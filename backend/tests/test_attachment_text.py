@@ -1768,11 +1768,21 @@ def test_readings_states(session) -> None:
         ("能读", "ok"),
         ("扫描件", "scan"),
         ("没了", "gone"),
-        ("外站", "unavailable"),
+        ("外站", "host"),
         ("还没取", "pending"),
         ("压缩包", "format"),
     ]
     assert found[0].chars == 4 and found[0].segments == 1 and found[0].file_type == "docx"
+    # 页面上写的话（D-097 设计稿第三节）
+    assert [x.note for x in found] == [
+        "",
+        "扫描件，暂不能识别文字",
+        "原网站上已没有这个附件",
+        "附件不在政府网站上，暂不能在小程序内阅读",
+        "新附件，一般半天内可读",
+        "此格式暂不能在小程序内阅读",
+    ]
+    assert [x.readable for x in found] == [True, False, False, False, False, False]
     assert [x.state for x in at.readings(session, old.id, NOW)] == ["old"]
     # 合并转载：详情页列的是组里正文最长那份的附件；那份是二级来源，不在下载范围里
     master = add_doc(session, 3, APPLY, RECENT, [])
@@ -1835,7 +1845,9 @@ def test_report_counts_formats_reasons_limits_and_sample(session, monkeypatch) -
         "zip": {"format": 1},
     }
     assert notice.actual_types == {"wps→doc": 1}
-    assert (notice.notices, notice.with_attachments, notice.with_readable) == (4, 4, 3)
+    # 按现在的标题规则是"资讯与指南"的那份（库里存的是申报通知）：附件在下载范围里、取了文字，
+    # 但小程序里不给读（和阅读页同一个判断，D-097），不算"至少一个附件能读"
+    assert (notice.notices, notice.with_attachments, notice.with_readable) == (4, 4, 2)
     assert notice.stale_kind == 1
     assert (notice.with_body, notice.no_body_but_readable) == (3, 1)
     assert (notice.over_limit, notice.over_only_with_attachments, notice.body_too_long) == (1, 1, 0)
@@ -1938,3 +1950,45 @@ def test_migration_0040_downgrade_upgrade(db_engine) -> None:
         "attachment_text_versions",
         "attachment_text_segments",
     }
+
+
+def test_policy_texts_kept_two_years_without_copies(session, client) -> None:  # noqa: F811
+    """D-097 ③：政策附件的文字留 2 年、只存文字；副本还是 90 天。"""
+    title = "辽宁省科学技术厅关于印发《科技计划项目管理办法》的通知"
+    kept = add_doc(
+        session, 1, title, NOW.date() - timedelta(days=200), [("办法", BASE + "rule.docx", "docx")]
+    )
+    expired = add_doc(
+        session, 2, title, NOW.date() - timedelta(days=800), [("旧办法", BASE + "old.docx", "docx")]
+    )
+    fetcher = FakeFetcher(
+        {
+            BASE + "rule.docx": make_docx("第一条 为规范管理，制定本办法。"),
+            BASE + "old.docx": make_docx("旧的办法。"),
+        }
+    )
+    # 只算附件文字的范围：2 年内的政策在，超过的不在；副本的范围（90 天）两个都不在
+    assert set(copies.candidates(session, NOW, texts=True)) == {BASE + "rule.docx"}
+    assert copies.candidates(session, NOW) == {}
+    cloud = FakeCloud()
+    run(session, fetcher, cloud)
+    assert fetcher.calls == [] and cloud.uploads == []
+    report = copies.extract_texts(session, fetcher=fetcher, now=NOW)
+    assert fetcher.calls == [BASE + "rule.docx"] and report.texts.extracted == 1
+    assert [x.state for x in at.readings(session, kept.id, NOW)] == ["ok"]
+    assert [x.state for x in at.readings(session, expired.id, NOW)] == ["old"]
+    # 副本的定时任务再跑一轮：不存副本，也不按副本的 90 天删掉文字
+    run(session, fetcher, cloud)
+    assert cloud.uploads == [] and set(_url_rows(session)) == {BASE + "rule.docx"}
+    [att] = client.get(f"/api/v1/documents/{kept.id}").json()["attachments"]
+    assert (att["readable"], att["state"], att["preview"], att["reason"]) == (
+        True,
+        "ok",
+        False,
+        "old",
+    )
+    # 过了 2 年：文字删掉
+    later = NOW + timedelta(days=600)
+    copies.extract_texts(session, fetcher=fetcher, now=later)
+    assert _url_rows(session) == {}
+    assert [x.state for x in at.readings(session, kept.id, later)] == ["old"]

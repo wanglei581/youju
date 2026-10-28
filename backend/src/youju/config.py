@@ -90,6 +90,9 @@ class Settings(BaseSettings):
     ai_advisor_api_key: SecretStr | None = None
     ai_advisor_model: str = ""
     ai_advisor_request_extra: dict | None = None
+    # 对外 AI 用流式返回（SSE）：经云开发调混元时，网关对不走流式、1 分钟内没生成完的请求不返回结果
+    # （D-098 调研，docs.cloudbase.net 的 FAQ）。默认关；实测最长的任务超过 1 分钟再打开
+    ai_advisor_stream: bool = False
     ai_model_label: str = ""
     ai_model_filing: str = ""
 

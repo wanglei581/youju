@@ -9,18 +9,19 @@
   又改过范围的只能按现在的算（这次升级前公众号还没开，没有真正发布过的周报）。
 
 编号 0033 是并行开发时预留的（0034 #297 也还没合并）；main 上现在是
-0032 → 0037 → 0038 → 0036 → 0039 → 0035 → 0040 → 0041（10/25），本迁移接在 0041 后面，避免出现两个 head。
+0032 → 0037 → 0038 → 0036 → 0039 → 0035 → 0040 → 0041 → 0042 → 0043（10/28），本迁移接在 0043 后面，
+避免出现两个 head。
 谁后合并谁把 down_revision 接到当时 main 最新的那个。
 
 Revision ID: 0033
-Revises: 0041
+Revises: 0043
 """
 
 import sqlalchemy as sa
 from alembic import op
 
 revision = "0033"
-down_revision = "0041"
+down_revision = "0043"
 branch_labels = None
 depends_on = None
 

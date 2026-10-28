@@ -46,13 +46,24 @@
 </block>
 <block wx:else>
   <view class="card">
-    <view class="h1">{{title || '站内阅读'}}</view>
-    <view wx:if="{{source}}" class="muted provenance">{{source.issuer}} <text class="nowrap">{{source.date}}</text><view>{{source.title}}</view><view>来源 {{source.host}}</view></view>
+    <view class="h1">{{docTitle || title || '站内阅读'}}</view>
+    <!-- 出处只写发文机关和日期，不写网址（D-097） -->
+    <view wx:if="{{source.issuer || source.date}}" class="muted provenance">{{source.issuer}} <text class="nowrap">{{source.date}}</text></view>
+    <!-- 目录（D-097）：正文 · 附件 1 · 附件 2；读不了的也列出来、写状态，不能点 -->
+    <view wx:if="{{toc.length > 1}}" class="toc">
+      <view wx:for="{{toc}}" wx:key="id" id="toc-{{index}}" class="toc-item {{item.current ? 'toc-item--on' : ''}} {{item.readable ? '' : 'toc-item--off'}}" data-id="{{item.id}}" bindtap="openToc" aria-role="{{item.readable && !item.current ? 'button' : 'text'}}" aria-disabled="{{!item.readable}}">
+        <text class="toc-label">{{item.label}}</text><text wx:if="{{item.name}}" class="toc-name">{{item.name}}</text>
+        <text wx:if="{{item.note}}" class="toc-note">{{item.note}}</text>
+      </view>
+    </view>
+    <view wx:if="{{partName}}" class="part-name">{{partLabel}}：{{partName}}</view>
     <view wx:if="{{loading}}" class="muted">正在加载阅读内容…</view>
     <view wx:if="{{error}}" class="error"><text>{{error}}</text><button bindtap="retry" class="btn-primary">{{changed ? '重新加载' : '重试'}}</button></view>
     <block wx:if="{{!loading && !error}}">
+      <view wx:if="{{updatedNote}}" class="notice">{{updatedNote}}</view>
+      <view wx:if="{{resumePage}}" class="resume"><text>从你上次读到的第 {{resumePage}} 页继续</text><text id="resume-start" class="link resume-start" bindtap="fromStart" aria-role="button">从开头看</text></view>
       <view wx:if="{{notice}}" class="notice">{{notice}}</view>
-      <view wx:if="{{scannedPages}}" class="notice">含 {{scannedPages}} 个扫描页，未读取的内容不计作已完成。</view>
+      <view wx:if="{{pages > 1}}" class="page-label">{{partLabel}} 第 {{page}} 页 / 共 {{pages}} 页</view>
       <view wx:for="{{segments}}" wx:key="n" class="segment">
         <text wx:if="{{item.loc}}" class="muted loc">{{item.loc}}</text>
         <text wx:if="{{item.text && !item.cells.length}}" class="reading-text" user-select>{{item.text}}</text>
@@ -60,9 +71,10 @@
           <view class="table table-row"><text wx:for="{{item.cells}}" wx:for-item="cell" wx:key="c" class="cell" user-select><text wx:if="{{cell.h}}" class="cell-head">{{cell.h}}：</text>{{cell.t}}</text></view>
         </scroll-view>
       </view>
-      <view wx:if="{{!segments.length && !notice}}" class="muted">暂未取得可阅读内容。</view>
-      <view wx:if="{{segments.length || page > 1}}" class="pagination"><button wx:if="{{page > 1}}" bindtap="previous">上一页</button><text>第 {{page}} 页</text><button wx:if="{{nextCursor !== null}}" bindtap="next">下一页</button></view>
-      <view wx:if="{{complete}}" class="muted">已到本版本内容末尾。</view>
+      <view wx:if="{{pages > 1}}" class="pagination"><button wx:if="{{prevCursor !== null}}" id="page-prev" bindtap="previous">上一页</button><text class="page-count">第 {{page}} 页 / 共 {{pages}} 页</text><button wx:if="{{nextCursor !== null}}" id="page-next" bindtap="next">下一页</button></view>
+      <!-- 这一部分读到头：正文完 / 附件 N 完；有扫描页的写还缺几页，不说读完 -->
+      <view wx:if="{{complete}}" class="end">{{endText}}</view>
+      <button wx:if="{{nextPart}}" id="next-part" class="btn-primary next-btn" bindtap="continueNext">{{complete ? '接着读' : '去读'}}{{nextPart.label}}{{nextPart.name ? '：' + nextPart.name : ''}}</button>
       <!-- 名单附件、几乎全是名单的正文（status=list），和挡掉了名单行的名单类通知正文（listHidden，D-092） -->
       <button wx:if="{{status === 'list' || listHidden}}" class="btn-primary lookup-btn" bindtap="lookup">在已收录名单中查询企业</button>
     </block>

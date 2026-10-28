@@ -86,6 +86,9 @@ _FAMILY = {
 COPY_KINDS = ("申报通知", "政策")
 WINDOW_DAYS = 90
 APPLICATION_WINDOW_DAYS = 180
+# 附件文字（attachment_text，给用户在小程序里读、给 AI 读）的范围：申报通知同副本（近 180 天）；
+# 政策近 2 年（D-097 ③：政策长期有效，过了 90 天附件就看不了；只存文字，不存原文件，副本仍是 90 天）
+POLICY_TEXT_WINDOW_DAYS = 730
 MAX_BYTES = MAX_RESPONSE_BYTES  # 20MB，抓取器超过就停止下载
 # 每段大小：callContainer 返回包上限 1000 KiB，留出余量
 PART_SIZE = 900 * 1024
@@ -869,10 +872,11 @@ def _recent(since: date, since_at: datetime):
     )
 
 
-def candidates(session: Session, now: datetime) -> dict[str, str]:
+def candidates(session: Session, now: datetime, *, texts: bool = False) -> dict[str, str]:
     """要下载的附件（存副本，wps、et 只取文字）：原站链接 → 题录里的扩展名，按文件发布日期
-    从新到旧。"""
-    since, since_at = _since(now)
+    从新到旧。texts：附件文字的范围（政策近 2 年，POLICY_TEXT_WINDOW_DAYS），不给是副本的范围
+    （政策近 90 天）；申报通知都是近 180 天。"""
+    since, since_at = _since(now, POLICY_TEXT_WINDOW_DAYS if texts else WINDOW_DAYS)
     apply_since, apply_since_at = _since(now, APPLICATION_WINDOW_DAYS)
     kind = func.coalesce(Document.kind_override, Document.rule_kind)
     rows = session.execute(
@@ -883,7 +887,9 @@ def candidates(session: Session, now: datetime) -> dict[str, str]:
             Source.rights_level == 1,
             available_condition(),
             or_(
-                _recent(since, since_at),
+                and_(kind == "政策", _recent(since, since_at))
+                if texts
+                else _recent(since, since_at),
                 and_(kind == "申报通知", _recent(apply_since, apply_since_at)),
             ),
             kind.in_(COPY_KINDS),
@@ -1263,7 +1269,9 @@ def _cache_run(
             report.storage_error = (
                 f"{report.storage_error}；{failure}" if report.storage_error else failure
             )
-        _text_cleanup(session, set(order), report.texts, now)
+        # 附件文字按自己的范围留（政策近 2 年），不跟着副本的 90 天删
+        text_live = {url_hash(url) for url in candidates(session, now, texts=True)}
+        _text_cleanup(session, text_live, report.texts, now)
     finally:
         if owns_client:
             client.close()
@@ -1308,7 +1316,7 @@ def extract_texts(
         if not got:
             return CacheReport(skipped=True)
         report = CacheReport()
-        wanted = candidates(session, now)
+        wanted = candidates(session, now, texts=True)
         order = {url_hash(url): url for url in wanted}
         todo = attachment_text.due(session, order, now, retry_now=retry_pending)
         picked = [key for key in order if key in todo]
@@ -1885,7 +1893,21 @@ def attachment_items(
 def is_recent(
     published: date | None, first_seen: datetime | None, now: datetime, *, kind: str = ""
 ) -> bool:
+    """在附件副本的范围里（申报通知近 180 天，其他近 90 天）。"""
     since, since_at = _since(now, APPLICATION_WINDOW_DAYS if kind == "申报通知" else WINDOW_DAYS)
+    if published is not None:
+        return published >= since
+    return first_seen is not None and first_seen >= since_at
+
+
+def text_recent(
+    published: date | None, first_seen: datetime | None, now: datetime, *, kind: str | None
+) -> bool:
+    """在附件文字的范围里（申报通知近 180 天，政策近 2 年；和 candidates(texts=True) 一样）。"""
+    days = {"申报通知": APPLICATION_WINDOW_DAYS, "政策": POLICY_TEXT_WINDOW_DAYS}.get(kind or "")
+    if days is None:
+        return False
+    since, since_at = _since(now, days)
     if published is not None:
         return published >= since
     return first_seen is not None and first_seen >= since_at

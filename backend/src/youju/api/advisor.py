@@ -19,9 +19,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, defer
 
 from youju import advisor_tasks as service
-from youju import boost, payments
-from youju.agreements import TOOLS_AGREEMENT_VERSION, agreement_at_least
-from youju.ai import heartbeat, interpret
+from youju import boost, chat_store, payments
+from youju.agreements import tools_agreed
+from youju.ai import content, heartbeat, interpret, result_safety
 from youju.ai.clause import Company
 from youju.ai.skills import AI_KINDS, get_skill
 from youju.api import v1
@@ -194,7 +194,7 @@ def _upload_consent(user: User) -> None:
     ):
         raise HTTPException(status_code=403, detail="请先阅读并同意工具使用说明")
     # 同意工具使用说明时已核对过；同意记录只会往新版本走，这里再查一次，不靠那一处
-    if not agreement_at_least(user.agreement_version, TOOLS_AGREEMENT_VERSION):
+    if not tools_agreed(user.agreement_version):
         raise HTTPException(status_code=403, detail=OUTDATED)
 
 
@@ -234,12 +234,12 @@ def start_trial(request: Request, session: SessionDep, user: UserDep) -> dict:
     """开始加量体验：用户在确认页看完规则点"开始体验"。重复点返回同一段体验，不会重新起算。
 
     开始体验不提交客户信息，不要求先同意工具使用说明；要求同意过写进体验记录的那一版用户协议和
-    隐私保护指引（TOOLS_AGREEMENT_VERSION）：过渡期里只同意过旧版的返回 403，小程序清掉本机的
-    同意记录，下次用需要登录的功能时请他重新同意。"""
+    隐私保护指引（agreements.tools_agreed）：过渡期里只同意过旧版、或只同意过不含体验条款的版本的，
+    返回 403，小程序清掉本机的同意记录，下次用需要登录的功能时请他重新同意。"""
     settings = get_settings()
     if not boost.trial_enabled(settings):
         raise HTTPException(status_code=404, detail="没有找到接口")
-    if not agreement_at_least(user.agreement_version, TOOLS_AGREEMENT_VERSION):
+    if not tools_agreed(user.agreement_version):
         raise HTTPException(status_code=403, detail=OUTDATED)
     # 和提交任务、注销同序：先锁用户行，再查体验记录和使用期（连接是 READ COMMITTED，
     # 锁后的查询读得到等锁期间别的请求刚提交的体验和使用期）。开始时间在锁后取：
@@ -332,9 +332,22 @@ def _out(task: AdvisorTask, session: Session, *, include_result: bool = True) ->
     if task.kind in AI_KINDS and not include_result:
         return {**result, "hasResult": bool(task.result_json)}
     if task.kind in AI_KINDS and task.result_json:
-        if task.expires_at is not None and task.expires_at <= _stamp():
+        # 内容安全（门槛第 4 道）：检查上线以前生成的不显示；词库更新以后先用本地词库再查一遍。
+        # 过期的照旧写"已过期"（先判断）
+        expired = task.expires_at is not None and task.expires_at <= _stamp()
+        hidden = (
+            None
+            if expired
+            else result_safety.visible_after_update(
+                task.result_json, get_skill(task.kind).result_field
+            )
+        )
+        if expired:
             result["result"] = None
             result["error"] = "结果已过期，请重新提交"
+        elif hidden:
+            result["result"] = None
+            result["error"] = hidden
         elif task.cache_key:
             try:
                 if not doc_id:
@@ -374,7 +387,10 @@ def _submission_lock(session: Session, kind: str):
 def _owned(
     session: Session, user: User, task_id: int, *, lock: bool = False, deleting: bool = False
 ) -> AdvisorTask:
-    stmt = select(AdvisorTask).where(AdvisorTask.id == task_id, AdvisorTask.user_id == user.id)
+    # 问这份通知的任务只从对话接口看、删（api/chat.py），这里当作没有（#328 第五节）
+    stmt = select(AdvisorTask).where(
+        AdvisorTask.id == task_id, AdvisorTask.user_id == user.id, AdvisorTask.kind != "ask"
+    )
     if lock:
         stmt = stmt.with_for_update()
     task = session.scalar(stmt)
@@ -436,6 +452,12 @@ def capabilities(request: Request, session: SessionDep, user: UserDep) -> dict:
             # 两项为假时小程序把按钮变灰、写原因，不收任务
             "available": heartbeat.worker_ready(session, settings, stamp),
             "siteFull": _site_full(session, settings, day),
+            # 问一问（#328 第五节）：chat 是显示不显示问一问（本地高危词库定稿以前为假）；
+            # chatConsent 是同意过当前版本的"问一问使用说明"没有；askTriesFull 是今天交给模型的
+            # 问这份通知满 20 问了没有
+            "chat": chat_store.chat_ready(),
+            "chatConsent": chat_store.consented(user),
+            "askTriesFull": counts.get(chat_store.ASK_TRY, 0) >= chat_store.ASK_TRY_LIMIT,
         }
         if ai_enabled
         else {
@@ -527,7 +549,7 @@ def create_task(
     if body.kind in AI_KINDS:
         # D-075：提交时就按原文判断这份能不能做，不能做直接说原因，不建任务、不扣次数
         try:
-            interpret.eligible_body(session, body.doc_id)
+            content.check(session, body.doc_id)
         except interpret.InterpretRefusal as exc:
             raise HTTPException(
                 status_code=422,
@@ -704,6 +726,8 @@ def list_tasks(session: SessionDep, user: UserDep) -> dict:
             AdvisorTask.user_id == user.id,
             AdvisorTask.created_at >= since,
             AdvisorTask.kind.in_(kinds),
+            # 问这份通知的任务只在对话里（PR-3 把 ask 加进 AI_KINDS 以后也不列在这里）
+            AdvisorTask.kind != "ask",
         )
         .order_by(AdvisorTask.created_at.desc(), AdvisorTask.id.desc())
     ).all()

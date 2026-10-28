@@ -523,7 +523,7 @@ test('未同意通用协议：工具中心与任务中心写通用工具文案�
     if (page.onLoad) page.onLoad({});
     page.onShow(); await flush();
     const shown = textOf(render(`pages/${name}/index.wxml`, page.data));
-    assert.match(shown, /使用工具前，请先阅读并同意《用户协议》和《隐私保护指引》/, name); assert.doesNotMatch(shown, /AI/, name);
+    assert.match(shown, /使用前，请先阅读并同意《用户协议》和《隐私保护指引》/, name); assert.doesNotMatch(shown, /AI/, name);
     // 403 时不知道服务端开没开批量工具：介绍卡只说"有什么"，不承诺同意后一定能用（Codex 审阅）
     if (name === 'advisor') { assert.match(shown, /工具中心有什么/); assert.doesNotMatch(shown, /同意后可以用/); }
     page.consent(); await flush(); assert.equal(asked, 1, name); page.onUnload();
@@ -538,7 +538,7 @@ test('老用户协议更新后：工具中心和我的记录直接写"协议已�
     if (page.onLoad) page.onLoad({});
     page.onShow(); await flush();
     const shown = textOf(render(`pages/${name}/index.wxml`, page.data));
-    assert.match(shown, /《用户协议》和《隐私保护指引》已更新，请阅读并同意新版后继续使用工具/, name); assert.doesNotMatch(shown, /使用工具前/, name);
+    assert.match(shown, /《用户协议》和《隐私保护指引》已更新，请阅读并同意新版后继续使用。/, name); assert.doesNotMatch(shown, /使用工具前/, name);
     page.consent(); await flush(); assert.equal(asked, 1, name); page.onUnload();
   }
 });

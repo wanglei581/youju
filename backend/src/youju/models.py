@@ -728,7 +728,7 @@ AI_STORED_REASONS = tuple(reason for reason in AI_REASONS if reason != "link_gon
 class AIEligibility(Base):
     """每份文件能不能做 AI 解读（D-075）：列表行上的"AI 解读"按钮读这里，列表请求不逐份读正文。
 
-    reason 为空表示能解读，否则是 AI_STORED_REASONS 之一。admin 的定时任务按 interpret.eligible_body
+    reason 为空表示能解读，否则是 AI_STORED_REASONS 之一。admin 的定时任务按 content.check
     算好写入（youju/ai/eligibility.py）；详情页和提交任务仍实时判断，以实时为准。原网页撤下不存这里，
     读表时另看 documents.link_gone_at（eligibility.flags、eligible_ids）。
     能不能解读是文件本身的属性，和 AI 开没开无关，所以 admin、api 两个服务回的一样。"""
@@ -774,6 +774,46 @@ class AIHeartbeat(Base):
     alerted_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     notice_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     refunds_pending: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    # admin 那一行：问答能用（对外 AI 的单独线路配齐了，问一问开发设计第六节第 3 条）；api 只读
+    ask_ready: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+
+
+class AISafetyHit(Base):
+    """内容安全的处置记录（迁移 0042）：本地高危词库或微信内容安全接口拦下的 AI 结果和用户提问。
+
+    D-093 门槛第 4 条、《生成式人工智能服务管理暂行办法》第十四条（发现违法内容要停止生成、
+    停止传输、消除，保存有关记录）。kind 是哪个功能（解读、对照、问一问的两个技能）；stage 是
+    拦在用户提问（question）还是 AI 结果（answer）；layer 是哪一层；reason_json 是原因（本地词库的
+    类别、词条编号、词库版本，或微信返回的 suggest、label），不写词本身。
+
+    - AI 结果被拦的：只记通知编号和任务编号，不存结果文字（结果全是政府原文的原句，按编号能找回）；
+      也不记用户编号（uid 为空）：结果不是用户写的。
+    - 问一问的提问被拦的（PR-2 起）：记那句话（最多 200 字）和去标识化的用户编号（同访问日志）。
+    不建外键：删任务、删对话、注销都不动它；190 天到期由每天的清理删除。只在处置违法违规内容、
+    依法向主管部门报告时由创始人在生产库里查；管理台、日报只给次数和类别。"""
+
+    __tablename__ = "ai_safety_hits"
+    __table_args__ = (
+        Index("ix_ai_safety_hits_expires", "expires_at"),
+        CheckConstraint(
+            "kind IN ('interpret', 'clause', 'find', 'ask')", name="ck_ai_safety_hits_kind"
+        ),
+        CheckConstraint("stage IN ('question', 'answer')", name="ck_ai_safety_hits_stage"),
+        CheckConstraint("layer IN ('local', 'wechat')", name="ck_ai_safety_hits_layer"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime())
+    uid: Mapped[str | None] = mapped_column(String(64))
+    kind: Mapped[str] = mapped_column(String(16))
+    stage: Mapped[str] = mapped_column(String(8))
+    layer: Mapped[str] = mapped_column(String(8))
+    reason_json: Mapped[dict | None] = mapped_column(JSONType)
+    text: Mapped[str | None] = mapped_column(String(200))
+    document_id: Mapped[int | None] = mapped_column(Integer)
+    task_id: Mapped[int | None] = mapped_column(Integer)
+    turn_id: Mapped[int | None] = mapped_column(Integer)
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime())
 
 
 # 申报条件的类别（D-052 第④项）：顺序也是对外展示的顺序
@@ -986,6 +1026,9 @@ class User(Base):
     agreement_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     advisor_agreement_version: Mapped[str | None] = mapped_column(String(20))
     advisor_agreement_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    # "问一问使用说明"的同意（agreements.CHAT_AGREEMENT_VERSION），同批量工具的使用说明
+    chat_agreement_version: Mapped[str | None] = mapped_column(String(32))
+    chat_agreement_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 
 
 class AdvisorTask(Base):
@@ -997,7 +1040,8 @@ class AdvisorTask(Base):
         Index("ix_advisor_tasks_user_created", "user_id", "created_at"),
         Index("ix_advisor_tasks_status_created", "status", "created_at"),
         CheckConstraint(
-            "kind IN ('compare', 'track', 'interpret', 'clause')", name="ck_advisor_tasks_kind"
+            "kind IN ('compare', 'track', 'interpret', 'clause', 'ask')",
+            name="ck_advisor_tasks_kind",
         ),
         Index("ix_advisor_tasks_cache", "cache_key", "finished_at"),
         CheckConstraint(
@@ -1033,6 +1077,51 @@ class AdvisorTask(Base):
     started_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     expires_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+
+
+class AIChat(Base):
+    """问一问的一条对话（迁移 0043）：每份通知一条，另有一条不带通知的（doc_key 为 0）。
+
+    doc_key 是建的时候那份通知的编号，建好以后不改；按通知找对话时换成现在的合并组再找
+    （api/chat.py）。updated_at 是最近一问的时间，"我的 AI 记录"按它排。"""
+
+    __tablename__ = "ai_chats"
+    __table_args__ = (
+        UniqueConstraint("user_id", "doc_key", name="uq_ai_chats_user_doc"),
+        Index("ix_ai_chats_user_updated", "user_id", "updated_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    doc_key: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime())
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime())
+
+
+class AIChatTurn(Base):
+    """对话里的一问一答。用户打的字只存在 question 一处（和 answer_json 里从原话取出的
+    keywords、docNumber），保存 30 天（expires_at）。问这份通知有 task_id 和 doc_id；
+    找通知的回答、规则当场答的回答存在 answer_json。"""
+
+    __tablename__ = "ai_chat_turns"
+    __table_args__ = (
+        UniqueConstraint("chat_id", "seq", name="uq_ai_chat_turns_chat_seq"),
+        UniqueConstraint("chat_id", "idempotency_key", name="uq_ai_chat_turns_chat_key"),
+        Index("ix_ai_chat_turns_expires", "expires_at"),
+        CheckConstraint("skill IN ('find', 'ask')", name="ck_ai_chat_turns_skill"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    chat_id: Mapped[int] = mapped_column(ForeignKey("ai_chats.id", ondelete="CASCADE"))
+    seq: Mapped[int] = mapped_column(Integer)
+    skill: Mapped[str] = mapped_column(String(8))
+    question: Mapped[str] = mapped_column(String(200))
+    task_id: Mapped[int | None] = mapped_column(ForeignKey("advisor_tasks.id", ondelete="SET NULL"))
+    doc_id: Mapped[int | None] = mapped_column(Integer)
+    answer_json: Mapped[dict | None] = mapped_column(JSONType)
+    idempotency_key: Mapped[str] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime())
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime())
 
 
 class AdvisorUsage(Base):

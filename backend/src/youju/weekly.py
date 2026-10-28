@@ -1020,7 +1020,10 @@ def render_flash(profile: DigestProfile, stamp: datetime, item: Item, period: st
         "打开小程序「查名单」，输入企业全称，在已收录的政府公开名单里查；查到时显示原名单里的那一行。"
     )
     page.paragraph(
-        "看详情：在小程序里打开这份名单的详情，点「站内阅读全文」；名单里的企业在「查名单」里查。"
+        # 不写按钮名：详情页的阅读入口叫"阅读全文"或"阅读附件"，读不了不显示（D-097 C）；
+        # 查名单的说法和详情页一致
+        "看详情：在小程序里打开这份名单的详情，看通知正文和出处；"
+        "名单里的企业在「查名单」里按企业名称查。"
     )
     page.footer(stamp, [], deadlines=False)
     body_html, body_text, linked = page.done()

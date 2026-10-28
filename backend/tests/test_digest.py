@@ -441,14 +441,29 @@ def test_daily_report_cli_sends_once_and_records_ai_usage(
     monkeypatch.setattr(alerts, "send_alert", lambda message: sent.append(message) or True)
     assert cli.main(["daily-report", "--dry-run"]) == 0 and sent == []
     assert "运维日报" in capsys.readouterr().out
-    assert cli.main(["daily-report"]) == 0 and len(sent) == 1
-    assert "AI 建议先核对" in sent[0]
+    # 主日报一条，能读情况（D-097 ④）紧接着另发一条
+    assert cli.main(["daily-report"]) == 0 and len(sent) == 2
+    assert "AI 建议先核对" in sent[0] and sent[1].startswith("运维日报·能读情况")
     usage = session.scalars(select(AIUsage).where(AIUsage.task == "report")).all()
     assert sum(u.calls for u in usage) == 2 and sum(u.prompt_tokens for u in usage) == 100
 
     monkeypatch.setattr(ai_module, "get_chat_client", lambda: None)  # 没配 AI 时日报照发
     monkeypatch.setattr(alerts, "send_alert", lambda message: False)
     assert cli.main(["daily-report"]) == 1  # 发送失败按任务失败退出，由 job.sh 再提醒
+    # 第二条（能读情况）没发出去也按失败退出
+    results = [True, False]
+    monkeypatch.setattr(alerts, "send_alert", lambda message: results.pop(0))
+    assert cli.main(["daily-report"]) == 1 and results == []
+
+    # 能读情况统计出错：只发主日报（里面写"取不到"）
+    def broken(*_args):
+        raise RuntimeError("坏了")
+
+    monkeypatch.setattr(digest_module, "readability", broken)
+    sent.clear()
+    monkeypatch.setattr(alerts, "send_alert", lambda message: sent.append(message) or True)
+    assert cli.main(["daily-report"]) == 0 and len(sent) == 1
+    assert "能读（近 30 天申报通知、政策）：取不到（统计出错，看容器日志）" in sent[0]
 
 
 def test_usage_that_cannot_be_recorded_fails_the_command(
@@ -488,11 +503,11 @@ def test_access_quality_and_usage_lines(session, world) -> None:
             AccessDaily(day=date(2026, 9, 27), service="api", requests=5, errors=5, slow=0),
         ]
     )
-    # 申报通知有了足够长的正文（200 字）；名单解析出企业
+    # 申报通知有了能显示的正文（有一句话，D-097 不再要求 200 字）；名单解析出企业
     detail = session.scalars(
         select(DocumentDetail).where(DocumentDetail.document_id == world["apply"].id)
     ).one()
-    detail.body_text = "正" * 200
+    detail.body_text = "请于10月10日前报送申报材料。"
     session.add(
         ListEntry(
             document_id=world["list"].id,
@@ -533,7 +548,7 @@ def test_access_quality_and_usage_lines(session, world) -> None:
     session.commit()
     d = build_digest(session, now=NOW)
     assert d.access == (("admin", 3000, 0, 1), ("api", 1000, 1, 2))
-    assert d.notices_with_body == before.notices_with_body + 1
+    assert d.readability.body_ok == before.readability.body_ok + 1
     assert d.notices_30 == before.notices_30 and d.notices_with_candidates >= 1
     assert d.lists_parsed == before.lists_parsed + 1 and d.lists_30 >= 1
     assert d.attachment_copies == before.attachment_copies + 1
@@ -554,7 +569,6 @@ def test_quality_line_wording() -> None:
     d = digest_module.Digest(
         day=date(2026, 10, 19),
         notices_30=207,
-        notices_with_body=190,
         notices_with_candidates=150,
         lists_30=40,
         lists_parsed=28,
@@ -562,13 +576,13 @@ def test_quality_line_wording() -> None:
     )
     text = digest_text(d, [])
     # 百分比向下取整；数据库大小取不到时照写
+    # "有正文"改到能读情况里（正文能读率，和详情页、阅读页同一个判断，D-097 ④）
     assert (
-        "数据（近 30 天发布）：申报通知 207 份，有正文 91%、有截止候选 72%；"
-        "名单 40 份，解析出企业名单 70%"
+        "数据（近 30 天发布）：申报通知 207 份，有截止候选 72%；名单 40 份，解析出企业名单 70%"
     ) in text
     assert "用量：数据库大小取不到；附件副本 0 个，不到 1 MB；批量工具结果文件 0 个" in text
     empty = digest_text(digest_module.Digest(day=date(2026, 10, 19)), [])
-    assert "申报通知 0 份，有正文 —、有截止候选 —；名单 0 份，解析出企业名单 —" in empty
+    assert "申报通知 0 份，有截止候选 —；名单 0 份，解析出企业名单 —" in empty
 
 
 def test_a_failing_metric_only_blanks_its_own_line(session, world, monkeypatch) -> None:
@@ -592,29 +606,220 @@ def test_a_failing_metric_only_blanks_its_own_line(session, world, monkeypatch) 
     assert "今天先核：" in text_ and "待核对 3 条" in text_
 
 
-def test_quality_counts_content_on_other_urls_of_the_same_notice(session, world) -> None:
-    """正文、截止候选在同一通知的另一个网址上（归并组），小程序会用，日报也要算上。"""
+def test_readability_counts_content_on_other_urls_of_the_same_notice(session, world) -> None:
+    """正文能读用详情页、阅读页同一个判断（D-097）：同一通知另一个网址上的正文，小程序会用，日报也算；
+    像网页导航的不算，真短的通知算。"""
     apply_doc, twin = world["apply"], world["twin"]
-    before = build_digest(session, now=NOW)
-    # 主文件自己没有正文（只有两个字，按详情页规则用自己的），先换成空的；另一个网址上有 300 字
+    before = build_digest(session, now=NOW).readability
     detail = session.scalars(
         select(DocumentDetail).where(DocumentDetail.document_id == apply_doc.id)
     ).one()
     detail.body_text = ""
-    session.add(
-        DocumentDetail(document_id=twin.id, body_text="正" * 300, fetched_at=NOW, status="ok")
+    twin_detail = DocumentDetail(
+        document_id=twin.id, body_text="申报说明。" * 60, fetched_at=NOW, status="ok"
     )
+    session.add(twin_detail)
     session.commit()
-    after = build_digest(session, now=NOW)
-    assert after.notices_with_body == before.notices_with_body + 1
-    # 主文件自己有正文（哪怕短）就用自己的：和详情页一致，不够 200 字不算
-    detail.body_text = "正" * 50
+    assert build_digest(session, now=NOW).readability.body_ok == before.body_ok + 1
+    # 组里没有别的正文时：自己的像网页导航不算（写进"正文像网页导航"），真短的通知算
+    session.delete(twin_detail)
+    detail.body_text = "首页\n政务公开\n通知公告"
     session.commit()
-    assert build_digest(session, now=NOW).notices_with_body == before.notices_with_body
-    # 和详情页同一个清理：原文 205 字，去掉网页上的"【关闭窗口】"后只剩 199 字，不算
-    detail.body_text = "正" * 199 + "【关闭窗口】"
+    after = build_digest(session, now=NOW).readability
+    assert after.body_ok == before.body_ok and after.no_body["正文像网页导航"] >= 1
+    detail.body_text = "【关闭窗口】"
     session.commit()
-    assert build_digest(session, now=NOW).notices_with_body == before.notices_with_body
-    detail.body_text = "正" * 200 + "【关闭窗口】"
+    assert build_digest(session, now=NOW).readability.body_ok == before.body_ok
+    detail.body_text = "请按时报送。【关闭窗口】"
     session.commit()
-    assert build_digest(session, now=NOW).notices_with_body == before.notices_with_body + 1
+    assert build_digest(session, now=NOW).readability.body_ok == before.body_ok + 1
+
+
+def _readable_doc(
+    session, n, title, *, day=date(2026, 9, 25), body="请于10月10日前报送。", gone=False
+):
+    """能读情况用的一份通知：一个来源一份，正文、附件按参数给。"""
+    source = Source(
+        level="省级",
+        province="山东",
+        dept="科技",
+        dept_full_name=f"山东省测试厅{n}",
+        column_name="通知公告",
+        url=f"https://kjt.shandong.gov.cn/read{n}/",
+        enabled=True,
+        parser_config={},
+        rights_level=1,
+    )
+    session.add(source)
+    session.flush()
+    doc = Document(
+        source_id=source.id,
+        url=f"https://kjt.shandong.gov.cn/read/{n}.html",
+        url_key=f"kjt.shandong.gov.cn/read/{n}.html",
+        title=title,
+        publish_date=day,
+        first_seen_at=NOW - timedelta(hours=30),
+        last_seen_at=NOW,
+        link_gone_at=NOW if gone else None,
+    )
+    session.add(doc)
+    session.flush()
+    session.add(DocumentDetail(document_id=doc.id, body_text=body, fetched_at=NOW, status="ok"))
+    session.commit()
+    return doc
+
+
+def _attachment(session, doc, n, *, text_ok=True, scanned=0):
+    from youju import attachment_text as texts
+    from youju.models import AttachmentTextUrl, AttachmentTextVersion, DocumentAttachment
+
+    url = f"https://kjt.shandong.gov.cn/files/{doc.id}-{n}.docx"
+    session.add(
+        DocumentAttachment(
+            document_id=doc.id, position=n, name=f"附件{n}", url=url, extension="docx"
+        )
+    )
+    if text_ok:
+        version = AttachmentTextVersion(
+            sha256=f"{doc.id}{n}".ljust(64, "0"),
+            file_type="docx",
+            size=10,
+            status="ok",
+            extractor=texts.EXTRACTOR_VERSION,
+            segments=3,
+            chars=30,
+            scanned_pages=scanned or None,
+            extracted_at=NOW,
+        )
+        session.add(version)
+        session.flush()
+        session.add(
+            AttachmentTextUrl(
+                url_hash=texts.url_key(url),
+                url=url,
+                declared_type="docx",
+                version_id=version.id,
+                status="ok",
+                extractor=texts.EXTRACTOR_VERSION,
+                checked_at=NOW,
+                changed_at=NOW,
+            )
+        )
+    session.commit()
+
+
+def test_readability_rates_waits_and_sites(session, monkeypatch) -> None:
+    """能读情况（D-097 ④）：近 30 天申报通知、政策，正文、附件、整条能读的份数，等取文字最久的
+    等了多久，读不全最多的网站；名单类和 30 天以前的不算。"""
+    monkeypatch.setattr(v1, "now", lambda: NOW.astimezone(ZoneInfo("Asia/Shanghai")))
+    whole = _readable_doc(session, 1, APPLY)
+    _attachment(session, whole, 0)
+    waiting = _readable_doc(session, 2, "山东省科学技术厅关于印发《科技计划项目管理办法》的通知")
+    _attachment(session, waiting, 0, text_ok=False)
+    scanned = _readable_doc(session, 3, APPLY)
+    _attachment(session, scanned, 0, scanned=2)
+    _readable_doc(session, 4, APPLY, gone=True)
+    _readable_doc(session, 5, APPLY, body="首页\n政务公开\n通知公告")
+    _readable_doc(session, 6, LIST)
+    _readable_doc(session, 7, APPLY, day=date(2026, 8, 1))
+    rb = build_digest(session, now=NOW).readability
+    assert (rb.notices, rb.body_ok, rb.whole_ok, rb.scanned_only) == (5, 3, 1, 1)
+    # 正文能读、没有附件的也算整条能读（没有要读的附件；agy 第 2 轮）
+    _readable_doc(session, 8, APPLY)
+    more = build_digest(session, now=NOW).readability
+    assert (more.notices, more.body_ok, more.whole_ok) == (6, 4, 2)
+    assert dict(rb.no_body) == {"原网页已打不开": 1, "正文像网页导航": 1}
+    assert (rb.attachments, rb.attachments_ok, rb.pending) == (3, 2, 1)
+    assert rb.oldest_pending_hours == 30
+    assert [site for site, _, _ in rb.sites] == [f"山东省测试厅{n}" for n in (2, 3, 4, 5)]
+    d = digest_module.Digest(day=date(2026, 9, 29), readability=rb)
+    # 主日报那一行直接对着三项提审门槛写（agy 第 1 轮）
+    assert (
+        "能读（近 30 天申报通知、政策 5 份）：提审门槛还没达到——正文 60%（要 90%）、整条 20%（要 75%）、"
+        "等取文字最久的附件 30 小时（要不超过 14 小时）；详见下一条"
+    ) in digest_text(d, [])
+    text_ = digest_module.readability_text(d)
+    assert text_.startswith(
+        "运维日报·能读情况 9月29日（近 30 天申报通知、政策 5 份）：提审门槛还没达到"
+        "（正文、整条、附件等待三项都达到才算，D-097）"
+    )
+    assert "正文能读 3 份（60%，门槛 90%，没达到，争取 95%）；读不了的：" in text_
+    assert (
+        f"等取文字的 1 个，最久的等了 30 小时（通知 {waiting.id}《{waiting.title[:20]}》）"
+        "（门槛不超过一轮 14 小时，没达到）"
+    ) in text_
+    assert "整条能读 1 份（20%，门槛 75%，没达到）" in text_
+    assert "正文和附件都能读、但附件有扫描页的 1 份单列、不算" in text_
+    assert (
+        "读不全最多的网站（份数；括号里是原因和份数，一份可能有几个原因）："
+        "山东省测试厅2 1（附件等取文字 1）"
+    ) in text_
+
+
+LONG_SITE = "某某省某某某某某某委员会某某某某某某中心" * 3
+
+
+def test_readability_text_drops_sites_to_fit_one_message() -> None:
+    rb = digest_module.Readability(
+        notices=100,
+        body_ok=95,
+        attachments=10,
+        attachments_ok=10,
+        whole_ok=80,
+        sites=[(f"{LONG_SITE}{n}", 9, [("没取到正文", 9)]) for n in range(10)],
+    )
+    d = digest_module.Digest(day=date(2026, 9, 29), readability=rb)
+    text_ = digest_module.readability_text(d)
+    budget = digest_module.MAX_ALERT_BYTES - len("【有据】".encode())
+    assert len(text_.encode()) <= budget
+    assert "正文能读 95 份（95%，门槛 90%，达到，争取 95%）" in text_
+    assert "没有等取文字的（门槛不超过一轮 14 小时，达到）" in text_
+    assert "整条能读 80 份（80%，门槛 75%，达到）" in text_
+    # 三项都达到才写"达到了"；扫描页单列的份数是 0 也写（agy 第 1 轮）
+    assert "：提审门槛达到了（正文、整条、附件等待三项都达到才算，D-097）" in text_
+    assert "附件有扫描页的 0 份单列、不算" in text_
+    assert "提审门槛达到了——正文 95%（要 90%）、整条 80%（要 75%）、没有等取文字的附件" in (
+        digest_text(d, [])
+    )
+    assert digest_module.gates(rb) == (True, True, True)
+    # 附件等待按秒比：14 小时整算达到，多 1 秒就不算（Grok 第 1 轮）
+    rb.pending, rb.oldest_pending_seconds, rb.oldest_pending_doc = 1, 14 * 3600, (7, "某通知")
+    assert digest_module.gates(rb) == (True, True, True)
+    assert "最久的等了 14 小时（通知 7《某通知》）（门槛不超过一轮 14 小时，达到）" in (
+        digest_module.readability_text(d)
+    )
+    # 写出来的小时：没超过一轮往下取整、超过才进位，0–14 小时只会和"达到"一起出现（Grok、agy 第 4 轮）
+    rb.oldest_pending_seconds = 13 * 3600 + 1
+    assert digest_module.gates(rb) == (True, True, True)
+    assert "等取文字最久的附件 13 小时（要不超过 14 小时）" in digest_text(d, [])
+    assert "最久的等了 13 小时（通知 7《某通知》）（门槛不超过一轮 14 小时，达到）" in (
+        digest_module.readability_text(d)
+    )
+    rb.oldest_pending_seconds = 0
+    assert digest_module.gates(rb) == (True, True, True)
+    assert "最久的等了 0 小时（通知 7《某通知》）（门槛不超过一轮 14 小时，达到）" in (
+        digest_module.readability_text(d)
+    )
+    rb.oldest_pending_seconds = 14 * 3600 + 1
+    assert digest_module.gates(rb) == (True, True, False)
+    # 显示的小时向上取整，和按秒判断一致：多 1 秒写 15 小时（Grok 第 2 轮）
+    assert "等取文字最久的附件 15 小时（要不超过 14 小时）" in digest_text(d, [])
+    assert "最久的等了 15 小时（通知 7《某通知》）（门槛不超过一轮 14 小时，没达到）" in (
+        digest_module.readability_text(d)
+    )
+    # 有一个等了多久算不出来（通知没有收录时间），另一个才等了 1 小时：也不算达到
+    rb.oldest_pending_seconds, rb.pending, rb.pending_unknown = 3600, 2, 1
+    assert digest_module.gates(rb) == (True, True, False)
+    text_ = digest_module.readability_text(d)
+    assert (
+        "等取文字的 2 个，有收录时间的里最久的等了 1 小时（通知 7《某通知》），"
+        "1 个附件所在的通知没有收录时间、等了多久不知道" in text_
+    )
+    assert "没达到）" in text_.split("\n")[2]
+    assert "有收录时间的里等取文字最久的附件 1 小时，另有 1 个等了多久不知道" in digest_text(d, [])
+    rb.oldest_pending_seconds = rb.oldest_pending_doc = None
+    assert digest_module.gates(rb) == (True, True, False)
+    assert digest_module.gates(digest_module.Readability()) == (False, False, True)
+    shown = text_.split("一份可能有几个原因）：")[1].split("；")
+    assert 0 < len(shown) < 10 and shown[0].startswith(f"{LONG_SITE}0 9")
+    assert digest_module.readability_text(digest_module.Digest(day=date(2026, 9, 29))) is None

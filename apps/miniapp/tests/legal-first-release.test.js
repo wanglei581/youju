@@ -15,7 +15,9 @@ const items = (section) => section.p.filter((p) => /^\d+\. /.test(p)).map((p) =>
 test('版本：比 10/15 首发的 2026-10 新，比后台第一次认 AI 条款的版本早（字符串比较）', () => {
   assert.match(first.version, /^\d{4}-\d{2}/);
   assert.ok(first.version > '2026-10' && first.version < SERVER_AI_TERMS_VERSION, first.version);
-  assert.ok(full.version >= SERVER_AI_TERMS_VERSION);
+  // 完整版 2026-11 含 AI 条款；10/28 起后台从 2026-11.1 起认（完整版没写"AI 结果送微信内容安全检查"），
+  // 完整版要升到 2026-12 以后才能对所有人开放 AI（白名单试用不看版本）
+  assert.ok(full.version >= '2026-11' && full.version > first.version);
 });
 
 test('只写首发包里有的：不写 AI、批量工具、加量体验、付费、投诉举报页、原文链接、使用帮助和"我的记录"', () => {

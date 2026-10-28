@@ -1,11 +1,12 @@
 // 原文链接已失效（后台 youju/link_check.py：近 30 天的每天查，隔天两次都打不开或是撤稿页才算；分不清是撤稿
-// 还是改了地址，只说链接失效）：卡片标"原文链接已失效"，详情页标题下先写明、正文是之前收录的，底部写明留存内容见站内阅读页（10/23 起不放复制按钮）
+// 还是改了地址，只说链接失效）：卡片标"原文链接已失效"，详情页标题下先写明、要点和截止是之前收录的，正文和附件不再提供（D-097），底部只写哪天检查时打不开（10/23 起不放复制按钮，D-097 起不写网址）
 // （10/15 全面测试：近 30 天 832 份里 20 份原网页已打不开；10/22 宁夏科技厅一份申报通知第二天撤稿）。
 // 失效以后不能再开始 AI 解读（原因代码 link_gone），已有的结果照常能看、写明基于此前收录的正文
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { render, textOf, findAll, hasClass } = require('./wxml-render.js');
 const reasons = require('../utils/ai-reasons.js');
+const { goneNote } = require('../utils/format.js');
 
 test('卡片：原文链接失效的标出来，没失效的不标', () => {
   const base = { doc: { kind: '申报通知', title: '关于开展申报的通知', issuer: '某厅', date: '2026-10-01' }, segs: [{ t: '关于开展申报的通知' }], kindCls: 'apply' };
@@ -15,17 +16,24 @@ test('卡片：原文链接失效的标出来，没失效的不标', () => {
   assert.equal(findAll(ok, hasClass('gone')).length, 0);
 });
 
-test('详情页：标题下先写明链接失效了、正文是之前收录的；底部写明哪天检查时打不开，给出下一步', () => {
-  const tree = render('pages/detail/index.wxml', { doc: { title: '关于开展申报的通知', host: 'kjt.example.gov.cn', link_gone: '2026-10-16' }, loaded: true });
+test('详情页：标题下先写明链接失效了、要点和截止是之前收录的、正文和附件不再提供（D-097）；底部只写哪天检查时打不开，不写网址', () => {
+  const tree = render('pages/detail/index.wxml', { doc: { title: '关于开展申报的通知', host: 'kjt.example.gov.cn', link_gone: '2026-10-16' }, goneNote: goneNote('2026-10-16', false), loaded: true });
   const top = findAll(tree, hasClass('gone-note')).map((n) => textOf(n).trim()).join('');
   assert.match(top, /原文链接已失效（2026-10-16 检查时打不开，原网页可能已撤下或改了地址）/);
-  assert.match(top, /下面是之前收录的内容，通知可能已撤回或更正/);
+  assert.match(top, /下面的要点和截止是之前收录的，通知可能已撤回或更正/);
+  assert.match(top, /正文和附件不再提供/);
   const note = findAll(tree, hasClass('source-gone')).map((n) => textOf(n).trim()).join('');
-  assert.match(note, /原文链接已失效（2026-10-16 检查时打不开）；留存的内容和状态见站内阅读页/);
-  assert.doesNotMatch(note, /复制/);
-  const fine = render('pages/detail/index.wxml', { doc: { title: '关于开展申报的通知', host: 'kjt.example.gov.cn' }, loaded: true });
+  assert.match(note, /原网页 2026-10-16 检查时已打不开。/);
+  assert.doesNotMatch(note, /复制|站内阅读页|kjt\.example\.gov\.cn/);
+  assert.doesNotMatch(textOf(tree), /kjt\.example\.gov\.cn/);
+  const fine = render('pages/detail/index.wxml', { doc: { title: '关于开展申报的通知', host: 'kjt.example.gov.cn' }, goneNote: goneNote('', false), loaded: true });
   assert.equal(findAll(fine, hasClass('source-gone')).length, 0);
   assert.equal(findAll(fine, hasClass('gone-note')).length, 0);
+  // 服务端万一还给了能读的正文或附件：不说"不再提供"（Grok 第 1 轮）
+  const still = goneNote('2026-10-16', true);
+  assert.match(still, /^原文链接已失效（2026-10-16 检查时打不开/);
+  assert.match(still, /下面是之前收录的内容/);
+  assert.doesNotMatch(still, /不再提供/);
 });
 
 test('不能解读的原因 link_gone：写明链接失效了、为什么不解读，不给下一步（复制的链接也打不开）', () => {

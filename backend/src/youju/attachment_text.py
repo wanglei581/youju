@@ -15,9 +15,10 @@
   分开写的号码（"138 1234 5678"、隔开写的身份证号和银行卡号、"账号："后面隔开写的数字）也遮掉。
   邮箱在这之前先只遮地址本身（和正文函数 10/20 起的写法一样；以前正文函数会把邮箱前面连着的
   中文一起遮掉）。
-- 范围跟附件副本一样（attachments.candidates）：申报通知近 180 天、政策近 90 天，一级公开来源、
-  没下架，名单类不读。每轮抓取补完详情后先取新附件的（youju attachment-texts，deploy/round.sh），
-  附件副本的定时任务下载时也顺带取（补上没轮到的）；AI 关着也照常跑。
+- 范围（attachments.candidates(texts=True)）：申报通知近 180 天、政策近 2 年（D-097 ③：只存文字；
+  附件副本还是政策近 90 天），一级公开来源、没下架，名单类不读。每轮抓取补完详情后先取新附件的
+  （youju attachment-texts，deploy/round.sh），附件副本的定时任务下载时也顺带取（补上没轮到的）；
+  AI 关着也照常跑。超过 90 天的政策附件不再随副本每 7 天复查，文字取过就留着，到 2 年删掉。
 """
 
 from __future__ import annotations
@@ -2469,17 +2470,44 @@ def cleanup(session: Session, live: set[str], report: TextReport) -> None:
     session.commit()
 
 
-# ---- 读：每份通知的附件给 AI 读得了没有（统计用，第 2 步解读、问答也从这里取） ----
+# ---- 读：每份通知的附件读得了没有 ----
+# 详情页的附件状态、阅读页给不给附件文字、运维日报的附件能读率、附件读入统计都用这一个判断
+# （D-097：详情页不再用"有没有副本"冒充"能不能读"）。
 
 # 不在 REASONS 里、读的时候才算出来的几种：还没取、通知较早（超出范围）、不是申报通知或政策、
-# 附件所在的那份文件不是一级公开来源或已下架（合并转载时详情页可能列组里另一份的附件）
+# 名单类、附件所在的那份文件不是一级公开来源或已下架（合并转载时详情页可能列组里另一份的附件）、
+# 原网页已失效、附件链接不在政府网站
 STATES = {
     "ok": "能读",
     "pending": "还没取",
     "old": "这份通知较早，附件没读",
     "kind": "这类文件不读附件",
+    "personal": "个人事项、失信和个人类名单，不读",
+    "list": "名单附件只给查询结果",
     "source": "附件所在的那份转载不是一级公开来源或已下架，没读",
+    "link_gone": "原网页已失效",
+    "host": "不是政府网站的链接",
     **REASONS,
+}
+# 页面上每种状态写的一句话（D-097 设计稿第三节；不写"正在准备""请稍后重试"这类说法）
+NOTES = {
+    "ok": "",
+    "pending": "新附件，一般半天内可读",
+    "scan": "扫描件，暂不能识别文字",
+    "format": "此格式暂不能在小程序内阅读",
+    "kind": "这类通知的附件暂不能在小程序内阅读",
+    "personal": "含个人信息，不在小程序内展示",
+    "list": "名单请在“查名单”里按企业名称查询",
+    "old": "这份通知较早，附件暂不能在小程序内阅读",
+    "link_gone": "原网页已打不开，附件暂不提供",
+    "host": "附件不在政府网站上，暂不能在小程序内阅读",
+    "source": "这个附件暂不能在小程序内阅读",
+    "too_large": "附件太大，暂不能在小程序内阅读",
+    "broken": "附件文件损坏或加了密，读不出文字",
+    "empty": "附件里没有能显示的文字",
+    "gone": "原网站上已没有这个附件",
+    "webpage": "原网站下载不了这个附件",
+    "unavailable": "原网站下载不了这个附件",
 }
 
 
@@ -2500,37 +2528,73 @@ class Reading:
     pages: int | None = None
     scanned_pages: int | None = None
     checked_at: datetime | None = None
+    attachment_id: int | None = None
+    # 附件所在那份文件的编号（合并转载时可能是组里另一份）
+    owner_id: int | None = None
+
+    @property
+    def readable(self) -> bool:
+        return self.state == "ok"
+
+    @property
+    def note(self) -> str:
+        """页面上写的一句话：能读、没有扫描页的不写；有扫描页的写还缺几页。"""
+        if self.state == "ok":
+            pages = self.scanned_pages or 0
+            return f"能读，另有 {pages} 页扫描件暂不能识别文字" if pages else ""
+        return NOTES.get(self.state, NOTES["unavailable"])
 
 
 def readings(session: Session, doc_id: int, now: datetime) -> list[Reading]:
-    """这份通知详情页列出的附件（合并转载的，和详情页一样取正文最长那份的附件），每个附件读得了
-    没有、读到的是哪个内容版本。范围按附件所在的那份文件算，和附件定时任务下载的范围
-    （attachments.candidates）一样：一级公开来源、没下架、申报通知近 180 天或政策近 90 天。
-    这份通知本身能不能公开（下架、来源级别）由调用方先查。"""
-    from sqlalchemy import func
-
-    from youju import attachments
+    """这份通知（主条目编号）详情页列出的附件（合并转载的，和详情页一样取正文最长那份的附件），
+    每个附件读得了没有、读到的是哪个内容版本。这份通知本身能不能公开（下架、来源级别）由调用方先查。"""
     from youju.api import v1  # 延迟引入：v1 引入较多，admin 的定时任务用不到这里
-    from youju.models import Document, Source
-    from youju.takedown import available_condition
+    from youju.models import Document
 
     detail = v1._details(session, [doc_id]).get(doc_id)
     items = sorted(detail.attachments, key=lambda a: a.position) if detail else []
+    master = session.get(Document, doc_id) if items else None
+    if master is None:
+        return []
+    return judge(session, master, items, now)
+
+
+def judge(session: Session, master, items: list, now: datetime) -> list[Reading]:
+    """附件（DocumentAttachment）读得了没有。master 是这份通知的主条目（Document）。依次看：
+    个人事项、失信和个人类名单（正文也不给，v1.body_withheld）→ personal；名单类（主条目或附件所在
+    那份是名单）→ list；不是申报通知、政策 → kind；附件所在那份不是一级公开来源或已下架 → source；
+    原网页已失效（主条目或附件所在那份）→ link_gone；不是政府网站的链接 → host；超出范围（按附件
+    所在那份库里存的类型：申报通知近 180 天、政策近 2 年，attachments.text_recent；和下载、清理
+    附件文字的 attachments.candidates 同一个类型，免得一边删了文字、一边还说"一般半天内可读"）
+    → old；格式不读 → format；还没按现在的规则取过 → pending；取不出、下载不了 → 原因；能读 → ok
+    （有扫描页的另给 scanned_pages）。"""
+    from youju import attachments
+    from youju.api import v1
+    from youju.classify import effective_kind
+    from youju.models import Document, Source
+    from youju.takedown import available_condition
+
     if not items:
         return []
-    owner = session.execute(
-        select(
-            func.coalesce(Document.kind_override, Document.rule_kind),
-            Document.publish_date,
-            Document.first_seen_at,
-            Source.rights_level,
+    owners = {
+        row.id: row
+        for row in session.execute(
+            select(
+                Document.id,
+                Document.title,
+                Document.kind_override,
+                Document.publish_date,
+                Document.first_seen_at,
+                Document.link_gone_at,
+                Document.rule_kind,
+                Source.rights_level,
+            )
+            .join(Source, Source.id == Document.source_id)
+            .where(Document.id.in_({a.document_id for a in items}), available_condition())
         )
-        .join(Source, Source.id == Document.source_id)
-        .where(Document.id == detail.document_id, available_condition())
-    ).first()
-    public = owner is not None and owner.rights_level == 1
-    kind = owner[0] if owner is not None else None
-    recent = public and attachments.is_recent(owner[1], owner[2], now, kind=kind or "")
+    }
+    master_kind = effective_kind(master.title, master.kind_override)
+    withheld = v1.body_withheld(master, master_kind)
     rows = {
         r.url_hash: r
         for r in session.scalars(
@@ -2549,26 +2613,67 @@ def readings(session: Session, doc_id: int, now: datetime) -> list[Reading]:
     }
     out = []
     for a in items:
-        reading = Reading(a.position, a.name, a.url, (a.extension or "").lower(), "pending")
+        reading = Reading(
+            a.position,
+            a.name,
+            a.url,
+            (a.extension or "").lower(),
+            "pending",
+            attachment_id=a.id,
+            owner_id=a.document_id,
+        )
+        owner = owners.get(a.document_id)
+        owner_kind = effective_kind(owner.title, owner.kind_override) if owner else None
         row = rows.get(url_key(a.url))
         version = versions.get(row.version_id) if row and row.version_id else None
-        if reading.ext not in attachments.DOWNLOAD_TYPES:
-            reading.state = "format"
-        elif not attachments._government_url(a.url):
-            reading.state, reading.detail = "unavailable", "不是政府网站的链接"
-        elif not public:
-            reading.state = "source"
-        elif kind not in attachments.COPY_KINDS:
+        if withheld:
+            reading.state = "personal"
+        elif "名单" in (master_kind, owner_kind):
+            reading.state = "list"
+        elif master_kind not in attachments.COPY_KINDS or (
+            owner is not None and owner_kind not in attachments.COPY_KINDS
+        ):
             reading.state = "kind"
-        elif not recent:
+        elif owner is None or owner.rights_level != 1:
+            reading.state = "source"
+        elif master.link_gone_at is not None or owner.link_gone_at is not None:
+            reading.state = "link_gone"
+        elif not attachments._government_url(a.url):
+            reading.state, reading.detail = "host", "不是政府网站的链接"
+        elif not attachments.text_recent(
+            owner.publish_date,
+            owner.first_seen_at,
+            now,
+            kind=owner.kind_override or owner.rule_kind,
+        ):
             reading.state = "old"
-        elif row is None or row.status == "pending":
+        elif reading.ext not in attachments.DOWNLOAD_TYPES:
+            reading.state = "format"
+        elif (
+            row is None
+            or row.status == "pending"
+            or row.extractor != EXTRACTOR_VERSION
+            or (version is not None and version.extractor != EXTRACTOR_VERSION)
+        ):
+            # 还没取，或按旧规则取的（规则升级后要重新取完才给读）
             reading.state = "pending"
+        elif row.status != "ok":
+            reading.state = row.reason or "unavailable"
+            reading.detail, reading.checked_at = row.detail, row.checked_at
+        elif version is None or version.status != "ok":
+            reading.state = (version.reason if version else None) or "unavailable"
+            reading.detail, reading.checked_at = row.detail, row.checked_at
+        elif not version.segments:
+            reading.state, reading.checked_at = "empty", row.checked_at
         else:
-            reading.state = "ok" if row.status == "ok" else row.reason or "unavailable"
-            reading.detail = row.detail
-            reading.checked_at = row.checked_at
-        if version is not None and reading.state not in ("old", "kind", "source"):
+            reading.state, reading.detail, reading.checked_at = "ok", row.detail, row.checked_at
+        if version is not None and reading.state not in (
+            "old",
+            "kind",
+            "source",
+            "list",
+            "personal",
+        ):
             reading.version_id, reading.sha256 = version.id, version.sha256
             reading.file_type, reading.chars = version.file_type, version.chars
             reading.segments, reading.pages = version.segments, version.pages

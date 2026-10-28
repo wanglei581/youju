@@ -612,6 +612,89 @@ def _cmd_extract_fields(args: argparse.Namespace) -> int:
     return 0 if usage_ok else 1
 
 
+def _cmd_ai_recheck_deadlines(args: argparse.Namespace) -> int:
+    """旧版本的 AI 截止检查重跑一遍（D-099 期 0）。
+    不加 --apply 只清点、估费用，不调模型、不改数据。"""
+    from youju.ai import get_chat_client
+    from youju.ai.deadlines import RESULT_VERSION
+    from youju.ai.pipeline import old_deadline_checks, rerun_old_deadlines, round_running
+    from youju.ai.usage import cost_yuan
+
+    now = datetime.now(UTC)
+    with session_factory()() as session:
+        # （上次用的模型, 输入 tokens, 输出 tokens），新的排前面
+        checks = [
+            (check.model, check.prompt_tokens, check.completion_tokens)
+            for _, _, check in old_deadline_checks(session, now, args.days)
+        ]
+        session.rollback()
+
+    def estimate(rows) -> tuple[float, bool]:
+        """按这些文件上次截止检查的用量、上次用的模型的列表价估（上限）；有没列价的模型时第二项为假。"""
+        total, priced = 0.0, True
+        for model, prompt_tokens, completion_tokens in rows:
+            cost = cost_yuan(model, prompt_tokens, completion_tokens)
+            if cost is None:
+                priced = False
+            else:
+                total += cost
+        return total, priced
+
+    batch = checks[: args.limit]
+    everything, priced_all = estimate(checks)
+    this_run, priced_run = estimate(batch)
+    print(
+        f"近 {args.days} 天发布、截止检查是旧版本（低于第 {RESULT_VERSION} 版）的主文件 "
+        f"{len(checks)} 份；这次最多重跑 {len(batch)} 份"
+    )
+    models = Counter(model for model, _, _ in checks)
+    print(f"  上次用的模型：{dict(models)}")
+    print(
+        f"  按上次用量和列表价估（上限，命中缓存、空闲时段更便宜）：这次约 {this_run:.2f} 元，"
+        f"全部约 {everything:.2f} 元"
+        + ("" if priced_all and priced_run else "；有没列价的模型，没算进去")
+    )
+    if not args.apply:
+        print("只清点，没调模型、没改数据。重跑会覆盖这些旧的 AI 截止检查结果，同意后再加 --apply")
+        return 0
+    if get_settings().role == "api":
+        # 定时任务在 admin 那边，在 api 容器里看不到它那一轮的锁
+        print("这个命令要在 admin 容器里跑，不能在 api 容器里跑")
+        return 1
+    if round_running():
+        print("定时任务这一轮正在跑，等它跑完再重跑（06:30、20:30 开始，一般半小时内）")
+        return 1
+    client = get_chat_client()
+    if client is None:
+        print("没有配置 AI 密钥（YOUJU_AI_API_KEY），不能重跑")
+        return 1
+    usage_ok = False
+    try:
+        with session_factory()() as session:
+            report = rerun_old_deadlines(
+                session, client, days=args.days, limit=args.limit, now=now, busy=round_running
+            )
+    finally:
+        usage_ok = _finish_ai(client, "recheck")
+    print(f"重跑 {report.documents} 份文件的 AI 截止检查（模型 {client.model}）")
+    if report.round_busy:
+        print("  中途碰上定时任务那一轮，先停下；做完的已保存，等这一轮跑完再跑一次接着做")
+    print(
+        f"  截止候选：AI 一致 {report.deadlines_agree} 条，只有规则找到 "
+        f"{report.deadlines_rule_only} 条，AI 新找到 {report.deadlines_ai_only} 条（都要人工核对）"
+    )
+    print(
+        f"  出错 {report.errors} 份（保留旧结果，下次再跑）；用量：输入 {report.prompt_tokens}、"
+        f"输出 {report.completion_tokens} tokens"
+    )
+    if report.body_changed:
+        print(f"  检查期间正文被换掉、这次没记的 {report.body_changed} 份（下次重跑）")
+    if report.stopped_early:
+        print("连续多份文件调用 AI 出错，提前停止（可能是服务不可用或额度用完）")
+        return 1
+    return 0 if usage_ok else 1
+
+
 def _cmd_ai_check(args: argparse.Namespace) -> int:
     from youju.ai import get_chat_client
     from youju.ai.pipeline import run_ai_checks
@@ -725,7 +808,7 @@ def _cmd_audit_deadlines(args: argparse.Namespace) -> int:
 def _cmd_daily_report(args: argparse.Namespace) -> int:
     from youju.ai import get_chat_client
     from youju.alerts import send_alert
-    from youju.digest import build_digest, digest_text, pick_for_review
+    from youju.digest import build_digest, digest_text, pick_for_review, readability_text
 
     client = get_chat_client()
     usage_ok = False
@@ -738,11 +821,20 @@ def _cmd_daily_report(args: argparse.Namespace) -> int:
     finally:
         usage_ok = _finish_ai(client, "report")
     text = digest_text(digest, picks)
+    # 能读情况（D-097 ④）放不进同一条（群机器人一条有字节上限），紧接着另发一条；统计出错时不发
+    # （主日报里已写"取不到"）
+    extra = readability_text(digest)
     print(text)
-    sent = None if args.dry_run else send_alert(text)
-    if not args.dry_run and sent is None:
+    if extra:
+        print(extra)
+    if args.dry_run:
+        return 0 if usage_ok else 1
+    sent = send_alert(text)
+    if sent is None:
         print("未配置告警，日报未发送")
-    return 0 if usage_ok and (args.dry_run or sent is True) else 1
+    elif sent is True and extra:
+        sent = send_alert(extra)
+    return 0 if usage_ok and sent is True else 1
 
 
 def _cmd_reclassify(_: argparse.Namespace) -> int:
@@ -1000,6 +1092,87 @@ def _cmd_log_uid(args: argparse.Namespace) -> int:
     from youju.access_log import log_uid
 
     print(log_uid(args.openid))
+    return 0
+
+
+def _cmd_safety_probe(args: argparse.Namespace) -> int:
+    """开放前量一量微信内容安全会不会误拦政府原文（门槛第 4 道）。只读，不写数据库。
+
+    送检的是 AI 真正会显示的原句：先取最近做完的 AI 结果里的原句；不够数，再从最近收录、能做解读
+    的通知里取像申报要点的段落（对象、条件、材料、时间、支持、方式）补上。交微信检查时带 --openid
+    （这个人两小时内要访问过小程序），只打印各种结果的份数和没通过的编号，不打印文字。每份占一次
+    当天的调用次数（没上架前每天 100 次，纠错也占），所以默认只查 30 份。
+    只能在云托管 admin 容器里跑。"""
+    import re
+
+    from sqlalchemy import select
+    from sqlalchemy.orm import defer
+
+    from youju import wx_security
+    from youju.ai import content, interpret, result_safety
+    from youju.ai.skills import AI_KINDS, get_skill
+    from youju.models import AdvisorTask
+
+    if not wx_security.in_cloud(get_settings()):
+        print("只能在云托管里跑：本机不调微信接口")
+        return 1
+    points = re.compile(r"申报|对象|条件|材料|截止|时间|支持|补助|奖励|方式|系统|报送")
+    samples: list[tuple[str, str]] = []
+    with session_factory()() as session:
+        tasks = session.scalars(
+            select(AdvisorTask)
+            .options(defer(AdvisorTask.snapshot), defer(AdvisorTask.input_json))
+            .where(
+                AdvisorTask.kind.in_(AI_KINDS),
+                AdvisorTask.status == "done",
+                AdvisorTask.result_json.is_not(None),
+            )
+            .order_by(AdvisorTask.finished_at.desc(), AdvisorTask.id.desc())
+            .limit(args.notices)
+        ).all()
+        for task in tasks:
+            text = result_safety.result_text(task.result_json, get_skill(task.kind).result_field)
+            if text.strip():
+                samples.append((f"任务 {task.id}", text[: wx_security.LIMIT]))
+        candidates = session.scalars(
+            select(Document.id)
+            .where(Document.taken_down_at.is_(None))
+            .order_by(Document.first_seen_at.desc(), Document.id.desc())
+            .limit(args.notices * 5)
+        ).all()
+        for doc_id in candidates:
+            if len(samples) >= args.notices:
+                break
+            try:
+                content.check(session, doc_id)
+                loaded = content.load(session, doc_id)
+            except interpret.InterpretRefusal:
+                continue
+            picked = [p["text"] for p in loaded.paragraphs() if points.search(p["text"])]
+            text = "\n".join(picked)[: wx_security.LIMIT]
+            if text.strip():
+                samples.append((f"通知 {doc_id}", text))
+    counts: dict[str, int] = {}
+    blocked: list[str] = []
+    errors = 0
+    for label, text in samples[: args.notices]:
+        try:
+            verdict = wx_security.check_text(args.openid, text)
+        except wx_security.CheckDown as exc:
+            errors += 1
+            print(f"{label}：检测出错（errcode {exc.errcode}）")
+            if exc.errcode in (45009, 61010):
+                break  # 次数用完、openid 两小时内没访问过：后面的也查不了
+            continue
+        key = f"{verdict.suggest}" + (f"（label {verdict.label}）" if verdict.label else "")
+        counts[key] = counts.get(key, 0) + 1
+        if not verdict.passed:
+            blocked.append(f"{label}（{key}）")
+    checked = sum(counts.values())
+    summary = "、".join(f"{key} {n} 份" for key, n in sorted(counts.items())) or "没有查成的"
+    print(f"查了 {checked} 份：{summary}；出错 {errors} 次")
+    if blocked:
+        print("没通过的：" + "，".join(blocked))
     return 0
 
 
@@ -1431,12 +1604,14 @@ def _cmd_ai_heartbeat(_: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_advisor_run(_: argparse.Namespace) -> int:
-    from youju.advisor_tasks import run_advisor_tasks
+def _cmd_advisor_run(args: argparse.Namespace) -> int:
+    from youju.advisor_tasks import POLL_WINDOW, run_advisor_tasks
 
-    # admin 没开 AI 时退回的任务由 ai-heartbeat 每分钟按任务表数出来提醒（D-075），这里不发
+    # admin 没开 AI 时退回的任务由 ai-heartbeat 每分钟按任务表数出来提醒（D-075），这里不发。
+    # 每分钟那一轮在 POLL_WINDOW 秒里隔几秒领一次新的 AI 任务；
+    # --once 只把现在排着的处理完（手动跑用）
     with session_factory()() as session:
-        report = run_advisor_tasks(session)
+        report = run_advisor_tasks(session, poll_window=0.0 if args.once else POLL_WINDOW)
     print("工具任务：" + "，".join(f"{name} {count}" for name, count in report.items()))
     return 0
 
@@ -1916,6 +2091,18 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=_cmd_ai_check)
 
     p = sub.add_parser(
+        "ai-recheck-deadlines",
+        help="旧版本的 AI 截止检查重跑一遍（新结果覆盖旧结果、不删数据）；"
+        "不加 --apply 只清点、估费用",
+    )
+    p.add_argument("--days", type=_positive, default=90, help="只重跑近多少天发布的文件（默认 90）")
+    p.add_argument("--limit", type=_positive, default=300, help="这次最多重跑多少份（默认 300）")
+    p.add_argument(
+        "--apply", action="store_true", help="真的调模型重跑；会覆盖线上已有的 AI 截止检查结果"
+    )
+    p.set_defaults(func=_cmd_ai_recheck_deadlines)
+
+    p = sub.add_parser(
         "extract-conditions",
         help="后台模型从申报通知正文抽申报条件（每条带原文引用），送核对台；没配密钥时跳过",
     )
@@ -1996,6 +2183,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument("openid")
     p.set_defaults(func=_cmd_log_uid)
+
+    p = sub.add_parser(
+        "safety-probe",
+        help="开放前量一量微信内容安全会不会误拦政府原文（只读，只能在云托管 admin 容器里跑）",
+    )
+    p.add_argument("--openid", required=True, help="两小时内访问过小程序的人（一般是创始人自己）")
+    p.add_argument("--notices", type=int, default=30, choices=range(1, 91), metavar="1-90")
+    p.set_defaults(func=_cmd_safety_probe)
 
     p = sub.add_parser(
         "triage-feedback",
@@ -2115,9 +2310,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument("--dry-run", action="store_true", help="只打印要退哪些、退多少，不写入")
     p.set_defaults(func=_cmd_pay_refund)
-    sub.add_parser("advisor-run", help="处理顾问技能包任务（开关关闭时跳过）").set_defaults(
-        func=_cmd_advisor_run
+    p = sub.add_parser(
+        "advisor-run",
+        help="处理顾问技能包任务（开关关闭时跳过）；AI 任务在 50 秒里每隔 3 秒领一次新的",
     )
+    p.add_argument("--once", action="store_true", help="只把现在排着的处理完就退出，不等新任务")
+    p.set_defaults(func=_cmd_advisor_run)
     sub.add_parser(
         "ai-heartbeat", help="写 admin 的 AI 设置心跳；两个服务设置不一致时提醒（D-075）"
     ).set_defaults(func=_cmd_ai_heartbeat)

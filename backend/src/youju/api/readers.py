@@ -16,7 +16,6 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from youju import attachment_text as texts
-from youju import attachments
 from youju.api import attachments as download_api
 from youju.api import v1
 from youju.classify import effective_kind
@@ -34,7 +33,13 @@ from youju.takedown import available_condition, is_taken_down
 
 PAGE_SEGMENTS = 20
 MAX_PAGE_BYTES = 128 * 1024
-READER_VERSION = 1
+# 分页按存下的文字大小算（每页最多 PAGE_SEGMENTS 段、合计不超过 PAGE_BUDGET 字节），整份内容的
+# 页数、每页从哪一段开始是定的：页面能写"第 N 页 / 共 M 页"、记住读到哪一页（D-097）。一页约
+# 4000 字（手机上十来屏）：2 万字的指南分成 5 页左右，续读才有意义；返回前还要再脱敏、换说法
+# （会变长一点），离返回上限 MAX_PAGE_BYTES 还很远
+PAGE_BUDGET = 12 * 1024
+# 2：D-097 分页定下来、遮挡处说法改了，旧版本号的续读位置作废
+READER_VERSION = 2
 
 
 class NoStoreRoute(APIRoute):
@@ -91,9 +96,10 @@ def _check_revision(cursor: str, expected: str | None, current: str) -> int:
 def _source(doc: Document, src: Source) -> dict:
     return {
         "id": str(doc.id),
-        "title": texts.mask(doc.title)[:1000],
-        "issuer": texts.mask(src.dept_full_name)[:500],
+        "title": v1.display_marks(texts.mask(doc.title))[:1000],
+        "issuer": v1.display_marks(texts.mask(src.dept_full_name))[:500],
         "date": doc.publish_date.isoformat() if doc.publish_date else None,
+        # 旧版小程序还显示网址；新版只写网站名称、发文机关、日期（D-097），下一版去掉
         "host": urlsplit(doc.url).hostname or "",
     }
 
@@ -101,14 +107,19 @@ def _source(doc: Document, src: Source) -> dict:
 def _payload(title: str, source: dict, status="ok", notice="") -> dict:
     return {
         "status": status,
-        "title": texts.mask(title)[:1000],
+        "state": None,
+        "title": v1.display_marks(texts.mask(title))[:1000],
         "source": source,
         "revision": None,
         "segments": [],
         "nextCursor": None,
+        "prevCursor": None,
+        "page": 0,
+        "pages": 0,
         "totalSegments": 0,
         "notice": notice,
         "scannedPages": 0,
+        "toc": None,
     }
 
 
@@ -124,24 +135,127 @@ def _document(session, doc_id: int, request: Request):
     return row
 
 
-def _page(payload: dict, candidates: list[dict], after: int, last: int) -> dict:
-    for segment in candidates:
-        payload["segments"].append(segment)
-        payload["nextCursor"] = str(segment["n"]) if segment["n"] < last else None
-        if len(json.dumps(payload, ensure_ascii=False).encode()) > MAX_PAGE_BYTES:
-            payload["segments"].pop()
-            if not payload["segments"]:
-                payload.update(
-                    status="unavailable",
-                    nextCursor=None,
-                    notice="这一段内容较大，暂时无法展示，请反馈问题。",
-                )
-                return payload
-            payload["nextCursor"] = str(payload["segments"][-1]["n"])
-            break
-    if not candidates and after:
+SEGMENT_MAX = 1000
+
+
+def _cut(line: str) -> int:
+    """一行超过 SEGMENT_MAX 字时在哪儿切：这个长度以内最后一个句号、分号后面；
+    前一半里都没有就在 SEGMENT_MAX 处切。"""
+    end = max(line.rfind(mark, 0, SEGMENT_MAX) for mark in "。；！？")
+    return end + 1 if end >= SEGMENT_MAX // 2 else SEGMENT_MAX
+
+
+def body_parts(text: str) -> list[str]:
+    """正文分段：空行隔开的一块是一段；超过 SEGMENT_MAX 字的按行拼成不超过这么长的几段（一行本身
+    太长才在句末切开），翻页不切在半句话中间。"""
+    parts: list[str] = []
+    for block in text.split("\n\n"):
+        if not block:
+            continue
+        current = ""
+        for line in block.split("\n"):
+            while len(line) > SEGMENT_MAX:
+                if current:
+                    parts.append(current)
+                    current = ""
+                cut = _cut(line)
+                parts.append(line[:cut])
+                line = line[cut:]
+            if current and len(current) + 1 + len(line) > SEGMENT_MAX:
+                parts.append(current)
+                current = line
+            else:
+                current = f"{current}\n{line}" if current else line
+        if current:
+            parts.append(current)
+    return parts
+
+
+def page_ends(sizes: list[tuple[int, int]]) -> list[int]:
+    """按段的顺序（段号, 字节数）分页，返回每页最后一段的段号。一段超过预算的自己一页。"""
+    ends: list[int] = []
+    count = used = 0
+    last = 0
+    for n, size in sizes:
+        if count and (count >= PAGE_SEGMENTS or used + size > PAGE_BUDGET):
+            ends.append(last)
+            count = used = 0
+        count += 1
+        used += size
+        last = n
+    if count:
+        ends.append(last)
+    return ends
+
+
+def _locate(ends: list[int], after: int) -> int:
+    """续读位置（上一页最后一段的段号，第 1 页是 0）是第几页（从 0 数）；不是页的开头就报错。"""
+    starts = [0, *ends[:-1]]
+    if after not in starts:
         raise HTTPException(422, "阅读位置超出范围，请重新打开")
+    return starts.index(after)
+
+
+def _page(payload: dict, segments: list[dict], ends: list[int], index: int) -> dict:
+    payload.update(
+        segments=segments,
+        page=index + 1,
+        pages=len(ends),
+        nextCursor=str(ends[index]) if index + 1 < len(ends) else None,
+        prevCursor=(str(ends[index - 2]) if index >= 2 else "0") if index >= 1 else None,
+    )
+    if len(json.dumps(payload, ensure_ascii=False).encode()) > MAX_PAGE_BYTES:
+        # 一段特别大（几万字的表格行）：这一页不显示，翻页照常
+        payload.update(
+            status="unavailable",
+            segments=[],
+            notice="这一页有一段特别长，暂时显示不了；可以翻页接着读，或反馈问题。",
+        )
     return payload
+
+
+def _toc(body: v1.ReadingBody, readings: list[texts.Reading]) -> dict:
+    """阅读页的目录：正文和每个附件能不能读（和详情页同一个判断）。"""
+    return {
+        "body": {"readable": body.status == "ok", "note": _BODY_NOTES.get(_body_key(body), "")},
+        "attachments": [
+            {
+                "id": str(r.attachment_id),
+                "name": v1.display_marks(texts.mask(r.name))[:300],
+                "ext": r.ext.upper(),
+                "readable": r.readable,
+                "state": r.state,
+                "stateText": r.note,
+            }
+            for r in readings
+        ],
+    }
+
+
+# 正文读不了时页面上写的话（D-097 设计稿第三节）
+_BODY_NOTES = {
+    "personal": "含个人信息，不在小程序内展示全文。",
+    "list:list": "这份通知的正文主要是名单，名单请在“查名单”里按企业名称查询。",
+    "list:mixed": (
+        "这份通知的正文里名单没能和通知文字分开，不展示正文；名单请在“查名单”里按企业名称查询。"
+    ),
+    "none:attachments": "这份通知的内容在附件里。",
+    "none:site": "这个网站的正文还取不到。",
+    "none:link_gone": "原网页已打不开，正文暂不提供。",
+}
+# 正文读不了时阅读接口的 status（旧版小程序按它显示）
+_BODY_STATUS = {
+    "personal": "unsupported",
+    "list:list": "list",
+    "list:mixed": "list",
+    "none:attachments": "empty",
+    "none:site": "empty",
+    "none:link_gone": "unavailable",
+}
+
+
+def _body_key(body: v1.ReadingBody) -> str:
+    return body.status if body.status in ("ok", "personal") else f"{body.status}:{body.reason}"
 
 
 @router.get("/documents/{doc_id}/reading")
@@ -155,87 +269,46 @@ def document_reading(
     doc, src = _document(session, doc_id, request)
     payload = _payload(doc.title, _source(doc, src))
     kind = effective_kind(doc.title, doc.kind_override)
-    # 名单类通知：正文挡掉名单内容后给读（D-092）；失信、个人类名单不给（list_filter 为 None）
-    list_filter = v1.list_body_filter(session, doc) if kind == "名单" else None
-    if kind == "名单" and list_filter is None:
-        payload.update(status="unsupported", notice="这类名单可能包含个人信息，站内不展示全文。")
-        return payload
-    if kind not in v1.BODY_KINDS and list_filter is None:
+    readings = texts.readings(session, doc.id, v1.now())
+    # 对完整正文脱敏后再分段，号码跨分页边界也不能漏出。
+    body = v1.reading_body(session, doc, kind, attachments=bool(readings), redact=texts.mask)
+    payload["toc"] = _toc(body, readings)
+    if body.status != "ok":
         payload.update(
-            status="unsupported",
-            notice="这类文件可能包含个人信息，站内不展示全文。",
+            status=_BODY_STATUS.get(_body_key(body), "unavailable"),
+            state=body.status if body.status != "none" else body.reason,
+            notice=_BODY_NOTES.get(_body_key(body), ""),
         )
         return payload
-    if doc.link_gone_at:
-        payload.update(status="unavailable", notice="来源已失效，内容暂不可阅读。")
-        return payload
-    chosen = v1._reading_body_selection(
-        session,
-        doc.id,
-        redact=texts.mask,
-        live_only=True,
-        allowed_kinds=v1.LIST_BODY_KINDS if list_filter is not None else v1.BODY_KINDS,
-    )
-    if chosen is None:
-        payload.update(status="empty", notice="正文暂未收录，请稍后重试或反馈问题。")
-        return payload
-    # 对完整正文脱敏后再分段，号码跨分页边界也不能漏出。
-    owner_id, _, cleaned = chosen
-    owner = session.get(Document, owner_id)
+    owner = session.get(Document, body.owner_id)
     source = session.get(Source, owner.source_id)
     payload["source"] = _source(owner, source)
-    notice = "以下为收录的原文文字，未经逐字人工核对；图片、版式与未收录附件不包含在内。"
-    hidden = False
-    if list_filter is not None:
-        result = list_filter(cleaned)
-        if result.text is None and result.reason == "short":
-            # 没认出名单、正文本来就太短：和别的类一样按没抓全说
-            payload.update(status="empty", notice="正文收录不足，暂不展示为完整内容。")
-            return payload
-        if result.text is None:
-            # 正文几乎全是名单，或名单没能和通知文字分开：只给查名单里的企业查询结果（D-088）
-            what = (
-                "这份通知的正文主要是名单"
-                if result.reason == "list"
-                else "这份通知的正文里有名单没能和通知文字分开，暂不展示正文"
-            )
-            payload.update(
-                status="list",
-                notice=f"{what}，站内只提供企业查询结果（查到后可以看原名单里的那一行）。",
-            )
-            return payload
-        cleaned, hidden = result.text, result.hidden
-        if hidden:
-            notice = (
-                "以下为收录的通知文字，未经逐字人工核对；正文里的名单内容站内不展开，可以在查名单里"
-                "查企业。图片、版式与未收录附件不包含在内。"
-            )
-    elif len(cleaned) < v1.BODY_MIN_CHARS:
-        payload.update(status="empty", notice="正文收录不足，暂不展示为完整内容。")
-        return payload
-    parts = [
-        line[i : i + 1000]
-        for line in cleaned.split("\n\n")
-        if line
-        for i in range(0, len(line), 1000)
+    parts = body_parts(body.text)
+    segments = [
+        {"n": n + 1, "kind": "p", "text": part, "loc": None, "cells": None}
+        for n, part in enumerate(parts)
     ]
+    ends = page_ends([(s["n"], len(json.dumps(s, ensure_ascii=False).encode())) for s in segments])
     current = _revision(
-        doc.id, payload["title"], payload["source"], cleaned, texts.EXTRACTOR_VERSION
+        doc.id, payload["title"], payload["source"], body.text, texts.EXTRACTOR_VERSION
     )
     after = _check_revision(cursor, revision, current)
-    payload.update(revision=current, totalSegments=len(parts), notice=notice)
-    if hidden:
+    index = _locate(ends, after)
+    payload.update(
+        revision=current,
+        totalSegments=len(parts),
+        state="ok",
+        notice=(
+            "正文如下，名单请在“查名单”里按企业名称查询。文字自动提取，未经人工逐字核对。"
+            if body.hidden
+            else "以下是从原网页自动提取的文字，未经人工逐字核对；图片和表格样式不在内。"
+        ),
+    )
+    if body.hidden:
         # 正文里有名单内容没展开：页面给"在已收录名单中查询企业"按钮
         payload["listHidden"] = True
-    return _page(
-        payload,
-        [
-            {"n": n + 1, "kind": "p", "text": parts[n], "loc": None, "cells": None}
-            for n in range(after, min(after + PAGE_SEGMENTS, len(parts)))
-        ],
-        after,
-        len(parts),
-    )
+    start = ends[index - 1] if index else 0
+    return _page(payload, segments[start : ends[index]], ends, index)
 
 
 def _safe_segment(row: AttachmentTextSegment) -> dict:
@@ -244,7 +317,7 @@ def _safe_segment(row: AttachmentTextSegment) -> dict:
         if key in ("page", "row", "table", "slide") and isinstance(value, int):
             loc[key] = value
         elif key == "sheet" and isinstance(value, str):
-            loc[key] = texts.mask(value)
+            loc[key] = v1.display_marks(texts.mask(value))
     cells = []
     for cell in row.cells or []:
         if not isinstance(cell, dict) or not isinstance(cell.get("c"), int):
@@ -252,17 +325,28 @@ def _safe_segment(row: AttachmentTextSegment) -> dict:
         cells.append(
             {
                 "c": cell.get("c"),
-                "t": texts.mask(str(cell.get("t", ""))),
-                "h": texts.mask(str(cell.get("h", ""))),
+                "t": v1.display_marks(texts.mask(str(cell.get("t", "")))),
+                "h": v1.display_marks(texts.mask(str(cell.get("h", "")))),
             }
         )
     return {
         "n": row.n,
         "kind": row.kind,
-        "text": texts.mask(row.text),
+        "text": v1.display_marks(texts.mask(row.text)),
         "loc": loc or None,
         "cells": cells or None,
     }
+
+
+# 附件读不了时阅读接口的 status（旧版小程序按它显示）；页面上的话见 attachment_text.NOTES
+_ATTACHMENT_STATUS = {
+    "personal": "unsupported",
+    "list": "list",
+    "kind": "unsupported",
+    "format": "unsupported",
+    "scan": "scan",
+    "empty": "empty",
+}
 
 
 @router.get("/documents/{doc_id}/attachments/{attachment_id}/reading")
@@ -287,51 +371,25 @@ def attachment_reading(
         raise HTTPException(404, "附件暂不可阅读")
     source_doc, src = owner
     payload = _payload(att.name, _source(source_doc, src))
-    kind = effective_kind(source_doc.title, source_doc.kind_override)
-    if "名单" in (kind, effective_kind(doc.title, doc.kind_override)):
-        # 名单附件只给查名单里的那一行，不整份展示（D-088）；页面给"在已收录名单中查询企业"按钮
+    now = v1.now()
+    readings = texts.readings(session, doc.id, now)
+    # 详情页列出的附件直接用目录里的判断；组里别的网址的附件（以前的详情页可能列过）单独判断
+    state = next((r for r in readings if r.attachment_id == att.id), None) or next(
+        iter(texts.judge(session, doc, [att], now))
+    )
+    kind = effective_kind(doc.title, doc.kind_override)
+    body = v1.reading_body(session, doc, kind, attachments=bool(readings), redact=texts.mask)
+    payload["toc"] = _toc(body, readings)
+    payload["state"] = state.state
+    if not state.readable:
         payload.update(
-            status="list",
-            notice="名单在站内只提供企业查询结果（查到后可以看原名单里的那一行），暂不整份展示。",
+            status=_ATTACHMENT_STATUS.get(state.state, "unavailable"), notice=f"{state.note}。"
         )
-        return payload
-    if (
-        kind not in attachments.COPY_KINDS
-        or effective_kind(doc.title, doc.kind_override) not in attachments.COPY_KINDS
-    ):
-        payload.update(status="unsupported", notice="此类附件可能包含个人信息，暂不展示全文。")
-        return payload
-    if doc.link_gone_at or source_doc.link_gone_at or not attachments._government_url(att.url):
-        payload.update(status="unavailable", notice="来源暂不可用，请稍后重试或反馈问题。")
-        return payload
-    if not attachments.is_recent(
-        source_doc.publish_date, source_doc.first_seen_at, v1.now(), kind=kind
-    ):
-        payload.update(status="unavailable", notice="此附件不在当前收录范围内。")
-        return payload
-    if (att.extension or "").lower() not in attachments.DOWNLOAD_TYPES:
-        payload.update(status="unsupported", notice="此格式暂未支持站内阅读。")
         return payload
     url = session.scalar(
         select(AttachmentTextUrl).where(AttachmentTextUrl.url_hash == texts.url_key(att.url))
     )
-    version = session.get(AttachmentTextVersion, url.version_id) if url and url.version_id else None
-    if (
-        not url
-        or url.extractor != texts.EXTRACTOR_VERSION
-        or (version and version.extractor != texts.EXTRACTOR_VERSION)
-    ):
-        payload.update(status="unavailable", notice="附件文字正在准备，请稍后重试。")
-        return payload
-    if url.status != "ok" or version is None or version.status != "ok":
-        reason = url.reason or (version.reason if version else None)
-        payload.update(
-            status=reason if reason in ("scan", "empty") else "unavailable",
-            notice="此附件为扫描件，暂未收录可读文字。"
-            if reason == "scan"
-            else "附件文字暂不可用，请稍后重试或反馈问题。",
-        )
-        return payload
+    version = session.get(AttachmentTextVersion, url.version_id)
     current = _revision(
         doc.id,
         att.id,
@@ -342,27 +400,42 @@ def attachment_reading(
         version.extracted_at,
     )
     after = _check_revision(cursor, revision, current)
-    total, last = session.execute(
-        select(func.count(), func.max(AttachmentTextSegment.n)).where(
-            AttachmentTextSegment.version_id == version.id
+    sizes = [
+        (n, int(size or 0) + 64)
+        for n, size in session.execute(
+            select(
+                AttachmentTextSegment.n,
+                func.octet_length(AttachmentTextSegment.text)
+                + func.coalesce(func.octet_length(AttachmentTextSegment.cells), 0),
+            )
+            .where(AttachmentTextSegment.version_id == version.id)
+            .order_by(AttachmentTextSegment.n)
         )
-    ).one()
+    ]
+    payload.update(revision=current, totalSegments=len(sizes))
+    if not sizes:
+        payload.update(status="empty", state="empty", notice=f"{texts.NOTES['empty']}。")
+        return payload
+    ends = page_ends(sizes)
+    index = _locate(ends, after)
+    start = ends[index - 1] if index else 0
     rows = session.scalars(
         select(AttachmentTextSegment)
-        .where(AttachmentTextSegment.version_id == version.id, AttachmentTextSegment.n > after)
+        .where(
+            AttachmentTextSegment.version_id == version.id,
+            AttachmentTextSegment.n > start,
+            AttachmentTextSegment.n <= ends[index],
+        )
         .order_by(AttachmentTextSegment.n)
-        .limit(PAGE_SEGMENTS)
     ).all()
-    payload.update(revision=current, totalSegments=total, scannedPages=version.scanned_pages or 0)
-    if not total:
-        payload.update(status="empty", notice="附件未收录可读文字。")
-        return payload
+    scanned = version.scanned_pages or 0
     payload.update(
-        status="partial" if version.scanned_pages else "ok",
+        scannedPages=scanned,
+        status="partial" if scanned else "ok",
         notice=(
-            f"其中 {version.scanned_pages} 页为扫描页，以下文字未包含这些页。"
-            if version.scanned_pages
-            else "以下为已提取的附件文字；图片、公章和原始版式未包含在内。"
+            f"其中 {scanned} 页是扫描件，暂不能识别文字，下面的文字不含这些页。"
+            if scanned
+            else "以下是从附件自动提取的文字，未经人工逐字核对；图片、公章和版式不在内。"
         ),
     )
-    return _page(payload, [_safe_segment(row) for row in rows], after, last)
+    return _page(payload, [_safe_segment(row) for row in rows], ends, index)

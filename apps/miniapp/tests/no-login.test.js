@@ -224,8 +224,10 @@ function detailRoot(final) {
   Object.assign(page.data, {
     loading: false, error: '',
     doc: { id: '9', title: '关于申报的通知', tags: ['申报通知'], region: '山东', issuer: '某厅', date: '2026-10-01',
-      deadline: { label: '申报截止', notes: ['以原文为准'] }, points: [['发文机关', '某厅']], body: { status: 'none' } },
+      deadline: { label: '申报截止', notes: ['以原文为准'] }, points: [['发文机关', '某厅']], body: { status: 'none', reason: 'attachments' } },
     due: { days: 10, tone: 'normal' }, dueDate: '10月17日', dueWeek: '周六',
+    // 有能读的附件：底栏主按钮是"阅读附件"（D-097）
+    entry: { label: '阅读附件', attachment: '3' },
   });
   return shown('pages/detail/index.wxml', page.data);
 }

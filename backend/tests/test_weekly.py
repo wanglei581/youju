@@ -1445,7 +1445,7 @@ def test_list_flash_title_period_count_and_how_to_check(session, profile, lists_
         "打开小程序「查名单」，输入企业全称，在已收录的政府公开名单里查；查到时显示原名单里的那一行。"
     )
     assert lines[9] == (
-        "看详情：在小程序里打开这份名单的详情，点「站内阅读全文」；名单里的企业在「查名单」里查。"
+        "看详情：在小程序里打开这份名单的详情，看通知正文和出处；名单里的企业在「查名单」里按企业名称查。"
     )
     for word in ("浏览器", "复制原文链接", "上过哪些", "在不在名单", "信用代码"):
         assert word not in issue.body_text + issue.body_html
@@ -1669,7 +1669,7 @@ def test_migration_0033_list_flash_upgrade_downgrade(db_engine, session, profile
         return columns, uniques
 
     try:
-        command.downgrade(cfg, "0041")
+        command.downgrade(cfg, "0043")
         columns, uniques = shape()
         assert not {"subject_id", "items", "scope"} & columns
         assert uniques == {"uq_digest_issue_kind_week"}

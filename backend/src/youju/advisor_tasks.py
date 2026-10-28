@@ -23,10 +23,10 @@ import httpx
 from openpyxl import load_workbook
 from sqlalchemy import and_, delete, func, or_, select, text, update
 from sqlalchemy.dialects.mysql import insert
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import Session, defer, sessionmaker
 
-from youju import access_log
-from youju.ai import advisor_endpoint, clause, heartbeat, interpret
+from youju import access_log, safety_words, wx_security
+from youju.ai import advisor_endpoint, clause, heartbeat, interpret, result_safety
 from youju.ai.client import AIError, ChatClient
 from youju.ai.skills import AI_KINDS, get_skill
 from youju.ai.usage import record_usage
@@ -37,6 +37,7 @@ from youju.models import (
     AdvisorFileTrash,
     AdvisorTask,
     AdvisorUsage,
+    AISafetyHit,
     AIUsage,
     Document,
     User,
@@ -52,6 +53,16 @@ MAX_UPLOAD_BYTES = 60 * 1024
 ADVISOR_AGREEMENT_VERSION = "advisor-2026-11-v2"
 TASK_TIMEOUT = timedelta(minutes=5)
 STALE_RUNNING = timedelta(minutes=10)
+# advisor-run 每分钟一轮（crontab）。队里有 AI 任务就一直领（和原来一样领到空）；
+# 队里空了，在开始后的 POLL_WINDOW 秒里每隔 POLL_INTERVAL 秒再看一次，用户点了
+# 几秒内就开始，不用等下一分钟（10/27 实测排队 48.6 秒）。过了这 50 秒、别的线程
+# 还在做任务时也接着看（反正要等它做完这一轮才结束）；全都空闲就退出。50 秒给
+# 启动、退出留余量，空闲时不和下一分钟那一轮撞上。开始满 CLAIM_LIMIT 秒不再领
+# 新的，手上的做完就退出，一轮最长约 4 分钟加一个任务（任务最长 5 分钟），
+# 不到 job.sh 当作"卡住了"的 10 分钟
+POLL_WINDOW = 50.0
+POLL_INTERVAL = 3.0
+CLAIM_LIMIT = 240.0
 # 处理中超过这么久的一定已经没人在跑（清理过期任务时才用，见 cleanup_advisor）
 ABANDONED = timedelta(days=1)
 INPUT_RETENTION = timedelta(days=7)
@@ -67,6 +78,10 @@ ERROR_CODES = {
     AI_CAP_MESSAGE: "AI_DAILY_CAP",
     AI_OFF_MESSAGE: "AI_OFF",
     heartbeat.UNAVAILABLE: "AI_UNAVAILABLE",
+    # 内容安全（门槛第 4 道）：结果没通过、检测接口出错。小程序没有这两个代码的固定说法时照写 error
+    result_safety.UNSAFE_MESSAGE: "AI_UNSAFE",
+    result_safety.REMOVED_MESSAGE: "AI_UNSAFE",
+    result_safety.CHECK_DOWN_MESSAGE: "AI_CHECK_DOWN",
 }
 
 
@@ -477,6 +492,109 @@ def legacy_result_document_ids(session: Session, client: httpx.Client, url: str)
         book.close()
 
 
+# 同一份内容没通过内容安全以后，多久内再提交直接按没通过处理
+BLOCK_CACHE = timedelta(days=1)
+SWEEP_BATCH = 200  # 词库更新以后复查已有结果，每批取几份
+
+
+def _recently_blocked(
+    session: Session, task: AdvisorTask, skill, model: str, key: str, stamp: datetime
+) -> bool:
+    """同一份内容 1 天内真查过、没通过。只认真查的那一次（写了处置记录的），不认后来直接判失败的，
+    免得每天有人交一次就一直续下去；本地词库拦下的，还要是现在这一版词库拦的（词库改了就重新查）。"""
+    rows = session.execute(
+        select(AISafetyHit.layer, AISafetyHit.reason_json)
+        .join(AdvisorTask, AdvisorTask.id == AISafetyHit.task_id)
+        .where(
+            AISafetyHit.stage == "answer",
+            AISafetyHit.created_at > stamp - BLOCK_CACHE,
+            AdvisorTask.kind == skill.kind,
+            AdvisorTask.id != task.id,
+            AdvisorTask.prompt_version == skill.prompt_version,
+            AdvisorTask.model == model,
+            AdvisorTask.cache_key == key,
+        )
+    ).all()
+    version = safety_words.LIBRARY.version
+    return any(
+        layer == "wechat" or (reason or {}).get("version") == version for layer, reason in rows
+    )
+
+
+def sweep_results(session: Session, stamp: datetime) -> int:
+    """词库更新以后，把还在保存期内、显示着的 AI 结果用现在的本地词库再查一遍（在本机比，
+    不调微信）。命中的撤下、写处置记录；没命中的把标记改成现在的版本。没有标记的（检查上线以前
+    生成的）读的时候本来就不显示，到期删除。先在库里按标记的版本筛，再分批取（不取快照里的整份
+    正文），每批单独提交。返回撤下了几份。"""
+    version = safety_words.LIBRARY.version
+    words = func.json_unquote(func.json_extract(AdvisorTask.result_json, "$.safety.words"))
+    ids = list(
+        session.scalars(
+            select(AdvisorTask.id)
+            .where(
+                AdvisorTask.kind.in_(AI_KINDS),
+                AdvisorTask.status == "done",
+                AdvisorTask.result_json.is_not(None),
+                or_(AdvisorTask.expires_at.is_(None), AdvisorTask.expires_at > stamp),
+                words.is_not(None),
+                words != version,
+            )
+            .order_by(AdvisorTask.id)
+        )
+    )
+    removed = 0
+    for at in range(0, len(ids), SWEEP_BATCH):
+        batch = session.scalars(
+            select(AdvisorTask)
+            .options(
+                defer(AdvisorTask.snapshot),
+                defer(AdvisorTask.input_json),
+                defer(AdvisorTask.input_rows),
+            )
+            .where(AdvisorTask.id.in_(ids[at : at + SWEEP_BATCH]), AdvisorTask.status == "done")
+            .with_for_update(skip_locked=True)
+        ).all()
+        for task in batch:
+            result = task.result_json or {}
+            mark = result.get("safety")
+            if not isinstance(mark, dict) or mark.get("words") == version:
+                continue
+            field = get_skill(task.kind).result_field
+            found = result_safety.local_hit(result_safety.quotes(result, field))
+            if found is None:
+                task.result_json = {**result, "safety": {**mark, "words": version}}
+                continue
+            result_safety.record_local(session, task, found, stamp=stamp, extra={"sweep": True})
+            task.status, task.error = "failed", result_safety.REMOVED_MESSAGE
+            task.result_json, task.result_rows, task.cache_key = None, 0, None
+            removed += 1
+        session.commit()
+    return removed
+
+
+def _remove_copies(session: Session, task: AdvisorTask, source_id: int) -> None:
+    """撤下没通过内容安全的那份缓存结果和它的复制件：复制结果不刷新生成时间，同类型、同缓存键、
+    生成时间相同的就是同一份。"""
+    source = session.get(AdvisorTask, source_id)
+    generated = ((source.result_json or {}).get("generated_at")) if source else None
+    if source is None or not source.cache_key or not generated:
+        return
+    for row in session.scalars(
+        select(AdvisorTask)
+        .where(
+            AdvisorTask.kind == source.kind,
+            AdvisorTask.cache_key == source.cache_key,
+            AdvisorTask.status == "done",
+            AdvisorTask.id != task.id,
+        )
+        .with_for_update()
+    ):
+        if (row.result_json or {}).get("generated_at") != generated:
+            continue
+        row.status, row.error = "failed", result_safety.REMOVED_MESSAGE
+        row.result_json, row.result_rows, row.cache_key = None, 0, None
+
+
 def process_ai(
     session: Session,
     task: AdvisorTask,
@@ -499,6 +617,7 @@ def process_ai(
     advisor_url, advisor_key, model, advisor_extra = advisor_endpoint(settings)
     call_reserved = False
     call_stamp = stamp
+    cached_from = None  # 结果是从哪个任务的缓存复制来的（内容安全没通过时要撤下那份）
     task.model, task.prompt_version = model, skill.prompt_version
     try:
         if not task.input_json:
@@ -508,6 +627,9 @@ def process_ai(
         )
         task.snapshot, task.cache_key = snapshot, key
         task.result_document_ids = snapshot["document_ids"]
+        if _recently_blocked(session, task, skill, model, key, stamp):
+            # 同一份内容 1 天内没通过内容安全：直接按没通过处理，不再调模型和微信（不另写记录）
+            raise result_safety.RecentlyBlocked
         cached = session.scalar(
             select(AdvisorTask)
             .where(
@@ -546,6 +668,7 @@ def process_ai(
                 except interpret.InterpretRefusal:
                     pass
         if reusable:
+            cached_from = cached.id
             result = (
                 clause.notification_result(cached.result_json)
                 if skill.kind == "clause"
@@ -565,6 +688,7 @@ def process_ai(
                     ),
                     max_retries=0,
                     extra_body=advisor_extra,
+                    stream=bool(getattr(settings, "ai_advisor_stream", False)),
                 )
             call_stamp = datetime.now(UTC) if live_time else stamp
             reserve_ai_call(session, skill.kind, model, call_stamp, settings.ai_advisor_daily_cap)
@@ -599,6 +723,12 @@ def process_ai(
                     result, current_verified, current["attachments"]
                 )
                 task.snapshot, task.cache_key = current, current_key
+        # 结果存进去之前过两层内容安全（D-093 门槛第 4 条）：复用缓存的也查；通过的记上标记
+        safety = result_safety.check(
+            session, task, result, field=skill.result_field, stamp=stamp, cached_from=cached_from
+        )
+        if safety is not None:
+            result = {**result, "safety": safety}
         task.result_json = result
         task.result_rows = len(result[skill.result_field])
         task.status, task.finished_at, task.error = "done", stamp, None
@@ -606,6 +736,21 @@ def process_ai(
             release_usage(session, task)
         session.commit()
         return True
+    except result_safety.ResultBlocked as blocked:
+        # 没通过内容安全：不显示、不存、退回次数；处置记录已经加进会话，和任务一起提交
+        if cached_from:
+            # 复用的缓存没通过：这份结果以前给别人显示过，撤下它和它的复制件（生成时间相同的），
+            # 也不再拿来复用（暂行办法第十四条：发现违法内容要消除）
+            _remove_copies(session, task, cached_from)
+        task.status, task.finished_at, task.error = "failed", stamp, result_safety.UNSAFE_MESSAGE
+        task.result_json = None
+        task.result_rows = 0
+        # 真查过没通过的留着缓存键（_recently_blocked 按它找处置记录）；直接判失败的不留
+        if isinstance(blocked, result_safety.RecentlyBlocked):
+            task.cache_key = None
+        release_usage(session, task)
+        session.commit()
+        return False
     except AICapReached:
         task.status, task.finished_at, task.error = "failed", stamp, AI_CAP_MESSAGE
         task.result_json = None
@@ -642,6 +787,8 @@ def process_ai(
         task.model, task.prompt_version = model, skill.prompt_version
         task.result_json = None
         task.cache_key = None
+        # 内容安全接口出错不放行，也不重排：暂时性的错误已经原地重试过（result_safety），
+        # 重排要重新调模型、占全站当天的次数
         retryable = (isinstance(exc, AIError) and exc.retryable) or isinstance(
             exc, (httpx.TransportError, TimeoutError)
         )
@@ -656,12 +803,17 @@ def process_ai(
         )
         if isinstance(exc, AIError) and not exc.retryable:
             task.error = "AI 返回内容无效或请求被拒绝，请稍后重试"
+        if isinstance(exc, wx_security.CheckDown):
+            task.error = result_safety.CHECK_DOWN_MESSAGE
         if retryable and task.attempts <= 2:
             task.status, task.started_at, task.finished_at = "queued", None, None
         else:
             task.status, task.started_at, task.finished_at = "failed", None, stamp
             release_usage(session, task)
         session.commit()
+        if isinstance(exc, wx_security.CheckDown):
+            # 往运维群提醒：按库里记的时间，所有进程合起来每小时最多一条
+            result_safety.alert_check_down(session, exc, stamp)
         return False
     finally:
         if chat_client is not None:
@@ -806,8 +958,21 @@ def run_advisor_tasks(
     stamp: datetime | None = None,
     timeout: timedelta = TASK_TIMEOUT,
     max_tasks: int | None = None,
+    poll_window: float = 0.0,
+    poll_interval: float = POLL_INTERVAL,
+    claim_limit: float = CLAIM_LIMIT,
+    clock=monotonic_clock.monotonic,
+    sleep=monotonic_clock.sleep,
 ) -> dict[str, int]:
-    """定时任务入口；先终结失去授权的解读任务，再按开关领取任务。"""
+    """定时任务入口；先终结失去授权的解读任务，再按开关领取任务。
+
+    默认（poll_window 0）把现在排着的处理完就返回（测试、手动 --once）。poll_window 大于 0 时
+    （每分钟的 advisor-run 用 POLL_WINDOW），AI 任务排空了不马上结束：开始后 poll_window 秒以内、
+    或别的线程还在做任务时，每隔 poll_interval 秒再领一次；开始满 claim_limit 秒不再领新的，
+    手上的做完就返回。数据工具不轮询，每轮只领一次。"""
+    start = clock()
+    deadline = start + poll_window if poll_window > 0 else None
+    claim_deadline = start + claim_limit if poll_window > 0 else None
     settings = settings or get_settings()
     live_timing = stamp is None
     stamp = _utc(stamp or datetime.now(UTC))
@@ -828,6 +993,8 @@ def run_advisor_tasks(
     result = {"processed": 0, "done": 0, "failed": 0, "requeued": requeued, "revoked": revoked}
     claimed: set[int] = set()
     claim_lock = Lock()
+    # 正在处理的任务数（领到加 1，处理完减 1；数据工具也算）：空闲的 AI 线程据此判断这一轮还结束不了
+    busy = {"in_flight": 0}
 
     def claim(work_session: Session, condition) -> AdvisorTask | None:
         # 临界区只负责领取；耗时的模型请求在锁外并行运行。
@@ -854,52 +1021,87 @@ def run_advisor_tasks(
             work_session.commit()
             claimed.add(task.id)
             result["processed"] += 1
+            busy["in_flight"] += 1
             return task
 
     def run_one(work_session: Session, task: AdvisorTask) -> None:
         # 任务行可能在处理途中被删（注销、过期清理）：之后只按编号重新取，不读 task 的属性
         task_id = task.id
         try:
-            done = process_task(
-                work_session,
-                task,
-                settings=settings,
-                stamp=datetime.now(UTC) if live_timing else stamp,
-                timeout=timeout,
-                live_time=live_timing,
-            )
-        except Exception:
-            work_session.rollback()
-            log.exception("顾问任务 #%s 处理异常", task_id)
-            failed_task = work_session.get(AdvisorTask, task_id)
-            if failed_task is not None:
-                failed_task.status, failed_task.finished_at = "failed", stamp
-                failed_task.error = "系统繁忙，请稍后重试"
-                release_usage(work_session, failed_task)
+            try:
+                done = process_task(
+                    work_session,
+                    task,
+                    settings=settings,
+                    stamp=datetime.now(UTC) if live_timing else stamp,
+                    timeout=timeout,
+                    live_time=live_timing,
+                )
+            except Exception:
+                work_session.rollback()
+                log.exception("顾问任务 #%s 处理异常", task_id)
+                failed_task = work_session.get(AdvisorTask, task_id)
+                if failed_task is not None:
+                    failed_task.status, failed_task.finished_at = "failed", stamp
+                    failed_task.error = "系统繁忙，请稍后重试"
+                    release_usage(work_session, failed_task)
+                    work_session.commit()
+                done = False
+            current = work_session.get(AdvisorTask, task_id) if live_timing else None
+            if current is not None and current.status in ("done", "failed"):
+                current.finished_at = datetime.now(UTC)
                 work_session.commit()
-            done = False
-        current = work_session.get(AdvisorTask, task_id) if live_timing else None
-        if current is not None and current.status in ("done", "failed"):
-            current.finished_at = datetime.now(UTC)
-            work_session.commit()
-        with claim_lock:
-            result["done" if done else "failed"] += 1
+            with claim_lock:
+                result["done" if done else "failed"] += 1
+        finally:
+            with claim_lock:
+                busy["in_flight"] -= 1
 
     def run_data() -> None:
-        # 数据工具始终由入口会话逐个处理。
-        while data_enabled:
-            task = claim(session, data_allowed)
-            if task is None:
-                break
-            run_one(session, task)
+        # 数据工具始终由入口会话逐个处理，同样开始满 claim_limit 秒不再领新的。处理数据工具的
+        # 整段时间都算"有人在忙"：两条数据任务之间计数不掉到 0，空闲的 AI 线程不会这时一起退出
+        if not data_enabled:
+            return
+        with claim_lock:
+            busy["in_flight"] += 1
+        try:
+            while claim_deadline is None or clock() < claim_deadline:
+                task = claim(session, data_allowed)
+                if task is None:
+                    break
+                run_one(session, task)
+        finally:
+            with claim_lock:
+                busy["in_flight"] -= 1
 
     if ai_enabled:
         factory = sessionmaker(bind=session.get_bind(), expire_on_commit=False)
 
         def ai_worker() -> None:
             with factory() as work_session:
-                while (task := claim(work_session, ai_allowed)) is not None:
-                    run_one(work_session, task)
+                # 开始满 claim_limit 秒不再领新的（手上的已经做完）：剩下的留给下一轮
+                while claim_deadline is None or clock() < claim_deadline:
+                    task = claim(work_session, ai_allowed)
+                    if task is not None:
+                        run_one(work_session, task)
+                        continue
+                    # 队里空了：不轮询（测试、--once）或领满 max_tasks 就结束
+                    if deadline is None or (
+                        max_tasks is not None and result["processed"] >= max_tasks
+                    ):
+                        break
+                    now = clock()
+                    with claim_lock:
+                        others_busy = busy["in_flight"] > 0
+                    # 过了 poll_window、别的线程也都空着：这一轮结束
+                    if now >= deadline and not others_busy:
+                        break
+                    # poll_window 以内睡到下一次看（最后一次正好在到点时看）；过了 poll_window
+                    # 但别的线程还在做任务（这一轮反正结束不了），照常隔几秒看
+                    wait = poll_interval if now >= deadline else min(poll_interval, deadline - now)
+                    if now + wait >= claim_deadline:
+                        break
+                    sleep(wait)
 
         concurrency = getattr(settings, "ai_advisor_concurrency", 3)
         with ThreadPoolExecutor(max_workers=concurrency) as pool:
@@ -1126,13 +1328,37 @@ def cleanup_advisor(
     usage_rows = (
         session.execute(delete(AdvisorUsage).where(AdvisorUsage.day < keep_from)).rowcount or 0
     )
+    # 内容安全的处置记录 190 天到期删除（门槛第 4 道）；删任务、注销都不提前删
+    safety_hits = (
+        session.execute(delete(AISafetyHit).where(AISafetyHit.expires_at <= stamp)).rowcount or 0
+    )
     session.commit()
+    # 词库更新以后再查一遍还显示着的 AI 结果：上面的保存期清理先提交，复查出错不影响它们
+    try:
+        swept = sweep_results(session, stamp)
+    except Exception as exc:  # noqa: BLE001 - 复查出错只记类型，下一天再查
+        session.rollback()
+        log.warning("AI 结果按新词库复查出错：%s", type(exc).__name__)
+        swept = 0
+    # 问一问：到期的问、一问都不剩的对话（#328 第十节第 1 条）。单独提交，出错不影响上面的清理
+    from youju import chat_store
+
+    try:
+        chat_counts = chat_store.cleanup(session, stamp)
+        session.commit()
+    except Exception as exc:  # noqa: BLE001 - 清理出错只记类型，下一天再清
+        session.rollback()
+        log.warning("问一问的到期清理出错：%s", type(exc).__name__)
+        chat_counts = {"ai_chat_turns": 0, "ai_chats": 0}
     return {
         "advisor_input_rows": input_count,
         "advisor_files": deleted_count,
         "advisor_ai_tasks": ai_tasks,
         "advisor_data_tasks": data_tasks,
         "advisor_usage_rows": usage_rows,
+        "ai_safety_hits": safety_hits,
+        "ai_results_removed": swept,
+        **chat_counts,
     }
 
 
