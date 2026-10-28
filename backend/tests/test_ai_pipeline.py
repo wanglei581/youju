@@ -842,20 +842,46 @@ def test_round_slot_rechecks_the_mark_after_taking_the_lock(tmp_path, monkeypatc
     assert not pipeline.round_running(path)
 
 
-def test_rerun_limits_row_lock_waits_while_writing(session) -> None:
-    """命令里给 lock_wait：这个会话每条语句等行锁最多这么多秒，拿着锁的时间有上限。"""
+def test_rerun_limits_row_lock_waits_while_writing(session, monkeypatch) -> None:
+    """命令里给 lock_wait：写库时每条语句等行锁最多这么多秒，拿着锁的时间有上限。每一份写库前都
+    设一次：连接池换了连接（用满 pool_recycle、断线重连），新连接上没有这个设置（独立审阅第 4 轮）。"""
     from sqlalchemy import text
 
-    from youju.ai.pipeline import rerun_old_deadlines
+    from youju.ai import pipeline
 
-    client, _ = fake_ai()
+    for number in (1, 2):
+        _old_check(session, add_doc(session, number))
+    client, _ = fake_ai(
+        deadlines=[ai_item("2026-10-15", "请各单位于2026年10月15日前完成网上申报。")]
+    )
+    seen = []
+    write_one = pipeline._write_one
+
+    def spy(*args, **kwargs):
+        seen.append(session.scalar(text("SELECT @@SESSION.innodb_lock_wait_timeout")))
+        return write_one(*args, **kwargs)
+
+    @contextmanager
+    def slot():
+        # 模拟连接池换了连接：每一份写库前，连接上的设置都回到默认
+        session.execute(text("SET SESSION innodb_lock_wait_timeout = DEFAULT"))
+        yield True
+
+    monkeypatch.setattr(pipeline, "_write_one", spy)
     try:
-        rerun_old_deadlines(
-            session, client, days=90, limit=10, now=datetime(2026, 10, 28, tzinfo=UTC), lock_wait=10
+        report = pipeline.rerun_old_deadlines(
+            session,
+            client,
+            days=90,
+            limit=10,
+            now=datetime(2026, 10, 28, tzinfo=UTC),
+            slot=slot,
+            lock_wait=10,
         )
-        assert session.scalar(text("SELECT @@SESSION.innodb_lock_wait_timeout")) == 10
     finally:
         session.execute(text("SET SESSION innodb_lock_wait_timeout = DEFAULT"))
+    assert seen == [10, 10]
+    assert report.written == 2
 
 
 def test_rerun_write_segment_has_a_time_limit(session, session_factory, tmp_path, monkeypatch):

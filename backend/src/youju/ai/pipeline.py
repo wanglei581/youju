@@ -495,19 +495,17 @@ def rerun_old_deadlines(
 
     和定时任务那一轮怎么让：调模型不拿锁（多慢都不挡它）；只有写库那一段在 slot 里做（命令里是
     round_slot：那一轮在跑或在等锁就拿不到）。拿不到就把这一份刚调出来的结果扔掉、停下，已做完的
-    照常保留，下次接着跑。写库那一段：lock_wait（命令里 10 秒）限住每条语句等行锁的时间，
-    write_limit（命令里 60 秒）限住这一段的总时长，到点丢掉这个数据库连接（服务器断开时回滚还没
-    提交的）、放锁、停下；所以 round.sh 最多等一分钟左右，远短于它最多等的 5 分钟。超时正好卡在
-    提交发出、还没收到确认时，说不准这一份写进去没有：写进去的已是新版本，下次不再跑；没写进去的
-    还是旧版本，下次接着跑。写库出错时先回滚再放锁。
+    照常保留，下次接着跑。写库那一段：lock_wait（命令里 10 秒）限住每条语句等行锁的时间（每一份
+    写库前都设一次：连接池可能换过连接）；write_limit（命令里 60 秒）限住这一段的总时长，到点
+    丢掉这个数据库连接（服务器断开时回滚还没提交的）、放锁、停下；所以 round.sh 最多等一分钟
+    左右，远短于它最多等的 5 分钟。超时正好卡在提交发出、还没收到确认时，说不准这一份写进去
+    没有：写进去的已是新版本，下次不再跑；没写进去的还是旧版本，下次接着跑。写库出错时先回滚
+    再放锁。
 
     会改线上已有的 AI 检查记录，要先征得同意再跑（youju ai-recheck-deadlines --apply）。
     定时任务（run_ai_checks）不会因为版本旧就重跑。"""
     now = now or datetime.now(UTC)
     report = AIRunReport()
-    if lock_wait:
-        # 只这个会话：写库那一段每条语句等行锁最多这么多秒
-        session.execute(text(f"SET SESSION innodb_lock_wait_timeout = {int(lock_wait)}"))
     consecutive_errors = 0
     for doc, detail, _ in old_deadline_checks(session, now, days)[:limit]:
         report.documents += 1
@@ -535,6 +533,13 @@ def rerun_old_deadlines(
                 break
             try:
                 with _time_limit(write_limit):
+                    if lock_wait:
+                        # 只这个连接：每条语句等行锁最多这么多秒。每一份都设一次：
+                        # 用满 pool_recycle、断线重连以后连接池给的是新连接，原来的设置
+                        # 就没了（独立审阅第 4 轮）
+                        session.execute(
+                            text(f"SET SESSION innodb_lock_wait_timeout = {int(lock_wait)}")
+                        )
                     _write_one(session, client, doc, body, items, now, report)
             except WriteTimeout:
                 # 连接可能停在一条语句的半截：不再用它，直接丢掉（服务器断开时回滚这份），再放锁
