@@ -32,19 +32,24 @@
   里的机关名开头的也是（国家发改委专精特新通知）。单独说的也是国家部委：后面是句子结尾、
   不是汉字的（标点、数字、字母；开头的引号、书名号先跳过）、地名、层级、时间词、类型词（"认定"除外：
   国家认定企业技术中心）、问内容的词、说发文的词（发布、出台、发的……）、"和、与、及、或"，或者
-  "企业""公司"以外的停用词（国家的、国家最新、国家发的申报通知）。前面是"和、与、及、或"、顿号、
-  逗号，再前面是算了的地区或层级的也是（省级和国家级专精特新、广东和国家高新技术企业）；
+  "企业""公司"以外的停用词（国家的、国家最新、国家发的申报通知）。前面是"和、与、及、或"、再前面
+  是算了的地区或层级的也是（广东和国家高新技术企业）；前面是顿号、逗号的，只在再前面是算了的层级
+  或国家部委时才算（省级、国家级专精特新；"我在广州，国家高新技术企业"不算）；
 - 层级（搜索页"层级"那组，和地区取交集）：省级 → 省级，市级 → 市级，区级、县级、区县级 → 区县级，
   省市级、市县级两层都算；省级以上、省级及以上 → 国家部委和省级，市级以上、市级及以上再加市级，
   区级、县级、区县级以上（及以上）各层都要，等于不筛（_LEVEL_WORDS）。单独说的（同上面"国家"
-  单独说的那几种，后面也可以是别的层级）或者前面是"和、与、及、或"、顿号、逗号，再前面是算了的
-  地区或层级的才算（省级的申报通知、国家级和省级专精特新、国家级、省级、市级专精特新）；紧跟着
+  单独说的那几种，后面也可以是别的层级）或者跟在算了的地区、层级后面连着说的才算（同上面"国家"：
+  "和、与、及、或"前面可以是地区或层级，顿号、逗号前面要是层级或国家部委：省级的申报通知、国家级和
+  省级专精特新、国家级、省级、市级专精特新；"深圳，省级专精特新"不算）；紧跟着
   名称时是名称的开头（省级专精特新中小企业、省级以上专精特新企业：省里、市里都转发这类通知），
   去掉、不算，也不当关键词；"副省级"里的不算。各省、各省份、各省区市 → 省级，各市、各地市 → 市级，
   各市县、各市区、各县市区、各市县区 → 市级和区县级，各区县、各县区、各区、各县 → 区县级
   （_SCOPES，一直算；"各市场""各区域"不算）；全国各地、全国、各地、各级不筛，同停用词去掉。
   省级地区名后面紧跟着"级""级以上""级及以上"的（广东省级、北京市级、广东省级以上）按"省级"
   "省级以上"同样看；城市、区县后面的"级"去掉（本来就是那一层），"级以上"同"市级以上""区县级以上"。
+  省、城市后面紧跟着的"区县""县区"（中间可以隔一个"的"）一直算区县级（深圳区县的补贴、广州的县区）。
+  直辖市市里的部门是省级来源：只说了直辖市（和它的区县）时"市级"按省级算（上海的市级政策 ＝ 上海 ∩
+  省级、天津河北区的市级政策 ＝ 天津 ∩ 省级），还说了别的省时省级、市级都要。
   城市、区县和层级一起说时（搜索页的城市只管市级来源、区县只管区县级来源，直接取交集一份都没有）：
   省级 → 所在的省（深圳的省级政策 ＝ 广东 ∩ 省级），市级 → 城市（区县换成所在的城市），区县级 →
   区县（城市换成它收录了的区县：深圳各区；一个都没收录的写进 uncovered："广东·广州（区县级）"，
@@ -83,8 +88,10 @@
   几个都算（广州黄埔区和天河区）。"各"开头的、以 _NOT_DISTRICT_ENDS 里的词结尾的（科技园区、
   我家小区、经济特区……）和整个是 _NOT_DISTRICT 里的词的（地区、山区……：南山区、龙湾区这类
   区县名也以它们结尾，只比整个词）不算；
-- 认出的省级地区、城市后面紧跟着的"地区"去掉（广东地区的申报通知 ＝ 广东，不留关键词"地区"）；
-  别处的照旧当关键词（欠发达地区、西部地区、地区总部：去掉会改了意思）；
+- 认出的省级地区、城市后面紧跟着的"地区"去掉（广东地区的申报通知 ＝ 广东，不留关键词"地区"），
+  后面是"总部"的不去（上海地区总部认定：地区总部是认定的名称）；别处的照旧当关键词（欠发达地区、
+  西部地区、地区总部：去掉会改了意思）；
+- 停用词另加"我在"（我在深圳，……）；
 - "××××年度"单独算一个关键词（"当标题词"），不和前后的字连成一个；晚于今年、早于 2000 年的
   "××××年"不当时间，也这样单独算一个；
 - "问题像在问内容"那几个词（能不能、补贴多少等）也当停用词去掉，不然会留成关键词、一份都找不到；
@@ -272,7 +279,9 @@ _SCOPES = {
 }
 _NOT_SCOPE = {"各市": "场", "各区": "域"}  # 后面是这个字的不算（各市场主体、各区域）
 _ANYWHERE = ("全国各地", "全国", "各地", "各级")  # 不筛，同停用词去掉
-_LISTED = (*_JOINS, "、", ",")  # 连着说几个地区、层级（"，"NFKC 以后是","）
+_LIST_MARKS = ("、", ",")  # 顿号、逗号（"，"NFKC 以后是","）：只在层级、国家部委后面算连着说
+# 省、城市后面的"区县""县区"（中间可以隔一个"的"）＝区县级："深圳区县的补贴""广州的县区"
+_AREA_TOWNS = re.compile("的?(?:区县|县区)(?!级)")
 
 # 机关简称和标题里的写法：同一组任一种写法都算（见 _alternates）
 _SPELLINGS = (
@@ -427,7 +436,7 @@ STOPWORDS = (
     "公告", "通告", "文件", "找", "查", "搜", "帮我", "帮忙", "我想", "想要", "一下", "看看",
     "有没有", "有哪些", "哪些", "什么", "关于", "相关", "有关", "方面", "的", "了", "吗", "呢",
     "请问", "企业", "公司", "我们", "我司", "一份", "截止", "时间", "什么时候", "哪天", "材料",
-    "条件", "要求", "能不能报", "多少",
+    "条件", "要求", "能不能报", "多少", "我在",
 )  # fmt: skip
 # 说发文的词：也当停用词去掉（"上周发布的申报通知"）
 _ISSUE = ("发布", "出台", "印发", "下发", "公布", "颁布")
@@ -867,17 +876,22 @@ def _areas(text: str, marks: list[str], covered: Coverage) -> _Found:
     district_hits: list[list[tuple[str, ...]]] = []
     levels: set[str] = set()
     counted: set[int] = set()  # 算了的地区、层级在哪里结束（看"和"连着说的）
+    leveled: set[int] = set()  # 其中层级、国家部委在哪里结束（顿号、逗号只在它们后面算连着说）
     starts: set[int] = set()
     places = (*table, *_LEVEL_WORDS, *_SCOPES)
     for m in _area_words(table).finditer(text):
         start, end, word = m.start(), m.end(), m.group()
         _take(marks, start, end)
         starts.add(start)
-        joined = start >= 2 and text[start - 1] in _LISTED and start - 1 in counted
+        before = text[start - 1] if start else ""
+        joined = (before in _JOINS and start - 1 in counted) or (
+            before in _LIST_MARKS and start - 1 in leveled
+        )
         if word in _SCOPES or word in _LEVEL_WORDS:
             if word in _SCOPES or joined or _alone(text[end:], places):
                 levels.update(_SCOPES.get(word) or _LEVEL_WORDS[word])
                 counted.add(end)
+                leveled.add(end)
             continue  # 紧跟着名称的（"省级专精特新"）：名称的开头，不算，也不当关键词
         if word in _NAME_STARTS and not (
             joined or _national(text[end:], places, agency=word == "国家")
@@ -885,28 +899,42 @@ def _areas(text: str, marks: list[str], covered: Coverage) -> _Found:
             continue  # 名称的开头（"国家高新技术企业"）：不当地区，也不当关键词
         meanings = table[word]
         kinds = {meaning[0] for meaning in meanings}
+        national = meanings[0][1] == NATIONAL
+        has_level = national
         # "广东省级""广东省级以上"按"省级""省级以上"看；城市、区县后面的"级"本来就是那一层，
         # "以上"同"市级以上""区县级以上"
         tail = next((t for t in ("级及以上", "级以上", "级") if text.startswith(t, end)), "")
+        towns = (
+            _AREA_TOWNS.match(text, end) if kinds & {"province", "city"} and not national else None
+        )
         if tail:
             _take(marks, end, end + len(tail))
             if "province" in kinds:
-                level = "" if meanings[0][1] == NATIONAL else "省" + tail
+                level = "" if national else "省" + tail
             elif tail == "级":
                 level = ""
             else:
                 level = ("市" if "city" in kinds else "区县") + tail
             if level and _alone(text[end + len(tail) :], places):
                 levels.update(_LEVEL_WORDS[level])
+                has_level = True
             end += len(tail)
+        elif towns:  # "深圳区县""深圳的区县"＝深圳的区县级
+            _take(marks, end, towns.end())
+            levels.add("区县级")
+            has_level = True
+            end = towns.end()
         elif (
             text.startswith("地区", end)
+            and not text.startswith("地区总部", end)  # "地区总部"是认定的名称
             and kinds & {"province", "city"}
-            and meanings[0][1] != NATIONAL
+            and not national
         ):
             _take(marks, end, end + 2)  # "广东地区""深圳地区"就是广东、深圳
             end += 2
         counted.add(end)
+        if has_level:
+            leveled.add(end)
         if "province" in kinds:
             provinces.append(meanings[0][1])
         elif "city" in kinds:
@@ -938,6 +966,14 @@ def _areas(text: str, marks: list[str], covered: Coverage) -> _Found:
     if picked and NATIONAL in named_order and NATIONAL not in picked:
         picked.insert(0, NATIONAL)  # 有层级又说了国家部委：国家部委也是一层
     local = [level for level in picked if level != NATIONAL]
+    if "市级" in local:  # 直辖市市里的部门是省级来源：直辖市的"市级"按省级算
+        areas = [p for p in regions if p != NATIONAL] + [a[0] for a in (*cities, *districts)]
+        if any(p in _MUNICIPALITIES for p in areas):
+            wanted = {*picked, "省级"}
+            if all(p in _MUNICIPALITIES for p in areas):
+                wanted.discard("市级")  # "上海的市级政策"同"上海的省级政策"
+            picked = [level for level in LEVEL_ORDER if level in wanted]
+            local = [level for level in picked if level != NATIONAL]
     if local and (cities or districts):
         regions, cities, districts, missing = _by_level(regions, cities, districts, local, covered)
         uncovered += missing
