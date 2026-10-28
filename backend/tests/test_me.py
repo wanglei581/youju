@@ -459,6 +459,9 @@ def test_personal_data_no_record_and_owned_rows(client, session, monkeypatch):
         "deadlineCluesTotal": 0,
         "events": [],
         "eventsTotal": 0,
+        "aiChats": [],
+        "aiChatsTotal": 0,
+        "aiChatTurnsTotal": 0,
         "boostTrial": None,
         "passGifts": [],
         "passGiftsTotal": 0,
@@ -469,6 +472,7 @@ def test_personal_data_no_record_and_owned_rows(client, session, monkeypatch):
             "unusedSubscriptions": 365,
             "toolInput": 7,
             "toolTasks": 30,
+            "aiChats": 30,
         },
         "exportedAt": NOW.isoformat(),
     }
@@ -1079,6 +1083,8 @@ def test_cleanup_removes_expired_personal_data(client, session, monkeypatch):
         "advisor_usage_rows": 0,
         "ai_safety_hits": 0,
         "ai_results_removed": 0,
+        "ai_chat_turns": 0,
+        "ai_chats": 0,
     }
     assert session.scalar(select(func.count(Event.id))) == 1
     assert [f.content for f in session.scalars(select(Feedback))] == ["新的"]

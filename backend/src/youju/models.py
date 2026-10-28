@@ -764,6 +764,8 @@ class AIHeartbeat(Base):
     alerted_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     notice_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     refunds_pending: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    # admin 那一行：问答能用（对外 AI 的单独线路配齐了，问一问开发设计第六节第 3 条）；api 只读
+    ask_ready: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
 
 
 class AISafetyHit(Base):
@@ -1014,6 +1016,9 @@ class User(Base):
     agreement_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     advisor_agreement_version: Mapped[str | None] = mapped_column(String(20))
     advisor_agreement_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    # "问一问使用说明"的同意（agreements.CHAT_AGREEMENT_VERSION），同批量工具的使用说明
+    chat_agreement_version: Mapped[str | None] = mapped_column(String(32))
+    chat_agreement_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 
 
 class AdvisorTask(Base):
@@ -1025,7 +1030,8 @@ class AdvisorTask(Base):
         Index("ix_advisor_tasks_user_created", "user_id", "created_at"),
         Index("ix_advisor_tasks_status_created", "status", "created_at"),
         CheckConstraint(
-            "kind IN ('compare', 'track', 'interpret', 'clause')", name="ck_advisor_tasks_kind"
+            "kind IN ('compare', 'track', 'interpret', 'clause', 'ask')",
+            name="ck_advisor_tasks_kind",
         ),
         Index("ix_advisor_tasks_cache", "cache_key", "finished_at"),
         CheckConstraint(
@@ -1061,6 +1067,51 @@ class AdvisorTask(Base):
     started_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     expires_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+
+
+class AIChat(Base):
+    """问一问的一条对话（迁移 0043）：每份通知一条，另有一条不带通知的（doc_key 为 0）。
+
+    doc_key 是建的时候那份通知的编号，建好以后不改；按通知找对话时换成现在的合并组再找
+    （api/chat.py）。updated_at 是最近一问的时间，"我的 AI 记录"按它排。"""
+
+    __tablename__ = "ai_chats"
+    __table_args__ = (
+        UniqueConstraint("user_id", "doc_key", name="uq_ai_chats_user_doc"),
+        Index("ix_ai_chats_user_updated", "user_id", "updated_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    doc_key: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime())
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime())
+
+
+class AIChatTurn(Base):
+    """对话里的一问一答。用户打的字只存在 question 一处（和 answer_json 里从原话取出的
+    keywords、docNumber），保存 30 天（expires_at）。问这份通知有 task_id 和 doc_id；
+    找通知的回答、规则当场答的回答存在 answer_json。"""
+
+    __tablename__ = "ai_chat_turns"
+    __table_args__ = (
+        UniqueConstraint("chat_id", "seq", name="uq_ai_chat_turns_chat_seq"),
+        UniqueConstraint("chat_id", "idempotency_key", name="uq_ai_chat_turns_chat_key"),
+        Index("ix_ai_chat_turns_expires", "expires_at"),
+        CheckConstraint("skill IN ('find', 'ask')", name="ck_ai_chat_turns_skill"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    chat_id: Mapped[int] = mapped_column(ForeignKey("ai_chats.id", ondelete="CASCADE"))
+    seq: Mapped[int] = mapped_column(Integer)
+    skill: Mapped[str] = mapped_column(String(8))
+    question: Mapped[str] = mapped_column(String(200))
+    task_id: Mapped[int | None] = mapped_column(ForeignKey("advisor_tasks.id", ondelete="SET NULL"))
+    doc_id: Mapped[int | None] = mapped_column(Integer)
+    answer_json: Mapped[dict | None] = mapped_column(JSONType)
+    idempotency_key: Mapped[str] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime())
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime())
 
 
 class AdvisorUsage(Base):

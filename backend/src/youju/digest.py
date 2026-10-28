@@ -179,6 +179,7 @@ class Digest:
     safety_local: int = 0
     safety_wechat: int = 0
     safety_documents: tuple[int, ...] = ()  # 被拦的通知编号（公开数据），最多列 5 个
+    safety_questions: int = 0  # 问一问的提问被拦（没有原文可看，只报次数）
     safety_check_down: int = 0
     # 近 24 小时新抓的正文、附件文字命中本地词库的份数（误拦，或者网站被挂了违规内容）
     safety_new_bodies: int = 0
@@ -349,15 +350,27 @@ def _safety(session: Session, digest: Digest, since: datetime) -> None:
     layers = dict(
         session.execute(
             select(AISafetyHit.layer, func.count(AISafetyHit.id))
-            .where(AISafetyHit.created_at >= since)
+            .where(AISafetyHit.created_at >= since, AISafetyHit.stage == "answer")
             .group_by(AISafetyHit.layer)
         ).all()
+    )
+    digest.safety_questions = (
+        session.scalar(
+            select(func.count(AISafetyHit.id)).where(
+                AISafetyHit.created_at >= since, AISafetyHit.stage == "question"
+            )
+        )
+        or 0
     )
     digest.safety_local, digest.safety_wechat = layers.get("local", 0), layers.get("wechat", 0)
     digest.safety_documents = tuple(
         session.scalars(
             select(AISafetyHit.document_id)
-            .where(AISafetyHit.created_at >= since, AISafetyHit.document_id.is_not(None))
+            .where(
+                AISafetyHit.created_at >= since,
+                AISafetyHit.stage == "answer",
+                AISafetyHit.document_id.is_not(None),
+            )
             .group_by(AISafetyHit.document_id)
             .order_by(func.max(AISafetyHit.created_at).desc())
             .limit(5)
@@ -396,7 +409,12 @@ def _safety_line(digest: Digest) -> str | None:
         return "内容安全（24 小时）：取不到（统计出错，看容器日志）"
     blocked = digest.safety_local + digest.safety_wechat
     new_hits = digest.safety_new_bodies + digest.safety_new_attachments
-    if not blocked and not digest.safety_check_down and not new_hits:
+    if (
+        not blocked
+        and not digest.safety_check_down
+        and not new_hits
+        and not digest.safety_questions
+    ):
         return None
     parts = []
     if blocked:
@@ -406,6 +424,8 @@ def _safety_line(digest: Digest) -> str | None:
             + (f"；通知 {docs}" if docs else "")
             + "），看一眼原文是不是误拦"
         )
+    if digest.safety_questions:
+        parts.append(f"问一问拦下提问 {digest.safety_questions} 次")
     if digest.safety_check_down:
         parts.append(
             f"检测接口出错、AI 任务没做成 {digest.safety_check_down} 个（admin 可能调不通微信接口）"

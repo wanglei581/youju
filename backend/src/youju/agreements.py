@@ -19,6 +19,11 @@ TOOLS_AGREEMENT_VERSION = "2026-11"
 # 以后带批量工具的完整版协议，版本号要排在这些版本后面（比如 2026-12）
 WITHOUT_TOOLS_TERMS = frozenset({"2026-11.1"})
 
+# "问一问使用说明"（《隐私保护指引》的正式补充，问一问开发设计 #328 第十三节第 1 条）的版本：
+# 白名单和对所有人开放时都要单独同意，发一问时核对（api/chat.py），admin 处理问答任务时再核一次。
+# 文字定稿以后不改；改字就升版本、请大家重新同意（小程序 content/chat-terms.js 的 version 一致）
+CHAT_AGREEMENT_VERSION = "chat-2026-12-v1"
+
 
 def agreement_at_least(version: str | None, needed: str) -> bool:
     """同意的版本不早于 needed（如 AI 条款第一次写进去的那一版）。写法不对的不算。"""
