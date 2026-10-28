@@ -930,3 +930,42 @@ def test_rerun_rolls_back_before_releasing_the_lock(
             )
     assert seen and seen[0] is True  # 回滚时锁还在手里
     assert not pipeline.round_running(path)
+
+
+def test_rerun_counts_only_after_the_commit_succeeds(
+    session, session_factory, tmp_path, monkeypatch
+):
+    """统计提交成功了才算：提交时超时回滚的，"AI 新找到"等几项不计（Codex 第 9 轮）。"""
+    import time
+
+    from youju.ai import pipeline
+
+    doc = add_doc(session)
+    _old_check(session, doc)
+    path, wanted = str(tmp_path / "round.lock"), str(tmp_path / "round.wanted")
+    client, _ = fake_ai(
+        deadlines=[ai_item("2026-10-15", "请各单位于2026年10月15日前完成网上申报。")]
+    )
+    with session_factory() as other:
+
+        def slow_commit():
+            time.sleep(3)
+
+        monkeypatch.setattr(other, "commit", slow_commit)
+        report = pipeline.rerun_old_deadlines(
+            other,
+            client,
+            days=90,
+            limit=10,
+            now=datetime(2026, 10, 28, tzinfo=UTC),
+            slot=lambda: pipeline.round_slot(path, wanted),
+            write_limit=0.5,
+        )
+    assert report.write_timeout and report.written == 0
+    assert (report.deadlines_agree, report.deadlines_rule_only, report.deadlines_ai_only) == (
+        0,
+        0,
+        0,
+    )
+    session.expire_all()
+    assert _deadline_check(session, doc).result == []

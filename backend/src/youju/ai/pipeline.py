@@ -66,7 +66,7 @@ class AIRunReport:
     round_busy: bool = False
     # 重跑旧版本时真正写进去的份数（documents 是试过的份数，含出错、正文变了没记的）
     written: int = 0
-    # 重跑时写库那一段超过了时限，停下了（拿着定时任务的锁不能太久）
+    # 重跑时写库那一段超过了时限，停下了（拿着定时任务的锁不能太久）；那一份写进去没有说不准
     write_timeout: bool = False
 
 
@@ -496,8 +496,10 @@ def rerun_old_deadlines(
     和定时任务那一轮怎么让：调模型不拿锁（多慢都不挡它）；只有写库那一段在 slot 里做（命令里是
     round_slot：那一轮在跑或在等锁就拿不到）。拿不到就把这一份刚调出来的结果扔掉、停下，已做完的
     照常保留，下次接着跑。写库那一段：lock_wait（命令里 10 秒）限住每条语句等行锁的时间，
-    write_limit（命令里 60 秒）限住这一段的总时长，到点丢掉这个数据库连接（服务器断开时回滚）、
-    放锁、停下；所以 round.sh 最多等一分钟左右，远短于它最多等的 5 分钟。写库出错时先回滚再放锁。
+    write_limit（命令里 60 秒）限住这一段的总时长，到点丢掉这个数据库连接（服务器断开时回滚还没
+    提交的）、放锁、停下；所以 round.sh 最多等一分钟左右，远短于它最多等的 5 分钟。超时正好卡在
+    提交发出、还没收到确认时，说不准这一份写进去没有：写进去的已是新版本，下次不再跑；没写进去的
+    还是旧版本，下次接着跑。写库出错时先回滚再放锁。
 
     会改线上已有的 AI 检查记录，要先征得同意再跑（youju ai-recheck-deadlines --apply）。
     定时任务（run_ai_checks）不会因为版本旧就重跑。"""
@@ -574,7 +576,12 @@ def _write_one(
         result=_serialize(items),
         usage=client.last_usage,
     )
-    # 只动 AI 的结果，不顺带让同组副本沿用核对结果（D-099 期 0 补审）
-    _apply_deadlines(session, doc, items, report, sync_twins=False)
+    # 只动 AI 的结果，不顺带让同组副本沿用核对结果（D-099 期 0 补审）。几项统计先记在这一份
+    # 自己的账上，提交成功了才并进总数（超时、出错回滚的不算）
+    staged = AIRunReport()
+    _apply_deadlines(session, doc, items, staged, sync_twins=False)
     session.commit()
+    report.deadlines_agree += staged.deadlines_agree
+    report.deadlines_rule_only += staged.deadlines_rule_only
+    report.deadlines_ai_only += staged.deadlines_ai_only
     report.written += 1

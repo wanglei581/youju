@@ -708,7 +708,10 @@ def _cmd_ai_recheck_deadlines(args: argparse.Namespace) -> int:
     if report.round_busy:
         print("  中途碰上定时任务那一轮，先停下；做完的已保存，等这一轮跑完再跑一次接着做")
     if report.write_timeout:
-        print("  写库那一段超过 60 秒，先停下（这一份没写进去，旧结果留着）；稍后再跑一次接着做")
+        print(
+            "  写库那一段超过 60 秒，先停下：这一份可能写进去了，也可能没有（写进去的已是新版本、"
+            "下次不再跑；没写进去的下次接着跑）；稍后再跑一次接着做"
+        )
     print(
         f"  截止候选：AI 一致 {report.deadlines_agree} 条，只有规则找到 "
         f"{report.deadlines_rule_only} 条，AI 新找到 {report.deadlines_ai_only} 条（都要人工核对）"
