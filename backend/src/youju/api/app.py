@@ -3902,6 +3902,10 @@ def import_reviews(
                 "conflict", item, "这边质检退回了这条截止，要在核对台重新核对，不按导入结果通过"
             )
             continue
+        # 和核对台一样："其他"类不对外显示，只认驳回（D-099 期 0 补审）
+        if item.status != "rejected" and row.kind not in DEADLINE_KINDS:
+            problem("conflict", item, "这条的类型是“其他”，不算申报截止，不按导入结果通过")
+            continue
         if item.status == "changed":
             try:
                 _check_change_target(session, row, target_id)
@@ -3947,6 +3951,11 @@ def unchange_deadline(
     group = _lock_group(session, row)
     if row.status != "changed":
         raise HTTPException(status_code=409, detail="这条截止没有标为已变更")
+    # 恢复成已通过就会对外显示："其他"类不行（D-099 期 0 补审）
+    if row.kind not in DEADLINE_KINDS:
+        raise HTTPException(
+            status_code=422, detail="这条的类型是“其他”，不算申报截止，不能恢复为已通过"
+        )
     for item in [d for d in group if d.status == "changed"]:
         item.status = "approved"
         item.change_reason = None
