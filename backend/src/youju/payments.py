@@ -223,7 +223,7 @@ def selling_to(settings, openid: str | None, client: Client) -> bool:
     - 现网（真扣钱）：只给代码包里带着定稿付费协议版本号（YOUJU_PAY_TERMS_VERSION）的小程序——
       开卖要单独提审一版，老版本永远看不到价格。
     补单、退款、对账等定时任务只看总开关（enabled），已有订单照常处理到底。"""
-    if not enabled(settings):
+    if not enabled(settings) or shutdown_notice(settings):
         return False
     testing = settings.xpay_env == 1 or getattr(settings, "pay_audience", "whitelist") != "all"
     tester = bool(openid) and openid in testers(settings) and client.env in TEST_BUILDS
@@ -354,19 +354,39 @@ def pass_summary(session: Session, user_id: int, stamp: datetime) -> dict:
     return status
 
 
-def paid_usage(session: Session, ticket: WorkbenchPass | None) -> bool:
-    # last_used_at 是任务提交时的最少审计记录，删除、失败、取消均不抹去使用事实。
+# 付费任务没出结果的状态（付费服务协议第二条第 2 项"系统出错、没出结果的不算用过"，
+# 开卖那一版必做第 13 项）
+NO_RESULT_STATES = ("failed", "cancelled")
+
+
+def paid_usage(
+    session: Session, ticket: WorkbenchPass | None, states: set[str] | None = None
+) -> bool:
+    """这段使用期用没用过付费的量（D-081）：记为付费的任务出了结果（完成时记在 last_used_at，
+    任务删了、注销了也还在），或者还在排队、处理中（结果可能马上就出来），算用过；系统出错、
+    排队时取消、处理前删掉的不算。认不出的状态按用过算：宁可核实后人工退，也不让没核实的自助退走。
+    states：调用方已经读到的这段使用期付费任务的状态（paid_task_states），不传就现读。"""
     if ticket is None or ticket.order_id is None:
         return False
-    return (
-        ticket.last_used_at is not None
-        or session.scalar(
-            select(AdvisorTask.id)
-            .where(AdvisorTask.pass_id == ticket.id, AdvisorTask.usage_source == "pass")
-            .limit(1)
-        )
-        is not None
+    if ticket.last_used_at is not None:
+        return True
+    if states is None:
+        states = paid_task_states(session, ticket.id)
+    return bool(states - set(NO_RESULT_STATES))
+
+
+def paid_task_states(session: Session, pass_id: int | None, *, lock=False) -> set[str]:
+    """这段使用期下记为付费的任务现在是什么状态。lock=True（自助退款）：要在锁使用期之前调用，
+    锁顺序是用户 → 任务 → 使用期，和任务完成、取消、注销一致；锁定读读得到别的会话刚交的任务，
+    会话是可重复读也一样（普通查询会停在事务开始时的快照上）。"""
+    if pass_id is None:
+        return set()
+    stmt = select(AdvisorTask.status).where(
+        AdvisorTask.pass_id == pass_id, AdvisorTask.usage_source == "pass"
     )
+    if lock:
+        stmt = stmt.with_for_update()
+    return set(session.scalars(stmt))
 
 
 def refund_reason(session: Session, order: PayOrder, stamp: datetime, *, lock=False) -> str | None:
@@ -392,10 +412,18 @@ def refund_reason(session: Session, order: PayOrder, stamp: datetime, *, lock=Fa
     if invoice is not None and invoice.status == "issued":
         # 已开的发票要先冲红，不能自助退
         return "已开过发票，退款请点“遇到问题”告诉我们"
+    # 先锁这段使用期的付费任务、再锁使用期（paid_task_states 的锁顺序）
+    states = paid_task_states(
+        session,
+        session.scalar(select(WorkbenchPass.id).where(WorkbenchPass.order_id == order.id)),
+        lock=lock,
+    )
     ticket = order_pass(session, order, lock=lock)
     if ticket is None or ticket.revoked_at is not None:
         return "使用期还没开通或已取消，可点“遇到问题”告诉我们"
-    if paid_usage(session, ticket):
+    if paid_usage(session, ticket, states):
+        if ticket.last_used_at is None and not states - {*NO_RESULT_STATES, "queued", "running"}:
+            return PAID_TASK_RUNNING
         return "这笔的使用期已用过付费的量（超出了每月免费次数，或一次超过 50 家）"
     refunds = monthly_self_refunds(session, order.user_id, stamp, exclude=order.id)
     if refunds >= SELF_REFUNDS_PER_MONTH:
@@ -413,6 +441,10 @@ def refund_reason(session: Session, order: PayOrder, stamp: datetime, *, lock=Fa
 # 注销后订单只留由微信标识算出的编号，只用于对账和争议、不用来认人；重新同意协议后按新账号算
 # （D-083 ④）
 SELF_REFUNDS_PER_MONTH = 1
+# 只有还在排队、处理中的付费任务（还没出结果）时自助退款的原因：处理完没出结果的不算用过
+PAID_TASK_RUNNING = (
+    "这笔的使用期有一份超出免费范围的名单还在处理；处理完没出结果的不算用过，到时可以再申请"
+)
 MONTHLY_REFUND_REASON = "每个账号每月只能申请 1 次无理由退款，本月已经申请过；下月 1 日起可以再申请"
 MONTHLY_REFUND_FINAL = (
     "每个账号每月只能申请 1 次无理由退款，本月已经申请过，这笔不能再无理由退款；"
@@ -1045,23 +1077,78 @@ def start_refund(session: Session, order: PayOrder, client: XPayClient, stamp: d
     session.commit()
 
 
-def ios_decision(session: Session, order: PayOrder | None, stamp: datetime) -> dict:
-    """苹果退款问询的答复（D-081，和安卓的无理由退款同一口径）：用过付费的量拒绝；没用过的，
-    付款 24 小时内（含恰好 24 小时）建议退款、超过 24 小时拒绝。凭据只写"付款后 24 小时内 /
-    付款后已超过 24 小时"和"用过付费的量 / 没有用过付费的量"，不带任务编号和具体时间（付费服务
-    协议"开卖那一版要一起做的"第 8 项、隐私指引）。查不到订单的答建议退款（_ios_reply）。"""
-    ticket = order_pass(session, order) if order else None
+# 赠送流水的保存期（隐私指引付费部分）
+REWARD_RETENTION = timedelta(days=3650)
+# 苹果问询查不到这笔订单、本地核验出错或超时：也答建议退款，注明暂时无法核验
+# （付费服务协议第二条第 7 项）
+IOS_UNVERIFIABLE = {"result_code": 0, "result_info": "无法核验", "evidence": "暂时无法核验"}
+
+
+def shutdown_notice(settings) -> bool:
+    """停止服务公示期间（YOUJU_PAY_SHUTDOWN_NOTICE）：不再卖新的使用期，苹果问询一律建议退款。"""
+    return bool(getattr(settings, "pay_shutdown_notice", False))
+
+
+def ios_decision(session: Session, order: PayOrder | None, stamp: datetime, settings=None) -> dict:
+    """苹果退款问询的答复（D-081，和安卓的无理由退款同一口径；付费服务协议第二条第 7 项）：
+    - 已核实应当退款的建议退款：停止服务公示期间的全部订单，和负责人用 `youju pay-refund-due`
+      标记过的订单（因我们的原因不能使用、未成年人未经监护人同意购买等），用没用过都一样；
+    - 其余的，用过付费的量拒绝；没用过的，付款 24 小时内（含恰好 24 小时）建议退款、超过拒绝；
+    - 查不到订单的建议退款，注明暂时无法核验（IOS_UNVERIFIABLE，_ios_reply 出错、超时也是）。
+    凭据只写"付款后 24 小时内 / 付款后已超过 24 小时"、"用过付费的量 / 没有用过付费的量"和
+    "已核实应当退款"，不带任务编号、具体时间和应当退款的原因：答复经微信给到境外的 Apple，
+    只给必要的（开卖那一版必做第 8 项、隐私指引付费部分）。"""
+    if order is None:
+        return dict(IOS_UNVERIFIABLE)
+    ticket = order_pass(session, order)
     used = paid_usage(session, ticket)
-    paid = order.paid_time if order is not None else None
+    paid = order.paid_time
     late = paid is not None and stamp > paid + SELF_REFUND_WINDOW
     timing = "付款后已超过 24 小时" if late else "付款后 24 小时内" if paid is not None else ""
     usage = "用过付费的量" if used else "没有用过付费的量"
     evidence = f"{timing}；{usage}" if timing else usage
+    if shutdown_notice(settings or get_settings()) or order.refund_due_at is not None:
+        return {
+            "result_code": 0,
+            "result_info": "应当退款",
+            "evidence": f"{evidence}；已核实应当退款",
+        }
     if used:
         return {"result_code": 1, "result_info": "已使用", "evidence": evidence}
     if late:
         return {"result_code": 1, "result_info": "付款已超过 24 小时", "evidence": evidence}
     return {"result_code": 0, "result_info": "未使用", "evidence": evidence}
+
+
+def mark_refund_due(
+    session: Session, order_id: int, note: str | None, stamp: datetime, *, dry_run: bool = False
+) -> tuple[str, PayOrder | None]:
+    """负责人核实一笔苹果订单应当退款（因我们的原因不能使用、未成年人未经监护人同意购买等），
+    或清除这个标记（note 为 None）：苹果来问时照它答"建议退款"（ios_decision）。
+    只给苹果手机付款、付过款的订单标：安卓的直接用 youju pay-refund 退。返回（结果, 订单）：
+    marked / cleared / unchanged / not_ios / missing。改动记一笔支付事件，事件里不写原因。"""
+    order = lock_order(session, order_id)
+    if order is None:
+        return "missing", None
+    if order.platform != "ios" or order.paid_time is None:
+        session.rollback()
+        return "not_ios", order
+    if (note is None) == (order.refund_due_at is None):
+        session.rollback()
+        return "unchanged", order
+    if dry_run:
+        session.rollback()
+        return ("cleared" if note is None else "marked"), order
+    order.refund_due_at = None if note is None else stamp
+    order.refund_due_note, order.updated_at = note, stamp
+    event(
+        session,
+        "refund_due_cleared" if note is None else "refund_due_marked",
+        {"pay_order_id": order.id},
+        order,
+    )
+    session.commit()
+    return ("cleared" if note is None else "marked"), order
 
 
 def _local_orders(session: Session, day: date) -> dict[str, int]:
@@ -1076,7 +1163,7 @@ def _local_orders(session: Session, day: date) -> dict[str, int]:
 
 
 def reconcile(
-    session: Session, day: date, bill: dict[str, int], stamp: datetime
+    session: Session, day: date, bill: dict[str, int], stamp: datetime, *, alert=None
 ) -> PayReconciliation:
     local = _local_orders(session, day)
     differences = {
@@ -1107,13 +1194,27 @@ def reconcile(
         session.add(row)
     row.local_count, row.local_fee = len(local), sum(local.values())
     row.bill_count, row.bill_fee = len(bill), sum(bill.values())
+    newly_different = bool(differences) and row.status != "different"
     row.differences, row.status, row.updated_at = (
         differences,
         "different" if differences else "matched",
         stamp,
     )
     session.commit()
+    if newly_different:
+        # 对不上的要人工核对（含账单已付款、本地没开通的，已转人工）：同一天只在第一次对不上时告警
+        _alert(
+            alert,
+            f"支付对账 {day}：本地 {row.local_count} 笔、账单 {row.bill_count} 笔，"
+            f"有 {len(differences)} 笔对不上，需人工核对（管理台订单页）",
+        )
     return row
+
+
+def _alert(alert, text: str) -> None:
+    from youju.alerts import send_alert
+
+    (alert or send_alert)(text)
 
 
 def parse_bill(raw: bytes, settings: Settings) -> dict[str, int]:
@@ -1156,10 +1257,9 @@ def _bill_failed(
     row.status = "failed" if row.attempts >= BILL_ATTEMPTS else "pending"
     session.commit()
     if newly_failed:
-        from youju.alerts import send_alert
-
-        (alert or send_alert)(
-            f"支付对账 {row.day} 的账单下载或解析失败 {row.attempts} 次，已停止重试，需人工核对"
+        _alert(
+            alert,
+            f"支付对账 {row.day} 的账单下载或解析失败 {row.attempts} 次，已停止重试，需人工核对",
         )
 
 
@@ -1179,8 +1279,14 @@ def download_reconcile(
     settings = client.settings
     if not settings.xpay_bill_order_column or not settings.xpay_bill_fee_column:
         # 没配账单列名就无法解析，下载也没用：直接标为失败，不访问微信。
+        # 开卖以后每天都在卖，对不了账要有人知道：同一天只告警一次
+        newly_failed = row.status != "failed"
         row.status, row.differences = "failed", {"error": "未配置账单字段"}
         session.commit()
+        if newly_failed and local:
+            _alert(
+                alert, f"支付对账 {day}：没配账单字段（YOUJU_XPAY_BILL_*），对不了账，需人工核对"
+            )
         return
     session.commit()
     try:
@@ -1204,7 +1310,7 @@ def download_reconcile(
                 raw.extend(chunk)
                 if len(raw) > 10 * 1024 * 1024:
                     raise XPayError
-        reconcile(session, day, parse_bill(bytes(raw), settings), stamp)
+        reconcile(session, day, parse_bill(bytes(raw), settings), stamp, alert=alert)
     except XPayError as exc:
         # 268490011：账单生成中，不算失败，下一分钟继续轮询。
         if exc.code != 268490011:
@@ -1481,7 +1587,15 @@ def cleanup(session: Session, settings, stamp: datetime) -> dict:
             PayOrder.status.in_(("completed", "closed", "refunded")),
         )
     )
-    return {"pay_events": events}
+    # 赠送天数的流水（续买多送、体验折算、奖励）自发放之日起保存 3650 天（隐私指引付费部分，
+    # 开卖那一版必做第 9 项）：到期连同它那一段使用期一起删（使用期引用流水，先删使用期；
+    # 任务上的引用会置空）
+    old = select(PassReward.id).where(PassReward.granted_at <= stamp - REWARD_RETENTION)
+    session.execute(delete(WorkbenchPass).where(WorkbenchPass.reward_id.in_(old)))
+    rewards = session.execute(
+        delete(PassReward).where(PassReward.granted_at <= stamp - REWARD_RETENTION)
+    ).rowcount
+    return {"pay_events": events, "pass_rewards": rewards or 0}
 
 
 def anonymize(session: Session, user: User) -> None:

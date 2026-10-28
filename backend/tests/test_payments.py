@@ -885,8 +885,10 @@ def test_ios_deadline_when_database_is_slow(setup_pay, monkeypatch):
         release.set()
         assert finished.wait(1)
     assert elapsed < 3
+    # 核验超时也答建议退款，注明暂时无法核验（付费服务协议第二条第 7 项）
     assert response.json()["result_code"] == 0
-    assert "超时" in response.json()["evidence"]
+    assert response.json()["result_info"] == "无法核验"
+    assert response.json()["evidence"] == "暂时无法核验"
 
 
 def test_payment_after_account_deletion_goes_to_manual_without_identity(setup_pay, session):
@@ -1429,7 +1431,13 @@ def test_self_refund_rules(setup_pay, session, monkeypatch, case, expected):
         # 付款后 24 小时多一点：已超过无理由退款时限（D-081，原为 7 天）
         monkeypatch.setattr(v1, "now", lambda: NOW + timedelta(hours=24, microseconds=1))
     if case == "used":
-        assert submit(setup_pay, count=51).status_code == 202
+        # 用过付费的量 = 付费任务出了结果（排队、处理中的另有一句，见 test_pay_sale_prep）
+        task_id = submit(setup_pay, count=51).json()["id"]
+        session.expire_all()
+        task = session.get(AdvisorTask, task_id)
+        task.status, task.finished_at = "done", NOW
+        advisor_tasks.record_pass_completion(session, task)
+        session.commit()
     result = self_refund(setup_pay, row)
     assert result.status_code == expected
     session.expire_all()
@@ -1452,29 +1460,48 @@ def test_self_refund_rules(setup_pay, session, monkeypatch, case, expected):
         assert not _calls(setup_pay[2], "/xpay/refund_order")
 
 
-@pytest.mark.parametrize("state", ["queued", "done", "failed", "cancelled", "deleted"])
-def test_ios_inquiry_uses_any_paid_task_and_retained_evidence(setup_pay, session, state):
+@pytest.mark.parametrize(
+    "state,used",
+    [
+        ("queued", True),
+        ("running", True),
+        ("done", True),
+        ("done_then_deleted", True),
+        ("failed", False),
+        ("cancelled", False),
+        ("deleted_before_run", False),
+    ],
+)
+def test_ios_inquiry_counts_only_paid_tasks_with_results(setup_pay, session, state, used):
+    """苹果问询（付费服务协议第二条第 2、7 项，开卖那一版必做第 13 项）：付费任务出了结果（之后删了也算）、
+    还在排队或处理中的算用过；系统出错、取消、处理前删掉的不算。凭据不带任务编号和时间（D-081）。"""
     setup_pay[2].order_type = 7
     row = delivered(setup_pay, session)
     assert inquiry(setup_pay, row)["result_info"] == "未使用"
-    response = submit(setup_pay, count=51)
-    task_id = response.json()["id"]
+    task_id = submit(setup_pay, count=51).json()["id"]
     session.expire_all()
     task = session.get(AdvisorTask, task_id)
-    if state == "deleted":
+    if state == "running":
+        task.status, task.started_at = "running", NOW
+        session.commit()
+    elif state in ("done", "done_then_deleted", "failed", "cancelled"):
+        task.status = "done" if state == "done_then_deleted" else state
+        task.finished_at = NOW + timedelta(minutes=1)
+        advisor_tasks.record_pass_completion(session, task)
+        session.commit()
+    if state in ("done_then_deleted", "deleted_before_run"):
         assert (
             setup_pay[0].delete(f"/api/v1/advisor/tasks/{task_id}", headers=HEADERS).status_code
             == 204
         )
-    elif state != "queued":
-        task.status, task.finished_at = state, NOW + timedelta(minutes=1)
-        advisor_tasks.record_pass_completion(session, task)
-        session.commit()
     setup_pay[2].calls.clear()
     result = inquiry(setup_pay, row)
-    assert result["result_code"] == 1 and result["result_info"] == "已使用"
-    # 凭据只说是否在付款后 24 小时内、是否用过付费的量，不带任务编号和时间（D-081）
-    assert result["evidence"] == "付款后 24 小时内；用过付费的量"
+    if used:
+        assert result["result_code"] == 1 and result["result_info"] == "已使用"
+        assert result["evidence"] == "付款后 24 小时内；用过付费的量"
+    else:
+        assert result["result_code"] == 0 and result["result_info"] == "未使用"
+        assert result["evidence"] == "付款后 24 小时内；没有用过付费的量"
     assert str(task_id) not in result["evidence"]
     assert not setup_pay[2].calls
 
@@ -1522,15 +1549,23 @@ def test_task_failure_does_not_refund_and_payment_switch_does_not_pause_tasks(se
         advisor_tasks.run_advisor_tasks(session, settings=setup_pay[1], stamp=NOW, max_tasks=1)
     session.expire_all()
     assert session.get(AdvisorTask, task_id).status == "failed"
-    assert payments.paid_usage(session, payments.order_pass(session, row))
+    # 系统出错、没出结果的付费任务不算用过（付费服务协议第二条第 2 项）：不自动退款，用户可以自己申请
+    assert not payments.paid_usage(session, payments.order_pass(session, row))
     run(session, setup_pay)
     assert row.status == "completed" and row.refund_order_id is None
     assert not _calls(setup_pay[2], "/xpay/refund_order")
+    assert payments.refund_reason(session, row, NOW) is None
 
 
 def test_account_deletion_preserves_financial_and_usage_audit(setup_pay, session):
     row = delivered(setup_pay, session)
     task_id = submit(setup_pay, count=51).json()["id"]
+    # 出了结果的付费任务：注销删掉任务以后，使用期上的记录还说明用过（苹果问询、争议时要用）
+    session.expire_all()
+    task = session.get(AdvisorTask, task_id)
+    task.status, task.finished_at = "done", NOW
+    advisor_tasks.record_pass_completion(session, task)
+    session.commit()
     ticket = payments.order_pass(session, row)
     assert setup_pay[0].delete("/api/v1/me", headers=HEADERS).status_code == 204
     session.expire_all()
@@ -1572,6 +1607,7 @@ def test_order_list_only_last_20_and_refund_ownership(setup_pay, session):
         "days",
         "status",
         "amount",
+        "termsVersion",
         "createdAt",
         "paidAt",
         "paidAmount",
@@ -1618,7 +1654,9 @@ def test_refund_reads_latest_usage_after_waiting_for_user_lock(setup_pay, sessio
             assert not payments.paid_usage(stale, payments.order_pass(stale, seen))
             assert submit(setup_pay, count=51).status_code == 202
             locked = payments.lock_order(stale, row.id)
-            assert "已用过付费的量" in payments.refund_reason(stale, locked, NOW, lock=True)
+            # 等到用户锁以后读到了刚交的付费任务（还在排队：先不能退，处理完没出结果的再退）
+            reason = payments.refund_reason(stale, locked, NOW, lock=True)
+            assert reason == payments.PAID_TASK_RUNNING
 
 
 def test_concurrent_orders_extend_without_overlapping(setup_pay, session_factory, session):
@@ -1692,6 +1730,8 @@ def test_500_rows_execute_compare_engine_without_refund(setup_pay, session, monk
         session.get(AdvisorTask, task_id).result_rows == 1
     )  # duplicate enterprise names are merged
     assert payments.order_pass(session, row).last_task_completed_at == NOW
+    # 出了结果才记"用过付费的量"的时间（提交时不记）
+    assert payments.order_pass(session, row).last_used_at == NOW
     assert row.status == "completed" and row.refund_status is None
 
 
@@ -1864,8 +1904,14 @@ def test_pass_holder_uses_free_quota_first_and_stays_refundable(setup_pay, sessi
     status = setup_pay[0].get("/api/v1/advisor/status", headers=HEADERS).json()
     assert status["quota"]["compare"]["used"] == 3
     # 第 4 次：免费次数用完，才用使用期
-    assert submit(setup_pay, count=1, key="fourth").json()["usageSource"] == "pass"
+    fourth = submit(setup_pay, count=1, key="fourth").json()
+    assert fourth["usageSource"] == "pass"
     session.expire_all()
+    assert payments.refund_reason(session, row, NOW) == payments.PAID_TASK_RUNNING
+    task = session.get(AdvisorTask, fourth["id"])
+    task.status, task.finished_at = "done", NOW
+    advisor_tasks.record_pass_completion(session, task)
+    session.commit()
     assert "已用过付费的量" in payments.refund_reason(session, row, NOW)
 
 

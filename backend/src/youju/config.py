@@ -128,6 +128,9 @@ class Settings(BaseSettings):
     # 如"增值税电子普通发票，个人或单位抬头"。购买页照这句显示；
     # 现网（真扣钱）没填就不卖（payments.orderable），沙箱联调不受影响
     pay_invoice_type: str = Field(default="", max_length=100)
+    # 停止服务公示期间（付费服务协议第二条第 5 项：至少提前 30 天公示）打开：不再卖新的使用期，
+    # 苹果退款问询一律答"建议退款"（第二条第 7 项）。默认关
+    pay_shutdown_notice: bool = False
     xpay_offer_id: str = ""
     xpay_env: Literal[0, 1] = 1
     xpay_appkey_prod: SecretStr | None = None

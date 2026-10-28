@@ -688,11 +688,9 @@ def create_task(
         try:
             session.flush()
             if ticket:
-                ticket.last_task_id, ticket.last_used_at, ticket.last_task_completed_at = (
-                    task.id,
-                    stamp,
-                    None,
-                )
+                # 提交时只记最近一次任务编号；"用过付费的量"要等任务出了结果才记
+                # （advisor_tasks.record_pass_completion，付费服务协议第二条第 2 项）
+                ticket.last_task_id, ticket.last_task_completed_at = task.id, None
             session.commit()
         except IntegrityError:
             session.rollback()
