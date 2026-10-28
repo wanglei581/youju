@@ -46,4 +46,16 @@ def advisor_endpoint(settings) -> tuple[str, str, str, dict | None]:
     return base_url, key, model, extra
 
 
-__all__ = ["AIError", "ChatClient", "advisor_endpoint", "get_chat_client"]
+def advisor_route_ready(settings) -> bool:
+    """对外 AI 的单独线路（YOUJU_AI_ADVISOR_BASE_URL、_MODEL、_API_KEY）三项都配好了。
+
+    问这份通知会把用户打的字发给模型，只走这条线路（隐私指引四·2 写的是经腾讯云开发调用），
+    白名单试用也不退回后台线路（问一问开发设计第六节第 3 条"只走单独线路"）。"""
+    key = getattr(settings, "ai_advisor_api_key", None)
+    key = key.get_secret_value() if key else ""
+    return bool(
+        getattr(settings, "ai_advisor_base_url", "") and getattr(settings, "ai_advisor_model", "")
+    ) and bool(key)
+
+
+__all__ = ["AIError", "ChatClient", "advisor_endpoint", "advisor_route_ready", "get_chat_client"]

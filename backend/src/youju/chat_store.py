@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 from youju import advisor_tasks as service
 from youju import safety_words
 from youju.agreements import CHAT_AGREEMENT_VERSION
+from youju.ai import result_safety
 from youju.models import AdvisorTask, AIChat, AIChatTurn, User
 
 TURN_RETENTION = timedelta(days=30)
@@ -56,13 +57,12 @@ def turn_status(turn: AIChatTurn, task: AdvisorTask | None) -> str:
 
 
 def counted(turn: AIChatTurn, task: AdvisorTask | None) -> bool:
-    """这一问算没算次数：只有问这份通知找到了原句才算（没退回占的那 1 次）。"""
-    return bool(
-        turn.skill == "ask"
-        and task is not None
-        and task.status == "done"
-        and not task.usage_released
-        and task.usage_source == "free"
+    """这一问算没算次数：只有问这份通知找到了原句才算（没退回占的那 1 次）。找到以后又被每天的
+    清理按新词库撤下的（advisor_tasks.sweep_results）没有退次数，也算。"""
+    if turn.skill != "ask" or task is None or task.usage_released or task.usage_source != "free":
+        return False
+    return task.status == "done" or (
+        task.status == "failed" and task.error == result_safety.REMOVED_MESSAGE
     )
 
 

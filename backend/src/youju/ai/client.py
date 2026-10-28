@@ -70,6 +70,26 @@ def _parse_json_object(envelope: object) -> tuple[dict[str, Any] | None, str | N
     return parsed, None
 
 
+def _content_text(envelope: object) -> str | None:
+    """信封里模型写的文字（choices[0].message.content）；旧接口已经解成对象、列表的，照原样写回
+    JSON 文字（不转义汉字），免得漏查。取不到时为 None。"""
+    try:
+        content = envelope["choices"][0]["message"]["content"]  # type: ignore[index]
+    except (KeyError, IndexError, TypeError):
+        return None
+    if isinstance(content, (dict, list)):
+        return json.dumps(content, ensure_ascii=False)
+    return content if isinstance(content, str) else None
+
+
+class _Stopped(Exception):
+    """on_text 叫停了（抛出了异常）：带着它原来的异常往外传，不当作超时或网络失败。"""
+
+    def __init__(self, error: Exception) -> None:
+        super().__init__("on_text 叫停")
+        self.error = error
+
+
 class ChatClient:
     """调用兼容 OpenAI 格式的 JSON 输出接口。"""
 
@@ -132,13 +152,20 @@ class ChatClient:
             body = None
         return response.status_code, body
 
-    def _send_stream(self, payload: dict[str, Any], headers: dict[str, str]) -> tuple[int, object]:
+    def _send_stream(
+        self,
+        payload: dict[str, Any],
+        headers: dict[str, str],
+        on_text: Callable[[str], None] | None = None,
+    ) -> tuple[int, object]:
         """流式返回（SSE）：逐段收 data 行，把 delta.content 拼起来，
         记下最后的 finish_reason 和 usage，拼成和一次性返回一样的信封。
         出错的状态码照一次性返回处理；流里来了错误事件按 502 处理（AI 服务暂时不可用），
         已收到的内容不用。某一段不是 JSON、或流没有正常结束（既没有 [DONE] 也没有
         finish_reason）时信封里不放 choices（按 invalid_envelope 处理）。用量都照样计入。
-        错误事件的原文不带出去（和一次性返回一样，报错里不放响应原文）。"""
+        错误事件的原文不带出去（和一次性返回一样，报错里不放响应原文）。
+        on_text：每收到一段内容，就把已经收到的全部文字交给它（问这份通知边收边查高危词）；
+        它抛出的异常原样往外抛，连接随即关掉，后面的不再收。"""
         body = {**payload, "stream": True, "stream_options": {"include_usage": True}}
         deadline = self.clock() + self.timeout
         with self._client.stream(
@@ -163,7 +190,10 @@ class ChatClient:
             timer.daemon = True
             timer.start()
             try:
-                return self._read_stream(response, deadline, fired)
+                return self._read_stream(response, deadline, fired, on_text)
+            except _Stopped as stopped:
+                # on_text 叫停的：原样往外抛，哪怕定时器恰好同时到点（不能变成超时、被重试）
+                raise stopped.error from None
             except Exception as exc:
                 # 定时器到点关了连接：不管读到哪一步抛了什么，都按超时处理
                 if fired.is_set():
@@ -173,7 +203,11 @@ class ChatClient:
                 timer.cancel()
 
     def _read_stream(
-        self, response: httpx.Response, deadline: float, fired: threading.Event
+        self,
+        response: httpx.Response,
+        deadline: float,
+        fired: threading.Event,
+        on_text: Callable[[str], None] | None = None,
     ) -> tuple[int, object]:
         """读 SSE 的每一行，拼成信封（见 _send_stream）。"""
         parts: list[str] = []
@@ -209,6 +243,11 @@ class ChatClient:
             # 思考内容（reasoning_content）不拼进结果
             if isinstance(delta, dict) and isinstance(delta.get("content"), str):
                 parts.append(delta["content"])
+                if on_text is not None and delta["content"]:
+                    try:
+                        on_text("".join(parts))
+                    except Exception as exc:
+                        raise _Stopped(exc) from exc
             if choices[0].get("finish_reason") is not None:
                 finish = choices[0]["finish_reason"]
         if fired.is_set():
@@ -223,21 +262,39 @@ class ChatClient:
             envelope["usage"] = usage
         return response.status_code, envelope
 
-    def complete_json(self, system: str, user: str, max_tokens: int = 800) -> dict[str, Any]:
-        """请求 JSON 对象。暂时性错误和非法 JSON 会重试；截断和非正常结束不重试。用量都累计。"""
+    def complete_json(
+        self,
+        system: str,
+        user: str,
+        max_tokens: int = 800,
+        *,
+        on_text: Callable[[str], None] | None = None,
+    ) -> dict[str, Any]:
+        """请求 JSON 对象。暂时性错误和非法 JSON 会重试；截断和非正常结束不重试。用量都累计。
+
+        on_text（可选）：收到的文字先交给它查一遍，它抛出异常就不往下走（问这份通知的本地高危词库，
+        问一问开发设计第九节第 6 条）。流式时每收到一段就把已经收到的全部文字交给它，跨段的词也
+        查得到，命中就断开；不是流式时整段收完、解析之前交给它一次。它的异常原样往外抛。"""
         self.totals["calls"] += 1
         # 先清零：这次调用在拿到任何响应前就失败时，不会把上一次的用量再记一遍
         self.last_usage = {"prompt_tokens": 0, "completion_tokens": 0}
         try:
-            return self._complete_json(system, user, max_tokens)
-        except AIError:
+            return self._complete_json(system, user, max_tokens, on_text)
+        except Exception:
+            # AIError 之外，on_text 叫停的（问这份通知命中本地词库）也记一次出错，日报看得到
             self.totals["errors"] += 1
             raise
         finally:
             for key in ("prompt_tokens", "completion_tokens"):
                 self.totals[key] += self.last_usage.get(key, 0)
 
-    def _complete_json(self, system: str, user: str, max_tokens: int) -> dict[str, Any]:
+    def _complete_json(
+        self,
+        system: str,
+        user: str,
+        max_tokens: int,
+        on_text: Callable[[str], None] | None = None,
+    ) -> dict[str, Any]:
         if "json" not in f"{system} {user}".lower():
             system = f"{system}\n请严格返回 JSON 对象。"
         payload = {
@@ -258,8 +315,10 @@ class ChatClient:
         last_code = None
         for attempt in range(self.max_retries + 1):
             try:
-                send = self._send_stream if self.stream else self._send
-                status, envelope = send(payload, headers)
+                if self.stream:
+                    status, envelope = self._send_stream(payload, headers, on_text)
+                else:
+                    status, envelope = self._send(payload, headers)
             # 超时、连不上、对方中途断开（RemoteProtocolError）、代理出错等传输层错误都算网络失败
             except httpx.TransportError as exc:
                 last_error = "AI 网络请求失败"
@@ -278,6 +337,10 @@ class ChatClient:
                 raise AIError(last_error, retryable=True)
             if status >= 400:
                 raise AIError(f"AI 请求被拒绝（HTTP {status}）")
+            if on_text is not None and not self.stream:
+                text = _content_text(envelope)
+                if text:
+                    on_text(text)
             parsed, code = _parse_json_object(envelope)
             if code is not None:
                 # 分类错误不链出解码异常，避免 JSONDecodeError 夹带响应正文。

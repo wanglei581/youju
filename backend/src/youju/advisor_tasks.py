@@ -867,6 +867,13 @@ def process_task(
     """处理一条已锁定为 running 的任务；失败按最多两次重试回队列。"""
     settings = settings or get_settings()
     stamp = _utc(stamp or datetime.now(UTC))
+    if task.kind == "ask":
+        # 问这份通知（问一问开发设计 #328 第六节第 3 条）：只摘原句、按来源逐字核对
+        from youju.ai import ask
+
+        return ask.process(
+            session, task, settings=settings, stamp=stamp, timeout=timeout, live_time=live_time
+        )
     if task.kind in AI_KINDS:
         return process_ai(
             session, task, settings=settings, stamp=stamp, timeout=timeout, live_time=live_time
