@@ -92,7 +92,10 @@ def round_wanted(
 def round_slot(path: str = ROUND_LOCK, wanted: str = ROUND_WANTED) -> Iterator[bool]:
     """拿着定时任务那一轮的锁处理一份：那一轮在等锁（round_wanted）或拿着锁时给 False；
     拿到了给 True，这一份做完就放开。round.sh 等锁之前先写标记，重跑见到标记就不再拿下一份，
-    所以它最多等这一份做完，不会被一直抢先（flock 不排队，光靠让一让保证不了；D-099 期 0 补审）。"""
+    所以它最多等这一份做完，不会被一直抢先（flock 不排队，光靠让一让保证不了；D-099 期 0 补审）。
+    拿到锁以后再看一眼标记：看标记和拿锁之间 round.sh 刚写了的，马上放开。剩下的情况是 round.sh
+    在这一份开始以后才来，它等这一份做完：一份最长约 1.5 分钟（调模型每次最多 30 秒、最多 3 次，
+    加写库），比它最多等的 5 分钟短。"""
     if round_wanted(wanted):
         yield False
         return
@@ -104,7 +107,7 @@ def round_slot(path: str = ROUND_LOCK, wanted: str = ROUND_WANTED) -> Iterator[b
             yield False
             return
         try:
-            yield True
+            yield not round_wanted(wanted)
         finally:
             fcntl.flock(fd, fcntl.LOCK_UN)
     finally:

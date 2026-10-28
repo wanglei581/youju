@@ -682,7 +682,8 @@ def test_round_slot_holds_the_round_lock_for_one_document(tmp_path) -> None:
     from youju.ai.pipeline import round_running, round_slot
 
     path = str(tmp_path / "round.lock")
-    with round_slot(path) as free:
+    wanted = str(tmp_path / "round.wanted")
+    with round_slot(path, wanted) as free:
         assert free and round_running(path)
         fd = os.open(path, os.O_WRONLY)
         try:
@@ -694,7 +695,7 @@ def test_round_slot_holds_the_round_lock_for_one_document(tmp_path) -> None:
     fd = os.open(path, os.O_WRONLY)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
-        with round_slot(path) as free:
+        with round_slot(path, wanted) as free:
             assert not free
     finally:
         os.close(fd)
@@ -827,3 +828,15 @@ def test_round_slot_gives_way_to_a_waiting_round(tmp_path) -> None:
     assert not round_wanted(str(wanted))
     with round_slot(path, str(wanted)) as free:
         assert free
+
+
+def test_round_slot_rechecks_the_mark_after_taking_the_lock(tmp_path, monkeypatch) -> None:
+    """看标记和拿锁之间 round.sh 刚写了标记：拿到锁以后再看一眼，马上放开让它（Codex 第 6 轮）。"""
+    from youju.ai import pipeline
+
+    path = str(tmp_path / "round.lock")
+    answers = iter([False, True])
+    monkeypatch.setattr(pipeline, "round_wanted", lambda wanted: next(answers))
+    with pipeline.round_slot(path, str(tmp_path / "round.wanted")) as free:
+        assert not free
+    assert not pipeline.round_running(path)
