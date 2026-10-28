@@ -693,6 +693,8 @@ def _cmd_ai_recheck_deadlines(args: argparse.Namespace) -> int:
                 limit=args.limit,
                 now=now,
                 slot=round_slot,
+                # 写库那一段每条语句等行锁最多 10 秒：拿着锁的时间有上限，定时任务那一轮等得起
+                lock_wait=10,
             )
     finally:
         usage_ok = _finish_ai(client, "recheck")

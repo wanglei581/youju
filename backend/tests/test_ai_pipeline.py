@@ -617,7 +617,7 @@ def _taken():
 
 
 def test_rerun_stops_while_the_round_is_running(session) -> None:
-    """定时任务那一轮在跑：一份都不做，停下（做完的照常保留，下次接着跑）。"""
+    """定时任务那一轮在跑（写库那一段拿不到锁）：这份刚调出来的结果扔掉、停下，旧结果留着。"""
     from youju.ai.pipeline import rerun_old_deadlines
 
     doc = add_doc(session)
@@ -631,7 +631,7 @@ def test_rerun_stops_while_the_round_is_running(session) -> None:
         now=datetime(2026, 10, 28, tzinfo=UTC),
         slot=_taken,
     )
-    assert report.round_busy and report.documents == 0 and calls == []
+    assert report.round_busy and report.written == 0 and len(calls) == 1
     assert _deadline_check(session, doc).result == []
 
 
@@ -751,8 +751,8 @@ def test_rerun_leaves_review_states_of_twins_alone(session) -> None:
     assert waiting.status == "approved"
 
 
-def test_rerun_holds_the_round_lock_while_calling_the_model(session, tmp_path) -> None:
-    """每一份调模型、写库的整个过程都拿着锁；锁被占了就停，已做完的留着。"""
+def test_rerun_holds_the_round_lock_only_while_writing(session, tmp_path) -> None:
+    """调模型不拿锁（多慢都不挡定时任务那一轮），写库那一段拿着；拿不到就扔掉这一份、停下。"""
     from sqlalchemy import event
 
     from youju.ai.pipeline import rerun_old_deadlines, round_running, round_slot
@@ -801,7 +801,7 @@ def test_rerun_holds_the_round_lock_while_calling_the_model(session, tmp_path) -
         )
     finally:
         event.remove(session, "before_commit", on_commit)
-    assert held == [True, True]
+    assert held == [False, False, False]  # 第 3 份调了模型，写库时拿不到锁，扔掉
     assert held_at_commit == [True, True]
     assert (report.written, report.round_busy) == (2, True)
     assert not round_running(path)
@@ -840,3 +840,19 @@ def test_round_slot_rechecks_the_mark_after_taking_the_lock(tmp_path, monkeypatc
     with pipeline.round_slot(path, str(tmp_path / "round.wanted")) as free:
         assert not free
     assert not pipeline.round_running(path)
+
+
+def test_rerun_limits_row_lock_waits_while_writing(session) -> None:
+    """命令里给 lock_wait：这个会话每条语句等行锁最多这么多秒，拿着锁的时间有上限。"""
+    from sqlalchemy import text
+
+    from youju.ai.pipeline import rerun_old_deadlines
+
+    client, _ = fake_ai()
+    try:
+        rerun_old_deadlines(
+            session, client, days=90, limit=10, now=datetime(2026, 10, 28, tzinfo=UTC), lock_wait=10
+        )
+        assert session.scalar(text("SELECT @@SESSION.innodb_lock_wait_timeout")) == 10
+    finally:
+        session.execute(text("SET SESSION innodb_lock_wait_timeout = DEFAULT"))

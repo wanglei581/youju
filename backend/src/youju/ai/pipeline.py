@@ -17,7 +17,7 @@ from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.orm import Session
 
 from youju.ai.classify import classify_with_ai
@@ -93,9 +93,8 @@ def round_slot(path: str = ROUND_LOCK, wanted: str = ROUND_WANTED) -> Iterator[b
     """拿着定时任务那一轮的锁处理一份：那一轮在等锁（round_wanted）或拿着锁时给 False；
     拿到了给 True，这一份做完就放开。round.sh 等锁之前先写标记，重跑见到标记就不再拿下一份，
     所以它最多等这一份做完，不会被一直抢先（flock 不排队，光靠让一让保证不了；D-099 期 0 补审）。
-    拿到锁以后再看一眼标记：看标记和拿锁之间 round.sh 刚写了的，马上放开。剩下的情况是 round.sh
-    在这一份开始以后才来，它等这一份做完：一份最长约 1.5 分钟（调模型每次最多 30 秒、最多 3 次，
-    加写库），比它最多等的 5 分钟短。"""
+    拿到锁以后再看一眼标记：看标记和拿锁之间 round.sh 刚写了的，马上放开。重跑只在写库那一小段
+    拿着它（调模型不拿），剩下的情况是 round.sh 在这一段开始以后才来，等这一段做完。"""
     if round_wanted(wanted):
         yield False
         return
@@ -459,57 +458,64 @@ def rerun_old_deadlines(
     limit: int,
     now: datetime | None = None,
     slot: Callable[[], AbstractContextManager[bool]] = _always_free,
+    lock_wait: int | None = None,
 ) -> AIRunReport:
     """重跑近 days 天内旧版本的截止检查（只做截止这一项，最多 limit 份），新结果覆盖旧结果，
     不删数据（D-099 期 0）：已有的候选和核对状态都不动（同组副本也不顺带沿用核对结果），
     规则候选的"AI 是否一致"按新结果重算，新找到的照常作为 AI 候选送审。调用出错的保留旧结果，
     下次再跑。
 
-    每一份都在 slot 里做（命令里是 round_slot，拿着定时任务那一轮的锁）：拿不到就停下，免得和
-    规则抽取同时改同一批候选；那一轮在等锁时也停（round_slot 看 round.sh 留的标记）；
-    已做完的照常保留，下次接着跑。
+    和定时任务那一轮怎么让：调模型不拿锁（多慢都不挡它）；只有写库那一段在 slot 里做（命令里是
+    round_slot：那一轮在跑或在等锁就拿不到）。拿不到就把这一份刚调出来的结果扔掉、停下，已做完的
+    照常保留，下次接着跑。写库那一段只有几条语句，lock_wait（命令里 10 秒）限住每条等行锁的时间，
+    所以 round.sh 最多等这一小段，远短于它最多等的 5 分钟。
 
     会改线上已有的 AI 检查记录，要先征得同意再跑（youju ai-recheck-deadlines --apply）。
     定时任务（run_ai_checks）不会因为版本旧就重跑。"""
     now = now or datetime.now(UTC)
     report = AIRunReport()
+    if lock_wait:
+        # 只这个会话：写库那一段每条语句等行锁最多这么多秒
+        session.execute(text(f"SET SESSION innodb_lock_wait_timeout = {int(lock_wait)}"))
     consecutive_errors = 0
     for doc, detail, _ in old_deadline_checks(session, now, days)[:limit]:
+        report.documents += 1
+        body = detail.body_text
+        try:
+            items = extract_deadlines_with_ai(
+                client, doc.title, body, detail.publish_date or doc.publish_date
+            )
+        except AIError:
+            _count_usage(report, client.last_usage)
+            session.rollback()
+            report.errors += 1
+            consecutive_errors += 1
+            if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+                report.stopped_early = True
+                break
+            continue
+        _count_usage(report, client.last_usage)
+        consecutive_errors = 0
         with slot() as free:
             if not free:
+                # 那一轮在跑或在等锁：这份刚调出来的结果不写，停下（旧结果留着，下次再跑）
+                session.rollback()
                 report.round_busy = True
                 break
-            if not _rerun_one(session, client, doc, detail, now, report):
-                consecutive_errors += 1
-                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
-                    report.stopped_early = True
-                    break
-            else:
-                consecutive_errors = 0
+            _write_one(session, client, doc, body, items, now, report)
     return report
 
 
-def _rerun_one(
+def _write_one(
     session: Session,
     client: ChatClient,
     doc: Document,
-    detail: DocumentDetail,
+    body: str,
+    items: list[DeadlineCandidate],
     now: datetime,
     report: AIRunReport,
-) -> bool:
-    """重跑一份；调用模型出错返回 False（保留旧结果），其余返回 True。"""
-    report.documents += 1
-    body = detail.body_text
-    try:
-        items = extract_deadlines_with_ai(
-            client, doc.title, body, detail.publish_date or doc.publish_date
-        )
-    except AIError:
-        _count_usage(report, client.last_usage)
-        session.rollback()
-        report.errors += 1
-        return False
-    _count_usage(report, client.last_usage)
+) -> None:
+    """把重跑一份的结果写进库（拿着锁的那一小段）。"""
     # 和定时任务一样：调模型期间正文被换掉的，这次的结果不记
     current = session.scalar(
         select(DocumentDetail.body_text)
@@ -519,7 +525,7 @@ def _rerun_one(
     if current != body:
         session.rollback()
         report.body_changed += 1
-        return True
+        return
     _record(
         session,
         doc.id,
@@ -533,4 +539,3 @@ def _rerun_one(
     _apply_deadlines(session, doc, items, report, sync_twins=False)
     session.commit()
     report.written += 1
-    return True
