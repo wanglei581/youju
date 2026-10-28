@@ -1429,12 +1429,12 @@ def test_changed_gone_webpage_and_temporary_failures(session) -> None:
         session.scalar(select(func.count()).where(AttachmentTextSegment.version_id == first)) == 0
     )
     assert report.versions_removed == 1
-    # 网络等临时问题：保留文字，规则版本不改，隔一天再试
+    # 网络等临时问题：按现在的规则取过的，保留文字，什么都不改（不定重试时间，due() 本来就不挑它）
     temporary = copies.Failure("network", "超时", True)
     at.record(session, url, "pdf", later + timedelta(hours=1), report, failure=temporary)
     row = _url_rows(session)[url]
     assert (row.status, row.changed_at, report.kept) == ("ok", later, 1)
-    assert row.retry_at == later + timedelta(hours=1) + at.TEXT_RETRY
+    assert row.retry_at is None
     # 原网站删了：撤下文字
     gone = copies.Failure("gone", "原网站已没有这个附件（HTTP 404）")
     at.record(session, url, "pdf", later + timedelta(days=1), report, failure=gone)
@@ -1482,7 +1482,8 @@ def test_text_retry_comes_back_in_the_next_round() -> None:
     # 每天两轮抓取（6:30、20:30，最长隔 14 小时）：一轮失败，下一轮就重试，不会总落在同一个时段
     # （10/27 海南工信厅 3 个附件按 24 小时重试，每次都赶上晚上那轮取不到，卡了两天）
     # 附件文字任务跟在两轮抓取后面（北京时间 6:30、20:30）；附件副本任务（10:15、23:30）也会记临时
-    # 失败。四个时点里哪一次失败（跑晚了一两个小时也算），都赶得上下一次附件文字任务
+    # 失败。四个时点里哪一次失败都赶得上下一次附件文字任务：两轮跑晚两小时、10:15 那次晚一小时、
+    # 23:30 那次晚半小时也行（23:30 晚一小时正好卡在 6:30，再晚就要靠早上那轮先抓取、补详情占掉的时间）
     rounds = [datetime(2026, 10, 27, 22, 30), datetime(2026, 10, 28, 12, 30)]  # UTC
     for failed in (
         datetime(2026, 10, 27, 12, 30) + timedelta(hours=2),  # 20:30 那轮，晚两小时
@@ -1854,7 +1855,7 @@ def test_readings_states(session) -> None:
     # 按现在的规则已有结论的（原网站已删）：副本任务复查时遇到临时问题，结论不变，不改成"下载不了"
     at.record(session, BASE + "gone.pdf", "pdf", later, report, failure=slow)
     gone_row = _url_rows(session)[BASE + "gone.pdf"]
-    assert (gone_row.status, gone_row.reason) == ("failed", "gone")
+    assert (gone_row.status, gone_row.reason, gone_row.retry_at) == ("failed", "gone", None)
     assert at.readings(session, doc.id, later)[2].state == "gone"
     # 合并转载：详情页列的是组里正文最长那份的附件；那份是二级来源，不在下载范围里
     master = add_doc(session, 3, APPLY, RECENT, [])

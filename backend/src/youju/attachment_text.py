@@ -2321,21 +2321,21 @@ def record(
     webpage = content is not None and _is_webpage(content)
     if content is None or webpage:
         if not webpage and (failure is None or failure.transient):
-            # 临时问题：有文字的保留，规则版本也不改（按旧规则取的仍要重取），隔 TEXT_RETRY 再试。
-            # 从没取到过文字的记成"原网站下载不了"、写明这次的原因：详情页、阅读页、日报不再把它
-            # 当成"新附件，等取文字"（D-097 ④ 等待只算真在排队的）；规则版本照旧不改，到时照样
-            # 重试，取到就能读
+            # 临时问题：有文字的保留，规则版本也不改。按现在的规则已有结论的（有文字的、原网站
+            # 已删、太大……，副本任务复查时遇到临时问题也会走到这里）什么都不改。还没按现在的规则
+            # 取成过的隔 TEXT_RETRY 再试（due() 只挑这些）；其中从没取到过文字的记成"原网站下载
+            # 不了"、写明这次的原因：详情页、阅读页、日报不再把它当成"新附件，等取文字"（D-097 ④
+            # 等待只算真在排队的），到时照样重试，取到就能读
             report.kept += 1
-            row.retry_at = now + TEXT_RETRY
-            # 只改按现在的规则还没取成过的（due() 到时一定会重试）；按现在的规则已有结论的（原网站
-            # 已删、太大……，副本任务复查时遇到临时问题也会走到这里）照旧写原来的结论
-            if row.version_id is None and row.extractor != EXTRACTOR_VERSION:
-                why = (failure.detail if failure is not None else "") or "网络等暂时问题"
-                if (row.status, row.reason) != ("failed", "unavailable"):
-                    row.changed_at = now
-                row.status, row.reason = "failed", "unavailable"
-                row.detail = f"暂时下载不了，下一轮再试：{why}"[:300]
-                row.checked_at = now
+            if row.extractor != EXTRACTOR_VERSION:
+                row.retry_at = now + TEXT_RETRY
+                if row.version_id is None:
+                    why = (failure.detail if failure is not None else "") or "网络等暂时问题"
+                    if (row.status, row.reason) != ("failed", "unavailable"):
+                        row.changed_at = now
+                    row.status, row.reason = "failed", "unavailable"
+                    row.detail = f"暂时下载不了，下一轮再试：{why}"[:300]
+                    row.checked_at = now
             session.commit()
             return
         row.version_id = None
