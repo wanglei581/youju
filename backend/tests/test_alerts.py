@@ -644,6 +644,7 @@ def test_round_runs_in_order_and_checks_only_after_crawl(
         .replace("cd /app/backend", f"cd {tmp_path}")
         .replace("/proc/1/fd/1", str(tmp_path / "round.log"))
         .replace("/tmp/youju-round.lock", str(tmp_path / "round.lock"))
+        .replace("/tmp/youju-round.wanted", str(tmp_path / "round.wanted"))
     )
     (tmp_path / "round.sh").write_text(script)
     (tmp_path / "env.sh").write_text("")

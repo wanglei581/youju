@@ -26,6 +26,8 @@ from youju.dedup import groups_for
 from youju.models import DocumentDeadline, DocumentDetail
 
 ORDER = {"企业申报截止": 0, "材料报送截止": 1, "推荐或审核截止": 2}
+# 对外显示的三类截止；"其他"类不显示，核对台也不让通过（D-099 期 0）
+DEADLINE_KINDS = tuple(ORDER)
 EXCERPT_FIRST_DAY = 8
 EXCERPT_LAST_DAY = 30
 DATE_IN_QUOTE = re.compile(

@@ -111,7 +111,7 @@
   <p class="hint">快捷键：j / k 下一张 / 上一张；a 通过；x 驳回；e 修改日期（Enter 改日期后通过）；u 撤回上一次；r 重新载入。输入框内不触发快捷键。</p>
   <div class="row hint"><button id="undoLast" disabled>撤回上一次</button></div>
   <div id="reviewNotice" class="review-notice" role="status" hidden><span id="reviewNoticeText"></span> <button id="undoNotice" disabled>撤回</button><span id="undoError" class="msg"></span></div>
-  <p class="hint">每天先核"7 天内截止"的：小程序里 7 天内到期的只显示核对过的日期（D-061）；核完再切到"30 天内截止"。只列申报通知。列表按核对顺序排：30 天内截止的在前，其中标"建议通过"（规则和 AI 找到同一天、同一类型，证据句里写着这个日期）的最前；其余按截止日期从早到晚，已过期的最后。"建议通过"只是参考，不会自动通过。日期旁的色条是截止类型：蓝色企业申报截止，橙色推荐或审核截止，绿色材料报送截止，红色其他（不是申报截止，通过前尤其要看清）。</p>
+  <p class="hint">每天先核"7 天内截止"的：小程序里 7 天内到期的只显示核对过的日期（D-061）；核完再切到"30 天内截止"。只列申报通知。列表按核对顺序排：30 天内截止的在前，其中标"建议通过"（规则和 AI 找到同一天、同一类型，证据句里写着这个日期）的最前；其余按截止日期从早到晚，已过期的最后。"建议通过"只是参考，不会自动通过。日期旁的色条是截止类型：蓝色企业申报截止，橙色推荐或审核截止，绿色材料报送截止，红色其他（不是申报截止，不对外显示，只能驳回）。</p>
   <p class="hint">转发组：同一份部里通知的各地版本（如江西版、福建版）。卡片下方列出同组其他版本的截止候选，方便对照；各版本的推荐截止、报送要求常常不同，只能按本版原文核对，不同版本的日期不互相套用，也没有整组通过。选“同一转发组放在一起”可以一次看完一件事。</p>
   <p class="hint">逐条对照原文核对：日期、时间和类型都对才点"通过"；日期不对就改好再通过；不是截止日期（如有效期、实施期限）点"驳回"。只有通过的才会出现在小程序里。黄色：原文写的年月日与候选一致；虚线框：原文这里没写年份，请确认年份。同一日期出现几处就标几处，哪一处是截止日期要看上下文；一处都没找到的会写明，请逐字核对。</p>
   <details class="card tools">
@@ -135,8 +135,11 @@
 (function () {
   const KIND_CLASS = { '企业申报截止': 'k-apply', '推荐或审核截止': 'k-recommend', '材料报送截止': 'k-material' };
   // AI 预审标签（后台只读已有的 AI 检查记录算出，见 youju/ai/hints.py）：只是参考，通过前仍要对照原文
-  const HINT_CLASS = { suggest: 'ai-yes strong', agree: 'ai-no', kind_mismatch: 'ai-diff', mismatch: 'ai-diff', ai_only: 'ai-only', unchecked: 'ai-no' };
+  const HINT_CLASS = { suggest: 'ai-yes strong', agree: 'ai-no', kind_mismatch: 'ai-diff', mismatch: 'ai-diff', ai_only: 'ai-only', unchecked: 'ai-no', other_kind: 'ai-diff' };
+  // 对外显示的三类截止；"其他"类只能驳回（后端也拦，D-099 期 0）
+  const DEADLINE_KINDS = ['企业申报截止', '材料报送截止', '推荐或审核截止'];
   const HINT_TIP = {
+    other_kind: '这条是"其他"类（公示期、征求意见、评审时间之类），不对外显示，只能驳回',
     suggest: '规则和 AI 找到同一天、同一类型，证据句里写着这个日期。只是建议，仍要对照原文再点通过',
     agree: 'AI 也找到了这一天，但不满足建议通过的条件，请仔细核对',
     kind_mismatch: 'AI 找到了同一天，但认为是另一类截止，请核对类型',
@@ -602,7 +605,9 @@
     const t = el('input', 't'); t.type = 'time'; t.value = item.candidate_time || ''; t.setAttribute('aria-label', '改为时间');
     const edit = el('button', '', '改日期后通过');
     const msg = el('span', 'msg');
-    row.append(when, kind, approve, reject, d, t, edit, msg);
+    const quotable = DEADLINE_KINDS.includes(item.kind);
+    if (quotable) row.append(when, kind, approve, reject, d, t, edit, msg);
+    else row.append(when, kind, reject, el('span', 'msg', '"其他"类不对外显示，只能驳回'), msg);
     approve.onclick = () => review(item, card, 'approve', msg);
     reject.onclick = () => review(item, card, 'reject', msg);
     edit.onclick = () => review(item, card, 'edit', msg);
@@ -614,7 +619,13 @@
         }
       };
     });
-    card.reviewAction = (action) => review(item, card, action, msg);
+    card.reviewAction = (action) => {
+      if (!quotable && action !== 'reject') {
+        msg.textContent = '"其他"类不对外显示，只能驳回（按 x）';
+        return;
+      }
+      review(item, card, action, msg);
+    };
     card.append(meta, title);
     if (item.reopen_note) card.append(el('div', 'reopen', `退回原因：${item.reopen_note}`));
     card.append(evidenceNode(item.evidence, item.candidate_date), row);
@@ -777,7 +788,11 @@
     else if (key === 'u') undoReview();
     else if (key === 'r') load(true);
     else if (current) {
-      if (key === 'e') current.card.querySelector('.d').focus();
+      if (key === 'e') {
+        const input = current.card.querySelector('.d');
+        if (input) input.focus();
+        else current.card.reviewAction('edit');
+      }
       else current.card.reviewAction(key === 'x' ? 'reject' : 'approve');
     }
   });

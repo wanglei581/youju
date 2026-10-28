@@ -57,6 +57,7 @@ from youju.classify import (
 )
 from youju.config import get_settings
 from youju.db import get_session
+from youju.deadline_excerpts import DEADLINE_KINDS
 from youju.dedup import canonical_ids, group_ids, groups_for, visible_documents
 from youju.fields import SUPPORT_LABELS
 from youju.lists.rules import candidate_key, is_person_query, normalize_name
@@ -3353,6 +3354,14 @@ def _review(deadline_id: int, body: ReviewIn, session: Session, status: str) -> 
     locked = _lock_candidates(session, row)
     if row.status != "pending":
         raise HTTPException(status_code=409, detail="候选已核对")
+    # 核对通过的会对外显示成截止：只认三类截止，"其他"类（公示期、征求意见、评审时间之类）
+    # 不对外显示，只能驳回（D-099 期 0 补审）。核对台改不了类型，真是申报截止的告诉团队改
+    if status == "approved" and row.kind not in DEADLINE_KINDS:
+        raise HTTPException(
+            status_code=422,
+            detail="这条的类型是“其他”，不算申报截止，不对外显示，请驳回；"
+            "要是其实是申报截止，告诉团队改类型",
+        )
     if status == "rejected" and (body.new_date is not None or body.new_time is not None):
         raise HTTPException(status_code=422, detail="驳回时不能修改日期")
     # 区分"没传时间"（沿用候选时间）和"明确清空时间"（time 传 null：原文只写到日期）
@@ -3865,6 +3874,10 @@ def import_reviews(
                 )
                 continue
             row = same[0]
+        # 和核对台一样："其他"类不对外显示，只认驳回（D-099 期 0 补审）。先看类型，再看变更目标
+        if item.status != "rejected" and row.kind not in DEADLINE_KINDS:
+            problem("conflict", item, "这条的类型是“其他”，不算申报截止，不按导入结果通过")
+            continue
         target_id = None
         if item.status == "changed":
             target_id = session.scalar(
@@ -3938,6 +3951,11 @@ def unchange_deadline(
     group = _lock_group(session, row)
     if row.status != "changed":
         raise HTTPException(status_code=409, detail="这条截止没有标为已变更")
+    # 恢复成已通过就会对外显示："其他"类不行（D-099 期 0 补审）
+    if row.kind not in DEADLINE_KINDS:
+        raise HTTPException(
+            status_code=422, detail="这条的类型是“其他”，不算申报截止，不能恢复为已通过"
+        )
     for item in [d for d in group if d.status == "changed"]:
         item.status = "approved"
         item.change_reason = None
