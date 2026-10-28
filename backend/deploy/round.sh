@@ -20,9 +20,11 @@ run() {
   [ "$code" -eq 0 ] || round_code=1
   return "$code"
 }
-# 整轮加锁：上一轮还没跑完就跳过这一轮并提醒，避免两轮的步骤交错（如本轮补详情被上一轮的锁挡住）
+# 整轮加锁：上一轮还没跑完就跳过这一轮并提醒，避免两轮的步骤交错（如本轮补详情被上一轮的锁挡住）。
+# 最多等 5 分钟：重跑旧版本 AI 截止检查（youju ai-recheck-deadlines）一次只拿着这把锁做一份，
+# 碰上时等它这一份做完再开始，它下一份拿不到锁就停下（D-099 期 0 补审）
 exec 9>/tmp/youju-round.lock
-if ! flock -n 9; then
+if ! flock -w 300 9; then
   finish 75
   log "跳过：上一轮抓取和处理还没跑完"
   "$D/job.sh" alert "上一轮抓取和处理还没跑完，跳过 $(date '+%H:%M') 这一轮" || :

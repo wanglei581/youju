@@ -9,7 +9,8 @@
 import fcntl
 import hashlib
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
@@ -58,13 +59,41 @@ class AIRunReport:
     due_soon_documents: int = 0
     # 调模型期间正文被换掉、这次的结果没记的份数（下一轮按新正文重查）
     body_changed: int = 0
-    # 重跑旧版本时碰上定时任务那一轮在跑，停下了（round_running）
+    # 重跑旧版本时碰上定时任务那一轮在跑，停下了（round_slot 拿不到锁）
     round_busy: bool = False
+    # 重跑旧版本时真正写进去的份数（documents 是试过的份数，含出错、正文变了没记的）
+    written: int = 0
 
 
 TASKS = ("kind", "deadlines")
 # 定时任务一轮的锁文件（deploy/round.sh、first-round.sh 用 flock 拿着）
 ROUND_LOCK = "/tmp/youju-round.lock"
+
+
+@contextmanager
+def round_slot(path: str = ROUND_LOCK) -> Iterator[bool]:
+    """拿着定时任务那一轮的锁处理一份：拿不到（那一轮在跑）给 False；拿到了给 True，
+    这一份做完就放开。round.sh 拿这把锁时最多等 5 分钟，所以碰上时它等这一份做完再开始，
+    不会被跳过；重跑这边下一份就拿不到锁、停下（D-099 期 0 补审：只在开始前试一下，
+    挡不住做到一半时那一轮开始）。"""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT, 0o644)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
+@contextmanager
+def _always_free() -> Iterator[bool]:
+    yield True
 
 
 def round_running(path: str = ROUND_LOCK) -> bool:
@@ -210,8 +239,16 @@ def _serialize(items: list[DeadlineCandidate]) -> dict:
 
 
 def _apply_deadlines(
-    session: Session, doc: Document, items: list[DeadlineCandidate], report: AIRunReport
+    session: Session,
+    doc: Document,
+    items: list[DeadlineCandidate],
+    report: AIRunReport,
+    *,
+    sync_twins: bool = True,
 ) -> None:
+    """写 AI 截止结果带来的变化：规则候选的"AI 是否一致"、新的"仅 AI 找到"候选。
+    sync_twins：顺带让同组还在待核对的副本沿用已核对的结果（定时任务照旧做）；重跑旧版本时不做，
+    只动 AI 的结果，核对状态一律不碰（留给每一轮的规则抽取去同步）。"""
     master = canonical_ids(session, [doc.id]).get(doc.id, doc.id)
     members = groups_for(session, [master])[master]
     # 同一通知的所有网址（归并组）里的候选，用来判断"已经有了"
@@ -269,7 +306,8 @@ def _apply_deadlines(
         group_rows.append(row)
         report.deadlines_ai_only += 1
     session.flush()
-    sync_reviewed_twins(session, {master})
+    if sync_twins:
+        sync_reviewed_twins(session, {master})
 
 
 def run_ai_checks(
@@ -397,14 +435,15 @@ def rerun_old_deadlines(
     days: int,
     limit: int,
     now: datetime | None = None,
-    busy: Callable[[], bool] = lambda: False,
+    slot: Callable[[], AbstractContextManager[bool]] = _always_free,
 ) -> AIRunReport:
     """重跑近 days 天内旧版本的截止检查（只做截止这一项，最多 limit 份），新结果覆盖旧结果，
-    不删数据（D-099 期 0）：已有的候选和核对状态都不动，规则候选的"AI 是否一致"按新结果重算，
-    新找到的照常作为 AI 候选送审。调用出错的保留旧结果，下次再跑。
+    不删数据（D-099 期 0）：已有的候选和核对状态都不动（同组副本也不顺带沿用核对结果），
+    规则候选的"AI 是否一致"按新结果重算，新找到的照常作为 AI 候选送审。调用出错的保留旧结果，
+    下次再跑。
 
-    每份开始前问一下 busy（命令里是 round_running）：定时任务那一轮在跑就停下，免得和规则抽取
-    抢同一批候选的锁；已做完的照常保留，下次接着跑。
+    每一份都在 slot 里做（命令里是 round_slot，拿着定时任务那一轮的锁）：拿不到就停下，免得和
+    规则抽取同时改同一批候选；已做完的照常保留，下次接着跑。
 
     会改线上已有的 AI 检查记录，要先征得同意再跑（youju ai-recheck-deadlines --apply）。
     定时任务（run_ai_checks）不会因为版本旧就重跑。"""
@@ -412,45 +451,62 @@ def rerun_old_deadlines(
     report = AIRunReport()
     consecutive_errors = 0
     for doc, detail, _ in old_deadline_checks(session, now, days)[:limit]:
-        if busy():
-            report.round_busy = True
-            break
-        report.documents += 1
-        body = detail.body_text
-        try:
-            items = extract_deadlines_with_ai(
-                client, doc.title, body, detail.publish_date or doc.publish_date
-            )
-        except AIError:
-            _count_usage(report, client.last_usage)
-            session.rollback()
-            report.errors += 1
-            consecutive_errors += 1
-            if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
-                report.stopped_early = True
+        with slot() as free:
+            if not free:
+                report.round_busy = True
                 break
-            continue
-        _count_usage(report, client.last_usage)
-        consecutive_errors = 0
-        # 和定时任务一样：调模型期间正文被换掉的，这次的结果不记
-        current = session.scalar(
-            select(DocumentDetail.body_text)
-            .where(DocumentDetail.document_id == doc.id)
-            .with_for_update()
-        )
-        if current != body:
-            session.rollback()
-            report.body_changed += 1
-            continue
-        _record(
-            session,
-            doc.id,
-            "deadlines",
-            client.model,
-            now,
-            result=_serialize(items),
-            usage=client.last_usage,
-        )
-        _apply_deadlines(session, doc, items, report)
-        session.commit()
+            if not _rerun_one(session, client, doc, detail, now, report):
+                consecutive_errors += 1
+                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+                    report.stopped_early = True
+                    break
+            else:
+                consecutive_errors = 0
     return report
+
+
+def _rerun_one(
+    session: Session,
+    client: ChatClient,
+    doc: Document,
+    detail: DocumentDetail,
+    now: datetime,
+    report: AIRunReport,
+) -> bool:
+    """重跑一份；调用模型出错返回 False（保留旧结果），其余返回 True。"""
+    report.documents += 1
+    body = detail.body_text
+    try:
+        items = extract_deadlines_with_ai(
+            client, doc.title, body, detail.publish_date or doc.publish_date
+        )
+    except AIError:
+        _count_usage(report, client.last_usage)
+        session.rollback()
+        report.errors += 1
+        return False
+    _count_usage(report, client.last_usage)
+    # 和定时任务一样：调模型期间正文被换掉的，这次的结果不记
+    current = session.scalar(
+        select(DocumentDetail.body_text)
+        .where(DocumentDetail.document_id == doc.id)
+        .with_for_update()
+    )
+    if current != body:
+        session.rollback()
+        report.body_changed += 1
+        return True
+    _record(
+        session,
+        doc.id,
+        "deadlines",
+        client.model,
+        now,
+        result=_serialize(items),
+        usage=client.last_usage,
+    )
+    # 只动 AI 的结果，不顺带让同组副本沿用核对结果（D-099 期 0 补审）
+    _apply_deadlines(session, doc, items, report, sync_twins=False)
+    session.commit()
+    report.written += 1
+    return True

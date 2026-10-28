@@ -1,6 +1,7 @@
 """AI 检查接进流水线：和规则互相印证，AI 找到的候选也要人工核对，出错按时重试。"""
 
 import json
+from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
 
 import httpx
@@ -609,6 +610,12 @@ def test_recheck_command_only_counts_without_apply(session, session_factory, mon
     assert _deadline_check(session, doc).result == []
 
 
+@contextmanager
+def _taken():
+    """定时任务那一轮拿着锁。"""
+    yield False
+
+
 def test_rerun_stops_while_the_round_is_running(session) -> None:
     """定时任务那一轮在跑：一份都不做，停下（做完的照常保留，下次接着跑）。"""
     from youju.ai.pipeline import rerun_old_deadlines
@@ -622,7 +629,7 @@ def test_rerun_stops_while_the_round_is_running(session) -> None:
         days=90,
         limit=10,
         now=datetime(2026, 10, 28, tzinfo=UTC),
-        busy=lambda: True,
+        slot=_taken,
     )
     assert report.round_busy and report.documents == 0 and calls == []
     assert _deadline_check(session, doc).result == []
@@ -663,3 +670,81 @@ def test_recheck_apply_refuses_in_the_api_container(session_factory, monkeypatch
     monkeypatch.setattr("youju.ai.get_chat_client", no_client)
     code = cli._cmd_ai_recheck_deadlines(argparse.Namespace(days=90, limit=300, apply=True))
     assert code == 1 and "admin 容器" in capsys.readouterr().out
+
+
+def test_round_slot_holds_the_round_lock_for_one_document(tmp_path) -> None:
+    """重跑每一份都拿着定时任务那一轮的锁：拿着的时候别人拿不到；那一轮拿着时重跑拿不到。"""
+    import fcntl
+    import os
+
+    import pytest
+
+    from youju.ai.pipeline import round_running, round_slot
+
+    path = str(tmp_path / "round.lock")
+    with round_slot(path) as free:
+        assert free and round_running(path)
+        fd = os.open(path, os.O_WRONLY)
+        try:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        finally:
+            os.close(fd)
+    assert not round_running(path)
+    fd = os.open(path, os.O_WRONLY)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        with round_slot(path) as free:
+            assert not free
+    finally:
+        os.close(fd)
+
+
+def test_rerun_leaves_review_states_of_twins_alone(session) -> None:
+    """重跑只动 AI 的结果：同组还在待核对的副本，不顺带沿用已核对的结果（D-099 期 0 补审）。
+    这件事留给每一轮的规则抽取（照旧会同步）。"""
+    from youju.ai.pipeline import rerun_old_deadlines
+    from youju.dedup import sync_reviewed_twins
+    from youju.models import DocumentMerge
+
+    master = add_doc(session, 1)
+    twin = add_doc(session, 2)
+    session.add(
+        DocumentMerge(duplicate_id=twin.id, canonical_id=master.id, active=True, match_key="t")
+    )
+    quote = "请各单位于2026年10月15日前完成网上申报。"
+
+    def deadline(doc, status, mark):
+        row = DocumentDeadline(
+            document_id=doc.id,
+            fingerprint=mark * 64,
+            kind="企业申报截止",
+            candidate_date=date(2026, 10, 15),
+            evidence=quote,
+            confidence="高",
+            status=status,
+            origin="rule",
+        )
+        if status == "approved":
+            row.approved_date = date(2026, 10, 15)
+            row.reviewed_by = "创始人"
+            row.reviewed_at = datetime(2026, 10, 20, tzinfo=UTC)
+        session.add(row)
+        return row
+
+    deadline(master, "approved", "a")
+    waiting = deadline(twin, "pending", "b")
+    session.commit()
+    _old_check(session, master)
+    client, _ = fake_ai(deadlines=[ai_item("2026-10-15", quote)])
+    report = rerun_old_deadlines(
+        session, client, days=90, limit=10, now=datetime(2026, 10, 28, tzinfo=UTC)
+    )
+    assert report.written == 1
+    session.refresh(waiting)
+    assert waiting.status == "pending"
+    # 对照：每一轮的规则抽取照旧会让它沿用已核对的结果
+    sync_reviewed_twins(session, {master.id})
+    session.commit()
+    session.refresh(waiting)
+    assert waiting.status == "approved"

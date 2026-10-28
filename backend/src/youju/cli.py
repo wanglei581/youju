@@ -617,7 +617,12 @@ def _cmd_ai_recheck_deadlines(args: argparse.Namespace) -> int:
     不加 --apply 只清点、估费用，不调模型、不改数据。"""
     from youju.ai import get_chat_client
     from youju.ai.deadlines import RESULT_VERSION
-    from youju.ai.pipeline import old_deadline_checks, rerun_old_deadlines, round_running
+    from youju.ai.pipeline import (
+        old_deadline_checks,
+        rerun_old_deadlines,
+        round_running,
+        round_slot,
+    )
     from youju.ai.usage import cost_yuan
 
     now = datetime.now(UTC)
@@ -629,11 +634,19 @@ def _cmd_ai_recheck_deadlines(args: argparse.Namespace) -> int:
         ]
         session.rollback()
 
+    # 这次要用的后台模型（和 get_chat_client 同一个取法，不用密钥）：按它的列表价估，
+    # 没列价的按上次的模型估
+    settings = get_settings()
+    configured = getattr(settings, "ai_background_model", "") or getattr(settings, "ai_model", "")
+
     def estimate(rows) -> tuple[float, bool]:
-        """按这些文件上次截止检查的用量、上次用的模型的列表价估（上限）；有没列价的模型时第二项为假。"""
+        """按这些文件上次截止检查的用量估（参考、上限）：价钱按这次配置的模型，没列价的按上次用的模型；
+        都没列价时第二项为假。"""
         total, priced = 0.0, True
         for model, prompt_tokens, completion_tokens in rows:
-            cost = cost_yuan(model, prompt_tokens, completion_tokens)
+            cost = cost_yuan(configured, prompt_tokens, completion_tokens)
+            if cost is None:
+                cost = cost_yuan(model, prompt_tokens, completion_tokens)
             if cost is None:
                 priced = False
             else:
@@ -650,14 +663,15 @@ def _cmd_ai_recheck_deadlines(args: argparse.Namespace) -> int:
     models = Counter(model for model, _, _ in checks)
     print(f"  上次用的模型：{dict(models)}")
     print(
-        f"  按上次用量和列表价估（上限，命中缓存、空闲时段更便宜）：这次约 {this_run:.2f} 元，"
+        f"  按上次用量、这次配置的模型（{configured or '未配置'}）的列表价估"
+        f"（参考，上限，命中缓存、空闲时段更便宜）：这次约 {this_run:.2f} 元，"
         f"全部约 {everything:.2f} 元"
         + ("" if priced_all and priced_run else "；有没列价的模型，没算进去")
     )
     if not args.apply:
         print("只清点，没调模型、没改数据。重跑会覆盖这些旧的 AI 截止检查结果，同意后再加 --apply")
         return 0
-    if get_settings().role == "api":
+    if settings.role == "api":
         # 定时任务在 admin 那边，在 api 容器里看不到它那一轮的锁
         print("这个命令要在 admin 容器里跑，不能在 api 容器里跑")
         return 1
@@ -672,11 +686,15 @@ def _cmd_ai_recheck_deadlines(args: argparse.Namespace) -> int:
     try:
         with session_factory()() as session:
             report = rerun_old_deadlines(
-                session, client, days=args.days, limit=args.limit, now=now, busy=round_running
+                session, client, days=args.days, limit=args.limit, now=now, slot=round_slot
             )
     finally:
         usage_ok = _finish_ai(client, "recheck")
     print(f"重跑 {report.documents} 份文件的 AI 截止检查（模型 {client.model}）")
+    print(
+        f"  写进去 {report.written} 份（出错 {report.errors} 份、"
+        f"正文变了没记 {report.body_changed} 份不算，下次再跑）"
+    )
     if report.round_busy:
         print("  中途碰上定时任务那一轮，先停下；做完的已保存，等这一轮跑完再跑一次接着做")
     print(
