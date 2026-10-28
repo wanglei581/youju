@@ -737,7 +737,8 @@ def test_stream_stops_as_soon_as_on_text_raises():
     with pytest.raises(Stop):
         client.complete_json("s", "u", on_text=check)
     assert seen == ['{"a": "甲', '{"a": "甲乙']  # 丙那一段没收
-    assert calls == [1] and client.totals["errors"] == 0
+    # 叫停的也记一次出错（日报看得到）；不重试
+    assert calls == [1] and client.totals["errors"] == 1 and client.totals["calls"] == 1
 
 
 def test_non_stream_gives_on_text_the_whole_reply_once():
@@ -752,3 +753,68 @@ def test_non_stream_gives_on_text_the_whole_reply_once():
     assert seen == ['{"ok": true}']
     with pytest.raises(Stop):
         client.complete_json("s", "u", on_text=lambda text: (_ for _ in ()).throw(Stop()))
+
+
+def test_on_text_stop_wins_over_a_timer_firing_at_the_same_moment(monkeypatch):
+    """on_text 叫停时总时限的定时器恰好也到点：照样原样抛出叫停的异常，不变成超时、不重试。"""
+    import threading
+    from types import SimpleNamespace
+
+    from youju.ai import client as client_module
+
+    timers = []
+
+    class FakeTimer:
+        def __init__(self, interval, function):
+            self.function = function
+            timers.append(self)
+
+        def start(self):
+            pass
+
+        def cancel(self):
+            pass
+
+    monkeypatch.setattr(
+        client_module, "threading", SimpleNamespace(Timer=FakeTimer, Event=threading.Event)
+    )
+    calls = []
+
+    def handler(request):
+        calls.append(1)
+        return sse(delta('{"a": "甲'), delta('乙"}', "stop"))
+
+    def check(text):
+        timers[-1].function()  # 定时器到点：设上标记、关掉连接
+        raise Stop
+
+    client = ChatClient(
+        "https://example.test",
+        "key",
+        "hy3",
+        transport=httpx.MockTransport(handler),
+        stream=True,
+        max_retries=2,
+        sleep=lambda _: None,
+    )
+    with pytest.raises(Stop):
+        client.complete_json("s", "u", on_text=check)
+    assert calls == [1] and client.totals["errors"] == 1
+
+
+def test_on_text_gets_json_text_when_content_is_already_an_object():
+    """旧接口把 content 解成了对象：照原样写回 JSON 文字交给 on_text（汉字不转义），不漏查。"""
+    seen = []
+    client = ChatClient(
+        "https://example.test",
+        "key",
+        "qwen",
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                json={"choices": [{"message": {"content": {"答": "甲"}}, "finish_reason": "stop"}]},
+            )
+        ),
+    )
+    assert client.complete_json("s", "u", on_text=seen.append) == {"答": "甲"}
+    assert seen == ['{"答": "甲"}']

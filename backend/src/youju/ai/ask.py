@@ -62,6 +62,7 @@ STATUSES = ("answer", "not_found", "out_of_scope", "clarify")
 MAX_QUOTES = 8  # 模型给的超过 8 句只取前 8 句
 MIN_QUOTE = 6  # 少于 6 个字的引用不认（同解读）
 MAX_TOKENS = 8000
+GUARD_STEP = 200  # 流式接收时每攒够这么多个新字查一次本地词库
 PREV_SCAN = 50  # 找上一答时最多往前看几问
 # 规则当场答的原因（第七节第 3 条、第六节第 3 条第 5 步）
 RULE_REASONS = ("no_prev", "no_nth", "changed", "draft")
@@ -155,6 +156,7 @@ _REASONS = {
     "ASK_BAD_OUTPUT": BAD_OUTPUT,
     "ASK_CHECK_DOWN": CHECK_DOWN,
     "AI_NOT_ELIGIBLE": NOT_ELIGIBLE,
+    "ASK_DOC_UPDATED": CHANGED,
 }
 # 没读的原因（content.Unread.reason）写在括号里的说法；off（没开读附件）不写
 _UNREAD_WHY = {
@@ -183,8 +185,9 @@ _BACK_WORDS = (
     "那一句",
 )
 _NUM = r"(?:\d+|[一二三四五六七八九十]+)"
-_NTH_SENTENCE = re.compile(rf"第{_NUM}句")
-_NTH = re.compile(rf"第({_NUM})")
+_NTH_SENTENCE = re.compile(rf"第({_NUM})句")
+# 没写"第 N 句"时只认"第 N 条""第 N 个"；"第一批""第二季度"这类不是在数上一答的句子
+_NTH_ITEM = re.compile(rf"第({_NUM})[条个]")
 _CN_DIGITS = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
 # 要代写：动作后面紧接着（中间最多隔一个"一份、一下、个、篇"）是材料（第六节第 3 条第 5 步）
 _DRAFT = re.compile(
@@ -239,8 +242,10 @@ def refers_back(question: str) -> bool:
 
 
 def nth(question: str) -> int | None:
-    """问题里带的"第 N"（数字或一到十）；没有为 None。"""
-    match = _NTH.search(plain(question))
+    """问题里指的上一答的第几句（数字或一到十）：先认"第 N 句"，没有再认"第 N 条""第 N 个"；
+    别的"第 N"（第一批、第二季度）不算。都没有为 None。"""
+    text = plain(question)
+    match = _NTH_SENTENCE.search(text) or _NTH_ITEM.search(text)
     return _number(match.group(1)) if match else None
 
 
@@ -452,11 +457,26 @@ class _Fail(Exception):
     """这一问没做成：记失败、退回 5 次那本。message 是 task.error（不含用户打的字）。"""
 
 
-def _guard(text: str) -> None:
-    """流式接收时每收到一段，就把已经收到的全部文字过一遍本地词库（跨段的词也查得到）。"""
-    hit = safety_words.check(text)
-    if hit is not None:
-        raise StreamBlocked(hit)
+class _Guard:
+    """边收边过本地词库（第九节第 6 条）：每攒够 GUARD_STEP 个新字，就把已经收到的全部文字查一遍
+    （跨段的词也查得到）。不是每收到一段都从头查：长回答一段两三个字，每段都查是平方级的慢
+    （独立审阅实测 8000 字、2000 个词条要 66 秒）。没攒够的尾巴由调用结束后的整段再查一次兜住
+    （final；不是流式的、回答已经解成对象的也靠它）。命中抛 StreamBlocked。"""
+
+    def __init__(self) -> None:
+        self.checked = 0  # 上次查到第几个字
+
+    def __call__(self, text: str) -> None:
+        if len(text) - self.checked < GUARD_STEP:
+            return
+        self.checked = len(text)
+        self.final(text)
+
+    @staticmethod
+    def final(text: str) -> None:
+        hit = safety_words.check(text)
+        if hit is not None:
+            raise StreamBlocked(hit)
 
 
 def _finish(session: Session, task_id: int, user_id: int, turn_id: int | None, apply) -> bool:
@@ -603,12 +623,15 @@ def process(
                 extra_body=extra,
                 stream=bool(getattr(settings, "ai_advisor_stream", False)),
             )
+        guard = _Guard()
         payload = chat_client.complete_json(
             SYSTEM_PROMPT,
             model_input(loaded, history(prev, reset, versions), question),
             max_tokens=MAX_TOKENS,
-            on_text=_guard,
+            on_text=guard,
         )
+        # 收完再整段查一次：流式时最后没攒够一步的那截、不是流式的整段回答都在这里查
+        guard.final(json.dumps(payload, ensure_ascii=False))
         if time.monotonic() - started > timeout.total_seconds():
             raise TimeoutError
         result = {
@@ -639,6 +662,10 @@ def process(
                 session, task, (blocked.hit, None), stamp=stamp, extra={"stream": True}
             )
         return fail(UNSAFE_ERROR)
+    except result_safety.UserGone:
+        # 处理途中注销了：什么都不写（任务、对话随用户删了），也不当作出错记日志
+        session.rollback()
+        return fail(heartbeat.UNAVAILABLE)
     except wx_security.CheckDown as exc:
         # 复核回答时内容安全接口出错：不在出错时放行，也不重排（重排要重新调模型）
         session.rollback()
@@ -688,7 +715,7 @@ def process(
 # ---- 读（发一问、取对话、轮询一问共用） ----
 
 
-def error_code(error: str | None) -> str | None:
+def error_code(error: str | None) -> str:
     """任务失败的原因 → 错误代码（第五节"一问的格式"）。"""
     from youju import advisor_tasks as service
 
@@ -702,15 +729,13 @@ def error_code(error: str | None) -> str | None:
         UNSAFE_ERROR: "ASK_UNSAFE",
         result_safety.REMOVED_MESSAGE: "ASK_UNSAFE",
         NOT_ELIGIBLE: "AI_NOT_ELIGIBLE",
-        CHANGED: None,
+        CHANGED: "ASK_DOC_UPDATED",
     }.get(error, "AI_UNAVAILABLE")
 
 
 def _failed(error: str | None) -> dict:
     code = error_code(error)
-    if error == CHANGED:
-        text = FAILED.format(reason=CHANGED)
-    elif error == result_safety.REMOVED_MESSAGE:
+    if error == result_safety.REMOVED_MESSAGE:
         text = REMOVED  # 已经显示过、后来按新词库撤下的
     elif code == "ASK_UNSAFE":
         text = UNSAFE_TEXT

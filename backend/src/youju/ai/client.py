@@ -71,12 +71,23 @@ def _parse_json_object(envelope: object) -> tuple[dict[str, Any] | None, str | N
 
 
 def _content_text(envelope: object) -> str | None:
-    """信封里模型写的文字（choices[0].message.content）；取不到或不是文字时为 None。"""
+    """信封里模型写的文字（choices[0].message.content）；旧接口已经解成对象、列表的，照原样写回
+    JSON 文字（不转义汉字），免得漏查。取不到时为 None。"""
     try:
         content = envelope["choices"][0]["message"]["content"]  # type: ignore[index]
     except (KeyError, IndexError, TypeError):
         return None
+    if isinstance(content, (dict, list)):
+        return json.dumps(content, ensure_ascii=False)
     return content if isinstance(content, str) else None
+
+
+class _Stopped(Exception):
+    """on_text 叫停了（抛出了异常）：带着它原来的异常往外传，不当作超时或网络失败。"""
+
+    def __init__(self, error: Exception) -> None:
+        super().__init__("on_text 叫停")
+        self.error = error
 
 
 class ChatClient:
@@ -180,6 +191,9 @@ class ChatClient:
             timer.start()
             try:
                 return self._read_stream(response, deadline, fired, on_text)
+            except _Stopped as stopped:
+                # on_text 叫停的：原样往外抛，哪怕定时器恰好同时到点（不能变成超时、被重试）
+                raise stopped.error from None
             except Exception as exc:
                 # 定时器到点关了连接：不管读到哪一步抛了什么，都按超时处理
                 if fired.is_set():
@@ -230,7 +244,10 @@ class ChatClient:
             if isinstance(delta, dict) and isinstance(delta.get("content"), str):
                 parts.append(delta["content"])
                 if on_text is not None and delta["content"]:
-                    on_text("".join(parts))
+                    try:
+                        on_text("".join(parts))
+                    except Exception as exc:
+                        raise _Stopped(exc) from exc
             if choices[0].get("finish_reason") is not None:
                 finish = choices[0]["finish_reason"]
         if fired.is_set():
@@ -263,7 +280,8 @@ class ChatClient:
         self.last_usage = {"prompt_tokens": 0, "completion_tokens": 0}
         try:
             return self._complete_json(system, user, max_tokens, on_text)
-        except AIError:
+        except Exception:
+            # AIError 之外，on_text 叫停的（问这份通知命中本地词库）也记一次出错，日报看得到
             self.totals["errors"] += 1
             raise
         finally:

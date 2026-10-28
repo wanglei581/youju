@@ -22,8 +22,10 @@ admin 处理任务时（advisor_tasks.process_ai），结果存进去之前先�
   用完等），抛 wx_security.CheckDown：任务直接失败、退回次数，不重排（重排要重新调模型）。
 
 问这份通知（ai/ask.py，问一问开发设计第九节第 6 条）的回答也用 check：查的是逐字核对、扩成整句
-以后要显示的原句（条目的 text）；处置记录另记这一问的编号（turn_id）。模型的输出在流式接收时
-已经边收边过了一遍本地词库（ask._guard），这里查的是扩成整句以后的原句。
+以后要显示的原句（条目的 text）。模型的输出在流式接收时已经边收边过了一遍本地词库（ask._Guard），
+这里查的是扩成整句以后的原句。问这份通知的处置记录另记这一问的编号（turn_id）和提问的人的
+去标识化用户编号（uid，同访问日志、同提问被拦的记录；第九节第 7 条、问一问使用说明第 3 条）；
+解读、对照的结果不是用户写的，照旧不记用户编号。
 """
 
 from __future__ import annotations
@@ -36,7 +38,7 @@ from sqlalchemy import BigInteger, cast, select, update
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.orm import Session
 
-from youju import safety_words, wx_security
+from youju import access_log, safety_words, wx_security
 from youju.models import AdvisorTask, AIChatTurn, AISafetyHit, AppKey, User
 
 log = logging.getLogger(__name__)
@@ -103,6 +105,10 @@ class ResultBlocked(Exception):
 
 class RecentlyBlocked(ResultBlocked):
     """同一份内容 1 天内真查过、没通过：这次不再调模型和微信，直接按没通过处理，也不另写记录。"""
+
+
+class UserGone(LookupError):
+    """处理途中提交任务的人注销了：不放行；任务随用户删掉，调用方丢掉结果。"""
 
 
 def quotes(result: dict | None, field: str) -> list[tuple[str | None, str]]:
@@ -178,7 +184,7 @@ def _record(
     session.add(
         AISafetyHit(
             created_at=stamp,
-            uid=None,
+            uid=_uid(session, task),
             kind=task.kind,
             stage="answer",
             layer=layer,
@@ -190,6 +196,15 @@ def _record(
             expires_at=stamp + HIT_RETENTION,
         )
     )
+
+
+def _uid(session: Session, task: AdvisorTask) -> str | None:
+    """问这份通知的回答被拦时记提问的人（去标识化，同访问日志）；人已经注销了为 None。
+    解读、对照的结果不是用户写的，不记。"""
+    if task.kind != "ask":
+        return None
+    user = session.get(User, task.user_id)
+    return access_log.log_uid(user.openid, session.get_bind()) if user is not None else None
 
 
 def _turn_id(session: Session, task: AdvisorTask) -> int | None:
@@ -239,7 +254,7 @@ def check(
     user = session.get(User, task.user_id)
     if user is None:
         # 处理途中注销了：不放行（任务随用户删除，调用方回滚）
-        raise LookupError("提交任务的人已经注销")
+        raise UserGone("提交任务的人已经注销")
     in_cloud = wx_security.in_cloud(wx_security.get_settings())
     verdict = _wechat(user.openid, "\n".join(value for _, value in pairs), task)
     if not verdict.passed:

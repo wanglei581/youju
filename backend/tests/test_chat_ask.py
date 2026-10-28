@@ -18,8 +18,8 @@ from fastapi.testclient import TestClient
 from pydantic import SecretStr
 from sqlalchemy import func, select
 
+from youju import access_log, attachment_text, chat_store, safety_words, wx_security
 from youju import advisor_tasks as service
-from youju import attachment_text, chat_store, safety_words, wx_security
 from youju.agreements import CHAT_AGREEMENT_VERSION
 from youju.ai import ask, content, heartbeat, interpret
 from youju.ai.client import AIError
@@ -125,7 +125,7 @@ def answer(*pairs):
 
 
 class FakeAsk:
-    """假的模型：记下收到的提示词和输入；按 8 个字一段把回复交给 on_text（模拟流式）。"""
+    """假的模型：记下收到的提示词和输入；按 chunk 个字一段把回复交给 on_text（模拟流式）。"""
 
     model = "advisor-model"
 
@@ -133,6 +133,7 @@ class FakeAsk:
         self.payload = answer(("P002", "企业申报截止时间为2026年11月20日"))
         self.error = None
         self.before_return = None
+        self.chunk = 8
         self.calls = []
         self.streamed = []
         self.totals = dict(calls=0, errors=0, prompt_tokens=0, completion_tokens=0)
@@ -146,7 +147,7 @@ class FakeAsk:
         if self.error:
             raise self.error
         reply = json.dumps(self.payload, ensure_ascii=False)
-        for end in range(8, len(reply) + 8, 8):
+        for end in range(self.chunk, len(reply) + self.chunk, self.chunk):
             self.streamed.append(reply[:end])
             if on_text:
                 on_text(reply[:end])
@@ -356,6 +357,10 @@ def test_refers_back_only_on_the_listed_words(question, back):
 def test_nth_and_drafting():
     assert ask.nth("刚才第五句呢") == 5 and ask.nth("第 12 句") == 12 and ask.nth("第十一句") == 11
     assert ask.nth("刚才那句") is None
+    # 先认"第 N 句"，没有再认"第 N 条""第 N 个"；第一批、第二季度这类不算
+    assert ask.nth("上面第2条第3句") == 3 and ask.nth("刚才第三条呢") == 3
+    assert ask.nth("你列的第2个") == 2
+    assert ask.nth("刚才说的第一批申报截止哪天") is None and ask.nth("上面第二季度的呢") is None
     for text in ("帮我写一份申报书", "替我写申请书", "起草个方案", "润色一下自评报告", "代写材料"):
         assert ask.drafting(text), text
     # 要紧挨着才算：问要交什么的不挡
@@ -779,16 +784,20 @@ def test_delete_chat_while_processing(client, session, session_factory, settings
         ("route", "AI_UNAVAILABLE"),
         ("site_full", "AI_DAILY_CAP"),
         ("taken_down", "AI_NOT_ELIGIBLE"),
-        ("updated_during_call", None),
+        ("updated_during_call", "ASK_DOC_UPDATED"),
+        ("ai_off", "AI_UNAVAILABLE"),
     ],
 )
 def test_admin_rechecks_and_refunds(
     client, session, session_factory, settings, doc, model, monkeypatch, change, error_code
 ):
     """admin 处理时再核：问一问使用说明的同意、AI 授权、单独线路、全站调用上限、这份还能不能问；
-    调用期间通知更新了不发布。都记失败、退回 5 次那本（20 问那本不退）。"""
+    调用期间通知更新了不发布；admin 整个处理不了 AI（关了）时排队的由 _fail_revoked_interpret 退回。
+    都记失败、退回 5 次那本（20 问那本不退）。"""
     turn_id = send(client, "截止是哪天", doc).json()["turn"]["id"]
-    if change == "consent":
+    if change == "ai_off":
+        settings.ai_advisor_enabled = False
+    elif change == "consent":
         monkeypatch.setattr(chat_store, "CHAT_AGREEMENT_VERSION", "chat-2027-01-v1")
     elif change == "whitelist":
         settings.ai_advisor_openids = "second"
@@ -807,11 +816,13 @@ def test_admin_rechecks_and_refunds(
     got = turn_of(client, turn_id)
     assert got["status"] == "failed" and got["counted"] is False and got["answer"] is None
     assert got["errorCode"] == error_code
-    if error_code is None:
+    if error_code == "ASK_DOC_UPDATED":
         assert got["error"] == "这次没做成：这份通知刚更新，请再问一次。这次不算次数。"
     assert got["error"].endswith("这次不算次数。")
     assert usage(session, "ask") == 0 and usage(session, chat_store.ASK_TRY) == 1
     assert len(model.calls) == (1 if change == "updated_during_call" else 0)
+    if change == "ai_off":  # 退回了几个记进心跳，下一分钟往运维群提醒
+        assert session.get(AIHeartbeat, "admin").refunds_pending == 1
 
 
 @pytest.mark.parametrize(
@@ -1140,7 +1151,8 @@ def test_link_gone_after_submission(client, session, settings, doc, model):
 def test_stream_hit_stops_and_records(client, session, settings, doc, model, wechat):
     """流式接收中本地词库命中：立刻断开，记 ASK_UNSAFE、退回 5 次那本、记违规记录，
     模型的输出不保存、不交给微信。"""
-    model.payload = answer(("P001", f"申报对象为本省{TEST_WORD}注册的企业"))
+    # 词出现在前面、后面还有一大段：攒够一步（GUARD_STEP 个新字）时查到，中途断开
+    model.payload = answer(("P001", f"申报对象为本省{TEST_WORD}" + "注册的企业" * 60))
     turn_id = send(client, "申报对象是谁", doc).json()["turn"]["id"]
     work(session, settings)
     got = turn_of(client, turn_id)
@@ -1153,7 +1165,7 @@ def test_stream_hit_stops_and_records(client, session, settings, doc, model, wec
     [hit] = hits(session)
     assert (hit.kind, hit.stage, hit.layer) == ("ask", "answer", "local")
     assert (hit.document_id, hit.turn_id, hit.task_id) == (doc, turn_id, task.id)
-    assert hit.text is None and hit.uid is None
+    assert hit.text is None and hit.uid == access_log.log_uid("internal", session.get_bind())
     assert hit.reason_json == {
         "category": "test",
         "entry": "t1",
@@ -1189,6 +1201,7 @@ def test_wechat_blocks_answer(client, session, settings, doc, model, wechat, sug
     assert wechat.calls[-1] == ("internal", S2)
     [hit] = hits(session)
     assert (hit.kind, hit.stage, hit.layer, hit.turn_id) == ("ask", "answer", "wechat", turn_id)
+    assert hit.uid == access_log.log_uid("internal", session.get_bind()) and hit.text is None
     assert hit.reason_json == {"suggest": suggest, "label": 20001, "traceId": "trace-1"}
     assert usage(session, "ask") == 0
 
@@ -1288,6 +1301,7 @@ def test_word_list_update_sweeps_shown_answers(client, session, settings, doc, m
     assert hit.reason_json["sweep"] is True and hit.text is None
     removed = turn_of(client, got["id"])
     assert removed["errorCode"] == "ASK_UNSAFE" and removed["error"] == ask.REMOVED
+    assert removed["counted"] is True and usage(session, "ask") == 1  # 撤下的没退次数，照样算
     assert removed["answer"] is None
 
 
@@ -1319,3 +1333,191 @@ def test_partial_read_note_comes_first(client, session, settings, doc, model, mo
         "head": True,
     }
     assert got["answer"]["scope"]["partial"] is True
+
+
+# ---- 审阅后补的（PR-3 第二轮） ----
+
+
+def test_stream_guard_checks_in_steps(client, session, settings, model, monkeypatch):
+    """边收边查不是每段都从头查：一段两个字、回答 8000 来字，也只在每攒够 GUARD_STEP 个新字时
+    查一次，收完再整段查一次。"""
+    doc = make_doc(session)
+    model.payload = answer(("P001", "某" * 7950))  # 原文里没有，核对不过：没有要显示的原句
+    model.chunk = 2
+    turn_id = send(client, "要满足哪些条件", doc).json()["turn"]["id"]
+    calls = []
+    real = safety_words.check
+    monkeypatch.setattr(
+        safety_words,
+        "check",
+        lambda text, library=None: calls.append(len(text)) or real(text, library),
+    )
+    work(session, settings)
+    reply = len(json.dumps(model.payload, ensure_ascii=False))
+    assert reply > 7900 and len(model.streamed) > 3900
+    assert len(calls) <= reply // ask.GUARD_STEP + 1  # 不到 41 次
+    assert calls[-1] == reply  # 最后整段查一次
+    assert turn_of(client, turn_id)["answer"]["status"] == "not_found"
+
+
+def test_hit_in_the_last_characters_is_caught(client, session, settings, doc, model, wechat):
+    """词在回答的最后几个字里（没攒够一步）：收完整段再查时照样拦下。"""
+    model.payload = answer(("P001", "某" * 500 + TEST_WORD))
+    turn_id = send(client, "申报对象是谁", doc).json()["turn"]["id"]
+    work(session, settings)
+    assert turn_of(client, turn_id)["errorCode"] == "ASK_UNSAFE"
+    reply = json.dumps(model.payload, ensure_ascii=False)
+    assert TEST_WORD in reply[-20:] and model.streamed[-1] == reply
+    [hit] = hits(session)
+    assert hit.layer == "local" and hit.reason_json["stream"] is True
+    assert session.scalar(select(AdvisorTask.result_json)) is None and len(wechat.calls) == 1
+
+
+def test_retry_of_a_just_created_ask_returns_it(client, session, doc, wechat, monkeypatch):
+    """断线重发：开头不加锁地按请求编号找时还没看到（另一个请求刚建成），提交前发现这条对话正忙——
+    再找一次，返回原来那一问，不回 ASK_IN_PROGRESS，也不再发给微信。"""
+    first = send(client, "截止是哪天", doc, key="retry")
+    assert first.status_code == 202
+    calls = len(wechat.calls)
+    real = chat._turn_by_key
+    missed = []
+
+    def lookup(session, user_id, key, stamp):
+        if not missed:
+            missed.append(key)
+            return None
+        return real(session, user_id, key, stamp)
+
+    monkeypatch.setattr(chat, "_turn_by_key", lookup)
+    again = send(client, "截止是哪天", doc, key="retry")
+    assert again.status_code == 202, again.text
+    assert again.json()["turn"]["id"] == first.json()["turn"]["id"]
+    assert missed == ["retry"] and len(wechat.calls) == calls
+    assert counts(session)[1:3] == (1, 1) and usage(session, "ask") == 1
+
+
+def test_requeue_then_success_counts_once(client, session, settings, doc, model):
+    """模型方繁忙重排了一次、第二次做成：只算 1 次，20 问那本也只记 1 问。"""
+    turn_id = send(client, "截止是哪天", doc).json()["turn"]["id"]
+    model.error = AIError("AI 服务暂时不可用（HTTP 503）", retryable=True)
+    work(session, settings)
+    task = session.scalar(select(AdvisorTask))
+    assert (task.status, task.attempts) == ("queued", 1)
+    assert turn_of(client, turn_id)["status"] == "queued"
+    model.error = None
+    work(session, settings)
+    got = turn_of(client, turn_id)
+    assert got["status"] == "done" and got["counted"] is True
+    assert usage(session, "ask") == 1 and usage(session, chat_store.ASK_TRY) == 1
+    assert session.scalar(select(func.sum(AIUsage.calls)).where(AIUsage.task == "ask")) == 2
+
+
+def test_account_deleted_while_processing(client, session, settings, doc, model, caplog):
+    """处理途中注销了：admin 收尾时用户、任务、这一问都没了，什么都不写，也不当作出错。"""
+    send(client, "截止是哪天", doc)
+    deleted = []
+    model.before_return = lambda: deleted.append(client.delete("/api/v1/me").status_code)
+    with caplog.at_level(logging.WARNING):
+        result = work(session, settings)
+    assert deleted == [204] and result["failed"] == 1
+    assert user_id(session) is None and counts(session) == (0, 0, 0, 0)
+    assert "问答任务" not in caplog.text
+
+
+def test_link_gone_wording(client, session, settings, doc, model):
+    """原文链接失效以后：没写日期、没找到的说法不叫人点"站内阅读"，也不给站内阅读。"""
+    first = asked(client, session, settings, model, "截止时间呢", doc, answer(("P001", S1)))
+    second = send(client, "评分标准是什么", doc).json()["turn"]["id"]
+    model.payload = {"status": "not_found", "quotes": []}
+    session.get(Document, doc).link_gone_at = datetime(2026, 10, 24, 2, tzinfo=UTC)
+    session.commit()
+    work(session, settings)
+    timing = turn_of(client, first["id"])["answer"]
+    assert [n["code"] for n in timing["notes"]] == ["link_gone", "time_none"]
+    assert timing["notes"][1]["text"] == ask.TIME_NONE_GONE == "摘到的原句里没有写具体日期。"
+    assert timing["quotes"][0]["reader"] is None
+    missing = turn_of(client, second)["answer"]
+    assert missing["lead"] == ask.NOT_FOUND and missing["reader"] is None
+    assert [(n["code"], n["text"]) for n in missing["notes"]] == [
+        ("link_gone", missing["notes"][0]["text"]),
+        ("not_found", "可以换个说法再问。这次不算次数。"),
+    ]
+
+
+def _sse_events(*texts, usage=None):
+    events = [
+        {"choices": [{"index": 0, "delta": {"content": text}, "finish_reason": None}]}
+        for text in texts
+    ]
+    events.append({"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]})
+    if usage:
+        events.append({"choices": [], "usage": usage})
+    return events
+
+
+@pytest.fixture
+def real_stream(monkeypatch, settings):
+    """真的 ChatClient（流式）接在假的网络上（httpx.MockTransport 按段吐 SSE），走 ask.process。
+    sent 记下对方已经吐出去的段，看得出是不是中途断开的。"""
+    import httpx
+
+    from youju.ai import client as client_module
+
+    state = SimpleNamespace(events=[], sent=[], requests=[])
+
+    def body():
+        for event in state.events:
+            state.sent.append(event)
+            yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n".encode()
+        yield b"data: [DONE]\n\n"
+
+    def handler(request):
+        state.requests.append(json.loads(request.content))
+        return httpx.Response(200, content=body(), headers={"content-type": "text/event-stream"})
+
+    transport = httpx.MockTransport(handler)
+    real = client_module.ChatClient
+    monkeypatch.setattr(
+        ask, "ChatClient", lambda *args, **kwargs: real(*args, transport=transport, **kwargs)
+    )
+    settings.ai_advisor_stream = True
+    return state
+
+
+def test_real_stream_hit_aborts_mid_stream(client, session, settings, doc, real_stream, wechat):
+    """真的流式接收：词库命中就断开，后面的不再收；不存模型的输出，记 ASK_UNSAFE 和处置记录，
+    退回 5 次那本；这次调用记一次出错。"""
+    head = '{"status": "answer", "quotes": [{"sid": "P001", "quote": "申报对象为'
+    real_stream.events = _sse_events(head, TEST_WORD, *(["本省注册的科技型中小企业"] * 30), '"}]}')
+    turn_id = send(client, "申报对象是谁", doc).json()["turn"]["id"]
+    work(session, settings)
+    assert real_stream.requests[0]["stream"] is True
+    assert len(real_stream.sent) < len(real_stream.events)  # 中途断开
+    got = turn_of(client, turn_id)
+    assert got["errorCode"] == "ASK_UNSAFE" and got["answer"] is None
+    assert session.scalar(select(AdvisorTask.result_json)) is None
+    [hit] = hits(session)
+    assert (hit.layer, hit.turn_id, hit.reason_json["stream"]) == ("local", turn_id, True)
+    assert usage(session, "ask") == 0 and usage(session, chat_store.ASK_TRY) == 1
+    row = session.scalar(select(AIUsage).where(AIUsage.task == "ask"))
+    assert (row.calls, row.errors) == (1, 1)
+    assert len(wechat.calls) == 1  # 只有提问那一次
+
+
+def test_real_stream_records_usage(client, session, settings, doc, real_stream):
+    real_stream.events = _sse_events(
+        '{"status": "answer", ',
+        '"quotes": [{"sid": "P002", ',
+        '"quote": "企业申报截止时间为2026年11月20日"}]}',
+        usage={"prompt_tokens": 120, "completion_tokens": 30},
+    )
+    turn_id = send(client, "截止是哪天", doc).json()["turn"]["id"]
+    work(session, settings)
+    got = turn_of(client, turn_id)
+    assert got["counted"] is True and [q["text"] for q in got["answer"]["quotes"]] == [S2]
+    request = real_stream.requests[0]
+    assert request["stream"] is True and request["model"] == "advisor-model"
+    assert request["messages"][0]["content"] == ask.SYSTEM_PROMPT
+    row = session.scalar(select(AIUsage).where(AIUsage.task == "ask"))
+    assert (row.model, row.calls, row.errors) == ("advisor-model", 1, 0)
+    assert (row.prompt_tokens, row.completion_tokens) == (120, 30)

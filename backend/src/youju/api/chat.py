@@ -374,10 +374,10 @@ def _ask_busy(session: Session, chat_id: int) -> bool:
     )
 
 
-def _ask_precheck(session: Session, user: User, body: TurnIn, stamp: datetime) -> content.Content:
+def _ask_precheck(session: Session, body: TurnIn, stamp: datetime) -> content.Content:
     """问这份通知交微信之前的检查（第六节第 3 条第 1、2 步）：带了通知，这份能问（同列表、详情、
-    提交解读的判断，原文链接确认失效的是 link_gone），后台能处理（admin 的单独线路配齐了）；
-    这条对话里上一问还没出结果的先挡一次（锁里还会再查）。取到的内容留给规则先挡用。"""
+    提交解读的判断，原文链接确认失效的是 link_gone），后台能处理（admin 的单独线路配齐了）。
+    取到的内容留给规则先挡用。"""
     if body.docId is None:
         raise _refuse(422, "CHAT_DOC_REQUIRED", ask.NO_DOC)
     try:
@@ -394,10 +394,22 @@ def _ask_precheck(session: Session, user: User, body: TurnIn, stamp: datetime) -
         raise _refuse(422, "AI_NOT_ELIGIBLE", message, reason=reason) from None
     if not heartbeat.ask_ready(session, get_settings(), stamp):
         raise _refuse(429, "AI_UNAVAILABLE", ask.UNAVAILABLE)
-    chat = _chat_for(session, user.id, body.docId)
-    if chat is not None and _ask_busy(session, chat.id):
-        raise _refuse(409, "ASK_IN_PROGRESS", ask.IN_PROGRESS)
     return loaded
+
+
+def _busy_replay(
+    session: Session, user: User, body: TurnIn, key: str, response: Response, stamp: datetime
+) -> dict | None:
+    """这条对话里上一问还没出结果：先挡一次，不把字交给微信（锁里还会再查）。忙着的多半就是断线
+    重发的这一问自己——开头不加锁地按请求编号找时它还没建成、这会儿刚建成——所以再找一次，
+    找到就原样返回，不回 ASK_IN_PROGRESS。不忙返回 None。"""
+    chat = _chat_for(session, user.id, body.docId)
+    if chat is None or not _ask_busy(session, chat.id):
+        return None
+    found = _turn_by_key(session, user.id, key, stamp)
+    if found is not None:
+        return _replay(session, *found, body, response, stamp)
+    raise _refuse(409, "ASK_IN_PROGRESS", ask.IN_PROGRESS)
 
 
 def _create_ask(
@@ -544,7 +556,10 @@ def create_turn(
     loaded = None
     if body.skill == "ask":
         # 问这份通知不收的（没带通知、这份不能问、后台处理不了、上一问没完）先挡下，不把字交给微信
-        loaded = _ask_precheck(session, user, body, stamp)
+        loaded = _ask_precheck(session, body, stamp)
+        replay = _busy_replay(session, user, body, key, response, stamp)
+        if replay is not None:
+            return replay
     # 带通知新建对话时这份要是公开的；已有对话的照常能发（通知下架了，找通知照常）
     elif (
         body.docId is not None
