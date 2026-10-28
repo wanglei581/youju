@@ -1463,9 +1463,18 @@ def _cmd_attachment_texts(args: argparse.Namespace) -> int:
         print(
             "另一个附件任务正在运行（附件副本、重查或另一次取文字），这次一个也没取；定时任务下一轮再取，手动补齐请等它跑完再重跑"
         )
+        print("attachment_texts skipped=1")
         return 0
     print(f"下载 {report.checked} 个（{report.bytes} 字节），这轮没轮到 {report.deferred} 个")
     print(_texts_line(report.texts))
+    # 容器终端里复制出来的中文可能有乱码，以这一行为准（只有英文和数字）
+    texts = report.texts
+    print(
+        f"attachment_texts checked={report.checked} bytes={report.bytes} "
+        f"deferred={report.deferred} extracted={texts.extracted} reused={texts.reused} "
+        f"unchanged={texts.unchanged} kept={texts.kept} failed={sum(texts.failed.values())} "
+        f"retracted={texts.retracted} removed={texts.removed} due={texts.due} errors={texts.errors}"
+    )
     return 1 if report.texts.errors else 0
 
 

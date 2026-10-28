@@ -1946,6 +1946,9 @@ def test_cli_commands(session, monkeypatch, capsys, tmp_path) -> None:
     assert cli.main(["attachment-texts", "--limit", "5"]) == 0
     out = capsys.readouterr().out
     assert "新取 1" in out and "还没取 0" in out
+    # 容器终端里贴回来的中文会乱码：另有一行只有英文和数字
+    assert out.splitlines()[-1].startswith("attachment_texts checked=1 bytes=")
+    assert "extracted=1 reused=0 unchanged=0 kept=0 failed=0 retracted=0 removed=0 due=0" in out
     sheet = tmp_path / "sheet.md"
     assert (
         cli.main(["attachment-text-report", "--now", "2026-10-06", "--worksheet", str(sheet)]) == 0
@@ -1975,10 +1978,12 @@ def test_cli_skips_without_failing_while_another_attachment_job_runs(
             assert cli.main(["attachment-texts"]) == 0
         finally:
             other.execute(sql("SELECT RELEASE_LOCK('youju_attachment_copies')"))
+    out = capsys.readouterr().out
     assert (
         "另一个附件任务正在运行（附件副本、重查或另一次取文字），这次一个也没取；定时任务下一轮再取，手动补齐请等它跑完再重跑"
-        in capsys.readouterr().out
+        in out
     )
+    assert out.splitlines()[-1] == "attachment_texts skipped=1"
     assert fetcher.calls == []
     assert session.scalar(select(func.count()).select_from(AttachmentTextUrl)) == 0
     monkeypatch.setattr(
