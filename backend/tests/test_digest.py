@@ -759,6 +759,31 @@ def test_readability_rates_waits_and_sites(session, monkeypatch) -> None:
 LONG_SITE = "某某省某某某某某某委员会某某某某某某中心" * 3
 
 
+def test_readability_download_failures_are_not_waiting(session, monkeypatch) -> None:
+    """下载暂时失败、等下一轮再试的附件（从没取到过文字）不算等取文字，算附件下载不了（D-097 ④：
+    等待只算真在排队的；10/27 海南工信厅 3 个附件取不到 robots.txt，被算成等了 342 小时）。"""
+    from youju import attachment_text as texts
+    from youju import attachments as copies
+
+    monkeypatch.setattr(v1, "now", lambda: NOW.astimezone(ZoneInfo("Asia/Shanghai")))
+    doc = _readable_doc(session, 1, APPLY)
+    _attachment(session, doc, 0, text_ok=False)
+    _attachment(session, doc, 1, text_ok=False)
+    first = f"https://kjt.shandong.gov.cn/files/{doc.id}-0.docx"
+    failure = copies.Failure("network", "robots.txt 暂时无法获取（HTTP 503），本次跳过", True)
+    texts.record(session, first, "docx", NOW, texts.TextReport(), failure=failure)
+    rb = digest_module.readability(session, NOW)
+    assert (rb.pending, rb.attachments, rb.attachments_ok) == (1, 2, 0)
+    assert rb.attachment_problems == {"附件等取文字": 1, "附件下载不了": 1}
+    # 另一个也下载失败：没有等取文字的了，等待那一项达到；附件能读率、整条照旧算没读到
+    second = f"https://kjt.shandong.gov.cn/files/{doc.id}-1.docx"
+    texts.record(session, second, "docx", NOW, texts.TextReport(), failure=failure)
+    rb = digest_module.readability(session, NOW)
+    assert (rb.pending, rb.oldest_pending_seconds, rb.whole_ok) == (0, None, 0)
+    assert rb.attachment_problems == {"附件下载不了": 2}
+    assert digest_module.gates(rb)[2] is True
+
+
 def test_readability_text_drops_sites_to_fit_one_message() -> None:
     rb = digest_module.Readability(
         notices=100,
