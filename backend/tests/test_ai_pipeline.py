@@ -751,11 +751,14 @@ def test_rerun_leaves_review_states_of_twins_alone(session) -> None:
 
 
 def test_rerun_holds_the_round_lock_while_calling_the_model(session, tmp_path) -> None:
-    """每一份调模型、写库的整个过程都拿着锁；锁被占了就停，已做完的留着；两份之间让一让。"""
+    """每一份调模型、写库的整个过程都拿着锁；锁被占了就停，已做完的留着。"""
+    from sqlalchemy import event
+
     from youju.ai.pipeline import rerun_old_deadlines, round_running, round_slot
 
     path = str(tmp_path / "round.lock")
-    held = []
+    wanted = str(tmp_path / "round.wanted")
+    held, held_at_commit = [], []
 
     def handler(request: httpx.Request) -> httpx.Response:
         held.append(round_running(path))
@@ -782,23 +785,45 @@ def test_rerun_holds_the_round_lock_while_calling_the_model(session, tmp_path) -
     @contextmanager
     def slot():
         if next(slots):
-            with round_slot(path) as free:
+            with round_slot(path, wanted) as free:
                 yield free
         else:
             yield False
 
-    pauses = []
-    report = rerun_old_deadlines(
-        session,
-        client,
-        days=90,
-        limit=10,
-        now=datetime(2026, 10, 28, tzinfo=UTC),
-        slot=slot,
-        gap=0.5,
-        sleep=pauses.append,
-    )
+    def on_commit(_session):
+        held_at_commit.append(round_running(path))
+
+    event.listen(session, "before_commit", on_commit)
+    try:
+        report = rerun_old_deadlines(
+            session, client, days=90, limit=10, now=datetime(2026, 10, 28, tzinfo=UTC), slot=slot
+        )
+    finally:
+        event.remove(session, "before_commit", on_commit)
     assert held == [True, True]
+    assert held_at_commit == [True, True]
     assert (report.written, report.round_busy) == (2, True)
-    assert pauses == [0.5, 0.5]  # 第 2、3 份之前各让一次
     assert not round_running(path)
+
+
+def test_round_slot_gives_way_to_a_waiting_round(tmp_path) -> None:
+    """round.sh 等锁前留标记：重跑见到新鲜的标记就不拿锁（flock 不排队，让等的一方先拿）；
+    标记过期（round.sh 被杀留下的）或没有标记照常拿。"""
+    import os
+    import time
+
+    from youju.ai.pipeline import WANTED_MAX_AGE, round_slot, round_wanted
+
+    path = str(tmp_path / "round.lock")
+    wanted = tmp_path / "round.wanted"
+    with round_slot(path, str(wanted)) as free:
+        assert free
+    wanted.write_text("1")
+    assert round_wanted(str(wanted))
+    with round_slot(path, str(wanted)) as free:
+        assert not free
+    stale = time.time() - WANTED_MAX_AGE - 60
+    os.utime(wanted, (stale, stale))
+    assert not round_wanted(str(wanted))
+    with round_slot(path, str(wanted)) as free:
+        assert free

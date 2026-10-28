@@ -9,11 +9,11 @@
 import fcntl
 import hashlib
 import os
+import time as _time
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
-from time import sleep as _sleep
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
@@ -69,14 +69,33 @@ class AIRunReport:
 TASKS = ("kind", "deadlines")
 # 定时任务一轮的锁文件（deploy/round.sh、first-round.sh 用 flock 拿着）
 ROUND_LOCK = "/tmp/youju-round.lock"
+# round.sh 等锁之前写的标记（"这一轮要锁"），拿到锁或放弃以后删掉；超过 10 分钟的当作过期
+# （round.sh 最多等 5 分钟，被杀掉留下的旧标记不会一直挡着重跑）
+ROUND_WANTED = "/tmp/youju-round.wanted"
+WANTED_MAX_AGE = 600.0
+
+
+def round_wanted(
+    path: str = ROUND_WANTED,
+    *,
+    max_age: float = WANTED_MAX_AGE,
+    clock: Callable[[], float] = _time.time,
+) -> bool:
+    """定时任务那一轮正在等锁（标记还新鲜）。"""
+    try:
+        return clock() - os.stat(path).st_mtime < max_age
+    except FileNotFoundError:
+        return False
 
 
 @contextmanager
-def round_slot(path: str = ROUND_LOCK) -> Iterator[bool]:
-    """拿着定时任务那一轮的锁处理一份：拿不到（那一轮在跑）给 False；拿到了给 True，
-    这一份做完就放开。round.sh 拿这把锁时最多等 5 分钟，所以碰上时它等这一份做完再开始，
-    不会被跳过；重跑这边下一份就拿不到锁、停下（D-099 期 0 补审：只在开始前试一下，
-    挡不住做到一半时那一轮开始）。"""
+def round_slot(path: str = ROUND_LOCK, wanted: str = ROUND_WANTED) -> Iterator[bool]:
+    """拿着定时任务那一轮的锁处理一份：那一轮在等锁（round_wanted）或拿着锁时给 False；
+    拿到了给 True，这一份做完就放开。round.sh 等锁之前先写标记，重跑见到标记就不再拿下一份，
+    所以它最多等这一份做完，不会被一直抢先（flock 不排队，光靠让一让保证不了；D-099 期 0 补审）。"""
+    if round_wanted(wanted):
+        yield False
+        return
     fd = os.open(path, os.O_WRONLY | os.O_CREAT, 0o644)
     try:
         try:
@@ -437,8 +456,6 @@ def rerun_old_deadlines(
     limit: int,
     now: datetime | None = None,
     slot: Callable[[], AbstractContextManager[bool]] = _always_free,
-    gap: float = 0.0,
-    sleep: Callable[[float], None] = _sleep,
 ) -> AIRunReport:
     """重跑近 days 天内旧版本的截止检查（只做截止这一项，最多 limit 份），新结果覆盖旧结果，
     不删数据（D-099 期 0）：已有的候选和核对状态都不动（同组副本也不顺带沿用核对结果），
@@ -446,18 +463,15 @@ def rerun_old_deadlines(
     下次再跑。
 
     每一份都在 slot 里做（命令里是 round_slot，拿着定时任务那一轮的锁）：拿不到就停下，免得和
-    规则抽取同时改同一批候选；已做完的照常保留，下次接着跑。两份之间先停 gap 秒再拿锁：
-    flock 不排队，放了马上再拿，正在等锁的 round.sh 可能一直抢不到、等满 5 分钟跳过这一轮
-    （命令里 gap=0.5）。
+    规则抽取同时改同一批候选；那一轮在等锁时也停（round_slot 看 round.sh 留的标记）；
+    已做完的照常保留，下次接着跑。
 
     会改线上已有的 AI 检查记录，要先征得同意再跑（youju ai-recheck-deadlines --apply）。
     定时任务（run_ai_checks）不会因为版本旧就重跑。"""
     now = now or datetime.now(UTC)
     report = AIRunReport()
     consecutive_errors = 0
-    for index, (doc, detail, _) in enumerate(old_deadline_checks(session, now, days)[:limit]):
-        if index and gap:
-            sleep(gap)
+    for doc, detail, _ in old_deadline_checks(session, now, days)[:limit]:
         with slot() as free:
             if not free:
                 report.round_busy = True

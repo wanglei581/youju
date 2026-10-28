@@ -622,6 +622,7 @@ def _cmd_ai_recheck_deadlines(args: argparse.Namespace) -> int:
         rerun_old_deadlines,
         round_running,
         round_slot,
+        round_wanted,
     )
     from youju.ai.usage import cost_yuan
 
@@ -675,7 +676,7 @@ def _cmd_ai_recheck_deadlines(args: argparse.Namespace) -> int:
         # 定时任务在 admin 那边，在 api 容器里看不到它那一轮的锁
         print("这个命令要在 admin 容器里跑，不能在 api 容器里跑")
         return 1
-    if round_running():
+    if round_running() or round_wanted():
         print("定时任务这一轮正在跑，等它跑完再重跑（06:30、20:30 开始，一般半小时内）")
         return 1
     client = get_chat_client()
@@ -692,8 +693,6 @@ def _cmd_ai_recheck_deadlines(args: argparse.Namespace) -> int:
                 limit=args.limit,
                 now=now,
                 slot=round_slot,
-                # 两份之间让 0.5 秒：round.sh 在等锁的话，这段时间里它就拿到了
-                gap=0.5,
             )
     finally:
         usage_ok = _finish_ai(client, "recheck")
