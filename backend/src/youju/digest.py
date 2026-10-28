@@ -186,6 +186,7 @@ class Digest:
     safety_new_bodies: int = 0
     safety_new_attachments: int = 0
     safety_ok: bool = True
+    safety_words_empty: str | None = None  # 本地词库没有词条时记版本：新正文、附件没扫
     # 能读情况（D-097 ④）：出错时是 None、readability_ok 为 False
     readability: Readability | None = None
     readability_ok: bool = True
@@ -387,7 +388,8 @@ def _safety(session: Session, digest: Digest, since: datetime) -> None:
         or 0
     )
     if not safety_words.LIBRARY.entries:
-        return  # 词库还没有词条
+        digest.safety_words_empty = safety_words.LIBRARY.version  # 这一行里写明没扫
+        return
     bodies = session.execute(
         select(DocumentDetail.body_text)
         .join(Document, Document.id == DocumentDetail.document_id)
@@ -408,10 +410,20 @@ def _safety(session: Session, digest: Digest, since: datetime) -> None:
     )
 
 
-def _safety_line(digest: Digest) -> str:
-    """每天都写一行：都是 0 就写没有拦下、没有出错，看得出这一项查过了、一切正常。"""
+def _safety_line(digest: Digest, *, note: bool = True) -> str:
+    """每天都写一行：都是 0 就写没有拦下、没有出错，看得出这一项查过了、一切正常。本地词库还没有
+    词条时另写一句没扫新正文、附件，免得读成本地这一层也查过了（note；整条放不下时先去掉这句，
+    再去掉 AI 建议，见 digest_text）。"""
     if not digest.safety_ok:
         return "内容安全（24 小时）：取不到（统计出错，看容器日志）"
+    return _safety_summary(digest) + (
+        f"；本地词库还没有词条（{digest.safety_words_empty}），新正文、附件没扫"
+        if note and digest.safety_words_empty
+        else ""
+    )
+
+
+def _safety_summary(digest: Digest) -> str:
     blocked = digest.safety_local + digest.safety_wechat
     new_hits = digest.safety_new_bodies + digest.safety_new_attachments
     if (
@@ -901,6 +913,7 @@ def digest_text(digest: Digest, picks: list[Pick]) -> str:
         _usage_line(digest),
         _safety_line(digest),
     ]
+    safety_at = len(lines) - 1
     usage = digest.usage
     if usage is not None and (usage.calls or usage.cumulative):
         if usage.cost is None:
@@ -929,14 +942,28 @@ def digest_text(digest: Digest, picks: list[Pick]) -> str:
         + (f"：{p.reason}" if p.reason else "")
         for i, p in enumerate(picks)
     ]
-    # 群提醒会加"【有据】"前缀；放不下时从最后一条 AI 建议开始去掉，数字部分本身超长时截断
+    # 群提醒会加"【有据】"前缀；放不下时从最后一条 AI 建议开始去掉。"本地词库还没有词条"那句
+    # 能换来多放一条 AI 建议时才去掉，不然留着；数字部分本身超长时截断
     budget = MAX_ALERT_BYTES - len("【有据】".encode())
+    text, kept = _fit(lines, pick_lines, budget)
+    if digest.safety_words_empty and (kept < len(pick_lines) or len(text.encode()) > budget):
+        short = list(lines)
+        short[safety_at] = _safety_line(digest, note=False)
+        short_text, short_kept = _fit(short, pick_lines, budget)
+        if short_kept > kept or len(text.encode()) > budget:
+            text, kept = short_text, short_kept
+    if len(text.encode()) <= budget:
+        return text
+    cut = budget - len("…".encode())
+    return text.encode()[:cut].decode("utf-8", "ignore") + "…"
+
+
+def _fit(lines: list[str], pick_lines: list[str], budget: int) -> tuple[str, int]:
+    """从最后一条 AI 建议开始去掉，直到放得下或者一条都不剩：（正文, 留下几条建议）。"""
+    picks = list(pick_lines)
     while True:
-        body = lines + (["AI 建议先核对（仅供参考）："] + pick_lines if pick_lines else [])
+        body = lines + (["AI 建议先核对（仅供参考）："] + picks if picks else [])
         text = "\n".join(body)
-        if len(text.encode()) <= budget:
-            return text
-        if not pick_lines:
-            cut = budget - len("…".encode())
-            return text.encode()[:cut].decode("utf-8", "ignore") + "…"
-        pick_lines.pop()
+        if len(text.encode()) <= budget or not picks:
+            return text, len(picks)
+        picks.pop()

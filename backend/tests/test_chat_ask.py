@@ -1098,7 +1098,7 @@ def test_read_time_recheck(
         "taken_down": ("unavailable", ask.TAKEN_DOWN),
         "kind": ("ineligible", ask.INELIGIBLE),
         "words": ("removed", ask.REMOVED),
-        "cloud": ("removed", ask.REMOVED),
+        "cloud": ("removed", ask.UNCHECKED),
     }[change]
     if change == "body":
         set_body(session_factory, doc, BODY + "\n八、新增。")

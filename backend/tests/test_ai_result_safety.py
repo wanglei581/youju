@@ -22,6 +22,8 @@ from youju.models import AdvisorTask, AdvisorUsage, AISafetyHit
 # 解读、对照的处置记录里另记的三项：1 天内认同一份内容用
 MATCH_KEYS = ("cacheKey", "promptVersion", "model")
 ALL_CLEAR = "内容安全（24 小时）：没有拦下、没有出错"
+# 随代码发布的词库（draft-0）还没有词条：这一行另写没扫新正文、附件
+ALL_CLEAR_NO_WORDS = ALL_CLEAR + "；本地词库还没有词条（draft-0），新正文、附件没扫"
 
 
 @pytest.fixture(autouse=True)
@@ -323,7 +325,7 @@ def test_daily_report_counts_blocks(session, settings, doc, wechat, monkeypatch)
         lines = digest_text(build_digest(session, now=now), []).splitlines()
         return [line for line in lines if line.startswith("内容安全")]
 
-    assert safety_line(NOW) == [ALL_CLEAR]
+    assert safety_line(NOW) == [ALL_CLEAR_NO_WORDS]
     word_list(monkeypatch, "申请书")
     blocked = direct_task(session, doc, key="blocked")
     run(session, blocked, settings)
@@ -580,6 +582,38 @@ def test_results_rechecked_after_word_list_update(  # noqa: F811
     assert clean.result_json["safety"]["words"] == "test-1"
 
 
+def test_sweep_removal_blocks_within_a_day(  # noqa: F811
+    session, settings, doc, wechat, monkeypatch
+):
+    """每天的复查按新词库撤下的：1 天内同一份内容再交，直接按没通过处理（复查清掉了任务的缓存键，
+    靠处置记录里记的认），不调模型和微信；词库再换版本以后照常重查。"""
+    shown = direct_task(session, doc, key="shown")
+    run(session, shown, settings)
+    assert shown.status == "done"
+    word_list(monkeypatch, "申请书")
+    assert service.cleanup_advisor(session, settings=settings, stamp=NOW)["ai_results_removed"] == 1
+    checked = len(wechat.calls)
+    fake = FakeChat()
+    again = direct_task(session, doc, key="again")
+    run(session, again, settings, fake=fake)
+    assert again.status == "failed" and again.error == result_safety.UNSAFE_MESSAGE
+    assert fake.calls == [] and len(wechat.calls) == checked and len(hits(session)) == 1
+    # 词库换了版本、新版本查不到：复查那条不再算数，照常调模型
+    library = safety_words.parse(
+        {
+            "version": "test-2",
+            "final": True,
+            "categories": {"test": {"name": "测试类别"}},
+            "entries": [{"id": "t2", "category": "test", "word": "不会出现的短语"}],
+        }
+    )
+    monkeypatch.setattr(safety_words, "LIBRARY", library)
+    fake = FakeChat()
+    later = direct_task(session, doc, key="later")
+    run(session, later, settings, fake=fake)
+    assert len(fake.calls) == 1 and later.status == "done"
+
+
 def test_clause_result_keeps_mark():
     """条款对照复制、套企业自述时带着标记。"""
     from youju.ai import clause
@@ -620,7 +654,7 @@ def test_daily_report_scans_new_texts(session, settings, doc, monkeypatch):  # n
     # 词库没有词条（随代码发布的草稿）时不扫；这一行照样写
     monkeypatch.setattr(safety_words, "LIBRARY", safety_words.load())
     lines = digest_text(build_digest(session, now=NOW + timedelta(hours=1)), []).splitlines()
-    assert [line for line in lines if line.startswith("内容安全")] == [ALL_CLEAR]
+    assert [line for line in lines if line.startswith("内容安全")] == [ALL_CLEAR_NO_WORDS]
 
 
 def test_daily_report_joins_attachment_segments(session, settings, doc, monkeypatch):  # noqa: F811
