@@ -784,6 +784,26 @@ def test_直辖市的市级按省级算(text, regions, levels):
     assert (conditions["cities"], conditions["districts"], conditions["uncovered"]) == ([], [], [])
 
 
+@pytest.mark.parametrize(
+    "text,city",
+    [
+        ("上海和深圳的市级政策", "广东/深圳"),
+        ("上海和苏州的市级政策", "江苏/苏州"),
+        ("上海和南山区的市级政策", "广东/深圳"),  # 区县的市级 → 所在的城市
+    ],
+)
+def test_直辖市和别的城市一起说市级_城市照旧(text, city):
+    """直辖市按省级、别的城市照写的市级：上海市里的部门和这个城市的市级，不换成全省。"""
+    covered = Coverage(
+        ALL_COVERED.provinces,
+        ALL_COVERED.cities | {("江苏", "苏州")},
+        ALL_COVERED.districts,
+    )
+    conditions = _parse(text, covered)
+    assert (conditions["regions"], conditions["cities"]) == (["上海"], [city])
+    assert (conditions["districts"], conditions["levels"]) == ([], ["省级", "市级"])
+
+
 def test_我在也当停用词():
     assert _parse("我在深圳找专精特新的申报通知")["keywords"] == ["专精特新"]
 
@@ -905,11 +925,40 @@ def test_省级地区后面的级以上():
     )
     assert conditions["keywords"] == []
     assert _parse("广东省级及以上的申报通知")["levels"] == ["国家部委", "省级"]
-    conditions = _parse("广东县级以上的申报通知")  # 各层都要：不筛层级，国家部委的也要
-    assert (conditions["regions"], conditions["levels"]) == (["国家部委", "广东"], [])
     conditions = _parse("广东省级以上专精特新企业")  # 紧跟着名称：只去掉
     assert (conditions["regions"], conditions["levels"]) == (["广东"], [])
     assert conditions["keywords"] == ["专精特新"]
+    # 城市后面的"市级以上"：省级又和市级一起，按全省找，条件那句写的是广东
+    conditions = _parse("深圳市级以上的申报通知")
+    assert conditions_text({"conditions": conditions, "notes": []}) == (
+        "地区 国家部委、广东 · 层级 国家部委、省级、市级 · 类型 申报通知 · 发布 不限时间"
+    )
+
+
+WITH_GUANGZHOU = Coverage(
+    ALL_COVERED.provinces, ALL_COVERED.cities | {("广东", "广州")}, ALL_COVERED.districts
+)
+
+
+@pytest.mark.parametrize(
+    "text,regions,cities",
+    [
+        ("广州县级以上申报通知", [], ["广东/广州"]),
+        ("深圳区县级及以上政策", [], ["广东/深圳"]),
+        ("广东县级以上的申报通知", ["广东"], []),
+        ("广东省县级及以上的申报通知", ["广东"], []),
+        ("国家和广东县级以上的申报通知", ["国家部委", "广东"], []),  # 说了国家部委的照写
+        ("国家和县级以上的申报通知", [], []),  # 只说了国家部委：都要
+    ],
+)
+def test_县级以上各层都要_地区照写的(text, regions, cities):
+    conditions = _parse(text, WITH_GUANGZHOU)
+    assert (conditions["regions"], conditions["cities"], conditions["districts"]) == (
+        regions,
+        cities,
+        [],
+    )
+    assert (conditions["levels"], conditions["uncovered"]) == ([], [])
 
 
 @pytest.mark.parametrize(
@@ -1570,6 +1619,25 @@ def test_广东地区和广东找到的一样(session, world, client):
     assert stored["conditions"] == _find(session, "广东的申报通知")["conditions"]
     assert stored["ids"] == _ids(world, "gd_apply", "sz_apply", "ns_apply", "gd_cash")
     assert (stored["link"], stored["notes"]) == (True, [])
+    _same_as_search_page(client, stored)
+
+
+def test_县级以上_直辖市和城市的市级_和搜索页结果一样(session, world, client):
+    stored = _find(session, "深圳县级以上的申报通知")  # 各层都要：照写的深圳
+    assert (stored["conditions"]["cities"], stored["conditions"]["levels"]) == (["广东/深圳"], [])
+    assert stored["ids"] == _ids(world, "sz_apply")
+    _same_as_search_page(client, stored)
+    sh = _source(session, "上海")  # 上海市里的部门是省级来源
+    doc = _doc(
+        session, sh, "上海市科学技术委员会关于组织申报2026年科技项目的通知", date(2026, 6, 6)
+    )
+    session.commit()
+    stored = _find(session, "上海和深圳的市级项目")
+    conditions = stored["conditions"]
+    assert (conditions["regions"], conditions["cities"]) == (["上海"], ["广东/深圳"])
+    assert conditions["levels"] == ["省级", "市级"]
+    assert stored["ids"] == [doc.id, world["sz_apply"]]
+    assert stored["link"] is True
     _same_as_search_page(client, stored)
 
 

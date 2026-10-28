@@ -37,7 +37,8 @@
   或国家部委时才算（省级、国家级专精特新；"我在广州，国家高新技术企业"不算）；
 - 层级（搜索页"层级"那组，和地区取交集）：省级 → 省级，市级 → 市级，区级、县级、区县级 → 区县级，
   省市级、市县级两层都算；省级以上、省级及以上 → 国家部委和省级，市级以上、市级及以上再加市级，
-  区级、县级、区县级以上（及以上）各层都要，等于不筛（_LEVEL_WORDS）。单独说的（同上面"国家"
+  区级、县级、区县级以上（及以上）各层都要，等于不筛，地区照写的（_LEVEL_WORDS；广州县级以上 ＝
+  广州，城市、区县不换，也不加国家部委；国家和县级以上 ＝ 都要）。单独说的（同上面"国家"
   单独说的那几种，后面也可以是别的层级）或者跟在算了的地区、层级后面连着说的才算（同上面"国家"：
   "和、与、及、或"前面可以是地区或层级，顿号、逗号前面要是层级或国家部委：省级的申报通知、国家级和
   省级专精特新、国家级、省级、市级专精特新；"深圳，省级专精特新"不算）；紧跟着
@@ -48,13 +49,15 @@
   省级地区名后面紧跟着"级""级以上""级及以上"的（广东省级、北京市级、广东省级以上）按"省级"
   "省级以上"同样看；城市、区县后面的"级"去掉（本来就是那一层），"级以上"同"市级以上""区县级以上"。
   省、城市后面紧跟着的"区县""县区"（中间可以隔一个"的"）一直算区县级（深圳区县的补贴、广州的县区）。
-  直辖市市里的部门是省级来源：只说了直辖市（和它的区县）时"市级"按省级算（上海的市级政策 ＝ 上海 ∩
-  省级、天津河北区的市级政策 ＝ 天津 ∩ 省级），还说了别的省时省级、市级都要。
+  直辖市市里的部门是省级来源：直辖市（和它的区县）的"市级"按省级算（上海的市级政策 ＝ 上海 ∩
+  省级、天津河北区的市级政策 ＝ 天津 ∩ 省级）；还说了别的省、城市、区县的，它们照写的层级算，
+  层级写成省级、市级（上海和深圳的市级政策 ＝ 上海、广东·深圳 ∩ 省级、市级）。
   城市、区县和层级一起说时（搜索页的城市只管市级来源、区县只管区县级来源，直接取交集一份都没有）：
   省级 → 所在的省（深圳的省级政策 ＝ 广东 ∩ 省级），市级 → 城市（区县换成所在的城市），区县级 →
   区县（城市换成它收录了的区县：深圳各区；一个都没收录的写进 uncovered："广东·广州（区县级）"，
   区县所在的城市没收录的写"广东·深圳（市级）"）；省级又和市级、区县级一起说的按全省找（深圳的省级
-  和市级政策 ＝ 广东 ∩ 省级、市级）。层级里有国家部委时（说了国家部委，或者"省级以上"这类），说了
+  和市级政策 ＝ 广东 ∩ 省级、市级；深圳市级以上 ＝ 国家部委、广东 ∩ 国家部委、省级、市级，条件那句
+  写的是广东，看得出来）。层级里有国家部委时（说了国家部委，或者"省级以上"这类），说了
   别的地区就把国家部委也放进地区，没说就从地区里拿掉（国家和省级 ＝ 层级 国家部委、省级；国家和
   广东的省级、广东省级以上 ＝ 地区 国家部委、广东 ∩ 层级 国家部委、省级，同搜索页 requestScope 的
   拼法），这样国家部委的不会因为取交集被筛掉；
@@ -963,9 +966,18 @@ def _areas(text: str, marks: list[str], covered: Coverage) -> _Found:
     uncovered = [p for p in named_order if p not in covered.provinces]
     districts = list(dict.fromkeys(districts))
     picked = [level for level in LEVEL_ORDER if level in levels]
+    others = bool(named - {NATIONAL} or city_hits or district_hits)  # 说了国家部委以外的地区
+    if set(picked) >= set(LEVEL_ORDER):
+        # "县级以上"：各层都要，不筛，地区照写的（城市、区县不换，也不加国家部委）；只说了国家部委的
+        # （国家和县级以上）也是都要
+        picked = []
+        if not others:
+            regions = [p for p in regions if p != NATIONAL]
+            uncovered = [p for p in uncovered if p != NATIONAL]
     if picked and NATIONAL in named_order and NATIONAL not in picked:
         picked.insert(0, NATIONAL)  # 有层级又说了国家部委：国家部委也是一层
     local = [level for level in picked if level != NATIONAL]
+    written = local  # 用户写的层级：城市、区县按这个换（_by_level 里直辖市的另算）
     if "市级" in local:  # 直辖市市里的部门是省级来源：直辖市的"市级"按省级算
         areas = [p for p in regions if p != NATIONAL] + [a[0] for a in (*cities, *districts)]
         if any(p in _MUNICIPALITIES for p in areas):
@@ -974,21 +986,21 @@ def _areas(text: str, marks: list[str], covered: Coverage) -> _Found:
                 wanted.discard("市级")  # "上海的市级政策"同"上海的省级政策"
             picked = [level for level in LEVEL_ORDER if level in wanted]
             local = [level for level in picked if level != NATIONAL]
-    if local and (cities or districts):
-        regions, cities, districts, missing = _by_level(regions, cities, districts, local, covered)
+    if written and (cities or districts):
+        regions, cities, districts, missing = _by_level(
+            regions, cities, districts, written, covered
+        )
         uncovered += missing
     if NATIONAL in picked:
         if NATIONAL not in covered.provinces:
             picked.remove(NATIONAL)
             if NATIONAL not in uncovered:
                 uncovered.append(NATIONAL)
-        elif named - {NATIONAL} or city_hits or district_hits:
+        elif others:
             # (国家部委 ∪ 地区) ∩ (国家部委 ∪ 层级)，不然国家部委的取交集就筛掉了
             regions = regions if NATIONAL in regions else [NATIONAL, *regions]
         else:
             regions = [p for p in regions if p != NATIONAL]  # 国家和省级 ＝ 层级 国家部委、省级
-    if set(picked) >= set(LEVEL_ORDER):
-        picked = []  # "县级以上"：各层都要，不筛
     return _Found(
         conditions={
             "regions": regions,
@@ -1022,31 +1034,39 @@ def _by_level(
     """城市、区县和省级、市级、区县级一起说时换成搜索页能取交集的条件（搜索页的城市只管市级来源、
     区县只管区县级来源，直接取交集一份都没有）：省级 → 所在的省；市级 → 城市（区县换成所在的
     城市）；区县级 → 区县（城市换成它收录了的区县）。省级又和市级、区县级一起说的按全省找（城市、
-    区县换成所在的省）。换不出来的（城市没收录区县、区县所在的城市没收录）写进返回的最后一项，
-    如"广东·广州（区县级）"。"""
-    whole = "省级" in local and len(local) > 1
+    区县换成所在的省）。local 是用户写的层级；直辖市的（天津河北区）"市级"按省级算，别的城市、区县
+    照写的算（上海和深圳的市级政策：深圳照旧是城市）。换不出来的（城市没收录区县、区县所在的城市
+    没收录）写进返回的最后一项，如"广东·广州（区县级）"。"""
+
+    def own(province: str) -> set[str]:
+        if province in _MUNICIPALITIES and "市级" in local:
+            return {*local, "省级"} - {"市级"}
+        return set(local)
+
     regions, out_cities, out_districts, missing = list(regions), [], [], []
     for p, c in cities:
-        if "省级" in local:
+        here = own(p)
+        if "省级" in here:
             regions.append(p)
-        if whole:
-            continue
-        if "市级" in local:
+        if "省级" in here and len(here) > 1:
+            continue  # 按全省找
+        if "市级" in here:
             out_cities.append((p, c))
-        if "区县级" in local:
+        if "区县级" in here:
             found = _city_districts(p, c, covered)
             out_districts += found
             missing += [] if found else [f"{_area_label(f'{p}/{c}')}（区县级）"]
     for p, c, d in districts:
-        if "省级" in local:
+        here = own(p)
+        if "省级" in here:
             regions.append(p)
-        if whole:
+        if "省级" in here and len(here) > 1:
             continue
-        if "市级" in local:
+        if "市级" in here:
             city = resolve_city(p, c, covered.cities)
             out_cities += [(p, city)] if city else []
             missing += [] if city else [f"{_area_label(f'{p}/{c}')}（市级）"]
-        if "区县级" in local:
+        if "区县级" in here:
             out_districts.append((p, c, d))
     return (
         list(dict.fromkeys(regions)),
