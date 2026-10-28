@@ -856,3 +856,77 @@ def test_rerun_limits_row_lock_waits_while_writing(session) -> None:
         assert session.scalar(text("SELECT @@SESSION.innodb_lock_wait_timeout")) == 10
     finally:
         session.execute(text("SET SESSION innodb_lock_wait_timeout = DEFAULT"))
+
+
+def test_rerun_write_segment_has_a_time_limit(session, session_factory, tmp_path, monkeypatch):
+    """写库那一段超过时限：丢掉连接（不留半截）、放锁、停下，旧结果留着（Codex 第 8 轮）。"""
+    import time
+
+    from youju.ai import pipeline
+
+    doc = add_doc(session)
+    _old_check(session, doc)
+    path, wanted = str(tmp_path / "round.lock"), str(tmp_path / "round.wanted")
+
+    def slow(*args, **kwargs):
+        time.sleep(3)
+
+    monkeypatch.setattr(pipeline, "_apply_deadlines", slow)
+    client, _ = fake_ai(
+        deadlines=[ai_item("2026-10-15", "请各单位于2026年10月15日前完成网上申报。")]
+    )
+    with session_factory() as other:
+        report = pipeline.rerun_old_deadlines(
+            other,
+            client,
+            days=90,
+            limit=10,
+            now=datetime(2026, 10, 28, tzinfo=UTC),
+            slot=lambda: pipeline.round_slot(path, wanted),
+            write_limit=0.5,
+        )
+    assert report.write_timeout and report.written == 0
+    assert not pipeline.round_running(path)
+    session.expire_all()
+    assert _deadline_check(session, doc).result == []
+
+
+def test_rerun_rolls_back_before_releasing_the_lock(
+    session, session_factory, tmp_path, monkeypatch
+):
+    """写库出错：先回滚，再放锁（出了 slot 才放）。"""
+    import pytest
+
+    from youju.ai import pipeline
+
+    doc = add_doc(session)
+    _old_check(session, doc)
+    path, wanted = str(tmp_path / "round.lock"), str(tmp_path / "round.wanted")
+    seen = []
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("写库出错")
+
+    monkeypatch.setattr(pipeline, "_apply_deadlines", broken)
+    client, _ = fake_ai(
+        deadlines=[ai_item("2026-10-15", "请各单位于2026年10月15日前完成网上申报。")]
+    )
+    with session_factory() as other:
+        real_rollback = other.rollback
+
+        def rollback():
+            seen.append(pipeline.round_running(path))
+            real_rollback()
+
+        monkeypatch.setattr(other, "rollback", rollback)
+        with pytest.raises(RuntimeError):
+            pipeline.rerun_old_deadlines(
+                other,
+                client,
+                days=90,
+                limit=10,
+                now=datetime(2026, 10, 28, tzinfo=UTC),
+                slot=lambda: pipeline.round_slot(path, wanted),
+            )
+    assert seen and seen[0] is True  # 回滚时锁还在手里
+    assert not pipeline.round_running(path)

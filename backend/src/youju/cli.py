@@ -693,8 +693,10 @@ def _cmd_ai_recheck_deadlines(args: argparse.Namespace) -> int:
                 limit=args.limit,
                 now=now,
                 slot=round_slot,
-                # 写库那一段每条语句等行锁最多 10 秒：拿着锁的时间有上限，定时任务那一轮等得起
+                # 写库那一段每条语句等行锁最多 10 秒、整段最多 60 秒：拿着锁的时间有上限，
+                # 定时任务那一轮等得起（它最多等 5 分钟）
                 lock_wait=10,
+                write_limit=60,
             )
     finally:
         usage_ok = _finish_ai(client, "recheck")
@@ -705,6 +707,8 @@ def _cmd_ai_recheck_deadlines(args: argparse.Namespace) -> int:
     )
     if report.round_busy:
         print("  中途碰上定时任务那一轮，先停下；做完的已保存，等这一轮跑完再跑一次接着做")
+    if report.write_timeout:
+        print("  写库那一段超过 60 秒，先停下（这一份没写进去，旧结果留着）；稍后再跑一次接着做")
     print(
         f"  截止候选：AI 一致 {report.deadlines_agree} 条，只有规则找到 "
         f"{report.deadlines_rule_only} 条，AI 新找到 {report.deadlines_ai_only} 条（都要人工核对）"
