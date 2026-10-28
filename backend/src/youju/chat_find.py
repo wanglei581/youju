@@ -761,7 +761,7 @@ def _time_at(text: str, pos: int = 0) -> _TimeHit | None:
         hit = _time_at(text[pos:])
         if hit is None:
             return None
-        now = as_of and hit.word in ("今天", "今日", "当天")  # 截至今天：不用筛
+        now = as_of and hit.word in ("今天", "今日", "当天", "本日", "当日")  # 截至今天：不用筛
         kind = "noop" if now else "vague"
         return _TimeHit(kind, pos + hit.end, text[pos : pos + hit.end], deadline=bool(until))
     best = None
@@ -780,12 +780,17 @@ def _time_at(text: str, pos: int = 0) -> _TimeHit | None:
             best = _TimeHit(kind, m.end(), m.group())
     if best is None:
         return None
-    eligible = text.endswith(_ELIGIBLE, 0, pos) and text[pos : pos + 1] in (*_NUMERALS, "半")
-    if eligible and best.kind != "year":  # 成立一年内、成立一年半：申报条件（认定 2025 年的照常认）
+    eligible = text.endswith(_ELIGIBLE, 0, pos) and (
+        text[pos : pos + 1] in (*_NUMERALS, "半") or best.kind == "span"
+    )
+    if eligible and best.kind != "year":  # 成立一年内、成立近一年：申报条件（认定 2025 年的照常认）
         return _TimeHit("skip", best.end, best.word)  # 整段留着当关键词，不再从中间认
-    if best.kind == "vague":  # 明天截止、下周截止、下月底截止：说的是截止
+    if best.kind == "vague":  # 明天截止、下月底截止、明天前截止：说的是截止
         part = _SUB.match(text, best.end)
-        if m := _DEADLINE_AT.match(text, part.end() if part else best.end):
+        at = part.end() if part else best.end
+        if edge := _BEFORE_AFTER.match(text, at) or _EDGE.match(text, at):
+            at = edge.end()
+        if m := _DEADLINE_AT.match(text, at):
             word = m.lastindex
             end = m.end() if m.group(word) != "截止" else m.start(word)
             return _TimeHit("vague", end, text[pos:end], deadline=True)
@@ -812,6 +817,8 @@ def _stop_at(text: str, i: int) -> tuple[int, bool] | None:
     elif m := _DEADLINE_AT.match(text, i):
         word = m.lastindex  # 1：截止、到期；2：即将截至这种
         return (m.end() if m.group(word) != "截止" else m.start(word)), True
+    if end is None and text.startswith("截至", i) and _time_at(text, i + 2) is None:
+        return i, True  # 2025 年截至的申报通知：后面没写到哪个时候，当"截止"写错了字
     if end is None:
         return None
     if m := _DEADLINE_AT.match(text, end):  # 今年底前到期、今年底前截止
