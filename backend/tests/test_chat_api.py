@@ -6,6 +6,7 @@
 """
 
 import logging
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from threading import Barrier
@@ -14,7 +15,8 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text, update
+from sqlalchemy.exc import DBAPIError
 
 from youju import access_log, chat_store, safety_words, wx_security
 from youju import advisor_tasks as service
@@ -308,6 +310,48 @@ def test_chat_consent_required_and_version_bump(
             assert send(c).status_code == 200
     finally:
         app_module.app.dependency_overrides.clear()
+
+
+def test_same_key_after_terms_update_returns_original(
+    session_factory, settings, find, wechat, monkeypatch
+):
+    """发出以后"问一问使用说明"或 AI 协议升了版：同一个请求编号重发拿得到原来那一问，不再交微信
+    （Codex 10/28）；新的一问照旧 403。"""
+
+    def override():
+        with session_factory() as s:
+            yield s
+
+    app_module.app.dependency_overrides[get_session] = override
+    try:
+        with TestClient(app_module.app) as c:
+            agree(c)
+            first = send(c, key="before-update")
+            assert first.status_code == 200
+            calls = len(wechat.calls)
+            monkeypatch.setattr(chat_store, "CHAT_AGREEMENT_VERSION", "chat-2027-01-v1")
+            monkeypatch.setattr(me, "CHAT_AGREEMENT_VERSION", "chat-2027-01-v1")
+            again = send(c, key="before-update")
+            assert again.status_code == 200 and again.json() == first.json()
+            assert code(send(c)) == "CHAT_CONSENT"
+            settings.ai_advisor_audience = "all"  # 对所有人开放，这个人没同意含 AI 条款的协议
+            again = send(c, key="before-update")
+            assert again.status_code == 200 and again.json() == first.json()
+            response = send(c)
+            assert response.status_code == 403
+            assert response.json()["detail"] == chat.AI_TERMS_UPDATED
+            assert len(wechat.calls) == calls
+            settings.ai_advisor_enabled = False  # AI 关了：照旧 404，重发也一样
+            assert send(c, key="before-update").status_code == 404
+    finally:
+        app_module.app.dependency_overrides.clear()
+
+
+def test_same_key_when_chat_closed_is_not_found(client, monkeypatch):
+    """问一问关了（词库或使用说明不再算定稿）：同一个请求编号重发也是 404，不返回原来那一问。"""
+    assert send(client, key="closed").status_code == 200
+    monkeypatch.setattr(chat_store, "CHAT_TERMS_FINAL", False)
+    assert send(client, key="closed").status_code == 404
 
 
 def test_ai_terms_outdated_after_opening_to_all(client, settings, session):
@@ -873,6 +917,48 @@ def test_cleanup_keeps_live_chats(client, session, settings):
     assert [t["question"] for t in got["turns"]] == ["新的问题"]
     # 接着问：编号接着往下排，不和到期删掉的撞
     assert send(client, "第三问").json()["turn"]["seq"] == 3
+
+
+def _wait_for_lock_wait(session, timeout=10.0):
+    """等到这个测试库里有一个事务在等锁（innodb_trx 的 LOCK WAIT，只看本库的连接）。测试账号没有
+    PROCESS 权限、查不了 innodb_trx 时退回等 1 秒（结果照样要对，只是不一定撞上锁等待）。"""
+    stop = time.monotonic() + timeout
+    query = text(
+        "SELECT COUNT(*) FROM information_schema.innodb_trx t"
+        " JOIN information_schema.processlist p ON p.id = t.trx_mysql_thread_id"
+        " WHERE t.trx_state = 'LOCK WAIT' AND p.db = DATABASE()"
+    )
+    while time.monotonic() < stop:
+        try:
+            waiting = session.scalar(query)
+        except DBAPIError:
+            session.rollback()
+            time.sleep(1)
+            return
+        if waiting:
+            return
+        session.rollback()
+        time.sleep(0.05)
+    raise AssertionError("没等到锁等待")
+
+
+def test_cleanup_and_new_question_at_once(client, session, session_factory):
+    """每天的清理正删一条全到期的对话（锁着、还没提交）时，同一个人发来新一问：新一问在对话行的锁上
+    等清理提交，再建一条新对话；不死锁、不报错、不丢（真 MySQL 上的锁等待，Codex 10/28）。"""
+    old_chat = send(client, "旧的问题").json()["chatId"]
+    session.execute(update(AIChatTurn).values(expires_at=NOW - timedelta(seconds=1)))
+    session.commit()
+    with session_factory() as sweeper, ThreadPoolExecutor(1) as pool:
+        assert chat_store.cleanup(sweeper, NOW) == {"ai_chat_turns": 1, "ai_chats": 1}
+        pending = pool.submit(send, client, "新的问题")
+        _wait_for_lock_wait(session)
+        sweeper.commit()
+        response = pending.result(timeout=60)
+    assert response.status_code == 200
+    assert response.json()["chatId"] != old_chat
+    session.expire_all()
+    assert [t.question for t in session.scalars(select(AIChatTurn))] == ["新的问题"]
+    assert counts(session) == (1, 1, 0)
 
 
 def test_account_deletion_deletes_chats_keeps_hits(client, session, find):

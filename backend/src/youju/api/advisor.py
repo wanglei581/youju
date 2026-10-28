@@ -433,6 +433,7 @@ def capabilities(request: Request, session: SessionDep, user: UserDep) -> dict:
     stamp = _stamp()
     heartbeat.note_api(session, settings, stamp)
     chat_on = chat_store.chat_ready()
+    ask_on = chat_on and heartbeat.ask_ready(session, settings, stamp)
     return {
         "data_tools": {
             "enabled": data_enabled,
@@ -446,17 +447,14 @@ def capabilities(request: Request, session: SessionDep, user: UserDep) -> dict:
         },
         "ai_advisor": {
             "enabled": True,
-            # 问这份通知（ask）只在问一问开着、admin 的单独线路配齐了时给（问一问开发设计第六节
-            # 第 3 条"只走单独线路"）；不给时对话页只有找通知，不写"暂未开放"。还剩几次在问一问
-            # 开着时就给（后台一时处理不了，"今天用完了"照样写得出）
-            "features": [
-                kind
-                for kind in AI_KINDS
-                if kind != "ask" or (chat_on and heartbeat.ask_ready(session, settings, stamp))
-            ],
+            # 问这份通知（ask）和它还剩几次（remaining.ask）同一个条件：问一问开着、admin 的单独
+            # 线路配齐了（心跳 ask_ready，含新鲜度；问一问开发设计第六节第 3 条"只走单独线路"）。
+            # 不给时对话页只有找通知，不写"暂未开放"（Codex 10/28：原来 remaining.ask 只看问一问
+            # 开没开，和 features 对不上）
+            "features": [kind for kind in AI_KINDS if kind != "ask" or ask_on],
             "disclosure": interpret.disclosure(settings),
             "remaining": {
-                k: max(0, 5 - counts.get(k, 0)) for k in AI_KINDS if k != "ask" or chat_on
+                k: max(0, 5 - counts.get(k, 0)) for k in AI_KINDS if k != "ask" or ask_on
             },
             # D-075：后台能不能处理（api 上看 admin 的心跳和设置指纹）、全站今天还能不能用。
             # 两项为假时小程序把按钮变灰、写原因，不收任务

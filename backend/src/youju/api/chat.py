@@ -5,15 +5,17 @@
   （chat_store.chat_ready）。发一问还要同意过当前版本的"问一问使用说明"（CHAT_CONSENT）。
 - 看和删自己的对话（GET /chats、GET /chats/{id}、GET /chat/turns/{id}、DELETE /chats/{id}）
   只认本人，不看开关、白名单和协议版本（D-093 门槛第 8 条）；别人的、不存在的都是 404。
-- 发一问先按请求编号找原来那一问，找到就原样返回，不再做下面的检查；没有才按顺序查：
-  限频 → 长度 → 号码 → 本地高危词库 → 问某家企业在不在名单里 → 微信内容安全（第九节）。
+- 发一问先按请求编号找原来那一问，找到就原样返回，不再做下面的检查（协议、使用说明的同意也不再
+  查：发出以后升了版，重发照样拿得到）；没有才按顺序查：同意 → 限频 → 长度 → 号码 → 本地高危词库
+  → 问某家企业在不在名单里 → 微信内容安全（第九节）。
   被拦下的都不建行、不扣次数；内容安全拦下的另记违规记录。
 - 问这份通知（skill=ask，第六节第 3 条）：本机的检查过了，再看带没带通知、这份能不能问（含原文链接
   失效）、后台能不能处理（单独线路）、这条对话上一问出没出结果，然后才交微信；锁用户行、锁里再按
   请求编号找一次、锁对话行，规则先挡（指代对不上、要代写，当场回答、不建任务），最后在全站上限的锁
   里查全站用量、占 5 次那本和 20 问那本，建这一问和任务（202）。回答由 ai/ask.py 出，三个返回一问的
   地方（发一问、取对话、轮询）都经它，读的时候再核一次。
-- 用户打的字只存在 ai_chat_turns.question（和找通知回答里的 keywords、docNumber）；
+- 用户打的字只存在 ai_chat_turns.question（和找通知回答里的 keywords、docNumber、uncovered 里没
+  收录的区县名，同一行、一起到期和删除）；
   日志、审计里只记编号、技能和错误代码，不记问题文字（第十节第 6 条）。
 """
 
@@ -534,17 +536,19 @@ def create_turn(
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ) -> dict:
     """发一问。找通知当场答完（200）；问这份通知建任务（202，规则先挡下的当场回答）。"""
-    _authorize(user)
-    if not chat_store.consented(user):
-        raise _refuse(403, "CHAT_CONSENT", "请先阅读并同意问一问使用说明")
     if not idempotency_key or not idempotency_key.strip() or len(idempotency_key) > 128:
         raise _refuse(422, "CHAT_KEY", "请提供 Idempotency-Key 请求头（不超过 128 字符）")
     key = idempotency_key.strip()
     stamp = _stamp()
-    # 先查请求编号，再做检查：断线重发不会撞上限频或内容安全出错，也不会把同一句话再发给微信
+    # 先查请求编号，再做检查：断线重发不会撞上限频或内容安全出错，也不会把同一句话再发给微信；
+    # 发出以后协议或使用说明升了版，重发也拿得到原来那一问（同看自己的对话，Codex 10/28）。
+    # 问一问关着、AI 对这个人没开的照旧 404（_visible）
     found = _turn_by_key(session, user.id, key, stamp)
     if found is not None:
         return _replay(session, *found, body, response, stamp)
+    _authorize(user)
+    if not chat_store.consented(user):
+        raise _refuse(403, "CHAT_CONSENT", "请先阅读并同意问一问使用说明")
     _limit(user.id)
     text = body.text.strip()
     if not text:
