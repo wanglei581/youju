@@ -10,13 +10,14 @@ admin 处理任务时（advisor_tasks.process_ai），结果存进去之前先�
 逐字摘的；模型自己写的话不显示，见 interpret.validate）。类型名、提醒、模型名称是我们写的
 固定文字，不查；没有条目的（拒答）不查。复用缓存的结果也照样查：开关打开以前缓存的从没查过。
 
-- 通过：结果里记上标记 safety（词库版本、查没查微信）。读的时候没有这个标记的不显示；词库版本
-  变了的先用本地词库再查一遍（visible_after_update）；每天的清理把命中的撤下、写处置记录
-  （advisor_tasks.sweep_results）。
+- 通过：结果里记上标记 safety（词库版本、查没查微信）。读的时候没有这个标记的不显示，在云托管里
+  读的（线上）标记里还要写着查过微信（mark_ok）；词库版本变了的先用本地词库再查一遍
+  （visible_after_update）；每天的清理把命中的撤下、写处置记录（advisor_tasks.sweep_results）。
 - 没通过：不显示、不存，任务记失败、退回次数（ResultBlocked，由调用方处理），另写一条处置记录
   （ai_safety_hits，190 天）：通知编号、任务编号、哪一层、原因、正文指纹和原句的段号（正文重抓
   以后也能对回当时是哪几句）；不存结果文字，不记用户编号。同一份内容 1 天内再提交，直接按没通过
-  处理，不再调模型和微信（advisor_tasks.BLOCK_CACHE）。
+  处理，不再调模型和微信（advisor_tasks.BLOCK_CACHE）：解读、对照的记录里另记缓存键、提示词版本
+  和模型，按这几项认，原来的任务删了、提交的人注销了也认得出。
 - 接口出错、超时：暂时性的（网络、超时、5xx、返回看不懂、errcode -1 系统繁忙、44991 频率限制）
   原地重试，最多查 3 次；还不行，或者是重试也没用的错误（权限、用户两小时内没访问过、当天次数
   用完等），抛 wx_security.CheckDown：任务直接失败、退回次数，不重排（重排要重新调模型）。
@@ -148,6 +149,18 @@ def mark(*, wechat: bool) -> dict:
     return {"words": safety_words.LIBRARY.version, "wechat": wechat}
 
 
+def mark_ok(stamp) -> bool:
+    """标记算不算数：要有词库版本，还要写着查过微信。只有本机开发和测试（YOUJU_ROLE=all、不在
+    云托管里）不调微信，wechat 是 false 也认；线上的 api、admin 一律要查过（Codex 10/28：不靠
+    配置推断在不在线上，admin 配错、没认出自己在云托管里时，没交微信查的结果照样不显示）。"""
+    if not isinstance(stamp, dict) or not isinstance(stamp.get("words"), str):
+        return False
+    if stamp.get("wechat") is True:
+        return True
+    settings = wx_security.get_settings()
+    return getattr(settings, "role", "all") == "all" and not wx_security.in_cloud(settings)
+
+
 def _pause(seconds: float) -> None:
     time.sleep(seconds)  # 测试里换掉，不真等
 
@@ -181,6 +194,15 @@ def _record(
     doc_id = snapshot.get("doc_id") or (task.input_json or {}).get("doc_id")
     if snapshot.get("body_hash"):
         reason = {**reason, "bodyHash": snapshot["body_hash"]}
+    if task.kind != "ask" and task.cache_key:
+        # 解读、对照：1 天内同一份内容再提交按这三项认（advisor_tasks._recently_blocked），
+        # 任务删了、提交的人注销了也认得出。缓存键是正文和核对情况的指纹，不含用户的数据
+        reason = {
+            **reason,
+            "cacheKey": task.cache_key,
+            "promptVersion": task.prompt_version,
+            "model": task.model,
+        }
     session.add(
         AISafetyHit(
             created_at=stamp,
@@ -270,13 +292,14 @@ def check(
 def visible_after_update(result: dict | None, field: str) -> str | None:
     """读的时候用：结果能不能照常显示。不能就返回给用户看的原因。
 
-    - 没有标记：内容安全检查上线以前生成的，没查过，不显示；
+    - 没有标记：内容安全检查上线以前生成的，没查过，不显示；线上读到没查过微信的标记也一样
+      （mark_ok）；
     - 标记的词库版本和现在的不一样：先用现在的本地词库再查一遍（在本机比，不调微信），命中的不显示。
       撤下和写处置记录由 admin 每天的清理做（api 不写处置记录）。"""
     if not result or not (result.get(field) or []):
         return None  # 拒答、没有条目：只有我们写的固定文字
     stamp = result.get("safety")
-    if not isinstance(stamp, dict):
+    if not mark_ok(stamp):
         return UNCHECKED_MESSAGE
     if stamp.get("words") != safety_words.LIBRARY.version and local_hit(quotes(result, field)):
         return REMOVED_MESSAGE

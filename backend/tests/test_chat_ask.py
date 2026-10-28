@@ -1082,12 +1082,13 @@ def test_attachment_quotes_follow_current_names(client, session, settings, doc, 
     assert again["quotes"][1]["reader"] is None and again["quotes"][1]["unreadable"] is True
 
 
-@pytest.mark.parametrize("change", ["body", "taken_down", "kind", "config", "words"])
+@pytest.mark.parametrize("change", ["body", "taken_down", "kind", "config", "words", "cloud"])
 def test_read_time_recheck(
     client, session, session_factory, settings, doc, model, monkeypatch, change
 ):
-    """读的时候再核一次：内容变了、读附件的开关变了、下架了、现在不能问了、按新词库查出来了，
-    都不显示原句，接口照常返回这一问（状态 hidden）。轮询时通知刚好更新，下一次就作废。"""
+    """读的时候再核一次：内容变了、读附件的开关变了、下架了、现在不能问了、按新词库查出来了、
+    线上读到没查过微信的标记（admin 配错），都不显示原句，接口照常返回这一问（状态 hidden）。
+    轮询时通知刚好更新，下一次就作废。"""
     got = asked(client, session, settings, model, "截止是哪天", doc)
     assert got["answer"]["status"] == "answer"
     chat_id = session.scalar(select(AIChat.id))
@@ -1097,6 +1098,7 @@ def test_read_time_recheck(
         "taken_down": ("unavailable", ask.TAKEN_DOWN),
         "kind": ("ineligible", ask.INELIGIBLE),
         "words": ("removed", ask.REMOVED),
+        "cloud": ("removed", ask.UNCHECKED),
     }[change]
     if change == "body":
         set_body(session_factory, doc, BODY + "\n八、新增。")
@@ -1113,8 +1115,11 @@ def test_read_time_recheck(
             "load",
             lambda s, d, *, link=True: replace(real(s, d, link=link), config=content.CONFIG_ATTACH),
         )
-    else:
+    elif change == "words":
         word_list(monkeypatch, TEST_WORD, "截止时间", version="test-2")
+    else:
+        # 本机做的回答没交微信查（标记里 wechat 是 false）：在云托管里读就不算数
+        monkeypatch.setattr(wx_security, "in_cloud", lambda settings: True)
     hidden = turn_of(client, got["id"])
     assert hidden["status"] == "done" and hidden["counted"] is True
     result = hidden["answer"]

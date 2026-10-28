@@ -136,6 +136,8 @@ STALE = "这份通知的内容后来更新过，这条回答的原句可能对�
 TAKEN_DOWN = "这份通知已下架，回答不再显示。"
 INELIGIBLE = "这份通知现在不能问了，这条回答不再显示。"  # 原因小程序按 utils/ai-reasons.js 写
 REMOVED = "这条回答没有通过内容安全检查，已撤下，不再显示。"
+# 线上读到没交微信查过的回答（只有 admin 配错时才会有）：没查过，不说没通过
+UNCHECKED = "这条回答生成时没有经过内容安全检查，不再显示。请重新问一次。"
 UNSAFE_TEXT = "这次的回答没有通过内容安全检查，不显示。可以换个说法再问。这次不算次数。"
 FAILED = "这次没做成：{reason}。这次不算次数。"
 
@@ -918,8 +920,11 @@ def _answer(session: Session, turn: AIChatTurn, task: AdvisorTask, stamp: dateti
     if status not in ("answer", "not_found"):
         return _fixed(session, turn, result, cache)
     out = _base(session, turn, result, cache, by="model")
-    if result_safety.visible_after_update(result, ASK.result_field):
-        return _hidden(out, "removed", REMOVED)
+    reason = result_safety.visible_after_update(result, ASK.result_field)
+    if reason:
+        return _hidden(
+            out, "removed", REMOVED if reason == result_safety.REMOVED_MESSAGE else UNCHECKED
+        )
     current = _load(session, turn.doc_id, cache)
     if isinstance(current, interpret.InterpretRefusal):
         if current.code == "unavailable":

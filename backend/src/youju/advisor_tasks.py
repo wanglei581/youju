@@ -501,18 +501,34 @@ def _recently_blocked(
     session: Session, task: AdvisorTask, skill, model: str, key: str, stamp: datetime
 ) -> bool:
     """同一份内容 1 天内真查过、没通过。只认真查的那一次（写了处置记录的），不认后来直接判失败的，
-    免得每天有人交一次就一直续下去；本地词库拦下的，还要是现在这一版词库拦的（词库改了就重新查）。"""
+    免得每天有人交一次就一直续下去；本地词库拦下的，还要是现在这一版词库拦的（词库改了就重新查）。
+
+    按处置记录里记的缓存键、提示词版本和模型认：原来的任务删了、提交的人注销了也认得出（那次退过
+    次数，不能借删除白白重来）。这三项 10/28 起才记，以前的记录照旧按原来的任务认。"""
+
+    def recorded(name: str):
+        return func.json_unquote(func.json_extract(AISafetyHit.reason_json, f"$.{name}"))
+
     rows = session.execute(
         select(AISafetyHit.layer, AISafetyHit.reason_json)
-        .join(AdvisorTask, AdvisorTask.id == AISafetyHit.task_id)
+        .outerjoin(AdvisorTask, AdvisorTask.id == AISafetyHit.task_id)
         .where(
             AISafetyHit.stage == "answer",
             AISafetyHit.created_at > stamp - BLOCK_CACHE,
-            AdvisorTask.kind == skill.kind,
-            AdvisorTask.id != task.id,
-            AdvisorTask.prompt_version == skill.prompt_version,
-            AdvisorTask.model == model,
-            AdvisorTask.cache_key == key,
+            AISafetyHit.kind == skill.kind,
+            or_(AISafetyHit.task_id.is_(None), AISafetyHit.task_id != task.id),
+            or_(
+                and_(
+                    recorded("cacheKey") == key,
+                    recorded("promptVersion") == skill.prompt_version,
+                    recorded("model") == model,
+                ),
+                and_(
+                    AdvisorTask.prompt_version == skill.prompt_version,
+                    AdvisorTask.model == model,
+                    AdvisorTask.cache_key == key,
+                ),
+            ),
         )
     ).all()
     version = safety_words.LIBRARY.version
@@ -524,8 +540,8 @@ def _recently_blocked(
 def sweep_results(session: Session, stamp: datetime) -> int:
     """词库更新以后，把还在保存期内、显示着的 AI 结果用现在的本地词库再查一遍（在本机比，
     不调微信）。命中的撤下、写处置记录；没命中的把标记改成现在的版本。没有标记的（检查上线以前
-    生成的）读的时候本来就不显示，到期删除。先在库里按标记的版本筛，再分批取（不取快照里的整份
-    正文），每批单独提交。返回撤下了几份。"""
+    生成的）、线上没写着查过微信的（result_safety.mark_ok），读的时候本来就不显示，不动它，到期
+    删除。先在库里按标记的版本筛，再分批取（不取快照里的整份正文），每批单独提交。返回撤下了几份。"""
     version = safety_words.LIBRARY.version
     words = func.json_unquote(func.json_extract(AdvisorTask.result_json, "$.safety.words"))
     ids = list(
@@ -557,7 +573,7 @@ def sweep_results(session: Session, stamp: datetime) -> int:
         for task in batch:
             result = task.result_json or {}
             mark = result.get("safety")
-            if not isinstance(mark, dict) or mark.get("words") == version:
+            if not result_safety.mark_ok(mark) or mark.get("words") == version:
                 continue
             field = get_skill(task.kind).result_field
             found = result_safety.local_hit(result_safety.quotes(result, field))

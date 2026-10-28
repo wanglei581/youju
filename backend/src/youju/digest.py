@@ -13,6 +13,7 @@ import math
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
+from itertools import groupby
 
 from sqlalchemy import func, or_, select, text
 from sqlalchemy.orm import Session
@@ -185,6 +186,7 @@ class Digest:
     safety_new_bodies: int = 0
     safety_new_attachments: int = 0
     safety_ok: bool = True
+    safety_words_empty: str | None = None  # 本地词库没有词条时记版本：新正文、附件没扫
     # 能读情况（D-097 ④）：出错时是 None、readability_ok 为 False
     readability: Readability | None = None
     readability_ok: bool = True
@@ -386,7 +388,8 @@ def _safety(session: Session, digest: Digest, since: datetime) -> None:
         or 0
     )
     if not safety_words.LIBRARY.entries:
-        return  # 词库还没有词条
+        digest.safety_words_empty = safety_words.LIBRARY.version  # 这一行里写明没扫
+        return
     bodies = session.execute(
         select(DocumentDetail.body_text)
         .join(Document, Document.id == DocumentDetail.document_id)
@@ -397,16 +400,27 @@ def _safety(session: Session, digest: Digest, since: datetime) -> None:
         select(AttachmentTextSegment.version_id, AttachmentTextSegment.text)
         .join(AttachmentTextVersion, AttachmentTextVersion.id == AttachmentTextSegment.version_id)
         .where(AttachmentTextVersion.extracted_at >= since)
+        .order_by(AttachmentTextSegment.version_id, AttachmentTextSegment.n)
     )
-    digest.safety_new_attachments = len(
-        {version for version, text in segments if safety_words.check(text or "")}
+    # 一份附件的文字按段的先后接起来整份查（同正文）：跨在相邻两段之间的词也查得到
+    digest.safety_new_attachments = sum(
+        1
+        for _, rows in groupby(segments, key=lambda row: row.version_id)
+        if safety_words.check("\n".join(piece or "" for _, piece in rows))
     )
 
 
-def _safety_line(digest: Digest) -> str | None:
-    """有拦下的、有检测出错的，或者统计出错时才写一行；都是 0 就不写。"""
+def _safety_line(digest: Digest) -> str:
+    """每天都写一行：都是 0 就写没有拦下、没有出错，看得出这一项查过了、一切正常。本地词库还没有
+    词条时另写一句没扫新正文、附件，免得读成本地这一层也查过了。"""
     if not digest.safety_ok:
         return "内容安全（24 小时）：取不到（统计出错，看容器日志）"
+    return _safety_summary(digest) + (
+        "；本地词库还没有词条，新正文、附件没扫" if digest.safety_words_empty else ""
+    )
+
+
+def _safety_summary(digest: Digest) -> str:
     blocked = digest.safety_local + digest.safety_wechat
     new_hits = digest.safety_new_bodies + digest.safety_new_attachments
     if (
@@ -415,7 +429,7 @@ def _safety_line(digest: Digest) -> str | None:
         and not new_hits
         and not digest.safety_questions
     ):
-        return None
+        return "内容安全（24 小时）：没有拦下、没有出错"
     parts = []
     if blocked:
         docs = "、".join(str(doc_id) for doc_id in digest.safety_documents)
@@ -894,10 +908,8 @@ def digest_text(digest: Digest, picks: list[Pick]) -> str:
         _quality_line(digest),
         readability_summary(digest),
         _usage_line(digest),
+        _safety_line(digest),
     ]
-    safety = _safety_line(digest)
-    if safety:
-        lines.append(safety)
     usage = digest.usage
     if usage is not None and (usage.calls or usage.cumulative):
         if usage.cost is None:
@@ -926,7 +938,8 @@ def digest_text(digest: Digest, picks: list[Pick]) -> str:
         + (f"：{p.reason}" if p.reason else "")
         for i, p in enumerate(picks)
     ]
-    # 群提醒会加"【有据】"前缀；放不下时从最后一条 AI 建议开始去掉，数字部分本身超长时截断
+    # 群提醒会加"【有据】"前缀；放不下时从最后一条 AI 建议开始去掉（"本地词库还没有词条"那句在
+    # 内容安全那一行里，先保留它：Codex 10/28），数字部分本身超长时截断
     budget = MAX_ALERT_BYTES - len("【有据】".encode())
     while True:
         body = lines + (["AI 建议先核对（仅供参考）："] + pick_lines if pick_lines else [])

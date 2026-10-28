@@ -359,7 +359,9 @@ def fake_ai(reply):
     return client, calls
 
 
-def test_ai_picks_only_from_the_offered_list(session, world) -> None:
+def test_ai_picks_only_from_the_offered_list(session, world, monkeypatch) -> None:
+    # 只看 AI 建议怎么挑、怎么写；群消息长度上限另有测试（下一个），这里放宽免得被挤掉
+    monkeypatch.setattr(digest_module, "MAX_ALERT_BYTES", digest_module.MAX_ALERT_BYTES + 400)
     apply_doc, list_doc, old = world["apply"], world["list"], world["old"]
     client, calls = fake_ai(
         lambda _: [
