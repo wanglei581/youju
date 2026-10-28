@@ -5,7 +5,7 @@
 
 - run：取条件、搜，得出存进 ai_chat_turns.answer_json 的回答：条件、总数、列出的通知编号（按当时
   的顺序，最多 10 份）、给不给"在搜索页看全部"、提示代码；不存标题和截止。条件里从原话取出的字
-  只有 keywords、docNumber；title 只记比没比中。
+  只有 keywords、docNumber 和 uncovered 里没收录的区县；title 只记比没比中。
 - render：打开对话时按存的编号重新取行（_items，截止、核对状态、能不能解读都是最新的），下架的
   不显示、份数记在 hidden；conditionsText、searchLink 现拼、不存。
 - examples：/chat/examples 的示例，按北京时间每小时算一次。
@@ -16,7 +16,8 @@
 
 设计没写死、这里定下的几处：
 - 一句里有几个时间词时，按上周、上个月这类（取先写的）、近 7 天、近 30 天、近 90 天、今年、
-  往年的顺序取第一个（往年取先写的）；
+  往年的顺序取第一个（往年取先写的）；意思不一样的有两个以上（"这周和上周"，"这周"和"近 7 天"
+  算一个）时加 times 那句；
 - "上周"这类（上星期、上个星期、上一周、上礼拜……，_PERIOD_OF）按发布日期筛上一个星期一到
   星期日，"上个月"这类（上月、上一个月）筛上一个自然月（北京时间）；"上上周""上上个月"再往前
   一个。搜索页没有这几种，同往年不给"在搜索页看全部"；
@@ -26,12 +27,38 @@
   企业、国家级专精特新、国家认定企业技术中心）是名称的开头，不当地区，也不当关键词（省里发的这类
   通知，标题多半不写"国家"）；"国家"后面的整段名称以局、委、部、署、办、厅、司结尾的是国家机关
   （国家数据局、国家发展改革委办公厅、国家能源局综合司；"布局、部署、举办、怎么办"这类不算，见
-  _NOT_AGENCY），照旧算国家部委，名称当关键词（"国家级"后面不看机关名）。单独说的也是国家部委：后面是句子结尾、
-  不是汉字的（标点、数字、字母；开头的引号、书名号先跳过）、地名、时间词、类型词（"认定"除外：
+  _NOT_AGENCY），照旧算国家部委，名称当关键词（"国家级"后面不看机关名）；后面的一段以 _AGENCIES
+  里的机关名开头的也是（国家发改委专精特新通知）。单独说的也是国家部委：后面是句子结尾、
+  不是汉字的（标点、数字、字母；开头的引号、书名号先跳过）、地名、层级、时间词、类型词（"认定"除外：
   国家认定企业技术中心）、问内容的词、说发文的词（发布、出台、发的……）、"和、与、及、或"，或者
-  "企业""公司"以外的停用词（国家的、国家最新、国家发的申报通知）；
-- 去掉的词后面紧跟着的"和、与、及、或"不粘到下一个词上（"高新技术企业和专精特新企业"不留
-  "和专精特新"）；地区前后的不去（"四川和邦生物""天津和平区""碳中和广东"里的"和"是名称的一部分）；
+  "企业""公司"以外的停用词（国家的、国家最新、国家发的申报通知）。前面是"和、与、及、或"、再前面
+  是算了的地区或层级的也是（省级和国家级专精特新、广东和国家高新技术企业）；
+- 层级（搜索页"层级"那组，和地区取交集）：省级 → 省级，市级 → 市级，区级、县级、区县级 → 区县级，
+  省市级、市县级两层都算（_LEVEL_WORDS）。单独说的（同上面"国家"单独说的那几种，后面也可以是
+  别的层级）或者前面是"和、与、及、或"、再前面是算了的地区或层级的才算（省级的申报通知、国家级和
+  省级专精特新）；紧跟着名称时是名称的开头（省级专精特新中小企业：省里、市里都转发这类通知），
+  去掉、不算，也不当关键词；"副省级"里的不算。各省、各省份、各省区市 → 省级，各市、各地市 → 市级，
+  各市县 → 市级和区县级，各区县、各县区、各区、各县 → 区县级（_SCOPES，一直算；"各市场""各区域"
+  不算）；全国各地、全国、各地、各级不筛，同停用词去掉。省级地区名后面紧跟着"级"的（广东省级、
+  北京市级）按"省级"同样看；城市、区县后面的"级"去掉（本来就是那一层）。有层级又说了国家部委时，
+  国家部委也放进层级：没说别的地区就从地区里拿掉（国家和省级 ＝ 层级 国家部委、省级），说了的留着
+  （国家和广东的省级 ＝ 地区 国家部委、广东 ∩ 层级 国家部委、省级，同搜索页 requestScope 的拼法），
+  这样国家部委的不会因为取交集被筛掉；
+- 去掉的词、名称（见下面机关名、项目名称两条）后面紧跟着的"和、与、及、或"不粘到下一个词上
+  （"高新技术企业和专精特新企业"不留"和专精特新"）；地区后面的不去（"四川和邦生物""天津和平区"
+  里的"和"是名称的一部分）。词的最后一个字是"和、与、及、或"、后面紧跟着地区、层级或名称的，去掉
+  这个字（人工智能和广东、国家数据局和广东），最后两个字是一个词的不去（_JOIN_WORDS：中和、普及、
+  参与……：碳中和广东），"以及"两个字一起去掉；
+- 机关简称（_SPELLINGS：发改委、工信部、人社局……）：关键词是表里的一种写法时，标题里有同一组的
+  任一种写法都算（发改委 ＝ 发改委、发展改革委、发展和改革委员会，写全称的也一样），前面或后面多一个
+  字的同样换（省发改委 ＝ 省发展改革委……）；搜索页一个关键词表达不了，不给"在搜索页看全部"。
+  连着的字里有 _AGENCIES 里的机关名（表里的各种写法，加科技厅、财政局这类）时在那里切开
+  （发改委专精特新 ＝ 发改委、专精特新），切完只剩一个字的并回去（省发改委；"有、和"这类单字不并），
+  机关名里的停用词不拆（中小企业局）；
+- 项目名称（_PROGRAMS：专精特新、小巨人、单项冠军……）：连着的字里有它们时在那里切开（专精特新小巨人
+  ＝ 专精特新、小巨人；标题常写成 专精特新“小巨人”）；
+- 用户打的空白：地区、时间、整个标题、文号照样按去掉空白的字认，关键词在打了空白的地方切开
+  （"人工智能 补贴" ＝ 人工智能、补贴；位置按 NFKC 以后的字算，"本年度"换了以后跟着挪）；
 - 问法的词（怎么、如何、需要、可以、流程、办理、单字"是"……，_ASKS）也当停用词去掉（"怎么申报
   专精特新"不留"怎么"）；
 - 机关名后面的"发的"（前一个字是部、厅、局、委、办、署、府、院）也去掉（"工信部发的通知"）；
@@ -40,6 +67,11 @@
 - "发布、出台、印发、下发、公布、颁布"这几个说发文的词也当停用词去掉（"上周发布的申报通知"）；
 - 以"市"开头的区县和城市名连着写、"市"只写一个的（"济南市中区"＝济南市市中区），认成那个
   区县，不拆成"济南市"和关键词"中区"（同第 3 条，只认收录了的区县）；
+- 没收录的区县：认出的城市后面紧跟着的一段（停用词、类型词那些切开以后）以"区""县"结尾、2–4 个字
+  的，当作这个城市里没收录的区县（城市名以"市"结尾、后面是"中区""南区""北区"的，区县是"市"加
+  这两个字：济南市中区、青岛市南区）：不当关键词，按整个城市找，写进 uncovered
+  （"山东·济南·市中区"）、加 uncovered 那句。"各"开头的和 _NOT_DISTRICT 里的（地区、社区、园区、
+  经济特区……）不算；
 - "××××年度"单独算一个关键词（"当标题词"），不和前后的字连成一个；晚于今年、早于 2000 年的
   "××××年"不当时间，也这样单独算一个；
 - "问题像在问内容"那几个词（能不能、补贴多少等）也当停用词去掉，不然会留成关键词、一份都找不到；
@@ -54,14 +86,18 @@
 - doc_number_none：收录里没有文号是"{docNumber}"的通知。文号可能抄错了，也可能我们没收录；
   可以输入标题里的几个词再找。
 - uncovered：收录里没有{uncovered}的来源，查不到那里的通知。［收录范围 ›］（一个收录了的地区都
-  没有时不搜，只有这一句；还有收录了的，就只搜收录了的）
+  没有时不搜，只有这一句；还有收录了的，就只搜收录了的；没收录的区县按整个城市找。有层级时
+  国家部委算层级，没收录也照样搜别的层级）
 - year：按发布日期找的 {year} 年发布的通知；"{year} 年度"的项目可能在 {next_year} 年才发通知，
   找不到可以改成"今年"再找。
+- times：写了几个时间，只按条件里"发布"那一项找的；要按别的时间找，只写那一个再找。
 - first_three：只按前 3 个词找的。
 - more：这里列最新 10 份。（link 为真时接［在搜索页看全部 ›］，为假时同时有 narrow）
 - narrow：可以加上地区、年份或更具体的词缩小范围。
-- empty：按这些条件没找到。可以少写几个词，或去掉地区、年份再找；也可能这个地方还没收录，
+- empty：按这些条件没找到。可以少写几个词，或去掉地区、时间再找；也可能这个地方还没收录，
   看"说明"里的收录范围。
+- spaces：词连着写时，标题里要一字不差才找得到；可以用空格把几个词隔开再找，比如"低空经济 补贴"。
+  （没找到、又有一个关键词有 5 个以上汉字时，接在 empty 后面；机关名不算）
 - title_none：没有标题完全一样的通知，按条件也没找到。可以只输入标题里的几个词再找。
 - content：找通知只帮你找到通知。想知道某份通知里的截止、材料、条件怎么写的，点那一行的
   "问这份通知"，AI 从原文里摘出相关的句子。
@@ -71,6 +107,7 @@
 
 from __future__ import annotations
 
+import itertools
 import re
 import unicodedata
 from dataclasses import dataclass
@@ -116,12 +153,16 @@ NOTES = {
         "按发布日期找的 {year} 年发布的通知；“{year} 年度”的项目可能在 {next_year} 年才发通知，"
         "找不到可以改成“今年”再找。"
     ),
+    "times": "写了几个时间，只按条件里“发布”那一项找的；要按别的时间找，只写那一个再找。",
     "first_three": "只按前 3 个词找的。",
     "more": "这里列最新 10 份。",
     "narrow": "可以加上地区、年份或更具体的词缩小范围。",
     "empty": (
-        "按这些条件没找到。可以少写几个词，或去掉地区、年份再找；也可能这个地方还没收录，"
+        "按这些条件没找到。可以少写几个词，或去掉地区、时间再找；也可能这个地方还没收录，"
         "看“说明”里的收录范围。"
+    ),
+    "spaces": (
+        "词连着写时，标题里要一字不差才找得到；可以用空格把几个词隔开再找，比如“低空经济 补贴”。"
     ),
     "title_none": "没有标题完全一样的通知，按条件也没找到。可以只输入标题里的几个词再找。",
     "content": (
@@ -180,6 +221,86 @@ _NOT_AGENCY = (
     "布局", "格局", "大局", "全局", "结局", "开局", "部署", "签署", "总部", "内部", "外部", "全部",
     "局部", "干部", "东部", "西部", "南部", "北部", "中部", "本部", "俱乐部", "怎么办", "举办",
     "主办", "承办", "协办", "创办", "开办", "合办", "代办", "大厅", "展厅", "公司",
+)  # fmt: skip
+
+# 层级：取值和搜索页的 levels 一样（v1.LEVELS），按这个顺序写
+LEVEL_ORDER = (NATIONAL, "省级", "市级", "区县级")
+# 单独说、或用"和、与、及、或"跟在地区、层级后面才算；紧跟着名称时是名称的开头（见 _areas）
+_LEVEL_WORDS = {
+    "省级": ("省级",),
+    "市级": ("市级",),
+    "区级": ("区县级",),
+    "县级": ("区县级",),
+    "区县级": ("区县级",),
+    "省市级": ("省级", "市级"),
+    "市县级": ("市级", "区县级"),
+}
+# 说的就是那一层，一直算
+_SCOPES = {
+    **dict.fromkeys(("各省", "各省份", "各省区市"), ("省级",)),
+    **dict.fromkeys(("各市", "各地市"), ("市级",)),
+    "各市县": ("市级", "区县级"),
+    **dict.fromkeys(("各区县", "各县区", "各区", "各县"), ("区县级",)),
+}
+_NOT_SCOPE = {"各市": "场", "各区": "域"}  # 后面是这个字的不算（各市场主体、各区域）
+_ANYWHERE = ("全国各地", "全国", "各地", "各级")  # 不筛，同停用词去掉
+
+# 机关简称和标题里的写法：同一组任一种写法都算（见 _alternates）
+_SPELLINGS = (
+    ("发改委", "发展改革委", "发展和改革委员会"),
+    ("发改局", "发展改革局", "发展和改革局"),
+    ("工信部", "工业和信息化部"),
+    ("工信厅", "工业和信息化厅"),
+    ("工信局", "工业和信息化局"),
+    ("经信委", "经济和信息化委员会"),
+    ("经信厅", "经济和信息化厅"),
+    ("经信局", "经济和信息化局"),
+    ("人社部", "人力资源社会保障部", "人力资源和社会保障部"),
+    ("人社厅", "人力资源社会保障厅", "人力资源和社会保障厅"),
+    ("人社局", "人力资源社会保障局", "人力资源和社会保障局"),
+    ("市监局", "市场监管局", "市场监督管理局"),
+    ("市场监管总局", "市场监督管理总局"),
+    ("卫健委", "卫生健康委", "卫生健康委员会"),
+    ("住建部", "住房城乡建设部", "住房和城乡建设部"),
+    ("住建厅", "住房城乡建设厅", "住房和城乡建设厅"),
+    ("住建局", "住房城乡建设局", "住房和城乡建设局"),
+    ("文旅部", "文化和旅游部"),
+    ("文旅厅", "文化和旅游厅"),
+    ("文旅局", "文化和旅游局"),
+    ("交通部", "交通运输部"),
+    ("交通厅", "交通运输厅"),
+    ("交通局", "交通运输局"),
+    ("国税总局", "税务总局"),
+)
+_SPELLING_OF = {word: group for group in _SPELLINGS for word in group}
+# 机关名：在这些名称那里切开（"发改委专精特新"），"国家"后面以它们开头的算国家部委
+_AGENCIES = (
+    *_SPELLING_OF,
+    "科技部", "科技厅", "科技局", "财政部", "财政厅", "财政局", "商务部", "商务厅", "商务局",
+    "国资委", "网信办", "知识产权局", "统计局", "中小企业局",
+)  # fmt: skip
+# 项目名称：标题常给它们加引号（专精特新“小巨人”），连着写的在这里切开
+_PROGRAMS = (
+    "专精特新",
+    "小巨人",
+    "单项冠军",
+    "隐形冠军",
+    "瞪羚",
+    "独角兽",
+    "揭榜挂帅",
+    "链主",
+    "雏鹰",
+)
+_NAMES = frozenset((*_AGENCIES, *_PROGRAMS))
+# 词最后的"和、与、及、或"后面紧跟着地区、层级或名称时去掉，最后两个字是这些词的不去（碳中和广东）
+_JOIN_WORDS = (
+    "中和", "共和", "温和", "缓和", "调和", "平和", "饱和", "祥和", "柔和", "涉及", "惠及", "普及",
+    "波及", "危及", "顾及", "参与", "给与",
+)  # fmt: skip
+# 紧跟在城市后面、以"区""县"结尾又不是区县的（见 _district）
+_NOT_DISTRICT = (
+    "地区", "社区", "园区", "景区", "城区", "市区", "郊区", "辖区", "片区", "山区", "特区", "湾区",
+    "大湾区", "经济特区", "示范区", "试验区", "先行区", "自贸区", "保税区",
 )  # fmt: skip
 
 
@@ -327,9 +448,10 @@ def _time_word(word: str) -> str:
 _TIME = re.compile(
     "|".join(_time_word(w) for w in sorted({*_TIME_OF, *_PAST, *_PERIOD_OF}, key=len, reverse=True))
 )
-# 机关名后面的"发的"也去掉（"工信部发的通知"）；"开发的""研发的"不算
-_DROP = re.compile(
-    _alternation([*TYPE_WORDS, *STOPWORDS, *_CONTENT, *_ISSUE, *_ASKS]).pattern
+# 切开的地方：要去掉的词（类型词、停用词……；机关名后面的"发的"也去掉："工信部发的通知"，"开发的"
+# "研发的"不算），和留着的名称（_NAMES），见 _pieces
+_CUTS = re.compile(
+    _alternation([*TYPE_WORDS, *STOPWORDS, *_CONTENT, *_ISSUE, *_ASKS, *_ANYWHERE, *_NAMES]).pattern
     + "|(?<=[部厅局委办署府院])发的"
 )
 _LEAD = tuple(
@@ -352,7 +474,7 @@ _LEAD = tuple(
 )
 
 
-# "国家""国家级"单独说（是地区）时后面跟的词，地名另外看。"企业""公司""认定"不算（国家企业
+# "国家""国家级"、层级单独说时后面跟的词，地名、层级另外看。"企业""公司""认定"不算（国家企业
 # 技术中心、国家认定企业技术中心）
 _ALONE_AFTER = tuple(
     {
@@ -361,6 +483,7 @@ _ALONE_AFTER = tuple(
         *_CONTENT,
         *_ISSUE,
         *_ASKS,
+        *_ANYWHERE,
         "发的",
         *_TIME_OF,
         *_PAST,
@@ -387,11 +510,37 @@ class Parsed:
     number: tuple[str, int, int] | None  # 认出了文号：（机关简称、年份、序号）
     content: bool  # 像在问内容
     dropped: bool  # 词超过 3 个，只按前 3 个找
+    times: bool = False  # 写了几个意思不一样的时间，只按一个找
+
+
+@dataclass(frozen=True)
+class _Found:
+    """_areas 认出来的：条件里的地区和层级，和后面切关键词要用的位置。"""
+
+    conditions: dict[str, Any]
+    starts: frozenset[int]  # 取走的地区、层级、名称开头从哪里开始（前面的"和"不粘到关键词上）
+    # 城市名后面那个字的位置 →（这个城市, 城市名以"市"结尾）
+    after_city: dict[int, tuple[list[tuple[str, str]], bool]]
 
 
 def normalize(text: str | None) -> str:
     """先 NFKC（全角转半角），再去掉所有空白。"""
     return "".join(unicodedata.normalize("NFKC", text or "").split())
+
+
+def _spaced(text: str | None, today: date) -> tuple[str, frozenset[int]]:
+    """normalize 以后、"本年度"换成"今年的年份＋年度"的字，和用户打了空白的地方（空白后面那个字在
+    这串字里的位置；"本年度"中间的不算，后面的跟着挪）。"""
+    parts = unicodedata.normalize("NFKC", text or "").split()
+    joined = "".join(parts)
+    new = f"{today.year}年度"
+    starts = [m.start() for m in re.finditer("本年度", joined)]
+    spaces = frozenset(
+        at + sum(len(new) - 3 for start in starts if start + 3 <= at)
+        for at in itertools.accumulate(len(part) for part in parts[:-1])
+        if not any(start < at < start + 3 for start in starts)
+    )
+    return joined.replace("本年度", new), spaces
 
 
 def _letters(text: str | None) -> str:
@@ -408,7 +557,8 @@ def empty_conditions() -> dict[str, Any]:
         "regions": [],  # 省级地区（含"国家部委"），只有收录了的
         "cities": [],  # "省/市"
         "districts": [],  # "省/市/区县"
-        "uncovered": [],  # 认出来但没收录的省级地区
+        "levels": [],  # 层级（同搜索页 levels），按 LEVEL_ORDER 的顺序
+        "uncovered": [],  # 认出来但没收录的省级地区，和收录了的城市里没收录的区县（"省·市·区县"）
         "kind": "all",
         "time": "不限",
         "year": None,  # 往年：按发布日期筛那一年
@@ -553,64 +703,100 @@ def _take(marks: list[str], start: int, end: int) -> None:
     marks[start:end] = "|" * (end - start)
 
 
+def _join_tail(word: str) -> str:
+    """词最后的"和、与、及、或"去掉（调用方看过后面紧跟着地区、层级或名称），最后两个字是一个词的
+    不去（_JOIN_WORDS：碳中和），"以及"两个字一起去掉。"""
+    if word.endswith("以及"):
+        return word[:-2]
+    if word.endswith(_JOINS) and not word.endswith(_JOIN_WORDS):
+        return word[:-1]
+    return word
+
+
 def _pieces(run: str) -> list[tuple[int, str, bool]]:
     """把一串连着的字按类型词、停用词、问内容的词切开：（位置, 字, 是不是要去掉的词）。
     切完剩一个字、又紧挨着"材料、企业、公司"（_GLUE）的，和它并成一个词，不去掉（"新材料"不拆成
     "新"和停用词"材料"；"大企业"不拆成"大"和"企业"）。别的停用词不并（"有什么政策"不留
     "有什么"），"有、为、给"这类单字也不并（_NO_GLUE："有企业补贴"不留"有企业"，"企业有什么补贴"不留
-    "企业有"）。去掉的词后面紧跟着的"和、与、及、或"不粘到下一个词上（"企业和专精特新"）。"""
-    raw: list[tuple[int, str, bool]] = []
+    "企业有"）。机关名、项目名称（_NAMES）留着、在那里切开（"发改委专精特新"）；机关名前后只剩一个字的
+    并回去（"省发改委"，_NO_GLUE 里的不并）。去掉的词、名称后面紧跟着的"和、与、及、或"不粘到下一个
+    词上（"企业和专精特新"），名称前面的去掉（"高新技术和专精特新"，见 _join_tail）。"""
+    raw: list[tuple[int, str, str]] = []  # （位置, 字, drop 去掉的词 / name 名称 / word 别的字）
     pos = 0
-    for m in _DROP.finditer(run):
+    for m in _CUTS.finditer(run):
         if m.start() > pos:
-            raw.append((pos, run[pos : m.start()], False))
-        raw.append((m.start(), m.group(), True))
+            raw.append((pos, run[pos : m.start()], "word"))
+        raw.append((m.start(), m.group(), "name" if m.group() in _NAMES else "drop"))
         pos = m.end()
     if pos < len(run):
-        raw.append((pos, run[pos:], False))
-    out: list[tuple[int, str, bool]] = []
+        raw.append((pos, run[pos:], "word"))
+    out: list[tuple[int, str, str]] = []
     i = 0
     while i < len(raw):
-        at, text, drop = raw[i]
-        if not drop and len(text) == 1:
-            nxt = raw[i + 1] if i + 1 < len(raw) else None
-            if nxt and nxt[2] and nxt[1] in _GLUE and text not in _NO_GLUE:
-                out.append((at, text + nxt[1], False))
+        at, text, kind = raw[i]
+        nxt = raw[i + 1] if i + 1 < len(raw) else None
+        if kind == "word" and len(text) == 1 and text not in _NO_GLUE:
+            if nxt and nxt[2] == "drop" and nxt[1] in _GLUE:
+                out.append((at, text + nxt[1], "word"))
                 i += 2
                 continue
-            if out and out[-1][2] and out[-1][1] in _GLUE and text not in _NO_GLUE:
+            if out and out[-1][2] == "drop" and out[-1][1] in _GLUE:
                 prev = out.pop()
-                out.append((prev[0], prev[1] + text, False))
+                out.append((prev[0], prev[1] + text, "word"))
+                i += 1
+                continue
+            if nxt and nxt[1] in _AGENCIES:  # "省发改委"
+                out.append((at, text + nxt[1], "name"))
+                i += 2
+                continue
+            if out and out[-1][1] in _AGENCIES:  # "科技局长"
+                prev = out.pop()
+                out.append((prev[0], prev[1] + text, "name"))
                 i += 1
                 continue
         if (
-            not drop
+            kind == "word"
             and out
-            and out[-1][2]
+            and out[-1][2] != "word"
             and text[0] in _JOINS
             and len(text) >= 3
             and not text.startswith(_HE_PLACES)
         ):
             at, text = at + 1, text[1:]  # "企业和专精特新"：去掉的词后面的"和"不粘到下一个词上
-        out.append((at, text, drop))
+        if kind == "word" and nxt and nxt[2] == "name":
+            text = _join_tail(text)  # "高新技术和专精特新"
+        if text:
+            out.append((at, text, kind))
         i += 1
-    return out
+    return [(at, text, kind == "drop") for at, text, kind in out]
+
+
+def _alone(rest: str, places: tuple[str, ...]) -> bool:
+    """单独说的（rest 是后面的字；开头的引号、书名号先跳过）：后面是句子结尾、不是汉字的、地名或
+    层级（places），或 _ALONE_AFTER 里的词。"""
+    rest = rest.lstrip(_OPENERS)
+    return (
+        not rest
+        or not _HAN_CHAR.match(rest[0])
+        or rest.startswith(_ALONE_AFTER)
+        or rest.startswith(places)
+    )
 
 
 def _national(rest: str, places: tuple[str, ...], *, agency: bool) -> bool:
     """看"国家""国家级"是不是说国家部委（rest 是它后面的字；开头的引号、书名号先跳过）：
-    - 单独说的：后面是句子结尾、不是汉字的、地名（places），或 _ALONE_AFTER 里的词；
-    - 后面紧跟着国家机关名（agency，只看"国家"）：连着的汉字（到 _NAME_END 里的词、地名或
-      "和＋地名"为止）整段以 _AGENCY_ENDS 结尾、又不以 _NOT_AGENCY 里的词结尾（国家数据局、
-      国家能源局综合司）。
+    - 单独说的（_alone）；
+    - 后面紧跟着国家机关名（agency，只看"国家"）：以 _AGENCIES 里的机关名开头（国家发改委
+      专精特新），或者连着的汉字（到 _NAME_END 里的词、地名或"和＋地名"为止）整段以 _AGENCY_ENDS
+      结尾、又不以 _NOT_AGENCY 里的词结尾（国家数据局、国家能源局综合司）。
     别的是名称的开头（国家高新技术企业、国家级专精特新）。"""
-    rest = rest.lstrip(_OPENERS)
-    if not rest or not _HAN_CHAR.match(rest[0]):
-        return True
-    if rest.startswith(_ALONE_AFTER) or rest.startswith(places):
+    if _alone(rest, places):
         return True
     if not agency:
         return False
+    rest = rest.lstrip(_OPENERS)
+    if rest.startswith(_AGENCIES):
+        return True
     end = 0
     while end < len(rest) and _HAN_CHAR.match(rest[end]):
         if rest.startswith(_NAME_END, end) or rest.startswith(places, end):
@@ -622,32 +808,72 @@ def _national(rest: str, places: tuple[str, ...], *, agency: bool) -> bool:
     return len(name) >= 2 and name.endswith(_AGENCY_ENDS) and not name.endswith(_NOT_AGENCY)
 
 
-def _areas(text: str, marks: list[str], covered: Coverage) -> dict[str, list[str]]:
-    """第 2–4 条。几个地区取并集；同名的市、区县按句子里写到的省、市缩小，缩小不了就都算。
+def _area_words(table: dict[str, list[tuple[str, ...]]]) -> re.Pattern:
+    """地名、层级、"各省"这类任一个，长的在前。"各省"这类后面是"级"的不算（各省级＝各＋省级），
+    "副省级"里的"省级"不算。"""
+
+    def one(word: str) -> str:
+        pattern = re.escape(word)
+        if word in _SCOPES:
+            pattern += f"(?![级{_NOT_SCOPE.get(word, '')}])"
+        elif word == "省级":
+            pattern = "(?<!副)" + pattern
+        return pattern
+
+    words = sorted({*table, *_LEVEL_WORDS, *_SCOPES}, key=len, reverse=True)
+    return re.compile("|".join(one(word) for word in words))
+
+
+def _areas(text: str, marks: list[str], covered: Coverage) -> _Found:
+    """第 2–4 条和层级。几个地区取并集；同名的市、区县按句子里写到的省、市缩小，缩小不了就都算。
     具体城市、区县替换同省的全省条件，具体区县替换所属城市（同搜索页 withoutCityProvinces、
-    withoutDistrictCities，这样"在搜索页看全部"打开的条件和这里一样）。"""
+    withoutDistrictCities，这样"在搜索页看全部"打开的条件和这里一样）。层级怎么算见模块说明。"""
     table = _area_table(covered)
     provinces: list[str] = []
     city_hits: list[list[tuple[str, ...]]] = []
+    # 城市名后面那个字的位置 →（city_hits 里第几个, 城市名以"市"结尾）
+    city_ends: dict[int, tuple[int, bool]] = {}
     district_hits: list[list[tuple[str, ...]]] = []
-    places = tuple(table)
-    for m in _alternation(table).finditer(text):
-        _take(marks, m.start(), m.end())
-        word = m.group()
-        if word in _NAME_STARTS and not _national(text[m.end() :], places, agency=word == "国家"):
+    levels: set[str] = set()
+    counted: set[int] = set()  # 算了的地区、层级在哪里结束（看"和"连着说的）
+    starts: set[int] = set()
+    places = (*table, *_LEVEL_WORDS, *_SCOPES)
+    for m in _area_words(table).finditer(text):
+        start, end, word = m.start(), m.end(), m.group()
+        _take(marks, start, end)
+        starts.add(start)
+        joined = start >= 2 and text[start - 1] in _JOINS and start - 1 in counted
+        if word in _SCOPES or word in _LEVEL_WORDS:
+            if word in _SCOPES or joined or _alone(text[end:], places):
+                levels.update(_SCOPES.get(word) or _LEVEL_WORDS[word])
+                counted.add(end)
+            continue  # 紧跟着名称的（"省级专精特新"）：名称的开头，不算，也不当关键词
+        if word in _NAME_STARTS and not (
+            joined or _national(text[end:], places, agency=word == "国家")
+        ):
             continue  # 名称的开头（"国家高新技术企业"）：不当地区，也不当关键词
-        meanings = table[m.group()]
+        meanings = table[word]
         kinds = {meaning[0] for meaning in meanings}
+        if text.startswith("级", end):  # "广东省级"按"省级"看；城市、区县本来就是那一层
+            _take(marks, end, end + 1)
+            if (
+                "province" in kinds
+                and meanings[0][1] != NATIONAL
+                and _alone(text[end + 1 :], places)
+            ):
+                levels.add("省级")
+            end += 1
+        counted.add(end)
         if "province" in kinds:
             provinces.append(meanings[0][1])
         elif "city" in kinds:
+            city_ends[end] = (len(city_hits), word.endswith("市"))
             city_hits.append([meaning[1:] for meaning in meanings if meaning[0] == "city"])
         else:
             district_hits.append([meaning[1:] for meaning in meanings])
     named = set(provinces)
-    cities: list[tuple[str, ...]] = []
-    for hit in city_hits:
-        cities += [c for c in hit if c[0] in named] or hit
+    city_hits = [[c for c in hit if c[0] in named] or hit for hit in city_hits]
+    cities: list[tuple[str, ...]] = [c for hit in city_hits for c in hit]
     named_cities = {(p, city_key(c)) for p, c in cities}
     districts: list[tuple[str, ...]] = []
     for hit in district_hits:
@@ -660,12 +886,40 @@ def _areas(text: str, marks: list[str], covered: Coverage) -> dict[str, list[str
     cities = [c for c in dict.fromkeys(cities) if (c[0], city_key(c[1])) not in parent_cities]
     parents = {c[0] for c in cities} | {d[0] for d in districts}
     named_order = list(dict.fromkeys(provinces))
-    return {
-        "regions": [p for p in named_order if p in covered.provinces and p not in parents],
-        "cities": [f"{p}/{c}" for p, c in cities],
-        "districts": [f"{p}/{c}/{d}" for p, c, d in dict.fromkeys(districts)],
-        "uncovered": [p for p in named_order if p not in covered.provinces],
-    }
+    regions = [p for p in named_order if p in covered.provinces and p not in parents]
+    picked = [level for level in LEVEL_ORDER if level in levels]
+    if picked and NATIONAL in named_order:
+        # 国家部委也放进层级，不然和层级取交集就筛掉了；没说别的地区时从地区里拿掉
+        if NATIONAL in covered.provinces:
+            picked.insert(0, NATIONAL)
+        if not (named - {NATIONAL} or city_hits or district_hits):
+            regions = [p for p in regions if p != NATIONAL]
+    return _Found(
+        conditions={
+            "regions": regions,
+            "cities": [f"{p}/{c}" for p, c in cities],
+            "districts": [f"{p}/{c}/{d}" for p, c, d in dict.fromkeys(districts)],
+            "levels": picked,
+            "uncovered": [p for p in named_order if p not in covered.provinces],
+        },
+        starts=frozenset(starts),
+        after_city={end: (city_hits[i], shi) for end, (i, shi) in city_ends.items()},
+    )
+
+
+def _district(piece: str, after: tuple[list[tuple[str, str]], bool] | None) -> str | None:
+    """紧跟在认出的城市后面、像区县名的一段（这个城市里没收录的区县）：以"区""县"结尾、2–4 个字，
+    不是"各"开头、不在 _NOT_DISTRICT 里。城市名以"市"结尾、这段是"中区、南区、北区"的，区县名
+    前面补上"市"（济南市中区、青岛市南区）。after 是这段前面的城市（_Found.after_city）。"""
+    if (
+        after is None
+        or not 2 <= len(piece) <= 4
+        or not piece.endswith(("区", "县"))
+        or piece.startswith("各")
+        or piece in _NOT_DISTRICT
+    ):
+        return None
+    return "市" + piece if after[1] and piece in ("中区", "南区", "北区") else piece
 
 
 def _period(kind: str, back: int, today: date) -> dict[str, str]:
@@ -683,8 +937,9 @@ def _period(kind: str, back: int, today: date) -> dict[str, str]:
 
 
 def parse(text: str, *, today: date, covered: Coverage) -> Parsed:
-    """第 1–7 条：从一句话里取条件。没认出来的字当关键词，不另外猜。"""
-    text = normalize(text).replace("本年度", f"{today.year}年度")
+    """第 1–7 条：从一句话里取条件。没认出来的字当关键词，不另外猜。text 是用户打的原话（用户打的
+    空白要用来切关键词）。"""
+    text, spaces = _spaced(text, today)
     conditions = empty_conditions()
     content = _has(text, _CONTENT)
     numbers = doc_numbers(text)
@@ -694,7 +949,8 @@ def parse(text: str, *, today: date, covered: Coverage) -> Parsed:
         return Parsed(conditions, (agency, year, seq), content, False)
 
     marks = list(text)
-    conditions |= _areas(text, marks, covered)
+    found = _areas(text, marks, covered)
+    conditions |= found.conditions
 
     windows: set[str] = set()
     past: list[tuple[int, int]] = []  # （位置, 年份）
@@ -719,6 +975,8 @@ def parse(text: str, *, today: date, covered: Coverage) -> Parsed:
         else:
             continue
         _take(marks, m.start(), m.end())
+    # 意思不一样的时间（"这周"和"近 7 天"算一个）
+    times = len({*(p for _, p in periods), *(y for _, y in past), *windows}) > 1
     if periods:
         conditions["period"] = _period(*min(periods)[1], today)
     elif windows:
@@ -732,28 +990,56 @@ def parse(text: str, *, today: date, covered: Coverage) -> Parsed:
     conditions["kind"] = next((kind for kind, words in _KIND_RULES if _has(text, words)), "all")
     # 问内容的提示只在那几个词单独出现时才加（"新材料"里的"材料"不算）
     content = False
+    uncovered: list[str] = []
     for run in _WORD.finditer("".join(marks)):
-        for at, piece, drop in _pieces(run.group()):
-            if not drop:
-                tokens.append((run.start() + at, piece))
-            elif piece in _CONTENT:
-                content = True
+        cuts = [run.start(), *sorted(p for p in spaces if run.start() < p < run.end()), run.end()]
+        for begin, end in itertools.pairwise(cuts):  # 用户打了空白的地方切开
+            for at, piece, drop in _pieces(run.string[begin:end]):
+                if drop:
+                    content = content or piece in _CONTENT
+                    continue
+                at += begin
+                if at + len(piece) in found.starts:  # "人工智能和广东"
+                    piece = _join_tail(piece)
+                after = found.after_city.get(at)
+                district = _district(piece, after)
+                if after and district:  # 收录了的城市里没收录的区县：按整个城市找
+                    uncovered += [_area_label(f"{p}/{c}/{district}") for p, c in after[0]]
+                    continue
+                tokens.append((at, piece))
+    conditions["uncovered"] = list(dict.fromkeys(conditions["uncovered"] + uncovered))
     words = list(dict.fromkeys(t[:KEYWORD_CHARS] for _, t in sorted(tokens) if len(t) >= 2))
     conditions["keywords"] = words[:KEYWORDS_MAX]
-    return Parsed(conditions, None, content, len(words) > KEYWORDS_MAX)
+    return Parsed(conditions, None, content, len(words) > KEYWORDS_MAX, times)
 
 
 # ---- 搜 ----
 
 
+def _alternates(keyword: str) -> list[str]:
+    """关键词的别的写法（_SPELLINGS）：整个词是表里的一种写法，或前面、后面多一个字（"省发改委"
+    ＝ 省发展改革委、省发展和改革委员会）。没有的是空的。"""
+    for head, body, tail in (
+        ("", keyword, ""),
+        (keyword[:1], keyword[1:], ""),
+        ("", keyword[:-1], keyword[-1:]),
+    ):
+        group = _SPELLING_OF.get(body)
+        if group:
+            return [head + word + tail for word in group if word != body]
+    return []
+
+
 def search_params(conditions: dict[str, Any]) -> dict[str, str]:
     """条件 → 搜索参数（search_statement 的参数和"在搜索页看全部"的链接共用这一张表）。
-    kind、time 一直带上：搜索页默认是近 30 天。只有一个关键词时才有 q（多个的另外取交集）。"""
+    kind、time 一直带上：搜索页默认是近 30 天。只有一个关键词、又没有别的写法时才有 q（多个的、
+    有别的写法的另外取交集）。"""
     params = {"kind": conditions["kind"], "time": conditions["time"]}
-    if len(conditions["keywords"]) == 1:
-        params["q"] = conditions["keywords"][0]
-    for key in ("regions", "cities", "districts"):
-        if conditions[key]:
+    keywords = conditions["keywords"]
+    if len(keywords) == 1 and not _alternates(keywords[0]):
+        params["q"] = keywords[0]
+    for key in ("regions", "cities", "districts", "levels"):
+        if conditions.get(key):
             params[key] = ",".join(conditions[key])
     return params
 
@@ -771,12 +1057,16 @@ def statement(session: Session, conditions: dict[str, Any]) -> Select:
         None,
         params["time"],
         None,
+        levels=params.get("levels"),
         cities=params.get("cities"),
         districts=params.get("districts"),
     )
-    if len(conditions["keywords"]) > 1:  # 每个关键词都要命中标题或文号
+    if "q" not in params:  # 每个关键词都要命中标题或文号；有别的写法的命中一种就行
         for keyword in conditions["keywords"]:
-            stmt = stmt.where(Document.id.in_(_keyword_ids(session, keyword)))
+            spellings = [keyword, *_alternates(keyword)]
+            stmt = stmt.where(
+                or_(*(Document.id.in_(_keyword_ids(session, word)) for word in spellings))
+            )
     if conditions["year"]:  # 搜索页没有按年份筛：在结果上再加发布日期在那一年里
         year = conditions["year"]
         stmt = stmt.where(
@@ -808,7 +1098,7 @@ def _listed(session: Session, stmt: Select) -> tuple[int, list[int]]:
 
 def _expressible(conditions: dict[str, Any]) -> bool:
     """搜索页能表达同样的条件：不是整个标题、不是文号、没按往年和上周、上个月筛，关键词不超过
-    1 个、不超过 50 字。"""
+    1 个、不超过 50 字、没有别的写法（层级搜索页有，照样给）。"""
     keywords = conditions["keywords"]
     return (
         not conditions["title"]
@@ -817,7 +1107,7 @@ def _expressible(conditions: dict[str, Any]) -> bool:
         and conditions["period"] is None
         and conditions["time"] in TIMES
         and len(keywords) <= 1
-        and all(len(k) <= SEARCH_Q_CHARS for k in keywords)
+        and all(len(k) <= SEARCH_Q_CHARS and not _alternates(k) for k in keywords)
     )
 
 
@@ -846,7 +1136,7 @@ def run(session: Session, text: str, *, today: date) -> dict[str, Any]:
     norm = normalize(text)
     if _has(norm, _PHOTO):
         return _answer(empty_conditions(), 0, [], ["photo"])
-    parsed = parse(norm, today=today, covered=coverage(session))
+    parsed = parse(text, today=today, covered=coverage(session))  # 原话：用户打的空白要用
     content = parsed.content
 
     def tail(total: int, link: bool = False) -> list[str]:
@@ -865,7 +1155,7 @@ def run(session: Session, text: str, *, today: date) -> dict[str, Any]:
         ids = _number_ids(session, *parsed.number)
         total, shown = _listed(session, _matched(session, ids)) if ids else (0, [])
         return _answer(conditions, total, shown, tail(total) if total else ["doc_number_none"])
-    if conditions["uncovered"] and not _has_area(conditions):
+    if _blocked(conditions):
         return _answer(conditions, 0, [], ["uncovered"])  # 不去搜
     if _nothing(conditions):
         # 一个条件都没认出来：不去搜（不然就把全部通知都列出来了），请用户换个说法
@@ -878,19 +1168,31 @@ def run(session: Session, text: str, *, today: date) -> dict[str, Any]:
         notes.append("uncovered")
     if conditions["year"]:
         notes.append("year")
+    if parsed.times:
+        notes.append("times")
     if parsed.dropped:
         notes.append("first_three")
     if not total:
         notes.append("title_none" if title_like else "empty")
+        if not title_like and any(_glued(k) for k in conditions["keywords"]):
+            notes.append("spaces")
     return _answer(conditions, total, shown, notes + tail(total, link), link)
 
 
+def _glued(keyword: str) -> bool:
+    """像几个词连着写的：5 个以上汉字，又不是机关名（有别的写法的、_NAMES 里的）。"""
+    return (
+        len(_HAN_CHAR.findall(keyword)) >= 5 and keyword not in _NAMES and not _alternates(keyword)
+    )
+
+
 def _nothing(conditions: dict[str, Any]) -> bool:
-    """没有关键词、地区、往年、上周或上个月，时间不限，类型不限：等于什么条件都没有。"""
+    """没有关键词、地区、层级、往年、上周或上个月，时间不限，类型不限：等于什么条件都没有。"""
     return (
         not conditions["keywords"]
         and not _has_area(conditions)
         and not conditions["uncovered"]
+        and not conditions.get("levels")
         and conditions["year"] is None
         and conditions["period"] is None
         and conditions["time"] == "不限"
@@ -900,6 +1202,13 @@ def _nothing(conditions: dict[str, Any]) -> bool:
 
 def _has_area(conditions: dict[str, Any]) -> bool:
     return bool(conditions["regions"] or conditions["cities"] or conditions["districts"])
+
+
+def _blocked(conditions: dict[str, Any]) -> bool:
+    """写到的地区都没收录：不去搜。有层级时国家部委算层级，没收录也照样搜别的层级。"""
+    levels = conditions.get("levels")
+    named = [u for u in conditions["uncovered"] if not (levels and u == NATIONAL)]
+    return bool(named) and not _has_area(conditions)
 
 
 # ---- 读的时候 ----
@@ -920,15 +1229,18 @@ def _span(period: dict[str, str]) -> str:
     return f"{start.year} 年 {start.month} 月 {start.day} 日至 {tail}"
 
 
+def _shown(keyword: str) -> str:
+    """关键词的写法：有别的写法的写成"发改委（或 发展改革委、发展和改革委员会）"。"""
+    others = _alternates(keyword)
+    return f"{keyword}（或 {'、'.join(others)}）" if others else keyword
+
+
 def conditions_text(stored: dict[str, Any]) -> str:
-    """条件那句（小程序写在"按这些条件找的："后面），如"地区 广东 · 类型 申报通知 · 发布 今年 ·
-    标题里有 专精特新"。没去搜的（拍照、地区都没收录）和整个标题比中的为空串。"""
+    """条件那句（小程序写在"按这些条件找的："后面），如"地区 广东 · 层级 省级 · 类型 申报通知 ·
+    发布 今年 · 标题里有 专精特新"（没有层级的不写那一项）。没去搜的（拍照、地区都没收录）和整个
+    标题比中的为空串。"""
     conditions = stored["conditions"]
-    if (
-        conditions["title"]
-        or "photo" in stored["notes"]
-        or (conditions["uncovered"] and not _has_area(conditions))
-    ):
+    if conditions["title"] or "photo" in stored["notes"] or _blocked(conditions):
         return ""
     if conditions["docNumber"]:
         return f"文号 {conditions['docNumber']}"
@@ -941,13 +1253,12 @@ def conditions_text(stored: dict[str, Any]) -> str:
         published = f"发布于 {conditions['year']} 年"
     else:
         published = "发布 " + ("不限时间" if conditions["time"] == "不限" else conditions["time"])
-    parts = [
-        f"地区 {'、'.join(areas) if areas else '不限'}",
-        f"类型 {KIND_LABELS[conditions['kind']]}",
-        published,
-    ]
+    parts = [f"地区 {'、'.join(areas) if areas else '不限'}"]
+    if conditions.get("levels"):
+        parts.append(f"层级 {'、'.join(conditions['levels'])}")
+    parts += [f"类型 {KIND_LABELS[conditions['kind']]}", published]
     if conditions["keywords"]:
-        parts.append(f"标题里有 {'、'.join(conditions['keywords'])}")
+        parts.append(f"标题里有 {'、'.join(_shown(k) for k in conditions['keywords'])}")
     return " · ".join(parts)
 
 
