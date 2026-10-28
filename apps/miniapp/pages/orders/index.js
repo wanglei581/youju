@@ -138,6 +138,10 @@ Page({
         items: this.data.items.map((item) => (String(item.orderId) === String(orderId) ? view : item)) });
     }).catch((err) => { this.setData({ sending: false, formError: err.message }); });
   },
-  terms(e) { wx.navigateTo({ url: `/pages/agreement/index?type=pay&version=${encodeURIComponent(e.currentTarget.dataset.version)}` }); },
+  // 这笔订单当时同意的那一版协议；版本对不上时协议页的遇到问题带上订单号
+  terms(e) {
+    const { version, id } = e.currentTarget.dataset;
+    wx.navigateTo({ url: `/pages/agreement/index?type=pay&version=${encodeURIComponent(version)}${id ? `&orderId=${encodeURIComponent(id)}` : ''}` });
+  },
   feedback() { wx.navigateTo({ url: `/pages/feedback/index?type=pay${this.orderId ? '&orderId=' + encodeURIComponent(this.orderId) : ''}` }); },
 });

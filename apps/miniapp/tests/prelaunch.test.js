@@ -115,7 +115,7 @@ test('我的页忽略较早请求的失败，注销后过时请求不恢复个�
   const page = load('pages/me/index.js', {
     '../../content/legal.js': { final: true },
     '../../utils/api.js': { isLive: () => true, me: () => new Promise((resolve, reject) => requests.push({ resolve, reject })) },
-    '../../utils/consent.js': { loginOpen: () => true, consentEpoch: () => epoch, applyServer: () => true, withdraw: () => { epoch += 1; return Promise.resolve(true); } },
+    '../../utils/consent.js': { loginOpen: () => true, consentEpoch: () => epoch, applyServer: () => true, withdrawAccount: () => { epoch += 1; return Promise.resolve(true); } },
     '../../utils/coverage.js': {}, '../../utils/subscribe.js': { remindOpen: () => true },
   });
   page.refresh(); page.refresh();
@@ -125,8 +125,6 @@ test('我的页忽略较早请求的失败，注销后过时请求不恢复个�
   await flush();
   assert.equal(page.data.profileError, '');
   page.refresh(); page.deleteAccount();
-  await flush();
-  requests[3].resolve({ pass: { active: true } });
   await flush();
   requests[2].resolve({ agreed: {}, subscriptions: {} });
   await flush();

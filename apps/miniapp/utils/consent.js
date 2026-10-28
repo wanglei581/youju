@@ -198,6 +198,22 @@ function passNotice() {
     + `注销后发邮件${email ? `到 ${email} ` : ''}并附订单号，同样受理。订单号在“我的 → 我的订单”，注销前可以先记下。`;
 }
 
+// 注销前看有没有没到期的使用期：包里没有付费页面（过审版）就不问、也不提付费；有的话读不到也按有算，
+// 宁可多问一句（Codex 10/28）。过审版不能出现付费字样（独立审阅 10/28）
+function hasActivePass() {
+  if (!require('./pages.js').has('orders')) return Promise.resolve(false);
+  return Promise.resolve().then(() => api.me()).then((res) => !!(res && res.pass && res.pass.active === true), () => true);
+}
+
+// 我的、我的数据两个注销入口共用：读使用期要等一会儿（请求会重试），这期间连点只进一次
+let withdrawing = false;
+function withdrawAccount() {
+  if (withdrawing) return Promise.resolve(false);
+  withdrawing = true;
+  const done = (ok) => { withdrawing = false; return ok; };
+  return hasActivePass().then((active) => withdraw(active)).then(done, () => done(false));
+}
+
 // 注销：撤回同意，删除服务端的全部个人信息。用户确认并删除成功时返回 true
 function withdraw(activePass) {
   return new Promise((resolve) => {
@@ -239,6 +255,6 @@ function withdraw(activePass) {
 }
 
 module.exports = {
-  ensureConsent, syncConsent, applyServer, consentEpoch, consentOpen, loginOpen, openPrivacy, agreedHere, remember, forget, withdraw, markAgreed, CONSENT_PAGE, AI_CONSENT_PAGE,
+  ensureConsent, syncConsent, applyServer, consentEpoch, consentOpen, loginOpen, openPrivacy, agreedHere, remember, forget, withdraw, withdrawAccount, markAgreed, CONSENT_PAGE, AI_CONSENT_PAGE,
   covers, agreeFailed, remindAny, featureNames,
 };

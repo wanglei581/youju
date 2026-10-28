@@ -179,7 +179,7 @@ def test_unknown_order_and_errors_answer_unverifiable(setup_pay, session, monkey
     assert "secret" not in str(answer)
 
 
-def test_shutdown_notice_stops_new_sales_and_suggests_every_ios_refund(
+def test_shutdown_notice_stops_new_sales_and_suggests_refunds_for_remaining_days(
     setup_pay, session, monkeypatch
 ):
     row = ios_order(setup_pay, session)
@@ -190,6 +190,10 @@ def test_shutdown_notice_stops_new_sales_and_suggests_every_ios_refund(
     setup_pay[1].pay_shutdown_notice = True
     answer = inquiry(setup_pay, row)
     assert answer["result_code"] == 0 and answer["evidence"].endswith("已核实应当退款")
+    # 停止服务只退剩余天数：使用期已经用完的那笔照常答（独立审阅 10/28）
+    monkeypatch.setattr(v1, "now", lambda: NOW + timedelta(days=31))
+    late = inquiry(setup_pay, row)
+    assert late["result_code"] == 1 and late["result_info"] == "已使用"
     # 公示后不再卖新的使用期；已有订单照常能看、能处理
     assert setup_pay[0].get("/api/v1/pay/products", headers=HEADERS).status_code == 404
     assert create(setup_pay).status_code == 404

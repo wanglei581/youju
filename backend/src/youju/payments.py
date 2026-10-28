@@ -443,7 +443,8 @@ def refund_reason(session: Session, order: PayOrder, stamp: datetime, *, lock=Fa
 SELF_REFUNDS_PER_MONTH = 1
 # 只有还在排队、处理中的付费任务（还没出结果）时自助退款的原因：处理完没出结果的不算用过
 PAID_TASK_RUNNING = (
-    "这笔的使用期有一份超出免费范围的名单还在处理；处理完没出结果的不算用过，到时可以再申请"
+    "这笔的使用期有一份超出免费范围的名单还在处理；处理完没出结果的不算用过，付款 24 小时内"
+    "可以再申请，超过 24 小时请点“遇到问题”告诉我们"
 )
 MONTHLY_REFUND_REASON = "每个账号每月只能申请 1 次无理由退款，本月已经申请过；下月 1 日起可以再申请"
 MONTHLY_REFUND_FINAL = (
@@ -1091,8 +1092,8 @@ def shutdown_notice(settings) -> bool:
 
 def ios_decision(session: Session, order: PayOrder | None, stamp: datetime, settings=None) -> dict:
     """苹果退款问询的答复（D-081，和安卓的无理由退款同一口径；付费服务协议第二条第 7 项）：
-    - 已核实应当退款的建议退款：停止服务公示期间的全部订单，和负责人用 `youju pay-refund-due`
-      标记过的订单（因我们的原因不能使用、未成年人未经监护人同意购买等），用没用过都一样；
+    - 已核实应当退款的建议退款：负责人用 `youju pay-refund-due` 标记过的订单（因我们的原因不能使用、
+      未成年人未经监护人同意购买等），和停止服务公示期间还有剩余使用期的订单，用没用过都一样；
     - 其余的，用过付费的量（出了结果）拒绝；付款超过 24 小时拒绝；付费的名单还在排队、处理中、
       没出结果的，建议退款并注明暂时无法核验（没出结果的不算用过，Codex 10/28）；都没有的建议退款；
     - 查不到订单的建议退款，注明暂时无法核验（IOS_UNVERIFIABLE，_ios_reply 出错、超时也是）。
@@ -1117,7 +1118,12 @@ def ios_decision(session: Session, order: PayOrder | None, stamp: datetime, sett
         else "没有用过付费的量"
     )
     evidence = f"{timing}；{usage}" if timing else usage
-    if shutdown_notice(settings or get_settings()) or order.refund_due_at is not None:
+    # 停止服务只退剩余天数（付费服务协议第二条第 5 项）：公示期间只给这一笔还有没用完、没收回的
+    # 使用期的订单答应当退款；已经用完、退过的照常答（独立审阅 10/28）
+    remaining = ticket is not None and ticket.revoked_at is None and ticket.ends_at > stamp
+    if order.refund_due_at is not None or (
+        shutdown_notice(settings or get_settings()) and remaining
+    ):
         # 应当退的和用没用过、过没过 24 小时无关：凭据只写这一句，不再带前面两句（agy 10/28）
         return {"result_code": 0, "result_info": "应当退款", "evidence": "已核实应当退款"}
     if used:

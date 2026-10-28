@@ -1494,7 +1494,18 @@ test('开卖必做第 4、5 项和收费方案第 9 项：购买页注销提示�
   assert.match(pass, /注销账号后，未到期的使用期和赠送天数作废，注销本身不退剩余天数，也不减少按《付费服务协议》第二条可以退的钱。/);
   assert.equal(pay.renewRule({ renewBonus: { days: 3, windowDays: 7 } }).text, '到期前后 7 天内续买，每次多送 3 天批量工具使用期');
   const advisor = fs.readFileSync(path.join(root, 'pages/advisor/index.wxml'), 'utf8');
-  assert.match(advisor, /交一份名单算一次，系统出错、没出结果的不算；免费每次 50 家以内，加量体验和批量工具使用期内每次 500 家以内。/);
+  assert.match(advisor, /\{\{countNote\}\}/);
+});
+
+test('收费方案第 9 项：工具中心怎么算次数只写用得上的家数——没在卖不提批量工具，加量体验用不了不提它', () => {
+  const page = load('pages/advisor/index.js', { '../../utils/api.js': {}, '../../utils/ai-access.js': {}, '../../utils/advisor.js': {}, '../../utils/tool-context.js': {}, '../../utils/boost.js': {}, '../../utils/daywatch.js': {}, '../../utils/consent.js': {} });
+  const line = (quota, payOn, offer) => { page.quota = quota; page.payOn = payOn; page.offer = offer; return page.countLine(); };
+  const free = (available) => ({ rows: { compare: 50, track: 50 }, pass: null, trial: { trialActive: false, trialAvailable: available } });
+  assert.equal(line(free(false), false, null), '交一份名单算一次，系统出错、没出结果的不算；免费每次 50 家以内。');
+  assert.equal(line(free(true), true, { line: '30 天 29 元' }), '交一份名单算一次，系统出错、没出结果的不算；免费每次 50 家以内，加量体验和批量工具使用期内每次 500 家以内。');
+  assert.equal(line(free(false), true, { line: '30 天 29 元' }), '交一份名单算一次，系统出错、没出结果的不算；免费每次 50 家以内，批量工具使用期内每次 500 家以内。');
+  assert.equal(line({ ...free(false), pass: { active: true } }, true, null), '交一份名单算一次，系统出错、没出结果的不算。');
+  assert.equal(line(null, true, null), '交一份名单算一次，系统出错、没出结果的不算。');
 });
 
 test('审核规范 3.3.1：登录没开放时订单页、购买页回首页，跳转失败再重新启动，不出现暂未开放', () => {
@@ -1506,17 +1517,36 @@ test('审核规范 3.3.1：登录没开放时订单页、购买页回首页，�
   }
 });
 
-test('开卖必做第 3 项：两个注销入口先读 /me 的使用期，读不到时也提示使用期', async () => {
+test('开卖必做第 3 项：两个注销入口都走 withdrawAccount', async () => {
   for (const file of ['me', 'my-data']) {
-    for (const value of [true, false, null]) {
-      const seen = [];
-      const page = load(`pages/${file}/index.js`, {
-        '../../content/legal.js': {}, '../../utils/api.js': { me: () => value === null ? Promise.reject(new Error('offline')) : Promise.resolve({ pass: { active: value } }) },
-        '../../utils/consent.js': { loginOpen: () => true, withdraw: (active) => { seen.push(active); return Promise.resolve(false); }, remindAny: () => false },
-        '../../utils/coverage.js': {}, '../../utils/conditions.js': {}, '../../utils/subscribe.js': { remindOpen: () => false },
-      }, { wx: {} });
-      page[file === 'me' ? 'deleteAccount' : 'deleteAll'](); await flush();
-      assert.deepEqual(seen, [value !== false]);
-    }
+    let calls = 0;
+    const page = load(`pages/${file}/index.js`, {
+      '../../content/legal.js': {}, '../../utils/api.js': {},
+      '../../utils/consent.js': { loginOpen: () => true, withdrawAccount: () => { calls += 1; return Promise.resolve(false); }, remindAny: () => false },
+      '../../utils/coverage.js': {}, '../../utils/conditions.js': {}, '../../utils/subscribe.js': { remindOpen: () => false },
+    }, { wx: {} });
+    page[file === 'me' ? 'deleteAccount' : 'deleteAll'](); await flush();
+    assert.equal(calls, 1);
   }
+});
+
+test('开卖必做第 3 项：注销前读使用期——包里没有订单页（过审版）不读也不提付费；读不到按有算；连点只进一次', async () => {
+  const run = async (pagesInPack, me, taps = 1) => {
+    const modals = []; const asked = [];
+    const consent = load('utils/consent.js', { './config.js': {}, '../content/legal.js': { final: true, operator: { email: 'help@example.com' } },
+      './api.js': { me: () => { asked.push('me'); return me(); }, deleteMe: () => Promise.resolve() }, './exports.js': { clear() {} }, './exporter.js': { removeFiles() {} },
+      './ai-access.js': {}, './pages.js': { has: (name) => pagesInPack.includes(name) } },
+    { wx: { showModal: (v) => { modals.push(v.content); v.success({ confirm: false }); }, showToast() {}, clearStorageSync() {}, removeStorageSync() {} } });
+    const results = await Promise.all(Array.from({ length: taps }, () => consent.withdrawAccount()));
+    return { modals, asked, results };
+  };
+  const review = await run([], () => Promise.resolve({ pass: { active: true } }));
+  assert.deepEqual(review.asked, []); assert.equal(review.modals.length, 1);
+  assert.doesNotMatch(review.modals.join(''), /付费|使用期/);
+  const offline = await run(['orders'], () => Promise.reject(new Error('offline')));
+  assert.deepEqual(offline.asked, ['me']);
+  const active = await run(['orders'], () => Promise.resolve({ pass: { active: true } }), 3);
+  assert.deepEqual(active.asked, ['me']); assert.deepEqual(active.results, [false, false, false]);
+  const none = await run(['orders'], () => Promise.resolve({ pass: { active: false } }));
+  assert.equal(none.modals.length, 1);
 });

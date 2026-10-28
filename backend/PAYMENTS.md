@@ -78,8 +78,9 @@ canRefund,refundUnavailableReason`。不返回名单或任务输入。
 超过 50 行，或当月免费次数已用完，才记为通行证。这样和付款页写的自助退款条件一致：
 “没有提交过超过 50 家的名单、也没有超出每月免费次数”（Claude 复核时改）。
 “用过付费的量”由 `paid_usage` 统一判断（2026-10-28 改，见文末"开卖那一版的后端必做项"）：
-这段使用期下记为通行证的任务出了结果（完成时记 `last_used_at`，删任务、注销也还在），或者还在排队、
-处理中，算用过；系统出错、排队时取消、处理前删掉的不算（付费服务协议第二条第 2 项）。
+这段使用期下记为通行证的任务出了结果（完成时记 `last_used_at`，删任务、注销也还在）算用过；还在排队、
+处理中的，自助退款先按用过算、等它出结果，苹果问询答"无法核验"；系统出错、排队时取消、处理前删掉的不算
+（付费服务协议第二条第 2 项）。
 使用期留最近一次任务编号、最近一次出结果的时间、完成/结束时间；不存企业名称或结果内容。
 
 ## 奖励天数（2026-10-10）
@@ -494,7 +495,8 @@ httpx 日志过滤 xpay/code2Session URL；异常稳定中文。
 
 ### 苹果问询（第 8 项②③）
 - 查不到订单、核验出错、超过两秒：`IOS_UNVERIFIABLE` = `0/无法核验/暂时无法核验`。
-- 已核实应当退款：`pay_orders.refund_due_at` 有值，或停止服务公示期间（`YOUJU_PAY_SHUTDOWN_NOTICE=true`），
+- 已核实应当退款：`pay_orders.refund_due_at` 有值，或停止服务公示期间（`YOUJU_PAY_SHUTDOWN_NOTICE=true`）
+  这一笔还有没用完、没收回的使用期（停止服务只退剩余天数，协议第二条第 5 项；独立审阅 10/28），
   答 `0/应当退款`，凭据只写"已核实应当退款"（和用没用过、过没过 24 小时无关），不写原因（答复经微信给到境外的
   Apple，只给必要的；agy 10/28）。
 - 付费的名单还在排队、处理中、没出结果（`last_used_at` 为空、没有完成的付费任务）：付款 24 小时内答
@@ -505,7 +507,8 @@ httpx 日志过滤 xpay/code2Session URL；异常稳定中文。
   只给苹果手机付过款的订单（安卓的直接 `youju pay-refund`）；原因 6–100 字记在 `refund_due_note`，
   只写情形，不写姓名、证件号、联系方式；每次改动记一笔支付事件 `refund_due_marked`/`refund_due_cleared`
   （事件里只有订单编号）。最后一行只有英文和数字：`refund_due order=N result=marked|cleared|unchanged|not_ios|missing dry_run=0|1`。
-- `YOUJU_PAY_SHUTDOWN_NOTICE=true`（停止服务公示，付费服务协议第二条第 5 项）同时停卖新的使用期
+- `YOUJU_PAY_SHUTDOWN_NOTICE=true`（停止服务公示，付费服务协议第二条第 5 项；api、admin 两个服务都设，
+  卖不卖和苹果问询都在 api 上判断）同时停卖新的使用期
   （`selling_to` 为假：商品、下单 404；订单、退款、开票照常）。按剩余天数退款仍用 `youju pay-refund --all-active --remaining`。
 
 ### 赠送流水 3650 天清理（第 9 项）
