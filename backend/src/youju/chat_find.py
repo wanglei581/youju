@@ -817,7 +817,8 @@ def _stop_at(text: str, i: int) -> tuple[int, bool] | None:
     elif m := _DEADLINE_AT.match(text, i):
         word = m.lastindex  # 1：截止、到期；2：即将截至这种
         return (m.end() if m.group(word) != "截止" else m.start(word)), True
-    if end is None and text.startswith("截至", i) and _time_at(text, i + 2) is None:
+    as_of = text.startswith("截至", i) and not text.startswith(("目前", "现在", "当前"), i + 2)
+    if end is None and as_of and _time_at(text, i + 2) is None:
         return i, True  # 2025 年截至的申报通知：后面没写到哪个时候，当"截止"写错了字
     if end is None:
         return None
