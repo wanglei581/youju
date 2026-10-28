@@ -33,7 +33,7 @@ Page({
   onHide() { this.visible = false; this.serial = (this.serial || 0) + 1; },
   onUnload() { this.onHide(); },
   load() {
-    if (!this.data.loginOpen) { this.setData({ loading: false }); return; }
+    if (!this.data.loginOpen) { goHome(); return; }
     const serial = this.serial = (this.serial || 0) + 1;
     // 切走时还在"重新核对"的那一张：结果不再写回，按钮要放开
     this.setData({ loading: true, error: '', checking: null });
@@ -138,5 +138,6 @@ Page({
         items: this.data.items.map((item) => (String(item.orderId) === String(orderId) ? view : item)) });
     }).catch((err) => { this.setData({ sending: false, formError: err.message }); });
   },
+  terms(e) { wx.navigateTo({ url: `/pages/agreement/index?type=pay&version=${encodeURIComponent(e.currentTarget.dataset.version)}` }); },
   feedback() { wx.navigateTo({ url: `/pages/feedback/index?type=pay${this.orderId ? '&orderId=' + encodeURIComponent(this.orderId) : ''}` }); },
 });

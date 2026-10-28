@@ -203,6 +203,7 @@ Page({
   },
 
   deleteAll() {
-    withdraw().then((ok) => { if (ok) wx.navigateBack(); });
+    Promise.resolve().then(() => api.me()).then((res) => !!(res && res.pass && res.pass.active === true), () => false)
+      .then((active) => withdraw(active)).then((ok) => { if (ok) wx.navigateBack(); });
   },
 });

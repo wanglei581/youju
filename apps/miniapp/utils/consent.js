@@ -191,7 +191,7 @@ function markAgreed() {
 }
 
 // 注销：撤回同意，删除服务端的全部个人信息。用户确认并删除成功时返回 true
-function withdraw() {
+function withdraw(activePass) {
   return new Promise((resolve) => {
     wx.showModal({
       title: '注销并删除数据',
@@ -200,7 +200,7 @@ function withdraw() {
       confirmColor: '#E5484D',
       success: (res) => {
         if (!res.confirm) { resolve(false); return; }
-        api.deleteMe()
+        const remove = () => api.deleteMe()
           .then(() => {
             exportsLog.clear();
             // 文件缺失或无法删除不影响注销；清空本机缓存也涵盖后续新增的个人数据。
@@ -221,6 +221,9 @@ function withdraw() {
             wx.showToast({ title: err.message || '注销失败，请稍后再试', icon: 'none' });
             resolve(false);
           });
+        if (!activePass) { remove(); return; }
+        // 两段分别确认，避免原说明和使用期提示合在一起被弹窗截断。
+        wx.showModal({ title: '注销并删除数据', content: '注销后未到期的使用期和赠送天数作废、不能恢复；注销本身不退剩余天数，也不减少按《付费服务协议》第二条可以退的钱；注销后发邮件并附订单号，同样受理。', confirmText: '注销', confirmColor: '#E5484D', success: (next) => { if (next.confirm) remove(); else resolve(false); }, fail: () => resolve(false) });
       },
       fail: () => resolve(false),
     });

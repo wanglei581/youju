@@ -45,6 +45,7 @@ Page({
     ordersLink: false },
   onShow() {
     this.visible = true;
+    if (!this.data.loginOpen) { goHome(); return; }
     if (this.payResume && this.poller) {
       this.payResume = false;
       this.payDeadline = Math.max(this.payDeadline || 0, Date.now() + RESUME_CHECK);
@@ -58,6 +59,7 @@ Page({
   },
   onUnload() { this.onHide(); this.unloaded = true; this.payResume = false; this.loadSerial = (this.loadSerial || 0) + 1; },
   load() {
+    if (!this.data.loginOpen) { goHome(); return; }
     const serial = this.loadSerial = (this.loadSerial || 0) + 1;
     this.setData({ loading: true, error: '', closedNote: '' });
     api.payProducts().then((res) => {

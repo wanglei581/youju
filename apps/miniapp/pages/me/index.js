@@ -164,7 +164,8 @@ Page({
 
   // 注销：撤回同意，删除服务端的关注、提醒、纠错等全部数据
   deleteAccount() {
-    withdraw().then((ok) => {
+    Promise.resolve().then(() => api.me()).then((res) => !!(res && res.pass && res.pass.active === true), () => false)
+      .then((active) => withdraw(active)).then((ok) => {
       if (ok) this.setData({ signedIn: false, hasRecord: false, outdated: false, agreed: false, nudge: false, followCount: 0, reminderCount: 0, profileLoading: false, profileError: '' });
     });
   },

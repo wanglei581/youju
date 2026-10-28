@@ -51,6 +51,7 @@
     <!-- D-087：两个工具是并列的，按钮都用白底次按钮，靠各自上面那句用途说明区分 -->
     <view class="advisor-title">批量处理客户名单（机构用）</view>
     <view class="advisor-text muted">{{dataStatus || '正在读取额度…'}}</view>
+    <view class="advisor-text muted">交一份名单算一次，系统出错、没出结果的不算；免费每次 50 家以内，加量体验和批量工具使用期内每次 500 家以内。</view>
     <view wx:if="{{seasonNote}}" class="advisor-text">{{seasonNote}}</view>
     <view wx:if="{{dataError}}" class="advisor-error">{{dataError}}<button class="advisor-button" bindtap="refreshQuota">刷新额度</button></view>
     <block wx:if="{{compareEnabled}}"><view class="advisor-text">批量名单比对：按企业名称或信用代码查询已收录名单，每条结果都能在小程序里对照官方原文。未查到不等于没有入选。</view><button class="advisor-button" data-kind="compare" bindtap="dataTool">批量名单比对</button></block>
