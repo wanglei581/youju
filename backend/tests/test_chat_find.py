@@ -250,6 +250,18 @@ def _same_as_search_page(client, stored):
             for p in ("近 90 天", "近九十天", "最近 90 天", "近三个月", "最近三个月")
         ],
         *[(p, "近 90 天") for p in ("近3个月", "这个季度")],
+        # "近 N 日"和"近 N 天"一样；"这星期"这几种和"这周"一样
+        *[(p, "近 7 天") for p in ("近7日", "近 7 日", "近七日", "最近7日", "最近七日")],
+        *[(p, "近 7 天") for p in ("这星期", "本星期", "这个星期")],
+        *[(p, "近 30 天") for p in ("近30日", "近 30 日", "近三十日", "最近30日", "最近三十日")],
+        *[(p, "近 90 天") for p in ("近90日", "近九十日", "最近90日", "最近九十日")],
+        *[
+            (p, "近 7 天")
+            for p in ("近一星期", "最近一星期", "近一个星期", "最近一个星期", "这礼拜", "这个周")
+        ],
+        *[(p, "近 7 天") for p in ("过去7天", "过去一周", "7天内", "一周内")],
+        *[(p, "近 30 天") for p in ("过去30天", "过去一个月", "30天内", "一个月内")],
+        *[(p, "近 90 天") for p in ("过去三个月", "90天内", "三个月内", "本季度")],
         *[(p, "今年") for p in ("今年", "本年", "2026年", "2026", "２０２６年")],
         ("今年最新", "近 30 天"),  # 几个时间词都有时，按近 7 天、近 30 天、近 90 天、今年的顺序取
         ("这周今年", "近 7 天"),
@@ -258,7 +270,7 @@ def _same_as_search_page(client, stored):
 def test_时间词(phrase, value):
     conditions = _parse(f"广东{phrase}的专精特新申报通知")
     assert conditions["time"] == value
-    assert conditions["year"] is None
+    assert (conditions["year"], conditions["period"]) == (None, None)
     assert conditions["keywords"] == ["专精特新"]
 
 
@@ -285,6 +297,55 @@ def test_晚于今年和早于2000年的年份不当时间():
         conditions = _parse(text)
         assert (conditions["time"], conditions["year"]) == ("不限", None)
         assert conditions["keywords"] == [keyword, "专精特新"]
+
+
+LAST_WEEK = {"from": "2026-06-08", "to": "2026-06-14"}
+LAST_MONTH = {"from": "2026-05-01", "to": "2026-05-31"}
+
+
+@pytest.mark.parametrize(
+    "phrase,period",
+    [
+        *[(p, LAST_WEEK) for p in ("上周", "上个周", "上星期", "上个星期", "上一周", "上一星期")],
+        *[(p, LAST_WEEK) for p in ("上一个星期", "上礼拜", "上个礼拜")],
+        *[(p, LAST_MONTH) for p in ("上个月", "上月", "上一个月")],
+        # 上上周、上上个月再往前一个，不认成上周、上个月
+        *[(p, {"from": "2026-06-01", "to": "2026-06-07"}) for p in ("上上周", "上上个星期")],
+        *[(p, {"from": "2026-06-01", "to": "2026-06-07"}) for p in ("上上一周", "上上一个星期")],
+        *[(p, {"from": "2026-04-01", "to": "2026-04-30"}) for p in ("上上个月", "上上月")],
+        ("上上一个月", {"from": "2026-04-01", "to": "2026-04-30"}),
+        # 和别的时间词一起时先算这两种；两种都有取先写的
+        ("今年上个月", LAST_MONTH),
+        ("上周最新", LAST_WEEK),
+        ("去年上个月", LAST_MONTH),
+        ("上个月和上周", LAST_MONTH),
+        ("上周和上个月", LAST_WEEK),
+    ],
+)
+def test_上周和上个月按发布日期筛(phrase, period):
+    conditions = _parse(f"广东{phrase}的专精特新申报通知")
+    assert (conditions["period"], conditions["time"], conditions["year"]) == (period, "不限", None)
+    assert conditions["keywords"] == ["专精特新"]
+
+
+@pytest.mark.parametrize(
+    "text", ["这个周期的申报通知", "上个周期的申报通知", "本周期的申报通知", "17天内的申报通知"]
+)
+def test_像时间词又不是的不认(text):
+    """以"周"结尾的后面是"期"、以数字开头的前面紧挨着数字：不当时间。"""
+    conditions = _parse(text)
+    assert (conditions["time"], conditions["period"]) == ("不限", None), text
+    assert _parse("十一个月内的申报通知")["time"] == "不限"
+
+
+def test_上周是上一个星期一到星期日_上个月是上一个自然月():
+    def period(text, today):
+        return parse(text, today=today, covered=ALL_COVERED).conditions["period"]
+
+    assert period("上周", date(2026, 6, 14)) == {"from": "2026-06-01", "to": "2026-06-07"}  # 星期日
+    assert period("上周", date(2027, 1, 6)) == {"from": "2026-12-28", "to": "2027-01-03"}
+    assert period("上个月", date(2027, 1, 6)) == {"from": "2026-12-01", "to": "2026-12-31"}
+    assert period("上个月", date(2026, 3, 31)) == {"from": "2026-02-01", "to": "2026-02-28"}
 
 
 # ---- 第 5 条 类型、第 7 条 关键词 ----
@@ -437,6 +498,127 @@ def test_没收录的省级地区单独记():
     assert (conditions["regions"], conditions["uncovered"]) == ([], ["国家部委"])
 
 
+@pytest.mark.parametrize(
+    "text,keywords",
+    [
+        ("国家高新技术企业认定", ["高新技术"]),
+        ("国家级专精特新小巨人企业", ["专精特新小巨人"]),
+        ("国家企业技术中心认定", ["技术中心"]),  # "企业"后面还是名称
+        ("国家认定企业技术中心", ["技术中心"]),  # "认定"后面也是
+        ("国家重点研发计划", ["重点研发计划"]),
+        ("国家级“小巨人”企业", ["小巨人"]),  # 开头的引号先跳过
+        ("国家《高新技术企业》认定", ["高新技术"]),
+    ],
+)
+def test_国家后面紧跟着名称时是名称的开头_不当地区也不当关键词(text, keywords):
+    conditions = _parse(text)
+    assert (conditions["regions"], conditions["keywords"]) == ([], keywords)
+    conditions = _parse(f"广东{text}")
+    assert (conditions["regions"], conditions["keywords"]) == (["广东"], keywords)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "国家",
+        "国家级",
+        "找国家级的",
+        "国家最新的申报通知",
+        "国家申报通知",
+        "国家2026年的申报通知",
+        "国家关于专精特新的政策",
+        "国家有哪些专精特新政策",
+        "国家发的申报通知",
+        "国家出台的政策",
+        "国家公布的名单",
+        "上月国家发布的政策",
+    ],
+)
+def test_国家单独说的是国家部委(text):
+    conditions = _parse(text)
+    assert conditions["regions"] == ["国家部委"], text
+    # 说发文的词不留成关键词；只剩真正的词（"专精特新"）
+    assert conditions["keywords"] in ([], ["专精特新"]), text
+
+
+@pytest.mark.parametrize(
+    "text,keywords",
+    [
+        ("国家数据局的申报通知", ["数据局"]),
+        ("国家知识产权局的通知", ["知识产权局"]),
+        ("国家发展改革委的通知", ["发展改革委"]),
+        ("国家卫生健康委员会的通知", ["卫生健康委员会"]),
+        ("国家网信办的通知", ["网信办"]),
+        ("国家工业和信息化部的通知", ["工业和信息化部"]),  # 名称里的"和"不断开
+        ("国家税务总局公告", ["税务总局"]),
+        ("国家各部委的通知", []),
+        ("国家民委的通知", ["民委"]),
+        ("国家发展改革委办公厅的通知", ["发展改革委办公厅"]),  # 按最短的机关名算
+        ("国家能源局综合司的通知", ["能源局综合司"]),
+        ("国家数据局发的通知", ["数据局"]),
+    ],
+)
+def test_国家后面紧跟着国家机关名照旧算国家部委(text, keywords):
+    conditions = _parse(text)
+    assert (conditions["regions"], conditions["keywords"]) == (["国家部委"], keywords)
+    # 机关名后面是"和＋地名"时到那里为止
+    assert _parse("国家数据局和广东的申报通知")["regions"] == ["国家部委", "广东"]
+
+
+@pytest.mark.parametrize(
+    "text,keywords",
+    [
+        ("国家产业布局", ["产业布局"]),
+        ("国家西部大开发", ["西部大开发"]),
+        ("国家战略部署", ["战略部署"]),
+        ("国家级经济技术开发区管委会", ["经济技术开发区管委会"]),  # "国家级"后面不看机关名
+        ("国家核心零部件项目", ["核心零部件"]),  # 整段名称以机关字结尾才算
+        ("国家电网有限公司的项目", ["电网有限"]),  # "公司"不是机关
+        ("国家高新技术企业认定怎么办理", ["高新技术"]),
+        ("国家专精特新怎么办", ["专精特新"]),
+    ],
+)
+def test_以局委部署办结尾又不是机关名的不算(text, keywords):
+    conditions = _parse(text)
+    assert (conditions["regions"], conditions["keywords"]) == ([], keywords)
+
+
+def test_地区前后的和与及或不去_可能是名称的一部分():
+    assert _parse("广东或四川的专精特新")["regions"] == ["广东", "四川"]
+    for text, keyword in (
+        ("碳中和广东的政策", "碳中和"),
+        ("四川和邦生物", "和邦生物"),
+        ("天津和平区的申报通知", "和平区"),  # 和平区没收录：照第 3 条当关键词
+        ("广东和平县", "和平县"),
+        ("安徽和县", "和县"),
+        ("新疆和田", "和田"),
+    ):
+        assert _parse(text)["keywords"] == [keyword], text
+
+
+def test_国家后面跟着地名或标点也是国家部委():
+    for text in ("国家、广东的专精特新", "国家广东的专精特新", "国家与广东的专精特新"):
+        assert _parse(text)["regions"] == ["国家部委", "广东"], text
+
+
+def test_以市开头的区县和城市名连着写_认成那个区县():
+    covered = Coverage(
+        provinces=frozenset({"山东"}),
+        cities=frozenset({("山东", "济南"), ("山东", "枣庄")}),
+        districts=frozenset({("山东", "济南", "市中区"), ("山东", "枣庄", "市中区")}),
+    )
+    for text in ("济南市中区的申报通知", "济南市市中区的申报通知", "山东济南市中区的申报通知"):
+        conditions = _parse(text, covered)
+        assert (conditions["regions"], conditions["cities"]) == ([], []), text
+        assert (conditions["districts"], conditions["keywords"]) == (["山东/济南/市中区"], []), text
+    assert _parse("枣庄市中区的申报通知", covered)["districts"] == ["山东/枣庄/市中区"]
+    assert _parse("济南市的申报通知", covered)["cities"] == ["山东/济南"]
+    # 区县没收录的照第 3 条：城市照认，剩下的字当关键词
+    city_only = Coverage(frozenset({"山东"}), frozenset({("山东", "济南")}), frozenset())
+    conditions = _parse("济南市中区的申报通知", city_only)
+    assert (conditions["cities"], conditions["keywords"]) == (["山东/济南"], ["中区"])
+
+
 # ---- 第 1 条 文号（不查库的部分） ----
 
 
@@ -495,6 +677,7 @@ def test_近30天(session, world, client):
         "kind": "申报通知",
         "time": "近 30 天",
         "year": None,
+        "period": None,
         "keywords": [],
         "docNumber": None,
         "title": False,
@@ -624,6 +807,44 @@ def test_往年按发布日期找_不给搜索页链接(session, world):
         == "地区 广东 · 类型 名单与公示 · 发布于 2025 年 · 标题里有 专精特新"
     )
     assert _find(session, "2025年广东的申报通知")["ids"] == _ids(world, "gd_cash")
+
+
+def test_上周和上个月按发布日期找_不给搜索页链接(session, world):
+    stored = _find(session, "四川上周的申报通知")
+    assert stored["conditions"]["period"] == {"from": "2026-06-08", "to": "2026-06-14"}
+    assert stored["ids"] == _ids(world, "sc_apply")  # 6 月 2 日的那份不在上周
+    assert (stored["link"], stored["notes"]) == (False, [])
+    assert (
+        conditions_text(stored)
+        == "地区 四川 · 类型 申报通知 · 发布于 2026 年 6 月 8 日至 6 月 14 日"
+    )
+    assert _find(session, "上个月的专精特新名单")["ids"] == _ids(world, "gd_list")
+    assert "vague" not in _find(session, "上个月")["notes"]  # 只写了时间也去搜
+
+
+def test_上周和上个月两头都算(session):
+    hb = _source(session, "湖北")
+    days = {
+        day: _doc(session, hb, f"湖北省关于组织申报测试项目的通知{n}", day).id
+        for n, day in enumerate(
+            [date(2026, 4, 30), date(2026, 5, 1), date(2026, 5, 31), date(2026, 6, 1)]
+            + [date(2026, 6, 7), date(2026, 6, 8), date(2026, 6, 14), date(2026, 6, 15)]
+        )
+    }
+    session.commit()
+    week = _find(session, "湖北上周的申报通知")["ids"]
+    assert week == [days[date(2026, 6, 14)], days[date(2026, 6, 8)]]
+    month = _find(session, "湖北上个月的申报通知")["ids"]
+    assert month == [days[date(2026, 5, 31)], days[date(2026, 5, 1)]]
+
+
+def test_读的时候_这次以前存的回答没有period也不出错(session, world):
+    stored = _find(session, "广东近30天的申报通知")
+    del stored["conditions"]["period"]
+    body = render(session, stored, today=TODAY)
+    assert body["conditions"]["period"] is None
+    assert body["conditionsText"] == "地区 广东 · 类型 申报通知 · 发布 近 30 天"
+    assert conditions_text(stored) == body["conditionsText"]
 
 
 def test_文号只按文号找(session, world):
@@ -894,6 +1115,12 @@ def test_条件那句的写法():
     assert conditions_text(stored) == (
         "地区 国家部委、山东·青岛、北京·朝阳区 · 类型 不限（不含资讯与指南） · 发布 不限时间"
     )
+    stored["conditions"] = chat_find.empty_conditions() | {
+        "period": {"from": "2026-12-28", "to": "2027-01-03"}
+    }
+    assert conditions_text(stored) == (
+        "地区 不限 · 类型 不限（不含资讯与指南） · 发布于 2026 年 12 月 28 日至 2027 年 1 月 3 日"
+    )
 
 
 # ---- /chat/examples ----
@@ -991,6 +1218,60 @@ def test_停用词粘在词里不拆开():
     assert _parse("大企业的申报通知")["keywords"] == ["大企业"]
     # 两个字以上的照旧拆：停用词"企业"去掉，"高新技术"留下
     assert _parse("请问有没有高新技术企业认定的材料要求")["keywords"] == ["高新技术"]
+    assert _parse("企业家的申报通知")["keywords"] == ["企业家"]
+    assert _parse("白名单")["keywords"] == ["白名单"]
+    assert _parse("黑名单")["keywords"] == ["黑名单"]
+    assert _parse("企业白名单")["keywords"] == ["白名单"]
+    assert _parse("工业企业白名单")["keywords"] == ["工业", "白名单"]
+    assert _parse("有企业补贴吗")["keywords"] == ["补贴"]  # "有、为、给"这类单字不并
+    assert _parse("小微企业有什么补贴")["keywords"] == ["小微", "补贴"]
+    assert _parse("企业能申请吗")["keywords"] == []
+    assert _parse("专精特新名单有吗")["keywords"] == ["专精特新"]
+
+
+@pytest.mark.parametrize(
+    "text,keywords",
+    [
+        ("怎么申报专精特新", ["专精特新"]),
+        ("企业可以申请哪些补贴", ["补贴"]),
+        ("需要哪些材料", []),
+        ("高企申报流程是什么", ["高企"]),
+        ("专精特新怎么办理", ["专精特新"]),
+    ],
+)
+def test_问法的词也去掉(text, keywords):
+    assert _parse(text)["keywords"] == keywords
+
+
+def test_去掉的词后面的和不粘到下一个词上():
+    assert _parse("高新技术企业和专精特新企业的申报通知")["keywords"] == ["高新技术", "专精特新"]
+    assert _parse("高新技术企业和科技型中小企业")["keywords"] == ["高新技术", "科技型中小"]
+    assert _parse("工业和信息化部的通知")["keywords"] == ["工业和信息化部"]
+    # 以"和"开头的县级地名不去"和"
+    assert _parse("找和平区的申报通知")["keywords"] == ["和平区"]
+    assert _parse("关于和田地区的通知")["keywords"] == ["和田地区"]
+    # 只和"材料、企业、公司"并：问句里的停用词不并成关键词
+    for text, keywords in (
+        ("广东有什么政策", []),
+        ("高新技术企业认定的条件是什么", ["高新技术"]),
+        ("专精特新申报要什么材料", ["专精特新"]),
+        ("什么样的条件", []),
+    ):
+        assert _parse(text)["keywords"] == keywords, text
+
+
+@pytest.mark.parametrize("word", ["发布", "出台", "印发", "下发", "公布", "颁布"])
+def test_说发文的词也去掉(word):
+    conditions = _parse(f"广东上周{word}的专精特新申报通知")
+    assert (conditions["regions"], conditions["keywords"]) == (["广东"], ["专精特新"])
+
+
+def test_机关名后面的发的去掉_开发的研发的不去():
+    assert _parse("工信部发的通知")["keywords"] == ["工信部"]
+    conditions = _parse("广东省科技厅发的申报通知")
+    assert (conditions["regions"], conditions["keywords"]) == (["广东"], ["科技厅"])
+    assert _parse("开发的软件")["keywords"] == ["开发", "软件"]
+    assert _parse("研发的项目")["keywords"] == ["研发"]
 
 
 def test_问内容的提示只在那几个词单独出现时才加():

@@ -15,7 +15,31 @@
 条件到搜索参数只有 search_params 一张表，自己搜和"在搜索页看全部"带的参数是同一份。
 
 设计没写死、这里定下的几处：
-- 一句里有几个时间词时，按近 7 天、近 30 天、近 90 天、今年、往年的顺序取第一个（往年取先写的）；
+- 一句里有几个时间词时，按上周、上个月这类（取先写的）、近 7 天、近 30 天、近 90 天、今年、
+  往年的顺序取第一个（往年取先写的）；
+- "上周"这类（上星期、上个星期、上一周、上礼拜……，_PERIOD_OF）按发布日期筛上一个星期一到
+  星期日，"上个月"这类（上月、上一个月）筛上一个自然月（北京时间）；"上上周""上上个月"再往前
+  一个。搜索页没有这几种，同往年不给"在搜索页看全部"；
+- "近 N 日""过去 N 天""N 天内"这类和"近 N 天"一样，"这星期""这礼拜""近一个星期"这类和"这周"
+  一样算近 7 天，"本季度"同"这个季度"（完整的见 _TIME_WORDS）；
+- 第 2 条的细化（设计的表写"国家""国家级"认成国家部委）：后面紧跟着别的名称时（国家高新技术
+  企业、国家级专精特新、国家认定企业技术中心）是名称的开头，不当地区，也不当关键词（省里发的这类
+  通知，标题多半不写"国家"）；"国家"后面的整段名称以局、委、部、署、办、厅、司结尾的是国家机关
+  （国家数据局、国家发展改革委办公厅、国家能源局综合司；"布局、部署、举办、怎么办"这类不算，见
+  _NOT_AGENCY），照旧算国家部委，名称当关键词（"国家级"后面不看机关名）。单独说的也是国家部委：后面是句子结尾、
+  不是汉字的（标点、数字、字母；开头的引号、书名号先跳过）、地名、时间词、类型词（"认定"除外：
+  国家认定企业技术中心）、问内容的词、说发文的词（发布、出台、发的……）、"和、与、及、或"，或者
+  "企业""公司"以外的停用词（国家的、国家最新、国家发的申报通知）；
+- 去掉的词后面紧跟着的"和、与、及、或"不粘到下一个词上（"高新技术企业和专精特新企业"不留
+  "和专精特新"）；地区前后的不去（"四川和邦生物""天津和平区""碳中和广东"里的"和"是名称的一部分）；
+- 问法的词（怎么、如何、需要、可以、流程、办理、单字"是"……，_ASKS）也当停用词去掉（"怎么申报
+  专精特新"不留"怎么"）；
+- 机关名后面的"发的"（前一个字是部、厅、局、委、办、署、府、院）也去掉（"工信部发的通知"）；
+- 以数字开头的时间词前面紧挨着数字时不认（"17天内"不是"7天内"）；以"周"结尾的时间词后面是
+  "期"时不认（"这个周期""上个周期"）；
+- "发布、出台、印发、下发、公布、颁布"这几个说发文的词也当停用词去掉（"上周发布的申报通知"）；
+- 以"市"开头的区县和城市名连着写、"市"只写一个的（"济南市中区"＝济南市市中区），认成那个
+  区县，不拆成"济南市"和关键词"中区"（同第 3 条，只认收录了的区县）；
 - "××××年度"单独算一个关键词（"当标题词"），不和前后的字连成一个；晚于今年、早于 2000 年的
   "××××年"不当时间，也这样单独算一个；
 - "问题像在问内容"那几个词（能不能、补贴多少等）也当停用词去掉，不然会留成关键词、一份都找不到；
@@ -50,7 +74,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import Select, func, or_, select
@@ -145,6 +169,18 @@ _AUTONOMOUS = {
 }
 NATIONAL = "国家部委"
 _NATIONAL_WORDS = ("国家部委", "国家级", "国家", "部委", "部里")
+# 这两个后面紧跟着别的名称时是名称的开头（"国家高新技术企业"），见 _national
+_NAME_STARTS = ("国家", "国家级")
+_JOINS = ("和", "与", "及", "或")
+_OPENERS = "“‘\"'《「『【〈〔([<"  # 引号、书名号、括号的前一半（NFKC 以后全角圆括号已是半角）
+# 国家机关名的结尾（"国家"后面的整段名称以这些结尾）
+_AGENCY_ENDS = ("局", "委", "部", "署", "办", "厅", "司", "委员会", "办公室")
+# 以这几个字结尾、又不是机关名的词
+_NOT_AGENCY = (
+    "布局", "格局", "大局", "全局", "结局", "开局", "部署", "签署", "总部", "内部", "外部", "全部",
+    "局部", "干部", "东部", "西部", "南部", "北部", "中部", "本部", "俱乐部", "怎么办", "举办",
+    "主办", "承办", "协办", "创办", "开办", "合办", "代办", "大厅", "展厅", "公司",
+)  # fmt: skip
 
 
 def _province_aliases() -> dict[str, str]:
@@ -184,20 +220,52 @@ _TIME_WORDS = {
     "近 7 天": (
         "近7天", "近七天", "最近7天", "最近七天", "这周", "本周", "这几天",
         "近一周", "近1周", "最近一周", "最近1周",
+        "近7日", "近七日", "最近7日", "最近七日", "这星期", "本星期", "这个星期",
+        "近一星期", "最近一星期", "近一个星期", "最近一个星期", "这礼拜", "本礼拜", "这个礼拜",
+        "近一个礼拜", "最近一个礼拜", "过去7天", "过去七天", "过去一周", "过去一个星期",
+        "7天内", "七天内", "一周内", "这个周",
     ),
     "近 30 天": (
         "近30天", "近三十天", "最近30天", "最近三十天", "近一个月", "最近一个月", "近1个月",
         "最近1个月", "最近", "最新", "近期", "本月", "这个月",
+        "近30日", "近三十日", "最近30日", "最近三十日", "过去30天", "过去三十天", "过去一个月",
+        "30天内", "三十天内", "一个月内",
     ),
     "近 90 天": (
         "近90天", "近九十天", "最近90天", "最近九十天", "近三个月", "最近三个月", "近3个月",
         "最近3个月", "这个季度",
+        "近90日", "近九十日", "最近90日", "最近九十日", "过去90天", "过去九十天", "过去三个月",
+        "90天内", "九十天内", "三个月内", "本季度",
     ),
     "今年": ("今年", "本年"),  # "本年度"先换成"今年的年份＋年度"，到不了这里
 }  # fmt: skip
 _TIME_ORDER = ("近 7 天", "近 30 天", "近 90 天", "今年")  # 几个时间词都有时取第一个
 _TIME_OF = {word: value for value, words in _TIME_WORDS.items() for word in words}
 _PAST = {"去年": 1, "前年": 2}
+# 上一个星期（一到日）、上一个自然月：（week 或 month, 往前几个），按发布日期筛，见 _period
+_PERIOD_OF = {
+    **dict.fromkeys(
+        (
+            "上周",
+            "上个周",
+            "上星期",
+            "上个星期",
+            "上一周",
+            "上一星期",
+            "上一个星期",
+            "上礼拜",
+            "上个礼拜",
+        ),
+        ("week", 1),
+    ),
+    **dict.fromkeys(
+        ("上上周", "上上个周", "上上一周", "上上星期", "上上个星期", "上上一星期", "上上一个星期")
+        + ("上上礼拜", "上上个礼拜"),
+        ("week", 2),
+    ),
+    **dict.fromkeys(("上个月", "上月", "上一个月"), ("month", 1)),
+    **dict.fromkeys(("上上个月", "上上月", "上上一个月"), ("month", 2)),
+}
 _YEAR = re.compile(r"(?<!\d)(\d{4})(?!\d)(?!年度)年?")  # 后面跟"年度"的不是时间
 _YEAR_DEGREE = re.compile(r"(?<!\d)\d{4}年度")
 _FIRST_YEAR = 2000  # 往年只认 2000 年以后
@@ -209,6 +277,29 @@ STOPWORDS = (
     "请问", "企业", "公司", "我们", "我司", "一份", "截止", "时间", "什么时候", "哪天", "材料",
     "条件", "要求", "能不能报", "多少",
 )  # fmt: skip
+# 说发文的词：也当停用词去掉（"上周发布的申报通知"）
+_ISSUE = ("发布", "出台", "印发", "下发", "公布", "颁布")
+# 问法的词：也当停用词去掉（"怎么申报专精特新""企业可以申请哪些补贴"）
+_ASKS = (
+    "怎么", "怎样", "如何", "哪里", "在哪里", "在哪", "需要", "可以", "开始", "结束", "流程",
+    "办理", "是",
+)  # fmt: skip
+# 切完剩一个字时只和这几个停用词并成一个词（"新材料""大企业"），见 _pieces
+_GLUE = ("材料", "企业", "公司", "名单")
+_NO_GLUE = "有为给对让帮在是要能会可把被向从和与及或"  # 这些单字不和后面的词并（"有企业补贴"）
+# 以"和"开头的县级地名：去掉的词后面紧跟着它们时，"和"不去（"找和平区的申报通知"）
+_HE_PLACES = (
+    "和平",
+    "和县",
+    "和田",
+    "和龙",
+    "和顺",
+    "和政",
+    "和静",
+    "和硕",
+    "和林格尔",
+    "和布克赛尔",
+)
 # 文号前面不算机关简称的字（"帮我找一下文号是……"）。地名不在里面："国家税务总局公告"的"国家"、
 # 机关简称开头的省名都是简称的一部分，去掉了就会拿别的机关的文号顶替
 _NUMBER_LEAD = ("文号", "发文字号", "字号", "编号", "是", "为")
@@ -219,15 +310,66 @@ def _alternation(words) -> re.Pattern:
     return re.compile("|".join(re.escape(w) for w in sorted(set(words), key=len, reverse=True)))
 
 
-_TIME = _alternation([*_TIME_OF, *_PAST])
-_DROP = _alternation([*TYPE_WORDS, *STOPWORDS, *_CONTENT])
+_NUMERALS = "0123456789零一二两三四五六七八九十百"
+
+
+def _time_word(word: str) -> str:
+    """一个时间词的正则：以数字开头的前面不能紧挨着数字（"17天内"不认成"7天内"），以"周"结尾的
+    后面不能是"期"（"这个周期""上个周期"不是时间）。"""
+    pattern = re.escape(word)
+    if word[0] in _NUMERALS:
+        pattern = f"(?<![{_NUMERALS}]){pattern}"
+    if word.endswith("周"):
+        pattern += "(?!期)"
+    return pattern
+
+
+_TIME = re.compile(
+    "|".join(_time_word(w) for w in sorted({*_TIME_OF, *_PAST, *_PERIOD_OF}, key=len, reverse=True))
+)
+# 机关名后面的"发的"也去掉（"工信部发的通知"）；"开发的""研发的"不算
+_DROP = re.compile(
+    _alternation([*TYPE_WORDS, *STOPWORDS, *_CONTENT, *_ISSUE, *_ASKS]).pattern
+    + "|(?<=[部厅局委办署府院])发的"
+)
 _LEAD = tuple(
     sorted(
-        {*STOPWORDS, *_TITLE_STARTS, *_NUMBER_LEAD, *_TIME_OF, *_PAST, *TYPE_WORDS, *_CONTENT},
+        {
+            *STOPWORDS,
+            *_TITLE_STARTS,
+            *_NUMBER_LEAD,
+            *_TIME_OF,
+            *_PAST,
+            *_PERIOD_OF,
+            *TYPE_WORDS,
+            *_CONTENT,
+            *_ISSUE,
+            *_ASKS,
+        },
         key=len,
         reverse=True,
     )
 )
+
+
+# "国家""国家级"单独说（是地区）时后面跟的词，地名另外看。"企业""公司""认定"不算（国家企业
+# 技术中心、国家认定企业技术中心）
+_ALONE_AFTER = tuple(
+    {
+        *STOPWORDS,
+        *TYPE_WORDS,
+        *_CONTENT,
+        *_ISSUE,
+        *_ASKS,
+        "发的",
+        *_TIME_OF,
+        *_PAST,
+        *_PERIOD_OF,
+        *_JOINS,
+    }
+    - {"企业", "公司", "认定"}
+)
+_NAME_END = tuple(set(_ALONE_AFTER) - set(_JOINS))  # 名称到这些词为止（"工业和信息化部"不断开）
 
 
 @dataclass(frozen=True)
@@ -270,6 +412,7 @@ def empty_conditions() -> dict[str, Any]:
         "kind": "all",
         "time": "不限",
         "year": None,  # 往年：按发布日期筛那一年
+        "period": None,  # 上周、上个月：{"from", "to"}（ISO 日期，两头都算），按发布日期筛
         "keywords": [],
         "docNumber": None,
         "title": False,  # 整个标题比中了没有（不存那句话）
@@ -397,7 +540,10 @@ def _area_table(covered: Coverage) -> dict[str, list[tuple[str, ...]]]:
         resolved = resolve_district(province, city, district, covered.districts)
         if not (_plain(province) and _plain(city) and _plain(district)) or resolved is None:
             continue
-        for name in dict.fromkeys((district, district.removesuffix("市"))):
+        names = [district, district.removesuffix("市")]
+        if district.startswith("市"):  # "济南市中区"：和城市名连着写，"市"只写一个
+            names.append(city_key(resolved[0]) + district)
+        for name in dict.fromkeys(names):
             if len(name) >= 2 and name not in PROVINCE_ALIASES:
                 table.setdefault(name, []).append(("district", province, *resolved))
     return table
@@ -409,8 +555,10 @@ def _take(marks: list[str], start: int, end: int) -> None:
 
 def _pieces(run: str) -> list[tuple[int, str, bool]]:
     """把一串连着的字按类型词、停用词、问内容的词切开：（位置, 字, 是不是要去掉的词）。
-    切完剩一个字、又紧挨着两个字以上的停用词的，和它并成一个词，不去掉（"新材料"不拆成
-    "新"和停用词"材料"；"大企业"不拆成"大"和"企业"）。单字的"的、了、找"这类不并。"""
+    切完剩一个字、又紧挨着"材料、企业、公司"（_GLUE）的，和它并成一个词，不去掉（"新材料"不拆成
+    "新"和停用词"材料"；"大企业"不拆成"大"和"企业"）。别的停用词不并（"有什么政策"不留
+    "有什么"），"有、为、给"这类单字也不并（_NO_GLUE："有企业补贴"不留"有企业"，"企业有什么补贴"不留
+    "企业有"）。去掉的词后面紧跟着的"和、与、及、或"不粘到下一个词上（"企业和专精特新"）。"""
     raw: list[tuple[int, str, bool]] = []
     pos = 0
     for m in _DROP.finditer(run):
@@ -426,18 +574,52 @@ def _pieces(run: str) -> list[tuple[int, str, bool]]:
         at, text, drop = raw[i]
         if not drop and len(text) == 1:
             nxt = raw[i + 1] if i + 1 < len(raw) else None
-            if nxt and nxt[2] and len(nxt[1]) >= 2:
+            if nxt and nxt[2] and nxt[1] in _GLUE and text not in _NO_GLUE:
                 out.append((at, text + nxt[1], False))
                 i += 2
                 continue
-            if out and out[-1][2] and len(out[-1][1]) >= 2:
+            if out and out[-1][2] and out[-1][1] in _GLUE and text not in _NO_GLUE:
                 prev = out.pop()
                 out.append((prev[0], prev[1] + text, False))
                 i += 1
                 continue
+        if (
+            not drop
+            and out
+            and out[-1][2]
+            and text[0] in _JOINS
+            and len(text) >= 3
+            and not text.startswith(_HE_PLACES)
+        ):
+            at, text = at + 1, text[1:]  # "企业和专精特新"：去掉的词后面的"和"不粘到下一个词上
         out.append((at, text, drop))
         i += 1
     return out
+
+
+def _national(rest: str, places: tuple[str, ...], *, agency: bool) -> bool:
+    """看"国家""国家级"是不是说国家部委（rest 是它后面的字；开头的引号、书名号先跳过）：
+    - 单独说的：后面是句子结尾、不是汉字的、地名（places），或 _ALONE_AFTER 里的词；
+    - 后面紧跟着国家机关名（agency，只看"国家"）：连着的汉字（到 _NAME_END 里的词、地名或
+      "和＋地名"为止）整段以 _AGENCY_ENDS 结尾、又不以 _NOT_AGENCY 里的词结尾（国家数据局、
+      国家能源局综合司）。
+    别的是名称的开头（国家高新技术企业、国家级专精特新）。"""
+    rest = rest.lstrip(_OPENERS)
+    if not rest or not _HAN_CHAR.match(rest[0]):
+        return True
+    if rest.startswith(_ALONE_AFTER) or rest.startswith(places):
+        return True
+    if not agency:
+        return False
+    end = 0
+    while end < len(rest) and _HAN_CHAR.match(rest[end]):
+        if rest.startswith(_NAME_END, end) or rest.startswith(places, end):
+            break
+        if rest[end] in _JOINS and rest.startswith(places, end + 1):  # "国家数据局和广东"
+            break
+        end += 1
+    name = rest[:end]
+    return len(name) >= 2 and name.endswith(_AGENCY_ENDS) and not name.endswith(_NOT_AGENCY)
 
 
 def _areas(text: str, marks: list[str], covered: Coverage) -> dict[str, list[str]]:
@@ -448,8 +630,12 @@ def _areas(text: str, marks: list[str], covered: Coverage) -> dict[str, list[str
     provinces: list[str] = []
     city_hits: list[list[tuple[str, ...]]] = []
     district_hits: list[list[tuple[str, ...]]] = []
+    places = tuple(table)
     for m in _alternation(table).finditer(text):
         _take(marks, m.start(), m.end())
+        word = m.group()
+        if word in _NAME_STARTS and not _national(text[m.end() :], places, agency=word == "国家"):
+            continue  # 名称的开头（"国家高新技术企业"）：不当地区，也不当关键词
         meanings = table[m.group()]
         kinds = {meaning[0] for meaning in meanings}
         if "province" in kinds:
@@ -482,6 +668,20 @@ def _areas(text: str, marks: list[str], covered: Coverage) -> dict[str, list[str
     }
 
 
+def _period(kind: str, back: int, today: date) -> dict[str, str]:
+    """上周（back=1）：上一个星期一到星期日，上上周（back=2）再往前一周；上个月、上上个月同样按
+    自然月。today 是北京时间的今天。"""
+    if kind == "week":
+        start = today - timedelta(days=today.weekday() + 7 * back)
+        end = start + timedelta(days=6)
+    else:
+        end = today.replace(day=1) - timedelta(days=1)
+        for _ in range(back - 1):
+            end = end.replace(day=1) - timedelta(days=1)
+        start = end.replace(day=1)
+    return {"from": start.isoformat(), "to": end.isoformat()}
+
+
 def parse(text: str, *, today: date, covered: Coverage) -> Parsed:
     """第 1–7 条：从一句话里取条件。没认出来的字当关键词，不另外猜。"""
     text = normalize(text).replace("本年度", f"{today.year}年度")
@@ -498,9 +698,12 @@ def parse(text: str, *, today: date, covered: Coverage) -> Parsed:
 
     windows: set[str] = set()
     past: list[tuple[int, int]] = []  # （位置, 年份）
+    periods: list[tuple[int, tuple[str, int]]] = []  # （位置, (week 或 month, 往前几个)）
     tokens: list[tuple[int, str]] = []  # （位置, 关键词）
     for m in _TIME.finditer("".join(marks)):
-        if m.group() in _PAST:
+        if m.group() in _PERIOD_OF:
+            periods.append((m.start(), _PERIOD_OF[m.group()]))
+        elif m.group() in _PAST:
             past.append((m.start(), today.year - _PAST[m.group()]))
         else:
             windows.add(_TIME_OF[m.group()])
@@ -516,7 +719,9 @@ def parse(text: str, *, today: date, covered: Coverage) -> Parsed:
         else:
             continue
         _take(marks, m.start(), m.end())
-    if windows:
+    if periods:
+        conditions["period"] = _period(*min(periods)[1], today)
+    elif windows:
         conditions["time"] = next(t for t in _TIME_ORDER if t in windows)
     elif past:
         conditions["year"] = min(past)[1]
@@ -577,6 +782,12 @@ def statement(session: Session, conditions: dict[str, Any]) -> Select:
         stmt = stmt.where(
             Document.publish_date >= date(year, 1, 1), Document.publish_date < date(year + 1, 1, 1)
         )
+    if conditions["period"]:  # 上周、上个月：搜索页也没有，同往年在结果上再加
+        period = conditions["period"]
+        stmt = stmt.where(
+            Document.publish_date >= date.fromisoformat(period["from"]),
+            Document.publish_date <= date.fromisoformat(period["to"]),
+        )
     if _folds_guides(params["kind"], None):
         stmt = stmt.where(_kind_is(_NOT_GUIDE))
     return _grouped(stmt)
@@ -596,13 +807,14 @@ def _listed(session: Session, stmt: Select) -> tuple[int, list[int]]:
 
 
 def _expressible(conditions: dict[str, Any]) -> bool:
-    """搜索页能表达同样的条件：不是整个标题、不是文号、没按往年筛，关键词不超过 1 个、
-    不超过 50 字。"""
+    """搜索页能表达同样的条件：不是整个标题、不是文号、没按往年和上周、上个月筛，关键词不超过
+    1 个、不超过 50 字。"""
     keywords = conditions["keywords"]
     return (
         not conditions["title"]
         and not conditions["docNumber"]
         and conditions["year"] is None
+        and conditions["period"] is None
         and conditions["time"] in TIMES
         and len(keywords) <= 1
         and all(len(k) <= SEARCH_Q_CHARS for k in keywords)
@@ -674,12 +886,13 @@ def run(session: Session, text: str, *, today: date) -> dict[str, Any]:
 
 
 def _nothing(conditions: dict[str, Any]) -> bool:
-    """没有关键词、地区、往年，时间不限，类型不限：等于什么条件都没有。"""
+    """没有关键词、地区、往年、上周或上个月，时间不限，类型不限：等于什么条件都没有。"""
     return (
         not conditions["keywords"]
         and not _has_area(conditions)
         and not conditions["uncovered"]
         and conditions["year"] is None
+        and conditions["period"] is None
         and conditions["time"] == "不限"
         and conditions["kind"] == "all"
     )
@@ -698,6 +911,15 @@ def _area_label(key: str) -> str:
     return "·".join(part for part in (province, city if city != province else "", district) if part)
 
 
+def _span(period: dict[str, str]) -> str:
+    """写成"2026 年 6 月 8 日至 6 月 14 日"；跨年时后一个也写年份。"""
+    start, end = date.fromisoformat(period["from"]), date.fromisoformat(period["to"])
+    tail = f"{end.month} 月 {end.day} 日"
+    if end.year != start.year:
+        tail = f"{end.year} 年 {tail}"
+    return f"{start.year} 年 {start.month} 月 {start.day} 日至 {tail}"
+
+
 def conditions_text(stored: dict[str, Any]) -> str:
     """条件那句（小程序写在"按这些条件找的："后面），如"地区 广东 · 类型 申报通知 · 发布 今年 ·
     标题里有 专精特新"。没去搜的（拍照、地区都没收录）和整个标题比中的为空串。"""
@@ -713,7 +935,9 @@ def conditions_text(stored: dict[str, Any]) -> str:
     areas = conditions["regions"] + [
         _area_label(key) for key in conditions["cities"] + conditions["districts"]
     ]
-    if conditions["year"]:
+    if conditions.get("period"):
+        published = f"发布于 {_span(conditions['period'])}"
+    elif conditions["year"]:
         published = f"发布于 {conditions['year']} 年"
     else:
         published = "发布 " + ("不限时间" if conditions["time"] == "不限" else conditions["time"])
