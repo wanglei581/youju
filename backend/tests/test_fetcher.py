@@ -178,8 +178,11 @@ def test_robots_server_error_once_is_retried_and_reason_recorded() -> None:
 
 
 def test_robots_network_error_reason_is_kept() -> None:
+    tries: list[str] = []
+
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/robots.txt":
+            tries.append(request.url.host)
             raise httpx.ConnectTimeout("连接超时")
         raise AssertionError("robots.txt 取不到时不应抓取页面")
 
@@ -187,6 +190,24 @@ def test_robots_network_error_reason_is_kept() -> None:
         result = f.fetch("https://a.gov.cn/list.html")
     assert result.status == "robots_error"
     assert result.error.startswith("robots.txt 暂时无法获取（") and "本次跳过" in result.error
+    # 超时、连不上在下层已经重试过一次，robots 这层不再多试
+    assert tries == ["a.gov.cn", "a.gov.cn"]
+
+
+def test_robots_retry_after_5xx_stops_at_the_deadline() -> None:
+    """5xx 以后再取一次之前到了期限：给 deadline，robots.txt 不当成读不到记下来。"""
+    requested = []
+    now = {"t": 0.0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(request.url.path)
+        now["t"] = 100.0  # 第一次取 robots.txt 的时候到了期限
+        return httpx.Response(503)
+
+    with deadline_fetcher(handler, now, deadline=10.0) as f:
+        result = f.fetch("https://a.gov.cn/1.html")
+        assert result.status == "deadline" and requested == ["/robots.txt"]
+        assert f._robots == {}
 
 
 def test_robots_4xx_or_html_means_allowed() -> None:

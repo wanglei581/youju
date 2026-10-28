@@ -2260,9 +2260,10 @@ _FETCH_REASONS = {
 
 
 # 网络等临时问题没取到：隔这么久再为取文字下载一次（附件副本自己的重试照旧）。比两轮抓取的间隔
-# （6:30、20:30，最长 14 小时）短：这一轮失败，下一轮就再试，不会总落在同一个时段（10/27 海南工信厅
-# 3 个附件按 24 小时重试，每次都赶上晚上那轮取不到 robots.txt，卡了两天）
-TEXT_RETRY = timedelta(hours=8)
+# （6:30、20:30，短的那段 10 小时）短，还给跑晚了留几小时余量：这一轮失败，下一轮就再试，不会
+# 总落在同一个时段（10/27 海南工信厅 3 个附件按 24 小时重试，每次都赶上晚上那轮取不到 robots.txt，
+# 卡了两天）
+TEXT_RETRY = timedelta(hours=6)
 
 
 def _is_webpage(data: bytes) -> bool:
@@ -2326,7 +2327,9 @@ def record(
             # 重试，取到就能读
             report.kept += 1
             row.retry_at = now + TEXT_RETRY
-            if row.version_id is None:
+            # 只改按现在的规则还没取成过的（due() 到时一定会重试）；按现在的规则已有结论的（原网站
+            # 已删、太大……，副本任务复查时遇到临时问题也会走到这里）照旧写原来的结论
+            if row.version_id is None and row.extractor != EXTRACTOR_VERSION:
                 why = (failure.detail if failure is not None else "") or "网络等暂时问题"
                 if (row.status, row.reason) != ("failed", "unavailable"):
                     row.changed_at = now
@@ -2665,10 +2668,12 @@ def judge(session: Session, master, items: list, now: datetime) -> list[Reading]
             and row.version_id is None
             and row.status == "failed"
             and row.retry_at is not None
+            and row.extractor != EXTRACTOR_VERSION
         ):
             # 从没取到过文字、下载暂时失败等下一轮再试的：说原网站下载不了（原因在 detail），不算
             # 等取文字；下一轮取到了就能读
-            reading.state, reading.detail = row.reason or "unavailable", row.detail
+            reading.state = row.reason or "unavailable"
+            reading.detail, reading.checked_at = row.detail, row.checked_at
         elif (
             row is None
             or row.status == "pending"

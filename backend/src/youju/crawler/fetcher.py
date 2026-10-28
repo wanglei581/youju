@@ -301,7 +301,7 @@ class PoliteFetcher:
                 None,
                 now,
                 f"robots.txt 暂时无法获取（{why[:120]}），本次跳过",
-                server_error=status is not None,
+                server_error=status is not None and status >= 500,
             )
         if status is not None and 400 <= status < 500:
             # RFC 9309 §2.3.1.3：4xx（包括 401、403）视为 robots.txt 不可用，可以抓取
