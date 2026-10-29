@@ -137,7 +137,7 @@ Page({
     });
   },
   recheck(orderId) {
-    this.rechecking = true; this.cancelledPay = false;
+    this.rechecking = true; this.cancelledPay = false; this.payNote = '';
     this.setData({ busy: true, message: pay.TEXT.confirming, payError: false, ordersLink: false });
     this.watch(orderId);
     this.payDeadline = Date.now() + pay.POLL_TIMEOUT;
@@ -158,27 +158,27 @@ Page({
       this.watch(order.orderId);
       try {
         wx.requestVirtualPayment(Object.assign(pay.paymentParams(order), {
-          success: () => this.afterPay(false), fail: (err) => this.payFailed(err),
+          success: () => this.afterPay(false), fail: (err) => this.payFailed(err, false),
         }));
-      } catch (err) { this.payFailed(err); }
+      } catch (err) { this.payFailed(err, true); }
     });
   },
-  // 付款前就被微信拒了（pay.notStarted，比如道具还没发布到现网）：肯定没扣钱——不记"待确认"、不挡下一次付款，
-  // 直接说没有扣钱和错误码（独立审阅 10/29：原来一律当成可能扣了款，提示"已扣款的会自动开通"，还锁 48 小时）
-  payFailed(err) {
-    if (!pay.notStarted(err)) { this.afterPay(pay.isCancel(err)); return; }
-    if (this.unloaded || this.payDeadline) return;
-    if (this.poller) this.poller.stop();
-    this.setData({ busy: false, message: pay.notStartedText(err), payError: true });
+  // 付款前就被微信拒了（pay.notStarted，比如道具还没发布到现网），或调起付款时就出错（付款界面没打开）：
+  // 不记"待确认"、不挡下一次付款（原来一律锁 48 小时），照取消那样再查几秒，万一扣了款也能开通；
+  // 说明里写错误码，不断言"没有扣钱"（独立审阅、Codex 第 6 轮、agy 第 4 轮，10/29）
+  payFailed(err, thrown) {
+    if (!thrown && !pay.notStarted(err)) { this.afterPay(pay.isCancel(err)); return; }
+    this.afterPay(true, pay.notStartedText(err));
   },
-  afterPay(cancelled) {
+  afterPay(cancelled, note) {
     if (this.unloaded || this.payDeadline) return;
     this.cancelledPay = cancelled;
+    this.payNote = note || '';
     // 没取消：可能已经扣款，记下这一笔，确认之前不再下新单
     if (!cancelled) { this.unsettledId = this.orderId; saveUnsettled(this.orderId); }
     this.payDeadline = Date.now() + (cancelled ? CANCEL_CHECK : pay.POLL_TIMEOUT);
-    this.setData({ message: cancelled ? pay.TEXT.cancelled : pay.TEXT.confirming, payError: false });
-    if (cancelled) wx.showToast({ title: pay.TEXT.cancelled, icon: 'none' });
+    this.setData({ message: this.payNote || (cancelled ? pay.TEXT.cancelled : pay.TEXT.confirming), payError: !!this.payNote });
+    if (cancelled && !this.payNote) wx.showToast({ title: pay.TEXT.cancelled, icon: 'none' });
     if (!this.visible) { this.payResume = true; return; }
     this.poller.start(this.payDeadline);
   },
@@ -195,9 +195,9 @@ Page({
         if (!this.unloaded && status.pass && status.pass.active) this.setData({ expires: pay.date(status.pass.expiresAt), soon: pay.expiryNotice(status.pass), message: `已开通，使用期到 ${pay.date(status.pass.expiresAt)}` });
       }).catch(() => {});
     } else if (result.state === 'timeout') {
-      const message = this.cancelledPay ? pay.TEXT.cancelled : rechecking ? pay.TEXT.unsettled : pay.TEXT.timeout;
+      const message = this.payNote || (this.cancelledPay ? pay.TEXT.cancelled : rechecking ? pay.TEXT.unsettled : pay.TEXT.timeout);
       // 没确认到结果（不是自己取消的）：给一个去订单页的入口，订单页可以"重新核对"
-      this.setData({ busy: false, message, payError: false, ordersLink: !this.cancelledPay });
+      this.setData({ busy: false, message, payError: !!this.payNote, ordersLink: !this.cancelledPay });
     } else {
       const status = result.order.status;
       const closed = status === '已关闭';

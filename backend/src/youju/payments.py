@@ -892,13 +892,15 @@ def accept_payment(
         else None
     )
     if problem is not None:
-        if not accepted and order.status != "manual":
+        if not accepted:
             # 微信已确认付款但核验不过：不能留在待支付里一直查，也不能发货；转人工并告警。
-            order.wx_order_id = data.get("wx_order_id")
-            if type(data.get("paid_fee")) is int:
-                order.paid_fee = data["paid_fee"]
-            order.paid_time = paid_time
-            order.platform = platform(data, settings)
+            # 已经是人工的单：付款信息不改，原因照样追加、再告警（escalate，Codex 第 6 轮）
+            if order.status != "manual":
+                order.wx_order_id = data.get("wx_order_id")
+                if type(data.get("paid_fee")) is int:
+                    order.paid_fee = data["paid_fee"]
+                order.paid_time = paid_time
+                order.platform = platform(data, settings)
             escalate(order, f"微信已确认付款，但{problem}，未发货，需人工核对", stamp)
         return False
     if push is not None:
@@ -1488,6 +1490,32 @@ def settle_pending(
     return "manual" if order.status == "manual" else "unavailable"
 
 
+def recheck(
+    session: Session, order: PayOrder, client: XPayClient, settings: Settings, stamp: datetime
+) -> str:
+    """负责人核对一张订单（youju pay-recheck）：48 小时查不到付款结果已关单的、转了人工的、
+    还在待确认的，向微信查一次，按和补单同一套规则处理——付了款且核验通过就开通（再通知发货），
+    退完了记已退款，微信已关单记关单，没付款不动（Codex 第 6 轮：关单以后要有核实、处理的路径）。
+    调用方已锁 用户 → 订单。返回 paid / refunded / closed / unpaid / manual / skipped
+    （其他状态的订单不动）；查单出错抛 XPayError。"""
+    if order.status not in ("closed", "manual", "pending"):
+        return "skipped"
+    data = query(session, order, client)
+    if mark_refunded(session, order, data, stamp):
+        return "refunded" if order.status == "refunded" else "manual"
+    status = data.get("status")
+    if status == 6:
+        if order.status != "closed":
+            order.status, order.updated_at = "closed", stamp
+        return "closed"
+    if status in (0, 1):
+        return "unpaid"
+    if order.status == "pending" and flag_odd_pending(order, data, stamp):
+        return "manual"
+    accept_payment(session, order, data, settings, stamp)
+    return "paid" if order.status == "completed" else order.status
+
+
 def run_payments(
     session: Session,
     *,
@@ -1619,7 +1647,11 @@ def run_payments(
                 order.status == "closed"
                 and order.error == UNCONFIRMED_PAYMENT_ERROR
                 and not order.alerted_at
-                and alert(f"支付订单 #{order.id} {UNCONFIRMED_PAYMENT_ERROR}") is not False
+                and alert(
+                    f"支付订单 #{order.id} {UNCONFIRMED_PAYMENT_ERROR}；核实付了款的，"
+                    f"在 admin 里运行 youju pay-recheck --order-id {order.id}"
+                )
+                is not False
             ):
                 order.alerted_at = stamp
             order.updated_at = stamp

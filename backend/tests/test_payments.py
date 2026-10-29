@@ -935,6 +935,81 @@ def test_manual_reasons_are_added_not_overwritten_and_alert_again(
     assert run_alerts(2).alerted_at == NOW + timedelta(minutes=1) and len(alerts) == 2
 
 
+def test_new_problem_on_manual_order_is_added_and_alerts_again(setup_pay, session):
+    """已经转人工的单（这里是投诉），之后的推送查到付款但核验不过：付款信息不改，原因照样追加、
+    再告警一次（Codex 第 6 轮：原来直接跳过，新问题没人知道）。"""
+    row = order(session, create(setup_pay))
+    base = {"OpenId": "pay-user", "MchOrderId": row.out_trade_no, "WxOrderId": row.wx_order_id}
+    assert push(setup_pay, {**base, "Event": "xpay_complaint_notify"}).json()["ErrCode"] == 0
+    alerts = []
+    _, settings, fake = setup_pay
+    payments.run_payments(
+        session, settings=settings, client=fake.client, stamp=NOW, alert=alerts.append
+    )
+    fake.status, fake.fee = 2, 101
+    assert push(setup_pay, payload(row)).json()["ErrCode"] != 0
+    session.expire_all()
+    row = session.get(PayOrder, row.id)
+    assert row.status == "manual" and row.error.startswith("微信已确认付款，但支付金额与订单不符")
+    assert payments.COMPLAINT_ERROR in row.error and row.alerted_at is None
+    later = NOW + timedelta(minutes=1)
+    payments.run_payments(
+        session, settings=settings, client=fake.client, stamp=later, alert=alerts.append
+    )
+    assert len(alerts) == 2 and "支付金额与订单不符" in alerts[1]
+    assert payments.order_pass(session, row) is None
+
+
+def test_pay_recheck_command_opens_a_paid_order_closed_after_48_hours(
+    setup_pay, session, session_factory, monkeypatch, capsys
+):
+    """48 小时查不到付款结果关了单、告警以后，负责人用 youju pay-recheck 向微信查一次：
+    付了款且核验通过就开通、通知发货；先 --dry-run 只看查单结果（Codex 第 6 轮）。"""
+    from youju import cli, xpay
+
+    _, settings, fake = setup_pay
+    monkeypatch.setattr(cli, "session_factory", lambda: session_factory)
+    monkeypatch.setattr("youju.config.get_settings", lambda: settings)
+    monkeypatch.setattr(
+        xpay, "wx_http", lambda: httpx.Client(transport=httpx.MockTransport(fake.handle))
+    )
+
+    def recheck(*args):
+        code = cli.main(["pay-recheck", *args])
+        return code, capsys.readouterr().out.strip().splitlines()[-1]
+
+    paid, unpaid = (order(session, create(setup_pay)) for _ in range(2))
+    for row in (paid, unpaid):
+        row.created_at = NOW - timedelta(hours=49)
+    session.commit()
+    fake.bad_order = True
+    run(session, setup_pay)
+    assert paid.status == unpaid.status == "closed"
+    fake.bad_order, fake.status = False, 2
+    assert recheck("--order-id", str(paid.id), "--dry-run") == (
+        0,
+        f"pay_recheck order={paid.id} result=dry_run status=closed wx_status=2 dry_run=1",
+    )
+    session.expire_all()
+    assert session.get(PayOrder, paid.id).status == "closed"
+    assert recheck("--order-id", str(paid.id)) == (
+        0,
+        f"pay_recheck order={paid.id} result=paid status=completed wx_status=- dry_run=0",
+    )
+    session.expire_all()
+    row = session.get(PayOrder, paid.id)
+    assert row.status == "completed" and row.goods_notified and payments.order_pass(session, row)
+    # 已开通的不再动；微信说没付款的照旧关着；没有的单号报 missing
+    assert recheck("--order-id", str(paid.id))[1].endswith(
+        "result=skipped status=completed wx_status=- dry_run=0"
+    )
+    fake.status = 1
+    assert recheck("--order-id", str(unpaid.id))[0] == 0
+    session.expire_all()
+    assert session.get(PayOrder, unpaid.id).status == "closed"
+    assert recheck("--order-id", "999999")[0] == 1
+
+
 def test_pending_order_window_and_confirmed_close(setup_pay, session):
     row = order(session, create(setup_pay))
     assert run(session, setup_pay)["processed"] == 0
@@ -1319,7 +1394,14 @@ def test_fix_3_unconfirmable_pending_closes_and_alerts_after_48_hours(setup_pay,
     later = NOW + timedelta(minutes=1)
     payments.run_payments(session, settings=settings, client=fake.client, stamp=later, alert=flaky)
     assert row.status == "closed" and row.alerted_at == later
-    assert sent == [f"支付订单 #{row.id} {payments.UNCONFIRMED_PAYMENT_ERROR}"] * 2
+    assert (
+        sent
+        == [
+            f"支付订单 #{row.id} {payments.UNCONFIRMED_PAYMENT_ERROR}；核实付了款的，"
+            f"在 admin 里运行 youju pay-recheck --order-id {row.id}"
+        ]
+        * 2
+    )
     assert payments.has_work(session, settings) is False
     assert run(session, setup_pay, NOW + timedelta(hours=1))["processed"] == 0
 

@@ -1863,6 +1863,58 @@ def _cmd_pay_refund_due(args: argparse.Namespace) -> int:
     return 0 if result in ("marked", "cleared", "unchanged") else 1
 
 
+def _cmd_pay_recheck(args: argparse.Namespace) -> int:
+    """负责人核对一张订单：48 小时查不到付款结果已关单的、转了人工的、还在待确认的，向微信查一次，
+    付了款且核验通过就开通（再通知发货），退完了记已退款，微信已关单记关单，没付款不动。
+    先加 --dry-run 只看查单结果。最后一行只有英文和数字（Webshell 里中文可能乱码）：
+    pay_recheck order=N result=… status=… wx_status=… dry_run=0|1"""
+    from youju import payments
+    from youju.config import get_settings
+    from youju.xpay import XPayClient, XPayError, wx_http
+
+    settings = get_settings()
+    stamp = datetime.now(UTC)
+    wx_status = "-"
+    with session_factory()() as session, wx_http() as http:
+        client = XPayClient(settings, http)
+        order = payments.lock_order(session, args.order_id)
+        if order is None:
+            result = "missing"
+        elif order.status not in ("closed", "manual", "pending"):
+            result = "skipped"
+        else:
+            try:
+                if args.dry_run:
+                    wx_status = payments.query(session, order, client).get("status", "-")
+                    result = "dry_run"
+                else:
+                    result = payments.recheck(session, order, client, settings, stamp)
+                    session.commit()
+                    if order.status == "completed" and not order.goods_notified:
+                        payments.provide_goods(session, order, client)
+            except XPayError as exc:
+                result = f"query_failed errcode={exc.code}"
+        session.rollback()
+        status = order.status if order is not None else "-"
+    print(
+        {
+            "paid": "核验通过，已开通",
+            "refunded": "微信那边已经退完，记成已退款、收回使用期",
+            "closed": "微信已关单，记成已关闭",
+            "unpaid": "微信那边还没有这笔付款，没改",
+            "manual": "核验不过或状态少见，已转人工（会告警）",
+            "skipped": "这笔订单不是已关闭、人工或待确认的，没动",
+            "missing": "没找到这笔订单",
+            "dry_run": "演练：只查了单，没改",
+        }.get(result.split()[0], "查单出错，没改，稍后再试")
+    )
+    print(
+        f"pay_recheck order={args.order_id} result={result} status={status} "
+        f"wx_status={wx_status} dry_run={int(args.dry_run)}"
+    )
+    return 0 if result.split()[0] in ("paid", "refunded", "closed", "unpaid", "dry_run") else 1
+
+
 def _cmd_pay(args: argparse.Namespace) -> int:
     from datetime import UTC, datetime, timedelta
 
@@ -2401,6 +2453,14 @@ def main(argv: list[str] | None = None) -> int:
     mark.add_argument("--clear", action="store_true", help="清除标记")
     p.add_argument("--dry-run", action="store_true", help="只打印，不写入")
     p.set_defaults(func=_cmd_pay_refund_due)
+    p = sub.add_parser(
+        "pay-recheck",
+        help="核对一张已关闭（48 小时查不到付款结果）、人工或待确认的订单：向微信查一次，"
+        "付了款就开通、退完了记已退款（开关关闭后仍可运行）",
+    )
+    p.add_argument("--order-id", type=int, required=True, help="订单编号（用户订单页上的订单号）")
+    p.add_argument("--dry-run", action="store_true", help="只查单、打印微信那边的状态，不写入")
+    p.set_defaults(func=_cmd_pay_recheck)
     p = sub.add_parser(
         "advisor-run",
         help="处理顾问技能包任务（开关关闭时跳过）；AI 任务在 50 秒里每隔 3 秒领一次新的",
