@@ -662,7 +662,10 @@ function payHeader() {
   const header = {};
   try {
     const terms = require('../content/pay-terms.js');
-    if (terms && terms.final === true && typeof terms.version === 'string' && terms.version) header['X-Youju-Pay-Terms'] = terms.version;
+    // 和购买页的 pay.termsFinal 同一个判断（这里不引 pay.js：测试加载器要求每个依赖都有替身）：
+    // 不一致的话入口还在、点进购买页却回首页（独立审阅 10/29）
+    const final = !!(terms && terms.final === true && typeof terms.text === 'string' && terms.text.trim() && !/待.*定稿|占位/.test(terms.text));
+    if (final && typeof terms.version === 'string' && terms.version) header['X-Youju-Pay-Terms'] = terms.version;
   } catch (e) { /* 读不到就不带 */ }
   try {
     const env = wx.getAccountInfoSync().miniProgram.envVersion;

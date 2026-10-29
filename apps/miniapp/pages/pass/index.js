@@ -158,10 +158,18 @@ Page({
       this.watch(order.orderId);
       try {
         wx.requestVirtualPayment(Object.assign(pay.paymentParams(order), {
-          success: () => this.afterPay(false), fail: (err) => this.afterPay(pay.isCancel(err)),
+          success: () => this.afterPay(false), fail: (err) => this.payFailed(err),
         }));
-      } catch (err) { this.afterPay(pay.isCancel(err)); }
+      } catch (err) { this.payFailed(err); }
     });
+  },
+  // 付款前就被微信拒了（pay.notStarted，比如道具还没发布到现网）：肯定没扣钱——不记"待确认"、不挡下一次付款，
+  // 直接说没有扣钱和错误码（独立审阅 10/29：原来一律当成可能扣了款，提示"已扣款的会自动开通"，还锁 48 小时）
+  payFailed(err) {
+    if (!pay.notStarted(err)) { this.afterPay(pay.isCancel(err)); return; }
+    if (this.unloaded || this.payDeadline) return;
+    if (this.poller) this.poller.stop();
+    this.setData({ busy: false, message: pay.notStartedText(err), payError: true });
   },
   afterPay(cancelled) {
     if (this.unloaded || this.payDeadline) return;

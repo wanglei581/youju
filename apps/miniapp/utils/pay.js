@@ -204,6 +204,14 @@ function invoiceProblem(form) {
 }
 function paymentParams(order) { return { signData: order.signData, paySig: order.paySig, signature: order.signature, mode: order.mode || PAY_MODE }; }
 function isCancel(err) { return !!err && (err.errCode === -2 || /cancel/i.test(err.errMsg || '')); }
+// 付款前就被微信拒了、肯定没扣钱的错误：只认官方 wx.requestVirtualPayment 错误码表里列出的（10/29 核对）——
+// 1001 参数错误、-4 风控拦截、-15001～-15014、-15016～-15021（签名错、道具没发布到现网、发布 10 分钟内还没生效、
+// 价格不符、商户受限、限频等；表里没有 -15015）。这类不记"待确认"、不挡下一次付款；
+// -1 支付失败、-5 结果未知和表里没有的错误码，仍当成可能扣了款（独立审阅 10/29）
+const NOT_STARTED = new Set([1001, -4, -15001, -15002, -15003, -15004, -15005, -15006, -15007, -15008, -15009, -15010,
+  -15011, -15012, -15013, -15014, -15016, -15017, -15018, -15019, -15020, -15021]);
+function notStarted(err) { return !!err && NOT_STARTED.has(err.errCode); }
+function notStartedText(err) { return `支付没有发起，没有扣钱，请稍后再试（错误码 ${err.errCode}）`; }
 function classify(order) {
   if (order && order.status === '已完成' && order.passStartsAt && order.passEndsAt && !order.passRevokedAt) return 'success';
   if (order && ['退款中', '已退款', '需人工处理', '已关闭'].includes(order.status)) return 'failed';
@@ -244,4 +252,4 @@ function createPoller(options) {
     stop, isActive: () => active,
   };
 }
-module.exports = { POLL_INTERVAL, POLL_TIMEOUT, PAY_MODE, TEXT, yuan, date, monthDay, clock, stateNote, passBadge, normalizeProducts, tierView, tiersLine, renewRule, termsFinal, invoiceType, expiryNotice, toolStatus, limitView, refundReason, giftLines, orderView, invoiceText, invoiceBody, invoiceProblem, paymentParams, isCancel, classify, createPoller };
+module.exports = { POLL_INTERVAL, POLL_TIMEOUT, PAY_MODE, TEXT, yuan, date, monthDay, clock, stateNote, passBadge, normalizeProducts, tierView, tiersLine, renewRule, termsFinal, invoiceType, expiryNotice, toolStatus, limitView, refundReason, giftLines, orderView, invoiceText, invoiceBody, invoiceProblem, paymentParams, isCancel, notStarted, notStartedText, classify, createPoller };

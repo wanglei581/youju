@@ -560,7 +560,9 @@ def _transaction_push(data: dict, xml: bool, session: Session, client: XPayClien
             return reply(xml, 1)
         payments.event(session, kind, data, order)
         if kind == "xpay_complaint_notify":
-            order.status, order.error = "manual", f"{payments.COMPLAINT_ERROR}，需人工处理"
+            # 原因只加不盖、再告警一次（payments.escalate）：
+            # 已经在核对退款的单不能被投诉盖掉（Codex 第 5 轮）
+            payments.escalate(order, f"{payments.COMPLAINT_ERROR}，需人工处理", _stamp())
             session.commit()
             return reply(xml)
         # 退款推送和发货推送一样只是"去查单"的信号，按查单结果走和每分钟补单同一套处理

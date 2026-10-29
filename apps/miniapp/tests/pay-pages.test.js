@@ -274,6 +274,18 @@ test('商品、下单、能力、我的、提交任务这几个请求带上代�
   const draft = api('trial', { version: 'pay-2026-10-draft', final: false, title: '付费服务协议', text: '【待定稿】' });
   await draft.module.payProducts();
   assert.deepEqual(draft.seen[0].header, { 'X-Youju-Env': 'trial' });
+  // 和购买页的 pay.termsFinal 一致：final 写成 true、正文还是占位，也不带（不然入口还在、购买页却回首页）
+  const pay = load('utils/pay.js', {}, {});
+  for (const terms of [
+    { version: 'pay-x', final: true, title: '付费服务协议', text: '【付费服务协议：待定稿】' },
+    { version: 'pay-x', final: true, title: '付费服务协议', text: '  ' },
+    { version: 'pay-x', final: 'true', title: '付费服务协议', text: '正文' },
+    { version: 'pay-x', final: true, title: '付费服务协议', text: '正文' },
+  ]) {
+    const one = api('trial', terms);
+    await one.module.payProducts();
+    assert.equal(Object.hasOwn(one.seen[0].header, 'X-Youju-Pay-Terms'), pay.termsFinal(terms) && terms.final === true, JSON.stringify(terms));
+  }
 });
 
 test('购买页在商品 404 或空列表时直接回首页，页面上不出现"暂未开放"，也没有付款按钮，防止首发包里的购买页被直接打开时像没做完的功能（D-074）', async () => {
@@ -481,6 +493,34 @@ test('购买页取消支付不记未完成单；其他失败记下来，确认�
   await flush();
   assert.equal(failed.calls.filter((call) => call[0] === 'create').length, 1);
   assert.deepEqual(failed.calls.filter((call) => call[0] === 'check').map((call) => call[1]), [41, 41]);
+});
+
+test('付款前就被微信拒了的错误（道具没发布到现网、发布还没生效、签名错、风控拦截等）直接说没有扣钱，不记待确认、不挡下一次付款；-1、-5 和没见过的错误码照旧当成可能扣了款，防止切现网后测试人员没花钱却被告知"已扣款"还锁 48 小时（独立审阅 10/29）', async () => {
+  for (const errCode of [-15010, -15014, -15013, -15006, -15001, -15021, -4, 1001]) {
+    const h = passPage({ onPay: (payload) => payload.fail({ errCode, errMsg: 'requestVirtualPayment:fail' }) });
+    await flush();
+    h.page.check({ detail: { value: ['agree'] } });
+    h.page.buy();
+    await flush();
+    assert.equal(h.page.data.message, `支付没有发起，没有扣钱，请稍后再试（错误码 ${errCode}）`, String(errCode));
+    assert.equal(h.page.data.busy, false);
+    assert.equal(h.page.data.payError, true);
+    assert.equal(h.storage.has('pay.unsettled'), false);
+    assert.equal(h.calls.filter((call) => call[0] === 'check').length, 0);
+    // 再点一次照常下新单，不是去复查上一笔
+    h.page.buy();
+    await flush();
+    assert.equal(h.calls.filter((call) => call[0] === 'create').length, 2, String(errCode));
+  }
+  for (const errCode of [-1, -5, -15015, -15022, -3, undefined]) {
+    const h = passPage({ onPay: (payload) => payload.fail({ errCode, errMsg: 'requestVirtualPayment:fail' }) });
+    await flush();
+    h.page.check({ detail: { value: ['agree'] } });
+    h.page.buy();
+    await flush();
+    assert.equal(h.storage.get('pay.unsettled').orderId, 41, String(errCode));
+    assert.doesNotMatch(h.page.data.message, /没有扣钱/);
+  }
 });
 
 test('购买页付款后切到后台超过一分钟，回来时再查一次服务端，查到已完成就显示开通，防止付了款却停在超时提示', async () => {

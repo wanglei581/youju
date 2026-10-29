@@ -887,6 +887,54 @@ def test_unconfirmed_refund_push_on_order_already_manual_alerts_again(setup_pay,
     assert len(alerts) == 2 and payments.REFUND_PUSH_UNCONFIRMED_ERROR in alerts[1]
 
 
+@pytest.mark.parametrize("order_of_events", ["refund_then_complaint", "complaint_then_partial"])
+def test_manual_reasons_are_added_not_overwritten_and_alert_again(
+    setup_pay, session, order_of_events
+):
+    """转人工的原因只加不盖、每来一个新原因再告警一次（payments.escalate，Codex 第 5 轮）：
+    没核实的退款转人工后又来投诉，退款核对那句不能被盖掉；投诉告警过以后查单显示部分退款，要再告警。"""
+    row = delivered(setup_pay, session)
+    base = {"OpenId": "pay-user", "MchOrderId": row.out_trade_no, "WxOrderId": row.wx_order_id}
+    complaint = {**base, "Event": "xpay_complaint_notify"}
+    refund = {**base, "Event": "xpay_refund_notify", "RefundFee": 100, "RetCode": 0}
+    fake = setup_pay[2]
+    alerts = []
+
+    def run_alerts(minutes):
+        payments.run_payments(
+            session,
+            settings=setup_pay[1],
+            client=fake.client,
+            stamp=NOW + timedelta(minutes=minutes),
+            alert=alerts.append,
+        )
+        session.expire_all()
+        return session.get(PayOrder, row.id)
+
+    if order_of_events == "refund_then_complaint":
+        assert push(setup_pay, refund).json()["ErrCode"] != 0
+        run_alerts(0)
+        assert push(setup_pay, complaint).json()["ErrCode"] == 0
+        current = run_alerts(1)
+        assert current.error.startswith(f"{payments.COMPLAINT_ERROR}，需人工处理；原来的原因：")
+        assert payments.REFUND_PUSH_UNCONFIRMED_ERROR in current.error
+    else:
+        assert push(setup_pay, complaint).json()["ErrCode"] == 0
+        run_alerts(0)
+        fake.status, fake.left_fee = 8, 50  # 查单：退完了，但剩的钱和预期不符
+        assert push(setup_pay, refund).json()["ErrCode"] == 0
+        current = run_alerts(1)
+        assert current.error.startswith(
+            "订单部分退款，退款金额和预期不符，需人工核对；原来的原因："
+        )
+        assert payments.COMPLAINT_ERROR in current.error and current.refund_status == "partial"
+    assert current.status == "manual" and current.alerted_at == NOW + timedelta(minutes=1)
+    assert len(alerts) == 2 and alerts[1] == f"支付订单 #{row.id} 需人工处理：{current.error}"
+    # 同一个原因再来一次：不重复加、不重复告警
+    assert not payments.escalate(current, f"{payments.COMPLAINT_ERROR}，需人工处理", NOW)
+    assert run_alerts(2).alerted_at == NOW + timedelta(minutes=1) and len(alerts) == 2
+
+
 def test_pending_order_window_and_confirmed_close(setup_pay, session):
     row = order(session, create(setup_pay))
     assert run(session, setup_pay)["processed"] == 0
@@ -1243,9 +1291,10 @@ def test_fix_2_push_amount_mismatch_manual_and_alerted_once(setup_pay, session):
     assert session.scalar(select(func.count(AdvisorTask.id))) == 0
 
 
-def test_fix_3_unconfirmable_pending_goes_manual_after_48_hours(setup_pay, session):
-    """查了 48 小时都没查成：不知道付没付款，转人工并告警。现网真扣钱：以前直接关单，万一其实付了款、
-    推送和对账也没接上就没人知道；告警没发出去，下一轮接着发（Codex 10/29）。"""
+def test_fix_3_unconfirmable_pending_closes_and_alerts_after_48_hours(setup_pay, session):
+    """查了 48 小时都没查成：关单并告警（现网真扣钱，万一其实付了款、推送和对账也没接上，有人去核对）；
+    告警没发出去，下一轮接着发，发出去以后不再选中（Codex 10/29）。不转人工：没有能把这种单查清楚的工具，
+    订单页"1 个工作日内处理"兑现不了（独立审阅 10/29）。"""
     row = order(session, create(setup_pay))
     row.created_at = NOW - timedelta(hours=47)
     session.commit()
@@ -1262,12 +1311,16 @@ def test_fix_3_unconfirmable_pending_goes_manual_after_48_hours(setup_pay, sessi
         return len(sent) > 1  # 第一次没发出去
 
     payments.run_payments(session, settings=settings, client=fake.client, stamp=NOW, alert=flaky)
-    assert row.status == "manual" and row.error == payments.UNCONFIRMED_PAYMENT_ERROR
+    assert row.status == "closed" and row.error == payments.UNCONFIRMED_PAYMENT_ERROR
     assert row.alerted_at is None
+    # 支付关着也照样补发（定时任务先看 has_work）
+    settings.pay_enabled = False
+    assert payments.has_work(session, settings) is True
     later = NOW + timedelta(minutes=1)
     payments.run_payments(session, settings=settings, client=fake.client, stamp=later, alert=flaky)
-    assert row.alerted_at == later
-    assert len(sent) == 2 and all(f"支付订单 #{row.id} 需人工处理" in m for m in sent)
+    assert row.status == "closed" and row.alerted_at == later
+    assert sent == [f"支付订单 #{row.id} {payments.UNCONFIRMED_PAYMENT_ERROR}"] * 2
+    assert payments.has_work(session, settings) is False
     assert run(session, setup_pay, NOW + timedelta(hours=1))["processed"] == 0
 
 

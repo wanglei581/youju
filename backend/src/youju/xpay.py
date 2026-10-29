@@ -68,9 +68,11 @@ class XPayClient:
 
     def appkey(self, env: int) -> str:
         secret = self.settings.xpay_appkey_prod if env == 0 else self.settings.xpay_appkey_sandbox
-        if not secret or not secret.get_secret_value():
+        # 去掉首尾空格，和 payments.orderable 的判断一致：环境变量里多粘了空格，签名也不会错
+        key = secret.get_secret_value().strip() if secret else ""
+        if not key:
             raise XPayError
-        return secret.get_secret_value()
+        return key
 
     def session_key(self, code: str, openid: str) -> str:
         # 方式 A（默认）：云托管开放接口服务，不带 secret，走容器内 http 地址。
