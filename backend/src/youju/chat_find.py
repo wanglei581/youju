@@ -535,10 +535,10 @@ _PERIOD_OF = {
     **dict.fromkeys(("上上个月", "上上月", "上上一个月"), ("month", 2)),
 }
 # 四位数：后面跟"年度"的不是时间；没写"年"、后面是万、元这类的是数（奖励 2000 万），后面跟着
-# "到 5000 元"这类的也是（奖励 2000 到 5000 元）
+# "到 5000 元"这类的、后面是小数点的也是（奖励 2000 到 5000 元、2025.5 元）
 _AMOUNT_UNITS = "万亿元千百个家人项台套吨亩米件号户名块只批所辆次篇起%"
 _YEAR = re.compile(
-    rf"(?<!\d)(\d{{4}})(?!\d)(?!年度)(?![到至~～\-—－]\d+(?:\.\d+)?[{_AMOUNT_UNITS}])"
+    rf"(?<!\d)(\d{{4}})(?![\d.])(?!年度)(?![到至~～\-—－–]\d+(?:\.\d+)?[{_AMOUNT_UNITS}])"
     rf"(?:年|(?![{_AMOUNT_UNITS}]))"
 )
 _YEAR_DEGREE = re.compile(r"(?<!\d)\d{4}年度")
@@ -927,9 +927,10 @@ def _time_at(text: str, pos: int = 0) -> _TimeHit | None:
             exact = part.group() in ("初", "年初")
             best = replace(best, end=since.end(), since=True, rough=not exact)
     stop = _stop_at(text, best.end)
-    # 去年以来截止、2025 年至今到期：说的是截止；去年以来截止目前（"截至"写错了字）是到现在，不算
-    now = best.since and _UP_TO_NOW_AT.match(text, best.end) is not None
-    if stop is not None and (not best.since or (stop[1] and not now)):
+    # 去年以来截止、2025 年至今到期：说的是截止；去年以来截止目前、今年以来截止目前（"截至"写错了
+    # 字）是到现在，不算
+    now = _UP_TO_NOW_AT.match(text, best.end) is not None
+    if stop is not None and not now and (not best.since or stop[1]):
         end, deadline = stop
         return _TimeHit("vague", end, text[pos:end], deadline=deadline)
     return best
