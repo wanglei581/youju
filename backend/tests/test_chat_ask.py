@@ -373,6 +373,8 @@ def test_nth_and_drafting():
     assert ask._spans("第1、3至5句") == [(1, 1), (3, 5)]
     assert ask._spans("第一和二句") == [(1, 1), (2, 2)]
     assert ask._spans("第1、2句和第5句") == [(1, 1), (2, 2), (5, 5)]  # 每一处都看（Codex 第 5 轮）
+    assert ask._spans("第1–3句") == [(1, 3)] and ask._spans("第2〜四句") == [(2, 4)]  # #409
+    assert ask.refers_back("第1–3句") and ask.beyond("刚才第1〜5句", 3) == 4
     assert [ask.beyond(t, 3) for t in ("第2、5句", "第1至5句", "第5至3句", "第2至四句")] == [
         5,
         4,
