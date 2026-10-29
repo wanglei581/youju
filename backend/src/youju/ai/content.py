@@ -93,9 +93,9 @@ class SourceText:
 
     @property
     def readable(self) -> bool:
-        """shown_id 那一个现在能不能在站内打开；正文为 True。"""
+        """shown_id 那一个现在能不能在站内打开；正文为 True（附件来源一个附件都没有的为 False）。"""
         shown = self.shown
-        return shown is None or shown.readable
+        return self.key == BODY if shown is None else shown.readable
 
     @property
     def label(self) -> str:

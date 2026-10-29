@@ -1402,8 +1402,12 @@ def test_card_reader_opens_the_attachment_named_in_scope(
 
 
 def test_pick_without_any_attachment_gives_nothing():
-    """内容一样的附件一个都没有（⑤）：不挑，调用方作废。"""
-    assert ask._pick(content.SourceText(key="att-x", version="x", text="甲"), [1]) == (None, "")
+    """内容一样的附件一个都没有（⑤）：不挑，调用方作废；这样的来源也不算能站内打开。"""
+    empty = content.SourceText(key="att-x", version="x", text="甲")
+    assert ask._pick(empty, [1]) == (None, "")
+    assert (empty.readable, empty.shown_id, empty.label) == (False, None, "")
+    body = content.SourceText(key=content.BODY, version="b", text="正文")
+    assert (body.readable, body.shown_id, body.label) == (True, None, "正文")
 
 
 def _attachment_only_load(monkeypatch, state):
