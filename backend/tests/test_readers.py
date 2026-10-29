@@ -24,6 +24,14 @@ from youju.models import (
 )
 
 NOW = datetime(2026, 10, 23, tzinfo=UTC)
+PAGE_SEGMENTS = readers.PAGE_SEGMENTS
+
+
+@pytest.fixture
+def twenty_per_page(monkeypatch):
+    """测翻页机制的用例按每页 20 段造数据（seed 的 45 段短文字 → 3 页），用这个夹具把段数上限
+    定成 20；别的用例按真实上限 PAGE_SEGMENTS 分页（seed 的 45 段一页读完）。"""
+    monkeypatch.setattr(readers, "PAGE_SEGMENTS", 20)
 
 
 @pytest.fixture
@@ -131,6 +139,7 @@ def read_all(client, url):
     return first, segments
 
 
+@pytest.mark.usefixtures("twenty_per_page")
 def test_attachment_pages_real_db_no_duplicates(client, session):
     doc, att, _, _ = seed(session)
     seen = []
@@ -162,6 +171,7 @@ def test_body_longer_than_old_limit_and_version_change(client, session):
     assert changed.status_code == 409 and changed.headers["cache-control"] == "no-store"
 
 
+@pytest.mark.usefixtures("twenty_per_page")
 @pytest.mark.parametrize("change", ["sha", "reextract"])
 def test_attachment_version_conflict_even_same_sha(client, session, change):
     doc, att, _, version = seed(session)
@@ -186,6 +196,7 @@ def test_old_extractor_is_not_exposed(client, session, change):
     assert data["status"] == "unavailable" and data["segments"] == []
 
 
+@pytest.mark.usefixtures("twenty_per_page")
 @pytest.mark.parametrize("field", ["taken_down_at", "link_gone_at"])
 def test_withdrawal_between_pages(client, session, field):
     doc, att, _, _ = seed(session)
@@ -553,6 +564,7 @@ def test_real_docx_extraction_to_native_response(client, session):
     assert "138" not in text and "（这里隐去了电话）" in text and "脱敏" not in text
 
 
+@pytest.mark.usefixtures("twenty_per_page")
 def test_url_withdrawal_cannot_read_previous_version(client, session):
     doc, att, url, _ = seed(session)
     first = client.get(path(doc, att)).json()
@@ -584,6 +596,7 @@ def test_out_of_range_cursor_and_rate_limit(client, session, monkeypatch):
 BANNED = ("已脱敏", "见原文", "摘录", "收录不足", "请稍后重试", "正在准备")
 
 
+@pytest.mark.usefixtures("twenty_per_page")
 def test_attachment_pages_are_numbered_and_resumable(client, session):
     doc, att, _, _ = seed(session)
     first = client.get(path(doc, att)).json()
@@ -605,6 +618,7 @@ def test_attachment_pages_are_numbered_and_resumable(client, session):
     assert bad.status_code == 422
 
 
+@pytest.mark.usefixtures("twenty_per_page")
 def test_body_pages_follow_paragraphs(client, session):
     body = "\n\n".join(f"第{i}条 申报单位应当按时报送材料。" for i in range(1, 46))
     doc, _, _, _ = seed(session, body=body)
@@ -615,6 +629,7 @@ def test_body_pages_follow_paragraphs(client, session):
     assert last["nextCursor"] is None and last["page"] == 3
 
 
+@pytest.mark.usefixtures("twenty_per_page")
 def test_page_ends_respect_size_budget():
     small = [(n, 100) for n in range(1, 46)]
     assert readers.page_ends(small) == [20, 40, 45]
@@ -625,6 +640,113 @@ def test_page_ends_respect_size_budget():
     sizes = [(1, 100), (2, readers.PAGE_BUDGET + 1), (3, 100), (4, 100)]
     assert readers.page_ends(sizes) == [1, 2, 4]
     assert readers.page_ends([]) == []
+
+
+def test_short_segments_fill_pages_by_budget():
+    """短段落（填报模板、表格行）按字节预算封页，不是 20 段一页：10/29 验收时 5615 字的自评估报告
+    模板分了 14 页。段数上限只防极短的段把一页撑得太长，低于小程序每页最多 200 段的校验。"""
+    # 274 段、平均 28 字（约 84 字节，附件每段另算 64 字节）：一页 83 段，4 页
+    template = [(n, 84 + 64) for n in range(1, 275)]
+    assert readers.page_ends(template) == [83, 166, 249, 274]
+    tiny = [(n, 3 + 64) for n in range(1, 301)]
+    assert readers.page_ends(tiny) == [PAGE_SEGMENTS, 2 * PAGE_SEGMENTS, 300]
+    assert PAGE_SEGMENTS < 200
+
+
+def test_short_attachment_segments_fill_pages(client, session):
+    """附件按真实的段数上限分页：短段落一页远多于 20 段，翻完不重不漏；按原来 20 段一页记下的
+    位置不再是一页的开头，回 422（小程序回到第 1 页，写"上次读到的位置已失效"）。"""
+    doc, att, _, version = seed(session)
+    session.execute(
+        delete(AttachmentTextSegment).where(AttachmentTextSegment.version_id == version.id)
+    )
+    session.add_all(
+        [
+            AttachmentTextSegment(
+                version_id=version.id, n=i, kind="p", text=f"第{i}项 任务编号和名称：________"
+            )
+            for i in range(1, 275)
+        ]
+    )
+    version.segments = 274
+    session.commit()
+    first, segments = read_all(client, path(doc, att))
+    assert first["status"] == "ok" and first["totalSegments"] == 274
+    assert 20 < len(first["segments"]) <= PAGE_SEGMENTS and first["pages"] <= 4
+    assert [s["n"] for s in segments] == list(range(1, 275))
+    old = client.get(path(doc, att), params={"cursor": "20", "revision": first["revision"]})
+    assert old.status_code == 422
+
+
+def test_short_body_paragraphs_fill_pages(client, session):
+    """正文也一样：45 段短条款一页读完（原来每页 20 段，要翻 3 页）。"""
+    body = "\n\n".join(f"第{i}条 申报单位应当按时报送材料。" for i in range(1, 46))
+    doc, _, _, _ = seed(session, body=body)
+    data = client.get(path(doc)).json()
+    assert (data["status"], data["page"], data["pages"], data["totalSegments"]) == ("ok", 1, 1, 45)
+    assert data["nextCursor"] is None and len(data["segments"]) == 45
+
+
+def test_full_page_of_short_rows_stays_small(client, session):
+    """一页放满段数上限的短表格行（单元格没有表头）：返回时每行还要带位置、补空表头，整页仍远小于
+    返回上限，不会显示成"这一页有一段特别长"。带工作表名的见下一个用例。"""
+    doc, att, _, version = seed(session)
+    session.execute(
+        delete(AttachmentTextSegment).where(AttachmentTextSegment.version_id == version.id)
+    )
+    for i in range(1, PAGE_SEGMENTS + 41):
+        # 一格一行：存下的文字、单元格、位置都很小，这一页放满段数上限
+        session.add(
+            AttachmentTextSegment(
+                version_id=version.id,
+                n=i,
+                kind="row",
+                text=str(i),
+                loc={"row": i},
+                cells=[{"c": 1, "t": str(i)}],
+            )
+        )
+    version.segments = PAGE_SEGMENTS + 40
+    session.commit()
+    first = client.get(path(doc, att)).json()
+    assert first["status"] == "ok" and len(first["segments"]) == PAGE_SEGMENTS
+    assert first["segments"][0]["cells"] == [{"c": 1, "t": "1", "h": ""}]
+    assert len(json.dumps(first, ensure_ascii=False).encode()) < readers.MAX_PAGE_BYTES // 3
+
+
+def test_long_sheet_names_count_toward_the_page_budget(client, session):
+    """表格每行返回时都带工作表名：分页把位置也算进预算，表名再长每页也不超返回上限，翻完不丢行
+    （Codex 补审：只算文字和单元格时，120 行 × 600 字的表名一页约 200KB，整页显示不出来）。"""
+    doc, att, _, version = seed(session)
+    session.execute(
+        delete(AttachmentTextSegment).where(AttachmentTextSegment.version_id == version.id)
+    )
+    sheet = "超长的工作表名称" * 75
+    for i in range(1, 161):
+        session.add(
+            AttachmentTextSegment(
+                version_id=version.id,
+                n=i,
+                kind="row",
+                text=str(i),
+                loc={"sheet": sheet, "row": i},
+                cells=[{"c": 1, "t": str(i)}],
+            )
+        )
+    version.segments = 160
+    session.commit()
+    first = client.get(path(doc, att)).json()
+    rows, page = [], first
+    while True:
+        assert page["status"] == "ok" and page["segments"]
+        assert len(json.dumps(page, ensure_ascii=False).encode()) < readers.MAX_PAGE_BYTES
+        rows.extend(s["n"] for s in page["segments"])
+        if page["nextCursor"] is None:
+            break
+        page = client.get(
+            path(doc, att), params={"cursor": page["nextCursor"], "revision": first["revision"]}
+        ).json()
+    assert first["pages"] > 1 and rows == list(range(1, 161))
 
 
 def _add_attachment(session, doc, position, name, url, ext):
