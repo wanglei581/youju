@@ -927,9 +927,9 @@ def _time_at(text: str, pos: int = 0) -> _TimeHit | None:
             exact = part.group() in ("初", "年初")
             best = replace(best, end=since.end(), since=True, rough=not exact)
     stop = _stop_at(text, best.end)
-    if stop is not None and (
-        not best.since or stop[1]
-    ):  # 去年以来截止、2025 年至今到期：说的是截止
+    # 去年以来截止、2025 年至今到期：说的是截止；去年以来截止目前（"截至"写错了字）是到现在，不算
+    now = best.since and _UP_TO_NOW_AT.match(text, best.end) is not None
+    if stop is not None and (not best.since or (stop[1] and not now)):
         end, deadline = stop
         return _TimeHit("vague", end, text[pos:end], deadline=deadline)
     return best
@@ -961,7 +961,22 @@ def _word_starts_at(text: str, i: int) -> bool:
     """i 处是一个词的头：句子完了、不是汉字、"的、截止、发布、前后、以来"这类，或者是要切开的
     停用词、类型词（_CUTS：本周五申报、上周五名单），或者"至今、到现在、内截止"这类时间的尾巴
     （_SINCE、_DEADLINE_AT：本月 15 号至今、上周五到今天、本月 15 号内截止）。"""
-    lead = ("的", "截", "到期", "过期", "发", "出台", "印发", "前", "后", "以", "之", "起", "开始")
+    lead = (
+        "的",
+        "截",
+        "到",
+        "至",
+        "过期",
+        "发",
+        "出台",
+        "印发",
+        "前",
+        "后",
+        "以",
+        "之",
+        "起",
+        "开始",
+    )
     return (
         i >= len(text)
         or not _HAN_CHAR.match(text[i])
@@ -1749,17 +1764,22 @@ def _period(kind: str, back: int, today: date) -> dict[str, str]:
     return {"from": start.isoformat(), "to": end.isoformat()}
 
 
-# 两个时间中间是这几个的是一段区间（2025 年到 2026 年、上周到本周、2025—2026 年）
-_RANGE_JOINS = ("到", "至", "~", "～", "-", "—", "－", "–")
+# 两个时间中间是这几个的是一段区间（2025 年到 2026 年、上周到本周）；横线只连两个年份（2024—2025
+# 年；2025-10 月是日期的写法）
+_RANGE_JOINS = ("到", "至", "~", "～")
+_RANGE_DASHES = ("-", "—", "－", "–")
+_YEAR_END = re.compile(r"\d{4}年?")
 
 
 def _range_joins(text: str, found: list[tuple[int, int, str, Any]]) -> list[tuple[int, int]]:
     """相邻两个认出的时间中间是"到、至"这类的：那几个字的（开头, 结尾）。"""
-    return [
-        (end, after[0])
-        for (_, end, _, _), after in itertools.pairwise(found)
-        if text[end : after[0]] in _RANGE_JOINS
-    ]
+    joins = []
+    for (at, end, _, _), after in itertools.pairwise(found):
+        join = text[end : after[0]]
+        years = _YEAR_END.fullmatch(text, at, end) and _YEAR_END.match(text, after[0])
+        if join in _RANGE_JOINS or (join in _RANGE_DASHES and years):
+            joins.append((end, after[0]))
+    return joins
 
 
 def _dates(kind: str, value: Any, today: date) -> tuple[date, date] | None:
