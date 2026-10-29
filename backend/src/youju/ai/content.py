@@ -33,6 +33,10 @@ CONFIG_ATTACH = "attach-v1"  # 读附件（附件读入第二步用；取舍规�
 
 BODY = "body"  # 正文来源的 key
 BEIJING = ZoneInfo("Asia/Shanghai")  # "附件取于"按北京时间的日期写
+# 读的时候挑中的是内容一样的另一个附件（替代，问一问开发设计第六节第 3 条"只更新显示"②④）：原句
+# 出处、读的范围里"读了""没读完"的附件名称后面都接这一句。不说原来那份为什么不用（打不开、不在
+# 列表里、现在读不到都是这一句，Codex 第 63 轮、复核 #406）
+SUBSTITUTE = "（回答时读的是另一份内容相同的附件）"
 
 
 @dataclass(frozen=True)
@@ -137,6 +141,9 @@ class Unread:
     # 附件在详情页附件列表里的编号（DocumentAttachment.id）：按编号对、不按顺序对，
     # 改名、换顺序也对得上；只读了一部分的正文为 None（问一问开发设计第十一节；Codex 第 8 轮）
     attachment_id: int | None = None
+    # 只读了一部分时它属于哪一份内容（SourceText.key）：是附件的，"没读完"的名称和入口用读的时候
+    # 给这份内容挑出来的那个附件；是正文的照正文写；整个没读的为 None（Codex 复核 #406）
+    source: str | None = None
 
 
 @dataclass(frozen=True)
@@ -231,13 +238,15 @@ class Content:
             if s.source == BODY
         ]
 
-    def scope_text(self, picked: dict[str, AttachmentRef] | None = None) -> str:
+    def scope_text(self, picked: dict[str, tuple[AttachmentRef, bool]] | None = None) -> str:
         """读的范围，给用户看。附件数按详情页列出的（本份通知自己的附件）。
 
         读附件时（CONFIG_ATTACH）每份附件内容写一个附件的名称，后面接"（附件取于 10 月 18 日）"，
-        名称和日期是同一个附件：picked 是读的时候按回答时记下的编号挑的那一个（ask._pick，和原句
-        出处是同一个），没给的用 shown_id 那一个。没读的原因怎么写由附件读入第二步定（D-085 的
-        excluded 还没有说法），在那之前不给用户看。"""
+        名称和日期是同一个附件。picked：读已有回答时，按那条回答存的 sourceAttachments 给每份附件
+        内容挑好的附件（{来源 key: (附件, 是不是替代)}，ask._pick，和原句出处是同一个；同一份现在的
+        内容，不同回答当时读的附件可能不一样，各按各的，Codex 复核 #406），替代的名称后面接
+        SUBSTITUTE；出回答那一刻不传，用 shown_id 那一个。没读的原因怎么写由附件读入第二步定
+        （D-085 的 excluded 还没有说法），在那之前不给用户看。"""
         if self.config == CONFIG_BODY:
             if not self.attachments_total:
                 return "读了：正文（这份通知没有附件）"
@@ -245,7 +254,7 @@ class Content:
         read = "、".join(_read_label(s, (picked or {}).get(s.key)) for s in self.sources)
         if not self.unread:
             return f"读了：{read}"
-        unread = "、".join(u.label for u in self.unread)
+        unread = "、".join(unread_label(u, picked) for u in self.unread)
         return f"读了：{read}；没读：{unread}"
 
     def versions(self) -> dict:
@@ -264,17 +273,31 @@ class Content:
         return {s.key: list(s.attachment_ids) for s in self.sources if s.attachments}
 
 
-def _read_label(source: SourceText, picked: AttachmentRef | None) -> str:
-    """读的范围里一个来源的写法：正文写"正文"；附件写挑中的那个附件的名称，有核对时间的接
-    "（附件取于 M 月 D 日）"（北京时间）。"""
-    attachment = picked or source.shown
+def unread_label(unread: Unread, picked: dict[str, tuple[AttachmentRef, bool]] | None) -> str:
+    """没读的写法：整个没读的写它自己的名称；只读了一部分的接上没读的那部分（"第 41 段以后"），
+    是附件的用 picked 里给这份内容挑出来的那个附件的名称（替代的接 SUBSTITUTE，和"读了"里的是
+    同一个；复核 #406），是正文的、没给 picked 的照它自己的名称。"""
+    if not unread.part:
+        return unread.label
+    chosen = (picked or {}).get(unread.source) if unread.source != BODY else None
+    if chosen is None:
+        return f"{unread.label}{unread.part}"
+    attachment, replaced = chosen
+    return f"{attachment.label}{SUBSTITUTE if replaced else ''}{unread.part}"
+
+
+def _read_label(source: SourceText, picked: tuple[AttachmentRef, bool] | None) -> str:
+    """读的范围里一个来源的写法：正文写"正文"；附件写挑中的那个附件的名称（替代的接 SUBSTITUTE），
+    有核对时间的再接"（附件取于 M 月 D 日）"（北京时间）。"""
+    attachment, substitute = picked if picked is not None else (source.shown, False)
     if attachment is None:
         return source.label
+    text = attachment.label + (SUBSTITUTE if substitute else "")
     if attachment.checked_at is None:
-        return attachment.label
+        return text
     day = attachment.checked_at
     day = (day if day.tzinfo else day.replace(tzinfo=UTC)).astimezone(BEIJING)
-    return f"{attachment.label}（附件取于 {day.month} 月 {day.day} 日）"
+    return f"{text}（附件取于 {day.month} 月 {day.day} 日）"
 
 
 def _check(session: Session, doc_id: int, *, link: bool = True) -> tuple[Document, str, str, str]:

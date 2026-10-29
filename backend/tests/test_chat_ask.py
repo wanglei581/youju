@@ -1165,7 +1165,12 @@ def _attachment_load(monkeypatch, state):
             sources=(*loaded.sources, source), segments=(*loaded.segments, *segments)
         )
         return replace(
-            loaded, texts=texts, config=content.CONFIG_ATTACH, unread=unread, attachments=listed
+            loaded,
+            texts=texts,
+            config=content.CONFIG_ATTACH,
+            unread=unread,
+            attachments=listed,
+            partial=bool(state.get("partial")),
         )
 
     monkeypatch.setattr(content, "load", load)
@@ -1258,7 +1263,9 @@ def test_same_content_attachments_keep_name_and_reader_together(
     assert scope == "读了：正文、附件 2《申报指南》（附件取于 10 月 18 日）"
     state["attachments"] = [state["attachments"][0], replace(closed, checked_at=None)]
     scope = turn_of(client, got["id"])["answer"]["scope"]["text"]
-    assert scope == "读了：正文、附件 1《申报指南（另一份）》（附件取于 10 月 20 日）"
+    assert scope == (  # 替代的：名称后面接注明，日期也用它的
+        f"读了：正文、附件 1《申报指南（另一份）》{ask.SUBSTITUTE}（附件取于 10 月 20 日）"
+    )
     # ② 记下的还在、打不开，内容一样的另一个能打开：用另一个，注明
     assert shown([other, closed]) == (replaced, opens(12), False)
     # ② 记下的不在附件列表里了：同一句注明
@@ -1397,14 +1404,103 @@ def test_card_reader_opens_the_attachment_named_in_scope(
     )
     assert card([other, ref(11, 2, readable=False)]) == (
         {"docId": doc, "attachmentId": 12},
-        "读了：附件 1《申报指南（另一份）》",
+        f"读了：附件 1《申报指南（另一份）》{ask.SUBSTITUTE}",
+    )
+
+
+def test_not_found_names_the_substitute_in_scope(
+    client, session, settings, doc, model, monkeypatch
+):
+    """没有原句的 not_found 回答只能靠读的范围说明（复核 #406）：回答以后加了内容一样的 B、原来读的 A
+    现在不能用，读的范围写 B，后面接"回答时读的是另一份内容相同的附件"。"""
+    state = {"attachments": [ref(11, 1)]}
+    _attachment_load(monkeypatch, state)
+    missing = asked(
+        client, session, settings, model, "评审专家是谁", doc, {"status": "not_found", "quotes": []}
+    )
+    assert missing["answer"]["scope"]["text"] == "读了：正文、附件 1《申报指南》"
+    state["attachments"] = [ref(11, 1, readable=False), ref(12, 2, "申报指南（另一份）")]
+    got = turn_of(client, missing["id"])["answer"]
+    assert got["status"] == "not_found"
+    assert got["scope"]["text"] == f"读了：正文、附件 2《申报指南（另一份）》{ask.SUBSTITUTE}"
+
+
+def test_partially_read_attachment_uses_the_picked_one(
+    client, session, settings, doc, model, monkeypatch
+):
+    """只读了一部分的附件内容（复核 #406）："读了""没读完"的名称和入口都用读的时候给这份内容挑出来的
+    那个附件：A 现在打不开、内容一样的 B 能打开，都写 B、入口开 B、加注明；正文只读了一部分的，
+    "没读完"照正文写。"""
+    key = "att-abc123def456"
+    partial = content.Unread(
+        "附件 1《申报指南》", "too_long", "第 3 段以后", attachment_id=11, source=key
+    )
+    state = {"attachments": [ref(11, 1)], "partial": True, "unread": [partial]}
+    _attachment_load(monkeypatch, state)
+    got = asked(
+        client, session, settings, model, "评审专家是谁", doc, {"status": "not_found", "quotes": []}
+    )
+    assert got["answer"]["notes"][0] == {
+        "code": "partial",
+        "text": "没读完：附件 1《申报指南》第 3 段以后（超出字数）",
+        "head": True,
+        "attachmentId": 11,
+    }
+    state["attachments"] = [ref(11, 1, readable=False), ref(12, 2, "申报指南（另一份）")]
+    again = turn_of(client, got["id"])["answer"]
+    named = f"附件 2《申报指南（另一份）》{ask.SUBSTITUTE}"
+    assert again["notes"][0] == {
+        "code": "partial",
+        "text": f"没读完：{named}第 3 段以后（超出字数）",
+        "head": True,
+        "attachmentId": 12,
+    }
+    assert again["scope"]["text"] == f"读了：正文、{named}；没读：{named}第 3 段以后"
+    assert again["scope"]["unread"] == [
+        {"label": named, "reason": "too_long", "attachmentId": 12, "readable": True}
+    ]
+    # 正文只读了一部分：照正文写，不查挑出来的附件
+    state["unread"] = [content.Unread("正文", "too_long", "第 41 段以后", source=content.BODY)]
+    body = turn_of(client, got["id"])["answer"]
+    assert body["status"] == "not_found"
+    assert body["notes"][0]["text"] == "没读完：正文第 41 段以后（超出字数）"
+    assert body["notes"][0]["attachmentId"] is None
+
+
+def test_two_answers_on_the_same_content_keep_their_own_attachment(
+    client, session, settings, doc, model, monkeypatch
+):
+    """同一份现在的内容，两条回答当时读的附件不一样（一条读的 A、一条读的 B）：各按自己记下的
+    sourceAttachments 挑、各自显示（复核 #406）。"""
+    a, b = ref(11, 1), ref(12, 2, "申报指南（另一份）")
+    state = {"attachments": [a]}
+    _attachment_load(monkeypatch, state)
+    quote = answer(("Aabc123def456-1", "评分标准：创新能力占40分"))
+    with_a = asked(client, session, settings, model, "评分标准是什么", doc, quote)
+    state["attachments"] = [replace(b, n=1)]  # A 删掉了，只剩内容一样的 B
+    with_b = asked(client, session, settings, model, "评分标准怎么定", doc, quote)
+    state["attachments"] = [a, b]  # 现在两个都在、都能打开
+
+    def shown(turn):
+        got = turn_of(client, turn["id"])["answer"]
+        return got["quotes"][0]["label"], got["quotes"][0]["reader"], got["scope"]["text"]
+
+    assert shown(with_a) == (
+        "附件 1《申报指南》第 1 段",
+        {"docId": doc, "attachmentId": 11},
+        "读了：正文、附件 1《申报指南》",
+    )
+    assert shown(with_b) == (
+        "附件 2《申报指南（另一份）》第 1 段",
+        {"docId": doc, "attachmentId": 12},
+        "读了：正文、附件 2《申报指南（另一份）》",
     )
 
 
 def test_pick_without_any_attachment_gives_nothing():
     """内容一样的附件一个都没有（⑤）：不挑，调用方作废；这样的来源也不算能站内打开。"""
     empty = content.SourceText(key="att-x", version="x", text="甲")
-    assert ask._pick(empty, [1]) == (None, "")
+    assert ask._pick(empty, [1]) == (None, False)
     assert (empty.readable, empty.shown_id, empty.label) == (False, None, "")
     body = content.SourceText(key=content.BODY, version="b", text="正文")
     assert (body.readable, body.shown_id, body.label) == (True, None, "正文")
@@ -1873,6 +1969,7 @@ def test_partial_read_note_comes_first(client, session, settings, doc, model, mo
         "code": "partial",
         "text": "没读完：附件 3《实施细则》第 41 段以后（超出字数）",
         "head": True,
+        "attachmentId": None,
     }
     assert got["answer"]["scope"]["partial"] is True
 

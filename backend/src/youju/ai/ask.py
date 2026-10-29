@@ -156,9 +156,9 @@ RULES_NOTE = (
 )
 SEE_ATTACHMENT_OPEN = "原句说“见附件”，附件 {i} 没读，可以点“站内阅读”看。"
 SEE_ATTACHMENT_CLOSED = "原句说“见附件”，附件 {i} 没读{why}，这份附件暂时读不出来。"
-# 内容一样的另一个附件替回答时引用的那个当出处（第六节第 3 条"只更新显示"②④）：接在出处后面。
-# 不说原来那份为什么不用（打不开、不在列表里、现在读不到都是这一句，Codex 第 63 轮）
-SUBSTITUTE = "（回答时引用的是另一份内容相同的附件）"
+# 内容一样的另一个附件替回答时读的那个（第六节第 3 条"只更新显示"②④）：接在出处后面，读的范围里
+# 也接（content.scope_text）
+SUBSTITUTE = content.SUBSTITUTE
 PARTIAL = "没读完：{parts}（超出字数）"
 LINK_GONE = (
     "原文链接 {date}检查时已失效。这条回答依据来自此前收录的内容，仅供参考，"
@@ -1148,7 +1148,7 @@ def _card_reader(doc_id: int, current: content.Content, picked: dict | None = No
     半句也不写。原文链接失效的由调用方先挡（一律不放）。"""
     if any(source.key == content.BODY for source in current.sources):
         return {"docId": doc_id, "attachmentId": None}
-    named = [(picked or {}).get(source.key) or source.shown for source in current.sources]
+    named = [((picked or {}).get(source.key) or (source.shown,))[0] for source in current.sources]
     openable = [a for a in named if a is not None and a.readable]
     if not openable:
         return None
@@ -1168,33 +1168,56 @@ def _recorded(snapshot: dict, result: dict) -> dict:
     }
 
 
-def _pick(source: content.SourceText, recorded: Any) -> tuple[content.AttachmentRef | None, str]:
-    """附件里的一句原句，出处名称、"站内阅读"入口、点进去打开的用哪一个附件（三样始终是同一个；
-    第六节第 3 条"只更新显示"，Codex 第 39、40 轮）。recorded 是回答时这份内容对应的附件编号
-    （这句的 attachmentIds）。候选只有现在还是这份内容的附件（source.attachments）：记下的附件不在
-    列表里了、现在的版本还不知道的，都当作现在读不到，不当候选；记下的还在列表里、内容换了的，读的
-    时候已经按⓪作废（outdated），走不到这里。
+def _partial(unread: content.Unread, picks: dict) -> tuple[content.AttachmentRef, bool] | None:
+    """只读了一部分的附件内容，读的时候给它挑出来的那个附件（同"读了"里的）；整个没读的、正文的
+    为 None（Unread.source，复核 #406）。"""
+    if not unread.part or unread.source == content.BODY:
+        return None
+    return picks.get(unread.source)
+
+
+def _partial_note(current: content.Content, picks: dict, gone: bool) -> dict:
+    """读不完时写在最前面的"没读完：……"：只读了一部分的是附件的，名称和入口用读的时候给这份内容
+    挑出来的那个附件（同"读了"里的，替代的接 SUBSTITUTE）；是正文的照正文写（content.unread_label，
+    复核 #406）。入口（attachmentId）给第一个能站内打开的附件；原文链接失效的不给。"""
+    parts = [content.unread_label(u, picks) for u in current.unread if u.part]
+    opens = None
+    for unread in current.unread:
+        chosen = _partial(unread, picks)
+        if opens is None and chosen is not None and chosen[0].readable and not gone:
+            opens = chosen[0].id
+    return _note("partial", PARTIAL.format(parts="、".join(parts)), head=True, attachmentId=opens)
+
+
+def _pick(source: content.SourceText, recorded: Any) -> tuple[content.AttachmentRef | None, bool]:
+    """一份读了的附件内容，读的时候用哪一个附件：原句出处的名称、"站内阅读"入口、点进去打开的，读的
+    范围里"读了""没读完"的名称和"附件取于"，卡片上的入口，都用它（始终是同一个附件；第六节第 3 条
+    "只更新显示"，Codex 第 39、40 轮、复核 #406）。recorded 是回答时这份内容对应的附件编号
+    （sourceAttachments 里这份内容的那一项，和每句的 attachmentIds 一样）。候选只有现在还是这份
+    内容的附件（source.attachments）：记下的附件不在列表里了、现在的版本还不知道的，都当作现在读
+    不到，不当候选；记下的还在列表里、内容换了的，读的时候已经按⓪作废（outdated），走不到这里。
 
     按这个先后挑，先有的算：① 记下的、现在能站内打开的，按现在的位置取第一个；② 内容一样的别的附件
-    里能站内打开的第一个；③ 记下的（都打不开）第一个；④ 内容一样的别的附件（都打不开）第一个。②④ 是
-    替代的，出处后面接 SUBSTITUTE。⑤ 一个都没有：给 None，调用方按读了的来源变了作废。
+    里能站内打开的第一个；③ 记下的（都打不开）第一个；④ 内容一样的别的附件（都打不开）第一个。
+    给（附件, 是不是替代）：②④ 是替代的，名称后面接 SUBSTITUTE。⑤ 一个都没有：给 None，调用方按
+    读了的来源变了作废。
 
-    这一版以前存的句子没有 attachmentIds：当作记下的就是现在这几个，用 shown_id 那一个、不注明。"""
+    这一版以前存的回答没有记下编号：当作记下的就是现在这几个，用 shown_id 那一个、不注明。"""
     if not source.attachments:
-        return None, ""
+        return None, False
     if not isinstance(recorded, list):
-        return source.shown, ""
+        return source.shown, False
     mine = [a for a in source.attachments if a.id in recorded]
     others = [a for a in source.attachments if a.id not in recorded]
-    choices = ((mine, ""), (others, SUBSTITUTE))
-    for candidates, note in choices:  # ①②：能站内打开的
+    choices = ((mine, False), (others, True))
+    for candidates, replaced in choices:  # ①②：能站内打开的
         for attachment in candidates:
             if attachment.readable:
-                return attachment, note
-    for candidates, note in choices:  # ③④：都打不开
+                return attachment, replaced
+    for candidates, replaced in choices:  # ③④：都打不开
         if candidates:
-            return candidates[0], note
-    return None, ""
+            return candidates[0], replaced
+    return None, False
 
 
 def _answer(session: Session, turn: AIChatTurn, task: AdvisorTask, stamp: datetime, cache: dict):
@@ -1219,16 +1242,15 @@ def _answer(session: Session, turn: AIChatTurn, task: AdvisorTask, stamp: dateti
     recorded = _recorded(snapshot, result)
     if outdated(snapshot.get("versions"), recorded, current):
         return _hidden(out, "stale", STALE)
-    # 每份附件内容用哪个附件：按回答时记下的编号挑一次（_pick），原句出处、读的范围里的名称和
-    # "附件取于"、卡片上的入口都用它，名称、入口、点进去打开的是同一个附件
-    picks = {}
+    # 每份附件内容用哪个附件：按这条回答记下的编号挑一次（_pick），原句出处、读的范围里"读了"
+    # "没读完"的名称和"附件取于"、卡片上的入口都用它，名称、入口、点进去打开的是同一个附件
+    picks: dict[str, tuple[content.AttachmentRef, bool]] = {}
     for source in current.sources:
         if source.key != content.BODY:
-            chosen, note = _pick(source, recorded.get(source.key))
+            chosen, replaced = _pick(source, recorded.get(source.key))
             if chosen is None:  # 内容一样的附件一个都没有了：读了的来源变了，作废
                 return _hidden(out, "stale", STALE)
-            picks[source.key] = (chosen, note)
-    chosen_ones = {key: chosen for key, (chosen, _) in picks.items()}
+            picks[source.key] = (chosen, replaced)
     gone = out["linkGone"]
     question = plain(turn.question)
     sources = {s.key: s for s in current.sources}
@@ -1243,8 +1265,8 @@ def _answer(session: Session, turn: AIChatTurn, task: AdvisorTask, stamp: dateti
             opens, readable, attachment = None, source is not None, False
         else:
             # 出处按现在的来源拼（附件改名、换位置以后跟着变，按内容版本找回）
-            chosen, note = picks[source.key]
-            label = chosen.label + place + note
+            chosen, replaced = picks[source.key]
+            label = chosen.label + place + (SUBSTITUTE if replaced else "")
             opens, readable, attachment = chosen.id, chosen.readable, True
         quotes.append(
             {
@@ -1260,11 +1282,26 @@ def _answer(session: Session, turn: AIChatTurn, task: AdvisorTask, stamp: dateti
                 "unreadable": bool(attachment and not readable),
             }
         )
-    unread = _unread(session, current, cache, bool(gone))
+    unread = []
+    for item, entry in zip(
+        _unread(session, current, cache, bool(gone)), current.unread, strict=True
+    ):
+        chosen = _partial(entry, picks)
+        if chosen is not None:
+            # 只读了一部分的附件：名称和入口跟"读了"里那份用同一个挑出来的附件（复核 #406）；
+            # 整个没读的照旧按它自己的编号和能不能打开
+            attachment, replaced = chosen
+            item = {
+                **item,
+                "label": attachment.label + (SUBSTITUTE if replaced else ""),
+                "attachmentId": attachment.id,
+                "readable": attachment.readable and not gone,
+            }
+        unread.append(item)
     redacted = int(result.get("redacted") or 0)
     # 卡片上的"站内阅读 ›"；None 时（原文链接失效了，或者读了的来源一个都打不开）叫人去点的半句
     # 都不写
-    reader = None if gone else _card_reader(turn.doc_id, current, chosen_ones)
+    reader = None if gone else _card_reader(turn.doc_id, current, picks)
 
     def pick(normal: str, closed: str, gone_text: str) -> str:
         """叫人去点、叫人再问的半句分三档（见 NOT_FOUND 那几个说法上面的说明）。"""
@@ -1276,8 +1313,7 @@ def _answer(session: Session, turn: AIChatTurn, task: AdvisorTask, stamp: dateti
     if result.get("reset"):
         notes.append(_note("reset", RESET, head=True))
     if current.partial:
-        parts = "、".join(f"{u.label}{u.part}" for u in current.unread if u.part)
-        notes.append(_note("partial", PARTIAL.format(parts=parts), head=True))
+        notes.append(_partial_note(current, picks, bool(gone)))
     texts = [plain(q["text"]) for q in quotes]
     joined = "\n".join(texts)
     if quotes and unread and "见附件" in joined:
@@ -1366,7 +1402,7 @@ def _answer(session: Session, turn: AIChatTurn, task: AdvisorTask, stamp: dateti
         notes=sorted(notes, key=lambda note: not note["head"]),
         verified=verified,
         scope={
-            "text": current.scope_text(chosen_ones),
+            "text": current.scope_text(picks),
             "partial": current.partial,
             "unread": unread,
         },
