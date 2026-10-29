@@ -511,8 +511,8 @@ def test_validate_only_looks_in_the_quotes_own_source():
                 text=attachment,
                 # 内容一样的两个附件：只读一次，两个编号都记在这份内容上（按位置排）
                 attachments=(
-                    content.Attachment(9, 3, "指南（另一份）", True),
-                    content.Attachment(7, 1, "指南", True),
+                    content.AttachmentRef(9, 3, "指南（另一份）", "a", True),
+                    content.AttachmentRef(7, 1, "指南", "a", True),
                 ),
             ),
         ),
@@ -1122,20 +1122,32 @@ def test_attachment_notes_and_unread_scope(client, session, settings, model, mon
     ]
 
 
+ATT_VERSION = "sha-abc:extract-v1"  # 假附件来源的内容版本
+
+
+def ref(attachment_id, n, name="申报指南", readable=True, version=ATT_VERSION):
+    """详情页附件列表里的一个附件现在的样子（content.AttachmentRef）。"""
+    return content.AttachmentRef(attachment_id, n, name, version, readable)
+
+
 def _attachment_load(monkeypatch, state):
     """在真的正文后面接一个附件来源（附件读入第二步以前 content.load 只取正文）。
-    state["attachments"] 是现在这份内容对应的附件（content.Attachment：编号、"附件 N"的 N、名称、
-    能不能站内打开）；读的时候改它，就是附件改名、换位置、增删、能不能打开变了。"""
+    state["attachments"] 是现在详情页附件列表里的附件（ref：编号、"附件 N"的 N、名称、能不能站内打开、
+    现在的内容版本）；读的时候改它，就是附件改名、换位置、增删、能不能打开、内容变了。版本是
+    ATT_VERSION 的那几个就是这份附件内容的附件；一个都没有，这份内容就读不到了（同真的 load：
+    没有这个来源）。"""
     real = content.load
     text = state.get("text", "评分标准：创新能力占40分。\n申报单位须提交盖章的申请书。")
 
     def load(session, doc_id, *, link=True):
         loaded = real(session, doc_id, link=link)
+        listed = tuple(state["attachments"])
+        unread = list(state.get("unread", []))
+        same = tuple(a for a in listed if a.version == ATT_VERSION)
+        if not same:
+            return replace(loaded, config=content.CONFIG_ATTACH, unread=unread, attachments=listed)
         source = content.SourceText(
-            key="att-abc123def456",
-            version="sha-abc:extract-v1",
-            text=text,
-            attachments=tuple(state["attachments"]),
+            key="att-abc123def456", version=ATT_VERSION, text=text, attachments=same
         )
         first, second = text.split("\n")
         segments = (
@@ -1152,8 +1164,9 @@ def _attachment_load(monkeypatch, state):
         texts = content.Texts(
             sources=(*loaded.sources, source), segments=(*loaded.segments, *segments)
         )
-        unread = list(state.get("unread", []))
-        return replace(loaded, texts=texts, config=content.CONFIG_ATTACH, unread=unread)
+        return replace(
+            loaded, texts=texts, config=content.CONFIG_ATTACH, unread=unread, attachments=listed
+        )
 
     monkeypatch.setattr(content, "load", load)
 
@@ -1161,7 +1174,7 @@ def _attachment_load(monkeypatch, state):
 def test_attachment_quotes_follow_current_names(client, session, settings, doc, model, monkeypatch):
     """回答里每句存来源的内容版本和段号：附件改名、换了位置以后，出处和"站内阅读"按现在的拼，
     回答不作废；站内打不开了不给链接。照模型给的先后排（附件那句在前）。"""
-    state = {"attachments": [content.Attachment(11, 1, "申报指南", True)]}
+    state = {"attachments": [ref(11, 1)]}
     _attachment_load(monkeypatch, state)
     got = asked(
         client,
@@ -1182,13 +1195,13 @@ def test_attachment_quotes_follow_current_names(client, session, settings, doc, 
     assert "attachmentIds" not in quotes[0]  # 记下的编号只在结果里，读的时候不往外给
     assert got["answer"]["scope"]["text"] == "读了：正文、附件 1《申报指南》"
     # 同一个附件改名、换到第 2 个
-    state["attachments"] = [content.Attachment(11, 2, "申报指南（修订）", True)]
+    state["attachments"] = [ref(11, 2, "申报指南（修订）")]
     again = turn_of(client, got["id"])["answer"]
     assert again["status"] == "answer"
     assert again["quotes"][0]["label"] == "附件 2《申报指南（修订）》第 1 段"
     assert again["quotes"][0]["reader"] == {"docId": doc, "attachmentId": 11}
     assert again["scope"]["text"] == "读了：正文、附件 2《申报指南（修订）》"
-    state["attachments"] = [content.Attachment(11, 2, "申报指南（修订）", False)]
+    state["attachments"] = [ref(11, 2, "申报指南（修订）", False)]
     again = turn_of(client, got["id"])["answer"]
     assert again["quotes"][0]["reader"] is None and again["quotes"][0]["unreadable"] is True
     assert again["quotes"][0]["label"] == "附件 2《申报指南（修订）》第 1 段"
@@ -1197,12 +1210,11 @@ def test_attachment_quotes_follow_current_names(client, session, settings, doc, 
 def test_same_content_attachments_keep_name_and_reader_together(
     client, session, settings, doc, model, monkeypatch
 ):
-    """内容一样的几个附件只读一次（第六节第 3 条"只更新显示"①–⑤，Codex 第 39、40 轮）：每句按回答时
-    记下的附件编号挑，出处名称、"站内阅读"入口、点进去打开的（入口带的附件编号）始终是同一个附件；
-    挑中替代的，出处后面注明。"""
-    real_load = content.load
-    recorded = content.Attachment(11, 1, "申报指南", True)
-    state = {"attachments": [recorded]}
+    """内容一样的几个附件只读一次（第六节第 3 条"只更新显示"⓪–⑤，Codex 第 39、40、61–63 轮）：每句按
+    回答时记下的附件编号挑，出处名称、"站内阅读"入口、点进去打开的（入口带的附件编号）始终是同一个
+    附件；挑中替代的，出处后面只注明一句；记下的附件还在列表里、内容换了的作废，哪怕另有附件还是旧
+    内容；现在的版本还不知道的当作读不到。"""
+    state = {"attachments": [ref(11, 1)]}
     _attachment_load(monkeypatch, state)
     got = asked(
         client,
@@ -1213,40 +1225,41 @@ def test_same_content_attachments_keep_name_and_reader_together(
         doc,
         answer(("Aabc123def456-1", "评分标准：创新能力占40分")),
     )
-    task_id = session.scalar(select(AdvisorTask.id))
-    assert session.get(AdvisorTask, task_id).result_json["quotes"][0]["attachmentIds"] == [11]
+    task = session.get(AdvisorTask, session.scalar(select(AdvisorTask.id)))
+    assert task.result_json["quotes"][0]["attachmentIds"] == [11]
+    assert task.snapshot["sourceAttachments"] == {"att-abc123def456": [11]}
 
-    def shown(attachments, unread=()):
-        state["attachments"], state["unread"] = attachments, list(unread)
+    def shown(attachments):
+        state["attachments"] = attachments
         answer_now = turn_of(client, got["id"])["answer"]
-        assert answer_now["status"] == "answer"
+        assert answer_now["status"] == "answer", answer_now
         quote = answer_now["quotes"][0]
         return quote["label"], quote["reader"], quote["unreadable"]
+
+    def hidden(attachments):
+        state["attachments"] = attachments
+        answer_now = turn_of(client, got["id"])["answer"]
+        return answer_now["status"], answer_now.get("hidden"), answer_now["lead"]
 
     def opens(attachment_id):
         return {"docId": doc, "attachmentId": attachment_id}
 
-    other = content.Attachment(12, 1, "申报指南（另一份）", True)  # 后来加的、内容一样
-    moved = content.Attachment(11, 2, "申报指南", True)
-    closed = replace(moved, readable=False)
+    other = ref(12, 1, "申报指南（另一份）")  # 后来加的、内容一样
+    moved, closed = ref(11, 2), ref(11, 2, readable=False)
+    replaced = "附件 1《申报指南（另一份）》第 1 段" + ask.SUBSTITUTE
     # ① 记下的还在、能打开：就用它，哪怕排在前面的另一个也能打开（读的范围里写的是那一个）
     assert shown([other, moved]) == ("附件 2《申报指南》第 1 段", opens(11), False)
     # ② 记下的还在、打不开，内容一样的另一个能打开：用另一个，注明
-    assert shown([other, closed]) == (
-        "附件 1《申报指南（另一份）》第 1 段" + ask.SUBSTITUTE_CLOSED,
-        opens(12),
-        False,
-    )
-    # ② 记下的不在附件列表里了
-    assert shown([other]) == (
-        "附件 1《申报指南（另一份）》第 1 段" + ask.SUBSTITUTE_GONE,
-        opens(12),
-        False,
-    )
-    # ② 记下的还在附件列表里、内容换了（现在是没读的附件）
-    assert shown(
-        [replace(other, n=2)], [content.Unread("附件 1《申报指南》", "scanned", attachment_id=11)]
-    ) == ("附件 2《申报指南（另一份）》第 1 段" + ask.SUBSTITUTE_UPDATED, opens(12), False)
+    assert shown([other, closed]) == (replaced, opens(12), False)
+    # ② 记下的不在附件列表里了：同一句注明
+    assert shown([other]) == (replaced, opens(12), False)
+    # 记下的还在、现在的版本还不知道（换了链接、还没重新取到）：当作读不到，能不能打开都一样
+    for readable in (True, False):
+        assert shown([other, ref(11, 2, readable=readable, version=None)]) == (
+            replaced,
+            opens(12),
+            False,
+        )
     # ③ 都打不开：用记下的那个，不给入口、不注明
     assert shown([replace(other, readable=False), closed]) == (
         "附件 2《申报指南》第 1 段",
@@ -1254,27 +1267,78 @@ def test_same_content_attachments_keep_name_and_reader_together(
         True,
     )
     # ④ 记下的不在了、内容一样的另一个也打不开：用另一个，注明，不给入口
-    assert shown([replace(other, readable=False)]) == (
-        "附件 1《申报指南（另一份）》第 1 段" + ask.SUBSTITUTE_GONE,
-        None,
-        True,
-    )
+    assert shown([replace(other, readable=False)]) == (replaced, None, True)
     # 记下的又能打开了：回到它
-    assert shown([recorded]) == ("附件 1《申报指南》第 1 段", opens(11), False)
-    # 这一版以前存的句子没有记下编号：用读的范围里写出名字的那个，不注明
-    row = session.get(AdvisorTask, task_id)
-    stored = copy.deepcopy(row.result_json)
-    del stored["quotes"][0]["attachmentIds"]
-    row.result_json = stored
+    assert shown([ref(11, 1)]) == ("附件 1《申报指南》第 1 段", opens(11), False)
+    # ⓪ 记下的还在列表里、内容换了：作废，哪怕另有附件还是旧内容
+    changed = ref(11, 2, version="sha-new:extract-v1")
+    assert hidden([other, changed]) == ("hidden", "stale", ask.STALE)
+    # ⑤ 这份内容一个附件都读不到了（唯一的那个版本还不知道、不在列表里）：读了的来源变了，作废
+    assert hidden([ref(11, 1, version=None)])[:2] == ("hidden", "stale")
+    assert hidden([])[:2] == ("hidden", "stale")
+    # 这一版以前存的回答没有记下编号：用读的范围里写出名字的那个，不注明
+    row = session.get(AdvisorTask, task.id)
+    stored, snap = copy.deepcopy(row.result_json), copy.deepcopy(row.snapshot)
+    del stored["quotes"][0]["attachmentIds"], snap["sourceAttachments"]
+    row.result_json, row.snapshot = stored, snap
     session.commit()
     assert shown([other, moved]) == ("附件 1《申报指南（另一份）》第 1 段", opens(12), False)
-    # ⑤ 内容一样的附件一个都没有了：作废
-    state["attachments"] = []
-    stale = turn_of(client, got["id"])["answer"]
-    assert (stale["status"], stale["hidden"], stale["quotes"]) == ("hidden", "stale", [])
-    monkeypatch.setattr(content, "load", real_load)  # 这份附件内容整个不在了：读了的来源变了
-    stale = turn_of(client, got["id"])["answer"]
-    assert (stale["status"], stale["hidden"]) == ("hidden", "stale")
+
+
+def test_read_attachment_changed_goes_stale_even_if_not_cited(
+    client, session, settings, doc, model, monkeypatch
+):
+    """⓪ 按回答时读了的附件算（sourceAttachments），引没引用、回答是不是没找到都算（Codex 第 62 轮）：
+    读了附件 A、没引用它，A 换了内容、另有 B 还是旧内容 → 作废（answer、not_found 各一题）；同内容的
+    附件加一个、减一个不作废（Codex 第 63 轮）。"""
+    state = {"attachments": [ref(11, 1)]}
+    _attachment_load(monkeypatch, state)
+    cited_body = asked(client, session, settings, model, "申报对象是谁", doc, answer(("P001", S1)))
+    missing = asked(
+        client, session, settings, model, "评审专家是谁", doc, {"status": "not_found", "quotes": []}
+    )
+    snapshots = session.scalars(select(AdvisorTask.snapshot).order_by(AdvisorTask.id)).all()
+    assert [s["sourceAttachments"] for s in snapshots] == [{"att-abc123def456": [11]}] * 2
+
+    def statuses(attachments):
+        state["attachments"] = attachments
+        return [turn_of(client, t["id"])["answer"]["status"] for t in (cited_body, missing)]
+
+    other = ref(12, 2, "申报指南（另一份）")
+    assert statuses([ref(11, 1), other]) == ["answer", "not_found"]  # 加一个
+    assert statuses([other]) == ["answer", "not_found"]  # 减一个
+    assert statuses([ref(11, 1, version="sha-new:extract-v1"), other]) == ["hidden", "hidden"]
+
+
+def test_attachment_changed_during_the_call(client, session, settings, doc, model, monkeypatch):
+    """调完再核和读的时候是同一个判断（第六节第 3 条"处理时"第 6 步，Codex 第 64 轮）：调模型的时候
+    读了的附件 A 换了内容、另有 B 还是旧内容（版本摘要没变），也不发布：记"这份通知刚更新"、退回。"""
+    state = {"attachments": [ref(11, 1)]}
+    _attachment_load(monkeypatch, state)
+
+    def swap():
+        state["attachments"] = [
+            ref(11, 1, version="sha-new:extract-v1"),
+            ref(12, 2, "申报指南（另一份）"),
+        ]
+
+    model.before_return = swap
+    got = asked(
+        client,
+        session,
+        settings,
+        model,
+        "评分标准是什么",
+        doc,
+        answer(("Aabc123def456-1", "评分标准：创新能力占40分")),
+    )
+    assert (got["status"], got["errorCode"]) == ("failed", "ASK_DOC_UPDATED")
+    assert usage(session, "ask") == 0 and usage(session, chat_store.ASK_TRY) == 1
+
+
+def test_pick_without_any_attachment_gives_nothing():
+    """内容一样的附件一个都没有（⑤）：不挑，调用方作废。"""
+    assert ask._pick(content.SourceText(key="att-x", version="x", text="甲"), [1]) == (None, "")
 
 
 def _attachment_only_load(monkeypatch, state):
@@ -1298,7 +1362,7 @@ def test_card_reader_follows_what_was_read(client, session, settings, doc, model
     （别的测试）；只读了附件开那个附件；读了的来源一个都打不开时不放入口，叫人去点的半句也不写。
     not_found、unverified 各一题，日期那句同样；读的时候按现在的状态定。"""
     state = {
-        "attachments": [content.Attachment(11, 1, "申报指南", True)],
+        "attachments": [ref(11, 1)],
         "text": "评分标准：创新能力占40分。\n申报单位须提交盖章的申请书。联系电话：[电话已脱敏]。",
     }
     _attachment_only_load(monkeypatch, state)
@@ -1339,7 +1403,7 @@ def test_card_reader_follows_what_was_read(client, session, settings, doc, model
     assert [n["text"] for n in shown[2]["notes"] if n["code"] == "time_none"] == [ask.TIME_NONE]
     assert shown[3]["reader"] == opened
     assert shown[3]["lead"] == ask.REDACTED.format(n=1) + ask.REDACTED_REST
-    state["attachments"] = [content.Attachment(11, 1, "申报指南", False)]  # 读了的附件现在打不开了
+    state["attachments"] = [ref(11, 1, readable=False)]  # 读了的附件现在打不开了
     shown = [turn_of(client, turn["id"])["answer"] for turn in (missing, wrong, dated, mixed)]
     assert shown[0]["reader"] is None
     assert shown[0]["notes"][-1] == {
@@ -1368,7 +1432,7 @@ def test_card_reader_picks_the_first_openable_source():
             key=f"att-{n}",
             version="a",
             text="甲",
-            attachments=(content.Attachment(10 + n, n, f"附件{n}", n == 2),),
+            attachments=(ref(10 + n, n, f"附件{n}", n == 2, "a"),),
         )
         for n in (1, 2)
     )
@@ -1389,10 +1453,10 @@ def test_card_reader_compares_positions_across_sources():
         key="att-a",
         version="a",
         text="甲",
-        attachments=(content.Attachment(31, 3, "丙", True), content.Attachment(11, 1, "甲", False)),
+        attachments=(ref(31, 3, "丙", True, "a"), ref(11, 1, "甲", False, "a")),
     )
     other = content.SourceText(
-        key="att-b", version="b", text="乙", attachments=(content.Attachment(21, 2, "乙", True),)
+        key="att-b", version="b", text="乙", attachments=(ref(21, 2, "乙", True, "b"),)
     )
     assert (same.attachment_ids, same.shown_id, same.label) == ((11, 31), 31, "附件 3《丙》")
     assert ask._card_reader(7, SimpleNamespace(sources=(same, other))) == {
@@ -1406,8 +1470,8 @@ def test_card_reader_compares_positions_across_sources():
         version="c",
         text="丁",
         attachments=(
-            content.Attachment(41, 4, "丁", False),
-            content.Attachment(51, 5, "戊", False),
+            ref(41, 4, "丁", False, "c"),
+            ref(51, 5, "戊", False, "c"),
         ),
     )
     assert (closed.shown_id, closed.readable, closed.label) == (41, False, "附件 4《丁》")
@@ -2427,7 +2491,7 @@ def test_mixed_read_and_unread_attachments(client, session, settings, doc, model
     session.add_all([read_one, unread_one])
     session.commit()
     state = {
-        "attachments": [content.Attachment(read_one.id, 1, "申报指南.pdf", True)],
+        "attachments": [ref(read_one.id, 1, "申报指南.pdf")],
         "unread": [content.Unread("附件 2《汇总表.pdf》", "scanned", attachment_id=unread_one.id)],
     }
     _attachment_load(monkeypatch, state)

@@ -231,7 +231,7 @@ def _attachment(text):
         key="att-0123456789ab",
         version="v",
         text=text,
-        attachments=(content.Attachment(1, 1, "申报书", True),),
+        attachments=(content.AttachmentRef(1, 1, "申报书", "v", True),),
     )
 
 
@@ -341,7 +341,7 @@ def test_locate_ask_stays_in_its_source_and_the_given_segments():
                 key="att-1",
                 version="a",
                 text=att,
-                attachments=(content.Attachment(5, 1, "指南", True),),
+                attachments=(content.AttachmentRef(5, 1, "指南", "a", True),),
             ),
         ),
         segments=(

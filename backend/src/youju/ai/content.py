@@ -34,14 +34,19 @@ BODY = "body"  # 正文来源的 key
 
 
 @dataclass(frozen=True)
-class Attachment:
-    """一份附件内容对应的一个附件，按现在详情页附件列表里的样子（读的时候拼出处、挑"站内阅读"
-    打开哪个用，问一问开发设计第六节第 3 条"只更新显示"）。"""
+class AttachmentRef:
+    """一个附件现在的样子（Content.attachments、SourceText.attachments 用；问一问开发设计第十一节，
+    Codex 第 61 轮）。读的时候拼出处、挑"站内阅读"打开哪个、判断回答还对不对得上都看它（第六节
+    第 3 条"只更新显示"⓪到⑤）。"""
 
     id: int  # 在详情页附件列表里的编号（document_attachments.id）
     n: int  # "附件 N"：现在在详情页附件列表里的位置（从 1 起，每次取内容时现算）
-    name: str
+    name: str  # 现在的名称
+    # 现在的内容版本（写法同 SourceText.version 的附件那种）；还没取到、取不出文字的为 None：
+    # 不知道，不算变了也不算没变
+    version: str | None
     readable: bool  # 现在能不能在站内打开（同站内阅读的判断）
+    checked_at: datetime | None = None  # 最后一次从原网站核对的时间（同内容的附件各有各的）
 
     @property
     def label(self) -> str:
@@ -53,16 +58,17 @@ class SourceText:
     """一个来源：正文，或者（以后）一份附件内容。逐字核对只在来源的 text 里找。
 
     内容一样的几个附件只读一次、只交给模型一次，是同一个来源，都记在 attachments 里（附件读入方案
-    的"附件 → 内容版本 → 文字"，Codex 第 39 轮）。出处名称（label）和"站内阅读"入口用同一个附件
-    （shown_id）：现在能站内打开的第一个，一个都打不开就是第一个（Codex 第 40 轮：名称用一个、入口
-    开另一个，用户点出处会进到另一份）。这几样都由 attachments 现算，对不上的写法写不出来。"""
+    的"附件 → 内容版本 → 文字"，Codex 第 39 轮）。出处名称（label）、"站内阅读"入口、"附件取于"
+    的日期用同一个附件（shown_id）：现在能站内打开的第一个，一个都打不开就是第一个（Codex 第 40、
+    61 轮：名称用一个、入口开另一个，用户点出处会进到另一份）。这几样都由 attachments 现算，对不上
+    的写法写不出来。"""
 
     key: str  # "body"；附件 "att-<内容 SHA-256 前 12 位>"：只随内容变，不随位置、名称、链接变
     version: str  # 正文：原文指纹（同原来的 body_hash）；附件："<内容 SHA-256>:<取文字的规则版本>"
     text: str  # 遮过号码的全文
-    # 这份内容对应的所有附件，按现在在详情页附件列表里的位置排；正文为空
-    attachments: tuple[Attachment, ...] = ()
-    checked_at: datetime | None = None  # 附件最后一次从原网站核对的时间；正文为 None
+    # Content.attachments 里现在的版本等于这份内容的那几个，按现在在详情页附件列表里的位置排；
+    # 正文为空
+    attachments: tuple[AttachmentRef, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "attachments", tuple(sorted(self.attachments, key=lambda a: a.n)))
@@ -72,7 +78,7 @@ class SourceText:
         return tuple(a.id for a in self.attachments)
 
     @property
-    def shown(self) -> Attachment | None:
+    def shown(self) -> AttachmentRef | None:
         """出处名称和"站内阅读"入口用的那个附件；正文为 None。"""
         return next((a for a in self.attachments if a.readable), None) or next(
             iter(self.attachments), None
@@ -96,6 +102,13 @@ class SourceText:
         if shown is not None:
             return shown.label
         return "正文" if self.key == BODY else ""
+
+    @property
+    def checked_at(self) -> datetime | None:
+        """shown_id 那一个最后一次从原网站核对的时间（"附件取于"用，日期和名称是同一个附件）；
+        正文为 None。"""
+        shown = self.shown
+        return shown.checked_at if shown is not None else None
 
 
 @dataclass(frozen=True)
@@ -192,6 +205,10 @@ class Content:
     partial: bool = False  # 有段落因为超出字数没读（读附件以后才会有）
     attachments_total: int = 0  # 详情页列出的附件一共几个（含没读的）
     config: str = CONFIG_BODY
+    # 现在详情页附件列表里的所有附件（读了的、没读的），按位置排：读的时候按编号查"还在不在列表里、
+    # 现在是什么版本、能不能站内打开"（第六节第 3 条"只更新显示"⓪到⑤）。只读正文时（附件读入第二步
+    # 以前）没有附件来源，用不到，为空
+    attachments: tuple[AttachmentRef, ...] = ()
 
     @property
     def sources(self) -> tuple[SourceText, ...]:
@@ -226,12 +243,19 @@ class Content:
         return f"读了：{read}；没读：{unread}"
 
     def versions(self) -> dict:
-        """追问和读回答时核对内容变没变用。"""
+        """追问和读回答时核对内容变没变用。只放内容，不放附件编号：同内容的附件加一个、减一个
+        不算内容变了（Codex 第 63 轮）。"""
         return {
             "config": self.config,
             "sources": {s.key: s.version for s in self.sources},
             "segments": interpret.digest([(s.sid, s.text) for s in self.segments]),
         }
+
+    def source_attachments(self) -> dict[str, list[int]]:
+        """{附件来源的 key: 这份内容这时对应的附件编号}：跟回答一起存成 sourceAttachments（读了
+        没引用的、没找到的回答里也有），读的时候判断"记下的附件内容换了没有"（第六节第 3 条
+        "只更新显示"⓪，Codex 第 62、63 轮）。不进版本摘要。"""
+        return {s.key: list(s.attachment_ids) for s in self.sources if s.attachments}
 
 
 def _check(session: Session, doc_id: int, *, link: bool = True) -> tuple[Document, str, str, str]:

@@ -156,18 +156,17 @@ RULES_NOTE = (
 )
 SEE_ATTACHMENT_OPEN = "原句说“见附件”，附件 {i} 没读，可以点“站内阅读”看。"
 SEE_ATTACHMENT_CLOSED = "原句说“见附件”，附件 {i} 没读{why}，这份附件暂时读不出来。"
-# 内容一样的另一个附件替回答时引用的那个当出处（第六节第 3 条"只更新显示"②④）：接在出处后面
-SUBSTITUTE_GONE = "（回答时引用的附件已不在附件列表里，这份附件内容相同）"
-SUBSTITUTE_CLOSED = "（回答时引用的附件现在打不开，这份附件内容相同）"
-# 回答时引用的附件还在列表里、内容换了（设计稿只写了上面两种，这一种待设计稿定，先按推荐写）
-SUBSTITUTE_UPDATED = "（回答时引用的附件内容已更新，这份附件内容相同）"
+# 内容一样的另一个附件替回答时引用的那个当出处（第六节第 3 条"只更新显示"②④）：接在出处后面。
+# 不说原来那份为什么不用（打不开、不在列表里、现在读不到都是这一句，Codex 第 63 轮）
+SUBSTITUTE = "（回答时引用的是另一份内容相同的附件）"
 PARTIAL = "没读完：{parts}（超出字数）"
 LINK_GONE = (
     "原文链接 {date}检查时已失效。这条回答依据来自此前收录的内容，仅供参考，"
     "以发文机关现在公布的为准。"
 )
 FOOTER = "不判断能不能申报，以原文和主管部门解释为准。"
-STALE = "这份通知的内容后来更新过，这条回答的原句可能对不上了，不再显示。请重新问一次。"
+# 附件换了链接、现在读不出来，也是"能读到的内容有变化"，所以不说"更新过"（Codex 第 63 轮）
+STALE = "这份通知能读到的内容后来有变化，这条回答的原句可能对不上了，不再显示。请重新问一次。"
 TAKEN_DOWN = "这份通知已下架，回答不再显示。"
 INELIGIBLE = "这份通知现在不能问了，这条回答不再显示。"  # 原因小程序按 utils/ai-reasons.js 写
 REMOVED = "这条回答没有通过内容安全检查，已撤下，不再显示。"
@@ -299,6 +298,29 @@ def changed(stored: dict | None, current: dict) -> bool:
     if stored.get("config") != current["config"] or stored.get("segments") != current["segments"]:
         return True
     return any(current["sources"].get(key) != value for key, value in stored["sources"].items())
+
+
+def drifted(stored: dict | None, recorded: Any, current: content.Content) -> bool:
+    """⓪（第六节第 3 条"只更新显示"，D-079；Codex 第 61–63 轮）：回答时读了的附件——recorded 是存下的
+    sourceAttachments，每个附件来源当时对应的附件编号，引没引用、回答是不是没找到都算——有一个还在
+    附件列表里、现在的版本已经知道、而且不是回答时那份内容，就算对不上（不能因为别的附件还是旧内容
+    就保留）。现在的版本还不知道的不算变了（当作现在读不到）。"""
+    if not isinstance(recorded, dict) or not isinstance(stored, dict):
+        return False
+    versions = stored.get("sources") if isinstance(stored.get("sources"), dict) else {}
+    now = {a.id: a for a in current.attachments}
+    for key, ids in recorded.items():
+        for attachment_id in ids if isinstance(ids, list) else ():
+            ref = now.get(attachment_id) if isinstance(attachment_id, int) else None
+            if ref is not None and ref.version is not None and ref.version != versions.get(key):
+                return True
+    return False
+
+
+def outdated(stored: dict | None, recorded: Any, current: content.Content) -> bool:
+    """这条回答（这一问）对不对得上现在的内容，只用这一个判断（第六节第 3 条，Codex 第 64 轮）：
+    版本摘要变了（changed），或者⓪成立（drifted），都算对不上。读的时候、调完再核都用它。"""
+    return changed(stored, current.versions()) or drifted(stored, recorded, current)
 
 
 @dataclass(frozen=True)
@@ -808,12 +830,15 @@ def process(
         last_two = recent(session, turn.chat_id, turn.seq, stamp)
         rule, reset = rules(question, prev, versions)
         used = prev if prev is not None and not reset else None
-        # 追问快照（第七节第 4 条）：只存编号、段号和版本，前两问的文字不存
+        # 追问快照（第七节第 4 条）：只存编号、段号和版本，前两问的文字不存；sourceAttachments 是
+        # 这次读的每个附件来源当时对应的附件编号（读的时候判断⓪，第六节第 3 条"只更新显示"）
+        source_attachments = loaded.source_attachments()
         snapshot = {
             "doc_id": loaded.doc_id,
             "prev": used.turn_id if used else None,
             "prevQuotes": [{"n": q["n"], "sid": q["sid"]} for q in used.quotes] if used else [],
             "versions": versions,
+            "sourceAttachments": source_attachments,
             "read": {
                 "config": loaded.config,
                 "sources": [s.key for s in loaded.sources],
@@ -869,11 +894,12 @@ def process(
         mark = result_safety.check(session, task, result, field=ASK.result_field, stamp=stamp)
         if mark is not None:
             result["safety"] = mark
-        # 6. 调完再取一次内容：作废了就不发布（同 process_ai 调用后重新校验）
+        # 6. 调完再取一次内容：对不上了就不发布（同 process_ai 调用后重新校验；和读的时候是
+        # 同一个判断）
         session.flush()
         session.expire_all()
         current = content.load(session, doc_id, link=False)
-        if changed(versions, current.versions()):
+        if outdated(versions, source_attachments, current):
             raise _Fail(CHANGED)
         # 7. 先锁用户行、再按编号重新取任务和这一问，都在才写
         return done(result, snapshot)
@@ -1132,47 +1158,46 @@ def _card_reader(doc_id: int, current: content.Content) -> dict | None:
     return {"docId": doc_id, "attachmentId": min(shown, key=lambda a: a.n).id}
 
 
-def _pick(
-    source: content.SourceText, recorded: Any, listed: set[int]
-) -> tuple[content.Attachment | None, str]:
+def _recorded(snapshot: dict, result: dict) -> dict:
+    """回答时读了的每个附件来源对应的附件编号（sourceAttachments，存在快照里）；这一版以前存的
+    没有，按每句的 attachmentIds 凑（只认得出引用了的）。"""
+    stored = snapshot.get("sourceAttachments")
+    if isinstance(stored, dict):
+        return stored
+    return {
+        q["source"]: q["attachmentIds"]
+        for q in result.get("quotes") or []
+        if isinstance(q, dict) and isinstance(q.get("attachmentIds"), list)
+    }
+
+
+def _pick(source: content.SourceText, recorded: Any) -> tuple[content.AttachmentRef | None, str]:
     """附件里的一句原句，出处名称、"站内阅读"入口、点进去打开的用哪一个附件（三样始终是同一个；
     第六节第 3 条"只更新显示"，Codex 第 39、40 轮）。recorded 是回答时这份内容对应的附件编号
-    （attachmentIds），listed 是现在详情页附件列表里的全部附件编号（读了的、没读的都算）。
+    （这句的 attachmentIds）。候选只有现在还是这份内容的附件（source.attachments）：记下的附件不在
+    列表里了、现在的版本还不知道的，都当作现在读不到，不当候选；记下的还在列表里、内容换了的，读的
+    时候已经按⓪作废（outdated），走不到这里。
 
-    按这个先后挑，先有的算：① 记下的编号里还在这份内容里、现在能站内打开的，按现在的位置取第一个；
-    ② 内容一样的别的附件里能站内打开的第一个；③ 记下的、还在这份内容里的（都打不开）第一个；
-    ④ 内容一样的别的附件（都打不开）第一个。②④ 是替代的，给出处后面要注明的那句：记下的还在这份
-    内容里、只是打不开 → SUBSTITUTE_CLOSED；记下的还在附件列表里、内容换了 → SUBSTITUTE_UPDATED；
-    都不在附件列表里了 → SUBSTITUTE_GONE。⑤ 内容一样的附件一个都没有了：给 None，调用方按读了的
-    来源变了作废（读的时候先按版本比过，一般到不了这里）。
+    按这个先后挑，先有的算：① 记下的、现在能站内打开的，按现在的位置取第一个；② 内容一样的别的附件
+    里能站内打开的第一个；③ 记下的（都打不开）第一个；④ 内容一样的别的附件（都打不开）第一个。②④ 是
+    替代的，出处后面接 SUBSTITUTE。⑤ 一个都没有：给 None，调用方按读了的来源变了作废。
 
     这一版以前存的句子没有 attachmentIds：当作记下的就是现在这几个，用 shown_id 那一个、不注明。"""
     if not source.attachments:
         return None, ""
     if not isinstance(recorded, list):
         return source.shown, ""
-    kept = {i for i in recorded if isinstance(i, int)}
-    mine = [a for a in source.attachments if a.id in kept]
-    others = [a for a in source.attachments if a.id not in kept]
-    choices = ((mine, False), (others, True))
-    for candidates, replaced in choices:  # ①②：能站内打开的
+    mine = [a for a in source.attachments if a.id in recorded]
+    others = [a for a in source.attachments if a.id not in recorded]
+    choices = ((mine, ""), (others, SUBSTITUTE))
+    for candidates, note in choices:  # ①②：能站内打开的
         for attachment in candidates:
             if attachment.readable:
-                return attachment, _substitute(replaced, mine, kept, listed)
-    for candidates, replaced in choices:  # ③④：都打不开
+                return attachment, note
+    for candidates, note in choices:  # ③④：都打不开
         if candidates:
-            return candidates[0], _substitute(replaced, mine, kept, listed)
+            return candidates[0], note
     return None, ""
-
-
-def _substitute(replaced: bool, mine: list, kept: set[int], listed: set[int]) -> str:
-    if not replaced:
-        return ""
-    if mine:
-        return SUBSTITUTE_CLOSED
-    if kept & listed:
-        return SUBSTITUTE_UPDATED
-    return SUBSTITUTE_GONE
 
 
 def _answer(session: Session, turn: AIChatTurn, task: AdvisorTask, stamp: datetime, cache: dict):
@@ -1193,16 +1218,13 @@ def _answer(session: Session, turn: AIChatTurn, task: AdvisorTask, stamp: dateti
         if current.code == "unavailable":
             return _hidden(out, "unavailable", TAKEN_DOWN)
         return _hidden(out, "ineligible", INELIGIBLE, reason=current.code)
-    if changed((task.snapshot or {}).get("versions"), current.versions()):
+    snapshot = task.snapshot or {}
+    if outdated(snapshot.get("versions"), _recorded(snapshot, result), current):
         return _hidden(out, "stale", STALE)
     gone = out["linkGone"]
     question = plain(turn.question)
     sources = {s.key: s for s in current.sources}
     places = {s.sid: s.place for s in current.segments}
-    # 现在详情页附件列表里的全部附件（读了的、没读的）：替代的出处注明"已不在附件列表里"用
-    listed = {a.id for s in current.sources for a in s.attachments} | {
-        u.attachment_id for u in current.unread if u.attachment_id is not None
-    }
     quotes = []
     for q in result.get("quotes") or []:
         source = sources.get(q.get("source"))
@@ -1214,7 +1236,7 @@ def _answer(session: Session, turn: AIChatTurn, task: AdvisorTask, stamp: dateti
         else:
             # 出处按现在的来源拼（附件改名、换位置以后跟着变，按内容版本找回）；内容一样的几个附件
             # 按回答时记下的编号挑，名称、入口、点进去打开的是同一个（_pick）
-            chosen, note = _pick(source, q.get("attachmentIds"), listed)
+            chosen, note = _pick(source, q.get("attachmentIds"))
             if chosen is None:  # 内容一样的附件一个都没有了：读了的来源变了，作废
                 return _hidden(out, "stale", STALE)
             label = chosen.label + place + note
