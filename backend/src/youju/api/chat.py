@@ -476,12 +476,7 @@ def _create_ask(
             session.commit()
         else:
             day = service.usage_day(stamp)
-            with service.ai_cap_lock(session):
-                used = max(
-                    service.global_ai_usage(session, day), service.global_ai_calls(session, day)
-                )
-                if used >= settings.ai_advisor_daily_cap:
-                    raise _refuse(429, "AI_DAILY_CAP", ask.SITE_FULL)
+            with service.ai_cap_slot(session, day, settings.ai_advisor_daily_cap, submissions=True):
                 if not service.reserve_usage(session, user.id, ask.ASK.kind, day):
                     raise _refuse(429, "ASK_DAILY_LIMIT", ask.DAILY_LIMIT)
                 if not service.reserve_usage(
@@ -506,6 +501,9 @@ def _create_ask(
                 session.flush()
                 turn.task_id = task.id
                 session.commit()
+    except service.AICapReached:
+        session.rollback()
+        raise _refuse(429, "AI_DAILY_CAP", ask.SITE_FULL) from None
     except service.AdvisorBusy:
         session.rollback()
         raise HTTPException(status_code=503, detail="系统繁忙，请稍后重试") from None
