@@ -101,6 +101,10 @@ function passPage(options = {}) {
       calls.push(['check', id]);
       return options.order ? options.order(id) : Promise.resolve({ orderId: id, status: '待确认', check: 'unpaid' });
     },
+    abandonPayOrder(id, code) {
+      calls.push(['abandon', id, code]);
+      return options.abandon ? options.abandon(id, code) : Promise.resolve({ orderId: id, status: '已关闭', abandon: 'closed' });
+    },
   };
   const wx = {
     getStorageSync: (key) => storage.get(key),
@@ -516,6 +520,8 @@ test('付款前就被微信拒了的错误（道具没发布到现网、发布�
     assert.doesNotMatch(h.page.data.message, /没有扣钱/);
     assert.equal(h.storage.has('pay.unsettled'), false);
     assert.equal(h.toasts.length, 0);
+    // 有错误码的报给服务端（查过没付款就当场关单，下次付款不会被这一单挡住）；调起时抛异常的不报
+    assert.deepEqual(h.calls.filter((call) => call[0] === 'abandon'), fail ? [['abandon', 41, errCode]] : []);
     // 照取消那样再查几秒（万一扣了款也能开通），查完说明还在、可以再付
     assert.ok(h.calls.some((call) => call[0] === 'check'));
     fireCheckDeadline(h.clock);
@@ -533,7 +539,21 @@ test('付款前就被微信拒了的错误（道具没发布到现网、发布�
     await flush();
     assert.equal(h.storage.get('pay.unsettled').orderId, 41, String(errCode));
     assert.doesNotMatch(h.page.data.message, /支付没有完成/);
+    assert.equal(h.calls.filter((call) => call[0] === 'abandon').length, 0, String(errCode));
   }
+  // 服务端已关单：核对到"已关闭"时照旧显示带错误码的那句，不换成"订单已关闭"
+  const closed = passPage({
+    onPay: (payload) => payload.fail({ errCode: -15010, errMsg: 'requestVirtualPayment:fail' }),
+    order: (id) => Promise.resolve({ orderId: id, status: '已关闭' }),
+  });
+  await flush();
+  closed.page.check({ detail: { value: ['agree'] } });
+  closed.page.buy();
+  await flush();
+  await flush();
+  assert.match(closed.page.data.message, /^支付没有完成（错误码 -15010）/);
+  assert.equal(closed.page.data.busy, false);
+  assert.equal(closed.page.data.payError, true);
 });
 
 test('购买页付款后切到后台超过一分钟，回来时再查一次服务端，查到已完成就显示开通，防止付了款却停在超时提示', async () => {

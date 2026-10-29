@@ -590,15 +590,10 @@ httpx 日志过滤 xpay/code2Session URL；异常稳定中文。
   `pay.termsFinal` 一致（正文还是占位的也不算），不出现入口还在、购买页却回首页。
 - 商品接口不再返回 `sandbox`。
 
-### 开卖前另开 PR 做的（这次不做）
-- 投诉推送现在一律转人工（#397 以前就是这样）：退款中的单转人工后不再自动重试退款，已退款的单显示"人工核对中"。
-  改成"投诉不改订单状态、单独记一条要告警的投诉"需要另一套告警记录（Codex 第 6 轮），开卖前单独做。
-- 付款前就被微信拒的单（小程序拿到错误码）在服务端还是"待确认"，48 小时后才关单；可以让小程序把错误码报给服务端，
-  查单确认没付款就当场关单、不告警（独立审阅第 2 轮建议）。
+### 开卖前另开 PR 做的
+- ~~投诉推送一律转人工~~、~~付款前被拒的单 48 小时后才关~~、~~查旧单出错时放行~~：已在 PR #400 后面的单独 PR 做完，见文末
+  "开卖前补的两件"。
 - 苹果手机不满足付款条件（iOS 15 以下、非中国大陆账户）时返回什么错误码，真付测试时记下来。
-- 下新单前查 10 分钟内的待支付单，查单出错时现在放行（#326 以前就是这样：付款前就失败的单微信那边可能查不到，挡住会让用户
-  10 分钟付不了）。极端情况（付款后小程序被关、换手机、同时查单接口出错）可能重复扣款（Codex 第 8 轮）。和上面"小程序报告
-  付款没发起、服务端当场关单"一起做：报告过的单不挡，没报告、又查不了的单才挡新单。
 
 ### 上线现网要做的（按顺序）
 1. 付费服务协议定稿（创始人过目），定稿稿进包（final: true）；隐私保护指引并入付费部分、升版本。
@@ -619,3 +614,30 @@ httpx 日志过滤 xpay/code2Session URL；异常稳定中文。
 `test_payments.py`、`test_sale.py`、`test_invoices.py`、`test_pay_versions.py` 的夹具改成现网（现网 AppKey、
 定稿协议版本、发票都配）；`test_config.py` 加价格不少于 1 元；小程序 `tests/pay-pages.test.js` 加
 "没有沙箱提示、按钮只写支付""草稿包不带协议版本号""协议没定稿、没写发票就回首页"。
+
+## 开卖前补的两件（10/29，接在 PR #400 后面）
+
+### 投诉不改退款中、已退款、已关闭订单的状态
+- `payments.note_complaint`：投诉推送到了，已完成、待确认、已转人工的单照旧转人工（`escalate`，原因只加不盖、补单告警）；
+  退款中、已退款、已关闭的单（`COMPLAINT_KEEPS_STATUS`）不改状态——以前一律转人工，退款中的单因此停掉自动退款，
+  已退款的单倒退成"人工核对中"（Codex 第 6 轮）。
+- `payments.complaint_alerts`（补单每一轮跑）：最近 7 天的投诉事件，订单是上面三种状态的单独告警一次（"订单已退款，没有转人工"），
+  在事件摘要里记 `alerted`，告警没发出去下一轮接着发；转了人工的投诉只记 `alerted`、不重复发。支付关着时近 7 天有投诉，
+  `has_work` 也算有活。自助退款看投诉照旧（原因文字或投诉事件，`refund_reason`）。
+
+### 付款前就被拒的单当场关，查不清的旧单才挡新单
+- 小程序拿到官方错误码表里下单阶段的错误（`payments.NOT_STARTED_CODES`，和小程序 `utils/pay.js` 一致）时，调
+  `POST /api/v1/pay/orders/{id}/abandon {"code": N}`：服务端只认本人 10 分钟内下的待确认单和表里的错误码，同一张 2 秒内只查一次
+  微信（和核对共用限频），按查单结果处理（`payments.abandon`）——付了款照常开通（万一），退完记已退款，核验不过转人工；
+  没付款（0/1）、已关单（6）、查不到或返回格式不对的当场关单，原因"付款前就被微信拒了（错误码 N），已关闭"，不告警。
+  关了以后要是其实付了款，发货推送照样会开通它。
+- 下新单前查 10 分钟内的待支付单，查单出错改成挡新单（409"上一笔付款微信暂时还查不到结果，请过几分钟再试"）——以前放行，
+  旧单其实付了款时会重复扣款（Codex 第 8 轮）。报告过的单已经关了，不再挡；没报告、微信又查不到的（下单回应没送到手机等）
+  最多挡 10 分钟。调起付款时就抛异常的（没有错误码）小程序不报告。
+- api 账号对 `pay_orders`、`pay_events` 本来就有 INSERT、UPDATE（`deploy/mysql_accounts.sql`"支付权限"），不用新授权；没有迁移。
+
+### 测试
+`test_payments.py`：`test_reporting_a_payment_that_never_started`、`test_reporting_only_counts_own_recent_pending_orders_and_known_codes`、
+`test_complaint_on_refunding_refunded_or_closed_order_keeps_status_and_alerts_once`、
+`test_complaint_on_completed_order_still_goes_manual_without_a_second_alert`，`test_new_order_first_checks_recent_pending_payment`
+按新规则改；小程序 `pay-pages.test.js`：有错误码的上报、抛异常的不报、服务端关单后说明不变。

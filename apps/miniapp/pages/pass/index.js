@@ -168,6 +168,8 @@ Page({
   // 说明里写错误码，不断言"没有扣钱"（独立审阅、Codex 第 6 轮、agy 第 4 轮，10/29）
   payFailed(err, thrown) {
     if (!thrown && !pay.notStarted(err)) { this.afterPay(pay.isCancel(err)); return; }
+    // 有错误码的报给服务端：查过没付款就当场关单，下次付款不会被这一单挡住（服务端只挡查不清的旧单）
+    if (!thrown && this.orderId && typeof api.abandonPayOrder === 'function') api.abandonPayOrder(this.orderId, err.errCode).catch(() => {});
     this.afterPay(true, pay.notStartedText(err));
   },
   afterPay(cancelled, note) {
@@ -202,8 +204,9 @@ Page({
       const status = result.order.status;
       const closed = status === '已关闭';
       // 转了人工：和订单页同一句说明（钱收到了没有、多久处理、能不能直接申请退款，按这张订单的实际情况写）
-      const message = closed ? pay.TEXT.closed : status === '需人工处理' ? pay.stateNote(result.order) : status === '已退款' ? pay.TEXT.refunded : `订单状态：${status}`;
-      this.setData({ busy: false, message, payError: !closed, ordersLink: !closed });
+      // 付款前就被拒、服务端已关单：照旧显示那句说明（带错误码），不换成"订单已关闭"
+      const message = closed && this.payNote ? this.payNote : closed ? pay.TEXT.closed : status === '需人工处理' ? pay.stateNote(result.order) : status === '已退款' ? pay.TEXT.refunded : `订单状态：${status}`;
+      this.setData({ busy: false, message, payError: !closed || !!this.payNote, ordersLink: !closed });
     }
   },
   orders() { wx.navigateTo({ url: '/pages/orders/index' }); },

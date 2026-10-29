@@ -889,6 +889,12 @@ function checkPayOrder(id) {
   return request(`/api/v1/pay/orders/${encodeURIComponent(id)}/check`, null, { method: 'POST' })
     .catch((err) => (err && err.status === 404 ? payOrder(id).then((order) => Object.assign({}, order, { check: null })) : Promise.reject(err)));
 }
+// 报告这一单付款前就被微信拒了（wx.requestVirtualPayment 失败回调的 errCode）：服务端向微信查一次，
+// 没付款、查不到就当场关单，下次付款不会被这一单挡住；付了款照常开通。返回订单，加上 abandon（结果，没处理时为 null）
+function abandonPayOrder(id, code) {
+  if (!isLive()) return Promise.reject(new Error('付费服务暂未开放'));
+  return request(`/api/v1/pay/orders/${encodeURIComponent(id)}/abandon`, null, { method: 'POST', data: { code } });
+}
 function refundPayOrder(id) {
   if (!isLive()) return Promise.reject(new Error('付费服务暂未开放'));
   return request(`/api/v1/pay/orders/${encodeURIComponent(id)}/refund`, null, { method: 'POST' });
@@ -906,5 +912,5 @@ module.exports = {
   myData, renameFollow, deleteFeedback, deleteSubscription,
   follow, files, saveSubscription,
   advisorCapabilities, forgetCapabilities, advisorMode, advisorStatus, advisorSeason, advisorPreview, startBoostTrial, createAdvisorTask, advisorTasks, advisorTask, cancelAdvisorTask, deleteAdvisorTask, downloadAdvisorTask, advisorTaskPart,
-  payProducts, createPayOrder, payOrder, payOrders, checkPayOrder, refundPayOrder, requestInvoice, payHeader,
+  payProducts, createPayOrder, payOrder, payOrders, checkPayOrder, abandonPayOrder, refundPayOrder, requestInvoice, payHeader,
 };

@@ -85,13 +85,26 @@ def enabled(settings) -> bool:
 
 
 def has_work(session: Session, settings) -> bool:
-    """定时任务是否需要运行：支付开启，或库里还有未完结订单、当天有本地订单的待完成对账。
+    """定时任务是否需要运行：支付开启，或库里还有未完结订单、当天有本地订单的待完成对账，
+    或近 7 天有投诉（不转人工的投诉要单独告警，见 complaint_alerts）。
 
-    支付关闭且没有这些记录时只做这两次本地查询，不创建 HTTP 客户端、不访问微信。
+    支付关闭且没有这些记录时只做这几次本地查询，不创建 HTTP 客户端、不访问微信。
     """
     if enabled(settings):
         return True
     if session.scalar(select(PayOrder.id).where(OPEN_ORDER).limit(1)) is not None:
+        return True
+    if (
+        session.scalar(
+            select(PayEvent.id)
+            .where(
+                PayEvent.kind == COMPLAINT_EVENT,
+                PayEvent.created_at > datetime.now(UTC) - COMPLAINT_ALERT_WINDOW,
+            )
+            .limit(1)
+        )
+        is not None
+    ):
         return True
     return (
         session.scalar(
@@ -120,6 +133,20 @@ TRIAL_REF = "order_trial"
 ORDER_GIFT_REFS = (RENEWAL_REF, TRIAL_REF)
 # 投诉推送写在订单上的说明（api/pay.py 收到 xpay_complaint_notify 时）：自助退款据此认出投诉中的订单
 COMPLAINT_ERROR = "收到用户投诉"
+COMPLAINT_EVENT = "xpay_complaint_notify"
+# 不转人工的投诉（退款中、已退款、已关闭的单）按投诉事件单独告警，只看最近 7 天的事件
+COMPLAINT_ALERT_WINDOW = timedelta(days=7)
+# 投诉时订单是这几种状态就不改状态：转人工会让退款中的单停掉自动退款、已退款的单倒退成"人工核对中"
+COMPLAINT_KEEPS_STATUS = frozenset({"refunding", "refunded", "closed"})
+# 付款前就被微信拒了的错误码（官方 wx.requestVirtualPayment 错误码表里下单阶段的错误和风控拦截，
+# 10/29 核对；
+# 和小程序 utils/pay.js 的 NOT_STARTED 一致）。-15003"系统错误"说不清发生在哪一步，不在里面
+NOT_STARTED_CODES = frozenset(
+    {1001, -4, -15001, -15002, -15004, -15005, -15006, -15007, -15008, -15009, -15010}
+    | {-15011, -15012, -15013, -15014, -15016, -15017, -15018, -15019, -15020, -15021}
+)
+# 小程序报告"付款没发起"只认 10 分钟内下的单（和下新单前查旧单的窗口一样）
+ABANDON_WINDOW = timedelta(minutes=10)
 # 退款发起方：self 用户自助（付款 24 小时内没用过付费的量，D-081）；
 # staff 负责人按规则发起（系统故障、停止服务）
 SELF_REFUND_WINDOW = timedelta(hours=24)
@@ -1501,6 +1528,89 @@ def settle_pending(
     return "manual" if order.status == "manual" else "unavailable"
 
 
+def note_complaint(order: PayOrder, stamp: datetime) -> bool:
+    """投诉推送：投诉一律要人工跟进（微信支付投诉有答复时限）。已完成、待确认、已转人工的单照旧转人工
+    （escalate，补单告警）；退款中、已退款、已关闭的单不改状态——转人工会让退款中的单停掉自动退款、
+    已退款的单倒退成"人工核对中"（Codex 第 6 轮）——由补单按投诉事件单独告警一次
+    （complaint_alerts）。
+    返回这次有没有转人工。"""
+    if order.status in COMPLAINT_KEEPS_STATUS:
+        return False
+    return escalate(order, f"{COMPLAINT_ERROR}，需人工处理", stamp)
+
+
+def complaint_alerts(session: Session, stamp: datetime, alert) -> int:
+    """没转人工的投诉（投诉时订单退款中、已退款、已关闭）单独告警一次：
+    在投诉事件的摘要里记 alerted，
+    告警没发出去下一轮接着发。转了人工的投诉由转人工的告警负责，这里只记上 alerted、不重复发。
+    只看最近 7 天的投诉事件。返回这次发出的告警条数。"""
+    sent = 0
+    for row in session.scalars(
+        select(PayEvent)
+        .where(
+            PayEvent.kind == COMPLAINT_EVENT,
+            PayEvent.order_id.is_not(None),
+            PayEvent.created_at > stamp - COMPLAINT_ALERT_WINDOW,
+        )
+        .order_by(PayEvent.id)
+    ):
+        if (row.summary or {}).get("alerted"):
+            continue
+        order = session.get(PayOrder, row.order_id)
+        if order is not None and order.status not in COMPLAINT_KEEPS_STATUS:
+            done = True
+        else:
+            label = STATUS_LABELS.get(order.status, order.status) if order else "已删除"
+            done = (
+                alert(
+                    f"支付订单 #{row.order_id} {COMPLAINT_ERROR}（订单{label}，没有转人工），"
+                    "需人工处理：到小程序后台虚拟支付的投诉里答复"
+                )
+                is not False
+            )
+            sent += done
+        if done:
+            row.summary = {**(row.summary or {}), "alerted": True}
+    session.commit()
+    return sent
+
+
+def abandonable(order: PayOrder, stamp: datetime) -> bool:
+    """小程序能不能报告这一单"付款没发起"：待确认、没注销、10 分钟内下的。"""
+    return (
+        order.status == "pending"
+        and order.user_id is not None
+        and order.created_at > stamp - ABANDON_WINDOW
+    )
+
+
+def abandon(
+    session: Session,
+    order: PayOrder,
+    code: int,
+    client: XPayClient,
+    settings: Settings,
+    stamp: datetime,
+) -> str:
+    """小程序报告这一单付款前就被微信拒了（NOT_STARTED_CODES 里的错误码）：向微信查一次——
+    付了款的照常开通（万一），退完的记已退款，核验不过的转人工；没付款（0/1）、已关单（6）、
+    查不到（微信那边可能根本没有这一单）或返回格式不对的，当场关单、不告警。关了以后要是其实付了款，
+    发货推送照样会把它开通（accept_payment 不看关没关单）。这样下新单前就不会被它挡住
+    （create_order 只挡查不清的旧单）。调用方已锁 用户 → 订单，
+    订单可报告（abandonable）。返回 closed / paid / refunded / manual。"""
+    try:
+        data = query(session, order, client)
+    except XPayError:
+        data = None
+    if data is not None:
+        result = settle_pending(session, order, data, settings, stamp)
+        if result in ("paid", "refunded", "manual", "closed"):
+            return result
+    order.status, order.updated_at = "closed", stamp
+    order.error = f"付款前就被微信拒了（错误码 {code}），已关闭"
+    return "closed"
+
+
 def recheck(
     session: Session, order: PayOrder, client: XPayClient, settings: Settings, stamp: datetime
 ) -> str:
@@ -1689,6 +1799,7 @@ def run_payments(
             order.error = "微信查单或通知暂不可用，将重试"
             order.updated_at = stamp
             session.commit()
+    complaint_alerts(session, stamp, alert)
     # 9:30 的任务创建记录后，每分钟继续未完成的账单生成/下载；失败满 5 次的不再占名额。
     days_stmt = select(PayReconciliation.day).where(PayReconciliation.status == "pending")
     if not open_shop:
