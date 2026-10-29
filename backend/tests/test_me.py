@@ -460,6 +460,7 @@ def test_personal_data_no_record_and_owned_rows(client, session, monkeypatch):
         "events": [],
         "eventsTotal": 0,
         "aiChats": [],
+        "aiChatsNext": None,
         "aiChatsTotal": 0,
         "aiChatTurnsTotal": 0,
         "boostTrial": None,

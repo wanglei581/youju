@@ -59,6 +59,12 @@ def test_hit_reports_category_entry_and_version():
         "测试\N{IDEOGRAPHIC SPACE}违禁词甲",  # 全角空格
         "测试\N{ZERO WIDTH SPACE}违禁词甲",
         "测试\N{ZERO WIDTH NO-BREAK SPACE}违禁词\N{WORD JOINER}甲",
+        # 其他显示时看不见的字符（Unicode 的"默认可忽略"）：软连字符、方向控制符、变体选择符、
+        # 标签字符、韩文填充符
+        "测试\N{SOFT HYPHEN}违禁词甲",
+        "测试违禁\N{VARIATION SELECTOR-16}词\N{RIGHT-TO-LEFT OVERRIDE}甲",
+        "测试\N{LEFT-TO-RIGHT MARK}违禁词\N{TAG LATIN SMALL LETTER A}甲",
+        "测\N{HANGUL FILLER}试违禁\N{COMBINING GRAPHEME JOINER}词甲",
     ],
 )
 def test_spaces_inside_word_still_hit(text):
@@ -78,8 +84,9 @@ def test_earliest_then_longest():
     assert check("测试违禁词甲乙", WORDS).entry_id == "t3"
 
 
-def test_streaming_text_checked_as_a_whole():
-    """流式接收：每收到一段就把已收到的全部文字交给 check，跨段的词也查得到。"""
+def test_text_joined_from_chunks_checked_as_a_whole():
+    """check 查传进来的全部文字：几段拼起来才成的词也查得到（收完整段用它兜底；流式接收时每段
+    只查窗口，见 test_chat_ask 里 _Guard 的测试）。"""
     chunks = ["根据通知第三条，测试违", "禁词", "甲在附件里"]
     received = ""
     hits = []
@@ -88,6 +95,23 @@ def test_streaming_text_checked_as_a_whole():
         hits.append(check(received, WORDS))
     assert hits[:2] == [None, None]
     assert hits[2] == Hit("illegal_other", "t1", "test-1")
+
+
+def test_longest_entry_length():
+    """最长词条的长度（处理过以后的字数）：载入时算好，流式接收每段都要用；没有词条为 0。"""
+    assert WORDS.longest == len("testbadword") == 11
+    assert library(final=False).longest == 0
+    assert library(("t1", "illegal_other", "甲 \N{SOFT HYPHEN}乙")).longest == 2  # 处理过以后的字数
+
+
+def test_invisible_char_does_not_block_combining():
+    """看不见的字符在规范化之前就去掉：组合用字形连接符、变体选择符夹在字母和组合符号中间，
+    去掉以后照样合成（Codex 第 3 轮）。"""
+    accented = library(("t1", "illegal_other", "café"))
+    assert safety_words.normalize("e\N{COMBINING GRAPHEME JOINER}\u0301") == "é"
+    assert check("cafe\N{COMBINING GRAPHEME JOINER}\u0301", accented).entry_id == "t1"
+    assert check("cafe\N{VARIATION SELECTOR-1}\u0301", accented).entry_id == "t1"
+    assert safety_words.strip_invisible("甲\u200b乙 丙") == "甲乙 丙"  # 空白留到规范化以后再去
 
 
 def test_check_does_not_depend_on_final():
