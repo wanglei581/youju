@@ -360,8 +360,9 @@ def test_refers_back_only_on_the_listed_words(question, back):
 def test_nth_and_drafting():
     assert ask.nth("刚才第五句呢") == 5 and ask.nth("第 12 句") == 12 and ask.nth("第十一句") == 11
     assert ask.nth("刚才那句") is None
-    # 先认"第 N 句"，没有再认"第 N 条""第 N 个"；第一批、第二季度这类不算
-    assert ask.nth("上面第2条第3句") == 3 and ask.nth("刚才第三条呢") == 3
+    # 指回上一答以后，"第 N"后面是句、条、个（和项、点）的都按上一答的编号算，每一处都看（#408）；
+    # 第一批、第二季度这类不算
+    assert ask._spans("上面第2条第3句") == [(2, 2), (3, 3)] and ask.nth("刚才第三条呢") == 3
     assert ask.nth("你列的第2个") == 2
     assert ask.nth("刚才第3项呢") == 3 and ask.nth("你说的第二点要盖章吗") == 2
     assert ask.nth("刚才说的第一批申报截止哪天") is None and ask.nth("上面第二季度的呢") is None
@@ -369,10 +370,9 @@ def test_nth_and_drafting():
     for text in ("第3、4句", "第 1 至 3 句", "第2至四句", "第5至3句", "第一、三句", "第2-5句"):
         assert ask.refers_back(text), text
     assert ask._spans("第2、5句") == [(2, 2), (5, 5)] and ask._spans("第5至3句") == [(3, 5)]
-    assert ask._spans("第1、3至5句") == [(1, 1), (3, 5)] and ask._spans("第一和两句") == [
-        (1, 1),
-        (2, 2),
-    ]
+    assert ask._spans("第1、3至5句") == [(1, 1), (3, 5)]
+    assert ask._spans("第一和二句") == [(1, 1), (2, 2)]
+    assert ask._spans("第1、2句和第5句") == [(1, 1), (2, 2), (5, 5)]  # 每一处都看（Codex 第 5 轮）
     assert [ask.beyond(t, 3) for t in ("第2、5句", "第1至5句", "第5至3句", "第2至四句")] == [
         5,
         4,
@@ -789,11 +789,33 @@ def test_listed_sentences_beyond_the_previous_answer(client, session, settings, 
     loaded = content.load(session, doc, link=False)
     quotes = tuple({"n": n, "sid": f"P00{n}", "quote": t} for n, t in ((1, S1), (2, S2), (3, S3)))
     prev = ask.Prev(1, "要满足哪些条件", loaded.versions(), quotes)
-    for text, n in (("第2至四句是什么意思", 4), ("第5至3句呢", 4), ("第2、5句呢", 5)):
-        rule, _ = ask.rules(text, prev, loaded.versions())
-        assert rule == {"status": "clarify", "reason": "no_nth", "m": 3}, text
-        assert ask.beyond(text, rule["m"]) == n, text
-    assert ask.rules("第一、三句呢", prev, loaded.versions()) == (None, False)
+    two = replace(prev, quotes=quotes[:2])
+    for previous, text, n in (
+        (prev, "第2至四句是什么意思", 4),
+        (prev, "第5至3句呢", 4),
+        (prev, "第2、5句呢", 5),
+        (prev, "第1、2句和第5句呢", 5),  # 每一处都看（Codex 第一批第 5 轮）
+        (prev, "上面第1至5条呢", 4),  # 有指回的词：条、个也按上一答的编号算
+        (prev, "刚才第1至999999999句", 4),  # 只按两头算，不卡
+        (prev, "上面第1至999999999条", 4),
+        (two, "第一、三句呢", 3),
+    ):
+        rule, _ = ask.rules(text, previous, loaded.versions())
+        m = previous.count
+        assert rule == {"status": "clarify", "reason": "no_nth", "m": m}, text
+        assert ask.beyond(text, m) == n, text
+    # 没超出的、没有指回的词的"第 N 条"：不当场答，照常交给模型
+    for previous, text in (
+        (prev, "第一、三句呢"),
+        (prev, "第2、3句呢"),
+        (prev, "第1至5条是什么"),
+        (two, "上面第1、2个呢"),
+    ):
+        assert ask.rules(text, previous, loaded.versions()) == (None, False), text
+    # "上面第1、2个"交给模型时数字照原样（不隐去的序号，第九节第 2 条）
+    asked(client, session, settings, model, "截止和审核", doc, answer(("P002", S2), ("P003", S3)))
+    asked(client, session, settings, model, "上面第1、2个是谁的", doc)
+    assert model.calls[-1][1]["question"] == "上面第1、2个是谁的"
 
 
 def test_two_asks_in_one_chat_at_once(client, session, doc, wechat, monkeypatch):

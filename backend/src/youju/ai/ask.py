@@ -220,30 +220,18 @@ _BACK_WORDS = (
     "这一句",
     "那一句",
 )
-_NUM = r"(?:\d+|[零〇一二三四五六七八九十两]+)"
+_NUM = r"(?:\d+|[一二三四五六七八九十]+)"  # 阿拉伯数字或一到十
 # 几句连写的（"第 N、M 句""第 N 至 M 句"）也算：序号用"、，,和与及或"隔开，或者用"至到-~—"连成范围，
 # 阿拉伯数字、中文数字可以混写（第七节第 3 条，连接的字同第九节第 2 条；#408）
 _JOINS = "、，,和与及或"
 _RANGES = "至到-~—"
 _NUMS = rf"{_NUM}(?:[{_JOINS}{re.escape(_RANGES)}]{_NUM})*"
 _SPLIT_NUMS = re.compile(f"([{_JOINS}{re.escape(_RANGES)}])")
+# "第 N 句"算指回上一答；指回上一答以后，"第 N"后面是句、条、个（和项、点）的都按上一答的编号算。
+# "第一批""第二季度"这类不是在数上一答的句子
 _NTH_SENTENCE = re.compile(rf"第({_NUMS})句")
-# 没写"第 N 句"时只认"第 N 条、个、项、点"；"第一批""第二季度"这类不是在数上一答的句子
-_NTH_ITEM = re.compile(rf"第({_NUMS})[条个项点]")
-_CN_DIGITS = {
-    "零": 0,
-    "〇": 0,
-    "一": 1,
-    "二": 2,
-    "两": 2,
-    "三": 3,
-    "四": 4,
-    "五": 5,
-    "六": 6,
-    "七": 7,
-    "八": 8,
-    "九": 9,
-}
+_NTH_ANY = re.compile(rf"第({_NUMS})[句条个项点]")
+_CN_DIGITS = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
 # 要代写：动作后面紧接着（中间最多隔一个"一份、一下、个、篇"）是材料（第六节第 3 条第 5 步）
 _DRAFT = re.compile(
     "(?:代写|帮我写|帮忙写|替我写|起草|润色|改写)(?:一份|一下|个|篇)?"
@@ -297,25 +285,26 @@ def refers_back(question: str) -> bool:
 
 
 def _spans(question: str) -> list[tuple[int, int]]:
-    """问题里指的上一答的第几句，每段（起, 止）：先认"第 N 句"，没有再认"第 N 条、个、项、点"；
-    几句连写的（"第2、5句""第1至5句"）都算，范围按从小到大（"第5至3句"是 3 到 5）。别的"第 N"
-    （第一批、第二季度）不算；认不出的为空。只记起止，不逐句展开（"第1至99999句"也不费事）。"""
-    text = plain(question)
-    match = _NTH_SENTENCE.search(text) or _NTH_ITEM.search(text)
-    if match is None:
-        return []
-    parts = _SPLIT_NUMS.split(match.group(1))
-    values = [_number(part) for part in parts[0::2]]
-    if any(value is None for value in values):
-        return []
-    spans = [(values[0], values[0])]
-    for at, mark in enumerate(parts[1::2]):
-        value = values[at + 1]
-        if mark in _RANGES:  # 和前一个序号连成范围
-            low, high = spans[-1]
-            spans[-1] = (min(low, value), max(high, value))
-        else:
-            spans.append((value, value))
+    """指回上一答的问题里指的上一答的第几句，每段（起, 止）：问题里每一处"第 N 句""第 N 条""第 N 个"
+    （和"第 N 项""第 N 点"）都算（"第1、2句和第5句"三句都看，Codex 第一批第 5 轮；#408）；几句连写的
+    （"第2、5句""第1至5句"）都算，范围按从小到大（"第5至3句"是 3 到 5）。别的"第 N"（第一批、
+    第二季度）不算。只记两头，不逐句展开（"第1至999999999句"也只比一次）。只在问题指回上一答时
+    用（refers_back）：单独一个"第1至5条"不是在问上一答。"""
+    spans = []
+    for match in _NTH_ANY.finditer(plain(question)):
+        parts = _SPLIT_NUMS.split(match.group(1))
+        values = [_number(part) for part in parts[0::2]]
+        if any(value is None for value in values):
+            continue
+        group = [(values[0], values[0])]
+        for at, mark in enumerate(parts[1::2]):
+            value = values[at + 1]
+            if mark in _RANGES:  # 和前一个序号连成范围
+                low, high = group[-1]
+                group[-1] = (min(low, value), max(high, value))
+            else:
+                group.append((value, value))
+        spans.extend(group)
     return spans
 
 
@@ -327,7 +316,8 @@ def nth(question: str) -> int | None:
 
 def beyond(question: str, count: int) -> int | None:
     """问题里指的上一答的几句里，超出上一答句数（count）的最小那一句（第七节第 3 条：上一答 3 句时，
-    "第2、5句"是 5，"第1至5句"是 4）；都没超出、没写第几句的为 None。"""
+    "第2、5句"是 5，"第1至5句"是 4）；都没超出、没写第几句的为 None。范围 [a, b] 只按两头算：
+    b 不超出就没有超出，否则是 a 和 count+1 里大的那个。"""
     over = [max(low, count + 1) for low, high in _spans(question) if high > count]
     return min(over) if over else None
 
