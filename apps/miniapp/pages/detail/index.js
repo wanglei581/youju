@@ -7,6 +7,11 @@ const { previewDocs } = require('../../utils/exporter.js');
 const { watchDay, stopDay } = require('../../utils/daywatch.js');
 const attachments = require('../../utils/attachments.js');
 const { versionRows, upstreamLine } = require('../../utils/repost.js');
+const { flags } = require('../../utils/pages.js');
+
+// 要点只放标题下、截止卡片里没有的（10/29：发文机关在标题下、地区在标签里、申报状态在截止卡片里，不重复写）
+const SHOWN_ELSEWHERE = ['发文机关', '适用地区', '申报状态'];
+const keyPoints = (doc) => (doc.points || []).filter((p) => Array.isArray(p) && !SHOWN_ELSEWHERE.includes(p[0]));
 
 // 转发卡片的标题（D-070：卡片只显示通知标题和发文机关）："发文机关｜通知标题"，标题里已经写了发文机关的不重复。
 // 微信卡片只显示两行左右，太长的截到 60 个字（按字截，不把表情等双字节字符截成半个）
@@ -65,7 +70,7 @@ function deadlineRows(deadlines) {
 Page({
   data: { doc: null, shareReady: false, regionText: '', due: null, dueNote: '', dueDate: '', dueWeek: '', changes: [], tagClasses: [], reminded: false, error: '',
     bodyView: null, bodySummary: '', noBody: '', entry: null, goneNote: '', supportExpanded: '', supportEvidence: '', conds: [],
-    atts: [], versions: [], versionLabel: '', upstream: '' },
+    atts: [], versions: [], versionLabel: '', upstream: '', points: [], has: flags() },
 
   onLoad(query) {
     if (api.watchStartup) api.watchStartup(this);
@@ -106,7 +111,7 @@ Page({
         const due = dueInfo(doc.deadline);
         const body = doc.body && doc.body.status === 'ok' ? doc.body : null;
         // 首发版（D-061）：接口给 deadlines 时按类型逐条写（企业申报、推荐、材料报送……），
-        // 核对过的标"已核对"，机器摘录的标"机器摘录·未经人工核对"并附原句，其余写"截止未核对"
+        // 核对过的标"已人工核对"，机器摘录的标"原文摘录"并附原句，其余写"截止时间见原文"
         const dls = Array.isArray(doc.deadlines) ? deadlineRows(doc.deadlines) : null;
         const versions = versionRows(doc.repost);
         // 正文和附件（D-097）：能不能读以服务端为准（和阅读页同一个判断）；正文先给开头，在段末停
@@ -114,6 +119,7 @@ Page({
         const bodyView = body ? opening(body) : null;
         this.setData({
           doc,
+          points: keyPoints(doc),
           // 地区照录服务端写法；来源带区县而地区文字里没写时补上区县
           regionText: regionText(doc),
           // 不满一屏全部显示（"全文如下"），长的显示开头（"下面是开头，全文约 N 字"）；正文卡顶上一行写能读到什么
@@ -152,7 +158,7 @@ Page({
       })
       .catch((err) => this.setData({
         doc: null, due: null, dueNote: '', changes: [], reminded: false, atts: [], conds: [], versions: [], versionLabel: '', upstream: '',
-        bodyView: null, bodySummary: '', noBody: '', entry: null, goneNote: '',
+        bodyView: null, bodySummary: '', noBody: '', entry: null, goneNote: '', points: [],
         takenDown: err.status === 404 && err.message === '该文件已下架',
         error: err.status === 404 ? err.message : `数据未更新：${err.message}`,
       }))
@@ -242,12 +248,17 @@ Page({
     });
   },
 
+  // 原文出处下的"数据说明 ›"：去使用帮助看截止日期、正文是怎么来的（包里有帮助页才显示）
+  help() {
+    if (this.data.has.help) wx.navigateTo({ url: '/pages/help/index?topic=deadline' });
+  },
+
   // 名单类通知的正文里名单没展开（D-092）：去查名单查企业
   toLists() {
     wx.navigateTo({ url: '/pages/lists/index' });
   },
 
-  // 正文下面和底栏两处同名的入口：阅读全文（正文）或阅读附件（第一个能读的附件）
+  // 底栏的入口：阅读全文（正文）或阅读附件（第一个能读的附件）
   readBody() {
     const { doc, entry } = this.data;
     if (!doc || !entry) return;

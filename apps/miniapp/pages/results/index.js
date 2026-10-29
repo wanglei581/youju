@@ -11,6 +11,15 @@ function generatedTime(value) {
   const pad = n => String(n).padStart(2, '0');
   return `${date.getUTCFullYear()}年${date.getUTCMonth() + 1}月${date.getUTCDate()}日 ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}（北京时间）`;
 }
+// 站内看结果（D-089）：截止一栏照导出文件的内容写，但不搬文件里给对账用的写法——"（机器摘录）"在页面上叫"原文摘录"，
+// 没有能显示的日期只写一句"截止时间见原文"，不写"截止未核对，以原文为准"（10/29 创始人：这类话写在使用帮助里）
+const SEE_ORIGINAL = '截止时间见原文';
+function deadlineText(item) {
+  const value = String(item.deadline || '');
+  if (!/^\d{4}-\d{2}-\d{2}/.test(value)) return SEE_ORIGINAL;
+  const role = String(item.date_role || '');
+  return `${value}${role ? ` ${role}` : ''}`.replace(/（机器摘录）/g, '（原文摘录）');
+}
 Page({
   data: { loading: false, error: '', result: null, current: false, saving: false, advisor: false, page: 1, nextCursor: null, changed: false },
   onLoad(q) {
@@ -40,7 +49,8 @@ Page({
       const next = res.nextCursor == null ? null : String(res.nextCursor);
       if (next !== null && (!next || this.cursors.slice(0, this.cursorIndex + 1).includes(next))) throw new Error('结果分页信息有误，请重试');
       this.revision = res.revision;
-      this.setData({ result: { ...res, generatedAtText: generatedTime(res.generatedAt) }, page: this.cursorIndex + 1, nextCursor: next });
+      const items = this.data.advisor ? res.items : res.items.map((item) => ({ ...item, deadlineText: deadlineText(item) }));
+      this.setData({ result: { ...res, items, generatedAtText: generatedTime(res.generatedAt) }, page: this.cursorIndex + 1, nextCursor: next });
     }).catch((err) => {
       if (!current()) return;
       if ([403, 404, 409, 410].includes(err.status)) { this.revision = ''; this.cursors = ['']; this.cursorIndex = 0; }

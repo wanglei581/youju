@@ -37,7 +37,7 @@ test('详情页：标题下先写明链接失效了、要点和截止是之前�
 });
 
 test('不能解读的原因 link_gone：写明链接失效了、为什么不解读，不给下一步（复制的链接也打不开）', () => {
-  assert.deepEqual(reasons.reasonView('link_gone', true), { text: '原文链接已失效，这份通知暂不提供 AI 解读和条款对照，请以发文机关现在公布的为准。', next: '', nextText: '' });
+  assert.deepEqual(reasons.reasonView('link_gone', true), { text: '原文链接已失效，这份通知暂不提供 AI 解读和条款对照。', next: '', nextText: '' });
 });
 
 test('解读、对照结果页：原文链接失效了照常显示结果，顶部写明基于此前收录的正文；解读结果下不再给条款对照', () => {

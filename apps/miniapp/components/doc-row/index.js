@@ -24,14 +24,15 @@ Component({
       const statusText = appStatus && typeof appStatus === 'object'
         ? ({ open: '征集中', closing: '即将截止', closed: '已截止' }[appStatus.code] || '') : status;
       const statusCls = appStatus && typeof appStatus === 'object' ? appStatus.code : statusClass(status);
-      // 接口带了 due（D-061 首发版）：核对过的写日期；机器摘录的写日期、另起一行附原句；其余只写"截止未核对"
+      // 接口带了 due（D-061 首发版）：核对过的写日期；机器摘录的写日期、另起一行附原句；其余写"截止时间见原文"，
+      // 可能 7 天内截止的写"可能 7 天内截止"（10/29 起不写"未核对"，说明在使用帮助里）
       const view = Object.prototype.hasOwnProperty.call(doc, 'due') && doc.kind === '申报通知' ? dueView(doc.due) : undefined;
       let due = dueInfo(doc.deadline);
       let dueNote = deadlineNote(doc);
       let excerpt = null;
       if (view !== undefined) {
         due = view && view.source !== 'unverified' ? { days: view.days, tone: view.tone, text: view.text } : null;
-        dueNote = due ? '' : (view || doc.dueSoonUnverified ? '截止未核对' : '截止时间见原文');
+        dueNote = due ? '' : (doc.dueSoonUnverified ? '可能 7 天内截止' : '截止时间见原文');
         excerpt = view && view.source === 'excerpt' ? { label: view.label, quote: view.quote } : null;
       }
       this.setData({

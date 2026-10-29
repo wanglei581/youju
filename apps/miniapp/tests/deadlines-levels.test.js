@@ -14,7 +14,7 @@ function load(file, deps = {}, globals = {}) {
   const module = { exports: {} };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', file), 'utf8'), {
     module, setTimeout, clearTimeout,
-    require(name) { if (name === '../../utils/regions.js') return require('../utils/regions.js'); if (!Object.hasOwn(deps, name) && /ai-access\.js$/.test(name)) return AI_OFF; assert.ok(Object.hasOwn(deps, name), `缺少依赖 ${name}`); return deps[name]; },
+    require(name) { if (name === '../../utils/regions.js') return require('../utils/regions.js'); if (!Object.hasOwn(deps, name) && /utils\/coverage\.js$/.test(name)) return { loadCoverage: () => Promise.resolve(null) }; if (!Object.hasOwn(deps, name) && /(^|\/)pages\.js$/.test(name)) return require('./helpers/package-pages-default.js').pages; if (!Object.hasOwn(deps, name) && /ai-access\.js$/.test(name)) return AI_OFF; assert.ok(Object.hasOwn(deps, name), `缺少依赖 ${name}`); return deps[name]; },
     Page(d) { def = d; }, Component(d) { def = d; }, ...globals,
   }, { filename: file });
   return def ? { ...def, data: JSON.parse(JSON.stringify(def.data)), setData(values) { Object.assign(this.data, values); } } : module.exports;
@@ -30,7 +30,7 @@ const NONE = { id: '2', kind: '申报通知', title: '关于组织申报的通�
 const VERIFIED = { id: '3', kind: '申报通知', title: '关于组织申报的通知', deadline_state: 'verified', deadline: { date: '2026-10-18', time: '', verified: true } };
 
 test('截止说明：未核对、无候选、已核对三种情况，未核对时不出现任何日期', () => {
-  assert.equal(format.deadlineNote(UNVERIFIED), '截止未核对');
+  assert.equal(format.deadlineNote(UNVERIFIED), '截止时间见原文');
   assert.equal(format.deadlineNote(NONE), '截止时间见原文');
   assert.equal(format.deadlineNote({ ...NONE, deadline_state: undefined }), '截止时间见原文'); // 旧接口没有这个字段
   assert.equal(format.deadlineNote(VERIFIED), ''); // 有核对过的日期时由 dueInfo 显示
@@ -45,7 +45,7 @@ test('截止说明：未核对、无候选、已核对三种情况，未核对�
 test('列表行：显示截止状态说明，模板不再写死文字', () => {
   const row = load('components/doc-row/index.js', { '../../utils/format.js': format, '../../utils/copy.js': {}, '../../utils/repost.js': require('../utils/repost.js') });
   const observe = (doc) => { row.observers['doc, q, today'].call(row, doc, ''); return row.data; };
-  assert.equal(observe(UNVERIFIED).dueNote, '截止未核对');
+  assert.equal(observe(UNVERIFIED).dueNote, '截止时间见原文');
   assert.equal(observe(UNVERIFIED).due, null);
   assert.equal(observe(NONE).dueNote, '截止时间见原文');
   const verified = observe(VERIFIED);
@@ -68,7 +68,7 @@ test('详情页：未核对写说明不给日期，无候选写见原文', async
     '../../utils/attachments.js': { decorate: () => [], note: () => '' },
   }, { wx: {} });
   page.onLoad({ id: '1' }); await flush();
-  assert.equal(page.data.dueNote, '截止未核对');
+  assert.equal(page.data.dueNote, '截止时间见原文');
   assert.equal(page.data.due, null); assert.equal(page.data.dueDate, '');
   doc = { ...UNVERIFIED, deadline: { date: '2026-11-23', verified: false, label: '企业申报截止' } };
   page.refreshing = false; page.load(); await flush();
@@ -115,7 +115,7 @@ test('截止页按月看的空状态：给去搜索申报通知的入口；接�
   page.pickTab(event({ key: 0 })); await flush();
   assert.equal(page.data.rows.length, 0);
   assert.equal(page.data.verifyingNote, undefined);
-  assert.equal(page.data.emptyTitle, `${page.data.month}月没有核对过或机器摘录的截止日期`);
+  assert.equal(page.data.emptyTitle, `${page.data.month}月没有核对过或原文摘录的截止日期`);
   page.goSearch();
   assert.equal(new URL(url, 'https://test.invalid').searchParams.get('kind'), '申报通知');
   const template = read('pages/report/index.wxml');
@@ -226,7 +226,7 @@ test('地区和层级：层级的国家部委不受地区限制，省级只列�
   page.onLoad({ open: '1' }); await flush();
   // 10/22 走查起：只看未截止的口径写在"去掉'只看未截止'"按钮下面（和筛选面板同一句），这里不再另写一遍
   assert.equal(page.data.emptyHint, '');
-  assert.equal(page.data.openNote, '“只看未截止”不含没写明截止日期或日期还没理清的通知');
+  assert.equal(page.data.openNote, '“只看未截止”不含截止日期还不确定的通知');
   assert.match(read('pages/search/index.wxml'), /wx:if="{{picked.open.length}}" class="empty-note exit-note">{{openNote}}<\/view>/);
   page.onLoad({ regions: '山东' }); await flush();
   assert.equal(page.data.emptyHint, '');

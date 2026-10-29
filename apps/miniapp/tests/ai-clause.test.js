@@ -287,7 +287,8 @@ test('页面已注册，所有静态文字无禁止字样；模板闭合，样�
   assert.doesNotMatch(read('pages/advisor-clause/index.wxss'), /#[0-9a-fA-F]|gradient|text-overflow|line-clamp|iconfont/);
   assert.match(read('pages/advisor-clause/index.wxss'), /word-break: break-word/);
   const template = read('pages/advisor-clause/index.wxml');
-  assert.match(template, /bindtap="original" disabled="\{\{!docId\}\}"/); assert.match(template, /bindtap="feedback" disabled="\{\{!docId\}\}"/);
+  // 拒答卡片里不再另放"看原文"（结果顶上已有一个，10/29 去重）；"这句摘错了"没有通知编号时不能点
+  assert.equal((template.match(/bindtap="original"/g) || []).length, 2); assert.match(template, /bindtap="feedback" disabled="\{\{!docId\}\}"/);
 });
 
 test('条款对照的条目和引用也去掉 PDF 版面换行（10/13）', () => {

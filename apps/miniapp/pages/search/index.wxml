@@ -10,7 +10,8 @@
   </view>
   <view class="kind-tabs" aria-role="tablist">
     <view wx:for="{{tabs}}" wx:key="key" class="kind-tab {{tab === item.key ? 'kind-tab--on' : ''}}" data-key="{{item.key}}" bindtap="pickTab" aria-role="tab" aria-selected="{{tab === item.key}}">
-      <text>{{item.label}}{{tab === item.key && !loading && !error ? ' ' + total : ''}}</text>
+      <!-- 份数只在下面的统计行写一次（10/29：页签上再写一遍是重复） -->
+      <text>{{item.label}}</text>
       <view wx:if="{{tab === item.key}}" class="kind-bar"></view>
     </view>
   </view>
@@ -122,7 +123,6 @@
               <view class="group-note">{{cityCoverageNote}}<text class="link" bindtap="loadCities">　刷新收录范围</text></view>
               <view wx:if="{{cityError}}" class="group-note">{{cityError}}</view>
             </block>
-            <view wx:if="{{g.tagged}}" class="tag-note">{{tagNote}}</view>
             <view class="options">
               <view wx:for="{{g.options}}" wx:for-item="o" wx:key="*this" class="option {{pickedMap[g.key + ':' + o] ? 'option--on' : ''}}"
                     data-group="{{g.key}}" data-option="{{o}}" bindtap="pickOption">{{o}}</view>

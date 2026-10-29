@@ -56,6 +56,8 @@ Component({
         cardTitle: doc && title ? title : '',
         cardPath: doc && title ? `/pages/detail/index?id=${doc}` : '',
         email: (legal.operator && legal.operator.email) || '',
+        // "我的"页上一行就是"使用帮助"：打不开客服时不再给第二个去使用帮助的入口，改给联系邮箱（10/29 agy）
+        help: pages.has('help') && from !== 'me',
       });
     },
     help() {

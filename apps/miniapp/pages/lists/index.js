@@ -30,7 +30,7 @@ function missNote(coverage) {
   if (partial > 0) parts.push(`已收录的名单里有 ${partial} 份很长、只读了前面一部分`);
   // 范围总要写上（agy 10/29 复审）：没有读不出、只读一部分的名单时，也不能让人以为"全查过了、就是没有"
   parts.push('只收录了科技、工信等部门的公开名单，地市发布的还没收录');
-  return `不能据此判断这家企业不在名单里：${parts.join('，')}。`;
+  return `不能据此判断这家企业不在名单里：${parts.join('；')}。`;
 }
 
 Page({

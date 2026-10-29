@@ -7,17 +7,18 @@
   <view wx:if="{{error}}" class="error">{{error}}<button bindtap="retry">重试</button></view>
   <block wx:if="{{result}}">
     <view class="muted">共 {{result.total}} {{advisor ? '行' : '份'}} · {{result.generatedAtText}}</view>
-    <view class="muted">{{result.notice}}</view>
+    <!-- 导出文件里的数据说明是给文件用的（"未核项"列等），站内不搬过来；批量工具的结果照旧写（含"未查到不代表未入选"） -->
+    <view wx:if="{{advisor}}" class="muted">{{result.notice}}</view>
     <view wx:if="{{!advisor}}" wx:for="{{result.items}}" wx:key="doc_id" class="result-item">
       <view class="title" data-id="{{item.doc_id}}" bindtap="detail">{{item.number}}. {{item.title}}</view>
       <view>{{item.kind}} · {{item.status}} · {{item.region}}</view>
       <view>发文机关：{{item.issuer || '未提供'}}</view>
       <view>文号：{{item.doc_number || '未提供'}} · 发布日期：{{item.published || '未提供'}}</view>
-      <view>截止：{{item.deadline || '未核对'}} {{item.date_role}}</view>
+      <view>截止：{{item.deadlineText}}</view>
       <view wx:if="{{item.deadline_quote}}">原句：{{item.deadline_quote}}</view>
       <view wx:if="{{item.support}}">{{item.support}}</view>
-      <view wx:if="{{item.unchecked && item.unchecked !== '无'}}" class="warn">未核对：{{item.unchecked}}</view>
-      <view class="muted source">出处：{{item.sites}}<text user-select>{{item.urls}}</text></view>
+      <!-- 只写网站名称，不写网址（D-097；10/23 审核以"复制链接去浏览器"退回过） -->
+      <view class="muted source">出处：{{item.sites}}</view>
       <button data-id="{{item.doc_id}}" bindtap="read">站内阅读正文和依据</button>
     </view>
     <view wx:if="{{advisor}}" wx:for="{{result.items}}" wx:key="n" class="result-item">

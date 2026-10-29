@@ -49,7 +49,7 @@
     <!-- 原文链接已失效（后台 linkGone）：结果照常能看，写明是按之前收录的正文做的（排队的任务可能在失效以后才做完，不说"撤下前做的"） -->
     <view wx:if="{{linkGone}}" class="card advisor-card advisor-gone">原文链接 {{linkGone}} 检查时已失效。这份结果基于此前收录的正文，仅供参考，请以发文机关现在公布的为准。</view>
     <!-- 附件提醒放在前面：材料清单可能不全，先告诉用户（10/17） -->
-    <view wx:if="{{outdated}}" class="card advisor-card">这份通知的核对信息或附件有更新，“已核对”一栏已换成现在的核对结果。</view>
+    <view wx:if="{{outdated}}" class="card advisor-card">解读之后，这份通知的核对信息或附件有更新；下面的原文摘录仍然有效，“已核对”一栏已换成现在的核对结果。</view>
     <view wx:if="{{result.attachmentNotice}}" class="card advisor-card">{{result.attachmentNotice}}</view>
     <view wx:if="{{result.verified.length}}" class="card advisor-card">
       <view class="advisor-title">已核对</view>
@@ -59,7 +59,7 @@
       </view>
     </view>
     <view wx:if="{{result.refusal}}" class="card advisor-card">
-      <view>{{result.refusal}}</view><button class="advisor-button" bindtap="original" disabled="{{!docId}}">看原文</button>
+      <view>{{result.refusal}}</view>
     </view>
     <!-- 同一句原文只出现一次（标"也属于"）；段落编号原文页没有，不再显示 -->
     <view wx:for="{{result.sections}}" wx:for-item="section" wx:key="type" class="card advisor-card">

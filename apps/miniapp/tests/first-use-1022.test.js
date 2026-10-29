@@ -24,7 +24,7 @@ function load(file, deps = {}, globals = {}) {
   const module = { exports: {} };
   vm.runInNewContext(read(file), {
     module, setTimeout, clearTimeout,
-    require(name) { if (!Object.hasOwn(deps, name) && /ai-access\.js$/.test(name)) return AI_OFF; assert.ok(Object.hasOwn(deps, name), `缺少依赖 ${name}`); return deps[name]; },
+    require(name) { if (!Object.hasOwn(deps, name) && /(^|\/)pages\.js$/.test(name)) return require('./helpers/package-pages-default.js').pages; if (!Object.hasOwn(deps, name) && /ai-access\.js$/.test(name)) return AI_OFF; assert.ok(Object.hasOwn(deps, name), `缺少依赖 ${name}`); return deps[name]; },
     Page(d) { def = d; }, Component(d) { def = d; }, ...globals,
   }, { filename: file });
   return def ? { ...def, data: plain(def.data), setData(values) { Object.assign(this.data, values); } } : module.exports;
@@ -80,14 +80,14 @@ test('第 7 条：详情页逐条截止和旧接口的截止卡片，当天截�
   assert.match(read('pages/report/index.wxml'), /item\.days === 0 \? '今天截止'/);
 });
 
-test('第 8 条：显示提取的正文时，标题里写明"自动提取"（10/29 去掉"未经人工逐字核对"和下面那行说明）；没提取到正文时只写去站内阅读页（名单去查名单）看，不出现提取的说明', async () => {
+test('第 8 条：显示提取的正文时，标题只写"正文"（10/29 创始人：自动提取这层说明写在使用帮助里）；没提取到正文时只写去站内阅读页（名单去查名单）看，不出现提取的说明', async () => {
   let body = { status: 'ok', text: '一、申报对象……', total: 7, truncated: false };
   let listed = [];
   const page = detailPage(() => ({ ...DOC, kind: '政策', body, attachments: listed }));
   page.onLoad({ id: '5' }); await flush();
   let root = render('pages/detail/index.wxml', { ...page.data, loading: false });
   const card = (r) => findAll(r, (n) => elements(n).some((c) => hasClass('section-title')(c) && /^正文/.test(flat(c))))[0];
-  assert.equal(flat(elements(card(root))[0]), '正文（自动提取）');
+  assert.equal(flat(elements(card(root))[0]), '正文');
   // 正文卡片里不再另写一行提取说明（10/29：以原文为准只在页底出处写一次）
   assert.equal(findAll(card(root), hasClass('body-note')).length, 0);
   assert.doesNotMatch(textOf(card(root)), /截止|一切以原文为准/);
@@ -214,8 +214,8 @@ test('第 5 条：直接在"地区"里选省份，和在城市一栏选"全部"�
   assert.deepEqual(plain(viaBj), { regions: ['北京'], cities: [], districts: [] });
 });
 
-const results = (extra) => render('pages/search/index.wxml', { loading: false, error: '', total: 3, totalAll: 9, chipTime: '近 30 天', items: [], activeChips: [], picked: { open: [] }, fold: { text: '' }, entries: {}, groups: [], openNote: '“只看未截止”不含没写明截止日期或日期还没理清的通知', ...extra });
-const OPEN_LINE = '“只看未截止”不含没写明截止日期或日期还没理清的通知';
+const results = (extra) => render('pages/search/index.wxml', { loading: false, error: '', total: 3, totalAll: 9, chipTime: '近 30 天', items: [], activeChips: [], picked: { open: [] }, fold: { text: '' }, entries: {}, groups: [], openNote: '“只看未截止”不含截止日期还不确定的通知', ...extra });
+const OPEN_LINE = '“只看未截止”不含截止日期还不确定的通知';
 
 test('第 6 条：选了"只看未截止"、有结果时，结果上面也写一句不含哪些（10/29 压短，完整口径在筛选面板）；没选、或没有结果时不写这一行', () => {
   const lines = (root) => findAll(root, hasClass('fold-note')).map(flat);
@@ -308,13 +308,13 @@ test('Grok 第 3 次走查：关注确认框写明下面只是名称、改名不
   const line = '按每行的省份和填了的条件，列出近 90 天发布的申报通知（已确认截止的不列，截止没核对的照列，以原文为准）；关键词不填就不限主题；客户名称只用来标出是哪家，不判断能不能报。';
   assert.ok(textOf(render('pages/advisor-form/index.wxml', { ...FORM, kind: 'track', title: '客户相关通知表' })).includes(line));
   assert.ok(!textOf(render('pages/advisor-form/index.wxml', FORM)).includes(line));
-  // D-097 起：详情页只给正文开头、在段末停，正文下面和底栏两处同名"阅读全文"去阅读页（全文在那里），
+  // D-097 起：详情页只给正文开头、在段末停，底栏"阅读全文"去阅读页（全文在那里；10/29 起正文卡片里不再另放一个）；
   // 不再有"展开全文/展开摘录/收起"
   const body = { status: 'ok', text: '一'.repeat(800), total: 800, truncated: false };
   const detail = detailPage(() => ({ ...DOC, kind: '政策', body }));
   detail.onLoad({ id: '5' }); await flush();
   let root = render('pages/detail/index.wxml', { ...detail.data, loading: false });
-  assert.equal(flat(findAll(root, hasClass('body-more'))[0]), '阅读全文›');
+  assert.equal(findAll(root, hasClass('body-more')).length, 0);
   assert.equal(flat(findAll(root, hasClass('body-label'))[0]), '下面是开头，全文约800字');
   assert.doesNotMatch(textOf(root), /展开全文|展开摘录|收起|站内阅读全文/);
   // 正文只存了前 2 万字（truncated）：开头照样在段末停，"阅读全文"去阅读页读完整的（阅读页不截断）
@@ -322,8 +322,8 @@ test('Grok 第 3 次走查：关注确认框写明下面只是名称、改名不
   cut.onLoad({ id: '5' }); await flush();
   root = render('pages/detail/index.wxml', { ...cut.data, loading: false });
   assert.equal(flat(findAll(root, hasClass('body-label'))[0]), '下面是开头，全文约30000字');
-  // 说的那个入口确实在页面上（正文下面和底栏两处同名）；不再叫人复制链接去浏览器（D-089、D-091）
-  assert.equal(findAll(root, (n) => tapsTo('readBody')(n) && /阅读全文/.test(flat(n))).length, 2);
+  // 去阅读页的入口只有底栏一个（10/29 创始人：上下两个"阅读全文"是重复）；不再叫人复制链接去浏览器（D-089、D-091）
+  assert.equal(findAll(root, (n) => tapsTo('readBody')(n) && /阅读全文/.test(flat(n))).length, 1);
   assert.doesNotMatch(textOf(root), /复制原文链接|浏览器/);
 });
 

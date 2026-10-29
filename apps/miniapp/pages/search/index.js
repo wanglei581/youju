@@ -10,7 +10,7 @@ const { requestOnce, remindOpen } = require('../../utils/subscribe.js');
 const { loadCoverage, notCoveredNames, allUncovered } = require('../../utils/coverage.js');
 const access = require('../../utils/ai-access.js');
 const {
-  requestScope, categoryConflict, supportConflict, migrateNational, NATIONAL, CATEGORIES, TAG_NOTE, CATEGORY_NOTE, GUIDE,
+  requestScope, categoryConflict, supportConflict, migrateNational, NATIONAL, CATEGORIES, CATEGORY_NOTE, GUIDE,
   foldNote, SUPPORT_MODES, SUPPORT_NOTE, INDUSTRIES, searchUrl,
 } = require('../../utils/conditions.js');
 
@@ -35,8 +35,8 @@ const REGION_SHORT = ['不限地区', '北京', '天津', '河北', '上海', '�
 // "只看未截止"（D-061，接口带 excerpts=1）：主截止核对过且没截止的、机器摘录的（只会是 8 天以后），
 // 以及 7 天内有候选、还没核对的；只有申报通知（名单、政策没有截止）。筛选面板里写明含哪些、不含哪些；
 // 结果上面和空状态只写一句不含哪些（10/22 走查要两处都说；10/29 创始人：提示不要写太多，压成短句）
-const OPEN_GROUP_NOTE = '只列申报通知：核对过还没截止的、机器摘录的、可能 7 天内截止待核对的；没写明截止日期或日期还没理清的不列';
-const OPEN_NOTE = '“只看未截止”不含没写明截止日期或日期还没理清的通知';
+const OPEN_GROUP_NOTE = '只列申报通知：已核对或原文摘录、还没截止的，以及可能 7 天内截止的；截止日期还不确定的不列';
+const OPEN_NOTE = '“只看未截止”不含截止日期还不确定的通知';
 const GROUPS = [
   // 还没收录的省份取自收录范围接口，写在 extra 里
   { key: 'region', title: '地区', hint: '可多选', multi: true, options: REGION_SHORT, note: '国家部委的文件在“层级”里选，和地区一起选时会同时列出', extra: '' },
@@ -45,7 +45,8 @@ const GROUPS = [
   { key: 'type', title: '类型', hint: '可多选', multi: true, options: ['申报通知', '名单与公示', '政策文件', GUIDE, '其他'] },
   { key: 'open', title: '申报状态', hint: '单选', multi: false, options: ['只看未截止'], note: OPEN_GROUP_NOTE },
   { key: 'time', title: '发布时间', hint: '单选', multi: false, options: ['近 7 天', '近 30 天', '近 90 天', '今年', '不限'] },
-  // 项目类别、支持方式、产业方向都按标题归类（tagged）：右栏顶部统一写一行 TAG_NOTE，选项下面只写各组特有的补充。
+  // 项目类别、支持方式、产业方向都按标题归类（tagged）："按标题归类、非官方分类"写在使用帮助里（10/29 创始人），
+  // 选项下面只写各组特有的补充。
   // 项目类别只有申报通知和名单有，不作资格判断；支持方式、产业方向只用于筛选（列表和详情不显示）
   { key: 'category', title: '项目类别', hint: '可多选', multi: true, tagged: true, options: CATEGORIES, note: CATEGORY_NOTE },
   { key: 'support', title: '支持方式', hint: '可多选', multi: true, tagged: true, options: SUPPORT_MODES, note: SUPPORT_NOTE },
@@ -106,7 +107,6 @@ Page({
     counts: {},
     // 已选条件条：[{ key, group, option, label }]，按左栏组的顺序；空时不显示这一条
     activeChips: [],
-    tagNote: TAG_NOTE,
     // 选了"只看未截止"时的口径：有结果时写在结果上面，没结果时写在"去掉'只看未截止'"下面，和筛选面板里同一句。
     // 只写"含没核对的"会读成只含没核对的，所以三处都写全（10/22 走查）
     openNote: OPEN_NOTE,

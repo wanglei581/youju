@@ -143,13 +143,14 @@ test('我的客户（过审版）：顶部没有"打开工具中心"，点了也
   }
 });
 
-test('联系客服（过审版）：鸿蒙手机打不开客服时不给"看使用帮助"，改成去"关于有据"看联系邮箱；完整版照旧给使用帮助', () => {
-  for (const [pages, help] of [[FIRST, false], [FULL, true]]) {
-    for (const variant of ['row', 'block']) {
+test('联系客服（过审版）：鸿蒙手机打不开客服时不给"看使用帮助"，改成去"关于有据"看联系邮箱；完整版照旧给使用帮助；"我的"页上一行就是使用帮助，那里一律改给联系邮箱（10/29）', () => {
+  for (const [pages, packHelp] of [[FIRST, false], [FULL, true]]) {
+    for (const [variant, from] of [['row', 'me'], ['block', 'me'], ['block', 'help']]) {
+      const help = packHelp && from !== 'me';
       const urls = [];
       const view = load('components/contact-button/index.js', { '../../content/legal.js': { operator: { email: 'help@example.invalid' } }, '../../utils/pages.js': pages },
         { wx: { getDeviceInfo: () => ({ platform: 'ohos' }), navigateTo: ({ url }) => urls.push(url) } });
-      Object.assign(view.properties, { from: 'me', docId: '', docTitle: '', reason: '', variant });
+      Object.assign(view.properties, { from, docId: '', docTitle: '', reason: '', variant });
       view.lifetimes.attached.call(view);
       const root = render('components/contact-button/index.wxml', { ...view.data, ...view.properties });
       const text = textOf(root);

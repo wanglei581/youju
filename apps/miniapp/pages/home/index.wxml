@@ -120,12 +120,11 @@
   <view class="card-head" data-url="/pages/report/index" bindtap="goEntry">
     <text class="card-title">7 天内截止</text><text class="link card-more">全部 <t-icon name="chevron-right" size="26rpx" /></text>
   </view>
-  <view wx:if="{{reviewNote}}" class="soon-stale">{{reviewNote}}</view>
   <view wx:for="{{soon}}" wx:key="id" class="soon-item" data-id="{{item.id}}" bindtap="openDoc">
     <view class="soon-title">{{item.title}}</view>
     <view class="soon-line"><text class="soon-when">{{item.kindText}} {{item.dateText}} {{item.week}}</text><view class="soon-right"><text class="pill pill--{{item.tone}}">{{item.days === 0 ? '今天截止' : '剩 ' + item.days + ' 天'}}</text><ai-button doc-id="{{item.id}}" doc-title="{{item.title}}" ai="{{item.ai}}" /></view></view>
   </view>
-  <view wx:if="{{soonUnverified}}" class="soon-foot {{soon.length ? '' : 'soon-foot--only'}}" data-url="/pages/report/index" bindtap="goEntry">{{soon.length ? '另有 ' + soonUnverified + ' 份可能 7 天内截止，日期还没核对 ›' : soonUnverified + ' 份通知可能 7 天内截止，日期还没核对 ›'}}</view>
+  <view wx:if="{{soonUnverified}}" class="soon-foot {{soon.length ? '' : 'soon-foot--only'}}" data-url="/pages/report/index" bindtap="goEntry">{{soon.length ? '另有 ' + soonUnverified + ' 份可能 7 天内截止 ›' : soonUnverified + ' 份通知可能 7 天内截止 ›'}}</view>
 </view>
 
 <view class="card">
@@ -147,7 +146,7 @@
   <t-icon name="secured" size="36rpx" color="#4E5969" />
   <view class="footer-text">
     <!-- 栏目数和省份数到了才写那半句，不出现空着的数字 -->
-    <text><text wx:if="{{stats}}">数据来自 {{stats.sources}} 个政府网站栏目，覆盖国家部委和 {{stats.provinces}} 个省<text wx:if="{{stats.cities}}">、{{stats.cities}} 个城市</text>，</text>每条都注明出处。有据不代办申报。</text>
+    <text><text wx:if="{{stats}}">数据来自 {{stats.sources}} 个政府网站栏目，</text>每条都注明出处。有据不代办申报。</text>
     <view class="link footer-link" bindtap="goCoverage">覆盖说明 ›</view>
   </view>
 </view>

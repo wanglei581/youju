@@ -10,7 +10,7 @@ const REASONS = {
   unavailable: { text: '这份文件已下架。', next: 'back' },
   // 原文链接已失效（后台隔天两次确认，backend/src/youju/link_check.py；分不清是撤稿还是改了地址）：
   // 为免误导不再开始新的解读；复制链接也打不开，不给下一步
-  link_gone: { text: '原文链接已失效，这份通知暂不提供 AI 解读和条款对照，请以发文机关现在公布的为准。', next: '' },
+  link_gone: { text: '原文链接已失效，这份通知暂不提供 AI 解读和条款对照。', next: '' },
 };
 const FALLBACK = '这份文件暂不能解读，请查看原文。';
 // 下一步按钮上的字

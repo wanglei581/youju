@@ -16,7 +16,7 @@ function load(file, deps = {}, globals = {}) {
   const module = { exports: {} };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', file), 'utf8'), {
     module, setTimeout, clearTimeout,
-    require(name) { if (name === '../../utils/regions.js') return require('../utils/regions.js'); if (!Object.hasOwn(deps, name) && /ai-access\.js$/.test(name)) return AI_OFF; assert.ok(Object.hasOwn(deps, name), `缺少依赖 ${name}`); return deps[name]; },
+    require(name) { if (name === '../../utils/regions.js') return require('../utils/regions.js'); if (!Object.hasOwn(deps, name) && /(^|\/)pages\.js$/.test(name)) return require('./helpers/package-pages-default.js').pages; if (!Object.hasOwn(deps, name) && /ai-access\.js$/.test(name)) return AI_OFF; assert.ok(Object.hasOwn(deps, name), `缺少依赖 ${name}`); return deps[name]; },
     Page(d) { def = d; }, Component(d) { def = d; }, ...globals,
   }, { filename: file });
   return def ? { ...def, data: JSON.parse(JSON.stringify(def.data)), setData(values) { Object.assign(this.data, values); } } : module.exports;
@@ -330,15 +330,15 @@ test('按标题归类的三组：右栏顶部统一一行说明，下面只写�
   const full = (key) => `${conditions.TAG_NOTE}；${page.data.groups.find((g) => g.key === key).note}`;
   // 原来每组各自写的完整说明（UI 第一轮）
   assert.equal(full('category'), '按标题归类，仅供检索参考，非官方分类；只含申报通知和名单');
-  assert.equal(full('support'), '按标题归类，仅供检索参考，非官方分类；只含申报通知和名单，不代表一定提供这种支持');
+  assert.equal(full('support'), '按标题归类，仅供检索参考，非官方分类；只含申报通知和名单');
   // 产业方向只留统一那句（10/29 删"一份文件可能有多个方向，也可能没有"）
   assert.equal(page.data.groups.find((g) => g.key === 'industry').note, undefined);
   // 只有这三组显示统一说明，补充里不再重复它
   assert.deepEqual(page.data.groups.filter((g) => g.tagged).map((g) => g.key), ['category', 'support', 'industry']);
   for (const g of page.data.groups) assert.ok(!(g.note || '').includes('仅供检索参考'), g.key);
   const template = read('pages/search/index.wxml');
-  assert.match(template, /<view class="group-title">{{g.title}}<text class="group-hint">{{g.hint}}<\/text><\/view>[\s\S]*?<view wx:if="{{g.tagged}}" class="tag-note">{{tagNote}}<\/view>\s*<view class="options">/);
-  assert.equal((template.match(/{{tagNote}}/g) || []).length, 1);
+  // 10/29 创始人："按标题归类、仅供检索参考、非官方分类"写在使用帮助里，筛选面板里不再写
+  assert.equal((template.match(/tagNote|tag-note/g) || []).length, 0);
 });
 
 test('本轮新加的文字不出现禁用字样', async () => {
@@ -389,7 +389,7 @@ test('未截止选项写明口径（D-061：含机器摘录和可能 7 天内截
   const { page, calls } = searchPage({ respond: (p) => ({ items: p.open || p.time !== '不限' ? [] : [{ id: '1' }], total: p.open || p.time !== '不限' ? 0 : 6, total_all: p.open ? 0 : 6, verified_open_total: 0 }) });
   page.onLoad({ open: '1' }); await flush();
   // 10/22 走查：选的时候就写明不含哪些，不只在没有结果时才说
-  assert.equal(page.data.groups.find((g) => g.key === 'open').note, '只列申报通知：核对过还没截止的、机器摘录的、可能 7 天内截止待核对的；没写明截止日期或日期还没理清的不列');
+  assert.equal(page.data.groups.find((g) => g.key === 'open').note, '只列申报通知：已核对或原文摘录、还没截止的，以及可能 7 天内截止的；截止日期还不确定的不列');
   assert.ok(read('pages/search/index.wxml').indexOf('bindtap="removeOpen"') < read('pages/search/index.wxml').indexOf('bindtap="allTime"'));
   page.removeOpen(); await flush(); assert.equal(calls.at(-1).open, undefined); assert.equal(page.data.totalAll, 6);
   assert.match(read('pages/search/index.wxml'), /查看不限发布时间的 {{totalAll}} 份/);

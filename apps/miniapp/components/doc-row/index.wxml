@@ -1,26 +1,24 @@
-<view class="row {{last ? '' : 'row--line'}}">
-  <view class="head" bindtap="open">
+<!-- 整行可点进详情（10/29：标题和"查看详情"去同一处，算重复入口，去掉"查看详情"）；
+     转发版本、解读按钮用 catchtap，不会连带打开详情；勾选导出时 open 不跳转，点击照常冒泡给外面的勾选 -->
+<view class="row {{last ? '' : 'row--line'}}" bindtap="open" aria-role="link">
+  <view class="head">
     <text class="tag tag--{{kindCls}}">{{doc.kind}}</text>
     <text wx:if="{{statusText}}" class="status status--{{statusCls}}">{{statusText}}</text>
     <text class="region">{{label || regionText || doc.region}}</text>
     <text wx:if="{{due}}" class="due {{due.tone ? 'due--' + due.tone : ''}}">{{due.text}}</text>
     <text wx:elif="{{dueNote}}" class="due">{{dueNote}}</text>
   </view>
-  <view class="title" bindtap="open"><text wx:for="{{segs}}" wx:key="index" class="{{item.hl ? 'hl' : ''}}">{{item.t}}</text></view>
-  <!-- 机器摘录的截止（D-061）：同一条里写明未经人工核对，并附原文那句话 -->
-  <view wx:if="{{excerpt}}" class="excerpt" bindtap="open"><text class="excerpt-tag">{{excerpt.label}}</text><text class="excerpt-quote">原文：{{excerpt.quote}}</text></view>
+  <view class="title"><text wx:for="{{segs}}" wx:key="index" class="{{item.hl ? 'hl' : ''}}">{{item.t}}</text></view>
+  <!-- 机器摘录的截止（D-061）：标"原文摘录"并附原文那句话 -->
+  <view wx:if="{{excerpt}}" class="excerpt"><text class="excerpt-tag">{{excerpt.label}}</text><text class="excerpt-quote">原文：{{excerpt.quote}}</text></view>
   <view wx:if="{{issuerLong}}" class="issuer">{{doc.issuer}}</view>
   <view class="meta">
     <text><text wx:if="{{!issuerLong && doc.issuer}}">{{doc.issuer}}</text><text wx:if="{{!issuerLong && doc.issuer && doc.date}}"> · </text><text wx:if="{{doc.date}}" class="meta-date">{{doc.date}}</text></text>
     <!-- 原文链接已失效（后台检查，近 30 天的每天查，隔天两次都打不开或是撤稿页才算，youju/link_check.py）。
          分不清是撤稿还是改了地址，只说链接失效，不说"已撤下"（agy 合规审阅 10/23） -->
     <text wx:if="{{doc.link_gone}}" class="gone">原文链接已失效</text>
-    <view class="copy" catchtap="open" aria-role="button" aria-label="查看文件详情">
-      <text>查看详情</text>
-      <t-icon name="chevron-right" size="28rpx" />
-    </view>
     <!-- 解读按钮（D-075，组件里判断）：只在能解读、对这个人开着时出现；勾选导出时不出现 -->
-    <ai-button doc-id="{{doc.id}}" doc-title="{{doc.title}}" ai="{{doc.ai}}" selecting="{{selecting}}" bind:toggle="aiToggle" />
+    <ai-button class="meta-ai" doc-id="{{doc.id}}" doc-title="{{doc.title}}" ai="{{doc.ai}}" selecting="{{selecting}}" bind:toggle="aiToggle" />
   </view>
   <!-- 转发版本：同一份部里通知的其他地方版本，各自的截止和原文在各自的详情里 -->
   <view wx:if="{{groupText}}" class="group" catchtap="toggleGroup" aria-role="button" aria-expanded="{{groupOpen}}">
@@ -33,8 +31,6 @@
         <text class="version-label">{{item.label}}</text>
         <text class="version-meta">{{item.issuer}}<text wx:if="{{item.date}}"> · {{item.date}}</text></text>
       </view>
-      <view class="version-copy" data-id="{{item.id}}" catchtap="openVersion" aria-role="button" aria-label="查看{{item.label}}详情">查看详情</view>
     </view>
-    <view class="versions-note">各版本的截止日期、报送要求可能不同，以各自原文为准</view>
   </view>
 </view>

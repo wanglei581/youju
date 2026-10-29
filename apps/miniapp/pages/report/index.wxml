@@ -48,7 +48,7 @@
       </block>
     </view>
   </view>
-  <view class="weak legend">实心点：核对过的截止　空心点：机器摘录　灰点：已截止</view>
+  <view class="weak legend">实心点：已核对　空心点：原文摘录　灰点：已截止</view>
 </view>
 <view wx:if="{{!tab && sel}}" class="sel-row"><text>只看 <text class="b">{{selLabel}}</text> 截止的</text><text class="link" bindtap="clearSel">看整个月</text></view>
 <view wx:if="{{!tab && truncated}}" class="weak trunc">未截止和已截止各最多显示 1000 条。</view>
@@ -60,7 +60,7 @@
     <view wx:if="{{item.meta}}" class="meta">{{item.meta}}</view>
     <view class="deadline">
       <text wx:if="{{item.dateText}}">{{item.kindText}} {{item.dateText}} {{item.week}}</text>
-      <text wx:else>{{item.kindText}}：截止未核对</text>
+      <text wx:else>{{item.kindText}}：截止时间见原文</text>
       <text wx:if="{{item.dateText}}" class="pill pill--{{item.tone}}">{{item.days < 0 ? '已截止' : item.days === 0 ? '今天截止' : '剩 ' + item.days + ' 天'}}</text>
     </view>
     <view wx:if="{{item.srcLabel}}" class="src-row"><text class="src src--{{item.source}}">{{item.srcLabel}}</text></view>
@@ -71,6 +71,8 @@
 </view>
 <view wx:if="{{!rows.length && !loading && !error && !sel}}" class="card empty">
   <view class="empty-title">{{emptyTitle}}</view>
+  <!-- 选的省份还没收录（网站不让程序访问等）：写明，免得以为这个省近期没有截止（10/29 审阅） -->
+  <view wx:if="{{uncovered}}" class="empty-sub">{{uncovered}}还没收录，暂时查不到这个地区的通知。</view>
   <block wx:if="{{!soon.total}}">
     <view class="link empty-link" bindtap="goSearch" aria-role="link">去搜索申报通知 ›</view>
   </block>
@@ -86,15 +88,17 @@
   </block>
 </view>
 
-<!-- 7 天内有候选但没核对的：照样列出标题，不写日期（D-061） -->
+<!-- 7 天内有候选但没核对的：照样列出标题，不写日期（D-061）；"日期还没核对"这层意思写在使用帮助里 -->
 <view wx:if="{{soon.total && (prefilled || (!loading && !error))}}" class="card soon">
-  <view class="soon-head"><text class="soon-title">可能 7 天内截止，日期还没核对</text><text class="weak">{{soon.total}} 份</text></view>
+  <view class="soon-head"><text class="soon-title">可能 7 天内截止</text><text class="weak">{{soon.total}} 份</text></view>
   <view wx:for="{{soon.items}}" wx:key="id" class="soon-item" data-id="{{item.id}}" data-has="{{true}}" bindtap="open">
     <view class="soon-item-title">{{item.title}}</view>
     <view class="meta">{{item.issuer}}<text wx:if="{{item.province}}"> · {{item.province}}</text><text wx:if="{{item.city}}"> · {{item.city}}</text><text wx:if="{{item.district}}"> · {{item.district}}</text></view>
-    <view class="soon-due"><text>截止未核对</text><ai-button doc-id="{{item.id}}" doc-title="{{item.title}}" ai="{{item.ai}}" /></view>
+    <view class="soon-due"><text>截止时间见原文</text><ai-button doc-id="{{item.id}}" doc-title="{{item.title}}" ai="{{item.ai}}" /></view>
   </view>
   <view wx:if="{{soon.total > soon.items.length}}" class="weak soon-more">只列出前 {{soon.items.length}} 份</view>
 </view>
 
-<view class="note">7 天内到期的只列人工核对过的日期；8–30 天到期的可能是机器摘录，附原文那句话。截止日期以原文为准。</view>
+<!-- 截止日期的显示规则写在使用帮助里，这里只留一个入口；包里没有使用帮助（首发 16 页）时照旧写一句 -->
+<view wx:if="{{has.help}}" class="note"><text class="link" bindtap="help" aria-role="link">截止日期怎么看 ›</text></view>
+<view wx:else class="note">7 天内到期的只列人工核对过的日期；8–30 天到期的可能是原文摘录，附原文那句话。截止日期以原文为准。</view>

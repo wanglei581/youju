@@ -294,7 +294,8 @@ test('D-073：服务端标了 outdated 的旧结果照常显示并加说明；�
     const wxml = read(`pages/${page}/index.wxml`);
     const at = wxml.indexOf('wx:if="{{outdated}}"');
     assert.ok(at > -1 && at < wxml.indexOf('result.attachmentNotice'), page);
-    assert.match(wxml, /核对信息或附件有更新，“已核对”一栏已换成现在的核对结果。/);
+    // D-073：写明是解读（对照）之后有更新、下面的原文仍然有效，免得以为要重做（重做要扣次数，10/29 审阅）
+    assert.match(wxml, /之后，这份通知的核对信息或附件有更新；下面的(原文摘录|条件原文)仍然有效，“已核对”一栏已换成现在的核对结果。/);
   }
 });
 
@@ -399,7 +400,8 @@ test('解读页渲染结果原句、核对值、missing、警示、附件提示�
   page.feedback(); assert.equal(urls.at(-1), '/pages/feedback/index?id=42&title=' + encodeURIComponent('通知 & 标题'));
   page.setData({ result: logic.resultView({ refusal: '拒答原文' }) });
   const refusal = render(read('pages/advisor-interpret/index.wxml'), page.data);
-  assert.match(refusal, /拒答原文.*看原文/); assert.doesNotMatch(refusal, /申报对象|材料清单/); page.onUnload();
+  // 拒答时"看原文"只在结果顶上一处，卡片里不再另放（10/29 去重）
+  assert.match(refusal, /看原文.*拒答原文/); assert.equal((refusal.match(/看原文/g) || []).length, 1); assert.doesNotMatch(refusal, /申报对象|材料清单/); page.onUnload();
 });
 
 test('capabilities 缓存与 refresh 并发合并，失败静默且 interpret 请求只有 doc_id', async () => {
@@ -433,7 +435,8 @@ test('共同任务页按各类权限显示，数据任务不能扩大 AI 访问�
     const page = load('pages/advisor-tasks/index.js', { '../../utils/api.js': api, '../../utils/advisor.js': helpers }, { wx: { navigateTo: ({ url }) => urls.push(url), setNavigationBarTitle() {} } });
     page.onShow(); await flush();
     const output = render(read('pages/advisor-tasks/index.wxml'), page.data);
-    assert.equal(output.includes('AI 解读'), enabled); assert.equal(output.includes('查看解读'), enabled);
+    // 记录卡片整张可点进结果，不再另放"查看解读"按钮（10/29：同一张卡两个入口）
+    assert.equal(output.includes('AI 解读'), enabled); assert.equal(output.includes('查看解读'), false);
     assert.equal(output.includes('通知标题'), enabled); assert.match(output, /批量名单比对.*站内查看结果/);
     assert.equal(listed, 1);
     if (!enabled) assert.doesNotMatch(output, /AI|内部测试/);

@@ -96,19 +96,22 @@ function dueInfo(deadline, now) {
   };
 }
 
-// 申报通知没有核对过的截止日期时的说明，只给文字、不给任何日期（合规红线）：
-// 有待核对的候选（deadline_state 为 unverified）写"截止未核对"，没有候选写"截止时间见原文"。
+// 申报通知没有核对过的截止日期时的说明，只给文字、不给任何日期（合规红线）。
+// 10/29 创始人："自动摘取，未经人工核对不要写在页面上，可以写在帮助里面"——有待核对的候选和没有候选的
+// 都写"截止时间见原文"，两者的区别写在使用帮助里（content/help.js 的 deadline 一条）。
 // 有核对过的日期时返回空串，由 dueInfo 显示日期；其他类型的文件不写说明。
-const NOTE_UNVERIFIED = '截止未核对';
+const NOTE_SEE_ORIGINAL = '截止时间见原文';
+const NOTE_UNVERIFIED = NOTE_SEE_ORIGINAL;
 
 // 首发版（D-061）的截止显示。接口带 excerpts=1 时每条有 due（主截止）、详情有 deadlines（逐个类型）：
 // - verified：人工核对过的，写日期和剩余天数，标"已人工核对"；
-// - excerpt：机器从原文摘出的，只会是 8–30 天到期的，写日期并标"机器摘录·未经人工核对"，必须带原句；
-// - unverified：有候选但不显示日期（7 天内没核对的、30 天以后的、过期的、几个日期对不上的），只写"截止未核对"。
+// - excerpt：机器从原文摘出的，只会是 8–30 天到期的，写日期并标"原文摘录"，必须带原句（和核对过的分得开，
+//   "没经过人工核对"这层意思写在使用帮助里，10/29 创始人）；
+// - unverified：有候选但不显示日期（7 天内没核对的、30 天以后的、过期的、几个日期对不上的），只写"截止时间见原文"。
 // 摘录没带原句、按手机日期算已进入 7 天内（页面放过夜、手机日期和服务端差一天）或在 30 天以后，
-// 这里再拦一次，只写"截止未核对"。
+// 这里再拦一次，不写日期。
 const VERIFIED_LABEL = '已人工核对';
-const EXCERPT_LABEL = '机器摘录·未经人工核对';
+const EXCERPT_LABEL = '原文摘录';
 const EXCERPT_MIN_DAYS = 8;
 const EXCERPT_MAX_DAYS = 30;
 function dueView(due, now) {
@@ -130,7 +133,6 @@ function dueView(due, now) {
   }
   return { source: 'unverified', kind: due.kind || '', days: null, tone: '', text: NOTE_UNVERIFIED, label: '', quote: '' };
 }
-const NOTE_SEE_ORIGINAL = '截止时间见原文';
 function deadlineNote(doc) {
   if (!doc || doc.kind !== '申报通知' || dueInfo(doc.deadline)) return '';
   return doc.deadline_state === 'unverified' ? NOTE_UNVERIFIED : NOTE_SEE_ORIGINAL;
@@ -185,29 +187,7 @@ function shortTime(iso) {
   return `${year}${d.getUTCMonth() + 1}月${d.getUTCDate()}日 ${hm}`;
 }
 
-// 截止核对断档（定稿方案第八节）：最近一次人工核对截止之后，已经过了 3 个及以上工作日（周一到周五，
-// 不扣节假日）没再核对，首页只写最近一次核对的日期，不写"今日未更新"（10/29 创始人：提示多了用户会不信任）；
-// 从没核对过不写（7 天内那块本来只列核对过的，没核对的已写"日期还没核对"）。reviewedAt 是后端给的带时区的时间。
-const STALE_WORKDAYS = 3;
-function workdaysSince(iso, now) {
-  const today = parseISO(todayISO(now));
-  let count = 0;
-  for (let t = parseISO(iso).getTime() + 86400000; t <= today.getTime() && count < STALE_WORKDAYS; t += 86400000) {
-    const day = new Date(t).getUTCDay();
-    if (day !== 0 && day !== 6) count += 1;
-  }
-  return count;
-}
-function reviewStaleNote(reviewedAt, now) {
-  if (!reviewedAt) return '';
-  const stamp = Date.parse(reviewedAt);
-  if (Number.isNaN(stamp)) return '';
-  const day = todayISO(new Date(stamp));
-  if (workdaysSince(day, now) < STALE_WORKDAYS) return '';
-  return `截止日期最近一次核对：${monthDay(day)}`;
-}
-
-// ---- 详情页"能读到什么"（D-097）：正文开头在段末停、两处同名的阅读入口、正文卡顶上那一行、没正文时说什么 ----
+// ---- 详情页"能读到什么"（D-097）：正文开头在段末停、底栏的阅读入口、正文卡顶上那一行、没正文时说什么 ----
 // 能不能读以服务端为准（详情接口的 body 和 attachments[].readable、state、stateText，和阅读页同一个
 // 判断），这里只决定页面怎么写，不另做判断。
 
@@ -324,7 +304,6 @@ function readEntry(body, view, atts) {
 }
 
 module.exports = {
-  reviewStaleNote,
   shortTime,
   todayISO, daysUntil, monthDay, cnDate, weekday, clockText, dueTone, dueInfo, kindClass, statusClass, highlight, ISSUER_WRAP, regionText,
   deadlineNote, NOTE_UNVERIFIED, NOTE_SEE_ORIGINAL, dueView, VERIFIED_LABEL, EXCERPT_LABEL,

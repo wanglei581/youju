@@ -20,8 +20,6 @@
       <view class="advisor-actions">
         <button wx:if="{{item.downloadable}}" class="advisor-button btn-primary" data-id="{{item.id}}" catchtap="readResult" loading="{{downloadingId === item.id}}" disabled="{{busyId !== null}}">站内查看结果</button>
         <button wx:if="{{item.dataTask && item.terminal}}" class="advisor-button" data-kind="{{item.kind}}" catchtap="again">重新填写</button>
-        <button wx:if="{{item.kind === 'interpret'}}" class="advisor-button btn-primary" data-id="{{item.id}}" catchtap="openTask">查看解读</button>
-        <button wx:if="{{item.kind === 'clause'}}" class="advisor-button btn-primary" data-id="{{item.id}}" catchtap="openTask">查看对照</button>
         <button wx:if="{{item.status === 'queued'}}" class="advisor-button" data-id="{{item.id}}" catchtap="cancel" disabled="{{busyId !== null}}">取消</button>
         <button wx:if="{{item.terminal}}" class="advisor-button advisor-danger" data-id="{{item.id}}" catchtap="remove" disabled="{{busyId !== null}}">删除</button>
       </view>

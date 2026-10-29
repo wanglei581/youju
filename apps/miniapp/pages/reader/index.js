@@ -236,7 +236,8 @@ Page({
       const last = next === null;
       const scanned = Number(res.scannedPages) > 0 ? Number(res.scannedPages) : 0;
       this.setData(Object.assign(head, { revision: res.revision, status: res.status, listHidden: res.listHidden === true,
-        notice: textOf(res.notice), segments, nextCursor: next, prevCursor: prev, page, pages,
+        // 读得出的部分顶上不再写"自动提取、未经人工逐字核对"（写在使用帮助里，10/29 创始人）；有扫描页时照旧说缺哪几页
+        notice: res.status === 'partial' ? textOf(res.notice) : '', segments, nextCursor: next, prevCursor: prev, page, pages,
         totalSegments: res.totalSegments || 0, scannedPages: scanned,
         complete: last && segments.length > 0, endText: last ? endTextOf(here.label, res.status, scanned) : '',
         nextPart: last ? nextPartOf(toc, this.part) : null,

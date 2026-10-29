@@ -28,7 +28,6 @@
     <ai-hint doc-id="{{doc.id}}" doc-title="{{doc.title}}" issuer="{{doc.issuer}}" date="{{doc.date}}" ai="{{doc.ai}}" bind:jump="toAi" />
     <!-- 原文链接已失效（youju/link_check.py）：放在标题下面先说（失效了就不能再解读，和上面那行提示不会同时出现），下面的要点、正文都是之前收录的 -->
     <view wx:if="{{goneNote}}" class="gone-note">{{goneNote}}</view>
-    <view class="weak status-note">类型、类别和发布阶段按标题归类，非官方分类</view>
   </view>
 
   <!-- 首发版（D-061）：按类型逐条写截止。核对过的标"已核对"；机器摘录的标"机器摘录·未经人工核对"并附原句；其余写"截止未核对" -->
@@ -39,7 +38,7 @@
         <view>
           <view class="due-label">{{item.kind}}</view>
           <view wx:if="{{item.dateText}}" class="due-date-row"><text class="due-date">{{item.dateText}}</text><text class="due-week">{{item.week}}</text></view>
-          <view wx:else class="due-unverified">截止未核对</view>
+          <view wx:else class="due-unverified">截止时间见原文</view>
         </view>
         <text wx:if="{{item.dateText}}" class="left-pill left-pill--{{item.tone}}">{{item.days < 0 ? '已截止' : item.days === 0 ? '今天截止' : '剩 ' + item.days + ' 天'}}</text>
       </view>
@@ -70,7 +69,7 @@
     </view>
   </view>
   <view wx:elif="{{dueNote && !changes.length}}" class="card due-card">
-    <view class="due-label">申报截止</view>
+    <view class="due-label">截止时间</view>
     <view class="due-unverified">{{dueNote}}</view>
   </view>
 
@@ -99,9 +98,10 @@
     </view>
   </view>
 
-  <view class="card">
+  <!-- 要点只放标题下、截止卡片里没有的（如文号）；一项都没有时不显示这张卡（10/29：发文机关、地区、截止不重复写） -->
+  <view wx:if="{{points.length}}" class="card">
     <view class="section-title">要点</view>
-    <view wx:for="{{doc.points}}" wx:key="index" class="kv {{index === doc.points.length - 1 ? 'kv--last' : ''}}">
+    <view wx:for="{{points}}" wx:key="index" class="kv {{index === points.length - 1 ? 'kv--last' : ''}}">
       <text class="k">{{item[0]}}</text><text class="v">{{item[1]}}</text>
     </view>
   </view>
@@ -138,10 +138,10 @@
   </view>
 
   <!-- 正文（D-097）：不满一屏的全部显示（"全文如下"），长的显示开头、在段末停（"下面是开头，全文约 N 字"）；
-       正文下面和底栏两处同名的入口去同一页（阅读全文 / 阅读附件），都读不了时不显示。标题里写明是自动提取；
-       "以原文为准"整页只在下面的原文出处里写一次（10/29 创始人：提示多了用户会不信任） -->
+       去阅读页只在底栏放一个入口（阅读全文 / 阅读附件，10/29 创始人：上下两个"阅读全文"是重复），都读不了时不显示。
+       正文是程序提取的这层说明写在使用帮助里，标题只写"正文"（10/29 创始人） -->
   <view wx:if="{{doc.body}}" id="body" class="card">
-    <view class="section-title">正文<text wx:if="{{bodyView}}">（自动提取）</text></view>
+    <view class="section-title">正文</view>
     <view wx:if="{{bodySummary}}" class="weak body-summary">{{bodySummary}}</view>
     <block wx:if="{{bodyView}}">
       <view class="body-label">{{bodyView.label}}</view>
@@ -153,7 +153,6 @@
       <view class="body-none">{{noBody}}</view>
       <view wx:if="{{doc.body.status === 'list'}}" class="link body-lookup" bindtap="toLists" aria-role="button">在“查名单”里按企业名称查询 ›</view>
     </block>
-    <view wx:if="{{entry}}" id="read-entry" class="link body-more" bindtap="readBody" aria-role="button">{{entry.label}} ›</view>
   </view>
 
   <!-- 附件紧跟正文：每个直接写能不能读（和阅读页同一个判断）；能读的写"阅读"可点，读不了的灰色、不能点、写原因 -->
@@ -170,11 +169,12 @@
   </view>
 
   <view class="card source">
-    <!-- 出处只写来源网站名称、发文机关、日期，不写网址（D-097：网址文字有被认为引导外跳的风险；10/23 审核退回过"复制链接去浏览器"） -->
+    <!-- 出处只写来源网站名称，不写网址（D-097：网址文字有被认为引导外跳的风险；10/23 审核退回过"复制链接去浏览器"）；
+         发文机关和日期标题下已有，这里不再写（10/29）。"以原文为准、不提供填报入口"这一句 agy 要求留在页面上 -->
     <view class="weak source-label">原文出处</view>
     <view class="source-site">{{doc.site || doc.issuer}}</view>
-    <view class="source-meta">发文机关：{{doc.issuer}}<text wx:if="{{doc.date}}">　发布日期：{{doc.date}}</text></view>
     <view class="source-note"><text wx:if="{{doc.checked}}">以上要点由有据按原文逐条整理，{{doc.checked}} 核对。</text>内容以原文为准；申报请在主管部门的申报系统办理，有据不提供填报入口。</view>
+    <view wx:if="{{has.help}}" class="link source-help" bindtap="help" aria-role="link">数据说明 ›</view>
   </view>
   <view style="height: 220rpx"></view>
 

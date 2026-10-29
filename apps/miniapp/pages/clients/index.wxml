@@ -74,7 +74,6 @@
   <view class="options"><view wx:for="{{districtLabels}}" wx:key="key" class="option option--on" data-value="{{item.key}}" bindtap="removeDistrict" aria-role="button" aria-label="移除区县{{item.label}}">{{item.label}}<t-icon name="close" size="24rpx" color="#2A5CE0" /></view></view>
   <view wx:if="{{coverageError}}" class="help">{{coverageError}}<text class="link" bindtap="loadCities">　重试</text></view>
   <view class="label">产业方向（可多选）</view>
-  <view class="weak help">按标题归类，仅供检索参考，非官方分类</view>
   <view class="options"><view wx:for="{{industries}}" wx:key="*this" class="option {{picked['industries:' + item] ? 'option--on' : ''}}" data-group="industries" data-value="{{item}}" bindtap="pick" aria-role="checkbox" aria-checked="{{!!picked['industries:' + item]}}">{{item}}</view></view>
   <view class="actions"><view class="muted action" bindtap="cancel" aria-role="button">取消</view><view class="btn-primary save-button" bindtap="save" aria-role="button">保存到本机</view></view>
 </view>

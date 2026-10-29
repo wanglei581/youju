@@ -41,7 +41,7 @@
   </view>
   <view wx:if="{{!loading && !error && record}}" class="card actions">
     <button bindtap="openDetail">看发布这份名单的通知</button>
-    <button bindtap="feedback">反馈内容问题</button>
+    <button bindtap="feedback">纠错</button>
   </view>
 </block>
 <block wx:else>
@@ -63,7 +63,6 @@
       <view wx:if="{{updatedNote}}" class="notice">{{updatedNote}}</view>
       <view wx:if="{{resumePage}}" class="resume"><text>从你上次读到的第 {{resumePage}} 页继续</text><text id="resume-start" class="link resume-start" bindtap="fromStart" aria-role="button">从开头看</text></view>
       <view wx:if="{{notice}}" class="notice">{{notice}}</view>
-      <view wx:if="{{pages > 1}}" class="page-label">{{partLabel}} 第 {{page}} 页 / 共 {{pages}} 页</view>
       <view wx:for="{{segments}}" wx:key="n" class="segment">
         <text wx:if="{{item.loc}}" class="muted loc">{{item.loc}}</text>
         <text wx:if="{{item.text && !item.cells.length}}" class="reading-text" user-select>{{item.text}}</text>
@@ -79,5 +78,5 @@
       <button wx:if="{{status === 'list' || listHidden}}" class="btn-primary lookup-btn" bindtap="lookup">在已收录名单中查询企业</button>
     </block>
   </view>
-  <view class="card actions"><button bindtap="feedback">反馈内容问题</button><button bindtap="detail">返回文件详情</button></view>
+  <view class="card actions"><button bindtap="feedback">纠错</button><button bindtap="detail">返回文件详情</button></view>
 </block>
