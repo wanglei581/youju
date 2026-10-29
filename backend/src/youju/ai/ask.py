@@ -4,13 +4,15 @@
 - 提交（api/chat.py）：这份能不能问、后台能不能处理（heartbeat.ask_ready）以后，先按规则挡
   （rules：指代对不上、要代写），挡下的当场回答、不建任务、不扣次数；其余建 kind=ask 的任务。
 - 处理（admin，advisor_tasks.process_task 交给 process）：再核 AI 授权、问一问使用说明的同意和
-  单独线路；取内容、找上一答和前两问、再过一遍规则；调模型（流式接收，每收到一段就查
-  "新的这段，加上它前面最长词条长度减 1 个字"，按规范化以后的字算，命中就断开）；
+  单独线路；取内容、找上一答和前两问、再过一遍规则；问题里的阿拉伯数字隐去以后交给模型
+  （model_input）；调模型（流式接收，每收到一段就查"新的这段，加上它前面最长词条长度减 1 个字"，
+  按规范化以后的字算，原文和按 JSON 转义还原以后的字都查，命中就断开）；
   按来源逐字核对（validate）；要显示的原句再过本地词库和微信内容安全
   （result_safety.check）；调完再取一次内容，变了不发布；先锁用户行、再按编号重新取任务和这一问，
   都在才写结果。找到原句的保留这 1 次，其余退回（ask_try 那本永不退）。
 - 读（render）：发一问、取对话、轮询一问都经这里出回答，读的时候再核一次：内容变了、下架了、
-  现在不能问了，不显示原句和"没有写"的结论；只是附件改名、换链接，出处和"站内阅读"按现在的拼。
+  现在不能问了，不显示原句和"没有写"的结论；只是附件改名、换链接，出处和"站内阅读"按现在的拼
+  （内容一样的几个附件按回答时记下的编号挑，_pick）。
 
 模型写的字一律不显示：回答里除了逐字核对过的原句，都是这里按第十二节第 3 条拼的固定说法。
 用户打的字只在 ai_chat_turns.question：任务的输入、快照、结果和日志里都没有（第十节第 6 条）；
@@ -32,7 +34,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from youju import safety_words, wx_security
+from youju import chat_guard, safety_words, wx_security
 from youju.ai import advisor_endpoint, content, heartbeat, interpret, result_safety
 from youju.ai.client import AIError, ChatClient
 from youju.ai.interpret import Skill
@@ -60,6 +62,8 @@ SYSTEM_PROMPT = (
     "给 out_of_scope。段落里没有相关的：给 not_found。"
     "电话、邮箱、证件号、联系人姓名已遮掉（写成“[电话已脱敏]”这样），不要猜；问的正是这些的，"
     "照常摘出写着它的那句原句（遮掉的地方照原样抄），不要因为遮掉了就给 not_found。"
+    "问题（含 recent、previousAnswer 里的问题）里的“[数字已隐去]”是交给你之前隐去的，"
+    "不要猜原来是多少。"
     "status 不是 answer 时 quotes 给空列表。"
 )
 ASK = Skill("ask", PROMPT_VERSION, SYSTEM_PROMPT, (), result_field="quotes")
@@ -152,6 +156,11 @@ RULES_NOTE = (
 )
 SEE_ATTACHMENT_OPEN = "原句说“见附件”，附件 {i} 没读，可以点“站内阅读”看。"
 SEE_ATTACHMENT_CLOSED = "原句说“见附件”，附件 {i} 没读{why}，这份附件暂时读不出来。"
+# 内容一样的另一个附件替回答时引用的那个当出处（第六节第 3 条"只更新显示"②④）：接在出处后面
+SUBSTITUTE_GONE = "（回答时引用的附件已不在附件列表里，这份附件内容相同）"
+SUBSTITUTE_CLOSED = "（回答时引用的附件现在打不开，这份附件内容相同）"
+# 回答时引用的附件还在列表里、内容换了（设计稿只写了上面两种，这一种待设计稿定，先按推荐写）
+SUBSTITUTE_UPDATED = "（回答时引用的附件内容已更新，这份附件内容相同）"
 PARTIAL = "没读完：{parts}（超出字数）"
 LINK_GONE = (
     "原文链接 {date}检查时已失效。这条回答依据来自此前收录的内容，仅供参考，"
@@ -407,14 +416,21 @@ def context(prev: Prev | None, last_two: list[str], reset: bool) -> dict:
 
 
 def model_input(loaded: content.Content, ctx: dict, question: str) -> str:
-    """段落在前、问题在后：同一份通知连续问时开头一样，有前缀缓存的线路能省输入费用。"""
+    """段落在前、问题在后：同一份通知连续问时开头一样，有前缀缓存的线路能省输入费用。
+
+    问题里的阿拉伯数字交给模型前现隐去（chat_guard.hide_numbers，第九节第 2 条）：这一问、recent
+    的两问、previousAnswer 的问题都过一遍，不管是什么时候问的（这条规则以前存下的也一样）；存下的、
+    显示的、送微信检查的都是原话，只有交给模型的这一份换。上一答摘的原句是通知原文，不换。"""
+    answer = ctx["previousAnswer"]
+    if answer is not None:
+        answer = {**answer, "question": chat_guard.hide_numbers(answer["question"])}
     return json.dumps(
         {
             "read": loaded.scope_text(),
             "paragraphs": [{"sid": s.sid, "text": s.text} for s in loaded.segments],
-            "recent": ctx["recent"],
-            "previousAnswer": ctx["previousAnswer"],
-            "question": question,
+            "recent": [chat_guard.hide_numbers(asked) for asked in ctx["recent"]],
+            "previousAnswer": answer,
+            "question": chat_guard.hide_numbers(question),
         },
         ensure_ascii=False,
     )
@@ -424,8 +440,10 @@ def validate(payload: Any, loaded: content.Content | content.Texts) -> dict:
     """核对模型的输出（第六节第 3 条"核对"）：超过 8 句只取前 8 句，每句用 content.locate_ask
     逐字找（段号要是交给模型的某一段；先这一段、再同一来源里交给模型的其他段；扩成完整的原句）。
     能显示的留下，照模型给的先后编号（最相关的在前，D-086 ①；追问"第几句"按这个编号）；重复的
-    留先出现的那句（不算对不上）。原句都含"已脱敏"的不引用，按句记个数：同一句摘了几次、摘的是
-    它的哪一截、一句引用跨了几句，含遮掉号码的每句都只记一次；这一步不看引用多长，算核对上了。
+    留先出现的那句（不算对不上）。附件里的句子另存回答时这份内容对应的附件编号（attachmentIds），
+    读的时候按它挑出处（第六节第 3 条"只更新显示"）。原句都含"已脱敏"的不引用，按句记个数：
+    同一句摘了几次、摘的是它的哪一截、一句引用跨了几句，含遮掉号码的每句都只记一次；这一步不看
+    引用多长，算核对上了。
     dropped 是对不上的个数（格式不对、找不到、不止一处又不全含遮掉的号码、太短）。格式不对抛
     ValueError。其他三种状态时模型给的句子一律不用。
 
@@ -445,7 +463,7 @@ def validate(payload: Any, loaded: content.Content | content.Texts) -> dict:
     if not payload["quotes"]:
         return {"status": "not_found", "quotes": [], "redacted": 0, "dropped": 0}
     texts = loaded.texts if isinstance(loaded, content.Content) else loaded
-    versions = {s.key: s.version for s in texts.sources}
+    sources = {s.key: s for s in texts.sources}
     kept: dict[tuple, content.Located] = {}  # 照模型给的先后
     masked: set[tuple] = set()  # 含遮掉号码的句子：（来源, 起, 止）
     dropped = 0
@@ -461,17 +479,21 @@ def validate(payload: Any, loaded: content.Content | content.Texts) -> dict:
         else:
             dropped += 1
     redacted = len(masked)
-    quotes = [
-        {
+    quotes = []
+    for n, q in enumerate(kept.values(), 1):
+        source = sources[q.source]
+        quote = {
             "n": n,
             "sid": q.sid,
             "source": q.source,
-            "version": versions[q.source],
+            "version": source.version,
             "text": q.quote,
             "place": q.place,
         }
-        for n, q in enumerate(kept.values(), 1)
-    ]
+        if source.attachments:
+            # 回答时这份内容对应的附件编号：读的时候按它挑出处（_pick），内容一样的附件也分得清
+            quote["attachmentIds"] = list(source.attachment_ids)
+        quotes.append(quote)
     if quotes:
         status = "answer"
     elif redacted:
@@ -528,39 +550,87 @@ def _boundary(raw: str) -> int:
     return 0
 
 
-class _Guard:
-    """边收边过本地词库（第九节第 6 条）：每收到一段就当场查"新收到的这段，加上它前面最长词条长度
-    减 1 个字"，跨段的词也查得到；不再每段从头查全部文字。
+_ESCAPES = {'"': '"', "\\": "\\", "/": "/", "b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t"}
+_HEX4 = re.compile("[0-9a-fA-F]{4}")
+_HEX_PART = re.compile("[0-9a-fA-F]{0,3}")  # \u 后面的十六进制还没写满 4 位
+# 高位代理后面的低位代理（\uDC00–\uDFFF）写了一半（空的也算：还没收到）
+_LOW_PART = re.compile(r"(?:\\(?:u(?:[dD](?:[c-fC-F][0-9a-fA-F]?)?)?)?)?")
+
+
+def _unescape(raw: str, *, final: bool = False) -> tuple[str, str]:
+    """按 JSON 字符串的转义规则还原 raw（第九节第 6 条，Codex 第 31 轮：高危词可以写成 \\uXXXX 这类
+    转义，原始的字里根本没有那个词）：\\uXXXX（两个连着的代理对合成一个字）、\\n 这类转义还原成字，
+    不是转义的照原样留着（\\\\u 是一个反斜杠加 u，不还原）。
+
+    返回（还原以后的字, 留到下一段的那截）：转义写了一半就到了末尾的（一个反斜杠、\\u 后面不满
+    4 位，高位代理后面还看不出接不接低位代理），这几个字原样留到下一段，连同下一段一起还原；
+    final（收完了）时不留，写了一半的照原样算。"""
+    out = []
+    i, end = 0, len(raw)
+    while i < end:
+        at = raw.find("\\", i)
+        if at < 0:
+            out.append(raw[i:])
+            i = end
+            break
+        out.append(raw[i:at])
+        i = at
+        kind = raw[i + 1 : i + 2]
+        if kind in _ESCAPES:
+            out.append(_ESCAPES[kind])
+            i += 2
+            continue
+        if kind != "u":
+            if not kind and not final:  # 反斜杠在末尾：留到下一段
+                break
+            out.append(raw[i : i + 2])  # 不是转义
+            i += 2
+            continue
+        digits = raw[i + 2 : i + 6]
+        if not _HEX4.fullmatch(digits):
+            if not final and len(digits) < 4 and _HEX_PART.fullmatch(digits):
+                break  # \u 后面还没写满 4 位：留到下一段
+            out.append(raw[i : i + 2])  # \u 后面不是十六进制：不是转义
+            i += 2
+            continue
+        code = int(digits, 16)
+        if 0xD800 <= code <= 0xDBFF:  # 高位代理：看后面接不接着低位代理
+            low = raw[i + 6 : i + 12]
+            if (
+                len(low) == 6
+                and low.startswith("\\u")
+                and _HEX4.fullmatch(low[2:])
+                and 0xDC00 <= int(low[2:], 16) <= 0xDFFF
+            ):
+                out.append(chr(0x10000 + (code - 0xD800) * 0x400 + int(low[2:], 16) - 0xDC00))
+                i += 12
+                continue
+            if not final and len(low) < 6 and _LOW_PART.fullmatch(low):
+                break  # 低位代理可能还没收到：连同高位代理留到下一段
+        out.append(chr(code))
+        i += 6
+    return "".join(out), raw[i:]
+
+
+class _Window:
+    """一路文字边收边查（_Guard 查两路：收到的原文，和按 JSON 转义还原以后的字）：每收到一段就当场
+    查"新收到的这段，加上它前面最长词条长度减 1 个字"，跨段的词也查得到；不再每段从头查全部文字。
 
     窗口按词库同样规范化以后的字算（safety_words.normalize：去掉看不见的字符、NFKC、转小写、去掉
     空白），被空白、零宽字符隔开的跨段词也在窗口里。规范化也要跨段：一段末尾的字可能和下一段开头的
-    字合成一个字（比如先收到 e、再单独收到组合重音符，NFKC 以后是 é）。所以收到的原文先去掉看不见的
+    字合成一个字（比如先收到 e、再单独收到组合重音符，NFKC 以后是 é）。所以收到的字先去掉看不见的
     字符（同 normalize 的第一步：夹在字母和组合符号中间的去掉以后也会合成），再全部留着：每段到了，
     先找最近的规范化边界（_boundary），边界之前的规范化一次就定了；边界到末尾这一截（"暂留"，通常
     只有一两个字）每段到了都连同新的一段重新规范化，和前面已经定了的最后"最长词条长度减 1"个字
     一起当场查。暂留不是不查，只是下一段来了再连同它们重新规范化；单字词条也一样当场查。已知限制：
-    一长串都当不了边界的字（比如几百个连着的组合符号）会一直暂留，每段都重新规范化，这时会变慢。
+    一长串都当不了边界的字（比如几百个连着的组合符号）会一直暂留，每段都重新规范化，这时会变慢。"""
 
-    客户端重试时从空的开始重新拼（ChatClient 每次重试都从头收）：收到的文字不再接着上一次的，
-    前一次收到的就作废、从头查。
-
-    收完再整段查一遍兜底（final：调用正常结束时查整段回答，不是流式的也靠它）；调用出错时
-    （中途断了、返回看不懂、超时）查最后收到的全部文字（last）。命中抛 StreamBlocked。
-    streaming：客户端是不是流式接收。"""
-
-    def __init__(self, *, streaming: bool = False) -> None:
-        self.streaming = streaming
-        self.last = ""  # 最后一次收到的全部原文
-        self.visible = ""  # 收到的原文去掉看不见的字符以后（safety_words.strip_invisible）
+    def __init__(self) -> None:
+        self.visible = ""  # 收到的字去掉看不见的字符以后（safety_words.strip_invisible）
         self.settled = 0  # visible 里规范化已经定了的字数（边界之前）
         self.tail = ""  # 定了的那截规范化以后的最后几个字（最长词条长度减 1 个）
 
-    def __call__(self, text: str) -> None:
-        if text.startswith(self.last):
-            new = text[len(self.last) :]
-        else:  # 重试了，从头收
-            new, self.visible, self.settled, self.tail = text, "", 0, ""
-        self.last = text
+    def feed(self, new: str) -> safety_words.Hit | None:
         library = safety_words.LIBRARY
         carry = max(library.longest - 1, 0)
         # 只去新收到的那截：一个字一个字地去，分段去和连着去结果一样
@@ -572,12 +642,48 @@ class _Guard:
         hit = safety_words.check_normalized(self.tail + fixed + held, library)
         self.settled += at
         self.tail = (self.tail + fixed)[-carry:] if carry else ""
+        return hit
+
+
+class _Guard:
+    """边收边过本地词库（第九节第 6 条）。每收到一段，两路各查一遍（_Window），任一路命中就算：
+
+    - 收到的原文；
+    - 按 JSON 字符串的转义规则还原以后的字（_unescape，Codex 第 31 轮：模型的输出是 JSON，高危词
+      可以写成 \\uXXXX 这类转义）。转义写了一半就到了段尾的，那几个字留到下一段一起还原。
+
+    客户端重试时从空的开始重新拼（ChatClient 每次重试都从头收）：收到的文字不再接着上一次的，
+    前一次收到的就作废、从头查。
+
+    收完再整段查一遍兜底（final：调用正常结束时查整段回答，不是流式的也靠它；同样原文和还原以后的
+    都查）；调用出错时（中途断了、返回看不懂、超时）查最后收到的全部文字（last）。命中抛
+    StreamBlocked。streaming：客户端是不是流式接收。"""
+
+    def __init__(self, *, streaming: bool = False) -> None:
+        self.streaming = streaming
+        self.last = ""  # 最后一次收到的全部原文
+        self._start()
+
+    def _start(self) -> None:
+        self.raw = _Window()
+        self.decoded = _Window()
+        self.escape = ""  # 写了一半的转义：留到下一段一起还原
+
+    def __call__(self, text: str) -> None:
+        if text.startswith(self.last):
+            new = text[len(self.last) :]
+        else:  # 重试了，从头收
+            new = text
+            self._start()
+        self.last = text
+        decoded, self.escape = _unescape(self.escape + new)
+        hit = self.raw.feed(new) or self.decoded.feed(decoded)
         if hit is not None:
             raise StreamBlocked(hit, streaming=self.streaming)
 
     @staticmethod
     def final(text: str) -> None:
-        hit = safety_words.check(text)
+        hit = safety_words.check(text) or safety_words.check(_unescape(text, final=True)[0])
         if hit is not None:
             raise StreamBlocked(hit, streaming=False)
 
@@ -1010,15 +1116,63 @@ def _note(code: str, text: str, *, head: bool, **extra) -> dict:
 def _card_reader(doc_id: int, current: content.Content) -> dict | None:
     """卡片上的"站内阅读 ›"打开哪一份（not_found、unverified，和含号码的对上、其余对不上的
     redacted；第六节第 3 条"卡片上的站内阅读"，Codex 第 41 轮）：按这次读了的来源、现在的状态定。
-    读了正文 → 开正文；没读正文（只读了附件）→ 读了的附件里现在能站内打开的第一个（按
-    Content.sources 的先后，附件按位置）；一个都打不开 → None：不放入口，叫人去点的半句也不写。
-    原文链接失效的由调用方先挡（一律不放）。"""
+    读了正文 → 开正文；没读正文（只读了附件）→ 读了的附件里现在能站内打开的第一个（按现在的位置，
+    跨来源比）；打开的就是那份内容在读的范围里写出名字的那个（SourceText.shown_id：内容一样的
+    几个附件里能打开的第一个），名称和入口是同一个附件。一个都打不开 → None：不放入口，叫人去点的
+    半句也不写。原文链接失效的由调用方先挡（一律不放）。"""
     if any(source.key == content.BODY for source in current.sources):
         return {"docId": doc_id, "attachmentId": None}
-    for source in current.sources:
-        if source.readable and source.attachment_id is not None:
-            return {"docId": doc_id, "attachmentId": source.attachment_id}
-    return None
+    shown = [
+        source.shown
+        for source in current.sources
+        if source.shown is not None and source.shown.readable
+    ]
+    if not shown:
+        return None
+    return {"docId": doc_id, "attachmentId": min(shown, key=lambda a: a.n).id}
+
+
+def _pick(
+    source: content.SourceText, recorded: Any, listed: set[int]
+) -> tuple[content.Attachment | None, str]:
+    """附件里的一句原句，出处名称、"站内阅读"入口、点进去打开的用哪一个附件（三样始终是同一个；
+    第六节第 3 条"只更新显示"，Codex 第 39、40 轮）。recorded 是回答时这份内容对应的附件编号
+    （attachmentIds），listed 是现在详情页附件列表里的全部附件编号（读了的、没读的都算）。
+
+    按这个先后挑，先有的算：① 记下的编号里还在这份内容里、现在能站内打开的，按现在的位置取第一个；
+    ② 内容一样的别的附件里能站内打开的第一个；③ 记下的、还在这份内容里的（都打不开）第一个；
+    ④ 内容一样的别的附件（都打不开）第一个。②④ 是替代的，给出处后面要注明的那句：记下的还在这份
+    内容里、只是打不开 → SUBSTITUTE_CLOSED；记下的还在附件列表里、内容换了 → SUBSTITUTE_UPDATED；
+    都不在附件列表里了 → SUBSTITUTE_GONE。⑤ 内容一样的附件一个都没有了：给 None，调用方按读了的
+    来源变了作废（读的时候先按版本比过，一般到不了这里）。
+
+    这一版以前存的句子没有 attachmentIds：当作记下的就是现在这几个，用 shown_id 那一个、不注明。"""
+    if not source.attachments:
+        return None, ""
+    if not isinstance(recorded, list):
+        return source.shown, ""
+    kept = {i for i in recorded if isinstance(i, int)}
+    mine = [a for a in source.attachments if a.id in kept]
+    others = [a for a in source.attachments if a.id not in kept]
+    choices = ((mine, False), (others, True))
+    for candidates, replaced in choices:  # ①②：能站内打开的
+        for attachment in candidates:
+            if attachment.readable:
+                return attachment, _substitute(replaced, mine, kept, listed)
+    for candidates, replaced in choices:  # ③④：都打不开
+        if candidates:
+            return candidates[0], _substitute(replaced, mine, kept, listed)
+    return None, ""
+
+
+def _substitute(replaced: bool, mine: list, kept: set[int], listed: set[int]) -> str:
+    if not replaced:
+        return ""
+    if mine:
+        return SUBSTITUTE_CLOSED
+    if kept & listed:
+        return SUBSTITUTE_UPDATED
+    return SUBSTITUTE_GONE
 
 
 def _answer(session: Session, turn: AIChatTurn, task: AdvisorTask, stamp: datetime, cache: dict):
@@ -1045,24 +1199,37 @@ def _answer(session: Session, turn: AIChatTurn, task: AdvisorTask, stamp: dateti
     question = plain(turn.question)
     sources = {s.key: s for s in current.sources}
     places = {s.sid: s.place for s in current.segments}
+    # 现在详情页附件列表里的全部附件（读了的、没读的）：替代的出处注明"已不在附件列表里"用
+    listed = {a.id for s in current.sources for a in s.attachments} | {
+        u.attachment_id for u in current.unread if u.attachment_id is not None
+    }
     quotes = []
     for q in result.get("quotes") or []:
         source = sources.get(q.get("source"))
-        attachment = source is not None and source.key != content.BODY
-        readable = source is not None and (not attachment or source.readable)
+        place = places.get(q["sid"], q.get("place", ""))
+        if source is None or source.key == content.BODY:
+            # 正文；来源找不到的（读的时候先按版本比过，一般到不了这里）不给入口
+            label = (source.label if source else "") + place
+            opens, readable, attachment = None, source is not None, False
+        else:
+            # 出处按现在的来源拼（附件改名、换位置以后跟着变，按内容版本找回）；内容一样的几个附件
+            # 按回答时记下的编号挑，名称、入口、点进去打开的是同一个（_pick）
+            chosen, note = _pick(source, q.get("attachmentIds"), listed)
+            if chosen is None:  # 内容一样的附件一个都没有了：读了的来源变了，作废
+                return _hidden(out, "stale", STALE)
+            label = chosen.label + place + note
+            opens, readable, attachment = chosen.id, chosen.readable, True
         quotes.append(
             {
                 "n": q["n"],
                 "sid": q["sid"],
                 "source": q["source"],
                 "version": q.get("version"),
-                # 出处按现在的来源拼：附件改名、换位置以后跟着变（按内容版本找回）
-                "label": (source.label if source else "")
-                + places.get(q["sid"], q.get("place", "")),
+                "label": label,
                 "text": q["text"],
                 "reader": None
                 if gone or not readable
-                else {"docId": turn.doc_id, "attachmentId": source.attachment_id},
+                else {"docId": turn.doc_id, "attachmentId": opens},
                 "unreadable": bool(attachment and not readable),
             }
         )

@@ -34,16 +34,68 @@ BODY = "body"  # 正文来源的 key
 
 
 @dataclass(frozen=True)
-class SourceText:
-    """一个来源：正文，或者（以后）一个附件。逐字核对只在来源的 text 里找。"""
+class Attachment:
+    """一份附件内容对应的一个附件，按现在详情页附件列表里的样子（读的时候拼出处、挑"站内阅读"
+    打开哪个用，问一问开发设计第六节第 3 条"只更新显示"）。"""
 
-    key: str  # "body"；附件 "att-<内容 SHA-256 前 12 位>"
-    label: str  # "正文"；"附件 2《申报书》"
+    id: int  # 在详情页附件列表里的编号（document_attachments.id）
+    n: int  # "附件 N"：现在在详情页附件列表里的位置（从 1 起，每次取内容时现算）
+    name: str
+    readable: bool  # 现在能不能在站内打开（同站内阅读的判断）
+
+    @property
+    def label(self) -> str:
+        return f"附件 {self.n}《{self.name}》"
+
+
+@dataclass(frozen=True)
+class SourceText:
+    """一个来源：正文，或者（以后）一份附件内容。逐字核对只在来源的 text 里找。
+
+    内容一样的几个附件只读一次、只交给模型一次，是同一个来源，都记在 attachments 里（附件读入方案
+    的"附件 → 内容版本 → 文字"，Codex 第 39 轮）。出处名称（label）和"站内阅读"入口用同一个附件
+    （shown_id）：现在能站内打开的第一个，一个都打不开就是第一个（Codex 第 40 轮：名称用一个、入口
+    开另一个，用户点出处会进到另一份）。这几样都由 attachments 现算，对不上的写法写不出来。"""
+
+    key: str  # "body"；附件 "att-<内容 SHA-256 前 12 位>"：只随内容变，不随位置、名称、链接变
     version: str  # 正文：原文指纹（同原来的 body_hash）；附件："<内容 SHA-256>:<取文字的规则版本>"
     text: str  # 遮过号码的全文
-    attachment_id: int | None = None  # 附件在详情页列表里的编号；正文为 None
-    readable: bool = True  # 附件现在能不能在站内打开；正文为 True
+    # 这份内容对应的所有附件，按现在在详情页附件列表里的位置排；正文为空
+    attachments: tuple[Attachment, ...] = ()
     checked_at: datetime | None = None  # 附件最后一次从原网站核对的时间；正文为 None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "attachments", tuple(sorted(self.attachments, key=lambda a: a.n)))
+
+    @property
+    def attachment_ids(self) -> tuple[int, ...]:
+        return tuple(a.id for a in self.attachments)
+
+    @property
+    def shown(self) -> Attachment | None:
+        """出处名称和"站内阅读"入口用的那个附件；正文为 None。"""
+        return next((a for a in self.attachments if a.readable), None) or next(
+            iter(self.attachments), None
+        )
+
+    @property
+    def shown_id(self) -> int | None:
+        shown = self.shown
+        return shown.id if shown is not None else None
+
+    @property
+    def readable(self) -> bool:
+        """shown_id 那一个现在能不能在站内打开；正文为 True。"""
+        shown = self.shown
+        return shown is None or shown.readable
+
+    @property
+    def label(self) -> str:
+        """出处名称：正文写"正文"；附件是 shown_id 那一个的"附件 2《申报书》"。"""
+        shown = self.shown
+        if shown is not None:
+            return shown.label
+        return "正文" if self.key == BODY else ""
 
 
 @dataclass(frozen=True)
@@ -106,7 +158,7 @@ class Texts:
         """按快照里存的正文段落重建（原来 validate 的做法：段与段之间的空隙补换行）。"""
         body = interpret.paragraph_body(paragraphs)
         return cls(
-            sources=(SourceText(key=BODY, label="正文", version="", text=body),),
+            sources=(SourceText(key=BODY, version="", text=body),),
             segments=tuple(
                 Segment(sid=p["pid"], source=BODY, text=p["text"], start=p["start"], end=p["end"])
                 for p in paragraphs
@@ -259,7 +311,7 @@ def load(session: Session, doc_id: int, *, link: bool = True) -> Content:
         document_ids=ids,
         body_id=_body_id(session, doc, ids, raw),
         texts=Texts(
-            sources=(SourceText(key=BODY, label="正文", version=interpret.digest(raw), text=body),),
+            sources=(SourceText(key=BODY, version=interpret.digest(raw), text=body),),
             segments=tuple(
                 Segment(sid=p["pid"], source=BODY, text=p["text"], start=p["start"], end=p["end"])
                 for p in paragraphs

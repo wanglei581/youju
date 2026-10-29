@@ -1,8 +1,10 @@
-"""问一问提问的两条本机规则（问一问开发设计第九节第 2 条、第六节第 2 条），两个技能共用：
+"""问一问提问的本机规则（问一问开发设计第九节第 2 条、第六节第 2 条）。前两条两个技能共用：
 
 - sensitive：像不像带了号码（统一社会信用代码、手机号、身份证号、银行卡号）。像就拦下（422
   CHAT_SENSITIVE，不建行、不保存、不扣次数）。只在本机比，不发给任何人；
-- goes_to_lists：是不是在问某家企业在不在名单里。是就带去查名单页（422 CHAT_GO_LISTS）。
+- goes_to_lists：是不是在问某家企业在不在名单里。是就带去查名单页（422 CHAT_GO_LISTS）；
+- hide_numbers：问这份通知交给模型之前，把问题里的阿拉伯数字隐去（admin 交给模型时现做，存下的、
+  显示的、送微信检查的都是原话）。
 """
 
 from __future__ import annotations
@@ -105,3 +107,49 @@ def goes_to_lists(text: str) -> bool:
         any(word in compact for word in words)
         for words in (_COMPANY_WORDS, _LIST_WORDS, _ASK_WORDS)
     )
+
+
+# 隐去数字（第九节第 2 条；D-093 第五节"不把企业的财务、研发数据和客户名称交给模型"，
+# Codex 第 44–47 轮）
+HIDDEN_NUMBER = "[数字已隐去]"
+# 一串阿拉伯数字：数字中间夹着的小数点、千分位逗号算在里面
+_NUMBER = re.compile(r"\d+(?:[.,]\d+)*")
+# 不换的两种（完整清单）：① 序号，"第"+数字+"句、条、款、项、段、点"；② 写到哪一天的日期：
+# 4 位+年+1–2 位+月+1–2 位+日/号、1–2 位+月+1–2 位+日/号，或 4 位、1–2 位、1–2 位用同一个"-"或"/"
+# 连起来。中间可以有空白；只写到年、年月的不算。日期的头尾要是整串数字的头尾（前面不接着数字，
+# 也不接着"数字+小数点或逗号"；"-""/"连的后面不再接着数字）
+_KEEP = re.compile(
+    r"第\s*\d+(?:[.,]\d+)*\s*[句条款项段点]"
+    r"|(?<!\d)(?<!\d[.,])(?:"
+    r"\d{4}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*[日号]"
+    r"|\d{1,2}\s*月\s*\d{1,2}\s*[日号]"
+    r"|\d{4}\s*([-/])\s*\d{1,2}\s*\1\s*\d{1,2}(?![.,]?\d)"
+    r")"
+)
+
+
+def hide_numbers(text: str) -> str:
+    """问这份通知交给模型的问题：每一串阿拉伯数字换成"[数字已隐去]"，前后的字都留着（问一问开发
+    设计第九节第 2 条的完整规则）。只有两种不换：序号（"第 3 句""第5条"）、写到哪一天的日期
+    （"2026 年 11 月 20 日""11月20号""2026-11-20"）；"第500万元""500号客户""3 个月""2026 年"
+    里的数字都换。
+
+    先 NFKC 再认（全角数字、全角空格也认得出），换的时候只换原文里那串数字对应的字，别的字一个
+    不改（"，"还是"，"）。用汉字写的数字（"三百人""三点五万元"）、企业名称认不出来，原样留着，
+    告知里照实写（第一节第 3 件，待创始人定，先按推荐做）。"""
+    pieces = [unicodedata.normalize("NFKC", char) for char in text]
+    plain = "".join(pieces)
+    owner = [at for at, piece in enumerate(pieces) for _ in piece]  # plain 的每个字是原文第几个字
+    keep = [match.span() for match in _KEEP.finditer(plain)]
+    out, last = [], 0
+    for match in _NUMBER.finditer(plain):
+        first, end = match.span()
+        if any(a <= first and end <= b for a, b in keep):
+            continue
+        start, stop = owner[first], owner[end - 1] + 1
+        if start < last:  # 原文一个字规范化以后有两串数字（比如"½"是"1⁄2"）：这个字已经整个换掉
+            continue
+        out.extend((text[last:start], HIDDEN_NUMBER))
+        last = stop
+    out.append(text[last:])
+    return "".join(out)

@@ -4,7 +4,7 @@
 
 import pytest
 
-from youju.chat_guard import goes_to_lists, sensitive
+from youju.chat_guard import HIDDEN_NUMBER, goes_to_lists, hide_numbers, sensitive
 from youju.crawler.detail import _luhn, has_personal_numbers
 from youju.lists.rules import normalize_credit_code
 
@@ -182,3 +182,64 @@ def test_goes_to_lists(text):
 )
 def test_not_goes_to_lists(text):
     assert not goes_to_lists(text)
+
+
+# ---- 隐去数字（第九节第 2 条，问这份通知交给模型之前） ----
+
+H = HIDDEN_NUMBER
+
+
+@pytest.mark.parametrize(
+    ("text", "sent"),
+    [
+        # 设计稿第九节第 2 条的单测
+        (
+            "我司去年研发投入500万，研发人员15人，能报吗",
+            f"我司去年研发投入{H}万，研发人员{H}人，能报吗",
+        ),
+        ("第500万元", f"第{H}万元"),
+        ("500号客户", f"{H}号客户"),
+        ("3 个月", f"{H} 个月"),
+        ("3.5 万元", f"{H} 万元"),
+        ("1,000 万", f"{H} 万"),
+        ("近 3 年", f"近 {H} 年"),
+        ("2026 年", f"{H} 年"),  # 只写到年、年月的不算日期
+        ("2026 年 11 月", f"{H} 年 {H} 月"),
+        # 全角数字也认得出，前后的字一个不改
+        ("５００万，１５人", f"{H}万，{H}人"),
+        ("第3、4句", f"第{H}、{H}句"),  # 只认"第"+数字+句、条、款、项、段、点
+        ("截止，2026.11.20", f"截止，{H}"),  # 用点连的不算日期
+        ("2026-11/20", f"{H}-{H}/{H}"),  # 要用同一个"-"或"/"连
+        ("2026-11-201", f"{H}-{H}-{H}"),  # 头尾要是整串数字的头尾
+        ("12026年11月20日", f"{H}年11月20日"),  # 年要正好 4 位；后面的"11月20日"照样是日期
+        ("½", H),  # 一个字规范化以后有两串数字：整个字换掉
+    ],
+)
+def test_hide_numbers(text, sent):
+    assert hide_numbers(text) == sent
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "第 3 句",
+        "第5条",
+        "第\N{IDEOGRAPHIC SPACE}３\N{IDEOGRAPHIC SPACE}款",
+        "第12项和第 1.5 段、第3点",
+        "2026 年 11 月 20 日",
+        "11月20号",
+        "11 月 20 日前",
+        "2026-11-20",
+        "2026/11/20",
+        "截止，2026年11月20日",  # 前面是逗号（全角逗号规范化以后是半角）也认得出
+        "２０２６年１１月２０日截止",
+        "第①条",
+        # 用汉字写的数字、企业名称认不出来，原样交给模型（告知里照实写）
+        "三百人",
+        "三点五万元",
+        "一家有限责任公司能申请吗",
+        "",
+    ],
+)
+def test_hide_numbers_keeps(text):
+    assert hide_numbers(text) == text
