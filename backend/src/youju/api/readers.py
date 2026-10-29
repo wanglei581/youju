@@ -406,13 +406,16 @@ def attachment_reading(
         version.extracted_at,
     )
     after = _check_revision(cursor, revision, current)
+    # 每段按返回时要带的算：文字、单元格、位置（表格每行都带工作表名，表名再长一页也不超返回上限），
+    # 另加 64 字节的字段名等
     sizes = [
         (n, int(size or 0) + 64)
         for n, size in session.execute(
             select(
                 AttachmentTextSegment.n,
                 func.octet_length(AttachmentTextSegment.text)
-                + func.coalesce(func.octet_length(AttachmentTextSegment.cells), 0),
+                + func.coalesce(func.octet_length(AttachmentTextSegment.cells), 0)
+                + func.coalesce(func.octet_length(AttachmentTextSegment.loc), 0),
             )
             .where(AttachmentTextSegment.version_id == version.id)
             .order_by(AttachmentTextSegment.n)

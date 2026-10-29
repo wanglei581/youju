@@ -688,15 +688,41 @@ def test_short_body_paragraphs_fill_pages(client, session):
 
 
 def test_full_page_of_short_rows_stays_small(client, session):
-    """一页放满段数上限的短表格行（带工作表名、单元格没有表头）：返回时每行还要带位置、补空表头，
-    整页仍远小于返回上限，不会显示成"这一页有一段特别长"。"""
+    """一页放满段数上限的短表格行（单元格没有表头）：返回时每行还要带位置、补空表头，整页仍远小于
+    返回上限，不会显示成"这一页有一段特别长"。带工作表名的见下一个用例。"""
     doc, att, _, version = seed(session)
     session.execute(
         delete(AttachmentTextSegment).where(AttachmentTextSegment.version_id == version.id)
     )
-    sheet = "攻关任务评估汇总表" * 3 + "（填报说明）"
     for i in range(1, PAGE_SEGMENTS + 41):
-        # 一格一行：存下的文字和单元格很小，这一页放满段数上限（位置不算进预算）
+        # 一格一行：存下的文字、单元格、位置都很小，这一页放满段数上限
+        session.add(
+            AttachmentTextSegment(
+                version_id=version.id,
+                n=i,
+                kind="row",
+                text=str(i),
+                loc={"row": i},
+                cells=[{"c": 1, "t": str(i)}],
+            )
+        )
+    version.segments = PAGE_SEGMENTS + 40
+    session.commit()
+    first = client.get(path(doc, att)).json()
+    assert first["status"] == "ok" and len(first["segments"]) == PAGE_SEGMENTS
+    assert first["segments"][0]["cells"] == [{"c": 1, "t": "1", "h": ""}]
+    assert len(json.dumps(first, ensure_ascii=False).encode()) < readers.MAX_PAGE_BYTES // 3
+
+
+def test_long_sheet_names_count_toward_the_page_budget(client, session):
+    """表格每行返回时都带工作表名：分页把位置也算进预算，表名再长每页也不超返回上限，翻完不丢行
+    （Codex 补审：只算文字和单元格时，120 行 × 600 字的表名一页约 200KB，整页显示不出来）。"""
+    doc, att, _, version = seed(session)
+    session.execute(
+        delete(AttachmentTextSegment).where(AttachmentTextSegment.version_id == version.id)
+    )
+    sheet = "超长的工作表名称" * 75
+    for i in range(1, 161):
         session.add(
             AttachmentTextSegment(
                 version_id=version.id,
@@ -707,12 +733,20 @@ def test_full_page_of_short_rows_stays_small(client, session):
                 cells=[{"c": 1, "t": str(i)}],
             )
         )
-    version.segments = PAGE_SEGMENTS + 40
+    version.segments = 160
     session.commit()
     first = client.get(path(doc, att)).json()
-    assert first["status"] == "ok" and len(first["segments"]) == PAGE_SEGMENTS
-    assert first["segments"][0]["loc"] == {"sheet": sheet, "row": 1}
-    assert len(json.dumps(first, ensure_ascii=False).encode()) < readers.MAX_PAGE_BYTES // 3
+    rows, page = [], first
+    while True:
+        assert page["status"] == "ok" and page["segments"]
+        assert len(json.dumps(page, ensure_ascii=False).encode()) < readers.MAX_PAGE_BYTES
+        rows.extend(s["n"] for s in page["segments"])
+        if page["nextCursor"] is None:
+            break
+        page = client.get(
+            path(doc, att), params={"cursor": page["nextCursor"], "revision": first["revision"]}
+        ).json()
+    assert first["pages"] > 1 and rows == list(range(1, 161))
 
 
 def _add_attachment(session, doc, position, name, url, ext):
