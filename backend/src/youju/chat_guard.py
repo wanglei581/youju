@@ -136,7 +136,7 @@ def hide_numbers(text: str) -> str:
 
     先 NFKC 再认（全角数字、全角空格也认得出），换的时候只换原文里那串数字对应的字，别的字一个
     不改（"，"还是"，"）。用汉字写的数字（"三百人""三点五万元"）、企业名称认不出来，原样留着，
-    告知里照实写（第一节第 3 件，待创始人定，先按推荐做）。"""
+    告知里照实写（设计稿第一节第 3 件，10/29 创始人按推荐定了，D-106 ③）。"""
     pieces = [unicodedata.normalize("NFKC", char) for char in text]
     plain = "".join(pieces)
     owner = [at for at, piece in enumerate(pieces) for _ in piece]  # plain 的每个字是原文第几个字

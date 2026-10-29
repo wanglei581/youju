@@ -1546,7 +1546,7 @@ def test_card_reader_compares_positions_across_sources():
 def test_redacted_with_the_rest_unverified(client, session, settings, doc, model):
     """含号码的对上了、其余的对不上（一句能显示的都没有）：仍是 redacted、不算次数，在"有 N 句……"
     后面接"其余摘出的句子和原文对不上……"，入口同 unverified；只有含号码的不放入口；原文链接失效
-    以后只留事实那半句（Codex 第 42 轮，待创始人确认）。"""
+    以后只留事实那半句（Codex 第 42 轮；D-106 ② 已定）。"""
     mixed = asked(
         client,
         session,
@@ -2615,7 +2615,7 @@ def test_mixed_read_and_unread_attachments(client, session, settings, doc, model
 
 
 def test_numbers_hidden_before_the_model(client, session, settings, doc, model, wechat):
-    """交给模型前隐去问题里的阿拉伯数字（第九节第 2 条；第一节第 3 件待创始人定，先按推荐做）：这一问、
+    """交给模型前隐去问题里的阿拉伯数字（第九节第 2 条；D-106 ③）：这一问、
     recent 的两问、previousAnswer 的问题都现做（前面存下的问题也一样），序号和写到哪一天的日期照旧，
     上一答摘的原句不换；存下的、显示的、送微信检查的都是原话。"""
     first = "我司去年研发投入500万，研发人员15人，能报吗"
