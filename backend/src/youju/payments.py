@@ -1412,11 +1412,17 @@ REFUND_PUSH_UNCONFIRMED_ERROR = (
 
 def flag_unconfirmed_refund(order: PayOrder, stamp: datetime) -> bool:
     """已完成的订单收到退款推送、这次没核实退款：转人工（每分钟的补单会发告警），返回 True。
+    已经因为别的原因（投诉等）转了人工、也告警过的：原因留着，前面加上退款要核对，再告警一次——
+    不然人工只按原来的原因处理，不知道还要核对退款（Codex 第 4 轮）。重推时不重复加、不重复告警。
     推送重推时查单显示退完了（8），mark_refunded 照常把它记成已退款、收回使用期。"""
-    if order.status != "completed":
+    if order.status == "completed":
+        order.status, order.error = "manual", REFUND_PUSH_UNCONFIRMED_ERROR
+    elif order.status == "manual" and REFUND_PUSH_UNCONFIRMED_ERROR not in (order.error or ""):
+        # 退款这句放前面：原因太长截到 500 字时截掉的是原来的原因，不是这句（重推靠它认出已经加过）
+        order.error = f"{REFUND_PUSH_UNCONFIRMED_ERROR}；原来的原因：{order.error or '无'}"[:500]
+    else:
         return False
-    order.status, order.alerted_at, order.updated_at = "manual", None, stamp
-    order.error = REFUND_PUSH_UNCONFIRMED_ERROR
+    order.alerted_at, order.updated_at = None, stamp
     return True
 
 

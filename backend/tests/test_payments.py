@@ -854,6 +854,39 @@ def test_refund_push_on_completed_order_not_confirmed_goes_manual(setup_pay, ses
     assert session.get(WorkbenchPass, ticket.id).revoked_at is not None
 
 
+def test_unconfirmed_refund_push_on_order_already_manual_alerts_again(setup_pay, session):
+    """已经因为投诉转了人工、也告警过的订单，又收到没核实的退款推送：原来的原因留着，前面加上退款要核对，
+    再告警一次；微信重推时不重复加、不重复告警（Codex 第 4 轮）。"""
+    row = delivered(setup_pay, session)
+    base = {"OpenId": "pay-user", "MchOrderId": row.out_trade_no, "WxOrderId": row.wx_order_id}
+    assert push(setup_pay, {**base, "Event": "xpay_complaint_notify"}).json()["ErrCode"] == 0
+    alerts = []
+
+    def run_alerts(stamp):
+        payments.run_payments(
+            session,
+            settings=setup_pay[1],
+            client=setup_pay[2].client,
+            stamp=stamp,
+            alert=alerts.append,
+        )
+
+    run_alerts(NOW)
+    session.expire_all()
+    row = session.get(PayOrder, row.id)
+    complaint = row.error
+    assert row.status == "manual" and row.alerted_at is not None and len(alerts) == 1
+    refund = {**base, "Event": "xpay_refund_notify", "RefundFee": 100, "RetCode": 0}
+    for _ in range(2):  # 第二次是微信重推
+        assert push(setup_pay, refund).json()["ErrCode"] != 0
+        session.expire_all()
+        row = session.get(PayOrder, row.id)
+        assert row.error.startswith(payments.REFUND_PUSH_UNCONFIRMED_ERROR)
+        assert row.error.endswith(complaint) and row.error.count("收到退款推送") == 1
+        run_alerts(NOW + timedelta(minutes=1))
+    assert len(alerts) == 2 and payments.REFUND_PUSH_UNCONFIRMED_ERROR in alerts[1]
+
+
 def test_pending_order_window_and_confirmed_close(setup_pay, session):
     row = order(session, create(setup_pay))
     assert run(session, setup_pay)["processed"] == 0
