@@ -19,7 +19,8 @@
       <view wx:if="{{item.supportText}}">支持方式：{{item.supportText}}</view>
       <!-- 只写网站名称，不写网址（D-097；10/23 审核以"复制链接去浏览器"退回过） -->
       <view class="muted source">出处：{{item.siteText}}<text wx:if="{{item.link_gone}}"> · 原文链接已失效</text></view>
-      <button data-id="{{item.doc_id}}" bindtap="read">站内阅读正文和依据</button>
+      <!-- 原文链接已失效的：正文、附件都不再提供（D-097），不给去阅读页的按钮（和详情页不给"阅读全文"一样，10/29 独立审阅） -->
+      <button wx:if="{{!item.link_gone}}" data-id="{{item.doc_id}}" bindtap="read">站内阅读正文和依据</button>
     </view>
     <view wx:if="{{advisor}}" wx:for="{{result.items}}" wx:key="n" class="result-item">
       <view class="title">{{item.n + 1}}. {{item.title}}</view>

@@ -249,7 +249,8 @@ function canRead(a) {
 // 有没有附件按实际列出的说（"附件在这句下面"要对得上）；不传时按服务端给的原因
 function noBodyText(body, atts) {
   if (!body) return '';
-  if (body.status === 'list') return '这份通知的正文里有名单，名单请在“查名单”里按企业名称查询';
+  // 名单类：下一行就是"在'查名单'里按企业名称查询 ›"，这里不再写一遍怎么查（10/29 独立审阅）
+  if (body.status === 'list') return '这份通知的正文里有名单';
   if (body.status === 'original') return '含个人信息，不在小程序内展示全文';
   // 原网页已失效：正文、附件都不给（D-097 维持现状），不说"内容在附件里"
   if (body.reason === 'link_gone') return '原网页已打不开，正文暂不提供';

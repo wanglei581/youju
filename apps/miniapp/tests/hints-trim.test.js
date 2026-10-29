@@ -376,6 +376,9 @@ test('详情页：没核对、候选在 7 天内的那一类写"可能 7 天内�
   assert.equal(page.data.goneAll, true);
   assert.equal(findAll(root, (n) => n.attrs && n.attrs.id === 'attachments').length, 0);
   assert.equal(textOf(root).split('不再提供').length - 1, 1);
+  // 名单类正文：说一句"正文里有名单"，怎么查只在下面的入口写一次（10/29 独立审阅）
+  const format = require('../utils/format.js');
+  assert.equal(format.noBodyText({ status: 'list' }), '这份通知的正文里有名单');
   // 服务端万一写的是"内容在附件里"：附件卡不显示，正文卡片也不能这么说（Codex 第 8 轮）
   doc = { ...doc, body: { status: 'none', reason: 'attachments' } };
   page.refreshing = false; page.load(); await settle();
@@ -495,7 +498,8 @@ test('结果页（站内看所选文件）：空的发布状态不留两个"·"�
   // 原文链接已失效：不写"截止："那一行，出处后面标一句（和列表、详情一致）
   const goneText = textOf(render('pages/results/index.wxml', soonPage.data));
   assert.match(goneText, /出处：某厅 · 原文链接已失效/);
-  assert.doesNotMatch(goneText.split('壬')[1], /截止：/);
+  assert.doesNotMatch(goneText.split('壬')[1], /截止：|站内阅读正文和依据/);
+  assert.match(goneText.split('壬')[0], /站内阅读正文和依据/);
   // 只看还有效的日期（Codex 第 8 轮）："原定……已延期"那条不算；今天带时刻、已经过了点的不算；只有变更的照写，不写"见原文"
   const now = new Date();
   const pastHour = (() => {
