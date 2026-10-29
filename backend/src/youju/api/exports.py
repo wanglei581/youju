@@ -123,6 +123,9 @@ class ExportItem:
     # 站内结果页写"可能 7 天内截止"，导出的文件不加这一列
     # （10/29 独立审阅：列表、详情写了，结果页没写）
     due_soon: bool = False
+    # 原文链接已失效：站内结果页不写"截止时间见原文"（原文已打不开），出处后面标一句；
+    # 导出的文件不加这一列
+    link_gone: bool = False
 
 
 def _date_time(value: datetime | None) -> str:
@@ -406,6 +409,7 @@ def _items(session: Session, raw_ids: list[str], excerpts: bool = False) -> list
                 change_checked="、".join(change_dates) or "未记录",
                 deadline_quote=excerpt_quote,
                 due_soon=kind == "申报通知" and excerpt_soon.get(master, False),
+                link_gone=bool(v1._link_gone(doc)),
             )
         )
     return result

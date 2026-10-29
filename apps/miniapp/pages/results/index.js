@@ -23,7 +23,8 @@ const EXCERPT_MARK = '（机器摘录）';
 // 没有日期时写"可能 7 天内截止"；写着的日期都不在 7 天内时，后面补一句，免得以为还早
 function deadlineText(item, now) {
   const value = String(item.deadline || '');
-  if (!/^\d{4}-\d{2}-\d{2}/.test(value)) return item.due_soon === true ? SOON : SEE_ORIGINAL;
+  // 原文链接已失效的（接口给 link_gone）：没日期时不写"截止时间见原文"（原文已打不开），出处后面标一句
+  if (!/^\d{4}-\d{2}-\d{2}/.test(value)) return item.due_soon === true ? SOON : (item.link_gone === true ? '' : SEE_ORIGINAL);
   const role = String(item.date_role || '');
   // 文件里日期和类型后面各标一次"（机器摘录）"，页面上只在末尾标一次"（原文摘录）"：2026-11-06 企业申报截止（原文摘录）
   const excerpt = value.includes(EXCERPT_MARK) || role.includes(EXCERPT_MARK);

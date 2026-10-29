@@ -790,6 +790,15 @@ def test_preview_marks_unverified_deadline_due_within_7_days(client, session, do
     assert items[ids["临期"]]["deadline"] == "截止未核对，以原文为准"
     assert "2026-10-16" not in str(items[ids["临期"]])
     assert items[ids["较远"]]["due_soon"] is False
+    assert items[ids["临期"]]["link_gone"] is False
+    # 原文链接已失效的：预览带 link_gone，小程序不写"截止时间见原文"
+    gone = session.get(Document, ids["较远"])
+    gone.link_gone_at = stamp
+    session.commit()
+    response = client.post(
+        "/api/v1/exports/preview", json={"ids": [str(ids["较远"])], "excerpts": 1}
+    )
+    assert response.json()["items"][0]["link_gone"] is True
     book = client.post(
         "/api/v1/exports", json={"ids": [str(ids["临期"])], "format": "xlsx", "excerpts": 1}
     )

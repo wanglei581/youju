@@ -474,14 +474,19 @@ test('结果页（站内看所选文件）：空的发布状态不留两个"·"�
     { number: 2, doc_id: '8', title: '己', kind: '申报通知', status: '', region: '河南 · 省级', deadline: `${plusDays(20)}（机器摘录）`, date_role: '材料报送截止（机器摘录）', deadline_quote: '某日前', due_soon: true },
     { number: 3, doc_id: '9', title: '庚', kind: '申报通知', status: '', region: '河南 · 省级', deadline: plusDays(3), date_role: '企业申报截止', due_soon: true },
     { number: 4, doc_id: '10', title: '辛', kind: '申报通知', status: '', region: '河南 · 省级', deadline: '截止未核对，以原文为准', date_role: '截止未核对', due_soon: false },
+    { number: 5, doc_id: '11', title: '壬', kind: '申报通知', status: '', region: '宁夏 · 省级', deadline: '见原文', date_role: '截止时间见原文', sites: '某厅（a.gov.cn）', due_soon: false, link_gone: true },
   ];
   const soonPage = pageOf('pages/results/index.js', {
     '../../utils/api.js': { exportPreview: () => Promise.resolve({ kind: 'catalogue', title: '本次所选文件目录', revision: 'r2', notice: '', generatedAt: '2026-10-29', total: 4, items: soonItems }) },
     '../../utils/exporter.js': { exportDocs() {} },
   });
-  soonPage.onLoad({ ids: '7,8,9,10' }); await soonPage.onShow();
+  soonPage.onLoad({ ids: '7,8,9,10,11' }); await soonPage.onShow();
   assert.deepEqual(soonPage.data.result.items.map((i) => i.deadlineText), [
-    '可能 7 天内截止', `${plusDays(20)} 材料报送截止（原文摘录）；另有一类可能 7 天内截止`, `${plusDays(3)} 企业申报截止`, '截止时间见原文']);
+    '可能 7 天内截止', `${plusDays(20)} 材料报送截止（原文摘录）；另有一类可能 7 天内截止`, `${plusDays(3)} 企业申报截止`, '截止时间见原文', '']);
+  // 原文链接已失效：不写"截止："那一行，出处后面标一句（和列表、详情一致）
+  const goneText = textOf(render('pages/results/index.wxml', soonPage.data));
+  assert.match(goneText, /出处：某厅 · 原文链接已失效/);
+  assert.doesNotMatch(goneText.split('壬')[1], /截止：/);
 });
 
 test('AI 首页：暂时不可用、连不上时只在上面那张卡里放"联系客服"；鸿蒙手机上客服按钮不再给第二个"使用帮助"', () => {
