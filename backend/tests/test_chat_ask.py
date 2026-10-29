@@ -1327,7 +1327,7 @@ def test_card_reader_picks_the_first_openable_source():
 def test_redacted_with_the_rest_unverified(client, session, settings, doc, model):
     """含号码的对上了、其余的对不上（一句能显示的都没有）：仍是 redacted、不算次数，在"有 N 句……"
     后面接"其余摘出的句子和原文对不上……"，入口同 unverified；只有含号码的不放入口；原文链接失效
-    以后只留事实那半句（Codex 第 42 轮，待创始人确认）。"""
+    以后只留事实那半句（Codex 第 42 轮，D-106 ②）。"""
     mixed = asked(
         client,
         session,
