@@ -68,6 +68,18 @@ def wx_client():
 WxDep = Annotated[XPayClient, Depends(wx_client)]
 
 
+# 下新单前查不清上一笔付款结果时的说法（挡新单，最多 10 分钟）
+UNVERIFIED_PREVIOUS = (
+    "上一笔付款微信暂时还查不到结果，请过几分钟再试；已扣款的会自动开通，可到“我的订单”查看"
+)
+
+
+class FailedOrderIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    order_id: int
+    code: int
+
+
 class OrderIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     product_id: str = Field(min_length=1, max_length=128)
@@ -77,6 +89,9 @@ class OrderIn(BaseModel):
     # 购买页上写的"能开哪种发票"（商品接口带回的那句）：和现在的配置不一致就不下单，
     # 订单记下的就是用户付款前看到的那句（Codex 第四轮）
     invoice_type: str = Field(default="", max_length=100)
+    # 上一笔付款前就被微信拒了（小程序拿到官方错误码表里下单阶段的错误码）：带上那一单和错误码，
+    # 服务端在那一单上记一笔，下新单前查它查不清时不挡（payments.mark_not_started）
+    failed_order: FailedOrderIn | None = None
 
 
 @router.get("/products", dependencies=[Depends(require_enabled)])
@@ -136,8 +151,12 @@ def create_order(body: OrderIn, session: SessionDep, user: UserDep, client: WxDe
     # （取消回调不准、付款中途小程序被关掉时，小程序本机没记下这一笔）。付了就先开通、不下新单。
     # 查不了的旧单挡新单（409，最多挡 10 分钟）：以前放行，
     # 旧单其实付了款时会重复扣款（Codex 10/29）。
-    # 付款前就被微信拒了的单，小程序会报告（abandon_order），服务端当场关单，就不在这里挡人了；
-    # 下单回应没送到手机这类没报告、微信那边也查不到的单，最多挡 10 分钟。
+    # 付款前就被微信拒了的单，小程序下一次付款时会带上（failed_order），记过的不在这里挡人；
+    # 下单回应没送到手机这类没带上、微信那边也查不到的单，最多挡 10 分钟。
+    if body.failed_order is not None:
+        payments.mark_not_started(
+            session, user.id, body.failed_order.order_id, body.failed_order.code, stamp
+        )
     # 候选先普通查（不加范围锁：两个新用户同时下单时，范围锁加插入会互相等待甚至死锁），
     # 再按主键逐个加锁、复核状态；推送或补单刚开通的这里会看到不是待支付，跳过。
     recent = session.scalars(
@@ -161,15 +180,17 @@ def create_order(body: OrderIn, session: SessionDep, user: UserDep, client: WxDe
         try:
             data = payments.query(session, old, client)
         except XPayError:
+            if payments.reported_not_started(old):
+                continue
             session.commit()
-            raise HTTPException(
-                status_code=409,
-                detail="上一笔付款微信暂时还查不到结果，请过几分钟再试；"
-                "已扣款的会自动开通，可到“我的订单”查看",
-            ) from None
+            raise HTTPException(status_code=409, detail=UNVERIFIED_PREVIOUS) from None
         # 和主动核对同一套处理（payments.settle_pending）：已关单、已退完的不挡新单；
-        # 付了款的开通、转人工的（金额不符、5/7 等少见状态）都返回 409，不再下新单
+        # 付了款的开通、转人工的（金额不符、5/7 等少见状态）都返回 409，不再下新单；
+        # 查单返回格式不对（unavailable）和查不了一样，挡新单（Codex 第 1 轮）
         result = payments.settle_pending(session, old, data, settings, stamp)
+        if result == "unavailable" and not payments.reported_not_started(old):
+            session.commit()
+            raise HTTPException(status_code=409, detail=UNVERIFIED_PREVIOUS)
         if result in ("paid", "manual"):
             session.commit()
             raise HTTPException(
@@ -437,38 +458,6 @@ def check_order(order_id: int, session: SessionDep, user: KnownUserDep, client: 
     return {**order_out(session, order), "check": result}
 
 
-class AbandonIn(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    # wx.requestVirtualPayment 失败回调里的 errCode
-    code: int
-
-
-@router.post("/orders/{order_id}/abandon", dependencies=[Depends(_body_size)])
-def abandon_order(
-    order_id: int, body: AbandonIn, session: SessionDep, user: KnownUserDep, client: WxDep
-) -> dict:
-    """小程序报告这一单付款前就被微信拒了（官方错误码表里下单阶段的错误，payments.NOT_STARTED_CODES）：
-    向微信查一次，没付款、查不到就当场关单（不告警），付了款照常开通（payments.abandon）。
-    这样下新单前就不会被它挡住。只认本人 10 分钟内下的、还在待确认的单和表里的错误码，
-    同一张 2 秒内只问一次微信；其余情况不查，原样返回订单。和核对一样不受支付开关控制。
-    返回订单，加上 abandon：这次的结果，没处理时为 None。"""
-    order = owned_order(session, user, order_id)
-    stamp = _stamp()
-    result = None
-    if (
-        body.code in payments.NOT_STARTED_CODES
-        and payments.abandonable(order, stamp)
-        and _check_due(order.id)
-    ):
-        order = owned_order(session, user, order_id, lock=True)
-        if payments.abandonable(order, stamp):
-            result = payments.abandon(session, order, body.code, client, get_settings(), stamp)
-            session.commit()
-            if order.status == "completed" and not order.goods_notified:
-                payments.provide_goods(session, order, client)
-    return {**order_out(session, order), "abandon": result}
-
-
 async def push_payload(request: Request) -> tuple[dict, bool]:
     settings = get_settings()
     # 云托管《消息推送》：服务未开公网时可信任所有推送；开了公网只认带 x-wx-source 的请求。
@@ -597,11 +586,13 @@ def _transaction_push(data: dict, xml: bool, session: Session, client: XPayClien
                 "%s 订单 #%s 推送的用户、环境或微信单号和订单对不上，没处理", kind, order_id
             )
             return reply(xml, 1)
-        payments.event(session, kind, data, order)
+        row = payments.event(session, kind, data, order)
         if kind == "xpay_complaint_notify":
-            # 已完成、待确认、已转人工的单转人工（原因只加不盖、再告警）；退款中、已退款、已关闭的
-            # 不改状态，补单按投诉事件单独告警（payments.note_complaint，Codex 第 6 轮）
-            payments.note_complaint(order, _stamp())
+            # 每条投诉收到时就定好由谁告警（payments.note_complaint）：
+            # 已完成、待确认、人工单转人工；
+            # 退款中、已退款、已关闭的不改状态，补单单独告警；同一个投诉重推的不再告警
+            session.flush()
+            payments.note_complaint(session, order, row, _stamp())
             session.commit()
             return reply(xml)
         # 退款推送和发货推送一样只是"去查单"的信号，按查单结果走和每分钟补单同一套处理

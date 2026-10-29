@@ -145,8 +145,11 @@ NOT_STARTED_CODES = frozenset(
     {1001, -4, -15001, -15002, -15004, -15005, -15006, -15007, -15008, -15009, -15010}
     | {-15011, -15012, -15013, -15014, -15016, -15017, -15018, -15019, -15020, -15021}
 )
-# 小程序报告"付款没发起"只认 10 分钟内下的单（和下新单前查旧单的窗口一样）
-ABANDON_WINDOW = timedelta(minutes=10)
+# 小程序下一次付款时带上的"上一笔付款前就被微信拒了"，只认 10 分钟内下的单
+# （和下新单前查旧单的窗口一样）
+NOT_STARTED_WINDOW = timedelta(minutes=10)
+# 记在那一单的 error 上（订单照旧待确认、补单照旧查）：下新单前查它查不清时不挡新单
+NOT_STARTED_PREFIX = "小程序报告付款前就被微信拒了"
 # 退款发起方：self 用户自助（付款 24 小时内没用过付费的量，D-081）；
 # staff 负责人按规则发起（系统故障、停止服务）
 SELF_REFUND_WINDOW = timedelta(hours=24)
@@ -779,7 +782,7 @@ def platform(order: dict, settings: Settings) -> str:
     return "ios" if value in (7, 8) else "android" if value in (0, 1) else "unknown"
 
 
-def event(session: Session, kind: str, data: dict, order: PayOrder | None = None) -> None:
+def event(session: Session, kind: str, data: dict, order: PayOrder | None = None) -> PayEvent:
     allowed = {
         "OpenId",
         "OutTradeNo",
@@ -811,7 +814,9 @@ def event(session: Session, kind: str, data: dict, order: PayOrder | None = None
     if order is not None and order.user_id is None:
         summary.pop("OpenId", None)
         summary.pop("openid", None)
-    session.add(PayEvent(order_id=order.id if order else None, kind=kind[:64], summary=summary))
+    row = PayEvent(order_id=order.id if order else None, kind=kind[:64], summary=summary)
+    session.add(row)
+    return row
 
 
 def query(
@@ -1528,87 +1533,94 @@ def settle_pending(
     return "manual" if order.status == "manual" else "unavailable"
 
 
-def note_complaint(order: PayOrder, stamp: datetime) -> bool:
-    """投诉推送：投诉一律要人工跟进（微信支付投诉有答复时限）。已完成、待确认、已转人工的单照旧转人工
-    （escalate，补单告警）；退款中、已退款、已关闭的单不改状态——转人工会让退款中的单停掉自动退款、
-    已退款的单倒退成"人工核对中"（Codex 第 6 轮）——由补单按投诉事件单独告警一次
-    （complaint_alerts）。
-    返回这次有没有转人工。"""
-    if order.status in COMPLAINT_KEEPS_STATUS:
-        return False
-    return escalate(order, f"{COMPLAINT_ERROR}，需人工处理", stamp)
+def note_complaint(session: Session, order: PayOrder, row: PayEvent, stamp: datetime) -> None:
+    """投诉推送：投诉一律要人工跟进（微信支付投诉有答复时限），每一条投诉在收到推送时就定好由谁告警，
+    记在这条投诉事件的摘要里（alert），补单发告警时不再看订单当时的状态（Codex 第 1 轮）：
+    - 同一个投诉（ComplaintId 相同）的重推：只记事件，alert=duplicate，不再告警；
+    - 已完成、待确认、人工单：转人工（escalate）；这次加上了原因（转人工的告警会发）
+      就 alert=manual；
+    - 其余（退款中、已退款、已关闭的单不改状态——转人工会让退款中的单停掉自动退款、已退款的单倒退成
+      "人工核对中"；或者人工单里已经有投诉原因、这次没加上）：alert=pending，补单单独发（complaint_alerts）。"""
+    summary = dict(row.summary or {})
+    complaint_id = summary.get("ComplaintId")
+    duplicate = bool(complaint_id) and any(
+        (other.summary or {}).get("ComplaintId") == complaint_id
+        for other in session.scalars(
+            select(PayEvent).where(
+                PayEvent.order_id == order.id,
+                PayEvent.kind == COMPLAINT_EVENT,
+                PayEvent.id != row.id,
+            )
+        )
+    )
+    if duplicate:
+        summary["alert"] = "duplicate"
+    elif order.status not in COMPLAINT_KEEPS_STATUS and escalate(
+        order, f"{COMPLAINT_ERROR}，需人工处理", stamp
+    ):
+        summary["alert"] = "manual"
+    else:
+        summary["alert"] = "pending"
+    row.summary = summary
 
 
 def complaint_alerts(session: Session, stamp: datetime, alert) -> int:
-    """没转人工的投诉（投诉时订单退款中、已退款、已关闭）单独告警一次：
-    在投诉事件的摘要里记 alerted，
-    告警没发出去下一轮接着发。转了人工的投诉由转人工的告警负责，这里只记上 alerted、不重复发。
-    只看最近 7 天的投诉事件。返回这次发出的告警条数。"""
+    """收到推送时定为单独告警（alert=pending）的投诉，每条发一次告警；
+    发出去（alert 返回 True）才记 sent，
+    没发出去或没配告警地址的下一轮接着发。只看最近 7 天的投诉事件；按行加锁、跳过别的补单正在发的，
+    两个补单同时跑也不会重复发（发出去以后、提交之前进程退出，仍可能多发一次）。返回这次发出的条数。"""
     sent = 0
-    for row in session.scalars(
+    rows = session.scalars(
         select(PayEvent)
         .where(
             PayEvent.kind == COMPLAINT_EVENT,
-            PayEvent.order_id.is_not(None),
             PayEvent.created_at > stamp - COMPLAINT_ALERT_WINDOW,
         )
         .order_by(PayEvent.id)
-    ):
-        if (row.summary or {}).get("alerted"):
+        .with_for_update(skip_locked=True)
+    ).all()
+    for row in rows:
+        if (row.summary or {}).get("alert") != "pending":
             continue
-        order = session.get(PayOrder, row.order_id)
-        if order is not None and order.status not in COMPLAINT_KEEPS_STATUS:
-            done = True
-        else:
-            label = STATUS_LABELS.get(order.status, order.status) if order else "已删除"
-            done = (
-                alert(
-                    f"支付订单 #{row.order_id} {COMPLAINT_ERROR}（订单{label}，没有转人工），"
-                    "需人工处理：到小程序后台虚拟支付的投诉里答复"
-                )
-                is not False
+        order = session.get(PayOrder, row.order_id) if row.order_id else None
+        label = STATUS_LABELS.get(order.status, order.status) if order else "已删除"
+        if (
+            alert(
+                f"支付订单 #{row.order_id} {COMPLAINT_ERROR}（订单{label}），需人工处理："
+                "到小程序后台虚拟支付的投诉里答复"
             )
-            sent += done
-        if done:
-            row.summary = {**(row.summary or {}), "alerted": True}
+            is True
+        ):
+            row.summary = {**(row.summary or {}), "alert": "sent"}
+            sent += 1
     session.commit()
     return sent
 
 
-def abandonable(order: PayOrder, stamp: datetime) -> bool:
-    """小程序能不能报告这一单"付款没发起"：待确认、没注销、10 分钟内下的。"""
-    return (
-        order.status == "pending"
-        and order.user_id is not None
-        and order.created_at > stamp - ABANDON_WINDOW
+def mark_not_started(
+    session: Session, user_id: int, order_id: int, code: int, stamp: datetime
+) -> bool:
+    """小程序下一次付款时带上"上一笔付款前就被微信拒了"（官方错误码表里下单阶段的错误）：
+    只认本人 10 分钟内下的、还在待确认的那一单和表里的错误码，在它的 error 上记一笔。
+    订单照旧待确认、补单照旧查，查到付了款照样开通（不凭小程序一句话关单，Codex 第 1 轮）；
+    只是下新单前查它查不清时不挡新单。
+    调用方已锁用户。返回有没有记上。"""
+    if code not in NOT_STARTED_CODES:
+        return False
+    order = session.scalar(
+        select(PayOrder)
+        .where(PayOrder.id == order_id, PayOrder.user_id == user_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
     )
+    if order is None or order.status != "pending" or order.created_at <= stamp - NOT_STARTED_WINDOW:
+        return False
+    order.error, order.updated_at = f"{NOT_STARTED_PREFIX}（错误码 {code}），还在核对", stamp
+    return True
 
 
-def abandon(
-    session: Session,
-    order: PayOrder,
-    code: int,
-    client: XPayClient,
-    settings: Settings,
-    stamp: datetime,
-) -> str:
-    """小程序报告这一单付款前就被微信拒了（NOT_STARTED_CODES 里的错误码）：向微信查一次——
-    付了款的照常开通（万一），退完的记已退款，核验不过的转人工；没付款（0/1）、已关单（6）、
-    查不到（微信那边可能根本没有这一单）或返回格式不对的，当场关单、不告警。关了以后要是其实付了款，
-    发货推送照样会把它开通（accept_payment 不看关没关单）。这样下新单前就不会被它挡住
-    （create_order 只挡查不清的旧单）。调用方已锁 用户 → 订单，
-    订单可报告（abandonable）。返回 closed / paid / refunded / manual。"""
-    try:
-        data = query(session, order, client)
-    except XPayError:
-        data = None
-    if data is not None:
-        result = settle_pending(session, order, data, settings, stamp)
-        if result in ("paid", "refunded", "manual", "closed"):
-            return result
-    order.status, order.updated_at = "closed", stamp
-    order.error = f"付款前就被微信拒了（错误码 {code}），已关闭"
-    return "closed"
+def reported_not_started(order: PayOrder) -> bool:
+    return (order.error or "").startswith(NOT_STARTED_PREFIX)
 
 
 def recheck(
@@ -1779,7 +1791,7 @@ def run_payments(
             if (
                 order.status == "manual"
                 and not order.alerted_at
-                and alert(f"支付订单 #{order.id} 需人工处理：{order.error}") is not False
+                and alert(f"支付订单 #{order.id} 需人工处理：{order.error}") is True
             ):
                 order.alerted_at = stamp
             if (
@@ -1790,13 +1802,15 @@ def run_payments(
                     f"支付订单 #{order.id} {UNCONFIRMED_PAYMENT_ERROR}；核实付了款的，"
                     f"在 admin 里运行 youju pay-recheck --order-id {order.id}"
                 )
-                is not False
+                is True
             ):
                 order.alerted_at = stamp
             order.updated_at = stamp
             session.commit()
         except XPayError:
-            order.error = "微信查单或通知暂不可用，将重试"
+            # 小程序报告过付款前就被拒的那句留着：下新单前靠它决定查不清时挡不挡
+            if not reported_not_started(order):
+                order.error = "微信查单或通知暂不可用，将重试"
             order.updated_at = stamp
             session.commit()
     complaint_alerts(session, stamp, alert)

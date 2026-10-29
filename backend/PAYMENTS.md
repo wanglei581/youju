@@ -615,29 +615,33 @@ httpx 日志过滤 xpay/code2Session URL；异常稳定中文。
 定稿协议版本、发票都配）；`test_config.py` 加价格不少于 1 元；小程序 `tests/pay-pages.test.js` 加
 "没有沙箱提示、按钮只写支付""草稿包不带协议版本号""协议没定稿、没写发票就回首页"。
 
-## 开卖前补的两件（10/29，接在 PR #400 后面）
+## 开卖前补的两件（10/29，PR #402，接在 PR #400 后面）
 
-### 投诉不改退款中、已退款、已关闭订单的状态
-- `payments.note_complaint`：投诉推送到了，已完成、待确认、已转人工的单照旧转人工（`escalate`，原因只加不盖、补单告警）；
-  退款中、已退款、已关闭的单（`COMPLAINT_KEEPS_STATUS`）不改状态——以前一律转人工，退款中的单因此停掉自动退款，
-  已退款的单倒退成"人工核对中"（Codex 第 6 轮）。
-- `payments.complaint_alerts`（补单每一轮跑）：最近 7 天的投诉事件，订单是上面三种状态的单独告警一次（"订单已退款，没有转人工"），
-  在事件摘要里记 `alerted`，告警没发出去下一轮接着发；转了人工的投诉只记 `alerted`、不重复发。支付关着时近 7 天有投诉，
-  `has_work` 也算有活。自助退款看投诉照旧（原因文字或投诉事件，`refund_reason`）。
+### 投诉：每一条投诉收到时就定好由谁告警
+- `payments.note_complaint`（投诉推送里调用）：同一个投诉（`ComplaintId` 相同）重推的只记事件（`alert=duplicate`）；
+  已完成、待确认、人工单转人工（`escalate`），这次加上了原因（转人工的告警会发）就记 `alert=manual`；
+  退款中、已退款、已关闭的单（`COMPLAINT_KEEPS_STATUS`）不改状态——以前一律转人工，退款中的单因此停掉自动退款、
+  已退款的单倒退成"人工核对中"（Codex #400 第 6 轮）——以及人工单里已经有投诉原因、这次没加上的，记 `alert=pending`。
+- `payments.complaint_alerts`（补单每一轮跑）：最近 7 天 `alert=pending` 的投诉事件每条发一次告警，发出去才记 `sent`；
+  不看补单那一刻的订单状态（Codex #402 第 1 轮：投诉后订单变了状态会漏发）。按行 `FOR UPDATE SKIP LOCKED`，
+  两个补单同时跑不会重复发（发出去以后、提交之前进程退出，仍可能多发一次）。近 7 天有投诉时 `has_work` 算有活。
+- 告警只有 `alert` 返回 True 才算发出去：没配告警地址（`send_alert` 返回 None）也下一轮接着发（转人工、48 小时关单、
+  投诉三处都这样，Codex #402 第 1 轮）。
 
-### 付款前就被拒的单当场关，查不清的旧单才挡新单
-- 小程序拿到官方错误码表里下单阶段的错误（`payments.NOT_STARTED_CODES`，和小程序 `utils/pay.js` 一致）时，调
-  `POST /api/v1/pay/orders/{id}/abandon {"code": N}`：服务端只认本人 10 分钟内下的待确认单和表里的错误码，同一张 2 秒内只查一次
-  微信（和核对共用限频），按查单结果处理（`payments.abandon`）——付了款照常开通（万一），退完记已退款，核验不过转人工；
-  没付款（0/1）、已关单（6）、查不到或返回格式不对的当场关单，原因"付款前就被微信拒了（错误码 N），已关闭"，不告警。
-  关了以后要是其实付了款，发货推送照样会开通它。
-- 下新单前查 10 分钟内的待支付单，查单出错改成挡新单（409"上一笔付款微信暂时还查不到结果，请过几分钟再试"）——以前放行，
-  旧单其实付了款时会重复扣款（Codex 第 8 轮）。报告过的单已经关了，不再挡；没报告、微信又查不到的（下单回应没送到手机等）
-  最多挡 10 分钟。调起付款时就抛异常的（没有错误码）小程序不报告。
-- api 账号对 `pay_orders`、`pay_events` 本来就有 INSERT、UPDATE（`deploy/mysql_accounts.sql`"支付权限"），不用新授权；没有迁移。
+### 付款前就被拒的单：下一次付款时带上，查不清的旧单才挡新单
+- 小程序拿到官方错误码表里下单阶段的错误码（`payments.NOT_STARTED_CODES`，和小程序 `utils/pay.js` 一致）时记在本机
+  （`pay.notStarted`，10 分钟），下一次下单把 `failed_order: {order_id, code}` 带上；服务端只认本人 10 分钟内的待确认单和
+  表里的错误码，在那一单的 error 上记一句（`payments.mark_not_started`，`NOT_STARTED_PREFIX`）。订单照旧待确认、补单照旧查，
+  查到付了款照样开通；补单查单出错不盖掉这一句。不凭小程序一句话关单（Codex #402 第 1 轮：客户端说法可以伪造、
+  查不清就关单会丢掉其实付了款的单）。
+- 下新单前查 10 分钟内的待支付单，查单出错或返回格式不对（`unavailable`）都挡新单（409"上一笔付款微信暂时还查不到结果，
+  请过几分钟再试……"）——以前放行，旧单其实付了款时会重复扣款（Codex #400 第 8 轮）；记过"付款前就被拒"的那一单不挡。
+  没带上、微信又查不到的（下单回应没送到手机等）最多挡 10 分钟。调起付款时就抛异常的（没有错误码）不记。
+- 没有新接口、没有迁移；api 账号对 `pay_orders`、`pay_events` 本来就有 INSERT、UPDATE。
 
 ### 测试
-`test_payments.py`：`test_reporting_a_payment_that_never_started`、`test_reporting_only_counts_own_recent_pending_orders_and_known_codes`、
+`test_payments.py`：`test_failed_order_note_only_marks_own_recent_pending_orders_with_known_codes`、
 `test_complaint_on_refunding_refunded_or_closed_order_keeps_status_and_alerts_once`、
 `test_complaint_on_completed_order_still_goes_manual_without_a_second_alert`，`test_new_order_first_checks_recent_pending_payment`
-按新规则改；小程序 `pay-pages.test.js`：有错误码的上报、抛异常的不报、服务端关单后说明不变。
+按新规则改（查不了、格式不对都挡，带上的不挡）；告警收集改成返回 True（`collect`）。小程序 `pay-pages.test.js`：有错误码的记下、
+下一次下单带上、下成新单后清掉、超过 10 分钟不带、抛异常的不记。

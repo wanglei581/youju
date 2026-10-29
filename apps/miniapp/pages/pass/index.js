@@ -25,6 +25,23 @@ function saveUnsettled(orderId) {
 function clearUnsettled() {
   try { wx.removeStorageSync(UNSETTLED_KEY); } catch (e) { /* 忽略 */ }
 }
+// 上一笔付款前就被微信拒了（pay.notStarted 的错误码）：记下那一单和错误码，10 分钟内下一次付款时带给服务端，
+// 服务端在那一单上记一笔，下新单前查它查不清时不挡新单（服务端不凭这一句关单，照旧跟踪到底）
+const NOT_STARTED_KEY = 'pay.notStarted';
+const NOT_STARTED_TTL = 10 * 60 * 1000;
+function readNotStarted() {
+  try {
+    const saved = wx.getStorageSync(NOT_STARTED_KEY);
+    return saved && saved.orderId && Number.isInteger(saved.code) && Date.now() - saved.at < NOT_STARTED_TTL
+      ? { order_id: saved.orderId, code: saved.code } : null;
+  } catch (e) { return null; }
+}
+function saveNotStarted(orderId, code) {
+  try { wx.setStorageSync(NOT_STARTED_KEY, { orderId, code, at: Date.now() }); } catch (e) { /* 存不了就算了：最多被挡 10 分钟 */ }
+}
+function clearNotStarted() {
+  try { wx.removeStorageSync(NOT_STARTED_KEY); } catch (e) { /* 忽略 */ }
+}
 // 没在卖（商品接口 404 或没有档位）时直接回首页，页面上不出现"暂未开放"之类的字样（D-074）：
 // 首发包带着这一页，从旧链接或分享直接打开时，审核人员和用户都只会回到首页
 function goHome() {
@@ -151,9 +168,13 @@ Page({
       if (this.unloaded) return null;
       // terms_version：用户刚勾选同意的《付费服务协议》版本，随订单保存
       // invoice_type：页面上写的发票类型，服务端核对和现在的一致才下单（订单记下用户看到的那句）
-      return api.createPayOrder({ product_id: this.data.product.productId, code, terms_version: payTerms.version, invoice_type: this.data.invoiceText });
+      const body = { product_id: this.data.product.productId, code, terms_version: payTerms.version, invoice_type: this.data.invoiceText };
+      const failed = readNotStarted();
+      if (failed) body.failed_order = failed;
+      return api.createPayOrder(body);
     }).then((order) => {
       if (!order || this.unloaded) return;
+      clearNotStarted();
       this.rechecking = false;
       this.watch(order.orderId);
       try {
@@ -168,8 +189,8 @@ Page({
   // 说明里写错误码，不断言"没有扣钱"（独立审阅、Codex 第 6 轮、agy 第 4 轮，10/29）
   payFailed(err, thrown) {
     if (!thrown && !pay.notStarted(err)) { this.afterPay(pay.isCancel(err)); return; }
-    // 有错误码的报给服务端：查过没付款就当场关单，下次付款不会被这一单挡住（服务端只挡查不清的旧单）
-    if (!thrown && this.orderId && typeof api.abandonPayOrder === 'function') api.abandonPayOrder(this.orderId, err.errCode).catch(() => {});
+    // 有错误码的记下来，下一次付款时带给服务端：查不清这一单时不挡新单（调起时就抛异常的没有错误码，不记）
+    if (!thrown && this.orderId) saveNotStarted(this.orderId, err.errCode);
     this.afterPay(true, pay.notStartedText(err));
   },
   afterPay(cancelled, note) {
