@@ -770,52 +770,48 @@ def test_followups_and_content_updates(
     assert usage(session, "ask") == 5  # 找到原句的 5 问；规则挡下的 2 问不占
 
 
-def test_listed_sentences_beyond_the_previous_answer(client, session, settings, doc, model):
-    """几句连写、范围的"第 N 句"（#408，第七节第 3 条）：上一答只有 3 句时，有一句超出就按超出的最小
-    那一句当场答"上一个回答里没有第 N 句"，不调模型、不扣次数；都没超出的照常交给模型，序号原样交
-    （隐去数字的例外，第九节第 2 条）。规则答的那一问也算上一答（0 句），所以每种都从 3 句的上一答问。"""
+def test_listed_sentences_beyond_the_previous_answer(
+    client, session, settings, doc, model, monkeypatch
+):
+    """几句连写、范围的"第 N 句"（#408，第七节第 3 条）：有一句超出上一答句数，就按超出的最小那一句当场答
+    "上一个回答里没有第 N 句"，不调模型、不扣次数；都没超出的、没有指回的词的"第 N 条"照常交给模型，
+    序号原样交（隐去数字的例外，第九节第 2 条）。每种写法都真的发一问：规则答的那一问也算上一答（0 句），
+    所以每种都先重新问出一个有 3 句（或 2 句）的上一答。"""
+    monkeypatch.setattr(service, "usage_limit", lambda kind: 100)
+    monkeypatch.setattr(chat_store, "ASK_TRY_LIMIT", 100)
     three = answer(("P001", S1), ("P002", S2), ("P003", S3))
-    asked(client, session, settings, model, "要满足哪些条件", doc, three)
-    within = asked(client, session, settings, model, "第一、三句和第2-3句是谁的截止", doc)
-    assert within["status"] == "done" and within["answer"]["by"] == "model"
-    assert model.calls[-1][1]["question"] == "第一、三句和第2-3句是谁的截止"
-    asked(client, session, settings, model, "要满足哪些条件", doc, three)
-    calls, used = len(model.calls), usage(session, "ask")
-    got = send(client, "第1至5句呢", doc).json()["turn"]
-    assert got["answer"]["status"] == "clarify" and got["counted"] is False
-    assert got["answer"]["lead"] == ask.CLARIFY_NTH.format(n=4, m=3)
-    assert len(model.calls) == calls and usage(session, "ask") == used
-    # 其余几种写法：同一个上一答（3 句）、同一份内容，规则当场答、写对句号
-    loaded = content.load(session, doc, link=False)
-    quotes = tuple({"n": n, "sid": f"P00{n}", "quote": t} for n, t in ((1, S1), (2, S2), (3, S3)))
-    prev = ask.Prev(1, "要满足哪些条件", loaded.versions(), quotes)
-    two = replace(prev, quotes=quotes[:2])
+    two = answer(("P002", S2), ("P003", S3))
     for previous, text, n in (
-        (prev, "第2至四句是什么意思", 4),
-        (prev, "第5至3句呢", 4),
-        (prev, "第2、5句呢", 5),
-        (prev, "第1、2句和第5句呢", 5),  # 每一处都看（Codex 第一批第 5 轮）
-        (prev, "上面第1至5条呢", 4),  # 有指回的词：条、个也按上一答的编号算
-        (prev, "刚才第1至999999999句", 4),  # 只按两头算，不卡
-        (prev, "上面第1至999999999条", 4),
+        (three, "第2至四句是什么意思", 4),
+        (three, "第1至5句呢", 4),
+        (three, "第5至3句呢", 4),
+        (three, "第2、5句呢", 5),
+        (three, "第1、2句和第5句呢", 5),  # 每一处都看（Codex 第一批第 5 轮）
+        (three, "上面第1至5条呢", 4),  # 有指回的词：条、个也按上一答的编号算
+        (three, "刚才第1至999999999句", 4),  # 只按两头算，不卡
+        (three, "上面第1至999999999条", 4),
         (two, "第一、三句呢", 3),
     ):
-        rule, _ = ask.rules(text, previous, loaded.versions())
-        m = previous.count
-        assert rule == {"status": "clarify", "reason": "no_nth", "m": m}, text
-        assert ask.beyond(text, m) == n, text
-    # 没超出的、没有指回的词的"第 N 条"：不当场答，照常交给模型
+        asked(client, session, settings, model, "要满足哪些条件", doc, previous)
+        calls = len(model.calls)
+        used, tries = usage(session, "ask"), usage(session, chat_store.ASK_TRY)
+        got = send(client, text, doc).json()["turn"]
+        assert got["answer"]["status"] == "clarify" and got["answer"]["by"] == "rule", text
+        m = len(previous["quotes"])
+        assert got["answer"]["lead"] == ask.CLARIFY_NTH.format(n=n, m=m), text
+        assert got["counted"] is False and len(model.calls) == calls, text
+        assert (usage(session, "ask"), usage(session, chat_store.ASK_TRY)) == (used, tries), text
     for previous, text in (
-        (prev, "第一、三句呢"),
-        (prev, "第2、3句呢"),
-        (prev, "第1至5条是什么"),
+        (three, "第一、三句呢"),
+        (three, "第2、3句呢"),
+        (three, "第1至5条是什么"),  # 没有指回的词
         (two, "上面第1、2个呢"),
     ):
-        assert ask.rules(text, previous, loaded.versions()) == (None, False), text
-    # "上面第1、2个"交给模型时数字照原样（不隐去的序号，第九节第 2 条）
-    asked(client, session, settings, model, "截止和审核", doc, answer(("P002", S2), ("P003", S3)))
-    asked(client, session, settings, model, "上面第1、2个是谁的", doc)
-    assert model.calls[-1][1]["question"] == "上面第1、2个是谁的"
+        asked(client, session, settings, model, "要满足哪些条件", doc, previous)
+        calls = len(model.calls)
+        got = asked(client, session, settings, model, text, doc)
+        assert got["answer"]["by"] == "model" and len(model.calls) == calls + 1, text
+        assert model.calls[-1][1]["question"] == text, text  # 序号原样交给模型
 
 
 def test_two_asks_in_one_chat_at_once(client, session, doc, wechat, monkeypatch):

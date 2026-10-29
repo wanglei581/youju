@@ -2,6 +2,8 @@
 
 两个技能（问这份通知、找通知）调同一个函数，下面每条对两个技能都成立。"""
 
+import time
+
 import pytest
 
 from youju.chat_guard import HIDDEN_NUMBER, goes_to_lists, hide_numbers, sensitive
@@ -275,3 +277,13 @@ def test_hide_numbers(text, sent):
 )
 def test_hide_numbers_keeps(text):
     assert hide_numbers(text) == text
+
+
+def test_hide_numbers_does_not_backtrack():
+    """序号里半角逗号既是千分位逗号又是连接字：后面没接后缀的长串也要很快（独立审阅第一批第 3 轮：
+    原来回溯次数随逗号个数翻倍，"第"+"1,"×40 要算两天）。"""
+    text = "第" + "1," * 400 + "1吗"
+    started = time.perf_counter()
+    assert hide_numbers(text) == "第" + H + "吗"
+    assert time.perf_counter() - started < 0.5
+    assert hide_numbers("第" + "1," * 3 + "1句") == "第" + "1," * 3 + "1句"  # 接了后缀的照旧是序号
