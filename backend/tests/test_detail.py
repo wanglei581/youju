@@ -68,6 +68,16 @@ from youju.crawler.detail import (
             1,
             date(2026, 9, 8),
         ),
+        (
+            # 2026-10-19 抓取，联系人和电话已换成脱敏占位
+            "detail_hunan_gxt_34081879",
+            "https://gxt.hunan.gov.cn/gxt/xxgk_71033/tzgg/202610/t20261015_34081879.html",
+            "湘工信电子〔2026〕361号\n各市州工业和信息化局、发展改革委，各有关单位",
+            "湖南省工业和信息化厅、湖南省发展和改革委员会",
+            "湘工信电子〔2026〕361号",
+            0,
+            date(2026, 10, 15),
+        ),
     ],
 )
 def test_real_detail_pages(fixture, url, opening, issuer, number, attachments, published) -> None:
@@ -81,6 +91,19 @@ def test_real_detail_pages(fixture, url, opening, issuer, number, attachments, p
     assert all(a.url.startswith("http") and a.extension for a in result.attachments)
     assert "网站首页" not in result.body_text
     assert "相关新闻" not in result.body_text
+
+
+def test_hunan_body_is_the_article_not_the_footer_site_menus() -> None:
+    # 湖南工信厅的正文在 #j-show-body 里；以前按文字量选中了页脚"国家部委网站""各省工信厅网站"
+    # 下拉框（选项文字多、又不是链接），正文和截止日期都没抓到
+    result = parse_detail(
+        read_fixture_html("detail_hunan_gxt_34081879"),
+        "https://gxt.hunan.gov.cn/gxt/xxgk_71033/tzgg/202610/t20261015_34081879.html",
+    )
+    assert "申报材料请于10月21日前报送至省工业和信息化厅电子信息处" in result.body_text
+    for menu in ("国家部委网站", "各省工信厅网站", "直属机构", "网站地图"):
+        assert menu not in result.body_text
+    assert result.body_text.endswith("湖南省发展和改革委员会\n2026年10月15日")
 
 
 # 网页上的导航、发布信息、工具栏、二维码、弹窗等字样：正文里不能有

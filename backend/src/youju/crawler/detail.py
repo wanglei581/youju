@@ -66,6 +66,8 @@ _EDITOR_SIDE_LABELS = frozenset({"相关文档", "相关链接", "关联链接"}
 _BODY_SELECTORS = (
     '//*[@id="zoom"]',
     '//*[@id="UCAP-CONTENT" or @id="contentText"]',
+    # 湖南省工信厅等（湖南政府网站群）：没有上面的容器时，按文字量会选中页脚的部门网站下拉框
+    '//*[@id="j-show-body"]',
     '//*[contains(concat(" ", normalize-space(@class), " "), " TRS_Editor ")]',
     '//*[contains(concat(" ", normalize-space(@class), " "), " article_content ")]',
     '//*[contains(concat(" ", normalize-space(@class), " "), " html-content-fun ")]',

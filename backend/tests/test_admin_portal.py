@@ -174,6 +174,7 @@ def test_overview_matches_database_and_consoles(client, session, world, monkeypa
         "audit": 1,
         "feedback": 1,
         "sources": 1,
+        "detail_failures": 0,
         "takedown": 0,
     }
     assert data["data"] == {
@@ -233,6 +234,7 @@ def test_overview_matches_database_and_consoles(client, session, world, monkeypa
         ("audit", "audit"),
         ("feedback", "feedback"),
         ("sources", "sources/trial"),
+        ("details", "detail-failures"),
     ],
 )
 def test_embedded_page_and_interface_auth(client, page, endpoint):

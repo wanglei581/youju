@@ -171,7 +171,8 @@ class SourceCheck(Base):
     source_id: Mapped[int] = mapped_column(ForeignKey("sources.id", ondelete="CASCADE"))
     started_at: Mapped[datetime] = mapped_column(UTCDateTime())
     finished_at: Mapped[datetime] = mapped_column(UTCDateTime())
-    # ok / http_error / network_error / ssl_error / robots_disallowed / robots_error / parse_empty
+    # ok / http_error / network_error / ssl_error / robots_disallowed / robots_error / parse_empty；
+    # access_denied：列表接口回了明确的拒绝访问（见 crawler/list_api.py）
     status: Mapped[str] = mapped_column(String(32))
     http_status: Mapped[int | None] = mapped_column(Integer)
     items_found: Mapped[int] = mapped_column(Integer, default=0)

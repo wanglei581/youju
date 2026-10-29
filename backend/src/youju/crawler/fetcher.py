@@ -6,9 +6,9 @@ import socket
 import ssl
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urlencode, urlsplit, urlunsplit
 from urllib.robotparser import RobotFileParser
 
 import certifi
@@ -215,8 +215,11 @@ class PoliteFetcher:
     def _expired(self) -> bool:
         return self._deadline is not None and self._clock() >= self._deadline
 
-    def fetch(self, url: str) -> FetchResult:
-        """抓取一个页面。重定向逐跳处理：每一跳都检查 robots.txt，并遵守目标网站的限速。"""
+    def fetch(self, url: str, form: Sequence[tuple[str, str]] | None = None) -> FetchResult:
+        """抓取一个页面。重定向逐跳处理：每一跳都检查 robots.txt，并遵守目标网站的限速。
+
+        form：栏目列表由公开接口提供时（youju.crawler.list_api），按页面脚本同样的参数以表单 POST。
+        robots、限速、地址检查都和抓页面一样；接口返回跳转时不跟随（POST 跟随跳转的行为不统一）。"""
         current = url
         for _ in range(_MAX_REDIRECTS + 1):
             if self._url_allowed is not None and not self._url_allowed(current):
@@ -239,10 +242,20 @@ class PoliteFetcher:
                 return FetchResult(
                     url, "robots_disallowed", final_url=current, error="robots.txt 不允许抓取该页面"
                 )
-            result = self._get(current)
+            result = self._get(current, form)
             if result.status != "redirect":
                 result.url = url
                 return result
+            if form is not None:
+                return FetchResult(
+                    url,
+                    "http_error",
+                    final_url=current,
+                    http_status=result.http_status,
+                    error=(
+                        f"HTTP {result.http_status}，接口跳转到 {result.final_url[:200]}，没有跟随"
+                    ),
+                )
             current = result.final_url
         return FetchResult(
             url, "network_error", final_url=current, error=f"重定向超过 {_MAX_REDIRECTS} 次"
@@ -320,7 +333,7 @@ class PoliteFetcher:
         with self._guard:
             return locks.setdefault(key, threading.Lock())
 
-    def _get(self, url: str) -> FetchResult:
+    def _get(self, url: str, form: Sequence[tuple[str, str]] | None = None) -> FetchResult:
         host = host_of(url)
         with self._lock_for(self._host_locks, host):
             last = self._last_request.get(host)
@@ -331,14 +344,15 @@ class PoliteFetcher:
             if self._expired():
                 return FetchResult(url, "deadline", final_url=url, error=_DEADLINE)
             try:
-                return self._request(url)
+                return self._request(url, form)
             finally:
                 self._last_request[host] = self._clock()
 
-    def _request(self, url: str) -> FetchResult:
+    def _request(self, url: str, form: Sequence[tuple[str, str]] | None = None) -> FetchResult:
         host = host_of(url)
         last_error = ""
-        network_retries = 1  # 超时或连接失败时重试一次
+        network_retries = 1  # 超时或连接失败时重试一次（接口只读，重发一次表单也没有副作用）
+        method, body = ("GET", None) if form is None else ("POST", urlencode(list(form)).encode())
         while True:
             if self._expired():
                 return FetchResult(url, "deadline", final_url=url, error=_DEADLINE)
@@ -357,19 +371,26 @@ class PoliteFetcher:
                         final_url=url,
                         error=f"{host} 解析到内网地址，不抓取",
                     )
-                request_url, headers, extensions = url, None, None
+                request_url, headers, extensions = url, {}, None
                 if real:
                     # 走真实网络只连检查过的地址；网址里没有主机名就不连
                     if not addresses:
                         return FetchResult(url, "network_error", error="网址里没有主机名，不抓取")
                     request_url, headers, extensions = _pinned_request(url, addresses[0])
+                if body is not None:
+                    headers = {**headers, "Content-Type": "application/x-www-form-urlencoded"}
                 timing = {}
                 if self._deadline is not None:
                     # 临近期限：这一次连接、读取最多等到期限（至少 1 秒）
                     left = max(1.0, self._deadline - self._clock())
                     timing["timeout"] = min(self._timeout, left)
                 with client.stream(
-                    "GET", request_url, headers=headers, extensions=extensions, **timing
+                    method,
+                    request_url,
+                    headers=headers or None,
+                    content=body,
+                    extensions=extensions,
+                    **timing,
                 ) as resp:
                     refusal = _peer_refusal(resp, real)
                     if refusal:
