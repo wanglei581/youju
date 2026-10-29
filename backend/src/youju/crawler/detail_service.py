@@ -40,6 +40,10 @@ class DetailFetcher:
 _RETRY_DELAYS = (timedelta(hours=6), timedelta(hours=24))
 REFETCH_FAILURE_PREFIX = "详情重抓未完成："
 _FILE_SUFFIXES = (".pdf", ".doc", ".docx", ".xls", ".xlsx", ".wps", ".et", ".zip", ".rar", ".ofd")
+# 政府网站的互动交流平台（意见征集、留言回复）：页面带验证码，按合规红线不抓，连请求都不发。
+# 广东各级政府网站（广州、深圳科技局、广东省工信厅等）列表里的"公开征求意见"会链到这里
+_INTERACTIVE_PATHS = ("/hdjlpt/",)
+_INTERACTIVE_REASON = "互动交流平台页面带验证码，不抓"
 
 
 @dataclass(frozen=True)
@@ -62,6 +66,15 @@ def _retryable(status: str, http_status: int | None) -> bool:
 def _government_url(url: str) -> bool:
     host = (urlsplit(url).hostname or "").lower()
     return host == "gov.cn" or host.endswith(".gov.cn")
+
+
+def _interactive(url: str) -> bool:
+    return any(part in urlsplit(url).path.lower() for part in _INTERACTIVE_PATHS)
+
+
+def _detail_url_allowed(url: str) -> bool:
+    """补正文时每一跳（含重定向）都查：只抓政府网站，不进互动交流平台。"""
+    return _government_url(url) and not _interactive(url)
 
 
 def _apply_full_title(doc: Document, title: str) -> None:
@@ -155,6 +168,8 @@ def _fetch_one(document_id: int, url: str, fetcher: DetailFetcher) -> _FetchOutc
     now = datetime.now(UTC)
     if not _government_url(url):
         return _FetchOutcome(document_id, now, None, None, "unsupported_host", "非政府网站")
+    if _interactive(url):
+        return _FetchOutcome(document_id, now, None, None, "protected", _INTERACTIVE_REASON)
     if urlsplit(url).path.lower().endswith(_FILE_SUFFIXES) and not urlsplit(
         url
     ).path.lower().endswith(".pdf"):
@@ -163,6 +178,9 @@ def _fetch_one(document_id: int, url: str, fetcher: DetailFetcher) -> _FetchOutc
         )
     fetched = fetcher.fetch(url)
     now = datetime.now(UTC)
+    if fetched.status == "unsupported_host" and _interactive(fetched.final_url or ""):
+        # 重定向进了互动交流平台：抓取器在那一跳之前就停了（见 _detail_url_allowed）
+        return _FetchOutcome(document_id, now, fetched, None, "protected", _INTERACTIVE_REASON)
     if fetched.status != "ok":
         return _FetchOutcome(
             document_id, now, fetched, None, fetched.status, fetched.error or fetched.status
@@ -197,7 +215,15 @@ def _fetch_one(document_id: int, url: str, fetcher: DetailFetcher) -> _FetchOutc
             return _FetchOutcome(
                 document_id, now, fetched, parsed, "unsupported_host", "PDF 非政府网站"
             )
+        if _interactive(pdf_url):
+            return _FetchOutcome(
+                document_id, now, fetched, parsed, "protected", _INTERACTIVE_REASON
+            )
         pdf_fetch = fetcher.fetch(pdf_url)
+        if pdf_fetch.status == "unsupported_host" and _interactive(pdf_fetch.final_url or ""):
+            return _FetchOutcome(
+                document_id, now, pdf_fetch, parsed, "protected", _INTERACTIVE_REASON
+            )
         if pdf_fetch.status != "ok":
             return _FetchOutcome(
                 document_id,
@@ -274,7 +300,7 @@ def _polite_fetcher() -> PoliteFetcher:
         settings.user_agent,
         settings.request_timeout,
         settings.per_host_interval,
-        url_allowed=_government_url,
+        url_allowed=_detail_url_allowed,
     )
 
 
