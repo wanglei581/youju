@@ -1880,9 +1880,8 @@ def _cmd_pay_recheck(args: argparse.Namespace) -> int:
         order = payments.lock_order(session, args.order_id)
         if order is not None and order.error:
             # 先把订单上记的原因（转人工的原因可能是投诉）给负责人看（Codex 第 8 轮）
-            print(
-                f"订单现在：{payments.STATUS_LABELS.get(order.status, order.status)}；原因：{order.error}"
-            )
+            label = payments.STATUS_LABELS.get(order.status, order.status)
+            print(f"订单现在：{label}；原因：{order.error}")
         if order is None:
             result = "missing"
         elif order.status not in ("closed", "manual", "pending"):
