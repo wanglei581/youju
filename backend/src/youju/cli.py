@@ -1833,6 +1833,37 @@ def _cmd_pay_refund(args: argparse.Namespace) -> int:
     return 1 if report["missing"] else 0
 
 
+def _cmd_pay_refund_due(args: argparse.Namespace) -> int:
+    """负责人核实一笔苹果手机付款的订单应当退款（付费服务协议第二条第 7 项：因我们的原因不能使用、
+    未成年人未经监护人同意购买等），苹果来问时就答"建议退款"；--clear 清除。
+    安卓的直接用 pay-refund 退。
+    最后一行只有英文和数字（Webshell 里中文可能乱码）：refund_due order=N result=marked|cleared|…"""
+    from youju import payments
+
+    stamp = datetime.now(UTC)
+    with session_factory()() as session:
+        result, order = payments.mark_refund_due(
+            session,
+            args.order_id,
+            None if args.clear else args.reason,
+            stamp,
+            dry_run=args.dry_run,
+        )
+    print(
+        {
+            "marked": "演练：会标记为应当退款"
+            if args.dry_run
+            else "已标记为应当退款，苹果问询会答建议退款",
+            "cleared": "演练：会清除标记" if args.dry_run else "已清除标记",
+            "unchanged": "没有变化（已经是这个状态）",
+            "not_ios": "不是苹果手机付过款的订单：安卓等请用 youju pay-refund 退款",
+            "missing": "没找到这笔订单",
+        }[result]
+    )
+    print(f"refund_due order={args.order_id} result={result} dry_run={int(args.dry_run)}")
+    return 0 if result in ("marked", "cleared", "unchanged") else 1
+
+
 def _cmd_pay(args: argparse.Namespace) -> int:
     from datetime import UTC, datetime, timedelta
 
@@ -2355,6 +2386,22 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument("--dry-run", action="store_true", help="只打印要退哪些、退多少，不写入")
     p.set_defaults(func=_cmd_pay_refund)
+    p = sub.add_parser(
+        "pay-refund-due",
+        help="核实一笔苹果手机付款的订单应当退款（苹果问询照它答建议退款）；--clear 清除"
+        "（开关关闭后仍可运行）",
+    )
+    p.add_argument("--order-id", type=int, required=True, help="订单编号（用户订单页上的订单号）")
+    mark = p.add_mutually_exclusive_group(required=True)
+    mark.add_argument(
+        "--reason",
+        type=_refund_reason,
+        help="核实的原因，6–100 字，记在订单上"
+        "（只写情形，如“系统故障三天不能用”，不写姓名、证件号、联系方式）",
+    )
+    mark.add_argument("--clear", action="store_true", help="清除标记")
+    p.add_argument("--dry-run", action="store_true", help="只打印，不写入")
+    p.set_defaults(func=_cmd_pay_refund_due)
     p = sub.add_parser(
         "advisor-run",
         help="处理顾问技能包任务（开关关闭时跳过）；AI 任务在 50 秒里每隔 3 秒领一次新的",

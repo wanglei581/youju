@@ -1,6 +1,6 @@
 const api = require('../../utils/api.js');
 const { describe } = require('../../utils/conditions.js');
-const { withdraw, loginOpen, remindAny } = require('../../utils/consent.js');
+const { withdrawAccount, loginOpen, remindAny } = require('../../utils/consent.js');
 const { KINDS, DATA_KINDS, STATES } = require('../../utils/advisor.js');
 const pages = require('../../utils/pages.js');
 
@@ -203,6 +203,7 @@ Page({
   },
 
   deleteAll() {
-    withdraw().then((ok) => { if (ok) wx.navigateBack(); });
+    // 有没到期的使用期时多一个确认框（付费协议开卖必做第 3 项，utils/consent.js withdrawAccount）
+    withdrawAccount().then((ok) => { if (ok) wx.navigateBack(); });
   },
 });

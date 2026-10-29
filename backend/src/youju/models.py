@@ -1357,6 +1357,10 @@ class PayOrder(Base):
     refund_attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     refund_retry_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     refund_started_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    # 负责人核实这笔应当退款（因我们的原因不能使用、未成年人未经监护人同意购买等）的时间和原因
+    # （youju pay-refund-due）：苹果退款问询照它答"建议退款"（付费服务协议第二条第 7 项）
+    refund_due_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    refund_due_note: Mapped[str | None] = mapped_column(String(100))
     query_retry_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     goods_notified: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     # 通知发货失败次数；达到上限不再重试，转人工。
@@ -1500,6 +1504,8 @@ class WorkbenchPass(Base):
     ends_at: Mapped[datetime] = mapped_column(UTCDateTime())
     revoked_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     last_task_id: Mapped[int | None] = mapped_column(Integer)
+    # 最近一次付费任务出结果的时间（payments.paid_usage）：任务删了、账号注销了也还在；
+    # 提交时不记，系统出错、取消的不记。迁移 0044 以前的旧行记的是提交时间（只会多算用过，不会少算）
     last_used_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     last_task_completed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 

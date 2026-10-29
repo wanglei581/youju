@@ -245,6 +245,9 @@ def order_out(session: Session, order: PayOrder) -> dict:
         "days": order.days,
         "status": payments.STATUS_LABELS[order.status],
         "amount": order.price,
+        # 下单时同意的《付费服务协议》版本：订单页按它打开协议
+        # （付费服务协议第七条，开卖那一版必做第 7 项）
+        "termsVersion": order.terms_version,
         # 下单时间：待确认的订单写"几点下的单"，用户好对上自己是哪一次付的
         "createdAt": order.created_at,
         "paidAt": order.paid_time,
@@ -489,7 +492,7 @@ def _ios_reply(bind, trade: str | None) -> dict:
                 if trade
                 else None
             )
-            decision = payments.ios_decision(session, order, _stamp())
+            decision = payments.ios_decision(session, order, _stamp(), get_settings())
             payments.event(
                 session,
                 "xpay_subscribe_ios_refund_query_notify",
@@ -498,8 +501,9 @@ def _ios_reply(bind, trade: str | None) -> dict:
             session.commit()
             return decision
     except Exception:
-        # 绝不把数据库连接或支付配置的异常文字放进退款凭据。
-        return {"result_code": 0, "result_info": "未使用", "evidence": "本地任务状态暂不能核验"}
+        # 绝不把数据库连接或支付配置的异常文字放进退款凭据；
+        # 核验不了也答建议退款（付费服务协议第二条第 7 项）
+        return dict(payments.IOS_UNVERIFIABLE)
 
 
 # 路径在服务启动时绑定，配置改变后须重新启动部署服务。
@@ -525,11 +529,7 @@ async def push(
                 asyncio.to_thread(_ios_reply, session.get_bind(), trade), timeout=2.0
             )
         except TimeoutError:
-            decision = {
-                "result_code": 0,
-                "result_info": "未使用",
-                "evidence": "本地任务状态核验超时",
-            }
+            decision = dict(payments.IOS_UNVERIFIABLE)
         return reply(xml, extra=decision)
     return await run_in_threadpool(_transaction_push, data, xml, session, client)
 

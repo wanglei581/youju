@@ -33,7 +33,7 @@ Page({
   onHide() { this.visible = false; this.serial = (this.serial || 0) + 1; },
   onUnload() { this.onHide(); },
   load() {
-    if (!this.data.loginOpen) { this.setData({ loading: false }); return; }
+    if (!this.data.loginOpen) { goHome(); return; }
     const serial = this.serial = (this.serial || 0) + 1;
     // 切走时还在"重新核对"的那一张：结果不再写回，按钮要放开
     this.setData({ loading: true, error: '', checking: null });
@@ -137,6 +137,11 @@ Page({
       this.setData({ sending: false, invoiceFor: null, message: pay.TEXT.invoiceSent,
         items: this.data.items.map((item) => (String(item.orderId) === String(orderId) ? view : item)) });
     }).catch((err) => { this.setData({ sending: false, formError: err.message }); });
+  },
+  // 这笔订单当时同意的那一版协议；版本对不上时协议页的遇到问题带上订单号
+  terms(e) {
+    const { version, id } = e.currentTarget.dataset;
+    wx.navigateTo({ url: `/pages/agreement/index?type=pay&version=${encodeURIComponent(version)}${id ? `&orderId=${encodeURIComponent(id)}` : ''}` });
   },
   feedback() { wx.navigateTo({ url: `/pages/feedback/index?type=pay${this.orderId ? '&orderId=' + encodeURIComponent(this.orderId) : ''}` }); },
 });

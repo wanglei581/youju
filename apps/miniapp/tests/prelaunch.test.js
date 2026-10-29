@@ -115,7 +115,7 @@ test('我的页忽略较早请求的失败，注销后过时请求不恢复个�
   const page = load('pages/me/index.js', {
     '../../content/legal.js': { final: true },
     '../../utils/api.js': { isLive: () => true, me: () => new Promise((resolve, reject) => requests.push({ resolve, reject })) },
-    '../../utils/consent.js': { loginOpen: () => true, consentEpoch: () => epoch, applyServer: () => true, withdraw: () => { epoch += 1; return Promise.resolve(true); } },
+    '../../utils/consent.js': { loginOpen: () => true, consentEpoch: () => epoch, applyServer: () => true, withdrawAccount: () => { epoch += 1; return Promise.resolve(true); } },
     '../../utils/coverage.js': {}, '../../utils/subscribe.js': { remindOpen: () => true },
   });
   page.refresh(); page.refresh();
@@ -220,4 +220,14 @@ test('截止页按月看：接收截断标记，并按截止时刻移入已截�
   assert.equal(page.data.rows.length, 0);
   assert.equal(page.data.past.length, 1);
   assert.equal(page.data.cells.find((c) => c.day === 30).past, true);
+});
+
+test('开卖必做第 3 项：有使用期时两次确认才注销，第二次取消就不删', async () => {
+  for (const confirmSecond of [true, false]) {
+    const modals = []; let deleted = 0;
+    const wx = { showModal: (v) => { modals.push(v.content); v.success({ confirm: modals.length === 1 || confirmSecond }); }, showToast() {}, clearStorageSync() {}, removeStorageSync() {} };
+    const consent = load('utils/consent.js', { './config.js': {}, '../content/legal.js': { final: true, operator: { email: 'help@example.com' } }, './api.js': { deleteMe: () => { deleted++; return Promise.resolve(); } }, './exports.js': { clear() {} }, './exporter.js': { removeFiles() {} } }, { wx });
+    assert.equal(await consent.withdraw(true), confirmSecond); assert.equal(deleted, confirmSecond ? 1 : 0);
+    assert.equal(modals.length, 2); assert.equal(modals[1], '注销后未到期的使用期和赠送天数作废、不能恢复；注销本身不退剩余天数，也不减少按《付费服务协议》第二条可以退的钱；注销后发邮件到 help@example.com 并附订单号，同样受理。订单号在“我的 → 我的订单”，注销前可以先记下。');
+  }
 });

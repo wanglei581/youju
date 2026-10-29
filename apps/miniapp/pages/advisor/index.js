@@ -11,7 +11,7 @@ Page({
     aiNotice: '', disclosure: '', context: null, recent: [], recentLoading: true, recentError: '', showScope: false,
     // 批量工具卡片（D-076）：在售时放在最上面——本月免费还剩几次、两档价格、"了解批量工具"；买过的写使用期到哪天。
     // 没在售时为 null，不显示，正式版开卖前看不到
-    payCard: null },
+    payCard: null, countNote: '' },
   onLoad(query) { this.setData({ context: context.read(query) }); },
   // 每次显示都重新问能力接口：在途的、缓存的答复都不用（可能是离开以前、0 点以前问的，AI 暂时不可用、满了跟着变，第 23 轮）
   onShow() {
@@ -28,7 +28,7 @@ Page({
   load() {
     const epoch = this.epoch = (this.epoch || 0) + 1;
     wx.setNavigationBarTitle({ title: '工具中心' });
-    this.setData({ loading: true, toolsEnabled: false, dataEnabled: false, aiEnabled: false, interpretEnabled: false, clauseEnabled: false, disclosure: '', aiNotice: '', recent: [], dataStatus: '', dataError: '', payCard: null });
+    this.setData({ loading: true, toolsEnabled: false, dataEnabled: false, aiEnabled: false, interpretEnabled: false, clauseEnabled: false, disclosure: '', aiNotice: '', recent: [], dataStatus: '', dataError: '', payCard: null, countNote: '' });
     this.payOn = false; this.offer = null; this.quota = null; this.quotaDone = false;
     api.advisorCapabilities({ refresh: true }).then((res) => {
       if (!this.visible || epoch !== this.epoch) return;
@@ -104,6 +104,7 @@ Page({
   // 额度有了结果（读到或读不到）才画，免得卡片先没有免费次数、再补上；使用期内写到期日和续买，
   // 免费次数用完时第一句写"已用完"
   renderPayCard() {
+    if (this.quotaDone) this.setData({ countNote: this.countLine() });
     if (!this.payOn) { this.setData({ payCard: null }); return; }
     if (!this.quotaDone) return;
     const pay = require('../../utils/pay.js');
@@ -126,6 +127,15 @@ Page({
       : usedUp ? '本月免费次数已用完，下月 1 日恢复'
         : `本月免费：${left('比对', quota.compare)}、${left('通知表', quota.track)}，${rows}`;
     this.setData({ payCard: { usedUp, quotaLine, offerLine: `要一次处理更多家：${this.offer.line}，不限次数，每次 500 家以内；一次付清，到期不再扣钱`, button: '了解批量工具' } });
+  },
+  // 怎么算次数（收费方案第 9 项）：只写这个人现在用得上的家数——没在卖的不提批量工具，加量体验用不了的不提它
+  // （独立审阅 10/28）；读不到额度时只写第一句
+  countLine() {
+    const quota = this.quota;
+    const head = '交一份名单算一次，系统出错、没出结果的不算';
+    if (!quota || quota.pass || quota.trial.trialActive) return `${head}。`;
+    const more = [quota.trial.trialAvailable ? '加量体验' : '', this.payOn && this.offer ? '批量工具使用期' : ''].filter(Boolean);
+    return `${head}；免费每次 ${quota.rows.compare} 家以内${more.length ? `，${more.join('和')}内每次 500 家以内` : ''}。`;
   },
   buyPass() { if (this.data.payCard && this.data.payCard.button) wx.navigateTo({ url: '/pages/pass/index' }); },
   refreshQuota() { this.loadQuota(); },

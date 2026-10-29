@@ -1,3 +1,4 @@
+@import "../../utils/advisor.wxss";
 .draft { margin: 20rpx 24rpx 0; padding: 16rpx 24rpx; background: var(--o-tint); border-radius: 16rpx; font-size: 24rpx; color: var(--o-txt); }
 .doc { padding: 32rpx; }
 .doc-title { font-size: 34rpx; font-weight: 600; }

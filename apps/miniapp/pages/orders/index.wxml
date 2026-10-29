@@ -1,6 +1,5 @@
 <notice-bar />
-<feature-closed wx:if="{{!loginOpen}}" />
-<block wx:else>
+<block wx:if="{{loginOpen}}">
   <view wx:if="{{message}}" class="card advisor-card">{{message}}</view>
   <view wx:if="{{loading}}" class="card advisor-card muted">正在加载…</view>
   <view wx:elif="{{error}}" class="card advisor-card"><view>{{error}}</view><button class="advisor-button" bindtap="load">重试</button></view>
@@ -15,7 +14,7 @@
     <view wx:if="{{item.period}}" class="order-line muted">使用期 {{item.period}}</view>
     <!-- 随这笔送的天数，每次一行（续买多送、加量体验折算） -->
     <view wx:for="{{item.gifts}}" wx:for-item="gift" wx:key="*this" class="order-line muted">{{gift}}</view>
-    <view class="order-line weak">订单号 {{item.orderId}}</view>
+    <view class="order-line weak">订单号 {{item.orderId}} <text wx:if="{{item.termsVersion}}" class="link" data-version="{{item.termsVersion}}" data-id="{{item.orderId}}" bindtap="terms" aria-role="button">《付费服务协议》</text></view>
     <view wx:if="{{!item.canRefund && item.reason}}" class="order-reason">不能自助退款：{{item.reason}}</view>
     <view wx:if="{{item.invoice}}" class="order-invoice">
       <view>发票：{{item.invoice.status}} · {{item.invoiceText}}</view>
