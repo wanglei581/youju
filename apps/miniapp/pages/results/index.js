@@ -1,5 +1,7 @@
 const api = require('../../utils/api.js');
 const { exportDocs } = require('../../utils/exporter.js');
+// 包里有使用帮助时，页底放"数据说明 ›"：截止日期的几种写法写在帮助里（agy 第 3 轮）
+const { flags } = require('../../utils/pages.js');
 // 统一按北京时间显示生成时间，不随设备时区改变，也不把原始 ISO 时区串呈现给用户。
 function generatedTime(value) {
   if (!value) return '生成时间未提供';
@@ -25,7 +27,7 @@ function deadlineText(item) {
   return `${value.split(EXCERPT_MARK).join('')}${kind ? ` ${kind}` : ''}${excerpt ? '（原文摘录）' : ''}`;
 }
 Page({
-  data: { loading: false, error: '', result: null, current: false, saving: false, advisor: false, page: 1, nextCursor: null, changed: false },
+  data: { loading: false, error: '', result: null, current: false, saving: false, advisor: false, page: 1, nextCursor: null, changed: false, has: flags() },
   onLoad(q) {
     let value = q.ids || '';
     try { value = decodeURIComponent(value); } catch (e) { value = ''; }
@@ -69,6 +71,7 @@ Page({
   },
   previous() { if (this.data.loading || this.data.saving || this.cursorIndex < 1) return; this.cursorIndex -= 1; return this.load(); },
   detail(e) { wx.navigateTo({ url: `/pages/detail/index?id=${encodeURIComponent(e.currentTarget.dataset.id)}` }); },
+  help() { if (this.data.has.help) wx.navigateTo({ url: '/pages/help/index?topic=deadline' }); },
   read(e) { wx.navigateTo({ url: `/pages/reader/index?id=${encodeURIComponent(e.currentTarget.dataset.id)}` }); },
   save() {
     if (!this.data.result || this.data.saving) return;

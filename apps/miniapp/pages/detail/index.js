@@ -258,9 +258,9 @@ Page({
     });
   },
 
-  // 原文出处下的"数据说明 ›"：去使用帮助看截止日期、正文是怎么来的（包里有帮助页才显示）
+  // 原文出处下的"数据说明 ›"：去使用帮助看正文、附件和要点是怎么来的，截止怎么标在它上面一条（包里有帮助页才显示）
   help() {
-    if (this.data.has.help) wx.navigateTo({ url: '/pages/help/index?topic=deadline' });
+    if (this.data.has.help) wx.navigateTo({ url: '/pages/help/index?topic=text' });
   },
 
   // 名单类通知的正文里名单没展开（D-092）：去查名单查企业

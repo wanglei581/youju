@@ -27,6 +27,7 @@ function load(name, api, extra = {}) {
       if (dep === '../../utils/data-tools.js') return extra.tools || {};
       if (dep === '../../utils/reading-progress.js') return extra.progress || require('../utils/reading-progress.js');
       if (extra.deps && Object.hasOwn(extra.deps, dep)) return extra.deps[dep];
+      if (dep === '../../utils/pages.js') return require('./helpers/package-pages-default.js').pages;
       throw new Error(dep);
     },
     wx: wxApi,

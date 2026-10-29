@@ -166,7 +166,13 @@ test('10/29 晚：数据说明都写在使用帮助里，页面上只留一个"�
   assert.match(wxml('detail'), /<view wx:if="{{has.help}}" class="link source-help" bindtap="help" aria-role="link">数据说明 ›<\/view>/);
   assert.match(wxml('report'), /<view wx:if="{{has.help}}" class="note"><text class="link" bindtap="help" aria-role="link">截止日期怎么看 ›<\/text><\/view>/);
   assert.match(wxml('report'), /<view wx:else class="note">7 天内到期的只列人工核对过的日期/);
-  for (const page of ['detail', 'report']) assert.match(read(`pages/${page}/index.js`), /help\(\) \{\n\s+if \(this\.data\.has\.help\) wx\.navigateTo\(\{ url: '\/pages\/help\/index\?topic=deadline' \}\);/, page);
+  // 详情页、阅读页跳到"正文和附件里的文字是怎么来的"，截止页、结果页跳到"截止日期怎么看"（agy、Codex 第 3 轮）
+  for (const [page, topic] of [['detail', 'text'], ['reader', 'text'], ['report', 'deadline'], ['results', 'deadline']]) {
+    assert.match(read(`pages/${page}/index.js`), new RegExp(`if \\(this\\.data\\.has\\.help\\) wx\\.navigateTo\\(\\{ url: '/pages/help/index\\?topic=${topic}' \\}\\);`), page);
+    assert.match(read(`pages/${page}/index.js`), /require\('\.\.\/\.\.\/utils\/pages\.js'\)/, page);
+  }
+  assert.match(wxml('reader'), /<view wx:if="{{has.help}}" class="help-link"><text class="link" bindtap="help" aria-role="link">数据说明 ›<\/text><\/view>/);
+  assert.match(wxml('results'), /<view wx:if="{{has.help && !advisor}}" class="help-link"><text class="link" bindtap="help" aria-role="link">数据说明 ›<\/text><\/view>/);
   // 帮助页：从"说明 ›"进来滚到那一条并加框
   const vm = require('node:vm');
   let def; const scrolled = [];
