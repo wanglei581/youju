@@ -1581,6 +1581,16 @@ class AICreditUse(Base):
     pool_day: Mapped[date] = mapped_column(Date)
 
 
+class AICreditPoolDay(Base):
+    """付费全站名额的当天计数（D-109 甲，迁移 0046）：从卡里占一次加 1，后来扣了、退了都不减。
+    单独一张表、不存用户：用户注销（体验送的次数随体验删掉）、订单按保存期删掉，都不会让当天的数变少
+    （Codex 10/29）。一天一行。"""
+
+    __tablename__ = "ai_credit_pool_days"
+    day: Mapped[date] = mapped_column(Date, primary_key=True)
+    reserved: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+
+
 class PayEvent(Base):
     """只保留允许的交易字段；原始 attach、姓名、手机号等不入库。"""
 

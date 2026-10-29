@@ -5,7 +5,8 @@
   记在这一行，锁住这一行就读到最新的数。用户删了置空（注销时另外收回）。
 - ai_credit_uses：每占一次记一行（reserved 占着 / charged 扣了 / released 退回），use_key 唯一；
   不建任务外键，任务删了凭据还在；跟着那一笔删。
-- 不要新授权才能部署：这次只建表，没有代码写它们。接进解读、对照、问一问以后，api 账号要对这两张表
+- ai_credit_pool_days：付费全站名额的当天计数，一天一行，只加不减，不存用户（注销、删订单都不减）。
+- 不要新授权才能部署：这次只建表，没有代码写它们。接进解读、对照、问一问以后，api 账号要对这三张表
   有 SELECT、INSERT、UPDATE（加在 deploy/mysql_accounts.sql，和那一版一起执行）。
 
 编号 0046 是协调会话 10/29 给的；main 上现在最新是 0043，0044（#397）、0045（AI 会话）还在 PR 里，
@@ -87,8 +88,16 @@ def upgrade() -> None:
     op.create_index("ix_ai_credit_uses_grant_state", "ai_credit_uses", ["grant_id", "state"])
     op.create_index("ix_ai_credit_uses_user", "ai_credit_uses", ["user_id"])
     op.create_index("ix_ai_credit_uses_pool_day", "ai_credit_uses", ["pool_day"])
+    op.create_table(
+        "ai_credit_pool_days",
+        sa.Column("day", sa.Date(), nullable=False),
+        sa.Column("reserved", sa.Integer(), server_default="0", nullable=False),
+        sa.PrimaryKeyConstraint("day"),
+        **OPTIONS,
+    )
 
 
 def downgrade() -> None:
+    op.drop_table("ai_credit_pool_days")
     op.drop_table("ai_credit_uses")
     op.drop_table("ai_credit_grants")

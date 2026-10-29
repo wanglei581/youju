@@ -118,6 +118,7 @@ EXCLUDED_TABLES = frozenset(
         # 卡里的 AI 次数（D-109）：给了多少次、每次占用和扣、退
         "ai_credit_grants",
         "ai_credit_uses",
+        "ai_credit_pool_days",
         # 密钥
         "app_keys",
         "signing_keys",

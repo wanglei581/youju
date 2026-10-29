@@ -21,10 +21,12 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 
 from sqlalchemy import func, select, update
+from sqlalchemy.dialects.mysql import insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from youju.advisor_tasks import usage_day
-from youju.models import AICreditGrant, AICreditUse, PayOrder, WorkbenchPass
+from youju.models import AICreditGrant, AICreditPoolDay, AICreditUse, PayOrder, WorkbenchPass
 
 log = logging.getLogger(__name__)
 
@@ -49,9 +51,9 @@ CONFIRM_TEXT = {
 }
 # 页面的说法由 AI 那边按 status 写（要创始人看，D-076）；这里只是兜底
 NO_CREDIT_TEXT = {
-    "NO_CARD": "没有可用的卡里次数",
-    "EXPIRED": "卡已过期",
-    "USED_UP": "卡里的次数用完了",
+    "NO_CARD": "今天的免费次数用完了，明天 0 点恢复",
+    "EXPIRED": "卡已过期；今天的免费次数用完了，明天 0 点恢复",
+    "USED_UP": "卡里的次数用完了；今天的免费次数明天 0 点恢复",
 }
 
 
@@ -87,7 +89,10 @@ class PaidPoolFull(CreditError):
     按"因我们的原因不能使用"处理（方案第四节第 2 条）。"""
 
     def __init__(self) -> None:
-        super().__init__("PAID_POOL_FULL", "今天卡里次数的全站名额满了，这次没有扣次数，请稍后再试")
+        super().__init__(
+            "PAID_POOL_FULL",
+            "今天卡里次数的全站名额满了，这次没有扣次数；我们会尽快处理，影响到使用的会给卡顺延",
+        )
 
 
 @dataclass
@@ -228,11 +233,7 @@ def reserve(
         raise ValueError(f"不认识的 kind 或 reason：{kind} {reason}")
     existing = session.scalar(select(AICreditUse).where(AICreditUse.use_key == use_key))
     if existing is not None:
-        if existing.state == "released":
-            raise CreditError("RELEASED", "这次请求的次数已经退回，不能再占")
-        grant = session.get(AICreditGrant, existing.grant_id)
-        source = "bought" if grant is not None and grant.kind == PURCHASE else "gift"
-        return _out(existing, source, wallet.left)
+        return _existing(session, existing, wallet)
     slot = wallet.next_slot()
     if slot is None:
         raise NoCredits(wallet.status)
@@ -251,11 +252,41 @@ def reserve(
         reserved_at=stamp,
         pool_day=usage_day(stamp),
     )
-    session.add(use)
+    try:
+        # 可重复读的旧快照下，上面的普通读看不到别的连接刚占的同一个 use_key：插入放在存档点里，
+        # 撞了唯一键就用当前读取回那一行，照"重复调用"处理（Codex 10/29）
+        with session.begin_nested():
+            session.add(use)
+            session.flush()
+    except IntegrityError:
+        existing = session.scalar(
+            select(AICreditUse)
+            .where(AICreditUse.use_key == use_key)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if existing is None:
+            raise
+        return _existing(session, existing, wallet)
     # 这一行 lock_wallet 已经锁着、读的是最新的：直接加 1，钱包里的数跟着变（一个事务里占几次也对）
     slot.grant.held += 1
+    # 付费全站名额的当天计数：单独一张表、只加不减，注销、删订单都不会让它变少
+    session.execute(
+        insert(AICreditPoolDay)
+        .values(day=use.pool_day, reserved=1)
+        .on_duplicate_key_update(reserved=AICreditPoolDay.reserved + 1)
+    )
     session.flush()
     return _out(use, slot.source, wallet.left)
+
+
+def _existing(session: Session, existing: AICreditUse, wallet: Wallet) -> dict:
+    """同一个 use_key 再来：占着或扣了的原样返回；已经退回的不能再占。"""
+    if existing.state == "released":
+        raise CreditError("RELEASED", "这次请求的次数已经退回，不能再占")
+    grant = session.get(AICreditGrant, existing.grant_id)
+    source = "bought" if grant is not None and grant.kind == PURCHASE else "gift"
+    return _out(existing, source, wallet.left)
 
 
 def _settle(session: Session, use_key: str, stamp: datetime, state: str, **values) -> str:
@@ -305,38 +336,61 @@ def release(session: Session, use_key: str, stamp: datetime, reason: str) -> str
 
 def paid_pool_used(bind, day: date) -> int:
     """当天从卡里发起的占用数（全站合计）：提交时占上的都算，后来扣了、退了都不减（失败、拒答也调了
-    模型，方案第三节第 4 条第 11 项）。在 ai_cap_slot(pool="paid") 那条连接上调。"""
-    return int(
-        bind.scalar(select(func.count(AICreditUse.id)).where(AICreditUse.pool_day == day)) or 0
-    )
-
-
-def paid_pool_limit(bind, stamp: datetime) -> int:
-    """付费全站名额 = max(1000, 在用的卡数 × 30)。在用的卡按人数：现在有没收回、没到期的卡或体验
-    赠送的用户（后面还没开始的段也算）。"""
-    cards = int(
-        bind.scalar(
-            select(func.count(func.distinct(AICreditGrant.user_id)))
-            .select_from(AICreditGrant)
-            .outerjoin(WorkbenchPass, WorkbenchPass.id == AICreditGrant.pass_id)
-            .where(
-                AICreditGrant.revoked_at.is_(None),
-                AICreditGrant.user_id.is_not(None),
-                (
-                    AICreditGrant.pass_id.is_not(None)
-                    & WorkbenchPass.revoked_at.is_(None)
-                    & (WorkbenchPass.ends_at > stamp)
-                )
-                | (AICreditGrant.trial_id.is_not(None) & (AICreditGrant.expires_at > stamp)),
-            )
-        )
-        or 0
-    )
-    return max(PAID_POOL_MIN, cards * PAID_POOL_PER_CARD)
+    模型，方案第三节第 4 条第 11 项）；记在 ai_credit_pool_days，用户注销、订单删掉都不减。
+    在 ai_cap_slot(pool="paid") 那条连接上调。"""
+    return int(bind.scalar(select(AICreditPoolDay.reserved).where(AICreditPoolDay.day == day)) or 0)
 
 
 # 付费全站名额的告警：用到 80%、满了各一次，每个进程每天记一下（几个实例可能各发一次，量很小）
 _alerted: set[tuple[date, str]] = set()
+# 在用卡数每个进程按分钟缓存一次：上限在付费全站名额的命名锁里要用，别每次都现数（agy 10/29）。
+# 卡数变得慢，晚一分钟没关系；测试换数据前调 reset_cache()
+_limit_cache: dict[datetime, int] = {}
+
+
+def reset_cache() -> None:
+    _limit_cache.clear()
+    _alerted.clear()
+
+
+def paid_pool_limit(bind, stamp: datetime) -> int:
+    """付费全站名额 = max(1000, 在用的卡数 × 30)，按分钟缓存（见 _limit_cache）。"""
+    minute = stamp.replace(second=0, microsecond=0)
+    if minute not in _limit_cache:
+        _limit_cache.clear()
+        _limit_cache[minute] = _pool_limit(bind, minute)
+    return _limit_cache[minute]
+
+
+def _pool_limit(bind, stamp: datetime) -> int:
+    """付费全站名额 = max(1000, 在用的卡数 × 30)。卡数按张数（Codex 10/29：一个人两张卡算两张）：
+    没收回、没到期的买卡段（后面还没开始的也算；上线补给的挂在同一段上，按段去重），加上没收回、
+    没到期的加量体验；续买多送的那段是赠送，不算一张卡。"""
+    cards = int(
+        bind.scalar(
+            select(func.count(func.distinct(AICreditGrant.pass_id)))
+            .select_from(AICreditGrant)
+            .join(WorkbenchPass, WorkbenchPass.id == AICreditGrant.pass_id)
+            .where(
+                AICreditGrant.revoked_at.is_(None),
+                AICreditGrant.kind.in_((PURCHASE, "backfill")),
+                WorkbenchPass.revoked_at.is_(None),
+                WorkbenchPass.ends_at > stamp,
+            )
+        )
+        or 0
+    )
+    trials = int(
+        bind.scalar(
+            select(func.count(AICreditGrant.id)).where(
+                AICreditGrant.kind == "trial",
+                AICreditGrant.revoked_at.is_(None),
+                AICreditGrant.expires_at > stamp,
+            )
+        )
+        or 0
+    )
+    return max(PAID_POOL_MIN, (cards + trials) * PAID_POOL_PER_CARD)
 
 
 def pool_alert(used: int, limit: int, day: date, *, alert=None) -> bool | None:
@@ -386,25 +440,16 @@ def grant_pass(
     （剩下的整天数 × 10）。同一段同一种只发一次，再调返回已有的那笔。"""
     if kind not in (PURCHASE, "renewal", "backfill") or amount <= 0:
         raise ValueError(f"不能给使用期发这种次数：{kind} {amount}")
-    existing = session.scalar(
-        select(AICreditGrant).where(AICreditGrant.pass_id == ticket.id, AICreditGrant.kind == kind)
-    )
-    if existing is not None:
-        return existing
+    where = (AICreditGrant.pass_id == ticket.id, AICreditGrant.kind == kind)
     grant = AICreditGrant(
         user_id=ticket.user_id, pass_id=ticket.id, kind=kind, amount=amount, granted_at=stamp
     )
-    session.add(grant)
-    session.flush()
-    return grant
+    return _insert_once(session, grant, where)
 
 
 def grant_trial(session: Session, trial, stamp: datetime) -> AICreditGrant:
     """开加量体验时送 30 次，到体验原定的结束时间作废（体验期里买卡、体验提前结束也不变）。
     一个体验只送一次。"""
-    existing = session.scalar(select(AICreditGrant).where(AICreditGrant.trial_id == trial.id))
-    if existing is not None:
-        return existing
     grant = AICreditGrant(
         user_id=trial.user_id,
         trial_id=trial.id,
@@ -413,9 +458,44 @@ def grant_trial(session: Session, trial, stamp: datetime) -> AICreditGrant:
         expires_at=trial.ends_at,
         granted_at=stamp,
     )
-    session.add(grant)
-    session.flush()
+    return _insert_once(session, grant, (AICreditGrant.trial_id == trial.id,))
+
+
+def _insert_once(session: Session, grant: AICreditGrant, where) -> AICreditGrant:
+    """同一段同一种、同一个体验只发一次：已有的直接返回。可重复读的旧快照下普通读可能看不到
+    别的连接刚发的那笔，所以插入放在存档点里，撞了唯一键再用当前读取回已有的那笔（Codex 10/29）。"""
+    existing = session.scalar(select(AICreditGrant).where(*where))
+    if existing is not None:
+        return existing
+    try:
+        with session.begin_nested():
+            session.add(grant)
+            session.flush()
+    except IntegrityError:
+        existing = session.scalar(
+            select(AICreditGrant)
+            .where(*where)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if existing is None:
+            raise
+        return existing
     return grant
+
+
+def revoke_user_grants(session: Session, user_id: int, stamp: datetime) -> int:
+    """注销时：这个用户名下的次数（卡上的、体验送的）全部作废（agy 10/29）。体验送的随体验记录删掉，
+    卡上的随使用期段照留、断开用户。已经扣的照留；正在占着的照常走完。"""
+    return (
+        session.execute(
+            update(AICreditGrant)
+            .where(AICreditGrant.user_id == user_id, AICreditGrant.revoked_at.is_(None))
+            .values(revoked_at=stamp)
+            .execution_options(synchronize_session="fetch")
+        ).rowcount
+        or 0
+    )
 
 
 def revoke_pass_grants(session: Session, pass_ids: list[int], stamp: datetime) -> int:
@@ -437,9 +517,9 @@ def paid_ai_usage(
     session: Session, ticket: WorkbenchPass | None, *, lock: bool = False
 ) -> str | None:
     """这一段买来的 AI 次数用没用过（"用过付费的量"的 AI 部分，方案第五节第 3 条）：
-    扣过返回 "used"，
-    还占着（结果没出来）返回 "running"，都没有返回 None。赠送的次数怎么用都不算。lock=True（退款时）
-    锁这一段的卡的行，锁的先后在任务之后、使用期之前。"""
+    扣过返回 "used"，还占着（结果没出来）返回 "running"，都没有返回 None。赠送的次数怎么用都不算。
+    lock=True（退款时）：调用方已经锁了用户行，这里锁这一段的卡的行
+    （同一个用户的事都先锁用户行，按用户行排队）。"""
     if ticket is None:
         return None
     stmt = select(AICreditGrant).where(

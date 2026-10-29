@@ -22,6 +22,14 @@ NOW = datetime(2026, 11, 10, 2, 0, tzinfo=UTC)  # 北京时间 11/10 10:00
 _seq = iter(range(1, 10_000))
 
 
+@pytest.fixture(autouse=True)
+def _fresh_cache():
+    # 在用卡数按分钟缓存、告警按天记在进程里：每个测试换了数据，先清掉
+    ai_credits.reset_cache()
+    yield
+    ai_credits.reset_cache()
+
+
 def user(session, openid="credit-user") -> User:
     row = User(openid=openid, agreement_version="2026-11", agreement_at=NOW)
     session.add(row)
@@ -307,6 +315,54 @@ def test_charge_and_release_race_settles_only_once(session, repeatable_read_fact
     assert (grant.used, grant.held) == (1, 0)
 
 
+def test_same_use_key_from_an_old_snapshot_returns_the_existing_one(
+    session, repeatable_read_factory
+):
+    owner = user(session)
+    _, ticket, grant = card(session, owner, paid=NOW - timedelta(days=2))
+    session.commit()
+    with repeatable_read_factory() as first, repeatable_read_factory() as second:
+        for s in (first, second):  # 各自先定下快照
+            assert s.scalar(select(func.count(AICreditUse.id))) == 0
+        take(first, owner, "task:dup")
+        first.commit()
+        again = take(second, owner, "task:dup")  # 普通读看不到，插入撞了唯一键：取回已有的那行
+        assert again["useKey"] == "task:dup" and again["grantId"] == grant.id
+        second.commit()
+    session.expire_all()
+    session.refresh(grant)
+    assert grant.held == 1
+    assert ai_credits.paid_pool_used(session, date(2026, 11, 10)) == 1
+
+
+def test_granting_twice_from_old_snapshots_gives_one_grant(session, repeatable_read_factory):
+    owner = user(session)
+    order, ticket, _ = card(session, owner)
+    row, _ = trial(session, owner)
+    session.commit()
+    with repeatable_read_factory() as first, repeatable_read_factory() as second:
+        for s in (first, second):
+            assert s.scalar(select(func.count(AICreditGrant.id))) == 2
+        a = ai_credits.grant_pass(first, first.get(WorkbenchPass, ticket.id), "backfill", 50, NOW)
+        first.commit()
+        b = ai_credits.grant_pass(second, second.get(WorkbenchPass, ticket.id), "backfill", 50, NOW)
+        assert a.id == b.id
+        second.commit()
+    session.expire_all()
+    assert session.scalar(select(func.count(AICreditGrant.id))) == 3
+    assert ai_credits.grant_trial(session, row, NOW).kind == "trial"
+
+
+def test_revoke_user_grants_on_account_deletion(session):
+    owner = user(session)
+    card(session, owner)
+    trial(session, owner)
+    take(session, owner, "task:1")
+    assert ai_credits.revoke_user_grants(session, owner.id, NOW) == 2
+    assert ai_credits.balance(session, owner.id, NOW)["status"] == "NO_CARD"
+    assert ai_credits.charge(session, "task:1", NOW) == "charged"  # 占着的照常走完
+
+
 # ---- 付费全站名额、告警、对账 -------------------------------------------------------------
 
 
@@ -322,15 +378,44 @@ def test_paid_pool_counts_every_reservation_and_scales_with_live_cards(session, 
     expired = user(session, "expired")
     card(session, expired, paid=NOW - timedelta(days=40))
     trial(session, user(session, "trial"))
+    # 按张数：一个人两张卡算两张，体验加买卡也算两张（Codex 10/29）
+    both = user(session, "both")
+    card(session, both)
+    card(session, both, starts=NOW + timedelta(days=30))
+    trial(session, both)
     session.commit()
     with db_engine.connect() as conn:  # 在"全站名额那条连接"上数
         assert ai_credits.paid_pool_used(conn, date(2026, 11, 10)) == 2
-        assert ai_credits.paid_pool_limit(conn, NOW) == max(1000, 42 * 30)  # 41 张卡 + 1 个体验
-    assert ai_credits.paid_pool_limit(session, NOW + timedelta(days=60)) == 1000
+        assert ai_credits.paid_pool_limit(conn, NOW) == max(1000, (41 + 1 + 3) * 30)
+    ai_credits.reset_cache()
+    assert ai_credits.paid_pool_limit(session, NOW + timedelta(days=90)) == 1000
 
 
-def test_pool_alert_once_per_level_per_day(monkeypatch):
-    monkeypatch.setattr(ai_credits, "_alerted", set())
+def test_paid_pool_count_does_not_drop_when_a_trial_user_is_deleted(session):
+    owner = user(session, "trial-only")
+    trial(session, owner)
+    take(session, owner, "task:1")
+    take(session, owner, "task:2")
+    session.commit()
+    session.delete(session.get(User, owner.id))  # 注销：体验和它送的次数一起删
+    session.commit()
+    assert session.scalar(select(func.count(AICreditGrant.id))) == 0
+    assert ai_credits.paid_pool_used(session, date(2026, 11, 10)) == 2
+
+
+def test_pool_limit_is_cached_per_minute(session):
+    owner = user(session)
+    card(session, owner)
+    session.commit()
+    first = ai_credits.paid_pool_limit(session, NOW)
+    for n in range(40):
+        card(session, user(session, f"later-{n}"))
+    session.commit()
+    assert ai_credits.paid_pool_limit(session, NOW + timedelta(seconds=30)) == first
+    assert ai_credits.paid_pool_limit(session, NOW + timedelta(minutes=1)) == 41 * 30
+
+
+def test_pool_alert_once_per_level_per_day():
     sent = []
     day = date(2026, 11, 10)
     assert ai_credits.pool_alert(799, 1000, day, alert=sent.append) is None
