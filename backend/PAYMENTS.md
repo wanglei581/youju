@@ -632,7 +632,8 @@ httpx 日志过滤 xpay/code2Session URL；异常稳定中文。
   告警里写商户单号；同一个投诉重推的按 `ComplaintId`（本地没有订单的再加商户单号）去重（独立审阅、Codex #402 第 4 轮）。
   两次重推同时到、收推送时都没看到对方的，`complaint_alerts` 发之前再判一次（`complaint_covered`）：同一投诉已经发过（sent）
   或转了人工（manual）的不再发，两条都在等的只发编号小的；收推送时只看编号更小的同伴（`same_complaint(earlier_only=True)`）。
-  和事件提交的先后无关（Codex #402 第 5、6 轮）。
+  和事件提交的先后无关（Codex #402 第 5、6 轮）。整段发告警拿着 MySQL 命名锁 `youju_pay_complaint_alerts`（不等待），
+  同一时刻只有一个补单在发，提交以后才放锁；拿不到这一轮就不发（Codex #402 第 7 轮：两个补单交错着发同一投诉的两条）。
 - 告警只有 `alert` 返回 True 才算发出去：没配告警地址（`send_alert` 返回 None）也下一轮接着发（转人工、48 小时关单、
   投诉三处都这样，Codex #402 第 1 轮）。
 

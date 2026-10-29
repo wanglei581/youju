@@ -13,7 +13,7 @@ import contextlib
 import csv
 import logging
 import math
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -21,7 +21,7 @@ from io import StringIO
 from urllib.parse import urlsplit
 from uuid import uuid4
 
-from sqlalchemy import case, delete, exists, func, or_, select, true, update
+from sqlalchemy import case, delete, exists, func, or_, select, text, true, update
 from sqlalchemy.orm import Session
 
 from youju import advisor_tasks
@@ -1597,11 +1597,42 @@ def complaint_covered(session: Session, row: PayEvent) -> bool:
     return False
 
 
+# 发投诉告警这一段同一时刻只让一个补单跑：两个补单交错着发同一投诉的两条（一个在发编号大的、
+# 还没提交，另一个看到它还在等、就发了编号小的），按行加锁挡不住（Codex #402 第 7 轮）
+COMPLAINT_ALERT_LOCK = "youju_pay_complaint_alerts"
+
+
+@contextlib.contextmanager
+def _complaint_alert_lock(session: Session) -> Iterator[bool]:
+    """拿投诉告警锁（不等待）：拿到给 True，另一个补单正在发给 False。锁挂在单独的一个连接上，
+    用完释放；连接断了 MySQL 也会自动释放。不是 MySQL（本机单元测试的别的库）时直接给 True。"""
+    bind = session.get_bind()
+    engine = getattr(bind, "engine", bind)
+    if engine.dialect.name != "mysql":
+        yield True
+        return
+    with engine.connect() as conn:
+        got = conn.scalar(text("SELECT GET_LOCK(:k, 0)"), {"k": COMPLAINT_ALERT_LOCK}) == 1
+        try:
+            yield got
+        finally:
+            if got:
+                conn.execute(text("SELECT RELEASE_LOCK(:k)"), {"k": COMPLAINT_ALERT_LOCK})
+
+
 def complaint_alerts(session: Session, stamp: datetime, alert) -> int:
     """收到推送时定为单独告警（alert=pending）的投诉，每条发一次告警；
     发出去（alert 返回 True）才记 sent，
     没发出去或没配告警地址的下一轮接着发。只看最近 7 天的投诉事件；按行加锁、跳过别的补单正在发的，
-    两个补单同时跑也不会重复发（发出去以后、提交之前进程退出，仍可能多发一次）。返回这次发出的条数。"""
+    两个补单同时跑也不会重复发（发出去以后、提交之前进程退出，仍可能多发一次）。返回这次发出的条数。
+    整段拿着投诉告警锁跑，提交以后才放锁；拿不到锁（另一个补单正在发）这一轮就不发，下一轮再看。"""
+    with _complaint_alert_lock(session) as got:
+        if not got:
+            return 0
+        return _send_complaint_alerts(session, stamp, alert)
+
+
+def _send_complaint_alerts(session: Session, stamp: datetime, alert) -> int:
     sent = 0
     rows = session.scalars(
         select(PayEvent)

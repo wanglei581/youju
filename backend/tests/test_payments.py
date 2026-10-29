@@ -634,6 +634,30 @@ def test_same_complaint_committed_out_of_order_still_alerts_exactly_once(setup_p
     assert session.get(PayEvent, large.id).summary["alert"] == "duplicate"
 
 
+def test_complaint_alerts_run_one_at_a_time(setup_pay, session):
+    """发投诉告警这一段同一时刻只让一个补单跑：锁在别人手里时这一轮不发，放开以后照发（Codex #402 第 7 轮）。"""
+    from sqlalchemy import text
+
+    session.add(
+        PayEvent(
+            order_id=None,
+            kind="xpay_complaint_notify",
+            summary={"MchOrderId": "not-ours", "ComplaintId": "c-3", "alert": "pending"},
+        )
+    )
+    session.commit()
+    engine = session.get_bind()
+    with engine.connect() as other:
+        name = payments.COMPLAINT_ALERT_LOCK
+        assert other.scalar(text("SELECT GET_LOCK(:k, 0)"), {"k": name}) == 1
+        alerts = []
+        assert payments.complaint_alerts(session, NOW, collect(alerts)) == 0
+        assert alerts == []
+        other.execute(text("SELECT RELEASE_LOCK(:k)"), {"k": name})
+    assert payments.complaint_alerts(session, NOW, collect(alerts)) == 1
+    assert len(alerts) == 1
+
+
 def test_complaint_on_completed_order_still_goes_manual_without_a_second_alert(setup_pay, session):
     """已完成的单收到投诉照旧转人工、由转人工的告警负责（事件记 alert=manual，不单独发）；
     同一个投诉重推只记事件（duplicate）；人工单里已经有投诉原因时又来一个新投诉，单独告警一次。"""
