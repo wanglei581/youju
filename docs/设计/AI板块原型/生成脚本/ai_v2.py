@@ -125,27 +125,36 @@ def excerpt_tag():
             f'font-weight: 600">机器摘录·未经人工核对</span>')
 
 
+def check_links(mt=6):
+    """原句下面的"看原文 ›""这句摘错了"。"""
+    return (f'<div style="margin-top: {mt}px; display: flex; align-items: center; font-size: 12.5px">{link("看原文 ›", 12.5)}'
+            f'<span style="margin-left: auto; display: inline-flex; align-items: center; gap: 3px; color: {T2}">{icon("flag", 13, T2)}这句摘错了</span></div>')
+
+
 def due_block():
-    """两种截止分开写（D-061，D-078 第五节）：机器摘录的写日期、剩几天，标"机器摘录·未经人工核对"并附原句；另一种还没核对。"""
+    """AI 解读结果里的截止（D-061，D-078 第五节）：分清是谁的截止。机器摘录的写日期、剩几天，标"机器摘录·未经人工核对"并附原句；
+    日期还没摘出来的，把解读摘到的那句列出来。每句都能看原文、纠错。"""
     d = DUE_SELF
-    when = f'{ab.month_day(d["date"])} {d["time"]}'
     first = (f'<div style="display: flex; flex-direction: column; gap: 6px">'
              f'<div style="display: flex; align-items: flex-end; justify-content: space-between; gap: 8px"><div style="min-width: 0">'
              f'<div style="font-size: 12px; color: {T2}">{d["kind"]}</div>'
-             f'<div style="margin-top: 2px; display: flex; align-items: baseline; gap: 8px"><span style="font-size: 20px; font-weight: 700; line-height: 1.3">{when}</span>'
-             f'<span style="font-size: 13px; color: {T2}">{ab.week_of(d["date"])}</span></div></div>'
+             f'<div style="margin-top: 2px; display: flex; align-items: baseline; gap: 8px"><span style="font-size: 20px; font-weight: 700; line-height: 1.3">'
+             f'{ab.month_day(d["date"])}</span><span style="font-size: 13px; color: {T2}">{ab.week_of(d["date"])} {d["time"]}</span></div></div>'
              f'<span style="flex-shrink: 0; height: 26px; padding: 0 10px; display: inline-flex; align-items: center; border-radius: 13px; background: {BLUE_TINT}; '
              f'color: {BLUE}; font-size: 13px; font-weight: 600">剩 {d["remainingDays"]} 天</span></div>{excerpt_tag()}'
-             f'<div style="padding: 6px 8px; border-radius: 5px; background: {FILL}; font-size: 13px; line-height: 1.7; color: {T2}">原文：{d["quote"]}</div></div>')
+             f'<div style="padding: 6px 8px; border-radius: 5px; background: {FILL}; font-size: 13px; line-height: 1.7; color: {T2}">原文：{d["quote"]}</div></div>'
+             + check_links(4))
     second = (f'<div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid {LINE}"><div style="font-size: 12px; color: {T2}">{DUE_RECO["kind"]}</div>'
-              f'<div style="margin-top: 3px; font-size: 14.5px">截止未核对，请以原文为准</div></div>')
+              f'<div style="margin-top: 6px; display: flex; flex-direction: column; gap: 6px">{excerpt_tag()}'
+              f'<div style="padding: 6px 8px; border-radius: 5px; background: {FILL}; font-size: 13px; line-height: 1.7; color: {T2}">原文：{Q_T2}</div></div>'
+              + check_links(4) + "</div>")
     return first + second
 
 
 def src_label(*path):
-    """这几句出自原文哪一节：程序按正文里的小标题认，不用模型。"""
-    return (f'<div style="margin-top: 14px; padding: 6px 10px; border-radius: 6px; background: {FILL}; font-size: 12px; line-height: 1.6; color: {T2}">'
-            f'原文：{" › ".join(path)}</div>')
+    """这几句在原文哪一节：程序按正文里的小标题认，不用模型。写"位置："、不加灰底，免得当成原句（独立 Claude 第 1 轮）。"""
+    return (f'<div style="margin-top: 14px; font-size: 12px; line-height: 1.6; color: {T2}">'
+            f'<span style="font-weight: 600">位置：</span>正文 › {" › ".join(path)}</div>')
 
 
 def q_item(text, first=False):
@@ -156,6 +165,7 @@ def q_item(text, first=False):
 
 
 def count_chips(selected=0, h=30, size=13):
+    """按类的胶囊：selected=None 时都不选中（对话卡片里点了打开整页、跳到那一类）。"""
     out = []
     for i, (n, c) in enumerate(COUNTS):
         st = f"background: {BLUE}; color: #FFFFFF; font-weight: 600" if i == selected else f"background: {FILL}; color: {T1}"
@@ -170,7 +180,7 @@ def answer(kind, body):
         return ab.answer(kind, body)
     t = (f'<span style="padding: 0 6px; line-height: 20px; border-radius: 4px; background: {BLUE}; color: #FFFFFF; font-size: 12px; '
          f'font-weight: 600">AI 生成</span>')
-    f = (f'<div style="margin-top: 12px; padding-top: 10px; border-top: 1px solid {LINE}; font-size: 11.5px; line-height: 1.7; color: {T3}">'
+    f = (f'<div style="margin-top: 12px; padding-top: 10px; border-top: 1px solid {LINE}; font-size: 11.5px; line-height: 1.7; color: {T2}">'
          f'<div>不判断能不能申报，以原文和主管部门解释为准。</div><div>{DISC_MODEL}</div>'
          f'<div style="display: flex; align-items: flex-start; gap: 12px"><span style="min-width: 0; overflow-wrap: anywhere">{DISC_FILING}</span>'
          f'<span style="margin-left: auto; flex-shrink: 0; color: {T2}">投诉举报</span></div></div>')
@@ -389,8 +399,24 @@ def compile_row(d, last=False):
             f'<span style="flex-shrink: 0; margin-top: 2px">{icon("close", 16, T3)}</span></div>')
 
 
+def date_snippet(q, reach=30):
+    """长句只取写日期的那一小句：从日期前面最近的标点后开始，到日期后面最近的逗号、句号、分号为止，前后加"…"
+    （截取的是原句里连着的一段，文件里放整句）。"""
+    import re
+    if not q:
+        return q
+    m = re.search(r"\d{1,2}月\d{1,2}日", q)
+    if not m:
+        return q
+    a = max((q.rfind(c, max(0, m.start() - reach), m.start()) for c in "，。；）)"), default=-1)
+    a = a + 1 if a >= 0 else max(0, m.start() - 10)
+    ends = [i for i in (q.find(c, m.end()) for c in "，。；") if 0 <= i <= m.end() + reach]
+    b = min(ends) + 1 if ends else min(len(q), m.end() + reach)
+    return ("…" if a > 0 else "") + q[a:b] + ("…" if b < len(q) else "")
+
+
 def preview_table():
-    """Excel 对比表的前三列预览：申报时间一列放的是收录里摘到的截止原句（4 份里黑龙江那份没摘到）。"""
+    """Excel 对比表的前三列预览：申报时间一列放的是收录里摘到的截止原句；黑龙江那份当它还没解读，写"等解读完才有"。"""
     def cell(text, head=False, clamp=3):
         if head:
             return (f'<div style="min-width: 0; padding: 7px 8px; font-size: 11.5px; font-weight: 600; line-height: 1.55; color: {T2}; '
@@ -400,8 +426,8 @@ def preview_table():
     cols = "grid-template-columns: 52px minmax(0, 1.05fr) minmax(0, 1.45fr)"
     rows = [cell("地区", True) + cell("通知", True) + cell("申报时间（原句）", True)]
     for d in COMPILE:
-        q = (d.get("due") or {}).get("quote") or "[原句]"
-        rows.append(cell(d["province"]) + cell(d["title"]) + cell(q))
+        q = date_snippet((d.get("due") or {}).get("quote"))
+        rows.append(cell(d["province"]) + cell(d["title"]) + (cell(q) if q else cell(f'<span style="color: {T3}">等解读完才有</span>')))
     return (f'<div style="margin-top: 10px; border: 1px solid {LINE2}; border-radius: 8px; overflow: hidden; display: grid; {cols}">'
             + "".join(rows) + "</div>")
 
@@ -416,11 +442,11 @@ def a_compile():
                 f'<div style="margin-top: 10px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 12px">{grid}</div></div>')
     fmt = card(f'<div style="padding: 14px 0"><div style="font-size: 15px; font-weight: 600">出成</div><div style="margin-top: 10px">'
                f'{seg(["Excel 对比表", "Word 汇编"], "Excel 对比表")}</div>'
-               f'<div style="margin-top: 10px; font-size: 13px; line-height: 1.7; color: {T2}">一份通知一行、一类内容一列；每格是原文原句，后面注明出处（比如“正文第 6 段”），没摘到的写“没摘到”。</div>'
+               f'<div style="margin-top: 10px; font-size: 13px; line-height: 1.7; color: {T2}">一份通知一行、一类内容一列；每格是原文原句，后面注明出处（正文写“正文”，附件写第几段、第几行）；没摘到的格子空着，在“读了”那一格写没摘到几类。</div>'
                f'{preview_table()}<div style="margin-top: 8px; font-size: 12px; color: {T3}">预览只显示前三列</div>'
                f'<div style="margin-top: 12px; padding: 8px 10px; border-radius: 8px; background: {BLUE_TINT}; font-size: 12.5px; line-height: 1.7; color: {T1}">'
                f'文件开头写着「AI 生成 · 句子摘自政府原文、未改写」，文件属性里也带隐式标识；生成后在「文件」里能找到。</div></div>')
-    bottom = button_bar("还没 AI 解读的先解读，每份约半分钟，不占每天 5 次<br>今天还能生成 20 个文件", "生成 Excel 对比表")
+    bottom = button_bar("还没 AI 解读的先解读，每份约半分钟。<br>这样的新解读每天最多 30 份，不占 AI 解读的 5 次。<br>今天还能生成 20 个文件。", "生成 Excel 对比表")
     return phone(nav("整理成文件") + notice_bar(nextv=True) + sel + what + fmt + '<div style="height: 16px"></div>', bottom)
 
 
@@ -559,7 +585,7 @@ def b_compile():
                  f'justify-content: center">{icon("doc", 22, BLUE)}</span><div style="flex: 1; min-width: 0">'
                  f'<div style="font-size: 14.5px; font-weight: 600; line-height: 1.5; overflow-wrap: anywhere">{FILE_NAME}</div>'
                  f'<div style="margin-top: 2px; font-size: 12px; color: {T2}">{len(COMPILE)} 份通知 · 4 类内容 · Excel</div></div></div>'
-                 f'<div style="margin-top: 10px; display: flex; gap: 8px">{small_btn("在小程序里看", True)}{small_btn("转发")}</div>'
+                 f'<div style="margin-top: 10px; display: flex; gap: 8px">{small_btn("打开文件", True)}{small_btn("转发")}</div>'
                  + para("文件开头写着「AI 生成 · 句子摘自政府原文、未改写」。<br>文件里也带隐式标识，在「文件」里能再找到。", 12, T3, 8))
     top = b_top() + bubble(f"把能解读的 {len(COMPILE)} 份整理成 Excel 对比表") + confirm + bubble("开始整理") + answer("ai", file_card)
     return b_page(top)
@@ -573,14 +599,15 @@ def b_compile():
 # 第 1 轮审阅（Codex、agy、独立 Claude）以后：次数写全、准备材料什么时候算次数写清、没带通知时输入框只找通知、
 # 按钮做的事在对话里标"点了按钮"、"这句摘错了"统一、材料清单页标题跟着看法走、页底补模型和备案号。
 C_HINT = "说要找什么通知，比如地区、类型、文号"
-ASK_EXAMPLES = ("企业申报截止是哪天？", "要准备哪些材料？")
-VIEWS_SEG = ["全部原句（30 句）", "材料清单（能勾选）"]
+ASK_EXAMPLES = ("要满足哪些条件？", "在哪里申报？")
+VIEWS_SEG = ["全部原句（30 句）", "准备材料（能勾选）"]
 PAGE_TRACK = "#E3E6EC"   # 放在页面底色上的分段选择用的底
 NO_NAMES = "请不要写企业名称、手机号。"
 
 
 def small_note(html, mt=8, pb=0):
-    return f'<div style="margin-top: {mt}px; padding-bottom: {pb}px; font-size: 12px; line-height: 1.7; color: {T3}">{html}</div>'
+    """说明文字：12px 用 T2（T3 在白底上对比度只有 3.2:1，独立 Claude 第 1 轮）。"""
+    return f'<div style="margin-top: {mt}px; padding-bottom: {pb}px; font-size: 12px; line-height: 1.7; color: {T2}">{html}</div>'
 
 
 def c_strip():
@@ -597,22 +624,30 @@ def ask_row(btn="问"):
 
 
 def c_continue():
-    """刚才看的通知：A 的截止和直达，加 B 的对话入口——两个常问问题和一行只问这份通知的提问框（agy 的提议），点了进问一问、带上这份通知。"""
+    """刚才看的通知：A 的截止和直达，加 B 的对话入口——两个常问问题和"问别的"，点了进问一问、带上这份通知。
+    不放提问框（D-075 第四节"AI 首页不放空白提问框"不用改；Codex、agy 第 2 轮都主张这样，一页两个输入框也容易看岔）。"""
     acts = (f'<div style="padding: 0 0 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px">{chip("AI 解读")}'
             f'{link("准备材料 ›")}{link("条款对照 ›")}</div>')
     asks = "".join(f'<span style="height: 30px; padding: 0 11px; display: inline-flex; align-items: center; border-radius: 15px; background: {CARD}; '
                    f'border: 1px solid {LINE2}; font-size: 12.5px; color: {T1}; white-space: nowrap">{t}</span>' for t in ASK_EXAMPLES)
+    more = (f'<span style="height: 30px; padding: 0 11px; display: inline-flex; align-items: center; gap: 1px; border-radius: 15px; background: {BLUE_TINT}; '
+            f'font-size: 12.5px; font-weight: 600; color: {BLUE}; white-space: nowrap">问别的{icon("chev", 13, BLUE)}</span>')
     ask = (f'<div style="padding: 12px 0 14px; border-top: 1px solid {LINE}"><div style="font-size: 12.5px; color: {T2}">问这份通知</div>'
-           f'<div style="margin-top: 8px; display: flex; flex-wrap: wrap; gap: 8px">{asks}</div><div style="margin-top: 10px">{ask_row()}</div>'
-           + small_note(f"问这份通知今天还剩 5 次；{NO_NAMES}", 6) + "</div>")
+           f'<div style="margin-top: 8px; display: flex; flex-wrap: wrap; gap: 8px">{asks}{more}</div>'
+           + small_note("点了进问一问、带上这份通知；<br>今天还剩 5 次，找到原句才算。", 6) + "</div>")
     return card(card_head("刚才看的通知") + doc_row(doc_with_due(), None, last=True, role=True, inapp=True) + acts + ask)
+
+
+C_TASKS = [("doc", "AI 解读", "一份通知的<br>原句分好类"), ("check", "准备材料", "材料原句<br>列成清单"), ("copy", "条款对照", "条件和企业<br>情况并排"),
+           ("download", "整理成文件", "几份通知出成<br>Excel、Word"), ("info", "问一问", "找通知，或问<br>一份通知"), ("list", "查名单", "企业在不在<br>公开名单里")]
 
 
 def c_tasks():
     """要办的事：同 A 的 6 格；下面把每样的次数写全（Codex、agy 第 1 轮：问一问每天 20 句、整理成文件的额度、准备材料什么时候算次数）。"""
-    tiles = "".join(task_tile(*t) for t in TASKS)
-    rules = ("AI 解读、条款对照、问这份通知：今天各还剩 5 次", "问这份通知每天最多问 20 句",
-             "整理成文件：每天最多 20 个，一次最多 10 份", "准备材料：没解读过的先解读（算 1 次 AI 解读）", "找通知、查名单不用 AI，不算次数")
+    tiles = "".join(task_tile(*t) for t in C_TASKS)
+    rules = ("AI 解读、准备材料、条款对照：点了先选通知", "AI 解读、条款对照、问这份通知：今天各还剩 5 次",
+             "问这份通知找到原句才算 1 次，没找到不算；", "另外每天最多问 20 句，找没找到都算", "整理成文件：每天最多 20 个，一次最多 10 份",
+             "准备材料：没解读过的先解读（算 1 次 AI 解读）", "找通知、查名单不用 AI，不算次数")
     return card(card_head("要办的事")
                 + f'<div style="padding: 12px 0 4px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px">{tiles}</div>'
                 + small_note("<br>".join(rules), 6, 14))
@@ -622,7 +657,7 @@ def c_records():
     recs = (record(f"问一问 · {DOC['title']}", "[日期] · AI 解读、准备材料、问了 2 句")
             + record(f"问一问 · {FIND_SHORT}", "[日期] · 找到 5 份，整理成 Excel 对比表")
             + record(f"条款对照 · {DOC['title']}", "[日期] · 已完成", last=True))
-    return card(card_head("最近的对话和结果", "全部") + recs)
+    return card(card_head("我的 AI 记录", "全部") + recs)
 
 
 def c_home():
@@ -640,7 +675,7 @@ def c_card():
                 + f'<div style="margin-top: 4px; font-size: 14px; line-height: 1.7">约半分钟把申报对象、条件、时间、材料的原文原句摘出来分好类，每句都能回原文核对。</div>'
                 + btn_primary("开始解读") + two
                 + small_note("没解读过的点「准备材料」会先解读（算 1 次）；<br>条款对照今天还剩 5 次。")
-                + ask + small_note(f"问这份通知今天还剩 5 次；{NO_NAMES}<br>AI 只摘原句，不判断能不能申报。", 8, 16))
+                + ask + small_note(f"问这份通知今天还剩 5 次，找到原句才算；<br>另外每天最多问 20 句，找没找到都算。<br>{NO_NAMES}<br>AI 只摘原句，不判断能不能申报。", 8, 16))
 
 
 def c_detail():
@@ -662,7 +697,7 @@ def tapped(text):
 
 def q_chat(n, text):
     """对话里的原句：同 ai_board.quote，"纠错"统一叫"这句摘错了"（agy 第 1 轮）。"""
-    return ab.quote(n, text).replace("纠错</span>", "这句摘错了</span>")
+    return ab.quote(n, text).replace("纠错</span>", "这句摘错了</span>").replace("出处：正文", "位置：正文")
 
 
 def open_full(text):
@@ -676,15 +711,15 @@ def c_page(top, ph, note):
 
 
 def c_interpret():
-    body = (para(f"摘出了 {TOTAL} 句，分在 5 类，可能没摘全。先看截止和申报对象，其余在完整结果里：")
+    body = (para(f"摘出了 {TOTAL} 句，分在 5 类，可能没摘全。先看截止和申报对象：")
             + f'<div style="margin-top: 10px; padding: 10px 12px; border-radius: 10px; border: 1px solid {LINE}">{due_block()}</div>'
-            + f'<div style="margin-top: 12px; display: flex; flex-wrap: wrap; gap: 6px">{count_chips(0, 28, 12.5)}</div>'
-            + small_note("材料清单里有 1 句和申报方式相同。", 6)
+            + f'<div style="margin-top: 12px; display: flex; flex-wrap: wrap; gap: 6px">{count_chips(None, 28, 12.5)}</div>'
+            + small_note("点类别打开完整结果、跳到那一类；<br>材料清单里有 1 句和申报方式相同。", 6)
             + q_chat(1, OBJ[0]) + q_chat(2, OBJ[1])
             + open_full(f"看完整结果（{TOTAL} 句）")
             + para(f"没摘到：{MISSING}，可能原文没写。", 13, T2, 10) + para(ab.READ_BODY, 13, T2, 4))
     top = c_top() + tapped("AI 解读这份通知") + answer("ai", body) + suggest("准备材料", "条款对照", "加入整理")
-    return c_page(top, "接着问这份通知里的事", f"今天还剩：问这份通知 5 次，AI 解读 4 次。<br>对话保存 30 天；{NO_NAMES}")
+    return c_page(top, "接着问这份通知里的事", f"今天还剩：问这份通知 5 次，AI 解读 4 次。<br>找到原句才算 1 次；还能问 20 句，找没找到都算。<br>对话保存 30 天；{NO_NAMES}")
 
 
 def res_foot():
@@ -696,8 +731,8 @@ def res_foot():
 def c_result():
     """从对话里点"看完整结果"打开的整页：同 A 的解读结果，顶上多一个看法切换（全部原句 / 材料清单），底栏"回到对话"。"""
     view = f'<div style="margin: 10px 12px 0">{seg(VIEWS_SEG, VIEWS_SEG[0], PAGE_TRACK)}</div>'
-    top = nav("AI 解读") + result_strip() + a_summary() + view + a_jump() + result_sections()
-    return first_screen(top, bar([("条款对照", "copy"), ("加入整理", "download")], "回到对话"), h=1880)
+    top = nav("AI 解读") + result_strip() + a_summary() + view + a_jump() + result_sections() + res_foot()
+    return first_screen(top, bar([("条款对照", "copy"), ("加入整理", "plus")], "回到对话"), h=1880)
 
 
 def c_find():
@@ -710,7 +745,9 @@ def c_find():
     body = (f'<div style="display: flex; align-items: baseline; justify-content: space-between; gap: 8px"><span style="font-size: 14px; font-weight: 600">按这些条件找的</span>'
             f'<span style="font-size: 12px; color: {T3}">点条件就能改</span></div>{chips_row}'
             + para(f"找到 {DATA['find']['total']} 份，按发布日期从新到旧，先列 {len(shown)} 份：", 14, T1, 10)
-            + f'<div style="margin-top: 2px">{rows}</div>' + open_full(f"看全部 {DATA['find']['total']} 份"))
+            + f'<div style="margin-top: 2px">{rows}</div>'
+            + small_note("没有「AI 解读」按钮的是现在不能解读的通知（比如还没有拿到完整正文），点标题能看到原因。", 4)
+            + open_full(f"看全部 {DATA['find']['total']} 份"))
     top = c_top(pinned=False) + bubble(ab.FIND_Q) + answer("find", body) + suggest(f"把能解读的 {len(COMPILE)} 份整理成文件")
     return c_page(top, C_HINT, f"找通知不用 AI、不算次数。<br>要问某一份里的事，点那一行进去再问；{NO_NAMES}")
 
@@ -737,13 +774,15 @@ def c_materials():
     rows = "".join(check_row(t, i < done, i == 0) for i, t in enumerate(MAT_SELF))
     shared = (f'<div style="margin-top: 4px; padding: 12px 0 14px; border-top: 1px solid {LINE}"><div style="font-size: 12.5px; color: {T2}">'
               f'另有 1 句和「申报方式」相同（两类项目都适用）：</div><div style="margin-top: 6px; padding: 8px 10px; border-radius: 8px; background: {ab.QUOTE_BG}; '
-              f'font-size: 14px; line-height: 1.75">{Q_W2}</div></div>')
+              f'font-size: 14px; line-height: 1.75">{Q_W2}</div>'
+              f'<div style="margin-top: 6px; display: flex; align-items: center; font-size: 12.5px">{link("看原文 ›", 12.5)}'
+              f'<span style="margin-left: auto; display: inline-flex; align-items: center; gap: 3px; color: {T2}">{icon("flag", 13, T2)}这句摘错了</span></div></div>')
     lst = card(f'<div style="padding-top: 14px; font-size: 13px; color: {T2}">两类项目要的材料不一样，按你报的那一类看：</div>'
                + utabs([f"企业自主研发项目 {len(MAT_SELF)}", f"企业委托研发项目 {len(MAT_ENTR)}"], f"企业自主研发项目 {len(MAT_SELF)}")
                + src_label(line(31), line(32)) + prog + rows + shared)
     note = (f'<div style="padding: 10px 16px 0; font-size: 12.5px; line-height: 1.6; color: {T2}">这份通知没有附件，材料都写在正文里；以原文和主管部门的解释为准。</div>')
-    top = nav("材料清单") + result_strip() + head + view + lst + note + res_foot() + '<div style="height: 20px"></div>'
-    return phone(top, bar([("条款对照", "copy"), ("加入整理", "download")], "回到对话"))
+    top = nav("准备材料") + result_strip() + head + view + lst + note + res_foot() + '<div style="height: 20px"></div>'
+    return phone(top, bar([("条款对照", "copy"), ("加入整理", "plus")], "回到对话"))
 
 
 def c_compile():
@@ -755,7 +794,7 @@ def c_compile():
                      + f'<div style="margin-top: 8px">{items}</div>'
                      + para("重庆那份还没有完整正文，不能整理。", 12.5, T2, 2)
                      + para("放对象、条件、时间、材料清单，出 Excel 对比表。", 13.5, T1, 10)
-                     + small_note("前三列预览：", 4) + preview_table()
+                     + small_note("前三列预览（长句只露出写日期的一段）：", 4) + preview_table()
                      + small_note("<br>".join(rules), 10)
                      + f'<div style="margin-top: 12px; display: flex; gap: 8px">{small_btn("开始整理", True)}{small_btn("改内容或格式")}</div>')
     file_card = (f'<div style="display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 10px; background: {FILL}">'
@@ -763,8 +802,8 @@ def c_compile():
                  f'justify-content: center">{icon("doc", 22, BLUE)}</span><div style="flex: 1; min-width: 0">'
                  f'<div style="font-size: 14.5px; font-weight: 600; line-height: 1.5; overflow-wrap: anywhere">{FILE_NAME}</div>'
                  f'<div style="margin-top: 2px; font-size: 12px; color: {T2}">{len(COMPILE)} 份通知 · 4 类内容 · Excel</div></div></div>'
-                 f'<div style="margin-top: 10px; display: flex; gap: 8px">{small_btn("在小程序里看", True)}{small_btn("转发")}</div>'
-                 + para("文件开头写着「AI 生成 · 句子摘自政府原文、未改写」。<br>文件里也带隐式标识，在「文件」里能再找到。", 12, T3, 8))
+                 f'<div style="margin-top: 10px; display: flex; gap: 8px">{small_btn("打开文件", True)}{small_btn("转发")}</div>'
+                 + para("每句后面注明出处（正文写「正文」，附件写第几段、第几行），<br>照着到站内阅读里找原文。<br>文件开头写着「AI 生成 · 句子摘自政府原文、未改写」<br>和模型、备案号，也带隐式标识；在「文件」里能再找到。", 12, T2, 8))
     top = (c_top(pinned=False) + tapped(f"把能解读的 {len(COMPILE)} 份整理成文件") + confirm + tapped("开始整理") + answer("ai", file_card))
     return c_page(top, C_HINT, f"找通知不用 AI、不算次数。<br>{NO_NAMES}")
 
@@ -828,43 +867,66 @@ SCREENS = [s for r in ROWS for s in (r[3], r[4])]
 C_SHOTS = [
     ("C1_AI首页", "AI 首页：先给结果，对话入口放进刚才看的通知", c_home,
      "照 A 先给结果：顶上是找通知的框（按规则找、不用 AI、不算次数），下面刚才看的通知、直接能看的、要办的事、最近的对话和结果。"
-     "B 的对话入口放进「刚才看的通知」卡片：两个常问问题和一行只问这份通知的提问框，点了进问一问、带上这份通知。"
-     "没看过通知时，这张卡片换成「先选一份通知」（近 7 天新的、关注的新文件、找通知）。次数在「要办的事」下面写全；「整理成文件」等 AI 汇编上线后才显示。",
-     ["先给结果", "只问这份通知的提问行", "次数写全"]),
+     "B 的对话入口放进「刚才看的通知」卡片：两个常问问题和「问别的」，点了进问一问、带上这份通知，在对话页里打字。首页不放提问框，D-075 第四节不用改。"
+     "「要办的事」里 AI 解读、准备材料、条款对照点了先选通知；「问一问」不带通知也能进（先只能找通知）。没看过通知时，上面那张卡片换成「先选一份通知」。次数在下面写全。"
+     "图里「整理成文件」那格和它的额度、页头「几份还能整理成一张表」、记录里的 Excel 是 AI 汇编上线以后的样子，汇编上线前都不显示。",
+     ["先给结果", "常问问题一点就问", "次数写全"]),
     ("C2_通知详情", "通知详情：直达整页，也能直接问", c_detail,
      "卡片还在「要点」下面。A 的「开始解读」和「准备材料、条款对照」直达整页；B 的一行提问框，发出去进问一问、带上这份通知。"
      "几样次数分开写；没解读过的点「准备材料」会先解读，写明算 1 次。",
      ["位置不动", "直达整页", "卡片里能直接问"]),
     ("C3_对话里解读", "问一问：摘要卡片", c_interpret,
-     "问一问是普通页面（不是底栏页），带着通知打开，通知固定在顶上。回答是摘要卡片：两种截止、按类几句、最多列 3 句，"
-     "「看完整结果」打开整页；卡片下面跟下一步按钮。解读、准备材料、整理成文件都是点按钮做的（气泡上写「点了按钮」），打字只用来找通知、问这份通知。",
-     ["最多列 3 句", "看完整结果", "下一步按钮"]),
+     "问一问是普通页面（不是底栏页），带着通知打开，通知固定在顶上。回答是摘要卡片：两种截止的原句照列，按类几句，其余只列第一类、最多 3 句，"
+     "「看完整结果」或点类别打开整页；卡片下面跟下一步按钮。两种截止都附原句、能看原文和纠错。"
+     "这一问来自带着通知刚打开问一问时输入框上面的「AI 解读这份通知」（这份还没解读过才有）；解读、准备材料、整理成文件都是点按钮做的（气泡上写「点了按钮」），打字只用来找通知、问这份通知。",
+     ["截止加 3 句以内", "看完整结果", "下一步按钮"]),
     ("C3b_解读整页", "整页解读：底栏回到对话", c_result,
-     "从对话打开的整页：先给一眼看的，再按类跳、按原文小标题分组（认不出小标题就照原文顺序列）；顶上能切到「材料清单」。"
+     "从对话打开的整页：先给一眼看的，再按类跳、按原文小标题分组（认不出小标题就照原文顺序列）；顶上能切到「准备材料（能勾选）」。"
      "底栏「回到对话」回到原来那条消息；从详情直接打开的，底栏是「接着问这份通知」。点「加入整理」后页面上出现「去整理（1 份）」。页底照现在写模型和备案号。",
-     ["整页好核对", "能切到材料清单", "回到对话"]),
+     ["整页好核对", "能切到准备材料", "回到对话"]),
     ("C4_对话里找", "问一问：找通知", c_find,
      "在对话里说要找什么：回一张「只查收录」卡片，条件能点着改（A 的胶囊），先列 3 份，「看全部 5 份」打开结果页（同 A4）。"
      "从 AI 首页找通知框进来的，直接到结果页。没带通知时输入框只提示找通知。",
      ["条件能点着改", "先列 3 份", "不算次数"]),
-    ("C5_材料清单", "准备材料：解读结果的另一种看法", c_materials,
-     "「准备材料」就是解读结果页里的「材料清单」看法，标题跟着变成「材料清单」：两类项目分开，每项是原文原句，能勾选，勾选只存在这台手机上（换手机会丢，写明了）。"
+    ("C5_准备材料", "准备材料：解读结果的另一种看法", c_materials,
+     "「准备材料」就是解读结果页里的「准备材料（能勾选）」看法，标题跟着变成「准备材料」：两类项目分开，每项是原文原句，能勾选，勾选只存在这台手机上（换手机会丢，写明了）。"
      "用解读的结果，没解读过的先解读、算 1 次。",
      ["少一个页面", "能勾选", "不另算次数"]),
     ("C6_对话里整理", "问一问：整理成文件", c_compile,
      "点「整理成文件」：确认卡片里有几份、放什么、前三列预览（A 的预览放进 B 的卡片）和额度，「开始整理」后回文件卡片；"
-     "改内容或格式打开整理页（同 A6）。整理时的新解读每天最多 30 份（#332），文件在对话里留一张卡片，在「文件」里也能找到。",
+     "改内容或格式打开整理页（同 A6）。整理时的新解读每天最多 30 份（#332），文件在对话里留一张卡片，在「文件」里也能找到。"
+     "这是 AI 汇编上线以后的画面；上线前，各屏里「加入整理」「整理成文件」的按钮都不显示。",
      ["确认里有预览", "文件留在对话里"]),
 ]
 
 FLOW = [("入口", "AI 首页 · 通知详情的 AI 卡片 · 列表行的「AI 解读」"), ("→", "↓"),
-        ("问一问对话页", "说一句就开始；回答是摘要卡片，最多列 3 句，带下一步按钮"), ("⇄", "↕"),
-        ("整页结果", "解读结果（含材料清单）· 找通知全部结果 · 整理页；底栏回到对话"), ("→", "↓"),
-        ("找回", "最近的对话和结果 · 我的 AI 记录 · 文件")]
+        ("问一问对话页", "常问问题、问别的、详情里的提问框、要办的事里的「问一问」进来；回答是摘要卡片：截止原句加第一类最多 3 句"), ("⇄", "↕"),
+        ("整页结果", "「AI 解读」「开始解读」直接到这里；对话里点「看完整结果」也到这里，底栏回到对话"), ("→", "↓"),
+        ("找回", "我的 AI 记录 · 文件")]
+
+# (在哪, 点什么, 去哪)
+ENTRY = [
+    ("AI 首页顶上", "找通知框", "找通知结果页（整页，条件能点着改；底下「整理成文件」）"),
+    ("AI 首页 · 刚才看的通知", "AI 解读", "解读整页（底栏「接着问这份通知」）"),
+    ("", "准备材料 ›", "解读整页的「准备材料（能勾选）」"),
+    ("", "条款对照 ›", "条款对照页（现在的）"),
+    ("", "常问问题、问别的", "问一问，带上这份通知"),
+    ("AI 首页 · 要办的事", "AI 解读、准备材料、条款对照", "先选一份通知（默认刚才看的），再到上面那几页"),
+    ("", "问一问", "问一问，不带通知：先只能找通知，选了通知再问"),
+    ("", "整理成文件", "整理页：选通知、内容、格式，先看预览（AI 汇编上线后才有）"),
+    ("", "查名单", "查名单页（现在的）"),
+    ("通知详情 · AI 卡片", "开始解读、准备材料、条款对照", "解读整页、准备材料看法、条款对照页"),
+    ("", "提问框", "问一问，带上这份通知"),
+    ("列表行（查询结果、关注的新文件、截止、找通知卡片）", "AI 解读", "解读整页"),
+    ("问一问 · 带着通知刚打开时", "AI 解读这份通知（这份还没解读过时才有）、常问问题", "对话里的解读摘要卡片（算 1 次 AI 解读）、问这份通知"),
+    ("问一问 · 回答卡片", "看完整结果、类别胶囊", "解读整页，跳到那一类（底栏「回到对话」）"),
+    ("问一问 · 下一步按钮", "准备材料、条款对照、加入整理", "准备材料看法、条款对照页、加进整理（出现「去整理（N 份）」）"),
+    ("问一问 · 找通知卡片", "看全部 N 份、整理成文件", "找通知结果页、对话里的整理确认卡片"),
+]
 
 FROM_A = ["AI 首页先给结果和要办的事", "长结果整页看：解读、材料清单、找通知全部结果、整理页",
           "条件写成能点着改的胶囊", "句子按原文小标题分组，每句看原文、纠错", "整理前先看预览"]
-FROM_B = ["一句话就能开始：在详情卡片、刚才看的通知里直接问", "回答是对话里的卡片，带下一步按钮",
+FROM_B = ["一句话就能开始：详情卡片里直接问，刚才看的通知点常问问题就问", "回答是对话里的卡片，带下一步按钮",
           "带着一份通知接着问，通知固定在顶上", "整理成文件用对话里的确认卡片和文件卡片", "做过的事按对话找回"]
 
 # 三方怎么合的：(问题, Claude, Codex, agy, 合成后)
@@ -872,11 +934,11 @@ MERGE = [
     ("对话页放哪", "普通页面，能带着通知打开", "普通页面，带通知编号打开", "二级全屏页，不做底栏页",
      "问一问做成普通页面，从详情、刚才看的通知带着通知打开；底栏 AI 首页不是对话"),
     ("AI 首页的对话入口", "顶上一条能找也能问的「问一问」入口", "不放框，点例子进对话；找通知用搜索框", "不放通用的框，「刚才看的通知」卡片里放一行只问这份通知",
-     "顶上照 A 是找通知的框；「刚才看的通知」卡片里放只问这份通知的一行和两个常问问题（要你定）"),
-    ("对话里放多少", "摘要卡片，最多 5 句", "简短答案和摘要卡片", "高浓度摘要，不超过 3 句", "摘要卡片最多列 3 句，其余「看完整结果」"),
+     "顶上照 A 是找通知的框；「刚才看的通知」卡片里放两个常问问题和「问别的」，点了进问一问、带上这份通知；不放提问框，D-075 第四节不用改"),
+    ("对话里放多少", "摘要卡片，最多 5 句", "简短答案和摘要卡片", "高浓度摘要，不超过 3 句", "摘要卡片：两种截止的原句照列，其余只列第一类、最多 3 句；别的「看完整结果」"),
     ("整页怎么回对话", "返回上一页", "回到原来那条消息；整页里做出的选择、文件回写成对话里的卡片", "返回上一页，回来后直接能接着问",
      "从对话打开的，底栏「回到对话」回到原来那条消息；从详情直接打开的，底栏「接着问这份通知」；整页里生成的文件在对话里补一张卡片"),
-    ("准备材料", "单独整页或解读页里都行", "解读结果的一种看法", "单独的勾选整页", "解读结果页里的「材料清单」看法：少一个页面，不另算次数"),
+    ("准备材料", "单独整页或解读页里都行", "解读结果的一种看法", "单独的勾选整页", "解读结果页里的「准备材料（能勾选）」看法：少一个页面；没解读过的先解读（算 1 次）"),
     ("找通知", "对话里一张卡片，看全部开结果页", "结果页，条件能改；对话里先确认条件", "结果页，顶上一句检索小结",
      "首页找通知框进结果页（A）；对话里说的回卡片：条件能点着改、先列 3 份、看全部"),
     ("先做哪些", "没提", "先做带通知的对话和整页衔接，AI 汇编按 #332 随后上", "没提", "同 Codex（要你定）"),
@@ -892,7 +954,9 @@ NOT_ADOPTED = [
     ("额度用完用分享或企业认证换次数（agy）", "分享换次数违反微信诱导分享的规定；企业认证要新收集企业信息"),
     ("整理时「不占 5 次」会被无限套用（agy）", "整理时的新解读另有每天 30 份的上限（#332），画面上写明了"),
     ("材料清单加「导出清单」（agy）", "先不做，随 AI 汇编（出 Word）以后再定"),
-    ("首页那行提问框要先豁免才能画（Codex、agy）", "这一屏就是给你定的；不同意就只留两个常问问题按钮（见「要你定的」第 1 条）"),
+    ("详情页标题改叫「通知详情」（独立 Claude）", "线上现在就叫「文件详情」，改名要全站一起改，另做"),
+    ("「剩29天」「剩 29 天」两种写法、详情页「非官方分类」折行（独立 Claude）", "是线上现有组件的写法，这次不动；改组件时一起改"),
+    ("开发上的约定算没解决（Codex 第 2 轮）", "这一版是定方向的效果图；回到对话怎么定位、文件怎么回写、勾选怎么存这几样，记在右边，开发设计稿里逐条写清再请 Codex 审"),
 ]
 DEV_LATER = [
     ("回到对话", "记住对话、消息和滚动位置，消息加载完再定位；页面栈不够时重新打开对话（Codex）"),
@@ -902,13 +966,14 @@ DEV_LATER = [
     ("没看过通知的人", "「刚才看的通知」换成「先选一份通知」：近 7 天新的、关注的新文件、找通知（agy）"),
     ("加入整理以后", "页面上出现「去整理（N 份）」，点了进整理（agy）"),
     ("小标题认不出", "照原文顺序列，不硬分组（Codex）"),
-    ("AI 汇编上线前", "「整理成文件」相关的入口都不显示，不给用户看没做完的功能（你 10/19 定的）"),
+    ("AI 汇编上线前", "这些都不显示：首页「整理成文件」那格和它的额度那行、页头那句「几份还能整理成一张表」、记录里的文件、问一问里的「加入整理」「整理成文件」按钮、整页底栏的「加入整理」；C6 是上线以后的画面（你 10/19 定的不给用户看没做完的功能；Codex）"),
+    ("次数和失败", "按钮旁边先写剩几次；用完了按钮变灰、写原因和什么时候恢复；解读失败、额度不够、正文缺了，卡片上写原因，没做成的不算（Codex）"),
 ]
 
 SAME = [
     "只从政府原文里摘原句，程序逐字核对，每句能看原文、纠错",
     "不判断能不能申报，不打分，不代写材料",
-    "企业信息不交给模型：条款对照的企业情况只在页面上和条件并排",
+    "条款对照里填的企业情况不交给模型，只在页面上和条件并排；问一问里打的字会交给模型，号码类服务器先拦下，企业名称请用户不要写（《问一问使用说明》第 3 条）",
     "查询、正文、附件、结果都在小程序里，不跳浏览器（10/23 定）",
     "AI 生成的标「AI 生成」，页底写模型和备案号（D-098）；按规则找的不标",
     "AI 解读、条款对照、问这份通知各每天 5 次；找通知、查名单不用 AI、不算次数",
@@ -984,6 +1049,7 @@ def page():
     places = "".join(f'<li><b>{a}</b><span>{b}</span></li>' for a, b in PLACES)
     gaps = "".join(f'<li><b>{a}</b><span>{b}</span></li>' for a, b in GAPS)
     old = "".join(f"<tr><td>{a}</td><td>{b}</td></tr>" for a, b in OLD)
+    entry = "".join(f'<tr><td class="q">{a}</td><td>{b}</td><td>{c}</td></tr>' for a, b, c in ENTRY)
     flow = "".join(
         (f'<div class="node"><b>{t}</b><span>{d}</span></div>' if i % 2 == 0
          else f'<div class="arrow" aria-hidden="true"><span class="h">{t}</span><span class="v">{d}</span></div>')
@@ -1068,6 +1134,7 @@ tr:last-child td {{ border-bottom: 0; }}
 .decide ol {{ margin: 0; padding-left: 1.3em; display: grid; gap: 10px; }}
 .decide li b {{ font-weight: 600; }}
 .decide p {{ margin: 12px 0 0; font-size: 14px; color: var(--muted); }}
+.h3 {{ margin: 22px 0 0; font-size: 16px; }}
 .v1 {{ margin-top: 72px; padding-top: 32px; border-top: 1px solid var(--line); }}
 .sources {{ margin: 12px 0 0; padding-left: 1.2em; font-size: 13.5px; color: var(--muted); }}
 .sources a {{ color: var(--accent); text-decoration: none; overflow-wrap: anywhere; }}
@@ -1099,6 +1166,8 @@ a:focus-visible {{ outline: 2px solid var(--accent); outline-offset: 2px; border
 <h2>结合的思路</h2>
 <p class="sub">对话当入口和线索，整页当交付物。从哪进来都能一句话开始；结果在对话里先给要紧的几行，长的打开整页看、核对、勾选、出文件，看完回到同一条对话接着问。</p>
 <div class="flow">{flow}</div>
+<h3 class="h3">每个按钮去哪</h3>
+<div class="table-wrap"><table><thead><tr><th>在哪</th><th>点什么</th><th>去哪</th></tr></thead><tbody>{entry}</tbody></table></div>
 <div class="two">
 <div class="opt"><div class="side side-a">从 A 拿的</div><ul class="plain">{from_a}</ul></div>
 <div class="opt"><div class="side side-b">从 B 拿的</div><ul class="plain">{from_b}</ul></div>
@@ -1113,23 +1182,21 @@ a:focus-visible {{ outline: 2px solid var(--accent); outline-offset: 2px; border
 
 <section>
 <h2>三方怎么合的</h2>
-<p class="sub">三方拿同一份材料各自写方案（Codex 用 gpt-6.1-terra），互相没看过，再逐条合。最右一列是合成后的做法，分歧大的两条放进「要你定的」。</p>
+<p class="sub">三方拿同一份材料各自写方案（Codex 用 gpt-6.1-terra），互相没看过，再逐条合。最右一列是合成后的做法。</p>
 <div class="table-wrap"><table class="merge"><thead><tr><th>问题</th><th>Claude</th><th>Codex</th><th>agy</th><th>合成后</th></tr></thead><tbody>{merge}</tbody></table></div>
 </section>
 
 <section>
 <h2>要你定的</h2>
 <div class="decide"><ol>
-<li><b>「刚才看的通知」卡片里放一行只问这份通知的提问框。</b>这要豁免 D-075 第四节「AI 首页不放空白提问框」：这一行只问这一份通知，不是随便问的框（agy 的提议，Codex 也主张不放通用的框）。
-Claude 原来提议在顶上放一条能找也能问的入口，Codex、agy 都觉得太像开放式聊天，合成版没用。不同意的话，卡片里只留两个常问问题按钮。</li>
 <li><b>先做哪些。</b>建议先做问一问对话页（带着通知问）、对话和整页的衔接、材料清单看法；AI 汇编（出 Excel、Word）按 #332 的开发设计随后上（Codex 的建议）。</li>
 </ol>
-<p>不影响这次提审：带 AI 提审还是现在的 AI 解读、条款对照（D-098）。你定了以后，出完整的设计稿和开发计划。</p></div>
+<p>首页不放提问框（常问问题点了就进问一问），D-075 第四节不用改。不影响这次提审：带 AI 提审还是现在的 AI 解读、条款对照（D-098）。你定了以后，出完整的设计稿和开发计划。</p></div>
 </section>
 
 <section>
-<h2>审阅怎么处理的<small>第 1 轮：Codex、agy、独立 Claude</small></h2>
-<p class="sub">三方审阅提的必须改，画面上能改的都改了（次数写全、准备材料什么时候算次数、没带通知时输入框只找通知、点按钮做的事在对话里标出来、「这句摘错了」统一、材料清单的标题、页底的模型和备案号）。下面是没采纳的和留到开发设计里定的。</p>
+<h2>审阅怎么处理的<small>agy 3 轮、Codex 5 轮、独立 Claude 4 轮，最后都是「剩余必须改：无」</small></h2>
+<p class="sub">画面上能改的都改了：首页不放提问框；每个按钮去哪列成表；推荐或审核截止列出摘到的原句；次数写全（找到原句才算 1 次，另外每天最多问 20 句、找没找到都算）；准备材料什么时候算次数；点按钮做的事在对话里标出来；「这句摘错了」统一；页底写模型和备案号；文件里的出处照 #332 写。下面是没采纳的和留到开发设计里定的。</p>
 <div class="two">
 <div class="opt"><h3>没采纳的</h3><ul class="plain">{not_adopted}</ul></div>
 <div class="opt"><h3>开发设计里定的</h3><ul class="plain">{dev_later}</ul></div>
