@@ -139,6 +139,7 @@ def read_all(client, url):
     return first, segments
 
 
+@pytest.mark.usefixtures("twenty_per_page")
 def test_attachment_pages_real_db_no_duplicates(client, session):
     doc, att, _, _ = seed(session)
     seen = []

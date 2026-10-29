@@ -208,12 +208,12 @@ test('附件段落的位置：从大到小、说法和查名单一样，页码�
     row(3, '甲', { page: 1, table: 1, row: 1 }), row(4, '乙', { page: 1, table: 1, row: 2 }),
     { n: 5, kind: 'p', text: '第二条', loc: { page: 2 } }, { n: 6, kind: 'p', text: '说明', loc: null },
     row(7, '丙', { table: 2, row: 1 }), row(8, '丁', { sheet: '汇总', row: 5 }), { n: 9, kind: 'p', text: '幻灯片文字', loc: { slide: 4 } },
-    row(10, '戊', { sheet: '', row: 7 }),
+    row(10, '戊', { sheet: '', row: 7 }), row(11, '己', { sheet: '  ', row: 8 }),
   ];
   const p = load('reader', { reading: async () => reading({ segments }) }, { progress: memoryProgress() });
   p.onLoad({ id: '7', attachment: '8' }); p.visible = true; await p.openPart('8');
   assert.deepEqual(p.data.segments.map((s) => s.loc),
-    ['原文第 1 页', '', '第 1 个表第 1 行', '第 2 行', '原文第 2 页', '', '第 2 个表第 1 行', '工作表“汇总”第 5 行', '第 4 张幻灯片', '第 7 行']);
+    ['原文第 1 页', '', '第 1 个表第 1 行', '第 2 行', '原文第 2 页', '', '第 2 个表第 1 行', '工作表“汇总”第 5 行', '第 4 张幻灯片', '第 7 行', '第 8 行']);
   const text = textOf(render('pages/reader/index.wxml', p.data));
   assert.equal((text.match(/原文第 1 页/g) || []).length, 1);
   assert.doesNotMatch(text, / · |行 \d|表 \d|工作表“”/);

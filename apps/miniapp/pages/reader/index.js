@@ -20,7 +20,7 @@ const LOC_LEVELS = [
 
 function locParts(loc) {
   if (!loc || typeof loc !== 'object') return [];
-  return LOC_LEVELS.filter(([key]) => loc[key] != null && loc[key] !== '')
+  return LOC_LEVELS.filter(([key]) => loc[key] != null && String(loc[key]).trim() !== '')
     .map(([key, label]) => ({ key, text: label(loc[key]) }));
 }
 
