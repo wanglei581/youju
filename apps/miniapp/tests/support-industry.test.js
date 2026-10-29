@@ -55,10 +55,9 @@ test('筛选弹层有支持方式（6 项，用详情核对字段的词）和产
   assert.equal(industry.tagged, true);
   assert.equal(page.data.tagNote, DISCLAIMER);
   assert.match(support.note, /不代表一定提供这种支持/);
-  assert.equal(industry.note, '一份文件可能有多个方向，也可能没有');
-  // 和详情页核对过的支持方式区分开
-  assert.match(support.note, /文件详情里的“支持方式”是核对原文后标注的/);
-  assert.match(support.note, /“征集入选”只用于筛选/);
+  // 10/29 压短：产业方向只留统一那句；支持方式只留"不代表一定提供这种支持"
+  assert.equal(industry.note, undefined);
+  assert.equal(support.note, '只含申报通知和名单，不代表一定提供这种支持');
   // 筛选弹层把说明显示在选项下面（与项目类别同一个模板）
   assert.match(read('pages/search/index.wxml'), /wx:if="{{g.note}}" class="group-note">{{g.note}}/);
 });

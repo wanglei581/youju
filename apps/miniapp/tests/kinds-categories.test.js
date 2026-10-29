@@ -155,7 +155,7 @@ test('详情页：申报通知和名单显示项目类别；类型、类别和�
   const template = read('pages/detail/index.wxml');
   assert.match(template, /<text wx:if="{{doc.category}}" class="tag tag--cat">{{doc.category}}<\/text>/);
   // 标题下只有一行说明（D-053 UI 第一轮）：不再分"发布阶段"（原叫名单状态）"项目类别"两三行
-  assert.match(template, new RegExp(`<view class="weak status-note">类型、类别和发布阶段按标题归类，${DISCLAIMER}</view>`));
+  assert.match(template, /<view class="weak status-note">类型、类别和发布阶段按标题归类，非官方分类<\/view>/);
   assert.equal((template.match(/status-note/g) || []).length, 1);
 });
 
@@ -180,7 +180,7 @@ test('关注的新文件：同样折叠资讯与指南，写明篇数，可以�
 test('新加的界面文字不出现禁用字样（含支持方式、产业方向）', () => {
   const texts = [
     conditions.CATEGORY_NOTE, ...conditions.CATEGORIES, conditions.GUIDE,
-    conditions.SUPPORT_NOTE, ...conditions.SUPPORT_MODES, conditions.INDUSTRY_NOTE, ...conditions.INDUSTRIES,
+    conditions.SUPPORT_NOTE, ...conditions.SUPPORT_MODES, ...conditions.INDUSTRIES,
     conditions.describe({ kind: 'all', supports: conditions.SUPPORT_MODES.join(','), industries: conditions.INDUSTRIES.join(','), time: '不限' }),
     read('pages/search/index.js'),
     foldLine({ fold: conditions.foldNote(3, 0) }), foldLine({ fold: conditions.foldNote(0, 3) }),

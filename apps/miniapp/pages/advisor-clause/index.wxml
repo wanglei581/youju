@@ -32,7 +32,7 @@
     <button wx:if="{{form.city}}" class="interpret-link" data-field="city" bindtap="clear">清空城市</button>
     <view wx:if="{{errors.city}}" class="advisor-error">{{errors.city}}</view>
     <view wx:if="{{errors.district}}" class="advisor-error">{{errors.district}}</view>
-    <view class="advisor-text muted">城市、区县仅作为企业自述并排显示，不表示当地的数据已收录，不核实属地要求。直辖市未选区县时按省级填写。</view>
+    <view class="advisor-text muted">城市、区县只用于并排显示，不核实属地要求；直辖市不选区县按省级填写。</view>
     <view class="clause-label">职工人数</view>
     <input class="clause-control" type="number" value="{{form.employees}}" data-field="employees" bindinput="input" placeholder="整数，可不填" />
     <view wx:if="{{errors.employees}}" class="advisor-error">{{errors.employees}}</view>
@@ -97,8 +97,8 @@
       <view wx:else class="interpret-ops"><button class="interpret-link" bindtap="original">看原文</button></view>
     </view>
     <!-- 原文链接已失效（后台 linkGone）：结果照常能看，写明是按之前收录的正文做的（排队的任务可能在失效以后才做完，不说"撤下前做的"） -->
-    <view wx:if="{{linkGone}}" class="card advisor-card advisor-gone">原文链接 {{linkGone}} 检查时已失效，原网页可能已撤下或改了地址。这份结果基于此前收录的正文，通知可能已撤回或更正，仅供参考，请以发文机关现在公布的为准。</view>
-    <view wx:if="{{outdated}}" class="card advisor-card">对照之后，这份通知的核对信息或附件有更新；正文没变，下面的条件原文仍然有效，“已核对”一栏已换成现在的核对结果。</view>
+    <view wx:if="{{linkGone}}" class="card advisor-card advisor-gone">原文链接 {{linkGone}} 检查时已失效。这份结果基于此前收录的正文，仅供参考，请以发文机关现在公布的为准。</view>
+    <view wx:if="{{outdated}}" class="card advisor-card">这份通知的核对信息或附件有更新，“已核对”一栏已换成现在的核对结果。</view>
     <view wx:if="{{result.attachmentNotice}}" class="card advisor-card">{{result.attachmentNotice}}</view>
     <view wx:if="{{result.verified.length}}" class="card advisor-card">
       <view class="advisor-title">已核对</view>

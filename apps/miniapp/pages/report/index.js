@@ -1,7 +1,7 @@
 const api = require('../../utils/api.js');
 const { PROVINCES, ALL, regionSelection, regionValue, areaLabel, uncoveredDistricts } = require('../../utils/regions.js');
 const { previewDocs } = require('../../utils/exporter.js');
-const { todayISO, verifyingNote, dueView, monthDay, weekday } = require('../../utils/format.js');
+const { todayISO, dueView, monthDay, weekday } = require('../../utils/format.js');
 const { watchDay, stopDay } = require('../../utils/daywatch.js');
 const { readCache, writeCache, cachedLabel } = require('../../utils/cache.js');
 
@@ -180,7 +180,6 @@ Page({
     // 7 天内有候选、还没核对的通知：只列标题，不写日期
     soon: NO_SOON,
     // 没有内容时的说明：截止日期正在人工核对，目前已核对几条（服务端给的数字）
-    verifyingNote: '',
     emptyTitle: '',
     // 显示的是本机存的上次数据时写明（取到新数据后清空）
     cachedText: '',
@@ -288,7 +287,6 @@ Page({
       rows: reset ? rows : this.data.rows.concat(rows),
       total: res.total, page, loading: false, cachedText, prefilled: !!prefilled,
       soon: this.data.verifiedOnly ? NO_SOON : (res.unverifiedSoon || NO_SOON),
-      verifyingNote: verifyingNote(res.verified_total),
       emptyTitle: emptyTitle(this.data),
     });
   },
@@ -319,7 +317,7 @@ Page({
     (this.data.district ? this.districtGate().then(request) : request()).then((res) => {
       if (seq !== this.calSeq) return;
       this.cal = res;
-      this.setData({ loading: false, truncated: !!res.truncated, verifyingNote: verifyingNote(res.verifiedTotal) });
+      this.setData({ loading: false, truncated: !!res.truncated });
       this.showMonth();
     }).catch((err) => {
       if (seq !== this.calSeq) return;

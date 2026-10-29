@@ -99,7 +99,7 @@ function dueInfo(deadline, now) {
 // 申报通知没有核对过的截止日期时的说明，只给文字、不给任何日期（合规红线）：
 // 有待核对的候选（deadline_state 为 unverified）写"截止未核对"，没有候选写"截止时间见原文"。
 // 有核对过的日期时返回空串，由 dueInfo 显示日期；其他类型的文件不写说明。
-const NOTE_UNVERIFIED = '截止未核对，请以原文为准';
+const NOTE_UNVERIFIED = '截止未核对';
 
 // 首发版（D-061）的截止显示。接口带 excerpts=1 时每条有 due（主截止）、详情有 deadlines（逐个类型）：
 // - verified：人工核对过的，写日期和剩余天数，标"已人工核对"；
@@ -134,13 +134,6 @@ const NOTE_SEE_ORIGINAL = '截止时间见原文';
 function deadlineNote(doc) {
   if (!doc || doc.kind !== '申报通知' || dueInfo(doc.deadline)) return '';
   return doc.deadline_state === 'unverified' ? NOTE_UNVERIFIED : NOTE_SEE_ORIGINAL;
-}
-
-// 截止雷达、申报日历没有内容时的说明；total 是服务端给的已核对条数（不是数字时不写条数）
-function verifyingNote(total) {
-  return typeof total === 'number' && total >= 0
-    ? `截止日期正在人工核对中，目前已核对 ${total} 条`
-    : '截止日期正在人工核对中';
 }
 
 // 类型标签颜色：申报=蓝，名单=橙，政策=绿
@@ -193,7 +186,8 @@ function shortTime(iso) {
 }
 
 // 截止核对断档（定稿方案第八节）：最近一次人工核对截止之后，已经过了 3 个及以上工作日（周一到周五，
-// 不扣节假日）没再核对，首页写"今日未更新"；从没核对过也写。reviewedAt 是后端给的带时区的时间。
+// 不扣节假日）没再核对，首页只写最近一次核对的日期，不写"今日未更新"（10/29 创始人：提示多了用户会不信任）；
+// 从没核对过不写（7 天内那块本来只列核对过的，没核对的已写"日期还没核对"）。reviewedAt 是后端给的带时区的时间。
 const STALE_WORKDAYS = 3;
 function workdaysSince(iso, now) {
   const today = parseISO(todayISO(now));
@@ -205,12 +199,12 @@ function workdaysSince(iso, now) {
   return count;
 }
 function reviewStaleNote(reviewedAt, now) {
-  if (!reviewedAt) return '今日未更新：截止日期还没有人工核对';
+  if (!reviewedAt) return '';
   const stamp = Date.parse(reviewedAt);
   if (Number.isNaN(stamp)) return '';
   const day = todayISO(new Date(stamp));
   if (workdaysSince(day, now) < STALE_WORKDAYS) return '';
-  return `今日未更新：截止日期最近一次人工核对是 ${monthDay(day)}`;
+  return `截止日期最近一次核对：${monthDay(day)}`;
 }
 
 // ---- 详情页"能读到什么"（D-097）：正文开头在段末停、两处同名的阅读入口、正文卡顶上那一行、没正文时说什么 ----
@@ -316,9 +310,9 @@ function noBodyText(body, atts) {
 // （readable 为真），不说"不再提供"，免得上面说没有、下面又能读
 function goneNote(linkGone, readable) {
   if (!linkGone) return '';
-  const head = `原文链接已失效（${linkGone} 检查时打不开，原网页可能已撤下或改了地址）。`;
-  if (readable) return `${head}下面是之前收录的内容，通知可能已撤回或更正，请以发文机关现在公布的为准。`;
-  return `${head}下面的要点和截止是之前收录的，通知可能已撤回或更正，请以发文机关现在公布的为准；正文和附件不再提供。`;
+  const head = `原文链接已失效（${linkGone} 检查时打不开）。`;
+  if (readable) return `${head}下面是之前收录的内容，请以发文机关现在公布的为准。`;
+  return `${head}下面的要点和截止是之前收录的，请以发文机关现在公布的为准；正文和附件不再提供。`;
 }
 
 // 正文下面和底栏两处同名的入口（D-097）：正文只显示了开头 → "阅读全文"（去阅读页看正文）；正文已全部
@@ -333,6 +327,6 @@ module.exports = {
   reviewStaleNote,
   shortTime,
   todayISO, daysUntil, monthDay, cnDate, weekday, clockText, dueTone, dueInfo, kindClass, statusClass, highlight, ISSUER_WRAP, regionText,
-  deadlineNote, verifyingNote, NOTE_UNVERIFIED, NOTE_SEE_ORIGINAL, dueView, VERIFIED_LABEL, EXCERPT_LABEL,
+  deadlineNote, NOTE_UNVERIFIED, NOTE_SEE_ORIGINAL, dueView, VERIFIED_LABEL, EXCERPT_LABEL,
   ONE_SCREEN, OPENING_MAX, aboutChars, opening, attachmentLine, summaryLine, noBodyText, goneNote, readEntry,
 };

@@ -28,7 +28,7 @@ function load(file, api, wx = {}, extra = {}) {
   let definition; const module = { exports: {} };
   const dependencies = { '../../utils/regions.js': require('../utils/regions.js'), '../../utils/api.js': api, '../../utils/ai-clause.js': clause,
     '../../utils/tool-context.js': context, '../../utils/format.js': format, '../../utils/advisor.js': advisor,
-    '../../utils/boost.js': require('../utils/boost.js'), '../../utils/ai-access.js': AI_OFF, '../../utils/daywatch.js': require('./helpers/day-off.js'), ...extra };
+    '../../utils/boost.js': require('../utils/boost.js'), '../../utils/ai-access.js': AI_OFF, '../../utils/daywatch.js': require('./helpers/day-off.js'), '../../utils/pages.js': require('./helpers/package-pages-default.js').pages, ...extra };
   vm.runInNewContext(read(file), { module, Date, Math, Promise, setTimeout, clearTimeout,
     require: (key) => { assert.ok(Object.hasOwn(dependencies, key), key); return dependencies[key]; },
     Page: (value) => { definition = value; }, wx: { setNavigationBarTitle() {}, ...wx },

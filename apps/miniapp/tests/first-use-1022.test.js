@@ -80,35 +80,28 @@ test('第 7 条：详情页逐条截止和旧接口的截止卡片，当天截�
   assert.match(read('pages/report/index.wxml'), /item\.days === 0 \? '今天截止'/);
 });
 
-test('第 8 条：显示提取的正文时，标题里写明"自动提取，未经人工逐字核对"；没提取到正文时只写去站内阅读页（名单去查名单）看，不出现提取的说明', async () => {
+test('第 8 条：显示提取的正文时，标题里写明"自动提取"（10/29 去掉"未经人工逐字核对"和下面那行说明）；没提取到正文时只写去站内阅读页（名单去查名单）看，不出现提取的说明', async () => {
   let body = { status: 'ok', text: '一、申报对象……', total: 7, truncated: false };
   let listed = [];
   const page = detailPage(() => ({ ...DOC, kind: '政策', body, attachments: listed }));
   page.onLoad({ id: '5' }); await flush();
   let root = render('pages/detail/index.wxml', { ...page.data, loading: false });
   const card = (r) => findAll(r, (n) => elements(n).some((c) => hasClass('section-title')(c) && /^正文/.test(flat(c))))[0];
-  assert.equal(flat(elements(card(root))[0]), '正文（自动提取，未经人工逐字核对）');
-  // 政策文件上面没有截止卡片：说明里不指向"上面的截止时间"
-  assert.equal(flat(findAll(card(root), hasClass('body-note'))[0]), '从原网页或PDF提取，一切以原文为准。');
-  assert.doesNotMatch(textOf(card(root)), /截止/);
-  // 申报通知上面的"截止时间"卡片里写了日期，才写"截止日期可先看上面的'截止时间'"（#339 的措辞）；
-  // 卡片里只有"截止未核对"时不写——上面没有日期可看
+  assert.equal(flat(elements(card(root))[0]), '正文（自动提取）');
+  // 正文卡片里不再另写一行提取说明（10/29：以原文为准只在页底出处写一次）
+  assert.equal(findAll(card(root), hasClass('body-note')).length, 0);
+  assert.doesNotMatch(textOf(card(root)), /截止|一切以原文为准/);
   let rows = [{ kind: '企业申报截止', source: 'unverified', date: null, time: null, remainingDays: null, quote: null }];
   const notice = detailPage(() => ({ ...DOC, deadlines: rows, body: { status: 'ok', text: '正文', total: 2, truncated: false } }));
   notice.onLoad({ id: '5' }); await flush();
   let withDue = render('pages/detail/index.wxml', { ...notice.data, loading: false });
   assert.equal(findAll(withDue, hasClass('dls-head')).length, 1);
-  assert.equal(flat(findAll(card(withDue), hasClass('body-note'))[0]), '从原网页或PDF提取，一切以原文为准。');
+  assert.equal(findAll(card(withDue), hasClass('body-note')).length, 0);
   rows = [{ kind: '企业申报截止', source: 'verified', date: plus(9), time: null, remainingDays: 9, quote: null }];
   notice.refreshing = false; notice.load(); await flush();
   withDue = render('pages/detail/index.wxml', { ...notice.data, loading: false });
-  assert.equal(flat(findAll(card(withDue), hasClass('body-note'))[0]), '从原网页或PDF提取；截止日期可先看上面的“截止时间”，一切以原文为准。');
-  // 旧接口（没有逐条截止，只有一条核对过的截止）：上面的卡片写了日期，同样写这半句
-  const legacy = detailPage(() => ({ ...DOC, deadline: { label: '申报截止', date: plus(9), time: null, verified: true, notes: [] }, deadline_state: 'verified', body: { status: 'ok', text: '正文', total: 2, truncated: false } }));
-  legacy.onLoad({ id: '5' }); await flush();
-  const old = render('pages/detail/index.wxml', { ...legacy.data, loading: false });
-  assert.equal(findAll(old, hasClass('dls-head')).length, 0);
-  assert.equal(flat(findAll(card(old), hasClass('body-note'))[0]), '从原网页或PDF提取；截止日期可先看上面的“截止时间”，一切以原文为准。');
+  assert.equal(findAll(card(withDue), hasClass('body-note')).length, 0);
+  assert.doesNotMatch(textOf(card(withDue)), /截止日期可先看/);
   // 没正文时分情况说（D-097）：名单去查名单，个人事项写含个人信息，内容在附件里的指向附件，网站取不到的直说
   const said = {
     list: /查名单/, original: /含个人信息，不在小程序内展示全文/, none: /这个网站的正文还取不到/, failed: /这个网站的正文还取不到/,
@@ -168,7 +161,8 @@ test('第 4 条：关注页写的按钮名和搜索页按钮上的字一样（"�
   const gated = textOf(render('pages/follow/index.wxml', { loginOpen: true, mode: 'gated', loading: false, follows: [], changes: [] }));
   assert.match(gated, /在搜索结果页点"关注"，把当前的关键词和筛选条件（地区、类型等）存下来；有新文件时在这里标出。/);
   const empty = textOf(render('pages/follow/index.wxml', { loginOpen: true, mode: 'live', loading: false, error: '', follows: [], changes: [] }));
-  assert.match(empty, /还没有关注。在搜索结果页点"关注"，就能把当前的关键词和筛选条件存下来。/);
+  // 空状态只说还没有，怎么做写在下面的按钮上（10/29 删重复的说明）
+  assert.match(empty, /还没有关注/); assert.doesNotMatch(empty, /就能把当前的关键词和筛选条件存下来/);
   // 底部入口不再写"地区 × 主题 × 类型"（像三项都得选），也不点名哪几项
   // 读屏标签和看得见的字对得上：按钮写"关注"，读屏读"关注当前搜索条件"
   assert.match(read('pages/search/index.wxml'), /class="follow-mini" bindtap="follow" aria-role="button" aria-label="关注当前搜索条件">/);
@@ -178,24 +172,21 @@ test('第 4 条：关注页写的按钮名和搜索页按钮上的字一样（"�
   assert.match(read('pages/search/index.wxml'), /class="follow-mini" bindtap="follow"[^>]*><t-icon name="notification"[^>]*\/>关注<\/view>/);
 });
 
-const CITY = { key: 'city', title: '城市区县', hint: '省市区联动 · 可多选', multi: true, options: [], note: '省市区选项由微信提供，选项齐全不代表已收录数据；选择具体城市会替换同省的全省条件，选择具体区县会替换所属城市和全省的条件。' };
+const CITY = { key: 'city', title: '城市区县', hint: '省市区联动 · 可多选', multi: true, options: [] };
 const sheet = (extra = {}) => render('pages/search/index.wxml', {
-  filterOpen: true, activeGroup: 'city', groups: [CITY], districtOptions: [], cityCoverageNote: '当前仅有 3 个城市的部分来源，不代表全市数据完整。', pickedMap: {}, counts: {}, entries: {}, activeChips: [], picked: { open: [], city: [], district: [] }, ...extra,
+  filterOpen: true, activeGroup: 'city', groups: [CITY], districtOptions: [], cityCoverageNote: '已收录 3 个城市的部分来源。', pickedMap: {}, counts: {}, entries: {}, activeChips: [], picked: { open: [], city: [], district: [] }, ...extra,
 });
 const notes = (root) => findAll(root, hasClass('group-note')).map(flat);
 
-test('第 5 条：城市区县的规则拆成短句，放在选择器上面（先看规则再选）；"点一下移除"只在有已选的城市、区县时出现', () => {
+test('第 5 条：城市区县的规则放在选择器上面（先看规则再选），10/29 压成一句；"点一下移除"只在有已选的城市、区县时出现', () => {
   let root = sheet();
   const pane = findAll(root, hasClass('pane-inner'))[0];
   const kids = elements(pane);
   const picker = kids.findIndex((n) => n.tag === 'picker');
   assert.equal(flat(kids[0]), '城市区县省市区联动·可多选');
-  assert.deepEqual(kids.slice(1, picker).map(flat), [
-    '城市一栏选“全部”：查全省各级来源（省、市、区县都在内），和在“地区”里选这个省一样。',
-    '区县一栏选“全部”：只查这个市已收录的市级来源，不含区县；要查区县，请选具体区县。',
-    '直辖市例外：区县一栏选“全部”时查整个直辖市（各级来源都在内）。',
-  ]);
-  assert.match(flat(kids[picker + 1]), /^当前仅有3个城市的部分来源/);
+  assert.deepEqual(kids.slice(1, picker).map(flat), ['城市选“全部”查全省；区县选“全部”只查这个市的市级来源，直辖市查整个直辖市。']);
+  assert.match(flat(kids[picker + 1]), /^已收录3个城市的部分来源。/);
+  assert.doesNotMatch(textOf(root), /不代表全市数据完整|省市区选项由微信提供/);
   assert.ok(notes(root).every((n) => !/点一下移除/.test(n)));
   // 原来挤在一段里的那句不在了
   assert.doesNotMatch(read('pages/search/index.wxml'), /已选城市、区县点一下移除。城市一栏选/);
@@ -223,10 +214,10 @@ test('第 5 条：直接在"地区"里选省份，和在城市一栏选"全部"�
   assert.deepEqual(plain(viaBj), { regions: ['北京'], cities: [], districts: [] });
 });
 
-const results = (extra) => render('pages/search/index.wxml', { loading: false, error: '', total: 3, totalAll: 9, chipTime: '近 30 天', items: [], activeChips: [], picked: { open: [] }, fold: { text: '' }, entries: {}, groups: [], openNote: '只列申报通知，含三类：日期已人工核对、还没截止的；机器摘录的（截止在 8 天以后，未经人工核对）；可能 7 天内截止、日期还没核对的。没写明截止日期、或截止日期还没理清的不在里面', ...extra });
-const OPEN_LINE = '“只看未截止”：只列申报通知，含三类：日期已人工核对、还没截止的；机器摘录的（截止在8天以后，未经人工核对）；可能7天内截止、日期还没核对的。没写明截止日期、或截止日期还没理清的不在里面';
+const results = (extra) => render('pages/search/index.wxml', { loading: false, error: '', total: 3, totalAll: 9, chipTime: '近 30 天', items: [], activeChips: [], picked: { open: [] }, fold: { text: '' }, entries: {}, groups: [], openNote: '“只看未截止”不含没写明截止日期或日期还没理清的通知', ...extra });
+const OPEN_LINE = '“只看未截止”不含没写明截止日期或日期还没理清的通知';
 
-test('第 6 条：选了"只看未截止"、有结果时，结果上面也写明口径（含哪些、不含哪些）；没选、或没有结果时不写这一行', () => {
+test('第 6 条：选了"只看未截止"、有结果时，结果上面也写一句不含哪些（10/29 压短，完整口径在筛选面板）；没选、或没有结果时不写这一行', () => {
   const lines = (root) => findAll(root, hasClass('fold-note')).map(flat);
   assert.ok(lines(results({ picked: { open: ['只看未截止'] } })).includes(OPEN_LINE));
   assert.ok(!lines(results({})).includes(OPEN_LINE));
@@ -247,7 +238,7 @@ test('第 7 条：转发合并的通知，截止卡片里写明上面的日期�
   page.onLoad({ id: '5' }); await flush();
   let root = render('pages/detail/index.wxml', { ...page.data, loading: false });
   const due = findAll(root, hasClass('due-card'))[0];
-  assert.equal(flat(findAll(due, hasClass('ver-hint'))[0]), '上面这一栏只对应本页这一版（江西版）；同一通知其他地方的版本，截止看下面“各版本的截止”');
+  assert.equal(flat(findAll(due, hasClass('ver-hint'))[0]), '上面是本页这一版（江西版）的截止；其他地方的版本见下面“各版本的截止”');
   // 提示说的那一块就在截止卡片后面
   const cards = elements(root).filter((n) => /card/.test(n.attrs.class || ''));
   const at = cards.indexOf(due);
@@ -295,10 +286,8 @@ test('第 5 条附带：截止页、我的客户页和搜索页同一说法—�
   for (const pageName of ['report', 'clients', 'search']) {
     const text = read(`pages/${pageName}/index.wxml`).replace(/<!--[\s\S]*?-->/g, '');
     assert.doesNotMatch(text, /直辖市不选区县时也是|按省级范围查询/, pageName);
-    assert.match(text, /只查这个市已收录的市级来源，不含区县/, pageName);
-    assert.match(text, /直辖市例外：区县一栏选“全部”时查整个直辖市（各级来源都在内）/, pageName);
-    // 城市一栏选"全部"＝全省各级：搜索页在规则第一句，截止页、我的客户页在同一行里，三页都写"（省、市、区县都在内）"
-    assert.ok(text.includes(pageName === 'search' ? '城市一栏选“全部”：查全省各级来源（省、市、区县都在内）' : '城市一栏选“全部”查全省各级来源（省、市、区县都在内）；'), pageName);
+    // 三页同一句（10/29 压成一句）：城市选"全部"是全省，区县选"全部"只查市级来源，直辖市是整个直辖市
+    assert.ok(text.includes('城市选“全部”查全省；区县选“全部”只查这个市的市级来源，直辖市查整个直辖市。'), pageName);
   }
 });
 
@@ -374,6 +363,7 @@ test('10/25 Grok 复审：工具中心不写"追溯官方原文"（像外链）�
   assert.equal((about.match(/导出的文件在底栏"导出"里/g) || []).length, 2);
   const clients = read('pages/clients/index.wxml');
   assert.doesNotMatch(clients, /点此移除/);
-  assert.match(clients, /已选的城市，点一下移除：/);
-  assert.match(clients, /已选的区县，点一下移除：/);
+  // 已选的城市、区县本身带关闭图标，10/29 起不再另写"点一下移除"
+  assert.doesNotMatch(clients, /点一下移除/);
+  assert.match(clients, /bindtap="removeCity"[^>]*>{{item}}<t-icon name="close"/);
 });

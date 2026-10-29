@@ -31,7 +31,7 @@ Component({
       let excerpt = null;
       if (view !== undefined) {
         due = view && view.source !== 'unverified' ? { days: view.days, tone: view.tone, text: view.text } : null;
-        dueNote = due ? '' : (view || doc.dueSoonUnverified ? '截止未核对，请以原文为准' : '截止时间见原文');
+        dueNote = due ? '' : (view || doc.dueSoonUnverified ? '截止未核对' : '截止时间见原文');
         excerpt = view && view.source === 'excerpt' ? { label: view.label, quote: view.quote } : null;
       }
       this.setData({

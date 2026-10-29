@@ -16,8 +16,7 @@
       <view>截止：{{item.deadline || '未核对'}} {{item.date_role}}</view>
       <view wx:if="{{item.deadline_quote}}">原句：{{item.deadline_quote}}</view>
       <view wx:if="{{item.support}}">{{item.support}}</view>
-      <view wx:if="{{item.unchecked}}" class="warn">{{item.unchecked}}</view>
-      <view>来源核对：{{item.source_checked || '未核对'}} · 截止核对：{{item.deadline_checked || '未核对'}} · 变更核对：{{item.change_checked || '未核对'}}</view>
+      <view wx:if="{{item.unchecked && item.unchecked !== '无'}}" class="warn">未核对：{{item.unchecked}}</view>
       <view class="muted source">出处：{{item.sites}}<text user-select>{{item.urls}}</text></view>
       <button data-id="{{item.doc_id}}" bindtap="read">站内阅读正文和依据</button>
     </view>

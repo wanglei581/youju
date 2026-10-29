@@ -141,8 +141,8 @@ Page({
   loadCities() {
     loadCoverage().then((c) => {
       this.coverage = c;
-      const cityNote = c && Array.isArray(c.cities) ? (c.cities.length ? `只已收录 ${c.cities.length} 个城市的部分来源，不代表全市完整覆盖。` : '当前尚未接入市级来源；城市可以保存，相关通知暂不可查询。') : '';
-      const districtNote = c && Array.isArray(c.districts) ? (c.districts.length ? `只已收录 ${c.districts.length} 个区县的部分来源。` : '当前尚未接入区县来源；区县可以保存，相关通知暂不可查询，不会改为全市或全省。') : '';
+      const cityNote = c && Array.isArray(c.cities) ? (c.cities.length ? `已收录 ${c.cities.length} 个城市的部分来源。` : '当前尚未接入市级来源；城市可以保存，相关通知暂不可查询。') : '';
+      const districtNote = c && Array.isArray(c.districts) ? (c.districts.length ? `已收录 ${c.districts.length} 个区县的部分来源。` : '当前尚未接入区县来源；区县可以保存，相关通知暂不可查询，不会改为全市或全省。') : '';
       this.setData({ cityCoverageNote: `${cityNote}${districtNote}`, cityOptions: (c && c.cities || []).map((v) => ({ key: `${v.province}/${v.city}`, label: `${v.province}·${v.city}` })),
         coverageError: c ? '' : '已收录城市、区县未加载，可重试；省级地区仍可选择' });
       if (this.data.editing) this.refreshPicked();

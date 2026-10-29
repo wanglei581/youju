@@ -87,14 +87,12 @@
     <view class="vline"></view>
     <view class="summary-text">
       <view>申报 <text class="b">{{stats.apply}}</text> · 名单与公示 <text class="b">{{stats.lists}}</text> · 其他 <text class="b">{{stats.other}}</text></view>
-      <view>来自 {{stats.provinces}} 个省和国家部委<text wx:if="{{stats.cities}}">、{{stats.cities}} 个城市</text> · 每条都有出处</view>
-      <!-- 同一份部里通知的各地转发版本按 1 份计（D-055） -->
-      <view wx:if="{{stats.week_reposts}}" class="summary-reposts">另有 {{stats.week_reposts}} 个转发版本，未重复计算</view>
+      <view>来自 {{stats.provinces}} 个省和国家部委<text wx:if="{{stats.cities}}">、{{stats.cities}} 个城市</text></view>
     </view>
   </block>
   <view wx:else class="summary-text">
     <view class="summary-zero">本周暂无新文件<text wx:if="{{checkedText}}"> · 最近检查 {{checkedText}}</text></view>
-    <view>来自 {{stats.provinces}} 个省和国家部委<text wx:if="{{stats.cities}}">、{{stats.cities}} 个城市</text> · 每条都有出处</view>
+    <view>来自 {{stats.provinces}} 个省和国家部委<text wx:if="{{stats.cities}}">、{{stats.cities}} 个城市</text></view>
   </view>
   <t-icon name="chevron-right" size="32rpx" color="#86909C" />
 </view>
@@ -127,7 +125,7 @@
     <view class="soon-title">{{item.title}}</view>
     <view class="soon-line"><text class="soon-when">{{item.kindText}} {{item.dateText}} {{item.week}}</text><view class="soon-right"><text class="pill pill--{{item.tone}}">{{item.days === 0 ? '今天截止' : '剩 ' + item.days + ' 天'}}</text><ai-button doc-id="{{item.id}}" doc-title="{{item.title}}" ai="{{item.ai}}" /></view></view>
   </view>
-  <view wx:if="{{soonUnverified}}" class="soon-foot {{soon.length ? '' : 'soon-foot--only'}}" data-url="/pages/report/index" bindtap="goEntry">{{soon.length ? '另有 ' + soonUnverified + ' 份可能 7 天内截止，日期还没核对 ›' : soonUnverified + ' 份通知可能 7 天内截止，日期还没核对，点开看是哪些 ›'}}</view>
+  <view wx:if="{{soonUnverified}}" class="soon-foot {{soon.length ? '' : 'soon-foot--only'}}" data-url="/pages/report/index" bindtap="goEntry">{{soon.length ? '另有 ' + soonUnverified + ' 份可能 7 天内截止，日期还没核对 ›' : soonUnverified + ' 份通知可能 7 天内截止，日期还没核对 ›'}}</view>
 </view>
 
 <view class="card">

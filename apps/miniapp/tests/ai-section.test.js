@@ -541,7 +541,7 @@ function contact(props, { platform = 'ios', email = 'help@example.invalid', getD
   return { view, wx, root: () => render('components/contact-button/index.wxml', { ...view.data, ...view.properties }) };
 }
 
-test('联系客服：微信自带客服按钮，写回复时间和客服管什么；带给客服的只有页面、通知编号、原因代码；在通知页上点带这份通知的卡片；鸿蒙手机换成一行字', () => {
+test('联系客服：微信自带客服按钮，写客服管什么（10/29 起不写回复时间）；带给客服的只有页面、通知编号、原因代码；在通知页上点带这份通知的卡片；鸿蒙手机换成一行字', () => {
   const c = contact({ from: 'ai_result', docId: '42', docTitle: '关于组织申报的通知', reason: 'AI_UNAVAILABLE' });
   const [button] = findAll(c.root(), (n) => n.tag === 'button');
   assert.equal(button.attrs['open-type'], 'contact');
@@ -549,7 +549,7 @@ test('联系客服：微信自带客服按钮，写回复时间和客服管什�
   assert.equal(button.attrs['show-message-card'], true);
   assert.equal(button.attrs['send-message-title'], '关于组织申报的通知');
   assert.equal(button.attrs['send-message-path'], '/pages/detail/index?id=42');
-  assert.equal(textOf(c.root()).trim(), '联系客服 一般当天或第二天回复 客服只解答小程序怎么用，不代办申报、不判断能不能报');
+  assert.equal(textOf(c.root()).trim(), '联系客服 客服解答小程序的使用问题，不代办申报');
   // 不认的内容不带（企业名称、长文字、任务编号这类不该进来的）
   const odd = contact({ from: '我的客户 甲公司', docId: 'task-7', reason: 'x'.repeat(80), docTitle: '标题' });
   assert.equal(odd.view.data.sessionFrom, 'youju'); assert.equal(odd.view.data.showCard, false);
@@ -569,7 +569,7 @@ test('联系客服：微信自带客服按钮，写回复时间和客服管什�
   const row = contact({ variant: 'row', from: 'me' });
   const [rowButton] = findAll(row.root(), (n) => n.tag === 'button');
   assert.equal(rowButton.attrs['open-type'], 'contact'); assert.equal(rowButton.attrs['session-from'], 'youju|from=me');
-  assert.equal(textOf(row.root()).trim(), '联系客服一般当天或第二天回复');
+  assert.equal(textOf(row.root()).trim(), '联系客服');
   assert.match(textOf(contact({ variant: 'row' }, { platform: 'ohos' }).root()), /这台手机暂不能打开，看使用帮助/);
   // 微信 style v2 的按钮要 !important 才认宽度和外边距
   assert.match(read('components/contact-button/index.wxss'), /width: 100% !important;/);
@@ -980,7 +980,7 @@ test('Codex 第 5 轮：AI 首页再次进来先清掉"我的 AI 记录"，离�
   assert.deepEqual(plain(h.page.data.records), []); assert.equal(h.page.data.lastDoc, null);
 });
 
-test('Codex 第 5 轮：任务因全站满了、暂时不可用、被移出白名单失败时不给"重试"；其他失败照旧能重试；AI 首页列表提示只在有按钮时说"点 AI 解读"', async () => {
+test('Codex 第 5 轮：任务因全站满了、暂时不可用、被移出白名单失败时不给"重试"；其他失败照旧能重试；AI 首页列表上不再写"点 AI 解读"（10/29 删提示）', async () => {
   for (const [errorCode, canRetry] of [['AI_DAILY_CAP', false], ['AI_UNAVAILABLE', false], ['AI_OFF', false], [null, true]]) {
     const states = [];
     const saved = new Map([[interpret.CONSENT_KEY, interpret.consentRecord()]]);
@@ -994,9 +994,9 @@ test('Codex 第 5 轮：任务因全站满了、暂时不可用、被移出白�
     assert.equal(lastState.phase, 'failed'); assert.equal(lastState.canRetry, canRetry, String(errorCode));
     session.hide();
   }
-  for (const [caps, mentions] of [[ON(), true], [ON({ siteFull: true }), false], [ON({ remaining: { interpret: 0, clause: 5 } }), false]]) {
+  for (const caps of [ON(), ON({ siteFull: true }), ON({ remaining: { interpret: 0, clause: 5 } })]) {
     const h = hubPage({ caps }); h.page.onShow(); await settle();
-    assert.equal(/点“AI 解读”直接开始/.test(textOf(render('pages/ai/index.wxml', h.page.data))), mentions, JSON.stringify(caps.ai_advisor));
+    assert.doesNotMatch(textOf(render('pages/ai/index.wxml', h.page.data)), /点标题看通知全文|点“AI 解读”直接开始/, JSON.stringify(caps.ai_advisor));
   }
 });
 
@@ -1074,7 +1074,7 @@ test('Codex 第 7 轮：AI 首页用着用着后台处理不了，马上收起"A
   h.access.set({ available: true });
   assert.equal(h.page.data.gate, ''); assert.equal(h.page.data.interpretOpen, true); assert.equal(h.page.data.clauseOpen, true);
   out = textOf(render('pages/ai/index.wxml', h.page.data));
-  assert.match(out, /今天还剩 5 次/); assert.match(out, /点“AI 解读”直接开始/);
+  assert.match(out, /今天还剩 5 次/);
   h.page.clauseLast(); assert.equal(h.navigations.length, 1);
   // 全站满了的时候后台又处理不了：改写暂时不可用；恢复了回到"今天满了"
   const f = hubPage({ caps: ON({ siteFull: true }) }); f.page.onShow(); await settle();

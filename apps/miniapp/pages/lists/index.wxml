@@ -61,7 +61,7 @@
     <view wx:else class="empty-lookup">
       <view class="empty-title">已收录的 {{result.coverage.lists}} 份名单中未找到</view>
       <view class="warn">{{missNote}}</view>
-      <view class="weak empty-text">收录范围：{{coverageSince ? coverageSince + '以来' : '近期'}}各省科技、工信部门发布、能读出企业名称的名单，仍在陆续补充，按类型的份数见本页下方"比对范围"。请核对企业全称再查。</view>
+      <view class="weak empty-text">请核对企业全称再查。已收录{{coverageSince ? coverageSince + '以来' : '近期'}}各省科技、工信部门的公开名单，份数见下方“比对范围”。</view>
     </view>
     <view wx:if="{{result.similar.length}}" class="similar">
       <view class="similar-title">名称相近的企业（不一定是同一家，点名称按全称查）</view>
@@ -98,7 +98,7 @@
 <!-- 比对范围（D-061，原名单看板的统计并到这里）：查名单拿哪些名单比的 -->
 <view wx:if="{{scope}}" class="card scope">
   <view class="section-title">比对范围<text class="weak count">能查的名单 {{scope.lists}} 份</text></view>
-  <view class="weak scope-text">查名单在读出了企业名称的名单里逐行比对；扫描件、图片等读不出文字的名单暂时查不到，不计入下面的份数和条数。公示期内的名单也计入，最终以发文机关公布的为准。</view>
+  <view class="weak scope-text">只统计能读出企业名称的名单，扫描件等读不出文字的不计入；公示期内的名单也计入，以发文机关最终公布的为准。</view>
   <view class="table-head"><text>名单类型</text><text>名单份数</text><text>企业条数</text></view>
   <view wx:for="{{scope.byType}}" wx:key="type" class="table-row"><text>{{item.type}}</text><text>{{item.lists}}</text><text>{{item.entries}}</text></view>
   <view class="scope-toggle" bindtap="toggleScope" aria-role="button" aria-expanded="{{scopeOpen}}"><text class="link">{{scopeOpen ? '收起' : '按省份、年度看'}}</text><t-icon name="{{scopeOpen ? 'chevron-up' : 'chevron-down'}}" size="26rpx" color="#2A5CE0" /></view>

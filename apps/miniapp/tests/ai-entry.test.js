@@ -19,7 +19,7 @@ const AI_PAGES = ['advisor', 'advisor-interpret', 'advisor-clause', 'advisor-tas
 const liveTimers = new Set();
 test.afterEach(() => { liveTimers.forEach(clearTimeout); liveTimers.clear(); });
 const trackedTimeout = (fn, delay) => { const id = setTimeout(() => { liveTimers.delete(id); fn(); }, delay); liveTimers.add(id); return id; };
-const NOTICE = 'AI 生成 · 内部测试：摘录通知原文原句，可能不全；不判断能否申报，以原文和主管部门解释为准。';
+const NOTICE = 'AI 生成 · 内部测试：摘录通知原文原句，不判断能否申报，以原文和主管部门解释为准。';
 // 10/17：入口是"要点"下面的卡片（标题 AI 解读，能用时有"开始解读"），不再是右下角浮动按钮
 const ENTRY_OPEN = (text) => text.startsWith('AI 解读') && text.includes('开始解读');
 const caps = (enabled, extra = {}) => ({

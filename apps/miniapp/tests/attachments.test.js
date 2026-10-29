@@ -98,8 +98,8 @@ test('附件直接写能不能读（和阅读页同一个判断，D-097）：能
   assert.deepEqual(list.map((a) => [a.canOpen, a.action, a.meta]), [
     [true, '阅读', ''], [false, '', '扫描件，暂不能识别文字'], [true, '阅读', '能读，另有 2 页扫描件暂不能识别文字'], [true, '阅读', ''],
   ]);
-  assert.equal(mod.note(list), '附件文字自动提取，未经人工逐字核对，以发文机关公布的文本为准');
-  assert.equal(mod.note(list.slice(1, 2)), '', '没有能读的附件不写这句');
+  // 附件卡片底部那句（自动提取、未经人工逐字核对）10/29 删掉：正文标题已写自动提取，页底出处写一次以原文为准
+  assert.equal(mod.note, undefined);
   assert.equal(mod.sizeText(2048), '2 KB');
   // 读不了、服务端又没给原因：行上写"暂不能读"，不留空（Grok 第 1 轮）
   assert.equal(mod.decorate([{ id: '11', readable: false, state: 'broken' }])[0].meta, '暂不能读');
@@ -171,13 +171,13 @@ test('详情页：点附件交给附件模块打开，打开过程中重复点�
     '../../utils/reminders.js': { remindedDocs: () => Promise.resolve({}) }, '../../utils/exporter.js': {},
     '../../utils/daywatch.js': { watchDay() {}, stopDay() {} },
     '../../utils/attachments.js': {
-      decorate: real.decorate, note: real.note,
+      decorate: real.decorate,
       open: (att, url) => { opens.push([att.id, url]); return new Promise((resolve) => { release = resolve; }); },
     },
   }, { wx: {} });
   page.onLoad({ id: '1' }); await flush();
   assert.deepEqual(page.data.atts.map((a) => a.meta), ['', '此格式暂不能在小程序内阅读', '']);
-  assert.equal(page.data.attNote, '附件文字自动提取，未经人工逐字核对，以发文机关公布的文本为准');
+  assert.equal(page.data.attNote, undefined);
   page.openAttachment({ currentTarget: { dataset: { index: 0 } } });
   page.openAttachment({ currentTarget: { dataset: { index: 2 } } });
   assert.deepEqual(opens, [['7', '1']]);
@@ -193,7 +193,7 @@ test('详情页：点附件交给附件模块打开，打开过程中重复点�
 
   const wxml = read('pages/detail/index.wxml');
   assert.match(wxml, /wx:for="{{atts}}"[^>]*bindtap="openAttachment"/);
-  assert.match(wxml, /{{attNote}}/);
+  assert.doesNotMatch(wxml, /attNote|未经人工逐字核对/);
   // 附件转发只来自 openDocument 自带的右上角菜单，附件区域不加分享按钮；正式版不出现 AI、智能。
   // 10/18 创始人批准验收问题 9a：整份通知可以从底栏唯一的"转发"按钮转（class bar-share），不是附件的
   const shareButtons = wxml.match(/<button[^>]*open-type="share"[^>]*>/g) || [];

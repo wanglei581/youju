@@ -22,8 +22,8 @@ const HOME_CACHE = 'youjuHomeCacheV1';
 const GUIDE_KEY = 'youjuGuideClosedV1';
 const GUIDE_FIRST = [
   // 10/18 验收 #21c：企业行政常把公司名输进"查申报"，这里写明在政府公开名单里查企业要先点"查名单"（用词 D-090）
-  { key: 'search', name: '搜通知', text: '按关键词、地区、类型找申报通知和政策；要在政府公开名单里查企业，先点搜索框上面的“查名单”' },
-  { key: 'due', name: '看截止和原文', text: '“截止”页列出快到期的通知；通知详情里可以站内阅读正文和附件，查看内容来源与处理状态', url: '/pages/report/index' },
+  { key: 'search', name: '搜通知', text: '按关键词、地区、类型找申报通知和政策；查企业点“查名单”' },
+  { key: 'due', name: '看截止和原文', text: '“截止”页列出快到期的通知；详情里可以读正文和附件', url: '/pages/report/index' },
 ];
 const GUIDE_TOOLS = { key: 'tools', name: '批量查客户（顾问用）', text: '在“工具中心”一次粘贴多家企业，在政府公开名单里查这些企业，并整理相关通知；需先同意协议，每月有免费次数', url: '/pages/advisor/index' };
 const GUIDE_CLIENTS = { key: 'clients', name: '批量查客户（顾问用）', text: '在“我的客户”存下客户的地区和产业方向，一次列出和它们相关的通知', url: '/pages/clients/index' };
@@ -35,7 +35,7 @@ function guideClosed() {
 }
 
 // "7 天内截止"：接口只给核对过的（最多 5 条）；按手机日期重算剩余天数，已过的不放
-// 后端没给这个字段（老版本或本机演示数据）时不写，免得误报"今日未更新"
+// 后端没给这个字段（老版本或本机演示数据）时不写
 function reviewNoteOf(stats) {
   return stats && Object.prototype.hasOwnProperty.call(stats, 'deadline_reviewed_at') ? reviewStaleNote(stats.deadline_reviewed_at) : '';
 }

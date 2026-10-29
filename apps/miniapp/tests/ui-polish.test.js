@@ -94,14 +94,14 @@ test('详情页和查名单的列表加载时用占位块，不写"正在加载�
   assert.ok(!lists.includes('正在加载…'));
 });
 
-test('截止页（D-061）只有一处标题和一个返回：自定义导航，下面一行常驻"机器摘录仅供参考，以原文为准"', () => {
+test('截止页（D-061）只有一处标题和一个返回：自定义导航；顶栏下不再常驻"机器摘录仅供参考，以原文为准"（10/29）', () => {
   const template = wxml('report');
   assert.equal(JSON.parse(read('pages/report/index.json')).navigationStyle, 'custom');
   assert.match(template, /<text class="nav-title">截止<\/text>/);
   assert.doesNotMatch(template.replace(/<!--[\s\S]*?-->/g, ''), /截止雷达|申报日历/);
   assert.equal((template.match(/class="nav-title"/g) || []).length, 1);
   assert.equal((template.match(/bindtap="goBack"/g) || []).length, 1);
-  assert.match(template, /<view class="sub">机器摘录仅供参考，以原文为准<\/view>/);
+  assert.doesNotMatch(template.replace(/<!--[\s\S]*?-->/g, ''), /class="sub"|机器摘录仅供参考/);
   assert.match(template, /style="padding-top: {{statusBarHeight}}px"/);
 });
 test('关注的新文件：没同意协议（403）显示说明卡和去"我的"的入口，不写"加载失败"和"重试"', async () => {

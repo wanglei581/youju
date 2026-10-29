@@ -22,7 +22,7 @@ function load(file, deps, globals = {}) {
   let definition; const module = { exports: {} };
   vm.runInNewContext(read(file), {
     module, Date, Math, Promise, setTimeout, clearTimeout,
-    require(name) { if (!Object.hasOwn(deps, name) && /ai-access\.js$/.test(name)) return AI_OFF; if (!Object.hasOwn(deps, name) && /daywatch\.js$/.test(name)) return require('./helpers/day-off.js'); assert.ok(Object.hasOwn(deps, name), `缺少依赖 ${name}`); return deps[name]; },
+    require(name) { if (!Object.hasOwn(deps, name) && /(^|\/)pages\.js$/.test(name)) return require('./helpers/package-pages-default.js').pages; if (!Object.hasOwn(deps, name) && /ai-access\.js$/.test(name)) return AI_OFF; if (!Object.hasOwn(deps, name) && /daywatch\.js$/.test(name)) return require('./helpers/day-off.js'); assert.ok(Object.hasOwn(deps, name), `缺少依赖 ${name}`); return deps[name]; },
     Page(value) { definition = value; }, Component(value) { definition = value; }, ...globals,
   }, { filename: file });
   return definition ? { ...definition, data: plain(definition.data), setData(value) { Object.assign(this.data, value); } } : module.exports;
@@ -294,7 +294,7 @@ test('D-073：服务端标了 outdated 的旧结果照常显示并加说明；�
     const wxml = read(`pages/${page}/index.wxml`);
     const at = wxml.indexOf('wx:if="{{outdated}}"');
     assert.ok(at > -1 && at < wxml.indexOf('result.attachmentNotice'), page);
-    assert.match(wxml, /正文没变/);
+    assert.match(wxml, /核对信息或附件有更新，“已核对”一栏已换成现在的核对结果。/);
   }
 });
 
@@ -341,7 +341,7 @@ test('解读页直达仍须 capabilities 开放，拒绝权限时不显示须知
     const output = render(read('pages/advisor-interpret/index.wxml'), page.data);
     assert.equal(output.includes('使用须知'), enabled === true);
     assert.equal(output.includes('AI'), enabled === true);
-    assert.equal(output.includes('内部测试：摘录通知原文原句，可能不全；不判断能否申报，以原文和主管部门解释为准。'), enabled === true);
+    assert.equal(output.includes('内部测试：摘录通知原文原句，不判断能否申报，以原文和主管部门解释为准。'), enabled === true);
     // AI 板块没显示（这里当作 AI 关着）时标题留空，不写"工具"也不写 AI；能力接口说开着才写
     assert.equal(navigationTitle, enabled === true ? 'AI 解读 · 内部测试' : '');
     page.check({ detail: { value: ['agree'] } }); page.agree(); await flush(); assert.equal(created, enabled === true ? 1 : 0); page.onUnload();

@@ -20,16 +20,16 @@ const decode = (value) => { try { return decodeURIComponent(value || ''); } catc
 const firstPage = () => typeof getCurrentPages === 'function' && getCurrentPages().length <= 1;
 // 查名单结果里条目编号的样子（服务端加密的 32 位编号，见 youju/lists/evidence.py）
 const TOKEN = /^[A-Za-z0-9_-]{32}$/;
-// 没查到时如实说：已读出企业名称的名单里没有；另有几份没读出、几份只读了一部分，不能据此判断不在名单里
+// 没查到时如实说（D-091）：先说不能据此判断不在名单里，再按份数说没读出、只读了一部分的，不写内部原因
 function missNote(coverage) {
   const unread = Number((coverage && coverage.unreadLists) || 0);
   const partial = Number((coverage && coverage.partialLists) || 0);
-  // 没读出企业名称的不在"已收录的 N 份"里，用"另有"；只读了一部分的在里面，用"其中"
+  // 没读出企业名称的不在"已收录的 N 份"里，用"另有"；只读了一部分的在里面，写明"已收录的名单里有"
   const parts = [];
-  if (unread > 0) parts.push(`另有 ${unread} 份名单没能读出企业名称（扫描件、旧格式、原网页打不开或表格没认出来）`);
-  if (partial > 0) parts.push(`已收录的名单中有 ${partial} 份很长、只读了前面一部分`);
-  const extra = parts.length ? `${parts.join('；')}。` : '';
-  return `${extra}不能据此判断这家企业不在名单里；地市发布的名单也还没收录。`;
+  if (unread > 0) parts.push(`另有 ${unread} 份名单读不出企业名称`);
+  if (partial > 0) parts.push(`已收录的名单里有 ${partial} 份很长、只读了前面一部分`);
+  parts.push('地市发布的名单还没收录');
+  return `不能据此判断这家企业不在名单里：${parts.join('，')}。`;
 }
 
 Page({

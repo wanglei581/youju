@@ -30,7 +30,7 @@ const NONE = { id: '2', kind: '申报通知', title: '关于组织申报的通�
 const VERIFIED = { id: '3', kind: '申报通知', title: '关于组织申报的通知', deadline_state: 'verified', deadline: { date: '2026-10-18', time: '', verified: true } };
 
 test('截止说明：未核对、无候选、已核对三种情况，未核对时不出现任何日期', () => {
-  assert.equal(format.deadlineNote(UNVERIFIED), '截止未核对，请以原文为准');
+  assert.equal(format.deadlineNote(UNVERIFIED), '截止未核对');
   assert.equal(format.deadlineNote(NONE), '截止时间见原文');
   assert.equal(format.deadlineNote({ ...NONE, deadline_state: undefined }), '截止时间见原文'); // 旧接口没有这个字段
   assert.equal(format.deadlineNote(VERIFIED), ''); // 有核对过的日期时由 dueInfo 显示
@@ -45,7 +45,7 @@ test('截止说明：未核对、无候选、已核对三种情况，未核对�
 test('列表行：显示截止状态说明，模板不再写死文字', () => {
   const row = load('components/doc-row/index.js', { '../../utils/format.js': format, '../../utils/copy.js': {}, '../../utils/repost.js': require('../utils/repost.js') });
   const observe = (doc) => { row.observers['doc, q, today'].call(row, doc, ''); return row.data; };
-  assert.equal(observe(UNVERIFIED).dueNote, '截止未核对，请以原文为准');
+  assert.equal(observe(UNVERIFIED).dueNote, '截止未核对');
   assert.equal(observe(UNVERIFIED).due, null);
   assert.equal(observe(NONE).dueNote, '截止时间见原文');
   const verified = observe(VERIFIED);
@@ -68,7 +68,7 @@ test('详情页：未核对写说明不给日期，无候选写见原文', async
     '../../utils/attachments.js': { decorate: () => [], note: () => '' },
   }, { wx: {} });
   page.onLoad({ id: '1' }); await flush();
-  assert.equal(page.data.dueNote, '截止未核对，请以原文为准');
+  assert.equal(page.data.dueNote, '截止未核对');
   assert.equal(page.data.due, null); assert.equal(page.data.dueDate, '');
   doc = { ...UNVERIFIED, deadline: { date: '2026-11-23', verified: false, label: '企业申报截止' } };
   page.refreshing = false; page.load(); await flush();
@@ -80,7 +80,7 @@ test('详情页：未核对写说明不给日期，无候选写见原文', async
   assert.match(read('pages/detail/index.wxml'), /wx:elif="{{dueNote && !changes.length}}"[\s\S]*{{dueNote}}/);
 });
 
-test('截止雷达空状态：写已核对条数，给去搜索申报通知的入口', async () => {
+test('截止雷达空状态：给去搜索申报通知的入口，不写"正在人工核对中、已核对几条"（10/29 删提示）', async () => {
   let url;
   const page = load('pages/report/index.js', {
     '../../utils/cache.js': { readCache: () => null, writeCache() {}, cachedLabel: () => '' },
@@ -88,7 +88,7 @@ test('截止雷达空状态：写已核对条数，给去搜索申报通知的�
     '../../utils/exporter.js': {}, '../../utils/format.js': format, '../../utils/daywatch.js': daywatch,
   }, { getApp: () => ({ globalData: {} }), wx: { navigateTo: (r) => { url = r.url; } } });
   page.onLoad(); await flush();
-  assert.equal(page.data.verifyingNote, '截止日期正在人工核对中，目前已核对 0 条');
+  assert.equal(page.data.verifyingNote, undefined);
   page.goSearch();
   assert.deepEqual(Object.fromEntries(new URL(url, 'https://test.invalid').searchParams), { kind: '申报通知' });
   page.data.province = '国家部委'; page.data.dept = '科技部门'; page.goSearch();
@@ -96,13 +96,12 @@ test('截止雷达空状态：写已核对条数，给去搜索申报通知的�
   page.data.province = '山东'; page.goSearch();
   assert.deepEqual(Object.fromEntries(new URL(url, 'https://test.invalid').searchParams), { kind: '申报通知', regions: '山东', depts: '科技部门' });
   const template = read('pages/report/index.wxml');
-  assert.match(template, /{{verifyingNote}}/);
+  assert.doesNotMatch(template, /verifyingNote|人工核对中/);
   assert.match(template, /bindtap="goSearch"[^>]*>去搜索申报通知/);
-  assert.equal(format.verifyingNote(12), '截止日期正在人工核对中，目前已核对 12 条');
-  assert.equal(format.verifyingNote(undefined), '截止日期正在人工核对中');
+  assert.equal(format.verifyingNote, undefined);
 });
 
-test('截止页按月看的空状态：写已核对条数，给去搜索申报通知的入口；接口透传已核对条数', async () => {
+test('截止页按月看的空状态：给去搜索申报通知的入口；接口照旧透传已核对条数', async () => {
   let url;
   const page = load('pages/report/index.js', {
     '../../utils/cache.js': { readCache: () => null, writeCache() {}, cachedLabel: () => '' },
@@ -115,12 +114,12 @@ test('截止页按月看的空状态：写已核对条数，给去搜索申报�
   page.onLoad(); await flush();
   page.pickTab(event({ key: 0 })); await flush();
   assert.equal(page.data.rows.length, 0);
-  assert.equal(page.data.verifyingNote, '截止日期正在人工核对中，目前已核对 3 条');
+  assert.equal(page.data.verifyingNote, undefined);
   assert.equal(page.data.emptyTitle, `${page.data.month}月没有核对过或机器摘录的截止日期`);
   page.goSearch();
   assert.equal(new URL(url, 'https://test.invalid').searchParams.get('kind'), '申报通知');
   const template = read('pages/report/index.wxml');
-  assert.match(template, /wx:if="{{!rows.length && !loading && !error && !sel}}"[\s\S]*{{verifyingNote}}[\s\S]*bindtap="goSearch"[^>]*>去搜索申报通知/);
+  assert.match(template, /wx:if="{{!rows.length && !loading && !error && !sel}}"[\s\S]*bindtap="goSearch"[^>]*>去搜索申报通知/);
   const api = load('utils/api.js', {
     './config.js': { devBaseUrl: 'https://test.invalid' }, '../mock/data.js': {}, './mockSearch.js': {}, './format.js': format,
   }, { wx: { request: ({ success }) => success({ statusCode: 200, data: { total: 0, items: [], pastTotal: 0, past: [], verifiedTotal: 0 } }) } });
@@ -227,8 +226,8 @@ test('地区和层级：层级的国家部委不受地区限制，省级只列�
   page.onLoad({ open: '1' }); await flush();
   // 10/22 走查起：只看未截止的口径写在"去掉'只看未截止'"按钮下面（和筛选面板同一句），这里不再另写一遍
   assert.equal(page.data.emptyHint, '');
-  assert.match(page.data.openNote, /没写明截止日期、或截止日期还没理清的不在里面/);
-  assert.match(read('pages/search/index.wxml'), /wx:if="{{picked.open.length}}" class="empty-note exit-note">“只看未截止”：{{openNote}}<\/view>/);
+  assert.equal(page.data.openNote, '“只看未截止”不含没写明截止日期或日期还没理清的通知');
+  assert.match(read('pages/search/index.wxml'), /wx:if="{{picked.open.length}}" class="empty-note exit-note">{{openNote}}<\/view>/);
   page.onLoad({ regions: '山东' }); await flush();
   assert.equal(page.data.emptyHint, '');
   assert.match(read('pages/search/index.wxml'), /wx:if="{{emptyHint}}" class="empty-note">{{emptyHint}}/);

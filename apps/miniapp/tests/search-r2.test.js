@@ -128,7 +128,7 @@ test('国家部委只在层级里：地区选项（含展开全部省份）没�
   assert.ok(!region().options.includes('国家部委'));
   assert.ok(page.data.groups.find((g) => g.key === 'level').options.includes('国家部委'));
   assert.equal(region().note, '国家部委的文件在“层级”里选，和地区一起选时会同时列出');
-  assert.match(page.data.groups.find((g) => g.key === 'level').note, /国家部委的文件同时列出，省级只列所选地区的/);
+  assert.equal(page.data.groups.find((g) => g.key === 'level').note, undefined);   // 层级那句长说明 10/29 删掉，地区组那句已说清
   page.pickOption(event({ group: 'region', option: '更多省份' })); await flush();
   assert.equal(region().options.length, 32); // 不限地区 + 31 个省级地区
   assert.ok(!region().options.includes('国家部委'));
@@ -330,8 +330,9 @@ test('按标题归类的三组：右栏顶部统一一行说明，下面只写�
   const full = (key) => `${conditions.TAG_NOTE}；${page.data.groups.find((g) => g.key === key).note}`;
   // 原来每组各自写的完整说明（UI 第一轮）
   assert.equal(full('category'), '按标题归类，仅供检索参考，非官方分类；只含申报通知和名单');
-  assert.equal(full('support'), '按标题归类，仅供检索参考，非官方分类；只含申报通知和名单，不代表一定提供这种支持。文件详情里的“支持方式”是核对原文后标注的；“征集入选”只用于筛选，详情里没有这一项');
-  assert.equal(full('industry'), '按标题归类，仅供检索参考，非官方分类；一份文件可能有多个方向，也可能没有');
+  assert.equal(full('support'), '按标题归类，仅供检索参考，非官方分类；只含申报通知和名单，不代表一定提供这种支持');
+  // 产业方向只留统一那句（10/29 删"一份文件可能有多个方向，也可能没有"）
+  assert.equal(page.data.groups.find((g) => g.key === 'industry').note, undefined);
   // 只有这三组显示统一说明，补充里不再重复它
   assert.deepEqual(page.data.groups.filter((g) => g.tagged).map((g) => g.key), ['category', 'support', 'industry']);
   for (const g of page.data.groups) assert.ok(!(g.note || '').includes('仅供检索参考'), g.key);
@@ -359,8 +360,7 @@ test('市级条件恢复、已选条、关注和国家部委组合均保留市�
   assert.ok(chipLabels(page).includes('市级'));
   assert.match(page.followName(), /山东 · 市级/);
   const level = page.data.groups.find((g) => g.key === 'level');
-  assert.match(level.note, /市区目前仅收录部分来源/);
-  assert.match(level.note, /我的 → 数据从哪里来/);
+  assert.equal(level.note, undefined);
   page.pickOption(event({ group: 'level', option: '国家部委' })); await flush();
   assert.equal(calls.at(-1).regions, '国家部委,山东');
   assert.equal(calls.at(-1).levels, '市级,国家部委');
@@ -389,7 +389,7 @@ test('未截止选项写明口径（D-061：含机器摘录和可能 7 天内截
   const { page, calls } = searchPage({ respond: (p) => ({ items: p.open || p.time !== '不限' ? [] : [{ id: '1' }], total: p.open || p.time !== '不限' ? 0 : 6, total_all: p.open ? 0 : 6, verified_open_total: 0 }) });
   page.onLoad({ open: '1' }); await flush();
   // 10/22 走查：选的时候就写明不含哪些，不只在没有结果时才说
-  assert.equal(page.data.groups.find((g) => g.key === 'open').note, '只列申报通知，含三类：日期已人工核对、还没截止的；机器摘录的（截止在 8 天以后，未经人工核对）；可能 7 天内截止、日期还没核对的。没写明截止日期、或截止日期还没理清的不在里面');
+  assert.equal(page.data.groups.find((g) => g.key === 'open').note, '只列申报通知：核对过还没截止的、机器摘录的、可能 7 天内截止待核对的；没写明截止日期或日期还没理清的不列');
   assert.ok(read('pages/search/index.wxml').indexOf('bindtap="removeOpen"') < read('pages/search/index.wxml').indexOf('bindtap="allTime"'));
   page.removeOpen(); await flush(); assert.equal(calls.at(-1).open, undefined); assert.equal(page.data.totalAll, 6);
   assert.match(read('pages/search/index.wxml'), /查看不限发布时间的 {{totalAll}} 份/);

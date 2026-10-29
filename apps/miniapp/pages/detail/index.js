@@ -62,13 +62,10 @@ function deadlineRows(deadlines) {
   });
 }
 
-// 上面的截止卡片有没有写日期：有逐条截止时看其中有没有日期，没有时看旧接口的那一条核对过的截止
-const dueDated = (dls, due) => (dls && dls.length ? dls.some((d) => d.dateText) : !!due);
-
 Page({
   data: { doc: null, shareReady: false, regionText: '', due: null, dueNote: '', dueDate: '', dueWeek: '', changes: [], tagClasses: [], reminded: false, error: '',
     bodyView: null, bodySummary: '', noBody: '', entry: null, goneNote: '', supportExpanded: '', supportEvidence: '', conds: [],
-    atts: [], attNote: '', versions: [], versionLabel: '', upstream: '', dueDated: false },
+    atts: [], versions: [], versionLabel: '', upstream: '' },
 
   onLoad(query) {
     if (api.watchStartup) api.watchStartup(this);
@@ -137,9 +134,6 @@ Page({
           upstream: upstreamLine(doc.repost),
           due,
           dls,
-          // 上面的截止卡片写了日期（逐条截止里至少一行有日期；旧接口只有一条核对过的截止）：
-          // 正文说明才写"截止日期可先看上面的'截止时间'"
-          dueDated: dueDated(dls, due),
           // 没有核对过的日期时只写说明（截止未核对 / 截止时间见原文），不给任何日期
           dueNote: deadlineNote(doc),
           dueDate: due ? cnDate(doc.deadline.date) : '',
@@ -147,7 +141,6 @@ Page({
           tagClasses: (doc.tags || []).map((t) => kindClass(t)),
           // 附件：每个直接写能不能读，读不了的灰色、不能点、写原因
           atts,
-          attNote: attachments.note(atts),
           // 已变更的截止（延期、调整、撤销）：不再当作有效截止，写明原因并链接到新通知
           changes: (doc.deadline_changes || []).map((c) => Object.assign({}, c, {
             dateText: `${cnDate(c.date)}${c.time ? ` ${c.time}` : ''}`,
@@ -158,7 +151,7 @@ Page({
         this.syncReminded();
       })
       .catch((err) => this.setData({
-        doc: null, due: null, dueNote: '', changes: [], reminded: false, atts: [], attNote: '', conds: [], versions: [], versionLabel: '', upstream: '',
+        doc: null, due: null, dueNote: '', changes: [], reminded: false, atts: [], conds: [], versions: [], versionLabel: '', upstream: '',
         bodyView: null, bodySummary: '', noBody: '', entry: null, goneNote: '',
         takenDown: err.status === 404 && err.message === '该文件已下架',
         error: err.status === 404 ? err.message : `数据未更新：${err.message}`,
@@ -226,7 +219,7 @@ Page({
     if (!doc) return;
     const dls = Array.isArray(doc.deadlines) ? deadlineRows(doc.deadlines) : null;
     const due = dueInfo(doc.deadline);
-    this.setData({ due, dls, dueDated: dueDated(dls, due) });
+    this.setData({ due, dls });
   },
 
   // 截止提醒：一次性订阅消息，用户在微信弹窗里允许后才算订阅成功

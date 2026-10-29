@@ -5,7 +5,7 @@
 <block wx:if="{{!loading}}">
   <block wx:if="{{toolsEnabled}}">
     <view wx:if="{{aiEnabled}}" class="ai-internal"><text class="ai-internal-tag">{{aiLabel}}</text>{{aiNotice}}</view>
-    <view wx:if="{{!items.length && !error}}" class="card advisor-card"><view class="advisor-title">还没有记录</view><view wx:if="{{aiEnabled}}" class="advisor-text muted">在通知详情页点“AI 解读”，或在工具中心使用其他工具，结果会保存在这里。</view><view wx:else class="advisor-text muted">在工具中心使用工具后，结果会保存在这里。</view><button class="advisor-button" bindtap="tools">去工具中心</button></view>
+    <view wx:if="{{!items.length && !error}}" class="card advisor-card"><view class="advisor-title">还没有记录</view><view wx:if="{{aiEnabled}}" class="advisor-text muted">在通知详情页点“AI 解读”<text wx:if="{{has.advisor}}">，或在工具中心使用其他工具</text>，结果会保存在这里。</view><view wx:elif="{{has.advisor}}" class="advisor-text muted">在工具中心使用工具后，结果会保存在这里。</view><button wx:if="{{has.advisor}}" class="advisor-button" bindtap="tools">去工具中心</button></view>
     <view wx:for="{{items}}" wx:key="id" class="card advisor-card" data-id="{{item.id}}" bindtap="openTask">
       <view class="advisor-title">{{item.kindLabel}}</view>
       <view wx:if="{{item.docTitle}}" class="advisor-text">{{item.docTitle}}</view>
