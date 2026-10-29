@@ -1157,8 +1157,11 @@ def _fixed(session: Session, turn: AIChatTurn, stored: dict, cache: dict) -> dic
     elif reason == "changed":
         out["lead"] = CLARIFY_CHANGED
     elif reason == "no_nth":
+        # 句号读的时候按问题现算；以前按旧规则存下的（比如当时也认"第 N 条"）按现在的规则算不出
+        # 超出的，不写错的句号，改写"没看明白你指的是哪一句"（独立审阅第一批第 6 轮）
         m = stored.get("m", 0)
-        out["lead"] = CLARIFY_NTH.format(n=beyond(turn.question, m) or nth(turn.question) or 0, m=m)
+        n = beyond(turn.question, m)
+        out["lead"] = CLARIFY_MODEL if n is None else CLARIFY_NTH.format(n=n, m=m)
     elif stored.get("status") == "clarify":
         out["lead"] = CLARIFY_MODEL
     else:

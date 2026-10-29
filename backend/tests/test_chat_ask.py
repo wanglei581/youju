@@ -832,6 +832,23 @@ def test_listed_sentences_beyond_the_previous_answer(
         got = asked(client, session, settings, model, text, doc)
         assert got["answer"]["by"] == "model" and len(model.calls) == calls + 1, text
         assert model.calls[-1][1]["question"] == text, text  # 序号原样交给模型
+    # "条、个、项、点"只是不当成上一答的句号："还没问过""内容更新过"照旧（#409）
+    fresh = make_doc(session, url="https://official.test/2")
+    got = send(client, "上面第5条是什么", fresh).json()["turn"]
+    assert got["answer"]["lead"] == ask.CLARIFY_NONE and got["counted"] is False
+    loaded = content.load(session, doc, link=False)
+    stale = ask.Prev(1, "要满足哪些条件", {**loaded.versions(), "segments": "旧的"}, ())
+    rule, _ = ask.rules("上面第5条是什么", stale, loaded.versions())
+    assert (rule["status"], rule["reason"]) == ("clarify", "changed")
+    # 以前按旧规则存下的"没有第 N 句"：按现在的规则算不出超出的，不写错的句号（独立审阅第 6 轮）
+    stored = {"status": "clarify", "reason": "no_nth", "m": 3}
+    for question, lead in (
+        ("上面第5条是什么", ask.CLARIFY_MODEL),
+        ("上面第2句提到的第5条规定", ask.CLARIFY_MODEL),
+        ("第1至5句呢", ask.CLARIFY_NTH.format(n=4, m=3)),
+    ):
+        turn = SimpleNamespace(question=question, doc_id=None)
+        assert ask._fixed(session, turn, stored, {})["lead"] == lead, question
 
 
 def test_two_asks_in_one_chat_at_once(client, session, doc, wechat, monkeypatch):
