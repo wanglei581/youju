@@ -201,21 +201,22 @@ test('名单查询离页丢弃迟回，返回保留输入并重新比对，不�
 });
 
 
-test('附件段落的位置：从大到小、说法和查名单一样，同一页、同一个表只写变了的那层', async () => {
+test('附件段落的位置：从大到小、说法和查名单一样，页码写原文第 N 页，同一页、同一个表只写变了的那层，空表名不写', async () => {
   const row = (n, t, loc) => ({ n, kind: 'row', cells: [{ c: 0, t, h: '名称' }], loc });
   const segments = [
     { n: 1, kind: 'p', text: '一、总则', loc: { page: 1 } }, { n: 2, kind: 'p', text: '第一条', loc: { page: 1 } },
     row(3, '甲', { page: 1, table: 1, row: 1 }), row(4, '乙', { page: 1, table: 1, row: 2 }),
     { n: 5, kind: 'p', text: '第二条', loc: { page: 2 } }, { n: 6, kind: 'p', text: '说明', loc: null },
     row(7, '丙', { table: 2, row: 1 }), row(8, '丁', { sheet: '汇总', row: 5 }), { n: 9, kind: 'p', text: '幻灯片文字', loc: { slide: 4 } },
+    row(10, '戊', { sheet: '', row: 7 }),
   ];
   const p = load('reader', { reading: async () => reading({ segments }) }, { progress: memoryProgress() });
   p.onLoad({ id: '7', attachment: '8' }); p.visible = true; await p.openPart('8');
   assert.deepEqual(p.data.segments.map((s) => s.loc),
-    ['第 1 页', '', '第 1 个表第 1 行', '第 2 行', '第 2 页', '', '第 2 个表第 1 行', '工作表“汇总”第 5 行', '第 4 张幻灯片']);
+    ['原文第 1 页', '', '第 1 个表第 1 行', '第 2 行', '原文第 2 页', '', '第 2 个表第 1 行', '工作表“汇总”第 5 行', '第 4 张幻灯片', '第 7 行']);
   const text = textOf(render('pages/reader/index.wxml', p.data));
-  assert.equal((text.match(/第 1 页/g) || []).length, 1);
-  assert.doesNotMatch(text, / · |行 \d|表 \d/);
+  assert.equal((text.match(/原文第 1 页/g) || []).length, 1);
+  assert.doesNotMatch(text, / · |行 \d|表 \d|工作表“”/);
 });
 
 test('101列附件完整显示且保留字段名，不按客户端假上限丢弃', async () => {
@@ -349,6 +350,21 @@ test('记着的位置已不是一页的开头（422）：从第 1 页读，写�
   p.onLoad({ id: '7' }); await p.onShow();
   assert.equal(p.data.page, 1); assert.equal(p.data.resumePage, 0);
   assert.equal(p.data.updatedNote, '上次读到的位置已失效，从第 1 页开始读'); assert.deepEqual(progress.map, {});
+});
+
+test('正在翻页时位置已不是一页的开头（422，如部署后分页变了）：回到第 1 页，写阅读位置已失效，不卡在重试上', async () => {
+  const progress = memoryProgress();
+  const calls = [];
+  const p = load('reader', { reading: async (_id, _att, args) => {
+    calls.push(args.cursor);
+    if (args.cursor === '20') throw Object.assign(new Error('阅读位置超出范围，请重新打开'), { status: 422 });
+    return reading({ nextCursor: '20', pages: 3 });
+  } }, { progress });
+  p.onLoad({ id: '7' }); await p.onShow();
+  await p.next();
+  assert.deepEqual(calls, ['0', '20', '0']);
+  assert.equal(p.data.page, 1); assert.equal(p.data.error, '');
+  assert.equal(p.data.updatedNote, '阅读位置已失效，从第 1 页开始读'); assert.deepEqual(progress.map, {});
 });
 
 test('目录里切到另一部分：加载期间页头和目录当前项就是要打开的那一部分，不留上一部分的名字（agy 第 1 轮）', async () => {
