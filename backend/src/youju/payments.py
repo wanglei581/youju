@@ -1583,12 +1583,16 @@ def complaint_alerts(session: Session, stamp: datetime, alert) -> int:
         if (row.summary or {}).get("alert") != "pending":
             continue
         order = session.get(PayOrder, row.order_id) if row.order_id else None
-        label = STATUS_LABELS.get(order.status, order.status) if order else "已删除"
-        if (
-            alert(
-                f"支付订单 #{row.order_id} {COMPLAINT_ERROR}（订单{label}），需人工处理："
-                "到小程序后台虚拟支付的投诉里答复"
+        if row.order_id is None:
+            # 本地没有这笔订单（商户单号对不上）：照样告警，写上商户单号
+            subject = (
+                f"商户单号 {(row.summary or {}).get('MchOrderId', '未知')}（本地没有这笔订单）"
             )
+        else:
+            label = STATUS_LABELS.get(order.status, order.status) if order else "已删除"
+            subject = f"支付订单 #{row.order_id}（订单{label}）"
+        if (
+            alert(f"{subject}{COMPLAINT_ERROR}，需人工处理：到小程序后台虚拟支付的投诉里答复")
             is True
         ):
             row.summary = {**(row.summary or {}), "alert": "sent"}

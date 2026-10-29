@@ -441,12 +441,27 @@ def test_orders_reported_as_never_started_do_not_count_toward_three_pending(setu
     # 8 笔被标记 + 最新这一笔没标：第 10 笔还能下；10 笔都标上了，第 11 笔挡（连这些一起最多 10 笔）
     tenth = create(setup_pay, failed_order={"order_id": previous.id, "code": -15010})
     assert tenth.status_code == 201, tenth.json()
-    eleventh = create(
-        setup_pay, failed_order={"order_id": order(session, tenth).id, "code": -15010}
-    )
+    tenth_id = order(session, tenth).id
+    eleventh = create(setup_pay, failed_order={"order_id": tenth_id, "code": -15010})
     assert eleventh.status_code == 429, eleventh.json()
+    # 被 429 挡回也存下了这一句（换台手机再付不会被第 10 笔挡，Codex #402 第 3 轮）
+    session.expire_all()
+    assert session.get(PayOrder, tenth_id).error.startswith(payments.NOT_STARTED_PREFIX)
     session.expire_all()
     assert session.scalar(select(func.count(PayOrder.id))) == 10
+
+
+def test_failed_order_note_is_kept_when_the_new_order_fails(setup_pay, session):
+    """带上来的"上一笔付款前就被拒"先单独存下：这一次下单失败（换会话密钥失败 503）回滚也不丢。"""
+    _, _, fake = setup_pay
+    first = order(session, create(setup_pay))
+    fake.wrong_owner = True
+    response = create(setup_pay, failed_order={"order_id": first.id, "code": -15014})
+    assert response.status_code == 503
+    session.expire_all()
+    row = session.get(PayOrder, first.id)
+    assert row.status == "pending" and row.error.startswith(payments.NOT_STARTED_PREFIX)
+    assert session.scalar(select(func.count(PayOrder.id))) == 1
 
 
 @pytest.mark.parametrize("status", ["refunding", "refunded", "closed"])
@@ -482,9 +497,47 @@ def test_complaint_on_refunding_refunded_or_closed_order_keeps_status_and_alerts
 
     for minute in range(4):
         payments.complaint_alerts(session, NOW + timedelta(minutes=minute), flaky)
-    assert len(sent) == 3 and f"支付订单 #{row.id} {payments.COMPLAINT_ERROR}" in sent[2]
+    assert len(sent) == 3 and sent[2].startswith(f"支付订单 #{row.id}（订单")
+    assert payments.COMPLAINT_ERROR in sent[2]
     event = session.scalar(select(PayEvent).where(PayEvent.kind == "xpay_complaint_notify"))
     assert event.summary["alert"] == "sent"
+
+
+@pytest.mark.parametrize("case", ["pending", "closed_unconfirmed", "unknown"])
+def test_complaint_on_order_without_wechat_order_id_is_accepted_and_alerted(
+    setup_pay, session, case
+):
+    """本地还没有微信单号的单（没开通的待确认单、48 小时查不到付款结果关掉的单）收到投诉：不比微信单号，
+    照样记下、告警——这正是"扣了钱没开通"最该处理的投诉；本地查不到订单的投诉也告警（独立审阅 #402）。"""
+    _, settings, fake = setup_pay
+    row = order(session, create(setup_pay))
+    if case == "closed_unconfirmed":
+        row.status, row.error = "closed", payments.UNCONFIRMED_PAYMENT_ERROR
+        session.commit()
+    complaint = {
+        "Event": "xpay_complaint_notify",
+        "OpenId": "pay-user",
+        "MchOrderId": "not-ours" if case == "unknown" else row.out_trade_no,
+        "WxOrderId": "wx-from-wechat",
+        "ComplaintId": "c-9",
+    }
+    assert push(setup_pay, complaint).json()["ErrCode"] == 0
+    session.expire_all()
+    current = session.get(PayOrder, row.id)
+    alerts = []
+    payments.run_payments(
+        session, settings=settings, client=fake.client, stamp=NOW, alert=collect(alerts)
+    )
+    if case == "pending":
+        # 待确认的单照旧转人工，由转人工的告警负责
+        assert current.status == "manual" and payments.COMPLAINT_ERROR in current.error
+        assert len(alerts) == 1 and "需人工处理" in alerts[0]
+    elif case == "closed_unconfirmed":
+        assert current.status == "closed"
+        assert any(f"支付订单 #{row.id}（订单已关闭）" in a for a in alerts)
+    else:
+        assert current.status == "pending"
+        assert any("商户单号 not-ours（本地没有这笔订单）" in a for a in alerts)
 
 
 def test_complaint_on_completed_order_still_goes_manual_without_a_second_alert(setup_pay, session):

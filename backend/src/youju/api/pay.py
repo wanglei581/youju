@@ -70,7 +70,8 @@ WxDep = Annotated[XPayClient, Depends(wx_client)]
 
 # 下新单前查不清上一笔付款结果时的说法（挡新单，最多 10 分钟）
 UNVERIFIED_PREVIOUS = (
-    "上一笔付款微信暂时还查不到结果，请过几分钟再试；已扣款的会自动开通，可到“我的订单”查看"
+    "上一笔付款微信暂时还查不到结果，请过几分钟再试（最多 10 分钟）；"
+    "如果已经扣了款，会自动开通，可到“我的订单”查看"
 )
 
 
@@ -153,10 +154,15 @@ def create_order(body: OrderIn, session: SessionDep, user: UserDep, client: WxDe
     # 旧单其实付了款时会重复扣款（Codex 10/29）。
     # 付款前就被微信拒了的单，小程序下一次付款时会带上（failed_order），记过的不在这里挡人；
     # 下单回应没送到手机这类没带上、微信那边也查不到的单，最多挡 10 分钟。
-    if body.failed_order is not None:
-        payments.mark_not_started(
-            session, user.id, body.failed_order.order_id, body.failed_order.code, stamp
-        )
+    if body.failed_order is not None and payments.mark_not_started(
+        session, user.id, body.failed_order.order_id, body.failed_order.code, stamp
+    ):
+        # 先单独存下：后面挡新单（409、429）或下单失败（503）回滚时这一句不跟着丢——
+        # 不然用户换台手机再付，那一单查不清还会挡人（Codex #402 第 3 轮）。
+        # 提交会放掉用户锁，重新加上
+        session.commit()
+        if session.scalar(select(User.id).where(User.id == user.id).with_for_update()) is None:
+            raise HTTPException(status_code=404, detail="没有找到接口")
     # 候选先普通查（不加范围锁：两个新用户同时下单时，范围锁加插入会互相等待甚至死锁），
     # 再按主键逐个加锁、复核状态；推送或补单刚开通的这里会看到不是待支付，跳过。
     recent = session.scalars(
@@ -573,7 +579,10 @@ def _transaction_push(data: dict, xml: bool, session: Session, client: XPayClien
     order = payments.lock_order(session, order_id) if order_id is not None else None
     if order is None:
         # 本地没有的订单重推也没用：只记摘要（事件表按白名单字段保存），应答成功。
-        payments.event(session, kind, data, None)
+        # 投诉照样要有人知道：记成单独告警（独立审阅 #402）
+        row = payments.event(session, kind, data, None)
+        if kind == payments.COMPLAINT_EVENT:
+            row.summary = {**row.summary, "alert": "pending"}
         session.commit()
         return reply(xml)
     # 推送没处理成的原因记进日志（微信会重推，补单兜底）：只记事件名、订单号和状态码，
@@ -586,7 +595,13 @@ def _transaction_push(data: dict, xml: bool, session: Session, client: XPayClien
             or not isinstance(data.get("OpenId"), str)
             or not 1 <= len(data["OpenId"]) <= 128
             or (kind == "xpay_goods_deliver_notify" and int(data.get("Env", -1)) != order.env)
-            or (kind != "xpay_goods_deliver_notify" and data.get("WxOrderId") != order.wx_order_id)
+            or (
+                kind != "xpay_goods_deliver_notify"
+                and data.get("WxOrderId") != order.wx_order_id
+                # 投诉只告警、不动钱：本地还没有微信单号的单（没开通、查不到付款结果被关掉的）
+                # 不比微信单号——这正是"扣了钱没开通"最该处理的投诉（独立审阅 #402）
+                and not (kind == payments.COMPLAINT_EVENT and order.wx_order_id is None)
+            )
         ):
             logger.warning(
                 "%s 订单 #%s 推送的用户、环境或微信单号和订单对不上，没处理", kind, order_id
