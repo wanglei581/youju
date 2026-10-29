@@ -604,6 +604,9 @@ def _transaction_push(data: dict, xml: bool, session: Session, client: XPayClien
                 _stamp(),
                 confirmed=ours and ret is not None and str(ret) == "0",
             )
+            if not accepted:
+                # 已完成的订单（苹果那边或小程序后台退的款）没核实退款：转人工，重推完也有人知道
+                payments.flag_unconfirmed_refund(order, _stamp())
         session.commit()
         if (
             accepted
@@ -622,5 +625,8 @@ def _transaction_push(data: dict, xml: bool, session: Session, client: XPayClien
         reason = f"errcode={code}" if code is not None else type(exc).__name__
         logger.warning("%s 订单 #%s 核验失败：%s", kind, order_id, reason)
         order.error = "推送暂未核验，将通过查单重试"
+        if kind == "xpay_refund_notify":
+            # 每分钟的补单不查已完成的订单：退款推送没核验成就转人工（Codex 10/29）
+            payments.flag_unconfirmed_refund(order, _stamp())
         session.commit()
         return reply(xml, 1)

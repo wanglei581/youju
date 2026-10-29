@@ -814,6 +814,41 @@ def test_official_refund_and_complaint_fields(setup_pay, session, kind):
     assert "13800138000" not in str(summary) and "ComplaintDetail" not in summary
 
 
+@pytest.mark.parametrize("problem", ["still_paid", "query_error"])
+def test_refund_push_on_completed_order_not_confirmed_goes_manual(setup_pay, session, problem):
+    """已完成的订单（苹果那边或小程序后台退的款）收到退款推送、查单没确认退款：转人工、告警一次，
+    使用期先不动；重推时查单显示退完了（8），照常记成已退款、收回使用期（Codex 10/29）。
+    以前只回"没处理"等微信重推，重推完、每分钟的补单又不查已完成的订单，就没人知道了。"""
+    row = delivered(setup_pay, session)
+    ticket = payments.order_pass(session, row)
+    data = {
+        "Event": "xpay_refund_notify",
+        "OpenId": "pay-user",
+        "MchOrderId": row.out_trade_no,
+        "WxOrderId": row.wx_order_id,
+        "RefundFee": 100,
+        "RetCode": 0,
+    }
+    fake = setup_pay[2]
+    # still_paid：查单还是已付款（2）；query_error：查单返回别的订单，核验失败
+    fake.bad_order = problem == "query_error"
+    assert push(setup_pay, data).json()["ErrCode"] != 0
+    session.expire_all()
+    row = session.get(PayOrder, row.id)
+    assert row.status == "manual" and row.error == payments.REFUND_PUSH_UNCONFIRMED_ERROR
+    assert session.get(WorkbenchPass, ticket.id).revoked_at is None
+    alerts = []
+    payments.run_payments(
+        session, settings=setup_pay[1], client=fake.client, stamp=NOW, alert=alerts.append
+    )
+    assert len(alerts) == 1 and f"支付订单 #{row.id} 需人工处理" in alerts[0]
+    fake.bad_order, fake.status, fake.left_fee = False, 8, 0
+    assert push(setup_pay, data).json()["ErrCode"] == 0
+    session.expire_all()
+    assert session.get(PayOrder, row.id).status == "refunded"
+    assert session.get(WorkbenchPass, ticket.id).revoked_at is not None
+
+
 def test_pending_order_window_and_confirmed_close(setup_pay, session):
     row = order(session, create(setup_pay))
     assert run(session, setup_pay)["processed"] == 0
@@ -1170,29 +1205,32 @@ def test_fix_2_push_amount_mismatch_manual_and_alerted_once(setup_pay, session):
     assert session.scalar(select(func.count(AdvisorTask.id))) == 0
 
 
-def test_fix_3_unconfirmable_pending_closes_after_48_hours(setup_pay, session):
+def test_fix_3_unconfirmable_pending_goes_manual_after_48_hours(setup_pay, session):
+    """查了 48 小时都没查成：不知道付没付款，转人工并告警。现网真扣钱：以前直接关单，万一其实付了款、
+    推送和对账也没接上就没人知道；告警没发出去，下一轮接着发（Codex 10/29）。"""
     row = order(session, create(setup_pay))
     row.created_at = NOW - timedelta(hours=47)
     session.commit()
-    setup_pay[2].bad_order = True
+    _, settings, fake = setup_pay
+    fake.bad_order = True
     run(session, setup_pay)
     assert row.status == "pending"
     row.created_at, row.query_retry_at = NOW - timedelta(hours=49), None
     session.commit()
-    # 现网真扣钱：关单时告警一次，万一用户其实付了款、推送和对账也没接上，有人去核对（Codex 10/29）
-    alerts = []
-    _, settings, fake = setup_pay
-    payments.run_payments(
-        session, settings=settings, client=fake.client, stamp=NOW, alert=alerts.append
-    )
-    assert row.status == "closed" and row.error == "超过 48 小时无法确认支付，已关闭"
-    assert row.alerted_at == NOW
-    assert alerts == [
-        f"支付订单 #{row.id} 超过 48 小时查不到付款结果，已关闭；"
-        "用户说付了款的，到小程序后台虚拟支付的交易订单里核对"
-    ]
+    sent = []
+
+    def flaky(message):
+        sent.append(message)
+        return len(sent) > 1  # 第一次没发出去
+
+    payments.run_payments(session, settings=settings, client=fake.client, stamp=NOW, alert=flaky)
+    assert row.status == "manual" and row.error == payments.UNCONFIRMED_PAYMENT_ERROR
+    assert row.alerted_at is None
+    later = NOW + timedelta(minutes=1)
+    payments.run_payments(session, settings=settings, client=fake.client, stamp=later, alert=flaky)
+    assert row.alerted_at == later
+    assert len(sent) == 2 and all(f"支付订单 #{row.id} 需人工处理" in m for m in sent)
     assert run(session, setup_pay, NOW + timedelta(hours=1))["processed"] == 0
-    assert len(alerts) == 1
 
 
 def test_fix_4_unconfigured_bill_columns_fail_without_download(setup_pay, session):

@@ -822,6 +822,8 @@ test('购买页第一句写给谁用，付款前写全收录范围、只限本�
   const text = shown('pages/pass/index.wxml', h.page.data);
   assert.match(text, /给要一次比对很多家客户的顾问用；查通知、查单家企业一直免费/);
   assert.match(text, /只限本人的微信使用/);
+  // 付款前就写明（agy 10/29）：未成年人未经监护人同意购买的，《付费服务协议》第二条第 7 项写了可以退
+  assert.match(text, /未成年人请在监护人同意后再购买/);
   // 苹果退款：由苹果公司通过 App Store 处理，小程序里也能提交、我们协助（协议第二条第 7 项、运营规范 14.6）
   assert.match(text, /苹果手机付款的，退款由苹果公司通过 App Store 处理，是否退款由苹果公司决定；也可以在“遇到问题”里提交，我们协助办理/);
   assert.doesNotMatch(text, /只能向 App Store 申请退款/);

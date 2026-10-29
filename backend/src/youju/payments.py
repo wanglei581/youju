@@ -1398,6 +1398,28 @@ ODD_STATUS_NAMES = {
 }
 
 
+# 待确认的订单查了 48 小时都没查成（查单一直出错）：不知道付没付款，转人工时写的说明
+UNCONFIRMED_PAYMENT_ERROR = (
+    "超过 48 小时查不到付款结果，需人工核对（小程序后台 → 虚拟支付 → 交易订单里查这一笔）"
+)
+# 已完成的订单收到退款推送、查单却没确认退款（多半是苹果那边或小程序后台退的款）：推送只重推有限次，
+# 每分钟的补单也不查已完成的订单，不转人工就没人知道（Codex 10/29）。使用期先不动，核实退了再收回
+REFUND_PUSH_UNCONFIRMED_ERROR = (
+    "收到退款推送，查单没确认退款，需人工核对（小程序后台 → 虚拟支付 → 交易订单）；"
+    "核实退了再收回使用期"
+)
+
+
+def flag_unconfirmed_refund(order: PayOrder, stamp: datetime) -> bool:
+    """已完成的订单收到退款推送、这次没核实退款：转人工（每分钟的补单会发告警），返回 True。
+    推送重推时查单显示退完了（8），mark_refunded 照常把它记成已退款、收回使用期。"""
+    if order.status != "completed":
+        return False
+    order.status, order.alerted_at, order.updated_at = "manual", None, stamp
+    order.error = REFUND_PUSH_UNCONFIRMED_ERROR
+    return True
+
+
 def flag_odd_pending(order: PayOrder, data: dict, stamp: datetime) -> bool:
     """待确认的订单查到上面说的少见状态：转人工（每分钟的补单会发告警），返回 True。
     状态不是整数（返回格式不对）的不算，留给下一次查单。"""
@@ -1560,18 +1582,12 @@ def run_payments(
                 except XPayError:
                     if not overdue:
                         raise
-                    # 查单一直失败也不能永远轮询；真付了款的由推送或账单对账转人工。
-                    # 现网真扣钱：推送、对账万一也没接上就没人知道了，关单时告警一次（Codex 10/29）
+                    # 查单一直失败也不能永远轮询。现网真扣钱：以前直接关单，万一用户其实付了款、
+                    # 推送和对账也没接上就没人知道了——转人工，下面照转人工的做法告警，
+                    # 告警没发出去下一轮接着发（Codex 10/29）
                     data = None
-                    order.status, order.error = "closed", "超过 48 小时无法确认支付，已关闭"
-                    if (
-                        alert(
-                            f"支付订单 #{order.id} 超过 48 小时查不到付款结果，已关闭；"
-                            "用户说付了款的，到小程序后台虚拟支付的交易订单里核对"
-                        )
-                        is not False
-                    ):
-                        order.alerted_at = stamp
+                    order.status, order.alerted_at = "manual", None
+                    order.error = UNCONFIRMED_PAYMENT_ERROR
                 if data is not None and not mark_refunded(session, order, data, stamp):
                     if data.get("status") == 6 or (overdue and data.get("status") in (0, 1)):
                         order.status = "closed"
