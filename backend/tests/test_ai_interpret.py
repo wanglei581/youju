@@ -885,6 +885,9 @@ def test_last_slot_goes_to_one_after_old_snapshots(
             work.connection(execution_options={"isolation_level": isolation})
             assert service.site_ai_used(work, day, submissions=submissions) == 1
         take(first, users[0])
+        # 先证明前提：第二个的业务事务里，可重复读时还是旧快照（看不到第一个刚占的），读已提交时看得到
+        stale = isolation == "REPEATABLE READ"
+        assert service.site_ai_used(second, day, submissions=submissions) == (1 if stale else 2)
         with pytest.raises(service.AICapReached):
             take(second, users[1])
     session.expire_all()

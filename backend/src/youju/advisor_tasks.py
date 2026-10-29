@@ -90,7 +90,8 @@ class AdvisorBusy(Exception):
 
 
 class AICapReached(Exception):
-    """实际模型调用已达到当天上限。"""
+    """全站 AI 用量到了当天上限：提交时按占用的次数和实际调用次数中大的算，admin 调模型前
+    只看实际调用次数（见 site_ai_used）。"""
 
 
 @contextmanager
