@@ -373,15 +373,23 @@ def _out(task: AdvisorTask, session: Session, *, include_result: bool = True) ->
 
 
 @contextmanager
-def _submission_lock(session: Session, kind: str):
+def _submission_lock(session: Session, kind: str, day, settings):
+    """AI 任务：全站上限的锁里查全站用量（满了回 429），占次数、建任务、提交都在锁里。
+    数据工具不进锁，也不读 AI 的设置。"""
     try:
         if kind in AI_KINDS:
-            with service.ai_cap_lock(session):
+            cap = settings.ai_advisor_daily_cap
+            with service.ai_cap_slot(session, day, cap, submissions=True):
                 yield
         else:
             yield
     except service.AdvisorBusy:
         raise HTTPException(status_code=503, detail="系统繁忙，请稍后重试") from None
+    except service.AICapReached:
+        raise HTTPException(
+            status_code=429,
+            detail={"code": "AI_DAILY_CAP", "message": "今天的 AI 使用次数已满，请明天再试"},
+        ) from None
 
 
 def _owned(
@@ -403,9 +411,8 @@ def _owned(
 
 
 def _site_full(session: Session, settings, day) -> bool:
-    """全站今天的 AI 用量到没到上限：和提交时的检查同一个口径。"""
-    used = max(service.global_ai_usage(session, day), service.global_ai_calls(session, day))
-    return used >= settings.ai_advisor_daily_cap
+    """全站今天的 AI 用量到没到上限：和提交时的检查同一个口径（site_ai_used）。"""
+    return service.site_ai_used(session, day) >= settings.ai_advisor_daily_cap
 
 
 @router.get("/mode")
@@ -602,19 +609,7 @@ def create_task(
                 "maxRows": row_limit,
             },
         )
-    with _submission_lock(session, body.kind):
-        if (
-            body.kind in AI_KINDS
-            and max(
-                service.global_ai_usage(session, day),
-                service.global_ai_calls(session, day),
-            )
-            >= settings.ai_advisor_daily_cap
-        ):
-            raise HTTPException(
-                status_code=429,
-                detail={"code": "AI_DAILY_CAP", "message": "今天的 AI 使用次数已满，请明天再试"},
-            )
+    with _submission_lock(session, body.kind, day, settings):
         if trial is not None:
             # 体验期先用体验当天的次数（两项合计）；用完了有使用期的用使用期，
             # 否则等第二天——不改用每月免费次数，体验结束后它们照常可用
