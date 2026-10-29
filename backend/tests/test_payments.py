@@ -597,6 +597,43 @@ def test_same_complaint_arriving_twice_at_once_alerts_once(setup_pay, session):
     assert states == ["sent", "duplicate", "sent"]
 
 
+def test_same_complaint_committed_out_of_order_still_alerts_exactly_once(setup_pay, session):
+    """编号大的先提交、先发了告警，编号小的后提交：看到同一投诉已经发过，不再发；
+    收推送时只看编号更小的同伴，编号小的不会因为看到编号大的就记成重复（Codex #402 第 6 轮）。"""
+    summary = {"MchOrderId": "not-ours", "ComplaintId": "c-7"}
+    small = PayEvent(
+        order_id=None, kind="xpay_complaint_notify", summary={**summary, "alert": "pending"}
+    )
+    large = PayEvent(
+        order_id=None, kind="xpay_complaint_notify", summary={**summary, "alert": "sent"}
+    )
+    session.add_all([small, large])
+    session.commit()
+    # 收推送时：编号小的只看更小的，没有同伴，不算重推
+    assert payments.same_complaint(session, small, earlier_only=True) == []
+    alerts = []
+    assert payments.complaint_alerts(session, NOW, collect(alerts)) == 0
+    session.expire_all()
+    assert session.get(PayEvent, small.id).summary["alert"] == "duplicate"
+    # 两条都在等：只发编号小的；编号小的这次没发出去，编号大的也不抢着发，下一轮再发编号小的
+    session.get(PayEvent, small.id).summary = {**summary, "alert": "pending"}
+    session.get(PayEvent, large.id).summary = {**summary, "alert": "pending"}
+    session.commit()
+    answers = iter([False, True])
+    sent = []
+
+    def flaky(text):
+        sent.append(text)
+        return next(answers)
+
+    payments.complaint_alerts(session, NOW, flaky)
+    payments.complaint_alerts(session, NOW + timedelta(minutes=1), flaky)
+    session.expire_all()
+    assert len(sent) == 2
+    assert session.get(PayEvent, small.id).summary["alert"] == "sent"
+    assert session.get(PayEvent, large.id).summary["alert"] == "duplicate"
+
+
 def test_complaint_on_completed_order_still_goes_manual_without_a_second_alert(setup_pay, session):
     """已完成的单收到投诉照旧转人工、由转人工的告警负责（事件记 alert=manual，不单独发）；
     同一个投诉重推只记事件（duplicate）；人工单里已经有投诉原因时又来一个新投诉，单独告警一次。"""

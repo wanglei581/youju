@@ -584,7 +584,7 @@ def _transaction_push(data: dict, xml: bool, session: Session, client: XPayClien
         if kind == payments.COMPLAINT_EVENT:
             # 同一个投诉的重推不再告警（和本地有订单的一样，Codex #402 第 4 轮）
             session.flush()
-            repeated = payments.repeated_complaint(session, row)
+            repeated = bool(payments.same_complaint(session, row, earlier_only=True))
             row.summary = {**row.summary, "alert": "duplicate" if repeated else "pending"}
         session.commit()
         return reply(xml)

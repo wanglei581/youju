@@ -1542,7 +1542,9 @@ def note_complaint(session: Session, order: PayOrder, row: PayEvent, stamp: date
     - 其余（退款中、已退款、已关闭的单不改状态——转人工会让退款中的单停掉自动退款、已退款的单倒退成
       "人工核对中"；或者人工单里已经有投诉原因、这次没加上）：alert=pending，补单单独发（complaint_alerts）。"""
     summary = dict(row.summary or {})
-    if repeated_complaint(session, row):
+    # 只看编号更小的：同一订单的推送拿着订单锁、先后一定；
+    # 比编号更大的会和补单那边的判断打架（Codex #402 第 6 轮）
+    if same_complaint(session, row, earlier_only=True):
         summary["alert"] = "duplicate"
     elif order.status not in COMPLAINT_KEEPS_STATUS and escalate(
         order, f"{COMPLAINT_ERROR}，需人工处理", stamp
@@ -1553,25 +1555,22 @@ def note_complaint(session: Session, order: PayOrder, row: PayEvent, stamp: date
     row.summary = summary
 
 
-def repeated_complaint(session: Session, row: PayEvent, *, earlier_only: bool = False) -> bool:
-    """这条投诉事件是不是同一个投诉（ComplaintId 相同）的重推：同一订单的；
-    本地查不到订单的按商户单号比。
-    没有 ComplaintId 的不算重推。调用方已 flush，row 有 id。"""
+def same_complaint(
+    session: Session, row: PayEvent, *, earlier_only: bool = False
+) -> list[PayEvent]:
+    """同一个投诉（ComplaintId 相同）的其他投诉事件：同一订单的；本地查不到订单的再按商户单号比。
+    earlier_only 只要编号更小的。没有 ComplaintId 的没有同伴。调用方已 flush，row 有 id。"""
     summary = row.summary or {}
     complaint_id = summary.get("ComplaintId")
     if not complaint_id:
-        return False
+        return []
     same_order = (
         PayEvent.order_id == row.order_id
         if row.order_id is not None
         else PayEvent.order_id.is_(None)
     )
-    return any(
-        (other.summary or {}).get("ComplaintId") == complaint_id
-        and (
-            row.order_id is not None
-            or (other.summary or {}).get("MchOrderId") == summary.get("MchOrderId")
-        )
+    return [
+        other
         for other in session.scalars(
             select(PayEvent).where(
                 same_order,
@@ -1579,7 +1578,23 @@ def repeated_complaint(session: Session, row: PayEvent, *, earlier_only: bool = 
                 PayEvent.id < row.id if earlier_only else PayEvent.id != row.id,
             )
         )
-    )
+        if (other.summary or {}).get("ComplaintId") == complaint_id
+        and (
+            row.order_id is not None
+            or (other.summary or {}).get("MchOrderId") == summary.get("MchOrderId")
+        )
+    ]
+
+
+def complaint_covered(session: Session, row: PayEvent) -> bool:
+    """这条待发的投诉是不是已经有人负责了：同一投诉已经发过告警（sent）或转了人工（manual），
+    或者有编号更小、还在等着发的（pending，让它先发）。和事件提交的先后无关：编号大的先提交、先发了，
+    编号小的后提交也会看到它已经发过；两条都在等时只发编号小的那条（Codex #402 第 6 轮）。"""
+    for other in same_complaint(session, row):
+        state = (other.summary or {}).get("alert")
+        if state in ("sent", "manual") or (state == "pending" and other.id < row.id):
+            return True
+    return False
 
 
 def complaint_alerts(session: Session, stamp: datetime, alert) -> int:
@@ -1600,9 +1615,9 @@ def complaint_alerts(session: Session, stamp: datetime, alert) -> int:
     for row in rows:
         if (row.summary or {}).get("alert") != "pending":
             continue
-        # 同一个投诉只让最早那一条发：两次重推同时到（本地没有订单时不加订单锁），收推送时的查重
-        # 可能互相看不到，这里按事件编号再判一次（Codex #402 第 5 轮）
-        if repeated_complaint(session, row, earlier_only=True):
+        # 同一个投诉只发一次：两次重推同时到（本地没有订单时不加订单锁），收推送时的查重
+        # 可能互相看不到，发之前再判一次（Codex #402 第 5、6 轮）
+        if complaint_covered(session, row):
             row.summary = {**(row.summary or {}), "alert": "duplicate"}
             continue
         order = session.get(PayOrder, row.order_id) if row.order_id else None
