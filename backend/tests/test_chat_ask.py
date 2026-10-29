@@ -1459,12 +1459,48 @@ def test_partially_read_attachment_uses_the_picked_one(
     assert again["scope"]["unread"] == [
         {"label": named, "reason": "too_long", "attachmentId": 12, "readable": True}
     ]
+    # "没读的附件里可能有……"按挑出来的那个能不能打开写：叫人去点，不写"暂时读不出来"
+    assert [n["text"] for n in again["notes"] if n["code"] == "not_found_unread"] == [
+        ask.NOT_FOUND_UNREAD
+    ]
     # 正文只读了一部分：照正文写，不查挑出来的附件
     state["unread"] = [content.Unread("正文", "too_long", "第 41 段以后", source=content.BODY)]
     body = turn_of(client, got["id"])["answer"]
     assert body["status"] == "not_found"
     assert body["notes"][0]["text"] == "没读完：正文第 41 段以后（超出字数）"
     assert body["notes"][0]["attachmentId"] is None
+
+
+def test_see_attachment_note_follows_the_picked_attachment(
+    client, session, settings, model, monkeypatch
+):
+    """原句说"见附件"、附件只读了一部分：这句的入口和"暂时读不出来"按读的时候挑出来的那个附件，
+    不按 Unread 自己的（A 打不开、内容一样的 B 能打开 → 给 B 的入口，不写"暂时读不出来"；
+    复核 #406 第 4 轮）。"""
+    doc = make_doc(session, body=BODY + "\n八、具体要求详见附件。")
+    key = "att-abc123def456"
+    partial = content.Unread(
+        "附件 1《申报指南》", "too_long", "第 3 段以后", attachment_id=11, source=key
+    )
+    state = {"attachments": [ref(11, 1)], "partial": True, "unread": [partial]}
+    _attachment_load(monkeypatch, state)
+    got = asked(
+        client,
+        session,
+        settings,
+        model,
+        "具体要求在哪",
+        doc,
+        answer(("P008", "八、具体要求详见附件")),
+    )
+
+    def see():
+        notes = turn_of(client, got["id"])["answer"]["notes"]
+        return [(n["text"], n["attachmentId"]) for n in notes if n["code"] == "see_attachment"]
+
+    assert see() == [(ask.SEE_ATTACHMENT_OPEN.format(i=1), 11)]
+    state["attachments"] = [ref(11, 1, readable=False), ref(12, 2, "申报指南（另一份）")]
+    assert see() == [(ask.SEE_ATTACHMENT_OPEN.format(i=2), 12)]
 
 
 def test_two_answers_on_the_same_content_keep_their_own_attachment(
@@ -1585,6 +1621,16 @@ def test_card_reader_follows_what_was_read(client, session, settings, doc, model
     assert shown[3]["lead"] == (
         "有 1 句涉及电话、联系人或证件号，小程序里不显示这类号码。"
         "其余摘出的句子和原文对不上，没有显示。可以再问一次。"
+    )
+    # 先打不开、后来又能打开了：入口和叫人去点的半句跟着回来（三种状态都看）
+    state["attachments"] = [ref(11, 1)]
+    shown = [turn_of(client, turn["id"])["answer"] for turn in (missing, wrong, dated, mixed)]
+    assert shown[0]["reader"] == opened and shown[0]["notes"][-1]["text"] == ask.NOT_FOUND_RETRY
+    assert (shown[1]["reader"], shown[1]["lead"]) == (opened, ask.UNVERIFIED)
+    assert [n["text"] for n in shown[2]["notes"] if n["code"] == "time_none"] == [ask.TIME_NONE]
+    assert (shown[3]["reader"], shown[3]["lead"]) == (
+        opened,
+        ask.REDACTED.format(n=1) + ask.REDACTED_REST,
     )
 
 

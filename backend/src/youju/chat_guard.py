@@ -117,16 +117,18 @@ _NUMBER = re.compile(r"\d+(?:[.,]\d+)*")
 # 不换的两种（完整清单）：① 序号，"第"+数字+"句、条、款、项、段、点"；② 写到哪一天的日期：
 # 4 位+年+1–2 位+月+1–2 位+日/号、1–2 位+月+1–2 位+日/号，或 4 位、1–2 位、1–2 位用同一个"-"或"/"
 # 连起来。中间可以有空白；只写到年、年月的不算。日期的头尾要是整串数字的头尾：前面不接着数字，
-# 也不接着"数字+小数点或逗号"；用"-""/"连的，前后也不接着"-""/"和数字（"2026-11-20-01"
-# "01-2026-11-20"这类编号整个换，agy 第一批第 1 轮）
+# 也不接着"数字+小数点或逗号"；用"-""/"连的，前后也不接着（隔着空白的也算）"-""/"、小数点、
+# 逗号和数字（"2026-11-20-01""01- 2026-11-20"这类编号整个换，agy、Codex 第一批第 1、2 轮）
 _KEEP = re.compile(
     r"第\s*\d+(?:[.,]\d+)*\s*[句条款项段点]"
     r"|(?<!\d)(?<!\d[.,])(?:"
     r"\d{4}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*[日号]"
     r"|\d{1,2}\s*月\s*\d{1,2}\s*[日号]"
     r")"
-    r"|(?<!\d)(?<!\d[-/.,])\d{4}\s*([-/])\s*\d{1,2}\s*\1\s*\d{1,2}(?!\d|\s*[-/.,]\s*\d)"
 )
+_DASH_DATE = re.compile(r"(?<!\d)\d{4}\s*([-/])\s*\d{1,2}\s*\1\s*\d{1,2}(?!\d|\s*[-/.,]\s*\d)")
+# 前面接着"数字+连接符"（中间可以隔着空白）：后行断言不能隔着不定长的空白，另外查
+_JOINED_BEFORE = re.compile(r"\d\s*[-/.,]\s*$")
 
 
 def hide_numbers(text: str) -> str:
@@ -141,7 +143,11 @@ def hide_numbers(text: str) -> str:
     pieces = [unicodedata.normalize("NFKC", char) for char in text]
     plain = "".join(pieces)
     owner = [at for at, piece in enumerate(pieces) for _ in piece]  # plain 的每个字是原文第几个字
-    keep = [match.span() for match in _KEEP.finditer(plain)]
+    keep = [match.span() for match in _KEEP.finditer(plain)] + [
+        match.span()
+        for match in _DASH_DATE.finditer(plain)
+        if not _JOINED_BEFORE.search(plain, 0, match.start())
+    ]
     out, last = [], 0
     for match in _NUMBER.finditer(plain):
         first, end = match.span()
