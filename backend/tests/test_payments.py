@@ -426,6 +426,20 @@ def test_failed_order_note_only_marks_own_recent_pending_orders_with_known_codes
     run(session, setup_pay)
     session.expire_all()
     assert session.get(PayOrder, second.id).status == "completed"
+    # 48 小时都查不到的：照旧关单告警，告警里注明小程序报告过付款前就被拒（独立审阅 #402）
+    fake.status = 1  # 前面那张待确认的单微信说还没付：不挡新单
+    third = order(session, create(setup_pay))
+    assert payments.mark_not_started(session, third.user_id, third.id, -15010, NOW)
+    third.created_at, third.query_retry_at = NOW - timedelta(hours=49), None
+    session.commit()
+    fake.bad_order = True
+    alerts = []
+    payments.run_payments(
+        session, settings=setup_pay[1], client=fake.client, stamp=NOW, alert=collect(alerts)
+    )
+    session.expire_all()
+    assert session.get(PayOrder, third.id).status == "closed"
+    assert any("小程序报告过付款前就被微信拒了" in a for a in alerts)
 
 
 def test_orders_reported_as_never_started_do_not_count_toward_three_pending(setup_pay, session):
@@ -538,6 +552,26 @@ def test_complaint_on_order_without_wechat_order_id_is_accepted_and_alerted(
     else:
         assert current.status == "pending"
         assert any("商户单号 not-ours（本地没有这笔订单）" in a for a in alerts)
+        # 同一个投诉重推：不再告警（Codex #402 第 4 轮）
+        assert push(setup_pay, complaint).json()["ErrCode"] == 0
+        more = []
+        payments.run_payments(
+            session,
+            settings=settings,
+            client=fake.client,
+            stamp=NOW + timedelta(minutes=1),
+            alert=collect(more),
+        )
+        assert not any("本地没有这笔订单" in a for a in more)
+        kinds = [
+            e.summary["alert"]
+            for e in session.scalars(
+                select(PayEvent)
+                .where(PayEvent.kind == "xpay_complaint_notify", PayEvent.order_id.is_(None))
+                .order_by(PayEvent.id)
+            )
+        ]
+        assert kinds == ["sent", "duplicate"]
 
 
 def test_complaint_on_completed_order_still_goes_manual_without_a_second_alert(setup_pay, session):

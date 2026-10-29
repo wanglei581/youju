@@ -582,7 +582,10 @@ def _transaction_push(data: dict, xml: bool, session: Session, client: XPayClien
         # 投诉照样要有人知道：记成单独告警（独立审阅 #402）
         row = payments.event(session, kind, data, None)
         if kind == payments.COMPLAINT_EVENT:
-            row.summary = {**row.summary, "alert": "pending"}
+            # 同一个投诉的重推不再告警（和本地有订单的一样，Codex #402 第 4 轮）
+            session.flush()
+            repeated = payments.repeated_complaint(session, row)
+            row.summary = {**row.summary, "alert": "duplicate" if repeated else "pending"}
         session.commit()
         return reply(xml)
     # 推送没处理成的原因记进日志（微信会重推，补单兜底）：只记事件名、订单号和状态码，

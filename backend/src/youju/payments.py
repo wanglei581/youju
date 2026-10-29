@@ -68,7 +68,7 @@ UNCONFIRMED_PAYMENT_ERROR = (
 UNCONFIRMED_CLOSE_UNALERTED = (
     (PayOrder.status == "closed")
     & PayOrder.alerted_at.is_(None)
-    & (PayOrder.error == UNCONFIRMED_PAYMENT_ERROR)
+    & PayOrder.error.startswith(UNCONFIRMED_PAYMENT_ERROR)
 )
 # 未完结订单：支付关闭后仍要处理到底，不能冻结。
 OPEN_ORDER = (
@@ -1542,18 +1542,7 @@ def note_complaint(session: Session, order: PayOrder, row: PayEvent, stamp: date
     - 其余（退款中、已退款、已关闭的单不改状态——转人工会让退款中的单停掉自动退款、已退款的单倒退成
       "人工核对中"；或者人工单里已经有投诉原因、这次没加上）：alert=pending，补单单独发（complaint_alerts）。"""
     summary = dict(row.summary or {})
-    complaint_id = summary.get("ComplaintId")
-    duplicate = bool(complaint_id) and any(
-        (other.summary or {}).get("ComplaintId") == complaint_id
-        for other in session.scalars(
-            select(PayEvent).where(
-                PayEvent.order_id == order.id,
-                PayEvent.kind == COMPLAINT_EVENT,
-                PayEvent.id != row.id,
-            )
-        )
-    )
-    if duplicate:
+    if repeated_complaint(session, row):
         summary["alert"] = "duplicate"
     elif order.status not in COMPLAINT_KEEPS_STATUS and escalate(
         order, f"{COMPLAINT_ERROR}，需人工处理", stamp
@@ -1562,6 +1551,33 @@ def note_complaint(session: Session, order: PayOrder, row: PayEvent, stamp: date
     else:
         summary["alert"] = "pending"
     row.summary = summary
+
+
+def repeated_complaint(session: Session, row: PayEvent) -> bool:
+    """这条投诉事件是不是同一个投诉（ComplaintId 相同）的重推：同一订单的；
+    本地查不到订单的按商户单号比。
+    没有 ComplaintId 的不算重推。调用方已 flush，row 有 id。"""
+    summary = row.summary or {}
+    complaint_id = summary.get("ComplaintId")
+    if not complaint_id:
+        return False
+    same_order = (
+        PayEvent.order_id == row.order_id
+        if row.order_id is not None
+        else PayEvent.order_id.is_(None)
+    )
+    return any(
+        (other.summary or {}).get("ComplaintId") == complaint_id
+        and (
+            row.order_id is not None
+            or (other.summary or {}).get("MchOrderId") == summary.get("MchOrderId")
+        )
+        for other in session.scalars(
+            select(PayEvent).where(
+                same_order, PayEvent.kind == COMPLAINT_EVENT, PayEvent.id != row.id
+            )
+        )
+    )
 
 
 def complaint_alerts(session: Session, stamp: datetime, alert) -> int:
@@ -1781,8 +1797,12 @@ def run_payments(
                     # 查单一直失败也不能永远轮询：关单，下面告警（见 UNCONFIRMED_PAYMENT_ERROR）。
                     # 不转人工：没有能把这种单查清楚再处理的工具，订单页"1 个工作日内处理"兑现不了
                     # （独立审阅 10/29）；关单后订单页写"如果其实扣了款，点'遇到问题'告诉我们"
+                    # 小程序报告过付款前就被拒的，告警里注明，方便人工核对（独立审阅 #402）
+                    note = (
+                        "（小程序报告过付款前就被微信拒了）" if reported_not_started(order) else ""
+                    )
                     data = None
-                    order.status, order.error = "closed", UNCONFIRMED_PAYMENT_ERROR
+                    order.status, order.error = "closed", UNCONFIRMED_PAYMENT_ERROR + note
                     order.alerted_at = None
                 if data is not None and not mark_refunded(session, order, data, stamp):
                     if data.get("status") == 6 or (overdue and data.get("status") in (0, 1)):
@@ -1800,10 +1820,10 @@ def run_payments(
                 order.alerted_at = stamp
             if (
                 order.status == "closed"
-                and order.error == UNCONFIRMED_PAYMENT_ERROR
+                and (order.error or "").startswith(UNCONFIRMED_PAYMENT_ERROR)
                 and not order.alerted_at
                 and alert(
-                    f"支付订单 #{order.id} {UNCONFIRMED_PAYMENT_ERROR}；核实付了款的，"
+                    f"支付订单 #{order.id} {order.error}；核实付了款的，"
                     f"在 admin 里运行 youju pay-recheck --order-id {order.id}"
                 )
                 is True
