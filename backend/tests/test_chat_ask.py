@@ -20,6 +20,7 @@ from fastapi.testclient import TestClient
 from pydantic import SecretStr
 from sqlalchemy import func, select
 
+from tests.test_ai_interpret import repeatable_read_requests, take_last_slot
 from youju import access_log, attachment_text, chat_store, safety_words, wx_security
 from youju import advisor_tasks as service
 from youju.agreements import CHAT_AGREEMENT_VERSION
@@ -921,6 +922,46 @@ def test_daily_counts(client, session, settings, doc, model):
     assert counts(session)[2] == 0  # 只有没找到的那一问建过任务，删对话时一起删了
 
 
+def test_site_cap_reads_past_old_snapshot(
+    client, session, session_factory, repeatable_read_factory, settings, doc, model, monkeypatch
+):
+    """提交时查全站用量不靠连接的隔离级别（#328 设计稿第 44 轮）：请求的会话是可重复读、快照早于
+    别人占最后一个名额，锁里也查得到：回 429，整笔回滚，不建对话、问、任务，不扣次数。"""
+    settings.ai_advisor_daily_cap = 1
+    repeatable_read_requests(repeatable_read_factory)
+    take_last_slot(
+        monkeypatch,
+        session_factory,
+        lambda s: s.add(AIUsage(day=service.usage_day(NOW), task="interpret", model="m", calls=1)),
+    )
+    response = send(client, "截止是哪天", doc)
+    assert response.status_code == 429 and code(response) == "AI_DAILY_CAP"
+    assert response.json()["detail"]["message"] == ask.SITE_FULL
+    assert counts(session) == (0, 0, 0, 0)
+    assert usage(session, "ask") == 0 and usage(session, chat_store.ASK_TRY) == 0
+
+
+def test_ask_call_cap_reads_past_old_snapshot(
+    client, session, session_factory, repeatable_read_factory, settings, doc, model, monkeypatch
+):
+    """admin 调模型前查全站调用次数也不靠隔离级别：这一轮的会话快照早于别人占最后一次调用，照样挡下：
+    不调模型，这一问记失败（AI_DAILY_CAP）、退回 5 次那本。"""
+    settings.ai_advisor_daily_cap = 1
+    turn_id = send(client, "截止是哪天", doc).json()["turn"]["id"]
+    take_last_slot(
+        monkeypatch,
+        session_factory,
+        lambda s: s.add(AIUsage(day=service.usage_day(NOW), task="interpret", model="m", calls=1)),
+    )
+    with repeatable_read_factory() as stale:
+        service.run_advisor_tasks(stale, settings=settings, stamp=NOW)
+    got = turn_of(client, turn_id)
+    assert got["status"] == "failed" and got["errorCode"] == "AI_DAILY_CAP"
+    assert model.calls == []
+    assert usage(session, "ask") == 0 and usage(session, chat_store.ASK_TRY) == 1
+    assert session.scalar(select(func.sum(AIUsage.calls))) == 1
+
+
 def test_task_key_clash_rolls_back(client, session, doc, model):
     """任务的请求编号撞了（这个人自己用解读接口发过 chat-turn: 开头的）：整个回滚，回 409，
     不扣次数；换个请求编号重发就好。"""
@@ -1791,7 +1832,7 @@ def test_card_reader_compares_positions_across_sources():
 def test_redacted_with_the_rest_unverified(client, session, settings, doc, model):
     """含号码的对上了、其余的对不上（一句能显示的都没有）：仍是 redacted、不算次数，在"有 N 句……"
     后面接"其余摘出的句子和原文对不上……"，入口同 unverified；只有含号码的不放入口；原文链接失效
-    以后只留事实那半句（Codex 第 42 轮；D-106 ② 已定）。"""
+    以后只留事实那半句（Codex 第 42 轮，D-106 ②）。"""
     mixed = asked(
         client,
         session,

@@ -21,7 +21,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 from openpyxl import load_workbook
-from sqlalchemy import and_, delete, func, or_, select, text, update
+from sqlalchemy import Connection, and_, delete, func, or_, select, text, update
 from sqlalchemy.dialects.mysql import insert
 from sqlalchemy.orm import Session, defer, sessionmaker
 
@@ -90,22 +90,51 @@ class AdvisorBusy(Exception):
 
 
 class AICapReached(Exception):
-    """实际模型调用已达到当天上限。"""
+    """全站 AI 用量到了当天上限：提交时按占用的次数和实际调用次数中大的算，admin 调模型前
+    只看实际调用次数（见 site_ai_used）。"""
 
 
 @contextmanager
 def ai_cap_lock(session: Session):
-    """锁在独立连接上；额度事务提交后才释放命名锁。"""
-    with AI_CAP_LOCAL_LOCK, session.get_bind().connect() as conn:
+    """锁在独立连接上；额度事务提交后才释放命名锁。yield 这条连接：自动提交、读已提交，每次读
+    都是已经提交的最新数据。锁里查全站用量要在它上面读，见 ai_cap_slot。"""
+    with (
+        AI_CAP_LOCAL_LOCK,
+        session.get_bind().connect().execution_options(isolation_level="AUTOCOMMIT") as conn,
+    ):
+        # 自动提交不改隔离级别：引擎万一是读未提交，会读到别的事务没提交、还可能回滚的退次数。
+        # 还回连接池时 SQLAlchemy 把自动提交和隔离级别都恢复成默认
+        conn.exec_driver_sql("SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED")
         if conn.scalar(text("SELECT GET_LOCK(:name, 2)"), {"name": AI_CAP_LOCK}) != 1:
             raise AdvisorBusy
         try:
-            yield
+            yield conn
         finally:
             conn.execute(text("SELECT RELEASE_LOCK(:name)"), {"name": AI_CAP_LOCK})
 
 
-def global_ai_calls(session: Session, day: date) -> int:
+@contextmanager
+def ai_cap_slot(session: Session, day: date, cap: int, *, submissions: bool):
+    """全站上限的"检查 + 占用"：解读、条款对照、问一问提交时，和 admin 调模型前都走这里。拿到锁以后
+    在锁的那条连接上查全站用量，满了抛 AICapReached；没满就 yield，调用方在锁里占用、提交业务事务，
+    提交以后才放锁。
+    不在业务事务里查：它拿锁之前读过表，可重复读下锁里读到的是拿锁之前的快照，两个请求会同时占到
+    最后一个名额（现在的连接是读已提交，见 db.py；在锁的连接上查就不依赖这一点）。也不用 FOR SHARE：
+    共享锁要拿到业务事务提交，会挡住不在命名锁下的记用量（record_usage）和退次数，还可能和它们死锁。"""
+    with ai_cap_lock(session) as conn:
+        if site_ai_used(conn, day, submissions=submissions) >= cap:
+            raise AICapReached
+        yield
+
+
+def site_ai_used(bind: Session | Connection, day: date, *, submissions: bool = True) -> int:
+    """全站当天的 AI 用量。提交时（submissions，显示满没满也是这个口径）取占用的次数和实际调用次数中
+    大的那个；admin 调模型前只看实际调用次数（这一份提交时已经占过次数）。"""
+    calls = global_ai_calls(bind, day)
+    return max(int(global_ai_usage(bind, day)), calls) if submissions else calls
+
+
+def global_ai_calls(session: Session | Connection, day: date) -> int:
     return int(
         session.scalar(
             select(func.coalesce(func.sum(AIUsage.calls), 0)).where(
@@ -119,9 +148,7 @@ def global_ai_calls(session: Session, day: date) -> int:
 def reserve_ai_call(session: Session, kind: str, model: str, stamp: datetime, cap: int) -> None:
     """调用前持久化一次不可退的调用；进程中断时宁可少调用。"""
     day = usage_day(stamp)
-    with ai_cap_lock(session):
-        if global_ai_calls(session, day) >= cap:
-            raise AICapReached
+    with ai_cap_slot(session, day, cap, submissions=False):
         table = AIUsage.__table__
         stmt = insert(table).values(
             day=day, task=kind, model=model, calls=1, errors=0, prompt_tokens=0, completion_tokens=0
@@ -258,7 +285,7 @@ def ledger_kind(task: AdvisorTask) -> str:
     return TRIAL_USAGE if task.usage_source == "trial" else task.kind
 
 
-def global_ai_usage(session: Session, day: date) -> int:
+def global_ai_usage(session: Session | Connection, day: date) -> int:
     """当天已占用的解读和条款对照次数；失败退款已从账本扣除。"""
     return session.scalar(
         select(func.coalesce(func.sum(AdvisorUsage.used_count), 0)).where(
