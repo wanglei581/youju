@@ -49,12 +49,12 @@ test('和具体数据挂钩的准确性说明、隐私说明照旧保留', () =>
   const RULE = '城市选“全部”查全省；区县选“全部”只查这个市的市级来源，直辖市查整个直辖市。';
   const keep = {
     // 详情页：状态标签、页底出处里的"以原文为准"、"不判断能否申报"、不提供填报入口
-    detail: ['<view wx:else class="due-unverified">截止未核对</view>', '以上要点由有据按原文逐条整理，以原文为准', '有据不判断能否申报', '（自动提取）',
+    detail: ['<view wx:else class="due-unverified">截止未核对</view>', '以上要点由有据按原文逐条整理，{{doc.checked}} 核对。', '有据不判断能否申报', '（自动提取）',
       '类型、类别和发布阶段按标题归类，非官方分类', '申报请在主管部门的申报系统办理，有据不提供填报入口。'],
     report: ['截止日期以原文为准。', '截止未核对', '7 天内到期的只列人工核对过的日期', '不代表当地没有通知', RULE],
     search: [RULE, '{{openNote}}'],
     // D-091：没查到的说明按份数写在 missNote 里（不能据此判断不在名单里）；同名提示改成"不一定是同一家"
-    lists: ['{{missNote}}', '名称相近的企业分开列出，不一定是同一家', '请核对企业全称再查。'],
+    lists: ['{{missNote}}', '名称相近的企业分开列出，不一定是同一家', '请核对企业全称再查；'],
     clients: ['已确认截止的不列', '这里的客户卡片不会自动发送', '要另外确认上传', '选省包含该省已收录的城市、区县', RULE, '不判断客户能不能申报', '客户名称只存在本机，导出的表里不含客户名称。',
       '这里的客户卡片只保存在本机，不上传'],
     files: ['导出记录只保存在这台手机上'],
@@ -68,6 +68,15 @@ test('和具体数据挂钩的准确性说明、隐私说明照旧保留', () =>
   }
   // 10/29：详情页、截止页"以原文为准"整页只出现一次
   for (const page of ['detail', 'report']) assert.equal((wxml(page).match(/以原文为准/g) || []).length, 1, page);
+  // 详情页那一处不挂在"有核对日期"的条件上：没核对日期的通知也要有（Codex 10/29 复审）
+  const { render, textOf, findAll, hasClass } = require('./wxml-render.js');
+  for (const checked of ['10月28日', '']) {
+    const root = render('pages/detail/index.wxml', { doc: { title: '关于组织申报的通知', issuer: '科技厅', date: '2026-10-20', checked }, loaded: true });
+    const note = textOf(findAll(root, hasClass('source-note'))[0]);
+    assert.equal((textOf(root).match(/以原文为准/g) || []).length, 1, checked || '没有核对日期');
+    assert.match(note, /内容以原文为准；申报请在主管部门的申报系统办理，有据不提供填报入口。/);
+    assert.equal(note.includes('以上要点由有据按原文逐条整理'), Boolean(checked));
+  }
 });
 
 test('删掉的重复或没有用的提示不再出现', () => {
@@ -113,13 +122,15 @@ test('10/29 第二轮：程序里拼出来的提示也一起压短（截止状�
   const lists = read('pages/lists/index.js');
   assert.match(lists, /return `不能据此判断这家企业不在名单里：\$\{parts\.join\('，'\)\}。`;/);
   assert.doesNotMatch(lists, /旧格式|没认出来/);
+  assert.match(lists, /只收录了科技、工信等部门的公开名单，地市发布的还没收录/);
   const reader = read('pages/reader/index.js');
   assert.doesNotMatch(reader, /认不出列名|以上面的原文为准/);
   const search = read('pages/search/index.js');
   assert.doesNotMatch(search, /不代表全市数据完整|不代表区县数据完整|省市区选项由微信提供|市区目前仅收录部分来源/);
   const contact = read('components/contact-button/index.wxml');
   assert.doesNotMatch(contact, /一般当天或第二天回复|客服只解答/);
-  assert.match(contact, /客服解答小程序的使用问题，不代办申报/);
+  // agy 复审："不代办"和"不判断能否申报"是两条边界，都要写
+  assert.match(contact, /客服解答小程序的使用问题，不代办申报、不判断能否申报/);
   // 合规要求的照旧：AI 标识、第十条公开、模型和备案号、投诉举报
   assert.match(read('pages/ai/index.wxml'), /AI 生成 · 以原文为准/);
   assert.equal(advisor.SCOPE.length, 4);

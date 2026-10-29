@@ -61,7 +61,7 @@
     <view wx:else class="empty-lookup">
       <view class="empty-title">已收录的 {{result.coverage.lists}} 份名单中未找到</view>
       <view class="warn">{{missNote}}</view>
-      <view class="weak empty-text">请核对企业全称再查。已收录{{coverageSince ? coverageSince + '以来' : '近期'}}各省科技、工信部门的公开名单，份数见下方“比对范围”。</view>
+      <view class="weak empty-text">请核对企业全称再查；{{coverageSince ? coverageSince + '以来' : '近期'}}的名单份数见下方“比对范围”。</view>
     </view>
     <view wx:if="{{result.similar.length}}" class="similar">
       <view class="similar-title">名称相近的企业（不一定是同一家，点名称按全称查）</view>

@@ -549,7 +549,7 @@ test('联系客服：微信自带客服按钮，写客服管什么（10/29 起�
   assert.equal(button.attrs['show-message-card'], true);
   assert.equal(button.attrs['send-message-title'], '关于组织申报的通知');
   assert.equal(button.attrs['send-message-path'], '/pages/detail/index?id=42');
-  assert.equal(textOf(c.root()).trim(), '联系客服 客服解答小程序的使用问题，不代办申报');
+  assert.equal(textOf(c.root()).trim(), '联系客服 客服解答小程序的使用问题，不代办申报、不判断能否申报');
   // 不认的内容不带（企业名称、长文字、任务编号这类不该进来的）
   const odd = contact({ from: '我的客户 甲公司', docId: 'task-7', reason: 'x'.repeat(80), docTitle: '标题' });
   assert.equal(odd.view.data.sessionFrom, 'youju'); assert.equal(odd.view.data.showCard, false);

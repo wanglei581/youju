@@ -15,5 +15,5 @@
   </block>
   <view wx:elif="{{help}}" class="contact-note contact-note--alt">这台手机暂不能打开微信客服。可以先看<text class="link" bindtap="help">使用帮助</text><text wx:if="{{email}}">，或发邮件到 {{email}}</text>。</view>
   <view wx:else class="contact-note contact-note--alt">这台手机暂不能打开微信客服<text wx:if="{{email}}">，可以发邮件到 {{email}}</text>。</view>
-  <view class="contact-note">客服解答小程序的使用问题，不代办申报</view>
+  <view class="contact-note">客服解答小程序的使用问题，不代办申报、不判断能否申报</view>
 </view>

@@ -174,7 +174,7 @@
     <view class="weak source-label">原文出处</view>
     <view class="source-site">{{doc.site || doc.issuer}}</view>
     <view class="source-meta">发文机关：{{doc.issuer}}<text wx:if="{{doc.date}}">　发布日期：{{doc.date}}</text></view>
-    <view class="source-note"><text wx:if="{{doc.checked}}">以上要点由有据按原文逐条整理，以原文为准，{{doc.checked}} 核对。</text>申报请在主管部门的申报系统办理，有据不提供填报入口。</view>
+    <view class="source-note"><text wx:if="{{doc.checked}}">以上要点由有据按原文逐条整理，{{doc.checked}} 核对。</text>内容以原文为准；申报请在主管部门的申报系统办理，有据不提供填报入口。</view>
   </view>
   <view style="height: 220rpx"></view>
 
