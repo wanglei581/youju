@@ -11,6 +11,8 @@ const { flags } = require('../../utils/pages.js');
 
 // 要点里不重复页面上别处已经写着的（10/29）：发文机关标题下有；适用地区在标题旁的地区里已写到时不再写；
 // 申报状态在截止卡片里已有带日期的那一条时不再写。别处没写到的照旧列（Codex 第 3 轮：不能无条件去掉）
+// 截止卡片里有没有带日期的那条：逐条截止里至少一行有日期，或旧接口那一条核对过的
+const datedDue = (dls, due) => (dls && dls.length ? dls.some((d) => d.dateText) : !!due);
 function keyPoints(doc, { region, dated }) {
   return (doc.points || []).filter((p) => {
     if (!Array.isArray(p)) return false;
@@ -128,8 +130,7 @@ Page({
         const region = regionText(doc);
         this.setData({
           doc,
-          // 截止卡片里有带日期的那条（逐条截止里至少一行有日期，或旧接口那一条核对过的）
-          points: keyPoints(doc, { region: region || doc.region, dated: dls && dls.length ? dls.some((d) => d.dateText) : !!due }),
+          points: keyPoints(doc, { region: region || doc.region, dated: datedDue(dls, due) }),
           // 地区照录服务端写法；来源带区县而地区文字里没写时补上区县
           regionText: region,
           // 不满一屏全部显示（"全文如下"），长的显示开头（"下面是开头，全文约 N 字"）；正文卡顶上一行写能读到什么
@@ -235,7 +236,8 @@ Page({
     if (!doc) return;
     const dls = Array.isArray(doc.deadlines) ? deadlineRows(doc.deadlines) : null;
     const due = dueInfo(doc.deadline);
-    this.setData({ due, dls });
+    // 过了零点截止卡片可能少了带日期的那条（如机器摘录进了 7 天内不再写日期）：要点跟着重算（Codex 第 4 轮）
+    this.setData({ due, dls, points: keyPoints(doc, { region: this.data.regionText || doc.region, dated: datedDue(dls, due) }) });
   },
 
   // 截止提醒：一次性订阅消息，用户在微信弹窗里允许后才算订阅成功

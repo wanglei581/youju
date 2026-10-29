@@ -229,6 +229,13 @@ test('详情页"要点"：别处确实写着的才不重复——发文机关在
     deadlines: [{ kind: '企业申报截止', source: 'unverified', date: null, time: null, remainingDays: null, quote: null }] };
   page.refreshing = false; page.load(); await settle();
   assert.deepEqual(page.data.points.map((p) => p[0]), ['文号', '适用地区', '申报状态']);
+  // 过了零点重算：截止卡片里带日期的那条没了（机器摘录进了 7 天内），申报状态跟着回来（Codex 第 4 轮）
+  doc = { ...base, deadlines: [{ kind: '企业申报截止', source: 'excerpt', date: plus(9), time: null, remainingDays: 9, quote: '请于某日前报送。' }] };
+  page.refreshing = false; page.load(); await settle();
+  assert.deepEqual(page.data.points.map((p) => p[0]), ['文号']);
+  page.data.doc = { ...page.data.doc, deadlines: [{ kind: '企业申报截止', source: 'excerpt', date: plus(5), time: null, remainingDays: 5, quote: '请于某日前报送。' }] };
+  page.recompute();
+  assert.deepEqual(page.data.points.map((p) => p[0]), ['文号', '申报状态']);
   // 一项都不剩时整张卡不显示
   doc = { ...base, points: [['发文机关', '宁夏回族自治区科学技术厅'], ['适用地区', '宁夏']], deadlines: [] };
   page.refreshing = false; page.load(); await settle();
