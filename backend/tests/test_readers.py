@@ -24,6 +24,14 @@ from youju.models import (
 )
 
 NOW = datetime(2026, 10, 23, tzinfo=UTC)
+PAGE_SEGMENTS = readers.PAGE_SEGMENTS
+
+
+@pytest.fixture(autouse=True)
+def twenty_per_page(monkeypatch):
+    """这个文件的翻页用例按每页 20 段造数据（45 段短文字 → 3 页），测的是翻页机制本身；
+    真实的段数上限（短段落按字节预算封页）在用例里改回 PAGE_SEGMENTS 测。"""
+    monkeypatch.setattr(readers, "PAGE_SEGMENTS", 20)
 
 
 @pytest.fixture
@@ -625,6 +633,44 @@ def test_page_ends_respect_size_budget():
     sizes = [(1, 100), (2, readers.PAGE_BUDGET + 1), (3, 100), (4, 100)]
     assert readers.page_ends(sizes) == [1, 2, 4]
     assert readers.page_ends([]) == []
+
+
+def test_short_segments_fill_pages_by_budget(monkeypatch):
+    """短段落（填报模板、表格行）按字节预算封页，不是 20 段一页：10/29 验收时 5615 字的自评估报告
+    模板分了 14 页。段数上限只防极短的段把一页撑得太长，低于小程序每页最多 200 段的校验。"""
+    monkeypatch.setattr(readers, "PAGE_SEGMENTS", PAGE_SEGMENTS)
+    # 274 段、平均 28 字（约 84 字节，附件每段另算 64 字节）：一页 83 段，4 页
+    template = [(n, 84 + 64) for n in range(1, 275)]
+    assert readers.page_ends(template) == [83, 166, 249, 274]
+    tiny = [(n, 3 + 64) for n in range(1, 301)]
+    assert readers.page_ends(tiny) == [PAGE_SEGMENTS, 2 * PAGE_SEGMENTS, 300]
+    assert PAGE_SEGMENTS < 200
+
+
+def test_short_attachment_segments_fill_pages(client, session, monkeypatch):
+    """附件按真实的段数上限分页：短段落一页远多于 20 段，翻完不重不漏；按原来 20 段一页记下的
+    位置不再是一页的开头，回 422（小程序回到第 1 页，写"上次读到的位置已失效"）。"""
+    monkeypatch.setattr(readers, "PAGE_SEGMENTS", PAGE_SEGMENTS)
+    doc, att, _, version = seed(session)
+    session.execute(
+        delete(AttachmentTextSegment).where(AttachmentTextSegment.version_id == version.id)
+    )
+    session.add_all(
+        [
+            AttachmentTextSegment(
+                version_id=version.id, n=i, kind="p", text=f"第{i}项 任务编号和名称：________"
+            )
+            for i in range(1, 275)
+        ]
+    )
+    version.segments = 274
+    session.commit()
+    first, segments = read_all(client, path(doc, att))
+    assert first["status"] == "ok" and first["totalSegments"] == 274
+    assert 20 < len(first["segments"]) <= PAGE_SEGMENTS and first["pages"] <= 4
+    assert [s["n"] for s in segments] == list(range(1, 275))
+    old = client.get(path(doc, att), params={"cursor": "20", "revision": first["revision"]})
+    assert old.status_code == 422
 
 
 def _add_attachment(session, doc, position, name, url, ext):

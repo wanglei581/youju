@@ -118,7 +118,7 @@ test('部分扫描附件：末尾写还缺几页扫描件、不说读完，真�
   const p = load('reader', { reading: async () => reading({ status: 'partial', scannedPages: 1, notice: '其中 1 页是扫描件，暂不能识别文字，下面的文字不含这些页。', segments: [{ n: 9, kind: 'row', cells: [{ c: 0, t: '12', h: '序号' }, { c: 1, t: '合成企业', h: '单位名称' }], loc: { sheet: '名单', row: 3 } }] }) }, { progress: memoryProgress() });
   p.onLoad({ id: '7', attachment: '8' }); p.visible = true; await p.openPart('8');
   assert.equal(p.data.complete, true); assert.equal(p.data.segments[0].cells[0].h, '序号');
-  assert.equal(p.data.segments[0].loc, '工作表 名单 · 行 3');
+  assert.equal(p.data.segments[0].loc, '工作表“名单”第 3 行');
   const text = textOf(render('pages/reader/index.wxml', p.data));
   assert.match(text, /单位名称：合成企业/); assert.doesNotMatch(text, /aaaa/); assert.match(text, /能显示的文字到这里。另有 1 页扫描件，暂不能识别文字/);
   assert.doesNotMatch(text, /附件 1 ?完|读完|已到本版本内容末尾|浏览器|复制/);
@@ -200,6 +200,23 @@ test('名单查询离页丢弃迟回，返回保留输入并重新比对，不�
   assert.equal(p.data.name, '合成科技有限公司'); assert.equal(p.data.result.items.length, 0); p.onUnload();
 });
 
+
+test('附件段落的位置：从大到小、说法和查名单一样，同一页、同一个表只写变了的那层', async () => {
+  const row = (n, t, loc) => ({ n, kind: 'row', cells: [{ c: 0, t, h: '名称' }], loc });
+  const segments = [
+    { n: 1, kind: 'p', text: '一、总则', loc: { page: 1 } }, { n: 2, kind: 'p', text: '第一条', loc: { page: 1 } },
+    row(3, '甲', { page: 1, table: 1, row: 1 }), row(4, '乙', { page: 1, table: 1, row: 2 }),
+    { n: 5, kind: 'p', text: '第二条', loc: { page: 2 } }, { n: 6, kind: 'p', text: '说明', loc: null },
+    row(7, '丙', { table: 2, row: 1 }), row(8, '丁', { sheet: '汇总', row: 5 }), { n: 9, kind: 'p', text: '幻灯片文字', loc: { slide: 4 } },
+  ];
+  const p = load('reader', { reading: async () => reading({ segments }) }, { progress: memoryProgress() });
+  p.onLoad({ id: '7', attachment: '8' }); p.visible = true; await p.openPart('8');
+  assert.deepEqual(p.data.segments.map((s) => s.loc),
+    ['第 1 页', '', '第 1 个表第 1 行', '第 2 行', '第 2 页', '', '第 2 个表第 1 行', '工作表“汇总”第 5 行', '第 4 张幻灯片']);
+  const text = textOf(render('pages/reader/index.wxml', p.data));
+  assert.equal((text.match(/第 1 页/g) || []).length, 1);
+  assert.doesNotMatch(text, / · |行 \d|表 \d/);
+});
 
 test('101列附件完整显示且保留字段名，不按客户端假上限丢弃', async () => {
   const cells = Array.from({ length: 101 }, (_, c) => ({ c, h: `列${c + 1}`, t: c === 100 ? '2026-10-30' : `值${c}` }));
