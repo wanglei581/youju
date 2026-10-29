@@ -1274,8 +1274,8 @@ def test_ask_ready_follows_admin_heartbeat(session, settings):
 
 
 def test_capabilities_and_old_task_endpoints(client, session, settings, doc, model, monkeypatch):
-    """能力接口：ask 只在问一问开着、单独线路配齐时给；remaining.ask 是今天还剩几次。
-    旧任务接口不管问答：不收 kind=ask、不列、取不到。"""
+    """能力接口：ask 只在问一问开着、单独线路配齐时给；remaining.ask 是今天还剩几次，和 ask 同一个
+    条件（Codex 10/28）。旧任务接口不管问答：不收 kind=ask、不列、取不到。"""
     caps = client.get("/api/v1/advisor/capabilities").json()["ai_advisor"]
     assert caps["features"] == ["interpret", "clause", "ask"] and caps["remaining"]["ask"] == 5
     asked(client, session, settings, model, "截止是哪天", doc)
@@ -1284,6 +1284,11 @@ def test_capabilities_and_old_task_endpoints(client, session, settings, doc, mod
     caps = client.get("/api/v1/advisor/capabilities").json()["ai_advisor"]
     assert "ask" not in caps["features"] and "ask" not in caps["remaining"]  # 问一问没开：都不提
     monkeypatch.setattr(chat_store, "CHAT_TERMS_FINAL", True)
+    key = settings.ai_advisor_api_key
+    settings.ai_advisor_api_key = None  # 单独线路没配齐：同样都不提
+    caps = client.get("/api/v1/advisor/capabilities").json()["ai_advisor"]
+    assert "ask" not in caps["features"] and "ask" not in caps["remaining"]
+    settings.ai_advisor_api_key = key
     response = client.post(
         "/api/v1/advisor/tasks",
         json={"kind": "ask", "doc_id": doc},
@@ -1402,6 +1407,20 @@ def test_retry_of_a_just_created_ask_returns_it(client, session, doc, wechat, mo
     assert again.json()["turn"]["id"] == first.json()["turn"]["id"]
     assert missed == ["retry"] and len(wechat.calls) == calls
     assert counts(session)[1:3] == (1, 1) and usage(session, "ask") == 1
+
+
+def test_ask_retry_after_terms_update_returns_it(client, session, doc, wechat, monkeypatch):
+    """问这份通知发出以后"问一问使用说明"升了版：同一个请求编号重发拿得到原来那一问（202），不再交
+    微信、不再占次数；新的一问回 403（Codex 10/28）。"""
+    first = send(client, "截止是哪天", doc, key="before-update")
+    assert first.status_code == 202
+    calls = len(wechat.calls)
+    monkeypatch.setattr(chat_store, "CHAT_AGREEMENT_VERSION", "chat-2027-01-v1")
+    again = send(client, "截止是哪天", doc, key="before-update")
+    assert again.status_code == 202, again.text
+    assert again.json()["turn"]["id"] == first.json()["turn"]["id"]
+    assert code(send(client, "别的问题", doc)) == "CHAT_CONSENT"
+    assert len(wechat.calls) == calls and usage(session, "ask") == 1
 
 
 def test_requeue_then_success_counts_once(client, session, settings, doc, model):
