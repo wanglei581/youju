@@ -88,7 +88,7 @@ function dueRows(doc) {
 
 Page({
   data: { doc: null, shareReady: false, regionText: '', due: null, dueNote: '', dueDate: '', dueWeek: '', changes: [], tagClasses: [], reminded: false, error: '',
-    bodyView: null, noBody: '', entry: null, goneNote: '', supportExpanded: '', supportEvidence: '', conds: [],
+    bodyView: null, noBody: '', entry: null, goneNote: '', goneAll: false, dueQuote: '', supportExpanded: '', supportEvidence: '', conds: [],
     atts: [], versions: [], versionLabel: '', upstream: '', points: [], has: flags() },
 
   onLoad(query) {
@@ -137,6 +137,7 @@ Page({
         const atts = attachments.decorate(doc.attachments);
         const bodyView = body ? opening(body) : null;
         const region = regionText(doc);
+        const readable = !!body || atts.some((a) => a.canOpen);
         this.setData({
           doc,
           points: keyPoints(doc, { region: region || doc.region, dated: datedDue(dls, due) }),
@@ -146,8 +147,9 @@ Page({
           // "正文约 N 字 · 附件 N 个"：字数下一行写着、附件下面逐个列着（10/29 独立审阅：同一屏写了两遍）
           bodyView,
           noBody: body ? '' : noBodyText(doc.body, atts),
-          // 原网页已失效：标题下写明（正文、附件都不再给）
-          goneNote: goneNote(doc.link_gone, !!body || atts.some((a) => a.canOpen)),
+          // 原网页已失效：标题下写明（正文、附件都不再给）；写了"不再提供"时正文卡片不再写一遍（goneAll）
+          goneNote: goneNote(doc.link_gone, readable),
+          goneAll: !!doc.link_gone && !readable,
           // 底栏："阅读全文"（只显示了开头）或"阅读附件"（正文已全部显示或没有正文），都读不了不显示
           entry: readEntry(doc.body, bodyView, atts),
           supportExpanded: '',
@@ -162,6 +164,8 @@ Page({
           dls,
           // 没有能显示的日期时只写"截止时间见原文"，不给任何日期；原文链接已失效的不写（原文已打不开）
           dueNote: doc.link_gone ? '' : deadlineNote(doc),
+          // 核对过的那句截止原文（接口只在"截止时间原文"一节给）：旧接口时跟在截止日期下面；别的节不当截止原句
+          dueQuote: doc.excerpt && doc.excerpt.section === '截止时间原文' ? String(doc.excerpt.text || '') : '',
           dueDate: due ? cnDate(doc.deadline.date) : '',
           dueWeek: due ? `${weekday(doc.deadline.date)}${doc.deadline.time ? ` ${doc.deadline.time}` : ''}` : '',
           tagClasses: (doc.tags || []).map((t) => kindClass(t)),
@@ -178,7 +182,7 @@ Page({
       })
       .catch((err) => this.setData({
         doc: null, due: null, dueNote: '', changes: [], reminded: false, atts: [], conds: [], versions: [], versionLabel: '', upstream: '',
-        bodyView: null, noBody: '', entry: null, goneNote: '', points: [],
+        bodyView: null, noBody: '', entry: null, goneNote: '', goneAll: false, dueQuote: '', points: [],
         takenDown: err.status === 404 && err.message === '该文件已下架',
         error: err.status === 404 ? err.message : `数据未更新：${err.message}`,
       }))

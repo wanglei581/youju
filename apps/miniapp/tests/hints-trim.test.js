@@ -330,6 +330,11 @@ test('详情页：核对过的截止原句只在截止卡片里写一次；"原�
   shown = textOf(root);
   assert.equal(shown.split('请于11月20日前报送。').length - 1, 1);
   assert.match(textOf(findAll(root, hasClass('due-card'))[0]), /已人工核对\s*原文：请于11月20日前报送。/);
+  // 别的节的摘录（演示数据里是"二、申报条件"）不当截止原句写在日期下面（Codex 第 6 轮）
+  doc = { ...doc, excerpt: { section: '二、申报条件', text: '（一）申报单位原则上应为制造业企业。' } };
+  page.refreshing = false; page.load(); await settle();
+  assert.equal(page.data.dueQuote, '');
+  assert.doesNotMatch(textOf(render('pages/detail/index.wxml', { ...page.data, loading: false })), /申报单位原则上应为制造业企业/);
 });
 
 test('详情页：没核对、候选在 7 天内的那一类写"可能 7 天内截止"；原文链接已失效的不写"截止时间见原文"、正文卡片不再写一遍', async () => {
@@ -361,6 +366,14 @@ test('详情页：没核对、候选在 7 天内的那一类写"可能 7 天内�
   assert.equal(findAll(root, (n) => n.attrs && n.attrs.id === 'body').length, 0);
   assert.equal(textOf(root).split('不再提供').length - 1, 1);
   assert.doesNotMatch(textOf(root), /原网页已打不开/);
+  // 链接失效、附件却还能读：标题下不说"不再提供"，正文卡片照旧写正文为什么没有（Codex 第 6 轮）
+  doc = { ...doc, attachments: [{ id: '3', name: '申报指南.pdf', ext: 'pdf', readable: true }] };
+  page.refreshing = false; page.load(); await settle();
+  root = render('pages/detail/index.wxml', { ...page.data, loading: false });
+  assert.equal(page.data.goneAll, false);
+  assert.doesNotMatch(textOf(root), /不再提供/);
+  assert.equal(findAll(root, (n) => n.attrs && n.attrs.id === 'body').length, 1);
+  assert.match(textOf(root), /原网页已打不开，正文暂不提供/);
 });
 
 test('详情页：正文卡顶上不再写"正文约 N 字 · 附件 N 个"（字数下一行写着、附件下面逐个列着）', async () => {
