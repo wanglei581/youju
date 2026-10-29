@@ -276,14 +276,16 @@ test('结果页（站内看所选文件）：截止只写日期或"截止时间�
     { number: 1, doc_id: '1', title: '甲', deadline: '2026-11-06（机器摘录）', date_role: '企业申报截止（机器摘录）', deadline_quote: '请于2026年11月6日前报送。', sites: '某厅网站', urls: 'https://a.example.gov.cn/1', unchecked: '截止日期（以原文为准）、支持方式' },
     { number: 2, doc_id: '2', title: '乙', deadline: '截止未核对，以原文为准', date_role: '截止未核对', sites: '某厅网站', urls: 'https://a.example.gov.cn/2', unchecked: '截止日期（以原文为准）' },
     { number: 3, doc_id: '3', title: '丙', deadline: '见原文', date_role: '截止时间见原文', sites: '某厅网站', urls: 'https://a.example.gov.cn/3', unchecked: '无' },
-    { number: 4, doc_id: '4', title: '丁', deadline: '2026-11-06；2026-11-20', date_role: '企业申报截止；推荐截止', sites: '某厅网站', urls: 'https://a.example.gov.cn/4', unchecked: '无' },
+    // 核对过的照后台的写法：类型在前、日期在后，几条用"；"连（api/exports.py _deadline_text）
+    { number: 4, doc_id: '4', title: '丁', deadline: '企业申报截止 2026-11-06；推荐截止 2026-11-20', date_role: '企业申报截止；推荐截止', sites: '某厅网站', urls: 'https://a.example.gov.cn/4', unchecked: '无' },
   ];
   const page = pageOf('pages/results/index.js', {
     '../../utils/api.js': { exportPreview: () => Promise.resolve({ kind: 'catalogue', title: '本次所选文件目录', revision: 'r1', notice: '本文件由第三方整理……“未核项”列出这一行还没有人工核对的字段', generatedAt: '2026-10-29', total: 4, items }) },
     '../../utils/exporter.js': { exportDocs() {} },
   });
   page.onLoad({ ids: '1,2,3,4' }); await page.onShow();
-  assert.deepEqual(page.data.result.items.map((i) => i.deadlineText), ['2026-11-06 企业申报截止（原文摘录）', '截止时间见原文', '截止时间见原文', '2026-11-06；2026-11-20 企业申报截止；推荐截止']);
+  // 自带类型的照写，不再接一遍"日期角色"（原来写成"企业申报截止 2026-11-06 企业申报截止"，Codex 第 9 轮）
+  assert.deepEqual(page.data.result.items.map((i) => i.deadlineText), ['企业申报截止 2026-11-06（原文摘录）', '截止时间见原文', '截止时间见原文', '企业申报截止 2026-11-06；推荐截止 2026-11-20']);
   const { render, textOf } = require('./wxml-render.js');
   const shown = textOf(render('pages/results/index.wxml', page.data));
   assert.doesNotMatch(shown, /未核项|未核对：|以原文为准|example\.gov\.cn|机器摘录/);
@@ -479,7 +481,7 @@ test('结果页（站内看所选文件）：空的发布状态不留两个"·"�
   const soonItems = [
     { number: 1, doc_id: '7', title: '戊', kind: '申报通知', status: '', region: '云南 · 省级', deadline: '截止未核对，以原文为准', date_role: '截止未核对', due_soon: true },
     { number: 2, doc_id: '8', title: '己', kind: '申报通知', status: '', region: '河南 · 省级', deadline: `${plusDays(20)}（机器摘录）`, date_role: '材料报送截止（机器摘录）', deadline_quote: '某日前', due_soon: true },
-    { number: 3, doc_id: '9', title: '庚', kind: '申报通知', status: '', region: '河南 · 省级', deadline: plusDays(3), date_role: '企业申报截止', due_soon: true },
+    { number: 3, doc_id: '9', title: '庚', kind: '申报通知', status: '', region: '河南 · 省级', deadline: `企业申报截止 ${plusDays(3)}`, date_role: '企业申报截止', due_soon: true },
     { number: 4, doc_id: '10', title: '辛', kind: '申报通知', status: '', region: '河南 · 省级', deadline: '截止未核对，以原文为准', date_role: '截止未核对', due_soon: false },
     { number: 5, doc_id: '11', title: '壬', kind: '申报通知', status: '', region: '宁夏 · 省级', deadline: '见原文', date_role: '截止时间见原文', sites: '某厅（a.gov.cn）', due_soon: false, link_gone: true },
   ];
@@ -489,7 +491,7 @@ test('结果页（站内看所选文件）：空的发布状态不留两个"·"�
   });
   soonPage.onLoad({ ids: '7,8,9,10,11' }); await soonPage.onShow();
   assert.deepEqual(soonPage.data.result.items.map((i) => i.deadlineText), [
-    '可能 7 天内截止', `${plusDays(20)} 材料报送截止（原文摘录）；另有一类可能 7 天内截止`, `${plusDays(3)} 企业申报截止`, '截止时间见原文', '']);
+    '可能 7 天内截止', `材料报送截止 ${plusDays(20)}（原文摘录）；另有一类可能 7 天内截止`, `企业申报截止 ${plusDays(3)}`, '截止时间见原文', '']);
   // 原文链接已失效：不写"截止："那一行，出处后面标一句（和列表、详情一致）
   const goneText = textOf(render('pages/results/index.wxml', soonPage.data));
   assert.match(goneText, /出处：某厅 · 原文链接已失效/);
@@ -502,16 +504,16 @@ test('结果页（站内看所选文件）：空的发布状态不留两个"·"�
   })();
   const parse = pageOf('pages/results/index.js', {
     '../../utils/api.js': { exportPreview: () => Promise.resolve({ kind: 'catalogue', title: '本次所选文件目录', revision: 'r3', notice: '', generatedAt: '2026-10-29', total: 3, items: [
-      { number: 1, doc_id: '21', title: '甲', kind: '申报通知', status: '', region: '河南 · 省级', deadline: `${plusDays(20)}；原定 ${plusDays(3)} 已延期，见新通知《乙》`, date_role: '企业申报截止；推荐截止（已延期）', due_soon: true },
-      { number: 2, doc_id: '22', title: '丙', kind: '申报通知', status: '', region: '河南 · 省级', deadline: `原定 ${plusDays(3)} 已撤销，见新通知《丁》`, date_role: '企业申报截止（已撤销）', due_soon: false },
-      ...(pastHour ? [{ number: 3, doc_id: '23', title: '戊', kind: '申报通知', status: '', region: '河南 · 省级', deadline: `${plusDays(0)} ${pastHour}`, date_role: '企业申报截止', due_soon: true }] : []),
+      { number: 1, doc_id: '21', title: '甲', kind: '申报通知', status: '', region: '河南 · 省级', deadline: `企业申报截止 ${plusDays(20)}；原定 推荐截止 ${plusDays(3)} 已延期，见新通知《乙》`, date_role: '企业申报截止；推荐截止（已延期）', due_soon: true },
+      { number: 2, doc_id: '22', title: '丙', kind: '申报通知', status: '', region: '河南 · 省级', deadline: `原定 企业申报截止 ${plusDays(3)} 已撤销，见新通知《丁》`, date_role: '企业申报截止（已撤销）', due_soon: false },
+      ...(pastHour ? [{ number: 3, doc_id: '23', title: '戊', kind: '申报通知', status: '', region: '河南 · 省级', deadline: `企业申报截止 ${plusDays(0)} ${pastHour}`, date_role: '企业申报截止', due_soon: true }] : []),
     ] }) },
     '../../utils/exporter.js': { exportDocs() {} },
   });
   parse.onLoad({ ids: '21,22,23' }); await parse.onShow();
   const texts = parse.data.result.items.map((i) => i.deadlineText);
-  assert.ok(texts[0].endsWith('；另有一类可能 7 天内截止'), texts[0]);
-  assert.match(texts[1], /^原定 .* 已撤销，见新通知《丁》/);
+  assert.equal(texts[0], `企业申报截止 ${plusDays(20)}；原定 推荐截止 ${plusDays(3)} 已延期，见新通知《乙》；另有一类可能 7 天内截止`);
+  assert.equal(texts[1], `原定 企业申报截止 ${plusDays(3)} 已撤销，见新通知《丁》`);
   if (pastHour) assert.ok(texts[2].endsWith('；另有一类可能 7 天内截止'), texts[2]);
 });
 
