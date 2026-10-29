@@ -365,6 +365,23 @@ def test_nth_and_drafting():
     assert ask.nth("你列的第2个") == 2
     assert ask.nth("刚才第3项呢") == 3 and ask.nth("你说的第二点要盖章吗") == 2
     assert ask.nth("刚才说的第一批申报截止哪天") is None and ask.nth("上面第二季度的呢") is None
+    # 几句连写、范围、中文数字混写也算（#408）：范围按从小到大，超出的报最小那一句
+    for text in ("第3、4句", "第 1 至 3 句", "第2至四句", "第5至3句", "第一、三句", "第2-5句"):
+        assert ask.refers_back(text), text
+    assert ask._spans("第2、5句") == [(2, 2), (5, 5)] and ask._spans("第5至3句") == [(3, 5)]
+    assert ask._spans("第1、3至5句") == [(1, 1), (3, 5)] and ask._spans("第一和两句") == [
+        (1, 1),
+        (2, 2),
+    ]
+    assert [ask.beyond(t, 3) for t in ("第2、5句", "第1至5句", "第5至3句", "第2至四句")] == [
+        5,
+        4,
+        4,
+        4,
+    ]
+    assert ask.beyond("第一、三句", 3) is None and ask.beyond("第一、三句", 2) == 3
+    assert ask.beyond("第1至99999999句", 3) == 4  # 只记起止，不逐句展开
+    assert ask.beyond("你列的第2、3条", 1) == 2 and ask.nth("你列的第2、3条") == 2
     for text in ("帮我写一份申报书", "替我写申请书", "起草个方案", "润色一下自评报告", "代写材料"):
         assert ask.drafting(text), text
     # 要紧挨着才算：问要交什么的不挡
@@ -723,7 +740,8 @@ def test_followups_and_content_updates(
         "上一个回答里没有第 5 句（只列了 1 句）。你指的是哪一句？可以把那句的几个字打出来再问。"
         "这次不算次数。"
     )
-    # 原文自己有"第五条"：不算指回上一答，交给模型
+    # 原文自己有"第五条"：不算指回上一答，交给模型（连写、范围的超出，见
+    # test_listed_sentences_beyond_the_previous_answer）
     calls = len(model.calls)
     asked(client, session, settings, model, "第五条是什么", doc, answer(("P005", S5)))
     assert len(model.calls) == calls + 1
@@ -750,6 +768,32 @@ def test_followups_and_content_updates(
         "quotes": [{"n": 1, "sid": "P003", "quote": S3}],
     }
     assert usage(session, "ask") == 5  # 找到原句的 5 问；规则挡下的 2 问不占
+
+
+def test_listed_sentences_beyond_the_previous_answer(client, session, settings, doc, model):
+    """几句连写、范围的"第 N 句"（#408，第七节第 3 条）：上一答只有 3 句时，有一句超出就按超出的最小
+    那一句当场答"上一个回答里没有第 N 句"，不调模型、不扣次数；都没超出的照常交给模型，序号原样交
+    （隐去数字的例外，第九节第 2 条）。规则答的那一问也算上一答（0 句），所以每种都从 3 句的上一答问。"""
+    three = answer(("P001", S1), ("P002", S2), ("P003", S3))
+    asked(client, session, settings, model, "要满足哪些条件", doc, three)
+    within = asked(client, session, settings, model, "第一、三句和第2-3句是谁的截止", doc)
+    assert within["status"] == "done" and within["answer"]["by"] == "model"
+    assert model.calls[-1][1]["question"] == "第一、三句和第2-3句是谁的截止"
+    asked(client, session, settings, model, "要满足哪些条件", doc, three)
+    calls, used = len(model.calls), usage(session, "ask")
+    got = send(client, "第1至5句呢", doc).json()["turn"]
+    assert got["answer"]["status"] == "clarify" and got["counted"] is False
+    assert got["answer"]["lead"] == ask.CLARIFY_NTH.format(n=4, m=3)
+    assert len(model.calls) == calls and usage(session, "ask") == used
+    # 其余几种写法：同一个上一答（3 句）、同一份内容，规则当场答、写对句号
+    loaded = content.load(session, doc, link=False)
+    quotes = tuple({"n": n, "sid": f"P00{n}", "quote": t} for n, t in ((1, S1), (2, S2), (3, S3)))
+    prev = ask.Prev(1, "要满足哪些条件", loaded.versions(), quotes)
+    for text, n in (("第2至四句是什么意思", 4), ("第5至3句呢", 4), ("第2、5句呢", 5)):
+        rule, _ = ask.rules(text, prev, loaded.versions())
+        assert rule == {"status": "clarify", "reason": "no_nth", "m": 3}, text
+        assert ask.beyond(text, rule["m"]) == n, text
+    assert ask.rules("第一、三句呢", prev, loaded.versions()) == (None, False)
 
 
 def test_two_asks_in_one_chat_at_once(client, session, doc, wechat, monkeypatch):

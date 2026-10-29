@@ -220,11 +220,30 @@ _BACK_WORDS = (
     "这一句",
     "那一句",
 )
-_NUM = r"(?:\d+|[一二三四五六七八九十]+)"
-_NTH_SENTENCE = re.compile(rf"第({_NUM})句")
+_NUM = r"(?:\d+|[零〇一二三四五六七八九十两]+)"
+# 几句连写的（"第 N、M 句""第 N 至 M 句"）也算：序号用"、，,和与及或"隔开，或者用"至到-~—"连成范围，
+# 阿拉伯数字、中文数字可以混写（第七节第 3 条，连接的字同第九节第 2 条；#408）
+_JOINS = "、，,和与及或"
+_RANGES = "至到-~—"
+_NUMS = rf"{_NUM}(?:[{_JOINS}{re.escape(_RANGES)}]{_NUM})*"
+_SPLIT_NUMS = re.compile(f"([{_JOINS}{re.escape(_RANGES)}])")
+_NTH_SENTENCE = re.compile(rf"第({_NUMS})句")
 # 没写"第 N 句"时只认"第 N 条、个、项、点"；"第一批""第二季度"这类不是在数上一答的句子
-_NTH_ITEM = re.compile(rf"第({_NUM})[条个项点]")
-_CN_DIGITS = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+_NTH_ITEM = re.compile(rf"第({_NUMS})[条个项点]")
+_CN_DIGITS = {
+    "零": 0,
+    "〇": 0,
+    "一": 1,
+    "二": 2,
+    "两": 2,
+    "三": 3,
+    "四": 4,
+    "五": 5,
+    "六": 6,
+    "七": 7,
+    "八": 8,
+    "九": 9,
+}
 # 要代写：动作后面紧接着（中间最多隔一个"一份、一下、个、篇"）是材料（第六节第 3 条第 5 步）
 _DRAFT = re.compile(
     "(?:代写|帮我写|帮忙写|替我写|起草|润色|改写)(?:一份|一下|个|篇)?"
@@ -277,12 +296,40 @@ def refers_back(question: str) -> bool:
     return any(word in text for word in _BACK_WORDS) or bool(_NTH_SENTENCE.search(text))
 
 
-def nth(question: str) -> int | None:
-    """问题里指的上一答的第几句（数字或一到十）：先认"第 N 句"，没有再认"第 N 条、个、项、点"；
-    别的"第 N"（第一批、第二季度）不算。都没有为 None。"""
+def _spans(question: str) -> list[tuple[int, int]]:
+    """问题里指的上一答的第几句，每段（起, 止）：先认"第 N 句"，没有再认"第 N 条、个、项、点"；
+    几句连写的（"第2、5句""第1至5句"）都算，范围按从小到大（"第5至3句"是 3 到 5）。别的"第 N"
+    （第一批、第二季度）不算；认不出的为空。只记起止，不逐句展开（"第1至99999句"也不费事）。"""
     text = plain(question)
     match = _NTH_SENTENCE.search(text) or _NTH_ITEM.search(text)
-    return _number(match.group(1)) if match else None
+    if match is None:
+        return []
+    parts = _SPLIT_NUMS.split(match.group(1))
+    values = [_number(part) for part in parts[0::2]]
+    if any(value is None for value in values):
+        return []
+    spans = [(values[0], values[0])]
+    for at, mark in enumerate(parts[1::2]):
+        value = values[at + 1]
+        if mark in _RANGES:  # 和前一个序号连成范围
+            low, high = spans[-1]
+            spans[-1] = (min(low, value), max(high, value))
+        else:
+            spans.append((value, value))
+    return spans
+
+
+def nth(question: str) -> int | None:
+    """问题里指的上一答最小的那一句（_spans）；没写第几句的为 None。"""
+    spans = _spans(question)
+    return min(low for low, _ in spans) if spans else None
+
+
+def beyond(question: str, count: int) -> int | None:
+    """问题里指的上一答的几句里，超出上一答句数（count）的最小那一句（第七节第 3 条：上一答 3 句时，
+    "第2、5句"是 5，"第1至5句"是 4）；都没超出、没写第几句的为 None。"""
+    over = [max(low, count + 1) for low, high in _spans(question) if high > count]
+    return min(over) if over else None
 
 
 def drafting(question: str) -> bool:
@@ -417,8 +464,7 @@ def rules(question: str, prev: Prev | None, versions: dict) -> tuple[dict | None
             return {"status": "clarify", "reason": "no_prev"}, False
         if changed(prev.versions, versions):
             return {"status": "clarify", "reason": "changed", "basis": prev.versions}, False
-        n = nth(question)
-        if n is not None and n > prev.count:
+        if beyond(question, prev.count) is not None:
             return {"status": "clarify", "reason": "no_nth", "m": prev.count}, False
     if drafting(question):
         return {"status": "out_of_scope", "reason": "draft"}, False
@@ -1121,7 +1167,8 @@ def _fixed(session: Session, turn: AIChatTurn, stored: dict, cache: dict) -> dic
     elif reason == "changed":
         out["lead"] = CLARIFY_CHANGED
     elif reason == "no_nth":
-        out["lead"] = CLARIFY_NTH.format(n=nth(turn.question) or 0, m=stored.get("m", 0))
+        m = stored.get("m", 0)
+        out["lead"] = CLARIFY_NTH.format(n=beyond(turn.question, m) or nth(turn.question) or 0, m=m)
     elif stored.get("status") == "clarify":
         out["lead"] = CLARIFY_MODEL
     else:
