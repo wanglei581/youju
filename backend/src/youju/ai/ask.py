@@ -1139,23 +1139,20 @@ def _note(code: str, text: str, *, head: bool, **extra) -> dict:
     return {"code": code, "text": text, "head": head, **extra}
 
 
-def _card_reader(doc_id: int, current: content.Content) -> dict | None:
+def _card_reader(doc_id: int, current: content.Content, picked: dict | None = None) -> dict | None:
     """卡片上的"站内阅读 ›"打开哪一份（not_found、unverified，和含号码的对上、其余对不上的
     redacted；第六节第 3 条"卡片上的站内阅读"，Codex 第 41 轮）：按这次读了的来源、现在的状态定。
     读了正文 → 开正文；没读正文（只读了附件）→ 读了的附件里现在能站内打开的第一个（按现在的位置，
-    跨来源比）；打开的就是那份内容在读的范围里写出名字的那个（SourceText.shown_id：内容一样的
-    几个附件里能打开的第一个），名称和入口是同一个附件。一个都打不开 → None：不放入口，叫人去点的
+    跨来源比）；每份内容只看读的范围里写出名字的那个附件（picked：读的时候按回答时记下的编号挑的，
+    没给的用 shown_id 那一个），名称和入口是同一个附件。一个都打不开 → None：不放入口，叫人去点的
     半句也不写。原文链接失效的由调用方先挡（一律不放）。"""
     if any(source.key == content.BODY for source in current.sources):
         return {"docId": doc_id, "attachmentId": None}
-    shown = [
-        source.shown
-        for source in current.sources
-        if source.shown is not None and source.shown.readable
-    ]
-    if not shown:
+    named = [(picked or {}).get(source.key) or source.shown for source in current.sources]
+    openable = [a for a in named if a is not None and a.readable]
+    if not openable:
         return None
-    return {"docId": doc_id, "attachmentId": min(shown, key=lambda a: a.n).id}
+    return {"docId": doc_id, "attachmentId": min(openable, key=lambda a: a.n).id}
 
 
 def _recorded(snapshot: dict, result: dict) -> dict:
@@ -1219,8 +1216,19 @@ def _answer(session: Session, turn: AIChatTurn, task: AdvisorTask, stamp: dateti
             return _hidden(out, "unavailable", TAKEN_DOWN)
         return _hidden(out, "ineligible", INELIGIBLE, reason=current.code)
     snapshot = task.snapshot or {}
-    if outdated(snapshot.get("versions"), _recorded(snapshot, result), current):
+    recorded = _recorded(snapshot, result)
+    if outdated(snapshot.get("versions"), recorded, current):
         return _hidden(out, "stale", STALE)
+    # 每份附件内容用哪个附件：按回答时记下的编号挑一次（_pick），原句出处、读的范围里的名称和
+    # "附件取于"、卡片上的入口都用它，名称、入口、点进去打开的是同一个附件
+    picks = {}
+    for source in current.sources:
+        if source.key != content.BODY:
+            chosen, note = _pick(source, recorded.get(source.key))
+            if chosen is None:  # 内容一样的附件一个都没有了：读了的来源变了，作废
+                return _hidden(out, "stale", STALE)
+            picks[source.key] = (chosen, note)
+    chosen_ones = {key: chosen for key, (chosen, _) in picks.items()}
     gone = out["linkGone"]
     question = plain(turn.question)
     sources = {s.key: s for s in current.sources}
@@ -1234,11 +1242,8 @@ def _answer(session: Session, turn: AIChatTurn, task: AdvisorTask, stamp: dateti
             label = (source.label if source else "") + place
             opens, readable, attachment = None, source is not None, False
         else:
-            # 出处按现在的来源拼（附件改名、换位置以后跟着变，按内容版本找回）；内容一样的几个附件
-            # 按回答时记下的编号挑，名称、入口、点进去打开的是同一个（_pick）
-            chosen, note = _pick(source, q.get("attachmentIds"))
-            if chosen is None:  # 内容一样的附件一个都没有了：读了的来源变了，作废
-                return _hidden(out, "stale", STALE)
+            # 出处按现在的来源拼（附件改名、换位置以后跟着变，按内容版本找回）
+            chosen, note = picks[source.key]
             label = chosen.label + place + note
             opens, readable, attachment = chosen.id, chosen.readable, True
         quotes.append(
@@ -1259,7 +1264,7 @@ def _answer(session: Session, turn: AIChatTurn, task: AdvisorTask, stamp: dateti
     redacted = int(result.get("redacted") or 0)
     # 卡片上的"站内阅读 ›"；None 时（原文链接失效了，或者读了的来源一个都打不开）叫人去点的半句
     # 都不写
-    reader = None if gone else _card_reader(turn.doc_id, current)
+    reader = None if gone else _card_reader(turn.doc_id, current, chosen_ones)
 
     def pick(normal: str, closed: str, gone_text: str) -> str:
         """叫人去点、叫人再问的半句分三档（见 NOT_FOUND 那几个说法上面的说明）。"""
@@ -1360,7 +1365,11 @@ def _answer(session: Session, turn: AIChatTurn, task: AdvisorTask, stamp: dateti
         quotes=quotes,
         notes=sorted(notes, key=lambda note: not note["head"]),
         verified=verified,
-        scope={"text": current.scope_text(), "partial": current.partial, "unread": unread},
+        scope={
+            "text": current.scope_text(chosen_ones),
+            "partial": current.partial,
+            "unread": unread,
+        },
         redacted=redacted,
     )
     return out

@@ -14,9 +14,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from functools import cached_property
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -31,6 +32,7 @@ CONFIG_BODY = "body-v1"  # 不读附件
 CONFIG_ATTACH = "attach-v1"  # 读附件（附件读入第二步用；取舍规则改了就升版本）
 
 BODY = "body"  # 正文来源的 key
+BEIJING = ZoneInfo("Asia/Shanghai")  # "附件取于"按北京时间的日期写
 
 
 @dataclass(frozen=True)
@@ -229,14 +231,18 @@ class Content:
             if s.source == BODY
         ]
 
-    def scope_text(self) -> str:
-        """读的范围，给用户看。读附件时（CONFIG_ATTACH）的说法由附件读入第二步定（要加附件取于
-        哪天、没读的原因），在那之前不给用户看。附件数按详情页列出的（本份通知自己的附件）。"""
+    def scope_text(self, picked: dict[str, AttachmentRef] | None = None) -> str:
+        """读的范围，给用户看。附件数按详情页列出的（本份通知自己的附件）。
+
+        读附件时（CONFIG_ATTACH）每份附件内容写一个附件的名称，后面接"（附件取于 10 月 18 日）"，
+        名称和日期是同一个附件：picked 是读的时候按回答时记下的编号挑的那一个（ask._pick，和原句
+        出处是同一个），没给的用 shown_id 那一个。没读的原因怎么写由附件读入第二步定（D-085 的
+        excluded 还没有说法），在那之前不给用户看。"""
         if self.config == CONFIG_BODY:
             if not self.attachments_total:
                 return "读了：正文（这份通知没有附件）"
             return "只读了正文，附件没读"
-        read = "、".join(s.label for s in self.sources)
+        read = "、".join(_read_label(s, (picked or {}).get(s.key)) for s in self.sources)
         if not self.unread:
             return f"读了：{read}"
         unread = "、".join(u.label for u in self.unread)
@@ -256,6 +262,19 @@ class Content:
         没引用的、没找到的回答里也有），读的时候判断"记下的附件内容换了没有"（第六节第 3 条
         "只更新显示"⓪，Codex 第 62、63 轮）。不进版本摘要。"""
         return {s.key: list(s.attachment_ids) for s in self.sources if s.attachments}
+
+
+def _read_label(source: SourceText, picked: AttachmentRef | None) -> str:
+    """读的范围里一个来源的写法：正文写"正文"；附件写挑中的那个附件的名称，有核对时间的接
+    "（附件取于 M 月 D 日）"（北京时间）。"""
+    attachment = picked or source.shown
+    if attachment is None:
+        return source.label
+    if attachment.checked_at is None:
+        return attachment.label
+    day = attachment.checked_at
+    day = (day if day.tzinfo else day.replace(tzinfo=UTC)).astimezone(BEIJING)
+    return f"{attachment.label}（附件取于 {day.month} 月 {day.day} 日）"
 
 
 def _check(session: Session, doc_id: int, *, link: bool = True) -> tuple[Document, str, str, str]:

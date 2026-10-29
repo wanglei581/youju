@@ -1125,9 +1125,9 @@ def test_attachment_notes_and_unread_scope(client, session, settings, model, mon
 ATT_VERSION = "sha-abc:extract-v1"  # 假附件来源的内容版本
 
 
-def ref(attachment_id, n, name="申报指南", readable=True, version=ATT_VERSION):
+def ref(attachment_id, n, name="申报指南", readable=True, version=ATT_VERSION, checked_at=None):
     """详情页附件列表里的一个附件现在的样子（content.AttachmentRef）。"""
-    return content.AttachmentRef(attachment_id, n, name, version, readable)
+    return content.AttachmentRef(attachment_id, n, name, version, readable, checked_at)
 
 
 def _attachment_load(monkeypatch, state):
@@ -1247,8 +1247,18 @@ def test_same_content_attachments_keep_name_and_reader_together(
     other = ref(12, 1, "申报指南（另一份）")  # 后来加的、内容一样
     moved, closed = ref(11, 2), ref(11, 2, readable=False)
     replaced = "附件 1《申报指南（另一份）》第 1 段" + ask.SUBSTITUTE
-    # ① 记下的还在、能打开：就用它，哪怕排在前面的另一个也能打开（读的范围里写的是那一个）
+    # ① 记下的还在、能打开：就用它，哪怕排在前面的另一个也能打开（shown_id 是那一个）
     assert shown([other, moved]) == ("附件 2《申报指南》第 1 段", opens(11), False)
+    # 读的范围里的名称和"附件取于"也用挑中的那一个（两个附件核对的日子不一样）
+    state["attachments"] = [
+        replace(other, checked_at=datetime(2026, 10, 20, 2, tzinfo=UTC)),
+        replace(moved, checked_at=datetime(2026, 10, 17, 18, tzinfo=UTC)),  # 北京时间 18 日
+    ]
+    scope = turn_of(client, got["id"])["answer"]["scope"]["text"]
+    assert scope == "读了：正文、附件 2《申报指南》（附件取于 10 月 18 日）"
+    state["attachments"] = [state["attachments"][0], replace(closed, checked_at=None)]
+    scope = turn_of(client, got["id"])["answer"]["scope"]["text"]
+    assert scope == "读了：正文、附件 1《申报指南（另一份）》（附件取于 10 月 20 日）"
     # ② 记下的还在、打不开，内容一样的另一个能打开：用另一个，注明
     assert shown([other, closed]) == (replaced, opens(12), False)
     # ② 记下的不在附件列表里了：同一句注明
@@ -1334,6 +1344,61 @@ def test_attachment_changed_during_the_call(client, session, settings, doc, mode
     )
     assert (got["status"], got["errorCode"]) == ("failed", "ASK_DOC_UPDATED")
     assert usage(session, "ask") == 0 and usage(session, chat_store.ASK_TRY) == 1
+
+
+def test_only_read_attachment_with_unknown_version_goes_stale(
+    client, session, settings, doc, model, monkeypatch
+):
+    """唯一读了的附件现在的版本还不知道（换了链接、还没重新取到）、又没有内容一样的别的附件：当作现在
+    读不到，作废；answer、not_found 各一题，能不能站内打开都一样（Codex 第 63 轮）。"""
+    state = {"attachments": [ref(11, 1)]}
+    _attachment_load(monkeypatch, state)
+    cited = asked(
+        client,
+        session,
+        settings,
+        model,
+        "评分标准是什么",
+        doc,
+        answer(("Aabc123def456-1", "评分标准：创新能力占40分")),
+    )
+    missing = asked(
+        client, session, settings, model, "评审专家是谁", doc, {"status": "not_found", "quotes": []}
+    )
+    assert [cited["answer"]["status"], missing["answer"]["status"]] == ["answer", "not_found"]
+    for readable in (True, False):
+        state["attachments"] = [ref(11, 1, readable=readable, version=None)]
+        got = [turn_of(client, t["id"])["answer"] for t in (cited, missing)]
+        assert [(a["status"], a["hidden"], a["lead"]) for a in got] == [
+            ("hidden", "stale", ask.STALE)
+        ] * 2
+
+
+def test_card_reader_opens_the_attachment_named_in_scope(
+    client, session, settings, doc, model, monkeypatch
+):
+    """没读正文时，卡片上的"站内阅读 ›"开的就是读的范围里写出名字的那个附件（按回答时记下的编号挑，
+    同原句出处）：回答时读的是 A，后来排在前面加了内容一样的 B，入口照旧开 A；A 打不开了才开 B。"""
+    state = {"attachments": [ref(11, 1)]}
+    _attachment_only_load(monkeypatch, state)
+    missing = asked(
+        client, session, settings, model, "评审专家是谁", doc, {"status": "not_found", "quotes": []}
+    )
+    other = ref(12, 1, "申报指南（另一份）")
+
+    def card(attachments):
+        state["attachments"] = attachments
+        got = turn_of(client, missing["id"])["answer"]
+        return got["reader"], got["scope"]["text"]
+
+    assert card([other, ref(11, 2)]) == (
+        {"docId": doc, "attachmentId": 11},
+        "读了：附件 2《申报指南》",
+    )
+    assert card([other, ref(11, 2, readable=False)]) == (
+        {"docId": doc, "attachmentId": 12},
+        "读了：附件 1《申报指南（另一份）》",
+    )
 
 
 def test_pick_without_any_attachment_gives_nothing():
