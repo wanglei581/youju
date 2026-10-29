@@ -88,7 +88,7 @@ function dueRows(doc) {
 
 Page({
   data: { doc: null, shareReady: false, regionText: '', due: null, dueNote: '', dueDate: '', dueWeek: '', changes: [], tagClasses: [], reminded: false, error: '',
-    bodyView: null, noBody: '', entry: null, goneNote: '', goneAll: false, dueQuote: '', supportExpanded: '', supportEvidence: '', conds: [],
+    bodyView: null, noBody: '', entry: null, goneNote: '', goneAll: false, dueQuote: '', checkedText: '', supportExpanded: '', supportEvidence: '', conds: [],
     atts: [], versions: [], versionLabel: '', upstream: '', points: [], has: flags() },
 
   onLoad(query) {
@@ -166,6 +166,8 @@ Page({
           dueNote: doc.link_gone ? '' : deadlineNote(doc),
           // 核对过的那句截止原文（接口只在"截止时间原文"一节给）：旧接口时跟在截止日期下面；别的节不当截止原句
           dueQuote: doc.excerpt && doc.excerpt.section === '截止时间原文' ? String(doc.excerpt.text || '') : '',
+          // 页底"截止日期已于 X 对照原文核对"：日期写成中文，免得读成截止日是这一天（10/29 独立审阅）
+          checkedText: /^\d{4}-\d{2}-\d{2}$/.test(String(doc.checked || '')) ? cnDate(doc.checked) : '',
           dueDate: due ? cnDate(doc.deadline.date) : '',
           dueWeek: due ? `${weekday(doc.deadline.date)}${doc.deadline.time ? ` ${doc.deadline.time}` : ''}` : '',
           tagClasses: (doc.tags || []).map((t) => kindClass(t)),
@@ -182,7 +184,7 @@ Page({
       })
       .catch((err) => this.setData({
         doc: null, due: null, dueNote: '', changes: [], reminded: false, atts: [], conds: [], versions: [], versionLabel: '', upstream: '',
-        bodyView: null, noBody: '', entry: null, goneNote: '', goneAll: false, dueQuote: '', points: [],
+        bodyView: null, noBody: '', entry: null, goneNote: '', goneAll: false, dueQuote: '', checkedText: '', points: [],
         takenDown: err.status === 404 && err.message === '该文件已下架',
         error: err.status === 404 ? err.message : `数据未更新：${err.message}`,
       }))

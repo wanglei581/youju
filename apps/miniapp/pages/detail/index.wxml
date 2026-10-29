@@ -158,7 +158,8 @@
   </view>
 
   <!-- 附件紧跟正文：每个直接写能不能读（和阅读页同一个判断）；能读的写"阅读"可点，读不了的灰色、不能点、写原因 -->
-  <view wx:if="{{atts.length}}" id="attachments" class="card">
+  <!-- 原文链接已失效、一个都读不了（goneAll）：标题下已写"正文和附件不再提供"，不再逐个写一遍（10/29 独立审阅） -->
+  <view wx:if="{{atts.length && !goneAll}}" id="attachments" class="card">
     <view class="section-title">附件 {{atts.length}}</view>
     <view wx:for="{{atts}}" wx:key="index" id="att-{{index}}" class="att {{item.canOpen ? '' : 'att--off'}}" hover-class="{{item.canOpen ? 'att--pressed' : 'none'}}" data-index="{{index}}" bindtap="openAttachment" aria-role="{{item.canOpen ? 'button' : 'text'}}" aria-disabled="{{!item.canOpen}}">
       <text class="att-ext att-ext--{{item.ext}}">{{item.ext}}</text>
@@ -176,7 +177,7 @@
     <view class="weak source-label">原文出处</view>
     <view class="source-site">{{doc.site || doc.issuer}}</view>
     <!-- 核对日期说的是截止（"要点"常常整张不显示，不再说"以上要点"，10/29 独立审阅） -->
-    <view class="source-note"><text wx:if="{{doc.checked}}">截止日期 {{doc.checked}} 按原文核对。</text>内容以原文为准；申报请在主管部门的申报系统办理，有据不提供填报入口。</view>
+    <view class="source-note"><text wx:if="{{checkedText}}">截止日期已于 {{checkedText}} 对照原文核对。</text>内容以原文为准；申报请在主管部门的申报系统办理，有据不提供填报入口。</view>
     <view wx:if="{{has.help}}" class="link source-help" bindtap="help" aria-role="link">数据说明 ›</view>
   </view>
   <view style="height: 220rpx"></view>

@@ -119,6 +119,10 @@ class ExportItem:
     deadline_checked: str
     change_checked: str
     deadline_quote: str = ""
+    # 没核对的那几类截止里有候选在 7 天内（和列表的 dueSoonUnverified 同一口径）：
+    # 站内结果页写"可能 7 天内截止"，导出的文件不加这一列
+    # （10/29 独立审阅：列表、详情写了，结果页没写）
+    due_soon: bool = False
 
 
 def _date_time(value: datetime | None) -> str:
@@ -272,10 +276,11 @@ def _items(session: Session, raw_ids: list[str], excerpts: bool = False) -> list
     # 已核对的支持方式和详情页同一口径（当前正文、一级来源、人工通过）
     approved_fields = v1._approved_fields(session, ordered)
     excerpt_views = {}
+    excerpt_soon = {}
     if excerpts:
         from youju.deadline_excerpts import batch
 
-        excerpt_views, _, _ = batch(
+        excerpt_views, excerpt_soon, _ = batch(
             session, ordered, v1._approved(session, ordered), v1.now().date()
         )
     target_masters = canonical_ids(session, target_ids)
@@ -400,6 +405,7 @@ def _items(session: Session, raw_ids: list[str], excerpts: bool = False) -> list
                 deadline_checked="、".join(review_dates) or "未记录",
                 change_checked="、".join(change_dates) or "未记录",
                 deadline_quote=excerpt_quote,
+                due_soon=kind == "申报通知" and excerpt_soon.get(master, False),
             )
         )
     return result

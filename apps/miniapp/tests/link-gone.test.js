@@ -16,12 +16,12 @@ test('卡片：原文链接失效的标出来，没失效的不标', () => {
   assert.equal(findAll(ok, hasClass('gone')).length, 0);
 });
 
-test('详情页：标题下先写明链接失效了、下面是之前收录的信息、正文和附件不再提供（D-097）；页底出处不再重复（10/29），不写网址', () => {
+test('详情页：标题下先写明链接失效了、正文和附件不再提供、以发文机关现在公布的为准（D-097）；页底出处不再重复（10/29），不写网址', () => {
   const tree = render('pages/detail/index.wxml', { doc: { title: '关于开展申报的通知', host: 'kjt.example.gov.cn', link_gone: '2026-10-16' }, goneNote: goneNote('2026-10-16', false), loaded: true });
   const top = findAll(tree, hasClass('gone-note')).map((n) => textOf(n).trim()).join('');
   assert.match(top, /原文链接已失效（2026-10-16 检查时打不开）。/);
-  // 不点名"要点"：要点常常整张不显示（10/29 独立审阅）
-  assert.match(top, /下面是之前收录的信息，请以发文机关现在公布的为准/);
+  // 不点名"要点"、不说"下面是"：要点常常整张不显示，下面可能只剩原文出处（10/29 独立审阅）
+  assert.match(top, /正文和附件不再提供，请以发文机关现在公布的为准。/);
   assert.doesNotMatch(top, /可能已撤下|可能已撤回/);
   assert.match(top, /正文和附件不再提供/);
   assert.equal(findAll(tree, hasClass('source-gone')).length, 0);

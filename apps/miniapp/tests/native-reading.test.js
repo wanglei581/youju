@@ -16,6 +16,8 @@ function load(name, api, extra = {}) {
       if (dep === '../../utils/data-tools.js') return extra.tools || {};
       if (dep === '../../utils/reading-progress.js') return extra.progress || require('../utils/reading-progress.js');
       if (dep === '../../utils/pages.js' && !(extra.deps && Object.hasOwn(extra.deps, dep))) return require('./helpers/package-pages-default.js').pages;
+      // 结果页按今天算"可能 7 天内截止"要用 format.js（10/29）；没另给替身时用真的
+      if (dep === '../../utils/format.js' && !(extra.deps && Object.hasOwn(extra.deps, dep))) return require('../utils/format.js');
       if (extra.deps && Object.hasOwn(extra.deps, dep)) return extra.deps[dep];
       throw new Error(dep);
     }, wx: { navigateTo: o => navigations.push(o.url), ...(extra.wx || {}) },

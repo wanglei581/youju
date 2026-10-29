@@ -55,7 +55,7 @@ test('和具体数据挂钩的准确性说明、隐私说明照旧保留', () =>
   const RULE = '城市选“全部”查全省；区县选“全部”只查这个市的市级来源，直辖市查整个直辖市。';
   const keep = {
     // 详情页：状态标签、页底出处里的"以原文为准"、"不判断能否申报"、不提供填报入口
-    detail: ["<view wx:else class=\"due-unverified\">{{item.soon ? '可能 7 天内截止' : '截止时间见原文'}}</view>", '截止日期 {{doc.checked}} 按原文核对。', '有据不判断能否申报',
+    detail: ["<view wx:else class=\"due-unverified\">{{item.soon ? '可能 7 天内截止' : '截止时间见原文'}}</view>", '截止日期已于 {{checkedText}} 对照原文核对。', '有据不判断能否申报',
       '内容以原文为准；申报请在主管部门的申报系统办理，有据不提供填报入口。', '数据说明 ›'],
     // 截止页：页底是"截止日期怎么看 ›"；包里没有使用帮助时照旧写那一句
     report: ['截止日期怎么看 ›', '截止日期以原文为准。', '截止时间见原文', '7 天内到期的只列人工核对过的日期', '不代表当地没有通知', RULE],
@@ -77,13 +77,14 @@ test('和具体数据挂钩的准确性说明、隐私说明照旧保留', () =>
   for (const page of ['detail', 'report']) assert.equal((wxml(page).match(/以原文为准/g) || []).length, 1, page);
   // 详情页那一处不挂在"有核对日期"的条件上：没核对日期的通知也要有（Codex 10/29 复审）
   const { render, textOf, findAll, hasClass } = require('./wxml-render.js');
-  for (const checked of ['10月28日', '']) {
-    const root = render('pages/detail/index.wxml', { doc: { title: '关于组织申报的通知', issuer: '科技厅', date: '2026-10-20', checked }, loaded: true });
+  for (const checked of ['2026年10月28日', '']) {
+    const root = render('pages/detail/index.wxml', { doc: { title: '关于组织申报的通知', issuer: '科技厅', date: '2026-10-20' }, checkedText: checked, loaded: true });
     const note = textOf(findAll(root, hasClass('source-note'))[0]);
     assert.equal((textOf(root).match(/以原文为准/g) || []).length, 1, checked || '没有核对日期');
     assert.match(note, /内容以原文为准；申报请在主管部门的申报系统办理，有据不提供填报入口。/);
     // 核对日期说的是截止；"要点"常常整张不显示，不再说"以上要点"（10/29 独立审阅）
-    assert.equal(note.includes('截止日期 10月28日 按原文核对。'), Boolean(checked));
+    // 日期写成中文、说"已于……对照原文核对"，免得读成截止日是这一天（10/29 独立审阅）
+    assert.equal(note.includes('截止日期已于 2026年10月28日 对照原文核对。'), Boolean(checked));
     assert.ok(!note.includes('以上要点'));
   }
 });
@@ -321,7 +322,7 @@ test('详情页：核对过的截止原句只在截止卡片里写一次；"原�
   assert.equal(shown.split('请于11月20日前报送。').length - 1, 1, '逐类写截止时原句只写一次');
   assert.doesNotMatch(shown, /原文摘录/);
   assert.match(shown, /申报对象（已核对原文）/);
-  assert.match(shown, /截止日期 2026-10-27 按原文核对。/);
+  assert.match(shown, /截止日期已于 2026年10月27日 对照原文核对。/);
   // 旧接口（没有 deadlines、只有核对过的 deadline）：原句跟在日期下面，标"已人工核对"，也只写一次
   doc = { ...base, kind: '政策文件', tags: ['政策文件'], deadline: { label: '截止', date: plusDays(20), time: null, verified: true, notes: [] } };
   delete doc.deadlines;
@@ -366,6 +367,13 @@ test('详情页：没核对、候选在 7 天内的那一类写"可能 7 天内�
   assert.equal(findAll(root, (n) => n.attrs && n.attrs.id === 'body').length, 0);
   assert.equal(textOf(root).split('不再提供').length - 1, 1);
   assert.doesNotMatch(textOf(root), /原网页已打不开/);
+  // 附件一个都读不了：附件卡片也不再逐个写"附件暂不提供"（真实数据 70171，10/29 独立审阅）
+  doc = { ...doc, attachments: [{ id: '4', name: '申报书.docx', ext: 'docx', readable: false }, { id: '5', name: '汇总表.xlsx', ext: 'xlsx', readable: false }] };
+  page.refreshing = false; page.load(); await settle();
+  root = render('pages/detail/index.wxml', { ...page.data, loading: false });
+  assert.equal(page.data.goneAll, true);
+  assert.equal(findAll(root, (n) => n.attrs && n.attrs.id === 'attachments').length, 0);
+  assert.equal(textOf(root).split('不再提供').length - 1, 1);
   // 链接失效、附件却还能读：标题下不说"不再提供"，正文卡片照旧写正文为什么没有（Codex 第 6 轮）
   doc = { ...doc, attachments: [{ id: '3', name: '申报指南.pdf', ext: 'pdf', readable: true }] };
   page.refreshing = false; page.load(); await settle();
@@ -460,6 +468,20 @@ test('结果页（站内看所选文件）：空的发布状态不留两个"·"�
   const shown = textOf(render('pages/results/index.wxml', page.data));
   assert.doesNotMatch(shown, / · {2}· |gov\.cn| 见原文 /);
   assert.match(shown, /支持方式：资金补助、奖励/);
+  // 没核对的那一类可能 7 天内到期（due_soon，和列表、详情一致）：没日期写"可能 7 天内截止"；写着的日期都不在 7 天内时补一句
+  const soonItems = [
+    { number: 1, doc_id: '7', title: '戊', kind: '申报通知', status: '', region: '云南 · 省级', deadline: '截止未核对，以原文为准', date_role: '截止未核对', due_soon: true },
+    { number: 2, doc_id: '8', title: '己', kind: '申报通知', status: '', region: '河南 · 省级', deadline: `${plusDays(20)}（机器摘录）`, date_role: '材料报送截止（机器摘录）', deadline_quote: '某日前', due_soon: true },
+    { number: 3, doc_id: '9', title: '庚', kind: '申报通知', status: '', region: '河南 · 省级', deadline: plusDays(3), date_role: '企业申报截止', due_soon: true },
+    { number: 4, doc_id: '10', title: '辛', kind: '申报通知', status: '', region: '河南 · 省级', deadline: '截止未核对，以原文为准', date_role: '截止未核对', due_soon: false },
+  ];
+  const soonPage = pageOf('pages/results/index.js', {
+    '../../utils/api.js': { exportPreview: () => Promise.resolve({ kind: 'catalogue', title: '本次所选文件目录', revision: 'r2', notice: '', generatedAt: '2026-10-29', total: 4, items: soonItems }) },
+    '../../utils/exporter.js': { exportDocs() {} },
+  });
+  soonPage.onLoad({ ids: '7,8,9,10' }); await soonPage.onShow();
+  assert.deepEqual(soonPage.data.result.items.map((i) => i.deadlineText), [
+    '可能 7 天内截止', `${plusDays(20)} 材料报送截止（原文摘录）；另有一类可能 7 天内截止`, `${plusDays(3)} 企业申报截止`, '截止时间见原文']);
 });
 
 test('AI 首页：暂时不可用、连不上时只在上面那张卡里放"联系客服"；鸿蒙手机上客服按钮不再给第二个"使用帮助"', () => {
