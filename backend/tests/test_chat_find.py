@@ -581,6 +581,7 @@ def test_换不成确定日期的时间说法去掉_加提示(phrase, time, year
         *("月内截止", "每年年底截止"),  # 独立审阅第 13 轮
         *("十五点截止", "五点十分截止"),  # agy 第 14 轮
         *("一点截止", "一点半截止", "五点零五分截止"),  # agy 第 15 轮
+        *("去年以来截止", "2025年至今到期"),  # 以来、至今后面跟着截止（Codex 10/29）
     ],
 )
 def test_说的是截止的不按发布时间筛_说一声(phrase):
@@ -955,6 +956,46 @@ def test_话题词后面的年底月底年内照样认(text, keywords, deadline)
     assert parsed.conditions["keywords"] == keywords, text
     assert parsed.conditions["period"] is None, text
     assert parsed.deadline == deadline and (parsed.deadline or parsed.vague_time), text
+
+
+@pytest.mark.parametrize(
+    "text,period",
+    [
+        ("2025年到2026年的申报通知", {"from": "2025-01-01", "to": "2026-06-15"}),
+        ("从2025年到2026年的政策", {"from": "2025-01-01", "to": "2026-06-15"}),
+        ("2026年到2025年的政策", {"from": "2025-01-01", "to": "2026-06-15"}),  # 反着写的
+        ("2024年至2025年的政策", {"from": "2024-01-01", "to": "2025-12-31"}),
+        ("2024-2025年的政策", {"from": "2024-01-01", "to": "2025-12-31"}),
+        ("上周到本周的通知", {"from": "2026-06-08", "to": "2026-06-15"}),
+        ("去年到今年的政策", {"from": "2025-01-01", "to": "2026-06-15"}),
+        ("上个月到这个月的通知", {"from": "2026-05-01", "to": "2026-06-15"}),
+    ],
+)
+def test_两个时间中间是到至的按整段区间筛(text, period):
+    """2025 年到 2026 年、上周到本周：一段区间，按早的那头的第一天到晚的那头的最后一天（不晚于今天）
+    筛（Codex 10/29：原来两头当成两个时间，只按一头筛）。"""
+    parsed = parse(text, today=TODAY, covered=ALL_COVERED)
+    conditions = parsed.conditions
+    assert (conditions["period"], conditions["time"], conditions["year"]) == (period, "不限", None)
+    assert not parsed.times and not parsed.vague_time, text
+
+
+def test_区间有一头换不成日期的两头都不筛():
+    """2025 年到明年、去年到下个月、2025 年到 2030 年：不按其中一头筛，加 time_word 那句（Codex
+    10/29）；晚于今年的年份照旧当标题词。"""
+    for text, keywords in (
+        ("2025年到明年的政策", []),
+        ("去年到下个月的通知", []),
+        ("2025年到2030年的规划", ["2030年", "规划"]),
+    ):
+        parsed = parse(text, today=TODAY, covered=ALL_COVERED)
+        conditions = parsed.conditions
+        assert (conditions["period"], conditions["time"], conditions["year"]) == (
+            None,
+            "不限",
+            None,
+        )
+        assert parsed.vague_time and conditions["keywords"] == keywords, text
 
 
 def test_换不成日期的时间后面的细分一起去掉():

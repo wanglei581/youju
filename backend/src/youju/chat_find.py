@@ -19,6 +19,9 @@
 - 一句里有几个时间词时，按上周、上个月、近半年、昨天这类按日期筛的（取先写的）、近 7 天、
   近 30 天、近 90 天、今年、往年的顺序取第一个（往年取先写的）；意思不一样的有两个以上（"这周和
   上周"，"这周"和"近 7 天"算一个）时加 times 那句；
+- 两个时间中间是"到、至、~、-"这类的是一段区间（_RANGE_JOINS，Codex 10/29）：两头都换得成日期的，
+  按早的那头的第一天到晚的那头的最后一天（不晚于今天）筛（2025 年到 2026 年、上周到本周，反着写的
+  一样）；有一头换不成的（明年、1 月、晚于今年的年份）两头都不按它筛，加 time_word 那句；
 - "上周"这类（上星期、上个星期、上一周、上礼拜……，_PERIOD_OF）按发布日期筛上一个星期一到
   星期日，"上个月"这类（上月、上一个月）筛上一个自然月（北京时间）；"上上周""上上个月"再往前
   一个。搜索页没有这几种，同往年不给"在搜索页看全部"；
@@ -71,7 +74,8 @@
   那一档）：
   时间后面跟着"截止、到期"的（今天截止、明天截止、本周五截止、近 7 天内截止、本月要截止、2026 年
   截止、今天 17 点截止，中间可以夹着"申报、申请、报名"：本月申报截止，_DEADLINE_AT；后面写成"截至"、
-  又没写到哪个时候的当"截止"写错了字：2025 年截至的申报通知），
+  又没写到哪个时候的当"截止"写错了字：2025 年截至的申报通知；"以来、至今"后面跟着截止的也算：
+  去年以来截止、2025 年至今到期，Codex 10/29），
   前面是"截止"的（截止今天、截止日期是今天、申报截止于今天，_UNTIL），没写时间、只说"即将截止、
   马上截止、还没截止、快到期、还没过期"的（_SOON_DEADLINE；写成"即将截至"的也算）和问"还能申报、
   还在申报期、还在征集"的（_STILL_OPEN）：不按那个时间筛，"即将、马上、还能"这类去掉；
@@ -919,7 +923,10 @@ def _time_at(text: str, pos: int = 0) -> _TimeHit | None:
         if since := _SINCE.match(text, best.end):  # 去年底以来：从去年开头算；"年初以来"正好
             exact = part.group() in ("初", "年初")
             best = replace(best, end=since.end(), since=True, rough=not exact)
-    if not best.since and (stop := _stop_at(text, best.end)) is not None:
+    stop = _stop_at(text, best.end)
+    if stop is not None and (
+        not best.since or stop[1]
+    ):  # 去年以来截止、2025 年至今到期：说的是截止
         end, deadline = stop
         return _TimeHit("vague", end, text[pos:end], deadline=deadline)
     return best
@@ -1739,6 +1746,69 @@ def _period(kind: str, back: int, today: date) -> dict[str, str]:
     return {"from": start.isoformat(), "to": end.isoformat()}
 
 
+# 两个时间中间是这几个的是一段区间（2025 年到 2026 年、上周到本周、2025—2026 年）
+_RANGE_JOINS = ("到", "至", "~", "～", "-", "—", "－", "–")
+
+
+def _range_joins(text: str, found: list[tuple[int, int, str, Any]]) -> list[tuple[int, int]]:
+    """相邻两个认出的时间中间是"到、至"这类的：那几个字的（开头, 结尾）。"""
+    return [
+        (end, after[0])
+        for (_, end, _, _), after in itertools.pairwise(found)
+        if text[end : after[0]] in _RANGE_JOINS
+    ]
+
+
+def _dates(kind: str, value: Any, today: date) -> tuple[date, date] | None:
+    """认出的一个时间换成（第一天, 最后一天）；不筛的（none）是 None。近 N 天同搜索页：今天往前
+    N 天到今天。"""
+    if kind == "window":
+        days = TIMES[value]
+        return (date(today.year, 1, 1) if days is None else today - timedelta(days=days)), today
+    if kind == "past":
+        return date(value, 1, 1), date(value, 12, 31)
+    if kind == "range":
+        return date.fromisoformat(value["from"]), date.fromisoformat(value["to"])
+    return None
+
+
+def _join_ranges(
+    text: str, found: list[tuple[int, int, str, Any]], today: date
+) -> tuple[set[str], list[tuple[int, int]], list[tuple[int, dict[str, str]]], bool]:
+    """认出的时间分成搜索页的那几项（windows）、往年（past，（位置, 年份））、按发布日期筛的几段
+    （ranges，（位置, 一段））。相邻两个中间是"到、至"这类的是一段区间（Codex 10/29：原来两头当成
+    两个时间，只按一头筛）：两头都换得成日期的，按早的那头的第一天到晚的那头的最后一天筛（2025 年
+    到 2026 年 ＝ 2025 年 1 月 1 日到今天，上周到本周 ＝ 上周一到今天，反着写的一样）；有一头换不成
+    的两头都不按它筛，最后一个值为真（加 time_word）。"""
+    windows: set[str] = set()
+    past: list[tuple[int, int]] = []
+    ranges: list[tuple[int, dict[str, str]]] = []
+    joined = False
+    joins = {start for start, _ in _range_joins(text, found)}
+    index = 0
+    while index < len(found):
+        at, end, kind, value = found[index]
+        if end in joins:
+            _, _, kind_to, value_to = found[index + 1]
+            spans = [_dates(kind, value, today), _dates(kind_to, value_to, today)]
+            if None in spans:
+                joined = True
+            else:
+                first = min(span[0] for span in spans if span)
+                last = min(max(span[1] for span in spans if span), today)
+                ranges.append((at, {"from": first.isoformat(), "to": last.isoformat()}))
+            index += 2
+            continue
+        if kind == "window":
+            windows.add(value)
+        elif kind == "past":
+            past.append((at, value))
+        elif kind == "range":
+            ranges.append((at, value))
+        index += 1
+    return windows, past, ranges, joined
+
+
 def parse(text: str, *, today: date, covered: Coverage) -> Parsed:
     """第 1–7 条：从一句话里取条件。没认出来的字当关键词，不另外猜。text 是用户打的原话（用户打的
     空白要用来切关键词）。"""
@@ -1759,9 +1829,10 @@ def parse(text: str, *, today: date, covered: Coverage) -> Parsed:
     found = _areas(text, marks, covered)
     conditions |= found.conditions
 
-    windows: set[str] = set()
-    past: list[tuple[int, int]] = []  # （位置, 年份）
-    ranges: list[tuple[int, dict[str, str]]] = []  # （位置, 按发布日期筛的一段：上周、近半年……）
+    # 认出的时间：（开头, 结尾, 哪一种, 值）。window：搜索页的近 7 天、今年这类；past：往年
+    # （年份）；range：按发布日期筛的一段（上周、近半年……）；none：不筛的（换不成日期的、说截止的、
+    # 截至今天）
+    found_times: list[tuple[int, int, str, Any]] = []
     vague = False  # 认得出是时间、又换不成确定日期的（_VAGUE）：去掉，不当关键词
     deadline = False  # 说的是截止（即将截止、今天截止）
     tokens: list[tuple[int, str]] = []  # （位置, 关键词）
@@ -1774,8 +1845,10 @@ def parse(text: str, *, today: date, covered: Coverage) -> Parsed:
                 tokens.append((at, hit.word))
                 vague = vague or hit.end > at + len(hit.word)
                 _take(marks, at, hit.end)
+                found_times.append((at, hit.end, "none", None))  # 2025 年到 2030 年：两头都不筛
             continue
         vague = vague or hit.rough
+        item: tuple[str, Any] = ("none", None)
         if hit.deadline:
             deadline = True
         elif hit.kind == "vague":
@@ -1785,32 +1858,34 @@ def parse(text: str, *, today: date, covered: Coverage) -> Parsed:
         elif hit.kind == "year":
             year = int(hit.word[:4])
             if year == today.year:
-                windows.add("今年")
+                item = ("window", "今年")
             elif hit.since:  # 2025 年以来、2025 年底以来：2025 年 1 月 1 日到今天
-                ranges.append((at, {"from": date(year, 1, 1).isoformat(), "to": until}))
+                item = ("range", {"from": date(year, 1, 1).isoformat(), "to": until})
             else:
-                past.append((at, year))
+                item = ("past", year)
         elif hit.kind == "span":
             kind, value = _span_value(hit.word, today)
-            if kind == "window":
-                windows.add(value)
-            else:
-                ranges.append((at, value))
+            item = ("window" if kind == "window" else "range", value)
         elif hit.word in _PERIOD_OF:
             period = _period(*_PERIOD_OF[hit.word], today)
-            ranges.append((at, period | {"to": until} if hit.since else period))
+            item = ("range", period | {"to": until} if hit.since else period)
         elif hit.word in _DAY_OF:
             day = (today - timedelta(days=_DAY_OF[hit.word])).isoformat()
-            ranges.append((at, {"from": day, "to": until if hit.since else day}))
+            item = ("range", {"from": day, "to": until if hit.since else day})
         elif hit.word in _PAST:
             year = today.year - _PAST[hit.word]
             if hit.since:
-                ranges.append((at, {"from": date(year, 1, 1).isoformat(), "to": until}))
+                item = ("range", {"from": date(year, 1, 1).isoformat(), "to": until})
             else:
-                past.append((at, year))
+                item = ("past", year)
         else:
-            windows.add(_TIME_OF[hit.word])
+            item = ("window", _TIME_OF[hit.word])
+        found_times.append((at, hit.end, *item))
         _take(marks, at, hit.end)
+    windows, past, ranges, joined = _join_ranges(text, found_times, today)
+    vague = vague or joined  # 区间有一头换不成日期的：两头都不按它筛，加 time_word
+    for start, end in _range_joins(text, found_times):
+        _take(marks, start, end)
     # 即将截止、马上截止：去掉"即将、马上"（认完时间再去，"本月要截止"的"要"要先让时间那段看到）
     for m in _SOON_DEADLINE.finditer(text):
         deadline = True
