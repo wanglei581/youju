@@ -17,6 +17,12 @@ from youju.config import Settings
 
 logger = logging.getLogger(__name__)
 
+# 新订单一律现网（env 0，真扣钱）。沙箱已去掉（创始人 10/29："支付那一个沙箱支付去掉"）：
+# 苹果支付只支持现网（官方文档 2026-09-14 版），安卓沙箱真机付款也真实扣钱（10/20 实测），
+# 留着只会让人看错。
+# 去掉沙箱以前下的测试单仍按订单上记的 env 查单、退款（appkey 按 env 取）。
+XPAY_ENV = 0
+
 
 def wx_http() -> httpx.Client:
     """调用微信接口用的 HTTP 客户端，用系统证书库校验 https。
@@ -141,6 +147,4 @@ class XPayClient:
 
     def bill(self, day: date) -> dict:
         ds = int(day.strftime("%Y%m%d"))
-        return self.call(
-            "/xpay/download_bill", {"begin_ds": ds, "end_ds": ds}, env=self.settings.xpay_env
-        )
+        return self.call("/xpay/download_bill", {"begin_ds": ds, "end_ds": ds}, env=XPAY_ENV)

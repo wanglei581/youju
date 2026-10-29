@@ -59,14 +59,16 @@ def shop(session_factory, monkeypatch):
         _env_file=None,
         pay_enabled=True,
         pay_audience="all",
-        # 沙箱只给测试名单（D-074）
         pay_openids="pay-user",
         advisor_enabled=True,
         boost_trial_enabled=True,
         renew_bonus_enabled=True,
         trust_wx_headers=True,
         xpay_offer_id="offer-test",
-        xpay_appkey_sandbox="12345",
+        # 新订单一律现网（沙箱已去掉，创始人 10/29）：现网 AppKey、定稿协议版本、发票类型都配了才卖
+        xpay_appkey_prod="12345",
+        pay_terms_version="pay-test",
+        pay_invoice_type="电子普通发票（测试）",
         xpay_price_pass=2900,
         xpay_price_pass_90=7900,
         agreement_version=AGREEMENT,
@@ -132,7 +134,7 @@ def deliver(shop, out_trade_no, product, paid_at):
             "Event": "xpay_goods_deliver_notify",
             "OpenId": "pay-user",
             "OutTradeNo": out_trade_no,
-            "Env": 1,
+            "Env": 0,
             "WeChatPayInfo": {
                 "MchOrderNo": "mch-test",
                 "TransactionId": "tx-test",
@@ -213,7 +215,7 @@ def test_two_tiers_listed_short_first_and_each_order_keeps_its_days(shop, sessio
     ]
     # 第一次买：不是续买，eligibleNow 为 False
     assert listed["renewBonus"] == {"days": 3, "windowDays": 7, "eligibleNow": False}
-    assert listed["invoiceType"] is None
+    assert listed["invoiceType"] == "电子普通发票（测试）"
     row = buy(shop, session, "workbench_90d")
     assert (row.days, row.price, row.bonus_days) == (90, 7900, 3)
     assert segments(session) == [(True, NOW, NOW + 90 * DAY, False)]
@@ -237,9 +239,9 @@ def test_order_keeps_the_invoice_type_shown_when_it_was_placed(shop, session):
     shop.settings.pay_invoice_type = "另一种发票（测试）"
     session.expire_all()
     assert session.get(PayOrder, row.id).invoice_type == "电子普通发票（测试）"
-    # 沙箱联调时可以还没填：记空
+    # 没写明能开哪种发票就不卖（沙箱已去掉，没有"先不填发票、只联调"的情形了）
     shop.settings.pay_invoice_type = ""
-    assert buy(shop, session, at=NOW + DAY).invoice_type is None
+    assert create(shop).status_code == 404
     with pytest.raises(ValidationError):
         Settings(_env_file=None, pay_invoice_type="字" * 101)
 
@@ -277,7 +279,7 @@ def test_push_naming_the_other_tier_opens_what_was_paid(shop, session):
         "Event": "xpay_goods_deliver_notify",
         "OpenId": "pay-user",
         "OutTradeNo": row.out_trade_no,
-        "Env": 1,
+        "Env": 0,
         "GoodsInfo": {
             "ProductId": "workbench_90d",
             "Quantity": 1,
@@ -385,10 +387,8 @@ def test_products_say_whether_renewing_now_gets_the_bonus(shop, session):
         shop.clock.at = at
         offer = shop.client.get("/api/v1/pay/products", headers=HEADERS).json()["renewBonus"]
         assert offer["eligibleNow"] is eligible
-    # 现网对所有人开卖后，看价格不要求登录：认不出是谁就是 False（沙箱只给测试名单，所以这里切到现网）
+    # 对所有人开卖后，看价格不要求登录：认不出是谁就是 False
     shop.clock.at = NOW + 24 * DAY
-    shop.settings.xpay_env, shop.settings.pay_terms_version = 0, "pay-test"
-    shop.settings.pay_invoice_type = "电子普通发票（测试）"
     anonymous = {"X-Youju-Env": "release", "X-Youju-Pay-Terms": "pay-test"}
     offer = shop.client.get("/api/v1/pay/products", headers=anonymous).json()["renewBonus"]
     assert offer["eligibleNow"] is False
@@ -751,7 +751,7 @@ def test_stop_service_refunds_every_active_order_by_remaining_days(shop, session
         product_id="workbench_30d",
         price=2900,
         days=30,
-        env=1,
+        env=0,
         terms_version="pay-test",
         status="completed",
         platform="ios",

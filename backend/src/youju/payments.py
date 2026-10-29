@@ -202,7 +202,7 @@ def client_of(headers: Mapping[str, str]) -> Client:
     """从请求头读出小程序包；认不出的环境一律按正式版算（宁可看不到，不能多放）。
 
     这两个头由小程序自己填，只用来决定"谁看得到购买入口"（审核和合规上的展示），不是安全边界：
-    改了头也绕不过钱相关的检查——沙箱只给测试名单（openid 由微信云托管注入，伪造不了），
+    改了头也绕不过钱相关的检查——测试阶段只给测试名单（openid 由微信云托管注入，伪造不了），
     下单时还核对请求体里用户同意的协议版本（老版本带的是草稿号，409），老版本的付款按钮本来就不可用。"""
     env = (headers.get(CLIENT_ENV_HEADER) or "").strip().lower()
     terms = (headers.get(PAY_TERMS_HEADER) or "").strip()[:40]
@@ -217,22 +217,20 @@ def selling_to(settings, openid: str | None, client: Client) -> bool:
     """这个用户、这个小程序包能不能看到购买入口、下新单（D-058、D-074）：
 
     - 总开关开着；
-    - 测试阶段（沙箱，或 YOUJU_PAY_AUDIENCE 还是 whitelist）：只给测试名单里的人，
-      并且只在开发版、体验版——正式版不出现沙箱和白名单购买（运营规范 5.19 人群对抗）；
-      沙箱真机付款也会真实扣钱（10/20 创始人实测），所以沙箱即使配成 all 也只给测试名单；
-    - 现网（真扣钱）：只给代码包里带着定稿付费协议版本号（YOUJU_PAY_TERMS_VERSION）的小程序——
+    - 测试阶段（YOUJU_PAY_AUDIENCE 还是 whitelist）：只给测试名单里的人，并且只在开发版、体验版——
+      正式版不出现白名单购买（运营规范 5.19 人群对抗）；
+      测试也是现网真付（沙箱已去掉，创始人 10/29）；
+    - 只给代码包里带着定稿付费协议版本号（YOUJU_PAY_TERMS_VERSION）的小程序——
       开卖要单独提审一版，老版本永远看不到价格。
     补单、退款、对账等定时任务只看总开关（enabled），已有订单照常处理到底。"""
     if not enabled(settings) or shutdown_notice(settings):
         return False
-    testing = settings.xpay_env == 1 or getattr(settings, "pay_audience", "whitelist") != "all"
+    testing = getattr(settings, "pay_audience", "whitelist") != "all"
     tester = bool(openid) and openid in testers(settings) and client.env in TEST_BUILDS
     if testing and not tester:
         return False
-    if settings.xpay_env == 0:
-        terms = getattr(settings, "pay_terms_version", "")
-        return bool(terms) and client.terms == terms
-    return True
+    terms = getattr(settings, "pay_terms_version", "")
+    return bool(terms) and client.terms == terms
 
 
 def invoice_type(settings) -> str:
@@ -242,15 +240,19 @@ def invoice_type(settings) -> str:
 
 
 def orderable(settings) -> bool:
-    """能不能真的下单：配了 offerId 和价格；现网（真扣钱）还必须配了定稿的协议版本
-    （YOUJU_PAY_TERMS_VERSION）和能开哪种发票（YOUJU_PAY_INVOICE_TYPE，D-070 付款前要看得到）。
-    沙箱只给测试名单（真机付款也会真实扣钱，10/20 创始人实测），协议定稿前也能联调。
+    """能不能真的下单（新订单一律现网、真扣钱）：配了 offerId、价格、现网 AppKey
+    （没配下单签不了名，只会 503，Codex 10/29），定稿的协议版本（YOUJU_PAY_TERMS_VERSION）
+    和能开哪种发票（YOUJU_PAY_INVOICE_TYPE，D-070 付款前要看得到）。
     商品列表、下单、购买入口都按这一条判断，不出现看得到价格却付不了款的入口，
     也不能绕过购买页直接下单。"""
     if not getattr(settings, "xpay_offer_id", "") or not products(settings):
         return False
-    return settings.xpay_env == 1 or bool(
-        getattr(settings, "pay_terms_version", "") and invoice_type(settings)
+    key = getattr(settings, "xpay_appkey_prod", None)
+    return bool(
+        key is not None
+        and key.get_secret_value().strip()
+        and getattr(settings, "pay_terms_version", "")
+        and invoice_type(settings)
     )
 
 
@@ -1559,8 +1561,17 @@ def run_payments(
                     if not overdue:
                         raise
                     # 查单一直失败也不能永远轮询；真付了款的由推送或账单对账转人工。
+                    # 现网真扣钱：推送、对账万一也没接上就没人知道了，关单时告警一次（Codex 10/29）
                     data = None
                     order.status, order.error = "closed", "超过 48 小时无法确认支付，已关闭"
+                    if (
+                        alert(
+                            f"支付订单 #{order.id} 超过 48 小时查不到付款结果，已关闭；"
+                            "用户说付了款的，到小程序后台虚拟支付的交易订单里核对"
+                        )
+                        is not False
+                    ):
+                        order.alerted_at = stamp
                 if data is not None and not mark_refunded(session, order, data, stamp):
                     if data.get("status") == 6 or (overdue and data.get("status") in (0, 1)):
                         order.status = "closed"

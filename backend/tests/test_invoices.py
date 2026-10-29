@@ -238,16 +238,20 @@ def test_pay_entry_flags_in_capabilities_and_me(pay, session):
         "enabled": False,
         "hasOrders": False,
     }
-    # 现网（真扣钱）没配定稿协议版本时不算在售，不出现付不了款的入口；沙箱可以
-    settings.xpay_price_pass, settings.xpay_env = 100, 0
-    assert client.get("/api/v1/me", headers=HEADERS).json()["pay"]["enabled"] is False
-    # 定稿协议版本号要和小程序代码包里的一致（HEADERS 带的是 pay-test，D-074）
-    settings.pay_terms_version = "pay-test"
-    # 还要写明能开哪种发票（D-070）
-    assert client.get("/api/v1/me", headers=HEADERS).json()["pay"]["enabled"] is False
-    settings.pay_invoice_type = "电子普通发票（测试）"
+    # 新订单一律现网、真扣钱（沙箱已去掉，创始人 10/29）：没配定稿协议版本（要和小程序代码包里的一致，
+    # HEADERS 带的是 pay-test，D-074）、没写明能开哪种发票（D-070）、没配现网 AppKey，都不算在售，
+    # 不出现付不了款的入口
+    settings.xpay_price_pass = 100
     assert client.get("/api/v1/me", headers=HEADERS).json()["pay"]["enabled"] is True
-    settings.pay_terms_version, settings.pay_invoice_type, settings.xpay_env = "", "", 1
+    for field, empty in (
+        ("pay_terms_version", ""),
+        ("pay_invoice_type", ""),
+        ("xpay_appkey_prod", None),
+    ):
+        kept = getattr(settings, field)
+        setattr(settings, field, empty)
+        assert client.get("/api/v1/me", headers=HEADERS).json()["pay"]["enabled"] is False
+        setattr(settings, field, kept)
     assert client.get("/api/v1/me", headers=HEADERS).json()["pay"]["enabled"] is True
 
 
@@ -275,8 +279,11 @@ def test_pay_tester_whitelist_hides_store_from_everyone_else(pay, session):
     # 正式版里不出现白名单购买（D-074，运营规范 5.19）：同一个测试人员换到正式版就看不到
     assert payments.selling_to(settings, "pay-user", payments.Client(terms="pay-test")) is False
     settings.pay_audience = "all"
-    # 沙箱只给测试名单：配成 all 也一样（D-074；沙箱真机付款也会真实扣钱，10/20 创始人实测）
-    assert payments.selling_to(settings, "anyone", trial) is False
+    # 对所有人开卖（现网，沙箱已去掉）：带定稿协议版本号的包谁都能买，正式版也一样；
+    # 老版本（不带版本号）照样看不到价格（D-074）
+    assert payments.selling_to(settings, "anyone", trial) is True
+    assert payments.selling_to(settings, "anyone", payments.Client(terms="pay-test")) is True
+    assert payments.selling_to(settings, "anyone", payments.Client()) is False
     assert payments.selling_to(settings, "pay-user", trial) is True
     settings.pay_enabled = False
     assert payments.selling_to(settings, "pay-user", trial) is False

@@ -131,13 +131,17 @@ def setup_pay(session_factory, monkeypatch):
         _env_file=None,
         pay_enabled=True,
         # 这些用例测售卖本身：对全体开放；测试名单另见 test_invoices。
-        # 沙箱配成 all 也只给测试名单（D-074），所以买东西的 pay-user 在名单里
         pay_audience="all",
         pay_openids="pay-user",
         advisor_enabled=True,
         trust_wx_headers=True,
         xpay_offer_id="offer-test",
+        # 新订单一律现网（沙箱已去掉，创始人 10/29）：现网 AppKey、定稿协议版本、发票类型都配了才卖
+        xpay_appkey_prod="12345",
+        # 去掉沙箱以前下的测试单（订单上记的 env 是 1）查单、退款用
         xpay_appkey_sandbox="12345",
+        pay_terms_version="pay-test",
+        pay_invoice_type="电子普通发票（测试）",
         xpay_price_pass=100,
         agreement_version="2026-11",
         xpay_bill_order_column="trade",
@@ -194,7 +198,7 @@ def payload(order):
         "Event": "xpay_goods_deliver_notify",
         "OpenId": "pay-user",
         "OutTradeNo": order.out_trade_no,
-        "Env": 1,
+        "Env": 0,
         "WeChatPayInfo": {
             "MchOrderNo": "mch-test",
             "TransactionId": "tx-test",
@@ -243,15 +247,22 @@ def test_official_signature_vectors():
 
 def test_defaults_and_env_only_secrets(tmp_path, monkeypatch):
     config = Settings(_env_file=None)
-    assert not config.pay_enabled and config.xpay_env == 1
+    # 没有沙箱开关了（创始人 10/29）：线上还留着 YOUJU_XPAY_ENV 也照常启动，不起作用
+    assert not config.pay_enabled and not hasattr(config, "xpay_env")
+    monkeypatch.setenv("YOUJU_XPAY_ENV", "1")
+    assert not hasattr(Settings(_env_file=None), "xpay_env")
     assert not payments.products(config)
     assert config.xpay_product_pass == "workbench_30d"
     monkeypatch.setenv("YOUJU_XPAY_PRICE_PASS", "")
     assert not payments.products(Settings(_env_file=None))
     path = tmp_path / "payment.env"
-    path.write_text("YOUJU_WX_APPSECRET=dotenv-test\nYOUJU_XPAY_APPKEY_SANDBOX=dotenv-test\n")
+    path.write_text(
+        "YOUJU_WX_APPSECRET=dotenv-test\nYOUJU_XPAY_APPKEY_SANDBOX=dotenv-test\n"
+        "YOUJU_XPAY_APPKEY_PROD=dotenv-test\n"
+    )
     assert Settings(_env_file=path).wx_appsecret is None
     assert Settings(_env_file=path).xpay_appkey_sandbox is None
+    assert Settings(_env_file=path).xpay_appkey_prod is None
     monkeypatch.setenv("YOUJU_WX_APPSECRET", "environment-test")
     assert Settings(_env_file=path).wx_appsecret.get_secret_value() == "environment-test"
 
@@ -265,7 +276,8 @@ def test_create_signatures_snapshot_and_rate_limit(setup_pay, session):
     assert signed == {
         "offerId": "offer-test",
         "buyQuantity": 1,
-        "env": 1,
+        # 现网（沙箱已去掉，创始人 10/29）
+        "env": 0,
         "currencyType": "CNY",
         "productId": "workbench_30d",
         "goodsPrice": 100,
@@ -274,7 +286,7 @@ def test_create_signatures_snapshot_and_rate_limit(setup_pay, session):
     }
     assert data["paySig"] == pay_signature("12345", "requestVirtualPayment", data["signData"])
     assert data["signature"] == signature("9hAb/NEYUlkaMBEsmFgzig==", data["signData"])
-    assert row.price == 100 and row.env == 1
+    assert row.price == 100 and row.env == 0
     assert create(setup_pay).status_code == 201
     assert create(setup_pay).status_code == 201
     assert create(setup_pay).status_code == 429
@@ -292,14 +304,12 @@ def test_create_signatures_snapshot_and_rate_limit(setup_pay, session):
     ],
 )
 def test_query_accepts_both_env_encodings_rejects_other_env(setup_pay, session, env, env_type, ok):
-    """查单返回的 env_type 官方写的是 1 现网、2 沙箱，和请求的 env（0、1）不一样：两种都认，另一个环境的拒绝。"""
-    _, settings, fake = setup_pay
-    settings.xpay_env = env
-    if env == 0:
-        settings.pay_terms_version = "pay-test"
-        settings.pay_invoice_type = "电子普通发票（测试）"
-        settings.xpay_appkey_prod = SecretStr("12345")
+    """查单返回的 env_type 官方写的是 1 现网、2 沙箱，和请求的 env（0、1）不一样：两种都认，另一个环境的拒绝。
+    新订单一律现网；env 1 是去掉沙箱以前下的测试单，照订单上记的环境查。"""
+    _, _, fake = setup_pay
     row = order(session, create(setup_pay))
+    row.env = env
+    session.commit()
     fake.env_type = env_type
     if ok:
         assert payments.query(session, row, fake.client)["order_id"] == row.out_trade_no
@@ -410,15 +420,13 @@ def test_products_lists_only_priced_items(setup_pay, session):
         "items": [
             {"productId": "workbench_30d", "name": "批量工具 30 天", "price": 100, "days": 30}
         ],
-        # 默认沙箱：小程序据此在协议定稿前也放开付款按钮给测试名单联调
-        "sandbox": True,
         # 续买多送开关默认关：付款页不提
         "renewBonus": None,
-        # 沙箱联调时发票类型可以还没填
-        "invoiceType": None,
+        "invoiceType": "电子普通发票（测试）",
     }
     assert session.scalar(select(func.count(PayOrder.id))) == 0
-    closed = {"items": [], "sandbox": True, "renewBonus": None, "invoiceType": None}
+    # 没有沙箱了：商品接口不再带 sandbox（创始人 10/29）
+    closed = {"items": [], "renewBonus": None, "invoiceType": None}
     settings.xpay_price_pass = None
     assert client.get("/api/v1/pay/products", headers=HEADERS).json() == closed
     settings.xpay_price_pass = 100
@@ -426,23 +434,28 @@ def test_products_lists_only_priced_items(setup_pay, session):
     assert client.get("/api/v1/pay/products", headers=HEADERS).json() == closed
     assert create(setup_pay).status_code == 404
     assert not fake.calls
-    # 现网（真扣钱）：没配定稿的协议版本时谁也不卖（D-074 只对带定稿协议版本号的包开放）
-    settings.xpay_offer_id, settings.xpay_env = "offer-test", 0
+    settings.xpay_offer_id = "offer-test"
+    # 没配现网 AppKey（或只有空格）：下单签不了名，价格也不显示，不出现看得到价格却付不了款（Codex 10/29）
+    for key in (None, SecretStr(""), SecretStr("  ")):
+        settings.xpay_appkey_prod = key
+        assert client.get("/api/v1/pay/products", headers=HEADERS).json() == closed
+        assert create(setup_pay).status_code == 404
+    settings.xpay_appkey_prod = SecretStr("12345")
+    assert not fake.calls
+    # 没配定稿的协议版本时谁也不卖（D-074 只对带定稿协议版本号的包开放）
+    settings.pay_terms_version = ""
     assert client.get("/api/v1/pay/products", headers=HEADERS).status_code == 404
     assert create(setup_pay).status_code == 404
     assert not fake.calls
     settings.pay_terms_version = "pay-test"
-    # 现网还要写明能开哪种发票（D-070 付款前要看得到）；写成占位也不算
+    # 还要写明能开哪种发票（D-070 付款前要看得到）；写成占位也不算
     for invoice in ("", "【发票类型】", "待确认"):
         settings.pay_invoice_type = invoice
-        assert client.get("/api/v1/pay/products", headers=HEADERS).json() == {
-            **closed,
-            "sandbox": False,
-        }
+        assert client.get("/api/v1/pay/products", headers=HEADERS).json() == closed
         assert create(setup_pay).status_code == 404
     settings.pay_invoice_type = "电子普通发票（测试）"
     listed = client.get("/api/v1/pay/products", headers=HEADERS).json()
-    assert listed["sandbox"] is False and [i["productId"] for i in listed["items"]] == [
+    assert "sandbox" not in listed and [i["productId"] for i in listed["items"]] == [
         "workbench_30d"
     ]
     assert listed["invoiceType"] == "电子普通发票（测试）"
@@ -489,7 +502,8 @@ def test_push_requires_matching_query(setup_pay, session, mismatch):
     elif mismatch == "owner":
         data["OpenId"] = "wrong"
     elif mismatch == "env":
-        data["Env"] = 0
+        # 新订单是现网（0）；推送说沙箱（1）就对不上
+        data["Env"] = 1
     elif mismatch == "trade":
         fake.bad_order = True
     elif mismatch == "unpaid":
@@ -511,7 +525,7 @@ def pay_logs(caplog):
         ("attach", "GoodsInfo.Attach（推送里是空的）"),
         ("no_goods", "GoodsInfo（推送里没有）"),
         ("wx", "WeChatPayInfo.TransactionId（值不同）"),
-        ("sandbox", "WeChatPayInfo.MchOrderNo（查单里是空的）"),
+        ("mch_empty", "WeChatPayInfo.MchOrderNo（查单里是空的）"),
     ],
 )
 def test_push_fields_unlike_query_still_open_what_was_paid(
@@ -533,7 +547,7 @@ def test_push_fields_unlike_query_still_open_what_was_paid(
         del data["GoodsInfo"]
     elif change == "wx":
         data["WeChatPayInfo"]["TransactionId"] = "wrong"
-    elif change == "sandbox":
+    elif change == "mch_empty":
         fake.channel_ids = ("", "")
     caplog.set_level(logging.WARNING, logger="youju")
     assert push(setup_pay, data).json()["ErrCode"] == 0
@@ -1165,9 +1179,20 @@ def test_fix_3_unconfirmable_pending_closes_after_48_hours(setup_pay, session):
     assert row.status == "pending"
     row.created_at, row.query_retry_at = NOW - timedelta(hours=49), None
     session.commit()
-    run(session, setup_pay)
+    # 现网真扣钱：关单时告警一次，万一用户其实付了款、推送和对账也没接上，有人去核对（Codex 10/29）
+    alerts = []
+    _, settings, fake = setup_pay
+    payments.run_payments(
+        session, settings=settings, client=fake.client, stamp=NOW, alert=alerts.append
+    )
     assert row.status == "closed" and row.error == "超过 48 小时无法确认支付，已关闭"
+    assert row.alerted_at == NOW
+    assert alerts == [
+        f"支付订单 #{row.id} 超过 48 小时查不到付款结果，已关闭；"
+        "用户说付了款的，到小程序后台虚拟支付的交易订单里核对"
+    ]
     assert run(session, setup_pay, NOW + timedelta(hours=1))["processed"] == 0
+    assert len(alerts) == 1
 
 
 def test_fix_4_unconfigured_bill_columns_fail_without_download(setup_pay, session):
@@ -1596,7 +1621,7 @@ def test_order_list_only_last_20_and_refund_ownership(setup_pay, session):
             product_id="workbench_30d",
             price=100,
             days=30,
-            env=1,
+            env=0,
             terms_version="pay-test",
             created_at=NOW + timedelta(seconds=n),
         )
@@ -1868,7 +1893,7 @@ def test_csv_submission_has_same_row_limits_as_inline(setup_pay, paid, count):
             "Event": "xpay_goods_deliver_notify",
             "OpenId": "pay-user",
             "OutTradeNo": signed["outTradeNo"],
-            "Env": 1,
+            "Env": 0,
             "GoodsInfo": {
                 "ProductId": "workbench_30d",
                 "Quantity": 1,
@@ -1976,19 +2001,18 @@ def test_late_confirmation_still_extends_from_the_pass_active_at_payment(
 
 
 def test_order_keeps_agreed_terms_version_and_rejects_outdated(setup_pay, session):
-    """订单记下用户同意的《付费服务协议》版本；服务端配了现行版本时，带旧版本来的不让下单。"""
+    """订单记下用户同意的《付费服务协议》版本；和现行版本不一致的不让下单。
+    没有沙箱了（创始人 10/29）：现行版本必须配（payments.orderable），不再有"不配只记录"。"""
     client, settings, _ = setup_pay
-    response = create(setup_pay, terms_version="pay-2026-10")
+    response = create(setup_pay)
     assert response.status_code == 201
-    assert order(session, response).terms_version == "pay-2026-10"
+    assert order(session, response).terms_version == settings.pay_terms_version == "pay-test"
     missing = client.post(
         "/api/v1/pay/orders", headers=HEADERS, json={"product_id": "workbench_30d", "code": "c"}
     )
     assert missing.status_code == 422
-    settings.pay_terms_version = "pay-2026-11"
     outdated = create(setup_pay, terms_version="pay-2026-10")
     assert outdated.status_code == 409 and "已更新" in outdated.json()["detail"]
-    assert create(setup_pay, terms_version="pay-2026-11").status_code == 201
 
 
 def test_submitting_without_a_pass_never_locks_the_pass_table(setup_pay, session):

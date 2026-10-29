@@ -18,7 +18,7 @@
   下单必须带 `terms_version`（用户勾选同意的版本），随订单保存；配了这个变量时，版本不一致返回 409，
   不配只记录不比对（Codex 复审后加，10/10）。
   原 100/200 行商品和环境配置已移除。
-- 保留 `YOUJU_XPAY_OFFER_ID`、`YOUJU_XPAY_ENV`（默认 1 沙箱）、对应环境的
+- 保留 `YOUJU_XPAY_OFFER_ID`、`YOUJU_XPAY_ENV`（默认 1 沙箱；**10/29 起去掉，新订单一律现网，见文末**）、对应环境的
   `YOUJU_XPAY_APPKEY_SANDBOX/PROD`，以及可选 `YOUJU_WX_APPID/YOUJU_WX_APPSECRET`。
   密钥只由创始人填环境变量，部署不使用 dotenv / secret 文件来源，不打印密钥。
   初始化参数只用于假客户端测试。
@@ -457,7 +457,7 @@ httpx 日志过滤 xpay/code2Session URL；异常稳定中文。
 ### 卖给谁（`payments.selling_to(settings, openid, client)`，商品、下单、能力、我的、提交任务、中间件共用）
 | 阶段 | 配置 | 谁看得到 |
 |---|---|---|
-| 沙箱联调 | `YOUJU_XPAY_ENV=1` | 测试名单里的人，并且只在开发版、体验版。沙箱真机付款也会真实扣钱（10/20 创始人实测），就算 `YOUJU_PAY_AUDIENCE=all` 也只给名单里的人 |
+| 沙箱联调（**10/29 起去掉**，见文末） | `YOUJU_XPAY_ENV=1` | 测试名单里的人，并且只在开发版、体验版。沙箱真机付款也会真实扣钱（10/20 创始人实测），就算 `YOUJU_PAY_AUDIENCE=all` 也只给名单里的人 |
 | 受控真实付款 | `YOUJU_XPAY_ENV=0` + `whitelist` | 测试名单里的人 + 开发版、体验版 + 代码包里的协议版本号等于 `YOUJU_PAY_TERMS_VERSION` |
 | 开卖 | `YOUJU_XPAY_ENV=0` + `all` | 代码包里的协议版本号等于 `YOUJU_PAY_TERMS_VERSION` 的小程序（不看是谁、不看环境，看价格不要求登录）；老版本永远看不到 |
 - 还要满足原来的条件：总开关、能下单（`payments.orderable`：offerId、价格；现网还要协议版本号和发票那一句）。
@@ -531,3 +531,52 @@ httpx 日志过滤 xpay/code2Session URL；异常稳定中文。
 `tests/test_pay_sale_prep.py`（出结果才算用过、还在处理时的退款原因、受限账号自助退款、标记和清除、
 无法核验、停服公示、订单带协议版本、命令行、3650 天清理、对账告警）；`test_payments.py` 里苹果问询和
 退款的用例按新口径改。
+
+## 去掉沙箱、付款一律现网（创始人 10/29，收费开关照旧）
+
+创始人 10/29 原话："支付那一个沙箱支付去掉，确保在正常的使用环境中也可以进行支付等操作"。
+官方《小程序虚拟支付》（2026-09-14 版）写明 Apple 支付不支持沙箱、只支持现网；10/20 实测安卓沙箱真机付款也真实扣钱。
+沙箱只会让测试人员看错，去掉。
+
+### 改了什么
+- 新订单一律现网（`xpay.XPAY_ENV = 0`）：下单签名用现网 AppKey，账单按现网下载。设置里删掉了 `xpay_env`，
+  线上还留着 `YOUJU_XPAY_ENV` 也照常启动、不起作用。
+- `YOUJU_XPAY_APPKEY_SANDBOX` 只给去掉沙箱以前下的测试单（订单上记的 env 是 1）查单、退款用；
+  线上那几笔都是创始人 10/19–10/20 的测试单，已退款或关单，可以不配。
+- 能下单（`payments.orderable`）= offerId + 价格 + **现网 AppKey**（`YOUJU_XPAY_APPKEY_PROD`；没配签不了名、只会 503，
+  Codex 10/29）+ 定稿协议版本号 + 发票那一句。少一样：商品列表空、下单 404、购买入口不出现。
+- 卖给谁（`payments.selling_to`）只剩两个阶段，都要代码包里的协议版本号等于 `YOUJU_PAY_TERMS_VERSION`：
+
+  | 阶段 | 配置 | 谁看得到 |
+  |---|---|---|
+  | 受控真实付款（真扣钱） | `YOUJU_PAY_AUDIENCE=whitelist` | 测试名单里的人，只在开发版、体验版 |
+  | 开卖 | `YOUJU_PAY_AUDIENCE=all` | 所有人（不看是谁、不看环境，看价格不要求登录）；老版本永远看不到 |
+
+- 小程序：购买页没有沙箱提示，按钮只写"支付 N 元（M 天）"。协议没定稿（`content/pay-terms.js` 的 final 不是 true）
+  或服务端没给发票那一句，就和没在卖一样回首页，不出现"付费服务暂未开放""能开哪种发票还没确定"（D-074 ⑧）。
+  `utils/api.js` 的 `payHeader` 只在 final 为 true 时带 `X-Youju-Pay-Terms`：服务端版本号配错也不会卖给草稿包。
+- 价格（分）少于 100 服务不启动：Apple 支付最低 1 元，安卓能买、苹果买不了不行。
+- 补单、对账（`youju pay-run`/`pay-reconcile`，定时任务跑的就是它们）和手动退款（`youju pay-refund`）
+  改用 `xpay.wx_http()`（系统证书库），和下单同一套。
+- 补单查了 48 小时还查不到付款结果、关单时告警一次：现网真扣钱，万一用户其实付了款，有人去后台核对。
+- 商品接口不再返回 `sandbox`。
+
+### 上线现网要做的（按顺序）
+1. 付费服务协议定稿（创始人过目），定稿稿进包（final: true）；隐私保护指引并入付费部分、升版本。
+2. 小程序后台 → 虚拟支付 → 道具管理：两个道具（workbench_30d、workbench_90d）发布到现网；
+   基础配置里确认小程序简称（Apple 支付要求）；资金管理里确认提现账户。
+3. 云托管 api、admin 两个服务的环境变量（创始人本人填密钥）：`YOUJU_XPAY_APPKEY_PROD`（现网 AppKey）、
+   `YOUJU_PAY_TERMS_VERSION`（定稿版本号）、`YOUJU_PAY_INVOICE_TYPE`（"电子发票，个人或单位抬头都可以"）；
+   `YOUJU_XPAY_ENV` 可以删。`YOUJU_PAY_AUDIENCE` 保持 whitelist。
+4. 受控真实付款（体验版、测试名单）：安卓付一笔，看开通、订单、发票申请、24 小时内自助退款；苹果手机付一笔
+   （iOS 15+、微信 8.0.68+、中国大陆 App Store 账户），**苹果的钱我们退不了**，要退由付款人向 App Store 申请，
+   顺便看苹果退款问询推送和退款推送是否到达、使用期是否收回。500 家名单完整流程实测（D-070 ④）。
+5. 第一笔现网付款的次日，下载那天的账单样本，核对列名和金额单位，配 `YOUJU_XPAY_BILL_ORDER_COLUMN`、
+   `YOUJU_XPAY_BILL_FEE_COLUMN`、`YOUJU_XPAY_BILL_FEE_UNIT`、`YOUJU_XPAY_BILL_HOSTS`，对账才跑得起来。
+6. 付费那一版提审前（团队再问一次）：`YOUJU_PAY_AUDIENCE=all`（审核员事先不知道是谁；老版本不带定稿协议版本号，
+   看不到价格）。审核通过、发布后所有用户可买。
+
+### 测试
+`test_payments.py`、`test_sale.py`、`test_invoices.py`、`test_pay_versions.py` 的夹具改成现网（现网 AppKey、
+定稿协议版本、发票都配）；`test_config.py` 加价格不少于 1 元；小程序 `tests/pay-pages.test.js` 加
+"没有沙箱提示、按钮只写支付""草稿包不带协议版本号""协议没定稿、没写发票就回首页"。

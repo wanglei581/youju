@@ -239,7 +239,7 @@ test('能力接口把服务端的 pay 原样带给页面（只认严格的 true�
 });
 
 test('商品、下单、能力、我的、提交任务这几个请求带上代码包里的付费协议版本号和小程序环境；读不到环境就不带，防止服务端认不出新版本或把正式版当体验版（D-074）', async () => {
-  function api(envVersion) {
+  function api(envVersion, terms = { version: 'pay-2026-11', final: true, title: '付费服务协议', text: '正文' }) {
     const seen = [];
     const request = (options) => {
       seen.push({ url: options.url, header: plain(options.header || {}) });
@@ -249,7 +249,7 @@ test('商品、下单、能力、我的、提交任务这几个请求带上代�
     if (envVersion) wx.getAccountInfoSync = () => ({ miniProgram: { envVersion } });
     const module = load('utils/api.js', {
       './config.js': { devBaseUrl: 'https://test.invalid' }, '../mock/data.js': {}, './mockSearch.js': {}, './format.js': {},
-      '../content/pay-terms.js': { version: 'pay-2026-11', final: true, title: '付费服务协议', text: '正文' },
+      '../content/pay-terms.js': terms,
     }, { wx, setTimeout: () => 0, clearTimeout() {} });
     return { module, seen };
   }
@@ -270,6 +270,10 @@ test('商品、下单、能力、我的、提交任务这几个请求带上代�
   const unknown = api(null);
   await unknown.module.payProducts();
   assert.deepEqual(unknown.seen[0].header, { 'X-Youju-Pay-Terms': 'pay-2026-11' });
+  // 协议没定稿的包不带版本号（付款一律现网、真扣钱，沙箱已去掉）：服务端版本号配错也不会卖给草稿包
+  const draft = api('trial', { version: 'pay-2026-10-draft', final: false, title: '付费服务协议', text: '【待定稿】' });
+  await draft.module.payProducts();
+  assert.deepEqual(draft.seen[0].header, { 'X-Youju-Env': 'trial' });
 });
 
 test('购买页在商品 404 或空列表时直接回首页，页面上不出现"暂未开放"，也没有付款按钮，防止首发包里的购买页被直接打开时像没做完的功能（D-074）', async () => {
@@ -378,45 +382,32 @@ test('订单页有订单时照常列出，不查能力接口也不回首页（�
   assert.ok(orderCard(h.page.data, 7));
 });
 
-test('购买页协议未定稿时没有付款按钮，调用 buy 也不下单，防止用未定稿协议收款', async () => {
+test('购买页协议未定稿时没有价格和付款按钮、直接回首页，调用 buy 也不下单，页面不出现"暂未开放"，防止用未定稿协议收款（D-074 ⑧）', async () => {
   assert.equal(payTerms.final, false);
   const h = passPage({ terms: payTerms });
   await flush();
   assert.equal(h.page.data.termsFinal, false);
-  assert.equal(h.page.data.product.productId, 'workbench_30d');
+  assert.deepEqual(h.urls, ['tab:/pages/home/index']);
+  assert.equal(h.page.data.product, null);
   assert.equal(payButtons(h.page.data).length, 0);
-  assert.match(shown('pages/pass/index.wxml', h.page.data), /付费服务暂未开放/);
+  assert.doesNotMatch(shown('pages/pass/index.wxml', h.page.data), /暂未开放/);
   h.page.buy();
-  assert.equal(h.page.data.message, '付费服务暂未开放');
   assert.equal(h.calls.length, 0);
 });
 
-test('购买页在沙箱下协议没定稿也能联调付款，顶部写明是沙箱测试、真机付款会真实扣款（不写"不扣真钱"）；现网没定稿仍不能付款，防止沙箱联调被协议卡住或现网误收款', async () => {
-  const sandbox = passPage({ terms: payTerms, payProducts: () => Promise.resolve({ items: [PRODUCT], sandbox: true }), onPay: (payload) => payload.fail({ errCode: -2 }) });
-  await flush();
-  assert.equal(sandbox.page.data.termsFinal, false);
-  assert.equal(sandbox.page.data.sandbox, true);
-  const page = shown('pages/pass/index.wxml', sandbox.page.data);
-  // 沙箱真机付款会真实扣钱（10/20 创始人实测）：直说，不能写"不扣真钱"
-  assert.match(page, /沙箱测试：只对测试人员开放。真机付款会真实扣款，开通的使用期仅供测试/);
-  assert.doesNotMatch(page, /不扣真钱/);
-  assert.equal(payButtons(sandbox.page.data).length, 1);
-  assert.equal(textOf(payButtons(sandbox.page.data)[0]).trim(), '沙箱支付 29 元（30 天）');
-  sandbox.page.check({ detail: { value: ['agree'] } });
-  sandbox.page.buy();
-  await flush();
-  assert.deepEqual(sandbox.calls.find((call) => call[0] === 'create')[1], {
-    product_id: 'workbench_30d', code: 'wx-code-1', terms_version: payTerms.version, invoice_type: '',
-  });
-  // sandbox 必须是布尔 true：其他值（字符串、缺省）都按现网处理
-  for (const res of [{ items: [PRODUCT], sandbox: 'true' }, { items: [PRODUCT], sandbox: false }]) {
-    const live = passPage({ terms: payTerms, payProducts: () => Promise.resolve(res) });
+test('没有沙箱了：服务端多带 sandbox 也不显示沙箱提示、不写"沙箱支付"，按钮只写"支付"；协议没定稿照样不能付款，防止测试人员以为付的不是真钱（创始人 10/29）', async () => {
+  for (const sandbox of [true, 'true', false]) {
+    const draft = passPage({ terms: payTerms, payProducts: () => Promise.resolve({ items: [PRODUCT], invoiceType: INVOICE, sandbox }) });
     await flush();
-    assert.equal(live.page.data.sandbox, false);
-    assert.equal(payButtons(live.page.data).length, 0);
-    assert.doesNotMatch(shown('pages/pass/index.wxml', live.page.data), /沙箱测试/);
-    live.page.buy();
-    assert.equal(live.calls.length, 0);
+    assert.equal(payButtons(draft.page.data).length, 0);
+    draft.page.buy();
+    assert.equal(draft.calls.length, 0);
+    const live = passPage({ payProducts: () => Promise.resolve({ items: [PRODUCT], invoiceType: INVOICE, sandbox }) });
+    await flush();
+    assert.equal(Object.hasOwn(live.page.data, 'sandbox'), false);
+    assert.doesNotMatch(shown('pages/pass/index.wxml', live.page.data), /沙箱/);
+    assert.equal(payButtons(live.page.data).length, 1);
+    assert.equal(textOf(payButtons(live.page.data)[0]).trim(), '支付 29 元（30 天）');
   }
 });
 
@@ -854,19 +845,22 @@ test('购买页第一句写给谁用，付款前写全收录范围、只限本�
   assert.deepEqual(h.urls, ['/pages/about/index']);
 });
 
-test('购买页的发票类型以服务端为准，服务端没给时现网没有付款按钮，沙箱照常联调，防止带着发票占位上线收费', async () => {
+test('购买页的发票类型以服务端为准，服务端没给时没有付款按钮、回首页，防止带着发票占位上线收费', async () => {
   for (const invoiceType of [undefined, null, '', '  ', '发票类型待创始人确认', '【发票类型】']) {
     const live = passPage({ payProducts: () => Promise.resolve({ items: TIERS, invoiceType }) });
     await flush();
     assert.equal(live.page.data.invoiceText, '');
     assert.equal(payButtons(live.page.data).length, 0);
-    assert.match(shown('pages/pass/index.wxml', live.page.data), /能开哪种发票还没确定/);
+    // 付不了款就和没在卖一样回首页，不显示"还没确定"的占位（D-074 ⑧）
+    assert.deepEqual(live.urls, ['tab:/pages/home/index']);
+    assert.doesNotMatch(shown('pages/pass/index.wxml', live.page.data), /能开哪种发票还没确定|暂未开放/);
     live.page.buy();
     assert.equal(live.calls.length, 0);
   }
+  // 没有沙箱了：服务端多带 sandbox 也不能不写发票就付款
   const sandbox = passPage({ payProducts: () => Promise.resolve({ items: TIERS, sandbox: true }) });
   await flush();
-  assert.equal(payButtons(sandbox.page.data).length, 1);
+  assert.equal(payButtons(sandbox.page.data).length, 0);
   const ready = passPage({ payProducts: () => Promise.resolve({ items: TIERS, invoiceType: ` ${INVOICE} ` }) });
   await flush();
   assert.equal(ready.page.data.invoiceText, INVOICE);
@@ -876,17 +870,17 @@ test('购买页的发票类型以服务端为准，服务端没给时现网没�
 });
 
 test('续买规则只有一句，和价格在同一屏；现在付款符合时说一声，开关关着时不提，防止规则藏在别处或不在售时出现', async () => {
-  const on = passPage({ payProducts: () => Promise.resolve({ items: TIERS, renewBonus: { days: 3, windowDays: 7, eligibleNow: true } }) });
+  const on = passPage({ payProducts: () => Promise.resolve({ items: TIERS, invoiceType: INVOICE, renewBonus: { days: 3, windowDays: 7, eligibleNow: true } }) });
   await flush();
   const hero = findAll(render('pages/pass/index.wxml', on.page.data), (node) => String(node.attrs.class || '').split(/\s+/).includes('pass-hero'))[0];
   assert.match(textOf(hero), /29.*79.*到期前后 7 天内续买，每次多送 3 天批量工具使用期：现在付款就送/);
-  const later = passPage({ payProducts: () => Promise.resolve({ items: TIERS, renewBonus: { days: 3, windowDays: 7, eligibleNow: false } }) });
+  const later = passPage({ payProducts: () => Promise.resolve({ items: TIERS, invoiceType: INVOICE, renewBonus: { days: 3, windowDays: 7, eligibleNow: false } }) });
   await flush();
   const text = shown('pages/pass/index.wxml', later.page.data);
   assert.match(text, /到期前后 7 天内续买，每次多送 3 天/);
   assert.doesNotMatch(text, /现在付款就送/);
   for (const renewBonus of [null, undefined, { days: '3', windowDays: 7 }, { days: 3, windowDays: 0 }]) {
-    const off = passPage({ payProducts: () => Promise.resolve({ items: TIERS, renewBonus }) });
+    const off = passPage({ payProducts: () => Promise.resolve({ items: TIERS, invoiceType: INVOICE, renewBonus }) });
     await flush();
     assert.equal(off.page.data.renew, null);
     assert.doesNotMatch(shown('pages/pass/index.wxml', off.page.data), /续买，每次多送/);
@@ -898,7 +892,7 @@ test('购买页写出现有使用期到哪天，3 天内到期改成到期提示
   const far = new Date(Date.now() + 20 * 86400000).toISOString();
   for (const [expiresAt, pattern] of [[soon, /批量工具 \d{1,2}月\d{1,2}日到期，到期不再扣钱；需要可以再买一次/], [far, /你的批量工具到 \d{4}-\d{2}-\d{2}；再买一次，接着往后顺延/]]) {
     const status = { pass: { active: true, expiresAt } };
-    const api = { payProducts: () => Promise.resolve({ items: TIERS }), advisorStatus: () => Promise.resolve(status) };
+    const api = { payProducts: () => Promise.resolve({ items: TIERS, invoiceType: INVOICE }), advisorStatus: () => Promise.resolve(status) };
     const page = load('pages/pass/index.js', {
       '../../utils/api.js': api, '../../utils/consent.js': { loginOpen: () => true },
       '../../utils/data-tools.js': { toolConsent: () => Promise.resolve(true) }, '../../content/pay-terms.js': FINAL_TERMS,

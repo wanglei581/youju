@@ -1783,11 +1783,10 @@ def _cmd_pay_refund(args: argparse.Namespace) -> int:
     """负责人按规则发起退款（D-070）：系统故障、停止服务按剩余天数退（--remaining），
     重复扣款、整段没法用的全额退（--full）。只退安卓、鸿蒙、电脑版微信付款的；苹果手机的请用户向
     App Store 申请。先加 --dry-run 看清楚要退哪些、退多少。"""
-    import httpx
 
     from youju.config import get_settings
     from youju.models import PayOrder, WorkbenchPass
-    from youju.xpay import XPayClient
+    from youju.xpay import XPayClient, wx_http
 
     if args.all_active and (args.full or args.extra_days):
         # 停止服务按剩余天数退（已开过发票的照样退，退完再冲红）；
@@ -1799,7 +1798,7 @@ def _cmd_pay_refund(args: argparse.Namespace) -> int:
         return 2
     settings = get_settings()
     stamp = datetime.now(UTC)
-    with session_factory()() as session, httpx.Client(trust_env=False) as http:
+    with session_factory()() as session, wx_http() as http:
         client = XPayClient(settings, http)
         if args.order_id is not None:
             ids = [args.order_id]
@@ -1867,11 +1866,9 @@ def _cmd_pay_refund_due(args: argparse.Namespace) -> int:
 def _cmd_pay(args: argparse.Namespace) -> int:
     from datetime import UTC, datetime, timedelta
 
-    import httpx
-
     from youju import payments
     from youju.config import get_settings
-    from youju.xpay import XPayClient
+    from youju.xpay import XPayClient, wx_http
 
     settings = get_settings()
     stamp = datetime.now(UTC)
@@ -1883,7 +1880,9 @@ def _cmd_pay(args: argparse.Namespace) -> int:
                 return 0
         elif not payments.has_work(session, settings):
             return 0
-        with httpx.Client(trust_env=False) as http:
+        # 补单、对账（定时任务跑的就是这个命令）和小程序接口用同一个客户端：
+        # 系统证书库校验 https（xpay.wx_http），不另走一套证书（Codex 10/29）
+        with wx_http() as http:
             client = XPayClient(settings, http)
             if args.command == "pay-reconcile":
                 payments.download_reconcile(session, day, client, stamp)
