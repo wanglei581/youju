@@ -15,7 +15,7 @@ from xml.etree import ElementTree
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import func, or_, select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
@@ -199,14 +199,20 @@ def create_order(body: OrderIn, session: SessionDep, user: UserDep, client: WxDe
                 if result == "paid"
                 else "上一笔付款需要人工核对，请点“遇到问题”告诉我们",
             )
-    count = session.scalar(
-        select(func.count(PayOrder.id)).where(
+    # 10 分钟内最多 3 笔待支付（防刷）。小程序报告过付款前就被微信拒了的单不算在这 3 笔里——
+    # 不然连着被拒三次（道具还没发布到现网等）第四次就得等 10 分钟（Codex #402 第 2 轮）；
+    # 但连这些一起最多 10 笔，免得靠"报告被拒"无限下单
+    pending = session.scalars(
+        select(PayOrder.error).where(
             PayOrder.user_id == user.id,
             PayOrder.status == "pending",
             PayOrder.created_at > stamp - timedelta(minutes=10),
         )
+    ).all()
+    unmarked = sum(
+        1 for error in pending if not (error or "").startswith(payments.NOT_STARTED_PREFIX)
     )
-    if count >= 3:
+    if unmarked >= 3 or len(pending) >= 10:
         raise HTTPException(status_code=429, detail="待支付订单过多，请稍后再试")
     trade = uuid4().hex
     raw = encode(

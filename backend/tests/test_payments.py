@@ -428,6 +428,27 @@ def test_failed_order_note_only_marks_own_recent_pending_orders_with_known_codes
     assert session.get(PayOrder, second.id).status == "completed"
 
 
+def test_orders_reported_as_never_started_do_not_count_toward_three_pending(setup_pay, session):
+    """10 分钟内最多 3 笔待支付；小程序报告过付款前就被拒的单不算在这 3 笔里（连着被拒也能接着付），
+    但连这些一起最多 10 笔（Codex #402 第 2 轮）。"""
+    _, _, fake = setup_pay
+    fake.bad_order = True  # 微信那边查不到这些单（付款前就被拒了）
+    previous = order(session, create(setup_pay))
+    for _ in range(8):
+        response = create(setup_pay, failed_order={"order_id": previous.id, "code": -15010})
+        assert response.status_code == 201
+        previous = order(session, response)
+    # 8 笔被标记 + 最新这一笔没标：第 10 笔还能下；10 笔都标上了，第 11 笔挡（连这些一起最多 10 笔）
+    tenth = create(setup_pay, failed_order={"order_id": previous.id, "code": -15010})
+    assert tenth.status_code == 201, tenth.json()
+    eleventh = create(
+        setup_pay, failed_order={"order_id": order(session, tenth).id, "code": -15010}
+    )
+    assert eleventh.status_code == 429, eleventh.json()
+    session.expire_all()
+    assert session.scalar(select(func.count(PayOrder.id))) == 10
+
+
 @pytest.mark.parametrize("status", ["refunding", "refunded", "closed"])
 def test_complaint_on_refunding_refunded_or_closed_order_keeps_status_and_alerts_once(
     setup_pay, session, status
