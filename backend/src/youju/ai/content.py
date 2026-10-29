@@ -82,6 +82,8 @@ class Located:
     end: int
     quote: str  # 原句（来源里的原样文字）
     place: str  # 出处（正文为空）
+    # 含已脱敏内容的那几句各自的起止（locate 传 masked=True、原句里有已脱敏的内容时才有）
+    masked: tuple[tuple[int, int], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -263,13 +265,17 @@ def load(session: Session, doc_id: int, *, link: bool = True) -> Content:
     )
 
 
-def locate(texts: Texts | Content, sid: Any, quote: str) -> tuple[Located | None, str | None]:
+def locate(
+    texts: Texts | Content, sid: Any, quote: str, *, masked: bool = False
+) -> tuple[Located | None, str | None]:
     """逐字核对：引用规范化（空白并成一个空格、全角转半角）以后，先在 sid 那一段里找；找不到，
     在这一段所属的来源里找唯一一处（不跨来源）。sid 对不上任何一段时在正文里找。找到以后扩成
     完整的句子。
 
     给 (Located, None)；对不上给 (None, "not_found")，有不止一处给 "ambiguous"，原句里有已脱敏的
-    内容给 "redacted"。引用太短（少于 6 个字）由调用方先挡。"""
+    内容给 (None, "redacted")。masked 为真时，有已脱敏内容的也给出位置 (Located, "redacted")，
+    Located.masked 是其中含已脱敏内容的那几句（一句引用可能跨几句）：问一问按句去重、记个数用，
+    原句照样不显示。引用太短（少于 6 个字）由调用方先挡。"""
     texts = texts.texts if isinstance(texts, Content) else texts
     index = texts._index
     wanted = interpret.normalize(quote.strip())[0]
@@ -309,5 +315,12 @@ def locate(texts: Texts | Content, sid: Any, quote: str) -> tuple[Located | None
     start, end = covered[0][0], covered[-1][1]
     original = source.text[start:end]
     if "已脱敏]" in original:
-        return None, "redacted"
+        if not masked:
+            return None, "redacted"
+        hidden = tuple((a, b) for a, b in covered if "已脱敏]" in source.text[a:b])
+        # 遮掉的内容被句界切开了（一般不会）：整段当一句
+        located = Located(
+            key, segment.sid, start, end, original, segment.place, hidden or ((start, end),)
+        )
+        return located, "redacted"
     return Located(key, segment.sid, start, end, original, segment.place), None

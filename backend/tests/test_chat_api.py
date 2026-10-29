@@ -753,10 +753,15 @@ def test_own_chats_readable_and_deletable_regardless(client, settings, session, 
     data = client.get("/api/v1/me/data").json()
     assert data["aiChats"][0]["id"] == chat_id
     assert client.get("/api/v1/me/data/chats").json()["items"][0]["id"] == chat_id
+    # 往后翻也照样能翻：位置在这条对话之后的翻到它，在它之前的翻不到
+    for at, expected in ((datetime(2099, 1, 1, tzinfo=UTC), [chat_id]), (NOW - timedelta(1), [])):
+        page = client.get("/api/v1/me/data/chats", params={"after": me._chat_cursor(at, 1)})
+        assert [c["id"] for c in page.json()["items"]] == expected
     turns = client.get(f"/api/v1/me/data/chats/{chat_id}").json()["turns"]
     assert turns[0]["question"] == "我的问题"
     assert client.delete(f"/api/v1/advisor/chats/{chat_id}").status_code == 204
     assert counts(session) == (0, 0, 0)
+    assert client.get(f"/api/v1/me/data/chats/{chat_id}").status_code == 404  # 删了的
 
 
 # ---- 删除、问答任务、旧任务接口 ----
@@ -1071,6 +1076,57 @@ def test_my_data_pages_chats(client, session):
     # 格式不对、位置大得离谱（不是上一页给的）
     for bad in ("坏的", "9" * 19 + "-1", "1-" + "9" * 19):
         assert client.get("/api/v1/me/data/chats", params={"after": bad}).status_code == 422
+
+
+def test_my_data_full_pages_have_no_next(client, session, monkeypatch):
+    """正好一页：50 问的对话不用往前翻，100 条对话不给 next。"""
+    monkeypatch.setattr(chat, "RATE_LIMIT", 10**6)
+    for n in range(50):
+        send(client, f"第{n}问")
+    chat_id = client.get("/api/v1/me/data").json()["aiChats"][0]["id"]
+    got = client.get(f"/api/v1/me/data/chats/{chat_id}").json()
+    assert (got["hasMore"], got["total"], got["range"]) == (False, 50, {"from": 1, "to": 50})
+    uid = user_id(session)
+    for n in range(99):
+        at = NOW - timedelta(minutes=n + 1)
+        row = AIChat(user_id=uid, doc_key=20_000 + n, created_at=at, updated_at=at)
+        session.add(row)
+        session.flush()
+        session.add(
+            AIChatTurn(
+                chat_id=row.id,
+                seq=1,
+                skill="find",
+                question=f"第{n}条",
+                idempotency_key=f"f-{n}",
+                created_at=at,
+                expires_at=at + timedelta(days=30),
+            )
+        )
+    session.commit()
+    data = client.get("/api/v1/me/data").json()
+    assert (data["aiChatsTotal"], len(data["aiChats"]), data["aiChatsNext"]) == (100, 100, None)
+
+
+def test_my_data_leaves_out_expired_turns(client, session):
+    """到期的问不列（第十节第 1 条）：对话里到期了一部分的，只数没到期的、范围按没到期的算；
+    都到期了的不在列表里，取它 404。到期时刻正好是现在也算到期。"""
+    chat_id = send(client, "第一问").json()["chatId"]
+    send(client, "第二问")
+    other = send(client, "带通知的", doc_id=make_doc(session)).json()["chatId"]
+    session.execute(
+        update(AIChatTurn)
+        .where(AIChatTurn.question.in_(["第一问", "带通知的"]))
+        .values(expires_at=NOW)
+    )
+    session.commit()
+    data = client.get("/api/v1/me/data").json()
+    assert [(c["id"], c["turns"]) for c in data["aiChats"]] == [(chat_id, 1)]
+    assert (data["aiChatsTotal"], data["aiChatTurnsTotal"]) == (1, 1)
+    got = client.get(f"/api/v1/me/data/chats/{chat_id}").json()
+    assert [t["question"] for t in got["turns"]] == ["第二问"]
+    assert (got["total"], got["range"]) == (1, {"from": 1, "to": 1})
+    assert client.get(f"/api/v1/me/data/chats/{other}").status_code == 404
 
 
 def test_last_question_truncated(client, session):

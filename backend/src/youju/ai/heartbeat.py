@@ -26,8 +26,8 @@ AI 的开关、开放范围、白名单、全站每天上限都是环境变量�
 只有 api 服务（YOUJU_ROLE=api）才看心跳：本机开发和测试是同一个进程、同一份设置，不会对不上。
 
 问这份通知（问一问开发设计第六节第 3 条"只走单独线路"）另记一项 ask_ready：admin 能处理 AI 任务、
-并且对外 AI 的单独线路三项都配好了（ask_capable）。api 的能力接口、发一问看它（ask_ready），
-本机开发和测试按本进程的设置算。
+对外 AI 的单独线路三项都配好了，并且开着流式接收（YOUJU_AI_ADVISOR_STREAM）——这三样都满足才算
+（ask_capable）。api 的能力接口、发一问看它（ask_ready），本机开发和测试按本进程的设置算。
 """
 
 from __future__ import annotations

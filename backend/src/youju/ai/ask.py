@@ -62,9 +62,9 @@ SYSTEM_PROMPT = (
 )
 ASK = Skill("ask", PROMPT_VERSION, SYSTEM_PROMPT, (), result_field="quotes")
 
-STATUSES = ("answer", "not_found", "out_of_scope", "clarify")  # 模型能回的四种
-# 回答里记的状态：模型回 answer 时按核对结果定（validate），没给出原句的分三种（D-105）
-RESULT_STATUSES = ("answer", "not_found", "unverified", "redacted", "out_of_scope", "clarify")
+# 模型能回的四种。回答里记的状态另有 unverified、redacted 两种：模型回 answer 时按核对结果定
+# （validate），没给出原句的分三种（D-105）
+STATUSES = ("answer", "not_found", "out_of_scope", "clarify")
 MAX_QUOTES = 8  # 模型给的超过 8 句只取前 8 句
 MIN_QUOTE = 6  # 少于 6 个字的引用不认（同解读）
 MAX_TOKENS = 8000
@@ -409,8 +409,10 @@ def model_input(loaded: content.Content, ctx: dict, question: str) -> str:
 
 def validate(payload: Any, loaded: content.Content | content.Texts) -> dict:
     """核对模型的输出（第六节第 3 条"核对"）：每句只在它的段号所属来源里逐字找，扩成完整的句子；
-    含"已脱敏"的不引用（记个数，算核对上了）；重复的去掉；超过 8 句只取前 8 句；留下的按原文先后排、
-    编号。格式不对抛 ValueError。其他三种状态时模型给的句子一律不用。
+    含"已脱敏"的不引用（按句记个数：同一句摘了几次、摘的是它的哪一截、一句引用跨了几句，含遮掉
+    号码的每句都只记一次；算核对上了）；
+    重复的去掉；超过 8 句只取前 8 句；留下的按原文先后排、编号。格式不对抛 ValueError。
+    其他三种状态时模型给的句子一律不用。
 
     模型回 answer 时按核对结果定状态，按这个先后，先满足的算（D-105，Codex 第 11 轮）：
     ① 至少有一句核对上了、又能显示 → answer；② 没有能显示的、但至少有一句核对上了（都含遮掉的
@@ -432,7 +434,8 @@ def validate(payload: Any, loaded: content.Content | content.Texts) -> dict:
     order = {s.key: i for i, s in enumerate(texts.sources)}
     versions = {s.key: s.version for s in texts.sources}
     kept: dict[tuple, content.Located] = {}
-    redacted = dropped = 0
+    masked: set[tuple] = set()  # 含遮掉号码的句子：（来源, 起, 止）
+    dropped = 0
     for item in payload["quotes"][:MAX_QUOTES]:
         sid = item.get("sid") if isinstance(item, dict) else None
         quote = item.get("quote") if isinstance(item, dict) else None
@@ -444,18 +447,22 @@ def validate(payload: Any, loaded: content.Content | content.Texts) -> dict:
         ):
             dropped += 1
             continue
-        located, reason = content.locate(texts, sid, quote)
+        located, reason = content.locate(texts, sid, quote, masked=True)
         if located is None:
-            if reason == "redacted":
-                redacted += 1
-            else:
+            dropped += 1
+            continue
+        if reason == "redacted":
+            sentences = {(located.source, a, b) for a, b in located.masked}
+            if sentences <= masked:  # 含号码的这几句都记过了：算重复
                 dropped += 1
+            masked |= sentences
             continue
         identity = (located.source, located.start, located.end)
         if identity in kept:
             dropped += 1
             continue
         kept[identity] = located
+    redacted = len(masked)
     ordered = sorted(kept.values(), key=lambda q: (order[q.source], q.start, q.end))
     quotes = [
         {
@@ -508,9 +515,10 @@ def _starter(char: str) -> bool:
 
 
 def _boundary(raw: str) -> int:
-    """raw 里最后一个"规范化边界"：边界之前的字单独规范化一次就定了，后面再来什么字都不会变。
-    从末尾往回找一个能当边界的字（_starter），它后面又不跟着组合符号或韩文字母；再核一遍分开
-    规范化和连着规范化结果一样（兜住少见的特例）。找不到给 0（整截都暂留）。"""
+    """raw（已经去掉看不见的字符）里最后一个"规范化边界"：边界之前的字单独规范化一次就定了，
+    后面再来什么字都不会变。从末尾往回找一个能当边界的字（_starter），它后面又不跟着组合符号或
+    韩文字母；再核一遍分开规范化和连着规范化结果一样（兜住少见的特例）。找不到给 0
+    （整截都暂留）。"""
     for at in range(len(raw) - 1, 0, -1):
         if not _starter(raw[at]):
             continue
@@ -525,14 +533,19 @@ def _boundary(raw: str) -> int:
 
 class _Guard:
     """边收边过本地词库（第九节第 6 条）：每收到一段就当场查"新收到的这段，加上它前面最长词条长度
-    减 1 个字"，跨段的词也查得到；长回答也只是线性的慢（不再每段从头查全部文字）。
+    减 1 个字"，跨段的词也查得到；不再每段从头查全部文字。
 
-    窗口按词库同样规范化以后的字算（safety_words.normalize：NFKC、转小写、去掉空白和零宽字符），
-    被空白、零宽字符隔开的跨段词也在窗口里。规范化也要跨段：一段末尾的字可能和下一段开头的字合成
-    一个字（比如先收到 e、再单独收到组合重音符，NFKC 以后是 é）。所以收到的原文全部留着：每段到了，
-    先找最近的规范化边界（_boundary），边界之前的原文规范化一次就定了；边界到末尾这一截（"暂留"，
-    通常只有一两个字）每段到了都连同新的一段重新规范化，和前面已经定了的最后"最长词条长度减 1"个字
-    一起当场查。暂留不是不查，只是下一段来了再连同它们重新规范化；单字词条也一样当场查。
+    窗口按词库同样规范化以后的字算（safety_words.normalize：去掉看不见的字符、NFKC、转小写、去掉
+    空白），被空白、零宽字符隔开的跨段词也在窗口里。规范化也要跨段：一段末尾的字可能和下一段开头的
+    字合成一个字（比如先收到 e、再单独收到组合重音符，NFKC 以后是 é）。所以收到的原文先去掉看不见的
+    字符（同 normalize 的第一步：夹在字母和组合符号中间的去掉以后也会合成），再全部留着：每段到了，
+    先找最近的规范化边界（_boundary），边界之前的规范化一次就定了；边界到末尾这一截（"暂留"，通常
+    只有一两个字）每段到了都连同新的一段重新规范化，和前面已经定了的最后"最长词条长度减 1"个字
+    一起当场查。暂留不是不查，只是下一段来了再连同它们重新规范化；单字词条也一样当场查。已知限制：
+    一长串都当不了边界的字（比如几百个连着的组合符号）会一直暂留，每段都重新规范化，这时会变慢。
+
+    客户端重试时从空的开始重新拼（ChatClient 每次重试都从头收）：收到的文字不再接着上一次的，
+    前一次收到的就作废、从头查。
 
     收完再整段查一遍兜底（final：调用正常结束时查整段回答，不是流式的也靠它）；调用出错时
     （中途断了、返回看不懂、超时）查最后收到的全部文字（last）。命中抛 StreamBlocked。
@@ -541,14 +554,21 @@ class _Guard:
     def __init__(self, *, streaming: bool = False) -> None:
         self.streaming = streaming
         self.last = ""  # 最后一次收到的全部原文
-        self.settled = 0  # 原文里规范化已经定了的字数（边界之前）
+        self.visible = ""  # 收到的原文去掉看不见的字符以后（safety_words.strip_invisible）
+        self.settled = 0  # visible 里规范化已经定了的字数（边界之前）
         self.tail = ""  # 定了的那截规范化以后的最后几个字（最长词条长度减 1 个）
 
     def __call__(self, text: str) -> None:
+        if text.startswith(self.last):
+            new = text[len(self.last) :]
+        else:  # 重试了，从头收
+            new, self.visible, self.settled, self.tail = text, "", 0, ""
         self.last = text
         library = safety_words.LIBRARY
         carry = max(library.longest - 1, 0)
-        pending = text[self.settled :]
+        # 只去新收到的那截：一个字一个字地去，分段去和连着去结果一样
+        self.visible += safety_words.strip_invisible(new)
+        pending = self.visible[self.settled :]
         at = _boundary(pending)
         fixed = safety_words.normalize(pending[:at])
         held = safety_words.normalize(pending[at:])

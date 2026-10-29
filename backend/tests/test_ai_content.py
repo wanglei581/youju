@@ -286,6 +286,25 @@ def test_locate_keeps_body_and_attachment_apart():
     assert content.locate(texts, None, "加盖公章") == (None, "not_found")
 
 
+def test_locate_gives_masked_sentence_only_when_asked():
+    """原句里有已脱敏的内容：默认给 (None, "redacted")（解读、对照照旧）；masked 为真时也给出
+    那一句的位置（问一问按句去重），摘的是它的哪一截都是同一句。"""
+    masked = "联系人：[姓名已脱敏]，联系电话：[电话已脱敏]。"
+    texts = content.Texts.from_paragraphs(interpret.split_paragraphs("申报书一式三份。" + masked))
+    assert content.locate(texts, "P001", "联系电话：[电话已脱敏]") == (None, "redacted")
+    found = [
+        content.locate(texts, "P001", quote, masked=True)
+        for quote in ("联系电话：[电话已脱敏]", "联系人：[姓名已脱敏]，联系电话")
+    ]
+    assert {why for _, why in found} == {"redacted"}
+    assert {(q.source, q.start, q.end, q.quote) for q, _ in found} == {
+        (content.BODY, 8, 8 + len(masked), masked)
+    }
+    assert all(q.masked == ((8, 8 + len(masked)),) for q, _ in found)  # 含已脱敏内容的那一句
+    located, why = content.locate(texts, "P001", "申报书一式三份", masked=True)
+    assert why is None and located.quote == "申报书一式三份。"
+
+
 @pytest.fixture
 def doc(session):
     source = Source(

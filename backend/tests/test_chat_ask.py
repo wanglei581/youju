@@ -453,6 +453,41 @@ def test_validate_status_order_without_shown_quotes():
     assert (got["status"], got["redacted"], got["dropped"]) == ("unverified", 0, 2)
 
 
+def test_validate_counts_a_masked_sentence_once():
+    """同一句含遮掉号码的摘了几次（整句、它的一截）只记一句，"有 N 句"不多算；多摘的算重复。"""
+    texts = _texts(S1, v1.redact_sensitive(S6))
+    phone, name = ("P002", "联系电话：[电话已脱敏]"), ("P002", "六、联系人：[姓名已脱敏]")
+    got = ask.validate(answer(phone, name, phone), texts)
+    assert (got["status"], got["redacted"], got["dropped"]) == ("redacted", 1, 2)
+    got = ask.validate(answer(phone, ("P001", S1), name), texts)
+    assert (got["status"], len(got["quotes"]), got["redacted"], got["dropped"]) == (
+        "answer",
+        1,
+        1,
+        1,
+    )
+
+
+def test_validate_counts_masked_sentences_inside_a_longer_quote():
+    """一句引用跨了几句时按句记（Codex 第 3 轮）：含号码的那句单独摘一次、连着下一句又摘一次，
+    只记一句；一句引用里有两句含号码的记两句。"""
+    masked = v1.redact_sensitive(S6)
+    texts = _texts(masked + S7)  # 一段里两句
+    got = ask.validate(
+        answer(("P001", "联系电话：[电话已脱敏]"), ("P001", "[电话已脱敏]。七、本通知自发布")),
+        texts,
+    )
+    assert (got["status"], got["quotes"], got["redacted"], got["dropped"]) == ("redacted", [], 1, 1)
+    texts = _texts("联系人：[姓名已脱敏]。联系电话：[电话已脱敏]。")
+    got = ask.validate(answer(("P001", "[姓名已脱敏]。联系电话")), texts)
+    assert (got["status"], got["redacted"], got["dropped"]) == ("redacted", 2, 0)
+    # 先摘跨两句的、再摘其中一句：后一句都记过了，算重复
+    got = ask.validate(
+        answer(("P001", "[姓名已脱敏]。联系电话"), ("P001", "联系电话：[电话已脱敏]")), texts
+    )
+    assert (got["status"], got["redacted"], got["dropped"]) == ("redacted", 2, 1)
+
+
 def test_validate_only_looks_in_the_quotes_own_source():
     """每句只在它的段号所属来源里逐字找：附件里的句子标成正文段号对不上，反过来也一样。"""
     body = S1
@@ -1513,8 +1548,11 @@ def test_account_deleted_while_processing(client, session, settings, doc, model,
 
 
 def test_link_gone_wording(client, session, settings, doc, model):
-    """原文链接失效以后：没写日期、没找到的说法不叫人点"站内阅读"，也不给站内阅读。"""
+    """原文链接失效以后：没写日期、没找到、摘的对不上的说法不叫人点"站内阅读"，也不给站内阅读。"""
     first = asked(client, session, settings, model, "截止时间呢", doc, answer(("P001", S1)))
+    off = asked(
+        client, session, settings, model, "要交哪些材料", doc, answer(("P001", "原文里没有的话"))
+    )
     second = send(client, "评分标准是什么", doc).json()["turn"]["id"]
     model.payload = {"status": "not_found", "quotes": []}
     session.get(Document, doc).link_gone_at = datetime(2026, 10, 24, 2, tzinfo=UTC)
@@ -1530,6 +1568,9 @@ def test_link_gone_wording(client, session, settings, doc, model):
         ("link_gone", missing["notes"][0]["text"]),
         ("not_found", "可以换个说法再问。这次不算次数。"),
     ]
+    unverified = turn_of(client, off["id"])["answer"]
+    assert unverified["lead"] == ask.UNVERIFIED_GONE and unverified["reader"] is None
+    assert [n["code"] for n in unverified["notes"]] == ["link_gone", "not_counted"]
 
 
 def _sse_events(*texts, usage=None, finish="stop"):
@@ -1611,6 +1652,24 @@ def test_real_stream_records_usage(client, session, settings, doc, real_stream):
     row = session.scalar(select(AIUsage).where(AIUsage.task == "ask"))
     assert (row.model, row.calls, row.errors) == ("advisor-model", 1, 0)
     assert (row.prompt_tokens, row.completion_tokens) == (120, 30)
+
+
+def test_retry_from_scratch_checked_on_the_spot(client, session, settings, doc, model, monkeypatch):
+    """客户端重试（格式不对、网络出错）时从头再收：新的一次收到的也当场查，命中就拦下，处置记录
+    写 stream（不是等调用出错以后才查到）。"""
+
+    def retried(system, user, max_tokens=800, *, on_text=None):
+        model.totals["calls"] += 1
+        on_text('{"status": "answer", "quotes": [' + "格式不对的一大段" * 30)  # 第一次：要重试
+        on_text('{"status": "answer", "quotes": [{"sid": "P001", "quote": "' + TEST_WORD)
+        raise httpx.DecodingError("没拦下的话走到这里")
+
+    monkeypatch.setattr(model, "complete_json", retried)
+    turn_id = send(client, "申报对象是谁", doc).json()["turn"]["id"]
+    work(session, settings)
+    assert turn_of(client, turn_id)["errorCode"] == "ASK_UNSAFE"
+    [hit] = hits(session)
+    assert (hit.layer, hit.turn_id, hit.reason_json["stream"]) == ("local", turn_id, True)
 
 
 def test_tail_checked_when_the_call_fails_unexpectedly(
@@ -1696,6 +1755,17 @@ def test_guard_checks_each_segment_on_the_spot(monkeypatch):
     assert _guard_hits(*_grow("开头", "某" * 300, "甲", "乙")) == 4
     # 都没有：不拦
     assert _guard_hits(*_grow("一段", "正常的", "回答")) is None
+    # 看不见的字符先去掉再规范化：组合用字形连接符夹在 e 和重音符中间也照样合成 é
+    assert _guard_hits(*_grow("x e\N{COMBINING GRAPHEME JOINER}", "\u0301")) == 2
+    assert _guard_hits(*_grow("caf", "e\N{SOFT HYPHEN}", "\N{VARIATION SELECTOR-1}\u0301")) == 3
+
+
+def test_guard_starts_over_when_the_client_retries(monkeypatch):
+    """客户端重试时从空的开始重新拼（ChatClient 每次重试都从头收）：前一次收到的作废、从头查，
+    新的一次开头的词当场拦下，不会因为前一次收得多就跳过。"""
+    word_list(monkeypatch, "甲乙")
+    assert _guard_hits("开头" + "某" * 300, "甲乙") == 2
+    assert _guard_hits("甲", "某" * 50, *_grow("甲", "乙")) == 4  # 重试以后跨段的照样拦
 
 
 def test_guard_waits_for_hangul_jamo_to_combine(monkeypatch):
@@ -1753,6 +1823,25 @@ def test_previous_answer_is_found_past_many_unanswered_turns(client, session, se
         "question": "企业申报截止是哪天？",
         "quotes": [{"n": 1, "sid": "P002", "quote": S2}],
     }
+
+
+def test_expired_turns_left_out_of_recent_and_previous(client, session, settings, doc, model):
+    """到期的问不算（第十节第 1 条）：上一答、最近两问都只从没到期的里取；到期时刻正好是现在
+    也算到期。"""
+    first = asked(
+        client, session, settings, model, "企业申报截止是哪天？", doc, answer(("P002", S2))
+    )
+    second = asked(client, session, settings, model, "市里哪天报送？", doc, answer(("P003", S3)))
+    later = session.get(AIChatTurn, second["id"])
+    chat_id, seq = later.chat_id, later.seq + 1
+    later.expires_at = NOW
+    session.commit()
+    assert ask.previous(session, chat_id, seq, NOW).question == "企业申报截止是哪天？"
+    assert ask.recent(session, chat_id, seq, NOW) == ["企业申报截止是哪天？"]
+    session.get(AIChatTurn, first["id"]).expires_at = NOW - timedelta(days=1)
+    session.commit()
+    assert ask.previous(session, chat_id, seq, NOW) is None
+    assert ask.recent(session, chat_id, seq, NOW) == []
 
 
 def test_unread_attachments_matched_by_id_not_order(client, session, settings, model, monkeypatch):
