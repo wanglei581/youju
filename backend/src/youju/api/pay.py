@@ -25,7 +25,7 @@ from youju.api.contact import transfer_to_kf
 from youju.api.me import KnownUserDep, UserDep, request_openid
 from youju.config import get_settings
 from youju.models import InvoiceRequest, PayOrder, User
-from youju.xpay import XPayClient, XPayError, encode, pay_signature, signature, wx_http
+from youju.xpay import XPAY_ENV, XPayClient, XPayError, encode, pay_signature, signature, wx_http
 
 logger = logging.getLogger(__name__)
 
@@ -86,12 +86,7 @@ def list_products(request: Request, session: SessionDep) -> dict:
     settings = get_settings()
     # 和下单条件一致（payments.orderable）：下不了单就不展示价格。
     if not payments.orderable(settings):
-        return {
-            "items": [],
-            "sandbox": settings.xpay_env == 1,
-            "renewBonus": None,
-            "invoiceType": None,
-        }
+        return {"items": [], "renewBonus": None, "invoiceType": None}
     # 看价格不要求登录；认得出是谁时才算"现在续买送不送"
     try:
         openid = request_openid(request)
@@ -108,11 +103,8 @@ def list_products(request: Request, session: SessionDep) -> dict:
             }
             for product, (price, days) in payments.products(settings).items()
         ],
-        # 沙箱（只有测试名单看得到；真机付款也会真实扣钱，10/20 创始人实测）：
-        # 小程序在《付费服务协议》定稿前也放开付款按钮供联调
-        "sandbox": settings.xpay_env == 1,
         "renewBonus": payments.renew_offer(session, settings, user, _stamp()),
-        # 能开哪种发票（付款前要看得到）；沙箱联调时可以还没填（None），现网没填就不卖
+        # 能开哪种发票（付款前要看得到）；没填就不卖，走到这里一定有
         "invoiceType": payments.invoice_type(settings) or None,
     }
 
@@ -193,7 +185,7 @@ def create_order(body: OrderIn, session: SessionDep, user: UserDep, client: WxDe
         {
             "offerId": settings.xpay_offer_id,
             "buyQuantity": 1,
-            "env": settings.xpay_env,
+            "env": XPAY_ENV,
             "currencyType": "CNY",
             "productId": body.product_id,
             "goodsPrice": price,
@@ -202,7 +194,7 @@ def create_order(body: OrderIn, session: SessionDep, user: UserDep, client: WxDe
         }
     )
     try:
-        pay_sig = pay_signature(client.appkey(settings.xpay_env), "requestVirtualPayment", raw)
+        pay_sig = pay_signature(client.appkey(XPAY_ENV), "requestVirtualPayment", raw)
         # session_key 仅用于此表达式，不赋给订单、日志、异常或任何持久对象。
         user_sig = signature(client.session_key(body.code, user.openid), raw)
     except XPayError:
@@ -215,9 +207,9 @@ def create_order(body: OrderIn, session: SessionDep, user: UserDep, client: WxDe
         days=days,
         # 下单时续买多送开着才算数（付款页这时写着这条规则）；付款时间符合才真的送
         bonus_days=payments.RENEW_BONUS_DAYS if payments.renew_bonus_enabled(settings) else 0,
-        # 购买页上写的发票类型（上面已核对和现在的配置一致；沙箱联调时可能还没填）
+        # 购买页上写的发票类型（上面已核对和现在的配置一致）
         invoice_type=invoice or None,
-        env=settings.xpay_env,
+        env=XPAY_ENV,
         terms_version=body.terms_version,
         created_at=stamp,
         updated_at=stamp,
@@ -568,7 +560,9 @@ def _transaction_push(data: dict, xml: bool, session: Session, client: XPayClien
             return reply(xml, 1)
         payments.event(session, kind, data, order)
         if kind == "xpay_complaint_notify":
-            order.status, order.error = "manual", f"{payments.COMPLAINT_ERROR}，需人工处理"
+            # 原因只加不盖、再告警一次（payments.escalate）：
+            # 已经在核对退款的单不能被投诉盖掉（Codex 第 5 轮）
+            payments.escalate(order, f"{payments.COMPLAINT_ERROR}，需人工处理", _stamp())
             session.commit()
             return reply(xml)
         # 退款推送和发货推送一样只是"去查单"的信号，按查单结果走和每分钟补单同一套处理
@@ -612,6 +606,9 @@ def _transaction_push(data: dict, xml: bool, session: Session, client: XPayClien
                 _stamp(),
                 confirmed=ours and ret is not None and str(ret) == "0",
             )
+            if not accepted:
+                # 已完成的订单（苹果那边或小程序后台退的款）没核实退款：转人工，重推完也有人知道
+                payments.flag_unconfirmed_refund(order, _stamp())
         session.commit()
         if (
             accepted
@@ -629,6 +626,11 @@ def _transaction_push(data: dict, xml: bool, session: Session, client: XPayClien
         code = exc.code if isinstance(exc, XPayError) else None
         reason = f"errcode={code}" if code is not None else type(exc).__name__
         logger.warning("%s 订单 #%s 核验失败：%s", kind, order_id, reason)
-        order.error = "推送暂未核验，将通过查单重试"
+        # 每分钟的补单不查已完成的订单：退款推送没核验成就转人工（Codex 10/29）。
+        # 已经转人工的不改原因：重推时查单又出错，不能把要人工核对什么盖成"将通过查单重试"
+        # （补单不查人工单，Codex 第 3 轮）
+        flagged = kind == "xpay_refund_notify" and payments.flag_unconfirmed_refund(order, _stamp())
+        if not flagged and order.status != "manual":
+            order.error = "推送暂未核验，将通过查单重试"
         session.commit()
         return reply(xml, 1)

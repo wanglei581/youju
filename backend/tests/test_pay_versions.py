@@ -1,5 +1,6 @@
-"""开卖按小程序版本放开（D-074）：沙箱和测试名单只在开发版、体验版；现网只对代码包里带着定稿付费协议
-版本号的小程序开放，老版本永远看不到价格。微信接口全部用 test_payments 的 FakeWechat。"""
+"""开卖按小程序版本放开（D-074）：测试名单只在开发版、体验版（现网真付，沙箱已去掉，创始人 10/29）；
+只对代码包里带着定稿付费协议版本号的小程序开放，老版本永远看不到价格。
+微信接口全部用 test_payments 的 FakeWechat。"""
 
 import pytest
 from pydantic import SecretStr
@@ -45,42 +46,39 @@ RELEASE_OLD = payments.Client(terms="pay-2026-10-draft", env="release")
 
 
 @pytest.mark.parametrize(
-    ("env", "audience", "openid", "client", "expected"),
+    ("audience", "openid", "client", "expected"),
     [
-        # 沙箱：只给测试名单、只在开发版和体验版；配成 all 也一样（沙箱真机付款也会真实扣钱）
-        (1, "whitelist", "tester", TRIAL_FINAL, True),
-        (1, "whitelist", "tester", payments.Client(env="develop"), True),
-        (1, "whitelist", "tester", RELEASE_FINAL, False),
-        (1, "whitelist", "stranger", TRIAL_FINAL, False),
-        (1, "all", "stranger", TRIAL_FINAL, False),
-        (1, "all", "tester", RELEASE_FINAL, False),
-        # 现网 + 测试名单（受控真实付款）：测试人员、体验版、带定稿协议版本号，三样都要
-        (0, "whitelist", "tester", TRIAL_FINAL, True),
-        (0, "whitelist", "tester", RELEASE_FINAL, False),
-        (0, "whitelist", "tester", payments.Client(terms="pay-old", env="trial"), False),
-        (0, "whitelist", "stranger", TRIAL_FINAL, False),
-        # 现网 + 所有人（开卖）：只看代码包里的协议版本号，不看是谁、不看环境
-        (0, "all", "stranger", RELEASE_FINAL, True),
-        (0, "all", None, RELEASE_FINAL, True),
-        (0, "all", "tester", RELEASE_OLD, False),
-        (0, "all", "tester", payments.Client(env="trial"), False),
+        # 测试名单（受控真实付款，现网真付）：测试人员、开发版或体验版、带定稿协议版本号，三样都要
+        ("whitelist", "tester", TRIAL_FINAL, True),
+        ("whitelist", "tester", payments.Client(terms="pay-final", env="develop"), True),
+        ("whitelist", "tester", RELEASE_FINAL, False),
+        ("whitelist", "tester", payments.Client(terms="pay-old", env="trial"), False),
+        # 协议没定稿的包不带版本号（小程序 utils/api.js）：测试人员也买不了，没有"先联调"的沙箱了
+        ("whitelist", "tester", payments.Client(env="trial"), False),
+        ("whitelist", "stranger", TRIAL_FINAL, False),
+        # 所有人（开卖）：只看代码包里的协议版本号，不看是谁、不看环境
+        ("all", "stranger", RELEASE_FINAL, True),
+        ("all", None, RELEASE_FINAL, True),
+        ("all", "tester", RELEASE_OLD, False),
+        ("all", "tester", payments.Client(env="trial"), False),
     ],
 )
-def test_selling_to_by_build_and_terms(env, audience, openid, client, expected):
-    settings = _settings(xpay_env=env, pay_audience=audience, pay_terms_version="pay-final")
+def test_selling_to_by_build_and_terms(audience, openid, client, expected):
+    settings = _settings(pay_audience=audience, pay_terms_version="pay-final")
     assert payments.selling_to(settings, openid, client) is expected
 
 
 def test_live_sale_needs_final_terms_configured_even_if_client_sends_none():
-    settings = _settings(xpay_env=0, pay_audience="all", pay_terms_version="")
+    settings = _settings(pay_audience="all", pay_terms_version="")
     assert payments.selling_to(settings, "tester", payments.Client(env="release")) is False
     assert payments.selling_to(settings, "tester", payments.Client(env="trial")) is False
 
 
 def test_release_build_never_shows_tester_store(setup_pay):  # noqa: F811
-    """测试阶段（沙箱）：同一个测试人员在正式版里看不到商品、价格、购买入口，也下不了单；
-    请求体不合法也是 404（中间件先挡），不暴露接口（D-074，运营规范 5.19）。"""
+    """测试阶段（YOUJU_PAY_AUDIENCE 还是 whitelist，现网真付）：同一个测试人员在正式版里看不到商品、
+    价格、购买入口，也下不了单；请求体不合法也是 404（中间件先挡），不暴露接口（D-074，运营规范 5.19）。"""
     client, settings, _ = setup_pay
+    settings.pay_audience = "whitelist"
     assert client.get("/api/v1/pay/products", headers=HEADERS).json()["items"]
     for headers in (RELEASE, NO_CLIENT):
         assert client.get("/api/v1/pay/products", headers=headers).status_code == 404
@@ -104,7 +102,7 @@ def test_live_sale_opens_only_to_packages_with_final_terms(setup_pay):  # noqa: 
     """现网对所有人开卖：只有代码包里带着定稿协议版本号的小程序（开卖那一版）看得到价格、能下单；
     老版本（草稿号或没带）永远看不到（D-074：开卖要单独提审一版）。"""
     client, settings, _ = setup_pay
-    settings.xpay_env, settings.pay_terms_version = 0, "pay-2026-12"
+    settings.pay_terms_version = "pay-2026-12"
     settings.pay_invoice_type = "电子普通发票（测试）"
     settings.xpay_appkey_prod = SecretStr("12345")
     new = {**RELEASE, "X-Youju-Pay-Terms": "pay-2026-12"}
@@ -115,7 +113,7 @@ def test_live_sale_opens_only_to_packages_with_final_terms(setup_pay):  # noqa: 
         assert client.get("/api/v1/me", headers=headers).json()["pay"]["enabled"] is False
     listed = client.get("/api/v1/pay/products", headers=new).json()
     assert [i["productId"] for i in listed["items"]] == ["workbench_30d"]
-    assert listed["sandbox"] is False
+    assert "sandbox" not in listed
     # 对所有人：不在测试名单的人用新版本也看得到；看价格不要求登录
     assert client.get("/api/v1/pay/products", headers=stranger).json()["items"]
     no_login = {"X-Youju-Env": "release", "X-Youju-Pay-Terms": "pay-2026-12"}
@@ -130,6 +128,7 @@ def test_live_sale_opens_only_to_packages_with_final_terms(setup_pay):  # noqa: 
 def test_free_limit_message_offers_the_pass_only_to_builds_that_can_buy(setup_pay):  # noqa: F811
     """本月免费次数用完时，只有能买的小程序包才在提示里提批量工具；正式版（测试阶段）只说下月恢复。"""
     client, settings, _ = setup_pay
+    settings.pay_audience = "whitelist"
     for index in range(3):
         assert submit(setup_pay, key=f"free-{index}").status_code == 202
     trial = submit(setup_pay, key="over-trial")

@@ -17,6 +17,12 @@ from youju.config import Settings
 
 logger = logging.getLogger(__name__)
 
+# 新订单一律现网（env 0，真扣钱）。沙箱已去掉（创始人 10/29："支付那一个沙箱支付去掉"）：
+# 苹果支付只支持现网（官方文档 2026-09-14 版），安卓沙箱真机付款也真实扣钱（10/20 实测），
+# 留着只会让人看错。
+# 去掉沙箱以前下的测试单仍按订单上记的 env 查单、退款（appkey 按 env 取）。
+XPAY_ENV = 0
+
 
 def wx_http() -> httpx.Client:
     """调用微信接口用的 HTTP 客户端，用系统证书库校验 https。
@@ -62,9 +68,11 @@ class XPayClient:
 
     def appkey(self, env: int) -> str:
         secret = self.settings.xpay_appkey_prod if env == 0 else self.settings.xpay_appkey_sandbox
-        if not secret or not secret.get_secret_value():
+        # 去掉首尾空格，和 payments.orderable 的判断一致：环境变量里多粘了空格，签名也不会错
+        key = secret.get_secret_value().strip() if secret else ""
+        if not key:
             raise XPayError
-        return secret.get_secret_value()
+        return key
 
     def session_key(self, code: str, openid: str) -> str:
         # 方式 A（默认）：云托管开放接口服务，不带 secret，走容器内 http 地址。
@@ -141,6 +149,4 @@ class XPayClient:
 
     def bill(self, day: date) -> dict:
         ds = int(day.strftime("%Y%m%d"))
-        return self.call(
-            "/xpay/download_bill", {"begin_ds": ds, "end_ds": ds}, env=self.settings.xpay_env
-        )
+        return self.call("/xpay/download_bill", {"begin_ds": ds, "end_ds": ds}, env=XPAY_ENV)
