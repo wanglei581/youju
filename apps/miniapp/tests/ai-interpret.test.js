@@ -28,14 +28,14 @@ function load(file, deps, globals = {}) {
   return definition ? { ...definition, data: plain(definition.data), setData(value) { Object.assign(this.data, value); } } : module.exports;
 }
 function storage(agreed = false) {
-  const values = new Map(agreed ? [[logic.CONSENT_KEY, true]] : []);
+  const values = new Map(agreed ? [[logic.CONSENT_KEY, logic.consentRecord()]] : []);
   return { getStorageSync: (key) => values.get(key), setStorageSync: (key, value) => values.set(key, value), values };
 }
 function sessionHarness(options = {}) {
   let now = 0; let next = 0; let created = 0; let polled = 0;
   const timers = new Map(); const state = {}; const keys = []; const local = options.storage || storage(true);
   const api = {
-    createAdvisorTask(body, key) { created += 1; keys.push(key); assert.deepEqual(body, { kind: 'interpret', doc_id: 42 }); return Promise.resolve({ id: created, status: 'queued' }); },
+    createAdvisorTask(body, key) { created += 1; keys.push(key); assert.deepEqual(body, { kind: 'interpret', doc_id: 42, notice: logic.NOTICE_VERSION }); return Promise.resolve({ id: created, status: 'queued' }); },
     advisorTask(id) { polled += 1; return Promise.resolve({ id, status: 'running' }); },
     ...options.api,
   };
@@ -256,6 +256,18 @@ test('429 保留后端 detail，404 使用固定提示；两者不重试消耗�
     h.session.show(); await flush();
     assert.equal(h.state.error, text); assert.equal(h.state.errorCode, errorCode || ''); h.session.hide();
   }
+  // 内容安全（门槛第 4 道，后台 10/28）：结果没通过、检测接口出错。小程序没有这两个代码的固定说法，
+  // 照写后台的原因（后台写明了没扣次数），可以重试
+  for (const [errorCode, error] of [
+    ['AI_UNSAFE', '这次的结果没有通过内容安全检查，不显示；这次没有扣你的次数。'],
+    ['AI_CHECK_DOWN', '内容安全检测暂时不可用，请稍后重试；这次没有扣你的次数。'],
+  ]) {
+    const h = sessionHarness({ session: { taskId: 6, docId: 9 }, api: { advisorTask: (id) => Promise.resolve({ id, status: 'failed', error, errorCode }) } });
+    h.session.show(); await flush();
+    assert.equal(h.state.phase, 'failed'); assert.equal(h.state.error, error);
+    assert.equal(h.state.errorCode, errorCode); assert.equal(h.state.canRetry, true); assert.equal(h.state.unavailable, false);
+    h.session.hide();
+  }
 });
 
 test('仅 taskId 回看读取本机上下文，不创建任务；缺少上下文也能回看结果', async () => {
@@ -330,7 +342,8 @@ test('解读页直达仍须 capabilities 开放，拒绝权限时不显示须知
     assert.equal(output.includes('使用须知'), enabled === true);
     assert.equal(output.includes('AI'), enabled === true);
     assert.equal(output.includes('内部测试：摘录通知原文原句，可能不全；不判断能否申报，以原文和主管部门解释为准。'), enabled === true);
-    assert.equal(navigationTitle, enabled === true ? 'AI 解读 · 内部测试' : '工具');
+    // AI 板块没显示（这里当作 AI 关着）时标题留空，不写"工具"也不写 AI；能力接口说开着才写
+    assert.equal(navigationTitle, enabled === true ? 'AI 解读 · 内部测试' : '');
     page.check({ detail: { value: ['agree'] } }); page.agree(); await flush(); assert.equal(created, enabled === true ? 1 : 0); page.onUnload();
   }
 });
@@ -344,7 +357,7 @@ test('换了手机打开已有解读：须知按钮写"查看结果"；从通知
     }, { wx: { ...local, setNavigationBarTitle() {} } });
     page.onLoad(taskId ? { taskId } : { docId: '42', title: '通知' }); page.onShow(); await flush();
     const output = render(read('pages/advisor-interpret/index.wxml'), page.data);
-    assert.match(output, /使用须知/); assert.match(output, taskId ? /我知道了，查看结果/ : /我知道了，开始解读/);
+    assert.match(output, /使用须知/); assert.match(output, taskId ? /同意并查看结果/ : /同意并开始解读/);
     assert.doesNotMatch(output, taskId ? /开始解读/ : /查看结果/); page.onUnload();
   }
 });
@@ -421,7 +434,7 @@ test('共同任务页按各类权限显示，数据任务不能扩大 AI 访问�
     page.onShow(); await flush();
     const output = render(read('pages/advisor-tasks/index.wxml'), page.data);
     assert.equal(output.includes('AI 解读'), enabled); assert.equal(output.includes('查看解读'), enabled);
-    assert.equal(output.includes('通知标题'), enabled); assert.match(output, /批量名单比对.*下载 Excel/);
+    assert.equal(output.includes('通知标题'), enabled); assert.match(output, /批量名单比对.*站内查看结果/);
     assert.equal(listed, 1);
     if (!enabled) assert.doesNotMatch(output, /AI|内部测试/);
     page.openTask({ currentTarget: { dataset: { id: 7 } } }); assert.equal(urls.length, enabled ? 1 : 0);

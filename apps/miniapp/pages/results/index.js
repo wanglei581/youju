@@ -1,0 +1,70 @@
+const api = require('../../utils/api.js');
+const { exportDocs } = require('../../utils/exporter.js');
+// 统一按北京时间显示生成时间，不随设备时区改变，也不把原始 ISO 时区串呈现给用户。
+function generatedTime(value) {
+  if (!value) return '生成时间未提供';
+  const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (dateOnly) return `${dateOnly[1]}年${Number(dateOnly[2])}月${Number(dateOnly[3])}日`;
+  const stamp = Date.parse(value);
+  if (!Number.isFinite(stamp)) return '生成时间未提供';
+  const date = new Date(stamp + 8 * 60 * 60 * 1000);
+  const pad = n => String(n).padStart(2, '0');
+  return `${date.getUTCFullYear()}年${date.getUTCMonth() + 1}月${date.getUTCDate()}日 ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}（北京时间）`;
+}
+Page({
+  data: { loading: false, error: '', result: null, current: false, saving: false, advisor: false, page: 1, nextCursor: null, changed: false },
+  onLoad(q) {
+    let value = q.ids || '';
+    try { value = decodeURIComponent(value); } catch (e) { value = ''; }
+    this.ids = value.split(',').filter(Boolean);
+    this.taskId = String(q.taskId || '');
+    this.setData({ current: q.current === '1', advisor: q.mode === 'advisor' });
+  },
+  onShow() { this.visible = true; return this.restart(); },
+  onHide() { this.visible = false; this.seq = (this.seq || 0) + 1; this.setData({ result: null, loading: false, saving: false }); },
+  onUnload() { this.onHide(); },
+  restart() { this.cursors = ['']; this.cursorIndex = 0; this.revision = ''; return this.load(); },
+  load() {
+    const seq = this.seq = (this.seq || 0) + 1;
+    const current = () => this.visible && seq === this.seq;
+    this.setData({ loading: true, error: '', result: null, changed: false });
+    if (this.data.advisor ? !/^\d+$/.test(this.taskId) : !this.ids.length || this.ids.length > 200 || this.ids.some((id) => !/^\d+$/.test(id))) {
+      this.setData({ loading: false, error: '结果地址无效，请返回重新选择。' }); return Promise.resolve();
+    }
+    const request = this.data.advisor ? api.advisorReading(this.taskId, { cursor: this.cursors[this.cursorIndex], revision: this.revision }) : api.exportPreview(this.ids);
+    return request.then((res) => {
+      if (!current()) return;
+      const kindOk = this.data.advisor ? ['compare', 'track'].includes(res && res.kind) : res && res.kind === 'catalogue';
+      if (!res || !kindOk || !res.revision || !Array.isArray(res.items) || res.items.length > 200) throw new Error('结果信息不完整，请重试');
+      if (this.revision && res.revision !== this.revision) throw Object.assign(new Error('内容版本已变化'), { status: 409 });
+      const next = res.nextCursor == null ? null : String(res.nextCursor);
+      if (next !== null && (!next || this.cursors.slice(0, this.cursorIndex + 1).includes(next))) throw new Error('结果分页信息有误，请重试');
+      this.revision = res.revision;
+      this.setData({ result: { ...res, generatedAtText: generatedTime(res.generatedAt) }, page: this.cursorIndex + 1, nextCursor: next });
+    }).catch((err) => {
+      if (!current()) return;
+      if ([403, 404, 409, 410].includes(err.status)) { this.revision = ''; this.cursors = ['']; this.cursorIndex = 0; }
+      this.setData({ result: null, nextCursor: null, changed: err.status === 409, error: err.message || '结果未加载，请重试' });
+    }).then(() => { if (current()) this.setData({ loading: false }); });
+  },
+  retry() { if (this.data.saving) return; return this.data.changed ? this.restart() : this.load(); },
+  next() {
+    if (this.data.loading || this.data.saving || this.data.nextCursor === null) return;
+    this.cursors = this.cursors.slice(0, this.cursorIndex + 1); this.cursors.push(this.data.nextCursor); this.cursorIndex += 1;
+    return this.load();
+  },
+  previous() { if (this.data.loading || this.data.saving || this.cursorIndex < 1) return; this.cursorIndex -= 1; return this.load(); },
+  detail(e) { wx.navigateTo({ url: `/pages/detail/index?id=${encodeURIComponent(e.currentTarget.dataset.id)}` }); },
+  read(e) { wx.navigateTo({ url: `/pages/reader/index?id=${encodeURIComponent(e.currentTarget.dataset.id)}` }); },
+  save() {
+    if (!this.data.result || this.data.saving) return;
+    const seq = this.seq; const result = this.data.result;
+    this.setData({ saving: true, error: '' });
+    const stale = () => { if (this.visible && seq === this.seq) this.setData({ result: null, error: '内容已更新，请重新查看结果后保存。', changed: true }); };
+    const job = this.data.advisor ? require('../../utils/data-tools.js').openResult(this.taskId, {
+      task: { kind: result.kind, rowCount: result.rowCount }, current: () => this.visible && seq === this.seq,
+    }) : exportDocs(this.ids, { revision: result.revision, label: result.title, onStale: stale, current: () => this.visible && seq === this.seq });
+    return job.catch((err) => { if (this.visible && seq === this.seq && !err.cancelled) this.setData({ error: err.message }); })
+      .then(() => { if (this.visible && seq === this.seq) this.setData({ saving: false }); });
+  },
+});

@@ -34,7 +34,7 @@ function load(file, deps, globals = {}, options = {}) {
     // 支付的文案、金额和轮询用真模块；其余依赖由本文件给出
     require(key) {
       if (!Object.hasOwn(deps, key) && key === '../../utils/pay.js') return require('../utils/pay.js');
-      assert.ok(Object.hasOwn(deps, key), `${file}: ${key}`);
+      if (!Object.hasOwn(deps, key) && /(^|\/)pages\.js$/.test(key)) return require('./helpers/package-pages-default.js').pages; if (!Object.hasOwn(deps, key) && /utils\/advisor\.js$/.test(key)) return require('./helpers/package-pages-default.js').advisor; assert.ok(Object.hasOwn(deps, key), `${file}: ${key}`);
       return deps[key];
     },
     Page(def) { page = def; }, ...globals,

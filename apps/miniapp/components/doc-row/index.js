@@ -1,8 +1,7 @@
 const { dueInfo, deadlineNote, dueView, kindClass, statusClass, highlight, ISSUER_WRAP, regionText } = require('../../utils/format.js');
-const { copyLink } = require('../../utils/copy.js');
 const { groupLine } = require('../../utils/repost.js');
 
-// 列表行：类型、状态、地区、截止 → 标题 → 发文机关和日期 + 复制原文链接
+// 列表行：类型、状态、地区、截止 → 标题 → 发文机关和日期 + 查看详情
 Component({
   options: { styleIsolation: 'apply-shared' },
   properties: {
@@ -67,9 +66,6 @@ Component({
       if (this.data.selecting) return;
       wx.navigateTo({ url: `/pages/detail/index?id=${this.data.doc.id}` });
     },
-    copy() {
-      copyLink(this.data.doc.url);
-    },
     aiToggle(e) {
       this.setData({ aiShown: !!(e.detail && e.detail.shown) });
     },
@@ -81,9 +77,6 @@ Component({
     openVersion(e) {
       if (this.data.selecting) return;
       wx.navigateTo({ url: `/pages/detail/index?id=${e.currentTarget.dataset.id}` });
-    },
-    copyVersion(e) {
-      copyLink(e.currentTarget.dataset.url);
     },
   },
 });

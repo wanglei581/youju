@@ -2,25 +2,29 @@
 
 返回格式与小程序 mock/data.js 一致。截止日期只返回人工核对通过的（approved）；待核对的候选
 只给"有没有"（deadline_state），不给日期；
-截止日期等关键字段只给核对过的；详情页另给正文供阅读（D-030，见 body_for_reading），名单类不给。
+截止日期等关键字段只给核对过的；详情页另给正文供阅读（D-030，见 body_for_reading），名单类挡掉
+名单内容后给（D-092）。
 """
 
 from __future__ import annotations
 
+import logging
 import re
 import time as _time
 from collections import OrderedDict, deque
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from threading import Lock
 from typing import Annotated, Any
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from sqlalchemy import Select, and_, func, not_, or_, select
 from sqlalchemy.orm import Session, aliased
 
-from youju import deadline_excerpts
+from youju import attachment_text, deadline_excerpts
 from youju import fields as field_rules
 from youju.ai import eligibility
 from youju.attachments import attachment_items, is_recent
@@ -28,6 +32,7 @@ from youju.categories import CATEGORIES, CATEGORY_KINDS, category_filter, shown_
 from youju.classify import (
     GUIDE,
     KINDS,
+    TITLE_EVALUATIONS,
     applicable_region,
     effective_kind,
     kind_filter,
@@ -36,15 +41,17 @@ from youju.classify import (
     status_filter,
 )
 from youju.conditions import public_conditions
-from youju.config import get_settings
-from youju.crawler.detail import redact_sensitive
+from youju.crawler.detail import _name_like, redact_sensitive
 from youju.crawler.urls import public_url
 from youju.db import get_session
 from youju.dedup import canonical_ids, group_ids, groups_for, visible_documents
 from youju.fields import SUPPORT_LABELS
 from youju.issuer import normalize_issuer
+from youju.lists import body as list_body
+from youju.lists import evidence as list_evidence
 from youju.lists.lookup import (
     ListLookupResult,
+    list_title_allowed,
     lookup_list_matches,
     lookup_name_candidates,
     public_condition,
@@ -52,12 +59,16 @@ from youju.lists.lookup import (
 from youju.lists.rules import candidate_key, is_person_query, normalize_name
 from youju.models import (
     Document,
+    DocumentAttachment,
     DocumentDeadline,
     DocumentDetail,
     DocumentField,
     DocumentMerge,
     JobRun,
     ListEntry,
+    ListEntryLocation,
+    ListEvidenceSource,
+    ListParse,
     RepostGroup,
     RepostGroupMember,
     Source,
@@ -69,12 +80,13 @@ from youju.regions import (
     resolve_city,
     resolve_district,
 )
-from youju.report_revision import publication_revision
+from youju.report_revision import list_count_revision, publication_revision
 from youju.repost import confirmed_members, grouped_documents, labels_for
-from youju.takedown import available_condition, is_taken_down
+from youju.takedown import available_condition, cache_revision, is_taken_down
 from youju.title_tags import INDUSTRIES, INDUSTRY_RULES, SUPPORT_KINDS, SUPPORT_MODES, SUPPORT_RULES
 
 router = APIRouter(prefix="/api/v1", tags=["小程序"])
+log = logging.getLogger("youju.api.v1")
 
 
 def _request_session(session: Annotated[Session, Depends(get_session)]) -> Session:
@@ -454,14 +466,17 @@ def _deadline_brief(d: DocumentDeadline | None) -> dict[str, Any] | None:
     return {"date": d.approved_date.isoformat(), "time": _hhmm(d.approved_time), "verified": True}
 
 
-def _link_gone(doc: Document) -> str | None:
+def link_gone_date(gone: datetime | None) -> str | None:
     """原网页确认失效的日期（北京时间）；能打开或还没确认的为 None（youju/link_check.py）。"""
-    gone = doc.link_gone_at
     if gone is None:
         return None
     if gone.tzinfo is None:
         gone = gone.replace(tzinfo=UTC)
     return gone.astimezone(_TZ).date().isoformat()
+
+
+def _link_gone(doc: Document) -> str | None:
+    return link_gone_date(doc.link_gone_at)
 
 
 def _item(
@@ -1060,7 +1075,47 @@ def _keyword_ids(session: Session, kw: str) -> Select:
     return by_title.union(by_number)
 
 
-@router.get("/search")
+# 搜索频率上限（S3）：同一来源地址每分钟最多 120 次，超了返回 429。只按来源地址算、不用 openid：
+# 隐私保护指引一·2 写明 openid 在服务器内存里只统计导出和打开附件的次数，搜索不在里面；
+# 来源地址是一·8 写明为保障运行安全处理的信息，查名单的限流也是按它算的。来源地址取平台写的
+# X-Original-Forwarded-For（9/30 实测不能伪造），和访问日志一样截到 64 个字符。
+# 依据：线上 10/12–10/18 同一来源一分钟最多搜了 24 次，平常 1–5 次；"我的客户"打开一次最多查
+# 20 组（每家客户一组）。120 次够一个办公室几个人共用一个公网出口、各自连开几次"我的客户"；
+# 脚本刷接口每秒能发几十次，限到每秒 2 次。计数只在进程内存里（不写库、不进日志），键数有上限
+# （淘汰最久没搜的）。快照里取最新 8 份不经过这里。
+SEARCH_PER_MINUTE = 120
+_SEARCH_KEYS_MAX = 10000
+_SEARCH_TIMES: OrderedDict[str, deque[float]] = OrderedDict()
+_SEARCH_LOCK = Lock()
+
+
+def _allow_search(address: str, now: float) -> bool:
+    """这个来源地址这次搜索没超上限就记一次、返回 True；超了返回 False，不记，也不更新先后顺序
+    （免得借此把别人的记录挤出去）。"""
+    key = "ip:" + address
+    with _SEARCH_LOCK:
+        times = _SEARCH_TIMES.get(key) or deque()
+        while times and times[0] <= now - 60:
+            times.popleft()
+        if len(times) >= SEARCH_PER_MINUTE:
+            return False
+        times.append(now)
+        _SEARCH_TIMES[key] = times
+        _SEARCH_TIMES.move_to_end(key)
+        while len(_SEARCH_TIMES) > _SEARCH_KEYS_MAX:
+            _SEARCH_TIMES.popitem(last=False)
+        return True
+
+
+def _limit_search(request: Request) -> None:
+    from youju.api.app import client_ip
+
+    if not _allow_search(client_ip(request)[:64], _time.monotonic()):
+        raise HTTPException(status_code=429, detail="搜索太频繁，请稍后再试")
+
+
+# 限流写在路由上（先于取数据库会话和校验参数）：快照等内部直接调 search() 的不计次
+@router.get("/search", dependencies=[Depends(_limit_search)])
 def search(
     session: SessionDep,
     excerpts: Annotated[int | None, Query(ge=1, le=1)] = None,
@@ -1239,7 +1294,7 @@ def search_statement(
         raise HTTPException(status_code=422, detail=f"发布时间不支持：{time}")
     picked_types = [TYPES[t] for t in _pick(types, TYPES, "类型")]
     picked_regions = [r for r in _pick(regions, PROVINCES, "地区") if r != "不限地区"]
-    picked_status = _pick(status, STATUSES, "名单状态")
+    picked_status = _pick(status, STATUSES, "发布阶段")
     picked_depts = _pick(depts, DEPTS, "发文部门")
     picked_levels = _pick(levels, LEVELS, "层级")
     picked_categories = _pick(categories, CATEGORY_SET, "项目类别")
@@ -1796,12 +1851,62 @@ def _list_board_stats_item(field: str, key: Any, lists: int, entries: int) -> di
     }
 
 
+# 名单看板每份名单的企业数（S2，10/19）：以前每次都把全部名单条目（线上约 27.8 万行）读进程序
+# 去重，名单没变也每 5 分钟整批重算（快照在 admin 上缓存失效时要 3.9–4.7 秒）。现在在数据库里
+# 按归并组去重计数，结果按它用到的全部数据的版本缓存（publication_revision 的名单部分加
+# list_count_revision），版本不变就不重算；另设 1 小时兜底，万一有版本没覆盖到的改动（如直接改库
+# 改企业名），最晚 1 小时后也会算进去。值为 (版本, 写入时刻, {归并组主文件编号: 企业数})。
+LIST_COUNTS_TTL = 3600
+_LIST_COUNTS: dict[str, tuple[tuple, float, dict[int, int]]] = {}
+_LIST_COUNTS_LOCK = Lock()
+
+
+def _list_entry_counts(session: Session, lists_revision: tuple) -> dict[int, int]:
+    """{归并组主文件编号: 去重后的企业名称数}，只含至少读到一个名称的组。
+
+    口径和改前在程序里逐条去重时完全一样：只算和查名单同一公开来源条件（只取一级来源，或与一级
+    来源归并的同一通知）、人工没改成别的类型的文件的条目；主文件和它当前生效的副本算一组
+    （副本只能挂在一个主文件下：document_merges 以副本编号为主键）；同一组里同一个规范化名称只算
+    一次，空名称不算。名称列的排序规则是 utf8mb4_0900_bin（迁移 0001），数据库去重和程序里比较
+    字符串一样：区分大小写、不忽略尾部空格。"""
+    # 先取版本再汇总：汇总期间有新写入时，存下的版本只会比数据旧，下次就重算，不会反过来
+    revision = (lists_revision, list_count_revision(session))
+    with _LIST_COUNTS_LOCK:  # 同一时间只算一份，并发的请求等它算完直接用
+        cached = _LIST_COUNTS.get("all")
+        stamp = _time.monotonic()
+        if cached and cached[0] == revision and stamp - cached[1] < LIST_COUNTS_TTL:
+            return cached[2]
+        # 归并表起别名：公开来源条件的子查询里也用到 document_merges，两层不混
+        merge = aliased(DocumentMerge)
+        master = func.coalesce(merge.canonical_id, ListEntry.document_id)
+        rows = session.execute(
+            select(master, func.count(func.distinct(ListEntry.normalized_name)))
+            .select_from(ListEntry)
+            .join(Document, Document.id == ListEntry.document_id)
+            .join(Source, Source.id == Document.source_id)
+            .outerjoin(
+                merge,
+                and_(merge.duplicate_id == ListEntry.document_id, merge.active.is_(True)),
+            )
+            .where(
+                public_condition(),
+                or_(Document.kind_override.is_(None), Document.kind_override == "名单"),
+                func.char_length(ListEntry.normalized_name) > 0,
+            )
+            .group_by(master)
+        ).all()
+        counts = {int(group): int(names) for group, names in rows}
+        _LIST_COUNTS["all"] = (revision, stamp, counts)
+        return counts
+
+
 def _list_board_payload(
     session: Session,
     days: int,
     year: int | None,
     province: str,
     list_type: str,
+    lists_revision: tuple | None = None,
 ) -> dict[str, Any]:
     """生成筛选后的完整名单和统计，调用方负责分页。"""
     rows = session.execute(_base().where(_kind_is(["名单"]))).all()
@@ -1809,28 +1914,11 @@ def _list_board_payload(
         return {"records": [], "stats": {"by_year": [], "by_province": [], "by_type": []}}
 
     masters = [doc.id for doc, _ in rows]
-    members_by_master = groups_for(session, masters)
-    owner = {member: master for master, members in members_by_master.items() for member in members}
-    member_ids = list(owner)
     details = _details(session, masters)
-    # 和查名单完全同一公开来源条件：只取一级来源，或与一级来源归并的同一通知。
-    entry_rows = session.execute(
-        select(ListEntry.document_id, ListEntry.normalized_name)
-        .join(Document, Document.id == ListEntry.document_id)
-        .join(Source, Source.id == Document.source_id)
-        .where(
-            ListEntry.document_id.in_(member_ids),
-            public_condition(),
-            or_(Document.kind_override.is_(None), Document.kind_override == "名单"),
-        )
-    ).all()
-    names_by_master: dict[int, set[str]] = {master: set() for master in masters}
-    parsed_masters: set[int] = set()
-    for document_id, normalized_name in entry_rows:
-        master = owner.get(document_id)
-        if master is not None and normalized_name:
-            parsed_masters.add(master)
-            names_by_master[master].add(normalized_name)
+    if lists_revision is None:
+        lists_revision = publication_revision(session, "lists")
+    # 主文件都是可见文件（不是任何生效归并的副本），所以按主文件编号取到的就是它这一组的数
+    counts = _list_entry_counts(session, lists_revision)
 
     records: list[dict[str, Any]] = []
     for doc, src in rows:
@@ -1845,7 +1933,7 @@ def _list_board_payload(
         if list_type and item_type != list_type:
             continue
         wording = _list_board_wording(doc.title)
-        count = len(names_by_master[doc.id]) if doc.id in parsed_masters else None
+        count = counts.get(doc.id)  # 一个企业名称也没读到的名单为 None
         records.append(
             {
                 "id": str(doc.id),
@@ -1941,7 +2029,7 @@ def list_board_report(
     if cached and current - cached[0] < REPORT_CACHE_TTL:
         result = cached[1]
     else:
-        result = _list_board_payload(session, days, year_value, province, list_type)
+        result = _list_board_payload(session, days, year_value, province, list_type, revision)
         if len(_REPORT_CACHE) >= REPORT_CACHE_MAX:
             _REPORT_CACHE.pop(next(iter(_REPORT_CACHE)))
         _REPORT_CACHE[key] = (current, result)
@@ -1968,72 +2056,590 @@ def _fmt_deadline_note(d: DocumentDeadline) -> str:
     return f"{d.kind} {day.month}月{day.day}日 {_WEEK[day.weekday()]}{time}"
 
 
-# 详情页的正文（D-030）：从原网页或 PDF 自动提取的文字，未经人工逐字核对，只供阅读；截止日期等
-# 关键字段仍只看"要点"里核对过的。只给申报通知和政策：名单、其他（招聘、职称评审等公示）里
-# 可能有个人姓名。入库时已隐去个人信息，给出前按现行规则再隐去一遍，再换成"见原文"的说法，
-# 去掉网页上几处固定的按钮文字（只按原样整串替换，不做猜测性的清理）。最多给前 2 万字（离
-# callContainer 单次返回 1000 KiB 的上限很远）；不到 200 字的多半没抓全，不给。
+# 详情页、阅读页的正文（D-030、D-097）：从原网页或 PDF 自动提取的文字，未经人工逐字核对，只供阅读；
+# 截止日期等关键字段仍只看"要点"里核对过的。入库时已隐去个人信息，给出前按现行规则再隐去一遍，
+# 遮掉的地方写"（这里隐去了电话）"这类说法（D-097：以前写"（电话见原文）"，像在叫人去原网站），
+# 去掉网页上几处固定的按钮文字（只按原样整串替换，不做猜测性的清理）。
+# 给哪些：申报通知、政策给全文；名单类挡掉名单内容后给（D-092）；资讯与指南、其他两类，标题写着
+# 个人事项的（PERSONAL_MATTER_WORDS）不给，其余给全文（D-097 ②）。
+# 不显示的：像网页导航的（page_chrome_only）。以前不到 200 字的一律不显示（多半没抓全），真短的
+# 通知（"现将《××办法》印发给你们，请遵照执行。"）也被挡掉了，D-097 改成现在这样。
+# 详情最多给前 2 万字（离 callContainer 单次返回 1000 KiB 的上限很远），阅读页分页给全文。
+# BODY_MIN_CHARS 只用来挑合并转载里用哪一份：自己的正文够这么长就用自己的，不够再看组里别的网址
+# （AI 解读取正文也是这个挑法），不再用来挡显示。
 BODY_MIN_CHARS = 200
 BODY_MAX_CHARS = 20_000
-_BODY_REPLACE = (
-    ("[电话已脱敏]", "（电话见原文）"),
-    ("[手机号已脱敏]", "（电话见原文）"),
-    ("[姓名已脱敏]", "（联系人见原文）"),
-    ("[邮箱已脱敏]", "（邮箱见原文）"),
-    ("[身份证号已脱敏]", "（已隐去）"),
-    ("[银行账号已脱敏]", "（已隐去）"),
-    ("【关闭窗口】", ""),
-    ("【打印本页】", ""),
-    ("【字体：大 中 小】", ""),
-    ("扫一扫在手机打开当前页", ""),
+# 入库脱敏留下的标记（crawler.detail.redact_sensitive、attachment_text.mask）→ 页面上的说法
+MASK_MARKS = (
+    ("[电话已脱敏]", "（这里隐去了电话）"),
+    ("[手机号已脱敏]", "（这里隐去了电话）"),
+    ("[姓名已脱敏]", "（这里隐去了联系人）"),
+    ("[邮箱已脱敏]", "（这里隐去了邮箱）"),
+    ("[身份证号已脱敏]", "（这里隐去了证件号）"),
+    ("[银行账号已脱敏]", "（这里隐去了银行账号）"),
 )
+PHONE_MARK = "（这里隐去了电话）"
+_PAGE_BUTTONS = ("【关闭窗口】", "【打印本页】", "【字体：大 中 小】", "扫一扫在手机打开当前页")
 _BLANK_LINES = re.compile(r"\n[ \t]*\n(?:[ \t]*\n)+")
 BODY_KINDS = ("申报通知", "政策")
+# 名单类通知的正文挡掉名单内容后也给读（D-092，youju/lists/body.py）
+LIST_BODY_KINDS = (*BODY_KINDS, "名单")
+# 资讯与指南、其他（D-097 ②）：标题不是个人事项的也给全文。
+# BODY_KINDS 不变：AI 解读只做申报通知和政策（ai/interpret.py 用它）
+OPEN_BODY_KINDS = (GUIDE, "其他")
+# 个人事项（D-097 ②）：招聘、考试、职称、任免、表彰个人、救助、处分等，标题里有这些词的不给正文
+# （正文多半列着个人姓名、成绩、职务）。按 10/27 线上公开快照里这两类全部 841 个标题逐条核过：
+# 宁可多挡（"评审专家培训的通知"也挡），不漏；会误挡普通政府文件的词（"先进"挡了"先进制造业"、
+# "个人"挡了"个人所得税"政策、"体检"挡了"政务新媒体检查"）不用，换成更具体的写法。
+PERSONAL_MATTER_WORDS = (
+    # 招聘、招募、录用、考试
+    "招聘",
+    "招募",
+    "引才",
+    "人才引进",
+    "引进人才",
+    "拟聘",
+    "聘用",
+    "录用",
+    "招录",
+    "选调",
+    "公务员",
+    "面试",
+    "笔试",
+    "考试",
+    "成绩",
+    "招生",
+    "毕业生",
+    "学生",
+    "学员",
+    "博士后",
+    # 职称、资格
+    "职称",
+    "专业技术资格",
+    "任职资格",
+    "专业技术职务",
+    "评审结果",
+    "答辩",
+    "资格证书",
+    "合格证书",
+    "业余无线电",
+    *TITLE_EVALUATIONS,
+    # 任免、人事
+    "任免",
+    "任职",
+    "拟任",
+    "任前",
+    "干部",
+    "人事",
+    "职务",
+    "考察对象",
+    "负责人",
+    "签字人",
+    "矿长",
+    "同志",
+    "人员",
+    "人选",
+    "入选",
+    "专家",
+    "特派员",
+    "外国人",
+    "薪酬",
+    # 表彰个人、奖励
+    "表彰",
+    "表扬",
+    "选树",
+    "劳模",
+    "劳动模范",
+    "奖章",
+    "红旗手",
+    "获奖",
+    "授奖",
+    "授予",
+    "奖金",
+    "初评通过",
+    "技能大赛",
+    "技能竞赛",
+    # 救助、生活
+    "救助",
+    "低保",
+    "抚恤",
+    "慰问",
+    "助学",
+    "奖学金",
+    "退休",
+    "社保",
+    "医保",
+    "工伤",
+    "户籍",
+    "婚姻",
+    # 处分、处罚、考核
+    "处分",
+    "处罚",
+    "违纪",
+    "问责",
+    "通报批评",
+    "免职",
+    "撤职",
+    "失信",
+    "巡察",
+    "考核结果",
+    "考核记分",
+)
 
 
-def body_for_reading(text: str | None, kind: str) -> dict:
-    """详情页正文：ok 给文字；名单类给 list，其他类给 original（都可能有个人姓名），
-    没抓到完整正文给 none——这三种页面上提示复制原文链接查看。"""
-    if kind == "名单":
-        return {"status": "list"}
-    if kind not in BODY_KINDS:
-        return {"status": "original"}
-    cleaned = redact_sensitive((text or "").replace("\r\n", "\n").replace("\r", "\n"))
-    for old, new in _BODY_REPLACE:
-        cleaned = cleaned.replace(old, new)
-    cleaned = _BLANK_LINES.sub("\n\n", cleaned).strip()
-    if len(cleaned) < BODY_MIN_CHARS:
-        return {"status": "none"}
-    return {
-        "status": "ok",
-        "text": cleaned[:BODY_MAX_CHARS],
-        "total": len(cleaned),
-        "truncated": len(cleaned) > BODY_MAX_CHARS,
+def personal_matter(title: str | None) -> bool:
+    """资讯与指南、其他类的标题写着个人事项（D-097 ②）：正文、附件都不给。
+    字中间隔着空格的（"招 聘"）也算。"""
+    plain = re.sub(r"\s+", "", title or "")
+    return any(word in plain for word in PERSONAL_MATTER_WORDS)
+
+
+def body_open(title: str | None, kind: str) -> bool:
+    """这类文件的正文给不给读（不含名单类：名单类看 list_body_filter）。"""
+    return kind in BODY_KINDS or (kind in OPEN_BODY_KINDS and not personal_matter(title))
+
+
+# 一句话的标点：中文的句号、逗号、分号、问号、叹号；英文的只算紧跟在汉字或右括号、右引号后面的
+# （"3,716.50""9:00"里的不算）。冒号不算：导航、发布信息里到处是"当前位置：""发布时间："
+_SENTENCE = re.compile(rf"[，。；！？]|(?<=[{chr(0x4E00)}-{chr(0x9FFF)}）」』”])[,.;!?]")
+# 像网页导航的正文最长多少字（10/27 线上公开快照：广东科技厅"首页 政务公开 科技资讯……"31 字、
+# 四川"首页 > 政民互动 > 意见征集……"60 字、青海"当前位置: 首页 - 新闻资讯……上一篇 下一篇"95–215 字、
+# 网站页脚 203–261 字；没有标点的长文多是表格（网站年度报表、名单），照常显示）
+PAGE_CHROME_MAX_CHARS = 300
+
+
+def page_chrome_only(text: str) -> bool:
+    """像网页导航：通篇没有一句话（没有句号、逗号这类标点），而且不长。这样的正文不显示（D-097）；
+    有一句话的短通知照常显示。"""
+    return len(text) <= PAGE_CHROME_MAX_CHARS and _SENTENCE.search(text) is None
+
+
+def display_marks(text: str) -> str:
+    """把入库脱敏留下的"[电话已脱敏]"这类标记换成页面上的说法（"（这里隐去了电话）"）。"""
+    for old, new in MASK_MARKS:
+        text = text.replace(old, new)
+    return text
+
+
+def _clean_reading_body(text: str | None, *, redact=redact_sensitive) -> str:
+    cleaned = display_marks(redact((text or "").replace("\r\n", "\n").replace("\r", "\n")))
+    for button in _PAGE_BUTTONS:
+        cleaned = cleaned.replace(button, "")
+    return _BLANK_LINES.sub("\n\n", _mask_contact_names(cleaned)).strip()
+
+
+# 联系人所在的行（"联系人""联 系 人""联系方式"），和这类标签写在上一行末尾时的下一行：像姓名的都遮
+_CONTACT_LABEL = re.compile(r"联\s*系\s*人|联\s*络\s*人|经\s*办\s*人|联系方式")
+_LABEL_AT_END = re.compile(
+    r"(?:联\s*系\s*人|联\s*络\s*人|经\s*办\s*人|联系方式)(?:及电话)?\s*[:：]\s*$"
+)
+# 写着电话的行：有号码（或入库时遮过的号码）的，像姓名的都遮（"吾慧星、张竞博，电话：
+# （这里隐去了电话）""刘老师，（这里隐去了电话）""联系电话：88888888（李四）"）；只有"电话""手机"
+# 字样、没有号码的（表头"联系电话"、"联系电话：张三、李四"），只遮带称呼的和"电话：""手机："后面的
+_PHONE_LINE = re.compile(rf"电话|手机|{PHONE_MARK}")
+_PHONE = (
+    rf"(?:{PHONE_MARK}|(?<!\d)0\d{{2,3}}[-－]?\d{{7,8}}(?!\d)|(?<!\d)1[3-9]\d{{9}}(?!\d)"
+    r"|(?<!\d)\d{7,8}(?!\d))"
+)
+_PHONE_ANY = re.compile(_PHONE)
+_PHONE_LABEL = re.compile(r"(?:电\s*话|手\s*机)(?:号码?)?\s*[:：]")
+# "联系人："写在上一行末尾、下面一行一个"姓名 电话"的：这几行都遮
+_CONTACT_ROW = re.compile(rf"^\s*[{chr(0x4E00)}-{chr(0x9FFF)}·]{{2,4}}\s*[，,、:：]?\s*{_PHONE}")
+_TITLE_END = (
+    "老师",
+    "先生",
+    "女士",
+    "同志",
+    "处长",
+    "科长",
+    "主任",
+    "部长",
+    "局长",
+    "所长",
+    "站长",
+    "经理",
+    "专员",
+    "工程师",
+)
+# 网站页脚的编审署名（行里任何位置的"一审：""责编："）：换成"（这里隐去了署名）"，不冒充联系人
+_EDITOR = re.compile(
+    r"(?:[一二三]审|初审|复审|终审|责任编辑|责编|编辑|校对|审核人?|审稿|签发人?|撰稿人?|供稿)\s*[:：]"
+)
+_CONTACT_SPLIT = re.compile(r"[\s；;，,、：:（）()\[\]【】/／]+")
+_HAN_CHAR = f"{chr(0x4E00)}-{chr(0x9FFF)}"
+_UNIT_END_CHARS = "处科室局厅部办站所院会队组股区"
+_UNIT_THEN_NAME = re.compile(rf"[{_UNIT_END_CHARS}]([{_HAN_CHAR}]{{2,3}})$")
+# 字间带空格的姓名（"联系人：张 三""孟 双、王 璐 联系电话"）：前后不能再接着一个单字（"张 三 李 四"
+# 分不清，不遮）
+_SPACED_NAME = re.compile(
+    rf"(?<![{_HAN_CHAR}])(?<!(?<![{_HAN_CHAR}])[{_HAN_CHAR}] )"
+    rf"[{_HAN_CHAR}](?: [{_HAN_CHAR}]){{1,2}}"
+    rf"(?![{_HAN_CHAR}])(?! [{_HAN_CHAR}](?![{_HAN_CHAR}]))"
+)
+# 表格模板里以冒号结尾的栏目（"推荐单位（盖章）："）：不当"标签的下一行"
+_FORM_FIELD = re.compile(r"[:：]\s*$")
+# 常见姓氏开头、但这些行里常见的普通词
+_NOT_NAMES = frozenset(
+    {
+        "关于",
+        "关闭",
+        "查询",
+        "时间",
+        "方式",
+        "周一",
+        "周二",
+        "周三",
+        "周四",
+        "周五",
+        "周六",
+        "周日",
+        "周末",
+        "工作日",
+        "上午",
+        "下午",
+        "中午",
+        "白天",
+        "晚上",
+        "全天",
+        "节假日",
+        # 单位名后面常跟的词（"指挥部成立""××室通过"）
+        "成立",
+        "通过",
+        "通知",
+        "工作",
+        "专项",
+        "会议",
+        "负责",
+        "办理",
+        "受理",
+        "咨询",
+        # 表格模板里的词（"推荐单位（盖章）："）
+        "盖章",
+        "签字",
+        "签章",
+        "公章",
     }
+)
+_CONTACT_MARK = "（这里隐去了联系人）"
+_EDITOR_MARK = "（这里隐去了署名）"
 
 
-def _reading_body(session: Session, doc_id: int) -> str | None:
-    """详情页用哪份正文：只从一级来源的文件里取；这份文件自己有就用自己的，没有再用同一通知
-    其他网址里最长的那份。"""
-    rows = session.execute(
-        select(DocumentDetail.document_id, DocumentDetail.body_text)
-        .join(Document, Document.id == DocumentDetail.document_id)
+def _person(word: str) -> bool:
+    return word not in _NOT_NAMES and _name_like(word)
+
+
+def _masked(token: str, mark: str) -> str | None:
+    """一段里有像姓名的就给遮好的这一段，没有给 None。整段像（"张三""刘老师"）；去掉称呼后像
+    （"张三处长""王五主任"）；"张三和李四"拆开都像；"高新处张三"单位用字后面的 2–3 个字像。"""
+    if _person(token):
+        return mark
+    title = next((t for t in _TITLE_END if token.endswith(t) and len(token) > len(t)), None)
+    if title is not None:
+        rest = token[: -len(title)]
+        if _person(rest):
+            return mark
+        inner = _masked(rest, mark)
+        if inner is not None:
+            # "高新区张三处长"：单位留着，姓名连称呼一起遮
+            return inner
+    parts = [p for p in re.split(r"[和与及]", token) if p]
+    if len(parts) >= 2 and all(_person(p) for p in parts):
+        return re.sub(r"[^和与及]+", mark, token)
+    match = _UNIT_THEN_NAME.search(token)
+    if match and _person(match.group(1)):
+        return token[: match.start(1)] + mark
+    return None
+
+
+def _mask_line(line: str, tokens: list[str], mark: str) -> str:
+    line = _SPACED_NAME.sub(
+        lambda m: mark if _person(m.group(0).replace(" ", "")) else m.group(0), line
+    )
+    for token in sorted(set(tokens), key=len, reverse=True):
+        new = _masked(token, mark)
+        if new is None:
+            continue
+        if new == mark:
+            # 带括号的（"（王老师）"）连括号一起换，不出现两层括号
+            line = line.replace(f"（{token}）", mark).replace(f"({token})", mark)
+        line = re.sub(rf"(?<![{_HAN_CHAR}]){re.escape(token)}(?![{_HAN_CHAR}])", new, line)
+    return line
+
+
+def _mask_contact_names(text: str) -> str:
+    """给出正文前，联系人所在的行、只写了电话的行、网站编审署名里像姓名的词（常见姓氏开头的
+    2–3 个字，和入库脱敏认姓名同一套）再遮一遍。以前入库时只遮了"联系人："后面的第一个词：
+    "联系人：（这里隐去了联系人）某某处 张三"的张三、"刘老师，电话……""一审：张三"都还在
+    （D-092 让名单类通知的正文也能读，10/25 用本机数据副本实测发现；Grok、agy 审阅补了连写、
+    拆行、空格隔开的写法）。"""
+    out = []
+    after_label = False
+    for line in text.split("\n"):
+        if not line.strip():
+            # 空行不打断"标签写在上一行末尾"：下面第一行有字的照样遮
+            out.append(line)
+            continue
+        raw = line
+        contact = (after_label and not _FORM_FIELD.search(line)) or (
+            _CONTACT_LABEL.search(line) is not None
+        )
+        editor = _EDITOR.search(line) is not None
+        tokens = [w for w in _CONTACT_SPLIT.split(line) if w]
+        if contact:
+            line = _mask_line(line, tokens, _CONTACT_MARK)
+        elif editor:
+            line = _mask_line(line, tokens, _EDITOR_MARK)
+        elif _PHONE_LINE.search(line) and _PHONE_ANY.search(line):
+            line = _mask_line(line, tokens, _CONTACT_MARK)
+        elif _PHONE_LINE.search(line):
+            label = _PHONE_LABEL.search(line)
+            near_label = [
+                t
+                for t in tokens
+                if t.endswith(_TITLE_END) or (label is not None and line.find(t) >= label.end())
+            ]
+            line = _mask_line(line, near_label, _CONTACT_MARK)
+        # 标签写在行尾的，下一行也遮；下面接着是一行一个"姓名 电话"的，一直遮到不是为止
+        row = after_label and _CONTACT_ROW.match(raw) is not None
+        after_label = _LABEL_AT_END.search(line) is not None or row
+        out.append(line)
+    return "\n".join(out)
+
+
+@dataclass
+class ReadingBody:
+    """一份通知的正文给不给、给哪一份（详情页和阅读页同一个判断，D-097）。
+
+    status：ok 给文字（text 是清理、脱敏后的全文；hidden：名单类挡掉了名单内容）；list 名单类通知的
+    正文几乎全是名单（reason=list），或名单没能和通知文字分开（reason=mixed），只给查名单；
+    personal 个人事项（资讯与指南、其他类的标题写着招聘、职称等）和失信、个人类名单，不给；
+    none 没有能显示的正文，reason 写页面上怎么说：attachments 这份通知列着附件（"这份通知的内容在
+    附件里"），site 没有附件（"这个网站的正文还取不到"），link_gone 原网页已失效（"原网页已打不开，
+    正文暂不提供"）。
+    problem：none 的具体原因（运维日报按网站统计）：empty 没取到正文；chrome 取到的像网页导航；
+    short_list 名单类通知挡完名单剩的字太少（D-092 的下限）；link_gone 原网页已失效。"""
+
+    status: str
+    text: str = ""
+    owner_id: int | None = None
+    hidden: bool = False
+    reason: str | None = None
+    problem: str | None = None
+
+
+def _no_body(problem: str, *, attachments: bool | None, owner_id: int | None = None) -> ReadingBody:
+    reason = None if attachments is None else ("attachments" if attachments else "site")
+    return ReadingBody("none", owner_id=owner_id, reason=reason, problem=problem)
+
+
+def _judge_text(
+    cleaned: str,
+    kind: str,
+    *,
+    list_filter: Callable[[str], list_body.Filtered] | None,
+    attachments: bool | None,
+    owner_id: int | None = None,
+) -> ReadingBody:
+    """已清理、脱敏的正文能不能显示：名单类先挡掉名单内容（D-092），再看是不是像网页导航。"""
+    hidden = False
+    if list_filter is not None:
+        result = list_filter(cleaned)
+        if result.text is None and result.reason == "short":
+            # 没认出名单、挡完剩的字又太少（D-092 的下限，防止短名单漏出来）
+            return _no_body("short_list", attachments=attachments, owner_id=owner_id)
+        if result.text is None:
+            return ReadingBody("list", owner_id=owner_id, reason=result.reason)
+        cleaned, hidden = result.text, result.hidden
+    if not cleaned:
+        return _no_body("empty", attachments=attachments, owner_id=owner_id)
+    if page_chrome_only(cleaned):
+        return _no_body("chrome", attachments=attachments, owner_id=owner_id)
+    return ReadingBody("ok", text=cleaned, owner_id=owner_id, hidden=hidden)
+
+
+def body_payload(body: ReadingBody) -> dict:
+    """详情接口的 body：ok 给前 2 万字和全文字数；个人事项写 original（旧版小程序按"不展示"说）；
+    没有能显示的正文给 none 和原因。"""
+    if body.status == "ok":
+        payload = {
+            "status": "ok",
+            "text": body.text[:BODY_MAX_CHARS],
+            "total": len(body.text),
+            "truncated": len(body.text) > BODY_MAX_CHARS,
+        }
+        if body.hidden:
+            payload["listHidden"] = True
+        return payload
+    if body.status == "personal":
+        return {"status": "original", "reason": "personal"}
+    if body.status == "list":
+        return {"status": "list"}
+    return {"status": "none", "reason": body.reason} if body.reason else {"status": "none"}
+
+
+def body_for_reading(
+    text: str | None,
+    kind: str,
+    *,
+    list_filter: Callable[[str], list_body.Filtered] | None = None,
+    title: str | None = None,
+) -> dict:
+    """一段正文按详情页的规则给不给（不查库、不看附件，没正文时不写原因）。资讯与指南、其他类要
+    给标题（title）才能判断是不是个人事项，没给按个人事项算。名单类：给了 list_filter
+    （list_body_filter，D-092）的挡掉名单后给文字，没给的按 list 说。"""
+    if kind == "名单" and list_filter is None:
+        return {"status": "list"}
+    if kind != "名单" and not body_open(title if title is not None else "招聘", kind):
+        return body_payload(ReadingBody("personal"))
+    return body_payload(
+        _judge_text(_clean_reading_body(text), kind, list_filter=list_filter, attachments=None)
+    )
+
+
+def list_body_filter(session: Session, doc: Document) -> Callable[[str], list_body.Filtered] | None:
+    """名单类通知正文的过滤函数（D-092）：这份通知能读（不是失信、个人类）时给，不能读给 None。
+    用这份通知归并组解析出的条目名称认名单行，组里各版本的发文机关署名照常显示。"""
+    if not list_body.readable(doc.title):
+        return None
+    return list_body.filter_for(session, group_ids(session, doc.id), min_chars=list_body.MIN_CHARS)
+
+
+def body_withheld(doc: Document, kind: str) -> bool:
+    """个人事项（资讯与指南、其他类）和失信、个人类名单：正文不给（详情页、阅读页都一样）。"""
+    if kind == "名单":
+        return not list_body.readable(doc.title)
+    return not body_open(doc.title, kind)
+
+
+def reading_body(
+    session: Session,
+    doc: Document,
+    kind: str,
+    *,
+    attachments: bool,
+    redact=redact_sensitive,
+) -> ReadingBody:
+    """详情页和阅读页给的正文（D-097：两处同一个判断）。attachments：这份通知列着附件（没有能显示
+    的正文时，页面说"内容在附件里"还是"正文还取不到"）。原网页已失效的不给（D-097"维持现状不给，
+    统计失效原因后另议"；以前详情页还显示之前收录的正文、阅读页不给，两处不一致），组里原网页已失效
+    的其他网址的正文也不用。"""
+    if body_withheld(doc, kind):
+        # 失信、处罚类和个人类名单：和别的个人事项一样不展示，不引导去查名单
+        return ReadingBody("personal")
+    if doc.link_gone_at is not None:
+        return ReadingBody("none", reason="link_gone", problem="link_gone")
+    list_filter = list_body_filter(session, doc) if kind == "名单" else None
+    if list_filter is not None:
+        allowed: tuple[str, ...] = LIST_BODY_KINDS
+    elif kind in BODY_KINDS:
+        allowed = BODY_KINDS
+    else:
+        allowed = (*BODY_KINDS, *OPEN_BODY_KINDS)
+    chosen = _reading_body_selection(
+        session,
+        doc.id,
+        redact=redact,
+        live_only=True,
+        allowed_kinds=allowed,
+        for_reading=True,
+        list_filter=list_filter,
+    )
+    if chosen is None:
+        return _no_body("empty", attachments=attachments)
+    owner_id, _, cleaned = chosen
+    return _judge_text(
+        cleaned, kind, list_filter=list_filter, attachments=attachments, owner_id=owner_id
+    )
+
+
+def _reading_body_selection(
+    session: Session,
+    doc_id: int,
+    *,
+    redact=redact_sensitive,
+    live_only: bool = False,
+    allowed_kinds: tuple[str, ...] | None = BODY_KINDS,
+    for_reading: bool = False,
+    list_filter: Callable[[str], list_body.Filtered] | None = None,
+) -> tuple[int, str, str] | None:
+    """主文足够可读就优先用；否则依长度、编号依次尝试转载，不一次载入全部正文。
+
+    返回实际来源编号、原始文字、清洗后文字。都不足时保留首个候选，让调用方继续说没有正文；
+    live_only 由原生阅读启用，旧 AI 结果保留原站撤下后的既有处理规则。
+    allowed_kinds=None 仅供管理报告统计历史采集范围，公开阅读保持默认类型限制。
+    for_reading（详情页、阅读页，D-097）：像网页导航的、空的不算可读，跳过去看别的网址；资讯与指南、
+    其他类标题写着个人事项的网址不用；都不可读时给第一个候选（调用方据此说"像网页导航"）。
+    名单类（给了 list_filter）先挡掉名单再看：几乎全是名单、名单分不开的就用这一份（页面说去
+    查名单）；挡完剩的字太少、剩下的像网页导航，才看别的网址。
+    AI 解读不加 for_reading，挑法和以前一样。
+    """
+    stmt = (
+        select(Document.id, Document.title, Document.kind_override)
+        .join(DocumentDetail, Document.id == DocumentDetail.document_id)
         .join(Source, Source.id == Document.source_id)
         .where(
             DocumentDetail.document_id.in_(group_ids(session, doc_id)),
             DocumentDetail.status == "ok",
+            DocumentDetail.body_text.is_not(None),
+            DocumentDetail.body_text != "",
             Source.rights_level == 1,
             available_condition(),
         )
-    ).all()
-    bodies = {row.document_id: row.body_text for row in rows if row.body_text}
-    return bodies.get(doc_id) or max(bodies.values(), key=len, default=None)
+        .order_by(
+            (Document.id == doc_id).desc(),
+            func.char_length(DocumentDetail.body_text).desc(),
+            Document.id,
+        )
+    )
+    if live_only:
+        stmt = stmt.where(Document.link_gone_at.is_(None))
+    first = fallback = None
+    for candidate_id, title, override in session.execute(stmt).all():
+        kind = effective_kind(title, override)
+        if allowed_kinds is not None and kind not in allowed_kinds:
+            continue
+        if for_reading and kind in OPEN_BODY_KINDS and personal_matter(title):
+            continue
+        raw = session.scalar(
+            select(DocumentDetail.body_text).where(DocumentDetail.document_id == candidate_id)
+        )
+        if not raw:
+            continue
+        cleaned = _clean_reading_body(raw, redact=redact)
+        candidate = candidate_id, raw, cleaned
+        usable = not for_reading or _usable_for_reading(cleaned, list_filter)
+        if usable and len(cleaned) >= BODY_MIN_CHARS:
+            return candidate
+        if usable and fallback is None:
+            fallback = candidate
+        if first is None:
+            first = candidate
+    return fallback or first
+
+
+def _usable_for_reading(
+    cleaned: str, list_filter: Callable[[str], list_body.Filtered] | None
+) -> bool:
+    """这一份正文在详情页、阅读页算不算可读（挑合并转载里用哪一份时用）。"""
+    if list_filter is None:
+        return bool(cleaned) and not page_chrome_only(cleaned)
+    result = list_filter(cleaned)
+    if result.text is None:
+        return result.reason in ("list", "mixed")
+    return not page_chrome_only(result.text)
+
+
+def _reading_body(
+    session: Session, doc_id: int, *, allowed_kinds: tuple[str, ...] | None = BODY_KINDS
+) -> str | None:
+    selected = _reading_body_selection(session, doc_id, allowed_kinds=allowed_kinds)
+    return selected[1] if selected else None
 
 
 @router.get("/documents/{doc_id}")
 def document(doc_id: int, session: SessionDep) -> dict:
     """文件详情：要点、附件、原文出处、正文（供阅读）；截止日期只给核对通过的。"""
-    from youju.ai import interpret
+    from youju.ai import content, interpret
 
     if is_taken_down(session, doc_id):
         raise HTTPException(status_code=404, detail="该文件已下架")
@@ -2048,11 +2654,12 @@ def document(doc_id: int, session: SessionDep) -> dict:
     # 不写它自己的开关，免得两个服务设置不一样时入口一边显示、一边拒绝。
     ai_reason: str | None = None
     try:
-        interpret.eligible_body(session, doc.id)
+        content.check(session, doc.id)
     except interpret.InterpretRefusal as exc:
         ai_reason = exc.code or "unavailable"
     ai_eligible = ai_reason is None
     detail = _details(session, [doc.id]).get(doc.id)
+    attachment_rows = sorted(detail.attachments, key=lambda a: a.position) if detail else []
     approved = _approved(session, [doc.id]).get(doc.id, [])
     deadline_views, _, _ = deadline_excerpts.batch(
         session, [doc.id], {doc.id: approved}, now().date()
@@ -2128,22 +2735,12 @@ def document(doc_id: int, session: SessionDep) -> dict:
             }
         )
 
-    from youju import deadline_clues as clues
-    from youju import rewards
-
-    can_submit_clue = (
-        rewards.enabled(get_settings())
-        and kind == "申报通知"
-        and not approved
-        and clues.pending_count(session) < 50
-    )
     payload = {
         "ai": {
             "interpret": ai_eligible,
             "clause": ai_eligible,
             "reason": ai_reason,
         },
-        "can_submit_deadline_clue": can_submit_clue,
         "id": str(doc.id),
         "kind": kind,
         "tags": [kind],
@@ -2180,15 +2777,14 @@ def document(doc_id: int, session: SessionDep) -> dict:
         "deadline_changes": deadline_changes,
         "points": points,
         "excerpt": excerpt,
-        # 附件：存有副本的可以在小程序里打开（preview），其他的给原因（youju/attachments.py）
-        "attachments": attachment_items(
-            session,
-            detail.attachments if detail else [],
-            kind=kind,
-            recent=is_recent(doc.publish_date, doc.first_seen_at, now(), kind=kind),
-        ),
+        "attachments": _detail_attachments(session, doc, kind, attachment_rows),
         "checked": checked,
-        "body": body_for_reading(_reading_body(session, doc.id), kind),
+        # 正文（D-097）：和阅读页同一个判断（原网页已失效的不给）
+        "body": body_payload(
+            reading_body(
+                session, doc, kind, attachments=bool(attachment_rows), redact=attachment_text.mask
+            )
+        ),
     }
     if fields:
         payload["fields"] = fields
@@ -2201,6 +2797,30 @@ def document(doc_id: int, session: SessionDep) -> dict:
     if repost and repost["others"]:
         payload["repost"] = _repost_detail(session, doc.id, repost)
     return payload
+
+
+def _detail_attachments(
+    session: Session, doc: Document, kind: str, rows: list[DocumentAttachment]
+) -> list[dict]:
+    """详情页的附件：能不能在小程序里读（readable、state、stateText、scannedPages）和阅读页同一个
+    判断（attachment_text.judge，D-097）。preview、reason 是附件副本能不能下载，旧版小程序还在用，
+    照旧给，不能当成"能不能读"。"""
+    items = attachment_items(
+        session,
+        rows,
+        kind=kind,
+        recent=is_recent(doc.publish_date, doc.first_seen_at, now(), kind=kind),
+    )
+    states = {r.attachment_id: r for r in attachment_text.judge(session, doc, rows, now())}
+    for item in items:
+        state = states[int(item["id"])]
+        item.update(
+            readable=state.readable,
+            state=state.state,
+            stateText=state.note,
+            scannedPages=(state.scanned_pages or 0) if state.readable else 0,
+        )
+    return items
 
 
 def _repost_detail(session: Session, doc_id: int, info: dict[str, Any]) -> dict[str, Any]:
@@ -2550,7 +3170,8 @@ def lookup_lists(
     request: Request,
     session: SessionDep,
     q: Annotated[
-        str, Query(min_length=2, max_length=100, description="企业全称或统一社会信用代码")
+        str,
+        Query(min_length=2, max_length=100, description="企业全称（也认统一社会信用代码）"),
     ],
 ) -> dict:
     """查名单：这家企业上过哪些名单。
@@ -2575,11 +3196,10 @@ def lookup_lists(
         )
     candidates = lookup_name_candidates(session, query) if query and not lookup.matches else []
     if not query or (person and not candidates):
-        raise HTTPException(
-            status_code=422, detail="只查企业和机构，请输入企业全称或统一社会信用代码"
-        )
+        raise HTTPException(status_code=422, detail="只查企业和机构，请输入企业全称")
     masters = lookup.master_ids
     best = {match.master_id: match for match in lookup.matches}
+    tokens = list_evidence.entry_tokens(session, [m.entry_id for m in lookup.matches])
     rows = session.execute(_ordered(_base().where(Document.id.in_(masters)))).all()
     items: list[dict] = []
     for item in _items(session, [tuple(r) for r in rows]):
@@ -2592,6 +3212,8 @@ def lookup_lists(
             "creditCode": entry.credit_code,
             "region": entry.region,
             "via": "name" if entry.normalized_name == query else "creditCode",
+            # 查"原名单里的那一行"用（D-088）：带签名，只有查到这家企业的人拿得到
+            "entryToken": tokens.get(entry.entry_id),
         }
         items.append(item)
     shown_names = {entry.normalized_name for entry in best.values()}
@@ -2624,12 +3246,6 @@ def lookup_lists(
             ),
             key=lambda x: -x["lists"],
         )[:10]
-    lists_total, since = session.execute(
-        select(func.count(func.distinct(ListEntry.document_id)), func.min(Document.publish_date))
-        .join(Document, Document.id == ListEntry.document_id)
-        .join(Source, Source.id == Document.source_id)
-        .where(Source.rights_level == 1, available_condition())
-    ).one()
     return {
         "query": q.strip(),
         "items": items,
@@ -2637,7 +3253,196 @@ def lookup_lists(
         "candidates": candidates,
         "ambiguous": lookup.ambiguous,
         "truncated": lookup.truncated,
-        "coverage": {"lists": lists_total, "since": since.isoformat() if since else None},
+        "coverage": _lookup_coverage(session),
+    }
+
+
+# 查名单的比对范围（收录份数、最早日期、没读出和没读全的份数）是整库统计，不在每次查询时都重算：
+# 名单数据版本（解析记录、人工定的类型、下架和归并，见 report_revision）没变时 60 秒内复用。
+# 下架、重新解析后马上失效（管理服务和接口服务是不同进程，靠数据库里的版本）；来源权限这类少见的
+# 改动最多晚 60 秒
+LOOKUP_COVERAGE_TTL = 60
+_LOOKUP_COVERAGE: dict[str, tuple[tuple, float, dict[str, Any]]] = {}
+
+
+def _lookup_coverage(session: Session) -> dict[str, Any]:
+    revision = publication_revision(session, "lists")
+    cached = _LOOKUP_COVERAGE.get("all")
+    current = _time.monotonic()
+    if cached and cached[0] == revision and current - cached[1] < LOOKUP_COVERAGE_TTL:
+        return dict(cached[2])
+    lists_total, since = session.execute(
+        select(func.count(func.distinct(ListEntry.document_id)), func.min(Document.publish_date))
+        .join(Document, Document.id == ListEntry.document_id)
+        .join(Source, Source.id == Document.source_id)
+        .where(Source.rights_level == 1, available_condition(), list_title_allowed())
+    ).one()
+    unread, partial = _unread_lists(session)
+    coverage = {
+        "lists": lists_total,
+        "since": since.isoformat() if since else None,
+        # "没查到"时如实说（D-091）：没读出企业名称的名单份数、只读了前面一部分的份数
+        "unreadLists": unread,
+        "partialLists": partial,
+    }
+    _LOOKUP_COVERAGE["all"] = (revision, current, coverage)
+    return dict(coverage)
+
+
+def _unread_lists(session: Session) -> tuple[int, int]:
+    """公开的名单文件里，没读出企业名称的份数（扫描件、旧格式、表格没认出来、详情取不到）、
+    只读了前面一部分的份数（PDF 超过页数上限）。"""
+    has_entries = (
+        select(ListEntry.id).where(ListEntry.document_id == ListParse.document_id).exists()
+    )
+    base = (
+        select(func.count(func.distinct(ListParse.document_id)))
+        .join(Document, Document.id == ListParse.document_id)
+        .join(Source, Source.id == Document.source_id)
+        .where(
+            Source.rights_level == 1,
+            available_condition(),
+            or_(Document.kind_override.is_(None), Document.kind_override == "名单"),
+            list_title_allowed(),
+        )
+    )
+    unread = session.scalar(base.where(~has_entries)) or 0
+    partial = (
+        session.scalar(base.where(has_entries, ListParse.failure_reason.like("%仅解析前%"))) or 0
+    )
+    return unread, partial
+
+
+_EVIDENCE_REASONS = {
+    "scan": "原文附件是扫描图片，读不出文字",
+    "empty": "原文附件里没有文字",
+    "broken": "原文附件损坏或加了密",
+    "format": "原文附件的格式暂不支持",
+    "too_large": "原文附件太大",
+    "webpage": "原网站给的不是文件",
+    "gone": "原网站已经没有这个附件",
+    "unavailable": "原网站暂时下载不了这个附件",
+}
+
+
+def _where_text(where: dict) -> str:
+    """原文位置的说法：第 3 页第 1 个表第 12 行；工作表"Sheet1"第 120 行；第 2 个表第 5 行。"""
+    parts = []
+    if where.get("sheet"):
+        parts.append(f"工作表“{where['sheet']}”")
+    if where.get("page"):
+        parts.append(f"第 {where['page']} 页")
+    if where.get("table"):
+        parts.append(f"第 {where['table']} 个表")
+    if where.get("row"):
+        parts.append(f"第 {where['row']} 行")
+    return "".join(parts)
+
+
+@router.get("/lists/record")
+def list_record(
+    request: Request,
+    session: SessionDep,
+    entry: Annotated[
+        str, Query(min_length=3, max_length=40, description="查名单结果里的 entryToken")
+    ],
+) -> dict:
+    """查名单结果里一条记录在原名单里的那一行（D-088）：只给这一行和列名、在原文的位置，个人信息
+    列不显示，不提供整份名单，也不给原文链接。条目编号要用查名单时给的加密编号。"""
+    _limit_lookup(request)
+    entry_id = list_evidence.parse_entry_token(session, entry)
+    row = session.get(ListEntry, entry_id) if entry_id is not None else None
+    doc = None
+    if row is not None:
+        doc = session.execute(
+            select(Document, Source)
+            .join(Source, Source.id == Document.source_id)
+            .where(
+                Document.id == row.document_id,
+                public_condition(),
+                or_(Document.kind_override.is_(None), Document.kind_override == "名单"),
+                list_title_allowed(),
+            )
+        ).first()
+    if doc is None:
+        raise HTTPException(status_code=404, detail="没有找到这条记录，请重新查询")
+    document, source = doc
+    kind = effective_kind(document.title, document.kind_override)
+    location = session.get(ListEntryLocation, row.id)
+    evidence_source = session.scalar(
+        select(ListEvidenceSource).where(
+            ListEvidenceSource.url_hash == list_evidence.url_key(row.source_url)
+        )
+    )
+    parsed_from = session.scalar(
+        select(ListParse.source_kind).where(
+            ListParse.document_id == row.document_id, ListParse.source_url == row.source_url
+        )
+    )
+    rows: list[dict] = []
+    if parsed_from == "detail":
+        # 名单在通知网页正文的表格里：原文那一行暂时只能给解析出的记录
+        state = "in_body"
+    elif evidence_source is None or (location is None and evidence_source.status != "failed"):
+        state = "pending"
+    elif evidence_source.status == "failed":
+        state = "failed"
+    elif location.state in ("ok", "multiple", "ambiguous"):
+        state = "found"
+        for stored in location.rows:
+            # 存的时候已只留公开的列（list_evidence.shown_cell）；这里按列名再挡一次个人信息列
+            # （名称列除外），文字再脱敏一遍。name：这一格是名称列（查到的那家单位）
+            cells = [
+                {
+                    "h": cell.get("h") or "",
+                    "t": redact_sensitive(str(cell.get("t", ""))),
+                    "name": bool(cell.get("n")),
+                }
+                for cell in stored.get("cells", [])
+                if cell.get("n") or not list_evidence.personal_header(cell.get("h"))
+            ]
+            rows.append(
+                {
+                    "where": _where_text(stored.get("where") or {}),
+                    "cells": cells,
+                    "hidden": int(stored.get("hidden") or 0),
+                }
+            )
+    elif location.state == "no_name_column":
+        # 原文表格里没认出哪一列是企业名称：不说"原文里没有这一行"
+        state = "no_column"
+    else:
+        state = "notfound"
+    partial = evidence_source is not None and evidence_source.status == "partial"
+    return {
+        "entry": {
+            "name": redact_sensitive(row.name),
+            "category": row.category,
+            "batch": row.batch,
+            "region": row.region,
+        },
+        "document": {
+            "id": str(document.id),
+            "title": redact_sensitive(document.title),
+            "status": list_status(document.title, kind),
+            "issuer": redact_sensitive(normalize_issuer(source.dept_full_name)),
+            "date": document.publish_date.isoformat() if document.publish_date else None,
+            "region": region_label(source.province, source.level, source.city, source.district),
+            # 只给网站名称和域名（和站内阅读的出处一样），不给原文链接
+            "site": f"{source.dept_full_name}网站",
+            "host": urlsplit(document.url).hostname or "",
+            "link_gone": link_gone_date(document.link_gone_at),
+        },
+        "evidence": {
+            "state": state,
+            "rows": rows,
+            "more": location is not None and location.state == "ambiguous",
+            "partial": partial,
+            "pagesRead": evidence_source.pages_read if partial else None,
+            "reason": _EVIDENCE_REASONS.get(evidence_source.reason or "")
+            if state == "failed" and evidence_source is not None
+            else None,
+        },
     }
 
 
@@ -2647,22 +3452,60 @@ def lookup_lists(
 # （带 X-WX-SOURCE，见 app._role_guard），公网直接访问是 404，不对外开放数据接口（D-050）。
 # 只有公开数据、不按用户区分：调首页时用一个不带请求头的空请求，认不出用户
 # （不带"你关注的条件"那一栏）。
-# 按北京时间日期缓存 60 秒。
+# 按北京时间日期缓存 60 秒，60 秒内直接给、不查数据库。
+# S2（10/19）：同一时间只算一份。以前缓存一到期，同时来的请求各算一遍（线上 10/17 18:03 同一秒
+# 3 个请求各算了 3.9–4.7 秒）；现在当场算的和后台刷新的共用一把锁，后来的等这一份算完直接用。
+# 到期后 5 分钟内先给旧的、同时安排后台刷新一份（响应发出后才算，不拖慢这次请求）；给旧的之前
+# 先核对下架版本，算好以后有文件下架或恢复就不给旧的。没有可用的旧的（刚启动、跨天、有下架或恢复、
+# 旧的超过 5 分钟）才当场算。admin 固定 1 个实例，进程内的锁就够；接口服务上各实例各算各的。
+# 值为 ((日期, 下架版本), 开始算的时刻, 快照)。快照不走 SessionDep（它会先查一次规则列）：
+# 没有可用的旧的时，占到名额、拿到锁、真要算了才查。
+# 当场算的时候同时等的请求最多 8 个（含正在算的），每个最多等 10 秒，多了或等久了回 503：等着的请求
+# 占着线程池（同步接口共用默认 40 个），不能让首屏把管理台和其他接口挤住；名额在查数据库之前就占，
+# 数据库慢的时候多出来的请求也不去查。小程序取快照只试一次，取不到就直接等实时数据，不提示。
 _SNAPSHOT_CACHE: dict[str, tuple[tuple, float, dict[str, Any]]] = {}
 SNAPSHOT_TTL = 60
+SNAPSHOT_STALE = 300
+SNAPSHOT_WAITERS = 8
+SNAPSHOT_WAIT = 10.0
+_SNAPSHOT_BUILD = Lock()  # 当场算和后台刷新共用：同一时间只算一份
+_SNAPSHOT_STATE = Lock()
+_snapshot_waiters = 0  # 当场算的和等着它的请求数（受 _SNAPSHOT_STATE 保护）
+# 已安排、还没做完的后台刷新是什么时候安排的（monotonic）；没有为 None。
+# 安排了超过 SNAPSHOT_STALE 秒还没做完的当作丢了（如响应没发出去），可以重新安排
+_snapshot_refresh_at: float | None = None
 
 
-@router.get("/snapshot")
-def snapshot(session: SessionDep) -> dict[str, Any]:
-    """首屏快照：home（同 /home?group=1&excerpts=1，列表换成最新 8 份申报通知，不带机器摘录）、
-    deadlines（同 /reports/deadlines?days=7&excerpts=1）、lists（同 /lists/recent?group=1）、
-    scope（同 /reports/lists 的 stats）。"""
-    current = now()
-    key = (current.astimezone(_TZ).date(),)
-    stamp = _time.monotonic()
+def _snapshot_revision(session: Session) -> tuple:
+    """快照的下架版本：下架、恢复的历史和归并（cache_revision），加上现在下架着的文件的条数和
+    编号校验和（下架时间列有索引，只读下架着的几行）——不经管理台直接改库下架、恢复也能发现。"""
+    hidden = session.execute(
+        select(func.count(), func.coalesce(func.sum(func.crc32(Document.id)), 0)).where(
+            Document.taken_down_at.is_not(None)
+        )
+    ).one()
+    return (cache_revision(session), tuple(hidden))
+
+
+def _cached_snapshot(max_age: float) -> tuple[tuple, float, dict[str, Any]] | None:
+    """今天算的、不超过 max_age 秒的那份，没有返回 None。只看日期和时间，不查数据库。"""
     cached = _SNAPSHOT_CACHE.get("first")
-    if cached and cached[0] == key and stamp - cached[1] < SNAPSHOT_TTL:
-        return cached[2]
+    if (
+        cached
+        and cached[0][0] == now().astimezone(_TZ).date()
+        and _time.monotonic() - cached[1] < max_age
+    ):
+        return cached
+    return None
+
+
+def _build_snapshot(session: Session) -> dict[str, Any]:
+    """算一份快照存进缓存。调用方持有 _SNAPSHOT_BUILD。"""
+    current = now()
+    stamp = _time.monotonic()
+    # 先取下架版本再算：算的时候有新下架，存下的键只会比数据旧，下次请求就重算
+    key = (current.astimezone(_TZ).date(), _snapshot_revision(session))
+    note_rules_complete(session)
     anonymous = Request(
         {
             "type": "http",
@@ -2685,3 +3528,75 @@ def snapshot(session: SessionDep) -> dict[str, Any]:
     }
     _SNAPSHOT_CACHE["first"] = (key, stamp, payload)
     return payload
+
+
+def _claim_snapshot_refresh() -> bool:
+    """还没有在做的后台刷新时安排一个，返回 True；已经安排了返回 False。"""
+    global _snapshot_refresh_at
+    stamp = _time.monotonic()
+    with _SNAPSHOT_STATE:
+        if _snapshot_refresh_at is not None and stamp - _snapshot_refresh_at < SNAPSHOT_STALE:
+            return False
+        _snapshot_refresh_at = stamp
+        return True
+
+
+def _snapshot_wait(delta: int) -> bool:
+    """当场算或等着的请求数加减 1；加的时候已经满了返回 False（不加）。"""
+    global _snapshot_waiters
+    with _SNAPSHOT_STATE:
+        if delta > 0 and _snapshot_waiters >= SNAPSHOT_WAITERS:
+            return False
+        _snapshot_waiters += delta
+        return True
+
+
+def _refresh_snapshot(bind) -> None:
+    """后台刷新：响应发出后在线程池里跑，用自己的数据库会话（请求的会话那时已经关了）。"""
+    global _snapshot_refresh_at
+    try:
+        with Session(bind=bind, expire_on_commit=False) as session, _SNAPSHOT_BUILD:
+            # 等锁的时候可能已经有请求当场算好了
+            if _cached_snapshot(SNAPSHOT_TTL) is None:
+                _build_snapshot(session)
+    except Exception:
+        # 刷新失败：旧的照样给到 5 分钟，之后的请求当场算，出错照常报错
+        log.exception("首屏快照后台刷新失败")
+    finally:
+        with _SNAPSHOT_STATE:
+            _snapshot_refresh_at = None
+
+
+@router.get("/snapshot")
+def snapshot(
+    session: Annotated[Session, Depends(get_session)], background: BackgroundTasks
+) -> dict[str, Any]:
+    """首屏快照：home（同 /home?group=1&excerpts=1，列表换成最新 8 份申报通知，不带机器摘录）、
+    deadlines（同 /reports/deadlines?days=7&excerpts=1）、lists（同 /lists/recent?group=1）、
+    scope（同 /reports/lists 的 stats）。"""
+    fresh = _cached_snapshot(SNAPSHOT_TTL)
+    if fresh is not None:
+        return fresh[2]
+    stale = _cached_snapshot(SNAPSHOT_STALE)
+    if stale is not None and stale[0][1] == _snapshot_revision(session):
+        if _claim_snapshot_refresh():
+            background.add_task(_refresh_snapshot, session.get_bind())
+        return stale[2]
+    # 等锁前先结束只读事务、把连接还给连接池：同时等的请求多时不把连接池占满
+    session.rollback()
+    busy = HTTPException(status_code=503, detail="首屏数据正在生成，请稍后再试")
+    if not _snapshot_wait(1):
+        raise busy
+    try:
+        if not _SNAPSHOT_BUILD.acquire(timeout=SNAPSHOT_WAIT):
+            raise busy
+        try:
+            # 等锁的时候别的请求或后台刷新可能已经算好了，直接用
+            fresh = _cached_snapshot(SNAPSHOT_TTL)
+            if fresh is not None:
+                return fresh[2]
+            return _build_snapshot(session)
+        finally:
+            _SNAPSHOT_BUILD.release()
+    finally:
+        _snapshot_wait(-1)

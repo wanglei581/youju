@@ -1,5 +1,6 @@
 import json
-from datetime import UTC, date, datetime, time
+import re
+from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -286,6 +287,205 @@ def test_snapshot_latest_apply_has_no_time_limit(client, session, seeded):
     assert str(old.id) in {item["id"] for item in body["home"]["items"]}
 
 
+def _new_apply(session, seeded, slug: str) -> Document:
+    """在申报通知同一来源下加一份新的申报通知（快照首页"最新 8 份"里会有它）。"""
+    source = session.get(Document, seeded["apply"]).source_id
+    doc = Document(
+        source_id=source,
+        url=f"https://gxt.ln.gov.cn/{slug}.html",
+        url_key=f"gxt.ln.gov.cn/{slug}.html",
+        title=f"关于组织申报{slug}科技项目的通知",
+        publish_date=date(2026, 9, 26),
+        first_seen_at=datetime.now(UTC),
+        last_seen_at=datetime.now(UTC),
+    )
+    session.add(doc)
+    session.commit()
+    return doc
+
+
+def _snapshot_ids(body) -> set[str]:
+    return {item["id"] for item in body["home"]["items"]}
+
+
+def _age_snapshot(seconds: float) -> None:
+    key, stamp, payload = v1._SNAPSHOT_CACHE["first"]
+    v1._SNAPSHOT_CACHE["first"] = (key, stamp - seconds, payload)
+
+
+def test_snapshot_stale_copy_first_then_refreshed_after_response(client, session, seeded):
+    """S2：60 秒到期后、5 分钟内先给旧的，同时在后台刷新一份；刷新好以后给新的。"""
+    v1._SNAPSHOT_CACHE.clear()
+    first = client.get("/api/v1/snapshot").json()
+    _age_snapshot(120)
+    doc = _new_apply(session, seeded, "stale")
+    stale = client.get("/api/v1/snapshot").json()
+    assert stale == first and str(doc.id) not in _snapshot_ids(stale)
+    # TestClient 等后台任务做完才返回：这时缓存已经换成新算的
+    assert str(doc.id) in _snapshot_ids(v1._SNAPSHOT_CACHE["first"][2])
+    assert v1._snapshot_refresh_at is None
+    assert str(doc.id) in _snapshot_ids(client.get("/api/v1/snapshot").json())
+
+
+def test_snapshot_rebuilt_in_request_when_no_usable_copy(client, session, seeded, monkeypatch):
+    """旧的超过 5 分钟、跨天、算好以后有文件下架时当场重算，不先给旧的。"""
+    from youju.takedown import change_state
+
+    v1._SNAPSHOT_CACHE.clear()
+    client.get("/api/v1/snapshot")
+    _age_snapshot(v1.SNAPSHOT_STALE + 1)
+    doc = _new_apply(session, seeded, "tooold")
+    assert str(doc.id) in _snapshot_ids(client.get("/api/v1/snapshot").json())
+    # 下架：过期后不再先给旧的（旧的里还有这份），当场重算
+    change_state(session, doc.id, action="takedown", note="测试", operator="测试", reason="其他")
+    _age_snapshot(120)
+    assert str(doc.id) not in _snapshot_ids(client.get("/api/v1/snapshot").json())
+    # 跨天：日期变了，当场按新的一天算
+    monkeypatch.setattr(v1, "now", lambda: NOW + timedelta(days=1))
+    assert client.get("/api/v1/snapshot").json()["generatedAt"][:10] == "2026-09-28"
+
+
+def test_snapshot_not_served_stale_after_direct_takedown(client, session, seeded):
+    """不经管理台、直接改库下架（没有下架记录）：过期后也不先给旧的，当场重算。"""
+    v1._SNAPSHOT_CACHE.clear()
+    doc = _new_apply(session, seeded, "direct")
+    assert str(doc.id) in _snapshot_ids(client.get("/api/v1/snapshot").json())
+    session.get(Document, doc.id).taken_down_at = datetime.now(UTC)
+    session.commit()
+    _age_snapshot(120)
+    assert str(doc.id) not in _snapshot_ids(client.get("/api/v1/snapshot").json())
+
+
+def test_snapshot_refresh_failure_keeps_old_copy(client, session, seeded, monkeypatch, caplog):
+    """后台刷新出错：这次照样给旧的，记下错误，下一个请求可以再安排刷新。"""
+    v1._SNAPSHOT_CACHE.clear()
+    first = client.get("/api/v1/snapshot").json()
+    _age_snapshot(120)
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("数据库暂时连不上")
+
+    monkeypatch.setattr(v1, "home", broken)
+    response = client.get("/api/v1/snapshot")
+    assert response.status_code == 200 and response.json() == first
+    assert "首屏快照后台刷新失败" in caplog.text
+    assert v1._snapshot_refresh_at is None
+    assert v1._claim_snapshot_refresh()
+    v1._snapshot_refresh_at = None
+
+
+def _snapshot_race(monkeypatch):
+    """当场算快照时第一个开始算的停住，等调用方放行；记下算了几份、查了几次下架版本。"""
+    import threading
+
+    release = threading.Event()
+    state = {"builds": 0, "revisions": 0}
+    real_home, real_revision = v1.home, v1.cache_revision
+
+    def slow_home(*args, **kwargs):
+        state["builds"] += 1
+        assert release.wait(30)
+        return real_home(*args, **kwargs)
+
+    def revision(session):
+        state["revisions"] += 1
+        return real_revision(session)
+
+    monkeypatch.setattr(v1, "home", slow_home)
+    monkeypatch.setattr(v1, "cache_revision", revision)
+    return state, release
+
+
+def _wait_until(check, seconds: float = 30) -> bool:
+    import threading
+
+    for _ in range(int(seconds * 100)):
+        if check():
+            return True
+        threading.Event().wait(0.01)
+    return check()
+
+
+def test_snapshot_concurrent_requests_build_once(
+    client, session_factory, session, seeded, monkeypatch
+):
+    """缓存过期时同时来的请求只算一份（线上 10/17 18:03 同一秒 3 个请求各算了一遍）；
+    等着的请求不占数据库连接。"""
+    from concurrent.futures import ThreadPoolExecutor
+
+    v1._SNAPSHOT_CACHE.clear()
+    monkeypatch.setattr(v1, "SNAPSHOT_WAIT", 60.0)  # 慢机器上也不会等超时
+    state, release = _snapshot_race(monkeypatch)
+    pool = session_factory.kw["bind"].pool
+    with ThreadPoolExecutor(3) as executor:
+        futures = [executor.submit(client.get, "/api/v1/snapshot") for _ in range(3)]
+        # 第一个在算（拿着连接）；第一份算完之前另外两个都看不到可用的，在等锁、已经把连接还回去
+        assert _wait_until(lambda: state["builds"] == 1 and v1._snapshot_waiters == 3)
+        assert _wait_until(lambda: pool.checkedout() == 1)
+        release.set()
+        bodies = [future.result().json() for future in futures]
+    assert state["builds"] == 1
+    assert state["revisions"] == 1  # 只有算的那个查了下架版本；等着的拿到锁后直接用
+    assert bodies[0] == bodies[1] == bodies[2]
+    assert v1._snapshot_waiters == 0
+
+
+@pytest.mark.parametrize(
+    ("waiters", "wait"),
+    [
+        (1, 60.0),  # 已经有一个在算、满了：马上拒，不等 60 秒
+        (8, 0.2),  # 没满：等 0.2 秒还没算完就放弃
+    ],
+)
+def test_snapshot_waiters_capped_and_wait_bounded(
+    client, session_factory, session, seeded, monkeypatch, waiters, wait
+):
+    """当场算的时候，等着的请求有个数上限、等的时间有上限，超了回 503
+    （小程序取快照只试一次，取不到就等实时数据）；被拒的请求一次数据库都不查。"""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from sqlalchemy import event
+
+    v1._SNAPSHOT_CACHE.clear()
+    monkeypatch.setattr(v1, "SNAPSHOT_WAITERS", waiters)
+    monkeypatch.setattr(v1, "SNAPSHOT_WAIT", wait)
+    state, release = _snapshot_race(monkeypatch)
+    engine = session_factory.kw["bind"]
+    statements: list[str] = []
+
+    def capture(connection, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", capture)
+    try:
+        with ThreadPoolExecutor(2) as executor:
+            building = executor.submit(client.get, "/api/v1/snapshot")
+            assert _wait_until(lambda: state["builds"] == 1)
+            before = len(statements)  # 算的那个停在这里，不再查数据库
+            refused = executor.submit(client.get, "/api/v1/snapshot")
+            assert _wait_until(refused.done, 10)
+            assert refused.result().status_code == 503
+            assert refused.result().json() == {"detail": "首屏数据正在生成，请稍后再试"}
+            assert statements[before:] == []
+            release.set()
+            assert building.result().status_code == 200
+    finally:
+        event.remove(engine, "before_cursor_execute", capture)
+    assert v1._snapshot_waiters == 0
+
+
+def test_snapshot_fresh_copy_needs_no_database(client, session, seeded, monkeypatch):
+    """60 秒内的直接给、不查数据库（数据库一时连不上也照样给）；过期后先核对下架版本。"""
+    v1._SNAPSHOT_CACHE.clear()
+    first = client.get("/api/v1/snapshot").json()
+
+    def unreachable(session):
+        raise RuntimeError("数据库暂时连不上")
+
+    monkeypatch.setattr(v1, "cache_revision", unreachable)
+    assert client.get("/api/v1/snapshot").json() == first
+
+
 def test_api_cleans_legacy_issuer_and_source_url(client, session, seeded):
     doc = session.get(Document, seeded["apply"])
     doc.url = "http://gxt.ln.gov.cn:443/1.html"
@@ -438,7 +638,8 @@ def test_document_detail_only_approved_deadlines(client, seeded):
     assert d["deadline"]["label"] == "企业申报截止" and d["deadline"]["date"] == "2026-10-18"
     assert d["deadline"]["notes"] == ["推荐或审核截止 10月20日 周二 17:00"]
     assert ["文号", "辽工信投资〔2026〕130号"] in d["points"]
-    # 还没有副本：不能在小程序里打开，给原因（副本见 test_attachments.py）
+    # 还没有副本、还没取文字：不能在小程序里打开、读，给原因（副本见 test_attachments.py；
+    # 能不能读和阅读页同一个判断，见 test_readers.py）
     [attachment] = d["attachments"]
     assert attachment["id"].isdigit()
     assert {k: v for k, v in attachment.items() if k != "id"} == {
@@ -447,14 +648,19 @@ def test_document_detail_only_approved_deadlines(client, seeded):
         "url": "https://gxt.ln.gov.cn/a1.pdf",
         "preview": False,
         "reason": "pending",
+        "readable": False,
+        "state": "pending",
+        "stateText": "新附件，一般半天内可读",
+        "scannedPages": 0,
     }
     assert d["checked"] == "2026-09-26" and d["host"] == "gxt.ln.gov.cn"
     listed = client.get(f"/api/v1/documents/{seeded['list']}").json()
     assert listed["deadline"] is None and listed["excerpt"] is None
     assert client.get("/api/v1/documents/999999").status_code == 404
-    # 正文太短（多半没抓全）不给；名单类不给正文（名单里可能有个人姓名）
-    assert d["body"] == {"status": "none"}
-    assert listed["body"] == {"status": "list"}
+    # 正文只有"……"（像网页上的字，没有一句话）不给，列着附件的说内容在附件里；名单类没有正文
+    # 也没有附件的说正文还取不到（有正文的挡掉名单内容后给，D-092，见 test_list_body.py）
+    assert d["body"] == {"status": "none", "reason": "attachments"}
+    assert listed["body"] == {"status": "none", "reason": "site"}
 
 
 def test_body_for_reading_cleans_only_known_strings():
@@ -470,8 +676,8 @@ def test_body_for_reading_cleans_only_known_strings():
     assert body["status"] == "ok" and body["truncated"] is False
     assert "各有关单位：\n\n请于10月18日前报送" in body["text"]
     assert (
-        "联系人：（联系人见原文），电话：（电话见原文），（电话见原文），邮箱 （邮箱见原文）"
-        in body["text"]
+        "联系人：（这里隐去了联系人），电话：（这里隐去了电话），（这里隐去了电话），"
+        "邮箱 （这里隐去了邮箱）" in body["text"]
     )
     for gone in ("【关闭窗口】", "【字体", "扫一扫", "已脱敏"):
         assert gone not in body["text"]
@@ -479,14 +685,31 @@ def test_body_for_reading_cleans_only_known_strings():
     long = body_for_reading("字" * (BODY_MAX_CHARS + 5), "政策")
     assert long["truncated"] is True and long["total"] == BODY_MAX_CHARS + 5
     assert len(long["text"]) == BODY_MAX_CHARS
+    # 像网页导航的（没有一句话、不长）不给；真短的通知照常给（D-097 去掉"不到 200 字不给"）
+    assert body_for_reading("首页\n政务公开\n科技资讯\n搜 索", "申报通知") == {"status": "none"}
     assert body_for_reading("短" * 199, "申报通知") == {"status": "none"}
     assert body_for_reading(None, "申报通知") == {"status": "none"}
+    short = body_for_reading("现将《管理办法》印发给你们，请遵照执行。", "政策")
+    assert short == {
+        "status": "ok",
+        "text": "现将《管理办法》印发给你们，请遵照执行。",
+        "total": 20,
+        "truncated": False,
+    }
+    # 没有标点的长文（表格）照常给
+    assert body_for_reading("序号\n企业名称\n" * 100, "政策")["status"] == "ok"
     assert body_for_reading("字" * 500, "名单") == {"status": "list"}
-    # 其他类（招聘、职称评审等公示）可能有个人姓名，不给正文
-    assert body_for_reading("字" * 500, "其他") == {"status": "original"}
+    # 资讯与指南、其他：标题写着个人事项（招聘、职称评审等）的不给，其余给全文（D-097 ②）；
+    # 不给标题按个人事项算
+    personal = {"status": "original", "reason": "personal"}
+    assert body_for_reading("字" * 500, "其他") == personal
+    assert body_for_reading("字" * 500, "其他", title="2026年职称评审结果公示") == personal
+    assert (
+        body_for_reading("字。" * 250, "资讯与指南", title="关于召开宣讲会的通知")["status"] == "ok"
+    )
     # 给出前按现行规则再隐去一遍；Windows 换行也按换行处理
-    again = body_for_reading("咨询电话：13812345678\r\n\r\n\r\n" + "内容" * 120, "政策")
-    assert "13812345678" not in again["text"] and "（电话见原文）" in again["text"]
+    again = body_for_reading("咨询电话：13812345678\r\n\r\n\r\n" + "内容。" * 80, "政策")
+    assert "13812345678" not in again["text"] and "（这里隐去了电话）" in again["text"]
     assert "\r" not in again["text"] and "\n\n\n" not in again["text"]
 
 
@@ -521,7 +744,7 @@ def test_detail_body_prefers_own_level1_text(client, session, seeded):
     body = client.get(f"/api/v1/documents/{own.id}").json()["body"]
     assert body["status"] == "ok" and body["text"].startswith("一级副本")  # 二级的更长也不用
     session.add(
-        DocumentDetail(document_id=own.id, body_text="本文" * 150, fetched_at=now, status="ok")
+        DocumentDetail(document_id=own.id, body_text="本文。" * 100, fetched_at=now, status="ok")
     )
     session.commit()
     body = client.get(f"/api/v1/documents/{own.id}").json()["body"]
@@ -704,6 +927,8 @@ def test_lists_lookup_exact_similar_and_coverage(client, seeded, session):
     assert [i["id"] for i in body["items"]] == [str(list_doc.id)]
     item = body["items"][0]
     assert item["kind"] == "名单" and item["status"] == "公示"
+    # 查"原名单里的那一行"用的编号带签名（D-088）
+    assert re.fullmatch(r"[A-Za-z0-9_-]{32}", item["matched"].pop("entryToken"))
     assert item["matched"] == {
         "name": "山东星河科技有限公司",
         "category": "科技型中小企业",
@@ -715,7 +940,12 @@ def test_lists_lookup_exact_similar_and_coverage(client, seeded, session):
     }
     # 名称相近的另列，不当作同一家
     assert body["similar"] == [{"name": "山东星河科技（青岛）有限公司", "lists": 1}]
-    assert body["coverage"] == {"lists": 1, "since": "2026-09-24"}
+    assert body["coverage"] == {
+        "lists": 1,
+        "since": "2026-09-24",
+        "unreadLists": 0,
+        "partialLists": 0,
+    }
     # 全角括号、空格不同也能查到；信用代码不分大小写
     assert len(client.get(url, params={"q": "山东星河科技（青岛） 有限公司"}).json()["items"]) == 1
     assert len(client.get(url, params={"q": "91310117588657256c"}).json()["items"]) == 1
@@ -1802,3 +2032,81 @@ def test_lists_lookup_rate_limited_and_recovers(client, monkeypatch):
     assert client.get("/api/v1/lists/lookup", params={"q": "测试公司"}).status_code == 429
     monkeypatch.setattr(v1._time, "monotonic", lambda: 1061)
     assert client.get("/api/v1/lists/lookup", params={"q": "测试公司"}).status_code == 200
+
+
+def test_search_window_per_address_and_recovers():
+    """S3 计数：每个来源地址一分钟滑动窗口；超了拒绝，被拒的不记次；不同地址互不影响。"""
+    for _ in range(v1.SEARCH_PER_MINUTE):
+        assert v1._allow_search("203.0.113.1", 1000.0)
+    assert not v1._allow_search("203.0.113.1", 1059.9)
+    assert len(v1._SEARCH_TIMES["ip:203.0.113.1"]) == v1.SEARCH_PER_MINUTE  # 被拒的不记
+    assert v1._allow_search("203.0.113.2", 1059.9)
+    assert v1._allow_search("203.0.113.1", 1060.0)  # 最早那批满 60 秒，恢复
+
+
+def test_search_rate_limited_per_address(client, monkeypatch):
+    """S3：同一来源地址每分钟搜索有上限，超了返回 429"搜索太频繁，请稍后再试"；别的地址照常；
+    快照里取最新 8 份不计次；计数只按来源地址，不保存 openid（隐私保护指引一·2 没写搜索计次）。"""
+    from types import SimpleNamespace
+
+    from youju.api import me
+
+    monkeypatch.setattr(
+        me, "get_settings", lambda: SimpleNamespace(trust_wx_headers=True, dev_openid=None)
+    )
+    monkeypatch.setattr(v1, "SEARCH_PER_MINUTE", 5)
+    user = {
+        "X-WX-SOURCE": "wx_client",
+        "X-WX-OPENID": "o-search-a",
+        "X-Original-Forwarded-For": "203.0.113.7",
+    }
+    for _ in range(5):
+        assert client.get("/api/v1/search", headers=user).status_code == 200
+    refused = client.get("/api/v1/search", headers=user, params={"q": "申报"})
+    assert refused.status_code == 429
+    assert refused.json() == {"detail": "搜索太频繁，请稍后再试"}
+    # 换个 openid、同一出口：照样被拦（不按 openid 算）
+    other_user = {**user, "X-WX-OPENID": "o-search-b"}
+    assert client.get("/api/v1/search", headers=other_user).status_code == 429
+    elsewhere = {**user, "X-Original-Forwarded-For": "203.0.113.8"}
+    assert client.get("/api/v1/search", headers=elsewhere).status_code == 200
+    v1._SNAPSHOT_CACHE.clear()
+    assert client.get("/api/v1/snapshot", headers=elsewhere).status_code == 200
+    assert len(v1._SEARCH_TIMES["ip:203.0.113.8"]) == 1
+    assert set(v1._SEARCH_TIMES) == {"ip:203.0.113.7", "ip:203.0.113.8"}
+    assert not any("o-search" in key for key in v1._SEARCH_TIMES)
+
+
+def test_search_limit_on_admin_by_address_before_db(session_factory, monkeypatch):
+    """admin 上同样按来源地址计次（换着 openid 刷绕不过去）；超限的请求在取数据库会话之前就拒绝。"""
+    from types import SimpleNamespace
+
+    from youju.api import app as app_module
+
+    opened = 0
+
+    def override():
+        nonlocal opened
+        opened += 1
+        with session_factory() as s:
+            yield s
+
+    monkeypatch.setattr(
+        app_module, "get_settings", lambda: SimpleNamespace(role="admin", admin_token="t" * 32)
+    )
+    monkeypatch.setattr(v1, "SEARCH_PER_MINUTE", 3)
+    app.dependency_overrides[get_session] = override
+    try:
+        client = TestClient(app)
+        office = {"X-WX-SOURCE": "wx_client", "X-Original-Forwarded-For": "203.0.113.7"}
+        for n in range(3):
+            headers = {**office, "X-WX-OPENID": f"o-{n}"}
+            assert client.get("/api/v1/search", headers=headers).status_code == 200
+        assert opened == 3
+        refused = client.get("/api/v1/search", headers={**office, "X-WX-OPENID": "o-new"})
+        assert refused.status_code == 429 and opened == 3
+        elsewhere = {**office, "X-Original-Forwarded-For": "203.0.113.8"}
+        assert client.get("/api/v1/search", headers=elsewhere).status_code == 200
+        assert set(v1._SEARCH_TIMES) == {"ip:203.0.113.7", "ip:203.0.113.8"}
+    finally:
+        app.dependency_overrides.clear()

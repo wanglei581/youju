@@ -1,16 +1,12 @@
 const api = require('../../utils/api.js');
-const { dueInfo, deadlineNote, dueView, cnDate, weekday, kindClass, regionText } = require('../../utils/format.js');
-const { copyLink } = require('../../utils/copy.js');
+const { dueInfo, deadlineNote, dueView, cnDate, weekday, kindClass, regionText, opening, summaryLine, noBodyText, goneNote, readEntry } = require('../../utils/format.js');
 const { requestOnce, remindOpen } = require('../../utils/subscribe.js');
 const { remindedDocs } = require('../../utils/reminders.js');
 const { loginOpen } = require('../../utils/consent.js');
-const { exportDocs } = require('../../utils/exporter.js');
+const { previewDocs } = require('../../utils/exporter.js');
 const { watchDay, stopDay } = require('../../utils/daywatch.js');
 const attachments = require('../../utils/attachments.js');
 const { versionRows, upstreamLine } = require('../../utils/repost.js');
-
-// 正文默认显示的字数：在这个长度附近的换行处截断，读起来不断在半句
-const BODY_PREVIEW = 600;
 
 // 转发卡片的标题（D-070：卡片只显示通知标题和发文机关）："发文机关｜通知标题"，标题里已经写了发文机关的不重复。
 // 微信卡片只显示两行左右，太长的截到 60 个字（按字截，不把表情等双字节字符截成半个）
@@ -28,12 +24,6 @@ function allowShare(on) {
   if (typeof wx === 'undefined') return;
   if (on && wx.showShareMenu) wx.showShareMenu({ menus: ['shareAppMessage'] });
   if (!on && wx.hideShareMenu) wx.hideShareMenu({ menus: ['shareAppMessage', 'shareTimeline'] });
-}
-
-function previewOf(text) {
-  if (text.length <= BODY_PREVIEW) return text;
-  const cut = text.lastIndexOf('\n', BODY_PREVIEW);
-  return `${text.slice(0, cut > BODY_PREVIEW - 200 ? cut : BODY_PREVIEW)}……`;
 }
 
 // 申报条件：接口只给人工核对、整份确认过的条目，每条是类别和通知原文里的原句（逐字引用）。
@@ -72,10 +62,13 @@ function deadlineRows(deadlines) {
   });
 }
 
+// 上面的截止卡片有没有写日期：有逐条截止时看其中有没有日期，没有时看旧接口的那一条核对过的截止
+const dueDated = (dls, due) => (dls && dls.length ? dls.some((d) => d.dateText) : !!due);
+
 Page({
   data: { doc: null, shareReady: false, regionText: '', due: null, dueNote: '', dueDate: '', dueWeek: '', changes: [], tagClasses: [], reminded: false, error: '',
-    bodyOpen: false, bodyFolded: false, bodyPreview: '', bodyRest: 0, supportExpanded: '', supportEvidence: '', conds: [],
-    atts: [], attNote: '', versions: [], upstream: '' },
+    bodyView: null, bodySummary: '', noBody: '', entry: null, goneNote: '', supportExpanded: '', supportEvidence: '', conds: [],
+    atts: [], attNote: '', versions: [], versionLabel: '', upstream: '', dueDated: false },
 
   onLoad(query) {
     if (api.watchStartup) api.watchStartup(this);
@@ -118,31 +111,43 @@ Page({
         // 首发版（D-061）：接口给 deadlines 时按类型逐条写（企业申报、推荐、材料报送……），
         // 核对过的标"已核对"，机器摘录的标"机器摘录·未经人工核对"并附原句，其余写"截止未核对"
         const dls = Array.isArray(doc.deadlines) ? deadlineRows(doc.deadlines) : null;
+        const versions = versionRows(doc.repost);
+        // 正文和附件（D-097）：能不能读以服务端为准（和阅读页同一个判断）；正文先给开头，在段末停
+        const atts = attachments.decorate(doc.attachments);
+        const bodyView = body ? opening(body) : null;
         this.setData({
           doc,
           // 地区照录服务端写法；来源带区县而地区文字里没写时补上区县
           regionText: regionText(doc),
-          // 正文默认只显示开头一段；比这长的才给"展开全文"
-          bodyOpen: false,
-          bodyFolded: !!body && body.text.length > BODY_PREVIEW,
-          bodyPreview: body ? previewOf(body.text) : '',
-          bodyRest: body ? body.total - body.text.length : 0,
+          // 不满一屏全部显示（"全文如下"），长的显示开头（"下面是开头，全文约 N 字"）；正文卡顶上一行写能读到什么
+          bodyView,
+          bodySummary: summaryLine(doc.body, atts),
+          noBody: body ? '' : noBodyText(doc.body, atts),
+          // 原网页已失效：标题下写明（正文、附件都不再给）
+          goneNote: goneNote(doc.link_gone, !!body || atts.some((a) => a.canOpen)),
+          // 正文下面和底栏两处同名："阅读全文"（只显示了开头）或"阅读附件"（正文已全部显示或没有正文），都读不了不显示
+          entry: readEntry(doc.body, bodyView, atts),
           supportExpanded: '',
           supportEvidence: '',
           conds: conditionRows(doc),
           // 转发版本（D-055）：同一份部里通知的各地版本，各自的截止按版本列出
-          versions: versionRows(doc.repost),
+          versions,
+          // 本页是哪一版（如"江西版"）：截止卡片里写明上面的日期只是这一版的（10/22 走查）
+          versionLabel: (versions.find((v) => v.current) || {}).label || '',
           upstream: upstreamLine(doc.repost),
           due,
           dls,
+          // 上面的截止卡片写了日期（逐条截止里至少一行有日期；旧接口只有一条核对过的截止）：
+          // 正文说明才写"截止日期可先看上面的'截止时间'"
+          dueDated: dueDated(dls, due),
           // 没有核对过的日期时只写说明（截止未核对 / 截止时间见原文），不给任何日期
           dueNote: deadlineNote(doc),
           dueDate: due ? cnDate(doc.deadline.date) : '',
           dueWeek: due ? `${weekday(doc.deadline.date)}${doc.deadline.time ? ` ${doc.deadline.time}` : ''}` : '',
           tagClasses: (doc.tags || []).map((t) => kindClass(t)),
-          // 附件：存有副本的点了在小程序里打开，其他的复制原文链接并说明原因
-          atts: attachments.decorate(doc.attachments),
-          attNote: attachments.note(doc.attachments),
+          // 附件：每个直接写能不能读，读不了的灰色、不能点、写原因
+          atts,
+          attNote: attachments.note(atts),
           // 已变更的截止（延期、调整、撤销）：不再当作有效截止，写明原因并链接到新通知
           changes: (doc.deadline_changes || []).map((c) => Object.assign({}, c, {
             dateText: `${cnDate(c.date)}${c.time ? ` ${c.time}` : ''}`,
@@ -153,15 +158,12 @@ Page({
         this.syncReminded();
       })
       .catch((err) => this.setData({
-        doc: null, due: null, dueNote: '', changes: [], reminded: false, atts: [], attNote: '', conds: [], versions: [], upstream: '',
+        doc: null, due: null, dueNote: '', changes: [], reminded: false, atts: [], attNote: '', conds: [], versions: [], versionLabel: '', upstream: '',
+        bodyView: null, bodySummary: '', noBody: '', entry: null, goneNote: '',
         takenDown: err.status === 404 && err.message === '该文件已下架',
         error: err.status === 404 ? err.message : `数据未更新：${err.message}`,
       }))
       .then(() => { this.refreshing = false; this.setData({ loading: false }); });
-  },
-
-  toggleBody() {
-    this.setData({ bodyOpen: !this.data.bodyOpen });
   },
 
   toggleSupport(e) {
@@ -214,10 +216,6 @@ Page({
     if (id && !current) wx.navigateTo({ url: `/pages/detail/index?id=${id}` });
   },
 
-  copyVersion(e) {
-    copyLink(e.currentTarget.dataset.url);
-  },
-
   openNew(e) {
     const id = e.currentTarget.dataset.id;
     if (id) wx.navigateTo({ url: `/pages/detail/index?id=${id}` });
@@ -225,7 +223,10 @@ Page({
 
   recompute() {
     const doc = this.data.doc;
-    if (doc) this.setData({ due: dueInfo(doc.deadline), dls: Array.isArray(doc.deadlines) ? deadlineRows(doc.deadlines) : null });
+    if (!doc) return;
+    const dls = Array.isArray(doc.deadlines) ? deadlineRows(doc.deadlines) : null;
+    const due = dueInfo(doc.deadline);
+    this.setData({ due, dls, dueDated: dueDated(dls, due) });
   },
 
   // 截止提醒：一次性订阅消息，用户在微信弹窗里允许后才算订阅成功
@@ -248,24 +249,33 @@ Page({
     });
   },
 
-  copy() {
-    copyLink(this.data.doc && this.data.doc.url);
+  // 名单类通知的正文里名单没展开（D-092）：去查名单查企业
+  toLists() {
+    wx.navigateTo({ url: '/pages/lists/index' });
   },
 
-  // 点附件：能打开的下载后用微信打开（右上角菜单可转发、保存）；不能打开的复制原文链接并说明原因
+  // 正文下面和底栏两处同名的入口：阅读全文（正文）或阅读附件（第一个能读的附件）
+  readBody() {
+    const { doc, entry } = this.data;
+    if (!doc || !entry) return;
+    const part = entry.attachment ? `&attachment=${encodeURIComponent(entry.attachment)}` : '';
+    wx.navigateTo({ url: `/pages/reader/index?id=${encodeURIComponent(doc.id)}${part}` });
+  },
+
+  // 点附件：能读的进入原生阅读页；读不了的灰色、不能点（原因已写在附件后面），不把失败变成复制外链。
   openAttachment(e) {
     const att = this.data.atts[e.currentTarget.dataset.index];
     const { doc } = this.data;
-    if (!att || !doc || this.openingAttachment) return;
+    if (!att || !doc || !att.canOpen || this.openingAttachment) return;
     this.openingAttachment = true;
     const done = () => { this.openingAttachment = false; };
-    attachments.open(att, doc.url).then(done, done);
+    attachments.open(att, doc.id).then(done, done);
   },
 
-  // 导出本份：Excel 或 Word，含原文链接和数据说明
+  // 先在小程序内查看本份文件目录，再按需保存。
   exportDoc() {
     const { doc } = this.data;
-    if (doc) exportDocs([doc.id], { label: doc.title.length > 30 ? `${doc.title.slice(0, 30)}…` : doc.title });
+    if (doc) previewDocs([doc.id], { label: doc.title.length > 30 ? `${doc.title.slice(0, 30)}…` : doc.title });
   },
 
   feedback() {

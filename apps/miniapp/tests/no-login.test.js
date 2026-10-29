@@ -27,7 +27,7 @@ function load(file, deps = {}, globals = {}) {
   const module = { exports: {} };
   vm.runInNewContext(read(file), {
     module, setTimeout, clearTimeout, console,
-    require(name) { if (name === '../../utils/regions.js') return require('../utils/regions.js'); if (!Object.hasOwn(deps, name) && /ai-access\.js$/.test(name)) return AI_OFF; return Object.hasOwn(deps, name) ? deps[name] : {}; },
+    require(name) { if (name === '../../utils/regions.js') return require('../utils/regions.js'); if (!Object.hasOwn(deps, name) && /ai-access\.js$/.test(name)) return AI_OFF; if (!Object.hasOwn(deps, name) && /(^|\/)pages\.js$/.test(name)) return require('./helpers/package-pages-default.js').pages; return Object.hasOwn(deps, name) ? deps[name] : {}; },
     Page(d) { def = d; },
     Component(d) { def = d; },
     ...globals,
@@ -77,7 +77,7 @@ test('开关只看代码包里的 legal.final：loginOpen 和它一致，不看�
   assert.equal(consentFor(false, { isLive: () => false }).loginOpen(), false);
 });
 
-test('底部导航：未定稿时只有首页、文件、我的三项，三等分；定稿后四项含"关注"；选中项按 app.json 的序号', () => {
+test('底部导航：未定稿时只有首页、导出、我的三项，三等分；定稿后四项含"关注"；选中项按 app.json 的序号（第三格叫"导出"，D-087）', () => {
   const tabs = JSON.parse(read('app.json')).tabBar.list.map((t) => t.pagePath);
   // app.json 仍保留关注页：定稿后不用改 app.json，分享进来的关注页链接也能打开。
   // 第 5 项是 AI 板块（D-075，序号 4）：AI 关着时底栏不画它，和原来一样（画出来的样子见 ai-section.test.js）
@@ -88,10 +88,10 @@ test('底部导航：未定稿时只有首页、文件、我的三项，三等�
     const files = tabs.indexOf('pages/files/index');
     const root = shown('custom-tab-bar/index.wxml', { ...bar.data, selected: files });
     const items = texts(root, hasClass('item'));
-    assert.deepEqual(items, final ? ['首页', '关注', '文件', '我的'] : ['首页', '文件', '我的']);
+    assert.deepEqual(items, final ? ['首页', '关注', '导出', '我的'] : ['首页', '导出', '我的']);
     const [barNode] = findAll(root, hasClass('bar'));
     assert.equal(barNode.attrs.style, `grid-template-columns: repeat(${items.length}, 1fr)`);
-    assert.deepEqual(texts(root, hasClass('item--on')), ['文件']);
+    assert.deepEqual(texts(root, hasClass('item--on')), ['导出']);
     // 每一项都能点，点了按自己的路径切换
     for (const node of findAll(root, hasClass('item'))) {
       bar.switchTab({ currentTarget: { dataset: { path: node.attrs['data-path'] } } });
@@ -223,8 +223,10 @@ function detailRoot(final) {
   Object.assign(page.data, {
     loading: false, error: '',
     doc: { id: '9', title: '关于申报的通知', tags: ['申报通知'], region: '山东', issuer: '某厅', date: '2026-10-01',
-      deadline: { label: '申报截止', notes: ['以原文为准'] }, points: [['发文机关', '某厅']], body: { status: 'none' } },
+      deadline: { label: '申报截止', notes: ['以原文为准'] }, points: [['发文机关', '某厅']], body: { status: 'none', reason: 'attachments' } },
     due: { days: 10, tone: 'normal' }, dueDate: '10月17日', dueWeek: '周六',
+    // 有能读的附件：底栏主按钮是"阅读附件"（D-097）
+    entry: { label: '阅读附件', attachment: '3' },
   });
   return shown('pages/detail/index.wxml', page.data);
 }
@@ -235,7 +237,7 @@ test('详情页：未定稿时截止卡片里没有"订阅截止提醒"，底栏
     assert.equal(findAll(root, tapsTo('toggleRemind')).length, final ? 1 : 0);
     assert.equal(textOf(root).includes('订阅截止提醒（一次）'), final);
     const [bar] = findAll(root, hasClass('bar'));
-    assert.deepEqual(findAll(bar, (n) => !!n.attrs.bindtap).map((n) => n.attrs.bindtap), final ? ['exportDoc', 'feedback', 'copy'] : ['exportDoc', 'copy']);
+    assert.deepEqual(findAll(bar, (n) => !!n.attrs.bindtap).map((n) => n.attrs.bindtap), final ? ['exportDoc', 'feedback', 'readBody'] : ['exportDoc', 'readBody']);
     assert.equal(textOf(bar).includes('纠错'), final);
     // 截止日期照常显示
     assert.match(textOf(root), /申报截止 10月17日 ?周六/);
@@ -275,7 +277,8 @@ test('关于有据：未定稿时使用说明不提关注和提醒，没有"去�
     const root = shown('pages/about/index.wxml', page.data);
     const all = textOf(root);
     assert.equal(findAll(root, tapsTo('feedback')).length, final ? 1 : 0);
-    assert.equal(all.includes('关注这个搜索'), final);
+    // 10/22 走查：按钮上写的是"关注"，说明里也写点"关注"、存的是当前搜索条件
+    assert.equal(all.includes('在搜索结果页点"关注"，把当前的关键词和筛选条件存下来'), final);
     // 订阅模板申请下来之前没有微信提醒，使用说明不提（10/15 走查）
     assert.equal(all.includes('订阅一次微信提醒'), false);
     assert.equal(all.includes('申请覆盖'), final);
@@ -293,7 +296,7 @@ test('关于有据：未定稿时使用说明不提关注和提醒，没有"去�
     assert.equal(notes.length, final ? 0 : 1);
     if (!final) {
       const note = textOf(notes[0]);
-      for (const line of ['本版本不需要登录，不收集姓名、手机号等个人信息', '只把链接或邮箱写入剪切板，不读取剪切板', '导出的文件只保存在你的手机上',
+      for (const line of ['本版本不需要登录，不收集姓名、手机号等个人信息', '点联系邮箱时，只把邮箱写入剪切板，不读取剪切板', '导出的文件只保存在你的手机上',
         `服务器按法律要求保存访问日志（如 IP 地址）${KEEP_DAYS} 天`]) assert.ok(note.includes(line), `数据说明缺少：${line}`);
       assert.doesNotMatch(note, /【|】|关注|提醒|纠错|注销|我的数据/);
     }

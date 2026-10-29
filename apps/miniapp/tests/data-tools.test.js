@@ -220,10 +220,10 @@ test('共同任务中心四种能力分别过滤；过期结果没有下载按�
     wx: { setNavigationBarTitle() {} }, setTimeout(fn) { const id = ++serial; timers.set(id, fn); return id; }, clearTimeout(id) { timers.delete(id); },
   });
   page.onShow(); await flush(); assert.deepEqual(page.data.items.map(i => i.kind), ['compare', 'track']);
-  let visible = textOf(render('pages/advisor-tasks/index.wxml', page.data)); assert.doesNotMatch(visible, /AI|下载 Excel/); assert.match(visible, /已过期/);
+  let visible = textOf(render('pages/advisor-tasks/index.wxml', page.data)); assert.doesNotMatch(visible, /AI|站内查看结果/); assert.match(visible, /已过期/);
   const poll = [...timers.values()][0]; page.onHide(); assert.equal(timers.size, 0); poll(); await flush(); assert.equal(listed, 1);
   items = [{ id: 1, kind: 'compare', status: 'done', hasFile: true, rowCount: 2 }]; page.onShow(); await flush();
-  visible = textOf(render('pages/advisor-tasks/index.wxml', page.data)); assert.match(visible, /下载 Excel/); assert.equal(timers.size, 0);
+  visible = textOf(render('pages/advisor-tasks/index.wxml', page.data)); assert.match(visible, /站内查看结果/); assert.equal(timers.size, 0);
   visibleCaps = caps(false, true); page.onShow(); await flush(); assert.equal(page.data.items.length, 0); page.onUnload();
 });
 
@@ -252,7 +252,7 @@ test('新增表单和独立说明均注册，模板完整；工具入口覆盖�
   const app = JSON.parse(fs.readFileSync(path.join(root, 'app.json'), 'utf8'));
   // 21 页完整候选 + 收费第一期的购买页、订单页（D-058，入口只在服务端在售或有订单时出现）
   // + 加量体验的确认页（D-070 ③，服务端开关开着才有入口）+ AI 板块首页和使用帮助（D-075）
-  assert.equal(app.pages.length, 26);
+  assert.equal(app.pages.length, 28);
   for (const page of ['advisor-form', 'advisor-terms', 'advisor-trial', 'pass', 'orders']) {
     assert.ok(app.pages.includes(`pages/${page}/index`)); parse(fs.readFileSync(path.join(root, `pages/${page}/index.wxml`), 'utf8'));
   }
@@ -302,9 +302,9 @@ test('读取任务期间权限被撤回时清空旧任务；文件记录重下�
     '../../utils/api.js': { isLive: () => true }, '../../utils/exports.js': { list: () => [{ id: 'advisor-8', source: 'advisor', taskId: 8, kind: 'track', count: 2, format: 'xlsx', at: '', path: '/fake' }] },
     '../../utils/exporter.js': { exists: () => false, exportDocs: () => { throw new Error('不能把任务编号当文档导出'); } }, '../../utils/format.js': { shortTime: () => '' },
     '../../utils/data-tools.js': { openResult: (id, options) => { calls.push(id); guard = options.current; return Promise.resolve(); } },
-  }, { wx: { showLoading() {}, hideLoading() {} } });
-  filePage.onShow(); filePage.reexport(event({ index: 0 })); assert.equal(guard(), true); filePage.onHide(); assert.equal(guard(), false); await flush();
-  assert.deepEqual(calls, [8]); filePage.onUnload();
+  }, { wx: { navigateTo: o => calls.push(o.url) } });
+  filePage.onShow(); filePage.reexport(event({ index: 0 })); await flush();
+  assert.deepEqual(calls, ['/pages/results/index?mode=advisor&taskId=8']); filePage.onUnload();
 });
 
 test('服务端免费次数刚耗尽时丢弃购买引导，两类行数上限均作废预览并采用服务端上限', async () => {
@@ -360,15 +360,15 @@ test('真实 exporter 模块接线可下载；页面离开后异步写入只删�
   assert.equal(exporter.remove('/local/private.txt'), false);
 });
 
-test('文件页清空确认使在途任务下载失效，清空后不能重新写入记录', async () => {
-  let guard; let resolve; let cleared = 0;
+test('文件页清空同时清理记录和导出文件，查看结果不在此页下载', async () => {
+  let cleared = 0; let removed = 0; const routes = [];
   const page = load('pages/files/index.js', {
     '../../utils/api.js': { isLive: () => true }, '../../utils/format.js': { shortTime: () => '' },
     '../../utils/exports.js': { list: () => [{ id: 'advisor-9', source: 'advisor', taskId: 9, count: 1, format: 'xlsx' }], clear: () => { cleared += 1; return true; } },
-    '../../utils/exporter.js': { exists: () => false, removeFiles: () => 0 },
-    '../../utils/data-tools.js': { openResult: (_id, options) => { guard = options.current; return new Promise(r => { resolve = r; }); } },
-  }, { wx: { showLoading() {}, hideLoading() {}, showToast() {}, showModal: o => o.success({ confirm: true }) } });
-  page.onShow(); page.reexport(event({ index: 0 })); assert.equal(guard(), true); page.clearAll(); assert.equal(guard(), false); assert.equal(cleared, 1); resolve(); await flush(); page.onUnload();
+    '../../utils/exporter.js': { exists: () => false, removeFiles: () => { removed += 1; return 0; } },
+  }, { wx: { navigateTo: o => routes.push(o.url), showToast() {}, showModal: o => o.success({ confirm: true }) } });
+  page.onShow(); page.reexport(event({ index: 0 })); page.clearAll();
+  assert.equal(cleared, 1); assert.equal(removed, 1); assert.deepEqual(routes, ['/pages/results/index?mode=advisor&taskId=9']); page.onUnload();
 });
 
 test('从微信文件选择器返回时先刷新能力，读取完成会等待能力后自动预览，不静默丢失', async () => {
@@ -399,14 +399,14 @@ test('数据工具已开时保留其他工具同意入口，不因整体enabled�
   assert.match(textOf(render('pages/advisor/index.wxml', page.data)), /阅读并同意后查看其他工具/); page.consent(); await flush(); assert.equal(agreed, 1); page.onUnload();
 });
 
-test('文件重下错误先关闭loading再显示提示，不被hideLoading吞掉', async () => {
-  const order = [];
+test('历史任务文件主入口按任务编号进入站内结果，不能直接打开本地旧文件', () => {
+  const routes = [];
   const page = load('pages/files/index.js', {
     '../../utils/api.js': { isLive: () => true }, '../../utils/format.js': { shortTime: () => '' },
     '../../utils/exports.js': { list: () => [{ source: 'advisor', taskId: 2, count: 1, format: 'xlsx' }] },
-    '../../utils/exporter.js': { exists: () => false }, '../../utils/data-tools.js': { openResult: () => Promise.reject(new Error('结果已下架')) },
-  }, { wx: { showLoading() {}, hideLoading() { order.push('hide'); }, showToast(o) { order.push(o.title); } } });
-  page.onShow(); page.reexport(event({ index: 0 })); await flush(); assert.deepEqual(order, ['hide', '结果已下架']); page.onUnload();
+    '../../utils/exporter.js': { exists: () => true, open: () => { throw new Error('不能默认打开文件'); } },
+  }, { wx: { navigateTo: o => routes.push(o.url) } });
+  page.onShow(); page.open(event({ index: 0 })); assert.deepEqual(routes, ['/pages/results/index?mode=advisor&taskId=2']); page.onUnload();
 });
 
 test('客户通知表旧四列保留关键词支持方式，第五列才解释为城市', () => {
@@ -522,7 +522,7 @@ test('未同意通用协议：工具中心与任务中心写通用工具文案�
     if (page.onLoad) page.onLoad({});
     page.onShow(); await flush();
     const shown = textOf(render(`pages/${name}/index.wxml`, page.data));
-    assert.match(shown, /使用工具前，请先阅读并同意《用户协议》和《隐私保护指引》/, name); assert.doesNotMatch(shown, /AI/, name);
+    assert.match(shown, /使用前，请先阅读并同意《用户协议》和《隐私保护指引》/, name); assert.doesNotMatch(shown, /AI/, name);
     // 403 时不知道服务端开没开批量工具：介绍卡只说"有什么"，不承诺同意后一定能用（Codex 审阅）
     if (name === 'advisor') { assert.match(shown, /工具中心有什么/); assert.doesNotMatch(shown, /同意后可以用/); }
     page.consent(); await flush(); assert.equal(asked, 1, name); page.onUnload();
@@ -537,7 +537,7 @@ test('老用户协议更新后：工具中心和我的记录直接写"协议已�
     if (page.onLoad) page.onLoad({});
     page.onShow(); await flush();
     const shown = textOf(render(`pages/${name}/index.wxml`, page.data));
-    assert.match(shown, /《用户协议》和《隐私保护指引》已更新，请阅读并同意新版后继续使用工具/, name); assert.doesNotMatch(shown, /使用工具前/, name);
+    assert.match(shown, /《用户协议》和《隐私保护指引》已更新，请阅读并同意新版后继续使用。/, name); assert.doesNotMatch(shown, /使用工具前/, name);
     page.consent(); await flush(); assert.equal(asked, 1, name); page.onUnload();
   }
 });

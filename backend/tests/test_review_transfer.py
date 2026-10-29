@@ -266,3 +266,46 @@ def test_import_warns_when_here_approved_but_export_says_changed(client, session
     ).json()
     assert got["missingTarget"] == 1
     assert "这边已通过" in got["problems"][0]["reason"]
+
+
+def test_import_does_not_approve_other_kind(client, session, reviewed):
+    """ "其他"类不对外显示：导入的"通过"不写、记为冲突，其余照常（D-099 期 0 补审）。"""
+    body = client.get("/api/admin/reviews/export", headers=HEADERS).json()
+    _reset_to_pending(session)
+    row = session.query(DocumentDeadline).filter_by(fingerprint="a" * 64).one()
+    row.kind = "其他"
+    session.commit()
+    done = client.post("/api/admin/reviews/import?dry_run=false", headers=HEADERS, json=body)
+    assert done.json()["conflict"] == 1 and done.json()["applied"] == 2
+    session.expire_all()
+    row = session.query(DocumentDeadline).filter_by(fingerprint="a" * 64).one()
+    assert row.status == "pending"
+
+
+def test_other_kind_cannot_be_restored_to_approved(client, session, reviewed):
+    """已变更的恢复成已通过就会对外显示："其他"类不行。"""
+    row = session.query(DocumentDeadline).filter_by(fingerprint="b" * 64).one()
+    assert row.status == "changed"
+    row.kind = "其他"
+    session.commit()
+    response = client.post(
+        f"/api/admin/deadlines/{row.id}/unchange",
+        headers=HEADERS,
+        json={"reviewed_by": "核对人甲"},
+    )
+    assert response.status_code == 422
+    session.expire_all()
+    assert session.query(DocumentDeadline).filter_by(fingerprint="b" * 64).one().status == "changed"
+
+
+def test_import_reports_other_kind_before_missing_change_target(client, session, reviewed):
+    """ "其他"类先按类型记冲突：哪怕导出的是"已变更"、这边还没有变更通知。"""
+    body = client.get("/api/admin/reviews/export", headers=HEADERS).json()
+    changed = next(i for i in body["items"] if i["status"] == "changed")
+    changed["change"]["toUrlKey"] = "kw.beijing.gov.cn/not-here.html"
+    _reset_to_pending(session)
+    row = session.query(DocumentDeadline).filter_by(fingerprint="b" * 64).one()
+    row.kind = "其他"
+    session.commit()
+    done = client.post("/api/admin/reviews/import?dry_run=false", headers=HEADERS, json=body)
+    assert done.json()["conflict"] == 1 and done.json()["missingTarget"] == 0

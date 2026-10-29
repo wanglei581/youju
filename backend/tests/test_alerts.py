@@ -2,7 +2,9 @@
 
 import logging
 import os
+import shutil
 import subprocess
+import time
 from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -450,6 +452,108 @@ def test_job_alerts_without_changing_failure_code(
         assert not calls
 
 
+def _job_script(tmp_path: Path) -> Path:
+    """真实的 job.sh，环境、日志和 /tmp 下的锁、开始时间都换到测试目录。"""
+    original = (Path(__file__).resolve().parents[1] / "deploy" / "job.sh").read_text()
+    script = (
+        original.replace("/app/backend/deploy/env.sh", str(tmp_path / "env.sh"))
+        .replace("cd /app/backend", f"cd {tmp_path}")
+        .replace("/proc/1/fd/1", str(tmp_path / "job.log"))
+        .replace("/tmp/youju-", f"{tmp_path}/youju-")
+    )
+    (tmp_path / "job.sh").write_text(script)
+    (tmp_path / "env.sh").write_text("")
+    return tmp_path / "job.sh"
+
+
+def _stub(tmp_path: Path, name: str, body: str) -> None:
+    path = tmp_path / name
+    path.write_text("#!/bin/sh\n" + body)
+    path.chmod(0o755)
+
+
+# 容器里的 /bin/sh 是 dash：本机有 dash 时两种都跑
+SHELLS = ["sh"] + (["dash"] if shutil.which("dash") else [])
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+@pytest.mark.parametrize(
+    ("started", "flock_code", "expected_code", "alert"),
+    [
+        ("ago:30", 75, 0, None),
+        ("ago:590", 75, 0, None),
+        ("ago:610", 75, 75, "上一次还没跑完"),
+        ("ago:-120", 75, 75, "上一次还没跑完"),  # 时钟往回调过：当作卡住
+        ("garbage", 75, 75, "上一次还没跑完"),
+        (None, 75, 75, "上一次还没跑完"),
+        ("ago:30", 1, 1, "任务执行失败"),  # 不是等锁超时：照常提醒
+    ],
+)
+def test_advisor_run_overlap_is_quiet_unless_stuck(
+    tmp_path, shell, started, flock_code, expected_code, alert
+):
+    # advisor-run 领到的任务做完才退出，常跨过下一分钟。下一分钟这一次等满 55 秒还没拿到锁：
+    # 上一轮开始不到 10 分钟就安静跳过；超过 10 分钟、读不到开始时间、时钟往回调过都照常提醒
+    job = _job_script(tmp_path)
+    if started == "garbage":
+        (tmp_path / "youju-advisor-run.started").write_text("abc\n")
+    elif started is not None:
+        ago = int(started.split(":")[1])
+        (tmp_path / "youju-advisor-run.started").write_text(f"{int(time.time()) - ago}\n")
+    _stub(tmp_path, "flock", 'printf "%s\\n" "$*" > "$FLOCK_ARGS"\nexit "$FLOCK_CODE"\n')
+    _stub(tmp_path, "youju", 'printf "%s\\n" "$*" >> "$ALERT_CALLS"\nexit 0\n')
+    env = {
+        **os.environ,
+        "PATH": f"{tmp_path}:{os.environ['PATH']}",
+        "FLOCK_ARGS": str(tmp_path / "flock.args"),
+        "FLOCK_CODE": str(flock_code),
+        "ALERT_CALLS": str(tmp_path / "alert.calls"),
+    }
+    result = subprocess.run([shell, str(job), "advisor-run"], env=env, check=False)
+    assert result.returncode == expected_code
+    # 下一分钟这一次最多等 55 秒（短于一分钟，不会堆积），上一轮一结束就接着跑
+    assert (tmp_path / "flock.args").read_text().startswith("-w 55 -E 75 ")
+    calls = (tmp_path / "alert.calls").read_text() if (tmp_path / "alert.calls").exists() else ""
+    log = (tmp_path / "job.log").read_text()
+    if alert:
+        assert alert in calls and f"退出码 {flock_code}" in calls
+        assert "跳过：youju advisor-run" not in log
+    else:
+        assert not calls
+        assert "跳过：youju advisor-run" in log
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_advisor_run_records_start_time_inside_lock(tmp_path, shell):
+    # 拿到锁以后才写开始时间（锁外写会把正在跑的那一轮的时间改掉）；youju 只收到 advisor-run，
+    # 开始时间文件不会混进参数；别的任务不写开始时间、还是不等锁
+    job = _job_script(tmp_path)
+    _stub(
+        tmp_path,
+        "flock",
+        'printf "%s\\n" "$*" >> "$FLOCK_ARGS"\n'
+        'case "$1" in -w) shift 5 ;; *) shift 4 ;; esac\nexec "$@"\n',
+    )
+    _stub(tmp_path, "timeout", 'shift\nexec "$@"\n')
+    _stub(tmp_path, "youju", 'printf "%s\\n" "$*" >> "$CALLS"\nexit 0\n')
+    env = {
+        **os.environ,
+        "PATH": f"{tmp_path}:{os.environ['PATH']}",
+        "CALLS": str(tmp_path / "calls"),
+        "FLOCK_ARGS": str(tmp_path / "flock.args"),
+    }
+    before = int(time.time())
+    assert subprocess.run([shell, str(job), "advisor-run"], env=env, check=False).returncode == 0
+    started = int((tmp_path / "youju-advisor-run.started").read_text())
+    assert before <= started <= int(time.time())
+    assert not (tmp_path / "youju-advisor-run.started.tmp").exists()
+    assert (tmp_path / "calls").read_text().splitlines() == ["advisor-run"]
+    assert subprocess.run([shell, str(job), "crawl"], env=env, check=False).returncode == 0
+    assert not (tmp_path / "youju-crawl.started").exists()
+    flock_args = (tmp_path / "flock.args").read_text().splitlines()
+    assert flock_args[0].startswith("-w 55 -E 75 ") and flock_args[1].startswith("-n -E 75 ")
+
+
 @pytest.mark.parametrize(
     ("round_locked", "crawl_code", "args", "expected"),
     [
@@ -461,6 +565,7 @@ def test_job_alerts_without_changing_failure_code(
                 "crawl",
                 "check-sources",
                 "fetch-details",
+                "attachment-texts",
                 "repost-groups",
                 "extract-deadlines",
                 "extract-fields",
@@ -479,6 +584,7 @@ def test_job_alerts_without_changing_failure_code(
                 "crawl",
                 "check-sources",
                 "fetch-details",
+                "attachment-texts",
                 "repost-groups",
                 "extract-deadlines",
                 "extract-fields",
@@ -497,6 +603,7 @@ def test_job_alerts_without_changing_failure_code(
             [
                 "crawl",
                 "fetch-details",
+                "attachment-texts",
                 "repost-groups",
                 "extract-deadlines",
                 "extract-fields",
@@ -513,6 +620,7 @@ def test_job_alerts_without_changing_failure_code(
             [
                 "crawl",
                 "fetch-details",
+                "attachment-texts",
                 "repost-groups",
                 "extract-deadlines",
                 "extract-fields",
@@ -536,6 +644,7 @@ def test_round_runs_in_order_and_checks_only_after_crawl(
         .replace("cd /app/backend", f"cd {tmp_path}")
         .replace("/proc/1/fd/1", str(tmp_path / "round.log"))
         .replace("/tmp/youju-round.lock", str(tmp_path / "round.lock"))
+        .replace("/tmp/youju-round.wanted", str(tmp_path / "round.wanted"))
     )
     (tmp_path / "round.sh").write_text(script)
     (tmp_path / "env.sh").write_text("")
@@ -545,7 +654,7 @@ def test_round_runs_in_order_and_checks_only_after_crawl(
     youju.chmod(0o755)
     job = tmp_path / "job.sh"
     job.write_text(
-        '#!/bin/sh\nprintf "%s\\n" "$1" >> "$CALLS"\n'
+        '#!/bin/sh\nprintf "%s\\n" "$*" >> "$CALLS"\n'
         '[ "$1" = crawl ] && exit "$CRAWL_CODE"\n'
         '[ "$1" = fetch-details ] && exit 1\n'
         "exit 0\n"
@@ -563,7 +672,11 @@ def test_round_runs_in_order_and_checks_only_after_crawl(
     }
     result = subprocess.run(["sh", str(tmp_path / "round.sh"), *args], env=env, check=False)
     assert result.returncode == 0
-    assert (tmp_path / "calls").read_text().split() == expected
+    calls = (tmp_path / "calls").read_text().splitlines()
+    assert [line.split()[0] for line in calls] == expected
+    if "attachment-texts" in expected:
+        # 补完详情（这里补详情失败也照跑）紧接着取附件文字，每轮最多 200 个（取舍写在 round.sh 里）
+        assert "attachment-texts --limit 200" in calls
 
 
 @pytest.mark.parametrize(

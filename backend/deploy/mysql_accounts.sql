@@ -21,7 +21,9 @@ GRANT INSERT, UPDATE, DELETE ON youju.users TO 'youju_api'@'%';
 GRANT INSERT, UPDATE, DELETE ON youju.follows TO 'youju_api'@'%';
 GRANT INSERT, UPDATE, DELETE ON youju.subscriptions TO 'youju_api'@'%';
 GRANT INSERT, UPDATE, DELETE ON youju.feedback TO 'youju_api'@'%';
-GRANT INSERT, UPDATE, DELETE ON youju.events TO 'youju_api'@'%';
+-- 使用记录（events）：写入接口已删（个人信息保护影响评估第六节（二）第 13 条），API 不再写这张表。
+-- 以前的记录注销时随用户行级联删除（MySQL 外键级联不另查子表权限），到期删除由 admin 服务做。
+-- 以前执行过旧版这里的授权的，新版 api 部署后可以收回：REVOKE INSERT, UPDATE, DELETE ON youju.events FROM 'youju_api'@'%';
 -- 顾问任务权限：迁移 0010 建表后，由创始人在正式库手工执行本行一次。
 GRANT INSERT, UPDATE, DELETE ON youju.advisor_tasks TO 'youju_api'@'%';
 GRANT INSERT, UPDATE, DELETE ON youju.advisor_usage TO 'youju_api'@'%';
@@ -40,14 +42,18 @@ GRANT INSERT, UPDATE ON youju.invoice_requests TO 'youju_api'@'%';
 
 -- 奖励权限：迁移 0027 完成后、打开奖励开关（YOUJU_REWARDS_ENABLED）之前，由创始人执行。
 -- 要和上面 workbench_passes 那一行一起执行：有奖励使用期的用户提交任务、注销时要改这张表。
--- 线索队列靠"把名称更新成原值"占用行锁来排队；密钥的值仍然不能改。
-GRANT UPDATE (name) ON youju.app_keys TO 'youju_api'@'%';
+-- 截止线索队列的行锁（"把名称更新成原值"）现在只有核对台（admin 服务）用：用户提交线索的接口已删，
+-- API 不再需要 app_keys 的 UPDATE。以前执行过旧版这里的授权的，新版 api 部署后可以收回：
+-- REVOKE UPDATE (name) ON youju.app_keys FROM 'youju_api'@'%';
 -- API 只在注销时断开流水关联；发奖 INSERT 由 admin 定时任务/核对台执行。
 GRANT UPDATE ON youju.pass_rewards TO 'youju_api'@'%';
 -- 以前这里还有防重复领取凭据表的 INSERT 授权，迁移 0035 已把表删掉。MySQL 删表不收回按表的授权，
 -- 执行过旧版的，迁移后可以收回（没有这项授权时报 1147，不用管）：
 -- REVOKE INSERT ON youju.reward_claims FROM 'youju_api'@'%';
-GRANT INSERT, UPDATE, DELETE ON youju.deadline_clues TO 'youju_api'@'%';
+-- 截止线索：用户提交的接口已删，API 不再新增；用户删除自己待核对的线索、注销时删掉待核对的和断开处理过的，
+-- 要 UPDATE、DELETE。以前执行过旧版这里的授权的，新版 api 部署后可以收回新增：
+-- REVOKE INSERT ON youju.deadline_clues FROM 'youju_api'@'%';
+GRANT UPDATE, DELETE ON youju.deadline_clues TO 'youju_api'@'%';
 
 -- 加量体验权限（D-070 ③）：迁移 0031 完成后、打开体验开关（YOUJU_BOOST_TRIAL_ENABLED）之前，由创始人执行。
 -- 用户点"开始体验"时新增一行；注销时随用户行级联删除（MySQL 外键级联不另查子表权限），API 不改也不删。
@@ -69,3 +75,10 @@ GRANT UPDATE (ends_at) ON youju.boost_trials TO 'youju_api'@'%';
 -- 不执行也不影响 AI 能不能用（api 只读 admin 那一行就能判断），只是收不到"两个服务设置不一致"
 -- "api 开着 AI、admin 却处理不了"这两条提醒；admin 能处理 AI 任务时每天会提醒一次"api 心跳没来"。
 GRANT INSERT, UPDATE ON youju.ai_heartbeat TO 'youju_api'@'%';
+
+-- 问一问权限（#328 第四节第 4 条）：迁移 0043 建好表以后、发 api 之前，由创始人执行（表不存在时
+-- 按表授权会报错）。对话和问答：用户发一问、删对话、注销时新增和删除。违规记录：只能新增，
+-- 不能改、删（同访问日志；190 天到期由 admin 的清理删）。
+GRANT INSERT, UPDATE, DELETE ON youju.ai_chats TO 'youju_api'@'%';
+GRANT INSERT, UPDATE, DELETE ON youju.ai_chat_turns TO 'youju_api'@'%';
+GRANT INSERT ON youju.ai_safety_hits TO 'youju_api'@'%';

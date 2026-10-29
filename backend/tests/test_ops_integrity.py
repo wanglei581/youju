@@ -168,6 +168,8 @@ def test_daily_report_requires_submission_except_dry_run(monkeypatch, sent, expe
     monkeypatch.setattr(cli, "session_factory", lambda: lambda: nullcontext(object()))
     monkeypatch.setattr(digest, "build_digest", lambda *a, **kw: object())
     monkeypatch.setattr(digest, "digest_text", lambda *a: "synthetic report")
+    # 能读情况另发的第二条（D-097 ④）：这里只测第一条的发送结果，第二条见 test_digest.py
+    monkeypatch.setattr(digest, "readability_text", lambda *a: None)
     monkeypatch.setattr(alerts, "send_alert", lambda _: sent)
     assert cli._cmd_daily_report(SimpleNamespace(dry_run=False)) == expected
     assert ("未配置告警" in capsys.readouterr().out) == (sent is None)

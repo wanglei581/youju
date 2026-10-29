@@ -1,6 +1,7 @@
 """AI 检查接进流水线：和规则互相印证，AI 找到的候选也要人工核对，出错按时重试。"""
 
 import json
+from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
 
 import httpx
@@ -425,3 +426,572 @@ def test_merged_twin_urls_are_not_checked_again(session) -> None:
     assert report.documents == 1
     checked = {c.document_id for c in session.scalars(select(AICheck))}
     assert checked == {master.id}
+
+
+def test_result_not_recorded_when_body_changes_during_the_call(
+    session, session_factory, monkeypatch
+) -> None:
+    """调模型期间正文被换掉（youju refetch-bodies 重取正文时删掉检查记录、要求重查）：这次的结果不记，
+    下一轮按新正文重查，免得旧正文的结果把"要重查"盖掉。"""
+    from types import SimpleNamespace
+
+    from youju.ai import pipeline
+
+    doc = add_doc(session)
+    seen = []
+
+    def classify(client, title, body):
+        seen.append(body)
+        if len(seen) == 1:
+            with session_factory() as other:
+                other.get(DocumentDetail, doc.id).body_text = BODY + "（重新取的正文）"
+                other.commit()
+        return SimpleNamespace(kind="申报通知", confidence=0.9, reason="组织企业申报")
+
+    monkeypatch.setattr(pipeline, "classify_with_ai", classify)
+    monkeypatch.setattr(pipeline, "extract_deadlines_with_ai", lambda *args: [])
+    client, _ = fake_ai()
+
+    report = run_ai_checks(session, client)
+    assert (report.documents, report.body_changed, report.kind_agree) == (1, 1, 0)
+    assert session.scalars(select(AICheck)).all() == []
+    report = run_ai_checks(session, client)
+    assert (report.documents, report.body_changed, report.kind_agree) == (1, 0, 1)
+    assert seen[-1] == BODY + "（重新取的正文）"
+    assert sorted(c.task for c in session.scalars(select(AICheck))) == ["deadlines", "kind"]
+
+
+def _deadline_check(session, doc):
+    return session.scalar(
+        select(AICheck).where(AICheck.document_id == doc.id, AICheck.task == "deadlines")
+    )
+
+
+def test_deadline_result_is_stored_with_version(session) -> None:
+    from youju.ai.deadlines import RESULT_VERSION
+
+    doc = add_doc(session)
+    client, _ = fake_ai(
+        deadlines=[ai_item("2026-10-15", "请各单位于2026年10月15日前完成网上申报。")]
+    )
+    run_ai_checks(session, client)
+    result = _deadline_check(session, doc).result
+    assert result["version"] == RESULT_VERSION
+    assert [(item["date"], item["kind"]) for item in result["items"]] == [
+        ("2026-10-15", "企业申报截止")
+    ]
+
+
+def test_old_list_results_still_count(session) -> None:
+    """第 1 版的记录直接存列表：规则候选照样认得 AI 结果。"""
+    doc = add_doc(session)
+    session.add(
+        AICheck(
+            document_id=doc.id,
+            task="deadlines",
+            model="m",
+            result=[{"kind": "企业申报截止", "date": "2026-10-15", "time": None}],
+            checked_at=datetime.now(UTC),
+        )
+    )
+    session.commit()
+    extract_existing(session)
+    row = session.scalar(
+        select(DocumentDeadline).where(DocumentDeadline.candidate_date == date(2026, 10, 15))
+    )
+    assert row.ai_agrees is True
+
+
+def test_one_sided_clock_is_not_agreement_and_not_resubmitted(session) -> None:
+    """D-099 期 0：规则没写时刻、AI 写了 17:00，不算一致；但也不当成新的一天另送一条 AI 候选。"""
+    doc = add_doc(session)
+    extract_existing(session, document_ids=[doc.id])
+    item = ai_item("2026-10-15", "请各单位于2026年10月15日前完成网上申报。")
+    item["time"] = "17:00"
+    client, _ = fake_ai(deadlines=[item])
+    report = run_ai_checks(session, client)
+    rows = session.scalars(select(DocumentDeadline).where(DocumentDeadline.document_id == doc.id))
+    assert sorted((r.origin, r.candidate_date, r.ai_agrees) for r in rows) == [
+        ("rule", date(2026, 10, 15), False),
+        ("rule", date(2026, 10, 20), False),
+    ]
+    assert (report.deadlines_agree, report.deadlines_rule_only, report.deadlines_ai_only) == (
+        0,
+        2,
+        0,
+    )
+
+
+def _old_check(session, doc, result=None):
+    session.add(
+        AICheck(
+            document_id=doc.id,
+            task="deadlines",
+            model="deepseek-flash",
+            result=[] if result is None else result,
+            prompt_tokens=1000,
+            completion_tokens=100,
+            checked_at=datetime(2026, 10, 1, tzinfo=UTC),
+        )
+    )
+    session.commit()
+
+
+def test_rerun_only_old_versions_within_the_days(session) -> None:
+    from youju.ai.deadlines import RESULT_VERSION
+    from youju.ai.pipeline import old_deadline_checks, rerun_old_deadlines
+
+    now = datetime(2026, 10, 28, 1, tzinfo=UTC)
+    recent = add_doc(session, 1)
+    old = add_doc(session, 2)
+    done = add_doc(session, 3)
+    for doc in (old,):
+        doc.publish_date = date(2026, 7, 1)
+        session.get(DocumentDetail, doc.id).publish_date = date(2026, 7, 1)
+    session.commit()
+    _old_check(session, recent)
+    _old_check(session, old)
+    _old_check(session, done, {"version": RESULT_VERSION, "items": []})
+    assert [doc.id for doc, _, _ in old_deadline_checks(session, now, 90)] == [recent.id]
+    client, calls = fake_ai(
+        deadlines=[ai_item("2026-10-15", "请各单位于2026年10月15日前完成网上申报。")]
+    )
+    report = rerun_old_deadlines(session, client, days=90, limit=10, now=now)
+    assert report.documents == 1 and len(calls) == 1
+    assert _deadline_check(session, recent).result["version"] == RESULT_VERSION
+    assert _deadline_check(session, old).result == []
+    assert _deadline_check(session, done).result == {"version": RESULT_VERSION, "items": []}
+    # AI 新找到、规则没有的这一天作为 AI 候选送审；再跑一次没有旧版本可跑
+    assert session.scalar(
+        select(DocumentDeadline).where(
+            DocumentDeadline.document_id == recent.id, DocumentDeadline.origin == "ai"
+        )
+    )
+    assert old_deadline_checks(session, now, 90) == []
+
+
+def test_rerun_keeps_the_old_result_when_the_call_fails(session) -> None:
+    from youju.ai.pipeline import rerun_old_deadlines
+
+    doc = add_doc(session)
+    old = [{"kind": "企业申报截止", "date": "2026-10-15", "time": None}]
+    _old_check(session, doc, old)
+    client, _ = fake_ai(status=500)
+    report = rerun_old_deadlines(
+        session, client, days=90, limit=10, now=datetime(2026, 10, 28, tzinfo=UTC)
+    )
+    assert report.errors == 1
+    assert _deadline_check(session, doc).result == old
+
+
+def test_recheck_command_only_counts_without_apply(session, session_factory, monkeypatch, capsys):
+    """不加 --apply：只清点份数、按上次用量估费用，不调模型、不改数据。"""
+    import argparse
+
+    from youju import cli
+
+    doc = add_doc(session)
+    today = datetime.now(UTC).date()
+    doc.publish_date = today - timedelta(days=10)
+    session.get(DocumentDetail, doc.id).publish_date = today - timedelta(days=10)
+    session.commit()
+    _old_check(session, doc)
+    monkeypatch.setattr(cli, "session_factory", lambda: session_factory)
+
+    def no_client(*args, **kwargs):
+        raise AssertionError("不加 --apply 不该调模型")
+
+    monkeypatch.setattr("youju.ai.get_chat_client", no_client)
+    code = cli._cmd_ai_recheck_deadlines(argparse.Namespace(days=90, limit=300, apply=False))
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "主文件 1 份" in out and "这次约 0.00 元" in out and "没调模型" in out
+    session.expire_all()
+    assert _deadline_check(session, doc).result == []
+
+
+@contextmanager
+def _taken():
+    """定时任务那一轮拿着锁。"""
+    yield False
+
+
+def test_rerun_stops_while_the_round_is_running(session) -> None:
+    """定时任务那一轮在跑（写库那一段拿不到锁）：这份刚调出来的结果扔掉、停下，旧结果留着。"""
+    from youju.ai.pipeline import rerun_old_deadlines
+
+    doc = add_doc(session)
+    _old_check(session, doc)
+    client, calls = fake_ai()
+    report = rerun_old_deadlines(
+        session,
+        client,
+        days=90,
+        limit=10,
+        now=datetime(2026, 10, 28, tzinfo=UTC),
+        slot=_taken,
+    )
+    assert report.round_busy and report.written == 0 and len(calls) == 1
+    assert _deadline_check(session, doc).result == []
+
+
+def test_round_running_sees_a_held_lock(tmp_path) -> None:
+    import fcntl
+    import os
+
+    from youju.ai.pipeline import round_running
+
+    path = tmp_path / "round.lock"
+    assert not round_running(str(path))  # 没有锁文件
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT)
+    try:
+        assert not round_running(str(path))
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        assert round_running(str(path))
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        assert not round_running(str(path))
+    finally:
+        os.close(fd)
+
+
+def test_recheck_apply_refuses_in_the_api_container(session_factory, monkeypatch, capsys):
+    """重跑要在 admin 容器里跑：定时任务在那边，api 容器里看不到它那一轮的锁。"""
+    import argparse
+    from types import SimpleNamespace
+
+    from youju import cli
+
+    monkeypatch.setattr(cli, "session_factory", lambda: session_factory)
+    monkeypatch.setattr(cli, "get_settings", lambda: SimpleNamespace(role="api"))
+
+    def no_client(*args, **kwargs):
+        raise AssertionError("不该调模型")
+
+    monkeypatch.setattr("youju.ai.get_chat_client", no_client)
+    code = cli._cmd_ai_recheck_deadlines(argparse.Namespace(days=90, limit=300, apply=True))
+    assert code == 1 and "admin 容器" in capsys.readouterr().out
+
+
+def test_round_slot_holds_the_round_lock_for_one_document(tmp_path) -> None:
+    """重跑每一份都拿着定时任务那一轮的锁：拿着的时候别人拿不到；那一轮拿着时重跑拿不到。"""
+    import fcntl
+    import os
+
+    import pytest
+
+    from youju.ai.pipeline import round_running, round_slot
+
+    path = str(tmp_path / "round.lock")
+    wanted = str(tmp_path / "round.wanted")
+    with round_slot(path, wanted) as free:
+        assert free and round_running(path)
+        fd = os.open(path, os.O_WRONLY)
+        try:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        finally:
+            os.close(fd)
+    assert not round_running(path)
+    fd = os.open(path, os.O_WRONLY)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        with round_slot(path, wanted) as free:
+            assert not free
+    finally:
+        os.close(fd)
+
+
+def test_rerun_leaves_review_states_of_twins_alone(session) -> None:
+    """重跑只动 AI 的结果：同组还在待核对的副本，不顺带沿用已核对的结果（D-099 期 0 补审）。
+    这件事留给每一轮的规则抽取（照旧会同步）。"""
+    from youju.ai.pipeline import rerun_old_deadlines
+    from youju.dedup import sync_reviewed_twins
+    from youju.models import DocumentMerge
+
+    master = add_doc(session, 1)
+    twin = add_doc(session, 2)
+    session.add(
+        DocumentMerge(duplicate_id=twin.id, canonical_id=master.id, active=True, match_key="t")
+    )
+    quote = "请各单位于2026年10月15日前完成网上申报。"
+
+    def deadline(doc, status, mark):
+        row = DocumentDeadline(
+            document_id=doc.id,
+            fingerprint=mark * 64,
+            kind="企业申报截止",
+            candidate_date=date(2026, 10, 15),
+            evidence=quote,
+            confidence="高",
+            status=status,
+            origin="rule",
+        )
+        if status == "approved":
+            row.approved_date = date(2026, 10, 15)
+            row.reviewed_by = "创始人"
+            row.reviewed_at = datetime(2026, 10, 20, tzinfo=UTC)
+        session.add(row)
+        return row
+
+    deadline(master, "approved", "a")
+    waiting = deadline(twin, "pending", "b")
+    session.commit()
+    _old_check(session, master)
+    client, _ = fake_ai(deadlines=[ai_item("2026-10-15", quote)])
+    report = rerun_old_deadlines(
+        session, client, days=90, limit=10, now=datetime(2026, 10, 28, tzinfo=UTC)
+    )
+    assert report.written == 1
+    session.refresh(waiting)
+    assert waiting.status == "pending"
+    # 对照：每一轮的规则抽取照旧会让它沿用已核对的结果
+    sync_reviewed_twins(session, {master.id})
+    session.commit()
+    session.refresh(waiting)
+    assert waiting.status == "approved"
+
+
+def test_rerun_holds_the_round_lock_only_while_writing(session, tmp_path) -> None:
+    """调模型不拿锁（多慢都不挡定时任务那一轮），写库那一段拿着；拿不到就扔掉这一份、停下。"""
+    from sqlalchemy import event
+
+    from youju.ai.pipeline import rerun_old_deadlines, round_running, round_slot
+
+    path = str(tmp_path / "round.lock")
+    wanted = str(tmp_path / "round.wanted")
+    held, held_at_commit = [], []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        held.append(round_running(path))
+        content = {"deadlines": [ai_item("2026-10-15", "请各单位于2026年10月15日前完成网上申报。")]}
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": json.dumps(content, ensure_ascii=False)}}],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+            },
+        )
+
+    client = ChatClient(
+        "https://example.test",
+        "key",
+        "m",
+        transport=httpx.MockTransport(handler),
+        sleep=lambda _: None,
+    )
+    for number in (1, 2, 3):
+        _old_check(session, add_doc(session, number))
+    slots = iter([True, True, False])
+
+    @contextmanager
+    def slot():
+        if next(slots):
+            with round_slot(path, wanted) as free:
+                yield free
+        else:
+            yield False
+
+    def on_commit(_session):
+        held_at_commit.append(round_running(path))
+
+    event.listen(session, "before_commit", on_commit)
+    try:
+        report = rerun_old_deadlines(
+            session, client, days=90, limit=10, now=datetime(2026, 10, 28, tzinfo=UTC), slot=slot
+        )
+    finally:
+        event.remove(session, "before_commit", on_commit)
+    assert held == [False, False, False]  # 第 3 份调了模型，写库时拿不到锁，扔掉
+    assert held_at_commit == [True, True]
+    assert (report.written, report.round_busy) == (2, True)
+    assert not round_running(path)
+
+
+def test_round_slot_gives_way_to_a_waiting_round(tmp_path) -> None:
+    """round.sh 等锁前留标记：重跑见到新鲜的标记就不拿锁（flock 不排队，让等的一方先拿）；
+    标记过期（round.sh 被杀留下的）或没有标记照常拿。"""
+    import os
+    import time
+
+    from youju.ai.pipeline import WANTED_MAX_AGE, round_slot, round_wanted
+
+    path = str(tmp_path / "round.lock")
+    wanted = tmp_path / "round.wanted"
+    with round_slot(path, str(wanted)) as free:
+        assert free
+    wanted.write_text("1")
+    assert round_wanted(str(wanted))
+    with round_slot(path, str(wanted)) as free:
+        assert not free
+    stale = time.time() - WANTED_MAX_AGE - 60
+    os.utime(wanted, (stale, stale))
+    assert not round_wanted(str(wanted))
+    with round_slot(path, str(wanted)) as free:
+        assert free
+
+
+def test_round_slot_rechecks_the_mark_after_taking_the_lock(tmp_path, monkeypatch) -> None:
+    """看标记和拿锁之间 round.sh 刚写了标记：拿到锁以后再看一眼，马上放开让它（Codex 第 6 轮）。"""
+    from youju.ai import pipeline
+
+    path = str(tmp_path / "round.lock")
+    answers = iter([False, True])
+    monkeypatch.setattr(pipeline, "round_wanted", lambda wanted: next(answers))
+    with pipeline.round_slot(path, str(tmp_path / "round.wanted")) as free:
+        assert not free
+    assert not pipeline.round_running(path)
+
+
+def test_rerun_limits_row_lock_waits_while_writing(session, monkeypatch) -> None:
+    """命令里给 lock_wait：写库时每条语句等行锁最多这么多秒，拿着锁的时间有上限。每一份写库前都
+    设一次：连接池换了连接（用满 pool_recycle、断线重连），新连接上没有这个设置（独立审阅第 4 轮）。"""
+    from sqlalchemy import text
+
+    from youju.ai import pipeline
+
+    for number in (1, 2):
+        _old_check(session, add_doc(session, number))
+    client, _ = fake_ai(
+        deadlines=[ai_item("2026-10-15", "请各单位于2026年10月15日前完成网上申报。")]
+    )
+    seen = []
+    write_one = pipeline._write_one
+
+    def spy(*args, **kwargs):
+        seen.append(session.scalar(text("SELECT @@SESSION.innodb_lock_wait_timeout")))
+        return write_one(*args, **kwargs)
+
+    @contextmanager
+    def slot():
+        # 模拟连接池换了连接：每一份写库前，连接上的设置都回到默认
+        session.execute(text("SET SESSION innodb_lock_wait_timeout = DEFAULT"))
+        yield True
+
+    monkeypatch.setattr(pipeline, "_write_one", spy)
+    try:
+        report = pipeline.rerun_old_deadlines(
+            session,
+            client,
+            days=90,
+            limit=10,
+            now=datetime(2026, 10, 28, tzinfo=UTC),
+            slot=slot,
+            lock_wait=10,
+        )
+    finally:
+        session.execute(text("SET SESSION innodb_lock_wait_timeout = DEFAULT"))
+    assert seen == [10, 10]
+    assert report.written == 2
+
+
+def test_rerun_write_segment_has_a_time_limit(session, session_factory, tmp_path, monkeypatch):
+    """写库那一段超过时限：丢掉连接（不留半截）、放锁、停下，旧结果留着（Codex 第 8 轮）。"""
+    import time
+
+    from youju.ai import pipeline
+
+    doc = add_doc(session)
+    _old_check(session, doc)
+    path, wanted = str(tmp_path / "round.lock"), str(tmp_path / "round.wanted")
+
+    def slow(*args, **kwargs):
+        time.sleep(3)
+
+    monkeypatch.setattr(pipeline, "_apply_deadlines", slow)
+    client, _ = fake_ai(
+        deadlines=[ai_item("2026-10-15", "请各单位于2026年10月15日前完成网上申报。")]
+    )
+    with session_factory() as other:
+        report = pipeline.rerun_old_deadlines(
+            other,
+            client,
+            days=90,
+            limit=10,
+            now=datetime(2026, 10, 28, tzinfo=UTC),
+            slot=lambda: pipeline.round_slot(path, wanted),
+            write_limit=0.5,
+        )
+    assert report.write_timeout and report.written == 0
+    assert not pipeline.round_running(path)
+    session.expire_all()
+    assert _deadline_check(session, doc).result == []
+
+
+def test_rerun_rolls_back_before_releasing_the_lock(
+    session, session_factory, tmp_path, monkeypatch
+):
+    """写库出错：先回滚，再放锁（出了 slot 才放）。"""
+    import pytest
+
+    from youju.ai import pipeline
+
+    doc = add_doc(session)
+    _old_check(session, doc)
+    path, wanted = str(tmp_path / "round.lock"), str(tmp_path / "round.wanted")
+    seen = []
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("写库出错")
+
+    monkeypatch.setattr(pipeline, "_apply_deadlines", broken)
+    client, _ = fake_ai(
+        deadlines=[ai_item("2026-10-15", "请各单位于2026年10月15日前完成网上申报。")]
+    )
+    with session_factory() as other:
+        real_rollback = other.rollback
+
+        def rollback():
+            seen.append(pipeline.round_running(path))
+            real_rollback()
+
+        monkeypatch.setattr(other, "rollback", rollback)
+        with pytest.raises(RuntimeError):
+            pipeline.rerun_old_deadlines(
+                other,
+                client,
+                days=90,
+                limit=10,
+                now=datetime(2026, 10, 28, tzinfo=UTC),
+                slot=lambda: pipeline.round_slot(path, wanted),
+            )
+    assert seen and seen[0] is True  # 回滚时锁还在手里
+    assert not pipeline.round_running(path)
+
+
+def test_rerun_counts_only_after_the_commit_succeeds(
+    session, session_factory, tmp_path, monkeypatch
+):
+    """统计提交成功了才算：提交时超时回滚的，"AI 新找到"等几项不计（Codex 第 9 轮）。"""
+    import time
+
+    from youju.ai import pipeline
+
+    doc = add_doc(session)
+    _old_check(session, doc)
+    path, wanted = str(tmp_path / "round.lock"), str(tmp_path / "round.wanted")
+    client, _ = fake_ai(
+        deadlines=[ai_item("2026-10-15", "请各单位于2026年10月15日前完成网上申报。")]
+    )
+    with session_factory() as other:
+
+        def slow_commit():
+            time.sleep(3)
+
+        monkeypatch.setattr(other, "commit", slow_commit)
+        report = pipeline.rerun_old_deadlines(
+            other,
+            client,
+            days=90,
+            limit=10,
+            now=datetime(2026, 10, 28, tzinfo=UTC),
+            slot=lambda: pipeline.round_slot(path, wanted),
+            write_limit=0.5,
+        )
+    assert report.write_timeout and report.written == 0
+    assert (report.deadlines_agree, report.deadlines_rule_only, report.deadlines_ai_only) == (
+        0,
+        0,
+        0,
+    )
+    session.expire_all()
+    assert _deadline_check(session, doc).result == []

@@ -975,6 +975,42 @@ def _before_0035(config):
     return ScriptDirectory.from_config(config).get_revision("0035").down_revision
 
 
+def _add_newer_structures(engine) -> tuple[list[str], list[str]]:
+    """在 0035 之前的表上跑新代码：0035 以后的迁移加的东西先临时补上——模型里有、库里还没有的表
+    （如 0043 的对话两张表），users 上模型里有、表里还没有的列（如 0043 的问一问同意两列，按可为空
+    补）。升回最新之前用 _drop_newer_structures 删掉，免得迁移重复建。返回（补的表, 补的列）。"""
+    from sqlalchemy import inspect, text
+
+    from youju.models import Base
+
+    existing = set(inspect(engine).get_table_names())
+    tables = [t for t in Base.metadata.sorted_tables if t.name not in existing]
+    Base.metadata.create_all(engine, tables=tables)
+    have = {c["name"] for c in inspect(engine).get_columns("users")}
+    added = [c for c in User.__table__.columns if c.name not in have]
+    with engine.begin() as conn:
+        for column in added:
+            kind = column.type.compile(dialect=engine.dialect)
+            conn.execute(text(f"ALTER TABLE users ADD COLUMN {column.name} {kind} NULL"))
+    return [t.name for t in tables], [c.name for c in added]
+
+
+def _drop_newer_structures(engine, newer: tuple[list[str], list[str]]) -> None:
+    from sqlalchemy import inspect, text
+
+    tables, columns = newer
+    with engine.begin() as conn:
+        conn.execute(text("SET FOREIGN_KEY_CHECKS = 0"))
+        for name in reversed(tables):
+            conn.execute(text(f"DROP TABLE IF EXISTS `{name}`"))
+        conn.execute(text("SET FOREIGN_KEY_CHECKS = 1"))
+    have = {c["name"] for c in inspect(engine).get_columns("users")}
+    with engine.begin() as conn:
+        for name in columns:
+            if name in have:
+                conn.execute(text(f"ALTER TABLE users DROP COLUMN {name}"))
+
+
 def _show_create(conn, table):
     """建表语句，去掉随数据变的自增起点。"""
     from sqlalchemy import text
@@ -1009,6 +1045,7 @@ def test_migration_0035_drops_legacy_structures_and_downgrade_rebuilds_them(
         with db_engine.connect() as conn:
             return conn.scalar(text("SELECT id FROM users WHERE openid = :o"), {"o": openid})
 
+    newer = ([], [])  # 在旧表上跑新代码时临时补的表和列，出错时 finally 里也要删掉
     try:
         # 先降到 0027 之前（0027、0031 的回退要按名字删 0035 重建的约束和索引），再升回 0035 的上一版，
         # 拿到 0027、0031 原样建出来的结构
@@ -1025,6 +1062,7 @@ def test_migration_0035_drops_legacy_structures_and_downgrade_rebuilds_them(
             } == original
 
         # 在迁移前的表上跑新代码：注册不写这四列；注销被引用的用户时，外键把引用置空
+        newer = _add_newer_structures(db_engine)
         inviter_id, newcomer_id = register("old-inviter"), register("old-newcomer")
         with db_engine.begin() as conn:
             conn.execute(
@@ -1065,6 +1103,8 @@ def test_migration_0035_drops_legacy_structures_and_downgrade_rebuilds_them(
                 {"id": newcomer_id},
             ).one() == ("legacy-code", None, 1)
 
+        _drop_newer_structures(db_engine, newer)
+        newer = ([], [])
         command.upgrade(config, "head")
         assert "reward_claims" not in inspect(db_engine).get_table_names()
         assert not set(LEGACY_USER_COLUMNS) & {
@@ -1091,6 +1131,7 @@ def test_migration_0035_drops_legacy_structures_and_downgrade_rebuilds_them(
             counts = ", ".join(f"COUNT({name})" for name in LEGACY_USER_COLUMNS)
             assert conn.execute(text(f"SELECT {counts} FROM users")).one() == (0, 0, 0, 0)
     finally:
+        _drop_newer_structures(db_engine, newer)
         command.upgrade(config, "head")
     with db_engine.connect() as conn:
         assert compare_metadata(MigrationContext.configure(conn), Base.metadata) == []
@@ -1144,13 +1185,14 @@ def test_migration_0035_gives_up_on_a_held_metadata_lock_and_resumes(session, db
         with db_engine.connect() as conn:
             rebuilt = {name: _show_create(conn, name) for name in ("users", "reward_claims")}
 
-        blocked("head", command.upgrade)
+        # 只升到 0035：后面还会有别的迁移（如 0040），"head"不一定是 0035
+        blocked("0035", command.upgrade)
         assert revision() == before
         assert "reward_claims" not in inspect(db_engine).get_table_names()
         assert set(LEGACY_USER_COLUMNS) <= {
             c["name"] for c in inspect(db_engine).get_columns("users")
         }
-        command.upgrade(config, "head")
+        command.upgrade(config, "0035")
         assert revision() == "0035"
 
         blocked(before, command.downgrade)
@@ -1176,7 +1218,7 @@ def test_migration_0035_gives_up_on_a_held_metadata_lock_and_resumes(session, db
                 )
             )
         assert revision() == before
-        command.upgrade(config, "head")
+        command.upgrade(config, "0035")
         assert revision() == "0035"
         with db_engine.connect() as conn:
             assert not conn.scalar(

@@ -28,7 +28,7 @@ test('首页和我的：无城市时文字与旧版相同，有城市追加数�
     const home = shown('home', { stats: value, loaded: true, shown: [], loginOpen: false });
     const me = shown('me', { stats: value, loginOpen: false });
     assert.ok(home.includes(`来自 28 个省和国家部委${count ? '、1 个城市' : ''} · 每条都有出处`));
-    assert.ok(home.includes(`数据来自 72 个政府网站栏目，覆盖国家部委和 28 个省${count ? '、1 个城市' : ''}，每条都附原文链接。`));
+    assert.ok(home.includes(`数据来自 72 个政府网站栏目，覆盖国家部委和 28 个省${count ? '、1 个城市' : ''}，每条都注明出处。`));
     assert.ok(me.includes('28个省 + 国家部委'));
     assert.equal(me.includes('其中已收录 1 个城市的栏目'), count === 1);
     if (!count) { assert.ok(!home.includes('城市')); assert.ok(!me.includes('城市')); }

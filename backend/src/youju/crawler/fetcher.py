@@ -32,13 +32,15 @@ _DNS_SLOTS = threading.BoundedSemaphore(32)
 # 走真实网络时每次请求新建连接：连接固定到检查过的 IP 后，不同域名可能共用同一个 IP（CDN），
 # 复用连接会把 B 网站的请求发到按 A 网站校验过证书的连接上
 _NO_KEEPALIVE = httpx.Limits(max_keepalive_connections=0)
+_DEADLINE = "到了这次任务的期限，没有查完"
 
 
 @dataclass
 class FetchResult:
     url: str
     # ok / http_error / network_error / ssl_error / robots_disallowed / robots_error / too_large；
-    # unsupported_host：配置了网址限制时不在范围内，或域名解析到内网、本机等非公网地址。
+    # unsupported_host：配置了网址限制时不在范围内，或域名解析到内网、本机等非公网地址；
+    # deadline：设了 deadline、到期还没查完（不是网站的问题，调用方当作没查）。
     # redirect 只在内部使用，fetch() 不会返回它
     status: str
     final_url: str = ""
@@ -51,10 +53,13 @@ class FetchResult:
 
 @dataclass
 class _RobotsEntry:
-    state: str  # rules / allow_all / unreachable / unsupported_host
+    state: (
+        str  # rules / allow_all / unreachable / unsupported_host / deadline（到期没读完，不缓存）
+    )
     parser: RobotFileParser | None
     fetched_at: float
-    error: str | None = None  # unsupported_host 的原因
+    error: str | None = None  # unsupported_host、unreachable 的原因
+    server_error: bool = False  # unreachable 是因为服务器回 5xx（超时、连不上在下层已重试过）
 
 
 def compat_ssl_context() -> ssl.SSLContext:
@@ -143,6 +148,7 @@ class PoliteFetcher:
         resolver: Callable[[str], list[str]] | None = None,
         real_network: bool | None = None,
         decode_text: bool = True,
+        deadline: float | None = None,
     ) -> None:
         headers = {
             "User-Agent": user_agent,
@@ -170,6 +176,10 @@ class PoliteFetcher:
         )
         self._compat_hosts: set[str] = set()
         self._interval = per_host_interval
+        self._timeout = timeout
+        # 整个任务的期限（clock 上的时刻，原网页检查用）：到期后不再发新请求、正在下载的放弃，
+        # fetch() 给 deadline；临近期限的请求超时缩短到剩下的时间。不设就和以前一样
+        self._deadline = deadline
         self._clock = clock
         self._sleep = sleep
         self._url_allowed = url_allowed
@@ -202,6 +212,9 @@ class PoliteFetcher:
     def __exit__(self, *exc: object) -> None:
         self.close()
 
+    def _expired(self) -> bool:
+        return self._deadline is not None and self._clock() >= self._deadline
+
     def fetch(self, url: str) -> FetchResult:
         """抓取一个页面。重定向逐跳处理：每一跳都检查 robots.txt，并遵守目标网站的限速。"""
         current = url
@@ -210,13 +223,15 @@ class PoliteFetcher:
                 return FetchResult(url, "unsupported_host", final_url=current, error="非政府网站")
             entry, allowed = self._check_robots(current)
             state = entry.state
+            if state == "deadline":
+                return FetchResult(url, "deadline", final_url=current, error=_DEADLINE)
             if state == "unreachable":
                 # RFC 9309 §2.3.1.4：robots.txt 因服务器错误或网络问题无法获取，视为全部禁止
                 return FetchResult(
                     url,
                     "robots_error",
                     final_url=current,
-                    error="robots.txt 暂时无法获取，本次跳过",
+                    error=entry.error or "robots.txt 暂时无法获取，本次跳过",
                 )
             if state == "unsupported_host":
                 return FetchResult(url, "unsupported_host", final_url=current, error=entry.error)
@@ -240,14 +255,24 @@ class PoliteFetcher:
             entry = self._robots.get(origin)
             if entry is None or self._clock() - entry.fetched_at > _ROBOTS_TTL_SECONDS:
                 entry = self._load_robots(origin)
-                self._robots[origin] = entry
-        if entry.state in {"unreachable", "unsupported_host"}:
+                if entry.state != "deadline":  # 到期没读完不记下来，不当成读不到
+                    self._robots[origin] = entry
+        if entry.state in {"unreachable", "unsupported_host", "deadline"}:
             return entry, False
         if entry.state == "allow_all" or entry.parser is None:
             return entry, True
         return entry, entry.parser.can_fetch(ROBOTS_TOKEN, url)
 
     def _load_robots(self, origin: str) -> _RobotsEntry:
+        """读 robots.txt；服务器一时回 5xx 就按这个网站的限速间隔再取一次（超时、连不上在下层已重试
+        过一次），还取不到才算取不到。原因写进 error，记到详情和附件的失败原因里（10/27 海南工信厅：
+        线上偶尔取不到它的 robots.txt，整站的附件、正文跳过，原因却没记下来）。"""
+        entry = self._load_robots_once(origin)
+        if entry.state == "unreachable" and entry.server_error:
+            entry = self._load_robots_once(origin)
+        return entry
+
+    def _load_robots_once(self, origin: str) -> _RobotsEntry:
         current = origin + "/robots.txt"
         # RFC 9309 §2.3.1.2：robots.txt 的重定向至少跟随 5 次；超过则视为不可用（可以抓取）
         for _ in range(_MAX_REDIRECTS + 1):
@@ -256,6 +281,8 @@ class PoliteFetcher:
                     "unsupported_host", None, self._clock(), "robots.txt 跳到非政府网站，本站跳过"
                 )
             result = self._get(current)
+            if result.status == "deadline":
+                return _RobotsEntry("deadline", None, self._clock())
             if result.status == "unsupported_host":
                 return _RobotsEntry("unsupported_host", None, self._clock(), result.error)
             if result.status != "redirect":
@@ -268,7 +295,14 @@ class PoliteFetcher:
         if result.status in ("network_error", "ssl_error") or (
             status is not None and status >= 500
         ):
-            return _RobotsEntry("unreachable", None, now)
+            why = f"HTTP {status}" if status is not None else (result.error or result.status)
+            return _RobotsEntry(
+                "unreachable",
+                None,
+                now,
+                f"robots.txt 暂时无法获取（{why[:120]}），本次跳过",
+                server_error=status is not None and status >= 500,
+            )
         if status is not None and 400 <= status < 500:
             # RFC 9309 §2.3.1.3：4xx（包括 401、403）视为 robots.txt 不可用，可以抓取
             return _RobotsEntry("allow_all", None, now)
@@ -294,6 +328,8 @@ class PoliteFetcher:
                 wait = self._interval - (self._clock() - last)
                 if wait > 0:
                     self._sleep(wait)
+            if self._expired():
+                return FetchResult(url, "deadline", final_url=url, error=_DEADLINE)
             try:
                 return self._request(url)
             finally:
@@ -304,11 +340,16 @@ class PoliteFetcher:
         last_error = ""
         network_retries = 1  # 超时或连接失败时重试一次
         while True:
+            if self._expired():
+                return FetchResult(url, "deadline", final_url=url, error=_DEADLINE)
             compat = host in self._compat_hosts
             client = self._compat_client if compat else self._client
             real = self._real["compat" if compat else "main"]
             try:
                 addresses = self._checked_addresses(url)
+                if self._expired():
+                    # 域名解析（最多 10 秒）跨过了期限：不再发请求
+                    return FetchResult(url, "deadline", final_url=url, error=_DEADLINE)
                 if addresses is None:
                     return FetchResult(
                         url,
@@ -322,8 +363,13 @@ class PoliteFetcher:
                     if not addresses:
                         return FetchResult(url, "network_error", error="网址里没有主机名，不抓取")
                     request_url, headers, extensions = _pinned_request(url, addresses[0])
+                timing = {}
+                if self._deadline is not None:
+                    # 临近期限：这一次连接、读取最多等到期限（至少 1 秒）
+                    left = max(1.0, self._deadline - self._clock())
+                    timing["timeout"] = min(self._timeout, left)
                 with client.stream(
-                    "GET", request_url, headers=headers, extensions=extensions
+                    "GET", request_url, headers=headers, extensions=extensions, **timing
                 ) as resp:
                     refusal = _peer_refusal(resp, real)
                     if refusal:
@@ -334,6 +380,9 @@ class PoliteFetcher:
                         size = 0
                         chunks = []
                         for chunk in resp.iter_bytes():
+                            if self._expired():
+                                # 一点一点慢慢回的页面：到期放弃，不能拖过期限
+                                return FetchResult(url, "deadline", final_url=url, error=_DEADLINE)
                             size += len(chunk)
                             if size > MAX_RESPONSE_BYTES:
                                 return FetchResult(

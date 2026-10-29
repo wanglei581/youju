@@ -1,8 +1,12 @@
 """每份文件能不能做 AI 解读（D-075）：预先算好存进 ai_eligibility，列表行上的"AI 解读"按钮读它。
 
-判断用的就是详情页和提交任务用的 interpret.eligible_body，这里只是把结果存起来，列表请求就不用
+判断用的就是详情页和提交任务用的 content.check，这里只是把结果存起来，列表请求就不用
 逐份读正文。存的结果可能比实际慢一点；提交任务时 api 仍按原文实时判断，以实时为准，不能做时
 不扣次数、写明原因。
+
+原网页撤下了（documents.link_gone_at，youju/link_check.py）不存进表里：存的是不看原网页的结果，
+列表读表时（flags、eligible_ids）当场换成 link_gone。原网页检查每天一批、标上和恢复都没有
+单独的时间戳可找，这样不用等重算，也不用给表的约束加新代码。
 
 什么时候重算（refresh_changed，admin 每 10 分钟跑一次，看最近 30 分钟，跑重了也没关系）：
 - 新收录的文件；
@@ -36,10 +40,13 @@ from datetime import datetime, timedelta
 from sqlalchemy import or_, select, text
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
-from youju.ai import interpret
+from youju.ai import content, interpret
 from youju.models import AIEligibility, Document, DocumentDetail, DocumentMerge
+
+# content.check 里排在"原网页撤下"前面的原因：这类文件本来就不解读，撤没撤下都照这几种说
+BEFORE_LINK = ("unavailable", "list", "kind", "source")
 
 RECENT = timedelta(minutes=30)
 BATCH = 500
@@ -52,12 +59,20 @@ FULL_WAIT = 600
 
 
 def compute(session: Session, doc_id: int) -> str | None:
-    """None 表示能解读；否则是原因代码（models.AI_REASONS）。"""
+    """None 表示能解读；否则是原因代码（models.AI_STORED_REASONS）。不看原网页撤下了没有，
+    读表时另看（effective_reason）。"""
     try:
-        interpret.eligible_body(session, doc_id)
+        content.check(session, doc_id, link=False)
     except interpret.InterpretRefusal as exc:
         return exc.code or "unavailable"
     return None
+
+
+def effective_reason(reason: str | None, link_gone_at: datetime | None) -> str | None:
+    """存的结果加上原网页撤下了没有，和 content.check 实时判断的一致。"""
+    if link_gone_at is not None and reason not in BEFORE_LINK:
+        return "link_gone"
+    return reason
 
 
 @contextmanager
@@ -199,20 +214,28 @@ def refresh_all(session: Session, stamp: datetime) -> dict[str, int]:
 
 
 def flags(session: Session, doc_ids: Iterable[int]) -> dict[int, dict]:
-    """列表行用：{编号: {"interpret", "clause", "reason"}}。还没算过的不给，小程序就不显示按钮。"""
+    """列表行用：{编号: {"interpret", "clause", "reason"}}。还没算过的不给，小程序就不显示按钮。
+    原网页撤下了的当场换成 link_gone（effective_reason）。"""
     ids = list(set(doc_ids))
     if not ids:
         return {}
-    return {
-        doc_id: {"interpret": reason is None, "clause": reason is None, "reason": reason}
-        for doc_id, reason in session.execute(
-            select(AIEligibility.document_id, AIEligibility.reason).where(
-                AIEligibility.document_id.in_(ids)
-            )
-        )
-    }
+    out = {}
+    for doc_id, stored, link_gone_at in session.execute(
+        select(AIEligibility.document_id, AIEligibility.reason, Document.link_gone_at)
+        .join(Document, Document.id == AIEligibility.document_id)
+        .where(AIEligibility.document_id.in_(ids))
+    ):
+        reason = effective_reason(stored, link_gone_at)
+        out[doc_id] = {"interpret": reason is None, "clause": reason is None, "reason": reason}
+    return out
 
 
 def eligible_ids():
-    """能解读的文件编号（子查询），给搜索的"只看能 AI 解读的"用。"""
-    return select(AIEligibility.document_id).where(AIEligibility.reason.is_(None))
+    """能解读的文件编号（子查询），给搜索的"只看能 AI 解读的"用：存的结果能解读、原网页没撤下。
+    用别名连 documents，免得和外层查询的 documents 关联到一起。"""
+    doc = aliased(Document)
+    return (
+        select(AIEligibility.document_id)
+        .join(doc, doc.id == AIEligibility.document_id)
+        .where(AIEligibility.reason.is_(None), doc.link_gone_at.is_(None))
+    )

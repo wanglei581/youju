@@ -6,6 +6,7 @@ from datetime import timedelta
 
 import pytest
 from alembic import command
+from pydantic import SecretStr
 from sqlalchemy import inspect, select, text
 from sqlalchemy.exc import OperationalError
 
@@ -71,12 +72,11 @@ def notice(doc, session):
     return doc
 
 
-def create(client, doc_id, company=None, key="clause-first"):
-    return client.post(
-        "/api/v1/advisor/tasks",
-        json={"kind": "clause", "doc_id": doc_id, "company": company},
-        headers={"Idempotency-Key": key},
-    )
+def create(client, doc_id, company=None, key="clause-first", notice=None):
+    body = {"kind": "clause", "doc_id": doc_id, "company": company}
+    if notice is not None:
+        body["notice"] = notice
+    return client.post("/api/v1/advisor/tasks", json=body, headers={"Idempotency-Key": key})
 
 
 def run(session, task, settings, fake=None, stamp=NOW):
@@ -99,14 +99,22 @@ def usage(session, task):
 def test_all_audience_clause_worker(client, session, settings, notice):
     settings.ai_advisor_audience = "all"
     settings.ai_advisor_openids = ""
+    # 对所有人开放只能走对外线路（云开发，D-093 上线门槛第 3 条）
+    settings.ai_advisor_base_url = "https://cloud1-test.api.tcloudbasegateway.com/v1/ai/cloudbase"
+    settings.ai_advisor_api_key = SecretStr("advisor-test-value")
+    settings.ai_advisor_model = "advisor-model"
     user = session.scalar(select(User).where(User.openid == "internal"))
     user.agreement_version = interpret.AI_AGREEMENT_VERSION
     session.commit()
-    created = create(client, notice.id, COMPANY_A)
+    # 对所有人开放时要带上同意过的使用须知版本（D-098）
+    refused = create(client, notice.id, COMPANY_A, key="clause-no-notice")
+    assert refused.status_code == 422 and refused.json()["detail"]["code"] == "AI_NOTICE_REQUIRED"
+    created = create(client, notice.id, COMPANY_A, notice=interpret.AI_NOTICE_VERSION)
     assert created.status_code == 202
     assert service.run_advisor_tasks(session, settings=settings, stamp=NOW)["done"] == 1
     task = session.get(AdvisorTask, created.json()["id"])
     assert task.status == "done" and usage(session, task) == 1
+    assert task.input_json["notice"] == interpret.AI_NOTICE_VERSION
 
 
 @pytest.mark.parametrize(

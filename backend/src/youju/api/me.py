@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from hashlib import sha256
 from typing import Annotated, Literal
 from zoneinfo import ZoneInfo
@@ -11,13 +11,19 @@ from zoneinfo import ZoneInfo
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import and_, case, func, or_, select, union_all
 from sqlalchemy.dialects.mysql import insert
 from sqlalchemy.orm import Session
 
 from youju import advisor_tasks as advisor_service
-from youju.agreements import TOOLS_AGREEMENT_VERSION, agreement_at_least
+from youju import chat_store
+from youju.agreements import (
+    CHAT_AGREEMENT_VERSION,
+    VERSION_FULL,
+    agreement_at_least,
+    tools_agreed,
+)
 from youju.api import v1
 from youju.config import get_settings
 from youju.db import get_session
@@ -36,6 +42,7 @@ from youju.models import (
 )
 from youju.repost import confirmed_members
 from youju.takedown import available_condition
+from youju.wx_security import check_feedback  # 纠错的内容安全检测，和 AI 结果、问一问共用一个模块
 
 router = APIRouter(prefix="/api/v1", tags=["用户"])
 SessionDep = Annotated[Session, Depends(get_session)]
@@ -103,7 +110,7 @@ STALE_AGREEMENT = "协议已更新，请关闭小程序后重新打开，更新�
 
 
 def current_user(user: Annotated[User | None, Depends(known_user)]) -> User:
-    """关注、订阅、纠错、埋点：必须已同意仍认的版本（默认就是当前版本）的用户协议和隐私保护指引。"""
+    """关注、订阅、纠错：必须已同意仍认的版本（默认就是当前版本）的用户协议和隐私保护指引。"""
     if user is None or user.agreement_at is None:
         raise HTTPException(status_code=403, detail="请先阅读并同意用户协议和隐私保护指引")
     if not agreement_valid(user.agreement_version, get_settings()):
@@ -118,7 +125,7 @@ UserDep = Annotated[User, Depends(current_user)]
 class AgreementIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     version: str = Field(min_length=1, max_length=20)
-    scope: Literal["general", "advisor"] = "general"
+    scope: Literal["general", "advisor", "chat"] = "general"
 
 
 class Conditions(BaseModel):
@@ -162,14 +169,6 @@ class FeedbackIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     docId: int | None = Field(default=None, gt=0)
     content: str = Field(min_length=1, max_length=500)
-
-
-class EventIn(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    name: Literal[
-        "search", "open_detail", "copy_link", "export", "lookup", "follow", "subscribe", "feedback"
-    ]
-    props: dict = Field(default_factory=dict)
 
 
 def _conditions_stmt(session: Session, conditions: dict):
@@ -338,6 +337,16 @@ def profile(request: Request, session: SessionDep, user: KnownUserDep) -> dict:
             if user.advisor_agreement_at
             else {}
         ),
+        **(
+            {
+                "chatAgreed": {
+                    "version": user.chat_agreement_version,
+                    "at": _iso(user.chat_agreement_at),
+                }
+            }
+            if user.chat_agreement_at
+            else {}
+        ),
         "follows": session.scalar(select(func.count(Follow.id)).where(Follow.user_id == user.id))
         or 0,
         "subscriptions": {
@@ -393,125 +402,9 @@ def reward_history(session: SessionDep, user: UserDep) -> dict:
     }
 
 
-class DeadlineClueIn(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    document_id: int = Field(gt=0, strict=True)
-    kind: Literal["企业申报截止", "推荐或审核截止", "材料报送截止", "其他"]
-    deadline_date: date = Field(alias="date")
-    deadline_time: str | None = Field(default=None, alias="time")
-    quote: str
-
-    @field_validator("deadline_date", mode="before")
-    @classmethod
-    def valid_date(cls, value):
-        if not isinstance(value, str) or re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", value) is None:
-            raise ValueError("日期格式应为 YYYY-MM-DD")
-        return value
-
-    @field_validator("quote")
-    @classmethod
-    def valid_quote(cls, value):
-        value = value.strip()
-        if not 6 <= len(value) <= 200:
-            raise ValueError("原文句子须为 6–200 字")
-        return value
-
-    @field_validator("deadline_time")
-    @classmethod
-    def valid_time(cls, value):
-        if value is not None and re.fullmatch(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]", value) is None:
-            raise ValueError("时间格式应为 HH:MM")
-        return value
-
-
-def _validate_clue_document(session: Session, document_id: int, day: date) -> None:
-    from youju.classify import effective_kind
-
-    stmt = (
-        v1._base()
-        .where(Document.id == document_id)
-        .with_only_columns(Document)
-        .execution_options(populate_existing=True)
-    )
-    doc = session.scalar(stmt)
-    if doc is None or effective_kind(doc.title, doc.kind_override) != "申报通知":
-        raise HTTPException(status_code=422, detail="只接受公开申报通知的截止线索")
-    if doc.publish_date is None:
-        raise HTTPException(status_code=422, detail="这份通知的发布日期尚不明确")
-    # 按日历周年计算，闰日的第三年以二月末为界。
-    upper = (
-        doc.publish_date.replace(year=doc.publish_date.year + 3, day=28)
-        if doc.publish_date.month == 2 and doc.publish_date.day == 29
-        else doc.publish_date.replace(year=doc.publish_date.year + 3)
-    )
-    if not doc.publish_date <= day <= upper:
-        raise HTTPException(status_code=422, detail="日期须在通知发布日至发布后三年之间")
-
-
-@router.post("/me/deadline-clues", status_code=201, dependencies=[Depends(_require_rewards)])
-def create_deadline_clue(body: DeadlineClueIn, session: SessionDep, user: UserDep) -> dict:
-    from datetime import time
-
-    from youju import deadline_clues as clues
-
-    document_id = canonical_ids(session, [body.document_id]).get(body.document_id, body.document_id)
-    _validate_clue_document(session, document_id, body.deadline_date)
-    quote = v1.redact_sensitive(_mask_feedback(body.quote))
-    if not 6 <= len(quote) <= 200:
-        raise HTTPException(status_code=422, detail="原文句子脱敏后须为 6–200 字，请缩短后再提交")
-    try:
-        passed = check_feedback(user.openid, quote)
-    except (httpx.HTTPError, ValueError, KeyError, TypeError, AttributeError) as exc:
-        raise HTTPException(status_code=503, detail="内容安全校验暂不可用") from exc
-    if not passed:
-        raise HTTPException(status_code=422, detail="内容可能不合规，请修改后再提交")
-    # 校验网络请求不持行锁；之后串行检查容量与最新核对结果。
-    user_id = user.id
-    session.rollback()
-    clues.lock_queue(session)
-    locked_user = session.scalar(
-        select(User)
-        .where(User.id == user_id)
-        .with_for_update()
-        .execution_options(populate_existing=True)
-    )
-    if locked_user is None:
-        raise HTTPException(status_code=403, detail="请先阅读并同意用户协议和隐私保护指引")
-    current_user(locked_user)
-    _validate_clue_document(session, document_id, body.deadline_date)
-    if any(d.kind == body.kind for d in v1._approved(session, [document_id]).get(document_id, [])):
-        raise HTTPException(status_code=409, detail="这份通知的截止日期已经核对过了")
-    if clues.pending_count(session) >= 50:
-        raise HTTPException(status_code=409, detail="线索暂时收满了，过几天再来")
-    if (
-        session.scalar(
-            select(DeadlineClue.id).where(
-                DeadlineClue.user_id == user.id,
-                DeadlineClue.document_id == document_id,
-                DeadlineClue.kind == body.kind,
-                DeadlineClue.status == "pending",
-            )
-        )
-        is not None
-    ):
-        raise HTTPException(status_code=409, detail="你已经提交过这项线索，请等核对结果")
-    if clues.pending_count(session, user.id) >= 20:
-        raise HTTPException(status_code=409, detail="你已有 20 条待核对线索，请等核对结果")
-    row = DeadlineClue(
-        user_id=user.id,
-        document_id=document_id,
-        kind=body.kind,
-        date=body.deadline_date,
-        time=time.fromisoformat(body.deadline_time) if body.deadline_time else None,
-        quote=quote,
-        status="pending",
-        submitted_at=v1.now(),
-    )
-    session.add(row)
-    session.commit()
-    return clues.out(row)
-
-
+# 提交截止线索的接口已删：D-061 删了"补截止日期"页面，小程序不调用，隐私保护指引也没写
+# （个人信息保护影响评估第六节（二）第 13 条）。以前留下的线索照常能查看、删除待核对的、
+# 在"我的数据"里导出；注销时待核对的删掉、处理过的断开用户（rewards.anonymize）。
 @router.get("/me/deadline-clues")
 def my_deadline_clues(session: SessionDep, user: UserDep) -> dict:
     from youju import deadline_clues as clues
@@ -544,11 +437,39 @@ def delete_deadline_clue(clue_id: int, session: SessionDep, user: KnownUserDep) 
     session.commit()
 
 
+def _agree_chat(body: AgreementIn, request: Request, session: Session) -> dict:
+    """同意"问一问使用说明"（问一问开发设计第十三节第 1 条）：AI 对这个人开着、已同意含 AI 条款的
+    协议才收，同 AI 任务（advisor._authorize）；版本只认当前的 CHAT_AGREEMENT_VERSION。"""
+    from youju.ai import interpret
+
+    settings = get_settings()
+    # 先于协议校验隐藏：问一问没开放（本地高危词库定稿以前）、AI 对这个人没开、没有身份，都是 404
+    try:
+        openid = request_openid(request)
+    except HTTPException:
+        raise HTTPException(status_code=404, detail="没有找到接口") from None
+    if not chat_store.chat_ready() or not interpret.enabled_for_openid(settings, openid):
+        raise HTTPException(status_code=404, detail="没有找到接口")
+    user = current_user(known_user(request, session))
+    if not interpret.ai_agreed(settings, user):
+        raise HTTPException(status_code=403, detail="AI 条款已更新，请更新小程序并重新阅读同意协议")
+    if not interpret.enabled(settings, user):
+        raise HTTPException(status_code=404, detail="没有找到接口")
+    if body.version != CHAT_AGREEMENT_VERSION:
+        raise HTTPException(status_code=422, detail="问一问使用说明已更新，请重新阅读并同意")
+    user.chat_agreement_version = body.version
+    user.chat_agreement_at = v1.now()
+    session.commit()
+    return {"version": body.version, "at": user.chat_agreement_at.isoformat()}
+
+
 @router.post("/me/agreement")
 def agreement(body: AgreementIn, request: Request, session: SessionDep) -> dict:
     """同意用户协议和隐私保护指引：从这时起才建立用户记录。接受仍认的最早版本到当前版本之间的版本
     （协议升版的过渡期里，还没更新的旧版小程序要能同意旧版）。已同意过更新的版本（如在另一台手机的新版
     小程序里）时不改回旧版本，免得新功能失效、两台手机来回请用户同意（Codex 审查）。"""
+    if body.scope == "chat":
+        return _agree_chat(body, request, session)
     if body.scope == "advisor":
         if not get_settings().advisor_enabled:
             raise HTTPException(status_code=404, detail="没有找到接口")
@@ -558,14 +479,16 @@ def agreement(body: AgreementIn, request: Request, session: SessionDep) -> dict:
         # 批量工具的任务记录和次数从 2026-11 版隐私保护指引起才写明（一·13）：过渡期（填了最早版本）
         # 只同意过旧版的照旧能用关注、纠错，但要先重新同意新版指引才能同意工具使用说明。
         # 固定版本，回退配置也不放宽（Codex 第三轮）；提交名单时 advisor._upload_consent 再查一次
-        if not agreement_at_least(user.agreement_version, TOOLS_AGREEMENT_VERSION):
+        if not tools_agreed(user.agreement_version):
             raise HTTPException(status_code=403, detail=OUTDATED)
         user.advisor_agreement_version = body.version
         user.advisor_agreement_at = v1.now()
         session.commit()
         return {"version": body.version, "at": user.advisor_agreement_at.isoformat()}
     oldest, current = agreement_range(get_settings())
-    if not oldest <= body.version <= current:
+    # 只收完整写法的版本号（年-月，可带 .数字）：范围内的怪值（如"2026-11.0x"）不存，
+    # 免得被当成不存在的一版、绕过按版本的判断
+    if VERSION_FULL.fullmatch(body.version) is None or not oldest <= body.version <= current:
         raise HTTPException(status_code=422, detail=STALE_AGREEMENT)
     stamp = v1.now()
     # 已同意过更新的版本：保留那次同意（版本和时间都不动）；记录的版本写法不对的不算
@@ -615,6 +538,8 @@ def delete_account(session: SessionDep, user: KnownUserDep) -> None:
         # D-071 第②条）
         rewards.anonymize(session, user, v1.now())
         anonymize(session, user)
+        # 问一问的对话和问答先显式删（第十节第 3 条）；违规记录不随注销删除，到期删
+        chat_store.delete_user_chats(session, user.id)
         advisor_service.delete_user_tasks(session, user.id, settings=get_settings())
         session.delete(user)
         session.commit()
@@ -639,6 +564,70 @@ def _titles(session: Session, doc_ids: list[int | None]) -> dict[int, str]:
     }
 
 
+def _chat_data(session: Session, user: User) -> dict:
+    """问一问的对话（第十节第 8 条）：还没到期的，每一问只写技能、问题文字、时间、状态、
+    算没算次数，不放回答（回答是公开文件的原句和查询结果，在对话页里看）。最多列最近 200 问，
+    另给对话数和问数。AI 关着、没同意新版协议的本人也照样列（D-093 门槛第 8 条）。"""
+    from youju.models import AdvisorTask, AIChat, AIChatTurn
+
+    live = (AIChat.user_id == user.id, chat_store.live_turns(v1.now().astimezone(UTC)))
+    joined = select(AIChatTurn, AIChat).join(AIChat, AIChat.id == AIChatTurn.chat_id)
+    rows = session.execute(
+        joined.where(*live).order_by(AIChatTurn.created_at.desc(), AIChatTurn.id.desc()).limit(200)
+    ).all()
+    task_ids = [turn.task_id for turn, _ in rows if turn.task_id]
+    tasks = (
+        {t.id: t for t in session.scalars(select(AdvisorTask).where(AdvisorTask.id.in_(task_ids)))}
+        if task_ids
+        else {}
+    )
+    doc_keys = list({chat.doc_key for _, chat in rows if chat.doc_key})
+    titles = _titles(session, doc_keys)
+    hidden = set(
+        session.scalars(
+            select(Document.id).where(Document.id.in_(doc_keys), ~available_condition())
+        )
+    )
+    chats: dict[int, dict] = {}
+    for turn, chat in rows:
+        entry = chats.setdefault(
+            chat.id,
+            {
+                "id": chat.id,
+                "hasDoc": chat.doc_key != 0,
+                "docId": chat.doc_key if chat.doc_key and chat.doc_key not in hidden else None,
+                # 下架的不给编号和标题（_titles 本来也不给下架的标题，这里写明）
+                "docTitle": titles.get(chat.doc_key)
+                if chat.doc_key and chat.doc_key not in hidden
+                else None,
+                "turns": [],
+            },
+        )
+        task = tasks.get(turn.task_id)
+        entry["turns"].append(
+            {
+                "skill": turn.skill,
+                "question": turn.question,
+                "createdAt": _iso(turn.created_at),
+                "status": chat_store.turn_status(turn, task),
+                "counted": chat_store.counted(turn, task),
+            }
+        )
+    for entry in chats.values():
+        entry["turns"].reverse()  # 对话里按先后
+    count = select(func.count(AIChatTurn.id)).join(AIChat, AIChat.id == AIChatTurn.chat_id)
+    return {
+        "aiChats": list(chats.values()),
+        "aiChatsTotal": session.scalar(
+            select(func.count(func.distinct(AIChat.id)))
+            .join(AIChatTurn, AIChatTurn.chat_id == AIChat.id)
+            .where(*live)
+        )
+        or 0,
+        "aiChatTurnsTotal": session.scalar(count.where(*live)) or 0,
+    }
+
+
 @router.get("/me/data")
 def personal_data(session: SessionDep, user: KnownUserDep) -> JSONResponse:
     settings = get_settings()
@@ -660,6 +649,16 @@ def personal_data(session: SessionDep, user: KnownUserDep) -> JSONResponse:
                 if user.advisor_agreement_at
                 else {}
             ),
+            **(
+                {
+                    "chatAgreed": {
+                        "version": user.chat_agreement_version,
+                        "at": _iso(user.chat_agreement_at),
+                    }
+                }
+                if user.chat_agreement_at
+                else {}
+            ),
         }
         if user is not None
         else None,
@@ -672,6 +671,9 @@ def personal_data(session: SessionDep, user: KnownUserDep) -> JSONResponse:
         "deadlineCluesTotal": 0,
         "events": [],
         "eventsTotal": 0,
+        "aiChats": [],
+        "aiChatsTotal": 0,
+        "aiChatTurnsTotal": 0,
         "boostTrial": None,
         "passGifts": [],
         "passGiftsTotal": 0,
@@ -684,6 +686,8 @@ def personal_data(session: SessionDep, user: KnownUserDep) -> JSONResponse:
             # （隐私保护指引第三节第 2 条"保存期限"）
             "toolInput": advisor_service.INPUT_RETENTION.days,
             "toolTasks": advisor_service.FILE_RETENTION.days,
+            # 问一问的对话 30 天（违规记录不列在这里，同访问日志）
+            "aiChats": chat_store.TURN_RETENTION.days,
         },
         "exportedAt": _iso(v1.now()),
     }
@@ -707,13 +711,14 @@ def personal_data(session: SessionDep, user: KnownUserDep) -> JSONResponse:
     ]
     from youju.models import AdvisorTask
 
+    # 问这份通知的任务不在这里列（它们在下面的对话里）
+    own_tasks = (AdvisorTask.user_id == user.id, AdvisorTask.kind != "ask")
     result["advisorTasksTotal"] = (
-        session.scalar(select(func.count(AdvisorTask.id)).where(AdvisorTask.user_id == user.id))
-        or 0
+        session.scalar(select(func.count(AdvisorTask.id)).where(*own_tasks)) or 0
     )
     advisor_rows = session.scalars(
         select(AdvisorTask)
-        .where(AdvisorTask.user_id == user.id)
+        .where(*own_tasks)
         .order_by(AdvisorTask.created_at.desc(), AdvisorTask.id.desc())
         .limit(500)
     ).all()
@@ -747,6 +752,7 @@ def personal_data(session: SessionDep, user: KnownUserDep) -> JSONResponse:
         }
         for row in advisor_rows
     ]
+    result.update(_chat_data(session, user))
     # 加量体验记录（开始和结束时间）；每天用了几次在额度账本里，和工具次数一样只保留本月和上个月
     from youju import boost
 
@@ -864,6 +870,9 @@ def personal_data(session: SessionDep, user: KnownUserDep) -> JSONResponse:
         for row in feedback
     ]
 
+    # 写使用记录（埋点）的接口已删：小程序不调用，隐私保护指引没写，按"不收集"处理
+    # （个人信息保护影响评估第六节（二）第 13 条）。这里只导出以前留下的，
+    # 到期由 youju cleanup 删除，注销时随用户删除
     result["eventsTotal"] = (
         session.scalar(select(func.count(Event.id)).where(Event.user_id == user.id)) or 0
     )
@@ -879,7 +888,7 @@ def personal_data(session: SessionDep, user: KnownUserDep) -> JSONResponse:
 
     response = JSONResponse(result)
     # 历史数据中的标题或埋点属性可能很长；按时间保留较新的条目。
-    for key in ("events", "subscriptions", "feedback"):
+    for key in ("events", "subscriptions", "feedback", "aiChats"):
         if len(response.body) <= _DATA_BYTES_LIMIT:
             break
         items = result[key]
@@ -1101,19 +1110,6 @@ def delete_subscription(subscription_id: int, session: SessionDep, user: KnownUs
     session.commit()
 
 
-def check_feedback(openid: str, content: str) -> bool:
-    response = httpx.post(
-        "http://api.weixin.qq.com/wxa/msg_sec_check",
-        json={"openid": openid, "version": 2, "scene": 2, "content": content},
-        timeout=5,
-    )
-    response.raise_for_status()
-    result = response.json()
-    if result.get("errcode") != 0:
-        raise ValueError("微信内容安全接口未成功")
-    return result.get("result", {}).get("suggest") == "pass"
-
-
 @router.post("/feedback", status_code=201)
 def create_feedback(body: FeedbackIn, session: SessionDep, user: UserDep) -> dict:
     doc_id = body.docId
@@ -1144,37 +1140,3 @@ def delete_feedback(feedback_id: int, session: SessionDep, user: KnownUserDep) -
         raise HTTPException(status_code=404, detail="没有找到纠错")
     session.delete(row)
     session.commit()
-
-
-_KINDS = {"all", "申报通知", "名单", "政策", "其他", "newDocs", "deadline"}
-_FORMATS = {"xlsx", "docx", "pptx"}
-
-
-@router.post("/events", status_code=202)
-def create_event(body: EventIn, session: SessionDep, user: UserDep) -> dict:
-    props = body.props
-    if set(props) - {"kind", "count", "format"}:
-        raise HTTPException(status_code=422, detail="埋点参数不支持")
-    if "kind" in props and (not isinstance(props["kind"], str) or props["kind"] not in _KINDS):
-        raise HTTPException(status_code=422, detail="埋点类型不支持")
-    if "format" in props and (
-        not isinstance(props["format"], str) or props["format"] not in _FORMATS
-    ):
-        raise HTTPException(status_code=422, detail="埋点格式不支持")
-    if "count" in props and (type(props["count"]) is not int or not 0 <= props["count"] <= 10000):
-        raise HTTPException(status_code=422, detail="埋点数量不支持")
-    session.execute(select(User.id).where(User.id == user.id).with_for_update()).one()
-    stamp = v1.now()
-    count = (
-        session.scalar(
-            select(func.count(Event.id)).where(
-                Event.user_id == user.id, Event.created_at > stamp - timedelta(minutes=1)
-            )
-        )
-        or 0
-    )
-    if count >= 60:
-        return {"accepted": False}
-    session.add(Event(user_id=user.id, name=body.name, props=props, created_at=stamp))
-    session.commit()
-    return {"accepted": True}

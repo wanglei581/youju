@@ -5,6 +5,7 @@
 // 发布身份只对照本产品的 tools/release/release-identity.json。不读环境变量，也不核验微信或云托管的线上授权。
 const fs = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const RELEASE_IDENTITY = (() => {
   const raw = JSON.parse(fs.readFileSync(path.join(__dirname, 'release', 'release-identity.json'), 'utf8'));
   const identity = { appid: raw.appid, cloudEnv: raw.cloudEnv, cloudService: raw.cloudService };
@@ -22,7 +23,9 @@ const SERVER_TOOL_TERMS_VERSION = (() => {
   return m[1];
 })();
 const FIRST_PAGES = ['home', 'follow', 'files', 'me', 'search', 'detail', 'report', 'lists',
-  'agreement', 'feedback', 'follow-new', 'my-data', 'about', 'clients'].map(p => `pages/${p}/index`);
+  'agreement', 'feedback', 'follow-new', 'my-data', 'about', 'clients', 'reader', 'results'].map(p => `pages/${p}/index`);
+// 底栏四格的名字，和 FIRST_PAGES 前四页一一对应（app.json 的 tabBar 和 custom-tab-bar 都是这四个字）
+const TAB_NAMES = ['首页', '关注', '导出', '我的'];
 const AI_PAGES = ['advisor', 'advisor-interpret', 'advisor-clause', 'advisor-tasks', 'complaint'].map(p => `pages/${p}/index`);
 // 加量体验确认页（D-070 ③，10/17 创始人批准）属于批量工具，从批量工具页进入
 const DATA_PAGES = ['advisor-form', 'advisor-terms', 'advisor-trial'].map(p => `pages/${p}/index`);
@@ -31,6 +34,47 @@ const PAY_PAGES = ['pass', 'orders'].map(p => `pages/${p}/index`);
 // AI 板块（D-075，10/19 创始人定）：板块首页和使用帮助随完整版。底栏第 5 项是板块首页，
 // 自定义底栏只在 api 说 AI 对这个人开着时才画出来，关着时用户看到的还是四栏
 const AI_SECTION_PAGES = ['ai', 'help'].map(p => `pages/${p}/index`);
+// 过审版加 AI（D-098，10/26 创始人定"这次提审就带上 AI"）：首发 16 页加 AI 首页、解读、对照、我的记录、投诉举报、使用帮助，
+// 底栏五格（最后一格 AI）；不带工具中心、批量工具、购买、订单页面
+const FIRST_AI_PAGES = ['ai', 'advisor-interpret', 'advisor-clause', 'advisor-tasks', 'complaint', 'help'].map(p => `pages/${p}/index`);
+// 后台第一次认 AI 条款的协议版本（backend/src/youju/ai/interpret.py 的 AI_AGREEMENT_VERSION）：
+// 过审版的协议不含 AI 条款，版本号要排在它前面，只同意过过审版协议的人才不会被当成同意过 AI 条款
+const SERVER_AI_TERMS_VERSION = (() => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'backend', 'src', 'youju', 'ai', 'interpret.py'), 'utf8');
+  const m = /^AI_AGREEMENT_VERSION = "([^"]+)"$/m.exec(source);
+  if (!m) throw new Error('读不到后台的 AI 条款版本');
+  return m[1];
+})();
+// 过审版协议里不能出现的说法（包里没有的功能和页面、原文链接、征信感的说法）：和生成脚本用同一份
+const FIRST_RELEASE_TERMS_BANNED = require('./make_legal_first_release.js').BANNED;
+// 过审版加 AI 协议（D-098）的版本号和不能出现的说法（包里没有的批量工具、加量体验、付费，原文链接）：和生成脚本用同一份
+const FIRST_AI_TERMS = require('./make_legal_first_release_ai.js');
+// 后台认作"不含批量工具和加量体验条款"的协议版本（backend/src/youju/agreements.py 的 WITHOUT_TOOLS_TERMS）：
+// 过审版加 AI 的版本号排在 2026-11 后面，后台这里没有它，就会把只同意过它的人当成同意过工具条款
+const SERVER_WITHOUT_TOOLS_TERMS = (() => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'backend', 'src', 'youju', 'agreements.py'), 'utf8');
+  // 允许换行和单双引号（ruff 格式化后集合可能折成多行）；读不到就报错，不当成空集合
+  const m = /^WITHOUT_TOOLS_TERMS\s*=\s*frozenset\(\s*\{([^}]*)\}\s*\)/m.exec(source);
+  if (!m) throw new Error('读不到后台不含工具条款的协议版本');
+  return [...m[1].matchAll(/["']([^"']+)["']/g)].map((x) => x[1]);
+})();
+// 定稿协议的指纹（D-098，Codex 10/26）：版本号和用户协议、隐私保护指引、免责声明三份正文一起算 SHA-256。
+// 包里协议的指纹对不上登记的那一版就不过：改了正文没升版本号、或新版本还没登记，都拦下。
+// 新版定稿时用 node tools/miniapp_presubmit_check.js --fingerprint [--root 包目录] 打印，写进 tools/release/agreement-fingerprints.json
+const FINGERPRINTS = JSON.parse(fs.readFileSync(path.join(__dirname, 'release', 'agreement-fingerprints.json'), 'utf8'));
+function agreementFingerprint(legal) {
+  const text = JSON.stringify({ version: legal.version, user: legal.user, privacy: legal.privacy, disclaimer: legal.disclaimer });
+  return crypto.createHash('sha256').update(text).digest('hex');
+}
+const FINGERPRINT_PROFILES = ['first-release', 'first-release-ai', 'ai-release', 'complete-release'];
+const PROFILES = ['first-release', 'first-release-ai', 'ai-internal', 'ai-release', 'complete-candidate', 'complete-release'];
+// 每种版本该有哪些页面；tools/miniapp_pack.js 打过审版（首发 16 页）时也用这一份
+function pagesFor(profile) {
+  if (!PROFILES.includes(profile)) throw new Error('参数不支持');
+  const complete = profile === 'complete-candidate' || profile === 'complete-release';
+  if (profile === 'first-release-ai') return FIRST_PAGES.concat(FIRST_AI_PAGES);
+  return profile === 'first-release' ? FIRST_PAGES.slice() : FIRST_PAGES.concat(AI_PAGES, complete ? DATA_PAGES.concat(PAY_PAGES, AI_SECTION_PAGES) : []);
+}
 
 function hasPlaceholder(value) {
   if (typeof value === 'string') return value.includes('【');
@@ -38,8 +82,8 @@ function hasPlaceholder(value) {
   return false;
 }
 function nonempty(value) { return typeof value === 'string' && value.trim().length > 0; }
-function inspect({ legal, config, app, project, toolTerms, payTerms, mode = 'submit', profile = 'first-release' }) {
-  if (!['submit', 'prepare'].includes(mode) || !['first-release', 'ai-internal', 'ai-release', 'complete-candidate', 'complete-release'].includes(profile)) {
+function inspect({ legal, config, app, project, toolTerms, payTerms, mode = 'submit', profile = 'first-release', fingerprints = FINGERPRINTS }) {
+  if (!['submit', 'prepare'].includes(mode) || !PROFILES.includes(profile)) {
     throw new Error('参数不支持');
   }
   const checks = [];
@@ -48,6 +92,11 @@ function inspect({ legal, config, app, project, toolTerms, payTerms, mode = 'sub
   const filed = nonempty(op.icp) && !hasPlaceholder(op.icp);
   add('agreement', '协议已定稿', legal.final === true, '按已确认版本定稿协议，不能以备案办理中跳过协议检查');
   add('placeholders', '协议没有未填占位', !hasPlaceholder(legal), '补齐协议占位内容');
+  if (FINGERPRINT_PROFILES.includes(profile)) {
+    add('terms-fingerprint', '协议正文和登记的定稿一致（指纹对得上版本号）',
+      typeof legal.version === 'string' && Object.hasOwn(fingerprints, legal.version) && fingerprints[legal.version] === agreementFingerprint(legal),
+      '协议正文改过却没升版本号，或这一版还没登记指纹：改正文要升版本号；定稿后用 --fingerprint 打印指纹，写进 tools/release/agreement-fingerprints.json');
+  }
   add('filing', '关于页有备案号', filed, '备案办理中；号下来后填 operator.icp。体验准备通过不等于可提审', mode === 'prepare');
   add('email', '关于页有联系邮箱', nonempty(op.email) && !hasPlaceholder(op.email), '填写真实联系邮箱');
   const releaseIdentityOk = !!project && project.appid === RELEASE_IDENTITY.appid
@@ -58,18 +107,54 @@ function inspect({ legal, config, app, project, toolTerms, payTerms, mode = 'sub
   add('debug', '没有打开调试', app.debug !== true, '关闭 debug');
   const pages = Array.isArray(app.pages) ? app.pages : [];
   const complete = profile === 'complete-candidate' || profile === 'complete-release';
-  const expected = profile === 'first-release' ? FIRST_PAGES : FIRST_PAGES.concat(AI_PAGES, complete ? DATA_PAGES.concat(PAY_PAGES, AI_SECTION_PAGES) : []);
+  const expected = pagesFor(profile);
   // 子包也会进上传包；未审阅的入口不能绕过主 pages 的范围检查。
   add('pages', '页面属于本次版本范围', pages.length === expected.length && new Set(pages).size === pages.length && expected.every(p => pages.includes(p))
     && !(app.subpackages || app.subPackages || []).length,
-  '核对历史首发14页、AI版19页或完整版26页（含加量体验确认页、购买页、订单页、AI 板块首页和使用帮助）；奖励及子包不属于本次范围');
-  const tabs = (app.tabBar && app.tabBar.list || []).map(t => t.pagePath);
-  const expectedTabs = FIRST_PAGES.slice(0, 4).concat(complete ? ['pages/ai/index'] : []);
-  add('tabs', complete ? '底栏为首页、关注、文件、我的，另有 AI 一格（AI 开着时才显示）' : '底栏为首页、关注、文件、我的',
-    JSON.stringify(tabs) === JSON.stringify(expectedTabs), complete ? '按 D-067 使用四栏，D-075 在最后加 pages/ai/index（自定义底栏按 api 决定画不画）' : '按 D-067 使用四栏');
+  '核对首发16页、过审版加AI 22页、AI版21页或完整版28页（均含站内阅读与结果页；过审版加AI另含AI首页、解读、对照、我的记录、投诉和帮助；完整版另含批量工具、购买、订单、AI板块和帮助）；奖励及子包不属于本次范围');
+  // 底栏的页面和名字：D-067 四栏；第三格打开的是导出记录，叫"导出"（D-087，原"文件"）；完整版最后加 AI 一格（D-075）
+  const tabList = (app.tabBar && app.tabBar.list) || [];
+  const tabs = tabList.map(t => t.pagePath);
+  const tabNames = tabList.map(t => t.text);
+  // 完整版和过审版加 AI（D-098）都有 AI 一格
+  const aiTab = complete || profile === 'first-release-ai';
+  const expectedTabs = FIRST_PAGES.slice(0, 4).concat(aiTab ? ['pages/ai/index'] : []);
+  const expectedNames = TAB_NAMES.concat(aiTab ? ['AI'] : []);
+  add('tabs', aiTab ? '底栏为首页、关注、导出、我的，另有 AI 一格（AI 开着时才显示）' : '底栏为首页、关注、导出、我的',
+    JSON.stringify(tabs) === JSON.stringify(expectedTabs) && JSON.stringify(tabNames) === JSON.stringify(expectedNames),
+    aiTab ? '按 D-067 使用四栏、第三格叫"导出"（D-087），D-075 在最后加 pages/ai/index（自定义底栏按 api 决定画不画）' : '按 D-067 使用四栏，第三格叫"导出"（D-087）');
   if (profile === 'first-release') add('ai-off', '首发包没有AI内测开关', config.aiInternal !== true, '首发不启用 AI 内测');
-  else add('ai-mode', 'AI包开关与选择的版本一致', config.aiInternal === (profile === 'ai-internal' || profile === 'complete-candidate'), '内测和完整候选 true，正式（AI 正式版、完整正式包）false；本工具不代替准入验证');
-  if (profile === 'ai-release' || profile === 'complete-release') add('ai-terms', '正式AI包使用独立新版协议', /^\d{4}-\d{2}/.test(legal.version || '') && legal.version >= '2026-11', '首发协议不含AI条款；正式AI包必须升至2026-11或后续版本，服务端同意范围也须同步');
+  if (profile === 'first-release') {
+    const text = JSON.stringify([legal.user, legal.privacy, legal.disclaimer]);
+    add('first-terms', '过审版协议只写包里有的功能（不含 AI 条款），版本排在 AI 条款版本之前', !FIRST_RELEASE_TERMS_BANNED.test(text)
+      && /^\d{4}-\d{2}/.test(legal.version || '') && legal.version < SERVER_AI_TERMS_VERSION,
+    '用 tools/miniapp_pack.js 打包（换上 content/legal-first-release.js，D-093 ⑤）；协议只写包里有的功能（不写 AI、批量工具、加量体验、付费、投诉举报页、原文链接），版本号要早于后台的 AI 条款版本');
+  }
+  if (profile === 'first-release-ai') {
+    const text = JSON.stringify([legal.user, legal.privacy, legal.disclaimer]);
+    add('first-ai-terms', '过审版加 AI 协议只写包里有的功能（不写批量工具、加量体验、付费、原文链接），版本是这一版的，后台不把它当成同意过工具条款',
+      !FIRST_AI_TERMS.BANNED.test(text) && legal.version === FIRST_AI_TERMS.VERSION && SERVER_WITHOUT_TOOLS_TERMS.includes(legal.version),
+      `用 tools/miniapp_pack.js --profile first-release-ai 打包（换上 content/legal-first-release-ai.js，D-098）；协议只写包里有的功能；版本号要等于 ${FIRST_AI_TERMS.VERSION}，并写进后台 agreements.WITHOUT_TOOLS_TERMS`);
+  }
+  if (profile !== 'first-release') add('ai-mode', 'AI包开关与选择的版本一致', config.aiInternal === (profile === 'ai-internal' || profile === 'complete-candidate'), '内测和完整候选 true，正式（AI 正式版、完整正式包）false；本工具不代替准入验证');
+  // 正式 AI 包：版本号之外，协议里要真有 AI 那一节（八、AI 功能与生成内容标识，至少 3 段），隐私保护指引要写到模型（Codex 10/26：只看版本号，删了条款也能过）
+  const aiSection = ((legal.user && legal.user.sections) || []).find(s => /AI 功能/.test((s && s.h) || ''));
+  const aiTermsText = !!aiSection && Array.isArray(aiSection.p) && aiSection.p.filter(nonempty).length >= 3
+    && /模型/.test(JSON.stringify((legal.privacy && legal.privacy.sections) || []));
+  if (profile === 'ai-release' || profile === 'complete-release' || profile === 'first-release-ai') {
+    add('ai-terms', '正式AI包使用独立新版协议，含 AI 条款', /^\d{4}-\d{2}/.test(legal.version || '') && legal.version >= '2026-11' && aiTermsText, '首发协议不含AI条款；正式AI包必须升至2026-11或后续版本，协议里要有"AI 功能与生成内容标识"那一节（至少 3 段），隐私保护指引要写明模型；服务端同意范围也须同步');
+    // 后台认 AI 条款的版本（SERVER_AI_TERMS_VERSION，10/28 起是 2026-11.1）：低于它的协议，同意了也用不了 AI
+    // （对所有人开放时）。完整版现在是 2026-11，只做内部包：体验准备只提示，提审照旧判不过（同 tools-terms-order）
+    add('ai-terms-current', '正式AI包的协议版本不低于后台认 AI 条款的版本', /^\d{4}-\d{2}/.test(legal.version || '') && legal.version >= SERVER_AI_TERMS_VERSION,
+      `协议版本要不低于 ${SERVER_AI_TERMS_VERSION}（后台 ai/interpret.py 的 AI_AGREEMENT_VERSION）：完整版要升到 2026-12，补上"AI 结果送微信内容安全检查"；改协议版本要创始人点头`, mode === 'prepare');
+  }
+  // 完整版带批量工具和加量体验：协议版本要排在那几个"不含工具条款"的版本后面（D-098）。不然只同意过
+  // 过审版加 AI（2026-11.1）的人，在完整版里不会被请去重新同意，后台又不认他同意过工具条款，工具用不了。
+  // 体验准备（prepare）只提示：完整版协议还是 2026-11，下次改它时升版本（要创始人点头）；提审（submit）不过
+  if (profile === 'complete-release') {
+    add('tools-terms-order', '完整版协议版本排在不含工具条款的版本之后', /^\d{4}-\d{2}/.test(legal.version || '') && SERVER_WITHOUT_TOOLS_TERMS.every((v) => legal.version > v),
+      `完整版协议升到 ${SERVER_WITHOUT_TOOLS_TERMS.join('、')} 之后的版本（如 2026-12），后台 agreements.WITHOUT_TOOLS_TERMS 不放它；改协议版本要创始人点头`, mode === 'prepare');
+  }
   add('internal-submit', '不把内测或完整候选包提交审核', !(mode === 'submit' && ['ai-internal', 'complete-candidate'].includes(profile)), '候选只能 prepare；完整交付须另行核对准入、实际业务验收及创始人批准');
   if (complete) {
     add('tool-terms', '完整版包含独立工具使用说明', !!toolTerms && toolTerms.version === SERVER_TOOL_TERMS_VERSION
@@ -88,14 +173,22 @@ function inspect({ legal, config, app, project, toolTerms, payTerms, mode = 'sub
     notice: mode === 'prepare' ? '仅体验准备检查；未核验平台后台、生产部署、真机或AI准入，不能据此提交审核' : '仅静态提审检查；还须核对备案后台、同包CI/生产/真机证据及创始人批准，本工具不授予提交权限', checks };
 }
 function main(args) {
-  let mode = 'submit', profile = 'first-release', json = false;
+  let mode = 'submit', profile = 'first-release', json = false, printFingerprint = false;
+  // --root：检查打好的包（tools/miniapp_pack.js 的输出目录），默认检查仓库里的 apps/miniapp
+  let root = path.join(__dirname, '..', 'apps', 'miniapp');
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--mode' && args[i + 1]) mode = args[++i];
     else if (args[i] === '--profile' && args[i + 1]) profile = args[++i];
+    else if (args[i] === '--root' && args[i + 1]) root = path.resolve(args[++i]);
     else if (args[i] === '--json') json = true;
-    else throw new Error('用法：node tools/miniapp_presubmit_check.js [--mode prepare|submit] [--profile first-release|ai-internal|ai-release|complete-candidate|complete-release] [--json]');
+    else if (args[i] === '--fingerprint') printFingerprint = true;
+    else throw new Error('用法：node tools/miniapp_presubmit_check.js [--mode prepare|submit] [--profile first-release|first-release-ai|ai-internal|ai-release|complete-candidate|complete-release] [--root 包目录] [--json]');
   }
-  const root = path.join(__dirname, '..', 'apps', 'miniapp');
+  if (printFingerprint) {
+    const legal = require(path.join(root, 'content/legal.js'));
+    console.log(`${legal.version} ${agreementFingerprint(legal)}`);
+    return 0;
+  }
   const result = inspect({legal: require(path.join(root, 'content/legal.js')), config: require(path.join(root, 'utils/config.js')),
     app: JSON.parse(fs.readFileSync(path.join(root, 'app.json'), 'utf8')),
     project: JSON.parse(fs.readFileSync(path.join(root, 'project.config.json'), 'utf8')),
@@ -113,4 +206,4 @@ if (require.main === module) {
   try { process.exitCode = main(process.argv.slice(2)); }
   catch (_) { console.error('无法完成检查：请核对参数和配置文件；未通过，不可提审。'); process.exitCode = 2; }
 }
-module.exports = { inspect, SERVER_TOOL_TERMS_VERSION };
+module.exports = { inspect, pagesFor, agreementFingerprint, FINGERPRINTS, PROFILES, FIRST_PAGES, FIRST_AI_PAGES, TAB_NAMES, SERVER_TOOL_TERMS_VERSION, SERVER_AI_TERMS_VERSION, SERVER_WITHOUT_TOOLS_TERMS, FIRST_AI_TERMS, FIRST_RELEASE_TERMS_BANNED };

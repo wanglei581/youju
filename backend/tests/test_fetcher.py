@@ -151,6 +151,65 @@ def test_robots_server_error_means_skip() -> None:
         assert f.fetch("https://a.gov.cn/list.html").status == "robots_error"
 
 
+def test_robots_server_error_once_is_retried_and_reason_recorded() -> None:
+    """robots.txt 服务器一时回 5xx：按限速间隔再取一次；两次都是 5xx 才跳过，原因写进失败说明。"""
+    robots_answers = {"a.gov.cn": [503, 200], "b.gov.cn": [503, 502]}
+    calls: list[str] = []
+    waits: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        host = request.url.host
+        if request.url.path == "/robots.txt":
+            calls.append(host)
+            code = robots_answers[host].pop(0)
+            return httpx.Response(code, text="User-agent: *\nAllow: /\n" if code == 200 else "")
+        return httpx.Response(200, text=LIST_HTML)
+
+    with make_fetcher(handler, interval=3.0, sleep=waits.append) as f:
+        # 第一次 503、隔一个限速间隔再取一次 200：照常抓
+        assert f.fetch("https://a.gov.cn/list.html").status == "ok"
+        assert calls == ["a.gov.cn", "a.gov.cn"] and waits and waits[0] > 0
+        # 两次都是 5xx：跳过，写明原因；这一轮里不再取（和原来一样）
+        result = f.fetch("https://b.gov.cn/list.html")
+        assert result.status == "robots_error"
+        assert result.error == "robots.txt 暂时无法获取（HTTP 502），本次跳过"
+        assert f.fetch("https://b.gov.cn/other.html").status == "robots_error"
+        assert calls.count("b.gov.cn") == 2
+
+
+def test_robots_network_error_reason_is_kept() -> None:
+    tries: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/robots.txt":
+            tries.append(request.url.host)
+            raise httpx.ConnectTimeout("连接超时")
+        raise AssertionError("robots.txt 取不到时不应抓取页面")
+
+    with make_fetcher(handler) as f:
+        result = f.fetch("https://a.gov.cn/list.html")
+    assert result.status == "robots_error"
+    assert result.error.startswith("robots.txt 暂时无法获取（") and "本次跳过" in result.error
+    # 超时、连不上在下层已经重试过一次，robots 这层不再多试
+    assert tries == ["a.gov.cn", "a.gov.cn"]
+
+
+def test_robots_retry_after_5xx_stops_at_the_deadline() -> None:
+    """5xx 以后再取一次之前到了期限：给 deadline，robots.txt 不当成读不到记下来。"""
+    requested = []
+    now = {"t": 0.0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(request.url.path)
+        now["t"] = 100.0  # 第一次取 robots.txt 的时候到了期限
+        return httpx.Response(503)
+
+    with deadline_fetcher(handler, now, deadline=10.0) as f:
+        result = f.fetch("https://a.gov.cn/1.html")
+        assert result.status == "deadline" and requested == ["/robots.txt"]
+        assert f._robots == {}
+
+
 def test_robots_4xx_or_html_means_allowed() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/robots.txt":
@@ -231,6 +290,116 @@ def test_per_host_interval() -> None:
     # a.gov.cn：robots → 等 3 秒 → 第一页 → 等 3 秒 → 第二页
     # b.gov.cn：不用等 a.gov.cn；robots → 等 3 秒 → 第一页
     assert sleeps == [3.0, 3.0, 3.0]
+
+
+def deadline_fetcher(handler, now: dict, deadline: float) -> PoliteFetcher:
+    return PoliteFetcher(
+        "TestAgent YoujuBot/0.1",
+        per_host_interval=0.0,
+        transport=httpx.MockTransport(handler),
+        resolver=public_dns,
+        clock=lambda: now["t"],
+        sleep=lambda seconds: None,
+        deadline=deadline,
+    )
+
+
+def test_deadline_already_passed_sends_nothing_and_does_not_cache_robots() -> None:
+    """设了期限（原网页检查用）、已经到期：一个请求也不发，给 deadline；robots.txt 不当成读不到记下来。"""
+    requested = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(request.url.path)
+        return httpx.Response(404)
+
+    now = {"t": 20.0}
+    with deadline_fetcher(handler, now, deadline=10.0) as f:
+        result = f.fetch("https://a.gov.cn/1.html")
+        assert result.status == "deadline" and requested == []
+        assert f._robots == {}
+
+
+def test_deadline_reached_between_robots_and_page() -> None:
+    requested = []
+    now = {"t": 0.0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(request.url.path)
+        if request.url.path == "/robots.txt":
+            now["t"] = 100.0  # 读 robots.txt 的时候到了期限
+            return httpx.Response(404)
+        return httpx.Response(200, text=LIST_HTML)
+
+    with deadline_fetcher(handler, now, deadline=10.0) as f:
+        result = f.fetch("https://a.gov.cn/1.html")
+        assert result.status == "deadline" and requested == ["/robots.txt"]
+        assert f._robots["https://a.gov.cn"].state == "allow_all"  # 读到了的照常记下
+
+
+def test_deadline_reached_during_dns_lookup_sends_no_request() -> None:
+    requested = []
+    now = {"t": 0.0}
+
+    def slow_dns(host: str) -> list[str]:
+        now["t"] = 100.0  # 解析的时候到了期限
+        return ["1.2.3.4"]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(request.url.path)
+        return httpx.Response(404)
+
+    f = PoliteFetcher(
+        "TestAgent YoujuBot/0.1",
+        per_host_interval=0.0,
+        transport=httpx.MockTransport(handler),
+        resolver=slow_dns,
+        clock=lambda: now["t"],
+        sleep=lambda seconds: None,
+        deadline=10.0,
+    )
+    with f:
+        assert f.fetch("https://a.gov.cn/1.html").status == "deadline"
+        assert requested == [] and f._robots == {}
+
+
+def test_deadline_cuts_off_a_slow_trickling_page() -> None:
+    """一点一点慢慢回数据的页面（每块都在超时以内）：到期就放下，不拖过期限。"""
+    now = {"t": 0.0}
+    sent = []
+
+    def trickle():
+        for _ in range(100):
+            now["t"] += 6.0
+            sent.append(1)
+            yield b"<p>" + b"x" * 100 + b"</p>"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/robots.txt":
+            return httpx.Response(404)
+        return httpx.Response(200, content=trickle(), headers={"content-type": "text/html"})
+
+    with deadline_fetcher(handler, now, deadline=30.0) as f:
+        result = f.fetch("https://a.gov.cn/1.html")
+    assert result.status == "deadline" and len(sent) < 10
+
+
+def test_deadline_shortens_request_timeout_and_no_deadline_keeps_it() -> None:
+    timeouts = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        timeouts.append(request.extensions["timeout"]["read"])
+        if request.url.path == "/robots.txt":
+            return httpx.Response(404)
+        return httpx.Response(200, text=LIST_HTML)
+
+    now = {"t": 0.0}
+    with deadline_fetcher(handler, now, deadline=5.0) as f:
+        assert f.fetch("https://a.gov.cn/1.html").status == "ok"
+    assert timeouts == [5.0, 5.0]
+    timeouts.clear()
+    with make_fetcher(handler) as f:
+        assert f.fetch("https://a.gov.cn/1.html").status == "ok"
+    assert timeouts == [20.0, 20.0]
 
 
 def test_decode_html_charsets() -> None:

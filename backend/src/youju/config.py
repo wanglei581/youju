@@ -14,7 +14,10 @@ DEFAULT_SOURCES_CSV = REPO_ROOT / "docs" / "数据来源" / "全国来源清单_
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="YOUJU_", env_file=".env", extra="ignore")
+    # hide_input_in_errors：配置错了起不来时，报错（会进部署日志）里不带填进去的值——密钥、数据库地址
+    model_config = SettingsConfigDict(
+        env_prefix="YOUJU_", env_file=".env", extra="ignore", hide_input_in_errors=True
+    )
 
     # 本机开发用 scripts/dev_mysql.sh 启动的 MySQL；线上填云托管 MySQL 的内网地址
     database_url: str = "mysql+pymysql://root@127.0.0.1:33306/youju?charset=utf8mb4"
@@ -82,6 +85,9 @@ class Settings(BaseSettings):
     ai_advisor_api_key: SecretStr | None = None
     ai_advisor_model: str = ""
     ai_advisor_request_extra: dict | None = None
+    # 对外 AI 用流式返回（SSE）：经云开发调混元时，网关对不走流式、1 分钟内没生成完的请求不返回结果
+    # （D-098 调研，docs.cloudbase.net 的 FAQ）。默认关；实测最长的任务超过 1 分钟再打开
+    ai_advisor_stream: bool = False
     ai_model_label: str = ""
     ai_model_filing: str = ""
 
@@ -201,6 +207,32 @@ class Settings(BaseSettings):
             raise ValueError(
                 "对外 AI 单独设置时，YOUJU_AI_ADVISOR_BASE_URL、YOUJU_AI_ADVISOR_API_KEY、"
                 "YOUJU_AI_ADVISOR_MODEL 三项要一起填"
+            )
+        # 对所有人开放时只能走对外线路（云开发，D-093 上线门槛第 3 条）：类目协议、实际调用、
+        # 页面公示的模型要一致，不能退回后台核对用的线路。白名单内部试用不受这条限制。
+        # 只有处理 AI 任务的服务（admin，本机的 all）调模型、要配这条线路；api 服务不调模型，
+        # 不用放密钥（D-098：密钥少放一处，也免得只给 admin 配了、api 起不来）
+        if (
+            self.ai_advisor_enabled
+            and self.ai_advisor_audience == "all"
+            and self.role != "api"
+            and not all(parts)
+        ):
+            raise ValueError(
+                "对所有人开放 AI（YOUJU_AI_ADVISOR_AUDIENCE=all）时，要配好对外线路："
+                "YOUJU_AI_ADVISOR_BASE_URL、YOUJU_AI_ADVISOR_API_KEY、YOUJU_AI_ADVISOR_MODEL，"
+                "不能用后台核对的线路"
+            )
+        # 对所有人开放时要能公示所用模型的名称和备案（登记）编号（D-098；上线门槛第 1、5 条）：
+        # 没填时 AI 首页和结果页底部那一行不显示，所以不能开放
+        if (
+            self.ai_advisor_enabled
+            and self.ai_advisor_audience == "all"
+            and not (self.ai_model_label.strip() and self.ai_model_filing.strip())
+        ):
+            raise ValueError(
+                "对所有人开放 AI（YOUJU_AI_ADVISOR_AUDIENCE=all）时，"
+                "要填公示用的模型名称和备案编号：YOUJU_AI_MODEL_LABEL、YOUJU_AI_MODEL_FILING"
             )
         return self
 

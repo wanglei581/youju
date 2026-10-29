@@ -1,6 +1,6 @@
 <notice-bar />
 <view class="privacy">这里的客户卡片只保存在本机，不上传；检索只发送所选地区（省、市、区县）和产业方向。</view>
-<view wx:if="{{!editing}}" class="card"><view class="message">批量比对名单或生成客户相关通知表，请用工具中心（要另外确认上传）；这里的客户卡片不会自动发送。</view><button class="btn-primary" bindtap="tools">打开工具中心</button></view>
+<view wx:if="{{!editing && tools}}" class="card"><view class="message">批量比对名单或生成客户相关通知表，请用工具中心（要另外确认上传）；这里的客户卡片不会自动发送。</view><button class="btn-primary" bindtap="tools">打开工具中心</button></view>
 <view wx:if="{{error}}" class="card message">{{error}}</view>
 <block wx:if="{{!editing}}">
   <view class="seg" aria-role="tablist">
@@ -38,7 +38,7 @@
       <!-- 结果很少时给出路（10/15 走查：江苏 + 一个产业方向，近 90 天只有 1 份） -->
       <view wx:if="{{loaded && !loading && !loadError && shown.length && shown.length < 3}}" class="weak scope-note">结果较少：可以在客户卡片里多选几个产业方向，或不选产业方向、只按地区看。</view>
       <view wx:if="{{shown.length && !loading}}" class="export-bar">
-        <view class="btn-primary export-btn" bindtap="exportShown" aria-role="button">导出这 {{shown.length}} 份</view>
+        <view class="btn-primary export-btn" bindtap="exportShown" aria-role="button">查看这 {{shown.length}} 份结果</view>
         <view class="weak export-note">客户名称只存在本机，导出的表里不含客户名称。</view>
       </view>
     </block>
@@ -46,7 +46,7 @@
 
   <!-- 客户卡片 -->
   <block wx:else>
-    <view class="intro">保存客户的地区和产业方向，最多 20 家。客户更多时，用工具中心的“客户相关通知表”上传名单一次处理。</view>
+    <view class="intro">保存客户的地区和产业方向，最多 20 家。<text wx:if="{{tools}}">客户更多时，用工具中心的“客户相关通知表”上传名单一次处理。</text></view>
     <view class="add btn-primary" bindtap="edit" aria-role="button">新增客户</view>
     <view wx:for="{{clients}}" wx:key="id" class="card client-card">
       <view class="section-title">{{item.displayName}}</view>
@@ -67,12 +67,12 @@
   <view class="options"><view wx:for="{{provinces}}" wx:key="*this" class="option {{picked['regions:' + item] ? 'option--on' : ''}}" data-group="regions" data-value="{{item}}" bindtap="pick" aria-role="checkbox" aria-checked="{{!!picked['regions:' + item]}}">{{item}}</view></view>
   <view class="label">城市与区县（省市区联动，可多选）</view>
   <picker mode="region" custom-item="全部" value="{{cityRegion}}" bindchange="chooseCity"><view class="option">选择省、市或区县</view></picker>
-  <view class="weak help">省市区选项来自微信，不代表已收录；区县一栏选“全部”只查市级来源（直辖市不选区县时也是）。</view>
+  <view class="weak help">省市区选项来自微信，不代表已收录；城市一栏选“全部”查全省各级来源（省、市、区县都在内）；区县一栏选“全部”只查这个市已收录的市级来源，不含区县；直辖市例外：区县一栏选“全部”时查整个直辖市（各级来源都在内）。</view>
   <view class="weak help">{{cityCoverageNote}}</view>
   <view wx:if="{{cityError}}" class="help">{{cityError}}</view>
-  <view wx:if="{{form.cities.length}}" class="weak help">已选城市，点此移除：</view>
+  <view wx:if="{{form.cities.length}}" class="weak help">已选的城市，点一下移除：</view>
   <view class="options"><view wx:for="{{form.cities}}" wx:key="*this" class="option option--on" data-value="{{item}}" bindtap="removeCity" aria-role="button" aria-label="移除城市{{item}}">{{item}}<t-icon name="close" size="24rpx" color="#2A5CE0" /></view></view>
-  <view wx:if="{{districtLabels.length}}" class="weak help">已选区县，点此移除：</view>
+  <view wx:if="{{districtLabels.length}}" class="weak help">已选的区县，点一下移除：</view>
   <view class="options"><view wx:for="{{districtLabels}}" wx:key="key" class="option option--on" data-value="{{item.key}}" bindtap="removeDistrict" aria-role="button" aria-label="移除区县{{item.label}}">{{item.label}}<t-icon name="close" size="24rpx" color="#2A5CE0" /></view></view>
   <view wx:if="{{coverageError}}" class="help">{{coverageError}}<text class="link" bindtap="loadCities">　重试</text></view>
   <view class="label">产业方向（可多选）</view>

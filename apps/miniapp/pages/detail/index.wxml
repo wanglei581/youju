@@ -19,14 +19,16 @@
     <view class="tags">
       <text wx:for="{{doc.tags}}" wx:key="*this" class="tag tag--{{tagClasses[index]}}">{{item}}</text>
       <text wx:if="{{doc.category}}" class="tag tag--cat">{{doc.category}}</text>
-      <text wx:if="{{doc.status}}" class="tag">名单状态：{{doc.status}}</text>
+      <text wx:if="{{doc.status}}" class="tag">发布阶段：{{doc.status}}</text>
       <text class="region">{{regionText || doc.region}}</text>
     </view>
     <view class="title">{{doc.title}}</view>
     <view class="pub">{{doc.issuer}} · {{doc.date}} 发布</view>
     <!-- 能解读时的一行提示（D-075，组件里判断显不显示）：点了滚到"要点"下面的卡片，卡片位置不动 -->
     <ai-hint doc-id="{{doc.id}}" doc-title="{{doc.title}}" issuer="{{doc.issuer}}" date="{{doc.date}}" ai="{{doc.ai}}" bind:jump="toAi" />
-    <view class="weak status-note">类型、类别和名单状态按标题归类，仅供检索参考，非官方分类</view>
+    <!-- 原文链接已失效（youju/link_check.py）：放在标题下面先说（失效了就不能再解读，和上面那行提示不会同时出现），下面的要点、正文都是之前收录的 -->
+    <view wx:if="{{goneNote}}" class="gone-note">{{goneNote}}</view>
+    <view class="weak status-note">类型、类别和发布阶段按标题归类，仅供检索参考，非官方分类</view>
   </view>
 
   <!-- 首发版（D-061）：按类型逐条写截止。核对过的标"已核对"；机器摘录的标"机器摘录·未经人工核对"并附原句；其余写"截止未核对" -->
@@ -39,11 +41,13 @@
           <view wx:if="{{item.dateText}}" class="due-date-row"><text class="due-date">{{item.dateText}}</text><text class="due-week">{{item.week}}</text></view>
           <view wx:else class="due-unverified">截止未核对，请以原文为准</view>
         </view>
-        <text wx:if="{{item.dateText}}" class="left-pill left-pill--{{item.tone}}">{{item.days < 0 ? '已截止' : '剩 ' + item.days + ' 天'}}</text>
+        <text wx:if="{{item.dateText}}" class="left-pill left-pill--{{item.tone}}">{{item.days < 0 ? '已截止' : item.days === 0 ? '今天截止' : '剩 ' + item.days + ' 天'}}</text>
       </view>
       <text wx:if="{{item.label}}" class="src src--{{item.source}}">{{item.label}}</text>
       <view wx:if="{{item.quote}}" class="dl-quote">原文：{{item.quote}}</view>
     </view>
+    <!-- 转发合并的通知（D-055）：上面的日期只是本页这一版的，别的地方的版本截止可能不同（10/22 走查） -->
+    <view wx:if="{{versions.length}}" class="weak ver-hint">上面这一栏只对应本页这一版{{versionLabel ? '（' + versionLabel + '）' : ''}}；同一通知其他地方的版本，截止看下面“各版本的截止”</view>
     <view wx:if="{{due && loginOpen && remindOpen && due.days >= 3}}" class="remind {{reminded ? 'remind--on' : ''}}" bindtap="toggleRemind">
       <t-icon name="notification" size="34rpx" />
       <text>{{reminded ? '已订阅：截止前 3 天用微信提醒你一次' : '订阅截止提醒（一次）'}}</text>
@@ -55,9 +59,11 @@
         <view class="due-label">{{doc.deadline.label}}</view>
         <view class="due-date-row"><text class="due-date">{{dueDate}}</text><text class="due-week">{{dueWeek}}</text></view>
       </view>
-      <text class="left-pill left-pill--{{due.tone || 'normal'}}">{{due.days < 0 ? '已截止' : '剩 ' + due.days + ' 天'}}</text>
+      <text class="left-pill left-pill--{{due.tone || 'normal'}}">{{due.days < 0 ? '已截止' : due.days === 0 ? '今天截止' : '剩 ' + due.days + ' 天'}}</text>
     </view>
     <view class="due-notes"><view wx:for="{{doc.deadline.notes}}" wx:key="*this">{{item}}</view></view>
+    <!-- 转发合并的通知（D-055）：上面的日期只是本页这一版的，别的地方的版本截止可能不同（10/22 走查） -->
+    <view wx:if="{{versions.length}}" class="weak ver-hint">上面这一栏只对应本页这一版{{versionLabel ? '（' + versionLabel + '）' : ''}}；同一通知其他地方的版本，截止看下面“各版本的截止”</view>
     <view wx:if="{{loginOpen && remindOpen && due.days >= 3}}" class="remind {{reminded ? 'remind--on' : ''}}" bindtap="toggleRemind">
       <t-icon name="notification" size="34rpx" />
       <text>{{reminded ? '已订阅：截止前 3 天用微信提醒你一次' : '订阅截止提醒（一次）'}}</text>
@@ -89,7 +95,6 @@
       <view class="ver-due {{item.verified ? '' : 'ver-due--none'}}">{{item.deadline}}</view>
       <view class="ver-meta">
         <text class="ver-meta-text">{{item.meta}}</text>
-        <text class="ver-copy" data-url="{{item.url}}" catchtap="copyVersion" aria-role="button" aria-label="复制{{item.label}}的原文链接">复制原文链接</text>
       </view>
     </view>
     <view class="weak ver-note">各版本的截止日期、报送要求可能不同，以各自原文为准</view>
@@ -134,53 +139,56 @@
     <view class="weak cond-note">条件以原文为准，不作为能否申报的判断</view>
   </view>
 
-  <view wx:if="{{doc.body}}" class="card">
-    <view class="section-title">正文</view>
-    <view class="weak body-note">从原网页或 PDF 自动提取，未经人工逐字核对；截止日期可先看上面的“截止时间”，一切以原文为准。</view>
-    <block wx:if="{{doc.body.status === 'ok'}}">
-      <text class="body-text" user-select>{{bodyOpen ? doc.body.text : bodyPreview}}</text>
-      <view wx:if="{{bodyFolded}}" class="link body-more" bindtap="toggleBody">{{bodyOpen ? '收起' : '展开全文'}}</view>
-      <view wx:if="{{doc.body.truncated && (bodyOpen || !bodyFolded)}}" class="weak body-rest">后面还有约 {{bodyRest}} 字，请复制原文链接在浏览器查看。</view>
+  <!-- 正文（D-097）：不满一屏的全部显示（"全文如下"），长的显示开头、在段末停（"下面是开头，全文约 N 字"）；
+       正文下面和底栏两处同名的入口去同一页（阅读全文 / 阅读附件），都读不了时不显示。标题里写明是自动提取、没逐字核对 -->
+  <view wx:if="{{doc.body}}" id="body" class="card">
+    <view class="section-title">正文<text wx:if="{{bodyView}}">（自动提取，未经人工逐字核对）</text></view>
+    <view wx:if="{{bodySummary}}" class="weak body-summary">{{bodySummary}}</view>
+    <block wx:if="{{bodyView}}">
+      <view class="weak body-note">从原网页或 PDF 提取<text wx:if="{{dueDated}}">；截止日期可先看上面的“截止时间”</text>，一切以原文为准。</view>
+      <view class="body-label">{{bodyView.label}}</view>
+      <text class="body-text" user-select>{{bodyView.text}}</text>
+      <!-- 名单类通知：正文里的名单没展开（D-092），给去查名单的入口 -->
+      <view wx:if="{{doc.body.listHidden}}" class="link body-lookup" bindtap="toLists" aria-role="button">名单请在“查名单”里按企业名称查询 ›</view>
     </block>
-    <view wx:elif="{{doc.body.status === 'list'}}" class="muted body-none">名单内容请复制原文链接查看；按企业名称查是否在名单上，可以用"查名单"。</view>
-    <view wx:elif="{{doc.body.status === 'original'}}" class="muted body-none">这类文件的正文请复制原文链接在浏览器查看。</view>
-    <view wx:else class="muted body-none">暂未提取到完整正文，请复制原文链接在浏览器查看。</view>
+    <block wx:else>
+      <view class="body-none">{{noBody}}</view>
+      <view wx:if="{{doc.body.status === 'list'}}" class="link body-lookup" bindtap="toLists" aria-role="button">在“查名单”里按企业名称查询 ›</view>
+    </block>
+    <view wx:if="{{entry}}" id="read-entry" class="link body-more" bindtap="readBody" aria-role="button">{{entry.label}} ›</view>
   </view>
 
+  <!-- 附件紧跟正文：每个直接写能不能读（和阅读页同一个判断）；能读的写"阅读"可点，读不了的灰色、不能点、写原因 -->
   <view wx:if="{{atts.length}}" id="attachments" class="card">
     <view class="section-title">附件 {{atts.length}}</view>
-    <view wx:for="{{atts}}" wx:key="index" class="att" hover-class="att--pressed" data-index="{{index}}" bindtap="openAttachment" aria-role="button">
+    <view wx:for="{{atts}}" wx:key="index" id="att-{{index}}" class="att {{item.canOpen ? '' : 'att--off'}}" hover-class="{{item.canOpen ? 'att--pressed' : 'none'}}" data-index="{{index}}" bindtap="openAttachment" aria-role="{{item.canOpen ? 'button' : 'text'}}" aria-disabled="{{!item.canOpen}}">
       <text class="att-ext att-ext--{{item.ext}}">{{item.ext}}</text>
       <view class="att-body">
         <text class="att-name">{{item.name}}</text>
         <text wx:if="{{item.meta}}" class="att-meta">{{item.meta}}</text>
       </view>
-      <text class="att-action {{item.canOpen ? 'att-action--open' : ''}}">{{item.action}}</text>
+      <text wx:if="{{item.canOpen}}" class="att-action att-action--open">{{item.action}}</text>
     </view>
-    <view class="att-foot">
+    <view wx:if="{{attNote}}" class="att-foot">
       <text>{{attNote}}</text>
-      <view class="copy" bindtap="copy"><t-icon name="copy" size="28rpx" />复制原文链接</view>
     </view>
   </view>
 
   <view class="card source">
-    <view class="source-top">
-      <view>
-        <view class="weak source-label">原文出处</view>
-        <view class="source-site">{{doc.site || doc.issuer}}</view>
-      </view>
-      <view class="copy copy--big" bindtap="copy"><t-icon name="copy" size="30rpx" />复制原文链接</view>
-    </view>
-    <view wx:if="{{doc.link_gone}}" class="source-gone">原网页已撤下或改了地址（{{doc.link_gone}} 检查时打不开），复制的链接可能打不开；可以到发文机关网站按标题查找。</view>
-    <view class="source-note">原文网址 {{doc.host || ''}}。小程序内不能直接打开政府网站，复制链接后在浏览器打开。<text wx:if="{{doc.checked}}">以上要点由有据按原文逐条整理，以原文为准，{{doc.checked}} 核对。</text>申报请在主管部门的申报系统办理，有据不提供填报入口。</view>
+    <!-- 出处只写来源网站名称、发文机关、日期，不写网址（D-097：网址文字有被认为引导外跳的风险；10/23 审核退回过"复制链接去浏览器"） -->
+    <view class="weak source-label">原文出处</view>
+    <view class="source-site">{{doc.site || doc.issuer}}</view>
+    <view class="source-meta">发文机关：{{doc.issuer}}<text wx:if="{{doc.date}}">　发布日期：{{doc.date}}</text></view>
+    <view wx:if="{{doc.link_gone}}" class="source-gone">原网页 {{doc.link_gone}} 检查时已打不开。</view>
+    <view class="source-note"><text wx:if="{{doc.checked}}">以上要点由有据按原文逐条整理，以原文为准，{{doc.checked}} 核对。</text>申报请在主管部门的申报系统办理，有据不提供填报入口。</view>
   </view>
   <view style="height: 220rpx"></view>
 
   <view class="bar">
-    <view class="bar-item" bindtap="exportDoc"><t-icon name="download" size="44rpx" /><text>导出</text></view>
+    <view class="bar-item" bindtap="exportDoc"><t-icon name="download" size="44rpx" /><text>结果</text></view>
     <view wx:if="{{loginOpen}}" class="bar-item" bindtap="feedback"><t-icon name="flag" size="44rpx" /><text>纠错</text></view>
     <!-- 10/18 验收：只能从右上角"···"转发时，园区专员找不到；按钮和菜单走同一个 onShareAppMessage -->
     <button class="bar-item bar-share" open-type="share" disabled="{{!shareReady}}" hover-class="none" aria-label="转发给好友或群"><t-icon name="share" size="44rpx" /><text>转发</text></button>
-    <view class="btn-primary bar-main" bindtap="copy"><t-icon name="copy" size="32rpx" color="#FFFFFF" />复制原文链接</view>
+    <view wx:if="{{entry}}" id="bar-read" class="btn-primary bar-main" bindtap="readBody"><t-icon name="file" size="32rpx" color="#FFFFFF" />{{entry.label}}</view>
   </view>
 </block>
