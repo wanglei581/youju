@@ -513,6 +513,7 @@ def test_近N个月没有那一天的取月底():
         *[(p, "不限", None) for p in ("1月1日到今天", "前几天到今天", "半年前到今天")],
         *[(p, "不限", None) for p in ("10月到今天", "上半年到今天", "国庆节前", "五一前")],
         *[(p, "不限", None) for p in ("劳动节后", "前阵子", "17点前", "下午5点前")],
+        *[(p, "不限", None) for p in ("五点前", "十二点前", "下午5点后", "17点以后", "五一节前")],
         # 截止写在年份前面；年份＋初底末后面再跟截止、以前；只写一个"前"（agy 第 3 轮）
         *[(p, "不限", None) for p in ("截止2025年", "截至2026年", "截止到2025年")],
         *[(p, "不限", None) for p in ("2025年底截止", "2025年底到期", "2025年底以前")],
@@ -573,6 +574,7 @@ def test_换不成确定日期的时间说法去掉_加提示(phrase, time, year
         *("本月申请到期", "今天17点截止", "本周五17点截止", "今天下午5点截止", "明天17:00截止"),
         # 没写哪天的几点截止；申报截至（写错了字）；直到今天还在申报（独立审阅第 11 轮）
         *("17点截止", "下午5点截止", "本月申报截至", "直到今天还在申报"),
+        "五点截止",  # 汉字的几点（agy 第 13 轮）
     ],
 )
 def test_说的是截止的不按发布时间筛_说一声(phrase):
@@ -718,6 +720,11 @@ def test_时间后面跟着初底末_照前面的筛加提示(phrase, time, year
         ("本单位能申请的补贴", ["补贴"]),
         ("所有资助", ["资助"]),
         ("全部扶持", ["扶持"]),
+        # 青、少、成这类字后面的"年前、年内"不认；本厂同本单位（独立审阅第 12 轮）
+        ("少年前途", ["少年前途"]),
+        ("专精特新年内部审计", ["专精特新", "年内部审计"]),
+        ("本厂能申报的项目", []),
+        ("本厂的补贴", ["补贴"]),
     ],
 )
 def test_不是时间说法的照旧当关键词(text, keywords):
@@ -852,8 +859,34 @@ def test_前面是找查看的年底中旬年前照样认():
     parsed = parse("看月底截止的申报", today=TODAY, covered=ALL_COVERED)
     assert parsed.deadline and parsed.conditions["keywords"] == []
     assert _parse("下午5点前提交")["keywords"] == ["提交"]
+    assert _parse("找年初以来的申报通知")["time"] == "今年"  # 独立审阅第 12 轮
+    # 有年底的、五点前提交、本厂（agy 第 13 轮）
+    parsed = parse("有年底的通知吗", today=TODAY, covered=ALL_COVERED)
+    assert parsed.vague_time and parsed.conditions["keywords"] == []
+    assert _parse("五点前提交")["keywords"] == ["提交"]
+    assert _parse("本厂有哪些补贴")["keywords"] == ["补贴"]
     for text in ("青年初心", "下午茶活动", "三点一线"):
         assert _parse(text)["keywords"] == [text], text
+
+
+@pytest.mark.parametrize(
+    "text,keywords,deadline",
+    [
+        ("高企申报年底截止吗", ["高企"], True),
+        ("专精特新申报月底截止", ["专精特新"], True),
+        ("高新技术企业认定月底截止吗", ["高新技术"], True),
+        ("高企年底截止吗", ["高企"], True),
+        ("专精特新年内到期的申报", ["专精特新"], True),
+        ("小巨人年初发布的名单", ["小巨人"], False),
+    ],
+)
+def test_话题词后面的年底月底年内照样认(text, keywords, deadline):
+    """不带今年、本月的年底、月底、年内跟在话题词、类型词后面也认（独立审阅第 12 轮：原来只认前面
+    不是汉字的）；前面是青、少、成这类字的不认（_NOT_TIME_YEAR：青年内容、少年前途）。"""
+    parsed = parse(text, today=TODAY, covered=ALL_COVERED)
+    assert parsed.conditions["keywords"] == keywords, text
+    assert parsed.conditions["period"] is None, text
+    assert parsed.deadline == deadline and (parsed.deadline or parsed.vague_time), text
 
 
 def test_换不成日期的时间后面的细分一起去掉():
