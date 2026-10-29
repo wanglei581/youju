@@ -641,7 +641,7 @@ _LAI_WORDS = "源|华|访|料|电|函|信|稿|往"
 _INNER = f"(?:内(?!{_NEI_WORDS})|来(?!{_LAI_WORDS}))"
 # 到现在为止（今年截至目前、去年到现在、截至目前为止；"截止目前"是"截至"写错了字）：同"以来"。
 # "截至"是到某个时候为止，不是截止
-_UP_TO_NOW = "(?:截[至止]到?|到|至)(?:目前|现在|当前|今天|今日)(?:为止)?|截止至今|至今为止"
+_UP_TO_NOW = "(?:截[至止]到?|到|至)(?:目前|现在|当前|今天|今日)(?:为止)?|截[至止]至今|至今为止"
 # 单独说的（到目前为止）：到现在，不用筛也不用说；"截止今天"多半说的是截止（_UNTIL），后面跟着
 # "为止"的才算
 _UP_TO_NOW_AT = re.compile(f"(?!截止到?今[天日](?!为止)){_UP_TO_NOW}")
@@ -835,7 +835,7 @@ def _time_at(text: str, pos: int = 0) -> _TimeHit | None:
     if best.kind == "vague":  # 下月底、明年前：后面的细分、前后一起算；明天截止、明天截至：截止
         at = _day_after(text, best.end, best.word, day=True) or best.end  # 下周五、明天下午
         part = _SUB.match(text, at)
-        at = part.end() if part else at
+        at = _daytime_after(text, part.end() if part else at)  # 明年 10 月 15 日下午截止
         if start := _FROM_AT.match(text, at):  # 明年起实施、11 月 1 日起实施
             at = start.end()
         end, deadline = _stop_at(text, at) or (at, False)
@@ -850,7 +850,7 @@ def _time_at(text: str, pos: int = 0) -> _TimeHit | None:
         if since := _SINCE.match(text, best.end):  # 上周五以来：从上周一算到今天
             best = replace(best, end=since.end(), since=best.word not in _TIME_OF)
     if best.kind in ("year", "word") and not best.since and (part := _SUB.match(text, best.end)):
-        best = replace(best, end=part.end(), rough=True)
+        best = replace(best, end=_daytime_after(text, part.end()), rough=True)  # 10 月 15 日下午
         if since := _SINCE.match(text, best.end):  # 去年底以来：从去年开头算；"年初以来"正好
             exact = part.group() in ("初", "年初")
             best = replace(best, end=since.end(), since=True, rough=not exact)
@@ -874,6 +874,12 @@ def _day_after(text: str, i: int, word: str, *, day: bool = False) -> int | None
     if end is not None and (part := _DAYTIME.match(text, end)):
         end = part.end()
     return end if end is not None and end > i and _word_starts_at(text, end) else None
+
+
+def _daytime_after(text: str, i: int) -> int:
+    """i 处的"上午、下午"这类（_DAYTIME，后面要是一个词的头）后面的位置；没有的返回 i。"""
+    part = _DAYTIME.match(text, i)
+    return part.end() if part and _word_starts_at(text, part.end()) else i
 
 
 def _word_starts_at(text: str, i: int) -> bool:
@@ -980,7 +986,7 @@ _CUTS = re.compile(
         ]
     ).pattern
     + "|(?<=[部厅局委办署府院])发的"
-    + "|(?<![实出表体])现在(?!线)"  # 实现在线申报、出现在、体现在不切
+    + "|(?<![实出表体兑发呈展显涌浮])现在(?!线)"  # 实现在线申报、出现在、兑现在哪不切
     + "|(?:有新|刚出|刚发|新发)(?=的|政策|通知|名单|申报|文件|补贴|项目)"  # 有新政策吗、刚出的
 )
 _LEAD = tuple(
