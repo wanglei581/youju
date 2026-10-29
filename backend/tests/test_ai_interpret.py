@@ -4,6 +4,7 @@ import copy
 import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
 from threading import Barrier, Event, Lock
 from types import SimpleNamespace
@@ -15,6 +16,7 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 from sqlalchemy import func, inspect, select, text, update
+from sqlalchemy.orm import Session, sessionmaker
 
 from youju import advisor_tasks as service
 from youju.agreements import TOOLS_AGREEMENT_VERSION
@@ -23,7 +25,7 @@ from youju.ai.client import AIError, ChatClient
 from youju.api import advisor as api
 from youju.api import app as app_module
 from youju.api import me, v1
-from youju.db import get_session
+from youju.db import create_mysql_engine, get_session
 from youju.migrations import alembic_config
 from youju.models import (
     AdvisorTask,
@@ -817,6 +819,174 @@ def test_concurrent_submission_uses_one_global_slot(session_factory, session, se
         statuses = list(pool.map(submit, ("internal", "second")))
     assert sorted(statuses) == [202, 429]
     assert service.global_ai_usage(session, service.usage_day(NOW)) == 1
+
+
+def take_last_slot(monkeypatch, session_factory, take):
+    """模拟并发：别的请求在本请求读过表（定下快照）以后、拿到全站额度锁之前，占了最后一个名额。
+    第一次拿锁前，take 在另一个会话里占用并提交。"""
+    real = service.ai_cap_lock
+    pending = [take]
+
+    @contextmanager
+    def racing(session):
+        if pending:
+            with session_factory() as other:
+                pending.pop()(other)
+                other.commit()
+        with real(session) as conn:
+            yield conn
+
+    monkeypatch.setattr(service, "ai_cap_lock", racing)
+
+
+def repeatable_read_requests(factory):
+    """接口的会话换成可重复读：请求在拿锁之前读过表，快照就定在那时。用的测试都带 client 夹具，
+    它收尾时清掉所有依赖覆盖。"""
+
+    def override():
+        with factory() as s:
+            yield s
+
+    app_module.app.dependency_overrides[get_session] = override
+
+
+@pytest.mark.parametrize("submissions", [False, True])
+@pytest.mark.parametrize("isolation", ["READ COMMITTED", "REPEATABLE READ"])
+def test_last_slot_goes_to_one_after_old_snapshots(
+    session_factory, session, isolation, submissions
+):
+    """全站上限的查账（#328 设计稿第 44 轮）：两个连接先各开事务、各做一次普通读定下快照，再依次争
+    最后一个名额，只有一个占上。线上连接是读已提交；可重复读时业务事务里读到的是拿锁之前的快照，
+    所以锁里在锁的那条连接上查。submissions 是提交时（占用的次数和实际调用取大的），否则是 admin
+    调模型前（只看实际调用）。"""
+    day = service.usage_day(NOW)
+    users = [
+        User(openid=openid, agreement_version="2026-10", agreement_at=NOW)
+        for openid in ("a", "b", "c")
+    ]
+    session.add_all(users)
+    session.flush()
+    if submissions:
+        session.add(AdvisorUsage(user_id=users[2].id, kind="clause", day=day, used_count=1))
+    else:
+        session.add(AIUsage(day=day, task="clause", model="m", calls=1))
+    session.commit()
+
+    def take(work, user):
+        if submissions:
+            with service.ai_cap_slot(work, day, 2, submissions=True):
+                assert service.reserve_usage(work, user.id, "interpret", day)
+                work.commit()
+        else:
+            service.reserve_ai_call(work, "interpret", "m", NOW, 2)
+
+    with session_factory() as first, session_factory() as second:
+        for work in (first, second):
+            work.connection(execution_options={"isolation_level": isolation})
+            assert service.site_ai_used(work, day, submissions=submissions) == 1
+        take(first, users[0])
+        # 先证明前提：第二个的业务事务里，可重复读时还是旧快照（看不到第一个刚占的），读已提交时看得到
+        stale = isolation == "REPEATABLE READ"
+        assert service.site_ai_used(second, day, submissions=submissions) == (1 if stale else 2)
+        with pytest.raises(service.AICapReached):
+            take(second, users[1])
+    session.expire_all()
+    assert service.site_ai_used(session, day, submissions=submissions) == 2
+
+
+@pytest.mark.parametrize("isolation", ["READ COMMITTED", "READ UNCOMMITTED"])
+def test_cap_check_ignores_uncommitted_refund(session_factory, db_engine, session, isolation):
+    """锁里查账只认已经提交的：别的事务退了次数还没提交（还可能回滚），不能先把名额放出去，提交以后
+    才放。业务会话的引擎是读未提交也一样：锁连接自己定成读已提交（Codex 审阅）。"""
+    day = service.usage_day(NOW)
+    user = User(openid="a", agreement_version="2026-10", agreement_at=NOW)
+    session.add(user)
+    session.flush()
+    session.add(AdvisorUsage(user_id=user.id, kind="interpret", day=day, used_count=2))
+    session.commit()
+    business = sessionmaker(bind=db_engine.execution_options(isolation_level=isolation))
+    with session_factory() as refund, business() as work:
+        row = refund.scalar(
+            select(AdvisorUsage).where(AdvisorUsage.user_id == user.id).with_for_update()
+        )
+        row.used_count -= 1
+        refund.flush()
+        with (
+            pytest.raises(service.AICapReached),
+            service.ai_cap_slot(work, day, 2, submissions=True),
+        ):
+            pass
+        refund.commit()
+        with service.ai_cap_slot(work, day, 2, submissions=True):
+            pass
+
+
+@pytest.mark.parametrize("isolation", [None, "REPEATABLE READ", "READ UNCOMMITTED"])
+def test_cap_lock_connection_is_read_committed_autocommit(db_engine, isolation):
+    """锁连接在锁里是自动提交、读已提交（会话绑的引擎是什么隔离级别都一样）；还回连接池以后恢复成
+    默认（不自动提交、读已提交），后面借到这条连接的不受影响。连接池只放一条，借到的一定是同一条。"""
+    engine = create_mysql_engine(db_engine.url, pool_size=1, max_overflow=0)
+    state = text("SELECT @@autocommit, @@transaction_isolation")
+    try:
+        bind = engine.execution_options(isolation_level=isolation) if isolation else engine
+        with Session(bind) as work, service.ai_cap_lock(work) as conn:
+            assert tuple(conn.execute(state).one()) == (1, "READ-COMMITTED")
+        with engine.connect() as again:
+            assert tuple(again.execute(state).one()) == (0, "READ-COMMITTED")
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.parametrize("kind", ["interpret", "clause"])
+def test_submission_cap_reads_past_old_snapshot(
+    client, settings, session, session_factory, repeatable_read_factory, doc, monkeypatch, kind
+):
+    """提交时查全站用量不靠连接的隔离级别：请求的会话是可重复读、快照早于别人占最后一个名额，
+    锁里也查得到，回 429，不建任务、不扣次数。"""
+    settings.ai_advisor_daily_cap = 1
+    other = User(openid="second", agreement_version="2026-10", agreement_at=NOW)
+    session.add(other)
+    session.commit()
+    day = service.usage_day(NOW)
+    repeatable_read_requests(repeatable_read_factory)
+    take_last_slot(
+        monkeypatch,
+        session_factory,
+        lambda s: s.add(AdvisorUsage(user_id=other.id, kind="clause", day=day, used_count=1)),
+    )
+    response = client.post(
+        "/api/v1/advisor/tasks",
+        json={"kind": kind, "doc_id": doc.id},
+        headers={"Idempotency-Key": "raced"},
+    )
+    assert response.status_code == 429
+    assert response.json()["detail"]["code"] == "AI_DAILY_CAP"
+    assert session.scalar(select(AdvisorTask.id)) is None
+    assert service.global_ai_usage(session, day) == 1
+
+
+def test_model_call_cap_reads_past_old_snapshot(
+    session, session_factory, repeatable_read_factory, settings, doc, monkeypatch
+):
+    """admin 调模型前查全站调用次数也不靠隔离级别：这一轮的会话快照早于别人占最后一次调用，
+    照样挡下：不调模型、记失败、退回次数。"""
+    settings.ai_advisor_daily_cap = 1
+    task = direct_task(session, doc)
+    day = service.usage_day(NOW)
+    take_last_slot(
+        monkeypatch,
+        session_factory,
+        lambda s: s.add(AIUsage(day=day, task="clause", model="m", calls=1)),
+    )
+    fake = FakeChat()
+    with repeatable_read_factory() as stale:
+        row = stale.get(AdvisorTask, task.id)
+        service.process_interpret(stale, row, settings=settings, stamp=NOW, chat_client=fake)
+    session.refresh(task)
+    assert fake.calls == []
+    assert task.status == "failed" and task.error == service.AI_CAP_MESSAGE
+    assert task.usage_released
+    assert service.global_ai_calls(session, day) == 1
 
 
 def test_submission_lock_timeout_returns_503(client, session, doc, monkeypatch):
