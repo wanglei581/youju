@@ -67,6 +67,9 @@ class Unread:
     label: str  # "附件 2《……》"
     reason: str  # off、scanned、format、too_long、old、pending、failed
     part: str | None = None  # 只读了一部分时写没读的那部分；整个没读为 None
+    # 附件在详情页附件列表里的编号（DocumentAttachment.id）：按编号对、不按顺序对，
+    # 改名、换顺序也对得上；只读了一部分的正文为 None（问一问开发设计第十一节；Codex 第 8 轮）
+    attachment_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -253,7 +256,7 @@ def load(session: Session, doc_id: int, *, link: bool = True) -> Content:
             ),
         ),
         unread=[
-            Unread(label=f"附件 {i}《{a.name}》", reason="off")
+            Unread(label=f"附件 {i}《{a.name}》", reason="off", attachment_id=a.id)
             for i, a in enumerate(attachments, 1)
         ],
         attachments_total=len(attachments),

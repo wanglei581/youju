@@ -2,8 +2,9 @@
 
 在本机比，不发给任何人。两处用：
 - AI 解读、条款对照的结果存进去之前（ai/result_safety.py），命中就不显示、记处置记录；
-- 问一问的提问和回答（问一问开发设计第九节第 3、6 条，PR-2、PR-3）。流式接收时每收到一段，
-  就把已经收到的全部文字交给 check，跨段的词也查得到。
+- 问一问的提问和回答（问一问开发设计第九节第 3、6 条，PR-2、PR-3）。流式接收回答时每收到一段，
+  只查"新收到的这段，加上它前面最长词条长度减 1 个字"（ai/ask.py 的 _Guard，按规范化以后的字算），
+  跨段的词也查得到；收完再整段查一遍兜底。
 
 **现在的词库只是草稿占位**（data/safety_words.json：version 是 draft-0，final 为 false，
 没有词条）。词库从哪来、分哪些类别、谁来维护，要经合规审定、创始人定；定稿（final 为 true）以前
@@ -66,6 +67,11 @@ class Library:
             groups.setdefault(entry.word[0], []).append(entry)
         object.__setattr__(self, "_by_first", {k: tuple(v) for k, v in groups.items()})
 
+    @property
+    def longest(self) -> int:
+        """最长词条的长度（处理过以后的字数）；没有词条为 0。"""
+        return max((len(entry.word) for entry in self.entries), default=0)
+
 
 def parse(data: Any) -> Library:
     """检查词库的格式、处理好词条。格式不对抛 ValueError（报错里只写词条编号，不写词）。"""
@@ -125,8 +131,13 @@ def check(text: str, library: Library | None = None) -> Hit | None:
 
     library 不给就用启动时载入的 LIBRARY。流式接收回答时，每收到一段就把已经收到的全部文字传进来
     （不是只传新的那一段）。词库定没定稿都照样查。"""
+    return check_normalized(normalize(text), library)
+
+
+def check_normalized(plain: str, library: Library | None = None) -> Hit | None:
+    """同 check，只是 plain 已经按 normalize 处理过（流式接收时按规范化以后的字截窗口，
+    不再处理一遍）。"""
     library = LIBRARY if library is None else library
-    plain = normalize(text)
     for at, char in enumerate(plain):
         for entry in library._by_first.get(char, ()):
             if plain.startswith(entry.word, at):

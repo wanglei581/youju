@@ -13,6 +13,7 @@ import random
 from datetime import UTC, datetime
 
 import pytest
+from sqlalchemy import select
 
 from youju.ai import content, interpret
 from youju.ai.clause import CLAUSE
@@ -340,11 +341,12 @@ def test_load_takes_body_like_before_and_marks_attachments_unread(session, doc):
             )
         )
     session.commit()
+    ids = dict(session.execute(select(DocumentAttachment.name, DocumentAttachment.id)).all())
     loaded = content.load(session, doc.id)
-    # 按详情页附件列表的顺序编"附件 N"，这一步都没读
+    # 按详情页附件列表的顺序编"附件 N"，这一步都没读；每个带上附件编号（按编号对，不按顺序对）
     assert loaded.unread == [
-        content.Unread("附件 1《汇总表.xlsx》", "off"),
-        content.Unread("附件 2《申报书.docx》", "off"),
+        content.Unread("附件 1《汇总表.xlsx》", "off", attachment_id=ids["汇总表.xlsx"]),
+        content.Unread("附件 2《申报书.docx》", "off", attachment_id=ids["申报书.docx"]),
     ]
     assert loaded.attachments_total == 2
     assert loaded.scope_text() == "只读了正文，附件没读"
