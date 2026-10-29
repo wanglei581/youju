@@ -624,9 +624,11 @@ def _transaction_push(data: dict, xml: bool, session: Session, client: XPayClien
         code = exc.code if isinstance(exc, XPayError) else None
         reason = f"errcode={code}" if code is not None else type(exc).__name__
         logger.warning("%s 订单 #%s 核验失败：%s", kind, order_id, reason)
-        order.error = "推送暂未核验，将通过查单重试"
-        if kind == "xpay_refund_notify":
-            # 每分钟的补单不查已完成的订单：退款推送没核验成就转人工（Codex 10/29）
-            payments.flag_unconfirmed_refund(order, _stamp())
+        # 每分钟的补单不查已完成的订单：退款推送没核验成就转人工（Codex 10/29）。
+        # 已经转人工的不改原因：重推时查单又出错，不能把要人工核对什么盖成"将通过查单重试"
+        # （补单不查人工单，Codex 第 3 轮）
+        flagged = kind == "xpay_refund_notify" and payments.flag_unconfirmed_refund(order, _stamp())
+        if not flagged and order.status != "manual":
+            order.error = "推送暂未核验，将通过查单重试"
         session.commit()
         return reply(xml, 1)

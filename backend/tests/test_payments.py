@@ -842,6 +842,11 @@ def test_refund_push_on_completed_order_not_confirmed_goes_manual(setup_pay, ses
         session, settings=setup_pay[1], client=fake.client, stamp=NOW, alert=alerts.append
     )
     assert len(alerts) == 1 and f"支付订单 #{row.id} 需人工处理" in alerts[0]
+    # 微信重推、这次还是没核实（查单又出错或还是已付款）：人工核对的原因不被盖掉（Codex 第 3 轮）
+    assert push(setup_pay, data).json()["ErrCode"] != 0
+    session.expire_all()
+    row = session.get(PayOrder, row.id)
+    assert row.status == "manual" and row.error == payments.REFUND_PUSH_UNCONFIRMED_ERROR
     fake.bad_order, fake.status, fake.left_fee = False, 8, 0
     assert push(setup_pay, data).json()["ErrCode"] == 0
     session.expire_all()
