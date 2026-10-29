@@ -1044,6 +1044,7 @@ def test_四位数后面是万元这类的不是年份():
     assert _parse("2025. 找专精特新")["year"] == 2025  # 句号不是小数点（Codex 第三次复查）
     assert _parse("2025.10发布的通知")["year"] == 2025  # 点号写的日期（独立审阅第 22 轮）
     assert _parse("2025.5万元的补贴")["year"] is None
+    assert _parse("2025.10项目申报")["year"] == 2025  # 项、人这类量词前面不会是小数（agy 收尾）
     for text in ("2025件", "2025号文", "补助2000户企业", "资助2000名学者", "通报2025起案件"):
         assert _parse(text)["year"] is None, text
     # 后面跟着"到 5000 元"这类的也是数（Codex 复查 10/29 时看到的）
