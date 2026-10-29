@@ -115,6 +115,9 @@ EXCLUDED_TABLES = frozenset(
         "pay_orders",
         "pay_events",
         "invoice_requests",
+        # 卡里的 AI 次数（D-109）：给了多少次、每次占用和扣、退
+        "ai_credit_grants",
+        "ai_credit_uses",
         # 密钥
         "app_keys",
         "signing_keys",
