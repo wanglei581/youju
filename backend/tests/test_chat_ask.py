@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, date, datetime, time, timedelta
 from threading import Barrier
+from time import perf_counter
 from types import SimpleNamespace
 
 import httpx
@@ -360,11 +361,11 @@ def test_refers_back_only_on_the_listed_words(question, back):
 def test_nth_and_drafting():
     assert ask.nth("刚才第五句呢") == 5 and ask.nth("第 12 句") == 12 and ask.nth("第十一句") == 11
     assert ask.nth("刚才那句") is None
-    # 指回上一答以后，"第 N"后面是句、条、个（和项、点）的都按上一答的编号算，每一处都看（#408）；
-    # 第一批、第二季度这类不算
-    assert ask._spans("上面第2条第3句") == [(2, 2), (3, 3)] and ask.nth("刚才第三条呢") == 3
-    assert ask.nth("你列的第2个") == 2
-    assert ask.nth("刚才第3项呢") == 3 and ask.nth("你说的第二点要盖章吗") == 2
+    # 本地只看"第 N 句"：条、个、项、点不论前面有没有指回的词都不算，交给模型（#409）；
+    # 第一批、第二季度这类也不算
+    assert ask._spans("上面第2条第3句") == [(3, 3)] and ask.nth("刚才第三条呢") is None
+    for text in ("你列的第2个", "刚才第3项呢", "你说的第二点要盖章吗", "上面第2条说的第4项材料"):
+        assert ask.nth(text) is None and ask.beyond(text, 1) is None, text
     assert ask.nth("刚才说的第一批申报截止哪天") is None and ask.nth("上面第二季度的呢") is None
     # 几句连写、范围、中文数字混写也算（#408）：范围按从小到大，超出的报最小那一句
     for text in ("第3、4句", "第 1 至 3 句", "第2至四句", "第5至3句", "第一、三句", "第2-5句"):
@@ -375,6 +376,11 @@ def test_nth_and_drafting():
     assert ask._spans("第1、2句和第5句") == [(1, 1), (2, 2), (5, 5)]  # 每一处都看（Codex 第 5 轮）
     assert ask._spans("第1–3句") == [(1, 3)] and ask._spans("第2〜四句") == [(2, 4)]  # #409
     assert ask.refers_back("第1–3句") and ask.beyond("刚才第1〜5句", 3) == 4
+    # 不回溯：接近 200 字、最后接不上后缀的也很快（#409）
+    for text in ("刚才第" + "1、" * 97 + "1吗", "刚才第" + "1" * 195 + "吗", "第" * 199 + "吗"):
+        started = perf_counter()
+        assert ask.beyond(text, 3) is None and ask.refers_back(text) == text.startswith("刚才")
+        assert perf_counter() - started < 0.5, text[:10]
     assert [ask.beyond(t, 3) for t in ("第2、5句", "第1至5句", "第5至3句", "第2至四句")] == [
         5,
         4,
@@ -383,7 +389,9 @@ def test_nth_and_drafting():
     ]
     assert ask.beyond("第一、三句", 3) is None and ask.beyond("第一、三句", 2) == 3
     assert ask.beyond("第1至99999999句", 3) == 4  # 只记起止，不逐句展开
-    assert ask.beyond("你列的第2、3条", 1) == 2 and ask.nth("你列的第2、3条") == 2
+    assert ask.beyond("你列的第2、3条", 1) is None and ask.nth("你列的第2、3条") is None
+    assert ask.beyond("上面第2句提到的第5条规定", 3) is None  # 只看第 2 句
+    assert ask.beyond("刚才第1句说按第十条执行，第十条写了什么", 3) is None
     for text in ("帮我写一份申报书", "替我写申请书", "起草个方案", "润色一下自评报告", "代写材料"):
         assert ask.drafting(text), text
     # 要紧挨着才算：问要交什么的不挡
@@ -775,9 +783,9 @@ def test_followups_and_content_updates(
 def test_listed_sentences_beyond_the_previous_answer(
     client, session, settings, doc, model, monkeypatch
 ):
-    """几句连写、范围的"第 N 句"（#408，第七节第 3 条）：有一句超出上一答句数，就按超出的最小那一句当场答
-    "上一个回答里没有第 N 句"，不调模型、不扣次数；都没超出的、没有指回的词的"第 N 条"照常交给模型，
-    序号原样交（隐去数字的例外，第九节第 2 条）。每种写法都真的发一问：规则答的那一问也算上一答（0 句），
+    """几句连写、范围的"第 N 句"（#408、#409，第七节第 3 条）：有一句超出上一答句数，就按超出的最小那一句
+    当场答"上一个回答里没有第 N 句"，不调模型、不扣次数；都没超出的、"第 N 条/个/项/点"（本地只看句）
+    照常交给模型，序号原样交（隐去数字的例外，第九节第 2 条）。每种写法都真的发一问：规则答的那一问也算上一答（0 句），
     所以每种都先重新问出一个有 3 句（或 2 句）的上一答。"""
     monkeypatch.setattr(service, "usage_limit", lambda kind: 100)
     monkeypatch.setattr(chat_store, "ASK_TRY_LIMIT", 100)
@@ -789,9 +797,9 @@ def test_listed_sentences_beyond_the_previous_answer(
         (three, "第5至3句呢", 4),
         (three, "第2、5句呢", 5),
         (three, "第1、2句和第5句呢", 5),  # 每一处都看（Codex 第一批第 5 轮）
-        (three, "上面第1至5条呢", 4),  # 有指回的词：条、个也按上一答的编号算
         (three, "刚才第1至999999999句", 4),  # 只按两头算，不卡
-        (three, "上面第1至999999999条", 4),
+        (three, "第1–5句", 4),  # 短破折号、波浪线也算范围；"第 N 句"本身就算指回（#409）
+        (three, "第1〜5句", 4),
         (two, "第一、三句呢", 3),
     ):
         asked(client, session, settings, model, "要满足哪些条件", doc, previous)
@@ -806,8 +814,18 @@ def test_listed_sentences_beyond_the_previous_answer(
     for previous, text in (
         (three, "第一、三句呢"),
         (three, "第2、3句呢"),
-        (three, "第1至5条是什么"),  # 没有指回的词
+        # 本地只看"第 N 句"：条、个、项、点不论有没有指回的词都交给模型，数字照原样（#409）
+        (three, "上面第1至5条呢"),
+        (three, "上面第1至999999999条"),
+        (three, "上面第1–5项"),
+        (three, "上面第1〜5点"),
+        (three, "第1至5条是什么"),
+        (three, "第1–5项是什么"),
+        (three, "上面第2–3项呢"),
         (two, "上面第1、2个呢"),
+        (three, "上面第2句提到的第5条规定是什么意思"),  # 只看第 2 句
+        (three, "刚才第1句说按第十条执行，第十条写了什么"),
+        (three, "上面第2条说的第4项材料是什么"),
     ):
         asked(client, session, settings, model, "要满足哪些条件", doc, previous)
         calls = len(model.calls)

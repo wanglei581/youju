@@ -287,4 +287,9 @@ def test_hide_numbers_does_not_backtrack():
     started = time.perf_counter()
     assert hide_numbers(text) == "第" + H + "吗"
     assert time.perf_counter() - started < 0.5
+    # 接近 200 字、最后接不上后缀的：连接字是"、""–"的也一样（#409）
+    for text in ("第" + "1、" * 98 + "1吗", "第" + "1–" * 98 + "1吗", "第" + "1，" * 98 + "1吗"):
+        started = time.perf_counter()
+        assert "1" not in hide_numbers(text)
+        assert time.perf_counter() - started < 0.5, text[:10]
     assert hide_numbers("第" + "1," * 3 + "1句") == "第" + "1," * 3 + "1句"  # 接了后缀的照旧是序号
