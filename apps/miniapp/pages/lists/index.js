@@ -195,11 +195,6 @@ Page({
     if (TOKEN.test(token)) wx.navigateTo({ url: `/pages/reader/index?entry=${encodeURIComponent(token)}` });
   },
 
-  evidence(e) {
-    const id = e.currentTarget.dataset.id;
-    if (id) wx.navigateTo({ url: `/pages/detail/index?id=${encodeURIComponent(id)}` });
-  },
-
   toggleRules() {
     this.setData({ rulesOpen: !this.data.rulesOpen });
   },

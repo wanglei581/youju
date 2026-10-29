@@ -181,3 +181,100 @@ test('10/29 晚：数据说明都写在使用帮助里，页面上只留一个"�
   page.onLoad({ topic: 'nope' }); page.onReady(); assert.deepEqual(scrolled, ['#help-deadline'], '没有这一条就不滚');
   page.onLoad({ topic: '<script>' }); assert.equal(page.data.topic, '');
 });
+
+// ---- 10/29 晚第三轮的几处逻辑（Codex、独立审阅提的） ----
+const vmRun = require('node:vm');
+function pageOf(file, deps, globals = {}) {
+  let def;
+  vmRun.runInNewContext(read(file), {
+    module: { exports: {} }, setTimeout, clearTimeout, Promise, Date, Math,
+    require(name) {
+      if (Object.hasOwn(deps, name)) return deps[name];
+      if (name === '../../utils/regions.js') return require('../utils/regions.js');
+      if (name === '../../utils/format.js') return require('../utils/format.js');
+      if (name === '../../utils/repost.js') return require('../utils/repost.js');
+      if (/(^|\/)pages\.js$/.test(name)) return require('./helpers/package-pages-default.js').pages;
+      if (/ai-access\.js$/.test(name)) return require('./helpers/ai-off.js');
+      throw new Error(`${file} 缺少依赖 ${name}`);
+    },
+    Page(d) { def = d; }, wx: { navigateTo() {}, setNavigationBarTitle() {}, ...(globals.wx || {}) }, getApp: () => ({ globalData: {} }), getCurrentPages: () => [{}, {}],
+  }, { filename: file });
+  return { ...def, data: JSON.parse(JSON.stringify(def.data)), setData(values) { Object.assign(this.data, JSON.parse(JSON.stringify(values))); } };
+}
+const settle = () => new Promise((resolve) => setImmediate(resolve));
+
+test('详情页"要点"：别处确实写着的才不重复——发文机关在标题下；适用地区包含在标题旁的地区里；申报状态要截止卡片里有带日期的那条', async () => {
+  const today = new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10);
+  const plus = (n) => new Date(Date.parse(`${today}T00:00:00Z`) + n * 86400000).toISOString().slice(0, 10);
+  const base = { id: '9', kind: '申报通知', tags: ['申报通知'], title: '关于组织申报的通知', issuer: '宁夏回族自治区科学技术厅', date: '2026-10-28', region: '宁夏 · 省级', attachments: [],
+    points: [['发文机关', '宁夏回族自治区科学技术厅'], ['文号', '宁科发〔2026〕1号'], ['适用地区', '宁夏'], ['申报状态', '征集中 · 按企业申报截止 11月6日']] };
+  let doc = { ...base, deadlines: [{ kind: '企业申报截止', source: 'verified', date: plus(9), time: null, remainingDays: 9, quote: null }] };
+  const deps = {
+    '../../utils/api.js': { detail: () => Promise.resolve(JSON.parse(JSON.stringify(doc))) },
+    '../../utils/subscribe.js': { remindOpen: () => false, requestOnce: () => Promise.resolve(false) }, '../../utils/reminders.js': { remindedDocs: () => Promise.resolve({}) },
+    '../../utils/consent.js': { loginOpen: () => true }, '../../utils/exporter.js': {}, '../../utils/daywatch.js': { watchDay() {}, stopDay() {} },
+    '../../utils/attachments.js': { decorate: () => [] },
+  };
+  const page = pageOf('pages/detail/index.js', deps);
+  page.onLoad({ id: '9' }); await settle();
+  assert.deepEqual(page.data.points, [['文号', '宁科发〔2026〕1号']]);
+  // 截止卡片里没有带日期的：申报状态照旧列；地区标签里没写到这个地名：适用地区照旧列
+  doc = { ...base, region: '国家部委', points: base.points.map((p) => (p[0] === '适用地区' ? ['适用地区', '全国'] : p)),
+    deadlines: [{ kind: '企业申报截止', source: 'unverified', date: null, time: null, remainingDays: null, quote: null }] };
+  page.refreshing = false; page.load(); await settle();
+  assert.deepEqual(page.data.points.map((p) => p[0]), ['文号', '适用地区', '申报状态']);
+  // 一项都不剩时整张卡不显示
+  doc = { ...base, points: [['发文机关', '宁夏回族自治区科学技术厅'], ['适用地区', '宁夏']], deadlines: [] };
+  page.refreshing = false; page.load(); await settle();
+  assert.deepEqual(page.data.points, []);
+  assert.match(wxml('detail'), /<view wx:if="{{points.length}}" class="card">\s*<view class="section-title">要点<\/view>/);
+});
+
+test('截止页：选了整个还没收录的省写明"还没收录"；换到别的省马上清掉，收录范围没取到不说没收录', async () => {
+  let coverage = { notCovered: [{ name: '广西', reason: '网站不允许程序访问' }] };
+  let release;
+  const deps = {
+    '../../utils/api.js': { deadlineReport: () => Promise.resolve({ items: [], total: 0, summary: {}, by_province: {}, verified_total: 0 }), calendar: () => Promise.resolve({ items: [], past: [] }) },
+    '../../utils/exporter.js': {}, '../../utils/daywatch.js': { watchDay() {}, stopDay() {} },
+    '../../utils/cache.js': { readCache: () => null, writeCache() {}, cachedLabel: () => '' },
+    '../../utils/coverage.js': { loadCoverage: () => new Promise((resolve) => { release = () => resolve(coverage); }) },
+  };
+  const page = pageOf('pages/report/index.js', deps);
+  page.onLoad({}); await settle();
+  const pick = (name) => page.pickProvince({ detail: { value: page.data.provinces.indexOf(name) } });
+  pick('广西'); release(); await settle();
+  assert.equal(page.data.uncovered, '广西');
+  pick('山东');
+  assert.equal(page.data.uncovered, '', '换省时马上清掉，不等收录范围回来');
+  release(); await settle(); assert.equal(page.data.uncovered, '');
+  coverage = null; pick('广西'); release(); await settle();
+  assert.equal(page.data.uncovered, '', '收录范围没取到：不说没收录');
+  assert.match(wxml('report'), /<view wx:if="{{uncovered}}" class="empty-sub">{{uncovered}}还没收录，暂时查不到这个地区的通知。<\/view>/);
+});
+
+test('结果页（站内看所选文件）：截止只写日期或"截止时间见原文"，原文摘录在末尾标一次；不显示导出说明、未核对一行和网址', async () => {
+  const items = [
+    { number: 1, doc_id: '1', title: '甲', deadline: '2026-11-06（机器摘录）', date_role: '企业申报截止（机器摘录）', deadline_quote: '请于2026年11月6日前报送。', sites: '某厅网站', urls: 'https://a.example.gov.cn/1', unchecked: '截止日期（以原文为准）、支持方式' },
+    { number: 2, doc_id: '2', title: '乙', deadline: '截止未核对，以原文为准', date_role: '截止未核对', sites: '某厅网站', urls: 'https://a.example.gov.cn/2', unchecked: '截止日期（以原文为准）' },
+    { number: 3, doc_id: '3', title: '丙', deadline: '见原文', date_role: '截止时间见原文', sites: '某厅网站', urls: 'https://a.example.gov.cn/3', unchecked: '无' },
+    { number: 4, doc_id: '4', title: '丁', deadline: '2026-11-06；2026-11-20', date_role: '企业申报截止；推荐截止', sites: '某厅网站', urls: 'https://a.example.gov.cn/4', unchecked: '无' },
+  ];
+  const page = pageOf('pages/results/index.js', {
+    '../../utils/api.js': { exportPreview: () => Promise.resolve({ kind: 'catalogue', title: '本次所选文件目录', revision: 'r1', notice: '本文件由第三方整理……“未核项”列出这一行还没有人工核对的字段', generatedAt: '2026-10-29', total: 4, items }) },
+    '../../utils/exporter.js': { exportDocs() {} },
+  });
+  page.onLoad({ ids: '1,2,3,4' }); await page.onShow();
+  assert.deepEqual(page.data.result.items.map((i) => i.deadlineText), ['2026-11-06 企业申报截止（原文摘录）', '截止时间见原文', '截止时间见原文', '2026-11-06；2026-11-20 企业申报截止；推荐截止']);
+  const { render, textOf } = require('./wxml-render.js');
+  const shown = textOf(render('pages/results/index.wxml', page.data));
+  assert.doesNotMatch(shown, /未核项|未核对：|以原文为准|example\.gov\.cn|机器摘录/);
+  assert.match(shown, /原句：请于2026年11月6日前报送。/);
+  assert.match(shown, /这里展示文件目录，不是企业入选结论或信用报告。/);
+});
+
+test('查名单结果：整行可点进发布这份名单的通知，只另放"看原名单里的这一行"', () => {
+  const lists = wxml('lists');
+  assert.doesNotMatch(lists, /看发布这份名单的通知|bindtap="evidence"/);
+  assert.match(lists, /<view wx:if="{{item.matched.entryToken}}" class="hit-actions">\s*<button class="hit-btn hit-btn--main" data-token="{{item.matched.entryToken}}" bindtap="record">看原名单里的这一行<\/button>/);
+  assert.doesNotMatch(read('pages/lists/index.js'), /evidence\(e\)/);
+});

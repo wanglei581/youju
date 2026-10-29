@@ -14,11 +14,15 @@ function generatedTime(value) {
 // 站内看结果（D-089）：截止一栏照导出文件的内容写，但不搬文件里给对账用的写法——"（机器摘录）"在页面上叫"原文摘录"，
 // 没有能显示的日期只写一句"截止时间见原文"，不写"截止未核对，以原文为准"（10/29 创始人：这类话写在使用帮助里）
 const SEE_ORIGINAL = '截止时间见原文';
+const EXCERPT_MARK = '（机器摘录）';
 function deadlineText(item) {
   const value = String(item.deadline || '');
   if (!/^\d{4}-\d{2}-\d{2}/.test(value)) return SEE_ORIGINAL;
   const role = String(item.date_role || '');
-  return `${value}${role ? ` ${role}` : ''}`.replace(/（机器摘录）/g, '（原文摘录）');
+  // 文件里日期和类型后面各标一次"（机器摘录）"，页面上只在末尾标一次"（原文摘录）"：2026-11-06 企业申报截止（原文摘录）
+  const excerpt = value.includes(EXCERPT_MARK) || role.includes(EXCERPT_MARK);
+  const kind = role.split(EXCERPT_MARK).join('');
+  return `${value.split(EXCERPT_MARK).join('')}${kind ? ` ${kind}` : ''}${excerpt ? '（原文摘录）' : ''}`;
 }
 Page({
   data: { loading: false, error: '', result: null, current: false, saving: false, advisor: false, page: 1, nextCursor: null, changed: false },

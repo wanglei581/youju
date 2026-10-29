@@ -41,9 +41,9 @@
       <view wx:for="{{result.items}}" wx:key="id" class="hit">
         <doc-row doc="{{item}}" last="{{true}}" today="{{today}}" />
         <view class="hit-line">名单中写作"{{item.matched.name}}"<text wx:if="{{item.matched.category}}"> · {{item.matched.category}}</text><text wx:if="{{item.matched.via === 'creditCode'}}">（信用代码相同）</text><text wx:if="{{item.matched.batch}}"> · {{item.matched.batch}}</text><text wx:if="{{item.matched.sequence}}"> · 序号 {{item.matched.sequence}}</text><text wx:if="{{item.matched.region}}"> · {{item.matched.region}}</text><text wx:if="{{item.matched.creditCode}}"> · 信用代码 {{item.matched.creditCode}}</text></view>
-        <view class="hit-actions">
-          <button wx:if="{{item.matched.entryToken}}" class="hit-btn hit-btn--main" data-token="{{item.matched.entryToken}}" bindtap="record">看原名单里的这一行</button>
-          <button class="hit-btn" data-id="{{item.id}}" bindtap="evidence">看发布这份名单的通知</button>
+        <!-- 整行可点进发布这份名单的通知（10/29 去掉同去处的第二个按钮）；这里只放"看原名单里的这一行" -->
+        <view wx:if="{{item.matched.entryToken}}" class="hit-actions">
+          <button class="hit-btn hit-btn--main" data-token="{{item.matched.entryToken}}" bindtap="record">看原名单里的这一行</button>
         </view>
       </view>
     </block>

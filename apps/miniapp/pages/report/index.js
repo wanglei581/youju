@@ -408,7 +408,8 @@ Page({
   // 只在选了省份时才取收录范围（缓存 10 分钟），平时截止页不多发请求
   checkUncovered() {
     const { province } = this.data;
-    if (!province || province === '国家部委') { if (this.data.uncovered) this.setData({ uncovered: '' }); return; }
+    if (this.data.uncovered) this.setData({ uncovered: '' });
+    if (!province || province === '国家部委') return;
     require('../../utils/coverage.js').loadCoverage().catch(() => null).then((c) => {
       if (province !== this.data.province) return;
       const missing = !!(c && Array.isArray(c.notCovered) && c.notCovered.some((r) => r && r.name === province));

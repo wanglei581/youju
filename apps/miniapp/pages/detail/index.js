@@ -9,9 +9,17 @@ const attachments = require('../../utils/attachments.js');
 const { versionRows, upstreamLine } = require('../../utils/repost.js');
 const { flags } = require('../../utils/pages.js');
 
-// 要点只放标题下、截止卡片里没有的（10/29：发文机关在标题下、地区在标签里、申报状态在截止卡片里，不重复写）
-const SHOWN_ELSEWHERE = ['发文机关', '适用地区', '申报状态'];
-const keyPoints = (doc) => (doc.points || []).filter((p) => Array.isArray(p) && !SHOWN_ELSEWHERE.includes(p[0]));
+// 要点里不重复页面上别处已经写着的（10/29）：发文机关标题下有；适用地区在标题旁的地区里已写到时不再写；
+// 申报状态在截止卡片里已有带日期的那一条时不再写。别处没写到的照旧列（Codex 第 3 轮：不能无条件去掉）
+function keyPoints(doc, { region, dated }) {
+  return (doc.points || []).filter((p) => {
+    if (!Array.isArray(p)) return false;
+    if (p[0] === '发文机关') return !doc.issuer;
+    if (p[0] === '适用地区') return !(p[1] && String(region || '').includes(String(p[1])));
+    if (p[0] === '申报状态') return !dated;
+    return true;
+  });
+}
 
 // 转发卡片的标题（D-070：卡片只显示通知标题和发文机关）："发文机关｜通知标题"，标题里已经写了发文机关的不重复。
 // 微信卡片只显示两行左右，太长的截到 60 个字（按字截，不把表情等双字节字符截成半个）
@@ -117,18 +125,20 @@ Page({
         // 正文和附件（D-097）：能不能读以服务端为准（和阅读页同一个判断）；正文先给开头，在段末停
         const atts = attachments.decorate(doc.attachments);
         const bodyView = body ? opening(body) : null;
+        const region = regionText(doc);
         this.setData({
           doc,
-          points: keyPoints(doc),
+          // 截止卡片里有带日期的那条（逐条截止里至少一行有日期，或旧接口那一条核对过的）
+          points: keyPoints(doc, { region: region || doc.region, dated: dls && dls.length ? dls.some((d) => d.dateText) : !!due }),
           // 地区照录服务端写法；来源带区县而地区文字里没写时补上区县
-          regionText: regionText(doc),
+          regionText: region,
           // 不满一屏全部显示（"全文如下"），长的显示开头（"下面是开头，全文约 N 字"）；正文卡顶上一行写能读到什么
           bodyView,
           bodySummary: summaryLine(doc.body, atts),
           noBody: body ? '' : noBodyText(doc.body, atts),
           // 原网页已失效：标题下写明（正文、附件都不再给）
           goneNote: goneNote(doc.link_gone, !!body || atts.some((a) => a.canOpen)),
-          // 正文下面和底栏两处同名："阅读全文"（只显示了开头）或"阅读附件"（正文已全部显示或没有正文），都读不了不显示
+          // 底栏："阅读全文"（只显示了开头）或"阅读附件"（正文已全部显示或没有正文），都读不了不显示
           entry: readEntry(doc.body, bodyView, atts),
           supportExpanded: '',
           supportEvidence: '',
