@@ -82,8 +82,16 @@ class Located:
     end: int
     quote: str  # 原句（来源里的原样文字）
     place: str  # 出处（正文为空）
-    # 含已脱敏内容的那几句各自的起止（locate 传 masked=True、原句里有已脱敏的内容时才有）
-    masked: tuple[tuple[int, int], ...] = ()
+
+
+@dataclass(frozen=True)
+class AskMatch:
+    """问答逐字核对的结果（locate_ask）。"""
+
+    kind: str  # shown 能显示；redacted 原句都含已脱敏的内容；not_found；ambiguous；too_short
+    located: Located | None = None  # shown 时那一句
+    # redacted 时其中含已脱敏内容的那几句（来源, 起, 止）：调用方按句去重、记个数
+    masked: tuple[tuple[str, int, int], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -265,17 +273,13 @@ def load(session: Session, doc_id: int, *, link: bool = True) -> Content:
     )
 
 
-def locate(
-    texts: Texts | Content, sid: Any, quote: str, *, masked: bool = False
-) -> tuple[Located | None, str | None]:
+def locate(texts: Texts | Content, sid: Any, quote: str) -> tuple[Located | None, str | None]:
     """逐字核对：引用规范化（空白并成一个空格、全角转半角）以后，先在 sid 那一段里找；找不到，
     在这一段所属的来源里找唯一一处（不跨来源）。sid 对不上任何一段时在正文里找。找到以后扩成
     完整的句子。
 
     给 (Located, None)；对不上给 (None, "not_found")，有不止一处给 "ambiguous"，原句里有已脱敏的
-    内容给 (None, "redacted")。masked 为真时，有已脱敏内容的也给出位置 (Located, "redacted")，
-    Located.masked 是其中含已脱敏内容的那几句（一句引用可能跨几句）：问一问按句去重、记个数用，
-    原句照样不显示。引用太短（少于 6 个字）由调用方先挡。"""
+    内容给 "redacted"。引用太短（少于 6 个字）由调用方先挡。"""
     texts = texts.texts if isinstance(texts, Content) else texts
     index = texts._index
     wanted = interpret.normalize(quote.strip())[0]
@@ -315,12 +319,67 @@ def locate(
     start, end = covered[0][0], covered[-1][1]
     original = source.text[start:end]
     if "已脱敏]" in original:
-        if not masked:
-            return None, "redacted"
-        hidden = tuple((a, b) for a, b in covered if "已脱敏]" in source.text[a:b])
-        # 遮掉的内容被句界切开了（一般不会）：整段当一句
-        located = Located(
-            key, segment.sid, start, end, original, segment.place, hidden or ((start, end),)
-        )
-        return located, "redacted"
+        return None, "redacted"
     return Located(key, segment.sid, start, end, original, segment.place), None
+
+
+def _find_all(index: dict[str, Any], segment: Segment, wanted: str) -> list[tuple]:
+    """wanted 在这一段里出现的每一处（重叠的也算）：（这一段, 在来源 text 里的起, 止）。"""
+    _, normalized, offsets = index["segments"][segment.sid]
+    found = []
+    at = normalized.find(wanted)
+    while at >= 0:
+        first = segment.start + offsets[at][0]
+        found.append((segment, first, segment.start + offsets[at + len(wanted) - 1][1]))
+        at = normalized.find(wanted, at + 1)
+    return found
+
+
+def locate_ask(texts: Texts | Content, sid: Any, quote: Any, *, shortest: int = 6) -> AskMatch:
+    """问答的逐字核对（问一问开发设计第六节第 3 条"在哪找""每句怎么判"、第十一节，Codex 第 40 轮）。
+    和 locate 共用索引和扩句，不同的三处（解读、对照照旧用 locate）：
+
+    ① sid 必须是交给模型的某一段，对不上直接 not_found，不到正文里找；
+    ② 先这一段、再同一来源里交给模型的其他段，找出所有出现的地方（不跨来源，没交给模型的段不找），
+       各扩成完整的原句，扩出来一样的算一处；出处按实际找到的那一段；
+    ③ 不先挡太短的：每一处扩出来的原句都含已脱敏的内容 → redacted（带上其中含已脱敏内容的那几句）；
+       不止一处、又不全含 → ambiguous（不猜是哪句）；只有一处、不含：规范化以后少于 shortest 个字
+       → too_short（太短的片段靠不住），否则 shown。
+
+    引用规范化以后是空的、一处都没找到 → not_found。"""
+    texts = texts.texts if isinstance(texts, Content) else texts
+    index = texts._index
+    entry = index["segments"].get(sid) if isinstance(sid, str) else None
+    wanted = interpret.normalize(quote.strip())[0] if isinstance(quote, str) else ""
+    if entry is None or not wanted:
+        return AskMatch("not_found")
+    segment = entry[0]
+    places = _find_all(index, segment, wanted)
+    if not places:
+        for other in index["by_source"].get(segment.source, ()):
+            if other.sid != segment.sid:
+                places.extend(_find_all(index, other, wanted))
+    source, _, _, sentences = index["sources"][segment.source]
+    spans: dict[tuple[int, int], tuple[Segment, list[tuple[int, int]]]] = {}
+    for found, first, last in places:
+        covered = [(a, b) for a, b in sentences if a < last and b > first]
+        if covered:
+            spans.setdefault((covered[0][0], covered[-1][1]), (found, covered))
+    if not spans:
+        return AskMatch("not_found")
+    masked = []
+    for (start, end), (_, covered) in spans.items():
+        if "已脱敏]" not in source.text[start:end]:
+            break
+        inner = [(a, b) for a, b in covered if "已脱敏]" in source.text[a:b]]
+        # 遮掉的内容被句界切开了（一般不会）：这一处当一句
+        masked.extend(inner or [(start, end)])
+    else:
+        return AskMatch("redacted", masked=tuple((segment.source, a, b) for a, b in masked))
+    if len(spans) > 1:
+        return AskMatch("ambiguous")
+    (start, end), (found, _) = next(iter(spans.items()))
+    if len(wanted) < shortest:
+        return AskMatch("too_short")
+    original = source.text[start:end]
+    return AskMatch("shown", Located(segment.source, found.sid, start, end, original, found.place))

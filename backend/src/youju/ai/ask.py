@@ -58,7 +58,9 @@ SYSTEM_PROMPT = (
     "问题在指上一答的第几句：只按 previousAnswer.quotes 的编号 n 理解，对不上给 clarify。"
     "和这份通知无关、要代写材料、问别的通知、问某家企业在不在名单里、要法律意见或预测评审结果："
     "给 out_of_scope。段落里没有相关的：给 not_found。"
-    "电话、邮箱、证件号已遮掉，不要猜。status 不是 answer 时 quotes 给空列表。"
+    "电话、邮箱、证件号、联系人姓名已遮掉（写成“[电话已脱敏]”这样），不要猜；问的正是这些的，"
+    "照常摘出写着它的那句原句（遮掉的地方照原样抄），不要因为遮掉了就给 not_found。"
+    "status 不是 answer 时 quotes 给空列表。"
 )
 ASK = Skill("ask", PROMPT_VERSION, SYSTEM_PROMPT, (), result_field="quotes")
 
@@ -66,7 +68,7 @@ ASK = Skill("ask", PROMPT_VERSION, SYSTEM_PROMPT, (), result_field="quotes")
 # （validate），没给出原句的分三种（D-105）
 STATUSES = ("answer", "not_found", "out_of_scope", "clarify")
 MAX_QUOTES = 8  # 模型给的超过 8 句只取前 8 句
-MIN_QUOTE = 6  # 少于 6 个字的引用不认（同解读）
+MIN_QUOTE = 6  # 只有一处、不含遮掉号码的引用，少于 6 个字的不认（同解读）；含号码的不看长短
 MAX_TOKENS = 8000
 PREV_BATCH = 50  # 找上一答时一批取几问（一批批往前找，不设上限，第七节第 1 条）
 # 规则当场答的原因（第七节第 3 条、第六节第 3 条第 5 步）
@@ -95,19 +97,30 @@ LEAD_ELIGIBLE = (
     "我们不替你判断能不能报（以主管部门解释为准）。下面摘出了原文里和这个问题有关的 {n} 句"
     "（可能没摘全），请逐句对照你们的情况："
 )
-# 没给出原句的三种（D-105，改 D-078 第八节）：不说"没有写"，各说各的，都不算次数
+# 没给出原句的三种（D-105，改 D-078 第八节）：不说"没有写"，各说各的，都不算次数。
+# 叫人去点"站内阅读"、叫人再问的半句分三档（第六节第 3 条"卡片上的站内阅读""原文链接失效了"）：
+# 平常都写；读了的来源一个都打不开（_CLOSED）不叫人去点；原文链接失效（_GONE）再问也不叫
+# （失效的通知不再收新问），只留事实那半句
 NOT_FOUND = "这次没在已读的内容里找到和你问的直接相关的原句，不代表原文一定没写。"
 UNVERIFIED = "这次摘出的句子和原文对不上，没有显示。可以再问一次，或点“站内阅读”自己找。"
-# 原文链接失效的不放"站内阅读"
-UNVERIFIED_GONE = "这次摘出的句子和原文对不上，没有显示。可以再问一次。"
+UNVERIFIED_CLOSED = "这次摘出的句子和原文对不上，没有显示。可以再问一次。"
+UNVERIFIED_GONE = "这次摘出的句子和原文对不上，没有显示。"
 # 问能不能报、又没给出原句时，在它们自己的说法前面加这一句（第六节第 3 条提示表）
 ELIGIBLE_PREFIX = "我们不替你判断能不能报（以主管部门解释为准）。"
 NOT_FOUND_UNREAD = "没读的附件里可能有，可以点读的范围里的“站内阅读”看。"
-# 没读的附件都打不开时：照样说可能在附件里，但不叫人点"站内阅读"（读的范围里每个写"暂时读不出来"）
-NOT_FOUND_UNREAD_CLOSED = "没读的附件里可能有，这些附件暂时读不出来。"
+# 没读的附件都打不开时：照样说可能在附件里，但不叫人点（读的范围里每个写"这份附件暂时读不出来"）
+NOT_FOUND_UNREAD_CLOSED = "没读的附件里可能有，这几份附件暂时读不出来（原因见读的范围）。"
+NOT_FOUND_UNREAD_CLOSED_ONE = "没读的附件里可能有，这份附件暂时读不出来（原因见读的范围）。"
+# 原文链接失效时：叫人去点、说"暂时读不出来"的半句都不写，只留事实（原因照旧在读的范围里）
+NOT_FOUND_UNREAD_GONE = "没读的附件里可能有。"
 NOT_FOUND_RETRY = "可以换个说法再问，或点“站内阅读”自己找。这次不算次数。"
-NOT_FOUND_RETRY_GONE = "可以换个说法再问。这次不算次数。"  # 原文链接失效的不放"站内阅读"
+NOT_FOUND_RETRY_CLOSED = "可以换个说法再问。这次不算次数。"
 REDACTED = "有 {n} 句涉及电话、联系人或证件号，小程序里不显示这类号码。"
+# 含号码的对上了、其余的对不上（一句能显示的都没有）：REDACTED 后面接这一句（Codex 第 42 轮；
+# 设计稿第一节第 2 件，待创始人确认，定之前按这个写）
+REDACTED_REST = "其余摘出的句子和原文对不上，没有显示。可以再问一次，或点“站内阅读”自己找。"
+REDACTED_REST_CLOSED = "其余摘出的句子和原文对不上，没有显示。可以再问一次。"
+REDACTED_REST_GONE = "其余摘出的句子和原文对不上，没有显示。"
 NOT_COUNTED = "这次不算次数。"
 OUT_OF_SCOPE = (
     "这个问题不在“问这份通知”能答的范围里：这里只从这份通知的原文里找相关原句，不代写材料、"
@@ -133,7 +146,7 @@ CLARIFY_MODEL = "没看明白你指的是哪一句。可以把那句的几个字
 RESET = "这份通知的内容在你上一问之后更新过，这次没有接着上一问理解，是按这句话本身找的原句。"
 TIME_ROLES = "这几句里的时间不一定是同一件事的，请看清每句写的是谁、做什么的时间。"
 TIME_NONE = "摘到的原句里没有写具体日期，可以点“站内阅读”看原文。"
-TIME_NONE_GONE = "摘到的原句里没有写具体日期。"
+TIME_NONE_GONE = "摘到的原句里没有写具体日期。"  # 读了的来源都打不开、原文链接失效的
 RULES_NOTE = (
     "原句里提到的有关规定、另行通知或系统里的内容，不在这次读的范围里，请以主管部门发布的为准。"
 )
@@ -408,11 +421,13 @@ def model_input(loaded: content.Content, ctx: dict, question: str) -> str:
 
 
 def validate(payload: Any, loaded: content.Content | content.Texts) -> dict:
-    """核对模型的输出（第六节第 3 条"核对"）：每句只在它的段号所属来源里逐字找，扩成完整的句子；
-    含"已脱敏"的不引用（按句记个数：同一句摘了几次、摘的是它的哪一截、一句引用跨了几句，含遮掉
-    号码的每句都只记一次；算核对上了）；
-    重复的去掉；超过 8 句只取前 8 句；留下的按原文先后排、编号。格式不对抛 ValueError。
-    其他三种状态时模型给的句子一律不用。
+    """核对模型的输出（第六节第 3 条"核对"）：超过 8 句只取前 8 句，每句用 content.locate_ask
+    逐字找（段号要是交给模型的某一段；先这一段、再同一来源里交给模型的其他段；扩成完整的原句）。
+    能显示的留下，照模型给的先后编号（最相关的在前，D-086 ①；追问"第几句"按这个编号）；重复的
+    留先出现的那句（不算对不上）。原句都含"已脱敏"的不引用，按句记个数：同一句摘了几次、摘的是
+    它的哪一截、一句引用跨了几句，含遮掉号码的每句都只记一次；这一步不看引用多长，算核对上了。
+    dropped 是对不上的个数（格式不对、找不到、不止一处又不全含遮掉的号码、太短）。格式不对抛
+    ValueError。其他三种状态时模型给的句子一律不用。
 
     模型回 answer 时按核对结果定状态，按这个先后，先满足的算（D-105，Codex 第 11 轮）：
     ① 至少有一句核对上了、又能显示 → answer；② 没有能显示的、但至少有一句核对上了（都含遮掉的
@@ -430,40 +445,22 @@ def validate(payload: Any, loaded: content.Content | content.Texts) -> dict:
     if not payload["quotes"]:
         return {"status": "not_found", "quotes": [], "redacted": 0, "dropped": 0}
     texts = loaded.texts if isinstance(loaded, content.Content) else loaded
-    known = {s.sid for s in texts.segments}
-    order = {s.key: i for i, s in enumerate(texts.sources)}
     versions = {s.key: s.version for s in texts.sources}
-    kept: dict[tuple, content.Located] = {}
+    kept: dict[tuple, content.Located] = {}  # 照模型给的先后
     masked: set[tuple] = set()  # 含遮掉号码的句子：（来源, 起, 止）
     dropped = 0
     for item in payload["quotes"][:MAX_QUOTES]:
         sid = item.get("sid") if isinstance(item, dict) else None
         quote = item.get("quote") if isinstance(item, dict) else None
-        if (
-            not isinstance(sid, str)
-            or sid not in known
-            or not isinstance(quote, str)
-            or len(interpret.normalize(quote.strip())[0]) < MIN_QUOTE
-        ):
+        match = content.locate_ask(texts, sid, quote, shortest=MIN_QUOTE)
+        if match.kind == "redacted":  # 记过的句子不重复记
+            masked.update(match.masked)
+        elif match.kind == "shown":
+            located = match.located
+            kept.setdefault((located.source, located.start, located.end), located)
+        else:
             dropped += 1
-            continue
-        located, reason = content.locate(texts, sid, quote, masked=True)
-        if located is None:
-            dropped += 1
-            continue
-        if reason == "redacted":
-            sentences = {(located.source, a, b) for a, b in located.masked}
-            if sentences <= masked:  # 含号码的这几句都记过了：算重复
-                dropped += 1
-            masked |= sentences
-            continue
-        identity = (located.source, located.start, located.end)
-        if identity in kept:
-            dropped += 1
-            continue
-        kept[identity] = located
     redacted = len(masked)
-    ordered = sorted(kept.values(), key=lambda q: (order[q.source], q.start, q.end))
     quotes = [
         {
             "n": n,
@@ -473,7 +470,7 @@ def validate(payload: Any, loaded: content.Content | content.Texts) -> dict:
             "text": q.quote,
             "place": q.place,
         }
-        for n, q in enumerate(ordered, 1)
+        for n, q in enumerate(kept.values(), 1)
     ]
     if quotes:
         status = "answer"
@@ -1010,6 +1007,20 @@ def _note(code: str, text: str, *, head: bool, **extra) -> dict:
     return {"code": code, "text": text, "head": head, **extra}
 
 
+def _card_reader(doc_id: int, current: content.Content) -> dict | None:
+    """卡片上的"站内阅读 ›"打开哪一份（not_found、unverified，和含号码的对上、其余对不上的
+    redacted；第六节第 3 条"卡片上的站内阅读"，Codex 第 41 轮）：按这次读了的来源、现在的状态定。
+    读了正文 → 开正文；没读正文（只读了附件）→ 读了的附件里现在能站内打开的第一个（按
+    Content.sources 的先后，附件按位置）；一个都打不开 → None：不放入口，叫人去点的半句也不写。
+    原文链接失效的由调用方先挡（一律不放）。"""
+    if any(source.key == content.BODY for source in current.sources):
+        return {"docId": doc_id, "attachmentId": None}
+    for source in current.sources:
+        if source.readable and source.attachment_id is not None:
+            return {"docId": doc_id, "attachmentId": source.attachment_id}
+    return None
+
+
 def _answer(session: Session, turn: AIChatTurn, task: AdvisorTask, stamp: datetime, cache: dict):
     from youju import advisor_tasks as service
 
@@ -1057,6 +1068,14 @@ def _answer(session: Session, turn: AIChatTurn, task: AdvisorTask, stamp: dateti
         )
     unread = _unread(session, current, cache, bool(gone))
     redacted = int(result.get("redacted") or 0)
+    # 卡片上的"站内阅读 ›"；None 时（原文链接失效了，或者读了的来源一个都打不开）叫人去点的半句
+    # 都不写
+    reader = None if gone else _card_reader(turn.doc_id, current)
+
+    def pick(normal: str, closed: str, gone_text: str) -> str:
+        """叫人去点、叫人再问的半句分三档（见 NOT_FOUND 那几个说法上面的说明）。"""
+        return gone_text if gone else (normal if reader else closed)
+
     notes = []
     if gone:
         notes.append(_note("link_gone", LINK_GONE.format(date=date_text(gone)), head=True))
@@ -1094,14 +1113,15 @@ def _answer(session: Session, turn: AIChatTurn, task: AdvisorTask, stamp: dateti
         if dates >= 2 or any(word in joined for word in _ROLE_WORDS):
             notes.append(_note("time_roles", TIME_ROLES, head=False))
         elif dates == 0:
-            notes.append(_note("time_none", TIME_NONE_GONE if gone else TIME_NONE, head=False))
+            notes.append(_note("time_none", TIME_NONE if reader else TIME_NONE_GONE, head=False))
     eligible = any(word in question for word in _ELIGIBLE_WORDS)
     dropped = int(result.get("dropped") or 0)
     if quotes:
         status = "answer"
     elif status == "answer" or (status == "not_found" and (redacted or dropped)):
         # 存的时候还没分三种（D-105 以前）：模型回 answer、却没有能显示的原句的都记成了 not_found；
-        # 按存下的个数分：有含遮掉号码的 → redacted，给了句子却都对不上 → unverified（Codex 补审）
+        # 按存下的个数分：有含遮掉号码的 → redacted（对不上的也有时照含号码、其余对不上的写法），
+        # 给了句子却都对不上 → unverified（Codex 补审）
         status = "redacted" if redacted else ("unverified" if dropped else "not_found")
     if status == "answer":
         out["lead"] = (LEAD_ELIGIBLE if eligible else LEAD).format(n=len(quotes))
@@ -1112,25 +1132,40 @@ def _answer(session: Session, turn: AIChatTurn, task: AdvisorTask, stamp: dateti
         # 前面加一句不替你判断。读的范围、"已核对的截止"照常给
         lead = ELIGIBLE_PREFIX if eligible else ""
         if status == "redacted":
-            # 不说"没有写"，也不叫人去看原文（站内阅读也遮着这些号码，D-092）
+            # 不说"没有写"，也不为号码叫人去看原文（站内阅读也遮着这些号码，D-092）
             out["lead"] = lead + REDACTED.format(n=redacted)
+            if dropped:
+                # 其余摘出的对不上：接着说，免得以为没显示只是因为号码；入口同 unverified
+                # （第六节第 3 条，Codex 第 42 轮）
+                out["lead"] += pick(REDACTED_REST, REDACTED_REST_CLOSED, REDACTED_REST_GONE)
+                out["reader"] = reader
             notes.append(_note("not_counted", NOT_COUNTED, head=False))
         else:
             # 有附件没读就提一句（设计稿第六节第 3 条提示表）：能在站内打开的叫人点"站内阅读"，
-            # 都打不开的只说可能在附件里；原文链接失效的不提（不放"站内阅读"）
+            # 都打不开的只说可能在附件里（只有一份没读时写"这份附件"）；原文链接失效的只留
+            # "没读的附件里可能有"（D-078：没读到不等于没规定）
             attachments = [item for item in unread if item["attachmentId"] is not None]
-            if not gone and attachments:
-                opens = any(item["readable"] for item in attachments)
-                hint = NOT_FOUND_UNREAD if opens else NOT_FOUND_UNREAD_CLOSED
+            if attachments:
+                if gone:
+                    hint = NOT_FOUND_UNREAD_GONE
+                elif any(item["readable"] for item in attachments):
+                    hint = NOT_FOUND_UNREAD
+                elif len(attachments) == 1:
+                    hint = NOT_FOUND_UNREAD_CLOSED_ONE
+                else:
+                    hint = NOT_FOUND_UNREAD_CLOSED
                 notes.append(_note("not_found_unread", hint, head=False))
             if status == "unverified":
-                out["lead"] = lead + (UNVERIFIED_GONE if gone else UNVERIFIED)
+                out["lead"] = lead + pick(UNVERIFIED, UNVERIFIED_CLOSED, UNVERIFIED_GONE)
+                notes.append(_note("not_counted", NOT_COUNTED, head=False))
+            elif gone:  # 失效的通知不再收新问：不叫人换个说法再问
+                out["lead"] = lead + NOT_FOUND
                 notes.append(_note("not_counted", NOT_COUNTED, head=False))
             else:
                 out["lead"] = lead + NOT_FOUND
-                retry = NOT_FOUND_RETRY_GONE if gone else NOT_FOUND_RETRY
+                retry = NOT_FOUND_RETRY if reader else NOT_FOUND_RETRY_CLOSED
                 notes.append(_note("not_found", retry, head=False))
-            out["reader"] = None if gone else {"docId": turn.doc_id, "attachmentId": None}
+            out["reader"] = reader
     out.update(
         status=status,
         quotes=quotes,

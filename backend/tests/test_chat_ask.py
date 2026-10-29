@@ -387,18 +387,20 @@ def _texts(*sentences):
     return content.Texts.from_paragraphs(interpret.split_paragraphs("\n".join(sentences)))
 
 
-def test_validate_expands_dedups_sorts_and_caps():
+def test_validate_expands_dedups_keeps_model_order_and_caps():
     lines = [f"第{n}条、申报单位须满足第{n}项要求。" for n in range(1, 11)]
     texts = _texts(*lines)
     quotes = [{"sid": "P010", "quote": "申报单位须满足第10项要求"}] + [
         {"sid": f"P{n:03d}", "quote": f"申报单位须满足第{n}项要求"} for n in range(1, 9)
     ]
     result = ask.validate({"status": "answer", "quotes": quotes}, texts)
-    # 超过 8 句只取模型给的前 8 句，按原文先后排、编号；扩成完整的句子
-    assert [q["sid"] for q in result["quotes"]] == [f"P{n:03d}" for n in range(1, 8)] + ["P010"]
+    # 超过 8 句只取模型给的前 8 句，照模型给的先后编号（最相关的在前，不按原文先后重排，Codex
+    # 第 15 轮）；扩成完整的句子
+    assert [q["sid"] for q in result["quotes"]] == ["P010"] + [f"P{n:03d}" for n in range(1, 8)]
     assert [q["n"] for q in result["quotes"]] == list(range(1, 9))
-    assert result["quotes"][0]["text"] == lines[0] and result["quotes"][0]["source"] == "body"
-    # 重复的、段号对不上的、太短的、格式不对的都不要
+    assert result["quotes"][0]["text"] == lines[9] and result["quotes"][1]["text"] == lines[0]
+    assert result["quotes"][0]["source"] == "body"
+    # 重复的、段号对不上的、太短的、格式不对的都不要；重复的不算对不上（不进 dropped）
     result = ask.validate(
         {
             "status": "answer",
@@ -412,7 +414,7 @@ def test_validate_expands_dedups_sorts_and_caps():
         },
         texts,
     )
-    assert [q["sid"] for q in result["quotes"]] == ["P002"] and result["dropped"] == 4
+    assert [q["sid"] for q in result["quotes"]] == ["P002"] and result["dropped"] == 3
     # 其他三种状态时模型给的句子一律不用
     for status in ("not_found", "out_of_scope", "clarify"):
         got = ask.validate({"status": status, "quotes": quotes}, texts)
@@ -453,39 +455,46 @@ def test_validate_status_order_without_shown_quotes():
     assert (got["status"], got["redacted"], got["dropped"]) == ("unverified", 0, 2)
 
 
+def test_validate_short_masked_fragment_is_redacted():
+    """含遮掉号码的先判、不看长短（Codex 第 40 轮）：只摘了遮挡前"联系电话："这样不到 6 个字的
+    一小段，也算核对上了、不显示（redacted），不当成对不上。不含号码的太短的才算对不上。"""
+    texts = _texts(S1, v1.redact_sensitive(S6))
+    got = ask.validate(answer(("P002", "联系电话：")), texts)
+    assert (got["status"], got["redacted"], got["dropped"]) == ("redacted", 1, 0)
+    got = ask.validate(answer(("P001", "一、申报")), texts)
+    assert (got["status"], got["dropped"]) == ("unverified", 1)
+
+
 def test_validate_counts_a_masked_sentence_once():
-    """同一句含遮掉号码的摘了几次（整句、它的一截）只记一句，"有 N 句"不多算；多摘的算重复。"""
+    """同一句含遮掉号码的摘了几次（整句、它的一截）只记一句，"有 N 句"不多算；多摘的是重复，
+    不算对不上。"""
     texts = _texts(S1, v1.redact_sensitive(S6))
     phone, name = ("P002", "联系电话：[电话已脱敏]"), ("P002", "六、联系人：[姓名已脱敏]")
     got = ask.validate(answer(phone, name, phone), texts)
-    assert (got["status"], got["redacted"], got["dropped"]) == ("redacted", 1, 2)
+    assert (got["status"], got["redacted"], got["dropped"]) == ("redacted", 1, 0)
     got = ask.validate(answer(phone, ("P001", S1), name), texts)
-    assert (got["status"], len(got["quotes"]), got["redacted"], got["dropped"]) == (
-        "answer",
-        1,
-        1,
-        1,
-    )
+    shown = (got["status"], len(got["quotes"]), got["redacted"], got["dropped"])
+    assert shown == ("answer", 1, 1, 0)
 
 
 def test_validate_counts_masked_sentences_inside_a_longer_quote():
     """一句引用跨了几句时按句记（Codex 第 3 轮）：含号码的那句单独摘一次、连着下一句又摘一次，
-    只记一句；一句引用里有两句含号码的记两句。"""
+    只记一句；一句引用里有两句含号码的记两句。都对得上，不算对不上。"""
     masked = v1.redact_sensitive(S6)
     texts = _texts(masked + S7)  # 一段里两句
     got = ask.validate(
         answer(("P001", "联系电话：[电话已脱敏]"), ("P001", "[电话已脱敏]。七、本通知自发布")),
         texts,
     )
-    assert (got["status"], got["quotes"], got["redacted"], got["dropped"]) == ("redacted", [], 1, 1)
+    assert (got["status"], got["quotes"], got["redacted"], got["dropped"]) == ("redacted", [], 1, 0)
     texts = _texts("联系人：[姓名已脱敏]。联系电话：[电话已脱敏]。")
     got = ask.validate(answer(("P001", "[姓名已脱敏]。联系电话")), texts)
     assert (got["status"], got["redacted"], got["dropped"]) == ("redacted", 2, 0)
-    # 先摘跨两句的、再摘其中一句：后一句都记过了，算重复
+    # 先摘跨两句的、再摘其中一句：后一句记过了，不重复记
     got = ask.validate(
         answer(("P001", "[姓名已脱敏]。联系电话"), ("P001", "联系电话：[电话已脱敏]")), texts
     )
-    assert (got["status"], got["redacted"], got["dropped"]) == ("redacted", 2, 1)
+    assert (got["status"], got["redacted"], got["dropped"]) == ("redacted", 2, 0)
 
 
 def test_validate_only_looks_in_the_quotes_own_source():
@@ -1064,9 +1073,12 @@ def test_attachment_notes_and_unread_scope(client, session, settings, model, mon
     missing = asked(
         client, session, settings, model, "评分标准", doc, {"status": "not_found", "quotes": []}
     )
-    # 附件打不开：照样说可能在附件里，但不叫人点"站内阅读"
+    # 附件打不开：照样说可能在附件里，但不叫人点"站内阅读"（只有一份没读：这份附件）
     assert [(n["code"], n["text"]) for n in missing["answer"]["notes"]] == [
-        ("not_found_unread", ask.NOT_FOUND_UNREAD_CLOSED),
+        (
+            "not_found_unread",
+            "没读的附件里可能有，这份附件暂时读不出来（原因见读的范围）。",
+        ),
         ("not_found", ask.NOT_FOUND_RETRY),
     ]
     # 附件在站内能打开了（同站内阅读的判断）
@@ -1082,14 +1094,23 @@ def test_attachment_notes_and_unread_scope(client, session, settings, model, mon
     assert opened["notes"][0]["text"] == "原句说“见附件”，附件 1 没读，可以点“站内阅读”看。"
     assert opened["notes"][0]["attachmentId"] == att.id
     assert opened["scope"]["unread"][0]["readable"] is True
-    missing = turn_of(client, missing["id"])["answer"]
-    assert [n["text"] for n in missing["notes"]] == [ask.NOT_FOUND_UNREAD, ask.NOT_FOUND_RETRY]
+    again = turn_of(client, missing["id"])["answer"]
+    assert [n["text"] for n in again["notes"]] == [ask.NOT_FOUND_UNREAD, ask.NOT_FOUND_RETRY]
+    # 原文链接失效以后：只留"没读的附件里可能有。"，叫人去点、说读不出来的半句都不写
+    session.get(Document, doc).link_gone_at = datetime(2026, 10, 24, 2, tzinfo=UTC)
+    session.commit()
+    gone = turn_of(client, missing["id"])["answer"]
+    assert [(n["code"], n["text"]) for n in gone["notes"]] == [
+        ("link_gone", gone["notes"][0]["text"]),
+        ("not_found_unread", "没读的附件里可能有。"),
+        ("not_counted", "这次不算次数。"),
+    ]
 
 
 def _attachment_load(monkeypatch, state):
     """在真的正文后面接一个附件来源（附件读入第二步以前 content.load 只取正文）。"""
     real = content.load
-    text = "评分标准：创新能力占40分。\n申报单位须提交盖章的申请书。"
+    text = state.get("text", "评分标准：创新能力占40分。\n申报单位须提交盖章的申请书。")
 
     def load(session, doc_id, *, link=True):
         loaded = real(session, doc_id, link=link)
@@ -1124,7 +1145,7 @@ def _attachment_load(monkeypatch, state):
 
 def test_attachment_quotes_follow_current_names(client, session, settings, doc, model, monkeypatch):
     """回答里每句存来源的内容版本和段号：附件改名、换了位置以后，出处和"站内阅读"按现在的拼，
-    回答不作废；站内打不开了不给链接。正文在前、附件在后。"""
+    回答不作废；站内打不开了不给链接。照模型给的先后排（附件那句在前）。"""
     state = {"label": "附件 1《申报指南》", "id": 11, "readable": True}
     _attachment_load(monkeypatch, state)
     got = asked(
@@ -1138,20 +1159,179 @@ def test_attachment_quotes_follow_current_names(client, session, settings, doc, 
     )
     quotes = got["answer"]["quotes"]
     assert [(q["n"], q["source"], q["label"]) for q in quotes] == [
-        (1, "body", "正文"),
-        (2, "att-abc123def456", "附件 1《申报指南》第 1 段"),
+        (1, "att-abc123def456", "附件 1《申报指南》第 1 段"),
+        (2, "body", "正文"),
     ]
-    assert quotes[1]["reader"] == {"docId": doc, "attachmentId": 11}
-    assert quotes[1]["version"] == "sha-abc:extract-v1"
+    assert quotes[0]["reader"] == {"docId": doc, "attachmentId": 11}
+    assert quotes[0]["version"] == "sha-abc:extract-v1"
     assert got["answer"]["scope"]["text"] == "读了：正文、附件 1《申报指南》"
     state.update(label="附件 2《申报指南（修订）》", id=12)
     again = turn_of(client, got["id"])["answer"]
     assert again["status"] == "answer"
-    assert again["quotes"][1]["label"] == "附件 2《申报指南（修订）》第 1 段"
-    assert again["quotes"][1]["reader"] == {"docId": doc, "attachmentId": 12}
+    assert again["quotes"][0]["label"] == "附件 2《申报指南（修订）》第 1 段"
+    assert again["quotes"][0]["reader"] == {"docId": doc, "attachmentId": 12}
     state["readable"] = False
     again = turn_of(client, got["id"])["answer"]
-    assert again["quotes"][1]["reader"] is None and again["quotes"][1]["unreadable"] is True
+    assert again["quotes"][0]["reader"] is None and again["quotes"][0]["unreadable"] is True
+
+
+def _attachment_only_load(monkeypatch, state):
+    """没读正文、只读了一个附件（D-080 ②：没有正文但附件能读的照样能问）。"""
+    _attachment_load(monkeypatch, state)
+    with_body = content.load
+
+    def load(session, doc_id, *, link=True):
+        loaded = with_body(session, doc_id, link=link)
+        texts = content.Texts(
+            sources=tuple(s for s in loaded.sources if s.key != content.BODY),
+            segments=tuple(s for s in loaded.segments if s.source != content.BODY),
+        )
+        return replace(loaded, texts=texts)
+
+    monkeypatch.setattr(content, "load", load)
+
+
+def test_card_reader_follows_what_was_read(client, session, settings, doc, model, monkeypatch):
+    """卡片上的"站内阅读 ›"按这次读了的来源定（第六节第 3 条，Codex 第 41 轮）：读了正文开正文
+    （别的测试）；只读了附件开那个附件；读了的来源一个都打不开时不放入口，叫人去点的半句也不写。
+    not_found、unverified 各一题，日期那句同样；读的时候按现在的状态定。"""
+    state = {
+        "label": "附件 1《申报指南》",
+        "id": 11,
+        "readable": True,
+        "text": "评分标准：创新能力占40分。\n申报单位须提交盖章的申请书。联系电话：[电话已脱敏]。",
+    }
+    _attachment_only_load(monkeypatch, state)
+    missing = asked(
+        client, session, settings, model, "评审专家是谁", doc, {"status": "not_found", "quotes": []}
+    )
+    wrong = asked(
+        client,
+        session,
+        settings,
+        model,
+        "要交哪些材料",
+        doc,
+        answer(("Aabc123def456-2", "原文里没有的一句话")),
+    )
+    dated = asked(
+        client,
+        session,
+        settings,
+        model,
+        "截止时间是哪天",
+        doc,
+        answer(("Aabc123def456-2", "申报单位须提交盖章的申请书")),
+    )
+    mixed = asked(
+        client,
+        session,
+        settings,
+        model,
+        "联系电话是多少",
+        doc,
+        answer(("Aabc123def456-2", "联系电话："), ("Aabc123def456-2", "原文里没有的一句话")),
+    )
+    opened = {"docId": doc, "attachmentId": 11}
+    shown = [turn["answer"] for turn in (missing, wrong, dated, mixed)]
+    assert shown[0]["reader"] == opened and shown[0]["notes"][-1]["text"] == ask.NOT_FOUND_RETRY
+    assert (shown[1]["reader"], shown[1]["lead"]) == (opened, ask.UNVERIFIED)
+    assert [n["text"] for n in shown[2]["notes"] if n["code"] == "time_none"] == [ask.TIME_NONE]
+    assert shown[3]["reader"] == opened
+    assert shown[3]["lead"] == ask.REDACTED.format(n=1) + ask.REDACTED_REST
+    state["readable"] = False  # 读了的附件现在打不开了
+    shown = [turn_of(client, turn["id"])["answer"] for turn in (missing, wrong, dated, mixed)]
+    assert shown[0]["reader"] is None
+    assert shown[0]["notes"][-1] == {
+        "code": "not_found",
+        "text": "可以换个说法再问。这次不算次数。",
+        "head": False,
+    }
+    assert shown[1]["reader"] is None
+    assert shown[1]["lead"] == "这次摘出的句子和原文对不上，没有显示。可以再问一次。"
+    assert [n["text"] for n in shown[2]["notes"] if n["code"] == "time_none"] == [
+        "摘到的原句里没有写具体日期。"
+    ]
+    assert shown[3]["reader"] is None
+    assert shown[3]["lead"] == (
+        "有 1 句涉及电话、联系人或证件号，小程序里不显示这类号码。"
+        "其余摘出的句子和原文对不上，没有显示。可以再问一次。"
+    )
+
+
+def test_card_reader_picks_the_first_openable_source():
+    """卡片入口按读了的来源定：读了正文开正文；没读正文开读了的附件里第一个能站内打开的
+    （读了两个附件、第一个打不开时开第二个）；都打不开不给。"""
+    body = content.SourceText(key="body", label="正文", version="b", text="正文")
+    first, second = (
+        content.SourceText(
+            key=f"att-{n}",
+            label=f"附件 {n}",
+            version="a",
+            text="甲",
+            attachment_id=10 + n,
+            readable=n == 2,
+        )
+        for n in (1, 2)
+    )
+
+    def reader(*sources):
+        return ask._card_reader(7, SimpleNamespace(sources=sources))
+
+    assert reader(body, first, second) == {"docId": 7, "attachmentId": None}
+    assert reader(first, second) == {"docId": 7, "attachmentId": 12}
+    assert reader(first) is None
+
+
+def test_redacted_with_the_rest_unverified(client, session, settings, doc, model):
+    """含号码的对上了、其余的对不上（一句能显示的都没有）：仍是 redacted、不算次数，在"有 N 句……"
+    后面接"其余摘出的句子和原文对不上……"，入口同 unverified；只有含号码的不放入口；原文链接失效
+    以后只留事实那半句（Codex 第 42 轮，待创始人确认）。"""
+    mixed = asked(
+        client,
+        session,
+        settings,
+        model,
+        "联系人是谁",
+        doc,
+        answer(("P006", "联系电话：[电话已脱敏]"), ("P001", "原文里没有的一句话")),
+    )
+    got = mixed["answer"]
+    assert (got["status"], mixed["counted"]) == ("redacted", False)
+    assert got["lead"] == (
+        "有 1 句涉及电话、联系人或证件号，小程序里不显示这类号码。"
+        "其余摘出的句子和原文对不上，没有显示。可以再问一次，或点“站内阅读”自己找。"
+    )
+    assert got["reader"] == {"docId": doc, "attachmentId": None}
+    only = asked(
+        client,
+        session,
+        settings,
+        model,
+        "咨询电话",
+        doc,
+        answer(("P006", "联系电话：[电话已脱敏]")),
+    )
+    assert (only["answer"]["lead"], only["answer"]["reader"]) == (ask.REDACTED.format(n=1), None)
+    eligible = asked(
+        client,
+        session,
+        settings,
+        model,
+        "联系人符合要求吗",
+        doc,
+        answer(("P006", "联系电话：[电话已脱敏]"), ("P001", "原文里没有的一句话")),
+    )
+    assert eligible["answer"]["lead"] == (
+        ask.ELIGIBLE_PREFIX + ask.REDACTED.format(n=1) + ask.REDACTED_REST
+    )
+    session.get(Document, doc).link_gone_at = datetime(2026, 10, 24, 2, tzinfo=UTC)
+    session.commit()
+    gone = turn_of(client, mixed["id"])["answer"]
+    assert gone["lead"] == ask.REDACTED.format(n=1) + "其余摘出的句子和原文对不上，没有显示。"
+    assert gone["reader"] is None
+    gone = turn_of(client, only["id"])["answer"]  # 只有含号码的：失效以后照旧
+    assert (gone["lead"], gone["reader"]) == (ask.REDACTED.format(n=1), None)
 
 
 @pytest.mark.parametrize("change", ["body", "taken_down", "kind", "config", "words", "cloud"])
@@ -1548,7 +1728,8 @@ def test_account_deleted_while_processing(client, session, settings, doc, model,
 
 
 def test_link_gone_wording(client, session, settings, doc, model):
-    """原文链接失效以后：没写日期、没找到、摘的对不上的说法不叫人点"站内阅读"，也不给站内阅读。"""
+    """原文链接失效以后：没写日期、没找到、摘的对不上的说法不叫人点"站内阅读"，也不叫人再问
+    （失效的通知不再收新问），只留事实那半句；也不给站内阅读（第六节第 3 条"原文链接失效了"）。"""
     first = asked(client, session, settings, model, "截止时间呢", doc, answer(("P001", S1)))
     off = asked(
         client, session, settings, model, "要交哪些材料", doc, answer(("P001", "原文里没有的话"))
@@ -1566,10 +1747,11 @@ def test_link_gone_wording(client, session, settings, doc, model):
     assert missing["lead"] == ask.NOT_FOUND and missing["reader"] is None
     assert [(n["code"], n["text"]) for n in missing["notes"]] == [
         ("link_gone", missing["notes"][0]["text"]),
-        ("not_found", "可以换个说法再问。这次不算次数。"),
+        ("not_counted", "这次不算次数。"),
     ]
     unverified = turn_of(client, off["id"])["answer"]
-    assert unverified["lead"] == ask.UNVERIFIED_GONE and unverified["reader"] is None
+    assert unverified["lead"] == ask.UNVERIFIED_GONE == "这次摘出的句子和原文对不上，没有显示。"
+    assert unverified["reader"] is None
     assert [n["code"] for n in unverified["notes"]] == ["link_gone", "not_counted"]
 
 
@@ -1825,6 +2007,26 @@ def test_previous_answer_is_found_past_many_unanswered_turns(client, session, se
     }
 
 
+def test_follow_up_numbers_follow_the_shown_order(client, session, settings, doc, model):
+    """原句照模型给的先后编号（第 15 轮）：先摘 P003、后摘 P002 时，第 1 句是 P003 那句；追问
+    交给模型的 previousAnswer 照这个编号。"""
+    first = asked(
+        client,
+        session,
+        settings,
+        model,
+        "报送和截止分别是哪天",
+        doc,
+        answer(("P003", S3), ("P002", S2)),
+    )
+    assert [(q["n"], q["sid"]) for q in first["answer"]["quotes"]] == [(1, "P003"), (2, "P002")]
+    asked(client, session, settings, model, "第2句是谁的截止", doc, answer(("P002", S2)))
+    assert model.calls[-1][1]["previousAnswer"]["quotes"] == [
+        {"n": 1, "sid": "P003", "quote": S3},
+        {"n": 2, "sid": "P002", "quote": S2},
+    ]
+
+
 def test_expired_turns_left_out_of_recent_and_previous(client, session, settings, doc, model):
     """到期的问不算（第十节第 1 条）：上一答、最近两问都只从没到期的里取；到期时刻正好是现在
     也算到期。"""
@@ -1940,14 +2142,23 @@ def test_results_stored_before_the_three_statuses(client, session, settings, doc
     个数分：有含遮掉号码的 → redacted，给了句子却都对不上 → unverified；模型自己回的 not_found 不变。"""
     got = asked(client, session, settings, model, "评分标准", doc, answer(("P001", S1)))
     task = session.get(AdvisorTask, session.get(AIChatTurn, got["id"]).task_id)
-    for stored, expected in (
-        ({"redacted": 1, "dropped": 0}, "redacted"),
-        ({"redacted": 0, "dropped": 2}, "unverified"),
-        ({"redacted": 0, "dropped": 0}, "not_found"),
+    body = {"docId": doc, "attachmentId": None}
+    for stored, expected, lead, reader in (
+        ({"redacted": 1, "dropped": 0}, "redacted", ask.REDACTED.format(n=1), None),
+        # 两个个数都大于 0：照含号码的对上、其余对不上的写，入口同 unverified（第六节第 3 条）
+        (
+            {"redacted": 1, "dropped": 2},
+            "redacted",
+            ask.REDACTED.format(n=1) + ask.REDACTED_REST,
+            body,
+        ),
+        ({"redacted": 0, "dropped": 2}, "unverified", ask.UNVERIFIED, body),
+        ({"redacted": 0, "dropped": 0}, "not_found", ask.NOT_FOUND, body),
     ):
         task.result_json = {**task.result_json, "status": "not_found", "quotes": [], **stored}
         session.commit()
-        assert turn_of(client, got["id"])["answer"]["status"] == expected
+        shown = turn_of(client, got["id"])["answer"]
+        assert (shown["status"], shown["lead"], shown["reader"]) == (expected, lead, reader)
 
 
 def test_each_status_with_eligibility_and_time_questions(
@@ -2067,6 +2278,16 @@ def test_mixed_read_and_unread_attachments(client, session, settings, doc, model
     again = turn_of(client, got["id"])["answer"]
     assert again["scope"]["unread"][0]["readable"] is False
     assert [n["text"] for n in again["notes"]] == [
-        ask.NOT_FOUND_UNREAD_CLOSED,
+        ask.NOT_FOUND_UNREAD_CLOSED_ONE,
+        ask.NOT_FOUND_RETRY,
+    ]
+    # 两份没读、都打不开：这几份附件
+    state["unread"] = [
+        *state["unread"],
+        content.Unread("附件 3《说明.pdf》", "scanned", attachment_id=unread_one.id + 1000),
+    ]
+    again = turn_of(client, got["id"])["answer"]
+    assert [n["text"] for n in again["notes"]] == [
+        "没读的附件里可能有，这几份附件暂时读不出来（原因见读的范围）。",
         ask.NOT_FOUND_RETRY,
     ]

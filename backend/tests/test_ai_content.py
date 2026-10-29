@@ -286,23 +286,81 @@ def test_locate_keeps_body_and_attachment_apart():
     assert content.locate(texts, None, "加盖公章") == (None, "not_found")
 
 
-def test_locate_gives_masked_sentence_only_when_asked():
-    """原句里有已脱敏的内容：默认给 (None, "redacted")（解读、对照照旧）；masked 为真时也给出
-    那一句的位置（问一问按句去重），摘的是它的哪一截都是同一句。"""
+def test_locate_ask_rules():
+    """问答的逐字核对（locate_ask，第六节第 3 条"在哪找""每句怎么判"，Codex 第 40 轮）。"""
     masked = "联系人：[姓名已脱敏]，联系电话：[电话已脱敏]。"
-    texts = content.Texts.from_paragraphs(interpret.split_paragraphs("申报书一式三份。" + masked))
-    assert content.locate(texts, "P001", "联系电话：[电话已脱敏]") == (None, "redacted")
-    found = [
-        content.locate(texts, "P001", quote, masked=True)
-        for quote in ("联系电话：[电话已脱敏]", "联系人：[姓名已脱敏]，联系电话")
-    ]
-    assert {why for _, why in found} == {"redacted"}
-    assert {(q.source, q.start, q.end, q.quote) for q, _ in found} == {
-        (content.BODY, 8, 8 + len(masked), masked)
+    consult = "咨询电话：[电话已脱敏]。"
+    body = "\n".join(
+        [
+            "申报书一式三份。" + masked,
+            consult + "申报截止时间为11月20日。",
+            "申报单位须提交盖章的申请书。",
+            "申请书须加盖公章。承诺书也须加盖公章。",
+            "咨询电话另行公布。",
+        ]
+    )
+    texts = content.Texts.from_paragraphs(interpret.split_paragraphs(body))
+    second = len("申报书一式三份。" + masked) + 1  # 第 2 段在正文里的起点
+    # 含已脱敏的不看长短：只摘了遮挡前不到 6 个字的一小段也算 redacted，带上那一句的位置
+    got = content.locate_ask(texts, "P001", "联系电话：")
+    assert got.kind == "redacted" and got.masked == ((content.BODY, 8, 8 + len(masked)),)
+    # 这一段没有，到同一来源里交给模型的其他段找：两处都有、每处都含遮掉的号码，每句各记一次
+    got = content.locate_ask(texts, "P003", "[电话已脱敏]")
+    assert got.kind == "redacted"
+    assert set(got.masked) == {
+        (content.BODY, 8, 8 + len(masked)),
+        (content.BODY, second, second + len(consult)),
     }
-    assert all(q.masked == ((8, 8 + len(masked)),) for q, _ in found)  # 含已脱敏内容的那一句
-    located, why = content.locate(texts, "P001", "申报书一式三份", masked=True)
-    assert why is None and located.quote == "申报书一式三份。"
+    # 不止一处、又不全含遮掉的号码：ambiguous（不先看长短）；一处含号码、一处不含也一样
+    assert content.locate_ask(texts, "P004", "加盖公章").kind == "ambiguous"
+    assert content.locate_ask(texts, "P003", "咨询电话").kind == "ambiguous"
+    # 只有一处、不含：少于 6 个字 too_short；够了能显示，出处按实际找到的那一段
+    assert content.locate_ask(texts, "P003", "盖章的申请").kind == "too_short"
+    got = content.locate_ask(texts, "P003", "申报书一式三份")
+    assert got.kind == "shown"
+    assert (got.located.sid, got.located.quote) == ("P001", "申报书一式三份。")
+    # 段号不是交给模型的某一段：直接 not_found，不到正文里找（解读用的 locate 照旧会找）
+    assert content.locate_ask(texts, "P999", "申报书一式三份").kind == "not_found"
+    assert content.locate(texts, "P999", "申报书一式三份")[0] is not None
+    for sid, quote in (("P001", "   "), ("P001", "原文里没有的一句话"), ("P001", None)):
+        assert content.locate_ask(texts, sid, quote).kind == "not_found"
+
+
+def test_locate_ask_stays_in_its_source_and_the_given_segments():
+    """不跨来源（正文段号的句子不到附件里找，反过来也一样）；来源里没交给模型的那截不找；
+    这一段里有，就只认这一段，别的段里也有不算不唯一。"""
+    body = "正文第一句写申报对象。正文第二句写截止时间。没交给模型的一句话。"
+    att = "附件里写评分标准。正文第一句写申报对象。"  # 有一句和正文一模一样
+    texts = content.Texts(
+        sources=(
+            content.SourceText(key="body", label="正文", version="b", text=body),
+            content.SourceText(key="att-1", label="附件 1", version="a", text=att, attachment_id=5),
+        ),
+        segments=(
+            content.Segment("P001", "body", body[:22], 0, 22),
+            content.Segment("A1-1", "att-1", att, 0, len(att)),
+        ),
+    )
+    # 两个来源都有的句子：按段号所属的来源找，不算不唯一，也不会算成另一个来源的
+    for sid, source in (("A1-1", "att-1"), ("P001", "body")):
+        got = content.locate_ask(texts, sid, "正文第一句写申报对象")
+        assert (got.kind, got.located.source, got.located.sid) == ("shown", source, sid)
+    assert content.locate_ask(texts, "P001", "附件里写评分标准").kind == "not_found"
+    assert content.locate_ask(texts, "P001", "没交给模型的一句话").kind == "not_found"
+    got = content.locate_ask(texts, "A1-1", "附件里写评分标准")
+    assert (got.kind, got.located.source, got.located.sid) == ("shown", "att-1", "A1-1")
+    both = content.Texts.from_paragraphs(
+        interpret.split_paragraphs(
+            "申请书须加盖单位公章后提交。\n承诺书须加盖单位公章后提交。\n逾期不予受理。"
+        )
+    )
+    got = content.locate_ask(both, "P002", "须加盖单位公章后提交")
+    assert (got.kind, got.located.sid, got.located.quote) == (
+        "shown",
+        "P002",
+        "承诺书须加盖单位公章后提交。",
+    )
+    assert content.locate_ask(both, "P003", "须加盖单位公章后提交").kind == "ambiguous"
 
 
 @pytest.fixture
