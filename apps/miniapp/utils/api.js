@@ -109,6 +109,8 @@ const ADMIN_READS = [
   /^\/api\/v1\/reports\/(deadlines|lists)(\?|$)/,
   /^\/api\/v1\/lists\/(recent|lookup|record)(\?|$)/,
   /^\/api\/v1\/documents\/\d+(\?|$)/,
+  // 本期清单：公众号文章点进来的第一屏（PR #287）
+  /^\/api\/v1\/digests\/(latest|\d+)(\?|$)/,
 ];
 const ADMIN_SERVICE = 'admin';
 const ADMIN_FIRST_WAIT = 8000;
@@ -459,6 +461,45 @@ function calendar(params = {}) {
     return page(0, [], []);
   }
   return copy({ items: mock.calendar.filter((d) => (!params.province || d.province === params.province) && (!params.city || d.city === params.city) && (!params.district || d.district === params.district)).map((d) => Object.assign({ docId: d.id }, d)), verifiedTotal: mock.calendar.filter((d) => d.verified).length });
+}
+
+// 本期清单（公众号方案 PR #287）：一期已发布周报的全部条目，按省份分好（国家部委在前，各省按条数从多到少），
+// 每条和列表行同一格式（doc-row）。演示数据用首页的几份文件拼一期，页面标"演示数据"
+const SECTION_ORDER = ['deadlines', 'applications', 'lists', 'policies'];
+function mockDigest(params = {}) {
+  const province = (d) => (d.region === '国家' ? '国家' : String(d.region || '').split(' · ')[0]);
+  const section = (d) => (d.kind === '名单' ? 'lists' : d.kind === '政策' ? 'policies' : (d.deadline && d.deadline.verified ? 'deadlines' : 'applications'));
+  const items = mock.home.map((d) => Object.assign({}, d, { province: province(d), section: section(d) }));
+  const counts = {};
+  items.forEach((d) => { counts[d.province] = (counts[d.province] || 0) + 1; });
+  items.sort((a, b) => ((a.province !== '国家') - (b.province !== '国家')) || (counts[b.province] - counts[a.province])
+    || a.province.localeCompare(b.province) || SECTION_ORDER.indexOf(a.section) - SECTION_ORDER.indexOf(b.section));
+  const provinces = [];
+  items.forEach((d) => { if (!provinces.some((p) => p.province === d.province)) provinces.push({ province: d.province, count: counts[d.province] }); });
+  const chosen = params.province ? items.filter((d) => d.province === params.province) : items;
+  const offset = params.offset || 0;
+  return {
+    id: 0, demo: true, title: '申报周报（演示数据）', weekStart: '2026-09-21', weekEnd: '2026-09-27', dataAt: '2026-09-28T07:30:00+08:00',
+    provinces, province: params.province || '', items: chosen.slice(offset, offset + (params.limit || 100)), total: chosen.length, offset, hidden: 0,
+  };
+}
+// params：province 只看一个省（国家部委是"国家"）、offset/limit 分页（每页最多 200 条）
+function digest(id, params) {
+  if (isLive()) return request(`/api/v1/digests/${encodeURIComponent(id)}`, params);
+  return copy(mockDigest(params));
+}
+// "我的 → 本周周报"：全国版最近一期已发布的周报（还没有时 404）。同一次打开里 10 分钟内不重复问；
+// 没问到（网络出错）的下次再问
+const LATEST_REUSE = 10 * 60 * 1000;
+let latestMemo = null;
+function latestDigest() {
+  if (!isLive()) return copy({ id: 0, demo: true, title: '申报周报（演示数据）', weekStart: '2026-09-21', weekEnd: '2026-09-27' });
+  if (latestMemo && Date.now() - latestMemo.at < LATEST_REUSE) return latestMemo.promise;
+  const promise = request('/api/v1/digests/latest');
+  const memo = { at: Date.now(), promise };
+  latestMemo = memo;
+  promise.catch((err) => { if (!(err && err.status === 404) && latestMemo === memo) latestMemo = null; });
+  return promise;
 }
 
 function lists() {
@@ -896,6 +937,7 @@ function requestInvoice(id, data) {
 
 module.exports = {
   watchStartup, stopStartup, prewarm, isLive, request, snapshotOnce, coverage, home, search, deadlineReport, listBoard, detail, calendar, lists, lookup, listRecord, exportFile, feedback,
+  digest, latestDigest,
   attachmentPart, reading, exportPreview, advisorReading,
   AGREED_KEY, forgetAgreed, me, agree, deleteMe, myFollows, createFollow, deleteFollow, seenFollow, followNew, mySubscriptions,
   myData, renameFollow, deleteFeedback, deleteSubscription,

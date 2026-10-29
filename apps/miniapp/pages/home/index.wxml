@@ -153,4 +153,7 @@
     <view class="link footer-link" bindtap="goCoverage">覆盖说明 ›</view>
   </view>
 </view>
+<!-- 扫码打开时微信自带的关注公众号条（PR #287）：微信只在扫码等场景显示，其余场景自动不显示；
+     公众号原始 ID 没配时不放（app.js 的 globalData.followBar）。每页只能放一个 -->
+<official-account wx:if="{{followBar}}" class="follow-bar"></official-account>
 <view class="tab-page-bottom"></view>

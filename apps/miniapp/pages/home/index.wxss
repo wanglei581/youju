@@ -79,6 +79,7 @@
 .entries--tools .entry-sub { font-size: 22rpx; }
 
 /* 申报季加量（D-070 ⑤）：和"你关注的条件本周有新文件"同样的浅蓝条，不用红色、不加红点 */
+.follow-bar { display: block; margin: 20rpx 24rpx 0; }
 .season { margin: 20rpx 24rpx 0; padding: 20rpx 28rpx; display: flex; align-items: center; gap: 20rpx; background: var(--brand-tint); border-radius: 24rpx; }
 .season-body { flex: 1; min-width: 0; }
 .season-title { font-size: 28rpx; font-weight: 600; line-height: 1.5; }

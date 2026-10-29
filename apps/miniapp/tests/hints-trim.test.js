@@ -13,7 +13,7 @@ const wxml = (page) => read(`pages/${page}/index.wxml`).replace(/<!--[\s\S]*?-->
 
 const WITH_NOTICE_BAR = ['about', 'advisor', 'advisor-clause', 'advisor-form', 'advisor-interpret', 'advisor-tasks', 'advisor-trial', 'ai', 'help',
   'advisor-terms', 'agreement', 'clients', 'detail', 'feedback', 'files', 'follow', 'follow-new', 'lists', 'me',
-  'my-data', 'orders', 'pass', 'report', 'search'];
+  'my-data', 'orders', 'pass', 'report', 'search', 'digest'];
 
 test('出处说明只在顶部 notice-bar 写一次：各页都有 notice-bar，页面里不再另写"第三方整理"', () => {
   assert.match(read('components/notice-bar/index.wxml'), /第三方整理 · 非政府平台 · 每条注明出处/);

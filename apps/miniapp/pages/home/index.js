@@ -84,12 +84,14 @@ Page({
     guideSteps: [],
     // 申报季加量（D-070 ⑤）提前公布的起止日期，和批量工具页同一句；没有这项活动或取不到时为空，不显示
     seasonText: '',
+    // 扫码打开时的关注公众号条（PR #287）：配了公众号原始 ID 才放，是否显示由微信按场景决定
+    followBar: false,
   },
 
   onLoad() {
     if (api.watchStartup) api.watchStartup(this);
-    const { statusBarHeight, navHeight, menuWidth } = getApp().globalData;
-    this.setData({ statusBarHeight, navHeight, menuWidth, guide: !guideClosed(), guideSteps: guideSteps(this.data.tools) });
+    const { statusBarHeight, navHeight, menuWidth, followBar } = getApp().globalData;
+    this.setData({ statusBarHeight, navHeight, menuWidth, followBar: Boolean(followBar), guide: !guideClosed(), guideSteps: guideSteps(this.data.tools) });
     this.lastShow = Date.now();
     this.reload();
   },

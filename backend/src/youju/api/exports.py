@@ -30,7 +30,13 @@ from youju.config import get_settings
 from youju.crawler.urls import public_url
 from youju.db import get_session
 from youju.dedup import canonical_ids, groups_for
-from youju.export_notes import DEADLINE_HEADER, DISCLAIMER, SEARCH_NOTICE, add_excel_notes
+from youju.export_notes import (
+    DEADLINE_HEADER,
+    DISCLAIMER,
+    SEARCH_NOTICE,
+    add_excel_notes,
+    official_account_notice,
+)
 from youju.issuer import normalize_issuer
 from youju.models import Document, DocumentDeadline, DocumentDetail, DocumentField, Source
 from youju.takedown import available_condition
@@ -486,6 +492,9 @@ def _docx(items: list[ExportItem], stamp: str, excerpts: bool = False) -> bytes:
     book.add_paragraph(_notice(excerpts))
     book.add_paragraph(DISCLAIMER)
     book.add_paragraph(SEARCH_NOTICE)
+    notice = official_account_notice()
+    if notice:
+        book.add_paragraph(notice)
     book.add_paragraph(f"导出时间（北京时间）：{stamp}")
     sources = book.add_table(rows=1, cols=6)
     for cell, title in zip(

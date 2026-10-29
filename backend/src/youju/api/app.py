@@ -39,6 +39,7 @@ from youju.api import weekly as weekly_api
 from youju.api.advisor import router as advisor_router
 from youju.api.attachments import router as attachments_router
 from youju.api.chat import router as chat_router
+from youju.api.digest import router as digest_router
 from youju.api.exports import router as exports_router
 from youju.api.me import router as me_router
 from youju.api.pay import push_router
@@ -96,6 +97,7 @@ app.include_router(chat_router)
 app.include_router(exports_router)
 app.include_router(me_router)
 app.include_router(attachments_router)
+app.include_router(digest_router)
 app.include_router(readers_router)
 
 app.include_router(pay_router)
@@ -244,10 +246,12 @@ ADMIN_READ_PATHS = frozenset(
         "/api/v1/reports/lists",
         "/api/v1/lists/recent",
         "/api/v1/lists/lookup",
+        # 本期清单：公众号文章点进来的第一屏（PR #287）
+        "/api/v1/digests/latest",
         "/api/v1/lists/record",
     }
 )
-ADMIN_READ_DOCUMENT = re.compile(r"/api/v1/documents/\d+")
+ADMIN_READ_DOCUMENT = re.compile(r"/api/v1/(?:documents|digests)/\d+")
 
 
 def _admin_read(request: Request, path: str) -> bool:

@@ -34,6 +34,8 @@ const PAY_PAGES = ['pass', 'orders'].map(p => `pages/${p}/index`);
 // AI 板块（D-075，10/19 创始人定）：板块首页和使用帮助随完整版。底栏第 5 项是板块首页，
 // 自定义底栏只在 api 说 AI 对这个人开着时才画出来，关着时用户看到的还是四栏
 const AI_SECTION_PAGES = ['ai', 'help'].map(p => `pages/${p}/index`);
+// 公众号"本期清单"页（公众号方案 PR #287 第 3 件事，10/18 创始人同意）：从公众号周报和"我的 → 本周周报"进入
+const GZH_PAGES = ['digest'].map(p => `pages/${p}/index`);
 // 过审版加 AI（D-098，10/26 创始人定"这次提审就带上 AI"）：首发 16 页加 AI 首页、解读、对照、我的记录、投诉举报、使用帮助，
 // 底栏五格（最后一格 AI）；不带工具中心、批量工具、购买、订单页面
 const FIRST_AI_PAGES = ['ai', 'advisor-interpret', 'advisor-clause', 'advisor-tasks', 'complaint', 'help'].map(p => `pages/${p}/index`);
@@ -73,7 +75,7 @@ function pagesFor(profile) {
   if (!PROFILES.includes(profile)) throw new Error('参数不支持');
   const complete = profile === 'complete-candidate' || profile === 'complete-release';
   if (profile === 'first-release-ai') return FIRST_PAGES.concat(FIRST_AI_PAGES);
-  return profile === 'first-release' ? FIRST_PAGES.slice() : FIRST_PAGES.concat(AI_PAGES, complete ? DATA_PAGES.concat(PAY_PAGES, AI_SECTION_PAGES) : []);
+  return profile === 'first-release' ? FIRST_PAGES.slice() : FIRST_PAGES.concat(AI_PAGES, complete ? DATA_PAGES.concat(PAY_PAGES, AI_SECTION_PAGES, GZH_PAGES) : []);
 }
 
 function hasPlaceholder(value) {
@@ -111,7 +113,7 @@ function inspect({ legal, config, app, project, toolTerms, payTerms, mode = 'sub
   // 子包也会进上传包；未审阅的入口不能绕过主 pages 的范围检查。
   add('pages', '页面属于本次版本范围', pages.length === expected.length && new Set(pages).size === pages.length && expected.every(p => pages.includes(p))
     && !(app.subpackages || app.subPackages || []).length,
-  '核对首发16页、过审版加AI 22页、AI版21页或完整版28页（均含站内阅读与结果页；过审版加AI另含AI首页、解读、对照、我的记录、投诉和帮助；完整版另含批量工具、购买、订单、AI板块和帮助）；奖励及子包不属于本次范围');
+  '核对首发16页、过审版加AI 22页、AI版21页或完整版29页（均含站内阅读与结果页；过审版加AI另含AI首页、解读、对照、我的记录、投诉和帮助；完整版另含批量工具、购买、订单、AI板块和帮助、本期清单页）；奖励及子包不属于本次范围');
   // 底栏的页面和名字：D-067 四栏；第三格打开的是导出记录，叫"导出"（D-087，原"文件"）；完整版最后加 AI 一格（D-075）
   const tabList = (app.tabBar && app.tabBar.list) || [];
   const tabs = tabList.map(t => t.pagePath);

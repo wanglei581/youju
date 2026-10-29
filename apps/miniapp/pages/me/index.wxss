@@ -36,6 +36,7 @@
 .row { display: flex; align-items: center; gap: 24rpx; padding: 28rpx 0; border-bottom: 2rpx solid var(--line); }
 .row--last { border-bottom: 0; }
 .row-text { flex: 1; font-size: 30rpx; }
+.row-sub { flex-shrink: 0; font-size: 24rpx; color: var(--t3); }
 .row-hint { font-size: 26rpx; color: var(--t3); }
 
 .danger { color: var(--red); }
