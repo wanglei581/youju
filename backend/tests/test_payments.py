@@ -574,6 +574,29 @@ def test_complaint_on_order_without_wechat_order_id_is_accepted_and_alerted(
         assert kinds == ["sent", "duplicate"]
 
 
+def test_same_complaint_arriving_twice_at_once_alerts_once(setup_pay, session):
+    """本地没有订单的同一投诉两次推送同时到，收推送时都没看到对方、都记成 pending：
+    发告警时按事件编号再判一次，只发最早那一条（Codex #402 第 5 轮）。"""
+    summary = {"MchOrderId": "not-ours", "ComplaintId": "c-7", "alert": "pending"}
+    session.add_all(
+        [
+            PayEvent(order_id=None, kind="xpay_complaint_notify", summary=dict(summary)),
+            PayEvent(order_id=None, kind="xpay_complaint_notify", summary=dict(summary)),
+            # 别的投诉照常发
+            PayEvent(
+                order_id=None,
+                kind="xpay_complaint_notify",
+                summary={**summary, "ComplaintId": "c-8"},
+            ),
+        ]
+    )
+    session.commit()
+    alerts = []
+    assert payments.complaint_alerts(session, NOW, collect(alerts)) == 2
+    states = [e.summary["alert"] for e in session.scalars(select(PayEvent).order_by(PayEvent.id))]
+    assert states == ["sent", "duplicate", "sent"]
+
+
 def test_complaint_on_completed_order_still_goes_manual_without_a_second_alert(setup_pay, session):
     """已完成的单收到投诉照旧转人工、由转人工的告警负责（事件记 alert=manual，不单独发）；
     同一个投诉重推只记事件（duplicate）；人工单里已经有投诉原因时又来一个新投诉，单独告警一次。"""

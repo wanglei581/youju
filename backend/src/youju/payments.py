@@ -1553,7 +1553,7 @@ def note_complaint(session: Session, order: PayOrder, row: PayEvent, stamp: date
     row.summary = summary
 
 
-def repeated_complaint(session: Session, row: PayEvent) -> bool:
+def repeated_complaint(session: Session, row: PayEvent, *, earlier_only: bool = False) -> bool:
     """这条投诉事件是不是同一个投诉（ComplaintId 相同）的重推：同一订单的；
     本地查不到订单的按商户单号比。
     没有 ComplaintId 的不算重推。调用方已 flush，row 有 id。"""
@@ -1574,7 +1574,9 @@ def repeated_complaint(session: Session, row: PayEvent) -> bool:
         )
         for other in session.scalars(
             select(PayEvent).where(
-                same_order, PayEvent.kind == COMPLAINT_EVENT, PayEvent.id != row.id
+                same_order,
+                PayEvent.kind == COMPLAINT_EVENT,
+                PayEvent.id < row.id if earlier_only else PayEvent.id != row.id,
             )
         )
     )
@@ -1597,6 +1599,11 @@ def complaint_alerts(session: Session, stamp: datetime, alert) -> int:
     ).all()
     for row in rows:
         if (row.summary or {}).get("alert") != "pending":
+            continue
+        # 同一个投诉只让最早那一条发：两次重推同时到（本地没有订单时不加订单锁），收推送时的查重
+        # 可能互相看不到，这里按事件编号再判一次（Codex #402 第 5 轮）
+        if repeated_complaint(session, row, earlier_only=True):
+            row.summary = {**(row.summary or {}), "alert": "duplicate"}
             continue
         order = session.get(PayOrder, row.order_id) if row.order_id else None
         if row.order_id is None:
