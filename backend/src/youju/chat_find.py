@@ -534,9 +534,12 @@ _PERIOD_OF = {
     **dict.fromkeys(("上个月", "上月", "上一个月"), ("month", 1)),
     **dict.fromkeys(("上上个月", "上上月", "上上一个月"), ("month", 2)),
 }
-# 四位数：后面跟"年度"的不是时间；没写"年"、后面是万、元这类的是数（奖励 2000 万）
+# 四位数：后面跟"年度"的不是时间；没写"年"、后面是万、元这类的是数（奖励 2000 万），后面跟着
+# "到 5000 元"这类的也是（奖励 2000 到 5000 元）
+_AMOUNT_UNITS = "万亿元千百个家人项台套吨亩米件号户名块只批所辆次篇起%"
 _YEAR = re.compile(
-    r"(?<!\d)(\d{4})(?!\d)(?!年度)(?:年|(?![万亿元千百个家人项台套吨亩米件号户名块只批所辆次篇起%]))"
+    rf"(?<!\d)(\d{{4}})(?!\d)(?!年度)(?![到至~～\-—－]\d+(?:\.\d+)?[{_AMOUNT_UNITS}])"
+    rf"(?:年|(?![{_AMOUNT_UNITS}]))"
 )
 _YEAR_DEGREE = re.compile(r"(?<!\d)\d{4}年度")
 _FIRST_YEAR = 2000  # 往年只认 2000 年以后
@@ -1779,7 +1782,8 @@ def _join_ranges(
     （ranges，（位置, 一段））。相邻两个中间是"到、至"这类的是一段区间（Codex 10/29：原来两头当成
     两个时间，只按一头筛）：两头都换得成日期的，按早的那头的第一天到晚的那头的最后一天筛（2025 年
     到 2026 年 ＝ 2025 年 1 月 1 日到今天，上周到本周 ＝ 上周一到今天，反着写的一样）；有一头换不成
-    的两头都不按它筛，最后一个值为真（加 time_word）。"""
+    的两头都不按它筛，最后一个值为真（加 time_word）。连着几段的（2024 年到 2025 年到明年）整段
+    同样算。"""
     windows: set[str] = set()
     past: list[tuple[int, int]] = []
     ranges: list[tuple[int, dict[str, str]]] = []
@@ -1787,17 +1791,19 @@ def _join_ranges(
     joins = {start for start, _ in _range_joins(text, found)}
     index = 0
     while index < len(found):
-        at, end, kind, value = found[index]
-        if end in joins:
-            _, _, kind_to, value_to = found[index + 1]
-            spans = [_dates(kind, value, today), _dates(kind_to, value_to, today)]
+        group = [found[index]]  # 连着的几段（2024 年到 2025 年到明年）一起算
+        while group[-1][1] in joins:
+            group.append(found[index + len(group)])
+        index += len(group)
+        at, _, kind, value = group[0]
+        if len(group) > 1:
+            spans = [_dates(kind, value, today) for _, _, kind, value in group]
             if None in spans:
                 joined = True
             else:
                 first = min(span[0] for span in spans if span)
                 last = min(max(span[1] for span in spans if span), today)
                 ranges.append((at, {"from": first.isoformat(), "to": last.isoformat()}))
-            index += 2
             continue
         if kind == "window":
             windows.add(value)
@@ -1805,7 +1811,6 @@ def _join_ranges(
             past.append((at, value))
         elif kind == "range":
             ranges.append((at, value))
-        index += 1
     return windows, past, ranges, joined
 
 
@@ -1845,7 +1850,7 @@ def parse(text: str, *, today: date, covered: Coverage) -> Parsed:
                 tokens.append((at, hit.word))
                 vague = vague or hit.end > at + len(hit.word)
                 _take(marks, at, hit.end)
-                found_times.append((at, hit.end, "none", None))  # 2025 年到 2030 年：两头都不筛
+            found_times.append((at, hit.end, "none", None))  # 2025 年到 2030（年）：两头都不筛
             continue
         vague = vague or hit.rough
         item: tuple[str, Any] = ("none", None)
