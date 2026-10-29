@@ -14,9 +14,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from functools import cached_property
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -31,19 +32,89 @@ CONFIG_BODY = "body-v1"  # 不读附件
 CONFIG_ATTACH = "attach-v1"  # 读附件（附件读入第二步用；取舍规则改了就升版本）
 
 BODY = "body"  # 正文来源的 key
+BEIJING = ZoneInfo("Asia/Shanghai")  # "附件取于"按北京时间的日期写
+# 读的时候挑中的是内容一样的另一个附件（替代，问一问开发设计第六节第 3 条"只更新显示"②④）：原句
+# 出处、读的范围里"读了""没读完"的附件名称后面都接这一句。不说原来那份为什么不用（打不开、不在
+# 列表里、现在读不到都是这一句，Codex 第 63 轮、复核 #406）
+SUBSTITUTE = "（回答时读的是另一份内容相同的附件）"
+
+
+@dataclass(frozen=True)
+class AttachmentRef:
+    """一个附件现在的样子（Content.attachments、SourceText.attachments 用；问一问开发设计第十一节，
+    Codex 第 61 轮）。读的时候拼出处、挑"站内阅读"打开哪个、判断回答还对不对得上都看它（第六节
+    第 3 条"只更新显示"⓪到⑤）。"""
+
+    id: int  # 在详情页附件列表里的编号（document_attachments.id）
+    n: int  # "附件 N"：现在在详情页附件列表里的位置（从 1 起，每次取内容时现算）
+    name: str  # 现在的名称
+    # 现在的内容版本（写法同 SourceText.version 的附件那种）；还没取到、取不出文字的为 None：
+    # 不知道，不算变了也不算没变
+    version: str | None
+    readable: bool  # 现在能不能在站内打开（同站内阅读的判断）
+    checked_at: datetime | None = None  # 最后一次从原网站核对的时间（同内容的附件各有各的）
+
+    @property
+    def label(self) -> str:
+        return f"附件 {self.n}《{self.name}》"
 
 
 @dataclass(frozen=True)
 class SourceText:
-    """一个来源：正文，或者（以后）一个附件。逐字核对只在来源的 text 里找。"""
+    """一个来源：正文，或者（以后）一份附件内容。逐字核对只在来源的 text 里找。
 
-    key: str  # "body"；附件 "att-<内容 SHA-256 前 12 位>"
-    label: str  # "正文"；"附件 2《申报书》"
+    内容一样的几个附件只读一次、只交给模型一次，是同一个来源，都记在 attachments 里（附件读入方案
+    的"附件 → 内容版本 → 文字"，Codex 第 39 轮）。出处名称（label）、"站内阅读"入口、"附件取于"
+    的日期用同一个附件（shown_id）：现在能站内打开的第一个，一个都打不开就是第一个（Codex 第 40、
+    61 轮：名称用一个、入口开另一个，用户点出处会进到另一份）。这几样都由 attachments 现算，对不上
+    的写法写不出来。"""
+
+    key: str  # "body"；附件 "att-<内容 SHA-256 前 12 位>"：只随内容变，不随位置、名称、链接变
     version: str  # 正文：原文指纹（同原来的 body_hash）；附件："<内容 SHA-256>:<取文字的规则版本>"
     text: str  # 遮过号码的全文
-    attachment_id: int | None = None  # 附件在详情页列表里的编号；正文为 None
-    readable: bool = True  # 附件现在能不能在站内打开；正文为 True
-    checked_at: datetime | None = None  # 附件最后一次从原网站核对的时间；正文为 None
+    # Content.attachments 里现在的版本等于这份内容的那几个，按现在在详情页附件列表里的位置排；
+    # 正文为空
+    attachments: tuple[AttachmentRef, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "attachments", tuple(sorted(self.attachments, key=lambda a: a.n)))
+
+    @property
+    def attachment_ids(self) -> tuple[int, ...]:
+        return tuple(a.id for a in self.attachments)
+
+    @property
+    def shown(self) -> AttachmentRef | None:
+        """出处名称和"站内阅读"入口用的那个附件；正文为 None。"""
+        return next((a for a in self.attachments if a.readable), None) or next(
+            iter(self.attachments), None
+        )
+
+    @property
+    def shown_id(self) -> int | None:
+        shown = self.shown
+        return shown.id if shown is not None else None
+
+    @property
+    def readable(self) -> bool:
+        """shown_id 那一个现在能不能在站内打开；正文为 True（附件来源一个附件都没有的为 False）。"""
+        shown = self.shown
+        return self.key == BODY if shown is None else shown.readable
+
+    @property
+    def label(self) -> str:
+        """出处名称：正文写"正文"；附件是 shown_id 那一个的"附件 2《申报书》"。"""
+        shown = self.shown
+        if shown is not None:
+            return shown.label
+        return "正文" if self.key == BODY else ""
+
+    @property
+    def checked_at(self) -> datetime | None:
+        """shown_id 那一个最后一次从原网站核对的时间（"附件取于"用，日期和名称是同一个附件）；
+        正文为 None。"""
+        shown = self.shown
+        return shown.checked_at if shown is not None else None
 
 
 @dataclass(frozen=True)
@@ -70,6 +141,9 @@ class Unread:
     # 附件在详情页附件列表里的编号（DocumentAttachment.id）：按编号对、不按顺序对，
     # 改名、换顺序也对得上；只读了一部分的正文为 None（问一问开发设计第十一节；Codex 第 8 轮）
     attachment_id: int | None = None
+    # 只读了一部分时它属于哪一份内容（SourceText.key）：是附件的，"没读完"的名称和入口用读的时候
+    # 给这份内容挑出来的那个附件；是正文的照正文写；整个没读的为 None（Codex 复核 #406）
+    source: str | None = None
 
 
 @dataclass(frozen=True)
@@ -106,7 +180,7 @@ class Texts:
         """按快照里存的正文段落重建（原来 validate 的做法：段与段之间的空隙补换行）。"""
         body = interpret.paragraph_body(paragraphs)
         return cls(
-            sources=(SourceText(key=BODY, label="正文", version="", text=body),),
+            sources=(SourceText(key=BODY, version="", text=body),),
             segments=tuple(
                 Segment(sid=p["pid"], source=BODY, text=p["text"], start=p["start"], end=p["end"])
                 for p in paragraphs
@@ -140,6 +214,10 @@ class Content:
     partial: bool = False  # 有段落因为超出字数没读（读附件以后才会有）
     attachments_total: int = 0  # 详情页列出的附件一共几个（含没读的）
     config: str = CONFIG_BODY
+    # 现在详情页附件列表里的所有附件（读了的、没读的），按位置排：读的时候按编号查"还在不在列表里、
+    # 现在是什么版本、能不能站内打开"（第六节第 3 条"只更新显示"⓪到⑤）。只读正文时（附件读入第二步
+    # 以前）没有附件来源，用不到，为空
+    attachments: tuple[AttachmentRef, ...] = ()
 
     @property
     def sources(self) -> tuple[SourceText, ...]:
@@ -160,26 +238,66 @@ class Content:
             if s.source == BODY
         ]
 
-    def scope_text(self) -> str:
-        """读的范围，给用户看。读附件时（CONFIG_ATTACH）的说法由附件读入第二步定（要加附件取于
-        哪天、没读的原因），在那之前不给用户看。附件数按详情页列出的（本份通知自己的附件）。"""
+    def scope_text(self, picked: dict[str, tuple[AttachmentRef, bool]] | None = None) -> str:
+        """读的范围，给用户看。附件数按详情页列出的（本份通知自己的附件）。
+
+        读附件时（CONFIG_ATTACH）每份附件内容写一个附件的名称，后面接"（附件取于 10 月 18 日）"，
+        名称和日期是同一个附件。picked：读已有回答时，按那条回答存的 sourceAttachments 给每份附件
+        内容挑好的附件（{来源 key: (附件, 是不是替代)}，ask._pick，和原句出处是同一个；同一份现在的
+        内容，不同回答当时读的附件可能不一样，各按各的，Codex 复核 #406），替代的名称后面接
+        SUBSTITUTE；出回答那一刻不传，用 shown_id 那一个。没读的原因怎么写由附件读入第二步定
+        （D-085 的 excluded 还没有说法），在那之前不给用户看。"""
         if self.config == CONFIG_BODY:
             if not self.attachments_total:
                 return "读了：正文（这份通知没有附件）"
             return "只读了正文，附件没读"
-        read = "、".join(s.label for s in self.sources)
+        read = "、".join(_read_label(s, (picked or {}).get(s.key)) for s in self.sources)
         if not self.unread:
             return f"读了：{read}"
-        unread = "、".join(u.label for u in self.unread)
+        unread = "、".join(unread_label(u, picked) for u in self.unread)
         return f"读了：{read}；没读：{unread}"
 
     def versions(self) -> dict:
-        """追问和读回答时核对内容变没变用。"""
+        """追问和读回答时核对内容变没变用。只放内容，不放附件编号：同内容的附件加一个、减一个
+        不算内容变了（Codex 第 63 轮）。"""
         return {
             "config": self.config,
             "sources": {s.key: s.version for s in self.sources},
             "segments": interpret.digest([(s.sid, s.text) for s in self.segments]),
         }
+
+    def source_attachments(self) -> dict[str, list[int]]:
+        """{附件来源的 key: 这份内容这时对应的附件编号}：跟回答一起存成 sourceAttachments（读了
+        没引用的、没找到的回答里也有），读的时候判断"记下的附件内容换了没有"（第六节第 3 条
+        "只更新显示"⓪，Codex 第 62、63 轮）。不进版本摘要。"""
+        return {s.key: list(s.attachment_ids) for s in self.sources if s.attachments}
+
+
+def unread_label(unread: Unread, picked: dict[str, tuple[AttachmentRef, bool]] | None) -> str:
+    """没读的写法：整个没读的写它自己的名称；只读了一部分的接上没读的那部分（"第 41 段以后"），
+    是附件的用 picked 里给这份内容挑出来的那个附件的名称（替代的接 SUBSTITUTE，和"读了"里的是
+    同一个；复核 #406），是正文的、没给 picked 的照它自己的名称。"""
+    if not unread.part:
+        return unread.label
+    chosen = (picked or {}).get(unread.source) if unread.source != BODY else None
+    if chosen is None:
+        return f"{unread.label}{unread.part}"
+    attachment, replaced = chosen
+    return f"{attachment.label}{SUBSTITUTE if replaced else ''}{unread.part}"
+
+
+def _read_label(source: SourceText, picked: tuple[AttachmentRef, bool] | None) -> str:
+    """读的范围里一个来源的写法：正文写"正文"；附件写挑中的那个附件的名称（替代的接 SUBSTITUTE），
+    有核对时间的再接"（附件取于 M 月 D 日）"（北京时间）。"""
+    attachment, substitute = picked if picked is not None else (source.shown, False)
+    if attachment is None:
+        return source.label
+    text = attachment.label + (SUBSTITUTE if substitute else "")
+    if attachment.checked_at is None:
+        return text
+    day = attachment.checked_at
+    day = (day if day.tzinfo else day.replace(tzinfo=UTC)).astimezone(BEIJING)
+    return f"{text}（附件取于 {day.month} 月 {day.day} 日）"
 
 
 def _check(session: Session, doc_id: int, *, link: bool = True) -> tuple[Document, str, str, str]:
@@ -259,7 +377,7 @@ def load(session: Session, doc_id: int, *, link: bool = True) -> Content:
         document_ids=ids,
         body_id=_body_id(session, doc, ids, raw),
         texts=Texts(
-            sources=(SourceText(key=BODY, label="正文", version=interpret.digest(raw), text=body),),
+            sources=(SourceText(key=BODY, version=interpret.digest(raw), text=body),),
             segments=tuple(
                 Segment(sid=p["pid"], source=BODY, text=p["text"], start=p["start"], end=p["end"])
                 for p in paragraphs

@@ -1,8 +1,10 @@
-"""问一问提问的两条本机规则（问一问开发设计第九节第 2 条、第六节第 2 条），两个技能共用：
+"""问一问提问的本机规则（问一问开发设计第九节第 2 条、第六节第 2 条）。前两条两个技能共用：
 
 - sensitive：像不像带了号码（统一社会信用代码、手机号、身份证号、银行卡号）。像就拦下（422
   CHAT_SENSITIVE，不建行、不保存、不扣次数）。只在本机比，不发给任何人；
-- goes_to_lists：是不是在问某家企业在不在名单里。是就带去查名单页（422 CHAT_GO_LISTS）。
+- goes_to_lists：是不是在问某家企业在不在名单里。是就带去查名单页（422 CHAT_GO_LISTS）；
+- hide_numbers：问这份通知交给模型之前，把问题里的阿拉伯数字隐去（admin 交给模型时现做，存下的、
+  显示的、送微信检查的都是原话）。
 """
 
 from __future__ import annotations
@@ -105,3 +107,73 @@ def goes_to_lists(text: str) -> bool:
         any(word in compact for word in words)
         for words in (_COMPANY_WORDS, _LIST_WORDS, _ASK_WORDS)
     )
+
+
+# 隐去数字（第九节第 2 条；D-093 第五节"不把企业的财务、研发数据和客户名称交给模型"，
+# Codex 第 44–47 轮）
+HIDDEN_NUMBER = "[数字已隐去]"
+# 一串阿拉伯数字：数字中间紧挨着的小数点、千分位逗号（半角）算在里面
+_NUMBER = re.compile(r"\d+(?:[.,]\d+)*")
+# 不换的两种（完整清单）：① 序号，"第"+数字+"句、条、款、项、段、点、个"，几个序号连写的也算（用
+# "、，,和与及或"隔开，或者用"至到-~—–〜"连成范围，阿拉伯数字、中文数字可以混写："第3、4句""第 1 至
+# 3 条""第2至四句"，#408）；② 写到哪一天的日期：
+# 4 位+年+1–2 位+月+1–2 位+日/号、1–2 位+月+1–2 位+日/号，或 4 位、1–2 位、1–2 位用同一个"-"或"/"
+# 连起来。中间可以有空白；只写到年、年月的不算。日期的头尾要是整串数字的头尾：前面不紧挨着数字，
+# 也不紧挨着"数字+小数点或逗号"；用"-""/"连的，前后也不接着"-""/"和数字（隔着空白也算接着；
+# "2026-11-20-01""01- 2026-11-20"这类编号整个换，agy、Codex 第一批第 1、2 轮），小数点、逗号只有
+# 紧挨着数字才算接着（"2026-11-20，3个月""1. 2026-11-20"里的日期照旧，独立审阅第 1 轮）
+# 序号里的一串数字用原子组：半角","既是千分位逗号又是连接字，不用原子组时"第1,1,…,1吗"这种后面
+# 没接后缀的，回溯次数随逗号个数翻倍，几十个字就能卡住处理问答的 admin（独立审阅第一批第 3 轮）
+_ORDINAL = r"(?:(?>\d+(?:[.,]\d+)*)|[零〇一二三四五六七八九十两]+)"
+_KEEP = re.compile(
+    rf"第\s*{_ORDINAL}(?:\s*[、，,和与及或至到\-~—–〜]\s*{_ORDINAL})*\s*[句条款项段点个]"
+    r"|(?<!\d)(?<!\d[.,])(?:"
+    r"\d{4}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*[日号]"
+    r"|\d{1,2}\s*月\s*\d{1,2}\s*[日号]"
+    r")"
+)
+_DASH_DATE = re.compile(r"(?<!\d)\d{4}\s*([-/])\s*\d{1,2}\s*\1\s*\d{1,2}(?!\d|\s*[-/]\s*\d|[.,]\d)")
+# 前面接着"数字+连接符"（"-""/"中间可以隔着空白）：后行断言不能隔着不定长的空白，另外查。
+# 用 \Z 不用 $：$ 在末尾的换行前面也算，"1.\n2026-11-20"会被当成紧挨着（Codex 第一批第 3 轮）
+_JOINED_BEFORE = re.compile(r"(?:\d\s*[-/]\s*|\d[.,])\Z")
+
+
+def _plain_char(char: str) -> str:
+    """一个字的 NFKC；规范化以后是半角逗号、本身不是的（全角逗号等）原样留着。"""
+    plain = unicodedata.normalize("NFKC", char)
+    return char if plain == "," and char != "," else plain
+
+
+def hide_numbers(text: str) -> str:
+    """问这份通知交给模型的问题：每一串阿拉伯数字换成"[数字已隐去]"，前后的字都留着（问一问开发
+    设计第九节第 2 条的完整规则）。只有两种不换：序号（"第 3 句""第5条"）、写到哪一天的日期
+    （"2026 年 11 月 20 日""11月20号""2026-11-20"）；"第500万元""500号客户""3 个月""2026 年"
+    里的数字都换。
+
+    先 NFKC 再认（全角数字、全角空格也认得出），换的时候只换原文里那串数字对应的字，别的字一个
+    不改（"，"还是"，"）。全角逗号（规范化以后才是半角逗号的字）不当千分位逗号：中文里"3，5个"
+    是两个数，不并成一串（独立审阅第 1 轮）。用汉字写的数字（"三百人""三点五万元"）、企业名称
+    认不出来，原样留着，告知里照实写（设计稿第一节第 3 件，10/29 创始人按推荐定了，D-106 ③）。"""
+    pieces = [_plain_char(char) for char in text]
+    plain = "".join(pieces)
+    owner = [at for at, piece in enumerate(pieces) for _ in piece]  # plain 的每个字是原文第几个字
+    keep = [match.span() for match in _KEEP.finditer(plain)] + [
+        match.span()
+        for match in _DASH_DATE.finditer(plain)
+        if not _JOINED_BEFORE.search(plain, 0, match.start())
+    ]
+    out, last = [], 0
+    for match in _NUMBER.finditer(plain):
+        first, end = match.span()
+        if any(a <= first and end <= b for a, b in keep):
+            continue
+        start, stop = owner[first], owner[end - 1] + 1
+        if start < last:
+            # 这串数字的开头落在已经整个换掉的那个字里（原文一个字规范化以后有两串数字，比如"½"是
+            # "1⁄2"）：接着换到这串的末尾，后面连着的数字（"½5"的 5）不会漏
+            last = max(last, stop)
+            continue
+        out.extend((text[last:start], HIDDEN_NUMBER))
+        last = stop
+    out.append(text[last:])
+    return "".join(out)

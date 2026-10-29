@@ -228,7 +228,10 @@ def test_validate_same_as_before_without_paragraphs():
 
 def _attachment(text):
     return content.SourceText(
-        key="att-0123456789ab", label="附件 1《申报书》", version="v", text=text
+        key="att-0123456789ab",
+        version="v",
+        text=text,
+        attachments=(content.AttachmentRef(1, 1, "申报书", "v", True),),
     )
 
 
@@ -237,7 +240,7 @@ def test_locate_keeps_body_and_attachment_apart():
     att = "申报书一式三份，加盖公章。\n资助金额不超过50万元。"
     texts = content.Texts(
         sources=(
-            content.SourceText(key=content.BODY, label="正文", version="b", text=body),
+            content.SourceText(key=content.BODY, version="b", text=body),
             _attachment(att),
         ),
         segments=(
@@ -333,8 +336,13 @@ def test_locate_ask_stays_in_its_source_and_the_given_segments():
     att = "附件里写评分标准。正文第一句写申报对象。"  # 有一句和正文一模一样
     texts = content.Texts(
         sources=(
-            content.SourceText(key="body", label="正文", version="b", text=body),
-            content.SourceText(key="att-1", label="附件 1", version="a", text=att, attachment_id=5),
+            content.SourceText(key="body", version="b", text=body),
+            content.SourceText(
+                key="att-1",
+                version="a",
+                text=att,
+                attachments=(content.AttachmentRef(5, 1, "指南", "a", True),),
+            ),
         ),
         segments=(
             content.Segment("P001", "body", body[:22], 0, 22),
