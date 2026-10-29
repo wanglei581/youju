@@ -374,6 +374,13 @@ test('详情页：没核对、候选在 7 天内的那一类写"可能 7 天内�
   assert.equal(page.data.goneAll, true);
   assert.equal(findAll(root, (n) => n.attrs && n.attrs.id === 'attachments').length, 0);
   assert.equal(textOf(root).split('不再提供').length - 1, 1);
+  // 服务端万一写的是"内容在附件里"：附件卡不显示，正文卡片也不能这么说（Codex 第 8 轮）
+  doc = { ...doc, body: { status: 'none', reason: 'attachments' } };
+  page.refreshing = false; page.load(); await settle();
+  root = render('pages/detail/index.wxml', { ...page.data, loading: false });
+  assert.equal(findAll(root, (n) => n.attrs && n.attrs.id === 'body').length, 0);
+  assert.doesNotMatch(textOf(root), /内容在附件里/);
+  doc = { ...doc, body: { status: 'none', reason: 'link_gone' } };
   // 链接失效、附件却还能读：标题下不说"不再提供"，正文卡片照旧写正文为什么没有（Codex 第 6 轮）
   doc = { ...doc, attachments: [{ id: '3', name: '申报指南.pdf', ext: 'pdf', readable: true }] };
   page.refreshing = false; page.load(); await settle();
@@ -487,6 +494,25 @@ test('结果页（站内看所选文件）：空的发布状态不留两个"·"�
   const goneText = textOf(render('pages/results/index.wxml', soonPage.data));
   assert.match(goneText, /出处：某厅 · 原文链接已失效/);
   assert.doesNotMatch(goneText.split('壬')[1], /截止：/);
+  // 只看还有效的日期（Codex 第 8 轮）："原定……已延期"那条不算；今天带时刻、已经过了点的不算；只有变更的照写，不写"见原文"
+  const now = new Date();
+  const pastHour = (() => {
+    const hour = new Date(now.getTime() + 8 * 3600 * 1000).getUTCHours();
+    return hour >= 1 ? `${String(hour - 1).padStart(2, '0')}:00` : null;
+  })();
+  const parse = pageOf('pages/results/index.js', {
+    '../../utils/api.js': { exportPreview: () => Promise.resolve({ kind: 'catalogue', title: '本次所选文件目录', revision: 'r3', notice: '', generatedAt: '2026-10-29', total: 3, items: [
+      { number: 1, doc_id: '21', title: '甲', kind: '申报通知', status: '', region: '河南 · 省级', deadline: `${plusDays(20)}；原定 ${plusDays(3)} 已延期，见新通知《乙》`, date_role: '企业申报截止；推荐截止（已延期）', due_soon: true },
+      { number: 2, doc_id: '22', title: '丙', kind: '申报通知', status: '', region: '河南 · 省级', deadline: `原定 ${plusDays(3)} 已撤销，见新通知《丁》`, date_role: '企业申报截止（已撤销）', due_soon: false },
+      ...(pastHour ? [{ number: 3, doc_id: '23', title: '戊', kind: '申报通知', status: '', region: '河南 · 省级', deadline: `${plusDays(0)} ${pastHour}`, date_role: '企业申报截止', due_soon: true }] : []),
+    ] }) },
+    '../../utils/exporter.js': { exportDocs() {} },
+  });
+  parse.onLoad({ ids: '21,22,23' }); await parse.onShow();
+  const texts = parse.data.result.items.map((i) => i.deadlineText);
+  assert.ok(texts[0].endsWith('；另有一类可能 7 天内截止'), texts[0]);
+  assert.match(texts[1], /^原定 .* 已撤销，见新通知《丁》/);
+  if (pastHour) assert.ok(texts[2].endsWith('；另有一类可能 7 天内截止'), texts[2]);
 });
 
 test('AI 首页：暂时不可用、连不上时只在上面那张卡里放"联系客服"；鸿蒙手机上客服按钮不再给第二个"使用帮助"', () => {

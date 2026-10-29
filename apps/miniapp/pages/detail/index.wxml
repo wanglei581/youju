@@ -142,8 +142,9 @@
   <!-- 正文（D-097）：不满一屏的全部显示（"全文如下"），长的显示开头、在段末停（"下面是开头，全文约 N 字"）；
        去阅读页只在底栏放一个入口（阅读全文 / 阅读附件，10/29 创始人：上下两个"阅读全文"是重复），都读不了时不显示。
        正文是程序提取的这层说明写在使用帮助里，标题只写"正文"（10/29 创始人） -->
-  <!-- 原文链接已失效的：标题下已经写了"正文和附件不再提供"，这里不再写一遍（还有能读的附件、标题下没这么写时照旧写） -->
-  <view wx:if="{{doc.body && !(goneAll && doc.body.reason === 'link_gone')}}" id="body" class="card">
+  <!-- 原文链接已失效、一个都读不了（goneAll）：标题下已经写了"正文和附件不再提供"，正文卡片不再说正文为什么没有
+       （附件卡也不显示，不能再说"内容在附件里"，Codex 第 8 轮）；名单类照旧给去查名单的入口。还有能读的附件时照旧写 -->
+  <view wx:if="{{doc.body && !(goneAll && doc.body.status !== 'list')}}" id="body" class="card">
     <view class="section-title">正文</view>
     <block wx:if="{{bodyView}}">
       <view class="body-label">{{bodyView.label}}</view>

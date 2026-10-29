@@ -19,20 +19,26 @@ function generatedTime(value) {
 const SEE_ORIGINAL = '截止时间见原文';
 const SOON = '可能 7 天内截止';
 const EXCERPT_MARK = '（机器摘录）';
+// 文件里"截止日期"一格按"；"连着写：核对过的、原文摘录的写成"2026-11-06 18:00"，已变更的写成"原定 2026-11-01 已延期，见新通知《…》"
+const DATE_AT = /^(\d{4}-\d{2}-\d{2})(?: (\d{1,2}:\d{2}))?/;
 // 没核对的那一类截止可能 7 天内到期（接口给 due_soon，和列表、详情同一口径，10/29 独立审阅）：
-// 没有日期时写"可能 7 天内截止"；写着的日期都不在 7 天内时，后面补一句，免得以为还早
+// 没有日期时写"可能 7 天内截止"；还有效的日期（不算"原定……"那几条）都不在 7 天内时，后面补一句，免得以为还早
 function deadlineText(item, now) {
   const value = String(item.deadline || '');
-  // 原文链接已失效的（接口给 link_gone）：没日期时不写"截止时间见原文"（原文已打不开），出处后面标一句
-  if (!/^\d{4}-\d{2}-\d{2}/.test(value)) return item.due_soon === true ? SOON : (item.link_gone === true ? '' : SEE_ORIGINAL);
+  // 一个日期都没写的（没核对、没写明）只写一句；原文链接已失效的（接口给 link_gone）不写"截止时间见原文"
+  // （原文已打不开），出处后面标一句。只有"原定……已延期"的照写，不丢变更（Codex 第 8 轮）
+  if (!/\d{4}-\d{2}-\d{2}/.test(value)) return item.due_soon === true ? SOON : (item.link_gone === true ? '' : SEE_ORIGINAL);
   const role = String(item.date_role || '');
   // 文件里日期和类型后面各标一次"（机器摘录）"，页面上只在末尾标一次"（原文摘录）"：2026-11-06 企业申报截止（原文摘录）
   const excerpt = value.includes(EXCERPT_MARK) || role.includes(EXCERPT_MARK);
   const kind = role.split(EXCERPT_MARK).join('');
   const text = `${value.split(EXCERPT_MARK).join('')}${kind ? ` ${kind}` : ''}${excerpt ? '（原文摘录）' : ''}`;
   if (item.due_soon !== true) return text;
-  const near = (value.match(/\d{4}-\d{2}-\d{2}/g) || []).some((iso) => {
-    const days = daysUntil(iso, now);
+  // 带时刻的按时刻算（当天过了点就算已截止）
+  const near = value.split('；').some((part) => {
+    const at = DATE_AT.exec(part.split(EXCERPT_MARK).join('').trim());
+    if (!at) return false;
+    const days = daysUntil(at[1], now, at[2]);
     return days >= 0 && days <= 7;
   });
   return near ? text : `${text}；另有一类${SOON}`;
