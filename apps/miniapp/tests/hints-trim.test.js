@@ -55,7 +55,7 @@ test('和具体数据挂钩的准确性说明、隐私说明照旧保留', () =>
   const RULE = '城市选“全部”查全省；区县选“全部”只查这个市的市级来源，直辖市查整个直辖市。';
   const keep = {
     // 详情页：状态标签、页底出处里的"以原文为准"、"不判断能否申报"、不提供填报入口
-    detail: ['<view wx:else class="due-unverified">截止时间见原文</view>', '以上要点由有据按原文逐条整理，{{doc.checked}} 核对。', '有据不判断能否申报',
+    detail: ["<view wx:else class=\"due-unverified\">{{item.soon ? '可能 7 天内截止' : '截止时间见原文'}}</view>", '截止日期 {{doc.checked}} 按原文核对。', '有据不判断能否申报',
       '内容以原文为准；申报请在主管部门的申报系统办理，有据不提供填报入口。', '数据说明 ›'],
     // 截止页：页底是"截止日期怎么看 ›"；包里没有使用帮助时照旧写那一句
     report: ['截止日期怎么看 ›', '截止日期以原文为准。', '截止时间见原文', '7 天内到期的只列人工核对过的日期', '不代表当地没有通知', RULE],
@@ -82,7 +82,9 @@ test('和具体数据挂钩的准确性说明、隐私说明照旧保留', () =>
     const note = textOf(findAll(root, hasClass('source-note'))[0]);
     assert.equal((textOf(root).match(/以原文为准/g) || []).length, 1, checked || '没有核对日期');
     assert.match(note, /内容以原文为准；申报请在主管部门的申报系统办理，有据不提供填报入口。/);
-    assert.equal(note.includes('以上要点由有据按原文逐条整理'), Boolean(checked));
+    // 核对日期说的是截止；"要点"常常整张不显示，不再说"以上要点"（10/29 独立审阅）
+    assert.equal(note.includes('截止日期 10月28日 按原文核对。'), Boolean(checked));
+    assert.ok(!note.includes('以上要点'));
   }
 });
 
@@ -93,21 +95,24 @@ test('删掉的重复或没有用的提示不再出现', () => {
       '<text class="weak">以原文为准</text>', '请以原文为准', '条件可能未列全', '各版本的截止日期、报送要求可能不同', '未经人工逐字核对', '截止日期可先看', '一切以原文为准',
       '检查时已打不开。', '仅供检索参考', 'attNote',
       // 10/29 晚
-      '（自动提取', '非官方分类', '机器摘录', '截止未核对', 'body-more', '发文机关：{{doc.issuer}}', 'doc.points'],
+      '（自动提取', '非官方分类', '机器摘录', '截止未核对', 'body-more', '发文机关：{{doc.issuer}}', 'doc.points',
+      // 10/29 独立审阅第 3 轮：核对过的截止原句不再单列一张"原文摘录"卡；"原文摘录"只标机器摘出的截止；正文卡顶上那一行去掉
+      '原文摘录', 'doc.excerpt.section', '以上要点', 'bodySummary'],
     me: ['有据是第三方整理的信息工具', '不绕过', '每条都有出处', '每条都注明出处', '地市目前只收录部分城市', '区县目前只收录少数地方'],
-    home: ['有据是第三方整理的信息工具', '未重复计算', '每条都有出处', '点开看是哪些', '日期还没核对', 'soon-stale', '覆盖国家部委和'],
+    home: ['有据是第三方整理的信息工具', '未重复计算', '每条都有出处', '点开看是哪些', '日期还没核对', 'soon-stale', '覆盖国家部委和', '份可能 7 天内截止 ›', '份通知可能 7 天内截止 ›'],
+    about: ['每条都注明出处'],
     ai: ['每条都有出处', '点标题看通知全文', '我的 AI 记录'],
     help: ['每条都有出处'],
     files: ['数据说明（来源网站', '导出不是必须的', '为节省空间'],
     follow: ['就能把当前的关键词和筛选条件存下来'],
     report: ['最终以原文为准', '未收录的城市、区县会明确提示', '直辖市不选区县时也是', '机器摘录仅供参考', '请以原文为准', '只统计已收录网站的文件', '城市一栏选', '人工核对中',
-      '日期还没核对', '截止未核对', '核对过的截止　空心点：机器摘录'],
+      '日期还没核对', '截止未核对', '核对过的截止　空心点：机器摘录', '<text>截止时间见原文</text>'],
     search: ['选择器无法使用时请升级微信', '同一通知的各地转发版本合为一条', '直辖市不选区县时也是', '不重复计数', '城市一栏选', '直辖市例外', 'tagNote', "' ' + total"],
     clients: ['需要批量处理或生成 Excel', '选择器无法使用时请升级微信', '选择具体区县会替换所属城市和全省的条件', '一条一行列出来', '直辖市不选区县时也是',
       '点一下移除', '省市区选项来自微信', '城市一栏选', '非官方分类'],
     results: ['来源核对：', '变更核对：', '{{item.urls}}', '未核对：', 'item.date_role'],
     reader: ['反馈内容问题', 'page-label'],
-    'advisor-tasks': ['查看解读', '查看对照'],
+    'advisor-tasks': ['查看解读', '查看对照', '结果基于此前收录的正文，仅供参考'],
     'advisor-interpret': ['原网页可能已撤下', '可能已撤回或更正', '正文没变'],
     'advisor-clause': ['原网页可能已撤下', '可能已撤回或更正', '正文没变', '不表示当地的数据已收录'],
   };
@@ -290,4 +295,162 @@ test('查名单结果：整行可点进发布这份名单的通知，只另放"�
   assert.doesNotMatch(lists, /看发布这份名单的通知|bindtap="evidence"/);
   assert.match(lists, /<view wx:if="{{item.matched.entryToken}}" class="hit-actions">\s*<button class="hit-btn hit-btn--main" data-token="{{item.matched.entryToken}}" bindtap="record">看原名单里的这一行<\/button>/);
   assert.doesNotMatch(read('pages/lists/index.js'), /evidence\(e\)/);
+});
+
+// ---- 10/29 独立审阅第 3 轮（按本机真实数据渲染看到的） ----
+const today8 = () => new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10);
+const plusDays = (n) => new Date(Date.parse(`${today8()}T00:00:00Z`) + n * 86400000).toISOString().slice(0, 10);
+function detailOf(getDoc) {
+  return pageOf('pages/detail/index.js', {
+    '../../utils/api.js': { detail: () => Promise.resolve(JSON.parse(JSON.stringify(getDoc()))) },
+    '../../utils/subscribe.js': { remindOpen: () => false, requestOnce: () => Promise.resolve(false) }, '../../utils/reminders.js': { remindedDocs: () => Promise.resolve({}) },
+    '../../utils/consent.js': { loginOpen: () => true }, '../../utils/exporter.js': {}, '../../utils/daywatch.js': { watchDay() {}, stopDay() {} },
+    '../../utils/attachments.js': { decorate: (list) => (list || []).map((a) => ({ ...a, canOpen: !!a.readable, meta: '', action: '阅读' })) },
+  });
+}
+
+test('详情页：核对过的截止原句只在截止卡片里写一次；"原文摘录"只标机器摘出的截止，申报对象标"已核对原文"', async () => {
+  const { render, textOf, findAll, hasClass } = require('./wxml-render.js');
+  const base = { id: '9', kind: '申报通知', tags: ['申报通知'], title: '关于组织申报的通知', issuer: '某厅', date: '2026-10-28', region: '山东 · 省级', attachments: [], points: [],
+    excerpt: { section: '截止时间原文', text: '请于11月20日前报送。' }, checked: '2026-10-27',
+    fields: { audience: { text: '注册在本省的企业' } } };
+  let doc = { ...base, deadlines: [{ kind: '企业申报截止', source: 'verified', date: plusDays(20), time: null, remainingDays: 20, quote: '请于11月20日前报送。' }] };
+  const page = detailOf(() => doc);
+  page.onLoad({ id: '9' }); await settle();
+  let shown = textOf(render('pages/detail/index.wxml', { ...page.data, loading: false }));
+  assert.equal(shown.split('请于11月20日前报送。').length - 1, 1, '逐类写截止时原句只写一次');
+  assert.doesNotMatch(shown, /原文摘录/);
+  assert.match(shown, /申报对象（已核对原文）/);
+  assert.match(shown, /截止日期 2026-10-27 按原文核对。/);
+  // 旧接口（没有 deadlines、只有核对过的 deadline）：原句跟在日期下面，标"已人工核对"，也只写一次
+  doc = { ...base, kind: '政策文件', tags: ['政策文件'], deadline: { label: '截止', date: plusDays(20), time: null, verified: true, notes: [] } };
+  delete doc.deadlines;
+  page.refreshing = false; page.load(); await settle();
+  const root = render('pages/detail/index.wxml', { ...page.data, loading: false });
+  shown = textOf(root);
+  assert.equal(shown.split('请于11月20日前报送。').length - 1, 1);
+  assert.match(textOf(findAll(root, hasClass('due-card'))[0]), /已人工核对\s*原文：请于11月20日前报送。/);
+});
+
+test('详情页：没核对、候选在 7 天内的那一类写"可能 7 天内截止"；原文链接已失效的不写"截止时间见原文"、正文卡片不再写一遍', async () => {
+  const { render, textOf, findAll, hasClass } = require('./wxml-render.js');
+  const base = { id: '9', kind: '申报通知', tags: ['申报通知'], title: '关于组织申报的通知', issuer: '某厅', date: '2026-10-28', region: '河南 · 省级', attachments: [], points: [] };
+  let doc = { ...base, deadlines: [
+    { kind: '企业申报截止', source: 'unverified', date: null, time: null, remainingDays: null, quote: null, soon: true },
+    { kind: '推荐或审核截止', source: 'excerpt', date: plusDays(9), time: '18:00', remainingDays: 9, quote: '审核提交时间截止到某日18:00' },
+    { kind: '材料报送截止', source: 'unverified', date: null, time: null, remainingDays: null, quote: null },
+  ] };
+  const page = detailOf(() => doc);
+  page.onLoad({ id: '9' }); await settle();
+  let rows = findAll(render('pages/detail/index.wxml', { ...page.data, loading: false }), hasClass('dl')).map((n) => textOf(n).replace(/\s+/g, ''));
+  assert.match(rows[0], /^企业申报截止可能7天内截止$/);
+  assert.match(rows[1], /^推荐或审核截止.*原文摘录/);
+  assert.match(rows[2], /^材料报送截止截止时间见原文$/);
+  // 原文链接已失效：没日期的那几类不写"截止时间见原文"（"可能 7 天内截止"照写）；没有一条能写的就不放截止卡片
+  doc = { ...doc, link_gone: '2026-10-27', body: { status: 'none', reason: 'link_gone' } };
+  page.refreshing = false; page.load(); await settle();
+  let root = render('pages/detail/index.wxml', { ...page.data, loading: false });
+  assert.deepEqual(page.data.dls.map((r) => r.kind), ['企业申报截止', '推荐或审核截止']);
+  assert.doesNotMatch(textOf(root), /截止时间见原文/);
+  doc = { ...base, deadlines: [], deadline_state: 'none', link_gone: '2026-10-27', body: { status: 'none', reason: 'link_gone' } };
+  page.refreshing = false; page.load(); await settle();
+  root = render('pages/detail/index.wxml', { ...page.data, loading: false });
+  assert.equal(page.data.dueNote, '');
+  assert.equal(findAll(root, hasClass('due-card')).length, 0);
+  // "正文和附件不再提供"标题下写了一次，正文卡片不再写"原网页已打不开，正文暂不提供"
+  assert.equal(findAll(root, (n) => n.attrs && n.attrs.id === 'body').length, 0);
+  assert.equal(textOf(root).split('不再提供').length - 1, 1);
+  assert.doesNotMatch(textOf(root), /原网页已打不开/);
+});
+
+test('详情页：正文卡顶上不再写"正文约 N 字 · 附件 N 个"（字数下一行写着、附件下面逐个列着）', async () => {
+  const { render, textOf } = require('./wxml-render.js');
+  const doc = { id: '9', kind: '申报通知', tags: ['申报通知'], title: '关于组织申报的通知', issuer: '某厅', date: '2026-10-28', region: '云南 · 省级', points: [], deadlines: [],
+    body: { status: 'ok', text: '一、申报对象。'.repeat(200), total: 1400, truncated: false },
+    attachments: [{ id: '1', name: '申报指南.pdf', ext: 'pdf', readable: true }, { id: '2', name: '申报书.docx', ext: 'docx', readable: true }] };
+  const page = detailOf(() => doc);
+  page.onLoad({ id: '9' }); await settle();
+  const shown = textOf(render('pages/detail/index.wxml', { ...page.data, loading: false }));
+  assert.equal(page.data.bodySummary, undefined);
+  assert.doesNotMatch(shown, /正文约|都能读/);
+  assert.equal(shown.split(/全文约 \d+ 字/).length - 1, 1);
+});
+
+test('列表行：原文链接已失效的不写"截止时间见原文"；另一类可能 7 天内截止时先说这个，不写更晚或已过的日期；整行和版本行按下有反馈', () => {
+  const vm = require('node:vm');
+  const load = (doc) => {
+    let def;
+    vm.runInNewContext(read('components/doc-row/index.js'), {
+      module: { exports: {} }, Date, Math,
+      require(name) {
+        if (name === '../../utils/format.js') return require('../utils/format.js');
+        if (name === '../../utils/repost.js') return require('../utils/repost.js');
+        throw new Error(name);
+      },
+      Component(d) { def = d; }, wx: { navigateTo() {} },
+    });
+    const c = { ...def, data: { ...(def.data || {}) }, properties: {}, setData(v) { Object.assign(this.data, v); } };
+    c.observers['doc, q, today'].call(c, doc, '');
+    return c.data;
+  };
+  const base = { id: '1', kind: '申报通知', title: '关于组织申报的通知', issuer: '某厅', date: '2026-10-28' };
+  assert.equal(load({ ...base, due: null, link_gone: '2026-10-27' }).dueNote, '');
+  assert.equal(load({ ...base, due: null }).dueNote, '截止时间见原文');
+  assert.equal(load({ ...base, due: null, dueSoonUnverified: true, link_gone: '2026-10-27' }).dueNote, '可能 7 天内截止');
+  // 推荐截止 9 天后（原文摘录）、企业申报截止可能 7 天内：先说"可能 7 天内截止"，不写 9 天后那个日期和原句
+  const later = load({ ...base, due: { kind: '推荐或审核截止', source: 'excerpt', date: plusDays(9), time: null, remainingDays: 9, quote: '某日前' }, dueSoonUnverified: true });
+  assert.equal(later.due, null); assert.equal(later.excerpt, null); assert.equal(later.dueNote, '可能 7 天内截止');
+  const past = load({ ...base, due: { kind: '推荐或审核截止', source: 'verified', date: plusDays(-2), time: null, remainingDays: -2, quote: '' }, dueSoonUnverified: true });
+  assert.equal(past.due, null); assert.equal(past.dueNote, '可能 7 天内截止');
+  // 核对过的日期本身就在 7 天内：照写这个日期
+  const near = load({ ...base, due: { kind: '企业申报截止', source: 'verified', date: plusDays(3), time: null, remainingDays: 3, quote: '' }, dueSoonUnverified: true });
+  assert.equal(near.due.days, 3); assert.equal(near.dueNote, '');
+  const tpl = read('components/doc-row/index.wxml');
+  assert.match(tpl, /<view class="row [^"]*" hover-class="row--pressed"[^>]*bindtap="open"/);
+  assert.match(tpl, /class="version" hover-class="version--pressed" hover-stop-propagation[^>]*catchtap="openVersion"[\s\S]*?<t-icon name="chevron-right"/);
+  assert.match(tpl, /class="group" catchtap="toggleGroup" hover-stop-propagation/);
+  assert.match(read('components/ai-button/index.wxml'), /class="ai-chip" hover-stop-propagation catchtap="open"/);
+});
+
+test('我的记录：AI 解读、条款对照的卡片画"›"、按下变淡（整张点开）；批量工具的卡片不画（靠"站内查看结果"按钮）', () => {
+  const { render, findAll } = require('./wxml-render.js');
+  const advisor = require('../utils/advisor.js');
+  const items = [
+    advisor.taskView({ id: 1, kind: 'interpret', status: 'done', createdAt: '2026-10-29T01:00:00Z' }),
+    advisor.taskView({ id: 2, kind: 'compare', status: 'done', createdAt: '2026-10-29T01:00:00Z', hasFile: true }),
+  ];
+  assert.deepEqual(items.map((i) => i.opens), [true, false]);
+  const root = render('pages/advisor-tasks/index.wxml', { loading: false, toolsEnabled: true, items });
+  const cards = findAll(root, (n) => n.attrs && n.attrs.bindtap === 'openTask');
+  assert.deepEqual(cards.map((c) => c.attrs['hover-class']), ['task-card--pressed', 'none']);
+  assert.deepEqual(cards.map((c) => findAll(c, (n) => n.tag === 't-icon').length), [1, 0]);
+  // 卡上的按钮按下时整张卡不变淡
+  for (const name of ['readResult', 'again', 'cancel', 'remove']) assert.match(wxml('advisor-tasks'), new RegExp(`hover-stop-propagation catchtap="${name}"`));
+});
+
+test('结果页（站内看所选文件）：空的发布状态不留两个"·"；支持方式没核对时不写那一行；出处只写网站名称，去掉括号里的网址', async () => {
+  const items = [
+    { number: 1, doc_id: '904', title: '甲', kind: '申报通知', status: '', region: '河南 · 省级', support: '见原文', sites: '河南省科学技术厅（kjt.henan.gov.cn）', deadline: '见原文', date_role: '截止时间见原文' },
+    { number: 2, doc_id: '905', title: '乙', kind: '申报通知', status: '征集中', region: '山东 · 省级', support: '资金补助、奖励', sites: '甲厅（a.gov.cn）；乙局（https://b.gov.cn/）', deadline: '见原文', date_role: '截止时间见原文' },
+    { number: 3, doc_id: '906', title: '丙', kind: '政策文件', status: '', region: '国家部委', support: '—', sites: '某部（筹）（c.gov.cn）', deadline: '见原文', date_role: '截止时间见原文' },
+  ];
+  const page = pageOf('pages/results/index.js', {
+    '../../utils/api.js': { exportPreview: () => Promise.resolve({ kind: 'catalogue', title: '本次所选文件目录', revision: 'r1', notice: '', generatedAt: '2026-10-29', total: 3, items }) },
+    '../../utils/exporter.js': { exportDocs() {} },
+  });
+  page.onLoad({ ids: '904,905,906' }); await page.onShow();
+  const got = page.data.result.items;
+  assert.deepEqual(got.map((i) => i.metaText), ['申报通知 · 河南 · 省级', '申报通知 · 征集中 · 山东 · 省级', '政策文件 · 国家部委']);
+  assert.deepEqual(got.map((i) => i.supportText), ['', '资金补助、奖励', '']);
+  assert.deepEqual(got.map((i) => i.siteText), ['河南省科学技术厅', '甲厅；乙局', '某部（筹）']);
+  const { render, textOf } = require('./wxml-render.js');
+  const shown = textOf(render('pages/results/index.wxml', page.data));
+  assert.doesNotMatch(shown, / · {2}· |gov\.cn| 见原文 /);
+  assert.match(shown, /支持方式：资金补助、奖励/);
+});
+
+test('AI 首页：暂时不可用、连不上时只在上面那张卡里放"联系客服"；鸿蒙手机上客服按钮不再给第二个"使用帮助"', () => {
+  const ai = read('pages/ai/index.wxml');
+  assert.match(ai, /<view wx:if="{{gate !== 'offline' && gate !== 'paused'}}" class="help-contact"><contact-button from="ai_home" \/><\/view>/);
+  assert.match(read('components/contact-button/index.js'), /const NO_HELP_LINK = \['me', 'ai_home', 'help'\];/);
 });

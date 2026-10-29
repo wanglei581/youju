@@ -105,17 +105,16 @@ test('附件直接写能不能读（和阅读页同一个判断，D-097）：能
   assert.equal(mod.decorate([{ id: '11', readable: false, state: 'broken' }])[0].meta, '暂不能读');
 });
 
-test('正文卡顶上一行、两处入口和附件那一行能不能点，用同一个判断（canOpen）', () => {
+test('底栏入口和附件那一行能不能点，用同一个判断（canOpen）', () => {
   const { mod } = setup();
-  // 旧接口没有 readable：附件那一行能点，顶上一行和入口也按能读算，不会一边写"阅读"一边说"暂不能读"
+  // 旧接口没有 readable：附件那一行能点，底栏入口也按能读算，不会一边写"阅读"一边说"暂不能读"
+  // （正文卡顶上那一行"正文约 N 字 · 附件 N 个"10/29 去掉了：和下一行、附件列表重复）
   const legacy = mod.decorate([{ id: '10', preview: false, reason: 'pending' }]);
-  assert.equal(format.attachmentLine(legacy), '附件 1 个，能读');
   assert.deepEqual(format.readEntry({ status: 'none' }, null, legacy), { label: '阅读附件', attachment: '10' });
   const mixed = mod.decorate([
     { id: '7', readable: false, state: 'scan', stateText: '扫描件，暂不能识别文字' },
     { id: '8', readable: true, state: 'ok', stateText: '' },
   ]);
-  assert.equal(format.summaryLine({ status: 'ok', total: 3210 }, mixed), '正文约 3200 字 · 附件 2 个，1 个能读，1 个扫描件暂不能识别文字');
   assert.deepEqual(format.readEntry({ status: 'none' }, null, mixed), { label: '阅读附件', attachment: '8' });
 });
 
@@ -187,8 +186,8 @@ test('详情页：点附件交给附件模块打开，打开过程中重复点�
   assert.deepEqual(opens, [['7', '1']]);
   page.openAttachment({ currentTarget: { dataset: { index: 2 } } });
   assert.deepEqual(opens, [['7', '1'], ['9', '1']]);
-  // 正文卡顶上一行、两处同名入口：正文没有时有能读的附件叫"阅读附件"，去第一个能读的附件
-  assert.equal(page.data.bodySummary, '附件 3 个，2 个能读，1 个格式暂不支持');
+  // 底栏入口：正文没有时有能读的附件叫"阅读附件"，去第一个能读的附件（正文卡顶上那一行 10/29 去掉了）
+  assert.equal(page.data.bodySummary, undefined);
   assert.deepEqual(page.data.entry, { label: '阅读附件', attachment: '7' });
 
   const wxml = read('pages/detail/index.wxml');

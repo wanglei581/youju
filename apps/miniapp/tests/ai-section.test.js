@@ -504,7 +504,8 @@ test('AI 首页的几种情况：没同意协议先走同意（通知列表照�
   // 后台处理不了：写暂时不可用，给联系客服
   h = hubPage({ caps: ON({ available: false }) }); h.page.onShow(); await settle();
   assert.match(h.text(), /AI 暂时不可用，请稍后再试。/);
-  assert.equal(findAll(render('pages/ai/index.wxml', h.page.data), (n) => n.tag === 'contact-button').length, 2);
+  // 暂时不可用：上面那张卡里有"联系客服"，底下"用的时候遇到问题？"那张不再放第二个（10/29 独立审阅）
+  assert.equal(findAll(render('pages/ai/index.wxml', h.page.data), (n) => n.tag === 'contact-button').length, 1);
   // 全站当天的上限满了：两项都不给剩几次，写明天恢复
   h = hubPage({ caps: ON({ siteFull: true }) }); h.page.onShow(); await settle();
   assert.match(h.text(), /今天 AI 的总用量满了，明天 0 点恢复；可以先看原文。/); assert.doesNotMatch(h.text(), /今天还剩/);
@@ -559,11 +560,17 @@ test('联系客服：微信自带客服按钮，写客服管什么（10/29 起�
   // 鸿蒙版微信不支持客服按钮：一行字，给使用帮助和协议里的邮箱
   for (const platform of ['ohos', 'ohos_pc']) {
     for (const getDeviceInfo of [true, false]) {
-      const harmony = contact({ from: 'ai_home' }, { platform, getDeviceInfo });
+      const harmony = contact({ from: 'ai_result' }, { platform, getDeviceInfo });
       assert.equal(findAll(harmony.root(), (n) => n.tag === 'button').length, 0);
       assert.match(textOf(harmony.root()), /这台手机暂不能打开微信客服。可以先看使用帮助，或发邮件到 help@example\.invalid。/);
       harmony.view.help(); assert.deepEqual(harmony.wx.urls, ['/pages/help/index']);
     }
+  }
+  // AI 首页同一张卡里有"使用帮助 ›"、使用帮助页就是它自己：鸿蒙上不再给去使用帮助的入口，改给联系邮箱（10/29 独立审阅）
+  for (const from of ['ai_home', 'help']) {
+    const own = contact({ from }, { platform: 'ohos' });
+    assert.match(textOf(own.root()), /这台手机暂不能打开微信客服，可以发邮件到 help@example\.invalid。/, from);
+    assert.doesNotMatch(textOf(own.root()), /使用帮助/, from);
   }
   // "我的"页那一行
   const row = contact({ variant: 'row', from: 'me' });
@@ -1066,7 +1073,7 @@ test('Codex 第 7 轮：AI 首页用着用着后台处理不了，马上收起"A
   assert.equal((out.match(/暂时不可用/g) || []).length >= 2, true, '两项能力都写暂时不可用');
   assert.ok(out.includes('AI 暂时不可用，请稍后再试。'));
   assert.deepEqual(h.page.data.recent.map((item) => item.ai), [null], '近 7 天那几份上不放按钮');
-  assert.deepEqual(findAll(root, (n) => n.tag === 'contact-button').map((n) => n.attrs.reason), ['paused', undefined]);
+  assert.deepEqual(findAll(root, (n) => n.tag === 'contact-button').map((n) => n.attrs.reason), ['paused']);
   // 页面上还是旧的样子时点了，也不进对照页
   h.page.setData({ clauseOpen: true }); h.page.clauseLast();
   assert.deepEqual(h.navigations, []);

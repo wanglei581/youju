@@ -183,7 +183,7 @@ test('入口只放在通知详情页，绑定当前通知；其他页面不引�
     if (name === 'detail') {
       assert.match(template, /<view id="ai-entry"><ai-entry blocked="\{\{!doc\}\}" doc-id="\{\{doc.id\}\}" doc-title="\{\{doc.title\}\}" doc-url="\{\{doc.url\}\}" has-attachments="\{\{atts.length > 0\}\}" ai="\{\{doc.ai\}\}" body-status="\{\{doc.body \? doc.body.status : ''\}\}" body-total="\{\{doc.body && doc.body.total \? doc.body.total : 0\}\}" bind:attachments="toAttachments" \/><\/view>/);
       // 卡片紧跟在"要点"后面，不再浮在正文上
-      assert.ok(template.indexOf('<ai-entry') > template.indexOf('要点') && template.indexOf('<ai-entry') < template.indexOf('原文摘录'));
+      assert.ok(template.indexOf('<ai-entry') > template.indexOf('要点') && template.indexOf('<ai-entry') < template.indexOf('支持方式'));
       assert.equal(usesFab, true);
     } else {
       assert.doesNotMatch(template, /<ai-entry\b|<tool-fab\b/, route); assert.equal(usesFab, false, route);

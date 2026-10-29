@@ -26,6 +26,20 @@ function deadlineText(item) {
   const kind = role.split(EXCERPT_MARK).join('');
   return `${value.split(EXCERPT_MARK).join('')}${kind ? ` ${kind}` : ''}${excerpt ? '（原文摘录）' : ''}`;
 }
+// 文件里的写法搬到页面上要收一收（10/29 独立审阅按真实数据看到的）：空的发布状态不留两个"·"；支持方式没核对时文件里写
+// "见原文"、不是申报通知写"—"，页面上都不写这一行；出处只写网站名称，去掉括号里的网址（D-097，文件里照旧带）
+const NO_SUPPORT = ['', '见原文', '—'];
+const HOST_IN_BRACKETS = /（[^（）\u4e00-\u9fff]*\.[^（）\u4e00-\u9fff]*）/g;
+function catalogueItem(item) {
+  const support = String(item.support || '').trim();
+  return {
+    ...item,
+    deadlineText: deadlineText(item),
+    metaText: [item.kind, item.status, item.region].filter(Boolean).join(' · '),
+    supportText: NO_SUPPORT.includes(support) ? '' : support,
+    siteText: String(item.sites || '').replace(HOST_IN_BRACKETS, ''),
+  };
+}
 Page({
   data: { loading: false, error: '', result: null, current: false, saving: false, advisor: false, page: 1, nextCursor: null, changed: false, has: flags() },
   onLoad(q) {
@@ -55,7 +69,7 @@ Page({
       const next = res.nextCursor == null ? null : String(res.nextCursor);
       if (next !== null && (!next || this.cursors.slice(0, this.cursorIndex + 1).includes(next))) throw new Error('结果分页信息有误，请重试');
       this.revision = res.revision;
-      const items = this.data.advisor ? res.items : res.items.map((item) => ({ ...item, deadlineText: deadlineText(item) }));
+      const items = this.data.advisor ? res.items : res.items.map(catalogueItem);
       this.setData({ result: { ...res, items, generatedAtText: generatedTime(res.generatedAt) }, page: this.cursorIndex + 1, nextCursor: next });
     }).catch((err) => {
       if (!current()) return;

@@ -117,11 +117,11 @@ test('详情页：接口给了空的 deadlines（没抽到候选）写"截止时
   const page = detailPage(() => doc);
   page.onLoad({ id: '5' }); await flush();
   let root = render('pages/detail/index.wxml', { ...page.data, loading: false });
-  assert.deepEqual(findAll(root, hasClass('due-card')).map(flat), ['截止时间截止时间见原文']);
+  assert.deepEqual(findAll(root, hasClass('due-card')).map(flat), ['截止时间见原文']);
   doc = { ...DOC }; page.refreshing = false; page.load(); await flush();
   assert.equal(page.data.dls, null);
   root = render('pages/detail/index.wxml', { ...page.data, loading: false });
-  assert.deepEqual(findAll(root, hasClass('due-card')).map(flat), ['截止时间截止时间见原文']);
+  assert.deepEqual(findAll(root, hasClass('due-card')).map(flat), ['截止时间见原文']);
 });
 
 function deadlinePage(api, globals = {}) {
@@ -158,7 +158,8 @@ test('截止页（列表）：已核对、机器摘录分开标，摘录带原�
   const soon = findAll(root, hasClass('soon'))[0];
   assert.match(flat(soon), /^可能7天内截止2份可能快截止的通知/);
   for (const item of findAll(soon, hasClass('soon-item'))) {
-    assert.match(flat(item), /截止时间见原文$/); assert.doesNotMatch(flat(item), DIGITS);
+    // 卡头写了"可能 7 天内截止"，每条不再各写一遍"截止时间见原文"（10/29 独立审阅）
+    assert.doesNotMatch(flat(item), /截止时间见原文/); assert.doesNotMatch(flat(item), DIGITS);
   }
   // 顶栏下常驻的"机器摘录仅供参考，以原文为准"10/29 删掉（每条有标签，页底说明写一次以原文为准）
   // 页底只留去使用帮助的入口（截止日期的显示规则写在帮助里，10/29 创始人）
@@ -219,14 +220,16 @@ test('首页（D-061）：三个入口；"7 天内截止"日期只放核对过�
   assert.deepEqual(page.data.soon.map((s) => s.id), ['1']);
   let root = render('pages/home/index.wxml', { ...page.data, loading: false });
   const block = findAll(root, hasClass('soon'))[0];
-  assert.match(flat(block), /^7天内截止全部甲企业申报截止.*17:00剩2天另有4份可能7天内截止›$/);
+  // 卡底只写份数、不单独可点：卡头"全部 ›"已经去截止页（10/29 独立审阅：同一张卡两个入口去同一处）
+  assert.match(flat(block), /^7天内截止全部甲企业申报截止.*17:00剩2天另有4份可能7天内截止$/);
+  assert.equal(findAll(block, (n) => n.attrs && n.attrs.bindtap === 'goEntry').length, 1);
   assert.deepEqual(findAll(root, hasClass('entry-name')).map(textOf), ['截止', '我的客户', '查名单']);
   // 一份都没核对（10/13 线上就是这样）：照样显示这一块，只写份数、不写日期，字号放大
   res = { ...res, dueSoon: [] }; page.lastShow = 0; page.reload(); await flush();
   root = render('pages/home/index.wxml', { ...page.data, loading: false });
   const only = findAll(root, hasClass('soon'));
   assert.equal(only.length, 1);
-  assert.equal(flat(only[0]), '7天内截止全部4份通知可能7天内截止›');
+  assert.equal(flat(only[0]), '7天内截止全部4份通知可能7天内截止');
   assert.equal(findAll(root, hasClass('soon-foot--only')).length, 1);
   // 核对过的和没核对的都没有，才不显示
   res = { ...res, dueSoon: [], dueSoonUnverifiedTotal: 0 }; page.lastShow = 0; page.reload(); await flush();

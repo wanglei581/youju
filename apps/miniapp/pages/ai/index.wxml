@@ -110,7 +110,8 @@
 
   <view class="card help">
     <view class="card-head"><text class="card-title">用的时候遇到问题？</text></view>
-    <view class="help-contact"><contact-button from="ai_home" /></view>
+    <!-- 暂时不可用、连不上时上面那张卡里已有"联系客服"，这里不再放第二个 -->
+    <view wx:if="{{gate !== 'offline' && gate !== 'paused'}}" class="help-contact"><contact-button from="ai_home" /></view>
     <view class="help-links">
       <text class="link" bindtap="help" aria-role="link">使用帮助 ›</text>
       <text class="link" bindtap="report" aria-role="link">投诉举报 ›</text>

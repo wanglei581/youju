@@ -240,38 +240,9 @@ function opening(body) {
   return { text: shown, full: false, label: `下面是开头，${listHidden ? '正文' : '全文'}约 ${aboutChars(total)} 字` };
 }
 
-// 附件读不了时正文卡顶上那一行的短说法；别的原因看附件列表里每个附件后面写的
-const SHORT = {
-  scan: '扫描件暂不能识别文字',
-  pending: '新附件一般半天内可读',
-  format: '格式暂不支持',
-};
-
 // 能不能读：详情页传的是 attachments.decorate 过的（canOpen，和附件那一行能不能点一致），没有时看 readable
 function canRead(a) {
   return typeof a.canOpen === 'boolean' ? a.canOpen : a.readable === true;
-}
-
-// "附件 3 个，2 个能读，1 个扫描件暂不能识别文字"
-function attachmentLine(atts) {
-  const list = atts || [];
-  if (!list.length) return '';
-  const ok = list.filter(canRead).length;
-  if (ok === list.length) return `附件 ${list.length} 个，${list.length > 1 ? '都' : ''}能读`;
-  const rest = list.filter((a) => !canRead(a));
-  const states = [...new Set(rest.map((a) => a.state))];
-  const why = states.length === 1 && SHORT[states[0]] ? SHORT[states[0]] : '暂不能读';
-  if (ok) return `附件 ${list.length} 个，${ok} 个能读，${rest.length} 个${why}`;
-  return `附件 ${list.length} 个，暂不能读（${why === '暂不能读' ? '原因见下面每个附件' : why}）`;
-}
-
-// 正文卡顶上那一行："正文约 3200 字 · 附件 3 个，2 个能读，1 个扫描件暂不能识别文字"
-function summaryLine(body, atts) {
-  const parts = [];
-  if (body && body.status === 'ok') parts.push(`正文约 ${aboutChars(body.total)} 字`);
-  const line = attachmentLine(atts);
-  if (line) parts.push(line);
-  return parts.join(' · ');
 }
 
 // 没正文时写的话（设计稿第三节）；名单类正文主要是名单的、个人事项的也在这里。atts：页面上列出的附件，
@@ -292,11 +263,12 @@ function goneNote(linkGone, readable) {
   if (!linkGone) return '';
   const head = `原文链接已失效（${linkGone} 检查时打不开）。`;
   if (readable) return `${head}下面是之前收录的内容，请以发文机关现在公布的为准。`;
-  return `${head}下面的要点和截止是之前收录的，请以发文机关现在公布的为准；正文和附件不再提供。`;
+  // 不点名"要点"：要点常常整张不显示（10/29 独立审阅）
+  return `${head}下面是之前收录的信息，请以发文机关现在公布的为准；正文和附件不再提供。`;
 }
 
-// 正文下面和底栏两处同名的入口（D-097）：正文只显示了开头 → "阅读全文"（去阅读页看正文）；正文已全部
-// 显示或没有正文、但有能读的附件 → "阅读附件"（去阅读页看第一个能读的附件）；都读不了 → 不显示
+// 底栏去阅读页的入口（D-097；10/29 起正文下面不再放第二个）：正文只显示了开头 → "阅读全文"（去阅读页看正文）；
+// 正文已全部显示或没有正文、但有能读的附件 → "阅读附件"（去阅读页看第一个能读的附件）；都读不了 → 不显示
 function readEntry(body, view, atts) {
   if (body && body.status === 'ok' && view && !view.full) return { label: '阅读全文', attachment: '' };
   const first = (atts || []).find(canRead);
@@ -307,5 +279,5 @@ module.exports = {
   shortTime,
   todayISO, daysUntil, monthDay, cnDate, weekday, clockText, dueTone, dueInfo, kindClass, statusClass, highlight, ISSUER_WRAP, regionText,
   deadlineNote, NOTE_UNVERIFIED, NOTE_SEE_ORIGINAL, dueView, VERIFIED_LABEL, EXCERPT_LABEL,
-  ONE_SCREEN, OPENING_MAX, aboutChars, opening, attachmentLine, summaryLine, noBodyText, goneNote, readEntry,
+  ONE_SCREEN, OPENING_MAX, aboutChars, opening, noBodyText, goneNote, readEntry,
 };

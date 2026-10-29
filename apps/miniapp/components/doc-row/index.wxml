@@ -1,6 +1,6 @@
-<!-- 整行可点进详情（10/29：标题和"查看详情"去同一处，算重复入口，去掉"查看详情"）；
-     转发版本、解读按钮用 catchtap，不会连带打开详情；勾选导出时 open 不跳转，点击照常冒泡给外面的勾选 -->
-<view class="row {{last ? '' : 'row--line'}}" bindtap="open" aria-role="link">
+<!-- 整行可点进详情（10/29：标题和"查看详情"去同一处，算重复入口，去掉"查看详情"），按下时变淡；
+     转发版本、解读按钮用 catchtap，不会连带打开详情，按它们时整行也不变淡；勾选导出时 open 不跳转，点击照常冒泡给外面的勾选 -->
+<view class="row {{last ? '' : 'row--line'}}" hover-class="row--pressed" hover-stay-time="80" bindtap="open" aria-role="link">
   <view class="head">
     <text class="tag tag--{{kindCls}}">{{doc.kind}}</text>
     <text wx:if="{{statusText}}" class="status status--{{statusCls}}">{{statusText}}</text>
@@ -21,16 +21,17 @@
     <ai-button class="meta-ai" doc-id="{{doc.id}}" doc-title="{{doc.title}}" ai="{{doc.ai}}" selecting="{{selecting}}" bind:toggle="aiToggle" />
   </view>
   <!-- 转发版本：同一份部里通知的其他地方版本，各自的截止和原文在各自的详情里 -->
-  <view wx:if="{{groupText}}" class="group" catchtap="toggleGroup" aria-role="button" aria-expanded="{{groupOpen}}">
+  <view wx:if="{{groupText}}" class="group" catchtap="toggleGroup" hover-stop-propagation aria-role="button" aria-expanded="{{groupOpen}}">
     <text>{{groupText}}</text>
     <t-icon name="{{groupOpen ? 'chevron-up' : 'chevron-down'}}" size="28rpx" />
   </view>
   <view wx:if="{{groupText && groupOpen}}" class="versions">
-    <view wx:for="{{doc.group.items}}" wx:key="id" class="version" data-id="{{item.id}}" catchtap="openVersion" aria-role="link" aria-label="{{item.label}}：{{item.issuer}}">
+    <view wx:for="{{doc.group.items}}" wx:key="id" class="version" hover-class="version--pressed" hover-stop-propagation data-id="{{item.id}}" catchtap="openVersion" aria-role="link" aria-label="{{item.label}}：{{item.issuer}}">
       <view class="version-main">
         <text class="version-label">{{item.label}}</text>
         <text class="version-meta">{{item.issuer}}<text wx:if="{{item.date}}"> · {{item.date}}</text></text>
       </view>
+      <t-icon name="chevron-right" size="28rpx" color="#86909C" />
     </view>
   </view>
 </view>

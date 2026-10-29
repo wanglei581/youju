@@ -124,7 +124,8 @@
     <view class="soon-title">{{item.title}}</view>
     <view class="soon-line"><text class="soon-when">{{item.kindText}} {{item.dateText}} {{item.week}}</text><view class="soon-right"><text class="pill pill--{{item.tone}}">{{item.days === 0 ? '今天截止' : '剩 ' + item.days + ' 天'}}</text><ai-button doc-id="{{item.id}}" doc-title="{{item.title}}" ai="{{item.ai}}" /></view></view>
   </view>
-  <view wx:if="{{soonUnverified}}" class="soon-foot {{soon.length ? '' : 'soon-foot--only'}}" data-url="/pages/report/index" bindtap="goEntry">{{soon.length ? '另有 ' + soonUnverified + ' 份可能 7 天内截止 ›' : soonUnverified + ' 份通知可能 7 天内截止 ›'}}</view>
+  <!-- 只写份数、不再单独可点：卡头"全部 ›"已经去截止页，同一张卡两个入口去同一处（10/29 独立审阅） -->
+  <view wx:if="{{soonUnverified}}" class="soon-foot {{soon.length ? '' : 'soon-foot--only'}}">{{soon.length ? '另有 ' + soonUnverified + ' 份可能 7 天内截止' : soonUnverified + ' 份通知可能 7 天内截止'}}</view>
 </view>
 
 <view class="card">

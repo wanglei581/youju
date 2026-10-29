@@ -1,5 +1,5 @@
 const api = require('../../utils/api.js');
-const { dueInfo, deadlineNote, dueView, cnDate, weekday, kindClass, regionText, opening, summaryLine, noBodyText, goneNote, readEntry } = require('../../utils/format.js');
+const { dueInfo, deadlineNote, dueView, cnDate, weekday, kindClass, regionText, opening, noBodyText, goneNote, readEntry } = require('../../utils/format.js');
 const { requestOnce, remindOpen } = require('../../utils/subscribe.js');
 const { remindedDocs } = require('../../utils/reminders.js');
 const { loginOpen } = require('../../utils/consent.js');
@@ -73,13 +73,22 @@ function deadlineRows(deadlines) {
       tone: dated ? (view.source === 'excerpt' ? 'normal' : (view.tone || 'normal')) : '',
       dateText: dated ? cnDate(d.date) : '',
       week: dated ? `${weekday(d.date)}${d.time ? ` ${d.time}` : ''}` : '',
+      // 没核对、候选日期在 7 天内的这一类（接口给 soon）：写"可能 7 天内截止"，和列表一致（10/29 独立审阅）
+      soon: !dated && d.soon === true,
     };
   });
 }
 
+// 原文链接已失效的：没日期的那几类不写"截止时间见原文"（原文已打不开，10/29 独立审阅），"可能 7 天内截止"照写
+function dueRows(doc) {
+  if (!Array.isArray(doc.deadlines)) return null;
+  const rows = deadlineRows(doc.deadlines);
+  return doc.link_gone ? rows.filter((r) => r.dateText || r.soon) : rows;
+}
+
 Page({
   data: { doc: null, shareReady: false, regionText: '', due: null, dueNote: '', dueDate: '', dueWeek: '', changes: [], tagClasses: [], reminded: false, error: '',
-    bodyView: null, bodySummary: '', noBody: '', entry: null, goneNote: '', supportExpanded: '', supportEvidence: '', conds: [],
+    bodyView: null, noBody: '', entry: null, goneNote: '', supportExpanded: '', supportEvidence: '', conds: [],
     atts: [], versions: [], versionLabel: '', upstream: '', points: [], has: flags() },
 
   onLoad(query) {
@@ -122,7 +131,7 @@ Page({
         const body = doc.body && doc.body.status === 'ok' ? doc.body : null;
         // 首发版（D-061）：接口给 deadlines 时按类型逐条写（企业申报、推荐、材料报送……），
         // 核对过的标"已人工核对"，机器摘录的标"原文摘录"并附原句，其余写"截止时间见原文"
-        const dls = Array.isArray(doc.deadlines) ? deadlineRows(doc.deadlines) : null;
+        const dls = dueRows(doc);
         const versions = versionRows(doc.repost);
         // 正文和附件（D-097）：能不能读以服务端为准（和阅读页同一个判断）；正文先给开头，在段末停
         const atts = attachments.decorate(doc.attachments);
@@ -133,9 +142,9 @@ Page({
           points: keyPoints(doc, { region: region || doc.region, dated: datedDue(dls, due) }),
           // 地区照录服务端写法；来源带区县而地区文字里没写时补上区县
           regionText: region,
-          // 不满一屏全部显示（"全文如下"），长的显示开头（"下面是开头，全文约 N 字"）；正文卡顶上一行写能读到什么
+          // 不满一屏全部显示（"全文如下"），长的显示开头（"下面是开头，全文约 N 字"）。正文卡顶上不再写
+          // "正文约 N 字 · 附件 N 个"：字数下一行写着、附件下面逐个列着（10/29 独立审阅：同一屏写了两遍）
           bodyView,
-          bodySummary: summaryLine(doc.body, atts),
           noBody: body ? '' : noBodyText(doc.body, atts),
           // 原网页已失效：标题下写明（正文、附件都不再给）
           goneNote: goneNote(doc.link_gone, !!body || atts.some((a) => a.canOpen)),
@@ -151,8 +160,8 @@ Page({
           upstream: upstreamLine(doc.repost),
           due,
           dls,
-          // 没有核对过的日期时只写说明（截止未核对 / 截止时间见原文），不给任何日期
-          dueNote: deadlineNote(doc),
+          // 没有能显示的日期时只写"截止时间见原文"，不给任何日期；原文链接已失效的不写（原文已打不开）
+          dueNote: doc.link_gone ? '' : deadlineNote(doc),
           dueDate: due ? cnDate(doc.deadline.date) : '',
           dueWeek: due ? `${weekday(doc.deadline.date)}${doc.deadline.time ? ` ${doc.deadline.time}` : ''}` : '',
           tagClasses: (doc.tags || []).map((t) => kindClass(t)),
@@ -169,7 +178,7 @@ Page({
       })
       .catch((err) => this.setData({
         doc: null, due: null, dueNote: '', changes: [], reminded: false, atts: [], conds: [], versions: [], versionLabel: '', upstream: '',
-        bodyView: null, bodySummary: '', noBody: '', entry: null, goneNote: '', points: [],
+        bodyView: null, noBody: '', entry: null, goneNote: '', points: [],
         takenDown: err.status === 404 && err.message === '该文件已下架',
         error: err.status === 404 ? err.message : `数据未更新：${err.message}`,
       }))
@@ -234,7 +243,7 @@ Page({
   recompute() {
     const doc = this.data.doc;
     if (!doc) return;
-    const dls = Array.isArray(doc.deadlines) ? deadlineRows(doc.deadlines) : null;
+    const dls = dueRows(doc);
     const due = dueInfo(doc.deadline);
     // 过了零点截止卡片可能少了带日期的那条（如机器摘录进了 7 天内不再写日期）：要点跟着重算（Codex 第 4 轮）
     this.setData({ due, dls, points: keyPoints(doc, { region: this.data.regionText || doc.region, dated: datedDue(dls, due) }) });

@@ -88,13 +88,14 @@
   </block>
 </view>
 
-<!-- 7 天内有候选但没核对的：照样列出标题，不写日期（D-061）；"日期还没核对"这层意思写在使用帮助里 -->
+<!-- 7 天内有候选但没核对的：照样列出标题，不写日期（D-061）；"日期还没核对"这层意思写在使用帮助里。
+     卡头写了"可能 7 天内截止"，每条不再各写一遍"截止时间见原文"（10/29 独立审阅） -->
 <view wx:if="{{soon.total && (prefilled || (!loading && !error))}}" class="card soon">
   <view class="soon-head"><text class="soon-title">可能 7 天内截止</text><text class="weak">{{soon.total}} 份</text></view>
   <view wx:for="{{soon.items}}" wx:key="id" class="soon-item" data-id="{{item.id}}" data-has="{{true}}" bindtap="open">
     <view class="soon-item-title">{{item.title}}</view>
     <view class="meta">{{item.issuer}}<text wx:if="{{item.province}}"> · {{item.province}}</text><text wx:if="{{item.city}}"> · {{item.city}}</text><text wx:if="{{item.district}}"> · {{item.district}}</text></view>
-    <view class="soon-due"><text>截止时间见原文</text><ai-button doc-id="{{item.id}}" doc-title="{{item.title}}" ai="{{item.ai}}" /></view>
+    <view class="soon-due"><ai-button doc-id="{{item.id}}" doc-title="{{item.title}}" ai="{{item.ai}}" /></view>
   </view>
   <view wx:if="{{soon.total > soon.items.length}}" class="weak soon-more">只列出前 {{soon.items.length}} 份</view>
 </view>

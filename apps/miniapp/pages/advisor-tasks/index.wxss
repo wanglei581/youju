@@ -1,1 +1,3 @@
 @import "../../utils/advisor.wxss";
+.task-head { display: flex; align-items: center; justify-content: space-between; gap: 16rpx; }
+.task-card--pressed { opacity: 0.6; }

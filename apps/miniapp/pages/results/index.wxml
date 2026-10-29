@@ -11,14 +11,14 @@
     <view wx:if="{{advisor}}" class="muted">{{result.notice}}</view>
     <view wx:if="{{!advisor}}" wx:for="{{result.items}}" wx:key="doc_id" class="result-item">
       <view class="title" data-id="{{item.doc_id}}" bindtap="detail">{{item.number}}. {{item.title}}</view>
-      <view>{{item.kind}} · {{item.status}} · {{item.region}}</view>
+      <view>{{item.metaText}}</view>
       <view>发文机关：{{item.issuer || '未提供'}}</view>
       <view>文号：{{item.doc_number || '未提供'}} · 发布日期：{{item.published || '未提供'}}</view>
       <view>截止：{{item.deadlineText}}</view>
       <view wx:if="{{item.deadline_quote}}">原句：{{item.deadline_quote}}</view>
-      <view wx:if="{{item.support}}">{{item.support}}</view>
+      <view wx:if="{{item.supportText}}">支持方式：{{item.supportText}}</view>
       <!-- 只写网站名称，不写网址（D-097；10/23 审核以"复制链接去浏览器"退回过） -->
-      <view class="muted source">出处：{{item.sites}}</view>
+      <view class="muted source">出处：{{item.siteText}}</view>
       <button data-id="{{item.doc_id}}" bindtap="read">站内阅读正文和依据</button>
     </view>
     <view wx:if="{{advisor}}" wx:for="{{result.items}}" wx:key="n" class="result-item">

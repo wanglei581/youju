@@ -145,8 +145,9 @@ test('我的客户（过审版）：顶部没有"打开工具中心"，点了也
 
 test('联系客服（过审版）：鸿蒙手机打不开客服时不给"看使用帮助"，改成去"关于有据"看联系邮箱；完整版照旧给使用帮助；"我的"页上一行就是使用帮助，那里一律改给联系邮箱（10/29）', () => {
   for (const [pages, packHelp] of [[FIRST, false], [FULL, true]]) {
-    for (const [variant, from] of [['row', 'me'], ['block', 'me'], ['block', 'help']]) {
-      const help = packHelp && from !== 'me';
+    // "我的"页上一行就是使用帮助、AI 首页同一张卡里有"使用帮助 ›"、使用帮助页就是它自己：这三处一律改给联系邮箱（10/29）
+    for (const [variant, from] of [['row', 'me'], ['block', 'me'], ['block', 'ai_result'], ['block', 'ai_home'], ['block', 'help']]) {
+      const help = packHelp && !['me', 'ai_home', 'help'].includes(from);
       const urls = [];
       const view = load('components/contact-button/index.js', { '../../content/legal.js': { operator: { email: 'help@example.invalid' } }, '../../utils/pages.js': pages },
         { wx: { getDeviceInfo: () => ({ platform: 'ohos' }), navigateTo: ({ url }) => urls.push(url) } });

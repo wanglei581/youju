@@ -1,5 +1,6 @@
 .row { padding: 28rpx 0 26rpx; }
 .row--line { border-bottom: 2rpx solid var(--line); }
+.row--pressed, .version--pressed { opacity: 0.6; }
 .head { display: flex; flex-wrap: wrap; align-items: center; gap: 12rpx; row-gap: 8rpx; }
 .region { font-size: 24rpx; color: var(--t2); white-space: nowrap; }
 .title { margin-top: 14rpx; font-size: 32rpx; font-weight: 600; line-height: 48rpx; color: var(--t1); }

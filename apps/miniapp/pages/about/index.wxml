@@ -21,7 +21,8 @@
 
 <view class="card">
   <view class="section-title">数据从哪里来</view>
-  <view class="muted plain">只收录政府网站公开发布的文件，每条都注明出处（发文机关和原网站）。遵守网站的访问规则，控制访问频率，网站拒绝程序访问的不绕过。<text wx:if="{{!has.help}}">截止日期：7 天内到期的只显示人工核对过的；8–30 天到期的，可能显示从原文摘出的日期，同时附上原文那句话，标"原文摘录"；其余不写日期，写"截止时间见原文"。</text></view>
+  <!-- "每条注明出处"顶栏写着，这里不再写（10/29 独立审阅：同一屏两遍） -->
+  <view class="muted plain">只收录政府网站公开发布的文件。遵守网站的访问规则，控制访问频率，网站拒绝程序访问的不绕过。<text wx:if="{{!has.help}}">截止日期：7 天内到期的只显示人工核对过的；8–30 天到期的，可能显示从原文摘出的日期，同时附上原文那句话，标"原文摘录"；其余不写日期，写"截止时间见原文"。</text></view>
 </view>
 
 <view wx:if="{{!cov && covFailed}}" class="card load-error"><text>收录范围没有加载出来</text><text class="link retry" bindtap="loadRange">重试</text></view>

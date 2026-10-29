@@ -16,11 +16,12 @@ test('卡片：原文链接失效的标出来，没失效的不标', () => {
   assert.equal(findAll(ok, hasClass('gone')).length, 0);
 });
 
-test('详情页：标题下先写明链接失效了、要点和截止是之前收录的、正文和附件不再提供（D-097）；页底出处不再重复（10/29），不写网址', () => {
+test('详情页：标题下先写明链接失效了、下面是之前收录的信息、正文和附件不再提供（D-097）；页底出处不再重复（10/29），不写网址', () => {
   const tree = render('pages/detail/index.wxml', { doc: { title: '关于开展申报的通知', host: 'kjt.example.gov.cn', link_gone: '2026-10-16' }, goneNote: goneNote('2026-10-16', false), loaded: true });
   const top = findAll(tree, hasClass('gone-note')).map((n) => textOf(n).trim()).join('');
   assert.match(top, /原文链接已失效（2026-10-16 检查时打不开）。/);
-  assert.match(top, /下面的要点和截止是之前收录的，请以发文机关现在公布的为准/);
+  // 不点名"要点"：要点常常整张不显示（10/29 独立审阅）
+  assert.match(top, /下面是之前收录的信息，请以发文机关现在公布的为准/);
   assert.doesNotMatch(top, /可能已撤下|可能已撤回/);
   assert.match(top, /正文和附件不再提供/);
   assert.equal(findAll(tree, hasClass('source-gone')).length, 0);
@@ -60,7 +61,9 @@ test('解读、对照结果页：原文链接失效了照常显示结果，顶�
 test('我的记录、AI 首页的记录：原文链接失效了写一句', () => {
   const item = { id: 1, kind: 'interpret', kindLabel: 'AI 解读', docTitle: '关于开展申报的通知', stateLabel: '已完成', time: '2026-10-24 10:00', status: 'done' };
   const tasks = render('pages/advisor-tasks/index.wxml', { loading: false, toolsEnabled: true, items: [{ ...item, linkGone: '2026-10-24' }, item] });
-  assert.equal(textOf(tasks).split('原文链接已失效，结果基于此前收录的正文，仅供参考').length - 1, 1);
+  // 列表上只标一句（和通知列表一样），"结果基于此前收录的正文"在点开的结果页写着（10/29）
+  assert.equal(textOf(tasks).split('原文链接已失效').length - 1, 1);
+  assert.doesNotMatch(textOf(tasks), /仅供参考/);
   const home = render('pages/ai/index.wxml', { records: [{ id: '1', kind: 'interpret', kindLabel: 'AI 解读', title: '通知', time: '2026-10-24', stateLabel: '已完成', linkGone: '2026-10-24' }] });
   assert.ok(findAll(home, hasClass('record-meta')).map((n) => textOf(n)).join('').includes('· 原文链接已失效'));
 });
