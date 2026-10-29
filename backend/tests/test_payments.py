@@ -1040,6 +1040,36 @@ def test_pay_recheck_command_opens_a_paid_order_closed_after_48_hours(
     assert row.status == "manual" and row.error.startswith("核对时微信查单状态 5（")
 
 
+def test_pay_recheck_keeps_the_pending_alert_of_a_manual_order_it_cannot_close(
+    setup_pay, session, session_factory, monkeypatch, capsys
+):
+    """负责人核对一张告警还没发出去的人工单（这里是投诉），微信说还没付款：订单照旧是人工、
+    待发的告警照旧由补单发，原因不丢；命令先打印订单上记的原因（Codex 第 8 轮）。"""
+    from youju import cli, xpay
+
+    _, settings, fake = setup_pay
+    monkeypatch.setattr(cli, "session_factory", lambda: session_factory)
+    monkeypatch.setattr("youju.config.get_settings", lambda: settings)
+    monkeypatch.setattr(
+        xpay, "wx_http", lambda: httpx.Client(transport=httpx.MockTransport(fake.handle))
+    )
+    row = order(session, create(setup_pay))
+    base = {"OpenId": "pay-user", "MchOrderId": row.out_trade_no, "WxOrderId": row.wx_order_id}
+    assert push(setup_pay, {**base, "Event": "xpay_complaint_notify"}).json()["ErrCode"] == 0
+    fake.status = 1
+    assert cli.main(["pay-recheck", "--order-id", str(row.id)]) == 0
+    out = capsys.readouterr().out
+    assert f"原因：{payments.COMPLAINT_ERROR}" in out and "result=unpaid status=manual" in out
+    session.expire_all()
+    row = session.get(PayOrder, row.id)
+    assert row.status == "manual" and row.alerted_at is None
+    alerts = []
+    payments.run_payments(
+        session, settings=settings, client=fake.client, stamp=NOW, alert=alerts.append
+    )
+    assert len(alerts) == 1 and payments.COMPLAINT_ERROR in alerts[0]
+
+
 def test_pending_order_window_and_confirmed_close(setup_pay, session):
     row = order(session, create(setup_pay))
     assert run(session, setup_pay)["processed"] == 0

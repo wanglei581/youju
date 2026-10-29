@@ -1512,9 +1512,21 @@ def recheck(
     if order.status not in ("closed", "manual", "pending"):
         return "skipped"
     data = query(session, order, client)
-    # 负责人在核对：人工单视同已经告知，推送那边"告警发出去之前不结案"的限制不挡这里
-    if order.status == "manual" and order.alerted_at is None:
+    # 负责人在核对：推送那边"告警发出去之前不结案"的限制不挡这里（先记 alerted_at）；
+    # 最后还是人工单（没付款、核验不过、少见状态）的，告警照旧等补单发——人工原因可能是投诉，
+    # 不能因为核对过一次就把待发的告警吞了（Codex 第 8 轮）
+    unalerted = awaiting_alert(order)
+    if unalerted:
         order.alerted_at = stamp
+    result = _recheck(session, order, data, settings, stamp)
+    if unalerted and order.status == "manual":
+        order.alerted_at = None
+    return result
+
+
+def _recheck(
+    session: Session, order: PayOrder, data: dict, settings: Settings, stamp: datetime
+) -> str:
     if mark_refunded(session, order, data, stamp):
         return "refunded" if order.status == "refunded" else "manual"
     status = data.get("status")
