@@ -501,7 +501,7 @@ test('付款前就被微信拒了的错误（道具没发布到现网、发布�
     clock.clearTimeout(due.id);
     due.fn();
   }
-  const cases = [-15010, -15014, -15013, -15006, -15003, -15001, -15021, -4, 1001].map((errCode) => ({ errCode, fail: true }))
+  const cases = [-15010, -15014, -15013, -15006, -15001, -15021, -4, 1001].map((errCode) => ({ errCode, fail: true }))
     .concat([{ errCode: undefined, fail: false }]);
   for (const { errCode, fail } of cases) {
     const onPay = fail ? (payload) => payload.fail({ errCode, errMsg: 'requestVirtualPayment:fail' }) : () => { throw new Error('调起失败'); };
@@ -525,7 +525,7 @@ test('付款前就被微信拒了的错误（道具没发布到现网、发布�
     await flush();
     assert.equal(h.calls.filter((call) => call[0] === 'create').length, 2, String(errCode));
   }
-  for (const errCode of [-1, -5, -15015, -15022, -3, undefined]) {
+  for (const errCode of [-1, -5, -15003, -15015, -15022, -3, undefined]) {
     const h = passPage({ onPay: (payload) => payload.fail({ errCode, errMsg: 'requestVirtualPayment:fail' }) });
     await flush();
     h.page.check({ detail: { value: ['agree'] } });

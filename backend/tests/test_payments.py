@@ -960,6 +960,29 @@ def test_new_problem_on_manual_order_is_added_and_alerts_again(setup_pay, sessio
     assert payments.order_pass(session, row) is None
 
 
+def test_manual_order_is_not_closed_out_by_a_push_before_its_alert_is_sent(setup_pay, session):
+    """转了人工、告警还没发出去的单，推送先不自动开通：等补单把告警发出去再开通（微信会重推）——
+    不然待发的告警跟着状态一起没了，投诉没人处理（Codex 第 7 轮）。"""
+    row = order(session, create(setup_pay))
+    base = {"OpenId": "pay-user", "MchOrderId": row.out_trade_no, "WxOrderId": row.wx_order_id}
+    assert push(setup_pay, {**base, "Event": "xpay_complaint_notify"}).json()["ErrCode"] == 0
+    _, settings, fake = setup_pay
+    fake.status = 2
+    assert push(setup_pay, payload(row)).json()["ErrCode"] != 0
+    session.expire_all()
+    row = session.get(PayOrder, row.id)
+    assert row.status == "manual" and payments.order_pass(session, row) is None
+    alerts = []
+    payments.run_payments(
+        session, settings=settings, client=fake.client, stamp=NOW, alert=alerts.append
+    )
+    assert len(alerts) == 1 and payments.COMPLAINT_ERROR in alerts[0]
+    assert push(setup_pay, payload(row)).json()["ErrCode"] == 0
+    session.expire_all()
+    row = session.get(PayOrder, row.id)
+    assert row.status == "completed" and payments.order_pass(session, row) is not None
+
+
 def test_pay_recheck_command_opens_a_paid_order_closed_after_48_hours(
     setup_pay, session, session_factory, monkeypatch, capsys
 ):
@@ -1008,6 +1031,13 @@ def test_pay_recheck_command_opens_a_paid_order_closed_after_48_hours(
     session.expire_all()
     assert session.get(PayOrder, unpaid.id).status == "closed"
     assert recheck("--order-id", "999999")[0] == 1
+    # 关了的单查到退款中（5）这类少见状态：不能当成已关闭了事，转人工、退出码 1（Codex 第 7 轮）
+    fake.status = 5
+    code, line = recheck("--order-id", str(unpaid.id))
+    assert code == 1 and "result=manual status=manual" in line
+    session.expire_all()
+    row = session.get(PayOrder, unpaid.id)
+    assert row.status == "manual" and row.error.startswith("核对时微信查单状态 5（")
 
 
 def test_pending_order_window_and_confirmed_close(setup_pay, session):

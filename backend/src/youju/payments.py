@@ -903,6 +903,8 @@ def accept_payment(
                 order.platform = platform(data, settings)
             escalate(order, f"微信已确认付款，但{problem}，未发货，需人工核对", stamp)
         return False
+    if not accepted and awaiting_alert(order):
+        return False
     if push is not None:
         # 推送只是"去查单"的信号，开不开通以查单为准（定时补单本来就只看查单）。
         # 原来推送字段和查单对不上就拒收：10/19 沙箱实测被拒、微信连推 6 次，
@@ -973,6 +975,8 @@ def mark_refunded(
     退款成功（RetCode 0），这时 5 也算完成。"""
     status = data.get("status")
     if not (status == 8 or (status == 5 and confirmed)):
+        return False
+    if awaiting_alert(order):
         return False
     left = data.get("left_fee")
     # 按剩余天数退的（refund_fee 小于订单金额），退完还剩"订单金额 − 退款金额"；
@@ -1426,6 +1430,13 @@ def escalate(order: PayOrder, reason: str, stamp: datetime) -> bool:
     return True
 
 
+def awaiting_alert(order: PayOrder) -> bool:
+    """转了人工、告警还没发出去的单：推送和查单先不自动结案（开通、记已退款），等补单把告警发出去
+    （一般一分钟内）再说——不然待发的告警跟着状态一起没了，投诉之类没人处理（Codex 第 7 轮）。
+    微信会重推；负责人用 youju pay-recheck 核对时不受这条限制（recheck 先记 alerted_at）。"""
+    return order.status == "manual" and order.alerted_at is None
+
+
 def flag_unconfirmed_refund(order: PayOrder, stamp: datetime) -> bool:
     """已完成（或已转人工）的订单收到退款推送、这次没核实退款：转人工、告警，返回 True。
     使用期先不动；推送重推时查单显示退完了（8），mark_refunded 照常把它记成已退款、收回使用期。"""
@@ -1501,6 +1512,9 @@ def recheck(
     if order.status not in ("closed", "manual", "pending"):
         return "skipped"
     data = query(session, order, client)
+    # 负责人在核对：人工单视同已经告知，推送那边"告警发出去之前不结案"的限制不挡这里
+    if order.status == "manual" and order.alerted_at is None:
+        order.alerted_at = stamp
     if mark_refunded(session, order, data, stamp):
         return "refunded" if order.status == "refunded" else "manual"
     status = data.get("status")
@@ -1510,10 +1524,13 @@ def recheck(
         return "closed"
     if status in (0, 1):
         return "unpaid"
-    if order.status == "pending" and flag_odd_pending(order, data, stamp):
-        return "manual"
-    accept_payment(session, order, data, settings, stamp)
-    return "paid" if order.status == "completed" else order.status
+    if status in (2, 3, 4):
+        accept_payment(session, order, data, settings, stamp)
+        return "paid" if order.status == "completed" else "manual"
+    # 退款中、退款失败等少见状态（或返回格式不对）：不能当成已关闭了事，转人工（Codex 第 7 轮）
+    name = ODD_STATUS_NAMES.get(status, "未知状态") if type(status) is int else "返回格式不对"
+    escalate(order, f"核对时微信查单状态 {status}（{name}），需人工核对", stamp)
+    return "manual"
 
 
 def run_payments(
