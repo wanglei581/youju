@@ -7,19 +7,20 @@
   <view wx:if="{{error}}" class="error">{{error}}<button bindtap="retry">重试</button></view>
   <block wx:if="{{result}}">
     <view class="muted">共 {{result.total}} {{advisor ? '行' : '份'}} · {{result.generatedAtText}}</view>
-    <view class="muted">{{result.notice}}</view>
+    <!-- 导出文件里的数据说明是给文件用的（"未核项"列等），站内不搬过来；批量工具的结果照旧写（含"未查到不代表未入选"） -->
+    <view wx:if="{{advisor}}" class="muted">{{result.notice}}</view>
     <view wx:if="{{!advisor}}" wx:for="{{result.items}}" wx:key="doc_id" class="result-item">
       <view class="title" data-id="{{item.doc_id}}" bindtap="detail">{{item.number}}. {{item.title}}</view>
-      <view>{{item.kind}} · {{item.status}} · {{item.region}}</view>
+      <view>{{item.metaText}}</view>
       <view>发文机关：{{item.issuer || '未提供'}}</view>
       <view>文号：{{item.doc_number || '未提供'}} · 发布日期：{{item.published || '未提供'}}</view>
-      <view>截止：{{item.deadline || '未核对'}} {{item.date_role}}</view>
+      <view wx:if="{{item.deadlineText}}">截止：{{item.deadlineText}}</view>
       <view wx:if="{{item.deadline_quote}}">原句：{{item.deadline_quote}}</view>
-      <view wx:if="{{item.support}}">{{item.support}}</view>
-      <view wx:if="{{item.unchecked}}" class="warn">{{item.unchecked}}</view>
-      <view>来源核对：{{item.source_checked || '未核对'}} · 截止核对：{{item.deadline_checked || '未核对'}} · 变更核对：{{item.change_checked || '未核对'}}</view>
-      <view class="muted source">出处：{{item.sites}}<text user-select>{{item.urls}}</text></view>
-      <button data-id="{{item.doc_id}}" bindtap="read">站内阅读正文和依据</button>
+      <view wx:if="{{item.supportText}}">支持方式：{{item.supportText}}</view>
+      <!-- 只写网站名称，不写网址（D-097；10/23 审核以"复制链接去浏览器"退回过） -->
+      <view class="muted source">出处：{{item.siteText}}<text wx:if="{{item.link_gone}}"> · 原文链接已失效</text></view>
+      <!-- 原文链接已失效的：正文、附件都不再提供（D-097），不给去阅读页的按钮（和详情页不给"阅读全文"一样，10/29 独立审阅） -->
+      <button wx:if="{{!item.link_gone}}" data-id="{{item.doc_id}}" bindtap="read">站内阅读正文和依据</button>
     </view>
     <view wx:if="{{advisor}}" wx:for="{{result.items}}" wx:key="n" class="result-item">
       <view class="title">{{item.n + 1}}. {{item.title}}</view>
@@ -28,5 +29,6 @@
     </view>
     <view class="pagination"><button wx:if="{{page > 1}}" bindtap="previous" disabled="{{saving}}">上一页</button><text>第 {{page}} 页</text><button wx:if="{{nextCursor !== null}}" bindtap="next" disabled="{{saving}}">下一页</button></view>
     <button bindtap="save" loading="{{saving}}" disabled="{{saving}}">{{advisor ? '另存 Excel（可选）' : '另存 Excel / Word（可选）'}}</button>
+    <view wx:if="{{has.help && !advisor}}" class="help-link"><text class="link" bindtap="help" aria-role="link">数据说明 ›</text></view>
   </block>
 </view>

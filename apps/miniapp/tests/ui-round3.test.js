@@ -13,7 +13,7 @@ function load(file, deps = {}, globals = {}) {
   const module = { exports: {} };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', file), 'utf8'), {
     module, setTimeout, clearTimeout,
-    require(name) { if (!Object.hasOwn(deps, name) && /ai-access\.js$/.test(name)) return AI_OFF; assert.ok(Object.hasOwn(deps, name), `缺少依赖 ${name}`); return deps[name]; },
+    require(name) { if (!Object.hasOwn(deps, name) && /(^|\/)pages\.js$/.test(name)) return require('./helpers/package-pages-default.js').pages; if (!Object.hasOwn(deps, name) && /ai-access\.js$/.test(name)) return AI_OFF; assert.ok(Object.hasOwn(deps, name), `缺少依赖 ${name}`); return deps[name]; },
     Page(d) { def = d; }, ...globals,
   }, { filename: file });
   return { ...def, data: JSON.parse(JSON.stringify(def.data)), setData(values) { Object.assign(this.data, values); } };
@@ -121,7 +121,8 @@ test('文件页还没导出过：一张卡片，图标、"还没有导出过"、
     ['2', '在小程序内查看结果，需要保存时再选 Excel 或 Word'],
     ['3', '导出后可转发给同事或客户'],
   ]);
-  assert.match(card[1], /<view class="pc-tip">导出不是必须的：结果在小程序内就能看完。需要在电脑上留存时，可把文件发给“文件传输助手”，再在电脑版微信里打开。<\/view>/);
+  assert.match(card[1], /<view class="pc-tip">需要在电脑上留存时，可把文件发给“文件传输助手”，再在电脑版微信里打开。<\/view>/);
+  assert.doesNotMatch(card[1], /导出不是必须的/);
 
   // 有记录时照常显示列表
   const filled = filesPage([{ id: 'a', format: 'xlsx', label: '高企名单', count: 3, size: 2048, at: '2026-10-06T08:00:00+08:00', path: '/x' }]);
@@ -132,7 +133,7 @@ test('文件页还没导出过：一张卡片，图标、"还没有导出过"、
 
 test('文件页：只存在这台手机上的那句在列表下方、页面最后；"导出带数据说明"那句已去掉（10/17 创始人：去掉没用的提示）', () => {
   const template = wxml('files');
-  const storage = '<view class="tip">导出记录只保存在这台手机上；为节省空间只保留最近一份文件，更早的可按当前数据重新查看并保存。</view>';
+  const storage = '<view class="tip">导出记录只保存在这台手机上，只保留最近一份文件；更早的可按当前数据重新查看并保存。</view>';
   const afterCards = template.slice(template.indexOf('<view wx:else class="card empty">'));
   assert.ok(afterCards.indexOf(storage) > 0);
   assert.ok(!template.includes('数据说明（来源网站'));

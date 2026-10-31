@@ -28,7 +28,7 @@ function load(file, api, wx = {}, extra = {}) {
   let definition; const module = { exports: {} };
   const dependencies = { '../../utils/regions.js': require('../utils/regions.js'), '../../utils/api.js': api, '../../utils/ai-clause.js': clause,
     '../../utils/tool-context.js': context, '../../utils/format.js': format, '../../utils/advisor.js': advisor,
-    '../../utils/boost.js': require('../utils/boost.js'), '../../utils/ai-access.js': AI_OFF, '../../utils/daywatch.js': require('./helpers/day-off.js'), ...extra };
+    '../../utils/boost.js': require('../utils/boost.js'), '../../utils/ai-access.js': AI_OFF, '../../utils/daywatch.js': require('./helpers/day-off.js'), '../../utils/pages.js': require('./helpers/package-pages-default.js').pages, ...extra };
   vm.runInNewContext(read(file), { module, Date, Math, Promise, setTimeout, clearTimeout,
     require: (key) => { assert.ok(Object.hasOwn(dependencies, key), key); return dependencies[key]; },
     Page: (value) => { definition = value; }, wx: { setNavigationBarTitle() {}, ...wx },
@@ -287,7 +287,8 @@ test('页面已注册，所有静态文字无禁止字样；模板闭合，样�
   assert.doesNotMatch(read('pages/advisor-clause/index.wxss'), /#[0-9a-fA-F]|gradient|text-overflow|line-clamp|iconfont/);
   assert.match(read('pages/advisor-clause/index.wxss'), /word-break: break-word/);
   const template = read('pages/advisor-clause/index.wxml');
-  assert.match(template, /bindtap="original" disabled="\{\{!docId\}\}"/); assert.match(template, /bindtap="feedback" disabled="\{\{!docId\}\}"/);
+  // 拒答卡片里不再另放"看原文"（结果顶上已有一个，10/29 去重）；"这句摘错了"没有通知编号时不能点
+  assert.equal((template.match(/bindtap="original"/g) || []).length, 2); assert.match(template, /bindtap="feedback" disabled="\{\{!docId\}\}"/);
 });
 
 test('条款对照的条目和引用也去掉 PDF 版面换行（10/13）', () => {

@@ -1,11 +1,11 @@
-<!-- 截止（D-061）：原截止雷达 + 申报日历合成一页。自定义导航：标题和返回只在蓝色顶栏里出现一次，下面一行常驻说明 -->
+<!-- 截止（D-061）：原截止雷达 + 申报日历合成一页。自定义导航：标题和返回只在蓝色顶栏里出现一次。
+     顶栏下原来常驻一句"机器摘录仅供参考，以原文为准"，10/29 删掉（每条有自己的标签，页底说明写一次"以原文为准"） -->
 <view class="top" style="padding-top: {{statusBarHeight}}px">
   <view class="nav" style="height: {{navHeight}}px">
     <!-- 从转发卡片打开（页面栈只有这一页）时左上角是"首页"，点了回首页 -->
     <view class="nav-back" bindtap="goBack" aria-role="button" aria-label="{{firstPage ? '回首页' : '返回'}}"><t-icon name="{{firstPage ? 'home' : 'chevron-left'}}" size="{{firstPage ? '40rpx' : '48rpx'}}" /></view>
     <text class="nav-title">截止</text>
   </view>
-  <view class="sub">机器摘录仅供参考，以原文为准</view>
 </view>
 <notice-bar />
 <view class="tabs" aria-role="tablist">
@@ -22,7 +22,8 @@
   <view wx:if="{{city || district}}" class="filter" bindtap="clearCity">改看全省</view>
   <picker wx:if="{{tab}}" mode="selector" range="{{depts}}" bindchange="pickDept"><view class="filter">{{dept || '不限部门'}} <t-icon name="chevron-down" size="26rpx" /></view></picker>
 </view>
-<view class="weak cached-note">省市区选项来自微信，不代表已收录；城市一栏选“全部”查全省各级来源（省、市、区县都在内）；区县一栏选“全部”只查这个市已收录的市级来源，不含区县；直辖市例外：区县一栏选“全部”时查整个直辖市（各级来源都在内）。没收录的地方查不到，不代表当地没有通知。{{cityError}}</view>
+<view wx:if="{{city || district}}" class="weak cached-note">城市选“全部”查全省；区县选“全部”只查这个市的市级来源，直辖市查整个直辖市。没收录的地方查不到，不代表当地没有通知。</view>
+<view wx:if="{{cityError}}" class="weak cached-note">{{cityError}}</view>
 <view class="switch-row">
   <text class="switch-text">只看已核对<text wx:if="{{!tab}}" class="weak">（按月看不筛部门）</text></text>
   <switch checked="{{verifiedOnly}}" color="#2A5CE0" bindchange="toggleVerified" aria-label="只看已核对" />
@@ -47,7 +48,7 @@
       </block>
     </view>
   </view>
-  <view class="weak legend">实心点：核对过的截止　空心点：机器摘录　灰点：已截止</view>
+  <view class="weak legend">实心点：已核对　空心点：原文摘录　灰点：已截止</view>
 </view>
 <view wx:if="{{!tab && sel}}" class="sel-row"><text>只看 <text class="b">{{selLabel}}</text> 截止的</text><text class="link" bindtap="clearSel">看整个月</text></view>
 <view wx:if="{{!tab && truncated}}" class="weak trunc">未截止和已截止各最多显示 1000 条。</view>
@@ -59,7 +60,7 @@
     <view wx:if="{{item.meta}}" class="meta">{{item.meta}}</view>
     <view class="deadline">
       <text wx:if="{{item.dateText}}">{{item.kindText}} {{item.dateText}} {{item.week}}</text>
-      <text wx:else>{{item.kindText}}：截止未核对，请以原文为准</text>
+      <text wx:else>{{item.kindText}}：截止时间见原文</text>
       <text wx:if="{{item.dateText}}" class="pill pill--{{item.tone}}">{{item.days < 0 ? '已截止' : item.days === 0 ? '今天截止' : '剩 ' + item.days + ' 天'}}</text>
     </view>
     <view wx:if="{{item.srcLabel}}" class="src-row"><text class="src src--{{item.source}}">{{item.srcLabel}}</text></view>
@@ -70,8 +71,9 @@
 </view>
 <view wx:if="{{!rows.length && !loading && !error && !sel}}" class="card empty">
   <view class="empty-title">{{emptyTitle}}</view>
+  <!-- 选的省份还没收录（网站不让程序访问等）：写明，免得以为这个省近期没有截止（10/29 审阅） -->
+  <view wx:if="{{uncovered}}" class="empty-sub">{{uncovered}}还没收录，暂时查不到这个地区的通知。</view>
   <block wx:if="{{!soon.total}}">
-    <view class="empty-sub">{{verifyingNote}}</view>
     <view class="link empty-link" bindtap="goSearch" aria-role="link">去搜索申报通知 ›</view>
   </block>
 </view>
@@ -86,15 +88,18 @@
   </block>
 </view>
 
-<!-- 7 天内有候选但没核对的：照样列出标题，不写日期（D-061） -->
+<!-- 7 天内有候选但没核对的：照样列出标题，不写日期（D-061）；"日期还没核对"这层意思写在使用帮助里。
+     卡头写了"可能 7 天内截止"，每条不再各写一遍"截止时间见原文"（10/29 独立审阅） -->
 <view wx:if="{{soon.total && (prefilled || (!loading && !error))}}" class="card soon">
-  <view class="soon-head"><text class="soon-title">可能 7 天内截止，日期还没核对</text><text class="weak">{{soon.total}} 份</text></view>
+  <view class="soon-head"><text class="soon-title">可能 7 天内截止</text><text class="weak">{{soon.total}} 份</text></view>
   <view wx:for="{{soon.items}}" wx:key="id" class="soon-item" data-id="{{item.id}}" data-has="{{true}}" bindtap="open">
     <view class="soon-item-title">{{item.title}}</view>
     <view class="meta">{{item.issuer}}<text wx:if="{{item.province}}"> · {{item.province}}</text><text wx:if="{{item.city}}"> · {{item.city}}</text><text wx:if="{{item.district}}"> · {{item.district}}</text></view>
-    <view class="soon-due"><text>截止未核对，请以原文为准</text><ai-button doc-id="{{item.id}}" doc-title="{{item.title}}" ai="{{item.ai}}" /></view>
+    <view class="soon-due"><ai-button doc-id="{{item.id}}" doc-title="{{item.title}}" ai="{{item.ai}}" /></view>
   </view>
   <view wx:if="{{soon.total > soon.items.length}}" class="weak soon-more">只列出前 {{soon.items.length}} 份</view>
 </view>
 
-<view class="note">7 天内到期的只写人工核对过的日期；8–30 天到期的可能是机器摘录，附原文那句话。只统计已收录网站的文件；申报请在主管部门的系统办理，以原文为准。</view>
+<!-- 截止日期的显示规则写在使用帮助里，这里只留一个入口；包里没有使用帮助（首发 16 页）时照旧写一句 -->
+<view wx:if="{{has.help}}" class="note"><text class="link" bindtap="help" aria-role="link">截止日期怎么看 ›</text></view>
+<view wx:else class="note">7 天内到期的只列人工核对过的日期；8–30 天到期的可能是原文摘录，附原文那句话。截止日期以原文为准。</view>

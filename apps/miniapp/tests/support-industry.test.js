@@ -15,7 +15,7 @@ function load(file, deps = {}, globals = {}) {
   const module = { exports: {} };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', file), 'utf8'), {
     module, setTimeout, clearTimeout,
-    require(name) { if (name === '../../utils/regions.js') return require('../utils/regions.js'); if (!Object.hasOwn(deps, name) && /ai-access\.js$/.test(name)) return AI_OFF; assert.ok(Object.hasOwn(deps, name), `缺少依赖 ${name}`); return deps[name]; },
+    require(name) { if (name === '../../utils/regions.js') return require('../utils/regions.js'); if (!Object.hasOwn(deps, name) && /(^|\/)pages\.js$/.test(name)) return require('./helpers/package-pages-default.js').pages; if (!Object.hasOwn(deps, name) && /ai-access\.js$/.test(name)) return AI_OFF; assert.ok(Object.hasOwn(deps, name), `缺少依赖 ${name}`); return deps[name]; },
     Page(d) { def = d; }, Component(d) { def = d; }, ...globals,
   }, { filename: file });
   return def ? { ...def, data: JSON.parse(JSON.stringify(def.data)), setData(values) { Object.assign(this.data, values); } } : module.exports;
@@ -50,15 +50,14 @@ test('筛选弹层有支持方式（6 项，用详情核对字段的词）和产
   assert.equal(industry.multi, true);
   assert.deepEqual(Array.from(support.options), SUPPORTS);
   assert.deepEqual(Array.from(industry.options), INDUSTRIES);
-  // 统一说明在右栏顶部（tagged 的组都显示 tagNote），选项下面只写各组特有的补充
+  // 10/29 创始人："按标题归类、仅供检索参考、非官方分类""不代表一定提供这种支持"写在使用帮助里，面板里只写各组特有的补充
   assert.equal(support.tagged, true);
   assert.equal(industry.tagged, true);
-  assert.equal(page.data.tagNote, DISCLAIMER);
-  assert.match(support.note, /不代表一定提供这种支持/);
-  assert.equal(industry.note, '一份文件可能有多个方向，也可能没有');
-  // 和详情页核对过的支持方式区分开
-  assert.match(support.note, /文件详情里的“支持方式”是核对原文后标注的/);
-  assert.match(support.note, /“征集入选”只用于筛选/);
+  assert.equal(page.data.tagNote, undefined);
+  assert.equal(industry.note, undefined);
+  assert.equal(support.note, '只含申报通知和名单');
+  const tags = require('../content/help.js').items.find((i) => i.key === 'tags').a.join('');
+  assert.ok(tags.includes(DISCLAIMER)); assert.match(tags, /不代表一定提供这种支持/);
   // 筛选弹层把说明显示在选项下面（与项目类别同一个模板）
   assert.match(read('pages/search/index.wxml'), /wx:if="{{g.note}}" class="group-note">{{g.note}}/);
 });

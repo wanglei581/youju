@@ -15,6 +15,9 @@ function load(name, api, extra = {}) {
       if (dep === '../../utils/exporter.js') return extra.exporter || {};
       if (dep === '../../utils/data-tools.js') return extra.tools || {};
       if (dep === '../../utils/reading-progress.js') return extra.progress || require('../utils/reading-progress.js');
+      if (dep === '../../utils/pages.js' && !(extra.deps && Object.hasOwn(extra.deps, dep))) return require('./helpers/package-pages-default.js').pages;
+      // 结果页按今天算"可能 7 天内截止"要用 format.js（10/29）；没另给替身时用真的
+      if (dep === '../../utils/format.js' && !(extra.deps && Object.hasOwn(extra.deps, dep))) return require('../utils/format.js');
       if (extra.deps && Object.hasOwn(extra.deps, dep)) return extra.deps[dep];
       throw new Error(dep);
     }, wx: { navigateTo: o => navigations.push(o.url), ...(extra.wx || {}) },
@@ -45,7 +48,9 @@ test('正文多页：写"正文 第 N 页 / 共 M 页"，前后翻页绑定同�
   } }, { progress: memoryProgress() });
   p.onLoad({ id: '7' }); await p.onShow();
   assert.equal(p.data.segments[0].text, '首段'); assert.equal(p.data.complete, false);
-  assert.match(textOf(render('pages/reader/index.wxml', p.data)), /正文 第 1 页 \/ 共 2 页/);
+  // 页码只在底下翻页那里写一次（10/29：上下两处页码算重复）
+  const shown = textOf(render('pages/reader/index.wxml', p.data));
+  assert.match(shown, /第 1 页 \/ 共 2 页/); assert.equal((shown.match(/第 1 页 \/ 共 2 页/g) || []).length, 1);
   await p.next(); assert.equal(p.data.page, 2); assert.equal(p.data.segments[0].text, '末段'); assert.equal(p.data.complete, true);
   assert.deepEqual(calls[1], ['7', '', { cursor: '20', revision: REV1 }]);
   await p.previous(); assert.deepEqual(calls[2], ['7', '', { cursor: '0', revision: REV1 }]);

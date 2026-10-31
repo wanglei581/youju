@@ -1,5 +1,7 @@
 const api = require('../../utils/api.js');
 const progress = require('../../utils/reading-progress.js');
+// 包里有使用帮助时，读完的地方放"数据说明 ›"（正文、附件的文字是程序提取的，说明写在帮助里，10/29 创始人、agy 第 3 轮）
+const { flags } = require('../../utils/pages.js');
 
 // 服务端没给说明时的兜底（页面说法以服务端 notice 为准，D-097 设计稿第三节）
 const STATUS = {
@@ -74,7 +76,7 @@ function evidenceRows(evidence) {
     const where = textOf(item.where);
     return {
       i, where, whereText: `在原文的位置：${where}`, cells, hidden,
-      hiddenText: hidden > 0 ? `另有 ${hidden} 列没有显示（联系方式、证件、备注和认不出列名的列）` : '',
+      hiddenText: hidden > 0 ? `另有 ${hidden} 列没有显示（联系方式、证件等）` : '',
     };
   });
 }
@@ -111,7 +113,7 @@ function listRowView(res) {
     rows: found ? evidenceRows(evidence) : [],
     moreLine: found && evidence.more === true ? '原文里这个名称出现超过 5 处，只列出前 5 处' : '',
     partialLine: found && evidence.partial === true ? `这份名单很长，只读了前 ${pages} 页` : '',
-    parsedTitle: found ? '我们从原文解析出的记录（以上面的原文为准）' : '解析出的记录',
+    parsedTitle: found ? '从原文解析出的记录' : '解析出的记录',
     parsed: entryItems(entry),
   };
 }
@@ -151,7 +153,7 @@ function toTop() {
 }
 
 Page({
-  data: { loading: false, error: '', changed: false, source: null, title: '', revision: '', status: '', notice: '',
+  data: { loading: false, error: '', changed: false, source: null, title: '', revision: '', status: '', notice: '', has: flags(),
     segments: [], nextCursor: null, prevCursor: null, page: 1, pages: 0, totalSegments: 0, scannedPages: 0, complete: false,
     docTitle: '', partLabel: '正文', partName: '', toc: [], nextPart: null, endText: '', resumePage: 0, updatedNote: '',
     listMode: false, listTitle: LIST_TITLE, listErrorKind: '', record: null, listHidden: false },
@@ -236,7 +238,8 @@ Page({
       const last = next === null;
       const scanned = Number(res.scannedPages) > 0 ? Number(res.scannedPages) : 0;
       this.setData(Object.assign(head, { revision: res.revision, status: res.status, listHidden: res.listHidden === true,
-        notice: textOf(res.notice), segments, nextCursor: next, prevCursor: prev, page, pages,
+        // 读得出的部分顶上不再写"自动提取、未经人工逐字核对"（写在使用帮助里，10/29 创始人）；有扫描页时照旧说缺哪几页
+        notice: res.status === 'partial' ? textOf(res.notice) : '', segments, nextCursor: next, prevCursor: prev, page, pages,
         totalSegments: res.totalSegments || 0, scannedPages: scanned,
         complete: last && segments.length > 0, endText: last ? endTextOf(here.label, res.status, scanned) : '',
         nextPart: last ? nextPartOf(toc, this.part) : null,
@@ -339,6 +342,7 @@ Page({
   },
   lookup() { wx.navigateTo({ url: '/pages/lists/index' }); },
   detail() { wx.navigateTo({ url: `/pages/detail/index?id=${encodeURIComponent(this.docId)}` }); },
+  help() { if (this.data.has.help) wx.navigateTo({ url: '/pages/help/index?topic=text' }); },
   openDetail() {
     const rec = this.data.record;
     if (!rec) return;

@@ -1,5 +1,5 @@
 const api = require('../../utils/api.js');
-const { dueInfo, deadlineNote, dueView, cnDate, weekday, kindClass, regionText, opening, summaryLine, noBodyText, goneNote, readEntry } = require('../../utils/format.js');
+const { dueInfo, deadlineNote, dueView, cnDate, weekday, kindClass, regionText, opening, noBodyText, goneNote, readEntry } = require('../../utils/format.js');
 const { requestOnce, remindOpen } = require('../../utils/subscribe.js');
 const { remindedDocs } = require('../../utils/reminders.js');
 const { loginOpen } = require('../../utils/consent.js');
@@ -7,6 +7,21 @@ const { previewDocs } = require('../../utils/exporter.js');
 const { watchDay, stopDay } = require('../../utils/daywatch.js');
 const attachments = require('../../utils/attachments.js');
 const { versionRows, upstreamLine } = require('../../utils/repost.js');
+const { flags } = require('../../utils/pages.js');
+
+// 要点里不重复页面上别处已经写着的（10/29）：发文机关标题下有；适用地区在标题旁的地区里已写到时不再写；
+// 申报状态在截止卡片里已有带日期的那一条时不再写。别处没写到的照旧列（Codex 第 3 轮：不能无条件去掉）
+// 截止卡片里有没有带日期的那条：逐条截止里至少一行有日期，或旧接口那一条核对过的
+const datedDue = (dls, due) => (dls && dls.length ? dls.some((d) => d.dateText) : !!due);
+function keyPoints(doc, { region, dated }) {
+  return (doc.points || []).filter((p) => {
+    if (!Array.isArray(p)) return false;
+    if (p[0] === '发文机关') return !doc.issuer;
+    if (p[0] === '适用地区') return !(p[1] && String(region || '').includes(String(p[1])));
+    if (p[0] === '申报状态') return !dated;
+    return true;
+  });
+}
 
 // 转发卡片的标题（D-070：卡片只显示通知标题和发文机关）："发文机关｜通知标题"，标题里已经写了发文机关的不重复。
 // 微信卡片只显示两行左右，太长的截到 60 个字（按字截，不把表情等双字节字符截成半个）
@@ -58,17 +73,23 @@ function deadlineRows(deadlines) {
       tone: dated ? (view.source === 'excerpt' ? 'normal' : (view.tone || 'normal')) : '',
       dateText: dated ? cnDate(d.date) : '',
       week: dated ? `${weekday(d.date)}${d.time ? ` ${d.time}` : ''}` : '',
+      // 没核对、候选日期在 7 天内的这一类（接口给 soon）：写"可能 7 天内截止"，和列表一致（10/29 独立审阅）
+      soon: !dated && d.soon === true,
     };
   });
 }
 
-// 上面的截止卡片有没有写日期：有逐条截止时看其中有没有日期，没有时看旧接口的那一条核对过的截止
-const dueDated = (dls, due) => (dls && dls.length ? dls.some((d) => d.dateText) : !!due);
+// 原文链接已失效的：没日期的那几类不写"截止时间见原文"（原文已打不开，10/29 独立审阅），"可能 7 天内截止"照写
+function dueRows(doc) {
+  if (!Array.isArray(doc.deadlines)) return null;
+  const rows = deadlineRows(doc.deadlines);
+  return doc.link_gone ? rows.filter((r) => r.dateText || r.soon) : rows;
+}
 
 Page({
   data: { doc: null, shareReady: false, regionText: '', due: null, dueNote: '', dueDate: '', dueWeek: '', changes: [], tagClasses: [], reminded: false, error: '',
-    bodyView: null, bodySummary: '', noBody: '', entry: null, goneNote: '', supportExpanded: '', supportEvidence: '', conds: [],
-    atts: [], attNote: '', versions: [], versionLabel: '', upstream: '', dueDated: false },
+    bodyView: null, noBody: '', entry: null, goneNote: '', goneAll: false, dueQuote: '', checkedText: '', supportExpanded: '', supportEvidence: '', conds: [],
+    atts: [], versions: [], versionLabel: '', upstream: '', points: [], has: flags() },
 
   onLoad(query) {
     if (api.watchStartup) api.watchStartup(this);
@@ -109,23 +130,27 @@ Page({
         const due = dueInfo(doc.deadline);
         const body = doc.body && doc.body.status === 'ok' ? doc.body : null;
         // 首发版（D-061）：接口给 deadlines 时按类型逐条写（企业申报、推荐、材料报送……），
-        // 核对过的标"已核对"，机器摘录的标"机器摘录·未经人工核对"并附原句，其余写"截止未核对"
-        const dls = Array.isArray(doc.deadlines) ? deadlineRows(doc.deadlines) : null;
+        // 核对过的标"已人工核对"，机器摘录的标"原文摘录"并附原句，其余写"截止时间见原文"
+        const dls = dueRows(doc);
         const versions = versionRows(doc.repost);
         // 正文和附件（D-097）：能不能读以服务端为准（和阅读页同一个判断）；正文先给开头，在段末停
         const atts = attachments.decorate(doc.attachments);
         const bodyView = body ? opening(body) : null;
+        const region = regionText(doc);
+        const readable = !!body || atts.some((a) => a.canOpen);
         this.setData({
           doc,
+          points: keyPoints(doc, { region: region || doc.region, dated: datedDue(dls, due) }),
           // 地区照录服务端写法；来源带区县而地区文字里没写时补上区县
-          regionText: regionText(doc),
-          // 不满一屏全部显示（"全文如下"），长的显示开头（"下面是开头，全文约 N 字"）；正文卡顶上一行写能读到什么
+          regionText: region,
+          // 不满一屏全部显示（"全文如下"），长的显示开头（"下面是开头，全文约 N 字"）。正文卡顶上不再写
+          // "正文约 N 字 · 附件 N 个"：字数下一行写着、附件下面逐个列着（10/29 独立审阅：同一屏写了两遍）
           bodyView,
-          bodySummary: summaryLine(doc.body, atts),
           noBody: body ? '' : noBodyText(doc.body, atts),
-          // 原网页已失效：标题下写明（正文、附件都不再给）
-          goneNote: goneNote(doc.link_gone, !!body || atts.some((a) => a.canOpen)),
-          // 正文下面和底栏两处同名："阅读全文"（只显示了开头）或"阅读附件"（正文已全部显示或没有正文），都读不了不显示
+          // 原网页已失效：标题下写明（正文、附件都不再给）；写了"不再提供"时正文卡片不再写一遍（goneAll）
+          goneNote: goneNote(doc.link_gone, readable),
+          goneAll: !!doc.link_gone && !readable,
+          // 底栏："阅读全文"（只显示了开头）或"阅读附件"（正文已全部显示或没有正文），都读不了不显示
           entry: readEntry(doc.body, bodyView, atts),
           supportExpanded: '',
           supportEvidence: '',
@@ -137,17 +162,17 @@ Page({
           upstream: upstreamLine(doc.repost),
           due,
           dls,
-          // 上面的截止卡片写了日期（逐条截止里至少一行有日期；旧接口只有一条核对过的截止）：
-          // 正文说明才写"截止日期可先看上面的'截止时间'"
-          dueDated: dueDated(dls, due),
-          // 没有核对过的日期时只写说明（截止未核对 / 截止时间见原文），不给任何日期
-          dueNote: deadlineNote(doc),
+          // 没有能显示的日期时只写"截止时间见原文"，不给任何日期；原文链接已失效的不写（原文已打不开）
+          dueNote: doc.link_gone ? '' : deadlineNote(doc),
+          // 核对过的那句截止原文（接口只在"截止时间原文"一节给）：旧接口时跟在截止日期下面；别的节不当截止原句
+          dueQuote: doc.excerpt && doc.excerpt.section === '截止时间原文' ? String(doc.excerpt.text || '') : '',
+          // 页底"截止日期已于 X 对照原文核对"：日期写成中文，免得读成截止日是这一天（10/29 独立审阅）
+          checkedText: /^\d{4}-\d{2}-\d{2}$/.test(String(doc.checked || '')) ? cnDate(doc.checked) : '',
           dueDate: due ? cnDate(doc.deadline.date) : '',
           dueWeek: due ? `${weekday(doc.deadline.date)}${doc.deadline.time ? ` ${doc.deadline.time}` : ''}` : '',
           tagClasses: (doc.tags || []).map((t) => kindClass(t)),
           // 附件：每个直接写能不能读，读不了的灰色、不能点、写原因
           atts,
-          attNote: attachments.note(atts),
           // 已变更的截止（延期、调整、撤销）：不再当作有效截止，写明原因并链接到新通知
           changes: (doc.deadline_changes || []).map((c) => Object.assign({}, c, {
             dateText: `${cnDate(c.date)}${c.time ? ` ${c.time}` : ''}`,
@@ -158,8 +183,8 @@ Page({
         this.syncReminded();
       })
       .catch((err) => this.setData({
-        doc: null, due: null, dueNote: '', changes: [], reminded: false, atts: [], attNote: '', conds: [], versions: [], versionLabel: '', upstream: '',
-        bodyView: null, bodySummary: '', noBody: '', entry: null, goneNote: '',
+        doc: null, due: null, dueNote: '', changes: [], reminded: false, atts: [], conds: [], versions: [], versionLabel: '', upstream: '',
+        bodyView: null, noBody: '', entry: null, goneNote: '', goneAll: false, dueQuote: '', checkedText: '', points: [],
         takenDown: err.status === 404 && err.message === '该文件已下架',
         error: err.status === 404 ? err.message : `数据未更新：${err.message}`,
       }))
@@ -224,9 +249,10 @@ Page({
   recompute() {
     const doc = this.data.doc;
     if (!doc) return;
-    const dls = Array.isArray(doc.deadlines) ? deadlineRows(doc.deadlines) : null;
+    const dls = dueRows(doc);
     const due = dueInfo(doc.deadline);
-    this.setData({ due, dls, dueDated: dueDated(dls, due) });
+    // 过了零点截止卡片可能少了带日期的那条（如机器摘录进了 7 天内不再写日期）：要点跟着重算（Codex 第 4 轮）
+    this.setData({ due, dls, points: keyPoints(doc, { region: this.data.regionText || doc.region, dated: datedDue(dls, due) }) });
   },
 
   // 截止提醒：一次性订阅消息，用户在微信弹窗里允许后才算订阅成功
@@ -249,12 +275,17 @@ Page({
     });
   },
 
+  // 原文出处下的"数据说明 ›"：去使用帮助看正文、附件和要点是怎么来的，截止怎么标在它上面一条（包里有帮助页才显示）
+  help() {
+    if (this.data.has.help) wx.navigateTo({ url: '/pages/help/index?topic=text' });
+  },
+
   // 名单类通知的正文里名单没展开（D-092）：去查名单查企业
   toLists() {
     wx.navigateTo({ url: '/pages/lists/index' });
   },
 
-  // 正文下面和底栏两处同名的入口：阅读全文（正文）或阅读附件（第一个能读的附件）
+  // 底栏的入口：阅读全文（正文）或阅读附件（第一个能读的附件）
   readBody() {
     const { doc, entry } = this.data;
     if (!doc || !entry) return;

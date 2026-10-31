@@ -34,7 +34,7 @@ const SCOPE = [
   '用途：把通知里的申报对象、条件、材料等原句摘出来分类，方便快速找到；条款对照把原文条件和你填写的企业情况并排列出，供你自己对照。',
   '不适用：判断企业能不能申报、代替阅读通知原文。不面向未成年人。',
 ];
-const INTERNAL_NOTICE = '摘录通知原文原句，可能不全；不判断能否申报，以原文和主管部门解释为准。';
+const INTERNAL_NOTICE = '摘录通知原文原句，不判断能否申报，以原文和主管部门解释为准。';
 
 // 后端 capabilities 的 disclosure 如果带了说明文字（字符串或 text 字段），优先显示后端的；
 // 目前线上只返回 modelLabel、filingNo，所以显示固定文字。
@@ -103,6 +103,8 @@ function taskView(task) {
     time: Number.isFinite(stamp) ? new Date(stamp + 8 * 3600000).toISOString().slice(0, 16).replace('T', ' ') : '',
     terminal: ['done', 'failed', 'cancelled'].includes(task.status),
     dataTask, expired,
+    // AI 解读、条款对照的卡片整张点开结果（openTask）：卡上画"›"、按下变淡（10/29 去掉"查看解读"后看不出能点）
+    opens: Object.prototype.hasOwnProperty.call(KINDS, task.kind),
     downloadable: dataTask && task.status === 'done' && task.hasFile === true && !expired && !unavailable,
     resultNote: unavailable ? blocked.message : dataTask && task.status === 'done' && (!task.hasFile || expired) ? '结果已过期或已删除，请重新提交' : '',
     expiresText: task.expiresAt ? String(task.expiresAt).slice(0, 10) : '',

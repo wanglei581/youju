@@ -31,15 +31,14 @@
 .k { flex-shrink: 0; min-width: 144rpx; max-width: 45%; color: var(--t3); }
 .v { flex: 1; color: var(--t1); }
 
-.excerpt-sec { font-size: 24rpx; font-weight: 400; }
-.excerpt { margin: 12rpx 0 32rpx; padding: 24rpx 28rpx; background: #F7F8FA; border-radius: 16rpx; font-size: 28rpx; line-height: 1.8; }
+/* 标题后面的小字紧跟标题：.section-title 两端对齐，不加 margin-right: auto 会被推到最右（10/29 创始人截图） */
+.excerpt-sec { margin-left: 12rpx; margin-right: auto; font-size: 24rpx; font-weight: 400; }
 .support-tags { display: flex; flex-wrap: wrap; gap: 12rpx; }
 .support-tag { min-height: 48rpx; padding: 8rpx 16rpx; box-sizing: border-box; display: flex; align-items: center; border: 2rpx solid var(--line); border-radius: 8rpx; color: var(--t1); font-size: 26rpx; line-height: 1.5; }
 .support-tag--on { border-color: var(--brand); background: var(--brand-tint); color: var(--brand); }
 .support-evidence { margin-top: 20rpx; padding: 20rpx 24rpx; background: #F7F8FA; border-radius: 12rpx; color: var(--t2); font-size: 26rpx; line-height: 1.7; }
 .support-evidence-label { color: var(--t3); }
 .audience-text { margin-top: 12rpx; font-size: 28rpx; line-height: 1.8; color: var(--t1); }
-.audience-note { margin-top: 12rpx; font-size: 24rpx; line-height: 1.6; }
 /* 申报条件：左列类别（同类连着的只写一次），右侧是通知原文里的原句 */
 .cond { display: flex; align-items: flex-start; gap: 20rpx; padding: 20rpx 0; border-bottom: 2rpx solid var(--line); font-size: 28rpx; line-height: 1.6; }
 .cond-cat { flex-shrink: 0; width: 112rpx; font-size: 24rpx; line-height: 44.8rpx; color: var(--t3); }
@@ -61,15 +60,12 @@
 .att-meta { font-size: 24rpx; line-height: 1.5; color: var(--t3); }
 .att-action { flex-shrink: 0; font-size: 26rpx; color: var(--t3); }
 .att-action--open { color: var(--brand); font-weight: 500; }
-.att-foot { display: flex; align-items: center; padding: 22rpx 0 24rpx; font-size: 25rpx; color: var(--t2); }
 
 .source { padding-top: 28rpx; padding-bottom: 28rpx; }
 .source-top { display: flex; align-items: center; justify-content: space-between; }
 .source-label { font-size: 24rpx; }
 .source-site { margin-top: 4rpx; font-size: 28rpx; }
-.source-meta { margin-top: 8rpx; font-size: 24rpx; line-height: 1.7; color: var(--t2); }
 .source-note { margin-top: 20rpx; font-size: 24rpx; line-height: 1.7; color: var(--t2); }
-.source-gone { margin-top: 20rpx; font-size: 26rpx; line-height: 1.7; color: var(--orange); }
 .gone-note { margin-top: 20rpx; padding: 16rpx 24rpx; background: var(--o-tint); color: var(--o-txt); border-radius: 12rpx; font-size: 26rpx; line-height: 1.7; }
 
 .bar { position: fixed; left: 0; right: 0; bottom: 0; padding: 16rpx 32rpx calc(16rpx + env(safe-area-inset-bottom)); display: flex; align-items: center; gap: 8rpx; background: var(--card); border-top: 2rpx solid var(--line); }
@@ -78,13 +74,10 @@
 /* 转发是 button（open-type="share"）：去掉按钮自带的边距、背景和边框，和旁边两项一样；微信新版按钮样式要加 !important 才压得住 */
 .bar-share { width: 100rpx !important; min-height: 0 !important; margin: 0 !important; padding: 0 !important; background: transparent !important; border-radius: 0 !important; line-height: normal !important; font-size: 22rpx !important; font-weight: normal !important; color: var(--t2) !important; }
 .bar-share::after { border: none; }
-.status-note { margin-top: 12rpx; font-size: 24rpx; }
 /* 正文（D-097）：先给开头、在段末停，"阅读全文"去阅读页；顶上一行写能读到什么 */
-.body-summary { margin: -4rpx 0 12rpx; font-size: 24rpx; line-height: 1.6; }
-.body-note { margin: 0 0 16rpx; font-size: 22rpx; line-height: 1.6; }
 .body-label { margin-bottom: 8rpx; font-size: 24rpx; line-height: 1.6; color: var(--t2); }
 .body-text { display: block; font-size: 28rpx; line-height: 1.8; color: var(--t1); white-space: pre-wrap; word-break: break-all; }
-.body-more { margin-top: 20rpx; font-size: 28rpx; font-weight: 500; }
+.source-help { margin-top: 16rpx; font-size: 26rpx; }
 .body-none { font-size: 28rpx; line-height: 1.6; color: var(--t1); }
 .body-lookup { margin-top: 20rpx; font-size: 28rpx; font-weight: 500; }
 /* 加载中的占位块 */
@@ -103,7 +96,6 @@
 .ver-due--none { color: var(--t3); }
 .ver-meta { margin-top: 6rpx; display: flex; align-items: flex-start; gap: 16rpx; font-size: 24rpx; line-height: 1.6; color: var(--t2); }
 .ver-meta-text { flex: 1; min-width: 0; }
-.ver-note { padding: 20rpx 0; font-size: 24rpx; line-height: 1.6; }
 .ver-hint { margin-top: 16rpx; font-size: 24rpx; line-height: 1.6; }
 .standard-link { display: flex; align-items: center; justify-content: space-between; padding: 24rpx 0 0; font-size: 26rpx; }
 /* 按类型逐条的截止（D-061） */

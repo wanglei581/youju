@@ -277,10 +277,10 @@ test('列表行的"AI 解读"：这一行能解读、AI 对这个人开着、后
     assert.equal(button.text(), '', JSON.stringify([props, state])); assert.deepEqual(button.events, []);
     button.view.open(); assert.equal(button.navigations.length, 0);
   }
-  // 列表行：按钮放在"复制原文链接"后面；勾选导出时隐藏；有按钮时发文机关另起一行腾地方
+  // 列表行：按钮在日期那一行靠右（整行可点，不再另放"查看详情"，10/29）；勾选导出时隐藏；有按钮时发文机关另起一行腾地方
   const rowWxml = read('components/doc-row/index.wxml');
-  assert.match(rowWxml, /<ai-button doc-id="\{\{doc\.id\}\}" doc-title="\{\{doc\.title\}\}" ai="\{\{doc\.ai\}\}" selecting="\{\{selecting\}\}" bind:toggle="aiToggle" \/>/);
-  assert.ok(rowWxml.indexOf('<ai-button') > rowWxml.indexOf('查看详情'));
+  assert.match(rowWxml, /<ai-button class="meta-ai" doc-id="\{\{doc\.id\}\}" doc-title="\{\{doc\.title\}\}" ai="\{\{doc\.ai\}\}" selecting="\{\{selecting\}\}" bind:toggle="aiToggle" \/>/);
+  assert.ok(!rowWxml.replace(/<!--[\s\S]*?-->/g, '').includes('查看详情'));
   const row = load('components/doc-row/index.js', { '../../utils/format.js': format, '../../utils/copy.js': { copyLink() {} }, '../../utils/repost.js': require('../utils/repost.js') });
   row.data.doc = { id: '42', title: '通知', kind: '申报通知', issuer: '山东省科学技术厅', date: '2026-10-16', ai: { interpret: true } };
   row.observers['doc, q, today'].call(row, row.data.doc, '');
@@ -504,7 +504,8 @@ test('AI 首页的几种情况：没同意协议先走同意（通知列表照�
   // 后台处理不了：写暂时不可用，给联系客服
   h = hubPage({ caps: ON({ available: false }) }); h.page.onShow(); await settle();
   assert.match(h.text(), /AI 暂时不可用，请稍后再试。/);
-  assert.equal(findAll(render('pages/ai/index.wxml', h.page.data), (n) => n.tag === 'contact-button').length, 2);
+  // 暂时不可用：上面那张卡里有"联系客服"，底下"用的时候遇到问题？"那张不再放第二个（10/29 独立审阅）
+  assert.equal(findAll(render('pages/ai/index.wxml', h.page.data), (n) => n.tag === 'contact-button').length, 1);
   // 全站当天的上限满了：两项都不给剩几次，写明天恢复
   h = hubPage({ caps: ON({ siteFull: true }) }); h.page.onShow(); await settle();
   assert.match(h.text(), /今天 AI 的总用量满了，明天 0 点恢复；可以先看原文。/); assert.doesNotMatch(h.text(), /今天还剩/);
@@ -541,7 +542,7 @@ function contact(props, { platform = 'ios', email = 'help@example.invalid', getD
   return { view, wx, root: () => render('components/contact-button/index.wxml', { ...view.data, ...view.properties }) };
 }
 
-test('联系客服：微信自带客服按钮，写回复时间和客服管什么；带给客服的只有页面、通知编号、原因代码；在通知页上点带这份通知的卡片；鸿蒙手机换成一行字', () => {
+test('联系客服：微信自带客服按钮，写客服管什么（10/29 起不写回复时间）；带给客服的只有页面、通知编号、原因代码；在通知页上点带这份通知的卡片；鸿蒙手机换成一行字', () => {
   const c = contact({ from: 'ai_result', docId: '42', docTitle: '关于组织申报的通知', reason: 'AI_UNAVAILABLE' });
   const [button] = findAll(c.root(), (n) => n.tag === 'button');
   assert.equal(button.attrs['open-type'], 'contact');
@@ -549,7 +550,7 @@ test('联系客服：微信自带客服按钮，写回复时间和客服管什�
   assert.equal(button.attrs['show-message-card'], true);
   assert.equal(button.attrs['send-message-title'], '关于组织申报的通知');
   assert.equal(button.attrs['send-message-path'], '/pages/detail/index?id=42');
-  assert.equal(textOf(c.root()).trim(), '联系客服 一般当天或第二天回复 客服只解答小程序怎么用，不代办申报、不判断能不能报');
+  assert.equal(textOf(c.root()).trim(), '联系客服 客服解答小程序的使用问题，不代办申报、不判断能否申报');
   // 不认的内容不带（企业名称、长文字、任务编号这类不该进来的）
   const odd = contact({ from: '我的客户 甲公司', docId: 'task-7', reason: 'x'.repeat(80), docTitle: '标题' });
   assert.equal(odd.view.data.sessionFrom, 'youju'); assert.equal(odd.view.data.showCard, false);
@@ -559,17 +560,23 @@ test('联系客服：微信自带客服按钮，写回复时间和客服管什�
   // 鸿蒙版微信不支持客服按钮：一行字，给使用帮助和协议里的邮箱
   for (const platform of ['ohos', 'ohos_pc']) {
     for (const getDeviceInfo of [true, false]) {
-      const harmony = contact({ from: 'ai_home' }, { platform, getDeviceInfo });
+      const harmony = contact({ from: 'ai_result' }, { platform, getDeviceInfo });
       assert.equal(findAll(harmony.root(), (n) => n.tag === 'button').length, 0);
       assert.match(textOf(harmony.root()), /这台手机暂不能打开微信客服。可以先看使用帮助，或发邮件到 help@example\.invalid。/);
       harmony.view.help(); assert.deepEqual(harmony.wx.urls, ['/pages/help/index']);
     }
   }
+  // AI 首页同一张卡里有"使用帮助 ›"、使用帮助页就是它自己：鸿蒙上不再给去使用帮助的入口，改给联系邮箱（10/29 独立审阅）
+  for (const from of ['ai_home', 'help']) {
+    const own = contact({ from }, { platform: 'ohos' });
+    assert.match(textOf(own.root()), /这台手机暂不能打开微信客服，可以发邮件到 help@example\.invalid。/, from);
+    assert.doesNotMatch(textOf(own.root()), /使用帮助/, from);
+  }
   // "我的"页那一行
   const row = contact({ variant: 'row', from: 'me' });
   const [rowButton] = findAll(row.root(), (n) => n.tag === 'button');
   assert.equal(rowButton.attrs['open-type'], 'contact'); assert.equal(rowButton.attrs['session-from'], 'youju|from=me');
-  assert.equal(textOf(row.root()).trim(), '联系客服一般当天或第二天回复');
+  assert.equal(textOf(row.root()).trim(), '联系客服');
   assert.match(textOf(contact({ variant: 'row' }, { platform: 'ohos' }).root()), /这台手机暂不能打开，看使用帮助/);
   // 微信 style v2 的按钮要 !important 才认宽度和外边距
   assert.match(read('components/contact-button/index.wxss'), /width: 100% !important;/);
@@ -980,7 +987,7 @@ test('Codex 第 5 轮：AI 首页再次进来先清掉"我的 AI 记录"，离�
   assert.deepEqual(plain(h.page.data.records), []); assert.equal(h.page.data.lastDoc, null);
 });
 
-test('Codex 第 5 轮：任务因全站满了、暂时不可用、被移出白名单失败时不给"重试"；其他失败照旧能重试；AI 首页列表提示只在有按钮时说"点 AI 解读"', async () => {
+test('Codex 第 5 轮：任务因全站满了、暂时不可用、被移出白名单失败时不给"重试"；其他失败照旧能重试；AI 首页列表上不再写"点 AI 解读"（10/29 删提示）', async () => {
   for (const [errorCode, canRetry] of [['AI_DAILY_CAP', false], ['AI_UNAVAILABLE', false], ['AI_OFF', false], [null, true]]) {
     const states = [];
     const saved = new Map([[interpret.CONSENT_KEY, interpret.consentRecord()]]);
@@ -994,9 +1001,9 @@ test('Codex 第 5 轮：任务因全站满了、暂时不可用、被移出白�
     assert.equal(lastState.phase, 'failed'); assert.equal(lastState.canRetry, canRetry, String(errorCode));
     session.hide();
   }
-  for (const [caps, mentions] of [[ON(), true], [ON({ siteFull: true }), false], [ON({ remaining: { interpret: 0, clause: 5 } }), false]]) {
+  for (const caps of [ON(), ON({ siteFull: true }), ON({ remaining: { interpret: 0, clause: 5 } })]) {
     const h = hubPage({ caps }); h.page.onShow(); await settle();
-    assert.equal(/点“AI 解读”直接开始/.test(textOf(render('pages/ai/index.wxml', h.page.data))), mentions, JSON.stringify(caps.ai_advisor));
+    assert.doesNotMatch(textOf(render('pages/ai/index.wxml', h.page.data)), /点标题看通知全文|点“AI 解读”直接开始/, JSON.stringify(caps.ai_advisor));
   }
 });
 
@@ -1066,7 +1073,7 @@ test('Codex 第 7 轮：AI 首页用着用着后台处理不了，马上收起"A
   assert.equal((out.match(/暂时不可用/g) || []).length >= 2, true, '两项能力都写暂时不可用');
   assert.ok(out.includes('AI 暂时不可用，请稍后再试。'));
   assert.deepEqual(h.page.data.recent.map((item) => item.ai), [null], '近 7 天那几份上不放按钮');
-  assert.deepEqual(findAll(root, (n) => n.tag === 'contact-button').map((n) => n.attrs.reason), ['paused', undefined]);
+  assert.deepEqual(findAll(root, (n) => n.tag === 'contact-button').map((n) => n.attrs.reason), ['paused']);
   // 页面上还是旧的样子时点了，也不进对照页
   h.page.setData({ clauseOpen: true }); h.page.clauseLast();
   assert.deepEqual(h.navigations, []);
@@ -1074,7 +1081,7 @@ test('Codex 第 7 轮：AI 首页用着用着后台处理不了，马上收起"A
   h.access.set({ available: true });
   assert.equal(h.page.data.gate, ''); assert.equal(h.page.data.interpretOpen, true); assert.equal(h.page.data.clauseOpen, true);
   out = textOf(render('pages/ai/index.wxml', h.page.data));
-  assert.match(out, /今天还剩 5 次/); assert.match(out, /点“AI 解读”直接开始/);
+  assert.match(out, /今天还剩 5 次/);
   h.page.clauseLast(); assert.equal(h.navigations.length, 1);
   // 全站满了的时候后台又处理不了：改写暂时不可用；恢复了回到"今天满了"
   const f = hubPage({ caps: ON({ siteFull: true }) }); f.page.onShow(); await settle();
@@ -1110,21 +1117,21 @@ test('Codex 第 7 轮：我的 AI 记录没加载出来时卡片照样留着，�
   const record = { id: 3, kind: 'interpret', status: 'done', docTitle: '通知3', createdAt: '2026-10-19T09:00:00+08:00' };
   const h = hubPage({ tasks: () => (tasksOk ? Promise.resolve({ items: [record] }) : Promise.reject(new Error('网络'))) });
   h.page.onShow(); await settle();
-  assert.equal(h.page.data.recordsError, '我的 AI 记录没有加载出来');
+  assert.equal(h.page.data.recordsError, '我的记录没有加载出来');
   const root = render('pages/ai/index.wxml', h.page.data);
-  const card = findAll(root, hasClass('card')).find((node) => textOf(node).includes('我的 AI 记录'));
+  const card = findAll(root, hasClass('card')).find((node) => textOf(node).includes('我的记录'));
   assert.ok(card, '卡片还在');
-  assert.match(textOf(card), /我的 AI 记录没有加载出来/);
+  assert.match(textOf(card), /我的记录没有加载出来/);
   assert.equal(findAll(card, tapsTo('retry')).length, 1, '有重试');
   assert.equal(findAll(card, tapsTo('allRecords')).length, 1, '有"全部"');
   h.page.allRecords(); assert.equal(h.navigations.at(-1), '/pages/advisor-tasks/index');
   // 点重试、这次加载出来了：错误去掉、列出记录
   tasksOk = true; h.page.retry(); await settle();
   assert.equal(h.page.data.recordsError, '');
-  assert.match(textOf(render('pages/ai/index.wxml', h.page.data)), /我的 AI 记录.*通知3/);
+  assert.match(textOf(render('pages/ai/index.wxml', h.page.data)), /我的记录.*通知3/);
   // 没有记录：不显示这张卡
   const e = hubPage(); e.page.onShow(); await settle();
-  assert.doesNotMatch(textOf(render('pages/ai/index.wxml', e.page.data)), /我的 AI 记录/);
+  assert.doesNotMatch(textOf(render('pages/ai/index.wxml', e.page.data)), /我的记录/);
   // 再次进来：上次的错误先清掉
   const r = hubPage({ tasks: () => Promise.reject(new Error('网络')) }); r.page.onShow(); await settle();
   r.access.ensure = () => new Promise(() => {});
@@ -1275,15 +1282,15 @@ test('Codex 第 10 轮：对所有人开放、还没同意协议时，"我的 AI
     h.page.onShow(); await settle();
     assert.equal(h.page.data.gate, 'consent'); assert.equal(h.page.data.recordsError, '', String(status));
     const out = textOf(render('pages/ai/index.wxml', h.page.data));
-    assert.doesNotMatch(out, /我的 AI 记录|没有加载出来/, String(status));
+    assert.doesNotMatch(out, /我的记录|没有加载出来/, String(status));
     assert.match(out, /阅读并同意/);
   }
   const n = hubPage({ caps: OFF('consent'), tasks: () => Promise.reject(Object.assign(new Error('网络不太好'), { retryable: true })) });
   n.page.onShow(); await settle();
-  assert.equal(n.page.data.recordsError, '我的 AI 记录没有加载出来');
+  assert.equal(n.page.data.recordsError, '我的记录没有加载出来');
   const s = hubPage({ tasks: () => Promise.reject(Object.assign(new Error('服务出错'), { status: 500 })) });
   s.page.onShow(); await settle();
-  assert.equal(s.page.data.recordsError, '我的 AI 记录没有加载出来', '服务出错也写没加载出来');
+  assert.equal(s.page.data.recordsError, '我的记录没有加载出来', '服务出错也写没加载出来');
 });
 
 // 真的 utils/consent.js，接上真的 ai-access（accessWith 建的 raw）
@@ -1706,7 +1713,7 @@ test('Codex 第 18 轮：我的 AI 记录里有处理中的，停在 AI 首页�
   const clock = { now: 1000 * HOUR };
   const h = hubPage({ tasks: () => Promise.resolve({ items: answer.map((t) => ({ ...t })) }), now: () => clock.now });
   h.page.onShow(); await settle();
-  assert.match(textOf(render('pages/ai/index.wxml', h.page.data)), /我的 AI 记录.*处理中/);
+  assert.match(textOf(render('pages/ai/index.wxml', h.page.data)), /我的记录.*处理中/);
   assert.deepEqual([...h.timers.values()].map((t) => t.ms), [5000]);
   // 还在处理：间隔变长
   assert.deepEqual(h.runTimers(), [5000]); await settle();
@@ -1716,7 +1723,7 @@ test('Codex 第 18 轮：我的 AI 记录里有处理中的，停在 AI 首页�
   // 处理完：显示已完成，不再问
   answer = [{ ...running, status: 'done', hasResult: true }];
   h.runTimers(); await settle();
-  assert.match(textOf(render('pages/ai/index.wxml', h.page.data)), /我的 AI 记录.*已完成/);
+  assert.match(textOf(render('pages/ai/index.wxml', h.page.data)), /我的记录.*已完成/);
   assert.equal(h.timers.size, 0, '都处理完了就停');
   // 离开就停
   answer = [running];

@@ -1,5 +1,5 @@
 const api = require('../../utils/api.js');
-const { todayISO, clockText, dueView, monthDay, weekday, reviewStaleNote } = require('../../utils/format.js');
+const { todayISO, clockText, dueView, monthDay, weekday } = require('../../utils/format.js');
 const { watchDay, stopDay } = require('../../utils/daywatch.js');
 const { readCache, writeCache, cachedLabel } = require('../../utils/cache.js');
 const { loginOpen } = require('../../utils/consent.js');
@@ -22,8 +22,8 @@ const HOME_CACHE = 'youjuHomeCacheV1';
 const GUIDE_KEY = 'youjuGuideClosedV1';
 const GUIDE_FIRST = [
   // 10/18 验收 #21c：企业行政常把公司名输进"查申报"，这里写明在政府公开名单里查企业要先点"查名单"（用词 D-090）
-  { key: 'search', name: '搜通知', text: '按关键词、地区、类型找申报通知和政策；要在政府公开名单里查企业，先点搜索框上面的“查名单”' },
-  { key: 'due', name: '看截止和原文', text: '“截止”页列出快到期的通知；通知详情里可以站内阅读正文和附件，查看内容来源与处理状态', url: '/pages/report/index' },
+  { key: 'search', name: '搜通知', text: '按关键词、地区、类型找申报通知和政策；查企业点“查名单”' },
+  { key: 'due', name: '看截止和原文', text: '“截止”页列出快到期的通知；详情里可以读正文和附件', url: '/pages/report/index' },
 ];
 const GUIDE_TOOLS = { key: 'tools', name: '批量查客户（顾问用）', text: '在“工具中心”一次粘贴多家企业，在政府公开名单里查这些企业，并整理相关通知；需先同意协议，每月有免费次数', url: '/pages/advisor/index' };
 const GUIDE_CLIENTS = { key: 'clients', name: '批量查客户（顾问用）', text: '在“我的客户”存下客户的地区和产业方向，一次列出和它们相关的通知', url: '/pages/clients/index' };
@@ -34,12 +34,8 @@ function guideClosed() {
   try { return Boolean(wx.getStorageSync(GUIDE_KEY)); } catch (e) { return false; }
 }
 
-// "7 天内截止"：接口只给核对过的（最多 5 条）；按手机日期重算剩余天数，已过的不放
-// 后端没给这个字段（老版本或本机演示数据）时不写，免得误报"今日未更新"
-function reviewNoteOf(stats) {
-  return stats && Object.prototype.hasOwnProperty.call(stats, 'deadline_reviewed_at') ? reviewStaleNote(stats.deadline_reviewed_at) : '';
-}
-
+// "7 天内截止"：接口只给核对过的（最多 5 条）；按手机日期重算剩余天数，已过的不放。
+// 核对断档不在首页写"今日未更新"（10/29 创始人：这类话不写在页面上；D-061 第八节第 2 条，D-108 待确认）
 function soonRows(list) {
   return (list || []).map((d) => {
     const view = dueView({ kind: d.label, source: d.source || 'verified', date: d.date, time: d.time, quote: d.quote });
@@ -72,7 +68,6 @@ Page({
     // 7 天内截止（只放核对过的）和 7 天内有候选、还没核对的份数
     soon: [],
     soonUnverified: 0,
-    reviewNote: '',
     loaded: false,
     error: '',
     // 协议定稿前（D-056）没有关注，不显示"你关注的条件本周有 N 份新文件"（演示数据里有这个数）
@@ -146,7 +141,7 @@ Page({
         // 已经显示着快照（一分钟内的数据）就不报错；显示着本机存的上次数据就留着，只在上面写明没更新
         if (fresh) return;
         if (this.data.loaded) this.setData({ error: `数据未更新：${err.message}` });
-        else this.setData({ stats: null, items: [], soon: [], soonUnverified: 0, reviewNote: '', error: `数据未更新：${err.message}` });
+        else this.setData({ stats: null, items: [], soon: [], soonUnverified: 0, error: `数据未更新：${err.message}` });
       })
       .then(() => { this.refreshing = false; this.setData({ loading: false }); });
   },
@@ -167,7 +162,6 @@ Page({
       // fresh：显示的是快照或实时数据（不是本机存的上次数据），这时不再提示"正在连接"
       stats, items: items || [], loaded: true, cachedText, fresh: !cachedText, checkedText: clockText(stats && stats.last_checked_at),
       soon: soonRows(this.dueSoon), soonUnverified: dueSoonUnverifiedTotal || 0,
-      reviewNote: reviewNoteOf(stats),
     });
   },
 
@@ -190,7 +184,7 @@ Page({
     }
     this.setData({ today: todayISO() });
     watchDay(this, (day) => {
-      this.setData({ today: day, soon: soonRows(this.dueSoon), reviewNote: reviewNoteOf(this.data.stats) });
+      this.setData({ today: day, soon: soonRows(this.dueSoon) });
       this.loadSeason(true);
     });
     if (typeof this.getTabBar === 'function' && this.getTabBar()) {

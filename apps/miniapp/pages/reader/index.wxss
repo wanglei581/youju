@@ -40,7 +40,7 @@
 .toc-name { flex: 1; min-width: 0; word-break: break-all; color: var(--t1); }
 .toc-note { flex-basis: 100%; font-size: 24rpx; color: var(--t3); }
 .part-name { margin-top: 20rpx; font-size: 28rpx; line-height: 1.6; font-weight: 600; word-break: break-all; }
-.page-label { margin-top: 16rpx; font-size: 24rpx; color: var(--t2); }
+.help-link { margin-top: 24rpx; font-size: 26rpx; }
 .page-count { flex-shrink: 0; font-size: 24rpx; color: var(--t2); }
 /* 续读：从上次那一页接着读，可以从开头看 */
 .resume { display: flex; align-items: center; justify-content: space-between; gap: 20rpx; margin: 20rpx 0 0; padding: 16rpx 20rpx; background: var(--fill); border-radius: 12rpx; font-size: 26rpx; }
