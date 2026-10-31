@@ -1504,6 +1504,93 @@ class WorkbenchPass(Base):
     last_task_completed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 
 
+class AICreditGrant(Base):
+    """卡里的 AI 次数：每给一次记一笔（D-109 甲，迁移 0046；youju/ai_credits.py）。
+
+    kind：purchase 买卡（天数 × 10）、renewal 续买多送（30）、trial 加量体验送的（30）、backfill
+    AI 进卡那一版上线时补给老卡的（剩下的整天数 × 10）。买来的、续买多送的、补给的挂在那一段使用期上
+    （pass_id），到期跟着那一段的 ends_at 走（段往前挪，到期跟着挪）；
+    体验送的挂在加量体验上（trial_id），
+    到期是体验原定的结束时间（expires_at，体验期里买卡、体验提前结束也不变）。
+    used 已扣、held 占着，都记在这一行上：锁住这一行就读到最新的数（读已提交、可重复读都一样）。
+    订单按保存期删掉时随使用期一起删；体验随用户删；注销时断开用户、收回（revoked_at）。"""
+
+    __tablename__ = "ai_credit_grants"
+    __table_args__ = (
+        CheckConstraint(
+            "(pass_id IS NULL) <> (trial_id IS NULL)", name="ck_ai_credit_grants_origin"
+        ),
+        CheckConstraint(
+            "kind IN ('purchase', 'renewal', 'trial', 'backfill')", name="ck_ai_credit_grants_kind"
+        ),
+        CheckConstraint(
+            "amount > 0 AND used >= 0 AND held >= 0 AND used + held <= amount",
+            name="ck_ai_credit_grants_counts",
+        ),
+        UniqueConstraint("pass_id", "kind", name="uq_ai_credit_grants_pass_kind"),
+        UniqueConstraint("trial_id", name="uq_ai_credit_grants_trial"),
+        Index("ix_ai_credit_grants_user", "user_id"),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    pass_id: Mapped[int | None] = mapped_column(
+        ForeignKey("workbench_passes.id", ondelete="CASCADE")
+    )
+    trial_id: Mapped[int | None] = mapped_column(ForeignKey("boost_trials.id", ondelete="CASCADE"))
+    kind: Mapped[str] = mapped_column(String(16))
+    amount: Mapped[int] = mapped_column(Integer)
+    used: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    held: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    expires_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    granted_at: Mapped[datetime] = mapped_column(UTCDateTime())
+    revoked_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+
+
+class AICreditUse(Base):
+    """卡里的 AI 次数每占一次记一行（D-109 甲，迁移 0046）：提交时占（reserved），结果给到用户时扣
+    （charged），没出结果退回（released）。use_key 是调用方给的唯一编号（解读、对照、问一问是
+    task:{任务编号}），不建任务外键：任务 30 天删掉以后这行照样在，退款、苹果问询靠它
+    （方案第三节第 4 条第 6 项）。reason 是为什么走卡（free_used 当天免费次数用完、
+    site_full 全站免费名额满了）；pool_day 是北京日期，数付费全站名额用。不存任务内容。"""
+
+    __tablename__ = "ai_credit_uses"
+    __table_args__ = (
+        UniqueConstraint("use_key", name="uq_ai_credit_uses_key"),
+        CheckConstraint(
+            "state IN ('reserved', 'charged', 'released')", name="ck_ai_credit_uses_state"
+        ),
+        CheckConstraint(
+            "kind IN ('interpret', 'clause', 'ask', 'photo', 'compile')",
+            name="ck_ai_credit_uses_kind",
+        ),
+        CheckConstraint("reason IN ('free_used', 'site_full')", name="ck_ai_credit_uses_reason"),
+        Index("ix_ai_credit_uses_grant_state", "grant_id", "state"),
+        Index("ix_ai_credit_uses_user", "user_id"),
+        Index("ix_ai_credit_uses_pool_day", "pool_day"),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    grant_id: Mapped[int] = mapped_column(ForeignKey("ai_credit_grants.id", ondelete="CASCADE"))
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    use_key: Mapped[str] = mapped_column(String(64))
+    kind: Mapped[str] = mapped_column(String(16))
+    state: Mapped[str] = mapped_column(String(16), default="reserved", server_default="reserved")
+    reason: Mapped[str] = mapped_column(String(16))
+    release_reason: Mapped[str | None] = mapped_column(String(32))
+    reserved_at: Mapped[datetime] = mapped_column(UTCDateTime())
+    settled_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    pool_day: Mapped[date] = mapped_column(Date)
+
+
+class AICreditPoolDay(Base):
+    """付费全站名额的当天计数（D-109 甲，迁移 0046）：从卡里占一次加 1，后来扣了、退了都不减。
+    单独一张表、不存用户：用户注销（体验送的次数随体验删掉）、订单按保存期删掉，都不会让当天的数变少
+    （Codex 10/29）。一天一行。"""
+
+    __tablename__ = "ai_credit_pool_days"
+    day: Mapped[date] = mapped_column(Date, primary_key=True)
+    reserved: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+
+
 class PayEvent(Base):
     """只保留允许的交易字段；原始 attach、姓名、手机号等不入库。"""
 
