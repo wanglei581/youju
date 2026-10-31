@@ -227,7 +227,8 @@ def reserve(
 
     reason：free_used（自己这一项今天的免费次数用完了）或 site_full（自己还有免费次数，
     但全站免费名额满了）。要确认的没带上抛 CreditConfirm（不占）；没有能扣的抛 NoCredits。
-    同一个 use_key 已经占着或扣了：原样返回，不重复占；已经退回的抛 CreditError("RELEASED")。
+    同一个 use_key、用户和功能已经占着或扣了：原样返回，不重复占；用户或功能不一致时抛
+    CreditError("REQUEST_MISMATCH")，不返回原凭据；已经退回的抛 CreditError("RELEASED")。
     返回 {useKey, grantId, source, left}。"""
     if kind not in USE_KINDS or reason not in REASONS:
         raise ValueError(f"不认识的 kind 或 reason：{kind} {reason}")
@@ -237,13 +238,13 @@ def reserve(
     if existing is not None:
         current = _current_use(session, use_key)
         if current is not None:
-            return _existing(session, current, wallet)
+            return _existing(session, current, wallet, kind)
     slot = wallet.next_slot()
     if slot is None:
         # 旧快照可能看不到刚占走最后一次的凭据，拒绝前再用当前读认一次重试。
         current = _current_use(session, use_key)
         if current is not None:
-            return _existing(session, current, wallet)
+            return _existing(session, current, wallet, kind)
         raise NoCredits(wallet.status)
     needed = ["site_full"] if reason == "site_full" else []
     if _first_purchase_prompt(session, slot, stamp):
@@ -252,7 +253,7 @@ def reserve(
         # 重试仍归原来那笔；钱包现在挑中的另一张卡需要确认，不影响已受理的请求。
         current = _current_use(session, use_key)
         if current is not None:
-            return _existing(session, current, wallet)
+            return _existing(session, current, wallet, kind)
         raise CreditConfirm(needed)
     use = AICreditUse(
         grant_id=slot.grant.id,
@@ -273,7 +274,7 @@ def reserve(
         existing = _current_use(session, use_key)
         if existing is None:
             raise
-        return _existing(session, existing, wallet)
+        return _existing(session, existing, wallet, kind)
     # 这一行 lock_wallet 已经锁着、读的是最新的：直接加 1，钱包里的数跟着变（一个事务里占几次也对）
     slot.grant.held += 1
     # 付费全站名额的当天计数：单独一张表、只加不减，注销、删订单都不会让它变少
@@ -296,12 +297,16 @@ def _current_use(session: Session, use_key: str) -> AICreditUse | None:
     )
 
 
-def _existing(session: Session, existing: AICreditUse, wallet: Wallet) -> dict:
-    """同一个 use_key 再来：占着或扣了的原样返回；已经退回的不能再占。"""
+def _existing(session: Session, existing: AICreditUse, wallet: Wallet, kind: str) -> dict:
+    """凭据须属于同一用户和功能；先核归属再看状态，不向误接或重放请求暴露原凭据。"""
+    if existing.user_id != wallet.user_id or existing.kind != kind:
+        raise CreditError("REQUEST_MISMATCH", "请求编号与本次请求不一致")
+    grant = session.get(AICreditGrant, existing.grant_id)
+    if grant is None or grant.user_id != wallet.user_id:
+        raise CreditError("REQUEST_MISMATCH", "请求编号与本次请求不一致")
     if existing.state == "released":
         raise CreditError("RELEASED", "这次请求的次数已经退回，不能再占")
-    grant = session.get(AICreditGrant, existing.grant_id)
-    source = "bought" if grant is not None and grant.kind == PURCHASE else "gift"
+    source = "bought" if grant.kind == PURCHASE else "gift"
     return _out(existing, source, wallet.left)
 
 

@@ -403,6 +403,83 @@ def test_retry_gift_does_not_request_confirmation_for_the_next_paid_card(
     assert ai_credits.paid_pool_used(session, date(2026, 11, 10)) == 1
 
 
+@pytest.mark.parametrize("state", ["reserved", "charged", "released"])
+def test_existing_use_key_cannot_return_another_users_receipt(session, state):
+    owner = user(session)
+    _, _, grant = card(session, owner)
+    other = user(session, "other-wallet")
+    _, _, other_grant = card(session, other)
+    take(session, owner, "task:owner-only")
+    if state == "charged":
+        ai_credits.charge(session, "task:owner-only", NOW)
+    elif state == "released":
+        ai_credits.release(session, "task:owner-only", NOW, "failed")
+    with pytest.raises(CreditError) as err:
+        take(session, other, "task:owner-only")
+    assert err.value.code == "REQUEST_MISMATCH"
+    assert err.value.message == "请求编号与本次请求不一致"
+    assert vars(err.value) == {"code": "REQUEST_MISMATCH", "message": "请求编号与本次请求不一致"}
+    session.refresh(grant)
+    session.refresh(other_grant)
+    assert (grant.used, grant.held) == {"reserved": (0, 1), "charged": (1, 0), "released": (0, 0)}[
+        state
+    ]
+    assert (other_grant.used, other_grant.held) == (0, 0)
+    assert ai_credits.paid_pool_used(session, date(2026, 11, 10)) == 1
+
+
+def test_existing_use_key_must_match_the_requested_function(session):
+    owner = user(session)
+    _, _, grant = card(session, owner)
+    take(session, owner, "task:interpret-only")
+    with pytest.raises(CreditError) as err:
+        ai_credits.reserve(
+            session, locked(session, owner), "task:interpret-only", "ask", NOW, reason="free_used"
+        )
+    assert err.value.code == "REQUEST_MISMATCH"
+    session.refresh(grant)
+    assert (grant.used, grant.held) == (0, 1)
+
+
+def test_existing_receipt_also_checks_the_grant_owner(session):
+    owner = user(session)
+    _, _, grant = card(session, owner)
+    other = user(session, "receipt-owner-mismatch")
+    take(session, owner, "task:inconsistent")
+    use = session.scalar(select(AICreditUse).where(AICreditUse.use_key == "task:inconsistent"))
+    # 即使凭据的 user_id 被错误接线，次数归属也必须核对，不能只相信其中一张表。
+    use.user_id = other.id
+    session.flush()
+    with pytest.raises(CreditError) as err:
+        take(session, other, "task:inconsistent")
+    assert err.value.code == "REQUEST_MISMATCH"
+    session.refresh(grant)
+    assert (grant.used, grant.held) == (0, 1)
+
+
+def test_duplicate_key_fallback_does_not_leak_another_users_receipt(
+    session, repeatable_read_factory
+):
+    owner = user(session)
+    card(session, owner, paid=NOW - timedelta(days=2))
+    other = user(session, "old-snapshot-other")
+    _, _, other_grant = card(session, other, paid=NOW - timedelta(days=2))
+    session.commit()
+    with repeatable_read_factory() as first, repeatable_read_factory() as stale:
+        assert stale.scalar(select(func.count(AICreditUse.id))) == 0
+        take(first, owner, "task:collision")
+        first.commit()
+        with pytest.raises(CreditError) as err:
+            take(stale, other, "task:collision")
+        assert err.value.code == "REQUEST_MISMATCH"
+        assert err.value.message == "请求编号与本次请求不一致"
+        stale.rollback()
+    session.expire_all()
+    session.refresh(other_grant)
+    assert (other_grant.used, other_grant.held) == (0, 0)
+    assert ai_credits.paid_pool_used(session, date(2026, 11, 10)) == 1
+
+
 def test_granting_twice_from_old_snapshots_gives_one_grant(session, repeatable_read_factory):
     owner = user(session)
     order, ticket, _ = card(session, owner)
