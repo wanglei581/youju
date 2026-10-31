@@ -12,8 +12,8 @@
   <block wx:else>
     <view class="card intro">
       <view class="intro-title">你账号下保存的个人信息</view>
-      <view class="muted intro-text">同意记录、关注、{{remindOpen || subs.length ? '微信提醒授权、' : ''}}纠错都在这里，可以复制保存，也可以改关注名称、删除记录。复制单条包含这条记录的完整条件、状态和时间；复制全部包含本页返回的数据。访问日志不在这里显示。更新于 {{exportedAt}}</view>
-      <view class="btn-primary copy" bindtap="copyAll" aria-role="button"><t-icon name="copy" size="36rpx" color="#FFFFFF" />复制全部数据</view>
+      <view class="muted intro-text">同意记录、关注、{{remindOpen || subs.length ? '微信提醒授权、' : ''}}纠错都在这里，可以复制保存，也可以改关注名称、删除记录。复制单条包含这条记录的完整条件、状态和时间；个人数据概览包含本页返回的数据；不含未加载的对话和逐条问题，问题请在对话内分页复制。访问日志不在这里显示。更新于 {{exportedAt}}</view>
+      <view class="btn-primary copy" bindtap="copyAll" aria-role="button"><t-icon name="copy" size="36rpx" color="#FFFFFF" />复制个人数据概览</view>
     </view>
 
     <view class="card">
@@ -54,7 +54,7 @@
         </view>
       </view>
       <view wx:if="{{!subs.length}}" class="empty weak">没有</view>
-      <view wx:if="{{totals.subs > subs.length}}" class="more weak">只显示最近 {{subs.length}} 条，复制全部数据里也是这些</view>
+      <view wx:if="{{totals.subs > subs.length}}" class="more weak">只显示最近 {{subs.length}} 条，复制个人数据概览里也是这些</view>
     </view>
 
     <view class="card">
@@ -72,7 +72,7 @@
         </view>
       </view>
       <view wx:if="{{!feedback.length}}" class="empty weak">没有</view>
-      <view wx:if="{{totals.feedback > feedback.length}}" class="more weak">只显示最近 {{feedback.length}} 条，复制全部数据里也是这些</view>
+      <view wx:if="{{totals.feedback > feedback.length}}" class="more weak">只显示最近 {{feedback.length}} 条，复制个人数据概览里也是这些</view>
     </view>
 
     <!-- 工具记录：本人随时能看（复制单条是这条的完整记录）、能删，功能关着、协议升了版本也一样（D-093 上线门槛第 8 条）；
@@ -88,13 +88,13 @@
           <text wx:else class="op-wait">正在处理，结束后可以删除</text>
         </view>
       </view>
-      <view wx:if="{{totals.tasks > tasks.length}}" class="more weak">只显示最近 {{tasks.length}} 条，复制全部数据里也是这些</view>
+      <view wx:if="{{totals.tasks > tasks.length}}" class="more weak">只显示最近 {{tasks.length}} 条，复制个人数据概览里也是这些</view>
       <view wx:if="{{fileNote}}" class="more weak">{{fileNote}}</view>
     </view>
 
     <view wx:if="{{chats.length}}" class="card">
       <view class="section-title">{{chatsTitle}} {{totals.chats}} 条 · {{totals.chatTurns}} 问</view>
-      <view class="muted plain">这里查看保存的问题、时间、状态和次数记录，不含回答。复制全部数据包含已加载的对话目录；问题按页查看、复制。</view>
+      <view class="muted plain">这里查看保存的问题、时间、状态和次数记录，不含回答。复制个人数据概览包含已加载的对话目录；问题按页查看、复制。</view>
       <view wx:for="{{chats}}" wx:key="id" class="item">
         <view class="item-main">{{item.title}}</view>
         <view class="item-sub">{{item.turns}} 问 · 最近 {{item.last}}</view>
@@ -125,7 +125,7 @@
 
     <view wx:if="{{totals.events}}" class="card">
       <view class="section-title">使用记录 {{totals.events}}</view>
-      <view class="muted plain">搜索、导出等操作的次数和类型，不含搜索的文字；在复制全部数据里可以看到每一条。</view>
+      <view class="muted plain">搜索、导出等操作的次数和类型，不含搜索的文字；在复制个人数据概览里可以看到每一条。</view>
     </view>
 
     <view class="card">

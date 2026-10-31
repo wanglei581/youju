@@ -46,7 +46,7 @@ function taskData(d) {
     })),
     tasksTitle: ai ? '工具和 AI 记录' : '工具记录',
     fileNote: files && pages.has('advisor-tasks') ? '批量工具的结果文件在“我的”→“我的记录”里下载' : '',
-    extras: extras.length ? `${extras.join('、')}：在“复制全部数据”里可以看到。` : '',
+    extras: extras.length ? `${extras.join('、')}：在“复制个人数据概览”里可以看到。` : '',
     toolsShown: pages.has('advisor') || rows.length > 0,
     boostShown: pages.has('advisor') || rows.length > 0 || Boolean(d.boostTrial),
   };
@@ -208,7 +208,7 @@ Page({
     if (!this.raw) return;
     wx.setClipboardData({
       data: JSON.stringify(this.raw, null, 2),
-      success: () => wx.showToast({ title: '已复制全部数据，可以粘贴保存', icon: 'none' }),
+      success: () => wx.showToast({ title: '已复制个人数据概览，可以粘贴保存', icon: 'none' }),
       fail: () => wx.showToast({ title: '没能复制：请先同意微信弹出的隐私保护指引，再点一次', icon: 'none' }),
     });
   },

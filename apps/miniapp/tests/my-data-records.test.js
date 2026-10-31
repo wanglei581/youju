@@ -152,12 +152,12 @@ test('保存期限：过审版、没有工具记录时不写批量工具、加�
   }
 });
 
-test('加量体验、送的批量工具天数：有的时候写一行，说明在"复制全部数据"里；没有就不显示', async () => {
+test('加量体验、送的批量工具天数：有的时候写一行，说明在"复制个人数据概览"里；没有就不显示', async () => {
   const h = myData({ pages: FIRST_PAGES, extra: { boostTrial: { startedAt: '2026-10-01T00:00:00+08:00', endsAt: '2026-10-04T00:00:00+08:00' }, passGiftsTotal: 2, passGifts: [] } });
   h.page.load(); await flush();
   const card = findAll(h.view(), hasClass('card')).find((c) => /其他记录/.test(textOf(c)));
   assert.ok(card);
-  assert.match(textOf(card), /加量体验的开始和结束时间、送的批量工具天数（2 笔）：在“复制全部数据”里可以看到。/);
+  assert.match(textOf(card), /加量体验的开始和结束时间、送的批量工具天数（2 笔）：在“复制个人数据概览”里可以看到。/);
   // 有加量体验记录时，保存期限里写它（即使是过审版）
   assert.match(textOf(findAll(h.view(), hasClass('plain')).at(-1)), /加量体验记录：开始和结束时间保存到你注销/);
   const none = myData();
