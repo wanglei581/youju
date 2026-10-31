@@ -335,6 +335,74 @@ def test_same_use_key_from_an_old_snapshot_returns_the_existing_one(
     assert ai_credits.paid_pool_used(session, date(2026, 11, 10)) == 1
 
 
+@pytest.mark.parametrize("settled", [False, True])
+def test_retry_last_credit_from_old_snapshot_returns_existing_receipt(
+    session, repeatable_read_factory, settled
+):
+    owner = user(session)
+    _, _, grant = card(session, owner, paid=NOW - timedelta(days=2))
+    grant.used = grant.amount - 1
+    session.commit()
+    with repeatable_read_factory() as first, repeatable_read_factory() as second:
+        for conn in (first, second):
+            assert conn.scalar(select(func.count(AICreditUse.id))) == 0
+        receipt = take(first, owner, "task:last")
+        if settled:
+            ai_credits.charge(first, "task:last", NOW)
+        first.commit()
+        # 余额已经为 0，但这是同一次请求重试，不应报 USED_UP，也不能再计全站名额。
+        assert take(second, owner, "task:last") == receipt
+        second.commit()
+    session.expire_all()
+    session.refresh(grant)
+    assert (grant.used, grant.held) == ((300, 0) if settled else (299, 1))
+    assert ai_credits.paid_pool_used(session, date(2026, 11, 10)) == 1
+
+
+def test_retry_released_credit_refreshes_old_snapshot_and_identity_map(
+    session, repeatable_read_factory
+):
+    owner = user(session)
+    _, _, grant = card(session, owner, paid=NOW - timedelta(days=2))
+    take(session, owner, "task:released")
+    session.commit()
+    with repeatable_read_factory() as stale, repeatable_read_factory() as releasing:
+        cached = stale.scalar(select(AICreditUse).where(AICreditUse.use_key == "task:released"))
+        assert cached.state == "reserved"
+        releasing.scalar(select(User).where(User.id == owner.id).with_for_update())
+        assert ai_credits.release(releasing, "task:released", NOW, "failed") == "released"
+        releasing.commit()
+        with pytest.raises(CreditError) as err:
+            take(stale, owner, "task:released")
+        assert err.value.code == "RELEASED"
+        assert cached.state == "released"
+        stale.rollback()
+    session.expire_all()
+    session.refresh(grant)
+    assert (grant.used, grant.held) == (0, 0)
+    assert ai_credits.paid_pool_used(session, date(2026, 11, 10)) == 1
+
+
+def test_retry_gift_does_not_request_confirmation_for_the_next_paid_card(
+    session, repeatable_read_factory
+):
+    owner = user(session)
+    card(session, owner)
+    _, gift = trial(session, owner)
+    gift.used = gift.amount - 1
+    session.commit()
+    with repeatable_read_factory() as first, repeatable_read_factory() as stale:
+        assert stale.scalar(select(func.count(AICreditUse.id))) == 0
+        receipt = take(first, owner, "task:last-gift", confirmed=())
+        assert receipt["source"] == "gift"
+        first.commit()
+        # 原请求占的是赠送次数；重试时下一笔虽是新买的卡，也不用重新确认退款提示。
+        assert take(stale, owner, "task:last-gift", confirmed=()) == receipt
+        stale.commit()
+    session.expire_all()
+    assert ai_credits.paid_pool_used(session, date(2026, 11, 10)) == 1
+
+
 def test_granting_twice_from_old_snapshots_gives_one_grant(session, repeatable_read_factory):
     owner = user(session)
     order, ticket, _ = card(session, owner)

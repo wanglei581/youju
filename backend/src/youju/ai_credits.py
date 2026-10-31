@@ -231,16 +231,28 @@ def reserve(
     返回 {useKey, grantId, source, left}。"""
     if kind not in USE_KINDS or reason not in REASONS:
         raise ValueError(f"不认识的 kind 或 reason：{kind} {reason}")
+    # 新请求先普通读，避免可重复读下给不存在的编号加间隙锁，妨碍其他用户插入。
+    # 看见已有凭据后须刷新当前状态，不能把已经退回的旧快照当成仍占着。
     existing = session.scalar(select(AICreditUse).where(AICreditUse.use_key == use_key))
     if existing is not None:
-        return _existing(session, existing, wallet)
+        current = _current_use(session, use_key)
+        if current is not None:
+            return _existing(session, current, wallet)
     slot = wallet.next_slot()
     if slot is None:
+        # 旧快照可能看不到刚占走最后一次的凭据，拒绝前再用当前读认一次重试。
+        current = _current_use(session, use_key)
+        if current is not None:
+            return _existing(session, current, wallet)
         raise NoCredits(wallet.status)
     needed = ["site_full"] if reason == "site_full" else []
     if _first_purchase_prompt(session, slot, stamp):
         needed.append("first_purchase")
     if needed and not set(needed) <= set(confirmed):
+        # 重试仍归原来那笔；钱包现在挑中的另一张卡需要确认，不影响已受理的请求。
+        current = _current_use(session, use_key)
+        if current is not None:
+            return _existing(session, current, wallet)
         raise CreditConfirm(needed)
     use = AICreditUse(
         grant_id=slot.grant.id,
@@ -253,18 +265,12 @@ def reserve(
         pool_day=usage_day(stamp),
     )
     try:
-        # 可重复读的旧快照下，上面的普通读看不到别的连接刚占的同一个 use_key：插入放在存档点里，
-        # 撞了唯一键就用当前读取回那一行，照"重复调用"处理（Codex 10/29）
+        # 插入放在存档点里；唯一键仍是重复编号的最终约束，撞键时当前读取回已有凭据。
         with session.begin_nested():
             session.add(use)
             session.flush()
     except IntegrityError:
-        existing = session.scalar(
-            select(AICreditUse)
-            .where(AICreditUse.use_key == use_key)
-            .with_for_update()
-            .execution_options(populate_existing=True)
-        )
+        existing = _current_use(session, use_key)
         if existing is None:
             raise
         return _existing(session, existing, wallet)
@@ -278,6 +284,16 @@ def reserve(
     )
     session.flush()
     return _out(use, slot.source, wallet.left)
+
+
+def _current_use(session: Session, use_key: str) -> AICreditUse | None:
+    """调用方已锁用户行：刷新凭据状态，同时绕过事务快照和会话里缓存的 ORM 对象。"""
+    return session.scalar(
+        select(AICreditUse)
+        .where(AICreditUse.use_key == use_key)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
 
 
 def _existing(session: Session, existing: AICreditUse, wallet: Wallet) -> dict:

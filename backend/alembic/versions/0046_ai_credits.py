@@ -1,4 +1,4 @@
-"""卡里的 AI 次数（D-109 甲：AI 次数加进使用期卡；模块 youju/ai_credits.py）：两张新表，只新增。
+"""卡里的 AI 次数（D-109 甲：AI 次数加进使用期卡；模块 youju/ai_credits.py）：三张新表，只新增。
 
 - ai_credit_grants：每给一次次数记一笔（买卡天数 × 10、续买多送 30、加量体验 30、上线补给）。
   挂在使用期段（pass_id，段删了一起删）或加量体验（trial_id，随用户删）上；已扣 used、占着 held
@@ -9,8 +9,9 @@
 - 不要新授权才能部署：这次只建表，没有代码写它们。接进解读、对照、问一问以后，api 账号要对这三张表
   有 SELECT、INSERT、UPDATE（加在 deploy/mysql_accounts.sql，和那一版一起执行）。
 
-编号 0046 是协调会话 10/29 给的；main 上现在最新是 0043，0044（#397）、0045（AI 会话）还在 PR 里，
-谁后合并谁把 down_revision 接到当时 main 最新的那个（协调会话合并时改）。
+编号 0046 是协调会话 10/29 给的；10/31 核对 main 最新为 0043，0044（#397）尚未合并。
+协调会话最终将原拟 0045 的违规记录索引并入问一问第二批 0047，0045 留空。
+谁后合并谁把 down_revision 接到当时 main 最新的那个，合并前检查只有一个迁移头。
 
 Revision ID: 0046
 Revises: 0043
@@ -41,7 +42,9 @@ def upgrade() -> None:
         sa.Column("expires_at", mysql.DATETIME(fsp=6), nullable=True),
         sa.Column("granted_at", mysql.DATETIME(fsp=6), nullable=False),
         sa.Column("revoked_at", mysql.DATETIME(fsp=6), nullable=True),
-        sa.CheckConstraint("(pass_id IS NULL) <> (trial_id IS NULL)", name="ck_ai_credit_grants_origin"),
+        sa.CheckConstraint(
+            "(pass_id IS NULL) <> (trial_id IS NULL)", name="ck_ai_credit_grants_origin"
+        ),
         sa.CheckConstraint(
             "kind IN ('purchase', 'renewal', 'trial', 'backfill')", name="ck_ai_credit_grants_kind"
         ),
