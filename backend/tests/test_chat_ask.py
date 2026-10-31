@@ -1003,6 +1003,99 @@ def test_delete_chat_while_processing(client, session, session_factory, settings
     assert session.scalar(select(func.sum(AIUsage.calls)).where(AIUsage.task == "ask")) == 1
 
 
+@pytest.mark.parametrize("state", ["failed", "queued", "done", "running"])
+@pytest.mark.parametrize("outcome", ["answer", "retry", "blocked"])
+@pytest.mark.parametrize("live_time", [False, True])
+def test_stale_worker_cannot_finish_or_refund(
+    client, session, session_factory, settings, doc, model, state, outcome, live_time
+):
+    """调用期间被取消或重领：旧调用无论成功、重试或被拦，都不能动新的任务和次数。"""
+    send(client, "截止是哪天", doc)
+    task_id = session.scalar(select(AdvisorTask.id))
+    marker = {"newer": True}
+
+    def replace_claim():
+        with session_factory() as other:
+            row = other.get(AdvisorTask, task_id)
+            row.status = state
+            if state == "running":
+                row.attempts += 1
+            row.result_json = marker
+            row.error = "新的处理状态"
+            row.finished_at = NOW if state in ("done", "failed") else None
+            other.commit()
+
+    model.before_return = replace_claim
+    if outcome == "retry":
+        model.error = AIError("测试网络错误", retryable=True)
+    elif outcome == "blocked":
+        model.payload = answer(("P002", TEST_WORD))
+    if live_time:
+        service.run_advisor_tasks(session, settings=settings, max_tasks=1)
+    else:
+        work(session, settings)
+    session.expire_all()
+    task = session.get(AdvisorTask, task_id)
+    assert task.status == state
+    assert task.attempts == (2 if state == "running" else 1)
+    assert task.result_json == marker and task.error == "新的处理状态"
+    assert task.finished_at == (NOW if state in ("done", "failed") else None)
+    assert usage(session, "ask") == 1
+    assert len(model.calls) == 1
+
+
+@pytest.mark.parametrize("change", ["cancel", "reclaim", "delete", "consent"])
+def test_claim_and_consent_rechecked_before_model_call(
+    client, session, session_factory, settings, doc, model, monkeypatch, change
+):
+    reply = send(client, "截止是哪天", doc).json()
+    task_id = session.scalar(select(AdvisorTask.id))
+    original = ask.rules
+
+    def change_after_read(*args, **kwargs):
+        result = original(*args, **kwargs)
+        with session_factory() as other:
+            row = other.get(AdvisorTask, task_id)
+            if change == "cancel":
+                row.status = "failed"
+            elif change == "reclaim":
+                row.attempts += 1
+            elif change == "delete":
+                chat_store.delete_chats(other, [reply["chatId"]])
+            else:
+                monkeypatch.setattr(chat_store, "CHAT_AGREEMENT_VERSION", "chat-new-version")
+            other.commit()
+        return result
+
+    monkeypatch.setattr(ask, "rules", change_after_read)
+    work(session, settings)
+    assert model.calls == []
+    assert session.scalar(select(func.coalesce(func.sum(AIUsage.calls), 0))) == 0
+
+
+def test_outer_failure_does_not_overwrite_new_claim(
+    client, session, session_factory, settings, doc, model, monkeypatch, caplog
+):
+    send(client, "截止是哪天", doc)
+    task_id = session.scalar(select(AdvisorTask.id))
+
+    def lost_claim(*args, **kwargs):
+        with session_factory() as other:
+            row = other.get(AdvisorTask, task_id)
+            row.attempts += 1
+            row.error = "新领取"
+            other.commit()
+        raise RuntimeError("不能出现在日志的用户问题")
+
+    monkeypatch.setattr(service, "process_task", lost_claim)
+    work(session, settings)
+    session.expire_all()
+    task = session.get(AdvisorTask, task_id)
+    assert task.status == "running" and task.attempts == 2 and task.error == "新领取"
+    assert usage(session, "ask") == 1
+    assert "不能出现在日志的用户问题" not in caplog.text
+
+
 @pytest.mark.parametrize(
     ("change", "error_code"),
     [
