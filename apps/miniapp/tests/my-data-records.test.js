@@ -40,13 +40,13 @@ const TASKS = [
   { id: 44, kind: 'compare', status: 'queued', rowCount: 5, createdAt: '2026-10-22T11:30:00+08:00' },
 ];
 
-function myData({ tasks = [], pages = APP_PAGES, extra = {}, remove, chatApi = {}, confirm = true } = {}) {
+function myData({ tasks = [], pages = APP_PAGES, extra = {}, remove, chatApi = {}, confirm = true, loadData } = {}) {
   const raw = { user: { openid: 'synthetic-openid', agreed: null }, follows: [], subscriptions: [], feedback: [], advisorTasks: plain(tasks),
     advisorTasksTotal: tasks.length, retention: RETENTION, ...extra };
   const calls = { load: 0, deleted: [] }; const copied = []; const toasts = []; let modal;
   const api = {
     ...chatApi,
-    myData: () => { calls.load += 1; return Promise.resolve(plain(raw)); },
+    myData: () => { calls.load += 1; return loadData ? loadData() : Promise.resolve(plain(raw)); },
     deleteAdvisorTask: (id) => { calls.deleted.push(id); return remove ? remove(id) : Promise.resolve(); },
   };
   const page = load('pages/my-data/index.js', {
@@ -240,4 +240,33 @@ test('切换对话或刷新后迟到的问题响应不覆盖当前数据；查�
   h.page.viewChat(event({ id: 71 })); h.page.load(); await flush();
   finishOld(CHAT_PAGE); await flush();
   assert.equal(h.page.data.chatDetail, null);
+});
+
+test('真实 API 封装使用后端挂载路径：本人数据分页与整条对话删除', async () => {
+  const sent = [];
+  const api = load('utils/api.js', {
+    './config.js': { devBaseUrl: 'http://localhost' }, '../mock/data.js': {},
+    './mockSearch.js': {}, './format.js': {},
+  }, { wx: { request(o) { sent.push([o.method, o.url]); o.success({ statusCode: o.method === 'DELETE' ? 204 : 200, data: {} }); } } });
+  await api.myDataChats('123-7'); await api.myDataChat(7, 21); await api.deleteChat(7);
+  assert.deepEqual(sent, [
+    ['GET', 'http://localhost/api/v1/me/data/chats?after=123-7'],
+    ['GET', 'http://localhost/api/v1/me/data/chats/7?before=21'],
+    ['DELETE', 'http://localhost/api/v1/advisor/chats/7'],
+  ]);
+});
+
+
+test('重复加载逆序完成或卸载后回包，不复活删除前目录，不覆盖新成功状态', async () => {
+  const pending = [];
+  const h = myData({ loadData: () => new Promise((resolve, reject) => pending.push({ resolve, reject })) });
+  h.page.load(); h.page.load();
+  pending[1].resolve({ ...h.raw, aiChats: [], aiChatsTotal: 0 }); await flush();
+  pending[0].resolve({ ...h.raw, aiChats: [CHAT], aiChatsTotal: 1 }); await flush();
+  assert.equal(h.page.data.chats.length, 0); assert.equal(h.page.raw.aiChats.length, 0);
+  h.page.load(); h.page.load(); pending[3].resolve(h.raw); await flush();
+  pending[2].reject(new Error('旧请求错误')); await flush(); assert.equal(h.page.data.error, '');
+  h.page.load(); h.page.onUnload(); const state = plain(h.page.data);
+  pending[4].resolve({ ...h.raw, aiChats: [CHAT] }); await flush();
+  assert.deepEqual(h.page.data, state);
 });

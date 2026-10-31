@@ -81,9 +81,11 @@ Page({
   load() {
     this.chatRequest = (this.chatRequest || 0) + 1;
     this.loadEpoch = (this.loadEpoch || 0) + 1;
+    const epoch = this.loadEpoch;
     this.setData({ chatDetail: null, chatLoading: false, loading: true, error: '' });
     api.myData()
       .then((d) => {
+        if (epoch !== this.loadEpoch) return;
         this.raw = d;
         const followName = {};
         d.follows.forEach((f) => { followName[f.id] = f.name; });
@@ -134,7 +136,10 @@ Page({
             ? `· AI 解读和条款对照：任务输入 ${d.retention.toolInput} 天后删除，任务和结果 ${d.retention.toolTasks} 天后删除` : '',
         });
       })
-      .catch((err) => this.setData({ loading: false, error: `加载失败：${err.message}` }));
+      .catch((err) => {
+        if (epoch !== this.loadEpoch) return;
+        this.setData({ loading: false, error: `加载失败：${err.message}` });
+      });
   },
 
   moreChats() {

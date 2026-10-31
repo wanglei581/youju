@@ -656,7 +656,7 @@ function myData() {
 // 本人数据管理不经过生成入口的能力或新协议检查。
 function myDataChats(after) { return request('/api/v1/me/data/chats', { after }); }
 function myDataChat(id, before) { return request(`/api/v1/me/data/chats/${id}`, before ? { before } : null); }
-function deleteChat(id) { return request(`/api/v1/chats/${id}`, null, { method: 'DELETE' }); }
+function deleteChat(id) { return request(`/api/v1/advisor/chats/${id}`, null, { method: 'DELETE' }); }
 
 // 开卖按小程序版本放开（D-074）：商品、下单、能力、我的、提交任务这几个请求带上代码包里《付费服务协议》的版本号
 // 和小程序环境（develop 开发版 / trial 体验版 / release 正式版）。服务端据此决定：沙箱和测试名单只在开发版、体验版，
