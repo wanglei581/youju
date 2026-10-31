@@ -76,7 +76,7 @@ def settings(monkeypatch):
         ai_advisor_base_url="https://advisor.invalid",
         ai_advisor_api_key=SecretStr("fake-advisor-value"),
         ai_advisor_model="advisor-model",
-        ai_advisor_stream=False,
+        ai_advisor_stream=True,  # 问这份通知只在流式开着时开放（第九节第 6 条）
         ai_model_label="测试模型",
         ai_model_filing="测试备案号",
         role="all",
@@ -388,18 +388,20 @@ def _texts(*sentences):
     return content.Texts.from_paragraphs(interpret.split_paragraphs("\n".join(sentences)))
 
 
-def test_validate_expands_dedups_sorts_and_caps():
+def test_validate_expands_dedups_keeps_model_order_and_caps():
     lines = [f"第{n}条、申报单位须满足第{n}项要求。" for n in range(1, 11)]
     texts = _texts(*lines)
     quotes = [{"sid": "P010", "quote": "申报单位须满足第10项要求"}] + [
         {"sid": f"P{n:03d}", "quote": f"申报单位须满足第{n}项要求"} for n in range(1, 9)
     ]
     result = ask.validate({"status": "answer", "quotes": quotes}, texts)
-    # 超过 8 句只取模型给的前 8 句，按原文先后排、编号；扩成完整的句子
-    assert [q["sid"] for q in result["quotes"]] == [f"P{n:03d}" for n in range(1, 8)] + ["P010"]
+    # 超过 8 句只取模型给的前 8 句，照模型给的先后编号（最相关的在前，不按原文先后重排，Codex
+    # 第 15 轮）；扩成完整的句子
+    assert [q["sid"] for q in result["quotes"]] == ["P010"] + [f"P{n:03d}" for n in range(1, 8)]
     assert [q["n"] for q in result["quotes"]] == list(range(1, 9))
-    assert result["quotes"][0]["text"] == lines[0] and result["quotes"][0]["source"] == "body"
-    # 重复的、段号对不上的、太短的、格式不对的都不要
+    assert result["quotes"][0]["text"] == lines[9] and result["quotes"][1]["text"] == lines[0]
+    assert result["quotes"][0]["source"] == "body"
+    # 重复的、段号对不上的、太短的、格式不对的都不要；重复的不算对不上（不进 dropped）
     result = ask.validate(
         {
             "status": "answer",
@@ -413,14 +415,18 @@ def test_validate_expands_dedups_sorts_and_caps():
         },
         texts,
     )
-    assert [q["sid"] for q in result["quotes"]] == ["P002"] and result["dropped"] == 4
-    # 其他三种状态时模型给的句子一律不用；answer 但一句都没对上按 not_found 算
+    assert [q["sid"] for q in result["quotes"]] == ["P002"] and result["dropped"] == 3
+    # 其他三种状态时模型给的句子一律不用
     for status in ("not_found", "out_of_scope", "clarify"):
         got = ask.validate({"status": status, "quotes": quotes}, texts)
         assert got["status"] == status and got["quotes"] == []
+    # answer 但给的句子一句都没核对上：unverified（摘录失败，不是没写，D-105）；
+    # 句子列表是空的：not_found（Codex 第 11 轮）
     got = ask.validate(
         {"status": "answer", "quotes": [{"sid": "P001", "quote": "原文里没有"}]}, texts
     )
+    assert got["status"] == "unverified" and got["quotes"] == []
+    got = ask.validate({"status": "answer", "quotes": []}, texts)
     assert got["status"] == "not_found" and got["quotes"] == []
     for bad in (None, [], {"status": "yes", "quotes": []}, {"status": "answer", "quotes": "x"}):
         with pytest.raises(ValueError):
@@ -434,6 +440,62 @@ def test_validate_skips_redacted_and_counts_them():
         texts,
     )
     assert [q["sid"] for q in result["quotes"]] == ["P001"] and result["redacted"] == 1
+    assert result["status"] == "answer"  # 有能显示的：answer，含号码的另写个数
+
+
+def test_validate_status_order_without_shown_quotes():
+    """没有能显示的原句时按核对结果定状态（D-105，Codex 第 11 轮的先后）：都含遮掉的号码 →
+    redacted；一句对不上、一句对上但含号码 → 也是 redacted；都对不上 → unverified。"""
+    texts = _texts(S1, v1.redact_sensitive(S6))
+    masked = ("P002", "联系电话：[电话已脱敏]")
+    got = ask.validate(answer(masked), texts)
+    assert (got["status"], got["quotes"], got["redacted"]) == ("redacted", [], 1)
+    got = ask.validate(answer(("P001", "原文里没有的一句话"), masked), texts)
+    assert (got["status"], got["redacted"], got["dropped"]) == ("redacted", 1, 1)
+    got = ask.validate(answer(("P001", "原文里没有的一句话"), ("P009", "段号也不对的一句")), texts)
+    assert (got["status"], got["redacted"], got["dropped"]) == ("unverified", 0, 2)
+
+
+def test_validate_short_masked_fragment_is_redacted():
+    """含遮掉号码的先判、不看长短（Codex 第 40 轮）：只摘了遮挡前"联系电话："这样不到 6 个字的
+    一小段，也算核对上了、不显示（redacted），不当成对不上。不含号码的太短的才算对不上。"""
+    texts = _texts(S1, v1.redact_sensitive(S6))
+    got = ask.validate(answer(("P002", "联系电话：")), texts)
+    assert (got["status"], got["redacted"], got["dropped"]) == ("redacted", 1, 0)
+    got = ask.validate(answer(("P001", "一、申报")), texts)
+    assert (got["status"], got["dropped"]) == ("unverified", 1)
+
+
+def test_validate_counts_a_masked_sentence_once():
+    """同一句含遮掉号码的摘了几次（整句、它的一截）只记一句，"有 N 句"不多算；多摘的是重复，
+    不算对不上。"""
+    texts = _texts(S1, v1.redact_sensitive(S6))
+    phone, name = ("P002", "联系电话：[电话已脱敏]"), ("P002", "六、联系人：[姓名已脱敏]")
+    got = ask.validate(answer(phone, name, phone), texts)
+    assert (got["status"], got["redacted"], got["dropped"]) == ("redacted", 1, 0)
+    got = ask.validate(answer(phone, ("P001", S1), name), texts)
+    shown = (got["status"], len(got["quotes"]), got["redacted"], got["dropped"])
+    assert shown == ("answer", 1, 1, 0)
+
+
+def test_validate_counts_masked_sentences_inside_a_longer_quote():
+    """一句引用跨了几句时按句记（Codex 第 3 轮）：含号码的那句单独摘一次、连着下一句又摘一次，
+    只记一句；一句引用里有两句含号码的记两句。都对得上，不算对不上。"""
+    masked = v1.redact_sensitive(S6)
+    texts = _texts(masked + S7)  # 一段里两句
+    got = ask.validate(
+        answer(("P001", "联系电话：[电话已脱敏]"), ("P001", "[电话已脱敏]。七、本通知自发布")),
+        texts,
+    )
+    assert (got["status"], got["quotes"], got["redacted"], got["dropped"]) == ("redacted", [], 1, 0)
+    texts = _texts("联系人：[姓名已脱敏]。联系电话：[电话已脱敏]。")
+    got = ask.validate(answer(("P001", "[姓名已脱敏]。联系电话")), texts)
+    assert (got["status"], got["redacted"], got["dropped"]) == ("redacted", 2, 0)
+    # 先摘跨两句的、再摘其中一句：后一句记过了，不重复记
+    got = ask.validate(
+        answer(("P001", "[姓名已脱敏]。联系电话"), ("P001", "联系电话：[电话已脱敏]")), texts
+    )
+    assert (got["status"], got["redacted"], got["dropped"]) == ("redacted", 2, 0)
 
 
 def test_validate_only_looks_in_the_quotes_own_source():
@@ -529,10 +591,11 @@ def test_ask_creates_task_then_finds_quotes(client, session, settings, doc, mode
     assert system == ask.SYSTEM_PROMPT and list(sent) == [
         "read",
         "paragraphs",
-        "history",
+        "recent",
+        "previousAnswer",
         "question",
     ]
-    assert sent["question"] == text and sent["history"] == []
+    assert sent["question"] == text and sent["recent"] == [] and sent["previousAnswer"] is None
     assert sent["read"] == "读了：正文（这份通知没有附件）"
     assert sent["paragraphs"][1] == {"sid": "P002", "text": S2}
     # 问题文字不进任务的输入、快照、结果
@@ -602,10 +665,13 @@ def test_rules_answer_on_the_spot(client, session, settings, doc, model, wechat)
     stored = session.get(AIChatTurn, draft["id"]).answer_json
     assert stored["versions"]["config"] == content.CONFIG_BODY
     assert "申报书" not in json.dumps(stored, ensure_ascii=False)
-    # 问要交什么的不挡，交给模型；规则答的两问也算"上一答"，问题文字带进上下文
+    # 问要交什么的不挡，交给模型；规则答的两问也算有回答：最近两问的问题文字带进上下文，
+    # 上一答是后一问（没有原句）
     got = asked(client, session, settings, model, "帮我写一下要交的材料", doc)
     assert got["status"] == "done"
-    assert model.calls[-1][1]["history"] == [{"q": "刚才那句是什么意思"}, {"q": "帮我写一份申报书"}]
+    sent = model.calls[-1][1]
+    assert sent["recent"] == ["刚才那句是什么意思", "帮我写一份申报书"]
+    assert sent["previousAnswer"] == {"question": "帮我写一份申报书", "quotes": []}
 
 
 def test_followups_and_content_updates(
@@ -627,12 +693,11 @@ def test_followups_and_content_updates(
     )
     assert [q["n"] for q in first["answer"]["quotes"]] == [1, 2]
     second = asked(client, session, settings, model, "那市里报送呢？", doc, answer(("P003", S3)))
-    assert model.calls[-1][1]["history"] == [
-        {
-            "q": "企业申报截止是哪天？",
-            "quotes": [{"n": 1, "sid": "P002", "quote": S2}, {"n": 2, "sid": "P003", "quote": S3}],
-        }
-    ]
+    assert model.calls[-1][1]["recent"] == ["企业申报截止是哪天？"]
+    assert model.calls[-1][1]["previousAnswer"] == {
+        "question": "企业申报截止是哪天？",
+        "quotes": [{"n": 1, "sid": "P002", "quote": S2}, {"n": 2, "sid": "P003", "quote": S3}],
+    }
     session.expire_all()
     snapshot = session.get(AdvisorTask, session.get(AIChatTurn, second["id"]).task_id).snapshot
     assert snapshot["prev"] == first["id"]
@@ -648,7 +713,8 @@ def test_followups_and_content_updates(
     calls = len(model.calls)
     asked(client, session, settings, model, "第五条是什么", doc, answer(("P005", S5)))
     assert len(model.calls) == calls + 1
-    assert model.calls[-1][1]["history"] == [{"q": "那市里报送呢？"}, {"q": "刚才第五句呢？"}]
+    assert model.calls[-1][1]["recent"] == ["那市里报送呢？", "刚才第五句呢？"]
+    assert model.calls[-1][1]["previousAnswer"] == {"question": "刚才第五句呢？", "quotes": []}
     # 上一答之后正文更新了
     set_body(session_factory, doc, BODY + "\n八、新增的一句说明。")
     changed = send(client, "刚才那句呢？", doc).json()["turn"]
@@ -657,15 +723,18 @@ def test_followups_and_content_updates(
     )
     calls = len(model.calls)
     reset = asked(client, session, settings, model, "那市里报送呢？", doc, answer(("P003", S3)))
-    assert len(model.calls) == calls + 1 and model.calls[-1][1]["history"] == []
+    assert len(model.calls) == calls + 1
+    assert model.calls[-1][1]["recent"] == [] and model.calls[-1][1]["previousAnswer"] is None
     assert reset["answer"]["notes"][0] == {"code": "reset", "text": ask.RESET, "head": True}
     assert reset["answer"]["quotes"][0]["text"] == S3
-    # 再问一个完整的：照常回答；上上一问依据的是更新以前的内容，不带它
+    # 再问一个完整的：照常回答；上一答是按现在的内容答的，最近两问的问题文字照常带上
     last = asked(client, session, settings, model, "市里报送截止是哪天", doc, answer(("P003", S3)))
     assert all(note["code"] != "reset" for note in last["answer"]["notes"])
-    assert model.calls[-1][1]["history"] == [
-        {"q": "那市里报送呢？", "quotes": [{"n": 1, "sid": "P003", "quote": S3}]}
-    ]
+    assert model.calls[-1][1]["recent"] == ["刚才那句呢？", "那市里报送呢？"]
+    assert model.calls[-1][1]["previousAnswer"] == {
+        "question": "那市里报送呢？",
+        "quotes": [{"n": 1, "sid": "P003", "quote": S3}],
+    }
     assert usage(session, "ask") == 5  # 找到原句的 5 问；规则挡下的 2 问不占
 
 
@@ -958,11 +1027,12 @@ def test_answer_states_and_notes(client, session, settings, model, monkeypatch):
         doc,
         answer(("P006", "联系电话：[电话已脱敏]")),
     )
-    assert only["counted"] is False and only["answer"]["status"] == "not_found"
-    assert only["answer"]["lead"] == (
-        "有 1 句涉及电话、联系人或证件号，小程序里不显示这类号码。这次不算次数。"
-    )
-    assert only["answer"]["notes"] == [] and only["answer"]["reader"] is None
+    assert only["counted"] is False and only["answer"]["status"] == "redacted"
+    assert only["answer"]["lead"] == "有 1 句涉及电话、联系人或证件号，小程序里不显示这类号码。"
+    assert only["answer"]["notes"] == [
+        {"code": "not_counted", "text": "这次不算次数。", "head": False}
+    ]
+    assert only["answer"]["reader"] is None and only["answer"]["quotes"] == []
     # 没找到
     missing = asked(
         client,
@@ -973,15 +1043,21 @@ def test_answer_states_and_notes(client, session, settings, model, monkeypatch):
         doc,
         {"status": "not_found", "quotes": []},
     )
-    assert missing["counted"] is False and missing["answer"]["lead"] == ask.NOT_FOUND
+    assert missing["counted"] is False and missing["answer"]["lead"] == ask.NOT_FOUND == (
+        "这次没在已读的内容里找到和你问的直接相关的原句，不代表原文一定没写。"
+    )
     assert missing["answer"]["notes"] == [
         {"code": "not_found", "text": ask.NOT_FOUND_RETRY, "head": False}
     ]
     assert missing["answer"]["reader"] == {"docId": doc, "attachmentId": None}
     assert missing["answer"]["scope"]["text"] == "读了：正文（这份通知没有附件）"
-    # answer 但一句都对不上：按没找到算
+    # answer 但一句都对不上：unverified，说对不上、可以再问（D-105）；不算次数，给"站内阅读"
     wrong = got("评分标准是什么", answer(("P001", "原文里没有的一句话")))
-    assert wrong["status"] == "not_found" and wrong["lead"] == ask.NOT_FOUND
+    assert wrong["status"] == "unverified" and wrong["lead"] == ask.UNVERIFIED == (
+        "这次摘出的句子和原文对不上，没有显示。可以再问一次，或点“站内阅读”自己找。"
+    )
+    assert wrong["notes"] == [{"code": "not_counted", "text": "这次不算次数。", "head": False}]
+    assert wrong["reader"] == {"docId": doc, "attachmentId": None} and wrong["quotes"] == []
     # 模型回的范围外、要问清楚：只有固定说法，模型给的句子不用
     scope = asked(
         client,
@@ -1038,7 +1114,14 @@ def test_attachment_notes_and_unread_scope(client, session, settings, model, mon
     missing = asked(
         client, session, settings, model, "评分标准", doc, {"status": "not_found", "quotes": []}
     )
-    assert [n["code"] for n in missing["answer"]["notes"]] == ["not_found"]  # 附件打不开：不提
+    # 附件打不开：照样说可能在附件里，但不叫人点"站内阅读"（只有一份没读：这份附件）
+    assert [(n["code"], n["text"]) for n in missing["answer"]["notes"]] == [
+        (
+            "not_found_unread",
+            "没读的附件里可能有，这份附件暂时读不出来（原因见读的范围）。",
+        ),
+        ("not_found", ask.NOT_FOUND_RETRY),
+    ]
     # 附件在站内能打开了（同站内阅读的判断）
     monkeypatch.setattr(
         attachment_text,
@@ -1052,14 +1135,23 @@ def test_attachment_notes_and_unread_scope(client, session, settings, model, mon
     assert opened["notes"][0]["text"] == "原句说“见附件”，附件 1 没读，可以点“站内阅读”看。"
     assert opened["notes"][0]["attachmentId"] == att.id
     assert opened["scope"]["unread"][0]["readable"] is True
-    missing = turn_of(client, missing["id"])["answer"]
-    assert [n["text"] for n in missing["notes"]] == [ask.NOT_FOUND_UNREAD, ask.NOT_FOUND_RETRY]
+    again = turn_of(client, missing["id"])["answer"]
+    assert [n["text"] for n in again["notes"]] == [ask.NOT_FOUND_UNREAD, ask.NOT_FOUND_RETRY]
+    # 原文链接失效以后：只留"没读的附件里可能有。"，叫人去点、说读不出来的半句都不写
+    session.get(Document, doc).link_gone_at = datetime(2026, 10, 24, 2, tzinfo=UTC)
+    session.commit()
+    gone = turn_of(client, missing["id"])["answer"]
+    assert [(n["code"], n["text"]) for n in gone["notes"]] == [
+        ("link_gone", gone["notes"][0]["text"]),
+        ("not_found_unread", "没读的附件里可能有。"),
+        ("not_counted", "这次不算次数。"),
+    ]
 
 
 def _attachment_load(monkeypatch, state):
     """在真的正文后面接一个附件来源（附件读入第二步以前 content.load 只取正文）。"""
     real = content.load
-    text = "评分标准：创新能力占40分。\n申报单位须提交盖章的申请书。"
+    text = state.get("text", "评分标准：创新能力占40分。\n申报单位须提交盖章的申请书。")
 
     def load(session, doc_id, *, link=True):
         loaded = real(session, doc_id, link=link)
@@ -1086,14 +1178,15 @@ def _attachment_load(monkeypatch, state):
         texts = content.Texts(
             sources=(*loaded.sources, source), segments=(*loaded.segments, *segments)
         )
-        return replace(loaded, texts=texts, config=content.CONFIG_ATTACH, unread=[])
+        unread = list(state.get("unread", []))
+        return replace(loaded, texts=texts, config=content.CONFIG_ATTACH, unread=unread)
 
     monkeypatch.setattr(content, "load", load)
 
 
 def test_attachment_quotes_follow_current_names(client, session, settings, doc, model, monkeypatch):
     """回答里每句存来源的内容版本和段号：附件改名、换了位置以后，出处和"站内阅读"按现在的拼，
-    回答不作废；站内打不开了不给链接。正文在前、附件在后。"""
+    回答不作废；站内打不开了不给链接。照模型给的先后排（附件那句在前）。"""
     state = {"label": "附件 1《申报指南》", "id": 11, "readable": True}
     _attachment_load(monkeypatch, state)
     got = asked(
@@ -1107,20 +1200,179 @@ def test_attachment_quotes_follow_current_names(client, session, settings, doc, 
     )
     quotes = got["answer"]["quotes"]
     assert [(q["n"], q["source"], q["label"]) for q in quotes] == [
-        (1, "body", "正文"),
-        (2, "att-abc123def456", "附件 1《申报指南》第 1 段"),
+        (1, "att-abc123def456", "附件 1《申报指南》第 1 段"),
+        (2, "body", "正文"),
     ]
-    assert quotes[1]["reader"] == {"docId": doc, "attachmentId": 11}
-    assert quotes[1]["version"] == "sha-abc:extract-v1"
+    assert quotes[0]["reader"] == {"docId": doc, "attachmentId": 11}
+    assert quotes[0]["version"] == "sha-abc:extract-v1"
     assert got["answer"]["scope"]["text"] == "读了：正文、附件 1《申报指南》"
     state.update(label="附件 2《申报指南（修订）》", id=12)
     again = turn_of(client, got["id"])["answer"]
     assert again["status"] == "answer"
-    assert again["quotes"][1]["label"] == "附件 2《申报指南（修订）》第 1 段"
-    assert again["quotes"][1]["reader"] == {"docId": doc, "attachmentId": 12}
+    assert again["quotes"][0]["label"] == "附件 2《申报指南（修订）》第 1 段"
+    assert again["quotes"][0]["reader"] == {"docId": doc, "attachmentId": 12}
     state["readable"] = False
     again = turn_of(client, got["id"])["answer"]
-    assert again["quotes"][1]["reader"] is None and again["quotes"][1]["unreadable"] is True
+    assert again["quotes"][0]["reader"] is None and again["quotes"][0]["unreadable"] is True
+
+
+def _attachment_only_load(monkeypatch, state):
+    """没读正文、只读了一个附件（D-080 ②：没有正文但附件能读的照样能问）。"""
+    _attachment_load(monkeypatch, state)
+    with_body = content.load
+
+    def load(session, doc_id, *, link=True):
+        loaded = with_body(session, doc_id, link=link)
+        texts = content.Texts(
+            sources=tuple(s for s in loaded.sources if s.key != content.BODY),
+            segments=tuple(s for s in loaded.segments if s.source != content.BODY),
+        )
+        return replace(loaded, texts=texts)
+
+    monkeypatch.setattr(content, "load", load)
+
+
+def test_card_reader_follows_what_was_read(client, session, settings, doc, model, monkeypatch):
+    """卡片上的"站内阅读 ›"按这次读了的来源定（第六节第 3 条，Codex 第 41 轮）：读了正文开正文
+    （别的测试）；只读了附件开那个附件；读了的来源一个都打不开时不放入口，叫人去点的半句也不写。
+    not_found、unverified 各一题，日期那句同样；读的时候按现在的状态定。"""
+    state = {
+        "label": "附件 1《申报指南》",
+        "id": 11,
+        "readable": True,
+        "text": "评分标准：创新能力占40分。\n申报单位须提交盖章的申请书。联系电话：[电话已脱敏]。",
+    }
+    _attachment_only_load(monkeypatch, state)
+    missing = asked(
+        client, session, settings, model, "评审专家是谁", doc, {"status": "not_found", "quotes": []}
+    )
+    wrong = asked(
+        client,
+        session,
+        settings,
+        model,
+        "要交哪些材料",
+        doc,
+        answer(("Aabc123def456-2", "原文里没有的一句话")),
+    )
+    dated = asked(
+        client,
+        session,
+        settings,
+        model,
+        "截止时间是哪天",
+        doc,
+        answer(("Aabc123def456-2", "申报单位须提交盖章的申请书")),
+    )
+    mixed = asked(
+        client,
+        session,
+        settings,
+        model,
+        "联系电话是多少",
+        doc,
+        answer(("Aabc123def456-2", "联系电话："), ("Aabc123def456-2", "原文里没有的一句话")),
+    )
+    opened = {"docId": doc, "attachmentId": 11}
+    shown = [turn["answer"] for turn in (missing, wrong, dated, mixed)]
+    assert shown[0]["reader"] == opened and shown[0]["notes"][-1]["text"] == ask.NOT_FOUND_RETRY
+    assert (shown[1]["reader"], shown[1]["lead"]) == (opened, ask.UNVERIFIED)
+    assert [n["text"] for n in shown[2]["notes"] if n["code"] == "time_none"] == [ask.TIME_NONE]
+    assert shown[3]["reader"] == opened
+    assert shown[3]["lead"] == ask.REDACTED.format(n=1) + ask.REDACTED_REST
+    state["readable"] = False  # 读了的附件现在打不开了
+    shown = [turn_of(client, turn["id"])["answer"] for turn in (missing, wrong, dated, mixed)]
+    assert shown[0]["reader"] is None
+    assert shown[0]["notes"][-1] == {
+        "code": "not_found",
+        "text": "可以换个说法再问。这次不算次数。",
+        "head": False,
+    }
+    assert shown[1]["reader"] is None
+    assert shown[1]["lead"] == "这次摘出的句子和原文对不上，没有显示。可以再问一次。"
+    assert [n["text"] for n in shown[2]["notes"] if n["code"] == "time_none"] == [
+        "摘到的原句里没有写具体日期。"
+    ]
+    assert shown[3]["reader"] is None
+    assert shown[3]["lead"] == (
+        "有 1 句涉及电话、联系人或证件号，小程序里不显示这类号码。"
+        "其余摘出的句子和原文对不上，没有显示。可以再问一次。"
+    )
+
+
+def test_card_reader_picks_the_first_openable_source():
+    """卡片入口按读了的来源定：读了正文开正文；没读正文开读了的附件里第一个能站内打开的
+    （读了两个附件、第一个打不开时开第二个）；都打不开不给。"""
+    body = content.SourceText(key="body", label="正文", version="b", text="正文")
+    first, second = (
+        content.SourceText(
+            key=f"att-{n}",
+            label=f"附件 {n}",
+            version="a",
+            text="甲",
+            attachment_id=10 + n,
+            readable=n == 2,
+        )
+        for n in (1, 2)
+    )
+
+    def reader(*sources):
+        return ask._card_reader(7, SimpleNamespace(sources=sources))
+
+    assert reader(body, first, second) == {"docId": 7, "attachmentId": None}
+    assert reader(first, second) == {"docId": 7, "attachmentId": 12}
+    assert reader(first) is None
+
+
+def test_redacted_with_the_rest_unverified(client, session, settings, doc, model):
+    """含号码的对上了、其余的对不上（一句能显示的都没有）：仍是 redacted、不算次数，在"有 N 句……"
+    后面接"其余摘出的句子和原文对不上……"，入口同 unverified；只有含号码的不放入口；原文链接失效
+    以后只留事实那半句（Codex 第 42 轮，D-106 ②）。"""
+    mixed = asked(
+        client,
+        session,
+        settings,
+        model,
+        "联系人是谁",
+        doc,
+        answer(("P006", "联系电话：[电话已脱敏]"), ("P001", "原文里没有的一句话")),
+    )
+    got = mixed["answer"]
+    assert (got["status"], mixed["counted"]) == ("redacted", False)
+    assert got["lead"] == (
+        "有 1 句涉及电话、联系人或证件号，小程序里不显示这类号码。"
+        "其余摘出的句子和原文对不上，没有显示。可以再问一次，或点“站内阅读”自己找。"
+    )
+    assert got["reader"] == {"docId": doc, "attachmentId": None}
+    only = asked(
+        client,
+        session,
+        settings,
+        model,
+        "咨询电话",
+        doc,
+        answer(("P006", "联系电话：[电话已脱敏]")),
+    )
+    assert (only["answer"]["lead"], only["answer"]["reader"]) == (ask.REDACTED.format(n=1), None)
+    eligible = asked(
+        client,
+        session,
+        settings,
+        model,
+        "联系人符合要求吗",
+        doc,
+        answer(("P006", "联系电话：[电话已脱敏]"), ("P001", "原文里没有的一句话")),
+    )
+    assert eligible["answer"]["lead"] == (
+        ask.ELIGIBLE_PREFIX + ask.REDACTED.format(n=1) + ask.REDACTED_REST
+    )
+    session.get(Document, doc).link_gone_at = datetime(2026, 10, 24, 2, tzinfo=UTC)
+    session.commit()
+    gone = turn_of(client, mixed["id"])["answer"]
+    assert gone["lead"] == ask.REDACTED.format(n=1) + "其余摘出的句子和原文对不上，没有显示。"
+    assert gone["reader"] is None
+    gone = turn_of(client, only["id"])["answer"]  # 只有含号码的：失效以后照旧
+    assert (gone["lead"], gone["reader"]) == (ask.REDACTED.format(n=1), None)
 
 
 @pytest.mark.parametrize("change", ["body", "taken_down", "kind", "config", "words", "cloud"])
@@ -1200,7 +1452,7 @@ def test_link_gone_after_submission(client, session, settings, doc, model):
 def test_stream_hit_stops_and_records(client, session, settings, doc, model, wechat):
     """流式接收中本地词库命中：立刻断开，记 ASK_UNSAFE、退回 5 次那本、记违规记录，
     模型的输出不保存、不交给微信。"""
-    # 词出现在前面、后面还有一大段：攒够一步（GUARD_STEP 个新字）时查到，中途断开
+    # 词出现在前面、后面还有一大段：收到凑齐这个词的那一段就当场查到，中途断开
     model.payload = answer(("P001", f"申报对象为本省{TEST_WORD}" + "注册的企业" * 60))
     turn_id = send(client, "申报对象是谁", doc).json()["turn"]["id"]
     work(session, settings)
@@ -1209,6 +1461,7 @@ def test_stream_hit_stops_and_records(client, session, settings, doc, model, wec
     assert got["error"] == ask.UNSAFE_TEXT and got["answer"] is None
     reply = json.dumps(model.payload, ensure_ascii=False)
     assert TEST_WORD in model.streamed[-1] and len(model.streamed[-1]) < len(reply)  # 中途断开
+    assert TEST_WORD not in model.streamed[-2]  # 凑齐的那一段当场断开，不多收
     task = session.scalar(select(AdvisorTask))
     assert task.result_json is None and task.status == "failed"
     [hit] = hits(session)
@@ -1289,7 +1542,8 @@ def test_errors_log_no_text(client, session, settings, doc, model, caplog):
 
 
 def test_ask_ready_follows_admin_heartbeat(session, settings):
-    """问答能用：admin 能处理 AI 任务、单独线路三项都配好；api 看 admin 的心跳（新鲜、设置一样）。"""
+    """问答能用：admin 能处理 AI 任务、单独线路三项都配好、按流式接收；api 看 admin 的心跳
+    （新鲜、设置一样）。"""
     admin = SimpleNamespace(**{**vars(settings), "role": "admin"})
     api = SimpleNamespace(**{**vars(settings), "role": "api"})
     assert heartbeat.ask_ready(session, api, NOW) is False  # 还没有心跳
@@ -1308,8 +1562,19 @@ def test_ask_ready_follows_admin_heartbeat(session, settings):
     heartbeat.beat(session, admin, "admin", NOW)
     other = SimpleNamespace(**{**vars(api), "ai_advisor_openids": "internal"})
     assert heartbeat.ask_ready(session, other, NOW) is False
+    # 没开流式：边收边查做不到，问这份通知不开放（第九节第 6 条，Codex 第 8 轮）
+    heartbeat.beat(
+        session, SimpleNamespace(**{**vars(admin), "ai_advisor_stream": False}), "admin", NOW
+    )
+    assert session.get(AIHeartbeat, "admin").ask_ready is False
+    assert heartbeat.worker_ready(session, api, NOW) is True
+    assert heartbeat.ask_ready(session, api, NOW) is False
+    heartbeat.beat(session, admin, "admin", NOW)
     # 本机开发和测试按本进程的设置算
     assert heartbeat.ask_ready(session, settings, NOW) is True
+    settings.ai_advisor_stream = False
+    assert heartbeat.ask_ready(session, settings, NOW) is False
+    settings.ai_advisor_stream = True
     settings.ai_advisor_api_key = None
     assert heartbeat.ask_ready(session, settings, NOW) is False
 
@@ -1392,30 +1657,38 @@ def test_partial_read_note_comes_first(client, session, settings, doc, model, mo
 # ---- 审阅后补的（PR-3 第二轮） ----
 
 
-def test_stream_guard_checks_in_steps(client, session, settings, model, monkeypatch):
-    """边收边查不是每段都从头查：一段两个字、回答 8000 来字，也只在每攒够 GUARD_STEP 个新字时
-    查一次，收完再整段查一次。"""
+def test_stream_guard_window_is_linear(client, session, settings, model, monkeypatch):
+    """边收边查不是每段都从头查：每段只查"新收到的这段，加上它前面最长词条长度减 1 个字"
+    （第九节第 6 条），一段两个字、回答 8000 来字，每次查的都只有几个字；收完再整段查一次。"""
     doc = make_doc(session)
     model.payload = answer(("P001", "某" * 7950))  # 原文里没有，核对不过：没有要显示的原句
     model.chunk = 2
     turn_id = send(client, "要满足哪些条件", doc).json()["turn"]["id"]
-    calls = []
-    real = safety_words.check
-    monkeypatch.setattr(
-        safety_words,
-        "check",
-        lambda text, library=None: calls.append(len(text)) or real(text, library),
-    )
+    windows, whole = [], []
+    real_window = safety_words.check_normalized
+
+    def window(text, library=None):  # 边收边查的窗口
+        windows.append(len(text))
+        return real_window(text, library)
+
+    def full(text, library=None):  # 整段查（不经上面那个，免得算进窗口）
+        whole.append(len(text))
+        return real_window(safety_words.normalize(text), library)
+
+    monkeypatch.setattr(safety_words, "check_normalized", window)
+    monkeypatch.setattr(safety_words, "check", full)
     work(session, settings)
     reply = len(json.dumps(model.payload, ensure_ascii=False))
     assert reply > 7900 and len(model.streamed) > 3900
-    assert len(calls) <= reply // ask.GUARD_STEP + 1  # 不到 41 次
-    assert calls[-1] == reply  # 最后整段查一次
-    assert turn_of(client, turn_id)["answer"]["status"] == "not_found"
+    carry = safety_words.LIBRARY.longest - 1
+    # 每段一查，窗口不超过：前面 carry 个字 + 新的两个字 + 暂留的一个字（JSON 里的空白不算）
+    assert len(windows) >= len(model.streamed) - 1 and max(windows) <= carry + model.chunk + 1
+    assert reply in whole  # 收完整段查一次兜底
+    assert turn_of(client, turn_id)["answer"]["status"] == "unverified"  # 原文里没有，对不上
 
 
 def test_hit_in_the_last_characters_is_caught(client, session, settings, doc, model, wechat):
-    """词在回答的最后几个字里（没攒够一步）：收完整段再查时照样拦下。"""
+    """词在回答的最后几个字里：收到最后一段时当场拦下（以前要等收完整段再查）。"""
     model.payload = answer(("P001", "某" * 500 + TEST_WORD))
     turn_id = send(client, "申报对象是谁", doc).json()["turn"]["id"]
     work(session, settings)
@@ -1423,7 +1696,7 @@ def test_hit_in_the_last_characters_is_caught(client, session, settings, doc, mo
     reply = json.dumps(model.payload, ensure_ascii=False)
     assert TEST_WORD in reply[-20:] and model.streamed[-1] == reply
     [hit] = hits(session)
-    assert hit.layer == "local" and "stream" not in hit.reason_json  # 收完整段查到的
+    assert hit.layer == "local" and hit.reason_json["stream"] is True  # 收到那一段当场查到的
     assert session.scalar(select(AdvisorTask.result_json)) is None and len(wechat.calls) == 1
 
 
@@ -1496,8 +1769,12 @@ def test_account_deleted_while_processing(client, session, settings, doc, model,
 
 
 def test_link_gone_wording(client, session, settings, doc, model):
-    """原文链接失效以后：没写日期、没找到的说法不叫人点"站内阅读"，也不给站内阅读。"""
+    """原文链接失效以后：没写日期、没找到、摘的对不上的说法不叫人点"站内阅读"，也不叫人再问
+    （失效的通知不再收新问），只留事实那半句；也不给站内阅读（第六节第 3 条"原文链接失效了"）。"""
     first = asked(client, session, settings, model, "截止时间呢", doc, answer(("P001", S1)))
+    off = asked(
+        client, session, settings, model, "要交哪些材料", doc, answer(("P001", "原文里没有的话"))
+    )
     second = send(client, "评分标准是什么", doc).json()["turn"]["id"]
     model.payload = {"status": "not_found", "quotes": []}
     session.get(Document, doc).link_gone_at = datetime(2026, 10, 24, 2, tzinfo=UTC)
@@ -1511,8 +1788,12 @@ def test_link_gone_wording(client, session, settings, doc, model):
     assert missing["lead"] == ask.NOT_FOUND and missing["reader"] is None
     assert [(n["code"], n["text"]) for n in missing["notes"]] == [
         ("link_gone", missing["notes"][0]["text"]),
-        ("not_found", "可以换个说法再问。这次不算次数。"),
+        ("not_counted", "这次不算次数。"),
     ]
+    unverified = turn_of(client, off["id"])["answer"]
+    assert unverified["lead"] == ask.UNVERIFIED_GONE == "这次摘出的句子和原文对不上，没有显示。"
+    assert unverified["reader"] is None
+    assert [n["code"] for n in unverified["notes"]] == ["link_gone", "not_counted"]
 
 
 def _sse_events(*texts, usage=None, finish="stop"):
@@ -1596,11 +1877,29 @@ def test_real_stream_records_usage(client, session, settings, doc, real_stream):
     assert (row.prompt_tokens, row.completion_tokens) == (120, 30)
 
 
+def test_retry_from_scratch_checked_on_the_spot(client, session, settings, doc, model, monkeypatch):
+    """客户端重试（格式不对、网络出错）时从头再收：新的一次收到的也当场查，命中就拦下，处置记录
+    写 stream（不是等调用出错以后才查到）。"""
+
+    def retried(system, user, max_tokens=800, *, on_text=None):
+        model.totals["calls"] += 1
+        on_text('{"status": "answer", "quotes": [' + "格式不对的一大段" * 30)  # 第一次：要重试
+        on_text('{"status": "answer", "quotes": [{"sid": "P001", "quote": "' + TEST_WORD)
+        raise httpx.DecodingError("没拦下的话走到这里")
+
+    monkeypatch.setattr(model, "complete_json", retried)
+    turn_id = send(client, "申报对象是谁", doc).json()["turn"]["id"]
+    work(session, settings)
+    assert turn_of(client, turn_id)["errorCode"] == "ASK_UNSAFE"
+    [hit] = hits(session)
+    assert (hit.layer, hit.turn_id, hit.reason_json["stream"]) == ("local", turn_id, True)
+
+
 def test_tail_checked_when_the_call_fails_unexpectedly(
     client, session, settings, doc, model, wechat, monkeypatch
 ):
-    """调用中途出了别的错（比如流的分块解码出错，不算网络错）：已经收到的那截也查，词在那里的
-    照样记 ASK_UNSAFE 和处置记录，退回 5 次那本。"""
+    """调用中途出了别的错（比如流的分块解码出错，不算网络错）：已经收到的那截在收到时就当场查过，
+    词在那里的照样记 ASK_UNSAFE 和处置记录（写 stream），退回 5 次那本。"""
 
     def broken(system, user, max_tokens=800, *, on_text=None):
         model.totals["calls"] += 1
@@ -1614,7 +1913,7 @@ def test_tail_checked_when_the_call_fails_unexpectedly(
     assert got["errorCode"] == "ASK_UNSAFE" and got["answer"] is None
     [hit] = hits(session)
     assert (hit.layer, hit.turn_id) == ("local", turn_id)
-    assert "stream" not in hit.reason_json
+    assert hit.reason_json["stream"] is True
     assert usage(session, "ask") == 0 and usage(session, chat_store.ASK_TRY) == 1
 
 
@@ -1622,8 +1921,8 @@ def test_tail_checked_when_the_call_fails_unexpectedly(
 def test_real_stream_tail_checked_when_the_call_fails(
     client, session, settings, doc, real_stream, wechat, ending
 ):
-    """调用出错（流中途断了、返回的不是 JSON）时，最后没攒够一步（不到 200 字）的那截也查：
-    词在那里的照样记 ASK_UNSAFE 和处置记录（不写 stream），退回 5 次那本。"""
+    """调用出错（流中途断了、返回的不是 JSON）以前，最后那几段收到时就当场查过：词在那里的
+    照样记 ASK_UNSAFE 和处置记录（写 stream），退回 5 次那本。"""
     head = '{"status": "answer", "quotes": [{"sid": "P001", "quote": "'
     texts = [head, *(["本省注册的科技型中小企业"] * 20), TEST_WORD]
     if ending == "broken":
@@ -1638,6 +1937,398 @@ def test_real_stream_tail_checked_when_the_call_fails(
     assert session.scalar(select(AdvisorTask.result_json)) is None
     [hit] = hits(session)
     assert (hit.layer, hit.turn_id, hit.text) == ("local", turn_id, None)
-    assert "stream" not in hit.reason_json
+    assert hit.reason_json["stream"] is True
     assert usage(session, "ask") == 0 and usage(session, chat_store.ASK_TRY) == 1
     assert len(wechat.calls) == 1
+
+
+# ---- #396 合并以后按设计稿 #328 第 6–11 轮改的（D-105、边收边查、上下文、附件编号） ----
+
+
+def _guard_hits(*texts):
+    """把 texts 依次当作流式收到的全部文字交给 _Guard，返回第几段（从 1 起）拦下；没拦下为 None。"""
+    guard = ask._Guard(streaming=True)
+    for n, text in enumerate(texts, 1):
+        try:
+            guard(text)
+        except ask.StreamBlocked:
+            return n
+    return None
+
+
+def _grow(*parts):
+    """流式收到的全部文字：每段到了都是前面所有段接起来。"""
+    return ["".join(parts[: n + 1]) for n in range(len(parts))]
+
+
+def test_guard_checks_each_segment_on_the_spot(monkeypatch):
+    """每段一到就当场查，单字词条也一样；跨段的词、被空白和零宽字符隔开的、全角大写的都查得到
+    （第九节第 6 条验收；Codex 第 9–11 轮）。"""
+    word_list(monkeypatch, "é", "甲乙", "ab", "café")
+    # 单字 é：收到 e 时不拦，单独收到组合重音符的那一段当场拦下
+    assert _guard_hits(*_grow("x e", "\u0301")) == 2
+    # 跨两段、第二段开头是组合符号
+    assert _guard_hits(*_grow("le caf", "e", "\u0301 noir")) == 3
+    # "甲""一串空格""乙"三段：第三段当场拦下（按规范化以后的字截窗口）
+    assert _guard_hits(*_grow("甲", "      ", "乙")) == 3
+    assert _guard_hits(*_grow("甲", "\u200b\u200d", "乙")) == 3
+    # 全角、大写：规范化以后是 ab
+    assert _guard_hits(*_grow("Ａ", "Ｂ")) == 2
+    # 窗口外的不重复查、也不漏：前面隔了一大段再出现
+    assert _guard_hits(*_grow("开头", "某" * 300, "甲", "乙")) == 4
+    # 都没有：不拦
+    assert _guard_hits(*_grow("一段", "正常的", "回答")) is None
+    # 看不见的字符先去掉再规范化：组合用字形连接符夹在 e 和重音符中间也照样合成 é
+    assert _guard_hits(*_grow("x e\N{COMBINING GRAPHEME JOINER}", "\u0301")) == 2
+    assert _guard_hits(*_grow("caf", "e\N{SOFT HYPHEN}", "\N{VARIATION SELECTOR-1}\u0301")) == 3
+
+
+def test_guard_starts_over_when_the_client_retries(monkeypatch):
+    """客户端重试时从空的开始重新拼（ChatClient 每次重试都从头收）：前一次收到的作废、从头查，
+    新的一次开头的词当场拦下，不会因为前一次收得多就跳过。"""
+    word_list(monkeypatch, "甲乙")
+    assert _guard_hits("开头" + "某" * 300, "甲乙") == 2
+    assert _guard_hits("甲", "某" * 50, *_grow("甲", "乙")) == 4  # 重试以后跨段的照样拦
+
+
+def test_guard_waits_for_hangul_jamo_to_combine(monkeypatch):
+    """韩文字母会和前后的字母合成一个字：初声、中声、终声分三段收到，合成以后的字照样查得到，
+    中间不会把还没合成的字母先定下来。"""
+    word_list(monkeypatch, "한")
+    assert _guard_hits(*_grow("\u1112", "\u1161", "\u11ab")) == 3
+    assert _guard_hits(*_grow("가하", "\u11ab")) == 2  # 先收到"하"、再收到终声
+
+
+def test_guard_final_still_checks_everything(monkeypatch):
+    """收完整段再查一次兜底（不是流式的整段回答也靠它）。"""
+    word_list(monkeypatch, "甲乙")
+    with pytest.raises(ask.StreamBlocked) as blocked:
+        ask._Guard.final("前面\n甲 乙")
+    assert blocked.value.streaming is False
+
+
+def test_boundary_keeps_combining_text_together():
+    """规范化边界：边界之前的字单独规范化一次就定了；组合符号、韩文字母前面不是边界。"""
+    assert ask._boundary("abc") == 2
+    # b 后面跟着组合符号：b 前面不当边界（保守：整截暂留，下一段来了再连同它们规范化）
+    assert ask._boundary("ab\u0301") == 0
+    assert ask._boundary("ab\u0301c") == 3
+    assert ask._boundary("\u1112\u1161") == 0
+    assert ask._boundary("e") == 0
+
+
+def test_previous_answer_is_found_past_many_unanswered_turns(client, session, settings, doc, model):
+    """上一答往前找不设上限（Codex 第 8 轮）；最近两问按顺序取、不管有没有回答，和上一答分开传
+    （Codex 第 9 轮）：中间连着 55 问都没有回答，上一答还是第一问，recent 是最近那两问。"""
+    first = asked(
+        client, session, settings, model, "企业申报截止是哪天？", doc, answer(("P002", S2))
+    )
+    turn = session.get(AIChatTurn, first["id"])
+    for seq in range(turn.seq + 1, turn.seq + 56):
+        session.add(
+            AIChatTurn(
+                chat_id=turn.chat_id,
+                seq=seq,
+                skill="ask",
+                question=f"没答上的第{seq}问",
+                doc_id=doc,
+                idempotency_key=f"gap-{seq}",
+                created_at=NOW,
+                expires_at=NOW + timedelta(days=30),
+            )
+        )
+    session.commit()
+    asked(client, session, settings, model, "那市里报送呢？", doc, answer(("P003", S3)))
+    sent = model.calls[-1][1]
+    last = turn.seq + 55
+    assert sent["recent"] == [f"没答上的第{last - 1}问", f"没答上的第{last}问"]
+    assert sent["previousAnswer"] == {
+        "question": "企业申报截止是哪天？",
+        "quotes": [{"n": 1, "sid": "P002", "quote": S2}],
+    }
+
+
+def test_follow_up_numbers_follow_the_shown_order(client, session, settings, doc, model):
+    """原句照模型给的先后编号（第 15 轮）：先摘 P003、后摘 P002 时，第 1 句是 P003 那句；追问
+    交给模型的 previousAnswer 照这个编号。"""
+    first = asked(
+        client,
+        session,
+        settings,
+        model,
+        "报送和截止分别是哪天",
+        doc,
+        answer(("P003", S3), ("P002", S2)),
+    )
+    assert [(q["n"], q["sid"]) for q in first["answer"]["quotes"]] == [(1, "P003"), (2, "P002")]
+    asked(client, session, settings, model, "第2句是谁的截止", doc, answer(("P002", S2)))
+    assert model.calls[-1][1]["previousAnswer"]["quotes"] == [
+        {"n": 1, "sid": "P003", "quote": S3},
+        {"n": 2, "sid": "P002", "quote": S2},
+    ]
+
+
+def test_expired_turns_left_out_of_recent_and_previous(client, session, settings, doc, model):
+    """到期的问不算（第十节第 1 条）：上一答、最近两问都只从没到期的里取；到期时刻正好是现在
+    也算到期。"""
+    first = asked(
+        client, session, settings, model, "企业申报截止是哪天？", doc, answer(("P002", S2))
+    )
+    second = asked(client, session, settings, model, "市里哪天报送？", doc, answer(("P003", S3)))
+    later = session.get(AIChatTurn, second["id"])
+    chat_id, seq = later.chat_id, later.seq + 1
+    later.expires_at = NOW
+    session.commit()
+    assert ask.previous(session, chat_id, seq, NOW).question == "企业申报截止是哪天？"
+    assert ask.recent(session, chat_id, seq, NOW) == ["企业申报截止是哪天？"]
+    session.get(AIChatTurn, first["id"]).expires_at = NOW - timedelta(days=1)
+    session.commit()
+    assert ask.previous(session, chat_id, seq, NOW) is None
+    assert ask.recent(session, chat_id, seq, NOW) == []
+
+
+def test_unread_attachments_matched_by_id_not_order(client, session, settings, model, monkeypatch):
+    """没读的附件按附件编号配能不能在站内打开，不按顺序配（Codex 第 8 轮）：换了顺序以后，
+    能打开的还是那一个。"""
+    monkeypatch.setattr(service, "usage_limit", lambda kind: 100)
+    doc = make_doc(session)
+    first = DocumentAttachment(
+        document_id=doc,
+        position=1,
+        name="指南.pdf",
+        url="https://kjt.example.gov.cn/a.pdf",
+        extension="pdf",
+    )
+    second = DocumentAttachment(
+        document_id=doc,
+        position=2,
+        name="申报书.docx",
+        url="https://kjt.example.gov.cn/b.docx",
+        extension="docx",
+    )
+    session.add_all([first, second])
+    session.commit()
+    opens = second.id
+    monkeypatch.setattr(
+        attachment_text,
+        "judge",
+        lambda session, master, rows, now: [
+            attachment_text.Reading(
+                1,
+                a.name,
+                a.url,
+                a.extension,
+                "ok" if a.id == opens else "scan",
+                attachment_id=a.id,
+            )
+            for a in rows
+        ],
+    )
+    got = asked(
+        client, session, settings, model, "评分标准", doc, {"status": "not_found", "quotes": []}
+    )
+    unread = {u["attachmentId"]: u["readable"] for u in got["answer"]["scope"]["unread"]}
+    assert unread == {first.id: False, second.id: True}
+    # 换了顺序：还是按编号配
+    first.position, second.position = 2, 1
+    session.commit()
+    again = turn_of(client, got["id"])["answer"]["scope"]["unread"]
+    assert [(u["label"], u["readable"]) for u in again] == [
+        ("附件 1《申报书.docx》", True),
+        ("附件 2《指南.pdf》", False),
+    ]
+
+
+def test_no_quote_statuses_keep_their_own_wording(client, session, settings, doc, model):
+    """没给出原句的三种（D-105）：只用自己那句说法；问能不能报的前面加一句不替你判断；
+    问时间的照样给"已核对的截止"一块；都不算次数，次数退回。"""
+    unverified = asked(
+        client,
+        session,
+        settings,
+        model,
+        "我们能报吗",
+        doc,
+        answer(("P001", "原文里没有的一句话")),
+    )
+    assert unverified["counted"] is False
+    assert unverified["answer"]["status"] == "unverified"
+    assert unverified["answer"]["lead"] == ask.ELIGIBLE_PREFIX + ask.UNVERIFIED
+    redacted = asked(
+        client,
+        session,
+        settings,
+        model,
+        "符合条件的话联系谁",
+        doc,
+        answer(("P006", "联系电话：[电话已脱敏]")),
+    )
+    assert redacted["answer"]["lead"] == ask.ELIGIBLE_PREFIX + ask.REDACTED.format(n=1)
+    missing = asked(
+        client,
+        session,
+        settings,
+        model,
+        "截止日期是哪天",
+        doc,
+        {"status": "not_found", "quotes": []},
+    )
+    assert missing["answer"]["lead"] == ask.NOT_FOUND
+    assert all(n["code"] not in ("time_roles", "time_none") for n in missing["answer"]["notes"])
+    assert usage(session, "ask") == 0  # 三种都退回了
+
+
+def test_results_stored_before_the_three_statuses(client, session, settings, doc, model):
+    """D-105 以前存的回答：模型回 answer、却没有能显示的原句的都记成了 not_found。读的时候按存下的
+    个数分：有含遮掉号码的 → redacted，给了句子却都对不上 → unverified；模型自己回的 not_found 不变。"""
+    got = asked(client, session, settings, model, "评分标准", doc, answer(("P001", S1)))
+    task = session.get(AdvisorTask, session.get(AIChatTurn, got["id"]).task_id)
+    body = {"docId": doc, "attachmentId": None}
+    for stored, expected, lead, reader in (
+        ({"redacted": 1, "dropped": 0}, "redacted", ask.REDACTED.format(n=1), None),
+        # 两个个数都大于 0：照含号码的对上、其余对不上的写，入口同 unverified（第六节第 3 条）
+        (
+            {"redacted": 1, "dropped": 2},
+            "redacted",
+            ask.REDACTED.format(n=1) + ask.REDACTED_REST,
+            body,
+        ),
+        ({"redacted": 0, "dropped": 2}, "unverified", ask.UNVERIFIED, body),
+        ({"redacted": 0, "dropped": 0}, "not_found", ask.NOT_FOUND, body),
+    ):
+        task.result_json = {**task.result_json, "status": "not_found", "quotes": [], **stored}
+        session.commit()
+        shown = turn_of(client, got["id"])["answer"]
+        assert (shown["status"], shown["lead"], shown["reader"]) == (expected, lead, reader)
+
+
+def test_each_status_with_eligibility_and_time_questions(
+    client, session, settings, model, monkeypatch
+):
+    """验收（Codex 第 11 轮）：四种状态各配"能不能报""什么时候截止"两种问法。能不能报：answer 换开头，
+    没给出原句的三种在自己的说法前面加一句不替你判断；问时间：四种都给"已核对的截止"一块，时间提示
+    只给 answer；只有 answer 算次数。"""
+    monkeypatch.setattr(service, "usage_limit", lambda kind: 100)
+    doc = make_doc(session)
+    session.add(
+        DocumentDeadline(
+            document_id=doc,
+            fingerprint="d1",
+            kind="企业申报截止",
+            candidate_date=date(2026, 11, 20),
+            approved_date=date(2026, 11, 20),
+            approved_time=time(17, 0),
+            evidence=S2,
+            confidence="high",
+            status="approved",
+            reviewed_at=NOW,
+        )
+    )
+    session.commit()
+    payloads = {
+        "answer": answer(("P002", S2), ("P003", S3)),
+        "not_found": {"status": "not_found", "quotes": []},
+        "unverified": answer(("P001", "原文里没有的一句话")),
+        "redacted": answer(("P006", "联系电话：[电话已脱敏]")),
+    }
+    verified = [
+        {"kind": "企业申报截止", "date": "2026-11-20", "time": "17:00", "remainingDays": 23}
+    ]
+    own = {
+        "not_found": ask.NOT_FOUND,
+        "unverified": ask.UNVERIFIED,
+        "redacted": ask.REDACTED.format(n=1),
+    }
+    for status, payload in payloads.items():
+        eligible = asked(client, session, settings, model, "我们能不能报", doc, payload)
+        timing = asked(client, session, settings, model, "什么时候截止", doc, payload)
+        for got in (eligible, timing):
+            assert got["answer"]["status"] == status and got["counted"] is (status == "answer")
+        assert timing["answer"]["verified"] == verified
+        assert eligible["answer"]["verified"] == []
+        codes = [n["code"] for n in timing["answer"]["notes"]]
+        if status == "answer":
+            assert eligible["answer"]["lead"] == ask.LEAD_ELIGIBLE.format(n=2)
+            assert timing["answer"]["lead"] == ask.LEAD.format(n=2) and "time_roles" in codes
+        else:
+            assert eligible["answer"]["lead"] == ask.ELIGIBLE_PREFIX + own[status]
+            assert timing["answer"]["lead"] == own[status]
+            assert "time_roles" not in codes and "time_none" not in codes
+    assert usage(session, "ask") == 2  # 只有 answer 的两问算
+
+
+def test_mixed_read_and_unread_attachments(client, session, settings, doc, model, monkeypatch):
+    """读附件开着、有的附件读了、有的没读：没读的那个按附件编号配能不能在站内打开（Codex 第 8 轮），
+    没找到时提一句可能在没读的附件里。"""
+    read_one = DocumentAttachment(
+        document_id=doc,
+        position=1,
+        name="申报指南.pdf",
+        url="https://kjt.example.gov.cn/1.pdf",
+        extension="pdf",
+    )
+    unread_one = DocumentAttachment(
+        document_id=doc,
+        position=2,
+        name="汇总表.pdf",
+        url="https://kjt.example.gov.cn/2.pdf",
+        extension="pdf",
+    )
+    session.add_all([read_one, unread_one])
+    session.commit()
+    state = {
+        "label": "附件 1《申报指南.pdf》",
+        "id": read_one.id,
+        "readable": True,
+        "unread": [content.Unread("附件 2《汇总表.pdf》", "scanned", attachment_id=unread_one.id)],
+    }
+    _attachment_load(monkeypatch, state)
+    opens = {unread_one.id}
+    monkeypatch.setattr(
+        attachment_text,
+        "judge",
+        lambda session, master, rows, now: [
+            attachment_text.Reading(
+                1,
+                a.name,
+                a.url,
+                a.extension,
+                "ok" if a.id in opens else "scan",
+                attachment_id=a.id,
+            )
+            for a in rows
+        ],
+    )
+    got = asked(
+        client, session, settings, model, "评审专家几人", doc, {"status": "not_found", "quotes": []}
+    )
+    scope = got["answer"]["scope"]
+    assert scope["unread"] == [
+        {
+            "label": "附件 2《汇总表.pdf》",
+            "reason": "scanned",
+            "attachmentId": unread_one.id,
+            "readable": True,
+        }
+    ]
+    assert [n["text"] for n in got["answer"]["notes"]] == [
+        ask.NOT_FOUND_UNREAD,
+        ask.NOT_FOUND_RETRY,
+    ]
+    opens.clear()  # 现在打不开了：只说可能在附件里
+    again = turn_of(client, got["id"])["answer"]
+    assert again["scope"]["unread"][0]["readable"] is False
+    assert [n["text"] for n in again["notes"]] == [
+        ask.NOT_FOUND_UNREAD_CLOSED_ONE,
+        ask.NOT_FOUND_RETRY,
+    ]
+    # 两份没读、都打不开：这几份附件
+    state["unread"] = [
+        *state["unread"],
+        content.Unread("附件 3《说明.pdf》", "scanned", attachment_id=unread_one.id + 1000),
+    ]
+    again = turn_of(client, got["id"])["answer"]
+    assert [n["text"] for n in again["notes"]] == [
+        "没读的附件里可能有，这几份附件暂时读不出来（原因见读的范围）。",
+        ask.NOT_FOUND_RETRY,
+    ]

@@ -564,67 +564,193 @@ def _titles(session: Session, doc_ids: list[int | None]) -> dict[int, str]:
     }
 
 
-def _chat_data(session: Session, user: User) -> dict:
-    """问一问的对话（第十节第 8 条）：还没到期的，每一问只写技能、问题文字、时间、状态、
-    算没算次数，不放回答（回答是公开文件的原句和查询结果，在对话页里看）。最多列最近 200 问，
-    另给对话数和问数。AI 关着、没同意新版协议的本人也照样列（D-093 门槛第 8 条）。"""
-    from youju.models import AdvisorTask, AIChat, AIChatTurn
+# "我的数据"里的问一问对话（问一问开发设计第十节第 8 条，Codex 第 10、11 轮）：不截断、分页取
+CHATS_PAGE = 100  # 对话列表一页几条
+TURNS_PAGE = 50  # 一条对话里的问一页几问
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+_AFTER = re.compile(r"(\d{1,19})-(\d{1,18})")  # 最近一问的时间（微秒）-对话编号
 
-    live = (AIChat.user_id == user.id, chat_store.live_turns(v1.now().astimezone(UTC)))
-    joined = select(AIChatTurn, AIChat).join(AIChat, AIChat.id == AIChatTurn.chat_id)
+
+def _chat_cursor(last_at: datetime, chat_id: int) -> str:
+    """对话列表的翻页位置：这一页最后一条的最近一问时间（微秒）和对话编号。"""
+    return f"{(last_at - _EPOCH) // timedelta(microseconds=1)}-{chat_id}"
+
+
+def _chat_page(
+    session: Session, user: User, stamp: datetime, after: tuple[datetime, int] | None = None
+) -> tuple[list[dict], str | None]:
+    """还没到期的对话一页（CHATS_PAGE 条）：按最近一问的时间从新到旧（同一时间按编号从大到小）。
+    每条写对话编号、通知编号和标题（下架的不给）、几问、最近一问的时间；没带通知的写最近一问的
+    前几个字（同"我的 AI 记录"）。不列每一问（另按对话分页取），也不放回答。
+    给（这一页, 下一页的位置）；翻完为 None。"""
+    from youju.api.chat import LAST_QUESTION_CHARS
+    from youju.models import AIChat, AIChatTurn
+
+    last_at = func.max(AIChatTurn.created_at)
+    stmt = (
+        select(AIChat, func.count(AIChatTurn.id), last_at)
+        .join(AIChatTurn, AIChatTurn.chat_id == AIChat.id)
+        .where(AIChat.user_id == user.id, chat_store.live_turns(stamp))
+        .group_by(AIChat.id)
+    )
+    if after is not None:
+        at, chat_id = after
+        stmt = stmt.having(or_(last_at < at, and_(last_at == at, AIChat.id < chat_id)))
     rows = session.execute(
-        joined.where(*live).order_by(AIChatTurn.created_at.desc(), AIChatTurn.id.desc()).limit(200)
+        stmt.order_by(last_at.desc(), AIChat.id.desc()).limit(CHATS_PAGE + 1)
     ).all()
-    task_ids = [turn.task_id for turn, _ in rows if turn.task_id]
-    tasks = (
-        {t.id: t for t in session.scalars(select(AdvisorTask).where(AdvisorTask.id.in_(task_ids)))}
-        if task_ids
-        else {}
-    )
-    doc_keys = list({chat.doc_key for _, chat in rows if chat.doc_key})
+    more = len(rows) > CHATS_PAGE
+    rows = rows[:CHATS_PAGE]
+    doc_keys = [chat.doc_key for chat, _, _ in rows if chat.doc_key]
     titles = _titles(session, doc_keys)
-    hidden = set(
-        session.scalars(
-            select(Document.id).where(Document.id.in_(doc_keys), ~available_condition())
+    hidden = (
+        set(
+            session.scalars(
+                select(Document.id).where(Document.id.in_(doc_keys), ~available_condition())
+            )
         )
+        if doc_keys
+        else set()
     )
-    chats: dict[int, dict] = {}
-    for turn, chat in rows:
-        entry = chats.setdefault(
-            chat.id,
-            {
-                "id": chat.id,
-                "hasDoc": chat.doc_key != 0,
-                "docId": chat.doc_key if chat.doc_key and chat.doc_key not in hidden else None,
-                # 下架的不给编号和标题（_titles 本来也不给下架的标题，这里写明）
-                "docTitle": titles.get(chat.doc_key)
-                if chat.doc_key and chat.doc_key not in hidden
-                else None,
-                "turns": [],
-            },
+    blank = [chat.id for chat, _, _ in rows if chat.doc_key == 0]
+    questions: dict[int, str] = {}
+    if blank:
+        newest = (
+            select(AIChatTurn.chat_id, func.max(AIChatTurn.seq).label("seq"))
+            .where(AIChatTurn.chat_id.in_(blank), chat_store.live_turns(stamp))
+            .group_by(AIChatTurn.chat_id)
+            .subquery()
         )
-        task = tasks.get(turn.task_id)
-        entry["turns"].append(
-            {
-                "skill": turn.skill,
-                "question": turn.question,
-                "createdAt": _iso(turn.created_at),
-                "status": chat_store.turn_status(turn, task),
-                "counted": chat_store.counted(turn, task),
-            }
+        questions = dict(
+            session.execute(
+                select(AIChatTurn.chat_id, AIChatTurn.question).join(
+                    newest,
+                    and_(AIChatTurn.chat_id == newest.c.chat_id, AIChatTurn.seq == newest.c.seq),
+                )
+            ).all()
         )
-    for entry in chats.values():
-        entry["turns"].reverse()  # 对话里按先后
-    count = select(func.count(AIChatTurn.id)).join(AIChat, AIChat.id == AIChatTurn.chat_id)
+    items = []
+    for chat, count, last in rows:
+        # 下架的不给编号和标题（_titles 本来也不给下架的标题，这里写明）
+        shown = bool(chat.doc_key) and chat.doc_key not in hidden
+        item = {
+            "id": chat.id,
+            "hasDoc": chat.doc_key != 0,
+            "docId": chat.doc_key if shown else None,
+            "docTitle": titles.get(chat.doc_key) if shown else None,
+            "turns": int(count),
+            "lastAt": _iso(last),
+        }
+        if chat.doc_key == 0:
+            question = questions.get(chat.id)
+            if question is not None and len(question) > LAST_QUESTION_CHARS:
+                question = question[:LAST_QUESTION_CHARS] + "…"
+            item["lastQuestion"] = question
+        items.append(item)
+    return items, (_chat_cursor(rows[-1][2], rows[-1][0].id) if more else None)
+
+
+def _chat_totals(session: Session, user: User, stamp: datetime) -> dict:
+    """还没到期的对话几条、一共几问。"""
+    from youju.models import AIChat, AIChatTurn
+
+    live = (AIChat.user_id == user.id, chat_store.live_turns(stamp))
+    turns = select(func.count(AIChatTurn.id)).join(AIChat, AIChat.id == AIChatTurn.chat_id)
     return {
-        "aiChats": list(chats.values()),
         "aiChatsTotal": session.scalar(
             select(func.count(func.distinct(AIChat.id)))
             .join(AIChatTurn, AIChatTurn.chat_id == AIChat.id)
             .where(*live)
         )
         or 0,
-        "aiChatTurnsTotal": session.scalar(count.where(*live)) or 0,
+        "aiChatTurnsTotal": session.scalar(turns.where(*live)) or 0,
+    }
+
+
+@router.get("/me/data/chats")
+def personal_data_chats(
+    session: SessionDep,
+    user: KnownUserDep,
+    after: Annotated[str | None, Query(max_length=40)] = None,
+) -> dict:
+    """对话列表往后翻（"我的数据"用；after 是上一页给的 next）。只认本人，不看 AI 开关和
+    协议版本（D-093 门槛第 8 条）。"""
+    if user is None:
+        return {"items": [], "next": None}
+    position = None
+    if after is not None:
+        match = _AFTER.fullmatch(after)
+        if match is None:
+            raise HTTPException(status_code=422, detail="翻页参数不对")
+        try:
+            position = (_EPOCH + timedelta(microseconds=int(match.group(1))), int(match.group(2)))
+        except OverflowError:  # 写得很大的位置：不是上一页给的
+            raise HTTPException(status_code=422, detail="翻页参数不对") from None
+    items, nxt = _chat_page(session, user, v1.now().astimezone(UTC), position)
+    return {"items": items, "next": nxt}
+
+
+@router.get("/me/data/chats/{chat_id}")
+def personal_data_chat(
+    chat_id: int,
+    session: SessionDep,
+    user: KnownUserDep,
+    before: Annotated[int | None, Query(ge=1, le=10**9)] = None,
+) -> dict:
+    """一条对话的问（"我的数据"用）：一页 TURNS_PAGE 问（按先后），before=<seq> 往前翻
+    （同 /chats/{id}）。每一问只写技能、问题文字、时间、状态、算没算次数，不放回答（回答是
+    公开文件的原句和查询结果，在对话页里看）。另给这条对话一共几问、这一页是第几到第几问
+    （复制时写明范围，如"第 1–50 问，共 230 问"）。只认本人，不看 AI 开关和协议版本；
+    别人的、都到期了的 404。"""
+    from youju.models import AdvisorTask, AIChat, AIChatTurn
+
+    chat = (
+        session.scalar(select(AIChat).where(AIChat.id == chat_id, AIChat.user_id == user.id))
+        if user is not None
+        else None
+    )
+    stamp = v1.now().astimezone(UTC)
+    live = (AIChatTurn.chat_id == chat_id, chat_store.live_turns(stamp))
+    total = session.scalar(select(func.count(AIChatTurn.id)).where(*live)) if chat else 0
+    if not total:
+        raise HTTPException(status_code=404, detail="没有找到对话")
+    conditions = [*live] if before is None else [*live, AIChatTurn.seq < before]
+    turns = list(
+        session.scalars(
+            select(AIChatTurn)
+            .where(*conditions)
+            .order_by(AIChatTurn.seq.desc())
+            .limit(TURNS_PAGE + 1)
+        )
+    )
+    more = len(turns) > TURNS_PAGE
+    turns = sorted(turns[:TURNS_PAGE], key=lambda turn: turn.seq)
+    task_ids = [turn.task_id for turn in turns if turn.task_id]
+    tasks = (
+        {t.id: t for t in session.scalars(select(AdvisorTask).where(AdvisorTask.id.in_(task_ids)))}
+        if task_ids
+        else {}
+    )
+    first = 0
+    if turns:
+        earlier = select(func.count(AIChatTurn.id)).where(*live, AIChatTurn.seq < turns[0].seq)
+        first = (session.scalar(earlier) or 0) + 1
+    return {
+        "id": chat_id,
+        "turns": [
+            {
+                "seq": turn.seq,
+                "skill": turn.skill,
+                "question": turn.question,
+                "createdAt": _iso(turn.created_at),
+                "status": chat_store.turn_status(turn, tasks.get(turn.task_id)),
+                "counted": chat_store.counted(turn, tasks.get(turn.task_id)),
+            }
+            for turn in turns
+        ],
+        "hasMore": more,
+        "total": total,
+        "range": {"from": first, "to": first + len(turns) - 1} if turns else None,
     }
 
 
@@ -672,6 +798,7 @@ def personal_data(session: SessionDep, user: KnownUserDep) -> JSONResponse:
         "events": [],
         "eventsTotal": 0,
         "aiChats": [],
+        "aiChatsNext": None,
         "aiChatsTotal": 0,
         "aiChatTurnsTotal": 0,
         "boostTrial": None,
@@ -752,7 +879,11 @@ def personal_data(session: SessionDep, user: KnownUserDep) -> JSONResponse:
         }
         for row in advisor_rows
     ]
-    result.update(_chat_data(session, user))
+    # 问一问的对话：第一页摘要（不列每一问、不放回答）；往后翻用
+    # /me/data/chats?after=<aiChatsNext>，每条对话的问用 /me/data/chats/{id}（第十节第 8 条）
+    stamp = v1.now().astimezone(UTC)
+    result["aiChats"], result["aiChatsNext"] = _chat_page(session, user, stamp)
+    result.update(_chat_totals(session, user, stamp))
     # 加量体验记录（开始和结束时间）；每天用了几次在额度账本里，和工具次数一样只保留本月和上个月
     from youju import boost
 
@@ -888,7 +1019,8 @@ def personal_data(session: SessionDep, user: KnownUserDep) -> JSONResponse:
 
     response = JSONResponse(result)
     # 历史数据中的标题或埋点属性可能很长；按时间保留较新的条目。
-    for key in ("events", "subscriptions", "feedback", "aiChats"):
+    # 问一问的对话已经分页（一页 100 条摘要），不在这里截
+    for key in ("events", "subscriptions", "feedback"):
         if len(response.body) <= _DATA_BYTES_LIMIT:
             break
         items = result[key]
