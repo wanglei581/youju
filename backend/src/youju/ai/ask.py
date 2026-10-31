@@ -746,10 +746,10 @@ class _Guard:
             raise StreamBlocked(hit, streaming=False)
 
 
-def _finish(session: Session, task_id: int, user_id: int, turn_id: int | None, apply) -> bool:
-    """写结果：先锁用户行（同提交、删对话、注销的锁顺序），再按编号重新取任务和这一问；任务或
-    这一问没了（处理途中删了对话、注销了），丢掉结果、什么都不写（次数删的时候已经退了；
-    处置记录不挂外键，照样留着）。"""
+def _claimed(
+    session: Session, task_id: int, user_id: int, turn_id: int | None, attempt: int
+) -> AdvisorTask | None:
+    """按统一锁顺序确认仍是这一轮处理；超时重领后旧进程不能结单或退次数。"""
     with session.no_autoflush:
         user = session.scalar(select(User.id).where(User.id == user_id).with_for_update())
         task = session.scalar(
@@ -759,14 +759,46 @@ def _finish(session: Session, task_id: int, user_id: int, turn_id: int | None, a
             .execution_options(populate_existing=True)
         )
         turn = (
-            session.scalar(select(AIChatTurn.id).where(AIChatTurn.id == turn_id))
+            session.scalar(
+                select(AIChatTurn.id)
+                .where(AIChatTurn.id == turn_id, AIChatTurn.task_id == task_id)
+                .with_for_update()
+            )
             if turn_id is not None
             else None
         )
-    if user is None or task is None or (turn_id is not None and turn is None):
+    if (
+        user is None
+        or task is None
+        or task.user_id != user_id
+        or task.status != "running"
+        or task.attempts != attempt
+        or (turn_id is not None and turn is None)
+    ):
+        return None
+    return task
+
+
+def _finish(
+    session: Session,
+    task_id: int,
+    user_id: int,
+    turn_id: int | None,
+    attempt: int,
+    apply,
+    *,
+    live_time: bool = False,
+) -> bool:
+    """写结果：先锁用户行（同提交、删对话、注销的锁顺序），再按编号重新取任务和这一问；任务或
+    这一问没了（处理途中删了对话、注销了），丢掉结果、什么都不写（次数删的时候已经退了；
+    处置记录不挂外键，照样留着）。"""
+    task = _claimed(session, task_id, user_id, turn_id, attempt)
+    if task is None:
         session.commit()
         return False
     apply(task)
+    if live_time and task.status in ("done", "failed"):
+        task.finished_at = datetime.now(UTC)
     session.commit()
     return True
 
@@ -786,10 +818,10 @@ def process(
     from youju import advisor_tasks as service
     from youju import chat_store
 
-    if task.status not in ("running", "queued"):
+    if task.status != "running":
         return False
     timeout = timeout or service.TASK_TIMEOUT
-    task_id, user_id = task.id, task.user_id
+    task_id, user_id, attempt = task.id, task.user_id, task.attempts
     turn_id = (task.input_json or {}).get("turn_id")
     turn_id = turn_id if isinstance(turn_id, int) else None
     started = time.monotonic()
@@ -809,7 +841,7 @@ def process(
             row.status, row.started_at, row.finished_at = "failed", None, stamp
             service.release_usage(session, row)
 
-        _finish(session, task_id, user_id, turn_id, apply)
+        _finish(session, task_id, user_id, turn_id, attempt, apply, live_time=live_time)
         return False
 
     def done(result: dict, snapshot: dict) -> bool:
@@ -821,7 +853,7 @@ def process(
             if result.get("status") != "answer":
                 service.release_usage(session, row)
 
-        return _finish(session, task_id, user_id, turn_id, apply)
+        return _finish(session, task_id, user_id, turn_id, attempt, apply, live_time=live_time)
 
     def tail_blocked() -> bool:
         """调用出错时（中途断了、返回看不懂、超时、网络断开）最后收到的全部文字再查一遍兜底。
@@ -891,6 +923,24 @@ def process(
                 snapshot,
             )
         # 4. 占一次全站调用
+        # 前面的内容读取可能很慢。发送前重新确认归属和授权，再在同一事务里占调用；
+        # reserve_ai_call 提交后才释放这些行锁，不让已取消或被重领的旧处理继续发送。
+        session.rollback()
+        current_task = _claimed(session, task_id, user_id, turn_id, attempt)
+        if current_task is None:
+            session.rollback()
+            return False
+        user = session.scalar(
+            select(User).where(User.id == user_id).execution_options(populate_existing=True)
+        )
+        if (
+            not chat_store.chat_ready()
+            or not interpret.enabled(settings, user)
+            or not chat_store.consented(user)
+        ):
+            raise _Fail(service.AI_OFF_MESSAGE)
+        if not heartbeat.ask_capable(settings):
+            raise _Fail(heartbeat.UNAVAILABLE)
         call_stamp = datetime.now(UTC) if live_time else stamp
         service.reserve_ai_call(session, ASK.kind, model, call_stamp, settings.ai_advisor_daily_cap)
         call_reserved = True

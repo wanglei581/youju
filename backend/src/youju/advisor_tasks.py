@@ -1076,7 +1076,8 @@ def run_advisor_tasks(
 
     def run_one(work_session: Session, task: AdvisorTask) -> None:
         # 任务行可能在处理途中被删（注销、过期清理）：之后只按编号重新取，不读 task 的属性
-        task_id = task.id
+        task_id, user_id, attempt = task.id, task.user_id, task.attempts
+        task_kind = task.kind
         try:
             try:
                 done = process_task(
@@ -1087,19 +1088,40 @@ def run_advisor_tasks(
                     timeout=timeout,
                     live_time=live_timing,
                 )
-            except Exception:
+            except Exception as exc:
                 work_session.rollback()
-                log.exception("顾问任务 #%s 处理异常", task_id)
-                failed_task = work_session.get(AdvisorTask, task_id)
-                if failed_task is not None:
-                    failed_task.status, failed_task.finished_at = "failed", stamp
+                # 异常可能带模型响应或用户输入，只记类型；兜底也不能覆盖后来重领的任务。
+                log.warning("顾问任务 #%s 处理异常：%s", task_id, type(exc).__name__)
+                work_session.scalar(select(User.id).where(User.id == user_id).with_for_update())
+                failed_task = work_session.scalar(
+                    select(AdvisorTask)
+                    .where(AdvisorTask.id == task_id)
+                    .with_for_update()
+                    .execution_options(populate_existing=True)
+                )
+                if (
+                    failed_task is not None
+                    and failed_task.user_id == user_id
+                    and failed_task.status == "running"
+                    and failed_task.attempts == attempt
+                ):
+                    failed_task.status = "failed"
+                    failed_task.finished_at = datetime.now(UTC) if live_timing else stamp
                     failed_task.error = "系统繁忙，请稍后重试"
                     release_usage(work_session, failed_task)
-                    work_session.commit()
+                work_session.commit()
                 done = False
-            current = work_session.get(AdvisorTask, task_id) if live_timing else None
-            if current is not None and current.status in ("done", "failed"):
-                current.finished_at = datetime.now(UTC)
+            # 问答在受领取代次保护的收尾内写完成时间；旧调用不可再给已取消的任务补写时间。
+            if live_timing and task_kind != "ask":
+                work_session.execute(
+                    update(AdvisorTask)
+                    .where(
+                        AdvisorTask.id == task_id,
+                        AdvisorTask.attempts == attempt,
+                        AdvisorTask.status.in_(("done", "failed")),
+                    )
+                    .values(finished_at=datetime.now(UTC))
+                )
                 work_session.commit()
             with claim_lock:
                 result["done" if done else "failed"] += 1
