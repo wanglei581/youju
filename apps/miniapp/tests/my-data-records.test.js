@@ -40,11 +40,12 @@ const TASKS = [
   { id: 44, kind: 'compare', status: 'queued', rowCount: 5, createdAt: '2026-10-22T11:30:00+08:00' },
 ];
 
-function myData({ tasks = [], pages = APP_PAGES, extra = {}, remove } = {}) {
+function myData({ tasks = [], pages = APP_PAGES, extra = {}, remove, chatApi = {}, confirm = true } = {}) {
   const raw = { user: { openid: 'synthetic-openid', agreed: null }, follows: [], subscriptions: [], feedback: [], advisorTasks: plain(tasks),
     advisorTasksTotal: tasks.length, retention: RETENTION, ...extra };
   const calls = { load: 0, deleted: [] }; const copied = []; const toasts = []; let modal;
   const api = {
+    ...chatApi,
     myData: () => { calls.load += 1; return Promise.resolve(plain(raw)); },
     deleteAdvisorTask: (id) => { calls.deleted.push(id); return remove ? remove(id) : Promise.resolve(); },
   };
@@ -53,7 +54,7 @@ function myData({ tasks = [], pages = APP_PAGES, extra = {}, remove } = {}) {
     '../../utils/consent.js': { loginOpen: () => true, remindAny: () => false, withdraw: () => Promise.resolve(false) },
     '../../utils/advisor.js': advisor, '../../utils/pages.js': pagesOf(pages),
   }, { wx: { setClipboardData: ({ data, success }) => { copied.push(JSON.parse(data)); if (success) success(); }, showToast: (o) => toasts.push(o.title),
-    showModal: (m) => { modal = m; m.success({ confirm: true }); }, navigateTo() { assert.fail('我的数据里删记录不跳到别的页面'); } } });
+    showModal: (m) => { modal = m; m.success({ confirm }); }, navigateTo() { assert.fail('我的数据里删记录不跳到别的页面'); } } });
   return { page, raw, calls, copied, toasts, modal: () => modal, view: () => render('pages/my-data/index.wxml', page.data) };
 }
 const recordsCard = (root) => findAll(root, hasClass('card')).find((card) => /工具(和 AI )?记录/.test(textOf(findAll(card, hasClass('section-title'))[0] || { text: '' })));
@@ -175,4 +176,68 @@ test('处理中超过一天的（没人在跑了、功能关掉后也不会有�
   h.page.remove(event({ kind: 'task', id: 45 })); await flush();
   assert.deepEqual(h.calls.deleted, [45]);
   assert.match(h.modal().content, /这条没有处理完的记录（用掉的次数退回）/);
+});
+
+const CHAT = { id: 71, hasDoc: true, docTitle: '合成通知', turns: 230, lastAt: '2026-10-30T09:00:00+08:00' };
+const CHAT_PAGE = { id: 71, turns: [{ seq: 230, skill: 'ask', question: '合成问题', status: 'running', counted: false, createdAt: CHAT.lastAt }], total: 230, range: { from: 230, to: 230 }, hasMore: true };
+
+test('关闭生成入口仍能翻全部对话目录与问题页，复制明确范围，处理中也能整条删除', async () => {
+  const calls = [];
+  const h = myData({ pages: FIRST_PAGES,
+    extra: { aiChats: [CHAT], aiChatsNext: 'cursor-71', aiChatsTotal: 2, aiChatTurnsTotal: 231, retention: { ...RETENTION, aiChats: 7 } },
+    chatApi: {
+      myDataChats: async (after) => { calls.push(['list', after]); return { items: [{ ...CHAT, id: 72, hasDoc: false, lastQuestion: '找合成通知', turns: 1 }], next: null }; },
+      myDataChat: async (id, before) => { calls.push(['view', id, before]); return before ? { ...CHAT_PAGE, turns: [{ ...CHAT_PAGE.turns[0], seq: 1 }], range: { from: 1, to: 1 }, hasMore: false } : CHAT_PAGE; },
+      deleteChat: async (id) => { calls.push(['delete', id]); },
+    } });
+  h.page.load(); await flush();
+  assert.match(textOf(h.view()), /AI 对话记录 2 条 · 231 问/);
+  assert.match(textOf(h.view()), /每一问保存 7 天/);
+  h.page.moreChats(); await flush();
+  assert.equal(h.page.data.chats.length, 2);
+  assert.equal(h.page.data.chatsNext, null);
+  h.page.viewChat(event({ id: 71 })); await flush();
+  assert.match(textOf(h.view()), /第 230–230 问，共 230 问/);
+  assert.match(textOf(h.view()), /合成问题/);
+  h.page.copyChatPage(); assert.deepEqual(h.copied[0], CHAT_PAGE);
+  h.page.earlierChat(); await flush();
+  assert.deepEqual(calls[2], ['view', 71, 230]);
+  assert.equal(h.page.data.chatDetail.hasMore, false);
+  h.page.remove(event({ kind: 'chat', id: 71 })); await flush();
+  assert.deepEqual(calls[3], ['delete', 71]);
+  assert.match(h.modal().content, /全部问题和结果.*已完成的问答次数不退回/);
+  assert.equal(h.calls.load, 2);
+  assert.equal(h.page.data.chatDetail, null);
+});
+
+test('对话翻页失败保留可重试位置；取消删除不调用接口；没有对话不出现栏目', async () => {
+  const empty = myData(); empty.page.load(); await flush();
+  assert.doesNotMatch(textOf(empty.view()), /AI 对话记录/);
+  const h = myData({ confirm: false, extra: { aiChats: [CHAT], aiChatsNext: 'cursor' }, chatApi: {
+    myDataChats: async () => { throw new Error('网络失败'); },
+    deleteChat: async () => assert.fail('取消不应删除'),
+  } });
+  h.page.load(); await flush(); h.page.moreChats(); await flush();
+  assert.equal(h.page.data.chatsNext, 'cursor');
+  assert.equal(h.page.data.chatsLoading, false);
+  assert.deepEqual(h.toasts, ['网络失败']);
+  h.page.remove(event({ kind: 'chat', id: 71 })); await flush();
+  assert.equal(h.calls.load, 1);
+});
+
+test('切换对话或刷新后迟到的问题响应不覆盖当前数据；查看问题不丢失正在翻的目录页', async () => {
+  let finishList; let finishOld;
+  const h = myData({ extra: { aiChats: [CHAT, { ...CHAT, id: 72 }], aiChatsNext: 'cursor' }, chatApi: {
+    myDataChats: () => new Promise((resolve) => { finishList = resolve; }),
+    myDataChat: (id) => id === 71 ? new Promise((resolve) => { finishOld = resolve; }) : Promise.resolve({ ...CHAT_PAGE, id }),
+  } });
+  h.page.load(); await flush(); h.page.moreChats();
+  h.page.viewChat(event({ id: 71 })); h.page.viewChat(event({ id: 72 })); await flush();
+  finishOld(CHAT_PAGE); finishList({ items: [{ ...CHAT, id: 73 }], next: null }); await flush();
+  assert.equal(h.page.data.chatDetail.id, 72);
+  assert.equal(h.page.data.chats.length, 3);
+  assert.equal(h.page.data.chatsLoading, false);
+  h.page.viewChat(event({ id: 71 })); h.page.load(); await flush();
+  finishOld(CHAT_PAGE); await flush();
+  assert.equal(h.page.data.chatDetail, null);
 });

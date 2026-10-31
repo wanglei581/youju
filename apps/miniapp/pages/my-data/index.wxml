@@ -92,6 +92,32 @@
       <view wx:if="{{fileNote}}" class="more weak">{{fileNote}}</view>
     </view>
 
+    <view wx:if="{{chats.length}}" class="card">
+      <view class="section-title">{{chatsTitle}} {{totals.chats}} 条 · {{totals.chatTurns}} 问</view>
+      <view class="muted plain">这里查看保存的问题、时间、状态和次数记录，不含回答。复制全部数据包含已加载的对话目录；问题按页查看、复制。</view>
+      <view wx:for="{{chats}}" wx:key="id" class="item">
+        <view class="item-main">{{item.title}}</view>
+        <view class="item-sub">{{item.turns}} 问 · 最近 {{item.last}}</view>
+        <view class="item-ops">
+          <text class="op" data-id="{{item.id}}" bindtap="viewChat" aria-role="button">查看问题</text>
+          <text class="op op--danger" data-kind="chat" data-id="{{item.id}}" bindtap="remove" aria-role="button">删除整条对话</text>
+        </view>
+      </view>
+      <view wx:if="{{chatsNext}}" class="op" bindtap="moreChats" aria-role="button">{{chatsLoading ? '加载中…' : '查看更多对话'}}</view>
+      <view wx:if="{{chatLoading}}" class="muted">问题加载中…</view>
+      <view wx:if="{{chatDetail}}">
+        <view class="section-title">对话 {{chatDetail.id}} · 第 {{chatDetail.range.from}}–{{chatDetail.range.to}} 问，共 {{chatDetail.total}} 问</view>
+        <view wx:for="{{chatDetail.turns}}" wx:for-item="turn" wx:key="seq" class="item">
+          <view class="item-main">{{turn.question}}</view>
+          <view class="item-sub">{{turn.skillLabel}} · {{turn.state}} · {{turn.created}} · {{turn.counted ? '已计次数' : '未计次数'}}</view>
+        </view>
+        <view class="item-ops">
+          <text class="op" bindtap="copyChatPage" aria-role="button">复制本页问题（含范围）</text>
+          <text wx:if="{{chatDetail.hasMore}}" class="op" bindtap="earlierChat" aria-role="button">更早的问题</text>
+        </view>
+      </view>
+    </view>
+
     <view wx:if="{{extras}}" class="card">
       <view class="section-title">其他记录</view>
       <view class="muted plain">{{extras}}</view>
@@ -111,6 +137,7 @@
         <!-- 批量工具、加量体验、按天次数：包里有工具中心或这个账号有过工具记录时才写（过审版没有这些功能，D-091） -->
         <view wx:if="{{retention.toolTasks && toolsShown}}">· 批量工具：任务里解析出的名单 {{retention.toolInput}} 天后清空，任务记录和结果文件（含提交的名单内容）{{retention.toolTasks}} 天后删除；可以在本页提前删除</view>
         <view wx:if="{{aiRetention}}">{{aiRetention}}</view>
+        <view wx:if="{{chatRetention}}">{{chatRetention}}</view>
         <view wx:if="{{boostShown}}">· 加量体验记录：开始和结束时间保存到你注销，注销时一并删除</view>
         <view wx:if="{{toolsShown}}">· 按天的使用次数：保留本月和上个月的</view>
         <view wx:if="{{remindOpen || subs.length}}">· 微信提醒授权：发出或失效 {{retention.usedSubscriptions}} 天后删除，没用上的 {{retention.unusedSubscriptions}} 天后删除</view>

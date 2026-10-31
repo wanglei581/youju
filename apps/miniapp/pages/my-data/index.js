@@ -52,11 +52,15 @@ function taskData(d) {
   };
 }
 
+function chatRows(rows) {
+  return rows.map((c) => ({ ...c, title: c.hasDoc ? (c.docTitle || '文件已下线') : (c.lastQuestion || '找通知'), last: when(c.lastAt) }));
+}
+
 // 我的数据：查阅、复制我们保存的你的全部个人信息，改关注名称，删除记录
 // （个人信息保护法第四十五至四十七条；网络数据安全管理条例第二十三条）
 // 协议定稿前（loginOpen 为 false，D-056）没有入口，直接打开时只显示"暂未开放"，不请求接口
 Page({
-  data: { loading: true, error: '', aiRetention: '', user: null, follows: [], subs: [], feedback: [], tasks: [], tasksTitle: '', fileNote: '', extras: '', toolsShown: false, boostShown: false, totals: {}, retention: null, exportedAt: '', loginOpen: loginOpen(), remindOpen: remindAny() },
+  data: { loading: true, error: '', aiRetention: '', chats: [], chatsTitle: 'AI 对话记录', chatsNext: null, chatsLoading: false, chatDetail: null, chatLoading: false, chatRetention: '', user: null, follows: [], subs: [], feedback: [], tasks: [], tasksTitle: '', fileNote: '', extras: '', toolsShown: false, boostShown: false, totals: {}, retention: null, exportedAt: '', loginOpen: loginOpen(), remindOpen: remindAny() },
 
   onShow() {
     if (!this.data.loginOpen) return;
@@ -69,11 +73,15 @@ Page({
   },
 
   onUnload() {
+    this.chatRequest = (this.chatRequest || 0) + 1;
+    this.loadEpoch = (this.loadEpoch || 0) + 1;
     if (api.stopStartup) api.stopStartup(this);
   },
 
   load() {
-    this.setData({ loading: true, error: '' });
+    this.chatRequest = (this.chatRequest || 0) + 1;
+    this.loadEpoch = (this.loadEpoch || 0) + 1;
+    this.setData({ chatDetail: null, chatLoading: false, loading: true, error: '' });
     api.myData()
       .then((d) => {
         this.raw = d;
@@ -113,7 +121,12 @@ Page({
             created: when(f.createdAt),
           })),
           ...taskData(d),
-          totals: { subs: d.subscriptionsTotal, feedback: d.feedbackTotal, events: d.eventsTotal, tasks: d.advisorTasksTotal || (d.advisorTasks || []).length },
+          chats: chatRows(d.aiChats || []),
+          chatsNext: d.aiChatsNext || null,
+          chatsLoading: false,
+          chatRetention: (d.aiChats || []).length && d.retention && d.retention.aiChats
+            ? `· AI 对话：每一问保存 ${d.retention.aiChats} 天，可以在本页提前删除整条对话` : '',
+          totals: { chats: d.aiChatsTotal || 0, chatTurns: d.aiChatTurnsTotal || 0, subs: d.subscriptionsTotal, feedback: d.feedbackTotal, events: d.eventsTotal, tasks: d.advisorTasksTotal || (d.advisorTasks || []).length },
           retention: d.retention,
           // 有过 AI 解读或条款对照任务的才写这两项的保存期限：AI 只对白名单开放时，其他人看不到 AI 字样
           // （AI 以外页面的模板里不写 AI，见 ai-entry.test.js）
@@ -122,6 +135,60 @@ Page({
         });
       })
       .catch((err) => this.setData({ loading: false, error: `加载失败：${err.message}` }));
+  },
+
+  moreChats() {
+    if (!this.data.chatsNext || this.data.chatsLoading) return;
+    const token = this.loadEpoch;
+    this.setData({ chatsLoading: true });
+    api.myDataChats(this.data.chatsNext).then((d) => {
+      if (token !== this.loadEpoch) return;
+      const ids = new Set(this.data.chats.map((c) => c.id));
+      const rows = d.items.filter((c) => !ids.has(c.id));
+      this.raw.aiChats.push(...rows);
+      this.raw.aiChatsNext = d.next;
+      this.setData({ chats: [...this.data.chats, ...chatRows(rows)], chatsNext: d.next, chatsLoading: false });
+    }).catch((err) => {
+      if (token !== this.loadEpoch) return;
+      this.setData({ chatsLoading: false });
+      wx.showToast({ title: err.message || '没能加载，请重试', icon: 'none' });
+    });
+  },
+
+  viewChat(e) {
+    const id = e.currentTarget.dataset.id;
+    if (!this.data.chats.some((c) => String(c.id) === String(id))) return;
+    this.fetchChat(id);
+  },
+
+  earlierChat() {
+    const d = this.data.chatDetail;
+    if (!d || !d.hasMore || this.data.chatLoading) return;
+    this.fetchChat(d.id, d.turns[0].seq);
+  },
+
+  fetchChat(id, before) {
+    const token = this.chatRequest = (this.chatRequest || 0) + 1;
+    this.setData({ chatLoading: true });
+    api.myDataChat(id, before).then((d) => {
+      if (token !== this.chatRequest) return;
+      this.chatRaw = d;
+      this.setData({ chatLoading: false, chatDetail: { ...d, turns: d.turns.map((t) => ({
+        ...t, skillLabel: { find: '找通知', ask: '问这份通知' }[t.skill] || t.skill,
+        state: STATES[t.status] || t.status, created: when(t.createdAt),
+      })) } });
+    }).catch((err) => {
+      if (token !== this.chatRequest) return;
+      this.setData({ chatLoading: false });
+      wx.showToast({ title: err.message || '没能加载，请重试', icon: 'none' });
+    });
+  },
+
+  copyChatPage() {
+    if (!this.chatRaw || !this.data.chatDetail || this.data.chatLoading) return;
+    wx.setClipboardData({ data: JSON.stringify(this.chatRaw, null, 2),
+      success: () => wx.showToast({ title: '已复制本页问题及范围', icon: 'none' }),
+      fail: () => wx.showToast({ title: '没能复制，请稍后再试', icon: 'none' }) });
   },
 
   // 复制全部：完整的 JSON，可以粘贴保存（剪贴板只写不读）
@@ -184,10 +251,12 @@ Page({
       follow: this.data.remindOpen ? '这个关注（它的微信提醒也会一起取消）' : '这个关注',
       sub: cancelling ? '这次还没发出的提醒' : '这条提醒历史记录',
       feedback: '这条纠错',
+      chat: '这条对话的全部问题和结果（已完成的问答次数不退回）',
       task: task && task.queued ? '这条排队中的记录（会先取消，用掉的次数退回）'
         : task && task.stuck ? '这条没有处理完的记录（用掉的次数退回）' : '这条记录和它的结果',
     }[kind];
-    const call = { follow: api.deleteFollow, sub: api.deleteSubscription, feedback: api.deleteFeedback, task: api.deleteAdvisorTask }[kind];
+    const call = { follow: api.deleteFollow, sub: api.deleteSubscription, feedback: api.deleteFeedback, task: api.deleteAdvisorTask, chat: api.deleteChat }[kind];
+    if (!call || (kind === 'chat' && !this.data.chats.some((c) => String(c.id) === String(id)))) return;
     wx.showModal({
       title: cancelling ? '取消提醒' : '删除记录',
       content: `删除${what}？删除后不能恢复。`,

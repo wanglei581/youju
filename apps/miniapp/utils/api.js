@@ -653,6 +653,11 @@ function myData() {
   return request('/api/v1/me/data');
 }
 
+// 本人数据管理不经过生成入口的能力或新协议检查。
+function myDataChats(after) { return request('/api/v1/me/data/chats', { after }); }
+function myDataChat(id, before) { return request(`/api/v1/me/data/chats/${id}`, before ? { before } : null); }
+function deleteChat(id) { return request(`/api/v1/chats/${id}`, null, { method: 'DELETE' }); }
+
 // 开卖按小程序版本放开（D-074）：商品、下单、能力、我的、提交任务这几个请求带上代码包里《付费服务协议》的版本号
 // 和小程序环境（develop 开发版 / trial 体验版 / release 正式版）。服务端据此决定：沙箱和测试名单只在开发版、体验版，
 // 现网只对带定稿协议版本号的包——老版本永远看不到价格。读不到就不带，服务端按正式版、没有协议处理（看不到购买入口）。
@@ -898,7 +903,7 @@ module.exports = {
   watchStartup, stopStartup, prewarm, isLive, request, snapshotOnce, coverage, home, search, deadlineReport, listBoard, detail, calendar, lists, lookup, listRecord, exportFile, feedback,
   attachmentPart, reading, exportPreview, advisorReading,
   AGREED_KEY, forgetAgreed, me, agree, deleteMe, myFollows, createFollow, deleteFollow, seenFollow, followNew, mySubscriptions,
-  myData, renameFollow, deleteFeedback, deleteSubscription,
+  myData, myDataChats, myDataChat, deleteChat, renameFollow, deleteFeedback, deleteSubscription,
   follow, files, saveSubscription,
   advisorCapabilities, forgetCapabilities, advisorMode, advisorStatus, advisorSeason, advisorPreview, startBoostTrial, createAdvisorTask, advisorTasks, advisorTask, cancelAdvisorTask, deleteAdvisorTask, downloadAdvisorTask, advisorTaskPart,
   payProducts, createPayOrder, payOrder, payOrders, checkPayOrder, refundPayOrder, requestInvoice, payHeader,
