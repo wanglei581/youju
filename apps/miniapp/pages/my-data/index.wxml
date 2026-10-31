@@ -105,7 +105,7 @@
       </view>
       <view wx:if="{{chatsNext}}" class="op" bindtap="moreChats" aria-role="button">{{chatsLoading ? '加载中…' : '查看更多对话'}}</view>
       <view wx:if="{{chatLoading}}" class="muted">问题加载中…</view>
-      <view wx:if="{{chatDetail}}">
+      <view wx:if="{{chatDetail}}" id="chat-detail">
         <view class="section-title">对话 {{chatDetail.id}} · 第 {{chatDetail.range.from}}–{{chatDetail.range.to}} 问，共 {{chatDetail.total}} 问</view>
         <view wx:for="{{chatDetail.turns}}" wx:for-item="turn" wx:key="seq" class="item">
           <view class="item-main">{{turn.question}}</view>

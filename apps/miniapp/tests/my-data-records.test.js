@@ -27,7 +27,7 @@ function load(file, deps = {}, globals = {}) {
     Page(d) { def = d; }, ...globals,
   }, { filename: file });
   if (!def) return module.exports;
-  return { ...def, data: plain(def.data), setData(values) { Object.assign(this.data, plain(values)); } };
+  return { ...def, data: plain(def.data), setData(values, callback) { Object.assign(this.data, plain(values)); if (callback) callback(); } };
 }
 const pagesOf = (list) => load('utils/pages.js', { './package-pages.js': list });
 
@@ -43,7 +43,7 @@ const TASKS = [
 function myData({ tasks = [], pages = APP_PAGES, extra = {}, remove, chatApi = {}, confirm = true, loadData } = {}) {
   const raw = { user: { openid: 'synthetic-openid', agreed: null }, follows: [], subscriptions: [], feedback: [], advisorTasks: plain(tasks),
     advisorTasksTotal: tasks.length, retention: RETENTION, ...extra };
-  const calls = { load: 0, deleted: [] }; const copied = []; const toasts = []; let modal;
+  const calls = { load: 0, deleted: [], scrolls: [] }; const copied = []; const toasts = []; let modal;
   const api = {
     ...chatApi,
     myData: () => { calls.load += 1; return loadData ? loadData() : Promise.resolve(plain(raw)); },
@@ -53,7 +53,7 @@ function myData({ tasks = [], pages = APP_PAGES, extra = {}, remove, chatApi = {
     '../../utils/api.js': api, '../../utils/conditions.js': conditions,
     '../../utils/consent.js': { loginOpen: () => true, remindAny: () => false, withdraw: () => Promise.resolve(false) },
     '../../utils/advisor.js': advisor, '../../utils/pages.js': pagesOf(pages),
-  }, { wx: { setClipboardData: ({ data, success }) => { copied.push(JSON.parse(data)); if (success) success(); }, showToast: (o) => toasts.push(o.title),
+  }, { wx: { pageScrollTo: (options) => calls.scrolls.push(plain(options)), setClipboardData: ({ data, success }) => { copied.push(JSON.parse(data)); if (success) success(); }, showToast: (o) => toasts.push(o.title),
     showModal: (m) => { modal = m; m.success({ confirm }); }, navigateTo() { assert.fail('我的数据里删记录不跳到别的页面'); } } });
   return { page, raw, calls, copied, toasts, modal: () => modal, view: () => render('pages/my-data/index.wxml', page.data) };
 }
@@ -197,12 +197,15 @@ test('关闭生成入口仍能翻全部对话目录与问题页，复制明确�
   assert.equal(h.page.data.chats.length, 2);
   assert.equal(h.page.data.chatsNext, null);
   h.page.viewChat(event({ id: 71 })); await flush();
+  assert.deepEqual(h.calls.scrolls, [{ selector: '#chat-detail', duration: 200 }]);
+  assert.match(read('pages/my-data/index.wxml'), /id="chat-detail"/);
   assert.match(textOf(h.view()), /第 230–230 问，共 230 问/);
   assert.match(textOf(h.view()), /合成问题/);
   h.page.copyChatPage(); assert.deepEqual(h.copied[0], CHAT_PAGE);
   h.page.earlierChat(); await flush();
   assert.deepEqual(calls[2], ['view', 71, 230]);
   assert.equal(h.page.data.chatDetail.hasMore, false);
+  assert.equal(h.calls.scrolls.length, 2);
   h.page.remove(event({ kind: 'chat', id: 71 })); await flush();
   assert.deepEqual(calls[3], ['delete', 71]);
   assert.match(h.modal().content, /全部问题和结果.*已完成的问答次数不退回/);
@@ -235,11 +238,13 @@ test('切换对话或刷新后迟到的问题响应不覆盖当前数据；查�
   h.page.viewChat(event({ id: 71 })); h.page.viewChat(event({ id: 72 })); await flush();
   finishOld(CHAT_PAGE); finishList({ items: [{ ...CHAT, id: 73 }], next: null }); await flush();
   assert.equal(h.page.data.chatDetail.id, 72);
+  assert.equal(h.calls.scrolls.length, 1);
   assert.equal(h.page.data.chats.length, 3);
   assert.equal(h.page.data.chatsLoading, false);
   h.page.viewChat(event({ id: 71 })); h.page.load(); await flush();
   finishOld(CHAT_PAGE); await flush();
   assert.equal(h.page.data.chatDetail, null);
+  assert.equal(h.calls.scrolls.length, 1);
 });
 
 test('真实 API 封装使用后端挂载路径：本人数据分页与整条对话删除', async () => {

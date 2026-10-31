@@ -181,7 +181,11 @@ Page({
       this.setData({ chatLoading: false, chatDetail: { ...d, turns: d.turns.map((t) => ({
         ...t, skillLabel: { find: '找通知', ask: '问这份通知' }[t.skill] || t.skill,
         state: STATES[t.status] || t.status, created: when(t.createdAt),
-      })) } });
+      })) } }, () => {
+        // 目录可能很长，等明细渲染后再定位；刷新或切换后的旧回调不能抢走当前位置。
+        if (token !== this.chatRequest || !this.data.chatDetail) return;
+        if (typeof wx.pageScrollTo === 'function') wx.pageScrollTo({ selector: '#chat-detail', duration: 200 });
+      });
     }).catch((err) => {
       if (token !== this.chatRequest) return;
       this.setData({ chatLoading: false });
