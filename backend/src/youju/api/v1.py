@@ -3125,6 +3125,29 @@ def display_body_text(text: str) -> str:
     return display_text(_mask_attachment_names(_mask_phones(display_marks(text))))
 
 
+# 交给模型的正文（D-114 独立审阅）：协议写“发送前隐去其中的身份证号、手机号、电话、邮箱、
+# 银行账号和联系人姓名”。入库那层脱敏之外，再按页面上同一套规则补遮号码、联系人姓名和邮箱；
+# 补遮的地方写回入库的标记（“[电话已脱敏]”这类），和以前交给模型的写法一样，AI 原句核对遇到
+# 标记照旧不用那一句。网址不遮：不是个人信息，申报方式里要用；也不做页面上的标记整理
+_TO_STORE_MARKS = (
+    ("（这里隐去了电话）", "[电话已脱敏]"),
+    ("（这里隐去了联系人）", "[姓名已脱敏]"),
+    ("（这里隐去了署名）", "[姓名已脱敏]"),
+    ("（这里隐去了邮箱）", "[邮箱已脱敏]"),
+    ("（这里隐去了证件号）", "[身份证号已脱敏]"),
+    ("（这里隐去了银行账号）", "[银行账号已脱敏]"),
+)
+
+
+def model_body_text(text: str) -> str:
+    """交给模型的正文：传入入库脱敏后的文字（redact_sensitive 的结果），按页面那套规则补遮，
+    标记写成入库的写法。处理两次结果一样。"""
+    shown = _hide_emails(_mask_phones(_mask_attachment_names(_mask_phones(display_marks(text)))))
+    for old, new in _TO_STORE_MARKS:
+        shown = shown.replace(old, new)
+    return shown
+
+
 def display_attachment_text(text: str) -> str:
     """附件一段文字（不是表格的格子）给页面的写法：先补遮号码、再遮姓名，再走 display_text。"""
     return display_text(_mask_attachment_names(_mask_phones(display_marks(text))))

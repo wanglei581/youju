@@ -122,13 +122,13 @@ def test_detail_and_reading_pages_mask_the_second_number(client, session):  # no
         assert "87687769" not in text and "62651782" not in text and "87687770" not in text
 
 
-def test_text_for_the_model_and_quote_check_is_unchanged(session):
-    """交给模型、核对 AI 原句用的文字（content.load：redact_sensitive 后的原文）不受显示层影响：
-    原文没变、旧结果的"正文变了"判断（段落比对）也不会因为这次改动作废。"""
+def test_text_for_the_model_masks_like_the_page_with_store_marks(session):
+    """交给模型、核对 AI 原句用的文字（content.load）：入库脱敏之后，按页面那套规则补遮号码，标记写成
+    入库的写法（D-114 独立审阅：协议写了发送前隐去电话）；页面上的说法不进模型的文字。"""
     doc, _, _, _ = seed(session, body=BODY)
     loaded = content.load(session, doc.id)
     body = loaded.texts.sources[0].text
-    assert "[电话已脱敏]、87687769" in body
+    assert "[电话已脱敏]、[电话已脱敏]" in body and "87687769" not in body
     assert MARK not in body
     # 入库的文字也没动；遮号码的入库规则（texts.mask、redact_sensitive）照旧，只有显示层多遮这一个
     assert v1._reading_body(session, doc.id) == BODY

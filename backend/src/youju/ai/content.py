@@ -195,8 +195,9 @@ def _check(session: Session, doc_id: int, *, link: bool = True) -> tuple[Documen
             "原文链接已失效，原网页可能已撤下或改了地址，暂不提供 AI 解读和条款对照", "link_gone"
         )
     raw = v1._reading_body(session, doc.id)
-    # 不删除网页杂项、不 strip，段落偏移始终对应数据库内的完整脱敏原文。
-    body = v1.redact_sensitive(raw or "")
+    # 不删除网页杂项、不 strip，段落偏移始终对应交给模型的这份正文：入库脱敏之后，再按页面那套规则
+    # 补遮号码、联系人姓名和邮箱（v1.model_body_text，D-114 独立审阅：协议写了发送前隐去这些）
+    body = v1.model_body_text(v1.redact_sensitive(raw or ""))
     if not body.strip():
         raise interpret.InterpretRefusal("没有可公开的完整正文，请查看官方原文", "no_body")
     if len(body) > interpret.MAX_BODY:
