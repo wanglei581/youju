@@ -703,10 +703,23 @@ def test_more_phone_contexts(shown, expected):
         "项目编号：2026001，金额：3000000元，截至20261120。",  # 编号、金额（以前把"金额"当成人名）
         "支出列“2060203自然科学基金”",
         "某某项目\n65337138",  # 不在联系方式标题下面
+        # agy 审阅举的例子：已遮号码下一行开头的科目编码、像标题的整句、常用词后面的数、一串 7 位编码
+        "（一）联系电话保持畅通，请勿关机\n某某 85213456",
+        "成绩 85213456",
+        "金额（2060502）",
+        "2060501、2060502",
     ],
 )
 def test_more_phone_rules_leave_other_numbers(text):
     assert v1.display_body_text(text) == text
+
+
+def test_next_line_number_must_stand_alone():
+    # 隔着换行接着写的号码，下一行只有号码才算（agy 审阅）
+    assert (
+        v1.display_body_text("电话：88888888\n2060502技术创新服务")
+        == f"电话：{P}\n2060502技术创新服务"
+    )
 
 
 def test_phone_label_cell_masks_the_next_cell():

@@ -2254,10 +2254,16 @@ _NOT_PHONE_NEXT = frozenset("元万亿千百%％‰年月日号个人次家项�
 _DATE_DIGITS = re.compile(r"(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])")
 
 
+_LINE_REST_EMPTY = re.compile(r"[ \t\u3000]*[。；;，,、]?[ \t\u3000]*(?:\n|$)")
+
+
 def _phone_tail(text: str, at: int) -> re.Match[str] | None:
     """text 在 at 处是不是"、87687769"这样紧跟着的号码；是就给匹配，不是给 None。"""
     match = _PHONE_TAIL.match(text, at)
     if match is None:
+        return None
+    # 隔着换行的：下一行只有这个号码才算（"电话：…⏎2060502技术创新服务"的科目编码不算）
+    if "\n" in match.group("sep") and _LINE_REST_EMPTY.match(text, match.end()) is None:
         return None
     after = text[match.end() : match.end() + 2]
     if after and after[0] in _NOT_PHONE_NEXT:
@@ -2638,7 +2644,7 @@ _CONTACT_HEADING = re.compile(
     r"^[ \t\u3000]*(?:[一二三四五六七八九十]+[、.．]|\d{1,2}[、.．]"
     r"|[（(][一二三四五六七八九十\d]{1,2}[）)])?"
     r"[ \t\u3000]*(?:联系方式|联系电话|咨询电话|咨询方式|联系人及(?:联系)?(?:电话|方式)"
-    r"|业务咨询|政策咨询|技术咨询)[ \t\u3000]*(?:如下)?[ \t\u3000]*[:：]?"
+    r"|业务咨询|政策咨询|技术咨询)[ \t\u3000]*(?:如下)?[ \t\u3000]*(?:[:：]|$)"
 )
 _BLOCK_STOP = re.compile(
     r"^[ \t\u3000]*(?:附[ \t\u3000]*件|联系邮箱|电子邮箱|邮[ \t\u3000]*箱|[Ee]-?mail"
@@ -2660,7 +2666,8 @@ _CLOSE_AFTER = re.compile(r"[ \t\u3000]*[）)]")
 _CODE_AFTER = re.compile(r"[ \t\u3000]*[A-Z][A-Z0-9]{3,}")
 _UNIT_LINE_END = re.compile(r"(?:[处科室局委办厅站所院组队]|中心|部门|单位|纪委|监委)[ \t\u3000]*$")
 _VERB_BEFORE_NUMBER = re.compile(r"(?:致电|电询|拨打)[^。！？!?\n]{0,20}$")
-_ONE_NUMBER = r"(?:0\d{2,3}[2-9]\d{6,7}|[2-9]\d{6,7}(?:(?:[-－]|转)\d{1,6})?)"
+# 一行一串号码只认 8 位或区号连写的：7 位的一串（"2060501、2060502"）更像科目编码（agy 审阅）
+_ONE_NUMBER = r"(?:0\d{2,3}[2-9]\d{6,7}|[2-9]\d{7}(?:(?:[-－]|转)\d{1,6})?)"
 _NUMBER_LIST_LINE = re.compile(
     rf"[ \t\u3000]*{_ONE_NUMBER}(?:[ \t\u3000]*[、，,/／;；][ \t\u3000]*{_ONE_NUMBER})+"
     r"[ \t\u3000]*[。；;，,]?[ \t\u3000]*"
@@ -2678,7 +2685,13 @@ def _name_before(text: str, start: int) -> tuple[int, int] | None:
     head = window[: sep.start()]
     for size in (3, 2):
         token = head[-size:]
-        if len(token) == size and re.fullmatch(f"[{_HAN_RANGE}]+", token) and _person(token):
+        if (
+            len(token) == size
+            and re.fullmatch(f"[{_HAN_RANGE}]+", token)
+            and token not in _NOT_NAME_WORDS
+            and token not in _ATT_NOT_NAMES
+            and _person(token)
+        ):
             begin, end = base + sep.start() - size, base + sep.start()
             if "\n" in sep.group() and not _name_line(text, begin, end):
                 return None
@@ -3093,6 +3106,41 @@ _ATT_NOT_NAMES = frozenset(
         "出纳",
         "文员",
         "秘书",
+        # 以常见姓氏的字开头、其实是栏目名或常用词的（"成绩 85213456""金额（2060502）"，
+        # 11/3 agy、独立审阅）
+        "成绩",
+        "金额",
+        "方向",
+        "毕业",
+        "关系",
+        "范围",
+        "简介",
+        "分数",
+        "得分",
+        "总分",
+        "名次",
+        "成本",
+        "费用",
+        "经费",
+        "资金",
+        "项目",
+        "代码",
+        "编码",
+        "批次",
+        "期限",
+        "计划",
+        "单价",
+        "数量",
+        "总计",
+        "合计",
+        "小计",
+        "余额",
+        "利润",
+        "收入",
+        "支出",
+        "预算",
+        "定额",
+        "基数",
     }
 )
 # 少见姓的姓名（"丘珞珈""和文丹"，11/2 复测）：只在把握大的位置上不靠姓氏表认——"联系人：""姓名："
