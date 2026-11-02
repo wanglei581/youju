@@ -50,10 +50,18 @@ const EXPECT = {
   let env = {};
   try { env = JSON.parse(ver.EnvParams || '{}'); } catch { throw new Error('EnvParams 不是 JSON'); }
   delete ver.EnvParams;  // 原始字符串里也有密钥，解析完就丢掉
+  // 不是普通对象（比如被双重编码成字符串）时不往下走：后面的 in 运算报错会把整串配置带进报错信息
+  if (!env || typeof env !== 'object' || Array.isArray(env)) { env = null; throw new Error('EnvParams 不是对象'); }
+  // 白名单项要是贴进了密钥（或 sk- 开头），只写"像密钥"、不打印；比完就把密钥值丢掉
+  const secretValues = SECRET.map((k) => env[k]).filter((v) => typeof v === 'string' && v.length >= 8);
+  const looksSecret = (v) => v.startsWith('sk-') || secretValues.some((sv) => v.includes(sv));
+  const secretLike = new Set(SHOWN.filter((k) => k in env && looksSecret(String(env[k]))));
+  secretValues.length = 0;
   const lines = [`${service} ${version}（${ver.Status || ''}，备注：${ver.Remark || '无'}）：环境变量共 ${Object.keys(env).length} 项`];
   const spaced = (v) => v !== v.trim();
   for (const k of SHOWN) {
     if (!(k in env)) { lines.push(`  ${k}：没设`); continue; }
+    if (secretLike.has(k)) { lines.push(`  ${k}：值像密钥，不显示 ← 可能贴错了地方`); continue; }
     const v = String(env[k]);
     lines.push(`  ${k} = ${JSON.stringify(v)}${spaced(v) ? '  ← 前后有空格' : ''}`);
   }
@@ -67,8 +75,15 @@ const EXPECT = {
     const exp = EXPECT[profile];
     const want = { ...exp.both, ...(service === 'admin' ? exp.admin : {}) };
     const bad = [];
+    // 值是 JSON 的（附加参数）按内容比：官方写法带空格（{"thinking": {"type": "disabled"}}）也算对
+    const same = (actual, expected) => {
+      if (actual === expected) return true;
+      if (typeof actual !== 'string' || !expected.startsWith('{')) return false;
+      try { return JSON.stringify(JSON.parse(actual)) === JSON.stringify(JSON.parse(expected)); } catch { return false; }
+    };
     for (const [k, v] of Object.entries(want)) {
-      if (env[k] !== v) bad.push(`${k} 应为 ${JSON.stringify(v)}，现在是 ${k in env ? JSON.stringify(String(env[k])) : '没设'}`);
+      if (secretLike.has(k)) { bad.push(`${k} 的值像密钥，可能贴错了地方`); continue; }
+      if (!same(env[k], v)) bad.push(`${k} 应为 ${JSON.stringify(v)}，现在是 ${k in env ? JSON.stringify(String(env[k])) : '没设'}`);
     }
     if (service === 'admin') {
       for (const k of exp.adminSecret) {
@@ -79,4 +94,10 @@ const EXPECT = {
     for (const b of bad) lines.push(`  ✗ ${b}`);
   }
   console.log(lines.join('\n'));
-})().catch((e) => { console.error('失败：', e && e.message ? e.message.slice(0, 200) : String(e).slice(0, 200)); process.exit(1); });
+})().catch((e) => {
+  // 报错信息里可能带配置内容（比如某个值被当成代码解析）：太长或像配置的不打印
+  const msg = e && e.message ? String(e.message) : String(e);
+  const safe = msg.length <= 120 && !/YOUJU_|sk-|\{/.test(msg) ? msg : '出错了（报错信息里可能有配置内容，不打印）';
+  console.error('失败：', safe);
+  process.exit(1);
+});
