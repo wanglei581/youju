@@ -37,9 +37,12 @@ const EXPECT = {
   let version = versionArg;
   if (!version) {
     const list = await api.DescribeCloudBaseRunServer({ EnvId: envId, ServerName: service, Limit: 100, Offset: 0 });
+    // 接口返回的顺序不保证：取流量最大的，一样大取创建时间最新的（灰度时两个版本都有流量）
     const live = (list.VersionItems || []).filter((v) => Number(v.FlowRatio) > 0);
     if (!live.length) throw new Error('没有在接流量的版本');
-    version = live[live.length - 1].VersionName;
+    live.sort((a, b) => Number(b.FlowRatio) - Number(a.FlowRatio) || String(b.CreatedTime || '').localeCompare(String(a.CreatedTime || '')));
+    version = live[0].VersionName;
+    if (live.length > 1) console.log(`注意：${live.length} 个版本在接流量（${live.map((v) => `${v.VersionName} ${v.FlowRatio}%`).join('、')}），看的是 ${version}`);
   }
   const ver = await api.DescribeCloudBaseRunServerVersion({ EnvId: envId, ServerName: service, VersionName: version });
   let env = {};
@@ -52,7 +55,7 @@ const EXPECT = {
     lines.push(`  ${k} = ${JSON.stringify(v)}${spaced(v) ? '  ← 前后有空格' : ''}`);
   }
   for (const k of SECRET) {
-    if (!(k in env)) { lines.push(`  ${k}：没设`); continue; }
+    if (!env[k]) { lines.push(`  ${k}：没设`); continue; }
     const v = String(env[k]);
     lines.push(`  ${k}：填了，${v.length} 个字${/\s/.test(v) ? '，里面有空白字符 ← 要去掉' : '，没有空格'}（不显示内容）`);
   }
@@ -69,7 +72,7 @@ const EXPECT = {
         if (!v) bad.push(`${k} 没填`);
         else if (/\s/.test(String(v))) bad.push(`${k} 里面有空白字符`);
         // 只看长度和公开的前缀格式，不打印内容：云开发的密钥是 800 多字的长串，DeepSeek 的是 sk- 开头、几十个字
-        else if (String(v).length > 100 || !String(v).startsWith('sk-')) bad.push(`${k} 不像 DeepSeek 的密钥（${String(v).length} 个字；DeepSeek 的是 sk- 开头、几十个字），可能还是原来云开发那把`);
+        else if (String(v).length > 100 || String(v).length < 20 || !String(v).startsWith('sk-')) bad.push(`${k} 不像 DeepSeek 的密钥（${String(v).length} 个字；DeepSeek 的是 sk- 开头、几十个字），可能还是原来云开发那把`);
       }
     }
     lines.push(bad.length ? `核对 ${profile}：有 ${bad.length} 处不对` : `核对 ${profile}：都对`);
