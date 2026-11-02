@@ -196,7 +196,7 @@ test('真实API接线：正文/附件版本游标、advisor身份通道、目录
 test('名单查询离页丢弃迟回，返回保留输入并重新比对，不沿用旧命中', async () => {
   const resolves = []; const names = [];
   const p = load('lists', { isLive: () => true, lookup: name => { names.push(name); return new Promise(r => resolves.push(r)); } }, {
-    deps: { '../../utils/format.js': { todayISO: () => '2026-10-23', cnDate: x => x }, '../../utils/daywatch.js': { watchDay() {}, stopDay() {} }, '../../utils/cache.js': {} },
+    deps: { '../../utils/format.js': { todayISO: () => '2026-10-23', cnDate: x => x, clockText: () => '' }, '../../utils/daywatch.js': { watchDay() {}, stopDay() {} }, '../../utils/cache.js': {} },
   });
   p.setData({ name: '合成科技有限公司' }); p.onShow(); p.query(); p.onHide();
   resolves[0]({ items: [{ id: '7' }] }); await new Promise(r => setImmediate(r));

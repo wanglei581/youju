@@ -152,7 +152,8 @@ Page({
     const id = e && e.currentTarget.dataset.id;
     const current = this.data.clients.find((c) => c.id === id);
     if (!current && this.data.clients.length >= MAX_CLIENTS) {
-      wx.showToast({ title: '最多 20 家，更多请用工具中心批量处理', icon: 'none' }); return;
+      // 包里没有工具中心（两个过审包）时不提工具中心（所列即所用，11/2 独立审阅）
+      wx.showToast({ title: pages.has('advisor') ? '最多 20 家，更多请用工具中心批量处理' : '最多 20 家', icon: 'none' }); return;
     }
     const form = normalize(current || {});
     this.setData({ editing: true, form, error: '', placeholder: `客户 ${current ? this.data.clients.indexOf(current) + 1 : this.data.clients.length + 1}` });

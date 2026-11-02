@@ -3,7 +3,7 @@ const { todayISO } = require('../../utils/format.js');
 const { watchDay, stopDay } = require('../../utils/daywatch.js');
 const { requestOnce, remindOpen } = require('../../utils/subscribe.js');
 const { ensureConsent, syncConsent, loginOpen } = require('../../utils/consent.js');
-const { describe, searchUrl } = require('../../utils/conditions.js');
+const { describe, sameAsName, quoted, searchUrl } = require('../../utils/conditions.js');
 
 // 关注范围暂不可查询（如城市来源停用后的旧关注）：服务端保留条件，newCount 为 null、queryUnavailable 为真
 const UNAVAILABLE_TEXT = '关注范围暂不可查询，请重新选择地区或等待来源恢复';
@@ -61,10 +61,12 @@ Page({
       .then((res) => {
         const follows = res.items.map((f) => {
           const unavailable = f.queryUnavailable === true || typeof f.newCount !== 'number';
+          const desc = describe(f.conditions);
           return {
             id: f.id,
             name: f.name,
-            desc: describe(f.conditions),
+            // 名称就是条件说明（没改过的默认名称）时只写名称一行（11/2 完整测试第 9 条）
+            desc: sameAsName(f.name, desc) ? '' : desc,
             searchUrl: searchUrl(f.conditions),
             newCount: unavailable ? null : f.newCount,
             unavailable,
@@ -182,7 +184,8 @@ Page({
     if (this.data.mode !== 'live') return;
     wx.showModal({
       title: '取消关注',
-      content: `不再关注"${name}"？${this.data.remindOpen ? '这个关注的微信提醒也会一起取消。' : ''}`,
+      // 名称里已有引号（默认名称里的“关键词”）时不再套一层（11/2 完整测试第 9 条）
+      content: `不再关注${quoted(name)}？${this.data.remindOpen ? '这个关注的微信提醒也会一起取消。' : ''}`,
       confirmText: '取消关注',
       confirmColor: '#E5484D',
       cancelText: '再想想',

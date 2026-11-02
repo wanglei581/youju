@@ -152,10 +152,12 @@ test('搜索三级选到区县：请求、已选条、弹层、关注保存、�
   page.follow(); await settle();
   assert.equal(saved.conditions.districts, '山东/青岛/市南区'); assert.equal(saved.conditions.cities, undefined);
   assert.match(saved.name, /江苏、山东·青岛·市南区/);
-  // 关注页：卡片摘要有区县；回搜索时网址带区县，打开后条件完全一样
+  // 关注页：卡片上有区县（默认名称就是条件说明，只写名称一行，11/2 完整测试第 9 条）；回搜索时网址带区县，打开后条件完全一样
   const follow = followPage([{ id: 7, name: saved.name, newCount: 0, conditions: saved.conditions }]);
   follow.page.loadLive(); await settle();
-  assert.match(follow.page.data.follows[0].desc, /江苏、山东·青岛·市南区/);
+  assert.match(follow.page.data.follows[0].name, /江苏、山东·青岛·市南区/);
+  assert.equal(follow.page.data.follows[0].desc, '');
+  assert.match(conditions.describe(saved.conditions), /江苏、山东·青岛·市南区/);
   follow.page.searchFollow(tap({ id: 7 }));
   const back = searchPage();
   back.page.onLoad(Object.fromEntries(new URL(follow.targets.at(-1), URL_BASE).searchParams)); await settle();

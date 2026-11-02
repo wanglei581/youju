@@ -185,7 +185,7 @@ test('层级筛选：国家部委、省级、市级、区县级四项，条件�
   const url = new URL(conditions.searchUrl({ kind: 'all', regions: '山东', levels: '省级', time: '不限' }), 'https://test.invalid');
   restored.onLoad(Object.fromEntries(url.searchParams)); await flush();
   assert.equal(calls.at(-1).levels, '省级'); assert.equal(calls.at(-1).regions, '山东');
-  assert.equal(conditions.describe({ kind: '申报通知', regions: '山东', levels: '省级', time: '不限' }), '山东 · 省级 · 申报通知 · 不限');
+  assert.equal(conditions.describe({ kind: '申报通知', regions: '山东', levels: '省级', time: '不限' }), '山东 · 省级 · 申报通知');
 });
 
 test('地区和层级：层级的国家部委不受地区限制，省级只列所选地区的；演示数据与服务端同一规则', async () => {

@@ -1,5 +1,5 @@
 const api = require('../../utils/api.js');
-const { describe } = require('../../utils/conditions.js');
+const { describe, sameAsName, quoted } = require('../../utils/conditions.js');
 const { withdraw, loginOpen, remindAny } = require('../../utils/consent.js');
 const { KINDS, DATA_KINDS, STATES } = require('../../utils/advisor.js');
 const pages = require('../../utils/pages.js');
@@ -26,10 +26,14 @@ function stuck(t) {
 }
 
 // 工具记录（批量工具和 AI 的任务）：类型、状态、时间；本人随时能删（D-093 上线门槛第 8 条），
-// 只有正在处理的要等结束。结果文件只在"我的记录"里下载，过审版没有这一页就不提
+// 只有正在处理的要等结束。结果文件只在"我的记录"里下载，过审版没有这一页就不提。
+// 批量工具、加量体验只在包里有工具中心（完整版）或这个账号真有这类记录时才提：过审版加 AI（D-098）
+// 包里只有 AI，有 AI 记录时栏目叫"AI 记录"，保存期限不写批量工具和加量体验（11/2 完整测试第 7 条）
 function taskData(d) {
   const rows = d.advisorTasks || [];
   const ai = rows.some((t) => Object.prototype.hasOwnProperty.call(KINDS, t.kind));
+  const data = rows.some((t) => Object.prototype.hasOwnProperty.call(DATA_KINDS, t.kind));
+  const tools = pages.has('advisor') || data;
   const files = rows.some((t) => Object.prototype.hasOwnProperty.call(DATA_KINDS, t.kind) && t.status === 'done');
   const extras = [d.boostTrial ? '加量体验的开始和结束时间' : '', d.passGiftsTotal ? `送的批量工具天数（${d.passGiftsTotal} 笔）` : ''].filter(Boolean);
   return {
@@ -44,11 +48,14 @@ function taskData(d) {
       created: when(t.createdAt),
       finished: when(t.finishedAt),
     })),
-    tasksTitle: ai ? '工具和 AI 记录' : '工具记录',
+    tasksTitle: ai && !tools ? 'AI 记录' : ai ? '工具和 AI 记录' : '工具记录',
     fileNote: files && pages.has('advisor-tasks') ? '批量工具的结果文件在“我的”→“我的记录”里下载' : '',
     extras: extras.length ? `${extras.join('、')}：在“复制全部数据”里可以看到。` : '',
-    toolsShown: pages.has('advisor') || rows.length > 0,
-    boostShown: pages.has('advisor') || rows.length > 0 || Boolean(d.boostTrial),
+    // 保存期限里的"批量工具"一行
+    toolsShown: tools,
+    boostShown: tools || Boolean(d.boostTrial),
+    // "按天的使用次数"：批量工具和 AI 都按天记次数（隐私保护指引三·2），有其中一样就写
+    usageShown: tools || rows.length > 0,
   };
 }
 
@@ -56,7 +63,7 @@ function taskData(d) {
 // （个人信息保护法第四十五至四十七条；网络数据安全管理条例第二十三条）
 // 协议定稿前（loginOpen 为 false，D-056）没有入口，直接打开时只显示"暂未开放"，不请求接口
 Page({
-  data: { loading: true, error: '', aiRetention: '', user: null, follows: [], subs: [], feedback: [], tasks: [], tasksTitle: '', fileNote: '', extras: '', toolsShown: false, boostShown: false, totals: {}, retention: null, exportedAt: '', loginOpen: loginOpen(), remindOpen: remindAny() },
+  data: { loading: true, error: '', aiRetention: '', user: null, follows: [], subs: [], feedback: [], tasks: [], tasksTitle: '', fileNote: '', extras: '', toolsShown: false, boostShown: false, usageShown: false, totals: {}, retention: null, exportedAt: '', loginOpen: loginOpen(), remindOpen: remindAny() },
 
   onShow() {
     if (!this.data.loginOpen) return;
@@ -90,11 +97,15 @@ Page({
             agreedVersion: u.agreed ? u.agreed.version : '',
             agreedAt: u.agreed ? when(u.agreed.at) : '',
           },
-          follows: d.follows.map((f) => ({ id: f.id, name: f.name, desc: describe(f.conditions), created: when(f.createdAt) })),
+          // 名称就是条件说明（没改过的默认名称）时不再写一遍条件；提到关注名称时引号不套引号（11/2 完整测试第 9 条）
+          follows: d.follows.map((f) => {
+            const desc = describe(f.conditions);
+            return { id: f.id, name: f.name, desc: sameAsName(f.name, desc) ? '' : desc, created: when(f.createdAt) };
+          }),
           subs: d.subscriptions.map((s) => ({
             id: s.id,
             kind: SUB_KIND[s.kind] || s.kind,
-            target: s.followId ? `关注"${followName[s.followId] || s.followId}"` : (s.docTitle || '文件已下线'),
+            target: s.followId ? `关注${quoted(followName[s.followId] || s.followId)}` : (s.docTitle || '文件已下线'),
             status: SUB_STATUS[s.status] || s.status,
             unused: s.status === 'unused',
             created: when(s.createdAt),
@@ -203,6 +214,7 @@ Page({
   },
 
   deleteAll() {
-    withdraw().then((ok) => { if (ok) wx.navigateBack(); });
+    // 注销弹窗按包里有的功能写删哪些记录（过审版加 AI 只说 AI 的，11/2 完整测试第 7 条）
+    withdraw(pages.flags()).then((ok) => { if (ok) wx.navigateBack(); });
   },
 });

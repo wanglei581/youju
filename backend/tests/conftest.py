@@ -79,6 +79,9 @@ def session_factory(db_engine: Engine) -> sessionmaker[Session]:
     v1._EXCERPT_CACHE.clear()
     v1._LOOKUP_COVERAGE.clear()
     v1._LIST_COUNTS.clear()
+    # 名单看板、截止报告的整份缓存（按数据版本做键，换了一批数据版本可能重复）：查名单的收录份数
+    # 也用名单看板的统计（11/2 完整测试第 6 条），一并清掉
+    v1._REPORT_CACHE.clear()
     return sessionmaker(bind=db_engine, expire_on_commit=False)
 
 

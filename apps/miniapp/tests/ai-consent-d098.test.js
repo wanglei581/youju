@@ -33,7 +33,11 @@ test('同意记录：旧的"我知道了"和别的须知版本都不算；点了
 });
 
 test('须知写明交给哪个模型处理：有公示的模型名称就写名称，没配时只写大模型、不写已备案；对照页用同一句', () => {
-  assert.equal(logic.modelText({ modelLabel: '某某大模型', filingNo: '备案-1' }), '通知原文会交给 某某大模型 处理。');
+  // 模型名两边是汉字时不加空格；以字母、数字开头或结尾的那一边才隔一个空格（11/2 完整测试第 21 条）
+  assert.equal(logic.modelText({ modelLabel: '某某大模型', filingNo: '备案-1' }), '通知原文会交给某某大模型处理。');
+  assert.equal(logic.modelText({ modelLabel: ' 腾讯混元助手大模型 ' }), '通知原文会交给腾讯混元助手大模型处理。');
+  assert.equal(logic.modelText({ modelLabel: 'DeepSeek' }), '通知原文会交给 DeepSeek 处理。');
+  assert.equal(logic.modelText({ modelLabel: '某某 V3' }), '通知原文会交给某某 V3 处理。');
   assert.equal(logic.modelText({ modelLabel: '  ' }), '通知原文会交给大模型处理。');
   assert.equal(logic.modelText(null), '通知原文会交给大模型处理。');
   assert.equal(clause.modelText, logic.modelText);
@@ -44,7 +48,7 @@ test('解读页、对照页：须知按钮写"同意并开始""同意并查看�
     const wxml = read(file);
     assert.ok(wxml.includes(start), file);
     assert.ok(wxml.includes('同意并查看结果'), file);
-    assert.ok(wxml.includes('点"同意"才开始。') && wxml.includes('点"同意"后查看结果。'), file);
+    assert.ok(wxml.includes('点“同意”才开始。') && wxml.includes('点“同意”后查看结果。'), file);
     assert.ok(wxml.includes('{{modelText}}'), file);
     assert.ok(wxml.includes('{{consentError}}'), file);
     assert.doesNotMatch(wxml, /我知道了/, file);

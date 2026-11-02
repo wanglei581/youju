@@ -108,7 +108,10 @@ test('首页（过审版）：没有"工具中心"入口、申报季加量一行
   assert.equal(first.page.data.tools, false);
   assert.equal(first.seasonAsked(), 0);
   assert.deepEqual(first.page.data.guideSteps.map((s) => s.key), ['search', 'due', 'clients']);
+  // 没有批量工具的包不写"批量"（11/2 完整测试第 18 条；创始人 11/2 同意，D-112）
+  assert.equal(first.page.data.guideSteps[2].name, '按客户查通知（顾问用）');
   const root = render('pages/home/index.wxml', first.page.data);
+  assert.ok(!textOf(root).includes('批量'));
   const [entries] = findAll(root, hasClass('entries'));
   assert.ok(!hasClass('entries--tools')(entries));
   assert.deepEqual(findAll(entries, hasClass('entry-name')).map((n) => textOf(n)), ['截止', '我的客户', '查名单']);

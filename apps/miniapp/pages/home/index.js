@@ -26,7 +26,8 @@ const GUIDE_FIRST = [
   { key: 'due', name: '看截止和原文', text: '“截止”页列出快到期的通知；详情里可以读正文和附件', url: '/pages/report/index' },
 ];
 const GUIDE_TOOLS = { key: 'tools', name: '批量查客户（顾问用）', text: '在“工具中心”一次粘贴多家企业，在政府公开名单里查这些企业，并整理相关通知；需先同意协议，每月有免费次数', url: '/pages/advisor/index' };
-const GUIDE_CLIENTS = { key: 'clients', name: '批量查客户（顾问用）', text: '在“我的客户”存下客户的地区和产业方向，一次列出和它们相关的通知', url: '/pages/clients/index' };
+// 没有工具中心的包（过审版、过审版加 AI）去"我的客户"：没有批量工具，不写"批量"（11/2 完整测试第 18 条；创始人 11/2 同意，D-112）
+const GUIDE_CLIENTS = { key: 'clients', name: '按客户查通知（顾问用）', text: '在“我的客户”存下客户的地区和产业方向，一次列出和它们相关的通知', url: '/pages/clients/index' };
 const guideSteps = (open) => GUIDE_FIRST.concat(open ? GUIDE_TOOLS : GUIDE_CLIENTS);
 
 // 本机读不到标记（读取出错）时照常显示，宁可多显示一次

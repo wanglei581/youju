@@ -156,9 +156,13 @@ test('"我的"：保留登录与同意，完整候选增加工具中心和共同
   assert.equal(findAll(root, tapsTo('login')).length, 1);
   assert.equal(findAll(root, tapsTo('coverage')).length, 1);
   const rows = findAll(root, hasClass('row'));
-  assert.deepEqual(rows.map((n) => textOf(n).trim()), ['我的记录', '申请覆盖：你关心的地区还没有？', '使用帮助', '用户协议与隐私保护指引', '关于有据']);
+  // 《用户协议》《隐私保护指引》各一行，名称和打开的文件一致（11/2 完整测试第 8 条）
+  assert.deepEqual(rows.map((n) => textOf(n).trim()), ['我的记录', '申请覆盖：你关心的地区还没有？', '使用帮助', '用户协议', '隐私保护指引', '关于有据']);
   assert.equal(findAll(root, (n) => n.tag === 'contact-button').length, 1);
   assert.equal(rows[3].attrs.bindtap, 'openAgreement');
+  assert.equal(rows[3].attrs['data-type'], 'user');
+  assert.equal(rows[4].attrs.bindtap, 'openAgreement');
+  assert.equal(rows[4].attrs['data-type'], 'privacy');
   assert.equal(findAll(root, tapsTo('openPrivacy')).length, 0);
 });
 
@@ -278,7 +282,7 @@ test('关于有据：未定稿时使用说明不提关注和提醒，没有"去�
     const all = textOf(root);
     assert.equal(findAll(root, tapsTo('feedback')).length, final ? 1 : 0);
     // 10/22 走查：按钮上写的是"关注"，说明里也写点"关注"、存的是当前搜索条件
-    assert.equal(all.includes('在搜索结果页点"关注"，把当前的关键词和筛选条件存下来'), final);
+    assert.equal(all.includes('在搜索结果页点“关注”，把当前的关键词和筛选条件存下来'), final);
     // 订阅模板申请下来之前没有微信提醒，使用说明不提（10/15 走查）
     assert.equal(all.includes('订阅一次微信提醒'), false);
     assert.equal(all.includes('申请覆盖'), final);

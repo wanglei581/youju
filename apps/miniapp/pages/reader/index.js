@@ -91,7 +91,8 @@ function listRowView(res) {
   const found = evidence.state === 'found';
   const status = doc.status === '公示' || doc.status === '公布' ? doc.status : '';
   const region = textOf(doc.region);
-  const host = textOf(doc.host);
+  // 出处只写来源网站名称（D-097），和详情页"原文出处"同一个字段 site（"××厅网站"），不写网址
+  const site = textOf(doc.site);
   const gone = textOf(doc.link_gone);
   const pages = typeof evidence.pagesRead === 'number' && Number.isFinite(evidence.pagesRead) ? String(evidence.pagesRead) : '';
   return {
@@ -105,7 +106,7 @@ function listRowView(res) {
     publicityNote: status === '公示' ? '发布阶段按名单标题用词标注，是否还在公示期以原文为准' : '',
     regionLine: region ? `地区：${region}` : '',
     disclaimer: '这一行摘自政府公开发布的名单，有据只做整理，不作判断。',
-    sourceLine: host ? `来源 ${host}` : '',
+    sourceLine: site ? `来源：${site}` : '',
     linkGoneLine: gone ? `原网页 ${gone} 起已打不开，下面是此前收录的内容` : '',
     state: textOf(evidence.state),
     stateNote: found ? '' : stateNoteOf(evidence),

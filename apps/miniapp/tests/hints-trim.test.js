@@ -290,7 +290,9 @@ test('结果页（站内看所选文件）：截止只写日期或"截止时间�
   const shown = textOf(render('pages/results/index.wxml', page.data));
   assert.doesNotMatch(shown, /未核项|未核对：|以原文为准|example\.gov\.cn|机器摘录/);
   assert.match(shown, /原句：请于2026年11月6日前报送。/);
-  assert.match(shown, /这里展示文件目录，不是企业入选结论或信用报告。/);
+  // 不出现"信用"一类字（11/2 完整测试第 3 条；创始人 11/2 同意，D-112）
+  assert.match(shown, /这里只列文件目录，不是企业入选结论。/);
+  assert.doesNotMatch(shown, /信用/);
 });
 
 test('查名单结果：整行可点进发布这份名单的通知，只另放"看原名单里的这一行"', () => {
