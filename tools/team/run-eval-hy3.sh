@@ -5,7 +5,7 @@
 #   tools/team/run-eval-hy3.sh <云开发 AI 地址> [--out 目录] [--concurrency 1|2|3] [--no-stream]
 #   tools/team/run-eval-hy3.sh --self-test [--out 目录]    不要密钥、不联网，用假模型走一遍（自检）
 #   tools/team/run-eval-deepseek.sh [--out 目录] [--concurrency 1|2|3] [--no-stream]
-#       改在 DeepSeek 官方接口上跑（https://api.deepseek.com，模型 deepseek-chat，不加附加参数），
+#       改在 DeepSeek 官方接口上跑（https://api.deepseek.com，模型 deepseek-v4-pro，关闭思考模式），
 #       提示输入 DeepSeek API Key；1.0 改用 DeepSeek 时用这个（类目页登记的是 DeepSeek，创始人 11/2）
 #
 #   云开发 AI 地址形如 https://<环境ID>.api.tcloudbasegateway.com/v1/ai/cloudbase；也可以不写在命令里，
@@ -69,8 +69,8 @@ esac
 # DeepSeek 不用外面 shell 里留着的混元地址和模型（YOUJU_EVAL_HY3_*），免得串线
 if [ "$PROVIDER" = deepseek ]; then
   BASE_URL="${ARG_URL:-https://api.deepseek.com}"
-  MODEL=deepseek-chat
-  EXTRA='{}'
+  MODEL=deepseek-v4-pro
+  EXTRA='{"thinking":{"type":"disabled"}}'
   KEY_NAME="DeepSeek API Key"
 else
   BASE_URL="${ARG_URL:-$ENV_HY3_URL}"
@@ -164,8 +164,8 @@ if [ "$SELF_TEST" = 1 ]; then
   YOUJU_DATABASE_URL="$DB_URL" "${PY[@]}" --fake-model --out "$OUT" --concurrency "$CONCURRENCY"
 else
   echo "开始评测：模型 $MODEL，并发 $CONCURRENCY，流式 $STREAM" >&2
-  # 线路只设给这一个子进程。附加参数：混元 hy3 关掉思考（和线上一致）；DeepSeek 不加（deepseek-chat
-  # 本来就是不思考模式），线上改用 DeepSeek 时 YOUJU_AI_ADVISOR_REQUEST_EXTRA 也照这样填 {}
+  # 线路只设给这一个子进程。附加参数：两家都关掉思考模式（和线上一致）。DeepSeek 用 deepseek-v4-pro：
+  # 官网价格页（11/3）只列 deepseek-flash 和它、默认开思考；线上后台核对一直用它加关闭思考，D-114 对外 AI 也用它
   YOUJU_DATABASE_URL="$DB_URL" \
     YOUJU_AI_ADVISOR_BASE_URL="$BASE_URL" \
     YOUJU_AI_ADVISOR_API_KEY="$KEY" \

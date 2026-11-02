@@ -433,6 +433,18 @@ def test_pass_bar():
     assert other_bars["gateway"]["ok"] is None and "只报告" in other_bars["gateway"]["label"]
     assert "参考值" in other_bars["cost"]["label"] and other["verdict"] == "PASS"
     assert eq.gateway_label("https://api.deepseek.com") == "DeepSeek 官方接口"
+    # DeepSeek 的模型在后台价目表里：费用按官网高峰时段价算成元，不再按云开发价目估
+    priced = eq.summarize(slow, _scores(), cloudbase=False, model="deepseek-v4-pro")
+    prompt = sum(r["usage"]["prompt_tokens"] for r in slow)
+    completion = sum(r["usage"]["completion_tokens"] for r in slow)
+    assert priced["cost"]["basis"] == "price_table"
+    assert priced["cost"]["yuan"] == pytest.approx((prompt * 9.0 + completion * 27.0) / 1_000_000)
+    priced_cost = {b["key"]: b for b in priced["bars"]}["cost"]
+    assert "DeepSeek 官网" in priced_cost["label"] and priced_cost["actual"].startswith("约 ")
+    assert "deepseek-v4-pro 输入每百万 tokens 9.0 元" in eq.cost_note(priced)
+    assert "参考值" in eq.cost_note(other) and "云开发控制台" in eq.cost_note(
+        eq.summarize(slow, _scores())
+    )
     dry = eq.summarize([_record(1, 0.0, 0, 0, status="dry_run")], _scores())
     assert dry["verdict"] == "未调用模型"
 

@@ -43,6 +43,7 @@ from sqlalchemy.orm import Session
 
 from youju.ai import advisor_endpoint, content, interpret
 from youju.ai.client import ChatClient
+from youju.ai.usage import PRICES, cost_yuan
 from youju.config import Settings
 from youju.db import create_mysql_engine
 from youju.models import Document
@@ -294,9 +295,12 @@ def points(prompt_tokens: int, completion_tokens: int) -> float:
     return (prompt_tokens * INPUT_POINTS + completion_tokens * OUTPUT_POINTS) / 1_000_000
 
 
-def summarize(records: list[dict], scores: list[dict], cloudbase: bool = True) -> dict:
-    """cloudbase：走的是云开发网关（混元）。不是（如 DeepSeek 官方接口）时，60 秒那条只报告，
-    费用按云开发价目估的只是参考值。"""
+def summarize(
+    records: list[dict], scores: list[dict], cloudbase: bool = True, model: str = ""
+) -> dict:
+    """cloudbase：走的是云开发网关（混元）。不是（如 DeepSeek 官方接口）时，60 秒那条只报告；
+    费用按后台价目表（youju.ai.usage.PRICES，DeepSeek 官网高峰时段价）估，表里没有这个模型时
+    才按云开发价目估、写明是参考值。"""
     attempted = [r for r in records if r["status"] != "dry_run"]
     elapsed = [r["elapsed_seconds"] for r in attempted]
     prompt = sum(r["usage"]["prompt_tokens"] for r in records)
@@ -359,6 +363,16 @@ def summarize(records: list[dict], scores: list[dict], cloudbase: bool = True) -
         },
     }
     summary["cloudbase"] = cloudbase
+    summary["model"] = model
+    yuan = None if cloudbase else cost_yuan(model, prompt, completion)
+    if yuan is not None:
+        summary["cost"] = {
+            "basis": "price_table",
+            "points": None,
+            "yuan": yuan,
+            "points_per_notice": None,
+            "yuan_per_notice": yuan / len(attempted) if attempted else 0.0,
+        }
     summary["bars"] = bars(summary)
     checked = [b["ok"] for b in summary["bars"] if b["ok"] is not None]
     if not attempted:
@@ -407,22 +421,47 @@ def bars(summary: dict) -> list[dict]:
             "ok": latency["over_gateway"] == 0 if cloudbase else None,
             "note": "不达标：上线前必须打开流式（YOUJU_AI_ADVISOR_STREAM=true）",
         },
-        {
-            "key": "cost",
-            "label": (
-                "平均每篇费用（只报告，不设门槛）"
-                if cloudbase
-                else "平均每篇费用（只报告，不设门槛；按云开发价目估的参考值，以模型方账单为准）"
-            ),
-            "actual": (
-                f"{summary['cost']['points_per_notice']:.1f} 点"
-                f"（约 {summary['cost']['yuan_per_notice']:.4f} 元）"
-                if summary["usage"]["reported"]
-                else "接口没返回用量"
-            ),
-            "ok": None,
-        },
+        cost_bar(summary, cloudbase),
     ]
+
+
+def cost_bar(summary: dict, cloudbase: bool) -> dict:
+    """费用那一条：只报告，不设门槛。"""
+    cost = summary["cost"]
+    if not summary["usage"]["reported"]:
+        actual = "接口没返回用量"
+    elif cost.get("basis") == "price_table":
+        actual = f"约 {cost['yuan_per_notice']:.4f} 元"
+    else:
+        actual = f"{cost['points_per_notice']:.1f} 点（约 {cost['yuan_per_notice']:.4f} 元）"
+    if cloudbase:
+        label = "平均每篇费用（只报告，不设门槛）"
+    elif cost.get("basis") == "price_table":
+        label = "平均每篇费用（只报告，不设门槛；按 DeepSeek 官网高峰时段价格估，空闲时段减半）"
+    else:
+        label = "平均每篇费用（只报告，不设门槛；按云开发价目估的参考值，以模型方账单为准）"
+    return {"key": "cost", "label": label, "actual": actual, "ok": None}
+
+
+def cost_note(summary: dict) -> str:
+    """报告"怎么算的"里费用那一行。"""
+    if summary["cost"].get("basis") == "price_table":
+        model = summary.get("model", "")
+        price_in, price_out, _checked = PRICES[model]
+        return (
+            "- 费用：按后台价目表（DeepSeek 官网价格页的高峰时段单价）估："
+            f"{model} 输入每百万 tokens {price_in} 元、输出 {price_out} 元；"
+            "缓存命中和空闲时段更便宜，以 DeepSeek 账单为准。"
+        )
+    tail = (
+        "。"
+        if summary.get("cloudbase", True)
+        else "；这次不是云开发线路，只是参考值，以模型方账单为准。"
+    )
+    return (
+        f"- 费用：输入每百万 tokens {INPUT_POINTS} 点、输出 {OUTPUT_POINTS} 点，"
+        f"{POINTS_PER_YUAN} 点约合 1 元（以云开发控制台为准）" + tail
+    )
 
 
 class FakeModel:
@@ -614,10 +653,16 @@ def report(gold: dict, records: list[dict], scores: list[dict], summary: dict, m
     tokens = f"输入 {usage['prompt_tokens']} tokens，输出 {usage['completion_tokens']} tokens"
     if summary["attempted_count"] and not usage["reported"]:
         tokens += "（接口没返回用量）"
-    money = (
-        f"共 {cost['points']:.1f} 点（约 {cost['yuan']:.3f} 元），"
-        f"平均每篇 {cost['points_per_notice']:.1f} 点（约 {cost['yuan_per_notice']:.4f} 元）"
-    )
+    if cost.get("basis") == "price_table":
+        money = (
+            f"共约 {cost['yuan']:.3f} 元，平均每篇约 {cost['yuan_per_notice']:.4f} 元"
+            "（按 DeepSeek 官网高峰时段价格估，空闲时段减半，以账单为准）"
+        )
+    else:
+        money = (
+            f"共 {cost['points']:.1f} 点（约 {cost['yuan']:.3f} 元），"
+            f"平均每篇 {cost['points_per_notice']:.1f} 点（约 {cost['yuan_per_notice']:.4f} 元）"
+        )
     codes = "、".join(f"{k} {v}" for k, v in summary["error_codes"].items())
     errors = (
         f"{summary['error_count']} 篇{f'（{codes}）' if codes else ''}；"
@@ -664,13 +709,7 @@ def report(gold: dict, records: list[dict], scores: list[dict], summary: dict, m
         "- 每篇通知只调一次模型，提示词、段落、max_tokens 和线上解读相同；"
         "逐字核对用 interpret.validate。",
         "- 耗时 p50、p95 用最近秩法（从小到大第 ceil(p·n) 个），含调用失败的那几次。",
-        f"- 费用：输入每百万 tokens {INPUT_POINTS} 点、输出 {OUTPUT_POINTS} 点，"
-        f"{POINTS_PER_YUAN} 点约合 1 元（以云开发控制台为准）"
-        + (
-            "。"
-            if summary.get("cloudbase", True)
-            else "；这次不是云开发线路，只是参考值，以模型方账单为准。"
-        ),
+        cost_note(summary),
     ]
     return "\n".join(lines) + "\n"
 
@@ -759,7 +798,7 @@ def main(argv: list[str] | None = None) -> int:
         by_doc = {r["gold_doc_id"]: r for r in records}
         scores = [score(q, by_doc[q["doc_id"]]) for q in gold["questions"]]
         cloudbase = args.fake_model or gateway_label(base_url) == "云开发网关"
-        summary = summarize(records, scores, cloudbase=cloudbase)
+        summary = summarize(records, scores, cloudbase=cloudbase, model=model)
         meta["finished_at"] = beijing_now()
         meta["wall_seconds"] = round(time.monotonic() - started, 1)
         write_outputs(args.out, gold, records, scores, summary, meta)
