@@ -386,3 +386,66 @@ def test_local_numbers_after_a_phone_label_are_masked(shown, expected):
 )
 def test_other_text_after_phone_labels_is_left_alone(text):
     assert v1.display_text(text) == text
+
+
+# Codex 审阅（11/2）：两段后缀的域名大写也认（"KJT.JIANGSU.GOV.CN"），一段后缀的照旧只认小写
+# （"ASP.NET"不算）；全角"＠"邮箱的用户名带下划线也遮
+@pytest.mark.parametrize(
+    "shown, expected",
+    [
+        ("见 KJT.JIANGSU.GOV.CN 网站", "见 （这里隐去了网址） 网站"),
+        ("见 Kjt.Jiangsu.Gov.Cn", "见 （这里隐去了网址）"),
+        ("联系邮箱：abc_def＠kjt.gov.cn。", "联系邮箱：（这里隐去了邮箱）。"),
+    ],
+)
+def test_upper_case_domains_and_underscore_emails_are_hidden(shown, expected):
+    assert v1.display_text(shown) == expected
+
+
+@pytest.mark.parametrize("text", ["ASP.NET 开发", "EXAMPLE.COM", "附件1.DOCX"])
+def test_upper_case_text_like_domains_is_left_alone(text):
+    assert v1.display_text(text) == text
+
+
+# 正文里入库时漏遮的联系人姓名（Codex 审阅，11/2）：显示时按附件那套补遮，另加"电话：""联系电话："
+# 标签前面隔着标点、空格的那个词；和标签连在一起的部门、事项名（"储备课题技术电话""纪检监察组联系电话"）不碰
+@pytest.mark.parametrize(
+    "shown, expected",
+    [
+        (
+            f"（联系人：电力处 梁弢；联系电话：{MARK}）",
+            f"（联系人：电力处 （这里隐去了联系人）；联系电话：{MARK}）",
+        ),
+        (f"科技处 廉瑞， 联系电话：{MARK}；", f"科技处 （这里隐去了联系人）， 联系电话：{MARK}；"),
+        (f"王娟 联系电话：{MARK}", f"（这里隐去了联系人） 联系电话：{MARK}"),
+    ],
+)
+def test_body_names_before_a_phone_label_are_masked(shown, expected):
+    assert v1.display_body_text(shown) == expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        f"AI赋能生物育种储备课题技术电话：{MARK}",
+        f"驻科技厅纪检监察组联系电话：{MARK}",
+        f"单位电话：{MARK}",
+        f"科技处，电话：{MARK}",
+        f"地址：河西区友谊路1号，电话：{MARK}",
+    ],
+)
+def test_body_words_that_are_not_names_are_left_alone(text):
+    assert v1.display_body_text(text) == v1.display_text(text)
+
+
+def test_detail_and_reading_pages_mask_body_names(client, session):  # noqa: F811
+    body = BODY.replace(
+        "2.材料报送地址", "3.联系人：电力处 梁弢；联系电话：[电话已脱敏]\n2.材料报送地址"
+    )
+    doc, _att, _, _version = seed(session, body=body)
+    detail = client.get(f"/api/v1/documents/{doc.id}").json()
+    assert "电力处 （这里隐去了联系人）；联系电话" in detail["body"]["text"]
+    reading = client.get(path(doc)).json()
+    joined = "".join(s["text"] for s in reading["segments"])
+    assert "电力处 （这里隐去了联系人）；联系电话" in joined
+    assert "梁弢" not in str(detail) and "梁弢" not in joined

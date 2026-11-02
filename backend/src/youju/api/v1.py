@@ -2355,15 +2355,17 @@ def _url_end(text: str, end: int) -> int:
 
 # 不带 http、www 的域名（11/2 F12）："kxjst.jiangsu.gov.cn""hjrz.chinatorch.org.cn/login"（带路径的
 # 连路径一起）也换成"（这里隐去了网址）"。认以 .gov.cn、.com.cn、.org.cn、.net.cn、.edu.cn、.cn、
-# .com、.net、.org 结尾、前面是字母数字和点、横线的串；后缀只认小写（"ASP.NET"不算），前面挨着
+# .com、.net、.org 结尾、前面是字母数字和点、横线的串；两段的后缀（.gov.cn 这类）大小写都认
+# （"KJT.JIANGSU.GOV.CN"，11/2 Codex 审阅），一段的（.cn、.com、.net、.org）只认小写
+# （"ASP.NET"不算），前面挨着
 # 字母数字、点、横线、斜杠或"@""＠"的不算（邮箱的域名由遮邮箱那一步管）。"附件1.docx""3.5""No.1"
 # "V2.0"这些后面不是这几个后缀，不碰
 _BARE_DOMAIN = re.compile(
     r"(?<![A-Za-z0-9.．@＠_/-])(?:[A-Za-z0-9][A-Za-z0-9-]*[.．])+"
-    r"(?:gov[.．]cn|com[.．]cn|org[.．]cn|net[.．]cn|edu[.．]cn|cn|com|net|org)(?![A-Za-z0-9-])"
+    r"(?:(?i:gov|com|org|net|edu)[.．](?i:cn)|cn|com|net|org)(?![A-Za-z0-9-])"
     r"(?:[/／][A-Za-z0-9._~:/?#@&+=%,;．／-]*)?"
 )
-_BARE_HINT = re.compile(r"[.．](?:cn|com|net|org)(?![A-Za-z0-9-])")
+_BARE_HINT = re.compile(r"[.．](?:(?i:cn)|com|net|org)(?![A-Za-z0-9-])")
 
 
 def _hide_urls(text: str) -> str:
@@ -2668,7 +2670,8 @@ def _mask_contact_names(text: str) -> str:
 # 附件里的联系人姓名（11/2 F13），只在显示时遮。认姓名和正文同一套（_masked：常见姓氏开头的
 # 2–3 个字、"刘老师""张三处长"这类带称呼的、"高新处张三"单位后面的姓名），但只看这几处：
 #   1. "联系人""经办人""电话""一审"这类标签后面，到下一个"××："标签、句末为止（40 个字以内）；
-#   2. 紧挨在号码前面的那个词（"刘老师，（这里隐去了电话）""徐丽萍 （这里隐去了电话）"）；
+#   2. 紧挨在号码前面的那个词（"刘老师，（这里隐去了电话）""徐丽萍 （这里隐去了电话）"），
+#      和紧挨在"电话：""联系电话："标签前面的那个词（"电力处 梁弢；联系电话："）；
 #   3. "联系人："写在行尾时，下一行有号码（或只有一个词）的那一行；
 #   4. 表格：列名是"联系人""负责人""姓名"这类的格子，和只写着"联系人"那一格的下一格。
 # 正文那套是整行判断（行里有"联系人""联系方式"就把整行像姓名的词都遮）：附件里的表头、长表格行、
@@ -2681,6 +2684,10 @@ _ATT_FIELD = re.compile(rf"[{_HAN_CHAR}]{{2,6}}\s*[:：]")
 _ATT_STOP = re.compile(r"[。；;！？!?\n]")
 _ATT_WINDOW = 40
 _ATT_BEFORE_PHONE = re.compile(rf"([{_HAN_CHAR}·](?: ?[{_HAN_CHAR}·]){{1,5}})[\s，,、:：]*$")
+# 紧挨在"电话：""联系电话："这类标签前面的那个词（"电力处 梁弢；联系电话：……"，11/2 Codex 审阅）
+# 词和标签之间要隔着标点或空格："储备课题技术电话""纪检监察组联系电话"这类和标签连在一起的
+# 是部门、事项名，不是姓名（本机库全量对比看到的）
+_ATT_BEFORE_LABEL = re.compile(rf"([{_HAN_CHAR}·](?: ?[{_HAN_CHAR}·]){{1,5}})[\s，,、；;]+$")
 _NAME_HEAD = re.compile(r"联\s*系\s*人|联\s*络\s*人|经\s*办\s*人|负\s*责\s*人|姓\s*名|填\s*表\s*人")
 _BARE_NAME_LABEL = re.compile(
     r"(?:联\s*系\s*人|联\s*络\s*人|经\s*办\s*人|负\s*责\s*人|姓\s*名)"
@@ -2731,6 +2738,12 @@ def _mask_attachment_line(line: str, after_label: bool) -> str:
         before = _ATT_BEFORE_PHONE.search(line, 0, phone.start())
         if before is not None:
             spans.append((before.start(1), before.end(1), _CONTACT_MARK))
+    for label in _PHONE_LABEL.finditer(line):
+        # 标签前面紧挨着的"联系"是标签的一部分（"联系电话："），不算在词里
+        end = label.start() - 2 if line[: label.start()].endswith("联系") else label.start()
+        before = _ATT_BEFORE_LABEL.search(line, 0, end)
+        if before is not None:
+            spans.append((before.start(1), before.end(1), _CONTACT_MARK))
     # 从后往前遮，前面的位置不变；重叠的只遮一次
     done = len(line)
     for start, end, mark in sorted(spans, reverse=True):
@@ -2753,6 +2766,12 @@ def _mask_attachment_names(text: str) -> str:
         after_label = _LABEL_AT_END.search(line) is not None
         out.append(masked)
     return "\n".join(out)
+
+
+def display_body_text(text: str) -> str:
+    """正文给页面的写法：入库时已经按整行遮过联系人姓名，这里再按上面 1–4 补遮漏掉的
+    （"电力处 梁弢；联系电话："，11/2 Codex 审阅），再走 display_text。"""
+    return display_text(_mask_attachment_names(display_marks(text)))
 
 
 def display_attachment_text(text: str) -> str:
@@ -2870,7 +2889,7 @@ def body_for_reading(
         return body_payload(ReadingBody("personal"))
     body = _judge_text(_clean_reading_body(text), kind, list_filter=list_filter, attachments=None)
     if body.status == "ok":
-        body.text = display_text(body.text)
+        body.text = display_body_text(body.text)
     return body_payload(body)
 
 
@@ -2931,7 +2950,7 @@ def reading_body(
     if body.status == "ok":
         # 只在给页面的文字上做（display_text）；挑用哪一份正文、判断能不能显示都按原来的文字，
         # AI 解读另取原文（_reading_body），都不受影响
-        body.text = display_text(body.text)
+        body.text = display_body_text(body.text)
     return body
 
 
