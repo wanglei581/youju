@@ -42,7 +42,7 @@
         <text wx:if="{{remindOpen}}" class="sub-remind" data-id="{{item.id}}" catchtap="remind" aria-role="button">提醒</text>
       </block>
     </view>
-    <view wx:if="{{mode === 'live' && !follows.length && !loading && !error}}" class="empty muted">还没有关注。在搜索结果页点"关注"，就能把当前的关键词和筛选条件存下来。</view>
+    <view wx:if="{{mode === 'live' && !follows.length && !loading && !error}}" class="empty muted">还没有关注</view>
     <view class="add" bindtap="addSub"><t-icon name="add" size="32rpx" color="#2A5CE0" />去搜索，设好条件后点"关注"</view>
   </view>
 

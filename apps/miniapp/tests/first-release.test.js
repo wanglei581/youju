@@ -8,7 +8,7 @@ const format = require('../utils/format.js');
 const boost = require('../utils/boost.js');
 const { render, textOf, findAll, hasClass } = require('./wxml-render.js');
 
-// 首发版（D-061）的截止显示：已核对 / 机器摘录（8 天以后、带原句）/ 截止未核对。依赖都用替身。
+// 首发版（D-061）的截止显示：已核对 / 原文摘录（机器摘出，8 天以后、带原句）/ 截止时间见原文。依赖都用替身。
 const ROOT = path.join(__dirname, '..');
 const read = (file) => fs.readFileSync(path.join(ROOT, file), 'utf8');
 const plain = (v) => JSON.parse(JSON.stringify(v));
@@ -38,7 +38,7 @@ test('dueView：已核对写日期和"已核对"；机器摘录要带原句、8 
   assert.equal(format.dueView({ source: 'excerpt', date: plus(30), quote: QUOTE }).source, 'excerpt');
   assert.equal(format.dueView({ source: 'excerpt', date: plus(8), quote: QUOTE }).source, 'excerpt');
   const excerpt = format.dueView({ kind: '企业申报截止', source: 'excerpt', date: plus(12), time: null, quote: QUOTE });
-  assert.equal(excerpt.label, '机器摘录·未经人工核对'); assert.equal(excerpt.quote, QUOTE); assert.equal(excerpt.tone, 'excerpt');
+  assert.equal(excerpt.label, '原文摘录'); assert.equal(excerpt.quote, QUOTE); assert.equal(excerpt.tone, 'excerpt');
   assert.match(excerpt.text, /剩12天/);
   // 摘录没带原句、或按手机日期已进入 7 天内：不写日期
   for (const due of [
@@ -51,7 +51,7 @@ test('dueView：已核对写日期和"已核对"；机器摘录要带原句、8 
     { source: 'unverified', date: plus(20), quote: QUOTE }, // 即使收到日期也不写
   ]) {
     const view = format.dueView(due);
-    assert.equal(view.source, 'unverified'); assert.equal(view.text, '截止未核对，请以原文为准');
+    assert.equal(view.source, 'unverified'); assert.equal(view.text, '截止时间见原文');
     assert.doesNotMatch(JSON.stringify(view), DIGITS);
   }
   assert.equal(format.dueView(null), null);
@@ -62,18 +62,18 @@ test('列表行：接口带 due 时按来源写；机器摘录另起一行写标
   const observe = (doc) => { row.observers['doc, q, today'].call(row, { id: '9', title: '关于组织申报的通知', kind: '申报通知', ...doc }, ''); return plain(row.data); };
   const ex = observe({ due: { kind: '企业申报截止', source: 'excerpt', date: plus(15), quote: QUOTE } });
   assert.match(ex.due.text, /剩15天/); assert.equal(ex.dueNote, '');
-  assert.deepEqual(ex.excerpt, { label: '机器摘录·未经人工核对', quote: QUOTE });
+  assert.deepEqual(ex.excerpt, { label: '原文摘录', quote: QUOTE });
   const root = render('components/doc-row/index.wxml', { ...ex, doc: { kind: '申报通知', title: 'x' } });
-  assert.equal(flat(findAll(root, hasClass('excerpt'))[0]), `机器摘录·未经人工核对原文：${QUOTE}`);
+  assert.equal(flat(findAll(root, hasClass('excerpt'))[0]), `原文摘录原文：${QUOTE}`);
   const ver = observe({ due: { kind: '企业申报截止', source: 'verified', date: plus(5), quote: QUOTE } });
   assert.match(ver.due.text, /剩5天/); assert.equal(ver.excerpt, null);
   const soon = observe({ due: null, dueSoonUnverified: true });
-  assert.equal(soon.due, null); assert.equal(soon.dueNote, '截止未核对，请以原文为准');
+  assert.equal(soon.due, null); assert.equal(soon.dueNote, '可能 7 天内截止');
   const unv = observe({ due: { kind: '企业申报截止', source: 'unverified', date: null } });
-  assert.equal(unv.dueNote, '截止未核对，请以原文为准'); assert.equal(unv.excerpt, null);
+  assert.equal(unv.dueNote, '截止时间见原文'); assert.equal(unv.excerpt, null);
   assert.equal(observe({ due: null }).dueNote, '截止时间见原文');
   // 旧接口（没有 due 字段）照旧：只认核对过的 deadline
-  assert.equal(observe({ deadline: null, deadline_state: 'unverified' }).dueNote, '截止未核对，请以原文为准');
+  assert.equal(observe({ deadline: null, deadline_state: 'unverified' }).dueNote, '截止时间见原文');
   // 不是申报通知的不写截止
   assert.equal(observe({ kind: '政策', due: null }).dueNote, '');
 });
@@ -99,14 +99,14 @@ test('详情页：一份通知几种截止逐条写类型；已核对、机器�
   const page = detailPage(() => ({ ...DOC, deadlines }));
   page.onLoad({ id: '5' }); await flush();
   assert.deepEqual(page.data.dls.map((v) => [v.kind, v.source, v.label]), [
-    ['企业申报截止', 'excerpt', '机器摘录·未经人工核对'], ['推荐或审核截止', 'verified', '已人工核对'], ['材料报送截止', 'unverified', ''],
+    ['企业申报截止', 'excerpt', '原文摘录'], ['推荐或审核截止', 'verified', '已人工核对'], ['材料报送截止', 'unverified', ''],
   ]);
   const root = render('pages/detail/index.wxml', { ...page.data, loading: false });
   const rows = findAll(root, hasClass('dl'));
   assert.equal(rows.length, 3);
-  assert.match(flat(rows[0]), /^企业申报截止.*17:00剩20天机器摘录·未经人工核对原文：请于2026年10月30日前/);
+  assert.match(flat(rows[0]), /^企业申报截止.*17:00剩20天原文摘录原文：请于2026年10月30日前/);
   assert.match(flat(rows[1]), /^推荐或审核截止.*剩25天已人工核对$/);
-  assert.equal(flat(rows[2]), '材料报送截止截止未核对，请以原文为准');
+  assert.equal(flat(rows[2]), '材料报送截止截止时间见原文');
   assert.doesNotMatch(textOf(rows[2]), DIGITS);
   // 有逐条截止时，不再另出旧的"申报截止"说明卡片
   assert.equal(findAll(root, hasClass('due-card')).length, 1);
@@ -117,11 +117,11 @@ test('详情页：接口给了空的 deadlines（没抽到候选）写"截止时
   const page = detailPage(() => doc);
   page.onLoad({ id: '5' }); await flush();
   let root = render('pages/detail/index.wxml', { ...page.data, loading: false });
-  assert.deepEqual(findAll(root, hasClass('due-card')).map(flat), ['申报截止截止时间见原文']);
+  assert.deepEqual(findAll(root, hasClass('due-card')).map(flat), ['截止时间见原文']);
   doc = { ...DOC }; page.refreshing = false; page.load(); await flush();
   assert.equal(page.data.dls, null);
   root = render('pages/detail/index.wxml', { ...page.data, loading: false });
-  assert.deepEqual(findAll(root, hasClass('due-card')).map(flat), ['申报截止截止未核对，请以原文为准']);
+  assert.deepEqual(findAll(root, hasClass('due-card')).map(flat), ['截止时间见原文']);
 });
 
 function deadlinePage(api, globals = {}) {
@@ -148,19 +148,22 @@ test('截止页（列表）：已核对、机器摘录分开标，摘录带原�
   assert.equal(main[0].params.days, 7); assert.equal(main[0].opts.verifiedOnly, false);
   assert.ok(calls.every((c) => !('support' in c.params)));
   assert.deepEqual(page.data.rows.map((r) => [r.docId, r.source, r.srcLabel]), [
-    ['1', 'verified', '已人工核对'], ['2', 'excerpt', '机器摘录·未经人工核对'], ['3', 'unverified', ''],
+    ['1', 'verified', '已人工核对'], ['2', 'excerpt', '原文摘录'], ['3', 'unverified', ''],
   ]);
   const root = render('pages/report/index.wxml', page.data);
   const items = findAll(root, hasClass('item'));
   assert.match(flat(items[0]), /企业申报截止.*17:00剩5天已人工核对/);
-  assert.match(flat(items[1]), /剩12天机器摘录·未经人工核对原文：请于2026年10月30日前/);
-  assert.match(flat(items[2]), /材料报送截止：截止未核对，请以原文为准/); assert.doesNotMatch(flat(items[2]).replace(/^摘录没带原句的通知/, ''), /剩/);
+  assert.match(flat(items[1]), /剩12天原文摘录原文：请于2026年10月30日前/);
+  assert.match(flat(items[2]), /材料报送截止：截止时间见原文/); assert.doesNotMatch(flat(items[2]), /请以原文为准/); assert.doesNotMatch(flat(items[2]).replace(/^摘录没带原句的通知/, ''), /剩/);
   const soon = findAll(root, hasClass('soon'))[0];
-  assert.match(flat(soon), /^可能7天内截止，日期还没核对2份可能快截止的通知/);
+  assert.match(flat(soon), /^可能7天内截止2份可能快截止的通知/);
   for (const item of findAll(soon, hasClass('soon-item'))) {
-    assert.match(flat(item), /截止未核对，请以原文为准$/); assert.doesNotMatch(flat(item), DIGITS);
+    // 卡头写了"可能 7 天内截止"，每条不再各写一遍"截止时间见原文"（10/29 独立审阅）
+    assert.doesNotMatch(flat(item), /截止时间见原文/); assert.doesNotMatch(flat(item), DIGITS);
   }
-  assert.match(textOf(root), /机器摘录仅供参考，以原文为准/);
+  // 顶栏下常驻的"机器摘录仅供参考，以原文为准"10/29 删掉（每条有标签，页底说明写一次以原文为准）
+  // 页底只留去使用帮助的入口（截止日期的显示规则写在帮助里，10/29 创始人）
+  assert.doesNotMatch(textOf(root), /机器摘录仅供参考|机器摘录·未经人工核对/); assert.match(textOf(root), /截止日期怎么看 ›/);
   page.toggleVerified({ detail: { value: true } }); await flush();
   assert.equal(calls.at(-1).opts.verifiedOnly, true);
   assert.deepEqual(page.data.rows.map((r) => r.docId), ['1']); assert.equal(page.data.soon.total, 0);
@@ -193,7 +196,7 @@ test('截止页（按月看）：实心点是核对过的、空心点是只有�
     assert.deepEqual(page.data.rows.map((r) => r.docId), ['2']);
   }
   const root = render('pages/report/index.wxml', page.data);
-  assert.match(flat(root), /实心点：核对过的截止空心点：机器摘录灰点：已截止/);
+  assert.match(flat(root), /实心点：已核对空心点：原文摘录灰点：已截止/);
   assert.equal(findAll(root, hasClass('filters')).length, 1, '按月看保留省市筛选，隐藏部门筛选');
 });
 
@@ -217,14 +220,16 @@ test('首页（D-061）：三个入口；"7 天内截止"日期只放核对过�
   assert.deepEqual(page.data.soon.map((s) => s.id), ['1']);
   let root = render('pages/home/index.wxml', { ...page.data, loading: false });
   const block = findAll(root, hasClass('soon'))[0];
-  assert.match(flat(block), /^7天内截止全部甲企业申报截止.*17:00剩2天另有4份可能7天内截止，日期还没核对›$/);
+  // 卡底只写份数、不单独可点：卡头"全部 ›"已经去截止页（10/29 独立审阅：同一张卡两个入口去同一处）
+  assert.match(flat(block), /^7天内截止全部甲企业申报截止.*17:00剩2天另有4份可能7天内截止$/);
+  assert.equal(findAll(block, (n) => n.attrs && n.attrs.bindtap === 'goEntry').length, 1);
   assert.deepEqual(findAll(root, hasClass('entry-name')).map(textOf), ['截止', '我的客户', '查名单']);
   // 一份都没核对（10/13 线上就是这样）：照样显示这一块，只写份数、不写日期，字号放大
   res = { ...res, dueSoon: [] }; page.lastShow = 0; page.reload(); await flush();
   root = render('pages/home/index.wxml', { ...page.data, loading: false });
   const only = findAll(root, hasClass('soon'));
   assert.equal(only.length, 1);
-  assert.equal(flat(only[0]), '7天内截止全部4份通知可能7天内截止，日期还没核对，点开看是哪些›');
+  assert.equal(flat(only[0]), '7天内截止全部4份通知可能7天内截止');
   assert.equal(findAll(root, hasClass('soon-foot--only')).length, 1);
   // 核对过的和没核对的都没有，才不显示
   res = { ...res, dueSoon: [], dueSoonUnverifiedTotal: 0 }; page.lastShow = 0; page.reload(); await flush();
@@ -233,11 +238,10 @@ test('首页（D-061）：三个入口；"7 天内截止"日期只放核对过�
   assert.match(textOf(root), /最新申报通知/);
 });
 
-test('详情：正文说明不再说"上面核对过的日期"（上面可能只有机器摘录或未核对）；指向"上面的截止时间"只在上面真有这张卡片时出现', () => {
+test('详情：正文卡片不再另写一行提取说明，标题只写"正文"（10/29 创始人：自动提取这层说明写在使用帮助里）', () => {
   const wxml = read('pages/detail/index.wxml');
-  assert.doesNotMatch(wxml, /核对过的日期/);
-  // 正文说明用 #339 的措辞；"截止日期可先看上面的'截止时间'"只在上面真有"截止时间"卡片时出现（政策文件上面没有截止，10/22 走查）
-  assert.match(wxml, /<view class="weak body-note">从原网页或 PDF 提取<text wx:if="{{dueDated}}">；截止日期可先看上面的“截止时间”<\/text>，一切以原文为准。<\/view>/);
+  assert.doesNotMatch(wxml, /核对过的日期|body-note|截止日期可先看|一切以原文为准|dueDated/);
+  assert.match(wxml, /<view class="section-title">正文<\/view>/); assert.doesNotMatch(wxml, /（自动提取/);
 });
 
 test('查名单：比对范围取不到、手里也没有上次的，写明没加载出来并能重试；取到后不再提示', async () => {
@@ -531,32 +535,24 @@ test('实时请求先失败、首屏快照后到：首页和查名单显示快�
   assert.ok(!lists.data.error); assert.equal(lists.data.shown[0].title, '快照名单');
 });
 
-test('截止核对断档（定稿方案第八节）：3 个及以上工作日没人工核对，首页"7 天内截止"写"今日未更新"', async () => {
-  // 2026-10-14 是周三（北京时间中午）
-  const now = new Date('2026-10-14T04:00:00Z');
-  assert.equal(format.reviewStaleNote(null, now), '今日未更新：截止日期还没有人工核对');
-  assert.equal(format.reviewStaleNote('2026-10-14T09:00:00+08:00', now), '');
-  assert.equal(format.reviewStaleNote('2026-10-10T18:00:00+08:00', now), '今日未更新：截止日期最近一次人工核对是 10月10日');   // 周六核对，之后周一到周三 3 个工作日
-  assert.equal(format.reviewStaleNote('2026-10-09T18:00:00+08:00', new Date('2026-10-13T04:00:00Z')), '');   // 周五核对，到下周二只过了 2 个工作日
-  assert.equal(format.reviewStaleNote('2026-10-09T18:00:00+08:00', now), '今日未更新：截止日期最近一次人工核对是 10月9日');
-  assert.equal(format.reviewStaleNote('2026-10-12T23:30:00+08:00', now), '');   // 周一晚核对，过了周二、三 → 2 个工作日
-  assert.equal(format.reviewStaleNote('not-a-date', now), '');
-  // 首页：后端给了这个字段才显示；一份都没核对时和"有几份日期还没核对"一起显示
-  let res = { stats: { week_total: 1, provinces: 28, sources: 70, deadline_reviewed_at: null }, items: [], dueSoon: [], dueSoonUnverifiedTotal: 4 };
-  const page = load('pages/home/index.js', {
-    '../../utils/boost.js': boost,
-    '../../utils/api.js': { home: () => Promise.resolve(plain(res)) }, '../../utils/format.js': format, '../../utils/daywatch.js': daywatch,
-    '../../utils/cache.js': { readCache: () => null, writeCache() {}, cachedLabel: () => '' },
-    '../../utils/consent.js': { loginOpen: () => false },
-  }, { getApp: () => ({ globalData: {} }), wx: { navigateTo() {} } });
-  page.onLoad(); await flush();
-  let root = render('pages/home/index.wxml', { ...page.data, loading: false });
-  assert.equal(flat(findAll(root, hasClass('soon-stale'))[0]), '今日未更新：截止日期还没有人工核对');
-  // 老版本后端没有这个字段：不显示
-  res = { stats: { week_total: 1, provinces: 28, sources: 70 }, items: [], dueSoon: [], dueSoonUnverifiedTotal: 4 };
-  page.lastShow = 0; page.reload(); await flush();
-  root = render('pages/home/index.wxml', { ...page.data, loading: false });
-  assert.equal(findAll(root, hasClass('soon-stale')).length, 0);
+test('截止核对断档不在首页写（10/29 创始人：这类话不写在页面上；D-061 第八节第 2 条，D-108 待确认）：不管核对过没有、断档多久，首页都不出这一行', async () => {
+  assert.equal(format.reviewStaleNote, undefined);
+  for (const reviewed of [null, '2026-10-09T18:00:00+08:00', undefined]) {
+    const stats = { week_total: 1, provinces: 28, sources: 70 };
+    if (reviewed !== undefined) stats.deadline_reviewed_at = reviewed;
+    const res = { stats, items: [], dueSoon: [], dueSoonUnverifiedTotal: 4 };
+    const page = load('pages/home/index.js', {
+      '../../utils/boost.js': boost,
+      '../../utils/api.js': { home: () => Promise.resolve(plain(res)) }, '../../utils/format.js': format, '../../utils/daywatch.js': daywatch,
+      '../../utils/cache.js': { readCache: () => null, writeCache() {}, cachedLabel: () => '' },
+      '../../utils/consent.js': { loginOpen: () => false },
+    }, { getApp: () => ({ globalData: {} }), wx: { navigateTo() {} } });
+    page.onLoad(); await flush();
+    const root = render('pages/home/index.wxml', { ...page.data, loading: false });
+    assert.equal(findAll(root, hasClass('soon-stale')).length, 0, String(reviewed));
+    assert.doesNotMatch(textOf(root), /今日未更新|最近一次核对/, String(reviewed));
+    assert.match(textOf(root), /4 份通知可能 7 天内截止/);
+  }
 });
 
 test('协议页（民法典第 496 条，10/14）：每份文件顶部列出重点条款，正文里对应的段落加粗', () => {

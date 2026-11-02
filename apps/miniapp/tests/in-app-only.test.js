@@ -75,10 +75,10 @@ test('不再有复制原文链接的代码：utils/copy.js 已删，所有页面
   for (const file of ['pages/detail/index.js', 'components/doc-row/index.js']) {
     assert.doesNotMatch(visible(read(file)), /setClipboardData|copyVersion/, file);
   }
-  // D-097：正文下面和底栏两处同名的阅读入口（阅读全文 / 阅读附件）都在小程序内；出处不写网址
+  // D-097：阅读入口（阅读全文 / 阅读附件）在小程序内，10/29 起只在底栏放一个（创始人：上下两个是重复）；出处不写网址
   const detail = visible(read('pages/detail/index.wxml'));
-  assert.equal((detail.match(/bindtap="readBody"/g) || []).length, 2);
-  assert.match(detail, /bindtap="readBody"[^>]*>\{\{entry\.label\}\} ›</);
+  assert.equal((detail.match(/bindtap="readBody"/g) || []).length, 1);
+  assert.match(detail, /id="bar-read" class="btn-primary bar-main" bindtap="readBody"/);
   // 页面上不显示网址（AI 入口组件拿 doc.url 作内部参数，不显示）
   assert.doesNotMatch(detail, /\{\{doc\.host|>[^<]*\{\{doc\.url\}\}|原文网址|链接仅供记录来源/);
 });

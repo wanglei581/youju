@@ -1,5 +1,5 @@
 // 联系客服（D-075 第七节）：用微信自带的客服按钮（open-type="contact"），按钮上只写"联系客服"。
-// 按钮下写回复时间（创始人定：每天有人看、周末也看）和客服管什么，免得进了会话第一句就问"我们能报吗"。
+// 按钮下写客服管什么，免得进了会话第一句就问"我们能报吗"；回复时间（创始人定：每天有人看、周末也看）10/29 起写在使用帮助里。
 // 鸿蒙版微信不支持客服按钮（平台标识 ohos、ohos_pc）：换成一行字，给使用帮助和协议里写的联系邮箱，不编造电话或微信号。
 // session-from 只带排查要用的短标识：从哪一页来、通知编号、出错原因代码；不带企业情况、客户名单、AI 结果、任务编号。
 // 在某份通知的页面上点：打开消息卡片，标题是通知标题、路径是这份通知的详情页（默认卡片不一定指向详情页），
@@ -10,6 +10,8 @@ const pages = require('../../utils/pages.js');
 const MAX_FROM = 1024;
 const SAFE = /^[A-Za-z0-9_-]{1,40}$/;
 const DOC_ID = /^\d{1,12}$/;
+// 这几处同一屏已有去使用帮助的入口（或就是使用帮助页）
+const NO_HELP_LINK = ['me', 'ai_home', 'help'];
 const CARD_TITLE = 60;
 
 function platform() {
@@ -56,6 +58,9 @@ Component({
         cardTitle: doc && title ? title : '',
         cardPath: doc && title ? `/pages/detail/index?id=${doc}` : '',
         email: (legal.operator && legal.operator.email) || '',
+        // "我的"页上一行就是"使用帮助"、AI 首页同一张卡里有"使用帮助 ›"、使用帮助页就是它自己：打不开客服时
+        // 不再给去使用帮助的入口，改给联系邮箱（10/29 agy、独立审阅）
+        help: pages.has('help') && !NO_HELP_LINK.includes(from),
       });
     },
     help() {

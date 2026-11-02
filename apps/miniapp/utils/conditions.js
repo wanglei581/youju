@@ -17,9 +17,8 @@ const CATEGORY_TYPES = ['申报通知', '名单与公示'];
 // "征集入选"只在筛选里有。支持方式只有申报通知和名单有；产业方向所有类型都有，一份文件可以有多个
 // 或没有。不显示金额
 const SUPPORT_MODES = ['资金支持', '贷款贴息', '资格认定', '入库备案', '项目立项', '征集入选'];
-const SUPPORT_NOTE = '只含申报通知和名单，不代表一定提供这种支持。文件详情里的“支持方式”是核对原文后标注的；“征集入选”只用于筛选，详情里没有这一项';
+const SUPPORT_NOTE = '只含申报通知和名单';
 const INDUSTRIES = ['数字经济', '先进制造', '新材料与化工', '生物医药与健康', '新能源与绿色低碳', '电子信息与集成电路', '现代农业', '文旅与现代服务业'];
-const INDUSTRY_NOTE = '一份文件可能有多个方向，也可能没有';
 
 function split(value) {
   return (value || '').split(',').map((v) => v.trim()).filter(Boolean);
@@ -122,5 +121,5 @@ function searchUrl(c) {
 
 module.exports = {
   describe, searchUrl, requestScope, categoryConflict, supportConflict, foldNote, migrateNational, NATIONAL, GUIDE,
-  CATEGORIES, TAG_NOTE, CATEGORY_NOTE, SUPPORT_MODES, SUPPORT_NOTE, INDUSTRIES, INDUSTRY_NOTE,
+  CATEGORIES, TAG_NOTE, CATEGORY_NOTE, SUPPORT_MODES, SUPPORT_NOTE, INDUSTRIES,
 };

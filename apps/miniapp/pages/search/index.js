@@ -10,8 +10,8 @@ const { requestOnce, remindOpen } = require('../../utils/subscribe.js');
 const { loadCoverage, notCoveredNames, allUncovered } = require('../../utils/coverage.js');
 const access = require('../../utils/ai-access.js');
 const {
-  requestScope, categoryConflict, supportConflict, migrateNational, NATIONAL, CATEGORIES, TAG_NOTE, CATEGORY_NOTE, GUIDE,
-  foldNote, SUPPORT_MODES, SUPPORT_NOTE, INDUSTRIES, INDUSTRY_NOTE, searchUrl,
+  requestScope, categoryConflict, supportConflict, migrateNational, NATIONAL, CATEGORIES, CATEGORY_NOTE, GUIDE,
+  foldNote, SUPPORT_MODES, SUPPORT_NOTE, INDUSTRIES, searchUrl,
 } = require('../../utils/conditions.js');
 
 // 转发（D-070）：路径带上当前的全部检索条件（和"关注"打开搜索同一套参数），接收人打开是同样的条件，结果按打开时的数据。
@@ -33,25 +33,26 @@ const KIND_TABS = [
 // （请求的拼法见 conditions.requestScope，旧条件见 migrateNational）；市级与省级分别筛选
 const REGION_SHORT = ['不限地区', '北京', '天津', '河北', '上海', '江苏', '安徽', '山东', '广东', '四川', '更多省份'];
 // "只看未截止"（D-061，接口带 excerpts=1）：主截止核对过且没截止的、机器摘录的（只会是 8 天以后），
-// 以及 7 天内有候选、还没核对的；只有申报通知（名单、政策没有截止）。选的时候就写明含哪些、不含哪些，
-// 有结果时写在结果上面、没结果时写在空状态里，都是这一句（10/22 走查）
-const OPEN_GROUP_NOTE = '只列申报通知，含三类：日期已人工核对、还没截止的；机器摘录的（截止在 8 天以后，未经人工核对）；可能 7 天内截止、日期还没核对的。没写明截止日期、或截止日期还没理清的不在里面';
+// 以及 7 天内有候选、还没核对的；只有申报通知（名单、政策没有截止）。筛选面板里写明含哪些、不含哪些；
+// 结果上面和空状态只写一句不含哪些（10/22 走查要两处都说；10/29 创始人：提示不要写太多，压成短句）
+const OPEN_GROUP_NOTE = '只列申报通知：已核对或原文摘录、还没截止的，以及可能 7 天内截止的；截止日期还不确定的不列';
+const OPEN_NOTE = '“只看未截止”不含截止日期还不确定的通知';
 const GROUPS = [
   // 还没收录的省份取自收录范围接口，写在 extra 里
   { key: 'region', title: '地区', hint: '可多选', multi: true, options: REGION_SHORT, note: '国家部委的文件在“层级”里选，和地区一起选时会同时列出', extra: '' },
   // 城市和区县共用这一组：同一个省市区选择器，已选城市在 options、已选区县在 districtOptions
-  { key: 'city', title: '城市区县', hint: '省市区联动 · 可多选', multi: true, options: [], note: '省市区选项由微信提供，选项齐全不代表已收录数据；选择具体城市会替换同省的全省条件，选择具体区县会替换所属城市和全省的条件。' },
+  { key: 'city', title: '城市区县', hint: '省市区联动 · 可多选', multi: true, options: [] },
   { key: 'type', title: '类型', hint: '可多选', multi: true, options: ['申报通知', '名单与公示', '政策文件', GUIDE, '其他'] },
   { key: 'open', title: '申报状态', hint: '单选', multi: false, options: ['只看未截止'], note: OPEN_GROUP_NOTE },
   { key: 'time', title: '发布时间', hint: '单选', multi: false, options: ['近 7 天', '近 30 天', '近 90 天', '今年', '不限'] },
-  // 项目类别、支持方式、产业方向都按标题归类（tagged）：右栏顶部统一写一行 TAG_NOTE，选项下面只写各组特有的补充。
+  // 项目类别、支持方式、产业方向都按标题归类（tagged）："按标题归类、非官方分类"写在使用帮助里（10/29 创始人），
+  // 选项下面只写各组特有的补充。
   // 项目类别只有申报通知和名单有，不作资格判断；支持方式、产业方向只用于筛选（列表和详情不显示）
   { key: 'category', title: '项目类别', hint: '可多选', multi: true, tagged: true, options: CATEGORIES, note: CATEGORY_NOTE },
   { key: 'support', title: '支持方式', hint: '可多选', multi: true, tagged: true, options: SUPPORT_MODES, note: SUPPORT_NOTE },
-  { key: 'industry', title: '产业方向', hint: '可多选', multi: true, tagged: true, options: INDUSTRIES, note: INDUSTRY_NOTE },
+  { key: 'industry', title: '产业方向', hint: '可多选', multi: true, tagged: true, options: INDUSTRIES },
   { key: 'status', title: '发布阶段', hint: '可多选', multi: true, options: ['公示', '公布'] },
-  { key: 'level', title: '层级', hint: '可多选', multi: true, options: [NATIONAL, '省级', '市级', '区县级'],
-    note: '和地区一起选时，国家部委的文件同时列出，省级只列所选地区的，市级和区县级也按所选地区筛选；市区目前仅收录部分来源，见“我的 → 数据从哪里来”' },
+  { key: 'level', title: '层级', hint: '可多选', multi: true, options: [NATIONAL, '省级', '市级', '区县级'] },
   { key: 'dept', title: '发文部门', hint: '可多选', multi: true, options: ['科技部门', '工信部门', '其他部门'] },
 ];
 const ALL_PROVINCES = PROVINCES;
@@ -97,7 +98,6 @@ Page({
     totalAll: 0,
     verifiedOpenTotal: 0,
     // 合并进转发组、没有另计的版本数（D-055）
-    reposts: 0,
     loading: false,
     error: '',
     filterOpen: false,
@@ -107,10 +107,9 @@ Page({
     counts: {},
     // 已选条件条：[{ key, group, option, label }]，按左栏组的顺序；空时不显示这一条
     activeChips: [],
-    tagNote: TAG_NOTE,
     // 选了"只看未截止"时的口径：有结果时写在结果上面，没结果时写在"去掉'只看未截止'"下面，和筛选面板里同一句。
     // 只写"含没核对的"会读成只含没核对的，所以三处都写全（10/22 走查）
-    openNote: OPEN_GROUP_NOTE,
+    openNote: OPEN_NOTE,
     // 协议定稿前（D-056）不显示"关注"和"没找到想要的？告诉我们"（纠错要先同意协议），定稿后照旧
     loginOpen: loginOpen(),
     picked: DEFAULT_PICKED,
@@ -190,8 +189,8 @@ Page({
       this.coverage = c;
       const names = notCoveredNames(c);
       const extra = names ? `${names}暂未收录` : '';
-      const cityNote = c && Array.isArray(c.cities) ? (c.cities.length ? `当前仅有 ${c.cities.length} 个城市的部分来源，不代表全市数据完整。` : '当前尚未接入市级来源。可以选择城市，数据接入后才能按城市查询和关注。') : '城市收录范围未加载，查询时仍由服务器核实；可重试。';
-      const districtNote = c && Array.isArray(c.districts) ? (c.districts.length ? `区县仅有 ${c.districts.length} 个的部分来源，不代表区县数据完整。` : '当前尚未接入区县来源，选择区县后暂不能查询，也不会改为全市或全省查询。') : '区县收录范围没有取到，暂不能按区县查询；可重试。';
+      const cityNote = c && Array.isArray(c.cities) ? (c.cities.length ? `已收录 ${c.cities.length} 个城市的部分来源。` : '当前尚未接入市级来源。可以选择城市，数据接入后才能按城市查询和关注。') : '城市收录范围未加载，查询时仍由服务器核实；可重试。';
+      const districtNote = c && Array.isArray(c.districts) ? (c.districts.length ? `已收录 ${c.districts.length} 个区县的部分来源。` : '当前尚未接入区县来源，选择区县后暂不能查询，也不会改为全市或全省查询。') : '区县收录范围没有取到，暂不能按区县查询；可重试。';
       this.setData({ groups: this.data.groups.map((g) => g.key === 'region' ? { ...g, extra } : g), cityCoverageNote: `${cityNote}${districtNote}` });
       if (this.data.picked.city.length || this.data.picked.district.length) this.apply(true);
     });
@@ -305,7 +304,7 @@ Page({
           ? `${missingDistricts.map(areaLabel).join('、')}暂未收录区县来源。请移除该区县或改选市级来源或全省`
           : '区县收录范围没有取到，暂不能确认所选区县是否已收录，没有查询；不会改为全市或全省查询');
       }
-      this.setData({ loading: false, items: [], total: 0, totalAll: 0, verifiedOpenTotal: 0, reposts: 0, folded: 0, guides: 0, fold: foldNote(0, 0), error: `${notes.join('；')}；未查询不代表没有相关通知。` });
+      this.setData({ loading: false, items: [], total: 0, totalAll: 0, verifiedOpenTotal: 0, folded: 0, guides: 0, fold: foldNote(0, 0), error: `${notes.join('；')}；未查询不代表没有相关通知。` });
       return;
     }
     api.search(params)
@@ -319,7 +318,6 @@ Page({
           total: res.total,
           totalAll: res.total_all,
           verifiedOpenTotal: res.verified_open_total || 0,
-          reposts: res.reposts || 0,
           folded,
           guides,
           fold: foldNote(folded, this.data.showGuides ? guides : 0),
@@ -347,7 +345,7 @@ Page({
       .catch((err) => {
         if (seq !== this.seq) return;
         // 重新查询失败时不保留旧结果，避免把旧条件的结果当成新结果
-        this.setData(reset ? { loading: false, error: err.message, items: [], total: 0, totalAll: 0, reposts: 0, folded: 0, guides: 0, fold: foldNote(0, 0) } : { loading: false, error: err.message });
+        this.setData(reset ? { loading: false, error: err.message, items: [], total: 0, totalAll: 0, folded: 0, guides: 0, fold: foldNote(0, 0) } : { loading: false, error: err.message });
       });
   },
 

@@ -82,7 +82,6 @@
 
   <view class="card">
     <view class="card-head" bindtap="allRecent" aria-role="link"><text class="card-title">近 7 天能解读的申报通知</text><text class="link card-more">全部 <t-icon name="chevron-right" size="26rpx" /></text></view>
-    <view class="list-note">点标题看通知全文<text wx:if="{{interpretOpen}}">，点“AI 解读”直接开始</text></view>
     <view wx:if="{{recentLoading}}" aria-label="正在加载">
       <view wx:for="{{[1, 2]}}" wx:key="*this" class="sk-row">
         <view class="sk-head"><view class="sk sk-tag"></view><view class="sk sk-chip"></view></view>
@@ -98,7 +97,7 @@
   </view>
 
   <view wx:if="{{records.length || recordsError}}" class="card">
-    <view class="card-head" bindtap="allRecords" aria-role="link"><text class="card-title">我的 AI 记录</text><text class="link card-more">全部 <t-icon name="chevron-right" size="26rpx" /></text></view>
+    <view class="card-head" bindtap="allRecords" aria-role="link"><text class="card-title">我的记录</text><text class="link card-more">全部 <t-icon name="chevron-right" size="26rpx" /></text></view>
     <view wx:if="{{recordsError}}" class="list-tip">{{recordsError}}<text class="link" bindtap="retry">　重试</text></view>
     <view wx:for="{{records}}" wx:key="id" class="record {{index === records.length - 1 ? 'record--last' : ''}}" data-id="{{item.id}}" data-kind="{{item.kind}}" bindtap="openRecord" aria-role="link">
       <view class="record-main">
@@ -111,7 +110,8 @@
 
   <view class="card help">
     <view class="card-head"><text class="card-title">用的时候遇到问题？</text></view>
-    <view class="help-contact"><contact-button from="ai_home" /></view>
+    <!-- 暂时不可用、连不上时上面那张卡里已有"联系客服"，这里不再放第二个 -->
+    <view wx:if="{{gate !== 'offline' && gate !== 'paused'}}" class="help-contact"><contact-button from="ai_home" /></view>
     <view class="help-links">
       <text class="link" bindtap="help" aria-role="link">使用帮助 ›</text>
       <text class="link" bindtap="report" aria-role="link">投诉举报 ›</text>

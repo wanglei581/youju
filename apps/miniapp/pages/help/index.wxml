@@ -1,5 +1,5 @@
 <notice-bar />
-<view wx:for="{{items}}" wx:key="key" class="card help-card">
+<view wx:for="{{items}}" wx:key="key" id="help-{{item.key}}" class="card help-card {{topic === item.key ? 'help-card--on' : ''}}">
   <view class="help-q">{{item.q}}</view>
   <view wx:for="{{item.a}}" wx:for-item="line" wx:key="*this" class="help-a">{{line}}</view>
 </view>
