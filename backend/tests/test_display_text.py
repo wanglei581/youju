@@ -705,6 +705,7 @@ def test_more_phone_contexts(shown, expected):
         "某某项目\n65337138",  # 不在联系方式标题下面
         # agy 审阅举的例子：已遮号码下一行开头的科目编码、像标题的整句、常用词后面的数、一串 7 位编码
         "（一）联系电话保持畅通，请勿关机\n某某 85213456",
+        "（一）联系电话：保持畅通\n某某 85213456",
         "成绩 85213456",
         "金额（2060502）",
         "2060501、2060502",
@@ -720,6 +721,12 @@ def test_next_line_number_must_stand_alone():
         v1.display_body_text("电话：88888888\n2060502技术创新服务")
         == f"电话：{P}\n2060502技术创新服务"
     )
+    # Windows 换行（\r\n）也认：交给模型的文字没有先统一换行
+    raw = "电话：010-88888888\r\n87687769\r\n"
+    assert v1.model_body_text(v1.redact_sensitive(raw)) == "电话：[电话已脱敏]\r\n[电话已脱敏]\r\n"
+    # 标题行冒号后面本身列着号码的照样当标题
+    text = f"联系电话：某项目 {P}\n另一项目 55520751\n联系邮箱：某"
+    assert v1.display_body_text(text) == f"联系电话：某项目 {P}\n另一项目 {P}\n联系邮箱：某"
 
 
 def test_phone_label_cell_masks_the_next_cell():

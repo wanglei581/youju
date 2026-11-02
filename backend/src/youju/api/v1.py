@@ -2245,7 +2245,7 @@ _PHONE_MARK_ANY = re.compile(r"（这里隐去了电话）|\[电话已脱敏\]|\
 _PHONE_TAIL = re.compile(
     r"(?P<sep>[ \t\u3000]*(?:[、/／，,；;]|或)[ \t\u3000]*|[ \t\u3000]+"
     # 下一行接着写的号码（"（这里隐去了电话）转8002⏎4682138转8002"，11/3 全库扫描）
-    r"|[ \t\u3000]*[、/／，,；;]?[ \t\u3000]*\n[ \t\u3000]*)"
+    r"|[ \t\u3000]*[、/／，,；;]?[ \t\u3000\r]*\n[ \t\u3000]*)"
     r"(?P<number>0\d{2,3}[2-9]\d{6,7}|[2-9]\d{6,7}(?:(?:[-－]|转)\d{1,8})?)(?!\d)"
 )
 # 已遮号码后面写着的分机（"（这里隐去了电话）转8002"）：照原样留着，再看后面有没有接着的号码
@@ -2254,7 +2254,7 @@ _NOT_PHONE_NEXT = frozenset("元万亿千百%％‰年月日号个人次家项�
 _DATE_DIGITS = re.compile(r"(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])")
 
 
-_LINE_REST_EMPTY = re.compile(r"[ \t\u3000]*[。；;，,、]?[ \t\u3000]*(?:\n|$)")
+_LINE_REST_EMPTY = re.compile(r"[ \t\u3000]*[。；;，,、]?[ \t\u3000\r]*(?:\n|$)")
 
 
 def _phone_tail(text: str, at: int) -> re.Match[str] | None:
@@ -2734,15 +2734,20 @@ def _block_lines(text: str) -> list[tuple[int, int]]:
     for line in lines:
         offsets.append(at)
         at += len(line) + 1
-    for i, line in enumerate(lines):
+    for i, raw in enumerate(lines):
+        line = raw.rstrip("\r")
         heading = _CONTACT_HEADING.match(line)
         if heading is None:
             continue
-        rest = line[heading.end() :]
+        # 冒号后面要么没字，要么本身列着号码（"联系电话：某项目 （这里隐去了电话）"）；
+        # "（一）联系电话：保持畅通"这样后面是一句话的不当标题（agy 审阅）
+        rest = line[heading.end() :].strip()
+        if rest and not (PHONE_MARK in rest or _LOCAL_NUMBER.search(rest)):
+            continue
         if "。" in rest or len(rest) > 60:
             continue
         for j in range(i + 1, min(len(lines), i + 1 + _BLOCK_LINES)):
-            following = lines[j]
+            following = lines[j].rstrip("\r")
             stop = _BLOCK_STOP.match(following) or _CONTACT_HEADING.match(following)
             if not following.strip() or stop:
                 break
