@@ -19,7 +19,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, defer
 
 from youju import advisor_tasks as service
-from youju import boost, chat_store, payments
+from youju import boost, chat_store, native_results, payments
 from youju.agreements import tools_agreed
 from youju.ai import content, heartbeat, interpret, result_safety
 from youju.ai.clause import Company
@@ -896,13 +896,30 @@ def read_result(
                 key: content[key]
                 for key in ("kind", "title", "notice", "revision", "generatedAt", "dataVersion")
             },
-            "items": items,
+            # 站内结果页里的"截止原文句子"按显示层给（v1.shown_quote，F11）；存下的结果和 Excel 不变
+            "items": [_shown_native_item(item) for item in items],
             "total": len(all_items),
             "rowCount": task.row_count,
             "nextCursor": str(end) if end < len(all_items) else None,
         },
         headers={"Cache-Control": "no-store"},
     )
+
+
+def _shown_native_item(item):
+    """数据工具站内结果的一项：字段里的"截止原文句子"按显示层给，返回副本。"""
+    if not isinstance(item, dict) or not isinstance(item.get("fields"), list):
+        return item
+    quote_label = native_results.LABELS["deadline_quote"]
+    return {
+        **item,
+        "fields": [
+            {**field, "value": v1.shown_quote(field.get("value"))}
+            if isinstance(field, dict) and field.get("label") == quote_label
+            else field
+            for field in item["fields"]
+        ],
+    }
 
 
 @router.get("/tasks/{task_id}/download", dependencies=[Depends(_enabled)])

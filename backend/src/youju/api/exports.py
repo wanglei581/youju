@@ -623,11 +623,20 @@ def preview_documents(
     try:
         excerpts = excerpts == 1 or payload.excerpts == 1
         items = _items(session, payload.ids, excerpts)
+        content = _preview_content(items, excerpts)
+        # 站内查看结果页显示的截止原句按显示层给（v1.shown_quote，F11）；只改给页面的这份，
+        # 版本号照旧按原来的内容算（和保存文件时一致），导出的文件不变
+        from youju.api import v1
+
+        content["items"] = [
+            {**item, "deadline_quote": v1.shown_quote(item.get("deadline_quote"))}
+            for item in content["items"]
+        ]
         response = JSONResponse(
             content={
                 "kind": "catalogue",
                 "title": "本次所选文件目录",
-                **_preview_content(items, excerpts),
+                **content,
                 "revision": _revision(items, excerpts),
                 "total": len(items),
                 "generatedAt": datetime.now(TZ).isoformat(),

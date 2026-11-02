@@ -554,7 +554,8 @@ def _items(
         for item in items:
             doc_id = int(item["id"])
             due = deadline_excerpts.selected(views.get(doc_id, []), now().date())
-            item["due"] = due.public(now().date()) if due else None
+            # 列表行带的截止原句按显示层给（shown_due，F11）
+            item["due"] = shown_due(due.public(now().date())) if due else None
             item["dueSoonUnverified"] = soon.get(doc_id, False)
     if grouped:
         versions = repost_versions(session, ids)
@@ -1730,8 +1731,8 @@ def _report_payload_excerpts(
                 "file_number": detail[1] if detail else None,
                 "doc_number": detail[1] if detail else None,
                 "source": due.source,
-                "quote": due.quote,
-                "due": due.public(today),
+                "quote": shown_quote(due.quote),
+                "due": shown_due(due.public(today)),
                 "dueSoonUnverified": soon.get(doc.id, False),
             }
         )
@@ -2364,6 +2365,53 @@ def display_text(text: str) -> str:
     return _hide_urls(_mask_phone_tails(display_marks(text)))
 
 
+# 返回给页面的原文片段（截止的"原文摘录"原句、申报条件和支持方式、申报对象的原句，列表行、
+# 截止页、日历、站内查看结果里带的原句）和正文走同一个显示层（11/2 F11，D-112）：网址换成
+# "（这里隐去了网址）"，遮过的号码按页面说法写。只改返回的那份：库里存的、核对台看的、交给模型和
+# 核对 AI 原句的都不变
+def shown_quote(text: str | None) -> str | None:
+    """一句原文片段按显示层给；不是字符串（没有原句）照原样。"""
+    return display_text(text) if isinstance(text, str) else text
+
+
+def shown_due(data: dict | None) -> dict | None:
+    """截止的公开写法（deadline_excerpts.View.public）里的原句按显示层给，返回副本。"""
+    if not data or not isinstance(data.get("quote"), str):
+        return data
+    return {**data, "quote": display_text(data["quote"])}
+
+
+def _shown_fields(fields: dict[str, Any]) -> dict[str, Any]:
+    """详情页"支持方式""申报对象"的原句按显示层给，返回副本（_approved_fields 本身不动：
+    AI 解读的"已核对"一栏和它的版本指纹也用它）。"""
+    out = dict(fields)
+    if isinstance(fields.get("support_evidence"), dict):
+        out["support_evidence"] = {
+            value: shown_quote(quote) for value, quote in fields["support_evidence"].items()
+        }
+    if isinstance(fields.get("audience"), dict):
+        audience = fields["audience"]
+        out["audience"] = {
+            **audience,
+            "text": shown_quote(audience.get("text")),
+            "evidence": shown_quote(audience.get("evidence")),
+        }
+    return out
+
+
+def _shown_conditions(conditions: dict | None) -> dict | None:
+    """详情页"申报条件"每条的原文原句按显示层给，返回副本。"""
+    if not conditions:
+        return conditions
+    return {
+        **conditions,
+        "items": [
+            {**item, "quote": shown_quote(item.get("quote"))} if isinstance(item, dict) else item
+            for item in conditions.get("items", [])
+        ],
+    }
+
+
 def _clean_reading_body(text: str | None, *, redact=redact_sensitive) -> str:
     cleaned = display_marks(redact((text or "").replace("\r\n", "\n").replace("\r", "\n")))
     for button in _PAGE_BUTTONS:
@@ -2815,9 +2863,16 @@ def document(doc_id: int, session: SessionDep) -> dict:
     )
     pending = not approved and doc.id in _pending(session, [doc.id])
     kind = effective_kind(doc.title, doc.kind_override)
-    fields = _approved_fields(session, [doc.id]).get(doc.id, {}) if kind == "申报通知" else {}
+    # 支持方式、申报对象、申报条件的原句按显示层给（F11），只改返回的这份
+    fields = (
+        _shown_fields(_approved_fields(session, [doc.id]).get(doc.id, {}))
+        if kind == "申报通知"
+        else {}
+    )
     # 申报条件（D-052 第④项）：只给整份人工确认过、和现在这版正文对得上的清单
-    apply_conditions = public_conditions(session, doc.id) if kind == "申报通知" else None
+    apply_conditions = (
+        _shown_conditions(public_conditions(session, doc.id)) if kind == "申报通知" else None
+    )
     status_value = application_status(approved) if kind == "申报通知" else None
     issuer = normalize_issuer(detail.issuer if detail and detail.issuer else src.dept_full_name)
     points = [["发文机关", issuer]]
@@ -2843,8 +2898,8 @@ def document(doc_id: int, session: SessionDep) -> dict:
             "verified": True,
             "notes": [_fmt_deadline_note(d) for d in approved[1:]],
         }
-        # 摘录只给核对过的那句原文证据
-        excerpt = {"section": "截止时间原文", "text": main.evidence}
+        # 摘录只给核对过的那句原文证据（按显示层给，F11）
+        excerpt = {"section": "截止时间原文", "text": shown_quote(main.evidence)}
         checked = main.reviewed_at.astimezone(_TZ).date().isoformat() if main.reviewed_at else None
 
     # 已变更的截止（延期、调整、撤销）：不再当作有效截止，写明原因并链接到新通知
@@ -2920,7 +2975,9 @@ def document(doc_id: int, session: SessionDep) -> dict:
         "host": urlsplit(doc.url).hostname or "",
         "deadline": deadline,
         "deadline_state": deadline_state(approved, pending),
-        "deadlines": [view.public(now().date()) for view in deadline_views.get(doc.id, [])]
+        "deadlines": [
+            shown_due(view.public(now().date())) for view in deadline_views.get(doc.id, [])
+        ]
         if effective_kind(doc.title, doc.kind_override) == "申报通知"
         else [],
         "deadline_changes": deadline_changes,
@@ -3217,7 +3274,7 @@ def _calendar_payload_excerpts(
                 "city": src.city,
                 "district": src.district,
                 "level": src.level,
-                "due": due.public(today) if due else None,
+                "due": shown_due(due.public(today)) if due else None,
                 "date": view.day.isoformat(),
                 "time": _hhmm(view.clock),
                 "region": (
@@ -3230,7 +3287,7 @@ def _calendar_payload_excerpts(
                 "hasDetail": True,
                 "verified": view.source == "verified",
                 "source": view.source,
-                "quote": view.quote,
+                "quote": shown_quote(view.quote),
                 "dueSoonUnverified": soon.get(doc.id, False),
             }
             (upcoming if open_now else past).append(item)
