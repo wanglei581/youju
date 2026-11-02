@@ -2742,7 +2742,7 @@ def _block_lines(text: str) -> list[tuple[int, int]]:
         # 冒号后面要么没字，要么本身列着号码（"联系电话：某项目 （这里隐去了电话）"）；
         # "（一）联系电话：保持畅通"这样后面是一句话的不当标题（agy 审阅）
         rest = line[heading.end() :].strip()
-        if rest and not (PHONE_MARK in rest or _LOCAL_NUMBER.search(rest)):
+        if rest and not (_PHONE_MARK_ANY.search(rest) or _LOCAL_NUMBER.search(rest)):
             continue
         if "。" in rest or len(rest) > 60:
             continue
