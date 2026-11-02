@@ -1002,7 +1002,6 @@ def coverage(session: SessionDep) -> dict:
         {"province": p, "city": c, "district": d, "sources": count}
         for (p, c, d), count in sorted(district_columns.items())
     ]
-    lasts = [r["lastUpdatedAt"] for r in regions]
     return {
         "sources": sum(r["sources"] for r in regions),
         "provinces": sum(1 for r in regions if r["name"] != "国家部委"),
@@ -1011,8 +1010,19 @@ def coverage(session: SessionDep) -> dict:
         "cities": cities,
         "districts": districts,
         "notCovered": not_covered,
-        "updatedAt": max(lasts) if lasts else None,
+        "updatedAt": iso(sources_updated_at(session)),
     }
+
+
+def sources_updated_at(session: Session) -> datetime | None:
+    """最近更新：启用的栏目（国家部委和 31 个省级地区，上面"已收录"列的那些）最近一次检查成功的
+    时间。关于页的"最近更新"（/coverage 的 updatedAt）和查名单没查到时的"名单数据更新到哪天"
+    （/lists/lookup 的 coverage.updatedAt）都用它，说的是同一个时间。"""
+    return session.scalar(
+        select(func.max(Source.last_success_at)).where(
+            Source.enabled.is_(True), Source.province.in_(("国家", *_PROVINCE_ORDER))
+        )
+    )
 
 
 def _dept_filter(groups: list[str]):
@@ -1865,7 +1875,10 @@ def _list_entry_counts(session: Session, lists_revision: tuple) -> dict[int, int
     """{归并组主文件编号: 去重后的企业名称数}，只含至少读到一个名称的组。
 
     口径和改前在程序里逐条去重时完全一样：只算和查名单同一公开来源条件（只取一级来源，或与一级
-    来源归并的同一通知）、人工没改成别的类型的文件的条目；主文件和它当前生效的副本算一组
+    来源归并的同一通知）、人工没改成别的类型的文件的条目；标题是失信、处罚、个人、表彰类的名单
+    不进查名单（list_title_allowed，D-091 ③），这里也不算——查名单页下方的"比对范围"和查名单
+    结果写的"已收录的 N 份"都用这份统计，要和查名单实际比对的名单一致（11/2 完整测试第 6 条）。
+    这类名单早先解析出的条目还留在库里时，以前会算进来；主文件和它当前生效的副本算一组
     （副本只能挂在一个主文件下：document_merges 以副本编号为主键）；同一组里同一个规范化名称只算
     一次，空名称不算。名称列的排序规则是 utf8mb4_0900_bin（迁移 0001），数据库去重和程序里比较
     字符串一样：区分大小写、不忽略尾部空格。"""
@@ -1891,6 +1904,7 @@ def _list_entry_counts(session: Session, lists_revision: tuple) -> dict[int, int
             .where(
                 public_condition(),
                 or_(Document.kind_override.is_(None), Document.kind_override == "名单"),
+                list_title_allowed(),
                 func.char_length(ListEntry.normalized_name) > 0,
             )
             .group_by(master)
@@ -2221,6 +2235,61 @@ def display_marks(text: str) -> str:
     return text
 
 
+# 已遮号码后面紧跟着的号码（11/2 完整测试第 5 条）："咨询电话：（这里隐去了电话）、87687769""电话:
+# （这里隐去了电话）/62651782"——入库规则只遮带区号的座机和手机号，同一处接着列的不带区号的号码漏了。
+# 只认紧跟在已遮号码后面、用"、""/""，""或"隔开的 7–8 位号码（本地号码不以 0、1 开头，可以带"-801"
+# "转801"这样的分机），一个接一个也认；后面接着小数、金额单位、"年月日号"这类字的不算，8 位像日期
+# （20261101）的不算。别处的数字（金额、年份、文号、编号）不碰
+_PHONE_MARK_ANY = re.compile(r"（这里隐去了电话）|\[电话已脱敏\]|\[手机号已脱敏\]")
+_PHONE_TAIL = re.compile(
+    r"(?P<sep>[ \t　]*(?:[、/／，,]|或)[ \t　]*)"
+    r"(?P<number>[2-9]\d{6,7}(?:(?:[-－]|转)\d{1,8})?)(?!\d)"
+)
+_NOT_PHONE_NEXT = frozenset("元万亿千百%％‰年月日号个人次家项份字条批期届级名位件页")
+_DATE_DIGITS = re.compile(r"(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])")
+
+
+def _phone_tail(text: str, at: int) -> re.Match[str] | None:
+    """text 在 at 处是不是"、87687769"这样紧跟着的号码；是就给匹配，不是给 None。"""
+    match = _PHONE_TAIL.match(text, at)
+    if match is None:
+        return None
+    after = text[match.end() : match.end() + 2]
+    if after and after[0] in _NOT_PHONE_NEXT:
+        return None
+    # 小数（"87687769.5"）不算；句末的英文句点照样算号码
+    if after[:1] in ".．" and after[1:2].isdigit():
+        return None
+    if _DATE_DIGITS.fullmatch(match.group("number")):
+        return None
+    return match
+
+
+def _mask_phone_tails(text: str) -> str:
+    """把紧跟在已遮号码后面的号码也换成"（这里隐去了电话）"，分隔符照原样留着。"""
+    if "隐去了电话" not in text and "已脱敏]" not in text:
+        return text
+    out: list[str] = []
+    done = 0
+    for mark in _PHONE_MARK_ANY.finditer(text):
+        if mark.start() < done:
+            continue
+        out.append(text[done : mark.end()])
+        done = mark.end()
+        while (tail := _phone_tail(text, done)) is not None:
+            out.append(tail.group("sep") + PHONE_MARK)
+            done = tail.end()
+    out.append(text[done:])
+    return "".join(out)
+
+
+def display_text(text: str) -> str:
+    """只在给页面显示时做的处理（详情页正文、阅读页正文和附件、名单单行页）：入库标记换成页面上的
+    说法，已遮号码后面紧跟着的号码也遮掉。入库的文字不改；交给模型、核对 AI 原句用的是
+    redact_sensitive 后的原文（ai/content.py），不经过这里，也不改。"""
+    return _mask_phone_tails(display_marks(text))
+
+
 def _clean_reading_body(text: str | None, *, redact=redact_sensitive) -> str:
     cleaned = display_marks(redact((text or "").replace("\r\n", "\n").replace("\r", "\n")))
     for button in _PAGE_BUTTONS:
@@ -2491,9 +2560,10 @@ def body_for_reading(
         return {"status": "list"}
     if kind != "名单" and not body_open(title if title is not None else "招聘", kind):
         return body_payload(ReadingBody("personal"))
-    return body_payload(
-        _judge_text(_clean_reading_body(text), kind, list_filter=list_filter, attachments=None)
-    )
+    body = _judge_text(_clean_reading_body(text), kind, list_filter=list_filter, attachments=None)
+    if body.status == "ok":
+        body.text = display_text(body.text)
+    return body_payload(body)
 
 
 def list_body_filter(session: Session, doc: Document) -> Callable[[str], list_body.Filtered] | None:
@@ -2547,9 +2617,14 @@ def reading_body(
     if chosen is None:
         return _no_body("empty", attachments=attachments)
     owner_id, _, cleaned = chosen
-    return _judge_text(
+    body = _judge_text(
         cleaned, kind, list_filter=list_filter, attachments=attachments, owner_id=owner_id
     )
+    if body.status == "ok":
+        # 只在给页面的文字上做（display_text）；挑用哪一份正文、判断能不能显示都按原来的文字，
+        # AI 解读另取原文（_reading_body），都不受影响
+        body.text = display_text(body.text)
+    return body
 
 
 def _reading_body_selection(
@@ -3271,19 +3346,30 @@ def _lookup_coverage(session: Session) -> dict[str, Any]:
     current = _time.monotonic()
     if cached and cached[0] == revision and current - cached[1] < LOOKUP_COVERAGE_TTL:
         return dict(cached[2])
-    lists_total, since = session.execute(
-        select(func.count(func.distinct(ListEntry.document_id)), func.min(Document.publish_date))
+    # 收录份数和查名单页下方"比对范围"（名单看板的统计，小程序把各类型的份数加起来）是同一个数，
+    # 直接用那份统计：同一通知的几个网址归并成一份（youju.dedup，查名单结果也是这样只列一次），只算
+    # 读出了企业名称的。以前这里按文件编号数，归并在一起的两个网址都解析出条目时多算一份（11/2 完整
+    # 测试第 6 条："已收录的 231 份名单中未找到"，下方"能查的名单 230 份"）
+    stats = list_board_report(session, days=30, page=1, size=1)["stats"]
+    lists_total = sum(item["lists"] for item in stats["by_type"])
+    since = session.scalar(
+        select(func.min(Document.publish_date))
+        .select_from(ListEntry)
         .join(Document, Document.id == ListEntry.document_id)
         .join(Source, Source.id == Document.source_id)
         .where(Source.rights_level == 1, available_condition(), list_title_allowed())
-    ).one()
+    )
     unread, partial = _unread_lists(session)
+    updated = sources_updated_at(session)
     coverage = {
         "lists": lists_total,
         "since": since.isoformat() if since else None,
         # "没查到"时如实说（D-091）：没读出企业名称的名单份数、只读了前面一部分的份数
         "unreadLists": unread,
         "partialLists": partial,
+        # 名单数据更新到哪天（D-091 设计稿第五节第 2 件"附收录范围和更新日期"）：和关于页的
+        # "最近更新"同一个时间（栏目最近一次检查成功）
+        "updatedAt": updated.astimezone(_TZ).isoformat() if updated else None,
     }
     _LOOKUP_COVERAGE["all"] = (revision, current, coverage)
     return dict(coverage)
@@ -3392,10 +3478,11 @@ def list_record(
         for stored in location.rows:
             # 存的时候已只留公开的列（list_evidence.shown_cell）；这里按列名再挡一次个人信息列
             # （名称列除外），文字再脱敏一遍。name：这一格是名称列（查到的那家单位）
+            # 文字按页面说法显示（display_text：遮过的号码写"（这里隐去了电话）"，紧跟着的号码也遮）
             cells = [
                 {
                     "h": cell.get("h") or "",
-                    "t": redact_sensitive(str(cell.get("t", ""))),
+                    "t": display_text(redact_sensitive(str(cell.get("t", "")))),
                     "name": bool(cell.get("n")),
                 }
                 for cell in stored.get("cells", [])
@@ -3428,9 +3515,10 @@ def list_record(
             "issuer": redact_sensitive(normalize_issuer(source.dept_full_name)),
             "date": document.publish_date.isoformat() if document.publish_date else None,
             "region": region_label(source.province, source.level, source.city, source.district),
-            # 只给网站名称和域名（和站内阅读的出处一样），不给原文链接
+            # 出处只给网站名称（D-097；和详情页"原文出处"同一个写法），不给域名和原文链接。
+            # 以前还给 host（域名），小程序写成"来源 kxjst.jiangsu.gov.cn"（11/2 完整测试第 2 条）；
+            # 旧版小程序拿不到 host 时不显示那一行
             "site": f"{source.dept_full_name}网站",
-            "host": urlsplit(document.url).hostname or "",
             "link_gone": link_gone_date(document.link_gone_at),
         },
         "evidence": {

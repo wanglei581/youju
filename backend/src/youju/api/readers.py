@@ -325,20 +325,22 @@ def _safe_segment(row: AttachmentTextSegment) -> dict:
         elif key == "sheet" and isinstance(value, str):
             loc[key] = v1.display_marks(texts.mask(value))
     cells = []
+    # 附件的文字、单元格按页面说法显示（v1.display_text：遮过的号码写"（这里隐去了电话）"，
+    # 紧跟着的号码也遮，11/2 完整测试第 5 条）；分页按库里存的字节数算，不受影响
     for cell in row.cells or []:
         if not isinstance(cell, dict) or not isinstance(cell.get("c"), int):
             continue
         cells.append(
             {
                 "c": cell.get("c"),
-                "t": v1.display_marks(texts.mask(str(cell.get("t", "")))),
-                "h": v1.display_marks(texts.mask(str(cell.get("h", "")))),
+                "t": v1.display_text(texts.mask(str(cell.get("t", "")))),
+                "h": v1.display_text(texts.mask(str(cell.get("h", "")))),
             }
         )
     return {
         "n": row.n,
         "kind": row.kind,
-        "text": v1.display_marks(texts.mask(row.text)),
+        "text": v1.display_text(texts.mask(row.text)),
         "loc": loc or None,
         "cells": cells or None,
     }

@@ -147,7 +147,9 @@ function askConsent(purpose) {
   // 协议更新后、或同意以后能用上 AI（两份文件里有 AI 功能的约定）：只能先读全文，在全文最后同意，
   // 弹窗写明是为了用什么（Codex 小程序第 13、15 轮）
   if (outdated || ai) {
-    const what = ai ? PURPOSES[purpose] : featureNames();
+    // 用途以字母开头（"AI 解读和条款对照"）时前面隔一个空格："再使用 AI 解读……"（11/2 完整测试第 21 条）
+    const name = ai ? PURPOSES[purpose] : featureNames();
+    const what = /^[A-Za-z0-9]/.test(name) ? ` ${name}` : name;
     wx.showModal({
       title: outdated ? '协议已更新' : '请先阅读并同意',
       content: outdated
@@ -190,12 +192,20 @@ function markAgreed() {
   aiAccess.recheck();
 }
 
+// 注销弹窗里写删哪些记录，按包里有的功能写（11/2 完整测试第 7 条）。has 是页面的 pages.flags()：
+// 完整版（有工具中心）写"工具输入、任务与结果"；过审版加 AI（D-098）只有 AI，写"AI 的输入、任务与结果"；
+// 过审版（首发 16 页）两样都没有，不写。没传（旧的调用）照完整版写。服务端照旧删掉全部记录
+function recordsPart(has) {
+  if (!has || has.advisor) return '、工具输入、任务与结果';
+  return has.ai ? '、AI 的输入、任务与结果' : '';
+}
+
 // 注销：撤回同意，删除服务端的全部个人信息。用户确认并删除成功时返回 true
-function withdraw() {
+function withdraw(has) {
   return new Promise((resolve) => {
     wx.showModal({
       title: '注销并删除数据',
-      content: `将撤回你对用户协议和隐私保护指引的同意，并删除你在有据的关注、${remindAny() ? '微信提醒、' : ''}纠错记录、工具输入、任务与结果，以及本机的导出记录和文件，删除后不能恢复。`,
+      content: `将撤回你对用户协议和隐私保护指引的同意，并删除你在有据的关注、${remindAny() ? '微信提醒、' : ''}纠错记录${recordsPart(has)}，以及本机的导出记录和文件，删除后不能恢复。`,
       confirmText: '注销',
       confirmColor: '#E5484D',
       success: (res) => {

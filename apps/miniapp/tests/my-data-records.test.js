@@ -9,7 +9,9 @@ const vm = require('node:vm');
 const conditions = require('../utils/conditions.js');
 const advisor = require('../utils/advisor.js');
 const { render, textOf, findAll, hasClass, tapsTo } = require('./wxml-render.js');
-const { FIRST_PAGES } = require('../../../tools/miniapp_presubmit_check.js');
+const { FIRST_PAGES, FIRST_AI_PAGES } = require('../../../tools/miniapp_presubmit_check.js');
+// 过审版加 AI（D-098，22 页）：首发 16 页加 AI 首页、解读、对照、我的记录、投诉举报、使用帮助，没有工具中心
+const FIRST_AI = FIRST_PAGES.concat(FIRST_AI_PAGES);
 
 const ROOT = path.join(__dirname, '..');
 const read = (file) => fs.readFileSync(path.join(ROOT, file), 'utf8');
@@ -40,7 +42,7 @@ const TASKS = [
   { id: 44, kind: 'compare', status: 'queued', rowCount: 5, createdAt: '2026-10-22T11:30:00+08:00' },
 ];
 
-function myData({ tasks = [], pages = APP_PAGES, extra = {}, remove } = {}) {
+function myData({ tasks = [], pages = APP_PAGES, extra = {}, remove, withdrawn = [] } = {}) {
   const raw = { user: { openid: 'synthetic-openid', agreed: null }, follows: [], subscriptions: [], feedback: [], advisorTasks: plain(tasks),
     advisorTasksTotal: tasks.length, retention: RETENTION, ...extra };
   const calls = { load: 0, deleted: [] }; const copied = []; const toasts = []; let modal;
@@ -50,13 +52,13 @@ function myData({ tasks = [], pages = APP_PAGES, extra = {}, remove } = {}) {
   };
   const page = load('pages/my-data/index.js', {
     '../../utils/api.js': api, '../../utils/conditions.js': conditions,
-    '../../utils/consent.js': { loginOpen: () => true, remindAny: () => false, withdraw: () => Promise.resolve(false) },
+    '../../utils/consent.js': { loginOpen: () => true, remindAny: () => false, withdraw: (has) => { withdrawn.push(has); return Promise.resolve(false); } },
     '../../utils/advisor.js': advisor, '../../utils/pages.js': pagesOf(pages),
   }, { wx: { setClipboardData: ({ data, success }) => { copied.push(JSON.parse(data)); if (success) success(); }, showToast: (o) => toasts.push(o.title),
     showModal: (m) => { modal = m; m.success({ confirm: true }); }, navigateTo() { assert.fail('我的数据里删记录不跳到别的页面'); } } });
   return { page, raw, calls, copied, toasts, modal: () => modal, view: () => render('pages/my-data/index.wxml', page.data) };
 }
-const recordsCard = (root) => findAll(root, hasClass('card')).find((card) => /工具(和 AI )?记录/.test(textOf(findAll(card, hasClass('section-title'))[0] || { text: '' })));
+const recordsCard = (root) => findAll(root, hasClass('card')).find((card) => /(工具(和 AI )?|^AI )记录/.test(textOf(findAll(card, hasClass('section-title'))[0] || { text: '' }).trim()));
 
 test('没有工具记录：不显示这一栏；页面上没有"管理工具任务"、去"我的记录"的按钮', async () => {
   const h = myData();
@@ -175,4 +177,69 @@ test('处理中超过一天的（没人在跑了、功能关掉后也不会有�
   h.page.remove(event({ kind: 'task', id: 45 })); await flush();
   assert.deepEqual(h.calls.deleted, [45]);
   assert.match(h.modal().content, /这条没有处理完的记录（用掉的次数退回）/);
+});
+
+test('过审版加 AI（11/2 完整测试第 7 条）：只有 AI 记录时栏目叫"AI 记录"，保存期限不写批量工具和加量体验；按天次数照写', async () => {
+  const lines = (h) => textOf(findAll(h.view(), hasClass('plain')).at(-1));
+  const h = myData({ pages: FIRST_AI, tasks: [TASKS[1]] });
+  h.page.load(); await flush();
+  assert.equal(h.page.data.tasksTitle, 'AI 记录');
+  assert.match(textOf(findAll(recordsCard(h.view()), hasClass('section-title'))[0]), /AI 记录 1/);
+  const text = lines(h);
+  for (const word of ['批量工具', '加量体验']) assert.ok(!text.includes(word), `过审版加 AI 还写着：${word}`);
+  assert.match(text, /AI 解读和条款对照：任务输入 7 天后删除，任务和结果 30 天后删除/);
+  assert.match(text, /按天的使用次数：保留本月和上个月的/);
+  assert.ok(!textOf(h.view()).includes('工具和 AI 记录'));
+  // 没有任何记录：AI、批量工具、按天次数都不写
+  const none = myData({ pages: FIRST_AI });
+  none.page.load(); await flush();
+  const empty = lines(none);
+  for (const word of ['批量工具', '加量体验', '按天的使用次数', 'AI 解读和条款对照']) assert.ok(!empty.includes(word), `没有记录还写着：${word}`);
+  // 这个账号真有批量工具记录（在完整版里用过）：照实写批量工具，栏目叫"工具和 AI 记录"
+  const mixed = myData({ pages: FIRST_AI, tasks: [TASKS[0], TASKS[1]] });
+  mixed.page.load(); await flush();
+  assert.equal(mixed.page.data.tasksTitle, '工具和 AI 记录');
+  assert.match(lines(mixed), /批量工具：任务里解析出的名单 7 天后清空/);
+  // 完整版只有 AI 记录：照旧叫"工具和 AI 记录"、写批量工具和加量体验
+  const full = myData({ tasks: [TASKS[1]] });
+  full.page.load(); await flush();
+  assert.equal(full.page.data.tasksTitle, '工具和 AI 记录');
+  assert.match(lines(full), /批量工具：/);
+  assert.match(lines(full), /加量体验记录：/);
+});
+
+test('注销按钮把包里有哪些功能交给注销弹窗（11/2 完整测试第 7 条）', async () => {
+  for (const [pages, flags] of [[FIRST_AI, { advisor: false, ai: true }], [APP_PAGES, { advisor: true, ai: true }], [FIRST_PAGES, { advisor: false, ai: false }]]) {
+    const withdrawn = [];
+    const h = myData({ pages, withdrawn });
+    h.page.deleteAll(); await flush();
+    assert.equal(withdrawn.length, 1);
+    assert.equal(withdrawn[0].advisor, flags.advisor);
+    assert.equal(withdrawn[0].ai, flags.ai);
+  }
+});
+
+test('注销弹窗按包里的功能写删哪些记录：完整版写工具，过审版加 AI 只写 AI，过审版都不写；没传照完整版', async () => {
+  const content = async (has) => {
+    let modal;
+    const deps = {
+      '../content/legal.js': { final: true, version: '2026-11.1' }, './config.js': { templates: {} },
+      './api.js': { isLive: () => true, AGREED_KEY: 'agreed', forgetAgreed() {}, deleteMe: () => Promise.resolve({}) },
+      './exports.js': { clear() {} }, './exporter.js': { removeFiles() {} }, './ai-access.js': { clear() {}, refresh() {}, recheck() {} },
+    };
+    const consent = load('utils/consent.js', deps, { wx: {
+      showModal: (m) => { modal = m; m.success({ confirm: false }); }, showToast() {},
+      getStorageSync: () => '', setStorageSync() {}, removeStorageSync() {}, clearStorageSync() {},
+    } });
+    assert.equal(await consent.withdraw(has), false);
+    return modal.content;
+  };
+  const ai = await content({ advisor: false, ai: true });
+  assert.match(ai, /纠错记录、AI 的输入、任务与结果，以及本机的导出记录和文件/);
+  assert.ok(!ai.includes('工具'));
+  assert.match(await content({ advisor: true, ai: true }), /纠错记录、工具输入、任务与结果，以及本机/);
+  const first = await content({ advisor: false, ai: false });
+  assert.match(first, /纠错记录，以及本机的导出记录和文件/);
+  assert.ok(!/工具|AI/.test(first));
+  assert.match(await content(undefined), /纠错记录、工具输入、任务与结果/);
 });

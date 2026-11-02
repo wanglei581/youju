@@ -162,9 +162,9 @@ Page({
       .catch(agreeFailed);
   },
 
-  // 注销：撤回同意，删除服务端的关注、提醒、纠错等全部数据
+  // 注销：撤回同意，删除服务端的关注、提醒、纠错等全部数据（弹窗按包里有的功能写删哪些记录）
   deleteAccount() {
-    withdraw().then((ok) => {
+    withdraw(this.data.has).then((ok) => {
       if (ok) this.setData({ signedIn: false, hasRecord: false, outdated: false, agreed: false, nudge: false, followCount: 0, reminderCount: 0, profileLoading: false, profileError: '' });
     });
   },

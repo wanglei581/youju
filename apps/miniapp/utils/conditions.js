@@ -87,10 +87,11 @@ function foldNote(folded, shown) {
   return { text: '', link: '' };
 }
 
-// 关注条件的一句话说明，如"山东、北京 · 省级 · 申报通知 · 近 30 天"；城市、区县写成"山东·青岛""山东·青岛·市南区"
+// 关注条件的一句话说明，如"山东、北京 · 省级 · 申报通知 · 近 30 天"；城市、区县写成"山东·青岛""山东·青岛·市南区"。
+// 关键词用中文引号（“高新技术企业”），和默认的关注名称（搜索页 followName）一样（11/2 完整测试第 9 条）
 function describe(c) {
   const parts = [];
-  if (c.q) parts.push(`"${c.q}"`);
+  if (c.q) parts.push(`“${c.q}”`);
   const regions = split(c.regions).filter((r) => r !== '不限地区');
   const areas = regions.concat(split(c.cities).map(areaLabel), split(c.districts).map(areaLabel));
   parts.push(areas.length ? areas.join('、') : '不限地区');
@@ -113,6 +114,21 @@ function describe(c) {
   return parts.join(' · ');
 }
 
+// 关注名称是不是就是条件说明（11/2 完整测试第 9 条）：没改过的默认名称（搜索页 followName）和 describe 写的是
+// 同一句，只差类型"全部"和"全部类型"、引号是弯是直；这时卡片上只写名称一行。默认名称截过、带了说明里没有的
+// 条件（项目类别等）或用户改过名的，两行照写
+function sameAsName(name, desc) {
+  const norm = (s) => String(s || '').replace(/[“”"]/g, '"').replace(/(^| · )全部类型(?= · |$)/g, '$1全部')
+    .replace(/\s+/g, ' ').trim();
+  return norm(name) !== '' && norm(name) === norm(desc);
+}
+
+// 在一句话里提到关注名称：名称自己带引号（默认名称里的“关键词”）时不再套一层，否则加中文引号
+function quoted(name) {
+  const text = String(name || '');
+  return /[“”"]/.test(text) ? text : `“${text}”`;
+}
+
 function searchUrl(c) {
   const params = Object.keys(c || {}).filter((k) => c[k] !== undefined && c[k] !== null && c[k] !== '')
     .map((k) => `${encodeURIComponent(k)}=${encodeURIComponent(c[k])}`);
@@ -120,6 +136,6 @@ function searchUrl(c) {
 }
 
 module.exports = {
-  describe, searchUrl, requestScope, categoryConflict, supportConflict, foldNote, migrateNational, NATIONAL, GUIDE,
+  describe, sameAsName, quoted, searchUrl, requestScope, categoryConflict, supportConflict, foldNote, migrateNational, NATIONAL, GUIDE,
   CATEGORIES, TAG_NOTE, CATEGORY_NOTE, SUPPORT_MODES, SUPPORT_NOTE, INDUSTRIES,
 };

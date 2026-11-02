@@ -29,7 +29,7 @@
       <view class="sub-icon sub-icon--{{item.tone}}"><t-icon name="{{item.icon}}" size="40rpx" color="#FFFFFF" /></view>
       <view class="sub-main">
         <view class="sub-name">{{item.name}}</view>
-        <view class="sub-desc">{{item.desc}}</view>
+        <view wx:if="{{item.desc}}" class="sub-desc">{{item.desc}}</view>
         <!-- 暂不可查询：条件原样保留，点卡片或下面的链接回搜索修改；不写"没有新文件" -->
         <view wx:if="{{item.unavailable}}" class="sub-left">{{item.queryMessage}}</view>
         <text wx:if="{{mode === 'live'}}" class="link" data-id="{{item.id}}" catchtap="searchFollow">{{item.unavailable ? '回搜索修改条件' : '按此条件搜索'}}</text>

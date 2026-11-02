@@ -156,9 +156,13 @@ test('"我的"：保留登录与同意，完整候选增加工具中心和共同
   assert.equal(findAll(root, tapsTo('login')).length, 1);
   assert.equal(findAll(root, tapsTo('coverage')).length, 1);
   const rows = findAll(root, hasClass('row'));
-  assert.deepEqual(rows.map((n) => textOf(n).trim()), ['我的记录', '申请覆盖：你关心的地区还没有？', '使用帮助', '用户协议与隐私保护指引', '关于有据']);
+  // 《用户协议》《隐私保护指引》各一行，名称和打开的文件一致（11/2 完整测试第 8 条）
+  assert.deepEqual(rows.map((n) => textOf(n).trim()), ['我的记录', '申请覆盖：你关心的地区还没有？', '使用帮助', '用户协议', '隐私保护指引', '关于有据']);
   assert.equal(findAll(root, (n) => n.tag === 'contact-button').length, 1);
   assert.equal(rows[3].attrs.bindtap, 'openAgreement');
+  assert.equal(rows[3].attrs['data-type'], 'user');
+  assert.equal(rows[4].attrs.bindtap, 'openAgreement');
+  assert.equal(rows[4].attrs['data-type'], 'privacy');
   assert.equal(findAll(root, tapsTo('openPrivacy')).length, 0);
 });
 
