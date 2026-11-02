@@ -2323,7 +2323,7 @@ _AREA_PHONE = re.compile(
 )
 # "8610-88828972""+86 10 88828972"这样带国家码的（11/2 复测）
 _INTL_PHONE = re.compile(
-    r"(?<![0-9A-Za-z+])\+?86[ \t\u3000]*[-－—–‐−‑]?[ \t\u3000]*0?[1-9]\d{1,2}"
+    r"(?<![0-9A-Za-z+])\+?86[ \t\u3000]*[-－—–‐−‑]?[ \t\u3000]*0?(?![48]00)[1-9]\d{1,2}"
     r"[ \t\u3000]*[-－—–‐−‑ ][ \t\u3000]*[2-9]\d{6,7}(?:(?:[-－]|转)\d{1,6})?(?!\d)"
 )
 # 写在已遮的联系人后面的本地号码（"（这里隐去了联系人）：55520803""（这里隐去了联系人） 55521169"）
@@ -2340,16 +2340,30 @@ _CODE_BEFORE = re.compile(
 
 
 def _mask_area_phones(text: str) -> str:
-    """把入库时漏掉的区号写法（破折号、括号、空格）整个换成"（这里隐去了电话）"。"""
+    """把入库时漏掉的区号写法（破折号、括号、空格）和国家码写法整个换成"（这里隐去了电话）"。"""
+    if "86" in text:
+        original = text
+
+        def intl(match: re.Match[str]) -> str:
+            # 国家码写法也看金额单位、"编号"这类（Codex 第 7 轮）
+            after = original[match.end() : match.end() + 2]
+            if after and after[0] in _NOT_PHONE_NEXT:
+                return match.group(0)
+            if _CODE_BEFORE.search(original, max(0, match.start() - 8), match.start()):
+                return match.group(0)
+            return PHONE_MARK
+
+        text = _INTL_PHONE.sub(intl, original)
     if "0" not in text:
         return text
+    current = text
 
     def repl(match: re.Match[str]) -> str:
-        if _CODE_BEFORE.search(text, max(0, match.start() - 8), match.start()):
+        if _CODE_BEFORE.search(current, max(0, match.start() - 8), match.start()):
             return match.group(0)
         return PHONE_MARK
 
-    return _AREA_PHONE.sub(repl, _INTL_PHONE.sub(PHONE_MARK, text))
+    return _AREA_PHONE.sub(repl, current)
 
 
 def _mask_contact_numbers(text: str) -> str:
@@ -2519,7 +2533,8 @@ def _hide_emails(text: str) -> str:
 
 # 电话类标签（电话、手机、传真、技术支持、咨询、联系方式、热线、值班）后面同一句里的本地号码
 # （11/2 复测）："技术支持：83124114""业务咨询：83124079、83124035"
-# "联系电话：业务部门：市科技局科技人才科，65119071"。到句号、换行或 80 个字为止；后面接着
+# "联系电话：业务部门：市科技局科技人才科，65119071"。到句号、问号、叹号、换行（最多 300 个字）
+# 为止；后面接着
 # 金额单位、"年月日号"的，小数，8 位像日期的，"编号""代码"这类后面的不算
 # 电话类词要紧挨着冒号（"咨询电话：""业务咨询：""电话号码："），"电话会议："这类不算
 _PHONE_CONTEXT = re.compile(
@@ -2527,13 +2542,16 @@ _PHONE_CONTEXT = re.compile(
     r"|热[ \t\u3000]*线|值[ \t\u3000]*班)(?:号码?)?[ \t\u3000]*[:：]"
 )
 _LOCAL_NUMBER = re.compile(r"(?<![0-9A-Za-z])[2-9]\d{6,7}(?:(?:[-－]|转)\d{1,6})?(?![0-9])")
-_CONTEXT_STOP = re.compile(r"[。\n]")
-_CONTEXT_WINDOW = 80
+_CONTEXT_STOP = re.compile(r"[。！？!?\n]")
+_CONTEXT_WINDOW = 300
 # 写在已遮号码前面的本地号码（"65119071、（这里隐去了电话）"）
 _NUMBER_BEFORE_MARK = re.compile(
     r"(?<![0-9A-Za-z])[2-9]\d{6,7}(?![0-9])"
     r"(?=[ \t\u3000]*[、/／，,或；;][ \t\u3000]*（这里隐去了电话）)"
 )
+
+
+_HOTLINE_HEAD = re.compile(r"(?<![0-9])[48]00[ \t\u3000]*[-－—–‐−‑]?[ \t\u3000]*$")
 
 
 def _is_phone_number(text: str, match: re.Match[str]) -> bool:
@@ -2545,6 +2563,9 @@ def _is_phone_number(text: str, match: re.Match[str]) -> bool:
     if after[:1] in ".．" and after[1:2].isdigit():
         return False
     if _DATE_DIGITS.fullmatch(match.group(0)[:8]):
+        return False
+    # 400/800 热线的后半截（"400-8205114"）：单位的服务热线，整个不遮
+    if _HOTLINE_HEAD.search(text, max(0, match.start() - 8), match.start()):
         return False
     return _CODE_BEFORE.search(text, max(0, match.start() - 8), match.start()) is None
 
@@ -2578,7 +2599,7 @@ def _mask_context_numbers(text: str) -> str:
 
 
 # 附件表格里列名是电话、手机、联系方式、传真的格子（"联系电话 | 63001576"，11/2 复测）
-_PHONE_HEAD = re.compile(r"电\s*话|手\s*机|联系方式|传\s*真")
+_PHONE_HEAD = re.compile(r"电\s*话|手\s*机|联系方式|传\s*真|热\s*线|值\s*班|咨\s*询|技术支持")
 
 
 def _mask_local_numbers(text: str) -> str:

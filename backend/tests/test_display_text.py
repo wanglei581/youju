@@ -609,3 +609,32 @@ def test_scripts_in_attachment_names_are_cut():
     name = "附件2.联系人信息表.xlsdocument.getElementById('Appendix').style.display='block';"
     assert v1.display_attachment_name(name) == "附件2.联系人信息表.xls"
     assert v1.display_attachment_name("附件1：申报书.docx") == "附件1：申报书.docx"
+
+
+# Codex 第 7 轮：国家码写法的编号、金额和 400/800 不遮；服务热线、值班列也是电话列；按整句判断
+@pytest.mark.parametrize(
+    "text",
+    [
+        "项目编号：8610-88828972",
+        "金额：8610-88828972元",
+        "服务电话：+86 400-8205114",
+        "咨询电话：400-820-5114",
+        "电话：800 8205114",
+    ],
+)
+def test_intl_like_codes_amounts_and_hotlines_stay(text):
+    assert v1.display_text(text) == text
+
+
+def test_hotline_and_duty_columns_are_phone_columns():
+    rows = v1.display_attachment_row(
+        [("单位", "某局"), ("服务热线", "63001576"), ("值班电话", "63001577")]
+    )
+    assert rows == ["某局", MARK, MARK]
+
+
+def test_phone_context_runs_to_the_end_of_the_sentence():
+    long_tail = "，".join(f"第{i}项事务说明" for i in range(12))
+    shown = f"咨询电话：{long_tail}，65119071？下一句编号 66001234"
+    out = v1.display_text(shown)
+    assert "65119071" not in out and "66001234" in out
