@@ -2253,10 +2253,17 @@ _PHONE_EXT = re.compile(r"(?:转|[-－])\d{1,6}(?!\d)")
 _NOT_PHONE_NEXT = frozenset("元万亿千百%％‰年月日号个人次家项份字条批期届级名位件页")
 
 
+_MONEY_AFTER_SPACE = frozenset("元万亿%％‰")
+
+
 def _unit_after(text: str, end: int) -> bool:
-    """号码后面（隔着空格也算）接着金额单位、"年月日号"这类字：不是号码（"资金 30000000 元"）。"""
-    rest = text[end : end + 6].lstrip(" \t\u3000")
-    return bool(rest) and rest[0] in _NOT_PHONE_NEXT
+    """号码后面紧接着金额单位、"年月日号"这类字：不是号码。隔着空格的只认钱和百分比
+    （"资金 30000000 元"）——"电话：号码 人事处"的"人"不算（11/3 独立审阅）。"""
+    following = text[end : end + 6]
+    if following[:1] and following[0] in _NOT_PHONE_NEXT:
+        return True
+    rest = following.lstrip(" \t\u3000")
+    return bool(rest) and len(rest) < len(following) and rest[0] in _MONEY_AFTER_SPACE
 
 
 _DATE_DIGITS = re.compile(r"(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])")
@@ -2626,10 +2633,13 @@ def _mask_context_numbers(text: str) -> str:
 # 附件表格里列名是电话、手机、联系方式、传真的格子（"联系电话 | 63001576"，11/2 复测）
 _PHONE_HEAD = re.compile(r"电\s*话|手\s*机|联系方式|传\s*真|热\s*线|值\s*班|咨\s*询|技术支持")
 # 只有一个号码的格子：8 位本地号码、区号连写、手机号（7 位的不算，太像编码）
-_SINGLE_PHONE_CELL = re.compile(r"0\d{2,3}[2-9]\d{6,7}|1[3-9]\d{9}|[2-9]\d{7}")
+_SINGLE_PHONE_CELL = re.compile(
+    # 可以带"/分机"（"88888888/801/802"）
+    r"(?:0\d{2,3}[2-9]\d{6,7}|1[3-9]\d{9}|[2-9]\d{7})(?:[/／]转?\d{1,6})*"
+)
 # 以单位用字结尾的格子（局、委、会、园、中心……）
 _ORG_CELL_END = re.compile(
-    r"(?:[处科室局委办厅站所院组队园会]|中心|部门|单位|政府|公司)"
+    r"(?:[处科室局委办厅站所院组队园会]|中心|部门|单位|政府)"
     # 后面可以跟一段括号（"……委员会（海淀区）"），或者整个名字写在括号里（"……委员会）"）
     r"(?:[（(][^（）()]{1,12}[）)])?[）)]?$"
 )
@@ -2792,8 +2802,12 @@ def _mask_more_numbers(text: str) -> str:
         next_char = text[end : end + 1]
         coded = bool(_HAN_AFTER.match(next_char)) and next_char not in _HAN_AFTER_OK
         unit = None if coded else _UNIT_BEFORE_NUMBER.search(before)
-        if unit is not None and "\n" in unit.group("sep") and not _LINE_REST_EMPTY.match(text, end):
-            # 单位名下一行写的号码：这一行只有号码才算
+        if (
+            unit is not None
+            and "\n" in unit.group("sep")
+            and (not _LINE_REST_EMPTY.match(text, end) or len(number.group()) < 8)
+        ):
+            # 单位名下一行写的号码：这一行只有号码、而且是 8 位以上才算（"某研究院⏎3000000"不算）
             unit = None
         name = None if coded else _name_before(text, start)
         if name is not None:

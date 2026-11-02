@@ -764,6 +764,7 @@ def test_more_phone_contexts_round_two(shown, expected):
         "成交额 32345678 元",  # 号码后面隔空格接"元"
         "资金 30000000 元。",
         "某局，2060502技术创新服务",  # 单位名后面的数紧接汉字，是编码
+        "某某研究院\n3000000",  # 单位名下一行的 7 位数
     ],
 )
 def test_more_phone_rules_round_two_leave_other_numbers(text):
@@ -800,4 +801,20 @@ def test_lone_number_cells_in_contact_tables():
     assert v1.display_attachment_row([("", "某某项目"), ("", "30000000")]) == [
         "某某项目",
         "30000000",
+    ]
+
+
+def test_space_before_a_word_after_the_number_still_masks():
+    # 隔着空格只认钱和百分比："电话：号码 人事处"照样遮（11/3 独立审阅第 2 轮）
+    assert v1.display_body_text("电话：88888888 人事处") == f"电话：{P} 人事处"
+    assert v1.display_body_text(f"{C} 88888888 项目办") == f"{C} {P} 项目办"
+
+
+def test_contact_table_cell_with_extensions_and_company_amounts():
+    row = [("", "4"), ("", "某某委员会"), ("", "88888888/801/802"), ("", "某路")]
+    assert v1.display_attachment_row(row) == ["4", "某某委员会", P, "某路"]
+    # 左边是公司的不当通讯录（多是金额表）
+    assert v1.display_attachment_row([("", "某某有限公司"), ("", "50000000")]) == [
+        "某某有限公司",
+        "50000000",
     ]
