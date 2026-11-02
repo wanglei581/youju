@@ -350,7 +350,7 @@ test('D-087（创始人 10/23 按 #341 推荐定）：工具中心两个工具�
   assert.doesNotMatch(read('utils/data-tools.js'), /文件页/);
   // "导出"现在是底栏这一格的名字：关于有据里说详情页的按钮按它现在的名字"结果"写（和导出记录页的步骤一致），不写点"导出"
   const about = read('pages/about/index.wxml');
-  assert.ok(about.includes('在文件详情点"结果"')); assert.doesNotMatch(about, /点"导出"/);
+  assert.ok(about.includes('在文件详情点“结果”')); assert.doesNotMatch(about, /点["“]导出["”]/);
   assert.match(read('pages/detail/index.wxml'), /bindtap="exportDoc"><t-icon name="download" size="44rpx" \/><text>结果<\/text>/);
   assert.match(read('pages/files/index.wxml'), /在文件详情点“结果”/);
 });
@@ -360,7 +360,7 @@ test('10/25 Grok 复审：工具中心不写"追溯官方原文"（像外链）�
   assert.doesNotMatch(tools, /追溯官方原文/);
   assert.match(tools, /每条结果都能在小程序里对照官方原文/);
   const about = read('pages/about/index.wxml');
-  assert.equal((about.match(/导出的文件在底栏"导出"里/g) || []).length, 2);
+  assert.equal((about.match(/导出的文件在底栏“导出”里/g) || []).length, 2);
   const clients = read('pages/clients/index.wxml');
   assert.doesNotMatch(clients, /点此移除/);
   // 已选的城市、区县本身带关闭图标，10/29 起不再另写"点一下移除"

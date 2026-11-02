@@ -2951,6 +2951,34 @@ _NOT_NAME_WORDS = frozenset(
         "单位",
         "本单位",
         "部门",
+        # 表格里的栏目名（空白表格"姓名 | 性别 | 年龄"，11/2 复测）
+        "序号",
+        "类型",
+        "名称",
+        "语言",
+        "带头人",
+        "性别",
+        "年龄",
+        "国籍",
+        "学历",
+        "学位",
+        "民族",
+        "籍贯",
+        "专业",
+        "职业",
+        "岗位",
+        "身份",
+        "出生",
+        "年月",
+        "日期",
+        "签字",
+        "签名",
+        "盖章",
+        "排名",
+        "分工",
+        "角色",
+        "合计",
+        "小计",
     }
 )
 _NAME_TAIL_UNITS = tuple(_UNIT_END_CHARS + "心司校县市省位")
@@ -3055,7 +3083,9 @@ def _mask_attachment_line(line: str, after_label: bool) -> str:
         if start < end:
             line = _mask_span(line, start, end, mark)
             done = start
-    return line
+    # 再补一遍：上面刚遮掉的联系人前面写着的名字（"××中心吴艳丽、吴丹，号码"，开头那遍时"吴丹"
+    # 还没遮成标记，11/2 独立审阅）
+    return _mask_sure_names(line)
 
 
 def _mask_attachment_names(text: str) -> str:
@@ -3111,9 +3141,12 @@ def display_attachment_row(cells: list[tuple[str, str]]) -> list[str]:
     out = []
     for i, (head, value) in enumerate(pairs):
         previous = pairs[i - 1][1].strip() if i else ""
-        named = _NAME_HEAD.search(head) or (previous and _BARE_NAME_LABEL.fullmatch(previous))
-        if named and _sure_name_word(value.strip().replace(" ", "")):
-            # 姓名列里整格就是一个 2–3 字的名字：不看姓氏表也遮（"和文丹"，11/2 复测）
+        by_head = _NAME_HEAD.search(head)
+        named = by_head or (previous and _BARE_NAME_LABEL.fullmatch(previous))
+        if by_head and _sure_name_word(value.strip().replace(" ", "")):
+            # 列名是"姓名""联系人"这类、整格就是一个 2–3 字的名字：不看姓氏表也遮
+            # （"和文丹"，11/2 复测）。只看列名，不看"上一格写着姓名"：空白表格
+            # "姓名 | 性别 | 年龄"里的栏目名不是名字（11/2 独立审阅）
             masked = value.replace(value.strip(), _CONTACT_MARK)
         elif named and len(value.strip()) <= _NAME_CELL_MAX:
             # 列名是"联系人""姓名"这类，或者上一格只写着"联系人"：这一格像姓名的都遮
