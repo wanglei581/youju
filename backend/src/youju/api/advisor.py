@@ -369,7 +369,38 @@ def _out(task: AdvisorTask, session: Session, *, include_result: bool = True) ->
             except interpret.InterpretRefusal as exc:
                 result["result"] = None
                 result["error"] = str(exc)
+    if task.kind in AI_KINDS and isinstance(result.get("result"), dict):
+        result["result"] = _shown_quotes(result["result"], get_skill(task.kind).result_field)
     return result
+
+
+def _shown_quotes(stored: dict, field: str) -> dict:
+    """AI 结果页显示的原句（条目、出处原句、"已核对"的原句）按页面说法给：网址换成
+    "（这里隐去了网址）"（v1.display_text，D-112）。只改这次返回的副本：存着的结果不动，核对原句
+    在生成时按原文做过，"正文变了没有"比的是存下的段落，都不受影响。"""
+
+    def shown(entry: dict, key: str) -> dict:
+        copy = dict(entry)
+        if isinstance(copy.get(key), str):
+            copy[key] = v1.display_text(copy[key])
+        return copy
+
+    def item_out(item):
+        if not isinstance(item, dict):
+            return item
+        item = shown(item, "text")
+        if isinstance(item.get("refs"), list):
+            item["refs"] = [shown(r, "quote") if isinstance(r, dict) else r for r in item["refs"]]
+        return item
+
+    out = dict(stored)
+    if isinstance(stored.get(field), list):
+        out[field] = [item_out(item) for item in stored[field]]
+    if isinstance(stored.get("verified"), list):
+        out["verified"] = [
+            shown(v, "quote") if isinstance(v, dict) else v for v in stored["verified"]
+        ]
+    return out
 
 
 @contextmanager

@@ -2242,7 +2242,7 @@ def display_marks(text: str) -> str:
 # （20261101）的不算。别处的数字（金额、年份、文号、编号）不碰
 _PHONE_MARK_ANY = re.compile(r"（这里隐去了电话）|\[电话已脱敏\]|\[手机号已脱敏\]")
 _PHONE_TAIL = re.compile(
-    r"(?P<sep>[ \t　]*(?:[、/／，,]|或)[ \t　]*)"
+    r"(?P<sep>[ \t\u3000]*(?:[、/／，,]|或)[ \t\u3000]*)"
     r"(?P<number>[2-9]\d{6,7}(?:(?:[-－]|转)\d{1,8})?)(?!\d)"
 )
 _NOT_PHONE_NEXT = frozenset("元万亿千百%％‰年月日号个人次家项份字条批期届级名位件页")
@@ -2283,11 +2283,85 @@ def _mask_phone_tails(text: str) -> str:
     return "".join(out)
 
 
+# 正文、附件里政府原文自带的网址（D-112，创始人 11/2 同意）：显示时换成"（这里隐去了网址）"，
+# 和隐去电话一个写法——留着 http/https 网址有被判"引导跳出到浏览器"的风险（10/23 审核退回的原因
+# 之一）。认 http://、https:// 开头的和 www. 开头的（"www"挨着别的字母、数字，或在邮箱里的不算）；
+# 网址只认英文字母、数字和网址里常见的符号，遇到汉字、（"．""／"以外的）全角标点、空白、括号就停，
+# 末尾的句点、逗号这类标点不算网址。网址外面只剩一对括号时连括号一起换：
+# "平台（https://x.gov.cn/login）"→"平台（这里隐去了网址）"。邮箱不在这次范围
+URL_MARK = "（这里隐去了网址）"
+# "http："后面的冒号常写成全角（"http：//www.…"），也有整个网址的标点都是全角的
+# （"http：／／www．ccgp．gov．cn"），都认
+_URL = re.compile(
+    r"(?:(?<![A-Za-z0-9])https?[:：][/／]{2}|(?<![A-Za-z0-9.．@_-])www[.．])"
+    r"[A-Za-z0-9._~:/?#@&+=%,;．／-]+",
+    re.IGNORECASE,
+)
+_URL_TRAILING = ".,;:?．"
+_URL_SPACES = " \t\u3000"
+_URL_EMPTY = re.compile(r"(?:https?[:：][/／]{2}|www[.．])[/.／．]*", re.IGNORECASE)
+# 网址被换行或空格断开（"（https://kxjst.⏎jiangsu.gov.cn/js-home/home）""http://xx. miit.gov.cn"，
+# 网页和 PDF 里常见）：隔着一个换行（断在哪个字后面都行），或者断在"." "/" "-"后面隔着空格，
+# 接着的一段也像网址（带"/"或".字母"）时接上，免得后半截露出来；"2.材料报送"这样的下一行不接
+_URL_GAP = re.compile(r"[ \t\u3000]*\n?[ \t\u3000]*")
+_URL_MORE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._~:/?#@&+=%,;．／-]*")
+_URL_PIECE = re.compile(r"[/／]|[.．][A-Za-z]")
+
+
+def _url_end(text: str, end: int) -> int:
+    """网址到哪里为止（含被换行、空格断开的后半截）。"""
+    while True:
+        gap = _URL_GAP.match(text, end)
+        if gap is None or gap.end() == end:
+            break
+        if "\n" not in gap.group() and text[end - 1] not in "./-．／":
+            break
+        more = _URL_MORE.match(text, gap.end())
+        if more is None or _URL_PIECE.search(more.group()) is None:
+            break
+        end = more.end()
+    return end
+
+
+def _hide_urls(text: str) -> str:
+    """把网址换成"（这里隐去了网址）"；网址外面只剩一对括号时连括号一起换。"""
+    lowered = text.lower()
+    if "http" not in lowered and "www" not in lowered:
+        return text
+    out: list[str] = []
+    done = 0
+    for match in _URL.finditer(text):
+        start = match.start()
+        if start < done:
+            # 已经算在前一个网址断开的后半截里
+            continue
+        whole = text[start : _url_end(text, match.end())]
+        end = start + len(whole.rstrip(_URL_TRAILING))
+        if _URL_EMPTY.fullmatch(text[start:end]):
+            # 只有"http://"这样的空壳，后面没有网址
+            continue
+        left, right = start, end
+        while left > done and text[left - 1] in _URL_SPACES:
+            left -= 1
+        while right < len(text) and text[right] in _URL_SPACES:
+            right += 1
+        if left > done and right < len(text) and text[left - 1] in "（(" and text[right] in "）)":
+            out.append(text[done : left - 1])
+            done = right + 1
+        else:
+            out.append(text[done:start])
+            done = end
+        out.append(URL_MARK)
+    out.append(text[done:])
+    return "".join(out)
+
+
 def display_text(text: str) -> str:
-    """只在给页面显示时做的处理（详情页正文、阅读页正文和附件、名单单行页）：入库标记换成页面上的
-    说法，已遮号码后面紧跟着的号码也遮掉。入库的文字不改；交给模型、核对 AI 原句用的是
-    redact_sensitive 后的原文（ai/content.py），不经过这里，也不改。"""
-    return _mask_phone_tails(display_marks(text))
+    """只在给页面显示时做的处理（详情页正文、阅读页正文和附件、名单单行页、AI 结果页的原句）：
+    入库标记换成页面上的说法，已遮号码后面紧跟着的号码也遮掉，网址换成"（这里隐去了网址）"。
+    入库的文字不改；交给模型、核对 AI 原句用的是 redact_sensitive 后的原文（ai/content.py），
+    不经过这里，也不改。"""
+    return _hide_urls(_mask_phone_tails(display_marks(text)))
 
 
 def _clean_reading_body(text: str | None, *, redact=redact_sensitive) -> str:
