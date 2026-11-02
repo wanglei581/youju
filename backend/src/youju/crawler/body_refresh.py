@@ -316,10 +316,12 @@ def _impact(
         .where(AICheck.document_id == document_id, AICheck.task.in_(AI_CHECK_TASKS))
     )
     # 还在显示的：用读取端同一个判断（interpret.body_changed，比原文指纹和脱敏后的段落），现在这份
-    # 正文的指纹和段落照 interpret.prepare 的算法算；快照里没记这两项的旧任务算上（宁可多数）
+    # 正文的指纹和段落照 interpret.prepare 的算法算（段落用交给模型的那份文字：入库脱敏后再按页面
+    # 规则补遮，v1.model_body_text，和 ai/content.py 一致）；快照里没记这两项的旧任务算上
+    # （宁可多数）
     current = {
         "body_hash": interpret.digest(old),
-        "paragraphs": interpret.split_paragraphs(redact_sensitive(old)),
+        "paragraphs": interpret.split_paragraphs(v1.model_body_text(redact_sensitive(old))),
     }
     ai = sum(
         1
