@@ -212,12 +212,10 @@ def test_urls_are_hidden_when_shown(shown, expected):
         # 文号、编号、数字
         "粤科函产字〔2026〕1737号",
         "版本 V1.0，增长 20.5%",
-        # "www"在别的词里；邮箱的域名不当网址换（遮邮箱是另一步）
+        # "www"在别的词里
         "wwwroot 目录",
         "awww 和 wwwx",
         "WWW规范",
-        "邮箱：abc@www.example.com",
-        "邮箱：kjc@most.gov.cn",
         # 只有"http://"没有网址；"https"后面不是"://"；"HTTP协议"
         "以 http:// 开头",
         "采用 https 协议",
@@ -272,13 +270,51 @@ def test_bare_domains_are_hidden_when_shown(shown, expected):
         # 后缀大写的技术名词、别的后缀
         "熟悉 ASP.NET 和 .NET 框架",
         "Node.js、socket.io、Vue.js",
-        # 邮箱的域名（遮邮箱是另一步，这里不当网址换）
-        "邮箱 abc@kjt.gov.cn",
         # 后缀后面还接着字母数字的不是这几个后缀
         "x.cnn、y.company、z.org2",
     ],
 )
 def test_text_like_domains_is_left_alone(text):
+    assert v1.display_text(text) == text
+
+
+# ---- 邮箱（11/2 F14）：全角"＠"写的也遮成"（这里隐去了邮箱）"，和入库时遮的写法一样 ----
+MAIL = "（这里隐去了邮箱）"
+
+
+@pytest.mark.parametrize(
+    "shown, expected",
+    [
+        ("电子邮箱：jxkjjcc＠kjt.jiangxi.gov.cn", f"电子邮箱：{MAIL}"),
+        ("报送至指定邮箱：jjsbgs＠51kehui.com。", f"报送至指定邮箱：{MAIL}。"),
+        ("发送至指定邮箱（kjtpgzx＠163.com）。", f"发送至指定邮箱（{MAIL}）。"),
+        # 域名里的点写成全角的；"＠"两边有空格
+        ("邮箱：cyec＠kjt．jiangxi．gov．cn", f"邮箱：{MAIL}"),
+        ("邮箱：cyec ＠ kjt.jiangxi.gov.cn", f"邮箱：{MAIL}"),
+        # 本地部分入库时被当成号码遮了的
+        ("于10月12日前发送至[电话已脱敏]＠163.com", f"于10月12日前发送至{MAIL}"),
+        ("邮箱：（这里隐去了电话）@163.com", f"邮箱：{MAIL}"),
+        # 半角的（入库一般已经遮过）、域名里写错成长横线的也遮，域名不再当网址换
+        ("邮箱：abc@www.example.com", f"邮箱：{MAIL}"),
+        ("邮箱：kjc@most.gov.cn", f"邮箱：{MAIL}"),
+        ("邮箱：chongjian@sd—ms.cn", f"邮箱：{MAIL}"),
+    ],
+)
+def test_emails_are_hidden_when_shown(shown, expected):
+    assert v1.display_text(shown) == expected
+    assert v1.display_text(expected) == expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "＠全体参赛单位",
+        "使用 @ 符号",
+        "Copyright @ 2022 版权所有",
+        "电子邮箱：（这里隐去了邮箱）",
+    ],
+)
+def test_other_at_signs_are_left_alone(text):
     assert v1.display_text(text) == text
 
 

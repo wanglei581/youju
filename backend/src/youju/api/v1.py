@@ -2377,13 +2377,31 @@ def _replace_links(text: str, pattern: re.Pattern[str]) -> str:
     return "".join(out)
 
 
+# 邮箱（11/2 F14）：全角"＠"写的（"jxkjjcc＠kjt.jiangxi.gov.cn"，入库规则只认半角"@"，漏了）和
+# 半角的都遮成"（这里隐去了邮箱）"，和入库时遮的写法一样；域名里的点、横线写成全角的（"．""—"）
+# 也认。本地部分是一串数字、入库时被当成号码遮了的（"（这里隐去了电话）@163.com"）整个换成邮箱的说法
+EMAIL_MARK = "（这里隐去了邮箱）"
+_EMAIL_ANY = re.compile(
+    r"(?:（这里隐去了电话）|\[(?:电话|手机号)已脱敏\]|(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]{1,64})"
+    r"[ \u3000]?[@＠][ \u3000]?[A-Za-z0-9-]+(?:[.．—－][A-Za-z0-9-]+)*[.．][A-Za-z]{2,63}"
+    r"(?![A-Za-z0-9-])"
+)
+
+
+def _hide_emails(text: str) -> str:
+    """把邮箱换成"（这里隐去了邮箱）"。"""
+    if "@" not in text and "＠" not in text:
+        return text
+    return _EMAIL_ANY.sub(EMAIL_MARK, text)
+
+
 def display_text(text: str) -> str:
     """只在给页面显示时做的处理（详情页正文、阅读页正文和附件、名单单行页、AI 结果页的原句）：
-    入库标记换成页面上的说法，已遮号码后面紧跟着的号码也遮掉，网址（含不带 http、www 的域名）
-    换成"（这里隐去了网址）"。
+    入库标记换成页面上的说法，已遮号码后面紧跟着的号码也遮掉，邮箱（含全角"＠"写的）换成
+    "（这里隐去了邮箱）"，网址（含不带 http、www 的域名）换成"（这里隐去了网址）"。
     入库的文字不改；交给模型、核对 AI 原句用的是 redact_sensitive 后的原文（ai/content.py），
     不经过这里，也不改。"""
-    return _hide_urls(_mask_phone_tails(display_marks(text)))
+    return _hide_urls(_hide_emails(_mask_phone_tails(display_marks(text))))
 
 
 # 返回给页面的原文片段（截止的"原文摘录"原句、申报条件和支持方式、申报对象的原句，列表行、
