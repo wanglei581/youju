@@ -1135,6 +1135,23 @@ def test_agreement_min_version_keeps_old_agreements(client, session, monkeypatch
     assert client.get("/api/v1/me").json()["agreed"]["valid"] is True
 
 
+def test_agreeing_again_stores_the_right_time(client, session, monkeypatch):
+    """库里已有这个用户、再次同意（新版本）时，同意时间也按 UTC 存：北京时间 9/29 10:00 同意的，
+    读出来就是这个时刻，不晚 8 小时（11/2 复测，10/15 起就有）。"""
+    settings(monkeypatch, version="2026-12", oldest="2026-09")
+    agree(client)  # 第一次同意：新建用户
+    later = NOW + timedelta(days=1)
+    monkeypatch.setattr(v1, "now", lambda: later)
+    response = client.post("/api/v1/me/agreement", json={"version": "2026-12"})
+    assert response.status_code == 200
+    assert datetime.fromisoformat(response.json()["at"]) == later
+    session.expire_all()
+    user = session.scalar(select(User).where(User.openid == "dev-user"))
+    assert (user.agreement_version, user.agreement_at) == ("2026-12", later)
+    assert user.last_visited_at == later
+    assert datetime.fromisoformat(client.get("/api/v1/me").json()["agreed"]["at"]) == later
+
+
 def test_agreement_version_must_look_like_year_month(client, session, monkeypatch):
     """版本号按"年-月"开头比较：写法不对的同意一律不算；重新同意时也不当成"更新的版本"留着。"""
     settings(monkeypatch)
