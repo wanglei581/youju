@@ -111,3 +111,24 @@ test('草稿期间和生成脚本 tools/make_legal_first_release_ai.js 的结果
   assert.match(ai.status, /草稿/);
   assert.deepEqual(JSON.parse(JSON.stringify(ai)), JSON.parse(JSON.stringify(build())));
 });
+
+test('D-112：完整版里六·3、它的要点、重点段落对不上或重复时，生成脚本报错，不会不声不响地删掉', () => {
+  const clone = () => JSON.parse(JSON.stringify(full));
+  // 六·3 后半句变了
+  const a = clone();
+  const six = section(a.user, '六、');
+  six.p[six.p.length - 1] = six.p[six.p.length - 1].replace('已购买的服务按购买时的约定履行', '已购买的服务另行约定');
+  assert.throws(() => build(a), /六·3/);
+  // 六·3 不再是第六条最后一款
+  const b = clone();
+  section(b.user, '六、').p.push('4. 新加的一款。');
+  assert.throws(() => build(b), /六·3/);
+  // 重点段落里六·3 那一段重复
+  const c = clone();
+  c.user.keyParagraphs.push('3. 公开信息的检索');
+  assert.throws(() => build(c), /重点段落/);
+  // 要点改了一个字
+  const d = clone();
+  d.user.keyPoints = d.user.keyPoints.map((k) => k.replace('收费功能另行购买', '收费功能另外购买'));
+  assert.throws(() => build(d), /要点 六·3/);
+});

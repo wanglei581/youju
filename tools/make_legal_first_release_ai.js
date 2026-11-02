@@ -21,9 +21,10 @@ const VERSION = '2026-11.1';
 // 这一版删掉，等真收费时协议升版再写
 const BANNED = /批量工具|批量名单|名单比对|通知表|上传名单|客户名单|选中的文件|加量体验|申报季加量|工具使用说明|工具任务|订单|购买页|支付|发票|原文链接|统一社会信用代码|核对企业主体|征信|信用评价|收费功能/;
 
-function build() {
+// source：完整版 2026-11 协议对象，不传就读 content/legal.js（测试传改过的原文，验证对不上会报错）
+function build(source) {
   delete require.cache[require.resolve(path.join(ROOT, 'legal.js'))];
-  const legal = JSON.parse(JSON.stringify(require(path.join(ROOT, 'legal.js'))));
+  const legal = JSON.parse(JSON.stringify(source || require(path.join(ROOT, 'legal.js'))));
   if (legal.version !== '2026-11') throw new Error(`content/legal.js 的版本是 ${legal.version}，这个脚本按 2026-11 写的，先核对`);
   const sec = (doc, head) => {
     const found = doc.sections.find((s) => s.h.startsWith(head));
@@ -58,9 +59,10 @@ function build() {
   edit(sec(U, '三、'), '关注、微信提醒和纠错需要先同意本协议和《隐私保护指引》。', '关注、微信提醒、纠错和 AI 功能需要先同意本协议和《隐私保护指引》。', '三·2');
   // 要点写准确（Grok 10/27）："不承担间接损失"只在服务中断那一款（六·2）。
   // 包里没有收费功能，"收费功能另行购买"那条要点和六·3 一起删掉（D-112，11/2）
-  const feePoints = U.keyPoints.filter((k) => k.includes('收费功能另行购买'));
-  if (feePoints.length !== 1) throw new Error(`要点 六·3：命中 ${feePoints.length} 条`);
-  U.keyPoints = U.keyPoints.filter((k) => !k.includes('收费功能另行购买'));
+  const FEE_POINT = '收费功能另行购买，购买前单独展示价格、期限和协议（六·3）';
+  const feePoints = U.keyPoints.filter((k) => k === FEE_POINT);
+  if (feePoints.length !== 1) throw new Error(`要点 六·3：整句命中 ${feePoints.length} 条`);
+  U.keyPoints = U.keyPoints.filter((k) => k !== FEE_POINT);
   point(U, '因我们故意、重大过失或依法应由我们承担责任的情形造成的损失依法承担，其他原因造成的间接损失不承担（二·3、六·2）',
     '因我们故意、重大过失或依法应由我们承担责任的情形造成的损失依法承担（二·3）；系统维护、故障等导致服务中断的，除上述情形外不承担间接损失（六·2）', '要点 二·3');
   // 包里不给原文链接（D-089、D-091），改成注明出处（和过审版 2026-10.2 一样）
@@ -80,8 +82,13 @@ function build() {
   U.keyPoints = U.keyPoints.filter((k) => !k.includes('四·5'));
   U.keyParagraphs = U.keyParagraphs.filter((k) => k !== '5. 上传名单');
   // 六·3 以后收费的说法这一版不写（D-112，11/2）：是第六节最后一条，删掉不用改编号
-  edit(sec(U, '六、'), '3. 公开信息的检索和查看现阶段免费。', null, '六·3');
-  if (!U.keyParagraphs.includes('3. 公开信息的检索')) throw new Error('用户协议重点段落里六·3 那一段没找到');
+  const FEE_PARAGRAPH = '3. 公开信息的检索和查看现阶段免费。如以后新增收费功能，我们会在您购买前单独展示服务内容、价格、期限和付费协议，由您自主决定是否购买；已购买的服务按购买时的约定履行。';
+  const six = sec(U, '六、');
+  const feeParas = six.p.filter((p) => p === FEE_PARAGRAPH);
+  if (feeParas.length !== 1 || six.p[six.p.length - 1] !== FEE_PARAGRAPH) throw new Error(`六·3：整段命中 ${feeParas.length} 处，或不是第六条最后一款`);
+  six.p = six.p.filter((p) => p !== FEE_PARAGRAPH);
+  const feeKeys = U.keyParagraphs.filter((k) => k === '3. 公开信息的检索');
+  if (feeKeys.length !== 1) throw new Error(`用户协议重点段落里六·3 那一段命中 ${feeKeys.length} 条`);
   U.keyParagraphs = U.keyParagraphs.filter((k) => k !== '3. 公开信息的检索');
 
   // ================= 隐私保护指引 =================
