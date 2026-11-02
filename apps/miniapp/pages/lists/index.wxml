@@ -31,16 +31,16 @@
 
 <view wx:if="{{error}}" class="card load-error"><text>{{error}}</text><text class="link retry" bindtap="reload">重试</text></view>
 <view wx:if="{{queried}}" class="card result">
-  <view class="section-title">"{{queried}}" 的查询结果<text wx:if="{{demo}}" class="weak count">演示数据</text></view>
+  <view class="section-title">“{{queried}}”的查询结果<text wx:if="{{demo}}" class="weak count">演示数据</text></view>
   <view wx:if="{{looking}}" class="muted result-text">正在比对名单原文…<view wx:if="{{serviceStarting}}">正在连接，比平时慢一点，请稍等…</view></view>
   <view wx:elif="{{lookupError}}" class="muted result-text">{{lookupError}}<text wx:if="{{lookupRetry}}" class="link" bindtap="query">　重试</text></view>
   <block wx:elif="{{result}}">
     <block wx:if="{{result.items.length}}">
       <view class="weak result-sum">在已收录的 {{result.coverage.lists}} 份名单中找到 {{result.items.length}} 份<text wx:if="{{result.truncated}}">（只列出最近的 {{result.items.length}} 份）</text></view>
-      <view wx:if="{{result.ambiguous}}" class="warn">名单里有名称相同、统一社会信用代码不同的企业，不能确定下面哪一份是你要查的这一家，请点"看原名单里的这一行"核对</view>
+      <view wx:if="{{result.ambiguous}}" class="warn">名单里有名称相同、统一社会信用代码不同的企业，不能确定下面哪一份是你要查的这一家，请点“看原名单里的这一行”核对</view>
       <view wx:for="{{result.items}}" wx:key="id" class="hit">
         <doc-row doc="{{item}}" last="{{true}}" today="{{today}}" />
-        <view class="hit-line">名单中写作"{{item.matched.name}}"<text wx:if="{{item.matched.category}}"> · {{item.matched.category}}</text><text wx:if="{{item.matched.via === 'creditCode'}}">（信用代码相同）</text><text wx:if="{{item.matched.batch}}"> · {{item.matched.batch}}</text><text wx:if="{{item.matched.sequence}}"> · 序号 {{item.matched.sequence}}</text><text wx:if="{{item.matched.region}}"> · {{item.matched.region}}</text><text wx:if="{{item.matched.creditCode}}"> · 信用代码 {{item.matched.creditCode}}</text></view>
+        <view class="hit-line">名单中写作“{{item.matched.name}}”<text wx:if="{{item.matched.category}}"> · {{item.matched.category}}</text><text wx:if="{{item.matched.via === 'creditCode'}}">（信用代码相同）</text><text wx:if="{{item.matched.batch}}"> · {{item.matched.batch}}</text><text wx:if="{{item.matched.sequence}}"> · 序号 {{item.matched.sequence}}</text><text wx:if="{{item.matched.region}}"> · {{item.matched.region}}</text><text wx:if="{{item.matched.creditCode}}"> · 信用代码 {{item.matched.creditCode}}</text></view>
         <!-- 整行可点进发布这份名单的通知（10/29 去掉同去处的第二个按钮）；这里只放"看原名单里的这一行" -->
         <view wx:if="{{item.matched.entryToken}}" class="hit-actions">
           <button class="hit-btn hit-btn--main" data-token="{{item.matched.entryToken}}" bindtap="record">看原名单里的这一行</button>
@@ -50,7 +50,7 @@
     <!-- 输入的是简称：没有叫这个名字的企业，但有名称里带这几个字的——先列候选，点一个按全称查 -->
     <view wx:elif="{{result.candidates.length}}" class="empty-lookup">
       <view class="empty-title">你要查的是不是：</view>
-      <view class="weak empty-text">名单里没有全称是"{{queried}}"的企业。下面是名称里带这几个字的，点一个按全称查。</view>
+      <view class="weak empty-text">名单里没有全称是“{{queried}}”的企业。下面是名称里带这几个字的，点一个按全称查。</view>
       <view class="candidates">
         <view wx:for="{{result.candidates}}" wx:key="*this" class="similar-item candidate" data-name="{{item}}" bindtap="pickSimilar" aria-role="button">
           <text class="similar-name">{{item}}</text><t-icon name="chevron-right" size="32rpx" color="#B4BAC6" />
