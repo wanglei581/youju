@@ -294,7 +294,9 @@ def points(prompt_tokens: int, completion_tokens: int) -> float:
     return (prompt_tokens * INPUT_POINTS + completion_tokens * OUTPUT_POINTS) / 1_000_000
 
 
-def summarize(records: list[dict], scores: list[dict]) -> dict:
+def summarize(records: list[dict], scores: list[dict], cloudbase: bool = True) -> dict:
+    """cloudbase：走的是云开发网关（混元）。不是（如 DeepSeek 官方接口）时，60 秒那条只报告，
+    费用按云开发价目估的只是参考值。"""
     attempted = [r for r in records if r["status"] != "dry_run"]
     elapsed = [r["elapsed_seconds"] for r in attempted]
     prompt = sum(r["usage"]["prompt_tokens"] for r in records)
@@ -356,6 +358,7 @@ def summarize(records: list[dict], scores: list[dict]) -> dict:
             ),
         },
     }
+    summary["cloudbase"] = cloudbase
     summary["bars"] = bars(summary)
     checked = [b["ok"] for b in summary["bars"] if b["ok"] is not None]
     if not attempted:
@@ -369,6 +372,7 @@ def bars(summary: dict) -> list[dict]:
     """候选门槛（创始人定）：总通过率、时间类全对、JSON 无效次数、60 秒网关，费用只报告。"""
     time_row = summary["by_type"]["时间"]
     latency = summary["latency"]
+    cloudbase = summary.get("cloudbase", True)
     exceptions = "、".join(time_row["failed"])
     return [
         {
@@ -394,14 +398,22 @@ def bars(summary: dict) -> list[dict]:
         },
         {
             "key": "gateway",
-            "label": f"没有超过 {GATEWAY_SECONDS} 秒的请求",
+            "label": (
+                f"没有超过 {GATEWAY_SECONDS} 秒的请求"
+                if cloudbase
+                else f"超过 {GATEWAY_SECONDS} 秒的请求（只有云开发网关有这个限制，这条线路只报告）"
+            ),
             "actual": f"{latency['over_gateway']} 次（最长 {latency['max']:.1f} 秒）",
-            "ok": latency["over_gateway"] == 0,
+            "ok": latency["over_gateway"] == 0 if cloudbase else None,
             "note": "不达标：上线前必须打开流式（YOUJU_AI_ADVISOR_STREAM=true）",
         },
         {
             "key": "cost",
-            "label": "平均每篇费用（只报告，不设门槛）",
+            "label": (
+                "平均每篇费用（只报告，不设门槛）"
+                if cloudbase
+                else "平均每篇费用（只报告，不设门槛；按云开发价目估的参考值，以模型方账单为准）"
+            ),
             "actual": (
                 f"{summary['cost']['points_per_notice']:.1f} 点"
                 f"（约 {summary['cost']['yuan_per_notice']:.4f} 元）"
@@ -477,7 +489,9 @@ def short(value: str, limit: int = 60) -> str:
 def gateway_label(base_url: str) -> str:
     """报告里只写是哪类线路，不写环境 ID。"""
     host = urlsplit(base_url).hostname or ""
-    return "云开发网关" if host.endswith(".tcloudbasegateway.com") else "其他地址"
+    if host.endswith(".tcloudbasegateway.com"):
+        return "云开发网关"
+    return "DeepSeek 官方接口" if host == "api.deepseek.com" else "其他地址"
 
 
 def write_outputs(
@@ -651,7 +665,12 @@ def report(gold: dict, records: list[dict], scores: list[dict], summary: dict, m
         "逐字核对用 interpret.validate。",
         "- 耗时 p50、p95 用最近秩法（从小到大第 ceil(p·n) 个），含调用失败的那几次。",
         f"- 费用：输入每百万 tokens {INPUT_POINTS} 点、输出 {OUTPUT_POINTS} 点，"
-        f"{POINTS_PER_YUAN} 点约合 1 元（以云开发控制台为准）。",
+        f"{POINTS_PER_YUAN} 点约合 1 元（以云开发控制台为准）"
+        + (
+            "。"
+            if summary.get("cloudbase", True)
+            else "；这次不是云开发线路，只是参考值，以模型方账单为准。"
+        ),
     ]
     return "\n".join(lines) + "\n"
 
@@ -739,7 +758,8 @@ def main(argv: list[str] | None = None) -> int:
             record["gold_doc_id"] = candidate["key"]
         by_doc = {r["gold_doc_id"]: r for r in records}
         scores = [score(q, by_doc[q["doc_id"]]) for q in gold["questions"]]
-        summary = summarize(records, scores)
+        cloudbase = args.fake_model or gateway_label(base_url) == "云开发网关"
+        summary = summarize(records, scores, cloudbase=cloudbase)
         meta["finished_at"] = beijing_now()
         meta["wall_seconds"] = round(time.monotonic() - started, 1)
         write_outputs(args.out, gold, records, scores, summary, meta)

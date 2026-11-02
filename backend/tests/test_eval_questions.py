@@ -427,6 +427,12 @@ def test_pass_bar():
     slow = fast[:16] + [_record(91, 60.5, 1000, 500)]
     gateway = {b["key"]: b for b in eq.summarize(slow, _scores())["bars"]}["gateway"]
     assert gateway["ok"] is False and "STREAM" in gateway["note"]
+    # 不是云开发线路（DeepSeek 官方接口）：60 秒那条只报告，不算门槛；费用写明是参考值
+    other = eq.summarize(slow, _scores(), cloudbase=False)
+    other_bars = {b["key"]: b for b in other["bars"]}
+    assert other_bars["gateway"]["ok"] is None and "只报告" in other_bars["gateway"]["label"]
+    assert "参考值" in other_bars["cost"]["label"] and other["verdict"] == "PASS"
+    assert eq.gateway_label("https://api.deepseek.com") == "DeepSeek 官方接口"
     dry = eq.summarize([_record(1, 0.0, 0, 0, status="dry_run")], _scores())
     assert dry["verdict"] == "未调用模型"
 
