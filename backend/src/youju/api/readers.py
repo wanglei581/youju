@@ -324,23 +324,26 @@ def _safe_segment(row: AttachmentTextSegment) -> dict:
             loc[key] = value
         elif key == "sheet" and isinstance(value, str):
             loc[key] = v1.display_marks(texts.mask(value))
-    cells = []
     # 附件的文字、单元格按页面说法显示（v1.display_text：遮过的号码写"（这里隐去了电话）"，
-    # 紧跟着的号码也遮，11/2 完整测试第 5 条）；分页按库里存的字节数算，不受影响
-    for cell in row.cells or []:
-        if not isinstance(cell, dict) or not isinstance(cell.get("c"), int):
-            continue
-        cells.append(
-            {
-                "c": cell.get("c"),
-                "t": v1.display_text(texts.mask(str(cell.get("t", "")))),
-                "h": v1.display_text(texts.mask(str(cell.get("h", "")))),
-            }
-        )
+    # 紧跟着的号码也遮，网址换成"（这里隐去了网址）"）；联系人姓名和正文用同一套规则遮（F13：
+    # 表格一行的各格放在一起判断）。分页按库里存的字节数算，不受影响
+    kept = [
+        cell
+        for cell in row.cells or []
+        if isinstance(cell, dict) and isinstance(cell.get("c"), int)
+    ]
+    heads = [texts.mask(str(cell.get("h", ""))) for cell in kept]
+    values = v1.display_attachment_row(
+        [(head, texts.mask(str(cell.get("t", "")))) for head, cell in zip(heads, kept, strict=True)]
+    )
+    cells = [
+        {"c": cell.get("c"), "t": value, "h": v1.display_text(head)}
+        for cell, head, value in zip(kept, heads, values, strict=True)
+    ]
     return {
         "n": row.n,
         "kind": row.kind,
-        "text": v1.display_text(texts.mask(row.text)),
+        "text": v1.display_attachment_text(texts.mask(row.text)),
         "loc": loc or None,
         "cells": cells or None,
     }

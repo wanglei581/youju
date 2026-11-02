@@ -2618,6 +2618,124 @@ def _mask_contact_names(text: str) -> str:
     return "\n".join(out)
 
 
+# 附件里的联系人姓名（11/2 F13），只在显示时遮。认姓名和正文同一套（_masked：常见姓氏开头的
+# 2–3 个字、"刘老师""张三处长"这类带称呼的、"高新处张三"单位后面的姓名），但只看这几处：
+#   1. "联系人""经办人""电话""一审"这类标签后面，到下一个"××："标签、句末为止（40 个字以内）；
+#   2. 紧挨在号码前面的那个词（"刘老师，（这里隐去了电话）""徐丽萍 （这里隐去了电话）"）；
+#   3. "联系人："写在行尾时，下一行有号码（或只有一个词）的那一行；
+#   4. 表格：列名是"联系人""负责人""姓名"这类的格子，和只写着"联系人"那一格的下一格。
+# 正文那套是整行判断（行里有"联系人""联系方式"就把整行像姓名的词都遮）：附件里的表头、长表格行、
+# 长句子这样遮会误遮"万元""申请日""安装""成长期"这类词（本机库全量对比看到的），所以收窄到上面几处
+_ATT_LABEL = re.compile(
+    rf"(?:联\s*系\s*人|联\s*络\s*人|经\s*办\s*人)(?:及其?(?:电话|手机|职务|联系方式))?\s*[:：]?"
+    rf"|联系方式\s*[:：]|{_PHONE_LABEL.pattern}"
+)
+_ATT_FIELD = re.compile(rf"[{_HAN_CHAR}]{{2,6}}\s*[:：]")
+_ATT_STOP = re.compile(r"[。；;！？!?\n]")
+_ATT_WINDOW = 40
+_ATT_BEFORE_PHONE = re.compile(rf"([{_HAN_CHAR}·](?: ?[{_HAN_CHAR}·]){{1,5}})[\s，,、:：]*$")
+_NAME_HEAD = re.compile(r"联\s*系\s*人|联\s*络\s*人|经\s*办\s*人|负\s*责\s*人|姓\s*名|填\s*表\s*人")
+_BARE_NAME_LABEL = re.compile(
+    r"(?:联\s*系\s*人|联\s*络\s*人|经\s*办\s*人|负\s*责\s*人|姓\s*名)"
+    r"(?:及其?(?:电话|手机|职务|联系方式))?\s*[:：]?"
+)
+_ONLY_PHONES = re.compile(rf"(?:{_PHONE}|[\s、/，,;；])+")
+# 附件表格里常见、像姓名（常见姓氏开头的两个字）但不是姓名的词（本机库全量对比看到的）：
+# 金额单位（"总经费（万元）"）、"团队成员"
+_ATT_NOT_NAMES = frozenset({"万元", "亿元", "千元", "百元", "成员"})
+# 列名是"联系人""姓名"这类的格子，内容不超过这么多字才整格按姓名遮；长的（一段话）照 1–3 判断
+_NAME_CELL_MAX = 20
+
+
+def _att_window(line: str, start: int) -> int:
+    """标签后面从 start 起，姓名只看到哪里为止：下一个"××："标签、句末、40 个字。"""
+    end = min(len(line), start + _ATT_WINDOW)
+    for pattern in (_ATT_STOP, _ATT_FIELD):
+        found = pattern.search(line, start, end)
+        if found is not None:
+            end = found.start()
+    return end
+
+
+def _att_name_token(word: str) -> bool:
+    """这个词要不要交给认姓名那一步：不是"万元""成员"，也不是以它们结尾的单位词（"团队成员"）。"""
+    if not word or word in _ATT_NOT_NAMES:
+        return False
+    tail = _UNIT_THEN_NAME.search(word)
+    return tail is None or tail.group(1) not in _ATT_NOT_NAMES
+
+
+def _mask_span(line: str, start: int, end: int, mark: str) -> str:
+    piece = line[start:end]
+    tokens = [w for w in _CONTACT_SPLIT.split(piece) if _att_name_token(w)]
+    return line[:start] + _mask_line(piece, tokens, mark) + line[end:]
+
+
+def _mask_attachment_line(line: str, after_label: bool) -> str:
+    """附件里的一行：按上面 1–3 遮姓名。after_label：上一行以"联系人："这类标签结尾。"""
+    spans: list[tuple[int, int, str]] = []
+    for label in _ATT_LABEL.finditer(line):
+        spans.append((label.end(), _att_window(line, label.end()), _CONTACT_MARK))
+    for label in _EDITOR.finditer(line):
+        spans.append((label.end(), _att_window(line, label.end()), _EDITOR_MARK))
+    if after_label and (_PHONE_ANY.search(line) or len(line.strip()) <= 8):
+        spans.append((0, _att_window(line, 0), _CONTACT_MARK))
+    for phone in _PHONE_ANY.finditer(line):
+        before = _ATT_BEFORE_PHONE.search(line, 0, phone.start())
+        if before is not None:
+            spans.append((before.start(1), before.end(1), _CONTACT_MARK))
+    # 从后往前遮，前面的位置不变；重叠的只遮一次
+    done = len(line)
+    for start, end, mark in sorted(spans, reverse=True):
+        end = min(end, done)
+        if start < end:
+            line = _mask_span(line, start, end, mark)
+            done = start
+    return line
+
+
+def _mask_attachment_names(text: str) -> str:
+    """附件一段文字里的联系人姓名（按行判断，"联系人："写在行尾时看下一行）。"""
+    out = []
+    after_label = False
+    for line in text.split("\n"):
+        if not line.strip():
+            out.append(line)
+            continue
+        masked = _mask_attachment_line(line, after_label)
+        after_label = _LABEL_AT_END.search(line) is not None
+        out.append(masked)
+    return "\n".join(out)
+
+
+def display_attachment_text(text: str) -> str:
+    """附件一段文字（不是表格的格子）给页面的写法：先遮联系人姓名，再走 display_text。"""
+    return display_text(_mask_attachment_names(display_marks(text)))
+
+
+def display_attachment_row(cells: list[tuple[str, str]]) -> list[str]:
+    """附件表格一行各格的内容（列名、内容都已按入库规则遮过号码）给页面的写法：遮联系人姓名后走
+    display_text。列名本身照 display_text 给，由调用方处理。"""
+    pairs = [(display_marks(head), display_marks(value)) for head, value in cells]
+    out = []
+    for i, (head, value) in enumerate(pairs):
+        previous = pairs[i - 1][1].strip() if i else ""
+        named = _NAME_HEAD.search(head) or (previous and _BARE_NAME_LABEL.fullmatch(previous))
+        if named and len(value.strip()) <= _NAME_CELL_MAX:
+            # 列名是"联系人""姓名"这类，或者上一格只写着"联系人"：这一格像姓名的都遮
+            masked = _mask_span(value, 0, len(value), _CONTACT_MARK)
+        else:
+            masked = _mask_attachment_names(value)
+            following = pairs[i + 1][1].strip() if i + 1 < len(pairs) else ""
+            if following and _ONLY_PHONES.fullmatch(following):
+                # 下一格只有号码：这一格整格像姓名就遮（"信推处 | 徐丽萍 | （这里隐去了电话）"）
+                word = value.strip().replace(" ", "")
+                if word and _masked(word, _CONTACT_MARK) == _CONTACT_MARK:
+                    masked = value.replace(value.strip(), _CONTACT_MARK)
+        out.append(display_text(masked))
+    return out
+
+
 @dataclass
 class ReadingBody:
     """一份通知的正文给不给、给哪一份（详情页和阅读页同一个判断，D-097）。
