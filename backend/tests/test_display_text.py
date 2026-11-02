@@ -32,7 +32,8 @@ MARK = "（这里隐去了电话）"
         (f"电话：{MARK}，87687769", f"电话：{MARK}，{MARK}"),
         ("电话：[手机号已脱敏]或87687769", f"电话：{MARK}或{MARK}"),
         # 一个接一个、半角逗号、全角斜杠、前后有空格
-        (f"{MARK}、87687769、87687770或88888888", f"{MARK}、{MARK}、{MARK}或{MARK}"),
+        # 连着 3 个同样的标记合成一个（独立审阅），"或"后面的照旧
+        (f"{MARK}、87687769、87687770或88888888", f"{MARK}或{MARK}"),
         (f"{MARK},87687769", f"{MARK},{MARK}"),
         (f"{MARK}／62651782", f"{MARK}／{MARK}"),
         (f"{MARK} / 62651782", f"{MARK} / {MARK}"),
@@ -73,7 +74,6 @@ def test_numbers_right_after_a_masked_phone_are_masked(shown, expected):
         f"{MARK}、12345678",
         f"{MARK}、01087687769",
         # 分隔符不在名单里
-        f"{MARK}；87687769",
         f"{MARK}87687769",
     ],
 )
@@ -168,7 +168,8 @@ URL = "（这里隐去了网址）"
         ("见https://x.gov.cn/a.html;下一句", f"见{URL};下一句"),
         ("见https://x.gov.cn/a.html：下一句", f"见{URL}：下一句"),
         # 括号里还有别的字：括号留着，只换网址
-        ("（网址：https://x.gov.cn）", f"（网址：{URL}）"),
+        # 括号里只剩网址标记的收成一个（独立审阅）
+        ("（网址：https://x.gov.cn）", URL),
         ("（详见https://x.gov.cn）", f"（详见{URL}）"),
         # 两个网址
         ("https://a.gov.cn、https://b.gov.cn", f"{URL}、{URL}"),
@@ -239,7 +240,7 @@ def test_other_text_is_left_alone(text):
         # 各种后缀；后面紧跟汉字、标点
         (
             "见 china.com.cn、abc.org.cn、x.net.cn、tsinghua.edu.cn",
-            f"见 {URL}、{URL}、{URL}、{URL}",
+            f"见 {URL}",  # 连着 4 个同样的标记合成一个（独立审阅）
         ),
         ("见example.com和example.net、example.org。", f"见{URL}和{URL}、{URL}。"),
         ("全角点 kjt．yn．gov．cn 也认", f"全角点 {URL} 也认"),
@@ -452,3 +453,62 @@ def test_detail_and_reading_pages_mask_body_names(client, session):  # noqa: F81
     joined = "".join(s["text"] for s in reading["segments"])
     assert "电力处 （这里隐去了联系人）；联系电话" in joined
     assert "梁弢" not in str(detail) and "梁弢" not in joined
+
+
+# 独立审阅（11/2）：入库时漏掉的号码写法和标记的整理
+CONTACT = "（这里隐去了联系人）"
+URL = "（这里隐去了网址）"
+
+
+@pytest.mark.parametrize(
+    "shown, expected",
+    [
+        # 区号用破折号、带括号、隔空格
+        ("联系电话：022—58832980", f"联系电话：{MARK}"),
+        ("联系电话：（0591）87882899（传真）", f"联系电话：{MARK}（传真）"),
+        ("电话：0591 87882899", f"电话：{MARK}"),
+        ("省自然基金委：0371—65099390 省科技厅", f"省自然基金委：{MARK} 省科技厅"),
+        # 写在已遮联系人后面的本地号码
+        (
+            f"北京市经济和信息化局 {CONTACT}：55520803，",
+            f"北京市经济和信息化局 {CONTACT}：{MARK}，",
+        ),
+        (f"规划处 {CONTACT} 87811397 规划处", f"规划处 {CONTACT} {MARK} 规划处"),
+        # 已遮号码后面隔着空格、分号的号码
+        (f"联系电话：{MARK}；86263938", f"联系电话：{MARK}；{MARK}"),
+        # 同一处连着 3 个以上同样的标记只留一个；两个的照旧
+        (f"技术支持：{MARK}、{MARK}、{MARK}、{MARK}。", f"技术支持：{MARK}。"),
+        (f"联系电话：{MARK} 3903039 3903040", f"联系电话：{MARK}"),
+        (f"咨询电话：{MARK}、{MARK}。", f"咨询电话：{MARK}、{MARK}。"),
+        # 括号里只剩网址标记的收成一个
+        ("通过“系统”（网址：https://xm.example.gov.cn/login）申报", f"通过“系统”{URL}申报"),
+    ],
+)
+def test_more_phone_forms_and_tidy_marks(shown, expected):
+    assert v1.display_text(shown) == expected
+    assert v1.display_text(v1.display_text(shown)) == v1.display_text(shown)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "2026—2028年",
+        "1999—2025",
+        "编号：0123—4567890",
+        "邮编：0532 2661000",
+        "（0532）",
+        f"{CONTACT} 20261101前报送",
+        f"{CONTACT}5000000元",
+    ],
+)
+def test_numbers_that_are_not_phones_stay(text):
+    assert v1.display_text(text) == v1.display_marks(text)
+
+
+def test_names_before_area_code_phones_are_masked_in_body():
+    shown = f"革委工业处 常文明，0531—51783107，{MARK}"
+    assert v1.display_body_text(shown) == f"革委工业处 {CONTACT}，{MARK}，{MARK}"
+    assert (
+        v1.display_body_text("18674 李宗仁 0451—82659737 省财政")
+        == f"18674 {CONTACT} {MARK} 省财政"
+    )

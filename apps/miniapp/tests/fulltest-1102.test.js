@@ -129,3 +129,12 @@ test('取消关注的确认框：名称自己带引号时不再套一层引号�
   for (const m of modals) assert.doesNotMatch(m.content, /"/);
   assert.equal(conditions.quoted('"旧写法" · 山东'), '"旧写法" · 山东');
 });
+
+test('关注条件说明：发布时间"不限"不写进说明，默认名称和说明一样时卡片只写一行（11/2 独立审阅）', () => {
+  const { describe: desc, sameAsName } = require('../utils/conditions.js');
+  const c = { q: '高新技术企业', regions: '不限地区', kind: 'all', time: '不限' };
+  const text = desc(c);
+  assert.ok(!/· 不限$/.test(text), text);
+  assert.ok(sameAsName('“高新技术企业” · 不限地区 · 全部', text), text);
+  assert.match(desc({ ...c, time: '近 30 天' }), /· 近 30 天$/);
+});

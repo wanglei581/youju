@@ -109,7 +109,8 @@ function describe(c) {
   if (supports.length) parts.push(`支持方式：${supports.join('、')}`);
   const industries = split(c.industries);
   if (industries.length) parts.push(`产业方向：${industries.join('、')}`);
-  if (c.time) parts.push(c.time);
+  // 发布时间"不限"不写（默认关注名称也不写，不然名称和说明差这一截、卡片又写两行，11/2 独立审阅）
+  if (c.time && c.time !== '不限') parts.push(c.time);
   if (c.open === 1 || c.open === '1') parts.push('只看未截止');
   return parts.join(' · ');
 }

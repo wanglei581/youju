@@ -2243,7 +2243,7 @@ def display_marks(text: str) -> str:
 # （20261101）的不算。别处的数字（金额、年份、文号、编号）不碰
 _PHONE_MARK_ANY = re.compile(r"（这里隐去了电话）|\[电话已脱敏\]|\[手机号已脱敏\]")
 _PHONE_TAIL = re.compile(
-    r"(?P<sep>[ \t\u3000]*(?:[、/／，,]|或)[ \t\u3000]*)"
+    r"(?P<sep>[ \t\u3000]*(?:[、/／，,；;]|或)[ \t\u3000]*|[ \t\u3000]+)"
     r"(?P<number>[2-9]\d{6,7}(?:(?:[-－]|转)\d{1,8})?)(?!\d)"
 )
 _NOT_PHONE_NEXT = frozenset("元万亿千百%％‰年月日号个人次家项份字条批期届级名位件页")
@@ -2311,6 +2311,74 @@ def _mask_labeled_phones(text: str) -> str:
         return match.group("label") + PHONE_MARK
 
     return _LABELED_PHONE.sub(repl, text)
+
+
+# 入库规则只认"-""－"连着区号的座机，"022—58832980"（破折号）、"（0591）87882899"（区号带括号）、
+# "0591 87882899"（隔空格）照原样露着（11/2 独立审阅，本机库约 110 份）：显示时整个号码遮掉，
+# 可以带分机
+_AREA_PHONE = re.compile(
+    r"(?<![0-9A-Za-z])(?:[（(]0\d{2,3}[）)][ \t\u3000]*"
+    r"|0\d{2,3}[ \t\u3000]*[-－—–‐]{1,2}[ \t\u3000]*"
+    r"|0\d{2,3}[ \t\u3000]+)[2-9]\d{6,7}(?:(?:[-－]|转)\d{1,6})?(?!\d)"
+)
+# 写在已遮的联系人后面的本地号码（"（这里隐去了联系人）：55520803""（这里隐去了联系人） 55521169"）
+_CONTACT_THEN_NUMBER = re.compile(
+    r"(?P<head>（这里隐去了联系人）[ \t\u3000]*[，,、：:；;]?[ \t\u3000]*)"
+    r"(?P<number>[2-9]\d{6,7}(?:(?:[-－]|转)\d{1,6})?)(?!\d)"
+)
+
+
+# 前面几个字是"编号""代码"这类的，是编号不是电话
+_CODE_BEFORE = re.compile(
+    r"(?:编号|代码|文号|序号|邮编|批号|编码|账号|卡号)[ \t\u3000]*[:：]?[ \t\u3000]*$"
+)
+
+
+def _mask_area_phones(text: str) -> str:
+    """把入库时漏掉的区号写法（破折号、括号、空格）整个换成"（这里隐去了电话）"。"""
+    if "0" not in text:
+        return text
+
+    def repl(match: re.Match[str]) -> str:
+        if _CODE_BEFORE.search(text, max(0, match.start() - 8), match.start()):
+            return match.group(0)
+        return PHONE_MARK
+
+    return _AREA_PHONE.sub(repl, text)
+
+
+def _mask_contact_numbers(text: str) -> str:
+    """已遮的联系人后面紧跟着的本地号码也遮；后面接着金额单位、日期的不算（同 _phone_tail）。"""
+    if "隐去了联系人" not in text:
+        return text
+
+    def repl(match: re.Match[str]) -> str:
+        after = text[match.end() : match.end() + 2]
+        if after and after[0] in _NOT_PHONE_NEXT:
+            return match.group(0)
+        if after[:1] in ".．" and after[1:2].isdigit():
+            return match.group(0)
+        if _DATE_DIGITS.fullmatch(match.group("number")):
+            return match.group(0)
+        return match.group("head") + PHONE_MARK
+
+    return _CONTACT_THEN_NUMBER.sub(repl, text)
+
+
+# 同一处连着 3 个以上同样的标记（"（这里隐去了电话）、（这里隐去了电话）、（这里隐去了电话）"）
+# 只留一个；"（网址：（这里隐去了网址））"这样括号里只剩标记的，收成一个标记（11/2 独立审阅）
+_MARK_RUN = re.compile(
+    r"(（这里隐去了(?:电话|邮箱|网址|联系人)）)(?:[ \t\u3000]*[、，,/／；;]?[ \t\u3000]*\1){2,}"
+)
+_MARK_IN_BRACKETS = re.compile(
+    r"[（(](?:[^（）()\n]{0,8}[:：])?[ \t\u3000]*(（这里隐去了网址）)[ \t\u3000]*[）)]"
+)
+
+
+def _tidy_marks(text: str) -> str:
+    if "（这里隐去了" not in text:
+        return text
+    return _MARK_IN_BRACKETS.sub(r"\1", _MARK_RUN.sub(r"\1", text))
 
 
 # 正文、附件里政府原文自带的网址（D-112，创始人 11/2 同意）：显示时换成"（这里隐去了网址）"，
@@ -2426,13 +2494,20 @@ def _hide_emails(text: str) -> str:
     return _EMAIL_ANY.sub(EMAIL_MARK, text)
 
 
+def _mask_phones(text: str) -> str:
+    """显示层补遮号码：区号的破折号、括号写法，"电话："标签后面的，已遮联系人后面的，已遮号码后面紧跟着的。
+    遮姓名之前也先走一遍（display_body_text、附件），"常文明，0531—51783107"号码认出来了，号码前面的姓名才遮得到。"""
+    text = _mask_labeled_phones(_mask_area_phones(text))
+    return _mask_phone_tails(_mask_contact_numbers(text))
+
+
 def display_text(text: str) -> str:
     """只在给页面显示时做的处理（详情页正文、阅读页正文和附件、名单单行页、AI 结果页的原句）：
     入库标记换成页面上的说法，"电话："这类标签后面不带区号的号码和已遮号码后面紧跟着的号码也遮掉，邮箱（含全角"＠"写的）换成
     "（这里隐去了邮箱）"，网址（含不带 http、www 的域名）换成"（这里隐去了网址）"。
     入库的文字不改；交给模型、核对 AI 原句用的是 redact_sensitive 后的原文（ai/content.py），
     不经过这里，也不改。"""
-    return _hide_urls(_hide_emails(_mask_phone_tails(_mask_labeled_phones(display_marks(text)))))
+    return _tidy_marks(_hide_urls(_hide_emails(_mask_phones(display_marks(text)))))
 
 
 # 返回给页面的原文片段（截止的"原文摘录"原句、申报条件和支持方式、申报对象的原句，列表行、
@@ -2771,18 +2846,18 @@ def _mask_attachment_names(text: str) -> str:
 def display_body_text(text: str) -> str:
     """正文给页面的写法：入库时已经按整行遮过联系人姓名，这里再按上面 1–4 补遮漏掉的
     （"电力处 梁弢；联系电话："，11/2 Codex 审阅），再走 display_text。"""
-    return display_text(_mask_attachment_names(display_marks(text)))
+    return display_text(_mask_attachment_names(_mask_phones(display_marks(text))))
 
 
 def display_attachment_text(text: str) -> str:
-    """附件一段文字（不是表格的格子）给页面的写法：先遮联系人姓名，再走 display_text。"""
-    return display_text(_mask_attachment_names(display_marks(text)))
+    """附件一段文字（不是表格的格子）给页面的写法：先补遮号码、再遮姓名，再走 display_text。"""
+    return display_text(_mask_attachment_names(_mask_phones(display_marks(text))))
 
 
 def display_attachment_row(cells: list[tuple[str, str]]) -> list[str]:
     """附件表格一行各格的内容（列名、内容都已按入库规则遮过号码）给页面的写法：遮联系人姓名后走
     display_text。列名本身照 display_text 给，由调用方处理。"""
-    pairs = [(display_marks(head), display_marks(value)) for head, value in cells]
+    pairs = [(display_marks(head), _mask_phones(display_marks(value))) for head, value in cells]
     out = []
     for i, (head, value) in enumerate(pairs):
         previous = pairs[i - 1][1].strip() if i else ""
