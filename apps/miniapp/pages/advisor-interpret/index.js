@@ -28,11 +28,24 @@ Page({
         if (value.unavailable) access.refresh();
         if (this.visible && this.data.aiEnabled) this.setData(value);
       } });
+    // AI 板块确认关了（后台说关着、不在白名单）：清掉标题回首页。本机缓存说开着、标题先写了入口名，
+    // 后来才确认关了时也一样，页面上不留 AI 字样（D-075；Grok 10/27 审阅）
+    this.unsubscribe = access.subscribe((state) => {
+      if (this.visible && state.confirmed && !state.visible) this.leave();
+    });
+  },
+  leave() {
+    if (this.leaving) return;
+    this.leaving = true;
+    wx.setNavigationBarTitle({ title: '' });
+    wx.switchTab({ url: '/pages/home/index', complete: () => { this.leaving = false; } });
   },
   onShow() {
     this.visible = true;
     const epoch = this.epoch = (this.epoch || 0) + 1;
-    wx.setNavigationBarTitle({ title: '工具' });
+    // 标题跟着入口叫"AI 解读"：AI 板块对这个人显示着（AI 开着）就直接写，没同意协议、连不上时也一样；
+    // 板块没显示（AI 关着、从旧链接进来）时留空，等能力接口回话，关着就回首页，页面上不出现 AI 字样（D-075）
+    wx.setNavigationBarTitle({ title: access.current().visible === true ? aiTitle('AI 解读') : '' });
     // 今天的次数用完、全站满了时停在这一页跨过零点：不自己重新开始（会直接提交、用掉次数），
     // 改写"可以重新开始了"，点了再问（第 18 轮）。跨零点时还在等能力接口回话：丢掉旧的、重新问（第 22 轮）
     watchDay(this, () => {
@@ -76,7 +89,7 @@ Page({
       if (gate === 'off' && !AI_INTERNAL) {
         // 底栏、列表上的入口也跟着重新问一次（关了或被移出白名单时随即收起）
         access.refresh();
-        this.setData({ aiEnabled: false, gate }); wx.switchTab({ url: '/pages/home/index' }); return;
+        this.setData({ aiEnabled: false, gate }); this.leave(); return;
       }
       this.setData({ loading: false, aiEnabled, gate, gateText: gateText(gate, res), aiNotice: aiEnabled ? internalNotice(ai.disclosure) : '',
         modelText: modelText(ai.disclosure),
@@ -101,7 +114,7 @@ Page({
   // 今天的次数用完了：去看以前的结果
   records() { if (this.data.gate === 'used') wx.navigateTo({ url: '/pages/advisor-tasks/index' }); },
   onHide() { this.visible = false; this.epoch = (this.epoch || 0) + 1; stopDay(this); this.session.hide(); },
-  onUnload() { this.onHide(); },
+  onUnload() { this.onHide(); if (this.unsubscribe) this.unsubscribe(); },
   check(e) { this.session.check((e.detail.value || []).includes('agree')); },
   agree() { if (this.data.aiEnabled) this.session.agree(); },
   // 使用须知只有一个"同意并开始解读"按钮（D-098）；打开已有任务时写"同意并查看结果"

@@ -1,6 +1,6 @@
 """附件读入第一步的实测统计（youju attachment-text-report，只读；《附件读入方案》第四节）。
 
-按附件副本定时任务的真实候选范围算，申报通知（近 180 天）、政策（近 90 天）分开，只算一级公开来源、
+按附件文字的真实候选范围算，申报通知（近 180 天）、政策（近 2 年，D-097 ③）分开，只算一级公开来源、
 没下架的：
 
 - 附件：每种格式（按题录里的扩展名）能读的比例，取不出、下载不了的原因分布；
@@ -27,6 +27,7 @@ from youju import attachment_text
 from youju.attachments import (
     APPLICATION_WINDOW_DAYS,
     DOWNLOAD_TYPES,
+    POLICY_TEXT_WINDOW_DAYS,
     _government_url,
     _recent,
     _since,
@@ -109,8 +110,9 @@ class Report:
 
 
 def _scope(session: Session, now: datetime):
-    """附件副本的候选范围（attachments.candidates 同样的条件），按文件。"""
-    since, since_at = _since(now)
+    """附件文字的候选范围（attachments.candidates(texts=True) 同样的条件：申报通知近 180 天、
+    政策近 2 年），按文件。"""
+    since, since_at = _since(now, POLICY_TEXT_WINDOW_DAYS)
     apply_since, apply_since_at = _since(now, APPLICATION_WINDOW_DAYS)
     kind = func.coalesce(Document.kind_override, Document.rule_kind)
     return kind, and_(
@@ -149,7 +151,10 @@ def build(session: Session, now: datetime, *, sample: int = 30, seed: int = 2026
 
     kind_col, condition = _scope(session, now)
     states = _url_states(session)
-    reports = {k: KindReport(k, APPLICATION_WINDOW_DAYS if k == "申报通知" else 90) for k in KINDS}
+    reports = {
+        k: KindReport(k, APPLICATION_WINDOW_DAYS if k == "申报通知" else POLICY_TEXT_WINDOW_DAYS)
+        for k in KINDS
+    }
     # 附件：按链接去重，同一链接只算一次（算在先出现的那类里）
     seen: set[str] = set()
     counts: dict[str, dict[str, Counter]] = {k: defaultdict(Counter) for k in KINDS}

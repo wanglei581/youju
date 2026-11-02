@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from hashlib import sha256
 from typing import Annotated, Literal
 from zoneinfo import ZoneInfo
@@ -17,7 +17,13 @@ from sqlalchemy.dialects.mysql import insert
 from sqlalchemy.orm import Session
 
 from youju import advisor_tasks as advisor_service
-from youju.agreements import TOOLS_AGREEMENT_VERSION, agreement_at_least
+from youju import chat_store
+from youju.agreements import (
+    CHAT_AGREEMENT_VERSION,
+    VERSION_FULL,
+    agreement_at_least,
+    tools_agreed,
+)
 from youju.api import v1
 from youju.config import get_settings
 from youju.db import get_session
@@ -36,6 +42,7 @@ from youju.models import (
 )
 from youju.repost import confirmed_members
 from youju.takedown import available_condition
+from youju.wx_security import check_feedback  # 纠错的内容安全检测，和 AI 结果、问一问共用一个模块
 
 router = APIRouter(prefix="/api/v1", tags=["用户"])
 SessionDep = Annotated[Session, Depends(get_session)]
@@ -118,7 +125,7 @@ UserDep = Annotated[User, Depends(current_user)]
 class AgreementIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     version: str = Field(min_length=1, max_length=20)
-    scope: Literal["general", "advisor"] = "general"
+    scope: Literal["general", "advisor", "chat"] = "general"
 
 
 class Conditions(BaseModel):
@@ -330,6 +337,16 @@ def profile(request: Request, session: SessionDep, user: KnownUserDep) -> dict:
             if user.advisor_agreement_at
             else {}
         ),
+        **(
+            {
+                "chatAgreed": {
+                    "version": user.chat_agreement_version,
+                    "at": _iso(user.chat_agreement_at),
+                }
+            }
+            if user.chat_agreement_at
+            else {}
+        ),
         "follows": session.scalar(select(func.count(Follow.id)).where(Follow.user_id == user.id))
         or 0,
         "subscriptions": {
@@ -420,11 +437,39 @@ def delete_deadline_clue(clue_id: int, session: SessionDep, user: KnownUserDep) 
     session.commit()
 
 
+def _agree_chat(body: AgreementIn, request: Request, session: Session) -> dict:
+    """同意"问一问使用说明"（问一问开发设计第十三节第 1 条）：AI 对这个人开着、已同意含 AI 条款的
+    协议才收，同 AI 任务（advisor._authorize）；版本只认当前的 CHAT_AGREEMENT_VERSION。"""
+    from youju.ai import interpret
+
+    settings = get_settings()
+    # 先于协议校验隐藏：问一问没开放（本地高危词库定稿以前）、AI 对这个人没开、没有身份，都是 404
+    try:
+        openid = request_openid(request)
+    except HTTPException:
+        raise HTTPException(status_code=404, detail="没有找到接口") from None
+    if not chat_store.chat_ready() or not interpret.enabled_for_openid(settings, openid):
+        raise HTTPException(status_code=404, detail="没有找到接口")
+    user = current_user(known_user(request, session))
+    if not interpret.ai_agreed(settings, user):
+        raise HTTPException(status_code=403, detail="AI 条款已更新，请更新小程序并重新阅读同意协议")
+    if not interpret.enabled(settings, user):
+        raise HTTPException(status_code=404, detail="没有找到接口")
+    if body.version != CHAT_AGREEMENT_VERSION:
+        raise HTTPException(status_code=422, detail="问一问使用说明已更新，请重新阅读并同意")
+    user.chat_agreement_version = body.version
+    user.chat_agreement_at = v1.now()
+    session.commit()
+    return {"version": body.version, "at": user.chat_agreement_at.isoformat()}
+
+
 @router.post("/me/agreement")
 def agreement(body: AgreementIn, request: Request, session: SessionDep) -> dict:
     """同意用户协议和隐私保护指引：从这时起才建立用户记录。接受仍认的最早版本到当前版本之间的版本
     （协议升版的过渡期里，还没更新的旧版小程序要能同意旧版）。已同意过更新的版本（如在另一台手机的新版
     小程序里）时不改回旧版本，免得新功能失效、两台手机来回请用户同意（Codex 审查）。"""
+    if body.scope == "chat":
+        return _agree_chat(body, request, session)
     if body.scope == "advisor":
         if not get_settings().advisor_enabled:
             raise HTTPException(status_code=404, detail="没有找到接口")
@@ -434,14 +479,16 @@ def agreement(body: AgreementIn, request: Request, session: SessionDep) -> dict:
         # 批量工具的任务记录和次数从 2026-11 版隐私保护指引起才写明（一·13）：过渡期（填了最早版本）
         # 只同意过旧版的照旧能用关注、纠错，但要先重新同意新版指引才能同意工具使用说明。
         # 固定版本，回退配置也不放宽（Codex 第三轮）；提交名单时 advisor._upload_consent 再查一次
-        if not agreement_at_least(user.agreement_version, TOOLS_AGREEMENT_VERSION):
+        if not tools_agreed(user.agreement_version):
             raise HTTPException(status_code=403, detail=OUTDATED)
         user.advisor_agreement_version = body.version
         user.advisor_agreement_at = v1.now()
         session.commit()
         return {"version": body.version, "at": user.advisor_agreement_at.isoformat()}
     oldest, current = agreement_range(get_settings())
-    if not oldest <= body.version <= current:
+    # 只收完整写法的版本号（年-月，可带 .数字）：范围内的怪值（如"2026-11.0x"）不存，
+    # 免得被当成不存在的一版、绕过按版本的判断
+    if VERSION_FULL.fullmatch(body.version) is None or not oldest <= body.version <= current:
         raise HTTPException(status_code=422, detail=STALE_AGREEMENT)
     stamp = v1.now()
     # 已同意过更新的版本：保留那次同意（版本和时间都不动）；记录的版本写法不对的不算
@@ -491,6 +538,8 @@ def delete_account(session: SessionDep, user: KnownUserDep) -> None:
         # D-071 第②条）
         rewards.anonymize(session, user, v1.now())
         anonymize(session, user)
+        # 问一问的对话和问答先显式删（第十节第 3 条）；违规记录不随注销删除，到期删
+        chat_store.delete_user_chats(session, user.id)
         advisor_service.delete_user_tasks(session, user.id, settings=get_settings())
         session.delete(user)
         session.commit()
@@ -515,6 +564,70 @@ def _titles(session: Session, doc_ids: list[int | None]) -> dict[int, str]:
     }
 
 
+def _chat_data(session: Session, user: User) -> dict:
+    """问一问的对话（第十节第 8 条）：还没到期的，每一问只写技能、问题文字、时间、状态、
+    算没算次数，不放回答（回答是公开文件的原句和查询结果，在对话页里看）。最多列最近 200 问，
+    另给对话数和问数。AI 关着、没同意新版协议的本人也照样列（D-093 门槛第 8 条）。"""
+    from youju.models import AdvisorTask, AIChat, AIChatTurn
+
+    live = (AIChat.user_id == user.id, chat_store.live_turns(v1.now().astimezone(UTC)))
+    joined = select(AIChatTurn, AIChat).join(AIChat, AIChat.id == AIChatTurn.chat_id)
+    rows = session.execute(
+        joined.where(*live).order_by(AIChatTurn.created_at.desc(), AIChatTurn.id.desc()).limit(200)
+    ).all()
+    task_ids = [turn.task_id for turn, _ in rows if turn.task_id]
+    tasks = (
+        {t.id: t for t in session.scalars(select(AdvisorTask).where(AdvisorTask.id.in_(task_ids)))}
+        if task_ids
+        else {}
+    )
+    doc_keys = list({chat.doc_key for _, chat in rows if chat.doc_key})
+    titles = _titles(session, doc_keys)
+    hidden = set(
+        session.scalars(
+            select(Document.id).where(Document.id.in_(doc_keys), ~available_condition())
+        )
+    )
+    chats: dict[int, dict] = {}
+    for turn, chat in rows:
+        entry = chats.setdefault(
+            chat.id,
+            {
+                "id": chat.id,
+                "hasDoc": chat.doc_key != 0,
+                "docId": chat.doc_key if chat.doc_key and chat.doc_key not in hidden else None,
+                # 下架的不给编号和标题（_titles 本来也不给下架的标题，这里写明）
+                "docTitle": titles.get(chat.doc_key)
+                if chat.doc_key and chat.doc_key not in hidden
+                else None,
+                "turns": [],
+            },
+        )
+        task = tasks.get(turn.task_id)
+        entry["turns"].append(
+            {
+                "skill": turn.skill,
+                "question": turn.question,
+                "createdAt": _iso(turn.created_at),
+                "status": chat_store.turn_status(turn, task),
+                "counted": chat_store.counted(turn, task),
+            }
+        )
+    for entry in chats.values():
+        entry["turns"].reverse()  # 对话里按先后
+    count = select(func.count(AIChatTurn.id)).join(AIChat, AIChat.id == AIChatTurn.chat_id)
+    return {
+        "aiChats": list(chats.values()),
+        "aiChatsTotal": session.scalar(
+            select(func.count(func.distinct(AIChat.id)))
+            .join(AIChatTurn, AIChatTurn.chat_id == AIChat.id)
+            .where(*live)
+        )
+        or 0,
+        "aiChatTurnsTotal": session.scalar(count.where(*live)) or 0,
+    }
+
+
 @router.get("/me/data")
 def personal_data(session: SessionDep, user: KnownUserDep) -> JSONResponse:
     settings = get_settings()
@@ -536,6 +649,16 @@ def personal_data(session: SessionDep, user: KnownUserDep) -> JSONResponse:
                 if user.advisor_agreement_at
                 else {}
             ),
+            **(
+                {
+                    "chatAgreed": {
+                        "version": user.chat_agreement_version,
+                        "at": _iso(user.chat_agreement_at),
+                    }
+                }
+                if user.chat_agreement_at
+                else {}
+            ),
         }
         if user is not None
         else None,
@@ -548,6 +671,9 @@ def personal_data(session: SessionDep, user: KnownUserDep) -> JSONResponse:
         "deadlineCluesTotal": 0,
         "events": [],
         "eventsTotal": 0,
+        "aiChats": [],
+        "aiChatsTotal": 0,
+        "aiChatTurnsTotal": 0,
         "boostTrial": None,
         "passGifts": [],
         "passGiftsTotal": 0,
@@ -560,6 +686,8 @@ def personal_data(session: SessionDep, user: KnownUserDep) -> JSONResponse:
             # （隐私保护指引第三节第 2 条"保存期限"）
             "toolInput": advisor_service.INPUT_RETENTION.days,
             "toolTasks": advisor_service.FILE_RETENTION.days,
+            # 问一问的对话 30 天（违规记录不列在这里，同访问日志）
+            "aiChats": chat_store.TURN_RETENTION.days,
         },
         "exportedAt": _iso(v1.now()),
     }
@@ -583,13 +711,14 @@ def personal_data(session: SessionDep, user: KnownUserDep) -> JSONResponse:
     ]
     from youju.models import AdvisorTask
 
+    # 问这份通知的任务不在这里列（它们在下面的对话里）
+    own_tasks = (AdvisorTask.user_id == user.id, AdvisorTask.kind != "ask")
     result["advisorTasksTotal"] = (
-        session.scalar(select(func.count(AdvisorTask.id)).where(AdvisorTask.user_id == user.id))
-        or 0
+        session.scalar(select(func.count(AdvisorTask.id)).where(*own_tasks)) or 0
     )
     advisor_rows = session.scalars(
         select(AdvisorTask)
-        .where(AdvisorTask.user_id == user.id)
+        .where(*own_tasks)
         .order_by(AdvisorTask.created_at.desc(), AdvisorTask.id.desc())
         .limit(500)
     ).all()
@@ -623,6 +752,7 @@ def personal_data(session: SessionDep, user: KnownUserDep) -> JSONResponse:
         }
         for row in advisor_rows
     ]
+    result.update(_chat_data(session, user))
     # 加量体验记录（开始和结束时间）；每天用了几次在额度账本里，和工具次数一样只保留本月和上个月
     from youju import boost
 
@@ -758,7 +888,7 @@ def personal_data(session: SessionDep, user: KnownUserDep) -> JSONResponse:
 
     response = JSONResponse(result)
     # 历史数据中的标题或埋点属性可能很长；按时间保留较新的条目。
-    for key in ("events", "subscriptions", "feedback"):
+    for key in ("events", "subscriptions", "feedback", "aiChats"):
         if len(response.body) <= _DATA_BYTES_LIMIT:
             break
         items = result[key]
@@ -978,19 +1108,6 @@ def delete_subscription(subscription_id: int, session: SessionDep, user: KnownUs
         raise HTTPException(status_code=404, detail="没有找到提醒授权记录")
     session.delete(row)
     session.commit()
-
-
-def check_feedback(openid: str, content: str) -> bool:
-    response = httpx.post(
-        "http://api.weixin.qq.com/wxa/msg_sec_check",
-        json={"openid": openid, "version": 2, "scene": 2, "content": content},
-        timeout=5,
-    )
-    response.raise_for_status()
-    result = response.json()
-    if result.get("errcode") != 0:
-        raise ValueError("微信内容安全接口未成功")
-    return result.get("result", {}).get("suggest") == "pass"
 
 
 @router.post("/feedback", status_code=201)

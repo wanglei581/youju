@@ -28,3 +28,23 @@
 .parsed { margin-top: 28rpx; }
 .parsed-title { font-size: 30rpx; line-height: 1.5; font-weight: 600; }
 .parsed-line { display: block; margin-top: 8rpx; font-size: 28rpx; line-height: 1.7; word-break: break-all; }
+
+/* 目录（D-097）：正文 · 附件 1 · 附件 2；当前这部分标出来，读不了的灰色、写状态 */
+.toc { margin-top: 24rpx; border: 1rpx solid var(--line); border-radius: 12rpx; overflow: hidden; }
+.toc-item { display: flex; flex-wrap: wrap; align-items: baseline; gap: 12rpx; padding: 18rpx 20rpx; border-top: 1rpx solid var(--line); font-size: 26rpx; line-height: 1.6; }
+.toc-item:first-child { border-top: 0; }
+.toc-item--on { background: var(--brand-tint); }
+.toc-item--on .toc-label { color: var(--brand); font-weight: 600; }
+.toc-item--off .toc-label, .toc-item--off .toc-name { color: var(--t3); }
+.toc-label { flex-shrink: 0; font-weight: 500; }
+.toc-name { flex: 1; min-width: 0; word-break: break-all; color: var(--t1); }
+.toc-note { flex-basis: 100%; font-size: 24rpx; color: var(--t3); }
+.part-name { margin-top: 20rpx; font-size: 28rpx; line-height: 1.6; font-weight: 600; word-break: break-all; }
+.page-label { margin-top: 16rpx; font-size: 24rpx; color: var(--t2); }
+.page-count { flex-shrink: 0; font-size: 24rpx; color: var(--t2); }
+/* 续读：从上次那一页接着读，可以从开头看 */
+.resume { display: flex; align-items: center; justify-content: space-between; gap: 20rpx; margin: 20rpx 0 0; padding: 16rpx 20rpx; background: var(--fill); border-radius: 12rpx; font-size: 26rpx; }
+.resume-start { flex-shrink: 0; }
+/* 读到这一部分的末尾 */
+.end { margin-top: 28rpx; text-align: center; font-size: 26rpx; color: var(--t2); }
+.next-btn { width: 100% !important; margin: 20rpx 0 0 !important; }

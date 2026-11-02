@@ -2,6 +2,10 @@
 
 D-061：机器摘录只在 8–30 天到期时给日期（7 天内只给人工核对过的，30 天以后写"截止未核对"），
 日期必须写在原句里，原句必须在当前正文里；同一类型几个日期对不上、已过期的都不给日期。
+
+D-099 期 0：只看三类截止（企业申报、材料报送、推荐或审核），"其他"类的候选不显示，也不算
+"7 天内有截止"；机器摘录的日期只取规则找到的候选。AI 单独找到的（试点里三分之一日期不对）和
+用户线索生成的不给日期，但同一类型日期对不上时照样算"冲突"、不给日期。
 """
 
 from __future__ import annotations
@@ -22,6 +26,8 @@ from youju.dedup import groups_for
 from youju.models import DocumentDeadline, DocumentDetail
 
 ORDER = {"企业申报截止": 0, "材料报送截止": 1, "推荐或审核截止": 2}
+# 对外显示的三类截止；"其他"类不显示，核对台也不让通过（D-099 期 0）
+DEADLINE_KINDS = tuple(ORDER)
 EXCERPT_FIRST_DAY = 8
 EXCERPT_LAST_DAY = 30
 DATE_IN_QUOTE = re.compile(
@@ -133,10 +139,13 @@ def batch(
             DocumentDeadline.status.in_(("pending", "changed")),
         )
     ).all()
+    # 能给摘录日期的候选：规则找到的、三类截止之一（D-099 期 0）
     eligible = [
         row
         for row in rows
         if row.status == "pending"
+        and row.origin == "rule"
+        and row.kind in ORDER
         and today + timedelta(days=EXCERPT_FIRST_DAY)
         <= row.candidate_date
         <= today + timedelta(days=EXCERPT_LAST_DAY)
@@ -213,10 +222,15 @@ def batch(
             for row in by_member.get(member, [])
             if row.status == "changed"
         }
+        # 只看三类截止；"其他"类不显示、也不算"7 天内有截止"（D-099 期 0）
         pending: dict[str, list[DocumentDeadline]] = {}
         for member in ids:
             for row in by_member.get(member, []):
-                if row.status == "pending" and (row.kind, row.candidate_date) not in changed:
+                if (
+                    row.status == "pending"
+                    and row.kind in ORDER
+                    and (row.kind, row.candidate_date) not in changed
+                ):
                     pending.setdefault(row.kind, []).append(row)
         soon[doc_id] = any(
             kind not in verified and today <= row.candidate_date <= today + timedelta(days=7)
@@ -239,8 +253,11 @@ def batch(
                     reason = "7 天内"
                 elif day > today + timedelta(days=EXCERPT_LAST_DAY):
                     reason = "30 天以后"
+                elif not (rule := [row for row in candidates if row.origin == "rule"]):
+                    # AI 单独找到的、用户线索生成的不给日期（D-099 期 0）
+                    reason = "不是规则找到的"
                 else:
-                    valid = [row for row in candidates if date_in_quote(day, row.evidence or "")]
+                    valid = [row for row in rule if date_in_quote(day, row.evidence or "")]
                     if not valid:
                         reason = "日期不在原句里"
                     else:

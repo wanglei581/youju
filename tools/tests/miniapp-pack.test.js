@@ -47,6 +47,7 @@ test('首发包：16 页、底栏四格（首页、关注、导出、我的）�
   assert.equal(legal.version, require(path.join(SOURCE, 'content', 'legal-first-release.js')).version);
   assert.doesNotMatch(JSON.stringify([legal.user, legal.privacy, legal.disclaimer]), /AI|模型|投诉举报|原文链接/);
   assert.equal(fs.existsSync(path.join(out, 'content', 'legal-first-release.js')), false);
+  assert.equal(fs.existsSync(path.join(out, 'content', 'legal-first-release-ai.js')), false);
   // 发布检查按首发版：页面范围、底栏都过；备案号这类外部条件只提示
   const byId = Object.fromEntries(result.checks.map((c) => [c.id, c.state]));
   assert.equal(byId.pages, 'pass'); assert.equal(byId.tabs, 'pass'); assert.equal(byId['ai-off'], 'pass');
@@ -62,9 +63,10 @@ test('首发包：16 页、底栏四格（首页、关注、导出、我的）�
 test('完整版也能打：页面和仓库一样多', () => {
   const out = fresh();
   const { pages, removed } = pack({ out, profile: 'complete-release', mode: 'prepare', npmFrom: fakeNpm() });
-  // 完整版用 content/legal.js，不带过审版那一份
+  // 完整版用 content/legal.js，不带过审版、过审版加 AI 那两份
   assert.equal(fs.readFileSync(path.join(out, 'content', 'legal.js'), 'utf8'), fs.readFileSync(path.join(SOURCE, 'content', 'legal.js'), 'utf8'));
   assert.equal(fs.existsSync(path.join(out, 'content', 'legal-first-release.js')), false);
+  assert.equal(fs.existsSync(path.join(out, 'content', 'legal-first-release-ai.js')), false);
   assert.deepEqual([...pages].sort(), [...pagesFor('complete-release')].sort());
   assert.deepEqual(removed, []);
 });
@@ -89,7 +91,7 @@ test('不往非空目录、apps/miniapp 里面打；参数不对不打', () => {
   }
 });
 
-test('过审版加 AI（D-098）：首发 16 页加 AI 那 6 页、底栏五格；协议用含 AI 条款的那一份，不剪 AI；不带工具中心、批量工具和付费页面', () => {
+test('过审版加 AI（D-098）：首发 16 页加 AI 那 6 页、底栏五格；协议换成过审版加 AI 那一份，不剪 AI；不带工具中心、批量工具和付费页面', () => {
   const out = fresh();
   const { pages, removed, result } = pack({ out, profile: 'first-release-ai', mode: 'prepare', npmFrom: fakeNpm() });
   const { FIRST_AI_PAGES } = require('../miniapp_presubmit_check.js');
@@ -103,12 +105,19 @@ test('过审版加 AI（D-098）：首发 16 页加 AI 那 6 页、底栏五格�
   assert.deepEqual(app.tabBar.list.map((t) => t.text), ['首页', '关注', '导出', '我的', 'AI']);
   // 不剪 AI：组件、模块都在
   for (const kept of ['components/ai-button/index.js', 'utils/ai-access.js', 'utils/advisor.js']) assert.ok(fs.existsSync(path.join(out, kept)), kept);
-  // 协议：完整版那一份（含 AI 条款），包里不留过审版那一份
+  // 协议：过审版加 AI 那一份（含 AI 条款，不含批量工具、加量体验和付费，D-098），包里不留别的那两份
   delete require.cache[require.resolve(path.join(out, 'content', 'legal.js'))];
-  assert.equal(require(path.join(out, 'content', 'legal.js')).version, require(path.join(SOURCE, 'content', 'legal.js')).version);
-  assert.equal(fs.existsSync(path.join(out, 'content', 'legal-first-release.js')), false);
+  const legal = require(path.join(out, 'content', 'legal.js'));
+  assert.equal(legal.version, require(path.join(SOURCE, 'content', 'legal-first-release-ai.js')).version);
+  assert.doesNotMatch(JSON.stringify([legal.user, legal.privacy, legal.disclaimer]), /批量工具|加量体验|订单|原文链接/);
+  assert.match(JSON.stringify(legal.user), /AI 功能与生成内容标识/);
+  for (const name of ['legal-first-release.js', 'legal-first-release-ai.js']) assert.equal(fs.existsSync(path.join(out, 'content', name)), false, name);
   const byId = Object.fromEntries(result.checks.map((c) => [c.id, c.state]));
-  for (const id of ['pages', 'tabs', 'ai-mode', 'ai-terms']) assert.equal(byId[id], 'pass', id);
+  for (const id of ['pages', 'tabs', 'ai-mode', 'ai-terms', 'first-ai-terms']) assert.equal(byId[id], 'pass', id);
+  // 草稿没定稿前发布检查不过（协议已定稿、指纹登记那两项），定稿要创始人过目
+  if (require(path.join(SOURCE, 'content', 'legal-first-release-ai.js')).final !== true) {
+    assert.equal(byId.agreement, 'fail'); assert.equal(byId['terms-fingerprint'], 'fail'); assert.equal(result.ok, false);
+  }
   assert.equal(byId['first-terms'], undefined);
   assert.equal(byId['no-ai'], undefined);
 });

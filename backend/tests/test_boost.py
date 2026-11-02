@@ -189,6 +189,23 @@ def test_old_agreement_kept_for_old_features_cannot_start_a_trial(ctx, session):
     assert start(client, identity).status_code == 200
 
 
+def test_first_release_ai_agreement_cannot_start_a_trial(ctx, session):
+    """D-098：只同意过过审版加 AI 的 2026-11.1（版本排在 2026-11 后面，正文没写加量体验）开始不了体验；
+    同意含体验条款的新版（如 2026-12）以后才行。"""
+    client = ctx.client
+    ctx.settings.agreement_version = "2026-12"
+    ctx.settings.agreement_min_version = "2026-10.2"
+    identity = headers("ai-pack-consent")
+    ai_pack = client.post("/api/v1/me/agreement", headers=identity, json={"version": "2026-11.1"})
+    assert ai_pack.status_code == 200 and ai_pack.json()["valid"] is True
+    response = start(client, identity)
+    assert response.status_code == 403 and response.json()["detail"] == me.OUTDATED
+    assert session.scalar(select(func.count(BoostTrial.id))) == 0
+    new = client.post("/api/v1/me/agreement", headers=identity, json={"version": "2026-12"})
+    assert new.status_code == 200
+    assert start(client, identity).status_code == 200
+
+
 def test_old_agreement_cannot_accept_the_new_tool_terms(ctx):
     """批量工具的任务记录和次数从 2026-11 版指引起才写明（一·13）：过渡期只同意过旧版的，
     先重新同意新版指引，才能同意工具使用说明和提交名单。"""

@@ -86,13 +86,44 @@ function setup(options = {}) {
   return { mod, memory, calls, copied, opened, loading, navigated, toasts, hidden: () => hidden };
 }
 
-test('附件入口统一站内阅读，副本状态仅显示说明', () => {
+test('附件直接写能不能读（和阅读页同一个判断，D-097）：能读的写"阅读"可点，读不了的灰色、不能点、写原因；有副本也不算能读', () => {
   const { mod } = setup();
-  const list = mod.decorate([ATT, { id: '8', preview: false, reason: 'personal' }]);
-  assert.deepEqual(list.map(a => a.action), ['站内阅读', '站内阅读']);
-  assert.equal(list[1].meta, '查看内容及处理状态');
+  const list = mod.decorate([
+    { ...ATT, readable: true, state: 'ok', stateText: '' },
+    { id: '8', preview: true, readable: false, state: 'scan', stateText: '扫描件，暂不能识别文字' },
+    { id: '9', readable: true, state: 'ok', stateText: '能读，另有 2 页扫描件暂不能识别文字', scannedPages: 2 },
+    // 旧接口没有 readable：能点进阅读页，由阅读页说明
+    { id: '10', preview: false, reason: 'pending' },
+  ]);
+  assert.deepEqual(list.map((a) => [a.canOpen, a.action, a.meta]), [
+    [true, '阅读', ''], [false, '', '扫描件，暂不能识别文字'], [true, '阅读', '能读，另有 2 页扫描件暂不能识别文字'], [true, '阅读', ''],
+  ]);
+  assert.equal(mod.note(list), '附件文字自动提取，未经人工逐字核对，以发文机关公布的文本为准');
+  assert.equal(mod.note(list.slice(1, 2)), '', '没有能读的附件不写这句');
   assert.equal(mod.sizeText(2048), '2 KB');
-  assert.equal(mod.note([ATT]), '附件在本小程序阅读，以发文机关公布的文本为准');
+  // 读不了、服务端又没给原因：行上写"暂不能读"，不留空（Grok 第 1 轮）
+  assert.equal(mod.decorate([{ id: '11', readable: false, state: 'broken' }])[0].meta, '暂不能读');
+});
+
+test('正文卡顶上一行、两处入口和附件那一行能不能点，用同一个判断（canOpen）', () => {
+  const { mod } = setup();
+  // 旧接口没有 readable：附件那一行能点，顶上一行和入口也按能读算，不会一边写"阅读"一边说"暂不能读"
+  const legacy = mod.decorate([{ id: '10', preview: false, reason: 'pending' }]);
+  assert.equal(format.attachmentLine(legacy), '附件 1 个，能读');
+  assert.deepEqual(format.readEntry({ status: 'none' }, null, legacy), { label: '阅读附件', attachment: '10' });
+  const mixed = mod.decorate([
+    { id: '7', readable: false, state: 'scan', stateText: '扫描件，暂不能识别文字' },
+    { id: '8', readable: true, state: 'ok', stateText: '' },
+  ]);
+  assert.equal(format.summaryLine({ status: 'ok', total: 3210 }, mixed), '正文约 3200 字 · 附件 2 个，1 个能读，1 个扫描件暂不能识别文字');
+  assert.deepEqual(format.readEntry({ status: 'none' }, null, mixed), { label: '阅读附件', attachment: '8' });
+});
+
+test('名单类通知挡掉了名单行（listHidden）：不说"全文"，写"正文如下"或"下面是开头，正文约 N 字"', () => {
+  assert.equal(format.opening({ status: 'ok', text: '各有关单位：现将名单公布如下。', total: 15, truncated: false, listHidden: true }).label, '正文如下');
+  const long = Array.from({ length: 20 }, (_, i) => `第${i + 1}条 申报单位应当按照要求如实填报材料并按时报送。`).join('\n');
+  assert.equal(format.opening({ status: 'ok', text: long, total: long.length, truncated: false, listHidden: true }).label, `下面是开头，正文约 ${format.aboutChars(long.length)} 字`);
+  assert.equal(format.opening({ status: 'ok', text: long, total: long.length, truncated: false }).label, `下面是开头，全文约 ${format.aboutChars(long.length)} 字`);
 });
 
 test('附件有无二进制副本均进入原生阅读页，不下载、不复制、不打开外部文件', async () => {
@@ -124,7 +155,11 @@ test('可选下载保留逐段校验和同版本缓存，残缺文件删除', as
 });
 
 test('详情页：点附件交给附件模块打开，打开过程中重复点击不重复下载', async () => {
-  const doc = { id: '1', title: '合成通知', url: DOC_URL, tags: [], attachments: [ATT, { id: '8', ext: 'WPS', name: '表', preview: false, reason: 'format' }] };
+  const doc = { id: '1', title: '合成通知', url: DOC_URL, tags: [], attachments: [
+    { ...ATT, readable: true, state: 'ok', stateText: '' },
+    { id: '8', ext: 'ZIP', name: '表', preview: false, reason: 'format', readable: false, state: 'format', stateText: '此格式暂不能在小程序内阅读' },
+    { id: '9', ext: 'DOC', name: '申报书', preview: false, reason: 'pending', readable: true, state: 'ok', stateText: '' },
+  ] };
   const opens = [];
   let release;
   const real = setup().mod;
@@ -141,14 +176,20 @@ test('详情页：点附件交给附件模块打开，打开过程中重复点�
     },
   }, { wx: {} });
   page.onLoad({ id: '1' }); await flush();
-  assert.deepEqual(page.data.atts.map((a) => a.meta), ['2 KB', '查看内容及处理状态']);
-  assert.equal(page.data.attNote, '附件在本小程序阅读，以发文机关公布的文本为准');
+  assert.deepEqual(page.data.atts.map((a) => a.meta), ['', '此格式暂不能在小程序内阅读', '']);
+  assert.equal(page.data.attNote, '附件文字自动提取，未经人工逐字核对，以发文机关公布的文本为准');
   page.openAttachment({ currentTarget: { dataset: { index: 0 } } });
-  page.openAttachment({ currentTarget: { dataset: { index: 1 } } });
+  page.openAttachment({ currentTarget: { dataset: { index: 2 } } });
   assert.deepEqual(opens, [['7', '1']]);
   release(true); await flush();
+  // 读不了的不能点（原因已写在附件后面）
   page.openAttachment({ currentTarget: { dataset: { index: 1 } } });
-  assert.deepEqual(opens, [['7', '1'], ['8', '1']]);
+  assert.deepEqual(opens, [['7', '1']]);
+  page.openAttachment({ currentTarget: { dataset: { index: 2 } } });
+  assert.deepEqual(opens, [['7', '1'], ['9', '1']]);
+  // 正文卡顶上一行、两处同名入口：正文没有时有能读的附件叫"阅读附件"，去第一个能读的附件
+  assert.equal(page.data.bodySummary, '附件 3 个，2 个能读，1 个格式暂不支持');
+  assert.deepEqual(page.data.entry, { label: '阅读附件', attachment: '7' });
 
   const wxml = read('pages/detail/index.wxml');
   assert.match(wxml, /wx:for="{{atts}}"[^>]*bindtap="openAttachment"/);

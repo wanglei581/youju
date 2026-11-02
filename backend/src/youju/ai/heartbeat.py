@@ -24,6 +24,10 @@ AI 的开关、开放范围、白名单、全站每天上限都是环境变量�
 发送失败或没配提醒机器人时不记时间，下一次照常再试。
 
 只有 api 服务（YOUJU_ROLE=api）才看心跳：本机开发和测试是同一个进程、同一份设置，不会对不上。
+
+问这份通知（问一问开发设计第六节第 3 条"只走单独线路"）另记一项 ask_ready：admin 能处理 AI 任务、
+并且对外 AI 的单独线路三项都配好了（ask_capable）。api 的能力接口、发一问看它（ask_ready），
+本机开发和测试按本进程的设置算。
 """
 
 from __future__ import annotations
@@ -38,7 +42,7 @@ from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from youju.ai import advisor_endpoint, interpret
+from youju.ai import advisor_endpoint, advisor_route_ready, interpret
 from youju.models import AIHeartbeat
 
 log = logging.getLogger(__name__)
@@ -76,10 +80,18 @@ def worker_capable(settings) -> bool:
     return interpret.worker_enabled(settings) and bool(advisor_endpoint(settings)[1])
 
 
+def ask_capable(settings) -> bool:
+    """admin 这边能处理问这份通知：能处理 AI 任务，并且对外 AI 的单独线路三项都配好了
+    （不退回后台线路，问一问开发设计第六节第 3 条）。"""
+    return worker_capable(settings) and advisor_route_ready(settings)
+
+
 def beat(session: Session, settings, service: str, stamp: datetime) -> AIHeartbeat:
-    """写这个服务的一行心跳并提交。admin 写它能不能处理 AI 任务；api 写它的总开关。"""
+    """写这个服务的一行心跳并提交。admin 写它能不能处理 AI 任务、问答能不能用；api 写它的总开关。"""
+    ask = False
     if service == "admin":
         enabled = worker_capable(settings)
+        ask = ask_capable(settings)
     else:
         enabled = bool(getattr(settings, "ai_advisor_enabled", False))
     row = session.get(AIHeartbeat, service)
@@ -87,6 +99,7 @@ def beat(session: Session, settings, service: str, stamp: datetime) -> AIHeartbe
         row = AIHeartbeat(service=service, beat_at=stamp, ai_enabled=enabled)
         session.add(row)
     row.beat_at, row.ai_enabled, row.fingerprint = stamp, enabled, fingerprint(settings)
+    row.ask_ready = ask
     session.commit()
     return row
 
@@ -99,6 +112,21 @@ def worker_ready(session: Session, settings, stamp: datetime) -> bool:
     return bool(
         row is not None
         and row.ai_enabled
+        and stamp - row.beat_at <= STALE
+        and row.fingerprint == fingerprint(settings)
+    )
+
+
+def ask_ready(session: Session, settings, stamp: datetime) -> bool:
+    """问这份通知能不能收：api 服务上看 admin 的心跳（同 worker_ready，另要 ask_ready）；
+    其他角色（本机开发、测试）按本进程的设置算。"""
+    if not enforced(settings):
+        return ask_capable(settings)
+    row = session.get(AIHeartbeat, "admin")
+    return bool(
+        row is not None
+        and row.ai_enabled
+        and row.ask_ready
         and stamp - row.beat_at <= STALE
         and row.fingerprint == fingerprint(settings)
     )

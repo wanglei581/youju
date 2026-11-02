@@ -75,3 +75,10 @@ GRANT UPDATE (ends_at) ON youju.boost_trials TO 'youju_api'@'%';
 -- 不执行也不影响 AI 能不能用（api 只读 admin 那一行就能判断），只是收不到"两个服务设置不一致"
 -- "api 开着 AI、admin 却处理不了"这两条提醒；admin 能处理 AI 任务时每天会提醒一次"api 心跳没来"。
 GRANT INSERT, UPDATE ON youju.ai_heartbeat TO 'youju_api'@'%';
+
+-- 问一问权限（#328 第四节第 4 条）：迁移 0043 建好表以后、发 api 之前，由创始人执行（表不存在时
+-- 按表授权会报错）。对话和问答：用户发一问、删对话、注销时新增和删除。违规记录：只能新增，
+-- 不能改、删（同访问日志；190 天到期由 admin 的清理删）。
+GRANT INSERT, UPDATE, DELETE ON youju.ai_chats TO 'youju_api'@'%';
+GRANT INSERT, UPDATE, DELETE ON youju.ai_chat_turns TO 'youju_api'@'%';
+GRANT INSERT ON youju.ai_safety_hits TO 'youju_api'@'%';
