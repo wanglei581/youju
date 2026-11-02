@@ -53,8 +53,10 @@ const EXPECT = {
   // 不是普通对象（比如被双重编码成字符串）时不往下走：后面的 in 运算报错会把整串配置带进报错信息
   if (!env || typeof env !== 'object' || Array.isArray(env)) { env = null; throw new Error('EnvParams 不是对象'); }
   // 白名单项要是贴进了密钥（或 sk- 开头），只写"像密钥"、不打印；比完就把密钥值丢掉
-  const secretValues = SECRET.map((k) => env[k]).filter((v) => typeof v === 'string' && v.length >= 8);
-  const looksSecret = (v) => v.startsWith('sk-') || secretValues.some((sv) => v.includes(sv));
+  // 比之前先去掉空白和引号（控制台里存过前后带空格、换行或引号的值）；值里只要有 sk- 就当密钥
+  const norm = (v) => String(v).replace(/[\s"'“”‘’`]/g, '');
+  const secretValues = SECRET.map((k) => env[k]).filter((v) => typeof v === 'string').map(norm).filter((v) => v.length >= 8);
+  const looksSecret = (v) => /sk-/i.test(v) || secretValues.some((sv) => norm(v).includes(sv));
   const secretLike = new Set(SHOWN.filter((k) => k in env && looksSecret(String(env[k]))));
   secretValues.length = 0;
   const lines = [`${service} ${version}（${ver.Status || ''}，备注：${ver.Remark || '无'}）：环境变量共 ${Object.keys(env).length} 项`];
