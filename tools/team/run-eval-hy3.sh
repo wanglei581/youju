@@ -4,6 +4,9 @@
 # 用法（在仓库或它的 worktree 里）：
 #   tools/team/run-eval-hy3.sh <云开发 AI 地址> [--out 目录] [--concurrency 1|2|3] [--no-stream]
 #   tools/team/run-eval-hy3.sh --self-test [--out 目录]    不要密钥、不联网，用假模型走一遍（自检）
+#   tools/team/run-eval-deepseek.sh [--out 目录] [--concurrency 1|2|3] [--no-stream]
+#       改在 DeepSeek 官方接口上跑（https://api.deepseek.com，模型 deepseek-chat，不加附加参数），
+#       提示输入 DeepSeek API Key；1.0 改用 DeepSeek 时用这个（类目页登记的是 DeepSeek，创始人 11/2）
 #
 #   云开发 AI 地址形如 https://<环境ID>.api.tcloudbasegateway.com/v1/ai/cloudbase；也可以不写在命令里，
 #   先 export YOUJU_EVAL_HY3_BASE_URL=<地址>。脚本里不写环境 ID。
@@ -19,13 +22,15 @@
 set -eu
 
 usage() {
-  sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'
   exit 2
 }
 
-BASE_URL="${YOUJU_EVAL_HY3_BASE_URL:-}"
+ENV_HY3_URL="${YOUJU_EVAL_HY3_BASE_URL:-}"
+ENV_HY3_MODEL="${YOUJU_EVAL_HY3_MODEL:-hy3}"
 DB_URL="${YOUJU_EVAL_DATABASE_URL:-mysql+pymysql://root@127.0.0.1:33306/youju_eval30?charset=utf8mb4}"
-MODEL="${YOUJU_EVAL_HY3_MODEL:-hy3}"
+ARG_URL=""
+PROVIDER=hy3
 OUT=""
 CONCURRENCY=2
 STREAM=true
@@ -43,12 +48,13 @@ while [ $# -gt 0 ]; do
       ;;
     --no-stream) STREAM=false ;;
     --self-test) SELF_TEST=1 ;;
+    --deepseek) PROVIDER=deepseek ;;
     -h | --help) usage ;;
     -*)
       echo "不认识的参数：$1" >&2
       usage
       ;;
-    *) BASE_URL="$1" ;;
+    *) ARG_URL="$1" ;;
   esac
   shift
 done
@@ -59,6 +65,19 @@ case "$CONCURRENCY" in
     exit 2
     ;;
 esac
+
+# DeepSeek 不用外面 shell 里留着的混元地址和模型（YOUJU_EVAL_HY3_*），免得串线
+if [ "$PROVIDER" = deepseek ]; then
+  BASE_URL="${ARG_URL:-https://api.deepseek.com}"
+  MODEL=deepseek-chat
+  EXTRA='{}'
+  KEY_NAME="DeepSeek API Key"
+else
+  BASE_URL="${ARG_URL:-$ENV_HY3_URL}"
+  MODEL="$ENV_HY3_MODEL"
+  EXTRA='{"thinking":{"type":"disabled"}}'
+  KEY_NAME="云开发 API Key"
+fi
 
 # 评测进程只拿到下面明确设的 YOUJU_ 变量：外面 shell 里留着的（别的密钥、别的库）一概不带进去
 for name in $(env | sed -n 's/^\(YOUJU_[A-Za-z0-9_]*\)=.*/\1/p'); do
@@ -76,7 +95,7 @@ if [ -z "$OUT" ]; then
   if [ "$SELF_TEST" = 1 ]; then
     OUT="$REPO/tools/eval-results/selftest-$(date +%Y%m%d-%H%M%S)"
   else
-    OUT="$REPO/tools/eval-results/hy3-$(date +%Y%m%d-%H%M%S)"
+    OUT="$REPO/tools/eval-results/$PROVIDER-$(date +%Y%m%d-%H%M%S)"
   fi
 fi
 # 后面会进 backend/ 运行，相对路径先按当前目录变成绝对路径
@@ -96,26 +115,33 @@ if [ "$SELF_TEST" = 0 ]; then
   fi
   case "$BASE_URL" in
     *[[:space:]]*)
-      echo "云开发 AI 地址里不能有空格" >&2
+      echo "模型地址里不能有空格" >&2
       exit 2
       ;;
     https://*) ;;
     *)
-      echo "云开发 AI 地址要以 https:// 开头" >&2
+      echo "模型地址要以 https:// 开头" >&2
       exit 2
       ;;
   esac
-  case "$BASE_URL" in
-    https://*.api.tcloudbasegateway.com/*) ;;
-    *) echo "提醒：地址不像云开发 AI 网关（https://<环境ID>.api.tcloudbasegateway.com/v1/ai/cloudbase），照样继续" >&2 ;;
-  esac
+  if [ "$PROVIDER" = deepseek ]; then
+    case "$BASE_URL" in
+      https://api.deepseek.com | https://api.deepseek.com/*) ;;
+      *) echo "提醒：地址不是 DeepSeek 官方接口（https://api.deepseek.com），照样继续" >&2 ;;
+    esac
+  else
+    case "$BASE_URL" in
+      https://*.api.tcloudbasegateway.com/*) ;;
+      *) echo "提醒：地址不像云开发 AI 网关（https://<环境ID>.api.tcloudbasegateway.com/v1/ai/cloudbase），照样继续" >&2 ;;
+    esac
+  fi
 fi
 
 KEY=""
 trap 'KEY=""; unset KEY' EXIT
 if [ "$SELF_TEST" = 0 ]; then
   # 密钥只在这个进程的变量里：不进命令行参数、不写文件；脚本是非交互 shell，不记历史
-  printf '请输入云开发 API Key（输入时不显示，回车结束）：' >&2
+  printf '请输入%s（输入时不显示，回车结束）：' "$KEY_NAME" >&2
   IFS= read -r -s KEY || true
   printf '\n' >&2
   KEY="${KEY//[[:space:]]/}"
@@ -138,12 +164,13 @@ if [ "$SELF_TEST" = 1 ]; then
   YOUJU_DATABASE_URL="$DB_URL" "${PY[@]}" --fake-model --out "$OUT" --concurrency "$CONCURRENCY"
 else
   echo "开始评测：模型 $MODEL，并发 $CONCURRENCY，流式 $STREAM" >&2
-  # 线路只设给这一个子进程；附加参数关掉思考（和线上一致）
+  # 线路只设给这一个子进程。附加参数：混元 hy3 关掉思考（和线上一致）；DeepSeek 不加（deepseek-chat
+  # 本来就是不思考模式），线上改用 DeepSeek 时 YOUJU_AI_ADVISOR_REQUEST_EXTRA 也照这样填 {}
   YOUJU_DATABASE_URL="$DB_URL" \
     YOUJU_AI_ADVISOR_BASE_URL="$BASE_URL" \
     YOUJU_AI_ADVISOR_API_KEY="$KEY" \
     YOUJU_AI_ADVISOR_MODEL="$MODEL" \
-    YOUJU_AI_ADVISOR_REQUEST_EXTRA='{"thinking":{"type":"disabled"}}' \
+    YOUJU_AI_ADVISOR_REQUEST_EXTRA="$EXTRA" \
     YOUJU_AI_ADVISOR_STREAM="$STREAM" \
     YOUJU_AI_ADVISOR_TIMEOUT_SECONDS=180 \
     "${PY[@]}" --out "$OUT" --concurrency "$CONCURRENCY"
