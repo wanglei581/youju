@@ -2324,14 +2324,34 @@ def _url_end(text: str, end: int) -> int:
     return end
 
 
+# 不带 http、www 的域名（11/2 F12）："kxjst.jiangsu.gov.cn""hjrz.chinatorch.org.cn/login"（带路径的
+# 连路径一起）也换成"（这里隐去了网址）"。认以 .gov.cn、.com.cn、.org.cn、.net.cn、.edu.cn、.cn、
+# .com、.net、.org 结尾、前面是字母数字和点、横线的串；后缀只认小写（"ASP.NET"不算），前面挨着
+# 字母数字、点、横线、斜杠或"@""＠"的不算（邮箱的域名由遮邮箱那一步管）。"附件1.docx""3.5""No.1"
+# "V2.0"这些后面不是这几个后缀，不碰
+_BARE_DOMAIN = re.compile(
+    r"(?<![A-Za-z0-9.．@＠_/-])(?:[A-Za-z0-9][A-Za-z0-9-]*[.．])+"
+    r"(?:gov[.．]cn|com[.．]cn|org[.．]cn|net[.．]cn|edu[.．]cn|cn|com|net|org)(?![A-Za-z0-9-])"
+    r"(?:[/／][A-Za-z0-9._~:/?#@&+=%,;．／-]*)?"
+)
+_BARE_HINT = re.compile(r"[.．](?:cn|com|net|org)(?![A-Za-z0-9-])")
+
+
 def _hide_urls(text: str) -> str:
-    """把网址换成"（这里隐去了网址）"；网址外面只剩一对括号时连括号一起换。"""
+    """把网址换成"（这里隐去了网址）"：先换 http、www 开头的，再换不带这些的域名（F12）。"""
     lowered = text.lower()
-    if "http" not in lowered and "www" not in lowered:
-        return text
+    if "http" in lowered or "www" in lowered:
+        text = _replace_links(text, _URL)
+    if _BARE_HINT.search(text):
+        text = _replace_links(text, _BARE_DOMAIN)
+    return text
+
+
+def _replace_links(text: str, pattern: re.Pattern[str]) -> str:
+    """把 pattern 认出的网址换成"（这里隐去了网址）"；网址外面只剩一对括号时连括号一起换。"""
     out: list[str] = []
     done = 0
-    for match in _URL.finditer(text):
+    for match in pattern.finditer(text):
         start = match.start()
         if start < done:
             # 已经算在前一个网址断开的后半截里
@@ -2359,7 +2379,8 @@ def _hide_urls(text: str) -> str:
 
 def display_text(text: str) -> str:
     """只在给页面显示时做的处理（详情页正文、阅读页正文和附件、名单单行页、AI 结果页的原句）：
-    入库标记换成页面上的说法，已遮号码后面紧跟着的号码也遮掉，网址换成"（这里隐去了网址）"。
+    入库标记换成页面上的说法，已遮号码后面紧跟着的号码也遮掉，网址（含不带 http、www 的域名）
+    换成"（这里隐去了网址）"。
     入库的文字不改；交给模型、核对 AI 原句用的是 redact_sensitive 后的原文（ai/content.py），
     不经过这里，也不改。"""
     return _hide_urls(_mask_phone_tails(display_marks(text)))

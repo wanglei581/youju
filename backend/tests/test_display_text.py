@@ -212,14 +212,12 @@ def test_urls_are_hidden_when_shown(shown, expected):
         # 文号、编号、数字
         "粤科函产字〔2026〕1737号",
         "版本 V1.0，增长 20.5%",
-        # "www"在别的词里、邮箱（不在这次范围）
+        # "www"在别的词里；邮箱的域名不当网址换（遮邮箱是另一步）
         "wwwroot 目录",
-        "awww.example.com",
+        "awww 和 wwwx",
         "WWW规范",
         "邮箱：abc@www.example.com",
         "邮箱：kjc@most.gov.cn",
-        # 不带 http、www 的域名不在这次范围
-        "来源 kjt.shandong.gov.cn",
         # 只有"http://"没有网址；"https"后面不是"://"；"HTTP协议"
         "以 http:// 开头",
         "采用 https 协议",
@@ -228,6 +226,59 @@ def test_urls_are_hidden_when_shown(shown, expected):
     ],
 )
 def test_other_text_is_left_alone(text):
+    assert v1.display_text(text) == text
+
+
+# ---- 不带 http、www 的域名（11/2 F12）：同样换成"（这里隐去了网址）" ----
+@pytest.mark.parametrize(
+    "shown, expected",
+    [
+        ("来源 kxjst.jiangsu.gov.cn", f"来源 {URL}"),
+        # 带路径的连路径一起
+        ("登录 hjrz.chinatorch.org.cn/login 填报", f"登录 {URL} 填报"),
+        ("网址：kjt.shandong.gov.cn/art/2026/10/1/a.html。", f"网址：{URL}。"),
+        # 外面只剩一对括号：连括号一起换
+        ("安徽省工业和信息化厅网站（jx.ah.gov.cn），选择", f"安徽省工业和信息化厅网站{URL}，选择"),
+        ("“企业微课”平台（qiyeweike.miitec.cn）填写", f"“企业微课”平台{URL}填写"),
+        # 各种后缀；后面紧跟汉字、标点
+        (
+            "见 china.com.cn、abc.org.cn、x.net.cn、tsinghua.edu.cn",
+            f"见 {URL}、{URL}、{URL}、{URL}",
+        ),
+        ("见example.com和example.net、example.org。", f"见{URL}和{URL}、{URL}。"),
+        ("全角点 kjt．yn．gov．cn 也认", f"全角点 {URL} 也认"),
+        ("awww.example.com", URL),
+    ],
+)
+def test_bare_domains_are_hidden_when_shown(shown, expected):
+    assert v1.display_text(shown) == expected
+    assert v1.display_text(expected) == expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # 附件名、表名
+        "附件1.docx",
+        "附件：表2.xlsx、申报书.pdf",
+        # 小数、编号、缩写、版本号
+        "增长 3.5 个百分点",
+        "No.1 和 No.12",
+        "e.g. 示例",
+        "版本 V2.0、v3.1.4",
+        # 文号里的点
+        "鲁科字〔2026〕12.3号",
+        "第1.2.3条",
+        # 后缀大写的技术名词、别的后缀
+        "熟悉 ASP.NET 和 .NET 框架",
+        "Node.js、socket.io、Vue.js",
+        # 邮箱的域名（遮邮箱是另一步，这里不当网址换）
+        "邮箱 abc@kjt.gov.cn",
+        # 后缀后面还接着字母数字的不是这几个后缀
+        "x.cnn、y.company、z.org2",
+    ],
+)
+def test_text_like_domains_is_left_alone(text):
     assert v1.display_text(text) == text
 
 
