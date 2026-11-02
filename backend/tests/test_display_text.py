@@ -482,6 +482,10 @@ URL = "（这里隐去了网址）"
         (f"咨询电话：{MARK}、{MARK}。", f"咨询电话：{MARK}、{MARK}。"),
         # 括号里只剩网址标记的收成一个
         ("通过“系统”（网址：https://xm.example.gov.cn/login）申报", f"通过“系统”{URL}申报"),
+        # 标签不是网址类的照留（Codex 第 4 轮）
+        (f"（申报入口：{URL}）", f"（申报入口：{URL}）"),
+        # 去了括号以后才连在一起的，一次就合并好（处理两次结果一样，Codex 第 4 轮）
+        (f"{URL}、（网址：{URL}）、{URL}", URL),
     ],
 )
 def test_more_phone_forms_and_tidy_marks(shown, expected):
