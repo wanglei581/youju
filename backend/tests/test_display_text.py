@@ -88,7 +88,8 @@ def test_display_text_is_idempotent_and_only_touches_marked_text():
     once = v1.display_text(text)
     assert v1.display_text(once) == once
     assert once == (
-        f"咨询电话：{MARK}、{MARK}；办公室：87687770。项目编号 20260001，资金 30000000 元。"
+        # 同一句电话标签后面的号码（"办公室：87687770"）也遮（11/2 复测）；编号、金额不碰
+        f"咨询电话：{MARK}、{MARK}；办公室：{MARK}。项目编号 20260001，资金 30000000 元。"
     )
     plain = "没有遮过的号码：87687769、87687770"
     assert v1.display_text(plain) == plain
@@ -114,7 +115,7 @@ def test_detail_and_reading_pages_mask_the_second_number(client, session):  # no
     assert f"咨询电话：{MARK}、{MARK}。" in joined
     attachment = client.get(path(doc, att)).json()
     first = next(s for s in attachment["segments"] if s["n"] == 1)
-    assert first["text"] == f"联系电话：{MARK}/{MARK}"
+    assert first["text"] == f"{MARK}、{MARK}"  # 有格子的行，text 用遮过的格子拼（11/2 复测）
     assert first["cells"][0]["t"] == f"{MARK}、{MARK}"
     for page in (detail, reading, attachment):
         text = str(page)
@@ -286,7 +287,8 @@ MAIL = "（这里隐去了邮箱）"
     [
         ("电子邮箱：jxkjjcc＠kjt.jiangxi.gov.cn", f"电子邮箱：{MAIL}"),
         ("报送至指定邮箱：jjsbgs＠51kehui.com。", f"报送至指定邮箱：{MAIL}。"),
-        ("发送至指定邮箱（kjtpgzx＠163.com）。", f"发送至指定邮箱（{MAIL}）。"),
+        # 邮箱标记外面的括号收掉（11/2 复测）
+        ("发送至指定邮箱（kjtpgzx＠163.com）。", f"发送至指定邮箱{MAIL}。"),
         # 域名里的点写成全角的；"＠"两边有空格
         ("邮箱：cyec＠kjt．jiangxi．gov．cn", f"邮箱：{MAIL}"),
         ("邮箱：cyec ＠ kjt.jiangxi.gov.cn", f"邮箱：{MAIL}"),
@@ -336,7 +338,7 @@ def test_detail_reading_and_attachment_pages_hide_urls(client, session):  # noqa
     assert f"开发中心平台”{URL}填报。" in "".join(s["text"] for s in reading["segments"])
     attachment = client.get(path(doc, att)).json()
     first = next(s for s in attachment["segments"] if s["n"] == 1)
-    assert first["text"] == f"填报网址：{URL}。" and first["cells"][0]["t"] == URL
+    assert first["text"] == URL and first["cells"][0]["t"] == URL  # 有格子的行，text 用遮过的格子拼
     for page in (detail["body"], reading["segments"], attachment["segments"]):
         assert "http" not in str(page) and "www." not in str(page)
     # 交给模型、核对原句的文字照旧带着网址；入库的文字没动
@@ -519,3 +521,91 @@ def test_names_before_area_code_phones_are_masked_in_body():
         v1.display_body_text("18674 李宗仁 0451—82659737 省财政")
         == f"18674 {CONTACT} {MARK} 省财政"
     )
+
+
+# 11/2 复测：电话类标签同一句里的号码、减号和国际写法、已遮号码前面的号码、标记整理
+MAIL_MARK = "（这里隐去了邮箱）"
+
+
+@pytest.mark.parametrize(
+    "shown, expected",
+    [
+        ("技术支持：83124114", f"技术支持：{MARK}"),
+        ("业务咨询：83124079、83124035", f"业务咨询：{MARK}、{MARK}"),
+        (
+            "联系电话：业务部门：市科技局科技人才科，65119071；监督部门：市科技局监督处，65233293。",
+            f"联系电话：业务部门：市科技局科技人才科，{MARK}；监督部门：市科技局监督处，{MARK}。",
+        ),
+        ("联系方式：海口市科技局，66530123", f"联系方式：海口市科技局，{MARK}"),
+        ("65119071、（这里隐去了电话）", f"{MARK}、{MARK}"),
+        ("电话：0912−3261033", f"电话：{MARK}"),
+        ("电话：8610-88828972", f"电话：{MARK}"),
+        (f"发送至指导邮箱（{MAIL_MARK}）", f"发送至指导邮箱{MAIL_MARK}"),
+        ("系统（网址：https://a.gov.cn/x i https://a.gov.cn/y）", "系统（这里隐去了网址）"),
+    ],
+)
+def test_more_phone_contexts_and_marks(shown, expected):
+    assert v1.display_text(shown) == expected
+    assert v1.display_text(v1.display_text(shown)) == v1.display_text(shown)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "电话会议：86263938",
+        "咨询：请于2026年11月20日前报送",
+        "项目编号：20261234",
+        "咨询电话：8008205114",  # 400/800 是单位的服务热线，10 位，不遮
+        "申报金额：50000000元",
+    ],
+)
+def test_text_near_phone_words_that_is_not_a_phone_stays(text):
+    assert v1.display_text(text) == text
+
+
+def test_phone_columns_and_sure_names_in_attachment_rows():
+    rows = v1.display_attachment_row(
+        [("序号", "1"), ("单位", "滨海新区工信局"), ("联系人", "吴老师"), ("联系电话", "63001576")]
+    )
+    assert rows == ["1", "滨海新区工信局", "（这里隐去了联系人）", MARK]
+    # 少见姓：姓名列整格是名字也遮；"科员"（职务）、"韩语"不当姓名
+    assert v1.display_attachment_row([("姓名", "和文丹"), ("职务", "科员"), ("电话", MARK)]) == [
+        "（这里隐去了联系人）",
+        "科员",
+        MARK,
+    ]
+    assert v1.display_attachment_row([("姓名", "韩语"), ("语种", "韩语")]) == ["韩语", "韩语"]
+
+
+@pytest.mark.parametrize(
+    "shown, expected",
+    [
+        (f"联系人：丘珞珈，电话：{MARK}", f"联系人：（这里隐去了联系人），电话：{MARK}"),
+        (
+            "产业发展促进中心吴艳丽、（这里隐去了联系人）",
+            "产业发展促进中心（这里隐去了联系人）、（这里隐去了联系人）",
+        ),
+        ("联系人：暂无", "联系人：暂无"),
+        ("联系人：本单位", "联系人：本单位"),
+        # 空白表格的栏目名、"社会发展"不当名字；"中国科协高博"只遮后两个字
+        (
+            "单位负责人： 统计负责人： 填表人： 联系电话：",
+            "单位负责人： 统计负责人： 填表人： 联系电话：",
+        ),
+        ("部门： 负责人： 日期：", "部门： 负责人： 日期："),
+        ("社会发展，（这里隐去了联系人），", "社会发展，（这里隐去了联系人），"),
+        (
+            "联系人：中国科协高博、（这里隐去了联系人）",
+            "联系人：中国科协（这里隐去了联系人）、（这里隐去了联系人）",
+        ),
+    ],
+)
+def test_sure_names_after_labels_and_before_masked_contacts(shown, expected):
+    assert v1.display_body_text(shown) == expected
+    assert v1.display_attachment_text(shown) == expected
+
+
+def test_scripts_in_attachment_names_are_cut():
+    name = "附件2.联系人信息表.xlsdocument.getElementById('Appendix').style.display='block';"
+    assert v1.display_attachment_name(name) == "附件2.联系人信息表.xls"
+    assert v1.display_attachment_name("附件1：申报书.docx") == "附件1：申报书.docx"

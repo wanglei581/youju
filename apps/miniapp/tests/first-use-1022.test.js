@@ -159,14 +159,14 @@ test('第 2 条：没预览时"提交任务"是灰的，紧挨着按钮上方写
 
 test('第 4 条：关注页写的按钮名和搜索页按钮上的字一样（"关注"），不再写"关注这个搜索"', () => {
   const gated = textOf(render('pages/follow/index.wxml', { loginOpen: true, mode: 'gated', loading: false, follows: [], changes: [] }));
-  assert.match(gated, /在搜索结果页点"关注"，把当前的关键词和筛选条件（地区、类型等）存下来；有新文件时在这里标出。/);
+  assert.match(gated, /在搜索结果页点“关注”，把当前的关键词和筛选条件（地区、类型等）存下来；有新文件时在这里标出。/);
   const empty = textOf(render('pages/follow/index.wxml', { loginOpen: true, mode: 'live', loading: false, error: '', follows: [], changes: [] }));
   // 空状态只说还没有，怎么做写在下面的按钮上（10/29 删重复的说明）
   assert.match(empty, /还没有关注/); assert.doesNotMatch(empty, /就能把当前的关键词和筛选条件存下来/);
   // 底部入口不再写"地区 × 主题 × 类型"（像三项都得选），也不点名哪几项
   // 读屏标签和看得见的字对得上：按钮写"关注"，读屏读"关注当前搜索条件"
   assert.match(read('pages/search/index.wxml'), /class="follow-mini" bindtap="follow" aria-role="button" aria-label="关注当前搜索条件">/);
-  assert.match(empty, /去搜索，设好条件后点"关注"/); assert.doesNotMatch(empty, /×/);
+  assert.match(empty, /去搜索，设好条件后点“关注”/); assert.doesNotMatch(empty, /×/);
   for (const text of [gated, empty]) assert.doesNotMatch(text, /关注这个搜索/);
   // 搜索页按钮上就是"关注"
   assert.match(read('pages/search/index.wxml'), /class="follow-mini" bindtap="follow"[^>]*><t-icon name="notification"[^>]*\/>关注<\/view>/);

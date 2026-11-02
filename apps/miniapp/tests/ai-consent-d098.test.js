@@ -48,7 +48,7 @@ test('解读页、对照页：须知按钮写"同意并开始""同意并查看�
     const wxml = read(file);
     assert.ok(wxml.includes(start), file);
     assert.ok(wxml.includes('同意并查看结果'), file);
-    assert.ok(wxml.includes('点"同意"才开始。') && wxml.includes('点"同意"后查看结果。'), file);
+    assert.ok(wxml.includes('点“同意”才开始。') && wxml.includes('点“同意”后查看结果。'), file);
     assert.ok(wxml.includes('{{modelText}}'), file);
     assert.ok(wxml.includes('{{consentError}}'), file);
     assert.doesNotMatch(wxml, /我知道了/, file);

@@ -12,7 +12,7 @@
   <block wx:else>
     <view class="card intro">
       <view class="intro-title">你账号下保存的个人信息</view>
-      <view class="muted intro-text">同意记录、关注、{{remindOpen || subs.length ? '微信提醒授权、' : ''}}纠错都在这里，可以复制保存，也可以改关注名称、删除记录。复制单条包含这条记录的完整条件、状态和时间；复制全部包含本页返回的数据。访问日志不在这里显示。更新于 {{exportedAt}}</view>
+      <view class="muted intro-text">同意记录、关注、{{remindOpen || subs.length ? '微信提醒授权、' : ''}}纠错{{tasks.length ? '、' + tasksTitle : ''}}都在这里，可以复制保存，也可以改关注名称、删除记录。复制单条包含这条记录的完整条件、状态和时间；复制全部包含本页返回的数据。访问日志不在这里显示。更新于 {{exportedAt}}</view>
       <view class="btn-primary copy" bindtap="copyAll" aria-role="button"><t-icon name="copy" size="36rpx" color="#FFFFFF" />复制全部数据</view>
     </view>
 

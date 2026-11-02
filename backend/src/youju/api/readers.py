@@ -114,7 +114,7 @@ def _payload(title: str, source: dict, status="ok", notice="") -> dict:
     return {
         "status": status,
         "state": None,
-        "title": v1.display_marks(texts.mask(title))[:1000],
+        "title": v1.display_attachment_name(v1.display_marks(texts.mask(title)))[:1000],
         "source": source,
         "revision": None,
         "segments": [],
@@ -227,7 +227,7 @@ def _toc(body: v1.ReadingBody, readings: list[texts.Reading]) -> dict:
         "attachments": [
             {
                 "id": str(r.attachment_id),
-                "name": v1.display_marks(texts.mask(r.name))[:300],
+                "name": v1.display_attachment_name(v1.display_marks(texts.mask(r.name)))[:300],
                 "ext": r.ext.upper(),
                 "readable": r.readable,
                 "state": r.state,
@@ -340,10 +340,17 @@ def _safe_segment(row: AttachmentTextSegment) -> dict:
         {"c": cell.get("c"), "t": value, "h": v1.display_text(head)}
         for cell, head, value in zip(kept, heads, values, strict=True)
     ]
+    # 有格子的行，text 用遮过的各格拼起来：整行原文按段落规则遮，认不出按列写的姓名和号码
+    # （"吴老师 | 63001576"），小程序有格子时只显示格子，但接口里也不能带原文（11/2 复测）
+    text = (
+        " | ".join(cell["t"] for cell in cells)
+        if cells
+        else v1.display_attachment_text(texts.mask(row.text))
+    )
     return {
         "n": row.n,
         "kind": row.kind,
-        "text": v1.display_attachment_text(texts.mask(row.text)),
+        "text": text,
         "loc": loc or None,
         "cells": cells or None,
     }
