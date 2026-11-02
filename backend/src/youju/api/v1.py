@@ -2687,7 +2687,7 @@ _ATT_BEFORE_PHONE = re.compile(rf"([{_HAN_CHAR}·](?: ?[{_HAN_CHAR}·]){{1,5}})[
 # 紧挨在"电话：""联系电话："这类标签前面的那个词（"电力处 梁弢；联系电话：……"，11/2 Codex 审阅）
 # 词和标签之间要隔着标点或空格："储备课题技术电话""纪检监察组联系电话"这类和标签连在一起的
 # 是部门、事项名，不是姓名（本机库全量对比看到的）
-_ATT_BEFORE_LABEL = re.compile(rf"([{_HAN_CHAR}·](?: ?[{_HAN_CHAR}·]){{1,5}})[\s，,、；;]+$")
+_ATT_BEFORE_LABEL = re.compile(rf"([{_HAN_CHAR}·](?: ?[{_HAN_CHAR}·]){{1,5}})[\s，,、；;。.]+$")
 _NAME_HEAD = re.compile(r"联\s*系\s*人|联\s*络\s*人|经\s*办\s*人|负\s*责\s*人|姓\s*名|填\s*表\s*人")
 _BARE_NAME_LABEL = re.compile(
     r"(?:联\s*系\s*人|联\s*络\s*人|经\s*办\s*人|负\s*责\s*人|姓\s*名)"

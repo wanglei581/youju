@@ -418,6 +418,7 @@ def test_upper_case_text_like_domains_is_left_alone(text):
         ),
         (f"科技处 廉瑞， 联系电话：{MARK}；", f"科技处 （这里隐去了联系人）， 联系电话：{MARK}；"),
         (f"王娟 联系电话：{MARK}", f"（这里隐去了联系人） 联系电话：{MARK}"),
+        (f"电力处 梁弢。联系电话：{MARK}", f"电力处 （这里隐去了联系人）。联系电话：{MARK}"),
     ],
 )
 def test_body_names_before_a_phone_label_are_masked(shown, expected):
@@ -432,6 +433,8 @@ def test_body_names_before_a_phone_label_are_masked(shown, expected):
         f"单位电话：{MARK}",
         f"科技处，电话：{MARK}",
         f"地址：河西区友谊路1号，电话：{MARK}",
+        f"请按时报送。联系电话：{MARK}",
+        f"本项工作由高新处负责。联系电话：{MARK}",
     ],
 )
 def test_body_words_that_are_not_names_are_left_alone(text):
