@@ -2381,8 +2381,14 @@ _MARK_IN_BRACKETS = re.compile(
 def _tidy_marks(text: str) -> str:
     if "（这里隐去了" not in text:
         return text
-    # 先去括号再合并：去了括号以后才连在一起的标记，一次就合并好（处理两次结果一样）
-    return _MARK_RUN.sub(r"\1", _MARK_IN_BRACKETS.sub(r"\1", text))
+    # 先去括号再合并：去了括号以后才连在一起的标记，一次就合并好；括号套了几层就去几层
+    # （"（（（这里隐去了网址）））"），处理两次结果一样
+    while True:
+        stripped = _MARK_IN_BRACKETS.sub(r"\1", text)
+        if stripped == text:
+            break
+        text = stripped
+    return _MARK_RUN.sub(r"\1", text)
 
 
 # 正文、附件里政府原文自带的网址（D-112，创始人 11/2 同意）：显示时换成"（这里隐去了网址）"，

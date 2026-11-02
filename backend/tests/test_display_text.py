@@ -486,6 +486,9 @@ URL = "（这里隐去了网址）"
         (f"（申报入口：{URL}）", f"（申报入口：{URL}）"),
         # 去了括号以后才连在一起的，一次就合并好（处理两次结果一样，Codex 第 4 轮）
         (f"{URL}、（网址：{URL}）、{URL}", URL),
+        # 括号套了几层都一次去掉（Codex 第 5 轮）
+        (f"（（{URL}））", URL),
+        (f"见（网址：（（{URL}）））", f"见{URL}"),
     ],
 )
 def test_more_phone_forms_and_tidy_marks(shown, expected):
