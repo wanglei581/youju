@@ -463,6 +463,9 @@ def test_model_body_masks_what_the_page_masks_with_store_marks():
     assert "https://kjgl.example.gov.cn/login" in out and "2026年11月30日" in out
     assert "（这里隐去了" not in out
     assert v1.model_body_text(out) == out
+    # 页面正文按整行遮联系人的那一道（_mask_contact_names）也在："某老师，电话……"、编审署名
+    assert v1.model_body_text("刘老师，电话：[电话已脱敏]") == "[姓名已脱敏]，电话：[电话已脱敏]"
+    assert v1.model_body_text("一审：张三") == "一审：[姓名已脱敏]"
 
 
 def test_load_sends_the_extra_masked_body(session, doc):

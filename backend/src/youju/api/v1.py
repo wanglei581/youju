@@ -3141,8 +3141,11 @@ _TO_STORE_MARKS = (
 
 def model_body_text(text: str) -> str:
     """交给模型的正文：传入入库脱敏后的文字（redact_sensitive 的结果），按页面那套规则补遮，
-    标记写成入库的写法。处理两次结果一样。"""
-    shown = _hide_emails(_mask_phones(_mask_attachment_names(_mask_phones(display_marks(text)))))
+    标记写成入库的写法。顺序和页面一样：先按整行遮联系人（_clean_reading_body 里那一道），再补遮
+    号码、姓名，最后邮箱；页面上删按钮、并空行这些整理不做，段落位置和交给模型的文字对得上。
+    处理两次结果一样。"""
+    shown = _mask_contact_names(display_marks(text))
+    shown = _hide_emails(_mask_phones(_mask_attachment_names(_mask_phones(shown))))
     for old, new in _TO_STORE_MARKS:
         shown = shown.replace(old, new)
     return shown
