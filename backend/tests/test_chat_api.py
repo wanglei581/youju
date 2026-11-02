@@ -6,15 +6,16 @@
 """
 
 import logging
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
-from threading import Barrier
+from threading import Barrier, Event
 from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 from youju import access_log, chat_store, safety_words, wx_security
 from youju import advisor_tasks as service
@@ -310,6 +311,48 @@ def test_chat_consent_required_and_version_bump(
         app_module.app.dependency_overrides.clear()
 
 
+def test_same_key_after_terms_update_returns_original(
+    session_factory, settings, find, wechat, monkeypatch
+):
+    """发出以后"问一问使用说明"或 AI 协议升了版：同一个请求编号重发拿得到原来那一问，不再交微信
+    （Codex 10/28）；新的一问照旧 403。"""
+
+    def override():
+        with session_factory() as s:
+            yield s
+
+    app_module.app.dependency_overrides[get_session] = override
+    try:
+        with TestClient(app_module.app) as c:
+            agree(c)
+            first = send(c, key="before-update")
+            assert first.status_code == 200
+            calls = len(wechat.calls)
+            monkeypatch.setattr(chat_store, "CHAT_AGREEMENT_VERSION", "chat-2027-01-v1")
+            monkeypatch.setattr(me, "CHAT_AGREEMENT_VERSION", "chat-2027-01-v1")
+            again = send(c, key="before-update")
+            assert again.status_code == 200 and again.json() == first.json()
+            assert code(send(c)) == "CHAT_CONSENT"
+            settings.ai_advisor_audience = "all"  # 对所有人开放，这个人没同意含 AI 条款的协议
+            again = send(c, key="before-update")
+            assert again.status_code == 200 and again.json() == first.json()
+            response = send(c)
+            assert response.status_code == 403
+            assert response.json()["detail"] == chat.AI_TERMS_UPDATED
+            assert len(wechat.calls) == calls
+            settings.ai_advisor_enabled = False  # AI 关了：照旧 404，重发也一样
+            assert send(c, key="before-update").status_code == 404
+    finally:
+        app_module.app.dependency_overrides.clear()
+
+
+def test_same_key_when_chat_closed_is_not_found(client, monkeypatch):
+    """问一问关了（词库或使用说明不再算定稿）：同一个请求编号重发也是 404，不返回原来那一问。"""
+    assert send(client, key="closed").status_code == 200
+    monkeypatch.setattr(chat_store, "CHAT_TERMS_FINAL", False)
+    assert send(client, key="closed").status_code == 404
+
+
 def test_ai_terms_outdated_after_opening_to_all(client, settings, session):
     """对所有人开放后没同意含 AI 条款的协议：403，detail 同 AI 任务那句。"""
     settings.ai_advisor_audience = "all"
@@ -553,7 +596,7 @@ def test_hit_record_failure_still_blocks(client, session, find, wechat, monkeypa
         ("find", "字" * 101, "CHAT_TEXT"),
         ("find", "字" * 100, None),
         ("ask", "字" * 201, "CHAT_TEXT"),
-        ("ask", "字" * 200, "AI_UNAVAILABLE"),
+        ("ask", "字" * 200, "CHAT_DOC_REQUIRED"),  # 长度过了；问这份通知要带通知（PR-3）
     ],
 )
 def test_length(client, session, skill, text, expected):
@@ -562,7 +605,7 @@ def test_length(client, session, skill, text, expected):
         assert response.status_code == 200
     else:
         assert code(response) == expected
-        assert response.status_code == (422 if expected == "CHAT_TEXT" else 429)
+        assert response.status_code == 422
 
 
 def test_rate_limit_counts_blocked(client, session, monkeypatch, find):
@@ -574,7 +617,7 @@ def test_rate_limit_counts_blocked(client, session, monkeypatch, find):
     for _ in range(5):
         assert code(send(client, "13812345678")) == "CHAT_SENSITIVE"
     for _ in range(5):
-        assert code(send(client, "问", skill="ask")) == "AI_UNAVAILABLE"
+        assert code(send(client, "问", skill="ask")) == "CHAT_DOC_REQUIRED"
     response = send(client, "第二十一问")
     assert response.status_code == 429 and code(response) == "CHAT_TOO_FAST"
     clock[0] += 61
@@ -808,7 +851,7 @@ def test_old_task_endpoints_ignore_ask(client, settings, session):
 def test_capabilities(client, session):
     caps = client.get("/api/v1/advisor/capabilities").json()["ai_advisor"]
     assert caps["chat"] is True and caps["chatConsent"] is True and caps["askTriesFull"] is False
-    assert "ask" not in caps["features"]  # PR-3 才注册
+    assert "ask" not in caps["features"]  # 单独线路（YOUJU_AI_ADVISOR_*）没配齐时不给
     uid = user_id(session)
     session.add(
         AdvisorUsage(
@@ -873,6 +916,39 @@ def test_cleanup_keeps_live_chats(client, session, settings):
     assert [t["question"] for t in got["turns"]] == ["新的问题"]
     # 接着问：编号接着往下排，不和到期删掉的撞
     assert send(client, "第三问").json()["turn"]["seq"] == 3
+
+
+def test_cleanup_and_new_question_at_once(client, session, session_factory, monkeypatch):
+    """每天的清理正删一条全到期的对话（锁着、还没提交）时，同一个人发来新一问：新一问走到锁对话行那一步
+    就等着，清理提交以后再建一条新对话；不死锁、不报错、不丢（真 MySQL 上的锁，Codex 10/28）。"""
+    old_chat = send(client, "旧的问题").json()["chatId"]
+    session.execute(update(AIChatTurn).values(expires_at=NOW - timedelta(seconds=1)))
+    session.commit()
+    reached = Event()
+    real = chat._chat_for
+
+    def chat_for(s, user_id, doc_id, *, lock=False):
+        if lock:
+            reached.set()  # 下一句就是锁对话行
+        return real(s, user_id, doc_id, lock=lock)
+
+    monkeypatch.setattr(chat, "_chat_for", chat_for)
+    with session_factory() as sweeper:
+        assert chat_store.cleanup(sweeper, NOW) == {"ai_chat_turns": 1, "ai_chats": 1}
+        with ThreadPoolExecutor(1) as pool:
+            pending = pool.submit(send, client, "新的问题")
+            try:
+                assert reached.wait(10)
+                time.sleep(0.5)
+                assert not pending.done()  # 在对话行的锁上等清理提交
+            finally:
+                sweeper.commit()
+            response = pending.result(timeout=60)
+    assert response.status_code == 200, response.text
+    assert response.json()["chatId"] != old_chat
+    session.expire_all()
+    assert [t.question for t in session.scalars(select(AIChatTurn))] == ["新的问题"]
+    assert counts(session) == (1, 1, 0)
 
 
 def test_account_deletion_deletes_chats_keeps_hits(client, session, find):
@@ -1090,6 +1166,7 @@ def test_question_text_only_read_where_allowed():
         "public_snapshot.py",  # 写明不导出
         # 下面几处只碰违规记录的层、原因、编号和到期时间，不读那句话（text）
         "ai/result_safety.py",  # AI 结果被拦时写记录（不存文字）
+        "ai/ask.py",  # 处理问这份通知：读这一问和前两问的问题交给模型，按编号核对这一问还在
         "advisor_tasks.py",  # 到期删除、1 天内不再查
         "digest.py",  # 运维日报只报次数和通知编号
     }

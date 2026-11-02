@@ -88,6 +88,18 @@ def session(session_factory: sessionmaker[Session]) -> Iterator[Session]:
         yield s
 
 
+@pytest.fixture
+def repeatable_read_factory(
+    db_engine: Engine, session_factory: sessionmaker[Session]
+) -> sessionmaker[Session]:
+    """每个事务都是"可重复读"的会话（线上连接是读已提交，见 youju/db.py）：事务里第一次普通读
+    定下快照，之后读不到别的连接新提交的。用来证明某处检查不靠连接的隔离级别。"""
+    return sessionmaker(
+        bind=db_engine.execution_options(isolation_level="REPEATABLE READ"),
+        expire_on_commit=False,
+    )
+
+
 def read_fixture_html(name: str) -> str:
     return (FIXTURES / "html" / f"{name}.html").read_bytes().decode("utf-8", errors="replace")
 

@@ -17,7 +17,13 @@ from tests.test_ai_interpret import settings as settings  # noqa: F401
 from youju import advisor_tasks as service
 from youju import safety_words, wx_security
 from youju.ai import result_safety
-from youju.models import AdvisorUsage, AISafetyHit
+from youju.models import AdvisorTask, AdvisorUsage, AISafetyHit
+
+# 解读、对照的处置记录里另记的三项：1 天内认同一份内容用
+MATCH_KEYS = ("cacheKey", "promptVersion", "model")
+ALL_CLEAR = "内容安全（24 小时）：没有拦下、没有出错"
+# 随代码发布的词库（draft-0）还没有词条：这一行另写没扫新正文、附件
+ALL_CLEAR_NO_WORDS = ALL_CLEAR + "；本地词库还没有词条，新正文、附件没扫"
 
 
 @pytest.fixture(autouse=True)
@@ -139,6 +145,12 @@ def test_local_word_blocks_result(session, settings, doc, wechat, monkeypatch): 
     assert (hit.kind, hit.stage, hit.layer) == ("interpret", "answer", "local")
     reason = dict(hit.reason_json)
     assert reason.pop("bodyHash") == task.snapshot["body_hash"]  # 正文重抓以后也对得回
+    # 缓存键、提示词版本、模型：任务删了也认得出同一份内容（advisor_tasks._recently_blocked）
+    assert [reason.pop(name) for name in MATCH_KEYS] == [
+        task.cache_key,
+        task.prompt_version,
+        task.model,
+    ]
     assert reason == {"category": "test", "entry": "t1", "version": "test-1", "sid": "P003"}
     assert hit.text is None and hit.uid is None
     assert (hit.document_id, hit.task_id) == (doc.id, task.id)
@@ -305,14 +317,15 @@ def test_migration_0042_downgrade_upgrade(db_engine) -> None:
 
 
 def test_daily_report_counts_blocks(session, settings, doc, wechat, monkeypatch):  # noqa: F811
-    """运维日报只报次数：拦下几次（按层）、检测接口出错几个；都是 0 不写这一行；不含任何文字。"""
+    """运维日报只报次数：拦下几次（按层）、检测接口出错几个；都是 0 也写一行，写明没有拦下、
+    没有出错；不含任何文字。"""
     from youju.digest import build_digest, digest_text
 
     def safety_line(now):
         lines = digest_text(build_digest(session, now=now), []).splitlines()
         return [line for line in lines if line.startswith("内容安全")]
 
-    assert safety_line(NOW) == []
+    assert safety_line(NOW) == [ALL_CLEAR_NO_WORDS]
     word_list(monkeypatch, "申请书")
     blocked = direct_task(session, doc, key="blocked")
     run(session, blocked, settings)
@@ -368,6 +381,81 @@ def test_word_list_update_lifts_block(session, settings, doc, wechat, monkeypatc
     assert again.status == "done" and again.result_json["items"]
 
 
+@pytest.mark.parametrize("layer", ["local", "wechat"])
+def test_block_holds_after_task_deleted(  # noqa: F811
+    client, session, settings, doc, wechat, monkeypatch, layer
+):
+    """没通过的任务删了：处置记录里记着缓存键、提示词版本和模型，1 天内同一份内容再提交照样直接
+    按没通过处理，不再调模型和微信（那次退过次数，不能借删除白白重来）。"""
+    if layer == "local":
+        word_list(monkeypatch, "申请书")
+    else:
+        wechat.verdict = wx_security.Verdict(False, "risky", 20001)
+    first = direct_task(session, doc, key="first")
+    run(session, first, settings)
+    assert first.status == "failed"
+    checked = len(wechat.calls)
+    assert client.delete(f"/api/v1/advisor/tasks/{first.id}").status_code == 204
+    later = NOW + timedelta(hours=1)
+    fake = FakeChat()
+    again = direct_task(session, doc, key="again", stamp=later)
+    run(session, again, settings, fake=fake, stamp=later)
+    assert again.status == "failed" and again.error == result_safety.UNSAFE_MESSAGE
+    assert fake.calls == [] and len(wechat.calls) == checked
+    assert len(hits(session)) == 1 and used(session) == 0
+
+
+def test_block_holds_after_account_deleted(client, session, settings, doc, wechat, monkeypatch):  # noqa: F811
+    """提交的人注销了（任务随用户删掉，处置记录留着）：别人 1 天内交同一份照样直接按没通过处理。"""
+    word_list(monkeypatch, "申请书")
+    first = direct_task(session, doc, key="first")
+    run(session, first, settings)
+    first_id = first.id
+    assert client.delete("/api/v1/me").status_code == 204
+    session.expire_all()
+    assert session.scalar(select(func.count(AdvisorTask.id))) == 0
+    fake = FakeChat()
+    other = direct_task(session, doc, openid="second", key="other")
+    run(session, other, settings, fake=fake)
+    assert other.status == "failed" and other.error == result_safety.UNSAFE_MESSAGE
+    assert fake.calls == [] and wechat.calls == []
+    assert [hit.task_id for hit in hits(session)] == [first_id]
+
+
+def test_old_records_still_match_by_task(session, settings, doc, wechat, monkeypatch):  # noqa: F811
+    """10/28 以前写的处置记录没有这三项：照旧按原来的任务认。"""
+    word_list(monkeypatch, "申请书")
+    first = direct_task(session, doc, key="first")
+    run(session, first, settings)
+    [hit] = hits(session)
+    hit.reason_json = {k: v for k, v in hit.reason_json.items() if k not in MATCH_KEYS}
+    session.commit()
+    fake = FakeChat()
+    again = direct_task(session, doc, key="again")
+    run(session, again, settings, fake=fake)
+    assert again.status == "failed" and fake.calls == [] and len(hits(session)) == 1
+
+
+@pytest.mark.parametrize("name", MATCH_KEYS)
+def test_block_needs_same_key_prompt_and_model(  # noqa: F811
+    client, session, settings, doc, wechat, monkeypatch, name
+):
+    """缓存键、提示词版本、模型有一样对不上，就不算同一份内容：照常调模型、再查。"""
+    word_list(monkeypatch, "申请书")
+    first = direct_task(session, doc, key="first")
+    run(session, first, settings)
+    # 任务删了，只能按记录里的三项认
+    assert client.delete(f"/api/v1/advisor/tasks/{first.id}").status_code == 204
+    [hit] = hits(session)
+    hit.reason_json = {**hit.reason_json, name: "别的"}
+    session.commit()
+    fake = FakeChat()
+    again = direct_task(session, doc, key="again")
+    run(session, again, settings, fake=fake)
+    assert len(fake.calls) == 1  # 调了模型
+    assert again.status == "failed" and len(hits(session)) == 2  # 又被词库拦下，另写一条
+
+
 def test_local_check_is_per_sentence():
     """本地词库一句一句查：前一句的结尾和后一句的开头拼不出词（交给微信的照旧是合起来的）。"""
     result = {
@@ -415,6 +503,65 @@ def test_unchecked_results_hidden_on_read(client, session, settings, doc, wechat
     assert body["result"] is None and body["error"] == result_safety.UNCHECKED_MESSAGE
 
 
+@pytest.mark.parametrize("stamp", [{"words": "draft-0"}, {"words": "draft-0", "wechat": False}])
+def test_cloud_reader_needs_wechat_check(  # noqa: F811
+    client, session, settings, doc, wechat, monkeypatch, stamp
+):
+    """线上读的时候，标记里要写着查过微信：admin 配错、没认出在云托管里时结果没交微信查，按没有
+    标记处理，不显示。本机开发和测试不调微信，照样显示。"""
+    task = direct_task(session, doc)
+    run(session, task, settings)
+    task.result_json = {**task.result_json, "safety": stamp}
+    session.commit()
+    url = f"/api/v1/advisor/tasks/{task.id}"
+    assert client.get(url).json()["result"]["items"]  # 本机
+    # 线上的服务（YOUJU_ROLE=api、admin）就算没认出自己在云托管里，也只认查过微信的
+    real = wx_security.get_settings
+    for role in ("api", "admin"):
+        fake = SimpleNamespace(role=role, trust_wx_headers=False)
+        monkeypatch.setattr(wx_security, "get_settings", lambda fake=fake: fake)
+        monkeypatch.setattr(wx_security, "in_cloud", lambda settings: False)
+        assert client.get(url).json()["error"] == result_safety.UNCHECKED_MESSAGE, role
+    monkeypatch.setattr(wx_security, "get_settings", real)
+    monkeypatch.setattr(wx_security, "in_cloud", lambda settings: True)
+    body = client.get(url).json()
+    assert body["result"] is None and body["error"] == result_safety.UNCHECKED_MESSAGE
+    # 查过微信的照常显示；没有词库版本的不算数
+    task.result_json = {**task.result_json, "safety": {"words": "draft-0", "wechat": True}}
+    session.commit()
+    assert client.get(url).json()["result"]["items"]
+    task.result_json = {**task.result_json, "safety": {"wechat": True}}
+    session.commit()
+    assert client.get(url).json()["error"] == result_safety.UNCHECKED_MESSAGE
+
+
+@pytest.mark.parametrize("word", ["不会出现的短语", "申请书"])
+def test_cloud_sweep_leaves_marks_without_wechat(  # noqa: F811
+    session, settings, doc, wechat, monkeypatch, word
+):
+    """线上每天的复查不动没写着查过微信的标记：不改成新版本、不撤（读的时候本来就不显示），到期删；
+    查过微信的照常复查。"""
+    unchecked = direct_task(session, doc, key="unchecked")
+    run(session, unchecked, settings)
+    assert unchecked.result_json["safety"] == {"words": "draft-0", "wechat": False}
+    monkeypatch.setattr(wx_security, "in_cloud", lambda settings: True)
+    checked = direct_task(session, doc, key="checked")
+    run(session, checked, settings)  # 复用了上一份的缓存，照样查一遍，记上新的标记
+    assert checked.result_json["safety"] == {"words": "draft-0", "wechat": True}
+    word_list(monkeypatch, word)  # 词库升版：test-1
+    removed = service.cleanup_advisor(session, settings=settings, stamp=NOW)["ai_results_removed"]
+    session.refresh(unchecked)
+    session.refresh(checked)
+    assert unchecked.status == "done"
+    assert unchecked.result_json["safety"] == {"words": "draft-0", "wechat": False}
+    if word == "申请书":
+        assert removed == 1 and checked.status == "failed" and checked.result_json is None
+        assert [hit.task_id for hit in hits(session)] == [checked.id]
+    else:
+        assert removed == 0 and checked.result_json["safety"] == {"words": "test-1", "wechat": True}
+        assert hits(session) == []
+
+
 def test_results_rechecked_after_word_list_update(  # noqa: F811
     client, session, settings, doc, wechat, monkeypatch
 ):
@@ -441,6 +588,38 @@ def test_results_rechecked_after_word_list_update(  # noqa: F811
     assert service.cleanup_advisor(session, settings=settings, stamp=NOW)["ai_results_removed"] == 0
     session.refresh(clean)
     assert clean.result_json["safety"]["words"] == "test-1"
+
+
+def test_sweep_removal_blocks_within_a_day(  # noqa: F811
+    session, settings, doc, wechat, monkeypatch
+):
+    """每天的复查按新词库撤下的：1 天内同一份内容再交，直接按没通过处理（复查清掉了任务的缓存键，
+    靠处置记录里记的认），不调模型和微信；词库再换版本以后照常重查。"""
+    shown = direct_task(session, doc, key="shown")
+    run(session, shown, settings)
+    assert shown.status == "done"
+    word_list(monkeypatch, "申请书")
+    assert service.cleanup_advisor(session, settings=settings, stamp=NOW)["ai_results_removed"] == 1
+    checked = len(wechat.calls)
+    fake = FakeChat()
+    again = direct_task(session, doc, key="again")
+    run(session, again, settings, fake=fake)
+    assert again.status == "failed" and again.error == result_safety.UNSAFE_MESSAGE
+    assert fake.calls == [] and len(wechat.calls) == checked and len(hits(session)) == 1
+    # 词库换了版本、新版本查不到：复查那条不再算数，照常调模型
+    library = safety_words.parse(
+        {
+            "version": "test-2",
+            "final": True,
+            "categories": {"test": {"name": "测试类别"}},
+            "entries": [{"id": "t2", "category": "test", "word": "不会出现的短语"}],
+        }
+    )
+    monkeypatch.setattr(safety_words, "LIBRARY", library)
+    fake = FakeChat()
+    later = direct_task(session, doc, key="later")
+    run(session, later, settings, fake=fake)
+    assert len(fake.calls) == 1 and later.status == "done"
 
 
 def test_clause_result_keeps_mark():
@@ -480,10 +659,43 @@ def test_daily_report_scans_new_texts(session, settings, doc, monkeypatch):  # n
     lines = digest_text(build_digest(session, now=NOW + timedelta(hours=1)), []).splitlines()
     [line] = [line for line in lines if line.startswith("内容安全")]
     assert "新抓的正文 1 份、附件 0 份命中本地词库" in line and "申请书" not in line
-    # 词库没有词条（随代码发布的草稿）时不扫、不写
+    # 词库没有词条（随代码发布的草稿）时不扫；这一行照样写
     monkeypatch.setattr(safety_words, "LIBRARY", safety_words.load())
     lines = digest_text(build_digest(session, now=NOW + timedelta(hours=1)), []).splitlines()
-    assert not [line for line in lines if line.startswith("内容安全")]
+    assert [line for line in lines if line.startswith("内容安全")] == [ALL_CLEAR_NO_WORDS]
+
+
+def test_daily_report_joins_attachment_segments(session, settings, doc, monkeypatch):  # noqa: F811
+    """日报扫新附件的文字按一份接起来查：跨在相邻两段之间的词也查得到；两份附件之间不接。"""
+    from youju import attachment_text as texts
+    from youju.digest import build_digest, digest_text
+    from youju.models import AttachmentTextSegment, AttachmentTextVersion
+
+    word_list(monkeypatch, "申请书")
+    # 第 1 份的词跨在两段之间；第 2 份的结尾和第 3 份的开头拼起来也是这个词，但不是同一份
+    for n, pieces in enumerate([["请提交申请", "书及附件。"], ["附件二：申请"], ["书面说明。"]], 1):
+        version = AttachmentTextVersion(
+            sha256=str(n) * 64,
+            file_type="docx",
+            size=10,
+            status="ok",
+            extractor=texts.EXTRACTOR_VERSION,
+            segments=len(pieces),
+            chars=sum(len(piece) for piece in pieces),
+            extracted_at=NOW,
+        )
+        session.add(version)
+        session.flush()
+        session.add_all(
+            [
+                AttachmentTextSegment(version_id=version.id, n=i, kind="p", text=piece)
+                for i, piece in enumerate(pieces, 1)
+            ]
+        )
+    session.commit()
+    digest = build_digest(session, now=NOW + timedelta(hours=1))
+    assert digest.safety_ok and digest.safety_new_attachments == 1
+    assert "附件 1 份命中本地词库" in digest_text(digest, [])
 
 
 def test_safety_probe_counts_only(session, session_factory, settings, doc, monkeypatch, capsys):  # noqa: F811

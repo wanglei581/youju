@@ -27,6 +27,7 @@ function load(name, api, extra = {}) {
       if (dep === '../../utils/data-tools.js') return extra.tools || {};
       if (dep === '../../utils/reading-progress.js') return extra.progress || require('../utils/reading-progress.js');
       if (extra.deps && Object.hasOwn(extra.deps, dep)) return extra.deps[dep];
+      if (dep === '../../utils/pages.js') return require('./helpers/package-pages-default.js').pages;
       throw new Error(dep);
     },
     wx: wxApi,
@@ -148,10 +149,10 @@ test('found 显示位置、各格、隐藏列和公示说明', async () => {
     { i: 2, h: '', t: '', name: false },
   ]);
   assert.equal(view.rows[0].hidden, 2);
-  assert.equal(view.rows[0].hiddenText, '另有 2 列没有显示（联系方式、证件、备注和认不出列名的列）');
+  assert.equal(view.rows[0].hiddenText, '另有 2 列没有显示（联系方式、证件等）');
   assert.equal(view.moreLine, '原文里这个名称出现超过 5 处，只列出前 5 处');
   assert.equal(view.partialLine, '这份名单很长，只读了前 4 页');
-  assert.equal(view.parsedTitle, '我们从原文解析出的记录（以上面的原文为准）');
+  assert.equal(view.parsedTitle, '从原文解析出的记录');
   assert.deepEqual(view.parsed.map((item) => [item.label, item.value]), [
     ['名称', '企业名称'], ['类别', '科技型中小企业'], ['批次', '第一批'], ['地区', '济南市'],
   ]);
@@ -292,14 +293,14 @@ test('页面文字里没有禁用词', async () => {
     '这条记录的地址无效，请回查名单页重新查询。',
     '这条记录已更新或不存在，请回查名单页重新查询。',
     '没有加载出来，请重试',
-    '列没有显示（联系方式、证件、备注和认不出列名的列）',
+    '列没有显示（联系方式、证件等）',
     '原文里这个名称出现超过 5 处，只列出前 5 处',
     '这份名单很长，只读了前 ',
     '这份名单的原文还在整理，暂时显示不了原文那一行。下面是从原文解析出的记录。',
     '原文附件暂时没读出来',
     '在原文里没有找到这一行（名称在原文里可能换了行或写法不同）。下面是从原文解析出的记录。',
     '这份名单在通知网页正文的表格里，暂时显示不了原文那一行。下面是从原文解析出的记录。',
-    '我们从原文解析出的记录',
+    '从原文解析出的记录',
     '解析出的记录',
     '发布阶段：',
     '来源 ',

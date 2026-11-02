@@ -1429,12 +1429,12 @@ def test_changed_gone_webpage_and_temporary_failures(session) -> None:
         session.scalar(select(func.count()).where(AttachmentTextSegment.version_id == first)) == 0
     )
     assert report.versions_removed == 1
-    # 网络等临时问题：保留文字，规则版本不改，隔一天再试
+    # 网络等临时问题：按现在的规则取过的，保留文字，什么都不改（不定重试时间，due() 本来就不挑它）
     temporary = copies.Failure("network", "超时", True)
     at.record(session, url, "pdf", later + timedelta(hours=1), report, failure=temporary)
     row = _url_rows(session)[url]
     assert (row.status, row.changed_at, report.kept) == ("ok", later, 1)
-    assert row.retry_at == later + timedelta(hours=1) + at.TEXT_RETRY
+    assert row.retry_at is None
     # 原网站删了：撤下文字
     gone = copies.Failure("gone", "原网站已没有这个附件（HTTP 404）")
     at.record(session, url, "pdf", later + timedelta(days=1), report, failure=gone)
@@ -1451,14 +1451,48 @@ def test_changed_gone_webpage_and_temporary_failures(session) -> None:
     assert report.retracted == 3 and report.failed["webpage"] == 1
     webpages = select(func.count()).where(AttachmentTextVersion.reason == "webpage")
     assert session.scalar(webpages) == 0
-    # 第一次就遇到临时问题：还没有文字，仍是待取；隔一天（或者手动不等）再算到期
+    # 第一次就遇到临时问题：还没有文字，记成"原网站下载不了"、写明这次的原因（D-097 ④：不算等取
+    # 文字）；规则版本不改，隔 TEXT_RETRY（或者手动不等）照样重试
     at.record(session, BASE + "slow.pdf", "pdf", NOW, report, failure=temporary)
     slow = _url_rows(session)[BASE + "slow.pdf"]
-    assert (slow.status, slow.extractor) == ("pending", 0)
+    assert (slow.status, slow.reason, slow.extractor) == ("failed", "unavailable", 0)
+    assert slow.detail == "暂时下载不了，下一轮再试：超时"
+    assert (slow.checked_at, slow.changed_at, slow.retry_at) == (NOW, NOW, NOW + at.TEXT_RETRY)
+    assert report.failed["unavailable"] == 0  # 临时问题记在"保留"里，不当成取不出
     key = {at.url_key(BASE + "slow.pdf")}
     assert at.due(session, key, NOW + timedelta(hours=1)) == set()
     assert at.due(session, key, NOW + timedelta(hours=1), retry_now=True) == key
     assert at.due(session, key, NOW + at.TEXT_RETRY) == key
+    # 下一轮又是临时问题：还是下载不了，换成这次的原因，不再改 changed_at
+    again = copies.Failure("network", "robots.txt 暂时无法获取（HTTP 503），本次跳过", True)
+    at.record(session, BASE + "slow.pdf", "pdf", NOW + at.TEXT_RETRY, report, failure=again)
+    slow = _url_rows(session)[BASE + "slow.pdf"]
+    assert slow.detail == "暂时下载不了，下一轮再试：robots.txt 暂时无法获取（HTTP 503），本次跳过"
+    assert (slow.changed_at, slow.retry_at) == (NOW, NOW + 2 * at.TEXT_RETRY)
+    # 再下一轮下载到了：取文字、能读，重试时间清掉
+    later_ok = NOW + 2 * at.TEXT_RETRY
+    at.record(session, BASE + "slow.pdf", "pdf", later_ok, report, content=make_docx("终于取到"))
+    slow = _url_rows(session)[BASE + "slow.pdf"]
+    assert (slow.status, slow.reason, slow.extractor) == ("ok", None, at.EXTRACTOR_VERSION)
+    assert slow.retry_at is None and slow.version_id is not None
+    assert at.due(session, key, later_ok + at.TEXT_RETRY) == set()
+
+
+def test_text_retry_comes_back_in_the_next_round() -> None:
+    # 每天两轮抓取（6:30、20:30，最长隔 14 小时）：一轮失败，下一轮就重试，不会总落在同一个时段
+    # （10/27 海南工信厅 3 个附件按 24 小时重试，每次都赶上晚上那轮取不到，卡了两天）
+    # 附件文字任务跟在两轮抓取后面（北京时间 6:30、20:30）；附件副本任务（10:15、23:30）也会记临时
+    # 失败。四个时点里哪一次失败都赶得上下一次附件文字任务：两轮跑晚两小时、10:15 那次晚一小时、
+    # 23:30 那次晚半小时也行（23:30 晚一小时正好卡在 6:30，再晚就要靠早上那轮先抓取、补详情占掉的时间）
+    rounds = [datetime(2026, 10, 27, 22, 30), datetime(2026, 10, 28, 12, 30)]  # UTC
+    for failed in (
+        datetime(2026, 10, 27, 12, 30) + timedelta(hours=2),  # 20:30 那轮，晚两小时
+        datetime(2026, 10, 27, 15, 30) + timedelta(minutes=30),  # 23:30 副本任务
+        datetime(2026, 10, 27, 22, 30) + timedelta(hours=2),  # 6:30 那轮，晚两小时
+        datetime(2026, 10, 28, 2, 15) + timedelta(hours=1),  # 10:15 副本任务
+    ):
+        following = min(r for r in rounds if r > failed)
+        assert failed + at.TEXT_RETRY <= following, failed
 
 
 def test_new_extractor_version_reextracts_and_marks_every_link(session, monkeypatch) -> None:
@@ -1474,6 +1508,11 @@ def test_new_extractor_version_reextracts_and_marks_every_link(session, monkeypa
     failure = copies.Failure("network", "超时", True)
     at.record(session, BASE + "b.docx", "docx", NOW, report, failure=failure)
     assert at.due(session, keys, NOW + at.TEXT_RETRY) == keys
+    # 从没取到过文字、下载临时失败的（下载不了）：规则再升级也照常重试
+    at.record(session, BASE + "new", "docx", NOW, report, failure=failure)
+    assert _url_rows(session)[BASE + "new"].reason == "unavailable"
+    monkeypatch.setattr(at, "EXTRACTOR_VERSION", at.EXTRACTOR_VERSION + 1)
+    assert at.url_key(BASE + "new") in at.due(session, keys, NOW + at.TEXT_RETRY)
     later = NOW + timedelta(days=1)
     at.record(session, BASE + "a.docx", "docx", later, report, content=content)
     rows = _url_rows(session)
@@ -1701,7 +1740,7 @@ def test_text_step_errors_never_stop_copies(session, monkeypatch, caplog) -> Non
 
 
 def test_text_only_run_never_touches_copies_or_storage(session) -> None:
-    add_doc(
+    first = add_doc(
         session,
         1,
         APPLY,
@@ -1726,7 +1765,19 @@ def test_text_only_run_never_touches_copies_or_storage(session) -> None:
     report = copies.extract_texts(session, fetcher=fetcher, now=NOW)
     assert fetcher.calls[-1] == BASE + "slow.doc" and report.texts.kept == 1
     rows = _url_rows(session)
-    assert rows[BASE + "slow.doc"].status == "pending" and BASE + "old.pdf" not in rows
+    assert (rows[BASE + "slow.doc"].status, rows[BASE + "slow.doc"].reason) == (
+        "failed",
+        "unavailable",
+    )
+    assert BASE + "old.pdf" not in rows
+    # robots.txt 取不到（抓取器写明了原因）：原因带进附件的说明，这个附件算下载不了、不算等取文字
+    blocked = "robots.txt 暂时无法获取（HTTP 503），本次跳过"
+    fetcher.files[BASE + "slow.doc"] = FetchResult(BASE + "slow.doc", "robots_error", error=blocked)
+    copies.extract_texts(session, fetcher=fetcher, now=NOW, retry_pending=True)
+    slow_row = _url_rows(session)[BASE + "slow.doc"]
+    assert slow_row.detail == f"暂时下载不了，下一轮再试：{blocked}"
+    states = {x.name: x.state for x in at.readings(session, first.id, NOW)}
+    assert states["附件3"] == "unavailable"
     # 临时问题的不自动重试，加 --retry-pending 才重试
     fetcher.calls.clear()
     copies.extract_texts(session, fetcher=fetcher, now=NOW)
@@ -1784,6 +1835,28 @@ def test_readings_states(session) -> None:
     ]
     assert [x.readable for x in found] == [True, False, False, False, False, False]
     assert [x.state for x in at.readings(session, old.id, NOW)] == ["old"]
+    # 下载暂时失败、等下一轮再试的（从没取到过文字）：说原网站下载不了、给出原因，不算还没取；
+    # 下一轮取到了就能读
+    slow = copies.Failure("network", "robots.txt 暂时无法获取（HTTP 503），本次跳过", True)
+    at.record(session, BASE + "later.docx", "docx", NOW, report, failure=slow)
+    waiting = at.readings(session, doc.id, NOW)[4]
+    assert (waiting.state, waiting.readable, waiting.note) == (
+        "unavailable",
+        False,
+        "原网站下载不了这个附件",
+    )
+    assert (
+        waiting.detail == "暂时下载不了，下一轮再试：robots.txt 暂时无法获取（HTTP 503），本次跳过"
+    )
+    assert waiting.checked_at == NOW
+    later = NOW + at.TEXT_RETRY
+    at.record(session, BASE + "later.docx", "docx", later, report, content=make_docx("后来取到"))
+    assert at.readings(session, doc.id, later)[4].state == "ok"
+    # 按现在的规则已有结论的（原网站已删）：副本任务复查时遇到临时问题，结论不变，不改成"下载不了"
+    at.record(session, BASE + "gone.pdf", "pdf", later, report, failure=slow)
+    gone_row = _url_rows(session)[BASE + "gone.pdf"]
+    assert (gone_row.status, gone_row.reason, gone_row.retry_at) == ("failed", "gone", None)
+    assert at.readings(session, doc.id, later)[2].state == "gone"
     # 合并转载：详情页列的是组里正文最长那份的附件；那份是二级来源，不在下载范围里
     master = add_doc(session, 3, APPLY, RECENT, [])
     session.get(DocumentDetail, master.id).body_text = ""
@@ -1873,6 +1946,9 @@ def test_cli_commands(session, monkeypatch, capsys, tmp_path) -> None:
     assert cli.main(["attachment-texts", "--limit", "5"]) == 0
     out = capsys.readouterr().out
     assert "新取 1" in out and "还没取 0" in out
+    # 容器终端里贴回来的中文会乱码：另有一行只有英文和数字
+    assert out.splitlines()[-1].startswith("attachment_texts checked=1 bytes=")
+    assert "extracted=1 reused=0 unchanged=0 kept=0 failed=0 retracted=0 removed=0 due=0" in out
     sheet = tmp_path / "sheet.md"
     assert (
         cli.main(["attachment-text-report", "--now", "2026-10-06", "--worksheet", str(sheet)]) == 0
@@ -1902,10 +1978,12 @@ def test_cli_skips_without_failing_while_another_attachment_job_runs(
             assert cli.main(["attachment-texts"]) == 0
         finally:
             other.execute(sql("SELECT RELEASE_LOCK('youju_attachment_copies')"))
+    out = capsys.readouterr().out
     assert (
         "另一个附件任务正在运行（附件副本、重查或另一次取文字），这次一个也没取；定时任务下一轮再取，手动补齐请等它跑完再重跑"
-        in capsys.readouterr().out
+        in out
     )
+    assert out.splitlines()[-1] == "attachment_texts skipped=1"
     assert fetcher.calls == []
     assert session.scalar(select(func.count()).select_from(AttachmentTextUrl)) == 0
     monkeypatch.setattr(

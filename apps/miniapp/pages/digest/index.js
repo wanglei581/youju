@@ -1,5 +1,6 @@
 const api = require('../../utils/api.js');
 const { todayISO, clockText } = require('../../utils/format.js');
+const { flags } = require('../../utils/pages.js');
 
 // 本期清单（公众号方案 PR #287）：从公众号周报里的小程序链接打开（带 id），或从"我的 → 本周周报"打开
 // （不带 id，取全国版最近一期）。接口已按省份排好（国家部委在前，各省按条数从多到少），这里按这个顺序分组，
@@ -62,6 +63,8 @@ Page({
     rest: 0,
     moreLoading: false,
     today: '',
+    // 包里有哪些页面（使用帮助在不在，D-108 的说明入口靠它）
+    has: flags(),
     weekText: '',
     dataText: '',
   },
@@ -166,5 +169,10 @@ Page({
 
   goHome() {
     wx.switchTab({ url: '/pages/home/index' });
+  },
+
+  // 截止日期怎么看：使用帮助里那一条（和截止页同一个入口，D-108）
+  help() {
+    if (this.data.has.help) wx.navigateTo({ url: '/pages/help/index?topic=deadline' });
   },
 });

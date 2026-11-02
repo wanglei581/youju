@@ -1,5 +1,7 @@
 const api = require('../../utils/api.js');
 const progress = require('../../utils/reading-progress.js');
+// 包里有使用帮助时，读完的地方放"数据说明 ›"（正文、附件的文字是程序提取的，说明写在帮助里，10/29 创始人、agy 第 3 轮）
+const { flags } = require('../../utils/pages.js');
 
 // 服务端没给说明时的兜底（页面说法以服务端 notice 为准，D-097 设计稿第三节）
 const STATUS = {
@@ -11,16 +13,33 @@ const LIST_TITLE = '原名单里的这一行';
 const ENTRY_TOKEN = /^[A-Za-z0-9_-]{32}$/;
 const ENTRY_FIELDS = [['名称', 'name'], ['类别', 'category'], ['批次', 'batch'], ['地区', 'region']];
 
+// 段落在原文的位置，从大到小写，说法和查名单的"在原文的位置"一样：工作表“名单”第 3 行、
+// 原文第 2 页第 1 个表第 5 行、第 4 张幻灯片。页码写"原文第 N 页"，和阅读页自己的"第 2 页 / 共 4 页"分开
+const LOC_LEVELS = [
+  ['sheet', (v) => `工作表“${v}”`], ['page', (v) => `原文第 ${v} 页`], ['slide', (v) => `第 ${v} 张幻灯片`],
+  ['table', (v) => `第 ${v} 个表`], ['row', (v) => `第 ${v} 行`],
+];
+
+function locParts(loc) {
+  if (!loc || typeof loc !== 'object') return [];
+  return LOC_LEVELS.filter(([key]) => loc[key] != null && String(loc[key]).trim() !== '')
+    .map(([key, label]) => ({ key, text: label(loc[key]) }));
+}
+
 // 不把服务端字符串解释成 HTML；表格按实际单元格排列，不推测页码或字段。
+// 位置只写和上一段不同的那几层：PDF 同一页的段落不再每段都写"第 1 页"，同一个表的行只写"第 N 行"；
+// 每页第一段写全
 function segmentsOf(items) {
   if (!Array.isArray(items) || items.length > 200) throw new Error('阅读内容格式有误，请重试');
+  let previous = [];
   return items.map((s) => {
     if (!s || typeof s.text !== 'string' && !Array.isArray(s.cells)) throw new Error('阅读内容格式有误，请重试');
     const cells = Array.isArray(s.cells) ? s.cells : [];
     if (cells.some((cell) => !cell || typeof cell.t !== 'string')) throw new Error('表格内容格式有误');
-    const labels = { page: '第', sheet: '工作表', row: '行', table: '表', slide: '幻灯片' };
-    const loc = s.loc && typeof s.loc === 'object' ? Object.keys(labels).filter((key) => s.loc[key] != null)
-      .map((key) => `${labels[key]} ${s.loc[key]}${key === 'page' ? ' 页' : ''}`).join(' · ') : '';
+    const parts = locParts(s.loc);
+    const from = parts.findIndex((part, i) => !previous[i] || previous[i].key !== part.key || previous[i].text !== part.text);
+    previous = parts;
+    const loc = from < 0 ? '' : parts.slice(from).map((part) => part.text).join('');
     return { n: s.n, kind: s.kind, text: s.text || '', loc,
       cells: cells.map((cell) => ({ c: cell.c, t: cell.t, h: typeof cell.h === 'string' ? cell.h : '' })) };
   });
@@ -57,7 +76,7 @@ function evidenceRows(evidence) {
     const where = textOf(item.where);
     return {
       i, where, whereText: `在原文的位置：${where}`, cells, hidden,
-      hiddenText: hidden > 0 ? `另有 ${hidden} 列没有显示（联系方式、证件、备注和认不出列名的列）` : '',
+      hiddenText: hidden > 0 ? `另有 ${hidden} 列没有显示（联系方式、证件等）` : '',
     };
   });
 }
@@ -94,7 +113,7 @@ function listRowView(res) {
     rows: found ? evidenceRows(evidence) : [],
     moreLine: found && evidence.more === true ? '原文里这个名称出现超过 5 处，只列出前 5 处' : '',
     partialLine: found && evidence.partial === true ? `这份名单很长，只读了前 ${pages} 页` : '',
-    parsedTitle: found ? '我们从原文解析出的记录（以上面的原文为准）' : '解析出的记录',
+    parsedTitle: found ? '从原文解析出的记录' : '解析出的记录',
     parsed: entryItems(entry),
   };
 }
@@ -134,7 +153,7 @@ function toTop() {
 }
 
 Page({
-  data: { loading: false, error: '', changed: false, source: null, title: '', revision: '', status: '', notice: '',
+  data: { loading: false, error: '', changed: false, source: null, title: '', revision: '', status: '', notice: '', has: flags(),
     segments: [], nextCursor: null, prevCursor: null, page: 1, pages: 0, totalSegments: 0, scannedPages: 0, complete: false,
     docTitle: '', partLabel: '正文', partName: '', toc: [], nextPart: null, endText: '', resumePage: 0, updatedNote: '',
     listMode: false, listTitle: LIST_TITLE, listErrorKind: '', record: null, listHidden: false },
@@ -219,18 +238,21 @@ Page({
       const last = next === null;
       const scanned = Number(res.scannedPages) > 0 ? Number(res.scannedPages) : 0;
       this.setData(Object.assign(head, { revision: res.revision, status: res.status, listHidden: res.listHidden === true,
-        notice: textOf(res.notice), segments, nextCursor: next, prevCursor: prev, page, pages,
+        // 读得出的部分顶上不再写"自动提取、未经人工逐字核对"（写在使用帮助里，10/29 创始人）；有扫描页时照旧说缺哪几页
+        notice: res.status === 'partial' ? textOf(res.notice) : '', segments, nextCursor: next, prevCursor: prev, page, pages,
         totalSegments: res.totalSegments || 0, scannedPages: scanned,
         complete: last && segments.length > 0, endText: last ? endTextOf(here.label, res.status, scanned) : '',
         nextPart: last ? nextPartOf(toc, this.part) : null,
         resumePage: opts.resumed && opts.banner && page > 1 ? page : 0, updatedNote: opts.updated || '' }));
     }).catch((err) => {
       if (!current()) return undefined;
-      // 内容更新了（409），或记着的位置已不是一页的开头（422）：作废记着的位置，回到第 1 页
-      if (err.status === 409 || (opts.resumed && err.status === 422)) {
+      // 内容更新了（409），或记着的、正在翻的位置已不是一页的开头（422，如分页规则改了）：作废记着的位置，
+      // 回到第 1 页。不然"重试"会一直发同一个位置
+      if (err.status === 409 || (err.status === 422 && cursor !== '0')) {
         progress.clear(this.docId, this.part); this.revision = '';
         const what = this.part ? '附件' : '正文';
-        const updated = err.status === 409 ? `${what}已更新，从第 1 页开始读` : '上次读到的位置已失效，从第 1 页开始读';
+        const updated = err.status === 409 ? `${what}已更新，从第 1 页开始读`
+          : `${opts.resumed ? '上次读到的' : '阅读'}位置已失效，从第 1 页开始读`;
         if (cursor === '0' && !revision) {
           this.setData({ error: '内容版本已变化，请重新加载。', changed: true });
           return undefined;
@@ -320,6 +342,7 @@ Page({
   },
   lookup() { wx.navigateTo({ url: '/pages/lists/index' }); },
   detail() { wx.navigateTo({ url: `/pages/detail/index?id=${encodeURIComponent(this.docId)}` }); },
+  help() { if (this.data.has.help) wx.navigateTo({ url: '/pages/help/index?topic=text' }); },
   openDetail() {
     const rec = this.data.record;
     if (!rec) return;

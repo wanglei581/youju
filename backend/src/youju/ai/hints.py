@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from youju.ai.deadlines import _date_span, stored_items
+from youju.deadline_excerpts import DEADLINE_KINDS
 from youju.dedup import groups_for
 from youju.extract.deadlines import may_be_same, same_moment
 from youju.models import AICheck, DocumentDeadline
@@ -22,7 +23,8 @@ SOON_DAYS = 30
 @dataclass(frozen=True)
 class Hint:
     """code：suggest 建议通过 / agree AI 一致但不建议直接通过 / kind_mismatch 日期一致、
-    类型不同 / mismatch AI 查过、没找到这一天 / ai_only 只有 AI 找到 / unchecked AI 还没核过。
+    类型不同 / mismatch AI 查过、没找到这一天 / ai_only 只有 AI 找到 / unchecked AI 还没核过 /
+    other_kind "其他"类，只能驳回。
     text 是页面上的标签。"""
 
     code: str
@@ -73,6 +75,9 @@ def deadline_hint(row: DocumentDeadline, found: list[Found] | None) -> Hint:
     （两边都没写，或都写了且相同）、AI 给的类型和规则相同，而且证据原句里写着这个日期（写了年份的
     年份也对）。日期一样、时刻只有一边写了的，提示"时刻只有一边写了"，不建议直接通过
     （D-099 期 0）。"""
+    if row.kind not in DEADLINE_KINDS:
+        # "其他"类不对外显示，核对台也不让通过（D-099 期 0 补审）：不进"建议通过"
+        return Hint("other_kind", '"其他"类：不对外显示，只能驳回')
     if row.origin == "ai":
         return Hint("ai_only", "仅 AI 找到")
     if found is None:

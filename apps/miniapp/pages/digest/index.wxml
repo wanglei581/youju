@@ -36,7 +36,9 @@
   </view>
   <view wx:if="{{rest}}" class="more-btn" bindtap="more" aria-role="button">{{moreLoading ? '正在加载…' : '显示更多（还有 ' + rest + ' 条）'}}</view>
   <view wx:if="{{!digest.total}}" class="card empty">这一期的条目现已都不再提供。</view>
-  <view wx:if="{{digest.hidden}}" class="weak page-note">另有 {{digest.hidden}} 条现已不再提供，这里不列出。</view>
-  <view class="weak page-note">截止日期只写人工核对过的，按现在的核对结果显示；"30 天内截止"等栏目是这一期发布时的分法。地市、区县组织初审或推荐的，报送时间可能更早。申报请在主管部门的系统办理，以原文为准。</view>
+  <!-- 截止日期的显示规则写在使用帮助里，这里只留一个入口（D-108，和截止页一样）；包里没有使用帮助时照旧写一句。
+       已下架、不再提供的条目不列也不另写条数（内部计数不写在页面上，#403） -->
+  <view wx:if="{{has.help}}" class="weak page-note"><text class="link" bindtap="help" aria-role="link">截止日期怎么看 ›</text></view>
+  <view wx:else class="weak page-note">截止日期以原文为准。</view>
 </block>
 <view style="height: 80rpx"></view>

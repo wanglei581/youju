@@ -21,7 +21,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 from openpyxl import load_workbook
-from sqlalchemy import and_, delete, func, or_, select, text, update
+from sqlalchemy import Connection, and_, delete, func, or_, select, text, update
 from sqlalchemy.dialects.mysql import insert
 from sqlalchemy.orm import Session, defer, sessionmaker
 
@@ -90,22 +90,51 @@ class AdvisorBusy(Exception):
 
 
 class AICapReached(Exception):
-    """实际模型调用已达到当天上限。"""
+    """全站 AI 用量到了当天上限：提交时按占用的次数和实际调用次数中大的算，admin 调模型前
+    只看实际调用次数（见 site_ai_used）。"""
 
 
 @contextmanager
 def ai_cap_lock(session: Session):
-    """锁在独立连接上；额度事务提交后才释放命名锁。"""
-    with AI_CAP_LOCAL_LOCK, session.get_bind().connect() as conn:
+    """锁在独立连接上；额度事务提交后才释放命名锁。yield 这条连接：自动提交、读已提交，每次读
+    都是已经提交的最新数据。锁里查全站用量要在它上面读，见 ai_cap_slot。"""
+    with (
+        AI_CAP_LOCAL_LOCK,
+        session.get_bind().connect().execution_options(isolation_level="AUTOCOMMIT") as conn,
+    ):
+        # 自动提交不改隔离级别：引擎万一是读未提交，会读到别的事务没提交、还可能回滚的退次数。
+        # 还回连接池时 SQLAlchemy 把自动提交和隔离级别都恢复成默认
+        conn.exec_driver_sql("SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED")
         if conn.scalar(text("SELECT GET_LOCK(:name, 2)"), {"name": AI_CAP_LOCK}) != 1:
             raise AdvisorBusy
         try:
-            yield
+            yield conn
         finally:
             conn.execute(text("SELECT RELEASE_LOCK(:name)"), {"name": AI_CAP_LOCK})
 
 
-def global_ai_calls(session: Session, day: date) -> int:
+@contextmanager
+def ai_cap_slot(session: Session, day: date, cap: int, *, submissions: bool):
+    """全站上限的"检查 + 占用"：解读、条款对照、问一问提交时，和 admin 调模型前都走这里。拿到锁以后
+    在锁的那条连接上查全站用量，满了抛 AICapReached；没满就 yield，调用方在锁里占用、提交业务事务，
+    提交以后才放锁。
+    不在业务事务里查：它拿锁之前读过表，可重复读下锁里读到的是拿锁之前的快照，两个请求会同时占到
+    最后一个名额（现在的连接是读已提交，见 db.py；在锁的连接上查就不依赖这一点）。也不用 FOR SHARE：
+    共享锁要拿到业务事务提交，会挡住不在命名锁下的记用量（record_usage）和退次数，还可能和它们死锁。"""
+    with ai_cap_lock(session) as conn:
+        if site_ai_used(conn, day, submissions=submissions) >= cap:
+            raise AICapReached
+        yield
+
+
+def site_ai_used(bind: Session | Connection, day: date, *, submissions: bool = True) -> int:
+    """全站当天的 AI 用量。提交时（submissions，显示满没满也是这个口径）取占用的次数和实际调用次数中
+    大的那个；admin 调模型前只看实际调用次数（这一份提交时已经占过次数）。"""
+    calls = global_ai_calls(bind, day)
+    return max(int(global_ai_usage(bind, day)), calls) if submissions else calls
+
+
+def global_ai_calls(session: Session | Connection, day: date) -> int:
     return int(
         session.scalar(
             select(func.coalesce(func.sum(AIUsage.calls), 0)).where(
@@ -119,9 +148,7 @@ def global_ai_calls(session: Session, day: date) -> int:
 def reserve_ai_call(session: Session, kind: str, model: str, stamp: datetime, cap: int) -> None:
     """调用前持久化一次不可退的调用；进程中断时宁可少调用。"""
     day = usage_day(stamp)
-    with ai_cap_lock(session):
-        if global_ai_calls(session, day) >= cap:
-            raise AICapReached
+    with ai_cap_slot(session, day, cap, submissions=False):
         table = AIUsage.__table__
         stmt = insert(table).values(
             day=day, task=kind, model=model, calls=1, errors=0, prompt_tokens=0, completion_tokens=0
@@ -258,7 +285,7 @@ def ledger_kind(task: AdvisorTask) -> str:
     return TRIAL_USAGE if task.usage_source == "trial" else task.kind
 
 
-def global_ai_usage(session: Session, day: date) -> int:
+def global_ai_usage(session: Session | Connection, day: date) -> int:
     """当天已占用的解读和条款对照次数；失败退款已从账本扣除。"""
     return session.scalar(
         select(func.coalesce(func.sum(AdvisorUsage.used_count), 0)).where(
@@ -501,18 +528,34 @@ def _recently_blocked(
     session: Session, task: AdvisorTask, skill, model: str, key: str, stamp: datetime
 ) -> bool:
     """同一份内容 1 天内真查过、没通过。只认真查的那一次（写了处置记录的），不认后来直接判失败的，
-    免得每天有人交一次就一直续下去；本地词库拦下的，还要是现在这一版词库拦的（词库改了就重新查）。"""
+    免得每天有人交一次就一直续下去；本地词库拦下的，还要是现在这一版词库拦的（词库改了就重新查）。
+
+    按处置记录里记的缓存键、提示词版本和模型认：原来的任务删了、提交的人注销了也认得出（那次退过
+    次数，不能借删除白白重来）。这三项 10/28 起才记，以前的记录照旧按原来的任务认。"""
+
+    def recorded(name: str):
+        return func.json_unquote(func.json_extract(AISafetyHit.reason_json, f"$.{name}"))
+
     rows = session.execute(
         select(AISafetyHit.layer, AISafetyHit.reason_json)
-        .join(AdvisorTask, AdvisorTask.id == AISafetyHit.task_id)
+        .outerjoin(AdvisorTask, AdvisorTask.id == AISafetyHit.task_id)
         .where(
             AISafetyHit.stage == "answer",
             AISafetyHit.created_at > stamp - BLOCK_CACHE,
-            AdvisorTask.kind == skill.kind,
-            AdvisorTask.id != task.id,
-            AdvisorTask.prompt_version == skill.prompt_version,
-            AdvisorTask.model == model,
-            AdvisorTask.cache_key == key,
+            AISafetyHit.kind == skill.kind,
+            or_(AISafetyHit.task_id.is_(None), AISafetyHit.task_id != task.id),
+            or_(
+                and_(
+                    recorded("cacheKey") == key,
+                    recorded("promptVersion") == skill.prompt_version,
+                    recorded("model") == model,
+                ),
+                and_(
+                    AdvisorTask.prompt_version == skill.prompt_version,
+                    AdvisorTask.model == model,
+                    AdvisorTask.cache_key == key,
+                ),
+            ),
         )
     ).all()
     version = safety_words.LIBRARY.version
@@ -524,8 +567,8 @@ def _recently_blocked(
 def sweep_results(session: Session, stamp: datetime) -> int:
     """词库更新以后，把还在保存期内、显示着的 AI 结果用现在的本地词库再查一遍（在本机比，
     不调微信）。命中的撤下、写处置记录；没命中的把标记改成现在的版本。没有标记的（检查上线以前
-    生成的）读的时候本来就不显示，到期删除。先在库里按标记的版本筛，再分批取（不取快照里的整份
-    正文），每批单独提交。返回撤下了几份。"""
+    生成的）、线上没写着查过微信的（result_safety.mark_ok），读的时候本来就不显示，不动它，到期
+    删除。先在库里按标记的版本筛，再分批取（不取快照里的整份正文），每批单独提交。返回撤下了几份。"""
     version = safety_words.LIBRARY.version
     words = func.json_unquote(func.json_extract(AdvisorTask.result_json, "$.safety.words"))
     ids = list(
@@ -557,7 +600,7 @@ def sweep_results(session: Session, stamp: datetime) -> int:
         for task in batch:
             result = task.result_json or {}
             mark = result.get("safety")
-            if not isinstance(mark, dict) or mark.get("words") == version:
+            if not result_safety.mark_ok(mark) or mark.get("words") == version:
                 continue
             field = get_skill(task.kind).result_field
             found = result_safety.local_hit(result_safety.quotes(result, field))
@@ -867,6 +910,13 @@ def process_task(
     """处理一条已锁定为 running 的任务；失败按最多两次重试回队列。"""
     settings = settings or get_settings()
     stamp = _utc(stamp or datetime.now(UTC))
+    if task.kind == "ask":
+        # 问这份通知（问一问开发设计 #328 第六节第 3 条）：只摘原句、按来源逐字核对
+        from youju.ai import ask
+
+        return ask.process(
+            session, task, settings=settings, stamp=stamp, timeout=timeout, live_time=live_time
+        )
     if task.kind in AI_KINDS:
         return process_ai(
             session, task, settings=settings, stamp=stamp, timeout=timeout, live_time=live_time

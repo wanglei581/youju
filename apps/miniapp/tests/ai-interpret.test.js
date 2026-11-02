@@ -22,7 +22,7 @@ function load(file, deps, globals = {}) {
   let definition; const module = { exports: {} };
   vm.runInNewContext(read(file), {
     module, Date, Math, Promise, setTimeout, clearTimeout,
-    require(name) { if (!Object.hasOwn(deps, name) && /ai-access\.js$/.test(name)) return AI_OFF; if (!Object.hasOwn(deps, name) && /daywatch\.js$/.test(name)) return require('./helpers/day-off.js'); assert.ok(Object.hasOwn(deps, name), `缺少依赖 ${name}`); return deps[name]; },
+    require(name) { if (!Object.hasOwn(deps, name) && /(^|\/)pages\.js$/.test(name)) return require('./helpers/package-pages-default.js').pages; if (!Object.hasOwn(deps, name) && /ai-access\.js$/.test(name)) return AI_OFF; if (!Object.hasOwn(deps, name) && /daywatch\.js$/.test(name)) return require('./helpers/day-off.js'); assert.ok(Object.hasOwn(deps, name), `缺少依赖 ${name}`); return deps[name]; },
     Page(value) { definition = value; }, Component(value) { definition = value; }, ...globals,
   }, { filename: file });
   return definition ? { ...definition, data: plain(definition.data), setData(value) { Object.assign(this.data, value); } } : module.exports;
@@ -294,7 +294,8 @@ test('D-073：服务端标了 outdated 的旧结果照常显示并加说明；�
     const wxml = read(`pages/${page}/index.wxml`);
     const at = wxml.indexOf('wx:if="{{outdated}}"');
     assert.ok(at > -1 && at < wxml.indexOf('result.attachmentNotice'), page);
-    assert.match(wxml, /正文没变/);
+    // D-073：写明是解读（对照）之后有更新、下面的原文仍然有效，免得以为要重做（重做要扣次数，10/29 审阅）
+    assert.match(wxml, /之后，这份通知的核对信息或附件有更新；下面的(原文摘录|条件原文)仍然有效，“已核对”一栏已换成现在的核对结果。/);
   }
 });
 
@@ -341,7 +342,7 @@ test('解读页直达仍须 capabilities 开放，拒绝权限时不显示须知
     const output = render(read('pages/advisor-interpret/index.wxml'), page.data);
     assert.equal(output.includes('使用须知'), enabled === true);
     assert.equal(output.includes('AI'), enabled === true);
-    assert.equal(output.includes('内部测试：摘录通知原文原句，可能不全；不判断能否申报，以原文和主管部门解释为准。'), enabled === true);
+    assert.equal(output.includes('内部测试：摘录通知原文原句，不判断能否申报，以原文和主管部门解释为准。'), enabled === true);
     // AI 板块没显示（这里当作 AI 关着）时标题留空，不写"工具"也不写 AI；能力接口说开着才写
     assert.equal(navigationTitle, enabled === true ? 'AI 解读 · 内部测试' : '');
     page.check({ detail: { value: ['agree'] } }); page.agree(); await flush(); assert.equal(created, enabled === true ? 1 : 0); page.onUnload();
@@ -399,7 +400,8 @@ test('解读页渲染结果原句、核对值、missing、警示、附件提示�
   page.feedback(); assert.equal(urls.at(-1), '/pages/feedback/index?id=42&title=' + encodeURIComponent('通知 & 标题'));
   page.setData({ result: logic.resultView({ refusal: '拒答原文' }) });
   const refusal = render(read('pages/advisor-interpret/index.wxml'), page.data);
-  assert.match(refusal, /拒答原文.*看原文/); assert.doesNotMatch(refusal, /申报对象|材料清单/); page.onUnload();
+  // 拒答时"看原文"只在结果顶上一处，卡片里不再另放（10/29 去重）
+  assert.match(refusal, /看原文.*拒答原文/); assert.equal((refusal.match(/看原文/g) || []).length, 1); assert.doesNotMatch(refusal, /申报对象|材料清单/); page.onUnload();
 });
 
 test('capabilities 缓存与 refresh 并发合并，失败静默且 interpret 请求只有 doc_id', async () => {
@@ -433,7 +435,8 @@ test('共同任务页按各类权限显示，数据任务不能扩大 AI 访问�
     const page = load('pages/advisor-tasks/index.js', { '../../utils/api.js': api, '../../utils/advisor.js': helpers }, { wx: { navigateTo: ({ url }) => urls.push(url), setNavigationBarTitle() {} } });
     page.onShow(); await flush();
     const output = render(read('pages/advisor-tasks/index.wxml'), page.data);
-    assert.equal(output.includes('AI 解读'), enabled); assert.equal(output.includes('查看解读'), enabled);
+    // 记录卡片整张可点进结果，不再另放"查看解读"按钮（10/29：同一张卡两个入口）
+    assert.equal(output.includes('AI 解读'), enabled); assert.equal(output.includes('查看解读'), false);
     assert.equal(output.includes('通知标题'), enabled); assert.match(output, /批量名单比对.*站内查看结果/);
     assert.equal(listed, 1);
     if (!enabled) assert.doesNotMatch(output, /AI|内部测试/);

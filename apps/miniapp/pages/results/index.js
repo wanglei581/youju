@@ -1,5 +1,8 @@
 const api = require('../../utils/api.js');
 const { exportDocs } = require('../../utils/exporter.js');
+// 包里有使用帮助时，页底放"数据说明 ›"：截止日期的几种写法写在帮助里（agy 第 3 轮）
+const { flags } = require('../../utils/pages.js');
+const { daysUntil } = require('../../utils/format.js');
 // 统一按北京时间显示生成时间，不随设备时区改变，也不把原始 ISO 时区串呈现给用户。
 function generatedTime(value) {
   if (!value) return '生成时间未提供';
@@ -11,8 +14,52 @@ function generatedTime(value) {
   const pad = n => String(n).padStart(2, '0');
   return `${date.getUTCFullYear()}年${date.getUTCMonth() + 1}月${date.getUTCDate()}日 ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}（北京时间）`;
 }
+// 站内看结果（D-089）：截止一栏照导出文件的内容写，但不搬文件里给对账用的写法——"（机器摘录）"在页面上叫"原文摘录"，
+// 没有能显示的日期只写一句"截止时间见原文"，不写"截止未核对，以原文为准"（10/29 创始人：这类话写在使用帮助里）
+const SEE_ORIGINAL = '截止时间见原文';
+const SOON = '可能 7 天内截止';
+const EXCERPT_MARK = '（机器摘录）';
+// 文件里"截止日期"一格按"；"连着写：核对过的写成"企业申报截止 2026-11-06 18:00"（自带类型），已变更的写成
+// "原定 企业申报截止 2026-11-01 已延期，见新通知《…》"；原文摘录的只有一条、只写日期"2026-11-06（机器摘录）"，类型在"日期角色"里
+const DATE_AT = /(\d{4}-\d{2}-\d{2})(?: (\d{1,2}:\d{2}))?/;
+// 没核对的那一类截止可能 7 天内到期（接口给 due_soon，和列表、详情同一口径，10/29 独立审阅）：
+// 没有日期时写"可能 7 天内截止"；还有效的日期（不算"原定……"那几条）都不在 7 天内时，后面补一句，免得以为还早
+function deadlineText(item, now) {
+  const value = String(item.deadline || '');
+  // 一个日期都没写的（没核对、没写明）只写一句；原文链接已失效的（接口给 link_gone）不写"截止时间见原文"
+  // （原文已打不开），出处后面标一句。只有"原定……已延期"的照写，不丢变更（Codex 第 8 轮）
+  if (!DATE_AT.test(value)) return item.due_soon === true ? SOON : (item.link_gone === true ? '' : SEE_ORIGINAL);
+  // 核对过的、已变更的自带类型，照写，不再接"日期角色"（原来写成"企业申报截止 2026-11-10 企业申报截止"，Codex 第 9 轮）；
+  // 原文摘录的补上类型，末尾标一次"（原文摘录）"：企业申报截止 2026-11-06（原文摘录）
+  const excerpt = value.includes(EXCERPT_MARK);
+  const kind = String(item.date_role || '').split(EXCERPT_MARK).join('');
+  const text = excerpt ? `${kind ? `${kind} ` : ''}${value.split(EXCERPT_MARK).join('')}（原文摘录）` : value;
+  if (item.due_soon !== true) return text;
+  // 带时刻的按时刻算（当天过了点就算已截止）
+  const near = value.split('；').some((part) => {
+    const at = part.trim().startsWith('原定') ? null : DATE_AT.exec(part);
+    if (!at) return false;
+    const days = daysUntil(at[1], now, at[2]);
+    return days >= 0 && days <= 7;
+  });
+  return near ? text : `${text}；另有一类${SOON}`;
+}
+// 文件里的写法搬到页面上要收一收（10/29 独立审阅按真实数据看到的）：空的发布状态不留两个"·"；支持方式没核对时文件里写
+// "见原文"、不是申报通知写"—"，页面上都不写这一行；出处只写网站名称，去掉括号里的网址（D-097，文件里照旧带）
+const NO_SUPPORT = ['', '见原文', '—'];
+const HOST_IN_BRACKETS = /（[^（）\u4e00-\u9fff]*\.[^（）\u4e00-\u9fff]*）/g;
+function catalogueItem(item, now) {
+  const support = String(item.support || '').trim();
+  return {
+    ...item,
+    deadlineText: deadlineText(item, now),
+    metaText: [item.kind, item.status, item.region].filter(Boolean).join(' · '),
+    supportText: NO_SUPPORT.includes(support) ? '' : support,
+    siteText: String(item.sites || '').replace(HOST_IN_BRACKETS, ''),
+  };
+}
 Page({
-  data: { loading: false, error: '', result: null, current: false, saving: false, advisor: false, page: 1, nextCursor: null, changed: false },
+  data: { loading: false, error: '', result: null, current: false, saving: false, advisor: false, page: 1, nextCursor: null, changed: false, has: flags() },
   onLoad(q) {
     let value = q.ids || '';
     try { value = decodeURIComponent(value); } catch (e) { value = ''; }
@@ -40,7 +87,9 @@ Page({
       const next = res.nextCursor == null ? null : String(res.nextCursor);
       if (next !== null && (!next || this.cursors.slice(0, this.cursorIndex + 1).includes(next))) throw new Error('结果分页信息有误，请重试');
       this.revision = res.revision;
-      this.setData({ result: { ...res, generatedAtText: generatedTime(res.generatedAt) }, page: this.cursorIndex + 1, nextCursor: next });
+      const now = new Date();
+      const items = this.data.advisor ? res.items : res.items.map((item) => catalogueItem(item, now));
+      this.setData({ result: { ...res, items, generatedAtText: generatedTime(res.generatedAt) }, page: this.cursorIndex + 1, nextCursor: next });
     }).catch((err) => {
       if (!current()) return;
       if ([403, 404, 409, 410].includes(err.status)) { this.revision = ''; this.cursors = ['']; this.cursorIndex = 0; }
@@ -55,6 +104,7 @@ Page({
   },
   previous() { if (this.data.loading || this.data.saving || this.cursorIndex < 1) return; this.cursorIndex -= 1; return this.load(); },
   detail(e) { wx.navigateTo({ url: `/pages/detail/index?id=${encodeURIComponent(e.currentTarget.dataset.id)}` }); },
+  help() { if (this.data.has.help) wx.navigateTo({ url: '/pages/help/index?topic=deadline' }); },
   read(e) { wx.navigateTo({ url: `/pages/reader/index?id=${encodeURIComponent(e.currentTarget.dataset.id)}` }); },
   save() {
     if (!this.data.result || this.data.saving) return;

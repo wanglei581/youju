@@ -106,6 +106,13 @@ def test_batch_checks_current_body_conflicts_and_near_dates(session, monkeypatch
     assert views[ids["有效"]][0].public(TODAY)["remainingDays"] == 8
     assert views[ids["临期"]][0].source == "unverified"
     assert soon[ids["临期"]]
+    # 详情页逐类写截止：没核对、候选在 7 天内的这一类带 soon（写"可能 7 天内截止"），照旧不给日期；
+    # 别的没核对的不带（10/29 独立审阅）
+    assert views[ids["临期"]][0].public(TODAY)["soon"] is True
+    assert all(
+        "soon" not in views[ids[name]][0].public(TODAY)
+        for name in ("有效", "原句已改", "年份错误", "太远")
+    )
     assert reasons == {
         "7 天内": 1,
         "30 天以后": 1,
@@ -118,6 +125,7 @@ def test_batch_checks_current_body_conflicts_and_near_dates(session, monkeypatch
         views[ids[name]][0].public(TODAY)["date"] is None
         for name in ("临期", "原句已改", "年份错误", "冲突", "太远")
     )
+    assert v1.document(ids["临期"], session)["deadlines"][0]["soon"] is True
     detail = v1.document(ids["有效"], session)
     assert detail["deadlines"][0]["source"] == "excerpt"
     assert detail["deadlines"][0]["quote"] == "申报截止：２０２６年１０月２０日。"

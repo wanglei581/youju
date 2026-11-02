@@ -14,7 +14,7 @@ function load(file, deps = {}, globals = {}) {
   const module = { exports: {} };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', file), 'utf8'), {
     module, setTimeout, clearTimeout,
-    require(name) { if (name === '../../utils/regions.js') return require('../utils/regions.js'); if (!Object.hasOwn(deps, name) && /ai-access\.js$/.test(name)) return AI_OFF; assert.ok(Object.hasOwn(deps, name), `缺少依赖 ${name}`); return deps[name]; },
+    require(name) { if (name === '../../utils/regions.js') return require('../utils/regions.js'); if (!Object.hasOwn(deps, name) && /(^|\/)pages\.js$/.test(name)) return require('./helpers/package-pages-default.js').pages; if (!Object.hasOwn(deps, name) && /ai-access\.js$/.test(name)) return AI_OFF; assert.ok(Object.hasOwn(deps, name), `缺少依赖 ${name}`); return deps[name]; },
     Page(d) { def = d; }, Component(d) { def = d; }, ...globals,
   }, { filename: file });
   return def ? { ...def, data: JSON.parse(JSON.stringify(def.data)), setData(values) { Object.assign(this.data, values); } } : module.exports;
@@ -99,9 +99,10 @@ test('项目类别筛选：8 类可多选，写明仅供检索参考、非官方
   assert.equal(group.title, '项目类别');
   assert.equal(group.multi, true);
   assert.deepEqual(Array.from(group.options), ['资质与梯度培育', '科技计划与研发', '平台载体与园区', '人才', '表彰奖励', '首台套与新产品', '试点示范', '其他申报']);
-  // 说明拆成两段：右栏顶部统一的一行（tagged）+ 选项下面这组特有的补充
+  // "按标题归类、仅供检索参考、非官方分类"写在使用帮助里（10/29 创始人），面板里只写这组特有的补充
   assert.equal(group.tagged, true);
-  assert.ok(page.data.tagNote.includes(DISCLAIMER));
+  assert.equal(page.data.tagNote, undefined);
+  assert.ok(require('../content/help.js').items.find((i) => i.key === 'tags').a.join('').includes(DISCLAIMER));
   assert.equal(group.note, '只含申报通知和名单');
   assert.equal(calls.at(-1).categories, undefined); // 没选时不带，和以前保存的关注条件一致
   page.pickOption(event({ group: 'category', option: '人才' })); await flush();
@@ -155,8 +156,8 @@ test('详情页：申报通知和名单显示项目类别；类型、类别和�
   const template = read('pages/detail/index.wxml');
   assert.match(template, /<text wx:if="{{doc.category}}" class="tag tag--cat">{{doc.category}}<\/text>/);
   // 标题下只有一行说明（D-053 UI 第一轮）：不再分"发布阶段"（原叫名单状态）"项目类别"两三行
-  assert.match(template, new RegExp(`<view class="weak status-note">类型、类别和发布阶段按标题归类，${DISCLAIMER}</view>`));
-  assert.equal((template.match(/status-note/g) || []).length, 1);
+  // 标题下不再写"按标题归类、非官方分类"（10/29 创始人：写在使用帮助里）
+  assert.equal((template.match(/status-note|非官方分类/g) || []).length, 0);
 });
 
 test('关注的新文件：同样折叠资讯与指南，写明篇数，可以点开', async () => {
@@ -180,7 +181,7 @@ test('关注的新文件：同样折叠资讯与指南，写明篇数，可以�
 test('新加的界面文字不出现禁用字样（含支持方式、产业方向）', () => {
   const texts = [
     conditions.CATEGORY_NOTE, ...conditions.CATEGORIES, conditions.GUIDE,
-    conditions.SUPPORT_NOTE, ...conditions.SUPPORT_MODES, conditions.INDUSTRY_NOTE, ...conditions.INDUSTRIES,
+    conditions.SUPPORT_NOTE, ...conditions.SUPPORT_MODES, ...conditions.INDUSTRIES,
     conditions.describe({ kind: 'all', supports: conditions.SUPPORT_MODES.join(','), industries: conditions.INDUSTRIES.join(','), time: '不限' }),
     read('pages/search/index.js'),
     foldLine({ fold: conditions.foldNote(3, 0) }), foldLine({ fold: conditions.foldNote(0, 3) }),

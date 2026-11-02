@@ -28,18 +28,18 @@
     <ai-hint doc-id="{{doc.id}}" doc-title="{{doc.title}}" issuer="{{doc.issuer}}" date="{{doc.date}}" ai="{{doc.ai}}" bind:jump="toAi" />
     <!-- 原文链接已失效（youju/link_check.py）：放在标题下面先说（失效了就不能再解读，和上面那行提示不会同时出现），下面的要点、正文都是之前收录的 -->
     <view wx:if="{{goneNote}}" class="gone-note">{{goneNote}}</view>
-    <view class="weak status-note">类型、类别和发布阶段按标题归类，仅供检索参考，非官方分类</view>
   </view>
 
-  <!-- 首发版（D-061）：按类型逐条写截止。核对过的标"已核对"；机器摘录的标"机器摘录·未经人工核对"并附原句；其余写"截止未核对" -->
+  <!-- 首发版（D-061、D-108）：按类型逐条写截止。核对过的标"已人工核对"、机器摘出的标"原文摘录"，都附原句；
+       没日期的写"截止时间见原文"，候选在 7 天内的写"可能 7 天内截止" -->
   <view wx:if="{{dls && dls.length}}" class="card due-card">
-    <view class="dls-head"><text class="due-label">截止时间</text><text class="weak">以原文为准</text></view>
+    <view class="dls-head"><text class="due-label">截止时间</text></view>
     <view wx:for="{{dls}}" wx:key="kind" class="dl {{index ? 'dl--line' : ''}}">
       <view class="due-top">
         <view>
           <view class="due-label">{{item.kind}}</view>
           <view wx:if="{{item.dateText}}" class="due-date-row"><text class="due-date">{{item.dateText}}</text><text class="due-week">{{item.week}}</text></view>
-          <view wx:else class="due-unverified">截止未核对，请以原文为准</view>
+          <view wx:else class="due-unverified">{{item.soon ? '可能 7 天内截止' : '截止时间见原文'}}</view>
         </view>
         <text wx:if="{{item.dateText}}" class="left-pill left-pill--{{item.tone}}">{{item.days < 0 ? '已截止' : item.days === 0 ? '今天截止' : '剩 ' + item.days + ' 天'}}</text>
       </view>
@@ -47,7 +47,7 @@
       <view wx:if="{{item.quote}}" class="dl-quote">原文：{{item.quote}}</view>
     </view>
     <!-- 转发合并的通知（D-055）：上面的日期只是本页这一版的，别的地方的版本截止可能不同（10/22 走查） -->
-    <view wx:if="{{versions.length}}" class="weak ver-hint">上面这一栏只对应本页这一版{{versionLabel ? '（' + versionLabel + '）' : ''}}；同一通知其他地方的版本，截止看下面“各版本的截止”</view>
+    <view wx:if="{{versions.length}}" class="weak ver-hint">上面是本页这一版{{versionLabel ? '（' + versionLabel + '）' : ''}}的截止；其他地方的版本见下面“各版本的截止”</view>
     <view wx:if="{{due && loginOpen && remindOpen && due.days >= 3}}" class="remind {{reminded ? 'remind--on' : ''}}" bindtap="toggleRemind">
       <t-icon name="notification" size="34rpx" />
       <text>{{reminded ? '已订阅：截止前 3 天用微信提醒你一次' : '订阅截止提醒（一次）'}}</text>
@@ -61,16 +61,21 @@
       </view>
       <text class="left-pill left-pill--{{due.tone || 'normal'}}">{{due.days < 0 ? '已截止' : due.days === 0 ? '今天截止' : '剩 ' + due.days + ' 天'}}</text>
     </view>
+    <!-- 核对过的那句原文跟在日期下面（和上面逐类写的一样），不再单列一张卡（10/29 独立审阅：同一句写两遍） -->
+    <view class="dl">
+      <text class="src src--verified">已人工核对</text>
+      <view wx:if="{{dueQuote}}" class="dl-quote">原文：{{dueQuote}}</view>
+    </view>
     <view class="due-notes"><view wx:for="{{doc.deadline.notes}}" wx:key="*this">{{item}}</view></view>
     <!-- 转发合并的通知（D-055）：上面的日期只是本页这一版的，别的地方的版本截止可能不同（10/22 走查） -->
-    <view wx:if="{{versions.length}}" class="weak ver-hint">上面这一栏只对应本页这一版{{versionLabel ? '（' + versionLabel + '）' : ''}}；同一通知其他地方的版本，截止看下面“各版本的截止”</view>
+    <view wx:if="{{versions.length}}" class="weak ver-hint">上面是本页这一版{{versionLabel ? '（' + versionLabel + '）' : ''}}的截止；其他地方的版本见下面“各版本的截止”</view>
     <view wx:if="{{loginOpen && remindOpen && due.days >= 3}}" class="remind {{reminded ? 'remind--on' : ''}}" bindtap="toggleRemind">
       <t-icon name="notification" size="34rpx" />
       <text>{{reminded ? '已订阅：截止前 3 天用微信提醒你一次' : '订阅截止提醒（一次）'}}</text>
     </view>
   </view>
+  <!-- 只有一句"截止时间见原文"：不再加"截止时间"小标题（10/29 独立审阅：叠字） -->
   <view wx:elif="{{dueNote && !changes.length}}" class="card due-card">
-    <view class="due-label">申报截止</view>
     <view class="due-unverified">{{dueNote}}</view>
   </view>
 
@@ -97,23 +102,18 @@
         <text class="ver-meta-text">{{item.meta}}</text>
       </view>
     </view>
-    <view class="weak ver-note">各版本的截止日期、报送要求可能不同，以各自原文为准</view>
   </view>
 
-  <view class="card">
+  <!-- 要点只放标题下、截止卡片里没有的（如文号）；一项都没有时不显示这张卡（10/29：发文机关、地区、截止不重复写） -->
+  <view wx:if="{{points.length}}" class="card">
     <view class="section-title">要点</view>
-    <view wx:for="{{doc.points}}" wx:key="index" class="kv {{index === doc.points.length - 1 ? 'kv--last' : ''}}">
+    <view wx:for="{{points}}" wx:key="index" class="kv {{index === points.length - 1 ? 'kv--last' : ''}}">
       <text class="k">{{item[0]}}</text><text class="v">{{item[1]}}</text>
     </view>
   </view>
 
   <!-- 解读入口卡片（10/17 取代右下角浮动按钮）：只有白名单（capabilities.ai_advisor.enabled）或正式开放后才渲染，其余用户不渲染任何内容；做不了的文件写明原因 -->
   <view id="ai-entry"><ai-entry blocked="{{!doc}}" doc-id="{{doc.id}}" doc-title="{{doc.title}}" doc-url="{{doc.url}}" has-attachments="{{atts.length > 0}}" ai="{{doc.ai}}" body-status="{{doc.body ? doc.body.status : ''}}" body-total="{{doc.body && doc.body.total ? doc.body.total : 0}}" bind:attachments="toAttachments" /></view>
-
-  <view wx:if="{{doc.excerpt}}" class="card">
-    <view class="section-title">原文摘录<text class="weak excerpt-sec">{{doc.excerpt.section}}</text></view>
-    <view class="excerpt">“{{doc.excerpt.text}}”</view>
-  </view>
 
   <view wx:if="{{doc.fields && doc.fields.support && doc.fields.support.length}}" class="card support-card">
     <view class="section-title">支持方式<text class="weak excerpt-sec">已核对原文</text></view>
@@ -124,9 +124,9 @@
   </view>
 
   <view wx:if="{{doc.fields && doc.fields.audience && doc.fields.audience.text}}" class="card audience-card">
-    <view class="section-title">申报对象（原文摘录）</view>
+    <!-- 申报对象是人工核对过的原文（和支持方式、申报条件一样标"已核对原文"）；"原文摘录"只用来标机器摘出的截止 -->
+    <view class="section-title">申报对象<text class="weak excerpt-sec">（已核对原文）</text></view>
     <view class="audience-text">{{doc.fields.audience.text}}</view>
-    <view class="weak audience-note">条件可能未列全，以原文为准</view>
   </view>
 
   <!-- 申报条件：只显示人工逐条核对、整份确认过的条目；每条是类别和通知原文里的原句（逐字引用），不显示概括的说法；不作能否申报的判断 -->
@@ -136,16 +136,17 @@
       <text class="cond-cat">{{item.showCat ? item.category : ''}}</text>
       <text class="cond-text" user-select>{{item.quote}}</text>
     </view>
-    <view class="weak cond-note">条件以原文为准，不作为能否申报的判断</view>
+    <view class="weak cond-note">有据不判断能否申报</view>
   </view>
 
   <!-- 正文（D-097）：不满一屏的全部显示（"全文如下"），长的显示开头、在段末停（"下面是开头，全文约 N 字"）；
-       正文下面和底栏两处同名的入口去同一页（阅读全文 / 阅读附件），都读不了时不显示。标题里写明是自动提取、没逐字核对 -->
-  <view wx:if="{{doc.body}}" id="body" class="card">
-    <view class="section-title">正文<text wx:if="{{bodyView}}">（自动提取，未经人工逐字核对）</text></view>
-    <view wx:if="{{bodySummary}}" class="weak body-summary">{{bodySummary}}</view>
+       去阅读页只在底栏放一个入口（阅读全文 / 阅读附件，10/29 创始人：上下两个"阅读全文"是重复），都读不了时不显示。
+       正文是程序提取的这层说明写在使用帮助里，标题只写"正文"（10/29 创始人） -->
+  <!-- 原文链接已失效、一个都读不了（goneAll）：标题下已经写了"正文和附件不再提供"，正文卡片不再说正文为什么没有
+       （附件卡也不显示，不能再说"内容在附件里"，Codex 第 8 轮）；名单类照旧给去查名单的入口。还有能读的附件时照旧写 -->
+  <view wx:if="{{doc.body && !(goneAll && doc.body.status !== 'list')}}" id="body" class="card">
+    <view class="section-title">正文</view>
     <block wx:if="{{bodyView}}">
-      <view class="weak body-note">从原网页或 PDF 提取<text wx:if="{{dueDated}}">；截止日期可先看上面的“截止时间”</text>，一切以原文为准。</view>
       <view class="body-label">{{bodyView.label}}</view>
       <text class="body-text" user-select>{{bodyView.text}}</text>
       <!-- 名单类通知：正文里的名单没展开（D-092），给去查名单的入口 -->
@@ -155,11 +156,11 @@
       <view class="body-none">{{noBody}}</view>
       <view wx:if="{{doc.body.status === 'list'}}" class="link body-lookup" bindtap="toLists" aria-role="button">在“查名单”里按企业名称查询 ›</view>
     </block>
-    <view wx:if="{{entry}}" id="read-entry" class="link body-more" bindtap="readBody" aria-role="button">{{entry.label}} ›</view>
   </view>
 
   <!-- 附件紧跟正文：每个直接写能不能读（和阅读页同一个判断）；能读的写"阅读"可点，读不了的灰色、不能点、写原因 -->
-  <view wx:if="{{atts.length}}" id="attachments" class="card">
+  <!-- 原文链接已失效、一个都读不了（goneAll）：标题下已写"正文和附件不再提供"，不再逐个写一遍（10/29 独立审阅） -->
+  <view wx:if="{{atts.length && !goneAll}}" id="attachments" class="card">
     <view class="section-title">附件 {{atts.length}}</view>
     <view wx:for="{{atts}}" wx:key="index" id="att-{{index}}" class="att {{item.canOpen ? '' : 'att--off'}}" hover-class="{{item.canOpen ? 'att--pressed' : 'none'}}" data-index="{{index}}" bindtap="openAttachment" aria-role="{{item.canOpen ? 'button' : 'text'}}" aria-disabled="{{!item.canOpen}}">
       <text class="att-ext att-ext--{{item.ext}}">{{item.ext}}</text>
@@ -169,18 +170,16 @@
       </view>
       <text wx:if="{{item.canOpen}}" class="att-action att-action--open">{{item.action}}</text>
     </view>
-    <view wx:if="{{attNote}}" class="att-foot">
-      <text>{{attNote}}</text>
-    </view>
   </view>
 
   <view class="card source">
-    <!-- 出处只写来源网站名称、发文机关、日期，不写网址（D-097：网址文字有被认为引导外跳的风险；10/23 审核退回过"复制链接去浏览器"） -->
+    <!-- 出处只写来源网站名称，不写网址（D-097：网址文字有被认为引导外跳的风险；10/23 审核退回过"复制链接去浏览器"）；
+         发文机关和日期标题下已有，这里不再写（10/29）。"以原文为准、不提供填报入口"这一句 agy 要求留在页面上 -->
     <view class="weak source-label">原文出处</view>
     <view class="source-site">{{doc.site || doc.issuer}}</view>
-    <view class="source-meta">发文机关：{{doc.issuer}}<text wx:if="{{doc.date}}">　发布日期：{{doc.date}}</text></view>
-    <view wx:if="{{doc.link_gone}}" class="source-gone">原网页 {{doc.link_gone}} 检查时已打不开。</view>
-    <view class="source-note"><text wx:if="{{doc.checked}}">以上要点由有据按原文逐条整理，以原文为准，{{doc.checked}} 核对。</text>申报请在主管部门的申报系统办理，有据不提供填报入口。</view>
+    <!-- 核对日期说的是截止（"要点"常常整张不显示，不再说"以上要点"，10/29 独立审阅） -->
+    <view class="source-note"><text wx:if="{{checkedText}}">截止日期已于 {{checkedText}} 对照原文核对。</text>内容以原文为准；申报请在主管部门的申报系统办理，有据不提供填报入口。</view>
+    <view wx:if="{{has.help}}" class="link source-help" bindtap="help" aria-role="link">数据说明 ›</view>
   </view>
   <view style="height: 220rpx"></view>
 

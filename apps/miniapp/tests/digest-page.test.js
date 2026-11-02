@@ -191,8 +191,10 @@ function server(items, extra = {}) {
   };
 }
 
-function digestPage(api, wx = {}) {
-  return load('pages/digest/index.js', { '../../utils/api.js': api, '../../utils/format.js': format }, { wx });
+function digestPage(api, wx = {}, pages = require('../utils/pages.js')) {
+  // 完整版的页面清单（仓库里的 app.json，含使用帮助）；pages 换成别的清单时看包里没有帮助页的情形
+  return load('pages/digest/index.js', { '../../utils/api.js': api, '../../utils/format.js': format,
+    '../../utils/pages.js': pages }, { wx });
 }
 
 function apiStub(responses) {
@@ -236,12 +238,32 @@ test('本期清单：带期号打开，按省份分组（顺序照接口），�
   // 出处说明只在顶部 notice-bar 写一次（#339）：页面里不再重复
   assert.doesNotMatch(text, /第三方整理/);
   assert.equal(findAll(root, (n) => n.tag === 'notice-bar').length, 1);
-  assert.match(text, /另有 1 条现已不再提供，这里不列出。/);
-  assert.match(text, /地市、区县组织初审或推荐的，报送时间可能更早。/);
+  // D-108（#403）：说明挪进使用帮助，页面上只留"截止日期怎么看"一个入口；已下架的条数这类内部计数不写
+  assert.doesNotMatch(text, /不再提供|报送时间可能更早|人工核对/);
+  assert.equal((text.match(/以原文为准/g) || []).length, 0);
+  assert.match(text, /截止日期怎么看 ›/);
   assert.doesNotMatch(text, /显示更多/);
   // 每条用列表行组件：点进详情看原文（doc-row 自己打开 /pages/detail/index?id=）
   assert.equal(findAll(root, (n) => n.tag === 'doc-row').length, 6);
   assert.match(read('components/doc-row/index.js'), /\/pages\/detail\/index\?id=\$\{this\.data\.doc\.id\}/);
+});
+
+test('本期清单：截止日期怎么看——点入口去使用帮助的那一条；包里没有使用帮助时不给入口，只写一句（D-108）', async () => {
+  const urls = [];
+  const full = digestPage(apiStub({ digest: server(ITEMS) }), { navigateTo: ({ url }) => urls.push(url) });
+  full.onLoad({ id: '12' }); await flush();
+  const root = render('pages/digest/index.wxml', full.data);
+  assert.equal(findAll(root, (n) => n.attrs.bindtap === 'help').length, 1);
+  full.help();
+  assert.deepEqual(urls, ['/pages/help/index?topic=deadline']);
+  const noHelp = load('utils/pages.js', { './package-pages.js': ['pages/home/index', 'pages/digest/index'] });
+  const bare = digestPage(apiStub({ digest: server(ITEMS) }), { navigateTo: ({ url }) => urls.push(url) }, noHelp);
+  bare.onLoad({ id: '12' }); await flush();
+  const text = textOf(render('pages/digest/index.wxml', bare.data));
+  assert.doesNotMatch(text, /截止日期怎么看/);
+  assert.match(text, /截止日期以原文为准。/);
+  bare.help();
+  assert.deepEqual(urls, ['/pages/help/index?topic=deadline']);
 });
 
 test('本期清单：分页取，每次 100 条，"显示更多"接着取；按省份筛由服务端筛、从头取；组标题写整省条数', async () => {
@@ -356,7 +378,8 @@ test('本期清单：条目全下架时写明；跨年的统计周两头写年�
   await flush();
   const text = textOf(render('pages/digest/index.wxml', page.data));
   assert.match(text, /这一期的条目现已都不再提供。/);
-  assert.match(text, /另有 6 条现已不再提供/);
+  // 已下架的条数不另写（D-108：内部计数不写在页面上）
+  assert.doesNotMatch(text, /另有 6 条/);
   assert.equal(page.data.weekText, '2025年12月29日—2026年1月4日');
 });
 

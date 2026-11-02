@@ -373,15 +373,23 @@ def _out(task: AdvisorTask, session: Session, *, include_result: bool = True) ->
 
 
 @contextmanager
-def _submission_lock(session: Session, kind: str):
+def _submission_lock(session: Session, kind: str, day, settings):
+    """AI 任务：全站上限的锁里查全站用量（满了回 429），占次数、建任务、提交都在锁里。
+    数据工具不进锁，也不读 AI 的设置。"""
     try:
         if kind in AI_KINDS:
-            with service.ai_cap_lock(session):
+            cap = settings.ai_advisor_daily_cap
+            with service.ai_cap_slot(session, day, cap, submissions=True):
                 yield
         else:
             yield
     except service.AdvisorBusy:
         raise HTTPException(status_code=503, detail="系统繁忙，请稍后重试") from None
+    except service.AICapReached:
+        raise HTTPException(
+            status_code=429,
+            detail={"code": "AI_DAILY_CAP", "message": "今天的 AI 使用次数已满，请明天再试"},
+        ) from None
 
 
 def _owned(
@@ -403,9 +411,8 @@ def _owned(
 
 
 def _site_full(session: Session, settings, day) -> bool:
-    """全站今天的 AI 用量到没到上限：和提交时的检查同一个口径。"""
-    used = max(service.global_ai_usage(session, day), service.global_ai_calls(session, day))
-    return used >= settings.ai_advisor_daily_cap
+    """全站今天的 AI 用量到没到上限：和提交时的检查同一个口径（site_ai_used）。"""
+    return service.site_ai_used(session, day) >= settings.ai_advisor_daily_cap
 
 
 @router.get("/mode")
@@ -432,6 +439,8 @@ def capabilities(request: Request, session: SessionDep, user: UserDep) -> dict:
     ai_enabled = interpret.enabled(settings, user)
     stamp = _stamp()
     heartbeat.note_api(session, settings, stamp)
+    chat_on = chat_store.chat_ready()
+    ask_on = chat_on and heartbeat.ask_ready(session, settings, stamp)
     return {
         "data_tools": {
             "enabled": data_enabled,
@@ -445,16 +454,22 @@ def capabilities(request: Request, session: SessionDep, user: UserDep) -> dict:
         },
         "ai_advisor": {
             "enabled": True,
-            "features": list(AI_KINDS),
+            # 问这份通知（ask）和它还剩几次（remaining.ask）同一个条件：问一问开着、admin 的单独
+            # 线路配齐了（心跳 ask_ready，含新鲜度；问一问开发设计第六节第 3 条"只走单独线路"）。
+            # 不给时对话页只有找通知，不写"暂未开放"（Codex 10/28：原来 remaining.ask 只看问一问
+            # 开没开，和 features 对不上）
+            "features": [kind for kind in AI_KINDS if kind != "ask" or ask_on],
             "disclosure": interpret.disclosure(settings),
-            "remaining": {k: max(0, 5 - counts.get(k, 0)) for k in AI_KINDS},
+            "remaining": {
+                k: max(0, 5 - counts.get(k, 0)) for k in AI_KINDS if k != "ask" or ask_on
+            },
             # D-075：后台能不能处理（api 上看 admin 的心跳和设置指纹）、全站今天还能不能用。
             # 两项为假时小程序把按钮变灰、写原因，不收任务
             "available": heartbeat.worker_ready(session, settings, stamp),
             "siteFull": _site_full(session, settings, day),
             # 问一问（#328 第五节）：chat 是显示不显示问一问（本地高危词库定稿以前为假）；
             # chatConsent 是同意过当前版本的"问一问使用说明"没有；askTriesFull 是今天交给模型的
-            # 问这份通知满 20 问了没有
+            # 问这份通知满 20 问了没有；remaining.ask 是问这份通知今天还剩几次（找到原句才算）
             "chat": chat_store.chat_ready(),
             "chatConsent": chat_store.consented(user),
             "askTriesFull": counts.get(chat_store.ASK_TRY, 0) >= chat_store.ASK_TRY_LIMIT,
@@ -594,19 +609,7 @@ def create_task(
                 "maxRows": row_limit,
             },
         )
-    with _submission_lock(session, body.kind):
-        if (
-            body.kind in AI_KINDS
-            and max(
-                service.global_ai_usage(session, day),
-                service.global_ai_calls(session, day),
-            )
-            >= settings.ai_advisor_daily_cap
-        ):
-            raise HTTPException(
-                status_code=429,
-                detail={"code": "AI_DAILY_CAP", "message": "今天的 AI 使用次数已满，请明天再试"},
-            )
+    with _submission_lock(session, body.kind, day, settings):
         if trial is not None:
             # 体验期先用体验当天的次数（两项合计）；用完了有使用期的用使用期，
             # 否则等第二天——不改用每月免费次数，体验结束后它们照常可用

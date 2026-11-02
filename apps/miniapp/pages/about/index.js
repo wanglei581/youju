@@ -2,6 +2,8 @@ const legal = require('../../content/legal.js');
 const { loadCoverage } = require('../../utils/coverage.js');
 const { shortTime } = require('../../utils/format.js');
 const { loginOpen, openPrivacy, remindAny } = require('../../utils/consent.js');
+// 包里有使用帮助时，截止日期的显示规则只写在帮助里（10/29），这里不重复；首发 16 页没有帮助页，照旧写在这里
+const { flags } = require('../../utils/pages.js');
 
 const ENV_NAME = { develop: '开发版', trial: '体验版' };
 
@@ -10,7 +12,7 @@ const ENV_NAME = { develop: '开发版', trial: '体验版' };
 // 协议定稿前（loginOpen 为 false，D-056）没有关注、提醒、纠错和申请覆盖：使用说明不提这些，纠错改为发邮件；
 // 加一段"数据说明"；不打开草案协议，隐私保护指引打开小程序后台填写的官方页面
 Page({
-  data: { op: legal.operator, disclaimer: legal.disclaimer, version: '', cov: null, covFailed: false, open: {}, loginOpen: loginOpen(), remindOpen: remindAny() },
+  data: { op: legal.operator, disclaimer: legal.disclaimer, version: '', cov: null, covFailed: false, open: {}, loginOpen: loginOpen(), remindOpen: remindAny(), has: flags() },
 
   onLoad() {
     let version = '';

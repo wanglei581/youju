@@ -26,6 +26,8 @@ from youju.dedup import groups_for
 from youju.models import DocumentDeadline, DocumentDetail
 
 ORDER = {"企业申报截止": 0, "材料报送截止": 1, "推荐或审核截止": 2}
+# 对外显示的三类截止；"其他"类不显示，核对台也不让通过（D-099 期 0）
+DEADLINE_KINDS = tuple(ORDER)
 EXCERPT_FIRST_DAY = 8
 EXCERPT_LAST_DAY = 30
 DATE_IN_QUOTE = re.compile(
@@ -90,9 +92,12 @@ class View:
     clock: time | None = None
     quote: str | None = None
     record_id: int | None = None
+    # 没核对的这一类截止有候选日期在 7 天内：详情页这一行写"可能 7 天内截止"，照旧不给日期
+    # （和列表的 dueSoonUnverified 同一口径，10/29 独立审阅：列表提示了、详情却没写）
+    soon: bool = False
 
     def public(self, today: date) -> dict:
-        return {
+        data = {
             "kind": self.kind,
             "source": self.source,
             "date": self.day.isoformat() if self.day else None,
@@ -100,6 +105,9 @@ class View:
             "remainingDays": (self.day - today).days if self.day else None,
             "quote": self.quote,
         }
+        if self.soon:
+            data["soon"] = True
+        return data
 
 
 def selected(views: list[View], today: date | None = None) -> View | None:
@@ -269,7 +277,10 @@ def batch(
                             )
             if reason:
                 reasons[reason] += 1
-                views.append(View(kind, "unverified"))
+                near = any(
+                    today <= row.candidate_date <= today + timedelta(days=7) for row in candidates
+                )
+                views.append(View(kind, "unverified", soon=near))
         output[doc_id] = sorted(
             views, key=lambda view: (ORDER.get(view.kind, 9), view.day or date.max)
         )

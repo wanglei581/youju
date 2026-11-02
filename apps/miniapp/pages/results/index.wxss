@@ -5,3 +5,4 @@
 .source text { display: block; }
 button { margin-top: 24rpx; font-size: 26rpx; }
 .error { color: var(--red); }
+.help-link { margin-top: 24rpx; font-size: 26rpx; text-align: center; }
