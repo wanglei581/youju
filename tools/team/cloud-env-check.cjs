@@ -1,6 +1,8 @@
 // 只读：核对云托管某个服务当前在跑的版本里，AI 和协议相关的几项环境变量（创始人在控制台改完后用）。
-// 只打印下面白名单里的非密钥项（值用 JSON 写法打印，前后空格看得出来）；密钥只打印"填了没有、多少个字、有没有空格"，
-// 绝不打印密钥内容；其他环境变量只数个数，不打印名字和值。用本机已登录的 wxcloud CLI 里的官方接口代理。
+// 只打印下面白名单里的非密钥项（值用 JSON 写法打印，前后空格看得出来）；密钥只报"填了""没填"，不报长度、格式，
+// 读到就丢掉（团队章程：密钥只由创始人配，团队工具不碰密钥内容）。换没换成 DeepSeek 的密钥，用端到端核对：
+// 白名单账号试一单，看日志里的模型名和结果页的公示。其他环境变量只数个数，不打印名字和值。
+// 用本机已登录的 wxcloud CLI 里的官方接口代理。
 // 用法：node tools/team/cloud-env-check.cjs <环境ID> <admin|api> [版本名] [--expect deepseek]
 const P = process.env.WXCLOUD_CLI_LIB || require('path').join(require('os').homedir(), '.local/lib/node_modules/@wxcloud/cli/lib');
 const api = require(P + '/api');
@@ -16,7 +18,7 @@ const SHOWN = [
   'YOUJU_AI_ADVISOR_ENABLED', 'YOUJU_AI_ADVISOR_AUDIENCE',
   'YOUJU_AI_ADVISOR_BASE_URL', 'YOUJU_AI_ADVISOR_MODEL', 'YOUJU_AI_ADVISOR_REQUEST_EXTRA', 'YOUJU_AI_ADVISOR_STREAM',
   'YOUJU_AI_MODEL_LABEL', 'YOUJU_AI_MODEL_FILING',
-  'YOUJU_AI_BASE_URL', 'YOUJU_AI_MODEL', 'YOUJU_AI_REQUEST_EXTRA',
+  'YOUJU_AI_BASE_URL', 'YOUJU_AI_MODEL', 'YOUJU_AI_BACKGROUND_MODEL', 'YOUJU_AI_REQUEST_EXTRA',
 ];
 const SECRET = ['YOUJU_AI_ADVISOR_API_KEY', 'YOUJU_AI_API_KEY'];
 
@@ -26,7 +28,7 @@ const EXPECT = {
   deepseek: {
     both: { YOUJU_AI_MODEL_LABEL: '求索对话DeepSeek Chat', YOUJU_AI_MODEL_FILING: 'Beijing-DeepseekChat-202404280016' },
     admin: { YOUJU_AI_ADVISOR_BASE_URL: 'https://api.deepseek.com', YOUJU_AI_ADVISOR_MODEL: 'deepseek-v4-pro', YOUJU_AI_ADVISOR_REQUEST_EXTRA: '{"thinking":{"type":"disabled"}}' },
-    adminSecret: ['YOUJU_AI_ADVISOR_API_KEY'],
+    adminSecret: ['YOUJU_AI_ADVISOR_API_KEY'],  // 只看填没填；是不是 DeepSeek 的密钥用端到端核对
   },
 };
 
@@ -47,6 +49,7 @@ const EXPECT = {
   const ver = await api.DescribeCloudBaseRunServerVersion({ EnvId: envId, ServerName: service, VersionName: version });
   let env = {};
   try { env = JSON.parse(ver.EnvParams || '{}'); } catch { throw new Error('EnvParams 不是 JSON'); }
+  delete ver.EnvParams;  // 原始字符串里也有密钥，解析完就丢掉
   const lines = [`${service} ${version}（${ver.Status || ''}，备注：${ver.Remark || '无'}）：环境变量共 ${Object.keys(env).length} 项`];
   const spaced = (v) => v !== v.trim();
   for (const k of SHOWN) {
@@ -55,9 +58,10 @@ const EXPECT = {
     lines.push(`  ${k} = ${JSON.stringify(v)}${spaced(v) ? '  ← 前后有空格' : ''}`);
   }
   for (const k of SECRET) {
-    if (!env[k]) { lines.push(`  ${k}：没设`); continue; }
-    const v = String(env[k]);
-    lines.push(`  ${k}：填了，${v.length} 个字${/\s/.test(v) ? '，里面有空白字符 ← 要去掉' : '，没有空格'}（不显示内容）`);
+    const filled = Boolean(env[k]);
+    delete env[k];  // 只留"填没填"，值不留在内存里继续用
+    lines.push(`  ${k}：${filled ? '填了' : '没填'}（密钥不看内容、长度和格式）`);
+    env[`__filled__${k}`] = filled;
   }
   if (profile) {
     const exp = EXPECT[profile];
@@ -68,11 +72,7 @@ const EXPECT = {
     }
     if (service === 'admin') {
       for (const k of exp.adminSecret) {
-        const v = env[k];
-        if (!v) bad.push(`${k} 没填`);
-        else if (/\s/.test(String(v))) bad.push(`${k} 里面有空白字符`);
-        // 只看长度和公开的前缀格式，不打印内容：云开发的密钥是 800 多字的长串，DeepSeek 的是 sk- 开头、几十个字
-        else if (String(v).length > 100 || String(v).length < 20 || !String(v).startsWith('sk-')) bad.push(`${k} 不像 DeepSeek 的密钥（${String(v).length} 个字；DeepSeek 的是 sk- 开头、几十个字），可能还是原来云开发那把`);
+        if (!env[`__filled__${k}`]) bad.push(`${k} 没填`);
       }
     }
     lines.push(bad.length ? `核对 ${profile}：有 ${bad.length} 处不对` : `核对 ${profile}：都对`);
