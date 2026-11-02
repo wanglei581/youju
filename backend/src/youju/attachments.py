@@ -567,7 +567,8 @@ def fetch_failure(result: FetchResult) -> Failure:
     if status == "robots_disallowed":
         return Failure("robots", "robots.txt 不允许下载")
     if status == "robots_error":
-        return Failure("robots", "robots.txt 暂时取不到", True)
+        # 抓取器写明了取不到的原因（HTTP 状态、超时……），带进附件的失败说明
+        return Failure("robots", (result.error or "robots.txt 暂时取不到")[:300], True)
     if status == "unsupported_host":
         return Failure("host", (result.error or "非政府网站")[:300])
     return Failure("network", (result.error or status)[:300], True)

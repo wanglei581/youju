@@ -612,6 +612,122 @@ def _cmd_extract_fields(args: argparse.Namespace) -> int:
     return 0 if usage_ok else 1
 
 
+def _cmd_ai_recheck_deadlines(args: argparse.Namespace) -> int:
+    """旧版本的 AI 截止检查重跑一遍（D-099 期 0）。
+    不加 --apply 只清点、估费用，不调模型、不改数据。"""
+    from youju.ai import get_chat_client
+    from youju.ai.deadlines import RESULT_VERSION
+    from youju.ai.pipeline import (
+        old_deadline_checks,
+        rerun_old_deadlines,
+        round_running,
+        round_slot,
+        round_wanted,
+    )
+    from youju.ai.usage import cost_yuan
+
+    now = datetime.now(UTC)
+    with session_factory()() as session:
+        # （上次用的模型, 输入 tokens, 输出 tokens），新的排前面
+        checks = [
+            (check.model, check.prompt_tokens, check.completion_tokens)
+            for _, _, check in old_deadline_checks(session, now, args.days)
+        ]
+        session.rollback()
+
+    # 这次要用的后台模型（和 get_chat_client 同一个取法，不用密钥）：按它的列表价估，
+    # 没列价的按上次的模型估
+    settings = get_settings()
+    configured = getattr(settings, "ai_background_model", "") or getattr(settings, "ai_model", "")
+
+    def estimate(rows) -> tuple[float, bool]:
+        """按这些文件上次截止检查的用量估（参考、上限）：价钱按这次配置的模型，没列价的按上次用的模型；
+        都没列价时第二项为假。"""
+        total, priced = 0.0, True
+        for model, prompt_tokens, completion_tokens in rows:
+            cost = cost_yuan(configured, prompt_tokens, completion_tokens)
+            if cost is None:
+                cost = cost_yuan(model, prompt_tokens, completion_tokens)
+            if cost is None:
+                priced = False
+            else:
+                total += cost
+        return total, priced
+
+    batch = checks[: args.limit]
+    everything, priced_all = estimate(checks)
+    this_run, priced_run = estimate(batch)
+    print(
+        f"近 {args.days} 天发布、截止检查是旧版本（低于第 {RESULT_VERSION} 版）的主文件 "
+        f"{len(checks)} 份；这次最多重跑 {len(batch)} 份"
+    )
+    models = Counter(model for model, _, _ in checks)
+    print(f"  上次用的模型：{dict(models)}")
+    print(
+        f"  按上次用量、这次配置的模型（{configured or '未配置'}）的列表价估"
+        f"（参考，上限，命中缓存、空闲时段更便宜）：这次约 {this_run:.2f} 元，"
+        f"全部约 {everything:.2f} 元"
+        + ("" if priced_all and priced_run else "；有没列价的模型，没算进去")
+    )
+    if not args.apply:
+        print("只清点，没调模型、没改数据。重跑会覆盖这些旧的 AI 截止检查结果，同意后再加 --apply")
+        return 0
+    if settings.role == "api":
+        # 定时任务在 admin 那边，在 api 容器里看不到它那一轮的锁
+        print("这个命令要在 admin 容器里跑，不能在 api 容器里跑")
+        return 1
+    if round_running() or round_wanted():
+        print("定时任务这一轮正在跑，等它跑完再重跑（06:30、20:30 开始，一般半小时内）")
+        return 1
+    client = get_chat_client()
+    if client is None:
+        print("没有配置 AI 密钥（YOUJU_AI_API_KEY），不能重跑")
+        return 1
+    usage_ok = False
+    try:
+        with session_factory()() as session:
+            report = rerun_old_deadlines(
+                session,
+                client,
+                days=args.days,
+                limit=args.limit,
+                now=now,
+                slot=round_slot,
+                # 写库那一段每条语句等行锁最多 10 秒、整段最多 60 秒：拿着锁的时间有上限，
+                # 定时任务那一轮等得起（它最多等 5 分钟）
+                lock_wait=10,
+                write_limit=60,
+            )
+    finally:
+        usage_ok = _finish_ai(client, "recheck")
+    print(f"重跑 {report.documents} 份文件的 AI 截止检查（模型 {client.model}）")
+    print(
+        f"  写进去 {report.written} 份（出错 {report.errors} 份、"
+        f"正文变了没记 {report.body_changed} 份不算，下次再跑）"
+    )
+    if report.round_busy:
+        print("  中途碰上定时任务那一轮，先停下；做完的已保存，等这一轮跑完再跑一次接着做")
+    if report.write_timeout:
+        print(
+            "  写库那一段超过 60 秒，先停下：这一份可能写进去了，也可能没有（写进去的已是新版本、"
+            "下次不再跑；没写进去的下次接着跑）；稍后再跑一次接着做"
+        )
+    print(
+        f"  截止候选：AI 一致 {report.deadlines_agree} 条，只有规则找到 "
+        f"{report.deadlines_rule_only} 条，AI 新找到 {report.deadlines_ai_only} 条（都要人工核对）"
+    )
+    print(
+        f"  出错 {report.errors} 份（保留旧结果，下次再跑）；用量：输入 {report.prompt_tokens}、"
+        f"输出 {report.completion_tokens} tokens"
+    )
+    if report.body_changed:
+        print(f"  检查期间正文被换掉、这次没记的 {report.body_changed} 份（下次重跑）")
+    if report.stopped_early:
+        print("连续多份文件调用 AI 出错，提前停止（可能是服务不可用或额度用完）")
+        return 1
+    return 0 if usage_ok else 1
+
+
 def _cmd_ai_check(args: argparse.Namespace) -> int:
     from youju.ai import get_chat_client
     from youju.ai.pipeline import run_ai_checks
@@ -1012,6 +1128,87 @@ def _cmd_log_uid(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_safety_probe(args: argparse.Namespace) -> int:
+    """开放前量一量微信内容安全会不会误拦政府原文（门槛第 4 道）。只读，不写数据库。
+
+    送检的是 AI 真正会显示的原句：先取最近做完的 AI 结果里的原句；不够数，再从最近收录、能做解读
+    的通知里取像申报要点的段落（对象、条件、材料、时间、支持、方式）补上。交微信检查时带 --openid
+    （这个人两小时内要访问过小程序），只打印各种结果的份数和没通过的编号，不打印文字。每份占一次
+    当天的调用次数（没上架前每天 100 次，纠错也占），所以默认只查 30 份。
+    只能在云托管 admin 容器里跑。"""
+    import re
+
+    from sqlalchemy import select
+    from sqlalchemy.orm import defer
+
+    from youju import wx_security
+    from youju.ai import content, interpret, result_safety
+    from youju.ai.skills import AI_KINDS, get_skill
+    from youju.models import AdvisorTask
+
+    if not wx_security.in_cloud(get_settings()):
+        print("只能在云托管里跑：本机不调微信接口")
+        return 1
+    points = re.compile(r"申报|对象|条件|材料|截止|时间|支持|补助|奖励|方式|系统|报送")
+    samples: list[tuple[str, str]] = []
+    with session_factory()() as session:
+        tasks = session.scalars(
+            select(AdvisorTask)
+            .options(defer(AdvisorTask.snapshot), defer(AdvisorTask.input_json))
+            .where(
+                AdvisorTask.kind.in_(AI_KINDS),
+                AdvisorTask.status == "done",
+                AdvisorTask.result_json.is_not(None),
+            )
+            .order_by(AdvisorTask.finished_at.desc(), AdvisorTask.id.desc())
+            .limit(args.notices)
+        ).all()
+        for task in tasks:
+            text = result_safety.result_text(task.result_json, get_skill(task.kind).result_field)
+            if text.strip():
+                samples.append((f"任务 {task.id}", text[: wx_security.LIMIT]))
+        candidates = session.scalars(
+            select(Document.id)
+            .where(Document.taken_down_at.is_(None))
+            .order_by(Document.first_seen_at.desc(), Document.id.desc())
+            .limit(args.notices * 5)
+        ).all()
+        for doc_id in candidates:
+            if len(samples) >= args.notices:
+                break
+            try:
+                content.check(session, doc_id)
+                loaded = content.load(session, doc_id)
+            except interpret.InterpretRefusal:
+                continue
+            picked = [p["text"] for p in loaded.paragraphs() if points.search(p["text"])]
+            text = "\n".join(picked)[: wx_security.LIMIT]
+            if text.strip():
+                samples.append((f"通知 {doc_id}", text))
+    counts: dict[str, int] = {}
+    blocked: list[str] = []
+    errors = 0
+    for label, text in samples[: args.notices]:
+        try:
+            verdict = wx_security.check_text(args.openid, text)
+        except wx_security.CheckDown as exc:
+            errors += 1
+            print(f"{label}：检测出错（errcode {exc.errcode}）")
+            if exc.errcode in (45009, 61010):
+                break  # 次数用完、openid 两小时内没访问过：后面的也查不了
+            continue
+        key = f"{verdict.suggest}" + (f"（label {verdict.label}）" if verdict.label else "")
+        counts[key] = counts.get(key, 0) + 1
+        if not verdict.passed:
+            blocked.append(f"{label}（{key}）")
+    checked = sum(counts.values())
+    summary = "、".join(f"{key} {n} 份" for key, n in sorted(counts.items())) or "没有查成的"
+    print(f"查了 {checked} 份：{summary}；出错 {errors} 次")
+    if blocked:
+        print("没通过的：" + "，".join(blocked))
+    return 0
+
+
 def _cmd_triage_feedback(args: argparse.Namespace) -> int:
     from youju.ai import get_chat_client
     from youju.ai.triage import triage_feedback
@@ -1299,9 +1496,18 @@ def _cmd_attachment_texts(args: argparse.Namespace) -> int:
         print(
             "另一个附件任务正在运行（附件副本、重查或另一次取文字），这次一个也没取；定时任务下一轮再取，手动补齐请等它跑完再重跑"
         )
+        print("attachment_texts skipped=1")
         return 0
     print(f"下载 {report.checked} 个（{report.bytes} 字节），这轮没轮到 {report.deferred} 个")
     print(_texts_line(report.texts))
+    # 容器终端里复制出来的中文可能有乱码，以这一行为准（只有英文和数字）
+    texts = report.texts
+    print(
+        f"attachment_texts checked={report.checked} bytes={report.bytes} "
+        f"deferred={report.deferred} extracted={texts.extracted} reused={texts.reused} "
+        f"unchanged={texts.unchanged} kept={texts.kept} failed={sum(texts.failed.values())} "
+        f"retracted={texts.retracted} removed={texts.removed} due={texts.due} errors={texts.errors}"
+    )
     return 1 if report.texts.errors else 0
 
 
@@ -1436,7 +1642,10 @@ def _cmd_ai_heartbeat(_: argparse.Namespace) -> int:
     with session_factory()() as session:
         row = heartbeat.beat(session, settings, "admin", stamp)
         heartbeat.check_and_alert(session, settings, stamp)
-        print(f"AI 设置心跳：admin {'能' if row.ai_enabled else '不能'}处理 AI 任务")
+        print(
+            f"AI 设置心跳：admin {'能' if row.ai_enabled else '不能'}处理 AI 任务，"
+            f"问这份通知{'能' if row.ask_ready else '不能'}用"
+        )
     return 0
 
 
@@ -1927,6 +2136,18 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=_cmd_ai_check)
 
     p = sub.add_parser(
+        "ai-recheck-deadlines",
+        help="旧版本的 AI 截止检查重跑一遍（新结果覆盖旧结果、不删数据）；"
+        "不加 --apply 只清点、估费用",
+    )
+    p.add_argument("--days", type=_positive, default=90, help="只重跑近多少天发布的文件（默认 90）")
+    p.add_argument("--limit", type=_positive, default=300, help="这次最多重跑多少份（默认 300）")
+    p.add_argument(
+        "--apply", action="store_true", help="真的调模型重跑；会覆盖线上已有的 AI 截止检查结果"
+    )
+    p.set_defaults(func=_cmd_ai_recheck_deadlines)
+
+    p = sub.add_parser(
         "extract-conditions",
         help="后台模型从申报通知正文抽申报条件（每条带原文引用），送核对台；没配密钥时跳过",
     )
@@ -2007,6 +2228,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument("openid")
     p.set_defaults(func=_cmd_log_uid)
+
+    p = sub.add_parser(
+        "safety-probe",
+        help="开放前量一量微信内容安全会不会误拦政府原文（只读，只能在云托管 admin 容器里跑）",
+    )
+    p.add_argument("--openid", required=True, help="两小时内访问过小程序的人（一般是创始人自己）")
+    p.add_argument("--notices", type=int, default=30, choices=range(1, 91), metavar="1-90")
+    p.set_defaults(func=_cmd_safety_probe)
 
     p = sub.add_parser(
         "triage-feedback",

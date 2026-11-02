@@ -1,9 +1,10 @@
 const api = require('../../utils/api.js');
 const { PROVINCES, ALL, regionSelection, regionValue, areaLabel, uncoveredDistricts } = require('../../utils/regions.js');
 const { previewDocs } = require('../../utils/exporter.js');
-const { todayISO, verifyingNote, dueView, monthDay, weekday } = require('../../utils/format.js');
+const { todayISO, dueView, monthDay, weekday } = require('../../utils/format.js');
 const { watchDay, stopDay } = require('../../utils/daywatch.js');
 const { readCache, writeCache, cachedLabel } = require('../../utils/cache.js');
+const { flags } = require('../../utils/pages.js');
 
 // 日历能翻到的月份：近 30 天所在的月到一年后所在的月（年×12+月，便于比较）
 function monthRange(today) {
@@ -154,10 +155,10 @@ function monthCells(year, month, marks, today) {
 
 // 没有带日期的截止时第一行写什么。7 天内只会有核对过的（机器摘录只给 8 天以后的）
 function emptyTitle({ tab, month, verifiedOnly, province, dept }) {
-  if (tab === MONTH) return verifiedOnly ? `${month}月没有核对过的截止日期` : `${month}月没有核对过或机器摘录的截止日期`;
+  if (tab === MONTH) return verifiedOnly ? `${month}月没有核对过的截止日期` : `${month}月没有核对过或原文摘录的截止日期`;
   if (province || dept) return '暂无符合条件的项目';
   if (tab === 7 || verifiedOnly) return `${tab} 天内暂无核对过的截止日期`;
-  return `${tab} 天内暂无核对过或机器摘录的截止日期`;
+  return `${tab} 天内暂无核对过或原文摘录的截止日期`;
 }
 
 Page({
@@ -170,6 +171,8 @@ Page({
     tab: 7,
     verifiedOnly: false,
     province: '', city: '', district: '', areaText: '', cityRegion: [], cityError: '',
+    // 选的省份还没收录时写省份名（空结果下面写一句，10/29 审阅）；包里有没有使用帮助（页底的"截止日期怎么看 ›"）
+    uncovered: '', has: flags(),
     dept: '',
     provinces: ['不限省份', '国家部委'].concat(PROVINCES),
     depts: DEPTS,
@@ -180,7 +183,6 @@ Page({
     // 7 天内有候选、还没核对的通知：只列标题，不写日期
     soon: NO_SOON,
     // 没有内容时的说明：截止日期正在人工核对，目前已核对几条（服务端给的数字）
-    verifyingNote: '',
     emptyTitle: '',
     // 显示的是本机存的上次数据时写明（取到新数据后清空）
     cachedText: '',
@@ -206,6 +208,7 @@ Page({
     const view = viewFromQuery(query, todayISO());
     this.setData({ statusBarHeight, navHeight, firstPage: firstPage(), ...view, areaText: areaText(view), cityRegion: regionValue(view.province) });
     if (view.tab === MONTH) this.loadMonth(); else this.load(true);
+    this.checkUncovered();
   },
   // 转发给好友和群（D-070）：不开朋友圈，不带任何奖励
   onShareAppMessage() {
@@ -288,7 +291,6 @@ Page({
       rows: reset ? rows : this.data.rows.concat(rows),
       total: res.total, page, loading: false, cachedText, prefilled: !!prefilled,
       soon: this.data.verifiedOnly ? NO_SOON : (res.unverifiedSoon || NO_SOON),
-      verifyingNote: verifyingNote(res.verified_total),
       emptyTitle: emptyTitle(this.data),
     });
   },
@@ -319,7 +321,7 @@ Page({
     (this.data.district ? this.districtGate().then(request) : request()).then((res) => {
       if (seq !== this.calSeq) return;
       this.cal = res;
-      this.setData({ loading: false, truncated: !!res.truncated, verifyingNote: verifyingNote(res.verifiedTotal) });
+      this.setData({ loading: false, truncated: !!res.truncated });
       this.showMonth();
     }).catch((err) => {
       if (seq !== this.calSeq) return;
@@ -401,7 +403,23 @@ Page({
     } catch (err) { this.setData({ cityError: err.message }); }
   },
   clearCity() { this.setData({ city: '', district: '', areaText: '', cityRegion: regionValue(this.data.province), cityError: '' }); this.reloadArea(); },
-  reloadArea() { this.cal = null; this.setData({ sel: '', rows: [], past: [], soon: NO_SOON }); if (this.data.tab === MONTH) this.loadMonth(); else this.load(true); },
+  reloadArea() { this.cal = null; this.setData({ sel: '', rows: [], past: [], soon: NO_SOON }); if (this.data.tab === MONTH) this.loadMonth(); else this.load(true); this.checkUncovered(); },
+  // 选的省份整个还没收录（网站不让程序访问等）：空结果时写明，免得以为这个省近期没有截止（10/29 审阅）。
+  // 只在选了省份时才取收录范围（缓存 10 分钟），平时截止页不多发请求
+  checkUncovered() {
+    const { province } = this.data;
+    if (this.data.uncovered) this.setData({ uncovered: '' });
+    if (!province || province === '国家部委') return;
+    require('../../utils/coverage.js').loadCoverage().catch(() => null).then((c) => {
+      if (province !== this.data.province) return;
+      const missing = !!(c && Array.isArray(c.notCovered) && c.notCovered.some((r) => r && r.name === province));
+      this.setData({ uncovered: missing ? province : '' });
+    });
+  },
+  // 页底"截止日期怎么看 ›"：显示规则写在使用帮助里（包里有帮助页才显示）
+  help() {
+    if (this.data.has.help) wx.navigateTo({ url: '/pages/help/index?topic=deadline' });
+  },
   pickDept(e) {
     const index = Number(e.detail.value);
     this.setData({ dept: index === 0 ? '' : this.data.depts[index] }); this.load(true);

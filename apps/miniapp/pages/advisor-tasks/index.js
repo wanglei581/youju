@@ -1,9 +1,10 @@
 const api = require('../../utils/api.js');
 const access = require('../../utils/ai-access.js');
 const { taskViews, blockDownload, internalNotice, allowedKinds, allKinds, aiTitle, gateState, AI_LABEL, FAB_TEXT, OFF_TEXT, gateText } = require('../../utils/advisor.js');
+const { flags } = require('../../utils/pages.js');
 
 Page({
-  data: { toolsEnabled: false, downloadingId: null, aiLabel: AI_LABEL, fabText: FAB_TEXT, gate: 'off', gateText: OFF_TEXT, loading: true, error: '', actionError: '', items: [], busyId: null, aiEnabled: false, aiNotice: '', kinds: [] },
+  data: { toolsEnabled: false, downloadingId: null, aiLabel: AI_LABEL, fabText: FAB_TEXT, gate: 'off', gateText: OFF_TEXT, loading: true, error: '', actionError: '', items: [], busyId: null, aiEnabled: false, aiNotice: '', kinds: [], has: flags() },
   // 每次显示都重新问能力接口：在途的、缓存的答复都不用（第 23 轮）
   onShow() { this.dead = false; this.visible = true; this.delay = 3000; if (api.forgetCapabilities) api.forgetCapabilities(); this.load(); },
   onHide() { this.stop(); },

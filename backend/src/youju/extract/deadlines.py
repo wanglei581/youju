@@ -33,8 +33,26 @@ class DeadlineCandidate:
 
 
 def same_moment(a_date: date, a_time: time | None, b_date: date, b_time: time | None) -> bool:
-    """同一天，且两边都写了时刻时时刻也相同，算同一个截止（规则和 AI 的候选互相比对用）。"""
+    """规则和 AI 的候选算不算"一致"：同一天，而且时刻也一样——两边都没写时刻，或都写了且相同。
+    一边写了时刻、一边没写，不算一致（D-099 期 0：没写的那边没有印证这个时刻）。"""
+    return a_date == b_date and a_time == b_time
+
+
+def may_be_same(a_date: date, a_time: time | None, b_date: date, b_time: time | None) -> bool:
+    """可能是同一个截止：同一天，两边都写了时刻的时刻也相同，一边没写时刻也算。
+    只用来去重（这一天已有候选就不再重复送审），不能当"一致"用，一致看 same_moment。"""
     return a_date == b_date and (a_time is None or b_time is None or a_time == b_time)
+
+
+def _clock(match: re.Match, period: str | None) -> time | None:
+    """原文的时刻。"下午 5 时""晚上 8 时""中午 1 时"是 17 时、20 时、13 时；
+    本来写成 17:00 的不再加。"晚上 12 时"是当天结束，和"24 时"一样只记日期（D-099 期 0）。"""
+    hour, minute = int(match.group("hour")), int(match.group("minute") or 0)
+    if (period in ("下午", "晚上") and 1 <= hour <= 11) or (period == "中午" and 1 <= hour <= 2):
+        hour += 12
+    elif period == "晚上" and hour == 12:
+        return None
+    return time(hour, minute)
 
 
 def _kind(context: str) -> str:
@@ -85,9 +103,13 @@ def extract_deadlines(body: str, publish_date: date | None) -> list[DeadlineCand
         for match in dates:
             before = sentence[max(0, match.start() - 45) : match.start()]
             after = sentence[match.end() : match.end() + 35]
-            # 区间起点后紧跟“至/到”，不作为截止。
+            # 区间起点后紧跟“至/到”，不作为截止；中间可以隔着"上午 9:00"这样的时刻（D-099 期 0：
+            # 以前带"上午/下午"的认不出，"10月12日上午9:00至10月31日"会把开始日当截止）
             after_date = re.sub(r"^\s*[（(][^）)]{1,6}[）)]", "", after)
-            if re.match(r"\s*(?:\d{1,2}\s*[:：时]\s*\d{0,2}\s*分?)?\s*[至到—–~-]", after_date):
+            if re.match(
+                r"\s*(?:(?:上午|下午|中午|晚上)\s*)?(?:\d{1,2}\s*[:：时点]\s*\d{0,2}\s*分?)?\s*[至到—–~-]",
+                after_date,
+            ):
                 continue
             if re.match(r"\s*(?:以后|以来|之后|起)", after):
                 continue
@@ -124,11 +146,11 @@ def extract_deadlines(body: str, publish_date: date | None) -> list[DeadlineCand
                 continue
             tail = sentence[match.end() : match.end() + 20]
             tail = re.sub(r"^\s*[（(][^）)]{1,6}[）)]", "", tail)
-            tail = re.sub(r"^\s*(?:上午|下午|中午|晚上)", "", tail)
+            period = re.match(r"\s*(上午|下午|中午|晚上)", tail)
+            if period:
+                tail = tail[period.end() :]
             clock = _TIME.match(tail.lstrip(" ,，"))
-            due_time = (
-                time(int(clock.group("hour")), int(clock.group("minute") or 0)) if clock else None
-            )
+            due_time = _clock(clock, period.group(1) if period else None) if clock else None
             if len(dates) == 1:
                 context = sentence
             else:

@@ -97,3 +97,50 @@ def test_long_evidence_is_cut_around_the_date():
 def test_bad_time_is_dropped():
     items = [item("2026-10-01", BODY, clock="25:00")]
     assert extract_deadlines_with_ai(make_client(items), "标题", BODY, date(2026, 9, 1)) == []
+
+
+def test_evidence_across_semicolon_and_line_break_is_kept():
+    """D-099 期 0：原句按全文核对。以前跨"；"或换行的原句对不上切好的单句，整条丢掉。"""
+    body = "申报时间：2026年9月20日至10月15日；材料报送截止\n2026年10月20日。"
+    items = [
+        item("2026-10-15", "申报时间：2026年9月20日至10月15日；材料报送截止", label="企业申报截止"),
+        item("2026-10-20", "材料报送截止\n2026年10月20日"),
+    ]
+    result = extract_deadlines_with_ai(make_client(items), "标题", body, date(2026, 9, 1))
+    assert [(r.due_date, r.kind) for r in result] == [
+        (date(2026, 10, 15), "企业申报截止"),
+        (date(2026, 10, 20), "材料报送截止"),
+    ]
+    # 跨行的原句存成一行
+    assert result[1].evidence == "材料报送截止 2026年10月20日"
+
+
+def test_evidence_still_has_to_be_verbatim():
+    body = "申报截止时间为2026年10月15日；逾期不予受理。"
+    items = [item("2026-10-15", "申报截止时间为2026年10月15日；逾期一律不受理")]
+    assert extract_deadlines_with_ai(make_client(items), "标题", body, date(2026, 9, 1)) == []
+
+
+def test_midnight_24_keeps_the_date_without_clock():
+    """写"24 时"的是当天结束：留下这一条、只记日期（和规则一样）。以前过不了格式检查，整条丢掉。"""
+    body = "请于2026年10月1日24时前报送材料。"
+    items = [item("2026-10-01", body, clock="24:00")]
+    result = extract_deadlines_with_ai(make_client(items), "标题", body, date(2026, 9, 1))
+    assert [(r.due_date, r.due_time) for r in result] == [(date(2026, 10, 1), None)]
+
+
+def test_one_digit_hour_is_read():
+    items = [item("2026-10-01", BODY, clock="9:00")]
+    result = extract_deadlines_with_ai(make_client(items), "标题", BODY, date(2026, 9, 1))
+    assert result[0].due_time == time(9)
+
+
+def test_stored_result_versions():
+    from youju.ai.deadlines import RESULT_VERSION, stored_items, stored_version
+
+    old = [{"date": "2026-10-01", "time": None}]
+    new = {"version": RESULT_VERSION, "items": old}
+    assert stored_items(old) == old and stored_version(old) == 1
+    assert stored_items(new) == old and stored_version(new) == RESULT_VERSION
+    assert stored_items(None) == [] and stored_version(None) == 0
+    assert stored_items({"version": 2}) == [] and stored_version({"items": []}) == 0

@@ -391,6 +391,7 @@ exit 0
     script = script.replace("cd /app/backend", f"cd {tmp_path}")
     script = script.replace("/proc/1/fd/1", str(tmp_path / "output"))
     script = script.replace("/tmp/youju-round.lock", str(tmp_path / "round.lock"))
+    script = script.replace("/tmp/youju-round.wanted", str(tmp_path / "round.wanted"))
     wrapper = tmp_path / "round.sh"
     wrapper.write_text(script)
     env = {
@@ -405,6 +406,8 @@ exit 0
     assert result.returncode == 0, result.stderr
     calls = (tmp_path / "calls").read_text()
     assert "job-start round" in calls and "step notify" in calls
+    # 等锁前留的标记，拿到锁或放弃以后都删掉
+    assert not (tmp_path / "round.wanted").exists()
     if failure == "lock":
         assert "job-finish 42 75" in calls and "step crawl" not in calls
     else:

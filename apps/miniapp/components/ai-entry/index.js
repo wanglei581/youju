@@ -9,6 +9,8 @@ const access = require('../../utils/ai-access.js');
 const context = require('../../utils/tool-context.js');
 const { reasonView } = require('../../utils/ai-reasons.js');
 
+const LINK_GONE_CARD = '这份通知暂不提供 AI 解读和条款对照。';
+
 // 和后端 interpret.eligible_body 的正文上限一致
 const MAX_BODY = 24000;
 
@@ -62,7 +64,10 @@ Component({
       const clauseAvailable = known && ai.clause === true;
       const available = interpretAvailable || clauseAvailable;
       const code = known && typeof ai.reason === 'string' && ai.reason ? ai.reason : legacyReason(this.properties.bodyStatus, this.properties.bodyTotal);
-      const view = available ? { text: '', next: '', nextText: '' } : reasonView(code, this.properties.hasAttachments);
+      // 原文链接已失效：详情页标题下已经写了"原文链接已失效……"，卡片上不再说一遍原因（11/2 开发者工具实测：同一屏两遍）；
+      // 提交被拒时的提示（解读页）照旧带原因
+      const view = available ? { text: '', next: '', nextText: '' }
+        : code === 'link_gone' ? { text: LINK_GONE_CARD, next: '', nextText: '' } : reasonView(code, this.properties.hasAttachments);
       this.setData({
         aiEnabled: !this.properties.blocked && known && state.visible === true && state.confirmed === true,
         paused: state.available === false,

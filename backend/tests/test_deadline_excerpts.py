@@ -1,6 +1,7 @@
 from datetime import date, datetime, timedelta
 
 import pytest
+from sqlalchemy import select
 
 from youju import deadline_excerpts as excerpts
 from youju.models import Document, DocumentDeadline, DocumentDetail, Source
@@ -105,6 +106,13 @@ def test_batch_checks_current_body_conflicts_and_near_dates(session, monkeypatch
     assert views[ids["有效"]][0].public(TODAY)["remainingDays"] == 8
     assert views[ids["临期"]][0].source == "unverified"
     assert soon[ids["临期"]]
+    # 详情页逐类写截止：没核对、候选在 7 天内的这一类带 soon（写"可能 7 天内截止"），照旧不给日期；
+    # 别的没核对的不带（10/29 独立审阅）
+    assert views[ids["临期"]][0].public(TODAY)["soon"] is True
+    assert all(
+        "soon" not in views[ids[name]][0].public(TODAY)
+        for name in ("有效", "原句已改", "年份错误", "太远")
+    )
     assert reasons == {
         "7 天内": 1,
         "30 天以后": 1,
@@ -117,6 +125,7 @@ def test_batch_checks_current_body_conflicts_and_near_dates(session, monkeypatch
         views[ids[name]][0].public(TODAY)["date"] is None
         for name in ("临期", "原句已改", "年份错误", "冲突", "太远")
     )
+    assert v1.document(ids["临期"], session)["deadlines"][0]["soon"] is True
     detail = v1.document(ids["有效"], session)
     assert detail["deadlines"][0]["source"] == "excerpt"
     assert detail["deadlines"][0]["quote"] == "申报截止：２０２６年１０月２０日。"
@@ -151,3 +160,85 @@ def test_selected_uses_open_excerpt_before_expired_verified():
     future = excerpts.View("材料报送截止", "excerpt", TODAY + timedelta(days=8))
     assert excerpts.selected([past, future], TODAY) == future
     assert excerpts.selected([past], TODAY) == past
+
+
+def test_only_rule_found_deadlines_get_excerpt_dates(session):
+    """D-099 期 0：机器摘录的日期只取规则找到的三类截止；AI 单独找到的、用户线索生成的不给日期，
+    但同一类型日期对不上照样算冲突；"其他"类什么都不显示、也不算 7 天内有截止。"""
+    source = Source(
+        level="省级",
+        province="北京",
+        dept="科技",
+        dept_full_name="北京市科技局",
+        column_name="通知",
+        url="https://example.gov.cn/",
+        rights_level=1,
+    )
+    session.add(source)
+    session.flush()
+    ids = {}
+
+    def doc(name, body, *candidates):
+        item = Document(
+            source_id=source.id,
+            title=f"{name}项目申报通知",
+            url=f"https://example.gov.cn/{name}",
+            url_key=f"origin-{name}",
+            publish_date=TODAY,
+            first_seen_at=datetime(2026, 10, 12),
+            last_seen_at=datetime(2026, 10, 12),
+        )
+        session.add(item)
+        session.flush()
+        ids[name] = item.id
+        session.add(
+            DocumentDetail(
+                document_id=item.id, body_text=body, status="ok", fetched_at=datetime(2026, 10, 12)
+            )
+        )
+        for number, (origin, kind, days, quote) in enumerate(candidates):
+            session.add(
+                DocumentDeadline(
+                    document_id=item.id,
+                    fingerprint=f"{name}{number}",
+                    kind=kind,
+                    candidate_date=TODAY + timedelta(days=days),
+                    evidence=quote,
+                    confidence="高",
+                    status="pending",
+                    origin=origin,
+                )
+            )
+
+    q20, q22, q15 = "申报截止：10月20日。", "申报截止：10月22日。", "申报截止：10月15日。"
+    doc("规则", q20, ("rule", "企业申报截止", 8, q20))
+    doc("仅AI", q20, ("ai", "企业申报截止", 8, q20))
+    doc("用户线索", q20, ("user", "企业申报截止", 8, q20))
+    doc("AI另一天", q20 + q22, ("rule", "企业申报截止", 8, q20), ("ai", "企业申报截止", 10, q22))
+    # AI 那条编号更小也不用它：日期取规则那条
+    doc("同一天", q20, ("ai", "材料报送截止", 8, q20), ("rule", "材料报送截止", 8, q20))
+    doc("其他类", q20 + q15, ("rule", "其他", 8, q20), ("ai", "其他", 3, q15))
+    doc("AI临期", q15, ("ai", "企业申报截止", 3, q15))
+    session.flush()
+    views, soon, reasons = excerpts.batch(session, list(ids.values()), {}, TODAY)
+
+    def shown(name):
+        return [(v.kind, v.source, v.day) for v in views[ids[name]]]
+
+    day8 = TODAY + timedelta(days=8)
+    assert shown("规则") == [("企业申报截止", "excerpt", day8)]
+    assert shown("仅AI") == [("企业申报截止", "unverified", None)]
+    assert shown("用户线索") == [("企业申报截止", "unverified", None)]
+    assert shown("AI另一天") == [("企业申报截止", "unverified", None)]
+    rule_row = session.scalar(
+        select(DocumentDeadline).where(
+            DocumentDeadline.document_id == ids["同一天"], DocumentDeadline.origin == "rule"
+        )
+    )
+    assert [(v.source, v.day, v.record_id) for v in views[ids["同一天"]]] == [
+        ("excerpt", day8, rule_row.id)
+    ]
+    assert shown("其他类") == [] and not soon[ids["其他类"]]
+    # AI 单独找到的临期截止不给日期，但照样提示"7 天内有截止未核对"
+    assert shown("AI临期") == [("企业申报截止", "unverified", None)] and soon[ids["AI临期"]]
+    assert reasons == {"不是规则找到的": 2, "冲突": 1, "7 天内": 1}

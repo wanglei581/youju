@@ -31,14 +31,20 @@ from youju.models import (
 )
 from youju.takedown import available_condition, is_taken_down
 
-PAGE_SEGMENTS = 20
+PAGE_SEGMENTS = 120
 MAX_PAGE_BYTES = 128 * 1024
 # 分页按存下的文字大小算（每页最多 PAGE_SEGMENTS 段、合计不超过 PAGE_BUDGET 字节），整份内容的
 # 页数、每页从哪一段开始是定的：页面能写"第 N 页 / 共 M 页"、记住读到哪一页（D-097）。一页约
 # 4000 字（手机上十来屏）：2 万字的指南分成 5 页左右，续读才有意义；返回前还要再脱敏、换说法
-# （会变长一点），离返回上限 MAX_PAGE_BYTES 还很远
+# （会变长一点），离返回上限 MAX_PAGE_BYTES 还很远。
+# 段数上限只防一页被极短的段撑得太长（附件每段另算 64 字节，再短的段一页也就一百多段），低于小程序
+# 每页最多 200 段的校验。原来是 20：填报模板、表格这类短段落的附件一页只有几百字，5000 多字要翻
+# 14 页（10/29 D-097 ④ 验收）
 PAGE_BUDGET = 12 * 1024
-# 2：D-097 分页定下来、遮挡处说法改了，旧版本号的续读位置作废
+# 2：D-097 分页定下来、遮挡处说法改了，旧版本号的续读位置作废。10/29 段数上限放宽、分页变了，
+# 版本号没改：记着的位置、部署时开着的页面翻页用的位置，不再是一页的开头时阅读接口回 422，小程序
+# 回到第 1 页、写"位置已失效"（已发的旧版小程序只在续读时这样，翻页时报错，退出重进后从第 1 页读）；
+# 改了版本号小程序会说成"已更新"，内容其实没变，分页没变的文件也要从头读
 READER_VERSION = 2
 
 
@@ -400,13 +406,16 @@ def attachment_reading(
         version.extracted_at,
     )
     after = _check_revision(cursor, revision, current)
+    # 每段按返回时要带的算：文字、单元格、位置（表格每行都带工作表名，表名再长一页也不超返回上限），
+    # 另加 64 字节的字段名等
     sizes = [
         (n, int(size or 0) + 64)
         for n, size in session.execute(
             select(
                 AttachmentTextSegment.n,
                 func.octet_length(AttachmentTextSegment.text)
-                + func.coalesce(func.octet_length(AttachmentTextSegment.cells), 0),
+                + func.coalesce(func.octet_length(AttachmentTextSegment.cells), 0)
+                + func.coalesce(func.octet_length(AttachmentTextSegment.loc), 0),
             )
             .where(AttachmentTextSegment.version_id == version.id)
             .order_by(AttachmentTextSegment.n)

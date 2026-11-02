@@ -11,7 +11,7 @@ const format = require('../utils/format.js');
 const regions = require('../utils/regions.js');
 const boost = require('../utils/boost.js');
 const { render, textOf, findAll, hasClass, tapsTo } = require('./wxml-render.js');
-const { FIRST_PAGES } = require('../../../tools/miniapp_presubmit_check.js');
+const { FIRST_PAGES, FIRST_AI_PAGES } = require('../../../tools/miniapp_presubmit_check.js');
 
 const ROOT = path.join(__dirname, '..');
 const read = (file) => fs.readFileSync(path.join(ROOT, file), 'utf8');
@@ -143,13 +143,15 @@ test('我的客户（过审版）：顶部没有"打开工具中心"，点了也
   }
 });
 
-test('联系客服（过审版）：鸿蒙手机打不开客服时不给"看使用帮助"，改成去"关于有据"看联系邮箱；完整版照旧给使用帮助', () => {
-  for (const [pages, help] of [[FIRST, false], [FULL, true]]) {
-    for (const variant of ['row', 'block']) {
+test('联系客服（过审版）：鸿蒙手机打不开客服时不给"看使用帮助"，改成去"关于有据"看联系邮箱；完整版照旧给使用帮助；"我的"页上一行就是使用帮助，那里一律改给联系邮箱（10/29）', () => {
+  for (const [pages, packHelp] of [[FIRST, false], [FULL, true]]) {
+    // "我的"页上一行就是使用帮助、AI 首页同一张卡里有"使用帮助 ›"、使用帮助页就是它自己：这三处一律改给联系邮箱（10/29）
+    for (const [variant, from] of [['row', 'me'], ['block', 'me'], ['block', 'ai_result'], ['block', 'ai_home'], ['block', 'help']]) {
+      const help = packHelp && !['me', 'ai_home', 'help'].includes(from);
       const urls = [];
       const view = load('components/contact-button/index.js', { '../../content/legal.js': { operator: { email: 'help@example.invalid' } }, '../../utils/pages.js': pages },
         { wx: { getDeviceInfo: () => ({ platform: 'ohos' }), navigateTo: ({ url }) => urls.push(url) } });
-      Object.assign(view.properties, { from: 'me', docId: '', docTitle: '', reason: '', variant });
+      Object.assign(view.properties, { from, docId: '', docTitle: '', reason: '', variant });
       view.lifetimes.attached.call(view);
       const root = render('components/contact-button/index.wxml', { ...view.data, ...view.properties });
       const text = textOf(root);
@@ -201,8 +203,12 @@ test('AI（过审版）：包里没有 AI 页面时对谁都不显示，白名�
 
 // 首发包里的页面、组件、工具函数写到包外页面的地方，必须用 utils/pages.js 判断过（或只被 AI 入口用，
 // AI 入口在包里没有 AI 页面时整个不显示）。新加的入口没判断时这里会报出来
-test('首发包里写到包外页面的文件都用 utils/pages.js 判断过', () => {
-  const firstNames = FIRST_PAGES.map((p) => p.split('/')[1]);
+test('首发包、过审版加 AI 包里写到包外页面的文件都用 utils/pages.js 判断过', () => {
+  for (const list of [FIRST_PAGES, FIRST_PAGES.concat(FIRST_AI_PAGES)]) guardedIn(list);
+});
+
+function guardedIn(list) {
+  const firstNames = list.map((p) => p.split('/')[1]);
   const files = [];
   const walk = (dir) => {
     for (const entry of fs.readdirSync(path.join(ROOT, dir), { withFileTypes: true })) {
@@ -225,5 +231,23 @@ test('首发包里写到包外页面的文件都用 utils/pages.js 判断过', (
     const guarded = /require\('(\.\.\/)+utils\/pages\.js'\)|require\('\.\/pages\.js'\)/.test(read(owner));
     if (!guarded) offenders.push(`${file}：${[...new Set(outside)].join('、')}`);
   }
-  assert.deepEqual(offenders, []);
+  assert.deepEqual(offenders, [], `${list.length} 页的包`);
+}
+
+test('我的记录（过审版加 AI，D-098）：包里没有工具中心，空的时候只说去通知详情页点"AI 解读"，不提工具中心、不给"去工具中心"；完整版照旧', async () => {
+  const caps = { data_tools: { enabled: false, features: [] }, ai_advisor: { enabled: true, features: ['interpret', 'clause'], remaining: { interpret: 5, clause: 5 } } };
+  for (const [pages, tools] of [[pagesOf(FIRST_PAGES.concat(FIRST_AI_PAGES)), false], [FULL, true]]) {
+    const page = load('pages/advisor-tasks/index.js', {
+      '../../utils/api.js': { advisorCapabilities: () => Promise.resolve(caps), advisorTasks: () => Promise.resolve({ items: [] }) },
+      '../../utils/advisor.js': require('../utils/advisor.js'), '../../utils/pages.js': pages,
+    }, { wx: { setNavigationBarTitle() {}, navigateTo() {} } });
+    page.onShow(); await flush();
+    const root = render('pages/advisor-tasks/index.wxml', page.data);
+    const text = textOf(root);
+    assert.match(text, /还没有记录/);
+    assert.match(text, /在通知详情页点“AI 解读”/);
+    assert.equal(/工具中心/.test(text), tools, String(tools));
+    assert.equal(findAll(root, tapsTo('tools')).length, tools ? 1 : 0);
+    page.onUnload();
+  }
 });

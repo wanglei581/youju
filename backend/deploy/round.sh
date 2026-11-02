@@ -20,9 +20,14 @@ run() {
   [ "$code" -eq 0 ] || round_code=1
   return "$code"
 }
-# 整轮加锁：上一轮还没跑完就跳过这一轮并提醒，避免两轮的步骤交错（如本轮补详情被上一轮的锁挡住）
+# 整轮加锁：上一轮还没跑完就跳过这一轮并提醒，避免两轮的步骤交错（如本轮补详情被上一轮的锁挡住）。
+# 最多等 5 分钟：重跑旧版本 AI 截止检查（youju ai-recheck-deadlines）一次只拿着这把锁做一份；
+# 等锁前留标记，它见到标记做完这一份就停，所以最多等它这一份（D-099 期 0 补审）
 exec 9>/tmp/youju-round.lock
-if ! flock -n 9; then
+# 先留标记"这一轮要锁"：重跑命令见到它，做完手上这一份就停，不再拿下一份（flock 不排队）
+date +%s > /tmp/youju-round.wanted
+if ! flock -w 300 9; then
+  rm -f /tmp/youju-round.wanted
   finish 75
   log "跳过：上一轮抓取和处理还没跑完"
   "$D/job.sh" alert "上一轮抓取和处理还没跑完，跳过 $(date '+%H:%M') 这一轮" || :
@@ -30,6 +35,7 @@ if ! flock -n 9; then
   [ "$1" = "--notify" ] && "$D/job.sh" notify
   exit 0
 fi
+rm -f /tmp/youju-round.wanted
 # 抓取成功后才核对栏目：抓取没跑完或失败时核对，会把还没检查到的栏目误报成漏检。
 # 早上那一轮另外提醒今天正好连续 3 天没抓到的栏目（每个栏目只提醒这一次，晚上那轮不重复）
 if [ "$1" = "--notify" ]; then

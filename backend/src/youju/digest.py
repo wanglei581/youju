@@ -13,6 +13,7 @@ import math
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
+from itertools import groupby
 
 from sqlalchemy import func, or_, select, text
 from sqlalchemy.orm import Session
@@ -25,6 +26,7 @@ from youju.dedup import canonical_ids, groups_for, visible_documents
 from youju.models import (
     AccessDaily,
     AdvisorTask,
+    AISafetyHit,
     AttachmentCopy,
     Document,
     DocumentDeadline,
@@ -173,6 +175,18 @@ class Digest:
     attachment_bytes: int = 0
     result_files: int = 0
     usage_ok: bool = True
+    # 内容安全（门槛第 4 道）：近 24 小时拦下的 AI 结果（按层），检测接口出错失败的 AI 任务。
+    # 只有次数，不含任何文字和用户编号
+    safety_local: int = 0
+    safety_wechat: int = 0
+    safety_documents: tuple[int, ...] = ()  # 被拦的通知编号（公开数据），最多列 5 个
+    safety_questions: int = 0  # 问一问的提问被拦（没有原文可看，只报次数）
+    safety_check_down: int = 0
+    # 近 24 小时新抓的正文、附件文字命中本地词库的份数（误拦，或者网站被挂了违规内容）
+    safety_new_bodies: int = 0
+    safety_new_attachments: int = 0
+    safety_ok: bool = True
+    safety_words_empty: str | None = None  # 本地词库没有词条时记版本：新正文、附件没扫
     # 能读情况（D-097 ④）：出错时是 None、readability_ok 为 False
     readability: Readability | None = None
     readability_ok: bool = True
@@ -305,6 +319,12 @@ def build_digest(session: Session, now: datetime | None = None) -> Digest:
     _quality_and_usage(session, digest, today)
     try:
         with session.begin_nested():
+            _safety(session, digest, since)
+    except Exception as exc:  # noqa: BLE001 - 统计出错不能让整条日报发不出去；只记类型
+        log.warning("日报的内容安全统计出错：%s", type(exc).__name__)
+        digest.safety_ok = False
+    try:
+        with session.begin_nested():
             digest.readability = readability(session, now)
     except Exception as exc:  # noqa: BLE001 - 统计出错不能让整条日报发不出去；只记类型
         log.warning("日报的能读情况统计出错：%s", type(exc).__name__)
@@ -322,6 +342,114 @@ def _quality_and_usage(session: Session, digest: Digest, today: date) -> None:
         except Exception as exc:  # noqa: BLE001 - 统计出错不能让整条日报发不出去；只记类型
             log.warning("日报的%s统计出错：%s", flag, type(exc).__name__)
             setattr(digest, flag, False)
+
+
+def _safety(session: Session, digest: Digest, since: datetime) -> None:
+    from youju import safety_words
+    from youju.ai import result_safety
+    from youju.models import AttachmentTextSegment, AttachmentTextVersion
+
+    layers = dict(
+        session.execute(
+            select(AISafetyHit.layer, func.count(AISafetyHit.id))
+            .where(AISafetyHit.created_at >= since, AISafetyHit.stage == "answer")
+            .group_by(AISafetyHit.layer)
+        ).all()
+    )
+    digest.safety_questions = (
+        session.scalar(
+            select(func.count(AISafetyHit.id)).where(
+                AISafetyHit.created_at >= since, AISafetyHit.stage == "question"
+            )
+        )
+        or 0
+    )
+    digest.safety_local, digest.safety_wechat = layers.get("local", 0), layers.get("wechat", 0)
+    digest.safety_documents = tuple(
+        session.scalars(
+            select(AISafetyHit.document_id)
+            .where(
+                AISafetyHit.created_at >= since,
+                AISafetyHit.stage == "answer",
+                AISafetyHit.document_id.is_not(None),
+            )
+            .group_by(AISafetyHit.document_id)
+            .order_by(func.max(AISafetyHit.created_at).desc())
+            .limit(5)
+        )
+    )
+    digest.safety_check_down = (
+        session.scalar(
+            select(func.count(AdvisorTask.id)).where(
+                AdvisorTask.error == result_safety.CHECK_DOWN_MESSAGE,
+                AdvisorTask.finished_at >= since,
+            )
+        )
+        or 0
+    )
+    if not safety_words.LIBRARY.entries:
+        digest.safety_words_empty = safety_words.LIBRARY.version  # 这一行里写明没扫
+        return
+    bodies = session.execute(
+        select(DocumentDetail.body_text)
+        .join(Document, Document.id == DocumentDetail.document_id)
+        .where(Document.first_seen_at >= since)
+    ).scalars()
+    digest.safety_new_bodies = sum(1 for body in bodies if safety_words.check(body or ""))
+    segments = session.execute(
+        select(AttachmentTextSegment.version_id, AttachmentTextSegment.text)
+        .join(AttachmentTextVersion, AttachmentTextVersion.id == AttachmentTextSegment.version_id)
+        .where(AttachmentTextVersion.extracted_at >= since)
+        .order_by(AttachmentTextSegment.version_id, AttachmentTextSegment.n)
+    )
+    # 一份附件的文字按段的先后接起来整份查（同正文）：跨在相邻两段之间的词也查得到
+    digest.safety_new_attachments = sum(
+        1
+        for _, rows in groupby(segments, key=lambda row: row.version_id)
+        if safety_words.check("\n".join(piece or "" for _, piece in rows))
+    )
+
+
+def _safety_line(digest: Digest) -> str:
+    """每天都写一行：都是 0 就写没有拦下、没有出错，看得出这一项查过了、一切正常。本地词库还没有
+    词条时另写一句没扫新正文、附件，免得读成本地这一层也查过了。"""
+    if not digest.safety_ok:
+        return "内容安全（24 小时）：取不到（统计出错，看容器日志）"
+    return _safety_summary(digest) + (
+        "；本地词库还没有词条，新正文、附件没扫" if digest.safety_words_empty else ""
+    )
+
+
+def _safety_summary(digest: Digest) -> str:
+    blocked = digest.safety_local + digest.safety_wechat
+    new_hits = digest.safety_new_bodies + digest.safety_new_attachments
+    if (
+        not blocked
+        and not digest.safety_check_down
+        and not new_hits
+        and not digest.safety_questions
+    ):
+        return "内容安全（24 小时）：没有拦下、没有出错"
+    parts = []
+    if blocked:
+        docs = "、".join(str(doc_id) for doc_id in digest.safety_documents)
+        parts.append(
+            f"拦下 {blocked} 次（本地词库 {digest.safety_local}、微信 {digest.safety_wechat}"
+            + (f"；通知 {docs}" if docs else "")
+            + "），看一眼原文是不是误拦"
+        )
+    if digest.safety_questions:
+        parts.append(f"问一问拦下提问 {digest.safety_questions} 次")
+    if digest.safety_check_down:
+        parts.append(
+            f"检测接口出错、AI 任务没做成 {digest.safety_check_down} 个（admin 可能调不通微信接口）"
+        )
+    if new_hits:
+        parts.append(
+            f"新抓的正文 {digest.safety_new_bodies} 份、附件 {digest.safety_new_attachments} 份"
+            "命中本地词库（看是误拦还是网站被挂了违规内容）"
+        )
+    return "内容安全（24 小时）：" + "；".join(parts)
 
 
 def _access(session: Session, digest: Digest, today: date) -> None:
@@ -780,6 +908,7 @@ def digest_text(digest: Digest, picks: list[Pick]) -> str:
         _quality_line(digest),
         readability_summary(digest),
         _usage_line(digest),
+        _safety_line(digest),
     ]
     usage = digest.usage
     if usage is not None and (usage.calls or usage.cumulative):
@@ -809,7 +938,8 @@ def digest_text(digest: Digest, picks: list[Pick]) -> str:
         + (f"：{p.reason}" if p.reason else "")
         for i, p in enumerate(picks)
     ]
-    # 群提醒会加"【有据】"前缀；放不下时从最后一条 AI 建议开始去掉，数字部分本身超长时截断
+    # 群提醒会加"【有据】"前缀；放不下时从最后一条 AI 建议开始去掉（"本地词库还没有词条"那句在
+    # 内容安全那一行里，先保留它：Codex 10/28），数字部分本身超长时截断
     budget = MAX_ALERT_BYTES - len("【有据】".encode())
     while True:
         body = lines + (["AI 建议先核对（仅供参考）："] + pick_lines if pick_lines else [])

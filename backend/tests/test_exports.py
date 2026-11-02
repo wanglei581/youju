@@ -735,3 +735,78 @@ def test_preview_query_compatibility_and_separate_user_limit(client, docs, monke
     limited = client.post("/api/v1/exports/preview", json={"ids": ids})
     assert limited.status_code == 429
     assert limited.headers["cache-control"] == "no-store"
+
+
+def test_preview_marks_unverified_deadline_due_within_7_days(client, session, docs, monkeypatch):
+    """站内结果页（10/29 独立审阅）：没核对的那一类截止有候选在 7 天内时，预览的这一行带 due_soon，
+    小程序写"可能 7 天内截止"，和列表、详情一致；照旧不给日期。导出的文件不加这一列。"""
+    from zoneinfo import ZoneInfo
+
+    from sqlalchemy import select
+
+    from youju.api import v1
+
+    monkeypatch.setattr(
+        v1, "now", lambda: datetime(2026, 10, 12, 9, tzinfo=ZoneInfo("Asia/Shanghai"))
+    )
+    source = session.scalar(select(Source))
+    stamp = datetime.now(UTC)
+    ids = {}
+    for name, day in (("临期", date(2026, 10, 16)), ("较远", date(2026, 11, 30))):
+        doc = Document(
+            source_id=source.id,
+            url=f"https://gxt.ln.gov.cn/{name}.html",
+            url_key=f"gxt.ln.gov.cn/{name}.html",
+            title=f"辽宁省关于组织申报2026年度{name}项目的通知",
+            publish_date=date(2026, 10, 9),
+            first_seen_at=stamp,
+            last_seen_at=stamp,
+        )
+        session.add(doc)
+        session.flush()
+        ids[name] = doc.id
+        quote = f"请于{day.month}月{day.day}日前将申报材料报送。"
+        session.add(
+            DocumentDetail(document_id=doc.id, body_text=quote, status="ok", fetched_at=stamp)
+        )
+        session.add(
+            DocumentDeadline(
+                document_id=doc.id,
+                fingerprint=name,
+                kind="企业申报截止",
+                candidate_date=day,
+                evidence=quote,
+                confidence="高",
+                status="pending",
+            )
+        )
+    session.commit()
+    response = client.post(
+        "/api/v1/exports/preview", json={"ids": [str(i) for i in ids.values()], "excerpts": 1}
+    )
+    assert response.status_code == 200, response.text
+    items = {item["doc_id"]: item for item in response.json()["items"]}
+    assert items[ids["临期"]]["due_soon"] is True
+    assert items[ids["临期"]]["deadline"] == "截止未核对，以原文为准"
+    assert "2026-10-16" not in str(items[ids["临期"]])
+    assert items[ids["较远"]]["due_soon"] is False
+    assert items[ids["临期"]]["link_gone"] is False
+    # 不带 excerpts（老包）：不算临期，和以前一样
+    plain = client.post("/api/v1/exports/preview", json={"ids": [str(ids["临期"])]})
+    assert plain.json()["items"][0]["due_soon"] is False
+    # 原文链接已失效的：预览带 link_gone，小程序不写"截止时间见原文"
+    gone = session.get(Document, ids["较远"])
+    gone.link_gone_at = stamp
+    session.commit()
+    response = client.post(
+        "/api/v1/exports/preview", json={"ids": [str(ids["较远"])], "excerpts": 1}
+    )
+    assert response.json()["items"][0]["link_gone"] is True
+    book = client.post(
+        "/api/v1/exports", json={"ids": [str(ids["临期"])], "format": "xlsx", "excerpts": 1}
+    )
+    assert book.status_code == 200
+    headers = [
+        cell.value for cell in next(load_workbook(BytesIO(book.content))["文件清单"].iter_rows())
+    ]
+    assert "due_soon" not in headers and not any("7 天内" in str(h) for h in headers)

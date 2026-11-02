@@ -58,7 +58,8 @@ class _RobotsEntry:
     )
     parser: RobotFileParser | None
     fetched_at: float
-    error: str | None = None  # unsupported_host 的原因
+    error: str | None = None  # unsupported_host、unreachable 的原因
+    server_error: bool = False  # unreachable 是因为服务器回 5xx（超时、连不上在下层已重试过）
 
 
 def compat_ssl_context() -> ssl.SSLContext:
@@ -230,7 +231,7 @@ class PoliteFetcher:
                     url,
                     "robots_error",
                     final_url=current,
-                    error="robots.txt 暂时无法获取，本次跳过",
+                    error=entry.error or "robots.txt 暂时无法获取，本次跳过",
                 )
             if state == "unsupported_host":
                 return FetchResult(url, "unsupported_host", final_url=current, error=entry.error)
@@ -263,6 +264,15 @@ class PoliteFetcher:
         return entry, entry.parser.can_fetch(ROBOTS_TOKEN, url)
 
     def _load_robots(self, origin: str) -> _RobotsEntry:
+        """读 robots.txt；服务器一时回 5xx 就按这个网站的限速间隔再取一次（超时、连不上在下层已重试
+        过一次），还取不到才算取不到。原因写进 error，记到详情和附件的失败原因里（10/27 海南工信厅：
+        线上偶尔取不到它的 robots.txt，整站的附件、正文跳过，原因却没记下来）。"""
+        entry = self._load_robots_once(origin)
+        if entry.state == "unreachable" and entry.server_error:
+            entry = self._load_robots_once(origin)
+        return entry
+
+    def _load_robots_once(self, origin: str) -> _RobotsEntry:
         current = origin + "/robots.txt"
         # RFC 9309 §2.3.1.2：robots.txt 的重定向至少跟随 5 次；超过则视为不可用（可以抓取）
         for _ in range(_MAX_REDIRECTS + 1):
@@ -285,7 +295,14 @@ class PoliteFetcher:
         if result.status in ("network_error", "ssl_error") or (
             status is not None and status >= 500
         ):
-            return _RobotsEntry("unreachable", None, now)
+            why = f"HTTP {status}" if status is not None else (result.error or result.status)
+            return _RobotsEntry(
+                "unreachable",
+                None,
+                now,
+                f"robots.txt 暂时无法获取（{why[:120]}），本次跳过",
+                server_error=status is not None and status >= 500,
+            )
         if status is not None and 400 <= status < 500:
             # RFC 9309 §2.3.1.3：4xx（包括 401、403）视为 robots.txt 不可用，可以抓取
             return _RobotsEntry("allow_all", None, now)

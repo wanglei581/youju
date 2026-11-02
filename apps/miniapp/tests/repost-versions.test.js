@@ -14,7 +14,7 @@ function load(file, deps = {}, globals = {}) {
   const module = { exports: {} };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', file), 'utf8'), {
     module, setTimeout, clearTimeout,
-    require(name) { if (!Object.hasOwn(deps, name) && /ai-access\.js$/.test(name)) return AI_OFF; assert.ok(Object.hasOwn(deps, name), `缺少依赖 ${name}`); return deps[name]; },
+    require(name) { if (!Object.hasOwn(deps, name) && /(^|\/)pages\.js$/.test(name)) return require('./helpers/package-pages-default.js').pages; if (!Object.hasOwn(deps, name) && /ai-access\.js$/.test(name)) return AI_OFF; assert.ok(Object.hasOwn(deps, name), `缺少依赖 ${name}`); return deps[name]; },
     Page(d) { def = d; }, Component(d) { def = d; }, ...globals,
   }, { filename: file });
   return def ? { ...def, data: JSON.parse(JSON.stringify(def.data)), setData(values) { Object.assign(this.data, values); } } : module.exports;
@@ -58,7 +58,7 @@ test('各版本的截止只写各自核对过的；没核对的不写日期', ()
   const rows = repost.versionRows(REPOST);
   assert.deepEqual(rows.map((r) => r.label), ['福建版', '陕西版', '天津版', '北京版']);
   assert.equal(rows[0].current, true);
-  assert.equal(rows[0].deadline, '截止未核对');
+  assert.equal(rows[0].deadline, '截止时间见原文');
   assert.doesNotMatch(rows[0].deadline, DIGITS); // 不借用陕西版、天津版的日期
   assert.equal(rows[1].deadline, '推荐或审核截止 10月10日');
   assert.equal(rows[2].deadline, '企业申报截止 10月12日 16:00');
@@ -149,7 +149,7 @@ test('详情页：各版本的截止按版本列出，点别的版本打开它�
   page.onLoad({ id: '13' });
   await flush();
   assert.equal(page.data.versions.length, 4);
-  assert.equal(page.data.versions[0].deadline, '截止未核对');
+  assert.equal(page.data.versions[0].deadline, '截止时间见原文');
   assert.equal(page.data.due, null); // 本版没有核对过的截止：不借用其他版本的
   assert.match(page.data.upstream, /^这些通知都转发或依据同一份部委通知：《/);
   page.openVersion(event({ id: '13', current: true }));
@@ -165,16 +165,16 @@ test('详情页：各版本的截止按版本列出，点别的版本打开它�
   assert.doesNotMatch(template, /copyVersion|复制原文链接/);
 });
 
-test('首页、搜索：按组计数时写明另有几个转发版本未重复计', () => {
-  assert.match(read('pages/home/index.wxml'), /wx:if="{{stats.week_reposts}}"[^>]*>另有 {{stats.week_reposts}} 个转发版本，未重复计算</);
-  assert.match(read('pages/search/index.wxml'), /wx:if="{{!loading && !error && reposts}}"[^>]*>已合并 {{reposts}} 个各地转发版本，不重复计数</);
+test('首页、搜索：按组计数，不再另写"另有几个转发版本未重复计"（10/29 删提示：每行已有"各地版本"可展开）', () => {
+  assert.doesNotMatch(read('pages/home/index.wxml'), /week_reposts|转发版本/);
+  assert.doesNotMatch(read('pages/search/index.wxml'), /reposts|不重复计数/);
 });
 
 test('新加的文字不出现禁用字样', () => {
   const texts = [
     read('utils/repost.js'),
     read('components/doc-row/index.wxml'),
-    /<!-- 转发版本（D-055）[\s\S]*?各版本的截止日期[^<]*<\/view>/.exec(read('pages/detail/index.wxml'))[0],
+    /<!-- 转发版本（D-055）[\s\S]*?<!-- 要点/.exec(read('pages/detail/index.wxml'))[0],
   ];
   for (const text of texts) for (const word of FORBIDDEN) assert.ok(!text.includes(word), `${word} 出现在新文字里`);
 });

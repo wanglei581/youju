@@ -1,0 +1,109 @@
+{
+  "version": "draft-0",
+  "final": false,
+  "note": "草稿占位：还没有词条。词库从哪来、分哪些类别、谁来维护，要经合规审定、创始人定（带 AI 提审补齐清单第 4 道；问一问开发设计第九节第 3 条）；定稿前 final 为 false，问一问不开放；AI 解读、对照的结果照样过这一层。改词库就升 version，处置记录里记版本。词条格式：{\"id\": \"……\", \"category\": \"类别代码\", \"word\": \"……\"}",
+  "basis": "《网络信息内容生态治理规定》（国家互联网信息办公室令第 5 号，2020 年 3 月 1 日起施行）第六条、第七条",
+  "categories": {
+    "illegal_constitution": {
+      "group": "违法信息",
+      "clause": "第六条（一）",
+      "name": "反对宪法所确定的基本原则"
+    },
+    "illegal_state_security": {
+      "group": "违法信息",
+      "clause": "第六条（二）",
+      "name": "危害国家安全，泄露国家秘密，颠覆国家政权，破坏国家统一"
+    },
+    "illegal_national_honor": {
+      "group": "违法信息",
+      "clause": "第六条（三）",
+      "name": "损害国家荣誉和利益"
+    },
+    "illegal_heroes": {
+      "group": "违法信息",
+      "clause": "第六条（四）",
+      "name": "歪曲、丑化、亵渎、否定英雄烈士事迹和精神，以侮辱、诽谤或者其他方式侵害英雄烈士的姓名、肖像、名誉、荣誉"
+    },
+    "illegal_terrorism": {
+      "group": "违法信息",
+      "clause": "第六条（五）",
+      "name": "宣扬恐怖主义、极端主义或者煽动实施恐怖活动、极端主义活动"
+    },
+    "illegal_ethnic_hatred": {
+      "group": "违法信息",
+      "clause": "第六条（六）",
+      "name": "煽动民族仇恨、民族歧视，破坏民族团结"
+    },
+    "illegal_religion_cult": {
+      "group": "违法信息",
+      "clause": "第六条（七）",
+      "name": "破坏国家宗教政策，宣扬邪教和封建迷信"
+    },
+    "illegal_rumor": {
+      "group": "违法信息",
+      "clause": "第六条（八）",
+      "name": "散布谣言，扰乱经济秩序和社会秩序"
+    },
+    "illegal_obscene_violent": {
+      "group": "违法信息",
+      "clause": "第六条（九）",
+      "name": "散布淫秽、色情、赌博、暴力、凶杀、恐怖或者教唆犯罪"
+    },
+    "illegal_defamation": {
+      "group": "违法信息",
+      "clause": "第六条（十）",
+      "name": "侮辱或者诽谤他人，侵害他人名誉、隐私和其他合法权益"
+    },
+    "illegal_other": {
+      "group": "违法信息",
+      "clause": "第六条（十一）",
+      "name": "法律、行政法规禁止的其他内容"
+    },
+    "harmful_clickbait": {
+      "group": "不良信息",
+      "clause": "第七条（一）",
+      "name": "使用夸张标题，内容与标题严重不符"
+    },
+    "harmful_scandal": {
+      "group": "不良信息",
+      "clause": "第七条（二）",
+      "name": "炒作绯闻、丑闻、劣迹等"
+    },
+    "harmful_disaster": {
+      "group": "不良信息",
+      "clause": "第七条（三）",
+      "name": "不当评述自然灾害、重大事故等灾难"
+    },
+    "harmful_sexual": {
+      "group": "不良信息",
+      "clause": "第七条（四）",
+      "name": "带有性暗示、性挑逗等易使人产生性联想"
+    },
+    "harmful_gore": {
+      "group": "不良信息",
+      "clause": "第七条（五）",
+      "name": "展现血腥、惊悚、残忍等致人身心不适"
+    },
+    "harmful_discrimination": {
+      "group": "不良信息",
+      "clause": "第七条（六）",
+      "name": "煽动人群歧视、地域歧视等"
+    },
+    "harmful_vulgar": {
+      "group": "不良信息",
+      "clause": "第七条（七）",
+      "name": "宣扬低俗、庸俗、媚俗内容"
+    },
+    "harmful_minors": {
+      "group": "不良信息",
+      "clause": "第七条（八）",
+      "name": "可能引发未成年人模仿不安全行为和违反社会公德行为、诱导未成年人不良嗜好等"
+    },
+    "harmful_other": {
+      "group": "不良信息",
+      "clause": "第七条（九）",
+      "name": "其他对网络生态造成不良影响的内容"
+    }
+  },
+  "entries": []
+}

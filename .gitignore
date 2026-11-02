@@ -1,6 +1,7 @@
 __pycache__/
 *.py[cod]
-.venv/
+# 不带斜杠：各工作区常把 .venv 做成指向别处的软链接，带斜杠只挡目录、挡不住软链接
+.venv
 .DS_Store
 node_modules/
 dist/

@@ -7,7 +7,6 @@ const api = require('./api.js');
 const DIR = 'attachments';
 const KEEP = 3;
 // 不写"以原网站为准"：像是要用户出去看（10/23 审核退回"复制链接去浏览器"）
-const NOTE_READ = '附件文字自动提取，未经人工逐字核对，以发文机关公布的文本为准';
 
 function sizeText(bytes) {
   if (!(bytes > 0)) return '';
@@ -28,11 +27,6 @@ function decorate(list) {
       action: canOpen ? '阅读' : '',
     });
   });
-}
-
-// 附件列表底下的一句：有能读的附件才写
-function note(list) {
-  return (list || []).some((att) => att.canOpen) ? NOTE_READ : '';
 }
 
 // 本机文件名用附件名称：转发给朋友时对方看到的就是这个名字
@@ -141,4 +135,4 @@ function open(att, docId) {
   }));
 }
 
-module.exports = { decorate, note, open, download, fileName, sizeText, NOTE_READ };
+module.exports = { decorate, open, download, fileName, sizeText };

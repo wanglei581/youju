@@ -67,6 +67,8 @@ RESULT_FIELDS = (
     "refusal",
     "dropped",
     "dropped_reasons",
+    # 内容安全检查的标记（ai/result_safety.py）：复制、套企业自述时也要带着
+    "safety",
 )
 
 

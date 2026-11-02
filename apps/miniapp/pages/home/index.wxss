@@ -64,7 +64,6 @@
 .pill--urgent { background: var(--r-tint); color: var(--red); }
 .soon-foot { padding: 24rpx 0; font-size: 24rpx; color: var(--t2); }
 .soon-foot--only { font-size: 28rpx; color: var(--t1); }
-.soon-stale { padding: 4rpx 0 16rpx; font-size: 24rpx; color: var(--orange); }
 .soon .soon-item:last-child { border-bottom: 0; }
 .more { min-height: 96rpx; display: flex; align-items: center; justify-content: center; gap: 8rpx; color: var(--brand); font-size: 28rpx; }
 
@@ -72,7 +71,6 @@
 .footer-text { font-size: 24rpx; line-height: 1.5; color: var(--t2); }
 .footer-link { margin-top: 12rpx; }
 .list-tip { padding: 48rpx 0; text-align: center; font-size: 26rpx; color: var(--t2); }
-.summary-reposts { color: var(--t3); }
 .cached-note { margin: 16rpx 32rpx 0; font-size: 24rpx; color: var(--t3); }
 
 .entries--tools { grid-template-columns: repeat(4, 1fr); }
