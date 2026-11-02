@@ -741,3 +741,63 @@ def test_phone_label_cell_masks_the_next_cell():
 def test_more_phone_rules_reach_the_model_text():
     # 交给模型的文字走同一套规则，标记写成入库的写法
     assert v1.model_body_text("产业政策处：51782598") == "产业政策处：[电话已脱敏]"
+
+
+# 独立审阅第 1 轮补的几种（11/3）
+@pytest.mark.parametrize(
+    "shown, expected",
+    [
+        ("某某处\n55520803\n下一行", f"某某处\n{P}\n下一行"),  # 单位名下一行单独写的
+        ("电话：0531-8888 8888", f"电话：{P}"),  # 区号后面本地号码中间隔空格
+        ("传真：0531 8888 8888", f"传真：{P}"),
+        (f"联系人：{C}/55520803", f"联系人：{C}/{P}"),  # 已遮联系人后面斜杠隔开
+        (f"{C}，1381234567", f"{C}，{P}"),  # 已遮联系人后面 10 位的手机号（原文少一位）
+    ],
+)
+def test_more_phone_contexts_round_two(shown, expected):
+    assert v1.display_body_text(shown) == expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "成交额 32345678 元",  # 号码后面隔空格接"元"
+        "资金 30000000 元。",
+        "某局，2060502技术创新服务",  # 单位名后面的数紧接汉字，是编码
+    ],
+)
+def test_more_phone_rules_round_two_leave_other_numbers(text):
+    assert v1.display_body_text(text) == text
+
+
+def test_lone_number_cells_in_contact_tables():
+    # 没写列名的通讯录表：左边一格是单位名（可带括号），这一格只有一个 8 位号码
+    assert v1.display_attachment_row(
+        [("", "1"), ("", "中关村某某园"), ("", "88888888"), ("", "某区某路9号")]
+    ) == [
+        "1",
+        "中关村某某园",
+        P,
+        "某区某路9号",
+    ]
+    assert v1.display_attachment_row([("", "某某委员会（某区）"), ("", "88888888")]) == [
+        "某某委员会（某区）",
+        P,
+    ]
+    # 同一行已经有遮掉的联系人
+    assert v1.display_attachment_row(
+        [("单位", "某某局"), ("联系人", "张小明"), ("列3", "88888888")]
+    ) == [
+        "某某局",
+        C,
+        P,
+    ]
+    # 列名是金额的、左边不是单位名的不遮
+    assert v1.display_attachment_row([("", "某某有限公司"), ("申请金额（元）", "30000000")]) == [
+        "某某有限公司",
+        "30000000",
+    ]
+    assert v1.display_attachment_row([("", "某某项目"), ("", "30000000")]) == [
+        "某某项目",
+        "30000000",
+    ]
