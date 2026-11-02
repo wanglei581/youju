@@ -16,13 +16,15 @@ const TARGET = path.join(ROOT, 'legal-first-release-ai.js');
 // 这一版去掉了批量工具和加量体验，后台 agreements.WITHOUT_TOOLS_TERMS 里要有它，不然会被当成同意过工具条款
 const VERSION = '2026-11.1';
 // "过审版加 AI"协议里不能出现的说法（包里没有的功能和页面、原文链接、征信感的说法）。
-// 发布检查（tools/miniapp_presubmit_check.js）用同一份。用户协议六·3"现阶段免费；如以后新增收费功能，购买前单独展示
-// 价格、期限和付费协议"说的是以后、不是现在有，和过审版 2026-10.2（D-094 定稿）一样保留，所以"购买""付费"不拦
-const BANNED = /批量工具|批量名单|名单比对|通知表|上传名单|客户名单|选中的文件|加量体验|申报季加量|工具使用说明|工具任务|订单|购买页|支付|发票|原文链接|统一社会信用代码|核对企业主体/;
+// 发布检查（tools/miniapp_presubmit_check.js）用同一份。11/2 起（D-112，创始人"都按推荐"）："征信""信用评价"
+// 和以后收费的说法也不写——过审版 2026-10.2（D-094）里保留的用户协议六·3"现阶段免费；如以后新增收费功能……"
+// 这一版删掉，等真收费时协议升版再写
+const BANNED = /批量工具|批量名单|名单比对|通知表|上传名单|客户名单|选中的文件|加量体验|申报季加量|工具使用说明|工具任务|订单|购买页|支付|发票|原文链接|统一社会信用代码|核对企业主体|征信|信用评价|收费功能/;
 
-function build() {
+// source：完整版 2026-11 协议对象，不传就读 content/legal.js（测试传改过的原文，验证对不上会报错）
+function build(source) {
   delete require.cache[require.resolve(path.join(ROOT, 'legal.js'))];
-  const legal = JSON.parse(JSON.stringify(require(path.join(ROOT, 'legal.js'))));
+  const legal = JSON.parse(JSON.stringify(source || require(path.join(ROOT, 'legal.js'))));
   if (legal.version !== '2026-11') throw new Error(`content/legal.js 的版本是 ${legal.version}，这个脚本按 2026-11 写的，先核对`);
   const sec = (doc, head) => {
     const found = doc.sections.find((s) => s.h.startsWith(head));
@@ -55,8 +57,12 @@ function build() {
   // 包里有 AI：服务说明和未登录说明写上（agy 10/27）
   edit(sec(U, '一、'), '登录后还可以使用关注、微信提醒和纠错反馈。', '登录后还可以使用关注、微信提醒、纠错反馈和 AI 功能（政策解读和条款对照，见第八条）。', '一·1');
   edit(sec(U, '三、'), '关注、微信提醒和纠错需要先同意本协议和《隐私保护指引》。', '关注、微信提醒、纠错和 AI 功能需要先同意本协议和《隐私保护指引》。', '三·2');
-  // 要点写准确（Grok 10/27）：包里没有收费功能；"不承担间接损失"只在服务中断那一款（六·2）
-  point(U, '收费功能另行购买，购买前单独展示价格、期限和协议（六·3）', '现阶段免费；以后新增收费功能，购买前单独展示价格、期限和协议（六·3）', '要点 六·3');
+  // 要点写准确（Grok 10/27）："不承担间接损失"只在服务中断那一款（六·2）。
+  // 包里没有收费功能，"收费功能另行购买"那条要点和六·3 一起删掉（D-112，11/2）
+  const FEE_POINT = '收费功能另行购买，购买前单独展示价格、期限和协议（六·3）';
+  const feePoints = U.keyPoints.filter((k) => k === FEE_POINT);
+  if (feePoints.length !== 1) throw new Error(`要点 六·3：整句命中 ${feePoints.length} 条`);
+  U.keyPoints = U.keyPoints.filter((k) => k !== FEE_POINT);
   point(U, '因我们故意、重大过失或依法应由我们承担责任的情形造成的损失依法承担，其他原因造成的间接损失不承担（二·3、六·2）',
     '因我们故意、重大过失或依法应由我们承担责任的情形造成的损失依法承担（二·3）；系统维护、故障等导致服务中断的，除上述情形外不承担间接损失（六·2）', '要点 二·3');
   // 包里不给原文链接（D-089、D-091），改成注明出处（和过审版 2026-10.2 一样）
@@ -66,7 +72,7 @@ function build() {
   edit(sec(U, '三、'), '并删除您的关注、微信提醒授权、纠错记录、工具任务及结果和加量体验记录；', '并删除您的关注、微信提醒授权、纠错记录和 AI 的任务及结果；', '三·3');
   // 查名单不像征信、只收企业全称（D-091 ③，和过审版一样）
   edit(sec(U, '四、'), '3. 企业名称查询限制：“按企业名称查名单”功能仅用于用户根据公开公示名单核对企业主体信息，您不得输入侵犯个人隐私、国家秘密或其他非法违规的关键词。',
-    '3. 查名单：“按企业名称查名单”只用于在政府公开发布的认定、立项、公示、入库、备案类名单中查找某个企业或机构的名称，不提供征信、信用评价或资质核验服务；您不得输入个人姓名、国家秘密或其他违法违规的内容。', '四·3');
+    '3. 查名单：“按企业名称查名单”只用于在政府公开发布的认定、立项、公示、入库、备案类名单中查找某个企业或机构的名称，不对企业作评价、评级或核验；您不得输入个人姓名、国家秘密或其他违法违规的内容。', '四·3');
   edit(sec(U, '四、'), '5. 上传名单：', null, '四·5');
   // 适用人群：企业经办人员和申报服务人员（D-093 ④，AI 上线那一版协议里改）
   edit(sec(U, '八、'), '适用于企业里负责项目申报的经办人员，不面向未成年人。',
@@ -75,6 +81,15 @@ function build() {
   edit(sec(U, '八、'), 'AI 功能包括政策解读、材料清单和条款对照，', 'AI 功能包括政策解读（含从通知原文整理出的申报材料清单）和条款对照，', '八·1 功能');
   U.keyPoints = U.keyPoints.filter((k) => !k.includes('四·5'));
   U.keyParagraphs = U.keyParagraphs.filter((k) => k !== '5. 上传名单');
+  // 六·3 以后收费的说法这一版不写（D-112，11/2）：是第六节最后一条，删掉不用改编号
+  const FEE_PARAGRAPH = '3. 公开信息的检索和查看现阶段免费。如以后新增收费功能，我们会在您购买前单独展示服务内容、价格、期限和付费协议，由您自主决定是否购买；已购买的服务按购买时的约定履行。';
+  const six = sec(U, '六、');
+  const feeParas = six.p.filter((p) => p === FEE_PARAGRAPH);
+  if (feeParas.length !== 1 || six.p[six.p.length - 1] !== FEE_PARAGRAPH) throw new Error(`六·3：整段命中 ${feeParas.length} 处，或不是第六条最后一款`);
+  six.p = six.p.filter((p) => p !== FEE_PARAGRAPH);
+  const feeKeys = U.keyParagraphs.filter((k) => k === '3. 公开信息的检索');
+  if (feeKeys.length !== 1) throw new Error(`用户协议重点段落里六·3 那一段命中 ${feeKeys.length} 条`);
+  U.keyParagraphs = U.keyParagraphs.filter((k) => k !== '3. 公开信息的检索');
 
   // ================= 隐私保护指引 =================
   // 第一部分去掉第 13 项（批量工具）、第 15 项（加量体验）：AI 功能 14 → 13，联系客服 16 → 14

@@ -78,7 +78,10 @@ test('改的几处：适用人群、查名单、注明出处、AI 结果送内�
   const user = JSON.stringify(ai.user);
   const privacy = JSON.stringify(ai.privacy);
   assert.match(user, /适用于企业里负责项目申报的经办人员和为企业提供申报服务的人员/);
-  assert.match(user, /只用于在政府公开发布的认定、立项、公示、入库、备案类名单中查找某个企业或机构的名称，不提供征信、信用评价或资质核验服务/);
+  assert.match(user, /只用于在政府公开发布的认定、立项、公示、入库、备案类名单中查找某个企业或机构的名称，不对企业作评价、评级或核验/);
+  // D-112（11/2）：不写"征信""信用评价"，以后收费的那一款（六·3）和对应的要点都删掉
+  assert.doesNotMatch(user, /征信|信用评价|收费功能|购买前|付费协议/);
+  assert.ok(!ai.user.keyParagraphs.includes('3. 公开信息的检索'));
   assert.match(user, /每条注明发文机关、发布日期和来源网站/);
   assert.match(privacy, /按企业名称查名单时输入的企业全称：只用于在政府公开名单中查找/);
   assert.match(privacy, /和 AI 生成的解读、对照结果/);
@@ -95,11 +98,11 @@ test('改的几处：适用人群、查名单、注明出处、AI 结果送内�
   const modelCall = (s) => s.p.find((p) => p.startsWith('· AI 模型调用：')).split('按我们的委托处理。')[1];
   same('privacy', '四、', modelCall);
   assert.match(privacy, /调用深圳市腾讯计算机系统有限公司的腾讯混元助手大模型/);
-  // 段落数：用户协议第四条少 1 款（上传名单）；指引第一部分少 2 项（批量工具、加量体验），第三部分少 2 条保存期限
+  // 段落数：用户协议第四条少 1 款（上传名单），第六条少 1 款（以后收费，D-112）；指引第一部分少 2 项（批量工具、加量体验），第三部分少 2 条保存期限
   const count = (doc) => doc.sections.map((s) => s.p.length);
   // 第二部分多 1 条：提醒入口开通后才显示
   assert.deepEqual(count(ai.privacy).map((n, i) => count(full.privacy)[i] - n), [0, 2, -1, 2, 0, 0, 0, 0, 0]);
-  assert.deepEqual(count(ai.user).map((n, i) => count(full.user)[i] - n), [0, 0, 0, 0, 1, 0, 0, 0, 0, 0]);
+  assert.deepEqual(count(ai.user).map((n, i) => count(full.user)[i] - n), [0, 0, 0, 0, 1, 0, 1, 0, 0, 0]);
 });
 
 test('草稿期间和生成脚本 tools/make_legal_first_release_ai.js 的结果一致（不在别处手改）', () => {
@@ -107,4 +110,25 @@ test('草稿期间和生成脚本 tools/make_legal_first_release_ai.js 的结果
   assert.equal(ai.final, false);
   assert.match(ai.status, /草稿/);
   assert.deepEqual(JSON.parse(JSON.stringify(ai)), JSON.parse(JSON.stringify(build())));
+});
+
+test('D-112：完整版里六·3、它的要点、重点段落对不上或重复时，生成脚本报错，不会不声不响地删掉', () => {
+  const clone = () => JSON.parse(JSON.stringify(full));
+  // 六·3 后半句变了
+  const a = clone();
+  const six = section(a.user, '六、');
+  six.p[six.p.length - 1] = six.p[six.p.length - 1].replace('已购买的服务按购买时的约定履行', '已购买的服务另行约定');
+  assert.throws(() => build(a), /六·3/);
+  // 六·3 不再是第六条最后一款
+  const b = clone();
+  section(b.user, '六、').p.push('4. 新加的一款。');
+  assert.throws(() => build(b), /六·3/);
+  // 重点段落里六·3 那一段重复
+  const c = clone();
+  c.user.keyParagraphs.push('3. 公开信息的检索');
+  assert.throws(() => build(c), /重点段落/);
+  // 要点改了一个字
+  const d = clone();
+  d.user.keyPoints = d.user.keyPoints.map((k) => k.replace('收费功能另行购买', '收费功能另外购买'));
+  assert.throws(() => build(d), /要点 六·3/);
 });
