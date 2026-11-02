@@ -56,7 +56,9 @@ const EXPECT = {
   // 比之前先去掉空白和引号（控制台里存过前后带空格、换行或引号的值）；值里只要有 sk- 就当密钥
   const norm = (v) => String(v).replace(/[\s"'“”‘’`]/g, '');
   const secretValues = SECRET.map((k) => env[k]).filter((v) => typeof v === 'string').map(norm).filter((v) => v.length >= 8);
-  const looksSecret = (v) => /sk-/i.test(v) || secretValues.some((sv) => norm(v).includes(sv));
+  // 白名单项都是短值（地址、模型名、公示名、版本号、附加参数）：超过 200 字的长串或 JWT 格式（eyJ 开头，
+  // 云开发的密钥是这种）也当密钥
+  const looksSecret = (v) => /sk-/i.test(v) || norm(v).length > 200 || /^eyJ/.test(norm(v)) || secretValues.some((sv) => norm(v).includes(sv));
   const secretLike = new Set(SHOWN.filter((k) => k in env && looksSecret(String(env[k]))));
   secretValues.length = 0;
   const lines = [`${service} ${version}（${ver.Status || ''}，备注：${ver.Remark || '无'}）：环境变量共 ${Object.keys(env).length} 项`];
