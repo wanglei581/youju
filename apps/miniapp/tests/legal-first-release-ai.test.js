@@ -98,7 +98,10 @@ test('改的几处：适用人群、查名单、注明出处、AI 结果送内�
   const modelCall = (s) => s.p.find((p) => p.startsWith('· AI 模型调用：')).split('按我们的委托处理。')[1];
   same('privacy', '四、', modelCall);
   // 类目页上登记的是 DeepSeek（创始人 11/2）：写明调用北京深度求索人工智能基础技术研究有限公司的模型，不再写混元
-  assert.match(privacy, /调用其求索对话DeepSeek Chat 大模型/);
+  assert.match(privacy, /调用求索对话DeepSeek Chat 大模型/);
+  // 接口和按委托处理的是杭州深度求索（DeepSeek 开放平台的运营方），备案主体是北京深度求索（独立审阅 11/3）
+  assert.match(privacy, /杭州深度求索人工智能基础技术研究有限公司（以下简称“深度求索”）运营的 DeepSeek 开放平台接口/);
+  assert.match(privacy, /已由北京深度求索人工智能基础技术研究有限公司在国家网信办完成生成式人工智能服务备案/);
   assert.match(privacy, /北京深度求索人工智能基础技术研究有限公司/);
   assert.doesNotMatch(privacy, /混元/);
   // 深度求索也按委托处理：下一段和隐私要点里"按委托处理"的合作方都写上它
