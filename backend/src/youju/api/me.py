@@ -12,7 +12,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import and_, case, func, or_, select, union_all
+from sqlalchemy import and_, case, func, literal, or_, select, union_all
 from sqlalchemy.dialects.mysql import insert
 from sqlalchemy.orm import Session
 
@@ -509,8 +509,16 @@ def agreement(body: AgreementIn, request: Request, session: SessionDep) -> dict:
             [
                 ("id", func.last_insert_id(User.id)),
                 ("last_visited_at", stamp),
-                # 先算时间、再改版本：MySQL 按从左到右的顺序赋值，后面的式子看到的是已经改过的值
-                ("agreement_at", case((newer, User.agreement_at), else_=stamp)),
+                # 先算时间、再改版本：MySQL 按从左到右的顺序赋值，后面的式子看到的是已经改过的值。
+                # 条件式里的时间要带上这一列的类型（按 UTC 存）：直接写 stamp 会把北京时间
+                # 当 UTC 存，再次同意的人在"我的数据"里晚 8 小时（11/2 复测，10/15 起就有）
+                (
+                    "agreement_at",
+                    case(
+                        (newer, User.agreement_at),
+                        else_=literal(stamp, User.__table__.c.agreement_at.type),
+                    ),
+                ),
                 ("agreement_version", case((newer, User.agreement_version), else_=body.version)),
             ]
         )
