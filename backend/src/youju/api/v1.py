@@ -2284,6 +2284,34 @@ def _mask_phone_tails(text: str) -> str:
     return "".join(out)
 
 
+# "联系电话：86263938"这样不带区号的本地号码（11/2 F15）：入库规则只遮带区号的座机和手机号，
+# 紧跟在"电话：""手机：""传真："这类标签后面的 7–8 位号码也遮（可以带"-801""转801"这样的分机）；
+# 后面接着金额单位、"年月日号"这类字的，小数，8 位像日期的不算（和 _phone_tail 同一套判断）。
+# 标签后面不是号码（"电话会议""电话：见附件"）的不碰
+_LABELED_PHONE = re.compile(
+    r"(?P<label>(?:电[ \t\u3000]*话|手[ \t\u3000]*机|传[ \t\u3000]*真)(?:号码?)?[ \t\u3000]*[:：][ \t\u3000]*)"
+    r"(?P<number>[2-9]\d{6,7}(?:(?:[-－]|转)\d{1,8})?)(?!\d)"
+)
+
+
+def _mask_labeled_phones(text: str) -> str:
+    """把"电话：86263938"这样标签后面的本地号码换成"（这里隐去了电话）"，标签照原样留着。"""
+    if not any(word in text for word in ("话", "机", "真")):
+        return text
+
+    def repl(match: re.Match[str]) -> str:
+        after = text[match.end() : match.end() + 2]
+        if after and after[0] in _NOT_PHONE_NEXT:
+            return match.group(0)
+        if after[:1] in ".．" and after[1:2].isdigit():
+            return match.group(0)
+        if _DATE_DIGITS.fullmatch(match.group("number")):
+            return match.group(0)
+        return match.group("label") + PHONE_MARK
+
+    return _LABELED_PHONE.sub(repl, text)
+
+
 # 正文、附件里政府原文自带的网址（D-112，创始人 11/2 同意）：显示时换成"（这里隐去了网址）"，
 # 和隐去电话一个写法——留着 http/https 网址有被判"引导跳出到浏览器"的风险（10/23 审核退回的原因
 # 之一）。认 http://、https:// 开头的和 www. 开头的（"www"挨着别的字母、数字，或在邮箱里的不算）；
@@ -2397,11 +2425,11 @@ def _hide_emails(text: str) -> str:
 
 def display_text(text: str) -> str:
     """只在给页面显示时做的处理（详情页正文、阅读页正文和附件、名单单行页、AI 结果页的原句）：
-    入库标记换成页面上的说法，已遮号码后面紧跟着的号码也遮掉，邮箱（含全角"＠"写的）换成
+    入库标记换成页面上的说法，"电话："这类标签后面不带区号的号码和已遮号码后面紧跟着的号码也遮掉，邮箱（含全角"＠"写的）换成
     "（这里隐去了邮箱）"，网址（含不带 http、www 的域名）换成"（这里隐去了网址）"。
     入库的文字不改；交给模型、核对 AI 原句用的是 redact_sensitive 后的原文（ai/content.py），
     不经过这里，也不改。"""
-    return _hide_urls(_hide_emails(_mask_phone_tails(display_marks(text))))
+    return _hide_urls(_hide_emails(_mask_phone_tails(_mask_labeled_phones(display_marks(text)))))
 
 
 # 返回给页面的原文片段（截止的"原文摘录"原句、申报条件和支持方式、申报对象的原句，列表行、

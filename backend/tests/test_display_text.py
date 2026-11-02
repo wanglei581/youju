@@ -54,8 +54,6 @@ def test_numbers_right_after_a_masked_phone_are_masked(shown, expected):
     "text",
     [
         # 不紧跟在已遮号码后面的：照旧（入库规则不遮不带区号的号码）
-        "联系电话：87687769",
-        f"电话：{MARK}，传真：87687770",
         "邮编：250001、87687769",
         f"{MARK}。87687769",
         # 金额、小数
@@ -351,3 +349,40 @@ def test_list_row_cells_hide_urls_and_masked_phones():
     assert v1.display_text(v1.redact_sensitive("网址 https://x.gov.cn/a")) == f"网址 {URL}"
     shown = v1.display_text(v1.redact_sensitive("电话 0531-12345678、87687769"))
     assert shown == f"电话 {MARK}、{MARK}"
+
+
+# "联系电话：86263938"这样不带区号、前面也没有已遮号码的本地号码（11/2 F15）：紧跟在"电话：""手机："
+# "传真："标签后面的 7–8 位号码显示时也遮，后面紧跟着的号码照第 1 条一起遮
+@pytest.mark.parametrize(
+    "shown, expected",
+    [
+        ("联系电话：86263938。", f"联系电话：{MARK}。"),
+        ("电 话：86263938", f"电 话：{MARK}"),
+        ("咨询电话: 86263938", f"咨询电话: {MARK}"),
+        ("传真：86263939转801", f"传真：{MARK}"),
+        ("电话号码：6626393", f"电话号码：{MARK}"),
+        ("联系电话：86263938、86263939", f"联系电话：{MARK}、{MARK}"),
+        # 下面两条原来属于"别的号码不碰"（F5 只管紧跟在已遮号码后面的），F15 起标签后面的也遮
+        ("联系电话：87687769", f"联系电话：{MARK}"),
+        (f"电话：{MARK}，传真：87687770", f"电话：{MARK}，传真：{MARK}"),
+    ],
+)
+def test_local_numbers_after_a_phone_label_are_masked(shown, expected):
+    assert v1.display_text(shown) == expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "电话：20261101",  # 像日期
+        "电话：86263938元",  # 金额
+        "电话：8626.5",  # 小数
+        "电话会议：86263938",  # 标签后面不是冒号
+        "电话：见附件",
+        "电话：12345",  # 位数不够
+        "手机：123456789012",  # 位数太多
+        "联系人：86263938",  # 不是电话标签
+    ],
+)
+def test_other_text_after_phone_labels_is_left_alone(text):
+    assert v1.display_text(text) == text
