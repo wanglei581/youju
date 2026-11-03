@@ -13,7 +13,7 @@ import contextlib
 import csv
 import logging
 import math
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -21,7 +21,7 @@ from io import StringIO
 from urllib.parse import urlsplit
 from uuid import uuid4
 
-from sqlalchemy import case, delete, exists, func, or_, select, true, update
+from sqlalchemy import case, delete, exists, func, or_, select, text, true, update
 from sqlalchemy.orm import Session
 
 from youju import advisor_tasks
@@ -68,7 +68,7 @@ UNCONFIRMED_PAYMENT_ERROR = (
 UNCONFIRMED_CLOSE_UNALERTED = (
     (PayOrder.status == "closed")
     & PayOrder.alerted_at.is_(None)
-    & (PayOrder.error == UNCONFIRMED_PAYMENT_ERROR)
+    & PayOrder.error.startswith(UNCONFIRMED_PAYMENT_ERROR)
 )
 # 未完结订单：支付关闭后仍要处理到底，不能冻结。
 OPEN_ORDER = (
@@ -85,13 +85,26 @@ def enabled(settings) -> bool:
 
 
 def has_work(session: Session, settings) -> bool:
-    """定时任务是否需要运行：支付开启，或库里还有未完结订单、当天有本地订单的待完成对账。
+    """定时任务是否需要运行：支付开启，或库里还有未完结订单、当天有本地订单的待完成对账，
+    或近 7 天有投诉（不转人工的投诉要单独告警，见 complaint_alerts）。
 
-    支付关闭且没有这些记录时只做这两次本地查询，不创建 HTTP 客户端、不访问微信。
+    支付关闭且没有这些记录时只做这几次本地查询，不创建 HTTP 客户端、不访问微信。
     """
     if enabled(settings):
         return True
     if session.scalar(select(PayOrder.id).where(OPEN_ORDER).limit(1)) is not None:
+        return True
+    if (
+        session.scalar(
+            select(PayEvent.id)
+            .where(
+                PayEvent.kind == COMPLAINT_EVENT,
+                PayEvent.created_at > datetime.now(UTC) - COMPLAINT_ALERT_WINDOW,
+            )
+            .limit(1)
+        )
+        is not None
+    ):
         return True
     return (
         session.scalar(
@@ -120,6 +133,23 @@ TRIAL_REF = "order_trial"
 ORDER_GIFT_REFS = (RENEWAL_REF, TRIAL_REF)
 # 投诉推送写在订单上的说明（api/pay.py 收到 xpay_complaint_notify 时）：自助退款据此认出投诉中的订单
 COMPLAINT_ERROR = "收到用户投诉"
+COMPLAINT_EVENT = "xpay_complaint_notify"
+# 不转人工的投诉（退款中、已退款、已关闭的单）按投诉事件单独告警，只看最近 7 天的事件
+COMPLAINT_ALERT_WINDOW = timedelta(days=7)
+# 投诉时订单是这几种状态就不改状态：转人工会让退款中的单停掉自动退款、已退款的单倒退成"人工核对中"
+COMPLAINT_KEEPS_STATUS = frozenset({"refunding", "refunded", "closed"})
+# 付款前就被微信拒了的错误码（官方 wx.requestVirtualPayment 错误码表里下单阶段的错误和风控拦截，
+# 10/29 核对；
+# 和小程序 utils/pay.js 的 NOT_STARTED 一致）。-15003"系统错误"说不清发生在哪一步，不在里面
+NOT_STARTED_CODES = frozenset(
+    {1001, -4, -15001, -15002, -15004, -15005, -15006, -15007, -15008, -15009, -15010}
+    | {-15011, -15012, -15013, -15014, -15016, -15017, -15018, -15019, -15020, -15021}
+)
+# 小程序下一次付款时带上的"上一笔付款前就被微信拒了"，只认 10 分钟内下的单
+# （和下新单前查旧单的窗口一样）
+NOT_STARTED_WINDOW = timedelta(minutes=10)
+# 记在那一单的 error 上（订单照旧待确认、补单照旧查）：下新单前查它查不清时不挡新单
+NOT_STARTED_PREFIX = "小程序报告付款前就被微信拒了"
 # 退款发起方：self 用户自助（付款 24 小时内没用过付费的量，D-081）；
 # staff 负责人按规则发起（系统故障、停止服务）
 SELF_REFUND_WINDOW = timedelta(hours=24)
@@ -752,7 +782,7 @@ def platform(order: dict, settings: Settings) -> str:
     return "ios" if value in (7, 8) else "android" if value in (0, 1) else "unknown"
 
 
-def event(session: Session, kind: str, data: dict, order: PayOrder | None = None) -> None:
+def event(session: Session, kind: str, data: dict, order: PayOrder | None = None) -> PayEvent:
     allowed = {
         "OpenId",
         "OutTradeNo",
@@ -784,7 +814,9 @@ def event(session: Session, kind: str, data: dict, order: PayOrder | None = None
     if order is not None and order.user_id is None:
         summary.pop("OpenId", None)
         summary.pop("openid", None)
-    session.add(PayEvent(order_id=order.id if order else None, kind=kind[:64], summary=summary))
+    row = PayEvent(order_id=order.id if order else None, kind=kind[:64], summary=summary)
+    session.add(row)
+    return row
 
 
 def query(
@@ -1501,6 +1533,169 @@ def settle_pending(
     return "manual" if order.status == "manual" else "unavailable"
 
 
+def note_complaint(session: Session, order: PayOrder, row: PayEvent, stamp: datetime) -> None:
+    """投诉推送：投诉一律要人工跟进（微信支付投诉有答复时限），每一条投诉在收到推送时就定好由谁告警，
+    记在这条投诉事件的摘要里（alert），补单发告警时不再看订单当时的状态（Codex 第 1 轮）：
+    - 同一个投诉（ComplaintId 相同）的重推：只记事件，alert=duplicate，不再告警；
+    - 已完成、待确认、人工单：转人工（escalate）；这次加上了原因（转人工的告警会发）
+      就 alert=manual；
+    - 其余（退款中、已退款、已关闭的单不改状态——转人工会让退款中的单停掉自动退款、已退款的单倒退成
+      "人工核对中"；或者人工单里已经有投诉原因、这次没加上）：alert=pending，补单单独发（complaint_alerts）。"""
+    summary = dict(row.summary or {})
+    # 只看编号更小的：同一订单的推送拿着订单锁、先后一定；
+    # 比编号更大的会和补单那边的判断打架（Codex #402 第 6 轮）
+    if same_complaint(session, row, earlier_only=True):
+        summary["alert"] = "duplicate"
+    elif order.status not in COMPLAINT_KEEPS_STATUS and escalate(
+        order, f"{COMPLAINT_ERROR}，需人工处理", stamp
+    ):
+        summary["alert"] = "manual"
+    else:
+        summary["alert"] = "pending"
+    row.summary = summary
+
+
+def same_complaint(
+    session: Session, row: PayEvent, *, earlier_only: bool = False
+) -> list[PayEvent]:
+    """同一个投诉（ComplaintId 相同）的其他投诉事件：同一订单的；本地查不到订单的再按商户单号比。
+    earlier_only 只要编号更小的。没有 ComplaintId 的没有同伴。调用方已 flush，row 有 id。"""
+    summary = row.summary or {}
+    complaint_id = summary.get("ComplaintId")
+    if not complaint_id:
+        return []
+    same_order = (
+        PayEvent.order_id == row.order_id
+        if row.order_id is not None
+        else PayEvent.order_id.is_(None)
+    )
+    return [
+        other
+        for other in session.scalars(
+            select(PayEvent).where(
+                same_order,
+                PayEvent.kind == COMPLAINT_EVENT,
+                PayEvent.id < row.id if earlier_only else PayEvent.id != row.id,
+            )
+        )
+        if (other.summary or {}).get("ComplaintId") == complaint_id
+        and (
+            row.order_id is not None
+            or (other.summary or {}).get("MchOrderId") == summary.get("MchOrderId")
+        )
+    ]
+
+
+def complaint_covered(session: Session, row: PayEvent) -> bool:
+    """这条待发的投诉是不是已经有人负责了：同一投诉已经发过告警（sent）或转了人工（manual），
+    或者有编号更小、还在等着发的（pending，让它先发）。和事件提交的先后无关：编号大的先提交、先发了，
+    编号小的后提交也会看到它已经发过；两条都在等时只发编号小的那条（Codex #402 第 6 轮）。"""
+    for other in same_complaint(session, row):
+        state = (other.summary or {}).get("alert")
+        if state in ("sent", "manual") or (state == "pending" and other.id < row.id):
+            return True
+    return False
+
+
+# 发投诉告警这一段同一时刻只让一个补单跑：两个补单交错着发同一投诉的两条（一个在发编号大的、
+# 还没提交，另一个看到它还在等、就发了编号小的），按行加锁挡不住（Codex #402 第 7 轮）
+COMPLAINT_ALERT_LOCK = "youju_pay_complaint_alerts"
+
+
+@contextlib.contextmanager
+def _complaint_alert_lock(session: Session) -> Iterator[bool]:
+    """拿投诉告警锁（不等待）：拿到给 True，另一个补单正在发给 False。锁挂在单独的一个连接上，
+    用完释放；连接断了 MySQL 也会自动释放。不是 MySQL（本机单元测试的别的库）时直接给 True。"""
+    bind = session.get_bind()
+    engine = getattr(bind, "engine", bind)
+    if engine.dialect.name != "mysql":
+        yield True
+        return
+    with engine.connect() as conn:
+        got = conn.scalar(text("SELECT GET_LOCK(:k, 0)"), {"k": COMPLAINT_ALERT_LOCK}) == 1
+        try:
+            yield got
+        finally:
+            if got:
+                conn.execute(text("SELECT RELEASE_LOCK(:k)"), {"k": COMPLAINT_ALERT_LOCK})
+
+
+def complaint_alerts(session: Session, stamp: datetime, alert) -> int:
+    """收到推送时定为单独告警（alert=pending）的投诉，每条发一次告警；
+    发出去（alert 返回 True）才记 sent，
+    没发出去或没配告警地址的下一轮接着发。只看最近 7 天的投诉事件；按行加锁、跳过别的补单正在发的，
+    两个补单同时跑也不会重复发（发出去以后、提交之前进程退出，仍可能多发一次）。返回这次发出的条数。
+    整段拿着投诉告警锁跑，提交以后才放锁；拿不到锁（另一个补单正在发）这一轮就不发，下一轮再看。"""
+    with _complaint_alert_lock(session) as got:
+        if not got:
+            return 0
+        return _send_complaint_alerts(session, stamp, alert)
+
+
+def _send_complaint_alerts(session: Session, stamp: datetime, alert) -> int:
+    sent = 0
+    rows = session.scalars(
+        select(PayEvent)
+        .where(
+            PayEvent.kind == COMPLAINT_EVENT,
+            PayEvent.created_at > stamp - COMPLAINT_ALERT_WINDOW,
+        )
+        .order_by(PayEvent.id)
+        .with_for_update(skip_locked=True)
+    ).all()
+    for row in rows:
+        if (row.summary or {}).get("alert") != "pending":
+            continue
+        # 同一个投诉只发一次：两次重推同时到（本地没有订单时不加订单锁），收推送时的查重
+        # 可能互相看不到，发之前再判一次（Codex #402 第 5、6 轮）
+        if complaint_covered(session, row):
+            row.summary = {**(row.summary or {}), "alert": "duplicate"}
+            continue
+        order = session.get(PayOrder, row.order_id) if row.order_id else None
+        if row.order_id is None:
+            # 本地没有这笔订单（商户单号对不上）：照样告警，写上商户单号
+            subject = (
+                f"商户单号 {(row.summary or {}).get('MchOrderId', '未知')}（本地没有这笔订单）"
+            )
+        else:
+            label = STATUS_LABELS.get(order.status, order.status) if order else "已删除"
+            subject = f"支付订单 #{row.order_id}（订单{label}）"
+        if (
+            alert(f"{subject}{COMPLAINT_ERROR}，需人工处理：到小程序后台虚拟支付的投诉里答复")
+            is True
+        ):
+            row.summary = {**(row.summary or {}), "alert": "sent"}
+            sent += 1
+    session.commit()
+    return sent
+
+
+def mark_not_started(
+    session: Session, user_id: int, order_id: int, code: int, stamp: datetime
+) -> bool:
+    """小程序下一次付款时带上"上一笔付款前就被微信拒了"（官方错误码表里下单阶段的错误）：
+    只认本人 10 分钟内下的、还在待确认的那一单和表里的错误码，在它的 error 上记一笔。
+    订单照旧待确认、补单照旧查，查到付了款照样开通（不凭小程序一句话关单，Codex 第 1 轮）；
+    只是下新单前查它查不清时不挡新单。
+    调用方已锁用户。返回有没有记上。"""
+    if code not in NOT_STARTED_CODES:
+        return False
+    order = session.scalar(
+        select(PayOrder)
+        .where(PayOrder.id == order_id, PayOrder.user_id == user_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if order is None or order.status != "pending" or order.created_at <= stamp - NOT_STARTED_WINDOW:
+        return False
+    order.error, order.updated_at = f"{NOT_STARTED_PREFIX}（错误码 {code}），还在核对", stamp
+    return True
+
+
+def reported_not_started(order: PayOrder) -> bool:
+    return (order.error or "").startswith(NOT_STARTED_PREFIX)
+
+
 def recheck(
     session: Session, order: PayOrder, client: XPayClient, settings: Settings, stamp: datetime
 ) -> str:
@@ -1655,8 +1850,12 @@ def run_payments(
                     # 查单一直失败也不能永远轮询：关单，下面告警（见 UNCONFIRMED_PAYMENT_ERROR）。
                     # 不转人工：没有能把这种单查清楚再处理的工具，订单页"1 个工作日内处理"兑现不了
                     # （独立审阅 10/29）；关单后订单页写"如果其实扣了款，点'遇到问题'告诉我们"
+                    # 小程序报告过付款前就被拒的，告警里注明，方便人工核对（独立审阅 #402）
+                    note = (
+                        "（小程序报告过付款前就被微信拒了）" if reported_not_started(order) else ""
+                    )
                     data = None
-                    order.status, order.error = "closed", UNCONFIRMED_PAYMENT_ERROR
+                    order.status, order.error = "closed", UNCONFIRMED_PAYMENT_ERROR + note
                     order.alerted_at = None
                 if data is not None and not mark_refunded(session, order, data, stamp):
                     if data.get("status") == 6 or (overdue and data.get("status") in (0, 1)):
@@ -1669,26 +1868,29 @@ def run_payments(
             if (
                 order.status == "manual"
                 and not order.alerted_at
-                and alert(f"支付订单 #{order.id} 需人工处理：{order.error}") is not False
+                and alert(f"支付订单 #{order.id} 需人工处理：{order.error}") is True
             ):
                 order.alerted_at = stamp
             if (
                 order.status == "closed"
-                and order.error == UNCONFIRMED_PAYMENT_ERROR
+                and (order.error or "").startswith(UNCONFIRMED_PAYMENT_ERROR)
                 and not order.alerted_at
                 and alert(
-                    f"支付订单 #{order.id} {UNCONFIRMED_PAYMENT_ERROR}；核实付了款的，"
+                    f"支付订单 #{order.id} {order.error}；核实付了款的，"
                     f"在 admin 里运行 youju pay-recheck --order-id {order.id}"
                 )
-                is not False
+                is True
             ):
                 order.alerted_at = stamp
             order.updated_at = stamp
             session.commit()
         except XPayError:
-            order.error = "微信查单或通知暂不可用，将重试"
+            # 小程序报告过付款前就被拒的那句留着：下新单前靠它决定查不清时挡不挡
+            if not reported_not_started(order):
+                order.error = "微信查单或通知暂不可用，将重试"
             order.updated_at = stamp
             session.commit()
+    complaint_alerts(session, stamp, alert)
     # 9:30 的任务创建记录后，每分钟继续未完成的账单生成/下载；失败满 5 次的不再占名额。
     days_stmt = select(PayReconciliation.day).where(PayReconciliation.status == "pending")
     if not open_shop:
