@@ -2,8 +2,9 @@
 
 在本机比，不发给任何人。两处用：
 - AI 解读、条款对照的结果存进去之前（ai/result_safety.py），命中就不显示、记处置记录；
-- 问一问的提问和回答（问一问开发设计第九节第 3、6 条，PR-2、PR-3）。流式接收时每收到一段，
-  就把已经收到的全部文字交给 check，跨段的词也查得到。
+- 问一问的提问和回答（问一问开发设计第九节第 3、6 条，PR-2、PR-3）。流式接收回答时每收到一段，
+  只查"新收到的这段，加上它前面最长词条长度减 1 个字"（ai/ask.py 的 _Guard，按规范化以后的字算），
+  跨段的词也查得到；收完再整段查一遍兜底。
 
 **现在的词库只是草稿占位**（data/safety_words.json：version 是 draft-0，final 为 false，
 没有词条）。词库从哪来、分哪些类别、谁来维护，要经合规审定、创始人定；定稿（final 为 true）以前
@@ -11,7 +12,8 @@
 （违法信息 11 类）、第七条（不良信息 9 类）列出，词条以后补，每条 {"id", "category", "word"}。
 改词库就升版本，处置记录里记版本（Hit.version）。
 
-比较前，词条和要查的文字做同样的处理：NFKC（全角转半角）、casefold（转小写）、去掉空白和零宽字符。
+比较前，词条和要查的文字做同样的处理：先去掉显示时看不见的字符（零宽字符、软连字符、方向控制符、
+变体选择符等），再 NFKC（全角转半角）、casefold（转小写），最后去掉空白。
 """
 
 from __future__ import annotations
@@ -24,15 +26,27 @@ from pathlib import Path
 from typing import Any
 
 PATH = Path(__file__).parent / "data" / "safety_words.json"
-# 空白和零宽字符（零宽空格、零宽非连接符、零宽连接符、字连接符、BOM）：夹在词中间也照样认得出
-_GAPS = re.compile(
-    r"[\s\N{ZERO WIDTH SPACE}-\N{ZERO WIDTH JOINER}\N{WORD JOINER}\N{ZERO WIDTH NO-BREAK SPACE}]+"
+# Unicode 里"默认可忽略"（Default_Ignorable_Code_Point）的字符：零宽空格和连接符、BOM、软连字符、
+# 组合用字形连接符、方向控制符、变体选择符、标签字符等，显示时看不见，夹在词中间也照样认得出
+_INVISIBLE = (
+    r"\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180f\u200b-\u200f\u202a-\u202e"
+    r"\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff\uffa0\ufff0-\ufff8\U0001bca0-\U0001bca3"
+    r"\U0001d173-\U0001d17a\U000e0000-\U000e0fff"
 )
+_HIDDEN = re.compile(f"[{_INVISIBLE}]+")
+# 规范化以后去掉的：空白（全角空格等规范化以后才是空格），和规范化以后才出现的看不见的字符
+_GAPS = re.compile(rf"[\s{_INVISIBLE}]+")
+
+
+def strip_invisible(text: str) -> str:
+    """去掉看不见的字符：normalize 的第一步。要在规范化之前去掉，夹在字母和它的组合符号中间的
+    （比如组合用字形连接符）才不挡着合成。一个字一个字地去，分段去和连着去结果一样。"""
+    return _HIDDEN.sub("", text)
 
 
 def normalize(text: str) -> str:
-    """比较用的写法：NFKC、casefold，去掉空白和零宽字符。"""
-    return _GAPS.sub("", unicodedata.normalize("NFKC", text).casefold())
+    """比较用的写法：去掉看不见的字符，再 NFKC、casefold，最后去掉空白。"""
+    return _GAPS.sub("", unicodedata.normalize("NFKC", strip_invisible(text)).casefold())
 
 
 @dataclass(frozen=True)
@@ -59,12 +73,16 @@ class Library:
     final: bool = False  # 经合规审定的定稿；为假时问一问不开放。check 不看它，照样查
     # 按词的第一个字分组，同一组里长的在前：查一段文字时每个位置只比这个字开头的几条
     _by_first: dict[str, tuple[Entry, ...]] = field(init=False, repr=False, compare=False)
+    # 最长词条的长度（处理过以后的字数），没有词条为 0：流式接收每收到一段都要用，载入时算一次
+    longest: int = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         groups: dict[str, list[Entry]] = {}
         for entry in sorted(self.entries, key=lambda e: -len(e.word)):
             groups.setdefault(entry.word[0], []).append(entry)
         object.__setattr__(self, "_by_first", {k: tuple(v) for k, v in groups.items()})
+        longest = max((len(entry.word) for entry in self.entries), default=0)
+        object.__setattr__(self, "longest", longest)
 
 
 def parse(data: Any) -> Library:
@@ -123,10 +141,15 @@ LIBRARY = load()
 def check(text: str, library: Library | None = None) -> Hit | None:
     """text 里有没有词库里的词：有就返回最靠前的那一个（同一位置取最长的），没有返回 None。
 
-    library 不给就用启动时载入的 LIBRARY。流式接收回答时，每收到一段就把已经收到的全部文字传进来
-    （不是只传新的那一段）。词库定没定稿都照样查。"""
+    library 不给就用启动时载入的 LIBRARY。词库定没定稿都照样查。流式接收回答时每收到一段不用它查
+    全部文字，而是用 check_normalized 查窗口（ai/ask.py 的 _Guard）；收完整段再用它查一遍。"""
+    return check_normalized(normalize(text), library)
+
+
+def check_normalized(plain: str, library: Library | None = None) -> Hit | None:
+    """同 check，只是 plain 已经按 normalize 处理过（流式接收时按规范化以后的字截窗口，
+    不再处理一遍）。"""
     library = LIBRARY if library is None else library
-    plain = normalize(text)
     for at, char in enumerate(plain):
         for entry in library._by_first.get(char, ()):
             if plain.startswith(entry.word, at):

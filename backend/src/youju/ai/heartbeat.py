@@ -26,8 +26,8 @@ AI 的开关、开放范围、白名单、全站每天上限都是环境变量�
 只有 api 服务（YOUJU_ROLE=api）才看心跳：本机开发和测试是同一个进程、同一份设置，不会对不上。
 
 问这份通知（问一问开发设计第六节第 3 条"只走单独线路"）另记一项 ask_ready：admin 能处理 AI 任务、
-并且对外 AI 的单独线路三项都配好了（ask_capable）。api 的能力接口、发一问看它（ask_ready），
-本机开发和测试按本进程的设置算。
+对外 AI 的单独线路三项都配好了，并且开着流式接收（YOUJU_AI_ADVISOR_STREAM）——这三样都满足才算
+（ask_capable）。api 的能力接口、发一问看它（ask_ready），本机开发和测试按本进程的设置算。
 """
 
 from __future__ import annotations
@@ -81,9 +81,14 @@ def worker_capable(settings) -> bool:
 
 
 def ask_capable(settings) -> bool:
-    """admin 这边能处理问这份通知：能处理 AI 任务，并且对外 AI 的单独线路三项都配好了
-    （不退回后台线路，问一问开发设计第六节第 3 条）。"""
-    return worker_capable(settings) and advisor_route_ready(settings)
+    """admin 这边能处理问这份通知：能处理 AI 任务，对外 AI 的单独线路三项都配好了（不退回后台线路，
+    问一问开发设计第六节第 3 条），并且按流式接收（YOUJU_AI_ADVISOR_STREAM）：边收边查高危词、
+    发现就中断，没开流式不开放、不留"整段收完再查"的退路（第九节第 6 条，Codex 第 8 轮）。"""
+    return (
+        worker_capable(settings)
+        and advisor_route_ready(settings)
+        and bool(getattr(settings, "ai_advisor_stream", False))
+    )
 
 
 def beat(session: Session, settings, service: str, stamp: datetime) -> AIHeartbeat:
