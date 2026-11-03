@@ -163,7 +163,9 @@ YOUJU_DATABASE_URL="$DB_URL" "${PY[@]}" --check
 if [ "$SELF_TEST" = 1 ]; then
   YOUJU_DATABASE_URL="$DB_URL" "${PY[@]}" --fake-model --out "$OUT" --concurrency "$CONCURRENCY"
 else
-  echo "开始评测：模型 $MODEL，并发 $CONCURRENCY，流式 $STREAM" >&2
+  # 变量名后面紧跟中文时要加花括号：macOS 的 bash 3.2 在 UTF-8 语言设置下会把中文的第一个字节读进变量名
+  # （"$MODEL，" → "MODEL\xef: unbound variable"，11/3 创始人第一次跑时遇到）
+  echo "开始评测：模型 ${MODEL}，并发 ${CONCURRENCY}，流式 ${STREAM}" >&2
   # 线路只设给这一个子进程。附加参数：两家都关掉思考模式（和线上一致）。DeepSeek 用 deepseek-v4-pro：
   # 官网价格页（11/3）只列 deepseek-flash 和它、默认开思考；线上后台核对一直用它加关闭思考，D-114 对外 AI 也用它
   YOUJU_DATABASE_URL="$DB_URL" \
