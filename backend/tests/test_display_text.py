@@ -72,7 +72,6 @@ def test_numbers_right_after_a_masked_phone_are_masked(shown, expected):
         f"{MARK}、876877690",
         f"{MARK}、123456",
         f"{MARK}、12345678",
-        f"{MARK}、01087687769",
         # 分隔符不在名单里
         f"{MARK}87687769",
     ],
@@ -647,3 +646,175 @@ def test_phone_context_runs_to_the_end_of_the_sentence():
     shown = f"咨询电话：{long_tail}，65119071？下一句编号 66001234"
     out = v1.display_text(shown)
     assert "65119071" not in out and "66001234" in out
+
+
+# ---- 11/3：正文里还漏着的几种号码写法（只在电话语境里认）----
+P = "（这里隐去了电话）"
+C = "（这里隐去了联系人）"
+
+
+@pytest.mark.parametrize(
+    "shown, expected",
+    [
+        # 已遮号码的下一行接着写的（含分机）
+        (
+            f"联系电话：{P}转8002\n4682138转8002\n邮箱：（这里隐去了邮箱）",
+            f"联系电话：{P}转8002\n{P}\n邮箱：（这里隐去了邮箱）",
+        ),
+        # 单位名后面隔着冒号、逗号、空格
+        (
+            "（产业政策处：51782598，轻工纺织产业处：51782822）",
+            f"（产业政策处：{P}，轻工纺织产业处：{P}）",
+        ),
+        ("业务部门：某局某科，65227947", f"业务部门：某局某科，{P}"),
+        # "联系方式"标题下面几行
+        (
+            "联系方式：\n资源配置与管理处 67515789\n机关纪委 67600056\n联系地址：某市某路1号",
+            f"联系方式：\n资源配置与管理处 {P}\n机关纪委 {P}\n联系地址：某市某路1号",
+        ),
+        (
+            "联系电话：\n某某项目\n65337138\n某某专项\n65300221",
+            f"联系电话：\n某某项目\n{P}\n某某专项\n{P}",
+        ),
+        # 人名后面的号码：括号连号码一起换，名字也遮；分行写的要名字单独一行、上一行是单位
+        ("请电询王小明（55521177）或李小红（55520811）。", f"请电询{C}{P}或{C}{P}。"),
+        ("节能处\n刘小明\n55520947\n申报平台", f"节能处\n{C}\n{P}\n申报平台"),
+        # "致电"后面同一句的
+        ("请有意向的企业提前致电86168249咨询。", f"请有意向的企业提前致电{P}咨询。"),
+        # 区号连写的 11–12 位（以前"已遮号码、01087687769"这样的也不遮，11/3 起遮）
+        ("联系电话：05388933778", f"联系电话：{P}"),
+        (f"咨询电话：{P}、01087687769", f"咨询电话：{P}、{P}"),
+        # 一行只有一串号码
+        ("88827981、88828830", f"{P}、{P}"),
+    ],
+)
+def test_more_phone_contexts(shown, expected):
+    assert v1.display_body_text(shown) == expected
+    assert v1.display_body_text(expected) == expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "2060502技术创新服务 200.00 200.00",  # 预算科目编码
+        "网站访问总量（单位：次）\n7206482",  # 访问量
+        "吉林省某某设计院 91220101 MA0Y5F26",  # 统一社会信用代码被空格拆开
+        "笔试成绩\n面试成绩\n最终成绩\n3000129",  # 成绩表
+        "项目编号：2026001，金额：3000000元，截至20261120。",  # 编号、金额（以前把"金额"当成人名）
+        "支出列“2060203自然科学基金”",
+        "某某项目\n65337138",  # 不在联系方式标题下面
+        # agy 审阅举的例子：已遮号码下一行开头的科目编码、像标题的整句、常用词后面的数、一串 7 位编码
+        "（一）联系电话保持畅通，请勿关机\n某某 85213456",
+        "（一）联系电话：保持畅通\n某某 85213456",
+        "成绩 85213456",
+        "金额（2060502）",
+        "2060501、2060502",
+    ],
+)
+def test_more_phone_rules_leave_other_numbers(text):
+    assert v1.display_body_text(text) == text
+
+
+def test_next_line_number_must_stand_alone():
+    # 隔着换行接着写的号码，下一行只有号码才算（agy 审阅）
+    assert (
+        v1.display_body_text("电话：88888888\n2060502技术创新服务")
+        == f"电话：{P}\n2060502技术创新服务"
+    )
+    # Windows 换行（\r\n）也认：交给模型的文字没有先统一换行
+    raw = "电话：010-88888888\r\n87687769\r\n"
+    assert v1.model_body_text(v1.redact_sensitive(raw)) == "电话：[电话已脱敏]\r\n[电话已脱敏]\r\n"
+    # 标题行冒号后面本身列着号码的照样当标题
+    text = f"联系电话：某项目 {P}\n另一项目 55520751\n联系邮箱：某"
+    assert v1.display_body_text(text) == f"联系电话：某项目 {P}\n另一项目 {P}\n联系邮箱：某"
+
+
+def test_phone_label_cell_masks_the_next_cell():
+    row = [("列1", C), ("列2", "联系方式:"), ("列3", "05922182100")]
+    assert v1.display_attachment_row(row) == [C, "联系方式:", P]
+    assert v1.display_attachment_row([("列1", "申报总额"), ("列2", "30000000")]) == [
+        "申报总额",
+        "30000000",
+    ]
+
+
+def test_more_phone_rules_reach_the_model_text():
+    # 交给模型的文字走同一套规则，标记写成入库的写法
+    assert v1.model_body_text("产业政策处：51782598") == "产业政策处：[电话已脱敏]"
+
+
+# 独立审阅第 1 轮补的几种（11/3）
+@pytest.mark.parametrize(
+    "shown, expected",
+    [
+        ("某某处\n55520803\n下一行", f"某某处\n{P}\n下一行"),  # 单位名下一行单独写的
+        ("电话：0531-8888 8888", f"电话：{P}"),  # 区号后面本地号码中间隔空格
+        ("传真：0531 8888 8888", f"传真：{P}"),
+        (f"联系人：{C}/55520803", f"联系人：{C}/{P}"),  # 已遮联系人后面斜杠隔开
+        (f"{C}，1381234567", f"{C}，{P}"),  # 已遮联系人后面 10 位的手机号（原文少一位）
+    ],
+)
+def test_more_phone_contexts_round_two(shown, expected):
+    assert v1.display_body_text(shown) == expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "成交额 32345678 元",  # 号码后面隔空格接"元"
+        "资金 30000000 元。",
+        "某局，2060502技术创新服务",  # 单位名后面的数紧接汉字，是编码
+        "某某研究院\n3000000",  # 单位名下一行的 7 位数
+    ],
+)
+def test_more_phone_rules_round_two_leave_other_numbers(text):
+    assert v1.display_body_text(text) == text
+
+
+def test_lone_number_cells_in_contact_tables():
+    # 没写列名的通讯录表：左边一格是单位名（可带括号），这一格只有一个 8 位号码
+    assert v1.display_attachment_row(
+        [("", "1"), ("", "中关村某某园"), ("", "88888888"), ("", "某区某路9号")]
+    ) == [
+        "1",
+        "中关村某某园",
+        P,
+        "某区某路9号",
+    ]
+    assert v1.display_attachment_row([("", "某某委员会（某区）"), ("", "88888888")]) == [
+        "某某委员会（某区）",
+        P,
+    ]
+    # 同一行已经有遮掉的联系人
+    assert v1.display_attachment_row(
+        [("单位", "某某局"), ("联系人", "张小明"), ("列3", "88888888")]
+    ) == [
+        "某某局",
+        C,
+        P,
+    ]
+    # 列名是金额的、左边不是单位名的不遮
+    assert v1.display_attachment_row([("", "某某有限公司"), ("申请金额（元）", "30000000")]) == [
+        "某某有限公司",
+        "30000000",
+    ]
+    assert v1.display_attachment_row([("", "某某项目"), ("", "30000000")]) == [
+        "某某项目",
+        "30000000",
+    ]
+
+
+def test_space_before_a_word_after_the_number_still_masks():
+    # 隔着空格只认钱和百分比："电话：号码 人事处"照样遮（11/3 独立审阅第 2 轮）
+    assert v1.display_body_text("电话：88888888 人事处") == f"电话：{P} 人事处"
+    assert v1.display_body_text(f"{C} 88888888 项目办") == f"{C} {P} 项目办"
+
+
+def test_contact_table_cell_with_extensions_and_company_amounts():
+    row = [("", "4"), ("", "某某委员会"), ("", "88888888/801/802"), ("", "某路")]
+    assert v1.display_attachment_row(row) == ["4", "某某委员会", P, "某路"]
+    # 左边是公司的不当通讯录（多是金额表）
+    assert v1.display_attachment_row([("", "某某有限公司"), ("", "50000000")]) == [
+        "某某有限公司",
+        "50000000",
+    ]

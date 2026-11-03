@@ -2243,11 +2243,33 @@ def display_marks(text: str) -> str:
 # （20261101）的不算。别处的数字（金额、年份、文号、编号）不碰
 _PHONE_MARK_ANY = re.compile(r"（这里隐去了电话）|\[电话已脱敏\]|\[手机号已脱敏\]")
 _PHONE_TAIL = re.compile(
-    r"(?P<sep>[ \t\u3000]*(?:[、/／，,；;]|或)[ \t\u3000]*|[ \t\u3000]+)"
-    r"(?P<number>[2-9]\d{6,7}(?:(?:[-－]|转)\d{1,8})?)(?!\d)"
+    r"(?P<sep>[ \t\u3000]*(?:[、/／，,；;]|或)[ \t\u3000]*|[ \t\u3000]+"
+    # 下一行接着写的号码（"（这里隐去了电话）转8002⏎4682138转8002"，11/3 全库扫描）
+    r"|[ \t\u3000]*[、/／，,；;]?[ \t\u3000\r]*\n[ \t\u3000]*)"
+    r"(?P<number>0\d{2,3}[2-9]\d{6,7}|[2-9]\d{6,7}(?:(?:[-－]|转)\d{1,8})?)(?!\d)"
 )
+# 已遮号码后面写着的分机（"（这里隐去了电话）转8002"）：照原样留着，再看后面有没有接着的号码
+_PHONE_EXT = re.compile(r"(?:转|[-－])\d{1,6}(?!\d)")
 _NOT_PHONE_NEXT = frozenset("元万亿千百%％‰年月日号个人次家项份字条批期届级名位件页")
+
+
+_MONEY_AFTER_SPACE = frozenset("元万亿%％‰")
+
+
+def _unit_after(text: str, end: int) -> bool:
+    """号码后面紧接着金额单位、"年月日号"这类字：不是号码。隔着空格的只认钱和百分比
+    （"资金 30000000 元"）——"电话：号码 人事处"的"人"不算（11/3 独立审阅）。"""
+    following = text[end : end + 6]
+    if following[:1] and following[0] in _NOT_PHONE_NEXT:
+        return True
+    rest = following.lstrip(" \t\u3000")
+    return bool(rest) and len(rest) < len(following) and rest[0] in _MONEY_AFTER_SPACE
+
+
 _DATE_DIGITS = re.compile(r"(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])")
+
+
+_LINE_REST_EMPTY = re.compile(r"[ \t\u3000]*[。；;，,、]?[ \t\u3000\r]*(?:\n|$)")
 
 
 def _phone_tail(text: str, at: int) -> re.Match[str] | None:
@@ -2255,8 +2277,11 @@ def _phone_tail(text: str, at: int) -> re.Match[str] | None:
     match = _PHONE_TAIL.match(text, at)
     if match is None:
         return None
+    # 隔着换行的：下一行只有这个号码才算（"电话：…⏎2060502技术创新服务"的科目编码不算）
+    if "\n" in match.group("sep") and _LINE_REST_EMPTY.match(text, match.end()) is None:
+        return None
     after = text[match.end() : match.end() + 2]
-    if after and after[0] in _NOT_PHONE_NEXT:
+    if _unit_after(text, match.end()):
         return None
     # 小数（"87687769.5"）不算；句末的英文句点照样算号码
     if after[:1] in ".．" and after[1:2].isdigit():
@@ -2277,6 +2302,10 @@ def _mask_phone_tails(text: str) -> str:
             continue
         out.append(text[done : mark.end()])
         done = mark.end()
+        ext = _PHONE_EXT.match(text, done)
+        if ext is not None:
+            out.append(ext.group())
+            done = ext.end()
         while (tail := _phone_tail(text, done)) is not None:
             out.append(tail.group("sep") + PHONE_MARK)
             done = tail.end()
@@ -2291,7 +2320,7 @@ def _mask_phone_tails(text: str) -> str:
 _LABELED_PHONE = re.compile(
     r"(?P<label>(?:电[ \t\u3000]*话|手[ \t\u3000]*机|传[ \t\u3000]*真)"
     r"(?:号码?)?[ \t\u3000]*[:：][ \t\u3000]*)"
-    r"(?P<number>[2-9]\d{6,7}(?:(?:[-－]|转)\d{1,8})?)(?!\d)"
+    r"(?P<number>0\d{2,3}[2-9]\d{6,7}|[2-9]\d{6,7}(?:(?:[-－]|转)\d{1,8})?)(?!\d)"
 )
 
 
@@ -2302,7 +2331,7 @@ def _mask_labeled_phones(text: str) -> str:
 
     def repl(match: re.Match[str]) -> str:
         after = text[match.end() : match.end() + 2]
-        if after and after[0] in _NOT_PHONE_NEXT:
+        if _unit_after(text, match.end()):
             return match.group(0)
         if after[:1] in ".．" and after[1:2].isdigit():
             return match.group(0)
@@ -2319,7 +2348,9 @@ def _mask_labeled_phones(text: str) -> str:
 _AREA_PHONE = re.compile(
     r"(?<![0-9A-Za-z])(?:[（(]0\d{2,3}[）)][ \t\u3000]*"
     r"|0\d{2,3}[ \t\u3000]*[-－—–‐−‑]{1,2}[ \t\u3000]*"
-    r"|0\d{2,3}[ \t\u3000]+)[2-9]\d{6,7}(?:(?:[-－]|转)\d{1,6})?(?!\d)"
+    r"|0\d{2,3}[ \t\u3000]+)"
+    # 本地号码中间隔一个空格的（"0531-8888 8888"，11/3 独立审阅）也算
+    r"(?:[2-9]\d{6,7}|[2-9]\d{2,3}[ \t\u3000]\d{4})(?:(?:[-－]|转)\d{1,6})?(?!\d)"
 )
 # "8610-88828972""+86 10 88828972"这样带国家码的（11/2 复测）
 _INTL_PHONE = re.compile(
@@ -2328,8 +2359,8 @@ _INTL_PHONE = re.compile(
 )
 # 写在已遮的联系人后面的本地号码（"（这里隐去了联系人）：55520803""（这里隐去了联系人） 55521169"）
 _CONTACT_THEN_NUMBER = re.compile(
-    r"(?P<head>（这里隐去了联系人）[ \t\u3000]*[，,、：:；;]?[ \t\u3000]*)"
-    r"(?P<number>[2-9]\d{6,7}(?:(?:[-－]|转)\d{1,6})?)(?!\d)"
+    r"(?P<head>（这里隐去了联系人）[ \t\u3000]*[，,、：:；;/／]?[ \t\u3000]*)"
+    r"(?P<number>0\d{2,3}[2-9]\d{6,7}|1[3-9]\d{8,9}|[2-9]\d{6,7}(?:(?:[-－]|转)\d{1,6})?)(?!\d)"
 )
 
 
@@ -2346,8 +2377,7 @@ def _mask_area_phones(text: str) -> str:
 
         def intl(match: re.Match[str]) -> str:
             # 国家码写法也看金额单位、"编号"这类（Codex 第 7 轮）
-            after = original[match.end() : match.end() + 2]
-            if after and after[0] in _NOT_PHONE_NEXT:
+            if _unit_after(original, match.end()):
                 return match.group(0)
             if _CODE_BEFORE.search(original, max(0, match.start() - 8), match.start()):
                 return match.group(0)
@@ -2373,7 +2403,7 @@ def _mask_contact_numbers(text: str) -> str:
 
     def repl(match: re.Match[str]) -> str:
         after = text[match.end() : match.end() + 2]
-        if after and after[0] in _NOT_PHONE_NEXT:
+        if _unit_after(text, match.end()):
             return match.group(0)
         if after[:1] in ".．" and after[1:2].isdigit():
             return match.group(0)
@@ -2541,7 +2571,9 @@ _PHONE_CONTEXT = re.compile(
     r"(?:电[ \t\u3000]*话|手[ \t\u3000]*机|传[ \t\u3000]*真|技术支持|咨[ \t\u3000]*询|联系方式"
     r"|热[ \t\u3000]*线|值[ \t\u3000]*班)(?:号码?)?[ \t\u3000]*[:：]"
 )
-_LOCAL_NUMBER = re.compile(r"(?<![0-9A-Za-z])[2-9]\d{6,7}(?:(?:[-－]|转)\d{1,6})?(?![0-9])")
+_LOCAL_NUMBER = re.compile(
+    r"(?<![0-9A-Za-z])(?:0\d{2,3}[2-9]\d{6,7}|[2-9]\d{6,7}(?:(?:[-－]|转)\d{1,6})?)(?![0-9])"
+)
 _CONTEXT_STOP = re.compile(r"[。！？!?\n]")
 _CONTEXT_WINDOW = 300
 # 写在已遮号码前面的本地号码（"65119071、（这里隐去了电话）"）
@@ -2558,7 +2590,7 @@ def _is_phone_number(text: str, match: re.Match[str]) -> bool:
     """一个 7–8 位的数是不是号码：后面不接金额单位、"年月日号"，不是小数，不像日期，
     前面不是"编号"这类。"""
     after = text[match.end() : match.end() + 2]
-    if after and after[0] in _NOT_PHONE_NEXT:
+    if _unit_after(text, match.end()):
         return False
     if after[:1] in ".．" and after[1:2].isdigit():
         return False
@@ -2600,6 +2632,24 @@ def _mask_context_numbers(text: str) -> str:
 
 # 附件表格里列名是电话、手机、联系方式、传真的格子（"联系电话 | 63001576"，11/2 复测）
 _PHONE_HEAD = re.compile(r"电\s*话|手\s*机|联系方式|传\s*真|热\s*线|值\s*班|咨\s*询|技术支持")
+# 只有一个号码的格子：8 位本地号码、区号连写、手机号（7 位的不算，太像编码）
+_SINGLE_PHONE_CELL = re.compile(
+    # 可以带"/分机"（"88888888/801/802"）
+    r"(?:0\d{2,3}[2-9]\d{6,7}|1[3-9]\d{9}|[2-9]\d{7})(?:[/／]转?\d{1,6})*"
+)
+# 以单位用字结尾的格子（局、委、会、园、中心……）
+_ORG_CELL_END = re.compile(
+    r"(?:[处科室局委办厅站所院组队园会]|中心|部门|单位|政府)"
+    # 后面可以跟一段括号（"……委员会（海淀区）"），或者整个名字写在括号里（"……委员会）"）
+    r"(?:[（(][^（）()]{1,12}[）)])?[）)]?$"
+)
+_NUMERIC_HEAD = re.compile(
+    r"金额|经费|资金|元|数|量|额|投资|面积|产值|收入|利润|编号|代码|序号|邮编|日期|时间|年|号"
+)
+# 一格里只写着电话类标签（"联系方式:""联系电话："），右边那格是号码
+_BARE_PHONE_LABEL = re.compile(
+    r"(?:联系|咨询|办公)?(?:电\s*话|手\s*机|联系方式|传\s*真)(?:号码?)?\s*[:：]?"
+)
 
 
 def _mask_local_numbers(text: str) -> str:
@@ -2609,19 +2659,203 @@ def _mask_local_numbers(text: str) -> str:
     )
 
 
+# 正文里还漏着的几种号码写法（11/3：11/2 第 3 轮复测和全库扫描）。只在"电话语境"里认，免得把
+# 预算科目编码、访问量这类数字当成电话：
+# ① "联系方式""联系电话""业务咨询"这类标题下面几行里的号码（标题行是一整句话的不算；
+#    遇到附件、邮箱、地址、下一节标题、空行就停，最多 24 行）；
+# ② 单位名（以处、科、室、局、委、办、中心、部门……结尾）后面隔着冒号、逗号、空格的号码；
+# ③ 人名（常见姓氏开头的 2–3 个字）后面隔着括号、逗号、空格、换行的号码，括号连号码一起换；
+# ④ "致电""电询""拨打"后面同一句里（20 个字以内）的号码；
+# ⑤ 一行里只有一串号码（两个以上）的，整串遮。
+# 号码照旧：7–8 位本地号码（可带分机）或区号连写的 11–12 位；后面接金额单位、"年月日号"的，
+# 小数、像日期的、"编号"这类后面的、400/800 热线的后半截都不算（_is_phone_number）
+_HAN_RANGE = f"{chr(0x4E00)}-{chr(0x9FFF)}"
+_CONTACT_HEADING = re.compile(
+    r"^[ \t\u3000]*(?:[一二三四五六七八九十]+[、.．]|\d{1,2}[、.．]"
+    r"|[（(][一二三四五六七八九十\d]{1,2}[）)])?"
+    r"[ \t\u3000]*(?:联系方式|联系电话|咨询电话|咨询方式|联系人及(?:联系)?(?:电话|方式)"
+    r"|业务咨询|政策咨询|技术咨询)[ \t\u3000]*(?:如下)?[ \t\u3000]*(?:[:：]|$)"
+)
+_BLOCK_STOP = re.compile(
+    r"^[ \t\u3000]*(?:附[ \t\u3000]*件|联系邮箱|电子邮箱|邮[ \t\u3000]*箱|[Ee]-?mail"
+    r"|联系地址|通信地址"
+    r"|通讯地址|地[ \t\u3000]*址|邮政编码|邮[ \t\u3000]*编|网[ \t\u3000]*址|特此"
+    r"|[一二三四五六七八九十]+[、.．]|[（(][一二三四五六七八九十]{1,2}[）)])"
+)
+_BLOCK_LINES = 24
+_UNIT_BEFORE_NUMBER = re.compile(
+    r"(?:[处科室局委办厅站所院组队]|中心|部门|单位|纪委|监委)"
+    r"(?P<sep>[ \t\u3000]*[：:，,][ \t\u3000]*|[ \t\u3000]+|[ \t\u3000]*\r?\n[ \t\u3000]*)$"
+)
+# 单位名、人名后面的数紧接着汉字（"某局，2060502技术创新服务"）是编码，不是号码
+_HAN_AFTER = re.compile(r"[\u4e00-\u9fff]")
+_HAN_AFTER_OK = frozenset("转或至和及")
+_NAME_SEP_BEFORE = re.compile(
+    r"(?P<open>[ \t\u3000]*[（(][ \t\u3000]*)$"
+    r"|(?:[ \t\u3000]*[，,、][ \t\u3000]*|[ \t\u3000]*\n[ \t\u3000]*|[ \t\u3000]+)$"
+)
+_CLOSE_AFTER = re.compile(r"[ \t\u3000]*[）)]")
+# 号码后面紧跟大写字母加数字的编码（"91220101 MA0Y5F26"：统一社会信用代码被空格拆开）不是电话
+_CODE_AFTER = re.compile(r"[ \t\u3000]*[A-Z][A-Z0-9]{3,}")
+_UNIT_LINE_END = re.compile(r"(?:[处科室局委办厅站所院组队]|中心|部门|单位|纪委|监委)[ \t\u3000]*$")
+_VERB_BEFORE_NUMBER = re.compile(r"(?:致电|电询|拨打)[^。！？!?\n]{0,20}$")
+# 一行一串号码只认 8 位或区号连写的：7 位的一串（"2060501、2060502"）更像科目编码（agy 审阅）
+_ONE_NUMBER = r"(?:0\d{2,3}[2-9]\d{6,7}|[2-9]\d{7}(?:(?:[-－]|转)\d{1,6})?)"
+_NUMBER_LIST_LINE = re.compile(
+    rf"[ \t\u3000]*{_ONE_NUMBER}(?:[ \t\u3000]*[、，,/／;；][ \t\u3000]*{_ONE_NUMBER})+"
+    r"[ \t\u3000]*[。；;，,]?[ \t\u3000]*"
+)
+
+
+def _name_before(text: str, start: int) -> tuple[int, int] | None:
+    """号码前面隔着括号、逗号、空格、换行的是不是人名（3 个字不像就看后 2 个字）；
+    是就给这个名字在 text 里的位置。"""
+    base = max(0, start - 12)
+    window = text[base:start]
+    sep = _NAME_SEP_BEFORE.search(window)
+    if sep is None:
+        return None
+    head = window[: sep.start()]
+    for size in (3, 2):
+        token = head[-size:]
+        if (
+            len(token) == size
+            and re.fullmatch(f"[{_HAN_RANGE}]+", token)
+            and token not in _NOT_NAME_WORDS
+            and token not in _ATT_NOT_NAMES
+            and _person(token)
+        ):
+            begin, end = base + sep.start() - size, base + sep.start()
+            if "\n" in sep.group() and not _name_line(text, begin, end):
+                return None
+            return begin, end
+    return None
+
+
+def _name_line(text: str, begin: int, end: int) -> bool:
+    """名字和号码隔着换行时，只认"某处⏎张某⏎号码"这种：名字单独占一行，上一行是单位名或
+    联系方式标题（"最终成绩⏎号码""基金项目⏎号码"这类不算）。"""
+    line_start = text.rfind("\n", 0, begin) + 1
+    if text[line_start:begin].strip():
+        return False
+    if line_start == 0:
+        return False
+    prev_start = text.rfind("\n", 0, line_start - 1) + 1
+    previous = text[prev_start : line_start - 1]
+    return bool(_UNIT_LINE_END.search(previous) or _CONTACT_HEADING.match(previous))
+
+
+_OPEN_BEFORE = re.compile(r"[（(][ \t\u3000]*$")
+
+
+def _with_brackets(text: str, start: int, end: int) -> tuple[int, int]:
+    """号码外面正好一对括号（"王某（55521177）"）时连括号一起算，换成标记后不留两层括号。"""
+    opening = _OPEN_BEFORE.search(text, max(0, start - 4), start)
+    closing = _CLOSE_AFTER.match(text, end)
+    if opening is not None and closing is not None:
+        return opening.start(), closing.end()
+    return start, end
+
+
+def _block_lines(text: str) -> list[tuple[int, int]]:
+    """联系方式类标题下面几行的范围。标题那一行本身不算（同一句里的号码由 _mask_context_numbers
+    管）；标题行冒号后面带句号或超过 60 个字的是一整句话，不当标题。"""
+    spans: list[tuple[int, int]] = []
+    lines = text.split("\n")
+    offsets = []
+    at = 0
+    for line in lines:
+        offsets.append(at)
+        at += len(line) + 1
+    for i, raw in enumerate(lines):
+        line = raw.rstrip("\r")
+        heading = _CONTACT_HEADING.match(line)
+        if heading is None:
+            continue
+        # 冒号后面要么没字，要么本身列着号码（"联系电话：某项目 （这里隐去了电话）"）；
+        # "（一）联系电话：保持畅通"这样后面是一句话的不当标题（agy 审阅）
+        rest = line[heading.end() :].strip()
+        if rest and not (_PHONE_MARK_ANY.search(rest) or _LOCAL_NUMBER.search(rest)):
+            continue
+        if "。" in rest or len(rest) > 60:
+            continue
+        for j in range(i + 1, min(len(lines), i + 1 + _BLOCK_LINES)):
+            following = lines[j].rstrip("\r")
+            stop = _BLOCK_STOP.match(following) or _CONTACT_HEADING.match(following)
+            if not following.strip() or stop:
+                break
+            spans.append((offsets[j], offsets[j] + len(following)))
+    return spans
+
+
+def _mask_more_numbers(text: str) -> str:
+    """把上面 ①–⑤ 几种语境里的号码换成"（这里隐去了电话）"。"""
+    if not any(c.isdigit() for c in text):
+        return text
+    spans: list[tuple[int, int, str]] = []
+    blocks = _block_lines(text)
+    for number in _LOCAL_NUMBER.finditer(text):
+        if not _is_phone_number(text, number) or _CODE_AFTER.match(text, number.end()):
+            continue
+        start, end = number.span()
+        before = text[max(0, start - 30) : start]
+        next_char = text[end : end + 1]
+        coded = bool(_HAN_AFTER.match(next_char)) and next_char not in _HAN_AFTER_OK
+        unit = None if coded else _UNIT_BEFORE_NUMBER.search(before)
+        if (
+            unit is not None
+            and "\n" in unit.group("sep")
+            and (not _LINE_REST_EMPTY.match(text, end) or len(number.group()) < 8)
+        ):
+            # 单位名下一行写的号码：这一行只有号码、而且是 8 位以上才算（"某研究院⏎3000000"不算）
+            unit = None
+        name = None if coded else _name_before(text, start)
+        if name is not None:
+            # 号码前面是人名：名字也遮（"某处⏎张某⏎号码"这样分行写的，遮姓名那一步认不出来）
+            spans.append((*name, _CONTACT_MARK))
+        if (
+            name is not None
+            or unit is not None
+            or any(a <= start and end <= b for a, b in blocks)
+            or _VERB_BEFORE_NUMBER.search(before)
+        ):
+            spans.append((*_with_brackets(text, start, end), PHONE_MARK))
+    at = 0
+    for line in text.split("\n"):
+        if _NUMBER_LIST_LINE.fullmatch(line):
+            for number in _LOCAL_NUMBER.finditer(line):
+                if _is_phone_number(line, number):
+                    spans.append((at + number.start(), at + number.end(), PHONE_MARK))
+        at += len(line) + 1
+    if not spans:
+        return text
+    out: list[str] = []
+    done = 0
+    for start, end, mark in sorted(set(spans)):
+        if start < done:
+            continue
+        out.append(text[done:start])
+        out.append(mark)
+        done = end
+    out.append(text[done:])
+    return "".join(out)
+
+
 def _mask_phones(text: str) -> str:
-    """显示层补遮号码：区号的破折号、括号写法，"电话："标签后面的，已遮联系人后面的，已遮号码后面紧跟着的。
-    遮姓名之前也先走一遍（display_body_text、附件），"常文明，0531—51783107"号码认出来了，号码前面的姓名才遮得到。"""
+    """显示层补遮号码：区号的破折号、括号写法，"电话："标签后面的，已遮联系人后面的，已遮号码后面紧跟着的，
+    再加上面 ①–⑤ 几种语境里的。遮姓名之前也先走一遍（display_body_text、附件），
+    "某某，0531—5178xxxx"号码认出来了，号码前面的姓名才遮得到。"""
     text = _mask_context_numbers(_mask_labeled_phones(_mask_area_phones(text)))
-    return _mask_phone_tails(_mask_contact_numbers(text))
+    text = _mask_phone_tails(_mask_contact_numbers(text))
+    return _mask_phone_tails(_mask_more_numbers(text))
 
 
 def display_text(text: str) -> str:
     """只在给页面显示时做的处理（详情页正文、阅读页正文和附件、名单单行页、AI 结果页的原句）：
     入库标记换成页面上的说法，"电话："这类标签后面不带区号的号码和已遮号码后面紧跟着的号码也遮掉，邮箱（含全角"＠"写的）换成
     "（这里隐去了邮箱）"，网址（含不带 http、www 的域名）换成"（这里隐去了网址）"。
-    入库的文字不改；交给模型、核对 AI 原句用的是 redact_sensitive 后的原文（ai/content.py），
-    不经过这里，也不改。"""
+    入库的文字不改；交给模型、核对 AI 原句用的是 model_body_text（入库脱敏后按这套规则补遮，
+    ai/content.py），不经过这里，也不改。"""
     return _tidy_marks(_hide_urls(_hide_emails(_mask_phones(display_marks(text)))))
 
 
@@ -2920,6 +3154,41 @@ _ATT_NOT_NAMES = frozenset(
         "出纳",
         "文员",
         "秘书",
+        # 以常见姓氏的字开头、其实是栏目名或常用词的（"成绩 85213456""金额（2060502）"，
+        # 11/3 agy、独立审阅）
+        "成绩",
+        "金额",
+        "方向",
+        "毕业",
+        "关系",
+        "范围",
+        "简介",
+        "分数",
+        "得分",
+        "总分",
+        "名次",
+        "成本",
+        "费用",
+        "经费",
+        "资金",
+        "项目",
+        "代码",
+        "编码",
+        "批次",
+        "期限",
+        "计划",
+        "单价",
+        "数量",
+        "总计",
+        "合计",
+        "小计",
+        "余额",
+        "利润",
+        "收入",
+        "支出",
+        "预算",
+        "定额",
+        "基数",
     }
 )
 # 少见姓的姓名（"丘珞珈""和文丹"，11/2 复测）：只在把握大的位置上不靠姓氏表认——"联系人：""姓名："
@@ -3067,6 +3336,10 @@ def _mask_attachment_line(line: str, after_label: bool) -> str:
     if after_label and (_PHONE_ANY.search(line) or len(line.strip()) <= 8):
         spans.append((0, _att_window(line, 0), _CONTACT_MARK))
     for phone in _PHONE_ANY.finditer(line):
+        if phone.group(0) != PHONE_MARK and not _is_phone_number(line, phone):
+            # "金额：3000000元"：后面接金额单位、像日期、"编号"后面的数不是号码，
+            # 前面的词不当姓名（11/3）
+            continue
         before = _ATT_BEFORE_PHONE.search(line, 0, phone.start())
         if before is not None:
             spans.append((before.start(1), before.end(1), _CONTACT_MARK))
@@ -3160,9 +3433,17 @@ def display_attachment_row(cells: list[tuple[str, str]]) -> list[str]:
     """附件表格一行各格的内容（列名、内容都已按入库规则遮过号码）给页面的写法：遮联系人姓名后走
     display_text。列名本身照 display_text 给，由调用方处理。"""
     pairs = [(display_marks(head), _mask_phones(display_marks(value))) for head, value in cells]
+    # 电话列（列名是电话类）的格子，和左边一格只写着"联系方式：""电话"这类标签的格子（两列的
+    # "项目 | 内容"表，11/3 全库扫描），里面像号码的都遮
     pairs = [
-        (head, _mask_local_numbers(value) if _PHONE_HEAD.search(head) else value)
-        for head, value in pairs
+        (
+            head,
+            _mask_local_numbers(value)
+            if _PHONE_HEAD.search(head)
+            or (i and _BARE_PHONE_LABEL.fullmatch(pairs[i - 1][1].strip()))
+            else value,
+        )
+        for i, (head, value) in enumerate(pairs)
     ]
     out = []
     for i, (head, value) in enumerate(pairs):
@@ -3186,6 +3467,19 @@ def display_attachment_row(cells: list[tuple[str, str]]) -> list[str]:
                 if word and _att_name_token(word) and _masked(word, _CONTACT_MARK) == _CONTACT_MARK:
                     masked = value.replace(value.strip(), _CONTACT_MARK)
         out.append(display_text(masked))
+    # 同一行里已经有遮掉的联系人或电话（表头没写"电话"的联系人表，11/3 独立审阅）：
+    # 单独一个号码的格子也遮；列名是金额、数量、编号、日期这类的不算
+    # 左边一格是单位名（"某某局 | 号码 | 地址"这样没写列名的通讯录表）的也遮
+    marked_row = any(_CONTACT_MARK in v or PHONE_MARK in v for v in out)
+    for i, (head, value) in enumerate(pairs):
+        single = _SINGLE_PHONE_CELL.fullmatch(value.strip())
+        if single is None or _NUMERIC_HEAD.search(head):
+            continue
+        if not _is_phone_number(value.strip(), single):
+            continue
+        left = pairs[i - 1][1].strip() if i else ""
+        if marked_row or _ORG_CELL_END.search(left):
+            out[i] = PHONE_MARK
     return out
 
 
