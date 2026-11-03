@@ -47,7 +47,7 @@ function tiersLine(products) {
 function renewRule(res) {
   const bonus = res && res.renewBonus;
   if (!bonus || !Number.isInteger(bonus.days) || bonus.days <= 0 || !Number.isInteger(bonus.windowDays) || bonus.windowDays <= 0) return null;
-  return { text: `到期前后 ${bonus.windowDays} 天内续买，每次多送 ${bonus.days} 天`, now: bonus.eligibleNow === true };
+  return { text: `到期前后 ${bonus.windowDays} 天内续买，每次多送 ${bonus.days} 天批量工具使用期`, now: bonus.eligibleNow === true };
 }
 function termsFinal(terms) {
   return !!(terms && terms.final && typeof terms.text === 'string' && terms.text.trim() && !/待.*定稿|占位/.test(terms.text));
@@ -152,6 +152,7 @@ function orderView(order) {
   const partial = Number.isInteger(order.refundAmount) && order.refundAmount > 0 && order.refundAmount !== order.amount;
   return Object.assign({}, order, {
     name,
+    termsVersion: typeof order.termsVersion === 'string' ? order.termsVersion : '',
     summary: `${name} · ${yuan(order.amount, true)} 元${order.paidAt ? ` · ${date(order.paidAt)} 付款` : ''} · ${status}${start && end ? ` · 使用期 ${start} 至 ${end}` : ''}`,
     // 订单页分行显示用：状态、金额、付款日期、使用期、送的天数
     statusText: status,
