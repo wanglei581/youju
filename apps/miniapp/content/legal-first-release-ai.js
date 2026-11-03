@@ -10,8 +10,8 @@
 // 定稿前 final 为 false：发布检查不通过，包里也不会打开登录。
 module.exports = {
   "version": "2026-11.1",
-  "final": false,
-  "status": "草稿（D-098 过审版加 AI 协议，待创始人过目后定稿）",
+  "final": true,
+  "status": "已定稿（D-115：创始人 11/3 确认定稿；过审版加 AI 协议，D-098，AI 模型调用按 D-114）",
   "operator": {
     "name": "青岛智磊信创软件智能科技有限公司",
     "address": "山东省青岛市高新区松园路17号E区E2楼101房间-29号",
