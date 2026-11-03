@@ -262,9 +262,10 @@ def load(session: Session, doc_id: int, *, link: bool = True) -> Content:
 
 
 def locate(texts: Texts | Content, sid: Any, quote: str) -> tuple[Located | None, str | None]:
-    """逐字核对：引用规范化（空白并成一个空格、全角转半角）以后，先在 sid 那一段里找；找不到，
-    在这一段所属的来源里找唯一一处（不跨来源）。sid 对不上任何一段时在正文里找。找到以后扩成
-    完整的句子。
+    """逐字核对：引用和原文都规范化（interpret.normalize：全角转半角，挨着中文的空白和换行去掉，
+    其余空白并成一个空格）以后，先在 sid 那一段里找；找不到，在这一段所属的来源里找唯一一处
+    （不跨来源）。sid 对不上任何一段时在正文里找。找到以后扩成完整的句子，原文片段照样带着
+    中间去掉的换行。
 
     给 (Located, None)；对不上给 (None, "not_found")，有不止一处给 "ambiguous"，原句里有已脱敏的
     内容给 "redacted"。引用太短（少于 6 个字）由调用方先挡。"""

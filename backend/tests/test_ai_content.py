@@ -285,6 +285,27 @@ def test_locate_keeps_body_and_attachment_apart():
     assert content.locate(texts, None, "加盖公章") == (None, "not_found")
 
 
+def test_locate_quote_written_without_pdf_hard_line_breaks():
+    # 11/3 评测：PDF 复制来的正文按版面硬换行，两个汉字、数字和汉字中间断行；模型写的不带换行
+    # （或把换行写成空格）也对得上，给的原文片段仍是正文里原样的一段，带着换行
+    body = "四、报送要求\n请于2026年6月\n10日前将申报\n书（加盖公章）一式两份报送市科技局。\n"
+    texts = content.Texts.from_paragraphs(interpret.split_paragraphs(body))
+    located, why = content.locate(texts, "P002", "请于2026年6月10日前将申报书（加盖公章）一式两份")
+    assert why is None
+    assert (located.sid, located.quote) == (
+        "P002",
+        "请于2026年6月\n10日前将申报\n书（加盖公章）一式两份报送市科技局。",
+    )
+    assert body[located.start : located.end] == located.quote
+    for sid in ("P003", "P009", None):
+        located, why = content.locate(texts, sid, "将申报 书（加盖公章）")
+        assert why is None
+        assert located.quote == "10日前将申报\n书（加盖公章）一式两份报送市科技局。"
+        assert body[located.start : located.end] == located.quote
+    # 只放过空白：错一个字照样对不上
+    assert content.locate(texts, "P002", "请于2026年6月11日前") == (None, "not_found")
+
+
 @pytest.fixture
 def doc(session):
     source = Source(

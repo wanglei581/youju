@@ -581,6 +581,62 @@ def test_exact_quotes(original, quote, keep):
         assert result["dropped"] == 1 and result["refusal"]
 
 
+# 11/3 评测：从 PDF 复制的正文按固定宽度硬换行，两个汉字、数字和汉字中间断行，模型照常写成不带
+# 换行的。挨着中文的空白和换行比较时去掉；西文之间的空白照旧并成一个空格
+@pytest.mark.parametrize(
+    "wrapped,plain",
+    [
+        ("推荐项\n目汇总表", "推荐项目汇总表"),
+        ("2026\n年6月", "2026年6月"),
+        ("17:30，\n主管部门", "17:30，主管部门"),
+        ("申报书\r\n　　（盖章）", "申报书（盖章）"),
+        ("推荐项 目汇总表", "推荐项目汇总表"),
+    ],
+)
+def test_normalize_drops_whitespace_next_to_chinese(wrapped, plain):
+    assert interpret.normalize(wrapped)[0] == interpret.normalize(plain)[0]
+
+
+def test_normalize_keeps_one_space_between_western_text():
+    assert interpret.normalize("Search API")[0] == "Search API"
+    assert interpret.normalize("17:30 PM")[0] == "17:30 PM"
+    assert interpret.normalize("Search \n\t API")[0] == "Search API"
+    # 看原文的字：全角冒号算中文，换行去掉；半角冒号不算，留一个空格
+    assert interpret.normalize("ABC：\n123")[0] == "ABC:123"
+    assert interpret.normalize("ABC:\n123")[0] == "ABC: 123"
+
+
+def test_normalize_offsets_point_back_to_original():
+    # 保留的字是 (i, i + 1)；去掉的空白不占位置；并成的空格覆盖整段空白
+    normalized, offsets = interpret.normalize("推荐项\n目 A  B")
+    assert normalized == "推荐项目A B"
+    assert offsets == [(0, 1), (1, 2), (2, 3), (4, 5), (6, 7), (7, 9), (9, 10)]
+    text = "　　推荐项\n目汇总表 Search  API\t１７:30，\n　主管部门 \n"
+    normalized, offsets = interpret.normalize(text)
+    assert normalized == "推荐项目汇总表Search API17:30,主管部门"
+    assert len(offsets) == len(normalized)
+    for char, (start, end) in zip(normalized, offsets, strict=True):
+        if char == " ":
+            assert start < end and text[start:end].isspace()
+        else:
+            original = text[start]
+            assert end == start + 1 and not original.isspace()
+            assert char == (chr(ord(original) - 0xFEE0) if "！" <= original <= "～" else original)
+    assert all(offsets[k][1] <= offsets[k + 1][0] for k in range(len(offsets) - 1))
+
+
+def test_quote_without_pdf_line_breaks_is_kept():
+    body = "三、申报时间\n区级推荐截止时间为2026\n年6月2日17:30，推荐项\n目汇总表一式两份报送市科技局。\n"
+    entry = item("区级推荐截止时间为2026年6月2日17:30，推荐项目汇总表", "P002", "时间")
+    result = interpret.validate({"items": [entry]}, interpret.split_paragraphs(body))
+    # 给的原文片段仍是正文里原样的一段，带着中间的换行
+    expected = "区级推荐截止时间为2026\n年6月2日17:30，推荐项\n目汇总表一式两份报送市科技局。"
+    assert result["dropped"] == 0
+    assert result["items"] == [
+        {"type": "时间", "text": expected, "refs": [{"pid": "P002", "quote": expected}]}
+    ]
+
+
 def test_invalid_type_and_ignored_display_deduplicated():
     invalid = [item(kind="结论"), item(pid="P999"), item("可以申报。")]
     mismatched = item()

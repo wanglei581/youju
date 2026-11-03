@@ -153,19 +153,41 @@ def digest(value: Any) -> str:
     return hashlib.sha256(data.encode()).hexdigest()
 
 
+def _cjk(char: str) -> bool:
+    """中日韩字符：汉字（一-鿿）、中文标点（　-〿）、全角字符（＀-￯）。"""
+    code = ord(char)
+    return 0x4E00 <= code <= 0x9FFF or 0x3000 <= code <= 0x303F or 0xFF00 <= code <= 0xFFEF
+
+
 def normalize(text: str) -> tuple[str, list[tuple[int, int]]]:
+    """逐字核对用的写法（引用和原文都过这一道）：全角 ASCII 转半角；一段连续空白，左边或右边
+    紧挨着的原文字符是中日韩字符（看原文的字，不看转半角以后的）就整段去掉，否则并成一个半角空格。
+
+    从 PDF 复制的正文按版面硬换行，常把一个词断在两行（"推荐项\\n目汇总表""2026\\n年6月"），模型
+    照常写成"推荐项目汇总表"；中文前后的空白不算字，去掉以后才对得上（11/3 评测：一份 2.3 万字的
+    通知 49 条摘录丢了 39 条）。西文之间的空白照旧留一个空格（"Search API""17:30 PM"）。
+
+    offsets[k] 是第 k 个字在原文里的 (起, 止)：保留的字是 (i, i + 1)，并成的空格覆盖整段空白，
+    去掉的空白不占位置。按头尾两个字的位置取原文，中间去掉的换行照样在原文片段里。"""
     chars: list[str] = []
     offsets: list[tuple[int, int]] = []
-    for i, char in enumerate(text):
+    i, size = 0, len(text)
+    while i < size:
+        char = text[i]
         if char.isspace():
-            if chars and chars[-1] == " ":
-                offsets[-1] = (offsets[-1][0], i + 1)
-                continue
-            char = " "
-        elif 0xFF01 <= ord(char) <= 0xFF5E:
+            end = i + 1
+            while end < size and text[end].isspace():
+                end += 1
+            if not ((i > 0 and _cjk(text[i - 1])) or (end < size and _cjk(text[end]))):
+                chars.append(" ")
+                offsets.append((i, end))
+            i = end
+            continue
+        if 0xFF01 <= ord(char) <= 0xFF5E:
             char = chr(ord(char) - 0xFEE0)
         chars.append(char)
         offsets.append((i, i + 1))
+        i += 1
     return "".join(chars), offsets
 
 
