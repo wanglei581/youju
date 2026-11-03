@@ -243,7 +243,7 @@ test('过审版协议（D-093 ⑤）：首发包的协议不能写 AI、投诉�
   assert.equal(inspect({ ...x, profile: 'ai-release', mode: 'prepare' }).checks.some((c) => c.id === 'first-terms'), false);
 });
 
-test('协议指纹（D-098）：正文改了没升版本号、这一版没登记都不过；仓库里两份定稿协议都已登记',()=>{
+test('协议指纹（D-098）：正文改了没升版本号、这一版没登记都不过；仓库里三份定稿协议都已登记',()=>{
  const x=input(); const fingerprints={[x.legal.version]:agreementFingerprint(x.legal)};
  const state=(y,f)=>presubmit.inspect({...y,profile:'first-release',mode:'prepare',fingerprints:f}).checks.find(c=>c.id==='terms-fingerprint').state;
  assert.equal(state(x,fingerprints),'pass');
