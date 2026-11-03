@@ -263,12 +263,13 @@ def load(session: Session, doc_id: int, *, link: bool = True) -> Content:
 
 def locate(texts: Texts | Content, sid: Any, quote: str) -> tuple[Located | None, str | None]:
     """逐字核对：引用和原文都规范化（interpret.normalize：全角转半角，挨着中文的空白和换行去掉，
-    其余空白并成一个空格）以后，先在 sid 那一段里找；找不到，在这一段所属的来源里找唯一一处
-    （不跨来源）。sid 对不上任何一段时在正文里找。找到以后扩成完整的句子，原文片段照样带着
-    中间去掉的换行。
+    其余空白并成一个空格）以后，先在 sid 那一段里找；找不到，在这一段所属的来源里找（不跨来源）：
+    只有一处就用这一处；不止一处时，恰好一处从 sid 那一段开始就用那一处（跨行的引用在一行一段里
+    找不全，同样的句子在别处又出现过），否则算不唯一。sid 对不上任何一段时在正文里找唯一一处。
+    找到以后扩成完整的句子，原文片段照样带着中间去掉的换行。
 
-    给 (Located, None)；对不上给 (None, "not_found")，有不止一处给 "ambiguous"，原句里有已脱敏的
-    内容给 "redacted"。引用太短（少于 6 个字）由调用方先挡。"""
+    给 (Located, None)；对不上给 (None, "not_found")，有不止一处（按上面的规则分不出是哪一处）给
+    "ambiguous"，原句里有已脱敏的内容给 "redacted"。引用太短（少于 6 个字）由调用方先挡。"""
     texts = texts.texts if isinstance(texts, Content) else texts
     index = texts._index
     wanted = interpret.normalize(quote.strip())[0]
@@ -286,12 +287,24 @@ def locate(texts: Texts | Content, sid: Any, quote: str) -> tuple[Located | None
         if key not in index["sources"]:
             return None, "not_found"
         _, whole, whole_offsets, _ = index["sources"][key]
-        at = whole.find(wanted)
-        if at < 0:
-            return None, "not_found"
         # 从下一字符继续查，重叠的命中也计为多次。
-        if whole.find(wanted, at + 1) >= 0:
-            return None, "ambiguous"
+        hits: list[int] = []
+        at = whole.find(wanted)
+        while at >= 0:
+            hits.append(at)
+            at = whole.find(wanted, at + 1)
+        if not hits:
+            return None, "not_found"
+        if len(hits) > 1:
+            # 只认从 sid 那一段开始的命中，恰好一处才用；sid 对不上任何一段时一处也不认
+            hits = [
+                h
+                for h in hits
+                if segment is not None and segment.start <= whole_offsets[h][0] < segment.end
+            ]
+            if len(hits) != 1:
+                return None, "ambiguous"
+        at = hits[0]
         first, last = whole_offsets[at][0], whole_offsets[at + len(wanted) - 1][1]
         # 命中的开头落在段外（以后附件段与段之间若有别的字）时当作对不上，不抛异常；
         # 正文段与段之间只有换行，命中的开头一定在段里，和原来一样

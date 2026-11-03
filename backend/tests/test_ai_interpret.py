@@ -591,10 +591,33 @@ def test_exact_quotes(original, quote, keep):
         ("17:30，\n主管部门", "17:30，主管部门"),
         ("申报书\r\n　　（盖章）", "申报书（盖章）"),
         ("推荐项 目汇总表", "推荐项目汇总表"),
+        # 中文常用、码位不在汉字和全角区的标点：弯引号、破折号、省略号、间隔号
+        ("“专精特新”\n“小巨人”", "“专精特新”“小巨人”"),
+        ("截止时间——\n2026年6月30日", "截止时间——2026年6月30日"),
+        ("详见附件……\n1.申报书", "详见附件……1.申报书"),
+        ("“4·\n15”国家安全教育日", "“4·15”国家安全教育日"),
+        # 扩展区汉字（扩展 A 区、补充平面）
+        (chr(0x3400) + "\nA", chr(0x3400) + "A"),
+        (chr(0x20000) + "\n2026", chr(0x20000) + "2026"),
     ],
 )
 def test_normalize_drops_whitespace_next_to_chinese(wrapped, plain):
     assert interpret.normalize(wrapped)[0] == interpret.normalize(plain)[0]
+
+
+def test_chinese_side_characters_edges():
+    # 每一段的头尾都算中文一侧，紧挨在段外的不算
+    inside = [
+        *(0x4E00, 0x9FFF, 0x3400, 0x4DBF, 0xF900, 0xFAFF, 0x20000, 0x3134F),
+        *(0x3000, 0x303F, 0xFF00, 0xFFEF, 0x2018, 0x201D, 0x2014, 0x2026, 0x00B7),
+    ]
+    outside = [
+        *(ord("A"), ord("1"), ord(":"), 0x4DFF, 0xA000, 0x33FF, 0x4DC0, 0xF8FF, 0xFB00),
+        *(0x1FFFF, 0x31350, 0x2FFF, 0x3040, 0xFEFF, 0xFFF0, 0x2017, 0x201E, 0x2013, 0x2015),
+        *(0x2025, 0x2027, 0x00B6, 0x00B8),
+    ]
+    assert all(interpret._cjk(chr(code)) for code in inside)
+    assert not any(interpret._cjk(chr(code)) for code in outside)
 
 
 def test_normalize_keeps_one_space_between_western_text():
