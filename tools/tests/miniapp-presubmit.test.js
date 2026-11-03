@@ -250,7 +250,7 @@ test('协议指纹（D-098）：正文改了没升版本号、这一版没登记
  const changed=JSON.parse(JSON.stringify(x)); changed.legal.user.sections[0].p[0]+='（改了一个字）';
  assert.equal(state(changed,fingerprints),'fail','改了正文没升版本号');
  assert.equal(state(x,{}),'fail','这一版没登记');
- for(const file of ['legal.js','legal-first-release.js']){
+ for(const file of ['legal.js','legal-first-release.js','legal-first-release-ai.js']){
   const legal=require(path.join(__dirname,'..','..','apps','miniapp','content',file));
   assert.equal(presubmit.FINGERPRINTS[legal.version],agreementFingerprint(legal),file);
  }
