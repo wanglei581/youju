@@ -163,7 +163,8 @@ def test_xlsx_export(client, docs):
         "未核项",
     ]
     assert sheet["M1"].value == "截止原文句子"
-    assert sheet["N1"].value == "原文链接" and sheet["O1"].value == "原文链接 2"
+    # 不再有"原文链接"列：这一版协议只写来源网站名称、不给原文链接（D-097、D-112；11/2 复测）
+    assert all(sheet.cell(r, 14).value is None for r in range(1, sheet.max_row + 1))
     assert sheet["B2"].value == "辽宁省关于组织申报科技项目的通知"
     assert sheet["D2"].value is None  # 申报通知没有发布阶段（原叫名单状态），status 契约保持不变
     assert sheet["D3"].value == "公示"
@@ -177,8 +178,8 @@ def test_xlsx_export(client, docs):
     assert sheet["K3"].value == "—"  # 名单没有支持方式
     assert sheet["L2"].value == "支持方式"
     assert sheet["L3"].value == "截止日期（以原文为准）、发布阶段"
-    assert sheet["N2"].hyperlink.target.endswith("/1.html")
-    assert sheet["O2"].hyperlink.target.endswith("/2.html")
+    assert all(cell.hyperlink is None for row in sheet.iter_rows() for cell in row)
+    assert not any("http" in str(cell.value or "") for row in sheet.iter_rows() for cell in row)
     note = book["数据说明"]
     assert "第三方整理，非政府平台" in note["B1"].value
     assert "“截止日期（以原文为准）”列" in note["B1"].value
@@ -197,8 +198,8 @@ def test_docx_export(client, docs):
     assert headings[0].startswith("1. 辽宁省关于组织申报")
     assert "第三方整理，非政府平台" in book.paragraphs[1].text
     text = "\n".join(p.text for p in book.paragraphs)
-    assert "https://gxt.ln.gov.cn/1.html" in text
-    assert "https://gxt.ln.gov.cn/2.html" in text
+    # Word 里也不再写"原文链接："（11/2 复测）
+    assert "原文链接" not in text and "http" not in text
     assert len(book.tables) == 3
     assert len(book.tables[0].rows) == 3
     assert book.tables[0].rows[1].cells[4].text == "2026-09-26"
@@ -209,6 +210,8 @@ def test_docx_export(client, docs):
     assert fields["日期角色"] == "推荐或审核截止；企业申报截止（已延期）"
     assert fields["支持方式"] == "见原文"
     assert fields["未核项"] == "支持方式"
+    # 来源网站只写网站名称，不带域名（和详情页"原文出处"一样，11/2 复测）
+    assert fields["来源网站"].endswith("网站") and "." not in fields["来源网站"]
     listed_fields = {row.cells[0].text: row.cells[1].text for row in book.tables[2].rows}
     assert listed_fields["截止日期（以原文为准）"] == "见原文"
     assert listed_fields["日期角色"] == "截止时间见原文"
@@ -626,7 +629,7 @@ def test_excerpt_export_keeps_all_verified_deadlines_and_cleans_legacy_fields(
     assert "原定 企业申报截止 2026-10-18 已延期" in row["截止日期（以原文为准）"]
     assert row["日期角色"] == "推荐或审核截止；企业申报截止（已延期）"
     assert row["发文机关"] == "安徽省财政厅、福建省职称改革工作办公室"
-    assert row["原文链接"] == "https://gxt.ln.gov.cn/1.html"
+    assert "原文链接" not in row
 
 
 def test_excerpt_export_only_falls_back_when_no_verified_deadline(

@@ -319,7 +319,7 @@ def doc(session):
 
 def test_load_takes_body_like_before_and_marks_attachments_unread(session, doc):
     raw = v1._reading_body(session, doc.id)
-    body = v1.redact_sensitive(raw or "")
+    body = v1.model_body_text(v1.redact_sensitive(raw or ""))
     loaded = content.load(session, doc.id)
     # 和原来 prepare 里的算法一样：段落按原规则切、正文指纹是库里原文的摘要、用的是本份正文
     assert loaded.paragraphs() == interpret.split_paragraphs(body)
@@ -415,7 +415,7 @@ def test_old_eligible_body_still_gives_the_four_values(session, doc):
     # 旧的调用（interpret.eligible_body）转调 content，照样给（通知、类型、原文、遮过号码的正文）
     found, kind, raw, body = interpret.eligible_body(session, doc.id)
     assert (found.id, kind, raw) == (doc.id, "申报通知", FIXED_BODY)
-    assert body == v1.redact_sensitive(FIXED_BODY)
+    assert body == v1.model_body_text(v1.redact_sensitive(FIXED_BODY))
 
 
 def test_load_prefers_its_own_body_in_a_merged_group(session, doc):
@@ -443,3 +443,39 @@ def test_load_prefers_its_own_body_in_a_merged_group(session, doc):
     # 组里两份正文一样：用本份的（原来 prepare 的排法：本份在前，再按编号）
     assert loaded.body_id == doc.id
     assert sorted(loaded.document_ids) == sorted([doc.id, other.id])
+
+
+def test_model_body_masks_what_the_page_masks_with_store_marks():
+    """交给模型的正文和页面一样补遮号码、联系人姓名和邮箱（协议写了发送前隐去），标记写成入库的写法，
+    AI 原句核对照旧认得；网址留着；处理两次一样（D-114 独立审阅）。"""
+    text = (
+        "联系人：张小明，联系电话：86263938\n"
+        "咨询电话：[电话已脱敏]、87687769\n"
+        "邮箱：kjc＿test＠example.cn\n"
+        "申报系统：https://kjgl.example.gov.cn/login\n"
+        "申报截止时间为2026年11月30日。"
+    )
+    out = v1.model_body_text(text)
+    assert "86263938" not in out and "87687769" not in out and "张小明" not in out
+    assert "联系人：[姓名已脱敏]" in out and "联系电话：[电话已脱敏]" in out
+    assert "咨询电话：[电话已脱敏]、[电话已脱敏]" in out
+    assert "＠" not in out and "[邮箱已脱敏]" in out
+    assert "https://kjgl.example.gov.cn/login" in out and "2026年11月30日" in out
+    assert "（这里隐去了" not in out
+    assert v1.model_body_text(out) == out
+    # 页面正文按整行遮联系人的那一道（_mask_contact_names）也在："某老师，电话……"、编审署名
+    assert v1.model_body_text("刘老师，电话：[电话已脱敏]") == "[姓名已脱敏]，电话：[电话已脱敏]"
+    assert v1.model_body_text("一审：张三") == "一审：[姓名已脱敏]"
+
+
+def test_load_sends_the_extra_masked_body(session, doc):
+    detail = session.get(DocumentDetail, doc.id)
+    detail.body_text = FIXED_BODY + "\n联系人：张小明，联系电话：86263938。"
+    session.commit()
+    loaded = content.load(session, doc.id)
+    text = loaded.source(content.BODY).text
+    assert "86263938" not in text and "张小明" not in text
+    assert "联系人：[姓名已脱敏]，联系电话：[电话已脱敏]。" in text
+    # 引用落在补遮过的句子上，照旧按“原句里有已脱敏的内容”不用
+    last = loaded.segments[-1]
+    assert content.locate(loaded, last.sid, "联系电话：[电话已脱敏]")[1] == "redacted"

@@ -19,7 +19,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, defer
 
 from youju import advisor_tasks as service
-from youju import boost, chat_store, payments
+from youju import boost, chat_store, native_results, payments
 from youju.agreements import tools_agreed
 from youju.ai import content, heartbeat, interpret, result_safety
 from youju.ai.clause import Company
@@ -369,7 +369,38 @@ def _out(task: AdvisorTask, session: Session, *, include_result: bool = True) ->
             except interpret.InterpretRefusal as exc:
                 result["result"] = None
                 result["error"] = str(exc)
+    if task.kind in AI_KINDS and isinstance(result.get("result"), dict):
+        result["result"] = _shown_quotes(result["result"], get_skill(task.kind).result_field)
     return result
+
+
+def _shown_quotes(stored: dict, field: str) -> dict:
+    """AI 结果页显示的原句（条目、出处原句、"已核对"的原句）按页面说法给：网址换成
+    "（这里隐去了网址）"（v1.display_text，D-112）。只改这次返回的副本：存着的结果不动，核对原句
+    在生成时按原文做过，"正文变了没有"比的是存下的段落，都不受影响。"""
+
+    def shown(entry: dict, key: str) -> dict:
+        copy = dict(entry)
+        if isinstance(copy.get(key), str):
+            copy[key] = v1.display_text(copy[key])
+        return copy
+
+    def item_out(item):
+        if not isinstance(item, dict):
+            return item
+        item = shown(item, "text")
+        if isinstance(item.get("refs"), list):
+            item["refs"] = [shown(r, "quote") if isinstance(r, dict) else r for r in item["refs"]]
+        return item
+
+    out = dict(stored)
+    if isinstance(stored.get(field), list):
+        out[field] = [item_out(item) for item in stored[field]]
+    if isinstance(stored.get("verified"), list):
+        out["verified"] = [
+            shown(v, "quote") if isinstance(v, dict) else v for v in stored["verified"]
+        ]
+    return out
 
 
 @contextmanager
@@ -865,13 +896,30 @@ def read_result(
                 key: content[key]
                 for key in ("kind", "title", "notice", "revision", "generatedAt", "dataVersion")
             },
-            "items": items,
+            # 站内结果页里的"截止原文句子"按显示层给（v1.shown_quote，F11）；存下的结果和 Excel 不变
+            "items": [_shown_native_item(item) for item in items],
             "total": len(all_items),
             "rowCount": task.row_count,
             "nextCursor": str(end) if end < len(all_items) else None,
         },
         headers={"Cache-Control": "no-store"},
     )
+
+
+def _shown_native_item(item):
+    """数据工具站内结果的一项：字段里的"截止原文句子"按显示层给，返回副本。"""
+    if not isinstance(item, dict) or not isinstance(item.get("fields"), list):
+        return item
+    quote_label = native_results.LABELS["deadline_quote"]
+    return {
+        **item,
+        "fields": [
+            {**field, "value": v1.shown_quote(field.get("value"))}
+            if isinstance(field, dict) and field.get("label") == quote_label
+            else field
+            for field in item["fields"]
+        ],
+    }
 
 
 @router.get("/tasks/{task_id}/download", dependencies=[Depends(_enabled)])

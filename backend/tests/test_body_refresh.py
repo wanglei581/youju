@@ -8,6 +8,7 @@ from sqlalchemy import select
 from tests.conftest import read_fixture_html
 from youju import cli
 from youju.ai import interpret
+from youju.api import v1
 from youju.crawler import detail_service
 from youju.crawler.body_refresh import Impact, _not_on_page, refresh_bodies, survey, trimmed_lines
 from youju.crawler.detail import outside_body_lines, parse_detail, redact_sensitive
@@ -208,7 +209,7 @@ def _reviewed_results(session, doc: Document) -> None:
     )
     shown = {
         "body_hash": interpret.digest(OLD),
-        "paragraphs": interpret.split_paragraphs(redact_sensitive(OLD)),
+        "paragraphs": interpret.split_paragraphs(v1.model_body_text(redact_sensitive(OLD))),
     }
     earlier = {
         "body_hash": interpret.digest("早先"),

@@ -1521,7 +1521,7 @@ test('Codex 第 13 轮：从 AI 板块点"阅读并同意"——弹窗写明是�
   assert.equal(a.wxModals.length, 1);
   const modal = a.wxModals[0];
   assert.equal(modal.title, '请先阅读并同意');
-  assert.match(modal.content, /使用AI 解读和条款对照前，请先阅读《用户协议》和《隐私保护指引》全文（里面有 AI 功能的约定），在全文最后同意/);
+  assert.match(modal.content, /使用 AI 解读和条款对照前，请先阅读《用户协议》和《隐私保护指引》全文（里面有 AI 功能的约定），在全文最后同意/);
   assert.equal(modal.confirmText, '阅读全文', '不能直接点同意'); assert.equal(modal.cancelText, '暂不');
   assert.doesNotMatch(modal.content, /关注和纠错/);
   assert.equal(await answer, false);
@@ -1534,7 +1534,7 @@ test('Codex 第 13 轮：从 AI 板块点"阅读并同意"——弹窗写明是�
   // 协议更新过、从 AI 板块来：标题写已更新，用途写 AI 解读和条款对照
   const u = ask({ version: '2026-09', valid: true });
   u.c.mod.ensureConsent({ purpose: 'ai' }); await settle();
-  assert.equal(u.wxModals[0].title, '协议已更新'); assert.match(u.wxModals[0].content, /再使用AI 解读和条款对照/);
+  assert.equal(u.wxModals[0].title, '协议已更新'); assert.match(u.wxModals[0].content, /再使用 AI 解读和条款对照。/);
   u.wxModals[0].success({ confirm: true }); assert.deepEqual(u.c.navigations, ['/pages/agreement/index?consent=1&for=ai']);
   // 别的入口点"先看协议"：去两份全文，不带 for=ai
   d.wxModals[0].success({ confirm: false }); assert.deepEqual(d.c.navigations, ['/pages/agreement/index?consent=1']);

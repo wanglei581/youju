@@ -291,7 +291,7 @@ def _export(client, docs, format_):
             links = [
                 cell.hyperlink.target for row in book["文件清单"] for cell in row if cell.hyperlink
             ]
-            assert links == [d.url for d in docs]
+            assert links == []  # 导出不带原文链接（D-112：不让用户跳出到浏览器）
         finally:
             book.close()
     else:
@@ -301,7 +301,7 @@ def _export(client, docs, format_):
             + [cell.text for table in book.tables for row in table.rows for cell in row.cells]
         )
     for doc in docs:
-        assert doc.title in text and doc.url in text
+        assert doc.title in text and doc.url not in text
     assert "第三方整理" in text and "以发文机关原文为准" in text
     return text
 

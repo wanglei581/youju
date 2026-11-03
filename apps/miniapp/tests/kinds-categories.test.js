@@ -119,7 +119,7 @@ test('项目类别筛选：8 类可多选，写明仅供检索参考、非官方
   const url = new URL(conditions.searchUrl({ kind: 'all', categories: '试点示范', time: '不限' }), 'https://test.invalid');
   restored.page.onLoad(Object.fromEntries(url.searchParams)); await flush();
   assert.equal(restored.calls.at(-1).categories, '试点示范');
-  assert.equal(conditions.describe({ kind: 'all', categories: '试点示范,人才', time: '不限' }), '不限地区 · 全部类型 · 项目类别：试点示范、人才 · 不限');
+  assert.equal(conditions.describe({ kind: 'all', categories: '试点示范,人才', time: '不限' }), '不限地区 · 全部类型 · 项目类别：试点示范、人才');
   // 筛选弹层把说明显示在选项下面
   assert.match(read('pages/search/index.wxml'), /wx:if="{{g.note}}" class="group-note">{{g.note}}/);
 });

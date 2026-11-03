@@ -814,7 +814,8 @@ def test_reading_notices_never_use_retired_phrases(client, session):
         response = client.get(url_)
         assert not any(word in response.text for word in BANNED), response.text[:300]
     data = client.get(path(doc, att)).json()
-    assert data["segments"][0]["text"] == "联系人：（这里隐去了联系人），电话：（这里隐去了电话）"
+    # 有格子的行，text 用遮过的格子拼（11/2 复测）
+    assert data["segments"][0]["text"] == "（这里隐去了证件号）"
     assert data["segments"][0]["cells"][0]["t"] == "（这里隐去了证件号）"
 
 

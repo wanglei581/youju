@@ -1,7 +1,8 @@
 <notice-bar />
 <view class="card">
   <view class="section-title">{{advisor ? '任务结果' : '本次所选文件目录'}}</view>
-  <view wx:if="{{!advisor}}" class="muted">这里展示文件目录，不是企业入选结论或信用报告。</view>
+  <!-- 不出现"信用"一类字（11/2 完整测试第 3 条；创始人 11/2 同意，D-112） -->
+  <view wx:if="{{!advisor}}" class="muted">这里只列文件目录，不是企业入选结论。</view>
   <view wx:if="{{current}}" class="muted">按当前数据重新查看，内容可能与之前保存的文件不同。</view>
   <view wx:if="{{loading}}" class="muted">正在读取结果…</view>
   <view wx:if="{{error}}" class="error">{{error}}<button bindtap="retry">重试</button></view>
