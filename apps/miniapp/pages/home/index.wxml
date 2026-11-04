@@ -21,8 +21,6 @@
   </view>
 </view>
 
-<view wx:if="{{businessLicense}}" class="license-entry" data-url="/pages/business-license/index" bindtap="goEntry" aria-role="button">营业执照信息 ›</view>
-
 <view class="entries {{tools ? 'entries--tools' : ''}}">
   <view class="entry" data-url="/pages/report/index" bindtap="goEntry">
     <view class="tile tile--green"><t-icon name="hourglass" size="44rpx" color="#FFFFFF" /></view>
@@ -41,6 +39,7 @@
     <text class="entry-name">工具中心</text><text class="entry-sub">批量处理</text>
   </view>
 </view>
+<view wx:if="{{businessLicense}}" class="license-entry" data-url="/pages/business-license/index" bindtap="goEntry" aria-role="button">营业执照信息 ›</view>
 
 <!-- 申报季加量（D-070 ⑤）：提前一周公布起止日期，文字和工具中心、批量工具页同一句（utils/boost.js 的 seasonLine）。
      没有这项活动、批量工具没开、取不到时不显示；不提购买、不加红点、不弹窗；点了去工具中心 -->

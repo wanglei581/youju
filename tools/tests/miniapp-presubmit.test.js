@@ -295,3 +295,13 @@ test('正式AI包的协议版本不低于后台认 AI 条款的版本（10/28 �
   assert.equal(state('2026-11.1', 'submit'), 'pass');
   assert.equal(state('2026-12', 'submit'), 'pass');
 });
+
+test('营业执照信息（D-107 ③）：能卖的完整版（付费协议定稿）提审时信用代码和照片要填齐、照片要在包里；没定稿或体验准备只提示',()=>{
+ const pay={version:'pay-2026-11',final:true,title:'付费服务协议',text:'正文'};
+ const state=(extra,mode)=>inspect({...input(),profile:'complete-release',mode,payTerms:pay,...extra}).checks.find(c=>c.id==='business-license').state;
+ assert.equal(state({businessLicense:{creditCode:'',photo:''},payTerms:{...pay,final:false}},'submit'),'warning');
+ assert.equal(state({businessLicense:{creditCode:'',photo:''}},'submit'),'fail');
+ assert.equal(state({businessLicense:{creditCode:'',photo:''}},'prepare'),'warning');
+ assert.equal(state({businessLicense:{creditCode:'X',photo:'images/license.jpg'},licensePhotoExists:false},'submit'),'fail');
+ assert.equal(state({businessLicense:{creditCode:'X',photo:'images/license.jpg'},licensePhotoExists:true},'submit'),'pass');
+});
