@@ -265,10 +265,14 @@ test('首页营业执照入口随包显示，未填写的执照信息不显示',
   const missing = homePage(without);
   assert.equal(missing.page.data.businessLicense, false);
   assert.ok(!textOf(render('pages/home/index.wxml', missing.page.data)).includes('营业执照信息'));
-  const data = { operator: require('../content/legal.js').operator, license: require('../content/business-license.js') };
+  const data = { operator: require('../content/legal.js').operator, license: { creditCode: '', photo: '' } };
   const empty = textOf(render('pages/business-license/index.wxml', data));
   assert.ok(empty.includes(data.operator.name)); assert.ok(empty.includes(data.operator.address));
   assert.ok(!empty.includes('统一社会信用代码'));
+  // 包里真实的执照信息：信用代码已填（创始人 11/4），页面显示出来
+  const real = require('../content/business-license.js');
+  assert.match(real.creditCode, /^[0-9A-HJ-NPQRTUWXY]{18}$/);
+  assert.ok(textOf(render('pages/business-license/index.wxml', { ...data, license: real })).includes(real.creditCode));
   const filled = textOf(render('pages/business-license/index.wxml', { ...data, license: { creditCode: '测试代码', photo: '/test.png' } }));
   assert.ok(filled.includes('测试代码')); assert.ok(filled.includes('营业执照'));
 });
