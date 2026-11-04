@@ -19,6 +19,21 @@ from youju.track import (
 BJ = ZoneInfo("Asia/Shanghai")
 
 
+def test_track_keeps_input_order_in_native_and_excel(session, tmp_path):
+    from youju.native_results import build
+
+    names = ["丙公司", "乙公司", "甲公司"]
+    report = track_clients(session, [CustomerProfile(name, "北京") for name in names])
+    assert [client.customer_name for client in report.clients] == names
+    native = build("track", report)
+    assert [item["fields"][0]["value"] for item in native["items"][len(names) :]] == names
+    output = tmp_path / "track.xlsx"
+    export_track_excel(report, output)
+    book = load_workbook(output)
+    assert [book["客户相关通知"].cell(row, 1).value for row in range(3, 6)] == names
+    book.close()
+
+
 def test_read_profiles_and_mark_unknown_province(tmp_path: Path):
     path = tmp_path / "clients.xlsx"
     book = Workbook()

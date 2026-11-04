@@ -487,14 +487,16 @@ def test_task_routes_check_ownership_before_feature_authorization(
     ]
     # 两个开关都关时整组接口都当作不存在（和上线前的行为一致）；别人的和不存在的任务提示相同。
     # 删除例外（D-093 上线门槛第 8 条）：本人随时能删自己的记录，不看开关和白名单；
-    # 删除接口一直在，别人的、不存在的照样是"没有找到顾问任务"
-    hidden = "没有找到顾问任务" if data_enabled or ai_enabled else "没有找到接口"
+    # 删除接口一直在，别人的、不存在的照样是"没有找到这条记录，可能已经删除"
+    hidden = "没有找到这条记录，可能已经删除" if data_enabled or ai_enabled else "没有找到接口"
     for method, suffix, own_status in routes:
         deleting = method == "DELETE"
         for task_id in (foreign.id, max(own.id, foreign.id) + 1000):
             response = client.request(method, f"/api/v1/advisor/tasks/{task_id}{suffix}")
             assert response.status_code == 404
-            assert response.json() == {"detail": "没有找到顾问任务" if deleting else hidden}
+            assert response.json() == {
+                "detail": "没有找到这条记录，可能已经删除" if deleting else hidden
+            }
         response = client.request(method, f"/api/v1/advisor/tasks/{own.id}{suffix}")
         assert response.status_code == (own_status if allowed or deleting else 404)
         if not allowed and not deleting:

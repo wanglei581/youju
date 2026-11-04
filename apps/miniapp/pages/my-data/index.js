@@ -49,7 +49,7 @@ function taskData(d) {
       finished: when(t.finishedAt),
     })),
     tasksTitle: ai && !tools ? 'AI 记录' : ai ? '工具和 AI 记录' : '工具记录',
-    fileNote: files && pages.has('advisor-tasks') ? '批量工具的结果文件在“我的”→“我的记录”里下载' : '',
+    fileNote: files && pages.has('advisor-tasks') ? '批量工具的结果在“我的”→“我的记录”→“站内查看结果”里另存 Excel' : '',
     extras: extras.length ? `${extras.join('、')}：在“复制全部数据”里可以看到。` : '',
     // 保存期限里的"批量工具"一行
     toolsShown: tools,
@@ -207,7 +207,7 @@ Page({
       success: (res) => {
         if (!res.confirm) return;
         call(id)
-          .then(() => { wx.showToast({ title: '已删除', icon: 'none' }); this.load(); })
+          .then(() => { if (kind === 'task') require('../../utils/exports.js').removeAdvisorTask(id); wx.showToast({ title: '已删除', icon: 'none' }); this.load(); })
           .catch((err) => wx.showToast({ title: err.message || '没删成，请稍后再试', icon: 'none' }));
       },
     });

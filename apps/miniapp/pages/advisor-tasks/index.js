@@ -111,6 +111,7 @@ Page({
       if (!res.confirm || this.data.busyId !== null) return;
       this.setData({ busyId: id, actionError: '' });
       call(id).then(() => {
+        if (call === api.deleteAdvisorTask) require('../../utils/exports.js').removeAdvisorTask(id);
         this.setData({ busyId: null });
         if (this.visible) this.load();
       }).catch((err) => this.setData({ busyId: null, actionError: err.message }));

@@ -1852,7 +1852,7 @@ def test_city_display_coverage_and_home(client, session, city_document):
     )
     detail = client.get(f"/api/v1/documents/{doc.id}").json()
     assert (detail["region"], detail["city"], detail["level"]) == ("青岛 · 市级", "青岛", "市级")
-    assert ["适用地区", "山东·青岛"] in detail["points"]
+    assert ["适用地区", "山东 · 青岛"] in detail["points"]
     assert detail["deadline"] is None
     body = client.get("/api/v1/coverage").json()
     assert body["cities"] == [{"province": "山东", "city": "青岛", "sources": 1}]
@@ -1927,13 +1927,13 @@ def test_city_calendar_radar_and_exports_require_approved_deadlines(client, sess
         assert response.status_code == 200
         if fmt == "xlsx":
             sheet = load_workbook(BytesIO(response.content))["文件清单"]
-            assert sheet.cell(2, 8).value == "山东·青岛"
+            assert sheet.cell(2, 8).value == "山东 · 青岛"
         else:
             book = WordDocument(BytesIO(response.content))
             text = " ".join(
                 cell.text for table in book.tables for row in table.rows for cell in row.cells
             )
-            assert "山东·青岛" in text
+            assert "山东 · 青岛" in text
 
 
 def test_city_deadline_change_requires_same_city(session, city_document):

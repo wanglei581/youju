@@ -193,10 +193,10 @@ function markAgreed() {
 }
 
 // 注销弹窗里写删哪些记录，按包里有的功能写（11/2 完整测试第 7 条）。has 是页面的 pages.flags()：
-// 完整版（有工具中心）写"工具输入、任务与结果"；过审版加 AI（D-098）只有 AI，写"AI 的输入、任务与结果"；
+// 11/4 完整测试 M4：完整版点名批量工具、AI 和加量体验；过审版加 AI（D-098）只有 AI，写"AI 的输入、任务与结果"；
 // 过审版（首发 16 页）两样都没有，不写。没传（旧的调用）照完整版写。服务端照旧删掉全部记录
 function recordsPart(has) {
-  if (!has || has.advisor) return '、工具输入、任务与结果';
+  if (!has || has.advisor) return `、批量工具${!has || has.ai ? '和 AI ' : ''}的输入、任务与结果、加量体验记录`;
   return has.ai ? '、AI 的输入、任务与结果' : '';
 }
 

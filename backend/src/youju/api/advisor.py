@@ -437,7 +437,7 @@ def _owned(
         stmt = stmt.with_for_update()
     task = session.scalar(stmt)
     if task is None:
-        raise HTTPException(status_code=404, detail="没有找到顾问任务")
+        raise HTTPException(status_code=404, detail="没有找到这条记录，可能已经删除")
     if not deleting:
         # 删除自己的记录不看开关和协议版本（D-093 上线门槛第 8 条）
         _authorize(task.kind, user)
@@ -907,6 +907,9 @@ def read_result(
             # 站内结果页里的"截止原文句子"按显示层给（v1.shown_quote，F11）；存下的结果和 Excel 不变
             "items": [_shown_native_item(item) for item in items],
             "total": len(all_items),
+            "summaryCount": sum(
+                item.get("title") == "汇总" and not item.get("documentId") for item in all_items
+            ),
             "rowCount": task.row_count,
             "nextCursor": str(end) if end < len(all_items) else None,
         },
@@ -1002,7 +1005,7 @@ def delete_task(task_id: int, request: Request, session: SessionDep, user: Known
     """删除自己的一条工具或 AI 记录及结果文件。和关注、纠错的删除一样只认本人，不看功能开关，
     也不要求先同意新版协议（D-093 上线门槛第 8 条）；别人的、不存在的都是"没有找到"。"""
     if user is None:
-        raise HTTPException(status_code=404, detail="没有找到顾问任务")
+        raise HTTPException(status_code=404, detail="没有找到这条记录，可能已经删除")
     task = _owned(session, user, task_id, lock=True, deleting=True)
     # 正在处理的等处理结束（结果文件可能正在上传）；开始超过一天的一定没人在跑了
     # （和过期清理同一条线），功能关掉以后不会再有人接着处理，也要能删

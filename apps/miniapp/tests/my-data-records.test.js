@@ -53,7 +53,7 @@ function myData({ tasks = [], pages = APP_PAGES, extra = {}, remove, withdrawn =
   const page = load('pages/my-data/index.js', {
     '../../utils/api.js': api, '../../utils/conditions.js': conditions,
     '../../utils/consent.js': { loginOpen: () => true, remindAny: () => false, withdrawAccount: (has) => { withdrawn.push(has); return Promise.resolve(false); } },
-    '../../utils/advisor.js': advisor, '../../utils/pages.js': pagesOf(pages),
+    '../../utils/advisor.js': advisor, '../../utils/pages.js': pagesOf(pages), '../../utils/exports.js': { removeAdvisorTask: (id) => { calls.removedExport = id; } },
   }, { wx: { setClipboardData: ({ data, success }) => { copied.push(JSON.parse(data)); if (success) success(); }, showToast: (o) => toasts.push(o.title),
     showModal: (m) => { modal = m; m.success({ confirm: true }); }, navigateTo() { assert.fail('我的数据里删记录不跳到别的页面'); } } });
   return { page, raw, calls, copied, toasts, modal: () => modal, view: () => render('pages/my-data/index.wxml', page.data) };
@@ -103,6 +103,7 @@ test('复制单条是这条的完整记录；删除走本人删除接口，删�
   assert.deepEqual(h.copied.at(-1), TASKS[1]);
   h.page.remove(event({ kind: 'task', id: 41 })); await flush();
   assert.deepEqual(h.calls.deleted, [41]);
+  assert.equal(h.calls.removedExport, 41);
   assert.equal(h.modal().title, '删除记录');
   assert.match(h.modal().content, /删除这条记录和它的结果？删除后不能恢复/);
   assert.equal(h.calls.load, 2);
@@ -123,7 +124,7 @@ test('删不成（例如刚开始处理，服务端说暂时不能删）：照�
 });
 
 test('结果文件：完整版提示去"我的记录"下载；过审版没有这一页，不提', async () => {
-  for (const [pages, note] of [[APP_PAGES, '批量工具的结果文件在“我的”→“我的记录”里下载'], [FIRST_PAGES, '']]) {
+  for (const [pages, note] of [[APP_PAGES, '批量工具的结果在“我的”→“我的记录”→“站内查看结果”里另存 Excel'], [FIRST_PAGES, '']]) {
     const h = myData({ tasks: TASKS, pages });
     h.page.load(); await flush();
     assert.equal(h.page.data.fileNote, note);
@@ -237,9 +238,9 @@ test('注销弹窗按包里的功能写删哪些记录：完整版写工具，�
   const ai = await content({ advisor: false, ai: true });
   assert.match(ai, /纠错记录、AI 的输入、任务与结果，以及本机的导出记录和文件/);
   assert.ok(!ai.includes('工具'));
-  assert.match(await content({ advisor: true, ai: true }), /纠错记录、工具输入、任务与结果，以及本机/);
+  assert.match(await content({ advisor: true, ai: true }), /纠错记录、批量工具和 AI 的输入、任务与结果、加量体验记录，以及本机/);
   const first = await content({ advisor: false, ai: false });
   assert.match(first, /纠错记录，以及本机的导出记录和文件/);
   assert.ok(!/工具|AI/.test(first));
-  assert.match(await content(undefined), /纠错记录、工具输入、任务与结果/);
+  assert.match(await content(undefined), /纠错记录、批量工具和 AI 的输入、任务与结果、加量体验记录/);
 });

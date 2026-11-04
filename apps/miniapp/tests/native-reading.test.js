@@ -151,8 +151,22 @@ test('advisor原生结果分页保留权限错误，旧任务不能伪造为有�
   assert.doesNotMatch(textOf(render('pages/results/index.wxml', p.data)), /来源地址|example\.gov\.cn/);
   await p.next(); assert.deepEqual(calls[1], ['8', { cursor: '20', revision: 'r1' }]);
   p.onHide(); expired = true; await p.onShow(); assert.equal(p.data.result, null); assert.equal(p.data.error, '结果已过期');
+  assert.match(textOf(render('pages/results/index.wxml', p.data)), /返回/);
+  assert.doesNotMatch(textOf(render('pages/results/index.wxml', p.data)), /重试/);
+  const missing = load('results', { advisorReading: async () => { throw Object.assign(new Error('已删除'), { status: 404 }); } });
+  missing.onLoad({ mode: 'advisor', taskId: '1' }); await missing.onShow();
+  assert.equal(missing.data.permanentError, true);
+  assert.doesNotMatch(textOf(render('pages/results/index.wxml', missing.data)), /重试/);
   const old = load('results', { advisorReading: async () => { throw Object.assign(new Error('旧结果未生成站内阅读内容，请重新生成'), { status: 409 }); } });
   old.onLoad({ mode: 'advisor', taskId: '1' }); await old.onShow(); assert.equal(old.data.result, null); assert.match(old.data.error, /重新生成/);
+});
+
+test('批量结果区分汇总与明细，兼容旧接口', async () => {
+  for (const summaryCount of [3, undefined]) {
+    const p = load('results', { advisorReading: async () => result({ kind: 'track', total: 6, rowCount: 3, summaryCount }) });
+    p.onLoad({ mode: 'advisor', taskId: '8' }); await p.onShow();
+    assert.match(textOf(render('pages/results/index.wxml', p.data)), /明细 3 行 · 汇总 3 行/);
+  }
 });
 
 test('结果离页后的迟回不能泄露旧任务数据，新查询不会被慢请求覆盖', async () => {

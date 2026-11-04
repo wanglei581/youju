@@ -17,4 +17,8 @@ function clear() {
   try { wx.removeStorageSync(KEY); return true; } catch (e) { return false; }
 }
 
-module.exports = { list, add, clear };
+function removeAdvisorTask(id) {
+  try { wx.setStorageSync(KEY, list().filter((r) => r.source !== 'advisor' || String(r.taskId) !== String(id))); return true; } catch (e) { return false; }
+}
+
+module.exports = { list, add, clear, removeAdvisorTask };

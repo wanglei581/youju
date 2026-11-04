@@ -874,5 +874,5 @@ def applicable_region(
     if province == "国家":
         return "全国"
     if level == "区县级" and city and district:
-        return "·".join(dict.fromkeys([province, city, district]))
-    return f"{province}·{city}" if level == "市级" and city else province
+        return " · ".join(dict.fromkeys([province, city, district]))
+    return f"{province} · {city}" if level == "市级" and city else province

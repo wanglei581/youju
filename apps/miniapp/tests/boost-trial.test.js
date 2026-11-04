@@ -376,6 +376,15 @@ test('工具中心：体验中写体验的次数，申报季写起止日期', as
   page.onUnload();
 });
 
+test('工具中心体验期间不催买，体验结束恢复价格说明', () => {
+  const page = load('pages/advisor/index.js', { '../../utils/api.js': {}, '../../utils/advisor.js': helpers, '../../utils/tool-context.js': context, '../../utils/boost.js': boost, '../../utils/pay.js': {} });
+  page.payOn = true; page.quotaDone = true; page.offer = { line: '30 天 29 元' };
+  page.quota = { track: 3, rows: 500, trial: { trialActive: true, trialLeft: 2, trialEnd: '明天' } };
+  page.renderPayCard(); assert.equal(page.data.payCard.offerLine, '');
+  page.quota.trial.trialActive = false; page.renderPayCard();
+  assert.match(page.data.payCard.offerLine, /要一次处理更多家/);
+});
+
 test('确认页已注册、标题写明；页面不出现购买字样', () => {
   const app = JSON.parse(fs.readFileSync(path.join(root, 'app.json'), 'utf8'));
   assert.ok(app.pages.includes('pages/advisor-trial/index'));
@@ -391,4 +400,3 @@ test('我的数据页不出现"内测"之类的字样：完整标识一行写"�
   assert.doesNotMatch(text, /内测|测试版|体验版/);
   assert.match(text, /完整标识<\/text><text class="kv-v link" bindtap="copyOpenid" aria-role="button">复制（联系客服时用）<\/text>/);
 });
-

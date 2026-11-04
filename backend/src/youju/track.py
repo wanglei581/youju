@@ -394,7 +394,7 @@ def track_clients(
                 else replace(client, invalid_city=True)
             )
         customers = normalized
-    customers.sort(key=lambda client: client.name)
+    # 11/4 完整测试 T6：保留填写顺序，站内结果和 Excel 共用这份报告。
     stamp = now()
     today = stamp.date()
     valid = [client for client in customers if client.valid]
