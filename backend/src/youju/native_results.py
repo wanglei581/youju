@@ -31,7 +31,7 @@ LABELS = {
     "sequence": "名单序号",
     "region": "名单中企业地区",
     "doc_number": "文号",
-    "url": "来源地址",
+    "site": "来源",
     "list_type": "名单类型",
     "year": "年度",
     "customer_name": "客户名称",

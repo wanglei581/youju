@@ -7,7 +7,7 @@ const boost = require('../../utils/boost.js');
 const { watchDay, stopDay } = require('../../utils/daywatch.js');
 
 Page({
-  data: { toolsEnabled: false, dataEnabled: false, compareEnabled: false, trackEnabled: false, dataStatus: '', dataError: '', seasonNote: '', aiGate: 'off', aiGateText: OFF_TEXT, aiLabel: AI_LABEL, fabText: FAB_TEXT, scope: SCOPE, gate: 'off', gateText: OFF_TEXT, loading: true, aiEnabled: false, interpretEnabled: false, clauseEnabled: false, aiPaused: false, aiFull: false, remaining: null, clauseRemaining: null, interpretOut: false, clauseOut: false,
+  data: { compareLabel: require('../../utils/advisor.js').DATA_KINDS.compare, compareDescription: require('../../utils/advisor.js').COMPARE_DESCRIPTION, toolsEnabled: false, dataEnabled: false, compareEnabled: false, trackEnabled: false, dataStatus: '', dataError: '', seasonNote: '', aiGate: 'off', aiGateText: OFF_TEXT, aiLabel: AI_LABEL, fabText: FAB_TEXT, scope: SCOPE, gate: 'off', gateText: OFF_TEXT, loading: true, aiEnabled: false, interpretEnabled: false, clauseEnabled: false, aiPaused: false, aiFull: false, remaining: null, clauseRemaining: null, interpretOut: false, clauseOut: false,
     aiNotice: '', disclosure: '', context: null, recent: [], recentLoading: true, recentError: '', showScope: false,
     // 批量工具卡片（D-076）：在售时放在最上面——本月免费还剩几次、两档价格、"了解批量工具"；买过的写使用期到哪天。
     // 没在售时为 null，不显示，正式版开卖前看不到
@@ -71,15 +71,15 @@ Page({
     api.advisorStatus().then((res) => {
       if (!current()) return;
       const quota = res.quota || {};
-      if (!res.enabled || !['compare', 'track'].every((kind) => quota[kind] && Number.isFinite(quota[kind].limit) && Number.isFinite(quota[kind].used) && Number.isFinite(quota[kind].maxRows))) throw new Error('额度信息不完整，请重试');
-      const remaining = (kind) => Math.max(0, ((quota[kind] || {}).limit || 0) - ((quota[kind] || {}).used || 0));
-      // 加量体验中（D-070 ③）显示体验的每天次数；申报季加量的起止日期另起一行
+      if (!res.enabled || !quota.track || !Number.isFinite(quota.track.limit) || !Number.isFinite(quota.track.used) || !Number.isFinite(quota.track.maxRows)) throw new Error('额度信息不完整，请重试');
+      const remaining = Math.max(0, quota.track.limit - quota.track.used);
       const trial = boost.trialView(res.trial);
-      const free = `本月比对剩余 ${remaining('compare')}/${quota.compare.limit} 次、每次最多 ${quota.compare.maxRows} 家；通知表剩余 ${remaining('track')}/${quota.track.limit} 次、每次最多 ${quota.track.maxRows} 家`;
-      this.quota = { compare: remaining('compare'), track: remaining('track'), rows: { compare: quota.compare.maxRows, track: quota.track.maxRows },
+      const rows = `每次最多 ${quota.track.maxRows} 家`;
+      const free = `本月通知表剩余 ${remaining}/${quota.track.limit} 次，${rows}`;
+      this.quota = { track: remaining, rows: quota.track.maxRows,
         pass: res.pass && res.pass.active ? res.pass : null, trial };
       // 在售时不再写"不需要购买"（买得到却说不用买，会让人以为没有付费功能）；没在售时照旧
-      this.setData({ seasonNote: boost.seasonLine(res.season), dataStatus: this.quota.pass ? `批量工具使用期内，比对每次最多 ${quota.compare.maxRows} 家，通知表每次最多 ${quota.track.maxRows} 家，不限提交次数`
+      this.setData({ seasonNote: boost.seasonLine(res.season), dataStatus: this.quota.pass ? `批量工具使用期内，${rows}，不限提交次数`
         : trial.trialActive ? boost.trialLine(trial)
           : this.payOn ? free : `${free}。免费额度不需要购买` });
       this.quotaDone = true;
@@ -109,33 +109,26 @@ Page({
     if (!this.quotaDone) return;
     const pay = require('../../utils/pay.js');
     const quota = this.quota;
-    // 每次多少家按额度接口里两项各自的上限写，两项一样时只写一次（Codex 第三轮：不写死、不只看比对）
-    const rows = quota && (quota.rows.compare === quota.rows.track ? `每次最多 ${quota.rows.compare} 家`
-      : `比对每次最多 ${quota.rows.compare} 家、通知表每次最多 ${quota.rows.track} 家`);
+    const rows = quota && `每次最多 ${quota.rows} 家`;
     if (quota && quota.pass) {
       const day = pay.monthDay(quota.pass.expiresAt);
-      this.setData({ payCard: { usedUp: false, quotaLine: `批量工具使用期${day ? `到 ${day}` : '内'}：批量名单比对、客户相关通知表不限次数，${rows}`,
+      this.setData({ payCard: { usedUp: false, quotaLine: `批量工具使用期${day ? `到 ${day}` : '内'}：客户相关通知表不限次数，${rows}`,
         // 取不到价格时只写到期日，不放买不了的"续买"按钮（Codex 第二轮）
         offerLine: this.offer ? `再买一次接着往后顺延：${this.offer.line}，一次付清，到期不再扣钱` : '', button: this.offer ? '续买批量工具' : '' } });
       return;
     }
     if (!this.offer) { this.setData({ payCard: null }); return; }
-    const usedUp = !!quota && !quota.trial.trialActive && quota.compare === 0 && quota.track === 0;
+    const usedUp = !!quota && !quota.trial.trialActive && quota.track === 0;
     // 只用完一项时那一项写"已用完"，不写"还剩 0 次"
     const left = (name, count) => (count === 0 ? `${name}已用完` : `${name}还剩 ${count} 次`);
     const quotaLine = !quota ? '' : quota.trial.trialActive ? boost.trialLine(quota.trial)
       : usedUp ? '本月免费次数已用完，下月 1 日恢复'
-        : `本月免费：${left('比对', quota.compare)}、${left('通知表', quota.track)}，${rows}`;
-    this.setData({ payCard: { usedUp, quotaLine, offerLine: `要一次处理更多家：${this.offer.line}，不限次数，每次 500 家以内；一次付清，到期不再扣钱`, button: '了解批量工具' } });
+        : `本月免费：${left('通知表', quota.track)}，${rows}`;
+    this.setData({ payCard: { usedUp, quotaLine, offerLine: `要一次处理更多家：${this.offer.line}，客户相关通知表不限次数，每次 500 家以内；一次付清，到期不再扣钱`, button: '了解批量工具' } });
   },
-  // 怎么算次数（收费方案第 9 项）：只写这个人现在用得上的家数——没在卖的不提批量工具，加量体验用不了的不提它
-  // （独立审阅 10/28）；读不到额度时只写第一句
+  // 家数上限已在额度说明中列出，这里只解释怎么算次数。
   countLine() {
-    const quota = this.quota;
-    const head = '交一份名单算一次，系统出错、没出结果的不算';
-    if (!quota || quota.pass || quota.trial.trialActive) return `${head}。`;
-    const more = [quota.trial.trialAvailable ? '加量体验' : '', this.payOn && this.offer ? '批量工具使用期' : ''].filter(Boolean);
-    return `${head}；免费每次 ${quota.rows.compare} 家以内${more.length ? `，${more.join('和')}内每次 500 家以内` : ''}。`;
+    return '交一份名单算一次，系统出错、没出结果的不算。';
   },
   buyPass() { if (this.data.payCard && this.data.payCard.button) wx.navigateTo({ url: '/pages/pass/index' }); },
   refreshQuota() { this.loadQuota(); },

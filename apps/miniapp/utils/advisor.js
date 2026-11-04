@@ -4,6 +4,7 @@ const { failedText } = require('./ai-reasons.js');
 
 const KINDS = { interpret: 'AI 解读', clause: '条款对照' };
 const DATA_KINDS = { compare: '批量名单比对', track: '客户相关通知表' };
+const COMPARE_DESCRIPTION = '批量名单比对：按企业名称或信用代码查询已收录名单，每条结果都能在小程序里对照官方原文。未查到不等于没有入选。';
 const STATES = { queued: '排队中', running: '处理中', done: '已完成', failed: '失败', cancelled: '已取消' };
 // 《人工智能生成合成内容标识办法》第四条要求显式标识：页面顶部固定写"AI 生成"，如实说明由 AI 模型生成。
 // AI 内测包（config.aiInternal）再加"内部测试"；AI 正式版（D-066）只写"AI 生成"。
@@ -72,7 +73,7 @@ function allowedKinds(ai) {
 }
 
 function dataKinds(data) {
-  return data && data.enabled === true && Array.isArray(data.features) ? Object.keys(DATA_KINDS).filter((kind) => data.features.includes(kind)) : [];
+  return data && data.enabled === true && Array.isArray(data.features) ? Object.keys(DATA_KINDS).filter((kind) => data.features.includes(kind) && (kind !== 'compare' || data.compareEnabled === true)) : [];
 }
 
 function allKinds(caps) {
@@ -122,4 +123,4 @@ function remainingOf(ai, kind) {
   return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.floor(value)) : null;
 }
 
-module.exports = { KINDS, DATA_KINDS, STATES, AI_INTERNAL, AI_LABEL, FAB_TEXT, RECORDS_TEXT, OFF_TEXT, GATE_TEXT, SCOPE, INTERNAL_PREFIX, gateText, INTERNAL_NOTICE, aiTitle, gateState, internalNotice, allowedKinds, dataKinds, allKinds, taskView, taskViews, blockDownload, remainingOf };
+module.exports = { KINDS, DATA_KINDS, COMPARE_DESCRIPTION, STATES, AI_INTERNAL, AI_LABEL, FAB_TEXT, RECORDS_TEXT, OFF_TEXT, GATE_TEXT, SCOPE, INTERNAL_PREFIX, gateText, INTERNAL_NOTICE, aiTitle, gateState, internalNotice, allowedKinds, dataKinds, allKinds, taskView, taskViews, blockDownload, remainingOf };

@@ -143,10 +143,12 @@ test('advisor原生结果分页保留权限错误，旧任务不能伪造为有�
   const p = load('results', { advisorReading: async (id, args) => {
     calls.push([id, plain(args)]);
     if (expired) throw Object.assign(new Error('结果已过期'), { status: 410 });
-    return result({ kind: 'compare', items: [{ n: 1, title: '合成企业', documentId: '7', fields: [{ label: '名单序号', value: '12' }] }], nextCursor: args.cursor ? null : '20' });
+    return result({ kind: 'compare', items: [{ n: 1, title: '合成企业', documentId: '7', fields: [{ label: '名单序号', value: '12' }, { label: '来源', value: '示例网站' }, { label: '来源地址', value: 'https://example.gov.cn/a' }] }], nextCursor: args.cursor ? null : '20' });
   } });
   p.onLoad({ mode: 'advisor', taskId: '8' }); await p.onShow();
   assert.match(textOf(render('pages/results/index.wxml', p.data)), /名单序号：12/);
+  assert.match(textOf(render('pages/results/index.wxml', p.data)), /来源：示例网站/);
+  assert.doesNotMatch(textOf(render('pages/results/index.wxml', p.data)), /来源地址|example\.gov\.cn/);
   await p.next(); assert.deepEqual(calls[1], ['8', { cursor: '20', revision: 'r1' }]);
   p.onHide(); expired = true; await p.onShow(); assert.equal(p.data.result, null); assert.equal(p.data.error, '结果已过期');
   const old = load('results', { advisorReading: async () => { throw Object.assign(new Error('旧结果未生成站内阅读内容，请重新生成'), { status: 409 }); } });

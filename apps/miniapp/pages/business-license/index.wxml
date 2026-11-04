@@ -1,0 +1,6 @@
+<view class="card license">
+  <view class="row"><text>运营者名称</text><text>{{operator.name}}</text></view>
+  <view class="row"><text>住所</text><text>{{operator.address}}</text></view>
+  <view wx:if="{{license.creditCode}}" class="row"><text>统一社会信用代码</text><text>{{license.creditCode}}</text></view>
+  <view wx:if="{{license.photo}}"><view>营业执照</view><image class="photo" src="{{license.photo}}" mode="widthFix" /></view>
+</view>

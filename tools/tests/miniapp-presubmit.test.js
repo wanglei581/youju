@@ -12,7 +12,7 @@ function input() { return {
   legal:{final:true, version:'2026-10.2', user:{sections:[{h:'一、服务内容与定位',p:['公开信息的检索和查看免费。']}]}, privacy:{sections:[]}, operator:{icp:'测试备案号',email:'contact@example.test'}},
   config:{cloudEnv:releaseIdentity.cloudEnv,cloudService:releaseIdentity.cloudService,devBaseUrl:'',templates:{newDocs:'',deadline:''}},
   project:{appid:releaseIdentity.appid},
-  app:{pages:['home','follow','files','me','search','detail','report','lists','agreement','feedback','follow-new','my-data','about','clients','reader','results'].map(p=>`pages/${p}/index`),tabBar:{list:[['home','首页'],['follow','关注'],['files','导出'],['me','我的']].map(([p,text])=>({pagePath:`pages/${p}/index`,text}))}}
+  app:{pages:['home','follow','files','me','search','detail','report','lists','agreement','feedback','follow-new','my-data','about','business-license','clients','reader','results'].map(p=>`pages/${p}/index`),tabBar:{list:[['home','首页'],['follow','关注'],['files','导出'],['me','我的']].map(([p,text])=>({pagePath:`pages/${p}/index`,text}))}}
 }; }
 function identityText(result) {
   return JSON.stringify(result);
@@ -294,4 +294,15 @@ test('正式AI包的协议版本不低于后台认 AI 条款的版本（10/28 �
   assert.equal(state('2026-11', 'submit'), 'fail');
   assert.equal(state('2026-11.1', 'submit'), 'pass');
   assert.equal(state('2026-12', 'submit'), 'pass');
+});
+
+test('营业执照信息（D-107 ③）：能卖的完整版（付费协议定稿）提审时信用代码和照片要填齐、照片要在包里；没定稿或体验准备只提示',()=>{
+ const pay={version:'pay-2026-11',final:true,title:'付费服务协议',text:'正文'};
+ const state=(extra,mode)=>inspect({...input(),profile:'complete-release',mode,payTerms:pay,...extra}).checks.find(c=>c.id==='business-license').state;
+ assert.equal(state({businessLicense:{creditCode:'',photo:''},payTerms:{...pay,final:false}},'submit'),'warning');
+ assert.equal(state({businessLicense:{creditCode:'',photo:''}},'submit'),'fail');
+ assert.equal(state({businessLicense:{creditCode:'',photo:''}},'prepare'),'warning');
+ assert.equal(state({businessLicense:{creditCode:'X',photo:'images/license.jpg'},licensePhotoExists:false},'submit'),'fail');
+ assert.equal(state({businessLicense:{creditCode:'X',photo:'images/license.jpg'},licensePhotoExists:true},'submit'),'fail');
+ assert.equal(state({businessLicense:{creditCode:'X',photo:'/images/license.jpg'},licensePhotoExists:true},'submit'),'pass');
 });

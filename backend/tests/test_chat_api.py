@@ -838,6 +838,7 @@ def test_delete_chat_done_ask_keeps_count(client, session):
 def test_old_task_endpoints_ignore_ask(client, settings, session):
     """现有任务接口不管问答：列表不列、取、删、取消都是 404。"""
     settings.advisor_enabled = True
+    settings.advisor_compare_enabled = True  # D-118 默认关；这里照旧测比对
     chat_id = send(client).json()["chatId"]
     task_id, _ = _ask_turn(session, chat_id)
     assert client.get(f"/api/v1/advisor/tasks/{task_id}").status_code == 404

@@ -213,6 +213,7 @@ def status(session: SessionDep, user: KnownUserDep) -> dict:
     wide = ticket is not None or bool(trial and trial["active"])
     return {
         "enabled": True,
+        "compareEnabled": bool(getattr(settings, "advisor_compare_enabled", False)),
         "pass": payments.pass_status(session, user.id, stamp)
         if user
         else {"active": False, "expiresAt": None},
@@ -266,6 +267,8 @@ def start_trial(request: Request, session: SessionDep, user: UserDep) -> dict:
 
 @router.post("/preview", dependencies=[Depends(_enabled), Depends(_body_size)])
 def preview(body: TaskIn, user: UserDep) -> dict:
+    if body.kind == "compare" and not getattr(get_settings(), "advisor_compare_enabled", False):
+        raise HTTPException(status_code=404, detail="没有找到接口")
     _authorize(body.kind, user)
     if body.kind in AI_KINDS:
         raise HTTPException(status_code=422, detail="预览只支持 compare 或 track")
@@ -475,7 +478,12 @@ def capabilities(request: Request, session: SessionDep, user: UserDep) -> dict:
     return {
         "data_tools": {
             "enabled": data_enabled,
-            "features": ["compare", "track"] if data_enabled else [],
+            "compareEnabled": data_enabled
+            and bool(getattr(settings, "advisor_compare_enabled", False)),
+            "features": (["compare"] if getattr(settings, "advisor_compare_enabled", False) else [])
+            + ["track"]
+            if data_enabled
+            else [],
             "remaining": {
                 k: max(0, boost.free_limit(settings, k, day) - counts.get(k, 0))
                 if data_enabled
@@ -546,6 +554,8 @@ def create_task(
     user: UserDep,
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ) -> dict:
+    if body.kind == "compare" and not getattr(get_settings(), "advisor_compare_enabled", False):
+        raise HTTPException(status_code=404, detail="没有找到接口")
     _authorize(body.kind, user)
     if not idempotency_key or not idempotency_key.strip() or len(idempotency_key) > 128:
         raise HTTPException(
@@ -905,7 +915,7 @@ def read_result(
 
 
 def _shown_native_item(item):
-    """数据工具站内结果的一项：字段里的"截止原文句子"按显示层给，返回副本。"""
+    """返回显示用副本，兼容旧结果中的来源地址。"""
     if not isinstance(item, dict) or not isinstance(item.get("fields"), list):
         return item
     quote_label = native_results.LABELS["deadline_quote"]
@@ -916,6 +926,7 @@ def _shown_native_item(item):
             if isinstance(field, dict) and field.get("label") == quote_label
             else field
             for field in item["fields"]
+            if not isinstance(field, dict) or field.get("label") != "来源地址"
         ],
     }
 

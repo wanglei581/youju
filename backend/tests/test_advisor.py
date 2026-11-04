@@ -28,6 +28,7 @@ NOW = datetime(2026, 9, 30, 23, 59, tzinfo=BJ)
 def advisor_settings(monkeypatch):
     settings = SimpleNamespace(
         advisor_enabled=True,
+        advisor_compare_enabled=True,
         cloud_env="test-env",
         dev_openid="advisor-user",
         trust_wx_headers=False,
@@ -85,6 +86,21 @@ def xlsx_content(rows):
     return output.getvalue()
 
 
+def test_compare_disabled_rejects_new_work(client, advisor_settings):
+    agree_advisor(client)
+    old = create(client).json()
+    advisor_settings.advisor_compare_enabled = False
+    assert (
+        client.post("/api/v1/advisor/preview", json={"kind": "compare", "rows": ["甲"]}).status_code
+        == 404
+    )
+    assert create(client, key="disabled").status_code == 404
+    assert client.get(f"/api/v1/advisor/tasks/{old['id']}").status_code == 200
+    caps = client.get("/api/v1/advisor/capabilities").json()["data_tools"]
+    assert caps["features"] == ["track"] and caps["compareEnabled"] is False
+    assert client.get("/api/v1/advisor/status").json()["compareEnabled"] is False
+
+
 def test_advisor_status_public_quota_and_switch(client, advisor_settings, monkeypatch):
     advisor_settings.advisor_enabled = False
     assert client.get("/api/v1/advisor/status").status_code == 404
@@ -93,6 +109,7 @@ def test_advisor_status_public_quota_and_switch(client, advisor_settings, monkey
     # 加量体验、申报季加量的开关默认关：不出现在额度里
     assert client.get("/api/v1/advisor/status").json() == {
         "enabled": True,
+        "compareEnabled": True,
         "pass": {"active": False, "expiresAt": None},
         "quota": {"compare": {**expected, "limit": 3}, "track": expected},
         "trial": None,
@@ -1416,6 +1433,31 @@ def test_native_legacy_result_does_not_recalculate(client, session):
     response = client.get(f"/api/v1/advisor/tasks/{task_id}/reading")
     assert response.status_code == 409
     assert "重新生成" in response.json()["detail"]
+
+
+def test_native_reading_filters_legacy_source_url_without_changing_saved_result(client, session):
+    from youju.compare import CompareReport, CompareRow
+    from youju.native_results import build
+
+    agree_advisor(client)
+    task_id = create(client).json()["id"]
+    task = session.get(AdvisorTask, task_id)
+    task.status, task.result_document_ids = "done", []
+    content = build("compare", CompareReport([CompareRow("甲", "甲", "name", "未查到")], [], NOW))
+    content["items"][0]["fields"].extend(
+        [
+            {"label": "来源地址", "value": "https://example.gov.cn/a"},
+            {"label": "来源", "value": "示例网站"},
+        ]
+    )
+    task.result_json = content
+    session.commit()
+    response = client.get(f"/api/v1/advisor/tasks/{task_id}/reading")
+    assert response.status_code == 200
+    assert "来源地址" not in response.text and "https://example.gov.cn/a" not in response.text
+    assert {"label": "来源", "value": "示例网站"} in response.json()["items"][0]["fields"]
+    session.expire(task)
+    assert task.result_json == content
 
 
 def test_native_summary_pagination_keeps_input_row_count(client, session):

@@ -47,7 +47,7 @@ test('扫描规则本身：字符串、属性里的禁用说法要报出来，�
 
 test('首发包页面、组件和工具函数：不出现复制链接去浏览器、以原网站为准这类把人送出小程序的说法', () => {
   const pages = firstPages();
-  assert.equal(pages.length, 16, `首发页面清单读成了 ${pages.length} 页`);
+  assert.equal(pages.length, 17, `首发页面清单读成了 ${pages.length} 页`);
   for (const page of ['detail', 'files', 'about', 'reader', 'lists', 'results']) assert.ok(pages.includes(page), `首发清单里没有 ${page}`);
   const files = [
     ...pages.flatMap((page) => ['wxml', 'js'].map((ext) => `pages/${page}/index.${ext}`)).filter((file) => fs.existsSync(path.join(ROOT, file))),

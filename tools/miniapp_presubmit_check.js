@@ -23,7 +23,7 @@ const SERVER_TOOL_TERMS_VERSION = (() => {
   return m[1];
 })();
 const FIRST_PAGES = ['home', 'follow', 'files', 'me', 'search', 'detail', 'report', 'lists',
-  'agreement', 'feedback', 'follow-new', 'my-data', 'about', 'clients', 'reader', 'results'].map(p => `pages/${p}/index`);
+  'agreement', 'feedback', 'follow-new', 'my-data', 'about', 'business-license', 'clients', 'reader', 'results'].map(p => `pages/${p}/index`);
 // 底栏四格的名字，和 FIRST_PAGES 前四页一一对应（app.json 的 tabBar 和 custom-tab-bar 都是这四个字）
 const TAB_NAMES = ['首页', '关注', '导出', '我的'];
 const AI_PAGES = ['advisor', 'advisor-interpret', 'advisor-clause', 'advisor-tasks', 'complaint'].map(p => `pages/${p}/index`);
@@ -82,7 +82,7 @@ function hasPlaceholder(value) {
   return false;
 }
 function nonempty(value) { return typeof value === 'string' && value.trim().length > 0; }
-function inspect({ legal, config, app, project, toolTerms, payTerms, mode = 'submit', profile = 'first-release', fingerprints = FINGERPRINTS }) {
+function inspect({ legal, config, app, project, toolTerms, payTerms, businessLicense, licensePhotoExists = false, mode = 'submit', profile = 'first-release', fingerprints = FINGERPRINTS }) {
   if (!['submit', 'prepare'].includes(mode) || !PROFILES.includes(profile)) {
     throw new Error('参数不支持');
   }
@@ -163,6 +163,11 @@ function inspect({ legal, config, app, project, toolTerms, payTerms, mode = 'sub
     add('tool-review', '工具说明公开发布复核', !!toolTerms && toolTerms.reviewedForRelease === true, '可体验；公开发布复核及实际准入证据仍须单独完成，提审前由创始人确认', true);
     // 付费协议没定稿时购买页的付款按钮不可用（pages/pass 用 utils/pay.js termsFinal 判断），这里只提示
     const payFinal = !!payTerms && payTerms.final === true && nonempty(payTerms.text) && !/待.*定稿|占位/.test(payTerms.text) && !hasPlaceholder(payTerms);
+    // 营业执照信息（D-107 ③，《电子商务法》第十五条：开始销售后在首页公示）：信用代码和执照照片要填齐、照片要在包里。
+    // 付费协议定稿（这个包能卖）时提审不过；没定稿（购买按钮不可用、不卖）时和体验准备一样只提示
+    const license = businessLicense || {};
+    add('business-license', '首页营业执照信息已填齐', nonempty(license.creditCode) && nonempty(license.photo) && license.photo.startsWith('/') && licensePhotoExists === true,
+      '在 content/business-license.js 填统一社会信用代码和执照照片的包内路径（以 / 开头，如 /images/license.jpg），并把照片放进包里（创始人提供）', mode === 'prepare' || !payFinal);
     add('pay-terms', '付费服务协议已定稿', payFinal, '协议定稿前（D-065：Codex、Grok 审阅，Claude 核对）购买按钮保持不可用；收费开关仍须门槛达标后由创始人批准打开', true);
   }
   for (const [id, name] of [['newDocs', '关注新文件'], ['deadline', '截止前']]) {
@@ -189,11 +194,15 @@ function main(args) {
     console.log(`${legal.version} ${agreementFingerprint(legal)}`);
     return 0;
   }
+  const licensePath = path.join(root, 'content/business-license.js');
+  const licenseFile = profile.startsWith('complete-') && fs.existsSync(licensePath) ? require(licensePath) : undefined;
   const result = inspect({legal: require(path.join(root, 'content/legal.js')), config: require(path.join(root, 'utils/config.js')),
     app: JSON.parse(fs.readFileSync(path.join(root, 'app.json'), 'utf8')),
     project: JSON.parse(fs.readFileSync(path.join(root, 'project.config.json'), 'utf8')),
     toolTerms: profile.startsWith('complete-') ? require(path.join(root, 'content/advisor-terms.js')) : undefined,
-    payTerms: profile.startsWith('complete-') ? require(path.join(root, 'content/pay-terms.js')) : undefined, mode, profile});
+    payTerms: profile.startsWith('complete-') ? require(path.join(root, 'content/pay-terms.js')) : undefined,
+    businessLicense: licenseFile, licensePhotoExists: !!(licenseFile && licenseFile.photo)
+      && fs.existsSync(path.join(root, String(licenseFile.photo).replace(/^\//, ''))), mode, profile});
   if (json) console.log(JSON.stringify(result, null, 2));
   else {
     console.log(result.notice + '\n');

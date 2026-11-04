@@ -44,7 +44,7 @@ const urlsIn = (root) => findAll(root, (n) => n.attrs['data-url'] !== undefined)
 
 test('utils/package-pages.js 和 app.json 的页面一样（打过审版时由 tools/miniapp_pack.js 重写）', () => {
   assert.deepEqual(require('../utils/package-pages.js'), APP_PAGES);
-  assert.equal(FIRST_PAGES.length, 16);
+  assert.equal(FIRST_PAGES.length, 17);
   assert.deepEqual(plain(FULL.flags()), { advisor: true, records: true, pass: true, orders: true, help: true, ai: true });
   assert.deepEqual(plain(FIRST.flags()), { advisor: false, records: false, pass: false, orders: false, help: false, ai: false });
   assert.equal(FIRST.has('my-data'), true); assert.equal(FIRST.has('lists'), true); assert.equal(FIRST.has('advisor-tasks'), false);
@@ -54,7 +54,7 @@ function mePage(pages, server) {
   const urls = [];
   const page = load('pages/me/index.js', {
     '../../content/legal.js': { final: true, version: '2026-11' },
-    '../../utils/consent.js': { loginOpen: () => true, consentEpoch: () => 0, applyServer: () => true, withdraw: () => Promise.resolve(false), markAgreed() {}, openPrivacy() {}, CONSENT_PAGE: '', agreeFailed() {}, featureNames: () => '' },
+    '../../utils/consent.js': { loginOpen: () => true, consentEpoch: () => 0, applyServer: () => true, withdraw: () => Promise.resolve(false), withdrawAccount: () => Promise.resolve(false), markAgreed() {}, openPrivacy() {}, CONSENT_PAGE: '', agreeFailed() {}, featureNames: () => '' },
     '../../utils/subscribe.js': { remindOpen: () => false },
     '../../utils/coverage.js': { loadCoverage: () => Promise.resolve(null), notCoveredNames: () => '' },
     '../../utils/pages.js': pages,
@@ -253,4 +253,26 @@ test('我的记录（过审版加 AI，D-098）：包里没有工具中心，空
     assert.equal(findAll(root, tapsTo('tools')).length, tools ? 1 : 0);
     page.onUnload();
   }
+});
+
+test('首页营业执照入口随包显示，未填写的执照信息不显示', () => {
+  for (const pages of [FIRST, FULL]) {
+    const h = homePage(pages);
+    assert.equal(h.page.data.businessLicense, true);
+    assert.match(textOf(render('pages/home/index.wxml', h.page.data)), /营业执照信息/);
+  }
+  const without = pagesOf(APP_PAGES.filter((p) => p !== 'pages/business-license/index'));
+  const missing = homePage(without);
+  assert.equal(missing.page.data.businessLicense, false);
+  assert.ok(!textOf(render('pages/home/index.wxml', missing.page.data)).includes('营业执照信息'));
+  const data = { operator: require('../content/legal.js').operator, license: { creditCode: '', photo: '' } };
+  const empty = textOf(render('pages/business-license/index.wxml', data));
+  assert.ok(empty.includes(data.operator.name)); assert.ok(empty.includes(data.operator.address));
+  assert.ok(!empty.includes('统一社会信用代码'));
+  // 包里真实的执照信息：信用代码已填（创始人 11/4），页面显示出来
+  const real = require('../content/business-license.js');
+  assert.match(real.creditCode, /^[0-9A-HJ-NPQRTUWXY]{18}$/);
+  assert.ok(textOf(render('pages/business-license/index.wxml', { ...data, license: real })).includes(real.creditCode));
+  const filled = textOf(render('pages/business-license/index.wxml', { ...data, license: { creditCode: '测试代码', photo: '/test.png' } }));
+  assert.ok(filled.includes('测试代码')); assert.ok(filled.includes('营业执照'));
 });
