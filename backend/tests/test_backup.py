@@ -808,12 +808,31 @@ def test_restore_drill_second_signal_and_nohup(session, db_engine, tmp_path, mon
         raise AssertionError("SIGTERM 应该已经转成中断")
 
     monkeypatch.setattr(restore_drill, "restore", twice)
-    original = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGHUP)}
+    # 删库阶段再来两个信号（终端断线连发 SIGHUP、又按 Ctrl+C）：应该被忽略，照样删库。
+    # _drill_databases 第 1 次是开头查残留，第 2 次是清理时查要不要提示
+    real_list = restore_drill._drill_databases
+    calls = {"n": 0}
+
+    def noisy(server):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            signal.raise_signal(signal.SIGHUP)
+            signal.raise_signal(signal.SIGINT)
+        return real_list(server)
+
+    monkeypatch.setattr(restore_drill, "_drill_databases", noisy)
+    original = {
+        sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT)
+    }
     assert restore_drill.run(TEST_DB_URL, None, source) == 1
     output = capsys.readouterr().out
     name = _drill_name(output)
     assert "演练被中断" in output and f"临时库 {name} 已删除" in output
+    assert calls["n"] == 2
+    with db_engine.connect() as conn:
+        assert not _schemas(conn, name)
     assert {sig: signal.getsignal(sig) for sig in original} == original
+    monkeypatch.setattr(restore_drill, "_drill_databases", real_list)
 
     # nohup：SIGHUP 本来就是忽略，演练不覆盖它，断线也不打断
     def hangup(engine, src):
@@ -828,6 +847,32 @@ def test_restore_drill_second_signal_and_nohup(session, db_engine, tmp_path, mon
         assert signal.getsignal(signal.SIGHUP) == signal.SIG_IGN
     finally:
         signal.signal(signal.SIGHUP, previous)
+
+
+def test_restore_drill_name_collision_leaves_other_database(
+    session, db_engine, tmp_path, monkeypatch, capsys
+):
+    import secrets
+
+    from youju import restore_drill
+    from youju.backup import BEIJING
+
+    populate(session)
+    source = tmp_path / "backup.jsonl.gz"
+    source.write_bytes(_dump(db_engine))
+    other = f"youju_drill_{datetime.now(BEIJING):%Y%m%d%H%M%S}_{secrets.token_hex(2)}"
+    with db_engine.begin() as conn:
+        conn.execute(text(f"CREATE DATABASE `{other}`"))
+    monkeypatch.setattr(restore_drill, "_database_name", lambda: other)
+    try:
+        assert restore_drill.run(TEST_DB_URL, None, source) == 1
+        output = capsys.readouterr().out
+        assert "撞了" in output and "已建临时库" not in output and "已删除" not in output
+        with db_engine.connect() as conn:
+            assert _schemas(conn, other)
+    finally:
+        with db_engine.begin() as conn:
+            conn.execute(text(f"DROP DATABASE IF EXISTS `{other}`"))
 
 
 def test_restore_drill_keeps_old_database_in_use(session, db_engine, tmp_path, capsys):

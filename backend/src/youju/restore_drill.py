@@ -239,8 +239,13 @@ def run(database_url: str, cloud_env: str | None, source: Path | None) -> int:
                     charset = "CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin"
                     conn.execute(text(f"CREATE DATABASE `{name}` {charset}"))
             except DBAPIError as exc:
+                # 确定没建成的：清理时不碰这个名字（1007 是撞了别人的同名库，删了就是删别人的）
+                if _code(exc) in (1007, 1044, 1227):
+                    attempted = False
                 if _code(exc) in (1044, 1227):
                     raise BackupError(GRANT_HINT) from None
+                if _code(exc) == 1007:
+                    raise BackupError("临时库名和另一个正在跑的演练撞了，请过一分钟再跑") from None
                 raise
             _say(f"已建临时库 {name}（演练结束会删掉）")
             target_url = url.set(database=name).render_as_string(hide_password=False)
@@ -300,12 +305,16 @@ def run(database_url: str, cloud_env: str | None, source: Path | None) -> int:
             if target is not None:
                 target.dispose()
             if attempted:
+                # 直接 DROP ... IF EXISTS：建库语句被信号打断时服务器可能还在建，
+                # DROP 会等它建完再删；先查一次只是为了决定怎么提示（查不到就当它在）
                 try:
                     existed = name in _drill_databases(server)
-                    if existed:
-                        with server.begin() as conn:
-                            conn.execute(text(f"DROP DATABASE `{name}`"))
-                        deleted = True
+                except Exception:
+                    existed = True
+                try:
+                    with server.begin() as conn:
+                        conn.execute(text(f"DROP DATABASE IF EXISTS `{name}`"))
+                    deleted = True
                 except Exception:
                     existed = True
                     failure = failure or "清理临时库失败"
