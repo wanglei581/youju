@@ -194,15 +194,12 @@ function main(args) {
     console.log(`${legal.version} ${agreementFingerprint(legal)}`);
     return 0;
   }
-  const licensePath = path.join(root, 'content/business-license.js');
-  const licenseFile = profile.startsWith('complete-') && fs.existsSync(licensePath) ? require(licensePath) : undefined;
   const result = inspect({legal: require(path.join(root, 'content/legal.js')), config: require(path.join(root, 'utils/config.js')),
     app: JSON.parse(fs.readFileSync(path.join(root, 'app.json'), 'utf8')),
     project: JSON.parse(fs.readFileSync(path.join(root, 'project.config.json'), 'utf8')),
     toolTerms: profile.startsWith('complete-') ? require(path.join(root, 'content/advisor-terms.js')) : undefined,
     payTerms: profile.startsWith('complete-') ? require(path.join(root, 'content/pay-terms.js')) : undefined,
-    businessLicense: licenseFile, licensePhotoExists: !!(licenseFile && licenseFile.photo)
-      && fs.existsSync(path.join(root, String(licenseFile.photo).replace(/^\//, ''))), mode, profile});
+    ...licenseInput(root, profile), mode, profile});
   if (json) console.log(JSON.stringify(result, null, 2));
   else {
     console.log(result.notice + '\n');
@@ -215,4 +212,14 @@ if (require.main === module) {
   try { process.exitCode = main(process.argv.slice(2)); }
   catch (_) { console.error('无法完成检查：请核对参数和配置文件；未通过，不可提审。'); process.exitCode = 2; }
 }
-module.exports = { inspect, pagesFor, agreementFingerprint, FINGERPRINTS, PROFILES, FIRST_PAGES, FIRST_AI_PAGES, TAB_NAMES, SERVER_TOOL_TERMS_VERSION, SERVER_AI_TERMS_VERSION, SERVER_WITHOUT_TOOLS_TERMS, FIRST_AI_TERMS, FIRST_RELEASE_TERMS_BANNED };
+// 包里的营业执照信息（完整版才查）：数据文件和照片文件在不在包里。命令行检查和打包工具（miniapp_pack.js）共用，
+// 打包时不传它，打好的完整版这一项永远“没填齐”，提审模式下打不出包（11/4 放执照照片时发现）
+function licenseInput(root, profile, load = (file) => require(path.join(root, file))) {
+  const file = path.join(root, 'content/business-license.js');
+  if (!String(profile).startsWith('complete-') || !fs.existsSync(file)) return { businessLicense: undefined, licensePhotoExists: false };
+  const businessLicense = load('content/business-license.js');
+  const photo = businessLicense && businessLicense.photo;
+  return { businessLicense, licensePhotoExists: !!photo && fs.existsSync(path.join(root, String(photo).replace(/^\//, ''))) };
+}
+
+module.exports = { inspect, licenseInput, pagesFor, agreementFingerprint, FINGERPRINTS, PROFILES, FIRST_PAGES, FIRST_AI_PAGES, TAB_NAMES, SERVER_TOOL_TERMS_VERSION, SERVER_AI_TERMS_VERSION, SERVER_WITHOUT_TOOLS_TERMS, FIRST_AI_TERMS, FIRST_RELEASE_TERMS_BANNED };

@@ -273,6 +273,63 @@ test('首页营业执照入口随包显示，未填写的执照信息不显示',
   const real = require('../content/business-license.js');
   assert.match(real.creditCode, /^[0-9A-HJ-NPQRTUWXY]{18}$/);
   assert.ok(textOf(render('pages/business-license/index.wxml', { ...data, license: real })).includes(real.creditCode));
+  // 执照照片（创始人 11/4）：包内绝对路径、文件在包里、是 JPEG；控制大小，别把主包撑大（主包上限 2 MB）
+  assert.match(real.photo, /^\/images\/[a-z0-9-]+\.jpg$/);
+  const photo = fs.readFileSync(path.join(__dirname, '..', real.photo.slice(1)));
+  assert.deepEqual([...photo.subarray(0, 3)], [0xff, 0xd8, 0xff]);
+  assert.ok(photo.length <= 200 * 1024, `执照照片 ${photo.length} 字节`);
+  const shown = findAll(render('pages/business-license/index.wxml', { ...data, license: real }), (node) => node.tag === 'image');
+  assert.equal(shown.length, 1); assert.equal(shown[0].attrs.src, real.photo); assert.equal(shown[0].attrs.bindtap, 'preview');
+  // 照片已转正、不带拍摄信息：JPEG 里没有 EXIF（APP1）段，横版，宽不小于 1200（换图时防止带进方向、位置信息或糊成看不清）
+  let at = 2; let size = null; let exif = false;
+  while (at + 4 <= photo.length && photo[at] === 0xff) {
+    const marker = photo[at + 1]; const len = photo.readUInt16BE(at + 2);
+    if (marker === 0xe1) exif = true;
+    if (marker >= 0xc0 && marker <= 0xc2) { size = { height: photo.readUInt16BE(at + 5), width: photo.readUInt16BE(at + 7) }; break; }
+    at += 2 + len;
+  }
+  assert.equal(exif, false); assert.ok(size && size.width > size.height && size.width >= 1200, JSON.stringify(size));
+  // 上传时开着“过滤无依赖文件”，照片路径只在 JS 里：project.config.json 要强制带上照片所在的文件夹
+  const project = JSON.parse(read('project.config.json'));
+  const folder = real.photo.split('/')[1];
+  assert.ok((project.packOptions.include || []).some((item) => item.type === 'folder' && item.value === folder), `packOptions.include 要有 ${folder}`);
+  // 没填照片：不画图片
+  assert.equal(findAll(render('pages/business-license/index.wxml', { ...data, license: { creditCode: real.creditCode, photo: '' } }), (node) => node.tag === 'image').length, 0);
   const filled = textOf(render('pages/business-license/index.wxml', { ...data, license: { creditCode: '测试代码', photo: '/test.png' } }));
   assert.ok(filled.includes('测试代码')); assert.ok(filled.includes('营业执照'));
+});
+
+test('营业执照照片点按全屏放大：先把包里的照片写到用户目录再预览，读写不了时用包内路径；没有照片不预览（独立审阅 #437）', () => {
+  const run = ({ photo = '/images/business-license.jpg', fs = 'ok', dir = 'wxfile://usr' } = {}) => {
+    const previews = []; const writes = [];
+    const fsm = {
+      readFile: ({ filePath, success, fail }) => (fs === 'read-fail' ? fail({ errMsg: 'readFile:fail' }) : success({ data: `bytes-of:${filePath}` })),
+      writeFile: ({ filePath, data, success, fail }) => { writes.push([filePath, data]); return fs === 'write-fail' ? fail({ errMsg: 'writeFile:fail' }) : success(); },
+    };
+    const toasts = [];
+    const wx = {
+      previewImage: (opts) => { previews.push({ urls: opts.urls, current: opts.current }); if (fs === 'preview-fail') opts.fail({ errMsg: 'previewImage:fail' }); },
+      showToast: (opts) => toasts.push(opts.title),
+      getFileSystemManager: () => { if (fs === 'none') throw new Error('不支持'); return fsm; },
+      env: dir ? { USER_DATA_PATH: dir } : {},
+    };
+    const page = load('pages/business-license/index.js', {
+      '../../content/legal.js': { operator: { name: '运营者', address: '住所' } },
+      '../../content/business-license.js': { creditCode: 'X', photo },
+    }, { wx });
+    page.preview();
+    // 页面在另一个 vm 上下文里建的对象，比较前转成普通对象
+    return { previews: JSON.parse(JSON.stringify(previews)), writes: JSON.parse(JSON.stringify(writes)), toasts };
+  };
+  const ok = run();
+  assert.deepEqual(ok.writes, [['wxfile://usr/business-license.jpg', 'bytes-of:/images/business-license.jpg']]);
+  assert.deepEqual(ok.previews, [{ urls: ['wxfile://usr/business-license.jpg'], current: 'wxfile://usr/business-license.jpg' }]);
+  for (const fs of ['read-fail', 'write-fail', 'none']) {
+    assert.deepEqual(run({ fs }).previews, [{ urls: ['/images/business-license.jpg'], current: '/images/business-license.jpg' }], fs);
+  }
+  assert.deepEqual(run({ dir: '' }).previews, [{ urls: ['/images/business-license.jpg'], current: '/images/business-license.jpg' }]);
+  assert.deepEqual(run({ photo: '' }).previews, []);
+  // 预览打不开：提示一句
+  assert.deepEqual(run({ fs: 'preview-fail' }).toasts, ['图片打不开，请稍后再试']);
+  assert.deepEqual(ok.toasts, []);
 });
