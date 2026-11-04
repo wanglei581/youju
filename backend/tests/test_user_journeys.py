@@ -787,6 +787,8 @@ def test_e_advisor_submit_process_download_quota_delete(journey, monkeypatch, ki
     monkeypatch.setenv("YOUJU_ADVISOR_ENABLED", "true")
     j.settings.advisor_enabled = Settings(_env_file=None).advisor_enabled
     assert j.settings.advisor_enabled
+    # D-118：批量名单比对默认关；这条旅程照旧把比对和通知表都走一遍
+    j.settings.advisor_compare_enabled = True
     source = _source(j.session)
     listed, _ = _document(j.session, source, "2026年高新技术企业名单公布", "tool-list")
     application, _ = _document(
@@ -992,6 +994,7 @@ def test_identity_missing_headers_never_creates_user(journey):
 def test_account_deletion_cascades_nonempty_tools_and_keeps_other_user(journey, monkeypatch):
     j = journey
     j.settings.advisor_enabled = True
+    j.settings.advisor_compare_enabled = True  # D-118 默认关；这里照旧测比对
     _agree(j)
     _tools_ready(j)
     _json(

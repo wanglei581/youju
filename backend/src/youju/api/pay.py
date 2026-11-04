@@ -114,9 +114,6 @@ def list_products(request: Request, session: SessionDep) -> dict:
             {
                 "productId": product,
                 "name": payments.pass_name(days),
-                "description": "批量名单比对、客户相关通知表"
-                if getattr(settings, "advisor_compare_enabled", False)
-                else "仅含客户相关通知表",
                 "price": price,
                 "days": days,
             }

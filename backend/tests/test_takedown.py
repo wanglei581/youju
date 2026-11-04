@@ -47,6 +47,7 @@ def settings(monkeypatch):
         admin_token=HEADERS["X-Admin-Token"],
         dev_openid="takedown-user",
         advisor_enabled=True,
+        advisor_compare_enabled=True,  # D-118 默认关；这些测试照旧测比对
         cloud_env="test-env",
         agreement_version="2026-11",
         send_wx_messages=True,

@@ -45,6 +45,7 @@ def ctx(session_factory, monkeypatch):
     settings = Settings(
         _env_file=None,
         advisor_enabled=True,
+        advisor_compare_enabled=True,  # D-118 默认关；这些测试照旧测比对
         boost_trial_enabled=True,
         trust_wx_headers=True,
         cloud_env="test-env",
@@ -113,7 +114,9 @@ def start(client, identity):
 
 
 def test_switches_default_off(session_factory, monkeypatch):
-    settings = Settings(_env_file=None, advisor_enabled=True, trust_wx_headers=True)
+    settings = Settings(
+        _env_file=None, advisor_enabled=True, advisor_compare_enabled=True, trust_wx_headers=True
+    )
     assert settings.boost_trial_enabled is False and settings.season_boost_enabled is False
     for module in (me, advisor, app_module):
         monkeypatch.setattr(module, "get_settings", lambda: settings)

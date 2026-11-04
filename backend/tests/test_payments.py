@@ -134,6 +134,7 @@ def setup_pay(session_factory, monkeypatch):
         pay_audience="all",
         pay_openids="pay-user",
         advisor_enabled=True,
+        advisor_compare_enabled=True,  # D-118 默认关；这些测试照旧测比对
         trust_wx_headers=True,
         xpay_offer_id="offer-test",
         # 新订单一律现网（沙箱已去掉，创始人 10/29）：现网 AppKey、定稿协议版本、发票类型都配了才卖
