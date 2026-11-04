@@ -243,7 +243,7 @@ test('过审版协议（D-093 ⑤）：首发包的协议不能写 AI、投诉�
   assert.equal(inspect({ ...x, profile: 'ai-release', mode: 'prepare' }).checks.some((c) => c.id === 'first-terms'), false);
 });
 
-test('协议指纹（D-098）：正文改了没升版本号、这一版没登记都不过；仓库里三份定稿协议都已登记',()=>{
+test('协议指纹（D-098）：正文改了没升版本号、这一版没登记都不过；仓库里定稿的协议都已登记，草稿还没登记',()=>{
  const x=input(); const fingerprints={[x.legal.version]:agreementFingerprint(x.legal)};
  const state=(y,f)=>presubmit.inspect({...y,profile:'first-release',mode:'prepare',fingerprints:f}).checks.find(c=>c.id==='terms-fingerprint').state;
  assert.equal(state(x,fingerprints),'pass');
@@ -252,8 +252,14 @@ test('协议指纹（D-098）：正文改了没升版本号、这一版没登记
  assert.equal(state(x,{}),'fail','这一版没登记');
  for(const file of ['legal.js','legal-first-release.js','legal-first-release-ai.js']){
   const legal=require(path.join(__dirname,'..','..','apps','miniapp','content',file));
+  // 草稿（完整版 2026-12 在创始人定稿前）不登记指纹：定稿时用 --fingerprint 打印、写进登记表
+  if(legal.final!==true){ assert.equal(Object.hasOwn(presubmit.FINGERPRINTS,legal.version),false,`${file} 还是草稿，不该已登记`); continue; }
   assert.equal(presubmit.FINGERPRINTS[legal.version],agreementFingerprint(legal),file);
  }
+ // 完整版 2026-11 升到 2026-12 后冻结的底稿（过审版两份协议从它改出来）：一字不差就是登记过的那一版
+ const base=require('../release/legal-2026-11.js');
+ assert.equal(base.version,'2026-11');
+ assert.equal(presubmit.FINGERPRINTS['2026-11'],agreementFingerprint(base),'tools/release/legal-2026-11.js');
 });
 
 test('过审版加 AI（D-098）：协议要是那一版、只写包里有的功能，后台也认它不含工具条款', () => {
