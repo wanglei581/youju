@@ -12,6 +12,11 @@ on:
   schedule:
     - cron: "4-59/10 * * * *"  # 避开整点（整点 GitHub 排队多，可能延迟或丢）
   workflow_dispatch:
+    inputs:
+      drill:
+        description: "演练：故意去查一个不存在的地址，走一遍开告警、指派、通知；再不带演练跑一次会自动关掉"
+        type: boolean
+        default: false
 permissions:
   contents: read
   issues: write
@@ -24,15 +29,18 @@ jobs:
     timeout-minutes: 5
     env:
       URL: https://admin-321511-12-1498153640.sh.run.tcloudbase.com/health
+      DRILL_URL: https://admin-321511-12-1498153640.sh.run.tcloudbase.com/health-drill-404
       TITLE: 线上停服告警
     steps:
       - name: 查线上核对台
         id: probe
         run: |
           ok=0; code=000
+          target="$URL"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.drill }}" = "true" ]; then target="$DRILL_URL"; echo "演练：查一个不存在的地址"; fi
           for i in 1 2 3; do
             rm -f /tmp/body
-            code=$(curl -sL -o /tmp/body -m 20 -w '%{http_code}' "$URL" || true)
+            code=$(curl -sL -o /tmp/body -m 20 -w '%{http_code}' "$target" || true)
             [ -n "$code" ] || code=000
             if [ "$code" = "200" ]; then ok=1; break; fi
             sleep 20
@@ -64,8 +72,10 @@ jobs:
           REASON: ${{ steps.probe.outputs.reason }}
         run: |
           now=$(TZ=Asia/Shanghai date '+%m-%d %H:%M')
+          note=""
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.drill }}" = "true" ]; then note="（这是演练，线上没有停。收到这条说明告警能通知到你；不带演练再跑一次会自动关掉。）"; fi
           gh issue create -R "$GITHUB_REPOSITORY" --title "$TITLE" --assignee "$GITHUB_REPOSITORY_OWNER" \
-            --body "${now}（北京时间）探活失败：核对台健康检查${REASON}。请先看微信云托管控制台的环境状态和费用中心余额。恢复后这个 issue 会自动关掉。"
+            --body "${now}（北京时间）探活失败：核对台健康检查${REASON}。请先看微信云托管控制台的环境状态和费用中心余额。恢复后这个 issue 会自动关掉。${note}"
       - name: 恢复了就关掉告警
         if: steps.probe.outputs.ok == '1' && steps.open.outputs.number != ''
         env:
