@@ -12,7 +12,7 @@ function limitText(offer, trial) {
 }
 
 Page({
-  data: { kind: 'compare', title: DATA_KINDS.compare, loading: true, error: '', gate: '', enabled: false, agreed: false,
+  data: { kind: 'track', title: DATA_KINDS.track, loading: true, error: '', gate: '', enabled: false, agreed: false,
     mode: 'paste', text: '', fileName: '', showFillHelp: false, rowCount: 0, previewed: false, previewing: false, submitting: false, inputError: '', maxRows: 50, remaining: 0, passActive: false, statusLine: '', accepted: false,
     // 加量体验、申报季加量（D-070，都以服务端 /advisor/status 为准，见 utils/boost.js）
     trialAvailable: false, trialActive: false, trialLeft: 0, trialPitch: '', trialCap: '', trialEnded: '', trialHint: '', seasonLine: '',
@@ -21,7 +21,7 @@ Page({
     // 使用期 3 天内到期的提示（在售时才显示，D-070："到期不再扣钱；需要可以再买一次"）
     passNotice: '' },
   onLoad(query) {
-    const kind = query.kind === 'track' ? 'track' : 'compare';
+    const kind = query.kind === 'compare' ? 'compare' : 'track';
     this.setData({ kind, title: DATA_KINDS[kind] });
     wx.setNavigationBarTitle({ title: DATA_KINDS[kind] });
     this.refreshKey();

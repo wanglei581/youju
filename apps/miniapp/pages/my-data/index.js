@@ -39,7 +39,7 @@ function taskData(d) {
   return {
     tasks: rows.map((t) => ({
       id: t.id,
-      kind: KINDS[t.kind] || DATA_KINDS[t.kind] || '工具记录',
+      kind: t.kind === 'compare' ? '历史批量工具' : KINDS[t.kind] || DATA_KINDS[t.kind] || '工具记录',
       rows: Object.prototype.hasOwnProperty.call(DATA_KINDS, t.kind) && t.rowCount ? t.rowCount : 0,
       state: STATES[t.status] || t.status,
       running: t.status === 'running' && !stuck(t),

@@ -24,7 +24,7 @@ function load(file, deps, globals = {}) {
   }, { filename: file });
   return page ? { ...page, data: plain(page.data), setData(value) { Object.assign(this.data, plain(value)); } } : module.exports;
 }
-const caps = (data = true, ai = false) => ({ data_tools: { enabled: data, features: data ? ['compare', 'track'] : [], remaining: { compare: 3, track: 3 } }, ai_advisor: { enabled: ai, features: ai ? ['interpret', 'clause'] : [] } });
+const caps = (data = true, ai = false) => ({ data_tools: { enabled: data, compareEnabled: true, features: data ? ['compare', 'track'] : [], remaining: { compare: 3, track: 3 } }, ai_advisor: { enabled: ai, features: ai ? ['interpret', 'clause'] : [] } });
 const status = (pass = false, used = 0) => ({ enabled: true, pass: { active: pass }, quota: { compare: { used, limit: 3, maxRows: pass ? 500 : 50 }, track: { used, limit: 3, maxRows: pass ? 500 : 50 } } });
 function dataLogic(api = {}, deps = {}, wx = {}) {
   return load('utils/data-tools.js', { './regions.js': require('../utils/regions.js'), './api.js': api, './advisor.js': helpers, '../content/advisor-terms.js': terms, './boost.js': require('../utils/boost.js'), ...deps }, { wx });

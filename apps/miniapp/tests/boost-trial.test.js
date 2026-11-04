@@ -49,7 +49,7 @@ test('体验状态：字段缺了或格式不对就当没有体验；进行中�
   assert.equal(boost.trialView({ ...trialActive(), endsAt: 'bad' }).trialActive, false);
   const active = boost.trialView(trialActive(3), NOW);
   assert.deepEqual([active.trialActive, active.trialAvailable, active.trialLeft, active.trialEnd], [true, false, 7, '10月23日 10:00']);
-  assert.match(boost.trialLine(active), /^加量体验中，到 10月23日 10:00 结束：每次最多 500 家，今天还能提交 7 次（名单比对和通知表合计）；不占本月免费次数$/);
+  assert.match(boost.trialLine(active), /^加量体验中，到 10月23日 10:00 结束：每次最多 500 家，今天还能提交 7 次；不占本月免费次数$/);
   // 当天用完：说明天 0 点恢复，并说清体验期间不能改用每月免费次数
   assert.equal(boost.trialCapText(active, NOW), '今天的 10 次加量体验已用完，明天 0 点恢复；体验期间每月免费次数不扣、也不能改用');
   // 最后一天（体验在明天 0 点之前结束）：不说"明天恢复"，说几点结束、之后回到免费版
@@ -65,7 +65,7 @@ test('确认页写全 D-070 要求的每一项，预计结束时间按现在加 
   const items = boost.confirmItems(status({ used: 1, trial: trialAvailable() }), NOW);
   const text = items.map((item) => `${item.label}：${item.text}`).join('\n');
   for (const must of [/连续 3 天/, /连续 72 小时/, /中途不能暂停/, /到 10月23日 10:00（北京时间）结束/, /每次最多 500 家（平时每次 50 家）/,
-    /两项合计每天最多 10 次，北京时间 0 点重新计数/, /现在本月免费还剩：名单比对 2 次、客户相关通知表 2 次/,
+    /客户相关通知表每天最多 10 次，北京时间 0 点重新计数/, /现在本月免费还剩：客户相关通知表 2 次/,
     /体验期间只用体验的次数，这些不扣、也不能改用，体验结束后接着用/,
     /不需要填写任何付款信息/, /自动回到免费版：每次 50 家以内/, /体验结束后照样能看、能导出/, /每个账号只能体验一次，只限本人使用，不能几个人共用/, /名单准备好再开始/]) {
     assert.match(text, must);
@@ -117,7 +117,7 @@ function dataLogic(api) {
 function form(options = {}) {
   const calls = []; const urls = [];
   const storage = new Map();
-  const api = { advisorCapabilities: () => Promise.resolve({ data_tools: { enabled: true, features: ['compare', 'track'], remaining: {} }, ai_advisor: { enabled: false, features: [] }, pay: { enabled: false } }),
+  const api = { advisorCapabilities: () => Promise.resolve({ data_tools: { enabled: true, compareEnabled: true, features: ['compare', 'track'], remaining: {} }, ai_advisor: { enabled: false, features: [] }, pay: { enabled: false } }),
     advisorStatus: () => Promise.resolve(options.status || status()), me: () => Promise.resolve({ advisorAgreed: { version: terms.version }, taskOwner: OWNER }),
     advisorPreview: (body) => { calls.push(['preview', plain(body)]); return Promise.resolve({ rowCount: body.rows.length }); },
     createAdvisorTask: (body, key) => { calls.push(['create', plain(body), key]); return Promise.resolve({ id: 5 }); }, ...options.api };
@@ -134,7 +134,7 @@ const rows = (n) => Array.from({ length: n }, (_, i) => `合成企业${i}`).join
 test('批量工具页：有资格时一直有加量体验入口；还有免费次数时不抢眼，用满或超过 50 家时推荐', async () => {
   const h = form({ status: status({ trial: trialAvailable() }) }); await flush();
   let tree = shown(h.page);
-  assert.match(textOf(tree), /加量体验（免费，每个账号一次）：从点“开始体验”起连续 3 天，每次最多 500 家，名单比对和通知表合计每天 10 次，不占本月免费次数。名单准备好再开始。/);
+  assert.match(textOf(tree), /加量体验（免费，每个账号一次）：从点“开始体验”起连续 3 天，每次最多 500 家，客户相关通知表每天 10 次，不占本月免费次数。名单准备好再开始。/);
   let entry = findAll(tree, tapsTo('openTrial'));
   assert.equal(entry.length, 1); assert.doesNotMatch(entry[0].attrs.class, /btn-primary/);
   // 这次超过 50 家：入口变成主按钮，预览提示里也推荐，提示下面紧跟一个"了解加量体验"（不用翻回上方找）
@@ -171,7 +171,7 @@ test('批量工具页：有资格时一直有加量体验入口；还有免费�
 test('体验中：免费次数用满也能提交 500 家以内；额度一行写体验；当天用完只说明天恢复', async () => {
   const h = form({ status: status({ used: 3, maxRows: 500, trial: trialActive(2) }) }); await flush();
   const text = textOf(shown(h.page));
-  assert.match(text, /加量体验中，到 (2026年)?10月23日 10:00 结束：每次最多 500 家，今天还能提交 8 次（名单比对和通知表合计）；不占本月免费次数/);
+  assert.match(text, /加量体验中，到 (2026年)?10月23日 10:00 结束：每次最多 500 家，今天还能提交 8 次；不占本月免费次数/);
   assert.doesNotMatch(text, /本月免费次数已用完/);
   assert.equal(findAll(shown(h.page), tapsTo('openTrial')).length, 0);
   h.page.input({ detail: { value: rows(120) } }); h.page.preview(); await flush();
@@ -317,7 +317,7 @@ test('确认页：开始之前写全规则，点一次才开始，重复点不�
   const text = textOf(tree);
   assert.match(text, /3 天内每次最多 500 家（免费）/);
   assert.match(text, /开始之前请看完/);
-  for (const must of [/连续 72 小时，中途不能暂停/, /每次最多 500 家/, /两项合计每天最多 10 次/, /本月免费还剩：名单比对 2 次、客户相关通知表 2 次/,
+  for (const must of [/连续 72 小时，中途不能暂停/, /每次最多 500 家/, /客户相关通知表每天最多 10 次/, /本月免费还剩：客户相关通知表 2 次/,
     /不需要填写任何付款信息/, /自动回到免费版/, /照样能看、能导出/, /每个账号只能体验一次/]) assert.match(text, must);
   assert.doesNotMatch(text, SALES);
   const startButton = findAll(tree, tapsTo('start'))[0];
@@ -365,7 +365,7 @@ test('确认页：用过了、使用期内时说明原因，不给开始；没�
 });
 
 test('工具中心：体验中写体验的次数，申报季写起止日期', async () => {
-  const api = { advisorCapabilities: () => Promise.resolve({ data_tools: { enabled: true, features: ['compare', 'track'], remaining: {} }, ai_advisor: { enabled: false, features: [] }, reason: 'off' }),
+  const api = { advisorCapabilities: () => Promise.resolve({ data_tools: { enabled: true, compareEnabled: true, features: ['compare', 'track'], remaining: {} }, ai_advisor: { enabled: false, features: [] }, reason: 'off' }),
     advisorStatus: () => Promise.resolve(status({ used: 3, limit: 5, maxRows: 500, trial: trialActive(4), seasonInfo: season() })), advisorTasks: () => Promise.resolve({ items: [] }) };
   const page = load('pages/advisor/index.js', { '../../utils/api.js': api, '../../utils/advisor.js': helpers, '../../utils/tool-context.js': context, '../../utils/boost.js': boost },
     { wx: { setNavigationBarTitle() {} } });

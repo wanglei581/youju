@@ -178,7 +178,7 @@ function dataLogic(api) {
 }
 
 function caps(pay) {
-  return { data_tools: { enabled: true, features: ['compare', 'track'] }, ai_advisor: { enabled: false, features: [] }, pay };
+  return { data_tools: { enabled: true, compareEnabled: true, features: ['compare', 'track'] }, ai_advisor: { enabled: false, features: [] }, pay };
 }
 function quota(used) {
   return { enabled: true, pass: { active: false }, quota: { compare: { used, limit: 3, maxRows: 50 }, track: { used, limit: 3, maxRows: 50 } } };
@@ -229,7 +229,7 @@ test('能力接口把服务端的 pay 原样带给页面（只认严格的 true�
     assert.ok(urls.length >= 1 && urls.every((url) => /\/api\/v1\/advisor\/capabilities$/.test(url)), urls.join());
     return result;
   }
-  const body = (pay, ai = false) => ({ statusCode: 200, data: { data_tools: { enabled: true, features: ['compare', 'track'] }, ai_advisor: { enabled: ai, features: [] }, pay } });
+  const body = (pay, ai = false) => ({ statusCode: 200, data: { data_tools: { enabled: true, compareEnabled: true, features: ['compare', 'track'] }, ai_advisor: { enabled: ai, features: [] }, pay } });
   assert.deepEqual(plain((await capabilities(body({ enabled: true, hasOrders: false }))).pay), { enabled: true, hasOrders: false });
   assert.deepEqual(plain((await capabilities(body({ enabled: false, hasOrders: true }, true))).pay), { enabled: false, hasOrders: true });
   assert.deepEqual(plain((await capabilities(body({ enabled: 'true', hasOrders: 1 }))).pay), { enabled: false, hasOrders: false });
@@ -913,7 +913,7 @@ test('购买页第一句写给谁用，付款前写全收录范围、只限本�
   const h = passPage({ payProducts: () => Promise.resolve({ items: TIERS, invoiceType: INVOICE }) });
   await flush();
   const text = shown('pages/pass/index.wxml', h.page.data);
-  assert.match(text, /给要一次比对很多家客户的顾问用；查通知、查单家企业一直免费/);
+  assert.match(text, /给要一次整理很多家客户相关通知的顾问用；查通知、查单家企业一直免费/);
   assert.match(text, /只限本人的微信使用/);
   assert.match(text, /本服务不面向未成年人/);
   assert.doesNotMatch(text, /未成年人请在监护人同意后再购买/);
@@ -932,7 +932,7 @@ test('购买页第一句写给谁用，付款前写全收录范围、只限本�
   assert.match(text, /开通时体验结束/);
   assert.doesNotMatch(text, /马上开通|马上生效/);
   // 第一句在价格前面
-  assert.ok(text.indexOf('给要一次比对很多家客户的顾问用') < text.indexOf('29'));
+  assert.ok(text.indexOf('给要一次整理很多家客户相关通知的顾问用') < text.indexOf('29'));
   const links = findAll(render('pages/pass/index.wxml', h.page.data), tapsTo('coverage'));
   assert.equal(links.length, 1);
   assert.match(textOf(links[0]), /查看收录范围/);
@@ -1090,7 +1090,7 @@ test('我的页刷新失败时收起"批量工具"一行，不在可能已停卖
   assert.doesNotMatch(shown('pages/me/index.wxml', page.data), /批量工具|元起/);
 });
 
-const centerCaps = (pay) => Promise.resolve({ data_tools: { enabled: true, features: ['compare', 'track'], remaining: {} }, ai_advisor: { enabled: false, features: [] }, reason: 'off', pay });
+const centerCaps = (pay) => Promise.resolve({ data_tools: { enabled: true, compareEnabled: true, features: ['compare', 'track'], remaining: {} }, ai_advisor: { enabled: false, features: [] }, reason: 'off', pay });
 const centerStatus = ({ used = 3, pass = null, rows = pass ? 500 : 50, trackRows = rows } = {}) => Promise.resolve({ enabled: true, quota: { compare: { used, limit: 3, maxRows: rows }, track: { used, limit: 3, maxRows: trackRows } }, pass, trial: null, season: null });
 function toolCenter(api) {
   const urls = []; let products = 0;
@@ -1112,7 +1112,7 @@ test('工具中心在售时最上面放"批量工具"卡片：免费用完写"�
   await flush(); await flush();
   const text = shown('pages/advisor/index.wxml', h.page.data);
   assert.match(text, /本月免费次数已用完，下月 1 日恢复/);
-  assert.match(text, /要一次处理更多家：30 天 29 元、90 天 79 元，不限次数，每次 500 家以内；一次付清，到期不再扣钱/);
+  assert.match(text, /要一次处理更多家：30 天 29 元、90 天 79 元，客户相关通知表不限次数，每次 500 家以内；一次付清，到期不再扣钱/);
   assert.doesNotMatch(text, /不需要购买/);
   assert.ok(text.indexOf('批量工具') < text.indexOf('我的记录'), '卡片要在最上面');
   const buy = findAll(render('pages/advisor/index.wxml', h.page.data), tapsTo('buyPass'));
@@ -1125,7 +1125,7 @@ test('工具中心在售时最上面放"批量工具"卡片：免费用完写"�
   await flush(); await flush();
   assert.equal(some.page.data.payCard.usedUp, false);
   const someText = shown('pages/advisor/index.wxml', some.page.data);
-  assert.match(someText, /本月免费：比对还剩 2 次、通知表还剩 2 次，每次最多 50 家/);
+  assert.match(someText, /本月免费：通知表还剩 2 次，每次最多 50 家/);
   assert.equal((someText.match(/每次最多 50 家/g) || []).length, 1);
 });
 
@@ -1148,7 +1148,7 @@ test('工具中心只用完一项时那一项写"已用完"，不写"还剩 0 �
   const h = toolCenter({ advisorCapabilities: () => centerCaps({ enabled: true, hasOrders: false }), advisorStatus: () => Promise.resolve(quota) });
   await flush(); await flush();
   const text = shown('pages/advisor/index.wxml', h.page.data);
-  assert.match(text, /本月免费：比对已用完、通知表还剩 2 次，每次最多 50 家/);
+  assert.match(text, /本月免费：通知表还剩 2 次，每次最多 50 家/);
   assert.doesNotMatch(text, /还剩 0 次/);
   assert.equal(h.page.data.payCard.usedUp, false);
 });
@@ -1200,14 +1200,14 @@ test('工具中心刷新额度失败时丢掉上一次的免费次数；有使�
 test('工具中心两项每次上限不同时分别写，按额度接口的数字，不写死（Codex 第三轮）', async () => {
   const h = toolCenter({ advisorCapabilities: () => centerCaps({ enabled: true, hasOrders: false }), advisorStatus: () => centerStatus({ used: 1, rows: 50, trackRows: 30 }) });
   await flush(); await flush();
-  assert.match(shown('pages/advisor/index.wxml', h.page.data), /本月免费：比对还剩 2 次、通知表还剩 2 次，比对每次最多 50 家、通知表每次最多 30 家/);
+  assert.match(shown('pages/advisor/index.wxml', h.page.data), /本月免费：通知表还剩 2 次，每次最多 30 家/);
 });
 
 test('工具中心使用期内的批量工具卡片写到期日和"续买批量工具"', async () => {
   const h = toolCenter({ advisorCapabilities: () => centerCaps({ enabled: true, hasOrders: true }), advisorStatus: () => centerStatus({ used: 0, pass: { active: true, expiresAt: '2026-11-18T04:00:00Z' } }) });
   await flush(); await flush();
   const text = shown('pages/advisor/index.wxml', h.page.data);
-  assert.match(text, /批量工具使用期到 11月18日：批量名单比对、客户相关通知表不限次数，每次最多 500 家/);
+  assert.match(text, /批量工具使用期到 11月18日：客户相关通知表不限次数，每次最多 500 家/);
   assert.match(text, /再买一次接着往后顺延：30 天 29 元、90 天 79 元/);
   assert.equal(textOf(findAll(render('pages/advisor/index.wxml', h.page.data), tapsTo('buyPass'))[0]), '续买批量工具');
 });
@@ -1589,7 +1589,7 @@ test('开卖必做第 4、5 项和收费方案第 9 项：购买页注销提示�
 });
 
 test('收费方案第 9 项：次数说明不重复额度中的家数', () => {
-  const page = load('pages/advisor/index.js', { '../../utils/api.js': {}, '../../utils/ai-access.js': {}, '../../utils/advisor.js': {}, '../../utils/tool-context.js': {}, '../../utils/boost.js': {}, '../../utils/daywatch.js': {}, '../../utils/consent.js': {} });
+  const page = load('pages/advisor/index.js', { '../../utils/api.js': {}, '../../utils/ai-access.js': {}, '../../utils/advisor.js': { DATA_KINDS: {} }, '../../utils/tool-context.js': {}, '../../utils/boost.js': {}, '../../utils/daywatch.js': {}, '../../utils/consent.js': {} });
   const line = (quota, payOn, offer) => { page.quota = quota; page.payOn = payOn; page.offer = offer; return page.countLine(); };
   const free = (available) => ({ rows: { compare: 50, track: 50 }, pass: null, trial: { trialActive: false, trialAvailable: available } });
   assert.equal(line(free(false), false, null), '交一份名单算一次，系统出错、没出结果的不算。');

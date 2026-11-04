@@ -694,7 +694,7 @@ function advisorCapabilities(options = {}) {
   const result = source.then((res) => {
     const ai = (res && res.ai_advisor) || {};
     const data = (res && res.data_tools) || {};
-    const data_tools = data.enabled === true ? { enabled: true, features: Array.isArray(data.features) ? data.features : [], remaining: data.remaining || {} } : Object.assign({}, DATA_DISABLED);
+    const data_tools = data.enabled === true ? { enabled: true, compareEnabled: data.compareEnabled === true, features: Array.isArray(data.features) ? data.features : [], remaining: data.remaining || {} } : Object.assign({}, DATA_DISABLED);
     // pay 原样带给工具表单：原来这里丢了 pay，收费开放后也不出现开通卡片（Codex 对接核对，10/16）
     const pay = payEntry(res);
     if (ai.enabled !== true) return { data_tools, pay, ai_advisor: Object.assign({}, AI_DISABLED), reason: ai.reason === 'consent' ? 'consent' : 'off' };

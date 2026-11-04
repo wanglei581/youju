@@ -81,7 +81,7 @@ test('有记录：逐条写类型、几家、状态和时间；AI 的叫法从 J
   const items = findAll(card, hasClass('item'));
   assert.equal(items.length, 4);
   const main = items.map((n) => textOf(findAll(n, hasClass('item-main'))[0]).trim());
-  assert.deepEqual(main, ['批量名单比对（12 家）', 'AI 解读', '客户相关通知表（3 家）', '批量名单比对（5 家）']);
+  assert.deepEqual(main, ['历史批量工具（12 家）', 'AI 解读', '客户相关通知表（3 家）', '历史批量工具（5 家）']);
   assert.match(textOf(items[0]), /已完成 · 提交于 2026-10-20 09:05 · 结束于 2026-10-20 09:06/);
   assert.match(textOf(items[3]), /排队中 · 提交于 2026-10-22 11:30/);
   // 正在处理的：没有删除，写等结束

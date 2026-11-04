@@ -28,6 +28,7 @@ NOW = datetime(2026, 9, 30, 23, 59, tzinfo=BJ)
 def advisor_settings(monkeypatch):
     settings = SimpleNamespace(
         advisor_enabled=True,
+        advisor_compare_enabled=True,
         cloud_env="test-env",
         dev_openid="advisor-user",
         trust_wx_headers=False,
@@ -85,6 +86,21 @@ def xlsx_content(rows):
     return output.getvalue()
 
 
+def test_compare_disabled_rejects_new_work(client, advisor_settings):
+    agree_advisor(client)
+    old = create(client).json()
+    advisor_settings.advisor_compare_enabled = False
+    assert (
+        client.post("/api/v1/advisor/preview", json={"kind": "compare", "rows": ["甲"]}).status_code
+        == 404
+    )
+    assert create(client, key="disabled").status_code == 404
+    assert client.get(f"/api/v1/advisor/tasks/{old['id']}").status_code == 200
+    caps = client.get("/api/v1/advisor/capabilities").json()["data_tools"]
+    assert caps["features"] == ["track"] and caps["compareEnabled"] is False
+    assert client.get("/api/v1/advisor/status").json()["compareEnabled"] is False
+
+
 def test_advisor_status_public_quota_and_switch(client, advisor_settings, monkeypatch):
     advisor_settings.advisor_enabled = False
     assert client.get("/api/v1/advisor/status").status_code == 404
@@ -93,6 +109,7 @@ def test_advisor_status_public_quota_and_switch(client, advisor_settings, monkey
     # 加量体验、申报季加量的开关默认关：不出现在额度里
     assert client.get("/api/v1/advisor/status").json() == {
         "enabled": True,
+        "compareEnabled": True,
         "pass": {"active": False, "expiresAt": None},
         "quota": {"compare": {**expected, "limit": 3}, "track": expected},
         "trial": None,

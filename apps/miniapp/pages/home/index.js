@@ -17,7 +17,7 @@ const SCOPES = [
 const HOME_CACHE = 'youjuHomeCacheV1';
 
 // 新手引导（D-070 ④）："三步上手"卡片。点"不再显示"后在本机记一个标记，以后不再出现；没关之前每次打开都显示。
-// 不判断是不是老用户；没有奖励、打勾和红点。第三步去工具中心（批量名单比对、客户相关通知表，要先同意协议）；
+// 不判断是不是老用户；没有奖励、打勾和红点。第三步去工具中心（客户相关通知表，要先同意协议）；
 // 协议没定稿的版本没有工具中心入口，改去不用登录的"我的客户"
 const GUIDE_KEY = 'youjuGuideClosedV1';
 const GUIDE_FIRST = [
@@ -25,7 +25,7 @@ const GUIDE_FIRST = [
   { key: 'search', name: '搜通知', text: '按关键词、地区、类型找申报通知和政策；查企业点“查名单”' },
   { key: 'due', name: '看截止和原文', text: '“截止”页列出快到期的通知；详情里可以读正文和附件', url: '/pages/report/index' },
 ];
-const GUIDE_TOOLS = { key: 'tools', name: '批量查客户（顾问用）', text: '在“工具中心”一次粘贴多家企业，在政府公开名单里查这些企业，并整理相关通知；需先同意协议，每月有免费次数', url: '/pages/advisor/index' };
+const GUIDE_TOOLS = { key: 'tools', name: '批量查客户（顾问用）', text: '在“工具中心”一次粘贴多家企业，整理客户相关通知；需先同意协议，每月有免费次数', url: '/pages/advisor/index' };
 // 没有工具中心的包（过审版、过审版加 AI）去"我的客户"：没有批量工具，不写"批量"（11/2 完整测试第 18 条；创始人 11/2 同意，D-112）
 const GUIDE_CLIENTS = { key: 'clients', name: '按客户查通知（顾问用）', text: '在“我的客户”存下客户的地区和产业方向，一次列出和它们相关的通知', url: '/pages/clients/index' };
 const guideSteps = (open) => GUIDE_FIRST.concat(open ? GUIDE_TOOLS : GUIDE_CLIENTS);
