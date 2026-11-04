@@ -1,7 +1,8 @@
 // 完整版协议 2026-12（D-117：提审完整版、开通支付）：content/legal.js 和《付费服务协议》content/pay-terms.js。
 // 守住：版本排在过审版加 AI（2026-11.1）后面、过得了后台的工具和 AI 门槛；2026-11.1 里对完整版同样适用的改动都搬过来了，
 // 其余条款和 2026-11 一字不差；付费部分并进了隐私保护指引；编号、互相引用、加粗段落对得上；
-// 写到批量名单比对的地方都是能整句删掉的分句（D-104 待创始人定）；付费协议和 docs 里的正文、说明文档里附的全文逐字一致。
+// 这一版不带批量名单比对（D-104，创始人 11/4 定），原来写到它的分句都删了、原句留在说明文档里；单家查名单照常（D-111）；
+// 付费协议和 docs 里的正文、说明文档里附的全文逐字一致。
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -187,8 +188,8 @@ test('编号连续、互相引用指向对的条目，加粗段落各找得到�
   assert.ok(legal.privacy.keyParagraphs.includes('17. 购买批量工具'));
 });
 
-// D-104（批量名单比对等微信结论）和 D-117（所有功能都开放）说法不一，等创始人定：写到它的地方都是能整句删掉的分句，
-// 说明文档 docs/合规/完整版协议草稿_2026-12.md 第四节逐处列着。定了"不带"就照这张表删
+// D-104（创始人 11/4"按推荐"）：这一版不带批量名单比对。原来写到它的 7 处分句已删，原句留在说明文档
+// docs/合规/完整版协议草稿_2026-12.md 第五节；等审核里单家查名单有了结果、下一版加回来时照表恢复（协议要升版）
 const COMPARE_CLAUSES = [
   ['legal', '、批量名单比对）和 AI 功能', '）和 AI 功能'],
   ['legal', '；批量名单比对只需企业名称或营业执照上的 18 位代码。', '。'],
@@ -199,17 +200,22 @@ const COMPARE_CLAUSES = [
   ['pay', '；批量名单比对“未查到”不表示企业未上榜或不具备资质。申报条件', '。申报条件'],
 ];
 
-test('D-104：写到批量名单比对的只有说明文档列的那几处，删掉以后不再提它、句子照样通', () => {
-  let text = { legal: legalText, pay: pay.text };
-  for (const [where, find, replace] of COMPARE_CLAUSES) {
-    assert.equal(text[where].split(find).length - 1, 1, `${where}：${find}`);
-    text = { ...text, [where]: text[where].replace(find, replace) };
+test('D-104：这一版协议和购买页都不提批量名单比对，批量工具只含客户相关通知表；单家查名单照常（D-111）；删掉的原句留在说明文档里', () => {
+  assert.doesNotMatch(legalText + pay.text, /名单比对|名单发生漏查/);
+  assert.doesNotMatch(legalText + pay.text, /，。|；。|、）|（）/);
+  for (const [where, , replace] of COMPARE_CLAUSES) {
+    if (replace) assert.ok((where === 'legal' ? legalText : pay.text).includes(replace), `${where}：删了以后的写法 ${replace}`);
   }
-  assert.doesNotMatch(text.legal + text.pay, /名单比对|名单发生漏查/);
-  assert.doesNotMatch(text.legal + text.pay, /，。|；。|、）|（）/);
-  // 说明文档里列的就是这几处
+  assert.match(pay.text, /3\. 服务内容：“批量工具”目前只含“客户相关通知表”一项。/);
+  const passPage = fs.readFileSync(path.join(__dirname, '..', 'pages', 'pass', 'index.wxml'), 'utf8').replace(/<!--[\s\S]*?-->/g, '');
+  assert.match(passPage, /批量工具目前只含“客户相关通知表”一项/);
+  assert.doesNotMatch(passPage, /名单比对/);
+  // 单家企业的查名单照常（用户协议四·3、指引一·7）
+  assert.ok(section(legal.user, '四、').p.some((p) => p.startsWith('3. 查名单：')));
+  assert.ok(section(legal.privacy, '一、').p.some((p) => p.startsWith('7. 按企业名称查名单时输入的企业全称')));
+  // 说明文档里留着删掉的原句，下一版照表恢复
   const doc = fs.readFileSync(path.join(ROOT, 'docs/合规/完整版协议草稿_2026-12.md'), 'utf8');
-  for (const [, find] of COMPARE_CLAUSES) assert.ok(doc.includes(find), `说明文档没列：${find}`);
+  for (const [, find] of COMPARE_CLAUSES) assert.ok(doc.includes(find), `说明文档没留：${find}`);
 });
 
 test('付费服务协议：版本 pay-2026-11、还没定稿（付款按钮不可用），正文和 docs 里的定稿稿逐段一致', () => {

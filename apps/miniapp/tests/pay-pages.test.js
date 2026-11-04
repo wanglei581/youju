@@ -913,7 +913,11 @@ test('购买页第一句写给谁用，付款前写全收录范围、只限本�
   const h = passPage({ payProducts: () => Promise.resolve({ items: TIERS, invoiceType: INVOICE }) });
   await flush();
   const text = shown('pages/pass/index.wxml', h.page.data);
-  assert.match(text, /给要一次比对很多家客户的顾问用；查通知、查单家企业一直免费/);
+  assert.match(text, /给要一次查很多家客户相关通知的顾问用；查通知、查单家企业一直免费/);
+  // 这一版不带批量名单比对（D-104，创始人 11/4）：购买页和《付费服务协议》第一条第 3 项一样，只写客户相关通知表
+  assert.match(text, /批量工具目前只含“客户相关通知表”一项/);
+  assert.match(text, /客户相关通知表：每月 3 次，每次 50 家以内/);
+  assert.doesNotMatch(text, /名单比对/);
   assert.match(text, /只限本人的微信使用/);
   // 付款前就写明（agy 10/29）：未成年人未经监护人同意购买的，《付费服务协议》第二条第 7 项写了可以退
   assert.match(text, /未成年人请在监护人同意后再购买/);
@@ -932,7 +936,7 @@ test('购买页第一句写给谁用，付款前写全收录范围、只限本�
   assert.match(text, /开通时体验结束/);
   assert.doesNotMatch(text, /马上开通|马上生效/);
   // 第一句在价格前面
-  assert.ok(text.indexOf('给要一次比对很多家客户的顾问用') < text.indexOf('29'));
+  assert.ok(text.indexOf('给要一次查很多家客户相关通知的顾问用') < text.indexOf('29'));
   const links = findAll(render('pages/pass/index.wxml', h.page.data), tapsTo('coverage'));
   assert.equal(links.length, 1);
   assert.match(textOf(links[0]), /查看收录范围/);

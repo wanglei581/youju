@@ -7,7 +7,7 @@
   <!-- 最上面一眼看到：给谁用、两档多少钱、会不会再扣钱；续买的规则和价格在同一屏（D-070） -->
   <view class="pass-hero">
     <view class="pass-name">批量工具</view>
-    <view class="pass-lead">给要一次比对很多家客户的顾问用；查通知、查单家企业一直免费</view>
+    <view class="pass-lead">给要一次查很多家客户相关通知的顾问用；查通知、查单家企业一直免费</view>
     <view class="pass-tiers" aria-role="radiogroup">
       <view wx:for="{{tiers}}" wx:key="productId" class="pass-tier {{index === selected ? 'pass-tier--on' : ''}}" data-index="{{index}}" bindtap="pick" aria-role="radio" aria-checked="{{index === selected}}">
         <view class="pass-tier-days">{{item.days}} 天</view>
@@ -23,24 +23,22 @@
 
   <view class="card pass-card">
     <view class="pass-title">包含什么</view>
-    <view class="pass-row">
-      <view class="pass-ico"><t-icon name="bulletpoint" size="36rpx" color="#2A5CE0" /></view>
-      <view class="pass-main"><view class="pass-lead-item">批量名单比对</view><view class="pass-desc">不限次数，每次 500 家以内</view></view>
-    </view>
+    <!-- 这一版不带批量名单比对（D-104，创始人 11/4）：批量工具目前只含客户相关通知表，和《付费服务协议》第一条第 3 项一致 -->
+    <view class="pass-line">批量工具目前只含“客户相关通知表”一项</view>
     <view class="pass-row">
       <view class="pass-ico"><t-icon name="task-checked" size="36rpx" color="#2A5CE0" /></view>
       <view class="pass-main"><view class="pass-lead-item">客户相关通知表</view><view class="pass-desc">不限次数，每次 500 家以内</view></view>
     </view>
     <view class="pass-row">
       <view class="pass-ico"><t-icon name="download" size="36rpx" color="#2A5CE0" /></view>
-      <view class="pass-main"><view class="pass-lead-item">结果可导出 Excel</view><view class="pass-desc">带发文机关、日期和原文链接</view></view>
+      <view class="pass-main"><view class="pass-lead-item">结果可导出 Excel</view><view class="pass-desc">带发文机关、发布日期和出处</view></view>
     </view>
   </view>
 
   <!-- 不买能用多少，和上面挨着写清楚：不想买的人不用猜 -->
   <view class="card pass-card">
     <view class="pass-title">不买也能用</view>
-    <view class="pass-line">批量名单比对、客户相关通知表：每月各 3 次，每次 50 家以内（交一份名单算一次，系统出错、没出结果的不算）</view>
+    <view class="pass-line">客户相关通知表：每月 3 次，每次 50 家以内（交一份名单算一次，系统出错、没出结果的不算）</view>
     <view class="pass-line">搜索、详情、附件、查名单、导出等一直免费</view>
   </view>
 
