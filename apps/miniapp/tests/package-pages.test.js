@@ -306,8 +306,10 @@ test('营业执照照片点按全屏放大：先把包里的照片写到用户�
       readFile: ({ filePath, success, fail }) => (fs === 'read-fail' ? fail({ errMsg: 'readFile:fail' }) : success({ data: `bytes-of:${filePath}` })),
       writeFile: ({ filePath, data, success, fail }) => { writes.push([filePath, data]); return fs === 'write-fail' ? fail({ errMsg: 'writeFile:fail' }) : success(); },
     };
+    const toasts = [];
     const wx = {
-      previewImage: (opts) => previews.push(opts),
+      previewImage: (opts) => { previews.push({ urls: opts.urls, current: opts.current }); if (fs === 'preview-fail') opts.fail({ errMsg: 'previewImage:fail' }); },
+      showToast: (opts) => toasts.push(opts.title),
       getFileSystemManager: () => { if (fs === 'none') throw new Error('不支持'); return fsm; },
       env: dir ? { USER_DATA_PATH: dir } : {},
     };
@@ -317,7 +319,7 @@ test('营业执照照片点按全屏放大：先把包里的照片写到用户�
     }, { wx });
     page.preview();
     // 页面在另一个 vm 上下文里建的对象，比较前转成普通对象
-    return { previews: JSON.parse(JSON.stringify(previews)), writes: JSON.parse(JSON.stringify(writes)) };
+    return { previews: JSON.parse(JSON.stringify(previews)), writes: JSON.parse(JSON.stringify(writes)), toasts };
   };
   const ok = run();
   assert.deepEqual(ok.writes, [['wxfile://usr/business-license.jpg', 'bytes-of:/images/business-license.jpg']]);
@@ -327,4 +329,7 @@ test('营业执照照片点按全屏放大：先把包里的照片写到用户�
   }
   assert.deepEqual(run({ dir: '' }).previews, [{ urls: ['/images/business-license.jpg'], current: '/images/business-license.jpg' }]);
   assert.deepEqual(run({ photo: '' }).previews, []);
+  // 预览打不开：提示一句
+  assert.deepEqual(run({ fs: 'preview-fail' }).toasts, ['图片打不开，请稍后再试']);
+  assert.deepEqual(ok.toasts, []);
 });

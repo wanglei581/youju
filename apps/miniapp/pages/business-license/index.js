@@ -7,7 +7,8 @@ const license = require('../../content/business-license.js');
 const PREVIEW_NAME = 'business-license.jpg';
 function preview(photo) {
   if (!photo) return;
-  const show = (url) => wx.previewImage({ urls: [url], current: url });
+  // 打不开时提示一句，免得点了没反应（独立审阅 #437 第 2 轮建议）
+  const show = (url) => wx.previewImage({ urls: [url], current: url, fail: () => wx.showToast({ title: '图片打不开，请稍后再试', icon: 'none' }) });
   let fs = null;
   try { fs = wx.getFileSystemManager(); } catch (e) { fs = null; }
   const dir = wx.env && wx.env.USER_DATA_PATH;
