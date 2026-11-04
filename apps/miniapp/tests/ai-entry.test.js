@@ -194,7 +194,7 @@ test('入口只放在通知详情页，绑定当前通知；其他页面不引�
   assert.equal(read('app.json').includes('components/ai-entry'), false); assert.equal(read('app.json').includes('components/tool-fab'), false);
 });
 
-test('非白名单用户在任何页面都看不到 AI 字样：AI 文案全部在 aiEnabled 条件里，原有页面没有新增', () => {
+test('非白名单用户看不到 AI 入口和内部测试文案；购买页“不含 AI 次数”那句也要受 aiEnabled 控制', () => {
   for (const file of ['components/ai-entry/index.wxml'].concat(AI_PAGES.map((name) => `pages/${name}/index.wxml`))) {
     assertAiGuarded(read(file));
     assert.doesNotMatch(read(file), /智能|即将推出/);
@@ -203,7 +203,10 @@ test('非白名单用户在任何页面都看不到 AI 字样：AI 文案全部�
   const aiRoutes = AI_PAGES.concat('ai').map((name) => `pages/${name}/index`);
   for (const route of JSON.parse(read('app.json')).pages.filter((item) => !aiRoutes.includes(item))) {
     const visible = read(`${route}.wxml`).replace(/<!--[^]*?-->/g, '');
-    assert.doesNotMatch(visible, /\bAI\b|内部测试/, route);
+    // 购买页写"不含 AI 次数"（D-109 ④），只在 AI 开着时显示（独立审阅 #436）
+    if (route === 'pages/pass/index') assertAiGuarded(read(`${route}.wxml`));
+    else assert.doesNotMatch(visible, /\bAI\b/, route);
+    assert.doesNotMatch(visible, /内部测试/, route);
   }
 });
 

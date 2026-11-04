@@ -155,6 +155,21 @@ test('advisor原生结果分页保留权限错误，旧任务不能伪造为有�
   old.onLoad({ mode: 'advisor', taskId: '1' }); await old.onShow(); assert.equal(old.data.result, null); assert.match(old.data.error, /重新生成/);
 });
 
+test('批量工具结果里原文链接已失效的那条只标一句，照常能看、能进文件详情；其他条不标（11/4 完整测试 T4b）', async () => {
+  const p = load('results', { advisorReading: async () => result({ kind: 'track', items: [
+    { n: 0, title: '合成通知甲', documentId: '7', fields: [{ label: '来源', value: '示例网站' }] },
+    { n: 1, title: '合成通知乙', documentId: '8', linkGone: true, fields: [{ label: '来源', value: '示例网站' }] },
+  ] }) });
+  p.onLoad({ mode: 'advisor', taskId: '8' }); await p.onShow();
+  const root = render('pages/results/index.wxml', p.data);
+  const cards = findAll(root, (node) => String(node.attrs && node.attrs.class || '').split(/\s+/).includes('result-item'));
+  assert.equal(cards.length, 2);
+  assert.doesNotMatch(textOf(cards[0]), /原文链接已失效/);
+  assert.match(textOf(cards[1]), /原文链接已失效/);
+  // 失效的也能进文件详情（详情页自己写明哪天失效、不给阅读全文）
+  assert.equal(findAll(cards[1], (node) => node.tag === 'button' && node.attrs['data-id'] === '8').length, 1);
+});
+
 test('结果离页后的迟回不能泄露旧任务数据，新查询不会被慢请求覆盖', async () => {
   const resolves = [];
   const p = load('results', { exportPreview: () => new Promise(r => resolves.push(r)) });
