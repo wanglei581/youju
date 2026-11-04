@@ -1532,8 +1532,9 @@ def test_native_reading_marks_link_gone_documents_instead_of_refusing(client, se
     agree_advisor(client)
     task_id = create(client).json()["id"]
     row = session.get(AdvisorTask, task_id)
+    status = {"label": "截止核对情况", "value": "未核对，请以原文为准"}
     items = [
-        {"documentId": str(doc.id), "title": doc.title, "fields": [], "n": n}
+        {"documentId": str(doc.id), "title": doc.title, "fields": [dict(status)], "n": n}
         for n, doc in enumerate(docs)
     ]
     content = {
@@ -1556,9 +1557,13 @@ def test_native_reading_marks_link_gone_documents_instead_of_refusing(client, se
     shown = {item["documentId"]: item for item in response.json()["items"]}
     assert shown[str(docs[1].id)]["linkGone"] is True
     assert "linkGone" not in shown[str(docs[0].id)]
+    # 失效的那条不再写“请以原文为准”（原文已打不开），其他条照旧
+    assert shown[str(docs[1].id)]["fields"] == [{"label": "截止核对情况", "value": "未核对"}]
+    assert shown[str(docs[0].id)]["fields"] == [status]
     # 存着的结果不改
     session.expire(row)
     assert all("linkGone" not in item for item in row.result_json["items"])
+    assert all(item["fields"] == [status] for item in row.result_json["items"])
     # 下架的照旧整份拒绝，不把旧结果当作绕过下架的副本
     docs[0].taken_down_at = stamp
     session.commit()

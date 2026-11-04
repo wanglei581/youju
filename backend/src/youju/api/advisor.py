@@ -33,7 +33,12 @@ from youju.config import get_settings
 from youju.db import get_session
 from youju.models import AdvisorTask, Document, Source, User
 from youju.takedown import available_condition
-from youju.track import read_customer_profiles, validate_customer_rows
+from youju.track import (
+    UNVERIFIED_SUMMARY,
+    UNVERIFIED_TEXT,
+    read_customer_profiles,
+    validate_customer_rows,
+)
 
 router = APIRouter(prefix="/api/v1/advisor", tags=["顾问"])
 native_router = APIRouter(route_class=NoStoreRoute)
@@ -900,7 +905,7 @@ def read_result(
     for item in all_items[cursor : cursor + 20]:
         # 读的时候当场标：生成以后才失效的也标上；存着的结果不改
         if item.get("documentId") in gone:
-            item = {**item, "linkGone": True}
+            item = _gone_item(item)
         size = len(json.dumps(item, ensure_ascii=False).encode())
         if used + size > 200 * 1024:
             if not items:
@@ -923,6 +928,24 @@ def read_result(
         },
         headers={"Cache-Control": "no-store"},
     )
+
+
+def _gone_item(item: dict) -> dict:
+    """原文链接已失效的那一条：标 linkGone；“截止核对情况”的“未核对，请以原文为准”改成“未核对”
+    （原文已打不开，和导出结果页对失效的不写“见原文”一样；独立审阅 #439 建议）。返回副本。"""
+    status_label = native_results.LABELS["deadline_status"]
+    fields = item.get("fields")
+    if isinstance(fields, list):
+        fields = [
+            {**field, "value": UNVERIFIED_SUMMARY}
+            if isinstance(field, dict)
+            and field.get("label") == status_label
+            and field.get("value") == UNVERIFIED_TEXT
+            else field
+            for field in fields
+        ]
+        return {**item, "linkGone": True, "fields": fields}
+    return {**item, "linkGone": True}
 
 
 def _shown_native_item(item):
