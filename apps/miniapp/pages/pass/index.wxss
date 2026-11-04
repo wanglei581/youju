@@ -49,7 +49,4 @@
 .pass-msg--error { color: var(--red); }
 /* 消息后面的"查看我的订单"：和消息同一行接着写，品牌蓝，点得到（行高够、左右留空） */
 .pass-orders { margin-left: 12rpx; padding: 8rpx 0; font-size: 26rpx; white-space: nowrap; }
-.pass-closed { padding: 24rpx 0; text-align: center; font-size: 28rpx; color: var(--t2); }
 
-/* 沙箱联调提示：醒目，避免测试人员以为是真付款 */
-.pass-sandbox { margin: 20rpx 24rpx 0; padding: 20rpx 24rpx; border-radius: 16rpx; background: var(--o-tint); color: var(--o-txt); font-size: 26rpx; line-height: 1.6; }

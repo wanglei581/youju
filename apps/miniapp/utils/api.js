@@ -654,13 +654,18 @@ function myData() {
 }
 
 // 开卖按小程序版本放开（D-074）：商品、下单、能力、我的、提交任务这几个请求带上代码包里《付费服务协议》的版本号
-// 和小程序环境（develop 开发版 / trial 体验版 / release 正式版）。服务端据此决定：沙箱和测试名单只在开发版、体验版，
-// 现网只对带定稿协议版本号的包——老版本永远看不到价格。读不到就不带，服务端按正式版、没有协议处理（看不到购买入口）。
+// 和小程序环境（develop 开发版 / trial 体验版 / release 正式版）。服务端据此决定：测试名单只在开发版、体验版，
+// 只对带定稿协议版本号的包卖——老版本永远看不到价格。读不到就不带，服务端按正式版、没有协议处理（看不到购买入口）。
+// 协议没定稿（final 不是 true）的包不带版本号：付款一律现网、真扣钱（沙箱已去掉，创始人 10/29），
+// 服务端版本号配错了也不会对草稿包卖
 function payHeader() {
   const header = {};
   try {
     const terms = require('../content/pay-terms.js');
-    if (terms && typeof terms.version === 'string' && terms.version) header['X-Youju-Pay-Terms'] = terms.version;
+    // 和购买页的 pay.termsFinal 同一个判断（这里不引 pay.js：测试加载器要求每个依赖都有替身）：
+    // 不一致的话入口还在、点进购买页却回首页（独立审阅 10/29）
+    const final = !!(terms && terms.final === true && typeof terms.text === 'string' && terms.text.trim() && !/待.*定稿|占位/.test(terms.text));
+    if (final && typeof terms.version === 'string' && terms.version) header['X-Youju-Pay-Terms'] = terms.version;
   } catch (e) { /* 读不到就不带 */ }
   try {
     const env = wx.getAccountInfoSync().miniProgram.envVersion;

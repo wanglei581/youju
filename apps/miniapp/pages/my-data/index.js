@@ -1,6 +1,6 @@
 const api = require('../../utils/api.js');
 const { describe, sameAsName, quoted } = require('../../utils/conditions.js');
-const { withdraw, loginOpen, remindAny } = require('../../utils/consent.js');
+const { withdrawAccount, loginOpen, remindAny } = require('../../utils/consent.js');
 const { KINDS, DATA_KINDS, STATES } = require('../../utils/advisor.js');
 const pages = require('../../utils/pages.js');
 
@@ -214,7 +214,8 @@ Page({
   },
 
   deleteAll() {
-    // 注销弹窗按包里有的功能写删哪些记录（过审版加 AI 只说 AI 的，11/2 完整测试第 7 条）
-    withdraw(pages.flags()).then((ok) => { if (ok) wx.navigateBack(); });
+    // 注销弹窗按包里有的功能写删哪些记录（过审版加 AI 只说 AI 的，11/2 完整测试第 7 条）；
+    // 有没到期的使用期时多一个确认框（付费协议开卖必做第 3 项，utils/consent.js withdrawAccount）
+    withdrawAccount(pages.flags()).then((ok) => { if (ok) wx.navigateBack(); });
   },
 });
