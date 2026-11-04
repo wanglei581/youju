@@ -1,14 +1,16 @@
 # 线上探活（D-118 ②：稳定性门槛有条件免掉的条件之一）。
 # 11/1 欠费停服 27 小时没人发现，因为告警、日报、定时任务都在同一个云托管环境里，环境停了它们也一起停。
-# 这里从云托管环境外面（GitHub）每 10 分钟查一次核对台：连续 3 次（间隔 20 秒）都不是 200，就开一个
+# 这里从云托管环境外面（GitHub）每 10 分钟查一次核对台的健康检查 /health（数据库连得上、定时任务心跳 15 分钟内更新过才是 200）：
+# 连续 3 次（间隔 20 秒）都不是 200，就开一个
 # "线上停服告警" issue；停服期间不再追加（免得刷屏），恢复后在这个 issue 里写一句已恢复并关掉。
-# GitHub 会把新 issue 通知给仓库主人。只读：不登录、不带任何密钥，只看公开地址的状态码。
+# 告警 issue 直接指派给仓库主人，GitHub 才会通知到他（仓库没有人关注时，只开 issue 不会通知任何人）。
+# 只读：不登录、不带任何密钥，只看公开地址的状态码；/health 不记访问日志。
 # 核对台地址本来就写在公开的部署文档里，这里不另外保密。
 # 注意：公开仓库连续 60 天没有提交时，GitHub 会停掉定时任务（停之前会发邮件提醒，到仓库 Actions 页点一下就能恢复）。
 name: 线上探活
 on:
   schedule:
-    - cron: "*/10 * * * *"
+    - cron: "4-59/10 * * * *"  # 避开整点（整点 GitHub 排队多，可能延迟或丢）
   workflow_dispatch:
 permissions:
   contents: read
@@ -21,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
-      URL: https://admin-321511-12-1498153640.sh.run.tcloudbase.com/admin
+      URL: https://admin-321511-12-1498153640.sh.run.tcloudbase.com/health
       TITLE: 线上停服告警
     steps:
       - name: 查线上核对台
@@ -36,8 +38,11 @@ jobs:
             sleep 20
           done
           reason="返回 ${code}"
-          if [ "$ok" != 1 ] && grep -q ENV_ISOLATED /tmp/body 2>/dev/null; then
-            reason="返回 ${code}，环境被隔离（ENV_ISOLATED：欠费或套餐到期）"
+          if [ "$ok" != 1 ]; then
+            if grep -q ENV_ISOLATED /tmp/body 2>/dev/null; then reason="返回 ${code}，环境被隔离（ENV_ISOLATED：欠费或套餐到期）"
+            elif grep -q db_error /tmp/body 2>/dev/null; then reason="返回 ${code}，连不上数据库"
+            elif grep -q 定时任务没有在运行 /tmp/body 2>/dev/null; then reason="返回 ${code}，定时任务没有在运行"
+            fi
           fi
           echo "ok=$ok" >> "$GITHUB_OUTPUT"
           echo "reason=$reason" >> "$GITHUB_OUTPUT"
@@ -59,8 +64,8 @@ jobs:
           REASON: ${{ steps.probe.outputs.reason }}
         run: |
           now=$(TZ=Asia/Shanghai date '+%m-%d %H:%M')
-          gh issue create -R "$GITHUB_REPOSITORY" --title "$TITLE" \
-            --body "${now}（北京时间）探活失败：核对台${REASON}。请先看微信云托管控制台的环境状态和费用中心余额。恢复后这个 issue 会自动关掉。"
+          gh issue create -R "$GITHUB_REPOSITORY" --title "$TITLE" --assignee "$GITHUB_REPOSITORY_OWNER" \
+            --body "${now}（北京时间）探活失败：核对台健康检查${REASON}。请先看微信云托管控制台的环境状态和费用中心余额。恢复后这个 issue 会自动关掉。"
       - name: 恢复了就关掉告警
         if: steps.probe.outputs.ok == '1' && steps.open.outputs.number != ''
         env:
@@ -68,4 +73,4 @@ jobs:
           N: ${{ steps.open.outputs.number }}
         run: |
           now=$(TZ=Asia/Shanghai date '+%m-%d %H:%M')
-          gh issue close "$N" -R "$GITHUB_REPOSITORY" --comment "${now}（北京时间）已恢复，核对台返回 200。"
+          gh issue close "$N" -R "$GITHUB_REPOSITORY" --comment "${now}（北京时间）已恢复，核对台健康检查返回 200。"
