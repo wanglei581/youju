@@ -1,4 +1,6 @@
 .license { padding: 32rpx; }
 .row { display: flex; justify-content: space-between; gap: 24rpx; padding: 20rpx 0; }
 .row text:last-child { text-align: right; word-break: break-all; }
+.photo-title { display: flex; justify-content: space-between; align-items: baseline; padding: 20rpx 0 12rpx; }
+.photo-hint { font-size: 24rpx; color: #6B7280; }
 .photo { width: 100%; }

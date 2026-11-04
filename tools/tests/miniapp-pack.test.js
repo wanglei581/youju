@@ -79,11 +79,19 @@ test('完整版打包时查打好的包里的营业执照信息和照片：都�
   assert.ok(fs.existsSync(path.join(out, license.photo.replace(/^\//, ''))));
   assert.equal(check(result).state, 'pass');
   // 照片不在包里（比如路径写错）：打包时这一项不通过（准备阶段是提示）
-  const { licenseInput } = require('../miniapp_presubmit_check.js');
+  const { licenseInput, inspect } = require('../miniapp_presubmit_check.js');
   fs.rmSync(path.join(out, license.photo.replace(/^\//, '')));
   const input = licenseInput(out, 'complete-release');
   assert.equal(input.licensePhotoExists, false);
   assert.equal(input.businessLicense.creditCode, license.creditCode);
+  // 用打好的包重新检查一次：这一项不再通过（准备阶段是提示）
+  const again = inspect({
+    legal: require(path.join(out, 'content', 'legal.js')), config: require(path.join(out, 'utils', 'config.js')),
+    app: JSON.parse(fs.readFileSync(path.join(out, 'app.json'), 'utf8')), project: JSON.parse(fs.readFileSync(path.join(out, 'project.config.json'), 'utf8')),
+    toolTerms: require(path.join(out, 'content', 'advisor-terms.js')), payTerms: require(path.join(out, 'content', 'pay-terms.js')),
+    ...input, mode: 'prepare', profile: 'complete-release',
+  });
+  assert.equal(check(again).state, 'warning');
   // 过审版不查执照
   assert.deepEqual(licenseInput(out, 'first-release'), { businessLicense: undefined, licensePhotoExists: false });
 });
