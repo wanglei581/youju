@@ -166,8 +166,8 @@ function inspect({ legal, config, app, project, toolTerms, payTerms, businessLic
     // 营业执照信息（D-107 ③，《电子商务法》第十五条：开始销售后在首页公示）：信用代码和执照照片要填齐、照片要在包里。
     // 付费协议定稿（这个包能卖）时提审不过；没定稿（购买按钮不可用、不卖）时和体验准备一样只提示
     const license = businessLicense || {};
-    add('business-license', '首页营业执照信息已填齐', nonempty(license.creditCode) && nonempty(license.photo) && licensePhotoExists === true,
-      '在 content/business-license.js 填统一社会信用代码和执照照片的包内路径，并把照片放进包里（创始人提供）', mode === 'prepare' || !payFinal);
+    add('business-license', '首页营业执照信息已填齐', nonempty(license.creditCode) && nonempty(license.photo) && license.photo.startsWith('/') && licensePhotoExists === true,
+      '在 content/business-license.js 填统一社会信用代码和执照照片的包内路径（以 / 开头，如 /images/license.jpg），并把照片放进包里（创始人提供）', mode === 'prepare' || !payFinal);
     add('pay-terms', '付费服务协议已定稿', payFinal, '协议定稿前（D-065：Codex、Grok 审阅，Claude 核对）购买按钮保持不可用；收费开关仍须门槛达标后由创始人批准打开', true);
   }
   for (const [id, name] of [['newDocs', '关注新文件'], ['deadline', '截止前']]) {

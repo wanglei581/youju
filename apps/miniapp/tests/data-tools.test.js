@@ -238,6 +238,18 @@ test('任务中心取消、删除按任务身份调用；下载遇到下架响�
   page.cancel(event({ id: 5 })); await flush(); page.remove(event({ id: 5 })); await flush(); assert.deepEqual(calls, [['cancel', 5], ['delete', 5]]); page.onUnload();
 });
 
+test('D-118：关掉 compare 以后，旧的 compare 任务照样在我的记录里能看能下，只是不给重新提交', async () => {
+  const off = caps(); off.data_tools.compareEnabled = false; off.data_tools.features = ['track'];
+  const items = [{ id: 1, kind: 'compare', status: 'done', hasFile: true, rowCount: 2 }, { id: 2, kind: 'track', status: 'done', hasFile: true, rowCount: 2 }];
+  const api = { advisorCapabilities: () => Promise.resolve(off), advisorTasks: () => Promise.resolve({ items }) };
+  const page = load('pages/advisor-tasks/index.js', { '../../utils/api.js': api, '../../utils/advisor.js': helpers }, { wx: { setNavigationBarTitle() {} }, setTimeout() { return 0; }, clearTimeout() {} });
+  page.onShow(); await flush();
+  assert.deepEqual(page.data.items.map(i => i.kind), ['compare', 'track']);
+  assert.deepEqual(page.data.items.map(i => i.redo), [false, true]);
+  assert.equal(page.data.items[0].downloadable, true);
+  page.onUnload();
+});
+
 test('独立说明须主动勾选，并先确认通用协议，再记录 advisor 版本', async () => {
   const calls = [];
   const api = { advisorStatus: () => Promise.resolve(status()), agree: (...args) => { calls.push(args); return Promise.resolve(); } };

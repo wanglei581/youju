@@ -23,7 +23,8 @@ Page({
   onLoad(query) {
     const kind = query.kind === 'compare' ? 'compare' : 'track';
     this.setData({ kind, title: DATA_KINDS[kind] });
-    wx.setNavigationBarTitle({ title: DATA_KINDS[kind] });
+    // kind=compare 的标题等能力接口确认开着再写（D-118：没开时会转到通知表，不先露出那项工具的名字）
+    if (kind !== 'compare') wx.setNavigationBarTitle({ title: DATA_KINDS[kind] });
     this.refreshKey();
   },
   onShow() { this.visible = true; this.load(); },
@@ -35,10 +36,17 @@ Page({
     this.setData({ loading: true, error: '', enabled: false, previewing: false, previewed: false });
     api.advisorCapabilities({ refresh: true }).then((caps) => {
       if (this.dead || serial !== this.serial) return;
-      if (!dataKinds(caps.data_tools).includes(this.data.kind)) {
+      const kinds = dataKinds(caps.data_tools);
+      // D-118：compare 没开时，直接打开 kind=compare（旧链接、旧记录）转到客户相关通知表，页面上不出现那项工具
+      if (this.data.kind === 'compare' && !kinds.includes('compare') && kinds.includes('track')) {
+        wx.redirectTo({ url: '/pages/advisor-form/index?kind=track' });
+        return;
+      }
+      if (!kinds.includes(this.data.kind)) {
         this.setData({ loading: false, gate: caps.reason || 'off', error: caps.reason === 'consent' ? '请先阅读并同意用户协议和隐私保护指引' : caps.reason === 'offline' ? '暂时连不上服务器，请重试' : '这项工具暂时不可用，请稍后重试' });
         return;
       }
+      if (this.data.kind === 'compare') wx.setNavigationBarTitle({ title: DATA_KINDS.compare });
       this.loadOffer(caps.pay, serial);
       return Promise.all([api.advisorStatus(), toolConsent({ identity: true })]).then(([status, agreement]) => {
         if (this.dead || serial !== this.serial) return;

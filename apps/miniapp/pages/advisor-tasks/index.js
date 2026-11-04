@@ -10,7 +10,12 @@ Page({
   onHide() { this.stop(); },
   onUnload() { this.dead = true; this.stop(); },
   stop() { this.visible = false; this.epoch = (this.epoch || 0) + 1; clearTimeout(this.timer); },
-  allowed(items, kinds = this.data.kinds) { return (items || []).filter((task) => kinds.includes(task.kind)); },
+  // D-118：数据工具关掉某一项（如 compare）后，以前的任务和结果照样列出、能下载；"重新提交"只给开着的那项
+  allowed(items, kinds = this.data.kinds) {
+    const data = (kinds || []).includes('track') || (kinds || []).includes('compare') ? ['compare', 'track'] : [];
+    return (items || []).filter((task) => kinds.includes(task.kind) || data.includes(task.kind))
+      .map((task) => (task.dataTask ? Object.assign({}, task, { redo: kinds.includes(task.kind) }) : task));
+  },
   load() {
     clearTimeout(this.timer);
     const epoch = this.epoch = (this.epoch || 0) + 1;

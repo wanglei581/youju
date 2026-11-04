@@ -303,5 +303,6 @@ test('营业执照信息（D-107 ③）：能卖的完整版（付费协议定�
  assert.equal(state({businessLicense:{creditCode:'',photo:''}},'submit'),'fail');
  assert.equal(state({businessLicense:{creditCode:'',photo:''}},'prepare'),'warning');
  assert.equal(state({businessLicense:{creditCode:'X',photo:'images/license.jpg'},licensePhotoExists:false},'submit'),'fail');
- assert.equal(state({businessLicense:{creditCode:'X',photo:'images/license.jpg'},licensePhotoExists:true},'submit'),'pass');
+ assert.equal(state({businessLicense:{creditCode:'X',photo:'images/license.jpg'},licensePhotoExists:true},'submit'),'fail');
+ assert.equal(state({businessLicense:{creditCode:'X',photo:'/images/license.jpg'},licensePhotoExists:true},'submit'),'pass');
 });

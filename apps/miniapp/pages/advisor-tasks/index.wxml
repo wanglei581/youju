@@ -20,7 +20,7 @@
       <view wx:if="{{item.refundNote}}" class="advisor-text muted">{{item.refundNote}}</view>
       <view class="advisor-actions">
         <button wx:if="{{item.downloadable}}" class="advisor-button btn-primary" data-id="{{item.id}}" hover-stop-propagation catchtap="readResult" loading="{{downloadingId === item.id}}" disabled="{{busyId !== null}}">站内查看结果</button>
-        <button wx:if="{{item.dataTask && item.terminal}}" class="advisor-button" data-kind="{{item.kind}}" hover-stop-propagation catchtap="again">重新填写</button>
+        <button wx:if="{{item.dataTask && item.terminal && item.redo}}" class="advisor-button" data-kind="{{item.kind}}" hover-stop-propagation catchtap="again">重新填写</button>
         <button wx:if="{{item.status === 'queued'}}" class="advisor-button" data-id="{{item.id}}" hover-stop-propagation catchtap="cancel" disabled="{{busyId !== null}}">取消</button>
         <button wx:if="{{item.terminal}}" class="advisor-button advisor-danger" data-id="{{item.id}}" hover-stop-propagation catchtap="remove" disabled="{{busyId !== null}}">删除</button>
       </view>
