@@ -8,11 +8,12 @@ const boost = require('../../utils/boost.js');
 
 // 包含什么里"不含 AI 次数"那句：只在 AI 对这个人开着、后台确认过时显示（和使用帮助一样，D-075 ①：AI 关着时页面没有 AI 字样）
 const aiOn = (state) => !!(state && state.visible === true && state.confirmed === true);
-// 不买也能用里客户相关通知表那一句：次数照额度接口（/advisor/status 的 quota.track.limit；申报季加量期间是加量后的次数，
-// 期限由下一句 seasonLine 写清，D-070 ⑤）。取不到、不是正整数时不猜次数，写去工具中心看——
-// 只写"每次 50 家以内"像是不限次数（agy 审阅 #436）
+// 不买也能用里客户相关通知表那一句：次数照额度接口（/advisor/status 的 quota.track.limit）。取不到、不是正整数时不猜次数，
+// 写去工具中心看——只写"每次 50 家以内"像是不限次数（agy 审阅 #436）。
+// 申报季加量期间次数、家数和期限都由下一句 seasonLine 写（D-070 ⑤），这一句只写怎么算次数，同一屏不重复（D-108，独立审阅 #436）
 const COUNT_RULE = '交一份名单算一次，系统出错、没出结果的不算';
-function freeLineOf(limit) {
+function freeLineOf(limit, inSeason) {
+  if (inSeason) return `客户相关通知表：${COUNT_RULE}`;
   return Number.isInteger(limit) && limit > 0
     ? `客户相关通知表：每月 ${limit} 次，每次 50 家以内（${COUNT_RULE}）`
     : `客户相关通知表：每月免费次数见工具中心，每次 50 家以内（${COUNT_RULE}）`;
@@ -116,8 +117,9 @@ Page({
         if (serial !== this.loadSerial) return;
         const active = !!(status.pass && status.pass.active);
         const limit = status.quota && status.quota.track && status.quota.track.limit;
+        const seasonLine = boost.seasonLine(status.season);
         this.setData({ expires: active ? pay.date(status.pass.expiresAt) : '', soon: pay.expiryNotice(status.pass),
-          freeLine: freeLineOf(limit), seasonLine: boost.seasonLine(status.season) });
+          freeLine: freeLineOf(limit, !!seasonLine && status.season.active === true), seasonLine });
       }).catch(() => { if (serial === this.loadSerial) this.setData({ expires: '', soon: '', freeLine: freeLineOf(null), seasonLine: '' }); });
     }).catch((err) => {
       if (serial !== this.loadSerial) return;

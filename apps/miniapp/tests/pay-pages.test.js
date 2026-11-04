@@ -1293,7 +1293,7 @@ test('购买页的免费次数照服务端额度写，取不到或不是正整�
   }
 });
 
-test('申报季加量期间购买页写清起止和之后回到几次，和首页、工具中心同一句；提前公布时写哪天开始（独立审阅 #436，D-070 ⑤）', async () => {
+test('申报季加量期间购买页写清起止和之后回到几次，和首页、工具中心同一句，次数不在相邻两句重复；提前公布时写哪天开始（独立审阅 #436，D-070 ⑤、D-108）', async () => {
   const season = { start: '2026-12-01', end: '2026-12-31', limit: 5, normalLimit: 3, maxRows: 50 };
   const boost = require('../utils/boost.js');
   for (const active of [true, false]) {
@@ -1303,8 +1303,11 @@ test('申报季加量期间购买页写清起止和之后回到几次，和首�
     const text = shown('pages/pass/index.wxml', h.page.data);
     assert.equal(h.page.data.seasonLine, boost.seasonLine(status.season));
     if (active) {
-      assert.match(text, /客户相关通知表：每月 5 次，每次 50 家以内/);
+      // 次数、家数、期限只在申报季那句写一次（D-108）；客户相关通知表那句只写怎么算次数
+      assert.match(text, /客户相关通知表：交一份名单算一次，系统出错、没出结果的不算/);
       assert.match(text, /申报季加量：12月1日至12月31日，免费次数每月 5 次（每次仍 50 家以内）；1月1日起回到每月 3 次/);
+      assert.equal((text.match(/每月 5 次/g) || []).length, 1);
+      assert.equal((text.match(/50 家以内/g) || []).length, 1);
     } else {
       assert.match(text, /客户相关通知表：每月 3 次，每次 50 家以内/);
       assert.match(text, /申报季加量将于12月1日开始：12月1日至12月31日免费次数每月 5 次（每次仍 50 家以内）/);
