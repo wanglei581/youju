@@ -114,10 +114,10 @@ def start(client, identity):
 
 
 def test_switches_default_off(session_factory, monkeypatch):
-    settings = Settings(
-        _env_file=None, advisor_enabled=True, advisor_compare_enabled=True, trust_wx_headers=True
-    )
+    settings = Settings(_env_file=None, advisor_enabled=True, trust_wx_headers=True)
     assert settings.boost_trial_enabled is False and settings.season_boost_enabled is False
+    # D-118：批量名单比对的开关默认也是关（钉住 Settings 的真实默认值，不靠测试替身的缺省）
+    assert settings.advisor_compare_enabled is False
     for module in (me, advisor, app_module):
         monkeypatch.setattr(module, "get_settings", lambda: settings)
     monkeypatch.setattr(v1, "now", lambda: NOW)
@@ -133,6 +133,7 @@ def test_switches_default_off(session_factory, monkeypatch):
             assert start(client, identity).status_code == 404
             body = status(client, identity)
             assert body["trial"] is None and body["season"] is None
+            assert body["compareEnabled"] is False
             assert body["quota"]["compare"] == {"used": 0, "limit": 3, "maxRows": 50}
             # 批量工具关着时体验接口也不在
             settings.advisor_enabled = False
