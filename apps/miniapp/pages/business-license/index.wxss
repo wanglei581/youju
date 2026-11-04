@@ -1,6 +1,8 @@
 .license { padding: 32rpx; }
 .row { display: flex; justify-content: space-between; gap: 24rpx; padding: 20rpx 0; }
 .row text:last-child { text-align: right; word-break: break-all; }
+/* 左边的“运营者名称”“住所”不被长地址挤成竖排（11/4 完整测试 H2） */
+.row text:first-child { flex-shrink: 0; white-space: nowrap; }
 .photo-title { display: flex; justify-content: space-between; align-items: baseline; padding: 20rpx 0 12rpx; }
 .photo-hint { font-size: 24rpx; color: #6B7280; }
 .photo { width: 100%; }
