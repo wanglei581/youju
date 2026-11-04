@@ -82,3 +82,9 @@ GRANT INSERT, UPDATE ON youju.ai_heartbeat TO 'youju_api'@'%';
 GRANT INSERT, UPDATE, DELETE ON youju.ai_chats TO 'youju_api'@'%';
 GRANT INSERT, UPDATE, DELETE ON youju.ai_chat_turns TO 'youju_api'@'%';
 GRANT INSERT ON youju.ai_safety_hits TO 'youju_api'@'%';
+
+-- ③ 备份恢复演练（youju restore-drill，D-118）：admin 账号在同一个 MySQL 上建临时库
+-- youju_drill_<北京时间>_<4 位随机>，恢复最新备份、核对，演练完删掉（终端断开、实例停止也会删；
+-- 万一没删掉，下一次演练开头先删）。只授这一类库名的权限（反斜杠是让下划线按字面匹配），
+-- 碰不到正式库 youju 以外的其他库，也不多给正式库任何权限。由创始人用 root 执行一次。
+GRANT ALL PRIVILEGES ON `youju\_drill\_%`.* TO 'youju_admin'@'%';
