@@ -86,7 +86,7 @@ function passPage(options = {}) {
   const calls = []; const urls = []; const toasts = []; const storage = new Map(); const clock = makeClock();
   const api = {
     payProducts: options.payProducts || (() => Promise.resolve({ items: [PRODUCT], invoiceType: INVOICE })),
-    advisorStatus: () => Promise.resolve({ pass: { active: false } }),
+    advisorStatus: options.advisorStatus || (() => Promise.resolve({ pass: { active: false } })),
     createPayOrder(body) {
       calls.push(['create', plain(body)]);
       if (options.create) return options.create(body);
@@ -1267,6 +1267,21 @@ test('购买页写清怎么算次数和苹果手机的付款条件；工具页�
   await flush();
   assert.equal(paid.page.data.countRule, '');
   assert.doesNotMatch(shown('pages/advisor-form/index.wxml', paid.page.data), /交一份名单算一次/);
+});
+
+test('购买页说明 AI 次数并按服务端额度显示免费次数，取不到不猜', async () => {
+  for (const limit of [3, 10]) {
+    const h = passPage({ advisorStatus: () => Promise.resolve({ pass: { active: false }, quota: { track: { limit } } }) });
+    await flush();
+    const text = shown('pages/pass/index.wxml', h.page.data);
+    assert.equal((text.match(/不含 AI 次数，AI 每天免费次数照旧/g) || []).length, 1);
+    assert.match(text, new RegExp(`客户相关通知表：每月 ${limit} 次，每次 50 家以内`));
+  }
+  for (const advisorStatus of [() => Promise.reject(new Error('离线')), () => Promise.resolve({ quota: { track: { limit: '10' } } })]) {
+    const h = passPage({ advisorStatus });
+    await flush();
+    assert.doesNotMatch(shown('pages/pass/index.wxml', h.page.data), /客户相关通知表：每月/);
+  }
 });
 
 test('小程序的页面和工具代码里不再有"客户工作台"，改叫"批量工具"，防止改名漏掉', () => {

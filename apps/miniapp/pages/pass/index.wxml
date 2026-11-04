@@ -31,12 +31,13 @@
       <view class="pass-ico"><t-icon name="download" size="36rpx" color="#2A5CE0" /></view>
       <view class="pass-main"><view class="pass-lead-item">结果可导出 Excel</view><view class="pass-desc">带发文机关和日期</view></view>
     </view>
+    <view class="pass-line">不含 AI 次数，AI 每天免费次数照旧</view>
   </view>
 
   <!-- 不买能用多少，和上面挨着写清楚：不想买的人不用猜 -->
   <view class="card pass-card">
     <view class="pass-title">不买也能用</view>
-    <view class="pass-line">客户相关通知表：每月 3 次，每次 50 家以内（交一份名单算一次，系统出错、没出结果的不算）</view>
+    <view class="pass-line">客户相关通知表：<block wx:if="{{freeLimit !== null}}">每月 {{freeLimit}} 次，</block>每次 50 家以内（交一份名单算一次，系统出错、没出结果的不算）</view>
     <view class="pass-line">搜索、详情、附件、查名单、导出等一直免费</view>
   </view>
 

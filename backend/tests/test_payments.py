@@ -273,6 +273,24 @@ def test_defaults_and_env_only_secrets(tmp_path, monkeypatch):
     assert Settings(_env_file=path).wx_appsecret.get_secret_value() == "environment-test"
 
 
+def test_create_requires_agreement_with_tools_terms(setup_pay, session):
+    _, settings, _ = setup_pay
+    settings.agreement_version = "2026-12"
+    settings.agreement_min_version = "2026-10"
+    user = session.scalar(select(User))
+    for version in ("2026-10", "2026-11.1"):
+        user.agreement_version = version
+        session.commit()
+        response = create(setup_pay)
+        assert response.status_code == 403
+        assert response.json()["detail"] == me.OUTDATED
+        assert session.scalar(select(func.count()).select_from(PayOrder)) == 0
+    user.agreement_version = "2026-12"
+    session.commit()
+    assert create(setup_pay).status_code == 201
+    assert session.scalar(select(func.count()).select_from(PayOrder)) == 1
+
+
 def test_create_signatures_snapshot_and_rate_limit(setup_pay, session):
     response = create(setup_pay)
     assert response.status_code == 201

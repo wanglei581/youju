@@ -59,7 +59,7 @@ Page({
     termsFinal: pay.termsFinal(payTerms), invoiceText: '',
     checked: false, busy: false, message: '', payError: false, confirmed: false, closedNote: '',
     // 付款结果没确认到、或转了人工：消息下面放"查看我的订单"
-    ordersLink: false },
+    ordersLink: false, freeLimit: null },
   onShow() {
     this.visible = true;
     if (!this.data.loginOpen) { goHome(); return; }
@@ -78,7 +78,7 @@ Page({
   load() {
     if (!this.data.loginOpen) { goHome(); return; }
     const serial = this.loadSerial = (this.loadSerial || 0) + 1;
-    this.setData({ loading: true, error: '', closedNote: '' });
+    this.setData({ loading: true, error: '', closedNote: '', freeLimit: null });
     api.payProducts().then((res) => {
       if (serial !== this.loadSerial) return;
       const tiers = pay.normalizeProducts(res).map(pay.tierView);
@@ -93,8 +93,10 @@ Page({
       if (tiers.length && this.data.loginOpen) api.advisorStatus({ refresh: true }).then((status) => {
         if (serial !== this.loadSerial) return;
         const active = !!(status.pass && status.pass.active);
-        this.setData({ expires: active ? pay.date(status.pass.expiresAt) : '', soon: pay.expiryNotice(status.pass) });
-      }).catch(() => { if (serial === this.loadSerial) this.setData({ expires: '', soon: '' }); });
+        const limit = status.quota && status.quota.track && status.quota.track.limit;
+        this.setData({ expires: active ? pay.date(status.pass.expiresAt) : '', soon: pay.expiryNotice(status.pass),
+          freeLimit: Number.isInteger(limit) && limit >= 0 ? limit : null });
+      }).catch(() => { if (serial === this.loadSerial) this.setData({ expires: '', soon: '', freeLimit: null }); });
     }).catch((err) => {
       if (serial !== this.loadSerial) return;
       if (err.status === 404) { this.closed(); return; }
