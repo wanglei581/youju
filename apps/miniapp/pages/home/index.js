@@ -80,6 +80,7 @@ Page({
     guideSteps: [],
     // 申报季加量（D-070 ⑤）提前公布的起止日期，和批量工具页同一句；没有这项活动或取不到时为空，不显示
     seasonText: '',
+    businessLicense: pages.has('business-license'),
   },
 
   onLoad() {

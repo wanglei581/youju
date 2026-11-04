@@ -50,7 +50,7 @@ function renewRule(res) {
   return { text: `到期前后 ${bonus.windowDays} 天内续买，每次多送 ${bonus.days} 天批量工具使用期`, now: bonus.eligibleNow === true };
 }
 function termsFinal(terms) {
-  return !!(terms && terms.final && typeof terms.text === 'string' && terms.text.trim() && !/待.*定稿|占位/.test(terms.text));
+  return !!(terms && terms.final === true && typeof terms.text === 'string' && terms.text.trim() && !/待.*定稿|占位/.test(terms.text));
 }
 // 能开哪种发票（D-070：付款前要看得到）：以服务端为准（YOUJU_PAY_INVOICE_TYPE，商品接口带回 invoiceType）；
 // 没有时现网没有付款按钮，服务端也不卖（payments.orderable）

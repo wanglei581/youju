@@ -284,7 +284,7 @@ test('商品、下单、能力、我的、提交任务这几个请求带上代�
   ]) {
     const one = api('trial', terms);
     await one.module.payProducts();
-    assert.equal(Object.hasOwn(one.seen[0].header, 'X-Youju-Pay-Terms'), pay.termsFinal(terms) && terms.final === true, JSON.stringify(terms));
+    assert.equal(Object.hasOwn(one.seen[0].header, 'X-Youju-Pay-Terms'), pay.termsFinal(terms), JSON.stringify(terms));
   }
 });
 
@@ -805,7 +805,7 @@ test('我的页只在有订单时显示"我的订单"并进入订单页；在售
   const urls = []; const pay = { enabled: false, hasOrders: false }; let meCalls = 0;
   const page = load('pages/me/index.js', {
     '../../content/legal.js': { final: true, version: '2026-10' },
-    '../../utils/consent.js': { loginOpen: () => true, consentEpoch: () => 0, applyServer: () => true, withdraw: () => Promise.resolve(false), markAgreed() {}, openPrivacy() {}, CONSENT_PAGE: '', agreeFailed() {}, featureNames: () => '' },
+    '../../utils/consent.js': { loginOpen: () => true, consentEpoch: () => 0, applyServer: () => true, withdraw: () => Promise.resolve(false), withdrawAccount: () => Promise.resolve(false), markAgreed() {}, openPrivacy() {}, CONSENT_PAGE: '', agreeFailed() {}, featureNames: () => '' },
     '../../utils/subscribe.js': { remindOpen: () => false },
     '../../utils/coverage.js': { loadCoverage: () => Promise.resolve(null), notCoveredNames: () => '' },
     '../../utils/api.js': { isLive: () => true, me: () => { meCalls += 1; return Promise.resolve({ pay: { ...pay }, follows: 0, subscriptions: {} }); },
@@ -915,8 +915,8 @@ test('购买页第一句写给谁用，付款前写全收录范围、只限本�
   const text = shown('pages/pass/index.wxml', h.page.data);
   assert.match(text, /给要一次比对很多家客户的顾问用；查通知、查单家企业一直免费/);
   assert.match(text, /只限本人的微信使用/);
-  // 付款前就写明（agy 10/29）：未成年人未经监护人同意购买的，《付费服务协议》第二条第 7 项写了可以退
-  assert.match(text, /未成年人请在监护人同意后再购买/);
+  assert.match(text, /本服务不面向未成年人/);
+  assert.doesNotMatch(text, /未成年人请在监护人同意后再购买/);
   // 苹果退款：由苹果公司通过 App Store 处理，小程序里也能提交、我们协助（协议第二条第 7 项、运营规范 14.6）
   assert.match(text, /苹果手机付款的，退款由苹果公司通过 App Store 处理，是否退款由苹果公司决定；也可以在“遇到问题”里提交，我们协助办理/);
   assert.doesNotMatch(text, /只能向 App Store 申请退款/);
@@ -1037,7 +1037,7 @@ test('我的页在售时所有人都显示"批量工具"一行：没买过写最
   let status = () => Promise.reject(new Error('读不到'));
   const page = load('pages/me/index.js', {
     '../../content/legal.js': { final: true, version: '2026-10' },
-    '../../utils/consent.js': { loginOpen: () => true, consentEpoch: () => 0, applyServer: () => true, withdraw: () => Promise.resolve(false), markAgreed() {}, openPrivacy() {}, CONSENT_PAGE: '', agreeFailed() {}, featureNames: () => '' },
+    '../../utils/consent.js': { loginOpen: () => true, consentEpoch: () => 0, applyServer: () => true, withdraw: () => Promise.resolve(false), withdrawAccount: () => Promise.resolve(false), markAgreed() {}, openPrivacy() {}, CONSENT_PAGE: '', agreeFailed() {}, featureNames: () => '' },
     '../../utils/subscribe.js': { remindOpen: () => false },
     '../../utils/coverage.js': { loadCoverage: () => Promise.resolve(null), notCoveredNames: () => '' },
     '../../utils/api.js': { isLive: () => true, me: () => Promise.resolve({ pay: { ...pay }, follows: 0, subscriptions: {} }),
@@ -1075,7 +1075,7 @@ test('我的页刷新失败时收起"批量工具"一行，不在可能已停卖
   let fail = false;
   const page = load('pages/me/index.js', {
     '../../content/legal.js': { final: true, version: '2026-10' },
-    '../../utils/consent.js': { loginOpen: () => true, consentEpoch: () => 0, applyServer: () => true, withdraw: () => Promise.resolve(false), markAgreed() {}, openPrivacy() {}, CONSENT_PAGE: '', agreeFailed() {}, featureNames: () => '' },
+    '../../utils/consent.js': { loginOpen: () => true, consentEpoch: () => 0, applyServer: () => true, withdraw: () => Promise.resolve(false), withdrawAccount: () => Promise.resolve(false), markAgreed() {}, openPrivacy() {}, CONSENT_PAGE: '', agreeFailed() {}, featureNames: () => '' },
     '../../utils/subscribe.js': { remindOpen: () => false },
     '../../utils/coverage.js': { loadCoverage: () => Promise.resolve(null), notCoveredNames: () => '' },
     '../../utils/api.js': { isLive: () => true, me: () => (fail ? Promise.reject(new Error('网络不稳定')) : Promise.resolve({ pay: { enabled: true, hasOrders: false }, follows: 0, subscriptions: {} })),
@@ -1124,7 +1124,9 @@ test('工具中心在售时最上面放"批量工具"卡片：免费用完写"�
   const some = toolCenter({ advisorCapabilities: () => centerCaps({ enabled: true, hasOrders: false }), advisorStatus: () => centerStatus({ used: 1 }) });
   await flush(); await flush();
   assert.equal(some.page.data.payCard.usedUp, false);
-  assert.match(shown('pages/advisor/index.wxml', some.page.data), /本月免费：比对还剩 2 次、通知表还剩 2 次，每次最多 50 家/);
+  const someText = shown('pages/advisor/index.wxml', some.page.data);
+  assert.match(someText, /本月免费：比对还剩 2 次、通知表还剩 2 次，每次最多 50 家/);
+  assert.equal((someText.match(/每次最多 50 家/g) || []).length, 1);
 });
 
 test('工具中心不在售时没有批量工具卡片、不取价格，照旧写"免费额度不需要购买"；取不到价格时也不显示卡片', async () => {
@@ -1502,7 +1504,7 @@ function mePage(me, extra = {}) {
   const urls = [];
   const page = load('pages/me/index.js', {
     '../../content/legal.js': { final: true, version: '2026-10' },
-    '../../utils/consent.js': { loginOpen: () => true, consentEpoch: () => 0, applyServer: () => extra.signedIn !== false, withdraw: () => Promise.resolve(false), markAgreed() {}, openPrivacy() {}, CONSENT_PAGE: '', agreeFailed() {}, featureNames: () => '' },
+    '../../utils/consent.js': { loginOpen: () => true, consentEpoch: () => 0, applyServer: () => extra.signedIn !== false, withdraw: () => Promise.resolve(false), withdrawAccount: () => Promise.resolve(false), markAgreed() {}, openPrivacy() {}, CONSENT_PAGE: '', agreeFailed() {}, featureNames: () => '' },
     '../../utils/subscribe.js': { remindOpen: () => false },
     '../../utils/coverage.js': { loadCoverage: () => Promise.resolve(null), notCoveredNames: () => '' },
     '../../utils/api.js': { isLive: () => true, me: () => Promise.resolve({ agreed: { version: '2026-10' }, follows: 0, subscriptions: {}, ...me() }),
@@ -1586,13 +1588,13 @@ test('开卖必做第 4、5 项和收费方案第 9 项：购买页注销提示�
   assert.match(advisor, /\{\{countNote\}\}/);
 });
 
-test('收费方案第 9 项：工具中心怎么算次数只写用得上的家数——没在卖不提批量工具，加量体验用不了不提它', () => {
+test('收费方案第 9 项：次数说明不重复额度中的家数', () => {
   const page = load('pages/advisor/index.js', { '../../utils/api.js': {}, '../../utils/ai-access.js': {}, '../../utils/advisor.js': {}, '../../utils/tool-context.js': {}, '../../utils/boost.js': {}, '../../utils/daywatch.js': {}, '../../utils/consent.js': {} });
   const line = (quota, payOn, offer) => { page.quota = quota; page.payOn = payOn; page.offer = offer; return page.countLine(); };
   const free = (available) => ({ rows: { compare: 50, track: 50 }, pass: null, trial: { trialActive: false, trialAvailable: available } });
-  assert.equal(line(free(false), false, null), '交一份名单算一次，系统出错、没出结果的不算；免费每次 50 家以内。');
-  assert.equal(line(free(true), true, { line: '30 天 29 元' }), '交一份名单算一次，系统出错、没出结果的不算；免费每次 50 家以内，加量体验和批量工具使用期内每次 500 家以内。');
-  assert.equal(line(free(false), true, { line: '30 天 29 元' }), '交一份名单算一次，系统出错、没出结果的不算；免费每次 50 家以内，批量工具使用期内每次 500 家以内。');
+  assert.equal(line(free(false), false, null), '交一份名单算一次，系统出错、没出结果的不算。');
+  assert.equal(line(free(true), true, { line: '30 天 29 元' }), '交一份名单算一次，系统出错、没出结果的不算。');
+  assert.equal(line(free(false), true, { line: '30 天 29 元' }), '交一份名单算一次，系统出错、没出结果的不算。');
   assert.equal(line({ ...free(false), pass: { active: true } }, true, null), '交一份名单算一次，系统出错、没出结果的不算。');
   assert.equal(line(null, true, null), '交一份名单算一次，系统出错、没出结果的不算。');
 });

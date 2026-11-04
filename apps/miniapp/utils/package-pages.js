@@ -15,6 +15,7 @@ module.exports = [
   'pages/follow-new/index',
   'pages/my-data/index',
   'pages/about/index',
+  'pages/business-license/index',
   'pages/advisor/index',
   'pages/advisor-interpret/index',
   'pages/advisor-clause/index',

@@ -21,6 +21,8 @@
   </view>
 </view>
 
+<view wx:if="{{businessLicense}}" class="license-entry" data-url="/pages/business-license/index" bindtap="goEntry" aria-role="button">营业执照信息 ›</view>
+
 <view class="entries {{tools ? 'entries--tools' : ''}}">
   <view class="entry" data-url="/pages/report/index" bindtap="goEntry">
     <view class="tile tile--green"><t-icon name="hourglass" size="44rpx" color="#FFFFFF" /></view>

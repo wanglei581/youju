@@ -1,0 +1,4 @@
+.license { padding: 32rpx; }
+.row { display: flex; justify-content: space-between; gap: 24rpx; padding: 20rpx 0; }
+.row text:last-child { text-align: right; word-break: break-all; }
+.photo { width: 100%; }

@@ -23,7 +23,7 @@ const SERVER_TOOL_TERMS_VERSION = (() => {
   return m[1];
 })();
 const FIRST_PAGES = ['home', 'follow', 'files', 'me', 'search', 'detail', 'report', 'lists',
-  'agreement', 'feedback', 'follow-new', 'my-data', 'about', 'clients', 'reader', 'results'].map(p => `pages/${p}/index`);
+  'agreement', 'feedback', 'follow-new', 'my-data', 'about', 'business-license', 'clients', 'reader', 'results'].map(p => `pages/${p}/index`);
 // 底栏四格的名字，和 FIRST_PAGES 前四页一一对应（app.json 的 tabBar 和 custom-tab-bar 都是这四个字）
 const TAB_NAMES = ['首页', '关注', '导出', '我的'];
 const AI_PAGES = ['advisor', 'advisor-interpret', 'advisor-clause', 'advisor-tasks', 'complaint'].map(p => `pages/${p}/index`);

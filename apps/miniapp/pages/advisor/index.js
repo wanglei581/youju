@@ -75,11 +75,12 @@ Page({
       const remaining = (kind) => Math.max(0, ((quota[kind] || {}).limit || 0) - ((quota[kind] || {}).used || 0));
       // 加量体验中（D-070 ③）显示体验的每天次数；申报季加量的起止日期另起一行
       const trial = boost.trialView(res.trial);
-      const free = `本月比对剩余 ${remaining('compare')}/${quota.compare.limit} 次、每次最多 ${quota.compare.maxRows} 家；通知表剩余 ${remaining('track')}/${quota.track.limit} 次、每次最多 ${quota.track.maxRows} 家`;
+      const rows = quota.compare.maxRows === quota.track.maxRows ? `每次最多 ${quota.compare.maxRows} 家` : `比对每次最多 ${quota.compare.maxRows} 家、通知表每次最多 ${quota.track.maxRows} 家`;
+      const free = `本月比对剩余 ${remaining('compare')}/${quota.compare.limit} 次、通知表剩余 ${remaining('track')}/${quota.track.limit} 次，${rows}`;
       this.quota = { compare: remaining('compare'), track: remaining('track'), rows: { compare: quota.compare.maxRows, track: quota.track.maxRows },
         pass: res.pass && res.pass.active ? res.pass : null, trial };
       // 在售时不再写"不需要购买"（买得到却说不用买，会让人以为没有付费功能）；没在售时照旧
-      this.setData({ seasonNote: boost.seasonLine(res.season), dataStatus: this.quota.pass ? `批量工具使用期内，比对每次最多 ${quota.compare.maxRows} 家，通知表每次最多 ${quota.track.maxRows} 家，不限提交次数`
+      this.setData({ seasonNote: boost.seasonLine(res.season), dataStatus: this.quota.pass ? `批量工具使用期内，${rows}，不限提交次数`
         : trial.trialActive ? boost.trialLine(trial)
           : this.payOn ? free : `${free}。免费额度不需要购买` });
       this.quotaDone = true;
@@ -128,14 +129,9 @@ Page({
         : `本月免费：${left('比对', quota.compare)}、${left('通知表', quota.track)}，${rows}`;
     this.setData({ payCard: { usedUp, quotaLine, offerLine: `要一次处理更多家：${this.offer.line}，不限次数，每次 500 家以内；一次付清，到期不再扣钱`, button: '了解批量工具' } });
   },
-  // 怎么算次数（收费方案第 9 项）：只写这个人现在用得上的家数——没在卖的不提批量工具，加量体验用不了的不提它
-  // （独立审阅 10/28）；读不到额度时只写第一句
+  // 家数上限已在额度说明中列出，这里只解释怎么算次数。
   countLine() {
-    const quota = this.quota;
-    const head = '交一份名单算一次，系统出错、没出结果的不算';
-    if (!quota || quota.pass || quota.trial.trialActive) return `${head}。`;
-    const more = [quota.trial.trialAvailable ? '加量体验' : '', this.payOn && this.offer ? '批量工具使用期' : ''].filter(Boolean);
-    return `${head}；免费每次 ${quota.rows.compare} 家以内${more.length ? `，${more.join('和')}内每次 500 家以内` : ''}。`;
+    return '交一份名单算一次，系统出错、没出结果的不算。';
   },
   buyPass() { if (this.data.payCard && this.data.payCard.button) wx.navigateTo({ url: '/pages/pass/index' }); },
   refreshQuota() { this.loadQuota(); },

@@ -879,7 +879,8 @@ def test_e_advisor_submit_process_download_quota_delete(journey, monkeypatch, ki
     try:
         text = "\n".join(str(cell.value) for sheet in book for row in sheet for cell in row)
         target = listed if kind == "compare" else application
-        assert COMPANY in text and target.title in text and target.url in text
+        assert COMPANY in text and target.title in text
+        assert target.url not in text and "原文链接" not in text
     finally:
         book.close()
     assert _json(j.client.get("/api/v1/me/data"))["advisorTasks"][0]["status"] == "done"

@@ -25,7 +25,7 @@ test('首发包：16 页、底栏四格（首页、关注、导出、我的）�
   const { pages, removed, result } = pack({ out, profile: 'first-release', mode: 'prepare', npmFrom: fakeNpm() });
   assert.deepEqual([...pages].sort(), [...FIRST_PAGES].sort());
   assert.equal(pages[0], 'pages/home/index');
-  assert.equal(removed.length, JSON.parse(appBefore).pages.length - 16);
+  assert.equal(removed.length, JSON.parse(appBefore).pages.length - FIRST_PAGES.length);
   const app = JSON.parse(fs.readFileSync(path.join(out, 'app.json'), 'utf8'));
   assert.deepEqual(app.pages, pages);
   assert.deepEqual(app.tabBar.list.map((t) => t.pagePath), ['pages/home/index', 'pages/follow/index', 'pages/files/index', 'pages/me/index']);
@@ -96,7 +96,7 @@ test('过审版加 AI（D-098）：首发 16 页加 AI 那 6 页、底栏五格�
   const { pages, removed, result } = pack({ out, profile: 'first-release-ai', mode: 'prepare', npmFrom: fakeNpm() });
   const { FIRST_AI_PAGES } = require('../miniapp_presubmit_check.js');
   assert.deepEqual([...pages].sort(), [...FIRST_PAGES, ...FIRST_AI_PAGES].sort());
-  assert.equal(pages.length, 22);
+  assert.equal(pages.length, FIRST_PAGES.length + FIRST_AI_PAGES.length);
   for (const page of ['pages/advisor/index', 'pages/advisor-form/index', 'pages/advisor-terms/index', 'pages/advisor-trial/index', 'pages/pass/index', 'pages/orders/index']) {
     assert.ok(removed.includes(page), page);
     assert.equal(fs.existsSync(path.join(out, path.dirname(page))), false, page);

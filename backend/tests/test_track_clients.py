@@ -237,7 +237,6 @@ def test_track_without_verified_deadlines_and_excludes_only_closed(session, monk
         "截止原文句子",
         "剩余天数",
         "支持方式",
-        "原文链接",
         "城市",
         "层级",
         "客户省份",
@@ -246,6 +245,7 @@ def test_track_without_verified_deadlines_and_excludes_only_closed(session, monk
         "区县",
         "客户区县",
     ]
+    assert all("http" not in str(cell.value or "") for row in sheet for cell in row)
     # 截止日期一列只写日期：没核对的留空，核对情况另写一列
     assert sheet["E3"].value == (stamp.date() - timedelta(days=1)).isoformat()
     assert sheet["F3"].value == "未核对，请以原文为准"

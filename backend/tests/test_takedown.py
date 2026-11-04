@@ -524,6 +524,15 @@ def test_legacy_tool_download_checks_actual_excel(
     else:
         advisor_tasks._run_engine(session, task, output)
         remove(client, docs[index])
+    # 旧格式带原文链接；新导出器不再生成该列。
+    book = load_workbook(output)
+    sheet = book.worksheets[0]
+    column = sheet.max_column + 1
+    sheet.cell(2, column, "原文链接")
+    for row, document_id in enumerate(task.result_document_ids or [], 3):
+        sheet.cell(row, column, session.get(Document, document_id).url)
+    book.save(output)
+    book.close()
     # 模拟迁移前生成的结果：没有依赖清单，甚至输入已经清理。
     task.result_document_ids = None
     task.input_rows = None
