@@ -50,7 +50,7 @@ jobs:
           # 只认这个任务自己开的、标题完全相同的 issue
           # 不用 --author（会改走搜索接口，有索引延迟）；拉开着的 issue 列表，在本地按标题和作者精确筛
           n=$(gh issue list -R "$GITHUB_REPOSITORY" --state open --limit 100 --json number,title,author \
-                --jq 'map(select(.title == $ENV.TITLE and ((.author.login // "") | test("github-actions")))) | .[0].number // empty')
+                --jq 'map(select(.title == env.TITLE and ((.author.login // "") | test("github-actions")))) | .[0].number // empty')
           echo "number=$n" >> "$GITHUB_OUTPUT"
       - name: 停了就开告警（已经开着就不再追加）
         if: steps.probe.outputs.ok != '1' && steps.open.outputs.number == ''
