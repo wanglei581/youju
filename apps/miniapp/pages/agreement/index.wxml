@@ -1,6 +1,9 @@
 <notice-bar />
 <feature-closed wx:if="{{!loginOpen}}" />
 <block wx:else>
+<!-- 订单同意的不是包里这一版（type=pay&version=…）：不能把现在这一版当成那笔订单同意的给人看（付费服务协议第七条） -->
+<view wx:if="{{mismatch}}" class="card note"><view>这笔订单同意的是《付费服务协议》{{mismatch}} 版，和小程序里现在的版本不同。需要那一版全文的，请点“遇到问题”告诉我们，我们发给你。</view><button class="advisor-button" bindtap="feedback">遇到问题</button></view>
+<block wx:if="{{!mismatch}}">
 <view wx:if="{{!final}}" class="draft">{{status}}</view>
 <view wx:if="{{consent}}" class="card intro">请阅读下面的《用户协议》和《隐私保护指引》全文，同意按钮在最后。不同意不影响检索、查看和导出。</view>
 <view wx:for="{{docs}}" wx:for-item="doc" wx:key="title" class="card doc">
@@ -14,7 +17,10 @@
     <view wx:for="{{s.p}}" wx:key="index" class="sec-p {{item.key ? 'sec-p--key' : ''}}">{{item.text}}</view>
   </view>
 </view>
+<!-- 付费协议要能完整下载留存（电子商务法第五十条、付费服务协议第七条）；"复制全文"要等隐私保护指引一·9 改版时再加 -->
+<view wx:if="{{pay}}" class="card note"><view>可以把协议全文存成文件，发到微信聊天里留存（可以发给自己）。</view><button class="advisor-button" bindtap="savePay">保存全文</button></view>
 <view class="card note">{{disclaimer}}</view>
 <view wx:if="{{consent}}" class="btn-primary agree {{sending ? 'agree--off' : ''}}" bindtap="agree" aria-role="button">{{sending ? '正在提交…' : '我已阅读，同意以上两份文件'}}</view>
+</block>
 </block>
 <view style="height: 60rpx"></view>
