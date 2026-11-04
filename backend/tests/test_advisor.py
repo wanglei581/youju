@@ -1494,6 +1494,84 @@ def test_native_summary_pagination_keeps_input_row_count(client, session):
     assert all(item["title"] == "本次收录范围内未找到相关通知" for item in items[22:])
 
 
+def test_native_reading_marks_link_gone_documents_instead_of_refusing(client, session):
+    """原文链接已失效的通知照样公开（列表、详情、导出都只标一句）：站内结果只给那几条标 linkGone，
+    不整份拒绝；下架的仍整份拒绝（11/4 完整测试 T4b）。"""
+    import hashlib
+    import json
+
+    from youju.models import Document, Source
+
+    src = Source(
+        level="省级",
+        province="山东",
+        dept="科技",
+        dept_full_name="山东省科学技术厅",
+        column_name="通知",
+        url="https://kjt.shandong.gov.cn/tz/",
+        enabled=True,
+        parser_config={},
+        rights_level=1,
+    )
+    session.add(src)
+    session.flush()
+    stamp = datetime.now(UTC)
+    docs = [
+        Document(
+            source_id=src.id,
+            url=f"https://kjt.shandong.gov.cn/{n}.html",
+            url_key=f"kjt.shandong.gov.cn/{n}.html",
+            title=f"合成通知{n}",
+            publish_date=NOW.date(),
+            first_seen_at=stamp,
+            last_seen_at=stamp,
+        )
+        for n in (1, 2)
+    ]
+    session.add_all(docs)
+    session.flush()
+    docs[1].link_gone_at = stamp
+    agree_advisor(client)
+    task_id = create(client).json()["id"]
+    row = session.get(AdvisorTask, task_id)
+    status = {"label": "截止核对情况", "value": "未核对，请以原文为准"}
+    items = [
+        {"documentId": str(doc.id), "title": doc.title, "fields": [dict(status)], "n": n}
+        for n, doc in enumerate(docs)
+    ]
+    content = {
+        "schema": 1,
+        "kind": "track",
+        "title": "客户相关通知表",
+        "notice": "合成",
+        "generatedAt": NOW.isoformat(),
+        "dataVersion": None,
+        "items": items,
+    }
+    content["revision"] = hashlib.sha256(json.dumps(content, sort_keys=True).encode()).hexdigest()
+    row.kind, row.status = "track", "done"
+    row.result_document_ids = [doc.id for doc in docs]
+    row.result_json = content
+    session.commit()
+    path = f"/api/v1/advisor/tasks/{task_id}/reading"
+    response = client.get(path)
+    assert response.status_code == 200
+    shown = {item["documentId"]: item for item in response.json()["items"]}
+    assert shown[str(docs[1].id)]["linkGone"] is True
+    assert "linkGone" not in shown[str(docs[0].id)]
+    # 失效的那条不再写“请以原文为准”（原文已打不开），其他条照旧
+    assert shown[str(docs[1].id)]["fields"] == [{"label": "截止核对情况", "value": "未核对"}]
+    assert shown[str(docs[0].id)]["fields"] == [status]
+    # 存着的结果不改
+    session.expire(row)
+    assert all("linkGone" not in item for item in row.result_json["items"])
+    assert all(item["fields"] == [status] for item in row.result_json["items"])
+    # 下架的照旧整份拒绝，不把旧结果当作绕过下架的副本
+    docs[0].taken_down_at = stamp
+    session.commit()
+    assert client.get(path).status_code == 410
+
+
 def test_native_result_requires_all_dependencies(client, session):
     from youju.compare import CompareReport, CompareRow
     from youju.native_results import build

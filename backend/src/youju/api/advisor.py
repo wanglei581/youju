@@ -33,7 +33,12 @@ from youju.config import get_settings
 from youju.db import get_session
 from youju.models import AdvisorTask, Document, Source, User
 from youju.takedown import available_condition
-from youju.track import read_customer_profiles, validate_customer_rows
+from youju.track import (
+    UNVERIFIED_SUMMARY,
+    UNVERIFIED_TEXT,
+    read_customer_profiles,
+    validate_customer_rows,
+)
 
 router = APIRouter(prefix="/api/v1/advisor", tags=["顾问"])
 native_router = APIRouter(route_class=NoStoreRoute)
@@ -866,16 +871,14 @@ def read_result(
     if ids is None:
         raise HTTPException(status_code=410, detail="结果依据暂时无法核验，请重新生成")
     # 每一页都复核公开范围和撤回状态，不把旧结果作为绕过下架的副本。
+    # 原文链接已失效（link_gone_at）不算撤回：通知照样公开，列表、详情、导出都只标一句，
+    # 这里也只给那几条标上 linkGone，不整份拒绝（11/4 完整测试 T4b：有一份失效，整份结果打不开）
     visible = (
         set(
             session.scalars(
                 select(Document.id)
                 .join(Source, Document.source_id == Source.id)
-                .where(
-                    Document.id.in_(ids),
-                    v1.public_condition(),
-                    Document.link_gone_at.is_(None),
-                )
+                .where(Document.id.in_(ids), v1.public_condition())
             )
         )
         if ids
@@ -883,6 +886,16 @@ def read_result(
     )
     if visible != set(ids):
         raise HTTPException(status_code=410, detail="结果依据已不可用，请重新生成")
+    gone = (
+        {
+            str(doc_id)
+            for doc_id in session.scalars(
+                select(Document.id).where(Document.id.in_(ids), Document.link_gone_at.is_not(None))
+            )
+        }
+        if ids
+        else set()
+    )
     if (cursor and not revision) or (revision and revision != content["revision"]):
         raise HTTPException(status_code=409, detail="结果版本已变化，请重新加载")
     all_items = content["items"]
@@ -890,6 +903,9 @@ def read_result(
         raise HTTPException(status_code=422, detail="结果页码无效")
     items, used = [], 0
     for item in all_items[cursor : cursor + 20]:
+        # 读的时候当场标：生成以后才失效的也标上；存着的结果不改
+        if item.get("documentId") in gone:
+            item = _gone_item(item)
         size = len(json.dumps(item, ensure_ascii=False).encode())
         if used + size > 200 * 1024:
             if not items:
@@ -915,6 +931,24 @@ def read_result(
         },
         headers={"Cache-Control": "no-store"},
     )
+
+
+def _gone_item(item: dict) -> dict:
+    """原文链接已失效的那一条：标 linkGone；“截止核对情况”的“未核对，请以原文为准”改成“未核对”
+    （原文已打不开，和导出结果页对失效的不写“见原文”一样；独立审阅 #439 建议）。返回副本。"""
+    status_label = native_results.LABELS["deadline_status"]
+    fields = item.get("fields")
+    if isinstance(fields, list):
+        fields = [
+            {**field, "value": UNVERIFIED_SUMMARY}
+            if isinstance(field, dict)
+            and field.get("label") == status_label
+            and field.get("value") == UNVERIFIED_TEXT
+            else field
+            for field in fields
+        ]
+        return {**item, "linkGone": True, "fields": fields}
+    return {**item, "linkGone": True}
 
 
 def _shown_native_item(item):
