@@ -1065,6 +1065,13 @@ def _cmd_backup_verify(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_restore_drill(args: argparse.Namespace) -> int:
+    from youju.restore_drill import run
+
+    settings = get_settings()
+    return run(settings.database_url, settings.cloud_env, args.file)
+
+
 def _hhmm(value: str) -> str:
     """命令行参数：HH:MM（北京时间）。"""
     try:
@@ -2281,6 +2288,10 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("backup-verify", help="只读校验最新备份的完整性和迁移版本")
     p.add_argument("--file", type=Path, help="校验本机备份文件，不从对象存储下载")
     p.set_defaults(func=_cmd_backup_verify)
+
+    p = sub.add_parser("restore-drill", help="在临时库演练备份恢复，结束后删除临时库")
+    p.add_argument("--file", type=Path, help="使用本机备份文件，不从对象存储下载")
+    p.set_defaults(func=_cmd_restore_drill)
 
     p = sub.add_parser(
         "restore", help="把备份文件恢复到当前数据库（要已迁移到同一版本、而且是空的）"

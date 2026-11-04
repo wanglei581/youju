@@ -555,3 +555,122 @@ def test_cli_backup_verify_file(session, db_engine, tmp_path, monkeypatch, capsy
     assert "备份校验失败" in capsys.readouterr().out
     assert cli.main(["backup-verify"]) == 1
     assert "YOUJU_CLOUD_ENV" in capsys.readouterr().out
+
+
+def test_restore_drill_file_and_download(session, db_engine, tmp_path, monkeypatch, capsys):
+    from youju import cli, restore_drill
+
+    populate(session)
+    source = tmp_path / "backup.jsonl.gz"
+    source.write_bytes(_dump(db_engine))
+    with db_engine.connect() as conn:
+        before = {
+            table.name: conn.scalar(select(func.count()).select_from(table))
+            for table in Base.metadata.sorted_tables
+        }
+    monkeypatch.setattr(
+        cli, "get_settings", lambda: SimpleNamespace(database_url=TEST_DB_URL, cloud_env="test")
+    )
+    names = iter(["youju_drill_20261104120000_abcd", "youju_drill_20261104120000_abce"])
+    monkeypatch.setattr(restore_drill, "_database_name", lambda: next(names))
+
+    def download(client, env, dest):
+        assert env == "test"
+        dest.write_bytes(source.read_bytes())
+        return "backups/cloud-backup.jsonl.gz"
+
+    monkeypatch.setattr(restore_drill, "download_latest", download)
+    for arguments, name, filename in [
+        (["--file", str(source)], "youju_drill_20261104120000_abcd", source.name),
+        ([], "youju_drill_20261104120000_abce", "cloud-backup.jsonl.gz"),
+    ]:
+        assert cli.main(["restore-drill", *arguments]) == 0
+        output = capsys.readouterr().out
+        assert filename in output and "documents: 1" in output and "follows: 1" in output
+        assert "（北京时间）" in output and "+00:00" not in output
+        assert f"临时库 {name} 已删除" in output
+        with db_engine.connect() as conn:
+            assert conn.scalar(text("SELECT COUNT(*) FROM documents")) == 1
+            assert conn.scalar(text("SELECT COUNT(*) FROM follows")) == 1
+            assert before == {
+                table.name: conn.scalar(select(func.count()).select_from(table))
+                for table in Base.metadata.sorted_tables
+            }
+            assert not conn.scalar(
+                text("SELECT COUNT(*) FROM information_schema.schemata WHERE schema_name=:name"),
+                {"name": name},
+            )
+
+
+def test_restore_drill_invalid_header(session, db_engine, tmp_path, monkeypatch, capsys):
+    from youju import cli, restore_drill
+
+    name = "youju_drill_20261104120000_abcf"
+    monkeypatch.setattr(restore_drill, "_database_name", lambda: name)
+    monkeypatch.setattr(
+        cli, "get_settings", lambda: SimpleNamespace(database_url=TEST_DB_URL, cloud_env=None)
+    )
+    source = tmp_path / "bad.gz"
+    source.write_bytes(gzip.compress(b'{"format":"wrong"}\n'))
+    assert cli.main(["restore-drill", "--file", str(source)]) == 1
+    output = capsys.readouterr().out
+    assert "说明行格式不对" in output and f"临时库 {name} 已删除" in output
+    with db_engine.connect() as conn:
+        assert not conn.scalar(
+            text("SELECT COUNT(*) FROM information_schema.schemata WHERE schema_name=:name"),
+            {"name": name},
+        )
+
+
+def test_restore_drill_refuses_unsafe_targets(monkeypatch, capsys):
+    from youju import restore_drill
+
+    monkeypatch.setattr(restore_drill, "_database_name", lambda: "youju_drill_20261104120000_abcd")
+    monkeypatch.setattr(
+        restore_drill, "create_mysql_engine", lambda *args: pytest.fail("不能连接或创建数据库")
+    )
+    assert restore_drill.run("sqlite:///test.db", None, None) == 1
+    assert (
+        restore_drill.run(
+            "mysql+pymysql://root@localhost/youju_drill_20261104120000_abcd", None, None
+        )
+        == 1
+    )
+    assert "与当前库相同" in capsys.readouterr().out
+
+
+def test_restore_drill_cleanup_failure(session, db_engine, tmp_path, monkeypatch, capsys):
+    from youju import cli, restore_drill
+
+    name = "youju_drill_20261104120000_abd0"
+    monkeypatch.setattr(restore_drill, "_database_name", lambda: name)
+    monkeypatch.setattr(
+        cli, "get_settings", lambda: SimpleNamespace(database_url=TEST_DB_URL, cloud_env=None)
+    )
+    source = tmp_path / "bad.gz"
+    source.write_bytes(gzip.compress(b"{}\n"))
+    real_engine = restore_drill.create_mysql_engine
+
+    class FailingDrop:
+        def __init__(self, engine):
+            self.engine = engine
+            self.calls = 0
+
+        def begin(self):
+            self.calls += 1
+            if self.calls == 2:
+                raise RuntimeError("模拟删除失败")
+            return self.engine.begin()
+
+        def dispose(self):
+            self.engine.dispose()
+
+    monkeypatch.setattr(
+        restore_drill, "create_mysql_engine", lambda url: FailingDrop(real_engine(url))
+    )
+    try:
+        assert cli.main(["restore-drill", "--file", str(source)]) == 1
+        assert f"临时库 {name} 没删掉，请手动删除" in capsys.readouterr().out
+    finally:
+        with db_engine.begin() as conn:
+            conn.execute(text(f"DROP DATABASE IF EXISTS `{name}`"))
