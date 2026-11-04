@@ -866,16 +866,14 @@ def read_result(
     if ids is None:
         raise HTTPException(status_code=410, detail="结果依据暂时无法核验，请重新生成")
     # 每一页都复核公开范围和撤回状态，不把旧结果作为绕过下架的副本。
+    # 原文链接已失效（link_gone_at）不算撤回：通知照样公开，列表、详情、导出都只标一句，
+    # 这里也只给那几条标上 linkGone，不整份拒绝（11/4 完整测试 T4b：有一份失效，整份结果打不开）
     visible = (
         set(
             session.scalars(
                 select(Document.id)
                 .join(Source, Document.source_id == Source.id)
-                .where(
-                    Document.id.in_(ids),
-                    v1.public_condition(),
-                    Document.link_gone_at.is_(None),
-                )
+                .where(Document.id.in_(ids), v1.public_condition())
             )
         )
         if ids
@@ -883,6 +881,16 @@ def read_result(
     )
     if visible != set(ids):
         raise HTTPException(status_code=410, detail="结果依据已不可用，请重新生成")
+    gone = (
+        {
+            str(doc_id)
+            for doc_id in session.scalars(
+                select(Document.id).where(Document.id.in_(ids), Document.link_gone_at.is_not(None))
+            )
+        }
+        if ids
+        else set()
+    )
     if (cursor and not revision) or (revision and revision != content["revision"]):
         raise HTTPException(status_code=409, detail="结果版本已变化，请重新加载")
     all_items = content["items"]
@@ -890,6 +898,9 @@ def read_result(
         raise HTTPException(status_code=422, detail="结果页码无效")
     items, used = [], 0
     for item in all_items[cursor : cursor + 20]:
+        # 读的时候当场标：生成以后才失效的也标上；存着的结果不改
+        if item.get("documentId") in gone:
+            item = {**item, "linkGone": True}
         size = len(json.dumps(item, ensure_ascii=False).encode())
         if used + size > 200 * 1024:
             if not items:
