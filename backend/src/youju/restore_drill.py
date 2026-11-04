@@ -49,7 +49,8 @@ NAME = re.compile(r"youju_drill_(\d{14})_[0-9a-f]{4}")
 STALE_AFTER = timedelta(hours=1)
 GRANT_HINT = (
     "数据库账号没有建临时库的权限：请在云托管 MySQL 里用 root 执行 "
-    "backend/deploy/mysql_accounts.sql 第 ③ 节那一句授权，再重跑"
+    "backend/deploy/mysql_accounts.sql 第 ③ 节（先确认 SELECT @@partial_revokes; 是 0，"
+    "执行后用 SHOW GRANTS 核对），再重跑"
 )
 # 这几种信号（终端断开、实例停止、Ctrl+C）都转成异常，照常走删库
 SIGNALS = tuple(
@@ -98,19 +99,41 @@ def _drill_databases(server) -> list[str]:
         return [row[0] for row in rows if NAME.fullmatch(row[0])]
 
 
+def _in_use(server, name: str) -> bool:
+    """有没有会话正连着这个库。同一账号的会话不需要 PROCESS 权限也看得到，
+    另一个演练用的也是这个账号。"""
+    with server.connect() as conn:
+        return bool(
+            conn.scalar(
+                text("SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE DB = :name"),
+                {"name": name},
+            )
+        )
+
+
 def _made_at(name: str) -> datetime:
     stamp = NAME.fullmatch(name).group(1)
     return datetime.strptime(stamp, "%Y%m%d%H%M%S").replace(tzinfo=BEIJING)
 
 
-def _install_handlers() -> dict:
+def _install_handlers(state: dict) -> dict:
+    """终端断开、实例停止、Ctrl+C 转成 _Stopped。只在第一次动作：先把三种信号都改成忽略再抛，
+    之后再来的（bash 断线会连发两次 SIGHUP、连按 Ctrl+C）不会打断删库；state["stopping"] 置位后
+    （开始删库）也不再抛。本来就是忽略的（如用 nohup 跑）不覆盖（独立审阅 #440 第 2 轮）。"""
+
     def stop(signum, frame):
+        if state["stopping"]:
+            return
+        state["stopping"] = True
+        _set_handlers({sig: signal.SIG_IGN for sig in SIGNALS})
         raise _Stopped(signum)
 
     previous = {}
     for sig in SIGNALS:
         # 不在主线程时装不了，照常跑
         with contextlib.suppress(ValueError, OSError):
+            if signal.getsignal(sig) == signal.SIG_IGN:
+                continue
             previous[sig] = signal.signal(sig, stop)
     return previous
 
@@ -122,11 +145,14 @@ def _set_handlers(handlers: dict) -> None:
 
 
 def run(database_url: str, cloud_env: str | None, source: Path | None) -> int:
-    previous = _install_handlers()
+    state = {"stopping": False}
+    previous = _install_handlers(state)
     server = None
     target = None
     name = None
-    created = False
+    # 发出建库语句之前就置位（建好到置位之间来信号也不会漏删）；删的时候先看库在不在
+    attempted = False
+    existed = False
     deleted = False
     failure = None
     lines: list[str] = []
@@ -134,9 +160,9 @@ def run(database_url: str, cloud_env: str | None, source: Path | None) -> int:
         url = make_url(database_url)
         if url.get_backend_name() != "mysql" or not url.database:
             raise BackupError("只接受指定了当前库名的 MySQL 连接串")
-        name = _database_name()
-        if not NAME.fullmatch(name) or name.lower() == url.database.lower():
-            raise BackupError("临时库名不安全或与当前库相同")
+        # 连库之前就挡住：当前库本身像演练临时库时不跑（临时库名在建库前一刻才取）
+        if url.database.lower().startswith(PREFIX):
+            raise BackupError("当前库名以 youju_drill_ 开头，看起来就是演练临时库，不在它上面演练")
         if source is None and not cloud_env:
             raise BackupError("没有设置 YOUJU_CLOUD_ENV，无法下载备份")
         with tempfile.TemporaryDirectory() as directory:
@@ -195,12 +221,19 @@ def run(database_url: str, cloud_env: str | None, source: Path | None) -> int:
             server = create_mysql_engine(server_url)
             now = datetime.now(BEIJING)
             for old in _drill_databases(server):
-                if now - _made_at(old) > STALE_AFTER:
+                if now - _made_at(old) > STALE_AFTER and not _in_use(server, old):
                     _say(f"发现上次没删掉的临时库 {old}，先删掉")
                     with server.begin() as conn:
                         conn.execute(text(f"DROP DATABASE `{old}`"))
                 else:
-                    _say(f"有一个 1 小时内建的临时库 {old}，可能另一个演练正在跑，没动它")
+                    _say(
+                        f"有一个临时库 {old} 是 1 小时内建的或正在用，可能另一个演练正在跑，没动它"
+                    )
+            # 建库前一刻再取名：名字里的时间就是建库时间（删残留按它算）
+            name = _database_name()
+            if not NAME.fullmatch(name) or name.lower() == url.database.lower():
+                raise BackupError("临时库名不安全或与当前库相同")
+            attempted = True
             try:
                 with server.begin() as conn:
                     charset = "CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin"
@@ -209,7 +242,6 @@ def run(database_url: str, cloud_env: str | None, source: Path | None) -> int:
                 if _code(exc) in (1044, 1227):
                     raise BackupError(GRANT_HINT) from None
                 raise
-            created = True
             _say(f"已建临时库 {name}（演练结束会删掉）")
             target_url = url.set(database=name).render_as_string(hide_password=False)
             cfg = alembic_config(target_url)
@@ -255,17 +287,27 @@ def run(database_url: str, cloud_env: str | None, source: Path | None) -> int:
         else:
             failure = f"演练操作失败（{type(exc).__name__}）"
     finally:
-        # 删库期间不再响应中断：先删库，再写屏幕
-        _set_handlers({sig: signal.SIG_IGN for sig in previous})
+        # 删库期间不再响应中断：先置位、改成忽略（这两步之间万一来了第一个信号，接住再来一遍），
+        # 再删库，最后才写屏幕
+        while True:
+            try:
+                state["stopping"] = True
+                _set_handlers({sig: signal.SIG_IGN for sig in SIGNALS})
+                break
+            except _Stopped:
+                failure = failure or "演练被中断（终端断开、实例停止或按了 Ctrl+C）"
         try:
             if target is not None:
                 target.dispose()
-            if created:
+            if attempted:
                 try:
-                    with server.begin() as conn:
-                        conn.execute(text(f"DROP DATABASE `{name}`"))
-                    deleted = True
+                    existed = name in _drill_databases(server)
+                    if existed:
+                        with server.begin() as conn:
+                            conn.execute(text(f"DROP DATABASE `{name}`"))
+                        deleted = True
                 except Exception:
+                    existed = True
                     failure = failure or "清理临时库失败"
             if server is not None:
                 server.dispose()
@@ -273,9 +315,9 @@ def run(database_url: str, cloud_env: str | None, source: Path | None) -> int:
             _set_handlers(previous)
     for line in lines:
         _say(line)
-    if created and deleted:
+    if existed and deleted:
         _say(f"临时库 {name} 已删除")
-    elif created:
+    elif existed:
         _say(f"临时库 {name} 没删掉，请手动删除（下一次演练开头也会先删）")
     if failure:
         _say(f"恢复演练失败：{failure}")

@@ -675,7 +675,7 @@ def test_restore_drill_refuses_unsafe_targets(monkeypatch, capsys):
     assert restore_drill.run("sqlite:///test.db", None, None) == 1
     same = "mysql+pymysql://root@localhost/youju_drill_20261104120000_abcd"
     assert restore_drill.run(same, None, None) == 1
-    assert "与当前库相同" in capsys.readouterr().out
+    assert "看起来就是演练临时库" in capsys.readouterr().out
 
 
 def test_restore_drill_reports_undeleted_database(
@@ -756,7 +756,7 @@ def test_restore_drill_drops_stale_leftovers_only(session, db_engine, tmp_path, 
         assert restore_drill.run(TEST_DB_URL, None, source) == 0
         output = capsys.readouterr().out
         assert f"发现上次没删掉的临时库 {stale}，先删掉" in output
-        assert f"有一个 1 小时内建的临时库 {fresh}" in output
+        assert f"有一个临时库 {fresh} 是 1 小时内建的或正在用" in output
         with db_engine.connect() as conn:
             assert not _schemas(conn, stale)
             assert _schemas(conn, fresh)
@@ -790,6 +790,77 @@ def test_restore_drill_interrupted_still_drops(session, db_engine, tmp_path, mon
         assert not _schemas(conn, name)
     # 跑完把信号处理换回原来的
     assert signal.getsignal(signal.SIGTERM) == original
+
+
+def test_restore_drill_second_signal_and_nohup(session, db_engine, tmp_path, monkeypatch, capsys):
+    import signal
+
+    from youju import restore_drill
+
+    populate(session)
+    source = tmp_path / "backup.jsonl.gz"
+    source.write_bytes(_dump(db_engine))
+    real_restore = restore_drill.restore
+
+    def twice(engine, src):
+        # 实例停止时先 SIGTERM，紧接着终端断开 SIGHUP：第一个转成中断，第二个被忽略
+        signal.raise_signal(signal.SIGTERM)
+        raise AssertionError("SIGTERM 应该已经转成中断")
+
+    monkeypatch.setattr(restore_drill, "restore", twice)
+    original = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGHUP)}
+    assert restore_drill.run(TEST_DB_URL, None, source) == 1
+    output = capsys.readouterr().out
+    name = _drill_name(output)
+    assert "演练被中断" in output and f"临时库 {name} 已删除" in output
+    assert {sig: signal.getsignal(sig) for sig in original} == original
+
+    # nohup：SIGHUP 本来就是忽略，演练不覆盖它，断线也不打断
+    def hangup(engine, src):
+        signal.raise_signal(signal.SIGHUP)
+        return real_restore(engine, src)
+
+    monkeypatch.setattr(restore_drill, "restore", hangup)
+    previous = signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    try:
+        assert restore_drill.run(TEST_DB_URL, None, source) == 0, capsys.readouterr().out
+        assert "恢复演练成功" in capsys.readouterr().out
+        assert signal.getsignal(signal.SIGHUP) == signal.SIG_IGN
+    finally:
+        signal.signal(signal.SIGHUP, previous)
+
+
+def test_restore_drill_keeps_old_database_in_use(session, db_engine, tmp_path, capsys):
+    import secrets
+    from datetime import timedelta
+
+    from youju import restore_drill
+    from youju.backup import BEIJING
+
+    populate(session)
+    source = tmp_path / "backup.jsonl.gz"
+    source.write_bytes(_dump(db_engine))
+    old = f"youju_drill_{datetime.now(BEIJING) - timedelta(hours=3):%Y%m%d%H%M%S}_{secrets.token_hex(2)}"
+    with db_engine.begin() as conn:
+        conn.execute(text(f"CREATE DATABASE `{old}`"))
+    holder = create_mysql_engine(
+        __import__("sqlalchemy")
+        .make_url(TEST_DB_URL)
+        .set(database=old)
+        .render_as_string(hide_password=False)
+    )
+    try:
+        with holder.connect() as busy:
+            busy.execute(text("SELECT 1"))
+            assert restore_drill.run(TEST_DB_URL, None, source) == 0
+            output = capsys.readouterr().out
+            assert f"有一个临时库 {old} 是 1 小时内建的或正在用" in output
+            with db_engine.connect() as conn:
+                assert _schemas(conn, old)
+    finally:
+        holder.dispose()
+        with db_engine.begin() as conn:
+            conn.execute(text(f"DROP DATABASE IF EXISTS `{old}`"))
 
 
 def test_restore_drill_works_with_drill_only_grant(session, db_engine, tmp_path, capsys):

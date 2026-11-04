@@ -87,4 +87,6 @@ GRANT INSERT ON youju.ai_safety_hits TO 'youju_api'@'%';
 -- youju_drill_<北京时间>_<4 位随机>，恢复最新备份、核对，演练完删掉（终端断开、实例停止也会删；
 -- 万一没删掉，下一次演练开头先删）。只授这一类库名的权限（反斜杠是让下划线按字面匹配），
 -- 碰不到正式库 youju 以外的其他库，也不多给正式库任何权限。由创始人用 root 执行一次。
+-- 执行前先查：SELECT @@partial_revokes; 结果要是 0（是 1 时库名里的 % 和 _ 按字面匹配，这句授权落空，先告诉团队）。
 GRANT ALL PRIVILEGES ON `youju\_drill\_%`.* TO 'youju_admin'@'%';
+-- 执行后核对：SHOW GRANTS FOR 'youju_admin'@'%'; 里要有 `youju\_drill\_%`.* 这一行。
