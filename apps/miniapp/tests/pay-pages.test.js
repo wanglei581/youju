@@ -121,8 +121,12 @@ function passPage(options = {}) {
     '../../utils/consent.js': { loginOpen: () => true },
     '../../utils/data-tools.js': { toolConsent: () => Promise.resolve(options.agreed !== false) },
     '../../content/pay-terms.js': options.terms || FINAL_TERMS,
+    // AI 开没开：默认关着（首发版的样子）；测"不含 AI 次数"那句时传 options.ai
+    '../../utils/ai-access.js': options.ai || require('./helpers/ai-off.js'),
+    '../../utils/boost.js': require('../utils/boost.js'),
   }, { wx, setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout });
   if (options.before) options.before({ page, storage });
+  page.onLoad({});
   page.onShow();
   return { page, calls, urls, toasts, storage, clock };
 }
@@ -991,7 +995,9 @@ test('购买页写出现有使用期到哪天，3 天内到期改成到期提示
     const page = load('pages/pass/index.js', {
       '../../utils/api.js': api, '../../utils/consent.js': { loginOpen: () => true },
       '../../utils/data-tools.js': { toolConsent: () => Promise.resolve(true) }, '../../content/pay-terms.js': FINAL_TERMS,
+      '../../utils/ai-access.js': require('./helpers/ai-off.js'), '../../utils/boost.js': require('../utils/boost.js'),
     }, { wx: { getStorageSync() {}, setStorageSync() {}, removeStorageSync() {}, navigateTo() {}, showToast() {} } });
+    page.onLoad({});
     page.onShow();
     await flush();
     assert.match(shown('pages/pass/index.wxml', page.data), pattern);
@@ -1269,19 +1275,74 @@ test('购买页写清怎么算次数和苹果手机的付款条件；工具页�
   assert.doesNotMatch(shown('pages/advisor-form/index.wxml', paid.page.data), /交一份名单算一次/);
 });
 
-test('购买页说明 AI 次数并按服务端额度显示免费次数，取不到不猜', async () => {
-  for (const limit of [3, 10]) {
+test('购买页的免费次数照服务端额度写，取不到或不是正整数时写去工具中心看，不留"每次 50 家以内"像不限次数（agy 审阅 #436）', async () => {
+  for (const limit of [3, 5]) {
     const h = passPage({ advisorStatus: () => Promise.resolve({ pass: { active: false }, quota: { track: { limit } } }) });
     await flush();
     const text = shown('pages/pass/index.wxml', h.page.data);
-    assert.equal((text.match(/不含 AI 次数，AI 每天免费次数照旧/g) || []).length, 1);
-    assert.match(text, new RegExp(`客户相关通知表：每月 ${limit} 次，每次 50 家以内`));
+    assert.match(text, new RegExp(`客户相关通知表：每月 ${limit} 次，每次 50 家以内（交一份名单算一次，系统出错、没出结果的不算）`));
+    assert.doesNotMatch(text, /见工具中心|申报季/);
   }
-  for (const advisorStatus of [() => Promise.reject(new Error('离线')), () => Promise.resolve({ quota: { track: { limit: '10' } } })]) {
+  for (const advisorStatus of [() => Promise.reject(new Error('离线')), () => Promise.resolve({ quota: { track: { limit: '10' } } }),
+    () => Promise.resolve({ quota: { track: { limit: 0 } } }), () => Promise.resolve({ quota: { track: { limit: -1 } } }), () => Promise.resolve({})]) {
     const h = passPage({ advisorStatus });
     await flush();
-    assert.doesNotMatch(shown('pages/pass/index.wxml', h.page.data), /客户相关通知表：每月/);
+    const text = shown('pages/pass/index.wxml', h.page.data);
+    assert.match(text, /客户相关通知表：每月免费次数见工具中心，每次 50 家以内（交一份名单算一次/);
+    assert.doesNotMatch(text, /每月 -?\d+ 次/);
   }
+});
+
+test('申报季加量期间购买页写清起止和之后回到几次，和首页、工具中心同一句；提前公布时写哪天开始（独立审阅 #436，D-070 ⑤）', async () => {
+  const season = { start: '2026-12-01', end: '2026-12-31', limit: 5, normalLimit: 3, maxRows: 50 };
+  const boost = require('../utils/boost.js');
+  for (const active of [true, false]) {
+    const status = { pass: { active: false }, quota: { track: { limit: active ? 5 : 3 } }, season: { ...season, active } };
+    const h = passPage({ advisorStatus: () => Promise.resolve(status) });
+    await flush();
+    const text = shown('pages/pass/index.wxml', h.page.data);
+    assert.equal(h.page.data.seasonLine, boost.seasonLine(status.season));
+    if (active) {
+      assert.match(text, /客户相关通知表：每月 5 次，每次 50 家以内/);
+      assert.match(text, /申报季加量：12月1日至12月31日，免费次数每月 5 次（每次仍 50 家以内）；1月1日起回到每月 3 次/);
+    } else {
+      assert.match(text, /客户相关通知表：每月 3 次，每次 50 家以内/);
+      assert.match(text, /申报季加量将于12月1日开始：12月1日至12月31日免费次数每月 5 次（每次仍 50 家以内）/);
+    }
+  }
+  // 额度接口没答上：申报季那句也不写
+  const h = passPage({ advisorStatus: () => Promise.reject(new Error('离线')) });
+  await flush();
+  assert.doesNotMatch(shown('pages/pass/index.wxml', h.page.data), /申报季/);
+});
+
+test('"不含 AI 次数"只在 AI 对这个人开着、后台确认过时显示；AI 关着、只有本机记录没确认时页面没有 AI 字样（独立审阅 #436，D-075 ①）', async () => {
+  const listeners = new Set();
+  let state = { visible: true, confirmed: false, available: true };
+  const ai = {
+    current: () => ({ ...state }),
+    subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); },
+    ensure: () => Promise.resolve({ ...state }),
+  };
+  const set = (next) => { state = { ...state, ...next }; listeners.forEach((fn) => fn({ ...state })); };
+  const h = passPage({ ai, advisorStatus: () => Promise.resolve({ pass: { active: false }, quota: { track: { limit: 3 } } }) });
+  await flush();
+  const count = () => (shown('pages/pass/index.wxml', h.page.data).match(/\bAI\b/g) || []).length;
+  // 本机记着"上次是显示的"、后台还没答：不写
+  assert.equal(count(), 0);
+  set({ confirmed: true });
+  assert.equal((shown('pages/pass/index.wxml', h.page.data).match(/不含 AI 次数，AI 每天免费次数照旧/g) || []).length, 1);
+  assert.equal(count(), 2);
+  // 后台说关了：马上收起
+  set({ visible: false });
+  assert.equal(count(), 0);
+  // 离开页面后不再跟着变
+  h.page.onUnload();
+  assert.equal(listeners.size, 0);
+  // 默认（AI 关着）的购买页没有 AI 字样
+  const off = passPage({ advisorStatus: () => Promise.resolve({ pass: { active: false }, quota: { track: { limit: 3 } } }) });
+  await flush();
+  assert.doesNotMatch(shown('pages/pass/index.wxml', off.page.data), /\bAI\b/);
 });
 
 test('小程序的页面和工具代码里不再有"客户工作台"，改叫"批量工具"，防止改名漏掉', () => {
@@ -1617,7 +1678,7 @@ test('收费方案第 9 项：次数说明不重复额度中的家数', () => {
 test('审核规范 3.3.1：登录没开放时订单页、购买页回首页，跳转失败再重新启动，不出现暂未开放', () => {
   for (const file of ['orders', 'pass']) {
     const urls = []; const calls = [];
-    const page = load(`pages/${file}/index.js`, { '../../utils/api.js': { payProducts: () => calls.push('products'), payOrders: () => calls.push('orders') }, '../../utils/consent.js': { loginOpen: () => false }, '../../content/pay-terms.js': FINAL_TERMS, '../../utils/data-tools.js': {} }, { wx: { switchTab: (v) => { urls.push(v.url); v.fail(); }, reLaunch: (v) => urls.push(v.url) } });
+    const page = load(`pages/${file}/index.js`, { '../../utils/api.js': { payProducts: () => calls.push('products'), payOrders: () => calls.push('orders') }, '../../utils/consent.js': { loginOpen: () => false }, '../../content/pay-terms.js': FINAL_TERMS, '../../utils/data-tools.js': {}, '../../utils/ai-access.js': require('./helpers/ai-off.js'), '../../utils/boost.js': {} }, { wx: { switchTab: (v) => { urls.push(v.url); v.fail(); }, reLaunch: (v) => urls.push(v.url) } });
     page.onShow(); assert.deepEqual(urls, ['/pages/home/index', '/pages/home/index']); assert.deepEqual(calls, []);
     assert.equal(shown(`pages/${file}/index.wxml`, page.data).includes('暂未开放'), false);
   }

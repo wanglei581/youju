@@ -3,6 +3,20 @@ const pay = require('../../utils/pay.js');
 const payTerms = require('../../content/pay-terms.js');
 const { loginOpen } = require('../../utils/consent.js');
 const { toolConsent } = require('../../utils/data-tools.js');
+const access = require('../../utils/ai-access.js');
+const boost = require('../../utils/boost.js');
+
+// 包含什么里"不含 AI 次数"那句：只在 AI 对这个人开着、后台确认过时显示（和使用帮助一样，D-075 ①：AI 关着时页面没有 AI 字样）
+const aiOn = (state) => !!(state && state.visible === true && state.confirmed === true);
+// 不买也能用里客户相关通知表那一句：次数照额度接口（/advisor/status 的 quota.track.limit；申报季加量期间是加量后的次数，
+// 期限由下一句 seasonLine 写清，D-070 ⑤）。取不到、不是正整数时不猜次数，写去工具中心看——
+// 只写"每次 50 家以内"像是不限次数（agy 审阅 #436）
+const COUNT_RULE = '交一份名单算一次，系统出错、没出结果的不算';
+function freeLineOf(limit) {
+  return Number.isInteger(limit) && limit > 0
+    ? `客户相关通知表：每月 ${limit} 次，每次 50 家以内（${COUNT_RULE}）`
+    : `客户相关通知表：每月免费次数见工具中心，每次 50 家以内（${COUNT_RULE}）`;
+}
 
 // 付款后还没确认完的订单记在本机。有它在就不下新单，先接着查它：
 // 确认超时后再点"支付"，不能变成重复扣款（Codex 复审，10/10）。
@@ -59,7 +73,13 @@ Page({
     termsFinal: pay.termsFinal(payTerms), invoiceText: '',
     checked: false, busy: false, message: '', payError: false, confirmed: false, closedNote: '',
     // 付款结果没确认到、或转了人工：消息下面放"查看我的订单"
-    ordersLink: false, freeLimit: null },
+    ordersLink: false,
+    // freeLine、seasonLine：不买也能用里的次数和申报季加量（额度接口答复以后才有）；aiEnabled：见上面 aiOn
+    freeLine: '', seasonLine: '', aiEnabled: false },
+  onLoad() {
+    this.setData({ aiEnabled: aiOn(access.current()) });
+    this.unsubscribeAi = access.subscribe((state) => this.setData({ aiEnabled: aiOn(state) }));
+  },
   onShow() {
     this.visible = true;
     if (!this.data.loginOpen) { goHome(); return; }
@@ -69,16 +89,18 @@ Page({
       this.poller.start(this.payDeadline);
     }
     if (!this.data.busy) this.load();
+    // 回到前台时再问一次 AI 对这个人开没开（多久真问一次由 ensure 管）
+    access.ensure();
   },
   onHide() {
     this.visible = false;
     if (this.poller && this.poller.isActive()) { this.poller.stop(); this.payResume = true; }
   },
-  onUnload() { this.onHide(); this.unloaded = true; this.payResume = false; this.loadSerial = (this.loadSerial || 0) + 1; },
+  onUnload() { this.onHide(); this.unloaded = true; this.payResume = false; this.loadSerial = (this.loadSerial || 0) + 1; if (this.unsubscribeAi) this.unsubscribeAi(); },
   load() {
     if (!this.data.loginOpen) { goHome(); return; }
     const serial = this.loadSerial = (this.loadSerial || 0) + 1;
-    this.setData({ loading: true, error: '', closedNote: '', freeLimit: null });
+    this.setData({ loading: true, error: '', closedNote: '' });
     api.payProducts().then((res) => {
       if (serial !== this.loadSerial) return;
       const tiers = pay.normalizeProducts(res).map(pay.tierView);
@@ -95,8 +117,8 @@ Page({
         const active = !!(status.pass && status.pass.active);
         const limit = status.quota && status.quota.track && status.quota.track.limit;
         this.setData({ expires: active ? pay.date(status.pass.expiresAt) : '', soon: pay.expiryNotice(status.pass),
-          freeLimit: Number.isInteger(limit) && limit >= 0 ? limit : null });
-      }).catch(() => { if (serial === this.loadSerial) this.setData({ expires: '', soon: '', freeLimit: null }); });
+          freeLine: freeLineOf(limit), seasonLine: boost.seasonLine(status.season) });
+      }).catch(() => { if (serial === this.loadSerial) this.setData({ expires: '', soon: '', freeLine: freeLineOf(null), seasonLine: '' }); });
     }).catch((err) => {
       if (serial !== this.loadSerial) return;
       if (err.status === 404) { this.closed(); return; }
