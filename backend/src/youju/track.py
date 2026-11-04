@@ -549,7 +549,7 @@ def export_track_excel(report: TrackReport, output: str | Path) -> int:
     detail.title = "客户相关通知"
     note = (
         "第三方整理 · 非政府平台；近 90 天发布的申报通知；"
-        f"“{DEADLINE_HEADER}”列中标“原文摘录”的未经人工核对；"
+        f"“截止核对情况”列写“原文摘录”的，“{DEADLINE_HEADER}”列里的日期未经人工核对；"
         f"数据截至 {_beijing_minute(report.generated_at)}"
     )
     # 截止日期一列只写日期（原文写了具体时间的带上时间）。没核对的留空，在“截止核对情况”里写明：

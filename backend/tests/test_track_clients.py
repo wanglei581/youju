@@ -313,7 +313,7 @@ def test_track_without_verified_deadlines_and_excludes_only_closed(session, monk
 
 def test_track_marks_machine_excerpts(session, monkeypatch, tmp_path):
     """D-061：8–30 天的机器摘录写日期、标"原文摘录，未经人工核对"并附原句；汇总里 7 天只认人工核对的，
-    14、30 天另含机器摘录的；能看到日期的一条都没有时写"未核对"。"""
+    14、30 天另含原文摘录的；能看到日期的一条都没有时写"未核对"。"""
     stamp = datetime(2026, 10, 12, 9, tzinfo=BJ)
     monkeypatch.setattr(v1, "now", lambda: stamp)
     source = Source(
