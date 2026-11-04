@@ -17,8 +17,14 @@ function clear() {
   try { wx.removeStorageSync(KEY); return true; } catch (e) { return false; }
 }
 
-function removeAdvisorTask(id) {
-  try { wx.setStorageSync(KEY, list().filter((r) => r.source !== 'advisor' || String(r.taskId) !== String(id))); return true; } catch (e) { return false; }
+// 删掉批量工具任务时：去掉指向它的导出记录（11/4 完整测试 T7），本机那份文件也一起删
+// （removeFile 由调用方传 exporter.remove，免得两个模块互相引用；只删本次导出目录里的文件）
+function removeAdvisorTask(id, removeFile) {
+  const all = list();
+  const gone = all.filter((r) => r.source === 'advisor' && String(r.taskId) === String(id));
+  if (!gone.length) return true;
+  if (typeof removeFile === 'function') gone.forEach((r) => { if (r.path) removeFile(r.path); });
+  try { wx.setStorageSync(KEY, all.filter((r) => !gone.includes(r))); return true; } catch (e) { return false; }
 }
 
 module.exports = { list, add, clear, removeAdvisorTask };

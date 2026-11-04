@@ -162,10 +162,12 @@ test('advisor原生结果分页保留权限错误，旧任务不能伪造为有�
 });
 
 test('批量结果区分汇总与明细，兼容旧接口', async () => {
-  for (const summaryCount of [3, undefined]) {
-    const p = load('results', { advisorReading: async () => result({ kind: 'track', total: 6, rowCount: 3, summaryCount }) });
+  // 接口给了汇总条数：分开写；旧接口没给（或不合理）：不拆，照旧写“共 N 行”（不能用 rowCount 推，会把明细和汇总算反）
+  for (const [summaryCount, pattern] of [[3, /明细 3 行 · 汇总 3 行/], [2, /明细 109 行 · 汇总 2 行/], [undefined, /共 6 行/], [0, /共 6 行/], [99, /共 6 行/]]) {
+    const total = summaryCount === 2 ? 111 : 6;
+    const p = load('results', { advisorReading: async () => result({ kind: 'track', total, rowCount: summaryCount === 2 ? 2 : 3, summaryCount }) });
     p.onLoad({ mode: 'advisor', taskId: '8' }); await p.onShow();
-    assert.match(textOf(render('pages/results/index.wxml', p.data)), /明细 3 行 · 汇总 3 行/);
+    assert.match(textOf(render('pages/results/index.wxml', p.data)), pattern, String(summaryCount));
   }
 });
 

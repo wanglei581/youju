@@ -874,5 +874,6 @@ def applicable_region(
     if province == "国家":
         return "全国"
     if level == "区县级" and city and district:
-        return " · ".join(dict.fromkeys([province, city, district]))
-    return f"{province} · {city}" if level == "市级" and city else province
+        # 地名内部紧排“·”（广东·广州），字段之间才用“ · ”（广东 · 省级、广东·广州 · 科技局），不改
+        return "·".join(dict.fromkeys([province, city, district]))
+    return f"{province}·{city}" if level == "市级" and city else province

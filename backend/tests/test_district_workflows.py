@@ -193,7 +193,7 @@ def test_district_needs_parents_and_company_display():
         {"company": company.model_dump(mode="json")},
     )
     assert shown["rows"][0]["company"][0]["value"] == "北京 · 朝阳区"
-    assert applicable_region("北京", "区县级", "北京", "朝阳区") == "北京 · 朝阳区"
+    assert applicable_region("北京", "区县级", "北京", "朝阳区") == "北京·朝阳区"
 
 
 def test_compare_export_preserves_source_district_not_entry_region(
@@ -339,15 +339,15 @@ def test_actual_excel_word_keep_verified_original_quote(
     session.commit()
     items = exports._items(session, [str(doc.id)], excerpts=excerpts)
     assert items[0].deadline_quote == evidence
-    assert items[0].region == "山东 · 青岛 · 市南区"
+    assert items[0].region == "山东·青岛·市南区"
     sheet = load_workbook(BytesIO(exports._xlsx(items, "2026-10-15", excerpts)))["文件清单"]
     row = dict(zip([c.value for c in sheet[1]], [c.value for c in sheet[2]], strict=True))
     assert (row["截止原文句子"] or "") == evidence
-    assert row["地区"] == "山东 · 青岛 · 市南区"
+    assert row["地区"] == "山东·青岛·市南区"
     word = WordDocument(BytesIO(exports._docx(items, "2026-10-15", excerpts)))
     fields = {r.cells[0].text: r.cells[1].text for r in word.tables[1].rows}
     assert fields["截止原文句子"] == evidence
-    assert fields["地区"] == "山东 · 青岛 · 市南区"
+    assert fields["地区"] == "山东·青岛·市南区"
 
 
 def test_district_changes_do_not_share_repost_identity_or_deadline_change_target(

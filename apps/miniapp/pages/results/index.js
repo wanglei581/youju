@@ -88,7 +88,8 @@ Page({
       this.revision = res.revision;
       const now = new Date();
       const items = this.data.advisor ? res.items : res.items.map((item) => catalogueItem(item, now));
-      const summaryCount = Number.isInteger(res.summaryCount) ? res.summaryCount : Math.max(0, res.total - (res.rowCount || res.total));
+      // 接口给的汇总条数（旧接口没有：不拆，照旧写“共 N 行”；agy 审阅 #441：用 rowCount 推会把明细和汇总算反）
+      const summaryCount = Number.isInteger(res.summaryCount) && res.summaryCount > 0 && res.summaryCount <= res.total ? res.summaryCount : 0;
       this.setData({ result: { ...res, items, summaryCount, generatedAtText: generatedTime(res.generatedAt) }, page: this.cursorIndex + 1, nextCursor: next });
     }).catch((err) => {
       if (!current()) return;

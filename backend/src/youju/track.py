@@ -351,7 +351,7 @@ def _province_match(profile: CustomerProfile, source: Source) -> bool:
 
 
 VERIFIED_TEXT = "已人工核对"
-EXCERPT_TEXT = "机器摘录，未经人工核对"
+EXCERPT_TEXT = "原文摘录，未经人工核对"
 UNVERIFIED_TEXT = "未核对，请以原文为准"
 UNVERIFIED_SUMMARY = "未核对"
 
@@ -549,7 +549,7 @@ def export_track_excel(report: TrackReport, output: str | Path) -> int:
     detail.title = "客户相关通知"
     note = (
         "第三方整理 · 非政府平台；近 90 天发布的申报通知；"
-        f"“{DEADLINE_HEADER}”列中标“机器摘录”的未经人工核对；"
+        f"“{DEADLINE_HEADER}”列中标“原文摘录”的未经人工核对；"
         f"数据截至 {_beijing_minute(report.generated_at)}"
     )
     # 截止日期一列只写日期（原文写了具体时间的带上时间）。没核对的留空，在“截止核对情况”里写明：
@@ -627,7 +627,7 @@ def export_track_excel(report: TrackReport, output: str | Path) -> int:
         1,
         1,
         _safe_cell(
-            note + "；“7 天内截止”只数人工核对过的，“14 天内”“30 天内”另含机器摘录的；"
+            note + "；“7 天内截止”只数人工核对过的，“14 天内”“30 天内”另含原文摘录的；"
             "“截止未核对的”也可能快截止，请看原文"
         ),
     )

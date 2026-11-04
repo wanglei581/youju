@@ -53,7 +53,7 @@ function myData({ tasks = [], pages = APP_PAGES, extra = {}, remove, withdrawn =
   const page = load('pages/my-data/index.js', {
     '../../utils/api.js': api, '../../utils/conditions.js': conditions,
     '../../utils/consent.js': { loginOpen: () => true, remindAny: () => false, withdrawAccount: (has) => { withdrawn.push(has); return Promise.resolve(false); } },
-    '../../utils/advisor.js': advisor, '../../utils/pages.js': pagesOf(pages), '../../utils/exports.js': { removeAdvisorTask: (id) => { calls.removedExport = id; } },
+    '../../utils/advisor.js': advisor, '../../utils/pages.js': pagesOf(pages), '../../utils/exports.js': { removeAdvisorTask: (id) => { calls.removedExport = id; } }, '../../utils/exporter.js': { remove: () => true },
   }, { wx: { setClipboardData: ({ data, success }) => { copied.push(JSON.parse(data)); if (success) success(); }, showToast: (o) => toasts.push(o.title),
     showModal: (m) => { modal = m; m.success({ confirm: true }); }, navigateTo() { assert.fail('我的数据里删记录不跳到别的页面'); } } });
   return { page, raw, calls, copied, toasts, modal: () => modal, view: () => render('pages/my-data/index.wxml', page.data) };

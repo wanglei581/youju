@@ -22,7 +22,9 @@ BJ = ZoneInfo("Asia/Shanghai")
 def test_track_keeps_input_order_in_native_and_excel(session, tmp_path):
     from youju.native_results import build
 
-    names = ["丙公司", "乙公司", "甲公司"]
+    # 按名称排会变成丙、乙、甲（码位：丙 < 乙 < 甲）；结果要照填写的甲、乙、丙
+    names = ["甲公司", "乙公司", "丙公司"]
+    assert sorted(names) != names
     report = track_clients(session, [CustomerProfile(name, "北京") for name in names])
     assert [client.customer_name for client in report.clients] == names
     native = build("track", report)
@@ -310,7 +312,7 @@ def test_track_without_verified_deadlines_and_excludes_only_closed(session, monk
 
 
 def test_track_marks_machine_excerpts(session, monkeypatch, tmp_path):
-    """D-061：8–30 天的机器摘录写日期、标"机器摘录，未经人工核对"并附原句；汇总里 7 天只认人工核对的，
+    """D-061：8–30 天的机器摘录写日期、标"原文摘录，未经人工核对"并附原句；汇总里 7 天只认人工核对的，
     14、30 天另含机器摘录的；能看到日期的一条都没有时写"未核对"。"""
     stamp = datetime(2026, 10, 12, 9, tzinfo=BJ)
     monkeypatch.setattr(v1, "now", lambda: stamp)
@@ -359,13 +361,13 @@ def test_track_marks_machine_excerpts(session, monkeypatch, tmp_path):
     session.commit()
     report = track_clients(session, [CustomerProfile("客户", "北京")])
     [item] = report.items
-    assert item.as_dict()["deadline_status"] == "机器摘录，未经人工核对"
+    assert item.as_dict()["deadline_status"] == "原文摘录，未经人工核对"
     assert item.as_dict()["deadline_quote"] == quote and item.remaining_days == 20
     output = tmp_path / "excerpt.xlsx"
     export_track_excel(report, output)
     book = load_workbook(output)
     assert book["客户相关通知"]["H2"].value == "截止日期（以原文为准）"
     row = [cell.value for cell in book["客户相关通知"][3]]
-    assert row[5:10] == ["机器摘录，未经人工核对", "企业申报截止", "2026-11-01", quote, 20]
+    assert row[5:10] == ["原文摘录，未经人工核对", "企业申报截止", "2026-11-01", quote, 20]
     summary = [cell.value for cell in book["汇总"][3]]
     assert summary[:7] == ["客户", 1, 0, "未核对", 0, 1, 1]

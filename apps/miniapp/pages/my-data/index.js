@@ -206,9 +206,14 @@ Page({
       confirmColor: '#E5484D',
       success: (res) => {
         if (!res.confirm) return;
+        const forget = () => { if (kind === 'task') require('../../utils/exports.js').removeAdvisorTask(id, require('../../utils/exporter.js').remove); };
         call(id)
-          .then(() => { if (kind === 'task') require('../../utils/exports.js').removeAdvisorTask(id); wx.showToast({ title: '已删除', icon: 'none' }); this.load(); })
-          .catch((err) => wx.showToast({ title: err.message || '没删成，请稍后再试', icon: 'none' }));
+          .then(() => { forget(); wx.showToast({ title: '已删除', icon: 'none' }); this.load(); })
+          .catch((err) => {
+            // 已经没有这条了（别处删过）：本机记录也清掉，当作删好了
+            if (err && err.status === 404) { forget(); wx.showToast({ title: '已删除', icon: 'none' }); this.load(); return; }
+            wx.showToast({ title: err.message || '没删成，请稍后再试', icon: 'none' });
+          });
       },
     });
   },
