@@ -232,10 +232,10 @@ test('任务中心取消、删除按任务身份调用；下载遇到下架响�
   const task = { id: 5, kind: 'compare', status: 'done', hasFile: true, rowCount: 2 };
   const api = { advisorCapabilities: () => Promise.resolve(caps()), advisorTasks: () => Promise.resolve({ items: [task] }),
     cancelAdvisorTask: (id) => { calls.push(['cancel', id]); return Promise.resolve(); }, deleteAdvisorTask: (id) => { calls.push(['delete', id]); return Promise.resolve(); } };
-  const page = load('pages/advisor-tasks/index.js', { '../../utils/api.js': api, '../../utils/advisor.js': helpers, '../../utils/data-tools.js': { openResult: () => Promise.reject(Object.assign(new Error('结果已下架，请重新生成'), { status: 410 })) } }, { wx: { setNavigationBarTitle() {}, showModal: (o) => o.success({ confirm: true }) } });
+  const page = load('pages/advisor-tasks/index.js', { '../../utils/api.js': api, '../../utils/advisor.js': helpers, '../../utils/exports.js': { removeAdvisorTask: (id, removeFile) => calls.push(['removeExport', id, typeof removeFile]) }, '../../utils/exporter.js': { remove: () => true }, '../../utils/data-tools.js': { openResult: () => Promise.reject(Object.assign(new Error('结果已下架，请重新生成'), { status: 410 })) } }, { wx: { setNavigationBarTitle() {}, showModal: (o) => o.success({ confirm: true }) } });
   page.onShow(); await flush(); page.download(event({ id: 5 })); await flush();
   assert.equal(page.data.items[0].downloadable, false); assert.match(page.data.actionError, /已下架/); assert.equal(page.data.busyId, null);
-  page.cancel(event({ id: 5 })); await flush(); page.remove(event({ id: 5 })); await flush(); assert.deepEqual(calls, [['cancel', 5], ['delete', 5]]); page.onUnload();
+  page.cancel(event({ id: 5 })); await flush(); page.remove(event({ id: 5 })); await flush(); assert.deepEqual(calls, [['cancel', 5], ['delete', 5], ['removeExport', 5, 'function']]); page.onUnload();
 });
 
 test('D-118：关掉 compare 以后，旧的 compare 任务照样在我的记录里能看能下，只是不给重新提交', async () => {

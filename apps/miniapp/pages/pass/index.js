@@ -63,7 +63,7 @@ function goHome() {
   wx.switchTab({ url: '/pages/home/index', fail: () => wx.reLaunch({ url: '/pages/home/index' }) });
 }
 // 停卖时还留在本页的情形：刚付过款、或还有一笔待确认——不送回首页，告诉他去订单页看
-const CLOSED_NOTE = '现在没有在售的档位。已付款的订单可以在"我的 → 我的订单"查看。';
+const CLOSED_NOTE = '现在没有在售的档位。已付款的订单可以在“我的 → 我的订单”查看。';
 
 Page({
   // 没有沙箱了（创始人 10/29：付款一律现网、真扣钱）：协议定稿、写明了发票才显示价格和付款按钮

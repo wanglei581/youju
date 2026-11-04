@@ -114,7 +114,7 @@ Page({
       const day = pay.monthDay(quota.pass.expiresAt);
       this.setData({ payCard: { usedUp: false, quotaLine: `批量工具使用期${day ? `到 ${day}` : '内'}：客户相关通知表不限次数，${rows}`,
         // 取不到价格时只写到期日，不放买不了的"续买"按钮（Codex 第二轮）
-        offerLine: this.offer ? `再买一次接着往后顺延：${this.offer.line}，一次付清，到期不再扣钱` : '', button: this.offer ? '续买批量工具' : '' } });
+        offerLine: this.offer && !quota.trial.trialActive ? `再买一次接着往后顺延：${this.offer.line}，一次付清，到期不再扣钱` : '', button: this.offer ? '续买批量工具' : '' } });
       return;
     }
     if (!this.offer) { this.setData({ payCard: null }); return; }
@@ -124,7 +124,7 @@ Page({
     const quotaLine = !quota ? '' : quota.trial.trialActive ? boost.trialLine(quota.trial)
       : usedUp ? '本月免费次数已用完，下月 1 日恢复'
         : `本月免费：${left('通知表', quota.track)}，${rows}`;
-    this.setData({ payCard: { usedUp, quotaLine, offerLine: `要一次处理更多家：${this.offer.line}，客户相关通知表不限次数，每次 500 家以内；一次付清，到期不再扣钱`, button: '了解批量工具' } });
+    this.setData({ payCard: { usedUp, quotaLine, offerLine: quota && quota.trial.trialActive ? '' : `要一次处理更多家：${this.offer.line}，客户相关通知表不限次数，每次 500 家以内；一次付清，到期不再扣钱`, button: '了解批量工具' } });
   },
   // 家数上限已在额度说明中列出，这里只解释怎么算次数。
   countLine() {

@@ -151,8 +151,24 @@ test('advisor原生结果分页保留权限错误，旧任务不能伪造为有�
   assert.doesNotMatch(textOf(render('pages/results/index.wxml', p.data)), /来源地址|example\.gov\.cn/);
   await p.next(); assert.deepEqual(calls[1], ['8', { cursor: '20', revision: 'r1' }]);
   p.onHide(); expired = true; await p.onShow(); assert.equal(p.data.result, null); assert.equal(p.data.error, '结果已过期');
+  assert.match(textOf(render('pages/results/index.wxml', p.data)), /返回/);
+  assert.doesNotMatch(textOf(render('pages/results/index.wxml', p.data)), /重试/);
+  const missing = load('results', { advisorReading: async () => { throw Object.assign(new Error('已删除'), { status: 404 }); } });
+  missing.onLoad({ mode: 'advisor', taskId: '1' }); await missing.onShow();
+  assert.equal(missing.data.permanentError, true);
+  assert.doesNotMatch(textOf(render('pages/results/index.wxml', missing.data)), /重试/);
   const old = load('results', { advisorReading: async () => { throw Object.assign(new Error('旧结果未生成站内阅读内容，请重新生成'), { status: 409 }); } });
   old.onLoad({ mode: 'advisor', taskId: '1' }); await old.onShow(); assert.equal(old.data.result, null); assert.match(old.data.error, /重新生成/);
+});
+
+test('批量结果区分汇总与明细，兼容旧接口', async () => {
+  // 接口给了汇总条数：分开写；旧接口没给（或不合理）：不拆，照旧写“共 N 行”（不能用 rowCount 推，会把明细和汇总算反）
+  for (const [summaryCount, pattern] of [[3, /明细 3 行 · 汇总 3 行/], [2, /明细 109 行 · 汇总 2 行/], [undefined, /共 6 行/], [0, /共 6 行/], [99, /共 6 行/]]) {
+    const total = summaryCount === 2 ? 111 : 6;
+    const p = load('results', { advisorReading: async () => result({ kind: 'track', total, rowCount: summaryCount === 2 ? 2 : 3, summaryCount }) });
+    p.onLoad({ mode: 'advisor', taskId: '8' }); await p.onShow();
+    assert.match(textOf(render('pages/results/index.wxml', p.data)), pattern, String(summaryCount));
+  }
 });
 
 test('批量工具结果里原文链接已失效的那条只标一句，照常能看、能进文件详情；其他条不标（11/4 完整测试 T4b）', async () => {

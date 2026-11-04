@@ -33,7 +33,7 @@
         <!-- 暂不可查询：条件原样保留，点卡片或下面的链接回搜索修改；不写"没有新文件" -->
         <view wx:if="{{item.unavailable}}" class="sub-left">{{item.queryMessage}}</view>
         <text wx:if="{{mode === 'live'}}" class="link" data-id="{{item.id}}" catchtap="searchFollow">{{item.unavailable ? '回搜索修改条件' : '按此条件搜索'}}</text>
-        <view wx:if="{{mode === 'live' && remindOpen && remindLeft}}" class="sub-left {{remindLeft[item.id] ? 'sub-left--on' : ''}}">{{remindLeft[item.id] ? '微信提醒还剩 ' + remindLeft[item.id] + ' 次' : '未订阅微信提醒，点"提醒"订阅'}}</view>
+        <view wx:if="{{mode === 'live' && remindOpen && remindLeft}}" class="sub-left {{remindLeft[item.id] ? 'sub-left--on' : ''}}">{{remindLeft[item.id] ? '微信提醒还剩 ' + remindLeft[item.id] + ' 次' : '未订阅微信提醒，点“提醒”订阅'}}</view>
       </view>
       <text wx:if="{{managing}}" class="sub-del" data-id="{{item.id}}" data-name="{{item.name}}" catchtap="remove" aria-role="button">删除</text>
       <block wx:else>
@@ -55,7 +55,7 @@
   <view wx:if="{{remindOpen}}" class="card remind">
     <view class="remind-main">
       <view class="remind-title">微信提醒</view>
-      <view class="muted remind-text">按次订阅：在关注旁点"提醒"，这个关注有新文件时用微信提醒你一次；想继续收到，提醒后再点一次。</view>
+      <view class="muted remind-text">按次订阅：在关注旁点“提醒”，这个关注有新文件时用微信提醒你一次；想继续收到，提醒后再点一次。</view>
     </view>
   </view>
 </block>

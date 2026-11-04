@@ -1399,6 +1399,7 @@ def test_native_task_result_pagination_owner_expiry(client, session):
     assert first.headers["cache-control"] == "no-store"
     assert len(data["items"]) == 20 and data["nextCursor"] == "20"
     assert data["total"] == 23
+    assert data["summaryCount"] == 0
     assert data["rowCount"] == 1
     missing_version = client.get(path, params={"cursor": 20})
     assert missing_version.status_code == 409
@@ -1414,6 +1415,7 @@ def test_native_task_result_pagination_owner_expiry(client, session):
     session.commit()
     denied = client.get(path)
     assert denied.status_code == 404
+    assert denied.json()["detail"] == "没有找到这条记录，可能已经删除"
     assert denied.headers["cache-control"] == "no-store"
     row.user_id = session.scalar(select(User.id).where(User.openid == "advisor-user"))
     row.expires_at = NOW.astimezone(UTC)
@@ -1481,7 +1483,7 @@ def test_native_summary_pagination_keeps_input_row_count(client, session):
         response = client.get(f"/api/v1/advisor/tasks/{task_id}/reading", params=params)
         assert response.status_code == 200
         data = response.json()
-        assert data["total"] == 44 and data["rowCount"] == 22
+        assert data["total"] == 44 and data["rowCount"] == 22 and data["summaryCount"] == 22
         assert response.headers["cache-control"] == "no-store"
         items.extend(data["items"])
         if data["nextCursor"] is None:

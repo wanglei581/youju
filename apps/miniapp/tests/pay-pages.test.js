@@ -515,7 +515,7 @@ test('付款前就被微信拒了的错误（道具没发布到现网、发布�
     h.page.buy();
     await flush();
     const note = errCode === undefined ? '支付没有完成，请稍后再试。' : `支付没有完成（错误码 ${errCode}），请稍后再试。`;
-    assert.equal(h.page.data.message, `${note}如果其实扣了款，会自动开通，可以在"我的 → 我的订单"查看。`, String(errCode));
+    assert.equal(h.page.data.message, `${note}如果其实扣了款，会自动开通，可以在“我的 → 我的订单”查看。`, String(errCode));
     assert.equal(h.page.data.payError, true);
     assert.doesNotMatch(h.page.data.message, /没有扣钱/);
     assert.equal(h.storage.has('pay.unsettled'), false);
@@ -1568,7 +1568,7 @@ test('订单页"人工核对中"：付了款没开通、能自助退的写可以
   assert.match(unverified, /这笔订单的付款情况需要人工核对/);
   assert.doesNotMatch(unverified, /付款已收到/);
   const closed = textOf(orderCard(h.page.data, 64));
-  assert.match(closed, /没有确认到付款，订单已关闭。如果其实扣了款，点"遇到问题"告诉我们/);
+  assert.match(closed, /没有确认到付款，订单已关闭。如果其实扣了款，点“遇到问题”告诉我们/);
   assert.equal(findAll(orderCard(h.page.data, 64), tapsTo('recheck')).length, 0);
   // 已关闭的也有带订单号的"遇到问题"：被关单的那笔其实扣了款时，反馈对得上订单（Codex 复核）
   const report = findAll(orderCard(h.page.data, 64), tapsTo('problem'));

@@ -110,10 +110,17 @@ Page({
     wx.showModal({ title, content, success: (res) => {
       if (!res.confirm || this.data.busyId !== null) return;
       this.setData({ busyId: id, actionError: '' });
+      const deleting = call === api.deleteAdvisorTask;
+      const forget = () => require('../../utils/exports.js').removeAdvisorTask(id, require('../../utils/exporter.js').remove);
       call(id).then(() => {
+        if (deleting) forget();
         this.setData({ busyId: null });
         if (this.visible) this.load();
-      }).catch((err) => this.setData({ busyId: null, actionError: err.message }));
+      }).catch((err) => {
+        // 删除时说没有这条（已经删掉了）：本机的导出记录和文件也清掉，列表重新读
+        if (deleting && err && err.status === 404) { forget(); this.setData({ busyId: null }); if (this.visible) this.load(); return; }
+        this.setData({ busyId: null, actionError: err.message });
+      });
     } });
   },
   openTask(e) {

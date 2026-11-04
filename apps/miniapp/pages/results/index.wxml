@@ -5,9 +5,9 @@
   <view wx:if="{{!advisor}}" class="muted">这里只列文件目录，不是企业入选结论。</view>
   <view wx:if="{{current}}" class="muted">按当前数据重新查看，内容可能与之前保存的文件不同。</view>
   <view wx:if="{{loading}}" class="muted">正在读取结果…</view>
-  <view wx:if="{{error}}" class="error">{{error}}<button bindtap="retry">重试</button></view>
+  <view wx:if="{{error}}" class="error">{{error}}<button wx:if="{{permanentError}}" bindtap="back">返回</button><button wx:else bindtap="retry">重试</button></view>
   <block wx:if="{{result}}">
-    <view class="muted">共 {{result.total}} {{advisor ? '行' : '份'}} · {{result.generatedAtText}}</view>
+    <view class="muted">{{advisor && result.summaryCount ? '明细 ' + (result.total - result.summaryCount) + ' 行 · 汇总 ' + result.summaryCount + ' 行' : '共 ' + result.total + (advisor ? ' 行' : ' 份')}} · {{result.generatedAtText}}</view>
     <!-- 导出文件里的数据说明是给文件用的（"未核项"列等），站内不搬过来；批量工具的结果照旧写（含"未查到不代表未入选"） -->
     <view wx:if="{{advisor}}" class="muted">{{result.notice}}</view>
     <view wx:if="{{!advisor}}" wx:for="{{result.items}}" wx:key="doc_id" class="result-item">

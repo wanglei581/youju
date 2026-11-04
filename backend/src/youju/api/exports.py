@@ -61,8 +61,8 @@ NOTICE = (
     "“未核项”列出这一行还没有人工核对的字段，请对照原文。"
 )
 EXCERPT_NOTICE = (
-    f"“{DEADLINE_HEADER}”列中标“机器摘录”的日期是机器从原文摘出、未经人工核对的，请以原文为准。"
-    "机器摘录的“日期角色”也标有“（机器摘录）”，未经人工核对。"
+    f"“{DEADLINE_HEADER}”列中标“原文摘录”的日期是机器从原文摘出、未经人工核对的，请以原文为准。"
+    "原文摘录的“日期角色”也标有“（原文摘录）”，未经人工核对。"
 )
 
 
@@ -72,10 +72,10 @@ def _notice(excerpts: bool) -> str:
     return (
         NOTICE.replace(
             f"“{DEADLINE_HEADER}”列只列人工核对通过的记录，",
-            f"“{DEADLINE_HEADER}”列包含人工核对过的和机器摘录的，",
+            f"“{DEADLINE_HEADER}”列包含人工核对过的和原文摘录的，",
         ).replace(
             "“日期角色”是人工核对时确认的截止类型；",
-            "“日期角色”标明截止类型，机器摘录的行另有标记；",
+            "“日期角色”标明截止类型，原文摘录的行另有标记；",
         )
         + EXCERPT_NOTICE
     )
@@ -348,9 +348,9 @@ def _items(session: Session, raw_ids: list[str], excerpts: bool = False) -> list
                 notes = [
                     due.day.isoformat()
                     + (f" {due.clock.strftime('%H:%M')}" if due.clock else "")
-                    + ("（机器摘录）" if due.source == "excerpt" else "")
+                    + ("（原文摘录）" if due.source == "excerpt" else "")
                 ]
-                roles = [due.kind + ("（机器摘录）" if due.source == "excerpt" else "")]
+                roles = [due.kind + ("（原文摘录）" if due.source == "excerpt" else "")]
                 excerpt_quote = v1.display_text(due.quote) if due.quote else ""
             elif excerpt_views.get(master):
                 notes = ["截止未核对，以原文为准"]
