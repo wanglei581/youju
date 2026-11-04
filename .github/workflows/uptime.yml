@@ -1,0 +1,63 @@
+# 线上探活（D-118 ②：稳定性门槛有条件免掉的条件之一）。
+# 11/1 欠费停服 27 小时没人发现，因为告警、日报、定时任务都在同一个云托管环境里，环境停了它们也一起停。
+# 这里从云托管环境外面（GitHub）每 10 分钟查一次核对台：连续 3 次（间隔 20 秒）都不是 200 就开一个
+# "线上停服告警" issue（已有就追加一条），恢复后自动关掉。GitHub 会把新 issue 通知给仓库主人。
+# 只读：不登录、不带任何密钥，只看公开地址的状态码。
+name: 线上探活
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+permissions:
+  contents: read
+  issues: write
+concurrency:
+  group: uptime
+  cancel-in-progress: false
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      URL: https://admin-321511-12-1498153640.sh.run.tcloudbase.com/admin
+      TITLE: 线上停服告警
+    steps:
+      - name: 查线上核对台
+        id: probe
+        run: |
+          ok=0; code=000
+          for i in 1 2 3; do
+            code=$(curl -s -o /tmp/body -m 20 -w '%{http_code}' "$URL" || true)
+            [ -n "$code" ] || code=000
+            if [ "$code" = "200" ]; then ok=1; break; fi
+            sleep 20
+          done
+          reason="返回 ${code}"
+          if grep -q ENV_ISOLATED /tmp/body 2>/dev/null; then reason="返回 ${code}，环境被隔离（ENV_ISOLATED：欠费或套餐到期）"; fi
+          echo "ok=$ok" >> "$GITHUB_OUTPUT"
+          echo "reason=$reason" >> "$GITHUB_OUTPUT"
+          echo "$reason"
+      - name: 停了就告警
+        if: steps.probe.outputs.ok != '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REASON: ${{ steps.probe.outputs.reason }}
+        run: |
+          now=$(TZ=Asia/Shanghai date '+%m-%d %H:%M')
+          msg="${now} 探活失败：核对台${REASON}。请先看微信云托管控制台的环境状态和费用中心余额。"
+          n=$(gh issue list -R "$GITHUB_REPOSITORY" --state open --search "\"${TITLE}\" in:title" --json number --jq '.[0].number // empty')
+          if [ -n "$n" ]; then
+            gh issue comment "$n" -R "$GITHUB_REPOSITORY" --body "$msg"
+          else
+            gh issue create -R "$GITHUB_REPOSITORY" --title "$TITLE" --body "$msg"
+          fi
+          exit 1
+      - name: 恢复了就关掉告警
+        if: steps.probe.outputs.ok == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          now=$(TZ=Asia/Shanghai date '+%m-%d %H:%M')
+          for n in $(gh issue list -R "$GITHUB_REPOSITORY" --state open --search "\"${TITLE}\" in:title" --json number --jq '.[].number'); do
+            gh issue close "$n" -R "$GITHUB_REPOSITORY" --comment "${now} 已恢复（核对台返回 200）。"
+          done
