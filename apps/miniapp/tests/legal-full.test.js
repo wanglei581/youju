@@ -56,9 +56,13 @@ test('2026-11.1 里对完整版同样适用的改动都搬过来了：和 2026-1
   };
   same('user', '二、', '1. 来源与出处');
   same('user', '二、', '3. 核对与责任');
-  same('user', '四、', '3. 查名单');
-  same('privacy', '一、', '7. 按企业名称查名单');
   same('privacy', '一、', '9. 剪切板');
+  // 查名单：2026-11.1 的说法，再加一句只显示命中的那一行和表头（D-088、D-091 ③；agy 第一轮）
+  const hitRow = '查到时只显示名单原文里命中这家企业的那一行和表头，不提供全量查询';
+  const userList = section(legal.user, '四、').p.find((p) => p.startsWith('3. 查名单'));
+  assert.equal(userList, section(ai.user, '四、').p.find((p) => p.startsWith('3. 查名单')).replace('；您不得输入', `；${hitRow}；您不得输入`));
+  const privacyList = section(legal.privacy, '一、').p.find((p) => p.startsWith('7. 按企业名称查名单'));
+  assert.equal(privacyList, section(ai.privacy, '一、').p.find((p) => p.startsWith('7. 按企业名称查名单')).replace('。本功能只查', `。${hitRow}。本功能只查`));
   same('privacy', '二、', '· 提醒入口在提醒模板开通以后才显示');
   same('privacy', '四、', '· AI 模型调用');
   // AI 那一条（第八条）整条一样：适用人群（D-093 ④）、材料清单写成解读的一部分
@@ -93,12 +97,38 @@ test('完整版保留批量工具、加量体验，付费并进隐私保护指�
   assert.match(fee, /^3\. 收费服务：/);
   assert.match(fee, /《付费服务协议》/);
   assert.ok(legal.user.keyParagraphs.includes('3. 收费服务'));
-  // 隐私保护指引和付费协议说的是同一套规矩
-  for (const phrase of ['答复只说明这一笔是否在付款后 24 小时内、是否用过付费的量', '注销本身不退剩余天数', '注销后发邮件并附订单号']) {
+  // 隐私保护指引和付费协议说的是同一套规矩；苹果问询答复"建议退款"的条件和无理由退款对齐（agy 第一轮）
+  for (const phrase of [
+    '付款后 24 小时内、没用过付费的量、这一笔的发票还没开出，并且您当月还没有被受理的无理由退款的，答复“建议退款”，不满足的答复“拒绝退款”',
+    '答复只说明这一笔是否符合这些条件（已核实应当退款的，只说明已核实应当退款），不提供任务内容、名单和结果',
+    '注销本身不退剩余天数', '注销后发邮件并附订单号',
+  ]) {
     assert.ok(legalText.includes(phrase) && pay.text.includes(phrase), phrase);
   }
   assert.match(pay.text, /可以开具的发票：电子发票，个人或单位抬头都可以。/);
   assert.match(pay.text, /本服务不含 AI 次数/);
+  // 已开发票的订单：开头限定为无理由退款以外应当退款的情形，和第 2 项"发票没开出才能无理由退款"不打架
+  assert.match(pay.text, /\n8\. 已开发票的订单：无理由退款以外、依法或者依照本协议应当退款的/);
+  // 全额退款后体验折算的天数照常保留（payments.revoke_pass）
+  assert.match(pay.text, /退哪一笔就只退那一笔（全额退款也一样）.*加量体验折算的天数是您自己没用完的体验时间，照常保留、不收回/);
+});
+
+test('出境告知（个保法第三十九条）：接收方、联系和行使权利的方式、目的、方式、种类都写了，依据写清楚，不放网址', () => {
+  const apple = section(legal.privacy, '四、').p.find((p) => p.startsWith('· 苹果公司（Apple）：'));
+  for (const part of ['属于向中国境外提供个人信息', '① 境外接收方：苹果公司（Apple），具体主体以 App Store 服务条款为准',
+    '② 联系方式和您向它行使权利的方式：按 Apple 隐私政策列明的方式联系它', '③ 处理目的', '④ 处理方式', '⑤ 个人信息的种类',
+    '依据《个人信息保护法》第十三条第一款第（二）项处理，按同条第二款不需要取得您的同意', '我们依照第三十九条把上面这些事项告诉您']) {
+    assert.ok(apple.includes(part), part);
+  }
+  // 联系邮箱（xxx@qq.com）照旧；网址（含 Apple 隐私问询页）不放
+  assert.doesNotMatch(legalText + pay.text, /https?:\/\/|www\.|apple\.com/i);
+  // 注销后留下的订单等记录：去标识化、限制访问，不说成匿名化
+  const kept = section(legal.privacy, '三、').p.find((p) => p.startsWith('· 到期后我们删除或匿名化处理'));
+  assert.match(kept, /作去标识化处理并限制访问/);
+  assert.match(kept, /这些记录不是匿名化信息/);
+  // 未成年人退款材料：监护人本人提交、同意为办理退款使用，规则写在第六部分
+  const six = section(legal.privacy, '六、').p.join('');
+  assert.match(six, /这些说明和材料由监护人本人提交，提交前我们请监护人确认同意我们为核实和办理这一次退款使用其中的信息/);
 });
 
 test('其余条款和 2026-11 一字不差；段落数只多了付费那几段和提醒入口一句', () => {
@@ -109,7 +139,7 @@ test('其余条款和 2026-11 一字不差；段落数只多了付费那几段�
       '13. 批量工具', '14. AI 功能', '15. 加量体验', '17. 购买批量工具', '· 订单：', '· 赠送天数：', '· 退款：', '· 发票：', '· 支付平台的通知：',
       '· 苹果退款问询：', '· 其他方式退款：', '· 提醒入口', '1. 存储地点', '· 订单、退款和开票记录', '· 赠送天数的记录', '· 到期后我们删除或匿名化处理',
       '· 深圳市腾讯计算机系统有限公司（微信）', '· AI 模型调用', '· 苹果公司（Apple）', '上述合作方中', '1. 查阅、复制', '2. 更正', '4. 撤回同意、注销',
-      '本小程序面向具备完全民事行为能力'],
+      '本小程序面向具备完全民事行为能力', '未成年人未经监护人同意购买的'],
   };
   for (const doc of ['user', 'privacy']) {
     const now = paragraphs(legal[doc]);
@@ -121,8 +151,9 @@ test('其余条款和 2026-11 一字不差；段落数只多了付费那几段�
   }
   const count = (doc) => doc.sections.map((s) => s.p.length);
   assert.deepEqual(count(legal.user), count(base.user));
-  // 指引：第一部分多 8 段（第 17 项和它的 7 条），第二部分多 1 段（提醒入口），第三部分多 2 段（订单等、赠送记录的保存期限），第四部分多 1 段（苹果公司）
-  assert.deepEqual(count(legal.privacy).map((n, i) => n - count(base.privacy)[i]), [0, 8, 1, 2, 1, 0, 0, 0, 0]);
+  // 指引：第一部分多 8 段（第 17 项和它的 7 条），第二部分多 1 段（提醒入口），第三部分多 2 段（订单等、赠送记录的保存期限），
+  // 第四部分多 1 段（苹果公司），第六部分多 1 段（监护人申请退款）
+  assert.deepEqual(count(legal.privacy).map((n, i) => n - count(base.privacy)[i]), [0, 8, 1, 2, 1, 0, 1, 0, 0]);
 });
 
 test('编号连续、互相引用指向对的条目，加粗段落各找得到一段，要点引用的条款都在', () => {
