@@ -71,6 +71,23 @@ test('完整版也能打：页面和仓库一样多', () => {
   assert.deepEqual(removed, []);
 });
 
+test('完整版打包时查打好的包里的营业执照信息和照片：都在就通过，照片没进包就不算填齐（11/4 打包漏传这一项）', () => {
+  const check = (result) => result.checks.find((c) => c.id === 'business-license');
+  const out = fresh();
+  const { result } = pack({ out, profile: 'complete-release', mode: 'prepare', npmFrom: fakeNpm() });
+  const license = require(path.join(SOURCE, 'content', 'business-license.js'));
+  assert.ok(fs.existsSync(path.join(out, license.photo.replace(/^\//, ''))));
+  assert.equal(check(result).state, 'pass');
+  // 照片不在包里（比如路径写错）：打包时这一项不通过（准备阶段是提示）
+  const { licenseInput } = require('../miniapp_presubmit_check.js');
+  fs.rmSync(path.join(out, license.photo.replace(/^\//, '')));
+  const input = licenseInput(out, 'complete-release');
+  assert.equal(input.licensePhotoExists, false);
+  assert.equal(input.businessLicense.creditCode, license.creditCode);
+  // 过审版不查执照
+  assert.deepEqual(licenseInput(out, 'first-release'), { businessLicense: undefined, licensePhotoExists: false });
+});
+
 test('不往非空目录、apps/miniapp 里面打；参数不对不打', () => {
   const out = fresh();
   fs.mkdirSync(out, { recursive: true });

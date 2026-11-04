@@ -16,7 +16,7 @@
 // 在开发者工具里对 apps/miniapp 点"构建 npm"，或用 --npm-from 指定一个已经构建好的小程序目录（例如 miniapp-release 的）
 const fs = require('node:fs');
 const path = require('node:path');
-const { inspect, pagesFor, PROFILES } = require('./miniapp_presubmit_check.js');
+const { inspect, licenseInput, pagesFor, PROFILES } = require('./miniapp_presubmit_check.js');
 
 const SOURCE = path.join(__dirname, '..', 'apps', 'miniapp');
 // 不进代码包的（和 project.config.json 的 packOptions.ignore 一致，另加本机的开发者工具设置）
@@ -128,6 +128,8 @@ function pack({ out, profile = 'first-release', mode = 'prepare', source = SOURC
     project: JSON.parse(fs.readFileSync(path.join(target, 'project.config.json'), 'utf8')),
     toolTerms: complete ? load('content/advisor-terms.js') : undefined,
     payTerms: complete ? load('content/pay-terms.js') : undefined,
+    // 营业执照信息和照片：查打好的包里有没有（和命令行检查同一套）
+    ...licenseInput(target, profile, load),
     mode,
     profile,
   });

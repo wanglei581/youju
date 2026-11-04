@@ -1,4 +1,5 @@
 // 营业执照信息（D-107 ③，《电子商务法》第十五条）：首页"营业执照信息"入口展示。
 // 统一社会信用代码：创始人 11/4 发来的营业执照（18 位，校验位已核对）。
-// 照片：包内绝对路径（以 / 开头，如 /images/business-license.jpg），照片文件放进包里；没放之前留空，页面不显示照片。
-module.exports = { creditCode: '91370222MAKBMAWY2Y', photo: '' };
+// 照片：包内绝对路径（以 / 开头），照片文件放在包里。用的是创始人 11/4 发来的营业执照（电子营业执照打印件），
+// 按拍摄方向转正、去掉照片里的拍摄信息（EXIF）、压到 160 KB 左右（1440×1048，字能看清）。
+module.exports = { creditCode: '91370222MAKBMAWY2Y', photo: '/images/business-license.jpg' };

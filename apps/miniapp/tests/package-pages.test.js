@@ -273,6 +273,13 @@ test('首页营业执照入口随包显示，未填写的执照信息不显示',
   const real = require('../content/business-license.js');
   assert.match(real.creditCode, /^[0-9A-HJ-NPQRTUWXY]{18}$/);
   assert.ok(textOf(render('pages/business-license/index.wxml', { ...data, license: real })).includes(real.creditCode));
+  // 执照照片（创始人 11/4）：包内绝对路径、文件在包里、是 JPEG；控制大小，别把主包撑大（主包上限 2 MB）
+  assert.match(real.photo, /^\/images\/[a-z0-9-]+\.jpg$/);
+  const photo = fs.readFileSync(path.join(__dirname, '..', real.photo.slice(1)));
+  assert.deepEqual([...photo.subarray(0, 3)], [0xff, 0xd8, 0xff]);
+  assert.ok(photo.length <= 200 * 1024, `执照照片 ${photo.length} 字节`);
+  const shown = findAll(render('pages/business-license/index.wxml', { ...data, license: real }), (node) => node.tag === 'image');
+  assert.equal(shown.length, 1); assert.equal(shown[0].attrs.src, real.photo);
   const filled = textOf(render('pages/business-license/index.wxml', { ...data, license: { creditCode: '测试代码', photo: '/test.png' } }));
   assert.ok(filled.includes('测试代码')); assert.ok(filled.includes('营业执照'));
 });
