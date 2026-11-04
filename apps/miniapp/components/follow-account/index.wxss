@@ -1,0 +1,5 @@
+/* 和"我的"页列表行同一尺寸；淡蓝底的一条和首页"申报季"一行同一配色 */
+.row { display: flex; align-items: center; gap: 24rpx; padding: 28rpx 0; border-bottom: 2rpx solid #EEF0F3; }
+.row-text { flex: 1; font-size: 30rpx; color: #1D2129; }
+.bar { margin: 20rpx 24rpx 0; padding: 24rpx 28rpx; display: flex; align-items: center; gap: 16rpx; border-radius: 24rpx; background: #EAF0FF; }
+.bar-text { flex: 1; min-width: 0; font-size: 26rpx; line-height: 1.6; color: #2A5CE0; }

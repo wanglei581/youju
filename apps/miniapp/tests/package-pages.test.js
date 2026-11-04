@@ -50,7 +50,7 @@ test('utils/package-pages.js 和 app.json 的页面一样（打过审版时由 t
   assert.equal(FIRST.has('my-data'), true); assert.equal(FIRST.has('lists'), true); assert.equal(FIRST.has('advisor-tasks'), false);
 });
 
-function mePage(pages, server) {
+function mePage(pages, server, extraApi = {}) {
   const urls = [];
   const page = load('pages/me/index.js', {
     '../../content/legal.js': { final: true, version: '2026-11' },
@@ -59,7 +59,7 @@ function mePage(pages, server) {
     '../../utils/coverage.js': { loadCoverage: () => Promise.resolve(null), notCoveredNames: () => '' },
     '../../utils/pages.js': pages,
     '../../utils/pay.js': require('../utils/pay.js'),
-    '../../utils/api.js': { isLive: () => true, me: () => Promise.resolve(plain(server)), payProducts: () => Promise.resolve({ items: [] }), advisorStatus: () => Promise.reject(new Error('没有使用期')) },
+    '../../utils/api.js': { isLive: () => true, me: () => Promise.resolve(plain(server)), payProducts: () => Promise.resolve({ items: [] }), advisorStatus: () => Promise.reject(new Error('没有使用期')), ...extraApi },
   }, { wx: { navigateTo: ({ url }) => urls.push(url), switchTab: ({ url }) => urls.push(url), showToast() {} }, getApp: () => ({ globalData: {} }) });
   return { page, urls };
 }
@@ -89,6 +89,22 @@ test('我的页（过审版）：宫格三格（没有工具中心），没有"�
   assert.equal(full.page.data.passEntry, true); assert.equal(full.page.data.ordersEntry, true); assert.notEqual(full.page.data.passBadge, '');
   const fullText = textOf(render('pages/me/index.wxml', full.page.data));
   for (const word of ['工具中心', '我的记录', '使用帮助', '批量工具', '我的订单']) assert.ok(fullText.includes(word), `完整版少了：${word}`);
+});
+
+test('我的页（过审版）：包里没有本期清单页时不显示"本周周报"、也不去问；完整版有已发布的一期才显示（PR #287）', async () => {
+  const server = { agreed: { version: '2026-11' }, current: true, follows: 0, subscriptions: {} };
+  for (const [pages, shown] of [[FIRST, false], [FULL, true]]) {
+    let asked = 0;
+    const latestDigest = () => { asked += 1; return Promise.resolve({ id: 12, weekStart: '2026-10-19', weekEnd: '2026-10-25' }); };
+    const { page, urls } = mePage(pages, server, { latestDigest });
+    page.onShow(); await flush();
+    assert.equal(asked, shown ? 1 : 0);
+    const root = render('pages/me/index.wxml', page.data);
+    assert.equal(textOf(root).includes('本周周报'), shown);
+    page.openDigest();
+    assert.deepEqual(urls, shown ? ['/pages/digest/index?id=12'] : []);
+  }
+  assert.ok(!FIRST_PAGES.includes('pages/digest/index'));
 });
 
 function homePage(pages) {

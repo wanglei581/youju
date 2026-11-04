@@ -35,6 +35,11 @@ class Settings(BaseSettings):
     template_newdocs: dict | None = None
     # 定时任务真正发送订阅消息（云托管开放接口服务）；不开时只演练。与是否信任请求头分开设置
     send_wx_messages: bool = False
+    # 公众号名称（公众号方案 PR #287）：填了以后导出的 Excel、Word 页脚加一行
+    # "关注微信公众号「名称」"，不填不加。名称由创始人注册公众号后确定，和小程序
+    # utils/config.js 的 officialAccount.name 一致；写法不对（超过 30 字、带换行或网址符号）
+    # 时也不加，不影响服务启动（export_notes 里检查）
+    official_account_name: str = ""
     # 用户协议和隐私保护指引的当前版本，和小程序 content/legal.js 的 version 一致。
     # 版本号按时间可排序（2026-10、2026-11……），后端和小程序都直接比字符串：
     # 同意过更新的版本也算同意了旧的
