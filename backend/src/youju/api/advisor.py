@@ -478,7 +478,8 @@ def capabilities(request: Request, session: SessionDep, user: UserDep) -> dict:
     return {
         "data_tools": {
             "enabled": data_enabled,
-            "compareEnabled": data_enabled and bool(getattr(settings, "advisor_compare_enabled", False)),
+            "compareEnabled": data_enabled
+            and bool(getattr(settings, "advisor_compare_enabled", False)),
             "features": (["compare"] if getattr(settings, "advisor_compare_enabled", False) else [])
             + ["track"]
             if data_enabled
@@ -914,7 +915,7 @@ def read_result(
 
 
 def _shown_native_item(item):
-    """数据工具站内结果的一项：字段里的"截止原文句子"按显示层给，返回副本。"""
+    """返回显示用副本，兼容旧结果中的来源地址。"""
     if not isinstance(item, dict) or not isinstance(item.get("fields"), list):
         return item
     quote_label = native_results.LABELS["deadline_quote"]
@@ -925,6 +926,7 @@ def _shown_native_item(item):
             if isinstance(field, dict) and field.get("label") == quote_label
             else field
             for field in item["fields"]
+            if not isinstance(field, dict) or field.get("label") != "来源地址"
         ],
     }
 

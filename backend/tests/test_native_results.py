@@ -91,6 +91,7 @@ def test_compare_summary_matches_excel_unique_customers_year_and_removed(tmp_pat
     assert {"label": "发布阶段", "value": "公示"} in details[0]["fields"]
     assert "发布阶段按标题用词标注" in native["notice"]
     assert "名单状态" not in str(native)
+    assert "来源地址" not in str(native) and "https://example.gov.cn" not in str(native)
 
 
 def test_compare_no_matches_keeps_no_hit_detail_without_inventing_groups(tmp_path):
@@ -155,6 +156,7 @@ def test_track_summary_matches_excel_verified_excerpt_zero_unknown_and_empty(tmp
     output = tmp_path / "track.xlsx"
     assert export_track_excel(report, output) == 13
     native = native_results.build("track", report)
+    assert "来源地址" not in str(native) and "https://example.gov.cn" not in str(native)
     rows = _native_summary(native)
     assert rows == _excel_summary(output)[0]
     fields = (

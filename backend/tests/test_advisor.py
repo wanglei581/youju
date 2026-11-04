@@ -1435,6 +1435,31 @@ def test_native_legacy_result_does_not_recalculate(client, session):
     assert "重新生成" in response.json()["detail"]
 
 
+def test_native_reading_filters_legacy_source_url_without_changing_saved_result(client, session):
+    from youju.compare import CompareReport, CompareRow
+    from youju.native_results import build
+
+    agree_advisor(client)
+    task_id = create(client).json()["id"]
+    task = session.get(AdvisorTask, task_id)
+    task.status, task.result_document_ids = "done", []
+    content = build("compare", CompareReport([CompareRow("甲", "甲", "name", "未查到")], [], NOW))
+    content["items"][0]["fields"].extend(
+        [
+            {"label": "来源地址", "value": "https://example.gov.cn/a"},
+            {"label": "来源", "value": "示例网站"},
+        ]
+    )
+    task.result_json = content
+    session.commit()
+    response = client.get(f"/api/v1/advisor/tasks/{task_id}/reading")
+    assert response.status_code == 200
+    assert "来源地址" not in response.text and "https://example.gov.cn/a" not in response.text
+    assert {"label": "来源", "value": "示例网站"} in response.json()["items"][0]["fields"]
+    session.expire(task)
+    assert task.result_json == content
+
+
 def test_native_summary_pagination_keeps_input_row_count(client, session):
     from youju.native_results import build
     from youju.track import CustomerProfile, CustomerTrack, TrackReport

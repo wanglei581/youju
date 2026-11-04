@@ -25,7 +25,7 @@
     </view>
     <view wx:if="{{advisor}}" wx:for="{{result.items}}" wx:key="n" class="result-item">
       <view class="title">{{item.n + 1}}. {{item.title}}</view>
-      <view wx:for="{{item.fields}}" wx:for-item="field" wx:key="index"><text>{{field.label}}：</text><text user-select>{{field.value}}</text></view>
+      <view wx:for="{{item.fields}}" wx:for-item="field" wx:key="index" wx:if="{{field.label !== '来源地址'}}"><text>{{field.label}}：</text><text user-select>{{field.value}}</text></view>
       <button wx:if="{{item.documentId}}" data-id="{{item.documentId}}" bindtap="detail">查看文件和依据</button>
     </view>
     <view class="pagination"><button wx:if="{{page > 1}}" bindtap="previous" disabled="{{saving}}">上一页</button><text>第 {{page}} 页</text><button wx:if="{{nextCursor !== null}}" bindtap="next" disabled="{{saving}}">下一页</button></view>
