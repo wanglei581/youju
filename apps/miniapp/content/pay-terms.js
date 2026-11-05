@@ -3,7 +3,7 @@
 // （tests/legal-full.test.js 核对）。
 // 11/4 换上定稿稿 pay-2026-11：D-117 起完整版就是开卖的那一版（D-074 ①"开卖单独提审一版"改成随完整版一起提审），
 // 并按 10/19 以后的决定和支付分支的代码改了几处，逐处见 docs/合规/完整版协议草稿_2026-12.md。
-// final 为 false：没定稿，购买页的付款按钮不可用（utils/pay.js termsFinal）。创始人过目定稿后改 true；
+// 已定稿（D-119：创始人 11/5“可以定稿”），final 为 true：购买页可以显示付款按钮（utils/pay.js termsFinal），能不能真卖仍看服务端开关；
 // 服务端 YOUJU_PAY_TERMS_VERSION 填 pay-2026-11，YOUJU_PAY_INVOICE_TYPE 填第五条第 1 项那一句
 // （"电子发票，个人或单位抬头都可以"，D-074 ⑦；购买页照服务端这句显示，三处必须一致）。
 // 小程序请求商品、下单时带着这里的 version（utils/api.js payHeader），服务端只给带着定稿版本号的小程序显示价格
@@ -13,7 +13,7 @@
 // 这一版只卖批量工具的使用期，卡里不含 AI 次数（D-109 ④：AI 从问一问那一版才收费，那时协议升版）。
 module.exports = {
   version: 'pay-2026-11',
-  final: false,
+  final: true,
   title: '付费服务协议',
   text: [
     '版本：pay-2026-11',

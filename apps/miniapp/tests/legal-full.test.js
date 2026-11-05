@@ -223,10 +223,10 @@ test('D-104：这一版协议和购买页都不提批量名单比对，批量工
   for (const [, find] of COMPARE_CLAUSES) assert.ok(doc.includes(find), `说明文档没留：${find}`);
 });
 
-test('付费服务协议：版本 pay-2026-11、还没定稿（付款按钮不可用），正文和 docs 里的定稿稿逐段一致', () => {
+test('付费服务协议：版本 pay-2026-11、已定稿（D-119，购买页可以显示付款按钮），正文和 docs 里的定稿稿逐段一致', () => {
   assert.equal(pay.version, 'pay-2026-11');
-  assert.equal(pay.final, false);
-  assert.equal(require('../utils/pay.js').termsFinal(pay), false);
+  assert.equal(pay.final, true);
+  assert.equal(require('../utils/pay.js').termsFinal(pay), true);
   const lines = pay.text.split('\n');
   assert.equal(lines[0], `版本：${pay.version}`);
   // docs/合规/付费服务协议与退款规则_v2.md 的"正文"一节：每段一行，小标题去掉 ###，列表去掉 "- "，去掉 **
@@ -237,7 +237,7 @@ test('付费服务协议：版本 pay-2026-11、还没定稿（付款按钮不�
   assert.deepEqual(plain, lines);
 });
 
-test('给创始人看的说明文档里附的全文和 legal.js、pay-terms.js 逐字一致（2026-12 草稿期间）', () => {
+test('给创始人看的说明文档里附的全文和 legal.js、pay-terms.js 逐字一致（2026-12，D-119 定稿）', () => {
   if (legal.version !== '2026-12') return;
   const doc = fs.readFileSync(path.join(ROOT, 'docs/合规/完整版协议草稿_2026-12.md'), 'utf8');
   // 全文按 tools/legal_markdown.js 转出来，标题降一级放进说明文档
