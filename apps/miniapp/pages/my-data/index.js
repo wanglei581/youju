@@ -62,6 +62,15 @@ function taskData(d) {
 // 我的数据：查阅、复制我们保存的你的全部个人信息，改关注名称，删除记录
 // （个人信息保护法第四十五至四十七条；网络数据安全管理条例第二十三条）
 // 协议定稿前（loginOpen 为 false，D-056）没有入口，直接打开时只显示"暂未开放"，不请求接口
+// 协议 2026-12 八·2：复制的内容里有 AI 生成的结果（AI 解读、条款对照）时，开头带“AI 生成”文字标识
+// （问一问的数据不放回答，只看工具记录里 AI 两项有没有结果；独立审阅 #431）
+const AI_KINDS = ['interpret', 'clause'];
+const AI_LABEL = '【AI 生成】以下内容含 AI 解读、条款对照的结果，由 AI 生成，仅供参考，以发文机关原文为准。\n';
+function hasAiResult(rows) {
+  return (rows || []).some((t) => t && AI_KINDS.includes(t.kind) && t.result != null);
+}
+function withAiLabel(text, ai) { return ai ? `${AI_LABEL}${text}` : text; }
+
 Page({
   data: { loading: true, error: '', aiRetention: '', user: null, follows: [], subs: [], feedback: [], tasks: [], tasksTitle: '', fileNote: '', extras: '', toolsShown: false, boostShown: false, usageShown: false, totals: {}, retention: null, exportedAt: '', loginOpen: loginOpen(), remindOpen: remindAny() },
 
@@ -146,7 +155,7 @@ Page({
   copyAll() {
     if (!this.raw) return;
     wx.setClipboardData({
-      data: JSON.stringify(this.raw, null, 2),
+      data: withAiLabel(JSON.stringify(this.raw, null, 2), hasAiResult(this.raw.advisorTasks)),
       success: () => wx.showToast({ title: '已复制全部数据，可以粘贴保存', icon: 'none' }),
       fail: () => wx.showToast({ title: '没能复制：请先同意微信弹出的隐私保护指引，再点一次', icon: 'none' }),
     });
@@ -159,7 +168,7 @@ Page({
     const row = this.raw && key && this.raw[key].find((item) => String(item.id) === String(id));
     if (!row) return;
     wx.setClipboardData({
-      data: JSON.stringify(row, null, 2),
+      data: withAiLabel(JSON.stringify(row, null, 2), kind === 'task' && hasAiResult([row])),
       success: () => wx.showToast({ title: '已复制这条完整记录', icon: 'none' }),
       fail: () => wx.showToast({ title: '没能复制，请稍后再试', icon: 'none' }),
     });

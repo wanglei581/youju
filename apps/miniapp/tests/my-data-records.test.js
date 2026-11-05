@@ -45,7 +45,7 @@ const TASKS = [
 function myData({ tasks = [], pages = APP_PAGES, extra = {}, remove, withdrawn = [] } = {}) {
   const raw = { user: { openid: 'synthetic-openid', agreed: null }, follows: [], subscriptions: [], feedback: [], advisorTasks: plain(tasks),
     advisorTasksTotal: tasks.length, retention: RETENTION, ...extra };
-  const calls = { load: 0, deleted: [] }; const copied = []; const toasts = []; let modal;
+  const calls = { load: 0, deleted: [] }; const copied = []; const labels = []; const toasts = []; let modal;
   const api = {
     myData: () => { calls.load += 1; return Promise.resolve(plain(raw)); },
     deleteAdvisorTask: (id) => { calls.deleted.push(id); return remove ? remove(id) : Promise.resolve(); },
@@ -54,9 +54,9 @@ function myData({ tasks = [], pages = APP_PAGES, extra = {}, remove, withdrawn =
     '../../utils/api.js': api, '../../utils/conditions.js': conditions,
     '../../utils/consent.js': { loginOpen: () => true, remindAny: () => false, withdrawAccount: (has) => { withdrawn.push(has); return Promise.resolve(false); } },
     '../../utils/advisor.js': advisor, '../../utils/pages.js': pagesOf(pages), '../../utils/exports.js': { removeAdvisorTask: (id) => { calls.removedExport = id; } }, '../../utils/exporter.js': { remove: () => true },
-  }, { wx: { setClipboardData: ({ data, success }) => { copied.push(JSON.parse(data)); if (success) success(); }, showToast: (o) => toasts.push(o.title),
+  }, { wx: { setClipboardData: ({ data, success }) => { labels.push(data.startsWith('【AI 生成】')); copied.push(JSON.parse(data.replace(/^【AI 生成】[^\n]*\n/, ''))); if (success) success(); }, showToast: (o) => toasts.push(o.title),
     showModal: (m) => { modal = m; m.success({ confirm: true }); }, navigateTo() { assert.fail('我的数据里删记录不跳到别的页面'); } } });
-  return { page, raw, calls, copied, toasts, modal: () => modal, view: () => render('pages/my-data/index.wxml', page.data) };
+  return { page, raw, calls, copied, labels, toasts, modal: () => modal, view: () => render('pages/my-data/index.wxml', page.data) };
 }
 const recordsCard = (root) => findAll(root, hasClass('card')).find((card) => /(工具(和 AI )?|^AI )记录/.test(textOf(findAll(card, hasClass('section-title'))[0] || { text: '' }).trim()));
 
@@ -101,6 +101,23 @@ test('复制单条是这条的完整记录；删除走本人删除接口，删�
   h.page.load(); await flush();
   h.page.copyOne(event({ kind: 'task', id: 42 }));
   assert.deepEqual(h.copied.at(-1), TASKS[1]);
+  // AI 解读的结果：开头带“AI 生成”（协议 2026-12 八·2）；批量工具的不带
+  assert.equal(h.labels.at(-1), true);
+  h.page.copyOne(event({ kind: 'task', id: 41 }));
+  assert.equal(h.labels.at(-1), false);
+  h.page.copyAll();
+  assert.equal(h.labels.at(-1), true);
+  const tools = myData({ tasks: [TASKS[0], TASKS[2]] });
+  tools.page.load(); await flush();
+  tools.page.copyAll();
+  assert.equal(tools.labels.at(-1), false);
+  // AI 任务还没有结果（排队、失败、过期）：不加
+  const pending = myData({ tasks: [{ ...TASKS[1], id: 45, status: 'queued', result: null }] });
+  pending.page.load(); await flush();
+  pending.page.copyOne(event({ kind: 'task', id: 45 }));
+  assert.equal(pending.labels.at(-1), false);
+  pending.page.copyAll();
+  assert.equal(pending.labels.at(-1), false);
   h.page.remove(event({ kind: 'task', id: 41 })); await flush();
   assert.deepEqual(h.calls.deleted, [41]);
   assert.equal(h.calls.removedExport, 41);
