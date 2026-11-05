@@ -398,9 +398,13 @@ test('订单页有订单时照常列出，不查能力接口也不回首页（�
   assert.ok(orderCard(h.page.data, 7));
 });
 
+// 11/5 起包里的《付费服务协议》已定稿（D-119）：测“未定稿不能付款”用一份改成未定稿的副本
+const DRAFT_TERMS = Object.freeze({ ...payTerms, final: false });
+
 test('购买页协议未定稿时没有价格和付款按钮、直接回首页，调用 buy 也不下单，页面不出现"暂未开放"，防止用未定稿协议收款（D-074 ⑧）', async () => {
-  assert.equal(payTerms.final, false);
-  const h = passPage({ terms: payTerms });
+  // 包里的协议已定稿（D-119）；这里用改成未定稿的副本测“未定稿不能付款”
+  assert.equal(payTerms.final, true);
+  const h = passPage({ terms: DRAFT_TERMS });
   await flush();
   assert.equal(h.page.data.termsFinal, false);
   assert.deepEqual(h.urls, ['tab:/pages/home/index']);
@@ -413,7 +417,7 @@ test('购买页协议未定稿时没有价格和付款按钮、直接回首页�
 
 test('没有沙箱了：服务端多带 sandbox 也不显示沙箱提示、不写"沙箱支付"，按钮只写"支付"；协议没定稿照样不能付款，防止测试人员以为付的不是真钱（创始人 10/29）', async () => {
   for (const sandbox of [true, 'true', false]) {
-    const draft = passPage({ terms: payTerms, payProducts: () => Promise.resolve({ items: [PRODUCT], invoiceType: INVOICE, sandbox }) });
+    const draft = passPage({ terms: DRAFT_TERMS, payProducts: () => Promise.resolve({ items: [PRODUCT], invoiceType: INVOICE, sandbox }) });
     await flush();
     assert.equal(payButtons(draft.page.data).length, 0);
     draft.page.buy();
@@ -918,6 +922,9 @@ test('购买页第一句写给谁用，付款前写全收录范围、只限本�
   await flush();
   const text = shown('pages/pass/index.wxml', h.page.data);
   assert.match(text, /给要一次整理很多家客户相关通知的顾问用；查通知、查单家企业一直免费/);
+  // 这一版不带批量名单比对（D-104，创始人 11/4）：购买页和《付费服务协议》第一条第 3 项一样，只写客户相关通知表
+  assert.match(text, /批量工具目前只含“客户相关通知表”一项/);
+  assert.doesNotMatch(text, /名单比对/);
   assert.match(text, /只限本人的微信使用/);
   assert.match(text, /本服务不面向未成年人/);
   assert.doesNotMatch(text, /未成年人请在监护人同意后再购买/);

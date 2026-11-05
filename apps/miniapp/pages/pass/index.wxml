@@ -23,13 +23,15 @@
 
   <view class="card pass-card">
     <view class="pass-title">包含什么</view>
+    <!-- 这一版批量工具只含客户相关通知表（D-104、D-118，创始人 11/4）：写明只含这一项，和《付费服务协议》第一条第 3 项一致 -->
+    <view class="pass-line">批量工具目前只含“客户相关通知表”一项</view>
     <view class="pass-row">
       <view class="pass-ico"><t-icon name="task-checked" size="36rpx" color="#2A5CE0" /></view>
       <view class="pass-main"><view class="pass-lead-item">客户相关通知表</view><view class="pass-desc">不限次数，每次 500 家以内</view></view>
     </view>
     <view class="pass-row">
       <view class="pass-ico"><t-icon name="download" size="36rpx" color="#2A5CE0" /></view>
-      <view class="pass-main"><view class="pass-lead-item">结果可导出 Excel</view><view class="pass-desc">带发文机关和日期</view></view>
+      <view class="pass-main"><view class="pass-lead-item">结果可导出 Excel</view><view class="pass-desc">带发文机关和发布日期</view></view>
     </view>
     <view wx:if="{{aiEnabled}}" class="pass-line">不含 AI 次数，AI 每天免费次数照旧</view>
   </view>

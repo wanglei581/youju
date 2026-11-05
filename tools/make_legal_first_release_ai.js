@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// 由 content/legal.js（2026-11，完整版）生成"过审版加 AI"用的协议草稿 content/legal-first-release-ai.js（D-098）。
+// 由完整版协议 2026-11 生成"过审版加 AI"用的协议草稿 content/legal-first-release-ai.js（D-098）。
+// 11/4 起 content/legal.js 升到 2026-12，2026-11 的定稿全文冻结在 tools/release/legal-2026-11.js，这里读它。
 // 这次提审的包（tools/miniapp_pack.js --profile first-release-ai，22 页）有 AI 首页、AI 解读、条款对照、我的记录、
 // 投诉举报、使用帮助，没有批量工具、加量体验、购买和订单页面。协议只写包里真有的功能（微信"所列即所用"）：
 // 保留 AI 条款；去掉批量工具、加量体验、付费；原文链接、查名单的说法和过审版（2026-10.2，D-094）一样改；
@@ -21,11 +22,13 @@ const VERSION = '2026-11.1';
 // 这一版删掉，等真收费时协议升版再写
 const BANNED = /批量工具|批量名单|名单比对|通知表|上传名单|客户名单|选中的文件|加量体验|申报季加量|工具使用说明|工具任务|订单|购买页|支付|发票|原文链接|统一社会信用代码|核对企业主体|征信|信用评价|收费功能/;
 
-// source：完整版 2026-11 协议对象，不传就读 content/legal.js（测试传改过的原文，验证对不上会报错）
+// 底稿：完整版 2026-11 的定稿全文（content/legal.js 已升到 2026-12）
+const SOURCE = path.join(__dirname, 'release', 'legal-2026-11.js');
+
+// source：完整版 2026-11 协议对象，不传就读底稿 SOURCE（测试传改过的原文，验证对不上会报错）
 function build(source) {
-  delete require.cache[require.resolve(path.join(ROOT, 'legal.js'))];
-  const legal = JSON.parse(JSON.stringify(source || require(path.join(ROOT, 'legal.js'))));
-  if (legal.version !== '2026-11') throw new Error(`content/legal.js 的版本是 ${legal.version}，这个脚本按 2026-11 写的，先核对`);
+  const legal = JSON.parse(JSON.stringify(source || require(SOURCE)));
+  if (legal.version !== '2026-11') throw new Error(`底稿的版本是 ${legal.version}，这个脚本按 2026-11 写的，先核对`);
   const sec = (doc, head) => {
     const found = doc.sections.find((s) => s.h.startsWith(head));
     if (!found) throw new Error(`没有找到 ${head}`);
