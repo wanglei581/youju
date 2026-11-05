@@ -167,11 +167,14 @@ def _cmd_board(args: argparse.Namespace) -> int:
             .subquery()
         )
         last_checks = {
-            sid: (status, http)
-            for sid, status, http in session.execute(
-                select(SourceCheck.source_id, SourceCheck.status, SourceCheck.http_status).join(
-                    latest, SourceCheck.id == latest.c.last_id
-                )
+            sid: (status, http, items)
+            for sid, status, http, items in session.execute(
+                select(
+                    SourceCheck.source_id,
+                    SourceCheck.status,
+                    SourceCheck.http_status,
+                    SourceCheck.items_found,
+                ).join(latest, SourceCheck.id == latest.c.last_id)
             )
         }
         counts = dict(
@@ -189,7 +192,7 @@ def _cmd_board(args: argparse.Namespace) -> int:
                 s.last_error,
                 s.verification_status,
                 counts.get(s.id, 0),
-                *last_checks.get(s.id, (None, None)),
+                *last_checks.get(s.id, (None, None, 0)),
             )
     result = cells(depts, sources, checks)
     header = (

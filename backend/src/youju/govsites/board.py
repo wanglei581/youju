@@ -17,7 +17,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
-from youju.govsites.inventory import DeptRow
+from youju.govsites.inventory import SHARED_ONLY, DeptRow
 
 STATES = ("已收录", "抓取失败", "网站无此栏目", "需人工", "不能抓")
 PENDING = "待启用"
@@ -38,6 +38,9 @@ class SourceState:
     documents: int = 0
     last_status: str | None = None  # 最后一次检查的结果（source_checks.status）
     last_http: int | None = None
+    # 最后一次检查识别出的条目数：同一份文件挂在先抓到它的来源下，合并部门共用栏目时
+    # 后一个来源名下没有文件，但它的检查照样读出了条目
+    last_items: int = 0
 
 
 @dataclass
@@ -72,7 +75,7 @@ def _outcome(url: str, sources: dict[str, SourceState], checks: dict[str, object
         last = s.last_success_at
         if last is not None and last.tzinfo is None:
             last = last.replace(tzinfo=UTC)
-        if last is not None and s.documents > 0:
+        if last is not None and (s.documents > 0 or s.last_items > 0):
             age = now - last
             if age > timedelta(days=STALE_DAYS):
                 return "stale", f"连续 {age.days} 天没有成功（{(s.last_error or '')[:60]}）"
@@ -140,6 +143,9 @@ def cell_for(
         return cell
     if row.status == "打不开":
         cell.state, cell.reason = "抓取失败", f"打不开：{row.reason[:80]}"
+        return cell
+    if not row.columns and row.reason == SHARED_ONLY:
+        cell.state, cell.reason = "需人工", SHARED_ONLY
         return cell
     if not row.columns:
         cell.state = "网站无此栏目"

@@ -27,7 +27,12 @@ from urllib.parse import urlsplit
 
 from lxml import etree
 
-from youju.crawler.adapters import api_html, find_unit_apis, jpaas_tree_categories
+from youju.crawler.adapters import (
+    api_html,
+    find_unit_apis,
+    jpaas_tree_categories,
+    jpaas_xxgk_groups,
+)
 from youju.crawler.fetcher import FetchResult, resolve_host
 from youju.crawler.urls import page_dir
 from youju.govsites.divisions import (
@@ -247,6 +252,8 @@ class Inventory:
         self._lock = threading.Lock()
         self._queued: set[str] = set()
         self.done = 0
+        # 国务院部门的网站（主机后缀）：省市县门户页脚常有"国务院部门网站"导航，不能当成本地部门
+        self.ministry_hosts: set[str] = set()
 
     # —— 页面 ——
 
@@ -276,6 +283,11 @@ class Inventory:
                 if html:
                     info.links += page_links(html, info.final_url)
                     info.categories += jpaas_tree_categories(html)
+                    # 信息公开分组列表：分组名 + 由条目网址还原的分组栏目页，当作栏目链接
+                    info.links += [
+                        Link(name, url, "jpaas分组")
+                        for name, url in jpaas_xxgk_groups(html, info.final_url)
+                    ]
         return info
 
     def _nav_pages(self, home: PageInfo, limit: int = 10) -> list[PageInfo]:
@@ -329,6 +341,11 @@ class Inventory:
         start = self.page(GOV_LOCAL_NAV)
         if start.result.status != "ok":
             raise RuntimeError(f"中国政府网地方政府网站导航打不开：{start.result.error}")
+        ministries = self.page(GOV_DEPT_NAV)
+        for link in ministries.links:
+            host = (urlsplit(link.url).hostname or "").lower()
+            if is_gov_url(link.url) and host not in ("www.gov.cn", "gov.cn"):
+                self.ministry_hosts.add(host.removeprefix("www."))
         provinces = [p for p in self.index.provinces() if not self.only or p.province in self.only]
         matcher = NameMatcher(provinces)
         found: dict[str, Found] = {}
@@ -578,6 +595,8 @@ class Inventory:
                 cats = dept_categories(text)
                 if not cats or not is_gov_url(link.url):
                     continue
+                if div.level != "国家级" and self._is_ministry(text, link.url):
+                    continue  # 页脚"国务院部门网站"里的部委，不是本地部门
                 if not _site_like(link.url, p.final_url) and not report:
                     continue
                 prefix = level_prefix(text)
@@ -613,6 +632,7 @@ class Inventory:
             )
         for rows_for_cat in picked:
             rows.extend(rows_for_cat)
+        _drop_shared_columns(rows)
         return rows
 
     def _pick(
@@ -648,18 +668,28 @@ class Inventory:
             same_host = urlsplit(f.url).netloc.lower() == urlsplit(home.final_url).netloc.lower()
             row.site_type = "门户频道" if same_host else "独立网站"
             dp = self.page(f.url)
+            # 独立部门网站上链到门户主机的栏目（如省政策文件库）不是这个部门的
+            exclude = portal_cols
+            if row.site_type == "独立网站":
+                exclude = exclude | _host_urls(dp, urlsplit(home.final_url).netloc.lower())
             if dp.result.status != "ok" or dp.block:
                 row.status = "不能抓" if dp.block else "打不开"
                 row.reason = dp.block or dp.result.error or dp.result.status
             else:
                 row.status = "已找到"
                 row.site_url = dp.final_url
-                self._fill_from_page(row, dp, [dp], portal_cols)
+                self._fill_from_page(row, dp, [dp], exclude)
             rows.append(row)
             # 开发区可能有好几个（国家级、省级各一），其他部门只取最像的一个
             if cat != "开发区" or len(rows) >= 6:
                 break
         return rows or ([self._dept_row(div, cat)] if cat in STANDARD_DEPTS else [])
+
+    def _is_ministry(self, text: str, url: str) -> bool:
+        host = (urlsplit(url).hostname or "").lower().removeprefix("www.")
+        if any(host == m or host.endswith("." + m) for m in self.ministry_hosts):
+            return True
+        return bool(_MINISTRY_NAME.search(text))
 
     def _dept_row(self, div: Division, dept: str) -> DeptRow:
         return DeptRow(div.code, div.level, div.province, div.city or "", div.district or "", dept)
@@ -766,6 +796,38 @@ def _script_redirect(result: FetchResult, url: str) -> str | None:
 
 # 信息公开分类树上的分类写成"部门页#xxgk-分类键"（不是能直接打开的栏目，试读记"需接口"）
 XXGK_TAG = "xxgk-"
+
+
+# 部委的写法：国家…、中华人民共和国…、国务院…，或以"部""总局""总署"结尾（地方部门不这样叫）
+_MINISTRY_NAME = re.compile(r"^(?:国家|中华人民共和国|国务院)|(?:部|总局|总署)$")
+
+
+def _host_urls(page: PageInfo, host: str) -> frozenset[str]:
+    """页面上指向某个主机的全部链接（用来排除部门网站上链到门户的栏目）。"""
+    return frozenset(link.url for link in page.links if urlsplit(link.url).netloc.lower() == host)
+
+
+SHARED_ONLY = "部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）"
+
+
+def _drop_shared_columns(rows: list[DeptRow]) -> None:
+    """同一行政区里，不同部门网站（频道）指向同一个栏目网址：那是模板里共用的栏目（县政府文件、
+    信息公开通用栏目），不算任何一个部门的。同一个合并部门（同一网址）算几类的不受影响。"""
+    sites: dict[str, set[str]] = {}
+    for r in rows:
+        if r.dept == "政府办":
+            continue
+        for c in r.columns:
+            sites.setdefault(c.url, set()).add(r.site_url)
+    shared = {url for url, owners in sites.items() if len(owners) > 1}
+    if not shared:
+        return
+    for r in rows:
+        if r.dept != "政府办" and r.columns:
+            kept = [c for c in r.columns if c.url not in shared]
+            if not kept:
+                r.reason = SHARED_ONLY
+            r.columns = kept
 
 
 _LEVEL_CHARS = "省市州盟县区旗"

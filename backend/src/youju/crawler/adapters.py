@@ -121,3 +121,30 @@ def jpaas_tree_categories(html: str) -> list[tuple[str, str]]:
             if isinstance(children, list):
                 stack.extend(children)
     return out
+
+
+_GROUP = re.compile(
+    r"<label[^>]*class=[\"']?label-className[\"']?[^>]*>\s*([^<]{2,20}?)\s*</label>(.*?)(?=<label[^>]*label-className|$)",
+    re.S,
+)
+_COL_ID = re.compile(r"/col/col(\d+)/|/art_(\d+)_\d+\.html")
+
+
+def jpaas_xxgk_groups(html: str, page_url: str) -> list[tuple[str, str]]:
+    """大汉 jpaas 信息公开"分组列表"单元里的分组（名称, 分组栏目页）。
+
+    单元 HTML 是一组组"<label class=label-className>政策法规</label> + 条目列表"，条目网址里带着
+    这个分组的栏目号（/col/col栏目号/… 或 art_栏目号_文章号.html），据此还原分组栏目页
+    /col/col栏目号/index.html（同一网站）。"""
+    out: list[tuple[str, str]] = []
+    for m in _GROUP.finditer(html or ""):
+        name, block = m.group(1).strip(), m.group(2)
+        for href in re.findall(r"""href=["']([^"']+)["']""", block):
+            col = _COL_ID.search(href)
+            if col:
+                col_id = col.group(1) or col.group(2)
+                url = urljoin(page_url, f"/col/col{col_id}/index.html")
+                if urlsplit(url).netloc.lower() == urlsplit(page_url).netloc.lower():
+                    out.append((name, url))
+                break
+    return out

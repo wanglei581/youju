@@ -288,7 +288,8 @@ def test_inventory_walks_official_navigation():
             <a href="/col/col1229080140/index.html">通知公告</a>
             <a href="/col/col1229080141/index.html">政策文件</a>""",
         "https://www.hangzhou.gov.cn/": """<a href="/qxwz/">区县（市）政府网站</a>
-            <a href="/bm/kjj/">市科技局</a><a href="http://kjt.zj.gov.cn/">省科技厅</a>""",
+            <a href="/bm/kjj/">市科技局</a><a href="http://kjt.zj.gov.cn/">省科技厅</a>
+            <a href="https://www.mee.gov.cn/">生态环境部</a>""",
         "https://www.hangzhou.gov.cn/qxwz/": '<a href="http://www.hzxh.gov.cn/">西湖区</a>',
         "https://www.hangzhou.gov.cn/bm/kjj/": '<a href="/bm/kjj/tzgg/">通知公告</a>',
         "http://www.hzxh.gov.cn/": '<a href="/jgsz/">机构设置</a>',
@@ -297,6 +298,9 @@ def test_inventory_walks_official_navigation():
         "http://www.hzxh.gov.cn/bm/kjj/xxgk/": '<a href="/bm/kjj/tzgg/">通知公告</a>',
         "http://www.hzxh.gov.cn/bm/fgj/": "<p>发改局</p>",
     }
+    pages["https://www.gov.cn/home/2023-03/29/content_5748953.htm"] = (
+        '<a href="https://www.mee.gov.cn/">生态环境部</a><a href="https://www.most.gov.cn/">科学技术部</a>'
+    )
     divisions = [d for d in _divisions() if d.province == "浙江"]
     inv = Inventory(
         DivisionIndex(divisions), FakeCache(pages), provinces=["浙江"], workers=4, per_province=2
@@ -327,6 +331,8 @@ def test_inventory_walks_official_navigation():
     assert [c.url for c in xh_kj.columns] == ["http://www.hzxh.gov.cn/bm/kjj/tzgg/"]
     assert depts[("330106", "发改委")].status == "已找到"
     assert depts[("330106", "商务")].status == "导航未找到"
+    # 市县门户页脚里的部委不算本地部门
+    assert depts[("330100", "生态环境")].status == "导航未找到"
 
 
 def test_national_ministries_are_target_depts():
@@ -489,3 +495,56 @@ def test_jpaas_category_tree_becomes_column_needing_api():
         "",
     )
     assert check_one(FakeCache({}), col, date(2026, 11, 5)).result == NEEDS_SCRIPT
+
+
+def test_jpaas_xxgk_groups_give_group_column_pages():
+    from youju.crawler.adapters import jpaas_xxgk_groups
+
+    html = (
+        '<label class="label-className">政策法规</label><ul class="ajax-ul"><li>'
+        '<a href="http://www.xiuzhou.gov.cn/col/col1229409716/art/2026/art_a1.html">某某措施</a></li></ul>'
+        '<label class="label-className">通知公告</label><ul class="ajax-ul"><li>'
+        '<a href="http://www.xiuzhou.gov.cn/art/2025/4/1/art_1229409846_25.html">某某通知</a></li></ul>'
+    )
+    groups = jpaas_xxgk_groups(html, "http://www.xiuzhou.gov.cn/col/col1229405616/index.html")
+    assert groups == [
+        ("政策法规", "http://www.xiuzhou.gov.cn/col/col1229409716/index.html"),
+        ("通知公告", "http://www.xiuzhou.gov.cn/col/col1229409846/index.html"),
+    ]
+
+
+def test_shared_template_columns_are_dropped():
+    from youju.govsites.inventory import ColumnHit, DeptRow, _drop_shared_columns
+
+    def r(dept, site, *urls):
+        cols = [ColumnHit("通知公告", "通知公告", u, site) for u in urls]
+        return DeptRow(
+            "330421",
+            "区县级",
+            "浙江",
+            "嘉兴",
+            "嘉善县",
+            dept,
+            site_url=site,
+            status="已找到",
+            columns=cols,
+        )
+
+    shared = "http://www.jiashan.gov.cn/col/col1229373860/index.html"
+    rows = [
+        r(
+            "发改委",
+            "http://www.jiashan.gov.cn/col/col1/index.html",
+            shared,
+            "http://www.jiashan.gov.cn/col/col11/index.html",
+        ),
+        r("科技", "http://www.jiashan.gov.cn/col/col2/index.html", shared),
+        # 合并部门：同一网站算两类，栏目相同不算共用
+        r("工信", "http://kjj.example.gov.cn/", "http://kjj.example.gov.cn/tzgg/"),
+        r("科技", "http://kjj.example.gov.cn/", "http://kjj.example.gov.cn/tzgg/"),
+    ]
+    _drop_shared_columns(rows)
+    assert [c.url for c in rows[0].columns] == ["http://www.jiashan.gov.cn/col/col11/index.html"]
+    assert rows[1].columns == []
+    assert rows[1].reason.startswith("部门页上只有本级共用的栏目")
+    assert [c.url for c in rows[2].columns] == ["http://kjj.example.gov.cn/tzgg/"]
