@@ -10,20 +10,23 @@ LZW、RunLength、CCITT 解码器和预测器也照文件里写的长度、列�
 
 - 一个数据流每解一步，解出的数据不超过 STREAM_MAX；
 - 一份 PDF（一次 reading() 里）解出的数据合计不超过 DOCUMENT_MAX：pdfminer 把解过的数据流留在
-  内存里，整份读完才释放；
-- 解码方式只认 FlateDecode、ASCIIHexDecode、ASCII85Decode，图片的几种原样留着（取文字时不解图片，
-  和 pdfminer 一样）。LZW、RunLength、CCITTFax 不解，整份按"格式不支持"：pdfminer 的这几个解码器
-  内存或时间没有上限，现在的文件只在图片上用（见下面的抽查）；
+  内存里，整份读完才释放。解一个数据流时先预留它的额度：解码参数可能指向对象流里的对象，要先解
+  那个对象流（甚至就是自己），预留的额度不让里面那一层用；一层套一层最多 _NESTING_MAX 层；
+- 有一个数据流超了，这份 PDF 里后面的数据流都不再解，reading() 结束时整份按超了算：pdfplumber
+  读文档信息（元数据）时会吞掉异常接着往下读，不能让它照常"读完"；
+- 解码方式只认 FlateDecode、ASCIIHexDecode，图片的几种原样留着（取文字时不解图片，和 pdfminer
+  一样）。LZW、RunLength、CCITTFax、ASCII85 不解，整份按"格式不支持"：pdfminer 的这几个解码器内存
+  或时间没有上限（ASCII85 去头尾空白的正则遇到长空白是平方级），抽查的真实文件里一个都没有；
 - 预测器（交叉引用流常用 PNG 预测器）：pdfminer 按文件里写的列数先分配一行，结果存成整数列表
-  （每个字节约占 9 字节内存），输入长度和列数都有上限。
+  （每个字节约占 9 字节内存，8MB 要 36 秒），输入长度和列数都有上限。
 不超上限的，解出的数据和 pdfminer 原来的写法一样（坏数据的处理也照抄）。超了、不支持的抛 Refused；
 pdfplumber 会把它包进 PdfminerException，用 refused(exc) 找出来。
 
 上限怎么定（2026-11-05 按 11/4 公开数据快照里附件、名单的 PDF 链接下载了 329 份真实文件，把每份的
 非图片数据流全部解一遍）：一个数据流解出最大 2.4MB（字体最大 1.5MB）；一份合计最大 35.6MB，中位
 1.0MB；文字多的文件解出的大约是文件大小的 10 倍，20MB 的文件整份读完约 220MB。解码方式只有
-FlateDecode（14,865 个）和 ASCIIHexDecode（5 个），预测器只有交叉引用流的 PNG 预测器。
-15,349 个数据流用这里的写法和 pdfminer 原来的写法解出的逐字节一样。
+FlateDecode（14,865 个）和 ASCIIHexDecode（5 个），预测器只有交叉引用流的 PNG 预测器（解出最大
+5KB）。15,349 个数据流用这里的写法和 pdfminer 原来的写法解出的逐字节一样。
 
 为什么不像解 rar（attachment_text._rar，PR #451）那样放进限内存的子进程：
 1. 本机 macOS 设不了 RLIMIT_AS（setrlimit 报 ValueError，分配照样成功），测试证明不了上限，只有线上
@@ -31,9 +34,9 @@ FlateDecode（14,865 个）和 ASCIIHexDecode（5 个），预测器只有交叉
 2. 四处调用拿回的东西（分段和出处、表格行、页数、图片面积）都要改成能跨进程传的格式，冒充 pdfplumber
    的测试也要跟着改；
 3. 每份 PDF 多起一个 Python 进程、重新导入 pdfplumber（约 0.5 秒）。
-限长解压在哪里都一样、测试能直接量内存，四处调用的逻辑不用改。它管不到的：解出来的内容在上限以内，
-但让 pdfminer 生成大量对象（比如几十 MB 层层嵌套的方括号）；这种不压缩、20MB 的文件也做得到，
-要把整个取文字放进限内存的子进程，另做。
+这里的上限只管"解压"这一层。解出来的内容在上限以内、却让 pdfminer 生成海量对象的，它管不到：几十 MB
+层层嵌套的方括号；字体的 ToUnicode 里一行 beginbfrange <00000000> <FFFFFFFF>（不到 1KB 的文件就让
+pdfminer 建一个 2^32 项的字典）。这些要把整个取文字放进限内存、限时的子进程，另做。
 """
 
 from __future__ import annotations
@@ -46,7 +49,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 
 from pdfminer import settings
-from pdfminer.ascii85 import ascii85decode, asciihexdecode
+from pdfminer.ascii85 import asciihexdecode
 from pdfminer.pdftypes import (
     LITERAL_CRYPT,
     LITERALS_ASCII85_DECODE,
@@ -71,19 +74,28 @@ _MB = 1024 * 1024
 STREAM_MAX = 32 * _MB
 # 一份 PDF 解出的数据合计。真实文件最大 35.6MB，20MB 的文字文件整份读完约 220MB
 DOCUMENT_MAX = 256 * _MB
-# 预测器的输入长度、列数（pdfminer 的写法：每个字节约占 9 字节内存，一行按列数先分配）
-PREDICTOR_INPUT_MAX = 8 * _MB
+# 预测器的输入长度、列数（pdfminer 的写法：每个字节约占 9 字节内存，一行按列数先分配）。
+# 真实文件里用预测器的都是交叉引用流，解出最大 5KB
+PREDICTOR_INPUT_MAX = 2 * _MB
 PREDICTOR_COLUMNS_MAX = 1 << 20
-# ASCII85 的输入长度（Python 的 a85decode 每 4 个字节先存成一个小 bytes 对象，约占 45 字节）
-ASCII85_INPUT_MAX = 8 * _MB
+# 数据流套着数据流（解码参数指向对象流里的对象，那个对象流要先解）最多几层；正常文件一两层
+_NESTING_MAX = 8
+# 坏数据逐字节解之前，先一块一块地解，出错的那一块再逐字节（结果和 pdfminer 从头逐字节一样）
+_CHUNK = 64 * 1024
 
 _IMAGE_FILTERS = (*LITERALS_DCT_DECODE, *LITERALS_JBIG2_DECODE, *LITERALS_JPX_DECODE)
-_REFUSED_FILTERS = (*LITERALS_LZW_DECODE, *LITERALS_RUNLENGTH_DECODE, *LITERALS_CCITTFAX_DECODE)
+_REFUSED_FILTERS = (
+    *LITERALS_LZW_DECODE,
+    *LITERALS_RUNLENGTH_DECODE,
+    *LITERALS_CCITTFAX_DECODE,
+    *LITERALS_ASCII85_DECODE,
+)
 
 
 class Refused(Exception):
     """这份 PDF 不读：reason 用 attachment_text.REASONS 里的代码（too_large：解压后太大；
-    format：压缩方式不支持），detail 写具体原因（不带"PDF"两个字，调用方自己接）。"""
+    format：压缩方式不支持；broken：数据流互相引用、套得太深），detail 写具体原因（不带"PDF"
+    两个字，调用方自己接）。"""
 
     def __init__(self, reason: str, detail: str) -> None:
         super().__init__(detail)
@@ -94,9 +106,12 @@ class Refused(Exception):
 @dataclass
 class _Budget:
     left: int
+    # 第一次拒读：之后这份 PDF 里的数据流一律不解，reading() 结束时整份按拒读算
+    refused: Refused | None = None
 
 
 _BUDGET: ContextVar[_Budget | None] = ContextVar("pdf_decode_budget", default=None)
+_DEPTH: ContextVar[int] = ContextVar("pdf_decode_depth", default=0)
 # pdfminer 原来的 PDFStream.decode（测试拿它对照"不超上限的结果一样"）
 _ORIGINAL: Callable[[PDFStream], None] | None = None
 
@@ -111,23 +126,29 @@ def install() -> None:
 
 @contextmanager
 def reading(on_refused: Callable[[Refused], Exception] | None = None) -> Iterator[None]:
-    """读一份 PDF：这里面解出的数据合计不超过 DOCUMENT_MAX。on_refused：把 Refused（常被 pdfplumber
-    包在 PdfminerException 里）换成调用方自己的异常。"""
+    """读一份 PDF：这里面解出的数据合计不超过 DOCUMENT_MAX；有数据流被拒，整份按拒读算（哪怕异常
+    被 pdfplumber 吞掉了）。on_refused：把拒读换成调用方自己的异常；不给就抛 Refused。"""
     install()
-    token = _BUDGET.set(_Budget(DOCUMENT_MAX))
+    budget = _Budget(DOCUMENT_MAX)
+    token = _BUDGET.set(budget)
     try:
         yield
     except Exception as exc:
-        hit = refused(exc)
+        hit = refused(exc) or budget.refused
         if hit is None:
             raise
-        # 记一条：附件副本的检查只记"取不出文字"，看日志才分得清是不是解压超了
-        log.info("PDF 不读：%s", hit.detail)
-        if on_refused is None:
-            raise
-        raise on_refused(hit) from exc
+        raise _refusal(hit, on_refused) from exc
+    else:
+        if budget.refused is not None:
+            raise _refusal(budget.refused, on_refused)
     finally:
         _BUDGET.reset(token)
+
+
+def _refusal(hit: Refused, on_refused: Callable[[Refused], Exception] | None) -> Exception:
+    # 记一条：附件副本的检查只记"取不出文字"，看日志才分得清是不是解压超了
+    log.info("PDF 不读：%s", hit.detail)
+    return on_refused(hit) if on_refused is not None else Refused(hit.reason, hit.detail)
 
 
 def refused(exc: BaseException) -> Refused | None:
@@ -163,6 +184,24 @@ def _check(size: int, cap: int) -> None:
 def _decode(self: PDFStream) -> None:
     """pdfminer 20260107 版 PDFStream.decode 的写法，加上上限（见模块说明）。"""
     assert self.data is None and self.rawdata is not None, str((self.data, self.rawdata))
+    budget = _BUDGET.get()
+    if budget is not None and budget.refused is not None:
+        raise Refused(budget.refused.reason, budget.refused.detail)
+    depth = _DEPTH.get()
+    token = _DEPTH.set(depth + 1)
+    try:
+        if depth >= _NESTING_MAX:
+            raise Refused("broken", "数据流互相引用、套得太深")
+        _decode_within(self, budget)
+    except Refused as exc:
+        if budget is not None and budget.refused is None:
+            budget.refused = exc
+        raise
+    finally:
+        _DEPTH.reset(token)
+
+
+def _decode_within(self: PDFStream, budget: _Budget | None) -> None:
     data = self.rawdata
     if self.decipher:
         # Handle encryption
@@ -171,28 +210,30 @@ def _decode(self: PDFStream) -> None:
         data = self.decipher(self.objid, self.genno, data, self.attrs)
     # 先取解码方式：它可能指向对象流里的对象，要先解那个对象流（也计入合计），再算这个的额度
     filters = self.get_filters()
-    budget = _BUDGET.get()
     cap = STREAM_MAX if budget is None else max(0, min(STREAM_MAX, budget.left))
-    for f, params in filters:
-        if f in LITERALS_FLATE_DECODE:
-            data = _inflate(data, cap)
-        elif f in LITERALS_ASCII85_DECODE:
-            _check_ascii85(data, cap)
-            data = ascii85decode(data)
-        elif f in LITERALS_ASCIIHEX_DECODE:
-            data = asciihexdecode(data)  # 解出的不超过输入的一半
-        elif f in _IMAGE_FILTERS:
-            pass  # 图片：pdfminer 也是原样留着
-        elif f in _REFUSED_FILTERS:
-            raise Refused("format", f"用了不支持的压缩方式 {f.name}")
-        elif f == LITERAL_CRYPT:
-            raise PDFNotImplementedError("/Crypt filter is unsupported")
-        else:
-            raise PDFNotImplementedError(f"Unsupported filter: {f!r}")
-        if params and "Predictor" in params:
-            data = _predict(data, params)
+    if budget is not None:
+        budget.left -= cap  # 先预留，解的过程中再引用到的数据流用不到这一份
+    try:
+        for f, params in filters:
+            if f in LITERALS_FLATE_DECODE:
+                data = _inflate(data, cap)
+            elif f in LITERALS_ASCIIHEX_DECODE:
+                data = asciihexdecode(data)  # 解出的不超过输入的一半
+            elif f in _IMAGE_FILTERS:
+                pass  # 图片：pdfminer 也是原样留着
+            elif f in _REFUSED_FILTERS:
+                raise Refused("format", f"用了不支持的压缩方式 {f.name}")
+            elif f == LITERAL_CRYPT:
+                raise PDFNotImplementedError("/Crypt filter is unsupported")
+            else:
+                raise PDFNotImplementedError(f"Unsupported filter: {f!r}")
+            if params and "Predictor" in params:
+                data = _predict(data, params)
+            _check(len(data), cap)
         _check(len(data), cap)
-    _check(len(data), cap)
+    finally:
+        if budget is not None:
+            budget.left += cap  # 退回预留，下面按实际解出的扣
     if budget is not None:
         budget.left -= len(data)
     self.data = data
@@ -220,26 +261,26 @@ def _inflate(data: bytes, cap: int) -> bytes:
 
 
 def _inflate_corrupted(data: bytes, cap: int) -> bytes:
-    """pdfminer 的 decompress_corrupted 加上限：一个字节一个字节地解，在最后 3 个字节里出错的
-    （一般是校验和不对）用已经解出的，在前面就出错的当空数据流（pdfminer 也是解出空的）。"""
+    """pdfminer 的 decompress_corrupted 加上限：逐字节地解，在最后 3 个字节里出错的（一般是校验和
+    不对）用已经解出的，在前面就出错的当空数据流（pdfminer 也是解出空的）。为了快，先一块一块地解，
+    哪一块出错，退回这一块开头的状态再逐字节解这一块（zlib 解出的和怎么分块无关）。"""
     inflater = zlib.decompressobj()
     out = bytearray()
-    for i in range(len(data)):
+    for start in range(0, len(data), _CHUNK):
+        saved = inflater.copy()
         try:
-            out += inflater.decompress(data[i : i + 1], cap + 1 - len(out))
+            out += inflater.decompress(data[start : start + _CHUNK], cap + 1 - len(out))
+            _check(len(out), cap)
+            continue
         except zlib.error:
-            if i < len(data) - 3:
-                return b""
-            break
-        _check(len(out), cap)
+            inflater = saved
+        for i in range(start, min(start + _CHUNK, len(data))):
+            try:
+                out += inflater.decompress(data[i : i + 1], cap + 1 - len(out))
+            except zlib.error:
+                return b"" if i < len(data) - 3 else bytes(out)
+            _check(len(out), cap)
     return bytes(out)
-
-
-def _check_ascii85(data: bytes, cap: int) -> None:
-    if len(data) > ASCII85_INPUT_MAX:
-        raise Refused("too_large", f"ASCII85 数据流超过 {ASCII85_INPUT_MAX // _MB}MB")
-    zeros = data.count(b"z")  # 一个 z 解出 4 个字节，别的 5 个字符解出 4 个字节
-    _check((len(data) - zeros) // 5 * 4 + 4 * zeros + 4, cap)
 
 
 def _predict(data: bytes, params: dict) -> bytes:

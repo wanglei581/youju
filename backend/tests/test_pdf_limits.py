@@ -2,9 +2,9 @@
 都停在上限、按"太大""格式不支持"记，内存不跟着涨；不超上限的数据流解出的和 pdfminer 原来的写法一样。
 样本都是内存里现做的几百字节到几百 KB 的 PDF，不联网、不用数据库。"""
 
-import base64
 import functools
 import logging
+import random
 import tracemalloc
 import zlib
 from pathlib import Path
@@ -65,6 +65,60 @@ def make_pdf(*streams: tuple[bytes, bytes]) -> bytes:
     out += b"".join(b"%010d 00000 n \n" % o for o in offsets)
     out += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objs) + 1, xref)
     return out
+
+
+def objstm_pdf(stream_extra: bytes, inner: dict[int, bytes], size: int, info: bytes = b"") -> bytes:
+    """PDF 1.5：交叉引用流 + 一个对象流（12 号，FlateDecode，stream_extra 是字典里再加的项），
+    inner 里的对象放在对象流里，对象流解压后补空格到 size 字节。页面、字体、页面内容是普通对象；
+    info 给了就当文档信息字典（元数据，11 号对象）。"""
+    plain = {
+        1: b"<< /Type /Catalog /Pages 2 0 R >>",
+        2: b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        3: b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Contents 4 0 R"
+        b" /Resources << /Font << /F1 5 0 R >> >> >>",
+        4: b"<< /Length %d >>\nstream\n" % len(TEXT) + TEXT + b"\nendstream",
+        5: b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    }
+    if info:
+        plain[11] = info
+    for objid in inner:
+        plain.pop(objid, None)  # 放进对象流的就不再单独写
+    header = bodies = b""
+    for objid, body in inner.items():
+        header += b"%d %d " % (objid, len(bodies))
+        bodies += body + b" "
+    data = header + bodies
+    packer = zlib.compressobj(9)
+    raw = packer.compress(data) + b"".join(
+        packer.compress(b" " * min(MB, size - len(data) - done))
+        for done in range(0, max(0, size - len(data)), MB)
+    )
+    raw += packer.flush()
+    plain[12] = (
+        b"<< /Type /ObjStm /N %d /First %d /Length %d /Filter /FlateDecode %s >>\nstream\n"
+        % (len(inner), len(header), len(raw), stream_extra)
+        + raw
+        + b"\nendstream"
+    )
+    where = {objid: (2, 12, index) for index, objid in enumerate(inner)}
+    out = b"%PDF-1.5\n"
+    for objid, body in sorted(plain.items()):
+        where[objid] = (1, len(out), 0)
+        out += b"%d 0 obj\n" % objid + body + b"\nendobj\n"
+    xref = max(where) + 1
+    where[xref] = (1, len(out), 0)
+    rows = b"".join(
+        bytes([kind]) + a.to_bytes(4, "big") + b.to_bytes(2, "big")
+        for kind, a, b in (where.get(i, (0, 0, 0xFFFF)) for i in range(xref + 1))
+    )
+    trailer = b"/Root 1 0 R" + (b" /Info 11 0 R" if info else b"")
+    out += (
+        b"%d 0 obj\n<< /Type /XRef /Size %d /W [1 4 2] %s /Length %d >>\nstream\n"
+        % (xref, xref + 1, trailer, len(rows))
+        + rows
+        + b"\nendstream\nendobj\n"
+    )
+    return out + b"startxref\n%d\n%%%%EOF\n" % where[xref][1]
 
 
 def texts(result: attachment_text.Extraction) -> list[str]:
@@ -170,9 +224,12 @@ def test_many_streams_stop_at_document_total(small_caps) -> None:
     assert extract_pdf_text(one) == ("Notice 2026\nNotice 2026", None)
 
 
-@pytest.mark.parametrize("name", ["LZWDecode", "RunLengthDecode", "CCITTFaxDecode", "LZW", "RL"])
+@pytest.mark.parametrize(
+    "name", ["LZWDecode", "RunLengthDecode", "CCITTFaxDecode", "ASCII85Decode", "LZW", "RL", "A85"]
+)
 def test_filters_without_limits_are_refused(name: str) -> None:
-    """pdfminer 的 LZW、RunLength、CCITT 解码器内存或时间没有上限；现在只有图片用（取文字不解图片）。"""
+    """pdfminer 的 LZW、RunLength、CCITT、ASCII85 解码器内存或时间没有上限（ASCII85 去空白的正则
+    是平方级：几万个空格就要几秒）；抽查的真实文件里一个都没有（图片用的不解）。"""
     pdf = make_pdf((b"/Filter /%s" % name.encode(), b"\x80\x0b\x60\x50\x22\x0c\x0c\x85\x01"))
     detail = f"用了不支持的压缩方式 {name}"
     assert results(pdf) == {
@@ -223,11 +280,69 @@ def test_used_up_total_never_means_unlimited(caplog) -> None:
     assert bomb.data is None and bomb.rawdata is not None  # 没解成，下次再读还是拒绝
 
 
-def test_ascii85_zero_runs_are_counted_before_decoding(small_caps) -> None:
-    """ASCII85 里一个 z 解出 4 个字节：先数出解出多大，超了不解。"""
-    pdf = make_pdf((b"/Filter /ASCII85Decode", b"z" * (512 * 1024) + b"~>"))
+# 页面树（2 号）和 /Predictor 的值（20 号）都在对象流里：打开文件要先解对象流，解的时候又要读 20 号
+SELF_REF = {2: b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>", 20: b"1"}
+
+
+def test_stream_referring_to_itself_stops_at_the_total(small_caps) -> None:
+    """独立审阅实测：对象流的解码参数 /Predictor 指向这个对象流里的对象，要解它就得先解对象流自己，
+    一层套一层，每层都拿满一个数据流的额度（812 字节的文件涨到 7GB）。现在每层先预留额度，合计用完
+    就停（这里 1MB、合计 3MB：解到第 4 层停）。"""
+    pdf = objstm_pdf(b"/DecodeParms << /Predictor 20 0 R >>", SELF_REF, 900 * 1024)
+    assert len(pdf) < 4096
+    # 留着的不超过合计上限，再加正在解的那一层 zlib 的两倍：以前是几百层 × 900KB，直到递归太深
+    assert peak_memory(lambda: results(pdf)) < 4 * pdf_limits.DOCUMENT_MAX
+    assert results(pdf) == {
+        "copy": "unchecked",
+        "text": ("too_large", "PDF 解压后合计超过 3MB"),
+        "list": "暂不支持这份 PDF（解压后合计超过 3MB）",
+        "body": ("", "PDF 解压后合计超过 3MB"),
+    }
+
+
+def test_streams_nested_too_deep_are_refused(monkeypatch) -> None:
+    """合计额度很宽时，一层套一层也有上限（最多 8 层）。"""
+    monkeypatch.setattr(pdf_limits, "STREAM_MAX", 1 * MB)
+    monkeypatch.setattr(pdf_limits, "DOCUMENT_MAX", 512 * MB)
+    pdf = objstm_pdf(b"/DecodeParms << /Predictor 20 0 R >>", SELF_REF, 900 * 1024)
+    assert peak_memory(lambda: attachment_text.extract(pdf)) < 16 * MB
     result = attachment_text.extract(pdf)
-    assert (result.reason, result.detail) == ("too_large", "PDF 数据流解压后超过 1MB")
+    assert (result.reason, result.detail) == ("broken", "PDF 数据流互相引用、套得太深")
+
+
+def test_refusal_swallowed_by_pdfplumber_still_fails_the_file(small_caps, monkeypatch) -> None:
+    """pdfplumber 读文档信息（元数据）时吞掉异常、接着往下读：信息字典里 2000 项都指向超了上限的
+    对象流里的对象，以前每项都解到上限再被吞掉（真实上限下每项约 18ms），最后整份照常"通过"。
+    现在第一次超了以后不再解，整份按超了算。"""
+    info = b"<< " + b" ".join(b"/K%d 20 0 R" % i for i in range(2000)) + b" >>"
+    pdf = objstm_pdf(b"", {20: b"(Alice)"}, 2 * MB, info=info)
+    calls = []
+    inflate = pdf_limits._inflate
+    monkeypatch.setattr(
+        pdf_limits, "_inflate", lambda data, cap: calls.append(cap) or inflate(data, cap)
+    )
+    assert results(pdf) == {
+        "copy": "unchecked",
+        "text": ("too_large", "PDF 数据流解压后超过 1MB"),
+        "list": "暂不支持这份 PDF（数据流解压后超过 1MB）",
+        "body": ("", "PDF 数据流解压后超过 1MB"),
+    }
+    assert len(calls) == 4  # 四处各解一次就停
+    # 对象流没超时照常读（同一份结构，信息字典读得出来）
+    ok = objstm_pdf(b"", {20: b"(Alice)"}, 512 * 1024, info=info)
+    assert results(ok)["copy"] == "pdf"
+
+
+def test_predictor_input_limit(monkeypatch) -> None:
+    """预测器的输入超了不解；不超的，内存是输入的十几倍（pdfminer 用整数列表），上限因此定得小。"""
+    monkeypatch.setattr(pdf_limits, "PREDICTOR_INPUT_MAX", 256 * 1024)
+    rows = bytes([2]) + bytes(255)  # 每行：过滤方式 + 255 个字节（Columns 255）
+    params = b"/Filter /FlateDecode /DecodeParms << /Predictor 12 /Columns 255 >>"
+    fits = make_pdf((params, zlib.compress(rows * 1024)))  # 256KB
+    over = make_pdf((params, zlib.compress(rows * 1025)))
+    assert peak_memory(lambda: attachment_text.extract(fits)) < 8 * MB
+    assert attachment_text.extract(fits).ok
+    assert attachment_text.extract(over).reason == "too_large"
 
 
 # ---- 不超上限的，和 pdfminer 原来解出的一样 ----
@@ -241,7 +356,6 @@ CASES = {
     "bad checksum": ({"Filter": LIT("FlateDecode")}, _TEXT[:-1] + bytes([_TEXT[-1] ^ 1])),
     "corrupted in the middle": ({"Filter": LIT("Fl")}, _TEXT[:30] + b"\xff\xff\xff" + _TEXT[33:]),
     "hex": ({"Filter": LIT("ASCIIHexDecode")}, b"48 65 6c 6c 6f>"),
-    "ascii85": ({"Filter": LIT("A85")}, base64.a85encode(b"hello world " * 20 + bytes(8)) + b"~>"),
     "hex then flate": (
         {"Filter": [LIT("AHx"), LIT("FlateDecode")]},
         _TEXT.hex().encode() + b">",
@@ -284,6 +398,28 @@ def test_streams_within_limits_decode_like_pdfminer(monkeypatch, name: str, stri
     assert decoded(pdf_limits._decode, attrs, raw) == theirs
     if not strict:
         assert isinstance(theirs, bytes)
+
+
+_WORDS = [bytes(random.Random(i).choices(range(97, 123), k=1 + i % 9)) for i in range(400)]
+_PROSE = b" ".join(random.Random(1105).choices(_WORDS, k=12000))  # 约 70KB，压完约 30KB
+_PACKED = zlib.compress(_PROSE, 9)
+DAMAGED = {
+    "early": _PACKED[:2000] + b"\xff\xff\xff" + _PACKED[2003:],
+    "late": _PACKED[:-3000] + b"\x00\xff\x00" + _PACKED[-2997:],
+    "bit flips": bytes(b ^ (1 if i % 997 == 5 else 0) for i, b in enumerate(_PACKED)),
+    "bad checksum": _PACKED[:-1] + bytes([_PACKED[-1] ^ 1]),
+    "truncated": _PACKED[:-5000],
+    "trailing bytes": _PACKED + b"\r\nendstream",
+}
+
+
+@pytest.mark.parametrize("damage", DAMAGED)
+def test_corrupted_streams_decoded_in_chunks_like_pdfminer(monkeypatch, damage: str) -> None:
+    """坏数据先按块解、出错的那块再逐字节：解出的和 pdfminer 从头逐字节解的一样（块调成 1KB，
+    这几种坏法都跨好几块）。"""
+    monkeypatch.setattr(pdf_limits, "_CHUNK", 1024)
+    attrs, raw = {"Filter": LIT("FlateDecode")}, DAMAGED[damage]
+    assert decoded(pdf_limits._decode, attrs, raw) == decoded(pdf_limits._ORIGINAL, attrs, raw)
 
 
 @pytest.mark.parametrize(
