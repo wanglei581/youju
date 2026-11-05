@@ -127,19 +127,20 @@ def install() -> None:
 @contextmanager
 def reading(on_refused: Callable[[Refused], Exception] | None = None) -> Iterator[None]:
     """读一份 PDF：这里面解出的数据合计不超过 DOCUMENT_MAX；有数据流被拒，整份按拒读算（哪怕异常
-    被 pdfplumber 吞掉了）。on_refused：把拒读换成调用方自己的异常；不给就抛 Refused。"""
+    被 pdfplumber 吞掉、照常读完了）。on_refused：把拒读换成调用方自己的异常；不给就抛 Refused。"""
     install()
     budget = _Budget(DOCUMENT_MAX)
     token = _BUDGET.set(budget)
     try:
         yield
     except Exception as exc:
-        hit = refused(exc) or budget.refused
+        # 别的异常（调用方自己的超时等）原样抛：本来就不是"读成了"，不用改
+        hit = refused(exc)
         if hit is None:
             raise
         raise _refusal(hit, on_refused) from exc
     else:
-        if budget.refused is not None:
+        if budget.refused is not None:  # 拒读被吞掉了，照常"读完"不算数
             raise _refusal(budget.refused, on_refused)
     finally:
         _BUDGET.reset(token)

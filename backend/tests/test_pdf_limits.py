@@ -2,6 +2,7 @@
 都停在上限、按"太大""格式不支持"记，内存不跟着涨；不超上限的数据流解出的和 pdfminer 原来的写法一样。
 样本都是内存里现做的几百字节到几百 KB 的 PDF，不联网、不用数据库。"""
 
+import contextlib
 import functools
 import logging
 import random
@@ -331,6 +332,24 @@ def test_refusal_swallowed_by_pdfplumber_still_fails_the_file(small_caps, monkey
     # 对象流没超时照常读（同一份结构，信息字典读得出来）
     ok = objstm_pdf(b"", {20: b"(Alice)"}, 512 * 1024, info=info)
     assert results(ok)["copy"] == "pdf"
+
+
+def test_swallowed_refusal_fails_a_normal_exit_only(small_caps) -> None:
+    """拒读被吞掉以后：照常读完的，整份按拒读算；中途出了别的错（调用方自己的超时等），原样抛出。"""
+    bomb = PDFStream({"Filter": LIT("FlateDecode")}, spaces_flate(2 * MB))
+
+    def swallowed() -> None:
+        with contextlib.suppress(pdf_limits.Refused):
+            bomb.get_data()
+
+    with pytest.raises(pdf_limits.Refused, match="数据流解压后超过 1MB"), pdf_limits.reading():
+        swallowed()
+        assert pytest.raises(pdf_limits.Refused, bomb.get_data)  # 之后再读直接拒，不再解
+    with pytest.raises(KeyError, match="别的错"), pdf_limits.reading():
+        swallowed()
+        raise KeyError("别的错")
+    with pdf_limits.reading():  # 新的一份重新计
+        assert PDFStream({}, b"BT ET").get_data() == b"BT ET"
 
 
 def test_predictor_input_limit(monkeypatch) -> None:
