@@ -8,7 +8,7 @@ openpyxl、python-docx 用 ZipFile.read() 一次读完整个部件。只看 zip 
 所以这里只认不压缩和 deflate（Office、WPS、LibreOffice 存的文件只用这两种；11/5 抽查 147 份真实
 附件的 3,288 个部件也是），每个部件按 64KB 一块真解一遍、数实际解出多少（不在目录写的大小处停），
 合计超过上限就不交给读取库；解出的和目录里写的不一样也不交（文件坏了，或者故意写小）。
-检查本身内存只占一块（deflate 的 read(n) 每次最多解出 n 字节），最多解到上限多一个字节。
+检查本身内存只占一块（deflate 的 read(n) 每次最多解出 n 字节），最多比上限多解一块。
 """
 
 from __future__ import annotations
@@ -19,7 +19,20 @@ import zlib
 
 ZIP_METHODS = (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED)
 _CHUNK = 64 * 1024
-_METHOD_NAMES = {zipfile.ZIP_BZIP2: "bzip2", zipfile.ZIP_LZMA: "LZMA"}
+# zip 规范（APPNOTE 4.4.5）里有的别的压缩方式：文件是好的，只是读取库不支持或 Office 不用。
+# 不在这里的编号按文件坏了算（名单解析记坏文件、过后重试，不记"暂不支持"永久不读）
+_METHOD_NAMES = {
+    1: "shrink",
+    6: "implode",
+    9: "deflate64",
+    zipfile.ZIP_BZIP2: "bzip2",
+    zipfile.ZIP_LZMA: "LZMA",
+    93: "zstd",
+    95: "xz",
+    98: "PPMd",
+    99: "AES 加密",
+}
+_KNOWN_METHODS = {2, 3, 4, 5, 10, 16, 18, 19, 20, 94, 96, 97, *_METHOD_NAMES}
 # 读部件时可能出的错：文件头坏了、部件重叠（Python 自己查的）、数据截断、deflate 数据坏、
 # 专有的加密或补丁格式、文件名解不了码
 _READ_ERRORS = (
@@ -51,6 +64,8 @@ def check(archive: zipfile.ZipFile, *, max_bytes: int, max_members: int) -> None
         raise ZipLimitError("members", f"部件太多（{len(infos)} 个）")
     for info in infos:
         if info.compress_type not in ZIP_METHODS:
+            if info.compress_type not in _KNOWN_METHODS:
+                raise ZipLimitError("broken", f"压缩方式编号不认识（{info.compress_type}）")
             name = _METHOD_NAMES.get(info.compress_type, f"编号 {info.compress_type}")
             raise ZipLimitError("method", f"压缩方式不支持（{name}）", name)
         if info.flag_bits & 0x1:

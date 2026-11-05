@@ -72,8 +72,8 @@ def office(kind: str) -> bytes:
     return output.getvalue()
 
 
-def patch_entry(data: bytes, name: str, *, crc=None, size=None, flags=None) -> bytes:
-    """改目录和文件头里一个部件的 CRC、解压后大小、标志位（造假文件用）。"""
+def patch_entry(data: bytes, name: str, *, crc=None, size=None, flags=None, method=None) -> bytes:
+    """改目录和文件头里一个部件的 CRC、解压后大小、标志位、压缩方式（造假文件用）。"""
     out = bytearray(data)
     eocd = out.rindex(b"PK\x05\x06")
     count, _, pos = struct.unpack_from("<HLL", out, eocd + 10)
@@ -89,6 +89,8 @@ def patch_entry(data: bytes, name: str, *, crc=None, size=None, flags=None) -> b
                     struct.pack_into("<L", out, header + size_at, size)
                 if flags is not None:
                     struct.pack_into("<H", out, header + flag_at, flags)
+                if method is not None:  # 压缩方式紧跟在标志位后面
+                    struct.pack_into("<H", out, header + flag_at + 2, method)
         pos += 46 + name_len + extra_len + comment_len
     return bytes(out)
 
@@ -196,12 +198,18 @@ def test_normal_office_files_read_as_before(reader):
 
 
 @pytest.mark.parametrize(
-    ("method", "reason"),
-    [("bzip2", "暂不支持此压缩方式（bzip2）"), ("deflate", "解析失败：BadZipFile")],
+    ("method", "limit", "reason"),
+    [
+        ("bzip2", None, "暂不支持此压缩方式（bzip2）"),
+        ("deflate", None, "解析失败：BadZipFile"),
+        ("deflate", 1 << 20, "暂不支持超过安全解析预算的文件（解压后超过 1MB）"),
+    ],
 )
-def test_list_bomb_recorded_without_aborting_batch(monkeypatch, method, reason):
+def test_list_bomb_recorded_without_aborting_batch(monkeypatch, method, limit, reason):
     from youju.lists import service
 
+    if limit is not None:
+        monkeypatch.setattr(parser, "_MAX_ZIP_UNCOMPRESSED", limit)
     response = SimpleNamespace(status="ok", final_url=None, content=bomb("docx", method), text="")
     fetcher = SimpleNamespace(fetch=lambda _: response)
     recorded = []
@@ -210,8 +218,15 @@ def test_list_bomb_recorded_without_aborting_batch(monkeypatch, method, reason):
     service._parse_source(
         None, None, "https://test.gov.cn/list.docx", "docx", "attachment", None, fetcher
     )
-    # 压缩方式不支持记"暂不支持"（文件不会变，不再重试）；大小不符和以前读取库报 CRC 错时一样
+    # 压缩方式不支持、超上限记"暂不支持"（文件不会变，不再重试）；大小不符和以前读取库报 CRC 错时
+    # 一样记坏文件，过后重试
     assert len(recorded) == 1 and recorded[0][-2] is None and recorded[0][-1] == reason
+
+
+def test_list_too_many_members_not_retried(monkeypatch):
+    monkeypatch.setattr(parser, "_MAX_ZIP_MEMBERS", 2)
+    with pytest.raises(ValueError, match=r"^暂不支持超过安全解析预算的文件（内部文件超过 2 个）$"):
+        parser.parse_attachment_result(office("docx"), "docx")
 
 
 @pytest.mark.parametrize(
@@ -291,11 +306,22 @@ def test_limit_shared_by_all_members():
     assert _kind(lying, max_bytes=1000) == "size"
 
 
-def test_encrypted_member_rejected():
-    data = patch_entry(_zip({"a": b"x" * 10}), "a", flags=0x1)
+@pytest.mark.parametrize(
+    ("change", "kind", "detail"),
+    [
+        ({"flags": 0x1}, "method", "加密"),
+        ({"method": 9}, "method", "deflate64"),
+        ({"method": 97}, "method", "编号 97"),
+        # 规范里没有的编号多半是文件坏了：按坏文件算，名单解析过后会重试
+        ({"method": 7}, "broken", ""),
+        ({"method": 0xFFFF}, "broken", ""),
+    ],
+)
+def test_other_methods_and_encryption_rejected(change, kind, detail):
+    data = patch_entry(_zip({"a": b"x" * 10}), "a", **change)
     with pytest.raises(zip_limits.ZipLimitError) as caught:
         _check(data)
-    assert caught.value.kind == "method" and caught.value.detail == "加密"
+    assert caught.value.kind == kind and caught.value.detail == detail
 
 
 def test_two_entries_for_the_same_data_rejected():
@@ -313,6 +339,79 @@ def test_damaged_data_rejected():
     start = data.index(b"PK\x03\x04") + 30 + 1  # 文件头 30 字节 + 文件名 "a"
     data[start : start + 20] = b"\xff" * 20
     assert _kind(bytes(data)) == "broken"
+
+
+def _zip64_entry(data: bytes, name: str, size: int) -> bytes:
+    """把一个部件的目录项改成 zip64 写法：解压后大小改写在 zip64 扩展里，写成 size。"""
+    eocd = data.rindex(b"PK\x05\x06")
+    count, _, offset = struct.unpack_from("<HLL", data, eocd + 10)
+    entries, pos = [], offset
+    for _ in range(count):
+        name_len, extra_len, comment_len = struct.unpack_from("<HHH", data, pos + 28)
+        end = pos + 46 + name_len + extra_len + comment_len
+        entry = bytearray(data[pos:end])
+        if entry[46 : 46 + name_len] == name.encode():
+            struct.pack_into("<L", entry, 24, 0xFFFFFFFF)
+            struct.pack_into("<H", entry, 30, extra_len + 12)
+            at = 46 + name_len + extra_len
+            entry[at:at] = struct.pack("<HHQ", 1, 8, size)
+        entries.append(bytes(entry))
+        pos = end
+    directory = b"".join(entries)
+    record = bytearray(data[eocd:])
+    struct.pack_into("<L", record, 12, len(directory))
+    return data[:offset] + directory + bytes(record)
+
+
+class _Unseekable(BytesIO):
+    """不能倒回去补文件头的输出：zipfile 只好在每个部件后面写数据描述符（标志位第 3 位）。"""
+
+    def seek(self, *args):
+        raise OSError("不能倒回去")
+
+    def seekable(self):
+        return False
+
+
+def test_zip64_size_written_small_counted_by_what_actually_inflates():
+    data = _zip64_entry(_zip({"a": b"x" * 1001}), "a", 10)
+    with zipfile.ZipFile(BytesIO(data)) as archive:
+        assert archive.getinfo("a").file_size == 10  # zipfile 认 zip64 扩展里写的
+    assert _kind(data, max_bytes=1000) == "size"
+    assert _kind(data, max_bytes=5000) == "broken"
+
+
+def test_data_descriptor_member_checked_by_central_directory():
+    stream = _Unseekable()
+    with zipfile.ZipFile(stream, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("a", b"x" * 600)
+    data = stream.getvalue()
+    with zipfile.ZipFile(BytesIO(data)) as archive:
+        assert archive.getinfo("a").flag_bits & 0x8
+    _check(data)
+    assert _kind(patch_entry(data, "a", size=10)) == "broken"
+
+
+def test_stored_member_with_more_data_than_written_rejected():
+    data = _zip({"a": b"x" * 10, "b": b"y" * 10}, zipfile.ZIP_STORED)
+    # 存了 10 字节、目录写解压后 5 字节：zipfile 读到写的大小就停，实际有的比写的多
+    assert _kind(patch_entry(data, "a", size=5, crc=zlib.crc32(b"x" * 5))) == "broken"
+
+
+def test_local_header_method_ignored():
+    # 只认目录里写的方式：本地文件头写成 bzip2，zipfile 照样按目录的 deflate 读（检查和读取库一致）
+    data = bytearray(_zip({"a": b"x" * 600}))
+    struct.pack_into("<H", data, 8, zipfile.ZIP_BZIP2)
+    _check(bytes(data))
+    with zipfile.ZipFile(BytesIO(bytes(data))) as archive:
+        assert archive.read("a") == b"x" * 600
+
+
+def test_prefixed_zip_checked_the_same():
+    real = b"x" * 1001
+    lying = patch_entry(_zip({"a": real}), "a", crc=zlib.crc32(real[:10]), size=10)
+    # 前面拼了别的数据：zipfile 按目录位置推算偏移，检查和读取库读的还是同一段
+    assert _kind(b"junk" * 100 + lying, max_bytes=5000) == "broken"
 
 
 def test_check_reads_in_small_chunks():
