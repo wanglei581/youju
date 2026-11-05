@@ -134,3 +134,33 @@ def test_short_bodies_are_compared_too() -> None:
     empty = SimpleNamespace(doc_number=None, body_text="")
     assert _signature(a)[1] != _signature(b)[1]
     assert _signature(empty)[1] is None
+
+
+def test_signature_ignores_page_header_time_and_counter() -> None:
+    """同一份文件发了两个网址：正文开头网页自带的发布时刻、访问计数不同，仍算同一份（11/4 完整测试）；
+    正文里别处的时间、开头以外的数字照样比。"""
+    from youju.dedup import _signature
+
+    title = "关于第十五届创新创业大赛获奖单位名单的公示"
+    rest = "根据有关通知，现将获奖单位名单予以公示。公示期为5个工作日。" * 10
+
+    def body(head: str, tail: str = rest) -> SimpleNamespace:
+        return SimpleNamespace(doc_number=None, body_text=f"{title}\n{head}\n来源：科学技术厅\n{tail}")
+
+    a = body("发布时间：2026-11-03 16:25\n访问量：12次")
+    b = body("发布时间：2026-11-03 16:19\n访问量：37次")
+    assert _signature(a)[1] == _signature(b)[1]
+    # 写成“2026年11月3日 16:25:08”、没有冒号后空格的也一样
+    c = body("发布日期：2026年11月3日16:25:08")
+    d = body("发布日期：2026年11月3日 09:02:41")
+    assert _signature(c)[1] == _signature(d)[1]
+    # 发布日期不同：照样不同
+    assert _signature(body("发布时间：2026-11-03 16:25"))[1] != _signature(body("发布时间：2026-11-04 16:25"))[1]
+    # 没有“发布时间”一类标签的时刻（如截止时间）不动
+    e = body("发布时间：2026-11-03 16:25", "申报截止时间：2026-11-20 17:00。" + rest)
+    f = body("发布时间：2026-11-03 16:25", "申报截止时间：2026-11-20 18:00。" + rest)
+    assert _signature(e)[1] != _signature(f)[1]
+    # 开头一段以外的“发布时间”不动（正文里引用别的文件的发布时间）
+    g = body("发布时间：2026-11-03 16:25", rest + "原通知发布时间：2026-10-01 09:00。")
+    h = body("发布时间：2026-11-03 16:25", rest + "原通知发布时间：2026-10-01 10:00。")
+    assert _signature(g)[1] != _signature(h)[1]
