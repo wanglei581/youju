@@ -51,9 +51,10 @@ def test_uptime_check_alerts_once_and_on_recovery(tmp_path, monkeypatch):
 
     monkeypatch.setattr(httpx, "get", fake_get)
     state = tmp_path / "state.json"
-    run = lambda: cli.main(
-        ["uptime-check", "--url", "https://api.example.com", "--state", str(state)]
-    )  # noqa: E731
+
+    def run():
+        return cli.main(["uptime-check", "--url", "https://api.example.com", "--state", str(state)])
+
     down = httpx.ConnectError("x")
     up = httpx.Response(200, json={"status": "ok"})
     replies.extend([down, down, down, up, up])

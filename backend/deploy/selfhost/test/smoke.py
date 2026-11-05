@@ -67,7 +67,9 @@ def main():
     status, body = call("POST", "/api/v1/feedback", {"content": "冒烟测试：日期不对"}, token=token)
     check("纠错（内容安全经 access_token 调假微信）", status == 201, body[:200])
 
-    status, body = call("POST", "/api/admin/takedown/1/remove", {}, headers={"x-admin-token": "x" * 40})
+    status, body = call(
+        "POST", "/api/admin/takedown/1/remove", {}, headers={"x-admin-token": "x" * 40}
+    )
     check("对外的域名上没有核对台", status == 404, body[:100])
 
     # 消息推送：安全模式（按官方算法加密、签名）
@@ -79,9 +81,15 @@ def main():
     status, body = call("POST", "/api/wx/push" + query, {"ToUserName": "gh", "Encrypt": encrypted})
     reply = json.loads(body) if status == 200 else {}
     expect = hashlib.sha1(
-        "".join(sorted([PUSH_TOKEN, str(reply.get("TimeStamp")), nonce, str(reply.get("Encrypt"))])).encode()
+        "".join(
+            sorted([PUSH_TOKEN, str(reply.get("TimeStamp")), nonce, str(reply.get("Encrypt"))])
+        ).encode()
     ).hexdigest()
-    check("消息推送验签、解密，回包加密且签名对", status == 200 and reply.get("MsgSignature") == expect, body[:200])
+    check(
+        "消息推送验签、解密，回包加密且签名对",
+        status == 200 and reply.get("MsgSignature") == expect,
+        body[:200],
+    )
     status, _ = call("POST", "/api/wx/push" + query.replace(nonce, "1"), {"Encrypt": encrypted})
     check("推送签名不对就拒", status == 403)
     print("全部通过")
