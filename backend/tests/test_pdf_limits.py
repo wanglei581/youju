@@ -4,6 +4,7 @@
 
 import base64
 import functools
+import logging
 import tracemalloc
 import zlib
 from pathlib import Path
@@ -64,6 +65,10 @@ def make_pdf(*streams: tuple[bytes, bytes]) -> bytes:
     out += b"".join(b"%010d 00000 n \n" % o for o in offsets)
     out += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objs) + 1, xref)
     return out
+
+
+def texts(result: attachment_text.Extraction) -> list[str]:
+    return [segment.text for segment in result.segments]
 
 
 def peak_memory(read) -> int:
@@ -179,36 +184,42 @@ def test_filters_without_limits_are_refused(name: str) -> None:
 
 
 @pytest.mark.parametrize(
-    "params",
+    ("params", "reason"),
     [
-        b"/Columns 50000000",
-        b"/Colors 50000000",
-        b"/Colors 400000000 /BitsPerComponent 1",
-        b"/BitsPerComponent 64",
+        (b"/Columns 50000000", "too_large"),
+        (b"/Colors 50000000", None),
+        (b"/Colors 400000000 /BitsPerComponent 1", None),
+        (b"/BitsPerComponent 64", "broken"),  # pdfminer 只认位深 1、8，别的直接报错
     ],
 )
-def test_predictor_parameters_cannot_blow_up_memory(params: bytes) -> None:
+def test_predictor_parameters_cannot_blow_up_memory(params: bytes, reason: str | None) -> None:
     """pdfminer 的 PNG 预测器先按列数分配一行（整数列表）：5000 万列要 450MB 内存，文件只有几百字节，
     列数超了不解。颜色数、位深再大也不先分配（20260107 版只按列数分配），内存照样不涨。"""
     raw = zlib.compress(bytes([2]) + bytes(999))
     pdf = make_pdf((b"/Filter /FlateDecode /DecodeParms << /Predictor 12 %s >>" % params, raw))
     assert peak_memory(lambda: attachment_text.extract(pdf)) < 8 * MB
-    if params.startswith(b"/Columns"):
-        result = attachment_text.extract(pdf)
-        assert (result.reason, result.detail) == ("too_large", "PDF 用预测器的数据流太大")
+    result = attachment_text.extract(pdf)
+    assert result.reason == reason
+    if reason == "too_large":
+        assert result.detail == "PDF 用预测器的数据流太大"
+    if reason is None:
+        assert texts(result) == ["Notice 2026"]
 
 
-def test_used_up_total_never_means_unlimited() -> None:
-    """合计额度用完（剩 0）时也是上限：zlib 的 max_length 给 0 是"不限"，这里给的是 1。"""
+def test_used_up_total_never_means_unlimited(caplog) -> None:
+    """合计额度用完（剩 0）时也是上限：zlib 的 max_length 给 0 是"不限"，这里给的是 1。拒读记一条日志；
+    没给 on_refused 时原样抛出 Refused；出了 reading() 额度就清掉。"""
     bomb = PDFStream({"Filter": LIT("FlateDecode")}, review_bomb())
 
     def read() -> None:
-        with pdf_limits.reading():
+        with pytest.raises(pdf_limits.Refused, match="合计"), pdf_limits.reading():
             pdf_limits._BUDGET.get().left = 0
-            with pytest.raises(pdf_limits.Refused, match="合计"):
-                bomb.get_data()
+            bomb.get_data()
 
-    assert peak_memory(read) < MB
+    with caplog.at_level(logging.INFO, logger="youju.pdf_limits"):
+        assert peak_memory(read) < MB
+    assert "PDF 不读：解压后合计超过" in caplog.text
+    assert pdf_limits._BUDGET.get() is None
     assert bomb.data is None and bomb.rawdata is not None  # 没解成，下次再读还是拒绝
 
 
