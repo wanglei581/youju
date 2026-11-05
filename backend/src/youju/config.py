@@ -11,6 +11,21 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_SOURCES_CSV = REPO_ROOT / "docs" / "数据来源" / "全国来源清单_P0_v1.csv"
+# 只从真正的环境变量读的密钥：backend/.env 和密钥文件里写了也不认，免得开发用的 .env 带着
+# 生产密钥被提交或拷走
+ENV_ONLY_SECRETS = (
+    "wx_appsecret",
+    "xpay_appkey_prod",
+    "xpay_appkey_sandbox",
+    "session_secret",
+    "wx_push_token",
+    "wx_push_aes_key",
+    "s3_access_key",
+    "s3_secret_key",
+    "sync_secret",
+    "offsite_s3_access_key",
+    "offsite_s3_secret_key",
+)
 
 
 class Settings(BaseSettings):
@@ -172,6 +187,71 @@ class Settings(BaseSettings):
     xpay_bill_fee_unit: Literal["fen", "yuan"] = "fen"
     xpay_bill_hosts: list[str] = []
 
+    # ---- 2.0 自建服务器（不用微信云托管，创始人 11/5"按这个做"）----
+    # 每一项的默认值都是现在云托管的做法，不配就和原来完全一样。怎么配见 docs/部署/自建服务器.md。
+    # 部署在哪里：cloudrun 微信云托管（现在）；self 自己的服务器（2.0）。self 时不信任任何
+    # X-WX-* 请求头（公网谁都能带），小程序接口服务改用自己的登录凭证（session_login）
+    hosting: Literal["cloudrun", "self"] = "cloudrun"
+    # 自己的登录：小程序 wx.login 拿到 code → 后端用 AppSecret 调 jscode2session 换 openid →
+    # 发我们签名的登录凭证（不写数据库，同意协议前仍不保存 openid）。和信任云托管请求头二选一
+    session_login: bool = False
+    # 登录凭证的签名密钥（至少 32 位随机字符）；换了它，所有人的凭证作废，小程序会自动重新登录
+    session_secret: SecretStr | None = None
+    session_ttl_hours: int = Field(default=168, ge=1, le=720)
+    # 微信开放接口（虚拟支付、内容安全、订阅消息）：cloudrun 经云托管开放接口服务，免 access_token；
+    # token 用 AppSecret 取 stable_token，自己带 access_token 调
+    # （自建服务器要在小程序后台把服务器 IP 加进白名单）
+    wx_open_api: Literal["cloudrun", "token"] = "cloudrun"
+    # 微信服务端接口的地址。只在本机全栈测试时改成假的微信（deploy/selfhost/test/wxmock.py），
+    # 线上一律用默认的官方地址（不是 https 的只认测试用的几个主机名）
+    wx_api_base: str = "https://api.weixin.qq.com"
+    # 对象存储（附件副本、批量工具结果、备份、访问日志归档、公开快照）：cloudbase 云托管对象存储；
+    # disk 服务器本机目录；s3 兼容 S3 的对象存储（腾讯云 COS 带密钥、MinIO 等）。见 youju/storage.py
+    storage_backend: Literal["cloudbase", "disk", "s3"] = "cloudbase"
+    storage_dir: Path | None = None
+    # 文件 ID（cloud://环境.存储桶/路径）里的"存储桶"一段。切换时填原云托管存储桶的名字，迁过来的
+    # 旧文件 ID 和新上传的写法一致；只是一个名字，disk、s3 都按路径存取
+    storage_bucket: str = Field(default="youju-self", pattern=r"^[0-9a-z][0-9a-z-]{2,80}$")
+    s3_endpoint: str = ""
+    s3_region: str = ""
+    s3_bucket: str = ""
+    s3_access_key: SecretStr | None = None
+    s3_secret_key: SecretStr | None = None
+    # MinIO 一般用路径式（https://域名/存储桶/对象）；COS 用虚拟主机式（https://存储桶.域名/对象）
+    s3_path_style: bool = False
+    # 消息推送（虚拟支付发货、退款、投诉，客服消息）：cloudrun 云托管消息推送（信任 X-WX-SOURCE）；
+    # signed 普通 HTTPS 地址，按小程序后台"消息推送"的 Token 验签，
+    # 配了 EncodingAESKey 就按安全模式解密、加密回包
+    wx_push_mode: Literal["cloudrun", "signed"] = "cloudrun"
+    wx_push_token: SecretStr | None = None
+    wx_push_aes_key: SecretStr | None = None
+    # 客户端地址从哪个请求头取（最后一项）：云托管是 x-original-forwarded-for；自建服务器由反向代理
+    # （Caddy）覆盖写入 x-forwarded-for。头里没有时用直连地址
+    client_ip_header: str = Field(default="x-original-forwarded-for", pattern=r"^[a-z0-9-]{1,64}$")
+    # 访问日志打到容器标准输出的那一行只留地址前一半（自建服务器的容器日志存在自己的硬盘上）
+    log_mask_ip: bool = False
+    # 公开数据同步（本机 → 服务器，只传公开内容，见 youju/sync/）：服务器上填了它才开放 /api/sync/；
+    # 本机用同一个密钥给请求签名。至少 32 位随机字符
+    sync_secret: SecretStr | None = None
+    # 本机：服务器地址（如 https://api.example.com）
+    sync_url: str = ""
+    # 服务器：公开数据以本机同步来的为准，核对台里改公开数据的操作一律拒绝（改了也会被下次同步盖掉）
+    public_replica: bool = False
+    # 异地备份（youju offsite-backup）：每天的整库备份用 age 加密后传到另一处兼容 S3 的对象存储
+    # （创始人 11/5 定：腾讯云 COS 归档存储）。服务器上只放 age 公钥，私钥由创始人离线保管，
+    # 服务器自己解不开；存储密钥只给这个存储桶的上传、列表、删除权限
+    offsite_s3_endpoint: str = ""
+    offsite_s3_region: str = ""
+    offsite_s3_bucket: str = ""
+    offsite_s3_access_key: SecretStr | None = None
+    offsite_s3_secret_key: SecretStr | None = None
+    offsite_s3_path_style: bool = False
+    # 存储类型（COS 的归档是 ARCHIVE；归档的文件提前删也按存满 90 天收费，备份不大，多花几块钱）
+    offsite_storage_class: str = Field(default="ARCHIVE", pattern=r"^[A-Z_]{0,32}$")
+    offsite_age_recipient: str = ""
+    # 和本机备份一样保留 30 天：隐私保护指引写的是备份保留 30 天，注销用户的数据不能在异地多留
+    offsite_keep_days: int = Field(default=30, ge=7, le=3650)
+
     @field_validator("xpay_price_pass", "xpay_price_pass_90", mode="before")
     @classmethod
     def _empty_pass_price(cls, value):
@@ -188,13 +268,13 @@ class Settings(BaseSettings):
     ):
         def public_dotenv():
             values = dotenv_settings()
-            for key in ("wx_appsecret", "xpay_appkey_prod", "xpay_appkey_sandbox"):
+            for key in ENV_ONLY_SECRETS:
                 values.pop(key, None)
             return values
 
         def public_file_secrets():
             values = file_secret_settings()
-            for key in ("wx_appsecret", "xpay_appkey_prod", "xpay_appkey_sandbox"):
+            for key in ENV_ONLY_SECRETS:
                 values.pop(key, None)
             return values
 
@@ -252,9 +332,14 @@ class Settings(BaseSettings):
             raise ValueError(
                 "YOUJU_ROLE=admin 时不能设置 YOUJU_TRUST_WX_HEADERS，它只用于小程序接口服务"
             )
-        if self.role == "api" and not self.trust_wx_headers:
+        if self.role == "api" and self.hosting == "cloudrun" and not self.trust_wx_headers:
             raise ValueError(
                 "YOUJU_ROLE=api 时要设置 YOUJU_TRUST_WX_HEADERS=true，用户身份取云托管注入的请求头"
+            )
+        if self.role == "api" and self.hosting == "self" and not self.session_login:
+            raise ValueError(
+                "自建服务器（YOUJU_HOSTING=self）的 YOUJU_ROLE=api 要设置"
+                " YOUJU_SESSION_LOGIN=true，用户身份取自己的登录凭证"
             )
         # 协议版本按"年-月"直接比字符串：写法不对、最早版本比当前版本还新，都会让同意的判断出错
         versions = [self.agreement_version] + [self.agreement_min_version] * bool(
@@ -266,6 +351,97 @@ class Settings(BaseSettings):
             )
         if self.agreement_min_version > self.agreement_version:
             raise ValueError("YOUJU_AGREEMENT_MIN_VERSION 不能比 YOUJU_AGREEMENT_VERSION 新")
+        return self
+
+    @model_validator(mode="after")
+    def _self_hosting(self) -> "Settings":
+        """2.0 自建服务器的几项要配齐、不能和云托管的做法混用；配错就不启动。"""
+        secret = (self.session_secret.get_secret_value() if self.session_secret else "").strip()
+        appsecret = (self.wx_appsecret.get_secret_value() if self.wx_appsecret else "").strip()
+        if self.hosting == "self" and self.trust_wx_headers:
+            # 自己的服务器在公网上，谁都能自带 X-WX-OPENID
+            raise ValueError("YOUJU_HOSTING=self 时不能设置 YOUJU_TRUST_WX_HEADERS")
+        if self.session_login and self.trust_wx_headers:
+            raise ValueError("YOUJU_SESSION_LOGIN 和 YOUJU_TRUST_WX_HEADERS 只能二选一")
+        if self.session_login and len(secret) < 32:
+            raise ValueError("YOUJU_SESSION_LOGIN=true 时 YOUJU_SESSION_SECRET 至少 32 位随机字符")
+        needs_appsecret = self.session_login or self.wx_open_api == "token"
+        if needs_appsecret and not (self.wx_appid.strip() and appsecret):
+            raise ValueError(
+                "自己登录（YOUJU_SESSION_LOGIN）或自己取 access_token（YOUJU_WX_OPEN_API=token）"
+                "要配 YOUJU_WX_APPID 和 YOUJU_WX_APPSECRET"
+            )
+        if self.hosting == "self" and self.session_login and self.wx_open_api != "token":
+            # 不然内容安全检查会悄悄跳过（wxopen.available 为假时一律算通过）
+            raise ValueError(
+                "自建服务器的小程序接口（YOUJU_SESSION_LOGIN）要设 YOUJU_WX_OPEN_API=token，"
+                "内容安全检查、提醒、付款都靠它"
+            )
+        if self.hosting == "self" and self.wx_open_api == "cloudrun" and self.send_wx_messages:
+            raise ValueError(
+                "自建服务器没有云托管开放接口服务：要发订阅消息先设 YOUJU_WX_OPEN_API=token"
+            )
+        if self.hosting == "self" and self.storage_backend == "cloudbase" and self.cloud_env:
+            raise ValueError(
+                "自建服务器不能用云托管对象存储：YOUJU_STORAGE_BACKEND 要设成 disk 或 s3"
+            )
+        if self.storage_backend != "cloudbase" and not self.cloud_env:
+            # 程序各处用"配没配环境 ID"判断对象存储能不能用；文件 ID 里也要它
+            raise ValueError(
+                "YOUJU_STORAGE_BACKEND 设成 disk 或 s3 时也要填 YOUJU_CLOUD_ENV"
+                "（文件 ID 里的环境名，迁移时沿用原来的）"
+            )
+        if self.storage_backend == "disk" and self.storage_dir is None:
+            raise ValueError("YOUJU_STORAGE_BACKEND=disk 时要填 YOUJU_STORAGE_DIR")
+        if self.storage_backend == "s3":
+            keys = [
+                k.get_secret_value() if k else "" for k in (self.s3_access_key, self.s3_secret_key)
+            ]
+            if not (
+                self.s3_endpoint.startswith("https://")
+                and self.s3_region.strip()
+                and self.s3_bucket.strip()
+                and all(keys)
+            ):
+                raise ValueError(
+                    "YOUJU_STORAGE_BACKEND=s3 时要填 YOUJU_S3_ENDPOINT（https 开头）、"
+                    "YOUJU_S3_REGION、YOUJU_S3_BUCKET、YOUJU_S3_ACCESS_KEY、YOUJU_S3_SECRET_KEY"
+                )
+        if self.wx_push_mode == "signed":
+            token = (self.wx_push_token.get_secret_value() if self.wx_push_token else "").strip()
+            aes = (self.wx_push_aes_key.get_secret_value() if self.wx_push_aes_key else "").strip()
+            # 小程序后台的规则：Token 3–32 位英文或数字；EncodingAESKey 43 位英文或数字
+            if not re.fullmatch(r"[A-Za-z0-9]{3,32}", token):
+                raise ValueError(
+                    "YOUJU_WX_PUSH_MODE=signed 时 YOUJU_WX_PUSH_TOKEN 要填 3–32 位英文或数字"
+                )
+            # 只收安全模式：明文模式的签名只覆盖 Token、时间、随机数，截到一次就能伪造包体
+            if not re.fullmatch(r"[A-Za-z0-9]{43}", aes):
+                raise ValueError(
+                    "YOUJU_WX_PUSH_MODE=signed 要用安全模式：YOUJU_WX_PUSH_AES_KEY 填小程序后台的"
+                    " EncodingAESKey（43 位英文或数字）"
+                )
+            if not self.wx_appid.strip():
+                raise ValueError(
+                    "安全模式的消息推送要配 YOUJU_WX_APPID（解密后核对是不是本小程序）"
+                )
+        if self.hosting == "cloudrun" and self.wx_push_mode == "signed" and self.trust_wx_headers:
+            raise ValueError("云托管上用云托管的消息推送，不设 YOUJU_WX_PUSH_MODE=signed")
+        base = self.wx_api_base.rstrip("/")
+        if not (
+            base == "https://api.weixin.qq.com"
+            or re.fullmatch(r"http://(wxmock|localhost|127\.0\.0\.1)(:\d+)?", base)
+        ):
+            raise ValueError("YOUJU_WX_API_BASE 只能是官方地址，或本机测试用的 http://wxmock")
+        sync = (self.sync_secret.get_secret_value() if self.sync_secret else "").strip()
+        if sync and len(sync) < 32:
+            raise ValueError("YOUJU_SYNC_SECRET 至少 32 位随机字符")
+        if self.public_replica and self.hosting != "self":
+            raise ValueError("YOUJU_PUBLIC_REPLICA 只用在自建服务器（YOUJU_HOSTING=self）")
+        if self.offsite_age_recipient and not re.fullmatch(
+            r"age1[0-9a-z]{58}", self.offsite_age_recipient.strip()
+        ):
+            raise ValueError("YOUJU_OFFSITE_AGE_RECIPIENT 是 age-keygen 给的公钥（age1 开头）")
         return self
 
     @model_validator(mode="after")

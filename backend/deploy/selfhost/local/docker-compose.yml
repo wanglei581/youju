@@ -1,0 +1,71 @@
+# 2.0 本机（创始人的 Windows 主机，Docker Desktop + WSL2）：抓取、处理，公开数据的主库和原始文件。
+# 不存任何用户数据：只往服务器推公开数据（youju sync-push），不从服务器拉东西。
+# 用法见 docs/部署/自建服务器.md 第四节（setup.ps1 一键装）。在这个目录下：
+#   copy env.example .env   （按说明填好）
+#   docker compose up -d
+# 数据都在 Docker 的卷里（WSL2 的虚拟磁盘），Docker Desktop 设置里把磁盘位置放到空间大的盘。
+name: youju-local
+
+services:
+  mysql:
+    image: mysql:8.0
+    restart: unless-stopped
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_bin
+      - --default-time-zone=+00:00
+      # 本机不需要二进制日志（不做主从；省磁盘），同步用的触发器也就不用 SUPER 权限
+      - --skip-log-bin
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?在 .env 里填 MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: youju
+      MYSQL_USER: youju
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?在 .env 里填 MYSQL_PASSWORD}
+    volumes:
+      - mysql:/var/lib/mysql
+      - ./mysql.cnf:/etc/mysql/conf.d/youju.cnf:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    deploy:
+      resources:
+        limits:
+          memory: 4g
+    logging: &logging
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  # 抓取、处理的定时任务 + 核对台（只给这台电脑自己的浏览器用：http://127.0.0.1:8080/admin）
+  worker:
+    image: ${YOUJU_IMAGE:-youju-selfhost:latest}
+    env_file: .env
+    restart: unless-stopped
+    environment:
+      YOUJU_ROLE: admin
+      PORT: "8000"
+      YOUJU_CRONTAB: /app/backend/deploy/selfhost/local/crontab
+    ports:
+      - "127.0.0.1:8080:8000"
+    depends_on:
+      mysql:
+        condition: service_healthy
+    volumes:
+      - storage:/data/storage
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 4g
+    logging: *logging
+
+volumes:
+  mysql:
+  storage:

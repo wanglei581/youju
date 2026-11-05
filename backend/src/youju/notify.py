@@ -7,12 +7,12 @@ from collections.abc import Callable
 from datetime import datetime, timedelta
 from typing import Any
 
-import httpx
 from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.dialects.mysql import insert
 from sqlalchemy.orm import Session
 
+from youju import wxopen
 from youju.api import v1
 from youju.api.me import agreement_valid, notification_statement
 from youju.config import Settings, get_settings
@@ -31,7 +31,8 @@ log = logging.getLogger("youju.notify")
 
 
 def send_message(payload: dict) -> dict:
-    response = httpx.post(
+    # 云托管里就是原来的 httpx.post（开放接口服务代填 access_token）；自建服务器由 wxopen 带上
+    response = wxopen.post(
         "http://api.weixin.qq.com/cgi-bin/message/subscribe/send", json=payload, timeout=10
     )
     response.raise_for_status()

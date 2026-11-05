@@ -1,0 +1,113 @@
+# 2.0 云服务器（2 核 4G 轻量服务器）：小程序接口、用户数据、公开数据副本。
+# 用法见 docs/部署/自建服务器.md。在这个目录下：
+#   cp env.example .env   # 按说明填好，chmod 600 .env
+#   docker compose up -d
+# 内存预算（合计约 2.6G，留 1.4G 给系统和突发）：MySQL 1.4G、api 0.5G、worker 0.6G、Caddy 0.1G。
+name: youju-server
+
+x-app: &app
+  image: ${YOUJU_IMAGE:-youju-selfhost:latest}
+  env_file: .env
+  restart: unless-stopped
+  depends_on:
+    mysql:
+      condition: service_healthy
+  volumes:
+    - storage:/data/storage
+  logging: &logging
+    driver: json-file
+    options:
+      max-size: "20m"
+      max-file: "5"
+
+services:
+  mysql:
+    image: mysql:8.0
+    restart: unless-stopped
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_bin
+      - --default-time-zone=+00:00
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?在 .env 里填 MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: youju
+      MYSQL_USER: youju
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?在 .env 里填 MYSQL_PASSWORD}
+    volumes:
+      - mysql:/var/lib/mysql
+      - ./mysql.cnf:/etc/mysql/conf.d/youju.cnf:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    deploy:
+      resources:
+        limits:
+          memory: 1400m
+    logging: *logging
+
+  # 小程序接口：只经 Caddy 对外
+  api:
+    <<: *app
+    environment:
+      YOUJU_ROLE: api
+      PORT: "8000"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  # 定时任务（只跑碰用户数据的：AI 任务、支付、提醒、清理、备份……）+ 核对台（只绑本机回环地址，
+  # 用 SSH 隧道访问）+ 收本机推来的公开数据（/api/sync/，经 Caddy）
+  worker:
+    <<: *app
+    environment:
+      YOUJU_ROLE: admin
+      PORT: "8000"
+      YOUJU_CRONTAB: /app/backend/deploy/selfhost/server/crontab
+    ports:
+      - "127.0.0.1:8080:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 640m
+
+  # 反向代理：自动申请、续期 HTTPS 证书（域名要先备案、解析到这台服务器）
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    environment:
+      YOUJU_DOMAIN: ${YOUJU_DOMAIN:?在 .env 里填 YOUJU_DOMAIN}
+      YOUJU_PUSH_PATH: ${YOUJU_WX_PUSH_PATH:-/api/wx/push}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - api
+      - worker
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+    logging: *logging
+
+volumes:
+  mysql:
+  storage:
+  caddy-data:
+  caddy-config:

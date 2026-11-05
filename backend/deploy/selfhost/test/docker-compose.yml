@@ -1,0 +1,111 @@
+# 在一台电脑上把 2.0 整套跑起来测试（服务器 + 本机 + 假微信）。只用于测试：密钥都是写死的测试值。
+#   sh ../build.sh                 # 先构建 youju-selfhost:latest
+#   docker compose up -d
+#   小程序 config.apiBaseUrl 填 http://127.0.0.1:18080（开发者工具勾选"不校验合法域名"）
+# 用完 docker compose down -v（连数据一起删）。
+name: youju-selftest
+
+x-server-env: &server_env
+  YOUJU_DATABASE_URL: mysql+pymysql://youju:test-only-db@server-mysql:3306/youju?charset=utf8mb4
+  YOUJU_HOSTING: self
+  YOUJU_SESSION_LOGIN: "true"
+  YOUJU_SESSION_SECRET: test-only-session-secret-0123456789abcdef
+  YOUJU_WX_OPEN_API: token
+  YOUJU_WX_API_BASE: http://wxmock:9000
+  YOUJU_WX_APPID: wxtest000000000000
+  YOUJU_WX_APPSECRET: test-only-appsecret
+  YOUJU_WX_PUSH_MODE: signed
+  YOUJU_WX_PUSH_TOKEN: testpushtoken
+  YOUJU_WX_PUSH_AES_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+  YOUJU_STORAGE_BACKEND: disk
+  YOUJU_STORAGE_DIR: /data/storage
+  YOUJU_CLOUD_ENV: prod-d5getqftefb61fc92
+  YOUJU_CLIENT_IP_HEADER: x-forwarded-for
+  YOUJU_LOG_MASK_IP: "true"
+  YOUJU_PUBLIC_REPLICA: "true"
+  YOUJU_SYNC_SECRET: test-only-sync-secret-0123456789abcdef
+  YOUJU_ADMIN_TOKEN: test-only-admin-token-0123456789abcdef
+  YOUJU_AGREEMENT_VERSION: "2026-12"
+  PORT: "8000"
+
+services:
+  wxmock:
+    image: ${YOUJU_IMAGE:-youju-selfhost:latest}
+    command: ["python", "/app/backend/deploy/selfhost/test/wxmock.py"]
+
+  server-mysql:
+    image: mysql:8.0
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_0900_bin", "--default-time-zone=+00:00"]
+    environment: {MYSQL_ROOT_PASSWORD: test-only-root, MYSQL_DATABASE: youju, MYSQL_USER: youju, MYSQL_PASSWORD: test-only-db}
+    volumes: ["../server/mysql.cnf:/etc/mysql/conf.d/youju.cnf:ro"]
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -ptest-only-root --silent"]
+      interval: 5s
+      retries: 60
+
+  api:
+    image: ${YOUJU_IMAGE:-youju-selfhost:latest}
+    environment: {<<: *server_env, YOUJU_ROLE: api}
+    volumes: ["server-storage:/data/storage"]
+    depends_on:
+      server-worker: {condition: service_healthy}
+
+  server-worker:
+    image: ${YOUJU_IMAGE:-youju-selfhost:latest}
+    environment: {<<: *server_env, YOUJU_ROLE: admin, YOUJU_CRONTAB: /app/backend/deploy/selfhost/server/crontab}
+    volumes: ["server-storage:/data/storage"]
+    ports: ["127.0.0.1:18081:8000"]
+    # Caddyfile 里把同步转给 worker（和服务器 compose 的服务名一致）
+    networks:
+      default:
+        aliases: [worker]
+    depends_on:
+      server-mysql: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 5s
+      retries: 60
+
+  caddy:
+    image: caddy:2
+    environment: {YOUJU_DOMAIN: ":18080", YOUJU_PUSH_PATH: /api/wx/push}
+    ports: ["127.0.0.1:18080:18080"]
+    volumes: ["../server/Caddyfile:/etc/caddy/Caddyfile:ro"]
+    depends_on: [api, server-worker]
+
+  local-mysql:
+    image: mysql:8.0
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_0900_bin", "--default-time-zone=+00:00", "--skip-log-bin"]
+    environment: {MYSQL_ROOT_PASSWORD: test-only-root, MYSQL_DATABASE: youju, MYSQL_USER: youju, MYSQL_PASSWORD: test-only-db}
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -ptest-only-root --silent"]
+      interval: 5s
+      retries: 60
+
+  local-worker:
+    image: ${YOUJU_IMAGE:-youju-selfhost:latest}
+    environment:
+      YOUJU_DATABASE_URL: mysql+pymysql://youju:test-only-db@local-mysql:3306/youju?charset=utf8mb4
+      YOUJU_ROLE: admin
+      YOUJU_HOSTING: self
+      YOUJU_ADMIN_TOKEN: test-only-admin-token-0123456789abcdef
+      YOUJU_STORAGE_BACKEND: disk
+      YOUJU_STORAGE_DIR: /data/storage
+      YOUJU_CLOUD_ENV: prod-d5getqftefb61fc92
+      # 测试里不让本机自己按点抓取：定时任务表用一个只有心跳的
+      YOUJU_CRONTAB: /app/backend/deploy/selfhost/crontab.idle
+      YOUJU_SYNC_URL: http://caddy:18080
+      YOUJU_SYNC_SECRET: test-only-sync-secret-0123456789abcdef
+      PORT: "8000"
+    volumes: ["local-storage:/data/storage"]
+    ports: ["127.0.0.1:18082:8000"]
+    depends_on:
+      local-mysql: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 5s
+      retries: 60
+
+volumes:
+  server-storage:
+  local-storage:
