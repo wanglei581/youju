@@ -85,6 +85,7 @@
     <button type="button" data-menu="invoices">开票</button>
     <p>来源管理</p>
     <button type="button" data-menu="sources">来源管理</button>
+    <button type="button" data-menu="details">补详情失败</button>
     <p>内容发布</p>
     <button type="button" data-menu="weekly">周报</button>
     <p>运维</p>
@@ -121,7 +122,7 @@
 <script>
 (() => {
   const $ = id => document.getElementById(id);
-  const titles = { overview:'总览',weekly:'周报',review:'截止日期',fields:'支持方式',conditions:'申报条件',repost:'转发归组',kinds:'类型复核','kind-suggest':'类型建议',audit:'质检',feedback:'纠错',takedown:'下架',invoices:'开票申请',sources:'来源管理',jobs:'定时任务',platforms:'外部平台' };
+  const titles = { overview:'总览',weekly:'周报',review:'截止日期',fields:'支持方式',conditions:'申报条件',repost:'转发归组',kinds:'类型复核','kind-suggest':'类型建议',audit:'质检',feedback:'纠错',takedown:'下架',invoices:'开票申请',sources:'来源管理',details:'补详情失败',jobs:'定时任务',platforms:'外部平台' };
   const names = {round:'每轮抓取',backup:'备份','backup-verify':'备份校验','check-links':'原网页检查','archive-logs':'日志归档',cleanup:'清理','audit-deadlines':'质检','daily-report':'日报','weekly-digest':'周报','advisor-run':'工具任务','pay-run':'支付补单和退款','pay-reconcile':'支付对账'};
   const states = {running:'运行中',ok:'成功',failed:'失败'};
   let token = '', active = 'overview', next = null, sequence = 0, due = '7';
@@ -188,14 +189,14 @@
       }
       todo.append(grid);
       // D-061：每天先核 7 天内截止；申请条件、支持方式、转发归组、类型复核、纠错暂缓，收进下面的折叠区
-      [['截止日期 · 7 天内','deadlines_7','review','7'],['截止日期 · 30 天内','deadlines_30','review','30'],['质检存疑','audit','audit'],['抓取异常来源','sources','sources']].forEach(([label,key,menu,wanted])=>grid.append(metric(label,d.todos[key],menu,wanted)));
+      [['截止日期 · 7 天内','deadlines_7','review','7'],['截止日期 · 30 天内','deadlines_30','review','30'],['质检存疑','audit','audit'],['抓取异常来源','sources','sources'],['补详情停止重试','detail_failures','details']].forEach(([label,key,menu,wanted])=>grid.append(metric(label,d.todos[key],menu,wanted)));
       const paused=node('details',undefined,'paused'), pausedGrid=node('div',undefined,'grid');
       paused.append(node('summary','暂缓的队列（D-061：首发前不用处理，数字只作参考）'),pausedGrid);
       [['截止日期 · 全部','deadlines','review','all'],['支持方式待核对','fields','fields'],['申报条件待确认','conditions','conditions'],['转发归组待确认','repost','repost'],['类型待复核','kinds','kinds'],['类型建议待确认','kind_suggestions','kind-suggest'],['未处理纠错','feedback','feedback']].forEach(([label,key,menu,wanted])=>pausedGrid.append(metric(label,d.todos[key],menu,wanted)));
       todo.append(paused);
       if(d.pay) todo.append(node('p',`支付待办 ${d.todos.pay} 项；待开发票 ${d.todos.invoices || 0} 张`));
       todo.append(node('p',`已下架 ${d.todos.takedown} 份`));
-      todo.append(node('p','来源异常与日报一致：今天的启用栏目检查失败或漏检。','muted'));
+      todo.append(node('p','来源异常与日报一致：今天的启用栏目检查失败或漏检。补详情停止重试：网络中断、网站 5xx 等临时问题连续 3 次失败、不再自动重试的文件。','muted'));
       const data=node('section',undefined,'panel'), metrics=node('div',undefined,'grid'); data.append(node('h3','数据'),metrics);
       [['文件数','documents'],['申报通知数','applications'],['名单份数','lists'],['名单条数','list_entries'],['已通过截止数','approved_deadlines'],['用户数','users'],['关注数','follows'],['待发提醒数','pending_reminders']].forEach(([label,key])=>metrics.append(metric(label,d.data[key])));
       data.append(node('p','文件、申报通知和名单份数按归并后的文件计；名单条数为入库条数；已通过截止为去重后的已通过候选；待发提醒为未使用的订阅授权，实际发送取决于触发条件。','muted'));

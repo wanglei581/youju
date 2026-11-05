@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from youju.categories import doc_category
 from youju.classify import doc_kind
 from youju.crawler.fetcher import FetchResult
+from youju.crawler.list_api import api_http_problem, api_request, read_api_response
 from youju.crawler.listing import ListItem, extract_items
 from youju.crawler.urls import host_of, public_url, url_key
 from youju.dedup import reconcile_documents
@@ -27,12 +28,16 @@ log = logging.getLogger(__name__)
 PARSE_EMPTY_MESSAGE = (
     "页面可以访问，但没有识别到列表条目：可能网站改版，或列表由脚本加载需要浏览器渲染"
 )
+# 检查期间来源的网址或抓取配置被改时，按新配置最多重来几次（改配置是人工操作，正常不会连着改）
+_CONFIG_RECHECKS = 2
 
 
 class Fetcher:
-    """抓取器接口；测试时可以换成假的实现。"""
+    """抓取器接口；测试时可以换成假的实现。form 只在来源配了列表接口时传（见 list_api）。"""
 
-    def fetch(self, url: str) -> FetchResult:  # pragma: no cover - 接口定义
+    def fetch(
+        self, url: str, form: Sequence[tuple[str, str]] | None = None
+    ) -> FetchResult:  # pragma: no cover - 接口定义
         raise NotImplementedError
 
 
@@ -150,6 +155,28 @@ def _lock_source(session: Session, source: Source) -> None:
     session.scalars(stmt).one()
 
 
+def _fetch_items(
+    fetcher: Fetcher, url: str, parser_config: dict | None, today: date | None
+) -> tuple[FetchResult, str, str | None, list[ListItem]]:
+    """按来源配置抓一次、识别条目，返回（抓取结果，状态，错误，条目）。不碰数据库。"""
+    api = api_request(parser_config)
+    result = fetcher.fetch(url) if api is None else fetcher.fetch(api.url, form=api.form)
+    status, error = result.status, result.error
+    items: list[ListItem] = []
+    if api is None:
+        if result.status == "ok":
+            items = extract_items(result.text, result.final_url or url, parser_config, today=today)
+            if not items:
+                status, error = "parse_empty", PARSE_EMPTY_MESSAGE
+    elif result.status == "ok":
+        # 每轮都复核：拒绝访问、栏目编号对不上、过半条目不在栏目目录下的都不入库（list_api）；
+        # 条目链接按栏目页补全，不按接口网址
+        status, error, items, _ = read_api_response(result.text, url, parser_config, today)
+    elif problem := api_http_problem(result):
+        status, error = problem
+    return result, status, error, items
+
+
 def check_source(
     session: Session,
     source: Source,
@@ -160,20 +187,22 @@ def check_source(
     """检查一个来源：先抓取和识别，再在一个短事务里入库、记录结果。
 
     网络请求可能持续几十秒，期间不开数据库事务、不持有锁（开始前先结束会话里已有的事务）。
+    锁住来源后再核对一次网址和抓取配置：期间被人改了（如 youju source-list-api），这次结果作废，
+    按新配置重新检查；最多重来 _CONFIG_RECHECKS 次，还在变就报错（记为内部错误）。
     """
-    url, parser_config = source.url, source.parser_config
-    session.commit()
+    # 起始时间和计时算整次检查（包括作废重来的部分）；条目的"看到时间"也用它，和平时一样是检查开始时
     started = _now()
     t0 = time.monotonic()
-    result = fetcher.fetch(url)
-    status, error = result.status, result.error
-    items: list[ListItem] = []
-    if result.status == "ok":
-        items = extract_items(result.text, result.final_url or url, parser_config, today=today)
-        if not items:
-            status, error = "parse_empty", PARSE_EMPTY_MESSAGE
-
-    _lock_source(session, source)
+    for _ in range(_CONFIG_RECHECKS + 1):
+        url, parser_config = source.url, source.parser_config
+        session.commit()
+        result, status, error, items = _fetch_items(fetcher, url, parser_config, today)
+        _lock_source(session, source)
+        if (source.url, source.parser_config) == (url, parser_config):
+            break
+        session.commit()  # 放开锁，按新配置重来
+    else:
+        raise RuntimeError(f"来源 #{source.id} 的网址或抓取配置在检查期间反复被改")
     # 来源第一次成功检查时看到的条目算基线，不计入"新增"
     baseline = bool(items) and source.last_success_at is None
     new_count = save_items(session, source, items, baseline=baseline, seen_at=started)
