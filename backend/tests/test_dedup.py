@@ -145,7 +145,9 @@ def test_signature_ignores_page_header_time_and_counter() -> None:
     rest = "根据有关通知，现将获奖单位名单予以公示。公示期为5个工作日。" * 10
 
     def body(head: str, tail: str = rest) -> SimpleNamespace:
-        return SimpleNamespace(doc_number=None, body_text=f"{title}\n{head}\n来源：科学技术厅\n{tail}")
+        return SimpleNamespace(
+            doc_number=None, body_text=f"{title}\n{head}\n来源：科学技术厅\n{tail}"
+        )
 
     a = body("发布时间：2026-11-03 16:25\n访问量：12次")
     b = body("发布时间：2026-11-03 16:19\n访问量：37次")
@@ -155,7 +157,10 @@ def test_signature_ignores_page_header_time_and_counter() -> None:
     d = body("发布日期：2026年11月3日 09:02:41")
     assert _signature(c)[1] == _signature(d)[1]
     # 发布日期不同：照样不同
-    assert _signature(body("发布时间：2026-11-03 16:25"))[1] != _signature(body("发布时间：2026-11-04 16:25"))[1]
+    assert (
+        _signature(body("发布时间：2026-11-03 16:25"))[1]
+        != _signature(body("发布时间：2026-11-04 16:25"))[1]
+    )
     # 没有“发布时间”一类标签的时刻（如截止时间）不动
     e = body("发布时间：2026-11-03 16:25", "申报截止时间：2026-11-20 17:00。" + rest)
     f = body("发布时间：2026-11-03 16:25", "申报截止时间：2026-11-20 18:00。" + rest)
