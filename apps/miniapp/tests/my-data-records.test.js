@@ -111,6 +111,13 @@ test('复制单条是这条的完整记录；删除走本人删除接口，删�
   tools.page.load(); await flush();
   tools.page.copyAll();
   assert.equal(tools.labels.at(-1), false);
+  // AI 任务还没有结果（排队、失败、过期）：不加
+  const pending = myData({ tasks: [{ ...TASKS[1], id: 45, status: 'queued', result: null }] });
+  pending.page.load(); await flush();
+  pending.page.copyOne(event({ kind: 'task', id: 45 }));
+  assert.equal(pending.labels.at(-1), false);
+  pending.page.copyAll();
+  assert.equal(pending.labels.at(-1), false);
   h.page.remove(event({ kind: 'task', id: 41 })); await flush();
   assert.deepEqual(h.calls.deleted, [41]);
   assert.equal(h.calls.removedExport, 41);
