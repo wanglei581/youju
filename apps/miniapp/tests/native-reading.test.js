@@ -171,6 +171,36 @@ test('批量结果区分汇总与明细，兼容旧接口', async () => {
   }
 });
 
+test('批量结果汇总超过一页时可以直接跳到明细（11/5 500 家实测：要先翻 25 页汇总）', async () => {
+  const calls = [];
+  const reading = async (id, args) => {
+    calls.push(plain(args));
+    const cursor = Number(args.cursor || 0);
+    return result({ kind: 'track', total: 7073, rowCount: 500, summaryCount: 500,
+      items: [{ n: cursor, title: cursor < 500 ? '汇总' : '合成通知', fields: [] }], nextCursor: String(cursor + 20) });
+  };
+  const p = load('results', { advisorReading: reading });
+  p.onLoad({ mode: 'advisor', taskId: '8' }); await p.onShow();
+  assert.equal(p.data.detailPage, 26);
+  assert.match(textOf(render('pages/results/index.wxml', p.data)), /明细从第 501 行起，跳到明细 ›/);
+  await p.jumpDetail();
+  assert.deepEqual(calls.at(-1), { cursor: '500', revision: 'r1' });
+  assert.equal(p.data.page, 26);
+  assert.doesNotMatch(textOf(render('pages/results/index.wxml', p.data)), /跳到明细/);
+  await p.previous();
+  assert.deepEqual(calls.at(-1), { cursor: '480', revision: 'r1' });
+  assert.equal(p.data.page, 25);
+  assert.match(textOf(render('pages/results/index.wxml', p.data)), /跳到明细/);
+  await p.next();
+  assert.deepEqual(calls.at(-1), { cursor: '500', revision: 'r1' });
+  // 汇总不满一页（明细就在第 1 页）、旧接口没给汇总条数：不出现
+  for (const summaryCount of [3, undefined]) {
+    const q = load('results', { advisorReading: async () => result({ kind: 'track', total: 6, rowCount: 3, summaryCount }) });
+    q.onLoad({ mode: 'advisor', taskId: '8' }); await q.onShow();
+    assert.doesNotMatch(textOf(render('pages/results/index.wxml', q.data)), /跳到明细/, String(summaryCount));
+  }
+});
+
 test('批量工具结果里原文链接已失效的那条只标一句，照常能看、能进文件详情；其他条不标（11/4 完整测试 T4b）', async () => {
   const p = load('results', { advisorReading: async () => result({ kind: 'track', items: [
     { n: 0, title: '合成通知甲', documentId: '7', fields: [{ label: '来源', value: '示例网站' }] },

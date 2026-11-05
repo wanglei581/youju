@@ -15,6 +15,8 @@ function generatedTime(value) {
   return `${date.getUTCFullYear()}年${date.getUTCMonth() + 1}月${date.getUTCDate()}日 ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}（北京时间）`;
 }
 // 11/4 完整测试 F7：新导出和页面都写"原文摘录"，旧接口的"机器摘录"仍兼容；没有能显示的日期只写"截止时间见原文"。
+// 批量工具结果每页的条数，和接口一致（后台 api/advisor.py read_result 每页 20 条）：只用来算“跳到明细”翻到第几页
+const PAGE_SIZE = 20;
 const SEE_ORIGINAL = '截止时间见原文';
 const SOON = '可能 7 天内截止';
 const EXCERPT_MARK = '（原文摘录）';
@@ -58,7 +60,7 @@ function catalogueItem(item, now) {
   };
 }
 Page({
-  data: { loading: false, error: '', result: null, current: false, saving: false, advisor: false, page: 1, nextCursor: null, changed: false, has: flags() },
+  data: { loading: false, error: '', result: null, current: false, saving: false, advisor: false, page: 1, nextCursor: null, detailPage: 0, changed: false, has: flags() },
   onLoad(q) {
     let value = q.ids || '';
     try { value = decodeURIComponent(value); } catch (e) { value = ''; }
@@ -90,7 +92,9 @@ Page({
       const items = this.data.advisor ? res.items : res.items.map((item) => catalogueItem(item, now));
       // 接口给的汇总条数（旧接口没有：不拆，照旧写“共 N 行”；agy 审阅 #441：用 rowCount 推会把明细和汇总算反）
       const summaryCount = Number.isInteger(res.summaryCount) && res.summaryCount > 0 && res.summaryCount <= res.total ? res.summaryCount : 0;
-      this.setData({ result: { ...res, items, summaryCount, generatedAtText: generatedTime(res.generatedAt) }, page: this.cursorIndex + 1, nextCursor: next });
+      // 明细从第几页开始（汇总在前、明细在后）：汇总超过一页时，标题下给“跳到明细”（11/5 500 家实测：500 家要先翻 25 页汇总）
+      const detailPage = this.data.advisor && summaryCount && summaryCount < res.total ? Math.floor(summaryCount / PAGE_SIZE) + 1 : 0;
+      this.setData({ result: { ...res, items, summaryCount, generatedAtText: generatedTime(res.generatedAt) }, page: this.cursorIndex + 1, nextCursor: next, detailPage });
     }).catch((err) => {
       if (!current()) return;
       if ([403, 404, 409, 410].includes(err.status)) { this.revision = ''; this.cursors = ['']; this.cursorIndex = 0; }
@@ -105,6 +109,14 @@ Page({
     return this.load();
   },
   previous() { if (this.data.loading || this.data.saving || this.cursorIndex < 1) return; this.cursorIndex -= 1; return this.load(); },
+  // 直接翻到明细开始的那一页；中间各页的位置照每页条数补上，“上一页”照常一页页往回翻
+  jumpDetail() {
+    const target = this.data.detailPage - 1;
+    if (this.data.loading || this.data.saving || !this.revision || target <= this.cursorIndex) return;
+    this.cursors = Array.from({ length: target + 1 }, (_, i) => (i ? String(i * PAGE_SIZE) : ''));
+    this.cursorIndex = target;
+    return this.load();
+  },
   detail(e) { wx.navigateTo({ url: `/pages/detail/index?id=${encodeURIComponent(e.currentTarget.dataset.id)}` }); },
   help() { if (this.data.has.help) wx.navigateTo({ url: '/pages/help/index?topic=deadline' }); },
   read(e) { wx.navigateTo({ url: `/pages/reader/index?id=${encodeURIComponent(e.currentTarget.dataset.id)}` }); },
