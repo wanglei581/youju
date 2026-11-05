@@ -13,6 +13,7 @@ from docx import Document as DocxDocument
 from lxml import html
 from openpyxl import load_workbook
 
+from youju import zip_limits
 from youju.lists import doc97
 from youju.lists.rules import normalize_credit_code, normalize_name, valid_org_name
 
@@ -262,13 +263,18 @@ def parse_html_tables(
 
 
 def _check_zip(data: bytes) -> None:
+    """DOCX、XLSX 交给 python-docx、openpyxl 之前按实际解出的大小检查（不信 zip 目录里写的，
+    见 zip_limits）。压缩方式不支持记"暂不支持"（文件不会变，不再重试）；太大照旧记
+    "压缩文件展开后过大"；解出的和目录不符按坏文件（和以前读取库报的一样，是 BadZipFile）。"""
     with zipfile.ZipFile(io.BytesIO(data)) as archive:
-        members = archive.infolist()
-        if (
-            len(members) > 1_000
-            or sum(member.file_size for member in members) > _MAX_ZIP_UNCOMPRESSED
-        ):
-            raise ValueError("压缩文件展开后过大")
+        try:
+            zip_limits.check(archive, max_bytes=_MAX_ZIP_UNCOMPRESSED, max_members=1_000)
+        except zip_limits.ZipLimitError as exc:
+            if exc.kind == "method":
+                raise ValueError(f"暂不支持此压缩方式（{exc.detail}）") from exc
+            if exc.kind == "broken":
+                raise zipfile.BadZipFile(str(exc)) from exc
+            raise ValueError("压缩文件展开后过大") from exc
 
 
 def _docx_entries(

@@ -24,6 +24,7 @@ from openpyxl import Workbook, load_workbook
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
+from youju import zip_limits
 from youju.classify import effective_kind, list_status
 from youju.export_notes import add_excel_notes
 from youju.lists.lookup import ListLookupMatch, lookup_list_matches, public_condition
@@ -37,6 +38,13 @@ MAX_XLSX_COLUMNS = 64
 MAX_XLSX_CELLS = MAX_XLSX_ROWS * MAX_XLSX_COLUMNS
 MAX_XML_ELEMENTS = 100_000
 MAX_ZIP_ENTRIES = 512
+# 表格交给 openpyxl 之前的解压检查（见 zip_limits）没通过时告诉用户的原因
+_ZIP_REASONS = {
+    "members": "表格包含过多文件，请减少内容后重试",
+    "size": "表格解压后过大，请减少内容后重试",
+    "method": "表格的压缩方式不支持，请用 Excel 或 WPS 重新保存后再试",
+    "broken": "表格文件已损坏，请用 Excel 或 WPS 重新保存后再试",
+}
 _NAME_HEADERS = {"企业名称", "单位名称", "公司名称"}
 _CODE_HEADERS = {"统一社会信用代码", "信用代码"}
 _YEAR = re.compile(r"(?<!\d)(20\d{2})(?!\d)")
@@ -184,7 +192,8 @@ def xlsx_sheet_paths(archive: ZipFile) -> list[str]:
 
 
 def validate_xlsx(content: bytes) -> bool:
-    """识别真实 XLSX；解压前检查总大小，按关系路径检查实际单元格。"""
+    """识别真实 XLSX；先按实际解出的大小检查（不信 zip 目录里写的，见 zip_limits），
+    再按关系路径检查实际单元格。"""
     if not content.startswith(b"PK\x03\x04"):
         return False
     try:
@@ -192,10 +201,10 @@ def validate_xlsx(content: bytes) -> bool:
     except BadZipFile:
         return False
     with archive:
-        if len(archive.infolist()) > MAX_ZIP_ENTRIES:
-            raise CompareInputError("表格包含过多文件，请减少内容后重试")
-        if sum(item.file_size for item in archive.infolist()) > MAX_FILE_BYTES:
-            raise CompareInputError("表格解压后过大，请减少内容后重试")
+        try:
+            zip_limits.check(archive, max_bytes=MAX_FILE_BYTES, max_members=MAX_ZIP_ENTRIES)
+        except zip_limits.ZipLimitError as exc:
+            raise CompareInputError(_ZIP_REASONS[exc.kind]) from exc
         try:
             paths = xlsx_sheet_paths(archive)
         except ElementTree.ParseError:
