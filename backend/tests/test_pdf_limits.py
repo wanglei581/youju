@@ -4,6 +4,7 @@
 
 import contextlib
 import functools
+import gc
 import logging
 import random
 import tracemalloc
@@ -384,6 +385,40 @@ def test_predictor_input_limit(monkeypatch) -> None:
     assert peak_memory(lambda: attachment_text.extract(fits)) < 8 * MB
     assert attachment_text.extract(fits).ok
     assert attachment_text.extract(over).reason == "too_large"
+
+
+def test_cross_reference_streams_get_a_larger_predictor_limit(monkeypatch) -> None:
+    """交叉引用流（/Type /XRef）每个对象占 5–7 个字节，对象多的大文件要用到更大的预测器输入。"""
+    monkeypatch.setattr(pdf_limits, "PREDICTOR_INPUT_MAX", 64 * 1024)
+    monkeypatch.setattr(pdf_limits, "XREF_PREDICTOR_INPUT_MAX", 256 * 1024)
+    raw = zlib.compress((bytes([2]) + bytes(255)) * 512)  # 128KB
+    params = {"Predictor": 12, "Columns": 255}
+    xref = PDFStream({"Type": LIT("XRef"), "Filter": LIT("Fl"), "DecodeParms": params}, raw)
+    other = PDFStream({"Filter": LIT("Fl"), "DecodeParms": params}, raw)
+    assert len(xref.get_data()) == 255 * 512
+    with pytest.raises(pdf_limits.Refused, match="预测器"):
+        other.get_data()
+
+
+def test_earlier_files_are_collected_before_the_next(small_caps, monkeypatch) -> None:
+    """pdfminer 的文档对象互相引用，读完要等循环垃圾回收才释放；拒读时解到一半的还挂在异常的回溯上。
+    连着读几份不能一份份叠上去（独立审阅实测：同一个炸弹连读 6 份，内存叠到 800MB）：前面读完的
+    合计解出超过 _COLLECT_AFTER（或者有拒读），下一份开始前先回收。"""
+    monkeypatch.setattr(pdf_limits, "_COLLECT_AFTER", MB)
+    bomb = objstm_pdf(b"/DecodeParms << /Predictor 20 0 R >>", SELF_REF, 900 * 1024)
+    normal = make_pdf(*[(b"/Filter /FlateDecode", spaces_flate(700 * 1024))] * 2)
+    gc.collect()
+    gc.disable()  # 自动回收什么时候跑说不准：关掉，只看 reading() 自己回收
+    tracemalloc.start()
+    held = []
+    try:
+        for pdf in [bomb] * 4 + [normal] * 4:
+            copies.check_content(pdf, "pdf")
+            held.append(tracemalloc.get_traced_memory()[0])
+    finally:
+        tracemalloc.stop()
+        gc.enable()
+    assert max(held) < 2 * pdf_limits.DOCUMENT_MAX  # 不回收时 8 份叠到 16MB
 
 
 # ---- 不超上限的，和 pdfminer 原来解出的一样 ----

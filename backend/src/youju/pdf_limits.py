@@ -41,6 +41,7 @@ pdfminer 建一个 2^32 项的字典）。这些要把整个取文字放进限�
 
 from __future__ import annotations
 
+import gc
 import logging
 import zlib
 from collections.abc import Callable, Iterator
@@ -75,13 +76,21 @@ STREAM_MAX = 32 * _MB
 # 一份 PDF 解出的数据合计。真实文件最大 35.6MB，20MB 的文字文件整份读完约 220MB
 DOCUMENT_MAX = 256 * _MB
 # 预测器的输入长度、列数（pdfminer 的写法：每个字节约占 9 字节内存，一行按列数先分配）。
-# 真实文件里用预测器的都是交叉引用流，解出最大 5KB
+# 真实文件里用预测器的都是交叉引用流，解出最大 5KB。交叉引用流（/Type /XRef）放宽到 8MB：每个
+# 对象占 5–7 个字节，2MB 只够 30 万个对象，带标签的大名单可能更多，它解不开整份就读不了
 PREDICTOR_INPUT_MAX = 2 * _MB
+XREF_PREDICTOR_INPUT_MAX = 8 * _MB
 PREDICTOR_COLUMNS_MAX = 1 << 20
 # 数据流套着数据流（解码参数指向对象流里的对象，那个对象流要先解）最多几层；正常文件一两层
 _NESTING_MAX = 8
 # 坏数据逐字节解之前，先一块一块地解，出错的那一块再逐字节（结果和 pdfminer 从头逐字节一样）
 _CHUNK = 64 * 1024
+# 读完的 PDF 要等循环垃圾回收才释放：pdfminer 的文档对象互相引用，拒读时解到一半的数据还挂在
+# 异常的回溯上。定时任务在一个进程里连着读，大文件、炸弹会一份份叠上去（独立审阅实测：同一个炸弹
+# 连读 6 份，内存叠到 800MB）。上次回收以后读完的合计解出超过这么多（或者有拒读），下一份开始前
+# 先回收一次；平常的小文件（中位 1MB）不用每份都回收
+_COLLECT_AFTER = 32 * _MB
+_uncollected = 0
 
 _IMAGE_FILTERS = (*LITERALS_DCT_DECODE, *LITERALS_JBIG2_DECODE, *LITERALS_JPX_DECODE)
 _REFUSED_FILTERS = (
@@ -128,8 +137,13 @@ def install() -> None:
 def reading(on_refused: Callable[[Refused], Exception] | None = None) -> Iterator[None]:
     """读一份 PDF：这里面解出的数据合计不超过 DOCUMENT_MAX；有数据流被拒，整份按拒读算（哪怕异常
     被 pdfplumber 吞掉、照常读完了）。on_refused：把拒读换成调用方自己的异常；不给就抛 Refused。"""
+    global _uncollected
     install()
+    if _uncollected >= _COLLECT_AFTER:
+        gc.collect()
+        _uncollected = 0
     budget = _Budget(DOCUMENT_MAX)
+    start = budget.left
     token = _BUDGET.set(budget)
     try:
         yield
@@ -144,6 +158,8 @@ def reading(on_refused: Callable[[Refused], Exception] | None = None) -> Iterato
             raise _refusal(budget.refused, on_refused)
     finally:
         _BUDGET.reset(token)
+        # 拒读时解到一半的（最多合计上限那么多）没记在额度里，下一份前一定回收
+        _uncollected += _COLLECT_AFTER if budget.refused else start - budget.left
 
 
 def _refusal(hit: Refused, on_refused: Callable[[Refused], Exception] | None) -> Exception:
@@ -229,7 +245,7 @@ def _decode_within(self: PDFStream, budget: _Budget | None) -> None:
             else:
                 raise PDFNotImplementedError(f"Unsupported filter: {f!r}")
             if params and "Predictor" in params:
-                data = _predict(data, params)
+                data = _predict(data, params, _predictor_limit(self))
             _check(len(data), cap)
         _check(len(data), cap)
     finally:
@@ -284,7 +300,12 @@ def _inflate_corrupted(data: bytes, cap: int) -> bytes:
     return bytes(out)
 
 
-def _predict(data: bytes, params: dict) -> bytes:
+def _predictor_limit(stream: PDFStream) -> int:
+    xref = getattr(stream.get("Type"), "name", None) == "XRef"
+    return XREF_PREDICTOR_INPUT_MAX if xref else PREDICTOR_INPUT_MAX
+
+
+def _predict(data: bytes, params: dict, limit: int) -> bytes:
     pred = int_value(params["Predictor"])
     if pred == 1:
         # no predictor
@@ -293,7 +314,7 @@ def _predict(data: bytes, params: dict) -> bytes:
         colors = int_value(params.get("Colors", 1))
         columns = int_value(params.get("Columns", 1))
         bitspercomponent = int_value(params.get("BitsPerComponent", 8))
-        if len(data) > PREDICTOR_INPUT_MAX or columns > PREDICTOR_COLUMNS_MAX:
+        if len(data) > limit or columns > PREDICTOR_COLUMNS_MAX:
             raise Refused("too_large", "用预测器的数据流太大")
         if pred == 2:
             return apply_tiff_predictor(colors, columns, bitspercomponent, data)
