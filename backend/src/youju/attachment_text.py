@@ -7,7 +7,9 @@
   （PDF 第几页、工作表和行号、第几个表格的第几行、第几张幻灯片）。带公章等图片的文件照样取字，
   图片不取。不用附件副本查个人信息的 attachments.text_of：它遇到图片就停，取的文字也不分段。
 - 格式：副本的 7 种（doc、docx、xls、xlsx、ppt、pptx、pdf）加上 wps、et（按文件头判断实际格式，
-  wps 多半是 doc、et 多半是 xls）。zip、rar、ofd 不下载、不读。
+  wps 多半是 doc、et 多半是 xls），以及 ofd（版式文件）和 zip、rar 压缩包（11/5 起：在内存里
+  解开一层，里面的 doc、docx、pdf、wps、xls、xlsx、et、ofd 逐个取文字，接成一份，每个文件前
+  写明第几个文件）。
 - 存法：附件（原网站链接）→ 内容版本（SHA-256）→ 文字，三张表（models.AttachmentText*）。
   内容相同的几个链接共用一份文字；原网站删了、内容变了，链接改指新版本或清空，没有链接指向的
   旧版本连同文字删掉（撤下旧文字）。
@@ -25,17 +27,25 @@ from __future__ import annotations
 
 import bisect
 import io
+import json
 import logging
+import math
+import os
 import re
 import struct
+import subprocess
+import sys
+import unicodedata
 import zipfile
+import zlib
 from collections import Counter
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
+from functools import partial
 from hashlib import sha256
 
 from lxml import etree
@@ -52,8 +62,13 @@ log = logging.getLogger("youju.attachment_text")
 # 2：10/20 正文脱敏规则改了（crawler/detail.py：邮箱、座机前面不再连带遮掉中文，联系人按姓名遮，
 # 账号多认几种写法），已取的按新规则重取
 EXTRACTOR_VERSION = 2
-# 除了副本的 7 种，再下载这两种只取文字（小程序打不开，不存副本）
-TEXT_ONLY_TYPES = ("wps", "et")
+# 除了副本的 7 种，再下载这几种只取文字（小程序打不开，不存副本）：wps、et；11/5 起加上 ofd 和
+# zip、rar 压缩包
+TEXT_ONLY_TYPES = ("wps", "et", "ofd", "zip", "rar")
+# 11/5 以前文件头认出是这几种时记的"格式不支持"（题录写的是 doc、pdf 等，实际是压缩包、OFD）：现在
+# 读得了，这样记着的当成还没按现在的规则取过，再下载、重取一次（_outdated）。规则版本不加 1：加了
+# 所有附件都要重新下载、重取，取完以前详情页都显示"还没取"
+_OLD_FORMAT_DETAILS = ("OFD 版式文件", "压缩包或认不出的 Office 文件", "RAR 压缩包")
 # 一份附件最多取这么多字（遮号码以后、表格按"格 | 格"连起来算），超过的按"太大"记，不存
 MAX_CHARS = 300_000
 # 一段最长这么多字，更长的在句末切开（和正文分段 interpret.split_paragraphs 一样）
@@ -526,7 +541,8 @@ _HTML = re.compile(
 
 
 def sniff(data: bytes) -> str:
-    """按文件头和内部结构认出实际格式（7 种之一）；认不出抛 Unreadable 并写明原因。"""
+    """按文件头和内部结构认出实际格式（Office 的 6 种、pdf，加上 ofd、zip、rar）；认不出抛
+    Unreadable 并写明原因。"""
     if not data:
         raise Unreadable("broken", "下载到的内容是空的")
     if data.startswith(b"%PDF-"):
@@ -541,14 +557,19 @@ def sniff(data: bytes) -> str:
         if len(found) == 1:
             return found.pop()
         if "OFD.xml" in names:
-            raise Unreadable("format", "OFD 版式文件")
-        raise Unreadable("format", "压缩包或认不出的 Office 文件")
+            return "ofd"
+        if found or "[Content_Types].xml" in names or "mimetype" in names:
+            # 认不出的 Office 文件、OpenDocument（odt 等）、EPUB 这类：不是压缩包，也不读
+            raise Unreadable("format", "认不出的 Office 文件")
+        return "zip"
     if data.startswith(_OLE):
         import olefile
 
         try:
             with olefile.OleFileIO(data) as ole:
                 roots = {entry[0] for entry in ole.listdir(streams=True, storages=True)}
+        except _Timeout:
+            raise
         except Exception as exc:  # noqa: BLE001 - 外部文件可能损坏，解析器会抛多种异常
             raise Unreadable("broken", "复合文档结构损坏") from exc
         if "EncryptedPackage" in roots or "EncryptionInfo" in roots:
@@ -557,8 +578,8 @@ def sniff(data: bytes) -> str:
         if len(found) == 1:
             return found.pop()
         raise Unreadable("format", "认不出的旧版 Office 或 WPS 文件")
-    if data.startswith(b"Rar!"):
-        raise Unreadable("format", "RAR 压缩包")
+    if data.startswith(b"Rar!\x1a\x07"):
+        return "rar"
     if data.lstrip()[:5] == b"{\\rtf":
         raise Unreadable("format", "RTF 文件")
     if _HTML.match(data[:1024]) or b"<html" in data[:512].lower():
@@ -667,6 +688,10 @@ class _Builder:
         if self.chars > (limit := _limits().chars):
             raise Unreadable("too_large", f"取出的文字超过 {limit // 10000} 万字")
         self.segments.append(Segment(len(self.segments) + 1, kind, text, loc or None, cells))
+
+    def add(self, segment: Segment, loc: dict) -> None:
+        """另一份已经取好、遮好的段落（压缩包里的一个文件）接在后面：段号接着编，出处加上 loc。"""
+        self._add(segment.kind, segment.text, {**loc, **(segment.loc or {})}, segment.cells)
 
     def para(self, text: str, loc: dict | None = None) -> None:
         text = clean(text)
@@ -795,6 +820,9 @@ class _Found:
     picture_bytes: int = 0
     pages: int | None = None
     scanned: int | None = None
+    # 压缩包：读了几个文件的说明；final 是已经逐个文件判断过扫描件、空文件，不再整份按图片判断
+    detail: str | None = None
+    final: bool = False
 
 
 # ---- 新版 Office（docx、xlsx、pptx） ----
@@ -873,6 +901,7 @@ class _Zip:
     def read(self, name: str) -> bytes | None:
         if name not in self.names:
             return None
+        _check_method(self.zf.getinfo(name))
         with self.zf.open(name) as fh:
             raw = fh.read(_TREE_MAX + 1)
         if len(raw) > _TREE_MAX:
@@ -888,6 +917,7 @@ class _Zip:
         """边读边解析（工作表、共享字符串可能很大），读到的字节照样计入合计上限。"""
         if name not in self.names:
             return
+        _check_method(self.zf.getinfo(name))
         with self.zf.open(name) as fh:
             yield from etree.iterparse(
                 _Counted(fh, self), events=("end",), resolve_entities=False, huge_tree=False
@@ -920,6 +950,17 @@ class _Zip:
             if target in self.names and target.endswith(".xml") and target.split("/")[0] == folder:
                 return target
         return default
+
+
+# zip 里只读不压缩（stored）和 deflate 压缩的部件：Python 解 bzip2、LZMA 时一次把读进来的压缩数据
+# 整段解开、不受 read(n) 的长度限制，几 KB 的文件能解出几 GB（11/5 独立审阅实测：362 字节的包内存
+# 涨到 660MB）。Office、OFD、压缩软件默认都用 deflate
+_ZIP_METHODS = (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED)
+
+
+def _check_method(info: zipfile.ZipInfo) -> None:
+    if info.compress_type not in _ZIP_METHODS:
+        raise Unreadable("broken", f"压缩方式不支持（{info.compress_type}）")
 
 
 class _Counted:
@@ -1413,6 +1454,8 @@ def _pdf(data: bytes) -> list:
 
     try:
         pdf = pdfplumber.open(io.BytesIO(data))
+    except _Timeout:
+        raise
     except Exception as exc:  # noqa: BLE001 - 第三方解析器对损坏、加密文件会抛多种异常
         raise Unreadable("broken", "PDF 打不开（损坏或加密）") from exc
     items: list[tuple] = []  # ("line", 文字, 页) 或 ("table", 行, 页)
@@ -1512,6 +1555,8 @@ def _ocr_layer(page) -> bool:
             _INVISIBLE.search(resolve1(stream).get_data())
             for stream in page.page_obj.contents or []
         )
+    except _Timeout:
+        raise
     except Exception:  # noqa: BLE001 - 内容流解不开就按看得见的字算
         return False
 
@@ -1541,6 +1586,8 @@ def _pdf_page(page) -> tuple[list, list, bool]:
     try:
         # 线条特别多的页（图纸、图表）找表格可能很慢：不找，只取文字行（9/28 数据里最多 1200 条）
         found = page.find_tables() if len(page.edges) <= _PDF_MAX_EDGES else []
+    except _Timeout:
+        raise  # 超时不能当成"找表格失败"吞掉
     except Exception:  # noqa: BLE001 - 找表格失败就当没有表格，照样取文字
         found = []
     boxes = [t.bbox for t in found]
@@ -2071,6 +2118,768 @@ def _ppt(data: bytes) -> list:
     return _Found(builder, int(picture_bytes > 0), picture_bytes)
 
 
+# ---- OFD 版式文件（GB/T 33190：zip 包，OFD.xml → 文档 Document.xml → 每页一个 Content.xml） ----
+# 字在 TextObject 的 TextCode 里：Boundary 是对象在页面上的位置（毫米），TextCode 的 X、Y 是第一个字
+# 的基线在对象里的位置，DeltaX 是后面每个字比前一个往右多少（"g 3 5.6"是 3 个 5.6）。WPS 等导出的
+# OFD 一个词一个对象，顺序也不是阅读顺序（页脚的页码常排在最前面），所以按基线位置排成行，再按
+# PDF 的规则接成段落（layout_wrapped）、去掉页边上的页码。表格只按行取字（格和格之间隔一个空格），
+# 不认表格结构。不取：模板页（页眉页脚一类的底版）、注释（签章、链接）、看不见的字
+# （Visible="false"，或者不填充也不描边、填充色全透明：扫描件上的识别层常这样写）。
+
+_OFD_PAGE = (0.0, 0.0, 210.0, 297.0)  # 没写页面大小时按 A4
+_OFD_IMAGES = (".png", ".jpg", ".jpeg", ".jb2", ".jbig2", ".tif", ".tiff", ".bmp", ".gif")
+
+
+@dataclass
+class _OfdRun:
+    """一段字（一个 TextCode）在页面上的位置：基线、左右、上下，单位毫米。"""
+
+    y: float
+    x0: float
+    x1: float
+    size: float
+    text: str
+
+
+@dataclass
+class _OfdPage:
+    runs: list[_OfdRun] = field(default_factory=list)
+    images: list[tuple[float, ...]] = field(default_factory=list)
+    paths: int = 0
+    hidden: int = 0  # 看不见的字数（识别层）
+
+
+def _float(value: str | None, default: float = 0.0) -> float:
+    try:
+        number = float(value) if value is not None else default
+    except ValueError:
+        return default
+    return number if math.isfinite(number) else default
+
+
+def _floats(value: str | None, count: int) -> tuple[float, ...] | None:
+    try:
+        numbers = tuple(float(v) for v in (value or "").split())
+    except ValueError:
+        return None
+    if len(numbers) != count or not all(math.isfinite(n) for n in numbers):
+        return None
+    return numbers
+
+
+def _ofd_deltas(value: str | None, count: int) -> list[float]:
+    """DeltaX 展开成每个字的间距（"g 3 5.6"是 3 个 5.6），最多 count 个；写错的地方到此为止。"""
+    tokens = (value or "").split()
+    out: list[float] = []
+    i = 0
+    while i < len(tokens) and len(out) < count:
+        try:
+            if tokens[i] == "g":
+                times, step = int(tokens[i + 1]), _float(tokens[i + 2])
+                out.extend([step] * max(0, min(times, count - len(out))))
+                i += 3
+            else:
+                out.append(_float(tokens[i]))
+                i += 1
+        except (IndexError, ValueError):
+            break
+    return out
+
+
+def _wide(char: str) -> bool:
+    return unicodedata.east_asian_width(char) in ("W", "F", "A")
+
+
+def _ofd_part(zf: _Zip, folder: str, loc: str | None) -> str | None:
+    """OFD 里引用的部件路径：/ 开头的从包的根算，其余从引用它的文件所在文件夹算；大小写对不上的
+    （个别软件写的）也认。"""
+    loc = (loc or "").strip().replace("\\", "/")
+    if not loc:
+        return None
+    path = loc.lstrip("/") if loc.startswith("/") else _join(folder, loc)
+    if path in zf.names:
+        return path
+    lower = {name.lower(): name for name in zf.names}
+    return lower.get(path.lower())
+
+
+def _ofd_text(obj, page: _OfdPage) -> None:
+    box = _floats(obj.get("Boundary"), 4)
+    if box is None:
+        return
+    a, b, c, d, e, f = _floats(obj.get("CTM"), 6) or (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+    scale = math.sqrt(abs(a * d - b * c)) or 1.0
+    size = _float(obj.get("Size"), 3.5) * scale
+    fill = (obj.get("Fill") or "true").lower() != "false"
+    stroke = (obj.get("Stroke") or "false").lower() == "true"
+    color = next((child for child in obj if _local(child) == "FillColor"), None)
+    transparent = color is not None and (color.get("Alpha") or "").strip() == "0"
+    visible = (obj.get("Visible") or "true").lower() != "false" and (
+        stroke or (fill and not transparent)
+    )
+    x = y = 0.0
+    for code in obj:
+        if _local(code) != "TextCode":
+            continue
+        raw = "".join(code.itertext())
+        # 没写 X、Y 的接着用上一个 TextCode 的（标准的写法）
+        x, y = _float(code.get("X"), x), _float(code.get("Y"), y)
+        text = clean(raw)
+        if not text:
+            continue
+        if not visible:
+            page.hidden += len(text)
+            continue
+        deltas = _ofd_deltas(code.get("DeltaX"), len(raw) - 1)
+        advance = sum(deltas) + (len(raw) - 1 - len(deltas)) * size
+        left = box[0] + a * x + c * y + e
+        base = box[1] + b * x + d * y + f
+        last = size if _wide(raw.rstrip()[-1:] or "a") else size / 2
+        page.runs.append(_OfdRun(base, left, left + abs(a) * advance + last, size, text))
+
+
+def _ofd_walk(parent, page: _OfdPage, depth: int = 0) -> None:
+    for obj in parent:
+        name = _local(obj)
+        if name == "TextObject":
+            _ofd_text(obj, page)
+        elif name == "ImageObject":
+            box = _floats(obj.get("Boundary"), 4)
+            if box is not None:
+                page.images.append(box)
+        elif name in ("PathObject", "CompositeObject"):
+            page.paths += 1
+        elif name == "PageBlock" and depth < 20:
+            _ofd_walk(obj, page, depth + 1)
+
+
+def _ofd_lines(runs: list[_OfdRun]) -> list[tuple[float, float, str]]:
+    """按基线把字排成行（基线差不到字高四成的算同一行），行内按左右接起来：隔得比一个字宽还远
+    （表格的格和格）隔一个空格，西文词之间隔四分之一个字宽就算；同一段字画了两遍（加粗）只留一遍。
+    返回 (上边, 下边, 一行字)。"""
+    lines = []
+    group: list[_OfdRun] = []
+    for run in sorted(runs, key=lambda r: (r.y, r.x0)):
+        if group and run.y - group[0].y > 0.4 * max(run.size, group[0].size, 0.5):
+            lines.append(group)
+            group = []
+        group.append(run)
+    if group:
+        lines.append(group)
+    out = []
+    for line in lines:
+        line.sort(key=lambda r: r.x0)
+        text, prev = "", None
+        for run in line:
+            if prev is not None:
+                if run.text == prev.text and abs(run.x0 - prev.x0) < 0.5 * max(run.size, 0.5):
+                    continue
+                latin = prev.text[-1].isascii() and run.text[0].isascii()
+                if run.x0 - prev.x1 > (0.25 if latin else 1.0) * max(run.size, prev.size):
+                    text += " "
+            text += run.text
+            prev = run
+        top = min(r.y - r.size for r in line)
+        bottom = max(r.y + 0.2 * r.size for r in line)
+        out.append((top, bottom, text))
+    return out
+
+
+def _ofd(data: bytes) -> _Found:
+    zf = _Zip(data)
+    if any(name.rpartition("/")[2].lower() == "encryptions.xml" for name in zf.names):
+        raise Unreadable("broken", "加密的 OFD 文件")
+    root = zf.xml("OFD.xml")
+    if root is None:
+        raise Unreadable("broken", "找不到 OFD.xml")
+    documents = [
+        path
+        for body in root.iter()
+        if _local(body) == "DocBody"
+        for child in body
+        if _local(child) == "DocRoot" and (path := _ofd_part(zf, "", child.text))
+    ]
+    if not documents:
+        raise Unreadable("broken", "OFD 里找不到文档")
+    pages: list[tuple[str, tuple[float, ...]]] = []
+    for path in documents:
+        doc = zf.xml(path)
+        if doc is None:
+            continue
+        folder = path.rpartition("/")[0]
+        default = _OFD_PAGE
+        for el in doc.iter():
+            if _local(el) == "PageArea":
+                box = next((_floats(b.text, 4) for b in el if _local(b) == "PhysicalBox"), None)
+                default = box or default
+                break
+        for el in doc.iter():
+            if _local(el) == "Page" and (part := _ofd_part(zf, folder, el.get("BaseLoc"))):
+                pages.append((part, default))
+    limits = _limits()
+    if len(pages) > limits.pdf_pages and not limits.pdf_first_pages:
+        raise Unreadable("too_large", f"OFD 超过 {limits.pdf_pages} 页")
+    items: list[tuple[str, int]] = []
+    scanned = 0
+    for number, (part, default) in enumerate(pages[: limits.pdf_pages], 1):
+        content = zf.xml(part)
+        if content is None:
+            continue
+        area_box = next(
+            (
+                _floats(b.text, 4)
+                for el in content
+                if _local(el) == "Area"
+                for b in el
+                if _local(b) == "PhysicalBox"
+            ),
+            None,
+        )
+        x0, y0, width, height = area_box or default
+        page = _OfdPage()
+        for el in content:
+            if _local(el) == "Content":
+                for layer in el:
+                    if _local(layer) == "Layer":
+                        _ofd_walk(layer, page)
+        chars = sum(len(r.text.replace(" ", "")) for r in page.runs)
+        area = max(width * height, 1e-6)
+        cover = sum(
+            max(0.0, min(ix + iw, x0 + width) - max(ix, x0))
+            * max(0.0, min(iy + ih, y0 + height) - max(iy, y0))
+            for ix, iy, iw, ih in page.images
+        )
+        if (page.images and chars < _SCAN_PAGE_CHARS and cover >= area * _SCAN_PAGE_SOME_COVER) or (
+            cover >= area * _SCAN_PAGE_COVER and page.hidden
+        ):
+            scanned += 1
+            continue
+        if not chars and page.paths >= _OUTLINED_CURVES:
+            scanned += 1  # 字被转成了线条
+            continue
+        top_margin, bottom_margin = y0 + height * _MARGIN, y0 + height * (1 - _MARGIN)
+        for top, bottom, text in _ofd_lines(page.runs):
+            in_margin = top < top_margin or bottom > bottom_margin
+            if in_margin and _PAGE_NUMBER.fullmatch(text):
+                continue  # 页眉页脚里的页码（公文的"— 1 —"）
+            items.append((text, number))
+    builder = _Builder()
+    width_chars = line_width("\n".join(text for text, _ in items))
+    current, current_page, physical = "", None, ""
+    for text, number in items:
+        if current and layout_wrapped(physical, text, width_chars):
+            current = current.rstrip() + text.lstrip()
+        else:
+            if current:
+                builder.para(current, {"page": current_page})
+            current, current_page = text, number
+        physical = text
+    if current:
+        builder.para(current, {"page": current_page})
+    images = [i for i in zf.zf.infolist() if i.filename.lower().endswith(_OFD_IMAGES)]
+    return _Found(
+        builder, len(images), sum(i.file_size for i in images), pages=len(pages), scanned=scanned
+    )
+
+
+# ---- 压缩包（zip、rar） ----
+# 在内存里解开（不写磁盘；包里的文件名只用来显示，不当路径用，"../"这类写法无从作怪），里面的文件
+# 按扩展名挑出能读的格式，再按文件头认实际格式，逐个用上面的规则取文字（规则和单独的附件一样），
+# 接成这个附件的一份文字：开头一段写一共几个文件、哪些读不了，每个文件前加一段"第 N 个文件（共
+# M 个）：文件名"，段落的出处另记 file（第几个文件）。不拆成几个附件：详情页、阅读页、AI 都是
+# "一个附件链接一份内容"，拆开要改接口和小程序；合成一份、分段写清楚，现在的阅读页（翻页、出处）
+# 原样能用。压缩包里的压缩包不打开（只解一层）。
+
+ARCHIVE_TYPES = ("zip", "rar")
+# 压缩包里读这几种（按扩展名挑）
+ARCHIVE_INNER_TYPES = ("doc", "docx", "pdf", "wps", "xls", "xlsx", "et", "ofd")
+_ARCHIVE_FILES = 50  # 最多读这么多个文件，再多的只写个数
+_ARCHIVE_ENTRIES = 5000  # 目录里的条目（含文件夹）超过这么多的整个不读
+_ARCHIVE_FILE_MAX = 20 * 1024 * 1024  # 单个文件解压后的上限，和下载附件的上限一样
+# 要读的文件解压后合计上限（都要放在内存里），防压缩炸弹
+_ARCHIVE_UNPACK_MAX = 64 * 1024 * 1024
+# rar 不能跳着读，不要的文件（图片、视频）也要解一遍才能往后走：连同这些一起，解压合计上限
+_ARCHIVE_SCAN_MAX = 256 * 1024 * 1024
+_ARCHIVE_RATIO = 200  # 解压后超过 1MB、又是压缩后大小这么多倍的，按压缩炸弹不读
+_ARCHIVE_NAME_MAX = 80  # 显示的文件名最长这么多字
+# 留给开头一段和每个文件标题的字数（文字合计不超过 MAX_CHARS：里面的文件按剩下的字数取）
+_ARCHIVE_HEAD_CHARS = 400
+_ARCHIVE_TITLE_CHARS = 120
+_RAR5 = b"Rar!\x1a\x07\x01\x00"
+# 系统、压缩软件自己生成的文件（苹果电脑的 __MACOSX、._ 开头的资源文件，Office 打开时的 ~$ 临时
+# 文件，.DS_Store、Thumbs.db 这类）：不算压缩包里的文件
+_JUNK_NAMES = {"thumbs.db", "desktop.ini"}
+# 里面一个文件读不了的说法（写在它的标题后面）
+_MEMBER_NOTES = {
+    "scan": "扫描件，暂不能识别文字",
+    "empty": "文件里没有能显示的文字",
+    "broken": "文件损坏或加了密，读不出文字",
+    "format": "这种格式暂不能在小程序内阅读",
+    "webpage": "这种格式暂不能在小程序内阅读",
+    "too_large": "文件太大，没有读",
+}
+_NESTED_NOTE = "压缩包里的压缩包暂不能阅读"
+_SKIPPED_NOTE = "压缩包解压后太大，这个文件没有读"  # 解压合计超了
+_CHARS_NOTE = "压缩包里的文字太多，这个文件没有读"  # 前面的文件已经快到字数上限
+_TIMEOUT_NOTE = "文件太大或太复杂，暂不能阅读"  # 取它的文字时超时
+_LATE_NOTE = "前面的文件读的时间太长，这个没有读"  # 超时以后的文件
+_METHOD_NOTE = "压缩方式暂不支持，这个文件没有读"  # bzip2、LZMA 等（不解开，防压缩炸弹）
+# 都读不了时整个附件记哪个原因：个数最多的；一样多按这个顺序
+_ARCHIVE_REASONS = ("scan", "broken", "too_large", "empty", "format")
+
+
+class _Timeout(Unreadable):
+    """取文字超时（_time_limit）：压缩包里读到一半超时，已读的照样用，后面的不读。"""
+
+
+class _Skipped(Unreadable):
+    """压缩包解压合计超了上限，这个文件没读（不是它自己太大）。"""
+
+
+@dataclass
+class _Member:
+    """压缩包里的一个文件。"""
+
+    path: str
+    size: int  # 目录里写的解压后大小
+    load: Callable[[], bytes] | None = None  # 读出内容（zip 用到时才解压）
+    data: bytes | memoryview | None = None  # rar 只能从头到尾解一遍，要读的先解出来
+    problem: tuple[str, str] | None = None  # 解压前就知道读不了：(原因, 说明)
+    note: str = ""  # 读不了时标题后面写的话（不写就按原因）
+    skipped: bool = False  # 解压合计超了，没读
+
+
+@dataclass
+class _Budget:
+    """解压合计上限：用了多少。rar 没读到头就停了的（超了上限、后面坏了），stopped 写原因：
+    后面还有几个文件不知道，只能在开头一段说一句。"""
+
+    used: int = 0
+    stopped: str = ""
+
+    @property
+    def left(self) -> int:
+        return max(0, _ARCHIVE_UNPACK_MAX - self.used)
+
+
+def _member_kind(path: str) -> str:
+    """doc：要读的格式；other：别的格式；junk：系统、压缩软件生成的，不算。"""
+    path = path.replace("\\", "/")
+    parts = [p for p in path.split("/") if p]
+    if not parts or path.endswith("/") or "__MACOSX" in parts[:-1]:
+        return "junk"  # 文件夹（有的 Windows 压缩软件写成反斜杠结尾，zipfile 不当文件夹）
+    base = parts[-1]
+    if base.startswith((".", "~$")) or base.lower() in _JUNK_NAMES:
+        return "junk"
+    return "doc" if _ext(base) in ARCHIVE_INNER_TYPES else "other"
+
+
+def _ext(path: str) -> str:
+    base = path.replace("\\", "/").rpartition("/")[2]
+    return base.rpartition(".")[2].lower() if "." in base.strip(".") else ""
+
+
+_NATURAL = re.compile(r"\d{1,30}|\D+")
+_NATURAL_SEPARATORS = " -_.，、,·"
+
+
+def _natural(path: str) -> tuple:
+    """排列顺序：外层的文件在前（主文件多在外面，附表放在子文件夹里）；同一层按名字，数字按大小
+    （附件2 在附件10 前面），同一位置上文字排在数字前面（"附件1.申报指南"在"附件1-1.申请表"前面，
+    "附件1-1.资料清单"在"附件1-1-2.申请表"前面），文件夹逐层比。"""
+    parts = [part for part in path.replace("\\", "/").split("/") if part]
+    key: list = [len(parts)]
+    for part in parts:
+        tokens = []
+        for token in _NATURAL.findall(part):
+            if token.isdecimal():  # "①"这类 isdigit() 也算，但 int() 认不了
+                tokens.append((1, int(token), ""))
+            elif text := token.strip(_NATURAL_SEPARATORS):
+                tokens.append((0, 0, text))
+        key.append(tuple(tokens))
+    return tuple(key)
+
+
+def _display_name(path: str) -> str:
+    """显示的文件名：只要最后一层（不带文件夹），去掉控制字符，太长的截断。"""
+    name = clean(re.sub(r"[\x00-\x1f\x7f]", " ", path.replace("\\", "/").rpartition("/")[2]))
+    return name if len(name) <= _ARCHIVE_NAME_MAX else name[: _ARCHIVE_NAME_MAX - 1] + "…"
+
+
+def _zip_name(info: zipfile.ZipInfo) -> str:
+    """zip 里的文件名：没标 UTF-8 的按 cp437 解出来的（Python 的默认）其实多是 GBK（中文 Windows 的
+    压缩软件），也可能是没标的 UTF-8，按原字节重新解。"""
+    if info.flag_bits & 0x800:
+        return info.filename
+    try:
+        raw = info.filename.encode("cp437")
+    except UnicodeEncodeError:
+        return info.filename
+    for codec in ("utf-8", "gb18030"):
+        try:
+            return raw.decode(codec)
+        except UnicodeDecodeError:
+            continue
+    return info.filename
+
+
+def _zip_load(zf: zipfile.ZipFile, info: zipfile.ZipInfo, budget: _Budget) -> bytes:
+    if info.flag_bits & 0x1:
+        raise Unreadable("broken", "加了密")
+    limit = min(_ARCHIVE_FILE_MAX, budget.left)
+    try:
+        with zf.open(info) as fh:
+            raw = fh.read(limit + 1)  # 不信目录里写的大小，最多读到上限
+    except (RuntimeError, NotImplementedError) as exc:  # 加密、不支持的压缩方式
+        raise Unreadable("broken", f"解压不了（{exc.__class__.__name__}）") from exc
+    except (zipfile.BadZipFile, zlib.error, EOFError, OSError, ValueError) as exc:
+        raise Unreadable("broken", "压缩数据损坏") from exc
+    budget.used += len(raw)
+    if len(raw) > limit:
+        if limit < _ARCHIVE_FILE_MAX:
+            raise _Skipped("too_large", "压缩包解压后太大")
+        raise Unreadable("too_large", "解压后超过 20MB")
+    return raw
+
+
+def _zip(data: bytes) -> _Found:
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(data))
+    except (zipfile.BadZipFile, ValueError, OSError, EOFError) as exc:
+        raise Unreadable("broken", "压缩包损坏") from exc
+    with zf:
+        infos = zf.infolist()
+        if len(infos) > _ARCHIVE_ENTRIES:
+            raise Unreadable("too_large", f"压缩包里超过 {_ARCHIVE_ENTRIES} 个条目")
+        budget = _Budget()
+        members = []
+        for info in infos:
+            if info.is_dir():
+                continue
+            member = _Member(_zip_name(info), info.file_size)
+            if info.compress_type not in _ZIP_METHODS:
+                member.problem = ("broken", "压缩方式不支持")
+                member.note = _METHOD_NOTE
+            elif info.file_size > _ARCHIVE_FILE_MAX:
+                member.problem = ("too_large", "解压后超过 20MB")
+            elif info.file_size > 1024 * 1024 and info.file_size > _ARCHIVE_RATIO * max(
+                info.compress_size, 1
+            ):
+                member.problem = ("too_large", "压缩比异常（可能是压缩炸弹）")
+            else:
+                member.load = partial(_zip_load, zf, info, budget)
+            members.append(member)
+        return _read_archive(members, budget)
+
+
+# rar 放在子进程里解（11/5 agy 审阅）：libarchive 是 C 写的，坏的 rar 让它崩溃、或者在一次调用里
+# 卡住时，主进程的 SIGALRM 打断不了；放在子进程里，崩了、超时被杀，只坏这一个附件。子进程只带最少的
+# 环境变量（不带数据库地址、密钥），虚拟内存另设上限。rar 只能从头往后解：要读的格式先解出来，
+# 不要的也得解一遍才能往后走，一起计入解压合计上限，超了就停。结果一条一条写回：4 字节头长度、
+# JSON 头、8 字节内容长度、内容；最后一条是 {"end": ...}。
+_RAR_CHILD = r"""
+import json
+import sys
+
+cfg = json.loads(sys.argv[1])
+out = sys.stdout.buffer
+
+
+def emit(head, body=b""):
+    raw = json.dumps(head, ensure_ascii=False).encode()
+    out.write(len(raw).to_bytes(4, "big") + raw + len(body).to_bytes(8, "big") + body)
+    out.flush()
+
+
+try:
+    import resource
+
+    resource.setrlimit(resource.RLIMIT_AS, (cfg["memory"], cfg["memory"]))
+except Exception:
+    pass
+try:
+    import libarchive
+except Exception:
+    emit({"end": "nolib"})
+    sys.exit(0)
+data = sys.stdin.buffer.read()
+kept = scanned = 0
+end = "done"
+try:
+    with libarchive.memory_reader(data, format_name=cfg["format"], filter_name="none") as archive:
+        for count, entry in enumerate(archive, 1):
+            if count > cfg["entries"]:
+                end = "entries"
+                break
+            if not entry.isfile:
+                continue
+            name = entry.pathname or ""
+            if isinstance(name, bytes):
+                name = name.decode("gb18030", "replace")
+            size = max(entry.size or 0, 0)
+            ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+            keep = ext in cfg["keep"] and size <= cfg["file_max"]
+            left = cfg["scan_max"] - scanned
+            limit = min(cfg["file_max"], cfg["unpack_max"] - kept, left) if keep else left
+            chunks, got = [], 0
+            try:
+                for block in entry.get_blocks(block_size=65536):
+                    got += len(block)
+                    if got > limit:
+                        break
+                    if keep:
+                        chunks.append(block)
+            except libarchive.ArchiveError:
+                emit({"path": name, "size": size, "problem": "broken"})
+                end = "broken"
+                break
+            scanned += got
+            if got > limit:
+                too_big = keep and limit == cfg["file_max"]
+                emit({"path": name, "size": size, "over": "file" if too_big else "total"})
+                end = "total"
+                break
+            kept += got if keep else 0
+            emit({"path": name, "size": size, "kept": keep}, b"".join(chunks))
+except libarchive.ArchiveError:
+    end = "broken"
+emit({"end": end})
+"""
+_RAR_MEMORY = 2 * 1024**3  # 子进程的虚拟内存上限（Linux 上管用）
+_RAR_BROKEN = "压缩包后面的部分解不开（损坏或加了密），后面的文件没有读"
+_RAR_TOO_BIG = "压缩包解压后太大，后面的文件没有读"
+
+
+def _rar(data: bytes) -> _Found:
+    """rar 用 libarchive 解（镜像里装了系统库 libarchive13t64；本机 macOS 自带），在子进程里解。"""
+    cfg = {
+        "format": "rar5" if data.startswith(_RAR5) else "rar",
+        "entries": _ARCHIVE_ENTRIES,
+        "file_max": _ARCHIVE_FILE_MAX,
+        "unpack_max": _ARCHIVE_UNPACK_MAX,
+        "scan_max": _ARCHIVE_SCAN_MAX,
+        "keep": list(ARCHIVE_INNER_TYPES),
+        "memory": _RAR_MEMORY,
+    }
+    try:
+        child = subprocess.run(
+            [sys.executable, "-I", "-c", _RAR_CHILD, json.dumps(cfg)],
+            input=data,
+            capture_output=True,
+            timeout=_limits().seconds,
+            env=_rar_env(),
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise Unreadable("too_large", f"解压 RAR 超过 {_limits().seconds} 秒") from exc
+    members, end = _rar_records(child.stdout)
+    if end == "nolib":
+        raise Unreadable("format", "RAR 压缩包（服务器缺少解压组件）")
+    if end == "entries":
+        raise Unreadable("too_large", f"压缩包里超过 {_ARCHIVE_ENTRIES} 个条目")
+    budget = _Budget()
+    if end == "total":
+        budget.stopped = _RAR_TOO_BIG
+    elif end != "done" or child.returncode != 0:
+        # 解到一半出错，或者子进程崩了（没写到最后一条）：前面解出来的照样用
+        if child.returncode != 0:
+            log.info("解 RAR 的子进程异常退出（%s）", child.returncode)
+        if not members:
+            raise Unreadable("broken", "RAR 压缩包损坏或加了密")
+        budget.stopped = _RAR_BROKEN
+    return _read_archive(members, budget)
+
+
+def _rar_env() -> dict[str, str]:
+    """子进程的环境变量：只有 PATH、LANG，和 libarchive-c 找系统库用的 LIBARCHIVE（设了的话）；
+    数据库地址、密钥这些一概不带。"""
+    env = {"PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"), "LANG": "C.UTF-8"}
+    if os.environ.get("LIBARCHIVE"):
+        env["LIBARCHIVE"] = os.environ["LIBARCHIVE"]
+    return env
+
+
+def _rar_records(raw: bytes) -> tuple[list[_Member], str | None]:
+    """子进程写回的结果 → 压缩包里的文件、最后一条的结论（没写到最后一条是 None）。文件内容只是
+    子进程输出的一段视图，不另复制（要读的合计可到 64MB），读的时候才复制出这一个文件。"""
+    members: list[_Member] = []
+    view = memoryview(raw)
+    pos = 0
+    while pos + 4 <= len(raw):
+        head_size = int.from_bytes(view[pos : pos + 4], "big")
+        if pos + 4 + head_size + 8 > len(raw):
+            break
+        head = json.loads(bytes(view[pos + 4 : pos + 4 + head_size]))
+        pos += 4 + head_size
+        body_size = int.from_bytes(view[pos : pos + 8], "big")
+        if pos + 8 + body_size > len(raw):
+            break
+        body = view[pos + 8 : pos + 8 + body_size]
+        pos += 8 + body_size
+        if "end" in head:
+            return members, str(head["end"])
+        member = _Member(str(head.get("path") or ""), int(head.get("size") or 0))
+        if head.get("problem"):
+            member.problem = ("broken", "解压出错（加了密或损坏）")
+        elif head.get("over") == "file" or member.size > _ARCHIVE_FILE_MAX:
+            member.problem = ("too_large", "解压后超过 20MB")
+        elif head.get("over"):
+            member.skipped = True
+        elif head.get("kept"):
+            member.data = body
+        members.append(member)
+    return members, None
+
+
+def _member_text(member: _Member, chars: int) -> tuple[Extraction | None, str]:
+    """压缩包里一个文件的文字（规则和单独的附件一样，字数上限是剩下的）。返回 (结果, 读不了时
+    标题后面写的话)；超时抛 _Timeout。"""
+    if member.skipped or (member.data is None and member.load is None and not member.problem):
+        return None, _SKIPPED_NOTE
+    if member.problem is not None:
+        reason, detail = member.problem
+        note = member.note or _MEMBER_NOTES.get(reason, _MEMBER_NOTES["broken"])
+        return Extraction(None, reason=reason, detail=detail), note
+    if chars <= 0:
+        return None, _CHARS_NOTE
+    try:
+        data = bytes(member.data) if member.data is not None else member.load()
+        file_type = sniff(data)
+        if file_type in ARCHIVE_TYPES:
+            return Extraction(file_type, reason="format", detail="压缩包里的压缩包"), _NESTED_NOTE
+        token = _LIMITS.set(replace(_limits(), chars=chars))
+        try:
+            found = _EXTRACTORS[file_type](data)
+        finally:
+            _LIMITS.reset(token)
+        result = _result(file_type, found)
+    except _Timeout:
+        raise
+    except _Skipped:
+        return None, _SKIPPED_NOTE
+    except Unreadable as exc:
+        if (
+            exc.reason == "too_large"
+            and chars < _limits().chars
+            and exc.detail.startswith("取出的文字超过")
+        ):
+            return None, _CHARS_NOTE  # 是前面的文件占了字数，不是它自己太大
+        result = Extraction(None, reason=exc.reason, detail=exc.detail)
+    except Exception as exc:  # noqa: BLE001 - 第三方解析器对损坏文件会抛多种异常
+        log.info("压缩包里的文件取文字出错：%s", exc.__class__.__name__)
+        result = Extraction(
+            None, reason="broken", detail=f"文件解析出错（{exc.__class__.__name__}）"
+        )
+    if result.reason == "webpage":
+        result.reason = "format"  # 包里的网页文件：就是格式不支持（不是"原网站下载不了"）
+    return result, "" if result.ok else _MEMBER_NOTES.get(result.reason, _MEMBER_NOTES["broken"])
+
+
+def _read_archive(members: list[_Member], budget: _Budget) -> _Found:
+    docs = sorted(
+        (m for m in members if _member_kind(m.path) == "doc"), key=lambda m: _natural(m.path)
+    )
+    others = Counter(
+        _ext(m.path)[:8] or "无扩展名" for m in members if _member_kind(m.path) == "other"
+    )
+    if not docs:
+        if budget.stopped:
+            # rar 没读到头就停了：后面可能还有能读的文件，不能说"没有能读的"
+            raise Unreadable(
+                "broken" if budget.stopped == _RAR_BROKEN else "too_large", budget.stopped
+            )
+        if others:
+            kinds = "、".join(f"{ext} {n} 个" for ext, n in others.most_common(5))
+            raise Unreadable("format", f"压缩包里没有能读的文件（{kinds}）")
+        raise Unreadable("empty", "压缩包里没有文件")
+    listed = docs[:_ARCHIVE_FILES]
+    limit = _limits().chars - _ARCHIVE_HEAD_CHARS - _ARCHIVE_TITLE_CHARS * len(listed)
+    results: list[tuple[_Member, Extraction | None, str]] = []
+    used = 0
+    timed_out = False
+    for member in listed:
+        if not timed_out and _expired():
+            _stop_timer()  # 截止时间到了（这一秒的提醒可能被解析库吞了）：后面的不读
+            timed_out = True
+        if timed_out:
+            member.data = None
+            results.append((member, None, _LATE_NOTE))
+            continue
+        try:
+            result, note = _member_text(member, limit - used)
+        except _Timeout:
+            _stop_timer()
+            timed_out = True
+            results.append((member, None, _TIMEOUT_NOTE))
+            continue
+        finally:
+            member.data = None  # rar 先解出来的内容读完就放掉
+        if result is not None and result.ok:
+            used += result.chars
+        results.append((member, result, note))
+    # 往下只是把读出的接起来：不再限时，免得这时到点的提醒把已经读出的全扔掉（11/5 独立审阅第 2 轮）
+    _stop_timer()
+    readable = [r for _, r, _ in results if r is not None and r.ok]
+    failed = Counter(r.reason for _, r, _ in results if r is not None and not r.ok)
+    if not readable:
+        # 整个附件记个数最多的原因（扫描件就写扫描件）；一样多按 _ARCHIVE_REASONS 的顺序；
+        # 都是解压超了、超时没读的记"太大"
+        order = {k: i for i, k in enumerate(_ARCHIVE_REASONS)}
+        reason = (
+            min(failed, key=lambda k: (-failed[k], order.get(k, len(order))))
+            if failed
+            else "too_large"
+        )
+        raise Unreadable(reason, f"压缩包里的 {len(docs)} 个文件都读不出文字")
+    builder = _Builder()
+    total = len(docs)
+    unread = len(results) - len(readable)
+    # 只有一个文件、又读到了头的，标题写"压缩包里的文件"；rar 中途停了的，后面可能还有
+    single = total == 1 and not budget.stopped
+    notes = []
+    if budget.stopped:
+        # 后面还有几个文件不知道：不写"一共几个"
+        notes += [budget.stopped, f"下面按顺序列出前面的 {total} 个文件"]
+    elif total > 1:
+        notes.append(f"压缩包里有 {total} 个文件，下面按顺序列出")
+    if unread:
+        notes.append(f"其中 {unread} 个没有读出文字，标题后面写了原因")
+    if total > len(listed):
+        notes.append(f"第 {len(listed) + 1} 个起没有读（文件太多）")
+    if others:
+        kinds = "、".join(f"{ext} {n} 个" for ext, n in others.most_common(5))
+        notes.append(f"另有 {sum(others.values())} 个其他格式的文件（{kinds}）暂不能在小程序内阅读")
+    if notes:
+        builder.para("；".join(notes) + "。")
+    pages = scanned = 0
+    for number, (member, result, note) in enumerate(results, 1):
+        name = _display_name(member.path)
+        if single:
+            title = f"压缩包里的文件：{name}"
+        elif budget.stopped:
+            title = f"第 {number} 个文件：{name}"
+        else:
+            title = f"第 {number} 个文件（共 {total} 个）：{name}"
+        builder.para(f"{title}（{note}）" if note else title, {"file": number})
+        if result is not None:
+            pages += result.pages or 0
+            scanned += result.scanned_pages or 0
+        if result is not None and result.ok:
+            builder.masked += result.masked
+            for segment in result.segments:
+                builder.add(segment, {"file": number})
+    summary = f"压缩包里 {total} 个文件，读了 {len(readable)} 个"
+    if failed:
+        summary += "；读不了：" + "、".join(f"{REASONS[k]} {n} 个" for k, n in failed.most_common())
+    return _Found(
+        builder,
+        pages=pages or None,
+        scanned=scanned or None,
+        detail=summary,
+        final=True,
+    )
+
+
 _EXTRACTORS = {
     "docx": _docx,
     "xlsx": _xlsx,
@@ -2079,6 +2888,9 @@ _EXTRACTORS = {
     "doc": _doc,
     "xls": _xls,
     "ppt": _ppt,
+    "ofd": _ofd,
+    "zip": _zip,
+    "rar": _rar,
 }
 
 
@@ -2089,25 +2901,54 @@ EXTRACT_SECONDS = 180
 @contextmanager
 def _time_limit(seconds: int) -> Iterator[None]:
     """限时（SIGALRM）：只在主线程里限，admin 的定时任务和命令行都在主线程；别的线程里不限。
-    到时在解析代码里抛 Unreadable；一次跑很久的 C 代码（lxml 解析一整个部件）要等它返回才停，
-    所以部件大小另有上限（_TREE_MAX）。"""
+    到时在解析代码里抛 _Timeout（Unreadable 的一种）；一次跑很久的 C 代码（lxml 解析一整个部件）
+    要等它返回才停，所以部件大小另有上限（_TREE_MAX）。到时以后每秒再提醒一次，直到出了这一段：
+    解析库里的 except Exception 会把第一次的超时当普通错误吞掉、接着往下解析（11/5 压缩包要接着
+    读下一个文件，只提醒一次就再也停不下来）。"""
+    import signal
+    import threading
+    import time
+
+    # 截止时间另记一份：压缩包每读一个文件前看一下，信号落在哪里都停得下来（哪个线程都管用）
+    deadline = _DEADLINE.set(time.monotonic() + seconds)
+    try:
+        if threading.current_thread() is not threading.main_thread():
+            yield
+            return
+
+        def stop(_signum, _frame):
+            raise _Timeout("too_large", f"取文字超过 {seconds} 秒")
+
+        previous = signal.signal(signal.SIGALRM, stop)
+        signal.setitimer(signal.ITIMER_REAL, seconds, 1)
+        try:
+            yield
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, previous)
+    finally:
+        _DEADLINE.reset(deadline)
+
+
+_DEADLINE: ContextVar[float | None] = ContextVar("attachment_text_deadline", default=None)
+
+
+def _expired() -> bool:
+    import time
+
+    deadline = _DEADLINE.get()
+    return deadline is not None and time.monotonic() >= deadline
+
+
+def _stop_timer() -> None:
+    """压缩包里的文件读完了（或者超时了）：停掉 _time_limit 每秒一次的提醒、不再理会已经发出的，
+    好把已经读出的接起来（很快，有上限）；出了 _time_limit 照常恢复原来的处理。"""
     import signal
     import threading
 
-    if threading.current_thread() is not threading.main_thread():
-        yield
-        return
-
-    def stop(_signum, _frame):
-        raise Unreadable("too_large", f"取文字超过 {seconds} 秒")
-
-    previous = signal.signal(signal.SIGALRM, stop)
-    signal.setitimer(signal.ITIMER_REAL, seconds)
-    try:
-        yield
-    finally:
+    if threading.current_thread() is threading.main_thread():
         signal.setitimer(signal.ITIMER_REAL, 0)
-        signal.signal(signal.SIGALRM, previous)
+        signal.signal(signal.SIGALRM, signal.SIG_IGN)
 
 
 # 字很少、图很大的：多半是扫描件加了个标题（"附件2"加一整页扫描图），也按扫描件记
@@ -2192,14 +3033,22 @@ def _extract(data: bytes) -> Extraction:
         return Extraction(
             file_type, reason="broken", detail=f"文件解析出错（{exc.__class__.__name__}）"
         )
+    return _result(file_type, found)
+
+
+def _result(file_type: str, found: _Found) -> Extraction:
+    """一种格式取完的段落 → 结果：没有字、字很少图很大的按扫描件或空文件记（不存段落）。"""
     builder = found.builder
     result = Extraction(
         file_type,
         builder.segments,
+        detail=found.detail,
         pages=found.pages,
         scanned_pages=found.scanned,
         masked=builder.masked,
     )
+    if found.final:
+        return result
     pictures = found.pictures or found.scanned
     if not result.segments:
         if pictures:
@@ -2274,25 +3123,35 @@ def _is_webpage(data: bytes) -> bool:
     return False
 
 
+def _outdated(extractor: int, reason: str | None, detail: str | None) -> bool:
+    """还没按现在的规则取过：规则版本不是现在的，或者是 11/5 以前记成"格式不支持"的压缩包、OFD
+    （_OLD_FORMAT_DETAILS）。"""
+    return extractor != EXTRACTOR_VERSION or (reason == "format" and detail in _OLD_FORMAT_DETAILS)
+
+
 def due(
     session: Session, keys: Iterable[str], now: datetime, *, retry_now: bool = False
 ) -> set[str]:
     """这些链接里还没按现在的规则取过文字的（没取过、按旧规则取的），要下载、取文字。上次遇到
     网络等临时问题的，到 retry_at 才算（retry_now 不等）。"""
     known = {
-        key: (extractor, retry_at)
-        for key, extractor, retry_at in session.execute(
+        key: (extractor, retry_at, reason, detail)
+        for key, extractor, retry_at, reason, detail in session.execute(
             select(
                 AttachmentTextUrl.url_hash,
                 AttachmentTextUrl.extractor,
                 AttachmentTextUrl.retry_at,
+                AttachmentTextUrl.reason,
+                AttachmentTextUrl.detail,
             )
         )
     }
     out = set()
     for key in keys:
-        extractor, retry_at = known.get(key, (0, None))
-        if extractor != EXTRACTOR_VERSION and (retry_now or retry_at is None or retry_at <= now):
+        extractor, retry_at, reason, detail = known.get(key, (0, None, None, None))
+        if _outdated(extractor, reason, detail) and (
+            retry_now or retry_at is None or retry_at <= now
+        ):
             out.add(key)
     return out
 
@@ -2327,7 +3186,7 @@ def record(
             # 不了"、写明这次的原因：详情页、阅读页、日报不再把它当成"新附件，等取文字"（D-097 ④
             # 等待只算真在排队的），到时照样重试，取到就能读
             report.kept += 1
-            if row.extractor != EXTRACTOR_VERSION:
+            if _outdated(row.extractor, row.reason, row.detail):
                 row.retry_at = now + TEXT_RETRY
                 if row.version_id is None:
                     why = (failure.detail if failure is not None else "") or "网络等暂时问题"
@@ -2386,7 +3245,7 @@ def _version(
     version = session.scalar(
         select(AttachmentTextVersion).where(AttachmentTextVersion.sha256 == digest)
     )
-    if version is not None and version.extractor == EXTRACTOR_VERSION:
+    if version is not None and not _outdated(version.extractor, version.reason, version.detail):
         return version, False
     if version is not None and version.detail == _IN_PROGRESS_AGAIN:
         result = Extraction(
@@ -2401,6 +3260,9 @@ def _version(
             )
             session.add(version)
         version.detail = _IN_PROGRESS_AGAIN if version.detail == _IN_PROGRESS else _IN_PROGRESS
+        # 正在取的不算按现在的规则取过（定向重取的版本原来的规则版本就是现在的，只改说明会被
+        # 当成已经取过，进程中途没了就一直停在"格式不支持"；11/5 独立审阅）
+        version.extractor = 0
         session.flush()
         # 链接先指向它、记成待取：进程中途没了，这个版本不会被当成没人用的清理掉；规则版本也清掉，
         # 下一轮马上再取（内容变了的链接原来按现在的规则取过，不清就要等到副本的例行复查）
@@ -2417,7 +3279,8 @@ def _version(
     version.reason = result.reason
     detail = result.detail
     if result.ok and result.scanned_pages:
-        detail = f"{result.scanned_pages} 页是扫描页，这些页的字没取到"
+        pages = f"{result.scanned_pages} 页是扫描页，这些页的字没取到"
+        detail = f"{detail}；{pages}" if detail else pages  # 压缩包：前面是读了几个文件
     version.detail = detail[:300] if detail else None
     version.extractor = EXTRACTOR_VERSION
     version.segments = len(result.segments)
