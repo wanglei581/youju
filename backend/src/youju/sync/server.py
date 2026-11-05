@@ -37,6 +37,8 @@ MAX_BODY = 64 * 1024 * 1024
 MAX_PLAIN = 512 * 1024 * 1024
 MAX_BLOB = 25 * 1024 * 1024
 BLOB_PREFIX = "attachments/"
+# 同步表里只属于服务器的行：本机没有，全推删"多出来的行"时要跳过（条件是"不是服务器自己的行"）
+SERVER_OWNED = {"document_deadlines": lambda t: t.c.origin != "user"}
 
 
 class Replace(Insert):
@@ -299,6 +301,9 @@ async def pks(request: Request, table: str, limit: int = 10000, after: str | Non
         raise HTTPException(status_code=422, detail="不是同步的表") from None
     (col,) = pk_columns(t)
     stmt = select(t.c[col]).order_by(t.c[col]).limit(max(1, min(limit, 50000)))
+    if t.name in SERVER_OWNED:
+        # 只在服务器上有的行（用户线索生成的截止日期）：不列出来，全推时就不会被当成多余的删掉
+        stmt = stmt.where(SERVER_OWNED[t.name](t))
     if after is not None:
         stmt = stmt.where(t.c[col] > (int(after) if after.lstrip("-").isdigit() else after))
     with get_engine().connect() as conn:

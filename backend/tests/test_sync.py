@@ -287,9 +287,23 @@ def test_full_push_removes_rows_the_server_should_not_have(env):
     # 服务器上多一份本机没有的（比如本机重建过）
     srv_src = source(env.server)
     document(env.server, srv_src, "stale")
+    # 服务器上用户线索生成的截止日期（本机没有）：全推不能当多余的删掉
+    user_deadline = insert(
+        env.server,
+        "document_deadlines",
+        document_id=keep,
+        fingerprint="u" * 64,
+        kind="企业申报截止",
+        candidate_date=date(2026, 12, 1),
+        evidence="用户填的",
+        confidence="低",
+        origin="user",
+        status="pending",
+    )
     local.full_push(env.local, env.client)
     assert [r["id"] for r in rows(env.server, "documents")] == [keep]
     assert count(env.server, "document_details") == 1
+    assert [r["id"] for r in rows(env.server, "document_deadlines")] == [user_deadline]
 
 
 def test_signatures_are_required(env):
