@@ -402,7 +402,8 @@ test('订单页有订单时照常列出，不查能力接口也不回首页（�
 const DRAFT_TERMS = Object.freeze({ ...payTerms, final: false });
 
 test('购买页协议未定稿时没有价格和付款按钮、直接回首页，调用 buy 也不下单，页面不出现"暂未开放"，防止用未定稿协议收款（D-074 ⑧）', async () => {
-  assert.equal(DRAFT_TERMS.final, false);
+  // 包里的协议已定稿（D-119）；这里用改成未定稿的副本测“未定稿不能付款”
+  assert.equal(payTerms.final, true);
   const h = passPage({ terms: DRAFT_TERMS });
   await flush();
   assert.equal(h.page.data.termsFinal, false);
