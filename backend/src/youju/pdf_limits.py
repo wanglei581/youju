@@ -11,7 +11,8 @@ LZW、RunLength、CCITT 解码器和预测器也照文件里写的长度、列�
 - 一个数据流每解一步，解出的数据不超过 STREAM_MAX；
 - 一份 PDF（一次 reading() 里）解出的数据合计不超过 DOCUMENT_MAX：pdfminer 把解过的数据流留在
   内存里，整份读完才释放。解一个数据流时先预留它的额度：解码参数可能指向对象流里的对象，要先解
-  那个对象流（甚至就是自己），预留的额度不让里面那一层用；一层套一层最多 _NESTING_MAX 层；
+  那个对象流（甚至就是自己），预留的额度不让里面那一层用（解失败的不退）；一层套一层最多
+  _NESTING_MAX 层；
 - 有一个数据流超了，这份 PDF 里后面的数据流都不再解，reading() 结束时整份按超了算：pdfplumber
   读文档信息（元数据）时会吞掉异常接着往下读，不能让它照常"读完"；
 - 解码方式只认 FlateDecode、ASCIIHexDecode，图片的几种原样留着（取文字时不解图片，和 pdfminer
@@ -145,6 +146,7 @@ def reading(on_refused: Callable[[Refused], Exception] | None = None) -> Iterato
     budget = _Budget(DOCUMENT_MAX)
     start = budget.left
     token = _BUDGET.set(budget)
+    ended = False
     try:
         yield
     except Exception as exc:
@@ -156,10 +158,12 @@ def reading(on_refused: Callable[[Refused], Exception] | None = None) -> Iterato
     else:
         if budget.refused is not None:  # 拒读被吞掉了，照常"读完"不算数
             raise _refusal(budget.refused, on_refused)
+        ended = True
     finally:
         _BUDGET.reset(token)
-        # 拒读时解到一半的（最多合计上限那么多）没记在额度里，下一份前一定回收
-        _uncollected += _COLLECT_AFTER if budget.refused else start - budget.left
+        # 出了错（含拒读）时解到一半的数据挂在异常的回溯上、没记在额度里（嵌套时可能有好几层），
+        # 下一份前一定回收；正常读完的按解出的合计算
+        _uncollected += start - budget.left if ended else _COLLECT_AFTER
 
 
 def _refusal(hit: Refused, on_refused: Callable[[Refused], Exception] | None) -> Exception:
@@ -230,29 +234,28 @@ def _decode_within(self: PDFStream, budget: _Budget | None) -> None:
     cap = STREAM_MAX if budget is None else max(0, min(STREAM_MAX, budget.left))
     if budget is not None:
         budget.left -= cap  # 先预留，解的过程中再引用到的数据流用不到这一份
-    try:
-        for f, params in filters:
-            if f in LITERALS_FLATE_DECODE:
-                data = _inflate(data, cap)
-            elif f in LITERALS_ASCIIHEX_DECODE:
-                data = asciihexdecode(data)  # 解出的不超过输入的一半
-            elif f in _IMAGE_FILTERS:
-                pass  # 图片：pdfminer 也是原样留着
-            elif f in _REFUSED_FILTERS:
-                raise Refused("format", f"用了不支持的压缩方式 {f.name}")
-            elif f == LITERAL_CRYPT:
-                raise PDFNotImplementedError("/Crypt filter is unsupported")
-            else:
-                raise PDFNotImplementedError(f"Unsupported filter: {f!r}")
-            if params and "Predictor" in params:
-                data = _predict(data, params, _predictor_limit(self))
-            _check(len(data), cap)
+    for f, params in filters:
+        if f in LITERALS_FLATE_DECODE:
+            data = _inflate(data, cap)
+        elif f in LITERALS_ASCIIHEX_DECODE:
+            data = asciihexdecode(data)  # 解出的不超过输入的一半
+        elif f in _IMAGE_FILTERS:
+            pass  # 图片：pdfminer 也是原样留着
+        elif f in _REFUSED_FILTERS:
+            raise Refused("format", f"用了不支持的压缩方式 {f.name}")
+        elif f == LITERAL_CRYPT:
+            raise PDFNotImplementedError("/Crypt filter is unsupported")
+        else:
+            raise PDFNotImplementedError(f"Unsupported filter: {f!r}")
+        if params and "Predictor" in params:
+            data = _predict(data, params, _predictor_limit(self))
         _check(len(data), cap)
-    finally:
-        if budget is not None:
-            budget.left += cap  # 退回预留，下面按实际解出的扣
+    _check(len(data), cap)
+    # 解成了才退回预留、按实际解出的扣。解失败的不退：解到一半的数据可能还挂在异常上（嵌套时
+    # 好几层），而 pdfplumber 关闭文件时会再解析一遍页面树，退了它就又拿到满额度（独立审阅实测
+    # 峰值到合计上限的将近两倍）
     if budget is not None:
-        budget.left -= len(data)
+        budget.left += cap - len(data)
     self.data = data
     self.rawdata = None
 

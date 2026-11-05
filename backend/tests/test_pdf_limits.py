@@ -421,6 +421,48 @@ def test_earlier_files_are_collected_before_the_next(small_caps, monkeypatch) ->
     assert max(held) < 2 * pdf_limits.DOCUMENT_MAX  # 不回收时 8 份叠到 16MB
 
 
+def test_failed_decode_keeps_its_reservation(small_caps) -> None:
+    """解失败的数据流不退预留的额度：解到一半的还可能挂在异常上，pdfplumber 关闭文件时又会再解析一遍
+    页面树，退了它就又拿到满额度（独立审阅第 3 轮：嵌套 7 层、最深一层用不认识的解码方式，峰值到
+    合计上限的将近两倍）。解成了的按实际解出的扣。"""
+    failing = PDFStream({"Filter": [LIT("Fl"), LIT("Bogus")]}, spaces_flate(900 * 1024))
+    fine = PDFStream({"Filter": LIT("Fl")}, spaces_flate(100 * 1024))
+    with pdf_limits.reading():
+        budget = pdf_limits._BUDGET.get()
+        with pytest.raises(PDFNotImplementedError):
+            failing.get_data()
+        assert budget.left == pdf_limits.DOCUMENT_MAX - pdf_limits.STREAM_MAX
+        fine.get_data()
+        assert budget.left == pdf_limits.DOCUMENT_MAX - pdf_limits.STREAM_MAX - 100 * 1024
+
+
+def test_failed_reads_are_collected_before_the_next(monkeypatch) -> None:
+    """读到一半出了别的错（不是拒读）：解到一半的数据挂在异常的回溯上、没记在额度里，下一份前也要回收
+    （agy 第 4 轮：以前这种只按已解完的计，连着出错就一直不回收）。"""
+    monkeypatch.setattr(pdf_limits, "_COLLECT_AFTER", 64 * MB)  # 按解出的大小永远到不了
+    raw = spaces_flate(900 * 1024)
+
+    def fail_holding_data() -> None:
+        with pdf_limits.reading():
+            held = [PDFStream({"Filter": LIT("Fl")}, raw).get_data()]
+            held.append(held)  # 和文档对象一样互相引用，只有循环垃圾回收收得掉
+            raise KeyError("解析出错")
+
+    gc.collect()
+    gc.disable()
+    tracemalloc.start()
+    left = []
+    try:
+        for _ in range(6):
+            with pytest.raises(KeyError):
+                fail_holding_data()
+            left.append(tracemalloc.get_traced_memory()[0])
+    finally:
+        tracemalloc.stop()
+        gc.enable()
+    assert max(left) < 2 * MB  # 不回收时 6 份叠到 5MB 多
+
+
 # ---- 不超上限的，和 pdfminer 原来解出的一样 ----
 
 _TEXT = zlib.compress(b"BT /F1 12 Tf (abc) Tj ET\n" * 200)
