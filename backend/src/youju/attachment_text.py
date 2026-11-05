@@ -2429,9 +2429,10 @@ class _Budget:
 
 def _member_kind(path: str) -> str:
     """doc：要读的格式；other：别的格式；junk：系统、压缩软件生成的，不算。"""
-    parts = [p for p in path.replace("\\", "/").split("/") if p]
-    if not parts or "__MACOSX" in parts[:-1]:
-        return "junk"
+    path = path.replace("\\", "/")
+    parts = [p for p in path.split("/") if p]
+    if not parts or path.endswith("/") or "__MACOSX" in parts[:-1]:
+        return "junk"  # 文件夹（有的 Windows 压缩软件写成反斜杠结尾，zipfile 不当文件夹）
     base = parts[-1]
     if base.startswith((".", "~$")) or base.lower() in _JUNK_NAMES:
         return "junk"
@@ -2596,7 +2597,8 @@ def _member_text(member: _Member, chars: int) -> tuple[Extraction | None, str]:
         return None, _SKIPPED_NOTE
     if member.problem is not None:
         reason, detail = member.problem
-        return Extraction(None, reason=reason, detail=detail), _MEMBER_NOTES[reason]
+        note = _MEMBER_NOTES.get(reason, _MEMBER_NOTES["broken"])
+        return Extraction(None, reason=reason, detail=detail), note
     if chars <= 0:
         return None, _SKIPPED_NOTE
     try:
@@ -2650,9 +2652,12 @@ def _read_archive(members: list[_Member], budget: _Budget) -> _Found:
         try:
             result, note = _member_text(member, limit - used)
         except _Timeout:
+            _stop_timer()
             timed_out = True
             results.append((member, None, _SKIPPED_NOTE))
             continue
+        finally:
+            member.data = None  # rar 先解出来的内容读完就放掉
         if result is not None and result.ok:
             used += result.chars
         results.append((member, result, note))
@@ -2734,8 +2739,10 @@ EXTRACT_SECONDS = 180
 @contextmanager
 def _time_limit(seconds: int) -> Iterator[None]:
     """限时（SIGALRM）：只在主线程里限，admin 的定时任务和命令行都在主线程；别的线程里不限。
-    到时在解析代码里抛 Unreadable；一次跑很久的 C 代码（lxml 解析一整个部件）要等它返回才停，
-    所以部件大小另有上限（_TREE_MAX）。"""
+    到时在解析代码里抛 _Timeout（Unreadable 的一种）；一次跑很久的 C 代码（lxml 解析一整个部件）
+    要等它返回才停，所以部件大小另有上限（_TREE_MAX）。到时以后每秒再提醒一次，直到出了这一段：
+    解析库里的 except Exception 会把第一次的超时当普通错误吞掉、接着往下解析（11/5 压缩包要接着
+    读下一个文件，只提醒一次就再也停不下来）。"""
     import signal
     import threading
 
@@ -2747,12 +2754,21 @@ def _time_limit(seconds: int) -> Iterator[None]:
         raise _Timeout("too_large", f"取文字超过 {seconds} 秒")
 
     previous = signal.signal(signal.SIGALRM, stop)
-    signal.setitimer(signal.ITIMER_REAL, seconds)
+    signal.setitimer(signal.ITIMER_REAL, seconds, 1)
     try:
         yield
     finally:
         signal.setitimer(signal.ITIMER_REAL, 0)
         signal.signal(signal.SIGALRM, previous)
+
+
+def _stop_timer() -> None:
+    """压缩包读到一半超时：停掉 _time_limit 每秒一次的提醒，好把已经读出的接起来（很快）。"""
+    import signal
+    import threading
+
+    if threading.current_thread() is threading.main_thread():
+        signal.setitimer(signal.ITIMER_REAL, 0)
 
 
 # 字很少、图很大的：多半是扫描件加了个标题（"附件2"加一整页扫描图），也按扫描件记

@@ -1210,6 +1210,34 @@ def test_zip_text_budget_and_time_limit(monkeypatch) -> None:
     ]
 
 
+def test_time_limit_keeps_firing_when_a_parser_swallows_it(monkeypatch) -> None:
+    """解析库的 except Exception 把超时吞掉、接着解析：每秒再提醒一次，照样停得下来；压缩包里
+    后面的文件不读（11/5：只提醒一次的话，后面的文件就不限时了）。"""
+    import contextlib
+    import time
+
+    def stubborn(_data):
+        with contextlib.suppress(Exception):  # 模拟解析库把超时当普通错误吞掉
+            time.sleep(5)
+        time.sleep(5)  # 接着干活：下一次提醒照样打断
+
+    monkeypatch.setattr(at, "EXTRACT_SECONDS", 1)
+    monkeypatch.setitem(at._EXTRACTORS, "pdf", stubborn)
+    started = time.monotonic()
+    single = at.extract(make_pdf("x"))
+    assert (single.reason, single.detail) == ("too_large", "取文字超过 1 秒")
+    data = make_zip(
+        [("a.docx", make_docx("先读的")), ("b.pdf", make_pdf("x")), ("c.docx", make_docx("后面的"))]
+    )
+    result = at.extract(data)
+    assert time.monotonic() - started < 7
+    assert texts(result)[-2:] == [
+        "第 2 个文件（共 3 个）：b.pdf（压缩包太大，这个文件没有读）",
+        "第 3 个文件（共 3 个）：c.docx（压缩包太大，这个文件没有读）",
+    ]
+    assert result.ok and "先读的" in texts(result)
+
+
 def test_zip_with_nothing_readable() -> None:
     cases = [
         (
@@ -1218,7 +1246,7 @@ def test_zip_with_nothing_readable() -> None:
             "压缩包里没有能读的文件（jpg 1 个、txt 1 个）",
         ),
         (
-            make_zip([("__MACOSX/._a.pdf", b"x"), (".DS_Store", b"x"), ("d/", b"")]),
+            make_zip([("__MACOSX/._a.pdf", b"x"), (".DS_Store", b"x"), ("d/", b""), ("e\\", b"")]),
             "empty",
             "压缩包里没有文件",
         ),
