@@ -27,10 +27,14 @@ from __future__ import annotations
 
 import bisect
 import io
+import json
 import logging
 import math
+import os
 import re
 import struct
+import subprocess
+import sys
 import unicodedata
 import zipfile
 import zlib
@@ -2279,6 +2283,8 @@ def _ofd(data: bytes) -> _Found:
     pages: list[tuple[str, tuple[float, ...]]] = []
     for path in documents:
         doc = zf.xml(path)
+        if doc is None:
+            continue
         folder = path.rpartition("/")[0]
         default = _OFD_PAGE
         for el in doc.iter():
@@ -2390,7 +2396,10 @@ _MEMBER_NOTES = {
     "too_large": "文件太大，没有读",
 }
 _NESTED_NOTE = "压缩包里的压缩包暂不能阅读"
-_SKIPPED_NOTE = "压缩包太大，这个文件没有读"
+_SKIPPED_NOTE = "压缩包解压后太大，这个文件没有读"  # 解压合计超了
+_CHARS_NOTE = "压缩包里的文字太多，这个文件没有读"  # 前面的文件已经快到字数上限
+_TIMEOUT_NOTE = "文件太大或太复杂，暂不能阅读"  # 取它的文字时超时
+_LATE_NOTE = "前面的文件读的时间太长，这个没有读"  # 超时以后的文件
 # 都读不了时整个附件记哪个原因：个数最多的；一样多按这个顺序
 _ARCHIVE_REASONS = ("scan", "broken", "too_large", "empty", "format")
 
@@ -2417,10 +2426,11 @@ class _Member:
 
 @dataclass
 class _Budget:
-    """解压合计上限：用了多少；rar 超了就停（后面的文件不知道还有几个）。"""
+    """解压合计上限：用了多少。rar 没读到头就停了的（超了上限、后面坏了），stopped 写原因：
+    后面还有几个文件不知道，只能在开头一段说一句。"""
 
     used: int = 0
-    truncated: bool = False
+    stopped: str = ""
 
     @property
     def left(self) -> int:
@@ -2534,60 +2544,159 @@ def _zip(data: bytes) -> _Found:
         return _read_archive(members, budget)
 
 
+# rar 放在子进程里解（11/5 agy 审阅）：libarchive 是 C 写的，坏的 rar 让它崩溃、或者在一次调用里
+# 卡住时，主进程的 SIGALRM 打断不了；放在子进程里，崩了、超时被杀，只坏这一个附件。子进程只带最少的
+# 环境变量（不带数据库地址、密钥），虚拟内存另设上限。rar 只能从头往后解：要读的格式先解出来，
+# 不要的也得解一遍才能往后走，一起计入解压合计上限，超了就停。结果一条一条写回：4 字节头长度、
+# JSON 头、8 字节内容长度、内容；最后一条是 {"end": ...}。
+_RAR_CHILD = r"""
+import json
+import sys
+
+cfg = json.loads(sys.argv[1])
+out = sys.stdout.buffer
+
+
+def emit(head, body=b""):
+    raw = json.dumps(head, ensure_ascii=False).encode()
+    out.write(len(raw).to_bytes(4, "big") + raw + len(body).to_bytes(8, "big") + body)
+    out.flush()
+
+
+try:
+    import resource
+
+    resource.setrlimit(resource.RLIMIT_AS, (cfg["memory"], cfg["memory"]))
+except Exception:
+    pass
+try:
+    import libarchive
+except Exception:
+    emit({"end": "nolib"})
+    sys.exit(0)
+data = sys.stdin.buffer.read()
+used = 0
+end = "done"
+try:
+    with libarchive.memory_reader(data, format_name=cfg["format"], filter_name="none") as archive:
+        for count, entry in enumerate(archive, 1):
+            if count > cfg["entries"]:
+                end = "entries"
+                break
+            if not entry.isfile:
+                continue
+            name = entry.pathname or ""
+            if isinstance(name, bytes):
+                name = name.decode("gb18030", "replace")
+            size = max(entry.size or 0, 0)
+            ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+            keep = ext in cfg["keep"] and size <= cfg["file_max"]
+            left = cfg["unpack_max"] - used
+            limit = min(cfg["file_max"], left) if keep else left
+            chunks, got = [], 0
+            try:
+                for block in entry.get_blocks(block_size=65536):
+                    got += len(block)
+                    if got > limit:
+                        break
+                    if keep:
+                        chunks.append(block)
+            except libarchive.ArchiveError:
+                emit({"path": name, "size": size, "problem": "broken"})
+                end = "broken"
+                break
+            used += got
+            if got > limit:
+                too_big = keep and limit == cfg["file_max"]
+                emit({"path": name, "size": size, "over": "file" if too_big else "total"})
+                end = "total"
+                break
+            emit({"path": name, "size": size, "kept": keep}, b"".join(chunks))
+except libarchive.ArchiveError:
+    end = "broken"
+emit({"end": end})
+"""
+_RAR_MEMORY = 2 * 1024**3  # 子进程的虚拟内存上限（Linux 上管用）
+_RAR_BROKEN = "压缩包后面的部分解不开（损坏或加了密），后面的文件没有读"
+_RAR_TOO_BIG = "压缩包解压后太大，后面的文件没有读"
+
+
 def _rar(data: bytes) -> _Found:
-    """rar 用 libarchive 解（镜像里装了系统库 libarchive13；本机 macOS 自带）。rar 只能从头往后解，
-    要读的文件先解到内存；不要的文件也得解一遍才能往后走，一起计入解压合计上限，超了就停。"""
+    """rar 用 libarchive 解（镜像里装了系统库 libarchive13t64；本机 macOS 自带），在子进程里解。"""
+    cfg = {
+        "format": "rar5" if data.startswith(_RAR5) else "rar",
+        "entries": _ARCHIVE_ENTRIES,
+        "file_max": _ARCHIVE_FILE_MAX,
+        "unpack_max": _ARCHIVE_UNPACK_MAX,
+        "keep": list(ARCHIVE_INNER_TYPES),
+        "memory": _RAR_MEMORY,
+    }
     try:
-        import libarchive
-    except Exception as exc:  # noqa: BLE001 - 找不到系统库时 import 会抛 OSError、AttributeError 等
-        raise Unreadable("format", "RAR 压缩包（服务器缺少解压组件）") from exc
+        child = subprocess.run(
+            [sys.executable, "-I", "-c", _RAR_CHILD, json.dumps(cfg)],
+            input=data,
+            capture_output=True,
+            timeout=_limits().seconds,
+            env=_rar_env(),
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise Unreadable("too_large", f"解压 RAR 超过 {_limits().seconds} 秒") from exc
+    members, end = _rar_records(child.stdout)
+    if end == "nolib":
+        raise Unreadable("format", "RAR 压缩包（服务器缺少解压组件）")
+    if end == "entries":
+        raise Unreadable("too_large", f"压缩包里超过 {_ARCHIVE_ENTRIES} 个条目")
     budget = _Budget()
-    members: list[_Member] = []
-    fmt = "rar5" if data.startswith(_RAR5) else "rar"
-    try:
-        with libarchive.memory_reader(data, format_name=fmt, filter_name="none") as archive:
-            for count, entry in enumerate(archive, 1):
-                if count > _ARCHIVE_ENTRIES:
-                    raise Unreadable("too_large", f"压缩包里超过 {_ARCHIVE_ENTRIES} 个条目")
-                if not entry.isfile:
-                    continue
-                name = entry.pathname or ""
-                if isinstance(name, bytes):  # 不是 UTF-8 的旧 rar 文件名，多半是 GBK
-                    name = name.decode("gb18030", "replace")
-                member = _Member(name, max(entry.size or 0, 0))
-                members.append(member)
-                keep = _member_kind(member.path) == "doc" and member.size <= _ARCHIVE_FILE_MAX
-                if member.size > _ARCHIVE_FILE_MAX:
-                    member.problem = ("too_large", "解压后超过 20MB")
-                limit = min(_ARCHIVE_FILE_MAX, budget.left) if keep else budget.left
-                chunks, got = [], 0
-                try:
-                    for block in entry.get_blocks(block_size=1 << 16):
-                        got += len(block)
-                        if got > limit:
-                            break
-                        if keep:
-                            chunks.append(block)
-                except libarchive.ArchiveError:
-                    member.problem = ("broken", "解压出错（加了密或损坏）")
-                    budget.truncated = True
-                    break
-                budget.used += got
-                if got > limit:
-                    # 这个文件没解完，后面的不能再往下解（要先把它解完），到此为止
-                    if keep and limit == _ARCHIVE_FILE_MAX:
-                        member.problem = ("too_large", "解压后超过 20MB")
-                    else:
-                        member.skipped = True
-                    budget.truncated = True
-                    break
-                if keep:
-                    member.data = b"".join(chunks)
-    except libarchive.ArchiveError as exc:
+    if end == "total":
+        budget.stopped = _RAR_TOO_BIG
+    elif end != "done" or child.returncode != 0:
+        # 解到一半出错，或者子进程崩了（没写到最后一条）：前面解出来的照样用
+        if child.returncode != 0:
+            log.info("解 RAR 的子进程异常退出（%s）", child.returncode)
         if not members:
-            raise Unreadable("broken", "RAR 压缩包损坏或加了密") from exc
-        budget.truncated = True  # 读到一半出错：前面解出来的照样用
+            raise Unreadable("broken", "RAR 压缩包损坏或加了密")
+        budget.stopped = _RAR_BROKEN
     return _read_archive(members, budget)
+
+
+def _rar_env() -> dict[str, str]:
+    """子进程的环境变量：只有 PATH、LANG，和 libarchive-c 找系统库用的 LIBARCHIVE（设了的话）；
+    数据库地址、密钥这些一概不带。"""
+    env = {"PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"), "LANG": "C.UTF-8"}
+    if os.environ.get("LIBARCHIVE"):
+        env["LIBARCHIVE"] = os.environ["LIBARCHIVE"]
+    return env
+
+
+def _rar_records(raw: bytes) -> tuple[list[_Member], str | None]:
+    """子进程写回的结果 → 压缩包里的文件、最后一条的结论（没写到最后一条是 None）。"""
+    members: list[_Member] = []
+    pos = 0
+    while pos + 4 <= len(raw):
+        head_size = int.from_bytes(raw[pos : pos + 4], "big")
+        if pos + 4 + head_size + 8 > len(raw):
+            break
+        head = json.loads(raw[pos + 4 : pos + 4 + head_size])
+        pos += 4 + head_size
+        body_size = int.from_bytes(raw[pos : pos + 8], "big")
+        if pos + 8 + body_size > len(raw):
+            break
+        body = raw[pos + 8 : pos + 8 + body_size]
+        pos += 8 + body_size
+        if "end" in head:
+            return members, str(head["end"])
+        member = _Member(str(head.get("path") or ""), int(head.get("size") or 0))
+        if head.get("problem"):
+            member.problem = ("broken", "解压出错（加了密或损坏）")
+        elif head.get("over") == "file" or member.size > _ARCHIVE_FILE_MAX:
+            member.problem = ("too_large", "解压后超过 20MB")
+        elif head.get("over"):
+            member.skipped = True
+        elif head.get("kept"):
+            member.data = body
+        members.append(member)
+    return members, None
 
 
 def _member_text(member: _Member, chars: int) -> tuple[Extraction | None, str]:
@@ -2600,7 +2709,7 @@ def _member_text(member: _Member, chars: int) -> tuple[Extraction | None, str]:
         note = _MEMBER_NOTES.get(reason, _MEMBER_NOTES["broken"])
         return Extraction(None, reason=reason, detail=detail), note
     if chars <= 0:
-        return None, _SKIPPED_NOTE
+        return None, _CHARS_NOTE
     try:
         data = member.data if member.data is not None else member.load()
         file_type = sniff(data)
@@ -2617,6 +2726,12 @@ def _member_text(member: _Member, chars: int) -> tuple[Extraction | None, str]:
     except _Skipped:
         return None, _SKIPPED_NOTE
     except Unreadable as exc:
+        if (
+            exc.reason == "too_large"
+            and chars < _limits().chars
+            and exc.detail.startswith("取出的文字超过")
+        ):
+            return None, _CHARS_NOTE  # 是前面的文件占了字数，不是它自己太大
         result = Extraction(None, reason=exc.reason, detail=exc.detail)
     except Exception as exc:  # noqa: BLE001 - 第三方解析器对损坏文件会抛多种异常
         log.info("压缩包里的文件取文字出错：%s", exc.__class__.__name__)
@@ -2647,14 +2762,14 @@ def _read_archive(members: list[_Member], budget: _Budget) -> _Found:
     timed_out = False
     for member in listed:
         if timed_out:
-            results.append((member, None, _SKIPPED_NOTE))
+            results.append((member, None, _LATE_NOTE))
             continue
         try:
             result, note = _member_text(member, limit - used)
         except _Timeout:
             _stop_timer()
             timed_out = True
-            results.append((member, None, _SKIPPED_NOTE))
+            results.append((member, None, _TIMEOUT_NOTE))
             continue
         finally:
             member.data = None  # rar 先解出来的内容读完就放掉
@@ -2680,11 +2795,11 @@ def _read_archive(members: list[_Member], budget: _Budget) -> _Found:
     if total > 1:
         notes.append(f"压缩包里有 {total} 个文件，下面按顺序列出")
         if unread:
-            notes.append(f"其中 {unread} 个读不出文字，只写了原因")
+            notes.append(f"其中 {unread} 个没有读出文字，标题后面写了原因")
     if total > len(listed):
         notes.append(f"第 {len(listed) + 1} 个起没有读（文件太多）")
-    if budget.truncated:
-        notes.append("压缩包解压后太大，后面的文件没有读")
+    if budget.stopped:
+        notes.append(budget.stopped)
     if others:
         kinds = "、".join(f"{ext} {n} 个" for ext, n in others.most_common(5))
         notes.append(f"另有 {sum(others.values())} 个其他格式的文件（{kinds}）暂不能在小程序内阅读")

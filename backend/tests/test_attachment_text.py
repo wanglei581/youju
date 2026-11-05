@@ -4,7 +4,6 @@
 import io
 import json
 import struct
-import sys
 import zipfile
 import zlib
 from datetime import date, datetime, timedelta
@@ -1114,7 +1113,7 @@ def test_zip_reads_each_inner_file_in_order_with_titles() -> None:
     )
     # 外层的在前、子文件夹里的在后；同一层按名字（数字按大小）
     assert texts(result) == [
-        "压缩包里有 6 个文件，下面按顺序列出；其中 2 个读不出文字，只写了原因；"
+        "压缩包里有 6 个文件，下面按顺序列出；其中 2 个没有读出文字，标题后面写了原因；"
         "另有 3 个其他格式的文件（jpg 1 个、txt 1 个、zip 1 个）暂不能在小程序内阅读。",
         "第 1 个文件（共 6 个）：假文档.doc（压缩包里的压缩包暂不能阅读）",
         "第 2 个文件（共 6 个）：空白.pdf（扫描件，暂不能识别文字）",
@@ -1166,7 +1165,7 @@ def test_zip_limits_mark_files_not_read(monkeypatch) -> None:
     many = make_zip([("a.docx", docx), ("b.docx", docx)])
     assert (
         texts(at.extract(many))[-1]
-        == "第 2 个文件（共 2 个）：b.docx（压缩包太大，这个文件没有读）"
+        == "第 2 个文件（共 2 个）：b.docx（压缩包解压后太大，这个文件没有读）"
     )
     monkeypatch.setattr(at, "_ARCHIVE_UNPACK_MAX", 64 * 1024 * 1024)
     # 文件太多：只读前面的
@@ -1186,7 +1185,9 @@ def test_zip_text_budget_and_time_limit(monkeypatch) -> None:
     # 字数上限按剩下的给：开头一段、每个标题先留出位置，第二个放不下就不读
     monkeypatch.setattr(at, "MAX_CHARS", at._ARCHIVE_HEAD_CHARS + 2 * at._ARCHIVE_TITLE_CHARS + 60)
     result = at.extract(make_zip(files))
-    assert texts(result)[-1] == "第 2 个文件（共 2 个）：b.docx（文件太大，没有读）"
+    assert (
+        texts(result)[-1] == "第 2 个文件（共 2 个）：b.docx（压缩包里的文字太多，这个文件没有读）"
+    )
     monkeypatch.setattr(at, "MAX_CHARS", 300_000)
     # 读到一半超时：已读的照样给，后面的写没读
     calls = []
@@ -1205,9 +1206,17 @@ def test_zip_text_budget_and_time_limit(monkeypatch) -> None:
     assert texts(timed)[1:] == [
         "第 1 个文件（共 3 个）：a.docx",
         "先读的",
-        "第 2 个文件（共 3 个）：b.pdf（压缩包太大，这个文件没有读）",
-        "第 3 个文件（共 3 个）：c.docx（压缩包太大，这个文件没有读）",
+        "第 2 个文件（共 3 个）：b.pdf（文件太大或太复杂，暂不能阅读）",
+        "第 3 个文件（共 3 个）：c.docx（前面的文件读的时间太长，这个没有读）",
     ]
+
+
+def test_zip_file_names_are_masked_like_text() -> None:
+    """包里文件名带的手机号、身份证号和文字一样入库前遮掉（标题也走 _Builder.para）。"""
+    name = "联系人13812345678的申报表.docx"
+    result = at.extract(make_zip([(name, make_docx("申报表"))]))
+    assert texts(result)[0] == "压缩包里的文件：联系人[手机号已脱敏]的申报表.docx"
+    assert "13812345678" not in "".join(texts(result)) and result.masked == 1
 
 
 def test_time_limit_keeps_firing_when_a_parser_swallows_it(monkeypatch) -> None:
@@ -1232,8 +1241,8 @@ def test_time_limit_keeps_firing_when_a_parser_swallows_it(monkeypatch) -> None:
     result = at.extract(data)
     assert time.monotonic() - started < 7
     assert texts(result)[-2:] == [
-        "第 2 个文件（共 3 个）：b.pdf（压缩包太大，这个文件没有读）",
-        "第 3 个文件（共 3 个）：c.docx（压缩包太大，这个文件没有读）",
+        "第 2 个文件（共 3 个）：b.pdf（文件太大或太复杂，暂不能阅读）",
+        "第 3 个文件（共 3 个）：c.docx（前面的文件读的时间太长，这个没有读）",
     ]
     assert result.ok and "先读的" in texts(result)
 
@@ -1328,15 +1337,41 @@ def test_rar_reads_like_zip(monkeypatch) -> None:
     cut = at.extract(make_rar4([("a.docx", make_docx("First file")), ("b.docx", make_docx("x"))]))
     assert (
         texts(cut)[0]
-        == "压缩包里有 2 个文件，下面按顺序列出；其中 1 个读不出文字，只写了原因；压缩包解压后太大，后面的文件没有读。"
+        == "压缩包里有 2 个文件，下面按顺序列出；其中 1 个没有读出文字，标题后面写了原因；压缩包解压后太大，后面的文件没有读。"
     )
-    assert texts(cut)[-1] == "第 2 个文件（共 2 个）：b.docx（压缩包太大，这个文件没有读）"
+    assert texts(cut)[-1] == "第 2 个文件（共 2 个）：b.docx（压缩包解压后太大，这个文件没有读）"
 
 
 def test_rar_without_libarchive_is_unsupported(monkeypatch) -> None:
-    monkeypatch.setitem(sys.modules, "libarchive", None)  # import 失败（没装系统库）
+    monkeypatch.setenv("LIBARCHIVE", "/nonexistent/libarchive.so")  # 子进程里加载不了系统库
     result = at.extract(make_rar4([("a.docx", make_docx("x"))]))
     assert (result.reason, result.detail) == ("format", "RAR 压缩包（服务器缺少解压组件）")
+
+
+def test_rar_child_process_dies_hangs_and_gets_no_secrets(monkeypatch) -> None:
+    """rar 在子进程里解：子进程死了，前面解出来的照样用；卡住了按时杀掉；环境变量不带密钥。"""
+    import time
+
+    pytest.importorskip("libarchive", reason="本机没有 libarchive 系统库")
+    data = make_rar4([("a.docx", make_docx("First file")), ("b.docx", make_docx("Second file"))])
+    last = 'emit({"path": name, "size": size, "kept": keep}, b"".join(chunks))'
+    assert last in at._RAR_CHILD
+    dies = at._RAR_CHILD.replace(last, last + "\n            import os\n            os._exit(3)")
+    monkeypatch.setattr(at, "_RAR_CHILD", dies)
+    result = at.extract(data)
+    assert texts(result) == [
+        "压缩包后面的部分解不开（损坏或加了密），后面的文件没有读。",
+        "压缩包里的文件：a.docx",
+        "First file",
+    ]
+    monkeypatch.setattr(at, "_RAR_CHILD", "import time\ntime.sleep(30)")
+    monkeypatch.setattr(at, "EXTRACT_SECONDS", 1)
+    started = time.monotonic()
+    assert at.extract(data).reason == "too_large"
+    assert time.monotonic() - started < 5
+    monkeypatch.setenv("YOUJU_DATABASE_URL", "mysql+pymysql://secret@db/youju")
+    monkeypatch.setenv("LIBARCHIVE", "/usr/lib/libarchive.so")
+    assert set(at._rar_env()) == {"PATH", "LANG", "LIBARCHIVE"}
 
 
 def _row(*texts: str, header: bool = False) -> at._Row:
