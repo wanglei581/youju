@@ -1247,6 +1247,68 @@ def test_time_limit_keeps_firing_when_a_parser_swallows_it(monkeypatch) -> None:
     assert result.ok and "先读的" in texts(result)
 
 
+def bzip2_zip(name: str, size: int) -> bytes:
+    """bzip2 压缩的 zip，目录里把解压后大小写成 1000（11/5 独立审阅的压缩炸弹探针）。"""
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_BZIP2) as zf:
+        zf.writestr(name, b"\x00" * size)
+    data = bytearray(out.getvalue())
+    for sig, offset in ((b"PK\x03\x04", 22), (b"PK\x01\x02", 24)):
+        at_ = data.find(sig)
+        struct.pack_into("<I", data, at_ + offset, 1000)
+    return bytes(data)
+
+
+def test_zip_methods_that_decompress_without_a_limit_are_refused() -> None:
+    """Python 解 bzip2、LZMA 不受 read(n) 限制：包里这样压缩的文件、Office 里这样压缩的部件都不解。"""
+    data = make_zip([("附件2.docx", make_docx("正常的文件"))])
+    mixed = io.BytesIO(data)
+    with zipfile.ZipFile(mixed, "a", zipfile.ZIP_BZIP2) as zf:
+        zf.writestr("附件1.pdf", b"\x00" * 5_000_000)
+    assert texts(at.extract(mixed.getvalue()))[1:] == [
+        "第 1 个文件（共 2 个）：附件1.pdf（压缩方式暂不支持，这个文件没有读）",
+        "第 2 个文件（共 2 个）：附件2.docx",
+        "正常的文件",
+    ]
+    lying = at.extract(bzip2_zip("附件1.pdf", 5_000_000))
+    assert (lying.reason, lying.detail) == ("broken", "压缩包里的 1 个文件都读不出文字")
+    # docx 的部件用 bzip2 压缩：不解
+    docx = io.BytesIO()
+    with (
+        zipfile.ZipFile(io.BytesIO(make_docx("申报指南"))) as src,
+        zipfile.ZipFile(docx, "w", zipfile.ZIP_BZIP2) as dst,
+    ):
+        for info in src.infolist():
+            dst.writestr(info.filename, src.read(info))
+    result = at.extract(docx.getvalue())
+    assert (result.file_type, result.reason, result.detail) == (
+        "docx",
+        "broken",
+        "压缩方式不支持（12）",
+    )
+
+
+def test_archive_stops_at_the_deadline_even_if_every_alarm_is_swallowed(monkeypatch) -> None:
+    """每次提醒都落在解析库吞异常的地方（11/5 独立审阅探针）：每读一个文件前看一下截止时间。"""
+    import contextlib
+    import time
+
+    def swallowing(_data):
+        with contextlib.suppress(Exception):
+            time.sleep(0.8)
+        builder = at._Builder()
+        builder.para("一页")
+        return at._Found(builder)
+
+    monkeypatch.setattr(at, "EXTRACT_SECONDS", 1)
+    monkeypatch.setitem(at._EXTRACTORS, "pdf", swallowing)
+    started = time.monotonic()
+    result = at.extract(make_zip([(f"{i}.pdf", make_pdf("x")) for i in range(1, 6)]))
+    assert time.monotonic() - started < 2.5
+    late = [x for x in texts(result) if x.endswith("（前面的文件读的时间太长，这个没有读）")]
+    assert result.ok and len(late) >= 3
+
+
 def test_zip_with_nothing_readable() -> None:
     cases = [
         (
@@ -1310,6 +1372,56 @@ def make_rar4(files) -> bytes:
     return out + bytes.fromhex("c43d7b00400700")
 
 
+def _vint(n: int) -> bytes:
+    out = bytearray()
+    while True:
+        out.append((n & 0x7F) | (0x80 if n >> 7 else 0))
+        n >>= 7
+        if not n:
+            return bytes(out)
+
+
+def make_rar5(files) -> bytes:
+    """不压缩的 RAR 5 包（RAR 5.0 格式说明：每块是 CRC32、块大小、类型、标志、字段、数据；整数用
+    7 位一组的变长写法）：files 是 (UTF-8 路径, 内容)，内容是 None 的是文件夹。"""
+
+    def block(kind: int, fields: bytes, data: bytes | None = None) -> bytes:
+        flags = 0x0002 if data is not None else 0  # 文件块都要带数据区（长度可以是 0）
+        body = _vint(kind) + _vint(flags) + (_vint(len(data)) if data is not None else b"") + fields
+        sized = _vint(len(body)) + body
+        return zlib.crc32(sized).to_bytes(4, "little") + sized + (data or b"")
+
+    out = b"Rar!\x1a\x07\x01\x00" + block(1, _vint(0))
+    for name, data in files:
+        raw = name.encode()
+        tail = _vint(0) + _vint(1) + _vint(len(raw)) + raw  # 不压缩、Unix、文件名
+        if data is None:
+            out += block(2, _vint(0x0001) + _vint(0) + _vint(0o40755) + tail, b"")
+        else:
+            crc = zlib.crc32(data).to_bytes(4, "little")
+            out += block(2, _vint(0x0004) + _vint(len(data)) + _vint(0o100644) + crc + tail, data)
+    return out + block(5, _vint(0))
+
+
+def test_rar5_with_chinese_names() -> None:
+    pytest.importorskip("libarchive", reason="本机没有 libarchive 系统库")
+    data = make_rar5(
+        [
+            ("资料", None),
+            ("资料/附件2：申报表.docx", make_docx("第二个文件")),
+            ("附件1：申报指南.docx", make_docx("第一个文件")),
+        ]
+    )
+    assert data.startswith(at._RAR5) and at.sniff(data) == "rar"
+    assert texts(at.extract(data)) == [
+        "压缩包里有 2 个文件，下面按顺序列出。",
+        "第 1 个文件（共 2 个）：附件1：申报指南.docx",
+        "第一个文件",
+        "第 2 个文件（共 2 个）：附件2：申报表.docx",
+        "第二个文件",
+    ]
+
+
 def test_rar_reads_like_zip(monkeypatch) -> None:
     pytest.importorskip("libarchive", reason="本机没有 libarchive 系统库")
     data = make_rar4(
@@ -1335,11 +1447,19 @@ def test_rar_reads_like_zip(monkeypatch) -> None:
     assert (broken.file_type, broken.reason) == ("rar", "broken")
     monkeypatch.setattr(at, "_ARCHIVE_UNPACK_MAX", len(make_docx("First file")) + 10)
     cut = at.extract(make_rar4([("a.docx", make_docx("First file")), ("b.docx", make_docx("x"))]))
-    assert (
-        texts(cut)[0]
-        == "压缩包里有 2 个文件，下面按顺序列出；其中 1 个没有读出文字，标题后面写了原因；压缩包解压后太大，后面的文件没有读。"
+    assert texts(cut)[0] == (
+        "压缩包解压后太大，后面的文件没有读；下面按顺序列出前面的 2 个文件；"
+        "其中 1 个没有读出文字，标题后面写了原因。"
     )
-    assert texts(cut)[-1] == "第 2 个文件（共 2 个）：b.docx（压缩包解压后太大，这个文件没有读）"
+    assert texts(cut)[1] == "第 1 个文件：a.docx"
+    assert texts(cut)[-1] == "第 2 个文件：b.docx（压缩包解压后太大，这个文件没有读）"
+    # 不要的文件（图片、视频）解压后另算一个更大的上限，不占要读的文件的 64MB
+    big = make_rar4([("photos.bin", b"\x00" * 200_000), ("a.docx", make_docx("First file"))])
+    assert texts(at.extract(big))[-1] == "First file"
+    # 连这个上限也超了、一个文档都还没读到：记"太大"，不能说"没有能读的文件"
+    monkeypatch.setattr(at, "_ARCHIVE_SCAN_MAX", 100_000)
+    stopped = at.extract(big)
+    assert (stopped.reason, stopped.detail) == ("too_large", "压缩包解压后太大，后面的文件没有读")
 
 
 def test_rar_without_libarchive_is_unsupported(monkeypatch) -> None:
@@ -1360,8 +1480,8 @@ def test_rar_child_process_dies_hangs_and_gets_no_secrets(monkeypatch) -> None:
     monkeypatch.setattr(at, "_RAR_CHILD", dies)
     result = at.extract(data)
     assert texts(result) == [
-        "压缩包后面的部分解不开（损坏或加了密），后面的文件没有读。",
-        "压缩包里的文件：a.docx",
+        "压缩包后面的部分解不开（损坏或加了密），后面的文件没有读；下面按顺序列出前面的 1 个文件。",
+        "第 1 个文件：a.docx",
         "First file",
     ]
     monkeypatch.setattr(at, "_RAR_CHILD", "import time\ntime.sleep(30)")
@@ -2029,6 +2149,55 @@ def test_packages_recorded_as_unsupported_before_are_read_again(session) -> None
         "format",
         "压缩包里没有能读的文件（jpg 1 个）",
     )
+
+
+def _as_before_1105(session, url: str) -> None:
+    """把这个链接（和它的内容版本）改回 11/5 以前的样子：压缩包记成"格式不支持"。"""
+    row = _url_rows(session)[url]
+    version = session.get(AttachmentTextVersion, row.version_id)
+    version.status, version.reason = "failed", "format"
+    version.detail = row.detail = "压缩包或认不出的 Office 文件"
+    row.status, row.reason = "failed", "format"
+    session.execute(
+        sql("DELETE FROM attachment_text_segments WHERE version_id = :v"), {"v": version.id}
+    )
+    session.commit()
+
+
+def test_interrupted_targeted_reextraction_is_retried_then_given_up(session, monkeypatch) -> None:
+    """定向重取时进程没了（内存不足被杀、部署重启）：下一轮接着重取，连着两次没了按损坏记；
+    不能停在"格式不支持"、写着"正在取文字"（11/5 独立审阅）。"""
+
+    class Died(BaseException):
+        pass
+
+    def dies(_content):
+        raise Died
+
+    report = at.TextReport()
+    packed = make_zip([("申报表.docx", make_docx("压缩包里的申报表"))])
+    other = make_zip([("通知.docx", make_docx("另一个压缩包"))])
+    for url, content in ((BASE + "a.pdf", packed), (BASE + "b.pdf", other)):
+        at.record(session, url, "pdf", NOW, report, content=content)
+        _as_before_1105(session, url)
+    keys = {at.url_key(BASE + "a.pdf"), at.url_key(BASE + "b.pdf")}
+    monkeypatch.setattr(at, "extract", dies)
+    for url, content in ((BASE + "a.pdf", packed), (BASE + "b.pdf", other)):
+        with pytest.raises(Died):
+            at.record(session, url, "pdf", NOW, report, content=content)
+        session.rollback()
+    assert at.due(session, keys, NOW) == keys
+    # b 又没了一次；a 这次取成了
+    with pytest.raises(Died):
+        at.record(session, BASE + "b.pdf", "pdf", NOW, report, content=other)
+    session.rollback()
+    monkeypatch.undo()
+    at.record(session, BASE + "a.pdf", "pdf", NOW, report, content=packed)
+    at.record(session, BASE + "b.pdf", "pdf", NOW, report, content=other)
+    rows = _url_rows(session)
+    assert (rows[BASE + "a.pdf"].status, rows[BASE + "a.pdf"].reason) == ("ok", None)
+    assert (rows[BASE + "b.pdf"].status, rows[BASE + "b.pdf"].reason) == ("failed", "broken")
+    assert at.due(session, keys, NOW) == set()
 
 
 def test_interrupted_extraction_is_not_retried_and_shared_links_follow(

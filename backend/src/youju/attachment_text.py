@@ -568,6 +568,8 @@ def sniff(data: bytes) -> str:
         try:
             with olefile.OleFileIO(data) as ole:
                 roots = {entry[0] for entry in ole.listdir(streams=True, storages=True)}
+        except _Timeout:
+            raise
         except Exception as exc:  # noqa: BLE001 - 外部文件可能损坏，解析器会抛多种异常
             raise Unreadable("broken", "复合文档结构损坏") from exc
         if "EncryptedPackage" in roots or "EncryptionInfo" in roots:
@@ -899,6 +901,7 @@ class _Zip:
     def read(self, name: str) -> bytes | None:
         if name not in self.names:
             return None
+        _check_method(self.zf.getinfo(name))
         with self.zf.open(name) as fh:
             raw = fh.read(_TREE_MAX + 1)
         if len(raw) > _TREE_MAX:
@@ -914,6 +917,7 @@ class _Zip:
         """边读边解析（工作表、共享字符串可能很大），读到的字节照样计入合计上限。"""
         if name not in self.names:
             return
+        _check_method(self.zf.getinfo(name))
         with self.zf.open(name) as fh:
             yield from etree.iterparse(
                 _Counted(fh, self), events=("end",), resolve_entities=False, huge_tree=False
@@ -946,6 +950,17 @@ class _Zip:
             if target in self.names and target.endswith(".xml") and target.split("/")[0] == folder:
                 return target
         return default
+
+
+# zip 里只读不压缩（stored）和 deflate 压缩的部件：Python 解 bzip2、LZMA 时一次把读进来的压缩数据
+# 整段解开、不受 read(n) 的长度限制，几 KB 的文件能解出几 GB（11/5 独立审阅实测：362 字节的包内存
+# 涨到 660MB）。Office、OFD、压缩软件默认都用 deflate
+_ZIP_METHODS = (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED)
+
+
+def _check_method(info: zipfile.ZipInfo) -> None:
+    if info.compress_type not in _ZIP_METHODS:
+        raise Unreadable("broken", f"压缩方式不支持（{info.compress_type}）")
 
 
 class _Counted:
@@ -1439,6 +1454,8 @@ def _pdf(data: bytes) -> list:
 
     try:
         pdf = pdfplumber.open(io.BytesIO(data))
+    except _Timeout:
+        raise
     except Exception as exc:  # noqa: BLE001 - 第三方解析器对损坏、加密文件会抛多种异常
         raise Unreadable("broken", "PDF 打不开（损坏或加密）") from exc
     items: list[tuple] = []  # ("line", 文字, 页) 或 ("table", 行, 页)
@@ -1538,6 +1555,8 @@ def _ocr_layer(page) -> bool:
             _INVISIBLE.search(resolve1(stream).get_data())
             for stream in page.page_obj.contents or []
         )
+    except _Timeout:
+        raise
     except Exception:  # noqa: BLE001 - 内容流解不开就按看得见的字算
         return False
 
@@ -1567,6 +1586,8 @@ def _pdf_page(page) -> tuple[list, list, bool]:
     try:
         # 线条特别多的页（图纸、图表）找表格可能很慢：不找，只取文字行（9/28 数据里最多 1200 条）
         found = page.find_tables() if len(page.edges) <= _PDF_MAX_EDGES else []
+    except _Timeout:
+        raise  # 超时不能当成"找表格失败"吞掉
     except Exception:  # noqa: BLE001 - 找表格失败就当没有表格，照样取文字
         found = []
     boxes = [t.bbox for t in found]
@@ -2375,8 +2396,10 @@ ARCHIVE_INNER_TYPES = ("doc", "docx", "pdf", "wps", "xls", "xlsx", "et", "ofd")
 _ARCHIVE_FILES = 50  # 最多读这么多个文件，再多的只写个数
 _ARCHIVE_ENTRIES = 5000  # 目录里的条目（含文件夹）超过这么多的整个不读
 _ARCHIVE_FILE_MAX = 20 * 1024 * 1024  # 单个文件解压后的上限，和下载附件的上限一样
-# 解压合计上限（rar 不能跳着读，不要的文件也要解压一遍，一起算），防压缩炸弹
+# 要读的文件解压后合计上限（都要放在内存里），防压缩炸弹
 _ARCHIVE_UNPACK_MAX = 64 * 1024 * 1024
+# rar 不能跳着读，不要的文件（图片、视频）也要解一遍才能往后走：连同这些一起，解压合计上限
+_ARCHIVE_SCAN_MAX = 256 * 1024 * 1024
 _ARCHIVE_RATIO = 200  # 解压后超过 1MB、又是压缩后大小这么多倍的，按压缩炸弹不读
 _ARCHIVE_NAME_MAX = 80  # 显示的文件名最长这么多字
 # 留给开头一段和每个文件标题的字数（文字合计不超过 MAX_CHARS：里面的文件按剩下的字数取）
@@ -2400,6 +2423,7 @@ _SKIPPED_NOTE = "压缩包解压后太大，这个文件没有读"  # 解压合�
 _CHARS_NOTE = "压缩包里的文字太多，这个文件没有读"  # 前面的文件已经快到字数上限
 _TIMEOUT_NOTE = "文件太大或太复杂，暂不能阅读"  # 取它的文字时超时
 _LATE_NOTE = "前面的文件读的时间太长，这个没有读"  # 超时以后的文件
+_METHOD_NOTE = "压缩方式暂不支持，这个文件没有读"  # bzip2、LZMA 等（不解开，防压缩炸弹）
 # 都读不了时整个附件记哪个原因：个数最多的；一样多按这个顺序
 _ARCHIVE_REASONS = ("scan", "broken", "too_large", "empty", "format")
 
@@ -2421,6 +2445,7 @@ class _Member:
     load: Callable[[], bytes] | None = None  # 读出内容（zip 用到时才解压）
     data: bytes | None = None  # rar 只能从头到尾解一遍，要读的先解出来
     problem: tuple[str, str] | None = None  # 解压前就知道读不了：(原因, 说明)
+    note: str = ""  # 读不了时标题后面写的话（不写就按原因）
     skipped: bool = False  # 解压合计超了，没读
 
 
@@ -2532,7 +2557,10 @@ def _zip(data: bytes) -> _Found:
             if info.is_dir():
                 continue
             member = _Member(_zip_name(info), info.file_size)
-            if info.file_size > _ARCHIVE_FILE_MAX:
+            if info.compress_type not in _ZIP_METHODS:
+                member.problem = ("broken", "压缩方式不支持")
+                member.note = _METHOD_NOTE
+            elif info.file_size > _ARCHIVE_FILE_MAX:
                 member.problem = ("too_large", "解压后超过 20MB")
             elif info.file_size > 1024 * 1024 and info.file_size > _ARCHIVE_RATIO * max(
                 info.compress_size, 1
@@ -2575,7 +2603,7 @@ except Exception:
     emit({"end": "nolib"})
     sys.exit(0)
 data = sys.stdin.buffer.read()
-used = 0
+kept = scanned = 0
 end = "done"
 try:
     with libarchive.memory_reader(data, format_name=cfg["format"], filter_name="none") as archive:
@@ -2591,8 +2619,8 @@ try:
             size = max(entry.size or 0, 0)
             ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
             keep = ext in cfg["keep"] and size <= cfg["file_max"]
-            left = cfg["unpack_max"] - used
-            limit = min(cfg["file_max"], left) if keep else left
+            left = cfg["scan_max"] - scanned
+            limit = min(cfg["file_max"], cfg["unpack_max"] - kept, left) if keep else left
             chunks, got = [], 0
             try:
                 for block in entry.get_blocks(block_size=65536):
@@ -2605,12 +2633,13 @@ try:
                 emit({"path": name, "size": size, "problem": "broken"})
                 end = "broken"
                 break
-            used += got
+            scanned += got
             if got > limit:
                 too_big = keep and limit == cfg["file_max"]
                 emit({"path": name, "size": size, "over": "file" if too_big else "total"})
                 end = "total"
                 break
+            kept += got if keep else 0
             emit({"path": name, "size": size, "kept": keep}, b"".join(chunks))
 except libarchive.ArchiveError:
     end = "broken"
@@ -2628,6 +2657,7 @@ def _rar(data: bytes) -> _Found:
         "entries": _ARCHIVE_ENTRIES,
         "file_max": _ARCHIVE_FILE_MAX,
         "unpack_max": _ARCHIVE_UNPACK_MAX,
+        "scan_max": _ARCHIVE_SCAN_MAX,
         "keep": list(ARCHIVE_INNER_TYPES),
         "memory": _RAR_MEMORY,
     }
@@ -2706,7 +2736,7 @@ def _member_text(member: _Member, chars: int) -> tuple[Extraction | None, str]:
         return None, _SKIPPED_NOTE
     if member.problem is not None:
         reason, detail = member.problem
-        note = _MEMBER_NOTES.get(reason, _MEMBER_NOTES["broken"])
+        note = member.note or _MEMBER_NOTES.get(reason, _MEMBER_NOTES["broken"])
         return Extraction(None, reason=reason, detail=detail), note
     if chars <= 0:
         return None, _CHARS_NOTE
@@ -2751,6 +2781,11 @@ def _read_archive(members: list[_Member], budget: _Budget) -> _Found:
         _ext(m.path)[:8] or "无扩展名" for m in members if _member_kind(m.path) == "other"
     )
     if not docs:
+        if budget.stopped:
+            # rar 没读到头就停了：后面可能还有能读的文件，不能说"没有能读的"
+            raise Unreadable(
+                "broken" if budget.stopped == _RAR_BROKEN else "too_large", budget.stopped
+            )
         if others:
             kinds = "、".join(f"{ext} {n} 个" for ext, n in others.most_common(5))
             raise Unreadable("format", f"压缩包里没有能读的文件（{kinds}）")
@@ -2761,6 +2796,9 @@ def _read_archive(members: list[_Member], budget: _Budget) -> _Found:
     used = 0
     timed_out = False
     for member in listed:
+        if not timed_out and _expired():
+            _stop_timer()  # 截止时间到了（这一秒的提醒可能被解析库吞了）：后面的不读
+            timed_out = True
         if timed_out:
             results.append((member, None, _LATE_NOTE))
             continue
@@ -2791,15 +2829,18 @@ def _read_archive(members: list[_Member], budget: _Budget) -> _Found:
     builder = _Builder()
     total = len(docs)
     unread = len(results) - len(readable)
+    # 只有一个文件、又读到了头的，标题写"压缩包里的文件"；rar 中途停了的，后面可能还有
+    single = total == 1 and not budget.stopped
     notes = []
-    if total > 1:
+    if budget.stopped:
+        # 后面还有几个文件不知道：不写"一共几个"
+        notes += [budget.stopped, f"下面按顺序列出前面的 {total} 个文件"]
+    elif total > 1:
         notes.append(f"压缩包里有 {total} 个文件，下面按顺序列出")
-        if unread:
-            notes.append(f"其中 {unread} 个没有读出文字，标题后面写了原因")
+    if unread:
+        notes.append(f"其中 {unread} 个没有读出文字，标题后面写了原因")
     if total > len(listed):
         notes.append(f"第 {len(listed) + 1} 个起没有读（文件太多）")
-    if budget.stopped:
-        notes.append(budget.stopped)
     if others:
         kinds = "、".join(f"{ext} {n} 个" for ext, n in others.most_common(5))
         notes.append(f"另有 {sum(others.values())} 个其他格式的文件（{kinds}）暂不能在小程序内阅读")
@@ -2808,11 +2849,12 @@ def _read_archive(members: list[_Member], budget: _Budget) -> _Found:
     pages = scanned = 0
     for number, (member, result, note) in enumerate(results, 1):
         name = _display_name(member.path)
-        title = (
-            f"第 {number} 个文件（共 {total} 个）：{name}"
-            if total > 1
-            else f"压缩包里的文件：{name}"
-        )
+        if single:
+            title = f"压缩包里的文件：{name}"
+        elif budget.stopped:
+            title = f"第 {number} 个文件：{name}"
+        else:
+            title = f"第 {number} 个文件（共 {total} 个）：{name}"
         builder.para(f"{title}（{note}）" if note else title, {"file": number})
         if result is not None:
             pages += result.pages or 0
@@ -2860,21 +2902,37 @@ def _time_limit(seconds: int) -> Iterator[None]:
     读下一个文件，只提醒一次就再也停不下来）。"""
     import signal
     import threading
+    import time
 
-    if threading.current_thread() is not threading.main_thread():
-        yield
-        return
-
-    def stop(_signum, _frame):
-        raise _Timeout("too_large", f"取文字超过 {seconds} 秒")
-
-    previous = signal.signal(signal.SIGALRM, stop)
-    signal.setitimer(signal.ITIMER_REAL, seconds, 1)
+    # 截止时间另记一份：压缩包每读一个文件前看一下，信号落在哪里都停得下来（哪个线程都管用）
+    deadline = _DEADLINE.set(time.monotonic() + seconds)
     try:
-        yield
+        if threading.current_thread() is not threading.main_thread():
+            yield
+            return
+
+        def stop(_signum, _frame):
+            raise _Timeout("too_large", f"取文字超过 {seconds} 秒")
+
+        previous = signal.signal(signal.SIGALRM, stop)
+        signal.setitimer(signal.ITIMER_REAL, seconds, 1)
+        try:
+            yield
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, previous)
     finally:
-        signal.setitimer(signal.ITIMER_REAL, 0)
-        signal.signal(signal.SIGALRM, previous)
+        _DEADLINE.reset(deadline)
+
+
+_DEADLINE: ContextVar[float | None] = ContextVar("attachment_text_deadline", default=None)
+
+
+def _expired() -> bool:
+    import time
+
+    deadline = _DEADLINE.get()
+    return deadline is not None and time.monotonic() >= deadline
 
 
 def _stop_timer() -> None:
@@ -3195,6 +3253,9 @@ def _version(
             )
             session.add(version)
         version.detail = _IN_PROGRESS_AGAIN if version.detail == _IN_PROGRESS else _IN_PROGRESS
+        # 正在取的不算按现在的规则取过（定向重取的版本原来的规则版本就是现在的，只改说明会被
+        # 当成已经取过，进程中途没了就一直停在"格式不支持"；11/5 独立审阅）
+        version.extractor = 0
         session.flush()
         # 链接先指向它、记成待取：进程中途没了，这个版本不会被当成没人用的清理掉；规则版本也清掉，
         # 下一轮马上再取（内容变了的链接原来按现在的规则取过，不清就要等到副本的例行复查）
