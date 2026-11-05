@@ -61,6 +61,7 @@ def shop(session_factory, monkeypatch):
         pay_audience="all",
         pay_openids="pay-user",
         advisor_enabled=True,
+        advisor_compare_enabled=True,  # D-118 默认关；这些测试照旧测比对
         boost_trial_enabled=True,
         renew_bonus_enabled=True,
         trust_wx_headers=True,

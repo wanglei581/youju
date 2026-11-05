@@ -10,7 +10,12 @@ Page({
   onHide() { this.stop(); },
   onUnload() { this.dead = true; this.stop(); },
   stop() { this.visible = false; this.epoch = (this.epoch || 0) + 1; clearTimeout(this.timer); },
-  allowed(items, kinds = this.data.kinds) { return (items || []).filter((task) => kinds.includes(task.kind)); },
+  // D-118：数据工具关掉某一项（如 compare）后，以前的任务和结果照样列出、能下载；"重新提交"只给开着的那项
+  allowed(items, kinds = this.data.kinds) {
+    const data = (kinds || []).includes('track') || (kinds || []).includes('compare') ? ['compare', 'track'] : [];
+    return (items || []).filter((task) => kinds.includes(task.kind) || data.includes(task.kind))
+      .map((task) => (task.dataTask ? Object.assign({}, task, { redo: kinds.includes(task.kind) }) : task));
+  },
   load() {
     clearTimeout(this.timer);
     const epoch = this.epoch = (this.epoch || 0) + 1;
@@ -105,10 +110,17 @@ Page({
     wx.showModal({ title, content, success: (res) => {
       if (!res.confirm || this.data.busyId !== null) return;
       this.setData({ busyId: id, actionError: '' });
+      const deleting = call === api.deleteAdvisorTask;
+      const forget = () => require('../../utils/exports.js').removeAdvisorTask(id, require('../../utils/exporter.js').remove);
       call(id).then(() => {
+        if (deleting) forget();
         this.setData({ busyId: null });
         if (this.visible) this.load();
-      }).catch((err) => this.setData({ busyId: null, actionError: err.message }));
+      }).catch((err) => {
+        // 删除时说没有这条（已经删掉了）：本机的导出记录和文件也清掉，列表重新读
+        if (deleting && err && err.status === 404) { forget(); this.setData({ busyId: null }); if (this.visible) this.load(); return; }
+        this.setData({ busyId: null, actionError: err.message });
+      });
     } });
   },
   openTask(e) {

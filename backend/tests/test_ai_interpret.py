@@ -487,14 +487,16 @@ def test_task_routes_check_ownership_before_feature_authorization(
     ]
     # 两个开关都关时整组接口都当作不存在（和上线前的行为一致）；别人的和不存在的任务提示相同。
     # 删除例外（D-093 上线门槛第 8 条）：本人随时能删自己的记录，不看开关和白名单；
-    # 删除接口一直在，别人的、不存在的照样是"没有找到顾问任务"
-    hidden = "没有找到顾问任务" if data_enabled or ai_enabled else "没有找到接口"
+    # 删除接口一直在，别人的、不存在的照样是"没有找到这条记录，可能已经删除"
+    hidden = "没有找到这条记录，可能已经删除" if data_enabled or ai_enabled else "没有找到接口"
     for method, suffix, own_status in routes:
         deleting = method == "DELETE"
         for task_id in (foreign.id, max(own.id, foreign.id) + 1000):
             response = client.request(method, f"/api/v1/advisor/tasks/{task_id}{suffix}")
             assert response.status_code == 404
-            assert response.json() == {"detail": "没有找到顾问任务" if deleting else hidden}
+            assert response.json() == {
+                "detail": "没有找到这条记录，可能已经删除" if deleting else hidden
+            }
         response = client.request(method, f"/api/v1/advisor/tasks/{own.id}{suffix}")
         assert response.status_code == (own_status if allowed or deleting else 404)
         if not allowed and not deleting:
@@ -513,6 +515,7 @@ def test_invalid_kind_does_not_disclose_unavailable_ai(
     client, settings, doc, ai_enabled, whitelisted, kind
 ):
     settings.advisor_enabled = True
+    settings.advisor_compare_enabled = True  # D-118 默认关；这里照旧测比对
     settings.ai_advisor_enabled = ai_enabled
     settings.ai_advisor_openids = "internal" if whitelisted else "second"
     body = {"rows": ["甲公司"]} if kind is None else {"kind": kind, "rows": ["甲公司"]}
@@ -707,6 +710,7 @@ def test_switch_whitelist_permissions_and_independent_tools(client, settings, do
     session.expire_all()
     assert session.get(AdvisorTask, task_id) is None
     settings.advisor_enabled = True
+    settings.advisor_compare_enabled = True  # D-118 默认关；这里照旧测比对
     tools_ready(session)
     assert (
         client.post(
@@ -794,6 +798,7 @@ def test_global_ai_daily_cap_keeps_personal_quota(client, settings, session, doc
     assert session.scalar(select(AdvisorTask.id)) is None
 
     settings.advisor_enabled = True
+    settings.advisor_compare_enabled = True  # D-118 默认关；这里照旧测比对
     tools_ready(session)
     assert (
         client.post(
@@ -1324,6 +1329,7 @@ def test_data_tools_keep_ai_polling_and_respect_claim_limit(
     # 数据工具（批量工具）由入口会话处理：它在跑的整段时间都算"有人在忙"，过了 50 秒空闲的
     # AI 线程也接着看，新提交的 AI 任务不用等批量任务做完（Grok 10/27 第二轮）
     settings.advisor_enabled = True
+    settings.advisor_compare_enabled = True  # D-118 默认关；这里照旧测比对
     settings.ai_advisor_concurrency = 1
     data = _data_task(session, doc, "data-long")
     late = direct_task(session, doc, key="data-late-ai")
@@ -1828,6 +1834,7 @@ def test_unregistered_non_whitelisted_user_cannot_access_ai(client, settings, do
     assert create(client, doc.id).status_code == 404
     assert client.get("/api/v1/advisor/tasks").status_code == 404
     settings.advisor_enabled = True
+    settings.advisor_compare_enabled = True  # D-118 默认关；这里照旧测比对
     response = create(client, doc.id)
     assert response.status_code == 422
     assert response.json() == {"detail": "kind 只能是 compare 或 track"}
@@ -2005,6 +2012,7 @@ def test_cache_from_hidden_separate_document_not_reused(session, settings, doc):
 
 def test_request_boundaries_keep_legacy_validation(client, settings, doc):
     settings.advisor_enabled = True
+    settings.advisor_compare_enabled = True  # D-118 默认关；这里照旧测比对
     assert (
         client.post(
             "/api/v1/advisor/tasks",

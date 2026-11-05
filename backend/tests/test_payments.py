@@ -134,6 +134,7 @@ def setup_pay(session_factory, monkeypatch):
         pay_audience="all",
         pay_openids="pay-user",
         advisor_enabled=True,
+        advisor_compare_enabled=True,  # D-118 默认关；这些测试照旧测比对
         trust_wx_headers=True,
         xpay_offer_id="offer-test",
         # 新订单一律现网（沙箱已去掉，创始人 10/29）：现网 AppKey、定稿协议版本、发票类型都配了才卖
@@ -270,6 +271,29 @@ def test_defaults_and_env_only_secrets(tmp_path, monkeypatch):
     assert Settings(_env_file=path).xpay_appkey_prod is None
     monkeypatch.setenv("YOUJU_WX_APPSECRET", "environment-test")
     assert Settings(_env_file=path).wx_appsecret.get_secret_value() == "environment-test"
+
+
+def test_create_requires_agreement_with_tools_terms(setup_pay, session):
+    # settings 是这个用例自己的（setup_pay 每次新建），改它不影响别的用例；
+    # 最低版本放到 2026-10，让两个旧版本都过得了登录那一关，拦它们的只能是 tools_agreed
+    _, settings, fake = setup_pay
+    settings.agreement_version = "2026-12"
+    settings.agreement_min_version = "2026-10"
+    user = session.scalar(select(User))
+    for version in ("2026-10", "2026-11.1"):
+        user.agreement_version = version
+        session.commit()
+        before = len(fake.calls)
+        response = create(setup_pay)
+        assert response.status_code == 403
+        assert response.json()["detail"] == me.OUTDATED
+        assert session.scalar(select(func.count()).select_from(PayOrder)) == 0
+        # 拦在下单前：没去问微信（换登录凭证、下单都没有）
+        assert len(fake.calls) == before
+    user.agreement_version = "2026-12"
+    session.commit()
+    assert create(setup_pay).status_code == 201
+    assert session.scalar(select(func.count()).select_from(PayOrder)) == 1
 
 
 def test_create_signatures_snapshot_and_rate_limit(setup_pay, session):

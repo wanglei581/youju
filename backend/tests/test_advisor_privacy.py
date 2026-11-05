@@ -24,9 +24,11 @@ def test_capabilities_hide_all_ai_metadata(client, settings, data_enabled, ai_en
     settings.ai_advisor_openids = "internal" if whitelisted else "second"
     response = client.get("/api/v1/advisor/capabilities")
     assert response.status_code == 200
+    # D-118：批量名单比对默认关（YOUJU_ADVISOR_COMPARE_ENABLED），能力里只剩客户相关通知表
     assert response.json()["data_tools"] == {
         "enabled": data_enabled,
-        "features": ["compare", "track"] if data_enabled else [],
+        "compareEnabled": False,
+        "features": ["track"] if data_enabled else [],
         "remaining": {"compare": 3 * int(data_enabled), "track": 3 * int(data_enabled)},
     }
     ai = response.json()["ai_advisor"]
@@ -60,6 +62,8 @@ def test_creation_kind_response_groups(
     settings.advisor_enabled = data_enabled
     settings.ai_advisor_enabled = ai_enabled
     settings.ai_advisor_openids = "internal" if whitelisted else "second"
+    # 这里测各种开关组合下"能不能建任务"的分组；compare 默认关（D-118，另有测试），这里打开它
+    settings.advisor_compare_enabled = True
     if data_enabled and kind in ("compare", "track"):
         tools_ready(session)
         assert (

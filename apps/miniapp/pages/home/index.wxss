@@ -92,3 +92,5 @@
 .guide-body { flex: 1; min-width: 0; }
 .guide-name { font-size: 28rpx; font-weight: 600; line-height: 44rpx; }
 .guide-text { margin-top: 2rpx; font-size: 24rpx; line-height: 1.5; color: var(--t2); }
+
+.license-entry { padding: 20rpx 32rpx; color: #2A5CE0; font-size: 28rpx; text-align: right; }

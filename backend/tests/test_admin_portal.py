@@ -216,7 +216,10 @@ def test_overview_matches_database_and_consoles(client, session, world, monkeypa
         admin,
         "get_settings",
         lambda: SimpleNamespace(
-            role="all", admin_token=HEADERS["X-Admin-Token"], advisor_enabled=True
+            role="all",
+            admin_token=HEADERS["X-Admin-Token"],
+            advisor_enabled=True,
+            advisor_compare_enabled=True,
         ),
     )
     data = client.get("/api/admin/overview", headers=HEADERS).json()

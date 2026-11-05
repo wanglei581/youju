@@ -194,6 +194,7 @@ def test_invalid_company_is_422_without_quota(client, session, notice, company):
 )
 def test_task_input_shape(client, settings, body):
     settings.advisor_enabled = True
+    settings.advisor_compare_enabled = True  # D-118 默认关；这里照旧测比对
     assert (
         client.post(
             "/api/v1/advisor/tasks", json=body, headers={"Idempotency-Key": "shape"}

@@ -7,7 +7,7 @@
   <!-- 最上面一眼看到：给谁用、两档多少钱、会不会再扣钱；续买的规则和价格在同一屏（D-070） -->
   <view class="pass-hero">
     <view class="pass-name">批量工具</view>
-    <view class="pass-lead">给要一次查很多家客户相关通知的顾问用；查通知、查单家企业一直免费</view>
+    <view class="pass-lead">给要一次整理很多家客户相关通知的顾问用；查通知、查单家企业一直免费</view>
     <view class="pass-tiers" aria-role="radiogroup">
       <view wx:for="{{tiers}}" wx:key="productId" class="pass-tier {{index === selected ? 'pass-tier--on' : ''}}" data-index="{{index}}" bindtap="pick" aria-role="radio" aria-checked="{{index === selected}}">
         <view class="pass-tier-days">{{item.days}} 天</view>
@@ -23,7 +23,7 @@
 
   <view class="card pass-card">
     <view class="pass-title">包含什么</view>
-    <!-- 这一版不带批量名单比对（D-104，创始人 11/4）：批量工具目前只含客户相关通知表，和《付费服务协议》第一条第 3 项一致 -->
+    <!-- 这一版批量工具只含客户相关通知表（D-104、D-118，创始人 11/4）：写明只含这一项，和《付费服务协议》第一条第 3 项一致 -->
     <view class="pass-line">批量工具目前只含“客户相关通知表”一项</view>
     <view class="pass-row">
       <view class="pass-ico"><t-icon name="task-checked" size="36rpx" color="#2A5CE0" /></view>
@@ -31,14 +31,17 @@
     </view>
     <view class="pass-row">
       <view class="pass-ico"><t-icon name="download" size="36rpx" color="#2A5CE0" /></view>
-      <view class="pass-main"><view class="pass-lead-item">结果可导出 Excel</view><view class="pass-desc">带发文机关、发布日期和出处</view></view>
+      <view class="pass-main"><view class="pass-lead-item">结果可导出 Excel</view><view class="pass-desc">带发文机关和发布日期</view></view>
     </view>
+    <view wx:if="{{aiEnabled}}" class="pass-line">不含 AI 次数，AI 每天免费次数照旧</view>
   </view>
 
   <!-- 不买能用多少，和上面挨着写清楚：不想买的人不用猜 -->
   <view class="card pass-card">
     <view class="pass-title">不买也能用</view>
-    <view class="pass-line">客户相关通知表：每月 3 次，每次 50 家以内（交一份名单算一次，系统出错、没出结果的不算）</view>
+    <view wx:if="{{freeLine}}" class="pass-line">{{freeLine}}</view>
+    <!-- 申报季加量：和首页、工具中心、批量工具页同一句（utils/boost.js 的 seasonLine），写清起止和之后回到几次（D-070 ⑤） -->
+    <view wx:if="{{seasonLine}}" class="pass-line">{{seasonLine}}</view>
     <view class="pass-line">搜索、详情、附件、查名单、导出等一直免费</view>
   </view>
 
@@ -48,7 +51,7 @@
     <view class="pass-note">这是第三方整理公开信息的工具，不是政府平台；不代办申报，不承诺申报结果。信息整理自政府部门公开网站，以发文机关原文为准。</view>
     <view class="pass-note">收录范围：已收录哪些省、哪些城市和栏目，请先<text class="link" bindtap="coverage" aria-role="button">查看收录范围</text>；没收录的地方查不到。</view>
     <view class="pass-note">只限本人的微信使用，不能转让，也不能几个人共用。</view>
-    <view class="pass-note">未成年人请在监护人同意后再购买。</view>
+    <view class="pass-note">本服务不面向未成年人；未成年人未经监护人同意购买的，可以申请全额退款。</view>
     <view class="pass-note">使用期从开通时起算（一般付款后几秒内就开通）；已有使用期的，接着往后顺延。在加量体验期间买的，开通时体验结束，没用完的体验时间折成天数加在后面（不足一天按一天）。</view>
     <view class="pass-note">只收这一次的钱，到期后不会再扣款。到期后，已经生成的结果仍可查看、导出（结果保存 30 天）。</view>
     <view class="pass-note">注销账号后，未到期的使用期和赠送天数作废，注销本身不退剩余天数，也不减少按《付费服务协议》第二条可以退的钱。</view>

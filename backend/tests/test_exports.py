@@ -587,17 +587,17 @@ def test_excerpt_export_marks_machine_excerpts(client, session, docs, monkeypatc
     body = {"ids": [str(doc.id)], "format": "xlsx"}
     for request in ({"json": {**body, "excerpts": 1}}, {"json": body, "params": {"excerpts": 1}}):
         row, notice = sheet(**request)
-        assert row["截止日期（以原文为准）"] == "2026-10-25（机器摘录）"
-        assert row["日期角色"] == "企业申报截止（机器摘录）"
+        assert row["截止日期（以原文为准）"] == "2026-10-25（原文摘录）"
+        assert row["日期角色"] == "企业申报截止（原文摘录）"
         assert row["未核项"] == "截止日期（以原文为准）、支持方式"
         assert row["截止原文句子"] == quote
-        assert "机器摘录" in notice and "未经人工核对" in notice
-        assert "机器摘录的“日期角色”也标有“（机器摘录）”" in notice
+        assert "原文摘录" in notice and "未经人工核对" in notice
+        assert "原文摘录的“日期角色”也标有“（原文摘录）”" in notice
         assert "“日期角色”是人工核对时确认的截止类型" not in notice
         assert "“截止日期（以原文为准）”列" in notice
     row, notice = sheet(json=body)
     assert row["截止原文句子"] is None and "2026-10-25" not in str(row["截止日期（以原文为准）"])
-    assert "机器摘录" not in notice
+    assert "原文摘录" not in notice
 
 
 def test_excerpt_export_keeps_all_verified_deadlines_and_cleans_legacy_fields(

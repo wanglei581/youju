@@ -102,6 +102,8 @@ class Settings(BaseSettings):
     # R1.5 顾问技能包总开关；上线前保持关闭。
     rewards_enabled: bool = False
     advisor_enabled: bool = False
+    # D-104 / D-118：微信尚未明确名单比对，默认不接收新任务。
+    advisor_compare_enabled: bool = False
     ai_advisor_enabled: bool = False
     ai_advisor_openids: str = ""
     ai_advisor_audience: Literal["whitelist", "all"] = "whitelist"

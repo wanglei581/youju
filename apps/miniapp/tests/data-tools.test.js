@@ -24,7 +24,7 @@ function load(file, deps, globals = {}) {
   }, { filename: file });
   return page ? { ...page, data: plain(page.data), setData(value) { Object.assign(this.data, plain(value)); } } : module.exports;
 }
-const caps = (data = true, ai = false) => ({ data_tools: { enabled: data, features: data ? ['compare', 'track'] : [], remaining: { compare: 3, track: 3 } }, ai_advisor: { enabled: ai, features: ai ? ['interpret', 'clause'] : [] } });
+const caps = (data = true, ai = false) => ({ data_tools: { enabled: data, compareEnabled: true, features: data ? ['compare', 'track'] : [], remaining: { compare: 3, track: 3 } }, ai_advisor: { enabled: ai, features: ai ? ['interpret', 'clause'] : [] } });
 const status = (pass = false, used = 0) => ({ enabled: true, pass: { active: pass }, quota: { compare: { used, limit: 3, maxRows: pass ? 500 : 50 }, track: { used, limit: 3, maxRows: pass ? 500 : 50 } } });
 function dataLogic(api = {}, deps = {}, wx = {}) {
   return load('utils/data-tools.js', { './regions.js': require('../utils/regions.js'), './api.js': api, './advisor.js': helpers, '../content/advisor-terms.js': terms, './boost.js': require('../utils/boost.js'), ...deps }, { wx });
@@ -232,10 +232,22 @@ test('任务中心取消、删除按任务身份调用；下载遇到下架响�
   const task = { id: 5, kind: 'compare', status: 'done', hasFile: true, rowCount: 2 };
   const api = { advisorCapabilities: () => Promise.resolve(caps()), advisorTasks: () => Promise.resolve({ items: [task] }),
     cancelAdvisorTask: (id) => { calls.push(['cancel', id]); return Promise.resolve(); }, deleteAdvisorTask: (id) => { calls.push(['delete', id]); return Promise.resolve(); } };
-  const page = load('pages/advisor-tasks/index.js', { '../../utils/api.js': api, '../../utils/advisor.js': helpers, '../../utils/data-tools.js': { openResult: () => Promise.reject(Object.assign(new Error('结果已下架，请重新生成'), { status: 410 })) } }, { wx: { setNavigationBarTitle() {}, showModal: (o) => o.success({ confirm: true }) } });
+  const page = load('pages/advisor-tasks/index.js', { '../../utils/api.js': api, '../../utils/advisor.js': helpers, '../../utils/exports.js': { removeAdvisorTask: (id, removeFile) => calls.push(['removeExport', id, typeof removeFile]) }, '../../utils/exporter.js': { remove: () => true }, '../../utils/data-tools.js': { openResult: () => Promise.reject(Object.assign(new Error('结果已下架，请重新生成'), { status: 410 })) } }, { wx: { setNavigationBarTitle() {}, showModal: (o) => o.success({ confirm: true }) } });
   page.onShow(); await flush(); page.download(event({ id: 5 })); await flush();
   assert.equal(page.data.items[0].downloadable, false); assert.match(page.data.actionError, /已下架/); assert.equal(page.data.busyId, null);
-  page.cancel(event({ id: 5 })); await flush(); page.remove(event({ id: 5 })); await flush(); assert.deepEqual(calls, [['cancel', 5], ['delete', 5]]); page.onUnload();
+  page.cancel(event({ id: 5 })); await flush(); page.remove(event({ id: 5 })); await flush(); assert.deepEqual(calls, [['cancel', 5], ['delete', 5], ['removeExport', 5, 'function']]); page.onUnload();
+});
+
+test('D-118：关掉 compare 以后，旧的 compare 任务照样在我的记录里能看能下，只是不给重新提交', async () => {
+  const off = caps(); off.data_tools.compareEnabled = false; off.data_tools.features = ['track'];
+  const items = [{ id: 1, kind: 'compare', status: 'done', hasFile: true, rowCount: 2 }, { id: 2, kind: 'track', status: 'done', hasFile: true, rowCount: 2 }];
+  const api = { advisorCapabilities: () => Promise.resolve(off), advisorTasks: () => Promise.resolve({ items }) };
+  const page = load('pages/advisor-tasks/index.js', { '../../utils/api.js': api, '../../utils/advisor.js': helpers }, { wx: { setNavigationBarTitle() {} }, setTimeout() { return 0; }, clearTimeout() {} });
+  page.onShow(); await flush();
+  assert.deepEqual(page.data.items.map(i => i.kind), ['compare', 'track']);
+  assert.deepEqual(page.data.items.map(i => i.redo), [false, true]);
+  assert.equal(page.data.items[0].downloadable, true);
+  page.onUnload();
 });
 
 test('独立说明须主动勾选，并先确认通用协议，再记录 advisor 版本', async () => {
@@ -252,7 +264,7 @@ test('新增表单和独立说明均注册，模板完整；工具入口覆盖�
   const app = JSON.parse(fs.readFileSync(path.join(root, 'app.json'), 'utf8'));
   // 21 页完整候选 + 收费第一期的购买页、订单页（D-058，入口只在服务端在售或有订单时出现）
   // + 加量体验的确认页（D-070 ③，服务端开关开着才有入口）+ AI 板块首页和使用帮助（D-075）
-  assert.equal(app.pages.length, 28);
+  assert.equal(app.pages.length, 29);
   for (const page of ['advisor-form', 'advisor-terms', 'advisor-trial', 'pass', 'orders']) {
     assert.ok(app.pages.includes(`pages/${page}/index`)); parse(fs.readFileSync(path.join(root, `pages/${page}/index.wxml`), 'utf8'));
   }

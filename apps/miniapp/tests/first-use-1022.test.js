@@ -358,7 +358,7 @@ test('D-087（创始人 10/23 按 #341 推荐定）：工具中心两个工具�
 test('10/25 Grok 复审：工具中心不写"追溯官方原文"（像外链）；关于有据写明导出的文件在底栏"导出"；我的客户的移除提示和搜索页同一说法', () => {
   const tools = read('pages/advisor/index.wxml');
   assert.doesNotMatch(tools, /追溯官方原文/);
-  assert.match(tools, /每条结果都能在小程序里对照官方原文/);
+  assert.match(read('utils/advisor.js'), /每条结果都能在小程序里对照官方原文/);
   const about = read('pages/about/index.wxml');
   assert.equal((about.match(/导出的文件在底栏“导出”里/g) || []).length, 2);
   const clients = read('pages/clients/index.wxml');

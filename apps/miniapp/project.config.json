@@ -23,7 +23,12 @@
         "type": "folder"
       }
     ],
-    "include": []
+    "include": [
+      {
+        "value": "images",
+        "type": "folder"
+      }
+    ]
   },
   "setting": {
     "urlCheck": false,

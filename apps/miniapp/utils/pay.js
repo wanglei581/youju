@@ -5,9 +5,9 @@ const PAY_MODE = 'short_series_goods';
 const TEXT = {
   ordering: '正在创建订单…', confirming: '正在确认支付结果…', cancelled: '已取消支付',
   closed: '这笔订单已关闭，可以重新支付',
-  unsettled: '上一笔付款还在确认，先不要再付：已扣款的会自动开通，可到"我的 → 我的订单"查看。超过 10 分钟还没开通，请点下方"遇到问题"告诉我们。',
+  unsettled: '上一笔付款还在确认，先不要再付：已扣款的会自动开通，可到“我的 → 我的订单”查看。超过 10 分钟还没开通，请点下方“遇到问题”告诉我们。',
   login: '微信登录没有完成，请重试', unsupported: '当前微信版本不支持这项支付，请升级微信后重试',
-  timeout: '暂未确认到支付结果：已扣款的会自动开通（一般 1–2 分钟内），可到"我的 → 我的订单"查看；没付款不会扣钱。超过 10 分钟还没开通，请点下方"遇到问题"告诉我们。',
+  timeout: '暂未确认到支付结果：已扣款的会自动开通（一般 1–2 分钟内），可到“我的 → 我的订单”查看；没付款不会扣钱。超过 10 分钟还没开通，请点下方“遇到问题”告诉我们。',
   refunded: '这笔付款已经退回，按原支付方式到账，到账时间以微信支付为准',
   orderFailed: '下单没有完成，请重试',
   termsRequired: '请先阅读并同意《付费服务协议》',
@@ -50,7 +50,7 @@ function renewRule(res) {
   return { text: `到期前后 ${bonus.windowDays} 天内续买，每次多送 ${bonus.days} 天批量工具使用期`, now: bonus.eligibleNow === true };
 }
 function termsFinal(terms) {
-  return !!(terms && terms.final && typeof terms.text === 'string' && terms.text.trim() && !/待.*定稿|占位/.test(terms.text));
+  return !!(terms && terms.final === true && typeof terms.text === 'string' && terms.text.trim() && !/待.*定稿|占位/.test(terms.text));
 }
 // 能开哪种发票（D-070：付款前要看得到）：以服务端为准（YOUJU_PAY_INVOICE_TYPE，商品接口带回 invoiceType）；
 // 没有时现网没有付款按钮，服务端也不卖（payments.orderable）
@@ -136,7 +136,7 @@ function stateNote(order) {
     return order.canRefund ? '付款已收到，但开通时出了问题，还没开通。我们 1 个工作日内处理；不想等可以直接申请退款，全额原路退回。'
       : '付款已收到，但开通时出了问题，还没开通。我们 1 个工作日内处理，结果会显示在这里。';
   }
-  if (order.status === '已关闭') return '没有确认到付款，订单已关闭。如果其实扣了款，点"遇到问题"告诉我们。';
+  if (order.status === '已关闭') return '没有确认到付款，订单已关闭。如果其实扣了款，点“遇到问题”告诉我们。';
   return '';
 }
 function orderView(order) {
@@ -214,7 +214,7 @@ const NOT_STARTED = new Set([1001, -4, -15001, -15002, -15004, -15005, -15006, -
 function notStarted(err) { return !!err && NOT_STARTED.has(err.errCode); }
 function notStartedText(err) {
   const code = err && Number.isInteger(err.errCode) ? `（错误码 ${err.errCode}）` : '';
-  return `支付没有完成${code}，请稍后再试。如果其实扣了款，会自动开通，可以在"我的 → 我的订单"查看。`;
+  return `支付没有完成${code}，请稍后再试。如果其实扣了款，会自动开通，可以在“我的 → 我的订单”查看。`;
 }
 function classify(order) {
   if (order && order.status === '已完成' && order.passStartsAt && order.passEndsAt && !order.passRevokedAt) return 'success';

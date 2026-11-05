@@ -39,7 +39,7 @@ function taskData(d) {
   return {
     tasks: rows.map((t) => ({
       id: t.id,
-      kind: KINDS[t.kind] || DATA_KINDS[t.kind] || '工具记录',
+      kind: t.kind === 'compare' ? '历史批量工具' : KINDS[t.kind] || DATA_KINDS[t.kind] || '工具记录',
       rows: Object.prototype.hasOwnProperty.call(DATA_KINDS, t.kind) && t.rowCount ? t.rowCount : 0,
       state: STATES[t.status] || t.status,
       running: t.status === 'running' && !stuck(t),
@@ -49,7 +49,7 @@ function taskData(d) {
       finished: when(t.finishedAt),
     })),
     tasksTitle: ai && !tools ? 'AI 记录' : ai ? '工具和 AI 记录' : '工具记录',
-    fileNote: files && pages.has('advisor-tasks') ? '批量工具的结果文件在“我的”→“我的记录”里下载' : '',
+    fileNote: files && pages.has('advisor-tasks') ? '批量工具的结果在“我的”→“我的记录”→“站内查看结果”里另存 Excel' : '',
     extras: extras.length ? `${extras.join('、')}：在“复制全部数据”里可以看到。` : '',
     // 保存期限里的"批量工具"一行
     toolsShown: tools,
@@ -206,9 +206,14 @@ Page({
       confirmColor: '#E5484D',
       success: (res) => {
         if (!res.confirm) return;
+        const forget = () => { if (kind === 'task') require('../../utils/exports.js').removeAdvisorTask(id, require('../../utils/exporter.js').remove); };
         call(id)
-          .then(() => { wx.showToast({ title: '已删除', icon: 'none' }); this.load(); })
-          .catch((err) => wx.showToast({ title: err.message || '没删成，请稍后再试', icon: 'none' }));
+          .then(() => { forget(); wx.showToast({ title: '已删除', icon: 'none' }); this.load(); })
+          .catch((err) => {
+            // 已经没有这条了（别处删过）：本机记录也清掉，当作删好了
+            if (err && err.status === 404) { forget(); wx.showToast({ title: '已删除', icon: 'none' }); this.load(); return; }
+            wx.showToast({ title: err.message || '没删成，请稍后再试', icon: 'none' });
+          });
       },
     });
   },
