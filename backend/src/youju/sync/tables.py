@@ -77,20 +77,29 @@ def dumps(payload: Any) -> bytes:
 
 
 # ---- 请求签名（本机和服务器用同一个 YOUJU_SYNC_SECRET） ----
+# 签名算在"方法、路径加查询串、时间、包体的 SHA-256"上，包体的 SHA-256 另放一个请求头：
+# 服务器先只看请求头验签，签名对了才读包体（不让没签名的请求塞几十 MB 进来占内存），
+# 读完再核对包体和头里的 SHA-256 一致
 
 HEADER_TIME = "X-Youju-Sync-Time"
 HEADER_SIGNATURE = "X-Youju-Sync-Signature"
+HEADER_BODY = "X-Youju-Sync-Body-Sha256"
 WINDOW_SECONDS = 300
 
 
-def signature(secret: str, method: str, target: str, stamp: str, body: bytes) -> str:
-    """target 是路径加查询串（如 /api/sync/v1/pks?table=documents&after=0）。"""
-    message = "\n".join([method.upper(), target, stamp, hashlib.sha256(body).hexdigest()])
+def body_digest(body: bytes) -> str:
+    return hashlib.sha256(body).hexdigest()
+
+
+def signature(secret: str, method: str, target: str, stamp: str, digest: str) -> str:
+    """target 是路径加查询串（如 /api/sync/v1/pks?table=documents&after=0）；digest 是包体的
+    SHA-256（十六进制）。"""
+    message = "\n".join([method.upper(), target, stamp, digest])
     return hmac.new(secret.encode(), message.encode(), hashlib.sha256).hexdigest()
 
 
 def signature_ok(
-    secret: str, method: str, target: str, stamp: str, body: bytes, given: str, now: float
+    secret: str, method: str, target: str, stamp: str, digest: str, given: str, now: float
 ) -> bool:
     try:
         when = int(stamp)
@@ -98,5 +107,7 @@ def signature_ok(
         return False
     if abs(now - when) > WINDOW_SECONDS:
         return False
-    expected = signature(secret, method, target, stamp, body)
+    if len(digest) != 64:
+        return False
+    expected = signature(secret, method, target, stamp, digest)
     return bool(given) and hmac.compare_digest(expected, given)

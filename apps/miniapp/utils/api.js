@@ -34,8 +34,14 @@ function storedSession() {
   return null;
 }
 
-function forgetSession() {
-  try { wx.removeStorageSync(SESSION_KEY); } catch (e) { /* 忽略 */ }
+// token 给了就只在本地存的还是它时才清：几个请求同时拿旧凭证回 401 时，后回来的不能把先回来的
+// 那个刚换好的新凭证清掉
+function forgetSession(token) {
+  try {
+    const saved = wx.getStorageSync(SESSION_KEY);
+    if (token && saved && saved.token !== token) return;
+    wx.removeStorageSync(SESSION_KEY);
+  } catch (e) { /* 忽略 */ }
 }
 
 function loginOnce() {
@@ -87,7 +93,7 @@ function httpsRequest(options) {
       data: options.data,
       timeout: options.timeout,
       success: (res) => {
-        if (res && res.statusCode === 401 && !retried) { forgetSession(); send(true); return; }
+        if (res && res.statusCode === 401 && !retried) { forgetSession(saved && saved.token); send(true); return; }
         options.success(res);
       },
       fail: options.fail,

@@ -178,15 +178,32 @@ class DiskTransport(httpx.BaseTransport):
             if start > end:
                 return httpx.Response(416, headers={"content-range": f"bytes */{total}"})
             status = 206
-        headers = {"content-length": str(end - start + 1 if total else 0)}
+        length = end - start + 1 if total else 0
+        headers = {"content-length": str(length)}
         if status == 206:
             headers["content-range"] = f"bytes {start}-{end}/{total}"
         if request.method == "HEAD":
             return httpx.Response(status, headers=headers, request=request)
-        with file.open("rb") as fh:
-            fh.seek(start)
-            content = fh.read(end - start + 1) if total else b""
-        return httpx.Response(status, headers=headers, content=content, request=request)
+        # 按块读，不整个读进内存（整库备份几百 MB，worker 只有 640MB）
+        return httpx.Response(
+            status, headers=headers, stream=_FileRange(file, start, length), request=request
+        )
+
+
+class _FileRange(httpx.SyncByteStream):
+    def __init__(self, file: Path, start: int, length: int) -> None:
+        self.file, self.start, self.length = file, start, length
+
+    def __iter__(self) -> Iterator[bytes]:
+        left = self.length
+        with self.file.open("rb") as fh:
+            fh.seek(self.start)
+            while left > 0:
+                chunk = fh.read(min(_CHUNK, left))
+                if not chunk:
+                    return
+                left -= len(chunk)
+                yield chunk
 
 
 # ---- 兼容 S3 的对象存储（AWS 签名 V4；腾讯云 COS、MinIO 都认） ----

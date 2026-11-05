@@ -266,8 +266,8 @@ def test_failed_batch_changes_nothing_and_resumes(env, monkeypatch):
     # 第一次 500：客户端重试，第二次写成
     report = local.push(env.local, env.client)
     assert report.batches == 1 and count(env.server, "documents") == 1
-    # 重放一批旧的（进度对不上）：409，不写
-    stale = {"stream": env.stream, "from_seq": 0, "to_seq": 1, "tables": {}}
+    # 不是服务器认的变更流（本机重建过、别的机器）：409，不写
+    stale = {"stream": "other-stream-0000", "max_seq": 1, "tables": {}}
     with pytest.raises(local.SyncError) as err:
         env.client.json("POST", "/apply", stale)
     assert "409" in str(err.value)
@@ -278,7 +278,7 @@ def test_stream_mismatch_needs_full_push(env):
     env.client.json("POST", "/reset", {"stream": "someone-else-stream", "applied_seq": 5})
     with pytest.raises(local.SyncError) as err:
         local.push(env.local, env.client)
-    assert "--full" in str(err.value)
+    assert "重新起步" in str(err.value)
 
 
 def test_full_push_removes_rows_the_server_should_not_have(env):
@@ -313,13 +313,31 @@ def test_signatures_are_required(env):
     with pytest.raises(local.SyncError) as err:
         wrong.json("GET", "/state")
     assert "401" in str(err.value)
+    empty = sync_tables.body_digest(b"")
     stamp = str(int(time.time()) - 3600)
-    sig = sync_tables.signature(SECRET, "GET", "/api/sync/v1/state", stamp, b"")
+    sig = sync_tables.signature(SECRET, "GET", "/api/sync/v1/state", stamp, empty)
     old = raw.get(
         "/api/sync/v1/state",
-        headers={sync_tables.HEADER_TIME: stamp, sync_tables.HEADER_SIGNATURE: sig},
+        headers={
+            sync_tables.HEADER_TIME: stamp,
+            sync_tables.HEADER_SIGNATURE: sig,
+            sync_tables.HEADER_BODY: empty,
+        },
     )
     assert old.status_code == 401
+    # 签名对、包体被换了：不认
+    stamp = str(int(time.time()))
+    sig = sync_tables.signature(SECRET, "POST", "/api/sync/v1/apply", stamp, empty)
+    swapped = raw.post(
+        "/api/sync/v1/apply",
+        content=b'{"full": true, "tables": {}}',
+        headers={
+            sync_tables.HEADER_TIME: stamp,
+            sync_tables.HEADER_SIGNATURE: sig,
+            sync_tables.HEADER_BODY: empty,
+        },
+    )
+    assert swapped.status_code == 401
 
 
 def test_sync_endpoints_are_404_without_secret(monkeypatch):
@@ -353,9 +371,11 @@ def test_gzip_bomb_is_refused(env):
 def _raw_gzip(client, payload):
     stamp = str(int(time.time()))
     target = "/api/sync/v1/apply"
+    digest = sync_tables.body_digest(payload)
     headers = {
         sync_tables.HEADER_TIME: stamp,
-        sync_tables.HEADER_SIGNATURE: sync_tables.signature(SECRET, "POST", target, stamp, payload),
+        sync_tables.HEADER_BODY: digest,
+        sync_tables.HEADER_SIGNATURE: sync_tables.signature(SECRET, "POST", target, stamp, digest),
         "Content-Encoding": "gzip",
     }
     res = client._http.post(target, content=payload, headers=headers)
@@ -509,3 +529,93 @@ def test_replica_refuses_public_admin_writes(monkeypatch):
     # 纠错处理、发票只动用户数据：照常往下走（口令不对，是 401/403，不是 409）
     assert client.post("/api/admin/feedback/1/handle", json={}, headers=token).status_code != 409
     get_settings.cache_clear()
+
+
+def test_late_commit_is_not_lost(env, db_engine):
+    """序号小、提交晚的变更：推的时候还看不见，不能被丢掉（推完只删推过的序号）。"""
+    src = source(env.local)
+    bootstrap(env)
+    slow = db_engine.connect()
+    trx = slow.begin()
+    slow.execute(
+        T["documents"]
+        .insert()
+        .values(
+            source_id=src,
+            url="https://kjt.shandong.gov.cn/tzgg/slow.html",
+            url_key="kjt.shandong.gov.cn/tzgg/slow.html",
+            title="提交晚的",
+            publish_date=date(2026, 11, 1),
+            first_seen_at=NOW,
+            last_seen_at=NOW,
+        )
+    )
+    fast = document(env.local, src, "fast", title="先提交的")  # 序号比 slow 的大，先提交
+    local.push(env.local, env.client)
+    assert [r["title"] for r in rows(env.server, "documents")] == ["先提交的"]
+    trx.commit()
+    slow.close()
+    local.push(env.local, env.client)
+    assert sorted(r["title"] for r in rows(env.server, "documents")) == ["先提交的", "提交晚的"]
+    assert fast
+
+
+def test_rebuilt_local_database_is_refused(env):
+    """本机从备份恢复、重建过（自增编号落到服务器已有的以下）：再推会盖掉服务器上别的行，拦下。"""
+    src = source(env.local)
+    document(env.local, src, "a")
+    document(env.local, src, "b")
+    bootstrap(env)
+    with env.local.begin() as conn:
+        conn.execute(text("SET FOREIGN_KEY_CHECKS = 0"))
+        conn.execute(text("DELETE FROM document_details"))
+        conn.execute(text("DELETE FROM documents"))
+        conn.execute(text("SET FOREIGN_KEY_CHECKS = 1"))
+        conn.execute(text("ALTER TABLE documents AUTO_INCREMENT = 1"))
+    with pytest.raises(local.SyncError) as err:
+        local.push(env.local, env.client)
+    assert "比服务器旧" in str(err.value) and "重新起步" in str(err.value)
+    with pytest.raises(local.SyncError):
+        local.full_push(env.local, env.client)
+    assert count(env.server, "documents") == 2  # 服务器一行都没动
+
+
+def test_full_push_refuses_mass_deletes_without_force(env):
+    src = source(env.local)
+    for n in range(260):
+        insert(
+            env.local,
+            "source_checks",
+            source_id=src,
+            started_at=NOW,
+            finished_at=NOW,
+            status="ok",
+            items_found=n,
+            items_new=0,
+            duration_ms=1,
+        )
+    bootstrap(env)
+    # 本机少了 250 行、变更又没记下来（模拟两边对不上）
+    with env.local.begin() as conn:
+        conn.execute(text("DELETE FROM source_checks WHERE id > 10"))
+        conn.execute(text(f"DELETE FROM `{local.CHANGES}`"))
+    report = local.full_push(env.local, env.client, dry_run=True)
+    assert report.would_delete == {"source_checks": 250}
+    assert count(env.server, "source_checks") == 260
+    with pytest.raises(local.SyncError) as err:
+        local.full_push(env.local, env.client)
+    assert "--dry-run" in str(err.value) and "--force" in str(err.value)
+    local.full_push(env.local, env.client, force=True)
+    assert count(env.server, "source_checks") == 10
+
+
+def test_only_one_push_at_a_time(env, db_engine):
+    source(env.local)
+    bootstrap(env)
+    with db_engine.connect() as other:
+        assert other.scalar(text("SELECT GET_LOCK('youju-sync-push', 0)")) == 1
+        with pytest.raises(local.SyncError) as err:
+            local.push(env.local, env.client)
+        assert "正在推" in str(err.value)
+        other.scalar(text("SELECT RELEASE_LOCK('youju-sync-push')"))
+    local.push(env.local, env.client)

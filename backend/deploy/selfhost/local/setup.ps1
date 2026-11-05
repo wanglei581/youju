@@ -19,7 +19,10 @@ function RandomHex([int]$bytes) {
 }
 
 Step "1/5 检查 Docker Desktop"
-try { docker version --format "{{.Server.Version}}" | Out-Null } catch {
+# PowerShell 5.1 里外部命令失败不会抛异常，要看退出码
+$dockerOk = $false
+try { docker version --format "{{.Server.Version}}" | Out-Null; $dockerOk = ($LASTEXITCODE -eq 0) } catch { $dockerOk = $false }
+if (-not $dockerOk) {
   Fail "没有找到正在运行的 Docker Desktop。请先安装 Docker Desktop（选 WSL2），打开它、等左下角显示 Engine running，再运行本脚本。`n安装后在 Docker Desktop 设置里：General 勾选 Start Docker Desktop when you sign in；Resources → Advanced 把 Disk image location 改到空间大的盘（例如 D:\DockerData），内存给 8 GB。"
 }
 Write-Host "Docker 正在运行。"
@@ -47,7 +50,8 @@ Step "3/5 载入镜像"
 if (Test-Path "youju-selfhost.tar") {
   docker load -i youju-selfhost.tar
 } else {
-  $image = (Select-String -Path ".env" -Pattern "^YOUJU_IMAGE=(.+)$").Matches[0].Groups[1].Value
+  # 去掉行尾的回车（.env 在 Windows 上可能是 CRLF）
+  $image = (Select-String -Path ".env" -Pattern "^YOUJU_IMAGE=([^\r\n]+)").Matches[0].Groups[1].Value.Trim()
   docker pull $image
   if ($LASTEXITCODE -ne 0) { Fail "拉不下镜像 $image。把 Claude 给的 youju-selfhost.tar 放到这个文件夹再运行。" }
 }
@@ -71,15 +75,24 @@ Step "5/5 电源设置（可选）"
 $answer = Read-Host "把这台电脑设成插着电源时不睡眠、不关硬盘吗？抓取要一直开着。输入 y 同意，直接回车跳过"
 if ($answer -eq "y") {
   powercfg /change standby-timeout-ac 0
+  $ok1 = ($LASTEXITCODE -eq 0)
   powercfg /change hibernate-timeout-ac 0
+  $ok2 = ($LASTEXITCODE -eq 0)
   powercfg /change disk-timeout-ac 0
-  Write-Host "已设好（只改了插电源时的设置，屏幕关闭不受影响）。"
+  $ok3 = ($LASTEXITCODE -eq 0)
+  if ($ok1 -and $ok2 -and $ok3) {
+    Write-Host "已设好（只改了插电源时的设置，屏幕关闭不受影响）。"
+  } else {
+    Write-Host "没设成功（可能要管理员权限）。请手动设：设置 → 系统 → 电源 → 屏幕和睡眠 → 插入电源时，睡眠设为'从不'。" -ForegroundColor Yellow
+  }
 }
 
 Write-Host ""
-Write-Host "装好了。下一步（起步导入公开数据）按 Claude 给的说明做，导出文件放在这个文件夹里：" -ForegroundColor Green
-Write-Host "  docker compose cp .\youju-sync-export.jsonl.gz worker:/tmp/export.jsonl.gz"
-Write-Host "  docker compose exec worker youju sync-import --file /tmp/export.jsonl.gz"
-Write-Host "  docker compose exec worker youju sync-setup"
-Write-Host "  docker compose exec worker youju sync-push --mark-synced"
+Write-Host "装好了。下一步（起步导入公开数据）按 Claude 给的说明做，导出文件放在这个文件夹里。" -ForegroundColor Green
+Write-Host "起步时先停定时任务（导入期间不能抓取），用一次性容器做，做完再启动："
+Write-Host "  docker compose stop worker"
+Write-Host "  docker compose run --rm -v ${PWD}:/move worker youju sync-import --file /move/youju-sync-export.jsonl.gz"
+Write-Host "  docker compose run --rm worker youju sync-setup"
+Write-Host "  docker compose run --rm worker youju sync-push --mark-synced"
+Write-Host "  docker compose start worker"
 Read-Host "按回车键结束"

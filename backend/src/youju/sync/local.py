@@ -165,17 +165,20 @@ class Client:
         query = httpx.QueryParams(params or {})
         target = API + path + (f"?{query}" if params else "")
         payload = gzip.compress(body, 6) if gzip_body else body
-        stamp = str(int(clock.time()))
-        headers = {
-            sync_tables.HEADER_TIME: stamp,
-            sync_tables.HEADER_SIGNATURE: sync_tables.signature(
-                self._secret, method, target, stamp, payload
-            ),
-            "Content-Type": content_type,
-        }
-        if gzip_body:
-            headers["Content-Encoding"] = "gzip"
+        digest = sync_tables.body_digest(payload)
         for wait in (5, 30, 120, None):
+            # 每次发都重签（签名有 5 分钟时效）
+            stamp = str(int(clock.time()))
+            headers = {
+                sync_tables.HEADER_TIME: stamp,
+                sync_tables.HEADER_BODY: digest,
+                sync_tables.HEADER_SIGNATURE: sync_tables.signature(
+                    self._secret, method, target, stamp, digest
+                ),
+                "Content-Type": content_type,
+            }
+            if gzip_body:
+                headers["Content-Encoding"] = "gzip"
             try:
                 response = self._http.request(
                     method, self.base + target, content=payload, headers=headers
@@ -184,12 +187,6 @@ class Client:
                 if wait is None:
                     raise SyncError(f"连不上服务器：{type(exc).__name__}") from None
                 clock.sleep(wait)
-                # 签名有时效：重试前重签
-                stamp = str(int(clock.time()))
-                headers[sync_tables.HEADER_TIME] = stamp
-                headers[sync_tables.HEADER_SIGNATURE] = sync_tables.signature(
-                    self._secret, method, target, stamp, payload
-                )
                 continue
             if response.status_code in ok:
                 return response
@@ -218,6 +215,8 @@ class PushReport:
     blobs: int = 0
     kept: dict[str, int] = field(default_factory=dict)
     applied_seq: int = 0
+    # 全推时服务器上多出来、要删（dry_run 时是会删）的行数
+    would_delete: dict[str, int] = field(default_factory=dict)
 
 
 def _rows_by_pk(engine: Engine, t: Table, pks: list[Any]) -> dict[Any, dict]:
@@ -303,31 +302,74 @@ def _send_blobs(client: Client, paths: list[str], store: storage.Backend | None 
     return sent
 
 
-def _changes(engine: Engine, after: int, limit: int) -> list[tuple[int, str, str]]:
+def _changes(engine: Engine, limit: int) -> list[tuple[int, str, str]]:
+    """最早的一批还没推的变更（只看得到已提交的；没提交的下一次再推）。"""
     with engine.connect() as conn:
         return [
             (int(seq), tbl, pk)
             for seq, tbl, pk in conn.execute(
-                text(f"SELECT seq, tbl, pk FROM `{CHANGES}` WHERE seq > :a ORDER BY seq LIMIT :n"),
-                {"a": after, "n": limit},
+                text(f"SELECT seq, tbl, pk FROM `{CHANGES}` ORDER BY seq LIMIT :n"), {"n": limit}
             )
         ]
 
 
-def _prune(engine: Engine, upto: int) -> None:
-    """服务器已经写进去的变更从本机删掉（分批，不长时间锁表）。"""
-    while True:
+def _forget(engine: Engine, seqs: list[int]) -> None:
+    """推成功的这几条变更从本机删掉——只删推过的这些序号，不按"小于某个序号"删：
+    事务提交的先后和序号的先后不一样，序号小、提交晚的变更这时还看不见，按范围删会把它丢掉。"""
+    for start in range(0, len(seqs), 1000):
+        part = seqs[start : start + 1000]
         with engine.begin() as conn:
-            gone = conn.execute(
-                text(f"DELETE FROM `{CHANGES}` WHERE seq <= :u ORDER BY seq LIMIT 10000"),
-                {"u": upto},
-            ).rowcount
-        if gone < 10000:
-            return
+            listed = ",".join(str(int(seq)) for seq in part)
+            conn.execute(text(f"DELETE FROM `{CHANGES}` WHERE seq IN ({listed})"))
+
+
+@contextlib.contextmanager
+def push_lock(engine: Engine) -> Iterator[None]:
+    """同一时间只推一路（定时的增量、手动的全推都拿这把锁）：两路交错时，全推读出的旧页可能在
+    增量推完新的之后才写到服务器。拿不到就报错退出，不等。"""
+    with engine.connect() as conn:
+        got = conn.scalar(text("SELECT GET_LOCK('youju-sync-push', 0)"))
+        if got != 1:
+            raise SyncError("另一个同步正在推（定时任务或手动全推），等它推完再来")
+        try:
+            yield
+        finally:
+            conn.scalar(text("SELECT RELEASE_LOCK('youju-sync-push')"))
+
+
+def local_next_ids(engine: Engine) -> dict[str, int]:
+    """本机各同步表下一个自增编号（读最新的，不用 information_schema 的缓存），
+    至少是现有最大编号加一。"""
+    names = {t.name for t in sync_tables.tables()}
+    out: dict[str, int] = {}
+    with engine.connect() as conn:
+        conn.execute(text("SET SESSION information_schema_stats_expiry = 0"))
+        for name, value in conn.execute(
+            text(
+                "SELECT TABLE_NAME, AUTO_INCREMENT FROM information_schema.TABLES"
+                " WHERE TABLE_SCHEMA = DATABASE()"
+            )
+        ):
+            if name in names and value is not None:
+                out[name] = int(value)
+        for t in sync_tables.tables():
+            if t.name in out:
+                (col,) = pk_columns(t)
+                top = conn.scalar(select(func.max(t.c[col])))
+                if top is not None:
+                    out[t.name] = max(out[t.name], int(top) + 1)
+    return out
+
+
+REBUILD_HINT = (
+    "按 docs/部署/自建服务器.md 重新起步（服务器 youju sync-export → 本机 youju sync-import → "
+    "youju sync-setup → youju sync-push --mark-synced），不要用 --full"
+)
 
 
 def check_ready(engine: Engine, client: Client) -> dict:
-    """推之前的检查：触发器都在、两边的迁移版本一样。返回服务器的状态。"""
+    """推之前的检查：触发器都在、两边的迁移版本一样、本机的自增编号没有落到服务器已有的编号以下
+    （本机从备份恢复、重建过时会这样：再推，本机新建的行会盖掉服务器上编号相同的别的行）。"""
     missing = missing_triggers(engine)
     if missing:
         raise SyncError(
@@ -339,6 +381,17 @@ def check_ready(engine: Engine, client: Client) -> dict:
         raise SyncError(
             f"两边的迁移版本不一样（本机 {mine}，服务器 {state.get('revision')}）："
             "先把两边升到同一版本的代码"
+        )
+    ours = local_next_ids(engine)
+    behind = [
+        name
+        for name, top in (state.get("max_ids") or {}).items()
+        if name in ours and ours[name] <= int(top)
+    ]
+    if behind:
+        raise SyncError(
+            f"本机库比服务器旧（{', '.join(sorted(behind)[:5])} 的编号落后了，"
+            "本机从备份恢复或重建过）：" + REBUILD_HINT
         )
     return state
 
@@ -352,41 +405,38 @@ def push(
     max_batches: int | None = None,
     store: storage.Backend | None = None,
 ) -> PushReport:
-    """增量推：从服务器记的进度往后，一批一批推，直到没有新的变更（或推满 max_batches 批）。"""
+    """增量推：本机变更表里已提交的变更一批一批推，推成功一批删一批（只删推过的序号），
+    直到推完（或推满 max_batches 批）。推的是行"现在"的样子，所以先后、重推都不影响结果。"""
     state = check_ready(engine, client)
     stream = stream_of(engine)
     if state.get("stream") != stream:
-        raise SyncError(
-            "服务器记的不是这条变更流（第一次同步、或本机库重建过）：先做一次全推 "
-            "youju sync-push --full，或起步时用 youju sync-import 后 youju sync-push --mark-synced"
-        )
-    applied = int(state.get("applied_seq") or 0)
-    report = PushReport(applied_seq=applied)
-    size = batch
-    while max_batches is None or report.batches < max_batches:
-        changes = _changes(engine, applied, size)
-        if not changes:
-            break
-        payload, ups, dels = _payload(engine, changes)
-        body = dumps(payload)
-        if len(body) > max_bytes and len(changes) > 1:
-            size = max(1, len(changes) // 2)
-            continue
-        report.blobs += _send_blobs(client, _blob_paths(payload), store)
-        result = client.json(
-            "POST",
-            "/apply",
-            {"stream": stream, "from_seq": applied, "to_seq": changes[-1][0], "tables": payload},
-        )
-        applied = int(result["applied_seq"])
-        for name, count in (result.get("kept") or {}).items():
-            report.kept[name] = report.kept.get(name, 0) + int(count)
-        report.batches += 1
-        report.upserts += ups
-        report.deletes += dels
-        report.applied_seq = applied
-        _prune(engine, applied)
+        raise SyncError("服务器记的不是这条变更流（还没起步、或本机库重建过）：" + REBUILD_HINT)
+    report = PushReport(applied_seq=int(state.get("applied_seq") or 0))
+    with push_lock(engine):
         size = batch
+        while max_batches is None or report.batches < max_batches:
+            changes = _changes(engine, size)
+            if not changes:
+                break
+            payload, ups, dels = _payload(engine, changes)
+            body = dumps(payload)
+            if len(body) > max_bytes and len(changes) > 1:
+                size = max(1, len(changes) // 2)
+                continue
+            report.blobs += _send_blobs(client, _blob_paths(payload), store)
+            result = client.json(
+                "POST",
+                "/apply",
+                {"stream": stream, "max_seq": changes[-1][0], "tables": payload},
+            )
+            for name, count in (result.get("kept") or {}).items():
+                report.kept[name] = report.kept.get(name, 0) + int(count)
+            _forget(engine, [seq for seq, _, _ in changes])
+            report.batches += 1
+            report.upserts += ups
+            report.deletes += dels
+            report.applied_seq = int(result.get("applied_seq") or 0)
+            size = batch
     return report
 
 
@@ -405,6 +455,10 @@ def _pages(engine: Engine, t: Table, page: int) -> Iterator[list[dict]]:
         last = rows[-1][col]
 
 
+# 全推删服务器上"多出来的行"时，超过这么多（且超过服务器那张表 1%）就停下，要 --force 才删
+PRUNE_GUARD_ROWS = 200
+
+
 def full_push(
     engine: Engine,
     client: Client,
@@ -414,41 +468,68 @@ def full_push(
     prune: bool = True,
     only: set[str] | None = None,
     store: storage.Backend | None = None,
+    force: bool = False,
+    dry_run: bool = False,
 ) -> PushReport:
     """整表全推：本机各表的全部行按主键分页推一遍（父表在前），再按主键清单删掉服务器上
-    多出来的行（子表在前），最后把服务器的进度设成开始全推前本机的最大序号。
+    多出来的行（子表在前）。用来修两边对不上；**本机库重建过、从备份恢复过不能用它**
+    （check_ready 会拦下，要重新起步）。
 
-    第一次同步、本机库重建过、或者两边对不上要修的时候用。推的时候本机照常抓取：开始以后的
-    变更都在变更表里，全推完接着增量推。"""
-    check_ready(engine, client)
+    - 删多余行前先数：超过 PRUNE_GUARD_ROWS 行、而且超过服务器那张表的 1% 就停下，要 force；
+      dry_run 只数不写不删。服务器自己的行（用户线索生成的截止日期）服务器不列出来，不会删。
+    - 变更表不动：全推期间和之前的变更照样留着，之后的增量再推一遍它们"现在"的样子（重推无害）。
+    - 服务器还没起步过（没有变更流）时，只有不带 only 的全推推完才设变更流。"""
+    state = check_ready(engine, client)
     stream = stream_of(engine)
     if not stream:
         raise SyncError("本机库还没建同步触发器：先执行 youju sync-setup")
-    with engine.connect() as conn:
-        start_seq = int(conn.scalar(text(f"SELECT COALESCE(MAX(seq), 0) FROM `{CHANGES}`")) or 0)
-    report = PushReport(applied_seq=start_seq)
+    if only is not None and state.get("stream") != stream:
+        raise SyncError("服务器还没对上这条变更流：第一次要全部表一起全推（不带 --tables）")
+    report = PushReport(applied_seq=int(state.get("applied_seq") or 0))
     chosen = [t for t in sync_tables.tables() if only is None or t.name in only]
-    for t in chosen:
-        for rows in _pages(engine, t, page):
-            chunk: list[dict] = []
-            size = 0
-            for row in rows:
-                encoded = encode_row(t, row)
-                chunk.append(encoded)
-                size += len(dumps(encoded))
-                if size >= max_bytes:
-                    report.blobs += _send_full(client, t, chunk, store)
-                    report.upserts += len(chunk)
-                    chunk, size = [], 0
-            if chunk:
-                report.blobs += _send_full(client, t, chunk, store)
-                report.upserts += len(chunk)
-            report.batches += 1
-    if prune:
-        for t in reversed(chosen):
-            report.deletes += _prune_server(engine, client, t, page * 10)
-    client.json("POST", "/reset", {"stream": stream, "applied_seq": start_seq})
-    _prune(engine, start_seq)
+    with push_lock(engine):
+        if not dry_run:
+            for t in chosen:
+                for rows in _pages(engine, t, page):
+                    chunk: list[dict] = []
+                    size = 0
+                    for row in rows:
+                        encoded = encode_row(t, row)
+                        chunk.append(encoded)
+                        size += len(dumps(encoded))
+                        if size >= max_bytes:
+                            report.blobs += _send_full(client, t, chunk, store)
+                            report.upserts += len(chunk)
+                            chunk, size = [], 0
+                    if chunk:
+                        report.blobs += _send_full(client, t, chunk, store)
+                        report.upserts += len(chunk)
+                    report.batches += 1
+        if prune:
+            extras = {t.name: _server_extras(engine, client, t, page * 10) for t in chosen}
+            counts = client.json("GET", "/counts").get("counts", {})
+            too_many = [
+                name
+                for name, pks in extras.items()
+                if len(pks) > PRUNE_GUARD_ROWS and len(pks) > int(counts.get(name, 0)) // 100
+            ]
+            report.would_delete = {name: len(pks) for name, pks in extras.items() if pks}
+            if too_many and not force and not dry_run:
+                raise SyncError(
+                    f"全推要删服务器上 {sum(report.would_delete.values())} 行多出来的数据"
+                    f"（{', '.join(too_many[:5])} 超过 1%），先用 --dry-run 看清楚；"
+                    "本机库重建过的话按手册重新起步，确认要删再加 --force"
+                )
+            if not dry_run:
+                for t in reversed(chosen):
+                    pks = extras[t.name]
+                    for start in range(0, len(pks), 1000):
+                        part = pks[start : start + 1000]
+                        body = {"full": True, "tables": {t.name: {"upserts": [], "deletes": part}}}
+                        result = client.json("POST", "/apply", body)
+                        report.deletes += len(part) - int((result.get("kept") or {}).get(t.name, 0))
+        if only is None and not dry_run and state.get("stream") != stream:
+            client.json("POST", "/reset", {"stream": stream, "applied_seq": 0})
     return report
 
 
@@ -461,38 +542,35 @@ def _send_full(
     return sent
 
 
-def _prune_server(engine: Engine, client: Client, t: Table, page: int) -> int:
+def _server_extras(engine: Engine, client: Client, t: Table, page: int) -> list[Any]:
+    """服务器上有、本机没有的主键（服务器自己的行不在服务器给的清单里）。"""
     (col,) = pk_columns(t)
     after: Any = None
-    removed = 0
+    extra: list[Any] = []
     while True:
         params: dict[str, Any] = {"table": t.name, "limit": page}
         if after is not None:
             params["after"] = after
         theirs = client.json("GET", "/pks", params=params).get("pks", [])
         if not theirs:
-            return removed
+            return extra
         with engine.connect() as conn:
             mine = set(conn.scalars(select(t.c[col]).where(t.c[col].in_(theirs))))
-        extra = [pk for pk in theirs if pk not in mine]
-        if extra:
-            body = {"full": True, "tables": {t.name: {"upserts": [], "deletes": extra}}}
-            result = client.json("POST", "/apply", body)
-            removed += len(extra) - int((result.get("kept") or {}).get(t.name, 0))
+        extra.extend(pk for pk in theirs if pk not in mine)
         after = theirs[-1]
 
 
 def mark_synced(engine: Engine, client: Client) -> int:
-    """起步时用：本机刚从服务器导出的数据导入（两边一样），直接把服务器的进度设成本机现在的最大序号。"""
+    """起步时用（本机定时任务停着）：本机刚导入服务器导出的数据，两边一样，变更表里只有导入时
+    记下的，全部清掉，把服务器的变更流设成本机的。返回清掉的条数。"""
     check_ready(engine, client)
     stream = stream_of(engine)
     if not stream:
         raise SyncError("本机库还没建同步触发器：先执行 youju sync-setup")
-    with engine.connect() as conn:
-        seq = int(conn.scalar(text(f"SELECT COALESCE(MAX(seq), 0) FROM `{CHANGES}`")) or 0)
-    client.json("POST", "/reset", {"stream": stream, "applied_seq": seq})
-    _prune(engine, seq)
-    return seq
+    with push_lock(engine), engine.begin() as conn:
+        cleared = conn.execute(text(f"DELETE FROM `{CHANGES}`")).rowcount
+    client.json("POST", "/reset", {"stream": stream, "applied_seq": 0})
+    return int(cleared or 0)
 
 
 def status(engine: Engine, client: Client | None) -> dict:
@@ -544,6 +622,9 @@ def export(engine: Engine, out: IO[bytes]) -> dict[str, int]:
         conn.begin(),
     ):
         revision = conn.scalar(text("SELECT version_num FROM alembic_version"))
+        # 自增起点：information_schema 默认缓存 24 小时，先关掉缓存读最新的；
+        # 再和"现有最大编号加一"取大的（包括不导出的用户线索截止日期）
+        conn.execute(text("SET SESSION information_schema_stats_expiry = 0"))
         next_ids = {
             name: int(value or 1)
             for name, value in conn.execute(
@@ -554,6 +635,11 @@ def export(engine: Engine, out: IO[bytes]) -> dict[str, int]:
             )
             if name in sync_tables.SYNC_TABLES
         }
+        for t in tables:
+            (col,) = pk_columns(t)
+            top = conn.scalar(select(func.max(t.c[col])))
+            if t.name in next_ids and top is not None:
+                next_ids[t.name] = max(next_ids[t.name], int(top) + 1)
         with gzip.GzipFile(fileobj=out, mode="wb") as gz:
             gz.write(
                 dumps(

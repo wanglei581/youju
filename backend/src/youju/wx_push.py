@@ -27,6 +27,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import struct
 import time as clock
 from collections.abc import Mapping
@@ -177,12 +178,11 @@ def seal_reply(
             {"Encrypt": encrypted, "MsgSignature": signature, "TimeStamp": stamp, "Nonce": nonce},
             separators=(",", ":"),
         ).encode()
-    root = ElementTree.Element("xml")
-    for name, value in (
-        ("Encrypt", encrypted),
-        ("MsgSignature", signature),
-        ("TimeStamp", str(stamp)),
-        ("Nonce", nonce),
-    ):
-        ElementTree.SubElement(root, name).text = value
-    return ElementTree.tostring(root, encoding="utf-8")
+    # 照官方示例的写法：字符串放在 CDATA 里。密文是 Base64、签名是十六进制，随机数只留字母数字
+    safe_nonce = re.sub(r"[^0-9A-Za-z]", "", nonce)
+    return (
+        f"<xml><Encrypt><![CDATA[{encrypted}]]></Encrypt>"
+        f"<MsgSignature><![CDATA[{signature}]]></MsgSignature>"
+        f"<TimeStamp>{stamp}</TimeStamp>"
+        f"<Nonce><![CDATA[{safe_nonce}]]></Nonce></xml>"
+    ).encode()

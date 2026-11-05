@@ -6,8 +6,8 @@
 
 - 导出（在云托管 admin 的"登录实例"里跑）：按前缀列出文件、逐个下载、打成一个 tar.gz；
   不给 --output 时把这个包传回对象存储 exports/ 下，在云托管控制台下载（控制台一次只能下一个文件）。
-- 导入（在新服务器上跑）：解开包，按原路径写进现在配的存储（disk、s3），已经有的跳过
-  （可以重复导入）。
+- 导入（在新服务器上跑）：解开包，按原路径写进现在配的存储（disk、s3），已经有、大小一样的跳过，
+  不一样的覆盖（可以重复导入）。
   文件 ID 只看路径（youju/storage.py），库里的旧文件 ID 不用改。
 """
 
@@ -92,6 +92,12 @@ def export_and_upload(env: str, prefixes: tuple[str, ...] = DEFAULT_PREFIXES) ->
     return report
 
 
+def _size(store: storage.Backend, path: str) -> int | None:
+    if isinstance(store, storage.DiskBackend):
+        return store._file(path).stat().st_size
+    return None  # s3：大小不知道，当作不一样，重写一遍
+
+
 def import_archive(source: Path) -> MoveReport:
     """把导出包按原路径写进现在配的存储（disk、s3）。不是云托管存储才能导入。"""
     if not storage.emulated():
@@ -107,7 +113,7 @@ def import_archive(source: Path) -> MoveReport:
             if not storage.valid_path(path) or member.size > MAX_FILE:
                 report.skipped += 1
                 continue
-            if store.exists(path):
+            if store.exists(path) and _size(store, path) == member.size:
                 report.skipped += 1
                 continue
             extracted = tar.extractfile(member)

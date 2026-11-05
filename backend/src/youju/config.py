@@ -371,6 +371,12 @@ class Settings(BaseSettings):
                 "自己登录（YOUJU_SESSION_LOGIN）或自己取 access_token（YOUJU_WX_OPEN_API=token）"
                 "要配 YOUJU_WX_APPID 和 YOUJU_WX_APPSECRET"
             )
+        if self.hosting == "self" and self.session_login and self.wx_open_api != "token":
+            # 不然内容安全检查会悄悄跳过（wxopen.available 为假时一律算通过）
+            raise ValueError(
+                "自建服务器的小程序接口（YOUJU_SESSION_LOGIN）要设 YOUJU_WX_OPEN_API=token，"
+                "内容安全检查、提醒、付款都靠它"
+            )
         if self.hosting == "self" and self.wx_open_api == "cloudrun" and self.send_wx_messages:
             raise ValueError(
                 "自建服务器没有云托管开放接口服务：要发订阅消息先设 YOUJU_WX_OPEN_API=token"
@@ -409,9 +415,13 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "YOUJU_WX_PUSH_MODE=signed 时 YOUJU_WX_PUSH_TOKEN 要填 3–32 位英文或数字"
                 )
-            if aes and not re.fullmatch(r"[A-Za-z0-9]{43}", aes):
-                raise ValueError("YOUJU_WX_PUSH_AES_KEY（EncodingAESKey）是 43 位英文或数字")
-            if aes and not self.wx_appid.strip():
+            # 只收安全模式：明文模式的签名只覆盖 Token、时间、随机数，截到一次就能伪造包体
+            if not re.fullmatch(r"[A-Za-z0-9]{43}", aes):
+                raise ValueError(
+                    "YOUJU_WX_PUSH_MODE=signed 要用安全模式：YOUJU_WX_PUSH_AES_KEY 填小程序后台的"
+                    " EncodingAESKey（43 位英文或数字）"
+                )
+            if not self.wx_appid.strip():
                 raise ValueError(
                     "安全模式的消息推送要配 YOUJU_WX_APPID（解密后核对是不是本小程序）"
                 )

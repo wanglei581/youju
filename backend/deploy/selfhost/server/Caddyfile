@@ -14,11 +14,17 @@
 	@sync path /api/sync/*
 	handle @sync {
 		request_body {
-			max_size 80MB
+			max_size 32MB
 		}
 		reverse_proxy worker:8000 {
 			header_up X-Forwarded-For {remote_host}
 		}
+	}
+
+	# 本机每 5 分钟从外面看一次定时任务服务还在不在（youju uptime-check）
+	handle /health/worker {
+		rewrite * /health
+		reverse_proxy worker:8000
 	}
 
 	@app path /api/v1/* /health {$YOUJU_PUSH_PATH}

@@ -57,7 +57,8 @@ def test_uptime_check_alerts_once_and_on_recovery(tmp_path, monkeypatch):
 
     down = httpx.ConnectError("x")
     up = httpx.Response(200, json={"status": "ok"})
-    replies.extend([down, down, down, up, up])
+    # 每次看两处（接口、定时任务）；第一处不通就不看第二处
+    replies.extend([down, down, down, up, up, up, up])
     assert run() == 1 and sent == []  # 第一次不通先不提醒
     assert run() == 1 and len(sent) == 1 and "连续 2 次" in sent[0]
     assert run() == 1 and len(sent) == 1  # 同一次故障只提醒一次

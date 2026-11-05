@@ -2150,12 +2150,22 @@ def _cmd_sync_push(args: argparse.Namespace) -> int:
     try:
         client = local.client_from_settings(get_settings())
         if args.mark_synced:
-            seq = local.mark_synced(engine, client)
-            print(f"已把服务器的同步进度设成本机现在的 {seq}")
+            cleared = local.mark_synced(engine, client)
+            print(f"起步完成：清掉导入时记下的 {cleared} 条变更，服务器对上了本机的变更流")
             return 0
         if args.full:
             only = set(args.tables.split(",")) if args.tables else None
-            report = local.full_push(engine, client, prune=not args.no_prune, only=only)
+            report = local.full_push(
+                engine,
+                client,
+                prune=not args.no_prune,
+                only=only,
+                force=args.force,
+                dry_run=args.dry_run,
+            )
+            if args.dry_run:
+                print(f"只数不改：服务器上多出来、全推会删的行 {report.would_delete or '没有'}")
+                return 0
         else:
             report = local.push(engine, client, max_batches=args.max_batches)
     except local.SyncError as exc:
@@ -2248,12 +2258,18 @@ def _cmd_uptime_check(args: argparse.Namespace) -> int:
     from youju.alerts import send_alert
 
     url = args.url.rstrip("/") + "/health"
-    try:
-        response = httpx.get(url, timeout=10, trust_env=False)
-        healthy = response.status_code == 200 and response.json().get("status") == "ok"
-        reason = f"HTTP {response.status_code}"
-    except (httpx.HTTPError, ValueError) as exc:
-        healthy, reason = False, type(exc).__name__
+    healthy, reason = True, ""
+    # 接口服务和定时任务服务各看一次（Caddy 把 /health/worker 转给 worker 的 /health）
+    for path, name in (("/health", "接口"), ("/health/worker", "定时任务")):
+        try:
+            response = httpx.get(args.url.rstrip("/") + path, timeout=10, trust_env=False)
+            ok = response.status_code == 200 and response.json().get("status") == "ok"
+            if not ok:
+                healthy, reason = False, f"{name} HTTP {response.status_code}"
+        except (httpx.HTTPError, ValueError, AttributeError) as exc:
+            healthy, reason = False, f"{name} {type(exc).__name__}"
+        if not healthy:
+            break
     try:
         state = _json.loads(args.state.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -2809,6 +2825,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--tables", help="全推时只推这几张表（逗号分隔）")
     p.add_argument("--mark-synced", action="store_true", help="起步导入后：把服务器进度设成本机的")
     p.add_argument("--max-batches", type=int, default=None, help="这次最多推几批")
+    p.add_argument("--dry-run", action="store_true", help="全推时只数服务器上多出来的行，不改")
+    p.add_argument("--force", action="store_true", help="全推要删很多行时也照删（先 --dry-run）")
     p.set_defaults(func=_cmd_sync_push)
     p = sub.add_parser("sync-status", help="同步状态：待推的变更、两边各表条数差")
     p.set_defaults(func=_cmd_sync_status)
@@ -2829,7 +2847,7 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=_cmd_storage_import)
     p = sub.add_parser("uptime-check", help="（本机）从外面看服务器的 /health，不通就提醒")
     p.add_argument("--url", required=True, help="服务器地址，如 https://api.example.com")
-    p.add_argument("--state", type=Path, default=Path("/tmp/youju-uptime.json"))
+    p.add_argument("--state", type=Path, default=Path(tempfile.gettempdir()) / "youju-uptime.json")
     p.set_defaults(func=_cmd_uptime_check)
 
     p = sub.add_parser("serve", help="启动 API 服务")

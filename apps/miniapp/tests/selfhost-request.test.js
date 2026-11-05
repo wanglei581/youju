@@ -181,3 +181,24 @@ test('配置文件：默认不填 apiBaseUrl；app.js 填了就不初始化云�
   assert.equal(config.apiBaseUrl, '');
   assert.match(read('app.js'), /!config\.apiBaseUrl && config\.cloudEnv && wx\.cloud/);
 });
+
+test('几个请求同时拿旧凭证回 401：后回来的不会把刚换好的新凭证清掉', async () => {
+  const h = harness(undefined, { youjuSession: { token: 'ys1.old', expiresAt: Date.now() + 3600e3 } });
+  h.api.request('/api/v1/me');
+  h.api.request('/api/v1/me/follows');
+  await flush();
+  const [a, b] = h.requests.splice(0, 2);
+  a.success(ok({ detail: 'x' }, 401));
+  await flush();
+  h.logins[0].success({ code: 'c' });
+  await flush();
+  h.requests.shift().success(ok({ token: 'ys1.new', expiresIn: 3600 }));
+  await flush();
+  assert.equal(h.storage.get('youjuSession').token, 'ys1.new');
+  b.success(ok({ detail: 'x' }, 401));
+  await flush();
+  // 新凭证还在，B 直接用它重发，不再登录一次
+  assert.equal(h.storage.get('youjuSession').token, 'ys1.new');
+  assert.equal(h.logins.length, 1);
+  assert.ok(h.requests.every((r) => r.header.Authorization === 'Bearer ys1.new'));
+});

@@ -164,6 +164,20 @@ def test_login_rejects_bad_code_format(session_mode):
             "43",
         ),
         ({"YOUJU_SYNC_SECRET": "short"}, "SYNC_SECRET"),
+        (
+            {
+                "YOUJU_HOSTING": "self",
+                "YOUJU_SESSION_LOGIN": "true",
+                "YOUJU_SESSION_SECRET": "k" * 40,
+                "YOUJU_WX_APPID": "wx0000000000000000",
+                "YOUJU_WX_APPSECRET": "s",
+            },
+            "YOUJU_WX_OPEN_API=token",
+        ),
+        (
+            {"YOUJU_WX_PUSH_MODE": "signed", "YOUJU_WX_PUSH_TOKEN": "abc", "YOUJU_WX_APPID": "wx1"},
+            "安全模式",
+        ),
         ({"YOUJU_PUBLIC_REPLICA": "true"}, "HOSTING=self"),
         ({"YOUJU_OFFSITE_AGE_RECIPIENT": "not-a-key"}, "age1"),
     ],

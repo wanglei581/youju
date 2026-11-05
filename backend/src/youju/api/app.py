@@ -298,7 +298,7 @@ async def _role_guard(request: Request, call_next):
         return JSONResponse(status_code=404, content={"detail": "Not Found"})
     if (
         getattr(get_settings(), "public_replica", False)
-        and request.method in ("POST", "PUT", "DELETE")
+        and request.method in ("POST", "PUT", "PATCH", "DELETE")
         and path.startswith("/api/admin/")
         and not path.startswith(REPLICA_ADMIN_WRITES)
     ):

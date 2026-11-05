@@ -33,8 +33,10 @@ log = logging.getLogger("youju.sync")
 router = APIRouter(prefix="/api/sync/v1", include_in_schema=False)
 STATE = "sync_state"
 # 一次请求最多收多少字节（压缩后），解压后最多多少：防止塞爆内存
-MAX_BODY = 64 * 1024 * 1024
-MAX_PLAIN = 512 * 1024 * 1024
+# 本机每批按未压缩 8MB 切（local.MAX_BYTES），附件副本最大 20MB：这两个上限都留了余量，
+# 又不至于让几个请求就把 worker（限 640MB 内存）撑爆
+MAX_BODY = 32 * 1024 * 1024
+MAX_PLAIN = 64 * 1024 * 1024
 MAX_BLOB = 25 * 1024 * 1024
 BLOB_PREFIX = "attachments/"
 # 同步表里只属于服务器的行：本机没有，全推删"多出来的行"时要跳过（条件是"不是服务器自己的行"）
@@ -60,10 +62,23 @@ def _secret() -> str:
 
 
 async def _body(request: Request) -> bytes:
-    """读包体（限大小）、验签、按需解压。签名算在原样收到的包体上。"""
+    """先只看请求头验签（方法、路径加查询串、时间、头里写的包体 SHA-256），签名对了才读包体
+    （限大小），读完核对包体的 SHA-256 和头里的一致，再按需解压。"""
     secret = _secret()
     if not secret:
         raise HTTPException(status_code=404, detail="Not Found")
+    target = request.url.path + (f"?{request.url.query}" if request.url.query else "")
+    digest = request.headers.get(sync_tables.HEADER_BODY, "")
+    if not sync_tables.signature_ok(
+        secret,
+        request.method,
+        target,
+        request.headers.get(sync_tables.HEADER_TIME, ""),
+        digest,
+        request.headers.get(sync_tables.HEADER_SIGNATURE, ""),
+        clock.time(),
+    ):
+        raise HTTPException(status_code=401, detail="签名不对或已过期")
     declared = request.headers.get("content-length")
     if declared is not None and (not declared.isdigit() or int(declared) > MAX_BODY):
         raise HTTPException(status_code=413, detail="包体太大")
@@ -73,17 +88,9 @@ async def _body(request: Request) -> bytes:
         if len(raw) > MAX_BODY:
             raise HTTPException(status_code=413, detail="包体太大")
     body = bytes(raw)
-    target = request.url.path + (f"?{request.url.query}" if request.url.query else "")
-    if not sync_tables.signature_ok(
-        secret,
-        request.method,
-        target,
-        request.headers.get(sync_tables.HEADER_TIME, ""),
-        body,
-        request.headers.get(sync_tables.HEADER_SIGNATURE, ""),
-        clock.time(),
-    ):
-        raise HTTPException(status_code=401, detail="签名不对或已过期")
+    del raw
+    if sync_tables.body_digest(body) != digest:
+        raise HTTPException(status_code=401, detail="包体和签名对不上")
     if request.headers.get("content-encoding") == "gzip":
         try:
             body = _gunzip(body)
@@ -122,19 +129,40 @@ def ensure_state(engine: Engine) -> None:
         )
 
 
-def read_state(engine: Engine) -> dict:
+def max_ids(conn: Connection) -> dict[str, int]:
+    """各同步表现在最大的主键（服务器自己的行不算）。本机推之前用它核对本机的自增编号没有倒退
+    （本机从备份恢复、重建过时，新建的行会和服务器上已有的撞编号，REPLACE 会盖掉别的行）。"""
+    out = {}
+    for t in sync_tables.tables():
+        (col,) = pk_columns(t)
+        if not t.c[col].autoincrement or t.c[col].foreign_keys:
+            continue  # 主键是父表编号的（如 document_details）跟着父表走，不单独核对
+        stmt = select(func.max(t.c[col]))
+        if t.name in SERVER_OWNED:
+            stmt = stmt.where(SERVER_OWNED[t.name](t))
+        value = conn.scalar(stmt)
+        if value is not None:
+            out[t.name] = int(value)
+    return out
+
+
+def read_state(engine: Engine, *, with_ids: bool = False) -> dict:
     ensure_state(engine)
     with engine.connect() as conn:
         row = conn.execute(
             text(f"SELECT stream, applied_seq, updated_at FROM `{STATE}` WHERE name = 'public'")
         ).first()
         revision = conn.scalar(text("SELECT version_num FROM alembic_version"))
-    return {
+        ids = max_ids(conn) if with_ids else None
+    out = {
         "stream": row.stream if row else None,
         "applied_seq": int(row.applied_seq) if row else 0,
         "updated_at": row.updated_at.isoformat() if row else None,
         "revision": revision,
     }
+    if ids is not None:
+        out["max_ids"] = ids
+    return out
 
 
 class Conflict(Exception):
@@ -178,11 +206,13 @@ def _old_blob_paths(conn: Connection, parts: dict) -> set[str]:
 def apply(engine: Engine, payload: dict) -> dict:
     """写一批（一个事务）。
 
-    - 增量（full 不是 true）：stream、from_seq 要和服务器记的进度一致，否则抛 Conflict（409），
-      写完把进度改成 to_seq；
-    - 全推（full=true）：不看、不改进度（最后由 /reset 设）。
+    - 增量（full 不是 true）：stream 要和服务器记的一致（本机换了变更流、或服务器换过，都要先
+      重新起步），否则抛 Conflict（409）。不按序号排先后：本机每批推的是这些行"现在"的样子，
+      早一批晚一批、重推一遍结果都一样；服务器只记下推到过的最大序号给人看；
+    - 全推（full=true）：不看 stream（第一次全推完由 /reset 设）。
     先删后写：删按子表先、外键检查照开（用户数据里指向它的照外键级联或置空；被挡住删不了的那一行
-    留着，按表计数写进回执 kept）；写用 REPLACE、关外键检查（见 youju/sync/__init__.py）。"""
+    留着，按表计数写进回执 kept；服务器自己的行不删）；写用 REPLACE、关外键检查
+    （见 youju/sync/__init__.py）。"""
     full = payload.get("full") is True
     parts = _decoded(payload.get("tables"))
     ensure_state(engine)
@@ -192,10 +222,7 @@ def apply(engine: Engine, payload: dict) -> dict:
             row = conn.execute(
                 text(f"SELECT stream, applied_seq FROM `{STATE}` WHERE name = 'public' FOR UPDATE")
             ).first()
-            from_seq, to_seq = payload.get("from_seq"), payload.get("to_seq")
-            if type(from_seq) is not int or type(to_seq) is not int or to_seq <= from_seq:
-                raise ValueError("from_seq、to_seq 不对")
-            if row is None or row.stream != payload.get("stream") or row.applied_seq != from_seq:
+            if row is None or row.stream != payload.get("stream"):
                 current = {
                     "stream": row.stream if row else None,
                     "applied_seq": row.applied_seq if row else 0,
@@ -217,12 +244,14 @@ def apply(engine: Engine, payload: dict) -> dict:
                     conn.execute(Replace(t), upserts[start : start + 500])
         finally:
             conn.execute(text("SET FOREIGN_KEY_CHECKS = 1"))
-        if not full:
+        seq = payload.get("max_seq")
+        if not full and type(seq) is int:
             conn.execute(
                 text(
-                    f"UPDATE `{STATE}` SET applied_seq = :s, updated_at = :u WHERE name = 'public'"
+                    f"UPDATE `{STATE}` SET applied_seq = GREATEST(applied_seq, :s),"
+                    " updated_at = :u WHERE name = 'public'"
                 ),
-                {"s": payload["to_seq"], "u": datetime.now(UTC).replace(tzinfo=None)},
+                {"s": seq, "u": datetime.now(UTC).replace(tzinfo=None)},
             )
     if old_paths:
         _collect_garbage(engine, old_paths)
@@ -231,12 +260,19 @@ def apply(engine: Engine, payload: dict) -> dict:
 
 
 def _delete(conn: Connection, t: Table, pks: list[Any]) -> int:
-    """删这些主键的行；被用户数据（RESTRICT 外键）挡住的逐行留下，返回留下的行数。"""
+    """删这些主键的行；被用户数据（RESTRICT 外键）挡住的逐行留下，返回留下的行数。
+    服务器自己的行（SERVER_OWNED，如用户线索生成的截止日期）一律不删。"""
     (col,) = pk_columns(t)
+    own = SERVER_OWNED.get(t.name)
+
+    def stmt(condition):
+        query = t.delete().where(condition)
+        return query.where(own(t)) if own else query
+
     try:
         with conn.begin_nested():
             for start in range(0, len(pks), 1000):
-                conn.execute(t.delete().where(t.c[col].in_(pks[start : start + 1000])))
+                conn.execute(stmt(t.c[col].in_(pks[start : start + 1000])))
         return 0
     except IntegrityError:
         pass
@@ -244,7 +280,7 @@ def _delete(conn: Connection, t: Table, pks: list[Any]) -> int:
     for pk in pks:
         try:
             with conn.begin_nested():
-                conn.execute(t.delete().where(t.c[col] == pk))
+                conn.execute(stmt(t.c[col] == pk))
         except IntegrityError:
             lost += 1
             log.warning("同步删除 %s #%s 被用户数据挡住，留着", t.name, pk)
@@ -277,7 +313,7 @@ def _collect_garbage(engine: Engine, paths: set[str]) -> None:
 @router.get("/state")
 async def state(request: Request) -> dict:
     await _body(request)
-    return read_state(get_engine())
+    return read_state(get_engine(), with_ids=True)
 
 
 @router.get("/counts")

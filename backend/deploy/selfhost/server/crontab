@@ -11,8 +11,8 @@
 20 * * * * /app/backend/deploy/job.sh rewards-reconcile
 # 订阅提醒：本机早上 6:30 那轮抓完、推过来以后再发（本机每 10 分钟推一次，留足时间）
 10 8 * * *  /app/backend/deploy/job.sh notify
-# 用户纠错过的文件复查截止日期（读纠错，在服务器上做；结果写在纠错旁边）
-40 8 * * *  /app/backend/deploy/job.sh triage-feedback
+# 用户纠错过的文件复查截止日期（triage-feedback）2.0 先不跑：它把结果写在截止日期上，那是从本机
+# 同步来的行，服务器上改了会被下次同步盖掉；要改成把结果只记在纠错上以后再加回来
 30 3 * * *  /app/backend/deploy/job.sh cleanup
 # 整库备份存本机存储（保留 30 天）→ 校验 → 加密后传异地（COS 归档）
 0 4 * * *  /app/backend/deploy/job.sh backup
