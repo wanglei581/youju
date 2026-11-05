@@ -193,6 +193,23 @@ test('批量结果汇总超过一页时可以直接跳到明细（11/5 500 家�
   assert.match(textOf(render('pages/results/index.wxml', p.data)), /跳到明细/);
   await p.next();
   assert.deepEqual(calls.at(-1), { cursor: '500', revision: 'r1' });
+  // 汇总条数不是 20 的倍数：跳到含第一条明细的那一页（汇总 510 条 → 第 26 页，从第 501 行起，第 511 行起是明细）
+  const calls510 = [];
+  const p510 = load('results', { advisorReading: async (id, args) => {
+    calls510.push(plain(args));
+    const cursor = Number(args.cursor || 0);
+    return result({ kind: 'track', total: 7083, rowCount: 510, summaryCount: 510, items: [{ n: cursor, title: '汇总', fields: [] }], nextCursor: String(cursor + 20) });
+  } });
+  p510.onLoad({ mode: 'advisor', taskId: '8' }); await p510.onShow();
+  assert.match(textOf(render('pages/results/index.wxml', p510.data)), /明细从第 511 行起/);
+  await p510.jumpDetail();
+  assert.deepEqual(calls510.at(-1), { cursor: '500', revision: 'r1' });
+  assert.equal(p510.data.page, 26);
+  // 全是汇总（没有明细）：不出现
+  const allSummary = load('results', { advisorReading: async () => result({ kind: 'track', total: 40, rowCount: 40, summaryCount: 40, nextCursor: '20' }) });
+  allSummary.onLoad({ mode: 'advisor', taskId: '8' }); await allSummary.onShow();
+  assert.equal(allSummary.data.detailPage, 0);
+  assert.doesNotMatch(textOf(render('pages/results/index.wxml', allSummary.data)), /跳到明细/);
   // 汇总不满一页（明细就在第 1 页）、旧接口没给汇总条数：不出现
   for (const summaryCount of [3, undefined]) {
     const q = load('results', { advisorReading: async () => result({ kind: 'track', total: 6, rowCount: 3, summaryCount }) });
