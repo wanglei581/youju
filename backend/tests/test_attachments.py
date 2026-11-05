@@ -6,6 +6,7 @@ import json
 import random
 import re
 import struct
+import tracemalloc
 import zipfile
 import zlib
 from collections import Counter
@@ -365,6 +366,87 @@ def test_office_files_with_large_pictures_are_not_copied() -> None:
     # 首页缩略图是正文首页的样子，不算
     thumbnail = with_parts(DOCX, {"docProps/thumbnail.jpeg": big})
     assert copies.check_content(thumbnail, "docx") == "docx"
+
+
+def recompressed(data: bytes, method: int, *names: str) -> bytes:
+    """把 Office 文件里的这些部件改用 method 压缩，其余照旧。"""
+    out = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(data)) as src, zipfile.ZipFile(out, "w") as dst:
+        for info in src.infolist():
+            body = src.read(info)
+            if info.filename in names:
+                info.compress_type = method
+            dst.writestr(info, body)
+    return out.getvalue()
+
+
+def peak_memory(read) -> int:
+    """read() 期间 Python 分配的内存最多比开始时多多少（tracemalloc，含解压出的数据）。"""
+    started = not tracemalloc.is_tracing()
+    if started:
+        tracemalloc.start()
+    tracemalloc.reset_peak()
+    base = tracemalloc.get_traced_memory()[0]
+    try:
+        read()
+        return tracemalloc.get_traced_memory()[1] - base
+    finally:
+        if started:
+            tracemalloc.stop()
+
+
+@pytest.mark.parametrize("method", [zipfile.ZIP_BZIP2, zipfile.ZIP_LZMA])
+def test_office_parts_with_other_compression_are_not_opened(monkeypatch, method: int) -> None:
+    """Python 解 bzip2、LZMA 部件时不管 read(n) 要多少，整段解开（压缩炸弹）。Office 只用 deflate 和
+    不压缩：有部件用别的压缩方式，一个部件都不打开，整份按取不出文字算（不存副本）。"""
+    pptx = with_parts(make_pptx("说明"), {"ppt/media/image1.png": make_png(16)})
+    files = {
+        "docx": recompressed(DOCX, method, "word/document.xml"),
+        "xlsx": recompressed(make_xlsx(("名称",)), method, "xl/worksheets/sheet1.xml"),
+        "pptx": recompressed(pptx, method, "ppt/media/image1.png"),  # 小图标也算
+    }
+    inner = recompressed(make_xlsx(("名称",)), method, "xl/worksheets/sheet1.xml")
+    assert len(inner) < copies.OBJECT_BYTES
+    embedded = with_parts(DOCX, {"word/embeddings/Workbook1.xlsx": inner})
+    plain = with_parts(DOCX, {"word/embeddings/Workbook1.xlsx": make_xlsx(("名称",))})
+    opened: list[tuple[str, int]] = []
+    real_open = zipfile.ZipFile.open
+
+    def spy(self, name, *args, **kwargs):
+        info = name if isinstance(name, zipfile.ZipInfo) else self.getinfo(name)
+        opened.append((info.filename, info.compress_type))
+        return real_open(self, name, *args, **kwargs)
+
+    monkeypatch.setattr(zipfile.ZipFile, "open", spy)
+    for kind, data in files.items():
+        assert copies.detect_type(data) == kind
+        assert copies.check_content(data, kind).code == "unchecked", kind
+    assert opened == []
+    # 嵌入的 Office 文件里有这种部件：外面的照常读，嵌入的一个部件都不打开，整份不存
+    assert copies.check_content(embedded, "docx").code == "unchecked"
+    assert opened and all(used != method for _, used in opened)
+    # 只用 deflate 和不压缩的照常存
+    assert copies.check_content(plain, "docx") == "docx"
+
+
+@pytest.mark.parametrize("method", [zipfile.ZIP_BZIP2, zipfile.ZIP_LZMA])
+def test_office_compression_bomb_is_not_inflated(method: int) -> None:
+    """11/5 独立审阅的样本：几百字节的 Office 文件，正文部件用 bzip2 压了几百 MB，以前一读就整段解开
+    （内存从 70MB 涨到 660MB）。这里压 128MB 的空格（bzip2 两百多字节、LZMA 不到 20KB）。"""
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w") as zf:
+        zf.writestr("[Content_Types].xml", "<Types/>")
+        info = zipfile.ZipInfo("word/document.xml")
+        info.compress_type = method
+        with zf.open(info, "w") as fh:
+            chunk = b" " * (1 << 20)
+            for _ in range(128):
+                fh.write(chunk)
+    bomb = out.getvalue()
+    assert len(bomb) < 64 * 1024
+    assert copies.detect_type(bomb) == "docx"
+    assert peak_memory(lambda: copies.check_content(bomb, "docx")) < 4 * 1024 * 1024
+    assert copies.check_content(bomb, "docx").code == "unchecked"
 
 
 def test_pdf_pages_mostly_covered_by_pictures_are_not_copied() -> None:
