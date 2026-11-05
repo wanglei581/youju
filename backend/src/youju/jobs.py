@@ -50,6 +50,7 @@ JOB_NAMES = OVERVIEW_JOBS + (
     "sync-push",
     "offsite-backup",
 )
+# 每 5 分钟一次的外部健康检查（本机看服务器）不记运行记录，和 advisor-run 一样
 
 
 def start_run(job: str) -> int | None:

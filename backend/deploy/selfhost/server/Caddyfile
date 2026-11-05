@@ -1,0 +1,43 @@
+# 2.0 云服务器的反向代理。YOUJU_DOMAIN 是已备案的接口域名（如 api.example.com），Caddy 自动申请、
+# 续期 HTTPS 证书（要放开 80、443 端口）。
+# - 只放行小程序接口（/api/v1/）、健康检查、消息推送和本机同步（/api/sync/，转给 worker）；
+#   核对台（/admin、/api/admin/）不对外，只能在服务器上经 SSH 隧道访问 127.0.0.1:8080。
+# - 不记访问日志（程序自己记，只记路径，见 youju/access_log.py）；客户端地址整个覆盖写进
+#   X-Forwarded-For（不信客户端自带的值），程序按 YOUJU_CLIENT_IP_HEADER 取。
+{
+	admin off
+}
+
+{$YOUJU_DOMAIN} {
+	encode gzip
+
+	@sync path /api/sync/*
+	handle @sync {
+		request_body {
+			max_size 80MB
+		}
+		reverse_proxy worker:8000 {
+			header_up X-Forwarded-For {remote_host}
+		}
+	}
+
+	@app path /api/v1/* /health {$YOUJU_PUSH_PATH}
+	handle @app {
+		request_body {
+			max_size 12MB
+		}
+		reverse_proxy api:8000 {
+			header_up X-Forwarded-For {remote_host}
+		}
+	}
+
+	handle {
+		respond 404
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		-Server
+	}
+}

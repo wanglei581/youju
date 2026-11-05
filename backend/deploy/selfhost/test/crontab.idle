@@ -1,0 +1,2 @@
+# 本机全栈测试用：只写心跳，不按点抓取（测试时手动跑命令）
+*/5 * * * * date +\%s > /tmp/youju-cron-heartbeat

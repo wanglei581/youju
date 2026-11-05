@@ -202,6 +202,9 @@ class Settings(BaseSettings):
     # token 用 AppSecret 取 stable_token，自己带 access_token 调
     # （自建服务器要在小程序后台把服务器 IP 加进白名单）
     wx_open_api: Literal["cloudrun", "token"] = "cloudrun"
+    # 微信服务端接口的地址。只在本机全栈测试时改成假的微信（deploy/selfhost/test/wxmock.py），
+    # 线上一律用默认的官方地址（不是 https 的只认测试用的几个主机名）
+    wx_api_base: str = "https://api.weixin.qq.com"
     # 对象存储（附件副本、批量工具结果、备份、访问日志归档、公开快照）：cloudbase 云托管对象存储；
     # disk 服务器本机目录；s3 兼容 S3 的对象存储（腾讯云 COS 带密钥、MinIO 等）。见 youju/storage.py
     storage_backend: Literal["cloudbase", "disk", "s3"] = "cloudbase"
@@ -225,6 +228,8 @@ class Settings(BaseSettings):
     # 客户端地址从哪个请求头取（最后一项）：云托管是 x-original-forwarded-for；自建服务器由反向代理
     # （Caddy）覆盖写入 x-forwarded-for。头里没有时用直连地址
     client_ip_header: str = Field(default="x-original-forwarded-for", pattern=r"^[a-z0-9-]{1,64}$")
+    # 访问日志打到容器标准输出的那一行只留地址前一半（自建服务器的容器日志存在自己的硬盘上）
+    log_mask_ip: bool = False
     # 公开数据同步（本机 → 服务器，只传公开内容，见 youju/sync/）：服务器上填了它才开放 /api/sync/；
     # 本机用同一个密钥给请求签名。至少 32 位随机字符
     sync_secret: SecretStr | None = None
@@ -241,10 +246,11 @@ class Settings(BaseSettings):
     offsite_s3_access_key: SecretStr | None = None
     offsite_s3_secret_key: SecretStr | None = None
     offsite_s3_path_style: bool = False
-    # 存储类型（COS 的归档是 ARCHIVE；归档的文件至少存 90 天，提前删也按 90 天收费）
+    # 存储类型（COS 的归档是 ARCHIVE；归档的文件提前删也按存满 90 天收费，备份不大，多花几块钱）
     offsite_storage_class: str = Field(default="ARCHIVE", pattern=r"^[A-Z_]{0,32}$")
     offsite_age_recipient: str = ""
-    offsite_keep_days: int = Field(default=180, ge=90, le=3650)
+    # 和本机备份一样保留 30 天：隐私保护指引写的是备份保留 30 天，注销用户的数据不能在异地多留
+    offsite_keep_days: int = Field(default=30, ge=7, le=3650)
 
     @field_validator("xpay_price_pass", "xpay_price_pass_90", mode="before")
     @classmethod
@@ -411,6 +417,12 @@ class Settings(BaseSettings):
                 )
         if self.hosting == "cloudrun" and self.wx_push_mode == "signed" and self.trust_wx_headers:
             raise ValueError("云托管上用云托管的消息推送，不设 YOUJU_WX_PUSH_MODE=signed")
+        base = self.wx_api_base.rstrip("/")
+        if not (
+            base == "https://api.weixin.qq.com"
+            or re.fullmatch(r"http://(wxmock|localhost|127\.0\.0\.1)(:\d+)?", base)
+        ):
+            raise ValueError("YOUJU_WX_API_BASE 只能是官方地址，或本机测试用的 http://wxmock")
         sync = (self.sync_secret.get_secret_value() if self.sync_secret else "").strip()
         if sync and len(sync) < 32:
             raise ValueError("YOUJU_SYNC_SECRET 至少 32 位随机字符")

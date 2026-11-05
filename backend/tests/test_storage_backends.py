@@ -238,3 +238,28 @@ def test_open_api_unknown_endpoint(disk):
     assert storage.open_api("/tcb/other", {"env": ENV})["errcode"] != 0
     assert storage.open_api("/tcb/uploadfile", {"env": ENV, "path": "../x"})["errcode"] != 0
     assert json.dumps(SimpleNamespace.__name__)
+
+
+def test_storage_export_and_import_keep_paths(disk, tmp_path, monkeypatch):
+    """切换时搬文件：按原路径打包、换一个存储解开，文件 ID 只看路径，库里的不用改。"""
+    from youju import storage_move
+
+    local = tmp_path / "f"
+    for path, body in (
+        ("advisor/out/u1/1.xlsx", b"result"),
+        ("logs/access-20261101.jsonl.gz", b"log"),
+        ("backups/youju-20261105.jsonl.gz", b"not moved"),
+    ):
+        local.write_bytes(body)
+        storage.upload(ENV, path, local)
+    archive = tmp_path / "move.tar.gz"
+    report = storage_move.export(ENV, archive, ("advisor/out/", "logs/"))
+    assert report.files == {"advisor/out/": 1, "logs/": 1}
+    monkeypatch.setenv("YOUJU_STORAGE_DIR", str(tmp_path / "new"))
+    get_settings.cache_clear()
+    moved = storage_move.import_archive(archive)
+    assert moved.files == {"advisor/": 1, "logs/": 1}
+    assert (tmp_path / "new/advisor/out/u1/1.xlsx").read_bytes() == b"result"
+    assert not (tmp_path / "new/backups").exists()
+    # 再导一次：已经有的跳过
+    assert storage_move.import_archive(archive).skipped == 2

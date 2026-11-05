@@ -6,7 +6,8 @@
   只有公钥，自己解不开；私钥由创始人离线保管，恢复时才用（docs/部署/自建服务器.md 第六节）。
 - 存放：YOUJU_OFFSITE_S3_* 配的存储桶（创始人 11/5 定：腾讯云 COS 归档存储），路径
   backups/youju-日期.jsonl.gz.age，存储类型默认 ARCHIVE（归档的文件取回要先在控制台"恢复"）。
-- 保留：删掉 YOUJU_OFFSITE_KEEP_DAYS（默认 180 天，不少于 90 天：归档至少按 90 天收费）以前的。
+- 保留：删掉 YOUJU_OFFSITE_KEEP_DAYS（默认 30 天，和本机备份、隐私保护指引写的一致）以前的。
+  归档的文件提前删也按存满 90 天收费；备份不大，多花几块钱，换注销用户的数据不在异地多留。
 """
 
 from __future__ import annotations

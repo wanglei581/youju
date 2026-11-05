@@ -187,6 +187,10 @@ def write(entry: dict[str, Any], *, engine: Engine | None = None) -> None:
         _note_failure(exc, *_keep(batch))
     try:
         line = {k: v for k, v in row.items() if k != "detail"}
+        if getattr(get_settings(), "log_mask_ip", False):
+            # 自建服务器：容器日志在自己的硬盘上另存一份，只留地址前一半（库里的访问日志照旧完整，
+            # 按网络安全法留存 6 个月，见 docs/部署/自建服务器.md）
+            line["ip"] = mask_ip(line.get("ip"))
         out_log.info(
             json.dumps(
                 {"event": "access", **line, "saved": saved}, ensure_ascii=False, default=_encode
@@ -194,6 +198,16 @@ def write(entry: dict[str, Any], *, engine: Engine | None = None) -> None:
         )
     except Exception:  # noqa: BLE001, S110 - 同上
         pass
+
+
+def mask_ip(ip: str | None) -> str | None:
+    """1.2.3.4 → 1.2.x.x；IPv6 只留前 3 段。"""
+    if not ip:
+        return ip
+    if ":" in ip:
+        return ":".join(ip.split(":")[:3]) + ":x"
+    parts = ip.split(".")
+    return ".".join(parts[:2] + ["x"] * (len(parts) - 2)) if len(parts) == 4 else "x"
 
 
 @dataclass

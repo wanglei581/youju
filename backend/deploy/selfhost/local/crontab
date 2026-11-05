@@ -1,0 +1,26 @@
+# 2.0 本机（Windows 主机上的 Docker）的定时任务（北京时间）：抓取、处理公开数据，推到服务器。
+# 和云托管现在的 deploy/crontab 一样的活，去掉了碰用户数据的（AI 工具任务、支付、提醒、纠错复查、
+# 访问日志归档，都在服务器上做，见 deploy/selfhost/server/crontab）。
+# 分 时 日 月 周  命令
+*/5 * * * * date +\%s > /tmp/youju-cron-heartbeat
+# 每份文件能不能做 AI 解读（公开数据的属性，算好推给服务器）
+*/10 * * * *  /app/backend/deploy/job.sh ai-eligibility
+25 2 * * *  /app/backend/deploy/job.sh ai-eligibility-rebuild
+# 每天 2 轮抓取和处理（和云托管一样，见 round.sh）；早上那轮不发提醒（提醒在服务器上发）
+30 6 * * *  /app/backend/deploy/round.sh
+30 20 * * *  /app/backend/deploy/round.sh
+30 7 * * 1  /app/backend/deploy/job.sh weekly-digest --scheduled
+30 7 * * 2-3  /app/backend/deploy/job.sh weekly-digest --scheduled
+30 7 * * 4-7  /app/backend/deploy/job.sh weekly-digest --scheduled; /app/backend/deploy/job.sh weekly-digest --kind reminder --scheduled
+10 5 * * *  /app/backend/deploy/job.sh check-links --limit 3000 --until 06:10
+15 10 * * *  /app/backend/deploy/job.sh cache-attachments
+30 23 * * *  /app/backend/deploy/job.sh cache-attachments
+45 10 * * *  /app/backend/deploy/job.sh list-evidence --apply
+50 23 * * *  /app/backend/deploy/job.sh list-evidence --apply
+0 8 * * *  /app/backend/deploy/job.sh audit-deadlines --sample 20; /app/backend/deploy/job.sh daily-report
+# 本机主库每天备份一份到本机存储（保留 30 天；出大事时还能从服务器导回来）
+0 4 * * *  /app/backend/deploy/job.sh backup
+# 把公开数据的变更推到服务器：每 10 分钟一次（job.sh 加锁，上一次没推完就跳过）
+*/10 * * * *  /app/backend/deploy/job.sh sync-push
+# 从外面看服务器还在不在：每 5 分钟一次，连续 2 次不通提醒到群里（不经 job.sh：自己会提醒）
+*/5 * * * *  . /app/backend/deploy/env.sh; cd /app/backend && flock -n /tmp/youju-uptime.lock timeout 60 youju uptime-check --url "$YOUJU_SYNC_URL" >> /proc/1/fd/1 2>&1

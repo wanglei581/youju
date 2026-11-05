@@ -874,6 +874,10 @@ def _cmd_reclassify(_: argparse.Namespace) -> int:
     """按当前的标题规则重算每份文件的类型（rule_kind）、项目类别（rule_category）和筛选标签
     （rule_supports、rule_industries），并去掉标题开头从列表页带进来的装饰符号（crawler/titles.py），
     只写有变化的。规则改了之后要跑一次；admin 服务每次启动时在迁移之后自动跑。"""
+    if getattr(get_settings(), "public_replica", False):
+        # 2.0 自建服务器：公开数据由本机算好推过来，这里不改（本机启动时会重算）
+        print("这台服务器的公开数据由本机同步过来，不在这里重算类型")
+        return 0
     from collections import defaultdict
 
     from sqlalchemy import update
@@ -960,12 +964,39 @@ def _cmd_backup(args: argparse.Namespace) -> int:
     return 0
 
 
+# 迁移写进去的种子行（恢复会从备份里带回来）
+_SEED_TABLES = frozenset({"signing_keys"})
+
+
+def _clear_seed_rows(engine) -> None:
+    """--fresh：刚迁移好的库里只有迁移写的种子行（signing_keys）时，先删掉它们再恢复。
+    别的表只要有一行数据就不删、报错（防止把有数据的库当成空库）。"""
+    from sqlalchemy import delete, func, select
+
+    from youju.backup import BackupError, backed_up_tables
+
+    tables = backed_up_tables()
+    with engine.begin() as conn:
+        busy = [
+            t.name
+            for t in tables
+            if t.name not in _SEED_TABLES and conn.scalar(select(func.count()).select_from(t))
+        ]
+        if busy:
+            raise BackupError(f"目标库不是刚迁移好的空库（{', '.join(busy[:5])} 有数据），没有动它")
+        for t in tables:
+            if t.name in _SEED_TABLES:
+                conn.execute(delete(t))
+
+
 def _cmd_restore(args: argparse.Namespace) -> int:
     from youju.backup import BackupError, restore
     from youju.db import create_mysql_engine
 
     engine = create_mysql_engine(get_settings().database_url)
     try:
+        if getattr(args, "fresh", False):
+            _clear_seed_rows(engine)
         with args.file.open("rb") as src:
             counts = restore(engine, src)
     except BackupError as exc:
@@ -2207,6 +2238,75 @@ def _cmd_offsite_backup(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_uptime_check(args: argparse.Namespace) -> int:
+    """从服务器外面（2.0 的本机）每 5 分钟看一次服务器的 /health：连续 2 次不通就提醒到群里，
+    恢复了再说一声；状态记在 --state 文件里（同一次故障只提醒一次）。"""
+    import json as _json
+
+    import httpx
+
+    from youju.alerts import send_alert
+
+    url = args.url.rstrip("/") + "/health"
+    try:
+        response = httpx.get(url, timeout=10, trust_env=False)
+        healthy = response.status_code == 200 and response.json().get("status") == "ok"
+        reason = f"HTTP {response.status_code}"
+    except (httpx.HTTPError, ValueError) as exc:
+        healthy, reason = False, type(exc).__name__
+    try:
+        state = _json.loads(args.state.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        state = {"fails": 0, "alerted": False}
+    if healthy:
+        if state.get("alerted"):
+            send_alert(f"服务器恢复了：{url} 健康检查通过")
+        state = {"fails": 0, "alerted": False}
+    else:
+        state["fails"] = int(state.get("fails", 0)) + 1
+        if state["fails"] >= 2 and not state.get("alerted"):
+            send_alert(f"服务器连续 {state['fails']} 次健康检查不通（{reason}）：{url}")
+            state["alerted"] = True
+    args.state.write_text(_json.dumps(state), encoding="utf-8")
+    print(f"{url}：{'正常' if healthy else '不通（' + reason + '）'}")
+    return 0 if healthy else 1
+
+
+def _cmd_storage_export(args: argparse.Namespace) -> int:
+    from youju import storage_move
+    from youju.backup import BackupError
+
+    env = get_settings().cloud_env
+    if not env:
+        print("没有设置 YOUJU_CLOUD_ENV")
+        return 1
+    prefixes = tuple(args.prefix) if args.prefix else storage_move.DEFAULT_PREFIXES
+    try:
+        if args.output:
+            report = storage_move.export(env, args.output, prefixes)
+        else:
+            report = storage_move.export_and_upload(env, prefixes)
+    except BackupError as exc:
+        print(f"导出失败：{exc}")
+        return 1
+    print(f"已导出 {report.files}（{report.bytes} 字节，跳过 {report.skipped} 个）")
+    print(f"导出包：{report.output}")
+    return 0
+
+
+def _cmd_storage_import(args: argparse.Namespace) -> int:
+    from youju import storage_move
+    from youju.backup import BackupError
+
+    try:
+        report = storage_move.import_archive(args.file)
+    except (BackupError, OSError) as exc:
+        print(f"导入失败：{exc}")
+        return 1
+    print(f"已导入 {report.files}（{report.bytes} 字节，已有或不合规跳过 {report.skipped} 个）")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="youju", description="有据数据底座命令行")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -2413,6 +2513,11 @@ def main(argv: list[str] | None = None) -> int:
         "restore", help="把备份文件恢复到当前数据库（要已迁移到同一版本、而且是空的）"
     )
     p.add_argument("file", type=Path, help="备份文件（.jsonl.gz）")
+    p.add_argument(
+        "--fresh",
+        action="store_true",
+        help="目标是刚迁移好的空库：先删掉迁移写的种子行（别的表有数据就拒绝）",
+    )
     p.set_defaults(func=_cmd_restore)
 
     p = sub.add_parser(
@@ -2715,6 +2820,17 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=_cmd_sync_import)
     p = sub.add_parser("offsite-backup", help="（服务器）把当天的整库备份加密后传到异地存储")
     p.set_defaults(func=_cmd_offsite_backup)
+    p = sub.add_parser("storage-export", help="（切换）把对象存储里要搬的文件打成一个包")
+    p.add_argument("--prefix", action="append", help="只导出这个前缀（可写多次）")
+    p.add_argument("--output", type=Path, help="写到本机这个文件；不写就传回对象存储 exports/")
+    p.set_defaults(func=_cmd_storage_export)
+    p = sub.add_parser("storage-import", help="（切换）把导出包按原路径写进现在的存储")
+    p.add_argument("--file", type=Path, required=True)
+    p.set_defaults(func=_cmd_storage_import)
+    p = sub.add_parser("uptime-check", help="（本机）从外面看服务器的 /health，不通就提醒")
+    p.add_argument("--url", required=True, help="服务器地址，如 https://api.example.com")
+    p.add_argument("--state", type=Path, default=Path("/tmp/youju-uptime.json"))
+    p.set_defaults(func=_cmd_uptime_check)
 
     p = sub.add_parser("serve", help="启动 API 服务")
     p.add_argument("--host", default="127.0.0.1")

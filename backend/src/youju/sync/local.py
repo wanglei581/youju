@@ -136,7 +136,11 @@ class Client:
     """带签名的同步请求（YOUJU_SYNC_URL、YOUJU_SYNC_SECRET）。http 可以换成测试用的客户端。"""
 
     def __init__(self, url: str, secret: str, *, http: httpx.Client | None = None) -> None:
-        if not url.startswith(("https://", "http://")):
+        host = httpx.URL(url).host if url.startswith(("https://", "http://")) else ""
+        # 公网上一律 https；http 只认本机测试用的容器名（不带点）和本机地址
+        if not url.startswith("https://") and not (
+            url.startswith("http://") and host and ("." not in host or host == "127.0.0.1")
+        ):
             raise SyncError("YOUJU_SYNC_URL 要写成 https://域名")
         if len(secret) < 32:
             raise SyncError("YOUJU_SYNC_SECRET 至少 32 位")

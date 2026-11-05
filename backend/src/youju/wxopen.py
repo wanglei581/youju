@@ -31,10 +31,10 @@ import httpx
 from youju.config import Settings, get_settings
 
 OPEN_API = "http://api.weixin.qq.com"
-TOKEN_URL = "https://api.weixin.qq.com/cgi-bin/stable_token"
-CODE2SESSION_URL = "https://api.weixin.qq.com/sns/jscode2session"
+TOKEN_PATH = "/cgi-bin/stable_token"
+CODE2SESSION_PATH = "/sns/jscode2session"
 # 不带 access_token 的接口：取 token 本身；换 openid（用 AppSecret）
-_NO_TOKEN = frozenset({"/cgi-bin/stable_token", "/sns/jscode2session"})
+_NO_TOKEN = frozenset({TOKEN_PATH, CODE2SESSION_PATH})
 # access_token 失效：不合法、不是最新、已过期
 EXPIRED_CODES = frozenset({40001, 40014, 42001})
 # 离失效不到这么多秒就换新的（官方：普通模式下平台提前 5 分钟更新）
@@ -71,6 +71,13 @@ def token_mode(settings: Settings | None = None) -> bool:
     return getattr(settings or get_settings(), "wx_open_api", "cloudrun") == "token"
 
 
+def api_base(settings: Settings | None = None) -> str:
+    """微信服务端接口的地址：官方的 https://api.weixin.qq.com；本机全栈测试可以换成假的微信。"""
+    return getattr(settings or get_settings(), "wx_api_base", "https://api.weixin.qq.com").rstrip(
+        "/"
+    )
+
+
 def _verify() -> ssl.SSLContext:
     # 和原来的 xpay.wx_http 一样用系统证书库：云托管开放接口服务接管 https 时用的是平台证书；
     # 自建服务器上系统证书库就是普通的公共根证书
@@ -87,8 +94,9 @@ class TokenCache:
         *,
         http: Callable[[], httpx.Client] | None = None,
         now: Callable[[], float] = clock.time,
+        base: str = "https://api.weixin.qq.com",
     ) -> None:
-        self._appid, self._secret = appid, secret
+        self._appid, self._secret, self._base = appid, secret, base
         self._http = http or (lambda: httpx.Client(trust_env=False, verify=_verify()))
         self._now = now
         self._lock = threading.Lock()
@@ -113,7 +121,7 @@ class TokenCache:
         body = {"grant_type": "client_credential", "appid": self._appid, "secret": self._secret}
         try:
             with self._http() as http:
-                response = http.post(TOKEN_URL, json=body, timeout=10)
+                response = http.post(self._base + TOKEN_PATH, json=body, timeout=10)
                 response.raise_for_status()
                 data = response.json()
         except (httpx.HTTPError, ValueError) as exc:
@@ -129,7 +137,7 @@ class TokenCache:
         return token, expires_in
 
 
-_caches: dict[tuple[str, str], TokenCache] = {}
+_caches: dict[tuple[str, str, str], TokenCache] = {}
 _caches_lock = threading.Lock()
 
 
@@ -139,8 +147,9 @@ def tokens(settings: Settings | None = None) -> TokenCache:
     appid = settings.wx_appid.strip()
     if not (appid and secret):
         raise OpenApiError("没有配 YOUJU_WX_APPID、YOUJU_WX_APPSECRET，取不了 access_token")
+    base = api_base(settings)
     with _caches_lock:
-        return _caches.setdefault((appid, secret), TokenCache(appid, secret))
+        return _caches.setdefault((appid, secret, base), TokenCache(appid, secret, base=base))
 
 
 def _errcode(response: httpx.Response) -> int | None:
@@ -157,11 +166,16 @@ def _errcode(response: httpx.Response) -> int | None:
 class OpenApiTransport(httpx.BaseTransport):
     """挂在 http://api.weixin.qq.com 上：改成 https、加 access_token 再发（见模块说明）。"""
 
-    def __init__(self, cache: TokenCache, inner: httpx.BaseTransport) -> None:
+    def __init__(
+        self, cache: TokenCache, inner: httpx.BaseTransport, base: str = "https://api.weixin.qq.com"
+    ) -> None:
         self._cache, self._inner = cache, inner
+        self._base = httpx.URL(base)
 
     def _send(self, request: httpx.Request, token: str | None) -> httpx.Response:
-        url = request.url.copy_with(scheme="https", port=None)
+        url = request.url.copy_with(
+            scheme=self._base.scheme, host=self._base.host, port=self._base.port
+        )
         if token is not None:
             url = url.copy_set_param("access_token", token)
         headers = [(k, v) for k, v in request.headers.multi_items() if k.lower() != "host"]
@@ -215,7 +229,7 @@ def client(**kwargs: Any) -> httpx.Client:
     return httpx.Client(
         trust_env=False,
         verify=_verify(),
-        mounts={OPEN_API: OpenApiTransport(tokens(), inner)},
+        mounts={OPEN_API: OpenApiTransport(tokens(), inner, api_base())},
         **kwargs,
     )
 
@@ -259,7 +273,7 @@ def code2session(code: str, settings: Settings | None = None) -> str:
     }
     try:
         with httpx.Client(trust_env=False, verify=_verify()) as http:
-            response = http.get(CODE2SESSION_URL, params=params, timeout=5)
+            response = http.get(api_base(settings) + CODE2SESSION_PATH, params=params, timeout=5)
             response.raise_for_status()
             data = response.json()
     except (httpx.HTTPError, ValueError) as exc:

@@ -92,7 +92,9 @@ class XPayClient:
             params.update(
                 appid=self.settings.wx_appid, secret=self.settings.wx_appsecret.get_secret_value()
             )
-            url = "https://api.weixin.qq.com/sns/jscode2session"
+            from youju.wxopen import CODE2SESSION_PATH, api_base
+
+            url = api_base(self.settings) + CODE2SESSION_PATH
         try:
             response = self.http.get(url, params=params, timeout=5)
             response.raise_for_status()
