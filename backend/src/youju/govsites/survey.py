@@ -35,9 +35,11 @@ def province_survey(
     platforms = Counter(sites.values())
     vendors = Counter(_vendor(p) for p in sites.values())
     top_vendor, top_n = vendors.most_common(1)[0] if vendors else ("", 0)
-    blocked = Counter(p.reason for p in portals if p.status == "不能抓")
-    blocked.update(d.reason for d in depts if d.status == "不能抓")
-    down = sum(p.status == "打不开" for p in portals) + sum(d.status == "打不开" for d in depts)
+    # 按网站数：门户没找到时补的部门格（complete_slots，原因以"门户"开头）不重复算
+    real = [d for d in depts if d.site_url and not d.reason.startswith("门户")]
+    blocked = Counter(f"门户·{p.reason}" for p in portals if p.status == "不能抓")
+    blocked.update(f"部门·{d.reason}" for d in real if d.status == "不能抓")
+    down = sum(p.status == "打不开" for p in portals) + sum(d.status == "打不开" for d in real)
     results = Counter(getattr(c, "result", "") for c in checks)
     by_platform: dict[str, Counter] = defaultdict(Counter)
     for c in checks:

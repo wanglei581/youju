@@ -11,13 +11,13 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import date
 
-from youju.govsites.inventory import DeptRow
-from youju.govsites.links import page_links, parse_html
-from youju.govsites.pagecache import PageCache
-from youju.govsites.platform import blocker, fingerprint
 from youju.crawler.adapters import api_html, find_list_api
 from youju.crawler.listing import extract_items
 from youju.crawler.urls import host_of
+from youju.govsites.inventory import XXGK_TAG, DeptRow
+from youju.govsites.links import page_links, parse_html
+from youju.govsites.pagecache import PageCache
+from youju.govsites.platform import blocker, fingerprint
 
 # 列表是脚本加载的迹象（页面上读不出条目时据此判断"要浏览器渲染或接口"）
 _SCRIPT_LIST = re.compile(
@@ -91,6 +91,12 @@ def columns_of(depts: Iterable[DeptRow]) -> list[ColumnCheck]:
 
 
 def check_one(cache: PageCache, col: ColumnCheck, today: date) -> ColumnCheck:
+    if f"#{XXGK_TAG}" in col.url:
+        # 信息公开分类树上的分类：页面已读过，列表要按分类由脚本加载（大汉信息公开接口，第二阶段写）
+        col.result = NEEDS_SCRIPT
+        col.reason = "信息公开分类树上的分类，列表由脚本按分类加载（待写大汉信息公开适配器）"
+        col.platform = col.platform or "大汉"
+        return col
     r = cache.get(col.url)
     col.http_status = r.http_status
     block = blocker(r.status, r.http_status, r.text)
@@ -138,7 +144,14 @@ def check_columns(
         groups[host_of(col.url)].append(col)
 
     def run(group: list[ColumnCheck]) -> list[ColumnCheck]:
-        return [check_one(cache, col, today) for col in group]
+        out = []
+        for col in group:
+            try:
+                out.append(check_one(cache, col, today))
+            except Exception as exc:  # noqa: BLE001 - 一个栏目出意外不让整批白跑
+                col.result, col.reason = DOWN, f"试读出错：{exc.__class__.__name__}"
+                out.append(col)
+        return out
 
     out: list[ColumnCheck] = []
     with ThreadPoolExecutor(workers, thread_name_prefix="coverage-verify") as ex:

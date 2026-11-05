@@ -56,9 +56,10 @@ _ORG_END = re.compile(
 )
 # 机构名称里不会出现的词：出现了就多半是新闻、事项、专题
 _NOT_ORG = re.compile(
-    r"召开|举行|开展|关于|通知|公告|公示|会议|活动|调研|印发|发布|解读|专题|专栏|服务|办理|指南|"
+    r"召开|举行|开展|关于|通知|公告|公示|会议|活动|调研|印发|发布|解读|专题|专栏|服务指南|办事服务|"
+    r"在线服务|办理|指南|"
     r"查询|申请|报名|系统|平台|热线|信箱|投诉|举报|在线|视频|图片|新闻|动态|要闻|访谈|直播|"
-    r"领导|局长|主任|书记|讲话|考察|走访|年报|报告|统计|规划|计划|方案|工作|政策|文件|资讯"
+    r"领导|局长|主任|书记|讲话|考察|走访|年报|报告|统计|规划|计划|方案|工作动态|工作部署|政策|文件|资讯"
 )
 _ORG_MAX_LEN = 30
 
@@ -118,6 +119,8 @@ COLUMN_RULES: tuple[tuple[str, tuple[str, ...], re.Pattern[str]], ...] = (
             "文件通知",
             "通告公告",
             "公告",
+            "重要公告",
+            "公告信息",
         ),
         re.compile(
             r"^(?:本[局委厅部]|部门|工作)?通知(?:公告|通告|公示)?$|^公告(?:通知)?$|通知公告"
@@ -156,8 +159,11 @@ COLUMN_RULES: tuple[tuple[str, tuple[str, ...], re.Pattern[str]], ...] = (
 )
 COLUMN_KINDS = tuple(kind for kind, _, _ in COLUMN_RULES)
 # 不要的栏目：解读、征求意见、废止、信息公开年报等
-_NOT_COLUMN = re.compile(
-    r"解读|征求|意见|废止|失效|清理|年报|指南|问答|图解|动漫|视频|备案|目录|依申请"
+_NOT_COLUMN = re.compile(r"征求|意见|废止|失效|清理|年报|指南|问答|图解|动漫|视频|备案|目录|依申请")
+# "政策解读"不是政策文件；"政策文件及解读"（浙江等地信息公开分类）是
+_INTERPRETATION = re.compile(r"解读")
+_WITH_INTERPRETATION = re.compile(
+    r"^(?:政策文件|规范性文件|政策法规|文件)(?:及|和|与)(?:政策)?解读$"
 )
 _COLUMN_MAX_LEN = 14
 
@@ -168,6 +174,8 @@ def column_kind(text: str) -> tuple[str, int] | None:
     t = re.sub(r"[>»›]+$|^[>»›·•]+", "", t)
     if not t or len(t) > _COLUMN_MAX_LEN or _NOT_COLUMN.search(t):
         return None
+    if _INTERPRETATION.search(t):
+        return ("政策文件", 1) if _WITH_INTERPRETATION.match(t) else None
     for kind, names, _pattern in COLUMN_RULES:
         if t in names:
             return kind, 0

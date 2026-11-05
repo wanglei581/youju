@@ -2,6 +2,8 @@
 
 from datetime import date
 
+from youju.crawler.fetcher import FetchResult
+from youju.crawler.listing import extract_items
 from youju.govsites.divisions import (
     DivisionIndex,
     NameMatcher,
@@ -21,8 +23,6 @@ from youju.govsites.inventory import (
 from youju.govsites.links import nav_links, page_links, parse_html, registrable
 from youju.govsites.names import column_kind, dept_categories
 from youju.govsites.platform import blocker, fingerprint
-from youju.crawler.fetcher import FetchResult
-from youju.crawler.listing import extract_items
 
 TREE = {
     "children": [
@@ -351,8 +351,12 @@ def test_list_api_only_accepts_whitelisted_same_site_endpoint():
     assert api_html(api, "not json") == ""
     other = good.replace("/api-gateway/jpaas-publish-server/front/page/build/unit", "/api/other")
     assert find_list_api(other, "https://kjt.zj.gov.cn/") is None
+    # 页面声明到别的主机上的接口：不请求（也不改成请求本站同一路径）
     evil = good.replace('url="/api', 'url="https://evil.example.com/api')
-    assert find_list_api(evil, "https://kjt.zj.gov.cn/").url.startswith("https://kjt.zj.gov.cn/")
+    assert find_list_api(evil, "https://kjt.zj.gov.cn/") is None
+    assert api_html(api, '{"data":"参数错误"}') == ""
+    bad_query = good.replace("{'pageType'", "{['x']:'1','pageType'")
+    assert find_list_api(bad_query, "https://kjt.zj.gov.cn/") is None
 
 
 def test_complete_slots_adds_standard_depts_for_missing_portals():
@@ -377,3 +381,111 @@ def test_complete_slots_adds_standard_depts_for_missing_portals():
     assert by_code[("330106", "科技")].status == "导航未找到"
     assert by_code[("330182", "科技")].status == "不能抓"
     assert "瑞数防护" in by_code[("330182", "科技")].reason
+
+
+def test_county_branch_of_city_bureau_counts_for_the_county():
+    from youju.govsites.inventory import _own_branch
+
+    index = DivisionIndex(_divisions())
+    xh = next(d for d in index.all if d.name == "西湖区")
+    assert _own_branch("杭州市生态环境局西湖分局", xh)
+    assert not _own_branch("杭州市生态环境局", xh)
+    assert not _own_branch("杭州市生态环境局滨江分局", xh)
+    assert dept_categories("杭州市生态环境局西湖分局") == ["生态环境"]
+
+
+def test_board_states():
+    from datetime import datetime, timedelta
+
+    from youju.govsites.board import SourceState, cell_for, coverage_rate, rollup
+    from youju.govsites.inventory import ColumnHit, DeptRow
+
+    now = datetime(2026, 11, 5, 12)
+
+    def row(*urls, status="已找到"):
+        cols = [ColumnHit("通知公告", "通知公告", u, "") for u in urls]
+        return DeptRow(
+            "330106", "区县级", "浙江", "杭州", "西湖区", "科技", status=status, columns=cols
+        )
+
+    def src(url, ok=None, docs=0, err=None, vs=None, mode="static", last=None, http=None):
+        return SourceState(url, False, mode, "unknown", ok, err, vs, docs, last, http)
+
+    a, b = "http://a.gov.cn/1/", "http://a.gov.cn/2/"
+    fresh = {
+        a: src(a, now - timedelta(hours=5), 10),
+        b: src(b, vs="网站防护拦截（瑞数防护，不绕过）", mode="blocked"),
+    }
+    c = cell_for(row(a, b), fresh, {}, now)
+    assert (c.state, c.last_success_at) == ("已收录", now - timedelta(hours=5))
+    assert "拒绝抓取" in c.reason
+    stale = {a: src(a, now - timedelta(days=5), 10)}
+    assert cell_for(row(a), stale, {}, now).state == "抓取失败"
+    blocked_only = {b: fresh[b]}
+    assert cell_for(row(b), blocked_only, {}, now).state == "不能抓"
+    failed = src(a, err="HTTP 500", last="http_error", http=500)
+    assert cell_for(row(a), {a: failed}, {}, now).state == "抓取失败"
+    waf = src(a, err="HTTP 412", last="http_error", http=412)
+    assert cell_for(row(a), {a: waf}, {}, now).state == "不能抓"
+    robots = src(a, err="robots.txt 不允许抓取该页面", last="robots_disallowed")
+    assert cell_for(row(a), {a: robots}, {}, now).state == "不能抓"
+    empty = src(a, err="页面可以访问，但没有识别到列表条目", last="parse_empty")
+    assert cell_for(row(a), {a: empty}, {}, now).state == "需人工"
+    imported = src(a, vs="试跑可读（全国覆盖 v1，未启用）")
+    assert cell_for(row(a), {a: imported}, {}, now).state == "待启用"
+    script = src(a, vs="需浏览器渲染或接口（全国覆盖 v1）", mode="browser")
+    assert cell_for(row(a), {a: script}, {}, now).state == "需人工"
+    assert cell_for(row(), {}, {}, now).state == "网站无此栏目"
+    assert cell_for(row(status="导航未找到"), {}, {}, now).state == "需人工"
+    cells = [
+        cell_for(row(a), fresh, {}, now),
+        cell_for(row(), {}, {}, now),
+        cell_for(row(b), blocked_only, {}, now),
+    ]
+    counter = rollup(cells)["区县级"]
+    # 程序判的"网站无此栏目"确认前不从分母里扣
+    assert coverage_rate(counter) == 1 / 2
+    assert coverage_rate(counter, confirmed_no_column=1) == 1.0
+
+
+def test_dept_names_with_service_or_work_words():
+    assert dept_categories("宁波市政务服务和数据管理局") == ["数据局"]
+    assert dept_categories("杭州经济技术开发区党工委（管理委员会）") == [
+        "开发区"
+    ] or dept_categories("杭州经济技术开发区管理委员会") == ["开发区"]
+    assert dept_categories("某某高新区工作委员会") == ["开发区"]
+    assert dept_categories("省政务服务中心") == []
+    assert dept_categories("科技局工作动态") == []
+
+
+def test_jpaas_category_tree_becomes_column_needing_api():
+    from youju.crawler.adapters import jpaas_tree_categories
+    from youju.govsites.verify import NEEDS_SCRIPT, ColumnCheck, check_one
+
+    html = (
+        'var treeStr = "[{#title#:#经信局#,#key#:#0#,#children#:[{#title#:#通知公告#,#key#:#52#,'
+        '#children#:[]},{#title#:#政策文件及解读#,#key#:#33#}]}]";'
+    )
+    cats = jpaas_tree_categories(html)
+    assert ("通知公告", "52") in cats and ("政策文件及解读", "33") in cats
+    p = _page("http://www.dongyang.gov.cn/col/col1/index.html", "<p>部门信息公开</p>")
+    p.categories = cats
+    hits = find_columns([p])
+    assert hits["通知公告"].url == "http://www.dongyang.gov.cn/col/col1/index.html#xxgk-52"
+    assert hits["政策文件"].name == "政策文件及解读（信息公开分类）"
+    col = ColumnCheck(
+        "330783",
+        "区县级",
+        "浙江",
+        "金华",
+        "东阳市",
+        "工信",
+        "",
+        "通知公告",
+        "通知公告",
+        hits["通知公告"].url,
+        "",
+        "",
+        "",
+    )
+    assert check_one(FakeCache({}), col, date(2026, 11, 5)).result == NEEDS_SCRIPT

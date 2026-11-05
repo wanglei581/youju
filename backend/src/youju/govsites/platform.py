@@ -146,21 +146,37 @@ _BLOCK_MARKERS: tuple[tuple[str, re.Pattern[str]], ...] = (
         "WAF 拦截",
         re.compile(r"waf\.tencent-cloud|aliyun_waf|_waf_|访问被拦截|您的访问被阻断|访问受限", re.I),
     ),
-    ("验证码", re.compile(r"请输入验证码|滑动验证|滑块验证|人机验证|captcha", re.I)),
-    ("需要登录", re.compile(r"请先登录|用户登录.{0,200}type=['\"]password", re.I | re.S)),
+)
+_CAPTCHA = re.compile(r"请输入验证码|滑动验证|滑块验证|人机验证|安全验证|captcha", re.I)
+_PASSWORD = re.compile(r"<input[^>]+type\s*=\s*['\"]?password", re.I)
+_TITLE = re.compile(r"<title[^>]*>(.*?)</title>", re.I | re.S)
+_GATE_TITLE = re.compile(
+    r"登录|登陆|统一身份认证|身份认证|用户认证|login|sign\s*in|验证|安全检查", re.I
 )
 
 
 def blocker(status: str, http_status: int | None, html: str) -> str | None:
-    """页面是不是防护页、验证码页或登录页；是就返回原因（记"不能抓"），否则 None。"""
+    """页面是不是防护页、验证码页或登录页；是就返回原因（记"不能抓"），否则 None。
+
+    验证码、登录按"页面本身就是关卡"判断：标题写着登录、认证、验证，或者正文很少、只剩一个关卡；
+    门户首页角落里的"用户登录"小框、留言板的"验证码"不算（它们旁边就是正常内容）。
+    """
     text = html or ""
+    head = text[:200000]
     for name, pattern in _BLOCK_MARKERS:
-        if pattern.search(text[:200000]):
-            # 正常页面上也可能有"验证码"三个字（留言板），只有内容很少的页面才算拦截页
-            if name in ("验证码", "需要登录") and len(re.sub(r"<[^>]+>", "", text)) > 3000:
-                continue
+        if pattern.search(head):
             return name
-    if http_status in (412, 521) or (http_status == 403 and status == "http_error"):
+    m = _TITLE.search(head)
+    title = re.sub(r"\s+", "", m.group(1)) if m else ""
+    gate_title = bool(_GATE_TITLE.search(title))
+    short = (
+        len(re.sub(r"<[^>]+>|\s+", "", re.sub(r"<script.*?</script>", "", head, flags=re.S))) < 1500
+    )
+    if _PASSWORD.search(head) and (gate_title or short):
+        return "需要登录"
+    if _CAPTCHA.search(head) and (gate_title or short):
+        return "验证码"
+    if http_status in (401, 412, 521) or (http_status == 403 and status == "http_error"):
         return f"HTTP {http_status} 拒绝访问"
     if status == "robots_disallowed":
         return "robots.txt 禁止"

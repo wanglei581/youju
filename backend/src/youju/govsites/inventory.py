@@ -27,6 +27,9 @@ from urllib.parse import urlsplit
 
 from lxml import etree
 
+from youju.crawler.adapters import api_html, find_unit_apis, jpaas_tree_categories
+from youju.crawler.fetcher import FetchResult, resolve_host
+from youju.crawler.urls import page_dir
 from youju.govsites.divisions import (
     Division,
     DivisionIndex,
@@ -49,7 +52,6 @@ from youju.govsites.links import (
 from youju.govsites.names import COLUMN_KINDS, column_kind, dept_categories
 from youju.govsites.pagecache import PageCache
 from youju.govsites.platform import URL_SHAPES, Fingerprint, blocker, fingerprint
-from youju.crawler.fetcher import FetchResult, resolve_host
 
 log = logging.getLogger(__name__)
 
@@ -164,6 +166,8 @@ class PageInfo:
     fp: Fingerprint | None = None
     block: str | None = None
     nav_text: str = ""  # 从门户首页哪个导航链接进来的（首页本身为空）
+    # 大汉 jpaas 信息公开分类树上的分类（名称, 键）：栏目在，但列表要按分类由脚本加载
+    categories: list[tuple[str, str]] = field(default_factory=list)
     level_hint: str = ""  # 门户首页：所属行政区的层级
 
 
@@ -246,8 +250,14 @@ class Inventory:
 
     # —— 页面 ——
 
-    def page(self, url: str) -> PageInfo:
+    def page(self, url: str, hops: int = 2) -> PageInfo:
         result = self.cache.get(url)
+        target = _script_redirect(result, url) if hops > 0 else None
+        if target:
+            # 只有一句 location.href 的跳转页（浙江县级部门频道常见）：跟过去，记跳转后的页面
+            nxt = self.page(target, hops - 1)
+            nxt.url = url
+            return nxt
         info = PageInfo(url, result.final_url or url, result)
         if result.status != "ok":
             info.block = blocker(result.status, result.http_status, result.text)
@@ -258,6 +268,14 @@ class Inventory:
         info.fp = fingerprint(
             result.text, info.final_url, info.doc, [link.url for link in info.links]
         )
+        if "unitbuild.js" in result.text:
+            # 大汉 jpaas：导航、栏目列表都由页面声明的单元接口拼出来，按页面给的参数取（最多 4 个）
+            for api in find_unit_apis(result.text, info.final_url)[:4]:
+                r = self.cache.get(api.url)
+                html = api_html(api, r.text) if r.status == "ok" else ""
+                if html:
+                    info.links += page_links(html, info.final_url)
+                    info.categories += jpaas_tree_categories(html)
         return info
 
     def _nav_pages(self, home: PageInfo, limit: int = 10) -> list[PageInfo]:
@@ -361,6 +379,26 @@ class Inventory:
                         push(div, f)
 
     def _process(self, div: Division, found: Found | None) -> list[tuple[Division, Found | None]]:
+        """处理一个行政区；出了意外也记一行"出错"、照常排下级，整棵子树不会从结果里消失。"""
+        try:
+            return self._process_inner(div, found)
+        except Exception as exc:  # noqa: BLE001 - 单个行政区的意外不影响别处
+            log.exception("处理 %s %s 时出错", div.province, div.name)
+            row = PortalRow(
+                div.code, div.level, div.province, div.city or "", div.district or "", div.name
+            )
+            row.status, row.reason = "出错", f"{exc.__class__.__name__}: {str(exc)[:100]}"
+            if found is not None:
+                row.portal_url, row.nav_source, row.nav_text = found.url, found.source, found.text
+            with self._lock:
+                already = row.code in self.portals
+            if not already:
+                self._finish(row, [])
+            return self._enqueue(div, self._expected_children(div), {})
+
+    def _process_inner(
+        self, div: Division, found: Found | None
+    ) -> list[tuple[Division, Found | None]]:
         row = PortalRow(
             div.code, div.level, div.province, div.city or "", div.district or "", div.name
         )
@@ -381,7 +419,12 @@ class Inventory:
         row.site_id_code, row.site_name = fp.site_id_code, fp.site_name
         row.platform, row.support = fp.platform, fp.support
         code6 = fp.site_id_code[:6]
-        if code6.isdigit() and div.level != "国家级" and code6 != div.code:
+        title = (home.doc.findtext(".//title") or "") if home.doc is not None else ""
+        named = any(v in fp.site_name + title for v in name_variants(div.name, div.kind))
+        if div.level != "国家级" and code6 != div.code and not named:
+            # 导航链接可能指到了别的网站（如政务服务网）：网站名、标题、标识码都对不上的，待核对
+            row.reason = "网站名称、标题和标识码都对不上这个行政区，待核对"
+        elif code6.isdigit() and div.level != "国家级" and code6 != div.code:
             # 标识码前 6 位是行政区划代码：对不上的可能是导航链到了别的网站（如政务服务网），待核对
             same_prov = code6[:2] == div.code[:2]
             row.reason = f"网站标识码 {fp.site_id_code} 和区划代码 {div.code} 不一致" + (
@@ -467,8 +510,12 @@ class Inventory:
                             continue
                         url, source = resolved
                     else:
-                        # 指向下级网站内页的链接（年报目录等）：取那个网站的首页
+                        # 指向下级网站内页的链接（年报目录等）：取那个网站的首页，记下是取的首页
                         url = f"{parts.scheme}://{parts.netloc}/"
+                        found[d.code] = Found(
+                            url, f"{link.text}（链到 {link.url}，取网站首页）", source
+                        )
+                        continue
                 found[d.code] = Found(url, link.text, source)
         return found
 
@@ -526,7 +573,7 @@ class Inventory:
             )
             for link in p.links:
                 text = link.text
-                if any(text.startswith(o) for o in others):
+                if any(text.startswith(o) for o in others) and not _own_branch(text, div):
                     continue
                 cats = dept_categories(text)
                 if not cats or not is_gov_url(link.url):
@@ -560,13 +607,21 @@ class Inventory:
         cats = STANDARD_DEPTS[1:] + OPTIONAL_DEPTS
         # 各部门网站多在不同主机上，并行抓（同一主机仍由抓取器排队、间隔 3 秒）
         with ThreadPoolExecutor(self.inner, thread_name_prefix="coverage-dept") as ex:
-            picked = list(ex.map(lambda c: self._pick(div, home, c, candidates.get(c, [])), cats))
+            portal_cols = frozenset(c.url for c in gov.columns)
+            picked = list(
+                ex.map(lambda c: self._pick(div, home, c, candidates.get(c, []), portal_cols), cats)
+            )
         for rows_for_cat in picked:
             rows.extend(rows_for_cat)
         return rows
 
     def _pick(
-        self, div: Division, home: PageInfo, cat: str, options: list[tuple[int, Found]]
+        self,
+        div: Division,
+        home: PageInfo,
+        cat: str,
+        options: list[tuple[int, Found]],
+        portal_cols: frozenset[str] = frozenset(),
     ) -> list[DeptRow]:
         if not options:
             return [self._dept_row(div, cat)] if cat in STANDARD_DEPTS else []
@@ -599,7 +654,7 @@ class Inventory:
             else:
                 row.status = "已找到"
                 row.site_url = dp.final_url
-                self._fill_from_page(row, dp, [dp])
+                self._fill_from_page(row, dp, [dp], portal_cols)
             rows.append(row)
             # 开发区可能有好几个（国家级、省级各一），其他部门只取最像的一个
             if cat != "开发区" or len(rows) >= 6:
@@ -609,13 +664,19 @@ class Inventory:
     def _dept_row(self, div: Division, dept: str) -> DeptRow:
         return DeptRow(div.code, div.level, div.province, div.city or "", div.district or "", dept)
 
-    def _fill_from_page(self, row: DeptRow, page: PageInfo, pages: list[PageInfo]) -> None:
+    def _fill_from_page(
+        self,
+        row: DeptRow,
+        page: PageInfo,
+        pages: list[PageInfo],
+        exclude: frozenset[str] = frozenset(),
+    ) -> None:
         fp = page.fp or Fingerprint()
         row.site_id_code, row.platform, row.support = fp.site_id_code, fp.platform, fp.support
         # 部门网站自己写的网站名（meta SiteName）是同一类部门的全称，就用它
         if row.dept != "政府办" and fp.site_name and row.dept in dept_categories(fp.site_name):
             row.dept_full_name = fp.site_name
-        hits = find_columns(pages)
+        hits = find_columns(pages, exclude)
         missing = [k for k in COLUMN_KINDS if k not in hits]
         if missing and row.dept != "政府办":
             # 部门首页没有：沿"信息公开"再找一层
@@ -625,7 +686,7 @@ class Inventory:
                 ):
                     sub = self.page(link.url)
                     if sub.result.status == "ok" and not sub.block:
-                        for kind, hit in find_columns([sub]).items():
+                        for kind, hit in find_columns([sub], exclude).items():
                             hits.setdefault(kind, hit)
                     break
         row.columns = [hits[k] for k in COLUMN_KINDS if k in hits]
@@ -663,6 +724,50 @@ def report_homepage_text(html: str) -> str | None:
     return url + ("/" if urlsplit(url).path in ("", "/") and not url.endswith("/") else "")
 
 
+def _own_branch(text: str, div: Division) -> bool:
+    """区县里上级部门的派出机构算本区县的部门：如"杭州市生态环境局西湖分局"
+    （生态环境在区县一级多是市局的分局）。"""
+    if div.level != "区县级" or not re.search(r"(分局|监管局|管理所)$", text):
+        return False
+    shorts = [v for v in name_variants(div.name, div.kind) if len(v) >= 2]
+    return any(v in text[2:] for v in shorts)
+
+
+_JS_REDIRECT = re.compile(
+    r"""(?:window\.)?location(?:\.href)?\s*=\s*["']([^"']+)["']|location\.replace\(\s*["']([^"']+)["']"""
+    r"""|<meta[^>]+http-equiv=["']?refresh["']?[^>]+url=([^"'>\s]+)""",
+    re.I,
+)
+
+
+def _script_redirect(result: FetchResult, url: str) -> str | None:
+    """只有一句脚本或 meta 跳转、没有正文的页面：跳到哪里（同一家网站内才跟）。"""
+    from youju.crawler.urls import normalize_url
+
+    if result.status != "ok" or not result.text:
+        return None
+    body = re.sub(
+        r"<script[^>]*src=[^>]*>\s*</script>|<link[^>]*>|<meta[^>]*name=[^>]*>", "", result.text
+    )
+    if (
+        len(re.sub(r"<[^>]+>|\s+", "", re.sub(r"<script.*?</script>", "", body, flags=re.S | re.I)))
+        > 200
+    ):
+        return None
+    m = _JS_REDIRECT.search(result.text)
+    if not m:
+        return None
+    base = result.final_url or url
+    target = normalize_url(base, next(g for g in m.groups() if g))
+    if not target or target == base or registrable(target) != registrable(base):
+        return None
+    return target
+
+
+# 信息公开分类树上的分类写成"部门页#xxgk-分类键"（不是能直接打开的栏目，试读记"需接口"）
+XXGK_TAG = "xxgk-"
+
+
 _LEVEL_CHARS = "省市州盟县区旗"
 
 
@@ -694,7 +799,9 @@ def complete_slots(portals: Iterable[PortalRow], depts: list[DeptRow]) -> list[D
         if p.code in have:
             continue
         status = p.status if p.status in ("打不开", "不能抓") else "导航未找到"
-        if p.status == "已找到":
+        if p.status == "出错":
+            reason = f"门户盘点出错：{p.reason[:80]}"
+        elif p.status == "已找到":
             reason = "门户首页上没认出部门"
         elif p.status == "导航未找到":
             reason = "上级官方导航里没找到这个行政区的门户"
@@ -743,27 +850,49 @@ def heading_more_links(doc: etree._Element, base_url: str) -> list[Link]:
     return out
 
 
-def find_columns(pages: list[PageInfo]) -> dict[str, ColumnHit]:
-    """在一组页面上按链接文字找目标栏目：完全相同的写法优先，同一家网站的优先。"""
-    best: dict[str, tuple[tuple[int, int], ColumnHit]] = {}
+def find_columns(
+    pages: list[PageInfo], exclude: frozenset[str] = frozenset()
+) -> dict[str, ColumnHit]:
+    """在一组页面上按链接文字找目标栏目。
+
+    完全相同的写法优先；同一写法里，在这个页面目录下的优先，其次同一主机，再次同一家网站
+    （xx.gov.cn）。别家网站的不要；exclude 里的（门户自己的栏目，部门频道页顶上常有）不要。
+    """
+    best: dict[str, tuple[tuple[int, int, int, int], ColumnHit]] = {}
     for p in pages:
         links = list(p.links)
         if p.doc is not None:
             links += heading_more_links(p.doc, p.final_url)
         home = registrable(p.final_url)
+        host = urlsplit(p.final_url).netloc.lower()
+        pdir = page_dir(p.final_url)
         for order, link in enumerate(links):
             hit = column_kind(link.text)
-            if hit is None:
+            if hit is None or link.url in exclude:
                 continue
             kind, strength = hit
             if not _site_like(link.url, p.final_url):
                 continue
             if registrable(link.url) != home:
                 continue  # 别家网站的栏目（如部门页上链到的省政策文件库）不算这个部门的栏目
-            key = (strength, order)
+            parts = urlsplit(link.url)
+            under = 0 if pdir != "/" and parts.path.startswith(pdir) else 1
+            same_host = 0 if parts.netloc.lower() == host else 1
+            key = (strength, under, same_host, order)
             current = best.get(kind)
             if current is None or key < current[0]:
                 best[kind] = (key, ColumnHit(kind, link.text, link.url, p.final_url))
+        # 信息公开分类树上的分类：没有真正的栏目链接时才用（排在链接后面）
+        for order, (title, cat_key) in enumerate(p.categories):
+            hit = column_kind(title)
+            if hit is None:
+                continue
+            kind, strength = hit
+            key = (strength + 2, 1, 1, order)
+            current = best.get(kind)
+            if current is None or key < current[0]:
+                url = f"{p.final_url.split('#', 1)[0]}#{XXGK_TAG}{cat_key}"
+                best[kind] = (key, ColumnHit(kind, f"{title}（信息公开分类）", url, p.final_url))
     return {kind: hit for kind, (_, hit) in best.items()}
 
 

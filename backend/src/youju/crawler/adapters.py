@@ -42,18 +42,30 @@ def _attrs(tag: str) -> dict[str, str]:
 
 def find_list_api(html: str, page_url: str) -> ListApi | None:
     """栏目页里声明的列表接口；认不出返回 None。"""
+    apis = find_unit_apis(html, page_url)
+    return apis[0] if apis else None
+
+
+def find_unit_apis(html: str, page_url: str) -> list[ListApi]:
+    """页面里声明的全部大汉 jpaas 单元接口（当前栏目的列表排最前，其次导航等其他单元）。"""
     candidates: list[tuple[int, ListApi]] = []
     for m in _HANWEB_SCRIPT.finditer(html or ""):
         attrs = _attrs(m.group(0))
-        path = attrs.get("url", "")
-        if urlsplit(path).path != HANWEB_JPAAS_PATH:
+        declared = urlsplit(urljoin(page_url, attrs.get("url", "")))
+        # 只认白名单路径，而且接口必须就在栏目页这个网站上（页面声明到别的主机的不请求）
+        if declared.path != HANWEB_JPAAS_PATH:
+            continue
+        if declared.netloc.lower() != urlsplit(page_url).netloc.lower():
             continue
         try:
             query = ast.literal_eval(attrs.get("querydata", ""))
-        except (ValueError, SyntaxError):
+        except Exception:  # noqa: BLE001 - 页面写的参数什么样都有，解析不了就不用
             continue
-        if not isinstance(query, dict) or not all(isinstance(v, str) for v in query.values()):
+        if not isinstance(query, dict) or not all(
+            isinstance(v, (str, int)) and not isinstance(v, bool) for v in query.values()
+        ):
             continue
+        query = {str(k): str(v) for k, v in query.items()}
         tag = query.get("tagId", "")
         # 一页上常有几个占位（导航、侧栏）：当前栏目的列表优先
         rank = 0 if "list" in tag.lower() or "列表" in tag else 1
@@ -61,14 +73,12 @@ def find_list_api(html: str, page_url: str) -> ListApi | None:
             rank += 2
         url = urljoin(page_url, HANWEB_JPAAS_PATH) + "?" + urlencode(query)
         candidates.append((rank, ListApi("大汉jpaas", url, page_url)))
-    if not candidates:
-        return None
     candidates.sort(key=lambda c: c[0])
-    api = candidates[0][1]
-    # 只认同一网站上的接口
-    if urlsplit(api.url).netloc.lower() != urlsplit(page_url).netloc.lower():
-        return None
-    return api
+    out: list[ListApi] = []
+    for _, api in candidates:
+        if api not in out:  # 同一接口地址只要一次
+            out.append(api)
+    return out
 
 
 def api_html(api: ListApi, text: str) -> str:
@@ -78,6 +88,36 @@ def api_html(api: ListApi, text: str) -> str:
             data = json.loads(text)
         except ValueError:
             return ""
-        html = (data.get("data") or {}).get("html") if isinstance(data, dict) else None
+        inner = data.get("data") if isinstance(data, dict) else None
+        html = inner.get("html") if isinstance(inner, dict) else None
         return html if isinstance(html, str) else ""
     return ""
+
+
+_TREE = re.compile(r'treeStr\s*=\s*"(\[.*?\])"\s*;', re.S)
+
+
+def jpaas_tree_categories(html: str) -> list[tuple[str, str]]:
+    """大汉 jpaas 信息公开"组配分类"树里的分类（名称, 分类键）。
+
+    县级部门的通知公告、政策文件常只是这棵树上的一个分类，列表点分类后由脚本按键加载；
+    盘点据此知道"栏目在，但要接口"，不会误判成网站没有这个栏目。"""
+    out: list[tuple[str, str]] = []
+    for m in _TREE.finditer(html or ""):
+        raw = m.group(1).replace("/#/", "\x00").replace("#", '"').replace("\x00", "/#/")
+        try:
+            nodes = json.loads(raw)
+        except ValueError:
+            continue
+        stack = list(nodes) if isinstance(nodes, list) else []
+        while stack:
+            node = stack.pop(0)
+            if not isinstance(node, dict):
+                continue
+            title, key = node.get("title"), node.get("key")
+            if isinstance(title, str) and isinstance(key, str):
+                out.append((title.strip(), key))
+            children = node.get("children")
+            if isinstance(children, list):
+                stack.extend(children)
+    return out

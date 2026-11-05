@@ -17,7 +17,7 @@ from youju.govsites.inventory import (
     write_table,
 )
 
-LEVELS = ("省级", "市级", "区县级")
+LEVELS = ("国家级", "省级", "市级", "区县级")
 
 
 def write_outputs(
@@ -116,7 +116,13 @@ COLUMN_FIELDS = (
 
 
 def import_status(check) -> str:
-    """试读结论 → 验证状态（开头的词决定 import-sources 的抓取方式；全国覆盖新来源一律不启用）。"""
+    """试读结论 → 验证状态（开头的词决定 import-sources 的抓取方式；全国覆盖新来源一律不启用）。
+
+    sources.verification_status 最长 64 字：超长的截短（开头的词保留，抓取方式不变）。"""
+    return _import_status(check)[:64]
+
+
+def _import_status(check) -> str:
     from youju.govsites import verify as v
 
     if check.result == v.READABLE:
@@ -133,7 +139,7 @@ def import_status(check) -> str:
 
 
 def column_rows(checks, checked_on: str) -> list[list[str]]:
-    order = {"省级": 0, "市级": 1, "区县级": 2}
+    order = {"国家级": -1, "省级": 0, "市级": 1, "区县级": 2}
     rows = []
     for c in sorted(checks, key=lambda c: (c.code[:2], order[c.level], c.code, c.dept, c.kind)):
         dept_full = (c.dept_full_name or c.dept)[:120]

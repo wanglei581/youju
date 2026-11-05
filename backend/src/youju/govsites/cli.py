@@ -12,9 +12,9 @@ DEFAULT_CACHE = Path.home() / ".cache" / "youju-coverage"
 
 def _fetcher(timeout: float = 20.0):
     from youju.config import get_settings
+    from youju.crawler.fetcher import PoliteFetcher
     from youju.govsites.inventory import CachingResolver
     from youju.govsites.links import is_gov_url
-    from youju.crawler.fetcher import PoliteFetcher
 
     settings = get_settings()
     return PoliteFetcher(
@@ -67,6 +67,7 @@ def _cmd_inventory(args: argparse.Namespace) -> int:
             args.cache,
             None if args.offline else fetcher,
             ok_days=args.max_age_days,
+            fail_days=0 if args.retry_failed else 2,
             offline=args.offline,
         )
         inv = Inventory(
@@ -149,17 +150,30 @@ def _cmd_board(args: argparse.Namespace) -> int:
 
     from sqlalchemy import func, select
 
+    from youju.db import session_factory
     from youju.govsites.board import PENDING, STATES, SourceState, cells, coverage_rate, rollup
     from youju.govsites.inventory import write_table
     from youju.govsites.verify import ColumnCheck
-    from youju.db import session_factory
-    from youju.models import Document, Source
+    from youju.models import Document, Source, SourceCheck
 
     _, depts = _load_states(args.state)
     depts = [d for d in depts if d.province in args.province]
     checks: dict[str, ColumnCheck] = {c.url: c for c in _load_checks(args.checks)}
     sources: dict[str, SourceState] = {}
     with session_factory()() as session:
+        latest = (
+            select(SourceCheck.source_id, func.max(SourceCheck.id).label("last_id"))
+            .group_by(SourceCheck.source_id)
+            .subquery()
+        )
+        last_checks = {
+            sid: (status, http)
+            for sid, status, http in session.execute(
+                select(SourceCheck.source_id, SourceCheck.status, SourceCheck.http_status).join(
+                    latest, SourceCheck.id == latest.c.last_id
+                )
+            )
+        }
         counts = dict(
             session.execute(
                 select(Document.source_id, func.count()).group_by(Document.source_id)
@@ -175,6 +189,7 @@ def _cmd_board(args: argparse.Namespace) -> int:
                 s.last_error,
                 s.verification_status,
                 counts.get(s.id, 0),
+                *last_checks.get(s.id, (None, None)),
             )
     result = cells(depts, sources, checks)
     header = (
@@ -219,7 +234,7 @@ def _cmd_board(args: argparse.Namespace) -> int:
     for prov in args.province:
         for level, cnt in sorted(
             rollup(c for c in result if c.province == prov).items(),
-            key=lambda kv: ["省级", "市级", "区县级"].index(kv[0]),
+            key=lambda kv: ["国家级", "省级", "市级", "区县级"].index(kv[0]),
         ):
             rate = coverage_rate(cnt)
             shown = f"{rate:.0%}" if rate is not None else "-"
@@ -237,12 +252,20 @@ def _load_states(paths) -> tuple[list, list]:
     """读一个或几个盘点结果；门户没找到的行政区补上标准部门格（见 complete_slots）。"""
     from youju.govsites.inventory import complete_slots, load_state
 
-    portals, depts = [], []
+    # 同一行政区在几份结果里都有时（全国一份、单省重跑一份），以后给的为准
+    portals: dict[str, object] = {}
+    depts: dict[str, list] = {}
     for path in paths:
         p, d = load_state(path)
-        portals += p
-        depts += d
-    return portals, complete_slots(portals, depts)
+        codes = {row.code for row in p}
+        for row in p:
+            portals[row.code] = row
+        for code in codes:
+            depts[code] = []
+        for row in d:
+            depts.setdefault(row.code, []).append(row)
+    flat = [row for rows in depts.values() for row in rows]
+    return list(portals.values()), complete_slots(list(portals.values()), flat)
 
 
 def _load_checks(paths) -> list:
@@ -267,6 +290,7 @@ def _cmd_survey(args: argparse.Namespace) -> int:
     rows = survey_all(provinces, portals, depts, checks)
     text = "\n\n".join([markdown(rows)] + [detail(r) for r in rows])
     out = args.out / "集约化平台盘点_数据.md"
+    out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(
         "# 集约化平台盘点数据（程序生成，youju coverage-survey）\n\n" + text + "\n",
         encoding="utf-8",
@@ -298,6 +322,7 @@ def register(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--workers", type=int, default=96)
     p.add_argument("--per-province", type=int, default=6, help="同一省同时处理几个行政区")
     p.add_argument("--offline", action="store_true", help="只用缓存，不联网")
+    p.add_argument("--retry-failed", action="store_true", help="上次没抓成功的页面重抓一次")
     p.add_argument("--log", action="store_true", help="进度写到缓存目录的 inventory.log")
     p.add_argument("--verbose", action="store_true")
     p.set_defaults(func=_cmd_inventory)
@@ -313,7 +338,7 @@ def register(sub: argparse._SubParsersAction) -> None:
         help="coverage-inventory 存的原始结果 JSON，可重复",
     )
     p.add_argument("--province", action="append")
-    p.add_argument("--level", action="append", choices=("省级", "市级", "区县级"))
+    p.add_argument("--level", action="append", choices=("国家级", "省级", "市级", "区县级"))
     p.add_argument("--sample-per-level", type=int, help="每省每级只抽 N 个（平台盘点用）")
     p.add_argument("--workers", type=int, default=48)
     p.add_argument("--offline", action="store_true")

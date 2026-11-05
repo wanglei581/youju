@@ -37,6 +37,8 @@ class ImportSummary:
     disabled: int = 0
 
 
+# 这些状态的来源重导入时不改启用开关（新建时不启用，之后由后台分批打开）
+_KEEP_ENABLED = ("试跑可读",)
 # 状态里出现这些词，说明网站明确不欢迎脚本访问：一律停用，不用浏览器渲染等方式绕过
 _REFUSAL_WORDS = ("拒绝", "防护", "拦截", "robots 禁止")
 
@@ -96,6 +98,10 @@ def import_sources(session: Session, csv_path: Path) -> ImportSummary:
             session.add(Source(url=url, parser_config={}, **fields))
             summary.created += 1
         else:
+            if status.startswith(_KEEP_ENABLED):
+                # 全国覆盖的新栏目只在新建时设为不启用；后台核对后打开的，重导入不关掉
+                fields.pop("enabled")
+                enabled = source.enabled
             for key, value in fields.items():
                 setattr(source, key, value)
             summary.updated += 1

@@ -15,7 +15,7 @@
 from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 
 from youju.govsites.inventory import DeptRow
 
@@ -36,6 +36,8 @@ class SourceState:
     last_error: str | None
     verification_status: str | None
     documents: int = 0
+    last_status: str | None = None  # 最后一次检查的结果（source_checks.status）
+    last_http: int | None = None
 
 
 @dataclass
@@ -59,7 +61,64 @@ def _refused(status: str | None) -> bool:
     return bool(status) and any(w in status for w in ("拒绝", "防护", "拦截", "robots 禁止"))
 
 
-def cell_for(row: DeptRow, sources: dict[str, SourceState], checks: dict[str, object]) -> Cell:
+# "已收录"的时效：最后成功超过这么多天（每天检查 1–4 次）就算抓取失败
+STALE_DAYS = 3
+
+
+def _outcome(url: str, sources: dict[str, SourceState], checks: dict[str, object], now: datetime):
+    """一个栏目现在的结论：ok / stale / blocked / failed / pending / unread，以及说明。"""
+    s = sources.get(url)
+    if s is not None:
+        last = s.last_success_at
+        if last is not None and last.tzinfo is None:
+            last = last.replace(tzinfo=UTC)
+        if last is not None and s.documents > 0:
+            age = now - last
+            if age > timedelta(days=STALE_DAYS):
+                return "stale", f"连续 {age.days} 天没有成功（{(s.last_error or '')[:60]}）"
+            return "ok", ""
+        if _refused(s.verification_status) or s.fetch_mode == "blocked" or s.health == "blocked":
+            return "blocked", s.verification_status or s.last_error or "网站拒绝抓取"
+        if s.last_status == "robots_disallowed":
+            return "blocked", "robots.txt 禁止"
+        if s.last_status == "http_error" and s.last_http in (401, 403, 412, 521):
+            return "blocked", f"HTTP {s.last_http} 拒绝访问"
+        if s.last_status == "parse_empty":
+            return "unread", "页面能打开，但读不出条目（要浏览器渲染、接口或写规则）"
+        if s.last_status and s.last_status != "ok":
+            return "failed", (s.last_error or s.last_status)[:100]
+        if s.last_status == "ok":
+            return "unread", "抓到了页面，但没有条目"
+        # 导入了还没抓：按导入时的验证状态
+        vs = s.verification_status or ""
+        if vs.startswith("试跑可读"):
+            return "pending", "栏目试读可读，已导入未启用"
+        if vs.startswith("本机无法访问"):
+            return "failed", vs
+        return "unread", vs or "已导入，还没抓过"
+    c = checks.get(url)
+    result = getattr(c, "result", "") if c is not None else ""
+    reason = getattr(c, "reason", "") if c is not None else ""
+    if result == "不能抓":
+        return "blocked", reason
+    if result == "打不开":
+        return "failed", f"栏目打不开：{reason[:80]}"
+    if result == "可读":
+        return "pending", "栏目试读可读，未导入"
+    if result:
+        return "unread", result
+    return "unread", "栏目还没试读"
+
+
+def cell_for(
+    row: DeptRow,
+    sources: dict[str, SourceState],
+    checks: dict[str, object],
+    now: datetime | None = None,
+) -> Cell:
+    now = now or datetime.now(UTC)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=UTC)
     cell = Cell(
         row.code,
         row.level,
@@ -73,63 +132,57 @@ def cell_for(row: DeptRow, sources: dict[str, SourceState], checks: dict[str, ob
         column_urls=[c.url for c in row.columns],
     )
     if row.status == "导航未找到":
-        cell.state, cell.reason = "需人工", "官方导航里没找到这个部门的网站或频道"
+        cell.state = "需人工"
+        cell.reason = row.reason or "官方导航里没找到这个部门的网站或频道"
         return cell
     if row.status == "不能抓":
-        cell.state, cell.reason = "不能抓", f"部门网站：{row.reason}"
+        cell.state, cell.reason = "不能抓", row.reason or "网站拒绝抓取"
         return cell
     if row.status == "打不开":
-        cell.state, cell.reason = "抓取失败", f"部门网站打不开：{row.reason[:80]}"
+        cell.state, cell.reason = "抓取失败", f"打不开：{row.reason[:80]}"
         return cell
     if not row.columns:
         cell.state = "网站无此栏目"
         cell.reason = "部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）"
         return cell
-    found = [sources[u] for u in cell.column_urls if u in sources]
-    ok = [s for s in found if s.last_success_at is not None and s.documents > 0]
-    if ok:
+    outcomes = [(_outcome(u, sources, checks, now), u) for u in cell.column_urls]
+    kinds = Counter(o[0] for o, _ in outcomes)
+    blocked_note = f"；另有 {kinds['blocked']} 个栏目网站拒绝抓取" if kinds["blocked"] else ""
+    if kinds["ok"]:
         cell.state = "已收录"
-        cell.last_success_at = max(s.last_success_at for s in ok)  # type: ignore[type-var]
-        cell.reason = f"{len(ok)}/{len(cell.column_urls)} 个栏目已收录"
-        return cell
-    if found and all(_refused(s.verification_status) or s.fetch_mode == "blocked" for s in found):
-        cell.state, cell.reason = "不能抓", found[0].verification_status or "网站拒绝抓取"
-        return cell
-    tried = [s for s in found if s.last_error]
-    if tried:
-        cell.state, cell.reason = "抓取失败", (tried[0].last_error or "")[:100]
-        return cell
-    # 还没导入或还没抓：看试读结论
-    results = [checks[u] for u in cell.column_urls if u in checks]
-    readable = [c for c in results if getattr(c, "result", "") == "可读"]
-    if readable or found:
-        cell.state, cell.reason = (
-            PENDING,
-            "栏目试读可读，已导入未启用" if found else "栏目试读可读，未导入",
+        cell.last_success_at = max(
+            sources[u].last_success_at  # type: ignore[type-var]
+            for (k, _), u in outcomes
+            if k == "ok"
         )
+        cell.reason = f"{kinds['ok']}/{len(outcomes)} 个栏目已收录" + blocked_note
         return cell
-    blocked = [c for c in results if getattr(c, "result", "") == "不能抓"]
-    if blocked and len(blocked) == len(results):
-        cell.state, cell.reason = "不能抓", getattr(blocked[0], "reason", "")
+    failed = [why for (k, why), _ in outcomes if k in ("failed", "stale")]
+    if failed:
+        cell.state, cell.reason = "抓取失败", failed[0] + blocked_note
+        stale = [sources[u].last_success_at for (k, _), u in outcomes if k == "stale"]
+        cell.last_success_at = max(stale) if stale else None  # type: ignore[type-var]
         return cell
-    down = [c for c in results if getattr(c, "result", "") == "打不开"]
-    if down and len(down) == len(results):
-        cell.state, cell.reason = "抓取失败", f"栏目打不开：{getattr(down[0], 'reason', '')[:80]}"
+    if kinds["blocked"] and kinds["blocked"] == len(outcomes):
+        cell.state = "不能抓"
+        cell.reason = next(why for (k, why), _ in outcomes if k == "blocked")
         return cell
-    if results:
-        cell.state = "需人工"
-        cell.reason = "；".join(
-            sorted({f"{getattr(c, 'result', '')}" for c in results if getattr(c, "result", "")})
-        )
+    if kinds["pending"]:
+        cell.state, cell.reason = PENDING, next(w for (k, w), _ in outcomes if k == "pending")
+        cell.reason += blocked_note
         return cell
-    cell.state, cell.reason = "需人工", "栏目还没试读"
+    cell.state = "需人工"
+    cell.reason = "；".join(sorted({w for (k, w), _ in outcomes if k == "unread"})) + blocked_note
     return cell
 
 
 def cells(
-    depts: Iterable[DeptRow], sources: dict[str, SourceState], checks: dict[str, object]
+    depts: Iterable[DeptRow],
+    sources: dict[str, SourceState],
+    checks: dict[str, object],
+    now: datetime | None = None,
 ) -> list[Cell]:
-    return [cell_for(d, sources, checks) for d in depts]
+    return [cell_for(d, sources, checks, now) for d in depts]
 
 
 def rollup(items: Iterable[Cell]) -> dict[str, Counter]:
@@ -140,9 +193,11 @@ def rollup(items: Iterable[Cell]) -> dict[str, Counter]:
     return out
 
 
-def coverage_rate(counter: Counter) -> float | None:
-    """覆盖率 = 已收录 ÷（应接入 − 网站无此栏目 − 不能抓）。
+def coverage_rate(counter: Counter, confirmed_no_column: int = 0) -> float | None:
+    """覆盖率 = 已收录 ÷（应接入 − 人工确认过的网站无此栏目 − 不能抓）。
 
-    没有栏目、明确不让抓的不算缺口，另列。"""
-    total = sum(counter.values()) - counter["网站无此栏目"] - counter["不能抓"]
+    程序判的"网站无此栏目"人工确认前不从分母里扣（免得没认出栏目就把覆盖率抬高）；
+    不能抓有防护页、robots 等证据，扣掉但单独列出、要有替代来源说明。
+    """
+    total = sum(counter.values()) - confirmed_no_column - counter["不能抓"]
     return counter["已收录"] / total if total > 0 else None
