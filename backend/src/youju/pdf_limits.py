@@ -19,8 +19,11 @@ LZW、RunLength、CCITT 解码器和预测器也照文件里写的长度、列�
 不超上限的，解出的数据和 pdfminer 原来的写法一样（坏数据的处理也照抄）。超了、不支持的抛 Refused；
 pdfplumber 会把它包进 PdfminerException，用 refused(exc) 找出来。
 
-上限怎么定：2026-11-05 按 11/4 公开数据快照里的附件、名单 PDF 链接下载了一批真实文件，数据流解压后
-最大、整份合计最大、用到的解码方式见 PR 说明；上限留了几倍余量。
+上限怎么定（2026-11-05 按 11/4 公开数据快照里附件、名单的 PDF 链接下载了 329 份真实文件，把每份的
+非图片数据流全部解一遍）：一个数据流解出最大 2.4MB（字体最大 1.5MB）；一份合计最大 35.6MB，中位
+1.0MB；文字多的文件解出的大约是文件大小的 10 倍，20MB 的文件整份读完约 220MB。解码方式只有
+FlateDecode（14,865 个）和 ASCIIHexDecode（5 个），预测器只有交叉引用流的 PNG 预测器。
+15,349 个数据流用这里的写法和 pdfminer 原来的写法解出的逐字节一样。
 
 为什么不像解 rar（attachment_text._rar，PR #451）那样放进限内存的子进程：
 1. 本机 macOS 设不了 RLIMIT_AS（setrlimit 报 ValueError，分配照样成功），测试证明不了上限，只有线上
@@ -35,6 +38,7 @@ pdfplumber 会把它包进 PdfminerException，用 refused(exc) 找出来。
 
 from __future__ import annotations
 
+import logging
 import zlib
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -61,11 +65,12 @@ from pdfminer.pdftypes import (
 )
 from pdfminer.utils import apply_png_predictor, apply_tiff_predictor
 
+log = logging.getLogger("youju.pdf_limits")
 _MB = 1024 * 1024
-# 一个数据流解出的数据（每一步；解的时候内存要占两倍）
+# 一个数据流解出的数据（每一步；解的时候内存要占两倍）。真实文件最大 2.4MB
 STREAM_MAX = 32 * _MB
-# 一份 PDF 解出的数据合计
-DOCUMENT_MAX = 128 * _MB
+# 一份 PDF 解出的数据合计。真实文件最大 35.6MB，20MB 的文字文件整份读完约 220MB
+DOCUMENT_MAX = 256 * _MB
 # 预测器的输入长度、列数（pdfminer 的写法：每个字节约占 9 字节内存，一行按列数先分配）
 PREDICTOR_INPUT_MAX = 8 * _MB
 PREDICTOR_COLUMNS_MAX = 1 << 20
@@ -113,8 +118,12 @@ def reading(on_refused: Callable[[Refused], Exception] | None = None) -> Iterato
     try:
         yield
     except Exception as exc:
-        hit = refused(exc) if on_refused is not None else None
+        hit = refused(exc)
         if hit is None:
+            raise
+        # 记一条：附件副本的检查只记"取不出文字"，看日志才分得清是不是解压超了
+        log.info("PDF 不读：%s", hit.detail)
+        if on_refused is None:
             raise
         raise on_refused(hit) from exc
     finally:
@@ -198,10 +207,15 @@ def _inflate(data: bytes, cap: int) -> bytes:
         out = inflater.decompress(data, cap + 1)
     except zlib.error as exc:
         if settings.STRICT:
-            raise PDFException(f"Invalid zlib bytes: {exc!r}, {data!r}") from exc
+            raise PDFException(f"Invalid zlib bytes: {exc!r}（{len(data)} 字节）") from exc
         return _inflate_corrupted(data, cap)
     _check(len(out), cap)
-    # 数据不完整（截断）时 pdfminer 的 zlib.decompress 报错、再逐字节解出能解的部分，就是 out
+    # 数据不完整（截断）：pdfminer 的 zlib.decompress 报错，严格模式下抛 PDFException，平时再逐字节
+    # 解出能解的部分，就是 out
+    if settings.STRICT and not inflater.eof:
+        raise PDFException(
+            f"Invalid zlib bytes: incomplete or truncated stream（{len(data)} 字节）"
+        )
     return out
 
 

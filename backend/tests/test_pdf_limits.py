@@ -9,6 +9,7 @@ import zlib
 from pathlib import Path
 
 import pdfminer
+import pdfminer.settings
 import pytest
 from pdfminer.pdfexceptions import PDFNotImplementedError
 from pdfminer.pdftypes import PDFStream
@@ -177,15 +178,38 @@ def test_filters_without_limits_are_refused(name: str) -> None:
     }
 
 
-def test_predictor_with_huge_columns_is_refused_before_allocating() -> None:
-    """pdfminer 的 PNG 预测器先按列数分配一行（整数列表）：5000 万列要 450MB 内存，文件只有几百字节。"""
-    raw = zlib.compress(b"\x00" * 100)
-    pdf = make_pdf(
-        (b"/Filter /FlateDecode /DecodeParms << /Predictor 12 /Columns 50000000 >>", raw)
-    )
+@pytest.mark.parametrize(
+    "params",
+    [
+        b"/Columns 50000000",
+        b"/Colors 50000000",
+        b"/Colors 400000000 /BitsPerComponent 1",
+        b"/BitsPerComponent 64",
+    ],
+)
+def test_predictor_parameters_cannot_blow_up_memory(params: bytes) -> None:
+    """pdfminer 的 PNG 预测器先按列数分配一行（整数列表）：5000 万列要 450MB 内存，文件只有几百字节，
+    列数超了不解。颜色数、位深再大也不先分配（20260107 版只按列数分配），内存照样不涨。"""
+    raw = zlib.compress(bytes([2]) + bytes(999))
+    pdf = make_pdf((b"/Filter /FlateDecode /DecodeParms << /Predictor 12 %s >>" % params, raw))
     assert peak_memory(lambda: attachment_text.extract(pdf)) < 8 * MB
-    result = attachment_text.extract(pdf)
-    assert (result.reason, result.detail) == ("too_large", "PDF 用预测器的数据流太大")
+    if params.startswith(b"/Columns"):
+        result = attachment_text.extract(pdf)
+        assert (result.reason, result.detail) == ("too_large", "PDF 用预测器的数据流太大")
+
+
+def test_used_up_total_never_means_unlimited() -> None:
+    """合计额度用完（剩 0）时也是上限：zlib 的 max_length 给 0 是"不限"，这里给的是 1。"""
+    bomb = PDFStream({"Filter": LIT("FlateDecode")}, review_bomb())
+
+    def read() -> None:
+        with pdf_limits.reading():
+            pdf_limits._BUDGET.get().left = 0
+            with pytest.raises(pdf_limits.Refused, match="合计"):
+                bomb.get_data()
+
+    assert peak_memory(read) < MB
+    assert bomb.data is None and bomb.rawdata is not None  # 没解成，下次再读还是拒绝
 
 
 def test_ascii85_zero_runs_are_counted_before_decoding(small_caps) -> None:
@@ -228,14 +252,27 @@ CASES = {
 }
 
 
+def decoded(decode, attrs: dict, raw: bytes):
+    """解出的数据；出错时是异常的类名。"""
+    stream = PDFStream(dict(attrs), raw)
+    try:
+        decode(stream)
+    except Exception as exc:  # noqa: BLE001 - 对照两种写法抛的是不是同一种异常
+        return exc.__class__.__name__
+    assert stream.rawdata is None
+    return stream.data
+
+
+@pytest.mark.parametrize("strict", [False, True])
 @pytest.mark.parametrize("name", CASES)
-def test_streams_within_limits_decode_like_pdfminer(name: str) -> None:
+def test_streams_within_limits_decode_like_pdfminer(monkeypatch, name: str, strict: bool) -> None:
+    """不超上限的，解出的和 pdfminer 原来的写法逐字节一样；严格模式（STRICT）下坏数据照样报同一种错。"""
+    monkeypatch.setattr(pdfminer.settings, "STRICT", strict)
     attrs, raw = CASES[name]
-    ours, theirs = PDFStream(dict(attrs), raw), PDFStream(dict(attrs), raw)
-    pdf_limits._ORIGINAL(theirs)
-    assert theirs.data is not None
-    assert ours.get_data() == theirs.data
-    assert ours.rawdata is None
+    theirs = decoded(pdf_limits._ORIGINAL, attrs, raw)
+    assert decoded(pdf_limits._decode, attrs, raw) == theirs
+    if not strict:
+        assert isinstance(theirs, bytes)
 
 
 @pytest.mark.parametrize(
