@@ -10,6 +10,7 @@
     <view class="muted">{{advisor && result.summaryCount ? '明细 ' + (result.total - result.summaryCount) + ' 行 · 汇总 ' + result.summaryCount + ' 行' : '共 ' + result.total + (advisor ? ' 行' : ' 份')}} · {{result.generatedAtText}}</view>
     <!-- 导出文件里的数据说明是给文件用的（"未核项"列等），站内不搬过来；批量工具的结果照旧写（含"未查到不代表未入选"） -->
     <view wx:if="{{advisor}}" class="muted">{{result.notice}}</view>
+    <view wx:if="{{detailPage > page}}" class="link jump-detail" bindtap="jumpDetail" aria-role="button">汇总在前；明细从第 {{result.summaryCount + 1}} 行起，跳到明细 ›</view>
     <view wx:if="{{!advisor}}" wx:for="{{result.items}}" wx:key="doc_id" class="result-item">
       <view class="title" data-id="{{item.doc_id}}" bindtap="detail">{{item.number}}. {{item.title}}</view>
       <view>{{item.metaText}}</view>
