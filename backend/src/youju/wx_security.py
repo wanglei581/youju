@@ -19,6 +19,7 @@ from typing import Any
 
 import httpx
 
+from youju import wxopen
 from youju.config import get_settings
 
 URL = "http://api.weixin.qq.com/wxa/msg_sec_check"
@@ -45,16 +46,16 @@ class Verdict:
 
 
 def in_cloud(settings: Any) -> bool:
-    """是不是在云托管里，要真的调接口。小程序接口服务信任微信请求头（trust_wx_headers，和纠错
+    """是不是要真的调接口。云托管里：小程序接口服务信任微信请求头（trust_wx_headers，和纠错
     跳过检测的条件一样）；核对台服务（YOUJU_ROLE=admin）不信任请求头，但同样经开放接口服务调
-    （发订阅消息就走这条路），问这份通知的回答在那里查。本机开发和测试两样都不是，不调。"""
-    return bool(getattr(settings, "trust_wx_headers", False)) or (
-        getattr(settings, "role", "all") == "admin"
-    )
+    （发订阅消息就走这条路），问这份通知的回答在那里查。自建服务器：配了自己取 access_token
+    （YOUJU_WX_OPEN_API=token）才调。本机开发和测试都不是，不调（见 wxopen.available）。"""
+    return wxopen.available(settings)
 
 
 def _post(openid: str, content: str, scene: int, timeout: float) -> Any:
-    response = httpx.post(
+    # 云托管里就是原来的 httpx.post；自建服务器由 wxopen 带上 access_token
+    response = wxopen.post(
         URL,
         json={"openid": openid, "version": 2, "scene": scene, "content": content},
         timeout=timeout,

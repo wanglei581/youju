@@ -46,6 +46,9 @@ JOB_NAMES = OVERVIEW_JOBS + (
     "public-snapshot",
     "notify",
     "alert",
+    # 2.0 自建服务器（deploy/selfhost/）：本机把公开数据推到服务器；服务器把加密的备份传到异地
+    "sync-push",
+    "offsite-backup",
 )
 
 

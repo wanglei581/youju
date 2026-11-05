@@ -1033,6 +1033,7 @@ def _cmd_restore_public(args: argparse.Namespace) -> int:
 
 
 def _cmd_backup_verify(args: argparse.Namespace) -> int:
+    from youju import storage
     from youju.backup import BackupError, download_latest, verify
     from youju.db import create_mysql_engine
 
@@ -1047,9 +1048,7 @@ def _cmd_backup_verify(args: argparse.Namespace) -> int:
                 counts = verify(engine, src)
             path = str(args.file)
         else:
-            import httpx
-
-            with tempfile.TemporaryDirectory() as tmp, httpx.Client(trust_env=False) as client:
+            with tempfile.TemporaryDirectory() as tmp, storage.http_client() as client:
                 local = Path(tmp) / "backup.jsonl.gz"
                 path = download_latest(client, settings.cloud_env, local)
                 with local.open("rb") as src:
@@ -2091,6 +2090,123 @@ def _cmd_weekly_digest(args: argparse.Namespace) -> int:
     return 0
 
 
+# ---- 2.0 自建服务器：公开数据同步（youju/sync/）、异地备份（youju/offsite.py） ----
+
+
+def _sync_engine():
+    from youju.db import create_mysql_engine
+
+    return create_mysql_engine(get_settings().database_url)
+
+
+def _cmd_sync_setup(args: argparse.Namespace) -> int:
+    from youju.sync import local
+
+    engine = _sync_engine()
+    try:
+        stream = local.setup(engine)
+    finally:
+        engine.dispose()
+    print(f"本机库已建好同步变更表和 {len(local.trigger_names())} 个触发器（变更流 {stream}）")
+    return 0
+
+
+def _cmd_sync_push(args: argparse.Namespace) -> int:
+    from youju.sync import local
+
+    engine = _sync_engine()
+    client = None
+    try:
+        client = local.client_from_settings(get_settings())
+        if args.mark_synced:
+            seq = local.mark_synced(engine, client)
+            print(f"已把服务器的同步进度设成本机现在的 {seq}")
+            return 0
+        if args.full:
+            only = set(args.tables.split(",")) if args.tables else None
+            report = local.full_push(engine, client, prune=not args.no_prune, only=only)
+        else:
+            report = local.push(engine, client, max_batches=args.max_batches)
+    except local.SyncError as exc:
+        print(f"同步失败：{exc}")
+        return 1
+    finally:
+        if client is not None:
+            client.close()
+        engine.dispose()
+    kept = "；".join(f"{k} {v} 行" for k, v in report.kept.items())
+    print(
+        f"推了 {report.batches} 批：写 {report.upserts} 行、删 {report.deletes} 行、"
+        f"传附件副本 {report.blobs} 个，服务器进度 {report.applied_seq}"
+        + (f"；被用户数据挡住没删的：{kept}" if kept else "")
+    )
+    return 0
+
+
+def _cmd_sync_status(args: argparse.Namespace) -> int:
+    import json as _json
+
+    from youju.sync import local
+
+    engine = _sync_engine()
+    client = None
+    try:
+        settings = get_settings()
+        if settings.sync_url:
+            client = local.client_from_settings(settings)
+        print(_json.dumps(local.status(engine, client), ensure_ascii=False, indent=2))
+    except local.SyncError as exc:
+        print(f"查同步状态失败：{exc}")
+        return 1
+    finally:
+        if client is not None:
+            client.close()
+        engine.dispose()
+    return 0
+
+
+def _cmd_sync_export(args: argparse.Namespace) -> int:
+    from youju.sync import local
+
+    engine = _sync_engine()
+    try:
+        counts = local.export_to_file(engine, args.output)
+    finally:
+        engine.dispose()
+    print(f"已导出 {sum(counts.values())} 行到 {args.output}（{len(counts)} 张表）")
+    return 0
+
+
+def _cmd_sync_import(args: argparse.Namespace) -> int:
+    from youju.sync import local
+
+    engine = _sync_engine()
+    try:
+        counts = local.import_file(engine, args.file)
+    except local.SyncError as exc:
+        print(f"导入失败：{exc}")
+        return 1
+    finally:
+        engine.dispose()
+    print(f"已导入 {sum(counts.values())} 行（{len(counts)} 张表）；下一步 youju sync-setup")
+    return 0
+
+
+def _cmd_offsite_backup(args: argparse.Namespace) -> int:
+    from youju import offsite
+    from youju.backup import BackupError
+
+    try:
+        report = offsite.run(get_settings())
+    except BackupError as exc:
+        print(f"异地备份失败：{exc}")
+        return 1
+    print(
+        f"已把 {report.source} 加密后传到异地（{report.bytes} 字节）；删掉 {report.pruned} 份过期的"
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="youju", description="有据数据底座命令行")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -2579,6 +2695,26 @@ def main(argv: list[str] | None = None) -> int:
         help="另外提醒今天正好连续没抓到第 3、7、14、30 天（之后每满 30 天）的栏目（只给早轮用）",
     )
     p.set_defaults(func=_cmd_check_sources)
+
+    p = sub.add_parser("sync-setup", help="（本机）建同步变更表和触发器，可以重复执行")
+    p.set_defaults(func=_cmd_sync_setup)
+    p = sub.add_parser("sync-push", help="（本机）把公开数据的变更推到服务器")
+    p.add_argument("--full", action="store_true", help="整表全推一遍，再删掉服务器上多出来的行")
+    p.add_argument("--no-prune", action="store_true", help="全推时不删服务器上多出来的行")
+    p.add_argument("--tables", help="全推时只推这几张表（逗号分隔）")
+    p.add_argument("--mark-synced", action="store_true", help="起步导入后：把服务器进度设成本机的")
+    p.add_argument("--max-batches", type=int, default=None, help="这次最多推几批")
+    p.set_defaults(func=_cmd_sync_push)
+    p = sub.add_parser("sync-status", help="同步状态：待推的变更、两边各表条数差")
+    p.set_defaults(func=_cmd_sync_status)
+    p = sub.add_parser("sync-export", help="（服务器）导出同步的表，给本机起步导入")
+    p.add_argument("--output", type=Path, required=True)
+    p.set_defaults(func=_cmd_sync_export)
+    p = sub.add_parser("sync-import", help="（本机）导入服务器导出的文件（同步的表要是空的）")
+    p.add_argument("--file", type=Path, required=True)
+    p.set_defaults(func=_cmd_sync_import)
+    p = sub.add_parser("offsite-backup", help="（服务器）把当天的整库备份加密后传到异地存储")
+    p.set_defaults(func=_cmd_offsite_backup)
 
     p = sub.add_parser("serve", help="启动 API 服务")
     p.add_argument("--host", default="127.0.0.1")

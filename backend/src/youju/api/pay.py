@@ -19,7 +19,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
-from youju import payments
+from youju import payments, wx_push
 from youju.api.advisor import SessionDep, _body_size, _stamp, _upload_consent
 from youju.api.contact import transfer_to_kf
 from youju.api.me import KnownUserDep, UserDep, request_openid
@@ -46,8 +46,13 @@ router = APIRouter(prefix="/api/v1/pay", tags=["支付"])
 
 
 def require_push_service() -> None:
-    # 推送路径只在接收云托管推送的服务上存在；不受支付开关控制，配置检测和非支付消息要能应答。
-    if not get_settings().trust_wx_headers:
+    # 推送路径只在接收推送的服务上存在；不受支付开关控制，配置检测和非支付消息要能应答。
+    # 云托管：信任请求头的接口服务；自建服务器：配了推送 Token（YOUJU_WX_PUSH_MODE=signed，
+    # 自己验签，见 youju/wx_push.py）
+    settings = get_settings()
+    if getattr(settings, "wx_push_mode", "cloudrun") == "signed":
+        return
+    if not settings.trust_wx_headers:
         raise HTTPException(status_code=404, detail="没有找到接口")
 
 
@@ -472,14 +477,25 @@ def check_order(order_id: int, session: SessionDep, user: KnownUserDep, client: 
 
 async def push_payload(request: Request) -> tuple[dict, bool]:
     settings = get_settings()
-    # 云托管《消息推送》：服务未开公网时可信任所有推送；开了公网只认带 x-wx-source 的请求。
-    appid = request.headers.get("X-WX-APPID")
-    if (settings.wx_push_public and not request.headers.get("X-WX-SOURCE")) or (
-        settings.wx_appid and appid is not None and appid != settings.wx_appid
-    ):
-        raise HTTPException(status_code=403, detail="推送来源无效")
-    await _body_size(request)
-    raw = await request.body()
+    request.state.push_secure = False
+    if getattr(settings, "wx_push_mode", "cloudrun") == "signed":
+        # 自建服务器：按小程序后台的 Token 验签，安全模式先解密（youju/wx_push.py）
+        await _body_size(request)
+        try:
+            raw, request.state.push_secure = wx_push.open_push(
+                settings, request.query_params, await request.body()
+            )
+        except wx_push.PushRejected:
+            raise HTTPException(status_code=403, detail="推送来源无效") from None
+    else:
+        # 云托管《消息推送》：服务未开公网时可信任所有推送；开了公网只认带 x-wx-source 的请求。
+        appid = request.headers.get("X-WX-APPID")
+        if (settings.wx_push_public and not request.headers.get("X-WX-SOURCE")) or (
+            settings.wx_appid and appid is not None and appid != settings.wx_appid
+        ):
+            raise HTTPException(status_code=403, detail="推送来源无效")
+        await _body_size(request)
+        raw = await request.body()
     xml = raw.lstrip().startswith(b"<")
     try:
         if xml:
@@ -538,11 +554,43 @@ def _ios_reply(bind, trade: str | None) -> dict:
         return dict(payments.IOS_UNVERIFIABLE)
 
 
+# 自建服务器在小程序后台填推送地址时，微信先发一个 GET 验证（只在 signed 模式下有）。
+@push_router.get(get_settings().wx_push_path)
+def verify_push_url(request: Request) -> Response:
+    settings = get_settings()
+    if getattr(settings, "wx_push_mode", "cloudrun") != "signed":
+        raise HTTPException(status_code=404, detail="没有找到接口")
+    try:
+        echostr = wx_push.verify_url(settings, request.query_params)
+    except wx_push.PushRejected:
+        raise HTTPException(status_code=403, detail="推送来源无效") from None
+    return Response(echostr, media_type="text/plain")
+
+
 # 路径在服务启动时绑定，配置改变后须重新启动部署服务。
 @push_router.post(get_settings().wx_push_path)
 async def push(
-    payload: Annotated[tuple[dict, bool], Depends(push_payload)], session: SessionDep, client: WxDep
+    request: Request,
+    payload: Annotated[tuple[dict, bool], Depends(push_payload)],
+    session: SessionDep,
+    client: WxDep,
 ) -> Response:
+    response = await _push(payload, session, client)
+    if not getattr(request.state, "push_secure", False):
+        return response
+    # 安全模式：回包也要加密（空串、success 除外），见 youju/wx_push.py
+    xml = payload[1]
+    sealed = wx_push.seal_reply(
+        get_settings(), bytes(response.body), xml=xml, nonce=request.query_params.get("nonce", "")
+    )
+    return Response(
+        sealed,
+        status_code=response.status_code,
+        media_type="application/xml" if xml else "application/json",
+    )
+
+
+async def _push(payload: tuple[dict, bool], session: Session, client: XPayClient) -> Response:
     data, xml = payload
     kind = data.get("Event", "")
     # 用户在客服会话里发的消息回"转客服"，客服人员才收得到（contact.py）；

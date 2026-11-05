@@ -8,7 +8,6 @@ import hashlib
 import hmac
 import json
 import logging
-import ssl
 from datetime import date
 
 import httpx
@@ -30,8 +29,14 @@ def wx_http() -> httpx.Client:
     云托管的开放接口服务接管了容器里到 api.weixin.qq.com 的连接，https 用的是平台自己签发、
     装在系统证书库里的证书；httpx 默认只认 certifi 自带的那份，会报 self-signed certificate，
     配了 AppSecret 的换会话密钥（方式 B）因此一直失败（10/19 沙箱下单 503）。仍然校验证书和域名，
-    只是信任的根证书改从系统证书库取。"""
-    return httpx.Client(trust_env=False, verify=ssl.create_default_context())
+    只是信任的根证书改从系统证书库取。
+
+    自建服务器（YOUJU_WX_OPEN_API=token）由 wxopen.client() 给 http://api.weixin.qq.com 的请求
+    带上 access_token（虚拟支付接口要 access_token 加 pay_sig；pay_sig 只签路径和包体，
+    加了 access_token 不影响签名）；云托管里和原来完全一样。"""
+    from youju import wxopen
+
+    return wxopen.client()
 
 
 class _PaymentLogFilter(logging.Filter):

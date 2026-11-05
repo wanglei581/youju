@@ -40,6 +40,7 @@ import httpx
 from sqlalchemy import Engine, delete, func, select
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 
+from youju import storage
 from youju.alerts import send_alert
 from youju.backup import BEIJING, BackupError, _open_api, _retrying, delete_files, upload
 from youju.config import get_settings
@@ -335,7 +336,7 @@ def run_archive(
         )
     own = client is None and output is None
     if own:
-        client = httpx.Client(trust_env=False)
+        client = storage.http_client()
     try:
         for day in _pending_days(engine, now):
             path = object_path(day)

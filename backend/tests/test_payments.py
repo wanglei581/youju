@@ -1099,7 +1099,8 @@ def test_wx_http_verifies_with_system_trust_store(monkeypatch):
         made.append(real(*args, **kwargs))
         return made[-1]
 
-    monkeypatch.setattr(xpay.ssl, "create_default_context", record)
+    # wx_http 由 wxopen.client() 建，打补丁打在 ssl 模块本身
+    monkeypatch.setattr(ssl, "create_default_context", record)
     with wx_http() as http:
         assert http.trust_env is False
     assert len(made) == 1
@@ -1340,7 +1341,7 @@ def test_pay_recheck_command_opens_a_paid_order_closed_after_48_hours(
 ):
     """48 小时查不到付款结果关了单、告警以后，负责人用 youju pay-recheck 向微信查一次：
     付了款且核验通过就开通、通知发货；先 --dry-run 只看查单结果（Codex 第 6 轮）。"""
-    from youju import cli, xpay
+    from youju import cli
 
     _, settings, fake = setup_pay
     monkeypatch.setattr(cli, "session_factory", lambda: session_factory)
@@ -1397,7 +1398,7 @@ def test_pay_recheck_keeps_the_pending_alert_of_a_manual_order_it_cannot_close(
 ):
     """负责人核对一张告警还没发出去的人工单（这里是投诉），微信说还没付款：订单照旧是人工、
     待发的告警照旧由补单发，原因不丢；命令先打印订单上记的原因（Codex 第 8 轮）。"""
-    from youju import cli, xpay
+    from youju import cli
 
     _, settings, fake = setup_pay
     monkeypatch.setattr(cli, "session_factory", lambda: session_factory)

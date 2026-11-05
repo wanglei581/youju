@@ -33,6 +33,7 @@ import httpx
 from sqlalchemy import Connection, Engine, Table, and_, func, or_, select, text
 from sqlalchemy.exc import SQLAlchemyError
 
+from youju import storage
 from youju.backup import (
     BEIJING,
     BackupError,
@@ -453,7 +454,7 @@ def run(
     today = now.astimezone(BEIJING).date()
     report = SnapshotReport(path=object_path(today))
     own = client is None
-    client = client or httpx.Client(trust_env=False)
+    client = client or storage.http_client()
     try:
         with tempfile.TemporaryDirectory() as tmp:
             local = Path(tmp) / Path(report.path).name
