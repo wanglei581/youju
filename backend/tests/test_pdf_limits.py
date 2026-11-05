@@ -68,8 +68,15 @@ def make_pdf(*streams: tuple[bytes, bytes]) -> bytes:
     return out
 
 
-def objstm_pdf(stream_extra: bytes, inner: dict[int, bytes], size: int, info: bytes = b"") -> bytes:
-    """PDF 1.5：交叉引用流 + 一个对象流（12 号，FlateDecode，stream_extra 是字典里再加的项），
+def objstm_pdf(
+    stream_extra: bytes,
+    inner: dict[int, bytes],
+    size: int,
+    info: bytes = b"",
+    filters: bytes = b"/FlateDecode",
+) -> bytes:
+    """PDF 1.5：交叉引用流 + 一个对象流（12 号，数据按 FlateDecode 压，字典里 /Filter 写 filters，
+    stream_extra 是字典里再加的项），
     inner 里的对象放在对象流里，对象流解压后补空格到 size 字节。页面、字体、页面内容是普通对象；
     info 给了就当文档信息字典（元数据，11 号对象）。"""
     plain = {
@@ -96,8 +103,8 @@ def objstm_pdf(stream_extra: bytes, inner: dict[int, bytes], size: int, info: by
     )
     raw += packer.flush()
     plain[12] = (
-        b"<< /Type /ObjStm /N %d /First %d /Length %d /Filter /FlateDecode %s >>\nstream\n"
-        % (len(inner), len(header), len(raw), stream_extra)
+        b"<< /Type /ObjStm /N %d /First %d /Length %d /Filter %s %s >>\nstream\n"
+        % (len(inner), len(header), len(raw), filters, stream_extra)
         + raw
         + b"\nendstream"
     )
@@ -309,6 +316,21 @@ def test_streams_nested_too_deep_are_refused(monkeypatch) -> None:
     assert peak_memory(lambda: attachment_text.extract(pdf)) < 16 * MB
     result = attachment_text.extract(pdf)
     assert (result.reason, result.detail) == ("broken", "PDF 数据流互相引用、套得太深")
+
+
+def test_filter_referring_into_its_own_object_stream_is_refused() -> None:
+    """/Filter 本身指向这个对象流里的对象：要知道怎么解就得先解自己（取解码方式时就套进去，还没解出
+    任何数据）。pdfminer 原来一直套到递归太深，现在第 9 层拒绝。"""
+    inner = {2: SELF_REF[2], 20: b"/FlateDecode"}
+    pdf = objstm_pdf(b"", inner, 4096, filters=b"20 0 R")
+    assert peak_memory(lambda: results(pdf)) < 4 * MB
+    detail = "数据流互相引用、套得太深"
+    assert results(pdf) == {
+        "copy": "unchecked",
+        "text": ("broken", f"PDF {detail}"),
+        "list": f"暂不支持这份 PDF（{detail}）",
+        "body": ("", f"PDF {detail}"),
+    }
 
 
 def test_refusal_swallowed_by_pdfplumber_still_fails_the_file(small_caps, monkeypatch) -> None:
