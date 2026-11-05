@@ -11,7 +11,7 @@ LZW、RunLength、CCITT 解码器和预测器也照文件里写的长度、列�
 - 一个数据流每解一步，解出的数据不超过 STREAM_MAX；
 - 一份 PDF（一次 reading() 里）解出的数据合计不超过 DOCUMENT_MAX：pdfminer 把解过的数据流留在
   内存里，整份读完才释放。解一个数据流时先预留它的额度：解码参数可能指向对象流里的对象，要先解
-  那个对象流（甚至就是自己），预留的额度不让里面那一层用（解失败的不退）；一层套一层最多
+  那个对象流（甚至就是自己），预留的额度不让里面那一层用（解到一半出错的，解出的部分照样扣着）；一层套一层最多
   _NESTING_MAX 层；
 - 有一个数据流超了，这份 PDF 里后面的数据流都不再解，reading() 结束时整份按超了算：pdfplumber
   读文档信息（元数据）时会吞掉异常接着往下读，不能让它照常"读完"；
@@ -234,28 +234,30 @@ def _decode_within(self: PDFStream, budget: _Budget | None) -> None:
     cap = STREAM_MAX if budget is None else max(0, min(STREAM_MAX, budget.left))
     if budget is not None:
         budget.left -= cap  # 先预留，解的过程中再引用到的数据流用不到这一份
-    for f, params in filters:
-        if f in LITERALS_FLATE_DECODE:
-            data = _inflate(data, cap)
-        elif f in LITERALS_ASCIIHEX_DECODE:
-            data = asciihexdecode(data)  # 解出的不超过输入的一半
-        elif f in _IMAGE_FILTERS:
-            pass  # 图片：pdfminer 也是原样留着
-        elif f in _REFUSED_FILTERS:
-            raise Refused("format", f"用了不支持的压缩方式 {f.name}")
-        elif f == LITERAL_CRYPT:
-            raise PDFNotImplementedError("/Crypt filter is unsupported")
-        else:
-            raise PDFNotImplementedError(f"Unsupported filter: {f!r}")
-        if params and "Predictor" in params:
-            data = _predict(data, params, _predictor_limit(self))
+    try:
+        for f, params in filters:
+            if f in LITERALS_FLATE_DECODE:
+                data = _inflate(data, cap)
+            elif f in LITERALS_ASCIIHEX_DECODE:
+                data = asciihexdecode(data)  # 解出的不超过输入的一半
+            elif f in _IMAGE_FILTERS:
+                pass  # 图片：pdfminer 也是原样留着
+            elif f in _REFUSED_FILTERS:
+                raise Refused("format", f"用了不支持的压缩方式 {f.name}")
+            elif f == LITERAL_CRYPT:
+                raise PDFNotImplementedError("/Crypt filter is unsupported")
+            else:
+                raise PDFNotImplementedError(f"Unsupported filter: {f!r}")
+            if params and "Predictor" in params:
+                data = _predict(data, params, _predictor_limit(self))
+            _check(len(data), cap)
         _check(len(data), cap)
-    _check(len(data), cap)
-    # 解成了才退回预留、按实际解出的扣。解失败的不退：解到一半的数据可能还挂在异常上（嵌套时
-    # 好几层），而 pdfplumber 关闭文件时会再解析一遍页面树，退了它就又拿到满额度（独立审阅实测
-    # 峰值到合计上限的将近两倍）
-    if budget is not None:
-        budget.left += cap - len(data)
+    finally:
+        # 退回预留、按已经解出的扣：解成了是解出的结果；解到一半出错的，解出的那部分还挂在异常上
+        # （嵌套时好几层，pdfplumber 关闭文件时又会再解析一遍页面树），照样扣着，不让后面的又拿到
+        # 满额度（独立审阅实测：不扣时峰值到合计上限的将近两倍）；没解出什么的不多扣（agy 第 5 轮）
+        if budget is not None:
+            budget.left += cap - min(len(data), cap)
     self.data = data
     self.rawdata = None
 

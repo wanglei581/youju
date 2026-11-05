@@ -421,19 +421,23 @@ def test_earlier_files_are_collected_before_the_next(small_caps, monkeypatch) ->
     assert max(held) < 2 * pdf_limits.DOCUMENT_MAX  # 不回收时 8 份叠到 16MB
 
 
-def test_failed_decode_keeps_its_reservation(small_caps) -> None:
-    """解失败的数据流不退预留的额度：解到一半的还可能挂在异常上，pdfplumber 关闭文件时又会再解析一遍
-    页面树，退了它就又拿到满额度（独立审阅第 3 轮：嵌套 7 层、最深一层用不认识的解码方式，峰值到
-    合计上限的将近两倍）。解成了的按实际解出的扣。"""
-    failing = PDFStream({"Filter": [LIT("Fl"), LIT("Bogus")]}, spaces_flate(900 * 1024))
+def test_failed_decode_keeps_what_it_decoded_charged(small_caps) -> None:
+    """解到一半出错的数据流：解出的部分还挂在异常上，pdfplumber 关闭文件时又会再解析一遍页面树，
+    所以照样扣着（独立审阅第 3 轮：嵌套 7 层、最深一层用不认识的解码方式，以前退回后峰值到合计上限的
+    将近两倍）；没解出什么的不多扣（agy 第 5 轮）。解成了的按实际解出的扣。"""
+    half_done = PDFStream({"Filter": [LIT("Fl"), LIT("Bogus")]}, spaces_flate(900 * 1024))
+    at_once = PDFStream({"Filter": LIT("Bogus")}, b"x" * 1000)
     fine = PDFStream({"Filter": LIT("Fl")}, spaces_flate(100 * 1024))
     with pdf_limits.reading():
         budget = pdf_limits._BUDGET.get()
         with pytest.raises(PDFNotImplementedError):
-            failing.get_data()
-        assert budget.left == pdf_limits.DOCUMENT_MAX - pdf_limits.STREAM_MAX
+            half_done.get_data()
+        assert budget.left == pdf_limits.DOCUMENT_MAX - 900 * 1024
+        with pytest.raises(PDFNotImplementedError):
+            at_once.get_data()
+        assert budget.left == pdf_limits.DOCUMENT_MAX - 900 * 1024 - 1000
         fine.get_data()
-        assert budget.left == pdf_limits.DOCUMENT_MAX - pdf_limits.STREAM_MAX - 100 * 1024
+        assert budget.left == pdf_limits.DOCUMENT_MAX - 1000 * 1024 - 1000
 
 
 def test_failed_reads_are_collected_before_the_next(monkeypatch) -> None:
