@@ -55,6 +55,10 @@ services:
     environment: {<<: *server_env, YOUJU_ROLE: admin, YOUJU_CRONTAB: /app/backend/deploy/selfhost/server/crontab}
     volumes: ["server-storage:/data/storage"]
     ports: ["127.0.0.1:18081:8000"]
+    # Caddyfile 里把同步转给 worker（和服务器 compose 的服务名一致）
+    networks:
+      default:
+        aliases: [worker]
     depends_on:
       server-mysql: {condition: service_healthy}
     healthcheck:
