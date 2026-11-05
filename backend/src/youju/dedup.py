@@ -22,13 +22,33 @@ def match_key(doc: Document, detail: DocumentDetail | None, source: Source) -> s
     return f"{title}|{re.sub(r'\s+', '', agency)}|{published.isoformat()}"
 
 
+# 正文开头网页自带的发布时刻和访问计数：同一份文件在原网站发了两个网址时，往往只有这两处不同
+# （11/4 完整测试：新疆科技厅同一份获奖单位名单公示两个网址，“发布时间：2026-11-03 16:25”和
+# “16:19”，没归并，名单里连着出现两次）。只看正文开头这一段（网页的标题区），只去掉“发布时间”
+# 一类标签后面日期里的时刻、访问量一类的数字；正文里的截止时间等一概不动。
+_HEAD_CHARS = 300
+_HEAD_TIME = re.compile(
+    r"((?:发布时间|发布日期|发表时间|更新时间|发文日期|成文日期)\s*[:：]?\s*"
+    r"\d{4}\s*[-/.年]\s*\d{1,2}\s*[-/.月]\s*\d{1,2}\s*日?)\s*\d{1,2}\s*[:：]\s*\d{2}(?:\s*[:：]\s*\d{2})?"
+)
+_HEAD_COUNT = re.compile(
+    r"((?:访问量|浏览量|浏览次数|阅读量|阅读次数|点击量|点击数|访问次数)\s*[:：]?\s*)\d+"
+)
+
+
+def _comparable(body: str) -> str:
+    head = _HEAD_COUNT.sub(r"\1", _HEAD_TIME.sub(r"\1", body[:_HEAD_CHARS]))
+    return head + body[_HEAD_CHARS:]
+
+
 def _signature(detail: DocumentDetail | None) -> tuple[str | None, str | None]:
     """文号和正文摘要（去空白后整段正文的哈希）；取不到的为 None（不参与比较）。
-    正文有任何不同就不归并：宁可少合并、多显示一条，也不把不同的文件藏起来。"""
+    正文有任何不同就不归并：宁可少合并、多显示一条，也不把不同的文件藏起来。
+    只有正文开头网页自带的发布时刻、访问计数不算（见 _comparable）。"""
     if detail is None:
         return None, None
     number = re.sub(r"\s+", "", detail.doc_number) if detail.doc_number else None
-    body = re.sub(r"\s+", "", detail.body_text or "")
+    body = re.sub(r"\s+", "", _comparable(detail.body_text or ""))
     # 有正文就比较（解析时不足 30 字的正文已清空）；没有正文的不参与比较
     digest = hashlib.sha256(body.encode()).hexdigest() if body else None
     return number or None, digest
