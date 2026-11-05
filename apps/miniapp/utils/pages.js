@@ -15,6 +15,7 @@ function flags() {
     orders: has('orders'),
     help: has('help'),
     ai: has('ai'),
+    license: has('business-license'),
   };
 }
 

@@ -45,8 +45,8 @@ const urlsIn = (root) => findAll(root, (n) => n.attrs['data-url'] !== undefined)
 test('utils/package-pages.js 和 app.json 的页面一样（打过审版时由 tools/miniapp_pack.js 重写）', () => {
   assert.deepEqual(require('../utils/package-pages.js'), APP_PAGES);
   assert.equal(FIRST_PAGES.length, 17);
-  assert.deepEqual(plain(FULL.flags()), { advisor: true, records: true, pass: true, orders: true, help: true, ai: true });
-  assert.deepEqual(plain(FIRST.flags()), { advisor: false, records: false, pass: false, orders: false, help: false, ai: false });
+  assert.deepEqual(plain(FULL.flags()), { advisor: true, records: true, pass: true, orders: true, help: true, ai: true, license: true });
+  assert.deepEqual(plain(FIRST.flags()), { advisor: false, records: false, pass: false, orders: false, help: false, ai: false, license: true });
   assert.equal(FIRST.has('my-data'), true); assert.equal(FIRST.has('lists'), true); assert.equal(FIRST.has('advisor-tasks'), false);
 });
 
@@ -255,16 +255,29 @@ test('我的记录（过审版加 AI，D-098）：包里没有工具中心，空
   }
 });
 
-test('首页营业执照入口随包显示，未填写的执照信息不显示', () => {
+test('营业执照入口：首页最底部一行链接（《电子商务法》第十五条，首页要有），“我的”页另有一行（创始人 11/5），未填写的执照信息不显示', async () => {
   for (const pages of [FIRST, FULL]) {
     const h = homePage(pages);
     assert.equal(h.page.data.businessLicense, true);
-    assert.match(textOf(render('pages/home/index.wxml', h.page.data)), /营业执照信息/);
+    const root = render('pages/home/index.wxml', h.page.data);
+    // 在首页页脚里，不在入口卡片下面
+    const [footer] = findAll(root, hasClass('footer'));
+    assert.match(textOf(footer), /营业执照信息/);
+    assert.equal(findAll(root, hasClass('license-entry')).length, 0);
+    // “我的”页也有一行，点了进营业执照页
+    const me = mePage(pages, { agreed: { version: '2026-11' }, current: true, follows: 0, subscriptions: {} });
+    const view = render('pages/me/index.wxml', me.page.data);
+    const row = findAll(view, (node) => node.attrs && node.attrs['data-url'] === '/pages/business-license/index');
+    assert.equal(row.length, 1);
+    assert.match(textOf(row[0]), /营业执照信息/);
   }
   const without = pagesOf(APP_PAGES.filter((p) => p !== 'pages/business-license/index'));
   const missing = homePage(without);
   assert.equal(missing.page.data.businessLicense, false);
   assert.ok(!textOf(render('pages/home/index.wxml', missing.page.data)).includes('营业执照信息'));
+  // 包里没有营业执照页：“我的”页也不放这一行
+  const noLicense = mePage(without, { agreed: { version: '2026-11' }, current: true, follows: 0, subscriptions: {} });
+  assert.ok(!textOf(render('pages/me/index.wxml', noLicense.page.data)).includes('营业执照信息'));
   const data = { operator: require('../content/legal.js').operator, license: { creditCode: '', photo: '' } };
   const empty = textOf(render('pages/business-license/index.wxml', data));
   assert.ok(empty.includes(data.operator.name)); assert.ok(empty.includes(data.operator.address));

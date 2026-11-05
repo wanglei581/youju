@@ -65,6 +65,8 @@
     <view class="row" data-type="privacy" bindtap="openAgreement" aria-role="button"><t-icon name="secured" size="40rpx" color="#4E5969" /><text class="row-text">隐私保护指引</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
   </block>
   <view wx:else class="row" bindtap="openPrivacy" aria-role="button"><t-icon name="secured" size="40rpx" color="#4E5969" /><text class="row-text">隐私保护指引</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
+  <!-- 营业执照信息（D-107 ③；创始人 11/5 要求“我的”页也放一个；首页最底部仍有链接，满足《电子商务法》第十五条） -->
+  <view wx:if="{{has.license}}" class="row" data-url="/pages/business-license/index" bindtap="go" aria-role="button"><t-icon name="file" size="40rpx" color="#4E5969" /><text class="row-text">营业执照信息</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
   <view class="row {{hasRecord && !profileLoading && !profileError ? '' : 'row--last'}}" data-url="/pages/about/index" bindtap="go" aria-role="button"><t-icon name="info-circle" size="40rpx" color="#4E5969" /><text class="row-text">关于有据</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
   <view wx:if="{{hasRecord && !profileLoading && !profileError}}" class="row" bindtap="myData" aria-role="button"><t-icon name="user-safety" size="40rpx" color="#4E5969" /><text class="row-text">我的数据</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
   <view wx:if="{{hasRecord && !profileLoading && !profileError}}" class="row row--last" bindtap="deleteAccount" aria-role="button"><t-icon name="delete" size="40rpx" color="#E5484D" /><text class="row-text danger">注销并删除数据</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
