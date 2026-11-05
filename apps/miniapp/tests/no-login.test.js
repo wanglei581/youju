@@ -134,11 +134,12 @@ test('"我的"：未定稿时顶部只写"有据"和"检索和导出不需要登
   // 不打开草案协议：那一行改为"隐私保护指引"，打开小程序后台填写的官方指引；关于有据照旧，最后一行没有下划线
   // 使用帮助和联系客服（D-075）不用登录，未定稿时也在
   const rows = findAll(root, hasClass('row'));
-  assert.deepEqual(rows.map((n) => textOf(n).trim()), ['使用帮助', '隐私保护指引', '关于有据']);
+  // 营业执照信息（创始人 11/5：“我的”页放一行）排在关于有据前面
+  assert.deepEqual(rows.map((n) => textOf(n).trim()), ['使用帮助', '隐私保护指引', '营业执照信息', '关于有据']);
   assert.equal(findAll(root, (n) => n.tag === 'contact-button').length, 1);
   assert.equal(rows[1].attrs.bindtap, 'openPrivacy');
   assert.equal(findAll(root, tapsTo('openAgreement')).length, 0);
-  assert.ok(hasClass('row--last')(rows[2]));
+  assert.ok(hasClass('row--last')(rows[3]));
 });
 
 test('"我的"：保留登录与同意，完整候选增加工具中心和共同任务入口', async () => {
@@ -157,7 +158,7 @@ test('"我的"：保留登录与同意，完整候选增加工具中心和共同
   assert.equal(findAll(root, tapsTo('coverage')).length, 1);
   const rows = findAll(root, hasClass('row'));
   // 《用户协议》《隐私保护指引》各一行，名称和打开的文件一致（11/2 完整测试第 8 条）
-  assert.deepEqual(rows.map((n) => textOf(n).trim()), ['我的记录', '申请覆盖：你关心的地区还没有？', '使用帮助', '用户协议', '隐私保护指引', '关于有据']);
+  assert.deepEqual(rows.map((n) => textOf(n).trim()), ['我的记录', '申请覆盖：你关心的地区还没有？', '使用帮助', '用户协议', '隐私保护指引', '营业执照信息', '关于有据']);
   assert.equal(findAll(root, (n) => n.tag === 'contact-button').length, 1);
   assert.equal(rows[3].attrs.bindtap, 'openAgreement');
   assert.equal(rows[3].attrs['data-type'], 'user');
