@@ -2443,7 +2443,7 @@ class _Member:
     path: str
     size: int  # 目录里写的解压后大小
     load: Callable[[], bytes] | None = None  # 读出内容（zip 用到时才解压）
-    data: bytes | None = None  # rar 只能从头到尾解一遍，要读的先解出来
+    data: bytes | memoryview | None = None  # rar 只能从头到尾解一遍，要读的先解出来
     problem: tuple[str, str] | None = None  # 解压前就知道读不了：(原因, 说明)
     note: str = ""  # 读不了时标题后面写的话（不写就按原因）
     skipped: bool = False  # 解压合计超了，没读
@@ -2700,19 +2700,21 @@ def _rar_env() -> dict[str, str]:
 
 
 def _rar_records(raw: bytes) -> tuple[list[_Member], str | None]:
-    """子进程写回的结果 → 压缩包里的文件、最后一条的结论（没写到最后一条是 None）。"""
+    """子进程写回的结果 → 压缩包里的文件、最后一条的结论（没写到最后一条是 None）。文件内容只是
+    子进程输出的一段视图，不另复制（要读的合计可到 64MB），读的时候才复制出这一个文件。"""
     members: list[_Member] = []
+    view = memoryview(raw)
     pos = 0
     while pos + 4 <= len(raw):
-        head_size = int.from_bytes(raw[pos : pos + 4], "big")
+        head_size = int.from_bytes(view[pos : pos + 4], "big")
         if pos + 4 + head_size + 8 > len(raw):
             break
-        head = json.loads(raw[pos + 4 : pos + 4 + head_size])
+        head = json.loads(bytes(view[pos + 4 : pos + 4 + head_size]))
         pos += 4 + head_size
-        body_size = int.from_bytes(raw[pos : pos + 8], "big")
+        body_size = int.from_bytes(view[pos : pos + 8], "big")
         if pos + 8 + body_size > len(raw):
             break
-        body = raw[pos + 8 : pos + 8 + body_size]
+        body = view[pos + 8 : pos + 8 + body_size]
         pos += 8 + body_size
         if "end" in head:
             return members, str(head["end"])
@@ -2741,7 +2743,7 @@ def _member_text(member: _Member, chars: int) -> tuple[Extraction | None, str]:
     if chars <= 0:
         return None, _CHARS_NOTE
     try:
-        data = member.data if member.data is not None else member.load()
+        data = bytes(member.data) if member.data is not None else member.load()
         file_type = sniff(data)
         if file_type in ARCHIVE_TYPES:
             return Extraction(file_type, reason="format", detail="压缩包里的压缩包"), _NESTED_NOTE
@@ -2800,6 +2802,7 @@ def _read_archive(members: list[_Member], budget: _Budget) -> _Found:
             _stop_timer()  # 截止时间到了（这一秒的提醒可能被解析库吞了）：后面的不读
             timed_out = True
         if timed_out:
+            member.data = None
             results.append((member, None, _LATE_NOTE))
             continue
         try:
@@ -2814,6 +2817,8 @@ def _read_archive(members: list[_Member], budget: _Budget) -> _Found:
         if result is not None and result.ok:
             used += result.chars
         results.append((member, result, note))
+    # 往下只是把读出的接起来：不再限时，免得这时到点的提醒把已经读出的全扔掉（11/5 独立审阅第 2 轮）
+    _stop_timer()
     readable = [r for _, r, _ in results if r is not None and r.ok]
     failed = Counter(r.reason for _, r, _ in results if r is not None and not r.ok)
     if not readable:
@@ -2936,12 +2941,14 @@ def _expired() -> bool:
 
 
 def _stop_timer() -> None:
-    """压缩包读到一半超时：停掉 _time_limit 每秒一次的提醒，好把已经读出的接起来（很快）。"""
+    """压缩包里的文件读完了（或者超时了）：停掉 _time_limit 每秒一次的提醒、不再理会已经发出的，
+    好把已经读出的接起来（很快，有上限）；出了 _time_limit 照常恢复原来的处理。"""
     import signal
     import threading
 
     if threading.current_thread() is threading.main_thread():
         signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, signal.SIG_IGN)
 
 
 # 字很少、图很大的：多半是扫描件加了个标题（"附件2"加一整页扫描图），也按扫描件记
