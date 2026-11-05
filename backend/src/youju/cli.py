@@ -2097,6 +2097,10 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("db-upgrade", help="把数据库迁移到最新结构").set_defaults(func=_cmd_db_upgrade)
 
+    from youju.govsites.cli import register as register_coverage
+
+    register_coverage(sub)
+
     p = sub.add_parser("import-sources", help="从全国来源清单 CSV 导入来源")
     p.add_argument("--csv", type=Path, help="默认 docs/数据来源/全国来源清单_P0_v1.csv")
     p.set_defaults(func=_cmd_import_sources)

@@ -1,0 +1,379 @@
+"""全国覆盖盘点：名称识别、导航链接、部门和栏目识别、平台特征、逐级走导航（用假的页面缓存）。"""
+
+from datetime import date
+
+from youju.govsites.divisions import (
+    DivisionIndex,
+    NameMatcher,
+    clean_place_text,
+    name_variants,
+    parse_tree,
+)
+from youju.govsites.inventory import (
+    GOV_LOCAL_NAV,
+    Inventory,
+    PageInfo,
+    find_columns,
+    level_chars,
+    level_prefix,
+    report_homepage,
+)
+from youju.govsites.links import nav_links, page_links, parse_html, registrable
+from youju.govsites.names import column_kind, dept_categories
+from youju.govsites.platform import blocker, fingerprint
+from youju.crawler.fetcher import FetchResult
+from youju.crawler.listing import extract_items
+
+TREE = {
+    "children": [
+        {
+            "code": "330000000000",
+            "name": "浙江省",
+            "type": "省",
+            "level": 1,
+            "children": [
+                {
+                    "code": "330100000000",
+                    "name": "杭州市",
+                    "type": "地级市",
+                    "level": 2,
+                    "children": [
+                        {"code": "330106000000", "name": "西湖区", "type": "市辖区", "level": 3},
+                        {"code": "330182000000", "name": "建德市", "type": "县级市", "level": 3},
+                    ],
+                },
+            ],
+        },
+        {
+            "code": "110000000000",
+            "name": "北京市",
+            "type": "直辖市",
+            "level": 1,
+            "children": [{"code": "110105000000", "name": "朝阳区", "type": "市辖区", "level": 3}],
+        },
+        {
+            "code": "420000000000",
+            "name": "湖北省",
+            "type": "省",
+            "level": 1,
+            "children": [
+                {"code": "429004000000", "name": "仙桃市", "type": "县级市", "level": 3},
+                {
+                    "code": "422800000000",
+                    "name": "恩施土家族苗族自治州",
+                    "type": "自治州",
+                    "level": 2,
+                    "children": [],
+                },
+            ],
+        },
+        {"code": "810000000000", "name": "香港特别行政区", "type": "特别行政区", "level": 1},
+        {"code": "710000000000", "name": "台湾省", "type": "省", "level": 1},
+    ]
+}
+
+
+def _divisions():
+    return parse_tree(TREE)
+
+
+def test_parse_tree_fields_follow_sources_conventions():
+    by_name = {d.name: d for d in _divisions()}
+    assert "香港特别行政区" not in by_name and "台湾省" not in by_name
+    hz = by_name["杭州市"]
+    assert (hz.level, hz.province, hz.city, hz.district, hz.code) == (
+        "市级",
+        "浙江",
+        "杭州",
+        None,
+        "330100",
+    )
+    xh = by_name["西湖区"]
+    assert (xh.level, xh.city, xh.district, xh.parent_code) == (
+        "区县级",
+        "杭州",
+        "西湖区",
+        "330100",
+    )
+    # 直辖市的区：城市填直辖市简称；省直辖县级市：城市填自己的简称
+    assert by_name["朝阳区"].city == "北京"
+    assert (by_name["仙桃市"].city, by_name["仙桃市"].parent_code) == ("仙桃", "420000")
+    assert by_name["恩施土家族苗族自治州"].city == "恩施土家族苗族自治州"
+
+
+def test_name_variants_cover_navigation_spellings():
+    assert name_variants("浙江省", "省") >= {"浙江省", "浙江"}
+    assert name_variants("杭州市") >= {"杭州市", "杭州"}
+    assert name_variants("恩施土家族苗族自治州") >= {"恩施州", "恩施"}
+    assert name_variants("峨边彝族自治县") >= {"峨边县", "峨边"}
+    assert "巴州" in name_variants("巴音郭楞蒙古自治州")
+    # 简称至少两个字
+    assert name_variants("沙市区") == {"沙市区", "沙市"}
+
+
+def test_matcher_strips_parent_prefix_and_suffix():
+    index = DivisionIndex(_divisions())
+    hz = next(d for d in index.all if d.name == "杭州市")
+    m = NameMatcher(index.children(hz.code), ["浙江省", "浙江", "杭州市", "杭州"])
+    assert m.match("杭州市西湖区人民政府").name == "西湖区"
+    assert m.match(" 建德 ").name == "建德市"
+    assert m.match("西湖区门户网站").name == "西湖区"
+    assert m.match("西湖区召开全体会议部署今年重点工作任务") is None
+    assert clean_place_text("浙江省人民政府门户网站") == "浙江省"
+
+
+def test_matcher_refuses_ambiguous_names():
+    from youju.govsites.divisions import Division
+
+    a = Division("320106", "鼓楼区", "市辖区", "区县级", "江苏", "南京", "鼓楼区", "320100")
+    b = Division("320302", "鼓楼区", "市辖区", "区县级", "江苏", "徐州", "鼓楼区", "320300")
+    assert NameMatcher([a, b]).match("鼓楼区") is None
+    assert NameMatcher([a]).match("鼓楼区") is a
+
+
+def test_page_links_reads_options_onclick_scripts_and_stray_html_end():
+    html = """<html><body><div>head</div></html>
+    <div class="foot">
+      <select><option value="">市县网站</option><option value="http://www.hangzhou.gov.cn/">杭州市</option></select>
+      <a href="javascript:;" onclick="window.open('http://www.jiande.gov.cn')">建德市</a>
+      <a href="/col/col1/index.html">通知公告</a>
+    </div>
+    <script>var sites=[{name:"西湖区",url:"http://www.hzxh.gov.cn/"}];</script>
+    </body></html>"""
+    links = {(link.text, link.url) for link in page_links(html, "https://www.zj.gov.cn/")}
+    assert ("杭州市", "http://www.hangzhou.gov.cn/") in links
+    assert ("建德市", "http://www.jiande.gov.cn/") in links
+    assert ("通知公告", "https://www.zj.gov.cn/col/col1/index.html") in links
+    assert ("西湖区", "http://www.hzxh.gov.cn/") in links
+
+
+def test_listing_reads_list_after_stray_html_end():
+    rows = "".join(
+        f'<li><a href="/zw/{i}.html">关于开展2026年度第{i}批项目申报工作的通知</a>'
+        f"<span>2026-10-{i:02d}</span></li>"
+        for i in range(1, 6)
+    )
+    html = f"<html><body><div>页头</div></html><ul class='list'>{rows}</ul></body></html>"
+    items = extract_items(html, "https://kjt.example.gov.cn/tzgg/", today=date(2026, 11, 5))
+    assert len(items) == 5
+
+
+def test_parse_html_expands_hanweb_datastore():
+    html = (
+        "<html><body><script type='text/xml'><datastore><recordset>"
+        "<record><![CDATA[<li><a href='/art/2026/11/1/art_1_2.html'>某某通知</a></li>]]></record>"
+        "</recordset></datastore></script></body></html>"
+    )
+    doc = parse_html(html)
+    assert [a.get("href") for a in doc.iter("a")] == ["/art/2026/11/1/art_1_2.html"]
+
+
+def test_nav_links_prefer_site_navigation_on_same_domain():
+    links = page_links(
+        """<a href="/wzdt/">网站地图</a><a href="/sxwz/">市县政府网站</a>
+        <a href="http://other.example.com/x">政府网站导航</a>
+        <a href="/news/1.html">关于政府网站工作年度报表的说明和部署安排的长新闻标题</a>
+        <a href="/nb/">2025年政府网站年度报表</a>""",
+        "https://www.zj.gov.cn/",
+    )
+    texts = [link.text for link in nav_links(links, "https://www.zj.gov.cn/")]
+    assert texts == ["市县政府网站", "2025年政府网站年度报表", "网站地图"]
+    assert (
+        registrable("http://kjt.zj.gov.cn/a")
+        == registrable("https://www.zj.gov.cn/")
+        == "zj.gov.cn"
+    )
+
+
+def test_dept_categories():
+    assert dept_categories("浙江省科学技术厅") == ["科技"]
+    assert dept_categories("省经信厅") == ["工信"]
+    assert set(dept_categories("建德市科学技术和工业信息化局")) == {"工信", "科技"}
+    assert dept_categories("市场监督管理局（知识产权局）") == ["市场监管"]
+    assert dept_categories("浙江省文化广电和旅游厅") == ["文旅"]
+    assert dept_categories("杭州市数据资源局") == ["数据局"]
+    assert dept_categories("杭州高新技术产业开发区管理委员会") == ["开发区"]
+    assert dept_categories("浙江省人民政府办公厅") == ["政府办"]
+    assert dept_categories("浙江省农业科学院") == []
+    assert dept_categories("省科技厅召开全省科技工作会议") == []
+    assert dept_categories("浙江省教育厅") == []
+
+
+def test_column_kind():
+    assert column_kind("通知公告") == ("通知公告", 0)
+    assert column_kind("公示公告") == ("公示公告", 0)
+    assert column_kind("规范性文件") == ("政策文件", 0)
+    assert column_kind("省政府文件") == ("政策文件", 1)
+    assert column_kind("政策解读") is None
+    assert column_kind("关于印发某某办法的通知") is None
+
+
+def test_level_prefix_and_chars():
+    assert level_prefix("省科技厅") == "省"
+    assert level_prefix("市场监督管理局") is None
+    index = DivisionIndex(_divisions())
+    by_name = {d.name: d for d in index.all}
+    assert level_chars(by_name["建德市"]) == "市"
+    assert level_chars(by_name["西湖区"]) == "区"
+    assert level_chars(by_name["浙江省"]) == "省"
+
+
+def test_fingerprint_and_blocker():
+    html = """<html><head><meta name="SiteName" content="浙江省科学技术厅">
+    <meta name="SiteIDCode" content="3300000018"></head><body>
+    <a href="/art/2026/11/1/art_1229_1.html">a</a><a href="/art/2026/11/2/art_1229_2.html">b</a>
+    <div>技术支持：南京大汉网络有限公司</div></body></html>"""
+    doc = parse_html(html)
+    links = [link.url for link in page_links(html, "https://kjt.zj.gov.cn/", doc)]
+    fp = fingerprint(html, "https://kjt.zj.gov.cn/", doc, links)
+    assert (fp.site_name, fp.site_id_code, fp.vendor) == ("浙江省科学技术厅", "3300000018", "大汉")
+    assert fp.shape.startswith("art_")
+    assert blocker("http_error", 412, "<html>$_ts=window['$_ts']</html>") == "瑞数防护"
+    assert blocker("robots_disallowed", None, "") == "robots.txt 禁止"
+    assert blocker("ok", 200, "<html>" + "正文" * 3000 + "请输入验证码</html>") is None
+
+
+def _page(url: str, html: str, final: str | None = None) -> PageInfo:
+    doc = parse_html(html)
+    return PageInfo(
+        url,
+        final or url,
+        FetchResult(url, "ok", final or url, 200, html),
+        doc,
+        page_links(html, final or url, doc),
+    )
+
+
+def test_find_columns_prefers_exact_names_and_more_links():
+    html = """<div class="box"><h3>通知公告</h3><a class="more" href="/tzgg/">更多</a></div>
+    <a href="/zcwj/">政策文件</a><a href="/zcjd/">政策解读</a>
+    <a href="http://other.gov.cn/gsgg/">公示公告</a>"""
+    hits = find_columns([_page("https://kjt.zj.gov.cn/", html)])
+    assert hits["通知公告"].url == "https://kjt.zj.gov.cn/tzgg/"
+    assert hits["政策文件"].url == "https://kjt.zj.gov.cn/zcwj/"
+    # 链到别家网站的栏目（如省政策文件库）不算这个部门的
+    assert "公示公告" not in hits
+
+
+def test_report_homepage():
+    page = _page(
+        "https://www.zj.gov.cn/nb/1.html",
+        "<table><tr><td>网站名称</td><td>浙江省科学技术厅门户网站</td></tr>"
+        "<tr><td>首页网址</td><td>http://kjt.zj.gov.cn/</td></tr></table>",
+    )
+    assert report_homepage(page) == "http://kjt.zj.gov.cn/"
+
+
+class FakeCache:
+    def __init__(self, pages: dict[str, str]) -> None:
+        self.pages = pages
+        self.hits = self.fetches = 0
+
+    def get(self, url: str) -> FetchResult:
+        if url in self.pages:
+            return FetchResult(url, "ok", url, 200, self.pages[url])
+        return FetchResult(url, "http_error", url, 404, "", "HTTP 404")
+
+
+def test_inventory_walks_official_navigation():
+    pages = {
+        GOV_LOCAL_NAV: '<a href="https://www.zj.gov.cn/">浙江</a><a href="http://www.beijing.gov.cn/">北京</a>',
+        "https://www.zj.gov.cn/": """<meta name="SiteName" content="浙江省人民政府">
+            <a href="/zwgk/zfwj/">省政府文件</a><a href="/tzgg/">通知公告</a>
+            <a href="/sxwz/">市县政府网站</a><a href="/bmwz/">省直部门网站</a>""",
+        "https://www.zj.gov.cn/sxwz/": '<a href="https://www.hangzhou.gov.cn/">杭州市</a>',
+        "https://www.zj.gov.cn/bmwz/": """<a href="http://kjt.zj.gov.cn/">浙江省科学技术厅</a>
+            <a href="http://www.hangzhou.gov.cn/kjj/">杭州市科学技术局</a>""",
+        "http://kjt.zj.gov.cn/": """<meta name="SiteName" content="浙江省科学技术厅">
+            <a href="/col/col1229080140/index.html">通知公告</a>
+            <a href="/col/col1229080141/index.html">政策文件</a>""",
+        "https://www.hangzhou.gov.cn/": """<a href="/qxwz/">区县（市）政府网站</a>
+            <a href="/bm/kjj/">市科技局</a><a href="http://kjt.zj.gov.cn/">省科技厅</a>""",
+        "https://www.hangzhou.gov.cn/qxwz/": '<a href="http://www.hzxh.gov.cn/">西湖区</a>',
+        "https://www.hangzhou.gov.cn/bm/kjj/": '<a href="/bm/kjj/tzgg/">通知公告</a>',
+        "http://www.hzxh.gov.cn/": '<a href="/jgsz/">机构设置</a>',
+        "http://www.hzxh.gov.cn/jgsz/": '<a href="/bm/kjj/">区科技局</a><a href="/bm/fgj/">区发改局</a>',
+        "http://www.hzxh.gov.cn/bm/kjj/": '<a href="/bm/kjj/xxgk/">信息公开</a>',
+        "http://www.hzxh.gov.cn/bm/kjj/xxgk/": '<a href="/bm/kjj/tzgg/">通知公告</a>',
+        "http://www.hzxh.gov.cn/bm/fgj/": "<p>发改局</p>",
+    }
+    divisions = [d for d in _divisions() if d.province == "浙江"]
+    inv = Inventory(
+        DivisionIndex(divisions), FakeCache(pages), provinces=["浙江"], workers=4, per_province=2
+    )
+    inv.run()
+    portals = {p.name: p for p in inv.portals.values()}
+    assert portals["浙江省"].status == "已找到"
+    assert portals["杭州市"].portal_url == "https://www.hangzhou.gov.cn/"
+    assert portals["杭州市"].nav_source == "https://www.zj.gov.cn/sxwz/"
+    assert portals["西湖区"].portal_url == "http://www.hzxh.gov.cn/"
+    assert portals["建德市"].status == "导航未找到"
+    depts = {(d.code, d.dept): d for d in inv.depts}
+    prov_kj = depts[("330000", "科技")]
+    assert (prov_kj.site_url, prov_kj.dept_full_name, prov_kj.nav_source) == (
+        "http://kjt.zj.gov.cn/",
+        "浙江省科学技术厅",
+        "https://www.zj.gov.cn/bmwz/",
+    )
+    assert {c.kind for c in prov_kj.columns} == {"通知公告", "政策文件"}
+    gov = depts[("330000", "政府办")]
+    assert {c.kind: c.url for c in gov.columns}["政策文件"] == "https://www.zj.gov.cn/zwgk/zfwj/"
+    # 市级门户上的"省科技厅"是上级部门，不算杭州的
+    hz_kj = depts[("330100", "科技")]
+    assert hz_kj.site_url == "https://www.hangzhou.gov.cn/bm/kjj/"
+    assert hz_kj.site_type == "门户频道"
+    # 区县部门频道首页没有栏目时，沿"信息公开"再找一层
+    xh_kj = depts[("330106", "科技")]
+    assert [c.url for c in xh_kj.columns] == ["http://www.hzxh.gov.cn/bm/kjj/tzgg/"]
+    assert depts[("330106", "发改委")].status == "已找到"
+    assert depts[("330106", "商务")].status == "导航未找到"
+
+
+def test_national_ministries_are_target_depts():
+    assert dept_categories("科学技术部") == ["科技"]
+    assert dept_categories("国家发展和改革委员会") == ["发改委"]
+    assert dept_categories("农业农村部") == ["农业农村"]
+    assert dept_categories("国家知识产权局") == ["市场监管"]
+    assert dept_categories("国家数据局") == ["数据局"]
+    assert dept_categories("外交部") == []
+
+
+def test_list_api_only_accepts_whitelisted_same_site_endpoint():
+    from youju.crawler.adapters import api_html, find_list_api
+
+    good = """<script src="/x/unitbuild.js" url="/api-gateway/jpaas-publish-server/front/page/build/unit"
+      queryData="{'pageType':'column','tagId':'当前栏目list','pageId':'1'}"></script>"""
+    api = find_list_api(good, "https://kjt.zj.gov.cn/col/col1/index.html")
+    assert api.url.startswith(
+        "https://kjt.zj.gov.cn/api-gateway/jpaas-publish-server/front/page/build/unit?"
+    )
+    assert api_html(api, '{"data":{"html":"<li>x</li>"}}') == "<li>x</li>"
+    assert api_html(api, "not json") == ""
+    other = good.replace("/api-gateway/jpaas-publish-server/front/page/build/unit", "/api/other")
+    assert find_list_api(other, "https://kjt.zj.gov.cn/") is None
+    evil = good.replace('url="/api', 'url="https://evil.example.com/api')
+    assert find_list_api(evil, "https://kjt.zj.gov.cn/").url.startswith("https://kjt.zj.gov.cn/")
+
+
+def test_complete_slots_adds_standard_depts_for_missing_portals():
+    from youju.govsites.inventory import STANDARD_DEPTS, PortalRow, complete_slots
+
+    portals = [
+        PortalRow("330106", "区县级", "浙江", "杭州", "西湖区", "西湖区", status="导航未找到"),
+        PortalRow(
+            "330182",
+            "区县级",
+            "浙江",
+            "杭州",
+            "建德市",
+            "建德市",
+            status="不能抓",
+            reason="瑞数防护",
+        ),
+    ]
+    rows = complete_slots(portals, [])
+    assert len(rows) == 2 * len(STANDARD_DEPTS)
+    by_code = {(r.code, r.dept): r for r in rows}
+    assert by_code[("330106", "科技")].status == "导航未找到"
+    assert by_code[("330182", "科技")].status == "不能抓"
+    assert "瑞数防护" in by_code[("330182", "科技")].reason

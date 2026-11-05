@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from youju.categories import doc_category
 from youju.classify import doc_kind
+from youju.crawler.adapters import api_html, find_list_api
 from youju.crawler.fetcher import FetchResult
 from youju.crawler.listing import ListItem, extract_items
 from youju.crawler.urls import host_of, public_url, url_key
@@ -150,6 +151,24 @@ def _lock_source(session: Session, source: Source) -> None:
     session.scalars(stmt).one()
 
 
+# 通用规则在栏目页上识别出的条目少于这个数，才去看页面有没有声明列表接口
+ADAPTER_MIN_ITEMS = 3
+
+
+def _items_via_adapter(
+    fetcher: Fetcher, page: FetchResult, url: str, parser_config: dict, today: date | None
+) -> list[ListItem]:
+    """栏目页自己声明了集约化平台的列表接口（见 crawler/adapters.py）时，按它取列表。"""
+    api = find_list_api(page.text, page.final_url or url)
+    if api is None:
+        return []
+    result = fetcher.fetch(api.url)
+    if result.status != "ok":
+        return []
+    html = api_html(api, result.text)
+    return extract_items(html, api.base_url, parser_config, today=today) if html else []
+
+
 def check_source(
     session: Session,
     source: Source,
@@ -170,6 +189,8 @@ def check_source(
     items: list[ListItem] = []
     if result.status == "ok":
         items = extract_items(result.text, result.final_url or url, parser_config, today=today)
+        if len(items) < ADAPTER_MIN_ITEMS and not parser_config.get("item_selector"):
+            items = _items_via_adapter(fetcher, result, url, parser_config, today) or items
         if not items:
             status, error = "parse_empty", PARSE_EMPTY_MESSAGE
 
