@@ -71,8 +71,9 @@ PARALLEL = 1
 _EXIT_MEMORY = 77
 _EXIT_OUTPUT = 78
 _EXIT_LIMITS = 79
+_EXIT_WRITE = 80
 # 和当时的环境有关、过一段时间再读的几种（见模块说明）
-_RETRY = {"spawn", "limits", "killed", "busy", "crash"}
+_RETRY = {"spawn", "limits", "killed", "busy", "crash", "io"}
 _SLOTS = threading.BoundedSemaphore(PARALLEL)
 # youju 包所在的目录：子进程用 -I 启动不读 PYTHONPATH，从这里导入和父进程同一份代码
 _ROOT = Path(__file__).resolve().parents[1]
@@ -88,9 +89,10 @@ class Failed(Exception):
     - open：打不开（损坏、加密），error 是 pdfplumber 抛的异常类名；
     - error：读的时候出错，error 同上；
     - memory、time、output：内存、CPU 时间、读出的结果超了（reason 都是 too_large）；
-    - spawn、limits、killed、busy、crash：起不了子进程、设不了资源上限、被系统停掉（多半是容器
-      内存不够）、墙上时间兜底到了、子进程崩了或写回的结果不对。和当时的环境有关，retry 为真，
-      error 是一句短的说明（名单记"解析失败：……"，过 6 小时再试）。
+    - spawn、limits、killed、busy、crash、io：起不了子进程、设不了资源上限（或者平台给的上限比
+      设定的低，超了不能算文件的）、被系统停掉（多半是容器内存不够）、墙上时间兜底到了、子进程崩了
+      或写回的结果不对、读写结果的临时文件出错。和当时的环境有关，retry 为真，error 是一句短的
+      说明（名单记"解析失败：……"，过 6 小时再试）。
 
     detail 写具体原因，不带"PDF"两个字（调用方自己接）。"""
 
@@ -171,7 +173,10 @@ def _spawn(cfg: dict, data: bytes, seconds: float) -> dict:
                     env=_env(),
                 )
             code = child.wait(timeout=_wall(seconds))
-        except OSError as exc:
+            return _output(code, cfg, seconds, out, err, _reduced(cfg))
+        except OSError as exc:  # 起子进程、读结果的临时文件出错
+            if child is not None:
+                raise Failed("io", "broken", "读解析结果时出错", "读结果出错") from exc
             raise Failed("spawn", "broken", "起不了解析的子进程", "起不了子进程") from exc
         except subprocess.TimeoutExpired:
             detail = f"解析等了 {_wall(seconds):g} 秒还没完（系统繁忙）"
@@ -181,7 +186,6 @@ def _spawn(cfg: dict, data: bytes, seconds: float) -> dict:
             if child is not None and child.poll() is None:
                 child.kill()
                 child.wait()
-        return _output(code, cfg, seconds, out, err)
 
 
 @contextlib.contextmanager
@@ -201,7 +205,31 @@ def _env() -> dict[str, str]:
     return {"PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"), "LANG": "C.UTF-8"}
 
 
-def _output(code: int, cfg: dict, seconds: float, out, err) -> dict:
+def _reduced(cfg: dict) -> dict[str, int]:
+    """平台给的硬上限比设定的低的几项：子进程从父进程继承硬上限，_limit 照它设（照样有上限），可
+    这时超了不能算文件的（换个地方就读得了）。返回 {"memory" 或 "cpu": 实际的上限}。"""
+    import resource
+
+    reduced = {}
+    for key, name, wanted in (
+        ("memory", "RLIMIT_AS", cfg["memory"]),
+        ("cpu", "RLIMIT_CPU", cfg["cpu"]),
+    ):
+        hard = resource.getrlimit(getattr(resource, name))[1]
+        if hard != resource.RLIM_INFINITY and hard < wanted:
+            reduced[key] = hard
+    return reduced
+
+
+def _output(code: int, cfg: dict, seconds: float, out, err, reduced: dict[str, int]) -> dict:
+    if code in (_EXIT_MEMORY, -signal.SIGXCPU) and reduced:
+        kind = "memory" if code == _EXIT_MEMORY else "cpu"
+        if kind in reduced:
+            got = _size(reduced[kind]) if kind == "memory" else f"{reduced[kind]} 秒"
+            detail = (
+                f"平台给的{'内存' if kind == 'memory' else ' CPU 时间'}上限只有 {got}，比设定的低"
+            )
+            raise Failed("limits", "broken", detail, "平台资源上限太低")
     if code == _EXIT_MEMORY:
         raise Failed("memory", "too_large", f"解析用的内存超过 {_size(cfg['memory'])}")
     if code == -signal.SIGXCPU:
@@ -210,8 +238,10 @@ def _output(code: int, cfg: dict, seconds: float, out, err) -> dict:
         raise Failed("limits", "broken", "解析的子进程设不了资源上限", "设不了资源上限")
     if code == -signal.SIGKILL:  # 不是父进程杀的（超时在前面）：多半是容器内存不够，系统停掉的
         raise Failed("killed", "too_large", "解析时内存不够，被系统停掉", "被系统停掉")
+    if code in (_EXIT_WRITE, -signal.SIGXFSZ):  # 临时盘写满、读写出错、平台的文件大小上限更低
+        raise Failed("io", "broken", "解析的子进程写不出结果", "子进程写不出结果")
     size = os.fstat(out.fileno()).st_size
-    if code in (_EXIT_OUTPUT, -signal.SIGXFSZ) or size > cfg["output"] + 8:
+    if code == _EXIT_OUTPUT or size > cfg["output"] + 8:
         raise Failed("output", "too_large", f"读出的内容超过 {_size(cfg['output'])}")
     if code != 0:
         detail = f"解析时子进程异常退出：{_died(code, err)}"
@@ -244,10 +274,15 @@ def _died(code: int, err) -> str:
             return signal.Signals(-code).name
         except ValueError:
             return f"信号 {-code}"
-    err.seek(max(0, os.fstat(err.fileno()).st_size - 2000))
-    lines = err.read().decode("utf-8", "replace").strip().splitlines()
-    name = lines[-1].split(":", 1)[0].strip()[:60] if lines else ""
+    err.seek(max(0, os.fstat(err.fileno()).st_size - 4000))
+    lines = err.read().decode("utf-8", "replace").splitlines()
+    # 从后往前找异常那一行（"KeyError: ..."）；前后可能还有底层库打印的别的话
+    names = (m.group(1) for line in reversed(lines) if (m := _EXCEPTION_LINE.match(line)))
+    name = next(names, "")
     return f"退出码 {code}" + (f"，{name}" if name else "")
+
+
+_EXCEPTION_LINE = re.compile(r"^([A-Za-z_][\w.]*(?:Error|Exception|Exit|Interrupt|Warning))\b")
 
 
 # ---- 子进程 ----
@@ -274,14 +309,14 @@ def _child() -> None:
         raw = json.dumps(answer, ensure_ascii=False).encode("utf-8", "surrogatepass")
     except MemoryError:
         os._exit(_EXIT_MEMORY)
-    if len(raw) > cfg["output"]:
+    if len(raw) > cfg["output"]:  # 读出的太多（文件本身的）
         os._exit(_EXIT_OUTPUT)
     try:
         out.write(len(raw).to_bytes(8, "big"))
         out.write(raw)
         out.flush()
-    except OSError:  # 超了 RLIMIT_FSIZE（EFBIG）
-        os._exit(_EXIT_OUTPUT)
+    except OSError:  # 长度先比过了，这里是临时盘写满、读写出错（环境的）
+        os._exit(_EXIT_WRITE)
     os._exit(0)
 
 

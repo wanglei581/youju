@@ -303,6 +303,15 @@ CRASHES = {
         "sys.stdout.buffer.write(len(raw).to_bytes(8, 'big') + raw)\n",
         ("crash", "解析时子进程写回的结果不对"),
     ),
+    # 异常那一行后面还有底层库打印的话：照样找出异常类名
+    "noisy stderr": (
+        "import sys\n"
+        "sys.stderr.write(\"Traceback (most recent call last):\\nKeyError: '某某'\\nlibfoo: note\\n\")\n"
+        "sys.exit(3)\n",
+        ("crash", "解析时子进程异常退出：退出码 3，KeyError"),
+    ),
+    # 长度先比过了还写不出结果（临时盘写满、读写出错）：环境的，过一段时间再读
+    "write error": ("import os; os._exit(80)\n", ("io", "解析的子进程写不出结果")),
     "memory exit": ("import os; os._exit(77)\n", ("memory", "解析用的内存超过 1024MB")),
     "output exit": ("import os; os._exit(78)\n", ("output", "读出的内容超过 64MB")),
 }
@@ -318,7 +327,34 @@ def test_crashed_or_garbled_child_is_a_failure(monkeypatch, name) -> None:
         pdf_sandbox.read("body", make_pdf(TEXT), seconds=60, pages=200)
     assert (raised.value.kind, raised.value.detail) == (kind, detail)
     # 文件本身的（同一份再读还是一样）不重读；和当时的环境有关的过一段时间再读
-    assert raised.value.retry == (kind in ("crash", "killed", "limits"))
+    assert raised.value.retry == (kind in ("crash", "killed", "limits", "io"))
+
+
+@pytest.mark.parametrize(
+    ("boot", "reduced", "detail"),
+    [
+        (
+            "import os; os._exit(77)\n",
+            {"memory": 256 * MB},
+            "平台给的内存上限只有 256MB，比设定的低",
+        ),
+        (
+            "import os, resource, signal\n"
+            "resource.setrlimit(resource.RLIMIT_CORE, (0, 0))\n"
+            "os.kill(os.getpid(), signal.SIGXCPU)\n",
+            {"cpu": 30},
+            "平台给的 CPU 时间上限只有 30 秒，比设定的低",
+        ),
+    ],
+    ids=["memory", "cpu"],
+)
+def test_limits_cut_by_the_platform_are_not_blamed_on_the_file(monkeypatch, boot, reduced, detail):
+    """平台给的硬上限比设定的低（子进程照平台的设）时超了：不算文件太大，过一段时间再读。"""
+    monkeypatch.setattr(pdf_sandbox, "_BOOT", boot)
+    monkeypatch.setattr(pdf_sandbox, "_reduced", lambda cfg: reduced)
+    with pytest.raises(pdf_sandbox.Failed) as raised:
+        pdf_sandbox.read("body", make_pdf(TEXT), seconds=60, pages=200)
+    assert (raised.value.kind, raised.value.detail, raised.value.retry) == ("limits", detail, True)
 
 
 def test_wall_clock_backstop_is_retried_later(monkeypatch) -> None:
