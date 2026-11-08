@@ -162,3 +162,23 @@ def test_city_activation_manifest_only_promotes_reviewed_two(session):
     second = import_sources(session, path)
     assert (second.created, second.updated) == (0, 2)
     assert session.scalar(select(func.count(Source.id))) == 53
+
+
+def test_coverage_rows_import_disabled_and_reimport_keeps_admin_switch(
+    session, tmp_path: Path
+) -> None:
+    """全国覆盖栏目清单："试跑可读"按静态抓取导入但不启用；后台打开后重导入不关掉。"""
+    assert mode_for("试跑可读（全国覆盖 v1，未启用）") == ("static", False)
+    row = (
+        "省级,浙江,科技,浙江省科学技术厅,通知通告,https://kjt.zj.gov.cn/col/col1229225203/index.html,"
+        "200,15,2026-11-05,试跑可读（全国覆盖 v1，未启用）,2026-11-05,"
+    )
+    path = write_csv(tmp_path, [row])
+    import_sources(session, path)
+    source = session.scalar(select(Source).where(Source.province == "浙江"))
+    assert (source.fetch_mode, source.enabled) == ("static", False)
+    source.enabled = True
+    session.commit()
+    import_sources(session, path)
+    session.refresh(source)
+    assert source.enabled is True

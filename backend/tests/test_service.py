@@ -214,3 +214,71 @@ def test_baseline_is_decided_after_taking_the_lock(session_factory) -> None:
     with session_factory() as s:
         new_doc = s.scalar(select(Document).where(Document.is_baseline.is_(False)))
         assert new_doc.title == "关于征集第三项需求的通知公告"
+
+
+JPAAS_PAGE = """<html><body><div class="col_right"><ul>
+<script id="u1" src="/cms_files/default/script/AuthorizedRead/unitbuild.js" webId="3387"
+ parseType="bulidstatic" url="/api-gateway/jpaas-publish-server/front/page/build/unit"
+ queryData="{'parseType':'bulidstatic','webId':'3387','tplSetId':'T1','pageType':'column','tagId':'当前栏目list','editType':'null','pageId':'1229225203'}"></script>
+</ul></div></body></html>"""
+JPAAS_JSON = (
+    '{"success":true,"data":{"html":"<li><a href=\\"/col/col1229225203/art/2026/art_1.html\\">'
+    "关于开展2026年度第一批项目申报的通知</a><span>2026-11-05</span></li>"
+    '<li><a href=\\"/col/col1229225203/art/2026/art_2.html\\">关于公布第二批认定名单的公示</a>'
+    '<span>2026-11-04</span></li>"}}'
+)
+
+
+def test_hanweb_jpaas_list_api_is_used_when_page_has_no_items(session) -> None:
+    url = "https://kjt.zj.gov.cn/col/col1229225203/index.html"
+    source = make_source(session, url)
+    api = (
+        "https://kjt.zj.gov.cn/api-gateway/jpaas-publish-server/front/page/build/unit?parseType=bulidstatic"
+        "&webId=3387&tplSetId=T1&pageType=column&tagId=%E5%BD%93%E5%89%8D%E6%A0%8F%E7%9B%AElist"
+        "&editType=null&pageId=1229225203"
+    )
+    fetcher = FakeFetcher({url: [page(url, JPAAS_PAGE)], api: [page(api, JPAAS_JSON)]})
+    check = check_source(session, source, fetcher)
+    assert (check.status, check.items_found) == ("ok", 2)
+    urls = set(session.scalars(select(Document.url).where(Document.source_id == source.id)))
+    assert urls == {
+        "https://kjt.zj.gov.cn/col/col1229225203/art/2026/art_1.html",
+        "https://kjt.zj.gov.cn/col/col1229225203/art/2026/art_2.html",
+    }
+
+
+def test_first_read_via_list_api_is_baseline_for_existing_source(session) -> None:
+    """以前只认出零星条目的来源，第一次经列表接口读出整页：旧通知按基线记，不算新增。"""
+    url = "https://kjt.zj.gov.cn/col/col1229225203/index.html"
+    source = make_source(session, url)
+    source.last_success_at = datetime(2026, 11, 1, tzinfo=UTC)
+    session.commit()
+    api = (
+        "https://kjt.zj.gov.cn/api-gateway/jpaas-publish-server/front/page/build/unit?parseType=bulidstatic"
+        "&webId=3387&tplSetId=T1&pageType=column&tagId=%E5%BD%93%E5%89%8D%E6%A0%8F%E7%9B%AElist"
+        "&editType=null&pageId=1229225203"
+    )
+    fetcher = FakeFetcher({url: [page(url, JPAAS_PAGE)], api: [page(api, JPAAS_JSON)]})
+    check = check_source(session, source, fetcher)
+    assert (check.status, check.items_found, check.is_baseline) == ("ok", 2, True)
+    session.refresh(source)
+    assert source.parser_config.get("list_api") == "大汉jpaas"
+
+
+def test_blocked_list_api_is_recorded_not_parse_empty(session) -> None:
+    url = "https://kjt.zj.gov.cn/col/col1229225203/index.html"
+    source = make_source(session, url)
+    api = (
+        "https://kjt.zj.gov.cn/api-gateway/jpaas-publish-server/front/page/build/unit?parseType=bulidstatic"
+        "&webId=3387&tplSetId=T1&pageType=column&tagId=%E5%BD%93%E5%89%8D%E6%A0%8F%E7%9B%AElist"
+        "&editType=null&pageId=1229225203"
+    )
+    denied = FetchResult(
+        api, "robots_disallowed", final_url=api, error="robots.txt 不允许抓取该页面"
+    )
+    fetcher = FakeFetcher({url: [page(url, JPAAS_PAGE)], api: [denied]})
+    check = check_source(session, source, fetcher)
+    assert check.status == "robots_disallowed"
+    assert "列表接口" in check.error
+    session.refresh(source)
+    assert source.health == "blocked"
