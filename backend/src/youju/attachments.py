@@ -268,10 +268,13 @@ def _check_bitmap(raw: bytes, size: int, where: str) -> None:
 
 
 def _pdf_text(data: bytes) -> str | None:
+    """PDF 里的文字。解压后太大、压缩方式不支持（pdf_limits）抛异常，text_of 按取不出文字算。"""
     import pdfplumber
 
+    from youju import pdf_limits
+
     texts = []
-    with pdfplumber.open(io.BytesIO(data)) as pdf:
+    with pdf_limits.reading(), pdfplumber.open(io.BytesIO(data)) as pdf:
         if len(pdf.pages) > _PDF_PAGES:
             return None
         for number, page in enumerate(pdf.pages, 1):
@@ -297,14 +300,33 @@ def _xml_text(raw: bytes) -> str:
     return html.unescape(_TAGS.sub("", _BREAK_TAGS.sub("\n", raw.decode("utf-8", "ignore"))))
 
 
+# zip 里只读不压缩（stored）和 deflate 压缩的部件，和附件文字读 Office、压缩包共用一份规则
+# （attachment_text._ZIP_METHODS）：Python 解 bzip2、LZMA 时一次把读进来的压缩数据整段
+# 解开、不受 read(n) 的长度限制，几百字节的文件能解出几百 MB（11/5 独立审阅实测：362 字节的包让
+# 内存从 70MB 涨到 660MB）。Office 只用这两种（11/5 抽查 147 份真实附件的 3,288 个部件也是）。
+
+
+class UnsupportedZip(Exception):
+    """Office 文件里有部件用了别的压缩方式：整份不读（一个部件都不打开），按取不出文字算。"""
+
+
 def _ooxml_text(data: bytes, nested: bool = False) -> str | None:
     """新版 Office 文件里的文字。位图超过 10KB 或 200 像素、矢量图和嵌入的对象（嵌入的表格、
     文档等）超过 50KB，抛 HasImages；小的矢量图取出文字，小的嵌入文档取出它的文字（只往下看
-    一层），一起查。"""
+    一层），一起查。有部件的压缩方式不是 deflate、不压缩，抛 UnsupportedZip（嵌入的文档也一样，
+    整份按取不出文字算，不存副本）。"""
     parts: list[str] = []
     total = 0
     with zipfile.ZipFile(io.BytesIO(data)) as zf:
-        for info in zf.infolist():
+        infos = zf.infolist()
+        for info in infos:
+            if info.compress_type not in attachment_text._ZIP_METHODS:
+                # 记一条：检查结果只写"取不出文字"，看日志才分得清是压缩方式的事
+                log.info("附件副本：Office 部件的压缩方式不支持（%s），不读", info.compress_type)
+                raise UnsupportedZip(
+                    f"压缩方式不支持（{info.compress_type}）：{info.filename[:80]}"
+                )
+        for info in infos:
             name = info.filename.lower()
             embedded = "/embeddings/" in f"/{name}"
             # 文件属性里的首页缩略图是正文首页的样子，正文已经查过
@@ -513,8 +535,8 @@ def _ole_pictures(data: bytes, file_type: str) -> str:
 
 
 def text_of(data: bytes, file_type: str) -> str | None:
-    """附件里的文字，用来查个人信息；取不出（扫描件、损坏、太大）返回 None。
-    有查不了的图片（见 HasImages）抛 HasImages。"""
+    """附件里的文字，用来查个人信息；取不出（扫描件、损坏、太大、Office 部件的压缩方式不支持、
+    PDF 解压后太大）返回 None。有查不了的图片（见 HasImages）抛 HasImages。"""
     try:
         if file_type == "pdf":
             return _pdf_text(data)
