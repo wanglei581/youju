@@ -222,7 +222,7 @@ def _reduced(cfg: dict) -> dict[str, int]:
 
 
 def _output(code: int, cfg: dict, seconds: float, out, err, reduced: dict[str, int]) -> dict:
-    if code in (_EXIT_MEMORY, -signal.SIGXCPU) and reduced:
+    if code in (_EXIT_MEMORY, -signal.SIGXCPU, -signal.SIGKILL) and reduced:
         kind = "memory" if code == _EXIT_MEMORY else "cpu"
         if kind in reduced:
             got = _size(reduced[kind]) if kind == "memory" else f"{reduced[kind]} 秒"
@@ -237,7 +237,8 @@ def _output(code: int, cfg: dict, seconds: float, out, err, reduced: dict[str, i
     if code == _EXIT_LIMITS:
         raise Failed("limits", "broken", "解析的子进程设不了资源上限", "设不了资源上限")
     if code == -signal.SIGKILL:  # 不是父进程杀的（超时在前面）：多半是容器内存不够，系统停掉的
-        raise Failed("killed", "too_large", "解析时内存不够，被系统停掉", "被系统停掉")
+        detail = "解析的子进程被系统停掉（可能是容器内存不够）"
+        raise Failed("killed", "too_large", detail, "被系统停掉")
     if code in (_EXIT_WRITE, -signal.SIGXFSZ):  # 临时盘写满、读写出错、平台的文件大小上限更低
         raise Failed("io", "broken", "解析的子进程写不出结果", "子进程写不出结果")
     size = os.fstat(out.fileno()).st_size
@@ -336,8 +337,11 @@ def _limit(cfg: dict) -> None:
         try:
             which = getattr(resource, name)
             limit = resource.getrlimit(which)[1]
-            if limit != resource.RLIM_INFINITY:
-                soft, hard = min(soft, limit), min(hard, limit)
+            if limit != resource.RLIM_INFINITY and hard > limit:
+                hard = limit
+                # CPU 时间：软上限等于硬上限时到了直接 SIGKILL（分不清原因），软上限留低 1 秒先收到
+                # SIGXCPU
+                soft = min(soft, max(limit - 1, 1) if name == "RLIMIT_CPU" else limit)
             resource.setrlimit(which, (soft, hard))
         except (ValueError, OSError):
             if not (name == "RLIMIT_AS" and sys.platform != "linux"):

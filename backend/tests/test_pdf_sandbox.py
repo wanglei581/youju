@@ -281,7 +281,7 @@ CRASHES = {
     # 不是父进程杀的 SIGKILL：多半是容器内存不够，系统停掉的
     "killed": (
         "import os, signal; os.kill(os.getpid(), signal.SIGKILL)\n",
-        ("killed", "解析时内存不够，被系统停掉"),
+        ("killed", "解析的子进程被系统停掉（可能是容器内存不够）"),
     ),
     # 设不了资源上限（这里让 setrlimit 报错）：不读
     "limits": (
@@ -403,7 +403,7 @@ def test_retryable_failures_in_all_four_readers(monkeypatch) -> None:
     outcome = detail_service._fetch_one(1, url, Fetcher())
     assert (outcome.status, outcome.failure_reason) == (
         "pdf_retry",
-        "PDF 解析时内存不够，被系统停掉",
+        "PDF 解析的子进程被系统停掉（可能是容器内存不够）",
     )
     assert detail_service._retryable("pdf_retry", None)
 
@@ -471,6 +471,24 @@ def test_one_child_at_a_time_per_process(monkeypatch) -> None:
         texts = list(pool.map(extract_pdf_text, [make_pdf(TEXT)] * 4))
     assert texts == [("x", None)] * 4
     assert most[0] == pdf_sandbox.PARALLEL == 1
+
+
+def test_platform_cpu_limit_is_hit_with_sigxcpu_and_not_blamed_on_the_file(monkeypatch) -> None:
+    """平台给的 CPU 时间硬上限比设定的低（这里子进程先把硬上限压到 3 秒）：软上限留低 1 秒，到了收到
+    SIGXCPU（不是分不清原因的 SIGKILL），父进程知道是平台压低的，不算文件太慢。"""
+    boot = (
+        "import resource, sys\n"
+        "resource.setrlimit(resource.RLIMIT_CPU, (3, 3))\n"
+        "sys.path.insert(0, sys.argv[1])\n"
+        "from youju.pdf_sandbox import _child\n"
+        "_child()\n"
+    )
+    monkeypatch.setattr(pdf_sandbox, "_BOOT", boot)
+    monkeypatch.setattr(pdf_sandbox, "_reduced", lambda cfg: {"cpu": 3})
+    with pytest.raises(pdf_sandbox.Failed) as raised:
+        pdf_sandbox.read("body", busy_pdf(), seconds=60, pages=200)
+    assert (raised.value.kind, raised.value.retry) == ("limits", True)
+    assert raised.value.detail == "平台给的 CPU 时间上限只有 3 秒，比设定的低"
 
 
 def test_lower_platform_hard_limits_are_kept() -> None:
