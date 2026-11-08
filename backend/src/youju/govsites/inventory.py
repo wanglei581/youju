@@ -605,10 +605,9 @@ class Inventory:
                 if div.level != "国家级" and self._is_ministry(text, link.url):
                     continue  # 页脚"国务院部门网站"里的部委，不是本地部门
                 if _service_hall(link.url) and not (
-                    "数据局" in cats and not _SERVICE_PATH.search(urlsplit(link.url).path)
+                    "数据局" in cats and _data_bureau_site(link.url)
                 ):
                     continue  # 政务服务网的部门办事页（"部门服务"），不是部门信息发布网站
-                    # （数据局的网站有的就叫 zwfw.xx.gov.cn，链接是数据局、路径不是办事页的放行）
                 if not _site_like(link.url, p.final_url) and not report:
                     continue
                 prefix = level_prefix(text)
@@ -856,6 +855,24 @@ XXGK_TAG = "xxgk-"
 _SERVICE_PATH = re.compile(
     r"bszn|branch-hall|deptThing|onething|/icity/|workProcess|departmentHoem|/bsdt/", re.I
 )
+
+
+_SERVICE_QUERY = re.compile(
+    r"portal/department|itemList|OrgItem|deptCode|regionCode|areaCode", re.I
+)
+
+
+def _data_bureau_site(url: str) -> bool:
+    """有的地方数据局网站就叫 zwfw.某市.gov.cn：只放行这种本地子域的首页，
+    省级政务服务网（hnzwfw.gov.cn 等）、部门办事页、事项页一律不放。"""
+    parts = urlsplit(url)
+    host = (parts.hostname or "").lower()
+    labels = host.split(".")
+    if labels[0] != "zwfw" or len(labels) < 4 or host.endswith("zwfw.gov.cn"):
+        return False
+    if parts.query or _SERVICE_QUERY.search(parts.path) or _SERVICE_PATH.search(parts.path):
+        return False
+    return len([seg for seg in parts.path.split("/") if seg]) <= 1
 
 
 def _service_hall(url: str) -> bool:
