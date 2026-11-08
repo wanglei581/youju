@@ -572,6 +572,8 @@ def test_gone_export_needs_no_login(client, session, on):
     text = word_text(response.content)
     assert f"{NOTICE}。这份通知将于10月28日清理。" in text and "第1段申报说明" in text
     assert "来源：山东省科技厅网站" in text and "http" not in text
+    # 原网页已经打不开、到期就清理：不写"在小程序里可以查看原文和更新"（agy 合规审阅 11/8）
+    assert "查看原文和更新" not in text
     live, _, _, _ = seed(session, 2)
     assert client.post(f"/api/v1/documents/{live.id}/gone-export").status_code == 409
 

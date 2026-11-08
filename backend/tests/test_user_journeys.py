@@ -612,6 +612,8 @@ def test_c_consent_feedback_admin_personal_data_delete_and_account_deletion(jour
         "pass": None,
         # 纠错送天数开关默认关：纠错页不提送天数
         "correctionReward": None,
+        # 我的保存（D-123）开关默认关、也没保存过：我的页不放入口
+        "saved": None,
     }
     empty = _json(j.client.get("/api/v1/me/data"))
     assert (

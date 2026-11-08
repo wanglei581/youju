@@ -186,7 +186,7 @@ def gone_note(row: SavedDocument) -> str:
 
 def word(info: dict, content: dict, notice_lines: list[str], stamp: str) -> bytes:
     """一份通知的 Word：标题、出处、原网页打不开的提示，正文和附件的文字，最后是来源说明。"""
-    from youju.export_notes import DISCLAIMER, SEARCH_NOTICE
+    from youju.export_notes import DISCLAIMER
 
     book = WordDocument()
     book.add_heading(info["title"], level=1)
@@ -225,7 +225,8 @@ def word(info: dict, content: dict, notice_lines: list[str], stamp: str) -> byte
         "以上文字是从原网页和附件自动提取的，未经人工逐字核对；图片、公章和版式不在内。"
     )
     book.add_paragraph(DISCLAIMER)
-    book.add_paragraph(SEARCH_NOTICE)
+    # 不写"在小程序里可以查看原文和更新"（别的导出有）：这份通知原网页已经打不开、到期就清理，
+    # 小程序里也看不到原文了（agy 合规审阅 11/8）
     book.add_paragraph(f"导出时间（北京时间）：{stamp}")
     output = BytesIO()
     book.save(output)

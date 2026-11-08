@@ -29,6 +29,6 @@
     <view class="empty-title">还没有保存过</view>
     <view class="muted empty-text">原网页打不开、7 天后清理的通知，在文件详情里点“保存”，保存后在这里看。</view>
   </view>
-  <view class="tip">保存的是正文和附件文字，不含附件原件；最多 {{max}} 份。删除或注销时一起删除；通知被下架的，保存的副本也一起删除。</view>
+  <view class="tip">保存的是正文和附件文字，不含附件原件；最多 {{max}} 份。删除或注销时一起删除；通知因投诉等原因被下架的，保存的副本也一起删除。</view>
 </block>
 </block>

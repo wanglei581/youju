@@ -64,7 +64,7 @@ Page({
       return true;
     }
     if (r.source === 'gone' && /^\d+$/.test(String(r.docId || ''))) {
-      wx.navigateTo({ url: `/pages/detail/index?id=${encodeURIComponent(r.docId)}` });
+      wx.navigateTo({ url: `/pages/detail/index?id=${encodeURIComponent(r.docId)}&from=gone` });
       return true;
     }
     return false;

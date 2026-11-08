@@ -206,7 +206,18 @@ test('导出记录：清理期导出的回到文件详情，我的保存里导�
   page.records = [{ source: 'gone', docId: '9', format: 'docx' }, { source: 'saved', savedId: '7', format: 'docx' }];
   page.open({ currentTarget: { dataset: { index: 0 } } });
   page.reexport({ currentTarget: { dataset: { index: 1 } } });
-  assert.deepEqual(urls, ['/pages/detail/index?id=9', '/pages/reader/index?saved=7']);
+  assert.deepEqual(urls, ['/pages/detail/index?id=9&from=gone', '/pages/reader/index?saved=7']);
+});
+
+test('从导出记录回到已清理的通知：说清楚已到期清理、保存过的去我的保存看', async () => {
+  const deps = detailDeps({}, []);
+  deps['../../utils/api.js'] = { detail: () => Promise.reject(Object.assign(new Error('没有找到这份文件'), { status: 404 })) };
+  const page = pageOf('pages/detail/index.js', deps);
+  page.onLoad({ id: '9', from: 'gone' }); await settle();
+  assert.equal(page.data.error, '这份通知原网页打不开，已经到期清理；保存过的在“我的 → 我的保存”里看');
+  const plain = pageOf('pages/detail/index.js', deps);
+  plain.onLoad({ id: '9' }); await settle();
+  assert.equal(plain.data.error, '没有找到这份文件');
 });
 
 test('我的页：服务端给了 saved、包里有这一页才放"我的保存"，写保存了几份', () => {

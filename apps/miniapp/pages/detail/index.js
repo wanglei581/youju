@@ -96,6 +96,8 @@ Page({
     // 协议定稿前（D-056）不显示"订阅截止提醒"和底栏的"纠错"，定稿后照旧
     this.setData({ loginOpen: loginOpen(), remindOpen: remindOpen('deadline') });
     this.docId = query.id;
+    // 从导出记录回来的清理期导出（D-123）：通知可能已经到期清理，找不到时说清楚，不只写"没有找到这份文件"
+    this.fromGone = query.from === 'gone';
     this.lastShow = Date.now();
     this.load();
   },
@@ -190,7 +192,9 @@ Page({
         doc: null, due: null, dueNote: '', changes: [], reminded: false, atts: [], conds: [], versions: [], versionLabel: '', upstream: '',
         bodyView: null, noBody: '', entry: null, goneNote: '', goneAll: false, goneWindow: false, savedHere: false, dueQuote: '', checkedText: '', points: [],
         takenDown: err.status === 404 && err.message === '该文件已下架',
-        error: err.status === 404 ? err.message : `数据未更新：${err.message}`,
+        error: err.status === 404 && this.fromGone && err.message !== '该文件已下架'
+          ? '这份通知原网页打不开，已经到期清理；保存过的在“我的 → 我的保存”里看'
+          : (err.status === 404 ? err.message : `数据未更新：${err.message}`),
       }))
       .then(() => { this.refreshing = false; this.setData({ loading: false }); });
   },
