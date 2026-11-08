@@ -172,10 +172,14 @@ def purge_documents(session: Session, document_ids: list[int]) -> int:
 
 
 def gone_note(row: SavedDocument) -> str:
-    """ "我的保存"里、阅读页上写的那句：原网页打不开的日期（D-123 ③：标明原网页撤下的日期）。"""
+    """我的保存里、阅读页上写的那句：原网页打不开的日期（D-123 ③：标明原网页撤下的日期）。
+    名单类照详情页的写法写"已撤下"（D-123 ④）。"""
+    saved_on = gone.md(gone.beijing_date(row.saved_at))
+    if row.kind == "名单":
+        return f"原网页{gone.md(row.gone_on)}起已撤下。这是你{saved_on}保存的副本。"
     return (
         f"原网页{gone.md(row.gone_on)}起打不开，内容可能已被发布机关撤回或更正，以官方为准。"
-        f"这是你{gone.md(gone.beijing_date(row.saved_at))}保存的副本。"
+        f"这是你{saved_on}保存的副本。"
     )
 
 

@@ -154,7 +154,8 @@ Page({
           // 提示下面给"保存""导出 Word"（goneWindow）
           goneNote: goneNote(doc.link_gone, readable, doc.gone),
           goneAll: !!doc.link_gone && !readable,
-          goneWindow: !!(doc.gone && doc.gone.notice),
+          // 名单类（D-123 ④）一直标明已撤下、不清理；7 天过后 window 为假，不给保存、导出
+          goneWindow: !!(doc.gone && doc.gone.notice && doc.gone.window === true),
           savedHere: false,
           // 底栏："阅读全文"（只显示了开头）或"阅读附件"（正文已全部显示或没有正文），都读不了不显示
           entry: readEntry(doc.body, bodyView, atts),

@@ -46,6 +46,10 @@ LISTED_WITHIN = timedelta(hours=48)
 
 # 原网页失效、到期也不清理的几种情况（页面照 D-097 显示"原文链接已失效"，不写清理日期、不能保存）
 KEEP_REASONS = {
+    # D-123 ④：名单类（查名单用到的，失效的多是公示期满后撤下的）不按 7 天清理，照常留着、
+    # 查名单照常能查到，卡片和详情页标明"原网页某月某日起已撤下"；这 7 天里正文和别的通知一样
+    # 照常给、能保存导出（7 天过后给不给没定，照现在不给，D-123 ⑥）
+    "list": "名单类，不按 7 天清理",
     "history": "有下架、恢复记录（记录要留着，删不了这份通知）",
     "changed": "别的通知的截止变更指向它",
     "listed": "原栏目还列着这份通知",
@@ -109,6 +113,17 @@ def notice(gone_at: datetime) -> str:
     return f"原网页{md(gone_on(gone_at))}起打不开，内容可能已被发布机关撤回或更正，以官方为准"
 
 
+def list_notice(gone_at: datetime) -> str:
+    """名单类的标记（D-123 ④：卡片和详情页标明原网页某月某日起已撤下）。"""
+    return f"原网页{md(gone_on(gone_at))}起已撤下"
+
+
+def is_list(doc: Document) -> bool:
+    from youju.classify import effective_kind
+
+    return effective_kind(doc.title, doc.kind_override) == "名单"
+
+
 def _squash(title: str | None) -> str:
     # 和归并（dedup.match_key）一样只去掉空白
     return re.sub(r"\s+", "", title or "")
@@ -125,6 +140,10 @@ def keep_reasons(session: Session, docs: Iterable[Document], now: datetime) -> d
 
     def mark(doc_id: int, reason: str) -> None:
         found.setdefault(doc_id, reason)
+
+    for doc in docs:
+        if is_list(doc):
+            mark(doc.id, "list")
 
     # 下架、恢复记录对 documents 是 RESTRICT：有记录的删不了，也不该删（审计记录要留）
     for doc_id in session.scalars(
@@ -214,12 +233,13 @@ def keep_reasons(session: Session, docs: Iterable[Document], now: datetime) -> d
 def window_ids(
     session: Session, docs: Iterable[Document], now: datetime, settings: Settings | None = None
 ) -> set[int]:
-    """这些通知里还在清理期里、到期会清理的（正文、附件照常给，能保存、导出）。"""
+    """这些通知里还在 7 天清理期里、正文附件照常给（能保存、导出）的：到期会清理的，加上名单类
+    （不清理，这 7 天里一样给）。别的不清理的（KEEP_REASONS 其余几种）照 D-097 不给。"""
     pending = [doc for doc in docs if viewable(doc.link_gone_at, now, settings)]
     if not pending:
         return set()
     kept = keep_reasons(session, pending, now)
-    return {doc.id for doc in pending if doc.id not in kept}
+    return {doc.id for doc in pending if kept.get(doc.id) in (None, "list")}
 
 
 def in_window(
@@ -228,20 +248,50 @@ def in_window(
     return doc.id in window_ids(session, [doc], now, settings)
 
 
-def reading_note(gone_at: datetime) -> str:
-    """阅读页正文、附件上面写的一句（阅读页没有保存、导出按钮，不说"可以先保存"）。"""
-    return f"{notice(gone_at)}。这份通知将于{md(cleanup_on(gone_at))}清理。"
+def reading_note(doc: Document) -> str:
+    """阅读页正文、附件上面、导出的 Word 里写的一句（没有保存、导出按钮，不说"可以先保存"）。"""
+    if is_list(doc):
+        return f"{list_notice(doc.link_gone_at)}。"
+    return f"{notice(doc.link_gone_at)}。这份通知将于{md(cleanup_on(doc.link_gone_at))}清理。"
 
 
-def payload(gone_at: datetime | None) -> dict:
-    """接口里的 gone（只给在清理期里、会清理的，window_ids）：原网页打不开的日期、清理日期和页面上
-    的两句话。不在清理期里的不给这个字段，小程序照原来的 link_gone 显示。"""
-    clean = cleanup_on(gone_at)
+def payload(doc: Document, window: bool) -> dict:
+    """接口里的 gone：原网页打不开的日期、清理日期（名单类没有）、页面上的两句话；window 是还在
+    7 天里、正文附件照常给、能保存导出。见 payloads。"""
+    if is_list(doc):
+        return {
+            "since": gone_on(doc.link_gone_at).isoformat(),
+            "cleanup": None,
+            "notice": list_notice(doc.link_gone_at),
+            # 7 天过后正文不给（D-123 ⑥ 没定，照现在）：名单照常能查
+            "cleanupNotice": "" if window else "正文不再提供，名单请在“查名单”里按企业名称查询",
+            "list": True,
+            "window": window,
+        }
+    clean = cleanup_on(doc.link_gone_at)
     return {
-        "since": gone_on(gone_at).isoformat(),
+        "since": gone_on(doc.link_gone_at).isoformat(),
         "cleanup": clean.isoformat(),
-        "notice": notice(gone_at),
+        "notice": notice(doc.link_gone_at),
         "cleanupNotice": f"这份通知将于{md(clean)}清理，可以先保存或导出",
+        "list": False,
+        "window": True,
+    }
+
+
+def payloads(
+    session: Session, docs: Iterable[Document], now: datetime, settings: Settings | None = None
+) -> dict[int, dict]:
+    """要带 gone 的（开关开着）：还在 7 天里、会清理的；名单类原网页失效的一直带（标明已撤下）。
+    别的（原网页能打开、开关关着、过了清理日期、不清理的）不带，小程序照原来的 link_gone 显示。"""
+    if not enabled(settings):
+        return {}
+    docs = [doc for doc in docs if doc.link_gone_at is not None]
+    if not docs:
+        return {}
+    window = window_ids(session, docs, now, settings)
+    return {
+        doc.id: payload(doc, doc.id in window) for doc in docs if doc.id in window or is_list(doc)
     }
 
 

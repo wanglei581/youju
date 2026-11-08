@@ -145,10 +145,12 @@ def _document(session, doc_id: int, request: Request):
 
 
 def _gone_note(session: Session, doc: Document) -> str:
-    """原网页失效、还在 7 天清理期里、到期会清理的（D-123）：页面上写打不开的日期和清理日期。"""
-    if doc.link_gone_at is None or not gone.in_window(session, doc, v1.now()):
+    """原网页失效、还在 7 天清理期里的（D-123）：页面上写打不开的日期和清理日期；名单类失效的一直
+    写"原网页某月某日起已撤下"（不清理）。"""
+    info = gone.payloads(session, [doc], v1.now()).get(doc.id) if doc.link_gone_at else None
+    if info is None:
         return ""
-    return gone.reading_note(doc.link_gone_at)
+    return gone.reading_note(doc)
 
 
 SEGMENT_MAX = 1000

@@ -581,16 +581,13 @@ def _items(
 
 def _with_gone(session: Session, items: list[dict], docs: list[Document]) -> None:
     """列表行加上 gone（D-123，开关开着）：原网页失效、还在 7 天清理期里、到期会清理的，给打不开
-    的日期、清理日期和提示（gone.payload），卡片据此写提示；别的行不加这个字段（旧版小程序照旧按
-    link_gone 显示）。"""
-    window = gone.window_ids(session, docs, now())
-    if not window:
-        return
-    gone_at = {doc.id: doc.link_gone_at for doc in docs}
+    的日期、清理日期和提示；名单类失效的一直给（标明原网页已撤下）。见 gone.payloads。别的行不加
+    这个字段（旧版小程序照旧按 link_gone 显示）。"""
+    shown = gone.payloads(session, docs, now())
     for item in items:
-        doc_id = int(item["id"])
-        if doc_id in window:
-            item["gone"] = gone.payload(gone_at[doc_id])
+        info = shown.get(int(item["id"]))
+        if info is not None:
+            item["gone"] = info
 
 
 # ---- 转发组（D-055）：同一份部里通知的各地版本 ---------------------------------------------
@@ -3615,8 +3612,8 @@ def reading_body(
     """详情页和阅读页给的正文（D-097：两处同一个判断）。attachments：这份通知列着附件（没有能显示
     的正文时，页面说"内容在附件里"还是"正文还取不到"）。原网页已失效的不给（D-097"维持现状不给，
     统计失效原因后另议"；以前详情页还显示之前收录的正文、阅读页不给，两处不一致），组里原网页已失效
-    的其他网址的正文也不用。D-123（开关开着）：失效后 7 天的清理期里照常给（gone.in_window），
-    组里还在清理期里的其他网址的正文也能用。"""
+    的其他网址的正文也不用。D-123（开关开着）：失效后 7 天的清理期里照常给（gone.in_window；
+    名单类不清理，这 7 天里一样给），组里还在清理期里的其他网址的正文也能用。"""
     if body_withheld(doc, kind):
         # 失信、处罚类和个人类名单：和别的个人事项一样不展示，不引导去查名单
         return ReadingBody("personal")
@@ -3901,10 +3898,11 @@ def document(doc_id: int, session: SessionDep) -> dict:
         payload.pop("fields", None)
     if apply_conditions:
         payload["apply_conditions"] = apply_conditions
-    # D-123：原网页失效、还在 7 天清理期里、到期会清理的，详情页写提示和清理日期，给保存、导出按钮
-    # （正文、附件照常给，见 reading_body、attachment_text.judge）
-    if gone.in_window(session, doc, now()):
-        payload["gone"] = gone.payload(doc.link_gone_at)
+    # D-123：原网页失效、还在 7 天清理期里的，详情页写提示和清理日期（名单类写已撤下、不清理），
+    # 给保存、导出按钮（正文、附件照常给，见 reading_body、attachment_text.judge）
+    info = gone.payloads(session, [doc], now()).get(doc.id)
+    if info is not None:
+        payload["gone"] = info
     # 转发组（D-055）：同一份部里通知的其他版本，各版本的截止各自列出（不互相套用）
     repost = repost_versions(session, [doc.id]).get(doc.id)
     if repost and repost["others"]:

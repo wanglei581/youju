@@ -112,11 +112,23 @@ def test_window_dates_follow_beijing_days(env):
     assert not gone.viewable(None, last)
     env(gone_cleanup_enabled="false")
     assert not gone.viewable(gone_at, last) and gone.blocked(gone_at, last)
-    assert gone.payload(gone_at) == {
+    doc = Document(title="关于开展申报的通知", kind_override="申报通知", link_gone_at=gone_at)
+    assert gone.payload(doc, True) == {
         "since": "2026-10-17",
         "cleanup": "2026-10-24",
         "notice": "原网页10月17日起打不开，内容可能已被发布机关撤回或更正，以官方为准",
         "cleanupNotice": "这份通知将于10月24日清理，可以先保存或导出",
+        "list": False,
+        "window": True,
+    }
+    roster = Document(title="拟认定名单公示", kind_override="名单", link_gone_at=gone_at)
+    assert gone.payload(roster, False) == {
+        "since": "2026-10-17",
+        "cleanup": None,
+        "notice": "原网页10月17日起已撤下",
+        "cleanupNotice": "正文不再提供，名单请在“查名单”里按企业名称查询",
+        "list": True,
+        "window": False,
     }
 
 
@@ -132,6 +144,8 @@ def test_window_gives_body_attachments_and_notice(client, session, on):
         "cleanup": "2026-10-28",
         "notice": NOTICE,
         "cleanupNotice": "这份通知将于10月28日清理，可以先保存或导出",
+        "list": False,
+        "window": True,
     }
     [item] = detail["attachments"]
     assert (item["state"], item["readable"]) == ("ok", True)
@@ -265,6 +279,41 @@ def test_same_title_from_an_earlier_year_is_not_a_move(session, on):
     session.add(old)
     session.commit()
     assert gone.keep_reasons(session, [doc], NOW) == {}
+
+
+def test_lists_are_kept_marked_and_readable_for_seven_days(client, session, on):
+    """D-123 ④：名单类不按 7 天清理，照常留着，卡片和详情页标明"原网页某月某日起已撤下"；这 7 天里
+    正文和别的通知一样照常给、能保存导出；7 天过后正文照现在不给（D-123 ⑥ 没定）。"""
+    doc, _ = gone_doc(session, kind="名单")
+    doc.title = "关于2026年度专精特新中小企业拟认定名单的公示"
+    session.commit()
+    detail = client.get(f"/api/v1/documents/{doc.id}").json()
+    assert detail["gone"] == {
+        "since": "2026-10-21",
+        "cleanup": None,
+        "notice": "原网页10月21日起已撤下",
+        "cleanupNotice": "",
+        "list": True,
+        "window": True,
+    }
+    assert detail["body"] != {"status": "none", "reason": "link_gone"}
+    reading = client.get(f"/api/v1/documents/{doc.id}/reading").json()
+    assert reading["goneNote"] == "原网页10月21日起已撤下。"
+    [row] = client.get("/api/v1/search", params={"time": "不限"}).json()["items"]
+    assert row["gone"]["notice"] == "原网页10月21日起已撤下"
+    # 7 天过后：照常留着、照常标明已撤下，正文照现在不给，不能保存
+    doc.link_gone_at = NOW - timedelta(days=9)
+    doc.link_checked_at = NOW - timedelta(hours=1)
+    session.commit()
+    later = client.get(f"/api/v1/documents/{doc.id}").json()
+    assert later["gone"]["window"] is False and later["gone"]["list"] is True
+    assert later["gone"]["cleanupNotice"] == "正文不再提供，名单请在“查名单”里按企业名称查询"
+    assert later["body"] == {"status": "none", "reason": "link_gone"}
+    agree(client)
+    assert save(client, doc).status_code == 409
+    counts = gone.cleanup_expired(session, now=NOW)
+    assert counts["list"] == 1 and counts["deleted"] == 0
+    assert session.get(Document, doc.id) is not None
 
 
 # ---- 本机：到期清理 ----

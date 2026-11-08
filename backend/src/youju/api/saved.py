@@ -326,7 +326,7 @@ def export_gone(doc_id: int, session: SessionDep, request: FastAPIRequest) -> Re
             raise HTTPException(status_code=409, detail="这份通知没有能导出的正文和附件文字")
         info = saved.meta(doc, session.get(Source, doc.source_id))
         stamp = now.astimezone(gone.BEIJING).strftime("%Y-%m-%d %H:%M:%S")
-        notice = gone.reading_note(doc.link_gone_at)
+        notice = gone.reading_note(doc)
         return _word_response(saved.word(info, content, [notice], stamp), stamp)
     finally:
         exports._export_slots.release()
