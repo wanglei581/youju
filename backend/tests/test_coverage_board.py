@@ -193,10 +193,20 @@ def test_admin_coverage_interfaces(client, session):  # noqa: F811
 def test_enable_requires_passed_acceptance(session):
     source = _source(session)
     source.last_success_at = NOW - timedelta(hours=1)
+    session.add(
+        SourceCheck(
+            source_id=source.id,
+            started_at=NOW - timedelta(hours=1),
+            finished_at=NOW - timedelta(hours=1),
+            status="ok",
+            items_found=12,
+            items_new=12,
+        )
+    )
     session.commit()
     import_inventory(session, _portals(), _depts())
     # 没抽查：一个都不开
-    r = enable_sources(session, "浙江", "省级", "王某")
+    r = enable_sources(session, "浙江", "省级", "王某", now=NOW)
     assert (r.enabled, r.blocked_reason is not None) == (0, True)
     session.add(
         CoverageAcceptance(
@@ -209,7 +219,7 @@ def test_enable_requires_passed_acceptance(session):
         )
     )
     session.commit()
-    assert enable_sources(session, "浙江", "省级", "王某").enabled == 0  # 没过也不开
+    assert enable_sources(session, "浙江", "省级", "王某", now=NOW).enabled == 0  # 没过也不开
     session.add(
         CoverageAcceptance(
             province="浙江",
@@ -221,12 +231,58 @@ def test_enable_requires_passed_acceptance(session):
         )
     )
     session.commit()
-    assert enable_sources(session, "浙江", "省级", "王某", dry_run=True).enabled == 1
+    assert enable_sources(session, "浙江", "省级", "王某", dry_run=True, now=NOW).enabled == 1
     session.refresh(source)
     assert source.enabled is False
-    assert enable_sources(session, "浙江", "省级", "王某").enabled == 1
+    r = enable_sources(session, "浙江", "省级", "王某", now=NOW)
+    assert (r.enabled, r.source_ids, r.acceptance_id is not None) == (1, [source.id], True)
     session.refresh(source)
-    assert source.enabled is True and "抽查合格后由 王某 启用" in source.note
+    assert source.enabled is True and f"抽查记录 #{r.acceptance_id}）后由 王某 启用" in source.note
+    # 启用后接着按正式口径重算：试抓成功、已启用的格算已收录
+    assert _cell(session, "科技").state == "已收录"
+
+
+def test_enable_skips_sources_refused_after_trial(session):
+    source = _source(session)
+    source.last_success_at = NOW - timedelta(days=1)
+    session.add_all(
+        [
+            SourceCheck(
+                source_id=source.id,
+                started_at=NOW - timedelta(days=1),
+                finished_at=NOW - timedelta(days=1),
+                status="ok",
+                items_found=10,
+                items_new=10,
+            ),
+            # 后来被网站 412 拦了：看板记不能抓，启用门禁也不开（D-013）
+            SourceCheck(
+                source_id=source.id,
+                started_at=NOW - timedelta(hours=1),
+                finished_at=NOW - timedelta(hours=1),
+                status="http_error",
+                http_status=412,
+                items_found=0,
+                items_new=0,
+            ),
+        ]
+    )
+    session.add(
+        CoverageAcceptance(
+            province="浙江",
+            level="省级",
+            sampled_by="王某",
+            sampled_at=NOW,
+            sample_size=5,
+            passed=True,
+        )
+    )
+    session.commit()
+    import_inventory(session, _portals(), _depts())
+    r = enable_sources(session, "浙江", "省级", "王某", now=NOW)
+    assert (r.enabled, r.skipped) == (0, 1)
+    session.refresh(source)
+    assert source.enabled is False
 
 
 def _cell(session, dept, code="330000"):

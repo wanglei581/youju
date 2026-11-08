@@ -213,6 +213,8 @@ def router(require_admin, audit) -> APIRouter:
             select(CoverageCell, CoverageDivision)
             .join(CoverageDivision, CoverageDivision.code == CoverageCell.division_code)
             .where(CoverageCell.id == cell_id)
+            # 和 coverage-refresh 错开：锁住这一格到提交，读到的是最新的人工字段和状态
+            .with_for_update(of=CoverageCell)
         ).first()
         if row is None:
             raise HTTPException(404, "没有这一格")

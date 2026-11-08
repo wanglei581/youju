@@ -360,7 +360,32 @@ def _cmd_enable(args: argparse.Namespace) -> int:
         print(f"没有启用：{r.blocked_reason}")
         return 1
     verb = "可启用" if args.dry_run else "已启用"
-    print(f"{args.province}{args.level}：符合条件 {r.candidates} 个，{verb} {r.enabled} 个")
+    print(
+        f"{args.province}{args.level}（依据抽查记录 #{r.acceptance_id}）："
+        f"符合条件 {r.candidates} 个，{verb} {r.enabled} 个；"
+        f"最近被拒绝或读不出、不开的 {r.skipped} 个"
+    )
+    shown = ", ".join(str(i) for i in r.source_ids[:50])
+    more = f" 等 {len(r.source_ids)} 个" if len(r.source_ids) > 50 else ""
+    print(f"来源编号：{shown or '无'}{more}")
+    if not args.dry_run and r.enabled:
+        # 和后台操作一样留痕（操作人、依据的抽查记录、开了哪些）
+        import logging
+
+        logging.getLogger("youju.audit").info(
+            json.dumps(
+                {
+                    "event": "admin",
+                    "action": "coverage_enable",
+                    "by": args.by,
+                    "province": args.province,
+                    "level": args.level,
+                    "acceptance_id": r.acceptance_id,
+                    "source_ids": r.source_ids,
+                },
+                ensure_ascii=False,
+            )
+        )
     return 0
 
 

@@ -476,15 +476,17 @@ class Inventory:
                 "（同省，待核对）" if same_prov else "（不是同一省，待核对）"
             )
         home.level_hint = div.level
-        pages = self._nav_pages(home) + self._seed_pages(div)
+        portal_pages = self._nav_pages(home)
         if div.level == "国家级":
             dept_nav = self.page(GOV_DEPT_NAV)
             if dept_nav.result.status == "ok":
                 dept_nav.nav_text = "国务院部门网站"
-                pages.append(dept_nav)
+                portal_pages.append(dept_nav)
+        # 入口补充页（省直部门网站）只用来找部门和下级门户；政府办的栏目只看门户自己的页面
+        pages = portal_pages + self._seed_pages(div)
         child_found = self._find_children(div, children, pages)
         try:
-            depts = self._find_depts(div, home, pages)
+            depts = self._find_depts(div, home, pages, portal_pages=portal_pages)
         except Exception as exc:  # noqa: BLE001 - 部门出意外不影响下级照常排队
             log.exception("找 %s %s 的部门时出错", div.province, div.name)
             row.reason = f"找部门时出错：{exc.__class__.__name__}"
@@ -611,22 +613,72 @@ class Inventory:
                 out |= {v for v in name_variants(d.name, d.kind) if len(v) >= 2}
         return sorted(out - own, key=len, reverse=True)
 
+    def _foreign_names(self, div: Division) -> list[str]:
+        """外省的名称写法（长的在前）：部门链接文字以它们开头的是外省的部门。
+
+        本行政区名字和外省同名开头的（青海海南州、河南县）由调用方比长短：本地写法更长的不算外省。"""
+        if div.level == "国家级":
+            return []
+        prov = self.index.province_of(div)
+        names = {
+            v
+            for p in self.index.provinces()
+            if p.code != prov.code
+            for v in name_variants(p.name, p.kind)
+            if len(v) >= 2
+        }
+        return sorted(names, key=len, reverse=True)
+
+    def _seed_sites(self, div: Division, own: list[str]) -> list[tuple[str, Found]]:
+        """导航入口补充里的部门网站本身，作为它那个部门的候选：(部门, 找到的网站)。
+
+        只认网站名（meta SiteName，没有就用标题）以本行政区名称开头、能归到目标部门的；
+        导航来源页记入口网址本身（可追溯到导航入口补充表）。"""
+        out: list[tuple[str, Found]] = []
+        for url, _note in self.seeds.get(div.code, []):
+            sp = self.page(url)
+            if sp.result.status != "ok" or sp.block:
+                continue
+            name = (sp.fp.site_name if sp.fp else "") or (
+                (sp.doc.findtext(".//title") or "").strip() if sp.doc is not None else ""
+            )
+            if not name or not any(name.startswith(o) for o in own):
+                continue
+            for cat in dept_categories(name):
+                if cat != "政府办":
+                    out.append((cat, Found(sp.final_url, name, url)))
+        return out
+
     def _find_depts(
-        self, div: Division, home: PageInfo, pages: list[PageInfo], portal_ok: bool = True
+        self,
+        div: Division,
+        home: PageInfo,
+        pages: list[PageInfo],
+        portal_ok: bool = True,
+        portal_pages: list[PageInfo] | None = None,
     ) -> list[DeptRow]:
         others = self._other_places(div)
+        foreign = self._foreign_names(div)
         own = sorted(name_variants(div.name, div.kind) | {div.province}, key=len, reverse=True)
         own_chars = level_chars(div)
         candidates: dict[str, list[tuple[int, Found]]] = {}
+        for cat, found in self._seed_sites(div, own):
+            # 入口补充里的部门网站本身（网站名写明是本省的哪个部门）：最优先
+            candidates.setdefault(cat, []).append((10, found))
         for p in pages:
             report = bool(REPORT_WORDS.search(p.nav_text))
             nav_bonus = (
                 2 if report or re.search(r"部门|省直|市直|区直|县直|机构|单位", p.nav_text) else 0
             )
             for link in p.links:
-                text = link.text
+                text = _clean_link_text(link.text)
                 if any(text.startswith(o) for o in others) and not _own_branch(text, div):
                     continue
+                # "中国（北京）自由贸易试验区"这类按括号里的地名算
+                bare = _CN_PREFIX.sub("", text)
+                hit = next((f for f in foreign if bare.startswith(f)), None)
+                if hit and not any(bare.startswith(o) and len(o) > len(hit) for o in own):
+                    continue  # 外省的部门（省直部门网站上常有"兄弟省份"链接）
                 cats = dept_categories(text)
                 if not cats or not is_gov_url(link.url):
                     continue
@@ -661,7 +713,7 @@ class Inventory:
         gov.site_url, gov.site_type, gov.nav_source = home.final_url, "门户本身", home.url
         if portal_ok:
             gov.status = "已找到"
-            self._fill_from_page(gov, home, pages)
+            self._fill_from_page(gov, home, portal_pages if portal_pages is not None else pages)
         else:
             # 门户不通：政府办（门户的政府文件、通知公告）照记不通，其他部门从官方入口补充里找
             gov.status = "不能抓" if home.block else "打不开"
@@ -816,6 +868,17 @@ def report_homepage_text(html: str) -> str | None:
     if not url.startswith("http"):
         url = "http://" + url
     return url + ("/" if urlsplit(url).path in ("", "/") and not url.endswith("/") else "")
+
+
+# 链接文字开头常带的符号（">海南省商务厅""·省财政厅"）：去掉再比名称
+_LINK_LEAD = re.compile(r"^[\s>》›»·•|｜\-—–:：、]+")
+
+
+_CN_PREFIX = re.compile(r"^中国[（(]")
+
+
+def _clean_link_text(text: str) -> str:
+    return _LINK_LEAD.sub("", text or "").strip()
 
 
 def _own_branch(text: str, div: Division) -> bool:

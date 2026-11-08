@@ -141,7 +141,13 @@
     STATES.forEach((s) => { const n = counts[s] || 0; if (!n || !total) return; const i = el('i', 's-' + s); i.style.width = (n / total * 100) + '%'; i.title = `${s} ${n}`; bar.append(i); });
     return bar;
   }
-  function when(iso) { return iso ? iso.replace('T', ' ').slice(0, 16) : ''; }
+  // 接口给的是 UTC 时间（带时区）：换成北京时间显示，dateOnly 只要日期
+  function when(iso, dateOnly) {
+    if (!iso) return '';
+    const d = new Date(iso.replace(/(\.\d{3})\d+/, '$1')); if (isNaN(d.getTime())) return iso; // 微秒只留到毫秒，各浏览器都认
+    const s = new Date(d.getTime() + 8 * 3600 * 1000).toISOString().replace('T', ' ');
+    return dateOnly ? s.slice(0, 10) : s.slice(0, 16);
+  }
   // 全国看这一级的合计；进了省看这个省，点状态卡片筛格子
   function renderKpis(data, inProvince) {
     const k = $('kpis'); k.replaceChildren();
@@ -153,7 +159,7 @@
       if (clickable) { b.title = '只看' + state; b.onclick = () => { $('stateFilter').value = $('stateFilter').value === state ? '' : state; renderGrid(); }; }
       k.append(b);
     });
-    $('refreshed').textContent = data.refreshed_at ? `状态按 ${when(data.refreshed_at)} 的抓取结果算（youju coverage-refresh）` : (data.total ? '有格还没重算过状态：先运行 youju coverage-refresh' : '');
+    $('refreshed').textContent = data.refreshed_at ? `状态按 ${when(data.refreshed_at)}（北京时间）的抓取结果算（youju coverage-refresh）` : (data.total ? '有格还没重算过状态：先运行 youju coverage-refresh' : '');
   }
   function renderSummary() {
     renderKpis(summary.levels[level] || { counts: {}, total: 0, rate: null, refreshed_at: null }, false);
@@ -162,7 +168,7 @@
     rows.sort((a, b) => (a.rate === null ? -1 : a.rate) - (b.rate === null ? -1 : b.rate));
     rows.forEach((p) => {
       const tr = el('tr', 'click');
-      const acc = p.acceptance ? (p.acceptance.passed ? '合格' : '没过') + '（' + (p.acceptance.level === '全部' ? '全省各级，' : '') + (p.acceptance.sampled_at || '').slice(0, 10) + '）' : '未抽查';
+      const acc = p.acceptance ? (p.acceptance.passed ? '合格' : '没过') + '（' + (p.acceptance.level === '全部' ? '全省各级，' : '') + when(p.acceptance.sampled_at, true) + '）' : '未抽查';
       const td = el('td'); td.append(stack(p.counts, p.total));
       tr.append(el('td', '', p.province), td, el('td', 'num', String(p.total)), el('td', 'num', String(p.counts['已收录'] || 0)), el('td', 'num', pct(p.rate)), el('td', '', acc));
       tr.onclick = () => openProvince(p.province);
@@ -182,7 +188,10 @@
     const prov = summary && summary.provinces.find((p) => p.level === level && p.province === currentProvince);
     if (prov) renderKpis(prov, true);
   }
-  function showNational() { currentProvince = null; $('detailCard').hidden = true; $('provinceCard').hidden = false; $('drawer').hidden = true; }
+  function showNational() {
+    currentProvince = null; $('detailCard').hidden = true; $('provinceCard').hidden = false; $('drawer').hidden = true;
+    if (summary) renderKpis(summary.levels[level] || { counts: {}, total: 0, rate: null, refreshed_at: null }, false);
+  }
 
   async function openProvince(province) {
     currentProvince = province; $('msg').textContent = '';
@@ -246,7 +255,7 @@
       box.append(close, title, tag);
       const kv = el('div', 'kv');
       const add = (k, v) => { kv.append(el('span', '', k)); const s = el('span'); if (v instanceof Node) s.append(v); else s.textContent = v || '—'; kv.append(s); };
-      add('原因', c.reason); add('最后成功', c.last_success_at ? c.last_success_at.replace('T', ' ').slice(0, 16) : '—');
+      add('原因', c.reason); add('最后成功', c.last_success_at ? when(c.last_success_at) : '—');
       add('部门网址', link(c.site_url)); add('导航来源页', link(c.nav_source)); add('门户', link(c.portal_url));
       add('盘点结论', `${c.inventory_status}${c.inventory_reason ? '：' + c.inventory_reason : ''}`);
       box.append(kv);
@@ -256,7 +265,7 @@
         const src = c.sources.find((s) => s.url === col.url);
         const p = el('div', 'kv');
         p.append(el('span', '', col.kind)); const v = el('span'); v.append(link(col.url));
-        v.append(el('div', 'muted', src ? `来源 #${src.id} · ${src.enabled ? '已启用' : '未启用'} · 健康 ${src.health} · 最后成功 ${src.last_success_at ? src.last_success_at.slice(0, 16).replace('T', ' ') : '—'}${src.last_error ? ' · ' + src.last_error : ''}` : `没导入来源${col.result ? '（试读：' + col.result + (col.reason ? '，' + col.reason : '') + '）' : ''}`));
+        v.append(el('div', 'muted', src ? `来源 #${src.id} · ${src.enabled ? '已启用' : '未启用'} · 健康 ${src.health} · 最后成功 ${src.last_success_at ? when(src.last_success_at) : '—'}${src.last_error ? ' · ' + src.last_error : ''}` : `没导入来源${col.result ? '（试读：' + col.result + (col.reason ? '，' + col.reason : '') + '）' : ''}`));
         p.append(v); box.append(p);
       });
       box.append(el('h2', '', '人工处理'));
@@ -289,9 +298,9 @@
     } catch (e) { box.replaceChildren(el('p', 'msg', e.message)); }
   }
   function exportCsv() {
-    const rows = [['层级', '省份', '城市', '区县', '区划代码', '部门', '部门全称', '状态', '原因', '最后成功时间', '人工确认无栏目', '替代来源', '备注']];
+    const rows = [['层级', '省份', '城市', '区县', '区划代码', '部门', '部门全称', '状态', '原因', '最后成功时间（北京时间）', '人工确认无栏目', '替代来源', '备注']];
     const state = $('stateFilter').value; const dept = $('deptFilter').value;
-    current.filter((c) => (!state || c.state === state) && (!dept || c.dept === dept)).forEach((c) => rows.push([c.level, c.province, c.city || '', c.district || '', c.code, c.dept, c.dept_full_name || '', c.state, c.reason || '', c.last_success_at || '', c.confirmed_no_column ? '是' : '', c.alt_source || '', c.note || '']));
+    current.filter((c) => (!state || c.state === state) && (!dept || c.dept === dept)).forEach((c) => rows.push([c.level, c.province, c.city || '', c.district || '', c.code, c.dept, c.dept_full_name || '', c.state, c.reason || '', when(c.last_success_at), c.confirmed_no_column ? '是' : '', c.alt_source || '', c.note || '']));
     // 以 = + - @、制表符、回车开头的格子前面加单引号：表格软件打开时不当成公式
     const cellText = (v) => { let t = String(v); if (/^[=+\-@\t\r]/.test(t)) t = "'" + t; return /[",\r\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t; };
     const csv = '\ufeff' + rows.map((r) => r.map(cellText).join(',')).join('\r\n');

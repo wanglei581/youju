@@ -9,7 +9,7 @@
 写这几张表的只有 admin 服务（youju coverage-import / coverage-refresh、后台覆盖看板页），
 admin 账号已有全部权限；api 账号已有全库 SELECT，不用新授权。
 
-编号：协调会话给号前按 0048 写（main 上最新是 0046，0047 在问一问第二批 PR 里）；合并时按实际接上。
+编号：0048 由协调会话 11/8 给定（main 上最新是 0046；0047 留给问一问第二批，谁后合进 main 谁改 down_revision）。
 
 Revision ID: 0048
 Revises: 0046

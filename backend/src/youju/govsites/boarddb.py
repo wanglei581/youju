@@ -10,13 +10,14 @@
 
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Iterator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.exc import ObjectDeletedError
 
-from youju.govsites.board import STATES, SourceState, cell_for
+from youju.govsites.board import STATES, SourceState, _outcome, cell_for
 from youju.govsites.inventory import STANDARD_DEPTS, ColumnHit, DeptRow, PortalRow
 from youju.models import (
     CoverageAcceptance,
@@ -186,7 +187,11 @@ def import_inventory(
             wanted[(d.code, d.dept)].append(d)
     existing: dict[tuple[str, str], list[CoverageCell]] = defaultdict(list)
     for part in _chunks(codes):
-        for c in session.scalars(select(CoverageCell).where(CoverageCell.division_code.in_(part))):
+        for c in session.scalars(
+            select(CoverageCell)
+            .where(CoverageCell.division_code.in_(part))
+            .execution_options(populate_existing=True)
+        ):
             existing[(c.division_code, c.dept)].append(c)
 
     touched: list[CoverageCell] = []
@@ -207,17 +212,41 @@ def import_inventory(
             touched.append(cell)
         # 盘点里已经没有的格：没人工动过的删掉，人工确认过的留着
         for cell in stale:
-            if cell.confirmed_no_column or cell.alt_source or cell.note:
-                cell.inventory_status = "导航未找到"
-                cell.inventory_reason = "这次盘点没找到（保留人工记录）"
-                touched.append(cell)
-            else:
-                session.delete(cell)
+            if not (
+                cell.confirmed_no_column or cell.alt_source or cell.note
+            ) and _delete_if_untouched(session, cell):
                 summary.cells_removed += 1
+                continue
+            cell.inventory_status = "导航未找到"
+            cell.inventory_reason = "这次盘点没找到（保留人工记录）"
+            touched.append(cell)
     session.flush()
     summary.links = _write_links(session, _desired_links(session, touched))
     session.commit()
     return summary
+
+
+def _delete_if_untouched(session: Session, cell: CoverageCell) -> bool:
+    """删掉没人工动过的格：删除语句里再核一次人工字段（读完以后有人刚在后台写了备注就不删）。"""
+    deleted = session.execute(
+        delete(CoverageCell)
+        .where(
+            CoverageCell.id == cell.id,
+            CoverageCell.confirmed_no_column.is_(False),
+            CoverageCell.alt_source.is_(None),
+            CoverageCell.note.is_(None),
+        )
+        .execution_options(synchronize_session=False)
+    ).rowcount
+    if deleted:
+        session.expunge(cell)
+        return True
+    try:
+        session.refresh(cell)  # 刚被人工动过：留着，下面照"保留人工记录"处理
+    except ObjectDeletedError:
+        session.expunge(cell)  # 别处已经删了
+        return True
+    return False
 
 
 def _sources_by_url(session: Session, urls: set[str]) -> dict[str, int]:
@@ -418,11 +447,16 @@ def refresh_states(
         )
     counts: Counter = Counter()
     for prov in provinces:
-        rows = session.execute(
+        stmt = (
             select(CoverageCell, CoverageDivision)
             .join(CoverageDivision, CoverageDivision.code == CoverageCell.division_code)
             .where(CoverageDivision.province == prov)
-        ).all()
+            .execution_options(populate_existing=True)
+        )
+        if not trial:
+            # 锁住这个省的格到提交：后台同时保存人工确认的，等这边算完再写（它自己会当场重算）
+            stmt = stmt.with_for_update(of=CoverageCell)
+        rows = session.execute(stmt).all()
         counts.update(refresh_cells(session, [(c, d) for c, d in rows], now, trial))
         if not trial:
             session.commit()
@@ -519,8 +553,16 @@ def latest_acceptance(
     options = [a for a in (accepted.get((province, level)), accepted.get((province, "全部"))) if a]
     if not options:
         return None
-    newest = max(options, key=lambda a: a["sampled_at"] or "")
-    return next(a for a in options if a["sampled_at"] == newest["sampled_at"])
+    newest = max(_when(a["sampled_at"]) for a in options)
+    return next(a for a in options if _when(a["sampled_at"]) == newest)
+
+
+def _when(value: str | None) -> datetime:
+    """抽查时间按时间比（ISO 写法有没有微秒都不影响）；没写时区的按 UTC。"""
+    if not value:
+        return datetime.min.replace(tzinfo=UTC)
+    at = datetime.fromisoformat(value)
+    return at if at.tzinfo else at.replace(tzinfo=UTC)
 
 
 def _latest_acceptances(session: Session) -> dict[tuple[str, str], dict]:
@@ -545,6 +587,9 @@ class EnableResult:
     candidates: int = 0
     enabled: int = 0
     blocked_reason: str | None = None  # 没抽查或没过（D-122）时不启用，写明原因
+    acceptance_id: int | None = None  # 依据的抽查记录
+    source_ids: list[int] = field(default_factory=list)  # 这次启用（dry-run 时是可启用）的来源
+    skipped: int = 0  # 挂在这一级、试抓成功过，但最近被网站拒绝或读不出的（不开）
 
 
 def enable_sources(
@@ -554,6 +599,7 @@ def enable_sources(
     by: str,
     limit: int = 2000,
     dry_run: bool = False,
+    now: datetime | None = None,
 ) -> EnableResult:
     """把某省某级"试抓成功、待启用"的来源分批打开（D-122 门禁）。
 
@@ -567,6 +613,7 @@ def enable_sources(
             f"{province}{level}还没抽查合格（D-122：没抽查或抽查没过的省，新接的来源先不放给用户）"
         )
         return result
+    result.acceptance_id = acc["id"]
     rows = session.execute(
         select(Source)
         .join(CoverageCellSource, CoverageCellSource.source_id == Source.id)
@@ -583,14 +630,26 @@ def enable_sources(
         .distinct()
         .order_by(Source.id)
     ).scalars()
-    candidates = list(rows)
+    found = list(rows)
+    # 和看板同一套结论：最近一次被 robots、401/403/412/521 拒绝的，或读不出条目的，不开（D-013）
+    states = _source_states(session, {s.id for s in found})
+    now = now or _now()
+    candidates = []
+    for source in found:
+        state = states.get(source.id)
+        if state and _outcome(source.url, {source.url: state}, {}, now)[0] == "pending":
+            candidates.append(source)
+        else:
+            result.skipped += 1
     result.candidates = len(candidates)
     for source in candidates[:limit]:
         if not dry_run:
             source.enabled = True
-            note = f"全国覆盖：{province}{level}抽查合格后由 {by} 启用"
+            note = f"全国覆盖：{province}{level}抽查合格（抽查记录 #{acc['id']}）后由 {by} 启用"
             source.note = f"{source.note}；{note}" if source.note else note
         result.enabled += 1
+        result.source_ids.append(source.id)
     if not dry_run:
         session.commit()
+        refresh_states(session, now=now, province=province)  # 启用的格马上按正式口径算
     return result
