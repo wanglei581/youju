@@ -13,7 +13,7 @@ from docx import Document as DocxDocument
 from lxml import html
 from openpyxl import load_workbook
 
-from youju import zip_limits
+from youju import pdf_limits, zip_limits
 from youju.lists import doc97
 from youju.lists.rules import normalize_credit_code, normalize_name, valid_org_name
 
@@ -366,7 +366,11 @@ def parse_attachment_result(
     if extension == "pdf":
         if not data.startswith(b"%PDF-"):
             raise ValueError("不是 PDF 文件")
-        with pdfplumber.open(io.BytesIO(data)) as pdf:
+        # 解数据流有上限（pdf_limits）：解压后太大、压缩方式不支持的记"暂不支持"，不再重试
+        with (
+            pdf_limits.reading(lambda hit: ValueError(f"暂不支持这份 PDF（{hit.detail}）")),
+            pdfplumber.open(io.BytesIO(data)) as pdf,
+        ):
             rows: list[list[object]] = []
             has_text = False
             page_count = len(pdf.pages)

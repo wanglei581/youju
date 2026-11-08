@@ -52,6 +52,7 @@ from lxml import etree
 from sqlalchemy import delete, exists, select
 from sqlalchemy.orm import Session
 
+from youju import zip_limits
 from youju.crawler import detail as body_rules
 from youju.models import AttachmentTextSegment, AttachmentTextUrl, AttachmentTextVersion
 from youju.text_lines import layout_wrapped, line_width
@@ -952,10 +953,11 @@ class _Zip:
         return default
 
 
-# zip 里只读不压缩（stored）和 deflate 压缩的部件：Python 解 bzip2、LZMA 时一次把读进来的压缩数据
-# 整段解开、不受 read(n) 的长度限制，几 KB 的文件能解出几 GB（11/5 独立审阅实测：362 字节的包内存
-# 涨到 660MB）。Office、OFD、压缩软件默认都用 deflate
-_ZIP_METHODS = (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED)
+# zip 里只读不压缩（stored）和 deflate 压缩的部件（规则在 zip_limits，附件副本、名单解析、用户上传
+# 表格共用一份）：Python 解 bzip2、LZMA 时一次把读进来的压缩数据整段解开、不受 read(n) 的长度限制，
+# 几 KB 的文件能解出几 GB（11/5 独立审阅实测：362 字节的包内存涨到 660MB）。Office、OFD、压缩软件
+# 默认都用 deflate。这里按上限 read(n) 读部件，目录里把大小写小也只解到上限，不用 zip_limits.check
+_ZIP_METHODS = zip_limits.ZIP_METHODS
 
 
 def _check_method(info: zipfile.ZipInfo) -> None:
@@ -1450,6 +1452,15 @@ def _pptx_table(tbl) -> list[_Row]:
 
 
 def _pdf(data: bytes) -> list:
+    """PDF：解数据流有上限（pdf_limits）。解压后太大、压缩方式不支持的按它给的原因记（"太大"
+    "格式不支持"），不当成文件损坏。"""
+    from youju import pdf_limits
+
+    with pdf_limits.reading(lambda hit: Unreadable(hit.reason, f"PDF {hit.detail}")):
+        return _pdf_read(data)
+
+
+def _pdf_read(data: bytes) -> list:
     import pdfplumber
 
     try:
