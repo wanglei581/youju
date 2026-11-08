@@ -405,7 +405,7 @@ def test_retention_and_extension_limits(client, session):
     session.commit()
     assert client.get(path(doc, att)).json()["status"] == "unavailable"
     doc.publish_date = date(2026, 10, 22)
-    att.extension = "zip"
+    att.extension = "7z"
     session.commit()
     assert client.get(path(doc, att)).json()["status"] == "unsupported"
 
@@ -777,7 +777,7 @@ def test_detail_toc_and_reading_agree_on_every_attachment(client, session):
         )
     )
     _add_attachment(session, doc, 2, "新附件.docx", "https://kjt.shandong.gov.cn/new.docx", "docx")
-    _add_attachment(session, doc, 3, "打包.zip", "https://kjt.shandong.gov.cn/a.zip", "zip")
+    _add_attachment(session, doc, 3, "打包.7z", "https://kjt.shandong.gov.cn/a.7z", "7z")
     _add_attachment(session, doc, 4, "外站.docx", "https://example.com/x.docx", "docx")
     session.commit()
     detail = client.get(f"/api/v1/documents/{doc.id}").json()
@@ -799,6 +799,38 @@ def test_detail_toc_and_reading_agree_on_every_attachment(client, session):
         assert (data["status"] in ("ok", "partial")) is readable
         if not readable:
             assert data["notice"] == f"{note}。" and data["segments"] == []
+
+
+def test_zip_attachment_reads_as_one_text_with_a_title_per_file(client, session):
+    """压缩包附件（11/5）：取到文字前是"还没取"，取到后详情页写能读，阅读页是一份文字，
+    每个文件前一段标题；里面 PDF 的页码照常给，第几个文件（loc.file）不给旧版小程序。"""
+    from .test_attachment_text import make_zip
+    from .test_attachments import make_docx, make_pdf
+
+    doc, _, _, _ = seed(session)
+    packed = _add_attachment(
+        session, doc, 1, "附件2 打包.zip", "https://kjt.shandong.gov.cn/pack.zip", "zip"
+    )
+    session.commit()
+    detail = client.get(f"/api/v1/documents/{doc.id}").json()
+    assert detail["attachments"][1]["state"] == "pending"
+    content = make_zip([("附件1.pdf", make_pdf("Guide 2026")), ("附件2.docx", make_docx("申报表"))])
+    texts.record(session, packed.url, "zip", NOW, texts.TextReport(), content=content)
+    detail = client.get(f"/api/v1/documents/{doc.id}").json()
+    item = detail["attachments"][1]
+    assert (item["state"], item["readable"], item["stateText"]) == ("ok", True, "")
+    # 副本照旧没有（小程序打不开 zip）
+    assert item["preview"] is False
+    download_api._times.clear()
+    first, segments = read_all(client, path(doc, packed))
+    assert first["state"] == "ok"
+    assert [(s["text"], s["loc"]) for s in segments] == [
+        ("压缩包里有 2 个文件，下面按顺序列出。", None),
+        ("第 1 个文件（共 2 个）：附件1.pdf", None),
+        ("Guide 2026", {"page": 1}),
+        ("第 2 个文件（共 2 个）：附件2.docx", None),
+        ("申报表", None),
+    ]
 
 
 def test_reading_notices_never_use_retired_phrases(client, session):
