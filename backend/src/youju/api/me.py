@@ -825,7 +825,17 @@ def personal_data(session: SessionDep, user: KnownUserDep) -> JSONResponse:
     result["saved"] = [
         {
             key: item[key]
-            for key in ("id", "docId", "title", "issuer", "date", "goneOn", "savedAt", "chars")
+            for key in (
+                "id",
+                "docId",
+                "title",
+                "issuer",
+                "kind",
+                "date",
+                "goneOn",
+                "savedAt",
+                "chars",
+            )
         }
         | {"cleaned": item["cleaned"]}
         for item in saved_list(session, user.id)

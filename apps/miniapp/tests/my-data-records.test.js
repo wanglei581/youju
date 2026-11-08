@@ -261,3 +261,16 @@ test('注销弹窗按包里的功能写删哪些记录：完整版写工具，�
   assert.ok(!/工具|AI/.test(first));
   assert.match(await content(undefined), /纠错记录、批量工具和 AI 的输入、任务与结果、加量体验记录/);
 });
+
+test('我的数据·保存的通知（D-123、D-124）：写原网页哪天起无法访问、保存时间；名单类照 D-123 ④ 写"已撤下"；本平台已停止展示的标出来', async () => {
+  const saved = [
+    { id: '7', docId: '9', title: '关于开展申报的通知', issuer: '某厅', kind: '申报通知', date: '2026-10-20', goneOn: '2026-10-21', savedAt: '2026-10-23T10:00:00+08:00', chars: 1450, cleaned: true },
+    { id: '8', docId: '10', title: '拟认定名单的公示', issuer: '某厅', kind: '名单', date: '2026-10-20', goneOn: '2026-10-22', savedAt: '2026-10-24T09:00:00+08:00', chars: 300, cleaned: false },
+  ];
+  const h = myData({ extra: { saved, savedTotal: 2 } });
+  h.page.load(); await flush();
+  const subs = h.page.data.saved.map((v) => v.sub);
+  assert.match(subs[0], /^原网页 2026-10-21 起无法访问 · 保存于 .+ · 原通知已停止展示$/);
+  assert.match(subs[1], /^原网页 2026-10-22 起已撤下 · 保存于 /);
+  assert.doesNotMatch(subs.join(), /清理|打不开/);
+});

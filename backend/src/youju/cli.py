@@ -1112,6 +1112,11 @@ def _cmd_check_links(args: argparse.Namespace) -> int:
             f"（其中网站回 200 的撤稿页、404 页 {counts['withdrawn_page']} 次），"
             f"暂时判断不了 {counts['unknown']}；该查还没轮到 {counts['left']} 份，"
             f"第一次像是撤下了、3 天还没确认的 {counts['stale_suspect']} 份"
+            + (
+                f"；超过 90 天的申报通知、政策（每月一次）另有 {counts['left_old']} 份没轮到"
+                if counts.get("left_old")
+                else ""
+            )
         )
         # D-123：查完接着删过了清理期的（开关关着什么也不做）。和检查放在同一个任务里，
         # 保证先查后删，也不用另排定时任务

@@ -491,18 +491,24 @@ def cleanup_expired(
     kept = keep_reasons(session, due, now, cleanup=True)
     for reason in kept.values():
         counts[reason] += 1
-    postponed = _postponed(session, [doc for doc in due if doc.id not in kept], now)
+    candidates = [doc.id for doc in due if doc.id not in kept]
+    possible = set(candidates)
+    postponed = _postponed(session, [doc for doc in due if doc.id in possible], now)
+    # 整组一起删：组里只要有一份这次删不了（不清理、推迟、还没到期），整组都先不删，免得主条目删了、
+    # 归并关系跟着没了，转载的那份单独冒出来（独立审阅第 2 轮）。组里有到期了也不清理、或者还没
+    # 到期的（不在 candidates 里）：这次和以后都要等，推迟的也算等同组，免得试跑报的"推迟、早晚要删"
+    # 偏大（独立审阅 D-124 第 2 轮）
+    groups = merge_groups(session, candidates)
+    blocked = {doc_id for doc_id in candidates if not groups[doc_id] <= possible}
+    for doc_id in blocked:
+        postponed.pop(doc_id, None)
     for reason in postponed.values():
         counts[reason] += 1
-    ready = [doc.id for doc in due if doc.id not in kept and doc.id not in postponed]
-    # 整组一起删：组里只要有一份这次删不了（不清理、推迟、还没到期），整组都先不删，免得主条目删了、
-    # 归并关系跟着没了，转载的那份单独冒出来（独立审阅第 2 轮）
-    if ready:
-        groups = merge_groups(session, ready)
-        allowed = set(ready)
-        held = {doc_id for doc_id in ready if not groups[doc_id] <= allowed}
-        counts["waiting"] += len(held)
-        ready = [doc_id for doc_id in ready if doc_id not in held]
+    ready = [doc_id for doc_id in candidates if doc_id not in postponed and doc_id not in blocked]
+    allowed = set(ready)
+    held = {doc_id for doc_id in ready if not groups[doc_id] <= allowed}
+    counts["waiting"] += len(blocked) + len(held)
+    ready = [doc_id for doc_id in ready if doc_id not in held]
     session.commit()
     if dry_run:
         counts["deleted"] = len(ready)

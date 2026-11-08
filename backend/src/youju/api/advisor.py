@@ -927,7 +927,7 @@ def read_result(
     items, used = [], 0
     for item in all_items[cursor : cursor + 20]:
         # 读的时候当场标：生成以后才失效的也标上；存着的结果不改
-        if str(item.get("documentId")) in cleaned_keys:
+        if item.get("documentId") and str(item["documentId"]) in cleaned_keys:
             item = _cleaned_item(item)
         elif item.get("documentId") in link_gone:
             item = _gone_item(item)
