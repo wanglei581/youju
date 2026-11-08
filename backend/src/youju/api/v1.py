@@ -468,9 +468,10 @@ def _deadline_brief(d: DocumentDeadline | None) -> dict[str, Any] | None:
 
 def not_found_detail() -> str:
     """找不到这份文件时的说法。D-123 开关开着：原网页失效的通知到期会清理（行删掉），从分享卡片、
-    关注、旧列表点进来时说清楚可能是清理了（分不清是清理还是别的原因，写"可能"；agy 第 2 轮）。"""
+    关注、旧列表点进来时说清楚可能是清理了（分不清是清理还是别的原因，写"可能"；agy 第 2 轮）。
+    说法照 D-124 ④（gone.NOT_FOUND）。"""
     if gone.enabled():
-        return "没有找到这份文件，可能是原网页打不开、已经到期清理；保存过的在“我的 → 我的保存”里看"
+        return gone.NOT_FOUND
     return "没有找到这份文件"
 
 

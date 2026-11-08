@@ -136,7 +136,7 @@ Page({
           saved: (Array.isArray(d.saved) ? d.saved : []).map((v) => ({
             id: v.id,
             title: v.title || '（没有标题）',
-            sub: `原网页 ${v.goneOn || ''} 起打不开 · 保存于 ${when(v.savedAt)}${v.cleaned ? ' · 原通知已清理' : ''}`,
+            sub: `原网页 ${v.goneOn || ''} 起无法访问 · 保存于 ${when(v.savedAt)}${v.cleaned ? ' · 原通知已停止展示' : ''}`,
           })),
           ...taskData(d),
           totals: { subs: d.subscriptionsTotal, feedback: d.feedbackTotal, events: d.eventsTotal, tasks: d.advisorTasksTotal || (d.advisorTasks || []).length, saved: d.savedTotal || (d.saved || []).length },

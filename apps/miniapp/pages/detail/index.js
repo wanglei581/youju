@@ -200,7 +200,7 @@ Page({
         bodyView: null, noBody: '', entry: null, goneNote: '', goneAll: false, goneExport: false, goneSave: false, savedHere: false, dueQuote: '', checkedText: '', points: [],
         takenDown: err.status === 404 && err.message === '该文件已下架',
         error: err.status === 404 && this.fromGone && err.message !== '该文件已下架'
-          ? '这份通知原网页打不开，已经到期清理；保存过的在“我的 → 我的保存”里看'
+          ? '这份通知原网页已无法访问，本平台已停止展示；保存过的在“我的 → 我的保存”里看'
           : (err.status === 404 ? err.message : `数据未更新：${err.message}`),
       }))
       .then(() => { this.refreshing = false; this.setData({ loading: false }); });

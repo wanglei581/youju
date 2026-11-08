@@ -23,6 +23,8 @@ AI 解读的时候）；31–90 天的大约一周查一次；没查过的先查
 D-123（开关 YOUJU_GONE_CLEANUP_ENABLED，youju/gone.py）：失效那天起 7 天是清理期，正文、附件照常
 给看、可以保存和导出，期间每天再查一次（下面的清理期队列，最先查；能打开了就清空、清理取消），
 第 8 天这里跑完以后删掉（cli check-links 接着调 gone.cleanup_expired）。
+D-124 ①（同一个开关）：发布超过 90 天的申报通知、政策也查，每月一次（排在最后，没查过的先查），
+失效了一样进清理；别的类型照旧只查 90 天以内的。没有发布日期的照旧不查。
 """
 
 import html
@@ -53,6 +55,9 @@ WINDOW = timedelta(days=90)  # 只查近 90 天发布的（申报和名单的时
 RECENT = timedelta(days=30)  # 近 30 天发布的每天查（一半申报通知 30 天内截止，见设计说明）
 RECENT_RECHECK = timedelta(hours=20)  # 每天 5:10 跑一次，留出前一天跑得晚的时间差
 RECHECK_AFTER = timedelta(days=6)  # 31–90 天的大约一周查一次
+# D-124 ①：超过 90 天也查的两类（用户主要看的、能读正文和附件的），每月一次
+OLD_KINDS = ("申报通知", "政策")
+OLD_RECHECK = timedelta(days=30)
 CONFIRM_AFTER = timedelta(hours=20)  # 第一次像是撤下了，隔天再确认
 # 第一次像是撤下了、过了这么久还没确认的（中间一直判断不了，或者没轮到）：输出里单独数出来
 STALE_SUSPECT = timedelta(days=3)
@@ -246,6 +251,26 @@ def _select(session: Session, now: datetime, limit: int) -> tuple[list[tuple[int
             ),
         ).order_by(*first),
     ]
+    if gone.enabled():
+        # D-124 ①：发布超过 90 天的申报通知、政策每月查一次，排最后。类型看入库时按标题算好的
+        # rule_kind（人工定过的看 kind_override，同 gone._due）。像是撤下了的（link_suspect_at
+        # 有值）已经在上面几队里（过了 90 天也接着查），这里不再挑
+        queues.append(
+            select(Document.id, Document.url, Document.title)
+            .join(Source, Source.id == Document.source_id)
+            .where(
+                Source.rights_level == 1,
+                available_condition(),
+                Document.publish_date < today - WINDOW,
+                Document.link_suspect_at.is_(None),
+                func.coalesce(Document.kind_override, Document.rule_kind).in_(OLD_KINDS),
+                or_(
+                    Document.link_checked_at.is_(None),
+                    Document.link_checked_at <= now - OLD_RECHECK,
+                ),
+            )
+            .order_by(*first)
+        )
     picked: list[tuple[int, str, str]] = []
     due = 0
     for stmt in queues:

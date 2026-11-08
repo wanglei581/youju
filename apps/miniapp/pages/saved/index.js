@@ -33,7 +33,7 @@ function view(raw) {
     note: textOf(item.note),
     cleaned: item.cleaned === true,
     state: item.cleaned === true
-      ? '原通知已清理，这里是保存的副本'
+      ? '本平台已停止展示原通知，这里是保存的副本'
       : `${charsText(chars)}${item.truncated === true ? '（太长，后面的附件没有存全）' : ''}`,
   };
 }
@@ -103,7 +103,7 @@ Page({
     if (!item) return;
     wx.showModal({
       title: '删除保存的通知',
-      content: item.cleaned ? '原通知已经清理，删除后就看不到了。确定删除？' : '确定删除这份保存的通知？',
+      content: item.cleaned ? '本平台已停止展示原通知，删除后就看不到了。确定删除？' : '确定删除这份保存的通知？',
       confirmText: '删除',
       confirmColor: '#E5484D',
       success: (res) => {

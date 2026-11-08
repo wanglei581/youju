@@ -43,7 +43,7 @@
     <view wx:elif="{{recentError}}" class="advisor-text"><view>{{recentError}}</view><button class="advisor-button" bindtap="retryRecent">重试</button></view>
     <view wx:elif="{{!recent.length}}" class="advisor-text muted">还没有记录。</view>
     <button wx:for="{{recent}}" wx:key="id" class="recent-task" data-id="{{item.id}}" bindtap="tasks">
-      <view>{{item.kindLabel}} · {{item.stateLabel}}</view><view class="muted">{{item.docTitle || ''}}<text wx:if="{{item.docTitle}}"> · </text>{{item.time}}</view>
+      <view>{{item.kindLabel}} · {{item.stateLabel}}</view><view class="muted">{{item.docTitle || ''}}<text wx:if="{{item.docTitle}}"> · </text><text wx:if="{{item.docCleaned}}">原通知已停止展示 · </text>{{item.time}}</view>
     </button>
     <button class="advisor-button" bindtap="tasks">全部记录</button>
   </view>

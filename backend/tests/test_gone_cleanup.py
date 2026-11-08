@@ -36,7 +36,8 @@ from .test_readers import seed
 
 NOW = datetime(2026, 10, 23, 2, tzinfo=UTC)  # 北京时间 10/23 10:00
 GONE = NOW - timedelta(days=2)  # 10/21 失效，10/28 清理
-NOTICE = "原网页10月21日起打不开，内容可能已被发布机关撤回或更正，以官方为准"
+# D-124 ④：照 agy 合规审阅的改法，哪天停止展示（清理那天）写在这一句里
+NOTICE = "原网页已无法访问，本平台将于10月28日停止展示；内容变动以官方最新发布为准"
 
 
 @pytest.fixture
@@ -128,8 +129,8 @@ def test_window_dates_follow_beijing_days(env):
     assert gone.payload(doc, True) == {
         "since": "2026-10-17",
         "cleanup": "2026-10-24",
-        "notice": "原网页10月17日起打不开，内容可能已被发布机关撤回或更正，以官方为准",
-        "cleanupNotice": "这份通知将于10月24日清理，可以先保存或导出",
+        "notice": "原网页已无法访问，本平台将于10月24日停止展示；内容变动以官方最新发布为准",
+        "cleanupNotice": "可以先保存或导出",
         "list": False,
         "window": True,
         "canSave": True,
@@ -137,12 +138,12 @@ def test_window_dates_follow_beijing_days(env):
     }
     # 没有能读的正文和附件：不说"可以先保存或导出"，不给按钮
     empty = gone.payload(doc, True, readable=False)
-    assert empty["cleanupNotice"] == "这份通知将于10月24日清理"
+    assert empty["cleanupNotice"] == ""
     assert empty["canSave"] is False and empty["canExport"] is False
     # 新版隐私指引还没上线（服务器协议版本早于 SAVED_AGREEMENT_VERSION）：只给导出
     env(agreement_version="2026-12")
     early = gone.payload(doc, True)
-    assert early["cleanupNotice"] == "这份通知将于10月24日清理，可以先导出"
+    assert early["cleanupNotice"] == "可以先导出"
     assert early["canSave"] is False and early["canExport"] is True
     roster = Document(title="拟认定名单公示", kind_override="名单", link_gone_at=gone_at)
     assert gone.payload(roster, False) == {
@@ -168,7 +169,7 @@ def test_window_gives_body_attachments_and_notice(client, session, on):
         "since": "2026-10-21",
         "cleanup": "2026-10-28",
         "notice": NOTICE,
-        "cleanupNotice": "这份通知将于10月28日清理，可以先保存或导出",
+        "cleanupNotice": "可以先保存或导出",
         "list": False,
         "window": True,
         "canSave": True,
@@ -176,7 +177,7 @@ def test_window_gives_body_attachments_and_notice(client, session, on):
     }
     [item] = detail["attachments"]
     assert (item["state"], item["readable"]) == ("ok", True)
-    note = f"{NOTICE}。这份通知将于10月28日清理。"
+    note = f"{NOTICE}。"
     body = client.get(f"/api/v1/documents/{doc.id}/reading").json()
     assert (body["status"], body["goneNote"]) == ("ok", note)
     page = client.get(f"/api/v1/documents/{doc.id}/attachments/{att.id}/reading").json()
@@ -205,8 +206,9 @@ def test_missing_documents_say_they_may_have_been_cleaned(client, session, env):
     for path in ("/api/v1/documents/999999", "/api/v1/documents/999999/reading"):
         response = client.get(path)
         assert response.status_code == 404
+        assert response.json()["detail"] == gone.NOT_FOUND
         assert response.json()["detail"].startswith(
-            "没有找到这份文件，可能是原网页打不开、已经到期清理"
+            "没有找到这份文件，可能是原网页已无法访问、本平台已停止展示"
         )
     env(gone_cleanup_enabled="false")
     assert client.get("/api/v1/documents/999999").json()["detail"] == "没有找到这份文件"
@@ -565,6 +567,78 @@ def test_link_check_rechecks_window_documents_daily_first(session, env):
     assert [item[0] for item in picked] == [doc.id, fresh.id] and left == 0
 
 
+def test_link_check_checks_old_notices_and_policies_monthly(session, env):
+    """D-124 ①：发布超过 90 天的申报通知、政策也查，每月一次，排在最后（没查过的先查）；别的类型照旧
+    只查 90 天以内的；开关关着照旧。"""
+    old = date(2026, 3, 1)  # 发布 200 多天
+    apply, _, _, _ = seed(session, 1)  # 申报通知，没查过
+    policy, _, _, _ = seed(session, 2, kind="政策")
+    guide, _, _, _ = seed(session, 3, kind="资讯与指南")
+    recent_check, _, _, _ = seed(session, 4, kind="政策")
+    for doc in (apply, policy, guide, recent_check):
+        doc.publish_date = old
+    policy.link_checked_at = NOW - timedelta(days=31)
+    recent_check.link_checked_at = NOW - timedelta(days=10)  # 这个月查过了
+    session.commit()
+    env(gone_cleanup_enabled="false")
+    assert link_check._select(session, NOW, 10) == ([], 0)
+    env(gone_cleanup_enabled="true")
+    live, _, _, _ = seed(session, 5)  # 近 30 天、没查过的排在前面
+    picked, left = link_check._select(session, NOW, 10)
+    assert [item[0] for item in picked] == [live.id, apply.id, policy.id] and left == 0
+    # 查到像是撤下了：上面几队接着管（隔天确认），这一队不再重复挑
+    apply.link_checked_at = apply.link_suspect_at = NOW - timedelta(hours=21)
+    session.commit()
+    picked, _ = link_check._select(session, NOW, 10)
+    assert [item[0] for item in picked].count(apply.id) == 1
+
+
+def test_dry_run_works_with_flag_off_and_lists_documents(session, env, capsys):
+    """D-124 ⑤：打开开关那天会一次清掉积下来的，要先试跑报数：只数不删的试跑开关关着也能跑，可以逐份
+    列出；真删要开关开着。"""
+    from youju import cli
+
+    env(gone_cleanup_enabled="false")
+    doc, _ = gone_doc(session, gone_at=NOW - timedelta(days=9))
+    stale, _ = gone_doc(session, 2, gone_at=NOW - timedelta(days=12))
+    stale.link_gone_seen_at = NOW - timedelta(days=3)  # 最近没确认过还打不开：先推迟
+    session.commit()
+    rows: list[dict] = []
+    counts = gone.cleanup_expired(session, now=NOW, dry_run=True, listing=rows)
+    assert (counts["due"], counts["deleted"], counts["stale"]) == (2, 1, 1)
+    assert rows == [
+        {
+            "id": stale.id,
+            "since": "2026-10-11",
+            "state": "推迟：最近 30 小时没确认还打不开",
+            "title": stale.title,
+        },
+        {"id": doc.id, "since": "2026-10-14", "state": "会删", "title": doc.title},
+    ]
+    assert gone.cleanup_expired(session, now=NOW)["deleted"] == 0  # 开关关着不真删
+    assert session.scalar(select(func.count()).select_from(Document)) == 2
+    assert cli.main(["gone-cleanup"]) == 1
+    assert "只数不删可以加 --dry-run" in capsys.readouterr().out
+    assert cli.main(["gone-cleanup", "--list"]) == 1
+    capsys.readouterr()
+    assert cli.main(["gone-cleanup", "--dry-run", "--list"]) == 0
+    out = capsys.readouterr().out
+    assert "合计到期该删 2 份" in out and f"#{doc.id}\t" in out and f"#{stale.id}\t" in out
+    assert session.scalar(select(func.count()).select_from(Document)) == 2
+
+
+def test_cleaned_ids_only_with_flag_on(session, env):
+    """D-124 ②：库里没有了的编号当是到期清理掉的（只有清理会删通知）；开关关着不判断。"""
+    doc, _ = gone_doc(session)
+    env(gone_cleanup_enabled="true")
+    assert gone.cleaned_ids(session, [doc.id, 999999, None, "", "999998", 0, "x"]) == {
+        999999,
+        999998,
+    }
+    env(gone_cleanup_enabled="false")
+    assert gone.cleaned_ids(session, [999999]) == set()
+
+
 def test_cli_check_links_runs_cleanup_after_checking(session, on, monkeypatch, capsys):
     from youju import cli
 
@@ -601,7 +675,11 @@ def test_save_list_read_export_delete(client, session, on):
     item = response.json()["item"]
     assert item["docId"] == str(doc.id) and item["goneOn"] == "2026-10-21"
     assert item["cleaned"] is False and item["chars"] > 0 and item["truncated"] is False
-    assert item["note"] == f"{NOTICE}。这是你10月23日保存的副本。"
+    # 副本写打不开的那天起（D-124 ④的说法；不说"将于某日停止展示"，保存以后可能已经停止展示）
+    assert (
+        item["note"]
+        == "原网页10月21日起无法访问；内容变动以官方最新发布为准。这是你10月23日保存的副本。"
+    )
     [listed] = client.get("/api/v1/me/saved").json()["items"]
     assert listed == item
     base = f"/api/v1/me/saved/{item['id']}/reading"
@@ -779,7 +857,8 @@ def test_gone_export_needs_no_login(client, session, on):
     response = client.post(f"/api/v1/documents/{doc.id}/gone-export")
     assert response.status_code == 200
     text = word_text(response.content)
-    assert f"{NOTICE}。这份通知将于10月28日清理。" in text and "第1段申报说明" in text
+    assert f"{NOTICE}。" in text and "第1段申报说明" in text
+    assert "清理" not in text and "撤回或更正" not in text
     assert "来源：山东省科技厅网站" in text and "http" not in text
     # 原网页已经打不开、到期就清理：不写"在小程序里可以查看原文和更新"（agy 合规审阅 11/8）
     assert "查看原文和更新" not in text

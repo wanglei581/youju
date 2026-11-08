@@ -1136,6 +1136,14 @@ def _print_gone_cleanup(counts: dict[str, int], *, dry_run: bool = False) -> Non
         + (f"；删的时候出错 {counts['failed']} 份（见日志）" if counts["failed"] else "")
         + (f"；不清理：{kept}" if kept else "")
     )
+    if dry_run:
+        # 打开开关那天的报数（D-124 ⑤）：推迟的、整组等着的也是早晚要删的，再确认一次还打不开就删
+        total = counts["due"] - sum(counts[r] for r in KEEP_REASONS) + counts["waiting"]
+        print(
+            f"合计到期该删 {total} 份（不算名单类和不清理的几种）："
+            f"这次就会删 {counts['deleted']} 份，其余 {total - counts['deleted']} 份"
+            "等原网页检查再确认一次还打不开、原栏目抓成功过、同组其他网址也到期后再删"
+        )
 
 
 def _cmd_saved_purge(args: argparse.Namespace) -> int:
@@ -1153,13 +1161,19 @@ def _cmd_saved_purge(args: argparse.Namespace) -> int:
 def _cmd_gone_cleanup(args: argparse.Namespace) -> int:
     from youju import gone
 
-    if not gone.enabled():
-        print("没有打开 YOUJU_GONE_CLEANUP_ENABLED，不清理")
+    # 试跑不删，开关关着也能跑：打开开关之前先报数给创始人（D-124 ⑤）
+    if not gone.enabled() and not args.dry_run:
+        print("没有打开 YOUJU_GONE_CLEANUP_ENABLED，不清理（只数不删可以加 --dry-run）")
         return 1
+    if args.list and not args.dry_run:
+        print("--list 只能和 --dry-run 一起用")
+        return 1
+    listing: list[dict] | None = [] if args.list else None
     with session_factory()() as session:
-        _print_gone_cleanup(
-            gone.cleanup_expired(session, dry_run=args.dry_run), dry_run=args.dry_run
-        )
+        counts = gone.cleanup_expired(session, dry_run=args.dry_run, listing=listing)
+    _print_gone_cleanup(counts, dry_run=args.dry_run)
+    for row in listing or []:
+        print(f"#{row['id']}\t{row['since']} 起打不开\t{row['state']}\t{row['title']}")
     return 0
 
 
@@ -2358,7 +2372,14 @@ def main(argv: list[str] | None = None) -> int:
         "gone-cleanup",
         help="D-123：删掉原网页失效过了 7 天清理期的通知（check-links 跑完会自动做，这里手动补跑）",
     )
-    p.add_argument("--dry-run", action="store_true", help="只数会删几份，不删")
+    p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="只数会删几份，不删；开关关着也能跑（打开开关前先报数，D-124 ⑤）",
+    )
+    p.add_argument(
+        "--list", action="store_true", help="和 --dry-run 一起用：逐份列出到期该删的（编号、标题）"
+    )
     p.set_defaults(func=_cmd_gone_cleanup)
 
     p = sub.add_parser(
