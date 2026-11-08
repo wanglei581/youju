@@ -35,7 +35,11 @@ _time_limit 用 SIGALRM，只在主线程里管用；补详情读 PDF 正文是�
 结束的（图片太大、页数超了、名单是扫描件、表格超了预算），子进程里也是抛 _Stop 结束，和
 pdf_limits.reading() 的配合不变（正常读完时，被 pdfplumber 吞掉的拒读照样让整份按拒读算）。
 
-开销（2026-11-05 实测，见 PR 说明）：每份多起一个 Python 进程、导入 pdfplumber，本机约 0.3 秒。
+上限怎么定（2026-11-08，按 11/4 公开数据快照里的附件、名单 PDF 链接重新下载 341 份真实文件，在 Linux
+虚拟机里把四处的读法各跑一遍，量子进程的 VmPeak，也就是 RLIMIT_AS 管的地址空间）：最大 276MB、
+99% 在 107MB 以内，刚导入完约 50MB；MEMORY_MAX 取 1GB（pdf_limits 允许一份解出 256MB，再加上解析
+用的对象；容器 2GB）。写回的结果最大 2.6MB，OUTPUT_MAX 取 32MB。各处的限时见调用的地方。
+开销：每份多起一个 Python 进程、导入 pdfplumber，Linux 上约 0.2 秒。
 """
 
 from __future__ import annotations
@@ -57,10 +61,10 @@ from pathlib import Path
 
 log = logging.getLogger("youju.pdf_sandbox")
 _MB = 1024 * 1024
-# 子进程的虚拟内存上限（RLIMIT_AS，含 Python 自己和各个库占的地址空间，见 PR 说明里的实测）
+# 子进程的虚拟内存上限（RLIMIT_AS，含 Python 自己和各个库占的地址空间）。真实文件最大 276MB
 MEMORY_MAX = 1024 * _MB
-# 子进程写回的结果最多这么大（RLIMIT_FSIZE）
-OUTPUT_MAX = 64 * _MB
+# 子进程写回的结果最多这么大（RLIMIT_FSIZE）。真实文件最大 2.6MB
+OUTPUT_MAX = 32 * _MB
 # 一个进程里同时读 PDF 的子进程个数
 PARALLEL = 1
 # 子进程出了 MemoryError、结果写不下、设不了资源上限时的退出码

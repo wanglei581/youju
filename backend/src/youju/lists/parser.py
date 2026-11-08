@@ -72,8 +72,8 @@ class _TableBudget:
 # 河南 567 页的入库名单本机实测：300 页读出 6298 家，全读 11903 家、13 秒、83 MB。
 # 以前被截断的，service._should_attempt 按原因里的页数重读一次
 MAX_PDF_PAGES = 1000
-# 读一份 PDF 最多用这么多秒（pdf_sandbox 到时停掉子进程），和查名单定位名单附件（attachment_text
-# 的 LIST_LIMITS）一样。河南 567 页的名单全读约 13 秒
+# 读一份 PDF 最多用这么多秒 CPU 时间（pdf_sandbox 到时停掉子进程），和查名单定位名单附件
+# （attachment_text 的 LIST_LIMITS）一样。11/8 实测 341 份真实文件最慢 163 秒（Linux 虚拟机）
 PDF_SECONDS = 600
 _MAX_ZIP_UNCOMPRESSED = 100 * 1024 * 1024
 _REGION = re.compile(r"[\u4e00-\u9fffA-Za-z0-9（）()·\-/ ]{2,64}")

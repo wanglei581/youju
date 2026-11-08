@@ -4,8 +4,9 @@ from youju import pdf_sandbox
 from youju.crawler.detail import redact_sensitive
 
 MAX_PAGES = 200
-# 读一份 PDF 正文最多用这么多秒（补详情在线程池里读，SIGALRM 管不了，由 pdf_sandbox 到时停掉子进程）
-PDF_SECONDS = 120
+# 读一份 PDF 正文最多用这么多秒 CPU 时间（补详情在线程池里读，SIGALRM 管不了，由 pdf_sandbox
+# 停掉子进程）。11/8 实测 341 份真实文件最慢 53 秒（Linux 虚拟机）
+PDF_SECONDS = 240
 
 
 def extract_pdf_text(content: bytes) -> tuple[str, str | None]:

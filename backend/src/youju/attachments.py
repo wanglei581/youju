@@ -132,7 +132,8 @@ _PLATFORM_HINTS = {
 }
 RUN_BYTES = 1024**3  # 每轮最多下载 1GB
 _PDF_PAGES = 300
-# 查一份 PDF 最多用这么多秒（pdf_sandbox 到时停掉子进程），到了按取不出文字算
+# 查一份 PDF 最多用这么多秒 CPU 时间（pdf_sandbox 到时停掉子进程），到了按取不出文字算。
+# 11/8 实测 341 份真实文件最慢 44 秒（Linux 虚拟机）
 PDF_SECONDS = 180
 _TEXT_MAX = 100 * 1024 * 1024  # Office 文件解压后的文字部分上限（防压缩炸弹）
 _LINK_MAX_AGE = 1800  # 临时链接有效期（秒）
