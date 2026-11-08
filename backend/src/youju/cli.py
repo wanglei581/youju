@@ -3,6 +3,7 @@
 import argparse
 import json
 import logging
+import re
 import sys
 import tempfile
 from collections import Counter
@@ -103,9 +104,21 @@ def _cmd_crawl(args: argparse.Namespace) -> int:
             stmt = stmt.where(Source.id.in_(args.source_id))
         if args.province:
             stmt = stmt.where(Source.province == args.province)
+        if args.skip_blocked:
+            # 网站明确拒绝过的（导入时就判了防护拦截，或抓取时被 robots 禁止）不再去请求
+            stmt = stmt.where(Source.fetch_mode != "blocked", Source.health != "blocked")
         if args.limit:
             stmt = stmt.limit(args.limit)
         ids = list(session.scalars(stmt).all())
+        if args.skip_blocked and ids:
+            # 最近一次被 401/403/412/521 拒绝的（含列表接口被拒）也不再请求
+            refused = re.compile(r"HTTP (?:401|403|412|521)\b")
+            errors = dict(
+                session.execute(
+                    select(Source.id, Source.last_error).where(Source.id.in_(ids))
+                ).all()
+            )
+            ids = [i for i in ids if not refused.search(errors.get(i) or "")]
     if not ids:
         print("没有符合条件的来源（先运行 youju import-sources？）")
         return 1
@@ -2097,6 +2110,10 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("db-upgrade", help="把数据库迁移到最新结构").set_defaults(func=_cmd_db_upgrade)
 
+    from youju.govsites.cli import register as register_coverage
+
+    register_coverage(sub)
+
     p = sub.add_parser("import-sources", help="从全国来源清单 CSV 导入来源")
     p.add_argument("--csv", type=Path, help="默认 docs/数据来源/全国来源清单_P0_v1.csv")
     p.set_defaults(func=_cmd_import_sources)
@@ -2107,6 +2124,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--limit", type=int, help="最多检查多少个来源")
     p.add_argument("--workers", type=int, help="同时抓取的网站数")
     p.add_argument("--include-disabled", action="store_true", help="也检查未启用的来源")
+    p.add_argument(
+        "--skip-blocked",
+        action="store_true",
+        help="跳过网站明确拒绝过的来源（防护拦截、robots 禁止）",
+    )
     p.set_defaults(func=_cmd_crawl)
 
     p = sub.add_parser("fetch-details", help="抓取尚无详情或到期重试的政府文件")
