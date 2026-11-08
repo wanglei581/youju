@@ -95,11 +95,19 @@ else
   echo "已生成 .env：数据库密码、核对台口令随机生成；服务器地址和同步密钥留空，先只在本机跑"
 fi
 docker compose up -d --wait --wait-timeout 300 mysql
-# 先用一次性容器建表、迁移到这一版的结构（worker 启动时也会做；先做是为了下面判断和导入）
+# 升级时先停旧 worker：迁移不能让旧代码跑在新结构上（deploy/start.sh 开头的规矩）；迁移中途失败时
+# worker 也停着、明确报错，不会让旧代码接着跑在迁移了一半的库上。第一次安装时这一步什么也不做
+docker compose stop worker
+# 用一次性容器建表、迁移到这一版的结构（worker 启动时也会做；先做是为了下面判断和导入）
 docker compose run --rm --no-deps worker youju db-upgrade
 # shellcheck disable=SC2016  # $MYSQL_ROOT_PASSWORD 要在容器里展开
 sources=$(docker compose exec -T mysql sh -c \
   'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -N -B -e "SELECT COUNT(*) FROM youju.sources"' 2>/dev/null || true)
+if [ -z "$sources" ]; then
+  # 查不到就停下：照样起 worker 的话，空库会跳过起步导入、从头抓，之后手动导入会被"表不是空的"拒掉
+  echo "查不到库里的数据量（数据库连不上？），worker 先不启动。把上面的输出发给 Claude。"
+  exit 1
+fi
 if [ "$sources" = "0" ] && [ -n "$(env_value YOUJU_SYNC_URL)" ]; then
   # 配了服务器的空库：起步数据必须是服务器刚导出的那一份，导入后还要对齐服务器进度，不能自动做；
   # 也先不启动 worker（它一启动就开始抓，抓到的新数据会让导入拒绝——导入只接受空库）
@@ -114,10 +122,8 @@ if [ "$sources" = "0" ] && [ -f youju-sync-export.jsonl.gz ]; then
   echo "起步数据已导入（先只在本机跑；以后配服务器时按手册第五节第 7 条重新起步）"
 elif [ "$sources" = "0" ]; then
   echo "库是空的，也没有起步数据：定时任务会从头抓取"
-elif [ -n "$sources" ]; then
-  echo "库里已经有数据（来源 ${sources} 个），不导入"
 else
-  echo "查不到库里的数据量，不导入"
+  echo "库里已经有数据（来源 ${sources} 个），不导入"
 fi
 docker compose up -d --wait --wait-timeout 900
 curl -fsS http://127.0.0.1:8080/health

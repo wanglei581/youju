@@ -145,6 +145,7 @@ Step "3/5 登录后自动启动（计划任务 youju-wsl）"
 $taskName = "youju-wsl"
 $loop = 'while ($true) {{ & wsl.exe -d {0} -u root -e sleep infinity; Start-Sleep -Seconds 30 }}' -f $Distro
 $keepAlive = 'powershell.exe -NoProfile -WindowStyle Hidden -Command "' + $loop + '"'
+$registered = $false
 try {
   $action = New-ScheduledTaskAction -Execute "conhost.exe" -Argument $keepAlive
   $trigger = New-ScheduledTaskTrigger -AtLogOn -User $identity.Name
@@ -153,12 +154,18 @@ try {
   Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Force `
     -Description "有据本机端：登录后让 WSL 发行版 $Distro 一直开着（Docker 和里面的抓取任务随它运行）" `
     -ErrorAction Stop | Out-Null
-  Start-ScheduledTask -TaskName $taskName -ErrorAction Stop
-  Say "计划任务 $taskName 已加好并启动（以后登录 Windows 后自动启动）。"
+  $registered = $true
 } catch {
   Say ("加计划任务没成功：" + $_.Exception.Message) "Yellow"
-  # 这次先手动开一个保活进程（注销或重启后就没了）
-  Start-Process -FilePath "conhost.exe" -ArgumentList $keepAlive
+}
+if ($registered) {
+  # 重跑（升级）时任务多半已经在跑：重新注册不会停掉它，就不再启动，免得开出第二个保活循环
+  $state = (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue).State
+  if ("$state" -ne "Running") { Start-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue }
+  Say "计划任务 $taskName 已加好、在运行（以后登录 Windows 后自动启动）。"
+} else {
+  # 这次先手动开一个保活进程（注销或重启后就没了）；工作目录放在系统目录，不占着安装包文件夹（升级时要删它）
+  Start-Process -FilePath "conhost.exe" -ArgumentList $keepAlive -WorkingDirectory $env:SystemRoot
   Say "已先手动开了一个保活进程；电脑重启或注销后要重新运行本脚本。把 $LogFile 发给 Claude。" "Yellow"
 }
 
@@ -199,6 +206,17 @@ if ($health -match '"ok"') {
 if ((RunningNames) -contains $Distro) { Say "发行版 $Distro 在运行。" } else { Say "发行版 $Distro 没在运行，把 $LogFile 发给 Claude。" "Yellow" }
 Say "核对台：这台电脑的浏览器开 http://127.0.0.1:8080/admin，口令用这条命令看："
 Say "  wsl -d $Distro -u root -e grep YOUJU_ADMIN_TOKEN /opt/youju/local/.env"
-Say ("数据（数据库、原始文件）在 " + (Join-Path $DataRoot "wsl") + " 里，不要删这个文件夹。")
+# 发行版实际放在哪：读 WSL 自己登记的位置（发行版早先装过的话，未必在 <数据盘>\youju\wsl）
+$base = $null
+try {
+  $entry = Get-ChildItem "HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss" -ErrorAction Stop |
+    ForEach-Object { Get-ItemProperty $_.PSPath } | Where-Object { $_.DistributionName -eq $Distro } | Select-Object -First 1
+  if ($entry) { $base = $entry.BasePath -replace '^\\\\\?\\', '' }
+} catch { }
+if (-not $base) { $base = Join-Path $DataRoot "wsl" }
+Say ("数据（数据库、原始文件）在 " + $base + " 里，不要删这个文件夹。")
+if ($base.StartsWith($PSScriptRoot, [StringComparison]::OrdinalIgnoreCase)) {
+  Say "注意：数据在安装包文件夹里面。升级时不要删这个安装包文件夹，先找 Claude 把数据挪出来。" "Yellow"
+}
 Say "电脑要一直开着、登录着。建议把 设置 → 系统 → 电源 里「插入电源时睡眠」设为「从不」（这一项请你自己改）。"
 Say ("完成：" + (Get-Date -Format "yyyy-MM-dd HH:mm:ss"))

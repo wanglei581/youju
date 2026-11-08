@@ -1,5 +1,6 @@
 """2.0 自建服务器的运维命令：恢复到刚迁移好的库、外部健康检查、异地备份、两份定时任务表。"""
 
+import ast
 import gzip
 import json
 import re
@@ -228,7 +229,10 @@ def test_wsl_setup_keeps_review_fixes():
     ps1 = (SELFHOST / "local" / "setup-wsl.ps1").read_text(encoding="utf-8-sig")
     # 保活：循环重开 wsl（计划任务的"失败重启"不可靠）、conhost 开窗口（Windows Terminal 下藏不住）、
     # -Force 更新已有任务、装 Docker 之前就启动
-    assert "while ($true)" in ps1 and '-Execute "conhost.exe"' in ps1 and "-Force" in ps1
+    assert "while ($true)" in ps1 and '-Execute "conhost.exe"' in ps1
+    assert re.search(r"Register-ScheduledTask [^\n]*-Force", ps1)
+    # 重跑时任务已经在跑就不再启动；只有注册失败才手动开保活进程（不占着安装包文件夹）
+    assert '"$state" -ne "Running"' in ps1 and "-WorkingDirectory $env:SystemRoot" in ps1
     assert ps1.index("Start-ScheduledTask") < ps1.index('setup-wsl.sh")')
     # 数据位置按盘符固定（<盘>:\youju），不跟着安装包解压位置走
     assert "Split-Path -Qualifier $PSScriptRoot" in ps1
@@ -240,6 +244,9 @@ def test_wsl_setup_keeps_review_fixes():
     sh = (SELFHOST / "local" / "setup-wsl.sh").read_text(encoding="utf-8")
     # 导入按「库是空的」判断（不靠标记文件），配了服务器的空库不自动导入、不启动 worker
     assert "SELECT COUNT(*) FROM youju.sources" in sh and "env_value YOUJU_SYNC_URL" in sh
+    # 升级时先停旧 worker 再迁移；查不到数据量就停下，不照样启动 worker
+    assert sh.index("docker compose stop worker") < sh.index("worker youju db-upgrade")
+    assert 'if [ -z "$sources" ]; then' in sh
     compose = (SELFHOST / "local" / "docker-compose.yml").read_text(encoding="utf-8")
     assert "start_period: 600s" in compose
 
@@ -272,12 +279,20 @@ def _alembic_head():
     versions = Path(__file__).resolve().parents[1] / "alembic" / "versions"
     revisions, parents = set(), set()
     for path in versions.glob("*.py"):
-        text = path.read_text(encoding="utf-8")
-        found = re.search(r"^revision\b[^=]*=\s*['\"]([^'\"]+)", text, re.M)
-        if found:
-            revisions.add(found.group(1))
-        for line in re.findall(r"^down_revision\b[^=]*=(.*)$", text, re.M):
-            parents.update(re.findall(r"['\"]([^'\"]+)['\"]", line))
+        for node in ast.parse(path.read_text(encoding="utf-8")).body:
+            if isinstance(node, ast.Assign) and len(node.targets) == 1:
+                target, value = node.targets[0], node.value
+            elif isinstance(node, ast.AnnAssign) and node.value is not None:
+                target, value = node.target, node.value
+            else:
+                continue
+            if not isinstance(target, ast.Name):
+                continue
+            if target.id == "revision":
+                revisions.add(ast.literal_eval(value))
+            elif target.id == "down_revision":
+                down = ast.literal_eval(value)
+                parents.update(down if isinstance(down, (tuple, list)) else [down] if down else [])
     (head,) = revisions - parents
     return head
 

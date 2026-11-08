@@ -30,22 +30,31 @@ git -C "$root" archive HEAD Dockerfile .dockerignore backend/pyproject.toml back
 echo "$sha" > "$pkg/source/VERSION"
 if [ "${2:-}" != "" ]; then
   python3 -I - "$2" "$pkg/source/backend/alembic/versions" <<'EOF'
+import ast
 import gzip
 import json
 import pathlib
-import re
 import sys
 
 with gzip.open(sys.argv[1], "rt", encoding="utf-8") as f:
     header = json.loads(f.readline())
+# 按语法读每个迁移文件顶层的 revision / down_revision（带类型标注、合并迁移的元组、跨行写法都认）
 revisions, parents = set(), set()
 for path in pathlib.Path(sys.argv[2]).glob("*.py"):
-    text = path.read_text(encoding="utf-8")
-    found = re.search(r"^revision\b[^=]*=\s*['\"]([^'\"]+)", text, re.M)
-    if found:
-        revisions.add(found.group(1))
-    for line in re.findall(r"^down_revision\b[^=]*=(.*)$", text, re.M):
-        parents.update(re.findall(r"['\"]([^'\"]+)['\"]", line))
+    for node in ast.parse(path.read_text(encoding="utf-8")).body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target, value = node.targets[0], node.value
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            target, value = node.target, node.value
+        else:
+            continue
+        if not isinstance(target, ast.Name):
+            continue
+        if target.id == "revision":
+            revisions.add(ast.literal_eval(value))
+        elif target.id == "down_revision":
+            down = ast.literal_eval(value)
+            parents.update(down if isinstance(down, (tuple, list)) else [down] if down else [])
 heads = revisions - parents
 if header.get("format") != "youju-sync-export" or heads != {header.get("revision")}:
     sys.exit(f"起步数据的迁移版本 {header.get('revision')} 和源码的最新迁移 {sorted(heads)} 不一致，不打包")
