@@ -40,7 +40,7 @@ _METHOD_NAMES = {
     93: "zstd",
     95: "xz",
     98: "PPMd",
-    99: "AES 加密",
+    99: "加密",  # WinZip AES：和标志位的加密记成同一类
 }
 _KNOWN_METHODS = {2, 3, 4, 5, 10, 16, 18, 19, 20, 94, 96, 97, *_METHOD_NAMES}
 # 读部件时可能出的错：文件头坏了、部件重叠（Python 自己查的）、数据截断、deflate 数据坏、

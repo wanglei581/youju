@@ -323,6 +323,7 @@ def test_limit_shared_by_all_members():
         ({"flags": 0x1}, "method", "加密"),
         ({"flags": 0x40}, "method", "加密"),  # 强加密
         ({"flags": 0x20}, "method", "补丁数据"),
+        ({"method": 99, "flags": 0x1}, "method", "加密"),  # WinZip AES
         ({"method": 9}, "method", "deflate64"),
         ({"method": 97}, "method", "编号 97"),
         # 规范里没有的编号多半是文件坏了：按坏文件算，名单解析过后会重试
