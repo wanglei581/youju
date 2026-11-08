@@ -49,6 +49,7 @@ JOB_NAMES = OVERVIEW_JOBS + (
     # 2.0 自建服务器（deploy/selfhost/）：本机把公开数据推到服务器；服务器把加密的备份传到异地
     "sync-push",
     "offsite-backup",
+    "offsite-pull",
 )
 # 每 5 分钟一次的外部健康检查（本机看服务器）不记运行记录，和 advisor-run 一样
 

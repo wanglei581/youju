@@ -246,8 +246,9 @@ class Settings(BaseSettings):
     offsite_s3_access_key: SecretStr | None = None
     offsite_s3_secret_key: SecretStr | None = None
     offsite_s3_path_style: bool = False
-    # 存储类型（COS 的归档是 ARCHIVE；归档的文件提前删也按存满 90 天收费，备份不大，多花几块钱）
-    offsite_storage_class: str = Field(default="ARCHIVE", pattern=r"^[A-Z_]{0,32}$")
+    # 存储类型：默认低频 STANDARD_IA（能直接下载，本机每天拉一份密文副本，youju offsite-pull）；
+    # 归档 ARCHIVE 更便宜，但要先在控制台"恢复"才能下，本机就拉不了
+    offsite_storage_class: str = Field(default="STANDARD_IA", pattern=r"^[A-Z_]{0,32}$")
     offsite_age_recipient: str = ""
     # 和本机备份一样保留 30 天：隐私保护指引写的是备份保留 30 天，注销用户的数据不能在异地多留
     offsite_keep_days: int = Field(default=30, ge=7, le=3650)

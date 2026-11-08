@@ -1,8 +1,9 @@
 """切换时搬对象存储里的文件（youju storage-export、storage-import；见 docs/部署/自建服务器.md）。
 
-云托管的对象存储里有要跟着走的：批量工具结果（advisor/out/，用户 30 天内还能下载）、访问日志归档
-（logs/，网络日志要留存不少于六个月）、附件副本（attachments/，本机也能重新下载，搬过来省得断档）。
-备份（backups/）和公开快照（public-snapshots/）不搬：切换时另做一份整库备份恢复。
+云托管的对象存储切换后跟着云托管一起注销，里面要跟着走的：批量工具结果（advisor/out/，用户 30 天内
+还能下载）、访问日志归档（logs/，网络日志要留存不少于六个月）、附件副本（attachments/，本机也能
+重新下载，搬过来省得断档）、近几天的整库备份（backups/，用 --since-days 只搬近的，切换后回退用）。
+公开快照（public-snapshots/）不搬。
 
 - 导出（在云托管 admin 的"登录实例"里跑）：按前缀列出文件、逐个下载、打成一个 tar.gz；
   不给 --output 时把这个包传回对象存储 exports/ 下，在云托管控制台下载（控制台一次只能下一个文件）。
@@ -13,12 +14,11 @@
 
 from __future__ import annotations
 
-import io
 import logging
 import tarfile
 import tempfile
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -28,7 +28,8 @@ from youju.backup import BackupError, _open_api, upload
 
 log = logging.getLogger("youju.storage_move")
 DEFAULT_PREFIXES = ("advisor/out/", "logs/", "attachments/")
-MAX_FILE = 64 * 1024 * 1024
+# 单个文件最大多少（整库备份最大，按块下载、不进内存）
+MAX_FILE = 4 * 1024 * 1024 * 1024
 
 
 @dataclass
@@ -39,7 +40,8 @@ class MoveReport:
     output: str = ""
 
 
-def _download(client: httpx.Client, env: str, file_id: str) -> bytes:
+def _download_to(client: httpx.Client, env: str, file_id: str, dest: Path) -> int:
+    """按块下载到 dest（整库备份几百 MB，不读进内存），返回字节数。"""
     data = _open_api(
         client,
         "/tcb/batchdownloadfile",
@@ -50,15 +52,35 @@ def _download(client: httpx.Client, env: str, file_id: str) -> bytes:
     url = (item or {}).get("download_url") or ""
     if not item or item.get("status") not in (None, 0) or not url.startswith("https://"):
         raise BackupError("没有拿到下载链接")
-    response = client.get(url, timeout=300)
-    if response.status_code != 200:
-        raise BackupError(f"下载失败（HTTP {response.status_code}）")
-    return response.content
+    size = 0
+    with client.stream("GET", url, timeout=600) as response:
+        if response.status_code != 200:
+            raise BackupError(f"下载失败（HTTP {response.status_code}）")
+        with dest.open("wb") as out:
+            for chunk in response.iter_bytes():
+                size += len(chunk)
+                if size > MAX_FILE:
+                    raise BackupError("文件太大")
+                out.write(chunk)
+    return size
 
 
-def export(env: str, output: Path, prefixes: tuple[str, ...] = DEFAULT_PREFIXES) -> MoveReport:
+def export(
+    env: str,
+    output: Path,
+    prefixes: tuple[str, ...] = DEFAULT_PREFIXES,
+    *,
+    since_days: int | None = None,
+    now: datetime | None = None,
+) -> MoveReport:
+    """since_days：只搬这么多天以内改过的（整库备份只搬近几天的）。"""
     report = MoveReport(output=str(output))
-    with storage.http_client() as client, tarfile.open(output, "w:gz") as tar:
+    cutoff = (now or datetime.now(UTC)) - timedelta(days=since_days) if since_days else None
+    with (
+        storage.http_client() as client,
+        tarfile.open(output, "w:gz") as tar,
+        tempfile.TemporaryDirectory() as tmp,
+    ):
         bucket = storage_list.bucket_of(client, env)
         for prefix in prefixes:
             objects = storage_list.list_objects(client, bucket, prefix)
@@ -67,25 +89,33 @@ def export(env: str, output: Path, prefixes: tuple[str, ...] = DEFAULT_PREFIXES)
                 if not storage.valid_path(item.key):
                     report.skipped += 1
                     continue
-                content = _download(client, env, bucket.prefix + item.key)
-                if len(content) > MAX_FILE:
+                if cutoff is not None and item.last_modified < cutoff:
+                    continue
+                local = Path(tmp) / "f"
+                try:
+                    size = _download_to(client, env, bucket.prefix + item.key, local)
+                except BackupError as exc:
+                    if str(exc) != "文件太大":
+                        raise
                     report.skipped += 1
                     continue
-                info = tarfile.TarInfo(item.key)
-                info.size = len(content)
+                info = tar.gettarinfo(str(local), arcname=item.key)
                 info.mtime = int(item.last_modified.timestamp())
-                tar.addfile(info, io.BytesIO(content))
-                report.bytes += len(content)
+                with local.open("rb") as fh:
+                    tar.addfile(info, fh)
+                report.bytes += size
                 count += 1
             report.files[prefix] = count
     return report
 
 
-def export_and_upload(env: str, prefixes: tuple[str, ...] = DEFAULT_PREFIXES) -> MoveReport:
+def export_and_upload(
+    env: str, prefixes: tuple[str, ...] = DEFAULT_PREFIXES, *, since_days: int | None = None
+) -> MoveReport:
     """导出后传回对象存储 exports/storage-时间.tar.gz（在云托管控制台下载）。"""
     with tempfile.TemporaryDirectory() as tmp:
         local = Path(tmp) / "storage.tar.gz"
-        report = export(env, local, prefixes)
+        report = export(env, local, prefixes, since_days=since_days)
         path = f"exports/storage-{datetime.now(UTC):%Y%m%d%H%M%S}.tar.gz"
         with storage.http_client() as client:
             report.output = upload(client, env, path, local, what="存储导出包")

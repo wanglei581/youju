@@ -31,29 +31,41 @@ Step "2/5 准备配置文件 .env"
 if (Test-Path ".env") {
   Write-Host "已经有 .env，不改它。（要改就用记事本打开 .env）"
 } else {
-  $syncUrl = Read-Host "粘贴服务器地址（例如 https://api.example.com）"
-  $syncSecret = Read-Host "粘贴同步密钥（和服务器 .env 里的 YOUJU_SYNC_SECRET 一样）"
-  if ($syncSecret.Length -lt 32) { Fail "同步密钥至少 32 位，请向 Claude 要服务器上生成的那一个。" }
+  $syncUrl = (Read-Host "粘贴服务器地址（例如 https://api.example.com；服务器还没买就直接回车，先只在本机跑）").Trim().TrimEnd("/")
+  $syncSecret = ""
+  if ($syncUrl -ne "") {
+    $syncSecret = (Read-Host "粘贴同步密钥（和服务器 .env 里的 YOUJU_SYNC_SECRET 一样）").Trim()
+    if ($syncSecret.Length -lt 32) { Fail "同步密钥至少 32 位，请向 Claude 要服务器上生成的那一个。" }
+  }
   $dbPassword = RandomHex 24
   $text = Get-Content "env.example" -Raw -Encoding UTF8
   $text = $text -replace "MYSQL_ROOT_PASSWORD=换成随机串", ("MYSQL_ROOT_PASSWORD=" + (RandomHex 24))
   $text = $text -replace "MYSQL_PASSWORD=换成随机串", ("MYSQL_PASSWORD=" + $dbPassword)
   $text = $text -replace "换成上面的MYSQL_PASSWORD", $dbPassword
   $text = $text -replace "YOUJU_ADMIN_TOKEN=换成随机串", ("YOUJU_ADMIN_TOKEN=" + (RandomHex 24))
-  $text = $text -replace "YOUJU_SYNC_URL=https://api.example.com", ("YOUJU_SYNC_URL=" + $syncUrl.Trim().TrimEnd("/"))
-  $text = $text -replace "YOUJU_SYNC_SECRET=换成和服务器一样的随机串", ("YOUJU_SYNC_SECRET=" + $syncSecret.Trim())
+  # 没填服务器：这两项留空，本机先单独跑（推送、看服务器健康、拉异地备份都安静跳过）
+  $text = $text -replace "YOUJU_SYNC_URL=https://api.example.com", ("YOUJU_SYNC_URL=" + $syncUrl)
+  $text = $text -replace "YOUJU_SYNC_SECRET=换成和服务器一样的随机串", ("YOUJU_SYNC_SECRET=" + $syncSecret)
   [System.IO.File]::WriteAllText((Join-Path $PSScriptRoot ".env"), $text, (New-Object System.Text.UTF8Encoding $false))
   Write-Host "已生成 .env。核对台口令在 .env 的 YOUJU_ADMIN_TOKEN 一行。"
 }
 
-Step "3/5 载入镜像"
+Step "3/5 准备程序（镜像）"
+# 三种来源，按顺序：同文件夹里的镜像文件 → 同文件夹里的程序源码（在这台电脑上构建，
+# 用国内镜像源装依赖） → .env 里写的镜像仓库
+$image = (Select-String -Path ".env" -Pattern "^YOUJU_IMAGE=([^\r\n]+)").Matches[0].Groups[1].Value.Trim()
 if (Test-Path "youju-selfhost.tar") {
   docker load -i youju-selfhost.tar
+  if ($LASTEXITCODE -ne 0) { Fail "载入镜像文件失败，把上面的报错截图发给 Claude。" }
+} elseif (Test-Path "source\Dockerfile") {
+  Write-Host "用 source 文件夹里的程序源码在这台电脑上构建（第一次要 10-20 分钟，下载基础镜像比较慢）……"
+  docker build -t youju-base:local -f source\Dockerfile source
+  if ($LASTEXITCODE -ne 0) { Fail "构建基础镜像失败，把上面的报错截图发给 Claude。" }
+  docker build -t $image --build-arg BASE=youju-base:local -f source\backend\deploy\selfhost\Dockerfile source\backend\deploy\selfhost
+  if ($LASTEXITCODE -ne 0) { Fail "构建镜像失败，把上面的报错截图发给 Claude。" }
 } else {
-  # 去掉行尾的回车（.env 在 Windows 上可能是 CRLF）
-  $image = (Select-String -Path ".env" -Pattern "^YOUJU_IMAGE=([^\r\n]+)").Matches[0].Groups[1].Value.Trim()
   docker pull $image
-  if ($LASTEXITCODE -ne 0) { Fail "拉不下镜像 $image。把 Claude 给的 youju-selfhost.tar 放到这个文件夹再运行。" }
+  if ($LASTEXITCODE -ne 0) { Fail "拉不下镜像 $image。把 Claude 给的安装包（含 source 文件夹）解压到这个文件夹再运行。" }
 }
 
 Step "4/5 启动"
@@ -88,11 +100,16 @@ if ($answer -eq "y") {
 }
 
 Write-Host ""
-Write-Host "装好了。下一步（起步导入公开数据）按 Claude 给的说明做，导出文件放在这个文件夹里。" -ForegroundColor Green
-Write-Host "起步时先停定时任务（导入期间不能抓取），用一次性容器做，做完再启动："
+$hasServer = (Select-String -Path ".env" -Pattern "^YOUJU_SYNC_URL=\S").Matches.Count -gt 0
+Write-Host "装好了。下一步导入公开数据（导出文件 youju-sync-export.jsonl.gz 放在这个文件夹里）：" -ForegroundColor Green
+Write-Host "导入时先停定时任务，用一次性容器做，做完再启动："
 Write-Host "  docker compose stop worker"
 Write-Host "  docker compose run --rm -v ${PWD}:/move worker youju sync-import --file /move/youju-sync-export.jsonl.gz"
 Write-Host "  docker compose run --rm worker youju sync-setup"
-Write-Host "  docker compose run --rm worker youju sync-push --mark-synced"
+if ($hasServer) {
+  Write-Host "  docker compose run --rm worker youju sync-push --mark-synced"
+} else {
+  Write-Host "  （还没配服务器：先只在本机跑，以后配好服务器按 Claude 的说明重新起步）"
+}
 Write-Host "  docker compose start worker"
 Read-Host "按回车键结束"

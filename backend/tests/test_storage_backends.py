@@ -263,3 +263,22 @@ def test_storage_export_and_import_keep_paths(disk, tmp_path, monkeypatch):
     assert not (tmp_path / "new/backups").exists()
     # 再导一次：已经有的跳过
     assert storage_move.import_archive(archive).skipped == 2
+
+
+def test_storage_export_since_days_only_moves_recent(disk, tmp_path):
+    """搬家时整库备份只搬近几天的（--since-days）。"""
+    import os
+    import time
+
+    from youju import storage_move
+
+    local = tmp_path / "f"
+    local.write_bytes(b"backup")
+    storage.upload(ENV, "backups/youju-20261101.jsonl.gz", local)
+    storage.upload(ENV, "backups/youju-20261105.jsonl.gz", local)
+    old = disk / "backups/youju-20261101.jsonl.gz"
+    ten_days_ago = time.time() - 10 * 86400
+    os.utime(old, (ten_days_ago, ten_days_ago))
+    archive = tmp_path / "b.tar.gz"
+    report = storage_move.export(ENV, archive, ("backups/",), since_days=7)
+    assert report.files == {"backups/": 1}

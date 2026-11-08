@@ -95,7 +95,7 @@ def offsite_settings(tmp_path):
         offsite_s3_access_key=SecretStr("ak"),
         offsite_s3_secret_key=SecretStr("sk"),
         offsite_s3_path_style=False,
-        offsite_storage_class="ARCHIVE",
+        offsite_storage_class="STANDARD_IA",
         offsite_age_recipient="age1" + "q" * 58,
         offsite_keep_days=30,
     )
@@ -120,7 +120,7 @@ def test_offsite_encrypts_uploads_to_archive_and_prunes(tmp_path):
     )
     assert report.target == "backups/youju-20261105.jsonl.gz.age"
     body, headers = fake.objects[report.target]
-    assert body == b"sealed:backup-bytes" and headers == {"x-cos-storage-class": "ARCHIVE"}
+    assert body == b"sealed:backup-bytes" and headers == {"x-cos-storage-class": "STANDARD_IA"}
     assert seen == [settings.offsite_age_recipient]
     # 30 天以前的删掉，近的留着
     assert "backups/youju-20260901.jsonl.gz.age" not in fake.objects
@@ -201,3 +201,48 @@ def test_windows_setup_script_is_utf8_with_bom():
     raw = (SELFHOST / "local" / "setup.ps1").read_bytes()
     assert raw.startswith(b"\xef\xbb\xbf")  # Windows PowerShell 5.1 没有 BOM 会把中文读成乱码
     assert "docker compose up -d" in raw.decode("utf-8-sig")
+
+
+def test_offsite_pull_keeps_a_ciphertext_copy_locally(tmp_path):
+    """本机每天把异地最新的加密备份下一份（已经有就不下），删掉过期的。"""
+    settings = offsite_settings(tmp_path)
+    settings.offsite_age_recipient = ""  # 本机不需要公钥
+    fake = FakeOffsite()
+    fake.objects["backups/youju-20261104.jsonl.gz.age"] = (b"old-cipher", {})
+    fake.objects["backups/youju-20261105.jsonl.gz.age"] = (b"new-cipher", {})
+    fake.url = lambda path, max_age: f"https://cos.example/{path}"
+    old_local = tmp_path / "store" / "offsite-backups"
+    old_local.mkdir(parents=True)
+    (old_local / "youju-20260901.jsonl.gz.age").write_bytes(b"expired")
+    seen = []
+
+    def handle(request):
+        seen.append(str(request.url))
+        return httpx.Response(200, content=fake.objects[request.url.path.lstrip("/")][0])
+
+    http = httpx.Client(transport=httpx.MockTransport(handle))
+    report = offsite.pull(
+        settings, now=datetime(2026, 11, 5, 23, tzinfo=UTC), backend=fake, http=http
+    )
+    assert report.target == "offsite-backups/youju-20261105.jsonl.gz.age"
+    assert (old_local / "youju-20261105.jsonl.gz.age").read_bytes() == b"new-cipher"
+    assert not (old_local / "youju-20260901.jsonl.gz.age").exists() and report.pruned == 1
+    # 再跑一次：已经有了，不再下载
+    again = offsite.pull(
+        settings, now=datetime(2026, 11, 5, 23, tzinfo=UTC), backend=fake, http=http
+    )
+    assert again.bytes == 0 and len(seen) == 1
+
+
+def test_local_only_mode_skips_sync_and_offsite_pull(monkeypatch, capsys):
+    """服务器还没买时本机先单独跑：推送、拉异地备份安静跳过（返回 0，job.sh 不提醒）。"""
+    for key in ("YOUJU_SYNC_URL", "YOUJU_SYNC_SECRET", "YOUJU_OFFSITE_S3_ACCESS_KEY"):
+        monkeypatch.delenv(key, raising=False)
+    get_settings.cache_clear()
+    try:
+        assert cli.main(["sync-push"]) == 0
+        assert cli.main(["offsite-pull"]) == 0
+        out = capsys.readouterr().out
+        assert "跳过推送" in out and "跳过" in out
+    finally:
+        get_settings.cache_clear()

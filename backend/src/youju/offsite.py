@@ -7,7 +7,11 @@
 - 存放：YOUJU_OFFSITE_S3_* 配的存储桶（创始人 11/5 定：腾讯云 COS 归档存储），路径
   backups/youju-日期.jsonl.gz.age，存储类型默认 ARCHIVE（归档的文件取回要先在控制台"恢复"）。
 - 保留：删掉 YOUJU_OFFSITE_KEEP_DAYS（默认 30 天，和本机备份、隐私保护指引写的一致）以前的。
-  归档的文件提前删也按存满 90 天收费；备份不大，多花几块钱，换注销用户的数据不在异地多留。
+- 存储类型默认低频（STANDARD_IA）：能直接下载（归档要先"恢复"几小时才能下），本机每天才能
+  拉一份密文副本（youju offsite-pull，创始人 11/5：备份在本机再留一份）。备份不大，低频和归档
+  每月差几毛钱。
+- 本机副本（youju offsite-pull）：在本机跑，用只能列表和下载的子账号密钥，把最新一份密文下到本机
+  存储 offsite-backups/，保留同样天数。本机没有私钥，解不开。
 """
 
 from __future__ import annotations
@@ -19,6 +23,8 @@ import tempfile
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+
+import httpx
 
 from youju import storage
 from youju.backup import BEIJING, BackupError, object_path
@@ -36,7 +42,7 @@ class OffsiteReport:
     pruned: int = 0
 
 
-def _config(settings: Settings) -> storage.S3Config:
+def _config(settings: Settings, *, need_recipient: bool = True) -> storage.S3Config:
     keys = [
         k.get_secret_value().strip() if k else ""
         for k in (settings.offsite_s3_access_key, settings.offsite_s3_secret_key)
@@ -46,7 +52,7 @@ def _config(settings: Settings) -> storage.S3Config:
         and settings.offsite_s3_region.strip()
         and settings.offsite_s3_bucket.strip()
         and all(keys)
-        and settings.offsite_age_recipient.strip()
+        and (settings.offsite_age_recipient.strip() or not need_recipient)
     ):
         raise BackupError(
             "异地备份要配 YOUJU_OFFSITE_S3_ENDPOINT（https）、_REGION、_BUCKET、_ACCESS_KEY、"
@@ -133,4 +139,60 @@ def run(
                 report.pruned += 1
     except storage.StorageError as exc:
         raise BackupError(f"今天的异地备份已上传，但清理旧的失败：{exc}") from None
+    return report
+
+
+LOCAL_PREFIX = "offsite-backups/"
+
+
+def pull(
+    settings: Settings,
+    *,
+    now: datetime | None = None,
+    backend: storage.S3Backend | None = None,
+    http: httpx.Client | None = None,
+) -> OffsiteReport:
+    """本机：把异地存储里最新的一份加密备份下到本机存储 offsite-backups/（已经有就不下），
+    删掉本机 YOUJU_OFFSITE_KEEP_DAYS 天以前的。下的是密文，本机解不开。"""
+    config = _config(settings, need_recipient=False)
+    source = backend or storage.S3Backend(config)
+    local = storage.backend(settings)
+    now = now or datetime.now(UTC)
+    report = OffsiteReport()
+    try:
+        candidates = sorted(item.key for item in source.list(PREFIX) if _NAME.fullmatch(item.key))
+    except storage.StorageError as exc:
+        raise BackupError(f"列异地备份失败：{exc}") from None
+    if not candidates:
+        raise BackupError("异地存储里还没有备份")
+    newest = candidates[-1]
+    target = LOCAL_PREFIX + newest[len(PREFIX) :]
+    report.source, report.target = newest, target
+    if not local.exists(target):
+        client = http or httpx.Client(trust_env=False, timeout=600)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                file = Path(tmp) / "backup.age"
+                with client.stream("GET", source.url(newest, 600)) as response:
+                    if response.status_code != 200:
+                        raise BackupError(
+                            f"下载异地备份失败（HTTP {response.status_code}；"
+                            "存储类型是归档的要先在控制台恢复，建议用低频）"
+                        )
+                    with file.open("wb") as out:
+                        for chunk in response.iter_bytes():
+                            out.write(chunk)
+                report.bytes = file.stat().st_size
+                local.put_file(target, file)
+        except httpx.HTTPError as exc:
+            raise BackupError(f"下载异地备份失败：{type(exc).__name__}") from None
+        finally:
+            if http is None:
+                client.close()
+    cutoff = now.astimezone(BEIJING).date() - timedelta(days=settings.offsite_keep_days)
+    for item in local.list(LOCAL_PREFIX):
+        match = re.fullmatch(r"offsite-backups/youju-(\d{8})\.jsonl\.gz\.age", item.key)
+        if match and datetime.strptime(match.group(1), "%Y%m%d").date() < cutoff:
+            local.delete(item.key)
+            report.pruned += 1
     return report

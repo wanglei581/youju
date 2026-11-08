@@ -2145,6 +2145,11 @@ def _cmd_sync_setup(args: argparse.Namespace) -> int:
 def _cmd_sync_push(args: argparse.Namespace) -> int:
     from youju.sync import local
 
+    settings = get_settings()
+    if not settings.sync_url and not settings.sync_secret:
+        # 本机先单独跑（服务器还没买）：定时任务照常调，这里安静跳过，不算失败、不提醒
+        print("还没配服务器（YOUJU_SYNC_URL），先只在本机跑，跳过推送")
+        return 0
     engine = _sync_engine()
     client = None
     try:
@@ -2248,6 +2253,26 @@ def _cmd_offsite_backup(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_offsite_pull(args: argparse.Namespace) -> int:
+    from youju import offsite
+    from youju.backup import BackupError
+
+    settings = get_settings()
+    if not (settings.offsite_s3_access_key and settings.offsite_s3_secret_key):
+        print("还没配异地备份的下载密钥（YOUJU_OFFSITE_S3_*），跳过")
+        return 0
+    try:
+        report = offsite.pull(get_settings())
+    except BackupError as exc:
+        print(f"拉异地备份失败：{exc}")
+        return 1
+    print(
+        f"本机已有最新的加密备份 {report.target}（这次下了 {report.bytes} 字节）；"
+        f"删掉 {report.pruned} 份过期的"
+    )
+    return 0
+
+
 def _cmd_uptime_check(args: argparse.Namespace) -> int:
     """从服务器外面（2.0 的本机）每 5 分钟看一次服务器的 /health：连续 2 次不通就提醒到群里，
     恢复了再说一声；状态记在 --state 文件里（同一次故障只提醒一次）。"""
@@ -2299,9 +2324,9 @@ def _cmd_storage_export(args: argparse.Namespace) -> int:
     prefixes = tuple(args.prefix) if args.prefix else storage_move.DEFAULT_PREFIXES
     try:
         if args.output:
-            report = storage_move.export(env, args.output, prefixes)
+            report = storage_move.export(env, args.output, prefixes, since_days=args.since_days)
         else:
-            report = storage_move.export_and_upload(env, prefixes)
+            report = storage_move.export_and_upload(env, prefixes, since_days=args.since_days)
     except BackupError as exc:
         print(f"导出失败：{exc}")
         return 1
@@ -2838,9 +2863,12 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=_cmd_sync_import)
     p = sub.add_parser("offsite-backup", help="（服务器）把当天的整库备份加密后传到异地存储")
     p.set_defaults(func=_cmd_offsite_backup)
+    p = sub.add_parser("offsite-pull", help="（本机）把异地最新的加密备份下到本机再留一份")
+    p.set_defaults(func=_cmd_offsite_pull)
     p = sub.add_parser("storage-export", help="（切换）把对象存储里要搬的文件打成一个包")
     p.add_argument("--prefix", action="append", help="只导出这个前缀（可写多次）")
     p.add_argument("--output", type=Path, help="写到本机这个文件；不写就传回对象存储 exports/")
+    p.add_argument("--since-days", type=int, help="只搬这么多天以内的（整库备份用，如 7）")
     p.set_defaults(func=_cmd_storage_export)
     p = sub.add_parser("storage-import", help="（切换）把导出包按原路径写进现在的存储")
     p.add_argument("--file", type=Path, required=True)

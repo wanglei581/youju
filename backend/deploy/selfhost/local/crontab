@@ -20,7 +20,11 @@
 0 8 * * *  /app/backend/deploy/job.sh audit-deadlines --sample 20; /app/backend/deploy/job.sh daily-report
 # 本机主库每天备份一份到本机存储（保留 30 天；出大事时还能从服务器导回来）
 0 4 * * *  /app/backend/deploy/job.sh backup
-# 把公开数据的变更推到服务器：每 10 分钟一次（job.sh 加锁，上一次没推完就跳过）
+# 服务器每天 5:10 把加密的整库备份传到 COS（低频）；本机 6:00 下一份密文再留一份（本机没有私钥，
+# 解不开；创始人 11/5 定）。没配 YOUJU_OFFSITE_S3_* 时安静跳过
+0 6 * * *  /app/backend/deploy/job.sh offsite-pull
+# 把公开数据的变更推到服务器：每 10 分钟一次（job.sh 加锁，上一次没推完就跳过；
+# 还没配服务器时安静跳过）
 */10 * * * *  /app/backend/deploy/job.sh sync-push
 # 从外面看服务器还在不在：每 5 分钟一次，连续 2 次不通提醒到群里（不经 job.sh：自己会提醒）
-*/5 * * * *  . /app/backend/deploy/env.sh; cd /app/backend && flock -n /tmp/youju-uptime.lock timeout 60 youju uptime-check --url "$YOUJU_SYNC_URL" >> /proc/1/fd/1 2>&1
+*/5 * * * *  . /app/backend/deploy/env.sh; [ -n "$YOUJU_SYNC_URL" ] && cd /app/backend && flock -n /tmp/youju-uptime.lock timeout 60 youju uptime-check --url "$YOUJU_SYNC_URL" >> /proc/1/fd/1 2>&1
