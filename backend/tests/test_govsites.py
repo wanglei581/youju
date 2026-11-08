@@ -551,3 +551,34 @@ def test_shared_template_columns_are_dropped():
     assert rows[1].columns == []
     assert rows[1].reason.startswith("部门页上只有本级共用的栏目")
     assert [c.url for c in rows[2].columns] == ["http://kjj.example.gov.cn/tzgg/"]
+
+
+def test_refused_pages_are_not_refetched_by_retry(tmp_path):
+    from youju.govsites.pagecache import PageCache
+
+    class CountingFetcher:
+        def __init__(self):
+            self.calls = 0
+
+        def fetch(self, url):
+            self.calls += 1
+            if "waf" in url:
+                return FetchResult(url, "http_error", url, 412, "", "HTTP 412")
+            return FetchResult(url, "network_error", url, None, "", "超时")
+
+    f = CountingFetcher()
+    cache = PageCache(tmp_path, f, fail_days=0)  # 相当于 --retry-failed
+    cache.get("http://waf.example.gov.cn/")
+    cache.get("http://slow.example.gov.cn/")
+    cache.get("http://waf.example.gov.cn/")
+    cache.get("http://slow.example.gov.cn/")
+    # 412 拒绝过的不再请求；超时的照常重试
+    assert f.calls == 3
+
+
+def test_national_dev_zone_is_not_a_ministry():
+    from youju.govsites.inventory import Inventory
+
+    inv = Inventory(DivisionIndex(_divisions()), FakeCache({}))
+    assert inv._is_ministry("国家发展和改革委员会", "https://www.ndrc.gov.cn/")
+    assert not inv._is_ministry("国家级宁波经济技术开发区管理委员会", "https://www.netd.gov.cn/")

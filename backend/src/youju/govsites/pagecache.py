@@ -15,6 +15,14 @@ from pathlib import Path
 from youju.crawler.fetcher import FetchResult, PoliteFetcher
 
 _TEXT_MAX = 3_000_000  # 只存前 300 万字：导航和列表页够用了
+REFUSED_DAYS = 30
+_REFUSED_HTTP = {401, 403, 412, 521}
+
+
+def _refused(cached: dict) -> bool:
+    return cached.get("status") == "robots_disallowed" or (
+        cached.get("status") == "http_error" and cached.get("http_status") in _REFUSED_HTTP
+    )
 
 
 class PageCache:
@@ -53,7 +61,14 @@ class PageCache:
         cached = self._read(path)
         if cached is not None:
             age = time.time() - cached.pop("_saved_at", 0)
-            limit = self.ok_seconds if cached.get("status") == "ok" else self.fail_seconds
+            if cached.get("status") == "ok":
+                limit = self.ok_seconds
+            elif _refused(cached):
+                # 网站明确拒绝过（robots 禁止、401/403/412/521）：30 天内不再去请求，
+                # 重抓失败页面（--retry-failed）也不碰它们，免得像在反复敲门
+                limit = REFUSED_DAYS * 86400
+            else:
+                limit = self.fail_seconds
             if self.offline or age < limit:
                 with self._lock:
                     self.hits += 1

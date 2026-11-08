@@ -672,10 +672,9 @@ class Inventory:
             same_host = urlsplit(f.url).netloc.lower() == urlsplit(home.final_url).netloc.lower()
             row.site_type = "门户频道" if same_host else "独立网站"
             dp = self.page(f.url)
-            # 独立部门网站上链到门户主机的栏目（如省政策文件库）不是这个部门的
+            # 门户自己的栏目不算部门的；几个部门都链到的同一个栏目（如省政策文件库）由
+            # _drop_shared_columns 去掉。部门挂在门户主机上的信息公开栏目照常认
             exclude = portal_cols
-            if row.site_type == "独立网站":
-                exclude = exclude | _host_urls(dp, urlsplit(home.final_url).netloc.lower())
             if dp.result.status != "ok" or dp.block:
                 row.status = "不能抓" if dp.block else "打不开"
                 row.reason = dp.block or dp.result.error or dp.result.status
@@ -693,6 +692,9 @@ class Inventory:
         host = (urlsplit(url).hostname or "").lower().removeprefix("www.")
         if any(host == m or host.endswith("." + m) for m in self.ministry_hosts):
             return True
+        # "国家级××经济技术开发区管委会""××国家高新区"不是部委，名称规则不管开发区
+        if "开发区" in dept_categories(text):
+            return False
         return bool(_MINISTRY_NAME.search(text))
 
     def _dept_row(self, div: Division, dept: str) -> DeptRow:
@@ -810,11 +812,6 @@ _SERVICE_HALL = re.compile(
 )
 # 部委的写法：国家…、中华人民共和国…、国务院…，或以"部""总局""总署"结尾（地方部门不这样叫）
 _MINISTRY_NAME = re.compile(r"^(?:国家|中华人民共和国|国务院)|(?:部|总局|总署)$")
-
-
-def _host_urls(page: PageInfo, host: str) -> frozenset[str]:
-    """页面上指向某个主机的全部链接（用来排除部门网站上链到门户的栏目）。"""
-    return frozenset(link.url for link in page.links if urlsplit(link.url).netloc.lower() == host)
 
 
 SHARED_ONLY = "部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）"
