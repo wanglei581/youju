@@ -465,6 +465,20 @@ def test_failed_recognition_is_remembered_and_rule_changes_retry(session, monkey
     assert at.ocr_due(session) == []  # 不反复识别
     monkeypatch.setattr(at, "OCR_RULES", at.OCR_RULES + 1)  # 识别规则改了：按新规则再来
     assert [v.id for v in at.ocr_due(session)] == [version.id]
+    # 以前每页都认出了的（没有还剩的扫描页）规则改了也按新规则重识别
+    monkeypatch.setattr(at, "OCR_RULES", 1)
+    fake_ocr(
+        monkeypatch,
+        {1: ["第一页认出来的一行字"], 2: ["第二页认出来的一行字"], 3: ["第三页认出来的一行字"]},
+    )
+    version.ocr_rules = 0
+    session.commit()
+    at.ocr_version(session, version, SCAN_PDF, NOW, pages=3)
+    session.expire_all()
+    assert (version.scanned_pages, version.ocr_pages, version.reason) == (0, 3, None)
+    assert at.ocr_due(session) == []
+    monkeypatch.setattr(at, "OCR_RULES", 2)
+    assert [v.id for v in at.ocr_due(session)] == [version.id]
     # 平常取文字重取了（规则改了、内容变了）：原来识别出的字没了，识别任务再来
     monkeypatch.setattr(at, "OCR_RULES", 1)
     fake_ocr(monkeypatch, {1: ["第一页认出来的一行字"]})

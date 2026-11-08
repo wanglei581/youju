@@ -3567,8 +3567,9 @@ def _store(
 
 
 def ocr_due(session: Session) -> list[AttachmentTextVersion]:
-    """识别任务要处理的内容版本（D-125）：按现在的规则取过、有扫描页（整份是扫描件，或者有几页
-    是）、还没按现在的识别规则识别过的 PDF 和压缩包（压缩包里的 PDF 一样识别），还有链接指向的。
+    """识别任务要处理的内容版本（D-125）：按现在的规则取过、有扫描页（整份是扫描件、有几页是，或者
+    按以前的识别规则识别过：规则改了要按新规则重识别）、还没按现在的识别规则识别过的 PDF 和压缩包
+    （压缩包里的 PDF 一样识别），还有链接指向的。
     按编号从新到旧；识别任务再按所在通知的发布日期排先后、只留取文字范围里的
     （attachments._ocr_order）。"""
     return list(
@@ -3579,7 +3580,8 @@ def ocr_due(session: Session) -> list[AttachmentTextVersion]:
                 AttachmentTextVersion.ocr_rules < OCR_RULES,
                 AttachmentTextVersion.file_type.in_(("pdf", "zip", "rar")),
                 (AttachmentTextVersion.reason == "scan")
-                | (AttachmentTextVersion.scanned_pages > 0),
+                | (AttachmentTextVersion.scanned_pages > 0)
+                | (AttachmentTextVersion.ocr_pages > 0),
                 exists().where(AttachmentTextUrl.version_id == AttachmentTextVersion.id),
             )
             .order_by(AttachmentTextVersion.id.desc())

@@ -1459,7 +1459,10 @@ def ocr_scans(
                     report.deferred = len(due) - index
                     break
                 version_id = version.id  # 出错回滚以后再读 version.id 会再查一次库
-                want = min(version.scanned_pages or version.pages or OCR_DOC_PAGES, OCR_DOC_PAGES)
+                # 要识别的页数：还没认出的加上以前认出的（规则改了重识别）；整份扫描、没记页数的
+                # 按总页数
+                scan = (version.scanned_pages or 0) + (version.ocr_pages or 0)
+                want = min(scan or version.pages or OCR_DOC_PAGES, OCR_DOC_PAGES)
                 # 指向这份内容的链接一个一个试，下载到一个就行
                 content = url = declared = None
                 for link, kind in urls:
