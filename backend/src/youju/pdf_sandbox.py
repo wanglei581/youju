@@ -160,16 +160,16 @@ def _env() -> dict[str, str]:
 
 def _output(code: int, cfg: dict, seconds: float, out, err) -> dict:
     if code == _EXIT_MEMORY:
-        raise Failed("memory", "too_large", f"解析用的内存超过 {cfg['memory'] // _MB}MB")
+        raise Failed("memory", "too_large", f"解析用的内存超过 {_size(cfg['memory'])}")
     if code == -signal.SIGKILL:  # 不是父进程杀的（超时在前面）：多半是容器内存不够，系统停掉的
         raise Failed("memory", "too_large", "解析时内存不够，被系统停掉")
     if code == -signal.SIGXCPU:
         raise Failed("time", "too_large", f"解析超过 {seconds:g} 秒")
     size = os.fstat(out.fileno()).st_size
     if code == _EXIT_OUTPUT or size > cfg["output"] + 8:
-        raise Failed("output", "too_large", f"读出的内容超过 {cfg['output'] // _MB}MB")
+        raise Failed("output", "too_large", f"读出的内容超过 {_size(cfg['output'])}")
     if code != 0:
-        raise Failed("crash", "broken", f"解析出错（子进程异常退出：{_died(code, err)}）")
+        raise Failed("crash", "broken", f"解析时子进程异常退出：{_died(code, err)}")
     out.seek(0)
     head = out.read(8)
     answer = None
@@ -179,11 +179,15 @@ def _output(code: int, cfg: dict, seconds: float, out, err) -> dict:
         except (ValueError, RecursionError):
             answer = None
     if not isinstance(answer, dict) or len(answer) != 1 or not answer.keys() & _ANSWERS:
-        raise Failed("crash", "broken", "解析出错（子进程写回的结果不对）")
+        raise Failed("crash", "broken", "解析时子进程写回的结果不对")
     return answer
 
 
 _ANSWERS = {"ok", "refused", "open", "error"}
+
+
+def _size(n: int) -> str:
+    return f"{n // _MB}MB" if n >= _MB else f"{n // 1024}KB"
 
 
 def _died(code: int, err) -> str:
@@ -270,7 +274,7 @@ def _exit_on_memory_error() -> None:
         return
 
 
-class _Stop(Exception):  # noqa: N818 - 不是错误：原来抛异常结束的结果
+class _Stop(Exception):  # 不是错误：原来的代码抛异常结束的结果
     """原来的代码抛异常结束的（图片太大、页数超了……）：result 是要写回的结果。在
     pdf_limits.reading() 里按异常结束，被吞掉的拒读不改它的结果（和原来一样）。"""
 
@@ -279,7 +283,7 @@ class _Stop(Exception):  # noqa: N818 - 不是错误：原来抛异常结束的�
         self.result = result
 
 
-class _OpenFailed(Exception):  # noqa: N818
+class _OpenFailed(Exception):
     def __init__(self, error: str) -> None:
         super().__init__(error)
         self.error = error
