@@ -2,11 +2,13 @@
 都停在上限、按"太大""格式不支持"记，内存不跟着涨；不超上限的数据流解出的和 pdfminer 原来的写法一样。
 样本都是内存里现做的几百字节到几百 KB 的 PDF，不联网、不用数据库。"""
 
+import base64
 import contextlib
 import functools
 import gc
 import logging
 import random
+import time
 import tracemalloc
 import zlib
 from pathlib import Path
@@ -233,12 +235,10 @@ def test_many_streams_stop_at_document_total(small_caps) -> None:
     assert extract_pdf_text(one) == ("Notice 2026\nNotice 2026", None)
 
 
-@pytest.mark.parametrize(
-    "name", ["LZWDecode", "RunLengthDecode", "CCITTFaxDecode", "ASCII85Decode", "LZW", "RL", "A85"]
-)
+@pytest.mark.parametrize("name", ["LZWDecode", "RunLengthDecode", "CCITTFaxDecode", "LZW", "RL"])
 def test_filters_without_limits_are_refused(name: str) -> None:
-    """pdfminer 的 LZW、RunLength、CCITT、ASCII85 解码器内存或时间没有上限（ASCII85 去空白的正则
-    是平方级：几万个空格就要几秒）；抽查的真实文件里一个都没有（图片用的不解）。"""
+    """pdfminer 的 LZW、RunLength、CCITT 解码器内存或时间没有上限；抽查的真实文件和测试里的真实样本里
+    一个都没有（图片用的不解）。"""
     pdf = make_pdf((b"/Filter /%s" % name.encode(), b"\x80\x0b\x60\x50\x22\x0c\x0c\x85\x01"))
     detail = f"用了不支持的压缩方式 {name}"
     assert results(pdf) == {
@@ -247,6 +247,23 @@ def test_filters_without_limits_are_refused(name: str) -> None:
         "list": f"暂不支持这份 PDF（{detail}）",
         "body": ("", f"PDF {detail}"),
     }
+
+
+def test_ascii85_zero_runs_are_counted_before_decoding(small_caps) -> None:
+    """ASCII85 里一个 z 解出 4 个字节：先数出解出多大，超了不解。"""
+    pdf = make_pdf((b"/Filter /ASCII85Decode", b"z" * (512 * 1024) + b"~>"))
+    result = attachment_text.extract(pdf)
+    assert (result.reason, result.detail) == ("too_large", "PDF 数据流解压后超过 1MB")
+
+
+def test_ascii85_with_long_whitespace_is_linear() -> None:
+    """pdfminer 去头尾 <~ ~> 的正则遇到长空白是平方级（以前 3.2 万个空格要 3 秒，100 万个要几个小时）。
+    a85decode 本来就忽略这些空白，先去掉再解：照样解出，一下就完。"""
+    body = base64.a85encode(b"BT /F1 12 Tf 20 100 Td (Notice 2026) Tj ET")
+    stream = PDFStream({"Filter": LIT("A85")}, b"<~" + body + b" " * MB + b"\n" * MB + b"~>")
+    started = time.monotonic()
+    assert stream.get_data() == b"BT /F1 12 Tf 20 100 Td (Notice 2026) Tj ET"
+    assert time.monotonic() - started < 5
 
 
 @pytest.mark.parametrize(
@@ -496,6 +513,17 @@ CASES = {
     ),
     "image": ({"Filter": LIT("DCTDecode")}, b"\xff\xd8\xff\xe0 jpeg"),
     "plain": ({}, b"BT ET"),
+    "ascii85": ({"Filter": LIT("A85")}, base64.a85encode(b"hello world " * 20 + bytes(8)) + b"~>"),
+    "ascii85 framed, spaced": (
+        {"Filter": LIT("ASCII85Decode")},
+        b" \f\f<~ \n" + base64.a85encode(b"BT (abc) Tj ET", wrapcol=7) + b"\r\n ~> \f\n",
+    ),
+    "ascii85 then flate": (  # 江苏、上海两份真实样本就是这样
+        {"Filter": [LIT("A85"), LIT("Fl")]},
+        base64.a85encode(_TEXT, wrapcol=75) + b"~>",
+    ),
+    "ascii85 form feed inside": ({"Filter": LIT("A85")}, b'<~87cURD\f\f]i,"Ebo80~>'),
+    "ascii85 garbage after end": ({"Filter": LIT("A85")}, b'<~87cURD]i,"Ebo80~>xyz'),
 }
 
 
@@ -513,12 +541,15 @@ def decoded(decode, attrs: dict, raw: bytes):
 @pytest.mark.parametrize("strict", [False, True])
 @pytest.mark.parametrize("name", CASES)
 def test_streams_within_limits_decode_like_pdfminer(monkeypatch, name: str, strict: bool) -> None:
-    """不超上限的，解出的和 pdfminer 原来的写法逐字节一样；严格模式（STRICT）下坏数据照样报同一种错。"""
+    """不超上限的，解出的和 pdfminer 原来的写法逐字节一样；坏数据（严格模式下的坏 Flate、ASCII85 中间
+    有换页符或结尾后还有字）照样报同一种错。"""
     monkeypatch.setattr(pdfminer.settings, "STRICT", strict)
     attrs, raw = CASES[name]
     theirs = decoded(pdf_limits._ORIGINAL, attrs, raw)
     assert decoded(pdf_limits._decode, attrs, raw) == theirs
-    if not strict:
+    if name.startswith("ascii85") and ("inside" in name or "garbage" in name):
+        assert theirs == "ValueError"  # a85decode 不认的字符
+    elif not strict:
         assert isinstance(theirs, bytes)
 
 
