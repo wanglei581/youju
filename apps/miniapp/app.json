@@ -28,7 +28,8 @@
     "pages/ai/index",
     "pages/help/index",
     "pages/reader/index",
-    "pages/results/index"
+    "pages/results/index",
+    "pages/saved/index"
   ],
   "window": {
     "navigationBarBackgroundColor": "#FFFFFF",

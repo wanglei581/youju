@@ -1,4 +1,4 @@
-const { dueInfo, deadlineNote, dueView, kindClass, statusClass, highlight, ISSUER_WRAP, regionText } = require('../../utils/format.js');
+const { dueInfo, deadlineNote, dueView, kindClass, statusClass, highlight, ISSUER_WRAP, regionText, goneLine } = require('../../utils/format.js');
 const { groupLine } = require('../../utils/repost.js');
 
 // 列表行：类型、状态、地区、截止 → 标题 → 发文机关和日期 + 查看详情
@@ -15,7 +15,7 @@ Component({
     selecting: { type: Boolean, value: false },
   },
   data: { segs: [], due: null, dueNote: '', excerpt: null, kindCls: '', statusCls: '', statusText: '', issuerLong: false,
-    groupText: '', groupOpen: false, regionText: '', aiShown: false },
+    groupText: '', groupOpen: false, regionText: '', aiShown: false, goneLine: '' },
   observers: {
     'doc, q, today': function (doc, q) {
       if (!doc || !doc.title) return;
@@ -53,6 +53,8 @@ Component({
         regionText: regionText(doc),
         // 转发版本（D-055）：同一份部里通知的其他地方版本，点开逐个列出
         groupText: groupLine(doc.group),
+        // D-123：原网页打不开、还在 7 天清理期里的，写打不开的日期、提示和哪天清理（服务端给的 gone）
+        goneLine: typeof goneLine === 'function' ? goneLine(doc.gone) : '',
       });
     },
     // 行上的"AI 解读"按钮出现或收起时，重排发文机关那一行

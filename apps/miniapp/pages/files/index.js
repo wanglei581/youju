@@ -52,8 +52,22 @@ Page({
     const r = this.record(e);
     if (!r) { wx.showToast({ title: '演示数据，导出后可以打开', icon: 'none' }); return; }
     if (r.source === 'advisor') { wx.navigateTo({ url: `/pages/results/index?mode=advisor&taskId=${encodeURIComponent(r.taskId)}` }); return; }
+    if (this.openOne(r)) return;
     if (Array.isArray(r.ids)) { previewDocs(r.ids, { current: true }); return; }
     wx.showToast({ title: '旧记录缺少来源编号，请重新查询', icon: 'none' });
+  },
+
+  // 一份通知的正文导出（D-123）：清理期里导出的回到文件详情，我的保存里导出的回到保存的副本
+  openOne(r) {
+    if (r.source === 'saved' && /^\d+$/.test(String(r.savedId || ''))) {
+      wx.navigateTo({ url: `/pages/reader/index?saved=${encodeURIComponent(r.savedId)}` });
+      return true;
+    }
+    if (r.source === 'gone' && /^\d+$/.test(String(r.docId || ''))) {
+      wx.navigateTo({ url: `/pages/detail/index?id=${encodeURIComponent(r.docId)}` });
+      return true;
+    }
+    return false;
   },
 
   // 转发到聊天；要在电脑上保存，发给"文件传输助手"
@@ -82,6 +96,7 @@ Page({
       wx.navigateTo({ url: `/pages/results/index?mode=advisor&taskId=${encodeURIComponent(r.taskId)}` });
       return;
     }
+    if (this.openOne(r)) return;
     // 新文件和记录存好后，新记录替代这一条（打开失败也替代）
     previewDocs(r.ids, { current: true }).then(() => this.load());
   },

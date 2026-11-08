@@ -1,0 +1,20 @@
+.loading-card { padding: 40rpx 32rpx; text-align: center; font-size: 26rpx; }
+.gate { padding-top: 36rpx; padding-bottom: 36rpx; }
+.gate-title { font-size: 32rpx; font-weight: 600; }
+.gate-text { margin-top: 12rpx; font-size: 26rpx; line-height: 1.7; }
+.gate-btn { margin-top: 28rpx; }
+.item { padding: 24rpx 0; border-bottom: 2rpx solid var(--line); }
+.item--last { border-bottom: none; }
+.item-title { font-size: 30rpx; font-weight: 600; line-height: 1.6; color: var(--t1); }
+.item-meta { margin-top: 6rpx; font-size: 24rpx; line-height: 1.5; }
+.item-note { margin-top: 10rpx; font-size: 24rpx; line-height: 1.6; color: var(--o-txt); }
+.item-state { margin-top: 4rpx; font-size: 24rpx; }
+.actions { margin-top: 16rpx; display: flex; gap: 16rpx; }
+.act { padding: 8rpx 24rpx; border: 2rpx solid var(--line2); border-radius: 28rpx; font-size: 26rpx; color: var(--t2); }
+.act--primary { border-color: var(--brand); color: var(--brand); }
+.act--danger { color: var(--red); }
+.empty { padding: 36rpx 32rpx; }
+.empty-title { font-size: 30rpx; font-weight: 600; }
+.empty-text { margin-top: 10rpx; font-size: 26rpx; line-height: 1.7; }
+.tip { margin: 24rpx 32rpx 48rpx; font-size: 24rpx; line-height: 1.7; color: var(--t3); }
+.retry { margin-left: 16rpx; }

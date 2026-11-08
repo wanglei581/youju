@@ -72,7 +72,7 @@ function hasAiResult(rows) {
 function withAiLabel(text, ai) { return ai ? `${AI_LABEL}${text}` : text; }
 
 Page({
-  data: { loading: true, error: '', aiRetention: '', user: null, follows: [], subs: [], feedback: [], tasks: [], tasksTitle: '', fileNote: '', extras: '', toolsShown: false, boostShown: false, usageShown: false, totals: {}, retention: null, exportedAt: '', loginOpen: loginOpen(), remindOpen: remindAny() },
+  data: { loading: true, error: '', aiRetention: '', user: null, follows: [], subs: [], feedback: [], saved: [], tasks: [], tasksTitle: '', fileNote: '', extras: '', toolsShown: false, boostShown: false, usageShown: false, totals: {}, retention: null, exportedAt: '', loginOpen: loginOpen(), remindOpen: remindAny() },
 
   onShow() {
     if (!this.data.loginOpen) return;
@@ -132,8 +132,14 @@ Page({
             handledAt: when(f.handledAt),
             created: when(f.createdAt),
           })),
+          // 我的保存（D-123）：只列标题、原网页打不开的日期和保存时间；保存的正文在"我的保存"里看
+          saved: (Array.isArray(d.saved) ? d.saved : []).map((v) => ({
+            id: v.id,
+            title: v.title || '（没有标题）',
+            sub: `原网页 ${v.goneOn || ''} 起打不开 · 保存于 ${when(v.savedAt)}${v.cleaned ? ' · 原通知已清理' : ''}`,
+          })),
           ...taskData(d),
-          totals: { subs: d.subscriptionsTotal, feedback: d.feedbackTotal, events: d.eventsTotal, tasks: d.advisorTasksTotal || (d.advisorTasks || []).length },
+          totals: { subs: d.subscriptionsTotal, feedback: d.feedbackTotal, events: d.eventsTotal, tasks: d.advisorTasksTotal || (d.advisorTasks || []).length, saved: d.savedTotal || (d.saved || []).length },
           retention: d.retention,
           // 有过 AI 解读或条款对照任务的才写这两项的保存期限：AI 只对白名单开放时，其他人看不到 AI 字样
           // （AI 以外页面的模板里不写 AI，见 ai-entry.test.js）
@@ -164,7 +170,7 @@ Page({
   // 单条复制完整原始记录，包含条件、状态和时间。
   copyOne(e) {
     const { kind, id } = e.currentTarget.dataset;
-    const key = { follow: 'follows', sub: 'subscriptions', feedback: 'feedback', task: 'advisorTasks' }[kind];
+    const key = { follow: 'follows', sub: 'subscriptions', feedback: 'feedback', task: 'advisorTasks', saved: 'saved' }[kind];
     const row = this.raw && key && this.raw[key].find((item) => String(item.id) === String(id));
     if (!row) return;
     wx.setClipboardData({
@@ -206,8 +212,9 @@ Page({
       feedback: '这条纠错',
       task: task && task.queued ? '这条排队中的记录（会先取消，用掉的次数退回）'
         : task && task.stuck ? '这条没有处理完的记录（用掉的次数退回）' : '这条记录和它的结果',
+      saved: '这份保存的通知',
     }[kind];
-    const call = { follow: api.deleteFollow, sub: api.deleteSubscription, feedback: api.deleteFeedback, task: api.deleteAdvisorTask }[kind];
+    const call = { follow: api.deleteFollow, sub: api.deleteSubscription, feedback: api.deleteFeedback, task: api.deleteAdvisorTask, saved: api.deleteSaved }[kind];
     wx.showModal({
       title: cancelling ? '取消提醒' : '删除记录',
       content: `删除${what}？删除后不能恢复。`,

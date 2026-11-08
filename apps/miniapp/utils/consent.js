@@ -196,8 +196,10 @@ function markAgreed() {
 // 11/4 完整测试 M4：完整版点名批量工具、AI 和加量体验；过审版加 AI（D-098）只有 AI，写"AI 的输入、任务与结果"；
 // 过审版（首发 16 页）两样都没有，不写。没传（旧的调用）照完整版写。服务端照旧删掉全部记录
 function recordsPart(has) {
-  if (!has || has.advisor) return `、批量工具${!has || has.ai ? '和 AI ' : ''}的输入、任务与结果、加量体验记录`;
-  return has.ai ? '、AI 的输入、任务与结果' : '';
+  // 我的保存（D-123，包里有这一页时）：保存的通知随账号一起删
+  const saved = has && has.saved ? '、保存的通知' : '';
+  if (!has || has.advisor) return `、批量工具${!has || has.ai ? '和 AI ' : ''}的输入、任务与结果、加量体验记录${saved}`;
+  return (has.ai ? '、AI 的输入、任务与结果' : '') + saved;
 }
 
 // 有没到期的使用期时注销前多说的一段（付费协议开卖必做第 3 项，不能写成注销前必须先办退款）。

@@ -16,6 +16,8 @@ function flags() {
     help: has('help'),
     ai: has('ai'),
     license: has('business-license'),
+    // 我的保存（D-123，随 2.0）
+    saved: has('saved'),
   };
 }
 

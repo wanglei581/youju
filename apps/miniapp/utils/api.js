@@ -563,6 +563,75 @@ function exportOnce(body) {
   });
 }
 
+// ---- 原网页失效的通知 7 天后清理（D-123）：清理期里保存（我的保存）、导出 Word ----
+
+// 导出这一份的 Word（ArrayBuffer）：path 是导出接口。服务端出错时返回的是文字，按状态码写提示
+const WORD_ERRORS = {
+  403: '请先阅读并同意用户协议和隐私保护指引',
+  404: '没有找到这份通知，可能已经清理或删除',
+  409: '这份通知已到清理日期，或者没有能导出的文字',
+  413: '这份通知太长，导出的文件超过 1000 KiB，请在小程序里阅读',
+  429: '导出太频繁，请 10 分钟后再试',
+  503: '现在导出的人多，请稍后再试',
+};
+function wordFile(path) {
+  if (!isLive()) return Promise.reject(new Error('演示数据不能导出，连上接口后可用'));
+  return afterWake(() => new Promise((resolve, reject) => {
+    const state = availability(config.cloudService);
+    let settled = false;
+    const finish = (fn, value) => { if (!settled) { settled = true; clearTimeout(timer); fn(value); } };
+    const fail = () => {
+      if (!settled) { state.failed(); finish(reject, new Error('网络不太好，请稍后再试')); }
+    };
+    const timer = setTimeout(fail, 30000);
+    const done = (res) => {
+      if (settled) return;
+      state.answered(res.statusCode);
+      if (res.statusCode === 200) { finish(resolve, res.data); return; }
+      if (res.statusCode === 403) forgetAgreed();
+      finish(reject, Object.assign(new Error(WORD_ERRORS[res.statusCode] || `导出失败（${res.statusCode}）`), { status: res.statusCode }));
+    };
+    const common = { method: 'POST', data: {}, dataType: 'other', responseType: 'arraybuffer', timeout: 30000, success: done, fail };
+    if (config.cloudEnv) {
+      wx.cloud.callContainer(Object.assign({
+        config: { env: config.cloudEnv }, path,
+        header: { 'X-WX-SERVICE': config.cloudService, 'content-type': 'application/json' },
+      }, common));
+    } else {
+      wx.request(Object.assign({ url: config.devBaseUrl + path, header: { 'content-type': 'application/json' } }, common));
+    }
+  }), false);
+}
+
+// 清理期里导出这份通知（不用登录，同导出题录）
+function exportGone(docId) {
+  return wordFile(`/api/v1/documents/${encodeURIComponent(docId)}/gone-export`);
+}
+
+// 保存到"我的保存"（要同意过写进"您保存的通知"的隐私保护指引）
+function saveDoc(docId) {
+  if (!isLive()) return Promise.reject(new Error('演示数据不能保存，连上接口后可用'));
+  return request('/api/v1/me/saved', null, { method: 'POST', data: { docId: String(docId) } });
+}
+
+function savedList() {
+  return request('/api/v1/me/saved');
+}
+
+// 按页读保存的副本（和阅读接口同一个格式）：part 空是正文，1、2… 是第几个附件
+function savedReading(id, part, params = {}) {
+  if (!isLive()) return Promise.reject(new Error('连接真实服务后可阅读内容'));
+  return request(`/api/v1/me/saved/${encodeURIComponent(id)}/reading`, Object.assign(part ? { part } : {}, params));
+}
+
+function deleteSaved(id) {
+  return request(`/api/v1/me/saved/${encodeURIComponent(id)}`, null, { method: 'DELETE' });
+}
+
+function exportSaved(id) {
+  return wordFile(`/api/v1/me/saved/${encodeURIComponent(id)}/export`);
+}
+
 // 附件副本的一段（ArrayBuffer）：服务端存有副本的附件按段取（每段不超过云托管返回上限 1000 KiB），
 // version 是详情接口给的版本，对不上（副本已更新）时服务端返回 409
 function attachmentPart(id, version, part) {
@@ -904,6 +973,7 @@ module.exports = {
   attachmentPart, reading, exportPreview, advisorReading,
   AGREED_KEY, forgetAgreed, me, agree, deleteMe, myFollows, createFollow, deleteFollow, seenFollow, followNew, mySubscriptions,
   myData, renameFollow, deleteFeedback, deleteSubscription,
+  exportGone, saveDoc, savedList, savedReading, deleteSaved, exportSaved,
   follow, files, saveSubscription,
   advisorCapabilities, forgetCapabilities, advisorMode, advisorStatus, advisorSeason, advisorPreview, startBoostTrial, createAdvisorTask, advisorTasks, advisorTask, cancelAdvisorTask, deleteAdvisorTask, downloadAdvisorTask, advisorTaskPart,
   payProducts, createPayOrder, payOrder, payOrders, checkPayOrder, refundPayOrder, requestInvoice, payHeader,

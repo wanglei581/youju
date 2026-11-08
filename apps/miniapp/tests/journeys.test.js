@@ -131,8 +131,8 @@ test('J-04/J-07/J-08 我的数据分开处理和安全状态，每类完整单�
   raw.subscriptions[0].status = 'unused'; page.load(); await flush();
   page.remove(event({ kind: 'sub', id: 2 })); assert.equal(modal.title, '取消提醒');
   const template = wxml('my-data');
-  // 关注、提醒授权、纠错、工具记录（D-093 上线门槛第 8 条，见 my-data-records.test.js）各一个
-  assert.equal((template.match(/bindtap="copyOne"/g) || []).length, 4);
+  // 关注、提醒授权、纠错、保存的通知（D-123）、工具记录（D-093 上线门槛第 8 条，见 my-data-records.test.js）各一个
+  assert.equal((template.match(/bindtap="copyOne"/g) || []).length, 5);
   assert.doesNotMatch(template, /wx:if="{{item.unused}}" class="item-ops"/);
 });
 

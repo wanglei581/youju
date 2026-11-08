@@ -16,10 +16,12 @@
     <text><text wx:if="{{!issuerLong && doc.issuer}}">{{doc.issuer}}</text><text wx:if="{{!issuerLong && doc.issuer && doc.date}}"> · </text><text wx:if="{{doc.date}}" class="meta-date">{{doc.date}}</text></text>
     <!-- 原文链接已失效（后台检查，近 30 天的每天查，隔天两次都打不开或是撤稿页才算，youju/link_check.py）。
          分不清是撤稿还是改了地址，只说链接失效，不说"已撤下"（agy 合规审阅 10/23） -->
-    <text wx:if="{{doc.link_gone}}" class="gone">原文链接已失效</text>
+    <text wx:if="{{doc.link_gone && !goneLine}}" class="gone">原文链接已失效</text>
     <!-- 解读按钮（D-075，组件里判断）：只在能解读、对这个人开着时出现；勾选导出时不出现 -->
     <ai-button class="meta-ai" doc-id="{{doc.id}}" doc-title="{{doc.title}}" ai="{{doc.ai}}" selecting="{{selecting}}" bind:toggle="aiToggle" />
   </view>
+  <!-- D-123：原网页打不开、还在 7 天清理期里的（服务端给 gone）：写打不开的日期、提示和哪天清理，正文、附件照常能看 -->
+  <view wx:if="{{goneLine}}" class="gone-line">{{goneLine}}</view>
   <!-- 转发版本：同一份部里通知的其他地方版本，各自的截止和原文在各自的详情里 -->
   <view wx:if="{{groupText}}" class="group" catchtap="toggleGroup" hover-stop-propagation aria-role="button" aria-expanded="{{groupOpen}}">
     <text>{{groupText}}</text>
