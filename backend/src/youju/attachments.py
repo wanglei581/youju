@@ -286,11 +286,10 @@ def _xml_text(raw: bytes) -> str:
     return html.unescape(_TAGS.sub("", _BREAK_TAGS.sub("\n", raw.decode("utf-8", "ignore"))))
 
 
-# zip 里只读不压缩（stored）和 deflate 压缩的部件（PR #451 给附件文字读 Office、压缩包加的是同一条
-# 规则，合并后可以共用那边的 _ZIP_METHODS）：Python 解 bzip2、LZMA 时一次把读进来的压缩数据整段
+# zip 里只读不压缩（stored）和 deflate 压缩的部件，和附件文字读 Office、压缩包共用一份规则
+# （attachment_text._ZIP_METHODS）：Python 解 bzip2、LZMA 时一次把读进来的压缩数据整段
 # 解开、不受 read(n) 的长度限制，几百字节的文件能解出几百 MB（11/5 独立审阅实测：362 字节的包让
-# 内存从 70MB 涨到 660MB）。Office 只用这两种（11/5 抽查 147 份真实附件的 3,288 个部件也是）
-_ZIP_METHODS = (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED)
+# 内存从 70MB 涨到 660MB）。Office 只用这两种（11/5 抽查 147 份真实附件的 3,288 个部件也是）。
 
 
 class UnsupportedZip(Exception):
@@ -307,7 +306,7 @@ def _ooxml_text(data: bytes, nested: bool = False) -> str | None:
     with zipfile.ZipFile(io.BytesIO(data)) as zf:
         infos = zf.infolist()
         for info in infos:
-            if info.compress_type not in _ZIP_METHODS:
+            if info.compress_type not in attachment_text._ZIP_METHODS:
                 # 记一条：检查结果只写"取不出文字"，看日志才分得清是压缩方式的事
                 log.info("附件副本：Office 部件的压缩方式不支持（%s），不读", info.compress_type)
                 raise UnsupportedZip(
