@@ -230,10 +230,11 @@ def test_wsl_setup_keeps_review_fixes():
     # -Force 更新已有任务、装 Docker 之前就启动
     assert "while ($true)" in ps1 and '-Execute "conhost.exe"' in ps1 and "-Force" in ps1
     assert ps1.index("Start-ScheduledTask") < ps1.index('setup-wsl.sh")')
-    # 数据位置按盘符固定（<盘>:\youju），不跟着安装包解压位置走；管理员窗口里不装
-    assert (
-        "Split-Path -Qualifier $PSScriptRoot" in ps1 and "WindowsBuiltInRole]::Administrator" in ps1
-    )
+    # 数据位置按盘符固定（<盘>:\youju），不跟着安装包解压位置走
+    assert "Split-Path -Qualifier $PSScriptRoot" in ps1
+    # 只拦开着 UAC 时提升过的管理员窗口（令牌提升类型 2）；关了 UAC 的电脑（11/8 创始人的主机
+    # EnableLUA=0，所有程序都是管理员身份）照常装
+    assert "GetTokenInformation(token, 18" in ps1 and "$elevation -eq 2" in ps1
     # 升级时先删旧源码再拷，拷贝管道失败要报出来
     assert "rm -rf /opt/youju/local/source" in ps1 and "set -euo pipefail" in ps1
     sh = (SELFHOST / "local" / "setup-wsl.sh").read_text(encoding="utf-8")

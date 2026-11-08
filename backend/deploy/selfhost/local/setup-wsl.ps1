@@ -76,8 +76,26 @@ Say ("数据位置：" + $DataRoot + "；安装包：" + $PSScriptRoot)
 Step "1/5 检查 WSL 和运行身份"
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 Say ("当前用户：" + $identity.Name)
-if ((New-Object Security.Principal.WindowsPrincipal($identity)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-  Fail "请在普通（非管理员）终端里运行本脚本：管理员窗口里的 WSL 和平时的不是同一套，发行版和登录后启动的任务都要装在平时的身份下。"
+# 开着用户账户控制（UAC）时，「以管理员身份运行」的窗口里的 WSL 和平时的不是同一套，发行版和登录后启动的
+# 任务都要装在平时的身份下：这种情况拦下。关了 UAC 的电脑（EnableLUA=0）所有程序本来就都是管理员身份，
+# 没有两套之分，照常装。用 Windows 的令牌提升类型判断：2 = 开着 UAC、这个窗口是提升过的
+$elevation = 0
+try {
+  $code = 'using System; using System.Runtime.InteropServices; public static class YoujuToken { ' +
+    '[DllImport("advapi32.dll", SetLastError = true)] static extern bool GetTokenInformation(IntPtr token, int infoClass, out int info, int length, out int returned); ' +
+    'public static int ElevationType() { int value, returned; IntPtr token = System.Security.Principal.WindowsIdentity.GetCurrent().Token; ' +
+    'return GetTokenInformation(token, 18, out value, 4, out returned) ? value : 0; } }'
+  Add-Type -TypeDefinition $code -ErrorAction Stop
+  $elevation = [YoujuToken]::ElevationType()
+} catch {
+  # 编译不了时退回看注册表：是管理员窗口、又开着 UAC，才算提升过的
+  $admin = (New-Object Security.Principal.WindowsPrincipal($identity)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+  $uac = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" -ErrorAction SilentlyContinue).EnableLUA
+  if ($admin -and $uac -ne 0) { $elevation = 2 }
+}
+Say "令牌提升类型：$elevation（1 = 只有一套身份，2 = 提升过的管理员窗口，3 = 普通窗口）"
+if ($elevation -eq 2) {
+  Fail "请在普通（非管理员）终端里运行本脚本：开着用户账户控制时，管理员窗口里的 WSL 和平时的不是同一套，发行版和登录后启动的任务都要装在平时的身份下。"
 }
 $verText = (& wsl.exe --version 2>&1 | Out-String)
 if ($LASTEXITCODE -ne 0 -or $verText -notmatch '(\d+)\.(\d+)\.(\d+)') {
