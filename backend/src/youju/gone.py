@@ -159,6 +159,8 @@ def _squash(title: str | None) -> str:
 
 def merge_groups(session: Session, ids: list[int]) -> dict[int, set[int]]:
     """每份所在归并组（同一份通知的不同网址）的全部编号，含它自己；不在组里的就是它自己。"""
+    if not ids:
+        return {}
     canonical = {
         row.duplicate_id: row.canonical_id
         for row in session.execute(
@@ -449,7 +451,7 @@ def cleanup_expired(
     if ready:
         groups = merge_groups(session, ready)
         allowed = set(ready)
-        held = [doc_id for doc_id in ready if not groups[doc_id] <= allowed]
+        held = {doc_id for doc_id in ready if not groups[doc_id] <= allowed}
         counts["waiting"] += len(held)
         ready = [doc_id for doc_id in ready if doc_id not in held]
     session.commit()
