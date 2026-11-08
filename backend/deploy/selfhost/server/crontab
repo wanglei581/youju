@@ -14,7 +14,7 @@
 # 用户纠错过的文件复查截止日期（triage-feedback）2.0 先不跑：它把结果写在截止日期上，那是从本机
 # 同步来的行，服务器上改了会被下次同步盖掉；要改成把结果只记在纠错上以后再加回来
 30 3 * * *  /app/backend/deploy/job.sh cleanup
-# 整库备份存本机存储（保留 30 天）→ 校验 → 加密后传异地（COS 归档）
+# 整库备份存本机存储（保留 30 天）→ 校验 → 加密后传异地（COS 低频）
 0 4 * * *  /app/backend/deploy/job.sh backup
 40 4 * * *  /app/backend/deploy/job.sh backup-verify
 10 5 * * *  /app/backend/deploy/job.sh offsite-backup
