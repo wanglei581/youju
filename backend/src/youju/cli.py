@@ -1093,13 +1093,45 @@ def _cmd_check_links(args: argparse.Namespace) -> int:
         until = today.replace(hour=hour, minute=minute, second=0, microsecond=0)
     with session_factory()() as session:
         counts = check_links(session, limit=args.limit, until=until)
-    print(
-        f"检查原网页 {counts['checked']} 份：能打开 {counts['ok']}，"
-        f"第一次像是撤下了待确认 {counts['suspect']}，确认失效 {counts['gone']}"
-        f"（其中网站回 200 的撤稿页、404 页 {counts['withdrawn_page']} 次），"
-        f"暂时判断不了 {counts['unknown']}；该查还没轮到 {counts['left']} 份，"
-        f"第一次像是撤下了、3 天还没确认的 {counts['stale_suspect']} 份"
+        print(
+            f"检查原网页 {counts['checked']} 份：能打开 {counts['ok']}，"
+            f"第一次像是撤下了待确认 {counts['suspect']}，确认失效 {counts['gone']}"
+            f"（其中网站回 200 的撤稿页、404 页 {counts['withdrawn_page']} 次），"
+            f"暂时判断不了 {counts['unknown']}；该查还没轮到 {counts['left']} 份，"
+            f"第一次像是撤下了、3 天还没确认的 {counts['stale_suspect']} 份"
+        )
+        # D-123：查完接着删过了清理期的（开关关着什么也不做）。和检查放在同一个任务里，
+        # 保证先查后删，也不用另排定时任务
+        from youju import gone
+
+        if gone.enabled():
+            _print_gone_cleanup(gone.cleanup_expired(session))
+    return 0
+
+
+def _print_gone_cleanup(counts: dict[str, int], *, dry_run: bool = False) -> None:
+    from youju.gone import KEEP_REASONS
+
+    kept = "，".join(
+        f"{text} {counts[reason]}" for reason, text in KEEP_REASONS.items() if counts[reason]
     )
+    print(
+        f"原网页失效到期清理：到期 {counts['due']} 份，{'会删' if dry_run else '删了'} "
+        f"{counts['deleted']} 份，最近 36 小时没查过、推迟到下次 {counts['stale']} 份"
+        + (f"；不清理：{kept}" if kept else "")
+    )
+
+
+def _cmd_gone_cleanup(args: argparse.Namespace) -> int:
+    from youju import gone
+
+    if not gone.enabled():
+        print("没有打开 YOUJU_GONE_CLEANUP_ENABLED，不清理")
+        return 1
+    with session_factory()() as session:
+        _print_gone_cleanup(
+            gone.cleanup_expired(session, dry_run=args.dry_run), dry_run=args.dry_run
+        )
     return 0
 
 
@@ -2284,6 +2316,13 @@ def main(argv: list[str] | None = None) -> int:
         "不带就是开始后 60 分钟",
     )
     p.set_defaults(func=_cmd_check_links)
+
+    p = sub.add_parser(
+        "gone-cleanup",
+        help="D-123：删掉原网页失效过了 7 天清理期的通知（check-links 跑完会自动做，这里手动补跑）",
+    )
+    p.add_argument("--dry-run", action="store_true", help="只数会删几份，不删")
+    p.set_defaults(func=_cmd_gone_cleanup)
 
     p = sub.add_parser("backup-verify", help="只读校验最新备份的完整性和迁移版本")
     p.add_argument("--file", type=Path, help="校验本机备份文件，不从对象存储下载")

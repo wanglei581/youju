@@ -3483,6 +3483,21 @@ def judge(session: Session, master, items: list, now: datetime) -> list[Reading]
     }
     master_kind = effective_kind(master.title, master.kind_override)
     withheld = v1.body_withheld(master, master_kind)
+    # 原网页失效的不给附件（D-097）；D-123 开关开着时，还在 7 天清理期里、到期会清理的照常给
+    # （和正文同一个判断：gone.window_ids）
+    from youju import gone
+
+    gone_ids = {master.id} if master.link_gone_at is not None else set()
+    gone_ids |= {row.id for row in owners.values() if row.link_gone_at is not None}
+    readable_gone = (
+        gone.window_ids(session, [session.get(Document, doc_id) for doc_id in gone_ids], now)
+        if gone_ids and gone.enabled()
+        else set()
+    )
+
+    def link_blocked(doc_id: int, gone_at) -> bool:
+        return gone_at is not None and doc_id not in readable_gone
+
     rows = {
         r.url_hash: r
         for r in session.scalars(
@@ -3524,7 +3539,9 @@ def judge(session: Session, master, items: list, now: datetime) -> list[Reading]
             reading.state = "kind"
         elif owner is None or owner.rights_level != 1:
             reading.state = "source"
-        elif master.link_gone_at is not None or owner.link_gone_at is not None:
+        elif link_blocked(master.id, master.link_gone_at) or link_blocked(
+            owner.id, owner.link_gone_at
+        ):
             reading.state = "link_gone"
         elif not attachments._government_url(a.url):
             reading.state, reading.detail = "host", "不是政府网站的链接"

@@ -83,6 +83,11 @@ GRANT INSERT, UPDATE, DELETE ON youju.ai_chats TO 'youju_api'@'%';
 GRANT INSERT, UPDATE, DELETE ON youju.ai_chat_turns TO 'youju_api'@'%';
 GRANT INSERT ON youju.ai_safety_hits TO 'youju_api'@'%';
 
+-- 我的保存权限（D-123）：迁移 0049 建好表以后、打开 YOUJU_GONE_CLEANUP_ENABLED 之前，由创始人执行
+-- （随 2.0）。用户保存一份新增一行，再保存一次换成新的内容，删除自己的副本；注销时随用户行级联删除。
+-- 下架后删副本由 admin 的清理任务做（admin 有全部权限）。
+GRANT INSERT, UPDATE, DELETE ON youju.saved_documents TO 'youju_api'@'%';
+
 -- ③ 备份恢复演练（youju restore-drill，D-118）：admin 账号在同一个 MySQL 上建临时库
 -- youju_drill_<北京时间>_<4 位随机>，恢复最新备份、核对，演练完删掉（终端断开、实例停止也会删；
 -- 万一没删掉，下一次演练开头先删）。只授这一类库名的权限（反斜杠是让下划线按字面匹配），

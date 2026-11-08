@@ -16,6 +16,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from youju import attachment_text as texts
+from youju import gone
 from youju.api import attachments as download_api
 from youju.api import v1
 from youju.classify import effective_kind
@@ -126,6 +127,8 @@ def _payload(title: str, source: dict, status="ok", notice="") -> dict:
         "notice": notice,
         "scannedPages": 0,
         "toc": None,
+        # D-123：原网页失效、还在 7 天清理期里的，正文和附件上面写的一句（_gone_note）
+        "goneNote": "",
     }
 
 
@@ -139,6 +142,13 @@ def _document(session, doc_id: int, request: Request):
     if row is None:
         raise HTTPException(404, "没有找到这份文件")
     return row
+
+
+def _gone_note(session: Session, doc: Document) -> str:
+    """原网页失效、还在 7 天清理期里、到期会清理的（D-123）：页面上写打不开的日期和清理日期。"""
+    if doc.link_gone_at is None or not gone.in_window(session, doc, v1.now()):
+        return ""
+    return gone.reading_note(doc.link_gone_at)
 
 
 SEGMENT_MAX = 1000
@@ -279,6 +289,7 @@ def document_reading(
     # 对完整正文脱敏后再分段，号码跨分页边界也不能漏出。
     body = v1.reading_body(session, doc, kind, attachments=bool(readings), redact=texts.mask)
     payload["toc"] = _toc(body, readings)
+    payload["goneNote"] = _gone_note(session, doc)
     if body.status != "ok":
         payload.update(
             status=_BODY_STATUS.get(_body_key(body), "unavailable"),
@@ -399,6 +410,7 @@ def attachment_reading(
     body = v1.reading_body(session, doc, kind, attachments=bool(readings), redact=texts.mask)
     payload["toc"] = _toc(body, readings)
     payload["state"] = state.state
+    payload["goneNote"] = _gone_note(session, doc)
     if not state.readable:
         payload.update(
             status=_ATTACHMENT_STATUS.get(state.state, "unavailable"), notice=f"{state.note}。"

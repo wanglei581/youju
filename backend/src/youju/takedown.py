@@ -124,5 +124,11 @@ def change_state(
                 operated_at=stamp,
             )
         )
+    if action == "takedown":
+        # D-123 ④：下架的（四种原因都算），用户保存的副本一起删。2.0 下架在本机做，本机没有副本，
+        # 服务器上的由每天的 cleanup 任务删（saved.purge_taken_down），删之前读的时候就不给
+        from youju.saved import purge_documents
+
+        purge_documents(session, [doc.id for doc in docs])
     session.commit()
     return [doc.id for doc in docs]
