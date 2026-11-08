@@ -405,26 +405,18 @@ def _copy(pdf, opts: dict) -> dict:
     return {"text": "\n".join(texts)}
 
 
-# 扫描页（见 _text_page）：不到这么多字、图片占了这么大比例的页面；或者图片盖住了几乎整页、
-# 字是识别层
-_SCAN_PAGE_CHARS = 10
-_SCAN_PAGE_SOME_COVER = 0.3
-_SCAN_PAGE_COVER = 0.9
-_PDF_MAX_EDGES = 5000
-# 没有字、曲线却有这么多的页：字被转成了线条，按扫描页算
-_OUTLINED_CURVES = 100
-
-
 def _text(pdf, opts: dict) -> dict:
-    """附件文字（attachment_text._pdf）：{"pages": 总页数, "read": [每页]}，每页见 _text_page。
-    超过 pages 页的：first_pages 为真时只读前 pages 页，不然不读（{"pages": 总页数}）。"""
+    """附件文字（attachment_text._pdf）：{"pages": 总页数, "read": [每页]}，每页见 _text_page
+    （认扫描页、找表格用的几个数 scan_chars 等由 attachment_text 传过来，和它认 OFD 扫描页
+    用同一套）。超过 pages 页的：first_pages 为真时只读前 pages 页，不然不读
+    （只有总页数）。"""
     pages = len(pdf.pages)
     if pages > opts["pages"] and not opts["first_pages"]:
         raise _Stop({"pages": pages})
     read = []
     for page in pdf.pages[: opts["pages"]]:
         try:
-            read.append(_text_page(page))
+            read.append(_text_page(page, opts))
         finally:
             page.close()  # 释放这一页解析出的对象
     return {"pages": pages, "read": read}
@@ -450,7 +442,7 @@ def _ocr_layer(page) -> bool:
         return False
 
 
-def _text_page(page) -> dict:
+def _text_page(page, opts: dict) -> dict:
     """一页：是不是扫描页（{"scan": true}）；不是的，表格外的文字行（[上边, 下边, 文字]，页码行
     由 attachment_text 按页面高度去掉）、表格（[上边, 各行各格的文字（合并单元格占的位置是
     null）, 竖线位置]）。
@@ -467,16 +459,16 @@ def _text_page(page) -> dict:
             for im in images
         )
         area = page.width * page.height
-        if len(page.chars) < _SCAN_PAGE_CHARS and cover >= area * _SCAN_PAGE_SOME_COVER:
+        if len(page.chars) < opts["scan_chars"] and cover >= area * opts["scan_some_cover"]:
             return {"scan": True}
-        if cover >= area * _SCAN_PAGE_COVER and _ocr_layer(page):
+        if cover >= area * opts["scan_cover"] and _ocr_layer(page):
             return {"scan": True}
-    if not page.chars and len(page.curves) >= _OUTLINED_CURVES:
+    if not page.chars and len(page.curves) >= opts["outlined_curves"]:
         return {"scan": True}  # 字被转成了线条（导出时"文字转曲"），取不出
     page = page.dedupe_chars()  # 为了加粗把同一个字重画一遍的，只留一个
     try:
         # 线条特别多的页（图纸、图表）找表格可能很慢：不找，只取文字行（9/28 数据里最多 1200 条）
-        found = page.find_tables() if len(page.edges) <= _PDF_MAX_EDGES else []
+        found = page.find_tables() if len(page.edges) <= opts["max_edges"] else []
     except Exception:  # noqa: BLE001 - 找表格失败就当没有表格，照样取文字
         found = []
     boxes = [t.bbox for t in found]
