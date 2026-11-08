@@ -239,6 +239,25 @@ def test_time_limit_stops_a_busy_pdf_in_all_four_readers(monkeypatch) -> None:
     assert time.monotonic() - started < 4 * pdf_sandbox._wall(2)
 
 
+def test_slow_pdf_inside_a_zip_is_too_large_not_broken(monkeypatch) -> None:
+    """压缩包里的慢 PDF 按"太大或太复杂"记（不是"损坏"），后面的文件按"前面读得太久"不读。以前在本进程里
+    读时，pdfplumber 把超时包进 PdfminerException，会记成"文件解析出错"、包里标成"损坏或加了密"
+    （11/8 #452 第 9 轮审阅发现）；现在 pdfplumber 只在子进程里跑，超时在父进程等的时候抛出。"""
+    import io
+    import zipfile
+
+    monkeypatch.setattr(attachment_text, "EXTRACT_SECONDS", 4)
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("0.pdf", make_pdf(TEXT))
+        zf.writestr("1.pdf", busy_pdf())
+        zf.writestr("2.pdf", make_pdf(TEXT))
+    result = attachment_text.extract(out.getvalue())
+    texts = [segment.text for segment in result.segments]
+    assert "第 2 个文件（共 3 个）：1.pdf（文件太大或太复杂，暂不能阅读）" in texts
+    assert "第 3 个文件（共 3 个）：2.pdf（前面的文件读的时间太长，这个没有读）" in texts
+
+
 def test_time_limit_works_outside_the_main_thread(monkeypatch) -> None:
     """补详情在线程池里读 PDF 正文：SIGALRM 只能在主线程，子进程照样到时停掉。"""
     monkeypatch.setattr(body_pdf, "PDF_SECONDS", 2)
