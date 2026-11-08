@@ -607,6 +607,8 @@ def status(engine: Engine, client: Client | None) -> dict:
 # ---- 起步：服务器导出、本机导入 ----
 
 EXPORT_FORMAT = "youju-sync-export"
+# 迁移会写种子行的同步表（0013 写了默认的周报方案）：刚迁移好的空库里就有，导入时可以清掉
+SEEDED_TABLES = frozenset({"digest_profiles"})
 
 
 def export(engine: Engine, out: IO[bytes]) -> dict[str, int]:
@@ -680,7 +682,11 @@ def import_export(engine: Engine, src: IO[bytes]) -> dict[str, int]:
         if header.get("revision") != mine:
             raise SyncError(f"迁移版本不一致：本机 {mine}，文件 {header.get('revision')}")
         busy = [n for n, t in tables.items() if conn.scalar(select(func.count()).select_from(t))]
-        if busy:
+        if busy and set(busy) <= SEEDED_TABLES:
+            # 只有迁移写进去的种子行（如默认的周报方案）：删掉，导入的文件里有服务器上的那一份
+            for name in busy:
+                conn.execute(tables[name].delete())
+        elif busy:
             raise SyncError(f"本机这些表不是空的：{', '.join(busy)}")
         conn.execute(text("SET FOREIGN_KEY_CHECKS = 0"))
         batch: list[dict] = []

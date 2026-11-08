@@ -474,6 +474,9 @@ def test_export_import_bootstrap(env, server_engine, db_engine):
         origin="user",
         status="pending",
     )
+    # 两边的库都是迁移建的：迁移 0013 写了一行默认的周报方案（种子行），导入时不能因为它就拒绝
+    for engine in (server_engine, db_engine):
+        insert(engine, "digest_profiles", name="全国版", provinces=[], keywords=[])
     buf = io.BytesIO()
     counts = local.export(server_engine, buf)
     assert counts["documents"] == 2 and counts["document_deadlines"] == 0
@@ -481,6 +484,7 @@ def test_export_import_bootstrap(env, server_engine, db_engine):
     buf.seek(0)
     local.import_export(db_engine, buf)
     assert [r["takedown_note"] for r in rows(db_engine, "documents")] == [None, None]
+    assert count(db_engine, "digest_profiles") == 1
     assert count(db_engine, "document_deadlines") == 0
     with db_engine.connect() as conn:
         auto = conn.scalar(
