@@ -103,6 +103,22 @@ def repeatable_read_factory(
     )
 
 
+@pytest.fixture
+def pdf_in_process(monkeypatch) -> None:
+    """读 PDF 不起子进程：pdf_sandbox 在测试进程里跑子进程的那一段（_work，结果照样过一遍
+    JSON）。给冒充 pdfplumber 的测试（再改 pdf_sandbox._open）、要改 pdf_limits 内部参数或量本进程
+    内存的测试用；子进程本身（限内存、限时、环境变量）在 test_pdf_sandbox.py 里测。"""
+    import json
+
+    from youju import pdf_sandbox
+
+    def spawn(cfg: dict, data: bytes, seconds: float) -> dict:
+        answer = pdf_sandbox._work(cfg["task"], data, cfg["options"])
+        return json.loads(json.dumps(answer, ensure_ascii=False))
+
+    monkeypatch.setattr(pdf_sandbox, "_spawn", spawn)
+
+
 def read_fixture_html(name: str) -> str:
     return (FIXTURES / "html" / f"{name}.html").read_bytes().decode("utf-8", errors="replace")
 

@@ -132,6 +132,8 @@ _PLATFORM_HINTS = {
 }
 RUN_BYTES = 1024**3  # 每轮最多下载 1GB
 _PDF_PAGES = 300
+# 查一份 PDF 最多用这么多秒（pdf_sandbox 到时停掉子进程），到了按取不出文字算
+PDF_SECONDS = 180
 _TEXT_MAX = 100 * 1024 * 1024  # Office 文件解压后的文字部分上限（防压缩炸弹）
 _LINK_MAX_AGE = 1800  # 临时链接有效期（秒）
 _LINK_TTL = 1200.0  # api 进程里缓存临时链接的时间，比有效期短
@@ -224,17 +226,6 @@ class HasImages(Exception):
     """附件里有查不了个人信息的图片或嵌入对象（异常说明写在哪里）。"""
 
 
-def _pdf_image_areas(page, images: list[dict]) -> list[float]:
-    """这一页上每张图片占的面积（超出页面的部分不算）。"""
-    x0, top, x1, bottom = page.bbox
-    areas = []
-    for image in images:
-        width = min(image["x1"], x1) - max(image["x0"], x0)
-        height = min(image["bottom"], bottom) - max(image["top"], top)
-        areas.append(width * height if width > 0 and height > 0 else 0.0)
-    return areas
-
-
 def _bitmap_size(raw: bytes) -> tuple[int, int] | None:
     """位图的宽、高（像素）；认不出返回 None。只读文件头，不解码像素。"""
     from PIL import Image
@@ -268,32 +259,26 @@ def _check_bitmap(raw: bytes, size: int, where: str) -> None:
 
 
 def _pdf_text(data: bytes) -> str | None:
-    """PDF 里的文字。解压后太大、压缩方式不支持（pdf_limits）抛异常，text_of 按取不出文字算。"""
-    import pdfplumber
+    """PDF 里的文字：在限内存、限时的子进程里读（pdf_sandbox；某一页几乎没有文字但有图片的，
+    多半是扫描页，查不了，返回 None）。没读成（解压后太大、压缩方式不支持、超时、超内存、损坏）
+    抛 pdf_sandbox.Failed，text_of 按取不出文字算。"""
+    from youju import pdf_sandbox
 
-    from youju import pdf_limits
-
-    texts = []
-    with pdf_limits.reading(), pdfplumber.open(io.BytesIO(data)) as pdf:
-        if len(pdf.pages) > _PDF_PAGES:
-            return None
-        for number, page in enumerate(pdf.pages, 1):
-            text = page.extract_text() or ""
-            images = page.images
-            # 某一页几乎没有文字但有图片：多半是扫描页，查不了
-            scanned = len(text.strip()) < 10 and bool(images)
-            areas = _pdf_image_areas(page, images) if images else []
-            page_area = page.width * page.height
-            page.close()  # 释放这一页解析出的对象，大文件不至于占满内存
-            if scanned:
-                return None
-            if any(area > page_area * PDF_IMAGE_SHARE for area in areas):
-                raise HasImages(f"PDF 第 {number} 页有超过 1/10 页面的图片")
-            if sum(areas) > page_area * PDF_PAGE_SHARE:
-                raise HasImages(f"PDF 第 {number} 页的图片合计超过半页")
-            texts.append(text)
-    joined = "\n".join(texts)
-    return joined if joined.strip() else None
+    found = pdf_sandbox.read(
+        "copy",
+        data,
+        seconds=PDF_SECONDS,
+        pages=_PDF_PAGES,
+        image_share=PDF_IMAGE_SHARE,
+        page_share=PDF_PAGE_SHARE,
+    )
+    if "images" in found:
+        number, kind = found["images"]
+        if kind == "one":
+            raise HasImages(f"PDF 第 {number} 页有超过 1/10 页面的图片")
+        raise HasImages(f"PDF 第 {number} 页的图片合计超过半页")
+    joined = found["text"]
+    return joined if joined is not None and joined.strip() else None
 
 
 def _xml_text(raw: bytes) -> str:
@@ -537,7 +522,7 @@ def _ole_pictures(data: bytes, file_type: str) -> str:
 
 def text_of(data: bytes, file_type: str) -> str | None:
     """附件里的文字，用来查个人信息；取不出（扫描件、损坏、太大、Office 部件的压缩方式不支持、
-    PDF 解压后太大）返回 None。有查不了的图片（见 HasImages）抛 HasImages。"""
+    PDF 解压后太大、读 PDF 超时超内存）返回 None。有查不了的图片（见 HasImages）抛 HasImages。"""
     try:
         if file_type == "pdf":
             return _pdf_text(data)

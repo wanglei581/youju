@@ -63,15 +63,7 @@ _PDF_PAGES = 300
 # 上限（20MB 的正文 XML 解析后要占几百 MB 内存，字数也早超过 MAX_CHARS 了）
 _XML_MAX = 100 * 1024 * 1024
 _TREE_MAX = 20 * 1024 * 1024
-# 扫描页（见 _pdf_page）：不到这么多字、图片占了这么大比例的页面；或者图片盖住了几乎整页、
-# 字是识别层
-_SCAN_PAGE_CHARS = 10
-_SCAN_PAGE_SOME_COVER = 0.3
-_SCAN_PAGE_COVER = 0.9
-_PDF_MAX_EDGES = 5000
-# 没有字、曲线却有这么多的页：字被转成了线条，按扫描页算
-_OUTLINED_CURVES = 100
-# 页码只在页面上下这么宽的边上认
+# 扫描页怎么认、表格怎么找（读 PDF 的那一段）在 pdf_sandbox 里。页码只在页面上下这么宽的边上认
 _MARGIN = 0.1
 
 # 取不出、下载不了的原因（models.ATTACHMENT_TEXT_REASONS），统计和以后的结果说明按这里写
@@ -1408,40 +1400,35 @@ def _pptx_table(tbl) -> list[_Row]:
 # ---- PDF ----
 
 
-def _pdf(data: bytes) -> list:
-    """PDF：解数据流有上限（pdf_limits）。解压后太大、压缩方式不支持的按它给的原因记（"太大"
-    "格式不支持"），不当成文件损坏。"""
-    from youju import pdf_limits
+def _pdf(data: bytes) -> _Found:
+    """PDF：每页的文字行、表格在限内存、限时的子进程里读（pdf_sandbox），这里接成段落和表格行。
+    解压后太大、压缩方式不支持的按 pdf_limits 给的原因记（"太大""格式不支持"），超时、超内存的
+    按"太大"记，都不当成文件损坏。"""
+    from youju import pdf_sandbox
 
-    with pdf_limits.reading(lambda hit: Unreadable(hit.reason, f"PDF {hit.detail}")):
-        return _pdf_read(data)
-
-
-def _pdf_read(data: bytes) -> list:
-    import pdfplumber
-
+    limits = _limits()
     try:
-        pdf = pdfplumber.open(io.BytesIO(data))
-    except Exception as exc:  # noqa: BLE001 - 第三方解析器对损坏、加密文件会抛多种异常
-        raise Unreadable("broken", "PDF 打不开（损坏或加密）") from exc
+        found = pdf_sandbox.read(
+            "text",
+            data,
+            seconds=limits.seconds,
+            pages=limits.pdf_pages,
+            first_pages=limits.pdf_first_pages,
+        )
+    except pdf_sandbox.Failed as exc:
+        raise _pdf_failed(exc, limits.seconds) from exc
+    pages = found["pages"]
+    if "read" not in found:
+        raise Unreadable("too_large", f"PDF 超过 {limits.pdf_pages} 页")
     items: list[tuple] = []  # ("line", 文字, 页) 或 ("table", 行, 页)
     scanned = 0
-    with pdf:
-        pages = len(pdf.pages)
-        limits = _limits()
-        if pages > limits.pdf_pages and not limits.pdf_first_pages:
-            raise Unreadable("too_large", f"PDF 超过 {limits.pdf_pages} 页")
-        for number, page in enumerate(pdf.pages[: limits.pdf_pages], 1):
-            try:
-                found = _pdf_page(page)
-            finally:
-                page.close()  # 释放这一页解析出的对象
-            lines, tables, is_scan = found
-            scanned += is_scan
-            entries = [(top, "line", text) for top, text in lines]
-            entries += [(top, "table", rows) for top, rows in tables]
-            entries.sort(key=lambda e: e[0])
-            items += [(kind, value, number) for _top, kind, value in entries]
+    for number, page in enumerate(found["read"], 1):
+        lines, tables, is_scan = _pdf_page(page)
+        scanned += is_scan
+        entries = [(top, "line", text) for top, text in lines]
+        entries += [(top, "table", rows) for top, rows in tables]
+        entries.sort(key=lambda e: e[0])
+        items += [(kind, value, number) for _top, kind, value in entries]
     builder = _Builder()
     texts = [value for kind, value, _ in items if kind == "line"]
     width = line_width("\n".join(texts))
@@ -1505,77 +1492,37 @@ def _pdf_read(data: bytes) -> list:
     return _Found(builder, pages=pages, scanned=scanned)
 
 
-_OCR_FONT = re.compile(r"OCR|GlyphLess", re.I)
-_INVISIBLE = re.compile(rb"(?<![\d.])3\s+Tr\b")
+def _pdf_failed(exc, seconds: int) -> Unreadable:
+    """子进程没读成（pdf_sandbox.Failed）→ 取不出的原因，说法和以前在本进程里读一样。"""
+    if exc.kind == "open":
+        return Unreadable("broken", "PDF 打不开（损坏或加密）")
+    if exc.kind == "error":
+        log.info("附件取文字出错（pdf）：%s", exc.error)
+        return Unreadable("broken", f"文件解析出错（{exc.error}）")
+    if exc.kind == "time":
+        return Unreadable("too_large", f"取文字超过 {seconds} 秒")
+    return Unreadable(exc.reason, f"PDF {exc.detail}")
 
 
-def _ocr_layer(page) -> bool:
-    """这页的字是不是扫描件上看不见的识别层：字体名带 OCR、GlyphLess（Acrobat、Tesseract
-    的识别层），或者页面内容把文字设成不可见（3 Tr，ABBYY 等识别软件这样写）。"""
-    if any(_OCR_FONT.search(c.get("fontname") or "") for c in page.chars):
-        return True
-    from pdfminer.pdftypes import resolve1
-
-    try:
-        return any(
-            _INVISIBLE.search(resolve1(stream).get_data())
-            for stream in page.page_obj.contents or []
-        )
-    except Exception:  # noqa: BLE001 - 内容流解不开就按看得见的字算
-        return False
-
-
-def _pdf_page(page) -> tuple[list, list, bool]:
-    """一页：表格外的文字行（去掉页码行）、表格（按行按格）、是不是扫描页。
-
-    扫描页：几乎没有文字、图片占了三成以上的页面；或者整页（九成以上）被图片盖住、上面的字是
-    看不见的识别层（扫描件自动识别出的字，错字多，不取）。只有几个字加一枚公章、一个徽标的页
-    （"特此通知"），整页底图上是正常文字的页（演示文稿导出的 PDF），字照样取。"""
-    images = page.images
-    if images:
-        x0, top, x1, bottom = page.bbox
-        cover = sum(
-            max(0.0, min(im["x1"], x1) - max(im["x0"], x0))
-            * max(0.0, min(im["bottom"], bottom) - max(im["top"], top))
-            for im in images
-        )
-        area = page.width * page.height
-        if len(page.chars) < _SCAN_PAGE_CHARS and cover >= area * _SCAN_PAGE_SOME_COVER:
-            return [], [], True
-        if cover >= area * _SCAN_PAGE_COVER and _ocr_layer(page):
-            return [], [], True
-    if not page.chars and len(page.curves) >= _OUTLINED_CURVES:
-        return [], [], True  # 字被转成了线条（导出时"文字转曲"），取不出
-    page = page.dedupe_chars()  # 为了加粗把同一个字重画一遍的，只留一个
-    try:
-        # 线条特别多的页（图纸、图表）找表格可能很慢：不找，只取文字行（9/28 数据里最多 1200 条）
-        found = page.find_tables() if len(page.edges) <= _PDF_MAX_EDGES else []
-    except Exception:  # noqa: BLE001 - 找表格失败就当没有表格，照样取文字
-        found = []
-    boxes = [t.bbox for t in found]
-
-    def outside(obj) -> bool:
-        if obj.get("object_type") != "char":
-            return True
-        x = (obj["x0"] + obj["x1"]) / 2
-        y = (obj["top"] + obj["bottom"]) / 2
-        return not any(x0 <= x <= x1 and top <= y <= bottom for x0, top, x1, bottom in boxes)
-
-    rest = page.filter(outside) if boxes else page
+def _pdf_page(page: dict) -> tuple[list, list, bool]:
+    """子进程读出的一页（pdf_sandbox._text_page）→ 表格外的文字行（去掉页眉页脚里的页码行）、
+    表格（按行按格）、是不是扫描页。"""
+    if page["scan"]:
+        return [], [], True
     lines = []
-    top_margin, bottom_margin = page.height * _MARGIN, page.height * (1 - _MARGIN)
-    for line in rest.extract_text_lines(layout=False, strip=True, return_chars=False):
-        text = (line.get("text") or "").strip()
+    top_margin, bottom_margin = page["height"] * _MARGIN, page["height"] * (1 - _MARGIN)
+    for top, bottom, text in page["lines"]:
+        text = text.strip()
         if not text:
             continue
-        in_margin = line["top"] < top_margin or line["bottom"] > bottom_margin
+        in_margin = top < top_margin or bottom > bottom_margin
         if in_margin and _PAGE_NUMBER.fullmatch(text):
             continue  # 页眉页脚里的页码；正文里单独一行的数字（"2025"）照留
-        lines.append((line["top"], text))
+        lines.append((top, text))
     tables = []
-    for table in found:
+    for top, values_by_row, xs in page["tables"]:
         rows = []
-        for number, values in enumerate(table.extract(), 1):
+        for number, values in enumerate(values_by_row, 1):
             cells: list[_Cell] = []
             for col, value in enumerate(values):
                 if value is None:  # 合并单元格占的位置
@@ -1585,8 +1532,7 @@ def _pdf_page(page) -> tuple[list, list, bool]:
                 cells.append(_Cell(col, _join_lines(value.split("\n"))))
             rows.append(_Row(cells, {"row": number}))
         # 表格竖线的位置（取整到 1pt）：下一页开头的表格竖线一样，才是续表
-        xs = tuple(sorted({round(c[0]) for c in table.cells} | {round(c[2]) for c in table.cells}))
-        tables.append((table.bbox[1], (rows, xs)))
+        tables.append((top, (rows, tuple(xs))))
     return lines, tables, False
 
 

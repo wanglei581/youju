@@ -1,12 +1,16 @@
 """PDF 解压上限（pdf_limits）：压缩炸弹在四处读 PDF 的地方（附件副本、附件文字、名单解析、PDF 正文）
 都停在上限、按"太大""格式不支持"记，内存不跟着涨；不超上限的数据流解出的和 pdfminer 原来的写法一样。
-样本都是内存里现做的几百字节到几百 KB 的 PDF，不联网、不用数据库。"""
+样本都是内存里现做的几百字节到几百 KB 的 PDF，不联网、不用数据库。
+
+读 PDF 平时在子进程里（pdf_sandbox）；这里量的是解压上限本身（本进程的内存、改上限和内部参数），
+所以子进程那一段放在本进程里跑（pdf_in_process），子进程本身在 test_pdf_sandbox.py 里测。"""
 
 import contextlib
 import functools
 import gc
 import logging
 import random
+import re
 import tracemalloc
 import zlib
 from pathlib import Path
@@ -22,6 +26,8 @@ from youju import attachment_text, pdf_limits
 from youju import attachments as copies
 from youju.crawler.pdf import extract_pdf_text
 from youju.lists.parser import parse_attachment
+
+pytestmark = pytest.mark.usefixtures("pdf_in_process")
 
 MB = 1024 * 1024
 SRC = Path(__file__).parents[1] / "src" / "youju"
@@ -562,17 +568,19 @@ def test_unsupported_filters_raise_like_pdfminer(attrs: dict, error: str) -> Non
 
 
 def test_every_pdf_reader_uses_the_limits() -> None:
-    """src 里用 pdfplumber、pdfminer 读 PDF 的文件都套了 pdf_limits.reading()（解码换成有上限的写法）。"""
+    """src 里只有 pdf_sandbox.py 用 pdfplumber、pdfminer 读 PDF（在子进程里，套着 pdf_limits.reading()，
+    解码换成有上限的写法）；四处读 PDF 的地方都经过它（pdf_sandbox.read）。"""
     assert PDFStream.decode is pdf_limits._decode
+    uses = re.compile(r"^\s*(?:import|from) (?:pdfplumber|pdfminer)\b", re.M)
     readers = sorted(
         path.relative_to(SRC).as_posix()
         for path in SRC.rglob("*.py")
-        if path.name != "pdf_limits.py"
-        and any(word in path.read_text(encoding="utf-8") for word in ("pdfplumber", "pdfminer"))
+        if path.name != "pdf_limits.py" and uses.search(path.read_text(encoding="utf-8"))
     )
-    assert readers == ["attachment_text.py", "attachments.py", "crawler/pdf.py", "lists/parser.py"]
-    for name in readers:
-        assert "pdf_limits.reading(" in (SRC / name).read_text(encoding="utf-8"), name
+    assert readers == ["pdf_sandbox.py"]
+    assert "pdf_limits.reading(" in (SRC / "pdf_sandbox.py").read_text(encoding="utf-8")
+    for name in ("attachment_text.py", "attachments.py", "crawler/pdf.py", "lists/parser.py"):
+        assert "pdf_sandbox.read(" in (SRC / name).read_text(encoding="utf-8"), name
 
 
 def test_pdfminer_version_is_the_one_decode_was_copied_from() -> None:

@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session
 
+from youju import pdf_sandbox
 from youju.classify import effective_kind, list_status
 from youju.config import get_settings
 from youju.crawler.detail_service import REFETCH_FAILURE_PREFIX, _government_url, fetch_details
@@ -266,10 +267,12 @@ def _parse_source(
             result = parse_attachment_result(response.content, actual_extension, pick)
             entries, partial_reason = result.entries, result.failure_reason
     except Exception as exc:  # noqa: BLE001 - 损坏的外部附件不能中断整批回填
+        # PDF 在子进程里读（pdf_sandbox）：出错时记子进程里那个异常的类名，和以前在本进程里读一样
+        name = exc.error if isinstance(exc, pdf_sandbox.Failed) else None
         reason = (
             str(exc)
             if isinstance(exc, ValueError) and str(exc).startswith("暂不支持")
-            else f"解析失败：{exc.__class__.__name__}"
+            else f"解析失败：{name or exc.__class__.__name__}"
         )
         _save(session, doc, url, kind, classification, None, reason)
     else:
