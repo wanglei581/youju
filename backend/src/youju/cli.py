@@ -1129,7 +1129,8 @@ def _print_gone_cleanup(counts: dict[str, int], *, dry_run: bool = False) -> Non
         f"{text} {counts[reason]}" for reason, text in KEEP_REASONS.items() if counts[reason]
     )
     print(
-        f"原网页失效到期清理：到期 {counts['due']} 份（名单类不算），"
+        ("试跑（只数不删）：" if dry_run else "")
+        + f"原网页失效到期清理：到期 {counts['due']} 份（名单类不算），"
         f"{'会删' if dry_run else '删了'} {counts['deleted']} 份；"
         f"推迟到下次：最近 30 小时没确认还打不开 {counts['stale']} 份、"
         f"原栏目 48 小时没抓成功 {counts['source_stale']} 份"
@@ -1137,12 +1138,15 @@ def _print_gone_cleanup(counts: dict[str, int], *, dry_run: bool = False) -> Non
         + (f"；不清理：{kept}" if kept else "")
     )
     if dry_run:
-        # 打开开关那天的报数（D-124 ⑤）：推迟的、整组等着的也是早晚要删的，再确认一次还打不开就删
-        total = counts["due"] - sum(counts[r] for r in KEEP_REASONS) + counts["waiting"]
+        # 打开开关那天的报数（D-124 ⑤）：会删的 + 推迟的是早晚要删的（推迟的等再确认一次还
+        # 打不开）；等同组其他网址的看同组：整组都能删时一起删，同组有不清理的就一直留着。
+        # 和 --list 的行数对得上
+        later = counts["stale"] + counts["source_stale"]
         print(
-            f"合计到期该删 {total} 份（不算名单类和不清理的几种）："
-            f"这次就会删 {counts['deleted']} 份，其余 {total - counts['deleted']} 份"
-            "等原网页检查再确认一次还打不开、原栏目抓成功过、同组其他网址也到期后再删"
+            f"合计到期该删 {counts['deleted'] + later} 份（不算名单类和不清理的几种）："
+            f"这次就会删 {counts['deleted']} 份，推迟 {later} 份（等原网页检查再确认一次还打不开、"
+            f"原栏目抓成功过以后删）；另有等同组其他网址的 {counts['waiting']} 份"
+            "（整组都能删时一起删，同组有不清理的就一直留着）"
         )
 
 

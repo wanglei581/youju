@@ -1613,8 +1613,14 @@ def test_native_reading_hides_only_cleaned_documents(client, session, monkeypatc
     task_id = create(client).json()["id"]
     row = session.get(AdvisorTask, task_id)
     status = {"label": "截止核对情况", "value": "未核对，请以原文为准"}
+    customer = {"label": "客户名称", "value": "甲公司"}
     items = [
-        {"documentId": str(doc.id), "title": doc.title, "fields": [dict(status)], "n": n}
+        {
+            "documentId": str(doc.id),
+            "title": doc.title,
+            "fields": [dict(customer), dict(status)],
+            "n": n,
+        }
         for n, doc in enumerate(docs)
     ]
     content = {
@@ -1640,11 +1646,17 @@ def test_native_reading_hides_only_cleaned_documents(client, session, monkeypatc
     response = client.get(path)
     assert response.status_code == 200
     first, second = response.json()["items"]
-    assert first == {"documentId": str(kept), "title": "合成通知1", "fields": [status], "n": 0}
+    assert first == {
+        "documentId": str(kept),
+        "title": "合成通知1",
+        "fields": [customer, status],
+        "n": 0,
+    }
+    # 客户名称这类用户自己提交的留着（看得出是哪家客户的），通知带出来的不给
     assert second == {
         "documentId": None,
         "title": "合成通知2",
-        "fields": [],
+        "fields": [customer],
         "n": 1,
         "cleaned": True,
         "note": gone.CLEANED_ITEM,

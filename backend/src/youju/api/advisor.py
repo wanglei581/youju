@@ -363,14 +363,15 @@ def _out(task: AdvisorTask, session: Session, *, include_result: bool = True) ->
                 task.result_json, get_skill(task.kind).result_field
             )
         )
-        if expired:
-            result["result"] = None
-            result["error"] = "结果已过期，请重新提交"
-        elif cleaned:
+        if cleaned:
             # D-124 ②：通知原网页失效、已经到期清理，引用它的结果不再给看（结果是按已经撤下的
-            # 内容做的），说清楚、指向我的保存（保存的只是通知的正文和附件文字，不含 AI 结果）
+            # 内容做的），说清楚、指向我的保存（保存的只是通知的正文和附件文字，不含 AI 结果）。
+            # 排在"已过期"前面：过期又清理了的，"请重新提交"也交不成（独立审阅 D-124 第 1 轮）
             result["result"] = None
             result["error"] = gone.CLEANED_RESULT
+        elif expired:
+            result["result"] = None
+            result["error"] = "结果已过期，请重新提交"
         elif hidden:
             result["result"] = None
             result["error"] = hidden
@@ -926,7 +927,7 @@ def read_result(
     items, used = [], 0
     for item in all_items[cursor : cursor + 20]:
         # 读的时候当场标：生成以后才失效的也标上；存着的结果不改
-        if item.get("documentId") in cleaned_keys:
+        if str(item.get("documentId")) in cleaned_keys:
             item = _cleaned_item(item)
         elif item.get("documentId") in link_gone:
             item = _gone_item(item)
@@ -957,16 +958,22 @@ def read_result(
     )
 
 
+# 批量结果里用户自己提交的那几项（客户相关通知表的客户、名单比对的输入），引用的通知清理了也留着，
+# 看得出是哪家客户的那一行（native_results.build）
+_CUSTOMER_LABELS = frozenset({"客户名称", "客户地区", "查询说明", "客户输入", "比对用的名称"})
+
+
 def _cleaned_item(item: dict) -> dict:
-    """引用的通知已经到期清理的那一条（D-124 ②）：标题留着（用户知道是哪一条），各项内容和"查看文件"
-    都不给，写明原因。返回副本。"""
-    return {
-        **item,
-        "documentId": None,
-        "fields": [],
-        "cleaned": True,
-        "note": gone.CLEANED_ITEM,
-    }
+    """引用的通知已经到期清理的那一条（D-124 ②）：标题和用户自己提交的几项（客户名称等）留着，通知
+    带出来的各项内容和"查看文件"都不给，写明原因。返回副本。"""
+    fields = item.get("fields")
+    kept = [
+        field
+        for field in (fields if isinstance(fields, list) else [])
+        if isinstance(field, dict) and field.get("label") in _CUSTOMER_LABELS
+    ]
+    out = {key: value for key, value in item.items() if key != "linkGone"}
+    return {**out, "documentId": None, "fields": kept, "cleaned": True, "note": gone.CLEANED_ITEM}
 
 
 def _gone_item(item: dict) -> dict:

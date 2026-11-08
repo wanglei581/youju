@@ -1886,8 +1886,30 @@ def test_api_cleaned_document_hides_result_and_says_why(
     assert shown["docCleaned"] is True and shown["docId"] is None and shown["docTitle"] is None
     [row] = client.get("/api/v1/advisor/tasks").json()["items"]
     assert row["docCleaned"] is True and row["status"] == "done" and row["docId"] is None
+    # 过期又清理了的：照样写清理的说法（"请重新提交"也交不成）
+    session.get(AdvisorTask, task_id).expires_at = NOW - timedelta(days=1)
+    session.commit()
+    assert client.get(f"/api/v1/advisor/tasks/{task_id}").json()["error"] == gone.CLEANED_RESULT
     assert client.delete(f"/api/v1/advisor/tasks/{task_id}").status_code < 300
     assert client.get("/api/v1/advisor/tasks").json()["items"] == []
+
+
+def test_api_takedown_still_says_taken_down_with_flag_on(
+    client, session, settings, doc, monkeypatch
+):
+    """开关开着时，下架的（行还在）照旧写"下架"，不说成已停止展示（独立审阅 D-124 第 1 轮）。"""
+    from youju import gone
+
+    monkeypatch.setattr(gone, "enabled", lambda settings=None: True)
+    created = create(client, doc.id).json()
+    task = session.get(AdvisorTask, created["id"])
+    run(session, task, settings)
+    doc.taken_down_at = NOW
+    session.commit()
+    result = client.get(f"/api/v1/advisor/tasks/{task.id}").json()
+    assert result["result"] is None and "下架" in result["error"]
+    assert "docCleaned" not in result
+    assert "docCleaned" not in client.get("/api/v1/advisor/tasks").json()["items"][0]
 
 
 @pytest.mark.parametrize("status,retry", [(429, True), (503, True), (403, False)])

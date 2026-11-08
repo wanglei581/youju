@@ -389,7 +389,9 @@ def cleaned_ids(
     session: Session, ids: Iterable[int | str | None], settings: Settings | None = None
 ) -> set[int]:
     """这些通知编号里已经不在库里的（D-124 ②）。通知只有到期清理会删（cleanup_expired，其余都是
-    下架、行留着），开关开着时就当是清理掉的；开关关着不判断（不会清理），照原来的说法。"""
+    下架、行留着；documents.source_id 对栏目是 RESTRICT），开关开着时就当是清理掉的；开关关着
+    不判断（不会清理），照原来的说法。以后加别的删通知行的路径（比如 2.0 同步带来别的删除），要
+    守住这一条，不然下架的会被说成"已停止展示"。"""
     wanted: set[int] = set()
     for value in ids:
         text = "" if value is None else str(value)
@@ -469,8 +471,9 @@ def cleanup_expired(
     的行经同步通道带到服务器（PR #453）。
 
     dry_run 只数不删，开关关着也能跑：打开开关那天会一次清掉积下来的"失效超过 7 天"的通知，
-    要先试跑报数给创始人（D-124 ⑤，没定）。listing：试跑时把到期、不属于不清理的几种情况的那些
-    （会删的、推迟的、整组等着的）逐份放进去（编号、失效日期、这次怎么处理、标题），给人核对。"""
+    要先试跑报数给创始人（D-124 ⑤，没定）。listing：试跑时把会删的、推迟的、等同组其他网址的
+    （waiting）逐份放进去（编号、失效日期、这次怎么处理、标题），份数和 deleted + stale +
+    source_stale + waiting 对得上；别的不清理的（名单、有下架记录等）不列。"""
     counts = {
         "due": 0,
         "deleted": 0,
@@ -506,7 +509,9 @@ def cleanup_expired(
         if listing is not None:
             will = set(ready)
             for doc in due:
-                if doc.id in kept:
+                # 不清理的（名单、有下架记录、原栏目还列着等）不列；等同组其他网址的（waiting：组里
+                # 还有在 7 天里的，或者这次整组删不了）列上，和计数对得上（独立审阅 D-124 第 1 轮）
+                if doc.id in kept and kept[doc.id] != "waiting":
                     continue
                 state = (
                     "会删"

@@ -335,6 +335,35 @@ def test_merge_group_waits_when_one_member_is_postponed(session, on):
     assert session.scalar(select(func.count()).select_from(DocumentMerge)) == 1
 
 
+def test_dry_run_lists_group_members_waiting_and_counts_match(session, env, capsys):
+    """试跑：等同组其他网址的（组里还有在 7 天里的、整组这次删不了的）也逐份列出，行数和"会删 + 推迟 +
+    等同组"对得上（独立审阅 D-124 第 1 轮）。"""
+    from youju import cli
+
+    env(gone_cleanup_enabled="false")
+    master, _ = gone_doc(session, 1, gone_at=NOW - timedelta(days=8))
+    copy, _ = gone_doc(session, 2, gone_at=NOW - timedelta(days=3))  # 还在 7 天里
+    session.add(DocumentMerge(duplicate_id=copy.id, canonical_id=master.id, match_key="k"))
+    lone, _ = gone_doc(session, 3, gone_at=NOW - timedelta(days=9))
+    session.commit()
+    rows: list[dict] = []
+    counts = gone.cleanup_expired(session, now=NOW, dry_run=True, listing=rows)
+    assert (counts["due"], counts["deleted"], counts["waiting"]) == (2, 1, 1)
+    assert [(row["id"], row["state"]) for row in rows] == [
+        (lone.id, "会删"),
+        (master.id, "等同组其他网址"),
+    ]
+    assert (
+        len(rows)
+        == counts["deleted"] + counts["stale"] + counts["source_stale"] + counts["waiting"]
+    )
+    capsys.readouterr()
+    cli._print_gone_cleanup(counts, dry_run=True)
+    out = capsys.readouterr().out
+    assert out.startswith("试跑（只数不删）：原网页失效到期清理：到期 2 份")
+    assert "合计到期该删 1 份" in out and "另有等同组其他网址的 1 份" in out
+
+
 def test_merge_group_all_in_window_still_shows_body(client, session, on):
     """组里几个网址都打不开、都还在 7 天里：主条目照常按清理期显示（显示时不看 waiting，agy 第 2 轮）。"""
     master, _ = gone_doc(session, 1, gone_at=NOW - timedelta(days=2))
@@ -575,8 +604,11 @@ def test_link_check_checks_old_notices_and_policies_monthly(session, env):
     policy, _, _, _ = seed(session, 2, kind="政策")
     guide, _, _, _ = seed(session, 3, kind="资讯与指南")
     recent_check, _, _, _ = seed(session, 4, kind="政策")
-    for doc in (apply, policy, guide, recent_check):
+    by_rule, _, _, _ = seed(session, 6, kind=None)  # 没人工定过类型：看入库时按标题算的 rule_kind
+    for doc in (apply, policy, guide, recent_check, by_rule):
         doc.publish_date = old
+    assert by_rule.rule_kind == "申报通知"
+    by_rule.link_checked_at = NOW - timedelta(days=40)
     policy.link_checked_at = NOW - timedelta(days=31)
     recent_check.link_checked_at = NOW - timedelta(days=10)  # 这个月查过了
     session.commit()
@@ -585,7 +617,7 @@ def test_link_check_checks_old_notices_and_policies_monthly(session, env):
     env(gone_cleanup_enabled="true")
     live, _, _, _ = seed(session, 5)  # 近 30 天、没查过的排在前面
     picked, left = link_check._select(session, NOW, 10)
-    assert [item[0] for item in picked] == [live.id, apply.id, policy.id] and left == 0
+    assert [item[0] for item in picked] == [live.id, apply.id, by_rule.id, policy.id] and left == 0
     # 查到像是撤下了：上面几队接着管（隔天确认），这一队不再重复挑
     apply.link_checked_at = apply.link_suspect_at = NOW - timedelta(hours=21)
     session.commit()
@@ -623,6 +655,7 @@ def test_dry_run_works_with_flag_off_and_lists_documents(session, env, capsys):
     capsys.readouterr()
     assert cli.main(["gone-cleanup", "--dry-run", "--list"]) == 0
     out = capsys.readouterr().out
+    assert out.startswith("试跑（只数不删）：")
     assert "合计到期该删 2 份" in out and f"#{doc.id}\t" in out and f"#{stale.id}\t" in out
     assert session.scalar(select(func.count()).select_from(Document)) == 2
 
