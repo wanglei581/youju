@@ -3,6 +3,7 @@
 import argparse
 import json
 import logging
+import re
 import sys
 import tempfile
 from collections import Counter
@@ -109,6 +110,15 @@ def _cmd_crawl(args: argparse.Namespace) -> int:
         if args.limit:
             stmt = stmt.limit(args.limit)
         ids = list(session.scalars(stmt).all())
+        if args.skip_blocked and ids:
+            # 最近一次被 401/403/412/521 拒绝的（含列表接口被拒）也不再请求
+            refused = re.compile(r"HTTP (?:401|403|412|521)\b")
+            errors = dict(
+                session.execute(
+                    select(Source.id, Source.last_error).where(Source.id.in_(ids))
+                ).all()
+            )
+            ids = [i for i in ids if not refused.search(errors.get(i) or "")]
     if not ids:
         print("没有符合条件的来源（先运行 youju import-sources？）")
         return 1

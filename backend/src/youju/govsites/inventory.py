@@ -604,8 +604,11 @@ class Inventory:
                     continue
                 if div.level != "国家级" and self._is_ministry(text, link.url):
                     continue  # 页脚"国务院部门网站"里的部委，不是本地部门
-                if _service_hall(link.url):
+                if _service_hall(link.url) and not (
+                    "数据局" in cats and not _SERVICE_PATH.search(urlsplit(link.url).path)
+                ):
                     continue  # 政务服务网的部门办事页（"部门服务"），不是部门信息发布网站
+                    # （数据局的网站有的就叫 zwfw.xx.gov.cn，链接是数据局、路径不是办事页的放行）
                 if not _site_like(link.url, p.final_url) and not report:
                     continue
                 prefix = level_prefix(text)
@@ -641,15 +644,25 @@ class Inventory:
             )
         for rows_for_cat in picked:
             rows.extend(rows_for_cat)
+        before = {id(r): {c.kind for c in r.columns} for r in rows}
         shared = _drop_shared_columns(rows)
         if shared:
-            # 只认出共用栏目的部门：把共用栏目排除后重找一遍（会沿"信息公开"再进一层）
+            # 丢了共用栏目的部门：把共用栏目排除后重找一遍缺的类型（会沿"信息公开"再进一层），
+            # 补回来的再查一次是不是共用的
             for r in rows:
-                if r.reason == SHARED_ONLY and r.status == "已找到" and r.site_url:
-                    page = self.page(r.site_url)
-                    self._fill_from_page(r, page, [page], portal_cols | shared)
-                    if r.columns:
-                        r.reason = ""
+                if r.dept == "政府办" or r.status != "已找到" or not r.site_url:
+                    continue
+                lost = before[id(r)] - {c.kind for c in r.columns}
+                if not lost:
+                    continue
+                kept = list(r.columns)
+                page = self.page(r.site_url)
+                self._fill_from_page(r, page, [page], portal_cols | shared)
+                have = {c.kind for c in kept}
+                r.columns = kept + [c for c in r.columns if c.kind in lost and c.kind not in have]
+                if r.columns and r.reason == SHARED_ONLY:
+                    r.reason = ""
+            _drop_shared_columns(rows)
         return rows
 
     def _pick(
@@ -784,8 +797,8 @@ def _own_branch(text: str, div: Division) -> bool:
 
 # 整段脚本只有一句跳转（不认 if 分支里的、拼接出来的地址）：location.href="…"、location.replace("…")
 _JS_REDIRECT_STMT = re.compile(
-    r"""^(?:window\.|self\.|top\.)?location(?:\.href)?\s*=\s*(["'])([^"'+]+)\1\s*;?$"""
-    r"""|^(?:window\.|self\.|top\.)?location\.replace\(\s*(["'])([^"'+]+)\3\s*\)\s*;?$""",
+    r"""^(?:window\.|self\.|top\.)?location(?:\.href)?\s*=\s*(["'])([^"'+]+)\1\s*;?\s*(?://[^\n]*)?$"""
+    r"""|^(?:window\.|self\.|top\.)?location\.replace\(\s*(["'])([^"'+]+)\3\s*\)\s*;?\s*(?://[^\n]*)?$""",
     re.I,
 )
 _META_REFRESH = re.compile(r"""<meta[^>]+http-equiv=["']?refresh["']?[^>]+url=([^"'>\s]+)""", re.I)
@@ -810,7 +823,11 @@ def _script_redirect(result: FetchResult, url: str) -> str | None:
         return None
     target = None
     for script in _SCRIPT_BODY.findall(result.text):
-        code = re.sub(r"//[^\n]*|/\*.*?\*/", "", script, flags=re.S).strip()
+        # 只去掉 /* … */ 和整行的 // 注释：网址里的 http:// 不能当注释删
+        code = re.sub(r"/\*.*?\*/", "", script, flags=re.S)
+        code = "\n".join(
+            line for line in code.splitlines() if not line.strip().startswith("//")
+        ).strip()
         if not code:
             continue
         m = _JS_REDIRECT_STMT.match(code)

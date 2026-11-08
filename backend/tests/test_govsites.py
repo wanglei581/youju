@@ -608,6 +608,10 @@ def test_round2_review_fixes():
     assert _script_redirect(branch, branch.url) is None
     joined = page("<html><body><script>location.href='/' + tp.pub_point;</script></body></html>")
     assert _script_redirect(joined, joined.url) is None
+    absolute = page(
+        '<html><body><script>\n// 跳到新栏目\nlocation.href="http://www.x.gov.cn/col/col3/index.html"; // 新地址\n</script></body></html>'
+    )
+    assert _script_redirect(absolute, absolute.url) == "http://www.x.gov.cn/col/col3/index.html"
     assert not _service_hall("https://zwfwj.beijing.gov.cn/")  # 政务服务和数据管理局
     assert _service_hall("https://zwfw.hubei.gov.cn/dept/1")
     assert _service_hall("https://hn.ahzwfw.gov.cn/bog-bsdt/static/x.html")
@@ -628,3 +632,13 @@ def test_header_login_box_on_script_list_page_is_not_a_gate():
     assert blocker("ok", 200, html) is None
     gate = "<html><head><title>某某系统</title></head><body><form><input type='password'></form></body></html>"
     assert blocker("ok", 200, gate) == "需要登录"
+
+
+def test_zwfw_named_data_bureau_site_is_kept():
+    from youju.govsites.inventory import _SERVICE_PATH, _service_hall
+
+    url = "https://zwfw.taizhou.gov.cn/"
+    assert _service_hall(url)  # 主机名就叫 zwfw
+    # 链接是数据局、路径不是办事页：_find_depts 放行（这里只核对两个条件）
+    assert "数据局" in dept_categories("台州市数据局")
+    assert not _SERVICE_PATH.search("/")
