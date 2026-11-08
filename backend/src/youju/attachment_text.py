@@ -1664,8 +1664,10 @@ _OCR_LEFT: ContextVar[list[int] | None] = ContextVar("attachment_text_ocr_left",
 
 def _ocr_label(cells: list[str]) -> str | None:
     """识别出的一行（各框的字，一个框多半是一格）里有没有账号、身份证号、手机这类列名：只有一种给
-    那一种，几种都有给 account（账号的规则 10–30 位都遮，身份证号、手机号也在里面）。"""
-    labels = {_cell_label(cell, types=True) for cell in cells} - {None}
+    那一种，几种都有给 account（账号的规则 10–30 位都遮，身份证号、手机号也在里面）。没有边框的
+    表头常被认成一个框（"序号 单位名称 开户银行 账号 金额"），框里用空格分开的每一段也看。"""
+    pieces = [piece for cell in cells for piece in {cell, *cell.split()}]
+    labels = {_cell_label(piece, types=True) for piece in pieces} - {None}
     if not labels:
         return None
     return labels.pop() if len(labels) == 1 else "account"
@@ -1691,7 +1693,10 @@ def _ocr_mask(text: str, column: str | None) -> str:
         if len(groups) == 1:
             if len(digits.rstrip("Xx")) < 15:
                 return match.group()
-            return "[身份证号已脱敏]" if len(digits) in (15, 18) else "[银行账号已脱敏]"
+            # 是身份证号的格式才按证件号说（全是数字的信用代码、采购编号也有 18 位）
+            if body_rules._ID_CARD.fullmatch(digits):
+                return "[身份证号已脱敏]"
+            return "[银行账号已脱敏]"
         if body_rules._ID_CARD.fullmatch(digits):
             return "[身份证号已脱敏]"
         if 15 <= len(digits) <= 30 and (

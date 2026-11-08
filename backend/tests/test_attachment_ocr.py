@@ -280,19 +280,30 @@ def test_recognized_tables_are_masked_by_column_and_long_numbers_always(monkeypa
                 "年度 2023 2024 2025 2026",
                 "分别为 125000 368000 520000 元",
                 "请转至 622 2021 2345 6789 0123 或 6222 0212 3456 7890 123",  # 分组写的账号
-            ]
+                # 认成一个框的几个金额碰巧是卡号的分法（中间每组 4 位）：宁可多遮（取舍，见 _card_like）
+                "单价 500 1500 3000 2000 元",
+            ],
+            2: [
+                "序号 单位名称 开户银行 账号 金额",  # 没有边框的表头认成了一个框
+                ["1", "某某公司", "中行某支行", "123456789012", "50"],  # 12 位的账号
+                "采购编号 912345678901234567",  # 18 位，不是身份证号的格式：按账号说
+            ],
         },
     )
-    got = texts(at.extract(pdf_pages([FULL]), limits=ocr_limits()))
+    got = texts(at.extract(pdf_pages([FULL, FULL]), limits=ocr_limits()))
     assert "编号 [身份证号已脱敏] 联系人" in got  # 一行几格的自成一段
+    assert "1 某某公司 中行某支行 [银行账号已脱敏] 50" in got
     assert "收款账户 [银行账号已脱敏] 说明" in got
     assert "预算（元） 12000000 8000000" in got
     joined = "\n".join(got)  # 一个框的几行可能接成一段
-    assert "备注：2026-12-15 合计 1350 820 4500 万元，另附 [身份证号已脱敏] 一份" in joined
+    # 18 位、不是身份证号的格式（地区码、出生日期对不上）：照样遮，按账号说
+    assert "备注：2026-12-15 合计 1350 820 4500 万元，另附 [银行账号已脱敏] 一份" in joined
     assert "合计 12500 13600 14700 万元" in joined
     assert "年度 2023 2024 2025 2026" in joined
     assert "分别为 125000 368000 520000 元" in joined
     assert "请转至 [银行账号已脱敏] 或 [银行账号已脱敏]" in joined
+    assert "单价 [银行账号已脱敏] 元" in joined
+    assert "采购编号 [银行账号已脱敏]" in joined
 
 
 def test_engine_that_cannot_start_in_the_child_is_an_environment_problem(
