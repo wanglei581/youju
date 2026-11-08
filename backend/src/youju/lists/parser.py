@@ -13,6 +13,7 @@ from docx import Document as DocxDocument
 from lxml import html
 from openpyxl import load_workbook
 
+from youju import pdf_limits, zip_limits
 from youju.lists import doc97
 from youju.lists.rules import normalize_credit_code, normalize_name, valid_org_name
 
@@ -74,6 +75,7 @@ class _TableBudget:
 # 以前被截断的，service._should_attempt 按原因里的页数重读一次
 MAX_PDF_PAGES = 1000
 _MAX_ZIP_UNCOMPRESSED = 100 * 1024 * 1024
+_MAX_ZIP_MEMBERS = 1_000
 _REGION = re.compile(r"[\u4e00-\u9fffA-Za-z0-9（）()·\-/ ]{2,64}")
 _REGION_SUFFIX = ("省", "市", "区", "县", "州", "盟", "旗", "地区", "新区", "开发区", "园区")
 _REGION_EXACT = {"北京", "上海", "天津", "重庆", "新疆", "西藏", "宁夏", "内蒙古", "香港", "澳门"}
@@ -262,13 +264,25 @@ def parse_html_tables(
 
 
 def _check_zip(data: bytes) -> None:
+    """DOCX、XLSX 交给 python-docx、openpyxl 之前按实际解出的大小检查（不信 zip 目录里写的，
+    见 zip_limits）。压缩方式不支持、超过上限记"暂不支持"（文件不会变，和别的超预算一样不再重试；
+    超上限以前记"解析失败：ValueError"，每 6 小时白读一遍）；解出的和目录不符、数据坏了按坏文件
+    （和以前读取库报 CRC 错时一样记 BadZipFile，过后重试）。"""
     with zipfile.ZipFile(io.BytesIO(data)) as archive:
-        members = archive.infolist()
-        if (
-            len(members) > 1_000
-            or sum(member.file_size for member in members) > _MAX_ZIP_UNCOMPRESSED
-        ):
-            raise ValueError("压缩文件展开后过大")
+        try:
+            zip_limits.check(archive, max_bytes=_MAX_ZIP_UNCOMPRESSED, max_members=_MAX_ZIP_MEMBERS)
+        except zip_limits.ZipLimitError as exc:
+            if exc.kind == "method":
+                what = "加密的文件" if exc.detail == "加密" else f"此压缩方式（{exc.detail}）"
+                raise ValueError(f"暂不支持{what}") from exc
+            if exc.kind == "broken":
+                raise zipfile.BadZipFile(str(exc)) from exc
+            over = (
+                f"内部文件超过 {_MAX_ZIP_MEMBERS} 个"
+                if exc.kind == "members"
+                else f"解压后超过 {_MAX_ZIP_UNCOMPRESSED >> 20}MB"
+            )
+            raise ValueError(f"暂不支持超过安全解析预算的文件（{over}）") from exc
 
 
 def _docx_entries(
@@ -352,7 +366,11 @@ def parse_attachment_result(
     if extension == "pdf":
         if not data.startswith(b"%PDF-"):
             raise ValueError("不是 PDF 文件")
-        with pdfplumber.open(io.BytesIO(data)) as pdf:
+        # 解数据流有上限（pdf_limits）：解压后太大、压缩方式不支持的记"暂不支持"，不再重试
+        with (
+            pdf_limits.reading(lambda hit: ValueError(f"暂不支持这份 PDF（{hit.detail}）")),
+            pdfplumber.open(io.BytesIO(data)) as pdf,
+        ):
             rows: list[list[object]] = []
             has_text = False
             page_count = len(pdf.pages)

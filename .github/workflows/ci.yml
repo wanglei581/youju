@@ -103,6 +103,11 @@ jobs:
           docker run --rm --network host
           -e "YOUJU_DATABASE_URL=mysql+pymysql://root:youju@127.0.0.1:3306/youju_image?charset=utf8mb4"
           youju:ci sh -c "youju db-upgrade && youju import-sources && youju report"
+      # rar 附件靠系统库 libarchive 解压：镜像里要装上、Python 能加载，并且认得 rar、rar5
+      - name: 容器里能加载 libarchive（解 rar 附件）
+        run: >-
+          docker run --rm youju:ci python -c
+          "import libarchive.ffi as f; f.get_read_format_function('rar'); f.get_read_format_function('rar5'); print(f.libarchive_path, f.version_number())"
       # 按部署方式启动两个服务（start.sh）：admin 迁移、装 cron、写心跳后起接口；api 只起接口。
       # 口令只是 CI 用的假值
       - name: 按部署方式启动 admin、api，健康检查通过
