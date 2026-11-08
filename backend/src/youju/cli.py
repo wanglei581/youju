@@ -1499,11 +1499,16 @@ def _beijing_noon(day: date | None) -> datetime | None:
 
 def _cmd_ocr_scans(args: argparse.Namespace) -> int:
     """识别附件里的扫描页（D-125）。开关关着、没装识别组件、另一个附件任务正在跑时什么都不做，
-    返回 0（不发失败提醒）；有内容版本识别出错（和当时的环境有关、数据库出错）返回 1。"""
+    返回 0（不发失败提醒）；识别组件装了却用不了、有内容版本识别出错（和当时的环境有关、数据库
+    出错）返回 1。"""
     from youju.attachments import ocr_scans
 
     with session_factory()() as session:
         report = ocr_scans(session, pages=args.pages, seconds=args.seconds)
+    if report.broken:
+        print(f"没有识别：{report.broken}")
+        print("ocr_scans broken=1")
+        return 1
     if report.skipped:
         print(f"没有识别：{report.skipped}")
         print("ocr_scans skipped=1")
@@ -1512,12 +1517,14 @@ def _cmd_ocr_scans(args: argparse.Namespace) -> int:
         f"识别了 {report.documents} 份（认出字的 {report.recognized} 份），"
         f"要识别 {report.pages} 页、认出 {report.ocr_pages} 页；"
         f"原网站下载不了 {report.unavailable} 份，文件变了 {report.changed} 份，"
-        f"出错 {report.errors} 份，这轮没轮到 {report.deferred} 份"
+        f"出错 {report.errors} 份，连着几次没成不再试 {report.gave_up} 份，"
+        f"这轮没轮到 {report.deferred} 份"
     )
     print(
         f"ocr_scans documents={report.documents} recognized={report.recognized} "
         f"pages={report.pages} ocr_pages={report.ocr_pages} unavailable={report.unavailable} "
-        f"changed={report.changed} errors={report.errors} deferred={report.deferred}"
+        f"changed={report.changed} errors={report.errors} gave_up={report.gave_up} "
+        f"deferred={report.deferred}"
     )
     return 1 if report.errors else 0
 

@@ -1387,15 +1387,19 @@ OCR_DOC_PAGES = 100
 class OcrReport:
     # 没跑的原因：开关关着、没装识别组件、另一个附件任务正在跑
     skipped: str | None = None
+    # 识别组件装了但用不了（ocr_smoke 试认一张图没成）：这轮不识别，命令行返回 1、发提醒
+    broken: str | None = None
     # 识别过的内容版本（其中认出了字的）、要识别的页数、认出字的页数
     documents: int = 0
     recognized: int = 0
     pages: int = 0
     ocr_pages: int = 0
-    # 原网站下载不了、文件变了（等平常的取文字重取）、和当时的环境有关没识别成（下次再来）
+    # 原网站下载不了、文件变了（按平常取文字的办法记下了新文件）、和当时的环境有关没识别成（下次
+    # 再来）、连着几次都没成不再试的
     unavailable: int = 0
     changed: int = 0
     errors: int = 0
+    gave_up: int = 0
     # 页数、时间到了，这轮没轮到的
     deferred: int = 0
 
@@ -1416,11 +1420,11 @@ def ocr_scans(
     seconds: float = 3600,
 ) -> OcrReport:
     """识别扫描页（D-125）：有扫描页、还没按现在的识别规则识别过的附件（_ocr_order：按所在通知的
-    发布日期从新到旧），从原网站重新下载（内容要和库里那一版一样，变了的等平常的取文字重取），识别后
-    换掉原来的文字（attachment_text.ocr_version）。一轮识别到 pages 页为止（不给按
-    YOUJU_OCR_PAGES_PER_RUN；最后一份可能超出一些：一份要么不识别，要么整份识别），最多跑 seconds
-    秒；一份最多 OCR_DOC_PAGES 页。和附件任务共用一把锁。开关关着、没装识别组件时什么都不做
-    （report.skipped）。"""
+    发布日期从新到旧），从原网站重新下载（内容要和库里那一版一样；原网站换了文件的，按平常取文字的
+    办法记下新文件），识别后换掉原来的文字（attachment_text.ocr_version）。一轮识别到 pages 页
+    为止（不给按 YOUJU_OCR_PAGES_PER_RUN；最后一份可能超出一些：一份要么不识别，要么整份识别），
+    最多跑 seconds 秒；一份最多 OCR_DOC_PAGES 页。和附件任务共用一把锁。开关关着、没装识别组件时
+    什么都不做（report.skipped）。"""
     settings = get_settings()
     if not settings.ocr_enabled:
         return OcrReport(skipped="开关关着（YOUJU_OCR_ENABLED）")
@@ -1433,6 +1437,10 @@ def ocr_scans(
             return OcrReport(
                 skipped="另一个附件任务正在运行（附件副本、重查或取文字），这次没识别；定时任务下一轮再识别"
             )
+        problem = attachment_text.ocr_smoke(settings.ocr_threads)
+        if problem is not None:
+            log.warning("识别组件用不了，这轮不识别：%s", problem)
+            return OcrReport(broken=f"识别组件用不了（{problem}），这轮没识别")
         report = OcrReport()
         due = _ocr_order(session, now)
         owns_fetcher = fetcher is None
@@ -1450,17 +1458,37 @@ def ocr_scans(
                 if report.pages >= budget or clock.monotonic() - started >= seconds:
                     report.deferred = len(due) - index
                     break
+                version_id = version.id  # 出错回滚以后再读 version.id 会再查一次库
                 want = min(version.scanned_pages or version.pages or OCR_DOC_PAGES, OCR_DOC_PAGES)
                 # 指向这份内容的链接一个一个试，下载到一个就行
-                content = None
-                for url in urls:
-                    content, _failure = _download(SimpleNamespace(url=url), fetcher, CacheReport())
+                content = url = declared = None
+                for link, kind in urls:
+                    content, _failure = _download(SimpleNamespace(url=link), fetcher, CacheReport())
                     if content is not None:
+                        url, declared = link, kind
                         break
                 if content is None:
                     report.unavailable += 1  # 平常的取文字会记下载不了；这里不记识别过，下次再来
                     continue
                 if sha256(content).hexdigest() != version.sha256:
+                    # 原网站换了文件：按平常取文字的办法记下新文件（这个链接改指新内容；新文件有
+                    # 扫描页的，下一轮再识别），免得每轮都下载一遍又跳过
+                    try:
+                        attachment_text.record(
+                            session,
+                            url,
+                            declared,
+                            now,
+                            attachment_text.TextReport(),
+                            content=content,
+                        )
+                    except Exception:  # noqa: BLE001 - 和当时的环境有关（起不了子进程等）、数据库出错
+                        session.rollback()
+                        report.errors += 1
+                        log.exception(
+                            "扫描页识别：记下原网站换过的文件时出错（内容版本 %s）", version_id
+                        )
+                        continue
                     report.changed += 1
                     continue
                 try:
@@ -1470,7 +1498,11 @@ def ocr_scans(
                 except Exception:  # noqa: BLE001 - 和当时的环境有关（起不了子进程等）、数据库出错
                     session.rollback()
                     report.errors += 1
-                    log.exception("扫描页识别出错：内容版本 %s", version.id)
+                    report.pages += want  # 没成的也算进这轮的页数，免得一轮里一份接一份地试
+                    log.exception("扫描页识别出错：内容版本 %s", version_id)
+                    continue
+                if result is None:
+                    report.gave_up += 1
                     continue
                 report.documents += 1
                 report.pages += want
@@ -1482,10 +1514,13 @@ def ocr_scans(
         return report
 
 
-def _ocr_order(session: Session, now: datetime) -> list[tuple[AttachmentTextVersion, list[str]]]:
+def _ocr_order(
+    session: Session, now: datetime
+) -> list[tuple[AttachmentTextVersion, list[tuple[str, str]]]]:
     """要识别的内容版本（attachment_text.ocr_due）排个先后：按所在通知的发布日期从新到旧，和取文字
-    同一个范围、同一个顺序（candidates(texts=True)），每份带上范围里指向它的链接（最多 3 个，下载时
-    一个一个试）。不在取文字范围里的（过了保留期、下架了，取文字下一轮会清掉）不识别。"""
+    同一个范围、同一个顺序（candidates(texts=True)），每份带上范围里指向它的链接和题录里的扩展名
+    （最多 3 个，下载时一个一个试）。不在取文字范围里的（过了保留期、下架了，取文字下一轮会清掉）
+    不识别。"""
     due = {version.id: version for version in attachment_text.ocr_due(session)}
     if not due:
         return []
@@ -1496,13 +1531,13 @@ def _ocr_order(session: Session, now: datetime) -> list[tuple[AttachmentTextVers
             )
         ).all()
     )
-    order: dict[int, list[str]] = {}
-    for url in candidates(session, now, texts=True):
+    order: dict[int, list[tuple[str, str]]] = {}
+    for url, declared in candidates(session, now, texts=True).items():
         version_id = by_url.get(url)
         if version_id is not None:
             urls = order.setdefault(version_id, [])
             if len(urls) < 3:
-                urls.append(url)
+                urls.append((url, declared))
     return [(due[version_id], urls) for version_id, urls in order.items()]
 
 

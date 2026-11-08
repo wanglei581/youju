@@ -1482,24 +1482,36 @@ def _pdf(data: bytes) -> _Found:
     pages = found["pages"]
     if "read" not in found:
         raise Unreadable("too_large", f"PDF 超过 {limits.pdf_pages} 页")
-    # 识别扫描页（D-125）：只在识别任务里做，按页码先后最多识别 limits.ocr_pages 页。连着认出的几页
-    # 前面加一行说明（ocr_marker），这几页的段落出处记 ocr
+    # 识别扫描页（D-125）：只在识别任务里做，按页码先后识别，一份（压缩包里几个 PDF 合起来）最多
+    # limits.ocr_pages 页（_OCR_LEFT 记还剩几页）。认出的每一页前面加一行说明（OCR_MARKER），这一页
+    # 的段落出处记 ocr；认出的字先按识别页的办法遮号码（_ocr_mask）
     scan_pages = [n for n, page in enumerate(found["read"], 1) if page["scan"]]
-    recognized = (
-        _ocr_pages(data, scan_pages[: limits.ocr_pages], limits)
-        if limits.ocr_pages and scan_pages
-        else {}
-    )
-    items: list[tuple] = []  # ("line", 文字, 页)、("table", 行, 页) 或 ("marker", 说明, 页)
-    scanned = 0
+    numbers: list[int] = []
+    if limits.ocr_pages and scan_pages:
+        left = _OCR_LEFT.get()
+        allowed = limits.ocr_pages if left is None else min(limits.ocr_pages, left[0])
+        numbers = scan_pages[: max(allowed, 0)]
+        if left is not None:
+            left[0] -= len(numbers)
+    recognized = _ocr_pages(data, numbers, limits) if numbers else {}
+    # ("line", 文字, 页)、("table", 行, 页)；识别页还有 ("marker", 说明, 页)、("row", 一行几格, 页)
+    items: list[tuple] = []
+    scanned = ocr_masked = 0
+    label = None  # 识别页上出现过的账号、身份证号、手机这类列名：往后的识别行都按它遮
     for number, page in enumerate(found["read"], 1):
         if number in recognized:
-            if number - 1 not in recognized:
-                end = number
-                while end + 1 in recognized:
-                    end += 1
-                items.append(("marker", ocr_marker(number, end, pages), number))
-            items += [("line", text, number) for _top, text in recognized[number]]
+            items.append(("marker", OCR_MARKER, number))
+            for _top, cells in recognized[number]:
+                here = _ocr_label(cells)
+                column = here or label
+                text = " ".join(cells)
+                # 先一格一格按列名遮（格和格不连成一个号码），再整行遮拆成几个框的号码
+                masked = _ocr_mask(" ".join(_ocr_mask(cell, column) for cell in cells), None)
+                ocr_masked += masked != text
+                label = here or label
+                # 一行有几个框的（表格的一行、分栏）自成一段，不和上下行接（"…50"接"2 …"会
+                # 读成"502"）
+                items.append(("row" if len(cells) > 1 else "line", masked, number))
             continue
         lines, tables, is_scan = _pdf_page(page)
         scanned += is_scan
@@ -1508,8 +1520,12 @@ def _pdf(data: bytes) -> _Found:
         entries.sort(key=lambda e: e[0])
         items += [(kind, value, number) for _top, kind, value in entries]
     builder = _Builder()
-    texts = [value for kind, value, _ in items if kind == "line"]
+    builder.masked = ocr_masked
+    # 行宽（判断折行）：取出的字和识别出的字分开算，识别页不改正常页的分段
+    texts = [value for kind, value, n in items if kind == "line" and n not in recognized]
     width = line_width("\n".join(texts))
+    ocr_texts = [value for kind, value, n in items if kind == "line" and n in recognized]
+    ocr_width = line_width("\n".join(ocr_texts)) if ocr_texts else width
     tables = 0
     last: dict | None = None  # 上一张表：竖线位置、表号、行数、表头、标签列
     current, current_page, physical = "", None, ""
@@ -1518,7 +1534,7 @@ def _pdf(data: bytes) -> _Found:
         return {"page": number, "ocr": 1} if number in recognized else {"page": number}
 
     for index, (kind, value, number) in enumerate(items):
-        if kind == "marker":
+        if kind in ("marker", "row"):
             if current:
                 builder.para(current, loc(current_page))
                 current, physical = "", ""
@@ -1570,7 +1586,8 @@ def _pdf(data: bytes) -> _Found:
             continue
         # 识别出的字和取出的字不接成一段（从识别页到普通页、或者反过来，都另起一段）
         same_kind = current_page is None or (current_page in recognized) == (number in recognized)
-        if current and same_kind and layout_wrapped(physical, value, width):
+        wide = ocr_width if number in recognized else width
+        if current and same_kind and layout_wrapped(physical, value, wide):
             current = current.rstrip() + value.lstrip()
         else:
             if current:
@@ -1602,7 +1619,10 @@ def _seconds_left(seconds: int) -> float:
 
 # 识别规则的版本：规则改了（分辨率、置信度、怎么分行）就加 1，识别过的内容版本按新规则重新识别
 OCR_RULES = 1
-_OCR_DPI = 200  # 渲染分辨率（每英寸点数），A4 约 1650×2340 像素
+# 渲染分辨率（每英寸点数）。RapidOCR 识别前会把长边缩到 2000 像素，先按 300 渲染再缩，小字比直接按
+# 200 渲染清楚：11/8 实测一页小字评分表，平均置信度 0.82 → 0.92，低于 0.85 的行 38 → 6，用时、
+# 内存差不多；字大的页一样
+_OCR_DPI = 300
 _OCR_PIXELS = 12_000_000  # 一页最多这么多像素（大幅面的图纸按比例降分辨率）
 _OCR_MIN_SCORE = 0.6  # 置信度低于这个的一行不要（公章、底纹、污渍认出的乱码多半在这以下）
 _OCR_MIN_CHARS = 10  # 一页认出的字不到这么多，按没认出算（还是扫描页）
@@ -1611,27 +1631,50 @@ _OCR_MIN_CHARS = 10  # 一页认出的字不到这么多，按没认出算（还
 _OCR_BATCH = 10
 _OCR_SECONDS = 60  # 每个识别子进程起来、载入模型的 CPU 时间
 _OCR_PAGE_SECONDS = 40  # 每页的 CPU 时间（本机实测 3–4 秒一页，慢的机器约慢一倍，留足）
+# 一份内容最多试几次：子进程崩了、被停、卡住（和环境有关的问题，也可能是文件本身让渲染出事）
+# 连着这么多次都没识别成，就记成识别过、不再试（平常取文字的"正在取"也是两次）
+_OCR_TRIES = 2
 # 页面上的说法（D-125）：页面上只标"文字是识别出来的"；"可能有错字"写在使用帮助里（D-108 定的
 # 这类说明只写进使用帮助），创始人看过再定。
-# 文字里：连着认出的几页前面一行（阅读页每页第一段前面本来就写"原文第 N 页"）
-OCR_MARKER_ALL = "（这份文件是扫描件，文字是识别出来的）"
-OCR_MARKER_PAGE = "（这一页是扫描件，文字是识别出来的）"
-OCR_MARKER_PAGES = "（第 {first}–{last} 页是扫描件，文字是识别出来的）"
+# 文字里：每一页识别出的字前面一行（阅读页每页第一段前面本来就写"原文第 N 页"）。每页都写：翻到
+# 哪一页、接着上次读，都看得到
+OCR_MARKER = "（这一页是扫描件，文字是识别出来的）"
 # 详情页附件后面（Reading.note）
 OCR_NOTE_ALL = "能读（扫描件，文字是识别出来的）"
 OCR_NOTE_SOME = "能读，其中 {pages} 页扫描件的文字是识别出来的"
-OCR_NOTE_MISSED = "；另有 {pages} 页没认出文字"
-# 阅读页顶上（api/readers.py）：还有没认出的页才写（小程序只在 status=partial 时显示）
-OCR_NOTICE_MISSED = "其中 {pages} 页扫描件没认出文字，下面的文字不含这些页。"
+OCR_NOTE_MISSED = "；另有 {pages} 页暂不能识别文字"
+# 阅读页顶上（api/readers.py）：还有没认出的页才写（小程序只在 status=partial 时显示）。和小程序
+# 读完时的"另有 N 页扫描件，暂不能识别文字"一个说法
+OCR_NOTICE_MISSED = "其中 {pages} 页扫描件暂不能识别文字，下面的文字不含这些页。"
+# 识别页遮号码（D-125，合规红线）：识别页没有表格结构，"账号""身份证号""手机"这类列名只在表头
+# 那一行，下面各行的号码靠不上列名——出现过这类列名以后，往后识别出的每一格都按列名遮（_ocr_label；
+# 账号 10–30 位怎么分组都遮）；另外 15 位以上的数字一律遮（身份证号、银行账号；通知里别的数字没有
+# 这么长、又不带字母的），连写的、每组 4 位以上用空格或横线隔开的都算（一个号码拆成了几个框）
+_OCR_LONG_DIGITS = re.compile(r"(?<![0-9A-Za-z])\d{4,}(?:[ -]\d{4,})*[Xx]?(?![0-9A-Za-z])")
+# 识别任务里一份内容还能识别几页（压缩包里几个 PDF 共用；ocr_version 设，_pdf 减）
+_OCR_LEFT: ContextVar[list[int] | None] = ContextVar("attachment_text_ocr_left", default=None)
 
 
-def ocr_marker(first: int, last: int, pages: int | None) -> str:
-    """连着认出的第 first–last 页前面那一行。"""
-    if first == 1 and pages and last >= pages:
-        return OCR_MARKER_ALL
-    if first == last:
-        return OCR_MARKER_PAGE
-    return OCR_MARKER_PAGES.format(first=first, last=last)
+def _ocr_label(cells: list[str]) -> str | None:
+    """识别出的一行（各框的字，一个框多半是一格）里有没有账号、身份证号、手机这类列名：只有一种给
+    那一种，几种都有给 account（账号的规则 10–30 位都遮，身份证号、手机号也在里面）。"""
+    labels = {_cell_label(cell, types=True) for cell in cells} - {None}
+    if not labels:
+        return None
+    return labels.pop() if len(labels) == 1 else "account"
+
+
+def _ocr_mask(text: str, column: str | None) -> str:
+    """识别出的字遮号码：按列名（column）遮，再把还剩下的 15 位以上的数字遮掉（15、18 位按证件号
+    的说法，别的按银行账号）。"""
+
+    def long_number(match: re.Match) -> str:
+        digits = re.sub(r"[^0-9Xx]", "", match.group())
+        if len(digits) < 15:
+            return match.group()
+        return "[身份证号已脱敏]" if len(digits) in (15, 18) else "[银行账号已脱敏]"
+
+    return _OCR_LONG_DIGITS.sub(long_number, mask(text, column=column))
 
 
 def ocr_whole(file_type: str | None, pages: int | None, ocr_pages: int, missed: int) -> bool:
@@ -1659,7 +1702,8 @@ def _ocr_pages(data: bytes, numbers: list[int], limits: Limits) -> dict[int, lis
             found = pdf_sandbox.read(
                 "ocr",
                 data,
-                seconds=ocr_seconds(len(batch)),
+                # CPU 时间按线程数放宽（几个线程的 CPU 时间加在一起算）；压缩包里的不超过整份剩下的
+                seconds=_seconds_left(ocr_seconds(len(batch)) * max(1, limits.ocr_threads)),
                 memory=pdf_sandbox.OCR_MEMORY_MAX,
                 pages=batch,
                 dpi=_OCR_DPI,
@@ -1675,14 +1719,43 @@ def _ocr_pages(data: bytes, numbers: list[int], limits: Limits) -> dict[int, lis
             continue
         for key, page in found.get("pages", {}).items():
             lines = _ocr_lines(page)
-            if sum(len(text.replace(" ", "")) for _top, text in lines) >= _OCR_MIN_CHARS:
+            if sum(len("".join(cells).replace(" ", "")) for _top, cells in lines) >= _OCR_MIN_CHARS:
                 out[int(key)] = lines
     return out
 
 
-def _ocr_lines(page: dict) -> list[tuple[float, str]]:
-    """一页识别出的框 → 一行一行的字（[(上边, 字)]，从上到下）：置信度低的不要；中心高度差不到
-    半行的算同一行，从左到右用空格接（表格的格和格分得开）；页面上下边上的页码行去掉。"""
+def ocr_smoke(threads: int = 1) -> str | None:
+    """识别组件能不能用：在识别子进程里认一张现做的小图（"OCR 2026"），能用给 None，不能用给原因。
+    识别任务每轮先跑一次：组件坏了（导入、模型、推理出错，子进程里才看得出来）就不识别，免得把排着
+    的都当成"认不出字"记成识别过。"""
+    from PIL import Image, ImageDraw, ImageFont
+
+    from youju import pdf_sandbox
+
+    image = Image.new("L", (900, 240), 255)
+    ImageDraw.Draw(image).text((40, 60), "OCR 2026", fill=0, font=ImageFont.load_default(size=96))
+    out = io.BytesIO()
+    image.save(out, "PDF", resolution=150)
+    try:
+        found = pdf_sandbox.read(
+            "ocr",
+            out.getvalue(),
+            seconds=ocr_seconds(1) * max(1, threads),
+            memory=pdf_sandbox.OCR_MEMORY_MAX,
+            pages=[1],
+            dpi=_OCR_DPI,
+            pixels=_OCR_PIXELS,
+            threads=threads,
+        )
+    except pdf_sandbox.Failed as exc:
+        return exc.detail
+    page = found.get("pages", {}).get("1")
+    return None if page and _ocr_lines(page) else "试认一张图，一个字也没认出来"
+
+
+def _ocr_lines(page: dict) -> list[tuple[float, list[str]]]:
+    """一页识别出的框 → 一行一行（[(上边, [从左到右各框的字])]，从上到下）：置信度低的不要；中心
+    高度差不到半行的算同一行（表格的一行，一个框多半是一格）；页面上下边上的页码行去掉。"""
     height = float(page.get("height") or 0)
     boxes = []
     for top, bottom, left, text, score in page.get("lines", []):
@@ -1709,13 +1782,13 @@ def _ocr_lines(page: dict) -> list[tuple[float, str]]:
             )
     out = []
     for row in rows:
-        text = " ".join(t for _left, t in sorted(row["boxes"]))
+        cells = [t for _left, t in sorted(row["boxes"])]
         in_margin = height and (
             row["top"] < height * _MARGIN or row["bottom"] > height * (1 - _MARGIN)
         )
-        if in_margin and _PAGE_NUMBER.fullmatch(text):
+        if in_margin and _PAGE_NUMBER.fullmatch(" ".join(cells)):
             continue  # 页眉页脚里的页码
-        out.append((row["top"], text))
+        out.append((row["top"], cells))
     return out
 
 
@@ -3473,6 +3546,7 @@ def _store(
     version.masked = result.masked
     version.ocr_rules = ocr_rules
     version.ocr_pages = result.ocr_pages if result.ok else 0
+    version.ocr_tries = 0
     version.extracted_at = now
     session.flush()
     if result.segments:
@@ -3521,29 +3595,78 @@ def ocr_version(
     *,
     pages: int,
     threads: int = 1,
-) -> Extraction:
-    """识别任务（D-125）：按现在的规则重取这份内容，扫描页最多识别 pages 页。认出了字就换掉原来
-    的段落，指向它的链接都改成能读；一页都没认出、或者这次整份没读成的，原来的结果照留，只记下按
-    这一版规则识别过（不反复识别）。和当时的环境有关的问题（起不了子进程等）照原样抛出，不记，
-    下次再来。content 要是这个版本的内容（调用方核对过 SHA-256）。"""
+) -> Extraction | None:
+    """识别任务（D-125）：按现在的规则重取这份内容，扫描页（压缩包里几个 PDF 合起来）最多识别 pages
+    页。认出了字、而且别的文字没有因此变少（_plain_chars：字数上限、压缩包整份的时间被识别占掉时，
+    后面的文字会少），才换掉原来的段落，指向它的链接都改成能读；不然原来的结果照留，只记下按这一版
+    规则识别过（不反复识别）。和当时的环境有关的问题（起不了子进程等）照原样抛出，下次再来；连着
+    _OCR_TRIES 次都这样的不再试，记成识别过，返回 None。content 要是这个版本的内容（调用方核对过
+    SHA-256）。"""
+    if (version.ocr_tries or 0) >= _OCR_TRIES:
+        log.warning(
+            "扫描页识别连着 %s 次没成（子进程出事），不再试：内容版本 %s", _OCR_TRIES, version.id
+        )
+        version.ocr_rules, version.ocr_tries = OCR_RULES, 0
+        session.commit()
+        return None
+    version.ocr_tries = (version.ocr_tries or 0) + 1
+    session.commit()  # 先记一次：进程这次没了（内存不足被杀等）也算一次
     limits = replace(
         _limits(),
         ocr_pages=pages,
         ocr_threads=threads,
         seconds=EXTRACT_SECONDS + ocr_seconds(pages),
     )
-    result = extract(content, limits=limits)
+    token = _OCR_LEFT.set([pages])
+    try:
+        result = extract(content, limits=limits)
+    finally:
+        _OCR_LEFT.reset(token)
+    better = False
     if result.ok and result.ocr_pages:
+        new = [(s.text, s.loc) for s in result.segments]
+        recognized = {_page_key(loc) for _text, loc in new if (loc or {}).get("ocr")}
+        old = session.execute(
+            select(AttachmentTextSegment.text, AttachmentTextSegment.loc).where(
+                AttachmentTextSegment.version_id == version.id
+            )
+        ).all()
+        before, after = _plain_chars(old, recognized), _plain_chars(new, recognized)
+        better = after >= before - max(50, before // 100)
+        if not better:
+            log.warning(
+                "扫描页识别：识别以后别的文字反而少了（%s → %s 字），不换：内容版本 %s",
+                before,
+                after,
+                version.id,
+            )
+    if better:
         _store(session, version, len(content), result, now, ocr_rules=OCR_RULES)
         for link in session.scalars(
             select(AttachmentTextUrl).where(AttachmentTextUrl.version_id == version.id)
         ):
             link.status, link.reason, link.detail = "ok", None, version.detail
-            link.changed_at = now
+            link.changed_at, link.retry_at = now, None
     else:
-        version.ocr_rules, version.ocr_pages = OCR_RULES, 0
+        # 原来的段落照留：ocr_pages 跟着原来的段落（规则改了重识别没成的，原来识别出的还在）
+        version.ocr_rules, version.ocr_tries = OCR_RULES, 0
     session.commit()
     return result
+
+
+def _page_key(loc: dict | None) -> tuple:
+    """段落出处里的哪个文件（压缩包里第几个）、第几页。"""
+    loc = loc or {}
+    return (loc.get("file"), loc.get("page"))
+
+
+def _plain_chars(segments, recognized: set[tuple]) -> int:
+    """不是识别出来的字有多少（识别了的那几页不算：那几页原来零星取到的几个字换成了识别出的整页）。"""
+    return sum(
+        len(text or "")
+        for text, loc in segments
+        if not (loc or {}).get("ocr") and _page_key(loc) not in recognized
+    )
 
 
 def cleanup(session: Session, live: set[str], report: TextReport) -> None:
