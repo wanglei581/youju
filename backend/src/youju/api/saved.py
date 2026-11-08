@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session
 
 from youju import gone, saved
 from youju.agreements import SAVED_AGREEMENT_VERSION, agreement_at_least
+from youju.api import attachments as download_api
 from youju.api import exports, readers, v1
 from youju.api.me import KnownUserDep, UserDep
 from youju.config import get_settings
@@ -47,6 +48,12 @@ NOT_IN_WINDOW = "只有原网页打不开 7 天以内的通知可以保存和导
 
 def _require_enabled() -> None:
     if not gone.enabled():
+        raise HTTPException(status_code=404, detail="没有找到接口")
+
+
+def _require_saving() -> None:
+    """保存要开关开着、新版隐私指引已经上线（gone.saving_open），不然没有这个接口。"""
+    if not gone.saving_open():
         raise HTTPException(status_code=404, detail="没有找到接口")
 
 
@@ -122,7 +129,7 @@ def saved_list(session: Session, user_id: int) -> list[dict]:
     return [_item(row, row.document_id not in existing) for row in rows]
 
 
-@router.post("/me/saved", status_code=201, dependencies=[Depends(_require_enabled)])
+@router.post("/me/saved", status_code=201, dependencies=[Depends(_require_saving)])
 def save_document(body: SaveIn, session: SessionDep, user: UserDep) -> dict:
     if not agreement_at_least(user.agreement_version, SAVED_AGREEMENT_VERSION):
         raise HTTPException(status_code=403, detail=SAVE_OUTDATED)
@@ -212,11 +219,15 @@ def saved_reading(
     saved_id: int,
     session: SessionDep,
     user: UserDep,
+    request: FastAPIRequest,
     part: Part = "",
     cursor: readers.Cursor = "0",
     revision: readers.Revision = None,
 ) -> dict:
-    """按页读保存的副本：和阅读接口（readers.document_reading）同一个格式，阅读页照常翻页。"""
+    """按页读保存的副本：和阅读接口（readers.document_reading）同一个格式，阅读页照常翻页。
+    和阅读接口一样限频（每翻一页要读出整份副本）。"""
+    if not download_api._allow(download_api._caller(request), clock.monotonic()):
+        raise HTTPException(status_code=429, detail="阅读太频繁，请稍后再试")
     row = _owned(session, user.id, saved_id)
     content = json.loads(row.content)
     source = {

@@ -1129,10 +1129,25 @@ def _print_gone_cleanup(counts: dict[str, int], *, dry_run: bool = False) -> Non
         f"{text} {counts[reason]}" for reason, text in KEEP_REASONS.items() if counts[reason]
     )
     print(
-        f"原网页失效到期清理：到期 {counts['due']} 份，{'会删' if dry_run else '删了'} "
-        f"{counts['deleted']} 份，最近 36 小时没查过、推迟到下次 {counts['stale']} 份"
+        f"原网页失效到期清理：到期 {counts['due']} 份（名单类不算），"
+        f"{'会删' if dry_run else '删了'} {counts['deleted']} 份；"
+        f"推迟到下次：最近 30 小时没确认还打不开 {counts['stale']} 份、"
+        f"原栏目 48 小时没抓成功 {counts['source_stale']} 份"
+        + (f"；删的时候出错 {counts['failed']} 份（见日志）" if counts["failed"] else "")
         + (f"；不清理：{kept}" if kept else "")
     )
+
+
+def _cmd_saved_purge(args: argparse.Namespace) -> int:
+    """服务器：按通知编号删用户保存的副本（D-123 ④）。通知已经到期清理、管理台下架不了的，收到投诉
+    时用这个删副本（下架得了的通知，下架时就删了）。"""
+    from youju.saved import purge_documents
+
+    with session_factory()() as session:
+        deleted = purge_documents(session, args.doc)
+        session.commit()
+    print(f"删了 {deleted} 份用户保存的副本（通知编号 {', '.join(map(str, args.doc))}）")
+    return 0
 
 
 def _cmd_gone_cleanup(args: argparse.Namespace) -> int:
@@ -2345,6 +2360,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument("--dry-run", action="store_true", help="只数会删几份，不删")
     p.set_defaults(func=_cmd_gone_cleanup)
+
+    p = sub.add_parser(
+        "saved-purge",
+        help="D-123：按通知编号删用户保存的副本（通知已清理、管理台下架不了时，收到投诉用）",
+    )
+    p.add_argument(
+        "--doc", type=int, action="append", required=True, help="通知编号，可以写多个 --doc"
+    )
+    p.set_defaults(func=_cmd_saved_purge)
 
     p = sub.add_parser("backup-verify", help="只读校验最新备份的完整性和迁移版本")
     p.add_argument("--file", type=Path, help="校验本机备份文件，不从对象存储下载")

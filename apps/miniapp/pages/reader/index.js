@@ -362,10 +362,16 @@ Page({
     if (!/^\d+$/.test(rec.docId)) return;
     wx.navigateTo({ url: `/pages/detail/index?id=${encodeURIComponent(rec.docId)}` });
   },
+  // 上一页就是我的保存才退回去；从导出记录等别处打开的，换成我的保存页（独立审阅第 1 轮）
   backToSaved() {
-    const openSaved = () => wx.navigateTo({ url: '/pages/saved/index' });
-    if (typeof wx.navigateBack !== 'function') { openSaved(); return; }
-    wx.navigateBack({ fail: openSaved });
+    const stack = typeof getCurrentPages === 'function' ? getCurrentPages() : [];
+    const prev = stack.length > 1 ? stack[stack.length - 2] : null;
+    const openSaved = () => wx.redirectTo({ url: '/pages/saved/index' });
+    if (prev && prev.route === 'pages/saved/index' && typeof wx.navigateBack === 'function') {
+      wx.navigateBack({ fail: openSaved });
+      return;
+    }
+    openSaved();
   },
   backToLists() {
     const openLists = () => wx.navigateTo({ url: '/pages/lists/index' });

@@ -8,8 +8,11 @@
   还要在；建了级联外键副本就跟着没了，建 RESTRICT 又会挡住清理。编号留着，下架时按它删副本
   （D-123 ④；documents 的自增编号不回收，不会撞上以后的新通知）。
 - user_id 随用户级联删除（注销时一起删，D-123 ③）。
-- 不要新授权才能部署：这次只建表。打开 YOUJU_GONE_CLEANUP_ENABLED 之前，api 账号要对这张表有
-  INSERT、DELETE（见 deploy/mysql_accounts.sql 的"我的保存"一段）。
+- documents 加一列 link_gone_seen_at（可空）：原网页检查最近一次确认还打不开的时间（判断不了的不算），
+  到期清理要求最近确认过，网站临时出故障时不清理（D-123 ①"网站临时出故障不能误删"）。加在表尾的
+  可空列，MySQL 8 直接改元数据，不重建表；已有的行是空的，下次检查确认了才填。
+- 不要新授权才能部署：这次只建表、加列。打开 YOUJU_GONE_CLEANUP_ENABLED 之前，api 账号要对这张表有
+  INSERT、UPDATE、DELETE（见 deploy/mysql_accounts.sql 的"我的保存"一段）。
 
 编号 0049 是协调会话 11/8 给的（0047 留给问一问第二批，0048 是覆盖看板）。接在 main 现在的头 0046
 后面；0047、0048 先合进 main 的，合并的人把 down_revision 改成那时的头（只有一个迁移头）。
@@ -30,6 +33,7 @@ OPTIONS = {"mysql_charset": "utf8mb4", "mysql_collate": "utf8mb4_0900_bin"}
 
 
 def upgrade() -> None:
+    op.add_column("documents", sa.Column("link_gone_seen_at", mysql.DATETIME(fsp=6), nullable=True))
     op.create_table(
         "saved_documents",
         sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
@@ -57,3 +61,4 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_table("saved_documents")
+    op.drop_column("documents", "link_gone_seen_at")

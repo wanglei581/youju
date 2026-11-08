@@ -28,7 +28,7 @@
     <ai-hint doc-id="{{doc.id}}" doc-title="{{doc.title}}" issuer="{{doc.issuer}}" date="{{doc.date}}" ai="{{doc.ai}}" bind:jump="toAi" />
     <!-- 原文链接已失效（youju/link_check.py）：放在标题下面先说（失效了就不能再解读，和上面那行提示不会同时出现），下面的要点、正文都是之前收录的 -->
     <!-- D-123：还在 7 天清理期里的写打不开的日期和清理日期，下面给"保存"（要登录，包里有"我的保存"时）和"导出 Word" -->
-    <view wx:if="{{goneNote}}" class="gone-note">{{goneNote}}<view wx:if="{{goneWindow}}" class="gone-actions"><view wx:if="{{loginOpen && has.saved}}" id="gone-save" class="gone-act" bindtap="saveGone" aria-role="button">{{savedHere ? '已保存' : '保存'}}</view><view id="gone-export" class="gone-act" bindtap="exportGone" aria-role="button">导出 Word</view></view></view>
+    <view wx:if="{{goneNote}}" class="gone-note">{{goneNote}}<view wx:if="{{goneExport || goneSave && loginOpen && has.saved}}" class="gone-actions"><view wx:if="{{goneSave && loginOpen && has.saved}}" id="gone-save" class="gone-act" bindtap="saveGone" aria-role="button">{{savedHere ? '已保存' : '保存'}}</view><view wx:if="{{goneExport}}" id="gone-export" class="gone-act" bindtap="exportGone" aria-role="button">导出 Word</view></view></view>
   </view>
 
   <!-- 首发版（D-061、D-108）：按类型逐条写截止。核对过的标"已人工核对"、机器摘出的标"原文摘录"，都附原句；

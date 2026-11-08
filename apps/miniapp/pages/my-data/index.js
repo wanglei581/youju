@@ -237,6 +237,8 @@ Page({
   deleteAll() {
     // 注销弹窗按包里有的功能写删哪些记录（过审版加 AI 只说 AI 的，11/2 完整测试第 7 条）；
     // 有没到期的使用期时多一个确认框（付费协议开卖必做第 3 项，utils/consent.js withdrawAccount）
-    withdrawAccount(pages.flags()).then((ok) => { if (ok) wx.navigateBack(); });
+    // "保存的通知"只在真保存过时写（开关关着、没保存过时注销弹窗和现在一样；独立审阅第 1 轮）
+    const has = Object.assign({}, pages.flags(), { saved: pages.has('saved') && this.data.saved.length > 0 });
+    withdrawAccount(has).then((ok) => { if (ok) wx.navigateBack(); });
   },
 });

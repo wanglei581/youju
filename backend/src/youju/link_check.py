@@ -215,7 +215,7 @@ def _select(session: Session, now: datetime, limit: int) -> tuple[list[tuple[int
     queues = []
     if gone.enabled():
         # D-123 清理期：失效后 10 天以内的每天查（不管发布了多久），排最前面，免得到了清理那天
-        # 还没再查过（gone.cleanup_expired 要求最近 36 小时查过）。下面两队不再重复挑这些
+        # 还没再确认过（gone.cleanup_expired 要求最近 30 小时确认还打不开）。下面两队不再重复挑这些
         window = Document.link_gone_at >= now - gone.RECHECK_SPAN
         queues.append(
             base.where(window, Document.link_checked_at <= now - RECENT_RECHECK).order_by(
@@ -276,16 +276,22 @@ def _apply(doc: Document, verdict: str, now: datetime) -> str:
     if verdict == "ok":
         doc.link_suspect_at = None
         doc.link_gone_at = None
+        doc.link_gone_seen_at = None
         return "ok"
     if verdict == "unknown":
+        # 判断不了：不改状态，也不算"确认还打不开"（D-123 到期清理看 link_gone_seen_at）
         return "unknown"
     if doc.link_suspect_at is None:
         doc.link_suspect_at = now
         return "suspect"
     if doc.link_gone_at is None and now - _utc(doc.link_suspect_at) >= CONFIRM_AFTER:
         doc.link_gone_at = now
+        doc.link_gone_seen_at = now
         return "gone"
-    return "gone" if doc.link_gone_at is not None else "suspect"
+    if doc.link_gone_at is not None:
+        doc.link_gone_seen_at = now
+        return "gone"
+    return "suspect"
 
 
 def _utc(value: datetime) -> datetime:

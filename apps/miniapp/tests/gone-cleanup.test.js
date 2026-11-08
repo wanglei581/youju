@@ -12,9 +12,9 @@ const root = path.join(__dirname, '..');
 const read = (file) => fs.readFileSync(path.join(root, file), 'utf8');
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 const NOTICE = '原网页10月21日起打不开，内容可能已被发布机关撤回或更正，以官方为准';
-const GONE = { since: '2026-10-21', cleanup: '2026-10-28', notice: NOTICE, cleanupNotice: '这份通知将于10月28日清理，可以先保存或导出', list: false, window: true, canSave: true };
+const GONE = { since: '2026-10-21', cleanup: '2026-10-28', notice: NOTICE, cleanupNotice: '这份通知将于10月28日清理，可以先保存或导出', list: false, window: true, canSave: true, canExport: true };
 // 名单类（D-123 ④）：不清理，一直标明已撤下；7 天过后不给正文、不给保存
-const LIST_LATER = { since: '2026-10-21', cleanup: null, notice: '原网页10月21日起已撤下', cleanupNotice: '正文不再提供，名单请在“查名单”里按企业名称查询', list: true, window: false, canSave: false };
+const LIST_LATER = { since: '2026-10-21', cleanup: null, notice: '原网页10月21日起已撤下', cleanupNotice: '正文不再提供，名单请在“查名单”里按企业名称查询', list: true, window: false, canSave: false, canExport: false };
 
 function pageOf(file, deps, globals = {}) {
   let def;
@@ -90,7 +90,8 @@ test('详情页：清理期里标题下写提示和清理日期，正文、附�
   const page = pageOf('pages/detail/index.js', detailDeps(doc, calls));
   page.onLoad({ id: '9' }); await settle();
   assert.equal(page.data.goneNote, `${NOTICE}。这份通知将于10月28日清理，可以先保存或导出。`);
-  assert.equal(page.data.goneWindow, true);
+  assert.equal(page.data.goneSave, true);
+  assert.equal(page.data.goneExport, true);
   assert.equal(page.data.goneAll, false);
   const tree = render('pages/detail/index.wxml', { ...page.data, loading: false });
   const note = findAll(tree, hasClass('gone-note')).map((n) => textOf(n)).join('');
@@ -118,21 +119,54 @@ test('名单类：卡片和详情页标明"原网页某月某日起已撤下"，
   const page = pageOf('pages/detail/index.js', detailDeps(doc, []));
   page.onLoad({ id: '2' }); await settle();
   assert.equal(page.data.goneNote, '原网页10月21日起已撤下。正文不再提供，名单请在“查名单”里按企业名称查询。');
-  assert.equal(page.data.goneWindow, false);
+  assert.equal(page.data.goneSave || page.data.goneExport, false);
   const tree = render('pages/detail/index.wxml', { ...page.data, loading: false });
   assert.equal(findAll(tree, hasClass('gone-act')).length, 0);
   assert.doesNotMatch(textOf(tree), /清理/);
 });
 
 test('详情页：清理期里没有能存的文字（正文就是名单、附件不展示）时不给保存、导出', async () => {
-  const listInWindow = { ...GONE, notice: '原网页10月21日起已撤下', cleanup: null, cleanupNotice: '', list: true, canSave: false };
+  const listInWindow = { ...GONE, notice: '原网页10月21日起已撤下', cleanup: null, cleanupNotice: '', list: true, canSave: false, canExport: false };
   const doc = { id: '3', kind: '名单', tags: ['名单'], title: '拟认定名单的公示', issuer: '某厅', date: '2026-10-20', region: '山东 · 省级',
     points: [], link_gone: '2026-10-21', gone: listInWindow, body: { status: 'list' }, attachments: [] };
   const page = pageOf('pages/detail/index.js', detailDeps(doc, []));
   page.onLoad({ id: '3' }); await settle();
   assert.equal(page.data.goneNote, '原网页10月21日起已撤下。');
-  assert.equal(page.data.goneWindow, false);
+  assert.equal(page.data.goneSave || page.data.goneExport, false);
   assert.equal(findAll(render('pages/detail/index.wxml', { ...page.data, loading: false }), hasClass('gone-act')).length, 0);
+});
+
+test('详情页：新版隐私指引还没上线（服务端 canSave 为假）时只给导出', async () => {
+  const doc = { id: '9', kind: '申报通知', tags: ['申报通知'], title: '关于开展科技计划项目申报的通知', issuer: '某厅', date: '2026-10-20',
+    region: '山东 · 省级', points: [], link_gone: '2026-10-21', gone: { ...GONE, canSave: false, cleanupNotice: '这份通知将于10月28日清理，可以先导出' },
+    body: { status: 'ok', text: '申报说明。'.repeat(20), total: 100, truncated: false }, attachments: [] };
+  const page = pageOf('pages/detail/index.js', detailDeps(doc, []));
+  page.onLoad({ id: '9' }); await settle();
+  const tree = render('pages/detail/index.wxml', { ...page.data, loading: false });
+  assert.deepEqual(findAll(tree, hasClass('gone-act')).map((n) => textOf(n).trim()), ['导出 Word']);
+});
+
+test('阅读副本："返回我的保存"上一页是我的保存就退回，从别处打开的换成我的保存页', () => {
+  const calls = [];
+  const make = (prevRoute) => {
+    let def;
+    vm.runInNewContext(read('pages/reader/index.js'), {
+      module: { exports: {} }, setTimeout, clearTimeout, Promise, Date, Math,
+      require(name) {
+        if (/reading-progress\.js$/.test(name)) return { get: () => null, save() {}, clear() {} };
+        if (/api\.js$/.test(name)) return {};
+        if (/(^|\/)pages\.js$/.test(name)) return require('./helpers/package-pages-default.js').pages;
+        throw new Error(name);
+      },
+      Page(d) { def = d; },
+      getCurrentPages: () => [{ route: prevRoute }, { route: 'pages/reader/index' }],
+      wx: { navigateBack: () => calls.push('back'), redirectTo: ({ url }) => calls.push(url) },
+    });
+    return def;
+  };
+  make('pages/saved/index').backToSaved();
+  make('pages/files/index').backToSaved();
+  assert.deepEqual(calls, ['back', '/pages/saved/index']);
 });
 
 test('详情页：服务端没给 gone（开关关着、过了清理日期、不清理的）照 D-097，不给保存、导出', async () => {
@@ -140,7 +174,7 @@ test('详情页：服务端没给 gone（开关关着、过了清理日期、不
     points: [], link_gone: '2026-10-21', body: { status: 'none', reason: 'link_gone' }, attachments: [] };
   const page = pageOf('pages/detail/index.js', detailDeps(doc, []));
   page.onLoad({ id: '9' }); await settle();
-  assert.equal(page.data.goneWindow, false);
+  assert.equal(page.data.goneSave || page.data.goneExport, false);
   assert.match(page.data.goneNote, /^原文链接已失效（2026-10-21 检查时打不开）。正文和附件不再提供/);
   const tree = render('pages/detail/index.wxml', { ...page.data, loading: false });
   assert.equal(findAll(tree, hasClass('gone-act')).length, 0);

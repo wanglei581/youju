@@ -26,18 +26,29 @@ from collections.abc import Iterable
 from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from youju.config import Settings, get_settings
-from youju.models import Document, DocumentDeadline, DocumentMerge, DocumentTakedownEvent
+from youju.models import (
+    Document,
+    DocumentDeadline,
+    DocumentMerge,
+    DocumentTakedownEvent,
+    Source,
+)
 from youju.takedown import available_condition
 
 log = logging.getLogger("youju.gone")
 BEIJING = ZoneInfo("Asia/Shanghai")
 DAYS = 7  # 失效那天算第 1 天，第 8 天清理（D-123：7 天后清理）
-# 清理前最近一次原网页检查要在这么久以内（清理期里每天查，清理那天早上刚查过；没轮到就推迟一天）
-FRESH = timedelta(hours=36)
+# 清理前最近一次确认原网页还打不开（documents.link_gone_seen_at，判断不了的不算）要在这么久以内：
+# 清理期里每天查、排最前，清理那天早上一般刚确认过；没轮到、或网站临时出故障判断不了，就推迟
+# （D-123 ①：网站临时出故障不能误删）
+FRESH = timedelta(hours=30)
+# 原栏目这么久没抓成功（sources.last_success_at）：不知道它还列不列着这份通知，推迟
+# （独立审阅第 1 轮）
+SOURCE_FRESH = timedelta(hours=48)
 # 失效后这么久以内的每天查（清理期 7 天，留几天给检查没轮到、清理推迟的）：link_check 的清理期队列
 RECHECK_SPAN = timedelta(days=DAYS + 3)
 # 原栏目列表这么久以内还列着、又是失效以后看到的：还挂在原栏目里，先不清理（删了下一轮抓取会把它
@@ -62,6 +73,18 @@ KEEP_REASONS = {
 
 def enabled(settings: Settings | None = None) -> bool:
     return bool((settings or get_settings()).gone_cleanup_enabled)
+
+
+def saving_open(settings: Settings | None = None) -> bool:
+    """能保存（我的保存）：开关开着，而且服务器现在的协议版本已经写进"您保存的通知"
+    （agreements.SAVED_AGREEMENT_VERSION）。新版指引还没上线时不给保存按钮，免得点了才被拒、
+    又请用户重新同意一个服务器还不认的版本（独立审阅第 1 轮）。"""
+    from youju.agreements import SAVED_AGREEMENT_VERSION, agreement_at_least
+
+    settings = settings or get_settings()
+    return enabled(settings) and agreement_at_least(
+        settings.agreement_version, SAVED_AGREEMENT_VERSION
+    )
 
 
 def _utc(value: datetime) -> datetime:
@@ -268,9 +291,11 @@ def reading_note(doc: Document) -> str:
 
 def payload(doc: Document, window: bool, readable: bool = True) -> dict:
     """接口里的 gone：原网页打不开的日期、清理日期（名单类没有）、页面上的两句话；window 是还在
-    7 天里、正文附件照常给；canSave 是还在 7 天里、又有能读的正文或附件（readable，详情页才知道），
-    给保存、导出按钮。见 payloads。"""
-    can_save = window and readable
+    7 天里、正文附件照常给；canExport 是还在 7 天里、又有能读的正文或附件（readable，详情页才
+    知道），给"导出 Word"；canSave 另要能保存（saving_open：新版隐私指引已经上线），给"保存"。
+    见 payloads。"""
+    can_export = window and readable
+    can_save = can_export and saving_open()
     if is_list(doc):
         return {
             "since": gone_on(doc.link_gone_at).isoformat(),
@@ -281,18 +306,20 @@ def payload(doc: Document, window: bool, readable: bool = True) -> dict:
             "list": True,
             "window": window,
             "canSave": can_save,
+            "canExport": can_export,
         }
     clean = cleanup_on(doc.link_gone_at)
+    # 没有能读的正文和附件（没东西可存）时不说"可以先保存或导出"
+    tail = "，可以先保存或导出" if can_save else ("，可以先导出" if can_export else "")
     return {
         "since": gone_on(doc.link_gone_at).isoformat(),
         "cleanup": clean.isoformat(),
         "notice": notice(doc.link_gone_at),
-        # 没有能读的正文和附件（没东西可存）时不说"可以先保存或导出"
-        "cleanupNotice": f"这份通知将于{md(clean)}清理"
-        + ("，可以先保存或导出" if can_save else ""),
+        "cleanupNotice": f"这份通知将于{md(clean)}清理{tail}",
         "list": False,
         "window": True,
         "canSave": can_save,
+        "canExport": can_export,
     }
 
 
@@ -329,6 +356,9 @@ def _due(session: Session, now: datetime, ids: list[int] | None = None, *, lock:
         .where(
             Document.link_gone_at.is_not(None),
             Document.link_gone_at < cutoff(now),
+            # 名单类不清理（D-123 ④）：直接不捞出来，免得留着的名单越积越多、每天重算一遍
+            # （rule_kind 是入库时按标题算好的类型，人工定过的看 kind_override，同 effective_kind）
+            func.coalesce(Document.kind_override, Document.rule_kind) != "名单",
             # 下架的（整组）照原来的做法留着、隐藏，不清理
             available_condition(),
         )
@@ -341,6 +371,31 @@ def _due(session: Session, now: datetime, ids: list[int] | None = None, *, lock:
     return list(session.scalars(stmt))
 
 
+def _postponed(session: Session, docs: list[Document], now: datetime) -> dict[int, str]:
+    """这次先不删、下次再看的：stale 最近 30 小时没有确认还打不开（没轮到检查，或网站出故障判断
+    不了）；source_stale 原栏目 48 小时没抓成功（不知道还列不列着）。"""
+    out: dict[int, str] = {}
+    sources = {doc.source_id for doc in docs}
+    fresh_sources = (
+        set(
+            session.scalars(
+                select(Source.id).where(
+                    Source.id.in_(sources), Source.last_success_at >= now - SOURCE_FRESH
+                )
+            )
+        )
+        if sources
+        else set()
+    )
+    for doc in docs:
+        seen = doc.link_gone_seen_at
+        if seen is None or _utc(seen) < now - FRESH:
+            out[doc.id] = "stale"
+        elif doc.source_id not in fresh_sources:
+            out[doc.id] = "source_stale"
+    return out
+
+
 def cleanup_expired(
     session: Session,
     *,
@@ -348,15 +403,22 @@ def cleanup_expired(
     dry_run: bool = False,
     settings: Settings | None = None,
 ) -> dict[str, int]:
-    """本机：删掉过了清理期的原网页失效通知（D-123）。原网页检查跑完以后调用（cli check-links），
-    清理那天早上刚查过一遍。
+    """本机：删掉过了清理期的原网页失效通知（D-123）。原网页检查跑完以后调用（cli check-links）。
 
-    返回 due 到期的份数、deleted 删了几份（dry_run 时是"会删"几份）、stale 最近 36 小时没查过、
-    推迟到下次的份数，以及 KEEP_REASONS 各种不清理的份数。删通知用数据库的外键规则：正文、截止、
-    附件列表、名单等公开数据级联删除；用户的截止提醒授权（subscriptions）、截止线索跟着删，纠错
-    断开；用户保存的副本（saved_documents）不建外键，不受影响。2.0 里本机删掉的行经同步通道
-    带到服务器（PR #453）。"""
-    counts = {"due": 0, "deleted": 0, "stale": 0, **{reason: 0 for reason in KEEP_REASONS}}
+    返回 due 到期的份数（名单类不算）、deleted 删了几份（dry_run 时是"会删"几份）、stale 最近
+    30 小时没有确认还打不开、source_stale 原栏目 48 小时没抓成功（这两种推迟到下次）、failed 删的
+    时候出错的份数（记日志，接着删下一份），以及 KEEP_REASONS 各种不清理的份数。删通知用数据库的
+    外键规则：正文、截止、附件列表、名单等公开数据级联删除；用户的截止提醒授权（subscriptions）、
+    截止线索跟着删，纠错断开；用户保存的副本（saved_documents）不建外键，不受影响。2.0 里本机删掉
+    的行经同步通道带到服务器（PR #453）。"""
+    counts = {
+        "due": 0,
+        "deleted": 0,
+        "stale": 0,
+        "source_stale": 0,
+        "failed": 0,
+        **{reason: 0 for reason in KEEP_REASONS},
+    }
     if not enabled(settings):
         return counts
     now = _utc(now or datetime.now(UTC))
@@ -366,26 +428,32 @@ def cleanup_expired(
     kept = keep_reasons(session, due, now, cleanup=True)
     for reason in kept.values():
         counts[reason] += 1
-    ready = [
-        doc.id
-        for doc in due
-        if doc.id not in kept
-        and doc.link_checked_at is not None
-        and _utc(doc.link_checked_at) >= now - FRESH
-    ]
-    counts["stale"] = len(due) - len(kept) - len(ready)
+    postponed = _postponed(session, [doc for doc in due if doc.id not in kept], now)
+    for reason in postponed.values():
+        counts[reason] += 1
+    ready = [doc.id for doc in due if doc.id not in kept and doc.id not in postponed]
     session.commit()
     if dry_run:
         counts["deleted"] = len(ready)
         return counts
     for doc_id in ready:
-        # 一份一个事务：锁住这一行再核对一遍（这期间恢复了、下架了、换了地址的不删）
-        docs = _due(session, now, [doc_id], lock=True)
-        if not docs or keep_reasons(session, docs, now, cleanup=True):
+        # 一份一个事务：锁住这一行再核对一遍（这期间恢复了、下架了、换了地址的不删）。
+        # 一份出错（锁等待超时等）只记日志、回滚，接着删下一份，不让一份卡住整批
+        try:
+            docs = _due(session, now, [doc_id], lock=True)
+            if (
+                not docs
+                or keep_reasons(session, docs, now, cleanup=True)
+                or _postponed(session, docs, now)
+            ):
+                session.rollback()
+                continue
+            session.execute(delete(Document).where(Document.id == doc_id))
+            session.commit()
+            counts["deleted"] += 1
+        except Exception as exc:  # noqa: BLE001 - 一份出意外不拖累整批，下次再删
             session.rollback()
-            continue
-        session.execute(delete(Document).where(Document.id == doc_id))
-        session.commit()
-        counts["deleted"] += 1
+            counts["failed"] += 1
+            log.warning("原网页失效到期清理：#%s 没删成（%s）", doc_id, exc.__class__.__name__)
     log.info("原网页失效到期清理：%s", counts)
     return counts

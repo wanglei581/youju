@@ -151,12 +151,14 @@ Page({
           noBody: body ? '' : noBodyText(doc.body, atts),
           // 原网页已失效：标题下写明（正文、附件都不再给）；写了"不再提供"时正文卡片不再写一遍（goneAll）。
           // D-123：还在 7 天清理期里的（服务端给 gone）写打不开的日期和清理日期，正文、附件照常给，
-          // 提示下面给"保存""导出 Word"（goneWindow）
+          // 提示下面给"保存""导出 Word"（goneSave、goneExport）
           goneNote: goneNote(doc.link_gone, readable, doc.gone),
           goneAll: !!doc.link_gone && !readable,
           // 名单类（D-123 ④）一直标明已撤下、不清理；7 天过后 window 为假，不给保存、导出。
-          // 没有能读的正文和附件（没东西可存，如正文就是名单）也不给（服务端 canSave，本页再看一次）
-          goneWindow: !!(doc.gone && doc.gone.notice && doc.gone.window === true && doc.gone.canSave !== false && readable),
+          // 没有能读的正文和附件（没东西可存，如正文就是名单）也不给（服务端 canExport、canSave，本页
+          // 再看一次）；新版隐私指引还没上线时服务端 canSave 为假，只给导出
+          goneExport: !!(doc.gone && doc.gone.window === true && doc.gone.canExport === true && readable),
+          goneSave: !!(doc.gone && doc.gone.window === true && doc.gone.canSave === true && readable),
           savedHere: false,
           // 底栏："阅读全文"（只显示了开头）或"阅读附件"（正文已全部显示或没有正文），都读不了不显示
           entry: readEntry(doc.body, bodyView, atts),
@@ -192,7 +194,7 @@ Page({
       })
       .catch((err) => this.setData({
         doc: null, due: null, dueNote: '', changes: [], reminded: false, atts: [], conds: [], versions: [], versionLabel: '', upstream: '',
-        bodyView: null, noBody: '', entry: null, goneNote: '', goneAll: false, goneWindow: false, savedHere: false, dueQuote: '', checkedText: '', points: [],
+        bodyView: null, noBody: '', entry: null, goneNote: '', goneAll: false, goneExport: false, goneSave: false, savedHere: false, dueQuote: '', checkedText: '', points: [],
         takenDown: err.status === 404 && err.message === '该文件已下架',
         error: err.status === 404 && this.fromGone && err.message !== '该文件已下架'
           ? '这份通知原网页打不开，已经到期清理；保存过的在“我的 → 我的保存”里看'
@@ -329,7 +331,7 @@ Page({
   // 要先同意协议；保存过再点是换成现在的内容
   saveGone() {
     const doc = this.data.doc;
-    if (!doc || !this.data.goneWindow || this.savingGone) return undefined;
+    if (!doc || !this.data.goneSave || this.savingGone) return undefined;
     this.savingGone = true;
     const done = () => { this.savingGone = false; };
     return ensureConsent({ purpose: 'save' }).then((ok) => {
@@ -349,7 +351,7 @@ Page({
   // D-123：清理期里导出这份通知的正文和附件文字（Word，不用登录）
   exportGone() {
     const doc = this.data.doc;
-    if (!doc || !this.data.goneWindow) return undefined;
+    if (!doc || !this.data.goneExport) return undefined;
     const label = doc.title.length > 30 ? `${doc.title.slice(0, 30)}…` : doc.title;
     return exportWord(() => api.exportGone(doc.id), { label, source: 'gone', docId: doc.id });
   },

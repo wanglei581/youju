@@ -171,7 +171,8 @@ Page({
   deleteAccount() {
     // 有没到期的使用期时多一个确认框（付费协议开卖必做第 3 项，utils/consent.js withdrawAccount）；
     // 弹窗按包里有的功能写删哪些记录（11/2 完整测试第 7 条）
-    withdrawAccount(this.data.has).then((ok) => {
+    // "保存的通知"只在服务端有这项功能（/me 给了 saved）时写，开关关着时不提（独立审阅第 1 轮）
+    withdrawAccount(Object.assign({}, this.data.has, { saved: !!(this.data.has.saved && this.data.savedEntry) })).then((ok) => {
       if (ok) this.setData({ signedIn: false, hasRecord: false, outdated: false, agreed: false, nudge: false, followCount: 0, reminderCount: 0, profileLoading: false, profileError: '' });
     });
   },

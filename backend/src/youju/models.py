@@ -246,6 +246,9 @@ class Document(Base):
     link_checked_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), index=True)
     link_suspect_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     link_gone_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    # 最近一次检查确认还打不开（404、410、撤稿页）的时间：判断不了（网站出错、超时、robots）的不算。
+    # D-123 到期清理要求最近确认过，网站临时出故障时不清理（迁移 0049）
+    link_gone_seen_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 
     source: Mapped[Source] = relationship()
     detail: Mapped["DocumentDetail | None"] = relationship(back_populates="document", uselist=False)

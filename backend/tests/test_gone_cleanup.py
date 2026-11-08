@@ -79,9 +79,20 @@ def gone_doc(session, n=1, *, gone_at=GONE, checked=NOW - timedelta(hours=3), **
     doc.link_suspect_at = gone_at - timedelta(days=1)
     doc.link_gone_at = gone_at
     doc.link_checked_at = checked
+    # 最近一次确认还打不开（判断不了的不算），到期清理看它
+    doc.link_gone_seen_at = checked
     doc.last_seen_at = gone_at - timedelta(days=2)
+    session.get(Source, doc.source_id).last_success_at = NOW - timedelta(hours=2)
     session.commit()
     return doc, att
+
+
+def fresh(session, docs, when):
+    """到期那天早上刚确认过还打不开，栏目也刚抓成功过。"""
+    for doc in docs:
+        doc.link_checked_at = doc.link_gone_seen_at = when - timedelta(hours=1)
+        session.get(Source, doc.source_id).last_success_at = when - timedelta(hours=1)
+    session.commit()
 
 
 def agree(client, version="2027-01"):
@@ -112,6 +123,7 @@ def test_window_dates_follow_beijing_days(env):
     assert not gone.viewable(None, last)
     env(gone_cleanup_enabled="false")
     assert not gone.viewable(gone_at, last) and gone.blocked(gone_at, last)
+    env(gone_cleanup_enabled="true", agreement_version="2027-01")
     doc = Document(title="关于开展申报的通知", kind_override="申报通知", link_gone_at=gone_at)
     assert gone.payload(doc, True) == {
         "since": "2026-10-17",
@@ -121,10 +133,17 @@ def test_window_dates_follow_beijing_days(env):
         "list": False,
         "window": True,
         "canSave": True,
+        "canExport": True,
     }
     # 没有能读的正文和附件：不说"可以先保存或导出"，不给按钮
-    assert gone.payload(doc, True, readable=False)["cleanupNotice"] == "这份通知将于10月24日清理"
-    assert gone.payload(doc, True, readable=False)["canSave"] is False
+    empty = gone.payload(doc, True, readable=False)
+    assert empty["cleanupNotice"] == "这份通知将于10月24日清理"
+    assert empty["canSave"] is False and empty["canExport"] is False
+    # 新版隐私指引还没上线（服务器协议版本早于 SAVED_AGREEMENT_VERSION）：只给导出
+    env(agreement_version="2026-12")
+    early = gone.payload(doc, True)
+    assert early["cleanupNotice"] == "这份通知将于10月24日清理，可以先导出"
+    assert early["canSave"] is False and early["canExport"] is True
     roster = Document(title="拟认定名单公示", kind_override="名单", link_gone_at=gone_at)
     assert gone.payload(roster, False) == {
         "since": "2026-10-17",
@@ -134,6 +153,7 @@ def test_window_dates_follow_beijing_days(env):
         "list": True,
         "window": False,
         "canSave": False,
+        "canExport": False,
     }
 
 
@@ -152,6 +172,7 @@ def test_window_gives_body_attachments_and_notice(client, session, on):
         "list": False,
         "window": True,
         "canSave": True,
+        "canExport": True,
     }
     [item] = detail["attachments"]
     assert (item["state"], item["readable"]) == ("ok", True)
@@ -276,10 +297,10 @@ def test_kept_documents_are_not_cleaned_and_follow_d097(client, session, on, rea
     agree(client)
     assert save(client, doc).status_code == 409
     later = NOW + timedelta(days=8)
+    fresh(session, [doc], later)
     if reason == "listed":
         doc.last_seen_at = later - timedelta(hours=1)  # 一直还列着
-    doc.link_checked_at = later - timedelta(hours=1)
-    session.commit()
+        session.commit()
     counts = gone.cleanup_expired(session, now=later)
     assert counts["due"] == 1 and counts[reason] == 1 and counts["deleted"] == 0
     assert session.get(Document, doc.id) is not None
@@ -296,9 +317,7 @@ def test_merge_group_is_cleaned_when_the_last_url_is_due(session, on):
     counts = gone.cleanup_expired(session, now=NOW)
     assert counts["deleted"] == 0 and counts["waiting"] == 1
     later = NOW + timedelta(days=5)
-    for doc in (master, copy):
-        doc.link_checked_at = later - timedelta(hours=1)
-    session.commit()
+    fresh(session, [master, copy], later)
     assert gone.cleanup_expired(session, now=later)["deleted"] == 2
     assert session.scalar(select(func.count()).select_from(Document)) == 0
 
@@ -337,6 +356,9 @@ def test_lists_are_kept_marked_and_readable_for_seven_days(client, session, on):
     doc.title = "关于2026年度专精特新中小企业拟认定名单的公示"
     session.commit()
     detail = client.get(f"/api/v1/documents/{doc.id}").json()
+    readable = detail["body"].get("status") == "ok" or any(
+        item["readable"] for item in detail["attachments"]
+    )
     assert detail["gone"] == {
         "since": "2026-10-21",
         "cleanup": None,
@@ -345,8 +367,8 @@ def test_lists_are_kept_marked_and_readable_for_seven_days(client, session, on):
         "list": True,
         "window": True,
         # 有没有东西可存：正文能读或有能读的附件
-        "canSave": detail["body"].get("status") == "ok"
-        or any(item["readable"] for item in detail["attachments"]),
+        "canSave": readable,
+        "canExport": readable,
     }
     assert detail["body"] != {"status": "none", "reason": "link_gone"}
     reading = client.get(f"/api/v1/documents/{doc.id}/reading").json()
@@ -363,8 +385,10 @@ def test_lists_are_kept_marked_and_readable_for_seven_days(client, session, on):
     assert later["body"] == {"status": "none", "reason": "link_gone"}
     agree(client)
     assert save(client, doc).status_code == 409
+    # 名单类不清理：到期也不捞出来
+    fresh(session, [doc], NOW)
     counts = gone.cleanup_expired(session, now=NOW)
-    assert counts["list"] == 1 and counts["deleted"] == 0
+    assert counts["due"] == 0 and counts["deleted"] == 0
     assert session.get(Document, doc.id) is not None
 
 
@@ -443,6 +467,79 @@ def test_cleanup_skips_documents_restored_or_moved_meanwhile(session, on, monkey
     assert session.get(Document, doc.id) is not None
 
 
+def test_only_definite_gone_checks_count_for_cleanup(session, on):
+    """判断不了的（网站出错、超时、robots）不算"确认还打不开"：网站维护期间不清理（D-123 ①：网站
+    临时出故障不能误删；独立审阅第 1 轮）。"""
+    doc, _ = gone_doc(session, gone_at=NOW - timedelta(days=7), checked=NOW - timedelta(days=2))
+    assert link_check._apply(doc, "unknown", NOW - timedelta(hours=2)) == "unknown"
+    assert doc.link_checked_at == NOW - timedelta(hours=2)
+    assert doc.link_gone_seen_at == NOW - timedelta(days=2)
+    session.commit()
+    counts = gone.cleanup_expired(session, now=NOW)
+    assert (counts["deleted"], counts["stale"]) == (0, 1)
+    assert link_check._apply(doc, "404", NOW - timedelta(hours=1)) == "gone"
+    assert doc.link_gone_seen_at == NOW - timedelta(hours=1)
+    session.commit()
+    assert gone.cleanup_expired(session, now=NOW)["deleted"] == 1
+    # 能打开了：三个时间都清空
+    other, _ = gone_doc(session, 2)
+    assert link_check._apply(other, "ok", NOW) == "ok"
+    assert other.link_gone_at is None and other.link_gone_seen_at is None
+
+
+def test_cleanup_waits_when_the_column_was_not_crawled(session, on):
+    """原栏目 48 小时没抓成功：不知道还列不列着，先不删（独立审阅第 1 轮）。"""
+    doc, _ = gone_doc(session, gone_at=NOW - timedelta(days=7))
+    session.get(Source, doc.source_id).last_success_at = NOW - timedelta(days=3)
+    session.commit()
+    counts = gone.cleanup_expired(session, now=NOW)
+    assert (counts["deleted"], counts["source_stale"]) == (0, 1)
+
+
+def test_one_failed_delete_does_not_stop_the_batch(session, on, monkeypatch):
+    first, _ = gone_doc(session, 1, gone_at=NOW - timedelta(days=8))
+    second, _ = gone_doc(session, 2, gone_at=NOW - timedelta(days=7))
+    real = gone._due
+
+    def flaky(session_, now, ids=None, *, lock=False):
+        if lock and ids == [first.id]:
+            raise RuntimeError("锁等待超时")
+        return real(session_, now, ids, lock=lock)
+
+    monkeypatch.setattr(gone, "_due", flaky)
+    counts = gone.cleanup_expired(session, now=NOW)
+    assert (counts["deleted"], counts["failed"]) == (1, 1)
+    remaining = set(session.scalars(select(Document.id)))
+    assert first.id in remaining and second.id not in remaining
+
+
+def test_saving_waits_for_the_new_privacy_version(client, session, env):
+    """开关开着、服务器协议还是旧版（早于 SAVED_AGREEMENT_VERSION）：不给保存（接口 404，按钮不出），
+    导出照常；我的页不放入口（没保存过时）。"""
+    env(gone_cleanup_enabled="true", dev_openid="dev-user", agreement_version="2026-12")
+    doc, _ = gone_doc(session)
+    gone_info = client.get(f"/api/v1/documents/{doc.id}").json()["gone"]
+    assert (gone_info["canSave"], gone_info["canExport"]) == (False, True)
+    agree(client, "2026-12")
+    assert save(client, doc).status_code == 404
+    assert client.get("/api/v1/me").json()["saved"] is None
+    assert client.post(f"/api/v1/documents/{doc.id}/gone-export").status_code == 200
+
+
+def test_cli_saved_purge_removes_copies_of_a_cleaned_notice(client, session, on, capsys):
+    """通知已经清理、管理台下架不了，收到投诉时在服务器上按编号删副本（D-123 ④）。"""
+    from youju import cli
+
+    doc, _ = gone_doc(session)
+    agree(client)
+    assert save(client, doc).status_code == 201
+    session.execute(Document.__table__.delete().where(Document.id == doc.id))
+    session.commit()
+    assert cli.main(["saved-purge", "--doc", str(doc.id)]) == 0
+    assert "删了 1 份用户保存的副本" in capsys.readouterr().out
+    assert session.scalar(select(func.count()).select_from(SavedDocument)) == 0
+
+
 def test_link_check_rechecks_window_documents_daily_first(session, env):
     """清理期里的每天再查一次（D-123 ①），不管发布了多久，排在最前面。"""
     doc, _ = gone_doc(session, checked=NOW - timedelta(hours=21))
@@ -478,7 +575,7 @@ def test_cli_check_links_runs_cleanup_after_checking(session, on, monkeypatch, c
     )
     assert cli.main(["check-links"]) == 0
     assert calls == ["check", "cleanup"]
-    assert "原网页失效到期清理：到期 1 份，删了 1 份" in capsys.readouterr().out
+    assert "原网页失效到期清理：到期 1 份（名单类不算），删了 1 份" in capsys.readouterr().out
     assert session.scalar(select(Document.id).where(Document.id == doc.id)) is None
 
 
