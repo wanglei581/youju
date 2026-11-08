@@ -540,6 +540,11 @@ class AttachmentTextVersion(Base):
     scanned_pages: Mapped[int | None] = mapped_column(Integer)
     # 遮过号码的段数
     masked: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    # 扫描页识别（D-125，attachment_text.ocr_version）：按哪一版识别规则识别过（attachment_text.
+    # OCR_RULES；0 是没识别过，平常重取文字也回到 0），识别出文字的扫描页有几页（scanned_pages 是
+    # 识别以后还没认出的页）
+    ocr_rules: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    ocr_pages: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     extracted_at: Mapped[datetime] = mapped_column(UTCDateTime())
 
 

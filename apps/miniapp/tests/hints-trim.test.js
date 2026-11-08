@@ -165,6 +165,8 @@ test('10/29 晚：数据说明都写在使用帮助里，页面上只留一个"�
   // 页面上撤下来的几句，帮助里都写着
   assert.match(text('deadline'), /已人工核对.*原文摘录.*没有经过人工核对.*截止时间见原文.*可能 7 天内截止/);
   assert.match(text('text'), /自动提取的，没有经过人工逐字核对/);
+  // 扫描件识别出的字（D-125）：页面上只标“文字是识别出来的”，可能有错字写在这里（D-108）
+  assert.match(text('text'), /标着“文字是识别出来的”的，是程序从图片里认出的字，可能有错字/);
   assert.match(text('tags'), /按标题归类，仅供检索参考，非官方分类/);
   assert.match(text('lists'), /不能这样判断/);
   for (const item of help.items.filter((i) => !i.ai)) assert.doesNotMatch(item.q + item.a.join(''), /\bAI\b/, item.key);

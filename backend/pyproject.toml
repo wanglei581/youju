@@ -28,6 +28,20 @@ dependencies = [
 [project.scripts]
 youju = "youju.cli:main"
 
+[project.optional-dependencies]
+# 扫描件识别文字（D-125）：开源的 RapidOCR（模型在安装包里，运行时不下载），只装在跑识别的机器上
+# （2.0 的本地电脑）；云托管镜像按锁文件只装主依赖，不装这一组。OpenCV 用不带界面的版本（见下面的
+# override-dependencies）
+ocr = [
+    "rapidocr-onnxruntime==1.4.4",
+    "opencv-python-headless>=4.8",
+]
+
+[tool.uv]
+# rapidocr-onnxruntime 要的是带界面的 opencv-python（精简镜像里缺 libGL 导入就失败），换成上面
+# 不带界面的 opencv-python-headless（同一个 cv2 模块）
+override-dependencies = ["opencv-python; sys_platform == 'never'"]
+
 [dependency-groups]
 dev = [
     "psycopg[binary]>=3.2",

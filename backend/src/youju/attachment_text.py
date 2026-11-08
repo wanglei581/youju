@@ -131,6 +131,8 @@ class Extraction:
     pages: int | None = None
     scanned_pages: int | None = None
     masked: int = 0
+    # 识别出文字的扫描页（D-125，只有识别任务里会有）
+    ocr_pages: int = 0
 
     @property
     def ok(self) -> bool:
@@ -822,6 +824,7 @@ class _Found:
     picture_bytes: int = 0
     pages: int | None = None
     scanned: int | None = None
+    ocr: int = 0  # 识别出文字的扫描页
     # 压缩包：读了几个文件的说明；final 是已经逐个文件判断过扫描件、空文件，不再整份按图片判断
     detail: str | None = None
     final: bool = False
@@ -1479,9 +1482,25 @@ def _pdf(data: bytes) -> _Found:
     pages = found["pages"]
     if "read" not in found:
         raise Unreadable("too_large", f"PDF 超过 {limits.pdf_pages} 页")
-    items: list[tuple] = []  # ("line", 文字, 页) 或 ("table", 行, 页)
+    # 识别扫描页（D-125）：只在识别任务里做，按页码先后最多识别 limits.ocr_pages 页。连着认出的几页
+    # 前面加一行说明（ocr_marker），这几页的段落出处记 ocr
+    scan_pages = [n for n, page in enumerate(found["read"], 1) if page["scan"]]
+    recognized = (
+        _ocr_pages(data, scan_pages[: limits.ocr_pages], limits)
+        if limits.ocr_pages and scan_pages
+        else {}
+    )
+    items: list[tuple] = []  # ("line", 文字, 页)、("table", 行, 页) 或 ("marker", 说明, 页)
     scanned = 0
     for number, page in enumerate(found["read"], 1):
+        if number in recognized:
+            if number - 1 not in recognized:
+                end = number
+                while end + 1 in recognized:
+                    end += 1
+                items.append(("marker", ocr_marker(number, end, pages), number))
+            items += [("line", text, number) for _top, text in recognized[number]]
+            continue
         lines, tables, is_scan = _pdf_page(page)
         scanned += is_scan
         entries = [(top, "line", text) for top, text in lines]
@@ -1494,10 +1513,20 @@ def _pdf(data: bytes) -> _Found:
     tables = 0
     last: dict | None = None  # 上一张表：竖线位置、表号、行数、表头、标签列
     current, current_page, physical = "", None, ""
+
+    def loc(number: int) -> dict:
+        return {"page": number, "ocr": 1} if number in recognized else {"page": number}
+
     for index, (kind, value, number) in enumerate(items):
+        if kind == "marker":
+            if current:
+                builder.para(current, loc(current_page))
+                current, physical = "", ""
+            builder.para(value, loc(number))
+            continue
         if kind == "table":
             if current:
-                builder.para(current, {"page": current_page})
+                builder.para(current, loc(current_page))
                 current, physical = "", ""
             value, xs = value
             # 跨页的续表：上一页最后是一张表、这一页一开始就是表、竖线位置一样（差 2pt 以内）。
@@ -1539,16 +1568,18 @@ def _pdf(data: bytes) -> _Found:
             last["headers"], last["columns"] = headers, columns
             last["head_text"] = last["head_text"] or head_text
             continue
-        if current and layout_wrapped(physical, value, width):
+        # 识别出的字和取出的字不接成一段（从识别页到普通页、或者反过来，都另起一段）
+        same_kind = current_page is None or (current_page in recognized) == (number in recognized)
+        if current and same_kind and layout_wrapped(physical, value, width):
             current = current.rstrip() + value.lstrip()
         else:
             if current:
-                builder.para(current, {"page": current_page})
+                builder.para(current, loc(current_page))
             current, current_page = value, number
         physical = value
     if current:
-        builder.para(current, {"page": current_page})
-    return _Found(builder, pages=pages, scanned=scanned)
+        builder.para(current, loc(current_page))
+    return _Found(builder, pages=pages, scanned=scanned, ocr=len(recognized))
 
 
 def _seconds_left(seconds: int) -> float:
@@ -1560,6 +1591,132 @@ def _seconds_left(seconds: int) -> float:
     if deadline is None:
         return seconds
     return max(1.0, min(seconds, deadline - time.monotonic()))
+
+
+# ---- 识别扫描页（D-125：开源的 RapidOCR 在我们自己的机器上识别，不接第三方） ----
+# 只在识别任务（attachments.ocr_scans，开关 YOUJU_OCR_ENABLED 默认关）里做：PDF 里认成扫描页的页
+# 渲染成图片识别，认出的字和取出的字一样遮号码、分段，段落出处记 {"page": 页, "ocr": 1}，连着认出的
+# 几页前面加一行说明（ocr_marker）。页面上标明是识别出来的（文字里那一行、详情页的 Reading.note），
+# 可能有错字写在使用帮助里。附件文字只用在站内阅读（和内容安全的日报统计）：截止日期、金额这些
+# 自动抽取、AI 都只用正文，不用附件文字。扫描件照旧不存原件副本（attachments 的副本检查）。
+
+# 识别规则的版本：规则改了（分辨率、置信度、怎么分行）就加 1，识别过的内容版本按新规则重新识别
+OCR_RULES = 1
+_OCR_DPI = 200  # 渲染分辨率（每英寸点数），A4 约 1650×2340 像素
+_OCR_PIXELS = 12_000_000  # 一页最多这么多像素（大幅面的图纸按比例降分辨率）
+_OCR_MIN_SCORE = 0.6  # 置信度低于这个的一行不要（公章、底纹、污渍认出的乱码多半在这以下）
+_OCR_MIN_CHARS = 10  # 一页认出的字不到这么多，按没认出算（还是扫描页）
+# 一个识别子进程最多识别这么多页：一批识别完子进程就退出，内存全部还回去；一批没成（内存、时间
+# 超了）只丢这一批。本机实测内存头两页涨到约 1.2GB 后就不再涨（见 pdf_sandbox.OCR_MEMORY_MAX）
+_OCR_BATCH = 10
+_OCR_SECONDS = 60  # 每个识别子进程起来、载入模型的 CPU 时间
+_OCR_PAGE_SECONDS = 40  # 每页的 CPU 时间（本机实测 3–4 秒一页，慢的机器约慢一倍，留足）
+# 页面上的说法（D-125）：页面上只标"文字是识别出来的"；"可能有错字"写在使用帮助里（D-108 定的
+# 这类说明只写进使用帮助），创始人看过再定。
+# 文字里：连着认出的几页前面一行（阅读页每页第一段前面本来就写"原文第 N 页"）
+OCR_MARKER_ALL = "（这份文件是扫描件，文字是识别出来的）"
+OCR_MARKER_PAGE = "（这一页是扫描件，文字是识别出来的）"
+OCR_MARKER_PAGES = "（第 {first}–{last} 页是扫描件，文字是识别出来的）"
+# 详情页附件后面（Reading.note）
+OCR_NOTE_ALL = "能读（扫描件，文字是识别出来的）"
+OCR_NOTE_SOME = "能读，其中 {pages} 页扫描件的文字是识别出来的"
+OCR_NOTE_MISSED = "；另有 {pages} 页没认出文字"
+# 阅读页顶上（api/readers.py）：还有没认出的页才写（小程序只在 status=partial 时显示）
+OCR_NOTICE_MISSED = "其中 {pages} 页扫描件没认出文字，下面的文字不含这些页。"
+
+
+def ocr_marker(first: int, last: int, pages: int | None) -> str:
+    """连着认出的第 first–last 页前面那一行。"""
+    if first == 1 and pages and last >= pages:
+        return OCR_MARKER_ALL
+    if first == last:
+        return OCR_MARKER_PAGE
+    return OCR_MARKER_PAGES.format(first=first, last=last)
+
+
+def ocr_whole(file_type: str | None, pages: int | None, ocr_pages: int, missed: int) -> bool:
+    """整份都是识别出来的：PDF、每页都认出了（压缩包、有没认出的页都按"其中几页"写）。"""
+    return file_type == "pdf" and not missed and bool(pages) and ocr_pages >= (pages or 0)
+
+
+def ocr_seconds(pages: int) -> int:
+    """识别这么多页最多用多少秒（CPU 时间，每批子进程另加载入模型的时间）。"""
+    pages = max(pages, 0)
+    return _OCR_SECONDS * math.ceil(pages / _OCR_BATCH) + _OCR_PAGE_SECONDS * pages
+
+
+def _ocr_pages(data: bytes, numbers: list[int], limits: Limits) -> dict[int, list]:
+    """识别这几页（页码从 1 起）：{页码: [(上边, 一行字)]}，只留认出了足够多字的页。每 _OCR_BATCH
+    页起一个限内存（OCR_MEMORY_MAX）、限 CPU 时间的子进程；一批没成（内存、时间超了，文件渲染
+    不了）这一批按都没认出算，接着识别下一批；和当时的环境有关的（起不了子进程等）抛出，识别任务
+    过一段时间再来。"""
+    from youju import pdf_sandbox
+
+    out = {}
+    for start in range(0, len(numbers), _OCR_BATCH):
+        batch = numbers[start : start + _OCR_BATCH]
+        try:
+            found = pdf_sandbox.read(
+                "ocr",
+                data,
+                seconds=ocr_seconds(len(batch)),
+                memory=pdf_sandbox.OCR_MEMORY_MAX,
+                pages=batch,
+                dpi=_OCR_DPI,
+                pixels=_OCR_PIXELS,
+                threads=limits.ocr_threads,
+            )
+        except pdf_sandbox.Failed as exc:
+            if exc.retry:
+                raise
+            log.info(
+                "扫描页没识别成（第 %s–%s 页，%s）：%s", batch[0], batch[-1], exc.kind, exc.detail
+            )
+            continue
+        for key, page in found.get("pages", {}).items():
+            lines = _ocr_lines(page)
+            if sum(len(text.replace(" ", "")) for _top, text in lines) >= _OCR_MIN_CHARS:
+                out[int(key)] = lines
+    return out
+
+
+def _ocr_lines(page: dict) -> list[tuple[float, str]]:
+    """一页识别出的框 → 一行一行的字（[(上边, 字)]，从上到下）：置信度低的不要；中心高度差不到
+    半行的算同一行，从左到右用空格接（表格的格和格分得开）；页面上下边上的页码行去掉。"""
+    height = float(page.get("height") or 0)
+    boxes = []
+    for top, bottom, left, text, score in page.get("lines", []):
+        text = clean(str(text))
+        if text and float(score) >= _OCR_MIN_SCORE:
+            boxes.append((float(top), float(bottom), float(left), text))
+    boxes.sort(key=lambda box: ((box[0] + box[1]) / 2, box[2]))
+    rows: list[dict] = []
+    for top, bottom, left, text in boxes:
+        center, size = (top + bottom) / 2, max(bottom - top, 1.0)
+        if rows and abs(center - rows[-1]["center"]) <= 0.5 * max(rows[-1]["size"], size):
+            row = rows[-1]
+            row["boxes"].append((left, text))
+            row["top"], row["bottom"] = min(row["top"], top), max(row["bottom"], bottom)
+        else:
+            rows.append(
+                {
+                    "center": center,
+                    "size": size,
+                    "top": top,
+                    "bottom": bottom,
+                    "boxes": [(left, text)],
+                }
+            )
+    out = []
+    for row in rows:
+        text = " ".join(t for _left, t in sorted(row["boxes"]))
+        in_margin = height and (
+            row["top"] < height * _MARGIN or row["bottom"] > height * (1 - _MARGIN)
+        )
+        if in_margin and _PAGE_NUMBER.fullmatch(text):
+            continue  # 页眉页脚里的页码
+        out.append((row["top"], text))
+    return out
 
 
 def _pdf_failed(exc, seconds: int) -> Unreadable:
@@ -2831,7 +2988,7 @@ def _read_archive(members: list[_Member], budget: _Budget) -> _Found:
         notes.append(f"另有 {sum(others.values())} 个其他格式的文件（{kinds}）暂不能在小程序内阅读")
     if notes:
         builder.para("；".join(notes) + "。")
-    pages = scanned = 0
+    pages = scanned = ocr = 0
     for number, (member, result, note) in enumerate(results, 1):
         name = _display_name(member.path)
         if single:
@@ -2844,6 +3001,7 @@ def _read_archive(members: list[_Member], budget: _Budget) -> _Found:
         if result is not None:
             pages += result.pages or 0
             scanned += result.scanned_pages or 0
+            ocr += result.ocr_pages if result.ok else 0
         if result is not None and result.ok:
             builder.masked += result.masked
             for segment in result.segments:
@@ -2855,6 +3013,7 @@ def _read_archive(members: list[_Member], budget: _Budget) -> _Found:
         builder,
         pages=pages or None,
         scanned=scanned or None,
+        ocr=ocr,
         detail=summary,
         final=True,
     )
@@ -2949,6 +3108,10 @@ class Limits:
     # 名单模式：整格是统一社会信用代码的不遮（全数字的信用代码会被当成银行卡号遮掉），规则见
     # _credit_code_cell；个人银行账号、身份证号、手机号照样遮
     keep_credit_codes: bool = False
+    # 识别扫描页（D-125）：一份 PDF 最多识别这么多扫描页，0 是不识别（平常取文字都不识别，只有
+    # 识别任务 attachments.ocr_scans 给）；识别用几个线程
+    ocr_pages: int = 0
+    ocr_threads: int = 1
 
 
 # 名单模式：PDF 读到第 1000 页（和 lists.parser.MAX_PDF_PAGES 一致，名单条目最多来自这么多页），
@@ -3037,6 +3200,7 @@ def _result(file_type: str, found: _Found) -> Extraction:
         pages=found.pages,
         scanned_pages=found.scanned,
         masked=builder.masked,
+        ocr_pages=found.ocr,
     )
     if found.final:
         return result
@@ -3261,14 +3425,42 @@ def _version(
         row.extractor, row.retry_at = 0, None
         session.commit()
         result = extract(content)
+    _store(session, version, len(content), result, now)
+    # 共用这份内容的其他链接：状态、原因跟着新结果改，记一次变化（第 2 步按它重算）
+    status = "ok" if result.ok else "failed"
+    for other in session.scalars(
+        select(AttachmentTextUrl).where(
+            AttachmentTextUrl.version_id == version.id, AttachmentTextUrl.id != row.id
+        )
+    ):
+        other.status, other.reason, other.detail = status, version.reason, version.detail
+        other.extractor, other.retry_at = EXTRACTOR_VERSION, None  # 不用再为它重新下载
+        other.changed_at = now
+    return version, True
+
+
+def _store(
+    session: Session,
+    version: AttachmentTextVersion,
+    size: int,
+    result: Extraction,
+    now: datetime,
+    *,
+    ocr_rules: int = 0,
+) -> None:
+    """把这次取的结果写进内容版本，换掉原来的段落。ocr_rules：按哪一版识别规则识别过扫描页
+    （平常取文字是 0：重取以后原来识别出的字没了，识别任务按 0 再来）。"""
     session.execute(
         delete(AttachmentTextSegment).where(AttachmentTextSegment.version_id == version.id)
     )
     version.file_type = result.file_type
-    version.size = len(content)
+    version.size = size
     version.status = "ok" if result.ok else "failed"
     version.reason = result.reason
     detail = result.detail
+    if result.ok and result.ocr_pages:
+        pages = f"{result.ocr_pages} 页扫描页的字是识别出来的"
+        detail = f"{detail}；{pages}" if detail else pages
     if result.ok and result.scanned_pages:
         pages = f"{result.scanned_pages} 页是扫描页，这些页的字没取到"
         detail = f"{detail}；{pages}" if detail else pages  # 压缩包：前面是读了几个文件
@@ -3279,6 +3471,8 @@ def _version(
     version.pages = result.pages
     version.scanned_pages = result.scanned_pages
     version.masked = result.masked
+    version.ocr_rules = ocr_rules
+    version.ocr_pages = result.ocr_pages if result.ok else 0
     version.extracted_at = now
     session.flush()
     if result.segments:
@@ -3296,17 +3490,59 @@ def _version(
                 for s in result.segments
             ],
         )
-    # 共用这份内容的其他链接：状态、原因跟着新结果改，记一次变化（第 2 步按它重算）
-    status = "ok" if result.ok else "failed"
-    for other in session.scalars(
-        select(AttachmentTextUrl).where(
-            AttachmentTextUrl.version_id == version.id, AttachmentTextUrl.id != row.id
+
+
+def ocr_due(session: Session) -> list[AttachmentTextVersion]:
+    """识别任务要处理的内容版本（D-125）：按现在的规则取过、有扫描页（整份是扫描件，或者有几页
+    是）、还没按现在的识别规则识别过的 PDF 和压缩包（压缩包里的 PDF 一样识别），还有链接指向的
+    （超出范围的已经清掉了）。新的在前。"""
+    return list(
+        session.scalars(
+            select(AttachmentTextVersion)
+            .where(
+                AttachmentTextVersion.extractor == EXTRACTOR_VERSION,
+                AttachmentTextVersion.ocr_rules < OCR_RULES,
+                AttachmentTextVersion.file_type.in_(("pdf", "zip", "rar")),
+                (AttachmentTextVersion.reason == "scan")
+                | (AttachmentTextVersion.scanned_pages > 0),
+                exists().where(AttachmentTextUrl.version_id == AttachmentTextVersion.id),
+            )
+            .order_by(AttachmentTextVersion.id.desc())
         )
-    ):
-        other.status, other.reason, other.detail = status, version.reason, version.detail
-        other.extractor, other.retry_at = EXTRACTOR_VERSION, None  # 不用再为它重新下载
-        other.changed_at = now
-    return version, True
+    )
+
+
+def ocr_version(
+    session: Session,
+    version: AttachmentTextVersion,
+    content: bytes,
+    now: datetime,
+    *,
+    pages: int,
+    threads: int = 1,
+) -> Extraction:
+    """识别任务（D-125）：按现在的规则重取这份内容，扫描页最多识别 pages 页。认出了字就换掉原来
+    的段落，指向它的链接都改成能读；一页都没认出、或者这次整份没读成的，原来的结果照留，只记下按
+    这一版规则识别过（不反复识别）。和当时的环境有关的问题（起不了子进程等）照原样抛出，不记，
+    下次再来。content 要是这个版本的内容（调用方核对过 SHA-256）。"""
+    limits = replace(
+        _limits(),
+        ocr_pages=pages,
+        ocr_threads=threads,
+        seconds=EXTRACT_SECONDS + ocr_seconds(pages),
+    )
+    result = extract(content, limits=limits)
+    if result.ok and result.ocr_pages:
+        _store(session, version, len(content), result, now, ocr_rules=OCR_RULES)
+        for link in session.scalars(
+            select(AttachmentTextUrl).where(AttachmentTextUrl.version_id == version.id)
+        ):
+            link.status, link.reason, link.detail = "ok", None, version.detail
+            link.changed_at = now
+    else:
+        version.ocr_rules, version.ocr_pages = OCR_RULES, 0
+    session.commit()
+    return result
 
 
 def cleanup(session: Session, live: set[str], report: TextReport) -> None:
@@ -3395,6 +3631,7 @@ class Reading:
     segments: int = 0
     pages: int | None = None
     scanned_pages: int | None = None
+    ocr_pages: int = 0  # 识别出文字的扫描页（D-125）
     checked_at: datetime | None = None
     attachment_id: int | None = None
     # 附件所在那份文件的编号（合并转载时可能是组里另一份）
@@ -3409,6 +3646,12 @@ class Reading:
         """页面上写的一句话：能读、没有扫描页的不写；有扫描页的写还缺几页。"""
         if self.state == "ok":
             pages = self.scanned_pages or 0
+            if self.ocr_pages:
+                # 整份 PDF 都是识别出来的写"扫描件"，有一部分是的写几页；还有没认出的页另写
+                if ocr_whole(self.file_type, self.pages, self.ocr_pages, pages):
+                    return OCR_NOTE_ALL
+                note = OCR_NOTE_SOME.format(pages=self.ocr_pages)
+                return note + (OCR_NOTE_MISSED.format(pages=pages) if pages else "")
             return f"能读，另有 {pages} 页扫描件暂不能识别文字" if pages else ""
         return NOTES.get(self.state, NOTES["unavailable"])
 
@@ -3557,6 +3800,7 @@ def judge(session: Session, master, items: list, now: datetime) -> list[Reading]
             reading.file_type, reading.chars = version.file_type, version.chars
             reading.segments, reading.pages = version.segments, version.pages
             reading.scanned_pages = version.scanned_pages
+            reading.ocr_pages = version.ocr_pages or 0
         out.append(reading)
     return out
 

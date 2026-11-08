@@ -63,6 +63,13 @@ log = logging.getLogger("youju.pdf_sandbox")
 _MB = 1024 * 1024
 # 子进程的虚拟内存上限（RLIMIT_AS，含 Python 自己和各个库占的地址空间）。真实文件最大 276MB
 MEMORY_MAX = 1024 * _MB
+# 识别扫描页（ocr，D-125）的子进程要装下 RapidOCR、onnxruntime、OpenCV 和渲染出的页面图片，上限
+# 另给。本机实测（11/8，单线程，A4 200dpi、每页 30 行）：载入模型后约 170MB，识别第 1 页后约 0.95GB，
+# 第 2 页起稳定在约 1.2GB，到第 8 页不再涨（不是每页都涨）；每批最多 10 页（attachment_text
+# 的 _OCR_BATCH），一批一个子进程，识别完退出、内存还回去。Linux 上的地址空间（VmPeak，RLIMIT_AS
+# 管的）见 CI"扫描页识别"一项。一次只跑一个识别子进程；本地电脑 16G（WSL 默认分到一半），2G 的
+# 上限加上抓取、数据库都够
+OCR_MEMORY_MAX = 2048 * _MB
 # 子进程写回的结果最多这么大（RLIMIT_FSIZE）。真实文件最大 2.6MB
 OUTPUT_MAX = 32 * _MB
 # 一个进程里同时读 PDF 的子进程个数
@@ -105,9 +112,9 @@ class Failed(Exception):
         self.retry = kind in _RETRY
 
 
-def read(task: str, data: bytes, *, seconds: float, **options) -> dict:
+def read(task: str, data: bytes, *, seconds: float, memory: int | None = None, **options) -> dict:
     """在子进程里按 task（TASKS 里的一种）读这份 PDF，返回读出的东西（见各个 task 的说明）；
-    没读成抛 Failed。options 原样传给 task。"""
+    没读成抛 Failed。options 原样传给 task。memory：虚拟内存上限，不给是 MEMORY_MAX。"""
     from youju import pdf_limits
 
     cfg = {
@@ -115,7 +122,7 @@ def read(task: str, data: bytes, *, seconds: float, **options) -> dict:
         "options": options,
         "stream_max": pdf_limits.STREAM_MAX,
         "document_max": pdf_limits.DOCUMENT_MAX,
-        "memory": MEMORY_MAX,
+        "memory": memory or MEMORY_MAX,
         "output": OUTPUT_MAX,
         "cpu": max(1, math.ceil(seconds)),
     }
@@ -170,7 +177,7 @@ def _spawn(cfg: dict, data: bytes, seconds: float) -> dict:
                     stdin=given,
                     stdout=out,
                     stderr=err,
-                    env=_env(),
+                    env=_env(cfg),
                 )
             code = child.wait(timeout=_wall(seconds))
             return _output(code, cfg, seconds, out, err, _reduced(cfg))
@@ -200,9 +207,20 @@ def _alarm_held():
         signal.pthread_sigmask(signal.SIG_SETMASK, old)
 
 
-def _env() -> dict[str, str]:
-    """子进程的环境变量：只有 PATH、LANG，数据库地址、密钥这些一概不带。"""
-    return {"PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"), "LANG": "C.UTF-8"}
+def _env(cfg: dict | None = None) -> dict[str, str]:
+    """子进程的环境变量：只有 PATH、LANG，数据库地址、密钥这些一概不带。识别扫描页（ocr）另带
+    几个线程数：numpy（OpenBLAS）、onnxruntime 默认按 CPU 核数起线程，每个线程都占一块地址空间，
+    核多的机器上会顶到内存上限（RLIMIT_AS）；malloc 的分配区也限成 2 个。"""
+    env = {"PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"), "LANG": "C.UTF-8"}
+    if cfg is not None and cfg.get("task") == "ocr":
+        threads = str(cfg["options"].get("threads", 1))
+        env.update(
+            OMP_NUM_THREADS=threads,
+            OPENBLAS_NUM_THREADS="1",
+            MKL_NUM_THREADS="1",
+            MALLOC_ARENA_MAX="2",
+        )
+    return env
 
 
 def _reduced(cfg: dict) -> dict[str, int]:
@@ -602,4 +620,52 @@ def _body(pdf, opts: dict) -> dict:
     return {"pages": pages, "text": "\n".join(texts)}
 
 
-TASKS = {"copy": _copy, "text": _text, "list": _list, "body": _body}
+def _ocr(pdf, opts: dict) -> dict:
+    """扫描页识别文字（attachment_text 的识别，D-125）：opts["pages"] 里的页（从 1 起）一页一页
+    渲染成图片（opts["dpi"]，一页的像素超过 opts["pixels"] 就降低分辨率），交给开源的 RapidOCR
+    （onnxruntime，模型在安装包里，不联网）。返回 {"pages": {页码: {"height": 页高, "lines": [[上边,
+    下边, 左边, 文字, 置信度], ...]}}}，坐标是 PDF 的点（和 _text_page 一样从页面上边往下量）。
+    没装识别组件时导入就失败（error: ModuleNotFoundError），调用方先查装没装。某一页渲染、识别
+    出错（坏的图片等）只跳过这一页；内存超了照样整个子进程退出（_exit_on_memory_error）。"""
+    import cv2
+    from rapidocr_onnxruntime import RapidOCR
+
+    cv2.setNumThreads(opts["threads"])  # OpenCV 自己的线程池也按设定的线程数
+    engine = RapidOCR(intra_op_num_threads=opts["threads"], inter_op_num_threads=1)
+    out: dict[str, dict] = {}
+    for number in opts["pages"]:
+        if not 1 <= number <= len(pdf.pages):
+            continue
+        try:
+            page = pdf.pages[number - 1]
+        except Exception:  # noqa: BLE001 - 这一页的对象坏了：跳过
+            continue
+        try:
+            area = max(float(page.width) * float(page.height), 1.0)
+            # 分辨率（每英寸点数）：按要的给，页面很大时按像素上限降下来（72 点一英寸）
+            dpi = min(float(opts["dpi"]), 72 * math.sqrt(opts["pixels"] / area))
+            image = page.to_image(resolution=dpi).original
+            result, _elapsed = engine(image)
+            scale = 72 / dpi
+            lines = []
+            for box, text, score in result or []:
+                xs = [float(point[0]) for point in box]
+                ys = [float(point[1]) for point in box]
+                lines.append(
+                    [
+                        round(min(ys) * scale, 2),
+                        round(max(ys) * scale, 2),
+                        round(min(xs) * scale, 2),
+                        str(text),
+                        round(float(score), 3),
+                    ]
+                )
+            out[str(number)] = {"height": float(page.height), "lines": lines}
+        except Exception:  # noqa: BLE001 - 这一页渲染、识别出错（坏的图片等）：跳过这一页
+            continue
+        finally:
+            page.close()
+    return {"pages": out}
+
+
+TASKS = {"copy": _copy, "text": _text, "list": _list, "body": _body, "ocr": _ocr}

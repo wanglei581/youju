@@ -1497,6 +1497,31 @@ def _beijing_noon(day: date | None) -> datetime | None:
     )
 
 
+def _cmd_ocr_scans(args: argparse.Namespace) -> int:
+    """识别附件里的扫描页（D-125）。开关关着、没装识别组件、另一个附件任务正在跑时什么都不做，
+    返回 0（不发失败提醒）；有内容版本识别出错（和当时的环境有关、数据库出错）返回 1。"""
+    from youju.attachments import ocr_scans
+
+    with session_factory()() as session:
+        report = ocr_scans(session, pages=args.pages, seconds=args.seconds)
+    if report.skipped:
+        print(f"没有识别：{report.skipped}")
+        print("ocr_scans skipped=1")
+        return 0
+    print(
+        f"识别了 {report.documents} 份（认出字的 {report.recognized} 份），"
+        f"要识别 {report.pages} 页、认出 {report.ocr_pages} 页；"
+        f"原网站下载不了 {report.unavailable} 份，文件变了 {report.changed} 份，"
+        f"出错 {report.errors} 份，这轮没轮到 {report.deferred} 份"
+    )
+    print(
+        f"ocr_scans documents={report.documents} recognized={report.recognized} "
+        f"pages={report.pages} ocr_pages={report.ocr_pages} unavailable={report.unavailable} "
+        f"changed={report.changed} errors={report.errors} deferred={report.deferred}"
+    )
+    return 1 if report.errors else 0
+
+
 def _cmd_attachment_texts(args: argparse.Namespace) -> int:
     """只取附件文字（不存副本、不访问对象存储）：每轮抓取补完详情后跑一次（deploy/round.sh），
     新附件当轮就能在小程序里站内阅读；也用来本机拿数据副本实测、手动补齐存量。
@@ -2544,6 +2569,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument("--retry-pending", action="store_true", help="上次网络等暂时问题没取到的也重试")
     p.set_defaults(func=_cmd_attachment_texts)
+    p = sub.add_parser(
+        "ocr-scans",
+        help="识别附件里的扫描页（D-125，开源 RapidOCR，不接第三方；开关 YOUJU_OCR_ENABLED 默认关、"
+        "要先装识别组件）：还没识别过的新的先识别，认出的字换进附件文字；另一个附件任务正在跑时这次跳过",
+    )
+    p.add_argument("--pages", type=int, help="本轮最多识别几页（默认按 YOUJU_OCR_PAGES_PER_RUN）")
+    p.add_argument(
+        "--seconds", type=float, default=3600, help="本轮最多跑多少秒（默认 3600，到了就停）"
+    )
+    p.set_defaults(func=_cmd_ocr_scans)
     p = sub.add_parser(
         "attachment-text-report",
         help="附件读入第一步的实测统计（只读）：各格式能读的比例、原因、超过 2.4 万字的份数、抽样",
