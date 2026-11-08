@@ -15,9 +15,11 @@ LZW、RunLength、CCITT 解码器和预测器也照文件里写的长度、列�
   _NESTING_MAX 层；
 - 有一个数据流超了，这份 PDF 里后面的数据流都不再解，reading() 结束时整份按超了算：pdfplumber
   读文档信息（元数据）时会吞掉异常接着往下读，不能让它照常"读完"；
-- 解码方式只认 FlateDecode、ASCIIHexDecode，图片的几种原样留着（取文字时不解图片，和 pdfminer
-  一样）。LZW、RunLength、CCITTFax、ASCII85 不解，整份按"格式不支持"：pdfminer 的这几个解码器内存
-  或时间没有上限（ASCII85 去头尾空白的正则遇到长空白是平方级），抽查的真实文件里一个都没有；
+- 解码方式只认 FlateDecode、ASCIIHexDecode、ASCII85Decode，图片的几种原样留着（取文字时不解图片，
+  和 pdfminer 一样）。LZW、RunLength、CCITTFax 不解，整份按"格式不支持"：pdfminer 的这几个解码器
+  内存或时间没有上限，抽查的真实文件和测试里的真实样本里一个都没有。ASCII85 要解（测试里江苏的通知、
+  上海的名单两份真实 PDF 正文都是 ASCII85 + Flate），pdfminer 去头尾 <~ ~> 的正则遇到长空白是平方级
+  （几万个空格就要几秒），先去掉 a85decode 本来就忽略的空白再交给它，输入长度和解出大小也有上限；
 - 预测器（交叉引用流常用 PNG 预测器）：pdfminer 按文件里写的列数先分配一行，结果存成整数列表
   （每个字节约占 9 字节内存，8MB 要 36 秒），输入长度和列数都有上限。
 不超上限的，解出的数据和 pdfminer 原来的写法一样（坏数据的处理也照抄）。超了、不支持的抛 Refused；
@@ -51,7 +53,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 
 from pdfminer import settings
-from pdfminer.ascii85 import asciihexdecode
+from pdfminer.ascii85 import ascii85decode, asciihexdecode
 from pdfminer.pdftypes import (
     LITERAL_CRYPT,
     LITERALS_ASCII85_DECODE,
@@ -82,6 +84,12 @@ DOCUMENT_MAX = 256 * _MB
 PREDICTOR_INPUT_MAX = 2 * _MB
 XREF_PREDICTOR_INPUT_MAX = 8 * _MB
 PREDICTOR_COLUMNS_MAX = 1 << 20
+# ASCII85 的输入长度：a85decode 每 4 个字节先存成一个小 bytes 对象，输入每 MB 约占 27MB 内存；全是 z
+# 时 bytes.join 每项另占 80 字节，每 MB 约 92MB（独立审阅实测）。测试里两份真实样本的 ASCII85 数据流
+# 只有 1.4–2.8KB（页面内容），页面内容编成 ASCII85 一般几十到一两百 KB
+ASCII85_INPUT_MAX = 512 * 1024
+# a85decode 忽略的空白（它的默认 ignorechars）
+_A85_IGNORED = b" \t\n\r\x0b"
 # 数据流套着数据流（解码参数指向对象流里的对象，那个对象流要先解）最多几层；正常文件一两层
 _NESTING_MAX = 8
 # 坏数据逐字节解之前，先一块一块地解，出错的那一块再逐字节（结果和 pdfminer 从头逐字节一样）
@@ -98,7 +106,6 @@ _REFUSED_FILTERS = (
     *LITERALS_LZW_DECODE,
     *LITERALS_RUNLENGTH_DECODE,
     *LITERALS_CCITTFAX_DECODE,
-    *LITERALS_ASCII85_DECODE,
 )
 
 
@@ -238,6 +245,8 @@ def _decode_within(self: PDFStream, budget: _Budget | None) -> None:
         for f, params in filters:
             if f in LITERALS_FLATE_DECODE:
                 data = _inflate(data, cap)
+            elif f in LITERALS_ASCII85_DECODE:
+                data = _ascii85(data, cap)
             elif f in LITERALS_ASCIIHEX_DECODE:
                 data = asciihexdecode(data)  # 解出的不超过输入的一半
             elif f in _IMAGE_FILTERS:
@@ -303,6 +312,22 @@ def _inflate_corrupted(data: bytes, cap: int) -> bytes:
                 return b"" if i < len(data) - 3 else bytes(out)
             _check(len(out), cap)
     return bytes(out)
+
+
+def _ascii85(data: bytes, cap: int) -> bytes:
+    """ASCII85。pdfminer 的 ascii85decode 先用两个正则去掉头尾的 <~、~>（连同两边的空白），遇到
+    长空白是平方级；后面的 a85decode 本来就忽略这几种空白（_A85_IGNORED）。先去掉它们、把连着的
+    换页符（正则当空白、a85decode 不忽略）缩成一个，再交给 pdfminer：解出的和原来一样，时间是
+    线性的。缩换页符用 replace 一轮减半（不用正则替换：几百万个孤立换页符会切出几百万个小 bytes，
+    8MB 的输入能吃 700MB 内存）。"""
+    if len(data) > ASCII85_INPUT_MAX:
+        raise Refused("too_large", f"ASCII85 数据流超过 {ASCII85_INPUT_MAX // 1024}KB")
+    data = data.translate(None, _A85_IGNORED)
+    while b"\x0c\x0c" in data:
+        data = data.replace(b"\x0c\x0c", b"\x0c")
+    zeros = data.count(b"z")  # 一个 z 解出 4 个字节，别的 5 个字符解出 4 个字节
+    _check((len(data) - zeros) // 5 * 4 + 4 * zeros + 4, cap)
+    return ascii85decode(data)
 
 
 def _predictor_limit(stream: PDFStream) -> int:
