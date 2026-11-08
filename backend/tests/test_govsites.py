@@ -417,8 +417,8 @@ def test_board_states():
             "330106", "区县级", "浙江", "杭州", "西湖区", "科技", status=status, columns=cols
         )
 
-    def src(url, ok=None, docs=0, err=None, vs=None, mode="static", last=None, http=None):
-        return SourceState(url, False, mode, "unknown", ok, err, vs, docs, last, http)
+    def src(url, ok=None, docs=0, err=None, vs=None, mode="static", last=None, http=None, on=True):
+        return SourceState(url, on, mode, "unknown", ok, err, vs, docs, last, http)
 
     a, b = "http://a.gov.cn/1/", "http://a.gov.cn/2/"
     fresh = {
@@ -444,6 +444,13 @@ def test_board_states():
     assert cell_for(row(a), {a: imported}, {}, now).state == "待启用"
     script = src(a, vs="需浏览器渲染或接口（全国覆盖 v1）", mode="browser")
     assert cell_for(row(a), {a: script}, {}, now).state == "需人工"
+    # 新来源默认不启用：试抓成功算待启用，不算已收录也不过期；试点报告（trial）按收录算
+    off = src(a, now - timedelta(days=5), 10, on=False)
+    assert cell_for(row(a), {a: off}, {}, now).state == "待启用"
+    assert cell_for(row(a), {a: off}, {}, now, trial=True).state == "已收录"
+    # 成功过、后来被拒：记不能抓，不是过期
+    later_refused = src(a, now - timedelta(days=5), 10, last="http_error", http=412)
+    assert cell_for(row(a), {a: later_refused}, {}, now).state == "不能抓"
     assert cell_for(row(), {}, {}, now).state == "网站无此栏目"
     assert cell_for(row(status="导航未找到"), {}, {}, now).state == "需人工"
     cells = [
@@ -582,3 +589,42 @@ def test_national_dev_zone_is_not_a_ministry():
     inv = Inventory(DivisionIndex(_divisions()), FakeCache({}))
     assert inv._is_ministry("国家发展和改革委员会", "https://www.ndrc.gov.cn/")
     assert not inv._is_ministry("国家级宁波经济技术开发区管理委员会", "https://www.netd.gov.cn/")
+
+
+def test_round2_review_fixes():
+    from youju.crawler.adapters import jpaas_tree_categories, jpaas_xxgk_groups
+    from youju.govsites.inventory import _script_redirect, _service_hall
+
+    def page(text, url="http://www.x.gov.cn/col/col1/index.html"):
+        return FetchResult(url, "ok", url, 200, text)
+
+    plain = page(
+        '<html><body><script> location.href="/col/col2/index.html";</script></body></html>'
+    )
+    assert _script_redirect(plain, plain.url) == "http://www.x.gov.cn/col/col2/index.html"
+    branch = page(
+        "<html><body><script>if('9103'=='9102'){location.href='/a.html';}</script></body></html>"
+    )
+    assert _script_redirect(branch, branch.url) is None
+    joined = page("<html><body><script>location.href='/' + tp.pub_point;</script></body></html>")
+    assert _script_redirect(joined, joined.url) is None
+    assert not _service_hall("https://zwfwj.beijing.gov.cn/")  # 政务服务和数据管理局
+    assert _service_hall("https://zwfw.hubei.gov.cn/dept/1")
+    assert _service_hall("https://hn.ahzwfw.gov.cn/bog-bsdt/static/x.html")
+    assert jpaas_tree_categories("var treeStr = '[{#title#:#通知公告#,#key#:#52#}]';") == [
+        ("通知公告", "52")
+    ]
+    mixed = (
+        '<label class="label-className">政策文件</label><ul>'
+        '<li><a href="/col/col1229401358/art/2026/art_1.html">a</a></li>'
+        '<li><a href="/col/col1229401359/art/2026/art_2.html">b</a></li></ul>'
+    )
+    assert jpaas_xxgk_groups(mixed, "http://www.tx.gov.cn/col/col1/index.html") == []
+
+
+def test_header_login_box_on_script_list_page_is_not_a_gate():
+    links = "".join(f'<a href="/col/col{i}/index.html">栏目{i}</a>' for i in range(30))
+    html = f"<html><head><title>通知公告</title></head><body>{links}<form><input type='password'></form></body></html>"
+    assert blocker("ok", 200, html) is None
+    gate = "<html><head><title>某某系统</title></head><body><form><input type='password'></form></body></html>"
+    assert blocker("ok", 200, gate) == "需要登录"

@@ -142,6 +142,8 @@ def column_rows(checks, checked_on: str) -> list[list[str]]:
     order = {"国家级": -1, "省级": 0, "市级": 1, "区县级": 2}
     rows = []
     for c in sorted(checks, key=lambda c: (c.code[:2], order[c.level], c.code, c.dept, c.kind)):
+        if "#xxgk-" in c.url:
+            continue  # 信息公开分类树上的分类不是能打开的栏目，不进导入清单（看板里记需人工）
         dept_full = (c.dept_full_name or c.dept)[:120]
         note = "；".join(c.samples[:2])
         rows.append(

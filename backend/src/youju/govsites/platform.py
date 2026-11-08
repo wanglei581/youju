@@ -169,12 +169,13 @@ def blocker(status: str, http_status: int | None, html: str) -> str | None:
     m = _TITLE.search(head)
     title = re.sub(r"\s+", "", m.group(1)) if m else ""
     gate_title = bool(_GATE_TITLE.search(title))
-    short = (
-        len(re.sub(r"<[^>]+>|\s+", "", re.sub(r"<script.*?</script>", "", head, flags=re.S))) < 1500
-    )
-    if _PASSWORD.search(head) and (gate_title or short):
+    # 整页就是一个关卡：正文很少、链接也很少（页头有登录小框、列表靠接口加载的栏目页
+    # 正文同样很少，但导航链接多，不算）
+    text_len = len(re.sub(r"<[^>]+>|\s+", "", re.sub(r"<script.*?</script>", "", head, flags=re.S)))
+    bare = text_len < 1500 and len(re.findall(r"<a\s[^>]*href=", head, re.I)) < 15
+    if _PASSWORD.search(head) and (gate_title or bare):
         return "需要登录"
-    if _CAPTCHA.search(head) and (gate_title or short):
+    if _CAPTCHA.search(head) and (gate_title or bare):
         return "验证码"
     if http_status in (401, 412, 521) or (http_status == 403 and status == "http_error"):
         return f"HTTP {http_status} 拒绝访问"

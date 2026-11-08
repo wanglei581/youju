@@ -68,24 +68,38 @@ def _refused(status: str | None) -> bool:
 STALE_DAYS = 3
 
 
-def _outcome(url: str, sources: dict[str, SourceState], checks: dict[str, object], now: datetime):
-    """一个栏目现在的结论：ok / stale / blocked / failed / pending / unread，以及说明。"""
+def _outcome(
+    url: str,
+    sources: dict[str, SourceState],
+    checks: dict[str, object],
+    now: datetime,
+    trial: bool = False,
+):
+    """一个栏目现在的结论：ok / stale / blocked / failed / pending / unread，以及说明。
+
+    trial：试点报告用——未启用但试抓成功的也算收录，不按 3 天过期（试点抓一轮就停）。"""
     s = sources.get(url)
     if s is not None:
-        last = s.last_success_at
-        if last is not None and last.tzinfo is None:
-            last = last.replace(tzinfo=UTC)
-        if last is not None and (s.documents > 0 or s.last_items > 0):
-            age = now - last
-            if age > timedelta(days=STALE_DAYS):
-                return "stale", f"连续 {age.days} 天没有成功（{(s.last_error or '')[:60]}）"
-            return "ok", ""
-        if _refused(s.verification_status) or s.fetch_mode == "blocked" or s.health == "blocked":
-            return "blocked", s.verification_status or s.last_error or "网站拒绝抓取"
+        # 先看最近一次是不是被拒（成功过、后来被 robots 或防护拒的，记不能抓而不是过期）
         if s.last_status == "robots_disallowed":
             return "blocked", "robots.txt 禁止"
         if s.last_status == "http_error" and s.last_http in (401, 403, 412, 521):
             return "blocked", f"HTTP {s.last_http} 拒绝访问"
+        if _refused(s.verification_status) or s.fetch_mode == "blocked" or s.health == "blocked":
+            return "blocked", s.verification_status or s.last_error or "网站拒绝抓取"
+        last = s.last_success_at
+        if last is not None and last.tzinfo is None:
+            last = last.replace(tzinfo=UTC)
+        if last is not None and (s.documents > 0 or s.last_items > 0):
+            if trial:
+                return "ok", ""
+            if not s.enabled:
+                # 新来源默认不启用：试抓成功但没在收，算待启用，不算已收录、也不算过期
+                return "pending", "试抓成功，待启用"
+            age = now - last
+            if age > timedelta(days=STALE_DAYS):
+                return "stale", f"连续 {age.days} 天没有成功（{(s.last_error or '')[:60]}）"
+            return "ok", ""
         if s.last_status == "parse_empty":
             return "unread", "页面能打开，但读不出条目（要浏览器渲染、接口或写规则）"
         if s.last_status and s.last_status != "ok":
@@ -118,6 +132,7 @@ def cell_for(
     sources: dict[str, SourceState],
     checks: dict[str, object],
     now: datetime | None = None,
+    trial: bool = False,
 ) -> Cell:
     now = now or datetime.now(UTC)
     if now.tzinfo is None:
@@ -151,7 +166,7 @@ def cell_for(
         cell.state = "网站无此栏目"
         cell.reason = "部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）"
         return cell
-    outcomes = [(_outcome(u, sources, checks, now), u) for u in cell.column_urls]
+    outcomes = [(_outcome(u, sources, checks, now, trial), u) for u in cell.column_urls]
     kinds = Counter(o[0] for o, _ in outcomes)
     blocked_note = f"；另有 {kinds['blocked']} 个栏目网站拒绝抓取" if kinds["blocked"] else ""
     if kinds["ok"]:
@@ -187,8 +202,9 @@ def cells(
     sources: dict[str, SourceState],
     checks: dict[str, object],
     now: datetime | None = None,
+    trial: bool = False,
 ) -> list[Cell]:
-    return [cell_for(d, sources, checks, now) for d in depts]
+    return [cell_for(d, sources, checks, now, trial) for d in depts]
 
 
 def rollup(items: Iterable[Cell]) -> dict[str, Counter]:

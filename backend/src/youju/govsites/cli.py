@@ -195,7 +195,7 @@ def _cmd_board(args: argparse.Namespace) -> int:
                 counts.get(s.id, 0),
                 *last_checks.get(s.id, (None, None, 0)),
             )
-    result = cells(depts, sources, checks)
+    result = cells(depts, sources, checks, trial=args.trial)
     header = (
         "层级",
         "省份",
@@ -356,6 +356,9 @@ def register(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--state", type=Path, action="append", required=True)
     p.add_argument("--checks", type=Path, action="append", help="coverage-verify 存的试读结果 JSON")
     p.add_argument("--province", action="append", required=True)
+    p.add_argument(
+        "--trial", action="store_true", help="试点报告：未启用但试抓成功的也算收录，不按 3 天过期"
+    )
     p.set_defaults(func=_cmd_board)
 
     p = sub.add_parser(

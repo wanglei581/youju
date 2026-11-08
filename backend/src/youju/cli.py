@@ -104,8 +104,8 @@ def _cmd_crawl(args: argparse.Namespace) -> int:
         if args.province:
             stmt = stmt.where(Source.province == args.province)
         if args.skip_blocked:
-            # 网站明确拒绝过的（防护拦截、robots 禁止）不再去请求
-            stmt = stmt.where(Source.fetch_mode != "blocked")
+            # 网站明确拒绝过的（导入时就判了防护拦截，或抓取时被 robots 禁止）不再去请求
+            stmt = stmt.where(Source.fetch_mode != "blocked", Source.health != "blocked")
         if args.limit:
             stmt = stmt.limit(args.limit)
         ids = list(session.scalars(stmt).all())

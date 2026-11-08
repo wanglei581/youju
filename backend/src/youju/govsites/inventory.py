@@ -457,7 +457,12 @@ class Inventory:
                 dept_nav.nav_text = "国务院部门网站"
                 pages.append(dept_nav)
         child_found = self._find_children(div, children, pages)
-        depts = self._find_depts(div, home, pages)
+        try:
+            depts = self._find_depts(div, home, pages)
+        except Exception as exc:  # noqa: BLE001 - 部门出意外不影响下级照常排队
+            log.exception("找 %s %s 的部门时出错", div.province, div.name)
+            row.reason = f"找部门时出错：{exc.__class__.__name__}"
+            depts = []
         self._finish(row, depts)
         return self._enqueue(div, children, child_found)
 
@@ -599,7 +604,7 @@ class Inventory:
                     continue
                 if div.level != "国家级" and self._is_ministry(text, link.url):
                     continue  # 页脚"国务院部门网站"里的部委，不是本地部门
-                if _SERVICE_HALL.search(link.url):
+                if _service_hall(link.url):
                     continue  # 政务服务网的部门办事页（"部门服务"），不是部门信息发布网站
                 if not _site_like(link.url, p.final_url) and not report:
                     continue
@@ -636,7 +641,15 @@ class Inventory:
             )
         for rows_for_cat in picked:
             rows.extend(rows_for_cat)
-        _drop_shared_columns(rows)
+        shared = _drop_shared_columns(rows)
+        if shared:
+            # 只认出共用栏目的部门：把共用栏目排除后重找一遍（会沿"信息公开"再进一层）
+            for r in rows:
+                if r.reason == SHARED_ONLY and r.status == "已找到" and r.site_url:
+                    page = self.page(r.site_url)
+                    self._fill_from_page(r, page, [page], portal_cols | shared)
+                    if r.columns:
+                        r.reason = ""
         return rows
 
     def _pick(
@@ -769,47 +782,76 @@ def _own_branch(text: str, div: Division) -> bool:
     return any(v in text[2:] for v in shorts)
 
 
-_JS_REDIRECT = re.compile(
-    r"""(?:window\.)?location(?:\.href)?\s*=\s*["']([^"']+)["']|location\.replace\(\s*["']([^"']+)["']"""
-    r"""|<meta[^>]+http-equiv=["']?refresh["']?[^>]+url=([^"'>\s]+)""",
+# 整段脚本只有一句跳转（不认 if 分支里的、拼接出来的地址）：location.href="…"、location.replace("…")
+_JS_REDIRECT_STMT = re.compile(
+    r"""^(?:window\.|self\.|top\.)?location(?:\.href)?\s*=\s*(["'])([^"'+]+)\1\s*;?$"""
+    r"""|^(?:window\.|self\.|top\.)?location\.replace\(\s*(["'])([^"'+]+)\3\s*\)\s*;?$""",
     re.I,
 )
+_META_REFRESH = re.compile(r"""<meta[^>]+http-equiv=["']?refresh["']?[^>]+url=([^"'>\s]+)""", re.I)
+_SCRIPT_BODY = re.compile(r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>", re.S | re.I)
 
 
 def _script_redirect(result: FetchResult, url: str) -> str | None:
-    """只有一句脚本或 meta 跳转、没有正文的页面：跳到哪里（同一家网站内才跟）。"""
+    """只有一句无条件跳转、没有正文的页面：跳到哪里（同一家网站内才跟；防护页不跟）。"""
     from youju.crawler.urls import normalize_url
 
     if result.status != "ok" or not result.text:
         return None
+    if blocker(result.status, result.http_status, result.text):
+        return None
     body = re.sub(
         r"<script[^>]*src=[^>]*>\s*</script>|<link[^>]*>|<meta[^>]*name=[^>]*>", "", result.text
     )
-    if (
-        len(re.sub(r"<[^>]+>|\s+", "", re.sub(r"<script.*?</script>", "", body, flags=re.S | re.I)))
-        > 200
-    ):
+    visible = re.sub(
+        r"<[^>]+>|\s+", "", re.sub(r"<script.*?</script>", "", body, flags=re.S | re.I)
+    )
+    if len(visible) > 200:
         return None
-    m = _JS_REDIRECT.search(result.text)
-    if not m:
+    target = None
+    for script in _SCRIPT_BODY.findall(result.text):
+        code = re.sub(r"//[^\n]*|/\*.*?\*/", "", script, flags=re.S).strip()
+        if not code:
+            continue
+        m = _JS_REDIRECT_STMT.match(code)
+        if m:
+            target = m.group(2) or m.group(4)
+            break
+    if target is None:
+        m = _META_REFRESH.search(result.text)
+        target = m.group(1) if m else None
+    if not target:
         return None
     base = result.final_url or url
-    target = normalize_url(base, next(g for g in m.groups() if g))
-    if not target or target == base or registrable(target) != registrable(base):
+    full = normalize_url(base, target)
+    if not full or full == base or registrable(full) != registrable(base):
         return None
-    return target
+    return full
 
 
 # 信息公开分类树上的分类写成"部门页#xxgk-分类键"（不是能直接打开的栏目，试读记"需接口"）
 XXGK_TAG = "xxgk-"
 
 
-# 政务服务网、公共资源交易等办事系统的部门页（门户"部门服务"导航常链到这里）：没有通知公告栏目
-_SERVICE_HALL = re.compile(
-    r"zwfw|zwdt|ggzy|bsdt|banshi\.|bszn|branch-hall|deptThing|onething|/icity/|"
-    r"workProcess|departmentHoem",
-    re.I,
+# 政务服务网、公共资源交易等办事系统的部门页（门户"部门服务"导航常链到这里）：没有通知公告栏目。
+# 按主机名的一段认（zwfw.hubei.gov.cn、ahzwfw.gov.cn、ggzy.xx.gov.cn），不按子串：
+# 北京"政务服务和数据管理局"的主机是 zwfwj.beijing.gov.cn，不能误排
+_SERVICE_PATH = re.compile(
+    r"bszn|branch-hall|deptThing|onething|/icity/|workProcess|departmentHoem|/bsdt/", re.I
 )
+
+
+def _service_hall(url: str) -> bool:
+    parts = urlsplit(url)
+    labels = (parts.hostname or "").lower().split(".")
+    if any(
+        lab in ("zwfw", "ggzy", "zwdt") or (lab.endswith("zwfw") and len(lab) <= 8)
+        for lab in labels
+    ):
+        return True
+    return bool(_SERVICE_PATH.search(parts.path + "?" + parts.query))
+
+
 # 部委的写法：国家…、中华人民共和国…、国务院…，或以"部""总局""总署"结尾（地方部门不这样叫）
 _MINISTRY_NAME = re.compile(r"^(?:国家|中华人民共和国|国务院)|(?:部|总局|总署)$")
 
@@ -817,7 +859,7 @@ _MINISTRY_NAME = re.compile(r"^(?:国家|中华人民共和国|国务院)|(?:部
 SHARED_ONLY = "部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）"
 
 
-def _drop_shared_columns(rows: list[DeptRow]) -> None:
+def _drop_shared_columns(rows: list[DeptRow]) -> frozenset[str]:
     """同一行政区里，不同部门网站（频道）指向同一个栏目网址：那是模板里共用的栏目（县政府文件、
     信息公开通用栏目），不算任何一个部门的。同一个合并部门（同一网址）算几类的不受影响。"""
     sites: dict[str, set[str]] = {}
@@ -828,13 +870,14 @@ def _drop_shared_columns(rows: list[DeptRow]) -> None:
             sites.setdefault(c.url, set()).add(r.site_url)
     shared = {url for url, owners in sites.items() if len(owners) > 1}
     if not shared:
-        return
+        return frozenset()
     for r in rows:
         if r.dept != "政府办" and r.columns:
             kept = [c for c in r.columns if c.url not in shared]
             if not kept:
                 r.reason = SHARED_ONLY
             r.columns = kept
+    return frozenset(shared)
 
 
 _LEVEL_CHARS = "省市州盟县区旗"

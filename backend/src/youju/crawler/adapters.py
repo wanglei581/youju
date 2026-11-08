@@ -94,7 +94,7 @@ def api_html(api: ListApi, text: str) -> str:
     return ""
 
 
-_TREE = re.compile(r'treeStr\s*=\s*"(\[.*?\])"\s*;', re.S)
+_TREE = re.compile(r"""treeStr\s*=\s*(["'])(\[.*?\])\1\s*;""", re.S)
 
 
 def jpaas_tree_categories(html: str) -> list[tuple[str, str]]:
@@ -104,7 +104,7 @@ def jpaas_tree_categories(html: str) -> list[tuple[str, str]]:
     盘点据此知道"栏目在，但要接口"，不会误判成网站没有这个栏目。"""
     out: list[tuple[str, str]] = []
     for m in _TREE.finditer(html or ""):
-        raw = m.group(1).replace("/#/", "\x00").replace("#", '"').replace("\x00", "/#/")
+        raw = m.group(2).replace("/#/", "\x00").replace("#", '"').replace("\x00", "/#/")
         try:
             nodes = json.loads(raw)
         except ValueError:
@@ -137,14 +137,21 @@ def jpaas_xxgk_groups(html: str, page_url: str) -> list[tuple[str, str]]:
     这个分组的栏目号（/col/col栏目号/… 或 art_栏目号_文章号.html），据此还原分组栏目页
     /col/col栏目号/index.html（同一网站）。"""
     out: list[tuple[str, str]] = []
+    host = urlsplit(page_url).netloc.lower()
     for m in _GROUP.finditer(html or ""):
         name, block = m.group(1).strip(), m.group(2)
+        ids: set[str] = set()
+        ok = True
         for href in re.findall(r"""href=["']([^"']+)["']""", block):
-            col = _COL_ID.search(href)
-            if col:
-                col_id = col.group(1) or col.group(2)
-                url = urljoin(page_url, f"/col/col{col_id}/index.html")
-                if urlsplit(url).netloc.lower() == urlsplit(page_url).netloc.lower():
-                    out.append((name, url))
+            full = urljoin(page_url, href)
+            col = _COL_ID.search(full)
+            if not col:
+                continue
+            if urlsplit(full).netloc.lower() != host:
+                ok = False  # 条目在别的网站上：还原不出本站的分组栏目
                 break
+            ids.add(col.group(1) or col.group(2))
+        # 组里的条目都来自同一个栏目才用；混着几个子栏目（如"政策文件"组里有"政策解读"）不猜
+        if ok and len(ids) == 1:
+            out.append((name, urljoin(page_url, f"/col/col{ids.pop()}/index.html")))
     return out
