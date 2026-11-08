@@ -285,7 +285,7 @@ def _output(code: int, cfg: dict, seconds: float, out, err, reduced: dict[str, i
     return answer
 
 
-_ANSWERS = {"ok", "refused", "open", "error"}
+_ANSWERS = {"ok", "refused", "open", "error", "setup"}
 
 
 def _size(n: int) -> str:
@@ -638,7 +638,8 @@ def _ocr(pdf, opts: dict) -> dict:
     """扫描页识别文字（attachment_text 的识别，D-125）：opts["pages"] 里的页（从 1 起）一页一页
     渲染成图片（opts["dpi"]，一页的像素超过 opts["pixels"] 就降低分辨率），交给开源的 RapidOCR
     （onnxruntime，模型在安装包里，不联网）。返回 {"pages": {页码: {"height": 页高, "lines": [[上边,
-    下边, 左边, 文字, 置信度], ...]}}}，坐标是 PDF 的点（和 _text_page 一样从页面上边往下量）。
+    下边, 左边, 文字, 置信度, 右边], ...]}}}，坐标是 PDF 的点（和 _text_page 一样从页面上边往下
+    量）。
     识别组件起不来（没装、装坏了、模型缺了）给 {"setup": 异常类名}（Failed 的 setup，和环境有关）。
     某一页渲染、识别出错（坏的图片等）只跳过这一页；内存超了照样整个子进程退出
     （_exit_on_memory_error）。"""
@@ -676,6 +677,7 @@ def _ocr(pdf, opts: dict) -> dict:
                         round(min(xs) * scale, 2),
                         str(text),
                         round(float(score), 3),
+                        round(max(xs) * scale, 2),
                     ]
                 )
             out[str(number)] = {"height": float(page.height), "lines": lines}

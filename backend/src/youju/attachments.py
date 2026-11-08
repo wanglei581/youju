@@ -1459,6 +1459,10 @@ def ocr_scans(
                     report.deferred = len(due) - index
                     break
                 version_id = version.id  # 出错回滚以后再读 version.id 会再查一次库
+                if (version.ocr_tries or 0) >= attachment_text.OCR_TRIES:  # 不用再下载了
+                    attachment_text.ocr_give_up(session, version)
+                    report.gave_up += 1
+                    continue
                 # 要识别的页数：还没认出的加上以前认出的（规则改了重识别）；整份扫描、没记页数的
                 # 按总页数
                 scan = (version.scanned_pages or 0) + (version.ocr_pages or 0)
@@ -1495,7 +1499,7 @@ def ocr_scans(
                     report.changed += 1
                     continue
                 try:
-                    result = attachment_text.ocr_version(
+                    stored = attachment_text.ocr_version(
                         session, version, content, now, pages=want, threads=settings.ocr_threads
                     )
                 except Exception:  # noqa: BLE001 - 和当时的环境有关（起不了子进程等）、数据库出错
@@ -1504,13 +1508,13 @@ def ocr_scans(
                     report.pages += want  # 没成的也算进这轮的页数，免得一轮里一份接一份地试
                     log.exception("扫描页识别出错：内容版本 %s", version_id)
                     continue
-                if result is None:
+                if stored is None:
                     report.gave_up += 1
                     continue
                 report.documents += 1
                 report.pages += want
-                report.ocr_pages += result.ocr_pages if result.ok else 0
-                report.recognized += int(bool(result.ok and result.ocr_pages))
+                report.ocr_pages += stored
+                report.recognized += int(stored > 0)
         finally:
             if owns_fetcher:
                 fetcher.close()

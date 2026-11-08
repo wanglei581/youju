@@ -41,9 +41,23 @@ def texts(result) -> list[str]:
     return [s.text for s in result.segments]
 
 
-def fake_ocr(monkeypatch, recognized: dict[int, list[str]], *, calls=None, error=None):
-    """冒充识别子进程：recognized 是 {页码: [一行一行的字]}，一行是一个框，写成列表的是一行里从左
-    到右的几个框（表格的几格）；没写的页什么都没认出。别的 task（取文字）照样走真的子进程。"""
+def _boxes(i: int, line) -> list[list]:
+    """第 i 行的框：写成字符串的是一个框；写成列表的是从左到右的几格（格和格隔开 44），其中写成
+    元组的一格是挨得很近的几个框（隔开 4，比如一个号码被拆开了）。行高 12。"""
+    top, bottom = 40.0 + 20 * i, 52.0 + 20 * i
+    out, x = [], 30.0
+    for cell in line if isinstance(line, list) else [line]:
+        for part in cell if isinstance(cell, tuple) else (cell,):
+            right = x + 9 * len(part)
+            out.append([top, bottom, x, part, 0.95, right])
+            x = right + 4
+        x += 40
+    return out
+
+
+def fake_ocr(monkeypatch, recognized: dict[int, list], *, calls=None, error=None):
+    """冒充识别子进程：recognized 是 {页码: [一行一行]}，一行怎么写见 _boxes；没写的页什么都没认出。
+    别的 task（取文字）照样走真的子进程。"""
     real = pdf_sandbox.read
 
     def read(task, data, **options):
@@ -57,9 +71,7 @@ def fake_ocr(monkeypatch, recognized: dict[int, list[str]], *, calls=None, error
         for number in options["pages"]:
             if number in recognized:
                 lines = [
-                    [40.0 + 20 * i, 52.0 + 20 * i, 30.0 + 60 * j, cell, 0.95]
-                    for i, line in enumerate(recognized[number])
-                    for j, cell in enumerate(line if isinstance(line, list) else [line])
+                    box for i, line in enumerate(recognized[number]) for box in _boxes(i, line)
                 ]
                 pages[str(number)] = {"height": 400.0, "lines": lines}
         return {"pages": pages}
@@ -89,6 +101,17 @@ def test_boxes_become_lines_low_scores_and_margin_page_numbers_dropped() -> None
         (130.0, ["第二行的文字"]),
         (400.0, ["3"]),
     ]
+    # 带右边的：挨得很近的框（间隔不到行高的 0.8）接成一格，隔得开的各是一格
+    page = {
+        "height": 842.0,
+        "lines": [
+            [100.0, 112.0, 60.0, "编号", 0.95, 84.0],
+            [100.0, 112.0, 120.0, "1101011990", 0.95, 180.0],
+            [100.0, 112.0, 184.0, "03071234", 0.95, 232.0],
+            [100.0, 112.0, 300.0, "12000000", 0.95, 348.0],
+        ],
+    }
+    assert at._ocr_lines(page) == [(100.0, ["编号", "1101011990 03071234", "12000000"])]
 
 
 # ---- PDF 里的扫描页 ----
@@ -250,13 +273,26 @@ def test_recognized_tables_are_masked_by_column_and_long_numbers_always(monkeypa
         {
             1: [
                 "备注：2026-12-15 合计 1350 820 4500 万元，另附 120202130900123456 一份",
-                ["编号", "1101011990", "03071234", "联系人"],
+                ["编号", ("1101011990", "03071234"), "联系人"],  # 一个号码被拆成挨着的两个框
+                ["收款账户", ("1202021309", "001234568"), "说明"],  # 账号拆成两段
+                ["预算（元）", "12000000", "8000000"],  # 相邻两格的金额不连成一个号码
+                "合计 12500 13600 14700 万元",  # 一个框里的一串金额、年份不遮
+                "年度 2023 2024 2025 2026",
+                "分别为 125000 368000 520000 元",
+                "请转至 622 2021 2345 6789 0123 或 6222 0212 3456 7890 123",  # 分组写的账号
             ]
         },
     )
     got = texts(at.extract(pdf_pages([FULL]), limits=ocr_limits()))
-    assert "备注：2026-12-15 合计 1350 820 4500 万元，另附 [身份证号已脱敏] 一份" in got
-    assert "编号 [身份证号已脱敏] 联系人" in got
+    assert "编号 [身份证号已脱敏] 联系人" in got  # 一行几格的自成一段
+    assert "收款账户 [银行账号已脱敏] 说明" in got
+    assert "预算（元） 12000000 8000000" in got
+    joined = "\n".join(got)  # 一个框的几行可能接成一段
+    assert "备注：2026-12-15 合计 1350 820 4500 万元，另附 [身份证号已脱敏] 一份" in joined
+    assert "合计 12500 13600 14700 万元" in joined
+    assert "年度 2023 2024 2025 2026" in joined
+    assert "分别为 125000 368000 520000 元" in joined
+    assert "请转至 [银行账号已脱敏] 或 [银行账号已脱敏]" in joined
 
 
 def test_engine_that_cannot_start_in_the_child_is_an_environment_problem(
@@ -277,6 +313,23 @@ def test_engine_that_cannot_start_in_the_child_is_an_environment_problem(
         )
     assert (caught.value.kind, caught.value.retry) == ("setup", True)
     assert caught.value.detail == "识别组件起不来（RuntimeError）"
+
+
+def test_setup_answer_from_a_real_child_is_an_environment_problem(monkeypatch) -> None:
+    """真的子进程写回 {"setup": ...}（识别组件起不来）：照样认得，不当成"写回的结果不对"。"""
+    boot = (
+        "import json, os\n"
+        'raw = json.dumps({"setup": "ModuleNotFoundError"}).encode()\n'
+        'os.write(1, len(raw).to_bytes(8, "big") + raw)\n'
+        "os._exit(0)\n"
+    )
+    monkeypatch.setattr(pdf_sandbox, "_BOOT", boot)
+    with pytest.raises(pdf_sandbox.Failed) as caught:
+        pdf_sandbox.read(
+            "ocr", pdf_pages([FULL]), seconds=60, pages=[1], dpi=200, pixels=10**8, threads=1
+        )
+    assert (caught.value.kind, caught.value.retry) == ("setup", True)
+    assert caught.value.detail == "识别组件起不来（ModuleNotFoundError）"
 
 
 def test_ocr_child_gets_thread_limits_in_its_environment() -> None:
@@ -318,7 +371,7 @@ def test_ocr_task_renders_pages_and_returns_boxes_in_pdf_points(
     assert seen[0] == ("options", {"intra_op_num_threads": 1, "inter_op_num_threads": 1})
     assert seen[1] == ("size", (834, 1112))  # 300×400 点，200dpi（向上取整）
     assert found == {
-        "pages": {"1": {"height": 400.0, "lines": [[72.0, 90.0, 36.0, "认出的字", 0.9]]}}
+        "pages": {"1": {"height": 400.0, "lines": [[72.0, 90.0, 36.0, "认出的字", 0.9, 108.0]]}}
     }
     # 大幅面按像素上限降分辨率
     seen.clear()
@@ -362,8 +415,7 @@ def test_ocr_version_replaces_text_and_marks_links(session, monkeypatch) -> None
         monkeypatch,
         {1: ["第一页认出来的一行字"], 2: ["第二页认出来的一行字"], 3: ["第三页认出来的一行字"]},
     )
-    result = at.ocr_version(session, scan, SCAN_PDF, NOW, pages=3)
-    assert result.ok and result.ocr_pages == 3
+    assert at.ocr_version(session, scan, SCAN_PDF, NOW, pages=3) == 3
     session.expire_all()
     scan = session.get(AttachmentTextVersion, scan.id)
     assert (scan.status, scan.reason, scan.ocr_rules, scan.ocr_pages, scan.scanned_pages) == (
@@ -413,11 +465,33 @@ def test_zip_shares_one_page_budget_and_is_stored(session, monkeypatch) -> None:
     at.record(session, BASE + "pack.zip", "zip", NOW, at.TextReport(), content=content)
     version = _version(session, BASE + "pack.zip")
     assert (version.file_type, version.reason) == ("zip", "scan")
-    result = at.ocr_version(session, version, content, NOW, pages=3)
+    assert at.ocr_version(session, version, content, NOW, pages=3) == 3
     assert [c["pages"] for c in calls] == [[1, 2], [1]]
-    assert result.ok and result.ocr_pages == 3
     session.expire_all()
     assert (version.status, version.ocr_pages, version.scanned_pages) == ("ok", 3, 1)
+
+
+def test_mixed_zip_is_stored_although_titles_and_summary_get_shorter(session, monkeypatch) -> None:
+    """压缩包里有能读的 Word、也有扫描的 PDF：扫描件认出来以后，文件标题后面的"扫描件，暂不能识别
+    文字"、开头说明里的"没有读出文字"都去掉了，这不算别的文字变少，照样存。"""
+    import zipfile
+
+    from .test_attachments import make_docx
+
+    fake_ocr(monkeypatch, {1: ["扫描件第一页认出来的一行字"], 2: ["扫描件第二页认出来的一行字"]})
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w") as z:
+        z.writestr("通知.docx", make_docx("申报指南：请各单位按要求报送材料。" * 3))
+        for name in ("甲.pdf", "乙.pdf", "丙.pdf"):
+            z.writestr(name, pdf_pages([FULL, FULL]))
+    content = out.getvalue()
+    add_doc(session, 1, APPLY, RECENT, [("压缩包", BASE + "mixed.zip", "zip")])
+    at.record(session, BASE + "mixed.zip", "zip", NOW, at.TextReport(), content=content)
+    version = _version(session, BASE + "mixed.zip")
+    assert (version.status, version.ocr_pages) == ("ok", 0)
+    assert at.ocr_version(session, version, content, NOW, pages=100) == 6
+    session.expire_all()
+    assert (version.ocr_pages, version.scanned_pages) == (6, None)
 
 
 def test_recognition_that_shrinks_the_other_text_is_not_stored(session, monkeypatch) -> None:
@@ -440,8 +514,7 @@ def test_recognition_that_shrinks_the_other_text_is_not_stored(session, monkeypa
         ocr_pages=1,
     )
     monkeypatch.setattr(at, "extract", lambda data, limits=None: shrunk)
-    result = at.ocr_version(session, version, SOME_PDF, NOW, pages=2)
-    assert result is shrunk
+    assert at.ocr_version(session, version, SOME_PDF, NOW, pages=2) == 0
     session.expire_all()
     assert (version.ocr_rules, version.ocr_pages, version.ocr_tries) == (at.OCR_RULES, 0, 0)
     assert (
@@ -457,8 +530,7 @@ def test_failed_recognition_is_remembered_and_rule_changes_retry(session, monkey
     at.record(session, BASE + "scan.pdf", "pdf", NOW, at.TextReport(), content=SCAN_PDF)
     version = _version(session, BASE + "scan.pdf")
     fake_ocr(monkeypatch, {})  # 一页都没认出
-    result = at.ocr_version(session, version, SCAN_PDF, NOW, pages=3)
-    assert result.reason == "scan"
+    assert at.ocr_version(session, version, SCAN_PDF, NOW, pages=3) == 0
     session.expire_all()
     version = session.get(AttachmentTextVersion, version.id)
     assert (version.reason, version.ocr_rules, version.ocr_pages) == ("scan", at.OCR_RULES, 0)
@@ -653,10 +725,30 @@ def test_ocr_job_retries_environment_errors_twice_then_gives_up(
         assert (report.errors, report.documents, report.pages) == (1, 0, 1)
         session.expire_all()
         assert (version.ocr_tries, version.ocr_rules) == (tries, 0)
+    fetcher.calls.clear()
     report = copies.ocr_scans(session, fetcher=fetcher, now=NOW, pages=1)
     assert report.gave_up == 1
+    assert BASE + "new.pdf" not in fetcher.calls  # 不再试的不用再下载
     session.expire_all()
     assert (version.ocr_tries, version.ocr_rules, version.reason) == (0, at.OCR_RULES, "scan")
+
+
+def test_environment_failures_do_not_count_as_tries(session, monkeypatch) -> None:
+    """起不了子进程、识别组件起不来这些只和当时的环境有关：抛出、下次再来，但不算次数。"""
+    add_doc(session, 1, APPLY, RECENT, [("扫描件", BASE + "scan.pdf", "pdf")])
+    at.record(session, BASE + "scan.pdf", "pdf", NOW, at.TextReport(), content=SCAN_PDF)
+    version = _version(session, BASE + "scan.pdf")
+    for kind in ("spawn", "setup", "spawn"):
+        fake_ocr(monkeypatch, {}, error=pdf_sandbox.Failed(kind, "broken", "环境出事", "环境"))
+        with pytest.raises(pdf_sandbox.Failed):
+            at.ocr_version(session, version, SCAN_PDF, NOW, pages=3)
+        session.expire_all()
+        assert (version.ocr_tries, version.ocr_rules) == (0, 0)
+    fake_ocr(monkeypatch, {}, error=pdf_sandbox.Failed("busy", "too_large", "卡住了", "卡住"))
+    with pytest.raises(pdf_sandbox.Failed):
+        at.ocr_version(session, version, SCAN_PDF, NOW, pages=3)
+    session.expire_all()
+    assert version.ocr_tries == 1
 
 
 def test_ocr_job_skips_while_another_attachment_job_runs(session, monkeypatch, ocr_on) -> None:
@@ -745,3 +837,5 @@ def test_real_ocr_reads_a_rendered_scan() -> None:
     joined = "".join(texts(result)).replace(" ", "").lower()
     assert texts(result)[0] == at.OCR_MARKER
     assert "applicationform" in joined and "2026-12-15" in joined
+    # 每轮开头试认的那张小图，真的识别组件也要认得出（不然线上每轮都报"用不了"）
+    assert at.ocr_smoke() is None
