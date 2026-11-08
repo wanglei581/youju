@@ -73,7 +73,8 @@ jobs:
 
   # 扫描页识别（D-125）：识别组件是可选的一组依赖（uv sync --extra ocr），平时的测试和云托管镜像都
   # 不装。这里装上跑真识别的测试（子进程有内存上限，Linux 上管用），量 Linux 上的用时、内存和装出来
-  # 多大；再在和云托管同一个基础镜像里装一遍、识别一遍，看缺不缺系统库
+  # 多大；再在和云托管同一个基础镜像里装一遍、识别一遍，看缺不缺系统库（pip 要加 --no-deps：锁文件
+  # 里已经是全部依赖，rapidocr 要的带界面的 OpenCV 由 uv 换成了不带界面的，pip 不认这个替换）
   ocr:
     name: 扫描页识别（装识别组件：真识别、用时、内存、大小）
     runs-on: ubuntu-latest
@@ -106,7 +107,7 @@ jobs:
           docker run --rm -v "$PWD":/src -w /src "$base" sh -c '
             pip install -q --no-cache-dir uv==0.12.5 &&
             uv export --frozen --no-dev --no-emit-project --extra ocr -o /tmp/req.txt &&
-            pip install -q --no-cache-dir --require-hashes -r /tmp/req.txt &&
+            pip install -q --no-cache-dir --no-deps --require-hashes -r /tmp/req.txt &&
             pip install -q --no-cache-dir --no-deps -e . &&
             python scripts/ocr_measure.py --pages 2 --sandbox'
 

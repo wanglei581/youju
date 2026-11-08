@@ -63,12 +63,12 @@ log = logging.getLogger("youju.pdf_sandbox")
 _MB = 1024 * 1024
 # 子进程的虚拟内存上限（RLIMIT_AS，含 Python 自己和各个库占的地址空间）。真实文件最大 276MB
 MEMORY_MAX = 1024 * _MB
-# 识别扫描页（ocr，D-125）的子进程要装下 RapidOCR、onnxruntime、OpenCV 和渲染出的页面图片，上限
-# 另给。本机实测（11/8，单线程，A4 200dpi、每页 30 行）：载入模型后约 170MB，识别第 1 页后约 0.95GB，
-# 第 2 页起稳定在约 1.2GB，到第 8 页不再涨（不是每页都涨）；每批最多 10 页（attachment_text
-# 的 _OCR_BATCH），一批一个子进程，识别完退出、内存还回去。Linux 上的地址空间（VmPeak，RLIMIT_AS
-# 管的）见 CI"扫描页识别"一项。一次只跑一个识别子进程；本地电脑 16G（WSL 默认分到一半），2G 的
-# 上限加上抓取、数据库都够
+# 识别扫描页（ocr，D-125）的子进程要装下 RapidOCR、onnxruntime、OpenCV 和渲染出的页面图片，
+# 上限另给。实测（11/8，单线程，A4 200dpi、每页 30 行）：Linux（CI 的 x86 机器）识别 3 页地址
+# 空间峰值（VmPeak，RLIMIT_AS 管的）约 1.0GB、实际占用约 0.77GB；本机 macOS 实际占用头两页涨到
+# 约 1.2GB，到第 8 页不再涨（不是每页都涨）。每批最多 10 页（attachment_text._OCR_BATCH），
+# 一批一个子进程，识别完退出、内存还回去。一次只跑一个识别子进程；本地电脑 16G（WSL 默认分到
+# 一半），2G 的上限加上抓取、数据库都够
 OCR_MEMORY_MAX = 2048 * _MB
 # 子进程写回的结果最多这么大（RLIMIT_FSIZE）。真实文件最大 2.6MB
 OUTPUT_MAX = 32 * _MB
