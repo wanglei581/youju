@@ -9,6 +9,7 @@ from urllib.parse import urlsplit
 from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
+from youju import pdf_sandbox
 from youju.categories import doc_category
 from youju.classify import doc_kind
 from youju.config import get_settings
@@ -53,8 +54,9 @@ class _FetchOutcome:
 
 
 def _retryable(status: str, http_status: int | None) -> bool:
-    # robots.txt 暂不可用时禁止本次抓取，但可在退避后重新检查。
-    return status in {"network_error", "robots_error"} or (
+    # robots.txt 暂不可用时禁止本次抓取，但可在退避后重新检查。pdf_retry：读 PDF 正文的子进程
+    # 遇到和当时的环境有关的问题（容器内存不够被停掉、太忙等，见 pdf_sandbox），不是文件本身的问题
+    return status in {"network_error", "robots_error", "pdf_retry"} or (
         status == "http_error" and http_status is not None and http_status >= 500
     )
 
@@ -176,7 +178,10 @@ def _fetch_one(document_id: int, url: str, fetcher: DetailFetcher) -> _FetchOutc
         or fetched.text.lstrip().startswith("%PDF-")
     )
     if is_pdf:
-        parsed = _pdf_detail(fetched.content)
+        try:
+            parsed = _pdf_detail(fetched.content)
+        except pdf_sandbox.Failed as exc:  # 只有 retry 为真的会抛到这里
+            return _FetchOutcome(document_id, now, fetched, None, "pdf_retry", f"PDF {exc.detail}")
         return _FetchOutcome(
             document_id,
             now,
@@ -211,7 +216,11 @@ def _fetch_one(document_id: int, url: str, fetcher: DetailFetcher) -> _FetchOutc
             return _FetchOutcome(
                 document_id, now, pdf_fetch, parsed, "unsupported_host", "PDF 非政府网站"
             )
-        pdf = _pdf_detail(pdf_fetch.content)
+        try:
+            pdf = _pdf_detail(pdf_fetch.content)
+        except pdf_sandbox.Failed as exc:  # 只有 retry 为真的会抛到这里
+            reason = f"PDF {exc.detail}"
+            return _FetchOutcome(document_id, now, pdf_fetch, parsed, "pdf_retry", reason)
         if pdf.failure_reason:
             return _FetchOutcome(
                 document_id, now, pdf_fetch, parsed, "pdf_error", pdf.failure_reason
