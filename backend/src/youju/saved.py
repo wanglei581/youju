@@ -19,8 +19,8 @@ from io import BytesIO
 from typing import Any
 
 from docx import Document as WordDocument
-from sqlalchemy import Select, and_, delete, exists, func, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy import Select, delete, exists, func, or_, select
+from sqlalchemy.orm import Session, aliased
 
 from youju import gone
 from youju.models import Document, DocumentTakedownEvent, SavedDocument, Source
@@ -122,16 +122,24 @@ def meta(doc: Document, source: Source) -> dict:
     }
 
 
-def visible_condition():
-    """读的时候不给的副本：这份通知现在下架着（整组），或者保存以后有过下架（下架后又恢复的也不给，
-    下架那时就该删了）。cleanup 任务每天按同一个条件删掉（purge_taken_down）。"""
-    hidden = select(Document.id).where(~available_condition())
+def _removed_condition():
+    """该删的副本：这份通知现在下架着（整组），或者保存以后有过下架（下架后又恢复的也算，下架那时
+    就该删了）。按每一行的 document_id 逐行核对（关联子查询），不先算出全部下架的通知：
+    2.0 全国铺开后通知有几十万份，"我的"页每次都要数一遍。"""
+    doc = aliased(Document)
+    hidden = exists().where(doc.id == SavedDocument.document_id, ~available_condition(doc))
     later = exists().where(
         DocumentTakedownEvent.document_id == SavedDocument.document_id,
         DocumentTakedownEvent.action == "takedown",
         DocumentTakedownEvent.operated_at >= SavedDocument.saved_at,
     )
-    return and_(SavedDocument.document_id.not_in(hidden), ~later)
+    return or_(hidden, later)
+
+
+def visible_condition():
+    """读的时候给的副本：不是该删的（_removed_condition）。cleanup 任务每天按同一个条件删掉
+    （purge_taken_down），删之前读的时候就不给。"""
+    return ~_removed_condition()
 
 
 def owned(session: Session, user_id: int) -> Select:
@@ -145,17 +153,7 @@ def count(session: Session, user_id: int) -> int:
 def purge_taken_down(session: Session) -> int:
     """删掉下架了的通知的副本（D-123 ④；不受开关影响）：条件同 visible_condition。返回删了几份。
     不提交，由调用方提交。"""
-    hidden = select(Document.id).where(~available_condition())
-    later = exists().where(
-        DocumentTakedownEvent.document_id == SavedDocument.document_id,
-        DocumentTakedownEvent.action == "takedown",
-        DocumentTakedownEvent.operated_at >= SavedDocument.saved_at,
-    )
-    ids = list(
-        session.scalars(
-            select(SavedDocument.id).where(or_(SavedDocument.document_id.in_(hidden), later))
-        )
-    )
+    ids = list(session.scalars(select(SavedDocument.id).where(_removed_condition())))
     for start in range(0, len(ids), 1000):
         session.execute(
             delete(SavedDocument).where(SavedDocument.id.in_(ids[start : start + 1000]))
