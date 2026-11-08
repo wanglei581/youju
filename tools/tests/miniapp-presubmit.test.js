@@ -12,7 +12,7 @@ function input() { return {
   legal:{final:true, version:'2026-10.2', user:{sections:[{h:'一、服务内容与定位',p:['公开信息的检索和查看免费。']}]}, privacy:{sections:[]}, operator:{icp:'测试备案号',email:'contact@example.test'}},
   config:{cloudEnv:releaseIdentity.cloudEnv,cloudService:releaseIdentity.cloudService,devBaseUrl:'',templates:{newDocs:'',deadline:''}},
   project:{appid:releaseIdentity.appid},
-  app:{pages:['home','follow','files','me','search','detail','report','lists','agreement','feedback','follow-new','my-data','about','clients','reader','results'].map(p=>`pages/${p}/index`),tabBar:{list:[['home','首页'],['follow','关注'],['files','导出'],['me','我的']].map(([p,text])=>({pagePath:`pages/${p}/index`,text}))}}
+  app:{pages:['home','follow','files','me','search','detail','report','lists','agreement','feedback','follow-new','my-data','about','business-license','clients','reader','results'].map(p=>`pages/${p}/index`),tabBar:{list:[['home','首页'],['follow','关注'],['files','导出'],['me','我的']].map(([p,text])=>({pagePath:`pages/${p}/index`,text}))}}
 }; }
 function identityText(result) {
   return JSON.stringify(result);
@@ -243,17 +243,23 @@ test('过审版协议（D-093 ⑤）：首发包的协议不能写 AI、投诉�
   assert.equal(inspect({ ...x, profile: 'ai-release', mode: 'prepare' }).checks.some((c) => c.id === 'first-terms'), false);
 });
 
-test('协议指纹（D-098）：正文改了没升版本号、这一版没登记都不过；仓库里两份定稿协议都已登记',()=>{
+test('协议指纹（D-098）：正文改了没升版本号、这一版没登记都不过；仓库里定稿的协议都已登记，草稿还没登记',()=>{
  const x=input(); const fingerprints={[x.legal.version]:agreementFingerprint(x.legal)};
  const state=(y,f)=>presubmit.inspect({...y,profile:'first-release',mode:'prepare',fingerprints:f}).checks.find(c=>c.id==='terms-fingerprint').state;
  assert.equal(state(x,fingerprints),'pass');
  const changed=JSON.parse(JSON.stringify(x)); changed.legal.user.sections[0].p[0]+='（改了一个字）';
  assert.equal(state(changed,fingerprints),'fail','改了正文没升版本号');
  assert.equal(state(x,{}),'fail','这一版没登记');
- for(const file of ['legal.js','legal-first-release.js']){
+ for(const file of ['legal.js','legal-first-release.js','legal-first-release-ai.js']){
   const legal=require(path.join(__dirname,'..','..','apps','miniapp','content',file));
+  // 草稿（完整版 2026-12 在创始人定稿前）不登记指纹：定稿时用 --fingerprint 打印、写进登记表
+  if(legal.final!==true){ assert.equal(Object.hasOwn(presubmit.FINGERPRINTS,legal.version),false,`${file} 还是草稿，不该已登记`); continue; }
   assert.equal(presubmit.FINGERPRINTS[legal.version],agreementFingerprint(legal),file);
  }
+ // 完整版 2026-11 升到 2026-12 后冻结的底稿（过审版两份协议从它改出来）：一字不差就是登记过的那一版
+ const base=require('../release/legal-2026-11.js');
+ assert.equal(base.version,'2026-11');
+ assert.equal(presubmit.FINGERPRINTS['2026-11'],agreementFingerprint(base),'tools/release/legal-2026-11.js');
 });
 
 test('过审版加 AI（D-098）：协议要是那一版、只写包里有的功能，后台也认它不含工具条款', () => {
@@ -294,4 +300,15 @@ test('正式AI包的协议版本不低于后台认 AI 条款的版本（10/28 �
   assert.equal(state('2026-11', 'submit'), 'fail');
   assert.equal(state('2026-11.1', 'submit'), 'pass');
   assert.equal(state('2026-12', 'submit'), 'pass');
+});
+
+test('营业执照信息（D-107 ③）：能卖的完整版（付费协议定稿）提审时信用代码和照片要填齐、照片要在包里；没定稿或体验准备只提示',()=>{
+ const pay={version:'pay-2026-11',final:true,title:'付费服务协议',text:'正文'};
+ const state=(extra,mode)=>inspect({...input(),profile:'complete-release',mode,payTerms:pay,...extra}).checks.find(c=>c.id==='business-license').state;
+ assert.equal(state({businessLicense:{creditCode:'',photo:''},payTerms:{...pay,final:false}},'submit'),'warning');
+ assert.equal(state({businessLicense:{creditCode:'',photo:''}},'submit'),'fail');
+ assert.equal(state({businessLicense:{creditCode:'',photo:''}},'prepare'),'warning');
+ assert.equal(state({businessLicense:{creditCode:'X',photo:'images/license.jpg'},licensePhotoExists:false},'submit'),'fail');
+ assert.equal(state({businessLicense:{creditCode:'X',photo:'images/license.jpg'},licensePhotoExists:true},'submit'),'fail');
+ assert.equal(state({businessLicense:{creditCode:'X',photo:'/images/license.jpg'},licensePhotoExists:true},'submit'),'pass');
 });

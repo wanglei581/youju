@@ -42,7 +42,10 @@ class Settings(BaseSettings):
     official_account_name: str = ""
     # 用户协议和隐私保护指引的当前版本，和小程序 content/legal.js 的 version 一致。
     # 版本号按时间可排序（2026-10、2026-11……），后端和小程序都直接比字符串：
-    # 同意过更新的版本也算同意了旧的
+    # 同意过更新的版本也算同意了旧的。
+    # 11/4 起 content/legal.js 是完整版 2026-12 的草稿（final 为 false，D-117）：
+    # 默认值先不跟着改，线上靠环境变量 YOUJU_AGREEMENT_VERSION；定稿上线时两个服务都改成
+    # 2026-12（D-095 例外，创始人点头），本机连完整版小程序测同意时也设成 2026-12
     agreement_version: str = "2026-11"
     # 仍然认的最早版本，平时不填（等于当前版本，旧版的同意失效、要重新同意）。
     # 协议升版只是给新功能加了条款（如 AI 版）时，填升版前的版本：旧的同意照旧能用旧功能
@@ -104,6 +107,8 @@ class Settings(BaseSettings):
     # R1.5 顾问技能包总开关；上线前保持关闭。
     rewards_enabled: bool = False
     advisor_enabled: bool = False
+    # D-104 / D-118：微信尚未明确名单比对，默认不接收新任务。
+    advisor_compare_enabled: bool = False
     ai_advisor_enabled: bool = False
     ai_advisor_openids: str = ""
     ai_advisor_audience: Literal["whitelist", "all"] = "whitelist"
@@ -122,20 +127,27 @@ class Settings(BaseSettings):
 
     # 收费必须单独开启；未配置价格的商品不出售。密钥由创始人填环境变量。
     pay_enabled: bool = False
-    # 开关打开后先只卖给测试名单（沙箱联调：体验版和正式版连的是同一个后端，不能让所有用户看到）；
+    # 开关打开后先只卖给测试名单（体验版里现网真付、真扣钱；体验版和正式版连的是同一个后端，
+    # 不能让所有用户看到）；
     # 门槛达标、创始人批准后改成 all 才对全体开放。名单是逗号分隔的 openid（我的数据页可复制）。
     pay_audience: Literal["whitelist", "all"] = "whitelist"
     pay_openids: str = ""
-    # 现行《付费服务协议》的版本号（和小程序 content/pay-terms.js 的 version 一致）。配了以后，
-    # 下单时带来的版本不一致就不让下单（协议更新后，旧版小程序要重新同意）；不配只记录不比对。
+    # 现行《付费服务协议》的版本号（和小程序 content/pay-terms.js 的 version 一致）。没配就不卖
+    # （payments.orderable）；下单时带来的版本不一致就不让下单（协议更新后，旧版小程序要重新同意）。
     pay_terms_version: str = ""
     # 能开哪种发票（D-070：付款前要看得到），创始人确认后填一句，
-    # 如"增值税电子普通发票，个人或单位抬头"。购买页照这句显示；
-    # 现网（真扣钱）没填就不卖（payments.orderable），沙箱联调不受影响
+    # 如"增值税电子普通发票，个人或单位抬头"。购买页照这句显示；没填就不卖（payments.orderable）
     pay_invoice_type: str = Field(default="", max_length=100)
+    # 停止服务公示期间（付费服务协议第二条第 5 项：至少提前 30 天公示）打开：不再卖新的使用期，
+    # 苹果退款问询对还有剩余使用期的订单答"建议退款"（第二条第 7 项）。默认关；
+    # api、admin 两个服务都设（卖不卖、苹果问询都在 api 上判断）
+    pay_shutdown_notice: bool = False
     xpay_offer_id: str = ""
-    xpay_env: Literal[0, 1] = 1
+    # 新订单一律现网（xpay.XPAY_ENV），没有沙箱开关了（创始人 10/29）；YOUJU_XPAY_ENV 不再起作用。
+    # 现网 AppKey 没配就不卖（payments.orderable）；api、admin 都要配
+    # （下单签名在 api，查单、发货、退款、对账在 admin）
     xpay_appkey_prod: SecretStr | None = None
+    # 只给去掉沙箱以前下的测试单（订单上记的 env 是 1）查单、退款用；没有这类没办完的单就不用配
     xpay_appkey_sandbox: SecretStr | None = None
     wx_appsecret: SecretStr | None = None
     wx_appid: str = ""
@@ -169,15 +181,6 @@ class Settings(BaseSettings):
     @classmethod
     def _empty_pass_price(cls, value):
         return None if value == "" else value
-
-    @field_validator("xpay_env", mode="before")
-    @classmethod
-    def _xpay_env_from_text(cls, value):
-        # 环境变量读进来是文字 "0"/"1"，Literal[0, 1] 不会把文字转成数字：
-        # 不转的话填了 YOUJU_XPAY_ENV 服务就起不来（10/19 api-059 启动失败）
-        if isinstance(value, str) and value.strip() in ("0", "1"):
-            return int(value.strip())
-        return value
 
     @field_validator("season_boost_start", "season_boost_end", mode="before")
     @classmethod
@@ -290,6 +293,16 @@ class Settings(BaseSettings):
         ):
             raise ValueError(
                 "YOUJU_XPAY_PRODUCT_PASS 和 YOUJU_XPAY_PRODUCT_PASS_90 不能是同一个商品编号"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _pass_prices_payable(self) -> "Settings":
+        """价格不到 1 元：苹果手机付不了（官方：Apple 支付最低 1 元），
+        安卓能买、苹果买不了，所以不启动。"""
+        if any(p is not None and p < 100 for p in (self.xpay_price_pass, self.xpay_price_pass_90)):
+            raise ValueError(
+                "YOUJU_XPAY_PRICE_PASS、YOUJU_XPAY_PRICE_PASS_90 按分填，不能少于 100（1 元）"
             )
         return self
 

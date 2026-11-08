@@ -216,7 +216,14 @@ def test_multiple_same_name_and_export_formula_escape(session, tmp_path):
     assert exported["明细"]["A1"].value.startswith("第三方整理")
     # 用词 D-090：表头和说明写"发布阶段"，不再写"名单状态"
     rows = [[cell.value for cell in row] for row in exported["明细"].iter_rows(max_row=4)]
+    assert all(
+        "http" not in str(cell or "")
+        for sheet in exported
+        for row in sheet
+        for cell in (c.value for c in row)
+    )
     header = next(row for row in rows if "客户输入" in row)
+    assert "原文链接" not in header
     assert "发布阶段" in header and "名单状态" not in header
     assert "发布阶段照录标题用词" in exported["明细"]["A1"].value
 
@@ -358,3 +365,31 @@ def test_xlsx_rejects_overlong_cell_reference(tmp_path):
             dst.writestr(item, data)
     with pytest.raises(CompareInputError, match="坐标无效"):
         read_customer_file(bad)
+
+
+def test_legacy_excel_document_dependencies_still_read_original_url():
+    from io import BytesIO
+
+    import httpx
+
+    from youju.advisor_tasks import legacy_result_document_ids
+
+    book = Workbook()
+    sheet = book.active
+    sheet.append(["说明"])
+    sheet.append(["标题", "原文链接"])
+    sheet.append(["旧通知", "https://example.test/old"])
+    output = BytesIO()
+    book.save(output)
+
+    class SessionStub:
+        def scalars(self, query):
+            params = query.compile().params
+            assert any("https://example.test/old" in value for value in params.values())
+            return [42]
+
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, content=output.getvalue()))
+    with httpx.Client(transport=transport) as client:
+        assert legacy_result_document_ids(SessionStub(), client, "https://example.test/file") == [
+            42
+        ]

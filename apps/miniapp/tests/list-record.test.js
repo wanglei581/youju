@@ -46,7 +46,7 @@ function record(patch = {}) {
     entry: { name: '企业名称', category: '科技型中小企业', batch: '第一批', region: '济南市', ...patch.entry },
     document: {
       id: '123', title: '名单文件标题', status: '公示', issuer: '发文机关', date: '2026-09-02',
-      region: '山东省', site: '发文机关网站', host: 'example.gov.cn', link_gone: null, ...patch.document,
+      region: '山东省', site: '发文机关网站', link_gone: null, ...patch.document,
     },
     evidence: { state: 'found', rows: [], more: false, partial: false, pagesRead: null, reason: null, ...patch.evidence },
   };
@@ -135,8 +135,8 @@ test('found 显示位置、各格、隐藏列和公示说明', async () => {
   assert.equal(view.publicityNote, '发布阶段按名单标题用词标注，是否还在公示期以原文为准');
   assert.equal(view.regionLine, '地区：山东省');
   assert.equal(view.disclaimer, '这一行摘自政府公开发布的名单，有据只做整理，不作判断。');
-  // 只写来源网站的域名，不给原文链接
-  assert.equal(view.sourceLine, '来源 example.gov.cn');
+  // 只写来源网站名称（和详情页"原文出处"同一个 site 字段），不写域名、不给原文链接（D-097，11/2 完整测试第 2 条）
+  assert.equal(view.sourceLine, '来源：发文机关网站');
   assert.equal('urlLine' in view, false);
   assert.equal(view.linkGoneLine, '原网页 2026-10-01 起已打不开，下面是此前收录的内容');
   assert.equal(view.found, true);
@@ -217,11 +217,20 @@ test('pending、failed、notfound、in_body 显示说明和解析记录', async 
     assert.equal(view.publicityNote, note);
     assert.equal(view.statusLine, item.statusLine);
     assert.equal(view.disclaimer, '这一行摘自政府公开发布的名单，有据只做整理，不作判断。');
-    assert.equal(view.sourceLine, '来源 example.gov.cn');
+    assert.equal(view.sourceLine, '来源：发文机关网站');
     if (item.issuerLine) assert.equal(view.issuerLine, item.issuerLine);
     if (item.parsed) assert.deepEqual(view.parsed.map((field) => [field.label, field.value]), item.parsed);
     else assert.equal(view.parsed.length, 4);
   }
+});
+
+test('出处只写来源网站名称：接口还带着域名（旧后台）也不显示；没有网站名称就不写这一行（11/2 完整测试第 2 条）', async () => {
+  const withHost = await open(TOKEN, { listRecord: async () => record({ document: { host: 'kxjst.jiangsu.gov.cn', site: '江苏省科学技术厅网站' } }) });
+  assert.equal(withHost.data.record.sourceLine, '来源：江苏省科学技术厅网站');
+  assert.doesNotMatch(stringsIn(withHost.data).join('\n'), /kxjst|\.gov\.cn/);
+  const noSite = await open(TOKEN, { listRecord: async () => record({ document: { host: 'kxjst.jiangsu.gov.cn', site: '' } }) });
+  assert.equal(noSite.data.record.sourceLine, '');
+  assert.doesNotMatch(stringsIn(noSite.data).join('\n'), /kxjst|\.gov\.cn/);
 });
 
 test('404 显示回查名单，其他错误显示原因和重试', async () => {
@@ -303,7 +312,7 @@ test('页面文字里没有禁用词', async () => {
     '从原文解析出的记录',
     '解析出的记录',
     '发布阶段：',
-    '来源 ',
+    '来源：',
     '起已打不开，下面是此前收录的内容',
     '在原文的位置：',
     '看发布这份名单的通知',

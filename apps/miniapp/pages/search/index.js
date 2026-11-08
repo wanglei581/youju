@@ -542,12 +542,12 @@ Page({
             .then((created) => {
               // 微信提醒还没开通时只告诉用户已关注，不问要不要订阅
               if (!remindOpen('newDocs')) {
-                wx.showToast({ title: '已关注，有新文件时会在"关注"里标出', icon: 'none', duration: 2500 });
+                wx.showToast({ title: '已关注，有新文件时会在“关注”里标出', icon: 'none', duration: 2500 });
                 return undefined;
               }
               return wx.showModal({
                 title: '已关注',
-                content: '有新文件时会在"关注"里标出。要不要再订阅一次微信提醒？',
+                content: '有新文件时会在“关注”里标出。要不要再订阅一次微信提醒？',
                 confirmText: '订阅提醒',
                 cancelText: '不用了',
                 success: (r) => {

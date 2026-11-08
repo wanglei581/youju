@@ -2,7 +2,8 @@
 
 - 逐字核对：新的 interpret.validate 改用 content.locate，和改之前的写法（下面原样抄的
   _legacy_validate）在固定用例和随机用例（解读、对照各 400 份随机正文，每份最多 16 条引用）上
-  逐项相同；
+  逐项相同；11/3 有意改了两处：空白的规范化（两边共用 interpret.normalize），整篇不止一处时取
+  从模型给的段开始的唯一一处（_legacy_validate 里按同样的规则另写了一遍，用来对照）；
 - 取内容：段落、正文指纹、用的哪一份正文和原来 prepare 里的算法相同，附件一律记"没读"；
 - 两个来源（正文、附件）的句子不会互相算错。
 """
@@ -10,6 +11,7 @@
 from __future__ import annotations
 
 import random
+import re
 from datetime import UTC, datetime
 
 import pytest
@@ -23,7 +25,8 @@ NOW = datetime(2026, 10, 3, 10, tzinfo=UTC)
 
 
 def _legacy_validate(payload, paragraphs, *, skill=interpret.INTERPRET):
-    """改之前的 interpret.validate 原样（main 66f8e7c0），只把模块里的名字加上 interpret. 前缀。"""
+    """改之前的 interpret.validate 原样（main 66f8e7c0），只把模块里的名字加上 interpret. 前缀；
+    11/3 起整篇不止一处时的规则跟着改了（见下面的注释）。"""
     if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
         raise ValueError("模型结果结构无效")
     by_pid = {p["pid"]: p for p in paragraphs}
@@ -65,13 +68,23 @@ def _legacy_validate(payload, paragraphs, *, skill=interpret.INTERPRET):
                 first = paragraph["start"] + offsets[at][0]
                 last = paragraph["start"] + offsets[at + len(quote) - 1][1]
             else:
-                at = normalized_body.find(quote)
-                if at < 0:
+                # 11/3 起：不止一处时，恰好一处从模型给的段开始就用那一处，否则不唯一（和
+                # content.locate 的写法不同，用正则零宽断言取重叠的命中，两边对照）
+                hits = [m.start() for m in re.finditer(f"(?={re.escape(quote)})", normalized_body)]
+                if not hits:
                     reason = "not_found"
                     break
-                if normalized_body.find(quote, at + 1) >= 0:
-                    reason = "ambiguous"
-                    break
+                if len(hits) > 1:
+                    hits = [
+                        h
+                        for h in hits
+                        if paragraph is not None
+                        and paragraph["start"] <= body_offsets[h][0] < paragraph["end"]
+                    ]
+                    if len(hits) != 1:
+                        reason = "ambiguous"
+                        break
+                at = hits[0]
                 first, last = body_offsets[at][0], body_offsets[at + len(quote) - 1][1]
                 paragraph = next(p for p in paragraphs if p["start"] <= first < p["end"])
             covered = [(a, b) for a, b in sentences if a < last and b > first]
@@ -285,6 +298,80 @@ def test_locate_keeps_body_and_attachment_apart():
     assert content.locate(texts, None, "加盖公章") == (None, "not_found")
 
 
+def test_locate_quote_written_without_pdf_hard_line_breaks():
+    # 11/3 评测：PDF 复制来的正文按版面硬换行，两个汉字、数字和汉字中间断行；模型写的不带换行
+    # （或把换行写成空格）也对得上，给的原文片段仍是正文里原样的一段，带着换行
+    body = "四、报送要求\n请于2026年6月\n10日前将申报\n书（加盖公章）一式两份报送市科技局。\n"
+    texts = content.Texts.from_paragraphs(interpret.split_paragraphs(body))
+    located, why = content.locate(texts, "P002", "请于2026年6月10日前将申报书（加盖公章）一式两份")
+    assert why is None
+    assert (located.sid, located.quote) == (
+        "P002",
+        "请于2026年6月\n10日前将申报\n书（加盖公章）一式两份报送市科技局。",
+    )
+    assert body[located.start : located.end] == located.quote
+    for sid in ("P003", "P009", None):
+        located, why = content.locate(texts, sid, "将申报 书（加盖公章）")
+        assert why is None
+        assert located.quote == "10日前将申报\n书（加盖公章）一式两份报送市科技局。"
+        assert body[located.start : located.end] == located.quote
+    # 只放过空白：错一个字照样对不上
+    assert content.locate(texts, "P002", "请于2026年6月11日前") == (None, "not_found")
+
+
+def test_locate_prefers_the_hit_starting_in_the_given_segment():
+    # 同一句在正文里出现两次，一处被版面换行断开、一处没断，模型写的不带换行。跨行的那处在一行
+    # 一段里找不全，整篇找到两处：恰好一处从模型给的段开始就用那一处，否则照旧算不唯一
+    body = (
+        "一、支持方向\n"
+        "（一）智能制造方向，每个项目资助\n"
+        "金额不超过100万元。\n"
+        "（二）绿色低碳方向，每个项目资助金额不超过100万元。\n"
+    )
+    texts = content.Texts.from_paragraphs(interpret.split_paragraphs(body))
+    quote = "每个项目资助金额不超过100万元"
+    located, why = content.locate(texts, "P002", quote)
+    assert why is None
+    assert (located.sid, located.quote) == (
+        "P002",
+        "（一）智能制造方向，每个项目资助\n金额不超过100万元。",
+    )
+    assert body[located.start : located.end] == located.quote
+    # 没断的那处在 P004 这一段里就找到
+    located, why = content.locate(texts, "P004", quote)
+    assert why is None
+    assert (located.sid, located.quote) == (
+        "P004",
+        "（二）绿色低碳方向，每个项目资助金额不超过100万元。",
+    )
+    # 哪一处都不从给的段开始、段号对不上任何一段、没给段号：分不出是哪一处
+    for sid in ("P001", "P003", "P999", None):
+        assert content.locate(texts, sid, quote) == (None, "ambiguous")
+
+
+def test_locate_still_ambiguous_when_two_hits_start_in_the_given_segment():
+    # 重复的字样跨行：两处命中都从 P002 开始，分不出是哪一处，照旧丢掉
+    body = "附表\n注：甲乙甲乙\n甲乙甲乙止。\n"
+    texts = content.Texts.from_paragraphs(interpret.split_paragraphs(body))
+    for sid in ("P002", "P003", None):
+        assert content.locate(texts, sid, "甲乙甲乙甲乙") == (None, "ambiguous")
+
+
+def test_locate_curly_quotes_and_dashes_next_to_line_breaks():
+    # 弯引号、破折号挨着换行（两边都不是汉字）时，换行同样去掉
+    body = "二、申报条件\n已认定为“专精特新”\n“小巨人”企业的，截止时间——\n2026年6月30日。\n"
+    texts = content.Texts.from_paragraphs(interpret.split_paragraphs(body))
+    located, why = content.locate(
+        texts, "P002", "已认定为“专精特新”“小巨人”企业的，截止时间——2026年6月30日"
+    )
+    assert why is None
+    assert (located.sid, located.quote) == (
+        "P002",
+        "已认定为“专精特新”\n“小巨人”企业的，截止时间——\n2026年6月30日。",
+    )
+    assert body[located.start : located.end] == located.quote
+
+
 @pytest.fixture
 def doc(session):
     source = Source(
@@ -319,7 +406,7 @@ def doc(session):
 
 def test_load_takes_body_like_before_and_marks_attachments_unread(session, doc):
     raw = v1._reading_body(session, doc.id)
-    body = v1.redact_sensitive(raw or "")
+    body = v1.model_body_text(v1.redact_sensitive(raw or ""))
     loaded = content.load(session, doc.id)
     # 和原来 prepare 里的算法一样：段落按原规则切、正文指纹是库里原文的摘要、用的是本份正文
     assert loaded.paragraphs() == interpret.split_paragraphs(body)
@@ -415,7 +502,7 @@ def test_old_eligible_body_still_gives_the_four_values(session, doc):
     # 旧的调用（interpret.eligible_body）转调 content，照样给（通知、类型、原文、遮过号码的正文）
     found, kind, raw, body = interpret.eligible_body(session, doc.id)
     assert (found.id, kind, raw) == (doc.id, "申报通知", FIXED_BODY)
-    assert body == v1.redact_sensitive(FIXED_BODY)
+    assert body == v1.model_body_text(v1.redact_sensitive(FIXED_BODY))
 
 
 def test_load_prefers_its_own_body_in_a_merged_group(session, doc):
@@ -443,3 +530,39 @@ def test_load_prefers_its_own_body_in_a_merged_group(session, doc):
     # 组里两份正文一样：用本份的（原来 prepare 的排法：本份在前，再按编号）
     assert loaded.body_id == doc.id
     assert sorted(loaded.document_ids) == sorted([doc.id, other.id])
+
+
+def test_model_body_masks_what_the_page_masks_with_store_marks():
+    """交给模型的正文和页面一样补遮号码、联系人姓名和邮箱（协议写了发送前隐去），标记写成入库的写法，
+    AI 原句核对照旧认得；网址留着；处理两次一样（D-114 独立审阅）。"""
+    text = (
+        "联系人：张小明，联系电话：86263938\n"
+        "咨询电话：[电话已脱敏]、87687769\n"
+        "邮箱：kjc＿test＠example.cn\n"
+        "申报系统：https://kjgl.example.gov.cn/login\n"
+        "申报截止时间为2026年11月30日。"
+    )
+    out = v1.model_body_text(text)
+    assert "86263938" not in out and "87687769" not in out and "张小明" not in out
+    assert "联系人：[姓名已脱敏]" in out and "联系电话：[电话已脱敏]" in out
+    assert "咨询电话：[电话已脱敏]、[电话已脱敏]" in out
+    assert "＠" not in out and "[邮箱已脱敏]" in out
+    assert "https://kjgl.example.gov.cn/login" in out and "2026年11月30日" in out
+    assert "（这里隐去了" not in out
+    assert v1.model_body_text(out) == out
+    # 页面正文按整行遮联系人的那一道（_mask_contact_names）也在："某老师，电话……"、编审署名
+    assert v1.model_body_text("刘老师，电话：[电话已脱敏]") == "[姓名已脱敏]，电话：[电话已脱敏]"
+    assert v1.model_body_text("一审：张三") == "一审：[姓名已脱敏]"
+
+
+def test_load_sends_the_extra_masked_body(session, doc):
+    detail = session.get(DocumentDetail, doc.id)
+    detail.body_text = FIXED_BODY + "\n联系人：张小明，联系电话：86263938。"
+    session.commit()
+    loaded = content.load(session, doc.id)
+    text = loaded.source(content.BODY).text
+    assert "86263938" not in text and "张小明" not in text
+    assert "联系人：[姓名已脱敏]，联系电话：[电话已脱敏]。" in text
+    # 引用落在补遮过的句子上，照旧按“原句里有已脱敏的内容”不用
+    last = loaded.segments[-1]
+    assert content.locate(loaded, last.sid, "联系电话：[电话已脱敏]")[1] == "redacted"

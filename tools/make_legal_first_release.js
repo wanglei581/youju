@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// 由 content/legal.js（2026-11，含 AI 条款）生成过审版用的协议草稿 content/legal-first-release.js（D-093 ⑤）。
+// 由完整版协议 2026-11（含 AI 条款）生成过审版用的协议草稿 content/legal-first-release.js（D-093 ⑤）。
+// 11/4 起 content/legal.js 升到 2026-12，2026-11 的定稿全文冻结在 tools/release/legal-2026-11.js，这里读它。
 // 过审版（首发 16 页，D-091）里没有 AI、批量工具、加量体验、购买和订单页面，协议只写包里真有的功能
 // （微信"所列即所用"；agy 10/25 合规审）。每一处改动都写在下面，按原文逐字查找、只许命中一次；
 // 原文改过、对不上时直接报错，不会悄悄漏改。定稿后 legal-first-release.js 就是固定文本，不再覆盖（--force 才覆盖）。
@@ -13,9 +14,11 @@ const VERSION = '2026-10.2';
 // 过审版协议里不能出现的说法（发布检查 tools/miniapp_presubmit_check.js 用同一份）
 const BANNED = /AI|LLM|GPT|人工智能|生成内容|生成式|智能问答|智能生成|大模型|大语言|模型|算法推荐|投诉举报|原文链接|使用帮助|我的记录|批量工具|加量体验|工具使用说明|订单|购买页|统一社会信用代码|核对企业主体/i;
 
+// 底稿：完整版 2026-11 的定稿全文（content/legal.js 已升到 2026-12）
+const SOURCE = path.join(__dirname, 'release', 'legal-2026-11.js');
+
 function build() {
-  delete require.cache[require.resolve(path.join(ROOT, 'legal.js'))];
-  const legal = JSON.parse(JSON.stringify(require(path.join(ROOT, 'legal.js'))));
+  const legal = JSON.parse(JSON.stringify(require(SOURCE)));
   const sec = (doc, head) => {
     const found = doc.sections.find((s) => s.h.startsWith(head));
     if (!found) throw new Error(`没有找到 ${head}`);

@@ -82,7 +82,7 @@ test('多选的支持方式和产业方向带到接口、关注名称、关注�
   assert.equal(calls.at(-1).supports, undefined);
   assert.equal(calls.at(-1).industries, undefined);
   const c = { kind: 'all', supports: '资格认定,征集入选', industries: '现代农业', time: '不限' };
-  assert.equal(conditions.describe(c), '不限地区 · 全部类型 · 支持方式：资格认定、征集入选 · 产业方向：现代农业 · 不限');
+  assert.equal(conditions.describe(c), '不限地区 · 全部类型 · 支持方式：资格认定、征集入选 · 产业方向：现代农业');
   const restored = searchPage(() => ({ total: 0, total_all: 0, items: [] }));
   const url = new URL(conditions.searchUrl(c), 'https://test.invalid');
   restored.page.onLoad(Object.fromEntries(url.searchParams)); await flush();

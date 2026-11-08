@@ -147,7 +147,9 @@ function askConsent(purpose) {
   // 协议更新后、或同意以后能用上 AI（两份文件里有 AI 功能的约定）：只能先读全文，在全文最后同意，
   // 弹窗写明是为了用什么（Codex 小程序第 13、15 轮）
   if (outdated || ai) {
-    const what = ai ? PURPOSES[purpose] : featureNames();
+    // 用途以字母开头（"AI 解读和条款对照"）时前面隔一个空格："再使用 AI 解读……"（11/2 完整测试第 21 条）
+    const name = ai ? PURPOSES[purpose] : featureNames();
+    const what = /^[A-Za-z0-9]/.test(name) ? ` ${name}` : name;
     wx.showModal({
       title: outdated ? '协议已更新' : '请先阅读并同意',
       content: outdated
@@ -190,17 +192,51 @@ function markAgreed() {
   aiAccess.recheck();
 }
 
-// 注销：撤回同意，删除服务端的全部个人信息。用户确认并删除成功时返回 true
-function withdraw() {
+// 注销弹窗里写删哪些记录，按包里有的功能写（11/2 完整测试第 7 条）。has 是页面的 pages.flags()：
+// 11/4 完整测试 M4：完整版点名批量工具、AI 和加量体验；过审版加 AI（D-098）只有 AI，写"AI 的输入、任务与结果"；
+// 过审版（首发 16 页）两样都没有，不写。没传（旧的调用）照完整版写。服务端照旧删掉全部记录
+function recordsPart(has) {
+  if (!has || has.advisor) return `、批量工具${!has || has.ai ? '和 AI ' : ''}的输入、任务与结果、加量体验记录`;
+  return has.ai ? '、AI 的输入、任务与结果' : '';
+}
+
+// 有没到期的使用期时注销前多说的一段（付费协议开卖必做第 3 项，不能写成注销前必须先办退款）。
+// 注销以后小程序里看不到订单了：写出邮箱，提醒先记下订单号（agy 10/28）
+function passNotice() {
+  const email = legal.operator && legal.operator.email;
+  return '注销后未到期的使用期和赠送天数作废、不能恢复；注销本身不退剩余天数，也不减少按《付费服务协议》第二条可以退的钱；'
+    + `注销后发邮件${email ? `到 ${email} ` : ''}并附订单号，同样受理。订单号在“我的 → 我的订单”，注销前可以先记下。`;
+}
+
+// 注销前看有没有没到期的使用期：包里没有付费页面（过审版）就不问、也不提付费；有的话读不到也按有算，
+// 宁可多问一句（Codex 10/28）。过审版不能出现付费字样（独立审阅 10/28）
+function hasActivePass() {
+  if (!require('./pages.js').has('orders')) return Promise.resolve(false);
+  return Promise.resolve().then(() => api.me()).then((res) => !!(res && res.pass && res.pass.active === true), () => true);
+}
+
+// 我的、我的数据两个注销入口共用：读使用期要等一会儿（请求会重试），这期间连点只进一次。
+// has 是页面的 pages.flags()，原样交给 withdraw（弹窗按包里有的功能写删哪些记录）
+let withdrawing = false;
+function withdrawAccount(has) {
+  if (withdrawing) return Promise.resolve(false);
+  withdrawing = true;
+  const done = (ok) => { withdrawing = false; return ok; };
+  return hasActivePass().then((active) => withdraw(has, active)).then(done, () => done(false));
+}
+
+// 注销：撤回同意，删除服务端的全部个人信息。用户确认并删除成功时返回 true。
+// has 见 recordsPart；activePass 为真时（有没到期的使用期）再弹一段使用期提示，两段都确认才删
+function withdraw(has, activePass) {
   return new Promise((resolve) => {
     wx.showModal({
       title: '注销并删除数据',
-      content: `将撤回你对用户协议和隐私保护指引的同意，并删除你在有据的关注、${remindAny() ? '微信提醒、' : ''}纠错记录、工具输入、任务与结果，以及本机的导出记录和文件，删除后不能恢复。`,
+      content: `将撤回你对用户协议和隐私保护指引的同意，并删除你在有据的关注、${remindAny() ? '微信提醒、' : ''}纠错记录${recordsPart(has)}，以及本机的导出记录和文件，删除后不能恢复。`,
       confirmText: '注销',
       confirmColor: '#E5484D',
       success: (res) => {
         if (!res.confirm) { resolve(false); return; }
-        api.deleteMe()
+        const remove = () => api.deleteMe()
           .then(() => {
             exportsLog.clear();
             // 文件缺失或无法删除不影响注销；清空本机缓存也涵盖后续新增的个人数据。
@@ -221,6 +257,9 @@ function withdraw() {
             wx.showToast({ title: err.message || '注销失败，请稍后再试', icon: 'none' });
             resolve(false);
           });
+        if (!activePass) { remove(); return; }
+        // 两段分别确认，避免原说明和使用期提示合在一起被弹窗截断。
+        wx.showModal({ title: '注销并删除数据', content: passNotice(), confirmText: '注销', confirmColor: '#E5484D', success: (next) => { if (next.confirm) remove(); else resolve(false); }, fail: () => resolve(false) });
       },
       fail: () => resolve(false),
     });
@@ -228,6 +267,6 @@ function withdraw() {
 }
 
 module.exports = {
-  ensureConsent, syncConsent, applyServer, consentEpoch, consentOpen, loginOpen, openPrivacy, agreedHere, remember, forget, withdraw, markAgreed, CONSENT_PAGE, AI_CONSENT_PAGE,
+  ensureConsent, syncConsent, applyServer, consentEpoch, consentOpen, loginOpen, openPrivacy, agreedHere, remember, forget, withdraw, withdrawAccount, markAgreed, CONSENT_PAGE, AI_CONSENT_PAGE,
   covers, agreeFailed, remindAny, featureNames,
 };

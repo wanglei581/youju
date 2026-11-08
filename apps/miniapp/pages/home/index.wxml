@@ -149,6 +149,9 @@
     <!-- 栏目数和省份数到了才写那半句，不出现空着的数字 -->
     <text><text wx:if="{{stats}}">数据来自 {{stats.sources}} 个政府网站栏目，</text>每条都注明出处。有据不代办申报。</text>
     <view class="link footer-link" bindtap="goCoverage">覆盖说明 ›</view>
+    <!-- 营业执照信息：《电子商务法》第十五条要求在首页显著位置公示（可以是链接，D-107 ③）。创始人 11/5 不要放在入口卡片下面，
+         挪到首页最底部这一行，“我的”页另有一行（pages/me） -->
+    <view wx:if="{{businessLicense}}" class="link footer-link" data-url="/pages/business-license/index" bindtap="goEntry" aria-role="button">营业执照信息 ›</view>
   </view>
 </view>
 <!-- 扫码打开时微信自带的关注公众号条（PR #287）：微信只在扫码等场景显示，其余场景自动不显示；

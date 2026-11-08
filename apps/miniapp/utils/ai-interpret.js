@@ -109,9 +109,14 @@ function withdrawConsent(storage) {
 const CONSENT_SAVE_FAILED = '没能记下你的同意，请再点一次；还不行请重新打开小程序。';
 // 须知里写明交给哪个模型处理：公示的模型名称（YOUJU_AI_MODEL_LABEL）。没配时（只有白名单内部试用；对所有人开放时后台不配就不启动）
 // 只写"大模型"，不写"已备案"（agy 10/26）
+// 模型名和前后的汉字之间不加空格（"交给腾讯混元助手大模型处理"）；名字开头、结尾是字母或数字时才隔一个空格
+// （"交给 DeepSeek 处理"），和别处"AI 解读"的写法一样（11/2 完整测试第 21 条）
 function modelText(disclosure) {
   const label = disclosure && typeof disclosure.modelLabel === 'string' ? disclosure.modelLabel.trim() : '';
-  return `通知原文会交给${label ? ` ${label} ` : '大模型'}处理。`;
+  if (!label) return '通知原文会交给大模型处理。';
+  const before = /^[A-Za-z0-9]/.test(label) ? ' ' : '';
+  const after = /[A-Za-z0-9]$/.test(label) ? ' ' : '';
+  return `通知原文会交给${before}${label}${after}处理。`;
 }
 function taskContext(storage, id, value) {
   try {

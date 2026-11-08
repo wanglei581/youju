@@ -25,7 +25,7 @@ test('首发包：16 页、底栏四格（首页、关注、导出、我的）�
   const { pages, removed, result } = pack({ out, profile: 'first-release', mode: 'prepare', npmFrom: fakeNpm() });
   assert.deepEqual([...pages].sort(), [...FIRST_PAGES].sort());
   assert.equal(pages[0], 'pages/home/index');
-  assert.equal(removed.length, JSON.parse(appBefore).pages.length - 16);
+  assert.equal(removed.length, JSON.parse(appBefore).pages.length - FIRST_PAGES.length);
   const app = JSON.parse(fs.readFileSync(path.join(out, 'app.json'), 'utf8'));
   assert.deepEqual(app.pages, pages);
   assert.deepEqual(app.tabBar.list.map((t) => t.pagePath), ['pages/home/index', 'pages/follow/index', 'pages/files/index', 'pages/me/index']);
@@ -71,6 +71,31 @@ test('完整版也能打：页面和仓库一样多', () => {
   assert.deepEqual(removed, []);
 });
 
+test('完整版打包时查打好的包里的营业执照信息和照片：都在就通过，照片没进包就不算填齐（11/4 打包漏传这一项）', () => {
+  const check = (result) => result.checks.find((c) => c.id === 'business-license');
+  const out = fresh();
+  const { result } = pack({ out, profile: 'complete-release', mode: 'prepare', npmFrom: fakeNpm() });
+  const license = require(path.join(SOURCE, 'content', 'business-license.js'));
+  assert.ok(fs.existsSync(path.join(out, license.photo.replace(/^\//, ''))));
+  assert.equal(check(result).state, 'pass');
+  // 照片不在包里（比如路径写错）：打包时这一项不通过（准备阶段是提示）
+  const { licenseInput, inspect } = require('../miniapp_presubmit_check.js');
+  fs.rmSync(path.join(out, license.photo.replace(/^\//, '')));
+  const input = licenseInput(out, 'complete-release');
+  assert.equal(input.licensePhotoExists, false);
+  assert.equal(input.businessLicense.creditCode, license.creditCode);
+  // 用打好的包重新检查一次：这一项不再通过（准备阶段是提示）
+  const again = inspect({
+    legal: require(path.join(out, 'content', 'legal.js')), config: require(path.join(out, 'utils', 'config.js')),
+    app: JSON.parse(fs.readFileSync(path.join(out, 'app.json'), 'utf8')), project: JSON.parse(fs.readFileSync(path.join(out, 'project.config.json'), 'utf8')),
+    toolTerms: require(path.join(out, 'content', 'advisor-terms.js')), payTerms: require(path.join(out, 'content', 'pay-terms.js')),
+    ...input, mode: 'prepare', profile: 'complete-release',
+  });
+  assert.equal(check(again).state, 'warning');
+  // 过审版不查执照
+  assert.deepEqual(licenseInput(out, 'first-release'), { businessLicense: undefined, licensePhotoExists: false });
+});
+
 test('不往非空目录、apps/miniapp 里面打；参数不对不打', () => {
   const out = fresh();
   fs.mkdirSync(out, { recursive: true });
@@ -96,7 +121,7 @@ test('过审版加 AI（D-098）：首发 16 页加 AI 那 6 页、底栏五格�
   const { pages, removed, result } = pack({ out, profile: 'first-release-ai', mode: 'prepare', npmFrom: fakeNpm() });
   const { FIRST_AI_PAGES } = require('../miniapp_presubmit_check.js');
   assert.deepEqual([...pages].sort(), [...FIRST_PAGES, ...FIRST_AI_PAGES].sort());
-  assert.equal(pages.length, 22);
+  assert.equal(pages.length, FIRST_PAGES.length + FIRST_AI_PAGES.length);
   for (const page of ['pages/advisor/index', 'pages/advisor-form/index', 'pages/advisor-terms/index', 'pages/advisor-trial/index', 'pages/pass/index', 'pages/orders/index']) {
     assert.ok(removed.includes(page), page);
     assert.equal(fs.existsSync(path.join(out, path.dirname(page))), false, page);

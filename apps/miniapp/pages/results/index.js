@@ -14,25 +14,26 @@ function generatedTime(value) {
   const pad = n => String(n).padStart(2, '0');
   return `${date.getUTCFullYear()}年${date.getUTCMonth() + 1}月${date.getUTCDate()}日 ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}（北京时间）`;
 }
-// 站内看结果（D-089）：截止一栏照导出文件的内容写，但不搬文件里给对账用的写法——"（机器摘录）"在页面上叫"原文摘录"，
-// 没有能显示的日期只写一句"截止时间见原文"，不写"截止未核对，以原文为准"（10/29 创始人：这类话写在使用帮助里）
+// 11/4 完整测试 F7：新导出和页面都写"原文摘录"，旧接口的"机器摘录"仍兼容；没有能显示的日期只写"截止时间见原文"。
+// 批量工具结果每页的条数，和接口一致（后台 api/advisor.py read_result 每页 20 条）：只用来算“跳到明细”翻到第几页
+const PAGE_SIZE = 20;
 const SEE_ORIGINAL = '截止时间见原文';
 const SOON = '可能 7 天内截止';
-const EXCERPT_MARK = '（机器摘录）';
+const EXCERPT_MARK = '（原文摘录）';
 // 文件里"截止日期"一格按"；"连着写：核对过的写成"企业申报截止 2026-11-06 18:00"（自带类型），已变更的写成
-// "原定 企业申报截止 2026-11-01 已延期，见新通知《…》"；原文摘录的只有一条、只写日期"2026-11-06（机器摘录）"，类型在"日期角色"里
+// "原定 企业申报截止 2026-11-01 已延期，见新通知《…》"；原文摘录只写日期，类型在"日期角色"里。
 const DATE_AT = /(\d{4}-\d{2}-\d{2})(?: (\d{1,2}:\d{2}))?/;
 // 没核对的那一类截止可能 7 天内到期（接口给 due_soon，和列表、详情同一口径，10/29 独立审阅）：
 // 没有日期时写"可能 7 天内截止"；还有效的日期（不算"原定……"那几条）都不在 7 天内时，后面补一句，免得以为还早
 function deadlineText(item, now) {
-  const value = String(item.deadline || '');
+  const value = String(item.deadline || '').replace(/（机器摘录）/g, EXCERPT_MARK);
   // 一个日期都没写的（没核对、没写明）只写一句；原文链接已失效的（接口给 link_gone）不写"截止时间见原文"
   // （原文已打不开），出处后面标一句。只有"原定……已延期"的照写，不丢变更（Codex 第 8 轮）
   if (!DATE_AT.test(value)) return item.due_soon === true ? SOON : (item.link_gone === true ? '' : SEE_ORIGINAL);
   // 核对过的、已变更的自带类型，照写，不再接"日期角色"（原来写成"企业申报截止 2026-11-10 企业申报截止"，Codex 第 9 轮）；
   // 原文摘录的补上类型，末尾标一次"（原文摘录）"：企业申报截止 2026-11-06（原文摘录）
   const excerpt = value.includes(EXCERPT_MARK);
-  const kind = String(item.date_role || '').split(EXCERPT_MARK).join('');
+  const kind = String(item.date_role || '').replace(/（机器摘录）/g, EXCERPT_MARK).split(EXCERPT_MARK).join('');
   const text = excerpt ? `${kind ? `${kind} ` : ''}${value.split(EXCERPT_MARK).join('')}（原文摘录）` : value;
   if (item.due_soon !== true) return text;
   // 带时刻的按时刻算（当天过了点就算已截止）
@@ -59,7 +60,7 @@ function catalogueItem(item, now) {
   };
 }
 Page({
-  data: { loading: false, error: '', result: null, current: false, saving: false, advisor: false, page: 1, nextCursor: null, changed: false, has: flags() },
+  data: { loading: false, error: '', result: null, current: false, saving: false, advisor: false, page: 1, nextCursor: null, detailPage: 0, changed: false, has: flags() },
   onLoad(q) {
     let value = q.ids || '';
     try { value = decodeURIComponent(value); } catch (e) { value = ''; }
@@ -74,7 +75,7 @@ Page({
   load() {
     const seq = this.seq = (this.seq || 0) + 1;
     const current = () => this.visible && seq === this.seq;
-    this.setData({ loading: true, error: '', result: null, changed: false });
+    this.setData({ loading: true, error: '', result: null, changed: false, permanentError: false });
     if (this.data.advisor ? !/^\d+$/.test(this.taskId) : !this.ids.length || this.ids.length > 200 || this.ids.some((id) => !/^\d+$/.test(id))) {
       this.setData({ loading: false, error: '结果地址无效，请返回重新选择。' }); return Promise.resolve();
     }
@@ -89,20 +90,33 @@ Page({
       this.revision = res.revision;
       const now = new Date();
       const items = this.data.advisor ? res.items : res.items.map((item) => catalogueItem(item, now));
-      this.setData({ result: { ...res, items, generatedAtText: generatedTime(res.generatedAt) }, page: this.cursorIndex + 1, nextCursor: next });
+      // 接口给的汇总条数（旧接口没有：不拆，照旧写“共 N 行”；agy 审阅 #441：用 rowCount 推会把明细和汇总算反）
+      const summaryCount = Number.isInteger(res.summaryCount) && res.summaryCount > 0 && res.summaryCount <= res.total ? res.summaryCount : 0;
+      // 明细从第几页开始（汇总在前、明细在后）：汇总超过一页时，标题下给“跳到明细”（11/5 500 家实测：500 家要先翻 25 页汇总）
+      const detailPage = this.data.advisor && summaryCount && summaryCount < res.total ? Math.floor(summaryCount / PAGE_SIZE) + 1 : 0;
+      this.setData({ result: { ...res, items, summaryCount, generatedAtText: generatedTime(res.generatedAt) }, page: this.cursorIndex + 1, nextCursor: next, detailPage });
     }).catch((err) => {
       if (!current()) return;
       if ([403, 404, 409, 410].includes(err.status)) { this.revision = ''; this.cursors = ['']; this.cursorIndex = 0; }
-      this.setData({ result: null, nextCursor: null, changed: err.status === 409, error: err.message || '结果未加载，请重试' });
+      this.setData({ result: null, nextCursor: null, changed: err.status === 409, permanentError: [404, 410].includes(err.status), error: err.message || '结果未加载，请重试' });
     }).then(() => { if (current()) this.setData({ loading: false }); });
   },
   retry() { if (this.data.saving) return; return this.data.changed ? this.restart() : this.load(); },
+  back() { wx.navigateBack({ fail: () => wx.switchTab({ url: '/pages/me/index' }) }); },
   next() {
     if (this.data.loading || this.data.saving || this.data.nextCursor === null) return;
     this.cursors = this.cursors.slice(0, this.cursorIndex + 1); this.cursors.push(this.data.nextCursor); this.cursorIndex += 1;
     return this.load();
   },
   previous() { if (this.data.loading || this.data.saving || this.cursorIndex < 1) return; this.cursorIndex -= 1; return this.load(); },
+  // 直接翻到明细开始的那一页；中间各页的位置照每页条数补上，“上一页”照常一页页往回翻
+  jumpDetail() {
+    const target = this.data.detailPage - 1;
+    if (this.data.loading || this.data.saving || !this.revision || target <= this.cursorIndex) return;
+    this.cursors = Array.from({ length: target + 1 }, (_, i) => (i ? String(i * PAGE_SIZE) : ''));
+    this.cursorIndex = target;
+    return this.load();
+  },
   detail(e) { wx.navigateTo({ url: `/pages/detail/index?id=${encodeURIComponent(e.currentTarget.dataset.id)}` }); },
   help() { if (this.data.has.help) wx.navigateTo({ url: '/pages/help/index?topic=deadline' }); },
   read(e) { wx.navigateTo({ url: `/pages/reader/index?id=${encodeURIComponent(e.currentTarget.dataset.id)}` }); },

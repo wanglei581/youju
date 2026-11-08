@@ -5,11 +5,11 @@ const PAY_MODE = 'short_series_goods';
 const TEXT = {
   ordering: '正在创建订单…', confirming: '正在确认支付结果…', cancelled: '已取消支付',
   closed: '这笔订单已关闭，可以重新支付',
-  unsettled: '上一笔付款还在确认，先不要再付：已扣款的会自动开通，可到"我的 → 我的订单"查看。超过 10 分钟还没开通，请点下方"遇到问题"告诉我们。',
+  unsettled: '上一笔付款还在确认，先不要再付：已扣款的会自动开通，可到“我的 → 我的订单”查看。超过 10 分钟还没开通，请点下方“遇到问题”告诉我们。',
   login: '微信登录没有完成，请重试', unsupported: '当前微信版本不支持这项支付，请升级微信后重试',
-  timeout: '暂未确认到支付结果：已扣款的会自动开通（一般 1–2 分钟内），可到"我的 → 我的订单"查看；没付款不会扣钱。超过 10 分钟还没开通，请点下方"遇到问题"告诉我们。',
+  timeout: '暂未确认到支付结果：已扣款的会自动开通（一般 1–2 分钟内），可到“我的 → 我的订单”查看；没付款不会扣钱。超过 10 分钟还没开通，请点下方“遇到问题”告诉我们。',
   refunded: '这笔付款已经退回，按原支付方式到账，到账时间以微信支付为准',
-  orderFailed: '下单没有完成，请重试', termsPending: '付费服务暂未开放',
+  orderFailed: '下单没有完成，请重试',
   termsRequired: '请先阅读并同意《付费服务协议》',
   refund: '已申请退款，按原支付方式退回，到账时间以微信支付为准',
   invoiceSent: '已提交开票申请：当月开出电子发票，发到你填的邮箱',
@@ -47,10 +47,10 @@ function tiersLine(products) {
 function renewRule(res) {
   const bonus = res && res.renewBonus;
   if (!bonus || !Number.isInteger(bonus.days) || bonus.days <= 0 || !Number.isInteger(bonus.windowDays) || bonus.windowDays <= 0) return null;
-  return { text: `到期前后 ${bonus.windowDays} 天内续买，每次多送 ${bonus.days} 天`, now: bonus.eligibleNow === true };
+  return { text: `到期前后 ${bonus.windowDays} 天内续买，每次多送 ${bonus.days} 天批量工具使用期`, now: bonus.eligibleNow === true };
 }
 function termsFinal(terms) {
-  return !!(terms && terms.final && typeof terms.text === 'string' && terms.text.trim() && !/待.*定稿|占位/.test(terms.text));
+  return !!(terms && terms.final === true && typeof terms.text === 'string' && terms.text.trim() && !/待.*定稿|占位/.test(terms.text));
 }
 // 能开哪种发票（D-070：付款前要看得到）：以服务端为准（YOUJU_PAY_INVOICE_TYPE，商品接口带回 invoiceType）；
 // 没有时现网没有付款按钮，服务端也不卖（payments.orderable）
@@ -136,7 +136,7 @@ function stateNote(order) {
     return order.canRefund ? '付款已收到，但开通时出了问题，还没开通。我们 1 个工作日内处理；不想等可以直接申请退款，全额原路退回。'
       : '付款已收到，但开通时出了问题，还没开通。我们 1 个工作日内处理，结果会显示在这里。';
   }
-  if (order.status === '已关闭') return '没有确认到付款，订单已关闭。如果其实扣了款，点"遇到问题"告诉我们。';
+  if (order.status === '已关闭') return '没有确认到付款，订单已关闭。如果其实扣了款，点“遇到问题”告诉我们。';
   return '';
 }
 function orderView(order) {
@@ -152,6 +152,7 @@ function orderView(order) {
   const partial = Number.isInteger(order.refundAmount) && order.refundAmount > 0 && order.refundAmount !== order.amount;
   return Object.assign({}, order, {
     name,
+    termsVersion: typeof order.termsVersion === 'string' ? order.termsVersion : '',
     summary: `${name} · ${yuan(order.amount, true)} 元${order.paidAt ? ` · ${date(order.paidAt)} 付款` : ''} · ${status}${start && end ? ` · 使用期 ${start} 至 ${end}` : ''}`,
     // 订单页分行显示用：状态、金额、付款日期、使用期、送的天数
     statusText: status,
@@ -203,6 +204,18 @@ function invoiceProblem(form) {
 }
 function paymentParams(order) { return { signData: order.signData, paySig: order.paySig, signature: order.signature, mode: order.mode || PAY_MODE }; }
 function isCancel(err) { return !!err && (err.errCode === -2 || /cancel/i.test(err.errMsg || '')); }
+// 付款前就被微信拒了的错误：只认官方 wx.requestVirtualPayment 错误码表里列出的（10/29 核对）——
+// 1001 参数错误、-4 风控拦截、-15001～-15014、-15016～-15021（签名错、道具没发布到现网、发布 10 分钟内还没生效、
+// 价格不符、商户受限、限频等；表里没有 -15015；-15003"系统错误"说不清发生在哪一步，按可能扣了款，Codex 第 7 轮）。这类不记"待确认"、不挡下一次付款，但不断言"没有扣钱"：
+// 照取消那样再查几秒，万一扣了款也能开通；服务端下新单前也会先查 10 分钟内的待支付单，不会重复扣款。
+// -1 支付失败、-5 结果未知和表里没有的错误码，仍当成可能扣了款（独立审阅、Codex 第 6 轮，10/29）
+const NOT_STARTED = new Set([1001, -4, -15001, -15002, -15004, -15005, -15006, -15007, -15008, -15009, -15010,
+  -15011, -15012, -15013, -15014, -15016, -15017, -15018, -15019, -15020, -15021]);
+function notStarted(err) { return !!err && NOT_STARTED.has(err.errCode); }
+function notStartedText(err) {
+  const code = err && Number.isInteger(err.errCode) ? `（错误码 ${err.errCode}）` : '';
+  return `支付没有完成${code}，请稍后再试。如果其实扣了款，会自动开通，可以在“我的 → 我的订单”查看。`;
+}
 function classify(order) {
   if (order && order.status === '已完成' && order.passStartsAt && order.passEndsAt && !order.passRevokedAt) return 'success';
   if (order && ['退款中', '已退款', '需人工处理', '已关闭'].includes(order.status)) return 'failed';
@@ -243,4 +256,4 @@ function createPoller(options) {
     stop, isActive: () => active,
   };
 }
-module.exports = { POLL_INTERVAL, POLL_TIMEOUT, PAY_MODE, TEXT, yuan, date, monthDay, clock, stateNote, passBadge, normalizeProducts, tierView, tiersLine, renewRule, termsFinal, invoiceType, expiryNotice, toolStatus, limitView, refundReason, giftLines, orderView, invoiceText, invoiceBody, invoiceProblem, paymentParams, isCancel, classify, createPoller };
+module.exports = { POLL_INTERVAL, POLL_TIMEOUT, PAY_MODE, TEXT, yuan, date, monthDay, clock, stateNote, passBadge, normalizeProducts, tierView, tiersLine, renewRule, termsFinal, invoiceType, expiryNotice, toolStatus, limitView, refundReason, giftLines, orderView, invoiceText, invoiceBody, invoiceProblem, paymentParams, isCancel, notStarted, notStartedText, classify, createPoller };

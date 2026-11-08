@@ -945,6 +945,8 @@ def test_lists_lookup_exact_similar_and_coverage(client, seeded, session):
         "since": "2026-09-24",
         "unreadLists": 0,
         "partialLists": 0,
+        # 名单数据更新到哪天：和关于页"最近更新"同一个时间（11/2 完整测试第 6 条）
+        "updatedAt": client.get("/api/v1/coverage").json()["updatedAt"],
     }
     # 全角括号、空格不同也能查到；信用代码不分大小写
     assert len(client.get(url, params={"q": "山东星河科技（青岛） 有限公司"}).json()["items"]) == 1
@@ -1009,6 +1011,43 @@ def test_lists_lookup_rename_same_name_and_duplicate_notice(client, seeded, sess
     assert body["ambiguous"] is True
     # 更名前的名称已在结果里，不再算"名称相近"
     assert body["similar"] == []
+
+
+def test_lists_lookup_count_is_the_scope_count_and_says_when_updated(client, seeded, session):
+    """查名单写的"已收录的 N 份"和查名单页下方"比对范围"（名单看板各类型的份数加起来）是同一个数：
+    同一通知的两个网址都解析出条目时算一份（以前按文件编号数成两份，11/2 完整测试第 6 条：231 和 230）；
+    标题是失信、处罚、个人类的名单早先解析出的条目还在库里时，两处都不算（查名单不比对它）。
+    没查到时附名单数据更新到哪天，和关于页"最近更新"同一个时间。"""
+    list_doc = session.get(Document, seeded["list"])
+    src = list_doc.source
+    dup_doc = _doc(src, 12, list_doc.title, list_doc.publish_date)  # 同一通知，网址不同
+    punitive = _doc(src, 13, "2026年严重失信企业名单公示", date(2026, 9, 2))
+    session.add_all([dup_doc, punitive])
+    session.flush()
+    for doc in (list_doc, dup_doc, punitive):
+        session.add(
+            ListEntry(
+                document_id=doc.id,
+                source_url=doc.url,
+                name="山东星河科技有限公司",
+                normalized_name="山东星河科技有限公司",
+                sequence="1",
+                category="科技型中小企业",
+            )
+        )
+    src.last_success_at = datetime(2026, 11, 1, 6, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
+    session.commit()
+    reconcile_documents(session)  # 同一机关同名同日的两个网址归为一份
+    session.commit()
+    assert session.scalar(select(DocumentMerge).where(DocumentMerge.duplicate_id == dup_doc.id))
+    missing = client.get("/api/v1/lists/lookup", params={"q": "不存在的科技有限公司"}).json()
+    scope = client.get("/api/v1/reports/lists", params={"days": 30, "page": 1, "size": 1}).json()
+    assert missing["coverage"]["lists"] == sum(t["lists"] for t in scope["stats"]["by_type"]) == 1
+    found = client.get("/api/v1/lists/lookup", params={"q": "山东星河科技有限公司"}).json()
+    assert len(found["items"]) == 1 and found["coverage"]["lists"] == 1
+    about = client.get("/api/v1/coverage").json()
+    assert missing["coverage"]["updatedAt"] == about["updatedAt"]
+    assert missing["coverage"]["updatedAt"].startswith("2026-11-01T06:30:00")
 
 
 def test_lists_lookup_shows_master_even_if_its_source_is_not_parsed(client, seeded, session):

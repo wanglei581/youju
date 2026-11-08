@@ -50,7 +50,7 @@ BEIJING = ZoneInfo("Asia/Shanghai")
 MAX_ROWS = 50
 MAX_BODY_BYTES = 100 * 1024
 MAX_UPLOAD_BYTES = 60 * 1024
-ADVISOR_AGREEMENT_VERSION = "advisor-2026-11-v2"
+ADVISOR_AGREEMENT_VERSION = "advisor-2026-12-v1"
 TASK_TIMEOUT = timedelta(minutes=5)
 STALE_RUNNING = timedelta(minutes=10)
 # advisor-run 每分钟一轮（crontab）。队里有 AI 任务就一直领（和原来一样领到空）；
@@ -895,6 +895,18 @@ def record_pass_completion(session: Session, task: AdvisorTask) -> None:
         )
         .values(last_task_completed_at=task.finished_at)
     )
+    # 付费任务出了结果才算用过付费的量（payments.paid_usage）：完成时记下，以后任务删了、
+    # 注销了也还在；系统出错、取消的不记。只往后记，晚完成的旧任务不把时间改早
+    if task.status == "done" and task.usage_source == "pass":
+        done_at = task.finished_at or datetime.now(UTC)
+        session.execute(
+            update(WorkbenchPass)
+            .where(
+                WorkbenchPass.id == task.pass_id,
+                or_(WorkbenchPass.last_used_at.is_(None), WorkbenchPass.last_used_at < done_at),
+            )
+            .values(last_used_at=done_at)
+        )
 
 
 def process_task(

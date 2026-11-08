@@ -86,7 +86,7 @@ function passPage(options = {}) {
   const calls = []; const urls = []; const toasts = []; const storage = new Map(); const clock = makeClock();
   const api = {
     payProducts: options.payProducts || (() => Promise.resolve({ items: [PRODUCT], invoiceType: INVOICE })),
-    advisorStatus: () => Promise.resolve({ pass: { active: false } }),
+    advisorStatus: options.advisorStatus || (() => Promise.resolve({ pass: { active: false } })),
     createPayOrder(body) {
       calls.push(['create', plain(body)]);
       if (options.create) return options.create(body);
@@ -121,8 +121,12 @@ function passPage(options = {}) {
     '../../utils/consent.js': { loginOpen: () => true },
     '../../utils/data-tools.js': { toolConsent: () => Promise.resolve(options.agreed !== false) },
     '../../content/pay-terms.js': options.terms || FINAL_TERMS,
+    // AI 开没开：默认关着（首发版的样子）；测"不含 AI 次数"那句时传 options.ai
+    '../../utils/ai-access.js': options.ai || require('./helpers/ai-off.js'),
+    '../../utils/boost.js': require('../utils/boost.js'),
   }, { wx, setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout });
   if (options.before) options.before({ page, storage });
+  page.onLoad({});
   page.onShow();
   return { page, calls, urls, toasts, storage, clock };
 }
@@ -178,7 +182,7 @@ function dataLogic(api) {
 }
 
 function caps(pay) {
-  return { data_tools: { enabled: true, features: ['compare', 'track'] }, ai_advisor: { enabled: false, features: [] }, pay };
+  return { data_tools: { enabled: true, compareEnabled: true, features: ['compare', 'track'] }, ai_advisor: { enabled: false, features: [] }, pay };
 }
 function quota(used) {
   return { enabled: true, pass: { active: false }, quota: { compare: { used, limit: 3, maxRows: 50 }, track: { used, limit: 3, maxRows: 50 } } };
@@ -229,7 +233,7 @@ test('能力接口把服务端的 pay 原样带给页面（只认严格的 true�
     assert.ok(urls.length >= 1 && urls.every((url) => /\/api\/v1\/advisor\/capabilities$/.test(url)), urls.join());
     return result;
   }
-  const body = (pay, ai = false) => ({ statusCode: 200, data: { data_tools: { enabled: true, features: ['compare', 'track'] }, ai_advisor: { enabled: ai, features: [] }, pay } });
+  const body = (pay, ai = false) => ({ statusCode: 200, data: { data_tools: { enabled: true, compareEnabled: true, features: ['compare', 'track'] }, ai_advisor: { enabled: ai, features: [] }, pay } });
   assert.deepEqual(plain((await capabilities(body({ enabled: true, hasOrders: false }))).pay), { enabled: true, hasOrders: false });
   assert.deepEqual(plain((await capabilities(body({ enabled: false, hasOrders: true }, true))).pay), { enabled: false, hasOrders: true });
   assert.deepEqual(plain((await capabilities(body({ enabled: 'true', hasOrders: 1 }))).pay), { enabled: false, hasOrders: false });
@@ -239,7 +243,7 @@ test('能力接口把服务端的 pay 原样带给页面（只认严格的 true�
 });
 
 test('商品、下单、能力、我的、提交任务这几个请求带上代码包里的付费协议版本号和小程序环境；读不到环境就不带，防止服务端认不出新版本或把正式版当体验版（D-074）', async () => {
-  function api(envVersion) {
+  function api(envVersion, terms = { version: 'pay-2026-11', final: true, title: '付费服务协议', text: '正文' }) {
     const seen = [];
     const request = (options) => {
       seen.push({ url: options.url, header: plain(options.header || {}) });
@@ -249,7 +253,7 @@ test('商品、下单、能力、我的、提交任务这几个请求带上代�
     if (envVersion) wx.getAccountInfoSync = () => ({ miniProgram: { envVersion } });
     const module = load('utils/api.js', {
       './config.js': { devBaseUrl: 'https://test.invalid' }, '../mock/data.js': {}, './mockSearch.js': {}, './format.js': {},
-      '../content/pay-terms.js': { version: 'pay-2026-11', final: true, title: '付费服务协议', text: '正文' },
+      '../content/pay-terms.js': terms,
     }, { wx, setTimeout: () => 0, clearTimeout() {} });
     return { module, seen };
   }
@@ -270,6 +274,22 @@ test('商品、下单、能力、我的、提交任务这几个请求带上代�
   const unknown = api(null);
   await unknown.module.payProducts();
   assert.deepEqual(unknown.seen[0].header, { 'X-Youju-Pay-Terms': 'pay-2026-11' });
+  // 协议没定稿的包不带版本号（付款一律现网、真扣钱，沙箱已去掉）：服务端版本号配错也不会卖给草稿包
+  const draft = api('trial', { version: 'pay-2026-10-draft', final: false, title: '付费服务协议', text: '【待定稿】' });
+  await draft.module.payProducts();
+  assert.deepEqual(draft.seen[0].header, { 'X-Youju-Env': 'trial' });
+  // 和购买页的 pay.termsFinal 一致：final 写成 true、正文还是占位，也不带（不然入口还在、购买页却回首页）
+  const pay = load('utils/pay.js', {}, {});
+  for (const terms of [
+    { version: 'pay-x', final: true, title: '付费服务协议', text: '【付费服务协议：待定稿】' },
+    { version: 'pay-x', final: true, title: '付费服务协议', text: '  ' },
+    { version: 'pay-x', final: 'true', title: '付费服务协议', text: '正文' },
+    { version: 'pay-x', final: true, title: '付费服务协议', text: '正文' },
+  ]) {
+    const one = api('trial', terms);
+    await one.module.payProducts();
+    assert.equal(Object.hasOwn(one.seen[0].header, 'X-Youju-Pay-Terms'), pay.termsFinal(terms), JSON.stringify(terms));
+  }
 });
 
 test('购买页在商品 404 或空列表时直接回首页，页面上不出现"暂未开放"，也没有付款按钮，防止首发包里的购买页被直接打开时像没做完的功能（D-074）', async () => {
@@ -378,45 +398,36 @@ test('订单页有订单时照常列出，不查能力接口也不回首页（�
   assert.ok(orderCard(h.page.data, 7));
 });
 
-test('购买页协议未定稿时没有付款按钮，调用 buy 也不下单，防止用未定稿协议收款', async () => {
-  assert.equal(payTerms.final, false);
-  const h = passPage({ terms: payTerms });
+// 11/5 起包里的《付费服务协议》已定稿（D-119）：测“未定稿不能付款”用一份改成未定稿的副本
+const DRAFT_TERMS = Object.freeze({ ...payTerms, final: false });
+
+test('购买页协议未定稿时没有价格和付款按钮、直接回首页，调用 buy 也不下单，页面不出现"暂未开放"，防止用未定稿协议收款（D-074 ⑧）', async () => {
+  // 包里的协议已定稿（D-119）；这里用改成未定稿的副本测“未定稿不能付款”
+  assert.equal(payTerms.final, true);
+  const h = passPage({ terms: DRAFT_TERMS });
   await flush();
   assert.equal(h.page.data.termsFinal, false);
-  assert.equal(h.page.data.product.productId, 'workbench_30d');
+  assert.deepEqual(h.urls, ['tab:/pages/home/index']);
+  assert.equal(h.page.data.product, null);
   assert.equal(payButtons(h.page.data).length, 0);
-  assert.match(shown('pages/pass/index.wxml', h.page.data), /付费服务暂未开放/);
+  assert.doesNotMatch(shown('pages/pass/index.wxml', h.page.data), /暂未开放/);
   h.page.buy();
-  assert.equal(h.page.data.message, '付费服务暂未开放');
   assert.equal(h.calls.length, 0);
 });
 
-test('购买页在沙箱下协议没定稿也能联调付款，顶部写明是沙箱测试、真机付款会真实扣款（不写"不扣真钱"）；现网没定稿仍不能付款，防止沙箱联调被协议卡住或现网误收款', async () => {
-  const sandbox = passPage({ terms: payTerms, payProducts: () => Promise.resolve({ items: [PRODUCT], sandbox: true }), onPay: (payload) => payload.fail({ errCode: -2 }) });
-  await flush();
-  assert.equal(sandbox.page.data.termsFinal, false);
-  assert.equal(sandbox.page.data.sandbox, true);
-  const page = shown('pages/pass/index.wxml', sandbox.page.data);
-  // 沙箱真机付款会真实扣钱（10/20 创始人实测）：直说，不能写"不扣真钱"
-  assert.match(page, /沙箱测试：只对测试人员开放。真机付款会真实扣款，开通的使用期仅供测试/);
-  assert.doesNotMatch(page, /不扣真钱/);
-  assert.equal(payButtons(sandbox.page.data).length, 1);
-  assert.equal(textOf(payButtons(sandbox.page.data)[0]).trim(), '沙箱支付 29 元（30 天）');
-  sandbox.page.check({ detail: { value: ['agree'] } });
-  sandbox.page.buy();
-  await flush();
-  assert.deepEqual(sandbox.calls.find((call) => call[0] === 'create')[1], {
-    product_id: 'workbench_30d', code: 'wx-code-1', terms_version: payTerms.version, invoice_type: '',
-  });
-  // sandbox 必须是布尔 true：其他值（字符串、缺省）都按现网处理
-  for (const res of [{ items: [PRODUCT], sandbox: 'true' }, { items: [PRODUCT], sandbox: false }]) {
-    const live = passPage({ terms: payTerms, payProducts: () => Promise.resolve(res) });
+test('没有沙箱了：服务端多带 sandbox 也不显示沙箱提示、不写"沙箱支付"，按钮只写"支付"；协议没定稿照样不能付款，防止测试人员以为付的不是真钱（创始人 10/29）', async () => {
+  for (const sandbox of [true, 'true', false]) {
+    const draft = passPage({ terms: DRAFT_TERMS, payProducts: () => Promise.resolve({ items: [PRODUCT], invoiceType: INVOICE, sandbox }) });
     await flush();
-    assert.equal(live.page.data.sandbox, false);
-    assert.equal(payButtons(live.page.data).length, 0);
-    assert.doesNotMatch(shown('pages/pass/index.wxml', live.page.data), /沙箱测试/);
-    live.page.buy();
-    assert.equal(live.calls.length, 0);
+    assert.equal(payButtons(draft.page.data).length, 0);
+    draft.page.buy();
+    assert.equal(draft.calls.length, 0);
+    const live = passPage({ payProducts: () => Promise.resolve({ items: [PRODUCT], invoiceType: INVOICE, sandbox }) });
+    await flush();
+    assert.equal(Object.hasOwn(live.page.data, 'sandbox'), false);
+    assert.doesNotMatch(shown('pages/pass/index.wxml', live.page.data), /沙箱/);
+    assert.equal(payButtons(live.page.data).length, 1);
+    assert.equal(textOf(payButtons(live.page.data)[0]).trim(), '支付 29 元（30 天）');
   }
 });
 
@@ -490,6 +501,87 @@ test('购买页取消支付不记未完成单；其他失败记下来，确认�
   await flush();
   assert.equal(failed.calls.filter((call) => call[0] === 'create').length, 1);
   assert.deepEqual(failed.calls.filter((call) => call[0] === 'check').map((call) => call[1]), [41, 41]);
+});
+
+test('付款前就被微信拒了的错误（道具没发布到现网、发布还没生效、签名错、风控拦截等）和调起付款时就出错的，不记待确认、不挡下一次付款，照取消那样再查几秒，说明里写错误码、不断言没扣钱；-1、-5 和表里没有的错误码照旧当成可能扣了款，防止切现网后测试人员没花钱却被锁 48 小时（独立审阅、Codex 第 6 轮、agy 第 4 轮，10/29）', async () => {
+  function fireCheckDeadline(clock) {
+    const due = clock.queued.reduce((best, item) => (item.ms > best.ms ? item : best));
+    clock.clearTimeout(due.id);
+    due.fn();
+  }
+  const cases = [-15010, -15014, -15013, -15006, -15001, -15021, -4, 1001].map((errCode) => ({ errCode, fail: true }))
+    .concat([{ errCode: undefined, fail: false }]);
+  for (const { errCode, fail } of cases) {
+    const onPay = fail ? (payload) => payload.fail({ errCode, errMsg: 'requestVirtualPayment:fail' }) : () => { throw new Error('调起失败'); };
+    const h = passPage({ onPay });
+    await flush();
+    h.page.check({ detail: { value: ['agree'] } });
+    h.page.buy();
+    await flush();
+    const note = errCode === undefined ? '支付没有完成，请稍后再试。' : `支付没有完成（错误码 ${errCode}），请稍后再试。`;
+    assert.equal(h.page.data.message, `${note}如果其实扣了款，会自动开通，可以在“我的 → 我的订单”查看。`, String(errCode));
+    assert.equal(h.page.data.payError, true);
+    assert.doesNotMatch(h.page.data.message, /没有扣钱/);
+    assert.equal(h.storage.has('pay.unsettled'), false);
+    assert.equal(h.toasts.length, 0);
+    // 有错误码的记下来（10 分钟内下一次付款时带给服务端，查不清这一单时不挡新单）；调起时抛异常的不记
+    assert.equal(h.storage.has('pay.notStarted'), fail, String(errCode));
+    // 照取消那样再查几秒（万一扣了款也能开通），查完说明还在、可以再付
+    assert.ok(h.calls.some((call) => call[0] === 'check'));
+    fireCheckDeadline(h.clock);
+    assert.equal(h.page.data.busy, false);
+    assert.equal(h.page.data.message.startsWith(note), true);
+    h.page.buy();
+    await flush();
+    const creates = h.calls.filter((call) => call[0] === 'create');
+    assert.equal(creates.length, 2, String(errCode));
+    assert.equal(Object.hasOwn(creates[0][1], 'failed_order'), false);
+    if (fail) {
+      assert.deepEqual(creates[1][1].failed_order, { order_id: 41, code: errCode });
+      // 这一笔又被拒了：记下的是这一笔（下成新单时先清掉上一笔的）
+      assert.equal(h.storage.get('pay.notStarted').code, errCode);
+    } else {
+      assert.equal(Object.hasOwn(creates[1][1], 'failed_order'), false);
+    }
+  }
+  // 超过 10 分钟的不再带（服务端那边也只认 10 分钟内的单）
+  const stale = passPage({ before: ({ storage }) => storage.set('pay.notStarted', { orderId: 40, code: -15010, at: Date.now() - 11 * 60 * 1000 }) });
+  await flush();
+  stale.page.check({ detail: { value: ['agree'] } });
+  stale.page.buy();
+  await flush();
+  assert.equal(Object.hasOwn(stale.calls.find((call) => call[0] === 'create')[1], 'failed_order'), false);
+  // 带着上一笔下成了新单、这一笔付款正常：清掉，不再带
+  const ok = passPage({ before: ({ storage }) => storage.set('pay.notStarted', { orderId: 40, code: -15010, at: Date.now() }) });
+  await flush();
+  ok.page.check({ detail: { value: ['agree'] } });
+  ok.page.buy();
+  await flush();
+  assert.deepEqual(ok.calls.find((call) => call[0] === 'create')[1].failed_order, { order_id: 40, code: -15010 });
+  assert.equal(ok.storage.has('pay.notStarted'), false);
+  for (const errCode of [-1, -5, -15003, -15015, -15022, -3, undefined]) {
+    const h = passPage({ onPay: (payload) => payload.fail({ errCode, errMsg: 'requestVirtualPayment:fail' }) });
+    await flush();
+    h.page.check({ detail: { value: ['agree'] } });
+    h.page.buy();
+    await flush();
+    assert.equal(h.storage.get('pay.unsettled').orderId, 41, String(errCode));
+    assert.doesNotMatch(h.page.data.message, /支付没有完成/);
+    assert.equal(h.storage.has('pay.notStarted'), false, String(errCode));
+  }
+  // 服务端已关单：核对到"已关闭"时照旧显示带错误码的那句，不换成"订单已关闭"
+  const closed = passPage({
+    onPay: (payload) => payload.fail({ errCode: -15010, errMsg: 'requestVirtualPayment:fail' }),
+    order: (id) => Promise.resolve({ orderId: id, status: '已关闭' }),
+  });
+  await flush();
+  closed.page.check({ detail: { value: ['agree'] } });
+  closed.page.buy();
+  await flush();
+  await flush();
+  assert.match(closed.page.data.message, /^支付没有完成（错误码 -15010）/);
+  assert.equal(closed.page.data.busy, false);
+  assert.equal(closed.page.data.payError, true);
 });
 
 test('购买页付款后切到后台超过一分钟，回来时再查一次服务端，查到已完成就显示开通，防止付了款却停在超时提示', async () => {
@@ -721,7 +813,7 @@ test('我的页只在有订单时显示"我的订单"并进入订单页；在售
   const urls = []; const pay = { enabled: false, hasOrders: false }; let meCalls = 0;
   const page = load('pages/me/index.js', {
     '../../content/legal.js': { final: true, version: '2026-10' },
-    '../../utils/consent.js': { loginOpen: () => true, consentEpoch: () => 0, applyServer: () => true, withdraw: () => Promise.resolve(false), markAgreed() {}, openPrivacy() {}, CONSENT_PAGE: '', agreeFailed() {}, featureNames: () => '' },
+    '../../utils/consent.js': { loginOpen: () => true, consentEpoch: () => 0, applyServer: () => true, withdraw: () => Promise.resolve(false), withdrawAccount: () => Promise.resolve(false), markAgreed() {}, openPrivacy() {}, CONSENT_PAGE: '', agreeFailed() {}, featureNames: () => '' },
     '../../utils/subscribe.js': { remindOpen: () => false },
     '../../utils/coverage.js': { loadCoverage: () => Promise.resolve(null), notCoveredNames: () => '' },
     '../../utils/api.js': { isLive: () => true, me: () => { meCalls += 1; return Promise.resolve({ pay: { ...pay }, follows: 0, subscriptions: {} }); },
@@ -829,8 +921,13 @@ test('购买页第一句写给谁用，付款前写全收录范围、只限本�
   const h = passPage({ payProducts: () => Promise.resolve({ items: TIERS, invoiceType: INVOICE }) });
   await flush();
   const text = shown('pages/pass/index.wxml', h.page.data);
-  assert.match(text, /给要一次比对很多家客户的顾问用；查通知、查单家企业一直免费/);
+  assert.match(text, /给要一次整理很多家客户相关通知的顾问用；查通知、查单家企业一直免费/);
+  // 这一版不带批量名单比对（D-104，创始人 11/4）：购买页和《付费服务协议》第一条第 3 项一样，只写客户相关通知表
+  assert.match(text, /批量工具目前只含“客户相关通知表”一项/);
+  assert.doesNotMatch(text, /名单比对/);
   assert.match(text, /只限本人的微信使用/);
+  assert.match(text, /本服务不面向未成年人/);
+  assert.doesNotMatch(text, /未成年人请在监护人同意后再购买/);
   // 苹果退款：由苹果公司通过 App Store 处理，小程序里也能提交、我们协助（协议第二条第 7 项、运营规范 14.6）
   assert.match(text, /苹果手机付款的，退款由苹果公司通过 App Store 处理，是否退款由苹果公司决定；也可以在“遇到问题”里提交，我们协助办理/);
   assert.doesNotMatch(text, /只能向 App Store 申请退款/);
@@ -846,7 +943,7 @@ test('购买页第一句写给谁用，付款前写全收录范围、只限本�
   assert.match(text, /开通时体验结束/);
   assert.doesNotMatch(text, /马上开通|马上生效/);
   // 第一句在价格前面
-  assert.ok(text.indexOf('给要一次比对很多家客户的顾问用') < text.indexOf('29'));
+  assert.ok(text.indexOf('给要一次整理很多家客户相关通知的顾问用') < text.indexOf('29'));
   const links = findAll(render('pages/pass/index.wxml', h.page.data), tapsTo('coverage'));
   assert.equal(links.length, 1);
   assert.match(textOf(links[0]), /查看收录范围/);
@@ -854,19 +951,22 @@ test('购买页第一句写给谁用，付款前写全收录范围、只限本�
   assert.deepEqual(h.urls, ['/pages/about/index']);
 });
 
-test('购买页的发票类型以服务端为准，服务端没给时现网没有付款按钮，沙箱照常联调，防止带着发票占位上线收费', async () => {
+test('购买页的发票类型以服务端为准，服务端没给时没有付款按钮、回首页，防止带着发票占位上线收费', async () => {
   for (const invoiceType of [undefined, null, '', '  ', '发票类型待创始人确认', '【发票类型】']) {
     const live = passPage({ payProducts: () => Promise.resolve({ items: TIERS, invoiceType }) });
     await flush();
     assert.equal(live.page.data.invoiceText, '');
     assert.equal(payButtons(live.page.data).length, 0);
-    assert.match(shown('pages/pass/index.wxml', live.page.data), /能开哪种发票还没确定/);
+    // 付不了款就和没在卖一样回首页，不显示"还没确定"的占位（D-074 ⑧）
+    assert.deepEqual(live.urls, ['tab:/pages/home/index']);
+    assert.doesNotMatch(shown('pages/pass/index.wxml', live.page.data), /能开哪种发票还没确定|暂未开放/);
     live.page.buy();
     assert.equal(live.calls.length, 0);
   }
+  // 没有沙箱了：服务端多带 sandbox 也不能不写发票就付款
   const sandbox = passPage({ payProducts: () => Promise.resolve({ items: TIERS, sandbox: true }) });
   await flush();
-  assert.equal(payButtons(sandbox.page.data).length, 1);
+  assert.equal(payButtons(sandbox.page.data).length, 0);
   const ready = passPage({ payProducts: () => Promise.resolve({ items: TIERS, invoiceType: ` ${INVOICE} ` }) });
   await flush();
   assert.equal(ready.page.data.invoiceText, INVOICE);
@@ -876,17 +976,17 @@ test('购买页的发票类型以服务端为准，服务端没给时现网没�
 });
 
 test('续买规则只有一句，和价格在同一屏；现在付款符合时说一声，开关关着时不提，防止规则藏在别处或不在售时出现', async () => {
-  const on = passPage({ payProducts: () => Promise.resolve({ items: TIERS, renewBonus: { days: 3, windowDays: 7, eligibleNow: true } }) });
+  const on = passPage({ payProducts: () => Promise.resolve({ items: TIERS, invoiceType: INVOICE, renewBonus: { days: 3, windowDays: 7, eligibleNow: true } }) });
   await flush();
   const hero = findAll(render('pages/pass/index.wxml', on.page.data), (node) => String(node.attrs.class || '').split(/\s+/).includes('pass-hero'))[0];
-  assert.match(textOf(hero), /29.*79.*到期前后 7 天内续买，每次多送 3 天：现在付款就送/);
-  const later = passPage({ payProducts: () => Promise.resolve({ items: TIERS, renewBonus: { days: 3, windowDays: 7, eligibleNow: false } }) });
+  assert.match(textOf(hero), /29.*79.*到期前后 7 天内续买，每次多送 3 天批量工具使用期：现在付款就送/);
+  const later = passPage({ payProducts: () => Promise.resolve({ items: TIERS, invoiceType: INVOICE, renewBonus: { days: 3, windowDays: 7, eligibleNow: false } }) });
   await flush();
   const text = shown('pages/pass/index.wxml', later.page.data);
   assert.match(text, /到期前后 7 天内续买，每次多送 3 天/);
   assert.doesNotMatch(text, /现在付款就送/);
   for (const renewBonus of [null, undefined, { days: '3', windowDays: 7 }, { days: 3, windowDays: 0 }]) {
-    const off = passPage({ payProducts: () => Promise.resolve({ items: TIERS, renewBonus }) });
+    const off = passPage({ payProducts: () => Promise.resolve({ items: TIERS, invoiceType: INVOICE, renewBonus }) });
     await flush();
     assert.equal(off.page.data.renew, null);
     assert.doesNotMatch(shown('pages/pass/index.wxml', off.page.data), /续买，每次多送/);
@@ -898,11 +998,13 @@ test('购买页写出现有使用期到哪天，3 天内到期改成到期提示
   const far = new Date(Date.now() + 20 * 86400000).toISOString();
   for (const [expiresAt, pattern] of [[soon, /批量工具 \d{1,2}月\d{1,2}日到期，到期不再扣钱；需要可以再买一次/], [far, /你的批量工具到 \d{4}-\d{2}-\d{2}；再买一次，接着往后顺延/]]) {
     const status = { pass: { active: true, expiresAt } };
-    const api = { payProducts: () => Promise.resolve({ items: TIERS }), advisorStatus: () => Promise.resolve(status) };
+    const api = { payProducts: () => Promise.resolve({ items: TIERS, invoiceType: INVOICE }), advisorStatus: () => Promise.resolve(status) };
     const page = load('pages/pass/index.js', {
       '../../utils/api.js': api, '../../utils/consent.js': { loginOpen: () => true },
       '../../utils/data-tools.js': { toolConsent: () => Promise.resolve(true) }, '../../content/pay-terms.js': FINAL_TERMS,
+      '../../utils/ai-access.js': require('./helpers/ai-off.js'), '../../utils/boost.js': require('../utils/boost.js'),
     }, { wx: { getStorageSync() {}, setStorageSync() {}, removeStorageSync() {}, navigateTo() {}, showToast() {} } });
+    page.onLoad({});
     page.onShow();
     await flush();
     assert.match(shown('pages/pass/index.wxml', page.data), pattern);
@@ -948,7 +1050,7 @@ test('我的页在售时所有人都显示"批量工具"一行：没买过写最
   let status = () => Promise.reject(new Error('读不到'));
   const page = load('pages/me/index.js', {
     '../../content/legal.js': { final: true, version: '2026-10' },
-    '../../utils/consent.js': { loginOpen: () => true, consentEpoch: () => 0, applyServer: () => true, withdraw: () => Promise.resolve(false), markAgreed() {}, openPrivacy() {}, CONSENT_PAGE: '', agreeFailed() {}, featureNames: () => '' },
+    '../../utils/consent.js': { loginOpen: () => true, consentEpoch: () => 0, applyServer: () => true, withdraw: () => Promise.resolve(false), withdrawAccount: () => Promise.resolve(false), markAgreed() {}, openPrivacy() {}, CONSENT_PAGE: '', agreeFailed() {}, featureNames: () => '' },
     '../../utils/subscribe.js': { remindOpen: () => false },
     '../../utils/coverage.js': { loadCoverage: () => Promise.resolve(null), notCoveredNames: () => '' },
     '../../utils/api.js': { isLive: () => true, me: () => Promise.resolve({ pay: { ...pay }, follows: 0, subscriptions: {} }),
@@ -986,7 +1088,7 @@ test('我的页刷新失败时收起"批量工具"一行，不在可能已停卖
   let fail = false;
   const page = load('pages/me/index.js', {
     '../../content/legal.js': { final: true, version: '2026-10' },
-    '../../utils/consent.js': { loginOpen: () => true, consentEpoch: () => 0, applyServer: () => true, withdraw: () => Promise.resolve(false), markAgreed() {}, openPrivacy() {}, CONSENT_PAGE: '', agreeFailed() {}, featureNames: () => '' },
+    '../../utils/consent.js': { loginOpen: () => true, consentEpoch: () => 0, applyServer: () => true, withdraw: () => Promise.resolve(false), withdrawAccount: () => Promise.resolve(false), markAgreed() {}, openPrivacy() {}, CONSENT_PAGE: '', agreeFailed() {}, featureNames: () => '' },
     '../../utils/subscribe.js': { remindOpen: () => false },
     '../../utils/coverage.js': { loadCoverage: () => Promise.resolve(null), notCoveredNames: () => '' },
     '../../utils/api.js': { isLive: () => true, me: () => (fail ? Promise.reject(new Error('网络不稳定')) : Promise.resolve({ pay: { enabled: true, hasOrders: false }, follows: 0, subscriptions: {} })),
@@ -1001,7 +1103,7 @@ test('我的页刷新失败时收起"批量工具"一行，不在可能已停卖
   assert.doesNotMatch(shown('pages/me/index.wxml', page.data), /批量工具|元起/);
 });
 
-const centerCaps = (pay) => Promise.resolve({ data_tools: { enabled: true, features: ['compare', 'track'], remaining: {} }, ai_advisor: { enabled: false, features: [] }, reason: 'off', pay });
+const centerCaps = (pay) => Promise.resolve({ data_tools: { enabled: true, compareEnabled: true, features: ['compare', 'track'], remaining: {} }, ai_advisor: { enabled: false, features: [] }, reason: 'off', pay });
 const centerStatus = ({ used = 3, pass = null, rows = pass ? 500 : 50, trackRows = rows } = {}) => Promise.resolve({ enabled: true, quota: { compare: { used, limit: 3, maxRows: rows }, track: { used, limit: 3, maxRows: trackRows } }, pass, trial: null, season: null });
 function toolCenter(api) {
   const urls = []; let products = 0;
@@ -1023,7 +1125,7 @@ test('工具中心在售时最上面放"批量工具"卡片：免费用完写"�
   await flush(); await flush();
   const text = shown('pages/advisor/index.wxml', h.page.data);
   assert.match(text, /本月免费次数已用完，下月 1 日恢复/);
-  assert.match(text, /要一次处理更多家：30 天 29 元、90 天 79 元，不限次数，每次 500 家以内；一次付清，到期不再扣钱/);
+  assert.match(text, /要一次处理更多家：30 天 29 元、90 天 79 元，客户相关通知表不限次数，每次 500 家以内；一次付清，到期不再扣钱/);
   assert.doesNotMatch(text, /不需要购买/);
   assert.ok(text.indexOf('批量工具') < text.indexOf('我的记录'), '卡片要在最上面');
   const buy = findAll(render('pages/advisor/index.wxml', h.page.data), tapsTo('buyPass'));
@@ -1035,7 +1137,9 @@ test('工具中心在售时最上面放"批量工具"卡片：免费用完写"�
   const some = toolCenter({ advisorCapabilities: () => centerCaps({ enabled: true, hasOrders: false }), advisorStatus: () => centerStatus({ used: 1 }) });
   await flush(); await flush();
   assert.equal(some.page.data.payCard.usedUp, false);
-  assert.match(shown('pages/advisor/index.wxml', some.page.data), /本月免费：比对还剩 2 次、通知表还剩 2 次，每次最多 50 家/);
+  const someText = shown('pages/advisor/index.wxml', some.page.data);
+  assert.match(someText, /本月免费：通知表还剩 2 次，每次最多 50 家/);
+  assert.equal((someText.match(/每次最多 50 家/g) || []).length, 1);
 });
 
 test('工具中心不在售时没有批量工具卡片、不取价格，照旧写"免费额度不需要购买"；取不到价格时也不显示卡片', async () => {
@@ -1057,7 +1161,7 @@ test('工具中心只用完一项时那一项写"已用完"，不写"还剩 0 �
   const h = toolCenter({ advisorCapabilities: () => centerCaps({ enabled: true, hasOrders: false }), advisorStatus: () => Promise.resolve(quota) });
   await flush(); await flush();
   const text = shown('pages/advisor/index.wxml', h.page.data);
-  assert.match(text, /本月免费：比对已用完、通知表还剩 2 次，每次最多 50 家/);
+  assert.match(text, /本月免费：通知表还剩 2 次，每次最多 50 家/);
   assert.doesNotMatch(text, /还剩 0 次/);
   assert.equal(h.page.data.payCard.usedUp, false);
 });
@@ -1109,14 +1213,14 @@ test('工具中心刷新额度失败时丢掉上一次的免费次数；有使�
 test('工具中心两项每次上限不同时分别写，按额度接口的数字，不写死（Codex 第三轮）', async () => {
   const h = toolCenter({ advisorCapabilities: () => centerCaps({ enabled: true, hasOrders: false }), advisorStatus: () => centerStatus({ used: 1, rows: 50, trackRows: 30 }) });
   await flush(); await flush();
-  assert.match(shown('pages/advisor/index.wxml', h.page.data), /本月免费：比对还剩 2 次、通知表还剩 2 次，比对每次最多 50 家、通知表每次最多 30 家/);
+  assert.match(shown('pages/advisor/index.wxml', h.page.data), /本月免费：通知表还剩 2 次，每次最多 30 家/);
 });
 
 test('工具中心使用期内的批量工具卡片写到期日和"续买批量工具"', async () => {
   const h = toolCenter({ advisorCapabilities: () => centerCaps({ enabled: true, hasOrders: true }), advisorStatus: () => centerStatus({ used: 0, pass: { active: true, expiresAt: '2026-11-18T04:00:00Z' } }) });
   await flush(); await flush();
   const text = shown('pages/advisor/index.wxml', h.page.data);
-  assert.match(text, /批量工具使用期到 11月18日：批量名单比对、客户相关通知表不限次数，每次最多 500 家/);
+  assert.match(text, /批量工具使用期到 11月18日：客户相关通知表不限次数，每次最多 500 家/);
   assert.match(text, /再买一次接着往后顺延：30 天 29 元、90 天 79 元/);
   assert.equal(textOf(findAll(render('pages/advisor/index.wxml', h.page.data), tapsTo('buyPass'))[0]), '续买批量工具');
 });
@@ -1176,6 +1280,79 @@ test('购买页写清怎么算次数和苹果手机的付款条件；工具页�
   await flush();
   assert.equal(paid.page.data.countRule, '');
   assert.doesNotMatch(shown('pages/advisor-form/index.wxml', paid.page.data), /交一份名单算一次/);
+});
+
+test('购买页的免费次数照服务端额度写，取不到或不是正整数时写去工具中心看，不留"每次 50 家以内"像不限次数（agy 审阅 #436）', async () => {
+  for (const limit of [3, 5]) {
+    const h = passPage({ advisorStatus: () => Promise.resolve({ pass: { active: false }, quota: { track: { limit } } }) });
+    await flush();
+    const text = shown('pages/pass/index.wxml', h.page.data);
+    assert.match(text, new RegExp(`客户相关通知表：每月 ${limit} 次，每次 50 家以内（交一份名单算一次，系统出错、没出结果的不算）`));
+    assert.doesNotMatch(text, /见工具中心|申报季/);
+  }
+  for (const advisorStatus of [() => Promise.reject(new Error('离线')), () => Promise.resolve({ quota: { track: { limit: '10' } } }),
+    () => Promise.resolve({ quota: { track: { limit: 0 } } }), () => Promise.resolve({ quota: { track: { limit: -1 } } }), () => Promise.resolve({})]) {
+    const h = passPage({ advisorStatus });
+    await flush();
+    const text = shown('pages/pass/index.wxml', h.page.data);
+    assert.match(text, /客户相关通知表：每月免费次数见工具中心，每次 50 家以内（交一份名单算一次/);
+    assert.doesNotMatch(text, /每月 -?\d+ 次/);
+  }
+});
+
+test('申报季加量期间购买页写清起止和之后回到几次，和首页、工具中心同一句，次数不在相邻两句重复；提前公布时写哪天开始（独立审阅 #436，D-070 ⑤、D-108）', async () => {
+  const season = { start: '2026-12-01', end: '2026-12-31', limit: 5, normalLimit: 3, maxRows: 50 };
+  const boost = require('../utils/boost.js');
+  for (const active of [true, false]) {
+    const status = { pass: { active: false }, quota: { track: { limit: active ? 5 : 3 } }, season: { ...season, active } };
+    const h = passPage({ advisorStatus: () => Promise.resolve(status) });
+    await flush();
+    const text = shown('pages/pass/index.wxml', h.page.data);
+    assert.equal(h.page.data.seasonLine, boost.seasonLine(status.season));
+    if (active) {
+      // 次数、家数、期限只在申报季那句写一次（D-108）；客户相关通知表那句只写怎么算次数
+      assert.match(text, /客户相关通知表：交一份名单算一次，系统出错、没出结果的不算/);
+      assert.match(text, /申报季加量：12月1日至12月31日，免费次数每月 5 次（每次仍 50 家以内）；1月1日起回到每月 3 次/);
+      assert.equal((text.match(/每月 5 次/g) || []).length, 1);
+      assert.equal((text.match(/50 家以内/g) || []).length, 1);
+    } else {
+      assert.match(text, /客户相关通知表：每月 3 次，每次 50 家以内/);
+      assert.match(text, /申报季加量将于12月1日开始：12月1日至12月31日免费次数每月 5 次（每次仍 50 家以内）/);
+    }
+  }
+  // 额度接口没答上：申报季那句也不写
+  const h = passPage({ advisorStatus: () => Promise.reject(new Error('离线')) });
+  await flush();
+  assert.doesNotMatch(shown('pages/pass/index.wxml', h.page.data), /申报季/);
+});
+
+test('"不含 AI 次数"只在 AI 对这个人开着、后台确认过时显示；AI 关着、只有本机记录没确认时页面没有 AI 字样（独立审阅 #436，D-075 ①）', async () => {
+  const listeners = new Set();
+  let state = { visible: true, confirmed: false, available: true };
+  const ai = {
+    current: () => ({ ...state }),
+    subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); },
+    ensure: () => Promise.resolve({ ...state }),
+  };
+  const set = (next) => { state = { ...state, ...next }; listeners.forEach((fn) => fn({ ...state })); };
+  const h = passPage({ ai, advisorStatus: () => Promise.resolve({ pass: { active: false }, quota: { track: { limit: 3 } } }) });
+  await flush();
+  const count = () => (shown('pages/pass/index.wxml', h.page.data).match(/\bAI\b/g) || []).length;
+  // 本机记着"上次是显示的"、后台还没答：不写
+  assert.equal(count(), 0);
+  set({ confirmed: true });
+  assert.equal((shown('pages/pass/index.wxml', h.page.data).match(/不含 AI 次数，AI 每天免费次数照旧/g) || []).length, 1);
+  assert.equal(count(), 2);
+  // 后台说关了：马上收起
+  set({ visible: false });
+  assert.equal(count(), 0);
+  // 离开页面后不再跟着变
+  h.page.onUnload();
+  assert.equal(listeners.size, 0);
+  // 默认（AI 关着）的购买页没有 AI 字样
+  const off = passPage({ advisorStatus: () => Promise.resolve({ pass: { active: false }, quota: { track: { limit: 3 } } }) });
+  await flush();
+  assert.doesNotMatch(shown('pages/pass/index.wxml', off.page.data), /\bAI\b/);
 });
 
 test('小程序的页面和工具代码里不再有"客户工作台"，改叫"批量工具"，防止改名漏掉', () => {
@@ -1398,7 +1575,7 @@ test('订单页"人工核对中"：付了款没开通、能自助退的写可以
   assert.match(unverified, /这笔订单的付款情况需要人工核对/);
   assert.doesNotMatch(unverified, /付款已收到/);
   const closed = textOf(orderCard(h.page.data, 64));
-  assert.match(closed, /没有确认到付款，订单已关闭。如果其实扣了款，点"遇到问题"告诉我们/);
+  assert.match(closed, /没有确认到付款，订单已关闭。如果其实扣了款，点“遇到问题”告诉我们/);
   assert.equal(findAll(orderCard(h.page.data, 64), tapsTo('recheck')).length, 0);
   // 已关闭的也有带订单号的"遇到问题"：被关单的那笔其实扣了款时，反馈对得上订单（Codex 复核）
   const report = findAll(orderCard(h.page.data, 64), tapsTo('problem'));
@@ -1413,7 +1590,7 @@ function mePage(me, extra = {}) {
   const urls = [];
   const page = load('pages/me/index.js', {
     '../../content/legal.js': { final: true, version: '2026-10' },
-    '../../utils/consent.js': { loginOpen: () => true, consentEpoch: () => 0, applyServer: () => extra.signedIn !== false, withdraw: () => Promise.resolve(false), markAgreed() {}, openPrivacy() {}, CONSENT_PAGE: '', agreeFailed() {}, featureNames: () => '' },
+    '../../utils/consent.js': { loginOpen: () => true, consentEpoch: () => 0, applyServer: () => extra.signedIn !== false, withdraw: () => Promise.resolve(false), withdrawAccount: () => Promise.resolve(false), markAgreed() {}, openPrivacy() {}, CONSENT_PAGE: '', agreeFailed() {}, featureNames: () => '' },
     '../../utils/subscribe.js': { remindOpen: () => false },
     '../../utils/coverage.js': { loadCoverage: () => Promise.resolve(null), notCoveredNames: () => '' },
     '../../utils/api.js': { isLive: () => true, me: () => Promise.resolve({ agreed: { version: '2026-10' }, follows: 0, subscriptions: {}, ...me() }),
@@ -1460,4 +1637,93 @@ test('我的页头：批量工具使用期内名字后面有"批量工具 · 到
   out.page.refresh(); await flush(); await flush();
   assert.equal(findAll(render('pages/me/index.wxml', out.page.data), tapsTo('openPass')).length, 0);
   assert.doesNotMatch(shown('pages/me/index.wxml', out.page.data), /批量工具 · /);
+});
+
+test('开卖必做第 7 项：订单带协议版本才显示《付费服务协议》入口，版本号编进链接', async () => {
+  const h = ordersPage([orderRecord({ termsVersion: 'v 1/2' }), orderRecord({ orderId: 42 })]);
+  await flush();
+  assert.equal(h.page.data.items[0].termsVersion, 'v 1/2');
+  assert.equal(findAll(render('pages/orders/index.wxml', h.page.data), tapsTo('terms')).length, 1);
+  h.page.terms({ currentTarget: { dataset: { version: 'v 1/2' } } });
+  assert.equal(h.opened[0], '/pages/agreement/index?type=pay&version=v%201%2F2');
+});
+
+test('开卖必做第 7 项：协议页版本对不上时只提示、可点遇到问题；对得上或没带版本时可保存全文', () => {
+  const writes = []; const shares = []; const toasts = []; const urls = [];
+  const wx = { env: { USER_DATA_PATH: '/local' }, setNavigationBarTitle() {}, navigateTo: ({ url }) => urls.push(url), showToast: (v) => toasts.push(v.title),
+    getFileSystemManager: () => ({ writeFile: (v) => { writes.push(v); v.success(); } }), shareFileMessage: (v) => shares.push(v) };
+  const make = () => load('pages/agreement/index.js', { '../../content/legal.js': { final: true }, '../../content/pay-terms.js': FINAL_TERMS, '../../utils/api.js': {}, '../../utils/consent.js': { loginOpen: () => true, consentOpen: () => false } }, { wx });
+  const old = make(); old.onLoad({ type: 'pay', version: 'old' });
+  const text = shown('pages/agreement/index.wxml', old.data);
+  assert.match(text, /这笔订单同意的是《付费服务协议》old 版/); assert.doesNotMatch(text, /购买批量工具 30 天/);
+  old.feedback(); assert.equal(urls[0], '/pages/feedback/index?type=pay');
+  for (const version of [undefined, FINAL_TERMS.version]) { const page = make(); page.onLoad({ type: 'pay', version }); page.savePay(); }
+  assert.equal(writes[0].filePath, `/local/付费服务协议_${FINAL_TERMS.version}.txt`);
+  assert.equal(writes[0].encoding, 'utf8'); assert.equal(writes[0].data, `《付费服务协议》（版本 ${FINAL_TERMS.version}）\n\n${FINAL_TERMS.text}`);
+  shares[0].fail({ errMsg: 'shareFileMessage:fail cancel' }); assert.equal(toasts.length, 0);
+  shares[0].fail({ errMsg: 'fail' }); assert.equal(toasts.pop(), '没能保存，请稍后再试');
+  wx.shareFileMessage = undefined; make().savePay(); assert.equal(toasts.pop(), '当前微信版本不支持保存文件，请升级微信后再试');
+  wx.shareFileMessage = () => {}; wx.getFileSystemManager = () => ({ writeFile: (v) => v.fail() }); make().savePay(); assert.equal(toasts.pop(), '没能保存，请稍后再试');
+});
+
+test('开卖必做第 4、5 项和收费方案第 9 项：购买页注销提示、续买赠品写品名、工具中心写怎么算次数', () => {
+  const pass = fs.readFileSync(path.join(root, 'pages/pass/index.wxml'), 'utf8');
+  assert.match(pass, /注销账号后，未到期的使用期和赠送天数作废，注销本身不退剩余天数，也不减少按《付费服务协议》第二条可以退的钱。/);
+  assert.equal(pay.renewRule({ renewBonus: { days: 3, windowDays: 7 } }).text, '到期前后 7 天内续买，每次多送 3 天批量工具使用期');
+  const advisor = fs.readFileSync(path.join(root, 'pages/advisor/index.wxml'), 'utf8');
+  assert.match(advisor, /\{\{countNote\}\}/);
+});
+
+test('收费方案第 9 项：次数说明不重复额度中的家数', () => {
+  const page = load('pages/advisor/index.js', { '../../utils/api.js': {}, '../../utils/ai-access.js': {}, '../../utils/advisor.js': { DATA_KINDS: {} }, '../../utils/tool-context.js': {}, '../../utils/boost.js': {}, '../../utils/daywatch.js': {}, '../../utils/consent.js': {} });
+  const line = (quota, payOn, offer) => { page.quota = quota; page.payOn = payOn; page.offer = offer; return page.countLine(); };
+  const free = (available) => ({ rows: { compare: 50, track: 50 }, pass: null, trial: { trialActive: false, trialAvailable: available } });
+  assert.equal(line(free(false), false, null), '交一份名单算一次，系统出错、没出结果的不算。');
+  assert.equal(line(free(true), true, { line: '30 天 29 元' }), '交一份名单算一次，系统出错、没出结果的不算。');
+  assert.equal(line(free(false), true, { line: '30 天 29 元' }), '交一份名单算一次，系统出错、没出结果的不算。');
+  assert.equal(line({ ...free(false), pass: { active: true } }, true, null), '交一份名单算一次，系统出错、没出结果的不算。');
+  assert.equal(line(null, true, null), '交一份名单算一次，系统出错、没出结果的不算。');
+});
+
+test('审核规范 3.3.1：登录没开放时订单页、购买页回首页，跳转失败再重新启动，不出现暂未开放', () => {
+  for (const file of ['orders', 'pass']) {
+    const urls = []; const calls = [];
+    const page = load(`pages/${file}/index.js`, { '../../utils/api.js': { payProducts: () => calls.push('products'), payOrders: () => calls.push('orders') }, '../../utils/consent.js': { loginOpen: () => false }, '../../content/pay-terms.js': FINAL_TERMS, '../../utils/data-tools.js': {}, '../../utils/ai-access.js': require('./helpers/ai-off.js'), '../../utils/boost.js': {} }, { wx: { switchTab: (v) => { urls.push(v.url); v.fail(); }, reLaunch: (v) => urls.push(v.url) } });
+    page.onShow(); assert.deepEqual(urls, ['/pages/home/index', '/pages/home/index']); assert.deepEqual(calls, []);
+    assert.equal(shown(`pages/${file}/index.wxml`, page.data).includes('暂未开放'), false);
+  }
+});
+
+test('开卖必做第 3 项：两个注销入口都走 withdrawAccount', async () => {
+  for (const file of ['me', 'my-data']) {
+    let calls = 0;
+    const page = load(`pages/${file}/index.js`, {
+      '../../content/legal.js': {}, '../../utils/api.js': {},
+      '../../utils/consent.js': { loginOpen: () => true, withdrawAccount: () => { calls += 1; return Promise.resolve(false); }, remindAny: () => false },
+      '../../utils/coverage.js': {}, '../../utils/conditions.js': {}, '../../utils/subscribe.js': { remindOpen: () => false },
+    }, { wx: {} });
+    page[file === 'me' ? 'deleteAccount' : 'deleteAll'](); await flush();
+    assert.equal(calls, 1);
+  }
+});
+
+test('开卖必做第 3 项：注销前读使用期——包里没有订单页（过审版）不读也不提付费；读不到按有算；连点只进一次', async () => {
+  const run = async (pagesInPack, me, taps = 1) => {
+    const modals = []; const asked = [];
+    const consent = load('utils/consent.js', { './config.js': {}, '../content/legal.js': { final: true, operator: { email: 'help@example.com' } },
+      './api.js': { me: () => { asked.push('me'); return me(); }, deleteMe: () => Promise.resolve() }, './exports.js': { clear() {} }, './exporter.js': { removeFiles() {} },
+      './ai-access.js': {}, './pages.js': { has: (name) => pagesInPack.includes(name) } },
+    { wx: { showModal: (v) => { modals.push(v.content); v.success({ confirm: false }); }, showToast() {}, clearStorageSync() {}, removeStorageSync() {} } });
+    const results = await Promise.all(Array.from({ length: taps }, () => consent.withdrawAccount()));
+    return { modals, asked, results };
+  };
+  const review = await run([], () => Promise.resolve({ pass: { active: true } }));
+  assert.deepEqual(review.asked, []); assert.equal(review.modals.length, 1);
+  assert.doesNotMatch(review.modals.join(''), /付费|使用期/);
+  const offline = await run(['orders'], () => Promise.reject(new Error('offline')));
+  assert.deepEqual(offline.asked, ['me']);
+  const active = await run(['orders'], () => Promise.resolve({ pass: { active: true } }), 3);
+  assert.deepEqual(active.asked, ['me']); assert.deepEqual(active.results, [false, false, false]);
+  const none = await run(['orders'], () => Promise.resolve({ pass: { active: false } }));
+  assert.equal(none.modals.length, 1);
 });

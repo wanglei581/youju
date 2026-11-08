@@ -14,7 +14,7 @@ const plain = (value) => JSON.parse(JSON.stringify(value));
 const helpers = require('../utils/advisor.js');
 // capabilities 的两类能力独立授权。
 const caps = (dataEnabled, aiEnabled) => ({
-  data_tools: { enabled: dataEnabled, features: dataEnabled ? ['compare', 'track'] : [], remaining: { compare: 1, track: 1 } },
+  data_tools: { enabled: dataEnabled, compareEnabled: true, features: dataEnabled ? ['compare', 'track'] : [], remaining: { compare: 1, track: 1 } },
   ai_advisor: { enabled: aiEnabled, features: aiEnabled ? ['interpret'] : [], remaining: { interpret: 3 }, disclosure: { modelLabel: '模型名称', filingNo: '登记编号' } },
 });
 

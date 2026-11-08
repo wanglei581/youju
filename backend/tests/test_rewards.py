@@ -54,6 +54,7 @@ def context(session_factory, monkeypatch):
         # D-070 起纠错送天数只看自己的开关（rewards.correction_enabled）
         correction_reward_enabled=True,
         advisor_enabled=True,
+        advisor_compare_enabled=True,  # D-118 默认关；这些测试照旧测比对
         trust_wx_headers=True,
         cloud_env="test-env",
         admin_token="test-admin",
@@ -454,7 +455,7 @@ def paid(session, owner, start=NOW):
         product_id="workbench_30d",
         price=100,
         days=30,
-        env=1,
+        env=0,
         terms_version="test",
         status="completed",
         platform="android",

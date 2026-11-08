@@ -487,14 +487,16 @@ def test_task_routes_check_ownership_before_feature_authorization(
     ]
     # 两个开关都关时整组接口都当作不存在（和上线前的行为一致）；别人的和不存在的任务提示相同。
     # 删除例外（D-093 上线门槛第 8 条）：本人随时能删自己的记录，不看开关和白名单；
-    # 删除接口一直在，别人的、不存在的照样是"没有找到顾问任务"
-    hidden = "没有找到顾问任务" if data_enabled or ai_enabled else "没有找到接口"
+    # 删除接口一直在，别人的、不存在的照样是"没有找到这条记录，可能已经删除"
+    hidden = "没有找到这条记录，可能已经删除" if data_enabled or ai_enabled else "没有找到接口"
     for method, suffix, own_status in routes:
         deleting = method == "DELETE"
         for task_id in (foreign.id, max(own.id, foreign.id) + 1000):
             response = client.request(method, f"/api/v1/advisor/tasks/{task_id}{suffix}")
             assert response.status_code == 404
-            assert response.json() == {"detail": "没有找到顾问任务" if deleting else hidden}
+            assert response.json() == {
+                "detail": "没有找到这条记录，可能已经删除" if deleting else hidden
+            }
         response = client.request(method, f"/api/v1/advisor/tasks/{own.id}{suffix}")
         assert response.status_code == (own_status if allowed or deleting else 404)
         if not allowed and not deleting:
@@ -513,6 +515,7 @@ def test_invalid_kind_does_not_disclose_unavailable_ai(
     client, settings, doc, ai_enabled, whitelisted, kind
 ):
     settings.advisor_enabled = True
+    settings.advisor_compare_enabled = True  # D-118 默认关；这里照旧测比对
     settings.ai_advisor_enabled = ai_enabled
     settings.ai_advisor_openids = "internal" if whitelisted else "second"
     body = {"rows": ["甲公司"]} if kind is None else {"kind": kind, "rows": ["甲公司"]}
@@ -581,6 +584,85 @@ def test_exact_quotes(original, quote, keep):
         assert result["dropped"] == 1 and result["refusal"]
 
 
+# 11/3 评测：从 PDF 复制的正文按固定宽度硬换行，两个汉字、数字和汉字中间断行，模型照常写成不带
+# 换行的。挨着中文的空白和换行比较时去掉；西文之间的空白照旧并成一个空格
+@pytest.mark.parametrize(
+    "wrapped,plain",
+    [
+        ("推荐项\n目汇总表", "推荐项目汇总表"),
+        ("2026\n年6月", "2026年6月"),
+        ("17:30，\n主管部门", "17:30，主管部门"),
+        ("申报书\r\n　　（盖章）", "申报书（盖章）"),
+        ("推荐项 目汇总表", "推荐项目汇总表"),
+        # 中文常用、码位不在汉字和全角区的标点：弯引号、破折号、省略号、间隔号
+        ("“专精特新”\n“小巨人”", "“专精特新”“小巨人”"),
+        ("截止时间——\n2026年6月30日", "截止时间——2026年6月30日"),
+        ("详见附件……\n1.申报书", "详见附件……1.申报书"),
+        ("“4·\n15”国家安全教育日", "“4·15”国家安全教育日"),
+        # 扩展区汉字（扩展 A 区、补充平面）
+        (chr(0x3400) + "\nA", chr(0x3400) + "A"),
+        (chr(0x20000) + "\n2026", chr(0x20000) + "2026"),
+    ],
+)
+def test_normalize_drops_whitespace_next_to_chinese(wrapped, plain):
+    assert interpret.normalize(wrapped)[0] == interpret.normalize(plain)[0]
+
+
+def test_chinese_side_characters_edges():
+    # 每一段的头尾都算中文一侧，紧挨在段外的不算
+    inside = [
+        *(0x4E00, 0x9FFF, 0x3400, 0x4DBF, 0xF900, 0xFAFF, 0x20000, 0x3134F),
+        *(0x3000, 0x303F, 0xFF00, 0xFFEF, 0x2018, 0x201D, 0x2014, 0x2026, 0x00B7),
+    ]
+    outside = [
+        *(ord("A"), ord("1"), ord(":"), 0x4DFF, 0xA000, 0x33FF, 0x4DC0, 0xF8FF, 0xFB00),
+        *(0x1FFFF, 0x31350, 0x2FFF, 0x3040, 0xFEFF, 0xFFF0, 0x2017, 0x201E, 0x2013, 0x2015),
+        *(0x2025, 0x2027, 0x00B6, 0x00B8),
+    ]
+    assert all(interpret._cjk(chr(code)) for code in inside)
+    assert not any(interpret._cjk(chr(code)) for code in outside)
+
+
+def test_normalize_keeps_one_space_between_western_text():
+    assert interpret.normalize("Search API")[0] == "Search API"
+    assert interpret.normalize("17:30 PM")[0] == "17:30 PM"
+    assert interpret.normalize("Search \n\t API")[0] == "Search API"
+    # 看原文的字：全角冒号算中文，换行去掉；半角冒号不算，留一个空格
+    assert interpret.normalize("ABC：\n123")[0] == "ABC:123"
+    assert interpret.normalize("ABC:\n123")[0] == "ABC: 123"
+
+
+def test_normalize_offsets_point_back_to_original():
+    # 保留的字是 (i, i + 1)；去掉的空白不占位置；并成的空格覆盖整段空白
+    normalized, offsets = interpret.normalize("推荐项\n目 A  B")
+    assert normalized == "推荐项目A B"
+    assert offsets == [(0, 1), (1, 2), (2, 3), (4, 5), (6, 7), (7, 9), (9, 10)]
+    text = "　　推荐项\n目汇总表 Search  API\t１７:30，\n　主管部门 \n"
+    normalized, offsets = interpret.normalize(text)
+    assert normalized == "推荐项目汇总表Search API17:30,主管部门"
+    assert len(offsets) == len(normalized)
+    for char, (start, end) in zip(normalized, offsets, strict=True):
+        if char == " ":
+            assert start < end and text[start:end].isspace()
+        else:
+            original = text[start]
+            assert end == start + 1 and not original.isspace()
+            assert char == (chr(ord(original) - 0xFEE0) if "！" <= original <= "～" else original)
+    assert all(offsets[k][1] <= offsets[k + 1][0] for k in range(len(offsets) - 1))
+
+
+def test_quote_without_pdf_line_breaks_is_kept():
+    body = "三、申报时间\n区级推荐截止时间为2026\n年6月2日17:30，推荐项\n目汇总表一式两份报送市科技局。\n"
+    entry = item("区级推荐截止时间为2026年6月2日17:30，推荐项目汇总表", "P002", "时间")
+    result = interpret.validate({"items": [entry]}, interpret.split_paragraphs(body))
+    # 给的原文片段仍是正文里原样的一段，带着中间的换行
+    expected = "区级推荐截止时间为2026\n年6月2日17:30，推荐项\n目汇总表一式两份报送市科技局。"
+    assert result["dropped"] == 0
+    assert result["items"] == [
+        {"type": "时间", "text": expected, "refs": [{"pid": "P002", "quote": expected}]}
+    ]
+
+
 def test_invalid_type_and_ignored_display_deduplicated():
     invalid = [item(kind="结论"), item(pid="P999"), item("可以申报。")]
     mismatched = item()
@@ -628,6 +710,7 @@ def test_switch_whitelist_permissions_and_independent_tools(client, settings, do
     session.expire_all()
     assert session.get(AdvisorTask, task_id) is None
     settings.advisor_enabled = True
+    settings.advisor_compare_enabled = True  # D-118 默认关；这里照旧测比对
     tools_ready(session)
     assert (
         client.post(
@@ -715,6 +798,7 @@ def test_global_ai_daily_cap_keeps_personal_quota(client, settings, session, doc
     assert session.scalar(select(AdvisorTask.id)) is None
 
     settings.advisor_enabled = True
+    settings.advisor_compare_enabled = True  # D-118 默认关；这里照旧测比对
     tools_ready(session)
     assert (
         client.post(
@@ -1245,6 +1329,7 @@ def test_data_tools_keep_ai_polling_and_respect_claim_limit(
     # 数据工具（批量工具）由入口会话处理：它在跑的整段时间都算"有人在忙"，过了 50 秒空闲的
     # AI 线程也接着看，新提交的 AI 任务不用等批量任务做完（Grok 10/27 第二轮）
     settings.advisor_enabled = True
+    settings.advisor_compare_enabled = True  # D-118 默认关；这里照旧测比对
     settings.ai_advisor_concurrency = 1
     data = _data_task(session, doc, "data-long")
     late = direct_task(session, doc, key="data-late-ai")
@@ -1749,6 +1834,7 @@ def test_unregistered_non_whitelisted_user_cannot_access_ai(client, settings, do
     assert create(client, doc.id).status_code == 404
     assert client.get("/api/v1/advisor/tasks").status_code == 404
     settings.advisor_enabled = True
+    settings.advisor_compare_enabled = True  # D-118 默认关；这里照旧测比对
     response = create(client, doc.id)
     assert response.status_code == 422
     assert response.json() == {"detail": "kind 只能是 compare 或 track"}
@@ -1926,6 +2012,7 @@ def test_cache_from_hidden_separate_document_not_reused(session, settings, doc):
 
 def test_request_boundaries_keep_legacy_validation(client, settings, doc):
     settings.advisor_enabled = True
+    settings.advisor_compare_enabled = True  # D-118 默认关；这里照旧测比对
     assert (
         client.post(
             "/api/v1/advisor/tasks",

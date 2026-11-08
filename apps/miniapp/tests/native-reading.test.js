@@ -143,14 +143,94 @@ test('advisor原生结果分页保留权限错误，旧任务不能伪造为有�
   const p = load('results', { advisorReading: async (id, args) => {
     calls.push([id, plain(args)]);
     if (expired) throw Object.assign(new Error('结果已过期'), { status: 410 });
-    return result({ kind: 'compare', items: [{ n: 1, title: '合成企业', documentId: '7', fields: [{ label: '名单序号', value: '12' }] }], nextCursor: args.cursor ? null : '20' });
+    return result({ kind: 'compare', items: [{ n: 1, title: '合成企业', documentId: '7', fields: [{ label: '名单序号', value: '12' }, { label: '来源', value: '示例网站' }, { label: '来源地址', value: 'https://example.gov.cn/a' }] }], nextCursor: args.cursor ? null : '20' });
   } });
   p.onLoad({ mode: 'advisor', taskId: '8' }); await p.onShow();
   assert.match(textOf(render('pages/results/index.wxml', p.data)), /名单序号：12/);
+  assert.match(textOf(render('pages/results/index.wxml', p.data)), /来源：示例网站/);
+  assert.doesNotMatch(textOf(render('pages/results/index.wxml', p.data)), /来源地址|example\.gov\.cn/);
   await p.next(); assert.deepEqual(calls[1], ['8', { cursor: '20', revision: 'r1' }]);
   p.onHide(); expired = true; await p.onShow(); assert.equal(p.data.result, null); assert.equal(p.data.error, '结果已过期');
+  assert.match(textOf(render('pages/results/index.wxml', p.data)), /返回/);
+  assert.doesNotMatch(textOf(render('pages/results/index.wxml', p.data)), /重试/);
+  const missing = load('results', { advisorReading: async () => { throw Object.assign(new Error('已删除'), { status: 404 }); } });
+  missing.onLoad({ mode: 'advisor', taskId: '1' }); await missing.onShow();
+  assert.equal(missing.data.permanentError, true);
+  assert.doesNotMatch(textOf(render('pages/results/index.wxml', missing.data)), /重试/);
   const old = load('results', { advisorReading: async () => { throw Object.assign(new Error('旧结果未生成站内阅读内容，请重新生成'), { status: 409 }); } });
   old.onLoad({ mode: 'advisor', taskId: '1' }); await old.onShow(); assert.equal(old.data.result, null); assert.match(old.data.error, /重新生成/);
+});
+
+test('批量结果区分汇总与明细，兼容旧接口', async () => {
+  // 接口给了汇总条数：分开写；旧接口没给（或不合理）：不拆，照旧写“共 N 行”（不能用 rowCount 推，会把明细和汇总算反）
+  for (const [summaryCount, pattern] of [[3, /明细 3 行 · 汇总 3 行/], [2, /明细 109 行 · 汇总 2 行/], [undefined, /共 6 行/], [0, /共 6 行/], [99, /共 6 行/]]) {
+    const total = summaryCount === 2 ? 111 : 6;
+    const p = load('results', { advisorReading: async () => result({ kind: 'track', total, rowCount: summaryCount === 2 ? 2 : 3, summaryCount }) });
+    p.onLoad({ mode: 'advisor', taskId: '8' }); await p.onShow();
+    assert.match(textOf(render('pages/results/index.wxml', p.data)), pattern, String(summaryCount));
+  }
+});
+
+test('批量结果汇总超过一页时可以直接跳到明细（11/5 500 家实测：要先翻 25 页汇总）', async () => {
+  const calls = [];
+  const reading = async (id, args) => {
+    calls.push(plain(args));
+    const cursor = Number(args.cursor || 0);
+    return result({ kind: 'track', total: 7073, rowCount: 500, summaryCount: 500,
+      items: [{ n: cursor, title: cursor < 500 ? '汇总' : '合成通知', fields: [] }], nextCursor: String(cursor + 20) });
+  };
+  const p = load('results', { advisorReading: reading });
+  p.onLoad({ mode: 'advisor', taskId: '8' }); await p.onShow();
+  assert.equal(p.data.detailPage, 26);
+  assert.match(textOf(render('pages/results/index.wxml', p.data)), /明细从第 501 行起，跳到明细 ›/);
+  await p.jumpDetail();
+  assert.deepEqual(calls.at(-1), { cursor: '500', revision: 'r1' });
+  assert.equal(p.data.page, 26);
+  assert.doesNotMatch(textOf(render('pages/results/index.wxml', p.data)), /跳到明细/);
+  await p.previous();
+  assert.deepEqual(calls.at(-1), { cursor: '480', revision: 'r1' });
+  assert.equal(p.data.page, 25);
+  assert.match(textOf(render('pages/results/index.wxml', p.data)), /跳到明细/);
+  await p.next();
+  assert.deepEqual(calls.at(-1), { cursor: '500', revision: 'r1' });
+  // 汇总条数不是 20 的倍数：跳到含第一条明细的那一页（汇总 510 条 → 第 26 页，从第 501 行起，第 511 行起是明细）
+  const calls510 = [];
+  const p510 = load('results', { advisorReading: async (id, args) => {
+    calls510.push(plain(args));
+    const cursor = Number(args.cursor || 0);
+    return result({ kind: 'track', total: 7083, rowCount: 510, summaryCount: 510, items: [{ n: cursor, title: '汇总', fields: [] }], nextCursor: String(cursor + 20) });
+  } });
+  p510.onLoad({ mode: 'advisor', taskId: '8' }); await p510.onShow();
+  assert.match(textOf(render('pages/results/index.wxml', p510.data)), /明细从第 511 行起/);
+  await p510.jumpDetail();
+  assert.deepEqual(calls510.at(-1), { cursor: '500', revision: 'r1' });
+  assert.equal(p510.data.page, 26);
+  // 全是汇总（没有明细）：不出现
+  const allSummary = load('results', { advisorReading: async () => result({ kind: 'track', total: 40, rowCount: 40, summaryCount: 40, nextCursor: '20' }) });
+  allSummary.onLoad({ mode: 'advisor', taskId: '8' }); await allSummary.onShow();
+  assert.equal(allSummary.data.detailPage, 0);
+  assert.doesNotMatch(textOf(render('pages/results/index.wxml', allSummary.data)), /跳到明细/);
+  // 汇总不满一页（明细就在第 1 页）、旧接口没给汇总条数：不出现
+  for (const summaryCount of [3, undefined]) {
+    const q = load('results', { advisorReading: async () => result({ kind: 'track', total: 6, rowCount: 3, summaryCount }) });
+    q.onLoad({ mode: 'advisor', taskId: '8' }); await q.onShow();
+    assert.doesNotMatch(textOf(render('pages/results/index.wxml', q.data)), /跳到明细/, String(summaryCount));
+  }
+});
+
+test('批量工具结果里原文链接已失效的那条只标一句，照常能看、能进文件详情；其他条不标（11/4 完整测试 T4b）', async () => {
+  const p = load('results', { advisorReading: async () => result({ kind: 'track', items: [
+    { n: 0, title: '合成通知甲', documentId: '7', fields: [{ label: '来源', value: '示例网站' }] },
+    { n: 1, title: '合成通知乙', documentId: '8', linkGone: true, fields: [{ label: '来源', value: '示例网站' }] },
+  ] }) });
+  p.onLoad({ mode: 'advisor', taskId: '8' }); await p.onShow();
+  const root = render('pages/results/index.wxml', p.data);
+  const cards = findAll(root, (node) => String(node.attrs && node.attrs.class || '').split(/\s+/).includes('result-item'));
+  assert.equal(cards.length, 2);
+  assert.doesNotMatch(textOf(cards[0]), /原文链接已失效/);
+  assert.match(textOf(cards[1]), /原文链接已失效/);
+  // 失效的也能进文件详情（详情页自己写明哪天失效、不给阅读全文）
+  assert.equal(findAll(cards[1], (node) => node.tag === 'button' && node.attrs['data-id'] === '8').length, 1);
 });
 
 test('结果离页后的迟回不能泄露旧任务数据，新查询不会被慢请求覆盖', async () => {
@@ -196,7 +276,7 @@ test('真实API接线：正文/附件版本游标、advisor身份通道、目录
 test('名单查询离页丢弃迟回，返回保留输入并重新比对，不沿用旧命中', async () => {
   const resolves = []; const names = [];
   const p = load('lists', { isLive: () => true, lookup: name => { names.push(name); return new Promise(r => resolves.push(r)); } }, {
-    deps: { '../../utils/format.js': { todayISO: () => '2026-10-23', cnDate: x => x }, '../../utils/daywatch.js': { watchDay() {}, stopDay() {} }, '../../utils/cache.js': {} },
+    deps: { '../../utils/format.js': { todayISO: () => '2026-10-23', cnDate: x => x, clockText: () => '' }, '../../utils/daywatch.js': { watchDay() {}, stopDay() {} }, '../../utils/cache.js': {} },
   });
   p.setData({ name: '合成科技有限公司' }); p.onShow(); p.query(); p.onHide();
   resolves[0]({ items: [{ id: '7' }] }); await new Promise(r => setImmediate(r));

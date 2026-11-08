@@ -12,7 +12,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 from io import BytesIO
 from typing import Annotated, Literal
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 from docx import Document as WordDocument
@@ -67,8 +67,8 @@ NOTICE = (
     "“未核项”列出这一行还没有人工核对的字段，请对照原文。"
 )
 EXCERPT_NOTICE = (
-    f"“{DEADLINE_HEADER}”列中标“机器摘录”的日期是机器从原文摘出、未经人工核对的，请以原文为准。"
-    "机器摘录的“日期角色”也标有“（机器摘录）”，未经人工核对。"
+    f"“{DEADLINE_HEADER}”列中标“原文摘录”的日期是机器从原文摘出、未经人工核对的，请以原文为准。"
+    "原文摘录的“日期角色”也标有“（原文摘录）”，未经人工核对。"
 )
 
 
@@ -78,10 +78,10 @@ def _notice(excerpts: bool) -> str:
     return (
         NOTICE.replace(
             f"“{DEADLINE_HEADER}”列只列人工核对通过的记录，",
-            f"“{DEADLINE_HEADER}”列包含人工核对过的和机器摘录的，",
+            f"“{DEADLINE_HEADER}”列包含人工核对过的和原文摘录的，",
         ).replace(
             "“日期角色”是人工核对时确认的截止类型；",
-            "“日期角色”标明截止类型，机器摘录的行另有标记；",
+            "“日期角色”标明截止类型，原文摘录的行另有标记；",
         )
         + EXCERPT_NOTICE
     )
@@ -169,11 +169,6 @@ def _unchecked(
     if kind == "名单":
         items.append("发布阶段")
     return items
-
-
-def _is_web_url(url: str) -> bool:
-    parts = urlsplit(url)
-    return parts.scheme in ("http", "https") and bool(parts.netloc)
 
 
 def _items(session: Session, raw_ids: list[str], excerpts: bool = False) -> list[ExportItem]:
@@ -347,8 +342,9 @@ def _items(session: Session, raw_ids: list[str], excerpts: bool = False) -> list
                 roles.append(f"{d.kind}（已{d.change_reason}）")
                 seen.add(key)
         kind = effective_kind(doc.title, doc.kind_override)
+        # 截止原句和页面一样走显示层：网址、号码、邮箱不露（11/2 复测，D-112）
         excerpt_quote = "\n".join(
-            dict.fromkeys(d.evidence for d in [*approved, *changed] if d.evidence)
+            dict.fromkeys(v1.display_text(d.evidence) for d in [*approved, *changed] if d.evidence)
         )
         if excerpts and kind == "申报通知" and not (approved or changed):
             from youju.deadline_excerpts import selected
@@ -358,10 +354,10 @@ def _items(session: Session, raw_ids: list[str], excerpts: bool = False) -> list
                 notes = [
                     due.day.isoformat()
                     + (f" {due.clock.strftime('%H:%M')}" if due.clock else "")
-                    + ("（机器摘录）" if due.source == "excerpt" else "")
+                    + ("（原文摘录）" if due.source == "excerpt" else "")
                 ]
-                roles = [due.kind + ("（机器摘录）" if due.source == "excerpt" else "")]
-                excerpt_quote = due.quote or ""
+                roles = [due.kind + ("（原文摘录）" if due.source == "excerpt" else "")]
+                excerpt_quote = v1.display_text(due.quote) if due.quote else ""
             elif excerpt_views.get(master):
                 notes = ["截止未核对，以原文为准"]
                 roles = ["截止未核对"]
@@ -380,7 +376,8 @@ def _items(session: Session, raw_ids: list[str], excerpts: bool = False) -> list
         urls = list(dict.fromkeys(public_url(item.url) for item, _ in group))
         sites = list(
             dict.fromkeys(
-                f"{src.dept_full_name}（{urlsplit(item.url).hostname or src.url}）"
+                # 只写网站名称，和详情页"原文出处"一样，不带域名（D-097；11/2 复测）
+                f"{src.dept_full_name}网站"
                 for item, src in group
             )
         )
@@ -432,9 +429,9 @@ def _xlsx(items: list[ExportItem], stamp: str, excerpts: bool = False) -> bytes:
     book = Workbook()
     sheet = book.active
     sheet.title = "文件清单"
-    max_urls = max(len(item.urls) for item in items)
+    # 不再写"原文链接"列：这一版协议只写来源网站名称、不给原文链接（D-097、D-112；11/2 复测）
     headings = [*HEADERS, "截止原文句子"]
-    headers = [*headings, "原文链接", *(f"原文链接 {n}" for n in range(2, max_urls + 1))]
+    headers = headings
     for column, title in enumerate(headers, 1):
         _cell(sheet, 1, column, title)
         sheet.cell(1, column).font = Font(bold=True)
@@ -453,20 +450,15 @@ def _xlsx(items: list[ExportItem], stamp: str, excerpts: bool = False) -> bytes:
             item.support,
             item.unchecked,
             item.deadline_quote,
-            *item.urls,
         )
         for column, value in enumerate(values, 1):
             _cell(sheet, row, column, value)
-        for column, url in enumerate(item.urls, len(headings) + 1):
-            if _is_web_url(url):
-                sheet.cell(row, column).hyperlink = url
-                sheet.cell(row, column).font = Font(color="0563C1", underline="single")
     sheet.freeze_panes = "B2"
     sheet.auto_filter.ref = sheet.dimensions
     widths = {"标题": 60, DEADLINE_HEADER: 60, "日期角色": 26, "支持方式": 22, "未核项": 36}
     for column in range(1, len(headers) + 1):
-        sheet.column_dimensions[sheet.cell(1, column).column_letter].width = (
-            60 if column > len(headings) else widths.get(headings[column - 1], 18)
+        sheet.column_dimensions[sheet.cell(1, column).column_letter].width = widths.get(
+            headings[column - 1], 18
         )
 
     note = book.create_sheet("数据说明")
@@ -550,9 +542,6 @@ def _docx(items: list[ExportItem], stamp: str, excerpts: bool = False) -> bytes:
             cells = table.add_row().cells
             cells[0].text = label
             cells[1].text = value
-        book.add_paragraph("原文链接：")
-        for url in item.urls:
-            book.add_paragraph(url)
     output = BytesIO()
     book.save(output)
     return output.getvalue()
@@ -632,11 +621,20 @@ def preview_documents(
     try:
         excerpts = excerpts == 1 or payload.excerpts == 1
         items = _items(session, payload.ids, excerpts)
+        content = _preview_content(items, excerpts)
+        # 站内查看结果页显示的截止原句按显示层给（v1.shown_quote，F11）；只改给页面的这份，
+        # 版本号照旧按原来的内容算（和保存文件时一致），导出的文件不变
+        from youju.api import v1
+
+        content["items"] = [
+            {**item, "deadline_quote": v1.shown_quote(item.get("deadline_quote"))}
+            for item in content["items"]
+        ]
         response = JSONResponse(
             content={
                 "kind": "catalogue",
                 "title": "本次所选文件目录",
-                **_preview_content(items, excerpts),
+                **content,
                 "revision": _revision(items, excerpts),
                 "total": len(items),
                 "generatedAt": datetime.now(TZ).isoformat(),

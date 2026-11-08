@@ -1,6 +1,6 @@
 // 加量体验（D-070 ③）和申报季加量（⑤）的页面文字。规则和数字都以服务端 /advisor/status 为准（后端 boost.py），
 // 这里只拼文字；字段缺了或格式不对就当没有这项活动，不猜。
-// 体验规则：每个账号一次（注销即删，不留凭据）；点"开始体验"起连续 72 小时，不能暂停；每次 500 家以内，名单比对和通知表合计每天 10 次
+// 体验规则：每个账号一次（注销即删，不留凭据）；点"开始体验"起连续 72 小时，不能暂停；每次 500 家以内，客户相关通知表每天 10 次
 // （北京时间 0 点重新计数）；不占每月免费次数；结束自动回到免费版。开卖之前体验相关的文字不提购买（D-070）。
 const format = require('./format.js');
 
@@ -43,7 +43,7 @@ function trialView(trial, now) {
 
 // 体验中的额度一行（批量工具页、工具中心共用）
 function trialLine(view) {
-  return `加量体验中，到 ${view.trialEnd} 结束：每次最多 ${view.trialRows} 家，今天还能提交 ${view.trialLeft} 次（名单比对和通知表合计）；不占本月免费次数`;
+  return `加量体验中，到 ${view.trialEnd} 结束：每次最多 ${view.trialRows} 家，今天还能提交 ${view.trialLeft} 次；不占本月免费次数`;
 }
 
 // 下一个北京时间 0 点（毫秒）：体验每天的次数按它重新计数
@@ -73,7 +73,7 @@ function trialEndedText(trial, now) {
 
 // 批量工具页上一直在的入口（有资格时）：写清楚是什么、多久、一次性。页面上只有一项工具，"两项"要写出是哪两项
 function trialPitch(view) {
-  return `加量体验（免费，每个账号一次）：从点“开始体验”起连续 ${view.trialHours / 24} 天，每次最多 ${view.trialRows} 家，名单比对和通知表合计每天 ${view.trialDaily} 次，不占本月免费次数。名单准备好再开始。`;
+  return `加量体验（免费，每个账号一次）：从点“开始体验”起连续 ${view.trialHours / 24} 天，每次最多 ${view.trialRows} 家，客户相关通知表每天 ${view.trialDaily} 次，不占本月免费次数。名单准备好再开始。`;
 }
 
 function nextDay(iso) {
@@ -109,26 +109,25 @@ function confirmItems(status, now) {
     const q = quota[kind] || {};
     return Number.isFinite(q.limit) && Number.isFinite(q.used) ? Math.max(0, q.limit - q.used) : null;
   };
-  const compare = left('compare');
   const track = left('track');
-  const normal = count((quota.compare || {}).maxRows) || 50;
+  const normal = count((quota.track || {}).maxRows) || 50;
   const stamp = (now || new Date()).getTime() + view.trialHours * 3600 * 1000;
   const end = format.clockText(new Date(stamp).toISOString(), now);
   // 体验期间只用体验的次数，每月免费次数不扣也不能改用（D-070 第二轮）。月底开始会跨月：
   // 本月剩下的免费次数体验期间用不了、也不顺延，开始之前说清楚，不能写"体验结束后照常可用"
   const crosses = beijingDay(new Date(stamp)).slice(0, 7) !== beijingDay(now).slice(0, 7);
   let free;
-  if (compare === null || track === null) free = '体验期间只用体验的次数，每月免费次数不扣、也不能改用；体验结束后照常使用。';
-  else if (compare + track === 0) free = '本月免费次数已经用完，体验的次数另算。体验期间只用体验的次数，不能改用每月免费次数；体验结束后照常使用。';
+  if (track === null) free = '体验期间只用体验的次数，每月免费次数不扣、也不能改用；体验结束后照常使用。';
+  else if (track === 0) free = '本月免费次数已经用完，体验的次数另算。体验期间只用体验的次数，不能改用每月免费次数；体验结束后照常使用。';
   else {
-    free = `现在本月免费还剩：名单比对 ${compare} 次、客户相关通知表 ${track} 次。体验期间只用体验的次数，这些不扣、也不能改用`;
+    free = `现在本月免费还剩：客户相关通知表 ${track} 次。体验期间只用体验的次数，这些不扣、也不能改用`;
     free += crosses ? '。注意：现在开始的话体验会跨过月底，本月剩下的免费次数用不上（不顺延到下个月），想用的话先用完再开始。'
       : '，体验结束后接着用。';
   }
   return [
     { label: `连续 ${view.trialHours / 24} 天`, text: `从你点“开始体验”起连续 ${view.trialHours} 小时，中途不能暂停；现在开始的话，到 ${end}（北京时间）结束。` },
-    { label: '每次多少家', text: `批量名单比对、客户相关通知表每次最多 ${view.trialRows} 家（平时每次 ${normal} 家）。` },
-    { label: '每天几次', text: `两项合计每天最多 ${view.trialDaily} 次，北京时间 0 点重新计数。` },
+    { label: '每次多少家', text: `客户相关通知表每次最多 ${view.trialRows} 家（平时每次 ${normal} 家）。` },
+    { label: '每天几次', text: `客户相关通知表每天最多 ${view.trialDaily} 次，北京时间 0 点重新计数。` },
     { label: '不占免费次数', text: free },
     { label: '不用付款', text: `不需要填写任何付款信息。体验结束后自动回到免费版：每次 ${normal} 家以内，每月免费次数照常。` },
     { label: '结果', text: '体验期间生成的结果保存 30 天，体验结束后照样能看、能导出。' },
@@ -141,7 +140,7 @@ function confirmItems(status, now) {
 function unavailableText(view) {
   if (view.trialActive) return '';
   if (view.trialReason === 'used') return '加量体验已经用过，每个账号只能体验一次。';
-  if (view.trialReason === 'pass') return '使用期内不限次数，不需要加量体验；体验留到以后再用。';
+  if (view.trialReason === 'pass') return '使用期内客户相关通知表不限次数，不需要加量体验；体验留到以后再用。';
   // 其余（开关关着、读不到）不给用户看"暂未开放"，确认页直接回首页（D-074 ⑧）
   return '';
 }

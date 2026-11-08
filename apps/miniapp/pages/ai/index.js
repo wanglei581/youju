@@ -362,7 +362,7 @@ Page({
   // 底部"已同意使用须知"那一行：每次显示时按手机上的记录重写
   noticeLine() {
     const info = consentInfo(wx);
-    const text = info ? `已同意 AI 解读、条款对照的使用须知（${info.at.getMonth() + 1} 月 ${info.at.getDate()} 日）` : '';
+    const text = info ? `已同意 AI 解读、条款对照的使用须知（${info.at.getMonth() + 1}月${info.at.getDate()}日）` : '';
     if (text !== this.data.noticeAgreedText) this.setData({ noticeAgreedText: text });
   },
 
