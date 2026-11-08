@@ -140,6 +140,12 @@ Page({
         const bodyView = body ? opening(body) : null;
         const region = regionText(doc);
         const readable = !!body || atts.some((a) => a.canOpen);
+        // 名单类（D-123 ④）一直标明已撤下、不清理；7 天过后 window 为假，不给保存、导出。
+        // 没有能读的正文和附件（没东西可存，如正文就是名单）也不给（服务端 canExport、canSave，本页
+        // 再看一次）；新版隐私指引还没上线时服务端 canSave 为假，只给导出
+        const goneExport = !!(doc.gone && doc.gone.window === true && doc.gone.canExport === true && readable);
+        const goneSave = !!(doc.gone && doc.gone.window === true && doc.gone.canSave === true && readable);
+        const saveShown = goneSave && loginOpen() && !!this.data.has.saved;
         this.setData({
           doc,
           points: keyPoints(doc, { region: region || doc.region, dated: datedDue(dls, due) }),
@@ -152,13 +158,10 @@ Page({
           // 原网页已失效：标题下写明（正文、附件都不再给）；写了"不再提供"时正文卡片不再写一遍（goneAll）。
           // D-123：还在 7 天清理期里的（服务端给 gone）写打不开的日期和清理日期，正文、附件照常给，
           // 提示下面给"保存""导出 Word"（goneSave、goneExport）
-          goneNote: goneNote(doc.link_gone, readable, doc.gone),
+          goneNote: goneNote(doc.link_gone, readable, doc.gone, { save: saveShown, export: goneExport }),
           goneAll: !!doc.link_gone && !readable,
-          // 名单类（D-123 ④）一直标明已撤下、不清理；7 天过后 window 为假，不给保存、导出。
-          // 没有能读的正文和附件（没东西可存，如正文就是名单）也不给（服务端 canExport、canSave，本页
-          // 再看一次）；新版隐私指引还没上线时服务端 canSave 为假，只给导出
-          goneExport: !!(doc.gone && doc.gone.window === true && doc.gone.canExport === true && readable),
-          goneSave: !!(doc.gone && doc.gone.window === true && doc.gone.canSave === true && readable),
+          goneExport,
+          goneSave,
           savedHere: false,
           // 底栏："阅读全文"（只显示了开头）或"阅读附件"（正文已全部显示或没有正文），都读不了不显示
           entry: readEntry(doc.body, bodyView, atts),

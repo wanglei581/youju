@@ -146,6 +146,18 @@ test('详情页：新版隐私指引还没上线（服务端 canSave 为假）�
   assert.deepEqual(findAll(tree, hasClass('gone-act')).map((n) => textOf(n).trim()), ['导出 Word']);
 });
 
+test('详情页：包里没有"我的保存"（过审版）时提示只写"可以先导出"，和按钮对得上', async () => {
+  const doc = { id: '9', kind: '申报通知', tags: ['申报通知'], title: '关于开展科技计划项目申报的通知', issuer: '某厅', date: '2026-10-20',
+    region: '山东 · 省级', points: [], link_gone: '2026-10-21', gone: GONE,
+    body: { status: 'ok', text: '申报说明。'.repeat(20), total: 100, truncated: false }, attachments: [] };
+  const page = pageOf('pages/detail/index.js', detailDeps(doc, []));
+  page.data.has = { ...page.data.has, saved: false };
+  page.onLoad({ id: '9' }); await settle();
+  assert.equal(page.data.goneNote, `${NOTICE}。这份通知将于10月28日清理，可以先导出。`);
+  const tree = render('pages/detail/index.wxml', { ...page.data, loading: false });
+  assert.deepEqual(findAll(tree, hasClass('gone-act')).map((n) => textOf(n).trim()), ['导出 Word']);
+});
+
 test('阅读副本："返回我的保存"上一页是我的保存就退回，从别处打开的换成我的保存页', () => {
   const calls = [];
   const make = (prevRoute) => {

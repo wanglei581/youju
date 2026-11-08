@@ -322,6 +322,17 @@ def test_merge_group_is_cleaned_when_the_last_url_is_due(session, on):
     assert session.scalar(select(func.count()).select_from(Document)) == 0
 
 
+def test_merge_group_waits_when_one_member_is_postponed(session, on):
+    """组里两份都到期，转载那份这次推迟（网站当天判断不了，没确认）：整组都先不删（独立审阅第 2 轮）。"""
+    master, _ = gone_doc(session, 1, gone_at=NOW - timedelta(days=9))
+    copy, _ = gone_doc(session, 2, gone_at=NOW - timedelta(days=8), checked=NOW - timedelta(days=2))
+    session.add(DocumentMerge(duplicate_id=copy.id, canonical_id=master.id, match_key="k"))
+    session.commit()
+    counts = gone.cleanup_expired(session, now=NOW)
+    assert (counts["deleted"], counts["stale"], counts["waiting"]) == (0, 1, 1)
+    assert session.scalar(select(func.count()).select_from(DocumentMerge)) == 1
+
+
 def test_merge_group_all_in_window_still_shows_body(client, session, on):
     """组里几个网址都打不开、都还在 7 天里：主条目照常按清理期显示（显示时不看 waiting，agy 第 2 轮）。"""
     master, _ = gone_doc(session, 1, gone_at=NOW - timedelta(days=2))

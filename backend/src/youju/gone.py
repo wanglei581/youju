@@ -154,6 +154,28 @@ def _squash(title: str | None) -> str:
     return re.sub(r"\s+", "", title or "")
 
 
+def merge_groups(session: Session, ids: list[int]) -> dict[int, set[int]]:
+    """每份所在归并组（同一份通知的不同网址）的全部编号，含它自己；不在组里的就是它自己。"""
+    canonical = {
+        row.duplicate_id: row.canonical_id
+        for row in session.execute(
+            select(DocumentMerge.duplicate_id, DocumentMerge.canonical_id).where(
+                DocumentMerge.active.is_(True), DocumentMerge.duplicate_id.in_(ids)
+            )
+        )
+    }
+    masters = {doc_id: canonical.get(doc_id, doc_id) for doc_id in ids}
+    members: dict[int, set[int]] = {master: {master} for master in masters.values()}
+    if members:
+        for master, duplicate in session.execute(
+            select(DocumentMerge.canonical_id, DocumentMerge.duplicate_id).where(
+                DocumentMerge.active.is_(True), DocumentMerge.canonical_id.in_(members)
+            )
+        ):
+            members[master].add(duplicate)
+    return {doc_id: members[master] for doc_id, master in masters.items()}
+
+
 def keep_reasons(
     session: Session, docs: Iterable[Document], now: datetime, *, cleanup: bool = False
 ) -> dict[int, str]:
@@ -192,23 +214,8 @@ def keep_reasons(
         if seen and seen > _utc(doc.link_gone_at) and seen >= now - LISTED_WITHIN:
             mark(doc.id, "listed")
     # 归并组（同一份通知的不同网址）里还有原网页没失效、没下架的
-    canonical = {
-        row.duplicate_id: row.canonical_id
-        for row in session.execute(
-            select(DocumentMerge.duplicate_id, DocumentMerge.canonical_id).where(
-                DocumentMerge.active.is_(True), DocumentMerge.duplicate_id.in_(ids)
-            )
-        )
-    }
-    masters = {doc_id: canonical.get(doc_id, doc_id) for doc_id in ids}
-    members: dict[int, set[int]] = {master: {master} for master in masters.values()}
-    for master, duplicate in session.execute(
-        select(DocumentMerge.canonical_id, DocumentMerge.duplicate_id).where(
-            DocumentMerge.active.is_(True), DocumentMerge.canonical_id.in_(members)
-        )
-    ):
-        members[master].add(duplicate)
-    others = {m for group in members.values() for m in group} - set(ids)
+    groups = merge_groups(session, ids)
+    others = {m for group in groups.values() for m in group} - set(ids)
     # 删的时候，组里还在 7 天里的也要等：各网址先后打不开时等最后一个也到期了整组一起删，免得主条目
     # 先删、归并关系跟着没了，转载的那份又单独冒出来（agy 第 1 轮）
     live: set[int] = set()
@@ -223,8 +230,8 @@ def keep_reasons(
                 live.add(doc_id)
             elif cleanup and _utc(gone_at) >= cutoff(now):
                 waiting.add(doc_id)
-    for doc_id, master in masters.items():
-        if members[master] & live:
+    for doc_id, group in groups.items():
+        if group & live:
             mark(doc_id, "merged")
     # 原栏目换了新地址：同一栏目、同一标题、原网页没失效、没下架的另一份，发布日期一样，或者是
     # 原网页开始打不开以后才出现的（同名的往年通知不算）
@@ -258,8 +265,8 @@ def keep_reasons(
                 for row in rows
             ):
                 mark(doc.id, "moved")
-    for doc_id, master in masters.items():
-        if members[master] & waiting:
+    for doc_id, group in groups.items():
+        if group & waiting:
             mark(doc_id, "waiting")
     return found
 
@@ -434,6 +441,14 @@ def cleanup_expired(
     for reason in postponed.values():
         counts[reason] += 1
     ready = [doc.id for doc in due if doc.id not in kept and doc.id not in postponed]
+    # 整组一起删：组里只要有一份这次删不了（不清理、推迟、还没到期），整组都先不删，免得主条目删了、
+    # 归并关系跟着没了，转载的那份单独冒出来（独立审阅第 2 轮）
+    if ready:
+        groups = merge_groups(session, ready)
+        allowed = set(ready)
+        held = [doc_id for doc_id in ready if not groups[doc_id] <= allowed]
+        counts["waiting"] += len(held)
+        ready = [doc_id for doc_id in ready if doc_id not in held]
     session.commit()
     if dry_run:
         counts["deleted"] = len(ready)
@@ -456,6 +471,11 @@ def cleanup_expired(
         except Exception as exc:  # noqa: BLE001 - 一份出意外不拖累整批，下次再删
             session.rollback()
             counts["failed"] += 1
-            log.warning("原网页失效到期清理：#%s 没删成（%s）", doc_id, exc.__class__.__name__)
+            log.warning(
+                "原网页失效到期清理：#%s 没删成（%s）",
+                doc_id,
+                exc.__class__.__name__,
+                exc_info=True,
+            )
     log.info("原网页失效到期清理：%s", counts)
     return counts

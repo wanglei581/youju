@@ -261,9 +261,16 @@ function noBodyText(body, atts) {
 // 原网页已失效时详情页标题下的提示（D-097：正文、附件都不再给）。服务端万一还给了能读的正文或附件
 // （readable 为真），不说"不再提供"，免得上面说没有、下面又能读。
 // D-123：还在 7 天清理期里的（服务端给了 gone）写打不开的日期和清理日期，正文、附件照常给
-function goneNote(linkGone, readable, gone) {
+// actions：这一页实际给的按钮（{ save, export }）。名单类和没给 actions 的照服务端的第二句；
+// 其余按实际按钮写，免得包里没有"我的保存"页（过审版）时写了"可以先保存"却只有导出（独立审阅第 2 轮）
+function goneNote(linkGone, readable, gone, actions) {
   if (gone && typeof gone.notice === 'string' && gone.notice) {
-    return `${gone.notice}。${typeof gone.cleanupNotice === 'string' && gone.cleanupNotice ? `${gone.cleanupNotice}。` : ''}`;
+    let second = typeof gone.cleanupNotice === 'string' ? gone.cleanupNotice : '';
+    if (actions && gone.list !== true && /^\d{4}-\d{2}-\d{2}$/.test(String(gone.cleanup || ''))) {
+      const tail = actions.save ? '，可以先保存或导出' : (actions.export ? '，可以先导出' : '');
+      second = `这份通知将于${monthDay(gone.cleanup)}清理${tail}`;
+    }
+    return `${gone.notice}。${second ? `${second}。` : ''}`;
   }
   if (!linkGone) return '';
   const head = `原文链接已失效（${linkGone} 检查时打不开）。`;
