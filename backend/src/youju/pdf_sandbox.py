@@ -206,23 +206,26 @@ def _env() -> dict[str, str]:
 
 
 def _reduced(cfg: dict) -> dict[str, int]:
-    """平台给的硬上限比设定的低的几项：子进程从父进程继承硬上限，_limit 照它设（照样有上限），可
-    这时超了不能算文件的（换个地方就读得了）。返回 {"memory" 或 "cpu": 实际的上限}。"""
+    """平台的硬上限让子进程实际拿到的比设定的少的几项：子进程从父进程继承硬上限，_limit 照它设
+    （照样有上限），这时超了不能算文件的（换个地方就读得了）。算法和 _limit 一样，返回
+    {"memory": 实际的内存上限, "cpu": 实际的 CPU 时间软上限}（没少的不写）。"""
     import resource
 
     reduced = {}
-    for key, name, wanted in (
-        ("memory", "RLIMIT_AS", cfg["memory"]),
-        ("cpu", "RLIMIT_CPU", cfg["cpu"]),
-    ):
-        hard = resource.getrlimit(getattr(resource, name))[1]
-        if hard != resource.RLIM_INFINITY and hard < wanted:
-            reduced[key] = hard
+    hard = resource.getrlimit(resource.RLIMIT_AS)[1]
+    if hard != resource.RLIM_INFINITY and hard < cfg["memory"]:
+        reduced["memory"] = hard
+    hard = resource.getrlimit(resource.RLIMIT_CPU)[1]
+    if hard != resource.RLIM_INFINITY and hard < cfg["cpu"] + 5:
+        soft = min(cfg["cpu"], max(hard - 1, 1))  # 和 _limit 一样：软上限比压低的硬上限少 1 秒
+        if soft < cfg["cpu"]:
+            reduced["cpu"] = soft
     return reduced
 
 
 def _output(code: int, cfg: dict, seconds: float, out, err, reduced: dict[str, int]) -> dict:
-    if code in (_EXIT_MEMORY, -signal.SIGXCPU, -signal.SIGKILL) and reduced:
+    # 到了内存、CPU 时间的上限（SIGKILL 不算：CPU 软上限总比硬上限低，先收到的是 SIGXCPU）
+    if code in (_EXIT_MEMORY, -signal.SIGXCPU) and reduced:
         kind = "memory" if code == _EXIT_MEMORY else "cpu"
         if kind in reduced:
             got = _size(reduced[kind]) if kind == "memory" else f"{reduced[kind]} 秒"
@@ -283,7 +286,7 @@ def _died(code: int, err) -> str:
     return f"退出码 {code}" + (f"，{name}" if name else "")
 
 
-_EXCEPTION_LINE = re.compile(r"^([A-Za-z_][\w.]*(?:Error|Exception|Exit|Interrupt|Warning))\b")
+_EXCEPTION_LINE = re.compile(r"^([A-Za-z_][\w.]*(?:Error|Exception|Exit|Interrupt))\b")
 
 
 # ---- 子进程 ----

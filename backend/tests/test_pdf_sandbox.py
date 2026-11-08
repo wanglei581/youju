@@ -484,11 +484,34 @@ def test_platform_cpu_limit_is_hit_with_sigxcpu_and_not_blamed_on_the_file(monke
         "_child()\n"
     )
     monkeypatch.setattr(pdf_sandbox, "_BOOT", boot)
-    monkeypatch.setattr(pdf_sandbox, "_reduced", lambda cfg: {"cpu": 3})
+    # 测试进程自己的硬上限没被压低：按子进程实际拿到的（软上限 2 秒）告诉父进程
+    monkeypatch.setattr(pdf_sandbox, "_reduced", lambda cfg: {"cpu": 2})
     with pytest.raises(pdf_sandbox.Failed) as raised:
         pdf_sandbox.read("body", busy_pdf(), seconds=60, pages=200)
+    # 收到的若是 SIGKILL，会记成"被系统停掉"（killed）：记成 limits 说明先到的是 SIGXCPU
     assert (raised.value.kind, raised.value.retry) == ("limits", True)
-    assert raised.value.detail == "平台给的 CPU 时间上限只有 3 秒，比设定的低"
+    assert raised.value.detail == "平台给的 CPU 时间上限只有 2 秒，比设定的低"
+
+
+@pytest.mark.parametrize(
+    ("hard_as", "hard_cpu", "reduced"),
+    [
+        (resource.RLIM_INFINITY, resource.RLIM_INFINITY, {}),
+        (2048 * MB, 65, {}),  # 比要的还高（CPU 要 60 秒软上限、65 秒硬上限）
+        (1024 * MB, 61, {}),  # 硬上限压到 61 秒：软上限还是 60 秒，拿到的没少
+        (
+            512 * MB,
+            60,
+            {"memory": 512 * MB, "cpu": 59},
+        ),  # 和设定的一样也要少 1 秒（软上限留低 1 秒）
+    ],
+)
+def test_reduced_limits_follow_what_the_child_actually_gets(
+    monkeypatch, hard_as, hard_cpu, reduced
+):
+    limits = {resource.RLIMIT_AS: hard_as, resource.RLIMIT_CPU: hard_cpu}
+    monkeypatch.setattr(resource, "getrlimit", lambda which: (0, limits[which]))
+    assert pdf_sandbox._reduced({"memory": 1024 * MB, "output": 32 * MB, "cpu": 60}) == reduced
 
 
 def test_lower_platform_hard_limits_are_kept() -> None:
