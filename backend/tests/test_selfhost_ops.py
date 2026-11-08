@@ -1,6 +1,9 @@
 """2.0 自建服务器的运维命令：恢复到刚迁移好的库、外部健康检查、异地备份、两份定时任务表。"""
 
 import json
+import shutil
+import subprocess
+import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -216,6 +219,22 @@ def test_wsl_setup_scripts_encoding():
     sh_path = SELFHOST / "local" / "setup-wsl.sh"
     assert b"\r" not in sh_path.read_bytes()
     assert sh_path.stat().st_mode & 0o111
+
+
+def test_windows_package_marks_chinese_names_utf8(tmp_path):
+    """安装包里的中文文件名（docs/数据来源）要标成 UTF-8：不标的话 Windows 解压时按 GBK 读成乱码，
+    构建镜像时找不到来源清单（11/8 在测试虚拟机里就是这样失败的）。"""
+    if shutil.which("git") is None:
+        pytest.skip("没有 git")
+    script = SELFHOST / "make-local-package.sh"
+    subprocess.run(["sh", str(script), str(tmp_path)], check=True, capture_output=True)
+    (package,) = tmp_path.glob("youju-local-*.zip")
+    with zipfile.ZipFile(package) as z:
+        names = z.namelist()
+        assert any("/source/docs/数据来源/" in name for name in names)
+        assert all(i.flag_bits & 0x800 for i in z.infolist() if not i.filename.isascii())
+        for wanted in ("setup-wsl.ps1", "setup-wsl.sh", "setup.ps1", "docker-compose.yml"):
+            assert any(name.endswith("/" + wanted) for name in names), wanted
 
 
 def test_compose_base_images_pinned_by_digest():
