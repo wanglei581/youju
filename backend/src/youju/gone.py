@@ -53,7 +53,7 @@ KEEP_REASONS = {
     "history": "有下架、恢复记录（记录要留着，删不了这份通知）",
     "changed": "别的通知的截止变更指向它",
     "listed": "原栏目还列着这份通知",
-    "merged": "同一份通知的其他网址还能打开",
+    "merged": "同一份通知的其他网址还能打开，或者还在 7 天里",
     "moved": "同一份通知在原栏目换了新地址",
 }
 
@@ -181,11 +181,15 @@ def keep_reasons(session: Session, docs: Iterable[Document], now: datetime) -> d
     ):
         members[master].add(duplicate)
     others = {m for group in members.values() for m in group} - set(ids)
+    # 还在 7 天里的也算：组里各网址先后打不开时，等最后一个也到期了整组一起删，免得主条目先删、
+    # 归并关系跟着没了，转载的那份又单独冒出来（agy 第 1 轮）
     live = (
         set(
             session.scalars(
                 select(Document.id).where(
-                    Document.id.in_(others), Document.link_gone_at.is_(None), available_condition()
+                    Document.id.in_(others),
+                    Document.link_gone_at.is_(None) | (Document.link_gone_at >= cutoff(now)),
+                    available_condition(),
                 )
             )
         )

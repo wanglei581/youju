@@ -265,6 +265,23 @@ def test_kept_documents_are_not_cleaned_and_follow_d097(client, session, on, rea
     assert session.get(Document, doc.id) is not None
 
 
+def test_merge_group_is_cleaned_when_the_last_url_is_due(session, on):
+    """归并组（同一份通知的不同网址）先后打不开：主条目到期时转载那份还在 7 天里，先不删；等最后一个
+    也到期了整组一起删（agy 第 1 轮）。"""
+    master, _ = gone_doc(session, 1, gone_at=NOW - timedelta(days=8))
+    copy, _ = gone_doc(session, 2, gone_at=NOW - timedelta(days=3))
+    session.add(DocumentMerge(duplicate_id=copy.id, canonical_id=master.id, match_key="k"))
+    session.commit()
+    assert gone.keep_reasons(session, [master], NOW) == {master.id: "merged"}
+    assert gone.cleanup_expired(session, now=NOW)["deleted"] == 0
+    later = NOW + timedelta(days=5)
+    for doc in (master, copy):
+        doc.link_checked_at = later - timedelta(hours=1)
+    session.commit()
+    assert gone.cleanup_expired(session, now=later)["deleted"] == 2
+    assert session.scalar(select(func.count()).select_from(Document)) == 0
+
+
 def test_same_title_from_an_earlier_year_is_not_a_move(session, on):
     doc, _ = gone_doc(session)
     old = Document(

@@ -370,9 +370,17 @@ def _saved_entry(session: Session, user: User | None) -> dict | None:
     """ "我的"页"我的保存"入口：开关开着时给（能保存）；开关关了但已经保存过的也给（自己的数据要能
     看、能删）；都不是给 None，不放入口。"""
     from youju import gone, saved
+    from youju.models import SavedDocument
 
-    count = saved.count(session, user.id) if user is not None else 0
     enabled = gone.enabled()
+    # 开关关着：没保存过的人（绝大多数）只看一眼有没有行，不数（agy 第 1 轮）
+    if not enabled and (
+        user is None
+        or session.scalar(select(SavedDocument.id).where(SavedDocument.user_id == user.id).limit(1))
+        is None
+    ):
+        return None
+    count = saved.count(session, user.id) if user is not None else 0
     if not enabled and not count:
         return None
     return {"enabled": enabled, "count": count, "max": get_settings().saved_max_per_user}
