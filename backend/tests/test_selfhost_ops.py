@@ -1,6 +1,8 @@
 """2.0 自建服务器的运维命令：恢复到刚迁移好的库、外部健康检查、异地备份、两份定时任务表。"""
 
+import gzip
 import json
+import re
 import shutil
 import subprocess
 import zipfile
@@ -221,6 +223,32 @@ def test_wsl_setup_scripts_encoding():
     assert sh_path.stat().st_mode & 0o111
 
 
+def test_wsl_setup_keeps_review_fixes():
+    """11/8 审阅改过的几处，别被改回去。"""
+    ps1 = (SELFHOST / "local" / "setup-wsl.ps1").read_text(encoding="utf-8-sig")
+    # 保活：循环重开 wsl（计划任务的"失败重启"不可靠）、conhost 开窗口（Windows Terminal 下藏不住）、
+    # -Force 更新已有任务、装 Docker 之前就启动
+    assert "while ($true)" in ps1 and '-Execute "conhost.exe"' in ps1 and "-Force" in ps1
+    assert ps1.index("Start-ScheduledTask") < ps1.index('setup-wsl.sh")')
+    # 数据位置按盘符固定（<盘>:\youju），不跟着安装包解压位置走；管理员窗口里不装
+    assert (
+        "Split-Path -Qualifier $PSScriptRoot" in ps1 and "WindowsBuiltInRole]::Administrator" in ps1
+    )
+    # 升级时先删旧源码再拷，拷贝管道失败要报出来
+    assert "rm -rf /opt/youju/local/source" in ps1 and "set -euo pipefail" in ps1
+    sh = (SELFHOST / "local" / "setup-wsl.sh").read_text(encoding="utf-8")
+    # 导入按「库是空的」判断（不靠标记文件），配了服务器的空库不自动导入、不启动 worker
+    assert "SELECT COUNT(*) FROM youju.sources" in sh and "env_value YOUJU_SYNC_URL" in sh
+    compose = (SELFHOST / "local" / "docker-compose.yml").read_text(encoding="utf-8")
+    assert "start_period: 600s" in compose
+
+
+def test_caddy_error_log_drops_query_strings():
+    """反代出错时 Caddy 的日志会带完整请求地址：查询串（检索词、企业名称）要去掉，和访问日志一样只留路径。"""
+    caddyfile = (SELFHOST / "server" / "Caddyfile").read_text(encoding="utf-8")
+    assert 'request>uri regexp "\\?.*" "?"' in caddyfile
+
+
 def test_windows_package_marks_chinese_names_utf8(tmp_path):
     """安装包里的中文文件名（docs/数据来源）要标成 UTF-8：不标的话 Windows 解压时按 GBK 读成乱码，
     构建镜像时找不到来源清单（11/8 在测试虚拟机里就是这样失败的）。"""
@@ -231,10 +259,47 @@ def test_windows_package_marks_chinese_names_utf8(tmp_path):
     (package,) = tmp_path.glob("youju-local-*.zip")
     with zipfile.ZipFile(package) as z:
         names = z.namelist()
-        assert any("/source/docs/数据来源/" in name for name in names)
+        # 顶层是 local 文件夹：解压到 E:\youju 就是 E:\youju\local
+        assert all(name.startswith("local/") for name in names)
+        assert any(name.startswith("local/source/docs/数据来源/") for name in names)
         assert all(i.flag_bits & 0x800 for i in z.infolist() if not i.filename.isascii())
         for wanted in ("setup-wsl.ps1", "setup-wsl.sh", "setup.ps1", "docker-compose.yml"):
-            assert any(name.endswith("/" + wanted) for name in names), wanted
+            assert f"local/{wanted}" in names, wanted
+
+
+def _alembic_head():
+    versions = Path(__file__).resolve().parents[1] / "alembic" / "versions"
+    revisions, parents = set(), set()
+    for path in versions.glob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        found = re.search(r"^revision\b[^=]*=\s*['\"]([^'\"]+)", text, re.M)
+        if found:
+            revisions.add(found.group(1))
+        for line in re.findall(r"^down_revision\b[^=]*=(.*)$", text, re.M):
+            parents.update(re.findall(r"['\"]([^'\"]+)['\"]", line))
+    (head,) = revisions - parents
+    return head
+
+
+@pytest.mark.parametrize("matches", [True, False])
+def test_windows_package_checks_starter_data_revision(tmp_path, matches):
+    """起步数据的迁移版本要等于源码的最新迁移，不然装到导入那一步必然失败：不一致就不打包。"""
+    if shutil.which("git") is None:
+        pytest.skip("没有 git")
+    revision = _alembic_head() if matches else "9999"
+    export = tmp_path / "export.jsonl.gz"
+    with gzip.open(export, "wt", encoding="utf-8") as f:
+        f.write(
+            json.dumps({"format": "youju-sync-export", "version": 1, "revision": revision}) + "\n"
+        )
+    out = tmp_path / "out"
+    out.mkdir()
+    script = SELFHOST / "make-local-package.sh"
+    done = subprocess.run(
+        ["sh", str(script), str(out), str(export)], capture_output=True, text=True
+    )
+    assert (done.returncode == 0) is matches, done.stderr
+    assert bool(list(out.glob("youju-local-*.zip"))) is matches
 
 
 def test_compose_base_images_pinned_by_digest():

@@ -2,16 +2,18 @@
 # 续期 HTTPS 证书（要放开 80、443 端口）。
 # - 只放行小程序接口（/api/v1/）、健康检查、消息推送和本机同步（/api/sync/，转给 worker）；
 #   核对台（/admin、/api/admin/）不对外，只能在服务器上经 SSH 隧道访问 127.0.0.1:8080。
-# - 不记访问日志（程序自己记，只记路径，见 youju/access_log.py）；出错日志里 IP 只留前一半；
+# - 不记访问日志（程序自己记，只记路径，见 youju/access_log.py）；出错日志里 IP 只留前一半、不带查询串；
 #   客户端地址整个覆盖写进
 #   X-Forwarded-For（不信客户端自带的值），程序按 YOUJU_CLIENT_IP_HEADER 取。
 {
 	admin off
-	# Caddy 自己的日志（出错时会带上请求）：来源 IP 只留前一半，登录凭证、Cookie 不记
+	# Caddy 自己的日志（出错时会带上请求）：来源 IP 只留前一半，登录凭证、Cookie 不记，
+	# 请求地址去掉查询串（检索词、企业名称等），和程序自己的访问日志一样只留路径
 	log {
 		format filter {
 			wrap json
 			fields {
+				request>uri regexp "\?.*" "?"
 				request>remote_ip ip_mask {
 					ipv4 16
 					ipv6 32

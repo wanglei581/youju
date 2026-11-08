@@ -62,6 +62,8 @@ services:
       interval: 60s
       timeout: 5s
       retries: 3
+      # 第一次启动要迁移、按标题规则重算全部文件类型，库大时超过 3 分钟：这段时间里失败不算
+      start_period: 600s
     deploy:
       resources:
         limits:
