@@ -1450,6 +1450,15 @@ def _pptx_table(tbl) -> list[_Row]:
 
 
 def _pdf(data: bytes) -> list:
+    """PDF：解数据流有上限（pdf_limits）。解压后太大、压缩方式不支持的按它给的原因记（"太大"
+    "格式不支持"），不当成文件损坏。"""
+    from youju import pdf_limits
+
+    with pdf_limits.reading(lambda hit: Unreadable(hit.reason, f"PDF {hit.detail}")):
+        return _pdf_read(data)
+
+
+def _pdf_read(data: bytes) -> list:
     import pdfplumber
 
     try:
