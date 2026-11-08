@@ -273,7 +273,8 @@ def _check_zip(data: bytes) -> None:
             zip_limits.check(archive, max_bytes=_MAX_ZIP_UNCOMPRESSED, max_members=_MAX_ZIP_MEMBERS)
         except zip_limits.ZipLimitError as exc:
             if exc.kind == "method":
-                raise ValueError(f"暂不支持此压缩方式（{exc.detail}）") from exc
+                what = "加密的文件" if exc.detail == "加密" else f"此压缩方式（{exc.detail}）"
+                raise ValueError(f"暂不支持{what}") from exc
             if exc.kind == "broken":
                 raise zipfile.BadZipFile(str(exc)) from exc
             over = (

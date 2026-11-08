@@ -38,12 +38,15 @@ MAX_XLSX_COLUMNS = 64
 MAX_XLSX_CELLS = MAX_XLSX_ROWS * MAX_XLSX_COLUMNS
 MAX_XML_ELEMENTS = 100_000
 MAX_ZIP_ENTRIES = 512
-# 表格交给 openpyxl 之前的解压检查（见 zip_limits）没通过时告诉用户的原因
+# 表格交给 openpyxl 之前的解压检查（见 zip_limits）没通过时告诉用户的原因。用户是从微信聊天里选的
+# ≤60KB 的表：正常的表撞上部件太多、解压后太大，多半是多余的工作表、空行或格式，告诉他怎么绕开
+# （表单上本来就有"粘贴文本"）
+_TOO_BIG = "表格里多余的工作表、空行或格式太多，请把客户名单复制到一张新表格再上传，或改用粘贴文本"
 _ZIP_REASONS = {
-    "members": "表格包含过多文件，请减少内容后重试",
-    "size": "表格解压后过大，请减少内容后重试",
-    "method": "表格的压缩方式不支持，请用 Excel 或 WPS 重新保存后再试",
-    "broken": "表格文件已损坏，请用 Excel 或 WPS 重新保存后再试",
+    "members": _TOO_BIG,
+    "size": _TOO_BIG,
+    "method": "表格的压缩方式不支持，请用 Excel 或 WPS 另存为 .xlsx 后再上传，或改用粘贴文本",
+    "broken": "表格文件已损坏，请用 Excel 或 WPS 另存为 .xlsx 后再上传，或改用粘贴文本",
 }
 _NAME_HEADERS = {"企业名称", "单位名称", "公司名称"}
 _CODE_HEADERS = {"统一社会信用代码", "信用代码"}

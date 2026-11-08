@@ -44,7 +44,7 @@ _METHOD_NAMES = {
 }
 _KNOWN_METHODS = {2, 3, 4, 5, 10, 16, 18, 19, 20, 94, 96, 97, *_METHOD_NAMES}
 # 读部件时可能出的错：文件头坏了、部件重叠（Python 自己查的）、数据截断、deflate 数据坏、
-# 专有的加密或补丁格式、文件名解不了码
+# 专有的加密或补丁格式、文件名解不了码、zip64 里写的偏移大得没法定位（OverflowError）
 _READ_ERRORS = (
     zipfile.BadZipFile,
     EOFError,
@@ -53,6 +53,7 @@ _READ_ERRORS = (
     RuntimeError,
     ValueError,
     OSError,
+    OverflowError,
 )
 
 
@@ -79,8 +80,11 @@ def check(archive: zipfile.ZipFile, *, max_bytes: int, max_members: int) -> None
                 raise ZipLimitError("broken", f"压缩方式编号不认识（{info.compress_type}）")
             name = _METHOD_NAMES.get(info.compress_type, f"编号 {info.compress_type}")
             raise ZipLimitError("method", f"压缩方式不支持（{name}）", name)
-        if info.flag_bits & 0x1:
+        # 标志位第 0 位加密、第 6 位强加密、第 5 位补丁数据：文件不会变，按不支持（不是坏文件）
+        if info.flag_bits & 0x41:
             raise ZipLimitError("method", "压缩方式不支持（加密）", "加密")
+        if info.flag_bits & 0x20:
+            raise ZipLimitError("method", "压缩方式不支持（补丁数据）", "补丁数据")
     # 两个目录项指向同一段数据：Python 3.12 只警告不拦，同一段会被当成两个部件各解一遍
     if len({info.header_offset for info in infos}) < len(infos):
         raise ZipLimitError("broken", "部件重叠")

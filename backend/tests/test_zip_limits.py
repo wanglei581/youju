@@ -177,7 +177,7 @@ def test_bomb_sample_inflates_when_the_check_is_removed(monkeypatch, reader, met
     [
         ("upload_xlsx", "bzip2", PAYLOAD, CompareInputError, "表格的压缩方式不支持"),
         ("upload_xlsx", "lzma", PAYLOAD, CompareInputError, "表格的压缩方式不支持"),
-        ("upload_xlsx", "deflate", PAYLOAD, CompareInputError, "表格解压后过大"),
+        ("upload_xlsx", "deflate", PAYLOAD, CompareInputError, "表格里多余的工作表"),
         # 实际解出的没超 2MB，但和目录里写的不符
         ("upload_xlsx", "deflate", 1 << 20, CompareInputError, "表格文件已损坏"),
         ("list_xlsx", "bzip2", PAYLOAD, ValueError, "暂不支持此压缩方式（bzip2）"),
@@ -234,12 +234,18 @@ def test_list_too_many_members_not_retried(monkeypatch):
         parser.parse_attachment_result(office("docx"), "docx")
 
 
+def test_list_encrypted_file_reason():
+    data = patch_entry(office("docx"), "word/document.xml", flags=0x1)
+    with pytest.raises(ValueError, match=r"^暂不支持加密的文件$"):
+        parser.parse_attachment_result(data, "docx")
+
+
 @pytest.mark.parametrize(
     ("method", "payload", "reason"),
     [
         ("bzip2", PAYLOAD, "压缩方式不支持"),
         ("lzma", PAYLOAD, "压缩方式不支持"),
-        ("deflate", PAYLOAD, "解压后过大"),
+        ("deflate", PAYLOAD, "多余的工作表"),
         ("deflate", 1 << 20, "已损坏"),
     ],
 )
@@ -315,6 +321,8 @@ def test_limit_shared_by_all_members():
     ("change", "kind", "detail"),
     [
         ({"flags": 0x1}, "method", "加密"),
+        ({"flags": 0x40}, "method", "加密"),  # 强加密
+        ({"flags": 0x20}, "method", "补丁数据"),
         ({"method": 9}, "method", "deflate64"),
         ({"method": 97}, "method", "编号 97"),
         # 规范里没有的编号多半是文件坏了：按坏文件算，名单解析过后会重试
@@ -346,8 +354,11 @@ def test_damaged_data_rejected():
     assert _kind(bytes(data)) == "broken"
 
 
-def _zip64_entry(data: bytes, name: str, size: int) -> bytes:
-    """把一个部件的目录项改成 zip64 写法：解压后大小改写在 zip64 扩展里，写成 size。"""
+def _zip64_entry(
+    data: bytes, name: str, size: int | None = None, local: int | None = None
+) -> bytes:
+    """把一个部件的目录项改成 zip64 写法：解压后大小（size）、文件头偏移（local）改写在 zip64
+    扩展里（顺序和 zipfile 解读的一样：先大小、后偏移）。"""
     eocd = data.rindex(b"PK\x05\x06")
     count, _, offset = struct.unpack_from("<HLL", data, eocd + 10)
     entries, pos = [], offset
@@ -356,10 +367,14 @@ def _zip64_entry(data: bytes, name: str, size: int) -> bytes:
         end = pos + 46 + name_len + extra_len + comment_len
         entry = bytearray(data[pos:end])
         if entry[46 : 46 + name_len] == name.encode():
-            struct.pack_into("<L", entry, 24, 0xFFFFFFFF)
-            struct.pack_into("<H", entry, 30, extra_len + 12)
+            fields = b""
+            for value, at in ((size, 24), (local, 42)):
+                if value is not None:
+                    struct.pack_into("<L", entry, at, 0xFFFFFFFF)
+                    fields += struct.pack("<Q", value)
+            struct.pack_into("<H", entry, 30, extra_len + 4 + len(fields))
             at = 46 + name_len + extra_len
-            entry[at:at] = struct.pack("<HHQ", 1, 8, size)
+            entry[at:at] = struct.pack("<HH", 1, len(fields)) + fields
         entries.append(bytes(entry))
         pos = end
     directory = b"".join(entries)
@@ -379,11 +394,19 @@ class _Unseekable(BytesIO):
 
 
 def test_zip64_size_written_small_counted_by_what_actually_inflates():
-    data = _zip64_entry(_zip({"a": b"x" * 1001}), "a", 10)
+    data = _zip64_entry(_zip({"a": b"x" * 1001}), "a", size=10)
     with zipfile.ZipFile(BytesIO(data)) as archive:
         assert archive.getinfo("a").file_size == 10  # zipfile 认 zip64 扩展里写的
     assert _kind(data, max_bytes=1000) == "size"
     assert _kind(data, max_bytes=5000) == "broken"
+
+
+def test_zip64_offset_out_of_range_is_broken():
+    # zip64 扩展里写的文件头偏移大到没法定位：zipfile 打开时抛 OverflowError，按坏文件
+    data = _zip64_entry(_zip({"a": b"x" * 10}), "a", local=2**63 + 5)
+    assert _kind(data) == "broken"
+    with pytest.raises(zipfile.BadZipFile):
+        parser.parse_attachment_result(data, "docx")
 
 
 def test_data_descriptor_member_checked_by_central_directory():
