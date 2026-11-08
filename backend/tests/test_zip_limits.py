@@ -10,6 +10,7 @@ import functools
 import gc
 import struct
 import tracemalloc
+import warnings
 import zipfile
 import zlib
 from io import BytesIO
@@ -72,8 +73,10 @@ def office(kind: str) -> bytes:
     return output.getvalue()
 
 
-def patch_entry(data: bytes, name: str, *, crc=None, size=None, flags=None, method=None) -> bytes:
-    """改目录和文件头里一个部件的 CRC、解压后大小、标志位、压缩方式（造假文件用）。"""
+def patch_entry(
+    data: bytes, name: str, *, crc=None, size=None, flags=None, method=None, csize=None
+) -> bytes:
+    """改目录和文件头里一个部件的 CRC、解压后大小、标志位、压缩方式、压缩后大小（造假文件用）。"""
     out = bytearray(data)
     eocd = out.rindex(b"PK\x05\x06")
     count, _, pos = struct.unpack_from("<HLL", out, eocd + 10)
@@ -91,6 +94,8 @@ def patch_entry(data: bytes, name: str, *, crc=None, size=None, flags=None, meth
                     struct.pack_into("<H", out, header + flag_at, flags)
                 if method is not None:  # 压缩方式紧跟在标志位后面
                     struct.pack_into("<H", out, header + flag_at + 2, method)
+                if csize is not None:  # 压缩后大小紧挨在解压后大小前面
+                    struct.pack_into("<L", out, header + size_at - 4, csize)
         pos += 46 + name_len + extra_len + comment_len
     return bytes(out)
 
@@ -398,13 +403,34 @@ def test_stored_member_with_more_data_than_written_rejected():
     assert _kind(patch_entry(data, "a", size=5, crc=zlib.crc32(b"x" * 5))) == "broken"
 
 
-def test_local_header_method_ignored():
-    # 只认目录里写的方式：本地文件头写成 bzip2，zipfile 照样按目录的 deflate 读（检查和读取库一致）
+@pytest.mark.parametrize(("offset", "value"), [(8, zipfile.ZIP_BZIP2), (6, 0x1)])
+def test_local_header_method_and_flags_ignored(offset, value):
+    # 只认目录里写的方式和标志位：本地文件头写成 bzip2 或加密，zipfile 照样按目录读
+    # （检查和读取库一致）
     data = bytearray(_zip({"a": b"x" * 600}))
-    struct.pack_into("<H", data, 8, zipfile.ZIP_BZIP2)
+    struct.pack_into("<H", data, offset, value)
     _check(bytes(data))
     with zipfile.ZipFile(BytesIO(bytes(data))) as archive:
         assert archive.read("a") == b"x" * 600
+
+
+def test_duplicate_names_each_counted():
+    output = BytesIO()
+    with warnings.catch_warnings(), zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
+        warnings.simplefilter("ignore")  # zipfile 写重名部件会警告
+        archive.writestr("a", b"x" * 600)
+        archive.writestr("a", b"y" * 600)
+    # 读取库按名字只读后一个，合计照样按两个算
+    assert _kind(output.getvalue(), max_bytes=1000) == "size"
+    _check(output.getvalue(), max_bytes=1200)
+
+
+def test_partly_overlapping_entries_rejected():
+    data = _zip({"a": b"x" * 600, "b": b"y" * 600})
+    with zipfile.ZipFile(BytesIO(data)) as archive:
+        csize = archive.getinfo("a").compress_size
+    # a 的压缩数据写长了、伸进 b 的文件头：zipfile 打开时报部件重叠，按坏文件
+    assert _kind(patch_entry(data, "a", csize=csize + 40), max_bytes=5000) == "broken"
 
 
 def test_prefixed_zip_checked_the_same():

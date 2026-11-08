@@ -8,6 +8,14 @@ openpyxl、python-docx 用 ZipFile.read() 一次读完整个部件。只看 zip 
 所以这里只认不压缩和 deflate（Office、WPS、LibreOffice 存的文件只用这两种；11/5 抽查 147 份真实
 附件的 3,288 个部件也是），每个部件按 64KB 一块真解一遍、数实际解出多少（不在目录写的大小处停），
 合计超过上限就不交给读取库；解出的和目录里写的不一样也不交（文件坏了，或者故意写小）。
+
+通过以后能保证的（按同一份字节、每个部件读一次算）：每个部件读一次最多解出目录写的大小，所有部件
+合计不超过 max_bytes。openpyxl、python-docx 载入时每个部件读一两次，同一部件再读是重复同样的量，
+内存读完就放掉，峰值仍按单次算。不保证的：
+- 完整性：检查时不校验 CRC，CRC 错由之后的读取库报；
+- 打开 zip 本身的开销：ZipFile() 先解析整个中央目录、检查耗时也和压缩数据量有关，这两样靠各入口
+  原有的文件大小上限封顶（上传表格 60KB、名单附件 20MB、结果文件 4MB）。要硬性限内存和时间，
+  得把读取放进子进程（另做）。
 检查本身内存只占一块（deflate 的 read(n) 每次最多解出 n 字节），最多比上限多解一块。
 """
 
@@ -58,7 +66,8 @@ class ZipLimitError(ValueError):
 
 
 def check(archive: zipfile.ZipFile, *, max_bytes: int, max_members: int) -> None:
-    """所有部件实际解出的合计不超过 max_bytes、部件不超过 max_members 个，才可以交给读取库。"""
+    """所有部件实际解出的合计不超过 max_bytes、部件不超过 max_members 个，才可以交给读取库
+    （读取库要读的是同一份字节；保证的范围见模块说明）。"""
     infos = archive.infolist()
     if len(infos) > max_members:
         raise ZipLimitError("members", f"部件太多（{len(infos)} 个）")
