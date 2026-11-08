@@ -203,6 +203,29 @@ def test_windows_setup_script_is_utf8_with_bom():
     assert "docker compose up -d" in raw.decode("utf-8-sig")
 
 
+def test_wsl_setup_scripts_encoding():
+    """WSL 方式的两个脚本：ps1 要 BOM + CRLF（Windows PowerShell 5.1），sh 只能是 LF、可执行（bash）。"""
+    ps1 = (SELFHOST / "local" / "setup-wsl.ps1").read_bytes()
+    assert ps1.startswith(b"\xef\xbb\xbf")
+    assert b"\n" not in ps1.replace(b"\r\n", b"")  # 每一行都是 CRLF
+    text = ps1.decode("utf-8-sig")
+    # 不用 Stop：由别的程序启动时，5.1 会把外部命令的标准错误当成报错中止脚本
+    assert '$ErrorActionPreference = "Continue"' in text
+    # 中文引号在 PowerShell 里也算字符串引号，写进提示会把字符串截断
+    assert "“" not in text and "”" not in text
+    sh_path = SELFHOST / "local" / "setup-wsl.sh"
+    assert b"\r" not in sh_path.read_bytes()
+    assert sh_path.stat().st_mode & 0o111
+
+
+def test_compose_base_images_pinned_by_digest():
+    """国内经镜像站拉 Docker Hub 的镜像：按摘要锁定，Docker 校验内容，镜像站换不了。"""
+    for name in ("local", "server", "test"):
+        for line in (SELFHOST / name / "docker-compose.yml").read_text().splitlines():
+            if line.strip().startswith("image:") and ("mysql" in line or "caddy" in line):
+                assert "@sha256:" in line, f"{name}: {line.strip()}"
+
+
 def test_offsite_pull_keeps_a_ciphertext_copy_locally(tmp_path):
     """本机每天把异地最新的加密备份下一份（已经有就不下），删掉过期的。"""
     settings = offsite_settings(tmp_path)

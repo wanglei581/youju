@@ -1,14 +1,16 @@
 # 2.0 本机（创始人的 Windows 主机，Docker Desktop + WSL2）：抓取、处理，公开数据的主库和原始文件。
 # 不存任何用户数据：只往服务器推公开数据（youju sync-push），不从服务器拉东西。
-# 用法见 docs/部署/自建服务器.md 第四节（setup.ps1 一键装）。在这个目录下：
-#   copy env.example .env   （按说明填好）
+# 用法见 docs/部署/自建服务器.md 第五节：一键脚本 setup-wsl.ps1（WSL 里装 Docker 引擎，不要 Docker Desktop）
+# 或 setup.ps1（Docker Desktop，要 Windows 11 23H2 以上）。手动的话在这个目录下：
+#   cp env.example .env   （按说明填好）
 #   docker compose up -d
-# 数据都在 Docker 的卷里（WSL2 的虚拟磁盘），Docker Desktop 设置里把磁盘位置放到空间大的盘。
+# 数据都在 Docker 的卷里：WSL 方式在 E:\youju\wsl 的虚拟磁盘里；Docker Desktop 在设置里把磁盘位置放到空间大的盘。
 name: youju-local
 
 services:
   mysql:
-    image: mysql:8.0
+    # 基础镜像按摘要锁定：国内要经镜像站拉，Docker 按摘要校验内容；升级时查 Docker Hub 上该标签的摘要一起改
+    image: mysql:8.0@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b
     restart: unless-stopped
     command:
       - --character-set-server=utf8mb4

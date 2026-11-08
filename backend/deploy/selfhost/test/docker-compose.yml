@@ -34,7 +34,7 @@ services:
     command: ["python", "/app/backend/deploy/selfhost/test/wxmock.py"]
 
   server-mysql:
-    image: mysql:8.0
+    image: mysql:8.0@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b
     command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_0900_bin", "--default-time-zone=+00:00"]
     environment: {MYSQL_ROOT_PASSWORD: test-only-root, MYSQL_DATABASE: youju, MYSQL_USER: youju, MYSQL_PASSWORD: test-only-db}
     volumes: ["../server/mysql.cnf:/etc/mysql/conf.d/youju.cnf:ro"]
@@ -67,14 +67,14 @@ services:
       retries: 60
 
   caddy:
-    image: caddy:2
+    image: caddy:2@sha256:4fcafa98afd1c2e642e353e3c5cf9ddbe892fcee14bc990e7ba2c5b78e51f9cf
     environment: {YOUJU_DOMAIN: ":18080", YOUJU_PUSH_PATH: /api/wx/push}
     ports: ["127.0.0.1:18080:18080"]
     volumes: ["../server/Caddyfile:/etc/caddy/Caddyfile:ro"]
     depends_on: [api, server-worker]
 
   local-mysql:
-    image: mysql:8.0
+    image: mysql:8.0@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b
     command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_0900_bin", "--default-time-zone=+00:00", "--skip-log-bin"]
     environment: {MYSQL_ROOT_PASSWORD: test-only-root, MYSQL_DATABASE: youju, MYSQL_USER: youju, MYSQL_PASSWORD: test-only-db}
     healthcheck:

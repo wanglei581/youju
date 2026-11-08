@@ -22,7 +22,8 @@ x-app: &app
 
 services:
   mysql:
-    image: mysql:8.0
+    # 基础镜像按摘要锁定：国内要经镜像站拉，Docker 按摘要校验内容；升级时查 Docker Hub 上该标签的摘要一起改
+    image: mysql:8.0@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b
     restart: unless-stopped
     command:
       - --character-set-server=utf8mb4
@@ -85,7 +86,7 @@ services:
 
   # 反向代理：自动申请、续期 HTTPS 证书（域名要先备案、解析到这台服务器）
   caddy:
-    image: caddy:2
+    image: caddy:2@sha256:4fcafa98afd1c2e642e353e3c5cf9ddbe892fcee14bc990e7ba2c5b78e51f9cf
     restart: unless-stopped
     environment:
       YOUJU_DOMAIN: ${YOUJU_DOMAIN:?在 .env 里填 YOUJU_DOMAIN}
