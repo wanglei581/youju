@@ -20,6 +20,8 @@ from youju.sources.onboard import checked_city, checked_district
 # 按"验证状态"的开头决定抓取方式，以及本迭代是否启用
 _MODES: list[tuple[str, str, bool]] = [
     ("已验证", "static", True),
+    # 全国覆盖盘点试读通过的新栏目：能直接读，但先不启用，等分批核对后在后台打开
+    ("试跑可读", "static", False),
     ("需浏览器渲染", "browser", False),  # 浏览器渲染在后续迭代实现
     ("已访问", "manual", False),  # 需要人工确认列表页或找列表接口
     ("本机无法访问", "manual", False),
@@ -35,6 +37,8 @@ class ImportSummary:
     disabled: int = 0
 
 
+# 这些状态的来源重导入时不改启用开关（新建时不启用，之后由后台分批打开）
+_KEEP_ENABLED = ("试跑可读",)
 # 状态里出现这些词，说明网站明确不欢迎脚本访问：一律停用，不用浏览器渲染等方式绕过
 _REFUSAL_WORDS = ("拒绝", "防护", "拦截", "robots 禁止")
 
@@ -94,6 +98,10 @@ def import_sources(session: Session, csv_path: Path) -> ImportSummary:
             session.add(Source(url=url, parser_config={}, **fields))
             summary.created += 1
         else:
+            if status.startswith(_KEEP_ENABLED):
+                # 全国覆盖的新栏目只在新建时设为不启用；后台核对后打开的，重导入不关掉
+                fields.pop("enabled")
+                enabled = source.enabled
             for key, value in fields.items():
                 setattr(source, key, value)
             summary.updated += 1
