@@ -15,6 +15,12 @@ function short(title) {
   return title.length > 30 ? `${title.slice(0, 30)}…` : title;
 }
 
+// 字数：一万以上写"约 4.8 万字"
+function charsText(chars) {
+  if (chars >= 10000) return `约 ${(Math.round(chars / 1000) / 10).toFixed(1)} 万字`;
+  return `约 ${chars} 字`;
+}
+
 function view(raw) {
   const item = raw && typeof raw === 'object' ? raw : {};
   const chars = Number.isInteger(item.chars) && item.chars > 0 ? item.chars : 0;
@@ -28,7 +34,7 @@ function view(raw) {
     cleaned: item.cleaned === true,
     state: item.cleaned === true
       ? '原通知已清理，这里是保存的副本'
-      : `约 ${chars} 字${item.truncated === true ? '（太长，后面的附件没有存全）' : ''}`,
+      : `${charsText(chars)}${item.truncated === true ? '（太长，后面的附件没有存全）' : ''}`,
   };
 }
 
@@ -72,7 +78,7 @@ Page({
   },
 
   enable() {
-    return ensureConsent().then((ok) => { if (ok) this.load(); });
+    return ensureConsent({ purpose: 'save' }).then((ok) => { if (ok) this.load(); });
   },
 
   pick(e) {

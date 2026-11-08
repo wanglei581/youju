@@ -215,9 +215,28 @@ test('我的页：服务端给了 saved、包里有这一页才放"我的保存"
   assert.doesNotMatch(tree({ savedEntry: false }), /我的保存/);
 });
 
-test('注销确认：包里有"我的保存"时写上保存的通知', () => {
+test('注销确认写上保存的通知；从"保存"来的同意弹窗写"保存通知前"，不写"关注和纠错"', async () => {
   const consent = read('utils/consent.js');
   assert.match(consent, /const saved = has && has\.saved \? '、保存的通知' : ''/);
+  const modals = [];
+  const mod = { exports: {} };
+  vm.runInNewContext(consent, {
+    module: mod, setTimeout, clearTimeout, Promise,
+    require(name) {
+      if (name === '../content/legal.js') return { final: true, version: '2027-01' };
+      if (name === './config.js') return { templates: {} };
+      if (name === './api.js') return { isLive: () => true, AGREED_KEY: 'agreed', forgetAgreed() {}, me: () => Promise.resolve({ agreed: null }) };
+      if (name === './exports.js' || name === './exporter.js') return {};
+      if (/ai-access\.js$/.test(name)) return require('./helpers/ai-off.js');
+      if (/(^|\/)pages\.js$/.test(name)) return require('./helpers/package-pages-default.js').pages;
+      throw new Error(name);
+    },
+    wx: { getStorageSync: () => '', setStorageSync() {}, removeStorageSync() {}, showToast() {}, showModal: (o) => { modals.push(o); o.success({ confirm: false }); }, navigateTo() {} },
+  });
+  const ok = await mod.exports.ensureConsent({ purpose: 'save' });
+  assert.equal(ok, false);
+  assert.match(modals[0].content, /^保存通知前，请阅读并同意《用户协议》和《隐私保护指引》/);
+  assert.doesNotMatch(modals[0].content, /关注和纠错/);
 });
 
 test('接口：保存、列表、按页读、删除、导出的地址和方法', async () => {

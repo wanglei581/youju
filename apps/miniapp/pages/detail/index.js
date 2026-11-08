@@ -326,7 +326,7 @@ Page({
     if (!doc || !this.data.goneWindow || this.savingGone) return undefined;
     this.savingGone = true;
     const done = () => { this.savingGone = false; };
-    return ensureConsent().then((ok) => {
+    return ensureConsent({ purpose: 'save' }).then((ok) => {
       if (!ok) return undefined;
       wx.showLoading({ title: '正在保存…', mask: true });
       return api.saveDoc(doc.id).then(() => {

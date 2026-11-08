@@ -142,8 +142,12 @@ const AI_CONSENT_PAGE = `${CONSENT_PAGE}&for=ai`;
 // 同意以后能用上 AI 的入口写明用途：ai 是 AI 首页、解读页、对照页；tools 是 AI 对这个人开着时的工具中心、我的记录
 const PURPOSES = { ai: 'AI 解读和条款对照', tools: '工具（含 AI 解读和条款对照）' };
 
+// 从"保存"来的（D-123，原网页打不开的通知存到我的保存）：弹窗写保存通知，不写"关注和纠错"
+const SAVE_PURPOSE = 'save';
+
 function askConsent(purpose) {
   const ai = Object.prototype.hasOwnProperty.call(PURPOSES, purpose);
+  const saving = purpose === SAVE_PURPOSE;
   // 协议更新后、或同意以后能用上 AI（两份文件里有 AI 功能的约定）：只能先读全文，在全文最后同意，
   // 弹窗写明是为了用什么（Codex 小程序第 13、15 轮）
   if (outdated || ai) {
@@ -153,7 +157,7 @@ function askConsent(purpose) {
     wx.showModal({
       title: outdated ? '协议已更新' : '请先阅读并同意',
       content: outdated
-        ? `《用户协议》和《隐私保护指引》已更新。请先阅读更新后的全文，在全文最后同意后，再使用${what}。`
+        ? `《用户协议》和《隐私保护指引》已更新。请先阅读更新后的全文，在全文最后同意后，再${saving ? '保存通知' : `使用${what}`}。`
         : `使用${what}前，请先阅读《用户协议》和《隐私保护指引》全文（里面有 AI 功能的约定），在全文最后同意。`,
       confirmText: '阅读全文',
       cancelText: '暂不',
@@ -164,7 +168,7 @@ function askConsent(purpose) {
   return new Promise((resolve) => {
     wx.showModal({
       title: '请先阅读并同意',
-      content: `使用${featureNames()}前，请阅读并同意《用户协议》和《隐私保护指引》。我们只保存你的微信用户标识和你主动设置、提交的内容，可随时在\u201c我的\u201d里注销并删除。`,
+      content: `${saving ? '保存通知' : `使用${featureNames()}`}前，请阅读并同意《用户协议》和《隐私保护指引》。我们只保存你的微信用户标识和你主动设置、提交的内容，可随时在\u201c我的\u201d里注销并删除。`,
       confirmText: '同意',
       cancelText: '先看协议',
       success: (res) => {
