@@ -211,6 +211,41 @@ def test_takedown_propagates_without_notes(env):
     assert event["action"] == "takedown" and event["note"] == ""
 
 
+def test_link_gone_status_and_cleanup_propagate(env):
+    """D-123（官方失效的通知 7 天后清理）：本机标"原网页已失效"、恢复、到期清理删掉，都经同步到服务器。
+    服务器据此提示哪天清理；和下架（taken_down_at）分得开。"""
+    src = source(env.local)
+    doc = document(env.local, src, "a")
+    keep = document(env.local, src, "b")
+    bootstrap(env)
+
+    def mark(doc_id, value):
+        with env.local.begin() as conn:
+            conn.execute(
+                T["documents"]
+                .update()
+                .where(T["documents"].c.id == doc_id)
+                .values(link_gone_at=value)
+            )
+
+    mark(doc, NOW)
+    local.push(env.local, env.client)
+    gone = {r["id"]: r for r in rows(env.server, "documents")}
+    assert gone[doc]["link_gone_at"] is not None and gone[doc]["taken_down_at"] is None
+    assert gone[keep]["link_gone_at"] is None
+    # 又能打开了（清空失效时间）也过去
+    mark(doc, None)
+    local.push(env.local, env.client)
+    assert all(r["link_gone_at"] is None for r in rows(env.server, "documents"))
+    # 到期清理：本机删掉，服务器跟着删（正文级联）
+    mark(doc, NOW)
+    with env.local.begin() as conn:
+        conn.execute(T["documents"].delete().where(T["documents"].c.id == doc))
+    local.push(env.local, env.client)
+    assert [r["id"] for r in rows(env.server, "documents")] == [keep]
+    assert [r["document_id"] for r in rows(env.server, "document_details")] == [keep]
+
+
 def test_user_data_survives_updates_and_follows_deletes(env):
     src = source(env.local)
     doc = document(env.local, src, "a")
