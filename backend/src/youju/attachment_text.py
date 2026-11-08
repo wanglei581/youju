@@ -1416,6 +1416,8 @@ def _pdf(data: bytes) -> _Found:
             first_pages=limits.pdf_first_pages,
         )
     except pdf_sandbox.Failed as exc:
+        if exc.retry:  # 和当时的环境有关：不当成这份文件取不出，原样抛出，过一段时间再取
+            raise
         raise _pdf_failed(exc, limits.seconds) from exc
     pages = found["pages"]
     if "read" not in found:
@@ -2143,6 +2145,10 @@ def _extract(data: bytes) -> Extraction:
     except Unreadable as exc:
         return Extraction(file_type, reason=exc.reason, detail=exc.detail)
     except Exception as exc:  # noqa: BLE001 - 第三方解析器对损坏文件会抛多种异常
+        if getattr(exc, "retry", False) is True:
+            # 读 PDF 的子进程遇到和当时的环境有关的问题（pdf_sandbox.Failed）：不记成损坏，抛给
+            # 调用方，按"取到一半进程中断"那样下次再取（附件任务）、或者过一段时间再读（查名单）
+            raise
         log.info("附件取文字出错（%s）：%s", file_type, exc.__class__.__name__)
         return Extraction(
             file_type, reason="broken", detail=f"文件解析出错（{exc.__class__.__name__}）"

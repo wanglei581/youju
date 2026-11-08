@@ -278,7 +278,16 @@ CRASHES = {
     # 不是父进程杀的 SIGKILL：多半是容器内存不够，系统停掉的
     "killed": (
         "import os, signal; os.kill(os.getpid(), signal.SIGKILL)\n",
-        ("memory", "解析时内存不够，被系统停掉"),
+        ("killed", "解析时内存不够，被系统停掉"),
+    ),
+    # 设不了资源上限（这里先把文件大小的硬上限压低）：不读
+    "limits": (
+        "import resource, sys\n"
+        "resource.setrlimit(resource.RLIMIT_FSIZE, (1000, 1000))\n"
+        "sys.path.insert(0, sys.argv[1])\n"
+        "from youju.pdf_sandbox import _child\n"
+        "_child()\n",
+        ("limits", "解析的子进程设不了资源上限"),
     ),
     "uncaught": ("raise KeyError('某某')\n", ("crash", "解析时子进程异常退出：退出码 1，KeyError")),
     "garbage": (
@@ -304,12 +313,44 @@ def test_crashed_or_garbled_child_is_a_failure(monkeypatch, name) -> None:
     with pytest.raises(pdf_sandbox.Failed) as raised:
         pdf_sandbox.read("body", make_pdf(TEXT), seconds=60, pages=200)
     assert (raised.value.kind, raised.value.detail) == (kind, detail)
+    # 文件本身的（同一份再读还是一样）不重读；和当时的环境有关的过一段时间再读
+    assert raised.value.retry == (kind in ("crash", "killed", "limits"))
 
 
-def test_crash_in_all_four_readers(monkeypatch) -> None:
-    monkeypatch.setattr(pdf_sandbox, "_BOOT", CRASHES["segfault"][0])
-    detail = "解析时子进程异常退出：SIGSEGV"
-    assert results(make_pdf(TEXT)) == failed(detail, text_reason="broken")
+def test_wall_clock_backstop_is_retried_later(monkeypatch) -> None:
+    """子进程不用 CPU 却一直不结束（卡住、容器忙得轮不上）：墙上时间兜底到了停掉，过一段时间再读。"""
+    monkeypatch.setattr(pdf_sandbox, "_BOOT", "import time; time.sleep(60)\n")
+    monkeypatch.setattr(pdf_sandbox, "_wall", lambda seconds: 1)
+    started = time.monotonic()
+    with pytest.raises(pdf_sandbox.Failed) as raised:
+        pdf_sandbox.read("body", make_pdf(TEXT), seconds=60, pages=200)
+    assert (raised.value.kind, raised.value.retry) == ("busy", True)
+    assert time.monotonic() - started < 20
+
+
+def test_child_that_cannot_start_is_retried_later(monkeypatch) -> None:
+    def broken(*args, **kwargs):
+        raise OSError(12, "Cannot allocate memory")
+
+    monkeypatch.setattr(subprocess, "Popen", broken)
+    with pytest.raises(pdf_sandbox.Failed) as raised:
+        pdf_sandbox.read("body", make_pdf(TEXT), seconds=60, pages=200)
+    assert (raised.value.kind, raised.value.retry) == ("spawn", True)
+
+
+def test_retryable_failures_in_all_four_readers(monkeypatch) -> None:
+    """和当时的环境有关的（这里是被系统停掉）：副本按临时问题较快重查；附件文字不记成取不出，抛给
+    调用方下次再取；名单记"解析失败"6 小时后再试；PDF 正文写明原因（正文读不了的都不自动重抓）。"""
+    monkeypatch.setattr(pdf_sandbox, "_BOOT", CRASHES["killed"][0])
+    pdf = make_pdf(TEXT)
+    check = copies.check_content(pdf, "pdf")
+    assert (check.code, check.transient) == ("unchecked", True)
+    with pytest.raises(pdf_sandbox.Failed, match="被系统停掉"):
+        attachment_text.extract(pdf)
+    with pytest.raises(pdf_sandbox.Failed) as raised:
+        parse_attachment(pdf, "pdf")
+    assert raised.value.error == "被系统停掉"  # 名单记"解析失败：被系统停掉"
+    assert extract_pdf_text(pdf) == ("", "PDF 解析时内存不够，被系统停掉")
 
 
 def test_output_limit(monkeypatch) -> None:
@@ -396,3 +437,10 @@ def test_children_limit_themselves() -> None:
 
 def test_signal_names_for_unknown_codes() -> None:
     assert pdf_sandbox._died(-signal.SIGTERM, None) == "SIGTERM"
+
+
+def test_alarm_is_held_while_the_child_starts() -> None:
+    """起子进程的那一下挡住 SIGALRM（调用方的限时到了也不会留下没人管的子进程），出来就放开。"""
+    with pdf_sandbox._alarm_held():
+        assert signal.SIGALRM in signal.pthread_sigmask(signal.SIG_BLOCK, [])
+    assert signal.SIGALRM not in signal.pthread_sigmask(signal.SIG_BLOCK, [])

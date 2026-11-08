@@ -12,16 +12,23 @@ _time_limit 用 SIGALRM，只在主线程里管用；补详情读 PDF 正文是�
   MemoryError 就立刻退出（sys.monitoring 看着每个抛出的异常），整份按内存超了算。只在 Linux 上
   管用（CI、线上）：本机 macOS 设不了 RLIMIT_AS（setrlimit 报错，分配照样成功）。另外把子进程的
   oom_score_adj 调到最大：整个容器内存不够时，系统先停读 PDF 的子进程，不先停定时任务、核对台；
-- 时间：父进程最多等 seconds 秒，到了就杀掉子进程，哪个线程里调用都管用；子进程自己另有 CPU
-  时间上限（RLIMIT_CPU，多给 _CPU_GRACE 秒），父进程意外没了也停得下来；
+- 时间：按子进程自己用的 CPU 时间算（RLIMIT_CPU，seconds 秒）：容器忙的时候排队等 CPU 的时间
+  不算，同一份文件在哪种负载下结果都一样，哪个线程里调用都管用（SIGALRM 只能在主线程）。父进程
+  另外最多等 _wall(seconds) 秒（墙上时间，兜底：子进程卡住不用 CPU、或者容器忙得一直轮不上）；
 - 结果：子进程写进一个临时文件（RLIMIT_FSIZE 限住大小，写不进去就退出），父进程看过大小再读。
   只传 JSON（字符串、数字、列表、字典），不用 pickle：子进程读的是不可信的文件，父进程不执行它
   给回来的任何东西；
 - 环境：子进程只带 PATH、LANG（数据库地址、密钥一概不带），用 -I 启动（不读 PYTHON* 环境变量、
-  不把当前目录加进 sys.path），代码从父进程同一份 youju 读；
+  不把当前目录加进 sys.path），代码从父进程同一份 youju 读。这里管的是资源和环境变量，不是安全
+  沙箱：子进程照样能读本用户能读的文件、能联网（pdfminer 是纯 Python，读 PDF 不执行文件里的代码）；
 - 一个进程里同时最多 PARALLEL 个子进程（补详情 4 个线程一起跑；容器只有 1 核，多开也不会更快，
-  内存却要按个数翻倍）；
+  内存却要按个数翻倍）。限时从拿到名额以后算：排队等别的文件不算这一份的时间，免得好好的文件
+  因为前面有慢的而被判超时；
 - pdf_limits 的解压上限在子进程里照样用：父进程把当时的上限传过去。
+
+没读成分两种（Failed.retry）：文件本身的（拒读、打不开、出错、内存或 CPU 时间超了、读出的太多），
+同一份文件再读还是一样，四处照原来的办法记、不反复重读；和当时的环境有关的（起不了子进程、
+设不了资源上限、容器内存不够被系统停掉、墙上时间兜底到了、子进程崩了），过一段时间再读。
 
 读 PDF 的那一段（打开、翻页、取哪些字段、什么时候停）都在这里，按 TASKS 分开，写法照搬原来
 四处的代码；拿回去以后怎么判断（扫描件、太大、表格里哪列是名称）还在原来的模块里。原来抛异常
@@ -56,11 +63,12 @@ MEMORY_MAX = 1024 * _MB
 OUTPUT_MAX = 64 * _MB
 # 一个进程里同时读 PDF 的子进程个数
 PARALLEL = 1
-# 子进程自己的 CPU 时间上限比父进程等的时间多这么多秒（父进程到时会先杀掉它）
-_CPU_GRACE = 10
-# 子进程出了 MemoryError、结果写不下时的退出码
+# 子进程出了 MemoryError、结果写不下、设不了资源上限时的退出码
 _EXIT_MEMORY = 77
 _EXIT_OUTPUT = 78
+_EXIT_LIMITS = 79
+# 和当时的环境有关、过一段时间再读的几种（见模块说明）
+_RETRY = {"spawn", "limits", "killed", "busy", "crash"}
 _SLOTS = threading.BoundedSemaphore(PARALLEL)
 # youju 包所在的目录：子进程用 -I 启动不读 PYTHONPATH，从这里导入和父进程同一份代码
 _ROOT = Path(__file__).resolve().parents[1]
@@ -75,8 +83,10 @@ class Failed(Exception):
     - refused：pdf_limits 拒读（reason 是它给的 too_large、format、broken）；
     - open：打不开（损坏、加密），error 是 pdfplumber 抛的异常类名；
     - error：读的时候出错，error 同上；
-    - memory、time、output：内存、时间、结果超了（reason 都是 too_large）；
-    - crash：子进程异常退出、写回的结果不对（reason 是 broken）。
+    - memory、time、output：内存、CPU 时间、读出的结果超了（reason 都是 too_large）；
+    - spawn、limits、killed、busy、crash：起不了子进程、设不了资源上限、被系统停掉（多半是容器
+      内存不够）、墙上时间兜底到了、子进程崩了或写回的结果不对。和当时的环境有关，retry 为真，
+      error 是一句短的说明（名单记"解析失败：……"，过 6 小时再试）。
 
     detail 写具体原因，不带"PDF"两个字（调用方自己接）。"""
 
@@ -86,6 +96,7 @@ class Failed(Exception):
         self.reason = reason
         self.detail = detail
         self.error = error
+        self.retry = kind in _RETRY
 
 
 def read(task: str, data: bytes, *, seconds: float, **options) -> dict:
@@ -100,10 +111,10 @@ def read(task: str, data: bytes, *, seconds: float, **options) -> dict:
         "document_max": pdf_limits.DOCUMENT_MAX,
         "memory": MEMORY_MAX,
         "output": OUTPUT_MAX,
-        "cpu": math.ceil(seconds) + _CPU_GRACE,
+        "cpu": max(1, math.ceil(seconds)),
     }
     try:
-        with _SLOTS:
+        with _SLOTS:  # 限时从拿到名额以后算（见模块说明）
             return _answer(_spawn(cfg, data, seconds))
     except Failed as exc:
         if exc.kind not in ("open", "error"):  # 普通的坏文件不记，超了、拒读的记一条
@@ -123,8 +134,13 @@ def _answer(answer: dict) -> dict:
     raise Failed("error", "broken", f"解析出错（{answer['error']}）", answer["error"])
 
 
+def _wall(seconds: float) -> float:
+    """父进程最多等多少秒（墙上时间，兜底）：CPU 时间的三倍再多半分钟。"""
+    return seconds * 3 + 30
+
+
 def _spawn(cfg: dict, data: bytes, seconds: float) -> dict:
-    """起子进程读，等它读完（最多 seconds 秒），返回它写回的 JSON；超时、超内存、崩了抛 Failed。
+    """起子进程读，等它读完，返回它写回的 JSON；超时、超内存、崩了抛 Failed。
     输入、输出、错误输出都是临时文件（不用管道：不会卡住，输出大小也好限）。"""
     with (
         tempfile.TemporaryFile() as given,
@@ -134,23 +150,42 @@ def _spawn(cfg: dict, data: bytes, seconds: float) -> dict:
         given.write(data)
         given.flush()
         given.seek(0)
-        child = subprocess.Popen(
-            [sys.executable, "-I", "-c", _BOOT, str(_ROOT), json.dumps(cfg)],
-            stdin=given,
-            stdout=out,
-            stderr=err,
-            env=_env(),
-        )
+        child = None
         try:
-            code = child.wait(timeout=seconds)
+            # 起子进程的时候不让调用方的 SIGALRM 打断（打断了可能留下没人管的子进程）；
+            # 挡住的信号在这个 try 里面放出来，下面的 finally 照样停掉子进程
+            with _alarm_held():
+                child = subprocess.Popen(
+                    [sys.executable, "-I", "-c", _BOOT, str(_ROOT), json.dumps(cfg)],
+                    stdin=given,
+                    stdout=out,
+                    stderr=err,
+                    env=_env(),
+                )
+            code = child.wait(timeout=_wall(seconds))
+        except OSError as exc:
+            raise Failed("spawn", "broken", "起不了解析的子进程", "起不了子进程") from exc
         except subprocess.TimeoutExpired:
-            raise Failed("time", "too_large", f"解析超过 {seconds:g} 秒") from None
+            detail = f"解析等了 {_wall(seconds):g} 秒还没完（系统繁忙）"
+            raise Failed("busy", "too_large", detail, "系统繁忙") from None
         finally:
-            # 超时、调用方自己的超时（SIGALRM）打断等待时，子进程一定要停掉
-            if child.poll() is None:
+            # 超时、调用方自己的超时（SIGALRM）打断等待时，子进程一定要停掉、收回
+            if child is not None and child.poll() is None:
                 child.kill()
                 child.wait()
         return _output(code, cfg, seconds, out, err)
+
+
+@contextlib.contextmanager
+def _alarm_held():
+    if threading.current_thread() is not threading.main_thread():
+        yield  # 别的线程收不到 SIGALRM 的处理（Python 只在主线程里调信号处理函数）
+        return
+    old = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGALRM})
+    try:
+        yield
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, old)
 
 
 def _env() -> dict[str, str]:
@@ -161,15 +196,18 @@ def _env() -> dict[str, str]:
 def _output(code: int, cfg: dict, seconds: float, out, err) -> dict:
     if code == _EXIT_MEMORY:
         raise Failed("memory", "too_large", f"解析用的内存超过 {_size(cfg['memory'])}")
-    if code == -signal.SIGKILL:  # 不是父进程杀的（超时在前面）：多半是容器内存不够，系统停掉的
-        raise Failed("memory", "too_large", "解析时内存不够，被系统停掉")
     if code == -signal.SIGXCPU:
         raise Failed("time", "too_large", f"解析超过 {seconds:g} 秒")
+    if code == _EXIT_LIMITS:
+        raise Failed("limits", "broken", "解析的子进程设不了资源上限", "设不了资源上限")
+    if code == -signal.SIGKILL:  # 不是父进程杀的（超时在前面）：多半是容器内存不够，系统停掉的
+        raise Failed("killed", "too_large", "解析时内存不够，被系统停掉", "被系统停掉")
     size = os.fstat(out.fileno()).st_size
-    if code == _EXIT_OUTPUT or size > cfg["output"] + 8:
+    if code in (_EXIT_OUTPUT, -signal.SIGXFSZ) or size > cfg["output"] + 8:
         raise Failed("output", "too_large", f"读出的内容超过 {_size(cfg['output'])}")
     if code != 0:
-        raise Failed("crash", "broken", f"解析时子进程异常退出：{_died(code, err)}")
+        detail = f"解析时子进程异常退出：{_died(code, err)}"
+        raise Failed("crash", "broken", detail, "子进程异常退出")
     out.seek(0)
     head = out.read(8)
     answer = None
@@ -179,7 +217,7 @@ def _output(code: int, cfg: dict, seconds: float, out, err) -> dict:
         except (ValueError, RecursionError):
             answer = None
     if not isinstance(answer, dict) or len(answer) != 1 or not answer.keys() & _ANSWERS:
-        raise Failed("crash", "broken", "解析时子进程写回的结果不对")
+        raise Failed("crash", "broken", "解析时子进程写回的结果不对", "子进程写回的结果不对")
     return answer
 
 
@@ -228,6 +266,8 @@ def _child() -> None:
         raw = json.dumps(answer, ensure_ascii=False).encode("utf-8", "surrogatepass")
     except MemoryError:
         os._exit(_EXIT_MEMORY)
+    if len(raw) > cfg["output"]:
+        os._exit(_EXIT_OUTPUT)
     try:
         out.write(len(raw).to_bytes(8, "big"))
         out.write(raw)
@@ -238,17 +278,23 @@ def _child() -> None:
 
 
 def _limit(cfg: dict) -> None:
+    """设资源上限。设不上的就退出（没有上限不读不可信的文件），只有 macOS 上的 RLIMIT_AS 例外
+    （设不了，本机开发、测试照样读）。"""
     import resource
 
     for name, soft, hard in (
         ("RLIMIT_AS", cfg["memory"], cfg["memory"]),
+        # 到了软上限收到 SIGXCPU（默认就退出），硬上限多给 5 秒再 SIGKILL
         ("RLIMIT_CPU", cfg["cpu"], cfg["cpu"] + 5),
         ("RLIMIT_FSIZE", cfg["output"] + 8, cfg["output"] + 8),
         # 崩了、超了 CPU 时间不写内存转储（几百 MB 写进容器的磁盘）
         ("RLIMIT_CORE", 0, 0),
     ):
-        with contextlib.suppress(ValueError, OSError):  # macOS 设不了 RLIMIT_AS
+        try:
             resource.setrlimit(getattr(resource, name), (soft, hard))
+        except (ValueError, OSError):
+            if not (name == "RLIMIT_AS" and sys.platform != "linux"):
+                os._exit(_EXIT_LIMITS)
     try:
         with open("/proc/self/oom_score_adj", "w") as fh:  # 只有 Linux 有；调大不用特权
             fh.write("1000")

@@ -522,7 +522,10 @@ def _ole_pictures(data: bytes, file_type: str) -> str:
 
 def text_of(data: bytes, file_type: str) -> str | None:
     """附件里的文字，用来查个人信息；取不出（扫描件、损坏、太大、Office 部件的压缩方式不支持、
-    PDF 解压后太大、读 PDF 超时超内存）返回 None。有查不了的图片（见 HasImages）抛 HasImages。"""
+    PDF 解压后太大、读 PDF 超时超内存）返回 None。有查不了的图片（见 HasImages）抛 HasImages；
+    读 PDF 时遇到和当时的环境有关的问题（pdf_sandbox.Failed，retry 为真）照样抛出，稍后再查。"""
+    from youju import pdf_sandbox
+
     try:
         if file_type == "pdf":
             return _pdf_text(data)
@@ -533,6 +536,10 @@ def text_of(data: bytes, file_type: str) -> str | None:
         return f"{main}\n{pictures}"
     except HasImages:
         raise
+    except pdf_sandbox.Failed as exc:
+        if exc.retry:
+            raise
+        return None
     except Exception:  # noqa: BLE001 - 第三方解析器对损坏文件会抛多种异常
         return None
 
@@ -552,10 +559,16 @@ def check_content(data: bytes, declared: str) -> str | Failure:
     detected = detect_type(data)
     if detected is None or _FAMILY[detected] != _FAMILY.get(declared):
         return Failure("mismatch", "文件内容和扩展名对不上（可能是网页，或文件已损坏、加密）")
+    from youju import pdf_sandbox
+
     try:
         text = text_of(data, detected)
     except HasImages as exc:
         return Failure("image", f"含图片，无法核验个人信息（{exc}）")
+    except (
+        pdf_sandbox.Failed
+    ) as exc:  # 和当时的环境有关（容器忙、内存不够等）：已有副本照用，稍后再查
+        return Failure("unchecked", f"这次没读成 PDF（{exc.detail}），稍后再查", True)
     if text is None:
         return Failure("unchecked", "取不出文字（扫描件或文件损坏），没法检查有没有个人信息")
     if has_personal_numbers(text):

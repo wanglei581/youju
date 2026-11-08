@@ -341,7 +341,8 @@ def _word97_entries(
 def _read_pdf(data: bytes) -> dict:
     """在限内存、限时的子进程里读 PDF 的表格（pdf_sandbox）：前 MAX_PDF_PAGES 页的表格、有没有字。
     解压后太大、压缩方式不支持、超时、超内存、读出的太多，记"暂不支持这份 PDF（原因）"，不再重试；
-    打不开、读的时候出错的照旧按出错记（解析失败：异常类名，过 6 小时再试）。"""
+    打不开、读的时候出错的照旧按出错记（解析失败：异常类名，过 6 小时再试），和当时的环境有关的
+    （容器忙、内存不够被系统停掉、子进程崩了等）也一样过 6 小时再试。"""
     try:
         return pdf_sandbox.read(
             "list",
@@ -354,7 +355,7 @@ def _read_pdf(data: bytes) -> dict:
             chars=_MAX_TEXT_CHARS,
         )
     except pdf_sandbox.Failed as exc:
-        if exc.kind in ("open", "error"):
+        if exc.kind in ("open", "error") or exc.retry:
             raise
         raise ValueError(f"暂不支持这份 PDF（{exc.detail}）") from exc
 

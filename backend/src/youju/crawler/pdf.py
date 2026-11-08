@@ -19,7 +19,8 @@ def extract_pdf_text(content: bytes) -> tuple[str, str | None]:
             return "", f"PDF 超过 {MAX_PAGES} 页"
         body = found["text"].strip()
     except pdf_sandbox.Failed as exc:
-        # 损坏、读的时候出错照旧记"无法解析"；解压超了、超时、超内存写明原因
+        # 损坏、读的时候出错照旧记"无法解析"；解压超了、超时、超内存等写明原因（PDF 正文读不了的
+        # 都不自动重抓，和以前一样）
         return "", "PDF 无法解析" if exc.kind in ("open", "error") else f"PDF {exc.detail}"
     except Exception:  # noqa: BLE001 - 起不了子进程等，和原来解析出错一样记
         return "", "PDF 无法解析"
