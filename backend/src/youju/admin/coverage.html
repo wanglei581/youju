@@ -29,6 +29,8 @@
   .kpi { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; cursor: pointer; background: #fff; text-align: left; }
   .kpi b { display: block; font-size: 22px; font-variant-numeric: tabular-nums; }
   .kpi span { color: var(--t2); font-size: 13px; }
+  .kpi.still { cursor: default; }
+  .pick { display: block; width: 100%; text-align: left; margin: 6px 0; padding: 8px 10px; }
   table { width: 100%; border-collapse: collapse; font-size: 14px; }
   th, td { padding: 8px 6px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: middle; }
   th { color: var(--t3); font-weight: normal; font-size: 13px; }
@@ -75,6 +77,7 @@
   <section class="card">
     <div class="kpis" id="kpis"></div>
     <div class="legend" id="legend"></div>
+    <p class="muted" id="refreshed"></p>
     <div class="msg" id="msg"></div>
   </section>
   <section class="card" id="provinceCard">
@@ -138,21 +141,28 @@
     STATES.forEach((s) => { const n = counts[s] || 0; if (!n || !total) return; const i = el('i', 's-' + s); i.style.width = (n / total * 100) + '%'; i.title = `${s} ${n}`; bar.append(i); });
     return bar;
   }
-  function renderSummary() {
-    const lv = summary.levels[level] || { counts: {}, total: 0, rate: null };
+  function when(iso) { return iso ? iso.replace('T', ' ').slice(0, 16) : ''; }
+  // 全国看这一级的合计；进了省看这个省，点状态卡片筛格子
+  function renderKpis(data, inProvince) {
     const k = $('kpis'); k.replaceChildren();
-    const tiles = [['应接入', lv.total, '']].concat(STATES.map((s) => [s, lv.counts[s] || 0, s])).concat([['覆盖率', pct(lv.rate), '']]);
+    const tiles = [['应接入', data.total, '']].concat(STATES.map((s) => [s, data.counts[s] || 0, s])).concat([['覆盖率', pct(data.rate), '']]);
     tiles.forEach(([label, value, state]) => {
-      const b = el('button', 'kpi'); b.append(el('b', '', String(value)), el('span', '', label));
-      if (state && currentProvince) b.onclick = () => { $('stateFilter').value = state; renderGrid(); };
+      const clickable = inProvince && state;
+      const b = el(clickable ? 'button' : 'div', 'kpi' + (clickable ? '' : ' still'));
+      b.append(el('b', '', String(value)), el('span', '', label));
+      if (clickable) { b.title = '只看' + state; b.onclick = () => { $('stateFilter').value = $('stateFilter').value === state ? '' : state; renderGrid(); }; }
       k.append(b);
     });
+    $('refreshed').textContent = data.refreshed_at ? `状态按 ${when(data.refreshed_at)} 的抓取结果算（youju coverage-refresh）` : (data.total ? '有格还没重算过状态：先运行 youju coverage-refresh' : '');
+  }
+  function renderSummary() {
+    renderKpis(summary.levels[level] || { counts: {}, total: 0, rate: null, refreshed_at: null }, false);
     const body = $('provinces'); body.replaceChildren();
     const rows = summary.provinces.filter((p) => p.level === level);
     rows.sort((a, b) => (a.rate === null ? -1 : a.rate) - (b.rate === null ? -1 : b.rate));
     rows.forEach((p) => {
       const tr = el('tr', 'click');
-      const acc = p.acceptance ? (p.acceptance.passed ? '合格' : '没过') + '（' + (p.acceptance.sampled_at || '').slice(0, 10) + '）' : '未抽查';
+      const acc = p.acceptance ? (p.acceptance.passed ? '合格' : '没过') + '（' + (p.acceptance.level === '全部' ? '全省各级，' : '') + (p.acceptance.sampled_at || '').slice(0, 10) + '）' : '未抽查';
       const td = el('td'); td.append(stack(p.counts, p.total));
       tr.append(el('td', '', p.province), td, el('td', 'num', String(p.total)), el('td', 'num', String(p.counts['已收录'] || 0)), el('td', 'num', pct(p.rate)), el('td', '', acc));
       tr.onclick = () => openProvince(p.province);
@@ -167,6 +177,10 @@
       renderTabs(); renderSummary();
       if (currentProvince) await openProvince(currentProvince);
     } catch (e) { $('msg').textContent = e.message; }
+  }
+  function provinceKpis() {
+    const prov = summary && summary.provinces.find((p) => p.level === level && p.province === currentProvince);
+    if (prov) renderKpis(prov, true);
   }
   function showNational() { currentProvince = null; $('detailCard').hidden = true; $('provinceCard').hidden = false; $('drawer').hidden = true; }
 
@@ -184,6 +198,7 @@
       current = all;
       $('provinceCard').hidden = true; $('detailCard').hidden = false;
       $('detailTitle').textContent = `${province} · ${level}（${all.length} 格）`;
+      provinceKpis();
       renderGrid();
     } catch (e) { $('msg').textContent = e.message; }
   }
@@ -202,7 +217,7 @@
         const td = el('td', 'cell' + (list.length ? ' s-' + list[0].state : ' none'));
         if (list.length) {
           td.title = list.map((c) => `${c.dept_full_name || c.dept}：${c.state}${c.reason ? '（' + c.reason + '）' : ''}`).join('\n');
-          td.onclick = () => openCell(list[0].id); shown += list.length;
+          td.onclick = () => (list.length > 1 ? chooseCell(list) : openCell(list[0].id)); shown += list.length;
           if (list.length > 1) td.textContent = list.length;
         }
         tr.append(td);
@@ -210,6 +225,15 @@
       table.append(tr);
     });
     $('gridNote').textContent = `显示 ${shown} 格。鼠标移到色块上看部门和原因，点色块看详情。`;
+  }
+  function chooseCell(list) {
+    const box = $('drawer'); box.hidden = false; box.replaceChildren();
+    const close = el('button', '', '关闭'); close.onclick = () => { box.hidden = true; };
+    box.append(close, el('h2', '', `${list[0].division} · ${list[0].dept}（${list.length} 个）`));
+    list.forEach((c) => {
+      const b = el('button', 'pick'); b.append(el('span', 'tag s-' + c.state, c.state), document.createTextNode(' ' + (c.dept_full_name || c.dept)));
+      b.onclick = () => openCell(c.id); box.append(b);
+    });
   }
   async function openCell(id) {
     const box = $('drawer'); box.hidden = false; box.replaceChildren(el('p', 'muted', '加载中……'));
@@ -240,6 +264,8 @@
       const who = whoInput();
       form.append(el('span', '', '操作人'), who);
       const conf = el('input'); conf.type = 'checkbox'; conf.checked = c.confirmed_no_column;
+      const confirmable = !c.columns.length && ['网站无此栏目', '需人工'].includes(c.state);
+      if (!confirmable && !c.confirmed_no_column) { conf.disabled = true; conf.title = '认出了栏目，或网站打不开、拒绝抓取：不能确认网站无此栏目'; }
       const alt = el('input'); alt.value = c.alt_source || ''; alt.placeholder = '替代来源网址（不能抓时）';
       const note = el('input'); note.value = c.note || ''; note.placeholder = '备注'; note.maxLength = 300;
       form.append(el('span', '', '网站无此栏目'), (() => { const l = el('label'); l.append(conf, document.createTextNode(' 人工核验确认')); return l; })());
@@ -248,8 +274,15 @@
       save.onclick = async () => {
         const by = takeWho(who, msg); if (!by) return;
         try {
-          await api('/api/admin/coverage/cells/' + id, { method: 'POST', body: JSON.stringify({ by, confirm_no_column: conf.checked, alt_source: alt.value.trim(), note: note.value }) });
-          msg.className = 'muted'; msg.textContent = '已保存；状态在下一次重算时更新';
+          const r = await api('/api/admin/coverage/cells/' + id, { method: 'POST', body: JSON.stringify({ by, confirm_no_column: conf.checked, alt_source: alt.value.trim(), note: note.value }) });
+          msg.className = 'muted';
+          msg.textContent = r.changed.length ? `已保存；现在的状态：${r.state}` : '没有改动';
+          const mine = (current || []).find((x) => x.id === id);
+          if (mine && r.changed.length) {
+            Object.assign(mine, { confirmed_no_column: conf.checked, alt_source: alt.value.trim() || null, note: note.value.trim() || null, state: r.state, reason: r.reason });
+            renderGrid();
+            summary = await api('/api/admin/coverage/summary'); provinceKpis();
+          }
         } catch (e) { msg.className = 'msg'; msg.textContent = e.message; }
       };
       box.append(form, save, msg);
@@ -259,7 +292,9 @@
     const rows = [['层级', '省份', '城市', '区县', '区划代码', '部门', '部门全称', '状态', '原因', '最后成功时间', '人工确认无栏目', '替代来源', '备注']];
     const state = $('stateFilter').value; const dept = $('deptFilter').value;
     current.filter((c) => (!state || c.state === state) && (!dept || c.dept === dept)).forEach((c) => rows.push([c.level, c.province, c.city || '', c.district || '', c.code, c.dept, c.dept_full_name || '', c.state, c.reason || '', c.last_success_at || '', c.confirmed_no_column ? '是' : '', c.alt_source || '', c.note || '']));
-    const csv = '﻿' + rows.map((r) => r.map((v) => /[",\n]/.test(String(v)) ? '"' + String(v).replace(/"/g, '""') + '"' : String(v)).join(',')).join('\n');
+    // 以 = + - @、制表符、回车开头的格子前面加单引号：表格软件打开时不当成公式
+    const cellText = (v) => { let t = String(v); if (/^[=+\-@\t\r]/.test(t)) t = "'" + t; return /[",\r\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t; };
+    const csv = '\ufeff' + rows.map((r) => r.map(cellText).join(',')).join('\r\n');
     const a = el('a'); a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' })); a.download = `覆盖看板_${currentProvince}_${level}.csv`; a.click();
   }
   function recordAcceptance() {

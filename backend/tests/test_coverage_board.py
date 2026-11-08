@@ -1,10 +1,20 @@
 """覆盖看板落库：导入盘点结果、按来源抓取结果重算状态、按级汇总、管理接口（人工确认、按省抽查）。"""
 
+import json
+import logging
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 from sqlalchemy import select
 
-from youju.govsites.boarddb import import_inventory, refresh_states, summary
+from youju.api.app import audit_log
+from youju.govsites.boarddb import (
+    enable_sources,
+    import_inventory,
+    latest_acceptance,
+    refresh_states,
+    summary,
+)
 from youju.govsites.inventory import ColumnHit, DeptRow, PortalRow
 from youju.models import (
     CoverageAcceptance,
@@ -111,9 +121,10 @@ def test_import_links_sources_and_refresh_computes_states(session):
     )
     session.commit()
     assert refresh_states(session, now=NOW)["待启用"] == 1
+    # 试点口径只算数、不写看板：正式看板不混进用户还看不到的来源
     assert refresh_states(session, now=NOW, trial=True)["已收录"] == 1
     session.refresh(cell)
-    assert cell.last_success_at is not None and cell.state == "已收录"
+    assert cell.state == "待启用" and cell.refreshed_at is not None
 
     # 启用以后照正式口径算，3 天没成功掉成抓取失败
     source.enabled = True
@@ -137,6 +148,7 @@ def test_reimport_keeps_human_edits_and_confirmation_wins(session):
     prov = data["provinces"][0]
     # 人工确认的网站无此栏目不算缺口：2 格里扣掉 1 格，剩下 1 格还没收录
     assert (prov["total"], prov["rate"]) == (2, 0.0)
+    assert prov["refreshed_at"] and data["levels"]["省级"]["refreshed_at"] == prov["refreshed_at"]
 
 
 def test_admin_coverage_interfaces(client, session):  # noqa: F811
@@ -176,3 +188,215 @@ def test_admin_coverage_interfaces(client, session):  # noqa: F811
     data = client.get("/api/admin/coverage/summary?level=省级", headers=HEADERS).json()
     assert data["provinces"][0]["acceptance"]["passed"] is True
     assert client.get("/admin/coverage?embed=1").status_code == 200
+
+
+def test_enable_requires_passed_acceptance(session):
+    source = _source(session)
+    source.last_success_at = NOW - timedelta(hours=1)
+    session.commit()
+    import_inventory(session, _portals(), _depts())
+    # 没抽查：一个都不开
+    r = enable_sources(session, "浙江", "省级", "王某")
+    assert (r.enabled, r.blocked_reason is not None) == (0, True)
+    session.add(
+        CoverageAcceptance(
+            province="浙江",
+            level="省级",
+            sampled_by="王某",
+            sampled_at=NOW,
+            sample_size=11,
+            passed=False,
+        )
+    )
+    session.commit()
+    assert enable_sources(session, "浙江", "省级", "王某").enabled == 0  # 没过也不开
+    session.add(
+        CoverageAcceptance(
+            province="浙江",
+            level="全部",
+            sampled_by="王某",
+            sampled_at=NOW + timedelta(hours=1),
+            sample_size=30,
+            passed=True,
+        )
+    )
+    session.commit()
+    assert enable_sources(session, "浙江", "省级", "王某", dry_run=True).enabled == 1
+    session.refresh(source)
+    assert source.enabled is False
+    assert enable_sources(session, "浙江", "省级", "王某").enabled == 1
+    session.refresh(source)
+    assert source.enabled is True and "抽查合格后由 王某 启用" in source.note
+
+
+def _cell(session, dept, code="330000"):
+    return session.scalar(
+        select(CoverageCell).where(CoverageCell.dept == dept, CoverageCell.division_code == code)
+    )
+
+
+def test_confirmation_only_for_cells_without_columns(session):
+    _source(session)
+    import_inventory(session, _portals(), _depts())
+    # 认出了栏目的格就算被标了确认，也照抓取结果算，不从分母里扣
+    sci = _cell(session, "科技")
+    sci.confirmed_no_column, sci.confirmed_by = True, "王某"
+    session.commit()
+    refresh_states(session, now=NOW)
+    session.refresh(sci)
+    assert sci.state == "待启用"
+    # 门户没找到的需人工格（没认出栏目）可以确认
+    town = _cell(session, "科技", "330106")
+    town.confirmed_no_column, town.confirmed_by = True, "王某"
+    session.commit()
+    refresh_states(session, now=NOW)
+    session.refresh(town)
+    assert town.state == "网站无此栏目" and "人工确认" in town.reason
+
+
+def test_refresh_links_sources_added_after_import(session):
+    import_inventory(session, _portals(), _depts())
+    assert refresh_states(session, now=NOW)["待启用"] == 0
+    source = _source(session)  # 来源后导入：重算时按网址挂上
+    assert refresh_states(session, now=NOW)["待启用"] == 1
+    cell = _cell(session, "科技")
+    assert (
+        session.scalar(
+            select(CoverageCellSource.source_id).where(CoverageCellSource.cell_id == cell.id)
+        )
+        == source.id
+    )
+
+
+def test_reimport_keeps_verify_results_when_not_given(session):
+    checks = {COL: SimpleNamespace(result="读不出", reason="列表是图片")}
+    import_inventory(session, _portals(), _depts(), checks)
+    import_inventory(session, _portals(), _depts())  # 这次没给试读结果
+    column = _cell(session, "科技").columns[0]
+    assert (column["result"], column["reason"]) == ("读不出", "列表是图片")
+
+
+def _zone(name, url):
+    return DeptRow(
+        "330000",
+        "省级",
+        "浙江",
+        "",
+        "",
+        "开发区",
+        dept_full_name=name,
+        site_url=url,
+        status="已找到",
+    )
+
+
+def test_zones_match_by_site_not_order(session):
+    a = _zone("甲开发区管委会", "https://a.zj.gov.cn/")
+    b = _zone("乙开发区管委会", "https://b.zj.gov.cn/")
+    import_inventory(session, _portals(), _depts() + [a, b])
+    cell_b = session.scalar(select(CoverageCell).where(CoverageCell.site_url == b.site_url))
+    cell_b.note = "乙的备注"
+    session.commit()
+    # 顺序反过来、甲换成丙（网址 http 和末尾斜杠不同也算同一个乙）
+    b2 = _zone("乙开发区管委会", "http://b.zj.gov.cn")
+    c = _zone("丙开发区管委会", "https://c.zj.gov.cn/")
+    s = import_inventory(session, _portals(), _depts() + [c, b2])
+    assert (s.cells_created, s.cells_removed) == (1, 1)
+    session.refresh(cell_b)
+    assert (cell_b.dept_full_name, cell_b.note) == ("乙开发区管委会", "乙的备注")
+    zones = session.scalars(
+        select(CoverageCell).where(CoverageCell.dept == "开发区").order_by(CoverageCell.seq)
+    ).all()
+    assert [z.dept_full_name for z in zones] == ["乙开发区管委会", "丙开发区管委会"]
+
+
+def test_latest_acceptance_newer_record_wins():
+    old_level = {"passed": True, "sampled_at": "2026-11-01T00:00:00+00:00", "level": "省级"}
+    new_all = {"passed": False, "sampled_at": "2026-11-05T00:00:00+00:00", "level": "全部"}
+    accepted = {("浙江", "省级"): old_level, ("浙江", "全部"): new_all}
+    assert latest_acceptance(accepted, "浙江", "省级")["passed"] is False
+    accepted[("浙江", "省级")] = {**old_level, "passed": False, "sampled_at": "2026-11-06T00:00"}
+    accepted[("浙江", "全部")] = {**new_all, "passed": True}
+    assert latest_acceptance(accepted, "浙江", "省级")["passed"] is False
+    assert latest_acceptance(accepted, "浙江", "市级")["passed"] is True
+    assert latest_acceptance(accepted, "江苏", "省级") is None
+
+
+def test_admin_edit_checks_confirmable_and_audits_changes(client, session, caplog):  # noqa: F811
+    _source(session)
+    import_inventory(session, _portals(), _depts())
+    refresh_states(session, now=NOW)
+    sci, fin = _cell(session, "科技"), _cell(session, "财政")
+    url = "/api/admin/coverage/cells/{}"
+    bad = client.post(
+        url.format(sci.id), headers=HEADERS, json={"by": "王某", "confirm_no_column": True}
+    )
+    assert bad.status_code == 422  # 认出了栏目
+    assert client.post(url.format(fin.id), headers=HEADERS, json={"by": "  "}).status_code == 422
+    audit_log.addHandler(caplog.handler)
+    try:
+        with caplog.at_level(logging.INFO, logger="youju.audit"):
+            body = {"by": " 王某 ", "confirm_no_column": True, "note": "门户统一发布"}
+            res = client.post(url.format(fin.id), headers=HEADERS, json=body).json()
+            again = client.post(url.format(fin.id), headers=HEADERS, json=body).json()
+    finally:
+        audit_log.removeHandler(caplog.handler)
+    # 保存后当场重算；第二次一样的内容不算改动、不写审计
+    assert res["state"] == "网站无此栏目" and res["changed"] == [
+        "confirmed_at",
+        "confirmed_by",
+        "confirmed_no_column",
+        "note",
+    ]
+    assert again["changed"] == []
+    records = [
+        json.loads(r.getMessage()) for r in caplog.records if "coverage_cell_edit" in r.getMessage()
+    ]
+    assert len(records) == 1
+    changes = records[0]["changes"]
+    assert records[0]["by"] == "王某"
+    assert changes["note"] == {"before": None, "after": "门户统一发布"}
+    assert changes["confirmed_no_column"] == {"before": False, "after": True}
+    session.refresh(fin)
+    assert (fin.confirmed_by, fin.state) == ("王某", "网站无此栏目")
+
+
+def test_admin_acceptance_levels_and_audit(client, session, caplog):  # noqa: F811
+    url = "/api/admin/coverage/acceptances"
+    base = {"by": "王某", "sample_size": 10, "passed": True}
+    assert (
+        client.post(
+            url, headers=HEADERS, json={**base, "province": "浙江", "level": "国家级"}
+        ).status_code
+        == 422
+    )
+    assert (
+        client.post(
+            url, headers=HEADERS, json={**base, "province": "国家", "level": "省级"}
+        ).status_code
+        == 422
+    )
+    assert (
+        client.post(
+            url, headers=HEADERS, json={**base, "by": " ", "province": "浙江", "level": "省级"}
+        ).status_code
+        == 422
+    )
+    audit_log.addHandler(caplog.handler)
+    try:
+        with caplog.at_level(logging.INFO, logger="youju.audit"):
+            res = client.post(
+                url,
+                headers=HEADERS,
+                json={**base, "province": "国家", "level": "国家级", "note": "抽 10 格"},
+            )
+    finally:
+        audit_log.removeHandler(caplog.handler)
+    assert res.status_code == 201
+    record = next(
+        json.loads(r.getMessage())
+        for r in caplog.records
+        if "coverage_acceptance" in r.getMessage()
+    )
+    assert (record["acceptance_id"], record["note"]) == (res.json()["id"], "抽 10 格")
+    assert session.scalar(select(CoverageAcceptance.level)) == "国家级"

@@ -69,6 +69,7 @@ def upgrade() -> None:
         sa.Column("reason", sa.String(300), nullable=True),
         sa.Column("last_success_at", mysql.DATETIME(fsp=6), nullable=True),
         sa.Column("state_changed_at", mysql.DATETIME(fsp=6), nullable=True),
+        sa.Column("refreshed_at", mysql.DATETIME(fsp=6), nullable=True),
         sa.Column("confirmed_no_column", sa.Boolean(), nullable=False),
         sa.Column("confirmed_by", sa.String(80), nullable=True),
         sa.Column("confirmed_at", mysql.DATETIME(fsp=6), nullable=True),

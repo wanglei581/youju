@@ -1,7 +1,8 @@
 """覆盖看板的管理接口（D-122）：按级、按省看各状态格数，逐格看原因和来源，人工确认和按省抽查。
 
 只给管理员用（口令和审计由管理台共用实现提供）；状态由 youju coverage-refresh 按抓取结果算，
-这里不能手填"已收录"，人能改的只有三件事：确认网站无此栏目、填替代来源、备注（都写审计）。
+这里不能手填"已收录"，人能改的只有三件事：确认网站无此栏目、填替代来源、备注（都写审计，记改前改后）。
+确认网站无此栏目只对没认出栏目的格生效（boarddb.can_confirm_no_column）；保存后这一格当场重算。
 """
 
 from datetime import UTC, datetime
@@ -10,7 +11,7 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -42,6 +43,13 @@ def _safe_url(value: str | None) -> str | None:
     return value
 
 
+def _who(value: str) -> str:
+    value = value.strip()
+    if not value:
+        raise ValueError("请填操作人")
+    return value
+
+
 class CellEditIn(BaseModel):
     by: str = Field(min_length=1, max_length=40)
     confirm_no_column: bool | None = None
@@ -51,10 +59,7 @@ class CellEditIn(BaseModel):
     @field_validator("by")
     @classmethod
     def by_trimmed(cls, value: str) -> str:
-        value = value.strip()
-        if not value:
-            raise ValueError("请填操作人")
-        return value
+        return _who(value)
 
     @field_validator("alt_source")
     @classmethod
@@ -65,17 +70,29 @@ class CellEditIn(BaseModel):
 class AcceptanceIn(BaseModel):
     by: str = Field(min_length=1, max_length=40)
     province: str
-    level: Literal["省级", "市级", "区县级", "全部"]
+    level: Literal["国家级", "省级", "市级", "区县级", "全部"]
     sample_size: int = Field(ge=1, le=10000)
     passed: bool
     note: str | None = Field(default=None, max_length=300)
 
+    @field_validator("by")
+    @classmethod
+    def by_trimmed(cls, value: str) -> str:
+        return _who(value)
+
     @field_validator("province")
     @classmethod
     def province_ok(cls, value: str) -> str:
-        if value not in PROVINCES or value == "国家":
-            raise ValueError("请填省份简称")
+        if value not in PROVINCES:
+            raise ValueError('请填省份简称（国家级填"国家"）')
         return value
+
+    @model_validator(mode="after")
+    def level_matches(self):
+        # 国家级只有"国家"一行；省份没有国家级
+        if (self.province == "国家") != (self.level == "国家级") and self.level != "全部":
+            raise ValueError('国家级抽查省份填"国家"，各省不能记国家级')
+        return self
 
 
 def _cell_out(cell: CoverageCell, div: CoverageDivision) -> dict:
@@ -192,26 +209,48 @@ def router(require_admin, audit) -> APIRouter:
 
     @routes.post("/cells/{cell_id}")
     def edit_cell(cell_id: int, body: CellEditIn, session: SessionDep, request: Request):
-        cell = session.get(CoverageCell, cell_id)
-        if cell is None:
+        row = session.execute(
+            select(CoverageCell, CoverageDivision)
+            .join(CoverageDivision, CoverageDivision.code == CoverageCell.division_code)
+            .where(CoverageCell.id == cell_id)
+        ).first()
+        if row is None:
             raise HTTPException(404, "没有这一格")
-        changes: dict[str, object] = {}
+        cell, div = row
+        changes: dict[str, dict[str, object]] = {}
+
+        def put(field: str, value: object) -> None:
+            # 只写真正变了的字段；审计记改前和改后
+            before = getattr(cell, field)
+            if before != value:
+                changes[field] = {"before": before, "after": value}
+                setattr(cell, field, value)
+
         if body.confirm_no_column is not None:
-            cell.confirmed_no_column = body.confirm_no_column
-            cell.confirmed_by = body.by if body.confirm_no_column else None
-            cell.confirmed_at = datetime.now(UTC) if body.confirm_no_column else None
-            changes["confirm_no_column"] = body.confirm_no_column
+            if (
+                body.confirm_no_column
+                and not cell.confirmed_no_column
+                and not boarddb.can_confirm_no_column(cell.columns, cell.state)
+            ):
+                raise HTTPException(
+                    422, "这一格认出了栏目，或网站打不开、拒绝抓取：不能确认网站无此栏目"
+                )
+            if body.confirm_no_column != cell.confirmed_no_column:
+                # 只在确认状态真的变了时记核验人和时间：之后只改备注不会覆盖最初的核验记录
+                put("confirmed_no_column", body.confirm_no_column)
+                put("confirmed_by", body.by if body.confirm_no_column else None)
+                put("confirmed_at", datetime.now(UTC) if body.confirm_no_column else None)
         if body.alt_source is not None:
-            cell.alt_source = body.alt_source or None
-            changes["alt_source"] = cell.alt_source
+            put("alt_source", body.alt_source or None)
         if body.note is not None:
-            cell.note = body.note.strip() or None
-            changes["note"] = cell.note
+            put("note", body.note.strip() or None)
         if not changes:
-            raise HTTPException(422, "没有要改的内容")
+            return {"ok": True, "changed": [], "state": cell.state, "reason": cell.reason}
+        # 当场重算这一格，看板上马上看到结果（规则和 coverage-refresh 同一份）
+        boarddb.refresh_cells(session, [(cell, div)])
         session.commit()
-        audit(request, "coverage_cell_edit", cell_id=cell_id, by=body.by, **changes)
-        return {"ok": True, "note": "状态在下一次 youju coverage-refresh 时重算"}
+        audit(request, "coverage_cell_edit", cell_id=cell_id, by=body.by, changes=changes)
+        return {"ok": True, "changed": sorted(changes), "state": cell.state, "reason": cell.reason}
 
     @routes.post("/acceptances", status_code=201)
     def add_acceptance(body: AcceptanceIn, session: SessionDep, request: Request):
@@ -229,11 +268,13 @@ def router(require_admin, audit) -> APIRouter:
         audit(
             request,
             "coverage_acceptance",
+            acceptance_id=row.id,
             province=body.province,
             level=body.level,
             by=body.by,
             sample_size=body.sample_size,
             passed=body.passed,
+            note=row.note,
         )
         return {"id": row.id}
 

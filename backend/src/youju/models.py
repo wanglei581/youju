@@ -1684,6 +1684,8 @@ class CoverageCell(Base):
     reason: Mapped[str | None] = mapped_column(String(300))
     last_success_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     state_changed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    # 状态最后一次按抓取结果重算的时间（看板据此提示数据是不是旧了）
+    refreshed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     # 人工能改的三件事：确认网站无此栏目、填替代来源、备注（都写审计）
     confirmed_no_column: Mapped[bool] = mapped_column(Boolean, default=False)
     confirmed_by: Mapped[str | None] = mapped_column(String(80))

@@ -240,6 +240,7 @@ class Inventory:
         per_province: int = 6,
         progress: Callable[[str], None] | None = None,
         inner: int = 4,
+        seeds: dict[str, list[tuple[str, str]]] | None = None,
     ) -> None:
         self.index = index
         self.cache = cache
@@ -248,6 +249,9 @@ class Inventory:
         self.workers = workers
         self.per_province = per_province
         self.inner = inner
+        # 导航入口补充：区划代码 → [(官方入口网址, 说明)]。门户打不开、或市县导航由脚本生成时，
+        # 用本地区其他官方网站（如省直部门网站）的导航补找部门和下级门户
+        self.seeds = seeds or {}
         self.progress = progress or (lambda msg: None)
         self.portals: dict[str, PortalRow] = {}
         self.depts: list[DeptRow] = []
@@ -336,6 +340,21 @@ class Inventory:
                     if links:
                         pages.append(PageInfo(src, src, r, None, links, nav_text="页脚脚本"))
         return pages
+
+    def _seed_pages(self, div: Division) -> list[PageInfo]:
+        """导航入口补充里这个行政区的官方入口页，连同它们的导航页（页脚的"省直部门""市县网站"等）。"""
+        out: list[PageInfo] = []
+        for url, note in self.seeds.get(div.code, []):
+            sp = self.page(url)
+            if sp.result.status != "ok" or sp.block:
+                continue
+            sp.level_hint = div.level
+            sp.nav_text = f"导航入口补充：{note}"
+            for p in self._nav_pages(sp):
+                if not p.nav_text or p is sp:
+                    p.nav_text = sp.nav_text
+                out.append(p)
+        return out
 
     # —— 走一遍 ——
 
@@ -430,8 +449,15 @@ class Inventory:
         if home.result.status != "ok" or home.block:
             row.status = "不能抓" if home.block else "打不开"
             row.reason = home.block or home.result.error or home.result.status
-            self._finish(row, [])
-            return self._enqueue(div, children, {})
+            if not self.seeds.get(div.code):
+                self._finish(row, [])
+                return self._enqueue(div, children, {})
+            # 门户不通，但有官方入口补充：用它们找部门和下级门户（门户本身照记不通，不绕过）
+            pages = self._seed_pages(div)
+            child_found = self._find_children(div, children, pages)
+            depts = self._find_depts(div, home, pages, portal_ok=False) if pages else []
+            self._finish(row, depts)
+            return self._enqueue(div, children, child_found)
         row.portal_url = home.final_url
         row.status = "已找到"
         fp = home.fp or Fingerprint()
@@ -450,7 +476,7 @@ class Inventory:
                 "（同省，待核对）" if same_prov else "（不是同一省，待核对）"
             )
         home.level_hint = div.level
-        pages = self._nav_pages(home)
+        pages = self._nav_pages(home) + self._seed_pages(div)
         if div.level == "国家级":
             dept_nav = self.page(GOV_DEPT_NAV)
             if dept_nav.result.status == "ok":
@@ -585,7 +611,9 @@ class Inventory:
                 out |= {v for v in name_variants(d.name, d.kind) if len(v) >= 2}
         return sorted(out - own, key=len, reverse=True)
 
-    def _find_depts(self, div: Division, home: PageInfo, pages: list[PageInfo]) -> list[DeptRow]:
+    def _find_depts(
+        self, div: Division, home: PageInfo, pages: list[PageInfo], portal_ok: bool = True
+    ) -> list[DeptRow]:
         others = self._other_places(div)
         own = sorted(name_variants(div.name, div.kind) | {div.province}, key=len, reverse=True)
         own_chars = level_chars(div)
@@ -631,8 +659,13 @@ class Inventory:
             home.fp.site_name if home.fp and home.fp.site_name else f"{div.name}人民政府"
         )
         gov.site_url, gov.site_type, gov.nav_source = home.final_url, "门户本身", home.url
-        gov.status = "已找到"
-        self._fill_from_page(gov, home, pages)
+        if portal_ok:
+            gov.status = "已找到"
+            self._fill_from_page(gov, home, pages)
+        else:
+            # 门户不通：政府办（门户的政府文件、通知公告）照记不通，其他部门从官方入口补充里找
+            gov.status = "不能抓" if home.block else "打不开"
+            gov.reason = f"门户{gov.status}：{(home.block or home.result.error or '')[:80]}"
         rows.append(gov)
         cats = STANDARD_DEPTS[1:] + OPTIONAL_DEPTS
         # 各部门网站多在不同主机上，并行抓（同一主机仍由抓取器排队、间隔 3 秒）
@@ -1251,3 +1284,20 @@ def load_docs(
                     )
                 )
     return portals, depts
+
+
+SEED_FIELDS = ("省份", "区划代码", "入口网址", "说明")
+
+
+def load_seeds(path: Path) -> dict[str, list[tuple[str, str]]]:
+    """导航入口补充（docs/数据来源/全国覆盖/导航入口补充.csv）：每行一个官方入口页，写明为什么用它。"""
+    if not path.exists():
+        return {}
+    out: dict[str, list[tuple[str, str]]] = {}
+    with path.open(encoding="utf-8-sig", newline="") as fh:
+        for r in csv.DictReader(fh):
+            url = (r.get("入口网址") or "").strip()
+            code = (r.get("区划代码") or "").strip()
+            if url and code and is_gov_url(url):
+                out.setdefault(code, []).append((url, (r.get("说明") or "").strip()))
+    return out
