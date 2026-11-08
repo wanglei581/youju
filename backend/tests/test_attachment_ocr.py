@@ -592,7 +592,7 @@ def test_reader_page_marks_recognized_text_and_lists_missed_pages(session, clien
     session.commit()
     data = client.get(path(doc, att)).json()
     assert (data["status"], data["scannedPages"]) == ("partial", 1)
-    assert data["notice"] == "其中 1 页扫描件暂不能识别文字，下面的文字不含这些页。"
+    assert data["notice"] == "其中 1 页是扫描件，暂不能识别文字，下面的文字不含这些页。"
     # 没识别过的照旧
     version.ocr_pages = 0
     session.commit()

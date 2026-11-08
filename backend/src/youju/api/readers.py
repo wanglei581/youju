@@ -449,13 +449,15 @@ def attachment_reading(
         )
         .order_by(AttachmentTextSegment.n)
     ).all()
-    # scannedPages 是还没有字的扫描页：识别过的（D-125）是没认出的页，认出的页在文字里标明
+    # scannedPages 是还没有字的扫描页（识别过的，D-125：是没认出的页；认出的页在文字里标明）
     scanned = version.scanned_pages or 0
-    if scanned and version.ocr_pages:
-        notice = texts.OCR_NOTICE_MISSED.format(pages=scanned)
-    elif scanned:
-        notice = f"其中 {scanned} 页是扫描件，暂不能识别文字，下面的文字不含这些页。"
-    else:
-        notice = "以下是从附件自动提取的文字，未经人工逐字核对；图片、公章和版式不在内。"
-    payload.update(scannedPages=scanned, status="partial" if scanned else "ok", notice=notice)
+    payload.update(
+        scannedPages=scanned,
+        status="partial" if scanned else "ok",
+        notice=(
+            f"其中 {scanned} 页是扫描件，暂不能识别文字，下面的文字不含这些页。"
+            if scanned
+            else "以下是从附件自动提取的文字，未经人工逐字核对；图片、公章和版式不在内。"
+        ),
+    )
     return _page(payload, [_safe_segment(row) for row in rows], ends, index)
