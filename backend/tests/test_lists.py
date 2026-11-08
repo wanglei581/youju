@@ -286,7 +286,9 @@ def test_pdfs_cut_at_an_older_page_limit_are_reread_once() -> None:
     assert not _should_attempt(_parse_record("ok", "PDF 共567页，仅解析前300页", hours_ago=1))
 
 
-def test_reread_replaces_entries_from_the_old_page_limit(session, monkeypatch, pdf_in_process) -> None:
+def test_reread_replaces_entries_from_the_old_page_limit(
+    session, monkeypatch, pdf_in_process
+) -> None:
     """以前只读了前 300 页的名单：重读后条目整份换成新结果（不重复叠加），原因清掉；再跑不再重读。"""
     visited: list[int] = []
 
