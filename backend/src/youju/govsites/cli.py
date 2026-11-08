@@ -9,6 +9,8 @@ from pathlib import Path
 
 DEFAULT_OUT = Path(__file__).resolve().parents[4] / "docs" / "数据来源" / "全国覆盖"
 DEFAULT_CACHE = Path.home() / ".cache" / "youju-coverage"
+BOARD_LOCK_WAIT = 600  # 等另一个看板命令最多这么多秒
+BOARD_BUSY = "另一个覆盖看板命令（导入、重算或启用）正在跑，10 分钟内没等到，这次没做；稍后再试"
 
 
 def _fetcher(timeout: float = 20.0):
@@ -308,7 +310,13 @@ def _cmd_survey(args: argparse.Namespace) -> int:
 
 def _cmd_import(args: argparse.Namespace) -> int:
     from youju.db import session_factory
-    from youju.govsites.boarddb import BOARD_STATES, import_inventory, refresh_states
+    from youju.govsites.boarddb import (
+        BOARD_STATES,
+        ImportSummary,
+        board_lock,
+        import_inventory,
+        refresh_states,
+    )
     from youju.govsites.divisions import read_csv
 
     if args.state:
@@ -324,10 +332,23 @@ def _cmd_import(args: argparse.Namespace) -> int:
     checks = {c.url: c for c in _load_checks(args.checks)}
     meta = {d.code: (d.kind, d.parent_code) for d in read_csv(args.divisions)}
     counts: Counter = Counter()
-    with session_factory()() as session:
-        s = import_inventory(session, portals, depts, checks, meta)
-        # 接着按抓取结果重算这几个省的状态：看板上不留"导入了还没算"的格
+    s = ImportSummary()
+    with session_factory()() as session, board_lock(session, BOARD_LOCK_WAIT) as got:
+        if not got:
+            print(BOARD_BUSY)
+            return 1
+        # 一省一导入、一省一提交（不长时间锁住格），接着按抓取结果重算这个省：
+        # 看板上不留"导入了还没算"的格
         for province in sorted({p.province for p in portals}):
+            part = import_inventory(
+                session,
+                [p for p in portals if p.province == province],
+                [d for d in depts if d.province == province],
+                checks,
+                meta,
+            )
+            for field in ("divisions", "cells_created", "cells_updated", "cells_removed", "links"):
+                setattr(s, field, getattr(s, field) + getattr(part, field))
             counts.update(refresh_states(session, province=province))
     print(
         f"导入完成：行政区 {s.divisions}，格新增 {s.cells_created}、更新 {s.cells_updated}、"
@@ -339,9 +360,12 @@ def _cmd_import(args: argparse.Namespace) -> int:
 
 def _cmd_refresh(args: argparse.Namespace) -> int:
     from youju.db import session_factory
-    from youju.govsites.boarddb import BOARD_STATES, refresh_states
+    from youju.govsites.boarddb import BOARD_STATES, board_lock, refresh_states
 
-    with session_factory()() as session:
+    with session_factory()() as session, board_lock(session, BOARD_LOCK_WAIT) as got:
+        if not got:
+            print(BOARD_BUSY)
+            return 1
         counts = refresh_states(session, trial=args.trial, province=args.province)
     label = "试点口径（只算数，没写看板）" if args.trial else "看板状态"
     print(label + "：" + "，".join(f"{s} {counts.get(s, 0)}" for s in BOARD_STATES))
@@ -350,15 +374,26 @@ def _cmd_refresh(args: argparse.Namespace) -> int:
 
 def _cmd_enable(args: argparse.Namespace) -> int:
     from youju.db import session_factory
-    from youju.govsites.boarddb import enable_sources
+    from youju.govsites.boarddb import board_lock, enable_sources, refresh_states
 
-    with session_factory()() as session:
+    with session_factory()() as session, board_lock(session, BOARD_LOCK_WAIT) as got:
+        if not got:
+            print(BOARD_BUSY)
+            return 1
         r = enable_sources(
             session, args.province, args.level, args.by, limit=args.limit, dry_run=args.dry_run
         )
+        _report_enable(args, r)
+        if not args.dry_run and r.enabled:
+            refresh_states(session, province=args.province)  # 启用的格马上按正式口径算
+    return 1 if r.blocked_reason else 0
+
+
+def _report_enable(args: argparse.Namespace, r) -> None:
+    """打印结果；真启用了的先写审计日志（在重算之前：重算出错也不丢审计）。"""
     if r.blocked_reason:
         print(f"没有启用：{r.blocked_reason}")
-        return 1
+        return
     verb = "可启用" if args.dry_run else "已启用"
     print(
         f"{args.province}{args.level}（依据抽查记录 #{r.acceptance_id}）："
@@ -386,7 +421,6 @@ def _cmd_enable(args: argparse.Namespace) -> int:
                 ensure_ascii=False,
             )
         )
-    return 0
 
 
 def register(sub: argparse._SubParsersAction) -> None:

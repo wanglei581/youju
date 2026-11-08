@@ -10,12 +10,13 @@
 
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, text
+from sqlalchemy.exc import InvalidRequestError
 from sqlalchemy.orm import Session
-from sqlalchemy.orm.exc import ObjectDeletedError
 
 from youju.govsites.board import STATES, SourceState, _outcome, cell_for
 from youju.govsites.inventory import STANDARD_DEPTS, ColumnHit, DeptRow, PortalRow
@@ -181,9 +182,10 @@ def import_inventory(
     session.flush()
 
     codes = sorted({p.code for p in portals})
+    code_set = set(codes)
     wanted: dict[tuple[str, str], list[DeptRow]] = defaultdict(list)
     for d in depts:
-        if d.code in existing_div:
+        if d.code in code_set:  # 只动这次给了门户的行政区
             wanted[(d.code, d.dept)].append(d)
     existing: dict[tuple[str, str], list[CoverageCell]] = defaultdict(list)
     for part in _chunks(codes):
@@ -243,10 +245,25 @@ def _delete_if_untouched(session: Session, cell: CoverageCell) -> bool:
         return True
     try:
         session.refresh(cell)  # 刚被人工动过：留着，下面照"保留人工记录"处理
-    except ObjectDeletedError:
-        session.expunge(cell)  # 别处已经删了
+    except InvalidRequestError:
+        session.expunge(cell)  # 别处已经删了（refresh 找不到这一行）
         return True
     return False
+
+
+@contextmanager
+def board_lock(session: Session, wait: int) -> Iterator[bool]:
+    """覆盖看板的导入、重算、启用互斥（MySQL 命名锁，按库名区分）：拿到给 True，wait 秒内没拿到
+    给 False。用单独的连接拿，进程退出、连接断开时自动放开；和后台保存之间靠行锁错开。"""
+    with session.get_bind().connect() as conn:
+        name = f"youju_coverage_board:{conn.scalar(text('SELECT DATABASE()'))}"[:64]
+        got = conn.scalar(text("SELECT GET_LOCK(:name, :wait)"), {"name": name, "wait": wait}) == 1
+        conn.commit()  # 锁跟着连接、不跟事务
+        try:
+            yield got
+        finally:
+            if got:
+                conn.scalar(text("SELECT RELEASE_LOCK(:name)"), {"name": name})
 
 
 def _sources_by_url(session: Session, urls: set[str]) -> dict[str, int]:
@@ -551,10 +568,8 @@ def latest_acceptance(
 ) -> dict | None:
     """某省某级最新的抽查结论：本级的和"全部"的哪个新用哪个（一样新用本级的）。"""
     options = [a for a in (accepted.get((province, level)), accepted.get((province, "全部"))) if a]
-    if not options:
-        return None
-    newest = max(_when(a["sampled_at"]) for a in options)
-    return next(a for a in options if _when(a["sampled_at"]) == newest)
+    # 一样新时 max 取前面的，也就是本级的
+    return max(options, key=lambda a: _when(a["sampled_at"])) if options else None
 
 
 def _when(value: str | None) -> datetime:
@@ -651,5 +666,4 @@ def enable_sources(
         result.source_ids.append(source.id)
     if not dry_run:
         session.commit()
-        refresh_states(session, now=now, province=province)  # 启用的格马上按正式口径算
     return result

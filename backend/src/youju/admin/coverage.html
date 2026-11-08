@@ -144,7 +144,9 @@
   // 接口给的是 UTC 时间（带时区）：换成北京时间显示，dateOnly 只要日期
   function when(iso, dateOnly) {
     if (!iso) return '';
-    const d = new Date(iso.replace(/(\.\d{3})\d+/, '$1')); if (isNaN(d.getTime())) return iso; // 微秒只留到毫秒，各浏览器都认
+    let s0 = iso.replace(/(\.\d{3})\d+/, '$1'); // 微秒只留到毫秒，各浏览器都认
+    if (!/(Z|[+-]\d{2}:?\d{2})$/.test(s0)) s0 += 'Z'; // 没写时区的按 UTC
+    const d = new Date(s0); if (isNaN(d.getTime())) return iso;
     const s = new Date(d.getTime() + 8 * 3600 * 1000).toISOString().replace('T', ' ');
     return dateOnly ? s.slice(0, 10) : s.slice(0, 16);
   }

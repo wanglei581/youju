@@ -9,6 +9,7 @@ from sqlalchemy import select
 
 from youju.api.app import audit_log
 from youju.govsites.boarddb import (
+    board_lock,
     enable_sources,
     import_inventory,
     latest_acceptance,
@@ -238,7 +239,8 @@ def test_enable_requires_passed_acceptance(session):
     assert (r.enabled, r.source_ids, r.acceptance_id is not None) == (1, [source.id], True)
     session.refresh(source)
     assert source.enabled is True and f"抽查记录 #{r.acceptance_id}）后由 王某 启用" in source.note
-    # 启用后接着按正式口径重算：试抓成功、已启用的格算已收录
+    # 启用后（命令行接着）按正式口径重算：试抓成功、已启用的格算已收录
+    refresh_states(session, now=NOW, province="浙江")
     assert _cell(session, "科技").state == "已收录"
 
 
@@ -456,3 +458,14 @@ def test_admin_acceptance_levels_and_audit(client, session, caplog):  # noqa: F8
     )
     assert (record["acceptance_id"], record["note"]) == (res.json()["id"], "抽 10 格")
     assert session.scalar(select(CoverageAcceptance.level)) == "国家级"
+
+
+def test_board_commands_are_exclusive(session_factory):
+    # 导入、重算、启用不同时跑：第二个拿不到锁
+    with session_factory() as a, session_factory() as b:
+        with board_lock(a, 0) as got_a:
+            assert got_a
+            with board_lock(b, 0) as got_b:
+                assert not got_b
+        with board_lock(b, 0) as again:
+            assert again
