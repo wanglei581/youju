@@ -26,7 +26,7 @@ from youju.crawler.fetcher import FetchResult
 from youju.models import AttachmentTextSegment, AttachmentTextUrl, AttachmentTextVersion
 
 from .test_attachment_text import BASE, pdf_pages
-from .test_attachments import APPLY, NOW, RECENT, FakeFetcher, add_doc
+from .test_attachments import APPLY, LIST, NOW, RECENT, FakeFetcher, add_doc
 from .test_readers import client, path, seed  # noqa: F401 - client 是 pytest 夹具
 
 FULL = {"images": [(0, 0, 300, 400)]}  # 整页是图片：扫描页
@@ -665,6 +665,27 @@ def test_ocr_job_only_takes_attachments_in_the_text_scope(session, monkeypatch, 
     fetcher = FakeFetcher({BASE + "old.pdf": SCAN_PDF})
     report = copies.ocr_scans(session, fetcher=fetcher, now=NOW)
     assert (report.documents, report.deferred, fetcher.calls) == (0, 0, [])
+
+
+def test_ocr_job_skips_lists_and_personal_matters(session, monkeypatch, ocr_on) -> None:
+    """D-125（创始人 11/9 确认范围）：只识别申报通知、政策的附件；名单类、个人事项（招聘等）的
+    附件不在取文字的范围里，有扫描件也不识别。"""
+    add_doc(session, 1, LIST, RECENT, [("名单", BASE + "list.pdf", "pdf")])
+    add_doc(
+        session,
+        2,
+        "关于公开招聘事业单位工作人员的公告",
+        RECENT,
+        [("报名表", BASE + "job.pdf", "pdf")],
+    )
+    add_doc(session, 3, APPLY, RECENT, [("申报书", BASE + "apply.pdf", "pdf")])
+    for name in ("list.pdf", "job.pdf", "apply.pdf"):
+        at.record(session, BASE + name, "pdf", NOW, at.TextReport(), content=SCAN_PDF)
+    fake_ocr(monkeypatch, {1: ["第一页认出来的一行字"], 2: ["第二页认出来的一行字"]})
+    fetcher = FakeFetcher({BASE + name: SCAN_PDF for name in ("list.pdf", "job.pdf", "apply.pdf")})
+    report = copies.ocr_scans(session, fetcher=fetcher, now=NOW)
+    assert fetcher.calls == [BASE + "apply.pdf"]
+    assert (report.documents, report.deferred) == (1, 0)
 
 
 def test_ocr_job_checks_the_download_and_retries_environment_errors(
