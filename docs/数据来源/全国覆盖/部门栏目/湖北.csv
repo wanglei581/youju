@@ -1,7 +1,7 @@
 ﻿层级,省份,城市,区县,区划代码,部门,部门全称,网站URL,网站类型,导航来源页,导航文字,状态,原因,通知公告,通知公告URL,政策文件,政策文件URL,公示公告,公示公告URL,栏目来源页,平台,网站标识码,技术支持
 省级,湖北,,,420000,政府办,湖北省人民政府,http://www.hubei.gov.cn/,门户本身,http://www.hubei.gov.cn/,,不能抓,门户不能抓：HTTP 412 拒绝访问,,,,,,,,,,
 省级,湖北,,,420000,发改委,湖北省发展和改革委员会,http://fgw.hubei.gov.cn/,独立网站,https://kjt.hubei.gov.cn/,湖北省发展和改革委员会,不能抓,HTTP 412 拒绝访问,,,,,,,,,,
-省级,湖北,,,420000,工信,湖北省经济和信息化厅,http://jxt.hubei.gov.cn/,独立网站,https://kjt.hubei.gov.cn/,湖北省经济和信息化厅,已找到,,通知公告,http://jxt.hubei.gov.cn/fbjd/zc/qtzdgkwj/gwfb/,规范性文件,http://jxt.hubei.gov.cn/fbjd/zc/gfxwj/,公示公告,http://jxt.hubei.gov.cn/fbjd/zc/qtzdgkwj/gsgg/,http://jxt.hubei.gov.cn/ http://jxt.hubei.gov.cn/fbjd/zc/gfxwj/,拓尔思|t日期_编号(拓尔思),4200000054,
+省级,湖北,,,420000,工信,湖北省经济和信息化厅,http://jxt.hubei.gov.cn/,独立网站,http://jxt.hubei.gov.cn/,湖北省经济和信息化厅,已找到,,通知公告,http://jxt.hubei.gov.cn/fbjd/zc/qtzdgkwj/gwfb/,规范性文件,http://jxt.hubei.gov.cn/fbjd/zc/gfxwj/,公示公告,http://jxt.hubei.gov.cn/fbjd/zc/qtzdgkwj/gsgg/,http://jxt.hubei.gov.cn/ http://jxt.hubei.gov.cn/fbjd/zc/gfxwj/,拓尔思|t日期_编号(拓尔思),4200000054,
 省级,湖北,,,420000,科技,湖北省科学技术厅,https://kjt.hubei.gov.cn/,独立网站,https://kjt.hubei.gov.cn/,湖北省科学技术厅,已找到,,通知公告,https://kjt.hubei.gov.cn/kjdt/tzgg/,规范性文件,https://kjt.hubei.gov.cn/zfxxgk_GK2020/zc2020/gfxwjj/,,,https://kjt.hubei.gov.cn/,拓尔思|t日期_编号(拓尔思),4200000026,
 省级,湖北,,,420000,商务,湖北省商务厅,http://swt.hubei.gov.cn/,独立网站,https://kjt.hubei.gov.cn/,湖北省商务厅,已找到,,通知公告,http://swt.hubei.gov.cn/stdt/tzgg/,政策文件,http://swt.hubei.gov.cn/zfxxgk/zc/gfxwj/,,,http://swt.hubei.gov.cn/,拓尔思|t日期_编号(拓尔思),4200000040,
 省级,湖北,,,420000,财政,湖北省财政厅,http://czt.hubei.gov.cn/,独立网站,https://kjt.hubei.gov.cn/,湖北省财政厅,不能抓,HTTP 412 拒绝访问,,,,,,,,,,

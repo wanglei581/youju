@@ -1,21 +1,21 @@
 ﻿层级,省份,城市,区县,区划代码,部门,部门全称,网站URL,网站类型,导航来源页,导航文字,状态,原因,通知公告,通知公告URL,政策文件,政策文件URL,公示公告,公示公告URL,栏目来源页,平台,网站标识码,技术支持
 省级,海南,,,460000,政府办,海南省人民政府,https://www.hainan.gov.cn/,门户本身,https://www.hainan.gov.cn/,,打不开,门户打不开：HTTP 400,,,,,,,,,,
-省级,海南,,,460000,发改委,海南省发展和改革委员会,http://plan.hainan.gov.cn/,独立网站,https://iitb.hainan.gov.cn/iitb/0205/newxxgk_index.shtml,>海南省发展和改革委员会,已找到,,通知公告,https://plan.hainan.gov.cn/common/search/a0d73dab7c3740779419e6ef289c247e?sort=publishedTime&_isAgg=false&_pageSize=12&_template=sfgw&_channelName=&page=1,政策文件,http://plan.hainan.gov.cn/sfgw/0500/zcwj.shtml,,,http://plan.hainan.gov.cn/,开普云|32位编号.shtml,4600000052,开普云
-省级,海南,,,460000,工信,海南省工业和信息化厅,http://iitb.hainan.gov.cn/,独立网站,https://iitb.hainan.gov.cn/iitb/0205/newxxgk_index.shtml,>海南省工业和信息化厅,已找到,,通知公告,http://iitb.hainan.gov.cn/iitb/tzgg/list2.shtml,政策文件,http://iitb.hainan.gov.cn/iitb/0500/zcwj.shtml?ddtab=true,公示公告,http://iitb.hainan.gov.cn/iitb/tzgg/list2.shtml?ddtab=true,http://iitb.hainan.gov.cn/,开普云|32位编号.shtml,4600000003,开普云
-省级,海南,,,460000,科技,北京市科学技术委员会、中关村科技园区管理委员会,https://kw.beijing.gov.cn/,独立网站,https://dost.hainan.gov.cn/,北京市科学技术委员会、中关村科技园区管理委员会,已找到,,通知公告,https://kw.beijing.gov.cn/zwgk/tzgg/,政策文件,https://kw.beijing.gov.cn/zwgk/zcwj/,,,https://kw.beijing.gov.cn/,拓尔思|t日期_编号(拓尔思),1100000207,
-省级,海南,,,460000,商务,>海南省商务厅,http://dofcom.hainan.gov.cn/,独立网站,https://iitb.hainan.gov.cn/iitb/0205/newxxgk_index.shtml,>海南省商务厅,打不开,HTTP 400,,,,,,,,,,
-省级,海南,,,460000,财政,>海南省财政厅,http://mof.hainan.gov.cn/,独立网站,https://iitb.hainan.gov.cn/iitb/0205/newxxgk_index.shtml,>海南省财政厅,打不开,HTTP 400,,,,,,,,,,
-省级,海南,,,460000,人社,海南省人力资源和社会保障厅,http://hrss.hainan.gov.cn/,独立网站,https://iitb.hainan.gov.cn/iitb/0205/newxxgk_index.shtml,>海南省人力资源和社会保障厅,已找到,,,,政策文件,http://hrss.hainan.gov.cn/hrss/0500/zcwj.shtml,公示公告,http://hrss.hainan.gov.cn/hrss/0400/list3.shtml?ddtab=true,http://hrss.hainan.gov.cn/,开普云|32位编号.shtml,4600000058,开普云
-省级,海南,,,460000,市场监管,>海南省市场监督管理局,http://amr.hainan.gov.cn/,独立网站,https://iitb.hainan.gov.cn/iitb/0205/newxxgk_index.shtml,>海南省市场监督管理局,打不开,HTTP 400,,,,,,,,,,
-省级,海南,,,460000,农业农村,>海南省农业农村厅,http://agri.hainan.gov.cn/,独立网站,https://iitb.hainan.gov.cn/iitb/0205/newxxgk_index.shtml,>海南省农业农村厅,打不开,HTTP 400,,,,,,,,,,
+省级,海南,,,460000,发改委,海南省发展和改革委员会,http://plan.hainan.gov.cn/,独立网站,https://iitb.hainan.gov.cn/iitb/0205/newxxgk_index.shtml,海南省发展和改革委员会,已找到,,通知公告,https://plan.hainan.gov.cn/common/search/a0d73dab7c3740779419e6ef289c247e?sort=publishedTime&_isAgg=false&_pageSize=12&_template=sfgw&_channelName=&page=1,政策文件,http://plan.hainan.gov.cn/sfgw/0500/zcwj.shtml,,,http://plan.hainan.gov.cn/,开普云|32位编号.shtml,4600000052,开普云
+省级,海南,,,460000,工信,海南省工业和信息化厅,https://iitb.hainan.gov.cn/,独立网站,https://iitb.hainan.gov.cn/,海南省工业和信息化厅,已找到,,通知公告,https://iitb.hainan.gov.cn/iitb/tzgg/list2.shtml,政策文件,https://iitb.hainan.gov.cn/iitb/0500/zcwj.shtml?ddtab=true,公示公告,https://iitb.hainan.gov.cn/iitb/tzgg/list2.shtml?ddtab=true,https://iitb.hainan.gov.cn/,开普云|32位编号.shtml,4600000003,开普云
+省级,海南,,,460000,科技,海南省科学技术厅,https://dost.hainan.gov.cn/,独立网站,https://dost.hainan.gov.cn/,海南省科学技术厅,已找到,,通知公告,https://dost.hainan.gov.cn/xxgk/tzgg/,政策文件,https://dost.hainan.gov.cn/xxgk/zfwj/,公示公告,https://dost.hainan.gov.cn/xxgk/tzgg/,https://dost.hainan.gov.cn/ https://dost.hainan.gov.cn/xxgk/newxxgk_index.html,拓尔思|t日期_编号(拓尔思),4600000009,拓尔思信息技术股份有限公司
+省级,海南,,,460000,商务,海南省商务厅,http://dofcom.hainan.gov.cn/,独立网站,https://iitb.hainan.gov.cn/iitb/0205/newxxgk_index.shtml,海南省商务厅,打不开,HTTP 400,,,,,,,,,,
+省级,海南,,,460000,财政,海南省财政厅,http://mof.hainan.gov.cn/,独立网站,https://iitb.hainan.gov.cn/iitb/0205/newxxgk_index.shtml,海南省财政厅,打不开,HTTP 400,,,,,,,,,,
+省级,海南,,,460000,人社,海南省人力资源和社会保障厅,http://hrss.hainan.gov.cn/,独立网站,https://iitb.hainan.gov.cn/iitb/0205/newxxgk_index.shtml,海南省人力资源和社会保障厅,已找到,,,,政策文件,http://hrss.hainan.gov.cn/hrss/0500/zcwj.shtml,公示公告,http://hrss.hainan.gov.cn/hrss/0400/list3.shtml?ddtab=true,http://hrss.hainan.gov.cn/,开普云|32位编号.shtml,4600000058,开普云
+省级,海南,,,460000,市场监管,海南省市场监督管理局,http://amr.hainan.gov.cn/,独立网站,https://iitb.hainan.gov.cn/iitb/0205/newxxgk_index.shtml,海南省市场监督管理局,打不开,HTTP 400,,,,,,,,,,
+省级,海南,,,460000,农业农村,海南省农业农村厅,http://agri.hainan.gov.cn/,独立网站,https://iitb.hainan.gov.cn/iitb/0205/newxxgk_index.shtml,海南省农业农村厅,打不开,HTTP 400,,,,,,,,,,
 省级,海南,,,460000,文旅,,,,,,导航未找到,,,,,,,,,,,
-省级,海南,,,460000,生态环境,海南省生态环境厅,https://hnsthb.hainan.gov.cn/,独立网站,https://iitb.hainan.gov.cn/iitb/0205/newxxgk_index.shtml,>海南省生态环境厅,已找到,,通知公告,https://hnsthb.hainan.gov.cn/xxgk/0400/,政府文件,https://hnsthb.hainan.gov.cn/xxgk/0500/,公示,https://hnsthb.hainan.gov.cn/xxgk/0400/tzgg_gs/,https://hnsthb.hainan.gov.cn/ https://hnsthb.hainan.gov.cn/xxgk/newxxgk_index.html,拓尔思|t日期_编号(拓尔思),4600000045,拓尔思信息技术股份有限公司
+省级,海南,,,460000,生态环境,海南省生态环境厅,https://hnsthb.hainan.gov.cn/,独立网站,https://iitb.hainan.gov.cn/iitb/0205/newxxgk_index.shtml,海南省生态环境厅,已找到,,通知公告,https://hnsthb.hainan.gov.cn/xxgk/0400/,政府文件,https://hnsthb.hainan.gov.cn/xxgk/0500/,公示,https://hnsthb.hainan.gov.cn/xxgk/0400/tzgg_gs/,https://hnsthb.hainan.gov.cn/ https://hnsthb.hainan.gov.cn/xxgk/newxxgk_index.html,拓尔思|t日期_编号(拓尔思),4600000045,拓尔思信息技术股份有限公司
 市级,海南,海口,,460100,政府办,海口市人民政府,http://www.haikou.gov.cn/,门户本身,http://www.haikou.gov.cn/,,已找到,,通知公告,https://www.haikou.gov.cn/xxgk/szfbjxxgk/ggfw/,政策,https://www.haikou.gov.cn/xxgk/xxgkml/zc/zfl/,公示公告,https://www.haikou.gov.cn/xxgk/szfbjxxgk/ggtz/,https://www.haikou.gov.cn/xxgk/xxgkml/szfxxgk.shtml https://www.haikou.gov.cn/xxgk/xxgkml/zfxxgkzd.shtml,拓尔思|日期目录/编号,4601000009,电话：0898-68725613
 市级,海南,海口,,460100,发改委,海口市发展和改革委员会,https://drc.haikou.gov.cn/xxxgk/fdzdgknr/index.shtml,独立网站,https://www.haikou.gov.cn/xxgk/xxgkml/szfxxgk.shtml,市发展和改革委员会,已找到,,,,部门文件,https://drc.haikou.gov.cn/xxxgk/fdzdgknr/bmwj/,,,https://drc.haikou.gov.cn/xxxgk/fdzdgknr/index.shtml,拓尔思|日期目录/编号,4601000019,
 市级,海南,海口,,460100,工信,海口市工业和信息化局,https://kgxj.haikou.gov.cn/zfxxgk/fdzdgknr/index.shtml,独立网站,https://www.haikou.gov.cn/xxgk/xxgkml/szfxxgk.shtml,市工业和信息化局,已找到,,,,部门文件,http://kgxj.haikou.gov.cn/zfxxgk/fdzdgknr/bmwj/,,,https://kgxj.haikou.gov.cn/zfxxgk/fdzdgknr/index.shtml,拓尔思|日期目录/编号,4601000002,
 市级,海南,海口,,460100,科技,,,,,,导航未找到,,,,,,,,,,,
 市级,海南,海口,,460100,商务,海口市商务局,https://hksw.haikou.gov.cn/xxgk/fdzdgknr/index.shtml,独立网站,https://www.haikou.gov.cn/xxgk/xxgkml/szfxxgk.shtml,市商务局,已找到,,,,部门文件,https://hksw.haikou.gov.cn/xxgk/fdzdgknr/bmwj_8266/,,,https://hksw.haikou.gov.cn/xxgk/fdzdgknr/index.shtml,拓尔思|日期目录/编号,4601000043,
-市级,海南,海口,,460100,财政,海口市财政局,https://sczj.haikou.gov.cn/xxgk/fdzdgknr/index.shtml,独立网站,https://www.haikou.gov.cn/xxgk/xxgkml/szfxxgk.shtml,市财政局,已找到,,,,部门文件,http://sczj.haikou.gov.cn/xxgk/fdzdgknr/bmwj/,,,https://sczj.haikou.gov.cn/xxgk/fdzdgknr/index.shtml,拓尔思|日期目录/编号,4601000027,
+市级,海南,海口,,460100,财政,海口市财政局,http://sczj.haikou.gov.cn/,独立网站,http://sczj.haikou.gov.cn/xxgk/gzndbb/202301/t1221695.shtml,市财政局,已找到,,,,政策文件,http://sczj.haikou.gov.cn/xxgk/zcwj/,公示公告,http://sczj.haikou.gov.cn/xxgk/gsgg/,http://sczj.haikou.gov.cn/,拓尔思|日期目录/编号,4601000027,
 市级,海南,海口,,460100,人社,海口市人力资源和社会保障局,https://rsj.haikou.gov.cn/xxgk/fdzdgknr/,独立网站,https://www.haikou.gov.cn/xxgk/xxgkml/szfxxgk.shtml,市人力资源和社会保障局,已找到,,,,部门文件,http://rsj.haikou.gov.cn/xxgk/fdzdgknr/bmwj/,,,https://rsj.haikou.gov.cn/xxgk/fdzdgknr/,拓尔思|日期目录/编号,4601000011,
 市级,海南,海口,,460100,市场监管,海口市市场监督管理局,https://amr.haikou.gov.cn/xxgk/fdzdgknr/index.shtml,独立网站,https://www.haikou.gov.cn/xxgk/xxgkml/szfxxgk.shtml,市市场监督管理局,已找到,,,,部门文件,http://amr.haikou.gov.cn/xxgk/zcwj/flfg/,,,https://amr.haikou.gov.cn/xxgk/fdzdgknr/index.shtml,拓尔思|日期目录/编号,4601000060,
 市级,海南,海口,,460100,农业农村,海口市农业农村局,https://nyj.haikou.gov.cn/xxgk/fdzdgknr/index.shtml,独立网站,https://www.haikou.gov.cn/xxgk/xxgkml/szfxxgk.shtml,市农业农村局,已找到,,,,部门文件,http://nyj.haikou.gov.cn/xxgk/fdzdgknr/bmwj/,,,https://nyj.haikou.gov.cn/xxgk/fdzdgknr/index.shtml,拓尔思|日期目录/编号,4601000012,
@@ -33,16 +33,16 @@
 市级,海南,三亚,,460200,文旅,,,,,,打不开,门户打不开：robots.txt 暂时无法获取（HTTP 502），本次跳过,,,,,,,,,,
 市级,海南,三亚,,460200,生态环境,,,,,,打不开,门户打不开：robots.txt 暂时无法获取（HTTP 502），本次跳过,,,,,,,,,,
 市级,海南,三沙,,460300,政府办,三沙市人民政府网,http://www.sansha.gov.cn/,门户本身,http://www.sansha.gov.cn/,,已找到,,,,,,,,,开普云|32位编号.shtml,4603000001,开普云
-市级,海南,三沙,,460300,发改委,海南省发展和改革委员会,http://plan.hainan.gov.cn/,独立网站,http://www.sansha.gov.cn/sansha/mtjjs/202611/fbfd6ff57b0d4c8caccab41b8118bbbd.shtml,>海南省发展和改革委员会,已找到,,通知公告,https://plan.hainan.gov.cn/common/search/a0d73dab7c3740779419e6ef289c247e?sort=publishedTime&_isAgg=false&_pageSize=12&_template=sfgw&_channelName=&page=1,政策文件,http://plan.hainan.gov.cn/sfgw/0500/zcwj.shtml,,,http://plan.hainan.gov.cn/,开普云|32位编号.shtml,4600000052,开普云
-市级,海南,三沙,,460300,工信,海南省工业和信息化厅,http://iitb.hainan.gov.cn/,独立网站,http://www.sansha.gov.cn/sansha/mtjjs/202611/fbfd6ff57b0d4c8caccab41b8118bbbd.shtml,>海南省工业和信息化厅,已找到,,通知公告,http://iitb.hainan.gov.cn/iitb/tzgg/list2.shtml,政策文件,http://iitb.hainan.gov.cn/iitb/0500/zcwj.shtml?ddtab=true,公示公告,http://iitb.hainan.gov.cn/iitb/tzgg/list2.shtml?ddtab=true,http://iitb.hainan.gov.cn/,开普云|32位编号.shtml,4600000003,开普云
-市级,海南,三沙,,460300,科技,海南省科学技术厅,https://dost.hainan.gov.cn/,独立网站,http://www.sansha.gov.cn/sansha/mtjjs/202611/fbfd6ff57b0d4c8caccab41b8118bbbd.shtml,>海南省科学技术厅,已找到,,通知公告,https://dost.hainan.gov.cn/xxgk/tzgg/,政策文件,https://dost.hainan.gov.cn/xxgk/zfwj/,公示公告,https://dost.hainan.gov.cn/xxgk/tzgg/,https://dost.hainan.gov.cn/ https://dost.hainan.gov.cn/xxgk/newxxgk_index.html,拓尔思|t日期_编号(拓尔思),4600000009,拓尔思信息技术股份有限公司
-市级,海南,三沙,,460300,商务,>海南省商务厅,http://dofcom.hainan.gov.cn/,独立网站,http://www.sansha.gov.cn/sansha/mtjjs/202611/fbfd6ff57b0d4c8caccab41b8118bbbd.shtml,>海南省商务厅,打不开,HTTP 400,,,,,,,,,,
-市级,海南,三沙,,460300,财政,>海南省财政厅,http://mof.hainan.gov.cn/,独立网站,http://www.sansha.gov.cn/sansha/mtjjs/202611/fbfd6ff57b0d4c8caccab41b8118bbbd.shtml,>海南省财政厅,打不开,HTTP 400,,,,,,,,,,
-市级,海南,三沙,,460300,人社,海南省人力资源和社会保障厅,http://hrss.hainan.gov.cn/,独立网站,http://www.sansha.gov.cn/sansha/mtjjs/202611/fbfd6ff57b0d4c8caccab41b8118bbbd.shtml,>海南省人力资源和社会保障厅,已找到,,,,政策文件,http://hrss.hainan.gov.cn/hrss/0500/zcwj.shtml,公示公告,http://hrss.hainan.gov.cn/hrss/0400/list3.shtml?ddtab=true,http://hrss.hainan.gov.cn/,开普云|32位编号.shtml,4600000058,开普云
-市级,海南,三沙,,460300,市场监管,>国家知识产权局,http://www.sipo.gov.cn/,独立网站,http://www.sansha.gov.cn/sansha/mtjjs/202611/fbfd6ff57b0d4c8caccab41b8118bbbd.shtml,>国家知识产权局,打不开,"robots.txt 暂时无法获取（连接失败：域名解析失败：[Errno 8] nodename nor servname provided, or not known），本次跳过",,,,,,,,,,
-市级,海南,三沙,,460300,农业农村,>海南省农业农村厅,http://agri.hainan.gov.cn/,独立网站,http://www.sansha.gov.cn/sansha/mtjjs/202611/fbfd6ff57b0d4c8caccab41b8118bbbd.shtml,>海南省农业农村厅,打不开,HTTP 400,,,,,,,,,,
+市级,海南,三沙,,460300,发改委,,,,,,导航未找到,,,,,,,,,,,
+市级,海南,三沙,,460300,工信,,,,,,导航未找到,,,,,,,,,,,
+市级,海南,三沙,,460300,科技,,,,,,导航未找到,,,,,,,,,,,
+市级,海南,三沙,,460300,商务,,,,,,导航未找到,,,,,,,,,,,
+市级,海南,三沙,,460300,财政,,,,,,导航未找到,,,,,,,,,,,
+市级,海南,三沙,,460300,人社,,,,,,导航未找到,,,,,,,,,,,
+市级,海南,三沙,,460300,市场监管,,,,,,导航未找到,,,,,,,,,,,
+市级,海南,三沙,,460300,农业农村,,,,,,导航未找到,,,,,,,,,,,
 市级,海南,三沙,,460300,文旅,,,,,,导航未找到,,,,,,,,,,,
-市级,海南,三沙,,460300,生态环境,海南省生态环境厅,https://hnsthb.hainan.gov.cn/,独立网站,http://www.sansha.gov.cn/sansha/mtjjs/202611/fbfd6ff57b0d4c8caccab41b8118bbbd.shtml,>海南省生态环境厅,已找到,,通知公告,https://hnsthb.hainan.gov.cn/xxgk/0400/,政府文件,https://hnsthb.hainan.gov.cn/xxgk/0500/,公示,https://hnsthb.hainan.gov.cn/xxgk/0400/tzgg_gs/,https://hnsthb.hainan.gov.cn/ https://hnsthb.hainan.gov.cn/xxgk/newxxgk_index.html,拓尔思|t日期_编号(拓尔思),4600000045,拓尔思信息技术股份有限公司
+市级,海南,三沙,,460300,生态环境,,,,,,导航未找到,,,,,,,,,,,
 市级,海南,儋州,,460400,政府办,,,,,,打不开,门户打不开：HTTP 400,,,,,,,,,,
 市级,海南,儋州,,460400,发改委,,,,,,打不开,门户打不开：HTTP 400,,,,,,,,,,
 市级,海南,儋州,,460400,工信,,,,,,打不开,门户打不开：HTTP 400,,,,,,,,,,
@@ -166,13 +166,13 @@
 区县级,海南,三沙,南沙区,460303,生态环境,,,,,,导航未找到,上级官方导航里没找到这个行政区的门户,,,,,,,,,,
 区县级,海南,五指山,五指山市,469001,政府办,五指山市人民政府网,http://wzs.hainan.gov.cn/,门户本身,http://wzs.hainan.gov.cn/,,已找到,,,,政策,http://wzs.hainan.gov.cn/mwzs/zhengce/mzw.shtml?ddtab=true,公示公告,http://wzs.hainan.gov.cn/wzs/0400/list2.shtml?ddtab=true,http://wzs.hainan.gov.cn/wzs/footer/201810/2aadae86005f43eebdfb3860fe884e71.shtml http://wzs.hainan.gov.cn/wzs/zfwzndbb/newxxgk_index.shtml,开普云|32位编号.shtml,4690010001,
 区县级,海南,五指山,五指山市,469001,发改委,五指山市发展和改革委员会,http://wzs.hainan.gov.cn/wzssfzhggj/zwgk/newxxgk_wzsbm.shtml,门户频道,http://wzs.hainan.gov.cn/wzs/zfwzndbb/newxxgk_index.shtml,市发展改革委,已找到,,,,,,,,,32位编号.shtml,4690010001,
-区县级,海南,五指山,五指山市,469001,工信,海南省工业和信息化厅,http://iitb.hainan.gov.cn/,独立网站,http://wzs.hainan.gov.cn/wzs/zfwzndbb/newxxgk_index.shtml,>海南省工业和信息化厅,已找到,,通知公告,http://iitb.hainan.gov.cn/iitb/tzgg/list2.shtml,政策文件,http://iitb.hainan.gov.cn/iitb/0500/zcwj.shtml?ddtab=true,公示公告,http://iitb.hainan.gov.cn/iitb/tzgg/list2.shtml?ddtab=true,http://iitb.hainan.gov.cn/,开普云|32位编号.shtml,4600000003,开普云
-区县级,海南,五指山,五指山市,469001,科技,海南省科学技术厅,https://dost.hainan.gov.cn/,独立网站,http://wzs.hainan.gov.cn/wzs/zfwzndbb/newxxgk_index.shtml,>海南省科学技术厅,已找到,,通知公告,https://dost.hainan.gov.cn/xxgk/tzgg/,政策文件,https://dost.hainan.gov.cn/xxgk/zfwj/,公示公告,https://dost.hainan.gov.cn/xxgk/tzgg/,https://dost.hainan.gov.cn/ https://dost.hainan.gov.cn/xxgk/newxxgk_index.html,拓尔思|t日期_编号(拓尔思),4600000009,拓尔思信息技术股份有限公司
-区县级,海南,五指山,五指山市,469001,商务,>海南省商务厅,http://dofcom.hainan.gov.cn/,独立网站,http://wzs.hainan.gov.cn/wzs/zfwzndbb/newxxgk_index.shtml,>海南省商务厅,打不开,HTTP 400,,,,,,,,,,
+区县级,海南,五指山,五指山市,469001,工信,,,,,,导航未找到,,,,,,,,,,,
+区县级,海南,五指山,五指山市,469001,科技,,,,,,导航未找到,,,,,,,,,,,
+区县级,海南,五指山,五指山市,469001,商务,,,,,,导航未找到,,,,,,,,,,,
 区县级,海南,五指山,五指山市,469001,财政,五指山市财政局,http://wzs.hainan.gov.cn/wzssczj/zwgk/newxxgk_wzsbm.shtml,门户频道,http://wzs.hainan.gov.cn/wzs/zfwzndbb/newxxgk_index.shtml,市财政局,已找到,,,,,,,,,32位编号.shtml,4690010001,
 区县级,海南,五指山,五指山市,469001,人社,五指山市人力资源和社会保障局,http://wzs.hainan.gov.cn/wzssrlzyhshbzj/zwgk/newxxgk_wzsbm.shtml,门户频道,http://wzs.hainan.gov.cn/wzs/zfwzndbb/newxxgk_index.shtml,市人力资源和社会保障局,已找到,,,,,,,,,32位编号.shtml,4690010001,
 区县级,海南,五指山,五指山市,469001,市场监管,五指山市市场监管局,http://wzs.hainan.gov.cn/wzssscjdglj/zwgk/newxxgk_wzsbm.shtml,门户频道,http://wzs.hainan.gov.cn/wzs/zfwzndbb/newxxgk_index.shtml,市市场监管局,已找到,,,,,,,,,32位编号.shtml,4690010001,
-区县级,海南,五指山,五指山市,469001,农业农村,>海南省农业农村厅,http://agri.hainan.gov.cn/,独立网站,http://wzs.hainan.gov.cn/wzs/zfwzndbb/newxxgk_index.shtml,>海南省农业农村厅,打不开,HTTP 400,,,,,,,,,,
+区县级,海南,五指山,五指山市,469001,农业农村,,,,,,导航未找到,,,,,,,,,,,
 区县级,海南,五指山,五指山市,469001,文旅,,,,,,导航未找到,,,,,,,,,,,
 区县级,海南,五指山,五指山市,469001,生态环境,五指山市生态环境局,http://wzs.hainan.gov.cn/wzsssthjbhj/zwgk/newxxgk_wzsbm.shtml,门户频道,http://wzs.hainan.gov.cn/wzs/zfwzndbb/newxxgk_index.shtml,市生态环境局,已找到,,,,,,,,,32位编号.shtml,4690010001,
 区县级,海南,琼海,琼海市,469002,政府办,,,,,,打不开,门户打不开：HTTP 400,,,,,,,,,,
@@ -187,16 +187,16 @@
 区县级,海南,琼海,琼海市,469002,文旅,,,,,,打不开,门户打不开：HTTP 400,,,,,,,,,,
 区县级,海南,琼海,琼海市,469002,生态环境,,,,,,打不开,门户打不开：HTTP 400,,,,,,,,,,
 区县级,海南,文昌,文昌市,469005,政府办,文昌市人民政府网,http://wenchang.hainan.gov.cn/,门户本身,http://wenchang.hainan.gov.cn/,,已找到,,,,政策,http://wenchang.hainan.gov.cn/nwenchang/mzc/mzc.shtml?ddtab=true,公示公告,http://wenchang.hainan.gov.cn/wenchang/0400/list3.shtml?ddtab=true,http://wenchang.hainan.gov.cn/wenchang/szfhy/list2.shtml?ddtab=true http://wenchang.hainan.gov.cn/wenchang/zfwzndbb/newxxgk_index.shtml,拓尔思|32位编号.shtml,4690050001,
-区县级,海南,文昌,文昌市,469005,发改委,文昌市发展和改革委员会,http://wenchang.hainan.gov.cn/wcsfzhggwyh/zwgk/newxxgk_wcbm.shtml,门户频道,http://wenchang.hainan.gov.cn/wenchang/zfwzndbb/newxxgk_index.shtml,市发展和改革委员会,已找到,,,,,,,,,拓尔思|32位编号.shtml,4690050001,
-区县级,海南,文昌,文昌市,469005,工信,文昌市科学技术和工业信息化局,http://wenchang.hainan.gov.cn/wcsskxjsgyxxhj/zwgk/newxxgk_wcbm.shtml,门户频道,http://wenchang.hainan.gov.cn/wenchang/zfwzndbb/newxxgk_index.shtml,市科学技术和工业信息化局,已找到,,,,,,,,,拓尔思|32位编号.shtml,4690050001,
-区县级,海南,文昌,文昌市,469005,科技,文昌市科学技术和工业信息化局,http://wenchang.hainan.gov.cn/wcsskxjsgyxxhj/zwgk/newxxgk_wcbm.shtml,门户频道,http://wenchang.hainan.gov.cn/wenchang/zfwzndbb/newxxgk_index.shtml,市科学技术和工业信息化局,已找到,,,,,,,,,拓尔思|32位编号.shtml,4690050001,
-区县级,海南,文昌,文昌市,469005,商务,>海南省商务厅,https://dofcom.hainan.gov.cn/,独立网站,http://wenchang.hainan.gov.cn/wenchang/zfwzndbb/newxxgk_index.shtml,>海南省商务厅,打不开,HTTP 400,,,,,,,,,,
-区县级,海南,文昌,文昌市,469005,财政,文昌市财政局,http://wenchang.hainan.gov.cn/wcsczj/zwgk/newxxgk_wcbm.shtml,门户频道,http://wenchang.hainan.gov.cn/wenchang/zfwzndbb/newxxgk_index.shtml,市财政局,已找到,,,,,,,,,32位编号.shtml,4690050001,
-区县级,海南,文昌,文昌市,469005,人社,文昌市人力资源和社会保障局,http://wenchang.hainan.gov.cn/wcsrlzyhshbzj/zwgk/newxxgk_wcbm.shtml,门户频道,http://wenchang.hainan.gov.cn/wenchang/zfwzndbb/newxxgk_index.shtml,市人力资源和社会保障局,已找到,,,,,,,,,拓尔思|32位编号.shtml,4690050001,
-区县级,海南,文昌,文昌市,469005,市场监管,文昌市市场监督管理局,http://wenchang.hainan.gov.cn/wcsgsxzglj/zwgk/newxxgk_wcbm.shtml,门户频道,http://wenchang.hainan.gov.cn/wenchang/zfwzndbb/newxxgk_index.shtml,市市场监督管理局,已找到,,,,,,,,,32位编号.shtml,4690050001,
-区县级,海南,文昌,文昌市,469005,农业农村,文昌市农业农村局,http://wenchang.hainan.gov.cn/wcsnyj/zwgk/newxxgk_wcbm.shtml,门户频道,http://wenchang.hainan.gov.cn/wenchang/zfwzndbb/newxxgk_index.shtml,市农业农村局,已找到,,,,,,,,,拓尔思|32位编号.shtml,4690050001,
+区县级,海南,文昌,文昌市,469005,发改委,文昌市发展和改革委员会,http://wenchang.hainan.gov.cn/wcsfzhggwyh/gknb/202601/05d27552eca9444da91bd4a194a993a8.shtml?ddtab=true,门户频道,http://wenchang.hainan.gov.cn/wenchang/zfwzndbb/newxxgk_index.shtml,文昌市发展和改革委员会,已找到,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,,,,,,,拓尔思|32位编号.shtml,4690050001,
+区县级,海南,文昌,文昌市,469005,工信,文昌市科学技术和工业信息化局,http://wenchang.hainan.gov.cn/wcsskxjsgyxxhj/gknb/202601/6844aa6441324f718bbfcdeb356c10c4.shtml?ddtab=true,门户频道,http://wenchang.hainan.gov.cn/wenchang/zfwzndbb/newxxgk_index.shtml,文昌市科学技术和工业信息化局,已找到,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,,,,,,,拓尔思|32位编号.shtml,4690050001,
+区县级,海南,文昌,文昌市,469005,科技,文昌市科学技术和工业信息化局,http://wenchang.hainan.gov.cn/wcsskxjsgyxxhj/gknb/202601/6844aa6441324f718bbfcdeb356c10c4.shtml?ddtab=true,门户频道,http://wenchang.hainan.gov.cn/wenchang/zfwzndbb/newxxgk_index.shtml,文昌市科学技术和工业信息化局,已找到,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,,,,,,,拓尔思|32位编号.shtml,4690050001,
+区县级,海南,文昌,文昌市,469005,商务,,,,,,导航未找到,,,,,,,,,,,
+区县级,海南,文昌,文昌市,469005,财政,文昌市财政局,http://wenchang.hainan.gov.cn/wcsczj/gknb/202601/8772cfb9184b4b28801e34ec3687666f.shtml?ddtab=true,门户频道,http://wenchang.hainan.gov.cn/wenchang/zfwzndbb/newxxgk_index.shtml,文昌市财政局,已找到,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,,,,,,,拓尔思|32位编号.shtml,4690050001,
+区县级,海南,文昌,文昌市,469005,人社,文昌市人力资源和社会保障局,http://wenchang.hainan.gov.cn/wcsrlzyhshbzj/gknb/202601/c89932bec4ce4a3aa0877c9c801c378d.shtml?ddtab=true,门户频道,http://wenchang.hainan.gov.cn/wenchang/zfwzndbb/newxxgk_index.shtml,文昌市人力资源和社会保障局,已找到,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,,,,,,,拓尔思|32位编号.shtml,4690050001,
+区县级,海南,文昌,文昌市,469005,市场监管,文昌市市场监督管理局,http://wenchang.hainan.gov.cn/wcsgsxzglj/gknb/202601/86dd93bfeaf2455497c6ab73b24666e4.shtml?ddtab=true,门户频道,http://wenchang.hainan.gov.cn/wenchang/zfwzndbb/newxxgk_index.shtml,文昌市市场监督管理局,已找到,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,,,,,,,拓尔思|32位编号.shtml,4690050001,
+区县级,海南,文昌,文昌市,469005,农业农村,文昌市农业农村局,http://wenchang.hainan.gov.cn/wcsnyj/gknb/202601/ad216aa3ef5a4befb12a007966ede471.shtml?ddtab=true,门户频道,http://wenchang.hainan.gov.cn/wenchang/zfwzndbb/newxxgk_index.shtml,文昌市农业农村局,已找到,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,,,,,,,拓尔思|32位编号.shtml,4690050001,
 区县级,海南,文昌,文昌市,469005,文旅,,,,,,导航未找到,,,,,,,,,,,
-区县级,海南,文昌,文昌市,469005,生态环境,文昌市生态环境局,http://wenchang.hainan.gov.cn/wcssthjbhj/zwgk/newxxgk_wcbm.shtml,门户频道,http://wenchang.hainan.gov.cn/wenchang/zfwzndbb/newxxgk_index.shtml,市生态环境局,已找到,,,,,,,,,拓尔思|32位编号.shtml,4690050001,
+区县级,海南,文昌,文昌市,469005,生态环境,文昌市生态环境局,http://wenchang.hainan.gov.cn/wcssthjbhj/gknb/202602/ebcb313d5678491a8d82d8ca1f2b34a6.shtml?ddtab=true,门户频道,http://wenchang.hainan.gov.cn/wenchang/zfwzndbb/newxxgk_index.shtml,文昌市生态环境局,已找到,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,,,,,,,拓尔思|32位编号.shtml,4690050001,
 区县级,海南,万宁,万宁市,469006,政府办,,,,,,打不开,门户打不开：HTTP 400,,,,,,,,,,
 区县级,海南,万宁,万宁市,469006,发改委,,,,,,打不开,门户打不开：HTTP 400,,,,,,,,,,
 区县级,海南,万宁,万宁市,469006,工信,,,,,,打不开,门户打不开：HTTP 400,,,,,,,,,,
@@ -215,7 +215,7 @@
 区县级,海南,东方,东方市,469007,商务,市商务局,http://dongfang.hainan.gov.cn/xxgkzl/sswj/xxgkml/,门户频道,http://dongfang.hainan.gov.cn/xxgkzl/fdzdgknr/wzndbb/,市商务局,已找到,,,,,,,,,拓尔思|t日期_编号(拓尔思),,
 区县级,海南,东方,东方市,469007,财政,市财政局,http://dongfang.hainan.gov.cn/xxgkzl/sczj/xxgkml/,门户频道,http://dongfang.hainan.gov.cn/xxgkzl/fdzdgknr/wzndbb/,市财政局,已找到,,,,,,,,,拓尔思|t日期_编号(拓尔思),,
 区县级,海南,东方,东方市,469007,人社,市人力资源和社会保障局,http://dongfang.hainan.gov.cn/xxgkzl/rsj/xxgkml/,门户频道,http://dongfang.hainan.gov.cn/xxgkzl/fdzdgknr/wzndbb/,市人力资源和社会保障局,已找到,,,,,,,,,拓尔思|t日期_编号(拓尔思),,
-区县级,海南,东方,东方市,469007,市场监管,市市场监督管理局,https://dongfang.hainan.gov.cn/xxgkzl/sgsj/xxgkml/index.html,门户频道,http://dongfang.hainan.gov.cn/xxgk/0100/0102/,市市场监督管理局,已找到,,,,,,,,,拓尔思|t日期_编号(拓尔思),,
+区县级,海南,东方,东方市,469007,市场监管,市市场监督管理局,http://dongfang.hainan.gov.cn/xxgkzl/sgsj/xxgkml/,门户频道,http://dongfang.hainan.gov.cn/xxgkzl/fdzdgknr/wzndbb/,市市场监督管理局,已找到,,,,,,,,,拓尔思|t日期_编号(拓尔思),,
 区县级,海南,东方,东方市,469007,农业农村,市农业农村局,http://dongfang.hainan.gov.cn/xxgkzl/nongyeju/xxgkml/,门户频道,http://dongfang.hainan.gov.cn/xxgkzl/fdzdgknr/wzndbb/,市农业农村局,已找到,,,,,,,,,拓尔思|t日期_编号(拓尔思),,
 区县级,海南,东方,东方市,469007,文旅,,,,,,导航未找到,,,,,,,,,,,
 区县级,海南,东方,东方市,469007,生态环境,市生态环境局,http://dongfang.hainan.gov.cn/xxgkzl/shbj/xxgkml/,门户频道,http://dongfang.hainan.gov.cn/xxgkzl/fdzdgknr/wzndbb/,市生态环境局,已找到,,,,,,,,,拓尔思|t日期_编号(拓尔思),,
@@ -256,7 +256,7 @@
 区县级,海南,临高,临高县,469024,发改委,县发展和改革委员会,http://lingao.hainan.gov.cn/xxgkzl/fgw/xxgkml/,门户频道,http://lingao.hainan.gov.cn/xxgkzl/xzf/wzndbb/,县发展和改革委员会,已找到,,,,,,,,,拓尔思|t日期_编号(拓尔思),4440240002,
 区县级,海南,临高,临高县,469024,工信,县科学技术和工业信息化局,https://lingao.hainan.gov.cn/xxgkzl/zfb_86489/xxgkml/index.html,门户频道,http://lingao.hainan.gov.cn/xxgkzl/xzf/wzndbb/,县科学技术和工业信息化局,已找到,,,,,,,,,拓尔思|t日期_编号(拓尔思),4440240002,
 区县级,海南,临高,临高县,469024,科技,县科学技术和工业信息化局,https://lingao.hainan.gov.cn/xxgkzl/zfb_86489/xxgkml/index.html,门户频道,http://lingao.hainan.gov.cn/xxgkzl/xzf/wzndbb/,县科学技术和工业信息化局,已找到,,,,,,,,,拓尔思|t日期_编号(拓尔思),4440240002,
-区县级,海南,临高,临高县,469024,商务,县商务局,http://lingao.hainan.gov.cn/xxgkzl/shangwuju/xxgkml/,门户频道,http://lingao.hainan.gov.cn/xxgkzl/xzf/wzndbb/,县商务局,已找到,,,,,,,,,拓尔思|t日期_编号(拓尔思),4440240002,
+区县级,海南,临高,临高县,469024,商务,县商务局,https://lingao.hainan.gov.cn/xxgkzl/shangwuju/xxgkml/,门户频道,http://lingao.hainan.gov.cn/xxgkzl/xzf/wzndbb/,县商务局,已找到,,,,,,,,,拓尔思|t日期_编号(拓尔思),4440240002,
 区县级,海南,临高,临高县,469024,财政,县财政局,http://lingao.hainan.gov.cn/xxgkzl/czj/xxgkml/,门户频道,http://lingao.hainan.gov.cn/xxgkzl/xzf/wzndbb/,县财政局,已找到,,,,,,,,,拓尔思|t日期_编号(拓尔思),4440240002,
 区县级,海南,临高,临高县,469024,人社,县人力资源和社会保障局,http://lingao.hainan.gov.cn/xxgkzl/rsj/xxgkml/,门户频道,http://lingao.hainan.gov.cn/xxgkzl/xzf/wzndbb/,县人力资源和社会保障局,已找到,,,,,,,,,拓尔思|t日期_编号(拓尔思),4440240002,
 区县级,海南,临高,临高县,469024,市场监管,县市场监督管理局,http://lingao.hainan.gov.cn/xxgkzl/yaojianju/xxgkml/,门户频道,http://lingao.hainan.gov.cn/xxgkzl/xzf/wzndbb/,县市场监督管理局,已找到,,,,,,,,,拓尔思|t日期_编号(拓尔思),4440240002,
@@ -278,7 +278,7 @@
 区县级,海南,昌江黎族自治县,昌江黎族自治县,469026,发改委,昌江县发展和改革委员会,http://changjiang.hainan.gov.cn/cjxfzhggwyh/zwgk/newxxgk_cjbm.shtml,门户频道,http://changjiang.hainan.gov.cn/changjiang/0205/newxxgk_index.shtml,县发展和改革委员会,已找到,,,,,,,,,拓尔思|32位编号.shtml,4690260001,
 区县级,海南,昌江黎族自治县,昌江黎族自治县,469026,工信,昌江县科学技术和工业信息化局,http://changjiang.hainan.gov.cn/cjxgyhxxhj/zwgk/newxxgk_cjbm.shtml,门户频道,http://changjiang.hainan.gov.cn/changjiang/0205/newxxgk_index.shtml,县科学技术和工业信息化局,已找到,,,,,,,,,拓尔思|32位编号.shtml,4690260001,
 区县级,海南,昌江黎族自治县,昌江黎族自治县,469026,科技,昌江县科学技术和工业信息化局,http://changjiang.hainan.gov.cn/cjxgyhxxhj/zwgk/newxxgk_cjbm.shtml,门户频道,http://changjiang.hainan.gov.cn/changjiang/0205/newxxgk_index.shtml,县科学技术和工业信息化局,已找到,,,,,,,,,拓尔思|32位编号.shtml,4690260001,
-区县级,海南,昌江黎族自治县,昌江黎族自治县,469026,商务,>海南省商务厅,http://dofcom.hainan.gov.cn/,独立网站,http://changjiang.hainan.gov.cn/,>海南省商务厅,打不开,HTTP 400,,,,,,,,,,
+区县级,海南,昌江黎族自治县,昌江黎族自治县,469026,商务,,,,,,导航未找到,,,,,,,,,,,
 区县级,海南,昌江黎族自治县,昌江黎族自治县,469026,财政,昌江县财政局,http://changjiang.hainan.gov.cn/cjxczj/zwgk/newxxgk_cjbm.shtml,门户频道,http://changjiang.hainan.gov.cn/changjiang/0205/newxxgk_index.shtml,县财政局,已找到,,,,,,,,,拓尔思|32位编号.shtml,4690260001,
 区县级,海南,昌江黎族自治县,昌江黎族自治县,469026,人社,昌江县人力资源和社会保障局,http://changjiang.hainan.gov.cn/cjxrlzyhshbzj/zwgk/newxxgk_cjbm.shtml,门户频道,http://changjiang.hainan.gov.cn/changjiang/0205/newxxgk_index.shtml,县人力资源和社会保障局,已找到,,,,,,,,,拓尔思|32位编号.shtml,4690260001,
 区县级,海南,昌江黎族自治县,昌江黎族自治县,469026,市场监管,昌江县市场监督管理局,http://changjiang.hainan.gov.cn/cjxscjdglj/zwgk/newxxgk_cjbm.shtml,门户频道,http://changjiang.hainan.gov.cn/changjiang/0205/newxxgk_index.shtml,县市场监督管理局,已找到,,,,,,,,,拓尔思|32位编号.shtml,4690260001,
@@ -286,16 +286,16 @@
 区县级,海南,昌江黎族自治县,昌江黎族自治县,469026,文旅,,,,,,导航未找到,,,,,,,,,,,
 区县级,海南,昌江黎族自治县,昌江黎族自治县,469026,生态环境,县生态环境局,http://changjiang.hainan.gov.cn/cjxsthjbhj/zwgk/newxxgk_cjbm.shtml,门户频道,http://changjiang.hainan.gov.cn/changjiang/0205/newxxgk_index.shtml,县生态环境局,打不开,ReadError: [Errno 54] Connection reset by peer,,,,,,,,,,
 区县级,海南,乐东黎族自治县,乐东黎族自治县,469027,政府办,乐东黎族自治县人民政府网,http://ledong.hainan.gov.cn/,门户本身,http://ledong.hainan.gov.cn/,,已找到,,,,部门文件,http://ledong.hainan.gov.cn/ledong/05032/list2.shtml,公示公告,http://ledong.hainan.gov.cn/ledong/0400/lists3gsgg.shtml?ddtab=true,http://ledong.hainan.gov.cn/ http://ledong.hainan.gov.cn/ledong/05032/list2.shtml?ddtab=true,拓尔思|32位编号.shtml,4690270001,
-区县级,海南,乐东黎族自治县,乐东黎族自治县,469027,发改委,乐东县发展和改革委员会,http://ledong.hainan.gov.cn/ldxfzhggj/zwgk/newxxgk_ldbm.shtml,门户频道,http://ledong.hainan.gov.cn/ledong/0205/newxxgk_index.shtml,县发展和改革委员会,已找到,,,,,,,,,拓尔思|32位编号.shtml,4690270001,
-区县级,海南,乐东黎族自治县,乐东黎族自治县,469027,工信,乐东县科学技术和工业信息化局,http://ledong.hainan.gov.cn/ldxkjgyxxhj/zwgk/newxxgk_ldbm.shtml,门户频道,http://ledong.hainan.gov.cn/ledong/0205/newxxgk_index.shtml,县科学技术和工业信息化局,已找到,,,,,,,,,32位编号.shtml,4690270001,
-区县级,海南,乐东黎族自治县,乐东黎族自治县,469027,科技,乐东县科学技术和工业信息化局,http://ledong.hainan.gov.cn/ldxkjgyxxhj/zwgk/newxxgk_ldbm.shtml,门户频道,http://ledong.hainan.gov.cn/ledong/0205/newxxgk_index.shtml,县科学技术和工业信息化局,已找到,,,,,,,,,32位编号.shtml,4690270001,
-区县级,海南,乐东黎族自治县,乐东黎族自治县,469027,商务,乐东县商务招商局,http://ledong.hainan.gov.cn/ldxswzsj/zwgk/newxxgk_ldbm.shtml,门户频道,http://ledong.hainan.gov.cn/ledong/0205/newxxgk_index.shtml,县商务招商局,已找到,,,,,,,,,拓尔思|32位编号.shtml,4690270001,
-区县级,海南,乐东黎族自治县,乐东黎族自治县,469027,财政,乐东县财政局,http://ledong.hainan.gov.cn/ldxczj/zwgk/newxxgk_ldbm.shtml,门户频道,http://ledong.hainan.gov.cn/ledong/0205/newxxgk_index.shtml,县财政局,已找到,,,,,,,,,拓尔思|32位编号.shtml,4690270001,
-区县级,海南,乐东黎族自治县,乐东黎族自治县,469027,人社,乐东县人力资源和社会保障局,http://ledong.hainan.gov.cn/ldxrlzyhshbzj/zwgk/newxxgk_ldbm.shtml,门户频道,http://ledong.hainan.gov.cn/ledong/0205/newxxgk_index.shtml,县人力资源和社会保障局,已找到,,,,,,,,,32位编号.shtml,4690270001,
-区县级,海南,乐东黎族自治县,乐东黎族自治县,469027,市场监管,乐东县市场监督管理局,http://ledong.hainan.gov.cn/ldxscjdlj/zwgk/newxxgk_ldbm.shtml,门户频道,http://ledong.hainan.gov.cn/ledong/0205/newxxgk_index.shtml,县市场监督管理局,已找到,,,,,,,,,32位编号.shtml,4690270001,
-区县级,海南,乐东黎族自治县,乐东黎族自治县,469027,农业农村,乐东县农业农村局,http://ledong.hainan.gov.cn/ldxnyncj/zwgk/newxxgk_ldbm.shtml,门户频道,http://ledong.hainan.gov.cn/ledong/0205/newxxgk_index.shtml,县农业农村局,已找到,,,,,,,,,拓尔思|32位编号.shtml,4690270001,
+区县级,海南,乐东黎族自治县,乐东黎族自治县,469027,发改委,乐东县发展和改革委员会,http://ledong.hainan.gov.cn/ldxfzhggj/gknb/202503/3dc254d11d5242329f7a6ad280af8bc0.shtml?ddtab=true,门户频道,http://ledong.hainan.gov.cn/ledong/0205/newxxgk_index.shtml,县发展和改革委员会,已找到,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,,,,,,,拓尔思|32位编号.shtml,4690270001,
+区县级,海南,乐东黎族自治县,乐东黎族自治县,469027,工信,乐东县科学技术和工业信息化局,http://ledong.hainan.gov.cn/ldxkjgyxxhj/gknb/202503/043e0171a68d4e5488bea78101e0d5f5.shtml?ddtab=true,门户频道,http://ledong.hainan.gov.cn/ledong/0205/newxxgk_index.shtml,县科学技术和工业信息化局,已找到,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,,,,,,,拓尔思|32位编号.shtml,4690270001,
+区县级,海南,乐东黎族自治县,乐东黎族自治县,469027,科技,乐东县科学技术和工业信息化局,http://ledong.hainan.gov.cn/ldxkjgyxxhj/gknb/202503/043e0171a68d4e5488bea78101e0d5f5.shtml?ddtab=true,门户频道,http://ledong.hainan.gov.cn/ledong/0205/newxxgk_index.shtml,县科学技术和工业信息化局,已找到,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,,,,,,,拓尔思|32位编号.shtml,4690270001,
+区县级,海南,乐东黎族自治县,乐东黎族自治县,469027,商务,乐东县商务招商局,https://ledong.hainan.gov.cn/ldxswzsj/gknb/202602/82a49253b1cf41c4b0e73973b42f92f9.shtml?ddtab=true,门户频道,http://ledong.hainan.gov.cn/ledong/0205/newxxgk_index.shtml,县商务招商局,已找到,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,,,,,,,拓尔思|32位编号.shtml,4690270001,
+区县级,海南,乐东黎族自治县,乐东黎族自治县,469027,财政,乐东县财政局,http://ledong.hainan.gov.cn/ldxczj/gknb/202501/88d91dbe5f694cc088b6729de3436345.shtml?ddtab=true,门户频道,http://ledong.hainan.gov.cn/ledong/0205/newxxgk_index.shtml,县财政局,已找到,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,,,,,,,拓尔思|32位编号.shtml,4690270001,
+区县级,海南,乐东黎族自治县,乐东黎族自治县,469027,人社,乐东县人力资源和社会保障局,http://ledong.hainan.gov.cn/ldxrlzyhshbzj/gknb/202503/7fd7cc56d3d54bafb1c700e8fa139922.shtml?ddtab=true,门户频道,http://ledong.hainan.gov.cn/ledong/0205/newxxgk_index.shtml,县人力资源和社会保障局,已找到,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,,,,,,,拓尔思|32位编号.shtml,4690270001,
+区县级,海南,乐东黎族自治县,乐东黎族自治县,469027,市场监管,乐东县市场监督管理局,https://ledong.hainan.gov.cn/ldxscjdlj/gknb/202602/6bddc81a186d49c0b36ba3a2ca55cd3c.shtml?ddtab=true,门户频道,http://ledong.hainan.gov.cn/ledong/0205/newxxgk_index.shtml,县市场监督管理局,已找到,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,,,,,,,拓尔思|32位编号.shtml,4690270001,
+区县级,海南,乐东黎族自治县,乐东黎族自治县,469027,农业农村,乐东县农业农村局,http://ledong.hainan.gov.cn/ldxnyncj/gknb/202501/978ee9f7fe2b4404b06d5151d34bfd68.shtml?ddtab=true,门户频道,http://ledong.hainan.gov.cn/ledong/0205/newxxgk_index.shtml,县农业农村局,已找到,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,,,,,,,拓尔思|32位编号.shtml,4690270001,
 区县级,海南,乐东黎族自治县,乐东黎族自治县,469027,文旅,,,,,,导航未找到,,,,,,,,,,,
-区县级,海南,乐东黎族自治县,乐东黎族自治县,469027,生态环境,乐东县生态环境局,http://ledong.hainan.gov.cn/ldxsthjbhj/zwgk/newxxgk_ldbm.shtml,门户频道,http://ledong.hainan.gov.cn/ledong/0205/newxxgk_index.shtml,县生态环境局,已找到,,,,,,,,,32位编号.shtml,4690270001,
+区县级,海南,乐东黎族自治县,乐东黎族自治县,469027,生态环境,乐东县生态环境局,https://ledong.hainan.gov.cn/ldxsthjbhj/gknb/202602/ae32125e319b46548127c300664d4be8.shtml?ddtab=true,门户频道,http://ledong.hainan.gov.cn/ledong/0205/newxxgk_index.shtml,县生态环境局,已找到,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,,,,,,,拓尔思|32位编号.shtml,4690270001,
 区县级,海南,陵水黎族自治县,陵水黎族自治县,469028,政府办,陵水黎族自治县人民政府,http://lingshui.hainan.gov.cn/,门户本身,http://lingshui.hainan.gov.cn/,,已找到,,,,政府文件,http://lingshui.hainan.gov.cn/xxgk_57512/0500/,公示公告,http://lingshui.hainan.gov.cn/xxgk_57512/0400/,http://lingshui.hainan.gov.cn/ http://lingshui.hainan.gov.cn/xxgkzl/zfb/wzndbb/,拓尔思|t日期_编号(拓尔思),4690280005,拓尔思信息技术股份有限公司&nbsp;&nbsp;
 区县级,海南,陵水黎族自治县,陵水黎族自治县,469028,发改委,县发展和改革委员会,http://lingshui.hainan.gov.cn/xxgkzl/fgw/xxxgkml/,门户频道,http://lingshui.hainan.gov.cn/xxgkzl/zfb/wzndbb/,县发展和改革委员会,已找到,,,,,,,,,拓尔思|t日期_编号(拓尔思),4690280005,拓尔思信息技术股份有限公司&nbsp;&nbsp;
 区县级,海南,陵水黎族自治县,陵水黎族自治县,469028,工信,县科学技术和工业信息化局,http://lingshui.hainan.gov.cn/xxgkzl/kxxxj/xxxgkml/,门户频道,http://lingshui.hainan.gov.cn/xxgkzl/zfb/wzndbb/,县科学技术和工业信息化局,已找到,,,,,,,,,拓尔思|t日期_编号(拓尔思),4690280005,拓尔思信息技术股份有限公司&nbsp;&nbsp;
@@ -320,9 +320,9 @@
 区县级,海南,保亭黎族苗族自治县,保亭黎族苗族自治县,469029,生态环境,,,,,,打不开,门户打不开：HTTP 400,,,,,,,,,,
 区县级,海南,琼中黎族苗族自治县,琼中黎族苗族自治县,469030,政府办,琼中黎族苗族自治县人民政府网,http://qiongzhong.hainan.gov.cn/,门户本身,http://qiongzhong.hainan.gov.cn/,,已找到,,,,政策文件,http://qiongzhong.hainan.gov.cn/xxgk/0500/,公示公告,http://qiongzhong.hainan.gov.cn/xxgk/0400/,http://qiongzhong.hainan.gov.cn/ http://qiongzhong.hainan.gov.cn/xxgkzl/xzf/wzndbb/,拓尔思|t日期_编号(拓尔思),4690300002,
 区县级,海南,琼中黎族苗族自治县,琼中黎族苗族自治县,469030,发改委,县发展和改革委员会,http://qiongzhong.hainan.gov.cn/xxgkzl/fgw/xxgkml/,门户频道,http://qiongzhong.hainan.gov.cn/xxgkzl/xzf/wzndbb/,县发展和改革委员会,已找到,,,,,,,,,拓尔思|t日期_编号(拓尔思),4690300002,
-区县级,海南,琼中黎族苗族自治县,琼中黎族苗族自治县,469030,工信,海南省工业和信息化厅,http://iitb.hainan.gov.cn/,独立网站,http://qiongzhong.hainan.gov.cn/xxgkzl/xzf/wzndbb/,>海南省工业和信息化厅,已找到,,通知公告,http://iitb.hainan.gov.cn/iitb/tzgg/list2.shtml,政策文件,http://iitb.hainan.gov.cn/iitb/0500/zcwj.shtml?ddtab=true,公示公告,http://iitb.hainan.gov.cn/iitb/tzgg/list2.shtml?ddtab=true,http://iitb.hainan.gov.cn/,开普云|32位编号.shtml,4600000003,开普云
-区县级,海南,琼中黎族苗族自治县,琼中黎族苗族自治县,469030,科技,海南省科学技术厅,https://dost.hainan.gov.cn/,独立网站,http://qiongzhong.hainan.gov.cn/xxgkzl/xzf/wzndbb/,>海南省科学技术厅,已找到,,通知公告,https://dost.hainan.gov.cn/xxgk/tzgg/,政策文件,https://dost.hainan.gov.cn/xxgk/zfwj/,公示公告,https://dost.hainan.gov.cn/xxgk/tzgg/,https://dost.hainan.gov.cn/ https://dost.hainan.gov.cn/xxgk/newxxgk_index.html,拓尔思|t日期_编号(拓尔思),4600000009,拓尔思信息技术股份有限公司
-区县级,海南,琼中黎族苗族自治县,琼中黎族苗族自治县,469030,商务,>海南省商务厅,http://dofcom.hainan.gov.cn/,独立网站,http://qiongzhong.hainan.gov.cn/xxgkzl/xzf/wzndbb/,>海南省商务厅,打不开,HTTP 400,,,,,,,,,,
+区县级,海南,琼中黎族苗族自治县,琼中黎族苗族自治县,469030,工信,,,,,,导航未找到,,,,,,,,,,,
+区县级,海南,琼中黎族苗族自治县,琼中黎族苗族自治县,469030,科技,,,,,,导航未找到,,,,,,,,,,,
+区县级,海南,琼中黎族苗族自治县,琼中黎族苗族自治县,469030,商务,,,,,,导航未找到,,,,,,,,,,,
 区县级,海南,琼中黎族苗族自治县,琼中黎族苗族自治县,469030,财政,县财政局,http://qiongzhong.hainan.gov.cn/xxgkzl/czj/xxgkml/,门户频道,http://qiongzhong.hainan.gov.cn/xxgkzl/xzf/wzndbb/,县财政局,已找到,,,,,,,,,拓尔思|t日期_编号(拓尔思),4690300002,
 区县级,海南,琼中黎族苗族自治县,琼中黎族苗族自治县,469030,人社,县人力资源和社会保障局,http://qiongzhong.hainan.gov.cn/xxgkzl/rsj/xxgkml/,门户频道,http://qiongzhong.hainan.gov.cn/xxgkzl/xzf/wzndbb/,县人力资源和社会保障局,已找到,,,,,,,,,拓尔思|t日期_编号(拓尔思),4690300002,
 区县级,海南,琼中黎族苗族自治县,琼中黎族苗族自治县,469030,市场监管,县市场监督管理局,http://qiongzhong.hainan.gov.cn/xxgkzl/gongshangju/xxgkml/,门户频道,http://qiongzhong.hainan.gov.cn/xxgkzl/xzf/wzndbb/,县市场监督管理局,已找到,,,,,,,,,拓尔思|t日期_编号(拓尔思),4690300002,

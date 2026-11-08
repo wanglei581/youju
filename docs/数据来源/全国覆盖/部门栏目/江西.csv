@@ -1,8 +1,8 @@
 ﻿层级,省份,城市,区县,区划代码,部门,部门全称,网站URL,网站类型,导航来源页,导航文字,状态,原因,通知公告,通知公告URL,政策文件,政策文件URL,公示公告,公示公告URL,栏目来源页,平台,网站标识码,技术支持
 省级,江西,,,360000,政府办,江西省人民政府,http://www.jiangxi.gov.cn/,门户本身,http://www.jiangxi.gov.cn/,,打不开,门户打不开：robots.txt 暂时无法获取（HTTP 502），本次跳过,,,,,,,,,,
 省级,江西,,,360000,发改委,江西省发展和改革委员会,http://drc.jiangxi.gov.cn/,独立网站,https://gxt.jiangxi.gov.cn/,省发展和改革委员会,已找到,,通知公告,http://drc.jiangxi.gov.cn/jxsfzhggwyh/col/col14590/index.html?vc_xxgkarea=014500858,政策文件,http://drc.jiangxi.gov.cn/jxsfzhggwyh/col/col14590/index.html?vc_xxgkarea=014500858,,,http://drc.jiangxi.gov.cn/,大汉|动态页?id=,3600000010,
-省级,江西,,,360000,工信,,,,,,导航未找到,,,,,,,,,,,
-省级,江西,,,360000,科技,省国防科技信息和卫星应用中心,https://gxt.jiangxi.gov.cn/jxsgyhxxht/sgfkjxxhwxyyzxgfblddgcxtjxsjyyyzxsgfkjhysclcjzx/index.html,独立网站,https://gxt.jiangxi.gov.cn/,省国防科技信息和卫星应用中心,已找到,,,,,,,,,UCAP,3600000013,
+省级,江西,,,360000,工信,江西省工业和信息化厅,https://gxt.jiangxi.gov.cn/,独立网站,https://gxt.jiangxi.gov.cn/,江西省工业和信息化厅,已找到,,工作通知,https://gxt.jiangxi.gov.cn/jxsgyhxxht/gztz/index.html,政策文件,https://gxt.jiangxi.gov.cn/jxsgyhxxht/zcwj/index.html,,,https://gxt.jiangxi.gov.cn/,UCAP|content_编号,3600000013,
+省级,江西,,,360000,科技,江西省科学技术厅,https://kjt.jiangxi.gov.cn/,独立网站,https://kjt.jiangxi.gov.cn/,江西省科学技术厅,已找到,,通知公告,https://kjt.jiangxi.gov.cn/jxskxjst/col/col27029/index.html,规范性文件,https://kjt.jiangxi.gov.cn/jxskxjst/col/col64258/index.html,,,https://kjt.jiangxi.gov.cn/,动态页?id=,3600000018,
 省级,江西,,,360000,商务,江西省商务厅,http://swt.jiangxi.gov.cn/,独立网站,https://gxt.jiangxi.gov.cn/,省商务厅,已找到,,,,,,,,,大汉|动态页?id=,3600000035,
 省级,江西,,,360000,财政,江西省财政厅,http://jxf.jiangxi.gov.cn/,独立网站,https://gxt.jiangxi.gov.cn/,省财政厅,已找到,,通知公告,http://jxf.jiangxi.gov.cn/jxsczt/tzgg/index.html,政策文件,http://jxf.jiangxi.gov.cn/jxsczt/zcwj718/index.html,,,http://jxf.jiangxi.gov.cn/,大汉|content_编号,3600000020,
 省级,江西,,,360000,人社,,,,,,导航未找到,,,,,,,,,,,
