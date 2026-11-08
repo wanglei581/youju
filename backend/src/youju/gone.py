@@ -358,7 +358,9 @@ def _due(session: Session, now: datetime, ids: list[int] | None = None, *, lock:
             Document.link_gone_at < cutoff(now),
             # 名单类不清理（D-123 ④）：直接不捞出来，免得留着的名单越积越多、每天重算一遍
             # （rule_kind 是入库时按标题算好的类型，人工定过的看 kind_override，同 effective_kind）
-            func.coalesce(Document.kind_override, Document.rule_kind) != "名单",
+            # 两列都空（升级过渡期规则列还没算）时按不是名单算，免得 NULL 比较把它整个漏掉
+            # （agy 第 3 轮）
+            func.coalesce(Document.kind_override, Document.rule_kind, "") != "名单",
             # 下架的（整组）照原来的做法留着、隐藏，不清理
             available_condition(),
         )
