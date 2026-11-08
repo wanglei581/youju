@@ -10,6 +10,7 @@ import resource
 import sys
 import time
 from dataclasses import replace
+from datetime import date
 from types import SimpleNamespace
 
 import pytest
@@ -402,13 +403,9 @@ def ocr_on(monkeypatch):
 
 
 def _two_scans(session):
-    add_doc(
-        session,
-        1,
-        APPLY,
-        RECENT,
-        [("旧的", BASE + "old.pdf", "pdf"), ("新的", BASE + "new.pdf", "pdf")],
-    )
+    """两份通知各一个扫描件：old.pdf 在 9/1 发布的那份里，new.pdf 在 10/1 发布的那份里。"""
+    add_doc(session, 1, APPLY, date(2026, 9, 1), [("旧的", BASE + "old.pdf", "pdf")])
+    add_doc(session, 2, APPLY, RECENT, [("新的", BASE + "new.pdf", "pdf")])
     report = at.TextReport()
     old = pdf_pages([FULL, FULL])
     new = pdf_pages([FULL])
@@ -445,6 +442,16 @@ def test_ocr_job_newest_first_within_the_page_budget(session, monkeypatch, ocr_o
     assert fetcher.calls == [BASE + "new.pdf", BASE + "old.pdf"]
     assert (report.documents, report.ocr_pages, report.deferred) == (1, 2, 0)
     assert copies.ocr_scans(session, fetcher=fetcher, now=NOW).documents == 0
+
+
+def test_ocr_job_only_takes_attachments_in_the_text_scope(session, monkeypatch, ocr_on) -> None:
+    """取文字范围以外的（申报通知过了 180 天等，取文字下一轮会清掉）不识别。"""
+    add_doc(session, 1, APPLY, date(2026, 1, 5), [("早就过了范围", BASE + "old.pdf", "pdf")])
+    at.record(session, BASE + "old.pdf", "pdf", NOW, at.TextReport(), content=SCAN_PDF)
+    assert len(at.ocr_due(session)) == 1
+    fetcher = FakeFetcher({BASE + "old.pdf": SCAN_PDF})
+    report = copies.ocr_scans(session, fetcher=fetcher, now=NOW)
+    assert (report.documents, report.deferred, fetcher.calls) == (0, 0, [])
 
 
 def test_ocr_job_checks_the_download_and_retries_environment_errors(

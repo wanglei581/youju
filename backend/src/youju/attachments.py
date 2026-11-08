@@ -61,7 +61,14 @@ from youju.crawler.detail import has_personal_numbers
 from youju.crawler.detail_service import _government_url
 from youju.crawler.fetcher import MAX_RESPONSE_BYTES, FetchResult, PoliteFetcher
 from youju.dedup import canonical_ids
-from youju.models import AttachmentCopy, AttachmentTextUrl, Document, DocumentAttachment, Source
+from youju.models import (
+    AttachmentCopy,
+    AttachmentTextUrl,
+    AttachmentTextVersion,
+    Document,
+    DocumentAttachment,
+    Source,
+)
 from youju.takedown import available_condition
 from youju.version import build_revision
 
@@ -1408,11 +1415,12 @@ def ocr_scans(
     pages: int | None = None,
     seconds: float = 3600,
 ) -> OcrReport:
-    """识别扫描页（D-125）：有扫描页、还没按现在的识别规则识别过的附件（attachment_text.ocr_due，
-    新的在前），从原网站重新下载（和取文字一样，内容要和库里那一版一样，变了的等平常的取文字重取），
-    识别后换掉原来的文字（attachment_text.ocr_version）。一轮最多识别 pages 页（不给按
-    YOUJU_OCR_PAGES_PER_RUN），最多跑 seconds 秒；一份最多 OCR_DOC_PAGES 页。和附件任务共用一把锁。
-    开关关着、没装识别组件时什么都不做（report.skipped）。"""
+    """识别扫描页（D-125）：有扫描页、还没按现在的识别规则识别过的附件（_ocr_order：按所在通知的
+    发布日期从新到旧），从原网站重新下载（内容要和库里那一版一样，变了的等平常的取文字重取），识别后
+    换掉原来的文字（attachment_text.ocr_version）。一轮识别到 pages 页为止（不给按
+    YOUJU_OCR_PAGES_PER_RUN；最后一份可能超出一些：一份要么不识别，要么整份识别），最多跑 seconds
+    秒；一份最多 OCR_DOC_PAGES 页。和附件任务共用一把锁。开关关着、没装识别组件时什么都不做
+    （report.skipped）。"""
     settings = get_settings()
     if not settings.ocr_enabled:
         return OcrReport(skipped="开关关着（YOUJU_OCR_ENABLED）")
@@ -1426,7 +1434,7 @@ def ocr_scans(
                 skipped="另一个附件任务正在运行（附件副本、重查或取文字），这次没识别；定时任务下一轮再识别"
             )
         report = OcrReport()
-        due = attachment_text.ocr_due(session)
+        due = _ocr_order(session, now)
         owns_fetcher = fetcher is None
         if fetcher is None:
             fetcher = PoliteFetcher(
@@ -1438,19 +1446,14 @@ def ocr_scans(
             )
         started = clock.monotonic()
         try:
-            for index, version in enumerate(due):
+            for index, (version, urls) in enumerate(due):
                 if report.pages >= budget or clock.monotonic() - started >= seconds:
                     report.deferred = len(due) - index
                     break
                 want = min(version.scanned_pages or version.pages or OCR_DOC_PAGES, OCR_DOC_PAGES)
-                # 指向这份内容的链接一个一个试，下载到一个就行（最多试 3 个）
+                # 指向这份内容的链接一个一个试，下载到一个就行
                 content = None
-                for url in session.scalars(
-                    select(AttachmentTextUrl.url)
-                    .where(AttachmentTextUrl.version_id == version.id)
-                    .order_by(AttachmentTextUrl.id)
-                    .limit(3)
-                ):
+                for url in urls:
                     content, _failure = _download(SimpleNamespace(url=url), fetcher, CacheReport())
                     if content is not None:
                         break
@@ -1477,6 +1480,30 @@ def ocr_scans(
             if owns_fetcher:
                 fetcher.close()
         return report
+
+
+def _ocr_order(session: Session, now: datetime) -> list[tuple[AttachmentTextVersion, list[str]]]:
+    """要识别的内容版本（attachment_text.ocr_due）排个先后：按所在通知的发布日期从新到旧，和取文字
+    同一个范围、同一个顺序（candidates(texts=True)），每份带上范围里指向它的链接（最多 3 个，下载时
+    一个一个试）。不在取文字范围里的（过了保留期、下架了，取文字下一轮会清掉）不识别。"""
+    due = {version.id: version for version in attachment_text.ocr_due(session)}
+    if not due:
+        return []
+    by_url = dict(
+        session.execute(
+            select(AttachmentTextUrl.url, AttachmentTextUrl.version_id).where(
+                AttachmentTextUrl.version_id.in_(list(due))
+            )
+        ).all()
+    )
+    order: dict[int, list[str]] = {}
+    for url in candidates(session, now, texts=True):
+        version_id = by_url.get(url)
+        if version_id is not None:
+            urls = order.setdefault(version_id, [])
+            if len(urls) < 3:
+                urls.append(url)
+    return [(due[version_id], urls) for version_id, urls in order.items()]
 
 
 # ---- 按现在的规则重新检查已存的副本（规则收紧后跑一次：youju recheck-attachments） ----

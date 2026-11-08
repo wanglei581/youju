@@ -3494,8 +3494,9 @@ def _store(
 
 def ocr_due(session: Session) -> list[AttachmentTextVersion]:
     """识别任务要处理的内容版本（D-125）：按现在的规则取过、有扫描页（整份是扫描件，或者有几页
-    是）、还没按现在的识别规则识别过的 PDF 和压缩包（压缩包里的 PDF 一样识别），还有链接指向的
-    （超出范围的已经清掉了）。新的在前。"""
+    是）、还没按现在的识别规则识别过的 PDF 和压缩包（压缩包里的 PDF 一样识别），还有链接指向的。
+    按编号从新到旧；识别任务再按所在通知的发布日期排先后、只留取文字范围里的
+    （attachments._ocr_order）。"""
     return list(
         session.scalars(
             select(AttachmentTextVersion)
