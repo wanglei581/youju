@@ -120,7 +120,11 @@ def test_window_dates_follow_beijing_days(env):
         "cleanupNotice": "这份通知将于10月24日清理，可以先保存或导出",
         "list": False,
         "window": True,
+        "canSave": True,
     }
+    # 没有能读的正文和附件：不说"可以先保存或导出"，不给按钮
+    assert gone.payload(doc, True, readable=False)["cleanupNotice"] == "这份通知将于10月24日清理"
+    assert gone.payload(doc, True, readable=False)["canSave"] is False
     roster = Document(title="拟认定名单公示", kind_override="名单", link_gone_at=gone_at)
     assert gone.payload(roster, False) == {
         "since": "2026-10-17",
@@ -129,6 +133,7 @@ def test_window_dates_follow_beijing_days(env):
         "cleanupNotice": "正文不再提供，名单请在“查名单”里按企业名称查询",
         "list": True,
         "window": False,
+        "canSave": False,
     }
 
 
@@ -146,6 +151,7 @@ def test_window_gives_body_attachments_and_notice(client, session, on):
         "cleanupNotice": "这份通知将于10月28日清理，可以先保存或导出",
         "list": False,
         "window": True,
+        "canSave": True,
     }
     [item] = detail["attachments"]
     assert (item["state"], item["readable"]) == ("ok", True)
@@ -169,6 +175,20 @@ def test_flag_off_keeps_d097(client, session, env):
     [row] = client.get("/api/v1/search", params={"time": "不限"}).json()["items"]
     assert "gone" not in row
     assert client.post(f"/api/v1/documents/{doc.id}/gone-export").status_code == 404
+
+
+def test_missing_documents_say_they_may_have_been_cleaned(client, session, env):
+    """清理掉的通知从分享卡片、关注、旧列表点进来：开关开着时说可能已到期清理（agy 第 2 轮）；
+    开关关着照旧。"""
+    env(gone_cleanup_enabled="true")
+    for path in ("/api/v1/documents/999999", "/api/v1/documents/999999/reading"):
+        response = client.get(path)
+        assert response.status_code == 404
+        assert response.json()["detail"].startswith(
+            "没有找到这份文件，可能是原网页打不开、已经到期清理"
+        )
+    env(gone_cleanup_enabled="false")
+    assert client.get("/api/v1/documents/999999").json()["detail"] == "没有找到这份文件"
 
 
 def test_cleanup_day_and_later_go_back_to_d097(client, session, on):
@@ -312,6 +332,9 @@ def test_lists_are_kept_marked_and_readable_for_seven_days(client, session, on):
         "cleanupNotice": "",
         "list": True,
         "window": True,
+        # 有没有东西可存：正文能读或有能读的附件
+        "canSave": detail["body"].get("status") == "ok"
+        or any(item["readable"] for item in detail["attachments"]),
     }
     assert detail["body"] != {"status": "none", "reason": "link_gone"}
     reading = client.get(f"/api/v1/documents/{doc.id}/reading").json()

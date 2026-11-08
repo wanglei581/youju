@@ -42,7 +42,7 @@ SessionDep = Annotated[Session, Depends(get_session)]
 Part = Annotated[str, Query(pattern=r"^([1-9][0-9]{0,2})?$")]
 WORD_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 SAVE_OUTDATED = "保存通知要先同意新版隐私保护指引，请更新小程序后重新阅读并同意"
-NOT_IN_WINDOW = "只有原网页打不开、7 天后清理的通知可以保存和导出"
+NOT_IN_WINDOW = "只有原网页打不开 7 天以内的通知可以保存和导出"
 
 
 def _require_enabled() -> None:
@@ -61,7 +61,7 @@ def _window_document(session: Session, doc_id: int) -> Document:
     doc_id = canonical_ids(session, [doc_id]).get(doc_id, doc_id)
     row = session.execute(v1._base().where(Document.id == doc_id)).first()
     if row is None:
-        raise HTTPException(status_code=404, detail="没有找到这份文件")
+        raise HTTPException(status_code=404, detail=v1.not_found_detail())
     doc = row[0]
     if not gone.in_window(session, doc, v1.now()):
         raise HTTPException(status_code=409, detail=NOT_IN_WINDOW)

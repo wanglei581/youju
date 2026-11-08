@@ -140,7 +140,7 @@ def _document(session, doc_id: int, request: Request):
     canonical = canonical_ids(session, [doc_id]).get(doc_id, doc_id)
     row = session.execute(v1._base().where(Document.id == canonical)).first()
     if row is None:
-        raise HTTPException(404, "没有找到这份文件")
+        raise HTTPException(404, v1.not_found_detail())
     return row
 
 

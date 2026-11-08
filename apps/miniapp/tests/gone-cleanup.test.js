@@ -12,9 +12,9 @@ const root = path.join(__dirname, '..');
 const read = (file) => fs.readFileSync(path.join(root, file), 'utf8');
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 const NOTICE = '原网页10月21日起打不开，内容可能已被发布机关撤回或更正，以官方为准';
-const GONE = { since: '2026-10-21', cleanup: '2026-10-28', notice: NOTICE, cleanupNotice: '这份通知将于10月28日清理，可以先保存或导出', list: false, window: true };
+const GONE = { since: '2026-10-21', cleanup: '2026-10-28', notice: NOTICE, cleanupNotice: '这份通知将于10月28日清理，可以先保存或导出', list: false, window: true, canSave: true };
 // 名单类（D-123 ④）：不清理，一直标明已撤下；7 天过后不给正文、不给保存
-const LIST_LATER = { since: '2026-10-21', cleanup: null, notice: '原网页10月21日起已撤下', cleanupNotice: '正文不再提供，名单请在“查名单”里按企业名称查询', list: true, window: false };
+const LIST_LATER = { since: '2026-10-21', cleanup: null, notice: '原网页10月21日起已撤下', cleanupNotice: '正文不再提供，名单请在“查名单”里按企业名称查询', list: true, window: false, canSave: false };
 
 function pageOf(file, deps, globals = {}) {
   let def;
@@ -122,6 +122,17 @@ test('名单类：卡片和详情页标明"原网页某月某日起已撤下"，
   const tree = render('pages/detail/index.wxml', { ...page.data, loading: false });
   assert.equal(findAll(tree, hasClass('gone-act')).length, 0);
   assert.doesNotMatch(textOf(tree), /清理/);
+});
+
+test('详情页：清理期里没有能存的文字（正文就是名单、附件不展示）时不给保存、导出', async () => {
+  const listInWindow = { ...GONE, notice: '原网页10月21日起已撤下', cleanup: null, cleanupNotice: '', list: true, canSave: false };
+  const doc = { id: '3', kind: '名单', tags: ['名单'], title: '拟认定名单的公示', issuer: '某厅', date: '2026-10-20', region: '山东 · 省级',
+    points: [], link_gone: '2026-10-21', gone: listInWindow, body: { status: 'list' }, attachments: [] };
+  const page = pageOf('pages/detail/index.js', detailDeps(doc, []));
+  page.onLoad({ id: '3' }); await settle();
+  assert.equal(page.data.goneNote, '原网页10月21日起已撤下。');
+  assert.equal(page.data.goneWindow, false);
+  assert.equal(findAll(render('pages/detail/index.wxml', { ...page.data, loading: false }), hasClass('gone-act')).length, 0);
 });
 
 test('详情页：服务端没给 gone（开关关着、过了清理日期、不清理的）照 D-097，不给保存、导出', async () => {

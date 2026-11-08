@@ -466,6 +466,14 @@ def _deadline_brief(d: DocumentDeadline | None) -> dict[str, Any] | None:
     return {"date": d.approved_date.isoformat(), "time": _hhmm(d.approved_time), "verified": True}
 
 
+def not_found_detail() -> str:
+    """找不到这份文件时的说法。D-123 开关开着：原网页失效的通知到期会清理（行删掉），从分享卡片、
+    关注、旧列表点进来时说清楚可能是清理了（分不清是清理还是别的原因，写"可能"；agy 第 2 轮）。"""
+    if gone.enabled():
+        return "没有找到这份文件，可能是原网页打不开、已经到期清理；保存过的在“我的 → 我的保存”里看"
+    return "没有找到这份文件"
+
+
 def link_gone_date(gone: datetime | None) -> str | None:
     """原网页确认失效的日期（北京时间）；能打开或还没确认的为 None（youju/link_check.py）。"""
     if gone is None:
@@ -3743,7 +3751,7 @@ def document(doc_id: int, session: SessionDep) -> dict:
     doc_id = canonical_ids(session, [doc_id]).get(doc_id, doc_id)
     row = session.execute(_base().where(Document.id == doc_id)).first()
     if row is None:
-        raise HTTPException(status_code=404, detail="没有找到这份文件")
+        raise HTTPException(status_code=404, detail=not_found_detail())
     doc, src = row
     # AI 入口用（不需要身份）：interpret、clause 是这份文件能不能做，reason 是不能做的原因代码
     # （D-075）。只说文件本身的属性、按原文实时判断，和 AI 开没开无关，admin、api 两个服务算出来
@@ -3900,7 +3908,10 @@ def document(doc_id: int, session: SessionDep) -> dict:
         payload["apply_conditions"] = apply_conditions
     # D-123：原网页失效、还在 7 天清理期里的，详情页写提示和清理日期（名单类写已撤下、不清理），
     # 给保存、导出按钮（正文、附件照常给，见 reading_body、attachment_text.judge）
-    info = gone.payloads(session, [doc], now()).get(doc.id)
+    readable = payload["body"].get("status") == "ok" or any(
+        item.get("readable") for item in payload["attachments"]
+    )
+    info = gone.payloads(session, [doc], now(), readable={doc.id: readable}).get(doc.id)
     if info is not None:
         payload["gone"] = info
     # 转发组（D-055）：同一份部里通知的其他版本，各版本的截止各自列出（不互相套用）

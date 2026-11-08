@@ -259,9 +259,11 @@ def reading_note(doc: Document) -> str:
     return f"{notice(doc.link_gone_at)}。这份通知将于{md(cleanup_on(doc.link_gone_at))}清理。"
 
 
-def payload(doc: Document, window: bool) -> dict:
+def payload(doc: Document, window: bool, readable: bool = True) -> dict:
     """接口里的 gone：原网页打不开的日期、清理日期（名单类没有）、页面上的两句话；window 是还在
-    7 天里、正文附件照常给、能保存导出。见 payloads。"""
+    7 天里、正文附件照常给；canSave 是还在 7 天里、又有能读的正文或附件（readable，详情页才知道），
+    给保存、导出按钮。见 payloads。"""
+    can_save = window and readable
     if is_list(doc):
         return {
             "since": gone_on(doc.link_gone_at).isoformat(),
@@ -271,31 +273,43 @@ def payload(doc: Document, window: bool) -> dict:
             "cleanupNotice": "" if window else "正文不再提供，名单请在“查名单”里按企业名称查询",
             "list": True,
             "window": window,
+            "canSave": can_save,
         }
     clean = cleanup_on(doc.link_gone_at)
     return {
         "since": gone_on(doc.link_gone_at).isoformat(),
         "cleanup": clean.isoformat(),
         "notice": notice(doc.link_gone_at),
-        "cleanupNotice": f"这份通知将于{md(clean)}清理，可以先保存或导出",
+        # 没有能读的正文和附件（没东西可存）时不说"可以先保存或导出"
+        "cleanupNotice": f"这份通知将于{md(clean)}清理"
+        + ("，可以先保存或导出" if can_save else ""),
         "list": False,
         "window": True,
+        "canSave": can_save,
     }
 
 
 def payloads(
-    session: Session, docs: Iterable[Document], now: datetime, settings: Settings | None = None
+    session: Session,
+    docs: Iterable[Document],
+    now: datetime,
+    settings: Settings | None = None,
+    readable: dict[int, bool] | None = None,
 ) -> dict[int, dict]:
     """要带 gone 的（开关开着）：还在 7 天里、会清理的；名单类原网页失效的一直带（标明已撤下）。
-    别的（原网页能打开、开关关着、过了清理日期、不清理的）不带，小程序照原来的 link_gone 显示。"""
+    别的（原网页能打开、开关关着、过了清理日期、不清理的）不带，小程序照原来的 link_gone 显示。
+    readable：详情页算好的"有没有能读的正文或附件"，没给的按有算（列表卡片不显示按钮）。"""
     if not enabled(settings):
         return {}
     docs = [doc for doc in docs if doc.link_gone_at is not None]
     if not docs:
         return {}
     window = window_ids(session, docs, now, settings)
+    readable = readable or {}
     return {
-        doc.id: payload(doc, doc.id in window) for doc in docs if doc.id in window or is_list(doc)
+        doc.id: payload(doc, doc.id in window, readable.get(doc.id, True))
+        for doc in docs
+        if doc.id in window or is_list(doc)
     }
 
 
