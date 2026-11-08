@@ -88,6 +88,7 @@ if ($names -contains $Distro) {
   }
   if (-not $ok) { Fail "Ubuntu 没下载成（或校验值对不上）。把 $LogFile 发给 Claude。" }
   $target = Join-Path $DataRoot "wsl"
+  New-Item -ItemType Directory -Force -Path $target | Out-Null
   $code = Run "wsl.exe" @("--import", $Distro, $target, $file, "--version", "2")
   if ($code -ne 0) { Fail "导入 WSL 发行版失败。把 $LogFile 发给 Claude。" }
   Say "已导入到 $target（数据库、原始文件都在这个文件夹的 ext4.vhdx 里）"
@@ -104,12 +105,12 @@ $copy = "umask 022 && mkdir -p /opt/youju/local && tar -C '$src' --exclude=./.en
 $code = Run "wsl.exe" @("-d", $Distro, "-u", "root", "-e", "sh", "-c", $copy)
 if ($code -ne 0) { Fail "把安装包拷进 WSL 失败。把 $LogFile 发给 Claude。" }
 $code = 0
-for ($round = 1; $round -le 2; $round++) {
+for ($round = 1; $round -le 3; $round++) {
   $code = Run "wsl.exe" @("-d", $Distro, "-u", "root", "-e", "bash", "/opt/youju/local/setup-wsl.sh")
   if ($code -ne 10) { break }
   Say "重启发行版，让 systemd 生效……"
   & wsl.exe --terminate $Distro | Out-Null
-  Start-Sleep -Seconds 3
+  Start-Sleep -Seconds 5
 }
 if ($code -ne 0) { Fail "安装没完成（退出码 $code）。把 $LogFile 发给 Claude。" }
 
@@ -119,7 +120,9 @@ if (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue) {
   Say "已经有计划任务 $taskName。"
 } else {
   # 隐藏的 PowerShell 窗口里让发行版一直开着（sleep infinity）：WSL 里没有进程时会自己关掉，
-  # Docker 和抓取任务也就跟着停了。WSL 被关掉时这个任务算失败，1 分钟后自动再开
+  # Docker 和抓取任务也就跟着停了。WSL 被关掉时这个任务算失败，1 分钟后自动再开。
+  # 触发器写明当前用户：不写用户就是「任何用户登录时」，那要管理员权限。
+  # 运行时限设成 0（不限）：不设的话默认 72 小时，保活进程三天后会被停掉
   $arg = "-NoProfile -WindowStyle Hidden -Command `"& wsl.exe -d $Distro -u root -e sleep infinity`""
   $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $arg
   $trigger = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"
@@ -130,10 +133,12 @@ if (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue) {
     Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings `
       -Description "有据本机端：登录后启动 WSL 发行版 $Distro（Docker 和里面的抓取任务随它运行）" `
       -ErrorAction Stop | Out-Null
+    Say "已加计划任务 $taskName（登录 Windows 后自动启动）。"
   } catch {
-    Fail ("加计划任务失败：" + $_.Exception.Message)
+    # 本机端这会儿已经在跑了，只是重启后不会自己起来：提醒，不中止
+    Say ("加计划任务没成功：" + $_.Exception.Message) "Yellow"
+    Say "本机端现在照常在跑；电脑重启后要手动启动一次：wsl -d $Distro -u root -e true。把 $LogFile 发给 Claude。" "Yellow"
   }
-  Say "已加计划任务 $taskName（登录 Windows 后自动启动）。"
 }
 Start-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
 
