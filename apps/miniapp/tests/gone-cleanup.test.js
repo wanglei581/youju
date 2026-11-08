@@ -291,6 +291,10 @@ test('从导出记录回到已清理的通知：说清楚本平台已停止展�
   const page = pageOf('pages/detail/index.js', deps);
   page.onLoad({ id: '9', from: 'gone' }); await settle();
   assert.equal(page.data.error, '这份通知原网页已无法访问，本平台已停止展示；保存过的在“我的 → 我的保存”里看');
+  // 找不到的重试也不会有：给"返回"，不给"重试"
+  const card = textOf(render('pages/detail/index.wxml', { ...page.data, loading: false }));
+  assert.match(card, /返回/);
+  assert.doesNotMatch(card, /重试/);
   const plain = pageOf('pages/detail/index.js', deps);
   plain.onLoad({ id: '9' }); await settle();
   assert.equal(plain.data.error, '没有找到这份文件');

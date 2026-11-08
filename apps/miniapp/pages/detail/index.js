@@ -125,7 +125,7 @@ Page({
     this.refreshing = true;
     allowShare(false);
     // 底栏"转发"按钮和右上角菜单同步：加载或刷新时不能点，加载成功才能点
-    this.setData({ loading: true, error: '', takenDown: false, shareReady: false });
+    this.setData({ loading: true, error: '', takenDown: false, notFound: false, shareReady: false });
     api.detail(this.docId)
       .then((doc) => {
         // 只有人工核对过的截止日期才显示（合规红线）
@@ -199,6 +199,8 @@ Page({
         doc: null, due: null, dueNote: '', changes: [], reminded: false, atts: [], conds: [], versions: [], versionLabel: '', upstream: '',
         bodyView: null, noBody: '', entry: null, goneNote: '', goneAll: false, goneExport: false, goneSave: false, savedHere: false, dueQuote: '', checkedText: '', points: [],
         takenDown: err.status === 404 && err.message === '该文件已下架',
+        // 找不到这份文件（D-123 开关开着时多半是原网页失效、本平台已停止展示）：重试也不会有，给"返回"
+        notFound: err.status === 404,
         error: err.status === 404 && this.fromGone && err.message !== '该文件已下架'
           ? '这份通知原网页已无法访问，本平台已停止展示；保存过的在“我的 → 我的保存”里看'
           : (err.status === 404 ? err.message : `数据未更新：${err.message}`),

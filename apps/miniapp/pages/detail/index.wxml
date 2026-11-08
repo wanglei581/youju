@@ -1,5 +1,5 @@
 <notice-bar />
-<view wx:if="{{error}}" class="card load-error"><text>{{error}}</text><text wx:if="{{takenDown}}" class="link retry" bindtap="goBack">返回</text><text wx:else class="link retry" bindtap="load">重试</text></view>
+<view wx:if="{{error}}" class="card load-error"><text>{{error}}</text><text wx:if="{{takenDown || notFound}}" class="link retry" bindtap="goBack">返回</text><text wx:else class="link retry" bindtap="load">重试</text></view>
 <!-- 加载中：灰色占位块占住标题和要点的位置 -->
 <view wx:if="{{!error && (loading || !doc)}}" aria-label="正在加载">
   <view class="card head">

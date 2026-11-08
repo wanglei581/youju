@@ -656,6 +656,45 @@ def test_link_check_checks_old_notices_and_policies_monthly(session, env):
     assert [item[0] for item in picked].count(apply.id) == 1
 
 
+def test_check_links_counts_the_monthly_queue_separately(session, env):
+    """D-124 ①：查完第 5 队的一份扣的是 left_old；到时间没查完的算 left_old，不算进 left（独立审阅
+    D-124 第 3 轮）。开关关着这一队不查。"""
+    from youju.crawler.fetcher import FetchResult
+
+    class Fake:
+        def __init__(self):
+            self.seen = []
+
+        def fetch(self, url):
+            self.seen.append(url)
+            text = "<html><body><h1>关于开展科技计划项目申报的通知</h1><p>各有关单位：</p></body></html>"
+            return FetchResult(
+                url=url,
+                status="ok",
+                http_status=200,
+                final_url=url,
+                text=text,
+                content_type="text/html; charset=utf-8",
+                content=text.encode(),
+            )
+
+    docs = [seed(session, n)[0] for n in (1, 2)]
+    for doc in docs:
+        doc.publish_date = date(2026, 3, 1)  # 发布 200 多天
+    session.commit()
+    env(gone_cleanup_enabled="false")
+    off = link_check.check_links(session, fetcher=Fake(), now=NOW, max_workers=1, budget=None)
+    assert (off["checked"], off["left"], off["left_old"]) == (0, 0, 0)
+    env(gone_cleanup_enabled="true")
+    ticks = iter(range(0, 1000, 6))  # 每问一次时间过 6 秒：第一份查了，第二份到时间不查
+    fake = Fake()
+    counts = link_check.check_links(
+        session, fetcher=fake, now=NOW, max_workers=1, budget=10, clock=lambda: next(ticks)
+    )
+    assert fake.seen == [docs[0].url]
+    assert (counts["checked"], counts["left"], counts["left_old"]) == (1, 0, 1)
+
+
 def test_dry_run_works_with_flag_off_and_lists_documents(session, env, capsys):
     """D-124 ⑤：打开开关那天会一次清掉积下来的，要先试跑报数：只数不删的试跑开关关着也能跑，可以逐份
     列出；真删要开关开着。"""
