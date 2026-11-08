@@ -53,8 +53,10 @@ KEEP_REASONS = {
     "history": "有下架、恢复记录（记录要留着，删不了这份通知）",
     "changed": "别的通知的截止变更指向它",
     "listed": "原栏目还列着这份通知",
-    "merged": "同一份通知的其他网址还能打开，或者还在 7 天里",
+    "merged": "同一份通知的其他网址还能打开",
     "moved": "同一份通知在原栏目换了新地址",
+    # 只在删的时候看（keep_reasons 的 cleanup=True）：页面照常按自己的 7 天显示
+    "waiting": "同一份通知的其他网址还在 7 天里，等最后一个到期一起删",
 }
 
 
@@ -129,9 +131,12 @@ def _squash(title: str | None) -> str:
     return re.sub(r"\s+", "", title or "")
 
 
-def keep_reasons(session: Session, docs: Iterable[Document], now: datetime) -> dict[int, str]:
+def keep_reasons(
+    session: Session, docs: Iterable[Document], now: datetime, *, cleanup: bool = False
+) -> dict[int, str]:
     """这些原网页失效的通知里，到期也不清理的：{编号: KEEP_REASONS 的键}。一种原因就够，按
-    KEEP_REASONS 的顺序给第一种。没失效的不看。"""
+    KEEP_REASONS 的顺序给第一种。没失效的不看。cleanup：删的时候另看 waiting（组里别的网址还在
+    7 天里）；显示的时候不看它，组里几个网址都在 7 天里时照常显示（agy 第 2 轮）。"""
     docs = [doc for doc in docs if doc.link_gone_at is not None]
     if not docs:
         return {}
@@ -181,21 +186,20 @@ def keep_reasons(session: Session, docs: Iterable[Document], now: datetime) -> d
     ):
         members[master].add(duplicate)
     others = {m for group in members.values() for m in group} - set(ids)
-    # 还在 7 天里的也算：组里各网址先后打不开时，等最后一个也到期了整组一起删，免得主条目先删、
-    # 归并关系跟着没了，转载的那份又单独冒出来（agy 第 1 轮）
-    live = (
-        set(
-            session.scalars(
-                select(Document.id).where(
-                    Document.id.in_(others),
-                    Document.link_gone_at.is_(None) | (Document.link_gone_at >= cutoff(now)),
-                    available_condition(),
-                )
+    # 删的时候，组里还在 7 天里的也要等：各网址先后打不开时等最后一个也到期了整组一起删，免得主条目
+    # 先删、归并关系跟着没了，转载的那份又单独冒出来（agy 第 1 轮）
+    live: set[int] = set()
+    waiting: set[int] = set()
+    if others:
+        for doc_id, gone_at in session.execute(
+            select(Document.id, Document.link_gone_at).where(
+                Document.id.in_(others), available_condition()
             )
-        )
-        if others
-        else set()
-    )
+        ):
+            if gone_at is None:
+                live.add(doc_id)
+            elif cleanup and _utc(gone_at) >= cutoff(now):
+                waiting.add(doc_id)
     for doc_id, master in masters.items():
         if members[master] & live:
             mark(doc_id, "merged")
@@ -231,6 +235,9 @@ def keep_reasons(session: Session, docs: Iterable[Document], now: datetime) -> d
                 for row in rows
             ):
                 mark(doc.id, "moved")
+    for doc_id, master in masters.items():
+        if members[master] & waiting:
+            mark(doc_id, "waiting")
     return found
 
 
@@ -356,7 +363,7 @@ def cleanup_expired(
     due = _due(session, now)
     session.commit()
     counts["due"] = len(due)
-    kept = keep_reasons(session, due, now)
+    kept = keep_reasons(session, due, now, cleanup=True)
     for reason in kept.values():
         counts[reason] += 1
     ready = [
@@ -374,7 +381,7 @@ def cleanup_expired(
     for doc_id in ready:
         # 一份一个事务：锁住这一行再核对一遍（这期间恢复了、下架了、换了地址的不删）
         docs = _due(session, now, [doc_id], lock=True)
-        if not docs or keep_reasons(session, docs, now):
+        if not docs or keep_reasons(session, docs, now, cleanup=True):
             session.rollback()
             continue
         session.execute(delete(Document).where(Document.id == doc_id))

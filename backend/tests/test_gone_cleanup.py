@@ -292,14 +292,26 @@ def test_merge_group_is_cleaned_when_the_last_url_is_due(session, on):
     copy, _ = gone_doc(session, 2, gone_at=NOW - timedelta(days=3))
     session.add(DocumentMerge(duplicate_id=copy.id, canonical_id=master.id, match_key="k"))
     session.commit()
-    assert gone.keep_reasons(session, [master], NOW) == {master.id: "merged"}
-    assert gone.cleanup_expired(session, now=NOW)["deleted"] == 0
+    assert gone.keep_reasons(session, [master], NOW, cleanup=True) == {master.id: "waiting"}
+    counts = gone.cleanup_expired(session, now=NOW)
+    assert counts["deleted"] == 0 and counts["waiting"] == 1
     later = NOW + timedelta(days=5)
     for doc in (master, copy):
         doc.link_checked_at = later - timedelta(hours=1)
     session.commit()
     assert gone.cleanup_expired(session, now=later)["deleted"] == 2
     assert session.scalar(select(func.count()).select_from(Document)) == 0
+
+
+def test_merge_group_all_in_window_still_shows_body(client, session, on):
+    """组里几个网址都打不开、都还在 7 天里：主条目照常按清理期显示（显示时不看 waiting，agy 第 2 轮）。"""
+    master, _ = gone_doc(session, 1, gone_at=NOW - timedelta(days=2))
+    copy, _ = gone_doc(session, 2, gone_at=NOW - timedelta(days=1))
+    session.add(DocumentMerge(duplicate_id=copy.id, canonical_id=master.id, match_key="k"))
+    session.commit()
+    assert gone.keep_reasons(session, [master], NOW) == {}
+    detail = client.get(f"/api/v1/documents/{master.id}").json()
+    assert detail["gone"]["window"] is True and detail["body"]["status"] == "ok"
 
 
 def test_same_title_from_an_earlier_year_is_not_a_move(session, on):
