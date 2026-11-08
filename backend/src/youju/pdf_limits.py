@@ -84,9 +84,10 @@ DOCUMENT_MAX = 256 * _MB
 PREDICTOR_INPUT_MAX = 2 * _MB
 XREF_PREDICTOR_INPUT_MAX = 8 * _MB
 PREDICTOR_COLUMNS_MAX = 1 << 20
-# ASCII85 的输入长度：a85decode 每 4 个字节先存成一个小 bytes 对象，输入每 MB 约占 27MB 内存
-# （独立审阅实测）。测试里两份真实样本的 ASCII85 数据流只有 1.4–2.8KB
-ASCII85_INPUT_MAX = 2 * _MB
+# ASCII85 的输入长度：a85decode 每 4 个字节先存成一个小 bytes 对象，输入每 MB 约占 27MB 内存；全是 z
+# 时 bytes.join 每项另占 80 字节，每 MB 约 92MB（独立审阅实测）。测试里两份真实样本的 ASCII85 数据流
+# 只有 1.4–2.8KB（页面内容），页面内容编成 ASCII85 一般几十到一两百 KB
+ASCII85_INPUT_MAX = 512 * 1024
 # a85decode 忽略的空白（它的默认 ignorechars）
 _A85_IGNORED = b" \t\n\r\x0b"
 # 数据流套着数据流（解码参数指向对象流里的对象，那个对象流要先解）最多几层；正常文件一两层
@@ -320,7 +321,7 @@ def _ascii85(data: bytes, cap: int) -> bytes:
     线性的。缩换页符用 replace 一轮减半（不用正则替换：几百万个孤立换页符会切出几百万个小 bytes，
     8MB 的输入能吃 700MB 内存）。"""
     if len(data) > ASCII85_INPUT_MAX:
-        raise Refused("too_large", f"ASCII85 数据流超过 {ASCII85_INPUT_MAX // _MB}MB")
+        raise Refused("too_large", f"ASCII85 数据流超过 {ASCII85_INPUT_MAX // 1024}KB")
     data = data.translate(None, _A85_IGNORED)
     while b"\x0c\x0c" in data:
         data = data.replace(b"\x0c\x0c", b"\x0c")

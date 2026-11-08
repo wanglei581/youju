@@ -251,20 +251,30 @@ def test_filters_without_limits_are_refused(name: str) -> None:
 
 def test_ascii85_zero_runs_are_counted_before_decoding(small_caps) -> None:
     """ASCII85 里一个 z 解出 4 个字节：先数出解出多大，超了不解。"""
-    pdf = make_pdf((b"/Filter /ASCII85Decode", b"z" * (512 * 1024) + b"~>"))
+    pdf = make_pdf((b"/Filter /ASCII85Decode", b"z" * (300 * 1024) + b"~>"))  # 解出 1.2MB
     result = attachment_text.extract(pdf)
     assert (result.reason, result.detail) == ("too_large", "PDF 数据流解压后超过 1MB")
 
 
 def test_ascii85_with_long_whitespace_is_linear() -> None:
-    """pdfminer 去头尾 <~ ~> 的正则遇到长空白是平方级（以前 3.2 万个空格要 3 秒，近 200 万个要几个小时）。
+    """pdfminer 去头尾 <~ ~> 的正则遇到长空白是平方级（以前 3.2 万个空格要 3 秒，近 50 万个要十分钟）。
     a85decode 本来就忽略这些空白，先去掉再解：照样解出，一下就完。"""
     body = base64.a85encode(b"BT /F1 12 Tf 20 100 Td (Notice 2026) Tj ET")
-    blank = b" " * (900 * 1024) + b"\n" * (900 * 1024)  # 在 ASCII85_INPUT_MAX（2MB）以内
+    blank = b" " * (240 * 1024) + b"\n" * (240 * 1024)  # 在 ASCII85_INPUT_MAX（512KB）以内
     stream = PDFStream({"Filter": LIT("A85")}, b"<~" + body + blank + b"~>")
     started = time.monotonic()
     assert stream.get_data() == b"BT /F1 12 Tf 20 100 Td (Notice 2026) Tj ET"
     assert time.monotonic() - started < 5
+
+
+def test_ascii85_input_limit_bounds_memory() -> None:
+    """ASCII85 最费内存的是全是 z（每个 z 在 bytes.join 里另占 80 字节，输入每 MB 约 92MB）：输入上限
+    以内也有上限；超了直接拒读（独立审阅第 7 轮：上限 2MB 时全是 z 要 184MB）。"""
+    zeros = PDFStream({"Filter": LIT("A85")}, b"z" * (pdf_limits.ASCII85_INPUT_MAX - 8))
+    assert peak_memory(zeros.get_data) < 64 * MB
+    over = PDFStream({"Filter": LIT("A85")}, b"z" * (pdf_limits.ASCII85_INPUT_MAX + 1))
+    with pytest.raises(pdf_limits.Refused, match="ASCII85 数据流超过 512KB"):
+        over.get_data()
 
 
 def test_ascii85_isolated_form_feeds_do_not_blow_up_memory() -> None:
