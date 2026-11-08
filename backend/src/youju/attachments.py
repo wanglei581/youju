@@ -69,8 +69,8 @@ log = logging.getLogger("youju.attachments")
 
 # wx.openDocument 的 fileType 合法值（官方文档）
 PREVIEW_TYPES = ("doc", "docx", "xls", "xlsx", "ppt", "pptx", "pdf")
-# 要下载的：能存副本的 7 种，加上只取文字给 AI 用的 wps、et（小程序打不开，不存副本；
-# 附件读入方案第三节第 1 条）
+# 要下载的：能存副本的 7 种，加上只取文字的 wps、et（附件读入方案第三节第 1 条），11/5 起还有
+# ofd 和 zip、rar 压缩包（小程序打不开，都不存副本，只取文字给站内阅读和 AI）
 DOWNLOAD_TYPES = PREVIEW_TYPES + attachment_text.TEXT_ONLY_TYPES
 # 文件头判断出的格式和扩展名要是同一类（.doc 实际是 docx 这类常见的情况照样能打开）
 _FAMILY = {
@@ -897,9 +897,9 @@ def _recent(since: date, since_at: datetime):
 
 
 def candidates(session: Session, now: datetime, *, texts: bool = False) -> dict[str, str]:
-    """要下载的附件（存副本，wps、et 只取文字）：原站链接 → 题录里的扩展名，按文件发布日期
-    从新到旧。texts：附件文字的范围（政策近 2 年，POLICY_TEXT_WINDOW_DAYS），不给是副本的范围
-    （政策近 90 天）；申报通知都是近 180 天。"""
+    """要下载的附件（存副本；wps、et、ofd、zip、rar 只取文字）：原站链接 → 题录里的扩展名，
+    按文件发布日期从新到旧。texts：附件文字的范围（政策近 2 年，POLICY_TEXT_WINDOW_DAYS），
+    不给是副本的范围（政策近 90 天）；申报通知都是近 180 天。"""
     since, since_at = _since(now, POLICY_TEXT_WINDOW_DAYS if texts else WINDOW_DAYS)
     apply_since, apply_since_at = _since(now, APPLICATION_WINDOW_DAYS)
     kind = func.coalesce(Document.kind_override, Document.rule_kind)
@@ -1015,7 +1015,7 @@ def _store_one(
     if failure is not None:
         outcome: Failure | str = failure
     elif row.declared_type not in PREVIEW_TYPES:
-        # wps、et：小程序打不开，不存副本，只取文字（能不能打开副本的规则不变）
+        # wps、et、ofd、zip、rar：小程序打不开，不存副本，只取文字（能不能打开副本的规则不变）
         outcome = Failure("format", "小程序打不开这种格式，不存副本（只取文字给 AI 用）")
     else:
         outcome = check_content(content, row.declared_type)
