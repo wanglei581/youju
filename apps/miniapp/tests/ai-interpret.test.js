@@ -279,6 +279,22 @@ test('仅 taskId 回看读取本机上下文，不创建任务；缺少上下文
   }
 });
 
+test('D-124 ②：从我的记录打开通知已经到期清理的解读（后台 docCleaned）：清掉本机记着的编号，写清理的说法，不给重试、看原文', async () => {
+  const cleanedText = '这份通知原网页已无法访问，本平台已停止展示，这条结果不再提供；此前保存过这份通知的，可以在“我的 → 我的保存”里看';
+  const local = storage(true); logic.taskContext(local, 12, { docId: '42', title: '缓存标题' });
+  const h = sessionHarness({ storage: local, session: { docId: '', title: '', taskId: 12 }, api: {
+    advisorTask: (id) => Promise.resolve({ id, status: 'done', result: null, error: cleanedText, docId: null, docTitle: null, linkGone: null, docCleaned: true }),
+  } });
+  h.session.show(); await flush();
+  assert.equal(h.created(), 0);
+  assert.equal(h.state.phase, 'failed');
+  assert.equal(h.state.error, cleanedText);
+  assert.equal(h.state.canRetry, false);
+  assert.equal(h.state.docId, ''); assert.equal(h.state.title, '');
+  assert.deepEqual(logic.taskContext(local, 12), { docId: '', title: '' });
+  h.session.hide();
+});
+
 test('D-073：服务端标了 outdated 的旧结果照常显示并加说明；没标、失败时都不显示说明', async () => {
   const done = (outdated) => (id) => Promise.resolve(Object.assign({ id, status: 'done', result: { items: [] } }, outdated ? { outdated: true } : {}));
   const marked = sessionHarness({ session: { taskId: 9 }, api: { advisorTask: done(true) } });

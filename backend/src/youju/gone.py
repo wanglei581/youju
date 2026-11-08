@@ -1,20 +1,26 @@
-"""原网页失效的通知 7 天后清理（D-123，创始人 11/8）。
+"""原网页失效的通知 7 天后清理（D-123，创始人 11/8；没定的几件 D-124 按推荐定了）。
 
 什么算失效沿用原网页检查（youju/link_check.py）：连续两次、相隔 20 小时以上打不开，记
 documents.link_gone_at。记下那天（北京时间）起 7 天是清理期：
 
 - 这 7 天里正文、附件照常给看（详情页、阅读页：v1.reading_body、attachment_text.judge），页面写明
-  "原网页某月某日起打不开，内容可能已被发布机关撤回或更正，以官方为准"和哪天清理，可以保存
+  "原网页已无法访问，本平台将于某月某日停止展示；内容变动以官方最新发布为准"（notice；D-124 ④照
+  agy 合规审阅的改法：不猜"可能已被撤回或更正"，给用户看的地方不说"清理"），可以保存
   （我的保存，youju/saved.py）、导出。
 - 期间每天再查一次（link_check 的清理期队列）：能打开了，link_check 清空 link_gone_at，清理就取消；
   同一份通知在原栏目换了新地址的（keep_reasons 的 moved：同一栏目、同一标题、原网页没失效的另一份）
-  等几种情况也不清理（KEEP_REASONS）。名单类不清理，一直标明"原网页某月某日起已撤下"（D-123 ④）。
+  等几种情况也不清理（KEEP_REASONS）。名单类不清理，一直标明"原网页某月某日起已撤下"（D-123 ④）；
+  这 7 天里正文照常给，7 天过后不给正文、只留查名单（D-124 ③）。
 - 失效那天 + 7 天起（cleanup_on）不再给正文和附件（照 D-097），本机原网页检查跑完以后删掉这份通知
   （cleanup_expired：要 30 小时内确认过还打不开、原栏目 48 小时内抓成功过，同一通知的几个网址整组
   一起删）；2.0 里删除经同步通道带到服务器（PR #453），用户保存的副本不受影响
   （saved_documents 不建外键）。
 - 因投诉下架的不算官方失效：照原来的做法下架（行留着、隐藏），不清理；用户保存的副本一起删
   （saved.purge_taken_down）。
+- 清理以后，引用这份通知的 AI 解读、条款对照结果和问一问的回答不再给看，说清楚原网页已无法访问、
+  本平台已停止展示，保存过的去"我的 → 我的保存"看；"我的记录"里这一条照常列着、标"原通知已停止
+  展示"，可以删除（D-124 ②，cleaned_ids）。
+- 发布超过 90 天的申报通知、政策也每月查一次原网页，失效了一样进清理（D-124 ①，link_check）。
 
 开关 YOUJU_GONE_CLEANUP_ENABLED，默认关：关着照 D-097，失效的正文、附件不给，不清理，
 不能保存、导出。
@@ -61,7 +67,7 @@ LISTED_WITHIN = timedelta(hours=48)
 KEEP_REASONS = {
     # D-123 ④：名单类（查名单用到的，失效的多是公示期满后撤下的）不按 7 天清理，照常留着、
     # 查名单照常能查到，卡片和详情页标明"原网页某月某日起已撤下"；这 7 天里正文和别的通知一样
-    # 照常给、能保存导出（7 天过后给不给没定，照现在不给，D-123 ⑥）
+    # 照常给、能保存导出，7 天过后不给正文、只留查名单（D-124 ③）
     "list": "名单类，不按 7 天清理",
     "history": "有下架、恢复记录（记录要留着，删不了这份通知）",
     "changed": "别的通知的截止变更指向它",
@@ -136,9 +142,30 @@ def md(day: date) -> str:
     return f"{day.month}月{day.day}日"
 
 
+# 给用户看的几句（D-124 ④：照 agy 合规审阅的改法，"清理"一律说"停止展示"，免得被理解成政府废止）。
+# 通知已经删掉以后不知道是哪天，不写日期
+NOT_FOUND = (
+    "没有找到这份文件，可能是原网页已无法访问、本平台已停止展示；保存过的在“我的 → 我的保存”里看"
+)
+# 清理以后打开引用它的 AI 解读、条款对照结果（D-124 ②）
+CLEANED_RESULT = (
+    "这份通知原网页已无法访问，本平台已停止展示，这条结果不再提供；"
+    "此前保存过这份通知的，可以在“我的 → 我的保存”里看"
+)
+# 问一问里问这份通知的回答（D-124 ②）
+CLEANED_ANSWER = (
+    "这份通知原网页已无法访问，本平台已停止展示，这条回答不再显示；"
+    "此前保存过这份通知的，可以在“我的 → 我的保存”里看"
+)
+# 批量工具站内结果里引用它的那一条（整份结果照常给，只挡这一条）
+CLEANED_ITEM = "这一条的通知原网页已无法访问，本平台已停止展示，这一条不再提供"
+
+
 def notice(gone_at: datetime) -> str:
-    """卡片、详情页、阅读页写的提示（D-123 ②）。"""
-    return f"原网页{md(gone_on(gone_at))}起打不开，内容可能已被发布机关撤回或更正，以官方为准"
+    """卡片、详情页、阅读页写的提示（D-123 ②，说法照 D-124 ④）：哪天停止展示是清理那天。"""
+    return (
+        f"原网页已无法访问，本平台将于{md(cleanup_on(gone_at))}停止展示；内容变动以官方最新发布为准"
+    )
 
 
 def list_notice(gone_at: datetime) -> str:
@@ -298,14 +325,14 @@ def reading_note(doc: Document) -> str:
     """阅读页正文、附件上面、导出的 Word 里写的一句（没有保存、导出按钮，不说"可以先保存"）。"""
     if is_list(doc):
         return f"{list_notice(doc.link_gone_at)}。"
-    return f"{notice(doc.link_gone_at)}。这份通知将于{md(cleanup_on(doc.link_gone_at))}清理。"
+    return f"{notice(doc.link_gone_at)}。"
 
 
 def payload(doc: Document, window: bool, readable: bool = True) -> dict:
-    """接口里的 gone：原网页打不开的日期、清理日期（名单类没有）、页面上的两句话；window 是还在
-    7 天里、正文附件照常给；canExport 是还在 7 天里、又有能读的正文或附件（readable，详情页才
-    知道），给"导出 Word"；canSave 另要能保存（saving_open：新版隐私指引已经上线），给"保存"。
-    见 payloads。"""
+    """接口里的 gone：原网页打不开的日期、清理日期（名单类没有）、页面上的两句话（notice 是完整的
+    第一句，卡片只写这句；cleanupNotice 是详情页的第二句）；window 是还在 7 天里、正文附件照常给；
+    canExport 是还在 7 天里、又有能读的正文或附件（readable，详情页才知道），给"导出 Word"；
+    canSave 另要能保存（saving_open：新版隐私指引已经上线），给"保存"。见 payloads。"""
     can_export = window and readable
     can_save = can_export and saving_open()
     if is_list(doc):
@@ -313,21 +340,20 @@ def payload(doc: Document, window: bool, readable: bool = True) -> dict:
             "since": gone_on(doc.link_gone_at).isoformat(),
             "cleanup": None,
             "notice": list_notice(doc.link_gone_at),
-            # 7 天过后正文不给（D-123 ⑥ 没定，照现在）：名单照常能查
+            # 7 天过后正文不给（D-124 ③）：名单照常能查
             "cleanupNotice": "" if window else "正文不再提供，名单请在“查名单”里按企业名称查询",
             "list": True,
             "window": window,
             "canSave": can_save,
             "canExport": can_export,
         }
-    clean = cleanup_on(doc.link_gone_at)
-    # 没有能读的正文和附件（没东西可存）时不说"可以先保存或导出"
-    tail = "，可以先保存或导出" if can_save else ("，可以先导出" if can_export else "")
+    # 第二句按实际给的按钮写；没有能读的正文和附件（没东西可存）时不写（哪天停止展示第一句已经写了）
+    second = "可以先保存或导出" if can_save else ("可以先导出" if can_export else "")
     return {
         "since": gone_on(doc.link_gone_at).isoformat(),
-        "cleanup": clean.isoformat(),
+        "cleanup": cleanup_on(doc.link_gone_at).isoformat(),
         "notice": notice(doc.link_gone_at),
-        "cleanupNotice": f"这份通知将于{md(clean)}清理{tail}",
+        "cleanupNotice": second,
         "list": False,
         "window": True,
         "canSave": can_save,
@@ -357,6 +383,23 @@ def payloads(
         for doc in docs
         if doc.id in window or is_list(doc)
     }
+
+
+def cleaned_ids(
+    session: Session, ids: Iterable[int | str | None], settings: Settings | None = None
+) -> set[int]:
+    """这些通知编号里已经不在库里的（D-124 ②）。通知只有到期清理会删（cleanup_expired，其余都是
+    下架、行留着；documents.source_id 对栏目是 RESTRICT），开关开着时就当是清理掉的；开关关着
+    不判断（不会清理），照原来的说法。以后加别的删通知行的路径（比如 2.0 同步带来别的删除），要
+    守住这一条，不然下架的会被说成"已停止展示"。"""
+    wanted: set[int] = set()
+    for value in ids:
+        text = "" if value is None else str(value)
+        if text.isdigit() and int(text) > 0:
+            wanted.add(int(text))
+    if not wanted or not enabled(settings):
+        return set()
+    return wanted - set(session.scalars(select(Document.id).where(Document.id.in_(wanted))))
 
 
 # ---- 本机：到期清理 ----
@@ -416,6 +459,7 @@ def cleanup_expired(
     now: datetime | None = None,
     dry_run: bool = False,
     settings: Settings | None = None,
+    listing: list[dict] | None = None,
 ) -> dict[str, int]:
     """本机：删掉过了清理期的原网页失效通知（D-123）。原网页检查跑完以后调用（cli check-links）。
 
@@ -424,7 +468,12 @@ def cleanup_expired(
     时候出错的份数（记日志，接着删下一份），以及 KEEP_REASONS 各种不清理的份数。删通知用数据库的
     外键规则：正文、截止、附件列表、名单等公开数据级联删除；用户的截止提醒授权（subscriptions）、
     截止线索跟着删，纠错断开；用户保存的副本（saved_documents）不建外键，不受影响。2.0 里本机删掉
-    的行经同步通道带到服务器（PR #453）。"""
+    的行经同步通道带到服务器（PR #453）。
+
+    dry_run 只数不删，开关关着也能跑：打开开关那天会一次清掉积下来的"失效超过 7 天"的通知，
+    要先试跑报数给创始人（D-124 ⑤，没定）。listing：试跑时把会删的、推迟的、等同组其他网址的
+    （waiting）逐份放进去（编号、失效日期、这次怎么处理、标题），份数和 deleted + stale +
+    source_stale + waiting 对得上；别的不清理的（名单、有下架记录等）不列。"""
     counts = {
         "due": 0,
         "deleted": 0,
@@ -433,7 +482,7 @@ def cleanup_expired(
         "failed": 0,
         **{reason: 0 for reason in KEEP_REASONS},
     }
-    if not enabled(settings):
+    if not enabled(settings) and not dry_run:
         return counts
     now = _utc(now or datetime.now(UTC))
     due = _due(session, now)
@@ -442,21 +491,50 @@ def cleanup_expired(
     kept = keep_reasons(session, due, now, cleanup=True)
     for reason in kept.values():
         counts[reason] += 1
-    postponed = _postponed(session, [doc for doc in due if doc.id not in kept], now)
+    candidates = [doc.id for doc in due if doc.id not in kept]
+    possible = set(candidates)
+    postponed = _postponed(session, [doc for doc in due if doc.id in possible], now)
+    # 整组一起删：组里只要有一份这次删不了（不清理、推迟、还没到期），整组都先不删，免得主条目删了、
+    # 归并关系跟着没了，转载的那份单独冒出来（独立审阅第 2 轮）。组里有到期了也不清理、或者还没
+    # 到期的（不在 candidates 里）：这次和以后都要等，推迟的也算等同组，免得试跑报的"推迟、早晚要删"
+    # 偏大（独立审阅 D-124 第 2 轮）
+    groups = merge_groups(session, candidates)
+    blocked = {doc_id for doc_id in candidates if not groups[doc_id] <= possible}
+    for doc_id in blocked:
+        postponed.pop(doc_id, None)
     for reason in postponed.values():
         counts[reason] += 1
-    ready = [doc.id for doc in due if doc.id not in kept and doc.id not in postponed]
-    # 整组一起删：组里只要有一份这次删不了（不清理、推迟、还没到期），整组都先不删，免得主条目删了、
-    # 归并关系跟着没了，转载的那份单独冒出来（独立审阅第 2 轮）
-    if ready:
-        groups = merge_groups(session, ready)
-        allowed = set(ready)
-        held = {doc_id for doc_id in ready if not groups[doc_id] <= allowed}
-        counts["waiting"] += len(held)
-        ready = [doc_id for doc_id in ready if doc_id not in held]
+    ready = [doc_id for doc_id in candidates if doc_id not in postponed and doc_id not in blocked]
+    allowed = set(ready)
+    held = {doc_id for doc_id in ready if not groups[doc_id] <= allowed}
+    counts["waiting"] += len(blocked) + len(held)
+    ready = [doc_id for doc_id in ready if doc_id not in held]
     session.commit()
     if dry_run:
         counts["deleted"] = len(ready)
+        if listing is not None:
+            will = set(ready)
+            for doc in due:
+                # 不清理的（名单、有下架记录、原栏目还列着等）不列；等同组其他网址的（waiting：组里
+                # 还有在 7 天里的，或者这次整组删不了）列上，和计数对得上（独立审阅 D-124 第 1 轮）
+                if doc.id in kept and kept[doc.id] != "waiting":
+                    continue
+                state = (
+                    "会删"
+                    if doc.id in will
+                    else {
+                        "stale": "推迟：最近 30 小时没确认还打不开",
+                        "source_stale": "推迟：原栏目 48 小时没抓成功",
+                    }.get(postponed.get(doc.id, ""), "等同组其他网址")
+                )
+                listing.append(
+                    {
+                        "id": doc.id,
+                        "since": gone_on(doc.link_gone_at).isoformat(),
+                        "state": state,
+                        "title": doc.title,
+                    }
+                )
         return counts
     for doc_id in ready:
         # 一份一个事务：锁住这一行再核对一遍（这期间恢复了、下架了、换了地址的不删）。

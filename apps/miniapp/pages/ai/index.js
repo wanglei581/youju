@@ -75,6 +75,8 @@ function recordRow(task) {
     stateLabel: view.stateLabel,
     // 原文链接确认失效了（后台 linkGone）：记录上写一句，点开的结果页写明是按之前收录的正文做的
     linkGone: view.linkGone || '',
+    // D-124 ②：通知已经到期清理（后台 docCleaned）：记录上写一句，点开的结果页写明不再提供
+    cleaned: view.docCleaned === true,
   };
 }
 

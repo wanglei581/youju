@@ -1572,6 +1572,104 @@ def test_native_reading_marks_link_gone_documents_instead_of_refusing(client, se
     assert client.get(path).status_code == 410
 
 
+def test_native_reading_hides_only_cleaned_documents(client, session, monkeypatch):
+    """D-124 ②：引用的通知原网页失效、已经到期清理（行删掉）：整份结果照常给，只挡那一条（标题留着，
+    各项内容和"查看文件"不给，写明原因）；开关关着照旧整份拒绝；下架的照旧整份拒绝。"""
+    import hashlib
+    import json
+
+    from youju import gone
+    from youju.models import Document, Source
+
+    src = Source(
+        level="省级",
+        province="山东",
+        dept="科技",
+        dept_full_name="山东省科学技术厅",
+        column_name="通知",
+        url="https://kjt.shandong.gov.cn/tz/",
+        enabled=True,
+        parser_config={},
+        rights_level=1,
+    )
+    session.add(src)
+    session.flush()
+    stamp = datetime.now(UTC)
+    docs = [
+        Document(
+            source_id=src.id,
+            url=f"https://kjt.shandong.gov.cn/{n}.html",
+            url_key=f"kjt.shandong.gov.cn/{n}.html",
+            title=f"合成通知{n}",
+            publish_date=NOW.date(),
+            first_seen_at=stamp,
+            last_seen_at=stamp,
+        )
+        for n in (1, 2)
+    ]
+    session.add_all(docs)
+    session.flush()
+    agree_advisor(client)
+    task_id = create(client).json()["id"]
+    row = session.get(AdvisorTask, task_id)
+    status = {"label": "截止核对情况", "value": "未核对，请以原文为准"}
+    customer = {"label": "客户名称", "value": "甲公司"}
+    items = [
+        {
+            "documentId": str(doc.id),
+            "title": doc.title,
+            "fields": [dict(customer), dict(status)],
+            "n": n,
+        }
+        for n, doc in enumerate(docs)
+    ]
+    content = {
+        "schema": 1,
+        "kind": "track",
+        "title": "客户相关通知表",
+        "notice": "合成",
+        "generatedAt": NOW.isoformat(),
+        "dataVersion": None,
+        "items": items,
+    }
+    content["revision"] = hashlib.sha256(json.dumps(content, sort_keys=True).encode()).hexdigest()
+    row.kind, row.status = "track", "done"
+    row.result_document_ids = [doc.id for doc in docs]
+    row.result_json = content
+    session.commit()
+    kept, cleaned = docs[0].id, docs[1].id
+    session.execute(Document.__table__.delete().where(Document.id == cleaned))
+    session.commit()
+    path = f"/api/v1/advisor/tasks/{task_id}/reading"
+    assert client.get(path).status_code == 410  # 开关关着：照旧
+    monkeypatch.setattr(gone, "enabled", lambda settings=None: True)
+    response = client.get(path)
+    assert response.status_code == 200
+    first, second = response.json()["items"]
+    assert first == {
+        "documentId": str(kept),
+        "title": "合成通知1",
+        "fields": [customer, status],
+        "n": 0,
+    }
+    # 客户名称这类用户自己提交的留着（看得出是哪家客户的），通知带出来的不给
+    assert second == {
+        "documentId": None,
+        "title": "合成通知2",
+        "fields": [customer],
+        "n": 1,
+        "cleaned": True,
+        "note": gone.CLEANED_ITEM,
+    }
+    # 存着的结果不改
+    session.expire(row)
+    assert row.result_json["items"] == items
+    # 下架的照旧整份拒绝
+    session.get(Document, kept).taken_down_at = stamp
+    session.commit()
+    assert client.get(path).status_code == 410
+
+
 def test_native_result_requires_all_dependencies(client, session):
     from youju.compare import CompareReport, CompareRow
     from youju.native_results import build

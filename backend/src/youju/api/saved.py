@@ -43,7 +43,7 @@ SessionDep = Annotated[Session, Depends(get_session)]
 Part = Annotated[str, Query(pattern=r"^([1-9][0-9]{0,2})?$")]
 WORD_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 SAVE_OUTDATED = "保存通知要先同意新版隐私保护指引，请更新小程序后重新阅读并同意"
-NOT_IN_WINDOW = "只有原网页打不开 7 天以内的通知可以保存和导出"
+NOT_IN_WINDOW = "只有原网页无法访问 7 天以内的通知可以保存和导出"
 
 
 def _require_enabled() -> None:

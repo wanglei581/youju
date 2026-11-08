@@ -34,7 +34,16 @@ from sqlalchemy import case, func, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from youju import access_log, chat_find, chat_guard, chat_store, dedup, safety_words, wx_security
+from youju import (
+    access_log,
+    chat_find,
+    chat_guard,
+    chat_store,
+    dedup,
+    gone,
+    safety_words,
+    wx_security,
+)
 from youju import advisor_tasks as service
 from youju.ai import ask, content, heartbeat, interpret, result_safety
 from youju.api import advisor as advisor_api
@@ -260,13 +269,18 @@ def _chat_out(
     }
 
 
-def _doc_out(session: Session, chat: AIChat, titles: dict | None = None) -> dict:
-    """对话的通知：hasDoc 是带不带通知；下架的不给编号和标题（同 advisor._document_out）。"""
+def _doc_out(
+    session: Session, chat: AIChat, titles: dict | None = None, cleaned: set[int] | None = None
+) -> dict:
+    """对话的通知：hasDoc 是带不带通知；下架的不给编号和标题（同 advisor._document_out）；
+    原网页失效、已经到期清理的另带 docCleaned（D-124 ②）。titles、cleaned：列表一次查好传进来。"""
     if chat.doc_key == 0:
         return {"hasDoc": False, "docId": None, "docTitle": None, "linkGone": None}
     if titles is None:
         titles = advisor_api._document_titles(session, [chat.doc_key])
-    return {"hasDoc": True, **advisor_api._document_out(chat.doc_key, titles)}
+    if cleaned is None:
+        cleaned = gone.cleaned_ids(session, [chat.doc_key])
+    return {"hasDoc": True, **advisor_api._document_out(chat.doc_key, titles, cleaned)}
 
 
 def _record_hit(
@@ -698,14 +712,14 @@ def list_chats(session: SessionDep, user: KnownUserDep) -> dict:
         .order_by(func.max(AIChatTurn.created_at).desc(), AIChat.id.desc())
     ).all()
     shown = rows[:LIST_LIMIT]
-    titles = advisor_api._document_titles(
-        session, [chat.doc_key for chat, *_ in shown if chat.doc_key]
-    )
+    keys = [chat.doc_key for chat, *_ in shown if chat.doc_key]
+    titles = advisor_api._document_titles(session, keys)
+    cleaned = gone.cleaned_ids(session, keys)
     items = []
     for chat, count, last_at, in_flight in shown:
         item = {
             "id": chat.id,
-            **_doc_out(session, chat, titles),
+            **_doc_out(session, chat, titles, cleaned),
             "turns": int(count),
             "lastAt": _iso(last_at),
             "busy": bool(in_flight),

@@ -1864,6 +1864,54 @@ def test_api_takedown_hides_completed_result(client, session, settings, doc):
     assert client.get("/api/v1/me/data").json()["advisorTasks"][0]["result"] is None
 
 
+def test_api_cleaned_document_hides_result_and_says_why(
+    client, session, settings, doc, monkeypatch
+):
+    """D-124 ②：通知原网页失效、已经到期清理（行删掉）以后，引用它的解读结果不再给看，说清楚原因、
+    指向我的保存；我的记录里这一条照常列着、标 docCleaned，可以删除。开关关着照旧。"""
+    from youju import gone
+
+    created = create(client, doc.id).json()
+    task = session.get(AdvisorTask, created["id"])
+    run(session, task, settings)
+    task_id = task.id
+    session.execute(Document.__table__.delete().where(Document.id == doc.id))
+    session.commit()
+    off = client.get(f"/api/v1/advisor/tasks/{task_id}").json()
+    assert off["result"] is None and off["error"] != gone.CLEANED_RESULT
+    assert "docCleaned" not in off
+    monkeypatch.setattr(gone, "enabled", lambda settings=None: True)
+    shown = client.get(f"/api/v1/advisor/tasks/{task_id}").json()
+    assert shown["result"] is None and shown["error"] == gone.CLEANED_RESULT
+    assert shown["docCleaned"] is True and shown["docId"] is None and shown["docTitle"] is None
+    [row] = client.get("/api/v1/advisor/tasks").json()["items"]
+    assert row["docCleaned"] is True and row["status"] == "done" and row["docId"] is None
+    # 过期又清理了的：照样写清理的说法（"请重新提交"也交不成）
+    session.get(AdvisorTask, task_id).expires_at = NOW - timedelta(days=1)
+    session.commit()
+    assert client.get(f"/api/v1/advisor/tasks/{task_id}").json()["error"] == gone.CLEANED_RESULT
+    assert client.delete(f"/api/v1/advisor/tasks/{task_id}").status_code < 300
+    assert client.get("/api/v1/advisor/tasks").json()["items"] == []
+
+
+def test_api_takedown_still_says_taken_down_with_flag_on(
+    client, session, settings, doc, monkeypatch
+):
+    """开关开着时，下架的（行还在）照旧写"下架"，不说成已停止展示（独立审阅 D-124 第 1 轮）。"""
+    from youju import gone
+
+    monkeypatch.setattr(gone, "enabled", lambda settings=None: True)
+    created = create(client, doc.id).json()
+    task = session.get(AdvisorTask, created["id"])
+    run(session, task, settings)
+    doc.taken_down_at = NOW
+    session.commit()
+    result = client.get(f"/api/v1/advisor/tasks/{task.id}").json()
+    assert result["result"] is None and "下架" in result["error"]
+    assert "docCleaned" not in result
+    assert "docCleaned" not in client.get("/api/v1/advisor/tasks").json()["items"][0]
+
+
 @pytest.mark.parametrize("status,retry", [(429, True), (503, True), (403, False)])
 def test_http_retry_classification_no_internal_retries(session, settings, doc, status, retry):
     task = direct_task(session, doc)

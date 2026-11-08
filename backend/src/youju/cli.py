@@ -1112,6 +1112,11 @@ def _cmd_check_links(args: argparse.Namespace) -> int:
             f"（其中网站回 200 的撤稿页、404 页 {counts['withdrawn_page']} 次），"
             f"暂时判断不了 {counts['unknown']}；该查还没轮到 {counts['left']} 份，"
             f"第一次像是撤下了、3 天还没确认的 {counts['stale_suspect']} 份"
+            + (
+                f"；超过 90 天的申报通知、政策（每月一次）另有 {counts['left_old']} 份没轮到"
+                if counts.get("left_old")
+                else ""
+            )
         )
         # D-123：查完接着删过了清理期的（开关关着什么也不做）。和检查放在同一个任务里，
         # 保证先查后删，也不用另排定时任务
@@ -1129,13 +1134,25 @@ def _print_gone_cleanup(counts: dict[str, int], *, dry_run: bool = False) -> Non
         f"{text} {counts[reason]}" for reason, text in KEEP_REASONS.items() if counts[reason]
     )
     print(
-        f"原网页失效到期清理：到期 {counts['due']} 份（名单类不算），"
+        ("试跑（只数不删）：" if dry_run else "")
+        + f"原网页失效到期清理：到期 {counts['due']} 份（名单类不算），"
         f"{'会删' if dry_run else '删了'} {counts['deleted']} 份；"
         f"推迟到下次：最近 30 小时没确认还打不开 {counts['stale']} 份、"
         f"原栏目 48 小时没抓成功 {counts['source_stale']} 份"
         + (f"；删的时候出错 {counts['failed']} 份（见日志）" if counts["failed"] else "")
         + (f"；不清理：{kept}" if kept else "")
     )
+    if dry_run:
+        # 打开开关那天的报数（D-124 ⑤）：会删的 + 推迟的是早晚要删的（推迟的等再确认一次还
+        # 打不开）；等同组其他网址的看同组：整组都能删时一起删，同组有不清理的就一直留着。
+        # 和 --list 的行数对得上
+        later = counts["stale"] + counts["source_stale"]
+        print(
+            f"合计到期该删 {counts['deleted'] + later} 份（不算名单类和不清理的几种）："
+            f"这次就会删 {counts['deleted']} 份，推迟 {later} 份（等原网页检查再确认一次还打不开、"
+            f"原栏目抓成功过以后删）；另有等同组其他网址的 {counts['waiting']} 份"
+            "（整组都能删时一起删，同组有不清理的就一直留着）"
+        )
 
 
 def _cmd_saved_purge(args: argparse.Namespace) -> int:
@@ -1153,13 +1170,19 @@ def _cmd_saved_purge(args: argparse.Namespace) -> int:
 def _cmd_gone_cleanup(args: argparse.Namespace) -> int:
     from youju import gone
 
-    if not gone.enabled():
-        print("没有打开 YOUJU_GONE_CLEANUP_ENABLED，不清理")
+    # 试跑不删，开关关着也能跑：打开开关之前先报数给创始人（D-124 ⑤）
+    if not gone.enabled() and not args.dry_run:
+        print("没有打开 YOUJU_GONE_CLEANUP_ENABLED，不清理（只数不删可以加 --dry-run）")
         return 1
+    if args.list and not args.dry_run:
+        print("--list 只能和 --dry-run 一起用")
+        return 1
+    listing: list[dict] | None = [] if args.list else None
     with session_factory()() as session:
-        _print_gone_cleanup(
-            gone.cleanup_expired(session, dry_run=args.dry_run), dry_run=args.dry_run
-        )
+        counts = gone.cleanup_expired(session, dry_run=args.dry_run, listing=listing)
+    _print_gone_cleanup(counts, dry_run=args.dry_run)
+    for row in listing or []:
+        print(f"#{row['id']}\t{row['since']} 起打不开\t{row['state']}\t{row['title']}")
     return 0
 
 
@@ -2358,7 +2381,14 @@ def main(argv: list[str] | None = None) -> int:
         "gone-cleanup",
         help="D-123：删掉原网页失效过了 7 天清理期的通知（check-links 跑完会自动做，这里手动补跑）",
     )
-    p.add_argument("--dry-run", action="store_true", help="只数会删几份，不删")
+    p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="只数会删几份，不删；开关关着也能跑（打开开关前先报数，D-124 ⑤）",
+    )
+    p.add_argument(
+        "--list", action="store_true", help="和 --dry-run 一起用：逐份列出到期该删的（编号、标题）"
+    )
     p.set_defaults(func=_cmd_gone_cleanup)
 
     p = sub.add_parser(

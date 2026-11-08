@@ -31,6 +31,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from youju import gone as gone_rules
 from youju import safety_words, wx_security
 from youju.ai import advisor_endpoint, content, heartbeat, interpret, result_safety
 from youju.ai.client import AIError, ChatClient
@@ -928,7 +929,10 @@ def _answer(session: Session, turn: AIChatTurn, task: AdvisorTask, stamp: dateti
     current = _load(session, turn.doc_id, cache)
     if isinstance(current, interpret.InterpretRefusal):
         if current.code == "unavailable":
-            return _hidden(out, "unavailable", TAKEN_DOWN)
+            # 原网页失效、已经到期清理的（库里没有了，D-124 ②）说清楚、指向我的保存；下架的照旧
+            cleaned = gone_rules.cleaned_ids(session, [turn.doc_id])
+            text = gone_rules.CLEANED_ANSWER if cleaned else TAKEN_DOWN
+            return _hidden(out, "unavailable", text)
         return _hidden(out, "ineligible", INELIGIBLE, reason=current.code)
     if changed((task.snapshot or {}).get("versions"), current.versions()):
         return _hidden(out, "stale", STALE)

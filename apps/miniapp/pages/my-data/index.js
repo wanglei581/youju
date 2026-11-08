@@ -132,11 +132,12 @@ Page({
             handledAt: when(f.handledAt),
             created: when(f.createdAt),
           })),
-          // 我的保存（D-123）：只列标题、原网页打不开的日期和保存时间；保存的正文在"我的保存"里看
+          // 我的保存（D-123）：只列标题、原网页打不开的日期和保存时间；保存的正文在"我的保存"里看。
+          // 名单类照 D-123 ④ 写"已撤下"
           saved: (Array.isArray(d.saved) ? d.saved : []).map((v) => ({
             id: v.id,
             title: v.title || '（没有标题）',
-            sub: `原网页 ${v.goneOn || ''} 起打不开 · 保存于 ${when(v.savedAt)}${v.cleaned ? ' · 原通知已清理' : ''}`,
+            sub: `原网页 ${v.goneOn || ''} 起${v.kind === '名单' ? '已撤下' : '无法访问'} · 保存于 ${when(v.savedAt)}${v.cleaned ? ' · 原通知已停止展示' : ''}`,
           })),
           ...taskData(d),
           totals: { subs: d.subscriptionsTotal, feedback: d.feedbackTotal, events: d.eventsTotal, tasks: d.advisorTasksTotal || (d.advisorTasks || []).length, saved: d.savedTotal || (d.saved || []).length },

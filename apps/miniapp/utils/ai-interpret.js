@@ -214,6 +214,12 @@ function createSession({ api, storage, update, docId = '', title = '', taskId = 
       if (task.docId) docId = task.docId;
       if (task.docTitle) title = task.docTitle;
     }
+    // D-124 ②：通知原网页失效、已经到期清理（后台 docCleaned）：清掉本机记着的编号和标题，不给"重试"
+    // "看原文"（重新提交会被拒、说成"已下架"；独立审阅 D-124 第 1 轮）
+    if (task.docCleaned === true) {
+      docId = ''; title = '';
+      taskContext(storage, taskId, { docId: '', title: '' });
+    }
     if (docId) taskContext(storage, taskId, { docId, title });
     emit({ taskId, docId, title });
     if (task.status === 'done' && task.hasResult && !Object.prototype.hasOwnProperty.call(task, 'result')) {

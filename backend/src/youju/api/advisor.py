@@ -19,7 +19,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, defer
 
 from youju import advisor_tasks as service
-from youju import boost, chat_store, native_results, payments
+from youju import boost, chat_store, gone, native_results, payments
 from youju.agreements import tools_agreed
 from youju.ai import content, heartbeat, interpret, result_safety
 from youju.ai.clause import Company
@@ -312,25 +312,38 @@ def _document_titles(session: Session, doc_ids: list[int]) -> dict[int, tuple[st
     }
 
 
-def _document_out(doc_id: int | None, titles: dict[int, tuple[str, str | None]]) -> dict:
+def _document_out(
+    doc_id: int | None,
+    titles: dict[int, tuple[str, str | None]],
+    cleaned: set[int] | frozenset[int] = frozenset(),
+) -> dict:
     # 编号与标题同时隐藏，不能暴露已下架或非公开通知的元数据。
     # linkGone：原网页确认撤下的日期（youju/link_check.py）；结果页、我的记录据此写明结果是撤下前
     # 按收录的正文做的，不再给条款对照（新提交会被拒，原因 link_gone）
+    # docCleaned：通知原网页失效、已经到期清理（gone.cleaned_ids，D-124 ②），我的记录标"原通知已停止
+    # 展示"；只在是的时候带（旧版小程序不认这个字段，照旧显示）
     title, link_gone = titles.get(doc_id, (None, None)) if doc_id is not None else (None, None)
-    return {
+    out = {
         "docId": doc_id if doc_id in titles else None,
         "docTitle": title,
         "linkGone": link_gone,
     }
+    if doc_id is not None and str(doc_id).isdigit() and int(doc_id) in cleaned:
+        out["docCleaned"] = True
+    return out
 
 
 def _out(task: AdvisorTask, session: Session, *, include_result: bool = True) -> dict:
     result = service.task_dict(
         task, include_result=include_result or task.kind not in AI_KINDS, stamp=_stamp()
     )
+    cleaned: set[int] = set()
     if task.kind in AI_KINDS:
         doc_id = (task.snapshot or {}).get("doc_id") or (task.input_json or {}).get("doc_id")
-        result.update(_document_out(doc_id, _document_titles(session, [doc_id] if doc_id else [])))
+        cleaned = gone.cleaned_ids(session, [doc_id])
+        result.update(
+            _document_out(doc_id, _document_titles(session, [doc_id] if doc_id else []), cleaned)
+        )
         if task.status == "queued":
             result.update(
                 service.queue_info(
@@ -350,7 +363,13 @@ def _out(task: AdvisorTask, session: Session, *, include_result: bool = True) ->
                 task.result_json, get_skill(task.kind).result_field
             )
         )
-        if expired:
+        if cleaned:
+            # D-124 ②：通知原网页失效、已经到期清理，引用它的结果不再给看（结果是按已经撤下的
+            # 内容做的），说清楚、指向我的保存（保存的只是通知的正文和附件文字，不含 AI 结果）。
+            # 排在"已过期"前面：过期又清理了的，"请重新提交"也交不成（独立审阅 D-124 第 1 轮）
+            result["result"] = None
+            result["error"] = gone.CLEANED_RESULT
+        elif expired:
             result["result"] = None
             result["error"] = "结果已过期，请重新提交"
         elif hidden:
@@ -778,15 +797,15 @@ def list_tasks(session: SessionDep, user: UserDep) -> dict:
         )
         .order_by(AdvisorTask.created_at.desc(), AdvisorTask.id.desc())
     ).all()
-    titles = _document_titles(
-        session, list({doc_id for task, _, doc_id in rows if task.kind in AI_KINDS and doc_id})
-    )
+    doc_ids = list({doc_id for task, _, doc_id in rows if task.kind in AI_KINDS and doc_id})
+    titles = _document_titles(session, doc_ids)
+    cleaned = gone.cleaned_ids(session, doc_ids)
     return {
         "items": [
             {
                 **service.task_dict(task, include_result=False),
                 "hasResult": bool(has_result),
-                **_document_out(doc_id, titles),
+                **_document_out(doc_id, titles, cleaned),
                 **(
                     service.queue_info(
                         session, task, getattr(settings, "ai_advisor_concurrency", 3)
@@ -884,9 +903,13 @@ def read_result(
         if ids
         else set()
     )
-    if visible != set(ids):
+    # D-124 ②：引用的通知原网页失效、已经到期清理的（库里没有了），整份结果照常给，只挡那几条
+    # （同上面原文链接失效只标不拒；下架的照旧整份不给）
+    cleaned = gone.cleaned_ids(session, set(ids) - visible) if visible != set(ids) else set()
+    if visible | cleaned != set(ids):
         raise HTTPException(status_code=410, detail="结果依据已不可用，请重新生成")
-    gone = (
+    cleaned_keys = {str(doc_id) for doc_id in cleaned}
+    link_gone = (
         {
             str(doc_id)
             for doc_id in session.scalars(
@@ -904,7 +927,9 @@ def read_result(
     items, used = [], 0
     for item in all_items[cursor : cursor + 20]:
         # 读的时候当场标：生成以后才失效的也标上；存着的结果不改
-        if item.get("documentId") in gone:
+        if item.get("documentId") and str(item["documentId"]) in cleaned_keys:
+            item = _cleaned_item(item)
+        elif item.get("documentId") in link_gone:
             item = _gone_item(item)
         size = len(json.dumps(item, ensure_ascii=False).encode())
         if used + size > 200 * 1024:
@@ -931,6 +956,24 @@ def read_result(
         },
         headers={"Cache-Control": "no-store"},
     )
+
+
+# 批量结果里用户自己提交的那几项（客户相关通知表的客户、名单比对的输入），引用的通知清理了也留着，
+# 看得出是哪家客户的那一行（native_results.build）
+_CUSTOMER_LABELS = frozenset({"客户名称", "客户地区", "查询说明", "客户输入", "比对用的名称"})
+
+
+def _cleaned_item(item: dict) -> dict:
+    """引用的通知已经到期清理的那一条（D-124 ②）：标题和用户自己提交的几项（客户名称等）留着，通知
+    带出来的各项内容和"查看文件"都不给，写明原因。返回副本。"""
+    fields = item.get("fields")
+    kept = [
+        field
+        for field in (fields if isinstance(fields, list) else [])
+        if isinstance(field, dict) and field.get("label") in _CUSTOMER_LABELS
+    ]
+    out = {key: value for key, value in item.items() if key != "linkGone"}
+    return {**out, "documentId": None, "fields": kept, "cleaned": True, "note": gone.CLEANED_ITEM}
 
 
 def _gone_item(item: dict) -> dict:

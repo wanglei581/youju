@@ -29,6 +29,8 @@
       <view wx:for="{{item.fields}}" wx:for-item="field" wx:key="index" wx:if="{{field.label !== '来源地址'}}"><text>{{field.label}}：</text><text user-select>{{field.value}}</text></view>
       <!-- 原文链接已失效的通知照样列出、只标一句（和列表、详情、导出一样；接口读的时候当场标 linkGone，11/4 完整测试 T4b） -->
       <view wx:if="{{item.linkGone}}" class="muted source">原文链接已失效</view>
+      <!-- D-124 ②：引用的通知已经到期清理：整份结果照常看，这一条只留标题和接口给的说明（不给各项内容和"查看文件"） -->
+      <view wx:if="{{item.cleaned}}" class="muted source">{{item.note}}</view>
       <button wx:if="{{item.documentId}}" data-id="{{item.documentId}}" bindtap="detail">查看文件和依据</button>
     </view>
     <view class="pagination"><button wx:if="{{page > 1}}" bindtap="previous" disabled="{{saving}}">上一页</button><text>第 {{page}} 页</text><button wx:if="{{nextCursor !== null}}" bindtap="next" disabled="{{saving}}">下一页</button></view>

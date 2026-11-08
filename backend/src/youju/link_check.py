@@ -23,6 +23,8 @@ AI 解读的时候）；31–90 天的大约一周查一次；没查过的先查
 D-123（开关 YOUJU_GONE_CLEANUP_ENABLED，youju/gone.py）：失效那天起 7 天是清理期，正文、附件照常
 给看、可以保存和导出，期间每天再查一次（下面的清理期队列，最先查；能打开了就清空、清理取消），
 第 8 天这里跑完以后删掉（cli check-links 接着调 gone.cleanup_expired）。
+D-124 ①（同一个开关）：发布超过 90 天的申报通知、政策也查，每月一次（排在最后，没查过的先查），
+失效了一样进清理；别的类型照旧只查 90 天以内的。没有发布日期的照旧不查。
 """
 
 import html
@@ -42,6 +44,7 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from youju import gone
+from youju.classify import kind_filter
 from youju.config import get_settings
 from youju.crawler.fetcher import FetchResult, PoliteFetcher
 from youju.models import Document, Source
@@ -53,6 +56,9 @@ WINDOW = timedelta(days=90)  # 只查近 90 天发布的（申报和名单的时
 RECENT = timedelta(days=30)  # 近 30 天发布的每天查（一半申报通知 30 天内截止，见设计说明）
 RECENT_RECHECK = timedelta(hours=20)  # 每天 5:10 跑一次，留出前一天跑得晚的时间差
 RECHECK_AFTER = timedelta(days=6)  # 31–90 天的大约一周查一次
+# D-124 ①：超过 90 天也查的两类（用户主要看的、能读正文和附件的），每月一次
+OLD_KINDS = ("申报通知", "政策")
+OLD_RECHECK = timedelta(days=30)
 CONFIRM_AFTER = timedelta(hours=20)  # 第一次像是撤下了，隔天再确认
 # 第一次像是撤下了、过了这么久还没确认的（中间一直判断不了，或者没轮到）：输出里单独数出来
 STALE_SUSPECT = timedelta(days=3)
@@ -193,7 +199,17 @@ def _classify(result: FetchResult, url: str, title: str) -> str:
 
 
 def _select(session: Session, now: datetime, limit: int) -> tuple[list[tuple[int, str, str]], int]:
-    """这次要查的（编号、网址、标题），以及该查而这次轮不到的份数。"""
+    """这次要查的（编号、网址、标题），以及该查而这次轮不到的份数（各队合计）。"""
+    picked, left, _, left_old = _pick(session, now, limit)
+    return picked, left + left_old
+
+
+def _pick(
+    session: Session, now: datetime, limit: int
+) -> tuple[list[tuple[int, str, str]], int, set[int], int]:
+    """同 _select，另把超过 90 天每月查的那一队（D-124 ①）分开数：（要查的，前面几队该查没轮到的，
+    要查的里面属于这一队的编号，这一队该查没轮到的）。这一队刚打开开关时积压多，单独数，免得盖住
+    前面几队真没查完（独立审阅 D-124 第 2 轮）。"""
     today = now.astimezone(BEIJING).date()
     base = (
         select(Document.id, Document.url, Document.title)
@@ -246,13 +262,61 @@ def _select(session: Session, now: datetime, limit: int) -> tuple[list[tuple[int
             ),
         ).order_by(*first),
     ]
+    old = None
+    if gone.enabled():
+        # D-124 ①：发布超过 90 天的申报通知、政策每月查一次，排最后。类型同 v1._kind_is：人工定过的
+        # 看 kind_override，没定过的看入库时按标题算好的 rule_kind，规则列还没算的（刚升级、还没跑
+        # youju reclassify）当场按标题判断。像是撤下了的（link_suspect_at 有值）已经在上面几队里
+        # （过了 90 天也接着查），这里不再挑
+        kinds = list(OLD_KINDS)
+        old = (
+            select(Document.id, Document.url, Document.title)
+            .join(Source, Source.id == Document.source_id)
+            .where(
+                Source.rights_level == 1,
+                available_condition(),
+                Document.publish_date < today - WINDOW,
+                Document.link_suspect_at.is_(None),
+                or_(
+                    Document.kind_override.in_(kinds),
+                    and_(
+                        Document.kind_override.is_(None),
+                        or_(
+                            Document.rule_kind.in_(kinds),
+                            and_(Document.rule_kind.is_(None), kind_filter(Document.title, kinds)),
+                        ),
+                    ),
+                ),
+                or_(
+                    Document.link_checked_at.is_(None),
+                    Document.link_checked_at <= now - OLD_RECHECK,
+                ),
+            )
+            .order_by(*first)
+        )
+
+    def count(stmt) -> int:
+        return session.scalar(select(func.count()).select_from(stmt.order_by(None).subquery()))
+
     picked: list[tuple[int, str, str]] = []
     due = 0
     for stmt in queues:
-        due += session.scalar(select(func.count()).select_from(stmt.order_by(None).subquery()))
+        due += count(stmt)
         if len(picked) < limit:
             picked += [tuple(row) for row in session.execute(stmt.limit(limit - len(picked)))]
-    return picked, due - len(picked)
+    main = len(picked)
+    old_ids: set[int] = set()
+    left_old = 0
+    if old is not None:
+        rows = (
+            [tuple(row) for row in session.execute(old.limit(limit - len(picked)))]
+            if len(picked) < limit
+            else []
+        )
+        old_ids = {row[0] for row in rows}
+        picked += rows
+        left_old = count(old) - len(rows)
+    return picked, due - main, old_ids, left_old
 
 
 def _stale_suspects(session: Session, now: datetime) -> int:
@@ -311,8 +375,9 @@ def check_links(
 ) -> dict[str, int]:
     """counts：checked 查了几份，ok / suspect / gone / unknown 各几份，withdrawn_page 其中几次是
     网站回 200 的撤稿页、404 页，left 该查而这次没轮到的份数（超过上限或到了 budget 秒没查完的；
-    天天不是 0 就该调大 --limit），stale_suspect 第一次像是撤下了、3 天还没确认的份数（中间一直
-    判断不了或没轮到：撤下的通知要更久才标出来）。
+    天天不是 0 就该调大 --limit），left_old 另外数的超过 90 天每月查的那一队没轮到的（D-124 ①，
+    开关开着才有；刚打开开关的几天积压多，不算进 left），stale_suspect 第一次像是撤下了、3 天还没
+    确认的份数（中间一直判断不了或没轮到：撤下的通知要更久才标出来）。
 
     budget：开始后这么多秒起不再开始新的检查；until：到这个时刻起也不再开始（两个取早的，已经过了
     就一份也不查）。已经开始的最多再等 DEADLINE_MARGIN 秒。"""
@@ -321,7 +386,7 @@ def check_links(
         left_seconds = max(0.0, (_utc(until) - now).total_seconds())
         budget = left_seconds if budget is None else min(budget, left_seconds)
     stop_at = clock() + budget if budget is not None else None
-    selected, left = _select(session, now, limit)
+    selected, left, old_ids, left_old = _pick(session, now, limit)
     # 查询事务先结束；网络请求期间不占用数据库连接
     session.commit()
     counts = {
@@ -331,7 +396,8 @@ def check_links(
         "gone": 0,
         "unknown": 0,
         "withdrawn_page": 0,
-        "left": left + len(selected),  # 查一份减一份
+        "left": left + len(selected) - len(old_ids),  # 查一份减一份
+        "left_old": left_old + len(old_ids),
         "stale_suspect": 0,
     }
     if not selected:
@@ -345,7 +411,7 @@ def check_links(
     def record(host: str, outcomes: list[LinkOutcome]) -> None:
         # 每查完一个网站写一次：中途被打断（部署重启、超时）也不丢已经查过的
         for outcome in outcomes:
-            counts["left"] -= 1
+            counts["left_old" if outcome.document_id in old_ids else "left"] -= 1
             doc = session.get(Document, outcome.document_id)
             if doc is None:
                 continue

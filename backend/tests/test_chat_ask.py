@@ -1123,6 +1123,49 @@ def test_attachment_quotes_follow_current_names(client, session, settings, doc, 
     assert again["quotes"][1]["reader"] is None and again["quotes"][1]["unreadable"] is True
 
 
+def test_read_time_cleaned_document(client, session, settings, doc, model, monkeypatch):
+    """D-124 ②：通知原网页失效、已经到期清理（行删掉）以后，问这份通知的回答不再显示，说清楚、指向
+    我的保存；对话列表标 docCleaned。开关关着照旧写已下架。"""
+    from youju import gone
+
+    got = asked(client, session, settings, model, "截止是哪天", doc)
+    assert got["answer"]["status"] == "answer"
+    session.execute(Document.__table__.delete().where(Document.id == doc))
+    session.commit()
+    result = turn_of(client, got["id"])["answer"]
+    assert (result["status"], result["hidden"], result["lead"]) == (
+        "hidden",
+        "unavailable",
+        ask.TAKEN_DOWN,
+    )
+    assert "docCleaned" not in client.get("/api/v1/advisor/chats").json()["items"][0]
+    monkeypatch.setattr(gone, "enabled", lambda settings=None: True)
+    result = turn_of(client, got["id"])["answer"]
+    assert (result["status"], result["hidden"], result["lead"]) == (
+        "hidden",
+        "unavailable",
+        gone.CLEANED_ANSWER,
+    )
+    assert result["quotes"] == [] and S2 not in json.dumps(result, ensure_ascii=False)
+    [item] = client.get("/api/v1/advisor/chats").json()["items"]
+    assert item["docCleaned"] is True and item["docTitle"] is None and item["docId"] is None
+
+
+def test_read_time_taken_down_with_flag_on_still_says_taken_down(
+    client, session, settings, doc, model, monkeypatch
+):
+    """开关开着时，下架的（行还在）照旧写已下架，不说成已停止展示（独立审阅 D-124 第 1 轮）。"""
+    from youju import gone
+
+    monkeypatch.setattr(gone, "enabled", lambda settings=None: True)
+    got = asked(client, session, settings, model, "截止是哪天", doc)
+    session.get(Document, doc).taken_down_at = NOW
+    session.commit()
+    result = turn_of(client, got["id"])["answer"]
+    assert (result["hidden"], result["lead"]) == ("unavailable", ask.TAKEN_DOWN)
+    assert "docCleaned" not in client.get("/api/v1/advisor/chats").json()["items"][0]
+
+
 @pytest.mark.parametrize("change", ["body", "taken_down", "kind", "config", "words", "cloud"])
 def test_read_time_recheck(
     client, session, session_factory, settings, doc, model, monkeypatch, change

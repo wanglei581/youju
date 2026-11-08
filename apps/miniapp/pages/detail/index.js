@@ -125,7 +125,7 @@ Page({
     this.refreshing = true;
     allowShare(false);
     // 底栏"转发"按钮和右上角菜单同步：加载或刷新时不能点，加载成功才能点
-    this.setData({ loading: true, error: '', takenDown: false, shareReady: false });
+    this.setData({ loading: true, error: '', takenDown: false, notFound: false, shareReady: false });
     api.detail(this.docId)
       .then((doc) => {
         // 只有人工核对过的截止日期才显示（合规红线）
@@ -199,8 +199,11 @@ Page({
         doc: null, due: null, dueNote: '', changes: [], reminded: false, atts: [], conds: [], versions: [], versionLabel: '', upstream: '',
         bodyView: null, noBody: '', entry: null, goneNote: '', goneAll: false, goneExport: false, goneSave: false, savedHere: false, dueQuote: '', checkedText: '', points: [],
         takenDown: err.status === 404 && err.message === '该文件已下架',
-        error: err.status === 404 && this.fromGone && err.message !== '该文件已下架'
-          ? '这份通知原网页打不开，已经到期清理；保存过的在“我的 → 我的保存”里看'
+        // 接口说找不到这份文件（404 带说明；D-123 开关开着时多半是原网页失效、本平台已停止展示）：重试也
+        // 不会有，给"返回"。网关回的 404 页面（不带说明，路由配错时会有）照旧给"重试"
+        notFound: err.status === 404 && typeof err.detail === 'string',
+        error: err.status === 404 && typeof err.detail === 'string' && this.fromGone && err.message !== '该文件已下架'
+          ? '这份通知原网页已无法访问，本平台已停止展示；保存过的在“我的 → 我的保存”里看'
           : (err.status === 404 ? err.message : `数据未更新：${err.message}`),
       }))
       .then(() => { this.refreshing = false; this.setData({ loading: false }); });

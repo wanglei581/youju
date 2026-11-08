@@ -11,8 +11,9 @@ const { render, textOf, findAll, hasClass } = require('./wxml-render.js');
 const root = path.join(__dirname, '..');
 const read = (file) => fs.readFileSync(path.join(root, file), 'utf8');
 const settle = () => new Promise((resolve) => setImmediate(resolve));
-const NOTICE = '原网页10月21日起打不开，内容可能已被发布机关撤回或更正，以官方为准';
-const GONE = { since: '2026-10-21', cleanup: '2026-10-28', notice: NOTICE, cleanupNotice: '这份通知将于10月28日清理，可以先保存或导出', list: false, window: true, canSave: true, canExport: true };
+// D-124 ④：照 agy 合规审阅的改法，哪天停止展示写在第一句里（服务端给的完整提示）
+const NOTICE = '原网页已无法访问，本平台将于10月28日停止展示；内容变动以官方最新发布为准';
+const GONE = { since: '2026-10-21', cleanup: '2026-10-28', notice: NOTICE, cleanupNotice: '可以先保存或导出', list: false, window: true, canSave: true, canExport: true };
 // 名单类（D-123 ④）：不清理，一直标明已撤下；7 天过后不给正文、不给保存
 const LIST_LATER = { since: '2026-10-21', cleanup: null, notice: '原网页10月21日起已撤下', cleanupNotice: '正文不再提供，名单请在“查名单”里按企业名称查询', list: true, window: false, canSave: false, canExport: false };
 
@@ -52,12 +53,13 @@ function rowOf(doc) {
   return c.data;
 }
 
-test('卡片：清理期里写打不开的日期、提示和哪天清理，不再单独标"原文链接已失效"；不在清理期里照旧', () => {
+test('卡片：清理期里写服务端给的提示（含哪天停止展示），不再单独标"原文链接已失效"；不在清理期里照旧', () => {
   const doc = { id: '1', kind: '申报通知', title: '关于开展申报的通知', issuer: '某厅', date: '2026-10-01', link_gone: '2026-10-21', gone: GONE };
   const data = rowOf(doc);
-  assert.equal(data.goneLine, `${NOTICE}；10月28日清理`);
+  assert.equal(data.goneLine, NOTICE);
   const tree = render('components/doc-row/index.wxml', { ...data, doc });
-  assert.equal(findAll(tree, hasClass('gone-line')).map((n) => textOf(n).trim()).join(), `${NOTICE}；10月28日清理`);
+  assert.equal(findAll(tree, hasClass('gone-line')).map((n) => textOf(n).trim()).join(), NOTICE);
+  assert.doesNotMatch(textOf(tree), /清理/);
   assert.equal(findAll(tree, hasClass('gone')).length, 0);
   const old = { ...doc, gone: undefined };
   const plain = render('components/doc-row/index.wxml', { ...rowOf(old), doc: old });
@@ -89,13 +91,14 @@ test('详情页：清理期里标题下写提示和清理日期，正文、附�
   const calls = [];
   const page = pageOf('pages/detail/index.js', detailDeps(doc, calls));
   page.onLoad({ id: '9' }); await settle();
-  assert.equal(page.data.goneNote, `${NOTICE}。这份通知将于10月28日清理，可以先保存或导出。`);
+  assert.equal(page.data.goneNote, `${NOTICE}。可以先保存或导出。`);
   assert.equal(page.data.goneSave, true);
   assert.equal(page.data.goneExport, true);
   assert.equal(page.data.goneAll, false);
   const tree = render('pages/detail/index.wxml', { ...page.data, loading: false });
   const note = findAll(tree, hasClass('gone-note')).map((n) => textOf(n)).join('');
-  assert.match(note, /以官方为准。这份通知将于10月28日清理/);
+  assert.ok(note.trim().startsWith(`${NOTICE}。可以先保存或导出。`), note);
+  assert.doesNotMatch(note, /清理|撤回或更正/);
   assert.deepEqual(findAll(tree, hasClass('gone-act')).map((n) => textOf(n).trim()), ['保存', '导出 Word']);
   assert.match(textOf(tree), /申报说明。/);
   await page.saveGone(); await settle();
@@ -138,7 +141,7 @@ test('详情页：清理期里没有能存的文字（正文就是名单、附�
 
 test('详情页：新版隐私指引还没上线（服务端 canSave 为假）时只给导出', async () => {
   const doc = { id: '9', kind: '申报通知', tags: ['申报通知'], title: '关于开展科技计划项目申报的通知', issuer: '某厅', date: '2026-10-20',
-    region: '山东 · 省级', points: [], link_gone: '2026-10-21', gone: { ...GONE, canSave: false, cleanupNotice: '这份通知将于10月28日清理，可以先导出' },
+    region: '山东 · 省级', points: [], link_gone: '2026-10-21', gone: { ...GONE, canSave: false, cleanupNotice: '可以先导出' },
     body: { status: 'ok', text: '申报说明。'.repeat(20), total: 100, truncated: false }, attachments: [] };
   const page = pageOf('pages/detail/index.js', detailDeps(doc, []));
   page.onLoad({ id: '9' }); await settle();
@@ -153,7 +156,7 @@ test('详情页：包里没有"我的保存"（过审版）时提示只写"可�
   const page = pageOf('pages/detail/index.js', detailDeps(doc, []));
   page.data.has = { ...page.data.has, saved: false };
   page.onLoad({ id: '9' }); await settle();
-  assert.equal(page.data.goneNote, `${NOTICE}。这份通知将于10月28日清理，可以先导出。`);
+  assert.equal(page.data.goneNote, `${NOTICE}。可以先导出。`);
   const tree = render('pages/detail/index.wxml', { ...page.data, loading: false });
   assert.deepEqual(findAll(tree, hasClass('gone-act')).map((n) => textOf(n).trim()), ['导出 Word']);
 });
@@ -206,7 +209,7 @@ function savedDeps(list, calls, synced = true) {
 }
 
 const ITEM = { id: '7', docId: '9', title: '关于开展科技计划项目申报的通知', issuer: '山东省科技厅', date: '2026-10-22', goneOn: '2026-10-21',
-  savedAt: '2026-10-23T10:00:00+08:00', chars: 1450, truncated: false, cleaned: false, note: `${NOTICE}。这是你10月23日保存的副本。` };
+  savedAt: '2026-10-23T10:00:00+08:00', chars: 1450, truncated: false, cleaned: false, note: '原网页10月21日起无法访问；内容变动以官方最新发布为准。这是你10月23日保存的副本。' };
 
 test('我的保存：列出标题、出处、打不开的日期和保存日期；点开用阅读页读，导出 Word、删除（先确认）', async () => {
   const calls = []; const urls = []; let modal;
@@ -216,7 +219,7 @@ test('我的保存：列出标题、出处、打不开的日期和保存日期�
   });
   page.onShow(); await settle(); await settle();
   assert.equal(page.data.mode, 'live');
-  assert.deepEqual(page.data.items.map((i) => i.state), ['约 1450 字', '原通知已清理，这里是保存的副本']);
+  assert.deepEqual(page.data.items.map((i) => i.state), ['约 1450 字', '本平台已停止展示原通知，这里是保存的副本']);
   const tree = render('pages/saved/index.wxml', page.data);
   const text = textOf(tree);
   assert.match(text, /我的保存 2/);
@@ -230,7 +233,7 @@ test('我的保存：列出标题、出处、打不开的日期和保存日期�
   assert.deepEqual(calls.filter((c) => c[0] !== 'export').map((c) => c.join(':')), ['export-api:7']);
   assert.equal(calls.find((c) => c[0] === 'export')[1].source, 'saved');
   page.remove(event('8')); await settle();
-  assert.match(modal.content, /原通知已经清理，删除后就看不到了/);
+  assert.match(modal.content, /本平台已停止展示原通知，删除后就看不到了/);
   assert.ok(calls.some((c) => c[0] === 'delete' && c[1] === '8'));
 });
 
@@ -282,15 +285,35 @@ test('导出记录：清理期导出的回到文件详情，我的保存里导�
   assert.deepEqual(urls, ['/pages/detail/index?id=9&from=gone', '/pages/reader/index?saved=7']);
 });
 
-test('从导出记录回到已清理的通知：说清楚已到期清理、保存过的去我的保存看', async () => {
+test('从导出记录回到已清理的通知：说清楚本平台已停止展示、保存过的去我的保存看', async () => {
   const deps = detailDeps({}, []);
-  deps['../../utils/api.js'] = { detail: () => Promise.reject(Object.assign(new Error('没有找到这份文件'), { status: 404 })) };
+  // 和 utils/api.js 一样：接口回的 404 带说明（detail）
+  const missing = () => Object.assign(new Error('没有找到这份文件'), { status: 404, detail: '没有找到这份文件' });
+  let answer = () => Promise.reject(missing());
+  deps['../../utils/api.js'] = { detail: () => answer() };
   const page = pageOf('pages/detail/index.js', deps);
   page.onLoad({ id: '9', from: 'gone' }); await settle();
-  assert.equal(page.data.error, '这份通知原网页打不开，已经到期清理；保存过的在“我的 → 我的保存”里看');
+  assert.equal(page.data.error, '这份通知原网页已无法访问，本平台已停止展示；保存过的在“我的 → 我的保存”里看');
+  // 找不到的重试也不会有：给"返回"，不给"重试"
+  // 错误卡片右边那个按钮的字（错误文字本身可能带"重试"二字，只看按钮）
+  const button = (data) => findAll(render('pages/detail/index.wxml', { ...data, loading: false }), hasClass('retry')).map((n) => textOf(n).trim()).join();
+  assert.equal(button(page.data), '返回');
   const plain = pageOf('pages/detail/index.js', deps);
   plain.onLoad({ id: '9' }); await settle();
   assert.equal(plain.data.error, '没有找到这份文件');
+  assert.equal(button(plain.data), '返回');
+  // 再打开时网络出错（同 utils/api.js 的 callFailure：不带状态码）：变回"重试"
+  answer = () => Promise.reject(Object.assign(new Error('网络不太好，请稍后再试'), { retryable: true }));
+  plain.load(); await settle();
+  assert.equal(plain.data.notFound, false);
+  assert.equal(button(plain.data), '重试');
+  // 网关回的 404 页面（不带说明）：不当成找不到，照旧给"重试"，也不说成已停止展示
+  answer = () => Promise.reject(Object.assign(new Error('服务暂时出错（404），请稍后重试'), { status: 404 }));
+  const gateway = pageOf('pages/detail/index.js', deps);
+  gateway.onLoad({ id: '9', from: 'gone' }); await settle();
+  assert.equal(gateway.data.error, '服务暂时出错（404），请稍后重试');
+  assert.equal(gateway.data.notFound, false);
+  assert.equal(button(gateway.data), '重试');
 });
 
 test('我的页：服务端给了 saved、包里有这一页才放"我的保存"，写保存了几份', () => {
@@ -361,4 +384,34 @@ test('接口：保存、列表、按页读、删除、导出的地址和方法',
   ]);
   assert.deepEqual(JSON.parse(JSON.stringify(sent[0][2])), { docId: '9' });
   assert.equal(sent[4][3], 'arraybuffer');
+});
+
+// ---- D-124 ②：通知到期清理以后，引用它的 AI 记录、批量结果 ----
+
+test('我的记录、AI 首页、工具中心：通知已经到期清理的（后台 docCleaned）标"原通知已停止展示"，照常能删', () => {
+  const { taskView } = require('../utils/advisor.js');
+  const task = taskView({ id: 5, kind: 'interpret', status: 'done', hasResult: true, createdAt: '2026-11-01T02:00:00Z', docId: null, docTitle: null, linkGone: null, docCleaned: true });
+  const tasks = textOf(render('pages/advisor-tasks/index.wxml', { loading: false, toolsEnabled: true, aiEnabled: true, items: [task], has: {} }));
+  assert.match(tasks, /原通知已停止展示/);
+  assert.match(tasks, /删除/);
+  assert.doesNotMatch(tasks, /原文链接已失效/);
+  const recent = textOf(render('pages/advisor/index.wxml', { loading: false, toolsEnabled: true, recentLoading: false, recent: [task] }));
+  assert.match(recent, /原通知已停止展示 · /);
+  const home = textOf(render('pages/ai/index.wxml', { records: [{ id: '5', kind: 'interpret', kindLabel: 'AI 解读', title: '', time: '2026-11-01', stateLabel: '已完成', linkGone: '', cleaned: true }] }));
+  assert.match(home, /已完成 · 原通知已停止展示/);
+  const plain = textOf(render('pages/advisor-tasks/index.wxml', { loading: false, toolsEnabled: true, aiEnabled: true, items: [{ ...task, docCleaned: undefined }], has: {} }));
+  assert.doesNotMatch(plain, /停止展示/);
+});
+
+test('批量结果：引用的通知已经到期清理的那一条只留标题和说明，不给各项内容和"查看文件"；别的条照常', () => {
+  const note = '这一条的通知原网页已无法访问，本平台已停止展示，这一条不再提供';
+  const items = [
+    { n: 0, documentId: '9', title: '合成通知1', fields: [{ label: '截止核对情况', value: '未核对' }] },
+    { n: 1, documentId: null, title: '合成通知2', fields: [], cleaned: true, note },
+  ];
+  const tree = render('pages/results/index.wxml', { loading: false, advisor: true, result: { items, title: '客户相关通知表' }, page: 1, nextCursor: null, has: {} });
+  const text = textOf(tree);
+  assert.match(text, /2\. 合成通知2/);
+  assert.match(text, new RegExp(note));
+  assert.equal((text.match(/查看文件和依据/g) || []).length, 1);
 });
