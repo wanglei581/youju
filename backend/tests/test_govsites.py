@@ -289,7 +289,8 @@ def test_inventory_walks_official_navigation():
             <a href="/col/col1229080141/index.html">政策文件</a>""",
         "https://www.hangzhou.gov.cn/": """<a href="/qxwz/">区县（市）政府网站</a>
             <a href="/bm/kjj/">市科技局</a><a href="http://kjt.zj.gov.cn/">省科技厅</a>
-            <a href="https://www.mee.gov.cn/">生态环境部</a>""",
+            <a href="https://www.mee.gov.cn/">生态环境部</a>
+            <a href="https://hz.zjzwfw.gov.cn/dept?deptCode=1">市商务局</a>""",
         "https://www.hangzhou.gov.cn/qxwz/": '<a href="http://www.hzxh.gov.cn/">西湖区</a>',
         "https://www.hangzhou.gov.cn/bm/kjj/": '<a href="/bm/kjj/tzgg/">通知公告</a>',
         "http://www.hzxh.gov.cn/": '<a href="/jgsz/">机构设置</a>',
@@ -333,6 +334,8 @@ def test_inventory_walks_official_navigation():
     assert depts[("330106", "商务")].status == "导航未找到"
     # 市县门户页脚里的部委不算本地部门
     assert depts[("330100", "生态环境")].status == "导航未找到"
+    # 政务服务网的部门办事页不是部门网站
+    assert depts[("330100", "商务")].status == "导航未找到"
 
 
 def test_national_ministries_are_target_depts():

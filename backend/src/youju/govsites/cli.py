@@ -124,6 +124,7 @@ def _cmd_verify(args: argparse.Namespace) -> int:
             args.cache,
             None if args.offline else fetcher,
             ok_days=args.max_age_days,
+            fail_days=0 if args.retry_failed else 2,
             offline=args.offline,
         )
         checks = check_columns(cache, cols, workers=args.workers)
@@ -311,6 +312,7 @@ def register(sub: argparse._SubParsersAction) -> None:
     common.add_argument(
         "--divisions", type=Path, default=DEFAULT_OUT / "行政区划.csv", help="行政区划清单"
     )
+    common.add_argument("--retry-failed", action="store_true", help="上次没抓成功的页面重抓一次")
 
     p = sub.add_parser(
         "coverage-divisions", parents=[common], help="从国家地名信息库取全国行政区划"
@@ -325,7 +327,6 @@ def register(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--workers", type=int, default=96)
     p.add_argument("--per-province", type=int, default=6, help="同一省同时处理几个行政区")
     p.add_argument("--offline", action="store_true", help="只用缓存，不联网")
-    p.add_argument("--retry-failed", action="store_true", help="上次没抓成功的页面重抓一次")
     p.add_argument("--log", action="store_true", help="进度写到缓存目录的 inventory.log")
     p.add_argument("--verbose", action="store_true")
     p.set_defaults(func=_cmd_inventory)

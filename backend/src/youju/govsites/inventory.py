@@ -197,7 +197,9 @@ class CachingResolver:
                 with self._lock:
                     self._cache[host] = (now, addrs)
                 return addrs
-            except TimeoutError as exc:  # 并发名额满或解析慢：稍等再试
+            except OSError as exc:
+                # 并发名额满、解析慢，或系统解析器在大量并发查询时偶尔回"找不到"：稍等再试，
+                # 三次都失败才算解析失败
                 last = exc
                 time.sleep(1 + attempt)
         raise last or OSError("域名解析失败")
@@ -597,6 +599,8 @@ class Inventory:
                     continue
                 if div.level != "国家级" and self._is_ministry(text, link.url):
                     continue  # 页脚"国务院部门网站"里的部委，不是本地部门
+                if _SERVICE_HALL.search(link.url):
+                    continue  # 政务服务网的部门办事页（"部门服务"），不是部门信息发布网站
                 if not _site_like(link.url, p.final_url) and not report:
                     continue
                 prefix = level_prefix(text)
@@ -798,6 +802,12 @@ def _script_redirect(result: FetchResult, url: str) -> str | None:
 XXGK_TAG = "xxgk-"
 
 
+# 政务服务网、公共资源交易等办事系统的部门页（门户"部门服务"导航常链到这里）：没有通知公告栏目
+_SERVICE_HALL = re.compile(
+    r"zwfw|zwdt|ggzy|bsdt|banshi\.|bszn|branch-hall|deptThing|onething|/icity/|"
+    r"workProcess|departmentHoem",
+    re.I,
+)
 # 部委的写法：国家…、中华人民共和国…、国务院…，或以"部""总局""总署"结尾（地方部门不这样叫）
 _MINISTRY_NAME = re.compile(r"^(?:国家|中华人民共和国|国务院)|(?:部|总局|总署)$")
 
