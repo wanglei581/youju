@@ -33,6 +33,7 @@ from youju import access_log
 from youju import fields as field_rules
 from youju.alerts import send_alert
 from youju.api import conditions as conditions_api
+from youju.api import coverage as coverage_api
 from youju.api import repost as repost_api
 from youju.api import v1 as v1_api
 from youju.api import weekly as weekly_api
@@ -1043,6 +1044,10 @@ AdminDep = Annotated[None, Depends(_require_admin)]
 app.include_router(weekly_api.router(_require_admin, _audit))
 app.add_api_route(
     "/admin/weekly", weekly_api.console, response_class=HTMLResponse, include_in_schema=False
+)
+app.include_router(coverage_api.router(_require_admin, _audit))
+app.add_api_route(
+    "/admin/coverage", coverage_api.console, response_class=HTMLResponse, include_in_schema=False
 )
 app.include_router(conditions_api.router(_require_admin, _audit))
 app.add_api_route(

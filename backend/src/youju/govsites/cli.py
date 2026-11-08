@@ -304,6 +304,42 @@ def _cmd_survey(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_import(args: argparse.Namespace) -> int:
+    from youju.db import session_factory
+    from youju.govsites.boarddb import import_inventory
+    from youju.govsites.divisions import read_csv
+
+    if args.state:
+        portals, depts = _load_states(args.state)
+    else:
+        # 没给盘点原始结果：读清单文件（docs/数据来源/全国覆盖/门户网站、部门栏目）
+        from youju.govsites.inventory import load_docs
+
+        portals, depts = load_docs(args.out, args.province)
+    if args.province:
+        portals = [p for p in portals if p.province in args.province]
+        depts = [d for d in depts if d.province in args.province]
+    checks = {c.url: c for c in _load_checks(args.checks)}
+    meta = {d.code: (d.kind, d.parent_code) for d in read_csv(args.divisions)}
+    with session_factory()() as session:
+        s = import_inventory(session, portals, depts, checks, meta)
+    print(
+        f"导入完成：行政区 {s.divisions}，格新增 {s.cells_created}、更新 {s.cells_updated}、"
+        f"删除 {s.cells_removed}；挂到已有来源 {s.links} 处"
+    )
+    return 0
+
+
+def _cmd_refresh(args: argparse.Namespace) -> int:
+    from youju.db import session_factory
+    from youju.govsites.boarddb import BOARD_STATES, refresh_states
+
+    with session_factory()() as session:
+        counts = refresh_states(session, trial=args.trial, province=args.province)
+    print("看板状态：" + "，".join(f"{s} {counts.get(s, 0)}" for s in BOARD_STATES))
+    return 0
+
+
 def register(sub: argparse._SubParsersAction) -> None:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--out", type=Path, default=DEFAULT_OUT, help="清单输出目录")
@@ -360,6 +396,26 @@ def register(sub: argparse._SubParsersAction) -> None:
         "--trial", action="store_true", help="试点报告：未启用但试抓成功的也算收录，不按 3 天过期"
     )
     p.set_defaults(func=_cmd_board)
+
+    p = sub.add_parser(
+        "coverage-import", parents=[common], help="把盘点结果写进覆盖看板表（按网址挂到已有来源）"
+    )
+    p.add_argument(
+        "--state",
+        type=Path,
+        action="append",
+        help="盘点原始结果 JSON；不给就读清单文件（--out 目录）",
+    )
+    p.add_argument("--checks", type=Path, action="append", help="coverage-verify 存的试读结果 JSON")
+    p.add_argument("--province", action="append", help="只导入某几个省")
+    p.set_defaults(func=_cmd_import)
+
+    p = sub.add_parser("coverage-refresh", help="按来源抓取结果重算覆盖看板每格的状态")
+    p.add_argument("--province", help="只算某个省")
+    p.add_argument(
+        "--trial", action="store_true", help="试点口径：未启用但试抓成功的也算收录，不按 3 天过期"
+    )
+    p.set_defaults(func=_cmd_refresh)
 
     p = sub.add_parser(
         "coverage-survey", parents=[common], help="每省集约化平台盘点（平台分布、可读比例、防护）"

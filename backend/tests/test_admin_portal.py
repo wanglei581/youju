@@ -236,6 +236,7 @@ def test_overview_matches_database_and_consoles(client, session, world, monkeypa
         ("audit", "audit"),
         ("feedback", "feedback"),
         ("sources", "sources/trial"),
+        ("coverage", "coverage/summary"),
     ],
 )
 def test_embedded_page_and_interface_auth(client, page, endpoint):

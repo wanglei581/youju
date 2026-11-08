@@ -1185,3 +1185,69 @@ def load_state(path: Path) -> tuple[list[PortalRow], list[DeptRow]]:
 def clean_dept_name(text: str, div: Division) -> str:
     """去掉导航文字里的空白和括号注释，保留机关名。"""
     return clean_place_text(text) if text else ""
+
+
+def load_docs(
+    out_dir: Path, provinces: Iterable[str] | None = None
+) -> tuple[list[PortalRow], list[DeptRow]]:
+    """从清单文件（门户网站/<省>.csv、部门栏目/<省>.csv）读回盘点结果：不用本机缓存也能导入看板。"""
+    only = set(provinces or [])
+    portals: list[PortalRow] = []
+    depts: list[DeptRow] = []
+    for path in sorted((out_dir / "门户网站").glob("*.csv")):
+        if only and path.stem not in only:
+            continue
+        with path.open(encoding="utf-8-sig", newline="") as fh:
+            for r in csv.DictReader(fh):
+                portals.append(
+                    PortalRow(
+                        r["区划代码"],
+                        r["层级"],
+                        r["省份"],
+                        r["城市"],
+                        r["区县"],
+                        r["名称"],
+                        portal_url=r["门户网址"],
+                        nav_source=r["导航来源页"],
+                        nav_text=r["导航文字"],
+                        status=r["状态"],
+                        reason=r["原因"],
+                        site_id_code=r["网站标识码"],
+                        site_name=r["网站名称"],
+                        platform=r["平台"],
+                        support=r["技术支持"],
+                    )
+                )
+    for path in sorted((out_dir / "部门栏目").glob("*.csv")):
+        if only and path.stem not in only:
+            continue
+        with path.open(encoding="utf-8-sig", newline="") as fh:
+            for r in csv.DictReader(fh):
+                source = (r["栏目来源页"] or "").split(" ")[0]
+                cols = [
+                    ColumnHit(kind, r[kind], r[f"{kind}URL"], source)
+                    for kind in COLUMN_KINDS
+                    if r.get(f"{kind}URL")
+                ]
+                depts.append(
+                    DeptRow(
+                        r["区划代码"],
+                        r["层级"],
+                        r["省份"],
+                        r["城市"],
+                        r["区县"],
+                        r["部门"],
+                        dept_full_name=r["部门全称"],
+                        site_url=r["网站URL"],
+                        site_type=r["网站类型"],
+                        nav_source=r["导航来源页"],
+                        nav_text=r["导航文字"],
+                        status=r["状态"],
+                        reason=r["原因"],
+                        site_id_code=r["网站标识码"],
+                        platform=r["平台"],
+                        support=r["技术支持"],
+                        columns=cols,
+                    )
+                )
+    return portals, depts
