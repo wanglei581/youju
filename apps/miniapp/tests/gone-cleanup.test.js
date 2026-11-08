@@ -287,7 +287,10 @@ test('导出记录：清理期导出的回到文件详情，我的保存里导�
 
 test('从导出记录回到已清理的通知：说清楚本平台已停止展示、保存过的去我的保存看', async () => {
   const deps = detailDeps({}, []);
-  deps['../../utils/api.js'] = { detail: () => Promise.reject(Object.assign(new Error('没有找到这份文件'), { status: 404 })) };
+  // 和 utils/api.js 一样：接口回的 404 带说明（detail）
+  const missing = () => Object.assign(new Error('没有找到这份文件'), { status: 404, detail: '没有找到这份文件' });
+  let answer = () => Promise.reject(missing());
+  deps['../../utils/api.js'] = { detail: () => answer() };
   const page = pageOf('pages/detail/index.js', deps);
   page.onLoad({ id: '9', from: 'gone' }); await settle();
   assert.equal(page.data.error, '这份通知原网页已无法访问，本平台已停止展示；保存过的在“我的 → 我的保存”里看');
@@ -298,6 +301,19 @@ test('从导出记录回到已清理的通知：说清楚本平台已停止展�
   const plain = pageOf('pages/detail/index.js', deps);
   plain.onLoad({ id: '9' }); await settle();
   assert.equal(plain.data.error, '没有找到这份文件');
+  assert.match(textOf(render('pages/detail/index.wxml', { ...plain.data, loading: false })), /返回/);
+  // 再打开时网络出错：变回"重试"
+  answer = () => Promise.reject(Object.assign(new Error('网络连接失败，请检查网络后重试'), { status: 0 }));
+  plain.load(); await settle();
+  assert.equal(plain.data.notFound, false);
+  assert.match(textOf(render('pages/detail/index.wxml', { ...plain.data, loading: false })), /重试/);
+  // 网关回的 404 页面（不带说明）：不当成找不到，照旧给"重试"，也不说成已停止展示
+  answer = () => Promise.reject(Object.assign(new Error('服务暂时出错（404），请稍后重试'), { status: 404 }));
+  const gateway = pageOf('pages/detail/index.js', deps);
+  gateway.onLoad({ id: '9', from: 'gone' }); await settle();
+  assert.equal(gateway.data.error, '服务暂时出错（404），请稍后重试');
+  assert.equal(gateway.data.notFound, false);
+  assert.match(textOf(render('pages/detail/index.wxml', { ...gateway.data, loading: false })), /重试/);
 });
 
 test('我的页：服务端给了 saved、包里有这一页才放"我的保存"，写保存了几份', () => {
