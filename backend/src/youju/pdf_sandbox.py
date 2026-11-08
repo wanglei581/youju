@@ -117,7 +117,9 @@ def read(task: str, data: bytes, *, seconds: float, **options) -> dict:
         with _SLOTS:  # 限时从拿到名额以后算（见模块说明）
             return _answer(_spawn(cfg, data, seconds))
     except Failed as exc:
-        if exc.kind not in ("open", "error"):  # 普通的坏文件不记，超了、拒读的记一条
+        if exc.retry:  # 和环境有关的要有人看到（连着出现多半是容器或部署出了问题）
+            log.warning("读 PDF 的子进程没读成（%s）：%s", exc.kind, exc.detail)
+        elif exc.kind not in ("open", "error"):  # 普通的坏文件不记，超了、拒读的记一条
             log.info("PDF 没读成（%s）：%s", exc.kind, exc.detail)
         raise
 
@@ -141,15 +143,17 @@ def _wall(seconds: float) -> float:
 
 def _spawn(cfg: dict, data: bytes, seconds: float) -> dict:
     """起子进程读，等它读完，返回它写回的 JSON；超时、超内存、崩了抛 Failed。
-    输入、输出、错误输出都是临时文件（不用管道：不会卡住，输出大小也好限）。"""
-    with (
-        tempfile.TemporaryFile() as given,
-        tempfile.TemporaryFile() as out,
-        tempfile.TemporaryFile() as err,
-    ):
-        given.write(data)
-        given.flush()
-        given.seek(0)
+    输入、输出、错误输出都是临时文件（不用管道：不会卡住，输出大小也好限）；临时目录写满、
+    文件句柄用完这类，和起不了子进程一样过一段时间再读。"""
+    with contextlib.ExitStack() as files:
+        try:
+            given, out, err = (files.enter_context(tempfile.TemporaryFile()) for _ in range(3))
+            given.write(data)
+            given.flush()
+            given.seek(0)
+        except OSError as exc:
+            detail = "起不了解析的子进程（临时文件）"
+            raise Failed("spawn", "broken", detail, "起不了子进程") from exc
         child = None
         try:
             # 起子进程的时候不让调用方的 SIGALRM 打断（打断了可能留下没人管的子进程）；
@@ -278,8 +282,8 @@ def _child() -> None:
 
 
 def _limit(cfg: dict) -> None:
-    """设资源上限。设不上的就退出（没有上限不读不可信的文件），只有 macOS 上的 RLIMIT_AS 例外
-    （设不了，本机开发、测试照样读）。"""
+    """设资源上限。平台给的硬上限比要的还低时就按平台的（照样有上限）；设不上的就退出（没有上限
+    不读不可信的文件），只有 macOS 上的 RLIMIT_AS 例外（设不了，本机开发、测试照样读）。"""
     import resource
 
     for name, soft, hard in (
@@ -291,7 +295,11 @@ def _limit(cfg: dict) -> None:
         ("RLIMIT_CORE", 0, 0),
     ):
         try:
-            resource.setrlimit(getattr(resource, name), (soft, hard))
+            which = getattr(resource, name)
+            limit = resource.getrlimit(which)[1]
+            if limit != resource.RLIM_INFINITY:
+                soft, hard = min(soft, limit), min(hard, limit)
+            resource.setrlimit(which, (soft, hard))
         except (ValueError, OSError):
             if not (name == "RLIMIT_AS" and sys.platform != "linux"):
                 os._exit(_EXIT_LIMITS)

@@ -10,6 +10,7 @@ import resource
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import zlib
@@ -20,6 +21,7 @@ import pytest
 from youju import attachment_text, pdf_limits, pdf_sandbox
 from youju import attachments as copies
 from youju.crawler import pdf as body_pdf
+from youju.crawler.fetcher import FetchResult
 from youju.crawler.pdf import extract_pdf_text
 from youju.lists import parser
 from youju.lists.parser import parse_attachment
@@ -233,7 +235,8 @@ def test_time_limit_stops_a_busy_pdf_in_all_four_readers(monkeypatch) -> None:
     started = time.monotonic()
     got = results(pdf)
     assert got == {**failed("解析超过 2 秒"), "text": ("too_large", "取文字超过 2 秒")}
-    assert time.monotonic() - started < 40
+    # 按子进程的 CPU 时间限：机器忙时墙上时间会长一些，墙上时间兜底保证每处不超过 _wall(2) 秒
+    assert time.monotonic() - started < 4 * pdf_sandbox._wall(2)
 
 
 def test_time_limit_works_outside_the_main_thread(monkeypatch) -> None:
@@ -242,7 +245,7 @@ def test_time_limit_works_outside_the_main_thread(monkeypatch) -> None:
     started = time.monotonic()
     with ThreadPoolExecutor(1) as pool:
         assert pool.submit(extract_pdf_text, busy_pdf()).result() == ("", "PDF 解析超过 2 秒")
-    assert time.monotonic() - started < 30
+    assert time.monotonic() - started < pdf_sandbox._wall(2)
 
 
 def test_caller_alarm_kills_the_child(monkeypatch) -> None:
@@ -280,10 +283,11 @@ CRASHES = {
         "import os, signal; os.kill(os.getpid(), signal.SIGKILL)\n",
         ("killed", "解析时内存不够，被系统停掉"),
     ),
-    # 设不了资源上限（这里先把文件大小的硬上限压低）：不读
+    # 设不了资源上限（这里让 setrlimit 报错）：不读
     "limits": (
         "import resource, sys\n"
-        "resource.setrlimit(resource.RLIMIT_FSIZE, (1000, 1000))\n"
+        "def refuse(*args):\n    raise OSError(1, 'Operation not permitted')\n"
+        "resource.setrlimit = refuse\n"
         "sys.path.insert(0, sys.argv[1])\n"
         "from youju.pdf_sandbox import _child\n"
         "_child()\n",
@@ -340,7 +344,9 @@ def test_child_that_cannot_start_is_retried_later(monkeypatch) -> None:
 
 def test_retryable_failures_in_all_four_readers(monkeypatch) -> None:
     """和当时的环境有关的（这里是被系统停掉）：副本按临时问题较快重查；附件文字不记成取不出，抛给
-    调用方下次再取；名单记"解析失败"6 小时后再试；PDF 正文写明原因（正文读不了的都不自动重抓）。"""
+    调用方下次再取；名单记"解析失败"6 小时后再试；补详情记成 pdf_retry，按退避再抓。"""
+    from youju.crawler import detail_service
+
     monkeypatch.setattr(pdf_sandbox, "_BOOT", CRASHES["killed"][0])
     pdf = make_pdf(TEXT)
     check = copies.check_content(pdf, "pdf")
@@ -350,7 +356,32 @@ def test_retryable_failures_in_all_four_readers(monkeypatch) -> None:
     with pytest.raises(pdf_sandbox.Failed) as raised:
         parse_attachment(pdf, "pdf")
     assert raised.value.error == "被系统停掉"  # 名单记"解析失败：被系统停掉"
-    assert extract_pdf_text(pdf) == ("", "PDF 解析时内存不够，被系统停掉")
+    with pytest.raises(pdf_sandbox.Failed):
+        extract_pdf_text(pdf)
+    url = "https://kjt.example.gov.cn/notice.pdf"
+
+    class Fetcher:
+        def fetch(self, _url):
+            return FetchResult(url, "ok", url, 200, content_type="application/pdf", content=pdf)
+
+    outcome = detail_service._fetch_one(1, url, Fetcher())
+    assert (outcome.status, outcome.failure_reason) == (
+        "pdf_retry",
+        "PDF 解析时内存不够，被系统停掉",
+    )
+    assert detail_service._retryable("pdf_retry", None)
+
+
+def test_temporary_files_that_fail_are_retried_later(monkeypatch) -> None:
+    """临时目录写满、文件句柄用完：和起不了子进程一样，过一段时间再读（不记成文件损坏）。"""
+
+    def full(*args, **kwargs):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(tempfile, "TemporaryFile", full)
+    with pytest.raises(pdf_sandbox.Failed) as raised:
+        pdf_sandbox.read("body", make_pdf(TEXT), seconds=60, pages=200)
+    assert (raised.value.kind, raised.value.retry) == ("spawn", True)
 
 
 def test_output_limit(monkeypatch) -> None:
@@ -404,6 +435,26 @@ def test_one_child_at_a_time_per_process(monkeypatch) -> None:
         texts = list(pool.map(extract_pdf_text, [make_pdf(TEXT)] * 4))
     assert texts == [("x", None)] * 4
     assert most[0] == pdf_sandbox.PARALLEL == 1
+
+
+def test_lower_platform_hard_limits_are_kept() -> None:
+    """平台给的硬上限比要的还低（这里先把文件大小的硬上限压到 1MB）：按平台的来，照样有上限、照样读。"""
+    code = (
+        "import json, resource, sys\n"
+        "resource.setrlimit(resource.RLIMIT_FSIZE, (1 << 20, 1 << 20))\n"
+        "sys.path.insert(0, sys.argv[1])\n"
+        "from youju import pdf_sandbox\n"
+        "pdf_sandbox._limit(json.loads(sys.argv[2]))\n"
+        "print(json.dumps(resource.getrlimit(resource.RLIMIT_FSIZE)))\n"
+    )
+    cfg = {"memory": 512 * MB, "output": 4 * MB, "cpu": 70}
+    out = subprocess.run(
+        [sys.executable, "-I", "-c", code, str(pdf_sandbox._ROOT), json.dumps(cfg)],
+        capture_output=True,
+        check=True,
+        text=True,
+    )
+    assert json.loads(out.stdout) == [1 << 20, 1 << 20]
 
 
 def test_children_limit_themselves() -> None:

@@ -3001,8 +3001,15 @@ def _extract(data: bytes) -> Extraction:
         file_type = sniff(data)
     except Unreadable as exc:
         return Extraction(None, reason=exc.reason, detail=exc.detail)
+    seconds = _limits().seconds
+    if file_type == "pdf":
+        # PDF 在子进程里按 CPU 时间限（pdf_sandbox）：这里的墙上时间只兜底，比子进程自己的墙上
+        # 时间兜底再晚一点，容器忙的时候好文件不会因为排队等 CPU 被记成"太大"
+        from youju import pdf_sandbox
+
+        seconds = math.ceil(pdf_sandbox._wall(seconds)) + 5
     try:
-        with _time_limit(_limits().seconds):
+        with _time_limit(seconds):
             found = _EXTRACTORS[file_type](data)
     except Unreadable as exc:
         return Extraction(file_type, reason=exc.reason, detail=exc.detail)
