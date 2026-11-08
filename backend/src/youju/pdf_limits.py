@@ -46,7 +46,6 @@ from __future__ import annotations
 
 import gc
 import logging
-import re
 import zlib
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -85,11 +84,11 @@ DOCUMENT_MAX = 256 * _MB
 PREDICTOR_INPUT_MAX = 2 * _MB
 XREF_PREDICTOR_INPUT_MAX = 8 * _MB
 PREDICTOR_COLUMNS_MAX = 1 << 20
-# ASCII85 的输入长度（Python 的 a85decode 每 4 个字节先存成一个小 bytes 对象，约占 45 字节）；
+# ASCII85 的输入长度：a85decode 每 4 个字节先存成一个小 bytes 对象，输入每 MB 约占 27MB 内存
+# （独立审阅实测）。测试里两份真实样本的 ASCII85 数据流只有 1.4–2.8KB
+ASCII85_INPUT_MAX = 2 * _MB
 # a85decode 忽略的空白（它的默认 ignorechars）
-ASCII85_INPUT_MAX = 8 * _MB
 _A85_IGNORED = b" \t\n\r\x0b"
-_FORM_FEEDS = re.compile(rb"\x0c+")
 # 数据流套着数据流（解码参数指向对象流里的对象，那个对象流要先解）最多几层；正常文件一两层
 _NESTING_MAX = 8
 # 坏数据逐字节解之前，先一块一块地解，出错的那一块再逐字节（结果和 pdfminer 从头逐字节一样）
@@ -318,10 +317,13 @@ def _ascii85(data: bytes, cap: int) -> bytes:
     """ASCII85。pdfminer 的 ascii85decode 先用两个正则去掉头尾的 <~、~>（连同两边的空白），遇到
     长空白是平方级；后面的 a85decode 本来就忽略这几种空白（_A85_IGNORED）。先去掉它们、把连着的
     换页符（正则当空白、a85decode 不忽略）缩成一个，再交给 pdfminer：解出的和原来一样，时间是
-    线性的。"""
+    线性的。缩换页符用 replace 一轮减半（不用正则替换：几百万个孤立换页符会切出几百万个小 bytes，
+    8MB 的输入能吃 700MB 内存）。"""
     if len(data) > ASCII85_INPUT_MAX:
         raise Refused("too_large", f"ASCII85 数据流超过 {ASCII85_INPUT_MAX // _MB}MB")
-    data = _FORM_FEEDS.sub(b"\x0c", data.translate(None, _A85_IGNORED))
+    data = data.translate(None, _A85_IGNORED)
+    while b"\x0c\x0c" in data:
+        data = data.replace(b"\x0c\x0c", b"\x0c")
     zeros = data.count(b"z")  # 一个 z 解出 4 个字节，别的 5 个字符解出 4 个字节
     _check((len(data) - zeros) // 5 * 4 + 4 * zeros + 4, cap)
     return ascii85decode(data)

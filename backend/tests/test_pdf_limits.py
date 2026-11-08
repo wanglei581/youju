@@ -257,13 +257,28 @@ def test_ascii85_zero_runs_are_counted_before_decoding(small_caps) -> None:
 
 
 def test_ascii85_with_long_whitespace_is_linear() -> None:
-    """pdfminer 去头尾 <~ ~> 的正则遇到长空白是平方级（以前 3.2 万个空格要 3 秒，100 万个要几个小时）。
+    """pdfminer 去头尾 <~ ~> 的正则遇到长空白是平方级（以前 3.2 万个空格要 3 秒，近 200 万个要几个小时）。
     a85decode 本来就忽略这些空白，先去掉再解：照样解出，一下就完。"""
     body = base64.a85encode(b"BT /F1 12 Tf 20 100 Td (Notice 2026) Tj ET")
-    stream = PDFStream({"Filter": LIT("A85")}, b"<~" + body + b" " * MB + b"\n" * MB + b"~>")
+    blank = b" " * (900 * 1024) + b"\n" * (900 * 1024)  # 在 ASCII85_INPUT_MAX（2MB）以内
+    stream = PDFStream({"Filter": LIT("A85")}, b"<~" + body + blank + b"~>")
     started = time.monotonic()
     assert stream.get_data() == b"BT /F1 12 Tf 20 100 Td (Notice 2026) Tj ET"
     assert time.monotonic() - started < 5
+
+
+def test_ascii85_isolated_form_feeds_do_not_blow_up_memory() -> None:
+    """独立审阅第 6 轮：换页符加一个字符重复到将近上限（几百万个孤立的换页符）。用正则替换缩换页符时
+    会切出几百万个小 bytes（8MB 的输入吃到 715MB）；现在用 replace，和 pdfminer 原来一样直接报错。"""
+    raw = b"\x0c!" * (pdf_limits.ASCII85_INPUT_MAX // 2 - 8)
+
+    def read() -> None:
+        with pytest.raises(ValueError):  # a85decode 不认换页符，和原来一样
+            PDFStream({"Filter": LIT("A85")}, raw).get_data()
+
+    assert peak_memory(read) < 8 * len(raw)
+    with pytest.raises(ValueError):
+        pdf_limits._ORIGINAL(PDFStream({"Filter": LIT("A85")}, raw))
 
 
 @pytest.mark.parametrize(
