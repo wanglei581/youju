@@ -295,25 +295,25 @@ test('从导出记录回到已清理的通知：说清楚本平台已停止展�
   page.onLoad({ id: '9', from: 'gone' }); await settle();
   assert.equal(page.data.error, '这份通知原网页已无法访问，本平台已停止展示；保存过的在“我的 → 我的保存”里看');
   // 找不到的重试也不会有：给"返回"，不给"重试"
-  const card = textOf(render('pages/detail/index.wxml', { ...page.data, loading: false }));
-  assert.match(card, /返回/);
-  assert.doesNotMatch(card, /重试/);
+  // 错误卡片右边那个按钮的字（错误文字本身可能带"重试"二字，只看按钮）
+  const button = (data) => findAll(render('pages/detail/index.wxml', { ...data, loading: false }), hasClass('retry')).map((n) => textOf(n).trim()).join();
+  assert.equal(button(page.data), '返回');
   const plain = pageOf('pages/detail/index.js', deps);
   plain.onLoad({ id: '9' }); await settle();
   assert.equal(plain.data.error, '没有找到这份文件');
-  assert.match(textOf(render('pages/detail/index.wxml', { ...plain.data, loading: false })), /返回/);
-  // 再打开时网络出错：变回"重试"
-  answer = () => Promise.reject(Object.assign(new Error('网络连接失败，请检查网络后重试'), { status: 0 }));
+  assert.equal(button(plain.data), '返回');
+  // 再打开时网络出错（同 utils/api.js 的 callFailure：不带状态码）：变回"重试"
+  answer = () => Promise.reject(Object.assign(new Error('网络不太好，请稍后再试'), { retryable: true }));
   plain.load(); await settle();
   assert.equal(plain.data.notFound, false);
-  assert.match(textOf(render('pages/detail/index.wxml', { ...plain.data, loading: false })), /重试/);
+  assert.equal(button(plain.data), '重试');
   // 网关回的 404 页面（不带说明）：不当成找不到，照旧给"重试"，也不说成已停止展示
   answer = () => Promise.reject(Object.assign(new Error('服务暂时出错（404），请稍后重试'), { status: 404 }));
   const gateway = pageOf('pages/detail/index.js', deps);
   gateway.onLoad({ id: '9', from: 'gone' }); await settle();
   assert.equal(gateway.data.error, '服务暂时出错（404），请稍后重试');
   assert.equal(gateway.data.notFound, false);
-  assert.match(textOf(render('pages/detail/index.wxml', { ...gateway.data, loading: false })), /重试/);
+  assert.equal(button(gateway.data), '重试');
 });
 
 test('我的页：服务端给了 saved、包里有这一页才放"我的保存"，写保存了几份', () => {
