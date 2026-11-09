@@ -1,4 +1,49 @@
 ﻿层级,省份,城市,区县,区划代码,部门,部门全称,状态,原因,最后成功时间,部门网址,导航来源页,栏目网址
+市级,福建,南平,,350700,政府办,南平市人民政府,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://www.np.gov.cn/cms/html/npszf/index.html,http://www.np.gov.cn/,
+市级,福建,南平,,350700,发改委,南平市发展和改革委员会,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://fgw.np.gov.cn/cms/html/fgw/index.html,https://www.np.gov.cn/cms/templates/430586493615970000/js/nplinks.js,
+市级,福建,南平,,350700,工信,南平市工业和信息化局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://gxj.np.gov.cn/cms/html/npsjxw/index.html,https://www.np.gov.cn/cms/templates/430586493615970000/js/nplinks.js,
+市级,福建,南平,,350700,科技,南平市科学技术局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://kjj.np.gov.cn/cms/html/npskxjsj/index.html,https://www.np.gov.cn/cms/templates/430586493615970000/js/nplinks.js,
+市级,福建,南平,,350700,商务,南平市商务局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://swj.np.gov.cn/cms/html/npsswj/index.html,https://www.np.gov.cn/cms/templates/430586493615970000/js/nplinks.js,
+市级,福建,南平,,350700,财政,南平市财政局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://czj.np.gov.cn/cms/html/czj/index.html,https://www.np.gov.cn/cms/templates/430586493615970000/js/nplinks.js,
+市级,福建,南平,,350700,人社,南平市人力资源和社会保障局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://rsj.np.gov.cn/cms/html/npsrlzyhshbzj/index.html,https://www.np.gov.cn/cms/templates/430586493615970000/js/nplinks.js,
+市级,福建,南平,,350700,市场监管,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,福建,南平,,350700,农业农村,南平市农业农村局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://nyncj.np.gov.cn/cms/html/npnyxxw/index.html,https://www.np.gov.cn/cms/templates/430586493615970000/js/nplinks.js,
+市级,福建,南平,,350700,文旅,南平市文化和旅游局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://whlyj.np.gov.cn/cms/html/npswhhlyj/index.html,https://www.np.gov.cn/cms/templates/430586493615970000/js/nplinks.js,
+市级,福建,南平,,350700,生态环境,南平市生态环境局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://sthjj.np.gov.cn/cms/html/npshjbhj/index.html,https://www.np.gov.cn/cms/templates/430586493615970000/js/nplinks.js,
+市级,福建,莆田,,350300,政府办,莆田市人民政府门户网站,已收录,2/2 个栏目已收录,2026-11-09 06:40,https://www.putian.gov.cn/,http://www.putian.gov.cn/,http://www.putian.gov.cn/zwgk/tzgg/ https://www.putian.gov.cn/zwgk/zxwjs/
+市级,福建,莆田,,350300,发改委,莆田市发展和改革委员会,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,https://fgw.putian.gov.cn/xxgk/zfxxgk/ysqgk/,https://www.putian.gov.cn/zfxxgk/gksq/,http://fgw.putian.gov.cn/xxgk/zfxxgk/xzgfxwj/
+市级,福建,莆田,,350300,工信,莆田市工业和信息化局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,https://jxw.putian.gov.cn/zfxxgk/gksq/,https://www.putian.gov.cn/zfxxgk/gksq/,http://jxw.putian.gov.cn/zfxxgk/zc/xzgfxwj/
+市级,福建,莆田,,350300,科技,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,福建,莆田,,350300,商务,莆田市商务局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,https://swj.putian.gov.cn/zfxxgk/gksq/,https://www.putian.gov.cn/zfxxgk/gksq/,http://swj.putian.gov.cn/zfxxgk/xzgfxwj/
+市级,福建,莆田,,350300,财政,莆田市财政局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,https://czj.putian.gov.cn/zfxxgk/gksq/,https://www.putian.gov.cn/zfxxgk/gksq/,http://czj.putian.gov.cn/zfxxgk/xzgfxwj/
+市级,福建,莆田,,350300,人社,莆田市人力资源和社会保障局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,https://rsj.putian.gov.cn/zwgk/zfxxgk/gksq/,https://www.putian.gov.cn/zfxxgk/gksq/,http://rsj.putian.gov.cn/zwgk/zfxxgk/zc/xzgfxwj/
+市级,福建,莆田,,350300,市场监管,莆田市市场监督管理局,已收录,1/2 个栏目已收录,2026-11-09 06:39,https://scjgj.putian.gov.cn/,https://www.putian.gov.cn/,https://scjgj.putian.gov.cn/xxgk/tzgg/ https://scjgj.putian.gov.cn/zfxxgk/fdzdgknr/
+市级,福建,莆田,,350300,农业农村,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,福建,莆田,,350300,文旅,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,福建,莆田,,350300,生态环境,莆田市生态环境局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,https://sthjj.putian.gov.cn/zfxxgk/gksq/,https://www.putian.gov.cn/zfxxgk/gksq/,http://sthjj.putian.gov.cn/zfxxgk/fdzdgknr/xzfg/
+市级,福建,漳州,,350600,政府办,漳州市人民政府,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://www.zhangzhou.gov.cn/cms/html/zzsrmzf/index.html,http://www.zhangzhou.gov.cn/,
+市级,福建,漳州,,350600,发改委,漳州市发展和改革委员会,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,http://fgw.zhangzhou.gov.cn/cms/html/zzsfzhggwyh/index.html,https://www.zhangzhou.gov.cn/cms/templates/830587003272890000/js/zzlinks.js,
+市级,福建,漳州,,350600,工信,漳州市工业和信息化局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,http://gxj.zhangzhou.gov.cn/cms/html/zzsjjhxxhwyh/index.html,https://www.zhangzhou.gov.cn/cms/templates/830587003272890000/js/zzlinks.js,
+市级,福建,漳州,,350600,科技,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,福建,漳州,,350600,商务,漳州市商务局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,http://swj.zhangzhou.gov.cn/cms/html/zzsswj/index.html,https://www.zhangzhou.gov.cn/cms/templates/830587003272890000/js/zzlinks.js,
+市级,福建,漳州,,350600,财政,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,福建,漳州,,350600,人社,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,福建,漳州,,350600,市场监管,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,福建,漳州,,350600,农业农村,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,福建,漳州,,350600,文旅,漳州市文化和旅游局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,http://wlj.zhangzhou.gov.cn/cms/html/zzslyfzwyh/index.html,https://www.zhangzhou.gov.cn/cms/templates/830587003272890000/js/zzlinks.js,
+市级,福建,漳州,,350600,生态环境,漳州市生态环境局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,http://hbj.zhangzhou.gov.cn/cms/html/zzssthjj/index.html,https://www.zhangzhou.gov.cn/cms/templates/830587003272890000/js/zzlinks.js,
+市级,福建,龙岩,,350800,政府办,龙岩市人民政府门户网站,已收录,1/2 个栏目已收录,2026-11-09 06:40,http://www.longyan.gov.cn/,http://www.longyan.gov.cn/,http://www.longyan.gov.cn/gk/flgk/gg/ http://www.longyan.gov.cn/gk/zcwjk/
+市级,福建,龙岩,,350800,发改委,龙岩市发展和改革委员会,已收录,2/2 个栏目已收录,2026-11-09 06:40,http://fgw.longyan.gov.cn/,http://jgdj.longyan.gov.cn/,http://fgw.longyan.gov.cn/zwgk/gggs/ http://fgw.longyan.gov.cn/zwgk/zcwj/
+市级,福建,龙岩,,350800,工信,市工信局,抓取失败,打不开：robots.txt 暂时无法获取（RemoteProtocolError: Server disconnected without sending a res,,http://lyjmw.longyan.gov.cn/,http://jgdj.longyan.gov.cn/,
+市级,福建,龙岩,,350800,科技,龙岩市科学技术局,已收录,2/2 个栏目已收录,2026-11-09 06:40,http://kjj.longyan.gov.cn/,http://jgdj.longyan.gov.cn/,http://kjj.longyan.gov.cn/zwgk/tzgg/ http://kjj.longyan.gov.cn/zwgk/zcwj/
+市级,福建,龙岩,,350800,商务,福建省龙岩市商务局,已收录,1/1 个栏目已收录,2026-11-09 06:40,http://swj.longyan.gov.cn/,http://jgdj.longyan.gov.cn/,http://swj.longyan.gov.cn/zwgk/zcfg/
+市级,福建,龙岩,,350800,财政,龙岩市财政局,已收录,2/2 个栏目已收录,2026-11-09 06:40,http://czj.longyan.gov.cn/,http://jgdj.longyan.gov.cn/,http://czj.longyan.gov.cn/xxgk/tzgg/ http://czj.longyan.gov.cn/xxgk/zcfg/
+市级,福建,龙岩,,350800,人社,龙岩市人力资源和社会保障局,已收录,2/2 个栏目已收录,2026-11-09 06:40,http://rsj.longyan.gov.cn/,http://jgdj.longyan.gov.cn/,http://rsj.longyan.gov.cn/zwgk/gggs/ http://rsj.longyan.gov.cn/zwgk/zcwj/
+市级,福建,龙岩,,350800,市场监管,龙岩市市场监督管理局,已收录,2/2 个栏目已收录,2026-11-09 06:40,http://scjgj.longyan.gov.cn/,http://jgdj.longyan.gov.cn/,http://scjgj.longyan.gov.cn/zwgk/gggs/ http://scjgj.longyan.gov.cn/zwgk/zcwj/
+市级,福建,龙岩,,350800,农业农村,龙岩市农业农村局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,http://nyncj.longyan.gov.cn/,http://jgdj.longyan.gov.cn/,
+市级,福建,龙岩,,350800,文旅,龙岩市文化和旅游局,已收录,2/2 个栏目已收录,2026-11-09 06:40,http://wlj.longyan.gov.cn/,http://jgdj.longyan.gov.cn/,http://wlj.longyan.gov.cn/zwgk/gggs/ http://wlj.longyan.gov.cn/zwgk/zcwj/
+市级,福建,龙岩,,350800,生态环境,龙岩市生态环境局,已收录,2/2 个栏目已收录,2026-11-09 06:40,http://sthjj.longyan.gov.cn/,http://jgdj.longyan.gov.cn/,http://sthjj.longyan.gov.cn/zwgk/gggs/ http://sthjj.longyan.gov.cn/zwgk/zcwj/
+市级,福建,龙岩,,350800,数据局,龙岩市数据管理局,已收录,2/2 个栏目已收录,2026-11-09 06:40,http://dsjj.longyan.gov.cn/,http://jgdj.longyan.gov.cn/,http://dsjj.longyan.gov.cn/zwgk/gzgg/ http://dsjj.longyan.gov.cn/zwgk/zcwj/
 市级,福建,福州,,350100,政府办,福州市人民政府,已收录,2/2 个栏目已收录,2026-11-09 06:39,https://www.fuzhou.gov.cn/,http://www.fuzhou.gov.cn/,https://www.fuzhou.gov.cn/zwgk/tzgg/ https://www.fuzhou.gov.cn/zwgk/zxwj/
 市级,福建,福州,,350100,发改委,福州市发展和改革委员会,已收录,2/2 个栏目已收录,2026-11-09 06:39,https://fgw.fuzhou.gov.cn/,https://www.fuzhou.gov.cn/zgfzzt/zfwzgzbb/?year=2025,https://fgw.fuzhou.gov.cn/fgwzwgk/tzgg/ https://fgw.fuzhou.gov.cn/fgwzwgk/fg/
 市级,福建,福州,,350100,工信,市工信局,已收录,1/2 个栏目已收录,2026-11-09 06:39,https://www.fuzhou.gov.cn/zgfzzt/sjxw/,https://www.fuzhou.gov.cn/zgfzzt/zfwzgzbb/?year=2025,https://www.fuzhou.gov.cn/zgfzzt/sjxw/fzjx/tzgg/ https://www.fuzhou.gov.cn/zgfzzt/sjxw/zfxxgkzl/zc/
@@ -13,28 +58,17 @@
 市级,福建,福州,,350100,数据局,福州市数据管理局,已收录,2/2 个栏目已收录,2026-11-09 06:39,https://sjglj.fuzhou.gov.cn/,https://www.fuzhou.gov.cn/zgfzzt/zfwzgzbb/?year=2025,https://sjglj.fuzhou.gov.cn/zwgk/tzgg/ https://sjglj.fuzhou.gov.cn/zwgk/fgwj/
 市级,福建,福州,,350100,开发区,福州新区管理委员会,抓取失败,robots.txt 暂时无法获取（RemoteProtocolError: Server disconnected without sending a response.），本次跳过,,https://fzxq.fuzhou.gov.cn/,https://www.fuzhou.gov.cn/zgfzzt/zfwzgzbb/?year=2025,http://fzxq.fuzhou.gov.cn/xxgk/fgwj/
 市级,福建,福州,,350100,开发区,中国(福建)自由贸易试验区福州片区管理委员会,已收录,2/2 个栏目已收录,2026-11-09 08:02,https://fzftz.fuzhou.gov.cn/,https://www.fuzhou.gov.cn/zgfzzt/zfwzgzbb/?year=2025,https://fzftz.fuzhou.gov.cn/zwgk/tzgg/ https://fzftz.fuzhou.gov.cn/zwgk/zcfg/
-市级,福建,南平,,350700,政府办,南平市人民政府,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://www.np.gov.cn/cms/html/npszf/index.html,http://www.np.gov.cn/,
-市级,福建,南平,,350700,发改委,南平市发展和改革委员会,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://fgw.np.gov.cn/cms/html/fgw/index.html,https://www.np.gov.cn/cms/templates/430586493615970000/js/nplinks.js,
-市级,福建,南平,,350700,工信,南平市工业和信息化局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://gxj.np.gov.cn/cms/html/npsjxw/index.html,https://www.np.gov.cn/cms/templates/430586493615970000/js/nplinks.js,
-市级,福建,南平,,350700,科技,南平市科学技术局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://kjj.np.gov.cn/cms/html/npskxjsj/index.html,https://www.np.gov.cn/cms/templates/430586493615970000/js/nplinks.js,
-市级,福建,南平,,350700,商务,南平市商务局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://swj.np.gov.cn/cms/html/npsswj/index.html,https://www.np.gov.cn/cms/templates/430586493615970000/js/nplinks.js,
-市级,福建,南平,,350700,财政,南平市财政局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://czj.np.gov.cn/cms/html/czj/index.html,https://www.np.gov.cn/cms/templates/430586493615970000/js/nplinks.js,
-市级,福建,南平,,350700,人社,南平市人力资源和社会保障局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://rsj.np.gov.cn/cms/html/npsrlzyhshbzj/index.html,https://www.np.gov.cn/cms/templates/430586493615970000/js/nplinks.js,
-市级,福建,南平,,350700,市场监管,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,福建,南平,,350700,农业农村,南平市农业农村局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://nyncj.np.gov.cn/cms/html/npnyxxw/index.html,https://www.np.gov.cn/cms/templates/430586493615970000/js/nplinks.js,
-市级,福建,南平,,350700,文旅,南平市文化和旅游局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://whlyj.np.gov.cn/cms/html/npswhhlyj/index.html,https://www.np.gov.cn/cms/templates/430586493615970000/js/nplinks.js,
-市级,福建,南平,,350700,生态环境,南平市生态环境局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://sthjj.np.gov.cn/cms/html/npshjbhj/index.html,https://www.np.gov.cn/cms/templates/430586493615970000/js/nplinks.js,
-市级,福建,三明,,350400,政府办,三明市人民政府门户网站,已收录,2/2 个栏目已收录,2026-11-09 06:40,http://www.sm.gov.cn/,http://www.sm.gov.cn/,http://www.sm.gov.cn/zw/gsgg/ http://www.sm.gov.cn/zw/zxwj/
-市级,福建,三明,,350400,发改委,三明市发展和改革委员会,已收录,2/2 个栏目已收录,2026-11-09 06:40,http://fgw.sm.gov.cn/,http://www.sm.gov.cn/,http://fgw.sm.gov.cn/xxgk/tzgg/ http://fgw.sm.gov.cn/szfgzjg/fgw/zc/xzgfxwj/
-市级,福建,三明,,350400,工信,三明市工业和信息化局,已收录,2/2 个栏目已收录,2026-11-09 06:40,http://jxw.sm.gov.cn/,http://www.sm.gov.cn/,http://jxw.sm.gov.cn/xxdt/tzgg/ http://jxw.sm.gov.cn/szfgzjg/jxw/zc/xzgfxwj/
-市级,福建,三明,,350400,科技,三明市科学技术局,已收录,2/2 个栏目已收录,2026-11-09 06:40,http://smkj.sm.gov.cn/,http://www.sm.gov.cn/,http://smkj.sm.gov.cn/xxgk/tzgg/ http://smkj.sm.gov.cn/szfgzjg/kjj/zc/xzgfxwj/
-市级,福建,三明,,350400,商务,三明市商务局,已收录,2/2 个栏目已收录,2026-11-09 06:40,http://swj.sm.gov.cn/,http://www.sm.gov.cn/,http://swj.sm.gov.cn/xxgk/tzgg/ http://swj.sm.gov.cn/xxgk/fgwj/
-市级,福建,三明,,350400,财政,三明市财政局,已收录,2/2 个栏目已收录,2026-11-09 06:40,http://cz.sm.gov.cn/,http://www.sm.gov.cn/,http://cz.sm.gov.cn/xxgk/tzgg/ http://cz.sm.gov.cn/szfgzjg/czj/zc/xzgfxwj/
-市级,福建,三明,,350400,人社,三明市人力资源和社会保障局,已收录,2/2 个栏目已收录,2026-11-09 06:40,http://rsj.sm.gov.cn/,http://www.sm.gov.cn/,http://rsj.sm.gov.cn/xxgk/tzgg/ http://rsj.sm.gov.cn/xxgk/fgwj/
-市级,福建,三明,,350400,市场监管,三明市市场监督管理局,已收录,2/2 个栏目已收录,2026-11-09 06:40,http://gsj.sm.gov.cn/,http://www.sm.gov.cn/,http://gsj.sm.gov.cn/xxgk/tzgg/ http://gsj.sm.gov.cn/szfgzjg/gsj/zc/xzgfxwj/
-市级,福建,三明,,350400,农业农村,三明市农业农村局,已收录,2/2 个栏目已收录,2026-11-09 06:40,http://smsnyj.sm.gov.cn/,http://www.sm.gov.cn/,http://smsnyj.sm.gov.cn/xxgk/tzgg/tzggzlm/ http://smsnyj.sm.gov.cn/xxgk/zcfg/
-市级,福建,三明,,350400,文旅,三明市文化和旅游局,已收录,2/2 个栏目已收录,2026-11-09 06:40,http://wlj.sm.gov.cn/,http://www.sm.gov.cn/,http://wlj.sm.gov.cn/xxgk/ggxx/ http://wlj.sm.gov.cn/xxgk/fgwj/zxwj/
-市级,福建,三明,,350400,生态环境,三明市生态环境局,已收录,2/2 个栏目已收录,2026-11-09 06:40,http://shb.sm.gov.cn/,http://www.sm.gov.cn/,http://shb.sm.gov.cn/gsgg/ http://shb.sm.gov.cn/szfgzjg/hbj/zc/xzgfxwj/
+市级,福建,宁德,,350900,政府办,宁德市人民政府门户网站,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,http://www.ningde.gov.cn/,http://www.ningde.gov.cn/,http://www.ningde.gov.cn/zwgk/tzgg/ http://www.ningde.gov.cn/zfxxgkzl/zc/xzgfxwj/
+市级,福建,宁德,,350900,发改委,宁德市发展和改革委员会,已收录,2/2 个栏目已收录,2026-11-09 06:40,https://fgw.ningde.gov.cn/,http://www.ningde.gov.cn/ztzl/zfwzgzndbb/,http://fgw.ningde.gov.cn/xxgk/gsgg/ https://fgw.ningde.gov.cn/zcjd/zcwj/
+市级,福建,宁德,,350900,工信,宁德市工业和信息化局,已收录,2/2 个栏目已收录,2026-11-09 06:40,https://gxj.ningde.gov.cn/,http://www.ningde.gov.cn/ztzl/zfwzgzndbb/,http://gxj.ningde.gov.cn/xxgk/tzgg/ http://gxj.ningde.gov.cn/xxgk/zcwj/
+市级,福建,宁德,,350900,科技,宁德市科学技术局,已收录,2/2 个栏目已收录,2026-11-09 06:40,https://kjj.ningde.gov.cn/,http://www.ningde.gov.cn/ztzl/zfwzgzndbb/,http://kjj.ningde.gov.cn/xxgk/tzgg/ https://kjj.ningde.gov.cn/zwgk/zc/gfxwj/
+市级,福建,宁德,,350900,商务,宁德市商务局,已收录,1/1 个栏目已收录,2026-11-09 06:40,https://swj.ningde.gov.cn/,http://www.ningde.gov.cn/ztzl/zfwzgzndbb/,https://swj.ningde.gov.cn/swdt/zcfg/zcfg/
+市级,福建,宁德,,350900,财政,宁德市财政局,已收录,1/1 个栏目已收录,2026-11-09 06:40,https://czj.ningde.gov.cn/,http://www.ningde.gov.cn/ztzl/zfwzgzndbb/,http://czj.ningde.gov.cn/tzgg/
+市级,福建,宁德,,350900,人社,宁德市人社局,已收录,2/2 个栏目已收录,2026-11-09 06:40,https://rsj.ningde.gov.cn/,http://www.ningde.gov.cn/ztzl/zfwzgzndbb/,http://rsj.ningde.gov.cn/zwgk/gsgg/ http://rsj.ningde.gov.cn/zwgk/zcfghjd/
+市级,福建,宁德,,350900,市场监管,宁德市场监督管理局,已收录,2/2 个栏目已收录,2026-11-09 06:40,https://scjd.ningde.gov.cn/,http://www.ningde.gov.cn/ztzl/zfwzgzndbb/,https://scjd.ningde.gov.cn/zw/tzgg/ https://scjd.ningde.gov.cn/zw/flfg/
+市级,福建,宁德,,350900,农业农村,宁德市农业农村局,已收录,2/2 个栏目已收录,2026-11-09 06:40,https://nyncj.ningde.gov.cn/,http://www.ningde.gov.cn/ztzl/zfwzgzndbb/,http://nyncj.ningde.gov.cn/tzgg/ https://nyncj.ningde.gov.cn/zcfg/
+市级,福建,宁德,,350900,文旅,宁德市文旅局,已收录,2/2 个栏目已收录,2026-11-09 06:40,https://wlj.ningde.gov.cn/,http://www.ningde.gov.cn/ztzl/zfwzgzndbb/,http://wlj.ningde.gov.cn/zwgk/gsgg/ http://wlj.ningde.gov.cn/zwgk/zcfg/
+市级,福建,宁德,,350900,生态环境,宁德市生态环境局,已收录,3/3 个栏目已收录,2026-11-09 06:40,https://sthjj.ningde.gov.cn/,http://www.ningde.gov.cn/ztzl/zfwzgzndbb/,https://sthjj.ningde.gov.cn/zwgk/wsgs/ http://sthjj.ningde.gov.cn/zwgk/wsgs/ http://sthjj.ningde.gov.cn/zwgk/zcyjd/flfgyzc/
 市级,福建,厦门,,350200,政府办,厦门市人民政府门户网站,已收录,1/1 个栏目已收录,2026-11-09 06:39,http://www.xm.gov.cn/,http://www.xm.gov.cn/,https://www.xm.gov.cn/zwgk/flfg/
 市级,福建,厦门,,350200,发改委,市发展和改革委员会,已收录,1/1 个栏目已收录,2026-11-09 06:39,http://dpc.xm.gov.cn/,http://www.xm.gov.cn/,http://dpc.xm.gov.cn/xxgk/zc/gfxwj/
 市级,福建,厦门,,350200,工信,厦门市工业和信息化局,已收录,1/2 个栏目已收录,2026-11-09 06:39,http://gxj.xm.gov.cn/,http://www.xm.gov.cn/,http://gxj.xm.gov.cn/xwzx/tzgg/ http://gxj.xm.gov.cn/zwgk/zfxxgkml/zc/
@@ -48,44 +82,10 @@
 市级,福建,厦门,,350200,生态环境,市生态环境局,已收录,1/2 个栏目已收录,2026-11-09 06:39,http://sthjj.xm.gov.cn/,http://www.xm.gov.cn/,http://sthjj.xm.gov.cn/zwgk/tzgg/ http://sthjj.xm.gov.cn/zwgk/zhengce/
 市级,福建,厦门,,350200,数据局,厦门市数据管理局,已收录,1/2 个栏目已收录,2026-11-09 06:39,http://as.xm.gov.cn/,http://www.xm.gov.cn/,http://as.xm.gov.cn/zwgk/tzgg/ http://as.xm.gov.cn/zwgk/zcfg/
 市级,福建,厦门,,350200,开发区,厦门火炬高新区管委会,已收录,1/2 个栏目已收录,2026-11-09 06:39,http://xmtorch.xm.gov.cn/,http://www.xm.gov.cn/,http://xmtorch.xm.gov.cn/zjhj/tzgg/ http://xmtorch.xm.gov.cn/xxgk/zfxxgkml/
-市级,福建,漳州,,350600,政府办,漳州市人民政府,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://www.zhangzhou.gov.cn/cms/html/zzsrmzf/index.html,http://www.zhangzhou.gov.cn/,
-市级,福建,漳州,,350600,发改委,漳州市发展和改革委员会,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,http://fgw.zhangzhou.gov.cn/cms/html/zzsfzhggwyh/index.html,https://www.zhangzhou.gov.cn/cms/templates/830587003272890000/js/zzlinks.js,
-市级,福建,漳州,,350600,工信,漳州市工业和信息化局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,http://gxj.zhangzhou.gov.cn/cms/html/zzsjjhxxhwyh/index.html,https://www.zhangzhou.gov.cn/cms/templates/830587003272890000/js/zzlinks.js,
-市级,福建,漳州,,350600,科技,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,福建,漳州,,350600,商务,漳州市商务局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,http://swj.zhangzhou.gov.cn/cms/html/zzsswj/index.html,https://www.zhangzhou.gov.cn/cms/templates/830587003272890000/js/zzlinks.js,
-市级,福建,漳州,,350600,财政,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,福建,漳州,,350600,人社,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,福建,漳州,,350600,市场监管,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,福建,漳州,,350600,农业农村,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,福建,漳州,,350600,文旅,漳州市文化和旅游局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,http://wlj.zhangzhou.gov.cn/cms/html/zzslyfzwyh/index.html,https://www.zhangzhou.gov.cn/cms/templates/830587003272890000/js/zzlinks.js,
-市级,福建,漳州,,350600,生态环境,漳州市生态环境局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,http://hbj.zhangzhou.gov.cn/cms/html/zzssthjj/index.html,https://www.zhangzhou.gov.cn/cms/templates/830587003272890000/js/zzlinks.js,
-市级,福建,莆田,,350300,政府办,莆田市人民政府门户网站,已收录,2/2 个栏目已收录,2026-11-09 06:40,https://www.putian.gov.cn/,http://www.putian.gov.cn/,http://www.putian.gov.cn/zwgk/tzgg/ https://www.putian.gov.cn/zwgk/zxwjs/
-市级,福建,莆田,,350300,发改委,莆田市发展和改革委员会,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,https://fgw.putian.gov.cn/xxgk/zfxxgk/ysqgk/,https://www.putian.gov.cn/zfxxgk/gksq/,http://fgw.putian.gov.cn/xxgk/zfxxgk/xzgfxwj/
-市级,福建,莆田,,350300,工信,莆田市工业和信息化局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,https://jxw.putian.gov.cn/zfxxgk/gksq/,https://www.putian.gov.cn/zfxxgk/gksq/,http://jxw.putian.gov.cn/zfxxgk/zc/xzgfxwj/
-市级,福建,莆田,,350300,科技,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,福建,莆田,,350300,商务,莆田市商务局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,https://swj.putian.gov.cn/zfxxgk/gksq/,https://www.putian.gov.cn/zfxxgk/gksq/,http://swj.putian.gov.cn/zfxxgk/xzgfxwj/
-市级,福建,莆田,,350300,财政,莆田市财政局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,https://czj.putian.gov.cn/zfxxgk/gksq/,https://www.putian.gov.cn/zfxxgk/gksq/,http://czj.putian.gov.cn/zfxxgk/xzgfxwj/
-市级,福建,莆田,,350300,人社,莆田市人力资源和社会保障局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,https://rsj.putian.gov.cn/zwgk/zfxxgk/gksq/,https://www.putian.gov.cn/zfxxgk/gksq/,http://rsj.putian.gov.cn/zwgk/zfxxgk/zc/xzgfxwj/
-市级,福建,莆田,,350300,市场监管,莆田市市场监督管理局,已收录,1/2 个栏目已收录,2026-11-09 06:39,https://scjgj.putian.gov.cn/,https://www.putian.gov.cn/zwgk/jgsz/,https://scjgj.putian.gov.cn/xxgk/tzgg/ https://scjgj.putian.gov.cn/zfxxgk/fdzdgknr/
-市级,福建,莆田,,350300,农业农村,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,福建,莆田,,350300,文旅,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,福建,莆田,,350300,生态环境,莆田市生态环境局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,https://sthjj.putian.gov.cn/zfxxgk/gksq/,https://www.putian.gov.cn/zfxxgk/gksq/,http://sthjj.putian.gov.cn/zfxxgk/fdzdgknr/xzfg/
-市级,福建,龙岩,,350800,政府办,龙岩市人民政府门户网站,已收录,1/2 个栏目已收录,2026-11-09 06:40,http://www.longyan.gov.cn/,http://www.longyan.gov.cn/,http://www.longyan.gov.cn/gk/flgk/gg/ http://www.longyan.gov.cn/gk/zcwjk/
-市级,福建,龙岩,,350800,发改委,龙岩市发展和改革委员会,已收录,2/2 个栏目已收录,2026-11-09 06:40,http://fgw.longyan.gov.cn/,http://jgdj.longyan.gov.cn/,http://fgw.longyan.gov.cn/zwgk/gggs/ http://fgw.longyan.gov.cn/zwgk/zcwj/
-市级,福建,龙岩,,350800,工信,市工信局,抓取失败,打不开：robots.txt 暂时无法获取（RemoteProtocolError: Server disconnected without sending a res,,http://lyjmw.longyan.gov.cn/,http://jgdj.longyan.gov.cn/,
-市级,福建,龙岩,,350800,科技,龙岩市科学技术局,已收录,2/2 个栏目已收录,2026-11-09 06:40,http://kjj.longyan.gov.cn/,http://jgdj.longyan.gov.cn/,http://kjj.longyan.gov.cn/zwgk/tzgg/ http://kjj.longyan.gov.cn/zwgk/zcwj/
-市级,福建,龙岩,,350800,商务,福建省龙岩市商务局,已收录,1/1 个栏目已收录,2026-11-09 06:40,http://swj.longyan.gov.cn/,http://jgdj.longyan.gov.cn/,http://swj.longyan.gov.cn/zwgk/zcfg/
-市级,福建,龙岩,,350800,财政,龙岩市财政局,已收录,2/2 个栏目已收录,2026-11-09 06:40,http://czj.longyan.gov.cn/,http://jgdj.longyan.gov.cn/,http://czj.longyan.gov.cn/xxgk/tzgg/ http://czj.longyan.gov.cn/xxgk/zcfg/
-市级,福建,龙岩,,350800,人社,龙岩市人力资源和社会保障局,已收录,2/2 个栏目已收录,2026-11-09 06:40,http://rsj.longyan.gov.cn/,http://jgdj.longyan.gov.cn/,http://rsj.longyan.gov.cn/zwgk/gggs/ http://rsj.longyan.gov.cn/zwgk/zcwj/
-市级,福建,龙岩,,350800,市场监管,龙岩市市场监督管理局,已收录,2/2 个栏目已收录,2026-11-09 06:40,http://scjgj.longyan.gov.cn/,http://jgdj.longyan.gov.cn/,http://scjgj.longyan.gov.cn/zwgk/gggs/ http://scjgj.longyan.gov.cn/zwgk/zcwj/
-市级,福建,龙岩,,350800,农业农村,龙岩市农业农村局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,http://nyncj.longyan.gov.cn/,http://jgdj.longyan.gov.cn/,
-市级,福建,龙岩,,350800,文旅,龙岩市文化和旅游局,已收录,2/2 个栏目已收录,2026-11-09 06:40,http://wlj.longyan.gov.cn/,http://jgdj.longyan.gov.cn/,http://wlj.longyan.gov.cn/zwgk/gggs/ http://wlj.longyan.gov.cn/zwgk/zcwj/
-市级,福建,龙岩,,350800,生态环境,龙岩市生态环境局,已收录,2/2 个栏目已收录,2026-11-09 06:40,http://sthjj.longyan.gov.cn/,http://jgdj.longyan.gov.cn/,http://sthjj.longyan.gov.cn/zwgk/gggs/ http://sthjj.longyan.gov.cn/zwgk/zcwj/
-市级,福建,龙岩,,350800,数据局,龙岩市数据管理局,已收录,2/2 个栏目已收录,2026-11-09 06:40,http://dsjj.longyan.gov.cn/,http://jgdj.longyan.gov.cn/,http://dsjj.longyan.gov.cn/zwgk/gzgg/ http://dsjj.longyan.gov.cn/zwgk/zcwj/
 市级,福建,泉州,,350500,政府办,泉州市人民政府--泉州市市人民政府门户网站,已收录,1/2 个栏目已收录,2026-11-09 06:40,http://www.quanzhou.gov.cn/,http://www.quanzhou.gov.cn/,http://www.quanzhou.gov.cn/zfb/xxgk/zfxxgkzl/gggs/ http://www.quanzhou.gov.cn/zfb/xxgk/zfxxgkzl/zxwj/
 市级,福建,泉州,,350500,发改委,泉州市发展和改革委员会,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,http://fgw.quanzhou.gov.cn/jgsz/jgsz/,http://www.quanzhou.gov.cn/zfb/zjqz/zfjg/,https://fgw.quanzhou.gov.cn/zwgk/tzgg/
 市级,福建,泉州,,350500,工信,泉州市工业和信息化局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,http://gxj.quanzhou.gov.cn/,http://www.quanzhou.gov.cn/zfb/wsbs/nrrh/202309/t20230918_2935773.htm,http://gxj.quanzhou.gov.cn/zwgk/tzgg/ http://gxj.quanzhou.gov.cn/zwgk/zcfg/zcfg/
-市级,福建,泉州,,350500,科技,泉州市科技局,已收录,1/1 个栏目已收录,2026-11-09 06:40,http://kj.quanzhou.gov.cn/xxgk/zzjg/kjjzn/,http://www.quanzhou.gov.cn/zfb/zjqz/zfjg/,http://kj.quanzhou.gov.cn/xxgk/tzgg/
+市级,福建,泉州,,350500,科技,泉州市科技局,已收录,1/1 个栏目已收录,2026-11-09 09:04,https://kj.quanzhou.gov.cn/,http://www.quanzhou.gov.cn/zfb/wsbs/nrrh/202309/t20230918_2935773.htm,https://kj.quanzhou.gov.cn/xxgk/tzgg/
 市级,福建,泉州,,350500,商务,泉州市商务局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,http://qzbofcom.quanzhou.gov.cn/zjswj/wjgk/,http://www.quanzhou.gov.cn/zfb/zjqz/zfjg/,https://qzbofcom.quanzhou.gov.cn/zwgk/tzgg/ https://qzbofcom.quanzhou.gov.cn/zwgk/zcfg/
 市级,福建,泉州,,350500,财政,泉州市财政局,已收录,1/2 个栏目已收录,2026-11-09 06:40,http://czj.quanzhou.gov.cn/zwgk/gkxx/znjs/,http://www.quanzhou.gov.cn/zfb/zjqz/zfjg/,http://czj.quanzhou.gov.cn/zwgk/tzgg/ http://czj.quanzhou.gov.cn/zwgk/zfxxgk/fdzdgknr/fggzhgfxwj/
 市级,福建,泉州,,350500,人社,泉州市人力资源和社会保障局,已收录,2/2 个栏目已收录,2026-11-09 08:02,http://rsj.quanzhou.gov.cn/,http://www.quanzhou.gov.cn/zfb/wsbs/nrrh/202309/t20230918_2935773.htm,http://rsj.quanzhou.gov.cn/zwgk/zxdt/tzgg/ http://rsj.quanzhou.gov.cn/zwgk/zcfg/
@@ -93,14 +93,14 @@
 市级,福建,泉州,,350500,农业农村,泉州市农业农村局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,http://nyncj.quanzhou.gov.cn/,http://www.quanzhou.gov.cn/zfb/wsbs/nrrh/202309/t20230918_2935773.htm,http://nyncj.quanzhou.gov.cn/xxgk/zfxxgk/fdzdgknr/tzgg/
 市级,福建,泉州,,350500,文旅,泉州市文化广电和旅游局,已收录,2/2 个栏目已收录,2026-11-09 08:02,http://cbtb.quanzhou.gov.cn/,http://www.quanzhou.gov.cn/zfb/wsbs/nrrh/202309/t20230918_2935773.htm,http://cbtb.quanzhou.gov.cn/zwgk/gsgg/ http://cbtb.quanzhou.gov.cn/zwgk/zcfg/
 市级,福建,泉州,,350500,生态环境,泉州市生态环境局,已收录,1/2 个栏目已收录,2026-11-09 06:40,http://sthjj.quanzhou.gov.cn/xxgk/jggk/znjs/,http://www.quanzhou.gov.cn/zfb/zjqz/zfjg/,http://sthjj.quanzhou.gov.cn/xxgk/tzgg/ http://sthjj.quanzhou.gov.cn/xxgk/zfxxgkzl/
-市级,福建,宁德,,350900,政府办,宁德市人民政府门户网站,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,http://www.ningde.gov.cn/,http://www.ningde.gov.cn/,http://www.ningde.gov.cn/zwgk/tzgg/ http://www.ningde.gov.cn/zfxxgkzl/zc/xzgfxwj/
-市级,福建,宁德,,350900,发改委,宁德市发展和改革委员会,已收录,2/2 个栏目已收录,2026-11-09 06:40,https://fgw.ningde.gov.cn/,http://www.ningde.gov.cn/ztzl/zfwzgzndbb/,http://fgw.ningde.gov.cn/xxgk/gsgg/ https://fgw.ningde.gov.cn/zcjd/zcwj/
-市级,福建,宁德,,350900,工信,宁德市工业和信息化局,已收录,2/2 个栏目已收录,2026-11-09 06:40,https://gxj.ningde.gov.cn/,http://www.ningde.gov.cn/ztzl/zfwzgzndbb/,http://gxj.ningde.gov.cn/xxgk/tzgg/ http://gxj.ningde.gov.cn/xxgk/zcwj/
-市级,福建,宁德,,350900,科技,宁德市科学技术局,已收录,2/2 个栏目已收录,2026-11-09 06:40,https://kjj.ningde.gov.cn/,http://www.ningde.gov.cn/ztzl/zfwzgzndbb/,http://kjj.ningde.gov.cn/xxgk/tzgg/ https://kjj.ningde.gov.cn/zwgk/zc/gfxwj/
-市级,福建,宁德,,350900,商务,宁德市商务局,已收录,1/1 个栏目已收录,2026-11-09 06:40,https://swj.ningde.gov.cn/,http://www.ningde.gov.cn/ztzl/zfwzgzndbb/,https://swj.ningde.gov.cn/swdt/zcfg/zcfg/
-市级,福建,宁德,,350900,财政,宁德市财政局,已收录,1/1 个栏目已收录,2026-11-09 06:40,https://czj.ningde.gov.cn/,http://www.ningde.gov.cn/ztzl/zfwzgzndbb/,http://czj.ningde.gov.cn/tzgg/
-市级,福建,宁德,,350900,人社,宁德市人社局,已收录,2/2 个栏目已收录,2026-11-09 06:40,https://rsj.ningde.gov.cn/,http://www.ningde.gov.cn/ztzl/zfwzgzndbb/,http://rsj.ningde.gov.cn/zwgk/gsgg/ http://rsj.ningde.gov.cn/zwgk/zcfghjd/
-市级,福建,宁德,,350900,市场监管,宁德市场监督管理局,已收录,2/2 个栏目已收录,2026-11-09 06:40,https://scjd.ningde.gov.cn/,http://www.ningde.gov.cn/ztzl/zfwzgzndbb/,https://scjd.ningde.gov.cn/zw/tzgg/ https://scjd.ningde.gov.cn/zw/flfg/
-市级,福建,宁德,,350900,农业农村,宁德市农业农村局,已收录,2/2 个栏目已收录,2026-11-09 06:40,https://nyncj.ningde.gov.cn/,http://www.ningde.gov.cn/ztzl/zfwzgzndbb/,http://nyncj.ningde.gov.cn/tzgg/ https://nyncj.ningde.gov.cn/zcfg/
-市级,福建,宁德,,350900,文旅,宁德市文旅局,已收录,2/2 个栏目已收录,2026-11-09 06:40,https://wlj.ningde.gov.cn/,http://www.ningde.gov.cn/ztzl/zfwzgzndbb/,http://wlj.ningde.gov.cn/zwgk/gsgg/ http://wlj.ningde.gov.cn/zwgk/zcfg/
-市级,福建,宁德,,350900,生态环境,宁德市生态环境局,已收录,3/3 个栏目已收录,2026-11-09 06:40,https://sthjj.ningde.gov.cn/,http://www.ningde.gov.cn/ztzl/zfwzgzndbb/,https://sthjj.ningde.gov.cn/zwgk/wsgs/ http://sthjj.ningde.gov.cn/zwgk/wsgs/ http://sthjj.ningde.gov.cn/zwgk/zcyjd/flfgyzc/
+市级,福建,三明,,350400,政府办,三明市人民政府门户网站,已收录,2/2 个栏目已收录,2026-11-09 06:40,http://www.sm.gov.cn/,http://www.sm.gov.cn/,http://www.sm.gov.cn/zw/gsgg/ http://www.sm.gov.cn/zw/zxwj/
+市级,福建,三明,,350400,发改委,三明市发展和改革委员会,已收录,2/2 个栏目已收录,2026-11-09 06:40,http://fgw.sm.gov.cn/,http://www.sm.gov.cn/,http://fgw.sm.gov.cn/xxgk/tzgg/ http://fgw.sm.gov.cn/szfgzjg/fgw/zc/xzgfxwj/
+市级,福建,三明,,350400,工信,三明市工业和信息化局,已收录,2/2 个栏目已收录,2026-11-09 06:40,http://jxw.sm.gov.cn/,http://www.sm.gov.cn/,http://jxw.sm.gov.cn/xxdt/tzgg/ http://jxw.sm.gov.cn/szfgzjg/jxw/zc/xzgfxwj/
+市级,福建,三明,,350400,科技,三明市科学技术局,已收录,2/2 个栏目已收录,2026-11-09 06:40,http://smkj.sm.gov.cn/,http://www.sm.gov.cn/,http://smkj.sm.gov.cn/xxgk/tzgg/ http://smkj.sm.gov.cn/szfgzjg/kjj/zc/xzgfxwj/
+市级,福建,三明,,350400,商务,三明市商务局,已收录,2/2 个栏目已收录,2026-11-09 06:40,http://swj.sm.gov.cn/,http://www.sm.gov.cn/,http://swj.sm.gov.cn/xxgk/tzgg/ http://swj.sm.gov.cn/xxgk/fgwj/
+市级,福建,三明,,350400,财政,三明市财政局,已收录,2/2 个栏目已收录,2026-11-09 06:40,http://cz.sm.gov.cn/,http://www.sm.gov.cn/,http://cz.sm.gov.cn/xxgk/tzgg/ http://cz.sm.gov.cn/szfgzjg/czj/zc/xzgfxwj/
+市级,福建,三明,,350400,人社,三明市人力资源和社会保障局,已收录,2/2 个栏目已收录,2026-11-09 06:40,http://rsj.sm.gov.cn/,http://www.sm.gov.cn/,http://rsj.sm.gov.cn/xxgk/tzgg/ http://rsj.sm.gov.cn/xxgk/fgwj/
+市级,福建,三明,,350400,市场监管,三明市市场监督管理局,已收录,2/2 个栏目已收录,2026-11-09 06:40,http://gsj.sm.gov.cn/,http://www.sm.gov.cn/,http://gsj.sm.gov.cn/xxgk/tzgg/ http://gsj.sm.gov.cn/szfgzjg/gsj/zc/xzgfxwj/
+市级,福建,三明,,350400,农业农村,三明市农业农村局,已收录,2/2 个栏目已收录,2026-11-09 06:40,http://smsnyj.sm.gov.cn/,http://www.sm.gov.cn/,http://smsnyj.sm.gov.cn/xxgk/tzgg/tzggzlm/ http://smsnyj.sm.gov.cn/xxgk/zcfg/
+市级,福建,三明,,350400,文旅,三明市文化和旅游局,已收录,2/2 个栏目已收录,2026-11-09 06:40,http://wlj.sm.gov.cn/,http://www.sm.gov.cn/,http://wlj.sm.gov.cn/xxgk/ggxx/ http://wlj.sm.gov.cn/xxgk/fgwj/zxwj/
+市级,福建,三明,,350400,生态环境,三明市生态环境局,已收录,2/2 个栏目已收录,2026-11-09 06:40,http://shb.sm.gov.cn/,http://www.sm.gov.cn/,http://shb.sm.gov.cn/gsgg/ http://shb.sm.gov.cn/szfgzjg/hbj/zc/xzgfxwj/
