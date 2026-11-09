@@ -419,7 +419,13 @@ def _cmd_enable(args: argparse.Namespace) -> int:
             print(BOARD_BUSY)
             return 1
         r = enable_sources(
-            session, args.province, args.level, args.by, limit=args.limit, dry_run=args.dry_run
+            session,
+            args.province,
+            args.level,
+            args.by,
+            limit=args.limit,
+            dry_run=args.dry_run,
+            verified=args.verified,
         )
         _report_enable(args, r)
         if not args.dry_run and r.enabled:
@@ -459,6 +465,150 @@ def _report_enable(args: argparse.Namespace, r) -> None:
                 ensure_ascii=False,
             )
         )
+
+
+def _cmd_sample(args: argparse.Namespace) -> int:
+    import csv
+
+    from youju.db import session_factory
+    from youju.govsites.inventory import write_table
+    from youju.govsites.sample import SAMPLE_FIELDS, sample_rows, summary_lines, to_csv_row
+
+    with session_factory()() as session:
+        rows = sample_rows(session, args.level, args.province, args.size)
+    if not rows:
+        print("库里没有这一级的来源（先导入、试抓）")
+        return 1
+    base = args.out / "抽查" / args.level
+    by_prov: dict[str, list] = {}
+    for r in rows:
+        by_prov.setdefault(r.source.province, []).append(r)
+    review = SAMPLE_FIELDS.index("复核人")
+    for prov, group in by_prov.items():
+        path = base / f"{prov}.csv"
+        # 重跑时保留已经填了的人工复核（按栏目网址对上）
+        kept: dict[str, list[str]] = {}
+        if path.exists():
+            with path.open(encoding="utf-8-sig", newline="") as fh:
+                for old in csv.DictReader(fh):
+                    kept[old["栏目URL"]] = [old["复核人"], old["复核结论"], old["复核备注"]]
+        out = []
+        for r in group:
+            line = to_csv_row(r)
+            line[review:] = kept.get(r.source.url, line[review:])
+            out.append(line)
+        write_table(path, SAMPLE_FIELDS, out)
+    text = "\n".join(summary_lines(rows))
+    print(text)
+    print(f"证据表写在 {base}/<省>.csv；最后三列留给人工复核")
+    return 0
+
+
+def _cmd_accept(args: argparse.Namespace) -> int:
+    """按证据表记每省抽查结论（D-122、D-126）：上线时由操作人在线上运行，写抽查记录。"""
+    from datetime import UTC, datetime
+
+    from youju.db import session_factory
+    from youju.govsites.sample import PASS_RATE, evidence_results
+    from youju.models import CoverageAcceptance
+
+    folder = args.out / "抽查" / args.level
+    results = [
+        r for r in evidence_results(folder) if not args.province or r.province in args.province
+    ]
+    if not results:
+        print(f"{folder} 里没有证据表")
+        return 1
+    print(f"合格标准：每个栏目都有结论，通过的占 {PASS_RATE:.0%} 以上（不通过的不进本批）")
+    for r in results:
+        verdict = "合格" if r.accepted else "没过"
+        print(
+            f"{r.province}：{verdict}（{r.total} 个栏目，通过 {r.passed}，不通过 {r.failed}，"
+            f"待重试 {r.retry}，没复核 {r.pending}，通过率 {r.rate:.0%}）"
+        )
+    if args.dry_run:
+        print("试算，没写库")
+        return 0
+    level = "国家级" if args.level == "国家级" else args.level
+    with session_factory()() as session:
+        for r in results:
+            session.add(
+                CoverageAcceptance(
+                    province=r.province,
+                    level=level,
+                    sampled_by=args.by,
+                    sampled_at=datetime.now(UTC),
+                    sample_size=r.total,
+                    passed=r.accepted,
+                    note=(
+                        f"全检 {r.total} 个栏目：通过 {r.passed}，不通过 {r.failed}，"
+                        f"待重试 {r.retry}（都不进本批）；"
+                        f"证据 docs/数据来源/全国覆盖/抽查/{args.level}/{r.province}.csv"
+                    )[:300],
+                )
+            )
+        session.commit()
+    import logging
+
+    logging.getLogger("youju.audit").info(
+        json.dumps(
+            {
+                "event": "admin",
+                "action": "coverage_accept",
+                "by": args.by,
+                "level": args.level,
+                "results": {r.province: r.accepted for r in results},
+            },
+            ensure_ascii=False,
+        )
+    )
+    print(f"已记 {len(results)} 条抽查结论")
+    return 0
+
+
+def _cmd_batch(args: argparse.Namespace) -> int:
+    """生成一批的导入文件：只收抽查合格省份里、最终结论是"通过"的试读可读栏目，网址不重复。"""
+    import csv
+    from collections import Counter
+
+    from youju.govsites.inventory import write_table
+    from youju.govsites.report import COLUMN_FIELDS
+    from youju.govsites.sample import evidence_results, final_verdict
+
+    passed: set[tuple[str, str]] = set()  # (层级, 栏目网址)
+    accepted: set[tuple[str, str]] = set()  # (层级, 省份)
+    for level in args.level:
+        folder = args.out / "抽查" / level
+        accepted |= {(level, r.province) for r in evidence_results(folder) if r.accepted}
+        for path in sorted(folder.glob("*.csv")):
+            with path.open(encoding="utf-8-sig", newline="") as fh:
+                passed |= {
+                    (level, r["栏目URL"]) for r in csv.DictReader(fh) if final_verdict(r) == "通过"
+                }
+    rows, seen = [], set()
+    for path in sorted((args.out / "栏目清单").glob("*.csv")):
+        with path.open(encoding="utf-8-sig", newline="") as fh:
+            reader = csv.reader(fh)
+            if next(reader, None) != list(COLUMN_FIELDS):
+                print(f"{path} 的表头和现在的不一样，跳过")
+                continue
+            for row in reader:
+                level, prov, url, status = row[0], row[1], row[7], row[11]
+                if (
+                    level in args.level
+                    and (level, prov) in accepted
+                    and (level, url) in passed
+                    and status.startswith("试跑可读")
+                    and url not in seen
+                ):
+                    seen.add(url)
+                    rows.append(row)
+    out = args.out / "批次" / f"{args.name}.csv"
+    write_table(out, COLUMN_FIELDS, rows)
+    by_prov = Counter(r[1] for r in rows)
+    print(f"写入 {out}：{len(rows)} 个栏目，{len(by_prov)} 个省（含国家级）")
+    print("，".join(f"{p} {n}" for p, n in by_prov.most_common()))
+    return 0
 
 
 def register(sub: argparse._SubParsersAction) -> None:
@@ -551,7 +701,41 @@ def register(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--by", required=True, help="操作人")
     p.add_argument("--limit", type=int, default=2000, help="一次最多启用多少个（每天新启用上限）")
     p.add_argument("--dry-run", action="store_true", help="只数一数，不启用")
+    p.add_argument(
+        "--verified",
+        action="store_true",
+        help="也开这台库里还没抓过、但试读可读的来源（本机试抓、抽查合格后在线上第一次打开时用）",
+    )
     p.set_defaults(func=_cmd_enable)
+
+    p = sub.add_parser(
+        "coverage-sample", help="每省抽查的证据表：抽到的栏目、抓取结果、最新 3 条和自动核对"
+    )
+    p.add_argument("--level", required=True, choices=LEVEL_ORDER)
+    p.add_argument("--province", action="append", help="只抽某几个省")
+    p.add_argument("--size", type=int, help="每省抽几个（不给就全查）")
+    p.add_argument(
+        "--out", type=Path, default=DEFAULT_OUT, help="清单目录（证据写进 抽查/<层级>/）"
+    )
+    p.set_defaults(func=_cmd_sample)
+
+    p = sub.add_parser(
+        "coverage-accept", help="按证据表记每省抽查结论（上线时在线上运行，写抽查记录）"
+    )
+    p.add_argument("--level", required=True, choices=LEVEL_ORDER)
+    p.add_argument("--by", required=True, help="操作人")
+    p.add_argument("--province", action="append", help="只记某几个省")
+    p.add_argument("--out", type=Path, default=DEFAULT_OUT, help="清单目录（读 抽查/<层级>/）")
+    p.add_argument("--dry-run", action="store_true", help="只算结论，不写库")
+    p.set_defaults(func=_cmd_accept)
+
+    p = sub.add_parser(
+        "coverage-batch", help="生成一批的导入文件：只收抽查合格省份里复核通过的栏目"
+    )
+    p.add_argument("--level", action="append", required=True, choices=LEVEL_ORDER)
+    p.add_argument("--name", required=True, help="文件名（写到 批次/<名字>.csv）")
+    p.add_argument("--out", type=Path, default=DEFAULT_OUT, help="清单目录")
+    p.set_defaults(func=_cmd_batch)
 
     p = sub.add_parser("coverage-refresh", help="按来源抓取结果重算覆盖看板每格的状态")
     p.add_argument("--province", help="只算某个省")

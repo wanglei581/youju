@@ -615,12 +615,16 @@ def enable_sources(
     limit: int = 2000,
     dry_run: bool = False,
     now: datetime | None = None,
+    verified: bool = False,
 ) -> EnableResult:
     """把某省某级"试抓成功、待启用"的来源分批打开（D-122 门禁）。
 
     只在这个省这一级最新的抽查合格时才启用；没抽查或没过的一个都不开（新来源先不放给用户）。
     只开：挂在这一级格上的、没启用的、静态抓取、没被网站拒绝、试抓成功过的来源；一次最多 limit 个
-    （每天新启用上限，第二阶段计划第三节）。"""
+    （每天新启用上限，第二阶段计划第三节）。
+
+    verified=True：也开这台库里还没抓过、但试读可读（"试跑可读"）的来源——本机试抓、抽查合格后
+    在线上第一次打开时用：线上不先试抓没启用的来源（文件一抓进来就对用户可见）。"""
     result = EnableResult()
     acc = latest_acceptance(_latest_acceptances(session), province, level)
     if not acc or not acc["passed"]:
@@ -640,7 +644,7 @@ def enable_sources(
             Source.enabled.is_(False),
             Source.fetch_mode == "static",
             Source.health != "blocked",
-            Source.last_success_at.is_not(None),
+            *([] if verified else [Source.last_success_at.is_not(None)]),
         )
         .distinct()
         .order_by(Source.id)
