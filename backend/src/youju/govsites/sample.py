@@ -353,10 +353,30 @@ class ProvinceResult:
 def final_verdict(row: dict) -> str:
     """一行的最终结论：人工复核写了就按人工（自动通过的也可能被复核否掉），没写看自动结论。
 
-    "待重试"是这次没抓到（如 robots.txt 暂时取不到）：不进本批，也不算进通过率。"""
-    if row.get("复核结论") in ("通过", "不通过", "待重试"):
-        return row["复核结论"]
-    return "通过" if row.get("自动结论") == "自动通过" else "待复核"
+    复核结论按开头认（"不通过（部门挂错）"算不通过，首尾空格不算）；"待重试"是这次没抓到
+    （不进本批，也不算进通过率）；写了别的词（"有问题"）一律算"待复核"，这个省补上之前不合格。"""
+    verdict = (row.get("复核结论") or "").strip()
+    if verdict:
+        for word in ("不通过", "待重试", "通过"):
+            if verdict.startswith(word):
+                return word
+        return "待复核"
+    return "通过" if (row.get("自动结论") or "").strip() == "自动通过" else "待复核"
+
+
+def unknown_verdicts(folder) -> list[str]:
+    """复核结论写了不认识的词的行（打印出来让人改）。"""
+    import csv
+    from pathlib import Path
+
+    out = []
+    for path in sorted(Path(folder).glob("*.csv")):
+        with path.open(encoding="utf-8-sig", newline="") as fh:
+            for r in csv.DictReader(fh):
+                verdict = (r.get("复核结论") or "").strip()
+                if verdict and final_verdict(r) == "待复核":
+                    out.append(f'{path.stem} {r.get("栏目URL", "")}：复核结论写的是"{verdict}"')
+    return out
 
 
 def evidence_results(folder) -> list[ProvinceResult]:

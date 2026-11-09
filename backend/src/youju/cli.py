@@ -95,6 +95,8 @@ def _cmd_import_sources(args: argparse.Namespace) -> int:
         shown = "；".join(s.existing[:20])
         more = f" 等 {len(s.existing)} 个" if len(s.existing) > 20 else ""
         print(f"库里已有的网址：{shown}{more}")
+    if s.near:
+        print(f"和库里只差 http/https 等写法的（同一个列表，没有新建）：{'；'.join(s.near)}")
     return 0
 
 

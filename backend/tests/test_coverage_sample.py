@@ -147,3 +147,48 @@ def test_batch_keeps_only_passed_columns_of_accepted_provinces(tmp_path):
         urls = [r[7] for r in list(csv.reader(fh))[1:]]
     # 浙江 4/5 合格，只收通过的 4 个；福建 1/2 不合格，整省不收
     assert urls == ["a1", "a2", "a3", "a4"]
+
+
+def test_final_verdict_reads_wording_by_prefix():
+    from youju.govsites.sample import final_verdict
+
+    auto = {"自动结论": "自动通过"}
+    assert final_verdict({**auto, "复核结论": "不通过（部门挂错）"}) == "不通过"
+    assert final_verdict({**auto, "复核结论": " 通过 "}) == "通过"
+    assert final_verdict({**auto, "复核结论": "有问题"}) == "待复核"  # 认不出的词要人看
+    assert final_verdict({**auto, "复核结论": "待重试（没抓到）"}) == "待重试"
+    assert final_verdict({**auto, "复核结论": ""}) == "通过"
+    assert final_verdict({"自动结论": "待人工", "复核结论": ""}) == "待复核"
+
+
+def test_batch_skips_lists_already_live(tmp_path):
+    import argparse
+    import csv
+
+    from youju.govsites.cli import _cmd_batch
+    from youju.govsites.report import COLUMN_FIELDS
+
+    out = tmp_path / "全国覆盖"
+    (out / "栏目清单").mkdir(parents=True)
+    row = [""] * len(COLUMN_FIELDS)
+    row[0], row[1], row[7], row[11] = "省级", "浙江", "https://kjt.zj.gov.cn/tzgg/", "试跑可读"
+    row2 = list(row)
+    row2[7] = "https://czt.zj.gov.cn/tzgg/"
+    with (out / "栏目清单" / "浙江.csv").open("w", encoding="utf-8-sig", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(COLUMN_FIELDS)
+        w.writerows([row, row2])
+    (out / "抽查" / "省级").mkdir(parents=True)
+    (out / "抽查" / "省级" / "浙江.csv").write_text(
+        "层级,省份,栏目URL,自动结论,没过的项,复核人,复核结论,复核备注\n"
+        "省级,浙江,https://kjt.zj.gov.cn/tzgg/,自动通过,,,,\n"
+        "省级,浙江,https://czt.zj.gov.cn/tzgg/,自动通过,,,,\n",
+        encoding="utf-8-sig",
+    )
+    # 线上已在收的来源清单里是 http 写法：同一个列表，不进本批
+    (tmp_path / "全国来源清单_P0_v1.csv").write_text(
+        "栏目URL\nhttp://kjt.zj.gov.cn/tzgg/\n", encoding="utf-8-sig"
+    )
+    assert _cmd_batch(argparse.Namespace(level=["省级"], name="第1批", out=out)) == 0
+    with (out / "批次" / "第1批.csv").open(encoding="utf-8-sig", newline="") as fh:
+        assert [r[7] for r in list(csv.reader(fh))[1:]] == ["https://czt.zj.gov.cn/tzgg/"]

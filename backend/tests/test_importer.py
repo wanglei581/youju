@@ -233,3 +233,23 @@ def test_duplicate_urls_are_refused_before_writing(session, tmp_path: Path) -> N
     with pytest.raises(ValueError, match="栏目网址重复"):
         import_sources(session, path)
     assert session.scalar(select(func.count(Source.id))) == 0
+
+
+def test_only_new_treats_http_and_https_as_the_same_list(session, tmp_path: Path) -> None:
+    live = write_csv(
+        tmp_path,
+        [
+            "省级,北京,科技,北京市科学技术委员会,通知公告,https://kw.beijing.gov.cn/zwgk/tzgg/,200,20,,已验证（列表页，含近期日期）,2026-09-26,"
+        ],
+    )
+    import_sources(session, live)
+    batch = tmp_path / "batch2.csv"
+    batch.write_text(
+        CSV_HEADER
+        + "省级,北京,科技,北京市科委,通知公告,http://kw.beijing.gov.cn/zwgk/tzgg/,200,20,,试跑可读（全国覆盖 v1，未启用）,2026-11-09,\n",
+        encoding="utf-8-sig",
+    )
+    s = import_sources(session, batch, only_new=True)
+    assert (s.created, s.skipped) == (0, 1)
+    assert "库里是 https://kw.beijing.gov.cn/zwgk/tzgg/" in s.near[0]
+    assert session.scalar(select(func.count(Source.id))) == 1

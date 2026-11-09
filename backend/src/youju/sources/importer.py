@@ -13,6 +13,7 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from youju.crawler.urls import url_key
 from youju.models import URL_KEY_MAX, Source
 from youju.regions import district_parent_city
 from youju.sources.onboard import checked_city, checked_district
@@ -37,6 +38,8 @@ class ImportSummary:
     disabled: int = 0
     skipped: int = 0  # only_new 时跳过的已有来源
     existing: list[str] = field(default_factory=list)  # 清单里库里已经有的网址（更新或跳过的）
+    # 只差 http/https、端口、默认页、参数顺序的（规范网址相同）：同一个列表，only_new 时也跳过
+    near: list[str] = field(default_factory=list)
 
 
 # 这些状态的来源重导入时不改启用开关（新建时不启用，之后由后台分批打开）
@@ -79,6 +82,8 @@ def import_sources(
         seen.setdefault(url, line)
     if dups:
         raise ValueError("来源清单里栏目网址重复：" + "；".join(dups[:5]))
+    # 库里已有来源的规范网址（only_new 用）：只差 http/https 的也是同一个列表，不再新建
+    known = {url_key(u): u for (u,) in session.execute(select(Source.url))} if only_new else {}
     for line, row in enumerate(rows, start=2):  # 第 1 行是表头
         url = row["栏目URL"].strip()
         if not url:
@@ -113,6 +118,10 @@ def import_sources(
         if source is not None:
             summary.existing.append(url)
         if source is not None and only_new:
+            summary.skipped += 1
+            continue
+        if source is None and only_new and url_key(url) in known:
+            summary.near.append(f"{url}（库里是 {known[url_key(url)]}）")
             summary.skipped += 1
             continue
         if source is None:
