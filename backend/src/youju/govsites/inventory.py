@@ -237,7 +237,9 @@ class CachingResolver:
         raise last or OSError("域名解析失败")
 
 
-_PICK_TRIES = 3  # 每类部门最多试几个候选页面
+_PICK_TRIES = 3  # 每类部门最多比几个能打开的候选页面（取第一个有能直接读的栏目的）
+_PICK_FETCHES = 6  # 每类部门最多抓几个候选页面（打不开、被否掉的也算）
+_PICK_FETCHES_ZONE = 10  # 开发区可能有好几个
 BRANCH_SECTION = (
     "分局版块"  # _not_own_site：派出分局在上级网站上的版块（算本区县的，栏目只认版块里的）
 )
@@ -947,16 +949,47 @@ class Inventory:
     ) -> list[DeptRow]:
         if not options:
             return [self._dept_row(div, cat)] if cat in STANDARD_DEPTS else []
-        if any(not f.alias for _, f in options):
-            options = [o for o in options if not o[1].alias]  # 有正名候选就不用牌子
+        # 括号里加挂的牌子只当备用候选：正名候选一个都不成（没有、或都被否掉）才用
+        primary = [o for o in options if not o[1].alias]
+        aliases = [o for o in options if o[1].alias]
+        rows, rejected = self._pick_from(div, home, cat, primary or aliases, portal_cols, owner)
+        if not rows and primary and aliases:
+            rows, more = self._pick_from(div, home, cat, aliases, portal_cols, owner)
+            rejected += more
+        if not rows and rejected and cat in STANDARD_DEPTS:
+            row = self._dept_row(div, cat)
+            row.status = "导航未找到"
+            row.reason = ("门户上的部门链接指向别处：" + "；".join(rejected[:2]))[:120]
+            return [row]
+        return rows or ([self._dept_row(div, cat)] if cat in STANDARD_DEPTS else [])
+
+    def _pick_from(
+        self,
+        div: Division,
+        home: PageInfo,
+        cat: str,
+        options: list[tuple[int, Found]],
+        portal_cols: frozenset[str],
+        owner: "_Owner | None",
+    ) -> tuple[list[DeptRow], list[str]]:
         rows: list[DeptRow] = []
         rejected: list[str] = []
         seen: set[str] = set()
+        top_score: int | None = None
+        fetched = 0
+        limit = _PICK_FETCHES_ZONE if cat == "开发区" else _PICK_FETCHES
         # 同分时网站首页、栏目页排在文章、部门年报、脚本页前面
         # （锦州"机构简介"文章、葫芦岛部门年报目录）
-        for _, f in sorted(options, key=lambda o: (-o[0], _weak_page(o[1].url))):
+        for score, f in sorted(options, key=lambda o: (-o[0], _weak_page(o[1].url))):
             if f.url in seen:
                 continue
+            if rows and cat != "开发区" and score != top_score and not self._named_own(f, owner):
+                # 已有首选、要往后试时，只试同分的、或链接文字明写是本地的：分更低、名称又说不清
+                # 的别家网站（市局独立域名的"科技局"）不能顶掉本地的频道
+                continue
+            if fetched >= limit:
+                break  # 打不开、被否掉的也算一次：每类部门最多抓这么多个候选页面
+            fetched += 1
             seen.add(f.url)
             if not _site_like(f.url, f.source, _DIR_DEPTH if f.via else 4):
                 # 年度报表里的一页：表里"首页网址"才是部门网站
@@ -967,7 +1000,7 @@ class Inventory:
                     site = report_homepage_text(self.cache.get(pdf).text)
                 if not site or site in seen:
                     continue
-                f = Found(site, f.text, f.url)
+                f = Found(site, f.text, f.url, f.via, f.alias)
                 seen.add(site)
             row = self._dept_row(div, cat)
             row.dept_full_name, row.site_url = f.text, f.url
@@ -1005,6 +1038,8 @@ class Inventory:
             # 有能直接读的栏目的。首选打不开、被拦的照旧记它，后面打不开、被拦的也不拿来顶替
             if rows and row.status != "已找到":
                 continue
+            if not rows:
+                top_score = score
             rows.append(row)
             if row.status != "已找到" or _readable(row) or len(rows) >= _PICK_TRIES:
                 break
@@ -1012,12 +1047,11 @@ class Inventory:
             best = next((r for r in rows if _readable(r)), None)
             best = best or next((r for r in rows if r.columns), None) or rows[0]
             rows = [best]
-        if not rows and rejected and cat in STANDARD_DEPTS:
-            row = self._dept_row(div, cat)
-            row.status = "导航未找到"
-            row.reason = ("门户上的部门链接指向别处：" + "；".join(rejected[:2]))[:120]
-            return [row]
-        return rows or ([self._dept_row(div, cat)] if cat in STANDARD_DEPTS else [])
+        return rows, rejected
+
+    def _named_own(self, f: Found, owner: "_Owner | None") -> bool:
+        """链接文字明写是本地的部门（以本地地名、本级层级字打头，或本地的派出分局）。"""
+        return owner is not None and name_verdict(f.text, owner.places).kind == "本级"
 
     def _check_group_columns(
         self,
@@ -1057,6 +1091,9 @@ class Inventory:
         打不开、被拦的页面只按网址判断（域名）。开发区只认两种明确的错：在上级门户的域名下、
         外省的（地市开发区常以地市名打头，名称判不了归属）。"""
         ok = dp.result.status == "ok" and not dp.block and dp.fp is not None
+        final = dp.final_url or f.url
+        if ok and _service_hall(final) and not (cat == "数据局" and _data_bureau_site(final)):
+            return f"「{f.text}」→{final}（链接跳到了政务服务网的办事页）"
         names: list[str] = []
         if ok:
             title = (dp.doc.findtext(".//title") or "") if dp.doc is not None else ""
@@ -1064,7 +1101,7 @@ class Inventory:
         v = site_verdict(
             names,
             dp.fp.site_id_code if ok else "",
-            [f.url, dp.final_url],
+            [f.url, final],
             owner.places,
             self.index,
             own_portal=owner.own_portal,
@@ -1076,7 +1113,7 @@ class Inventory:
             v = site_verdict(
                 [],
                 "",
-                [f.url, dp.final_url],
+                [f.url, final],
                 owner.places,
                 self.index,
                 own_portal=owner.own_portal,

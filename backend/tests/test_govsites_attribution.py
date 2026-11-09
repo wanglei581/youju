@@ -64,7 +64,21 @@ TREE = {
             1,
             [_n("120101", "和平区", "市辖区", 3), _n("120105", "河北区", "市辖区", 3)],
         ),
-        _n("130000", "河北省", "省", 1),
+        _n(
+            "130000",
+            "河北省",
+            "省",
+            1,
+            [
+                _n(
+                    "130800",
+                    "承德市",
+                    "地级市",
+                    2,
+                    [_n("130802", "双桥区", "市辖区", 3), _n("130821", "承德县", "县", 3)],
+                )
+            ],
+        ),
         _n(
             "320000",
             "江苏省",
@@ -204,6 +218,9 @@ def test_service_hall_is_not_a_department():
     assert dept_categories("区市监局") == ["市场监管"]
     assert dept_categories("黎城县农业农村和水利局") == ["农业农村"]
     assert dept_categories("长兴县农业农村水利局") == ["农业农村"]
+    # 11/8 清单里已认出的写法不能回退（秦都区、仲巴县）
+    assert dept_categories("区农业农村局和水利局") == ["农业农村"]
+    assert "农业农村" in dept_categories("农业农村局和科技水利局（县乡村振兴局）")
     assert dept_categories("县农业农村和乡村振兴局") == ["农业农村"]
     assert dept_categories("浙江省农业科学院") == []
     assert dept_categories("县农业机械化服务中心") == []
@@ -664,3 +681,104 @@ def test_upper_portals_known_before_the_city_finishes():
     # 省门户上直接列出区县时，区县可能先于地市处理完：地市门户网址在排下级时就记下
     inv._remember_children({"360400": Found("http://www.jiujiang.gov.cn/", "九江市", "x")})
     assert inv._upper_portals(_places("濂溪区")) == ["http://www.jiujiang.gov.cn/"]
+
+
+# —— 第二轮独立审阅（11/9）——
+
+
+def test_branch_of_county_sharing_the_city_name():
+    from youju.govsites.attribution import branch_of_own
+
+    cd = _places("承德县")
+    assert not branch_of_own("承德市生态环境局双桥分局", cd)  # 打头的是上级"承德市"
+    assert branch_of_own("承德市生态环境局承德县分局", cd)
+    assert branch_of_own("承德县生态环境分局", cd)
+
+
+class RedirectCache(FakeCache):
+    """部分网址跳到别处（最终网址不同）。"""
+
+    def __init__(self, pages, redirects):
+        super().__init__(pages)
+        self.redirects = redirects
+
+    def get(self, url):
+        if url in self.redirects:
+            final = self.redirects[url]
+            r = super().get(final)
+            return FetchResult(url, r.status, final, r.http_status, r.text, r.error)
+        return super().get(url)
+
+
+def _lianxi_with(links: str, extra: dict[str, str]) -> dict[str, str]:
+    pages = _jiangxi_pages(city_kj=False, city_kfq=False)
+    pages["http://www.lianxi.gov.cn/bmwz/"] = links
+    pages.update(extra)
+    return pages
+
+
+def test_local_channel_not_replaced_by_unclear_site_elsewhere():
+    pages = _lianxi_with(
+        '<a href="/bm/kjj/">濂溪区科学技术局</a><a href="http://www.jjkjj.gov.cn/">科技局</a>',
+        {
+            "http://www.lianxi.gov.cn/bm/kjj/": "<p>机构职能</p>",
+            # 市局用独立域名、网站名说不清：分更低，不能顶掉本地频道
+            "http://www.jjkjj.gov.cn/": '<title>首页</title><a href="/tzgg/">通知公告</a>',
+        },
+    )
+    kj = _depts(_run(pages, ["江西"]))[("360402", "科技")]
+    assert kj.site_url == "http://www.lianxi.gov.cn/bm/kjj/"
+
+
+def test_candidate_fetches_are_capped():
+    links = '<a href="/bm/kjj/">区科技局</a>' + "".join(
+        f'<a href="/bm/kj{i}/">区科技局</a>' for i in range(8)
+    )
+    pages = _lianxi_with(links, {"http://www.lianxi.gov.cn/bm/kjj/": "<p>机构职能</p>"})
+    cache = FakeCache(pages)
+    asked: list[str] = []
+    orig = cache.get
+
+    def get(url):
+        asked.append(url)
+        return orig(url)
+
+    cache.get = get
+    inv = Inventory(INDEX, cache, provinces=["江西"], workers=2, per_province=2)
+    inv.run()
+    tried = {u for u in asked if u.startswith("http://www.lianxi.gov.cn/bm/kj")}
+    assert len(tried) <= 6  # 打不开的也算次数
+    assert _depts(inv)[("360402", "科技")].site_url == "http://www.lianxi.gov.cn/bm/kjj/"
+
+
+def test_portal_link_redirecting_elsewhere_is_judged_by_final_site():
+    pages = _lianxi_with(
+        '<a href="/bm/czj/">财政局</a><a href="/bm/zwfw/">政务服务数据管理局</a>',
+        {
+            "http://czj.jiujiang.gov.cn/": '<meta name="SiteName" content="九江市财政局">',
+            "https://www.jxzwfw.gov.cn/dept/1": "<p>办事</p>",
+        },
+    )
+    redirects = {
+        "http://www.lianxi.gov.cn/bm/czj/": "http://czj.jiujiang.gov.cn/",
+        "http://www.lianxi.gov.cn/bm/zwfw/": "https://www.jxzwfw.gov.cn/dept/1",
+    }
+    inv = Inventory(
+        INDEX, RedirectCache(pages, redirects), provinces=["江西"], workers=2, per_province=2
+    )
+    inv.run()
+    depts = _depts(inv)
+    cz = depts[("360402", "财政")]
+    assert cz.status == "导航未找到" and "九江市财政局" in cz.reason
+    assert ("360402", "数据局") not in depts  # 跳到政务服务网的办事页
+
+
+def test_alias_used_when_all_proper_candidates_are_rejected():
+    pages = _lianxi_with(
+        '<a href="http://kjj.jiujiang.gov.cn/">科技局</a>'
+        '<a href="/bm/gxj/">区工业和信息化局（区科学技术局）</a>',
+        {"http://www.lianxi.gov.cn/bm/gxj/": '<a href="/bm/gxj/tzgg/">通知公告</a>'},
+    )
+    depts = _depts(_run(pages, ["江西"]))
+    assert depts[("360402", "科技")].site_url == "http://www.lianxi.gov.cn/bm/gxj/"
+    assert depts[("360402", "工信")].site_url == "http://www.lianxi.gov.cn/bm/gxj/"

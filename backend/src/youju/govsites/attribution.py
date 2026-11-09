@@ -138,7 +138,11 @@ def branch_of_own(text: str, places: Places) -> bool:
     t = clean_name(text)
     if own_branch(t, places.div):
         return True
-    return t.endswith("分局") and any(t.startswith(o) for o in places.own)
+    if not t.endswith("分局"):
+        return False
+    # 打头的最长地名要是本地的："承德市生态环境局双桥分局"打头的是上级"承德市"，不是承德县的
+    hit = _best_prefix(t, places)
+    return hit is not None and hit[0] == "本级"
 
 
 _LEAD = re.compile(r"^[\s>》›»·•|｜\-—–:：、]+")
@@ -263,10 +267,11 @@ def site_verdict(
     own_portal_code: str = "",
     upper_portals: list[str] | tuple[str, ...] = (),
 ) -> Verdict:
-    """部门网站抓到后判断它是谁的：本地门户里的频道放行；别的先看网站自己写的名字（SiteName、
-    标题里的几段），说不清时再看标识码、域名。"""
+    """部门网站抓到后判断它是谁的：本地门户里的频道放行（看最终网址：本门户链接跳到别的网站的
+    不算频道）；别的先看网站自己写的名字（SiteName、标题里的几段），说不清时再看标识码、域名。"""
     own_host = _host(own_portal)
-    if own_host and any(_host(u) == own_host for u in urls if u):
+    final = next((u for u in reversed(urls) if u), "")
+    if own_host and _host(final) == own_host:
         # 本地门户里的部门频道：网页带的是门户全站的网站名、标识码（集安市门户的 SiteName 写着
         # "通化市人民政府"，广东集约化门户首页带省里的标识码），按它们判会把本地部门全排掉
         return UNSURE
