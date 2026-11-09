@@ -105,6 +105,23 @@ def dept_categories(text: str) -> list[str]:
     # 政府办公厅和其他部门互斥：办公厅名称里不会带别的部门
     if "政府办" in out:
         out = ["政府办"]
+    if out and out != ["开发区"] and out != ["政府办"]:
+        # 括号里加挂的牌子也是这个机关的职能：县里"经信局（商务局）""工业和信息化局（科学技术局）"
+        for part in _bracket_orgs(text):
+            for label in dept_categories(part):
+                if label not in out and label not in ("政府办", "开发区"):
+                    out.append(label)
+    return out
+
+
+def _bracket_orgs(text: str) -> list[str]:
+    """括号里像机关名的部分（"……局（商务局）"里的"商务局"；"、"分开的几个都算）。"""
+    out: list[str] = []
+    for inner in re.findall(r"[（(]([^（()）]+)[）)]", text or ""):
+        for part in re.split(r"[、，,；;]", inner):
+            part = part.strip()
+            if re.search(r"(局|委|委员会|办|办公室)$", part):
+                out.append(part)
     return out
 
 

@@ -197,6 +197,13 @@ def test_service_hall_is_not_a_department():
     assert dept_categories("区人力社保局") == ["人社"]
     assert dept_categories("长兴县文化和广电旅游体育局") == ["文旅"]
     assert dept_categories("区市监局") == ["市场监管"]
+    # 括号里加挂的牌子也算（柯城区"经信局（商务局）"）
+    assert dept_categories("经信局（商务局）") == ["工信", "商务"]
+    assert dept_categories("柯城区工业和信息化局（科学技术局）") == ["工信", "科技"]
+    assert dept_categories("长兴县财政局(国资办)") == ["财政"]
+    assert dept_categories("长兴县商务局(粮食和物资储备局、投资促进局)") == ["商务"]
+    assert dept_categories("市场监督管理局（知识产权局）") == ["市场监管"]
+    assert dept_categories("县人民政府办公室（县外事办）") == ["政府办"]
     # "生态环境局长兴分局"里的"局长"不是职务（长兴、长沙、长治……打头的分局）
     assert dept_categories("湖州市生态环境局长兴分局") == ["生态环境"]
     assert dept_categories("长沙市生态环境局长沙县分局") == ["生态环境"]
