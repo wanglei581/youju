@@ -1,13 +1,16 @@
 """一批来源上线（D-122、D-126）：导入 → 看板 → 记抽查结论 → 分省打开，一步一核对。
 
-在线上 admin 容器的终端里前台运行（deploy/batch1.sh）。控制台贴回来的中文会乱码（10/16 的教训），
+在线上 admin 容器的终端里前台运行（sh deploy/batch1.sh）。控制台贴回来的中文会乱码（10/16 的教训），
 所以每一步只打一行纯 ASCII 的结论（如 `step=enable prov=TJ lvl=PROV n=15 expect=15 ok=1`），
-最后一行 `batch1_done=1 enabled=248`；同时写进 /tmp/<tag>-<时间>.txt。要看哪些网址对不上，
-另写进 /tmp/<tag>-<时间>-detail.txt（中文），结论行里给出文件名。
+最后一行 `batch1_done=1 enabled=<本批个数>`；同时写进 /tmp/<tag>-<时间>.txt（第一行给出文件名）。
+要看哪些网址对不上，另写进 /tmp/<tag>-<时间>-detail.txt（中文），结论行里给出文件名；审计行、
+意料外的错的经过也写在那里。
 
 - --check：只做能试算的：批次文件和证据表一致、导入试算、抽查结论试算、每省应打开数。
 - --apply：按顺序做，每一步先试算、核对，对不上就停（`stop=1 step=…`），不往下走。重跑时已经
   做完的步骤会认出来（导入过的跳过、记过同一份证据的抽查结论不重记、已经打开的不重开）。
+- 后台"覆盖看板"里人工记的"没过"（回滚时补记的、上线前先压住的）不盖掉：这个省在批次里就停下，
+  不在批次里就不重记它的抽查结论。
 
 每省应打开数从批次文件和证据表现算（批次里这个省这一级、证据表最终结论是"通过"的），不写死。
 """
@@ -15,6 +18,7 @@
 import csv
 import json
 import logging
+import traceback
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -63,6 +67,8 @@ ABBR = {
 }
 LVL = {"国家级": "NAT", "省级": "PROV", "市级": "CITY", "区县级": "COUNTY"}
 ORDER = list(ABBR)
+# 按证据表记的抽查结论（coverage-accept 和这里第五步写的）备注里都有这一段；没有的是后台人工记的
+EVIDENCE_MARK = "证据 docs/数据来源/全国覆盖/抽查/"
 
 
 class Stop(Exception):
@@ -80,6 +86,7 @@ class Report:
         self.detail_path = log_dir / f"{tag}-{stamp}-detail.txt"
         self.echo = echo
         self.lines: list[str] = []
+        self.step = "start"  # 正在做哪一步：出了意料外的错，停下时报这一步
 
     def line(self, text: str) -> None:
         assert text.isascii(), text
@@ -118,10 +125,23 @@ def expectations(out: Path, batch: Path, levels: list[str]) -> dict[tuple[str, s
     )
 
 
-def _audit(action: str, **fields) -> None:
-    logging.getLogger("youju.audit").info(
-        json.dumps({"event": "admin", "action": action, **fields}, ensure_ascii=False)
-    )
+def _audit(report: Report, action: str, **fields) -> None:
+    """审计行照常写日志（stderr）；在容器终端里跑时 stderr 不进云托管日志，所以也写进细节文件。"""
+    line = json.dumps({"event": "admin", "action": action, **fields}, ensure_ascii=False)
+    logging.getLogger("youju.audit").info(line)
+    report.detail(f"审计：{line}")
+
+
+def _manual_holds(latest: dict, results: list, level: str) -> dict[str, dict]:
+    """最新一条抽查结论是后台人工记的"没过"的省（备注里没有证据表那一段）。"""
+    from youju.govsites.boarddb import latest_acceptance
+
+    holds = {}
+    for r in results:
+        acc = latest_acceptance(latest, r.province, level)
+        if acc and not acc["passed"] and EVIDENCE_MARK not in (acc["note"] or ""):
+            holds[r.province] = acc
+    return holds
 
 
 def run(
@@ -146,6 +166,7 @@ def run(
     batch = out / "批次" / f"{batch_name}.csv"
     try:
         # 一、批次文件和证据表一致（复核改了却忘了重生成批次，这里就停）
+        report.step = "batch"
         if not batch.exists():
             report.line("stop=1 step=batch reason=batch_file_missing")
             return False
@@ -156,6 +177,13 @@ def run(
         for u in unknown:
             report.detail(f"复核结论认不出：{u}")
         same = plan.rows == committed
+        if not same:
+            now_rows = {tuple(r) for r in plan.rows}
+            old_rows = {tuple(r) for r in committed}
+            for r in sorted(old_rows - now_rows):
+                report.detail(f"批次文件里有、按证据表重算没有（或内容变了）：{r[0]} {r[1]} {r[7]}")
+            for r in sorted(now_rows - old_rows):
+                report.detail(f"按证据表重算有、批次文件里没有（或内容变了）：{r[0]} {r[1]} {r[7]}")
         want = expectations(out, batch, levels)
         total = sum(len(v) for v in want.values())
         ok = same and not unknown and total == len(committed)
@@ -167,6 +195,7 @@ def run(
             raise Stop("batch")
 
         # 二、导入（只加新的；已经在库里的同一个列表不碰）
+        report.step = "import"
         known = {url_key(u) for (u,) in session.execute(select(Source.url))}
         expect_new = sum(1 for r in committed if url_key(r[7]) not in known)
         trial = import_sources(session, batch, only_new=True, dry_run=True)
@@ -186,16 +215,32 @@ def run(
             if not ok:
                 raise Stop("import")
 
-        # 三、抽查结论（按证据表算；合格的要盖住批次里所有省）
+        # 三、抽查结论（按证据表算；合格的要盖住批次里所有省；后台人工记了"没过"的省不开）
+        report.step = "accept_check"
+        from youju.govsites.boarddb import _latest_acceptances
+
         results = {lv: evidence_results(out / "抽查" / lv) for lv in levels}
+        latest = _latest_acceptances(session)
+        holds = {lv: _manual_holds(latest, results[lv], lv) for lv in levels}
         for lv in levels:
             accepted = {r.province for r in results[lv] if r.accepted}
             need = {p for (lvl, p) in want if lvl == lv}
-            ok = need <= accepted
+            blocking = need & holds[lv].keys()
+            ok = need <= accepted and not blocking
             held = len(results[lv]) - len(accepted)
+            for p, acc in sorted(holds[lv].items()):
+                report.detail(
+                    f"{lv} {p} 后台记了没过（抽查记录 #{acc['id']}，{acc['sampled_by']}，"
+                    f"{acc['sampled_at']}）：{acc['note'] or ''}"
+                    + (
+                        "——在本批里，停下：要放先在看板记合格或重新抽查"
+                        if p in need
+                        else "——不在本批，不盖掉"
+                    )
+                )
             report.line(
                 f"step=accept_check lvl={LVL[lv]} accepted={len(accepted)} held={held} "
-                f"batch_provinces={len(need)} ok={_bool(ok)}"
+                f"batch_provinces={len(need)} manual_holds={len(holds[lv])} ok={_bool(ok)}"
             )
             if not ok:
                 for p in sorted(need - accepted):
@@ -210,6 +255,7 @@ def run(
             return True
 
         # 四、看板：全国清单写进看板表并重算（只动清单里有门户的行政区）
+        report.step = "coverage_import"
         from youju.govsites.divisions import read_csv
         from youju.govsites.inventory import load_docs
 
@@ -236,14 +282,19 @@ def run(
         if not ok:
             raise Stop("coverage_import")
 
-        # 五、记抽查结论：同一份证据（备注里的 sha1 相同）、同一结论已经记过的不重记
-        from youju.govsites.boarddb import _latest_acceptances, latest_acceptance
+        # 五、记抽查结论：同一份证据（备注里的 sha1 相同）、同一结论已经记过的不重记；
+        # 后台人工记的"没过"不盖掉（在批次里的第三步已经停了，这里是不在批次里的）
+        report.step = "accept"
+        from youju.govsites.boarddb import latest_acceptance
         from youju.govsites.cli import _sha1
 
         for lv in levels:
-            written = skipped = 0
+            written = skipped = kept = 0
             latest = _latest_acceptances(session)
             for r in results[lv]:
+                if r.province in holds[lv]:
+                    kept += 1
+                    continue
                 sha = _sha1(out / "抽查" / lv / f"{r.province}.csv")
                 acc = latest_acceptance(latest, r.province, lv)
                 if (
@@ -264,7 +315,7 @@ def run(
                         passed=r.accepted,
                         note=(
                             f"全检 {r.total} 个栏目：通过 {r.passed}，不通过 {r.failed}，"
-                            f"待重试 {r.retry}（都不进本批）；"
+                            f"待重试 {r.retry}，不收 {r.excluded}（都不进本批）；"
                             f"证据 docs/数据来源/全国覆盖/抽查/{lv}/{r.province}.csv（sha1 {sha}）"
                         )[:300],
                     )
@@ -272,14 +323,21 @@ def run(
                 written += 1
             session.commit()
             _audit(
+                report,
                 "coverage_accept",
                 by=by,
                 level=lv,
-                results={r.province: r.accepted for r in results[lv]},
+                results={
+                    r.province: r.accepted for r in results[lv] if r.province not in holds[lv]
+                },
             )
-            report.line(f"step=accept lvl={LVL[lv]} written={written} already={skipped} ok=1")
+            report.line(
+                f"step=accept lvl={LVL[lv]} written={written} already={skipped} "
+                f"kept_manual={kept} ok=1"
+            )
 
         # 六、分省打开：先试算，个数对上再开；已经打开的算进 done_before
+        report.step = "enable"
         for (lv, prov), urls in want.items():
             keys = {url_key(u) for u in urls}
             done_before = sum(
@@ -307,6 +365,7 @@ def run(
                 )
                 ok = real.enabled == expect
                 _audit(
+                    report,
                     "coverage_enable",
                     by=operator,
                     province=prov,
@@ -334,4 +393,11 @@ def run(
     except Stop as exc:
         session.rollback()
         report.line(f"stop=1 step={exc} detail={report.detail_path.name}")
+        return False
+    except Exception as exc:  # 意料外的错：也打一行 stop，出错经过写进细节文件，不只留在终端
+        session.rollback()
+        report.detail(traceback.format_exc())
+        report.line(
+            f"stop=1 step={report.step} error={type(exc).__name__} detail={report.detail_path.name}"
+        )
         return False

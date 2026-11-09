@@ -22,7 +22,8 @@
 - 重复：同一省里去掉参数后是同一个列表的，后面那个记重复。
 
 都过记"自动通过"，否则记"待人工"并写明哪项没过；最后三列（复核人、复核结论、复核备注）
-留给人工复核。只读库、不联网。
+留给人工复核。复核结论写"通过""不通过""待重试"（这次没抓到）或"不收"（读得对、但不在收录范围，
+如整栏是招聘公示），后面可以加括号说明（见 final_verdict）。只读库、不联网。
 """
 
 import hashlib
@@ -339,10 +340,11 @@ class ProvinceResult:
     failed: int = 0
     pending: int = 0  # 待人工、还没复核的
     retry: int = 0  # 这次没抓到、下批重试的（不算进通过率）
+    excluded: int = 0  # 不收：读得对、但不在收录范围的（不算进通过率）
 
     @property
     def rate(self) -> float:
-        judged = self.total - self.retry
+        judged = self.total - self.retry - self.excluded
         return self.passed / judged if judged else 0.0
 
     @property
@@ -353,11 +355,12 @@ class ProvinceResult:
 def final_verdict(row: dict) -> str:
     """一行的最终结论：人工复核写了就按人工（自动通过的也可能被复核否掉），没写看自动结论。
 
-    复核结论按开头认（"不通过（部门挂错）"算不通过，首尾空格不算）；"待重试"是这次没抓到
-    （不进本批，也不算进通过率）；写了别的词（"有问题"）一律算"待复核"，这个省补上之前不合格。"""
+    复核结论按开头认（"不通过（部门挂错）"算不通过，首尾空格不算）；"待重试"是这次没抓到，
+    "不收"是读得对、但不在收录范围（如整栏都是事业单位招聘公示）：这两种都不进本批，也不算进
+    通过率（通过率量的是读得准不准）；写了别的词（"有问题"）一律算"待复核"，这个省补上之前不合格。"""
     verdict = (row.get("复核结论") or "").strip()
     if verdict:
-        for word in ("不通过", "待重试", "通过"):
+        for word in ("不通过", "待重试", "不收", "通过"):
             if verdict.startswith(word):
                 return word
         return "待复核"
@@ -397,6 +400,8 @@ def evidence_results(folder) -> list[ProvinceResult]:
                     res.failed += 1
                 elif verdict == "待重试":
                     res.retry += 1
+                elif verdict == "不收":
+                    res.excluded += 1
                 else:
                     res.pending += 1
         out.append(res)

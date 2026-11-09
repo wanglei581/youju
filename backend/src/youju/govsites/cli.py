@@ -565,7 +565,7 @@ def _cmd_accept(args: argparse.Namespace) -> int:
         verdict = "合格" if r.accepted else "没过"
         print(
             f"{r.province}：{verdict}（{r.total} 个栏目，通过 {r.passed}，不通过 {r.failed}，"
-            f"待重试 {r.retry}，没复核 {r.pending}，通过率 {r.rate:.0%}）"
+            f"待重试 {r.retry}，不收 {r.excluded}，没复核 {r.pending}，通过率 {r.rate:.0%}）"
         )
     if args.dry_run:
         print("试算，没写库")
@@ -583,7 +583,7 @@ def _cmd_accept(args: argparse.Namespace) -> int:
                     passed=r.accepted,
                     note=(
                         f"全检 {r.total} 个栏目：通过 {r.passed}，不通过 {r.failed}，"
-                        f"待重试 {r.retry}（都不进本批）；"
+                        f"待重试 {r.retry}，不收 {r.excluded}（都不进本批）；"
                         f"证据 docs/数据来源/全国覆盖/抽查/{args.level}/{r.province}.csv"
                         f"（sha1 {_sha1(folder / f'{r.province}.csv')}）"
                     )[:300],
@@ -728,8 +728,12 @@ def _cmd_golive(args: argparse.Namespace) -> int:
     from youju.govsites.boarddb import board_lock
     from youju.govsites.golive import Report, run
 
+    if not str(args.log_dir).isascii():
+        print("--log-dir 要用纯 ASCII 的路径（结论行纯 ASCII）")
+        return 2
     args.log_dir.mkdir(parents=True, exist_ok=True)
     report = Report(args.log_dir, args.tag)
+    report.line(f"log={report.path}")  # 第一行就给出文件名：最后一行留给结论
     with session_factory()() as session, board_lock(session, BOARD_LOCK_WAIT) as got:
         if not got:
             report.line("stop=1 step=lock reason=another_board_command_running")
@@ -744,7 +748,6 @@ def _cmd_golive(args: argparse.Namespace) -> int:
             report,
             operator=args.operator,
         )
-    report.line(f"log={report.path}")
     return 0 if ok else 1
 
 
