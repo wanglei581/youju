@@ -1001,13 +1001,15 @@ class Inventory:
             if f.url in seen:
                 continue
             if rows and cat != "开发区":
+                # 已有首选、要往后试时，只试同分的、或链接文字明写是本地的：分更低、名称又说不清
+                # 的别家网站（市局独立域名的"科技局"）不能顶掉本地的频道。首选本身是文章、年报、
+                # 简介一类时，后面的弱页不再试；在本地门户自己域名下的也可以试（潍坊发改委选了
+                # 年报列表、池州人社选了文章，真正的部门网站在本市域名下、分低）
                 weak = bool(_weak_page(f.url))
                 if top_weak and weak:
-                    continue  # 首选已经是文章、年报一类：再试也只试像部门网站的
-                if not top_weak and score != top_score and not self._named_own(f, owner):
-                    # 已有首选、要往后试时，只试同分的、或链接文字明写是本地的：分更低、名称又说
-                    # 不清的别家网站（市局独立域名的"科技局"）不能顶掉本地的频道。首选本身是
-                    # 文章、年报一类时不受这条限制（潍坊发改委选了年报列表、池州人社选了文章）
+                    continue
+                local = top_weak and self._local_domain(f, home, owner)
+                if score != top_score and not self._named_own(f, owner) and not local:
                     continue
             if fetched >= limit:
                 break  # 打不开、被否掉的也算一次：每类部门最多抓这么多个候选页面
@@ -1070,6 +1072,14 @@ class Inventory:
             best = best or next((r for r in rows if r.columns), None) or rows[0]
             rows = [best]
         return rows, rejected
+
+    def _local_domain(self, f: Found, home: PageInfo, owner: "_Owner | None") -> bool:
+        """候选在本地门户自己的注册域下（本地和上级共用一个域名时不算：海南的市县）。"""
+        own = registrable(home.final_url)
+        if not own or registrable(f.url) != own:
+            return False
+        upper = {registrable(u) for u in owner.upper_portals} if owner is not None else set()
+        return own not in upper
 
     def _named_own(self, f: Found, owner: "_Owner | None") -> bool:
         """链接文字明写是本地的部门（以本地地名、本级层级字打头，或本地的派出分局）。"""

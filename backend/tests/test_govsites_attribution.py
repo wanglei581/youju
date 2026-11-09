@@ -827,3 +827,17 @@ def test_weak_top_page_can_be_replaced_by_a_department_site():
     depts = _depts(_run(pages, ["江西"]))
     assert depts[("360400", "人社")].site_url == "http://rsj.jiujiang.gov.cn/"
     assert depts[("360400", "财政")].site_url == "http://czj.jiujiang.gov.cn/"
+
+
+def test_local_weak_page_not_replaced_by_unclear_site_elsewhere():
+    # 独立审阅（11/9）：本地部门链到简介文章，市局独立域名的"科技局"有栏目，也不能顶掉本地的
+    pages = _lianxi_with(
+        '<a href="/content/2025/1001.html">濂溪区科学技术局</a>'
+        '<a href="http://www.jjkjj.gov.cn/">科技局</a>',
+        {
+            "http://www.lianxi.gov.cn/content/2025/1001.html": "<p>科技局简介</p>",
+            "http://www.jjkjj.gov.cn/": '<title>首页</title><a href="/tzgg/">通知公告</a>',
+        },
+    )
+    kj = _depts(_run(pages, ["江西"]))[("360402", "科技")]
+    assert kj.site_url == "http://www.lianxi.gov.cn/content/2025/1001.html"
