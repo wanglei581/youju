@@ -105,3 +105,22 @@ def test_write_outputs_names_files_by_level(tmp_path) -> None:
     )
     assert csv_path.name == "江苏_市级.csv" and md_path.name == "江苏_市级.md"
     assert csv_path.parent.name == "抽查"
+
+
+def test_attribution_uses_issuer_and_strips_site_noise() -> None:
+    cell = {"城市": "焦作", "部门": "农业农村"}
+    col = "<title>欢迎访问焦作市农业农村局网站！</title>"
+    assert sc.attribution_check(cell, col, "")[0] == "本市本部门"
+    jieyang = {"城市": "揭阳", "部门": "人社"}
+    portal = '<meta name="SiteName" content="揭阳市人民政府门户网站"><title>通知公告</title>'
+    doc = (
+        "<title>关于某某的公告</title><p>来源：揭阳市人力资源和社会保障局 发布时间：2026-11-03</p>"
+    )
+    assert sc.attribution_check(jieyang, portal, doc)[0] == "本市本部门"
+    zone = {"城市": "潍坊", "部门": "开发区"}
+    assert sc.attribution_check(zone, "<title>潍坊高新技术产业开发区</title>", "")[0] == (
+        "本市本部门"
+    )
+    gz = {"城市": "广州", "部门": "发改委"}
+    doc2 = "<title>广州市发展和改革委员会关于举办培训的通知 | 广州市发展和改革委员会网站</title>"
+    assert sc.attribution_check(gz, "<title>通知公告</title>", doc2)[0] == "本市本部门"

@@ -167,6 +167,16 @@ def city_names(city: str) -> set[str]:
     return names
 
 
+# 网站名前后的客套话："欢迎访问焦作市农业农村局网站！""广州市发展和改革委员会网站"
+_SITE_NOISE = re.compile(r"^欢迎(?:访问|您)?|(?:门户)?网站[！!]?$|欢迎您[！!]?$|官网$|[！!]$")
+# 开发区的网站名常不写"管委会"（"潍坊高新技术产业开发区"），抽查时按名称认
+_ZONE = re.compile(r"开发区|高新区|新区|园区|试验区|示范区|保税区|管委会|管理委员会")
+# 文件页上写的发文单位："来源：揭阳市人社局""发布机构：衢州市文化广电旅游局"
+_ISSUER = re.compile(
+    r"(?:来源|信息来源|发布机构|发文机关|发文单位|发布单位)\s*[:：]\s*([^\s|<>【】]{3,30})"
+)
+
+
 def _site_names(page_html: str) -> list[str]:
     doc = parse_html(page_html)
     out = []
@@ -180,22 +190,37 @@ def _site_names(page_html: str) -> list[str]:
     return out
 
 
+def _org_parts(names: list[str]) -> list[str]:
+    """网站名、标题拆成一段一段的机关名候选（去掉客套话）。"""
+    parts = []
+    for s in names:
+        for part in re.split(r"[-_|·—–>＞:：\s]+", s):
+            part = _SITE_NOISE.sub("", _SITE_NOISE.sub("", part.strip()))
+            if part:
+                parts.append(part)
+                # 标题开头的发文机关："广州市发展和改革委员会关于……的通知"
+                if "关于" in part:
+                    parts.append(part.split("关于", 1)[0])
+    return parts
+
+
 def attribution_check(cell: dict, column_html: str, doc_html: str) -> tuple[str, str]:
-    """栏目页和文件页的网站名、标题里有没有本市的写法，栏目页网站名能不能归到这个部门。"""
+    """栏目页和文件页的网站名、标题、发文单位里有没有本市的写法，能不能归到这个部门。"""
     city, dept = cell.get("城市", ""), cell.get("部门", "")
     col_names = _site_names(column_html)
     doc_names = _site_names(doc_html)
+    issuers = [m.group(1) for m in _ISSUER.finditer(page_text(doc_html))][:3]
     names = city_names(city) if city else set()
-    where = " / ".join(col_names + doc_names)[:120]
-    if not names or not any(n in s for n in names for s in col_names + doc_names):
-        return "待看", f"网站名和标题里没有找到“{city}”：{where or '（都没有）'}"
+    texts = col_names + doc_names + issuers
+    where = " / ".join(texts)[:160]
+    if not names or not any(n in s for n in names for s in texts):
+        return "待看", f"网站名、标题和发文单位里没有找到“{city}”：{where or '（都没有）'}"
     if dept == "政府办":
         return "本市本部门", where
-    for s in col_names + doc_names:
-        for part in re.split(r"[-_|·—–>＞:：\s]+", s):
-            if dept in dept_categories(part):
-                return "本市本部门", where
-    return "本市", f"认不出是“{dept}”的网站（门户频道或网站名不写部门）：{where}"
+    for part in _org_parts(texts):
+        if dept in dept_categories(part) or (dept == "开发区" and _ZONE.search(part)):
+            return "本市本部门", where
+    return "本市", f"认不出是“{dept}”（门户频道或网站名不写部门）：{where}"
 
 
 # —— 取证（要数据库和页面缓存）——
@@ -238,38 +263,56 @@ def evidence_for(cell: dict, session, cache, today: date) -> dict:
     if not urls:
         ev.update(程序结论=REVIEW, 打开="看板里这一格没有栏目网址")
         return ev
-    title = doc_url = ""
-    published = None
+    candidates: list[tuple[str, str, date | None, str]] = []
     ids = list(session.scalars(select(Source.id).where(Source.url.in_(urls))))
-    row = None
     if ids:
-        row = session.execute(
+        rows = session.execute(
             select(Document.title, Document.url, Document.publish_date)
             .where(Document.source_id.in_(ids), Document.publish_date.is_not(None))
             .order_by(Document.publish_date.desc(), Document.id.desc())
-            .limit(1)
-        ).first()
-    if row is not None:
-        title, doc_url, published = row
-        ev["来源"] = "库里"
-    else:
-        item = None
+            .limit(10)
+        ).all()
+        candidates = [(t, u, d, "库里") for t, u, d in rows]
+    if not candidates:
         for url in urls:
             item = _first_list_item(cache, url, today)
             if item is not None:
+                candidates = [(item.title, item.url, item.publish_date, "列表页重读")]
                 break
-        if item is None:
-            ev.update(
-                来源="列表页重读", 程序结论=REVIEW, 打开="库里没有文件，列表页也没读出带日期的条目"
-            )
-            return ev
-        title, doc_url, published = item.title, item.url, item.publish_date
-        ev["来源"] = "列表页重读"
-    ev.update(文件标题=title, 文件网址=doc_url, 发布日期=published.isoformat() if published else "")
-    if not is_gov_url(doc_url):
-        ev.update(打开="非政府网站，未打开", 程序结论=REVIEW)
+    if not candidates:
+        ev.update(
+            来源="列表页重读", 程序结论=REVIEW, 打开="库里没有文件，列表页也没读出带日期的条目"
+        )
         return ev
-    r = cache.get(doc_url)
+    # 先挑政府网站上的网页（栏目里转的新华网、公众号外链和附件不核），原文打不开就顺延，最多试 3 份
+    skipped: list[str] = []
+    chosen = None
+    tries = 0
+    for title, doc_url, published, origin in candidates:
+        if not is_gov_url(doc_url):
+            skipped.append("外链")
+            continue
+        if _ATTACHMENT.search(doc_url.split("?")[0]):
+            skipped.append("附件")
+            continue
+        tries += 1
+        r = cache.get(doc_url)
+        chosen = (title, doc_url, published, origin, r)
+        if r.status == "ok" or tries >= 3:
+            break
+        skipped.append("打不开")
+    if chosen is None:
+        title, doc_url, published, origin = candidates[0]
+        ev.update(文件标题=title, 文件网址=doc_url, 来源=origin, 程序结论=REVIEW)
+        ev.update(
+            发布日期=published.isoformat() if published else "", 打开="最近的文件都是外链或附件"
+        )
+        return ev
+    title, doc_url, published, origin, r = chosen
+    ev.update(文件标题=title, 文件网址=doc_url, 来源=origin)
+    ev["发布日期"] = published.isoformat() if published else ""
+    if skipped:
+        ev["备注"] = "跳过更新的：" + "、".join(skipped)
     if r.status != "ok":
         ev.update(打开=f"打不开：{(r.error or r.status)[:80]}", 程序结论=REVIEW)
         return ev
@@ -287,6 +330,9 @@ def evidence_for(cell: dict, session, cache, today: date) -> dict:
     )
     ev["程序结论"] = OK if passed else REVIEW
     return ev
+
+
+_ATTACHMENT = re.compile(r"\.(?:pdf|docx?|xlsx?|wps|ofd|zip|rar|7z|txt|jpe?g|png)$", re.I)
 
 
 def _md_cell(value: str) -> str:
