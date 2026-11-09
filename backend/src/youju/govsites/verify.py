@@ -58,6 +58,17 @@ class ColumnCheck:
     samples: list[str] = field(default_factory=list)
 
 
+_LEVEL_RANK = {"国家级": 0, "省级": 1, "市级": 2, "区县级": 3}
+
+
+def columns_for(depts: Iterable[DeptRow], levels=None) -> list[ColumnCheck]:
+    """要试读的栏目：同一网址只留一个，归到最高的那一级（省厅的栏目也挂在区县页上时算省级），
+    再按 levels 过滤。几条线分级试读时，同一个网址不会在两级各出一行；谁占网址也固定下来。"""
+    ordered = sorted(depts, key=lambda d: (_LEVEL_RANK.get(d.level, 9), d.code, d.dept))
+    cols = columns_of(ordered)
+    return [c for c in cols if c.level in levels] if levels else cols
+
+
 def columns_of(depts: Iterable[DeptRow]) -> list[ColumnCheck]:
     """盘点结果里所有找到的栏目（同一网址只留一个：合并部门的同一栏目不重复）。"""
     out: list[ColumnCheck] = []

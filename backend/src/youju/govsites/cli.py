@@ -61,6 +61,11 @@ def _cmd_inventory(args: argparse.Namespace) -> int:
         # 只写这几级：走到最深的那一级就停（国家级、省级都只用走到省级）
         deepest = max(levels, key=LEVEL_ORDER.index)
         max_level = "省级" if deepest in ("国家级", "省级") else deepest
+        if args.max_level != "区县级":
+            print(f"给了 --levels，走到哪一级按它定（{max_level}），--max-level 不用")
+    elif args.max_level != "区县级":
+        # 只给 --max-level：只换走到的这几级，更下级的行照旧（几条线并行时不冲掉别人的）
+        levels = set(LEVEL_ORDER[: LEVEL_ORDER.index(args.max_level) + 1])
     started = time.time()
     log_path = args.cache / "inventory.log"
     log_fh = open(log_path, "a", encoding="utf-8") if args.log else None  # noqa: SIM115
@@ -91,9 +96,11 @@ def _cmd_inventory(args: argparse.Namespace) -> int:
             seeds=load_seeds(args.seeds),
         )
         inv.run()
-    state = args.cache / (
-        "state-" + ("_".join(args.province) if args.province else "全国") + ".json"
-    )
+    # 只写某几级时原始结果另存一份（文件名带层级），不覆盖全量的那份
+    tag = "_".join(args.province) if args.province else "全国"
+    if levels:
+        tag += "-" + "_".join(lv for lv in LEVEL_ORDER if lv in levels)
+    state = args.cache / f"state-{tag}.json"
     save_state(inv, state)
     summary = write_outputs(
         index, list(inv.portals.values()), inv.depts, args.out, args.province, levels or None
@@ -116,17 +123,18 @@ def _cmd_verify(args: argparse.Namespace) -> int:
         COLUMN_FIELDS,
         column_key,
         column_rows,
+        dedupe_column_rows,
         merge_level_rows,
         verify_summary,
     )
-    from youju.govsites.verify import check_columns, columns_of
+    from youju.govsites.verify import check_columns, columns_for
 
     _, depts = _load_states(args.state)
     if args.province:
         depts = [d for d in depts if d.province in args.province]
-    if args.level:
-        depts = [d for d in depts if d.level in args.level]
-    cols = columns_of(depts)
+    # 高一级先占网址（省厅栏目也挂在区县页上时算省级），再按 --level 过滤
+    cols = columns_for(depts, set(args.level) if args.level else None)
+    scope = [d for d in depts if d.level in args.level] if args.level else depts
     if args.sample_per_level:
         # 抽样（平台盘点用）：每省每级取网址散列最小的 N 个，重跑抽到的一样
         picked = []
@@ -153,7 +161,7 @@ def _cmd_verify(args: argparse.Namespace) -> int:
         by_prov.setdefault(c.province, []).append(c)
     if args.level:
         # 只试读某几级：范围里的每个省都写（这一级一个栏目也没有也要把旧行换掉），其他级的行照旧
-        for d in depts:
+        for d in scope:
             by_prov.setdefault(d.province, [])
     sub = "栏目抽样试读" if args.sample_per_level else "栏目清单"
     for prov, group in by_prov.items():
@@ -161,10 +169,13 @@ def _cmd_verify(args: argparse.Namespace) -> int:
         rows = column_rows(group, today)
         if args.level:
             rows = merge_level_rows(path, COLUMN_FIELDS, rows, set(args.level), column_key)
+            rows = dedupe_column_rows(rows)  # 别级旧行里同一网址的，留最高一级那行
         write_table(path, COLUMN_FIELDS, rows)
     tag = ("抽样-" if args.sample_per_level else "") + (
         "_".join(args.province) if args.province else "全国"
     )
+    if args.level:
+        tag += "-" + "_".join(lv for lv in LEVEL_ORDER if lv in args.level)
     dump = [asdict(c) | {"latest": c.latest.isoformat() if c.latest else None} for c in checks]
     (args.cache / f"checks-{tag}.json").write_text(
         json.dumps(dump, ensure_ascii=False), encoding="utf-8"

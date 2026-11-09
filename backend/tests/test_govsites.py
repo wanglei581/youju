@@ -794,3 +794,44 @@ def test_load_seeds_reads_every_file_in_directory(tmp_path):
     assert seeds["360000"] == [("https://kjt.jiangxi.gov.cn/", "科技厅")]
     assert seeds["360100"] == [("https://www.nc.gov.cn/", "南昌")]
     assert load_seeds(d / "江西_省级.csv").keys() == {"360000"}
+
+
+def test_shared_column_goes_to_the_higher_level():
+    from youju.govsites.inventory import ColumnHit, DeptRow
+    from youju.govsites.report import dedupe_column_rows
+    from youju.govsites.verify import columns_for
+
+    shared = "https://kjt.zj.gov.cn/tzgg/"
+    county = DeptRow(
+        "330106",
+        "区县级",
+        "浙江",
+        "杭州",
+        "西湖区",
+        "科技",
+        status="已找到",
+        columns=[ColumnHit("通知公告", "通知公告", shared, "")],
+    )
+    prov = DeptRow(
+        "330000",
+        "省级",
+        "浙江",
+        "",
+        "",
+        "科技",
+        status="已找到",
+        columns=[ColumnHit("通知公告", "通知公告", shared, "")],
+    )
+    # 区县的行在前也归省级；只试读区县时这个网址不再出现
+    assert [(c.level, c.url) for c in columns_for([county, prov])] == [("省级", shared)]
+    assert columns_for([county, prov], {"区县级"}) == []
+    rows = [["省级"] + [""] * 6 + [shared], ["区县级"] + [""] * 6 + [shared]]
+    assert dedupe_column_rows(rows) == [rows[0]]
+
+
+def test_summarize_lists_only_written_levels():
+    from youju.govsites.report import summarize
+
+    index = DivisionIndex([d for d in _divisions() if d.province == "浙江"])
+    text = summarize(index, [], [], ["浙江"], {"省级"})
+    assert "浙江 | 省级" in text and "浙江 | 市级" not in text
