@@ -209,6 +209,10 @@ def _zhejiang_pages() -> dict[str, str]:
     }
     api = find_unit_apis(pages[JPAAS_DEPT], JPAAS_DEPT)[0].url
     pages[api] = json.dumps({"data": {"html": unit_html}})
+    # 还原出来的分类栏目页自己写着栏目名（长兴县实际页面的 meta ColumnName）
+    pages["http://www.zjcx.gov.cn/xxgk/zfbmxxgk/zxxkxjsj/fdzdgknr/zcwj/xzbmfgfxwj/index.html"] = (
+        '<meta name="ColumnName" content="乡镇、部门非规范性文件"><title>乡镇、部门非规范性文件</title>'
+    )
     return pages
 
 
@@ -360,4 +364,34 @@ def test_guangdong_county_departments_from_gkmlpt_directory():
     # 门户首页带的是省里的标识码（广东集约化），部门页在本门户主机上：不因此判成上级
     assert [(c.kind, c.url) for c in fg.columns] == [
         ("通知公告", "https://www.gdsx.gov.cn/sgsxfgj/gkmlpt/index#xxgk-gkmlpt-3076")
+    ]
+
+
+def _group_check_pages(column_page: str | None) -> dict[str, str]:
+    pages = _zhejiang_pages()
+    leaf = "http://www.zjcx.gov.cn/xxgk/zfbmxxgk/zxxkxjsj/fdzdgknr/zcwj/xzbmfgfxwj/index.html"
+    if column_page is None:
+        pages.pop(leaf)
+    else:
+        pages[leaf] = column_page
+    return pages
+
+
+def test_group_columns_are_checked_by_their_own_name():
+    leaf = "http://www.zjcx.gov.cn/xxgk/zfbmxxgk/zxxkxjsj/fdzdgknr/zcwj/xzbmfgfxwj/index.html"
+
+    def kj_columns(pages):
+        inv = Inventory(INDEX, FakeCache(pages), provinces=["浙江"], workers=2, per_province=2)
+        inv.run()
+        return [(c.kind, c.url) for c in _depts(inv)[("330522", "科技")].columns]
+
+    # 分组"政策文件"还原出的栏目其实是"其他文件政策解读"（拱墅区）：不要
+    assert (
+        kj_columns(_group_check_pages('<meta name="ColumnName" content="其他文件政策解读">')) == []
+    )
+    # 栏目页打不开：不要
+    assert kj_columns(_group_check_pages(None)) == []
+    # 栏目自己叫"通知公告"：记到通知公告
+    assert kj_columns(_group_check_pages("<title>通知公告 - 长兴县人民政府</title>")) == [
+        ("通知公告", leaf)
     ]

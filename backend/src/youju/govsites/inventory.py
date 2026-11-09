@@ -251,6 +251,17 @@ def _weak_page(url: str) -> int:
     return int(_WEAK_PAGE.search(path) is not None or any(p.search(path) for _, p in URL_SHAPES))
 
 
+def _column_name(page: PageInfo) -> str:
+    """栏目页自己写的栏目名：meta ColumnName，没有就用标题的第一段。"""
+    if page.doc is None:
+        return ""
+    for meta in page.doc.iter("meta"):
+        if (meta.get("name") or "").lower() == "columnname" and (meta.get("content") or "").strip():
+            return meta.get("content").strip()
+    title = (page.doc.findtext(".//title") or "").strip()
+    return re.split(r"\s*[-_|｜—]\s*", title)[0] if title else ""
+
+
 def _readable(row: DeptRow) -> bool:
     """部门页上认出了能直接打开的栏目（不是要接口的信息公开分类）。"""
     return row.status == "已找到" and any(f"#{XXGK_TAG}" not in c.url for c in row.columns)
@@ -946,6 +957,38 @@ class Inventory:
             return [row]
         return rows or ([self._dept_row(div, cat)] if cat in STANDARD_DEPTS else [])
 
+    def _check_group_columns(
+        self,
+        pages: list[PageInfo],
+        hits: dict[str, ColumnHit],
+        exclude: frozenset[str],
+        max_depth: int,
+    ) -> dict[str, ColumnHit]:
+        """由大汉分组条目还原出来的栏目页，看它自己叫什么（meta ColumnName，没有就看标题）：
+        分组"政策文件"里的条目可能发在"其他文件政策解读"栏目（拱墅区），还原出的栏目名不是这一类
+        的就不要；它自己的名字是另一类目标栏目、那一类又还空着的，记到那一类。"""
+        groups = {link.url for p in pages for link in p.links if link.via == "jpaas分组"}
+        bad: set[str] = set()
+        moved: list[ColumnHit] = []  # 自己的名字是另一类目标栏目的
+        for kind, hit in hits.items():
+            if hit.url not in groups:
+                continue
+            cp = self.page(hit.url)
+            ok = cp.result.status == "ok" and not cp.block
+            name = _column_name(cp) if ok else ""
+            own = column_kind(name) if name else None
+            if own is not None and own[0] == kind:
+                continue
+            bad.add(hit.url)
+            if own is not None:
+                moved.append(ColumnHit(own[0], name, hit.url, hit.source))
+        if not bad:
+            return hits
+        hits = find_columns(pages, exclude | frozenset(bad), max_depth)
+        for hit in moved:
+            hits.setdefault(hit.kind, hit)
+        return hits
+
     def _not_own_site(self, cat: str, f: Found, dp: PageInfo, owner: "_Owner") -> str:
         """候选部门网站不是本地的（上级、别处、外省）时返回一句原因，是本地的或说不清返回空串。
 
@@ -1010,6 +1053,7 @@ class Inventory:
         if row.dept != "政府办" and fp.site_name and row.dept in dept_categories(fp.site_name):
             row.dept_full_name = fp.site_name
         hits = find_columns(pages, exclude, max_depth)
+        hits = self._check_group_columns(pages, hits, exclude, max_depth)
         missing = [k for k in COLUMN_KINDS if k not in hits]
         if missing and row.dept != "政府办":
             # 部门首页没有：沿"信息公开"再找一层
