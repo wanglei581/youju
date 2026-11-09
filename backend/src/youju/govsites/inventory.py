@@ -55,6 +55,7 @@ from youju.govsites.links import (
     script_links,
 )
 from youju.govsites.names import COLUMN_KINDS, column_kind, dept_categories
+from youju.govsites.navrules import city_nav_links, device_redirect, labeled_scripts
 from youju.govsites.pagecache import PageCache
 from youju.govsites.platform import URL_SHAPES, Fingerprint, blocker, fingerprint
 
@@ -328,17 +329,30 @@ class Inventory:
                 ]
                 for g in groups[:6]:
                     visit(g, f"{link.text}/{g.text}")
+        if home.level_hint == "市级":
+            # 地市门户：通用导航词没收的部门列表页（部门频道、市政府工作机构、政务公开……，navrules）
+            for link in city_nav_links(home.links, home.final_url, seen):
+                visit(link, link.text)
         if home.doc is not None:
             # 省、市门户的"市县网站""部门网站"常由脚本拼出来：多看几个本站脚本
             extra = 6 if home.level_hint in ("省级", "市级", "国家级") else 0
             # 安徽等省每个地市一个导航脚本：省级门户多看一些
             named = 24 if home.level_hint == "省级" else 8
-            for src in footer_scripts(home.doc, home.final_url, extra=extra, named_limit=named):
+            scripts = [
+                (src, "页脚脚本")
+                for src in footer_scripts(home.doc, home.final_url, extra=extra, named_limit=named)
+            ]
+            if home.level_hint == "市级" and home.result.text:
+                # "市直部门""政府部门"下拉菜单的链接脚本（安徽各市、黄冈）：按菜单名挑，排在前面
+                labeled = labeled_scripts(home.result.text, home.final_url)
+                chosen = {src for src, _ in labeled}
+                scripts = labeled + [(s, t) for s, t in scripts if s not in chosen]
+            for src, label in scripts:
                 r = self.cache.get(src)
                 if r.status == "ok":
                     links = script_links(r.text, home.final_url)
                     if links:
-                        pages.append(PageInfo(src, src, r, None, links, nav_text="页脚脚本"))
+                        pages.append(PageInfo(src, src, r, None, links, nav_text=label))
         return pages
 
     def _seed_pages(self, div: Division) -> list[PageInfo]:
@@ -932,9 +946,11 @@ def _script_redirect(result: FetchResult, url: str) -> str | None:
     if target is None:
         m = _META_REFRESH.search(result.text)
         target = m.group(1) if m else None
-    if not target:
-        return None
     base = result.final_url or url
+    if not target:
+        # 地址放在变量里、带条件的跳转：按设备分手机版电脑版、换 https、按主机名（navrules）
+        full = device_redirect(result.text, base)
+        return full if full and full != base else None
     full = normalize_url(base, target)
     if not full or full == base or registrable(full) != registrable(base):
         return None
