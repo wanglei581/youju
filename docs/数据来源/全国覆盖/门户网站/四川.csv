@@ -1,6 +1,6 @@
 ﻿层级,省份,城市,区县,区划代码,名称,门户网址,导航来源页,导航文字,状态,原因,网站标识码,网站名称,平台,技术支持
 省级,四川,,,510000,四川省,https://www.sc.gov.cn/,https://www.gov.cn/home/2023-03/29/content_5748954.htm,四川,已找到,,5100000062,四川省人民政府网站,开普云|32位编号.shtml,
-市级,四川,成都,,510100,成都市,http://www.chengdu.gov.cn/,https://www.sc.gov.cn/,成都市,不能抓,HTTP 412 拒绝访问,,,,
+市级,四川,成都,,510100,成都市,http://www.chengdu.gov.cn/,https://www.sc.gov.cn/,成都市,打不开,robots.txt 暂时无法获取（RemoteProtocolError: no response line received），本次跳过,,,,
 市级,四川,自贡,,510300,自贡市,https://www.zg.gov.cn/,https://www.sc.gov.cn/,自贡市,已找到,,5103000007,自贡市人民政府,未识别,
 市级,四川,攀枝花,,510400,攀枝花市,http://www.panzhihua.gov.cn/,https://www.sc.gov.cn/,攀枝花市,已找到,,5104000001,攀枝花市人民政府,开普云,
 市级,四川,泸州,,510500,泸州市,https://www.luzhou.gov.cn/,https://www.sc.gov.cn/,泸州市,已找到,,5105000013,泸州市人民政府门户网站,开普云,
@@ -17,7 +17,7 @@
 市级,四川,达州,,511700,达州市,http://www.dazhou.gov.cn/,https://www.sc.gov.cn/,达州市,已找到,,5117000005,达州市人民政府门户网,开普云,
 市级,四川,雅安,,511800,雅安市,https://www.yaan.gov.cn/,https://www.sc.gov.cn/,雅安市,已找到,,5118000022,雅安市人民政府,未识别,
 市级,四川,巴中,,511900,巴中市,https://www.cnbz.gov.cn/,https://www.sc.gov.cn/,巴中市,已找到,,5119000011,巴中市人民政府,未识别,
-市级,四川,资阳,,512000,资阳市,https://www.ziyang.gov.cn/,https://www.sc.gov.cn/,资阳市,已找到,,5120000001,资阳市人民政府,未识别,
+市级,四川,资阳,,512000,资阳市,http://www.ziyang.gov.cn/,https://www.sc.gov.cn/,资阳市,已找到,,5120000001,资阳市人民政府,未识别,
 市级,四川,阿坝藏族羌族自治州,,513200,阿坝藏族羌族自治州,http://www.abazhou.gov.cn/,https://www.sc.gov.cn/,阿坝州,已找到,,5132000003,阿坝藏族羌族自治州人民政府,32位编号.shtml,
 市级,四川,甘孜藏族自治州,,513300,甘孜藏族自治州,http://www.gzz.gov.cn/,https://www.sc.gov.cn/,甘孜州,已找到,,5133000010,甘孜藏族自治州人民政府,动态页?id=,
 市级,四川,凉山彝族自治州,,513400,凉山彝族自治州,http://www.lsz.gov.cn/,https://www.sc.gov.cn/,凉山州,已找到,,5134000016,凉山彝族自治州人民政府,拓尔思|t日期_编号(拓尔思),
