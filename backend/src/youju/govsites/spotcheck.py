@@ -364,12 +364,13 @@ def write_outputs(
 ) -> tuple[Path, Path]:
     folder = out / "抽查"
     folder.mkdir(parents=True, exist_ok=True)
-    csv_path = folder / f"{province}.csv"
+    # 文件名带层级：几条线各抽各的级，不互相覆盖
+    csv_path = folder / f"{province}_{level}.csv"
     with csv_path.open("w", encoding="utf-8-sig", newline="") as fh:
         w = csv.DictWriter(fh, FIELDS)
         w.writeheader()
         w.writerows(rows)
-    md_path = folder / f"{province}.md"
+    md_path = folder / f"{province}_{level}.md"
     md_path.write_text(
         render_markdown(province, level, population, seed, rows, today), encoding="utf-8"
     )

@@ -95,3 +95,13 @@ def test_render_markdown_escapes_pipes() -> None:
     assert "关于A\\|B的通知" in text
     assert "程序判合格 1/1" in text
     assert "不足 20 个" in text
+
+
+def test_write_outputs_names_files_by_level(tmp_path) -> None:
+    row = {f: "" for f in sc.FIELDS}
+    row.update(序号=1, 程序结论=sc.OK)
+    csv_path, md_path = sc.write_outputs(
+        tmp_path, "江苏", "市级", 1, "2026-11", [row], date(2026, 11, 9)
+    )
+    assert csv_path.name == "江苏_市级.csv" and md_path.name == "江苏_市级.md"
+    assert csv_path.parent.name == "抽查"
