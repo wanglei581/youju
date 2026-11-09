@@ -794,3 +794,108 @@ def test_load_seeds_reads_every_file_in_directory(tmp_path):
     assert seeds["360000"] == [("https://kjt.jiangxi.gov.cn/", "科技厅")]
     assert seeds["360100"] == [("https://www.nc.gov.cn/", "南昌")]
     assert load_seeds(d / "江西_省级.csv").keys() == {"360000"}
+
+
+def test_shared_column_goes_to_the_higher_level():
+    from youju.govsites.inventory import ColumnHit, DeptRow
+    from youju.govsites.report import dedupe_column_rows
+    from youju.govsites.verify import columns_for
+
+    shared = "https://kjt.zj.gov.cn/tzgg/"
+    county = DeptRow(
+        "330106",
+        "区县级",
+        "浙江",
+        "杭州",
+        "西湖区",
+        "科技",
+        status="已找到",
+        columns=[ColumnHit("通知公告", "通知公告", shared, "")],
+    )
+    prov = DeptRow(
+        "330000",
+        "省级",
+        "浙江",
+        "",
+        "",
+        "科技",
+        status="已找到",
+        columns=[ColumnHit("通知公告", "通知公告", shared, "")],
+    )
+    # 区县的行在前也归省级；只试读区县时这个网址不再出现
+    assert [(c.level, c.url) for c in columns_for([county, prov])] == [("省级", shared)]
+    assert columns_for([county, prov], {"区县级"}) == []
+    rows = [["省级"] + [""] * 6 + [shared], ["区县级"] + [""] * 6 + [shared]]
+    assert dedupe_column_rows(rows) == [rows[0]]
+
+
+def test_summarize_lists_only_written_levels():
+    from youju.govsites.report import summarize
+
+    index = DivisionIndex([d for d in _divisions() if d.province == "浙江"])
+    text = summarize(index, [], [], ["浙江"], {"省级"})
+    assert "浙江 | 省级" in text and "浙江 | 市级" not in text
+
+
+def test_merged_departments_keep_inventory_order():
+    from youju.govsites.inventory import ColumnHit, DeptRow
+    from youju.govsites.verify import columns_for
+
+    url = "https://jxj.example.gov.cn/tzgg/"
+
+    def row(dept):
+        return DeptRow(
+            "330402",
+            "区县级",
+            "浙江",
+            "嘉兴",
+            "南湖区",
+            dept,
+            status="已找到",
+            columns=[ColumnHit("通知公告", "通知公告", url, "")],
+        )
+
+    # 工信、商务合并的局共用一个栏目：归盘点顺序靠前的工信（不按部门名排序）
+    assert [c.dept for c in columns_for([row("商务"), row("工信")])] == ["工信"]
+
+
+def test_dept_levels_skip_upper_level_departments(tmp_path):
+    pages = {
+        GOV_LOCAL_NAV: '<a href="https://www.zj.gov.cn/">浙江</a>',
+        "https://www.zj.gov.cn/": """<a href="/sxwz/">市县政府网站</a>
+            <a href="http://kjt.zj.gov.cn/">浙江省科学技术厅</a>""",
+        "https://www.zj.gov.cn/sxwz/": '<a href="https://www.hangzhou.gov.cn/">杭州市</a>',
+        "https://www.hangzhou.gov.cn/": '<a href="http://kj.hangzhou.gov.cn/">杭州市科学技术局</a>',
+        "http://kj.hangzhou.gov.cn/": '<a href="/tzgg/">通知公告</a>',
+    }
+
+    class CountingCache(FakeCache):
+        def __init__(self, pages):
+            super().__init__(pages)
+            self.asked: list[str] = []
+
+        def get(self, url):
+            self.asked.append(url)
+            return super().get(url)
+
+    cache = CountingCache(pages)
+    inv = Inventory(
+        DivisionIndex([d for d in _divisions() if d.province == "浙江"]),
+        cache,
+        provinces=["浙江"],
+        max_level="市级",
+        workers=2,
+        per_province=2,
+        dept_levels={"市级"},
+    )
+    inv.run()
+    assert {d.level for d in inv.depts} == {"市级"}
+    assert "http://kjt.zj.gov.cn/" not in cache.asked  # 省直部门网站不去抓
+    assert any(d.site_url == "http://kj.hangzhou.gov.cn/" for d in inv.depts)
+    # 原始结果只存这几级：上级门户行不存，读回来时不会被补成"导航未找到"的格
+    from youju.govsites.inventory import complete_slots, load_state, save_state
+
+    save_state(inv, tmp_path / "state.json", {"市级"})
+    portals, depts = load_state(tmp_path / "state.json")
+    assert {p.level for p in portals} == {"市级"}
+    assert {d.level for d in complete_slots(portals, depts)} == {"市级"}

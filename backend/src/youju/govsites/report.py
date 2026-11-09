@@ -52,7 +52,7 @@ def write_outputs(
             d_rows = merge_level_rows(d_path, DEPT_FIELDS, d_rows, levels, _dept_key)
         write_table(p_path, PORTAL_FIELDS, p_rows)
         write_table(d_path, DEPT_FIELDS, d_rows)
-    return summarize(index, portals, depts, provinces)
+    return summarize(index, portals, depts, provinces, levels)
 
 
 _DEPT_ORDER = {d: i for i, d in enumerate(STANDARD_DEPTS + OPTIONAL_DEPTS)}
@@ -94,12 +94,16 @@ def summarize(
     portals: list[PortalRow],
     depts: list[DeptRow],
     provinces: Iterable[str] | None = None,
+    levels: Collection[str] | None = None,
 ) -> str:
+    """每省每级的找到情况；levels 给了只列这几级（只写了这几级时，别的级是 0 会让合计偏小）。"""
     only = set(provinces or [])
     lines = ["省份 | 层级 | 行政区 | 门户找到 | 门户打不开/不能抓 | 标准部门应有 | 找到 | 有栏目"]
     total = Counter()
     for prov in [p.province for p in index.provinces() if not only or p.province in only]:
         for level in LEVELS:
+            if levels and level not in levels:
+                continue
             divs = [d for d in index.all if d.province == prov and d.level == level]
             if not divs:
                 continue
@@ -218,6 +222,18 @@ def column_rows(checks, checked_on: str) -> list[list[str]]:
             ]
         )
     return rows
+
+
+def dedupe_column_rows(rows: list[list[str]]) -> list[list[str]]:
+    """栏目清单里同一栏目网址只留一行：按 column_key 排好序后留第一行（同省里层级高的在前）。"""
+    seen: set[str] = set()
+    out = []
+    for row in rows:
+        if row[7] in seen:
+            continue
+        seen.add(row[7])
+        out.append(row)
+    return out
 
 
 def column_key(row: list[str]) -> tuple:
