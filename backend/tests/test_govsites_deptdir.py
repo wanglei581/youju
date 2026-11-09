@@ -447,6 +447,16 @@ def test_group_column_name_from_any_title_segment():
     ]
 
 
+def test_column_name_after_department_name_in_title():
+    leaf = "http://www.zjcx.gov.cn/xxgk/zfbmxxgk/zxxkxjsj/fdzdgknr/zcwj/xzbmfgfxwj/index.html"
+    pages = _group_check_pages("<title>长兴县科学技术局 - 政策文件</title>")
+    inv = Inventory(INDEX, FakeCache(pages), provinces=["浙江"], workers=2, per_province=2)
+    inv.run()
+    assert [(c.kind, c.url) for c in _depts(inv)[("330522", "科技")].columns] == [
+        ("政策文件", leaf)
+    ]
+
+
 def test_breadcrumb_title_uses_its_first_segment():
     # "其他文件政策解读_政策文件_拱墅区人民政府"：第一段才是这个栏目的名字
     pages = _group_check_pages("<title>其他文件政策解读_政策文件_长兴县人民政府</title>")

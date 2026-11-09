@@ -73,7 +73,13 @@ from youju.govsites.links import (
     registrable,
     script_links,
 )
-from youju.govsites.names import COLUMN_KINDS, alias_categories, column_kind, dept_categories
+from youju.govsites.names import (
+    COLUMN_KINDS,
+    alias_categories,
+    column_kind,
+    dept_categories,
+    looks_like_org,
+)
 from youju.govsites.pagecache import PageCache
 from youju.govsites.platform import URL_SHAPES, Fingerprint, blocker, fingerprint
 
@@ -283,10 +289,11 @@ def _column_name(page: PageInfo) -> str:
     title = (page.doc.findtext(".//title") or "").strip()
     if not title:
         return ""
-    # 取第一段；第一段是网站名（"××县人民政府 - 政策文件"）才往后看。面包屑式标题
-    # "其他文件政策解读_政策文件_拱墅区人民政府"取第一段，不取后面的上级栏目名
+    # 取第一段；第一段是网站名、部门名（"××县人民政府 - 政策文件""××区司法局 - 通知公告"）
+    # 才往后看。面包屑式标题"其他文件政策解读_政策文件_拱墅区人民政府"取第一段
     parts = [t for t in re.split(r"\s*[-_|｜—]\s*", title) if t]
-    rest = parts[1:] if parts and _SITE_TITLE.search(parts[0]) else []
+    owner = bool(parts) and (_SITE_TITLE.search(parts[0]) or looks_like_org(parts[0]))
+    rest = parts[1:] if owner else []
     return next((t for t in rest if column_kind(t)), parts[0] if parts else "")
 
 
