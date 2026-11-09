@@ -23,13 +23,13 @@ DEPT_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("科技", re.compile(r"科学技术|科技(?!馆|园|城|大学|学院|中心|报|馆)|科工信|工科")),
     ("商务", re.compile(r"商务|投资促进|招商|口岸")),
     ("财政", re.compile(r"财政")),
-    ("人社", re.compile(r"人力资源和社会保障|人力资源社会保障|人社")),
-    ("市场监管", re.compile(r"市场监督管理|市场监管|知识产权")),
+    ("人社", re.compile(r"人力资源和社会保障|人力资源社会保障|人力社保|人社")),
+    ("市场监管", re.compile(r"市场监督管理|市场监管|市监局|知识产权")),
     ("农业农村", re.compile(r"农业农村|农业和农村|农牧|农业")),
     (
         "文旅",
         re.compile(
-            r"文化和旅游|文化广电和旅游|文化广电旅游|文化旅游|文旅|文化体育和旅游|文体旅|"
+            r"文化和旅游|文化广电和旅游|文化和广电旅游|文化广电旅游|文化旅游|文旅|文化体育和旅游|文体旅|"
             r"文化广电体育和旅游|文化广电体育旅游|文广旅|文广新旅|文化广电新闻出版和旅游"
         ),
     ),
@@ -57,15 +57,21 @@ _ORG_END = re.compile(
 # 机构名称里不会出现的词：出现了就多半是新闻、事项、专题
 _NOT_ORG = re.compile(
     r"召开|举行|开展|关于|通知|公告|公示|会议|活动|调研|印发|发布|解读|专题|专栏|服务指南|办事服务|"
-    r"在线服务|办理|指南|"
+    r"在线服务|办理|指南|大厅|"
     r"查询|申请|报名|系统|平台|热线|信箱|投诉|举报|在线|视频|图片|新闻|动态|要闻|访谈|直播|"
     r"领导|局长|主任|书记|讲话|考察|走访|年报|报告|统计|规划|计划|方案|工作动态|工作部署|政策|文件|资讯"
 )
 _ORG_MAX_LEN = 30
 
 
-def looks_like_org(text: str) -> bool:
+def _bare_org(text: str) -> str:
+    """去掉括号注释；显示时被截断的（"……局（长兴县人民政府区域合..."）连同没合上的括号一起去掉。"""
     t = re.sub(r"[（(].*?[）)]", "", text or "")
+    return re.sub(r"[（(][^）)]*$|(?:\.{2,}|…+)$", "", t)
+
+
+def looks_like_org(text: str) -> bool:
+    t = _bare_org(text)
     if not t or len(t) > _ORG_MAX_LEN or len(t) < 3:
         return False
     if _NOT_ORG.search(t):
@@ -80,7 +86,7 @@ def dept_categories(text: str) -> list[str]:
     """
     if not looks_like_org(text):
         return []
-    t = re.sub(r"[（(].*?[）)]", "", text)
+    t = _bare_org(text)
     out: list[str] = []
     for label, pattern in DEPT_RULES:
         if pattern.search(t):

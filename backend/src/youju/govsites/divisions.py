@@ -321,8 +321,14 @@ def clean_place_text(text: str, prefixes: Iterable[str] = ()) -> str:
 class NameMatcher:
     """在给定的一组行政区里，按导航文字找是哪一个；同名或简称撞车的不认（宁缺不错）。"""
 
-    def __init__(self, candidates: Iterable[Division], prefixes: Iterable[str] = ()) -> None:
+    def __init__(
+        self,
+        candidates: Iterable[Division],
+        prefixes: Iterable[str] = (),
+        exclude_short: Iterable[str] = (),
+    ) -> None:
         self.prefixes = sorted({p for p in prefixes if p}, key=len, reverse=True)
+        excluded = set(exclude_short)
         full: dict[str, list[Division]] = {}
         short: dict[str, list[Division]] = {}
         for d in candidates:
@@ -330,8 +336,11 @@ class NameMatcher:
             for v in name_variants(d.name, d.kind) - {d.name}:
                 short.setdefault(v, []).append(d)
         self._full = {k: v[0] for k, v in full.items() if len(v) == 1}
-        # 简称和别的行政区全称相同的（如某县简称恰是另一个市名）不用
-        self._short = {k: v[0] for k, v in short.items() if len(v) == 1 and k not in full}
+        # 简称和别的行政区全称相同的（如某县简称恰是另一个市名）不用；exclude_short 里的简称
+        # （和外省同名的"河北""海南"）也不用，只认全称
+        self._short = {
+            k: v[0] for k, v in short.items() if len(v) == 1 and k not in full and k not in excluded
+        }
 
     def match(self, text: str) -> Division | None:
         t = clean_place_text(text, self.prefixes)
