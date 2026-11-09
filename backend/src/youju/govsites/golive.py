@@ -132,6 +132,14 @@ def _audit(report: Report, action: str, **fields) -> None:
     report.detail(f"审计：{line}")
 
 
+def _rollback(session: Session, report: Report) -> None:
+    """停下前回滚；连接已经断了（查询中途被杀）时回滚自己也会出错，记下来、照样打 stop 行。"""
+    try:
+        session.rollback()
+    except Exception:
+        report.detail("回滚出错（连接可能已经断了）：\n" + traceback.format_exc())
+
+
 def _manual_holds(latest: dict, results: list, level: str) -> dict[str, dict]:
     """最新一条抽查结论是后台人工记的"没过"的省（备注里没有证据表那一段）。"""
     from youju.govsites.boarddb import latest_acceptance
@@ -283,7 +291,8 @@ def run(
             raise Stop("coverage_import")
 
         # 五、记抽查结论：同一份证据（备注里的 sha1 相同）、同一结论已经记过的不重记；
-        # 后台人工记的"没过"不盖掉（在批次里的第三步已经停了，这里是不在批次里的）
+        # 后台人工记的"没过"不盖掉。写之前按最新的记录再查一遍：第四步看板导入要一两分钟，这期间
+        # 有人在看板记了"没过"，在本批里的省就停（不然这里补记"合格"会盖过它、第六步照开）
         report.step = "accept"
         from youju.govsites.boarddb import latest_acceptance
         from youju.govsites.cli import _sha1
@@ -291,8 +300,19 @@ def run(
         for lv in levels:
             written = skipped = kept = 0
             latest = _latest_acceptances(session)
+            fresh = _manual_holds(latest, results[lv], lv)
+            need = {p for (lvl, p) in want if lvl == lv}
+            late = sorted((need & fresh.keys()) - holds[lv].keys())
+            for p in late:
+                acc = fresh[p]
+                report.detail(
+                    f"{lv} {p} 看板导入期间后台记了没过（抽查记录 #{acc['id']}，"
+                    f"{acc['sampled_by']}）：{acc['note'] or ''}——在本批里，停下"
+                )
+            if late:
+                raise Stop("accept")
             for r in results[lv]:
-                if r.province in holds[lv]:
+                if r.province in fresh:
                     kept += 1
                     continue
                 sha = _sha1(out / "抽查" / lv / f"{r.province}.csv")
@@ -327,9 +347,7 @@ def run(
                 "coverage_accept",
                 by=by,
                 level=lv,
-                results={
-                    r.province: r.accepted for r in results[lv] if r.province not in holds[lv]
-                },
+                results={r.province: r.accepted for r in results[lv] if r.province not in fresh},
             )
             report.line(
                 f"step=accept lvl={LVL[lv]} written={written} already={skipped} "
@@ -391,12 +409,12 @@ def run(
         report.line(f"{report.tag}_done={_bool(ok)} enabled={enabled_now} expect={total}")
         return ok
     except Stop as exc:
-        session.rollback()
+        _rollback(session, report)
         report.line(f"stop=1 step={exc} detail={report.detail_path.name}")
         return False
     except Exception as exc:  # 意料外的错：也打一行 stop，出错经过写进细节文件，不只留在终端
-        session.rollback()
         report.detail(traceback.format_exc())
+        _rollback(session, report)
         report.line(
             f"stop=1 step={report.step} error={type(exc).__name__} detail={report.detail_path.name}"
         )

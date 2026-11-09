@@ -339,13 +339,14 @@ class ProvinceResult:
     passed: int = 0
     failed: int = 0
     pending: int = 0  # 待人工、还没复核的
-    retry: int = 0  # 这次没抓到、下批重试的（不算进通过率）
-    excluded: int = 0  # 不收：读得对、但不在收录范围的（不算进通过率）
+    retry: int = 0  # 这次没抓到、下批重试的（不知道读得准不准，不算进通过率）
+    excluded: int = 0  # 不收：读得对、但不在收录范围的（不进本批；读得对，通过率里算对）
 
     @property
     def rate(self) -> float:
-        judged = self.total - self.retry - self.excluded
-        return self.passed / judged if judged else 0.0
+        """读得准的占多少：通过和不收都算读得准，待重试不算进分母。"""
+        judged = self.total - self.retry
+        return (self.passed + self.excluded) / judged if judged else 0.0
 
     @property
     def accepted(self) -> bool:
@@ -355,9 +356,10 @@ class ProvinceResult:
 def final_verdict(row: dict) -> str:
     """一行的最终结论：人工复核写了就按人工（自动通过的也可能被复核否掉），没写看自动结论。
 
-    复核结论按开头认（"不通过（部门挂错）"算不通过，首尾空格不算）；"待重试"是这次没抓到，
-    "不收"是读得对、但不在收录范围（如整栏都是事业单位招聘公示）：这两种都不进本批，也不算进
-    通过率（通过率量的是读得准不准）；写了别的词（"有问题"）一律算"待复核"，这个省补上之前不合格。"""
+    复核结论按开头认（"不通过（部门挂错）"算不通过，首尾空格不算）。"待重试"是这次没抓到：不进
+    本批，也不算进通过率（不知道读得准不准）。"不收"是读得对、但不在收录范围（如整栏都是事业单位
+    招聘公示）：不进本批；通过率量的是读得准不准，所以它算读得对。写了别的词（"有问题"）一律算
+    "待复核"，这个省补上之前不合格。"""
     verdict = (row.get("复核结论") or "").strip()
     if verdict:
         for word in ("不通过", "待重试", "不收", "通过"):

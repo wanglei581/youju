@@ -209,3 +209,59 @@ def test_unexpected_error_prints_stop_line(session, tmp_path, monkeypatch):
     assert not ok
     assert lines[-1].startswith("stop=1 step=coverage_import error=RuntimeError detail=")
     assert "看板表坏了" in _detail(tmp_path)
+
+
+def test_manual_hold_recorded_during_board_import_stops(session, tmp_path, monkeypatch):
+    """第四步看板导入期间（线上要一两分钟）后台记了"没过"：第五步按最新记录再查一遍，停下，
+    不补记"合格"、不打开（#471 第二轮独立复核）。"""
+    import youju.govsites.boarddb as boarddb
+
+    real = boarddb.import_inventory
+
+    def import_then_hold(s, *args, **kwargs):
+        summary = real(s, *args, **kwargs)
+        s.add(
+            CoverageAcceptance(
+                province="浙江",
+                level="省级",
+                sampled_by="协调会话",
+                sampled_at=NOW + timedelta(minutes=1),
+                sample_size=0,
+                passed=False,
+                note="先压住",
+            )
+        )
+        s.commit()
+        return summary
+
+    monkeypatch.setattr(boarddb, "import_inventory", import_then_hold)
+    out = _docs(tmp_path)
+    ok, lines = _run(session, out, tmp_path, apply=True)
+    assert not ok
+    assert lines[-1].startswith("stop=1 step=accept detail=")
+    assert {s.enabled for s in session.scalars(select(Source))} == {False}
+    newest = session.scalars(
+        select(CoverageAcceptance).order_by(CoverageAcceptance.sampled_at.desc())
+    ).first()
+    assert (newest.passed, newest.note) == (False, "先压住")
+    assert "看板导入期间后台记了没过" in _detail(tmp_path)
+
+
+def test_rollback_error_still_prints_stop_line(session, tmp_path, monkeypatch):
+    """连接在查询中途断了、回滚自己也出错：照样打 stop 行，回滚出错写进细节文件。"""
+    import youju.govsites.boarddb as boarddb
+
+    def rollback_fails():
+        raise RuntimeError("回滚也失败")
+
+    def broken(s, *args, **kwargs):
+        # 从这里起回滚也失败（前面导入试算自己的回滚照常）
+        monkeypatch.setattr(s, "rollback", rollback_fails)
+        raise RuntimeError("查询中途连接断了")
+
+    monkeypatch.setattr(boarddb, "import_inventory", broken)
+    out = _docs(tmp_path)
+    ok, lines = _run(session, out, tmp_path, apply=True)
+    assert not ok
+    assert lines[-1].startswith("stop=1 step=coverage_import error=RuntimeError detail=")
+    assert "回滚出错" in _detail(tmp_path)
