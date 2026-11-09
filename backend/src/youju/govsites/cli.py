@@ -4,7 +4,7 @@ import argparse
 import json
 import time
 from collections import Counter
-from dataclasses import asdict
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 DEFAULT_OUT = Path(__file__).resolve().parents[4] / "docs" / "数据来源" / "全国覆盖"
@@ -414,17 +414,52 @@ def _cmd_enable(args: argparse.Namespace) -> int:
     from youju.db import session_factory
     from youju.govsites.boarddb import board_lock, enable_sources, refresh_states
 
+    if args.verified and not args.batch:
+        print("--verified 要和 --batch 一起用：只开批次文件里、证据表复核通过的栏目")
+        return 1
     with session_factory()() as session, board_lock(session, BOARD_LOCK_WAIT) as got:
         if not got:
             print(BOARD_BUSY)
             return 1
         r = enable_sources(
-            session, args.province, args.level, args.by, limit=args.limit, dry_run=args.dry_run
+            session,
+            args.province,
+            args.level,
+            args.by,
+            limit=args.limit,
+            dry_run=args.dry_run,
+            verified=args.verified,
+            only_urls=_batch_urls(args.batch, args.province, args.level) if args.batch else None,
         )
         _report_enable(args, r)
         if not args.dry_run and r.enabled:
             refresh_states(session, province=args.province)  # 启用的格马上按正式口径算
     return 1 if r.blocked_reason else 0
+
+
+def _batch_urls(path: Path, province: str, level: str) -> list[str]:
+    """批次文件里这个省这一级的栏目，再按证据表的最终结论过滤一遍：批次生成以后复核又改成
+    "不通过"的（比如创始人复看时写的），这里就不开。证据表在批次文件旁边的 抽查/<层级>/<省>.csv。"""
+    import csv
+
+    from youju.govsites.sample import final_verdict
+
+    with path.open(encoding="utf-8-sig", newline="") as fh:
+        urls = [
+            r["栏目URL"] for r in csv.DictReader(fh) if r["省份"] == province and r["层级"] == level
+        ]
+    evidence = path.parent.parent / "抽查" / level / f"{province}.csv"
+    if not evidence.exists():
+        print(f"没有证据表 {evidence}，一个都不开")
+        return []
+    with evidence.open(encoding="utf-8-sig", newline="") as fh:
+        ok = {r["栏目URL"] for r in csv.DictReader(fh) if final_verdict(r) == "通过"}
+    dropped = [u for u in urls if u not in ok]
+    if dropped:
+        print(
+            f"批次里有、但证据表最终结论不是通过的 {len(dropped)} 个，不开：" + "；".join(dropped)
+        )
+    return [u for u in urls if u in ok]
 
 
 def _report_enable(args: argparse.Namespace, r) -> None:
@@ -441,6 +476,8 @@ def _report_enable(args: argparse.Namespace, r) -> None:
     shown = ", ".join(str(i) for i in r.source_ids[:50])
     more = f" 等 {len(r.source_ids)} 个" if len(r.source_ids) > 50 else ""
     print(f"来源编号：{shown or '无'}{more}")
+    if r.missing:
+        print(f"批次里有、这次没开的 {len(r.missing)} 个：" + "；".join(r.missing))
     if not args.dry_run and r.enabled:
         # 和后台操作一样留痕（操作人、依据的抽查记录、开了哪些）
         import logging
@@ -454,11 +491,235 @@ def _report_enable(args: argparse.Namespace, r) -> None:
                     "province": args.province,
                     "level": args.level,
                     "acceptance_id": r.acceptance_id,
+                    "verified": args.verified,
+                    "batch": str(args.batch) if args.batch else None,
                     "source_ids": r.source_ids,
                 },
                 ensure_ascii=False,
             )
         )
+
+
+def _cmd_sample(args: argparse.Namespace) -> int:
+    import csv
+
+    from youju.db import session_factory
+    from youju.govsites.inventory import write_table
+    from youju.govsites.sample import SAMPLE_FIELDS, sample_rows, summary_lines, to_csv_row
+
+    with session_factory()() as session:
+        rows = sample_rows(session, args.level, args.province, args.size)
+    if not rows:
+        print("库里没有这一级的来源（先导入、试抓）")
+        return 1
+    base = args.out / "抽查" / args.level
+    by_prov: dict[str, list] = {}
+    for r in rows:
+        by_prov.setdefault(r.source.province, []).append(r)
+    review = SAMPLE_FIELDS.index("复核人")
+    for prov, group in by_prov.items():
+        path = base / f"{prov}.csv"
+        # 重跑时保留已经填了的人工复核（按栏目网址对上）
+        kept: dict[str, list[str]] = {}
+        if path.exists():
+            with path.open(encoding="utf-8-sig", newline="") as fh:
+                for old in csv.DictReader(fh):
+                    kept[old["栏目URL"]] = [old["复核人"], old["复核结论"], old["复核备注"]]
+        out = []
+        for r in group:
+            line = to_csv_row(r)
+            line[review:] = kept.get(r.source.url, line[review:])
+            out.append(line)
+        write_table(path, SAMPLE_FIELDS, out)
+    text = "\n".join(summary_lines(rows))
+    print(text)
+    print(f"证据表写在 {base}/<省>.csv；最后三列留给人工复核")
+    return 0
+
+
+def _sha1(path: Path) -> str:
+    import hashlib
+
+    return hashlib.sha1(path.read_bytes()).hexdigest()[:12] if path.exists() else "无"
+
+
+def _cmd_accept(args: argparse.Namespace) -> int:
+    """按证据表记每省抽查结论（D-122、D-126）：上线时由操作人在线上运行，写抽查记录。"""
+    from datetime import UTC, datetime
+
+    from youju.db import session_factory
+    from youju.govsites.sample import PASS_RATE, evidence_results, unknown_verdicts
+    from youju.models import CoverageAcceptance
+
+    folder = args.out / "抽查" / args.level
+    for line in unknown_verdicts(folder):
+        print(f"复核结论认不出（这个省先不合格）：{line}")
+    results = [
+        r for r in evidence_results(folder) if not args.province or r.province in args.province
+    ]
+    if not results:
+        print(f"{folder} 里没有证据表")
+        return 1
+    print(f"合格标准：每个栏目都有结论，通过的占 {PASS_RATE:.0%} 以上（不通过的不进本批）")
+    for r in results:
+        verdict = "合格" if r.accepted else "没过"
+        print(
+            f"{r.province}：{verdict}（{r.total} 个栏目，通过 {r.passed}，不通过 {r.failed}，"
+            f"待重试 {r.retry}，没复核 {r.pending}，通过率 {r.rate:.0%}）"
+        )
+    if args.dry_run:
+        print("试算，没写库")
+        return 0
+    level = "国家级" if args.level == "国家级" else args.level
+    with session_factory()() as session:
+        for r in results:
+            session.add(
+                CoverageAcceptance(
+                    province=r.province,
+                    level=level,
+                    sampled_by=args.by,
+                    sampled_at=datetime.now(UTC),
+                    sample_size=r.total,
+                    passed=r.accepted,
+                    note=(
+                        f"全检 {r.total} 个栏目：通过 {r.passed}，不通过 {r.failed}，"
+                        f"待重试 {r.retry}（都不进本批）；"
+                        f"证据 docs/数据来源/全国覆盖/抽查/{args.level}/{r.province}.csv"
+                        f"（sha1 {_sha1(folder / f'{r.province}.csv')}）"
+                    )[:300],
+                )
+            )
+        session.commit()
+    import logging
+
+    logging.getLogger("youju.audit").info(
+        json.dumps(
+            {
+                "event": "admin",
+                "action": "coverage_accept",
+                "by": args.by,
+                "level": args.level,
+                "results": {r.province: r.accepted for r in results},
+            },
+            ensure_ascii=False,
+        )
+    )
+    print(f"已记 {len(results)} 条抽查结论")
+    return 0
+
+
+# 以前导入过线上的来源清单（docs/数据来源/ 下）。候选清单（如 地市来源候选_R1.5_v1.csv）
+# 还没接入，不算
+LIVE_LISTS = (
+    "全国来源清单_P0_v1.csv",
+    "地市来源接入_2026-10-15.csv",
+    "区县来源接入_2026-10-15.csv",
+)
+
+
+@dataclass
+class BatchPlan:
+    rows: list
+    already: list[str]  # 线上已在收（启用）的同一个列表
+    held: list[str]  # 线上清单里有、但没启用的（要渲染、访问控制等），不进本批
+    missing: list[str]  # 证据表里通过、栏目清单里对不上的
+    unknown: list[str]  # 复核结论认不出的
+    skipped_files: list[str] = field(default_factory=list)  # 表头和现在不一样、没读的栏目清单
+
+
+def build_batch(out: Path, levels: list[str]) -> BatchPlan:
+    """一批的导入行：只收抽查合格省份里、最终结论是"通过"的试读可读栏目，网址不重复。
+
+    按（层级、省、栏目网址）对证据表和栏目清单；线上来源清单里已有的同一个列表（规范网址相同，
+    只差 http/https 等）不进本批，按那份清单的验证状态分成"已在收"和"有但没启用"。"""
+    import csv
+
+    from youju.crawler.urls import url_key
+    from youju.govsites.report import COLUMN_FIELDS
+    from youju.govsites.sample import evidence_results, final_verdict, unknown_verdicts
+    from youju.sources.importer import mode_for
+
+    passed: set[tuple[str, str, str]] = set()  # (层级, 省份, 栏目网址)
+    accepted: set[tuple[str, str]] = set()  # (层级, 省份)
+    unknown: list[str] = []
+    for level in levels:
+        folder = out / "抽查" / level
+        unknown += unknown_verdicts(folder)
+        accepted |= {(level, r.province) for r in evidence_results(folder) if r.accepted}
+        for path in sorted(folder.glob("*.csv")):
+            with path.open(encoding="utf-8-sig", newline="") as fh:
+                passed |= {
+                    (level, r["省份"], r["栏目URL"])
+                    for r in csv.DictReader(fh)
+                    if final_verdict(r) == "通过"
+                }
+    live: dict[str, tuple[str, bool]] = {}  # 规范网址 → (说明, 线上是否启用)
+    for name in LIVE_LISTS:
+        path = out.parent / name
+        if not path.exists():
+            continue
+        with path.open(encoding="utf-8-sig", newline="") as fh:
+            for r in csv.DictReader(fh):
+                url = (r.get("栏目URL") or "").strip()
+                if url:
+                    _, on = mode_for((r.get("验证状态") or "").strip())
+                    live[url_key(url)] = (f"{name}：{url}", on)
+    plan = BatchPlan([], [], [], [], unknown)
+    seen: set[str] = set()
+    matched: set[tuple[str, str, str]] = set()
+    for path in sorted((out / "栏目清单").glob("*.csv")):
+        with path.open(encoding="utf-8-sig", newline="") as fh:
+            reader = csv.reader(fh)
+            if next(reader, None) != list(COLUMN_FIELDS):
+                plan.skipped_files.append(str(path))
+                continue
+            for row in reader:
+                level, prov, url, status = row[0], row[1], row[7], row[11]
+                key = (level, prov, url)
+                if level not in levels or (level, prov) not in accepted or key not in passed:
+                    continue
+                matched.add(key)
+                if not status.startswith("试跑可读") or url in seen:
+                    continue
+                if url_key(url) in live:
+                    where, on = live[url_key(url)]
+                    (plan.already if on else plan.held).append(f"{prov} {url}（{where}）")
+                    continue
+                seen.add(url)
+                plan.rows.append(row)
+    plan.missing = sorted(k[2] for k in passed if (k[0], k[1]) in accepted and k not in matched)
+    return plan
+
+
+def _cmd_batch(args: argparse.Namespace) -> int:
+    """写一批的导入文件（批次/<名字>.csv）。"""
+    from collections import Counter
+
+    from youju.govsites.inventory import write_table
+    from youju.govsites.report import COLUMN_FIELDS
+
+    plan = build_batch(args.out, args.level)
+    for line in plan.unknown:
+        print(f"复核结论认不出（这个省先不合格）：{line}")
+    for path in plan.skipped_files:
+        print(f"{path} 的表头和现在的不一样，没读（要全量重跑这个省）")
+    out = args.out / "批次" / f"{args.name}.csv"
+    write_table(out, COLUMN_FIELDS, plan.rows)
+    by_prov = Counter(r[1] for r in plan.rows)
+    print(f"写入 {out}：{len(plan.rows)} 个栏目，{len(by_prov)} 个省（含国家级）")
+    print("，".join(f"{p} {n}" for p, n in by_prov.most_common()))
+    if plan.already:
+        print(f"线上已在收、不进本批的 {len(plan.already)} 个：" + "；".join(plan.already))
+    if plan.held:
+        print(
+            f"线上清单里有、但没启用（要渲染、访问控制等）的 {len(plan.held)} 个，不进本批："
+            + "；".join(plan.held)
+        )
+    if plan.missing:
+        print(
+            f"证据表里通过、栏目清单里对不上的 {len(plan.missing)} 个：" + "；".join(plan.missing)
+        )
+    return 0
 
 
 def register(sub: argparse._SubParsersAction) -> None:
@@ -551,7 +812,46 @@ def register(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--by", required=True, help="操作人")
     p.add_argument("--limit", type=int, default=2000, help="一次最多启用多少个（每天新启用上限）")
     p.add_argument("--dry-run", action="store_true", help="只数一数，不启用")
+    p.add_argument(
+        "--verified",
+        action="store_true",
+        help="也开这台库里还没抓过、但试读可读的来源（本机试抓、抽查合格后在线上第一次打开时用）",
+    )
+    p.add_argument(
+        "--batch",
+        type=Path,
+        help="只开这份批次文件里这个省这一级的栏目（批次/<名字>.csv），报出批次里有、这次没开的",
+    )
     p.set_defaults(func=_cmd_enable)
+
+    p = sub.add_parser(
+        "coverage-sample", help="每省抽查的证据表：抽到的栏目、抓取结果、最新 3 条和自动核对"
+    )
+    p.add_argument("--level", required=True, choices=LEVEL_ORDER)
+    p.add_argument("--province", action="append", help="只抽某几个省")
+    p.add_argument("--size", type=int, help="每省抽几个（不给就全查）")
+    p.add_argument(
+        "--out", type=Path, default=DEFAULT_OUT, help="清单目录（证据写进 抽查/<层级>/）"
+    )
+    p.set_defaults(func=_cmd_sample)
+
+    p = sub.add_parser(
+        "coverage-accept", help="按证据表记每省抽查结论（上线时在线上运行，写抽查记录）"
+    )
+    p.add_argument("--level", required=True, choices=LEVEL_ORDER)
+    p.add_argument("--by", required=True, help="操作人")
+    p.add_argument("--province", action="append", help="只记某几个省")
+    p.add_argument("--out", type=Path, default=DEFAULT_OUT, help="清单目录（读 抽查/<层级>/）")
+    p.add_argument("--dry-run", action="store_true", help="只算结论，不写库")
+    p.set_defaults(func=_cmd_accept)
+
+    p = sub.add_parser(
+        "coverage-batch", help="生成一批的导入文件：只收抽查合格省份里复核通过的栏目"
+    )
+    p.add_argument("--level", action="append", required=True, choices=LEVEL_ORDER)
+    p.add_argument("--name", required=True, help="文件名（写到 批次/<名字>.csv）")
+    p.add_argument("--out", type=Path, default=DEFAULT_OUT, help="清单目录")
+    p.set_defaults(func=_cmd_batch)
 
     p = sub.add_parser("coverage-refresh", help="按来源抓取结果重算覆盖看板每格的状态")
     p.add_argument("--province", help="只算某个省")

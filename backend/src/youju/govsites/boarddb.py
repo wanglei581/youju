@@ -18,6 +18,7 @@ from sqlalchemy import delete, func, select, text
 from sqlalchemy.exc import InvalidRequestError
 from sqlalchemy.orm import Session
 
+from youju.crawler.urls import url_key
 from youju.govsites.board import STATES, SourceState, _outcome, cell_for
 from youju.govsites.inventory import STANDARD_DEPTS, ColumnHit, DeptRow, PortalRow
 from youju.models import (
@@ -605,6 +606,7 @@ class EnableResult:
     acceptance_id: int | None = None  # 依据的抽查记录
     source_ids: list[int] = field(default_factory=list)  # 这次启用（dry-run 时是可启用）的来源
     skipped: int = 0  # 挂在这一级、试抓成功过，但最近被网站拒绝或读不出的（不开）
+    missing: list[str] = field(default_factory=list)  # only_urls 里有、这次没开的（写明原因）
 
 
 def enable_sources(
@@ -615,12 +617,20 @@ def enable_sources(
     limit: int = 2000,
     dry_run: bool = False,
     now: datetime | None = None,
+    verified: bool = False,
+    only_urls: list[str] | None = None,
 ) -> EnableResult:
     """把某省某级"试抓成功、待启用"的来源分批打开（D-122 门禁）。
 
     只在这个省这一级最新的抽查合格时才启用；没抽查或没过的一个都不开（新来源先不放给用户）。
     只开：挂在这一级格上的、没启用的、静态抓取、没被网站拒绝、试抓成功过的来源；一次最多 limit 个
-    （每天新启用上限，第二阶段计划第三节）。"""
+    （每天新启用上限，第二阶段计划第三节）。
+
+    verified=True：也开这台库里还没抓过、但试读可读（"试跑可读"）的来源——本机试抓、抽查合格后
+    在线上第一次打开时用：线上不先试抓没启用的来源（文件一抓进来就对用户可见）。
+
+    only_urls：只开这些栏目（批次文件里这个省这一级的，按规范网址对），其余一个不开；批次里有、
+    这次没开的写进 missing（没导入、已经在收、被拒绝或读不出），方便和批次文件核对。"""
     result = EnableResult()
     acc = latest_acceptance(_latest_acceptances(session), province, level)
     if not acc or not acc["passed"]:
@@ -640,12 +650,16 @@ def enable_sources(
             Source.enabled.is_(False),
             Source.fetch_mode == "static",
             Source.health != "blocked",
-            Source.last_success_at.is_not(None),
+            *([] if verified else [Source.last_success_at.is_not(None)]),
         )
         .distinct()
         .order_by(Source.id)
     ).scalars()
     found = list(rows)
+    wanted: dict[str, str] | None = None
+    if only_urls is not None:
+        wanted = {url_key(u): u for u in only_urls}
+        found = [s for s in found if url_key(s.url) in wanted]
     # 和看板同一套结论：最近一次被 robots、401/403/412/521 拒绝的，或读不出条目的，不开（D-013）
     states = _source_states(session, {s.id for s in found})
     now = now or _now()
@@ -657,6 +671,19 @@ def enable_sources(
         else:
             result.skipped += 1
     result.candidates = len(candidates)
+    if wanted is not None:
+        got = {url_key(s.url) for s in candidates[:limit]}
+        for key, url in wanted.items():
+            if key in got:
+                continue
+            src = session.scalar(select(Source).where(Source.url == url))
+            if src is None:
+                why = "库里没有（没导入，或线上是另一种写法）"
+            elif src.enabled:
+                why = "已经在收"
+            else:
+                why = "最近被网站拒绝、读不出、不是静态抓取，或不在这一级的格上"
+            result.missing.append(f"{url}（{why}）")
     for source in candidates[:limit]:
         if not dry_run:
             source.enabled = True

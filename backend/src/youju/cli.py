@@ -85,8 +85,18 @@ def _cmd_import_sources(args: argparse.Namespace) -> int:
 
     csv_path: Path = args.csv or get_settings().sources_csv
     with session_factory()() as session:
-        s = import_sources(session, csv_path)
-    print(f"导入完成：新增 {s.created}，更新 {s.updated}；启用 {s.enabled}，暂不抓取 {s.disabled}")
+        s = import_sources(session, csv_path, only_new=args.only_new, dry_run=args.dry_run)
+    head = "试算（没写库）" if args.dry_run else "导入完成"
+    print(
+        f"{head}：新增 {s.created}，更新 {s.updated}，跳过已有 {s.skipped}；"
+        f"启用 {s.enabled}，暂不抓取 {s.disabled}"
+    )
+    if s.existing:
+        shown = "；".join(s.existing[:20])
+        more = f" 等 {len(s.existing)} 个" if len(s.existing) > 20 else ""
+        print(f"库里已有的网址：{shown}{more}")
+    if s.near:
+        print(f"和库里只差 http/https 等写法的（同一个列表，没有新建）：{'；'.join(s.near)}")
     return 0
 
 
@@ -2116,6 +2126,12 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser("import-sources", help="从全国来源清单 CSV 导入来源")
     p.add_argument("--csv", type=Path, help="默认 docs/数据来源/全国来源清单_P0_v1.csv")
+    p.add_argument(
+        "--only-new",
+        action="store_true",
+        help="库里已有的网址一律不碰（全国覆盖分批上线用，不改已经在收的来源）",
+    )
+    p.add_argument("--dry-run", action="store_true", help="只数一数、列出库里已有的网址，不写库")
     p.set_defaults(func=_cmd_import_sources)
 
     p = sub.add_parser("crawl", help="检查来源列表页，发现新条目")

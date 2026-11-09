@@ -469,3 +469,53 @@ def test_board_commands_are_exclusive(session_factory):
                 assert not got_b
         with board_lock(b, 0) as again:
             assert again
+
+
+def test_enable_verified_opens_never_crawled_readable_sources(session):
+    # 本机试抓、抽查合格后在线上第一次打开：线上不先试抓没启用的来源
+    source = _source(session)
+    session.add(
+        CoverageAcceptance(
+            province="浙江",
+            level="省级",
+            sampled_by="王某",
+            sampled_at=NOW,
+            sample_size=11,
+            passed=True,
+        )
+    )
+    session.commit()
+    import_inventory(session, _portals(), _depts())
+    assert enable_sources(session, "浙江", "省级", "王某", now=NOW).enabled == 0
+    r = enable_sources(session, "浙江", "省级", "王某", now=NOW, verified=True)
+    assert (r.enabled, r.source_ids) == (1, [source.id])
+    session.refresh(source)
+    assert source.enabled is True
+
+
+def test_enable_with_batch_opens_only_listed_sources(session):
+    listed = _source(session)
+    other = _source(session, url="https://kjt.zj.gov.cn/zcwj/")
+    depts = _depts()
+    depts[0].columns.append(ColumnHit("政策文件", "政策文件", other.url, "https://kjt.zj.gov.cn/"))
+    session.add(
+        CoverageAcceptance(
+            province="浙江",
+            level="省级",
+            sampled_by="王某",
+            sampled_at=NOW,
+            sample_size=11,
+            passed=True,
+        )
+    )
+    session.commit()
+    import_inventory(session, _portals(), depts)
+    gone = "https://kjt.zj.gov.cn/nothere/"
+    r = enable_sources(
+        session, "浙江", "省级", "王某", now=NOW, verified=True, only_urls=[listed.url, gone]
+    )
+    # 只开批次里的；批次里有、库里没有的报出来
+    assert (r.enabled, r.source_ids) == (1, [listed.id])
+    assert len(r.missing) == 1 and gone in r.missing[0]
+    session.refresh(other)
+    assert other.enabled is False
