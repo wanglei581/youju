@@ -354,3 +354,19 @@ def test_intro_article_lists_are_demoted() -> None:
     assert got[1].nav_text == CITY_NAV_NOTE
     assert got[2].nav_text == "部门网站"
     assert got[3].nav_text == "政府网站年度报表"
+
+
+def test_guide_links_dropped_when_homepage_link_is_on_the_same_page() -> None:
+    """镇江：正文链到部门的信息公开指南、页脚链到部门首页——去掉指南那条。"""
+    from youju.govsites.navrules import prune_weak_links
+
+    html = """<a href="http://fgw.zhenjiang.gov.cn/fgw/zfxxgkzn/xxgk_tt.shtml">镇江市发展和改革委员会</a>
+        <a href="http://kjj.zhenjiang.gov.cn/kjj/zfxxgkzn/xxgk_tt.shtml">镇江市科学技术局</a>
+        <a href="http://fgw.zhenjiang.gov.cn/">市发改委</a>"""
+    inv = _inventory({"http://www.zhenjiang.gov.cn/x.shtml": html})
+    p = inv.page("http://www.zhenjiang.gov.cn/x.shtml")
+    prune_weak_links(p)
+    assert [link.url for link in p.links] == [
+        "http://kjj.zhenjiang.gov.cn/kjj/zfxxgkzn/xxgk_tt.shtml",
+        "http://fgw.zhenjiang.gov.cn/",
+    ]

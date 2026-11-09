@@ -196,33 +196,52 @@ _WEAK_TARGET = re.compile(
 )
 
 
+def _weak_target(url: str) -> bool:
+    from youju.govsites.platform import URL_SHAPES
+
+    parts = urlsplit(url)
+    path = (parts.path or "/") + ("?" + parts.query if parts.query else "")
+    return bool(_WEAK_TARGET.search(path)) or any(p.search(path) for _, p in URL_SHAPES)
+
+
+def prune_weak_links(page) -> None:
+    """同一页上同一类部门既有部门网站首页的链接、又有它的信息公开指南、简介页链接的
+    （镇江"市级部门政府信息公开"页：正文是指南页、页脚是首页），去掉指南、简介那条。"""
+    from youju.govsites.names import dept_categories
+
+    good: set[str] = set()
+    for link in page.links:
+        if not _weak_target(link.url):
+            good.update(dept_categories(link.text))
+    page.links = [
+        link
+        for link in page.links
+        if not (_weak_target(link.url) and set(dept_categories(link.text)) & good)
+    ]
+
+
 def weak_dept_list(page) -> bool:
     """导航页上的部门链接多半指向机构简介文章、信息公开指南、年报页（锦州"机构简介"、
     镇江"市级部门政府信息公开"）：不是部门网站的导航。"""
     from youju.govsites.names import dept_categories
-    from youju.govsites.platform import URL_SHAPES
 
     targets = [link.url for link in page.links if dept_categories(link.text)]
     if len(targets) < 3:
         return False
-
-    def weak(url: str) -> bool:
-        parts = urlsplit(url)
-        path = (parts.path or "/") + ("?" + parts.query if parts.query else "")
-        return bool(_WEAK_TARGET.search(path)) or any(p.search(path) for _, p in URL_SHAPES)
-
-    return sum(weak(u) for u in targets) * 5 >= len(targets) * 3
+    return sum(_weak_target(u) for u in targets) * 5 >= len(targets) * 3
 
 
 def demote_weak_lists(pages: list) -> None:
-    """地市门户：这类导航页的说明改成中性（不给找部门加分），免得简介文章、指南页顶掉
-    首页上的部门网站（11/9 锦州、镇江）。年度报表页不动：它们靠"首页网址"找部门网站。"""
+    """地市门户的导航页：同一部门有首页链接时去掉它的指南、简介链接；部门链接多半是简介文章、
+    指南、年报页的，说明改成中性（不给找部门加分），免得顶掉首页上的部门网站（11/9 锦州、镇江）。
+    年度报表页不动：它们靠"首页网址"找部门网站。"""
     from youju.govsites.links import REPORT_WORDS
 
     for p in pages[1:]:
-        if p.nav_text in (CITY_NAV_NOTE, CITY_SCRIPT_NOTE) or REPORT_WORDS.search(p.nav_text or ""):
+        if REPORT_WORDS.search(p.nav_text or "") or p.doc is None:
             continue
-        if p.doc is not None and weak_dept_list(p):
+        prune_weak_links(p)
+        if p.nav_text not in (CITY_NAV_NOTE, CITY_SCRIPT_NOTE) and weak_dept_list(p):
             p.nav_text = CITY_NAV_NOTE
 
 
