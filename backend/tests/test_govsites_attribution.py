@@ -693,6 +693,8 @@ def test_branch_of_county_sharing_the_city_name():
     assert not branch_of_own("承德市生态环境局双桥分局", cd)  # 打头的是上级"承德市"
     assert branch_of_own("承德市生态环境局承德县分局", cd)
     assert branch_of_own("承德县生态环境分局", cd)
+    assert branch_of_own("承德市承德县生态环境分局", cd)  # 上级名 + 本地名 + 分局
+    assert not branch_of_own("承德市生态环境分局", cd)
 
 
 class RedirectCache(FakeCache):
@@ -795,3 +797,13 @@ def test_portal_topic_page_is_not_a_department_column():
     )
     sj = _depts(_run(pages, ["江西"]))[("360402", "数据局")]
     assert [c.url for c in sj.columns] == ["http://www.lianxi.gov.cn/zwgk/jgzn/sjj/tzgg/"]
+
+
+def test_department_channel_under_a_topic_path_keeps_its_columns():
+    # 通化市发改委那种：部门频道本身在 /ztzl/ 下，栏目在频道目录里，照常认
+    pages = _lianxi_with(
+        '<a href="/ztzl/fgw/">濂溪区发展和改革委员会</a>',
+        {"http://www.lianxi.gov.cn/ztzl/fgw/": '<a href="/ztzl/fgw/tzgg/">通知公告</a>'},
+    )
+    fg = _depts(_run(pages, ["江西"]))[("360402", "发改委")]
+    assert [c.url for c in fg.columns] == ["http://www.lianxi.gov.cn/ztzl/fgw/tzgg/"]

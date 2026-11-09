@@ -140,9 +140,18 @@ def branch_of_own(text: str, places: Places) -> bool:
         return True
     if not t.endswith("分局"):
         return False
-    # 打头的最长地名要是本地的："承德市生态环境局双桥分局"打头的是上级"承德市"，不是承德县的
-    hit = _best_prefix(t, places)
-    return hit is not None and hit[0] == "本级"
+    # 去掉打头的上级地名再看（"银川市西夏区生态环境分局"）；打头的最长地名要是本地的：
+    # "承德市生态环境局双桥分局"去掉"承德市"后不是承德县，不算
+    for _ in range(3):
+        hit = _best_prefix(t, places)
+        if hit is None:
+            return False
+        if hit[0] == "本级":
+            return True
+        if hit[0] != "上级":
+            return False
+        t = t[len(hit[1]) :]
+    return False
 
 
 _LEAD = re.compile(r"^[\s>》›»·•|｜\-—–:：、]+")

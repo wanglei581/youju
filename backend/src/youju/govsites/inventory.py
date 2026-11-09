@@ -283,9 +283,11 @@ def _column_name(page: PageInfo) -> str:
     title = (page.doc.findtext(".//title") or "").strip()
     if not title:
         return ""
-    # 标题各段里找像栏目名的一段（"××县人民政府 - 政策文件"），没有就取第一段
+    # 取第一段；第一段是网站名（"××县人民政府 - 政策文件"）才往后看。面包屑式标题
+    # "其他文件政策解读_政策文件_拱墅区人民政府"取第一段，不取后面的上级栏目名
     parts = [t for t in re.split(r"\s*[-_|｜—]\s*", title) if t]
-    return next((t for t in parts if column_kind(t)), parts[0] if parts else "")
+    rest = parts[1:] if parts and _SITE_TITLE.search(parts[0]) else []
+    return next((t for t in rest if column_kind(t)), parts[0] if parts else "")
 
 
 def _readable(row: DeptRow) -> bool:
@@ -293,6 +295,7 @@ def _readable(row: DeptRow) -> bool:
     return row.status == "已找到" and any(f"#{XXGK_TAG}" not in c.url for c in row.columns)
 
 
+_SITE_TITLE = re.compile(r"人民政府|政府网|门户|网站|政务网")
 # 门户的专题专栏路径（/zt/、/ztzl/、/zhuanti/……）：部门页上链到这里的不算部门自己的栏目
 _TOPIC_PATH = re.compile(r"/(?:zt|ztzl|ztlm|zhuanti|special|topic)(?:/|_|\d|$)", re.I)
 # 部门目录页上的部门网址最多几层（山西县级平台 /lczw/zfxxgk/bmxxgk/zfzcbm/部门_编号/ 是 5 层）
@@ -1164,7 +1167,8 @@ class Inventory:
         # 部门网站自己写的网站名（meta SiteName）是同一类部门的全称，就用它
         if row.dept != "政府办" and fp.site_name and row.dept in dept_categories(fp.site_name):
             row.dept_full_name = fp.site_name
-        topics = row.dept != "政府办"
+        # 门户频道的部门：链到门户专题专栏的不算（独立网站自己的"规范性文件专栏"照常认）
+        topics = row.dept != "政府办" and row.site_type == "门户频道"
         hits = find_columns(pages, exclude, max_depth, topics)
         hits = self._check_group_columns(pages, hits, exclude, max_depth, topics)
         missing = [k for k in COLUMN_KINDS if k not in hits]
@@ -1431,8 +1435,15 @@ def find_columns(
             depth = max(max_depth, _COL_DEPTH) if link.via == "jpaas分组" else max_depth
             if not _site_like(link.url, p.final_url, depth):
                 continue
-            if skip_topics and _TOPIC_PATH.search(urlsplit(link.url).path):
-                continue  # 门户的专题专栏（枣庄"财政预决算公开"专题）不是部门自己的栏目
+            lpath = urlsplit(link.url).path
+            if (
+                skip_topics
+                and _TOPIC_PATH.search(lpath)
+                and not (pdir != "/" and lpath.startswith(pdir))
+            ):
+                # 门户频道页上链到门户专题专栏（枣庄"财政预决算公开"专题）的不是部门自己的栏目；
+                # 频道本身在专题路径下的（通化市发改委 /ztzl/fgw/）、链到频道目录里的照常认
+                continue
             if registrable(link.url) != home:
                 continue  # 别家网站的栏目（如部门页上链到的省政策文件库）不算这个部门的栏目
             parts = urlsplit(link.url)
