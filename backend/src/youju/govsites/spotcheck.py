@@ -213,7 +213,24 @@ def _title_positions(text: str, title: str) -> list[int]:
     return [start for start, _ in _title_spans(text, title)]
 
 
-def date_check(stored: date | None, page_html: str, title: str = "") -> tuple[str, str]:
+# 网址里的年月（"/202608/""/2026/08/""t20260821_"）：页面没写发布日期时，
+# 用来判断发文日期是不是发布的那个月
+_URL_MONTH = re.compile(
+    r"/(20\d{2})[-/]?(0[1-9]|1[0-2])(?:[-/]?\d{2})?/|/t(20\d{2})(0[1-9]|1[0-2])\d{2}_"
+)
+
+
+def _url_month(url: str) -> tuple[int, int] | None:
+    m = _URL_MONTH.search(url or "")
+    if not m:
+        return None
+    y, mo = (m.group(1), m.group(2)) if m.group(1) else (m.group(3), m.group(4))
+    return int(y), int(mo)
+
+
+def date_check(
+    stored: date | None, page_html: str, title: str = "", url: str = ""
+) -> tuple[str, str]:
     """结论：一致 / 页面写的是别的日期 / 原文只标成文日期 / 原文没标发布日期 / 页面上找不到日期。
 
     依次看：标题后面标注的发布日期（这篇文件自己的；侧栏、相关文章里的日期在别处）→ 标题后面
@@ -249,9 +266,14 @@ def date_check(stored: date | None, page_html: str, title: str = "") -> tuple[st
                 and not re.match(r"\s*(?:前|起|止|之前|以前|截止)", tail[m.end() :])
             ):
                 return "一致", "日期在标题下方（没写发布日期字样）"
+    visible = _dates(_PUB_DATE, text)
+    written = _dates(_DOC_DATE, text)
+    if not visible and stored in written and _url_month(url) == (stored.year, stored.month):
+        # 页面没写发布日期：库里是原文的发文/成文日期，网址里的年月也对得上（宿迁）
+        return "一致", "原文没写发布日期，和发文/成文日期一样，网址年月也对得上"
     # 网页头的 PubDate 常是系统重新生成页面的时间（济南、赣州比页面上标的晚一两天），
     # 只在页面上没标时用
-    published = _dates(_PUB_DATE, text) or _dates(_META_DATE, page_html or "")
+    published = visible or _dates(_META_DATE, page_html or "")
     if published:
         if stored == published[0]:
             return "一致", ""
@@ -259,7 +281,6 @@ def date_check(stored: date | None, page_html: str, title: str = "") -> tuple[st
         if stored in published:
             return "页面写的是别的日期", f"库里的日期不是页面上第一个标明的发布日期：{shown}"
         return "页面写的是别的日期", f"页面上标的发布日期：{shown}"
-    written = _dates(_DOC_DATE, text)
     if stored in written:
         return "一致", "原文没写发布日期，和成文日期一样"
     for form in forms:
@@ -495,7 +516,7 @@ def evidence_for(
     ev["打开"] = "ok" if (r.final_url or doc_url) == doc_url else f"ok（跳到 {r.final_url}）"
     col = cache.get(urls[0])
     ev["标题核对"], ev["标题说明"] = title_check(title, r.text)
-    ev["日期核对"], ev["日期说明"] = date_check(published, r.text, title)
+    ev["日期核对"], ev["日期说明"] = date_check(published, r.text, title, doc_url)
     # 原文里核对过的标题（"濮阳市市场监督管理局关于……"）也拿来认部门
     confirmed = [title] if ev["标题核对"] in ("一致", "基本一致") else []
     ev["归属核对"], ev["归属说明"] = attribution_check(

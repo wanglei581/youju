@@ -262,3 +262,12 @@ def test_dates_followed_by_before_or_from_and_enumerated_time_labels() -> None:
     assert sc.date_check(date(2026, 10, 31), page, title)[0] != "一致"
     page2 = f"<h1>{title}</h1> 一、时间：2026年11月20日 二、地点"
     assert sc.date_check(date(2026, 11, 20), page2, title)[0] != "一致"
+
+
+def test_writing_date_with_matching_url_month() -> None:
+    page = "发布机构 宿迁市人民政府 发文日期 2026-08-21 文号 宿政发〔2026〕1号"
+    head = '<meta name="PubDate" content="2026-09-16 10:00">'
+    url_aug = "http://www.suqian.gov.cn/cnsq/szfwj/202608/7d5977a0.shtml"
+    url_nov = "https://www.zgsr.gov.cn/kjj/gsgg/202611/1badd7c6.shtml"
+    assert sc.date_check(date(2026, 8, 21), head + page, url=url_aug)[0] == "一致"
+    assert sc.date_check(date(2026, 8, 21), head + page, url=url_nov)[0] == "页面写的是别的日期"
