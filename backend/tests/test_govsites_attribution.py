@@ -203,6 +203,8 @@ def test_service_hall_is_not_a_department():
     assert dept_categories("长兴县文化和广电旅游体育局") == ["文旅"]
     assert dept_categories("区市监局") == ["市场监管"]
     assert dept_categories("黎城县农业农村和水利局") == ["农业农村"]
+    assert dept_categories("长兴县农业农村水利局") == ["农业农村"]
+    assert dept_categories("县农业农村和乡村振兴局") == ["农业农村"]
     assert dept_categories("浙江省农业科学院") == []
     assert dept_categories("县农业机械化服务中心") == []
     assert dept_categories("县农业机械管理局") == []  # 不是"农业农村和……局"这种合并部门

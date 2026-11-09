@@ -87,6 +87,12 @@ def test_directory_needs_enough_local_org_links():
     )
     page = _page("http://www.zjcx.gov.cn/bmxxgk/", orgs + '<a href="http://x.gov.cn/">某某局</a>')
     assert directory_score(page, "http://www.zjcx.gov.cn/") == (6, 3)
+    # 没有 title、显示被截断的名字也算
+    cut = _page(
+        "http://www.zjcx.gov.cn/b/",
+        '<a href="/bm/9/">·长兴县发展和改革局（长兴县人民政府区域合...</a>',
+    )
+    assert directory_score(cut, "http://www.zjcx.gov.cn/") == (1, 1)
     assert is_directory(page, "http://www.zjcx.gov.cn/")
     few = _page("http://www.zjcx.gov.cn/bmxxgk/", orgs[: orgs.index("教育局") - 30])
     assert not is_directory(few, "http://www.zjcx.gov.cn/")
@@ -158,6 +164,15 @@ def test_gkmlpt_tree_categories_skip_jump_links():
         ("通知公告", "gkmlpt-3076"),
     ]
     assert gkmlpt_tree_categories("<p>没有分类树</p>") == []
+    # 分类树分行写、带子分类、后面不跟换行：照样读全
+    pretty = (
+        "TREE: "
+        + json.dumps(
+            [{"id": 1, "name": "通知公告", "children": [{"id": 2, "name": "政策文件"}]}], indent=2
+        )
+        + "}"
+    )
+    assert gkmlpt_tree_categories(pretty) == [("通知公告", "gkmlpt-1"), ("政策文件", "gkmlpt-2")]
 
 
 # —— 走一遍：浙江大汉信息公开（长兴县写法）——

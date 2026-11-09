@@ -69,8 +69,10 @@ def directory_score(page: PageInfo, home_url: str) -> tuple[int, int]:
         if registrable(link.url) != home or _article(link.url) or _reportish(link):
             continue  # 别家网站的、链到文章的（柯城区"公开指南"页上各部门链到自己的指南文章）、
             # 链到年报的不算
-        text = re.sub(r"^[\s>》›»·•|｜\-—–:：、]+", "", link.text or "")
-        bare = re.sub(r"[（(][^）)]*[）)]?$", "", text)  # 末尾括号注释（可能被截断）
+        text = re.sub(r"^[\s>》›»·•|｜\-—–:：、]+", "", link.text or "").strip()
+        # 去掉括号注释，以及显示时被截断的尾巴（"……局（长兴县人民政府区域合..."）
+        bare = re.sub(r"[（(][^）)]*[）)]", "", text)
+        bare = re.sub(r"[（(][^）)]*$|(?:\.{2,}|…+)$", "", bare)
         if not looks_like_org(bare) or not _ORG_TAIL.search(bare):
             continue
         orgs.add(link.url)
@@ -80,7 +82,8 @@ def directory_score(page: PageInfo, home_url: str) -> tuple[int, int]:
 
 
 def _reportish(link: Link) -> bool:
-    return bool(_REPORTISH_URL.search(urlsplit(link.url).path) or _REPORTISH_TEXT.search(link.text))
+    path = urlsplit(link.url).path
+    return bool(_REPORTISH_URL.search(path) or _REPORTISH_TEXT.search(link.text or ""))
 
 
 def _article(url: str) -> bool:
@@ -108,7 +111,10 @@ def _rank(text: str) -> int:
 def find_directories(
     inv: Inventory, div: Division, home: PageInfo, pages: list[PageInfo], budget: int = 8
 ) -> list[PageInfo]:
-    """门户信息公开平台里的部门目录页（已在 pages 里的也认）。最多再抓 budget 个页面。"""
+    """门户信息公开平台里的部门目录页。最多再抓 budget 个页面。
+
+    已走过的导航页里有目录页时只把它们标上 directory（不再找），返回空列表；
+    返回的只是这里新抓到的目录页，调用方追加到导航页后面。"""
     home_url = home.final_url
     site = registrable(home_url)
     found: list[PageInfo] = []
@@ -179,7 +185,7 @@ def find_directories(
 # —— 大汉 jpaas 信息公开：分组条目 → 分类栏目页 ——
 
 _GROUP = re.compile(
-    r"<label[^>]*class=[\"']?label-className[\"']?[^>]*>\s*([^<]{2,20}?)\s*</label>"
+    r"<label[^>]*class=[\"']?[^\"'>]*\blabel-className\b[^>]*>\s*([^<]{2,20}?)\s*</label>"
     r"(.*?)(?=<label[^>]*label-className|$)",
     re.S,
 )
@@ -222,7 +228,7 @@ def jpaas_path_groups(html: str, page_url: str) -> list[tuple[str, str]]:
 
 # —— 数字广东 gkmlpt：部门页里的分类树 ——
 
-_GKML_TREE = re.compile(r"\bTREE\s*:\s*(\[.*?\])\s*,\s*\n", re.S)
+_GKML_TREE = re.compile(r"\bTREE\s*:\s*(?=\[)")
 GKMLPT_KEY = "gkmlpt-"
 
 
@@ -232,7 +238,8 @@ def gkmlpt_tree_categories(text: str) -> list[tuple[str, str]]:
     if not m:
         return []
     try:
-        nodes = json.loads(m.group(1))
+        # 从"["起按 JSON 读一个完整的值：分类树带子分类、换不换行都不会截错
+        nodes, _ = json.JSONDecoder().raw_decode(text, m.end())
     except ValueError:
         return []
     out: list[tuple[str, str]] = []
