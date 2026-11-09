@@ -171,6 +171,11 @@ def name_verdict(text: str, places: Places) -> Verdict:
             break
         cat, name = hit
         if cat == "本级":
+            rest = t[len(name) :]
+            if name in places.foreign and div.level != "省级" and rest.endswith("厅"):
+                # 本地简称和外省同名（天津河北区的"河北"），后面又是省级才叫的"厅"：
+                # "河北工业和信息化厅"是河北省的
+                return Verdict("外省", f"名称以外省「{name}」开头、以「厅」结尾", "名称")
             return Verdict("本级", f"名称以本地「{name}」开头", "名称")
         if cat == "上级":
             # "四川省康定市财政局"：去掉上级地名再看后面是不是本地

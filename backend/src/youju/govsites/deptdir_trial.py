@@ -10,6 +10,7 @@
 
 import argparse
 import csv
+from collections.abc import Callable
 from datetime import date
 from pathlib import Path
 
@@ -50,7 +51,9 @@ def run(
     cache: PageCache,
     codes: list[str],
     out_dir: Path,
+    on_county: Callable[[list[list[str]], list[str]], None] | None = None,
 ) -> tuple[list[list[str]], list[str]]:
+    """按县试读；每走完一个县调用一次 on_county(这个县的明细行, 这个县的说明)。"""
     provinces = sorted({index.by_code[c].province for c in codes})
     portals, old_depts = load_docs(out_dir, provinces)
     portal_by_code = {p.code: p for p in portals}
@@ -59,6 +62,7 @@ def run(
     notes: list[str] = []
     done: dict[str, Inventory] = {}
     for code in codes:
+        first_row, first_note = len(rows), len(notes)
         county = index.by_code[code]
         chain = []
         c = county.parent_code
@@ -129,6 +133,8 @@ def run(
                     ]
                     + tail
                 )
+        if on_county is not None:
+            on_county(rows[first_row:], notes[first_note:])
     return rows, notes
 
 
@@ -141,17 +147,21 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--cache", type=Path, default=DEFAULT_CACHE)
     args = ap.parse_args(argv)
     index = DivisionIndex(read_csv(args.divisions))
-    with _fetcher() as fetcher:
-        cache = PageCache(args.cache, fetcher)
-        rows, notes = run(index, cache, args.county, args.docs)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     with args.out.open("w", encoding="utf-8-sig", newline="") as fh:
-        w = csv.writer(fh)
-        w.writerow(FIELDS)
-        w.writerows(rows)
+        csv.writer(fh).writerow(FIELDS)
+
+    def write(rows: list[list[str]], notes: list[str]) -> None:
+        # 每个县走完就写：中途断了，走完的县照样留下
+        with args.out.open("a", encoding="utf-8", newline="") as fh:
+            csv.writer(fh).writerows(rows)
+        for n in notes:
+            print(n, flush=True)
+
+    with _fetcher() as fetcher:
+        cache = PageCache(args.cache, fetcher)
+        rows, _ = run(index, cache, args.county, args.docs, on_county=write)
     print(f"{date.today()} 写入 {args.out}（{len(rows)} 行）")
-    for n in notes:
-        print(n)
     return 0
 
 

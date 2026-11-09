@@ -183,6 +183,9 @@ def test_name_verdict_elsewhere_and_other_provinces():
     assert _kind("北京市科学技术委员会", "海南省") == "外省"
     assert _kind("中国（北京）自由贸易试验区", "海南省") == "外省"
     assert _kind("海南省科技厅", "海南藏族自治州") == "外省"
+    assert _kind("河北工业和信息化厅", "河北区") == "外省"  # 简称和外省同名、又是"厅"
+    assert _kind("河北区科技局", "河北区") == "本级"
+    assert _kind("海南科技局", "海南藏族自治州") == "本级"
     assert _kind("通辽市财政局", "新城区") == "别处"
     assert _kind("科尔沁区财政局", "新城区") == "别处"
     assert _kind("市财政局", "濂溪区") == "上级"  # 区里写"市"是上级
