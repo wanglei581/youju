@@ -194,3 +194,48 @@ def test_supplement_pages_do_not_outrank_existing_dept_sites() -> None:
 
     for note in (CITY_NAV_NOTE, CITY_SCRIPT_NOTE):
         assert not re.search(r"部门|省直|市直|区直|县直|机构|单位", note)
+
+
+def test_zhou_shi_in_city_names_is_not_a_nav_word() -> None:
+    from youju.govsites.links import nav_links
+
+    links = [
+        Link("杭州市稳岗就业", "https://www.hangzhou.gov.cn/col/1/index.html", "a"),
+        Link("福州市医疗卫生", "https://www.hangzhou.gov.cn/col/2/index.html", "a"),
+        Link("各州市政府网站", "https://www.hangzhou.gov.cn/col/3/index.html", "a"),
+        Link("州市网站", "https://www.hangzhou.gov.cn/col/4/index.html", "a"),
+        Link("部门网站", "https://www.hangzhou.gov.cn/col/5/index.html", "a"),
+    ]
+    got = [link.text for link in nav_links(links, "https://www.hangzhou.gov.cn/")]
+    assert got == ["各州市政府网站", "州市网站", "部门网站"]
+
+
+def test_specific_page() -> None:
+    from youju.govsites.navrules import specific_page
+
+    assert specific_page("https://www.linyi.gov.cn/typt/zfxxgknb.htm")
+    assert specific_page("http://www.baoding.gov.cn/mlbd-1472-386944.html")
+    assert specific_page("https://www.x.gov.cn/?siteId=1")
+    assert not specific_page("http://www.yibin.gov.cn/index.html")
+    assert not specific_page("https://www.ezhou.gov.cn/sy/")
+    assert not specific_page("https://www.lf.gov.cn/Category_5/Index.aspx")
+    assert not specific_page("http://www.jining.gov.cn/")
+
+
+def test_child_portal_link_to_a_report_page_takes_site_root() -> None:
+    divisions = [
+        Division("370000", "山东省", "省", "省级", "山东", None, None, None),
+        Division("371300", "临沂市", "地级市", "市级", "山东", "临沂", None, "370000"),
+    ]
+    inv = Inventory(DivisionIndex(divisions), FakeCache({}), provinces=["山东"], workers=2)
+    from youju.govsites.inventory import PageInfo
+
+    nav = PageInfo(
+        "http://www.shandong.gov.cn/col/1/index.html",
+        "http://www.shandong.gov.cn/col/1/index.html",
+        FetchResult("http://www.shandong.gov.cn/col/1/index.html", "ok", None, 200, ""),
+        links=[Link("临沂市", "https://www.linyi.gov.cn/typt/zfxxgknb.htm", "a")],
+    )
+    found = inv._find_children(divisions[0], [divisions[1]], [nav])
+    assert found["371300"].url == "https://www.linyi.gov.cn/"
+    assert "取网站首页" in found["371300"].text

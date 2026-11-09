@@ -226,7 +226,7 @@ def nav_links(links: list[Link], page_url: str, limit: int = 10) -> list[Link]:
     for link in links:
         if len(link.text) > _NAV_MAX_LEN or link.url in seen:
             continue
-        if not any(w in link.text for w in NAV_WORDS):
+        if not any(_word_in(w, link.text) for w in NAV_WORDS):
             continue
         if registrable(link.url) != home:
             continue
@@ -274,9 +274,20 @@ def _nav_rank(text: str) -> int:
     if any(w in text for w in _ELSEWHERE):
         return 20
     for rank, words in enumerate(_NAV_RANKS):
-        if any(w in text for w in words):
+        if any(_word_in(w, text) for w in words):
             return rank
     return 9
+
+
+# "州市"（云南等省的"各州市"）也是"杭州市""福州市"这类地名的一部分：前面紧挨着别的汉字的不算
+# 导航词（11/9：杭州门户上"杭州市稳岗就业"一类链接占满了导航名额，部门网站页反而没走到）
+_ZHOU_SHI = re.compile(r"(?:^|[^一-龥]|[各全及和与])州市")
+
+
+def _word_in(word: str, text: str) -> bool:
+    if word == "州市":
+        return bool(_ZHOU_SHI.search(text))
+    return word in text
 
 
 def is_gov_url(url: str) -> bool:

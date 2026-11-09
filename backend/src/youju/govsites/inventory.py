@@ -62,6 +62,7 @@ from youju.govsites.navrules import (
     device_redirect,
     https_fallback,
     labeled_scripts,
+    specific_page,
 )
 from youju.govsites.pagecache import PageCache
 from youju.govsites.platform import URL_SHAPES, Fingerprint, blocker, fingerprint
@@ -582,6 +583,12 @@ class Inventory:
                     continue
                 url = link.url
                 source = p.final_url
+                if _portal_like(url, p.final_url) and specific_page(url):
+                    # 链到下级网站的某一页（年报、文章）：取那个网站的首页（navrules）
+                    parts = urlsplit(url)
+                    root = f"{parts.scheme}://{parts.netloc}/"
+                    found[d.code] = Found(root, f"{link.text}（链到 {url}，取网站首页）", source)
+                    continue
                 if not _portal_like(url, p.final_url):
                     parts = urlsplit(url)
                     if parts.netloc.lower() == urlsplit(p.final_url).netloc.lower():

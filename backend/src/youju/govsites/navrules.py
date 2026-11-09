@@ -209,3 +209,23 @@ def https_fallback(url: str, status: str, error: str | None) -> str | None:
     if not _DROPPED.search(error or ""):
         return None
     return "https://" + url[len("http://") :]
+
+
+# —— 5. 上级网站链到下级门户的某一页 ——
+
+_HOME_NAMES = re.compile(r"^(?:index|default|home|main|portal|sy|shouye)(?:_?pc)?$", re.I)
+_PAGE_EXT = re.compile(r"\.(?:s?html?|jsp|aspx?|php|do)$", re.I)
+
+
+def specific_page(url: str) -> bool:
+    """网址是网站里的某一页（年报、栏目、文章），不是首页：目录、index.html 之类不算。
+
+    省网站的信息公开页上链到下级门户的常常是它的"政府信息公开年报"页（11/9 临沂）、
+    某篇文章（保定）：拿它当门户首页，首页上的导航和部门就全找错了。"""
+    parts = urlsplit(url)
+    if parts.query:
+        return True
+    last = (parts.path or "/").rsplit("/", 1)[-1]
+    if not last or not _PAGE_EXT.search(last):
+        return False
+    return not _HOME_NAMES.match(_PAGE_EXT.sub("", last))
