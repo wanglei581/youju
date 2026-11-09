@@ -192,3 +192,45 @@ def test_batch_skips_lists_already_live(tmp_path):
     assert _cmd_batch(argparse.Namespace(level=["省级"], name="第1批", out=out)) == 0
     with (out / "批次" / "第1批.csv").open(encoding="utf-8-sig", newline="") as fh:
         assert [r[7] for r in list(csv.reader(fh))[1:]] == ["https://czt.zj.gov.cn/tzgg/"]
+
+
+def test_committed_batch_matches_evidence():
+    """提交的第 1 批导入文件要和用证据表重算的一致：复核结论改了却忘了重生成批次，这里会失败。"""
+    import csv
+    from pathlib import Path
+
+    from youju.govsites.cli import DEFAULT_OUT, build_batch
+
+    path = DEFAULT_OUT / "批次" / "第1批_国家级和省级.csv"
+    with path.open(encoding="utf-8-sig", newline="") as fh:
+        committed = list(csv.reader(fh))[1:]
+    plan = build_batch(Path(DEFAULT_OUT), ["国家级", "省级"])
+    assert plan.unknown == []
+    assert plan.rows == committed
+
+
+def test_batch_urls_drop_rows_failed_after_batch(tmp_path, capsys):
+    import argparse
+
+    from youju.govsites.cli import _batch_urls, _cmd_enable
+
+    (tmp_path / "批次").mkdir()
+    (tmp_path / "抽查" / "省级").mkdir(parents=True)
+    batch = tmp_path / "批次" / "第1批.csv"
+    batch.write_text(
+        "层级,省份,栏目URL\n省级,浙江,u1\n省级,浙江,u2\n省级,江苏,v1\n", encoding="utf-8-sig"
+    )
+    (tmp_path / "抽查" / "省级" / "浙江.csv").write_text(
+        "层级,省份,栏目URL,自动结论,没过的项,复核人,复核结论,复核备注\n"
+        "省级,浙江,u1,自动通过,,,,\n"
+        "省级,浙江,u2,自动通过,,创始人,不通过（部门不对）,复看\n",
+        encoding="utf-8-sig",
+    )
+    # 批次生成后复核改成不通过的不开；只取这个省这一级
+    assert _batch_urls(batch, "浙江", "省级") == ["u1"]
+    # --verified 不带 --batch 不开
+    args = argparse.Namespace(
+        province="浙江", level="省级", by="王某", limit=10, dry_run=True, verified=True, batch=None
+    )
+    assert _cmd_enable(args) == 1
+    assert "--batch" in capsys.readouterr().out

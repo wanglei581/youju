@@ -127,6 +127,8 @@ def import_sources(
         if source is None:
             session.add(Source(url=url, parser_config={}, **fields))
             summary.created += 1
+            if only_new:
+                known[url_key(url)] = url
         else:
             if status.startswith(_KEEP_ENABLED):
                 # 全国覆盖的新栏目只在新建时设为不启用；后台核对后打开的，重导入不关掉

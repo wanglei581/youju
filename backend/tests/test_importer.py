@@ -253,3 +253,16 @@ def test_only_new_treats_http_and_https_as_the_same_list(session, tmp_path: Path
     assert (s.created, s.skipped) == (0, 1)
     assert "库里是 https://kw.beijing.gov.cn/zwgk/tzgg/" in s.near[0]
     assert session.scalar(select(func.count(Source.id))) == 1
+
+
+def test_only_new_creates_one_source_per_list_within_a_file(session, tmp_path: Path) -> None:
+    batch = tmp_path / "batch3.csv"
+    batch.write_text(
+        CSV_HEADER
+        + "省级,北京,科技,北京市科委,通知公告,https://kw.beijing.gov.cn/tzgg/,200,20,,试跑可读（全国覆盖 v1，未启用）,2026-11-09,\n"
+        + "省级,北京,科技,北京市科委,通知公告,http://kw.beijing.gov.cn/tzgg/,200,20,,试跑可读（全国覆盖 v1，未启用）,2026-11-09,\n",
+        encoding="utf-8-sig",
+    )
+    s = import_sources(session, batch, only_new=True)
+    assert (s.created, s.skipped) == (1, 1)
+    assert session.scalar(select(func.count(Source.id))) == 1
