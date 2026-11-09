@@ -46,17 +46,26 @@ def level_chars(div: Division) -> str:
 
 def own_branch(text: str, div: Division) -> bool:
     """区县里上级部门的派出机构算本区县的部门：如"杭州市生态环境局西湖分局"
-    （生态环境在区县一级多是市局的分局）。"""
-    if div.level != "区县级" or not re.search(r"(分局|监管局|管理所)$", text):
+    （生态环境在区县一级多是市局的分局）。
+
+    本地名称后面要紧跟"分局""区分局""县分局"这类结尾："岳阳楼分局"不是岳阳县的，
+    "井陉矿分局"不是井陉县的。"""
+    if div.level != "区县级":
         return False
-    shorts = [v for v in name_variants(div.name, div.kind) if len(v) >= 2]
-    return any(v in text[2:] for v in shorts)
+    shorts = sorted((v for v in name_variants(div.name, div.kind) if len(v) >= 2), key=len)
+    for v in shorts:
+        i = text.find(v, 2)
+        while i >= 0:
+            if re.fullmatch(r"(?:区|县|市|旗)?(?:分局|监管局|管理所)", text[i + len(v) :]):
+                return True
+            i = text.find(v, i + 1)
+    return False
 
 
 class Verdict(NamedTuple):
     kind: str  # 本级 / 上级 / 别处 / 外省 / 不确定
     reason: str = ""
-    basis: str = ""  # 名称 / 同网址 / 标识码 / 域名
+    basis: str = ""  # 名称 / 标识码 / 域名
 
 
 UNSURE = Verdict("不确定")
@@ -211,13 +220,6 @@ def name_verdict(text: str, places: Places) -> Verdict:
     return UNSURE
 
 
-def norm_url(url: str) -> str:
-    """比较网址用：小写主机 + 去掉末尾斜杠的路径 + 查询串（不管 http/https）。"""
-    p = urlsplit(url or "")
-    path = (p.path or "/").rstrip("/") or "/"
-    return (p.hostname or "").lower() + path + ("?" + p.query if p.query else "")
-
-
 def _host(url: str) -> str:
     return (urlsplit(url or "").hostname or "").lower()
 
@@ -252,21 +254,18 @@ def site_verdict(
     own_portal: str,
     own_portal_code: str = "",
     upper_portals: list[str] | tuple[str, ...] = (),
-    upper_sites: set[str] | frozenset[str] = frozenset(),
 ) -> Verdict:
-    """部门网站抓到后判断它是谁的。names 是网站自己写的名字（SiteName、标题里的几段），先看它们；
-    都说不清时再看同网址、标识码、域名。"""
+    """部门网站抓到后判断它是谁的：本地门户里的频道放行；别的先看网站自己写的名字（SiteName、
+    标题里的几段），说不清时再看标识码、域名。"""
+    own_host = _host(own_portal)
+    if own_host and any(_host(u) == own_host for u in urls if u):
+        # 本地门户里的部门频道：网页带的是门户全站的网站名、标识码（集安市门户的 SiteName 写着
+        # "通化市人民政府"，广东集约化门户首页带省里的标识码），按它们判会把本地部门全排掉
+        return UNSURE
     for name in names:
         v = name_verdict(name, places)
         if v.kind != "不确定":
             return v
-    normed = {norm_url(u) for u in urls if u}
-    if normed & set(upper_sites):
-        return Verdict("上级", "和上级的部门网站是同一个网址", "同网址")
-    own_host = _host(own_portal)
-    if own_host and any(_host(u) == own_host for u in urls if u):
-        # 本地门户里的部门频道：网页带的是门户的标识码（广东集约化门户首页甚至带省里的），不再往下猜
-        return UNSURE
     if site_code and site_code != own_portal_code:
         v = _code_verdict(site_code, places, index)
         if v.kind != "不确定":

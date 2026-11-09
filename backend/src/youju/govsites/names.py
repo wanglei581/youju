@@ -94,7 +94,7 @@ def dept_categories(text: str) -> list[str]:
     # "农业农村"的宽松写法"农业"不能吃掉"农业科学院""农业机械化服务中心"这类事业单位
     # （"农业农村和水利局"这类合并部门照算：只看是不是以厅、局、委、部结尾）
     if "农业农村" in out and not re.search(
-        r"(农业农村|农业和农村|农牧|农业).{0,8}(厅|局|委|委员会|部)$", t
+        r"(农业农村|农业和农村|农牧|农业)(?:和[^，。和]{1,6})?(厅|局|委|委员会|部)$", t
     ):
         out.remove("农业农村")
     # 开发区：只要管委会（不是开发区里的某个局）
@@ -106,12 +106,22 @@ def dept_categories(text: str) -> list[str]:
     # 政府办公厅和其他部门互斥：办公厅名称里不会带别的部门
     if "政府办" in out:
         out = ["政府办"]
-    if out and out != ["开发区"] and out != ["政府办"]:
-        # 括号里加挂的牌子也是这个机关的职能：县里"经信局（商务局）""工业和信息化局（科学技术局）"
-        for part in _bracket_orgs(text):
-            for label in dept_categories(part):
-                if label not in out and label not in ("政府办", "开发区"):
-                    out.append(label)
+    return out
+
+
+def alias_categories(text: str) -> list[str]:
+    """括号里加挂的牌子带来的目标部门（"经信局（商务局）"的商务）。正名已经算的不重复。
+
+    牌子是这个机关的职能，但"科学技术局（知识产权局）"不该抢走真正的市场监管局：盘点只在
+    这一类没有正名候选时才用它（备用候选）。"""
+    main = dept_categories(text)
+    if not main or main in (["开发区"], ["政府办"]):
+        return []
+    out: list[str] = []
+    for part in _bracket_orgs(text):
+        for label in dept_categories(part):
+            if label not in main and label not in out and label not in ("政府办", "开发区"):
+                out.append(label)
     return out
 
 

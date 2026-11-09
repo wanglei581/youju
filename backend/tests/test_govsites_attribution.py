@@ -100,7 +100,10 @@ TREE = {
             "吉林省",
             "省",
             1,
-            [_n("220200", "吉林市", "地级市", 2, [_n("220202", "昌邑区", "市辖区", 3)])],
+            [
+                _n("220200", "吉林市", "地级市", 2, [_n("220202", "昌邑区", "市辖区", 3)]),
+                _n("220500", "通化市", "地级市", 2, [_n("220582", "集安市", "县级市", 3)]),
+            ],
         ),
     ]
 }
@@ -200,13 +203,17 @@ def test_service_hall_is_not_a_department():
     assert dept_categories("黎城县农业农村和水利局") == ["农业农村"]
     assert dept_categories("浙江省农业科学院") == []
     assert dept_categories("县农业机械化服务中心") == []
-    # 括号里加挂的牌子也算（柯城区"经信局（商务局）"）
-    assert dept_categories("经信局（商务局）") == ["工信", "商务"]
-    assert dept_categories("柯城区工业和信息化局（科学技术局）") == ["工信", "科技"]
-    assert dept_categories("长兴县财政局(国资办)") == ["财政"]
-    assert dept_categories("长兴县商务局(粮食和物资储备局、投资促进局)") == ["商务"]
-    assert dept_categories("市场监督管理局（知识产权局）") == ["市场监管"]
-    assert dept_categories("县人民政府办公室（县外事办）") == ["政府办"]
+    assert dept_categories("县农业机械管理局") == []  # 不是"农业农村和……局"这种合并部门
+    # 括号里加挂的牌子（柯城区"经信局（商务局）"）：正名照算，牌子另给，盘点当备用候选
+    from youju.govsites.names import alias_categories
+
+    assert dept_categories("经信局（商务局）") == ["工信"]
+    assert alias_categories("经信局（商务局）") == ["商务"]
+    assert alias_categories("柯城区工业和信息化局（科学技术局）") == ["科技"]
+    assert alias_categories("长兴县财政局(国资办)") == []
+    assert alias_categories("长兴县商务局(粮食和物资储备局、投资促进局)") == []
+    assert alias_categories("市场监督管理局（知识产权局）") == []
+    assert alias_categories("县人民政府办公室（县外事办）") == []
     # "生态环境局长兴分局"里的"局长"不是职务（长兴、长沙、长治……打头的分局）
     assert dept_categories("湖州市生态环境局长兴分局") == ["生态环境"]
     assert dept_categories("长沙市生态环境局长沙县分局") == ["生态环境"]
@@ -231,15 +238,12 @@ def test_site_verdict_prefers_the_site_name():
     assert v.kind == "不确定"  # 和本省无关的名字不认作任何一方
 
 
-def test_site_verdict_same_url_code_and_domain():
+def test_site_verdict_code_and_domain():
     lianxi = {
         "own_portal": "http://www.lianxi.gov.cn/",
         "upper_portals": ["http://www.jiujiang.gov.cn/"],
     }
-    v = _site(["首页"], "", "http://kjj.jiujiang.gov.cn", "濂溪区", **lianxi,
-              upper_sites={"kjj.jiujiang.gov.cn/"})  # fmt: skip
-    assert (v.kind, v.basis) == ("上级", "同网址")
-    v = _site([], "", "http://kjj.jiujiang.gov.cn/", "濂溪区", **lianxi)
+    v = _site(["首页"], "", "http://kjj.jiujiang.gov.cn/", "濂溪区", **lianxi)
     assert (v.kind, v.basis) == ("上级", "域名")
     v = _site([], "", "http://kjj.lianxi.gov.cn/", "濂溪区", **lianxi)
     assert v.kind == "不确定"
@@ -344,23 +348,28 @@ def _jiangxi_pages(city_kj: bool, city_kfq: bool) -> dict[str, str]:
     }
 
 
-def test_county_link_to_city_department_by_same_url_or_city_domain():
-    depts = _depts(_run(_jiangxi_pages(city_kj=True, city_kfq=False), ["江西"]))
-    assert depts[("360400", "科技")].site_url == "http://kjj.jiujiang.gov.cn/"
-    lx = depts[("360402", "科技")]
-    assert lx.status == "导航未找到" and "同一个网址" in lx.reason
-    # 九江市没认这个网址：按"在九江市门户的域名下、不在濂溪区的域名下"否掉
-    lx = _depts(_run(_jiangxi_pages(city_kj=False, city_kfq=False), ["江西"]))[("360402", "科技")]
-    assert lx.status == "导航未找到" and "域名" in lx.reason
+def test_county_link_to_city_department_on_city_domain():
+    # 九江市认没认这个网址、谁先跑完都一样：网站在九江市门户的域名下、不在濂溪区的域名下
+    for city_kj in (True, False):
+        depts = _depts(_run(_jiangxi_pages(city_kj=city_kj, city_kfq=False), ["江西"]))
+        lx = depts[("360402", "科技")]
+        assert lx.status == "导航未找到" and "域名" in lx.reason
     assert ("360402", "数据局") not in depts  # 政务服务大厅不是数据局
 
 
-def test_dev_zone_kept_for_county_unless_the_city_has_the_same_site():
-    depts = _depts(_run(_jiangxi_pages(city_kj=False, city_kfq=False), ["江西"]))
-    assert depts[("360402", "开发区")].site_url == "http://jkq.jiujiang.gov.cn/"
-    depts = _depts(_run(_jiangxi_pages(city_kj=False, city_kfq=True), ["江西"]))
-    assert depts[("360400", "开发区")].site_url == "http://jkq.jiujiang.gov.cn/"
-    assert ("360402", "开发区") not in depts
+def test_dev_zone_on_city_domain_is_not_the_county_one():
+    for city_kfq in (False, True):
+        depts = _depts(_run(_jiangxi_pages(city_kj=False, city_kfq=city_kfq), ["江西"]))
+        assert ("360402", "开发区") not in depts
+    assert depts[("360400", "开发区")].site_url == "http://jkq.jiujiang.gov.cn/"  # 九江市自己的
+    # 开发区以地市名打头、网站不在地市域名下：县里的照常留（名称判不了归属）
+    pages = _jiangxi_pages(city_kj=False, city_kfq=False)
+    pages["http://www.lianxi.gov.cn/bmwz/"] = (
+        '<a href="http://www.jjkfq.gov.cn/">九江经济技术开发区管理委员会</a>'
+    )
+    pages["http://www.jjkfq.gov.cn/"] = '<a href="/tzgg/">通知公告</a>'
+    depts = _depts(_run(pages, ["江西"]))
+    assert depts[("360402", "开发区")].site_url == "http://www.jjkfq.gov.cn/"
 
 
 def test_upper_level_name_link_with_city_name_is_skipped():
@@ -542,3 +551,109 @@ def test_pick_prefers_site_pages_over_articles_on_ties():
     # 两个同分候选都认不出栏目：取栏目页，不取"机构简介"文章
     depts = _depts(_run(_jiujiang_city_pages(channel_cols=False), ["江西"]))
     assert depts[("360400", "财政")].site_url == "http://www.jiujiang.gov.cn/czj/"
+
+
+# —— 第一轮独立审阅提出的几处（11/9）——
+
+
+def test_portal_channel_kept_when_portal_site_name_is_the_parent():
+    # 集安市门户全站的 SiteName 写着"通化市人民政府"：门户里的部门频道照常算集安市的
+    pages = {
+        GOV_LOCAL_NAV: '<a href="http://www.jl.gov.cn/">吉林</a>',
+        "http://www.jl.gov.cn/": '<a href="/sxwz/">市县政府网站</a>',
+        "http://www.jl.gov.cn/sxwz/": '<a href="http://www.ja.gov.cn/">集安市</a>',
+        "http://www.ja.gov.cn/": """<meta name="SiteName" content="通化市人民政府">
+            <meta name="SiteIDCode" content="2205820001"><a href="/bmwz/">部门网站</a>""",
+        "http://www.ja.gov.cn/bmwz/": '<a href="/czj/">集安市财政局</a>',
+        "http://www.ja.gov.cn/czj/": """<meta name="SiteName" content="通化市人民政府">
+            <a href="/czj/tzgg/">通知公告</a>""",
+    }
+    cz = _depts(_run(pages, ["吉林"]))[("220582", "财政")]
+    assert cz.site_url == "http://www.ja.gov.cn/czj/"
+    assert [c.url for c in cz.columns] == ["http://www.ja.gov.cn/czj/tzgg/"]
+
+
+def test_blocked_top_candidate_is_kept_not_replaced():
+    pages = {
+        GOV_LOCAL_NAV: '<a href="https://www.jiangxi.gov.cn/">江西</a>',
+        "https://www.jiangxi.gov.cn/": """<a href="/bmwz/">省直部门网站</a>
+            <a href="http://www.other.gov.cn/">科技厅</a>""",
+        "https://www.jiangxi.gov.cn/bmwz/": '<a href="http://kjt.jiangxi.gov.cn/">江西省科学技术厅</a>',
+        "http://www.other.gov.cn/": '<a href="/tzgg/">通知公告</a>',
+    }
+
+    class Blocked(FakeCache):
+        def get(self, url):
+            if url.startswith("http://kjt.jiangxi.gov.cn/"):
+                return FetchResult(url, "http_error", url, 412, "", "HTTP 412")
+            return super().get(url)
+
+    inv = Inventory(INDEX, Blocked(pages), provinces=["江西"], workers=2, per_province=2)
+    inv.run()
+    kj = _depts(inv)[("360000", "科技")]
+    assert kj.site_url == "http://kjt.jiangxi.gov.cn/" and kj.status in ("不能抓", "打不开")
+
+
+def _jiujiang_county_pages(with_market_bureau: bool) -> dict[str, str]:
+    pages = _jiangxi_pages(city_kj=False, city_kfq=False)
+    links = '<a href="/bm/kjj/">区科学技术局（区知识产权局）</a>'
+    if with_market_bureau:
+        links += '<a href="/bm/scj/">区市场监督管理局</a>'
+    pages["http://www.lianxi.gov.cn/bmwz/"] = links
+    pages["http://www.lianxi.gov.cn/bm/kjj/"] = '<a href="/bm/kjj/tzgg/">通知公告</a>'
+    pages["http://www.lianxi.gov.cn/bm/scj/"] = "<p>市场监督管理局</p>"
+    return pages
+
+
+def test_bracket_alias_only_when_no_proper_candidate():
+    depts = _depts(_run(_jiujiang_county_pages(with_market_bureau=True), ["江西"]))
+    assert depts[("360402", "市场监管")].site_url == "http://www.lianxi.gov.cn/bm/scj/"
+    assert depts[("360402", "科技")].site_url == "http://www.lianxi.gov.cn/bm/kjj/"
+    # 没有正牌的市场监管局：才用加挂"知识产权局"牌子的科技局
+    depts = _depts(_run(_jiujiang_county_pages(with_market_bureau=False), ["江西"]))
+    assert depts[("360402", "市场监管")].site_url == "http://www.lianxi.gov.cn/bm/kjj/"
+
+
+def test_report_listing_is_not_a_directory_and_homepage_is_read():
+    pages = _jiangxi_pages(city_kj=False, city_kfq=False)
+    report = "http://www.lianxi.gov.cn/zwgk/ndbb/2025/"
+    pages["http://www.lianxi.gov.cn/"] = """<meta name="SiteName" content="濂溪区人民政府">
+        <a href="/zwgk/ndbb/2025/">政府网站年度报表</a>"""
+    names = ["财政局", "教育局", "公安局", "民政局", "司法局", "审计局", "统计局"]
+    pages[report] = "".join(
+        f'<a href="/zwgk/ndbb/2025/bm/{i}.html">濂溪区{n}</a>' for i, n in enumerate(names)
+    )
+    pages["http://www.lianxi.gov.cn/zwgk/ndbb/2025/bm/0.html"] = (
+        "<table><tr><td>首页网址</td><td>http://czj.lianxi.gov.cn/</td></tr></table>"
+    )
+    pages["http://czj.lianxi.gov.cn/"] = '<a href="/tzgg/">通知公告</a>'
+    inv = _run(pages, ["江西"])
+    assert "360402" not in inv.directories
+    assert _depts(inv)[("360402", "财政")].site_url == "http://czj.lianxi.gov.cn/"
+
+
+def test_branch_names_need_the_local_name_right_before_the_suffix():
+    from youju.govsites.attribution import own_branch
+
+    xc = BY_NAME["新城区"]
+    assert own_branch("呼和浩特市公安局新城区分局", xc)
+    assert own_branch("呼和浩特市生态环境局新城分局", xc)
+    assert not own_branch("呼和浩特市公安局新城湖分局", xc)  # "岳阳楼分局"不是岳阳县的那种
+
+
+def test_hosts_compare_without_ports():
+    from youju.govsites.inventory import _hostname
+
+    assert _hostname("https://www.lianxi.gov.cn:443/bm/") == "www.lianxi.gov.cn"
+    v = _site([], "3604000001", "https://www.lianxi.gov.cn:443/bm/kjj/", "濂溪区",
+              own_portal="http://www.lianxi.gov.cn/")  # fmt: skip
+    assert v.kind == "不确定"  # 本地门户的频道（带不带端口一样）
+
+
+def test_upper_portals_known_before_the_city_finishes():
+    from youju.govsites.inventory import Found
+
+    inv = Inventory(INDEX, FakeCache({}), provinces=["江西"])
+    # 省门户上直接列出区县时，区县可能先于地市处理完：地市门户网址在排下级时就记下
+    inv._remember_children({"360400": Found("http://www.jiujiang.gov.cn/", "九江市", "x")})
+    assert inv._upper_portals(_places("濂溪区")) == ["http://www.jiujiang.gov.cn/"]

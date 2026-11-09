@@ -28,7 +28,7 @@ from collections import Counter
 from typing import TYPE_CHECKING
 from urllib.parse import urljoin, urlsplit
 
-from youju.govsites.links import Link, registrable
+from youju.govsites.links import REPORT_WORDS, Link, registrable
 from youju.govsites.names import dept_categories, looks_like_org
 from youju.govsites.platform import URL_SHAPES
 
@@ -51,6 +51,9 @@ _ORG_TAIL = re.compile(r"(局|委|委员会|办|办公室|中心|分局|管委�
 DIR_MIN_ORGS = 6  # 目录页上至少这么多个像机关名的本站链接
 DIR_MIN_TARGETS = 2  # 其中至少这么多个是目标部门
 DIR_NAV = "部门目录"  # 目录页的导航文字前缀（含"部门"，部门候选照常加导航分）
+# 年报一类的页面：部门链到自己的年报，不是部门目录（年报目录的"首页网址"由盘点原有规则读）
+_REPORTISH_URL = re.compile(r"ndbb|zfxxgknb|xxgknb|gzndbb|nianbao|/nb/|/bmnb/", re.I)
+_REPORTISH_TEXT = re.compile(r"年报|年度报告|年度报表|工作报表")
 
 
 def _clean(text: str) -> str:
@@ -63,8 +66,9 @@ def directory_score(page: PageInfo, home_url: str) -> tuple[int, int]:
     orgs: set[str] = set()
     targets: set[str] = set()
     for link in page.links:
-        if registrable(link.url) != home or _article(link.url):
-            continue  # 别家网站的、链到文章的（柯城区"公开指南"页上各部门链到自己的指南文章）不算
+        if registrable(link.url) != home or _article(link.url) or _reportish(link):
+            continue  # 别家网站的、链到文章的（柯城区"公开指南"页上各部门链到自己的指南文章）、
+            # 链到年报的不算
         text = re.sub(r"^[\s>》›»·•|｜\-—–:：、]+", "", link.text or "")
         bare = re.sub(r"[（(][^）)]*[）)]?$", "", text)  # 末尾括号注释（可能被截断）
         if not looks_like_org(bare) or not _ORG_TAIL.search(bare):
@@ -73,6 +77,10 @@ def directory_score(page: PageInfo, home_url: str) -> tuple[int, int]:
         if [c for c in dept_categories(bare) if c != "政府办"]:
             targets.add(link.url)
     return len(orgs), len(targets)
+
+
+def _reportish(link: Link) -> bool:
+    return bool(_REPORTISH_URL.search(urlsplit(link.url).path) or _REPORTISH_TEXT.search(link.text))
 
 
 def _article(url: str) -> bool:
@@ -106,6 +114,11 @@ def find_directories(
     found: list[PageInfo] = []
     seen = {p.final_url for p in pages} | {p.url for p in pages}
     for p in pages:
+        # 首页、年报目录不当部门目录（年报目录上的部门链接由盘点原有规则读"首页网址"）
+        if p is home or p.final_url == home_url or _REPORTISH_TEXT.search(p.nav_text):
+            continue
+        if REPORT_WORDS.search(p.nav_text):
+            continue
         if p.directory or is_directory(p, home_url):
             p.directory = True
             found.append(p)
