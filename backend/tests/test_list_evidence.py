@@ -627,6 +627,10 @@ def test_record_api_failed_reason(client, session) -> None:
         # 获奖、表彰类不在五类里（D-091 ③）
         ("2026年度省科学技术奖获奖项目名单公示", False),
         ("关于表彰2026年度优秀企业的决定", False),
+        # 个人事项的名单（11/9）：数据库查询条件和标题规则同一口径
+        ("2026年10月企业职工从事特殊工种申请提前退休人员公示", False),
+        ("社会组织负责人任职前公示", False),
+        ("关于某市中医医院拟确定为工伤保险协议医疗机构的公示", True),
     ],
 )
 def test_lookup_scope_excludes_punitive_and_person_lists(client, session, title, shown) -> None:
