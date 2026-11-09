@@ -235,6 +235,7 @@ def test_service_hall_is_not_a_department():
     assert alias_categories("长兴县商务局(粮食和物资储备局、投资促进局)") == []
     assert alias_categories("市场监督管理局（知识产权局）") == []
     assert alias_categories("县人民政府办公室（县外事办）") == []
+    assert alias_categories("县经信局（县投资促进中心）") == ["商务"]
     # "生态环境局长兴分局"里的"局长"不是职务（长兴、长沙、长治……打头的分局）
     assert dept_categories("湖州市生态环境局长兴分局") == ["生态环境"]
     assert dept_categories("长沙市生态环境局长沙县分局") == ["生态环境"]

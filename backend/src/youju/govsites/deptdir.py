@@ -122,7 +122,9 @@ def find_directories(
     seen = {p.final_url for p in pages} | {p.url for p in pages}
     for p in pages:
         # 首页、年报目录不当部门目录（年报目录上的部门链接由盘点原有规则读"首页网址"）
-        if p is home or p.final_url == home_url or _REPORTISH_TEXT.search(p.nav_text):
+        if p is home or p.final_url.rstrip("/") == home_url.rstrip("/"):
+            continue
+        if _REPORTISH_TEXT.search(p.nav_text):
             continue
         if REPORT_WORDS.search(p.nav_text):
             continue
@@ -153,9 +155,9 @@ def find_directories(
     first = candidates(pages)
     level1 = [c for c in first if c[0] == 0][:3] + [c for c in first if c[0] == 1][:2]
     hubs: list[PageInfo] = []
-    for _, link in level1:
-        if budget <= 0:
-            break
+    for rank, link in level1:
+        if budget <= 0 or (found and rank == 1):
+            break  # 直接入口已经找到目录，总入口不再抓
         budget -= 1
         seen.add(link.url)
         p = inv.page(link.url)

@@ -1180,7 +1180,9 @@ class Inventory:
                 ):
                     sub = self.page(link.url)
                     if sub.result.status == "ok" and not sub.block:
-                        for kind, hit in find_columns([sub], exclude, max_depth, topics).items():
+                        found = find_columns([sub], exclude, max_depth, topics)
+                        found = self._check_group_columns([sub], found, exclude, max_depth, topics)
+                        for kind, hit in found.items():
                             hits.setdefault(kind, hit)
                     break
         row.columns = [hits[k] for k in COLUMN_KINDS if k in hits]

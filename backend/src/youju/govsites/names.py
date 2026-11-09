@@ -138,7 +138,7 @@ def _bracket_orgs(text: str) -> list[str]:
     for inner in re.findall(r"[（(]([^（()）]+)[）)]", text or ""):
         for part in re.split(r"[、，,；;]", inner):
             part = part.strip()
-            if re.search(r"(局|委|委员会|办|办公室)$", part):
+            if re.search(r"(局|委|委员会|办|办公室|中心)$", part):
                 out.append(part)
     return out
 

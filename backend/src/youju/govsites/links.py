@@ -127,7 +127,7 @@ def page_links(html: str, base_url: str, doc: etree._Element | None = None) -> l
         text = _text(a) or title
         # 显示的文字被截断了（"长兴县发展和改革局（长兴县人民政府区域合..."），title 里是全称就用它
         cut = _TRUNCATED.sub("", text)
-        if cut != text and len(title) > len(cut) and title.startswith(cut.lstrip("·•>»- ")):
+        if cut != text and len(title) >= len(cut) and title.startswith(cut.lstrip("·•>»- ")):
             text = title
         href = a.get("href") or ""
         if href.strip().lower().startswith(("javascript", "#")) or not href.strip():
