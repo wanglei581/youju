@@ -1353,14 +1353,19 @@ SEED_FIELDS = ("省份", "区划代码", "入口网址", "说明")
 
 
 def load_seeds(path: Path) -> dict[str, list[tuple[str, str]]]:
-    """导航入口补充（docs/数据来源/全国覆盖/导航入口补充.csv）：每行一个官方入口页，写明为什么用它。"""
+    """导航入口补充：每行一个官方入口页，写明为什么用它。
+
+    path 是目录（docs/数据来源/全国覆盖/导航入口补充/，按省按层各一个文件，如"江西_省级.csv"，
+    几条线各写各的文件）就读里面所有 CSV；是文件就只读它。"""
     if not path.exists():
         return {}
+    files = sorted(path.glob("*.csv")) if path.is_dir() else [path]
     out: dict[str, list[tuple[str, str]]] = {}
-    with path.open(encoding="utf-8-sig", newline="") as fh:
-        for r in csv.DictReader(fh):
-            url = (r.get("入口网址") or "").strip()
-            code = (r.get("区划代码") or "").strip()
-            if url and code and is_gov_url(url):
-                out.setdefault(code, []).append((url, (r.get("说明") or "").strip()))
+    for file in files:
+        with file.open(encoding="utf-8-sig", newline="") as fh:
+            for r in csv.DictReader(fh):
+                url = (r.get("入口网址") or "").strip()
+                code = (r.get("区划代码") or "").strip()
+                if url and code and is_gov_url(url):
+                    out.setdefault(code, []).append((url, (r.get("说明") or "").strip()))
     return out

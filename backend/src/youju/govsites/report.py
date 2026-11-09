@@ -1,12 +1,18 @@
-"""把盘点结果写成按省分开的 CSV，并汇总每省、每级的找到情况。"""
+"""把盘点结果写成按省分开的 CSV，并汇总每省、每级的找到情况。
 
+只写某几级（levels）时，文件里其他级的行原样留下：几条线分级并行时，谁跑哪一级就只换哪一级的行。
+"""
+
+import csv
 from collections import Counter, defaultdict
-from collections.abc import Iterable
+from collections.abc import Callable, Collection, Iterable
 from pathlib import Path
 
 from youju.govsites.divisions import DivisionIndex
 from youju.govsites.inventory import (
+    _LEVEL_ORDER,
     DEPT_FIELDS,
+    OPTIONAL_DEPTS,
     PORTAL_FIELDS,
     STANDARD_DEPTS,
     DeptRow,
@@ -26,7 +32,9 @@ def write_outputs(
     depts: list[DeptRow],
     out_dir: Path,
     provinces: Iterable[str] | None = None,
+    levels: Collection[str] | None = None,
 ) -> str:
+    """写门户网站/<省>.csv、部门栏目/<省>.csv。levels 给了就只换这几级的行，其他级照旧。"""
     depts = complete_slots(portals, depts)
     by_prov_p: dict[str, list[PortalRow]] = defaultdict(list)
     by_prov_d: dict[str, list[DeptRow]] = defaultdict(list)
@@ -35,11 +43,50 @@ def write_outputs(
     for d in depts:
         by_prov_d[d.province].append(d)
     for prov, rows in by_prov_p.items():
-        write_table(out_dir / "门户网站" / f"{prov}.csv", PORTAL_FIELDS, portal_rows(rows))
-        write_table(
-            out_dir / "部门栏目" / f"{prov}.csv", DEPT_FIELDS, dept_rows(by_prov_d.get(prov, []))
-        )
+        p_path = out_dir / "门户网站" / f"{prov}.csv"
+        d_path = out_dir / "部门栏目" / f"{prov}.csv"
+        p_rows = portal_rows(rows)
+        d_rows = dept_rows(by_prov_d.get(prov, []))
+        if levels:
+            p_rows = merge_level_rows(p_path, PORTAL_FIELDS, p_rows, levels, _portal_key)
+            d_rows = merge_level_rows(d_path, DEPT_FIELDS, d_rows, levels, _dept_key)
+        write_table(p_path, PORTAL_FIELDS, p_rows)
+        write_table(d_path, DEPT_FIELDS, d_rows)
     return summarize(index, portals, depts, provinces)
+
+
+_DEPT_ORDER = {d: i for i, d in enumerate(STANDARD_DEPTS + OPTIONAL_DEPTS)}
+
+
+def _portal_key(row: list[str]) -> tuple:
+    # 和 portal_rows 同一个顺序：省、层级、区划代码（第 0 列层级，第 4 列区划代码）
+    return (row[4][:2], _LEVEL_ORDER.get(row[0], 9), row[4])
+
+
+def _dept_key(row: list[str]) -> tuple:
+    return (row[4][:2], _LEVEL_ORDER.get(row[0], 9), row[4], _DEPT_ORDER.get(row[5], 99))
+
+
+def merge_level_rows(
+    path: Path,
+    header: Iterable[str],
+    new_rows: list[list[str]],
+    levels: Collection[str],
+    key: Callable[[list[str]], tuple],
+) -> list[list[str]]:
+    """文件里不属于 levels 的行原样留下（第 0 列是层级），属于的换成 new_rows 里这几级的行。
+
+    表头和现在的不一样（改过列）就不合并，报错让全量重跑，免得旧行错列。"""
+    kept: list[list[str]] = []
+    if path.exists():
+        with path.open(encoding="utf-8-sig", newline="") as fh:
+            reader = csv.reader(fh)
+            old_header = next(reader, None)
+            if old_header is not None and list(old_header) != list(header):
+                raise ValueError(f"{path} 的表头和现在的不一样，不能只写某几级：请全量重跑这个省")
+            kept = [row for row in reader if row and row[0] not in levels]
+    rows = kept + [row for row in new_rows if row[0] in levels]
+    return sorted(rows, key=key)
 
 
 def summarize(
@@ -171,6 +218,11 @@ def column_rows(checks, checked_on: str) -> list[list[str]]:
             ]
         )
     return rows
+
+
+def column_key(row: list[str]) -> tuple:
+    """栏目清单的顺序（和 column_rows 一样）：省、层级、区划代码、部门、栏目类型。"""
+    return (row[19][:2], _LEVEL_ORDER.get(row[0], 9), row[19], row[4], row[14])
 
 
 def verify_summary(checks) -> str:

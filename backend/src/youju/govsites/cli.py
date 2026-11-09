@@ -9,6 +9,7 @@ from pathlib import Path
 
 DEFAULT_OUT = Path(__file__).resolve().parents[4] / "docs" / "数据来源" / "全国覆盖"
 DEFAULT_CACHE = Path.home() / ".cache" / "youju-coverage"
+LEVEL_ORDER = ("国家级", "省级", "市级", "区县级")
 BOARD_LOCK_WAIT = 600  # 等另一个看板命令最多这么多秒
 BOARD_BUSY = "另一个覆盖看板命令（导入、重算或启用）正在跑，10 分钟内没等到，这次没做；稍后再试"
 
@@ -54,6 +55,12 @@ def _cmd_inventory(args: argparse.Namespace) -> int:
     from youju.govsites.report import write_outputs
 
     index = DivisionIndex(read_csv(args.divisions))
+    levels = set(args.levels or [])
+    max_level = args.max_level
+    if levels:
+        # 只写这几级：走到最深的那一级就停（国家级、省级都只用走到省级）
+        deepest = max(levels, key=LEVEL_ORDER.index)
+        max_level = "省级" if deepest in ("国家级", "省级") else deepest
     started = time.time()
     log_path = args.cache / "inventory.log"
     log_fh = open(log_path, "a", encoding="utf-8") if args.log else None  # noqa: SIM115
@@ -77,7 +84,7 @@ def _cmd_inventory(args: argparse.Namespace) -> int:
             index,
             cache,
             provinces=args.province,
-            max_level=args.max_level,
+            max_level=max_level,
             workers=args.workers,
             per_province=args.per_province,
             progress=progress,
@@ -88,7 +95,9 @@ def _cmd_inventory(args: argparse.Namespace) -> int:
         "state-" + ("_".join(args.province) if args.province else "全国") + ".json"
     )
     save_state(inv, state)
-    summary = write_outputs(index, list(inv.portals.values()), inv.depts, args.out, args.province)
+    summary = write_outputs(
+        index, list(inv.portals.values()), inv.depts, args.out, args.province, levels or None
+    )
     print(summary)
     print(
         f"用时 {time.time() - started:.0f} 秒；页面缓存命中 {cache.hits}、"
@@ -103,7 +112,13 @@ def _cmd_verify(args: argparse.Namespace) -> int:
 
     from youju.govsites.inventory import write_table
     from youju.govsites.pagecache import PageCache
-    from youju.govsites.report import COLUMN_FIELDS, column_rows, verify_summary
+    from youju.govsites.report import (
+        COLUMN_FIELDS,
+        column_key,
+        column_rows,
+        merge_level_rows,
+        verify_summary,
+    )
     from youju.govsites.verify import check_columns, columns_of
 
     _, depts = _load_states(args.state)
@@ -136,9 +151,17 @@ def _cmd_verify(args: argparse.Namespace) -> int:
     by_prov: dict[str, list] = {}
     for c in checks:
         by_prov.setdefault(c.province, []).append(c)
+    if args.level:
+        # 只试读某几级：范围里的每个省都写（这一级一个栏目也没有也要把旧行换掉），其他级的行照旧
+        for d in depts:
+            by_prov.setdefault(d.province, [])
     sub = "栏目抽样试读" if args.sample_per_level else "栏目清单"
     for prov, group in by_prov.items():
-        write_table(args.out / sub / f"{prov}.csv", COLUMN_FIELDS, column_rows(group, today))
+        path = args.out / sub / f"{prov}.csv"
+        rows = column_rows(group, today)
+        if args.level:
+            rows = merge_level_rows(path, COLUMN_FIELDS, rows, set(args.level), column_key)
+        write_table(path, COLUMN_FIELDS, rows)
     tag = ("抽样-" if args.sample_per_level else "") + (
         "_".join(args.province) if args.province else "全国"
     )
@@ -443,14 +466,20 @@ def register(sub: argparse._SubParsersAction) -> None:
     )
     p.add_argument("--province", action="append", help="只走某个省（简称，可重复）")
     p.add_argument("--max-level", choices=("省级", "市级", "区县级"), default="区县级")
+    p.add_argument(
+        "--levels",
+        action="append",
+        choices=LEVEL_ORDER,
+        help="只写这几级的行（可重复），清单文件里其他级的行照旧：几条线分级并行时用",
+    )
     p.add_argument("--workers", type=int, default=96)
     p.add_argument("--per-province", type=int, default=6, help="同一省同时处理几个行政区")
     p.add_argument("--offline", action="store_true", help="只用缓存，不联网")
     p.add_argument(
         "--seeds",
         type=Path,
-        default=DEFAULT_OUT / "导航入口补充.csv",
-        help="导航入口补充（门户不通或导航由脚本生成时用的官方入口页）",
+        default=DEFAULT_OUT / "导航入口补充",
+        help="导航入口补充（门户不通或导航由脚本生成时用的官方入口页）：目录或单个 CSV",
     )
     p.add_argument("--log", action="store_true", help="进度写到缓存目录的 inventory.log")
     p.add_argument("--verbose", action="store_true")

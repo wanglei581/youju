@@ -713,3 +713,84 @@ def test_seed_entries_find_depts_and_cities_when_portal_is_down():
     depts = {(d.code, d.dept): d for d in inv.depts}
     assert depts[("330000", "政府办")].status == "打不开"
     assert depts[("330000", "财政")].site_url == "http://czt.zj.gov.cn/"
+
+
+def _rows_for(tmp_path, sub, prov="浙江"):
+    import csv as _csv
+
+    with (tmp_path / sub / f"{prov}.csv").open(encoding="utf-8-sig", newline="") as fh:
+        return list(_csv.reader(fh))[1:]
+
+
+def test_write_outputs_with_levels_keeps_other_levels(tmp_path):
+    from youju.govsites.inventory import ColumnHit, DeptRow, PortalRow
+    from youju.govsites.report import write_outputs
+
+    index = DivisionIndex([d for d in _divisions() if d.province == "浙江"])
+    prov = PortalRow(
+        "330000", "省级", "浙江", "", "", "浙江省", "https://www.zj.gov.cn/", status="已找到"
+    )
+    city = PortalRow(
+        "330100",
+        "市级",
+        "浙江",
+        "杭州",
+        "",
+        "杭州市",
+        "https://www.hangzhou.gov.cn/",
+        status="已找到",
+    )
+    city_dept = DeptRow(
+        "330100",
+        "市级",
+        "浙江",
+        "杭州",
+        "",
+        "科技",
+        site_url="https://kj.hangzhou.gov.cn/",
+        status="已找到",
+        columns=[ColumnHit("通知公告", "通知公告", "https://kj.hangzhou.gov.cn/tzgg/", "")],
+    )
+    write_outputs(index, [prov, city], [city_dept], tmp_path)
+    # 只重跑省级：省级的行换成新的，地市的行原样留下
+    prov2 = PortalRow(
+        "330000", "省级", "浙江", "", "", "浙江省", "https://www.zj.gov.cn/", status="打不开"
+    )
+    write_outputs(index, [prov2], [], tmp_path, levels={"省级"})
+    portals = _rows_for(tmp_path, "门户网站")
+    assert [(r[0], r[9]) for r in portals] == [("省级", "打不开"), ("市级", "已找到")]
+    depts = _rows_for(tmp_path, "部门栏目")
+    assert any(
+        r[0] == "市级" and r[5] == "科技" and r[14] == "https://kj.hangzhou.gov.cn/tzgg/"
+        for r in depts
+    )
+    assert all(r[0] in ("省级", "市级") for r in depts)
+
+
+def test_merge_level_rows_refuses_changed_header(tmp_path):
+    import pytest
+
+    from youju.govsites.report import _portal_key, merge_level_rows
+
+    path = tmp_path / "x.csv"
+    path.write_text("层级,旧列\n省级,1\n", encoding="utf-8-sig")
+    with pytest.raises(ValueError, match="表头"):
+        merge_level_rows(path, ("层级", "新列"), [], {"市级"}, _portal_key)
+
+
+def test_load_seeds_reads_every_file_in_directory(tmp_path):
+    from youju.govsites.inventory import load_seeds
+
+    d = tmp_path / "导航入口补充"
+    d.mkdir()
+    head = "省份,区划代码,入口网址,说明\n"
+    (d / "江西_省级.csv").write_text(
+        head + "江西,360000,https://kjt.jiangxi.gov.cn/,科技厅\n", encoding="utf-8-sig"
+    )
+    (d / "江西_市级.csv").write_text(
+        head + "江西,360100,https://www.nc.gov.cn/,南昌\n", encoding="utf-8-sig"
+    )
+    seeds = load_seeds(d)
+    assert seeds["360000"] == [("https://kjt.jiangxi.gov.cn/", "科技厅")]
+    assert seeds["360100"] == [("https://www.nc.gov.cn/", "南昌")]
+    assert load_seeds(d / "江西_省级.csv").keys() == {"360000"}
