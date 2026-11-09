@@ -120,6 +120,12 @@ def run(
                 rows.append(base + ["", "", "", "", "", "", ""] + tail)
             for col in d.columns:
                 ck = checks.get(col.url)
+                if ck is not None and "#xxgk-gkmlpt-" in col.url:
+                    # 试读程序把信息公开分类一律说成大汉的，数字广东的写清楚
+                    # （verify.py 归全国覆盖主线，不改它）
+                    ck.reason = (
+                        "数字广东信息公开平台的分类，列表由接口按分类加载（待写广东集约化适配器）"
+                    )
                 rows.append(
                     base
                     + [

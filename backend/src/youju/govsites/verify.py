@@ -91,12 +91,6 @@ def columns_of(depts: Iterable[DeptRow]) -> list[ColumnCheck]:
 
 
 def check_one(cache: PageCache, col: ColumnCheck, today: date) -> ColumnCheck:
-    if f"#{XXGK_TAG}gkmlpt-" in col.url:
-        # 数字广东信息公开平台的分类（deptdir.py）：列表由 /gkmlpt/api/all/<编号> 接口按分类加载
-        col.result = NEEDS_SCRIPT
-        col.reason = "数字广东信息公开平台的分类，列表由接口按分类加载（待写广东集约化适配器）"
-        col.platform = col.platform or "广东集约化"
-        return col
     if f"#{XXGK_TAG}" in col.url:
         # 信息公开分类树上的分类：页面已读过，列表要按分类由脚本加载（大汉信息公开接口，第二阶段写）
         col.result = NEEDS_SCRIPT

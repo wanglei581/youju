@@ -38,6 +38,7 @@ from youju.crawler.urls import page_dir
 from youju.govsites.attribution import (  # noqa: F401 - level_*、_own_branch 原在本模块，保留旧名字
     NOT_OWN,
     Places,
+    branch_of_own,
     level_chars,
     level_prefix,
     name_verdict,
@@ -237,6 +238,24 @@ class CachingResolver:
         raise last or OSError("域名解析失败")
 
 
+_PICK_TRIES = 3  # 每类部门最多试几个候选页面
+# 像文章、部门年报目录、脚本列表页的网址：同分时排在网站首页、栏目页后面
+_WEAK_PAGE = re.compile(
+    r"/info/\d+/\d+\.s?html?$|/content/|/gkmlpt/|zfxxgknb|/bmnb/|/nb/|ndbb|nianbao", re.I
+)
+
+
+def _weak_page(url: str) -> int:
+    parts = urlsplit(url)
+    path = parts.path + ("?" + parts.query if parts.query else "")
+    return int(_WEAK_PAGE.search(path) is not None or any(p.search(path) for _, p in URL_SHAPES))
+
+
+def _readable(row: DeptRow) -> bool:
+    """部门页上认出了能直接打开的栏目（不是要接口的信息公开分类）。"""
+    return row.status == "已找到" and any(f"#{XXGK_TAG}" not in c.url for c in row.columns)
+
+
 # 部门目录页上的部门网址最多几层（山西县级平台 /lczw/zfxxgk/bmxxgk/zfzcbm/部门_编号/ 是 5 层）
 _DIR_DEPTH = 6
 # 部门目录里的部门页上，栏目最多几层（山西 /lczw/zfxxgk/bmxxgk/zfzcbm/部门/公开内容/栏目/ 7 层）
@@ -268,6 +287,9 @@ def _portal_like(url: str, current: str) -> bool:
 
 
 class Inventory:
+    # 这几级的门户再找信息公开平台里的部门目录页（县直部门多半只在那里列出，deptdir.py）
+    deptdir_levels: frozenset[str] = frozenset({"区县级"})
+
     def __init__(
         self,
         index: DivisionIndex,
@@ -279,7 +301,6 @@ class Inventory:
         progress: Callable[[str], None] | None = None,
         inner: int = 4,
         seeds: dict[str, list[tuple[str, str]]] | None = None,
-        deptdir_levels: Iterable[str] = ("区县级",),
     ) -> None:
         self.index = index
         self.cache = cache
@@ -291,8 +312,6 @@ class Inventory:
         # 导航入口补充：区划代码 → [(官方入口网址, 说明)]。门户打不开、或市县导航由脚本生成时，
         # 用本地区其他官方网站（如省直部门网站）的导航补找部门和下级门户
         self.seeds = seeds or {}
-        # 这几级的门户再找信息公开平台里的部门目录页（县直部门多半只在那里列出）
-        self.deptdir_levels = frozenset(deptdir_levels)
         self.directories: dict[str, list[str]] = {}  # 区划代码 → 认出的部门目录页（可追溯）
         self.progress = progress or (lambda msg: None)
         self.portals: dict[str, PortalRow] = {}
@@ -553,13 +572,6 @@ class Inventory:
                 portal_pages.append(dept_nav)
         # 入口补充页（省直部门网站）只用来找部门和下级门户；政府办的栏目只看门户自己的页面
         pages = portal_pages + self._seed_pages(div)
-        if div.level in self.deptdir_levels:
-            # 县直部门多半只列在信息公开平台的部门目录里（deptdir.py）：目录页当导航页用
-            pages += find_directories(self, div, home, pages)
-            dirs = [p.final_url for p in pages if p.directory]
-            if dirs:
-                with self._lock:
-                    self.directories[div.code] = dirs
         # 链回本门户、上级门户的不是下级门户（南通市年报页上区县名链到市门户内页）
         own_host = urlsplit(home.final_url).netloc.lower()
         child_found = self._find_children(div, children, pages, upper_hosts | {own_host})
@@ -738,6 +750,8 @@ class Inventory:
         portal_ok: bool = True,
         portal_pages: list[PageInfo] | None = None,
     ) -> list[DeptRow]:
+        if portal_ok and div.level in self.deptdir_levels:
+            pages = pages + self._directory_pages(div, home, pages)
         places = places_for(self.index, div)
         own = list(places.own)
         candidates: dict[str, list[tuple[int, Found]]] = {}
@@ -805,7 +819,7 @@ class Inventory:
             )
         owner = _Owner(
             places,
-            home.final_url if portal_ok else "",
+            home.final_url,
             home.fp.site_id_code if portal_ok and home.fp else "",
             tuple(self._upper_portals(places)),
             upper_sites,
@@ -846,6 +860,21 @@ class Inventory:
             _drop_shared_columns(rows)
         return rows
 
+    def _directory_pages(
+        self, div: Division, home: PageInfo, pages: list[PageInfo]
+    ) -> list[PageInfo]:
+        """信息公开平台里的部门目录页（deptdir.py），当导航页用；出了意外只是不找目录，部门照常认。"""
+        try:
+            extra = find_directories(self, div, home, pages)
+        except Exception:  # noqa: BLE001 - 找目录出意外不影响这个行政区别的部门
+            log.exception("找 %s %s 的部门目录时出错", div.province, div.name)
+            return []
+        dirs = [p.final_url for p in pages + extra if p.directory]
+        if dirs:
+            with self._lock:
+                self.directories[div.code] = dirs
+        return extra
+
     def _pick(
         self,
         div: Division,
@@ -860,7 +889,9 @@ class Inventory:
         rows: list[DeptRow] = []
         rejected: list[str] = []
         seen: set[str] = set()
-        for _, f in sorted(options, key=lambda o: -o[0]):
+        # 同分时网站首页、栏目页排在文章、部门年报、脚本页前面
+        # （锦州"机构简介"文章、葫芦岛部门年报目录）
+        for _, f in sorted(options, key=lambda o: (-o[0], _weak_page(o[1].url))):
             if f.url in seen:
                 continue
             seen.add(f.url)
@@ -897,9 +928,18 @@ class Inventory:
                 # 部门目录里的部门页（信息公开平台）栏目在深处：…/部门/fdzdgknr/zcwj/子分类/
                 self._fill_from_page(row, dp, [dp], exclude, _COL_DEPTH if f.via else 4)
             rows.append(row)
-            # 开发区可能有好几个（国家级、省级各一），其他部门只取最像的一个
-            if cat != "开发区" or len(rows) >= 6:
+            # 开发区可能有好几个（国家级、省级各一），其他部门只取最像的一个。最像的那个页面上
+            # 认不出能直接读的栏目时（杭州部门被"组织机构职能"页上的门户信息公开频道顶掉、常州的
+            # 简介页），再试后面的，最多看 3 个，取第一个有能直接读的栏目的
+            if cat == "开发区":
+                if len(rows) >= 6:
+                    break
+            elif _readable(row) or len(rows) >= _PICK_TRIES:
                 break
+        if cat != "开发区" and len(rows) > 1:
+            best = next((r for r in rows if _readable(r)), None)
+            best = best or next((r for r in rows if r.columns), None) or rows[0]
+            rows = [best]
         if not rows and rejected and cat in STANDARD_DEPTS:
             row = self._dept_row(div, cat)
             row.reason = ("门户上的部门链接指向别处：" + "；".join(rejected[:2]))[:120]
@@ -935,8 +975,8 @@ class Inventory:
             return ""
         if (
             v.kind == "上级"
-            and v.basis == "名称"
-            and _own_branch(f.text, owner.places.div)
+            and v.basis in ("名称", "标识码", "域名")
+            and branch_of_own(f.text, owner.places)
             and urlsplit(dp.final_url).path.strip("/") not in ("", "index.html", "index.htm")
         ):
             # "银川市生态环境局西夏分局"链到市局网站上分局自己的版块（/hbfj/xxfj/）：派出分局的

@@ -482,3 +482,53 @@ def test_branch_section_on_city_bureau_site_counts_for_the_district():
     depts = _depts(_run(pages, ["内蒙古"]))
     assert depts[("150102", "生态环境")].site_url == "http://sthjj.huhhot.gov.cn/hbfj/xcfj/"
     assert depts[("150102", "市场监管")].site_url == ""
+
+
+def test_county_named_branch_on_city_bureau_site():
+    from youju.govsites.attribution import branch_of_own, clean_name
+
+    xc = _places("新城区")
+    assert branch_of_own("新城区生态环境分局", xc)
+    assert branch_of_own("呼和浩特市生态环境局新城分局", xc)
+    assert not branch_of_own("呼和浩特市生态环境局", xc)
+    assert clean_name("中国（北京）自由贸易试验区") == "北京自由贸易试验区"
+
+
+# —— 每类部门选哪个页面（地市一组 11/9 报的：杭州、常州、锦州、葫芦岛）——
+
+
+def _jiujiang_city_pages(channel_cols: bool) -> dict[str, str]:
+    return {
+        GOV_LOCAL_NAV: '<a href="https://www.jiangxi.gov.cn/">江西</a>',
+        "https://www.jiangxi.gov.cn/": '<a href="/sxwz/">设区市政府网站</a>',
+        "https://www.jiangxi.gov.cn/sxwz/": '<a href="http://www.jiujiang.gov.cn/">九江市</a>',
+        # 独立网站只在首页上（不加导航分），门户频道在"组织机构"页上（加导航分）：频道分高
+        "http://www.jiujiang.gov.cn/": """<meta name="SiteName" content="九江市人民政府">
+            <a href="/zzjg/">组织机构</a><a href="http://kjj.jiujiang.gov.cn/">九江市科学技术局</a>""",
+        "http://www.jiujiang.gov.cn/zzjg/": """<a href="/col/col1/index.html">市科技局</a>
+            <a href="/info/1798/73896.htm">市财政局</a><a href="/czj/">市财政局</a>""",
+        "http://www.jiujiang.gov.cn/col/col1/index.html": (
+            '<meta name="SiteName" content="九江市人民政府">'
+            + ('<a href="/col/col1/tzgg/">通知公告</a>' if channel_cols else "<p>机构职能</p>")
+        ),
+        "http://kjj.jiujiang.gov.cn/": """<meta name="SiteName" content="九江市科学技术局">
+            <a href="/tzgg/">通知公告</a>""",
+        "http://www.jiujiang.gov.cn/info/1798/73896.htm": "<p>财政局简介</p>",
+        "http://www.jiujiang.gov.cn/czj/": "<p>财政局</p>",
+    }
+
+
+def test_pick_tries_next_candidate_when_top_page_has_no_columns():
+    depts = _depts(_run(_jiujiang_city_pages(channel_cols=False), ["江西"]))
+    kj = depts[("360400", "科技")]
+    assert kj.site_url == "http://kjj.jiujiang.gov.cn/"
+    assert [c.url for c in kj.columns] == ["http://kjj.jiujiang.gov.cn/tzgg/"]
+    # 分最高的频道本身有栏目：照旧取它，不多试
+    depts = _depts(_run(_jiujiang_city_pages(channel_cols=True), ["江西"]))
+    assert depts[("360400", "科技")].site_url == "http://www.jiujiang.gov.cn/col/col1/index.html"
+
+
+def test_pick_prefers_site_pages_over_articles_on_ties():
+    # 两个同分候选都认不出栏目：取栏目页，不取"机构简介"文章
+    depts = _depts(_run(_jiujiang_city_pages(channel_cols=False), ["江西"]))
+    assert depts[("360400", "财政")].site_url == "http://www.jiujiang.gov.cn/czj/"

@@ -123,15 +123,24 @@ def places_for(index: DivisionIndex, div: Division) -> Places:
     )
 
 
+def branch_of_own(text: str, places: Places) -> bool:
+    """链接文字说明是本区县的派出分局："杭州市生态环境局西湖分局"，或"西夏区生态环境分局"这样
+    以本地名称打头、以"分局"结尾的。"""
+    t = clean_name(text)
+    if own_branch(t, places.div):
+        return True
+    return t.endswith("分局") and any(t.startswith(o) for o in places.own)
+
+
 _LEAD = re.compile(r"^[\s>》›»·•|｜\-—–:：、]+")
-_CN_PREFIX = re.compile(r"^中国[（(]")
+_CN_PREFIX = re.compile(r"^中国[（(]([^）)]{2,10})[）)]")
 _GRADE_PREFIX = re.compile(r"^(?:国家级|省级)")
 _BRACKETS = re.compile(r"[（(【\[][^）)】\]]*[）)】\]]")
 
 
 def clean_name(text: str) -> str:
     t = _LEAD.sub("", re.sub(r"\s+", "", text or ""))
-    t = _CN_PREFIX.sub("", t)  # "中国（北京）自由贸易试验区"按"北京"算
+    t = _CN_PREFIX.sub(r"\1", t)  # "中国（北京）自由贸易试验区"按"北京自由贸易试验区"算
     t = _GRADE_PREFIX.sub("", t)  # "国家级九江经济技术开发区"
     return _BRACKETS.sub("", t)
 
