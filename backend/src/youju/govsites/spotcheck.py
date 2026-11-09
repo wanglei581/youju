@@ -78,8 +78,10 @@ _TAG = re.compile(r"<[^>]+>")
 
 
 def page_text(page_html: str) -> str:
-    """网页的文字（去掉脚本、样式和标签，实体转成字符）。"""
-    t = _SCRIPT_STYLE.sub(" ", page_html or "")
+    """网页的文字（去掉注释、脚本、样式和标签，实体转成字符）。注释里常有模板留下的旧日期（潍坊）。"""
+    # 只去掉短注释：没闭合好的长注释会把后面的正文一起吞掉（淮安）
+    t = re.sub(r"<!--(?:(?!-->).){0,300}?-->", " ", page_html or "", flags=re.S)
+    t = _SCRIPT_STYLE.sub(" ", t)
     t = _TAG.sub(" ", t)
     return htmllib.unescape(t)
 
@@ -99,7 +101,9 @@ def _longest_run(needle: str, hay: str) -> int:
 
 
 # 库里标题混进了列表上的其他文字（漯河、本溪一类平台的悬浮提示："标题：…点击数：…发表时间：…"）
-_POLLUTED = re.compile(r"^标题[:：]|点击数[:：]|发表时间[:：]|浏览次数[:：]|阅读次数[:：]")
+_POLLUTED = re.compile(
+    r"^(?:标题|主题)[:：]|点击数[:：]|发表时间[:：]|浏览次数[:：]|阅读次数[:：]|\s日期[:：]\s*\d"
+)
 
 
 def title_check(stored: str, page_html: str) -> tuple[str, str]:
@@ -108,7 +112,14 @@ def title_check(stored: str, page_html: str) -> tuple[str, str]:
         return "不一致", "库里没有标题"
     if _POLLUTED.search(stored or ""):
         return "不一致", "库里标题混进了列表上的其他文字（点击数、发表时间等）"
-    hay = norm_title(page_text(page_html)) + norm_title(_page_title(page_html))
+    meta = re.search(
+        r"""<meta[^>]+name=["']ArticleTitle["'][^>]+content=["']([^"']+)""", page_html or "", re.I
+    )
+    hay = (
+        norm_title(page_text(page_html))
+        + norm_title(_page_title(page_html))
+        + norm_title(htmllib.unescape(meta.group(1)) if meta else "")
+    )
     if t in hay:
         return "一致", ""
     ratio = _longest_run(t, hay) / len(t)
@@ -119,7 +130,11 @@ def title_check(stored: str, page_html: str) -> tuple[str, str]:
 
 _DATE = r"(\d{4})\s*[-/.年]\s*(\d{1,2})\s*[-/.月]\s*(\d{1,2})"
 # 发布日期的标签。前面不能紧挨着别的汉字：那是正文里的句子（"询价公告发布日期""公示时间"）
-_PUB_LABEL = r"(?<![一-龥])(?:发布日期|发布时间|发表时间|公开日期|信息时间|日期|时间)"
+_PUB_LABEL = (
+    r"(?<![一-龥])"
+    r"(?:信息发布日期|信息发布时间|发布日期|发布时间|发表时间|公开日期|信息时间|更新时间|编稿时间"
+    r"|日期|时间)"
+)
 # 成文、生成、印发日期：和发布日期常常不是一天，只写了这些的页面单独说明
 _DOC_LABEL = r"(?<![一-龥])(?:成文日期|生成日期|印发日期|发文日期)"
 _PUB_DATE = re.compile(_PUB_LABEL + r"\s*[:：]?\s*" + _DATE)
@@ -163,14 +178,53 @@ def date_forms(d: date) -> list[str]:
     ]
 
 
-def date_check(stored: date | None, page_html: str) -> tuple[str, str]:
-    """结论：一致 / 页面写的是别的日期 / 原文只标成文日期 / 页面上找不到日期。"""
+def _title_positions(text: str, title: str) -> list[int]:
+    """标题（去掉标点空白后的前 10 个字）在页面文字里出现的位置（按原文下标）。"""
+    key = norm_title(title)[:10]
+    if len(key) < 6:
+        return []
+    chars: list[str] = []
+    index: list[int] = []
+    for i, ch in enumerate(text):
+        for c in unicodedata.normalize("NFKC", ch):
+            if unicodedata.category(c)[0] not in "PSZC":
+                chars.append(c)
+                index.append(i)
+    flat = "".join(chars)
+    out, start = [], 0
+    while (k := flat.find(key, start)) >= 0:
+        out.append(index[k])
+        start = k + 1
+    return out
+
+
+def date_check(stored: date | None, page_html: str, title: str = "") -> tuple[str, str]:
+    """结论：一致 / 页面写的是别的日期 / 原文只标成文日期 / 原文没标发布日期 / 页面上找不到日期。
+
+    先看标题后面紧挨着标的发布日期（这篇文件自己的日期；侧栏、相关文章里的日期在别处）。"""
     if stored is None:
         return "页面上找不到日期", "库里没有发布日期"
-    text = page_text(page_html)
-    published = _dates(_META_DATE, page_html or "") + _dates(_PUB_DATE, text)
-    # 以网页头的发布时间、没有时以页面上第一个标明的发布日期为准；后面的标注日期多半是
-    # 相关文章列表里的，碰巧一样的交给人看
+    # 空白压成一个：标题和日期之间常隔着大段排版用的换行
+    text = re.sub(r"\s+", " ", page_text(page_html))
+    near: list[date] = []
+    key_len = len(norm_title(title))
+    for pos in _title_positions(text, title):
+        for d in _dates(_PUB_DATE, text[pos : pos + 300]):
+            if d not in near:
+                near.append(d)
+        # 标题后面紧挨着的日期（不写"发布日期"字样，如"……的通知 2026-09-24 来源：……"）
+        tail = text[pos : pos + key_len + 80]
+        if any(re.search(rf"(?<!\d){re.escape(f)}(?!\d)", tail) for f in date_forms(stored)):
+            return "一致", "日期在标题下方（没写发布日期字样）"
+    if stored in near:
+        return "一致", ""
+    if near:
+        shown = "、".join(d.isoformat() for d in near[:4])
+        return "页面写的是别的日期", f"标题后面标的发布日期：{shown}"
+    # 以页面上看得见的第一个"发布日期/发布时间"为准：后面的标注日期多半是相关文章列表里的，
+    # 碰巧一样的交给人看。网页头的 PubDate 常是系统重新生成页面的时间（济南、赣州比页面上
+    # 标的晚一两天），只在页面上没标时用
+    published = _dates(_PUB_DATE, text) or _dates(_META_DATE, page_html or "")
     if published and stored == published[0]:
         return "一致", ""
     if stored in published:
@@ -266,12 +320,13 @@ def attribution_check(
     doc_html: str,
     portal_domain: str = "",
     county_names: frozenset[str] = frozenset(),
+    doc_titles: list[str] | None = None,
 ) -> tuple[str, str]:
     """栏目页和文件页的网站名、标题、发文单位里有没有本市的写法（或栏目在本市门户的域名下），
     能不能归到这个部门。portal_domain：本市门户的本级域名（如 shaoyang.gov.cn）。"""
     city, dept = cell.get("城市", ""), cell.get("部门", "")
     col_names = _site_names(column_html)
-    doc_names = _site_names(doc_html)
+    doc_names = _site_names(doc_html) + list(doc_titles or [])
     issuers = [m.group(1) for m in _ISSUER.finditer(page_text(doc_html))][:3]
     names = city_names(city) if city else set()
     texts = col_names + doc_names + issuers
@@ -285,7 +340,10 @@ def attribution_check(
     # 网站名里出现本市下辖区县的名字：可能是区县的网站（扬州、南昌的区县网站在市域名下、
     # 名称也带市名），交给人看
     # 只看栏目页的网站名和标题：文件标题里的"新华社"之类会碰上石家庄新华区这种名字
-    named = [n for n in county_names if any(n in s for s in col_names)]
+    # 和本市同名的区县简称（淮安区的"淮安"、南昌县的"南昌"）不算
+    named = [
+        n for n in county_names if not any(n in c for c in names) and any(n in s for s in col_names)
+    ]
     if named:
         return "待看", f"网站名里有区县名“{named[0]}”，可能是区县的网站：{where}"
     if dept == "政府办":
@@ -407,9 +465,11 @@ def evidence_for(
     ev["打开"] = "ok" if (r.final_url or doc_url) == doc_url else f"ok（跳到 {r.final_url}）"
     col = cache.get(urls[0])
     ev["标题核对"], ev["标题说明"] = title_check(title, r.text)
-    ev["日期核对"], ev["日期说明"] = date_check(published, r.text)
+    ev["日期核对"], ev["日期说明"] = date_check(published, r.text, title)
+    # 原文里核对过的标题（"濮阳市市场监督管理局关于……"）也拿来认部门
+    confirmed = [title] if ev["标题核对"] in ("一致", "基本一致") else []
     ev["归属核对"], ev["归属说明"] = attribution_check(
-        cell, col.text if col.status == "ok" else "", r.text, portal_domain, county_names
+        cell, col.text if col.status == "ok" else "", r.text, portal_domain, county_names, confirmed
     )
     passed = (
         ev["标题核对"] in ("一致", "基本一致")

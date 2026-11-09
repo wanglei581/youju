@@ -182,3 +182,40 @@ def test_date_uses_first_labeled_publication_date() -> None:
     page = "发布日期：2026-11-05 正文…… 相关文章 发布日期：2026-11-03"
     assert sc.date_check(date(2026, 11, 5), page)[0] == "一致"
     assert sc.date_check(date(2026, 11, 3), page)[0] == "页面写的是别的日期"
+
+
+def test_visible_date_beats_meta_and_city_named_counties_ignored() -> None:
+    page = '<meta name="PubDate" content="2026-11-04 19:32"><p>成文日期: 2026-11-03 发布日期: 2026-11-03</p>'
+    assert sc.date_check(date(2026, 11, 3), page)[0] == "一致"
+    cell = {
+        "城市": "淮安",
+        "部门": "文旅",
+        "栏目网址": "https://wgj.huaian.gov.cn/zwgk/gggs/list.html",
+    }
+    col = "<title>淮安市文化广电和旅游局</title>"
+    counties = frozenset({"淮安区", "淮安", "清江浦区", "清江浦"})
+    assert sc.attribution_check(cell, col, "", "huaian.gov.cn", counties)[0] == "本市本部门"
+
+
+def test_date_next_to_title_beats_sidebar_dates() -> None:
+    """阜新：侧栏新闻的"发布时间"排在正文前面；以标题后面紧挨着的日期为准。"""
+    page = (
+        "<div>辽宁信息 更多 某某会议召开 发布时间：2026-10-13</div>"
+        "<h1>关于开展2026年全市政策性粮油库存检查工作的通知</h1><p>日期： 2026-04-27 浏览量：270</p>"
+    )
+    title = "关于开展2026年全市政策性粮油 库存检查工作的通知"
+    assert sc.date_check(date(2026, 4, 27), page, title)[0] == "一致"
+    assert sc.date_check(date(2026, 10, 13), page, title)[0] == "页面写的是别的日期"
+    assert sc.date_check(date(2026, 11, 3), "信息发布日期 : 2026-11-03")[0] == "一致"
+
+
+def test_more_page_shapes_from_manual_review() -> None:
+    # 标题下方紧挨着的日期、注释里的旧日期、"主题：…日期："的污染标题
+    page = "<h1>关于开展政府开放日活动的通知</h1> 2026-09-24 来源：市发改委"
+    assert sc.date_check(date(2026, 9, 24), page, "关于开展政府开放日活动的通知")[0] == "一致"
+    old = "<!--<span>发布时间：2022-11-01</span>--><span>发布时间： 2026-11-06</span>"
+    assert sc.date_check(date(2026, 11, 6), old)[0] == "一致"
+    polluted = "主题：2026年重点企业线上招聘会（第三十九期） 日期：2026-11-09"
+    assert (
+        sc.title_check(polluted, "<h1>2026年重点企业线上招聘会（第三十九期）</h1>")[0] == "不一致"
+    )

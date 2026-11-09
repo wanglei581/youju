@@ -1,6 +1,6 @@
 ﻿层级,省份,城市,区县,区划代码,名称,门户网址,导航来源页,导航文字,状态,原因,网站标识码,网站名称,平台,技术支持
 省级,四川,,,510000,四川省,https://www.sc.gov.cn/,https://www.gov.cn/home/2023-03/29/content_5748954.htm,四川,已找到,,5100000062,四川省人民政府网站,开普云|32位编号.shtml,
-市级,四川,成都,,510100,成都市,http://www.chengdu.gov.cn/,https://www.sc.gov.cn/,成都市,打不开,robots.txt 暂时无法获取（RemoteProtocolError: no response line received），本次跳过,,,,
+市级,四川,成都,,510100,成都市,http://www.chengdu.gov.cn/,https://www.sc.gov.cn/,成都市,不能抓,HTTP 412 拒绝访问,,,,
 市级,四川,自贡,,510300,自贡市,https://www.zg.gov.cn/,https://www.sc.gov.cn/,自贡市,已找到,,5103000007,自贡市人民政府,未识别,
 市级,四川,攀枝花,,510400,攀枝花市,http://www.panzhihua.gov.cn/,https://www.sc.gov.cn/,攀枝花市,已找到,,5104000001,攀枝花市人民政府,开普云,
 市级,四川,泸州,,510500,泸州市,https://www.luzhou.gov.cn/,https://www.sc.gov.cn/,泸州市,已找到,,5105000013,泸州市人民政府门户网站,开普云,
@@ -11,7 +11,7 @@
 市级,四川,内江,,511000,内江市,http://www.neijiang.gov.cn/,https://www.sc.gov.cn/,内江市,已找到,,5110000003,内江市人民政府,32位编号.shtml,
 市级,四川,乐山,,511100,乐山市,https://www.leshan.gov.cn/,https://www.sc.gov.cn/,乐山市,已找到,,5111000002,中共乐山市委乐山市人民政府,未识别,
 市级,四川,南充,,511300,南充市,https://www.nanchong.gov.cn/,https://www.sc.gov.cn/,南充市,已找到,,5113000012,南充市人民政府,拓尔思|t日期_编号(拓尔思),
-市级,四川,眉山,,511400,眉山市,http://www.ms.gov.cn/,https://www.sc.gov.cn/,眉山市,打不开,robots.txt 暂时无法获取（超时：ReadTimeout），本次跳过,,,,
+市级,四川,眉山,,511400,眉山市,https://www.ms.gov.cn/,https://www.sc.gov.cn/,眉山市,已找到,,5114000002,中共眉山市委 眉山市人民政府 门户网站,动态页?id=,
 市级,四川,宜宾,,511500,宜宾市,http://www.yibin.gov.cn/index.html,https://www.sc.gov.cn/,宜宾市,已找到,,5115000008,宜宾市人民政府网站,拓尔思|t日期_编号(拓尔思),
 市级,四川,广安,,511600,广安市,https://www.guang-an.gov.cn/,https://www.sc.gov.cn/,广安市,已找到,,5116000002,广安市人民政府,UCAP|content_编号,
 市级,四川,达州,,511700,达州市,http://www.dazhou.gov.cn/,https://www.sc.gov.cn/,达州市,已找到,,5117000005,达州市人民政府门户网,开普云,
