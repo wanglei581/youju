@@ -44,6 +44,7 @@ _DIR_LINK = re.compile(
 # 总入口：自己多半不是目录，目录在下一层
 _HUB_LINK = re.compile(
     r"^(?:政务公开|政府信息公开|信息公开|政府信息公开目录|信息公开目录|政务公开目录|"
+    r"政府信息公开平台|政务公开平台|信息公开平台|政府信息公开专栏|政务公开专栏|"
     r"法定主动公开内容|主动公开)$"
 )
 _TRAIL = re.compile(r"[\s>»›＞〉》+＋]+$|^[\s>»›·•]+")
@@ -72,7 +73,7 @@ def directory_score(page: PageInfo, home_url: str) -> tuple[int, int]:
         text = re.sub(r"^[\s>》›»·•|｜\-—–:：、]+", "", link.text or "").strip()
         # 去掉括号注释，以及显示时被截断的尾巴（"……局（长兴县人民政府区域合..."）
         bare = re.sub(r"[（(][^）)]*[）)]", "", text)
-        bare = re.sub(r"[（(][^）)]*$|(?:\.{2,}|…+)$", "", bare)
+        bare = re.sub(r"[（(][^）)]*$|(?:\.{2,}|…+)$", "", bare).strip()
         if not looks_like_org(bare) or not _ORG_TAIL.search(bare):
             continue
         orgs.add(link.url)
@@ -148,7 +149,9 @@ def find_directories(
                 uniq.append((rank, link))
         return uniq
 
-    level1 = candidates(pages)[:4]
+    # 直接像目录的入口最多 3 个，总入口另留 2 个（别让一串"机构简介"挤掉"政务公开"）
+    first = candidates(pages)
+    level1 = [c for c in first if c[0] == 0][:3] + [c for c in first if c[0] == 1][:2]
     hubs: list[PageInfo] = []
     for _, link in level1:
         if budget <= 0:
@@ -156,7 +159,7 @@ def find_directories(
         budget -= 1
         seen.add(link.url)
         p = inv.page(link.url)
-        if p.result.status != "ok" or p.block:
+        if p.result.status != "ok" or p.block or _not_directory_page(p, link, home_url):
             continue
         p.nav_text = f"{DIR_NAV}：{_clean(link.text)}"
         if is_directory(p, home_url):
@@ -173,13 +176,20 @@ def find_directories(
         budget -= 1
         seen.add(link.url)
         p = inv.page(link.url)
-        if p.result.status != "ok" or p.block:
+        if p.result.status != "ok" or p.block or _not_directory_page(p, link, home_url):
             continue
         p.nav_text = f"{DIR_NAV}：{_clean(link.text)}"
         if is_directory(p, home_url):
             p.directory = True
             found.append(p)
     return found
+
+
+def _not_directory_page(p: PageInfo, link: Link, home_url: str) -> bool:
+    """抓来的页面是门户首页（"机构设置"跳回了首页）或年报一类的，不当部门目录。"""
+    if p.final_url.rstrip("/") == home_url.rstrip("/"):
+        return True
+    return _reportish(link) or bool(_REPORTISH_URL.search(urlsplit(p.final_url).path))
 
 
 # —— 大汉 jpaas 信息公开：分组条目 → 分类栏目页 ——

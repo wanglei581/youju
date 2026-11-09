@@ -281,7 +281,11 @@ def _column_name(page: PageInfo) -> str:
         if (meta.get("name") or "").lower() == "columnname" and (meta.get("content") or "").strip():
             return meta.get("content").strip()
     title = (page.doc.findtext(".//title") or "").strip()
-    return re.split(r"\s*[-_|｜—]\s*", title)[0] if title else ""
+    if not title:
+        return ""
+    # 标题各段里找像栏目名的一段（"××县人民政府 - 政策文件"），没有就取第一段
+    parts = [t for t in re.split(r"\s*[-_|｜—]\s*", title) if t]
+    return next((t for t in parts if column_kind(t)), parts[0] if parts else "")
 
 
 def _readable(row: DeptRow) -> bool:

@@ -410,3 +410,38 @@ def test_group_columns_are_checked_by_their_own_name():
     assert kj_columns(_group_check_pages("<title>通知公告 - 长兴县人民政府</title>")) == [
         ("通知公告", leaf)
     ]
+
+
+def test_link_redirecting_to_home_is_not_a_directory():
+    pages = _zhejiang_pages()
+    home = "http://www.zjcx.gov.cn/"
+    # 首页上直接列着一串部门（够目录的数），"机构设置"跳回首页：首页不当部门目录
+    pages[home] = (
+        pages[home]
+        + "".join(
+            f'<a href="/xxgk/zfbmxxgk/b{i}/index.html">长兴县{n}</a>'
+            for i, n in enumerate(["财政局", "教育局", "公安局", "民政局", "司法局", "审计局"])
+        )
+        + '<a href="/jgsz/">机构设置</a>'
+    )
+
+    class Redirect(FakeCache):
+        def get(self, url):
+            if url == "http://www.zjcx.gov.cn/jgsz/":
+                r = super().get(home)
+                return FetchResult(url, r.status, home, r.http_status, r.text, r.error)
+            return super().get(url)
+
+    inv = Inventory(INDEX, Redirect(pages), provinces=["浙江"], workers=2, per_province=2)
+    inv.run()
+    assert home not in inv.directories.get("330522", [])
+
+
+def test_group_column_name_from_any_title_segment():
+    leaf = "http://www.zjcx.gov.cn/xxgk/zfbmxxgk/zxxkxjsj/fdzdgknr/zcwj/xzbmfgfxwj/index.html"
+    pages = _group_check_pages("<title>长兴县人民政府 - 乡镇、部门非规范性文件</title>")
+    inv = Inventory(INDEX, FakeCache(pages), provinces=["浙江"], workers=2, per_province=2)
+    inv.run()
+    assert [(c.kind, c.url) for c in _depts(inv)[("330522", "科技")].columns] == [
+        ("政策文件", leaf)
+    ]

@@ -67,7 +67,7 @@ _ORG_MAX_LEN = 30
 def _bare_org(text: str) -> str:
     """去掉括号注释；显示时被截断的（"……局（长兴县人民政府区域合..."）连同没合上的括号一起去掉。"""
     t = re.sub(r"[（(].*?[）)]", "", text or "")
-    return re.sub(r"[（(][^）)]*$|(?:\.{2,}|…+)$", "", t)
+    return re.sub(r"[（(][^）)]*$|(?:\.{2,}|…+)$", "", t).strip()
 
 
 def looks_like_org(text: str) -> bool:
