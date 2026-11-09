@@ -58,6 +58,7 @@ from youju.govsites.names import COLUMN_KINDS, column_kind, dept_categories
 from youju.govsites.navrules import (
     CITY_NAV_NOTE,
     CITY_SCRIPT_NOTE,
+    channel_shape,
     city_nav_links,
     device_redirect,
     https_fallback,
@@ -218,8 +219,10 @@ def _site_like(url: str, current: str) -> bool:
     """像不像一个网站（或频道）的入口，而不是一篇文章：不是文章网址形状，路径不太深。"""
     parts = urlsplit(url)
     path = parts.path or "/"
-    for _, pattern in URL_SHAPES:
-        if pattern.search(path + ("?" + parts.query if parts.query else "")):
+    for name, pattern in URL_SHAPES:
+        if pattern.search(path + ("?" + parts.query if parts.query else "")) and not (
+            channel_shape(name, path)
+        ):
             return False
     if path.lower().endswith((".pdf", ".doc", ".docx", ".xls", ".xlsx", ".jpg", ".png", ".zip")):
         return False

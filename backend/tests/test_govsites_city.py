@@ -239,3 +239,25 @@ def test_child_portal_link_to_a_report_page_takes_site_root() -> None:
     found = inv._find_children(divisions[0], [divisions[1]], [nav])
     assert found["371300"].url == "https://www.linyi.gov.cn/"
     assert "取网站首页" in found["371300"].text
+
+
+def test_channel_pages_that_look_like_articles() -> None:
+    from youju.govsites.inventory import _site_like
+
+    assert _site_like("https://www.suining.gov.cn/dept/7e713e2e3afdf388b9649e06a874f92b.html", "")
+    assert not _site_like("https://www.x.gov.cn/xxgk/7e713e2e3afdf388b9649e06a874f92b.shtml", "")
+    uuid = "a096dbcd-95dc-40df-9de0-1d1ab13d0969"
+    assert _site_like(f"https://www.sjz.gov.cn/columns/{uuid}/", "")
+    assert _site_like(f"https://www.sjz.gov.cn/columns/{uuid}/index.html", "")
+    assert not _site_like(f"https://www.sjz.gov.cn/columns/{uuid}/202611/123.html", "")
+
+
+def test_wrapped_redirect_links_are_dropped() -> None:
+    from youju.govsites.links import page_links
+
+    html = (
+        '<a href="http://libs.dg.gov.cn/code/xhtml/loading.html?from=%E5%8F%91%E6%94%B9">发改</a>'
+        '<a href="http://dgdp.dg.gov.cn/gkmlpt/index">东莞市发展和改革局</a>'
+    )
+    got = [(link.text, link.url) for link in page_links(html, "https://www.dg.gov.cn/")]
+    assert got == [("东莞市发展和改革局", "http://dgdp.dg.gov.cn/gkmlpt/index")]

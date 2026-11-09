@@ -229,3 +229,23 @@ def specific_page(url: str) -> bool:
     if not last or not _PAGE_EXT.search(last):
         return False
     return not _HOME_NAMES.match(_PAGE_EXT.sub("", last))
+
+
+# —— 6. 像文章网址、其实是频道页的 ——
+
+# 部门目录：遂宁的部门频道是 /dept/<32 位编号>.html
+_DEPT_DIRS = {"dept", "depts", "department", "bm", "bmpd", "bumen", "jgsz", "zfbm", "szfbm"}
+_COLUMNS_CHANNEL = re.compile(r"^/columns/[0-9a-f-]{36}/(?:index\.s?html?)?$", re.I)
+
+
+def channel_shape(shape: str, path: str) -> bool:
+    """文章网址形状里两种其实是频道页的写法（_site_like 用）：
+
+    - "32位编号"：上一层目录是部门目录（/dept/<编号>.html，遂宁）；
+    - "columns-uuid"：网址到栏目编号目录为止（/columns/<编号>/，石家庄的栏目页，文章在它下面）。"""
+    if shape.startswith("32位编号"):
+        segments = [s for s in path.split("/") if s]
+        return len(segments) >= 2 and segments[-2].lower() in _DEPT_DIRS
+    if shape == "columns-uuid":
+        return bool(_COLUMNS_CHANNEL.match(path))
+    return False

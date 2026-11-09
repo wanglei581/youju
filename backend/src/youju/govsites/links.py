@@ -101,6 +101,12 @@ def parse_html(html: str) -> etree._Element | None:
         return None
 
 
+# 跳转包装页：参数里只有链接名称、真正的网址由页面脚本查出来（东莞首页的部门链接都是
+# libs.dg.gov.cn/code/xhtml/loading.html?from=<名称>，那个网站 robots 禁止）。
+# 看不出指向哪里，不当链接用
+_WRAPPED = re.compile(r"/loading\.html?\?(?:[^#]*&)?from=", re.I)
+
+
 def page_links(html: str, base_url: str, doc: etree._Element | None = None) -> list[Link]:
     """页面上所有带文字的链接（去重，保留第一次出现的写法）。"""
     doc = doc if doc is not None else parse_html(html)
@@ -114,7 +120,7 @@ def page_links(html: str, base_url: str, doc: etree._Element | None = None) -> l
     def add(text: str, href: str | None, via: str) -> None:
         url = normalize_url(page, href)
         text = (text or "").strip()
-        if not url or not text or len(text) > 60:
+        if not url or not text or len(text) > 60 or _WRAPPED.search(url):
             return
         key = (text, url)
         if key not in seen:
