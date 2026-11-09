@@ -197,6 +197,9 @@ def test_service_hall_is_not_a_department():
     assert dept_categories("区人力社保局") == ["人社"]
     assert dept_categories("长兴县文化和广电旅游体育局") == ["文旅"]
     assert dept_categories("区市监局") == ["市场监管"]
+    assert dept_categories("黎城县农业农村和水利局") == ["农业农村"]
+    assert dept_categories("浙江省农业科学院") == []
+    assert dept_categories("县农业机械化服务中心") == []
     # 括号里加挂的牌子也算（柯城区"经信局（商务局）"）
     assert dept_categories("经信局（商务局）") == ["工信", "商务"]
     assert dept_categories("柯城区工业和信息化局（科学技术局）") == ["工信", "科技"]

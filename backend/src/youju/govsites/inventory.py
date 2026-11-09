@@ -880,7 +880,7 @@ class Inventory:
         except Exception:  # noqa: BLE001 - 找目录出意外不影响这个行政区别的部门
             log.exception("找 %s %s 的部门目录时出错", div.province, div.name)
             return []
-        dirs = [p.final_url for p in pages + extra if p.directory]
+        dirs = list(dict.fromkeys(p.final_url for p in pages + extra if p.directory))
         if dirs:
             with self._lock:
                 self.directories[div.code] = dirs
