@@ -113,6 +113,22 @@ def test_jpaas_path_groups_restore_category_column_pages():
     ]
 
 
+def test_jpaas_groups_need_a_clear_majority_column():
+    page = "http://www.gongshu.gov.cn/col/col1229461610/index.html"
+    # 拱墅区写法："/col/栏目号/art/…"和"/art/年/月/日/art_栏目号_编号.html"混着，夹着共用的年报栏目
+    mixed = """<label class="label-className">政策文件</label><ul>
+      <li><a href="http://www.gongshu.gov.cn/col/col1229565827/art/2026/art_a.html">一</a></li>
+      <li><a href="http://www.gongshu.gov.cn/art/2025/8/13/art_1229565827_1857766.html">二</a></li>
+      <li><a href="http://www.gongshu.gov.cn/art/2025/6/23/art_1229565827_1852150.html">三</a></li>
+      <li><a href="http://www.gongshu.gov.cn/col/col1229707689/art/2026/art_b.html">年报</a></li></ul>
+      <label class="label-className">资金信息</label><ul>
+      <li><a href="http://www.gongshu.gov.cn/col/col1229601867/art/2026/art_c.html">四</a></li>
+      <li><a href="http://www.gongshu.gov.cn/col/col1229226098/art/2026/art_d.html">五</a></li></ul>"""
+    assert jpaas_path_groups(mixed, page) == [
+        ("政策文件", "http://www.gongshu.gov.cn/col/col1229565827/index.html")
+    ]  # 3/4 来自同一栏目；资金信息两个栏目各一半，拿不准不还原
+
+
 def test_gkmlpt_tree_categories_skip_jump_links():
     text = (
         "window._CONFIG = {\n SID: '751358',\n TREE: "

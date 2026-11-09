@@ -173,14 +173,17 @@ _GROUP = re.compile(
 _HREF = re.compile(r"""href=["']([^"']+)["']""")
 
 
+_ART_ID = re.compile(r"/art_(\d+)_\d+\.html?$")
+GROUP_MAJORITY = 0.6  # 组里至少这么多条目来自同一个分类栏目，才认它是这一组的栏目
+
+
 def jpaas_path_groups(html: str, page_url: str) -> list[tuple[str, str]]:
     """大汉 jpaas"组配分类"单元里的分组（名称, 分类栏目页）。
 
-    条目网址是 …/分类目录/art/年/art_编号.html 的写法（长兴等县）：取组里条目最多的那个分类目录，
-    还原成 …/分类目录/index.html（同一网站）。
-
-    组里条目来自几个子分类（如"政策文件"下有规范性文件、其他文件）时只取条目最多的一个：
-    盘点每类栏目只记一个网址，其余的留给人工补。"""
+    条目网址是 …/分类目录/art/年/art_编号.html 的写法（长兴等县），还原成 …/分类目录/index.html；
+    …/art/年/月/日/art_栏目号_文章号.html 的按栏目号还原成 /col/col栏目号/index.html（同一网站）。
+    组里的条目常混着别的栏目（拱墅区各部门的"政策文件"组里夹着共用的年报栏目），只有一个栏目占到
+    六成以上才用它；拿不准的不还原（盘点照旧记信息公开分类，试读记"需接口"）。"""
     out: list[tuple[str, str]] = []
     host = urlsplit(page_url).netloc.lower()
     for m in _GROUP.finditer(html or ""):
@@ -191,10 +194,16 @@ def jpaas_path_groups(html: str, page_url: str) -> list[tuple[str, str]]:
             if parts.netloc.lower() != host or "/art/" not in parts.path:
                 continue
             base = parts.path.split("/art/", 1)[0]
+            art = _ART_ID.search(parts.path)
             if base and base != "/":
                 dirs[f"{parts.scheme}://{parts.netloc}{base}"] += 1
-        if dirs:
-            out.append((name, dirs.most_common(1)[0][0] + "/index.html"))
+            elif art:
+                dirs[f"{parts.scheme}://{parts.netloc}/col/col{art.group(1)}"] += 1
+        if not dirs:
+            continue
+        best, count = dirs.most_common(1)[0]
+        if count / sum(dirs.values()) >= GROUP_MAJORITY:
+            out.append((name, best + "/index.html"))
     return out
 
 

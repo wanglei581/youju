@@ -197,6 +197,11 @@ def test_service_hall_is_not_a_department():
     assert dept_categories("区人力社保局") == ["人社"]
     assert dept_categories("长兴县文化和广电旅游体育局") == ["文旅"]
     assert dept_categories("区市监局") == ["市场监管"]
+    # "生态环境局长兴分局"里的"局长"不是职务（长兴、长沙、长治……打头的分局）
+    assert dept_categories("湖州市生态环境局长兴分局") == ["生态环境"]
+    assert dept_categories("长沙市生态环境局长沙县分局") == ["生态环境"]
+    assert dept_categories("局长信箱") == []
+    assert dept_categories("市场监管局局长带队检查") == []
 
 
 # —— 部门网站本身 ——
