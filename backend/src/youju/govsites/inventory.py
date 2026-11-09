@@ -55,7 +55,14 @@ from youju.govsites.links import (
     script_links,
 )
 from youju.govsites.names import COLUMN_KINDS, column_kind, dept_categories
-from youju.govsites.navrules import city_nav_links, device_redirect, labeled_scripts
+from youju.govsites.navrules import (
+    CITY_NAV_NOTE,
+    CITY_SCRIPT_NOTE,
+    city_nav_links,
+    device_redirect,
+    https_fallback,
+    labeled_scripts,
+)
 from youju.govsites.pagecache import PageCache
 from youju.govsites.platform import URL_SHAPES, Fingerprint, blocker, fingerprint
 
@@ -266,6 +273,12 @@ class Inventory:
 
     def page(self, url: str, hops: int = 2) -> PageInfo:
         result = self.cache.get(url)
+        alt = https_fallback(url, result.status, result.error)
+        if alt:
+            # 官方导航给的 http 地址连接被断开、同一网站的 https 能打开（navrules）
+            second = self.cache.get(alt)
+            if second.status == "ok":
+                result = second
         target = _script_redirect(result, url) if hops > 0 else None
         if target:
             # 只有一句 location.href 的跳转页（浙江县级部门频道常见）：跟过去，记跳转后的页面
@@ -330,9 +343,10 @@ class Inventory:
                 for g in groups[:6]:
                     visit(g, f"{link.text}/{g.text}")
         if home.level_hint == "市级":
-            # 地市门户：通用导航词没收的部门列表页（部门频道、市政府工作机构、政务公开……，navrules）
+            # 地市门户：通用导航词没收的部门列表页（部门频道、市政府工作机构、政务公开……）。
+            # 说明用中性的 CITY_NAV_NOTE：这些页上的部门不加分，不顶掉原有导航找到的部门网站
             for link in city_nav_links(home.links, home.final_url, seen):
-                visit(link, link.text)
+                visit(link, CITY_NAV_NOTE)
         if home.doc is not None:
             # 省、市门户的"市县网站""部门网站"常由脚本拼出来：多看几个本站脚本
             extra = 6 if home.level_hint in ("省级", "市级", "国家级") else 0
@@ -344,7 +358,10 @@ class Inventory:
             ]
             if home.level_hint == "市级" and home.result.text:
                 # "市直部门""政府部门"下拉菜单的链接脚本（安徽各市、黄冈）：按菜单名挑，排在前面
-                labeled = labeled_scripts(home.result.text, home.final_url)
+                labeled = [
+                    (src, CITY_SCRIPT_NOTE)
+                    for src, _ in labeled_scripts(home.result.text, home.final_url)
+                ]
                 chosen = {src for src, _ in labeled}
                 scripts = labeled + [(s, t) for s, t in scripts if s not in chosen]
             for src, label in scripts:

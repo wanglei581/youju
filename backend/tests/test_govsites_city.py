@@ -137,9 +137,9 @@ def test_city_portal_follows_redirect_and_reads_menu_scripts() -> None:
     assert home.final_url == "http://www.nanjing.gov.cn/index.html"
     home.level_hint = "市级"
     nav = {p.url: p.nav_text for p in inv._nav_pages(home)}
-    assert nav["http://www.nanjing.gov.cn/bmpd/"] == "部门频道"
-    assert nav["http://www.nanjing.gov.cn/zwgk/"] == "政务公开"
-    assert nav["http://www.nanjing.gov.cn/ljgl/sjjg/1.js?num=100"] == "市直部门"
+    assert nav["http://www.nanjing.gov.cn/bmpd/"] == "地市补充·列表页"
+    assert nav["http://www.nanjing.gov.cn/zwgk/"] == "地市补充·列表页"
+    assert nav["http://www.nanjing.gov.cn/ljgl/sjjg/1.js?num=100"] == "地市补充·菜单脚本"
     # 省级、区县级门户不加部门列表页的叫法、不按菜单名挑脚本（只改地市；区县级照旧按文件名看页脚脚本）
     home.level_hint = "区县级"
     nav = {p.url: p.nav_text for p in inv._nav_pages(home)}
@@ -157,3 +157,40 @@ def test_device_redirect_only_follows_understood_conditions() -> None:
     assert device_redirect(unknown, base) is None
     by_var = '<script>var u = "/index.html"; window.location.href = u;</script>'
     assert device_redirect(by_var, base) == "http://www.x.gov.cn/index.html"
+
+
+def test_https_fallback_only_for_dropped_http() -> None:
+    from youju.govsites.navrules import https_fallback
+
+    dropped = "robots.txt 暂时无法获取（RemoteProtocolError: Server disconnected without sending）"
+    assert https_fallback("http://www.fuzhou.gov.cn/", "robots_error", dropped) == (
+        "https://www.fuzhou.gov.cn/"
+    )
+    assert https_fallback("https://www.fuzhou.gov.cn/", "robots_error", dropped) is None
+    assert https_fallback("http://www.x.gov.cn/", "http_error", "HTTP 412") is None
+    assert https_fallback("http://www.x.gov.cn/", "robots_error", "HTTP 521") is None
+
+
+def test_page_switches_to_https_when_http_is_dropped() -> None:
+    class DroppingCache(FakeCache):
+        def get(self, url: str) -> FetchResult:
+            if url.startswith("http://www.fuzhou.gov.cn"):
+                return FetchResult(url, "robots_error", url, None, "", "RemoteProtocolError: x")
+            return super().get(url)
+
+    divisions = [Division("350000", "福建省", "省", "省级", "福建", None, None, None)]
+    inv = Inventory(
+        DivisionIndex(divisions), DroppingCache({"https://www.fuzhou.gov.cn/": "<a>x</a>"})
+    )
+    p = inv.page("http://www.fuzhou.gov.cn/")
+    assert p.result.status == "ok" and p.final_url == "https://www.fuzhou.gov.cn/"
+
+
+def test_supplement_pages_do_not_outrank_existing_dept_sites() -> None:
+    """补充导航页上的门户部门频道不能顶掉原有导航找到的部门独立网站（11/9 杭州）。"""
+    import re
+
+    from youju.govsites.navrules import CITY_NAV_NOTE, CITY_SCRIPT_NOTE
+
+    for note in (CITY_NAV_NOTE, CITY_SCRIPT_NOTE):
+        assert not re.search(r"部门|省直|市直|区直|县直|机构|单位", note)

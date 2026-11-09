@@ -166,6 +166,10 @@ CITY_NAV_WORDS = (
     "政务公开",
 )
 _NAV_MAX_LEN = 16
+# 这两种补充导航页的说明（PageInfo.nav_text）：不能带"部门""机构""单位""市直"等字，
+# 免得找部门时加分、顶掉原有导航找到的部门网站（11/9 杭州的部门网站被门户里的部门频道顶掉过）
+CITY_NAV_NOTE = "地市补充·列表页"
+CITY_SCRIPT_NOTE = "地市补充·菜单脚本"
 
 
 def city_nav_links(links: list[Link], page_url: str, skip: set[str], limit: int = 6) -> list[Link]:
@@ -184,3 +188,24 @@ def city_nav_links(links: list[Link], page_url: str, skip: set[str], limit: int 
         out.append(link)
     out.sort(key=lambda link: "政务公开" in link.text)
     return out[:limit]
+
+
+# —— 4. http 端口断开连接、https 正常 ——
+
+# 连接层面的失败（服务器没回应、直接断开）：不是网站回了"拒绝"（403、412、521 等照旧记不能抓）
+_DROPPED = re.compile(
+    r"RemoteProtocolError|Server disconnected|no response line|Connection reset|"
+    r"ConnectError|ConnectionRefused|连接被|断开",
+    re.I,
+)
+
+
+def https_fallback(url: str, status: str, error: str | None) -> str | None:
+    """官方导航给的是 http 地址、网站的 http 端口却直接断开连接时，同一网站的 https 地址。
+
+    福州、盘锦等地的门户这样（11/9 实测 https 能打开）；只换协议，不换主机、路径和标识。"""
+    if not url.startswith("http://") or status not in ("robots_error", "network_error"):
+        return None
+    if not _DROPPED.search(error or ""):
+        return None
+    return "https://" + url[len("http://") :]
