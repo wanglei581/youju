@@ -4,7 +4,7 @@ import argparse
 import json
 import time
 from collections import Counter
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 DEFAULT_OUT = Path(__file__).resolve().parents[4] / "docs" / "数据来源" / "全国覆盖"
@@ -624,6 +624,7 @@ class BatchPlan:
     held: list[str]  # 线上清单里有、但没启用的（要渲染、访问控制等），不进本批
     missing: list[str]  # 证据表里通过、栏目清单里对不上的
     unknown: list[str]  # 复核结论认不出的
+    skipped_files: list[str] = field(default_factory=list)  # 表头和现在不一样、没读的栏目清单
 
 
 def build_batch(out: Path, levels: list[str]) -> BatchPlan:
@@ -670,6 +671,7 @@ def build_batch(out: Path, levels: list[str]) -> BatchPlan:
         with path.open(encoding="utf-8-sig", newline="") as fh:
             reader = csv.reader(fh)
             if next(reader, None) != list(COLUMN_FIELDS):
+                plan.skipped_files.append(str(path))
                 continue
             for row in reader:
                 level, prov, url, status = row[0], row[1], row[7], row[11]
@@ -699,6 +701,8 @@ def _cmd_batch(args: argparse.Namespace) -> int:
     plan = build_batch(args.out, args.level)
     for line in plan.unknown:
         print(f"复核结论认不出（这个省先不合格）：{line}")
+    for path in plan.skipped_files:
+        print(f"{path} 的表头和现在的不一样，没读（要全量重跑这个省）")
     out = args.out / "批次" / f"{args.name}.csv"
     write_table(out, COLUMN_FIELDS, plan.rows)
     by_prov = Counter(r[1] for r in plan.rows)
