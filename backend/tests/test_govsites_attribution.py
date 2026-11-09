@@ -495,13 +495,16 @@ def test_branch_section_on_city_bureau_site_counts_for_the_district():
             <a href="http://sthjj.huhhot.gov.cn/hbfj/xcfj/">呼和浩特市生态环境局新城分局</a>
             <a href="http://scjgj.huhhot.gov.cn/">呼和浩特市市场监督管理局新城区分局</a>""",
         # 分局的版块在市局网站上（网站名是市局的）：算新城区的
+        # 页面菜单里还有市局自己的"政策文件"：那是市局的，不算分局的
         "http://sthjj.huhhot.gov.cn/hbfj/xcfj/": """<meta name="SiteName" content="呼和浩特市生态环境局">
-            <a href="/hbfj/xcfj/tzgg/">通知公告</a>""",
+            <a href="/hbfj/xcfj/tzgg/">通知公告</a><a href="/zfxxgk/zcwj/">政策文件</a>""",
         # 链到市局首页：不算
         "http://scjgj.huhhot.gov.cn/": '<meta name="SiteName" content="呼和浩特市市场监督管理局">',
     }
     depts = _depts(_run(pages, ["内蒙古"]))
-    assert depts[("150102", "生态环境")].site_url == "http://sthjj.huhhot.gov.cn/hbfj/xcfj/"
+    hb = depts[("150102", "生态环境")]
+    assert hb.site_url == "http://sthjj.huhhot.gov.cn/hbfj/xcfj/"
+    assert [c.url for c in hb.columns] == ["http://sthjj.huhhot.gov.cn/hbfj/xcfj/tzgg/"]
     assert depts[("150102", "市场监管")].site_url == ""
 
 

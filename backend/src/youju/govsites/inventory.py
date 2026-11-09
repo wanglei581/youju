@@ -238,6 +238,9 @@ class CachingResolver:
 
 
 _PICK_TRIES = 3  # 每类部门最多试几个候选页面
+BRANCH_SECTION = (
+    "分局版块"  # _not_own_site：派出分局在上级网站上的版块（算本区县的，栏目只认版块里的）
+)
 # 像文章、部门年报目录、脚本列表页的网址：同分时排在网站首页、栏目页后面
 _WEAK_PAGE = re.compile(
     r"/info/\d+/\d+\.s?html?$|/content/|/gkmlpt/|zfxxgknb|/bmnb/|/nb/|ndbb|nianbao|"
@@ -973,7 +976,8 @@ class Inventory:
             row.site_type = "门户频道" if same_host else "独立网站"
             dp = self.page(f.url)
             why = self._not_own_site(cat, f, dp, owner) if owner is not None else ""
-            if why:
+            section = why == BRANCH_SECTION
+            if why and not section:
                 rejected.append(why)
                 continue  # 链到的是上级、别处、外省的部门网站：看下一个候选
             # 门户自己的栏目不算部门的；几个部门都链到的同一个栏目（如省政策文件库）由
@@ -987,6 +991,10 @@ class Inventory:
                 row.site_url = dp.final_url
                 # 部门目录里的部门页（信息公开平台）栏目在深处：…/部门/fdzdgknr/zcwj/子分类/
                 self._fill_from_page(row, dp, [dp], exclude, _COL_DEPTH if f.via else 4)
+                if section:
+                    # 派出分局在上级网站上的版块：上级网站菜单里的栏目是上级的，只认版块下面的
+                    base = page_dir(dp.final_url)
+                    row.columns = [c for c in row.columns if urlsplit(c.url).path.startswith(base)]
             if cat == "开发区":
                 rows.append(row)
                 if len(rows) >= 6:  # 开发区可能有好几个（国家级、省级各一）
@@ -1083,8 +1091,8 @@ class Inventory:
             and not _site_root(dp.final_url)
         ):
             # "银川市生态环境局西夏分局"链到市局网站上分局自己的版块（/hbfj/xxfj/）：派出分局的
-            # 东西就在上级网站上，算本区县的；链到市局首页的才不算
-            return ""
+            # 东西就在上级网站上，算本区县的；链到市局首页的才不算。栏目只认版块里的（_pick）
+            return BRANCH_SECTION
         return f"「{f.text}」→{names[0] if names else dp.final_url}（{v.reason}）"
 
     def _is_ministry(self, text: str, url: str) -> bool:
