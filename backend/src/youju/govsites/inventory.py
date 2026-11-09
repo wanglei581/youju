@@ -241,6 +241,7 @@ class Inventory:
         progress: Callable[[str], None] | None = None,
         inner: int = 4,
         seeds: dict[str, list[tuple[str, str]]] | None = None,
+        dept_levels: Iterable[str] | None = None,
     ) -> None:
         self.index = index
         self.cache = cache
@@ -252,6 +253,8 @@ class Inventory:
         # 导航入口补充：区划代码 → [(官方入口网址, 说明)]。门户打不开、或市县导航由脚本生成时，
         # 用本地区其他官方网站（如省直部门网站）的导航补找部门和下级门户
         self.seeds = seeds or {}
+        # 只对这几级找部门（--levels）：上级只走门户和导航页找下级，不去抓上级的部门网站
+        self.dept_levels = set(dept_levels) if dept_levels else None
         self.progress = progress or (lambda msg: None)
         self.portals: dict[str, PortalRow] = {}
         self.depts: list[DeptRow] = []
@@ -455,7 +458,11 @@ class Inventory:
             # 门户不通，但有官方入口补充：用它们找部门和下级门户（门户本身照记不通，不绕过）
             pages = self._seed_pages(div)
             child_found = self._find_children(div, children, pages)
-            depts = self._find_depts(div, home, pages, portal_ok=False) if pages else []
+            depts = (
+                self._find_depts(div, home, pages, portal_ok=False)
+                if pages and self._wants_depts(div)
+                else []
+            )
             self._finish(row, depts)
             return self._enqueue(div, children, child_found)
         row.portal_url = home.final_url
@@ -485,6 +492,9 @@ class Inventory:
         # 入口补充页（省直部门网站）只用来找部门和下级门户；政府办的栏目只看门户自己的页面
         pages = portal_pages + self._seed_pages(div)
         child_found = self._find_children(div, children, pages)
+        if not self._wants_depts(div):
+            self._finish(row, [])
+            return self._enqueue(div, children, child_found)
         try:
             depts = self._find_depts(div, home, pages, portal_pages=portal_pages)
         except Exception as exc:  # noqa: BLE001 - 部门出意外不影响下级照常排队
@@ -493,6 +503,9 @@ class Inventory:
             depts = []
         self._finish(row, depts)
         return self._enqueue(div, children, child_found)
+
+    def _wants_depts(self, div: Division) -> bool:
+        return self.dept_levels is None or div.level in self.dept_levels
 
     def _finish(self, row: PortalRow, depts: list[DeptRow]) -> None:
         with self._lock:
@@ -1258,11 +1271,15 @@ def write_table(path: Path, header: Iterable[str], rows: Iterable[list[str]]) ->
     return n
 
 
-def save_state(inv: Inventory, path: Path) -> None:
-    """原始结果（含每个栏目找到的位置）存成 JSON，后续试跑、看板统计都从这里读。"""
+def save_state(inv: Inventory, path: Path, levels: Iterable[str] | None = None) -> None:
+    """原始结果（含每个栏目找到的位置）存成 JSON，后续试跑、看板统计都从这里读。
+
+    levels 给了只存这几级的门户和部门：只写某几级时上级没找部门，存进去会被 complete_slots 补成
+    "导航未找到"，再拿去导入看板就把上级格的网址和栏目冲掉。"""
+    keep = set(levels or [])
     data = {
-        "portals": [asdict(p) for p in inv.portals.values()],
-        "depts": [asdict(d) for d in inv.depts],
+        "portals": [asdict(p) for p in inv.portals.values() if not keep or p.level in keep],
+        "depts": [asdict(d) for d in inv.depts if not keep or d.level in keep],
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
@@ -1353,14 +1370,19 @@ SEED_FIELDS = ("省份", "区划代码", "入口网址", "说明")
 
 
 def load_seeds(path: Path) -> dict[str, list[tuple[str, str]]]:
-    """导航入口补充（docs/数据来源/全国覆盖/导航入口补充.csv）：每行一个官方入口页，写明为什么用它。"""
+    """导航入口补充：每行一个官方入口页，写明为什么用它。
+
+    path 是目录（docs/数据来源/全国覆盖/导航入口补充/，按省按层各一个文件，如"江西_省级.csv"，
+    几条线各写各的文件）就读里面所有 CSV；是文件就只读它。"""
     if not path.exists():
         return {}
+    files = sorted(path.glob("*.csv")) if path.is_dir() else [path]
     out: dict[str, list[tuple[str, str]]] = {}
-    with path.open(encoding="utf-8-sig", newline="") as fh:
-        for r in csv.DictReader(fh):
-            url = (r.get("入口网址") or "").strip()
-            code = (r.get("区划代码") or "").strip()
-            if url and code and is_gov_url(url):
-                out.setdefault(code, []).append((url, (r.get("说明") or "").strip()))
+    for file in files:
+        with file.open(encoding="utf-8-sig", newline="") as fh:
+            for r in csv.DictReader(fh):
+                url = (r.get("入口网址") or "").strip()
+                code = (r.get("区划代码") or "").strip()
+                if url and code and is_gov_url(url):
+                    out.setdefault(code, []).append((url, (r.get("说明") or "").strip()))
     return out

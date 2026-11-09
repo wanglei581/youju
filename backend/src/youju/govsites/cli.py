@@ -9,6 +9,7 @@ from pathlib import Path
 
 DEFAULT_OUT = Path(__file__).resolve().parents[4] / "docs" / "数据来源" / "全国覆盖"
 DEFAULT_CACHE = Path.home() / ".cache" / "youju-coverage"
+LEVEL_ORDER = ("国家级", "省级", "市级", "区县级")
 BOARD_LOCK_WAIT = 600  # 等另一个看板命令最多这么多秒
 BOARD_BUSY = "另一个覆盖看板命令（导入、重算或启用）正在跑，10 分钟内没等到，这次没做；稍后再试"
 
@@ -54,6 +55,17 @@ def _cmd_inventory(args: argparse.Namespace) -> int:
     from youju.govsites.report import write_outputs
 
     index = DivisionIndex(read_csv(args.divisions))
+    levels = set(args.levels or [])
+    max_level = args.max_level
+    if levels:
+        # 只写这几级：走到最深的那一级就停（国家级、省级都只用走到省级）
+        deepest = max(levels, key=LEVEL_ORDER.index)
+        max_level = "省级" if deepest in ("国家级", "省级") else deepest
+        if args.max_level != "区县级":
+            print(f"给了 --levels，走到哪一级按它定（{max_level}），--max-level 不用")
+    elif args.max_level != "区县级":
+        # 只给 --max-level：只换走到的这几级，更下级的行照旧（几条线并行时不冲掉别人的）
+        levels = set(LEVEL_ORDER[: LEVEL_ORDER.index(args.max_level) + 1])
     started = time.time()
     log_path = args.cache / "inventory.log"
     log_fh = open(log_path, "a", encoding="utf-8") if args.log else None  # noqa: SIM115
@@ -77,18 +89,26 @@ def _cmd_inventory(args: argparse.Namespace) -> int:
             index,
             cache,
             provinces=args.province,
-            max_level=args.max_level,
+            max_level=max_level,
             workers=args.workers,
             per_province=args.per_province,
             progress=progress,
             seeds=load_seeds(args.seeds),
+            dept_levels=levels or None,
         )
         inv.run()
-    state = args.cache / (
-        "state-" + ("_".join(args.province) if args.province else "全国") + ".json"
-    )
-    save_state(inv, state)
-    summary = write_outputs(index, list(inv.portals.values()), inv.depts, args.out, args.province)
+    # 只写某几级时原始结果另存一份（文件名带层级），不覆盖全量的那份
+    tag = "_".join(args.province) if args.province else "全国"
+    if levels:
+        tag += "-" + "_".join(lv for lv in LEVEL_ORDER if lv in levels)
+    state = args.cache / f"state-{tag}.json"
+    save_state(inv, state, levels or None)
+    portals, depts = list(inv.portals.values()), inv.depts
+    if levels:
+        # 只写这几级：上级的门户行没找部门，不进清单、不补"导航未找到"的格
+        portals = [p for p in portals if p.level in levels]
+        depts = [d for d in depts if d.level in levels]
+    summary = write_outputs(index, portals, depts, args.out, args.province, levels or None)
     print(summary)
     print(
         f"用时 {time.time() - started:.0f} 秒；页面缓存命中 {cache.hits}、"
@@ -103,15 +123,22 @@ def _cmd_verify(args: argparse.Namespace) -> int:
 
     from youju.govsites.inventory import write_table
     from youju.govsites.pagecache import PageCache
-    from youju.govsites.report import COLUMN_FIELDS, column_rows, verify_summary
-    from youju.govsites.verify import check_columns, columns_of
+    from youju.govsites.report import (
+        COLUMN_FIELDS,
+        column_key,
+        column_rows,
+        dedupe_column_rows,
+        merge_level_rows,
+        verify_summary,
+    )
+    from youju.govsites.verify import check_columns, columns_for
 
     _, depts = _load_states(args.state)
     if args.province:
         depts = [d for d in depts if d.province in args.province]
-    if args.level:
-        depts = [d for d in depts if d.level in args.level]
-    cols = columns_of(depts)
+    # 高一级先占网址（省厅栏目也挂在区县页上时算省级），再按 --level 过滤
+    cols = columns_for(depts, set(args.level) if args.level else None)
+    scope = [d for d in depts if d.level in args.level] if args.level else depts
     if args.sample_per_level:
         # 抽样（平台盘点用）：每省每级取网址散列最小的 N 个，重跑抽到的一样
         picked = []
@@ -136,12 +163,23 @@ def _cmd_verify(args: argparse.Namespace) -> int:
     by_prov: dict[str, list] = {}
     for c in checks:
         by_prov.setdefault(c.province, []).append(c)
+    if args.level:
+        # 只试读某几级：范围里的每个省都写（这一级一个栏目也没有也要把旧行换掉），其他级的行照旧
+        for d in scope:
+            by_prov.setdefault(d.province, [])
     sub = "栏目抽样试读" if args.sample_per_level else "栏目清单"
     for prov, group in by_prov.items():
-        write_table(args.out / sub / f"{prov}.csv", COLUMN_FIELDS, column_rows(group, today))
+        path = args.out / sub / f"{prov}.csv"
+        rows = column_rows(group, today)
+        if args.level:
+            rows = merge_level_rows(path, COLUMN_FIELDS, rows, set(args.level), column_key)
+            rows = dedupe_column_rows(rows)  # 别级旧行里同一网址的，留最高一级那行
+        write_table(path, COLUMN_FIELDS, rows)
     tag = ("抽样-" if args.sample_per_level else "") + (
         "_".join(args.province) if args.province else "全国"
     )
+    if args.level:
+        tag += "-" + "_".join(lv for lv in LEVEL_ORDER if lv in args.level)
     dump = [asdict(c) | {"latest": c.latest.isoformat() if c.latest else None} for c in checks]
     (args.cache / f"checks-{tag}.json").write_text(
         json.dumps(dump, ensure_ascii=False), encoding="utf-8"
@@ -443,14 +481,20 @@ def register(sub: argparse._SubParsersAction) -> None:
     )
     p.add_argument("--province", action="append", help="只走某个省（简称，可重复）")
     p.add_argument("--max-level", choices=("省级", "市级", "区县级"), default="区县级")
+    p.add_argument(
+        "--levels",
+        action="append",
+        choices=LEVEL_ORDER,
+        help="只写这几级的行（可重复），清单文件里其他级的行照旧：几条线分级并行时用",
+    )
     p.add_argument("--workers", type=int, default=96)
     p.add_argument("--per-province", type=int, default=6, help="同一省同时处理几个行政区")
     p.add_argument("--offline", action="store_true", help="只用缓存，不联网")
     p.add_argument(
         "--seeds",
         type=Path,
-        default=DEFAULT_OUT / "导航入口补充.csv",
-        help="导航入口补充（门户不通或导航由脚本生成时用的官方入口页）",
+        default=DEFAULT_OUT / "导航入口补充",
+        help="导航入口补充（门户不通或导航由脚本生成时用的官方入口页）：目录或单个 CSV",
     )
     p.add_argument("--log", action="store_true", help="进度写到缓存目录的 inventory.log")
     p.add_argument("--verbose", action="store_true")
