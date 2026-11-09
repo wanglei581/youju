@@ -361,7 +361,7 @@ def test_upload_exact_byte_boundary_and_xlsx_expansion(client):
     with ZipFile(archive, "w", compression=8) as book:
         book.writestr("xl/worksheets/sheet1.xml", b" " * (2 * 1024 * 1024 + 1))
     response = client.post("/api/v1/advisor/preview", json=upload_body(archive.getvalue()))
-    assert response.status_code == 422 and "解压后过大" in response.json()["detail"]
+    assert response.status_code == 422 and "多余的工作表" in response.json()["detail"]
 
 
 @pytest.mark.parametrize("sparse", [False, True])
@@ -1136,7 +1136,7 @@ def test_xlsx_cumulative_expansion_limit(client):
         archive.writestr("a", b"x" * (1024 * 1024 + 1))
         archive.writestr("b", b"x" * (1024 * 1024 + 1))
     response = client.post("/api/v1/advisor/preview", json=upload_body(output.getvalue()))
-    assert response.status_code == 422 and "解压后过大" in response.json()["detail"]
+    assert response.status_code == 422 and "多余的工作表" in response.json()["detail"]
 
 
 @pytest.mark.parametrize("content", [b"PK company\nOther company", b"PKbroken"])

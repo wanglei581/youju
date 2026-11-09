@@ -53,7 +53,7 @@ import httpx
 from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.orm import Session
 
-from youju import attachment_text
+from youju import attachment_text, zip_limits
 from youju.backup import _BUSY_CODES, BEIJING, BackupError, _open_api, _retrying, upload
 from youju.classify import effective_kind
 from youju.config import get_settings
@@ -132,6 +132,9 @@ _PLATFORM_HINTS = {
 }
 RUN_BYTES = 1024**3  # 每轮最多下载 1GB
 _PDF_PAGES = 300
+# 查一份 PDF 最多用这么多秒 CPU 时间（pdf_sandbox 到时停掉子进程），到了按取不出文字算。
+# 11/8 实测 341 份真实文件最慢 44 秒（Linux 虚拟机）
+PDF_SECONDS = 180
 _TEXT_MAX = 100 * 1024 * 1024  # Office 文件解压后的文字部分上限（防压缩炸弹）
 _LINK_MAX_AGE = 1800  # 临时链接有效期（秒）
 _LINK_TTL = 1200.0  # api 进程里缓存临时链接的时间，比有效期短
@@ -224,17 +227,6 @@ class HasImages(Exception):
     """附件里有查不了个人信息的图片或嵌入对象（异常说明写在哪里）。"""
 
 
-def _pdf_image_areas(page, images: list[dict]) -> list[float]:
-    """这一页上每张图片占的面积（超出页面的部分不算）。"""
-    x0, top, x1, bottom = page.bbox
-    areas = []
-    for image in images:
-        width = min(image["x1"], x1) - max(image["x0"], x0)
-        height = min(image["bottom"], bottom) - max(image["top"], top)
-        areas.append(width * height if width > 0 and height > 0 else 0.0)
-    return areas
-
-
 def _bitmap_size(raw: bytes) -> tuple[int, int] | None:
     """位图的宽、高（像素）；认不出返回 None。只读文件头，不解码像素。"""
     from PIL import Image
@@ -268,40 +260,34 @@ def _check_bitmap(raw: bytes, size: int, where: str) -> None:
 
 
 def _pdf_text(data: bytes) -> str | None:
-    """PDF 里的文字。解压后太大、压缩方式不支持（pdf_limits）抛异常，text_of 按取不出文字算。"""
-    import pdfplumber
+    """PDF 里的文字：在限内存、限时的子进程里读（pdf_sandbox；某一页几乎没有文字但有图片的，
+    多半是扫描页，查不了，返回 None）。没读成（解压后太大、压缩方式不支持、超时、超内存、损坏）
+    抛 pdf_sandbox.Failed，text_of 按取不出文字算。"""
+    from youju import pdf_sandbox
 
-    from youju import pdf_limits
-
-    texts = []
-    with pdf_limits.reading(), pdfplumber.open(io.BytesIO(data)) as pdf:
-        if len(pdf.pages) > _PDF_PAGES:
-            return None
-        for number, page in enumerate(pdf.pages, 1):
-            text = page.extract_text() or ""
-            images = page.images
-            # 某一页几乎没有文字但有图片：多半是扫描页，查不了
-            scanned = len(text.strip()) < 10 and bool(images)
-            areas = _pdf_image_areas(page, images) if images else []
-            page_area = page.width * page.height
-            page.close()  # 释放这一页解析出的对象，大文件不至于占满内存
-            if scanned:
-                return None
-            if any(area > page_area * PDF_IMAGE_SHARE for area in areas):
-                raise HasImages(f"PDF 第 {number} 页有超过 1/10 页面的图片")
-            if sum(areas) > page_area * PDF_PAGE_SHARE:
-                raise HasImages(f"PDF 第 {number} 页的图片合计超过半页")
-            texts.append(text)
-    joined = "\n".join(texts)
-    return joined if joined.strip() else None
+    found = pdf_sandbox.read(
+        "copy",
+        data,
+        seconds=PDF_SECONDS,
+        pages=_PDF_PAGES,
+        image_share=PDF_IMAGE_SHARE,
+        page_share=PDF_PAGE_SHARE,
+    )
+    if "images" in found:
+        number, kind = found["images"]
+        if kind == "one":
+            raise HasImages(f"PDF 第 {number} 页有超过 1/10 页面的图片")
+        raise HasImages(f"PDF 第 {number} 页的图片合计超过半页")
+    joined = found["text"]
+    return joined if joined is not None and joined.strip() else None
 
 
 def _xml_text(raw: bytes) -> str:
     return html.unescape(_TAGS.sub("", _BREAK_TAGS.sub("\n", raw.decode("utf-8", "ignore"))))
 
 
-# zip 里只读不压缩（stored）和 deflate 压缩的部件，和附件文字读 Office、压缩包共用一份规则
-# （attachment_text._ZIP_METHODS）：Python 解 bzip2、LZMA 时一次把读进来的压缩数据整段
+# zip 里只读不压缩（stored）和 deflate 压缩的部件，和附件文字、名单解析、用户上传表格共用一份规则
+# （zip_limits.ZIP_METHODS）：Python 解 bzip2、LZMA 时一次把读进来的压缩数据整段
 # 解开、不受 read(n) 的长度限制，几百字节的文件能解出几百 MB（11/5 独立审阅实测：362 字节的包让
 # 内存从 70MB 涨到 660MB）。Office 只用这两种（11/5 抽查 147 份真实附件的 3,288 个部件也是）。
 
@@ -320,7 +306,7 @@ def _ooxml_text(data: bytes, nested: bool = False) -> str | None:
     with zipfile.ZipFile(io.BytesIO(data)) as zf:
         infos = zf.infolist()
         for info in infos:
-            if info.compress_type not in attachment_text._ZIP_METHODS:
+            if info.compress_type not in zip_limits.ZIP_METHODS:
                 # 记一条：检查结果只写"取不出文字"，看日志才分得清是压缩方式的事
                 log.info("附件副本：Office 部件的压缩方式不支持（%s），不读", info.compress_type)
                 raise UnsupportedZip(
@@ -536,7 +522,10 @@ def _ole_pictures(data: bytes, file_type: str) -> str:
 
 def text_of(data: bytes, file_type: str) -> str | None:
     """附件里的文字，用来查个人信息；取不出（扫描件、损坏、太大、Office 部件的压缩方式不支持、
-    PDF 解压后太大）返回 None。有查不了的图片（见 HasImages）抛 HasImages。"""
+    PDF 解压后太大、读 PDF 超时超内存）返回 None。有查不了的图片（见 HasImages）抛 HasImages；
+    读 PDF 时遇到和当时的环境有关的问题（pdf_sandbox.Failed，retry 为真）照样抛出，稍后再查。"""
+    from youju import pdf_sandbox
+
     try:
         if file_type == "pdf":
             return _pdf_text(data)
@@ -547,6 +536,10 @@ def text_of(data: bytes, file_type: str) -> str | None:
         return f"{main}\n{pictures}"
     except HasImages:
         raise
+    except pdf_sandbox.Failed as exc:
+        if exc.retry:
+            raise
+        return None
     except Exception:  # noqa: BLE001 - 第三方解析器对损坏文件会抛多种异常
         return None
 
@@ -566,10 +559,16 @@ def check_content(data: bytes, declared: str) -> str | Failure:
     detected = detect_type(data)
     if detected is None or _FAMILY[detected] != _FAMILY.get(declared):
         return Failure("mismatch", "文件内容和扩展名对不上（可能是网页，或文件已损坏、加密）")
+    from youju import pdf_sandbox
+
     try:
         text = text_of(data, detected)
     except HasImages as exc:
         return Failure("image", f"含图片，无法核验个人信息（{exc}）")
+    except (
+        pdf_sandbox.Failed
+    ) as exc:  # 和当时的环境有关（容器忙、内存不够等）：已有副本照用，稍后再查
+        return Failure("unchecked", f"这次没读成 PDF（{exc.detail}），稍后再查", True)
     if text is None:
         return Failure("unchecked", "取不出文字（扫描件或文件损坏），没法检查有没有个人信息")
     if has_personal_numbers(text):

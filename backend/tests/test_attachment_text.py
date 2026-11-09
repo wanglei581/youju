@@ -1231,10 +1231,16 @@ def test_time_limit_keeps_firing_when_a_parser_swallows_it(monkeypatch) -> None:
         time.sleep(5)  # 接着干活：下一次提醒照样打断
 
     monkeypatch.setattr(at, "EXTRACT_SECONDS", 1)
-    monkeypatch.setitem(at._EXTRACTORS, "pdf", stubborn)
+    # 单独一份用在本进程里解析的格式（docx）；单独的 PDF 在子进程里按 CPU 时间限，这里的墙上
+    # 时间只兜底（见下一个测试）
+    docx = at._EXTRACTORS["docx"]
+    monkeypatch.setitem(at._EXTRACTORS, "docx", stubborn)
     started = time.monotonic()
-    single = at.extract(make_pdf("x"))
+    single = at.extract(make_docx("x"))
     assert (single.reason, single.detail) == ("too_large", "取文字超过 1 秒")
+    monkeypatch.setitem(at._EXTRACTORS, "docx", docx)
+    # 压缩包整份一个墙上时间（1 秒）：包里的 PDF 照样被它打断
+    monkeypatch.setitem(at._EXTRACTORS, "pdf", stubborn)
     data = make_zip(
         [("a.docx", make_docx("先读的")), ("b.pdf", make_pdf("x")), ("c.docx", make_docx("后面的"))]
     )
@@ -1245,6 +1251,27 @@ def test_time_limit_keeps_firing_when_a_parser_swallows_it(monkeypatch) -> None:
         "第 3 个文件（共 3 个）：c.docx（前面的文件读的时间太长，这个没有读）",
     ]
     assert result.ok and "先读的" in texts(result)
+
+
+def test_single_pdf_gets_only_a_wall_clock_backstop(monkeypatch) -> None:
+    """单独一份 PDF：子进程按 CPU 时间限（seconds 秒），这里的墙上时间只兜底，比子进程自己的墙上
+    时间兜底再晚 5 秒（容器忙时好文件不会因为等 CPU 被记成"太大"）；别的格式照旧是 seconds 秒。"""
+    import contextlib
+    import math
+
+    from youju import pdf_sandbox
+
+    seen = []
+
+    @contextlib.contextmanager
+    def recorded(seconds):
+        seen.append(seconds)
+        yield
+
+    monkeypatch.setattr(at, "_time_limit", recorded)
+    assert at.extract(make_pdf("x")).ok
+    assert at.extract(make_docx("x")).ok
+    assert seen == [math.ceil(pdf_sandbox._wall(at.EXTRACT_SECONDS)) + 5, at.EXTRACT_SECONDS]
 
 
 def bzip2_zip(name: str, size: int) -> bytes:

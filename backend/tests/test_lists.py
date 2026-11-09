@@ -157,11 +157,9 @@ def _fake_pdf(page_count: int, visited: list[int]):
 
 
 @pytest.mark.parametrize("page_count", [MAX_PDF_PAGES, MAX_PDF_PAGES + 1])
-def test_pdf_page_limit_keeps_first_pages(monkeypatch, page_count: int) -> None:
+def test_pdf_page_limit_keeps_first_pages(monkeypatch, pdf_in_process, page_count: int) -> None:
     visited: list[int] = []
-    monkeypatch.setattr(
-        "youju.lists.parser.pdfplumber.open", lambda _: _fake_pdf(page_count, visited)
-    )
+    monkeypatch.setattr("youju.pdf_sandbox._open", lambda _: _fake_pdf(page_count, visited))
     result = parse_attachment_result(b"%PDF-fake", "pdf")
     assert [entry.name for entry in result.entries] == ["北京星河科技有限公司"]
     assert visited == list(range(1, MAX_PDF_PAGES + 1))
@@ -170,12 +168,12 @@ def test_pdf_page_limit_keeps_first_pages(monkeypatch, page_count: int) -> None:
     )
 
 
-def test_pdf_page_limit_is_recorded_for_scanned_file(monkeypatch) -> None:
+def test_pdf_page_limit_is_recorded_for_scanned_file(monkeypatch, pdf_in_process) -> None:
     pdf = _fake_pdf(MAX_PDF_PAGES + 1, [])
     for page in pdf.pages:
         page.extract_text = lambda: ""
         page.extract_tables = lambda table_settings=None: []
-    monkeypatch.setattr("youju.lists.parser.pdfplumber.open", lambda _: pdf)
+    monkeypatch.setattr("youju.pdf_sandbox._open", lambda _: pdf)
     over = MAX_PDF_PAGES + 1
     with pytest.raises(
         ValueError, match=f"暂不支持扫描件；PDF 共{over}页，仅解析前{MAX_PDF_PAGES}页"
@@ -193,10 +191,10 @@ class FakeFetcher:
         return self.responses[url]
 
 
-def test_pdf_page_limit_saves_partial_parse_reason(session, monkeypatch) -> None:
+def test_pdf_page_limit_saves_partial_parse_reason(session, monkeypatch, pdf_in_process) -> None:
     visited: list[int] = []
     over = MAX_PDF_PAGES + 1
-    monkeypatch.setattr("youju.lists.parser.pdfplumber.open", lambda _: _fake_pdf(over, visited))
+    monkeypatch.setattr("youju.pdf_sandbox._open", lambda _: _fake_pdf(over, visited))
     source = Source(
         level="省级",
         province="北京",
@@ -288,7 +286,9 @@ def test_pdfs_cut_at_an_older_page_limit_are_reread_once() -> None:
     assert not _should_attempt(_parse_record("ok", "PDF 共567页，仅解析前300页", hours_ago=1))
 
 
-def test_reread_replaces_entries_from_the_old_page_limit(session, monkeypatch) -> None:
+def test_reread_replaces_entries_from_the_old_page_limit(
+    session, monkeypatch, pdf_in_process
+) -> None:
     """以前只读了前 300 页的名单：重读后条目整份换成新结果（不重复叠加），原因清掉；再跑不再重读。"""
     visited: list[int] = []
 
@@ -317,7 +317,7 @@ def test_reread_replaces_entries_from_the_old_page_limit(session, monkeypatch) -
         def __exit__(self, *args):
             pass
 
-    monkeypatch.setattr("youju.lists.parser.pdfplumber.open", lambda _: Pdf())
+    monkeypatch.setattr("youju.pdf_sandbox._open", lambda _: Pdf())
     source = Source(
         level="省级",
         province="河南",
@@ -492,7 +492,7 @@ def test_reread_parse_failure_keeps_entries_and_stops(session) -> None:
     ],
 )
 def test_reread_without_entries_keeps_status_and_stops(
-    session, monkeypatch, status, reason, content, kept
+    session, monkeypatch, pdf_in_process, status, reason, content, kept
 ) -> None:
     """Codex 复核 #274：没有条目的截断记录重读没成功时，也保留原状态、记上原因、不再重读。"""
 
@@ -515,7 +515,7 @@ def test_reread_without_entries_keeps_status_and_stops(
         def __exit__(self, *args):
             pass
 
-    monkeypatch.setattr("youju.lists.parser.pdfplumber.open", lambda _: Pdf())
+    monkeypatch.setattr("youju.pdf_sandbox._open", lambda _: Pdf())
     url = f"https://kjt.henan.gov.cn/2026-list-{status}.pdf"
     document = _henan_list(session, url)
     session.add(
@@ -542,7 +542,7 @@ def test_reread_without_entries_keeps_status_and_stops(
     assert fake.calls == [url]
 
 
-def test_scanned_pdf_cut_at_old_limit_is_reread(session, monkeypatch) -> None:
+def test_scanned_pdf_cut_at_old_limit_is_reread(session, monkeypatch, pdf_in_process) -> None:
     """以前记成扫描件、只看了前 300 页的：后面的页有名单，重读后能读出来（Codex 审阅 #274）。"""
 
     class Page:
@@ -567,7 +567,7 @@ def test_scanned_pdf_cut_at_old_limit_is_reread(session, monkeypatch) -> None:
         def __exit__(self, *args):
             pass
 
-    monkeypatch.setattr("youju.lists.parser.pdfplumber.open", lambda _: Pdf())
+    monkeypatch.setattr("youju.pdf_sandbox._open", lambda _: Pdf())
     url = "https://kjt.henan.gov.cn/2026-list-c.pdf"
     document = _henan_list(session, url)
     session.add(
