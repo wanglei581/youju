@@ -249,10 +249,11 @@ _PICK_FETCHES_ZONE = 10  # 开发区可能有好几个
 BRANCH_SECTION = (
     "分局版块"  # _not_own_site：派出分局在上级网站上的版块（算本区县的，栏目只认版块里的）
 )
-# 像文章、部门年报目录、脚本列表页的网址：同分时排在网站首页、栏目页后面
+# 像文章、部门年报目录、脚本列表页、门户上按部门分的规范性文件列表（宜宾 /bmgfxwj/部门/）的网址：
+# 同分时排在网站首页、栏目页后面
 _WEAK_PAGE = re.compile(
     r"/info/\d+/\d+\.s?html?$|/content/|/gkmlpt/|zfxxgknb|/bmnb/|/nb/|ndbb|nianbao|"
-    r"/jgjj/|/jianjie/|/ldxx/|/ldjs/|/ldzc/|zfxxgkzn|xxgkzn|xxgk_tt|/gkzn",
+    r"/jgjj/|/jianjie/|/ldxx/|/ldjs/|/ldzc/|zfxxgkzn|xxgkzn|xxgk_tt|/gkzn|/bmgfxwj/",
     re.I,
 )
 

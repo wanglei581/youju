@@ -841,3 +841,15 @@ def test_local_weak_page_not_replaced_by_unclear_site_elsewhere():
     )
     kj = _depts(_run(pages, ["江西"]))[("360402", "科技")]
     assert kj.site_url == "http://www.lianxi.gov.cn/content/2025/1001.html"
+
+
+def test_portal_department_document_list_is_a_weak_page():
+    # 宜宾（地市一组 11/9）：门户上按部门分的规范性文件列表不当部门网站，本市域名下的部门网站换上来
+    pages = _jiujiang_city_pages(channel_cols=False)
+    pages["http://www.jiujiang.gov.cn/zzjg/"] = '<a href="/xxgk/zcfg/bmgfxwj/czj/">市财政局</a>'
+    pages["http://www.jiujiang.gov.cn/"] = """<meta name="SiteName" content="九江市人民政府">
+        <a href="/zzjg/">组织机构</a><a href="http://czj.jiujiang.gov.cn/">财政局</a>"""
+    pages["http://www.jiujiang.gov.cn/xxgk/zcfg/bmgfxwj/czj/"] = "<p>部门规范性文件</p>"
+    pages["http://czj.jiujiang.gov.cn/"] = '<a href="/tzgg/">通知公告</a>'
+    depts = _depts(_run(pages, ["江西"]))
+    assert depts[("360400", "财政")].site_url == "http://czj.jiujiang.gov.cn/"
