@@ -164,6 +164,8 @@ def test_name_verdict_upper_level_names():
     assert _kind("海南州科技局", "共和县") == "上级"
     assert _kind("吉林市科技局", "昌邑区") == "上级"
     assert _kind("吉林省科技厅", "吉林市") == "上级"
+    assert _kind("吉林科技厅", "吉林市") == "上级"  # 市县没有厅
+    assert _kind("市生态环境局（新城分局）", "新城区") == "本级"  # 括号里写的分局
     assert _kind("自治区发展和改革委员会", "新城区") == "上级"
 
 

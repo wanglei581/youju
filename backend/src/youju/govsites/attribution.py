@@ -145,13 +145,17 @@ _LEAD = re.compile(r"^[\s>》›»·•|｜\-—–:：、]+")
 _CN_PREFIX = re.compile(r"^中国[（(]([^）)]{2,10})[）)]")
 _GRADE_PREFIX = re.compile(r"^(?:国家级|省级)")
 _BRACKETS = re.compile(r"[（(【\[][^）)】\]]*[）)】\]]")
+_BRANCH_END = re.compile(r"(?:分局|监管局|管理所)$")
 
 
 def clean_name(text: str) -> str:
     t = _LEAD.sub("", re.sub(r"\s+", "", text or ""))
     t = _CN_PREFIX.sub(r"\1", t)  # "中国（北京）自由贸易试验区"按"北京自由贸易试验区"算
     t = _GRADE_PREFIX.sub("", t)  # "国家级九江经济技术开发区"
-    return _BRACKETS.sub("", t)
+    # 括号注释去掉；括号里写的是派出分局（"市生态环境局（西湖分局）"）的保留文字
+    return _BRACKETS.sub(
+        lambda m: m.group(0)[1:-1] if _BRANCH_END.search(m.group(0)[1:-1]) else "", t
+    )
 
 
 def _best_prefix(t: str, places: Places) -> tuple[str, str] | None:
@@ -180,7 +184,7 @@ def name_verdict(text: str, places: Places) -> Verdict:
     if not t:
         return UNSURE
     div = places.div
-    if own_branch(t, div):
+    if branch_of_own(t, places):
         return Verdict("本级", "本地的派出分局", "名称")
     stripped = ""
     for _ in range(3):
@@ -190,10 +194,14 @@ def name_verdict(text: str, places: Places) -> Verdict:
         cat, name = hit
         if cat == "本级":
             rest = t[len(name) :]
-            if name in places.foreign and div.level != "省级" and rest.endswith("厅"):
+            provincial = rest.endswith("厅") and not rest.endswith(("办公厅", "大厅"))
+            if name in places.foreign and div.level != "省级" and provincial:
                 # 本地简称和外省同名（天津河北区的"河北"），后面又是省级才叫的"厅"：
                 # "河北工业和信息化厅"是河北省的
                 return Verdict("外省", f"名称以外省「{name}」开头、以「厅」结尾", "名称")
+            if div.level in ("市级", "区县级") and provincial:
+                # 市县没有"厅"：吉林市门户上的"吉林科技厅"是吉林省的
+                return Verdict("上级", "「厅」是省级部门的叫法", "名称")
             return Verdict("本级", f"名称以本地「{name}」开头", "名称")
         if cat == "上级":
             # "四川省康定市财政局"：去掉上级地名再看后面是不是本地

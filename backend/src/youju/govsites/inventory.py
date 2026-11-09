@@ -240,7 +240,9 @@ class CachingResolver:
 _PICK_TRIES = 3  # 每类部门最多试几个候选页面
 # 像文章、部门年报目录、脚本列表页的网址：同分时排在网站首页、栏目页后面
 _WEAK_PAGE = re.compile(
-    r"/info/\d+/\d+\.s?html?$|/content/|/gkmlpt/|zfxxgknb|/bmnb/|/nb/|ndbb|nianbao", re.I
+    r"/info/\d+/\d+\.s?html?$|/content/|/gkmlpt/|zfxxgknb|/bmnb/|/nb/|ndbb|nianbao|"
+    r"/jgjj/|/jianjie/|/ldxx/|/ldjs/|/ldzc/",
+    re.I,
 )
 
 
@@ -1004,6 +1006,7 @@ class Inventory:
             rows = [best]
         if not rows and rejected and cat in STANDARD_DEPTS:
             row = self._dept_row(div, cat)
+            row.status = "导航未找到"
             row.reason = ("门户上的部门链接指向别处：" + "；".join(rejected[:2]))[:120]
             return [row]
         return rows or ([self._dept_row(div, cat)] if cat in STANDARD_DEPTS else [])
