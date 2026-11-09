@@ -293,6 +293,8 @@ def _readable(row: DeptRow) -> bool:
     return row.status == "已找到" and any(f"#{XXGK_TAG}" not in c.url for c in row.columns)
 
 
+# 门户的专题专栏路径（/zt/、/ztzl/、/zhuanti/……）：部门页上链到这里的不算部门自己的栏目
+_TOPIC_PATH = re.compile(r"/(?:zt|ztzl|ztlm|zhuanti|special|topic)(?:/|_|\d|$)", re.I)
 # 部门目录页上的部门网址最多几层（山西县级平台 /lczw/zfxxgk/bmxxgk/zfzcbm/部门_编号/ 是 5 层）
 _DIR_DEPTH = 6
 # 部门目录里的部门页上，栏目最多几层（山西 /lczw/zfxxgk/bmxxgk/zfzcbm/部门/公开内容/栏目/ 7 层）
@@ -1063,6 +1065,7 @@ class Inventory:
         hits: dict[str, ColumnHit],
         exclude: frozenset[str],
         max_depth: int,
+        skip_topics: bool = False,
     ) -> dict[str, ColumnHit]:
         """由大汉分组条目还原出来的栏目页，看它自己叫什么（meta ColumnName，没有就看标题）：
         分组"政策文件"里的条目可能发在"其他文件政策解读"栏目（拱墅区），还原出的栏目名不是这一类
@@ -1084,7 +1087,7 @@ class Inventory:
                 moved.append(ColumnHit(own[0], name, hit.url, hit.source))
         if not bad:
             return hits
-        hits = find_columns(pages, exclude | frozenset(bad), max_depth)
+        hits = find_columns(pages, exclude | frozenset(bad), max_depth, skip_topics)
         for hit in moved:
             hits.setdefault(hit.kind, hit)
         return hits
@@ -1161,8 +1164,9 @@ class Inventory:
         # 部门网站自己写的网站名（meta SiteName）是同一类部门的全称，就用它
         if row.dept != "政府办" and fp.site_name and row.dept in dept_categories(fp.site_name):
             row.dept_full_name = fp.site_name
-        hits = find_columns(pages, exclude, max_depth)
-        hits = self._check_group_columns(pages, hits, exclude, max_depth)
+        topics = row.dept != "政府办"
+        hits = find_columns(pages, exclude, max_depth, topics)
+        hits = self._check_group_columns(pages, hits, exclude, max_depth, topics)
         missing = [k for k in COLUMN_KINDS if k not in hits]
         if missing and row.dept != "政府办":
             # 部门首页没有：沿"信息公开"再找一层
@@ -1172,7 +1176,7 @@ class Inventory:
                 ):
                     sub = self.page(link.url)
                     if sub.result.status == "ok" and not sub.block:
-                        for kind, hit in find_columns([sub], exclude, max_depth).items():
+                        for kind, hit in find_columns([sub], exclude, max_depth, topics).items():
                             hits.setdefault(kind, hit)
                     break
         row.columns = [hits[k] for k in COLUMN_KINDS if k in hits]
@@ -1400,7 +1404,10 @@ def heading_more_links(doc: etree._Element, base_url: str) -> list[Link]:
 
 
 def find_columns(
-    pages: list[PageInfo], exclude: frozenset[str] = frozenset(), max_depth: int = 4
+    pages: list[PageInfo],
+    exclude: frozenset[str] = frozenset(),
+    max_depth: int = 4,
+    skip_topics: bool = False,
 ) -> dict[str, ColumnHit]:
     """在一组页面上按链接文字找目标栏目。
 
@@ -1424,6 +1431,8 @@ def find_columns(
             depth = max(max_depth, _COL_DEPTH) if link.via == "jpaas分组" else max_depth
             if not _site_like(link.url, p.final_url, depth):
                 continue
+            if skip_topics and _TOPIC_PATH.search(urlsplit(link.url).path):
+                continue  # 门户的专题专栏（枣庄"财政预决算公开"专题）不是部门自己的栏目
             if registrable(link.url) != home:
                 continue  # 别家网站的栏目（如部门页上链到的省政策文件库）不算这个部门的栏目
             parts = urlsplit(link.url)

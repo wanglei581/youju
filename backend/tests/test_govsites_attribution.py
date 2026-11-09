@@ -782,3 +782,16 @@ def test_alias_used_when_all_proper_candidates_are_rejected():
     depts = _depts(_run(pages, ["江西"]))
     assert depts[("360402", "科技")].site_url == "http://www.lianxi.gov.cn/bm/gxj/"
     assert depts[("360402", "工信")].site_url == "http://www.lianxi.gov.cn/bm/gxj/"
+
+
+def test_portal_topic_page_is_not_a_department_column():
+    # 枣庄（地市一组 11/9 抽查）：部门页上链到门户"财政预决算公开"专题，不算部门的栏目
+    pages = _lianxi_with(
+        '<a href="/zwgk/jgzn/sjj/jgjj/">濂溪区数据局</a>',
+        {
+            "http://www.lianxi.gov.cn/zwgk/jgzn/sjj/jgjj/": """<a href="/zwgk/zt/czyjsgk/">政策文件</a>
+                <a href="/zwgk/jgzn/sjj/tzgg/">通知公告</a>""",
+        },
+    )
+    sj = _depts(_run(pages, ["江西"]))[("360402", "数据局")]
+    assert [c.url for c in sj.columns] == ["http://www.lianxi.gov.cn/zwgk/jgzn/sjj/tzgg/"]
