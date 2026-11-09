@@ -215,9 +215,8 @@ def test_specific_page() -> None:
 
     assert specific_page("https://www.linyi.gov.cn/typt/zfxxgknb.htm")
     assert specific_page("http://www.baoding.gov.cn/mlbd-1472-386944.html")
-    # 只看路径：带参数的可能就是挂在平台上的门户本身
-    assert not specific_page("https://www.x.gov.cn/?siteId=1")
-    assert not specific_page("https://www.x.gov.cn/index.jsp?siteId=1")
+    # 只用于省找地市：带参数的是门户里的某个频道（淄博 ?open=zfxxgknb）
+    assert specific_page("https://www.zibo.gov.cn/?open=zfxxgknb")
     assert specific_page("https://www.x.gov.cn/art/zfxxgknb.jsp?id=3")
     assert not specific_page("http://www.yibin.gov.cn/index.html")
     assert not specific_page("https://www.ezhou.gov.cn/sy/")
@@ -370,3 +369,23 @@ def test_guide_links_dropped_when_homepage_link_is_on_the_same_page() -> None:
         "http://kjj.zhenjiang.gov.cn/kjj/zfxxgkzn/xxgk_tt.shtml",
         "http://fgw.zhenjiang.gov.cn/",
     ]
+
+
+def test_dept_channel_pages_are_not_weak_targets() -> None:
+    from youju.govsites.navrules import _weak_target
+
+    assert not _weak_target("https://www.suining.gov.cn/dept/7e713e2e3afdf388b9649e06a874f92b.html")
+    assert _weak_target("http://www.jz.gov.cn/info/1798/73887.htm")
+    assert _weak_target("http://fgw.zhenjiang.gov.cn/fgw/zfxxgkzn/xxgk_tt.shtml")
+
+
+def test_weak_links_only_pruned_for_the_same_site() -> None:
+    """泸州：商务会展局的简介页链接不能因为另有一个"商务"类机构（口岸办）的首页链接就被剪掉。"""
+    from youju.govsites.navrules import prune_weak_links
+
+    html = """<a href="https://www.luzhou.gov.cn/jg/swhzj/jgjj/">泸州市商务和会展局</a>
+        <a href="http://kab.luzhou.gov.cn/">泸州市口岸和物流办公室</a>"""
+    inv = _inventory({"https://www.luzhou.gov.cn/jg/": html})
+    p = inv.page("https://www.luzhou.gov.cn/jg/")
+    prune_weak_links(p)
+    assert len(p.links) == 2

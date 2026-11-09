@@ -164,6 +164,12 @@ def _labeled_dates(text: str) -> list[date]:
     return _dates(_PUB_DATE, text)
 
 
+# 标题后面、日期前面出现这些字样时，那个日期不是发布日期
+_NOT_PUB = re.compile(
+    r"截止|成文|印发|发文|生效|失效|期限|有效期|至|到|开始|结束|报名|申报|时间|日前|之前"
+)
+
+
 def date_forms(d: date) -> list[str]:
     y, m, dd = d.year, d.month, d.day
     return [
@@ -178,10 +184,11 @@ def date_forms(d: date) -> list[str]:
     ]
 
 
-def _title_positions(text: str, title: str) -> list[int]:
-    """标题（去掉标点空白后的前 10 个字）在页面文字里出现的位置（按原文下标）。"""
-    key = norm_title(title)[:10]
-    if len(key) < 6:
+def _title_spans(text: str, title: str) -> list[tuple[int, int]]:
+    """标题在页面文字里出现的位置（开头、结尾的原文下标）。整条标题（去掉标点空白）对得上就用
+    整条；列表里截断过的标题对不上时用前 10 个字。"""
+    full = norm_title(title)
+    if len(full) < 6:
         return []
     chars: list[str] = []
     index: list[int] = []
@@ -191,52 +198,63 @@ def _title_positions(text: str, title: str) -> list[int]:
                 chars.append(c)
                 index.append(i)
     flat = "".join(chars)
-    out, start = [], 0
-    while (k := flat.find(key, start)) >= 0:
-        out.append(index[k])
-        start = k + 1
-    return out
+    for key in (full, full[:10]):
+        out, start = [], 0
+        while (k := flat.find(key, start)) >= 0:
+            out.append((index[k], index[k + len(key) - 1] + 1))
+            start = k + 1
+        if out:
+            return out
+    return []
+
+
+def _title_positions(text: str, title: str) -> list[int]:
+    return [start for start, _ in _title_spans(text, title)]
 
 
 def date_check(stored: date | None, page_html: str, title: str = "") -> tuple[str, str]:
     """结论：一致 / 页面写的是别的日期 / 原文只标成文日期 / 原文没标发布日期 / 页面上找不到日期。
 
-    先看标题后面紧挨着标的发布日期（这篇文件自己的日期；侧栏、相关文章里的日期在别处）。"""
+    依次看：标题后面标注的发布日期（这篇文件自己的；侧栏、相关文章里的日期在别处）→ 标题后面
+    紧挨着、没写字样的日期 → 页面上第一个标注的发布日期或网页头的 PubDate → 成文日期（只在页面
+    没写发布日期时）。都只从标题结尾往后找：标题里本身带的日期不算。"""
     if stored is None:
         return "页面上找不到日期", "库里没有发布日期"
     # 空白压成一个：标题和日期之间常隔着大段排版用的换行
     text = re.sub(r"\s+", " ", page_text(page_html))
+    spans = _title_spans(text, title)
     near: list[date] = []
-    key_len = len(norm_title(title))
-    for pos in _title_positions(text, title):
-        for d in _dates(_PUB_DATE, text[pos : pos + 300]):
+    for _, end in spans:
+        for d in _dates(_PUB_DATE, text[end : end + 300]):
             if d not in near:
                 near.append(d)
-        # 标题后面紧挨着的日期（不写"发布日期"字样，如"……的通知 2026-09-24 来源：……"）
-        tail = text[pos : pos + key_len + 80]
-        if any(re.search(rf"(?<!\d){re.escape(f)}(?!\d)", tail) for f in date_forms(stored)):
-            return "一致", "日期在标题下方（没写发布日期字样）"
-    if stored in near:
-        return "一致", ""
     if near:
+        if stored in near:
+            return "一致", ""
         shown = "、".join(d.isoformat() for d in near[:4])
         return "页面写的是别的日期", f"标题后面标的发布日期：{shown}"
-    # 以页面上看得见的第一个"发布日期/发布时间"为准：后面的标注日期多半是相关文章列表里的，
-    # 碰巧一样的交给人看。网页头的 PubDate 常是系统重新生成页面的时间（济南、赣州比页面上
-    # 标的晚一两天），只在页面上没标时用
+    forms = date_forms(stored)
+    for _, end in spans:
+        tail = text[end : end + 80]
+        for f in forms:
+            m = re.search(rf"(?<!\d){re.escape(f)}(?!\d)", tail)
+            # 紧挨在标题后面（30 字以内），中间没有截止、成文、印发、"至"这类字样
+            if m and m.start() <= 30 and not _NOT_PUB.search(tail[: m.start()]):
+                return "一致", "日期在标题下方（没写发布日期字样）"
+    # 网页头的 PubDate 常是系统重新生成页面的时间（济南、赣州比页面上标的晚一两天），
+    # 只在页面上没标时用
     published = _dates(_PUB_DATE, text) or _dates(_META_DATE, page_html or "")
-    if published and stored == published[0]:
-        return "一致", ""
-    if stored in published:
+    if published:
+        if stored == published[0]:
+            return "一致", ""
         shown = "、".join(d.isoformat() for d in published[:4])
-        return "页面写的是别的日期", f"库里的日期不是页面上第一个标明的发布日期：{shown}"
+        if stored in published:
+            return "页面写的是别的日期", f"库里的日期不是页面上第一个标明的发布日期：{shown}"
+        return "页面写的是别的日期", f"页面上标的发布日期：{shown}"
     written = _dates(_DOC_DATE, text)
     if stored in written:
-        return "一致", "和原文的成文日期一样"
-    if published:
-        shown = "、".join(d.isoformat() for d in published[:4])
-        return "页面写的是别的日期", f"页面上标的发布日期：{shown}"
-    for form in date_forms(stored):
+        return "一致", "原文没写发布日期，和成文日期一样"
+    for form in forms:
         if re.search(rf"(?<!\d){re.escape(form)}(?!\d)", text):
             # 正文里的截止日、会议日期也可能正好是这一天：不算核对过，交给人看
             return "原文没标发布日期", "页面上有这个日期，但没标明是发布日期"
@@ -350,6 +368,10 @@ def attribution_check(
         return "本市本部门", where
     own = sorted(names | {"市"}, key=len, reverse=True)
 
+    def own_org(part: str) -> bool:
+        # "市"开头的是本级简称（"市人社局"），"市场监管总局"不是
+        return part.startswith(tuple(own)) and not part.startswith("市场")
+
     def dept_hit(part: str) -> bool:
         return dept in dept_categories(part) or (dept == "开发区" and bool(_ZONE.search(part)))
 
@@ -357,7 +379,7 @@ def attribution_check(
         if not _UPPER.match(part) and dept_hit(part):
             return "本市本部门", where
     for part in _org_parts(doc_names + issuers):
-        if part.startswith(tuple(own)) and dept_hit(part):
+        if own_org(part) and dept_hit(part):
             return "本市本部门", where
     return "本市", f"认不出是“{dept}”（门户频道或网站名不写部门）：{where}"
 
@@ -560,12 +582,14 @@ def write_outputs(
     # 抽查/<级>/<省>.csv 是主线 coverage-sample 的统一证据表，这里不写；核对结论填进它的复核三列
     folder = out / province
     folder.mkdir(parents=True, exist_ok=True)
-    csv_path = folder / f"联网核对_{level}.csv"
+    # 换种子复验时文件名带上种子，不覆盖原记录
+    name = f"联网核对_{level}" + ("" if seed == DEFAULT_SEED else f"_{seed}")
+    csv_path = folder / f"{name}.csv"
     with csv_path.open("w", encoding="utf-8-sig", newline="") as fh:
         w = csv.DictWriter(fh, FIELDS)
         w.writeheader()
         w.writerows(rows)
-    md_path = folder / f"联网核对_{level}.md"
+    md_path = folder / f"{name}.md"
     md_path.write_text(
         render_markdown(province, level, population, seed, rows, today), encoding="utf-8"
     )

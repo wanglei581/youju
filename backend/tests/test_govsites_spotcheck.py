@@ -219,3 +219,31 @@ def test_more_page_shapes_from_manual_review() -> None:
     assert (
         sc.title_check(polluted, "<h1>2026年重点企业线上招聘会（第三十九期）</h1>")[0] == "不一致"
     )
+
+
+def test_date_inside_title_does_not_count_and_publication_beats_writing_date() -> None:
+    title = "关于召开2026年5月1日座谈会的通知"
+    page = f"<h1>{title}</h1> 发布日期：2026-04-20"
+    assert sc.date_check(date(2026, 5, 1), page, title)[0] == "页面写的是别的日期"
+    assert sc.date_check(date(2026, 4, 20), page, title)[0] == "一致"
+    both = "成文日期：2026-04-10 发布日期：2026-04-20"
+    assert sc.date_check(date(2026, 4, 10), both)[0] == "页面写的是别的日期"
+    only_written = "成文日期：2026-04-10"
+    assert sc.date_check(date(2026, 4, 10), only_written)[0] == "一致"
+
+
+def test_seed_in_file_name(tmp_path) -> None:
+    row = {f: "" for f in sc.FIELDS}
+    row.update(序号=1, 程序结论=sc.OK)
+    a, _ = sc.write_outputs(tmp_path, "江苏", "市级", 1, sc.DEFAULT_SEED, [row], date(2026, 11, 9))
+    b, _ = sc.write_outputs(tmp_path, "江苏", "市级", 1, "2026-11-b", [row], date(2026, 11, 9))
+    assert a.name == "联网核对_市级.csv" and b.name == "联网核对_市级_2026-11-b.csv"
+
+
+def test_tail_date_after_other_labels_and_market_bureau_prefix() -> None:
+    title = "关于开展专项资金申报的通知"
+    page = f"<h1>{title}</h1> 申报截止时间 2026-11-20 正文……"
+    assert sc.date_check(date(2026, 11, 20), page, title)[0] != "一致"
+    cell = {"城市": "南京", "部门": "市场监管", "栏目网址": "https://amr.nanjing.gov.cn/tzgg/"}
+    doc = "<title>市场监管总局关于开展专项检查的通知</title>"
+    assert sc.attribution_check(cell, "<title>通知公告</title>", doc, "nanjing.gov.cn")[0] == "本市"

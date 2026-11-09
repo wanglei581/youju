@@ -192,7 +192,7 @@ def city_nav_pages(home, seen: set[str], visit) -> None:
 # 不是部门网站导航（宜宾门户上按部门分的规范性文件列表 /bmgfxwj/）
 _WEAK_TARGET = re.compile(
     r"/info/\d+/\d+\.s?html?$|/content/|zfxxgkzn|xxgkzn|xxgk_tt|zfxxgknb|xxgknb|/nb/|bmnb|"
-    r"/jgjj|/jgzn|/jgzz|/ldjj|/ldxx|/bmgfxwj/",
+    r"/jgjj|/jgzn|/jgzz|/zzjg|/zyzz|/ldjj|/ldxx|/bmgfxwj/",
     re.I,
 )
 
@@ -201,23 +201,33 @@ def _weak_target(url: str) -> bool:
     from youju.govsites.platform import URL_SHAPES
 
     parts = urlsplit(url)
-    path = (parts.path or "/") + ("?" + parts.query if parts.query else "")
-    return bool(_WEAK_TARGET.search(path)) or any(p.search(path) for _, p in URL_SHAPES)
+    path = parts.path or "/"
+    full = path + ("?" + parts.query if parts.query else "")
+    if _WEAK_TARGET.search(full):
+        return True
+    # 文章网址形状算弱链接，但频道页的例外不算（遂宁的部门频道 /dept/<编号>.html）
+    return any(p.search(full) and not channel_shape(name, path) for name, p in URL_SHAPES)
 
 
 def prune_weak_links(page) -> None:
-    """同一页上同一类部门既有部门网站首页的链接、又有它的信息公开指南、简介页链接的
+    """同一页上同一个部门网站（同一主机）既有首页链接、又有它的信息公开指南、简介页链接的
     （镇江"市级部门政府信息公开"页：正文是指南页、页脚是首页），去掉指南、简介那条。"""
     from youju.govsites.names import dept_categories
 
-    good: set[str] = set()
+    # 只在同一主机（同一个机构的网站）另有不是简介、指南的链接时才剪：按部门类别剪会把
+    # 泸州的"市商务会展局"剪掉、换成同属"商务"类的口岸和物流办公室
+    good_hosts: set[str] = set()
     for link in page.links:
-        if not _weak_target(link.url):
-            good.update(dept_categories(link.text))
+        if dept_categories(link.text) and not _weak_target(link.url):
+            good_hosts.add((urlsplit(link.url).hostname or "").lower())
     page.links = [
         link
         for link in page.links
-        if not (_weak_target(link.url) and set(dept_categories(link.text)) & good)
+        if not (
+            dept_categories(link.text)
+            and _weak_target(link.url)
+            and (urlsplit(link.url).hostname or "").lower() in good_hosts
+        )
     ]
 
 
@@ -310,7 +320,10 @@ def specific_page(url: str) -> bool:
     省网站的信息公开页上链到下级门户的常常是它的"政府信息公开年报"页（11/9 临沂）、
     某篇文章（保定）：拿它当门户首页，首页上的导航和部门就全找错了。"""
     parts = urlsplit(url)
-    # 只看路径：带参数的（"?siteId=…"）可能就是挂在别的网站平台上的门户本身，不能截成网站首页
+    # 只用于省找地市（地市门户在自己的主机上）：带参数的是门户里的某个频道（淄博 ?open=zfxxgknb
+    # 是年报频道）。区县门户常挂在地市平台的参数页上，那里不用这条
+    if parts.query:
+        return True
     last = (parts.path or "/").rsplit("/", 1)[-1]
     if not last or not _PAGE_EXT.search(last):
         return False
