@@ -835,3 +835,60 @@ def test_summarize_lists_only_written_levels():
     index = DivisionIndex([d for d in _divisions() if d.province == "浙江"])
     text = summarize(index, [], [], ["浙江"], {"省级"})
     assert "浙江 | 省级" in text and "浙江 | 市级" not in text
+
+
+def test_merged_departments_keep_inventory_order():
+    from youju.govsites.inventory import ColumnHit, DeptRow
+    from youju.govsites.verify import columns_for
+
+    url = "https://jxj.example.gov.cn/tzgg/"
+
+    def row(dept):
+        return DeptRow(
+            "330402",
+            "区县级",
+            "浙江",
+            "嘉兴",
+            "南湖区",
+            dept,
+            status="已找到",
+            columns=[ColumnHit("通知公告", "通知公告", url, "")],
+        )
+
+    # 工信、商务合并的局共用一个栏目：归盘点顺序靠前的工信（不按部门名排序）
+    assert [c.dept for c in columns_for([row("商务"), row("工信")])] == ["工信"]
+
+
+def test_dept_levels_skip_upper_level_departments():
+    pages = {
+        GOV_LOCAL_NAV: '<a href="https://www.zj.gov.cn/">浙江</a>',
+        "https://www.zj.gov.cn/": """<a href="/sxwz/">市县政府网站</a>
+            <a href="http://kjt.zj.gov.cn/">浙江省科学技术厅</a>""",
+        "https://www.zj.gov.cn/sxwz/": '<a href="https://www.hangzhou.gov.cn/">杭州市</a>',
+        "https://www.hangzhou.gov.cn/": '<a href="http://kj.hangzhou.gov.cn/">杭州市科学技术局</a>',
+        "http://kj.hangzhou.gov.cn/": '<a href="/tzgg/">通知公告</a>',
+    }
+
+    class CountingCache(FakeCache):
+        def __init__(self, pages):
+            super().__init__(pages)
+            self.asked: list[str] = []
+
+        def get(self, url):
+            self.asked.append(url)
+            return super().get(url)
+
+    cache = CountingCache(pages)
+    inv = Inventory(
+        DivisionIndex([d for d in _divisions() if d.province == "浙江"]),
+        cache,
+        provinces=["浙江"],
+        max_level="市级",
+        workers=2,
+        per_province=2,
+        dept_levels={"市级"},
+    )
+    inv.run()
+    assert {d.level for d in inv.depts} == {"市级"}
+    assert "http://kjt.zj.gov.cn/" not in cache.asked  # 省直部门网站不去抓
+    assert any(d.site_url == "http://kj.hangzhou.gov.cn/" for d in inv.depts)

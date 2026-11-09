@@ -94,6 +94,7 @@ def _cmd_inventory(args: argparse.Namespace) -> int:
             per_province=args.per_province,
             progress=progress,
             seeds=load_seeds(args.seeds),
+            dept_levels=levels or None,
         )
         inv.run()
     # 只写某几级时原始结果另存一份（文件名带层级），不覆盖全量的那份

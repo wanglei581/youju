@@ -14,7 +14,7 @@ from datetime import date
 from youju.crawler.adapters import api_html, find_list_api
 from youju.crawler.listing import extract_items
 from youju.crawler.urls import host_of
-from youju.govsites.inventory import XXGK_TAG, DeptRow
+from youju.govsites.inventory import OPTIONAL_DEPTS, STANDARD_DEPTS, XXGK_TAG, DeptRow
 from youju.govsites.links import page_links, parse_html
 from youju.govsites.pagecache import PageCache
 from youju.govsites.platform import blocker, fingerprint
@@ -59,12 +59,16 @@ class ColumnCheck:
 
 
 _LEVEL_RANK = {"国家级": 0, "省级": 1, "市级": 2, "区县级": 3}
+# 同一行政区两个部门合并、共用一个栏目时，归给盘点顺序靠前的部门（政府办、发改委、工信、科技……）
+_DEPT_RANK = {d: i for i, d in enumerate(STANDARD_DEPTS + OPTIONAL_DEPTS)}
 
 
 def columns_for(depts: Iterable[DeptRow], levels=None) -> list[ColumnCheck]:
     """要试读的栏目：同一网址只留一个，归到最高的那一级（省厅的栏目也挂在区县页上时算省级），
     再按 levels 过滤。几条线分级试读时，同一个网址不会在两级各出一行；谁占网址也固定下来。"""
-    ordered = sorted(depts, key=lambda d: (_LEVEL_RANK.get(d.level, 9), d.code, d.dept))
+    ordered = sorted(
+        depts, key=lambda d: (_LEVEL_RANK.get(d.level, 9), d.code, _DEPT_RANK.get(d.dept, 99))
+    )
     cols = columns_of(ordered)
     return [c for c in cols if c.level in levels] if levels else cols
 
