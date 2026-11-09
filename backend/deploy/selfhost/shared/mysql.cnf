@@ -1,0 +1,20 @@
+# 共用服务器（D-126）上的 MySQL 8：容器限 576M 内存（有据三个容器合计 1.5G）。
+# 数据库现在约 0.45G（11/4 线上快照，名单占 86%）；常用的索引和近期数据放得进 256M 缓冲池。
+[mysqld]
+innodb_buffer_pool_size = 256M
+innodb_redo_log_capacity = 256M
+innodb_log_buffer_size = 8M
+innodb_flush_log_at_trx_commit = 1
+max_connections = 40
+# 性能统计要多占 400MB 左右内存，关掉
+performance_schema = OFF
+table_open_cache = 400
+table_definition_cache = 400
+tmp_table_size = 16M
+max_heap_table_size = 16M
+key_buffer_size = 8M
+# 二进制日志只留 3 天（每天整库备份 + 异地备份；不做主从）
+binlog_expire_logs_seconds = 259200
+# 本机每批同步按未压缩 8MB 切（sync/local.py MAX_BYTES），64M 留足余量
+max_allowed_packet = 64M
+skip_name_resolve = ON

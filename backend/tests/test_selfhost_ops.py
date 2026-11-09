@@ -6,6 +6,7 @@ import json
 import re
 import shutil
 import subprocess
+import tarfile
 import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
@@ -19,7 +20,7 @@ from sqlalchemy import text
 from youju import cli, offsite, storage
 from youju.access_log import mask_ip
 from youju.backup import BackupError
-from youju.config import get_settings
+from youju.config import Settings, get_settings
 from youju.jobs import JOB_NAMES
 
 from .test_job_names import _cron_commands, _job_names_in
@@ -236,8 +237,8 @@ def test_wsl_setup_keeps_review_fixes():
     assert ps1.index("Start-ScheduledTask") < ps1.index('setup-wsl.sh")')
     # 数据位置按盘符固定（<盘>:\youju），不跟着安装包解压位置走
     assert "Split-Path -Qualifier $PSScriptRoot" in ps1
-    # 只拦开着 UAC 时提升过的管理员窗口（令牌提升类型 2）；关了 UAC 的电脑（11/8 创始人的主机
-    # EnableLUA=0，所有程序都是管理员身份）照常装
+    # 只拦开着 UAC 时提升过的管理员窗口（令牌提升类型 2）；关了 UAC 的电脑（EnableLUA=0，
+    # 所有程序都是管理员身份）照常装
     assert "GetTokenInformation(token, 18" in ps1 and "$elevation -eq 2" in ps1
     # 升级时先删旧源码再拷，拷贝管道失败要报出来
     assert "rm -rf /opt/youju/local/source" in ps1 and "set -euo pipefail" in ps1
@@ -320,10 +321,229 @@ def test_windows_package_checks_starter_data_revision(tmp_path, matches):
 
 def test_compose_base_images_pinned_by_digest():
     """国内经镜像站拉 Docker Hub 的镜像：按摘要锁定，Docker 校验内容，镜像站换不了。"""
-    for name in ("local", "server", "test"):
+    for name in ("local", "server", "test", "shared"):
         for line in (SELFHOST / name / "docker-compose.yml").read_text().splitlines():
             if line.strip().startswith("image:") and ("mysql" in line or "caddy" in line):
                 assert "@sha256:" in line, f"{name}: {line.strip()}"
+
+
+SHARED = SELFHOST / "shared"
+
+
+def _shared_services():
+    """共用服务器的 compose 文件按缩进切成各服务的文本（测试环境没有 PyYAML）。"""
+    text = (SHARED / "docker-compose.yml").read_text(encoding="utf-8")
+    body = text.split("\nservices:\n", 1)[1].split("\nvolumes:\n", 1)[0]
+    services = {}
+    for block in re.split(r"\n(?=  [a-z]+:\n)", "\n" + body):
+        found = re.match(r"\n?  ([a-z]+):\n", block)
+        if found:
+            services[found.group(1)] = block
+    return text, services
+
+
+def test_shared_server_compose_stays_small_and_local():
+    """D-126：和别的项目共用一台 4G 的服务器——三个容器合计不超过 1.5G、不许用交换区、主机内存紧张时
+    先停有据的；只听本机回环地址（对外只经宝塔 nginx 的站点），不带 Caddy（80、443 是宝塔的）。"""
+    text, services = _shared_services()
+    assert set(services) == {"mysql", "api", "worker"}
+    total = 0
+    for name, block in services.items():
+        limit = re.search(r"^    mem_limit: (\d+)m$", block, re.M).group(1)
+        swap = re.search(r"^    memswap_limit: (\d+)m$", block, re.M).group(1)
+        assert swap == limit, name
+        total += int(limit)
+    assert total <= 1536
+    # 接口和 worker 经 x-app 继承
+    assert (
+        "oom_score_adj: 500" in services["mysql"]
+        and "oom_score_adj: 500" in text.split("services:")[0]
+    )
+    assert re.findall(r'^\s+- "([^"]+)"$', text, re.M) == [
+        "127.0.0.1:18100:8000",
+        "127.0.0.1:18101:8000",
+    ]
+    assert "image: caddy" not in text and '"80:80"' not in text and '"443:443"' not in text
+    # 测试期 worker 只写心跳，上线前在 .env 里换成服务器的定时任务表
+    assert "${YOUJU_CRONTAB:-/app/backend/deploy/selfhost/crontab.idle}" in services["worker"]
+
+
+def test_shared_server_nginx_site_only_forwards_app_paths():
+    """宝塔 nginx 上有据的站点：只转小程序接口、健康检查、消息推送和本机同步，别的路径 404；关掉宝塔
+    proxy.conf 全局开着的 proxy_cache 和 404 换上游（接口回的是各人自己的数据）；不记访问日志；来源地址覆盖写入。"""
+    conf = (SHARED / "nginx-https.conf").read_text(encoding="utf-8")
+    https = conf.split("listen 443 ssl;", 1)[1]
+    assert re.findall(r"^    location ([^{]+?) \{", https, re.M) == [
+        "^~ /api/sync/",
+        "= /health/worker",
+        "^~ /api/v1/",
+        "= /health",
+        "= /api/wx/push",
+        "/",
+    ]
+    assert set(re.findall(r"proxy_pass (\S+);", https)) == {
+        "http://127.0.0.1:18101",
+        "http://127.0.0.1:18101/health",
+        "http://127.0.0.1:18100",
+    }
+    assert https.rstrip().endswith("location / {\n        return 404;\n    }\n}")
+    for needed in (
+        "proxy_cache off;",
+        "proxy_next_upstream off;",
+        "access_log off;",
+        "proxy_set_header X-Forwarded-For $remote_addr;",
+    ):
+        assert needed in https, needed
+    http_only = (SHARED / "nginx-http.conf").read_text(encoding="utf-8")
+    assert "proxy_pass" not in http_only and "return 404;" in http_only
+
+
+def test_shared_server_script_guards():
+    """youju-shared.sh 以 root 跑在别的项目也在用的服务器上：几处保护别被改掉。"""
+    path = SHARED / "youju-shared.sh"
+    sh = path.read_text(encoding="utf-8")
+    assert sh.startswith("#!/bin/bash\n") and "\nset -euo pipefail\n" in sh
+    assert b"\r" not in path.read_bytes()
+    if shutil.which("bash"):
+        subprocess.run(["bash", "-n", str(path)], check=True)
+    units = re.search(r'DESKTOP_UNITS="([^"]+)"', sh).group(1).split()
+    # 只许停桌面、远程桌面、打印和桌面配套这几类（D-126）；网卡靠的 NetworkManager、安全更新、Docker、SSH、
+    # 定时任务、别的项目的服务一个都不能混进来：清单要改先改这里
+    assert units[0] == "gdm.service" and len(units) == len(set(units))
+    assert set(units) == {
+        "gdm.service",
+        "gnome-remote-desktop.service",
+        "xrdp.service",
+        "xrdp-sesman.service",
+        "cups.path",
+        "cups.socket",
+        "cups.service",
+        "cups-browsed.service",
+        "avahi-daemon.socket",
+        "avahi-daemon.service",
+        "fwupd-refresh.timer",
+        "fwupd.service",
+        "ModemManager.service",
+        "kerneloops.service",
+        "power-profiles-daemon.service",
+        "switcheroo-control.service",
+        "colord.service",
+        "accounts-daemon.service",
+        "upower.service",
+        "udisks2.service",
+        "rtkit-daemon.service",
+    }
+    # 这把钥匙只能传文件：sftp、restrict（不给命令行和端口转发）
+    assert (
+        'restrict,command="%s -d %s -P %s"' in sh
+        and "SFTP_SERVER=/usr/lib/openssh/sftp-server" in sh
+    )
+    assert "port-forwarding" not in sh and "permitopen" not in sh
+    # 只能上传：读文件、列目录、链接、服务器内复制都不许
+    assert "SFTP_DENY=read,opendir,readdir,readlink,symlink,hardlink,copy-data\n" in sh
+    # 家目录、.ssh、钥匙文件都归 root：youju 用 sftp 改不了自己这把钥匙的限制
+    assert "useradd --no-create-home --home-dir /home/youju" in sh
+    assert "install -d -m 755 -o root -g root /home/youju /home/youju/.ssh" in sh
+    assert "chown root:root /home/youju/.ssh/authorized_keys.tmp" in sh
+    assert not re.search(r"(?<!no-)create-home", sh)
+    # 解包前先拷到只有 root 能进的目录再核对哈希（incoming 归 youju，核对完可能被换掉）
+    assert sh.index('install -m 600 "$BASE/incoming/$name"') < sh.index("sha256sum -c -")
+    # 改无桌面开机之前，先查有没有别的服务只挂在桌面模式下
+    assert sh.index("extra=$(graphical_only) || die") < sh.index(
+        "systemctl set-default multi-user.target"
+    )
+    # 续期按"现在的证书和 nginx 已加载的不一样"判断：哪次重载失败，下周还会再试
+    assert '"$(cat "$LOADED_FILE" 2>/dev/null || true)"' in sh and "mark_loaded" in sh
+    # nginx：动之前现有配置要能过检查；新文件过不了就撤回、不重载
+    assert sh.index('"$NGINX" -t >/dev/null 2>&1 || die') < sh.index(
+        'mv -f "$SITE.youju-tmp" "$SITE"'
+    )
+    assert "已撤回，nginx 没有重载" in sh
+    # 改之前整个站点目录先打包备份（只用来对照，回退只删有据自己的文件）
+    assert sh.index('tar -czf "$backup"') < sh.index('mv -f "$SITE.youju-tmp" "$SITE"')
+    # 改 nginx 前后核对别的站点状态码的只读子命令
+    assert '  sites) sites "$@" ;;' in sh and '--resolve "$h:443:127.0.0.1"' in sh
+    # 停桌面服务的回退命令写的是正在跑的这份脚本的绝对路径；gdm 以别名启用的也照原样恢复
+    assert 'SELF=$(readlink -f "$0")' in sh and '[ "$enabled" = alias ]' in sh
+    # 不能为了腾内存去结束一个用户的全部会话：别的项目的进程可能挂在它的 SSH 会话下
+    assert "terminate-user" not in sh and "pkill -u ubuntu" not in sh
+    # 证书工具按摘要锁定；.env 只有 root 能读、已有就不覆盖
+    assert re.search(r"CERTBOT_IMAGE=certbot/certbot:v[\d.]+@sha256:[0-9a-f]{64}\n", sh)
+    assert "umask 077" in sh and "已有 ${SERVER}/.env，不动" in sh
+    # 不把 bash 函数起名叫 install / env：会盖掉脚本里要用的系统命令
+    assert not re.search(r"^(install|env)\(\)", sh, re.M)
+
+
+def test_shared_server_files_keep_server_details_out_of_the_repo():
+    """仓库是公开的：共用服务器的 IP、域名和盘点结果不写进这些文件，用占位符；具体值在创始人电脑上的本地文件。"""
+    texts = [path.read_text(encoding="utf-8") for path in SHARED.iterdir()]
+    doc = Path(__file__).resolve().parents[2] / "docs" / "部署" / "自建服务器.md"
+    texts.append(doc.read_text(encoding="utf-8").split("## 十、", 1)[1])
+    for body in texts:
+        for ip in re.findall(r"\b\d{1,3}(?:\.\d{1,3}){3}\b", body):
+            assert ip in {"127.0.0.1", "0.0.0.0"}, ip
+    assert "DOMAIN=${YOUJU_DOMAIN:-}\n" in (SHARED / "youju-shared.sh").read_text(encoding="utf-8")
+    section = doc.read_text(encoding="utf-8").split("## 十、", 1)[1]
+    assert section.index("install -m 600 /opt/youju/incoming/") < section.index("sha256sum -c -")
+    assert "-o root -g root /home/youju /home/youju/.ssh" in section
+    assert "chown root:root /home/youju/.ssh/authorized_keys" in section
+
+
+def test_shared_server_env_passes_startup_checks(monkeypatch):
+    """youju-shared.sh env 生成的配置要能过程序启动时的检查（接口、worker 两个角色），不然装到 up 才发现
+    起不来；测试期微信接口指向本机不存在的地址，不拿占位的 AppSecret 去调微信。"""
+    sh = (SHARED / "youju-shared.sh").read_text(encoding="utf-8")
+    body = sh.split('cat > "$SERVER/.env.tmp" <<EOF\n', 1)[1].split("\nEOF\n", 1)[0]
+    values = {
+        "ver": "abcdef12",
+        "root_pw": "r" * 48,
+        "db_pw": "d" * 48,
+        "APPID": "wx0000000000000000",
+        "aes": "A" * 43,
+        "cloud_env": "test-env",
+    }
+    env = {}
+    for line in body.splitlines():
+        if not line or line.startswith("#"):
+            continue
+        key, value = line.split("=", 1)
+        value = re.sub(
+            r"\$\(openssl rand -hex (\d+)\)", lambda m: "f" * (2 * int(m.group(1))), value
+        )
+        value = re.sub(r"\$\{(\w+)\}", lambda m: values[m.group(1)], value)
+        assert "$" not in value, line
+        env[key] = value
+    assert env["YOUJU_WX_API_BASE"] == "http://127.0.0.1:9"
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    for role in ("api", "admin"):
+        monkeypatch.setenv("YOUJU_ROLE", role)
+        settings = Settings(_env_file=None)
+        assert (settings.hosting, settings.role, settings.public_replica) == ("self", role, True)
+
+
+def test_server_package_structure(tmp_path):
+    """共用服务器的安装包：shared/ 是部署文件，source/ 是构建镜像的源码（VERSION 是提交号），属主都是 root。"""
+    if shutil.which("git") is None:
+        pytest.skip("没有 git")
+    script = SELFHOST / "make-server-package.sh"
+    done = subprocess.run(
+        ["sh", str(script), str(tmp_path)], check=True, capture_output=True, text=True
+    )
+    (package,) = tmp_path.glob("youju-server-*.tar.gz")
+    sha = package.name.removeprefix("youju-server-").removesuffix(".tar.gz")
+    assert re.fullmatch(r"[0-9a-f]{8}", sha) and package.name in done.stdout
+    with tarfile.open(package) as tar:
+        members = {m.name: m for m in tar.getmembers()}
+        for name in ("docker-compose.yml", "mysql.cnf", "nginx-http.conf", "nginx-https.conf"):
+            assert f"shared/{name}" in members, name
+        assert members["shared/youju-shared.sh"].mode == 0o755
+        assert tar.extractfile("source/VERSION").read().decode().strip() == sha
+        assert "source/Dockerfile" in members and "source/backend/src/youju/config.py" in members
+        assert any(name.startswith("source/docs/数据来源/") for name in members)
+        assert all(m.uid == 0 and m.gid == 0 for m in members.values())
+        assert all(name.split("/", 1)[0] in {"shared", "source"} for name in members)
+        assert not any(name.endswith(".env") for name in members)
 
 
 def test_offsite_pull_keeps_a_ciphertext_copy_locally(tmp_path):
