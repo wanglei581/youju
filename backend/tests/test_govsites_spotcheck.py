@@ -145,3 +145,8 @@ def test_attribution_by_portal_domain() -> None:
     assert sc.attribution_check(cell, col, "")[0] == "待看"
     verdict, note = sc.attribution_check(cell, col, "", "shaoyang.gov.cn")
     assert verdict == "本市本部门" and "shaoyang.gov.cn" in note
+
+
+def test_date_labels_inside_sentences_are_ignored() -> None:
+    page = "【信息时间：2026-10-28 阅读次数： 】 3.询价公告发布日期：2026年9月8日。"
+    assert sc.date_check(date(2026, 10, 28), page)[0] == "一致"
