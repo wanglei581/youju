@@ -389,3 +389,19 @@ def test_weak_links_only_pruned_for_the_same_site() -> None:
     p = inv.page("https://www.luzhou.gov.cn/jg/")
     prune_weak_links(p)
     assert len(p.links) == 2
+
+
+def test_shared_portal_host_keeps_other_departments_intro_links() -> None:
+    """各部门共用门户域名：发改委有频道链接，不能顺带剪掉只有简介链接的科技局。"""
+    from youju.govsites.navrules import prune_weak_links
+
+    html = """<a href="https://www.x.gov.cn/bm/fgw/">某市发展和改革委员会</a>
+        <a href="https://www.x.gov.cn/bm/fgw/jgjj/">某市发展和改革委员会</a>
+        <a href="https://www.x.gov.cn/bm/kjj/jgjj/">某市科学技术局</a>"""
+    inv = _inventory({"https://www.x.gov.cn/jg/": html})
+    p = inv.page("https://www.x.gov.cn/jg/")
+    prune_weak_links(p)
+    assert [link.url for link in p.links] == [
+        "https://www.x.gov.cn/bm/fgw/",
+        "https://www.x.gov.cn/bm/kjj/jgjj/",
+    ]

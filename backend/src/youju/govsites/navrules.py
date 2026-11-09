@@ -214,21 +214,22 @@ def prune_weak_links(page) -> None:
     （镇江"市级部门政府信息公开"页：正文是指南页、页脚是首页），去掉指南、简介那条。"""
     from youju.govsites.names import dept_categories
 
-    # 只在同一主机（同一个机构的网站）另有不是简介、指南的链接时才剪：按部门类别剪会把
-    # 泸州的"市商务会展局"剪掉、换成同属"商务"类的口岸和物流办公室
-    good_hosts: set[str] = set()
+    # 只在同一类部门、同一主机另有不是简介、指南的链接时才剪（同一个机构）：只按部门类别剪会把
+    # 泸州的"市商务会展局"换成同属商务类的口岸办；只按主机剪会在各部门共用门户域名时
+    # 把只有简介链接的别的部门一起剪掉
+    good: set[tuple[str, str]] = set()
     for link in page.links:
-        if dept_categories(link.text) and not _weak_target(link.url):
-            good_hosts.add((urlsplit(link.url).hostname or "").lower())
-    page.links = [
-        link
-        for link in page.links
-        if not (
-            dept_categories(link.text)
-            and _weak_target(link.url)
-            and (urlsplit(link.url).hostname or "").lower() in good_hosts
-        )
-    ]
+        if not _weak_target(link.url):
+            host = (urlsplit(link.url).hostname or "").lower()
+            good.update((cat, host) for cat in dept_categories(link.text))
+
+    def redundant(link) -> bool:
+        if not _weak_target(link.url):
+            return False
+        host = (urlsplit(link.url).hostname or "").lower()
+        return any((cat, host) in good for cat in dept_categories(link.text))
+
+    page.links = [link for link in page.links if not redundant(link)]
 
 
 def weak_dept_list(page) -> bool:

@@ -247,3 +247,18 @@ def test_tail_date_after_other_labels_and_market_bureau_prefix() -> None:
     cell = {"城市": "南京", "部门": "市场监管", "栏目网址": "https://amr.nanjing.gov.cn/tzgg/"}
     doc = "<title>市场监管总局关于开展专项检查的通知</title>"
     assert sc.attribution_check(cell, "<title>通知公告</title>", doc, "nanjing.gov.cn")[0] == "本市"
+
+
+def test_tail_date_needs_the_whole_title() -> None:
+    """列表里截断的标题只对上前 10 个字时，不看标题下方没写字样的日期。"""
+    page = "<h1>关于做好2026年度专项资金项目申报工作和2026-11-20前报送材料的通知</h1>"
+    stored_title = "关于做好2026年度专项资金项目申报工作的补充通知..."
+    assert sc.date_check(date(2026, 11, 20), page, stored_title)[0] != "一致"
+
+
+def test_dates_followed_by_before_or_from_and_enumerated_time_labels() -> None:
+    title = "关于报送年度统计数据的通知"
+    page = f"<h1>{title}</h1> 请于2026年10月31日前报送 发布日期：2026-10-20"
+    assert sc.date_check(date(2026, 10, 31), page, title)[0] != "一致"
+    page2 = f"<h1>{title}</h1> 一、时间：2026年11月20日 二、地点"
+    assert sc.date_check(date(2026, 11, 20), page2, title)[0] != "一致"

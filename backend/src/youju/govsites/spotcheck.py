@@ -130,10 +130,11 @@ def title_check(stored: str, page_html: str) -> tuple[str, str]:
 
 _DATE = r"(\d{4})\s*[-/.年]\s*(\d{1,2})\s*[-/.月]\s*(\d{1,2})"
 # 发布日期的标签。前面不能紧挨着别的汉字：那是正文里的句子（"询价公告发布日期""公示时间"）
+# 单写的"日期""时间"前面也不能是顿号（"一、时间：2026年11月20日"是正文里的活动时间）
 _PUB_LABEL = (
-    r"(?<![一-龥])"
-    r"(?:信息发布日期|信息发布时间|发布日期|发布时间|发表时间|公开日期|信息时间|更新时间|编稿时间"
-    r"|日期|时间)"
+    r"(?:(?<![一-龥])"
+    r"(?:信息发布日期|信息发布时间|发布日期|发布时间|发表时间|公开日期|信息时间|更新时间|编稿时间)"
+    r"|(?<![一-龥、])(?:日期|时间))"
 )
 # 成文、生成、印发日期：和发布日期常常不是一天，只写了这些的页面单独说明
 _DOC_LABEL = r"(?<![一-龥])(?:成文日期|生成日期|印发日期|发文日期)"
@@ -184,7 +185,7 @@ def date_forms(d: date) -> list[str]:
     ]
 
 
-def _title_spans(text: str, title: str) -> list[tuple[int, int]]:
+def _title_spans(text: str, title: str, full_only: bool = False) -> list[tuple[int, int]]:
     """标题在页面文字里出现的位置（开头、结尾的原文下标）。整条标题（去掉标点空白）对得上就用
     整条；列表里截断过的标题对不上时用前 10 个字。"""
     full = norm_title(title)
@@ -198,7 +199,7 @@ def _title_spans(text: str, title: str) -> list[tuple[int, int]]:
                 chars.append(c)
                 index.append(i)
     flat = "".join(chars)
-    for key in (full, full[:10]):
+    for key in (full,) if full_only else (full, full[:10]):
         out, start = [], 0
         while (k := flat.find(key, start)) >= 0:
             out.append((index[k], index[k + len(key) - 1] + 1))
@@ -234,12 +235,19 @@ def date_check(stored: date | None, page_html: str, title: str = "") -> tuple[st
         shown = "、".join(d.isoformat() for d in near[:4])
         return "页面写的是别的日期", f"标题后面标的发布日期：{shown}"
     forms = date_forms(stored)
-    for _, end in spans:
+    # 标题下方没写字样的日期只在整条标题对得上时看：只对上前 10 个字时，"结尾"还在标题中间
+    for _, end in _title_spans(text, title, full_only=True):
         tail = text[end : end + 80]
         for f in forms:
             m = re.search(rf"(?<!\d){re.escape(f)}(?!\d)", tail)
             # 紧挨在标题后面（30 字以内），中间没有截止、成文、印发、"至"这类字样
-            if m and m.start() <= 30 and not _NOT_PUB.search(tail[: m.start()]):
+            # 后面紧跟"前""起""止"的（"请于10月31日前报送""自11月1日起施行"）也不算
+            if (
+                m
+                and m.start() <= 30
+                and not _NOT_PUB.search(tail[: m.start()])
+                and not re.match(r"\s*(?:前|起|止|之前|以前|截止)", tail[m.end() :])
+            ):
                 return "一致", "日期在标题下方（没写发布日期字样）"
     # 网页头的 PubDate 常是系统重新生成页面的时间（济南、赣州比页面上标的晚一两天），
     # 只在页面上没标时用
