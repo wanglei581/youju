@@ -188,6 +188,44 @@ def city_nav_pages(home, seen: set[str], visit) -> None:
         visit(link, CITY_NAV_NOTE)
 
 
+# 部门链接指向这类页面的导航页，是"机构简介""信息公开指南"一类的列表，不是部门网站导航
+_WEAK_TARGET = re.compile(
+    r"/info/\d+/\d+\.s?html?$|/content/|zfxxgkzn|xxgkzn|xxgk_tt|zfxxgknb|xxgknb|/nb/|bmnb|"
+    r"/jgjj|/jgzn|/jgzz|/ldjj|/ldxx",
+    re.I,
+)
+
+
+def weak_dept_list(page) -> bool:
+    """导航页上的部门链接多半指向机构简介文章、信息公开指南、年报页（锦州"机构简介"、
+    镇江"市级部门政府信息公开"）：不是部门网站的导航。"""
+    from youju.govsites.names import dept_categories
+    from youju.govsites.platform import URL_SHAPES
+
+    targets = [link.url for link in page.links if dept_categories(link.text)]
+    if len(targets) < 3:
+        return False
+
+    def weak(url: str) -> bool:
+        parts = urlsplit(url)
+        path = (parts.path or "/") + ("?" + parts.query if parts.query else "")
+        return bool(_WEAK_TARGET.search(path)) or any(p.search(path) for _, p in URL_SHAPES)
+
+    return sum(weak(u) for u in targets) * 5 >= len(targets) * 3
+
+
+def demote_weak_lists(pages: list) -> None:
+    """地市门户：这类导航页的说明改成中性（不给找部门加分），免得简介文章、指南页顶掉
+    首页上的部门网站（11/9 锦州、镇江）。年度报表页不动：它们靠"首页网址"找部门网站。"""
+    from youju.govsites.links import REPORT_WORDS
+
+    for p in pages[1:]:
+        if p.nav_text in (CITY_NAV_NOTE, CITY_SCRIPT_NOTE) or REPORT_WORDS.search(p.nav_text or ""):
+            continue
+        if p.doc is not None and weak_dept_list(p):
+            p.nav_text = CITY_NAV_NOTE
+
+
 def city_menu_scripts(home, scripts: list[tuple[str, str]]) -> list[tuple[str, str]]:
     """地市门户："市直部门""政府部门"菜单的链接脚本排在页脚脚本前面（_nav_pages 的挂钩）。"""
     if not home.result.text:

@@ -59,6 +59,7 @@ from youju.govsites.navrules import (
     channel_shape,
     city_menu_scripts,
     city_nav_pages,
+    demote_weak_lists,
     device_redirect,
     https_fallback,
     specific_page,
@@ -350,6 +351,7 @@ class Inventory:
                     visit(g, f"{link.text}/{g.text}")
         if home.level_hint == "市级":
             city_nav_pages(home, seen, visit)  # 地市门户的部门列表页（navrules）
+            demote_weak_lists(pages)  # 简介文章、指南页的列表不加分（navrules）
         if home.doc is not None:
             # 省、市门户的"市县网站""部门网站"常由脚本拼出来：多看几个本站脚本
             extra = 6 if home.level_hint in ("省级", "市级", "国家级") else 0

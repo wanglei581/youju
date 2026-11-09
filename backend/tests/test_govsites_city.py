@@ -330,3 +330,27 @@ if (host != "www.x.gov.cn")
     assert device_redirect(neg, "http://m.x.gov.cn/") == "http://m.x.gov.cn/other/index.html"
     concat = '<script>var pc = "/index" + ".html"; window.location.href = pc;</script>'
     assert device_redirect(concat, "http://www.x.gov.cn/") is None
+
+
+def test_intro_article_lists_are_demoted() -> None:
+    """ "机构简介"页上的部门链接都是简介文章：这页不给找部门加分（锦州），年度报表页照旧。"""
+    from youju.govsites.navrules import CITY_NAV_NOTE, demote_weak_lists
+
+    intro = """<a href="http://www.jz.gov.cn/info/1798/73887.htm">市发展和改革委员会</a>
+        <a href="http://www.jz.gov.cn/info/1798/73889.htm">市科学技术局</a>
+        <a href="http://www.jz.gov.cn/info/1798/73895.htm">市财政局</a>"""
+    sites = """<a href="https://fgw.jz.gov.cn/">市发展和改革委员会</a>
+        <a href="https://kjj.jz.gov.cn/">市科学技术局</a><a href="https://czj.jz.gov.cn/">市财政局</a>"""
+    pages = {
+        "http://www.jz.gov.cn/": "<title>锦州</title>",
+        "http://www.jz.gov.cn/jgjj1.htm": intro,
+        "http://www.jz.gov.cn/bm.htm": sites,
+        "http://www.jz.gov.cn/nb.htm": intro,
+    }
+    inv = _inventory(pages)
+    got = [inv.page(u) for u in pages]
+    got[1].nav_text, got[2].nav_text, got[3].nav_text = "机构简介", "部门网站", "政府网站年度报表"
+    demote_weak_lists(got)
+    assert got[1].nav_text == CITY_NAV_NOTE
+    assert got[2].nav_text == "部门网站"
+    assert got[3].nav_text == "政府网站年度报表"
