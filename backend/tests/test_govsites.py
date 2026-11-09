@@ -859,7 +859,7 @@ def test_merged_departments_keep_inventory_order():
     assert [c.dept for c in columns_for([row("商务"), row("工信")])] == ["工信"]
 
 
-def test_dept_levels_skip_upper_level_departments():
+def test_dept_levels_skip_upper_level_departments(tmp_path):
     pages = {
         GOV_LOCAL_NAV: '<a href="https://www.zj.gov.cn/">浙江</a>',
         "https://www.zj.gov.cn/": """<a href="/sxwz/">市县政府网站</a>
@@ -892,3 +892,10 @@ def test_dept_levels_skip_upper_level_departments():
     assert {d.level for d in inv.depts} == {"市级"}
     assert "http://kjt.zj.gov.cn/" not in cache.asked  # 省直部门网站不去抓
     assert any(d.site_url == "http://kj.hangzhou.gov.cn/" for d in inv.depts)
+    # 原始结果只存这几级：上级门户行不存，读回来时不会被补成"导航未找到"的格
+    from youju.govsites.inventory import complete_slots, load_state, save_state
+
+    save_state(inv, tmp_path / "state.json", {"市级"})
+    portals, depts = load_state(tmp_path / "state.json")
+    assert {p.level for p in portals} == {"市级"}
+    assert {d.level for d in complete_slots(portals, depts)} == {"市级"}

@@ -102,10 +102,13 @@ def _cmd_inventory(args: argparse.Namespace) -> int:
     if levels:
         tag += "-" + "_".join(lv for lv in LEVEL_ORDER if lv in levels)
     state = args.cache / f"state-{tag}.json"
-    save_state(inv, state)
-    summary = write_outputs(
-        index, list(inv.portals.values()), inv.depts, args.out, args.province, levels or None
-    )
+    save_state(inv, state, levels or None)
+    portals, depts = list(inv.portals.values()), inv.depts
+    if levels:
+        # 只写这几级：上级的门户行没找部门，不进清单、不补"导航未找到"的格
+        portals = [p for p in portals if p.level in levels]
+        depts = [d for d in depts if d.level in levels]
+    summary = write_outputs(index, portals, depts, args.out, args.province, levels or None)
     print(summary)
     print(
         f"用时 {time.time() - started:.0f} 秒；页面缓存命中 {cache.hits}、"

@@ -1271,11 +1271,15 @@ def write_table(path: Path, header: Iterable[str], rows: Iterable[list[str]]) ->
     return n
 
 
-def save_state(inv: Inventory, path: Path) -> None:
-    """原始结果（含每个栏目找到的位置）存成 JSON，后续试跑、看板统计都从这里读。"""
+def save_state(inv: Inventory, path: Path, levels: Iterable[str] | None = None) -> None:
+    """原始结果（含每个栏目找到的位置）存成 JSON，后续试跑、看板统计都从这里读。
+
+    levels 给了只存这几级的门户和部门：只写某几级时上级没找部门，存进去会被 complete_slots 补成
+    "导航未找到"，再拿去导入看板就把上级格的网址和栏目冲掉。"""
+    keep = set(levels or [])
     data = {
-        "portals": [asdict(p) for p in inv.portals.values()],
-        "depts": [asdict(d) for d in inv.depts],
+        "portals": [asdict(p) for p in inv.portals.values() if not keep or p.level in keep],
+        "depts": [asdict(d) for d in inv.depts if not keep or d.level in keep],
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
