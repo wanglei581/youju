@@ -808,3 +808,22 @@ def test_department_channel_under_a_topic_path_keeps_its_columns():
     )
     fg = _depts(_run(pages, ["江西"]))[("360402", "发改委")]
     assert [c.url for c in fg.columns] == ["http://www.lianxi.gov.cn/ztzl/fgw/tzgg/"]
+
+
+def test_weak_top_page_can_be_replaced_by_a_department_site():
+    # 潍坊发改委、池州人社（地市一组 11/9）：首选是年报列表、文章一类，后面分低、名称说不清的
+    # 部门网站有能读的栏目时换成它
+    pages = _jiujiang_city_pages(channel_cols=False)
+    pages["http://www.jiujiang.gov.cn/zzjg/"] = (
+        '<a href="/Content/show/76.html">市人社局</a><a href="/wzbb/ndbb/2025/">市财政局</a>'
+    )
+    pages["http://www.jiujiang.gov.cn/"] = """<meta name="SiteName" content="九江市人民政府">
+        <a href="/zzjg/">组织机构</a><a href="http://rsj.jiujiang.gov.cn/">人社局</a>
+        <a href="http://czj.jiujiang.gov.cn/">财政局</a>"""
+    pages["http://www.jiujiang.gov.cn/Content/show/76.html"] = "<p>人社局简介</p>"
+    pages["http://www.jiujiang.gov.cn/wzbb/ndbb/2025/"] = "<p>年度报表</p>"
+    pages["http://rsj.jiujiang.gov.cn/"] = '<a href="/tzgg/">通知公告</a>'
+    pages["http://czj.jiujiang.gov.cn/"] = '<a href="/tzgg/">通知公告</a>'
+    depts = _depts(_run(pages, ["江西"]))
+    assert depts[("360400", "人社")].site_url == "http://rsj.jiujiang.gov.cn/"
+    assert depts[("360400", "财政")].site_url == "http://czj.jiujiang.gov.cn/"

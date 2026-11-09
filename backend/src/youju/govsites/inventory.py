@@ -252,7 +252,7 @@ BRANCH_SECTION = (
 # 像文章、部门年报目录、脚本列表页的网址：同分时排在网站首页、栏目页后面
 _WEAK_PAGE = re.compile(
     r"/info/\d+/\d+\.s?html?$|/content/|/gkmlpt/|zfxxgknb|/bmnb/|/nb/|ndbb|nianbao|"
-    r"/jgjj/|/jianjie/|/ldxx/|/ldjs/|/ldzc/",
+    r"/jgjj/|/jianjie/|/ldxx/|/ldjs/|/ldzc/|zfxxgkzn|xxgkzn|xxgk_tt|/gkzn",
     re.I,
 )
 
@@ -992,6 +992,7 @@ class Inventory:
         rejected: list[str] = []
         seen: set[str] = set()
         top_score: int | None = None
+        top_weak = False  # 首选是文章、年报、简介、公开指南一类的页面
         fetched = 0
         limit = _PICK_FETCHES_ZONE if cat == "开发区" else _PICK_FETCHES
         # 同分时网站首页、栏目页排在文章、部门年报、脚本页前面
@@ -999,10 +1000,15 @@ class Inventory:
         for score, f in sorted(options, key=lambda o: (-o[0], _weak_page(o[1].url))):
             if f.url in seen:
                 continue
-            if rows and cat != "开发区" and score != top_score and not self._named_own(f, owner):
-                # 已有首选、要往后试时，只试同分的、或链接文字明写是本地的：分更低、名称又说不清
-                # 的别家网站（市局独立域名的"科技局"）不能顶掉本地的频道
-                continue
+            if rows and cat != "开发区":
+                weak = bool(_weak_page(f.url))
+                if top_weak and weak:
+                    continue  # 首选已经是文章、年报一类：再试也只试像部门网站的
+                if not top_weak and score != top_score and not self._named_own(f, owner):
+                    # 已有首选、要往后试时，只试同分的、或链接文字明写是本地的：分更低、名称又说
+                    # 不清的别家网站（市局独立域名的"科技局"）不能顶掉本地的频道。首选本身是
+                    # 文章、年报一类时不受这条限制（潍坊发改委选了年报列表、池州人社选了文章）
+                    continue
             if fetched >= limit:
                 break  # 打不开、被否掉的也算一次：每类部门最多抓这么多个候选页面
             fetched += 1
@@ -1055,7 +1061,7 @@ class Inventory:
             if rows and row.status != "已找到":
                 continue
             if not rows:
-                top_score = score
+                top_score, top_weak = score, bool(_weak_page(f.url))
             rows.append(row)
             if row.status != "已找到" or _readable(row) or len(rows) >= _PICK_TRIES:
                 break
