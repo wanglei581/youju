@@ -1623,3 +1623,105 @@ class PayReconciliation(Base):
     attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
+
+
+# —— 覆盖看板（全国数据覆盖，D-122）：一格 = 行政区 × 目标部门，状态由来源抓取结果算出 ——
+
+
+class CoverageDivision(Base):
+    """行政区（国家地名信息库）和盘点找到的门户。国家级用 000000。"""
+
+    __tablename__ = "coverage_divisions"
+
+    code: Mapped[str] = mapped_column(String(6), primary_key=True)
+    name: Mapped[str] = mapped_column(String(64))
+    kind: Mapped[str] = mapped_column(String(16))
+    level: Mapped[str] = mapped_column(String(8), index=True)
+    province: Mapped[str] = mapped_column(String(32), index=True)
+    city: Mapped[str | None] = mapped_column(String(32))
+    district: Mapped[str | None] = mapped_column(String(32))
+    parent_code: Mapped[str | None] = mapped_column(String(6))
+    # 已找到 / 导航未找到 / 打不开 / 不能抓 / 出错
+    portal_status: Mapped[str] = mapped_column(String(8), default="导航未找到")
+    portal_url: Mapped[str | None] = mapped_column(String(512))
+    portal_reason: Mapped[str | None] = mapped_column(String(300))
+    # 在哪个官方页面上找到的（可追溯）
+    portal_nav_source: Mapped[str | None] = mapped_column(String(512))
+    site_id_code: Mapped[str | None] = mapped_column(String(20))
+    platform: Mapped[str | None] = mapped_column(String(64))
+    inventoried_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+
+
+class CoverageCell(Base):
+    """覆盖看板的一格：一个行政区的一个目标部门（开发区可有几个，按 seq 区分）。"""
+
+    __tablename__ = "coverage_cells"
+    __table_args__ = (
+        UniqueConstraint("division_code", "dept", "seq", name="uq_coverage_cells_division_dept"),
+        Index("ix_coverage_cells_state", "state"),
+        Index("ix_coverage_cells_dept", "dept"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    division_code: Mapped[str] = mapped_column(
+        ForeignKey("coverage_divisions.code", ondelete="CASCADE")
+    )
+    dept: Mapped[str] = mapped_column(String(16))
+    seq: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    # 标准部门（11 个，每个行政区都应有）；数据局、开发区是"有就收"
+    required: Mapped[bool] = mapped_column(Boolean, default=True)
+    dept_full_name: Mapped[str | None] = mapped_column(String(128))
+    site_url: Mapped[str | None] = mapped_column(String(512))
+    site_type: Mapped[str | None] = mapped_column(String(8))
+    nav_source: Mapped[str | None] = mapped_column(String(512))
+    # 盘点结论（已找到 / 导航未找到 / 打不开 / 不能抓）和原因
+    inventory_status: Mapped[str] = mapped_column(String(8))
+    inventory_reason: Mapped[str | None] = mapped_column(String(300))
+    # 盘点找到的栏目：[{kind, name, url, source}]；导入时按网址挂到 sources（coverage_cell_sources）
+    columns: Mapped[list] = mapped_column(JSONType, default=list)
+    # 看板状态：已收录 / 抓取失败 / 网站无此栏目 / 需人工 / 不能抓 / 待启用
+    state: Mapped[str] = mapped_column(String(8), default="需人工")
+    reason: Mapped[str | None] = mapped_column(String(300))
+    last_success_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    state_changed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    # 状态最后一次按抓取结果重算的时间（看板据此提示数据是不是旧了）
+    refreshed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    # 人工能改的三件事：确认网站无此栏目、填替代来源、备注（都写审计）
+    confirmed_no_column: Mapped[bool] = mapped_column(Boolean, default=False)
+    confirmed_by: Mapped[str | None] = mapped_column(String(80))
+    confirmed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    alt_source: Mapped[str | None] = mapped_column(String(512))
+    note: Mapped[str | None] = mapped_column(String(300))
+    updated_at: Mapped[datetime] = mapped_column(
+        UTCDateTime(), server_default=NOW, onupdate=func.now(6)
+    )
+
+
+class CoverageCellSource(Base):
+    """格 ↔ 来源（多对多：合并部门的一个栏目可同时服务几格）。来源只停用不删除。"""
+
+    __tablename__ = "coverage_cell_sources"
+
+    cell_id: Mapped[int] = mapped_column(
+        ForeignKey("coverage_cells.id", ondelete="CASCADE"), primary_key=True
+    )
+    source_id: Mapped[int] = mapped_column(
+        ForeignKey("sources.id", ondelete="RESTRICT"), primary_key=True
+    )
+    kind: Mapped[str] = mapped_column(String(8))
+
+
+class CoverageAcceptance(Base):
+    """按省抽查（D-122：每省抽查合格才算接好，没抽查或没过的省新来源先不放给用户）。"""
+
+    __tablename__ = "coverage_acceptances"
+    __table_args__ = (Index("ix_coverage_acceptances_province", "province", "level"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    province: Mapped[str] = mapped_column(String(32))
+    level: Mapped[str] = mapped_column(String(8))  # 省级 / 市级 / 区县级 / 全部
+    sampled_by: Mapped[str] = mapped_column(String(80))
+    sampled_at: Mapped[datetime] = mapped_column(UTCDateTime())
+    sample_size: Mapped[int] = mapped_column(Integer)
+    passed: Mapped[bool] = mapped_column(Boolean)
+    note: Mapped[str | None] = mapped_column(String(300))

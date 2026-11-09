@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>覆盖看板 · 有据</title>
+<style>
+  :root {
+    --brand: #2A5CE0; --brand-tint: #EAF0FF; --bg: #F2F4F8; --card: #FFFFFF;
+    --t1: #1D2129; --t2: #4E5969; --t3: #86909C; --line: #EEF0F3; --line2: #E5E6EB;
+    --green: #0E8A63; --g-tint: #E8F7F1; --orange: #D9640F; --o-tint: #FFF3E8; --red: #E5484D;
+    --grey: #A9AEB8; --dark: #4E5969; --amber: #B7791F;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--t1); font: 15px/1.6 "PingFang SC", "Hiragino Sans GB", "Noto Sans SC", sans-serif; }
+  header { position: sticky; top: 0; z-index: 2; background: var(--card); border-bottom: 1px solid var(--line); }
+  .bar { max-width: 1180px; margin: 0 auto; padding: 12px 16px; display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+  h1 { margin: 0; font-size: 18px; }
+  a { color: var(--brand); }
+  .auth { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
+  input, select { font: inherit; padding: 6px 10px; border: 1px solid var(--line2); border-radius: 8px; background: #fff; color: var(--t1); }
+  button { font: inherit; padding: 6px 14px; border-radius: 8px; border: 1px solid var(--line2); background: #fff; color: var(--t1); cursor: pointer; }
+  button.on, .primary { background: var(--brand); border-color: var(--brand); color: #fff; }
+  main { max-width: 1180px; margin: 0 auto; padding: 16px; }
+  .hint { color: var(--t2); font-size: 14px; margin: 0 0 12px; }
+  .card { background: var(--card); border-radius: 12px; padding: 16px; margin-bottom: 12px; }
+  .tabs { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; }
+  .kpi { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; cursor: pointer; background: #fff; text-align: left; }
+  .kpi b { display: block; font-size: 22px; font-variant-numeric: tabular-nums; }
+  .kpi span { color: var(--t2); font-size: 13px; }
+  .kpi.still { cursor: default; }
+  .pick { display: block; width: 100%; text-align: left; margin: 6px 0; padding: 8px 10px; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { padding: 8px 6px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: middle; }
+  th { color: var(--t3); font-weight: normal; font-size: 13px; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  tr.click { cursor: pointer; }
+  tr.click:hover { background: var(--brand-tint); }
+  .stack { display: flex; height: 10px; border-radius: 5px; overflow: hidden; background: var(--line); min-width: 160px; }
+  .stack i { display: block; height: 100%; }
+  .s-已收录 { background: var(--green); } .s-抓取失败 { background: var(--red); } .s-需人工 { background: var(--orange); }
+  .s-网站无此栏目 { background: var(--grey); } .s-不能抓 { background: var(--dark); } .s-待启用 { background: var(--amber); }
+  .legend { display: flex; gap: 12px; flex-wrap: wrap; font-size: 13px; color: var(--t2); margin: 8px 0; }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+  .grid { overflow: auto; }
+  .grid td.cell { width: 34px; min-width: 34px; height: 26px; padding: 0; border: 2px solid #fff; cursor: pointer; }
+  .grid td.cell.none { background: var(--bg); cursor: default; }
+  .grid th.dept { writing-mode: vertical-rl; height: 70px; padding: 4px 0; text-align: center; }
+  .filters { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 8px; }
+  .drawer { position: fixed; right: 0; top: 0; bottom: 0; width: min(520px, 100%); background: #fff; box-shadow: -4px 0 16px rgba(0,0,0,.08); padding: 16px; overflow: auto; z-index: 5; }
+  .drawer h2 { margin: 0 0 8px; font-size: 16px; }
+  .kv { display: grid; grid-template-columns: 6.5em 1fr; gap: 4px 10px; font-size: 14px; margin: 8px 0; word-break: break-all; }
+  .kv span:nth-child(odd) { color: var(--t3); }
+  .tag { display: inline-block; padding: 0 8px; border-radius: 10px; font-size: 13px; color: #fff; }
+  .msg { font-size: 13px; color: var(--red); min-height: 1.2em; }
+  .muted { color: var(--t3); font-size: 13px; }
+  [hidden] { display: none !important; }
+  @media (max-width: 640px) { .kv { grid-template-columns: 1fr; } .stack { min-width: 90px; } }
+</style>
+</head>
+<body>
+<header>
+  <div class="bar">
+    <h1>覆盖看板</h1>
+    <a href="/admin/sources">来源接入</a>
+    <div class="auth">
+      <input id="reviewer" placeholder="操作人" size="8" aria-label="操作人">
+      <input id="token" type="password" placeholder="管理口令" size="16" aria-label="管理口令">
+      <button id="load">刷新</button>
+    </div>
+  </div>
+</header>
+<main>
+  <p class="hint">一格 = 一个行政区的一个目标部门。状态由 <code>youju coverage-refresh</code> 按抓取结果算，不能手填"已收录"；这里能做的只有三件事：确认网站无此栏目、填替代来源、备注，都会留痕。覆盖率 = 已收录 ÷（应接入 − 人工确认的网站无此栏目 − 不能抓）。每省抽查合格才算接好（D-122）。</p>
+  <div class="tabs" id="tabs"></div>
+  <section class="card">
+    <div class="kpis" id="kpis"></div>
+    <div class="legend" id="legend"></div>
+    <p class="muted" id="refreshed"></p>
+    <div class="msg" id="msg"></div>
+  </section>
+  <section class="card" id="provinceCard">
+    <table>
+      <thead><tr><th>省份</th><th>状态分布</th><th class="num">应接入</th><th class="num">已收录</th><th class="num">覆盖率</th><th>抽查</th></tr></thead>
+      <tbody id="provinces"></tbody>
+    </table>
+  </section>
+  <section class="card" id="detailCard" hidden>
+    <div class="filters">
+      <button id="back">← 返回全国</button>
+      <b id="detailTitle"></b>
+      <select id="stateFilter" aria-label="按状态筛选"><option value="">全部状态</option></select>
+      <select id="deptFilter" aria-label="按部门筛选"><option value="">全部部门</option></select>
+      <button id="exportCsv">导出 CSV</button>
+      <button id="accept">记一次抽查</button>
+    </div>
+    <div class="grid"><table id="grid"></table></div>
+    <p class="muted" id="gridNote"></p>
+  </section>
+</main>
+<aside class="drawer" id="drawer" hidden></aside>
+<script src="/admin/embed.js"></script>
+<script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+  const STATES = ['已收录', '抓取失败', '需人工', '网站无此栏目', '不能抓', '待启用'];
+  const LEVELS = ['国家级', '省级', '市级', '区县级'];
+  const DEPTS = ['政府办', '发改委', '工信', '科技', '商务', '财政', '人社', '市场监管', '农业农村', '文旅', '生态环境', '数据局', '开发区'];
+  let level = '省级';
+  let summary = null;
+  let current = null; // 当前省份的格
+  let currentProvince = null;
+
+  function headers() { return { 'X-Admin-Token': youjuAdminToken(), 'Content-Type': 'application/json' }; }
+  function el(tag, cls, text) { const n = document.createElement(tag); if (cls) n.className = cls; if (text !== undefined) n.textContent = text; return n; }
+  function pct(v) { return v === null || v === undefined ? '—' : (v * 100).toFixed(0) + '%'; }
+  function safeLink(url) { try { const u = new URL(url); return ['http:', 'https:'].includes(u.protocol) ? u.href : null; } catch (e) { return null; } }
+  // 抽屉会盖住顶上的输入框：抽屉里自带"操作人"，带出顶上填过的名字，保存时写回去
+  function whoInput() { const w = el('input'); w.placeholder = '操作人'; w.maxLength = 40; w.value = $('reviewer').value; return w; }
+  function takeWho(w, msg) { const by = w.value.trim(); if (!by) { msg.textContent = '请填操作人'; return null; } $('reviewer').value = by; return by; }
+  function link(url) { const href = safeLink(url); if (!href) return el('span', '', url || '—'); const a = el('a', '', url); a.href = href; a.target = '_blank'; a.rel = 'noopener noreferrer'; return a; }
+  async function api(path, opts) {
+    const res = await fetch(path, Object.assign({ headers: headers() }, opts || {}));
+    if (!res.ok) {
+      let detail = ''; try { detail = (await res.json()).detail; } catch (e) { /* 不是 JSON */ }
+      if (Array.isArray(detail)) detail = detail.map((d) => d.msg).join('；');
+      throw new Error(res.status === 401 ? '口令不对或未配置' : (detail || `请求失败（${res.status}）`));
+    }
+    return res.json();
+  }
+
+  function renderTabs() {
+    const tabs = $('tabs'); tabs.replaceChildren();
+    LEVELS.forEach((lv) => { const b = el('button', lv === level ? 'on' : '', lv); b.onclick = () => { level = lv; showNational(); load(); }; tabs.append(b); });
+    const lg = $('legend'); lg.replaceChildren();
+    STATES.forEach((s) => { const span = el('span'); const i = el('i', 's-' + s); span.append(i, document.createTextNode(s)); lg.append(span); });
+  }
+  function stack(counts, total) {
+    const bar = el('div', 'stack');
+    STATES.forEach((s) => { const n = counts[s] || 0; if (!n || !total) return; const i = el('i', 's-' + s); i.style.width = (n / total * 100) + '%'; i.title = `${s} ${n}`; bar.append(i); });
+    return bar;
+  }
+  // 接口给的是 UTC 时间（带时区）：换成北京时间显示，dateOnly 只要日期
+  function when(iso, dateOnly) {
+    if (!iso) return '';
+    let s0 = iso.replace(/(\.\d{3})\d+/, '$1'); // 微秒只留到毫秒，各浏览器都认
+    if (!/(Z|[+-]\d{2}:?\d{2})$/.test(s0)) s0 += 'Z'; // 没写时区的按 UTC
+    const d = new Date(s0); if (isNaN(d.getTime())) return iso;
+    const s = new Date(d.getTime() + 8 * 3600 * 1000).toISOString().replace('T', ' ');
+    return dateOnly ? s.slice(0, 10) : s.slice(0, 16);
+  }
+  // 全国看这一级的合计；进了省看这个省，点状态卡片筛格子
+  function renderKpis(data, inProvince) {
+    const k = $('kpis'); k.replaceChildren();
+    const tiles = [['应接入', data.total, '']].concat(STATES.map((s) => [s, data.counts[s] || 0, s])).concat([['覆盖率', pct(data.rate), '']]);
+    tiles.forEach(([label, value, state]) => {
+      const clickable = inProvince && state;
+      const b = el(clickable ? 'button' : 'div', 'kpi' + (clickable ? '' : ' still'));
+      b.append(el('b', '', String(value)), el('span', '', label));
+      if (clickable) { b.title = '只看' + state; b.onclick = () => { $('stateFilter').value = $('stateFilter').value === state ? '' : state; renderGrid(); }; }
+      k.append(b);
+    });
+    $('refreshed').textContent = data.refreshed_at ? `状态按 ${when(data.refreshed_at)}（北京时间）的抓取结果算（youju coverage-refresh）` : (data.total ? '有格还没重算过状态：先运行 youju coverage-refresh' : '');
+  }
+  function renderSummary() {
+    renderKpis(summary.levels[level] || { counts: {}, total: 0, rate: null, refreshed_at: null }, false);
+    const body = $('provinces'); body.replaceChildren();
+    const rows = summary.provinces.filter((p) => p.level === level);
+    rows.sort((a, b) => (a.rate === null ? -1 : a.rate) - (b.rate === null ? -1 : b.rate));
+    rows.forEach((p) => {
+      const tr = el('tr', 'click');
+      const acc = p.acceptance ? (p.acceptance.passed ? '合格' : '没过') + '（' + (p.acceptance.level === '全部' ? '全省各级，' : '') + when(p.acceptance.sampled_at, true) + '）' : '未抽查';
+      const td = el('td'); td.append(stack(p.counts, p.total));
+      tr.append(el('td', '', p.province), td, el('td', 'num', String(p.total)), el('td', 'num', String(p.counts['已收录'] || 0)), el('td', 'num', pct(p.rate)), el('td', '', acc));
+      tr.onclick = () => openProvince(p.province);
+      body.append(tr);
+    });
+    if (!rows.length) { const tr = el('tr'); const td = el('td', 'muted', '这一级还没有数据：先运行 youju coverage-import 和 coverage-refresh'); td.colSpan = 6; tr.append(td); body.append(tr); }
+  }
+  async function load() {
+    $('msg').textContent = '';
+    try {
+      summary = await api('/api/admin/coverage/summary');
+      renderTabs(); renderSummary();
+      if (currentProvince) await openProvince(currentProvince);
+    } catch (e) { $('msg').textContent = e.message; }
+  }
+  function provinceKpis() {
+    const prov = summary && summary.provinces.find((p) => p.level === level && p.province === currentProvince);
+    if (prov) renderKpis(prov, true);
+  }
+  function showNational() {
+    currentProvince = null; $('detailCard').hidden = true; $('provinceCard').hidden = false; $('drawer').hidden = true;
+    if (summary) renderKpis(summary.levels[level] || { counts: {}, total: 0, rate: null, refreshed_at: null }, false);
+  }
+
+  async function openProvince(province) {
+    currentProvince = province; $('msg').textContent = '';
+    try {
+      let page = 1; const all = [];
+      for (;;) {
+        const q = new URLSearchParams({ province, level, page: String(page), size: '500' });
+        const data = await api('/api/admin/coverage/cells?' + q);
+        all.push(...data.cells);
+        if (all.length >= data.total || !data.cells.length) break;
+        page += 1;
+      }
+      current = all;
+      $('provinceCard').hidden = true; $('detailCard').hidden = false;
+      $('detailTitle').textContent = `${province} · ${level}（${all.length} 格）`;
+      provinceKpis();
+      renderGrid();
+    } catch (e) { $('msg').textContent = e.message; }
+  }
+  function renderGrid() {
+    const state = $('stateFilter').value; const dept = $('deptFilter').value;
+    const depts = dept ? [dept] : DEPTS;
+    const byDiv = new Map();
+    current.forEach((c) => { const key = c.code; if (!byDiv.has(key)) byDiv.set(key, { name: c.division, city: c.city, cells: {} }); const d = byDiv.get(key); (d.cells[c.dept] = d.cells[c.dept] || []).push(c); });
+    const table = $('grid'); table.replaceChildren();
+    const head = el('tr'); head.append(el('th', '', '行政区')); depts.forEach((d) => head.append(el('th', 'dept', d))); table.append(head);
+    let shown = 0;
+    byDiv.forEach((d) => {
+      const tr = el('tr'); tr.append(el('td', '', d.name));
+      depts.forEach((dp) => {
+        const list = (d.cells[dp] || []).filter((c) => !state || c.state === state);
+        const td = el('td', 'cell' + (list.length ? ' s-' + list[0].state : ' none'));
+        if (list.length) {
+          td.title = list.map((c) => `${c.dept_full_name || c.dept}：${c.state}${c.reason ? '（' + c.reason + '）' : ''}`).join('\n');
+          td.onclick = () => (list.length > 1 ? chooseCell(list) : openCell(list[0].id)); shown += list.length;
+          if (list.length > 1) td.textContent = list.length;
+        }
+        tr.append(td);
+      });
+      table.append(tr);
+    });
+    $('gridNote').textContent = `显示 ${shown} 格。鼠标移到色块上看部门和原因，点色块看详情。`;
+  }
+  function chooseCell(list) {
+    const box = $('drawer'); box.hidden = false; box.replaceChildren();
+    const close = el('button', '', '关闭'); close.onclick = () => { box.hidden = true; };
+    box.append(close, el('h2', '', `${list[0].division} · ${list[0].dept}（${list.length} 个）`));
+    list.forEach((c) => {
+      const b = el('button', 'pick'); b.append(el('span', 'tag s-' + c.state, c.state), document.createTextNode(' ' + (c.dept_full_name || c.dept)));
+      b.onclick = () => openCell(c.id); box.append(b);
+    });
+  }
+  async function openCell(id) {
+    const box = $('drawer'); box.hidden = false; box.replaceChildren(el('p', 'muted', '加载中……'));
+    try {
+      const c = await api('/api/admin/coverage/cells/' + id);
+      box.replaceChildren();
+      const close = el('button', '', '关闭'); close.onclick = () => { box.hidden = true; };
+      const title = el('h2', '', `${c.division} · ${c.dept_full_name || c.dept}`);
+      const tag = el('span', 'tag s-' + c.state, c.state);
+      box.append(close, title, tag);
+      const kv = el('div', 'kv');
+      const add = (k, v) => { kv.append(el('span', '', k)); const s = el('span'); if (v instanceof Node) s.append(v); else s.textContent = v || '—'; kv.append(s); };
+      add('原因', c.reason); add('最后成功', c.last_success_at ? when(c.last_success_at) : '—');
+      add('部门网址', link(c.site_url)); add('导航来源页', link(c.nav_source)); add('门户', link(c.portal_url));
+      add('盘点结论', `${c.inventory_status}${c.inventory_reason ? '：' + c.inventory_reason : ''}`);
+      box.append(kv);
+      box.append(el('h2', '', '栏目'));
+      if (!c.columns.length) box.append(el('p', 'muted', '没有认出栏目'));
+      c.columns.forEach((col) => {
+        const src = c.sources.find((s) => s.url === col.url);
+        const p = el('div', 'kv');
+        p.append(el('span', '', col.kind)); const v = el('span'); v.append(link(col.url));
+        v.append(el('div', 'muted', src ? `来源 #${src.id} · ${src.enabled ? '已启用' : '未启用'} · 健康 ${src.health} · 最后成功 ${src.last_success_at ? when(src.last_success_at) : '—'}${src.last_error ? ' · ' + src.last_error : ''}` : `没导入来源${col.result ? '（试读：' + col.result + (col.reason ? '，' + col.reason : '') + '）' : ''}`));
+        p.append(v); box.append(p);
+      });
+      box.append(el('h2', '', '人工处理'));
+      const form = el('div', 'kv');
+      const who = whoInput();
+      form.append(el('span', '', '操作人'), who);
+      const conf = el('input'); conf.type = 'checkbox'; conf.checked = c.confirmed_no_column;
+      const confirmable = !c.columns.length && ['网站无此栏目', '需人工'].includes(c.state);
+      if (!confirmable && !c.confirmed_no_column) { conf.disabled = true; conf.title = '认出了栏目，或网站打不开、拒绝抓取：不能确认网站无此栏目'; }
+      const alt = el('input'); alt.value = c.alt_source || ''; alt.placeholder = '替代来源网址（不能抓时）';
+      const note = el('input'); note.value = c.note || ''; note.placeholder = '备注'; note.maxLength = 300;
+      form.append(el('span', '', '网站无此栏目'), (() => { const l = el('label'); l.append(conf, document.createTextNode(' 人工核验确认')); return l; })());
+      form.append(el('span', '', '替代来源'), alt, el('span', '', '备注'), note);
+      const save = el('button', 'primary', '保存'); const msg = el('div', 'msg');
+      save.onclick = async () => {
+        const by = takeWho(who, msg); if (!by) return;
+        try {
+          const r = await api('/api/admin/coverage/cells/' + id, { method: 'POST', body: JSON.stringify({ by, confirm_no_column: conf.checked, alt_source: alt.value.trim(), note: note.value }) });
+          msg.className = 'muted';
+          msg.textContent = r.changed.length ? `已保存；现在的状态：${r.state}` : '没有改动';
+          const mine = (current || []).find((x) => x.id === id);
+          if (mine && r.changed.length) {
+            Object.assign(mine, { confirmed_no_column: conf.checked, alt_source: alt.value.trim() || null, note: note.value.trim() || null, state: r.state, reason: r.reason });
+            renderGrid();
+            summary = await api('/api/admin/coverage/summary'); provinceKpis();
+          }
+        } catch (e) { msg.className = 'msg'; msg.textContent = e.message; }
+      };
+      box.append(form, save, msg);
+    } catch (e) { box.replaceChildren(el('p', 'msg', e.message)); }
+  }
+  function exportCsv() {
+    const rows = [['层级', '省份', '城市', '区县', '区划代码', '部门', '部门全称', '状态', '原因', '最后成功时间（北京时间）', '人工确认无栏目', '替代来源', '备注']];
+    const state = $('stateFilter').value; const dept = $('deptFilter').value;
+    current.filter((c) => (!state || c.state === state) && (!dept || c.dept === dept)).forEach((c) => rows.push([c.level, c.province, c.city || '', c.district || '', c.code, c.dept, c.dept_full_name || '', c.state, c.reason || '', when(c.last_success_at), c.confirmed_no_column ? '是' : '', c.alt_source || '', c.note || '']));
+    // 以 = + - @、制表符、回车开头的格子前面加单引号：表格软件打开时不当成公式
+    const cellText = (v) => { let t = String(v); if (/^[=+\-@\t\r]/.test(t)) t = "'" + t; return /[",\r\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t; };
+    const csv = '\ufeff' + rows.map((r) => r.map(cellText).join(',')).join('\r\n');
+    const a = el('a'); a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' })); a.download = `覆盖看板_${currentProvince}_${level}.csv`; a.click();
+  }
+  function recordAcceptance() {
+    const box = $('drawer'); box.hidden = false; box.replaceChildren();
+    const close = el('button', '', '关闭'); close.onclick = () => { box.hidden = true; };
+    box.append(close, el('h2', '', `记一次抽查：${currentProvince} · ${level}`));
+    box.append(el('p', 'muted', 'D-122：每省抽查合格才算接好；没抽查或没过的省，新接的来源 2.0 上线时先不放给用户。'));
+    const form = el('div', 'kv');
+    const who = whoInput();
+    form.append(el('span', '', '操作人'), who);
+    const size = el('input'); size.type = 'number'; size.min = '1'; size.value = '20';
+    const result = el('select'); result.append(new Option('请选择', ''), new Option('合格', 'yes'), new Option('没过', 'no'));
+    const note = el('input'); note.maxLength = 300; note.placeholder = '抽了哪些、发现什么问题';
+    form.append(el('span', '', '抽查格数'), size, el('span', '', '结果'), result, el('span', '', '备注'), note);
+    const save = el('button', 'primary', '保存'); const msg = el('div', 'msg');
+    save.onclick = async () => {
+      const by = takeWho(who, msg); if (!by) return;
+      if (!result.value) { msg.textContent = '请选抽查结果'; return; }
+      try {
+        await api('/api/admin/coverage/acceptances', { method: 'POST', body: JSON.stringify({ by, province: currentProvince, level, sample_size: Number(size.value), passed: result.value === 'yes', note: note.value }) });
+        box.hidden = true; await load();
+      } catch (e) { msg.textContent = e.message; }
+    };
+    box.append(form, save, msg);
+  }
+  STATES.forEach((s) => $('stateFilter').append(new Option(s, s)));
+  DEPTS.forEach((d) => $('deptFilter').append(new Option(d, d)));
+  $('stateFilter').onchange = renderGrid; $('deptFilter').onchange = renderGrid;
+  $('back').onclick = () => { showNational(); renderSummary(); };
+  $('exportCsv').onclick = exportCsv; $('accept').onclick = recordAcceptance;
+  $('load').onclick = load;
+  window.load = load;
+  renderTabs();
+})();
+</script>
+</body>
+</html>

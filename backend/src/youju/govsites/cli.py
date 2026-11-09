@@ -3,11 +3,14 @@
 import argparse
 import json
 import time
+from collections import Counter
 from dataclasses import asdict
 from pathlib import Path
 
 DEFAULT_OUT = Path(__file__).resolve().parents[4] / "docs" / "数据来源" / "全国覆盖"
 DEFAULT_CACHE = Path.home() / ".cache" / "youju-coverage"
+BOARD_LOCK_WAIT = 600  # 等另一个看板命令最多这么多秒
+BOARD_BUSY = "另一个覆盖看板命令（导入、重算或启用）正在跑，10 分钟内没等到，这次没做；稍后再试"
 
 
 def _fetcher(timeout: float = 20.0):
@@ -46,7 +49,7 @@ def _cmd_divisions(args: argparse.Namespace) -> int:
 
 def _cmd_inventory(args: argparse.Namespace) -> int:
     from youju.govsites.divisions import DivisionIndex, read_csv
-    from youju.govsites.inventory import Inventory, save_state
+    from youju.govsites.inventory import Inventory, load_seeds, save_state
     from youju.govsites.pagecache import PageCache
     from youju.govsites.report import write_outputs
 
@@ -78,6 +81,7 @@ def _cmd_inventory(args: argparse.Namespace) -> int:
             workers=args.workers,
             per_province=args.per_province,
             progress=progress,
+            seeds=load_seeds(args.seeds),
         )
         inv.run()
     state = args.cache / (
@@ -304,6 +308,121 @@ def _cmd_survey(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_import(args: argparse.Namespace) -> int:
+    from youju.db import session_factory
+    from youju.govsites.boarddb import (
+        BOARD_STATES,
+        ImportSummary,
+        board_lock,
+        import_inventory,
+        refresh_states,
+    )
+    from youju.govsites.divisions import read_csv
+
+    if args.state:
+        portals, depts = _load_states(args.state)
+    else:
+        # 没给盘点原始结果：读清单文件（docs/数据来源/全国覆盖/门户网站、部门栏目）
+        from youju.govsites.inventory import load_docs
+
+        portals, depts = load_docs(args.out, args.province)
+    if args.province:
+        portals = [p for p in portals if p.province in args.province]
+        depts = [d for d in depts if d.province in args.province]
+    checks = {c.url: c for c in _load_checks(args.checks)}
+    meta = {d.code: (d.kind, d.parent_code) for d in read_csv(args.divisions)}
+    counts: Counter = Counter()
+    s = ImportSummary()
+    with session_factory()() as session, board_lock(session, BOARD_LOCK_WAIT) as got:
+        if not got:
+            print(BOARD_BUSY)
+            return 1
+        # 一省一导入、一省一提交（不长时间锁住格），接着按抓取结果重算这个省：
+        # 看板上不留"导入了还没算"的格
+        for province in sorted({p.province for p in portals}):
+            part = import_inventory(
+                session,
+                [p for p in portals if p.province == province],
+                [d for d in depts if d.province == province],
+                checks,
+                meta,
+            )
+            for field in ("divisions", "cells_created", "cells_updated", "cells_removed", "links"):
+                setattr(s, field, getattr(s, field) + getattr(part, field))
+            counts.update(refresh_states(session, province=province))
+    print(
+        f"导入完成：行政区 {s.divisions}，格新增 {s.cells_created}、更新 {s.cells_updated}、"
+        f"删除 {s.cells_removed}；挂到已有来源 {s.links} 处"
+    )
+    print("看板状态：" + "，".join(f"{st} {counts.get(st, 0)}" for st in BOARD_STATES))
+    return 0
+
+
+def _cmd_refresh(args: argparse.Namespace) -> int:
+    from youju.db import session_factory
+    from youju.govsites.boarddb import BOARD_STATES, board_lock, refresh_states
+
+    with session_factory()() as session, board_lock(session, BOARD_LOCK_WAIT) as got:
+        if not got:
+            print(BOARD_BUSY)
+            return 1
+        counts = refresh_states(session, trial=args.trial, province=args.province)
+    label = "试点口径（只算数，没写看板）" if args.trial else "看板状态"
+    print(label + "：" + "，".join(f"{s} {counts.get(s, 0)}" for s in BOARD_STATES))
+    return 0
+
+
+def _cmd_enable(args: argparse.Namespace) -> int:
+    from youju.db import session_factory
+    from youju.govsites.boarddb import board_lock, enable_sources, refresh_states
+
+    with session_factory()() as session, board_lock(session, BOARD_LOCK_WAIT) as got:
+        if not got:
+            print(BOARD_BUSY)
+            return 1
+        r = enable_sources(
+            session, args.province, args.level, args.by, limit=args.limit, dry_run=args.dry_run
+        )
+        _report_enable(args, r)
+        if not args.dry_run and r.enabled:
+            refresh_states(session, province=args.province)  # 启用的格马上按正式口径算
+    return 1 if r.blocked_reason else 0
+
+
+def _report_enable(args: argparse.Namespace, r) -> None:
+    """打印结果；真启用了的先写审计日志（在重算之前：重算出错也不丢审计）。"""
+    if r.blocked_reason:
+        print(f"没有启用：{r.blocked_reason}")
+        return
+    verb = "可启用" if args.dry_run else "已启用"
+    print(
+        f"{args.province}{args.level}（依据抽查记录 #{r.acceptance_id}）："
+        f"符合条件 {r.candidates} 个，{verb} {r.enabled} 个；"
+        f"最近被拒绝或读不出、不开的 {r.skipped} 个"
+    )
+    shown = ", ".join(str(i) for i in r.source_ids[:50])
+    more = f" 等 {len(r.source_ids)} 个" if len(r.source_ids) > 50 else ""
+    print(f"来源编号：{shown or '无'}{more}")
+    if not args.dry_run and r.enabled:
+        # 和后台操作一样留痕（操作人、依据的抽查记录、开了哪些）
+        import logging
+
+        logging.getLogger("youju.audit").info(
+            json.dumps(
+                {
+                    "event": "admin",
+                    "action": "coverage_enable",
+                    "by": args.by,
+                    "province": args.province,
+                    "level": args.level,
+                    "acceptance_id": r.acceptance_id,
+                    "source_ids": r.source_ids,
+                },
+                ensure_ascii=False,
+            )
+        )
+
+
 def register(sub: argparse._SubParsersAction) -> None:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--out", type=Path, default=DEFAULT_OUT, help="清单输出目录")
@@ -327,6 +446,12 @@ def register(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--workers", type=int, default=96)
     p.add_argument("--per-province", type=int, default=6, help="同一省同时处理几个行政区")
     p.add_argument("--offline", action="store_true", help="只用缓存，不联网")
+    p.add_argument(
+        "--seeds",
+        type=Path,
+        default=DEFAULT_OUT / "导航入口补充.csv",
+        help="导航入口补充（门户不通或导航由脚本生成时用的官方入口页）",
+    )
     p.add_argument("--log", action="store_true", help="进度写到缓存目录的 inventory.log")
     p.add_argument("--verbose", action="store_true")
     p.set_defaults(func=_cmd_inventory)
@@ -360,6 +485,38 @@ def register(sub: argparse._SubParsersAction) -> None:
         "--trial", action="store_true", help="试点报告：未启用但试抓成功的也算收录，不按 3 天过期"
     )
     p.set_defaults(func=_cmd_board)
+
+    p = sub.add_parser(
+        "coverage-import", parents=[common], help="把盘点结果写进覆盖看板表（按网址挂到已有来源）"
+    )
+    p.add_argument(
+        "--state",
+        type=Path,
+        action="append",
+        help="盘点原始结果 JSON；不给就读清单文件（--out 目录）",
+    )
+    p.add_argument("--checks", type=Path, action="append", help="coverage-verify 存的试读结果 JSON")
+    p.add_argument("--province", action="append", help="只导入某几个省")
+    p.set_defaults(func=_cmd_import)
+
+    p = sub.add_parser(
+        "coverage-enable", help="某省某级抽查合格后，分批启用试抓成功、待启用的来源（D-122 门禁）"
+    )
+    p.add_argument("--province", required=True)
+    p.add_argument("--level", required=True, choices=("国家级", "省级", "市级", "区县级"))
+    p.add_argument("--by", required=True, help="操作人")
+    p.add_argument("--limit", type=int, default=2000, help="一次最多启用多少个（每天新启用上限）")
+    p.add_argument("--dry-run", action="store_true", help="只数一数，不启用")
+    p.set_defaults(func=_cmd_enable)
+
+    p = sub.add_parser("coverage-refresh", help="按来源抓取结果重算覆盖看板每格的状态")
+    p.add_argument("--province", help="只算某个省")
+    p.add_argument(
+        "--trial",
+        action="store_true",
+        help="试点口径：未启用但试抓成功的也算收录、不按 3 天过期；只打印各状态格数，不写看板",
+    )
+    p.set_defaults(func=_cmd_refresh)
 
     p = sub.add_parser(
         "coverage-survey", parents=[common], help="每省集约化平台盘点（平台分布、可读比例、防护）"

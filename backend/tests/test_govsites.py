@@ -643,3 +643,73 @@ def test_zwfw_named_data_bureau_site_is_kept():
     assert not _data_bureau_site("https://www.hnzwfw.gov.cn/portal/department/1")
     assert not _data_bureau_site("https://zwfw.nmg.gov.cn/OrgItem_index.html")
     assert not _data_bureau_site("https://zwfw.sc.gov.cn/dept?deptCode=1")
+
+
+def test_seed_site_is_its_own_dept_and_skips_other_provinces():
+    pages = {
+        GOV_LOCAL_NAV: '<a href="https://www.zj.gov.cn/">浙江</a>',
+        # 省门户能打开：政府办的栏目只看门户自己的页面
+        "https://www.zj.gov.cn/": '<a href="/col/col9/index.html">通知公告</a>',
+        # 入口补充：省科技厅网站（网站名在 SiteName 里），页上有兄弟省份链接和下属中心
+        "https://kjt.zj.gov.cn/": """<meta name="SiteName" content="浙江省科学技术厅">
+            <a href="/col/col1/index.html">通知公告</a>
+            <a href="https://kw.beijing.gov.cn/">&gt;北京市科学技术委员会</a>
+            <a href="https://kjt.zj.gov.cn/zx/">省科技信息研究院</a>
+            <a href="https://kfq.beijing.gov.cn/">中国（北京）经济技术开发区管委会</a>""",
+        "https://kw.beijing.gov.cn/": '<a href="/tzgg/">通知公告</a>',
+        "https://kjt.zj.gov.cn/zx/": "<p>研究院</p>",
+        "https://kfq.beijing.gov.cn/": '<a href="/tzgg/">通知公告</a>',
+    }
+    seeds = {"330000": [("https://kjt.zj.gov.cn/", "省科技厅网站首页")]}
+    inv = Inventory(
+        DivisionIndex(_divisions()),
+        FakeCache(pages),
+        provinces=["浙江"],
+        max_level="省级",
+        workers=2,
+        per_province=2,
+        seeds=seeds,
+    )
+    inv.run()
+    depts = {(d.code, d.dept): d for d in inv.depts}
+    sci = depts[("330000", "科技")]
+    assert (sci.site_url, sci.dept_full_name, sci.nav_source) == (
+        "https://kjt.zj.gov.cn/",
+        "浙江省科学技术厅",
+        "https://kjt.zj.gov.cn/",
+    )
+    assert [c.url for c in sci.columns] == ["https://kjt.zj.gov.cn/col/col1/index.html"]
+    gov = depts[("330000", "政府办")]
+    assert [c.url for c in gov.columns] == ["https://www.zj.gov.cn/col/col9/index.html"]
+    assert not any("beijing" in (d.site_url or "") for d in inv.depts)
+
+
+def test_seed_entries_find_depts_and_cities_when_portal_is_down():
+    pages = {
+        GOV_LOCAL_NAV: '<a href="https://www.zj.gov.cn/">浙江</a>',
+        # 省门户不通（这里没有页面 → 404 打不开）；入口补充：省科技厅网站的页脚导航
+        "https://kjt.zj.gov.cn/": """<a href="/bmwz/">省直部门网站</a><a href="/sxwz/">市县政府网站</a>
+            <a href="/col/col1/index.html">通知公告</a>""",
+        "https://kjt.zj.gov.cn/bmwz/": '<a href="http://czt.zj.gov.cn/">浙江省财政厅</a>',
+        "https://kjt.zj.gov.cn/sxwz/": '<a href="https://www.hangzhou.gov.cn/">杭州市</a>',
+        "http://czt.zj.gov.cn/": '<a href="/tzgg/">通知公告</a>',
+        "https://www.hangzhou.gov.cn/": "<p>杭州</p>",
+    }
+    divisions = [d for d in _divisions() if d.province == "浙江"]
+    seeds = {"330000": [("https://kjt.zj.gov.cn/", "省科技厅网站首页")]}
+    inv = Inventory(
+        DivisionIndex(divisions),
+        FakeCache(pages),
+        provinces=["浙江"],
+        workers=2,
+        per_province=2,
+        seeds=seeds,
+    )
+    inv.run()
+    portals = {p.name: p for p in inv.portals.values()}
+    assert portals["浙江省"].status == "打不开"  # 门户本身照记不通
+    assert portals["杭州市"].status == "已找到"
+    assert portals["杭州市"].nav_source == "https://kjt.zj.gov.cn/sxwz/"
+    depts = {(d.code, d.dept): d for d in inv.depts}
+    assert depts[("330000", "政府办")].status == "打不开"
+    assert depts[("330000", "财政")].site_url == "http://czt.zj.gov.cn/"
