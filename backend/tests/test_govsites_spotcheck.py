@@ -124,3 +124,24 @@ def test_attribution_uses_issuer_and_strips_site_noise() -> None:
     gz = {"城市": "广州", "部门": "发改委"}
     doc2 = "<title>广州市发展和改革委员会关于举办培训的通知 | 广州市发展和改革委员会网站</title>"
     assert sc.attribution_check(gz, "<title>通知公告</title>", doc2)[0] == "本市本部门"
+
+
+def test_date_check_meta_and_document_dates() -> None:
+    d = date(2026, 11, 3)
+    meta = '<meta name="PubDate" content="2026-11-03 15:07"><p>正文</p>'
+    assert sc.date_check(d, meta)[0] == "一致"
+    # "公示时间""征求意见时间"不是发布日期
+    assert sc.date_check(d, "公示时间：2026年11月4日至10日 2026-11-03")[0] == "一致"
+    only_written = "成文日期：2026-10-28 文号：某府规〔2026〕5号"
+    assert sc.date_check(d, only_written)[0] == "原文只标成文日期"
+    both = "成文日期 2026年01月28日 发布时间 2026年02月10日"
+    verdict, note = sc.date_check(date(2026, 5, 20), both)
+    assert verdict == "页面写的是别的日期" and "2026-02-10" in note
+
+
+def test_attribution_by_portal_domain() -> None:
+    cell = {"城市": "邵阳", "部门": "市场监管", "栏目网址": "https://amr.shaoyang.gov.cn/tzgg/"}
+    col = "<title>通知公告_市市场监督管理局</title>"
+    assert sc.attribution_check(cell, col, "")[0] == "待看"
+    verdict, note = sc.attribution_check(cell, col, "", "shaoyang.gov.cn")
+    assert verdict == "本市本部门" and "shaoyang.gov.cn" in note

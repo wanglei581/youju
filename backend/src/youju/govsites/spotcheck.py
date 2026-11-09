@@ -20,7 +20,7 @@ from datetime import date
 from pathlib import Path
 
 from youju.govsites.divisions import name_variants
-from youju.govsites.links import is_gov_url, parse_html
+from youju.govsites.links import is_gov_url, parse_html, registrable
 from youju.govsites.names import dept_categories
 from youju.govsites.platform import fingerprint
 
@@ -112,14 +112,23 @@ def title_check(stored: str, page_html: str) -> tuple[str, str]:
 
 
 _DATE = r"(\d{4})\s*[-/.年]\s*(\d{1,2})\s*[-/.月]\s*(\d{1,2})"
-_LABELED_DATE = re.compile(
-    r"(?:发布日期|发布时间|发文日期|成文日期|印发日期|日期|时间)\s*[:：]?\s*" + _DATE
+# 发布日期的标签；单写"日期""时间"的，前面不能紧挨着别的汉字（"公示时间""征求意见时间"不算）
+_PUB_LABEL = r"(?:发布日期|发布时间|发表时间|公开日期|(?<![一-龥])日期|(?<![一-龥])时间)"
+# 成文、生成、印发日期：和发布日期常常不是一天，只写了这些的页面单独说明
+_DOC_LABEL = r"(?:成文日期|生成日期|印发日期|发文日期)"
+_PUB_DATE = re.compile(_PUB_LABEL + r"\s*[:：]?\s*" + _DATE)
+_DOC_DATE = re.compile(_DOC_LABEL + r"\s*[:：]?\s*" + _DATE)
+# 网页头里的发布时间（宜春、阳江等：页面上的日期由脚本显示，头里写着）
+_META_DATE = re.compile(
+    r"""<meta[^>]+name=["'](?:PubDate|pubdate|publishdate|PublishDate|firstpublishedtime)["'][^>]+"""
+    r"""content=["']\s*""" + _DATE,
+    re.I,
 )
 
 
-def _labeled_dates(text: str) -> list[date]:
+def _dates(pattern: re.Pattern, text: str) -> list[date]:
     out: list[date] = []
-    for m in _LABELED_DATE.finditer(text):
+    for m in pattern.finditer(text):
         try:
             d = date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
         except ValueError:
@@ -127,6 +136,11 @@ def _labeled_dates(text: str) -> list[date]:
         if d not in out:
             out.append(d)
     return out
+
+
+def _labeled_dates(text: str) -> list[date]:
+    """页面文字里标明是发布日期的日期（测试和旧调用用）。"""
+    return _dates(_PUB_DATE, text)
 
 
 def date_forms(d: date) -> list[str]:
@@ -144,18 +158,25 @@ def date_forms(d: date) -> list[str]:
 
 
 def date_check(stored: date | None, page_html: str) -> tuple[str, str]:
+    """结论：一致 / 页面写的是别的日期 / 原文只标成文日期 / 页面上找不到日期。"""
     if stored is None:
         return "页面上找不到日期", "库里没有发布日期"
     text = page_text(page_html)
-    labeled = _labeled_dates(text)
-    if stored in labeled:
+    published = _dates(_META_DATE, page_html or "") + _dates(_PUB_DATE, text)
+    if stored in published:
         return "一致", ""
-    if labeled:
-        shown = "、".join(d.isoformat() for d in labeled[:4])
-        return "页面写的是别的日期", f"页面上标的日期：{shown}"
+    written = _dates(_DOC_DATE, text)
+    if stored in written:
+        return "一致", "和原文的成文日期一样"
+    if published:
+        shown = "、".join(d.isoformat() for d in published[:4])
+        return "页面写的是别的日期", f"页面上标的发布日期：{shown}"
     for form in date_forms(stored):
         if re.search(rf"(?<!\d){re.escape(form)}(?!\d)", text):
             return "一致", "页面上没有标明是发布日期，但有这个日期"
+    if written:
+        shown = "、".join(d.isoformat() for d in written[:4])
+        return "原文只标成文日期", f"原文只写了成文/生成日期 {shown}，没写发布日期"
     return "页面上找不到日期", "页面上没有标明的日期，也找不到库里的日期"
 
 
@@ -204,8 +225,11 @@ def _org_parts(names: list[str]) -> list[str]:
     return parts
 
 
-def attribution_check(cell: dict, column_html: str, doc_html: str) -> tuple[str, str]:
-    """栏目页和文件页的网站名、标题、发文单位里有没有本市的写法，能不能归到这个部门。"""
+def attribution_check(
+    cell: dict, column_html: str, doc_html: str, portal_domain: str = ""
+) -> tuple[str, str]:
+    """栏目页和文件页的网站名、标题、发文单位里有没有本市的写法（或栏目在本市门户的域名下），
+    能不能归到这个部门。portal_domain：本市门户的本级域名（如 shaoyang.gov.cn）。"""
     city, dept = cell.get("城市", ""), cell.get("部门", "")
     col_names = _site_names(column_html)
     doc_names = _site_names(doc_html)
@@ -213,8 +237,12 @@ def attribution_check(cell: dict, column_html: str, doc_html: str) -> tuple[str,
     names = city_names(city) if city else set()
     texts = col_names + doc_names + issuers
     where = " / ".join(texts)[:160]
-    if not names or not any(n in s for n in names for s in texts):
+    first_col = (cell.get("栏目网址") or "").split(" ")[0]
+    same_domain = bool(portal_domain) and registrable(first_col) == portal_domain
+    if not same_domain and (not names or not any(n in s for n in names for s in texts)):
         return "待看", f"网站名、标题和发文单位里没有找到“{city}”：{where or '（都没有）'}"
+    if same_domain:
+        where = f"栏目在本市门户域名 {portal_domain} 下；" + where
     if dept == "政府办":
         return "本市本部门", where
     for part in _org_parts(texts):
@@ -247,7 +275,7 @@ def _first_list_item(cache, url: str, today: date):
     return next((i for i in items if i.publish_date), None)
 
 
-def evidence_for(cell: dict, session, cache, today: date) -> dict:
+def evidence_for(cell: dict, session, cache, today: date, portal_domain: str = "") -> dict:
     from sqlalchemy import select
 
     from youju.models import Document, Source
@@ -321,7 +349,7 @@ def evidence_for(cell: dict, session, cache, today: date) -> dict:
     ev["标题核对"], ev["标题说明"] = title_check(title, r.text)
     ev["日期核对"], ev["日期说明"] = date_check(published, r.text)
     ev["归属核对"], ev["归属说明"] = attribution_check(
-        cell, col.text if col.status == "ok" else "", r.text
+        cell, col.text if col.status == "ok" else "", r.text, portal_domain
     )
     passed = (
         ev["标题核对"] in ("一致", "基本一致")
@@ -448,9 +476,16 @@ def main(argv: list[str] | None = None) -> int:
                 r.get("层级") == args.level and r.get("状态") == "已收录" for r in rows
             )
             picked = pick_cells(rows, args.level, args.n, args.seed)
+            # 本市门户的本级域名：政府办那一格的部门网址就是门户
+            portals = {
+                r.get("区划代码"): registrable(r.get("部门网址") or "")
+                for r in rows
+                if r.get("部门") == "政府办" and r.get("部门网址")
+            }
             evidence = []
             for i, cell in enumerate(picked, start=1):
-                ev = evidence_for(cell, session, cache, today)
+                domain = portals.get(cell.get("区划代码"), "")
+                ev = evidence_for(cell, session, cache, today, domain)
                 ev["序号"] = i
                 evidence.append(ev)
                 print(f"{province} {i}/{len(picked)} {ev['城市']} {ev['部门']}：{ev['程序结论']}")
