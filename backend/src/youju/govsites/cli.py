@@ -560,12 +560,15 @@ def _cmd_accept(args: argparse.Namespace) -> int:
     if not results:
         print(f"{folder} 里没有证据表")
         return 1
-    print(f"合格标准：每个栏目都有结论，通过的占 {PASS_RATE:.0%} 以上（不通过的不进本批）")
+    print(
+        f"合格标准：每个栏目都有结论，读得准的（通过、不收）占 {PASS_RATE:.0%} 以上"
+        "（待重试不算进分母；只有通过的进本批）"
+    )
     for r in results:
         verdict = "合格" if r.accepted else "没过"
         print(
             f"{r.province}：{verdict}（{r.total} 个栏目，通过 {r.passed}，不通过 {r.failed}，"
-            f"待重试 {r.retry}，不收 {r.excluded}，没复核 {r.pending}，通过率 {r.rate:.0%}）"
+            f"待重试 {r.retry}，不收 {r.excluded}，没复核 {r.pending}，读得准的 {r.rate:.0%}）"
         )
     if args.dry_run:
         print("试算，没写库")
