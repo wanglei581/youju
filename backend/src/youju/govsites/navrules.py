@@ -188,10 +188,11 @@ def city_nav_pages(home, seen: set[str], visit) -> None:
         visit(link, CITY_NAV_NOTE)
 
 
-# 部门链接指向这类页面的导航页，是"机构简介""信息公开指南"一类的列表，不是部门网站导航
+# 部门链接指向这类页面的导航页，是"机构简介""信息公开指南""部门规范性文件"一类的列表，
+# 不是部门网站导航（宜宾门户上按部门分的规范性文件列表 /bmgfxwj/）
 _WEAK_TARGET = re.compile(
     r"/info/\d+/\d+\.s?html?$|/content/|zfxxgkzn|xxgkzn|xxgk_tt|zfxxgknb|xxgknb|/nb/|bmnb|"
-    r"/jgjj|/jgzn|/jgzz|/ldjj|/ldxx",
+    r"/jgjj|/jgzn|/jgzz|/ldjj|/ldxx|/bmgfxwj/",
     re.I,
 )
 
