@@ -215,7 +215,10 @@ def test_specific_page() -> None:
 
     assert specific_page("https://www.linyi.gov.cn/typt/zfxxgknb.htm")
     assert specific_page("http://www.baoding.gov.cn/mlbd-1472-386944.html")
-    assert specific_page("https://www.x.gov.cn/?siteId=1")
+    # 只看路径：带参数的可能就是挂在平台上的门户本身
+    assert not specific_page("https://www.x.gov.cn/?siteId=1")
+    assert not specific_page("https://www.x.gov.cn/index.jsp?siteId=1")
+    assert specific_page("https://www.x.gov.cn/art/zfxxgknb.jsp?id=3")
     assert not specific_page("http://www.yibin.gov.cn/index.html")
     assert not specific_page("https://www.ezhou.gov.cn/sy/")
     assert not specific_page("https://www.lf.gov.cn/Category_5/Index.aspx")
@@ -268,3 +271,62 @@ def test_autonomous_prefecture_short_form() -> None:
 
     names = name_variants("湘西土家族苗族自治州", "自治州")
     assert {"湘西自治州", "湘西州", "湘西"} <= names
+
+
+def test_county_link_to_a_specific_page_is_not_cut_to_site_root() -> None:
+    """区县门户常挂在地市网站的子目录、参数页下：省网站上链到区县的具体页不截成网站首页。"""
+    from youju.govsites.inventory import PageInfo
+
+    divisions = [
+        Division("370000", "山东省", "省", "省级", "山东", None, None, None),
+        Division("371300", "临沂市", "地级市", "市级", "山东", "临沂", None, "370000"),
+        Division("371302", "兰山区", "市辖区", "区县级", "山东", "临沂", "兰山区", "371300"),
+    ]
+    inv = Inventory(DivisionIndex(divisions), FakeCache({}), provinces=["山东"], workers=2)
+    nav = PageInfo(
+        "http://www.shandong.gov.cn/col/1/index.html",
+        "http://www.shandong.gov.cn/col/1/index.html",
+        FetchResult("http://www.shandong.gov.cn/col/1/index.html", "ok", None, 200, ""),
+        links=[Link("兰山区", "https://www.linyi.gov.cn/lsq/zfxxgknb.htm", "a")],
+    )
+    found = inv._find_children(divisions[0], divisions[1:], [nav])
+    assert found["371302"].url == "https://www.linyi.gov.cn/lsq/zfxxgknb.htm"
+
+
+def test_redirect_script_on_a_content_page_is_not_followed() -> None:
+    """跳转规则只对几乎没有正文的页面生效：正常内容页里的手机版跳转脚本不跟。"""
+    from youju.govsites.inventory import _script_redirect
+
+    body = "<p>" + "通知正文内容" * 60 + "</p>"
+    page = f"<html><body>{body}{NANJING[NANJING.index('<script') :]}</body></html>"
+    result = FetchResult("http://www.nanjing.gov.cn/a.html", "ok", None, 200, page)
+    assert _script_redirect(result, result.url) is None
+    tiny = FetchResult("http://www.nanjing.gov.cn/", "ok", None, 200, NANJING)
+    assert _script_redirect(tiny, tiny.url) == "http://www.nanjing.gov.cn/index.html"
+
+
+def test_https_refusal_is_kept_as_blocked() -> None:
+    """http 断开、https 回 412：以 https 的拒绝为准，记不能抓（成都），不记打不开。"""
+
+    class Cache(FakeCache):
+        def get(self, url: str) -> FetchResult:
+            if url.startswith("http://www.chengdu.gov.cn"):
+                return FetchResult(url, "robots_error", url, None, "", "RemoteProtocolError: x")
+            if url.startswith("https://www.chengdu.gov.cn"):
+                return FetchResult(url, "http_error", url, 412, "", "HTTP 412")
+            return super().get(url)
+
+    divisions = [Division("510000", "四川省", "省", "省级", "四川", None, None, None)]
+    inv = Inventory(DivisionIndex(divisions), Cache({}))
+    p = inv.page("http://www.chengdu.gov.cn/")
+    assert p.result.http_status == 412 and p.block == "HTTP 412 拒绝访问"
+
+
+def test_device_redirect_negated_host_and_concatenated_var() -> None:
+    neg = """<script>var host = location.hostname;
+if (host != "www.x.gov.cn")
+{ location.href = "/other/index.html"; }</script>"""
+    assert device_redirect(neg, "http://www.x.gov.cn/") is None
+    assert device_redirect(neg, "http://m.x.gov.cn/") == "http://m.x.gov.cn/other/index.html"
+    concat = '<script>var pc = "/index" + ".html"; window.location.href = pc;</script>'
+    assert device_redirect(concat, "http://www.x.gov.cn/") is None

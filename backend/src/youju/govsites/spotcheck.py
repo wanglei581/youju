@@ -98,10 +98,16 @@ def _longest_run(needle: str, hay: str) -> int:
     return 0
 
 
+# 库里标题混进了列表上的其他文字（漯河、本溪一类平台的悬浮提示："标题：…点击数：…发表时间：…"）
+_POLLUTED = re.compile(r"^标题[:：]|点击数[:：]|发表时间[:：]|浏览次数[:：]|阅读次数[:：]")
+
+
 def title_check(stored: str, page_html: str) -> tuple[str, str]:
     t = norm_title(stored)
     if not t:
         return "不一致", "库里没有标题"
+    if _POLLUTED.search(stored or ""):
+        return "不一致", "库里标题混进了列表上的其他文字（点击数、发表时间等）"
     hay = norm_title(page_text(page_html)) + norm_title(_page_title(page_html))
     if t in hay:
         return "一致", ""
@@ -163,8 +169,13 @@ def date_check(stored: date | None, page_html: str) -> tuple[str, str]:
         return "页面上找不到日期", "库里没有发布日期"
     text = page_text(page_html)
     published = _dates(_META_DATE, page_html or "") + _dates(_PUB_DATE, text)
-    if stored in published:
+    # 以网页头的发布时间、没有时以页面上第一个标明的发布日期为准；后面的标注日期多半是
+    # 相关文章列表里的，碰巧一样的交给人看
+    if published and stored == published[0]:
         return "一致", ""
+    if stored in published:
+        shown = "、".join(d.isoformat() for d in published[:4])
+        return "页面写的是别的日期", f"库里的日期不是页面上第一个标明的发布日期：{shown}"
     written = _dates(_DOC_DATE, text)
     if stored in written:
         return "一致", "和原文的成文日期一样"
@@ -173,11 +184,27 @@ def date_check(stored: date | None, page_html: str) -> tuple[str, str]:
         return "页面写的是别的日期", f"页面上标的发布日期：{shown}"
     for form in date_forms(stored):
         if re.search(rf"(?<!\d){re.escape(form)}(?!\d)", text):
-            return "一致", "页面上没有标明是发布日期，但有这个日期"
+            # 正文里的截止日、会议日期也可能正好是这一天：不算核对过，交给人看
+            return "原文没标发布日期", "页面上有这个日期，但没标明是发布日期"
     if written:
         shown = "、".join(d.isoformat() for d in written[:4])
         return "原文只标成文日期", f"原文只写了成文/生成日期 {shown}，没写发布日期"
     return "页面上找不到日期", "页面上没有标明的日期，也找不到库里的日期"
+
+
+def counties_by_city(path: Path) -> dict[str, frozenset[str]]:
+    """地级区划代码 → 它下辖区县的名称写法（全称和至少两个字的简称）。"""
+    from youju.govsites.divisions import read_csv
+
+    out: dict[str, set[str]] = {}
+    if not path.exists():
+        return {}
+    for d in read_csv(path):
+        if d.level == "区县级" and d.parent_code:
+            out.setdefault(d.parent_code, set()).update(
+                v for v in name_variants(d.name, d.kind) if len(v) >= 2
+            )
+    return {code: frozenset(names) for code, names in out.items()}
 
 
 def city_names(city: str) -> set[str]:
@@ -192,6 +219,14 @@ def city_names(city: str) -> set[str]:
 _SITE_NOISE = re.compile(r"^欢迎(?:访问|您)?|(?:门户)?网站[！!]?$|欢迎您[！!]?$|官网$|[！!]$")
 # 开发区的网站名常不写"管委会"（"潍坊高新技术产业开发区"），抽查时按名称认
 _ZONE = re.compile(r"开发区|高新区|新区|园区|试验区|示范区|保税区|管委会|管理委员会")
+# 上级、外省的机关名开头：栏目页网站名以这些开头的不算本市部门
+_PROVINCES = (
+    "北京|天津|河北|山西|内蒙古|辽宁|吉林|黑龙江|上海|江苏|浙江|安徽|福建|江西|山东|河南|湖北|湖南|"
+    "广东|广西|海南|重庆|四川|贵州|云南|西藏|陕西|甘肃|青海|宁夏|新疆"
+)
+_UPPER = re.compile(
+    rf"^(?:国家|国务院|中华人民共和国|中共中央|全国|省|(?:{_PROVINCES})(?:省|市|自治区)?)"
+)
 # 文件页上写的发文单位："来源：揭阳市人社局""发布机构：衢州市文化广电旅游局"
 _ISSUER = re.compile(
     r"(?:来源|信息来源|发布机构|发文机关|发文单位|发布单位)\s*[:：]\s*([^\s|<>【】]{3,30})"
@@ -226,7 +261,11 @@ def _org_parts(names: list[str]) -> list[str]:
 
 
 def attribution_check(
-    cell: dict, column_html: str, doc_html: str, portal_domain: str = ""
+    cell: dict,
+    column_html: str,
+    doc_html: str,
+    portal_domain: str = "",
+    county_names: frozenset[str] = frozenset(),
 ) -> tuple[str, str]:
     """栏目页和文件页的网站名、标题、发文单位里有没有本市的写法（或栏目在本市门户的域名下），
     能不能归到这个部门。portal_domain：本市门户的本级域名（如 shaoyang.gov.cn）。"""
@@ -243,10 +282,24 @@ def attribution_check(
         return "待看", f"网站名、标题和发文单位里没有找到“{city}”：{where or '（都没有）'}"
     if same_domain:
         where = f"栏目在本市门户域名 {portal_domain} 下；" + where
+    # 网站名里出现本市下辖区县的名字：可能是区县的网站（扬州、南昌的区县网站在市域名下、
+    # 名称也带市名），交给人看
+    # 只看栏目页的网站名和标题：文件标题里的"新华社"之类会碰上石家庄新华区这种名字
+    named = [n for n in county_names if any(n in s for s in col_names)]
+    if named:
+        return "待看", f"网站名里有区县名“{named[0]}”，可能是区县的网站：{where}"
     if dept == "政府办":
         return "本市本部门", where
-    for part in _org_parts(texts):
-        if dept in dept_categories(part) or (dept == "开发区" and _ZONE.search(part)):
+    own = sorted(names | {"市"}, key=len, reverse=True)
+
+    def dept_hit(part: str) -> bool:
+        return dept in dept_categories(part) or (dept == "开发区" and bool(_ZONE.search(part)))
+
+    for part in _org_parts(col_names):
+        if not _UPPER.match(part) and dept_hit(part):
+            return "本市本部门", where
+    for part in _org_parts(doc_names + issuers):
+        if part.startswith(tuple(own)) and dept_hit(part):
             return "本市本部门", where
     return "本市", f"认不出是“{dept}”（门户频道或网站名不写部门）：{where}"
 
@@ -275,7 +328,14 @@ def _first_list_item(cache, url: str, today: date):
     return next((i for i in items if i.publish_date), None)
 
 
-def evidence_for(cell: dict, session, cache, today: date, portal_domain: str = "") -> dict:
+def evidence_for(
+    cell: dict,
+    session,
+    cache,
+    today: date,
+    portal_domain: str = "",
+    county_names: frozenset[str] = frozenset(),
+) -> dict:
     from sqlalchemy import select
 
     from youju.models import Document, Source
@@ -349,7 +409,7 @@ def evidence_for(cell: dict, session, cache, today: date, portal_domain: str = "
     ev["标题核对"], ev["标题说明"] = title_check(title, r.text)
     ev["日期核对"], ev["日期说明"] = date_check(published, r.text)
     ev["归属核对"], ev["归属说明"] = attribution_check(
-        cell, col.text if col.status == "ok" else "", r.text, portal_domain
+        cell, col.text if col.status == "ok" else "", r.text, portal_domain, county_names
     )
     passed = (
         ev["标题核对"] in ("一致", "基本一致")
@@ -378,7 +438,7 @@ def render_markdown(
 ) -> str:
     ok = sum(r["程序结论"] == OK for r in rows)
     lines = [
-        f"# {province}{level}抽查（程序取证，{today.isoformat()}）",
+        f"# {province}{level}联网核对（程序取证，{today.isoformat()}）",
         "",
         f"抽样方法：总体是覆盖看板里{province}{level}“已收录”的 {population} 格；按"
         f"“种子 {seed} + 区划代码 + 部门 + 栏目网址”的 SHA-1 从小到大取前 {len(rows)} 格"
@@ -436,15 +496,16 @@ def write_outputs(
     rows: list[dict],
     today: date,
 ) -> tuple[Path, Path]:
-    folder = out / "抽查"
+    # 写到 <out>/<省>/联网核对_<级>.csv（docs 里用 地市第二批/，只归地市一组）。
+    # 抽查/<级>/<省>.csv 是主线 coverage-sample 的统一证据表，这里不写；核对结论填进它的复核三列
+    folder = out / province
     folder.mkdir(parents=True, exist_ok=True)
-    # 文件名带层级：几条线各抽各的级，不互相覆盖
-    csv_path = folder / f"{province}_{level}.csv"
+    csv_path = folder / f"联网核对_{level}.csv"
     with csv_path.open("w", encoding="utf-8-sig", newline="") as fh:
         w = csv.DictWriter(fh, FIELDS)
         w.writeheader()
         w.writerows(rows)
-    md_path = folder / f"{province}_{level}.md"
+    md_path = folder / f"联网核对_{level}.md"
     md_path.write_text(
         render_markdown(province, level, population, seed, rows, today), encoding="utf-8"
     )
@@ -464,8 +525,19 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--cache", type=Path, default=Path.home() / ".cache" / "youju-coverage-city1")
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--offline", action="store_true", help="只用页面缓存，不联网")
+    p.add_argument(
+        "--divisions",
+        type=Path,
+        default=Path(__file__).resolve().parents[4]
+        / "docs"
+        / "数据来源"
+        / "全国覆盖"
+        / "行政区划.csv",
+        help="行政区划清单（认区县名用）",
+    )
     args = p.parse_args(argv)
     today = date.today()
+    county_index = counties_by_city(args.divisions)
     with _fetcher() as fetcher, session_factory()() as session:
         cache = PageCache(args.cache, None if args.offline else fetcher, offline=args.offline)
         for board in args.board:
@@ -485,7 +557,8 @@ def main(argv: list[str] | None = None) -> int:
             evidence = []
             for i, cell in enumerate(picked, start=1):
                 domain = portals.get(cell.get("区划代码"), "")
-                ev = evidence_for(cell, session, cache, today, domain)
+                counties = county_index.get(cell.get("区划代码") or "", frozenset())
+                ev = evidence_for(cell, session, cache, today, domain, counties)
                 ev["序号"] = i
                 evidence.append(ev)
                 print(f"{province} {i}/{len(picked)} {ev['城市']} {ev['部门']}：{ev['程序结论']}")

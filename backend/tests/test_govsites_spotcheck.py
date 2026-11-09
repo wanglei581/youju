@@ -55,7 +55,8 @@ def test_date_check_forms_and_labels() -> None:
     assert sc.date_check(d, "成文日期：2026年11月5日")[0] == "一致"
     verdict, note = sc.date_check(d, "发布日期：2026-11-04")
     assert verdict == "页面写的是别的日期" and "2026-11-04" in note
-    assert sc.date_check(d, "正文写于 2026.11.05 会议")[0] == "一致"
+    # 只在正文里有这个日期：不算核对过，交给人看
+    assert sc.date_check(d, "正文写于 2026.11.05 会议")[0] == "原文没标发布日期"
     assert sc.date_check(d, "正文没有日期")[0] == "页面上找不到日期"
     assert sc.date_check(d, "编号 2026-11-050")[0] == "页面上找不到日期"
     assert sc.date_check(None, "发布日期：2026-11-05") == ("页面上找不到日期", "库里没有发布日期")
@@ -103,8 +104,9 @@ def test_write_outputs_names_files_by_level(tmp_path) -> None:
     csv_path, md_path = sc.write_outputs(
         tmp_path, "江苏", "市级", 1, "2026-11", [row], date(2026, 11, 9)
     )
-    assert csv_path.name == "江苏_市级.csv" and md_path.name == "江苏_市级.md"
-    assert csv_path.parent.name == "抽查"
+    # 写到 <out>/<省>/联网核对_<级>.csv；抽查/<级>/<省>.csv 是主线 coverage-sample 的统一证据表
+    assert csv_path.name == "联网核对_市级.csv" and md_path.name == "联网核对_市级.md"
+    assert csv_path.parent.name == "江苏"
 
 
 def test_attribution_uses_issuer_and_strips_site_noise() -> None:
@@ -131,7 +133,7 @@ def test_date_check_meta_and_document_dates() -> None:
     meta = '<meta name="PubDate" content="2026-11-03 15:07"><p>正文</p>'
     assert sc.date_check(d, meta)[0] == "一致"
     # "公示时间""征求意见时间"不是发布日期
-    assert sc.date_check(d, "公示时间：2026年11月4日至10日 2026-11-03")[0] == "一致"
+    assert sc.date_check(d, "公示时间：2026年11月4日至10日 2026-11-03")[0] == "原文没标发布日期"
     only_written = "成文日期：2026-10-28 文号：某府规〔2026〕5号"
     assert sc.date_check(d, only_written)[0] == "原文只标成文日期"
     both = "成文日期 2026年01月28日 发布时间 2026年02月10日"
@@ -150,3 +152,33 @@ def test_attribution_by_portal_domain() -> None:
 def test_date_labels_inside_sentences_are_ignored() -> None:
     page = "【信息时间：2026-10-28 阅读次数： 】 3.询价公告发布日期：2026年9月8日。"
     assert sc.date_check(date(2026, 10, 28), page)[0] == "一致"
+
+
+def test_polluted_list_titles_are_not_accepted() -> None:
+    page = "<h1>本溪市医疗器械网络销售信息告知（2026年22号）</h1>"
+    stored = "标题：本溪市医疗器械网络销售信息告知（2026年22号） 点击数：33 发表时间：2026-11-06"
+    assert sc.title_check(stored, page)[0] == "不一致"
+
+
+def test_reposted_upper_level_document_does_not_prove_department() -> None:
+    """市局栏目转载的省厅文件：标题里的"省科学技术厅"不能证明这一格是本市科技局。"""
+    cell = {"城市": "许昌", "部门": "科技", "栏目网址": "https://www.xuchang.gov.cn/tzgg/"}
+    col = "<title>通知公告</title>"
+    doc = "<title>河南省科学技术厅关于2027年度省重点研发专项答辩评审的预通知</title>"
+    assert sc.attribution_check(cell, col, doc, "xuchang.gov.cn")[0] == "本市"
+    col2 = "<title>通知公告_许昌市科学技术局</title>"
+    assert sc.attribution_check(cell, col2, doc, "xuchang.gov.cn")[0] == "本市本部门"
+
+
+def test_county_site_is_flagged() -> None:
+    cell = {"城市": "扬州", "部门": "发改委", "栏目网址": "http://www.yangzhou.gov.cn/gyq/fgw/"}
+    col = "<title>通知公告_扬州市广陵区发展和改革局</title>"
+    counties = frozenset({"广陵区", "广陵"})
+    verdict, note = sc.attribution_check(cell, col, "", "yangzhou.gov.cn", counties)
+    assert verdict == "待看" and "广陵" in note
+
+
+def test_date_uses_first_labeled_publication_date() -> None:
+    page = "发布日期：2026-11-05 正文…… 相关文章 发布日期：2026-11-03"
+    assert sc.date_check(date(2026, 11, 5), page)[0] == "一致"
+    assert sc.date_check(date(2026, 11, 3), page)[0] == "页面写的是别的日期"

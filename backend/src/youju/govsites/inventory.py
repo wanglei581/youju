@@ -56,13 +56,11 @@ from youju.govsites.links import (
 )
 from youju.govsites.names import COLUMN_KINDS, column_kind, dept_categories
 from youju.govsites.navrules import (
-    CITY_NAV_NOTE,
-    CITY_SCRIPT_NOTE,
     channel_shape,
-    city_nav_links,
+    city_menu_scripts,
+    city_nav_pages,
     device_redirect,
     https_fallback,
-    labeled_scripts,
     specific_page,
 )
 from youju.govsites.pagecache import PageCache
@@ -282,9 +280,10 @@ class Inventory:
         result = self.cache.get(url)
         alt = https_fallback(url, result.status, result.error)
         if alt:
-            # 官方导航给的 http 地址连接被断开、同一网站的 https 能打开（navrules）
+            # 官方导航给的 http 地址连接被断开、不应答，换同一网站的 https（navrules）。
+            # https 能打开、或在 https 那边明确拒绝（412、403、521、robots 禁止）都以它为准
             second = self.cache.get(alt)
-            if second.status == "ok":
+            if second.status == "ok" or blocker(second.status, second.http_status, second.text):
                 result = second
         target = _script_redirect(result, url) if hops > 0 else None
         if target:
@@ -350,10 +349,7 @@ class Inventory:
                 for g in groups[:6]:
                     visit(g, f"{link.text}/{g.text}")
         if home.level_hint == "市级":
-            # 地市门户：通用导航词没收的部门列表页（部门频道、市政府工作机构、政务公开……）。
-            # 说明用中性的 CITY_NAV_NOTE：这些页上的部门不加分，不顶掉原有导航找到的部门网站
-            for link in city_nav_links(home.links, home.final_url, seen):
-                visit(link, CITY_NAV_NOTE)
+            city_nav_pages(home, seen, visit)  # 地市门户的部门列表页（navrules）
         if home.doc is not None:
             # 省、市门户的"市县网站""部门网站"常由脚本拼出来：多看几个本站脚本
             extra = 6 if home.level_hint in ("省级", "市级", "国家级") else 0
@@ -363,14 +359,8 @@ class Inventory:
                 (src, "页脚脚本")
                 for src in footer_scripts(home.doc, home.final_url, extra=extra, named_limit=named)
             ]
-            if home.level_hint == "市级" and home.result.text:
-                # "市直部门""政府部门"下拉菜单的链接脚本（安徽各市、黄冈）：按菜单名挑，排在前面
-                labeled = [
-                    (src, CITY_SCRIPT_NOTE)
-                    for src, _ in labeled_scripts(home.result.text, home.final_url)
-                ]
-                chosen = {src for src, _ in labeled}
-                scripts = labeled + [(s, t) for s, t in scripts if s not in chosen]
+            if home.level_hint == "市级":
+                scripts = city_menu_scripts(home, scripts)  # "市直部门"菜单脚本（navrules）
             for src, label in scripts:
                 r = self.cache.get(src)
                 if r.status == "ok":
@@ -599,8 +589,14 @@ class Inventory:
                     continue
                 url = link.url
                 source = p.final_url
-                if _portal_like(url, p.final_url) and specific_page(url):
-                    # 链到下级网站的某一页（年报、文章）：取那个网站的首页（navrules）
+                if (
+                    div.level == "省级"
+                    and d.level == "市级"
+                    and _portal_like(url, p.final_url)
+                    and specific_page(url)
+                ):
+                    # 省网站链到地市网站的某一页（年报、文章）：取那个网站的首页（navrules）。
+                    # 只用于省找地市：区县门户常挂在地市网站的子目录、参数页下，不能截
                     parts = urlsplit(url)
                     root = f"{parts.scheme}://{parts.netloc}/"
                     found[d.code] = Found(root, f"{link.text}（链到 {url}，取网站首页）", source)

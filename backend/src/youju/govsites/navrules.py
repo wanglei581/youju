@@ -17,7 +17,10 @@ from youju.govsites.links import Link, registrable
 # —— 1. 首页跳转 ——
 
 _SCRIPT_BODY = re.compile(r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>", re.S | re.I)
-_VAR = re.compile(r"""\b(?:var|let|const)\s+([A-Za-z_$][\w$]*)\s*=\s*(["'])([^"'\n]{1,200})\2""")
+# 变量赋值成一个字面地址；后面还有"+ 拼接"的不算（只拿得到半截地址）
+_VAR = re.compile(
+    r"""\b(?:var|let|const)\s+([A-Za-z_$][\w$]*)\s*=\s*(["'])([^"'\n]{1,200})\2(?!\s*\+)"""
+)
 _REDIRECT = re.compile(
     r"""(?:window\.|document\.|self\.|top\.)?location(?:\.href)?\s*=\s*"""
     r"""(?:(["'])([^"'+\n]{1,200})\1|([A-Za-z_$][\w$]*))\s*(?:;|$|\n|\})"""
@@ -88,7 +91,11 @@ def device_redirect(html: str, base_url: str) -> str | None:
                 if verdict is False:
                     continue  # 停用的跳转
                 hosts = {h.lower() for h in _HOST_LITERAL.findall(cond.group(1))}
-                if hosts and base_host not in hosts:
+                if hosts and "!=" in cond.group(1):
+                    # host != "某主机"：对这些主机以外才跳
+                    if base_host in hosts:
+                        continue
+                elif hosts and base_host not in hosts:
                     continue  # 只对别的主机生效
                 if not hosts and verdict is None and not device_page:
                     continue  # 看不懂的条件
@@ -172,6 +179,26 @@ CITY_NAV_NOTE = "地市补充·列表页"
 CITY_SCRIPT_NOTE = "地市补充·菜单脚本"
 
 
+def city_nav_pages(home, seen: set[str], visit) -> None:
+    """地市门户：通用导航词没收的部门列表页走一遍（Inventory._nav_pages 的挂钩）。
+
+    visit(link, 说明) 是 _nav_pages 里的访问函数；说明用中性的 CITY_NAV_NOTE：这些页上的
+    部门不加分，不顶掉原有导航找到的部门网站。"""
+    for link in city_nav_links(home.links, home.final_url, seen):
+        visit(link, CITY_NAV_NOTE)
+
+
+def city_menu_scripts(home, scripts: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """地市门户："市直部门""政府部门"菜单的链接脚本排在页脚脚本前面（_nav_pages 的挂钩）。"""
+    if not home.result.text:
+        return scripts
+    labeled = [
+        (src, CITY_SCRIPT_NOTE) for src, _ in labeled_scripts(home.result.text, home.final_url)
+    ]
+    chosen = {src for src, _ in labeled}
+    return labeled + [(s, label) for s, label in scripts if s not in chosen]
+
+
 def city_nav_links(links: list[Link], page_url: str, skip: set[str], limit: int = 6) -> list[Link]:
     """地市门户上通用导航词没收的部门列表页（同一家网站，文字短）。部门导航在前，政务公开在后。"""
     home = registrable(page_url)
@@ -195,15 +222,17 @@ def city_nav_links(links: list[Link], page_url: str, skip: set[str], limit: int 
 # 连接层面的失败（服务器没回应、直接断开）：不是网站回了"拒绝"（403、412、521 等照旧记不能抓）
 _DROPPED = re.compile(
     r"RemoteProtocolError|Server disconnected|no response line|Connection reset|"
-    r"ConnectError|ConnectionRefused|连接被|断开",
+    r"ConnectError|ConnectionRefused|连接被|断开|超时|Timeout",
     re.I,
 )
 
 
 def https_fallback(url: str, status: str, error: str | None) -> str | None:
-    """官方导航给的是 http 地址、网站的 http 端口却直接断开连接时，同一网站的 https 地址。
+    """官方导航给的是 http 地址、网站的 http 端口却断开连接或不应答时，同一网站的 https 地址。
 
-    福州、盘锦等地的门户这样（11/9 实测 https 能打开）；只换协议，不换主机、路径和标识。"""
+    福州、盘锦（断开）、眉山（超时）的门户这样，11/9 实测 https 能打开。只换协议，不换主机、
+    路径和标识；https 那边的 robots.txt 由抓取器按新地址重新取、重新判断。网站回了 403、412、
+    521 等的不换（那是拒绝，照旧记不能抓）。"""
     if not url.startswith("http://") or status not in ("robots_error", "network_error"):
         return None
     if not _DROPPED.search(error or ""):
@@ -223,8 +252,7 @@ def specific_page(url: str) -> bool:
     省网站的信息公开页上链到下级门户的常常是它的"政府信息公开年报"页（11/9 临沂）、
     某篇文章（保定）：拿它当门户首页，首页上的导航和部门就全找错了。"""
     parts = urlsplit(url)
-    if parts.query:
-        return True
+    # 只看路径：带参数的（"?siteId=…"）可能就是挂在别的网站平台上的门户本身，不能截成网站首页
     last = (parts.path or "/").rsplit("/", 1)[-1]
     if not last or not _PAGE_EXT.search(last):
         return False
