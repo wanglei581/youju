@@ -261,3 +261,10 @@ def test_wrapped_redirect_links_are_dropped() -> None:
     )
     got = [(link.text, link.url) for link in page_links(html, "https://www.dg.gov.cn/")]
     assert got == [("东莞市发展和改革局", "http://dgdp.dg.gov.cn/gkmlpt/index")]
+
+
+def test_autonomous_prefecture_short_form() -> None:
+    from youju.govsites.divisions import name_variants
+
+    names = name_variants("湘西土家族苗族自治州", "自治州")
+    assert {"湘西自治州", "湘西州", "湘西"} <= names
