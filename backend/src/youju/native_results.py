@@ -31,7 +31,7 @@ LABELS = {
     "sequence": "名单序号",
     "region": "名单中企业地区",
     "doc_number": "文号",
-    "url": "来源地址",
+    "site": "来源",
     "list_type": "名单类型",
     "year": "年度",
     "customer_name": "客户名称",
@@ -103,8 +103,8 @@ def build(kind: str, report, *, generated_at: datetime | None = None) -> dict:
 
         title = "客户相关通知表"
         generated = data.get("generated_at")
-        notice += "仅查近90天申报通知，已确认超过截止时间的通知不列；机器摘录未经人工核对。"
-        notice += "7天内只计人工核对的日期，14/30天另含机器摘录；截止未核对的也可能快截止。"
+        notice += "仅查近90天申报通知，已确认超过截止时间的通知不列；原文摘录未经人工核对。"
+        notice += "7天内只计人工核对的日期，14/30天另含原文摘录；截止未核对的也可能快截止。"
         items.extend(_summary_items(TRACK_SUMMARY_HEADERS, track_summary_rows(report)))
         for client in report.clients:
             for match in client.items or [None]:

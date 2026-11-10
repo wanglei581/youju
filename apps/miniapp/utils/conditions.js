@@ -17,9 +17,8 @@ const CATEGORY_TYPES = ['申报通知', '名单与公示'];
 // "征集入选"只在筛选里有。支持方式只有申报通知和名单有；产业方向所有类型都有，一份文件可以有多个
 // 或没有。不显示金额
 const SUPPORT_MODES = ['资金支持', '贷款贴息', '资格认定', '入库备案', '项目立项', '征集入选'];
-const SUPPORT_NOTE = '只含申报通知和名单，不代表一定提供这种支持。文件详情里的“支持方式”是核对原文后标注的；“征集入选”只用于筛选，详情里没有这一项';
+const SUPPORT_NOTE = '只含申报通知和名单';
 const INDUSTRIES = ['数字经济', '先进制造', '新材料与化工', '生物医药与健康', '新能源与绿色低碳', '电子信息与集成电路', '现代农业', '文旅与现代服务业'];
-const INDUSTRY_NOTE = '一份文件可能有多个方向，也可能没有';
 
 function split(value) {
   return (value || '').split(',').map((v) => v.trim()).filter(Boolean);
@@ -88,10 +87,11 @@ function foldNote(folded, shown) {
   return { text: '', link: '' };
 }
 
-// 关注条件的一句话说明，如"山东、北京 · 省级 · 申报通知 · 近 30 天"；城市、区县写成"山东·青岛""山东·青岛·市南区"
+// 关注条件的一句话说明，如"山东、北京 · 省级 · 申报通知 · 近 30 天"；城市、区县写成"山东·青岛""山东·青岛·市南区"。
+// 关键词用中文引号（“高新技术企业”），和默认的关注名称（搜索页 followName）一样（11/2 完整测试第 9 条）
 function describe(c) {
   const parts = [];
-  if (c.q) parts.push(`"${c.q}"`);
+  if (c.q) parts.push(`“${c.q}”`);
   const regions = split(c.regions).filter((r) => r !== '不限地区');
   const areas = regions.concat(split(c.cities).map(areaLabel), split(c.districts).map(areaLabel));
   parts.push(areas.length ? areas.join('、') : '不限地区');
@@ -109,9 +109,25 @@ function describe(c) {
   if (supports.length) parts.push(`支持方式：${supports.join('、')}`);
   const industries = split(c.industries);
   if (industries.length) parts.push(`产业方向：${industries.join('、')}`);
-  if (c.time) parts.push(c.time);
+  // 发布时间"不限"不写（默认关注名称也不写，不然名称和说明差这一截、卡片又写两行，11/2 独立审阅）
+  if (c.time && c.time !== '不限') parts.push(c.time);
   if (c.open === 1 || c.open === '1') parts.push('只看未截止');
   return parts.join(' · ');
+}
+
+// 关注名称是不是就是条件说明（11/2 完整测试第 9 条）：没改过的默认名称（搜索页 followName）和 describe 写的是
+// 同一句，只差类型"全部"和"全部类型"、引号是弯是直；这时卡片上只写名称一行。默认名称截过、带了说明里没有的
+// 条件（项目类别等）或用户改过名的，两行照写
+function sameAsName(name, desc) {
+  const norm = (s) => String(s || '').replace(/[“”"]/g, '"').replace(/(^| · )全部类型(?= · |$)/g, '$1全部')
+    .replace(/\s+/g, ' ').trim();
+  return norm(name) !== '' && norm(name) === norm(desc);
+}
+
+// 在一句话里提到关注名称：名称自己带引号（默认名称里的“关键词”）时不再套一层，否则加中文引号
+function quoted(name) {
+  const text = String(name || '');
+  return /[“”"]/.test(text) ? text : `“${text}”`;
 }
 
 function searchUrl(c) {
@@ -121,6 +137,6 @@ function searchUrl(c) {
 }
 
 module.exports = {
-  describe, searchUrl, requestScope, categoryConflict, supportConflict, foldNote, migrateNational, NATIONAL, GUIDE,
-  CATEGORIES, TAG_NOTE, CATEGORY_NOTE, SUPPORT_MODES, SUPPORT_NOTE, INDUSTRIES, INDUSTRY_NOTE,
+  describe, sameAsName, quoted, searchUrl, requestScope, categoryConflict, supportConflict, foldNote, migrateNational, NATIONAL, GUIDE,
+  CATEGORIES, TAG_NOTE, CATEGORY_NOTE, SUPPORT_MODES, SUPPORT_NOTE, INDUSTRIES,
 };

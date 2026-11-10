@@ -489,7 +489,7 @@ function listRecord(token) {
   if (token !== DEMO_ENTRY) return Promise.reject(Object.assign(new Error('这条记录已更新或不存在'), { status: 404 }));
   return copy({
     entry: { name: DEMO_COMPANY, category: '科技型中小企业', batch: '第4批', region: null },
-    document: { id: String(mock.lists.items[0].id), title: mock.lists.items[0].title, status: mock.lists.items[0].status, issuer: mock.lists.items[0].issuer, date: mock.lists.items[0].date, region: mock.lists.items[0].region, site: `${mock.lists.items[0].issuer}网站`, host: 'jxj.example.gov.cn', link_gone: null },
+    document: { id: String(mock.lists.items[0].id), title: mock.lists.items[0].title, status: mock.lists.items[0].status, issuer: mock.lists.items[0].issuer, date: mock.lists.items[0].date, region: mock.lists.items[0].region, site: `${mock.lists.items[0].issuer}网站`, link_gone: null },
     evidence: { state: 'found', more: false, partial: false, pagesRead: null, reason: null,
       rows: [{ where: '工作表\u201c名单\u201d第 12 行', hidden: 2, cells: [{ h: '序号', t: '12', name: false }, { h: '企业名称', t: DEMO_COMPANY, name: true }, { h: '所在地区', t: '演示市', name: false }] }] },
   });
@@ -654,13 +654,18 @@ function myData() {
 }
 
 // 开卖按小程序版本放开（D-074）：商品、下单、能力、我的、提交任务这几个请求带上代码包里《付费服务协议》的版本号
-// 和小程序环境（develop 开发版 / trial 体验版 / release 正式版）。服务端据此决定：沙箱和测试名单只在开发版、体验版，
-// 现网只对带定稿协议版本号的包——老版本永远看不到价格。读不到就不带，服务端按正式版、没有协议处理（看不到购买入口）。
+// 和小程序环境（develop 开发版 / trial 体验版 / release 正式版）。服务端据此决定：测试名单只在开发版、体验版，
+// 只对带定稿协议版本号的包卖——老版本永远看不到价格。读不到就不带，服务端按正式版、没有协议处理（看不到购买入口）。
+// 协议没定稿（final 不是 true）的包不带版本号：付款一律现网、真扣钱（沙箱已去掉，创始人 10/29），
+// 服务端版本号配错了也不会对草稿包卖
 function payHeader() {
   const header = {};
   try {
     const terms = require('../content/pay-terms.js');
-    if (terms && typeof terms.version === 'string' && terms.version) header['X-Youju-Pay-Terms'] = terms.version;
+    // 和购买页的 pay.termsFinal 同一个判断（这里不引 pay.js：测试加载器要求每个依赖都有替身）：
+    // 不一致的话入口还在、点进购买页却回首页（独立审阅 10/29）
+    const final = !!(terms && terms.final === true && typeof terms.text === 'string' && terms.text.trim() && !/待.*定稿|占位/.test(terms.text));
+    if (final && typeof terms.version === 'string' && terms.version) header['X-Youju-Pay-Terms'] = terms.version;
   } catch (e) { /* 读不到就不带 */ }
   try {
     const env = wx.getAccountInfoSync().miniProgram.envVersion;
@@ -689,7 +694,7 @@ function advisorCapabilities(options = {}) {
   const result = source.then((res) => {
     const ai = (res && res.ai_advisor) || {};
     const data = (res && res.data_tools) || {};
-    const data_tools = data.enabled === true ? { enabled: true, features: Array.isArray(data.features) ? data.features : [], remaining: data.remaining || {} } : Object.assign({}, DATA_DISABLED);
+    const data_tools = data.enabled === true ? { enabled: true, compareEnabled: data.compareEnabled === true, features: Array.isArray(data.features) ? data.features : [], remaining: data.remaining || {} } : Object.assign({}, DATA_DISABLED);
     // pay 原样带给工具表单：原来这里丢了 pay，收费开放后也不出现开通卡片（Codex 对接核对，10/16）
     const pay = payEntry(res);
     if (ai.enabled !== true) return { data_tools, pay, ai_advisor: Object.assign({}, AI_DISABLED), reason: ai.reason === 'consent' ? 'consent' : 'off' };
@@ -732,11 +737,13 @@ function createAdvisorTask(data, key) {
   if (!isLive() || !['compare', 'track', 'interpret', 'clause'].includes(data.kind)) {
     return Promise.reject(Object.assign(new Error('暂时没有可用工具'), { status: 404 }));
   }
+  // 解读、对照带上同意过的使用须知版本（D-098）；数据工具不带
+  const notice = typeof data.notice === 'string' && data.notice ? { notice: data.notice } : {};
   const body = ['compare', 'track'].includes(data.kind)
     ? { kind: data.kind, ...(data.file ? { file: data.file } : { rows: data.rows }) }
     : data.kind === 'clause'
-    ? { kind: 'clause', doc_id: Number(data.doc_id), company: data.company || {} }
-    : { kind: 'interpret', doc_id: Number(data.doc_id) };
+    ? { kind: 'clause', doc_id: Number(data.doc_id), company: data.company || {}, ...notice }
+    : { kind: 'interpret', doc_id: Number(data.doc_id), ...notice };
   return request('/api/v1/advisor/tasks', null, { method: 'POST', data: body, header: Object.assign(payHeader(), { 'Idempotency-Key': key }) }).catch((err) => {
     // 带代码的拒绝（D-075：AI_NOT_ELIGIBLE 带原因代码、AI_UNAVAILABLE）保留后台写的说明，另记原因代码；
     // 其余 422（输入校验）把逐项说明拼起来

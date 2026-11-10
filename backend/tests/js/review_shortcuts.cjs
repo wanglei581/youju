@@ -7,7 +7,7 @@ const html = fs.readFileSync(path.join(__dirname, '../../src/youju/admin/review.
 const script = html.split('<script>')[1].split('</script>')[0];
 const embed = fs.readFileSync(path.join(__dirname, '../../src/youju/admin/embed.js'), 'utf8');
 
-function harness(embedded) {
+function harness(embedded, otherKind = false) {
   const listeners = {};
   const ids = {};
   let document;
@@ -89,9 +89,10 @@ function harness(embedded) {
   ids.due.value = 'all'; ids.token.value = 'local-token';
   // 后台按核对顺序（order_key 升序）返回：3 建议通过排最前，2、1 按截止日期从早到晚
   const day = { 3: 15, 2: 15, 1: 16 };
-  const hints = { 3: ['suggest', '建议通过'], 2: ['mismatch', '规则与 AI 不一致'], 1: ['unchecked', 'AI 未核'] };
+  const hints = { 3: ['suggest', '建议通过'], 2: ['mismatch', '规则与 AI 不一致'],
+    1: otherKind ? ['other_kind', '"其他"类：不对外显示，只能驳回'] : ['unchecked', 'AI 未核'] };
   const items = [3, 2, 1].map(id => ({ id, document_id: id, title: `标题 <img> ${id}`, url: '/official',
-    source: '测试来源', publish_date: '2026-09-30', kind: id === 1 ? '推荐或审核截止' : '企业申报截止',
+    source: '测试来源', publish_date: '2026-09-30', kind: id === 1 ? (otherKind ? '其他' : '推荐或审核截止') : '企业申报截止',
     candidate_date: `2026-10-${day[id]}`, candidate_time: '17:00', evidence: `请于2026年10月${day[id]}日前申报`,
     confidence: '高', hint: hints[id][0], hint_text: hints[id][1],
     order_key: `${id === 3 ? 0 : 1}|2026-10-${day[id]}|${String(id).padStart(12, '0')}` }));
@@ -203,4 +204,22 @@ const posts = h => h.calls.filter(c => c.method === 'POST');
     const count = posts(h).length; h.key('u'); await settle(); assert.equal(posts(h).length, count);
   }
   console.log('独立页面与嵌入页面：快捷键、输入保护、原位撤回、重载、超时和失败处理通过');
+  {
+    // "其他"类不对外显示，只能驳回（D-099 期 0）：卡片没有通过、改日期；a、e 不发请求只提示；x 照常驳回
+    const h = harness(false, true);
+    h.ids.load.click(); await settle();
+    const other = h.cards().find(c => c.querySelector('.kind-big').textContent === '其他');
+    assert.ok(other);
+    assert.equal(other.querySelector('.primary'), null);
+    assert.equal(other.querySelector('.d'), null);
+    h.key('j'); h.key('j'); assert.equal(current(h), other);
+    const before = posts(h).length;
+    h.key('a'); h.key('e'); await settle();
+    assert.equal(posts(h).length, before);
+    assert.ok(other.querySelectorAll('.msg').at(-1).textContent.includes('只能驳回'));
+    h.key('x'); await settle();
+    assert.equal(posts(h).length, before + 1);
+    assert.ok(posts(h).at(-1).url.endsWith('/reject'));
+  }
+  console.log('"其他"类卡片：只放驳回，a、e 不发请求');
 })().catch(error => { console.error(error); process.exitCode = 1; });

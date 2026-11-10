@@ -29,6 +29,8 @@ JOB_NAMES = OVERVIEW_JOBS + (
     "crawl",
     "check-sources",
     "fetch-details",
+    # 每轮补完详情后取附件文字（round.sh）
+    "attachment-texts",
     "repost-groups",
     "extract-deadlines",
     "extract-fields",

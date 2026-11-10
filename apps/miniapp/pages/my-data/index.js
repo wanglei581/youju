@@ -1,6 +1,6 @@
 const api = require('../../utils/api.js');
-const { describe } = require('../../utils/conditions.js');
-const { withdraw, loginOpen, remindAny } = require('../../utils/consent.js');
+const { describe, sameAsName, quoted } = require('../../utils/conditions.js');
+const { withdrawAccount, loginOpen, remindAny } = require('../../utils/consent.js');
 const { KINDS, DATA_KINDS, STATES } = require('../../utils/advisor.js');
 const pages = require('../../utils/pages.js');
 
@@ -26,16 +26,20 @@ function stuck(t) {
 }
 
 // 工具记录（批量工具和 AI 的任务）：类型、状态、时间；本人随时能删（D-093 上线门槛第 8 条），
-// 只有正在处理的要等结束。结果文件只在"我的记录"里下载，过审版没有这一页就不提
+// 只有正在处理的要等结束。结果文件只在"我的记录"里下载，过审版没有这一页就不提。
+// 批量工具、加量体验只在包里有工具中心（完整版）或这个账号真有这类记录时才提：过审版加 AI（D-098）
+// 包里只有 AI，有 AI 记录时栏目叫"AI 记录"，保存期限不写批量工具和加量体验（11/2 完整测试第 7 条）
 function taskData(d) {
   const rows = d.advisorTasks || [];
   const ai = rows.some((t) => Object.prototype.hasOwnProperty.call(KINDS, t.kind));
+  const data = rows.some((t) => Object.prototype.hasOwnProperty.call(DATA_KINDS, t.kind));
+  const tools = pages.has('advisor') || data;
   const files = rows.some((t) => Object.prototype.hasOwnProperty.call(DATA_KINDS, t.kind) && t.status === 'done');
   const extras = [d.boostTrial ? '加量体验的开始和结束时间' : '', d.passGiftsTotal ? `送的批量工具天数（${d.passGiftsTotal} 笔）` : ''].filter(Boolean);
   return {
     tasks: rows.map((t) => ({
       id: t.id,
-      kind: KINDS[t.kind] || DATA_KINDS[t.kind] || '工具记录',
+      kind: t.kind === 'compare' ? '历史批量工具' : KINDS[t.kind] || DATA_KINDS[t.kind] || '工具记录',
       rows: Object.prototype.hasOwnProperty.call(DATA_KINDS, t.kind) && t.rowCount ? t.rowCount : 0,
       state: STATES[t.status] || t.status,
       running: t.status === 'running' && !stuck(t),
@@ -44,19 +48,31 @@ function taskData(d) {
       created: when(t.createdAt),
       finished: when(t.finishedAt),
     })),
-    tasksTitle: ai ? '工具和 AI 记录' : '工具记录',
-    fileNote: files && pages.has('advisor-tasks') ? '批量工具的结果文件在“我的”→“我的记录”里下载' : '',
+    tasksTitle: ai && !tools ? 'AI 记录' : ai ? '工具和 AI 记录' : '工具记录',
+    fileNote: files && pages.has('advisor-tasks') ? '批量工具的结果在“我的”→“我的记录”→“站内查看结果”里另存 Excel' : '',
     extras: extras.length ? `${extras.join('、')}：在“复制全部数据”里可以看到。` : '',
-    toolsShown: pages.has('advisor') || rows.length > 0,
-    boostShown: pages.has('advisor') || rows.length > 0 || Boolean(d.boostTrial),
+    // 保存期限里的"批量工具"一行
+    toolsShown: tools,
+    boostShown: tools || Boolean(d.boostTrial),
+    // "按天的使用次数"：批量工具和 AI 都按天记次数（隐私保护指引三·2），有其中一样就写
+    usageShown: tools || rows.length > 0,
   };
 }
 
 // 我的数据：查阅、复制我们保存的你的全部个人信息，改关注名称，删除记录
 // （个人信息保护法第四十五至四十七条；网络数据安全管理条例第二十三条）
 // 协议定稿前（loginOpen 为 false，D-056）没有入口，直接打开时只显示"暂未开放"，不请求接口
+// 协议 2026-12 八·2：复制的内容里有 AI 生成的结果（AI 解读、条款对照）时，开头带“AI 生成”文字标识
+// （问一问的数据不放回答，只看工具记录里 AI 两项有没有结果；独立审阅 #431）
+const AI_KINDS = ['interpret', 'clause'];
+const AI_LABEL = '【AI 生成】以下内容含 AI 解读、条款对照的结果，由 AI 生成，仅供参考，以发文机关原文为准。\n';
+function hasAiResult(rows) {
+  return (rows || []).some((t) => t && AI_KINDS.includes(t.kind) && t.result != null);
+}
+function withAiLabel(text, ai) { return ai ? `${AI_LABEL}${text}` : text; }
+
 Page({
-  data: { loading: true, error: '', aiRetention: '', user: null, follows: [], subs: [], feedback: [], tasks: [], tasksTitle: '', fileNote: '', extras: '', toolsShown: false, boostShown: false, totals: {}, retention: null, exportedAt: '', loginOpen: loginOpen(), remindOpen: remindAny() },
+  data: { loading: true, error: '', aiRetention: '', user: null, follows: [], subs: [], feedback: [], tasks: [], tasksTitle: '', fileNote: '', extras: '', toolsShown: false, boostShown: false, usageShown: false, totals: {}, retention: null, exportedAt: '', loginOpen: loginOpen(), remindOpen: remindAny() },
 
   onShow() {
     if (!this.data.loginOpen) return;
@@ -90,11 +106,15 @@ Page({
             agreedVersion: u.agreed ? u.agreed.version : '',
             agreedAt: u.agreed ? when(u.agreed.at) : '',
           },
-          follows: d.follows.map((f) => ({ id: f.id, name: f.name, desc: describe(f.conditions), created: when(f.createdAt) })),
+          // 名称就是条件说明（没改过的默认名称）时不再写一遍条件；提到关注名称时引号不套引号（11/2 完整测试第 9 条）
+          follows: d.follows.map((f) => {
+            const desc = describe(f.conditions);
+            return { id: f.id, name: f.name, desc: sameAsName(f.name, desc) ? '' : desc, created: when(f.createdAt) };
+          }),
           subs: d.subscriptions.map((s) => ({
             id: s.id,
             kind: SUB_KIND[s.kind] || s.kind,
-            target: s.followId ? `关注"${followName[s.followId] || s.followId}"` : (s.docTitle || '文件已下线'),
+            target: s.followId ? `关注${quoted(followName[s.followId] || s.followId)}` : (s.docTitle || '文件已下线'),
             status: SUB_STATUS[s.status] || s.status,
             unused: s.status === 'unused',
             created: when(s.createdAt),
@@ -135,7 +155,7 @@ Page({
   copyAll() {
     if (!this.raw) return;
     wx.setClipboardData({
-      data: JSON.stringify(this.raw, null, 2),
+      data: withAiLabel(JSON.stringify(this.raw, null, 2), hasAiResult(this.raw.advisorTasks)),
       success: () => wx.showToast({ title: '已复制全部数据，可以粘贴保存', icon: 'none' }),
       fail: () => wx.showToast({ title: '没能复制：请先同意微信弹出的隐私保护指引，再点一次', icon: 'none' }),
     });
@@ -148,7 +168,7 @@ Page({
     const row = this.raw && key && this.raw[key].find((item) => String(item.id) === String(id));
     if (!row) return;
     wx.setClipboardData({
-      data: JSON.stringify(row, null, 2),
+      data: withAiLabel(JSON.stringify(row, null, 2), kind === 'task' && hasAiResult([row])),
       success: () => wx.showToast({ title: '已复制这条完整记录', icon: 'none' }),
       fail: () => wx.showToast({ title: '没能复制，请稍后再试', icon: 'none' }),
     });
@@ -195,14 +215,21 @@ Page({
       confirmColor: '#E5484D',
       success: (res) => {
         if (!res.confirm) return;
+        const forget = () => { if (kind === 'task') require('../../utils/exports.js').removeAdvisorTask(id, require('../../utils/exporter.js').remove); };
         call(id)
-          .then(() => { wx.showToast({ title: '已删除', icon: 'none' }); this.load(); })
-          .catch((err) => wx.showToast({ title: err.message || '没删成，请稍后再试', icon: 'none' }));
+          .then(() => { forget(); wx.showToast({ title: '已删除', icon: 'none' }); this.load(); })
+          .catch((err) => {
+            // 已经没有这条了（别处删过）：本机记录也清掉，当作删好了
+            if (err && err.status === 404) { forget(); wx.showToast({ title: '已删除', icon: 'none' }); this.load(); return; }
+            wx.showToast({ title: err.message || '没删成，请稍后再试', icon: 'none' });
+          });
       },
     });
   },
 
   deleteAll() {
-    withdraw().then((ok) => { if (ok) wx.navigateBack(); });
+    // 注销弹窗按包里有的功能写删哪些记录（过审版加 AI 只说 AI 的，11/2 完整测试第 7 条）；
+    // 有没到期的使用期时多一个确认框（付费协议开卖必做第 3 项，utils/consent.js withdrawAccount）
+    withdrawAccount(pages.flags()).then((ok) => { if (ok) wx.navigateBack(); });
   },
 });

@@ -277,10 +277,10 @@ test('列表行的"AI 解读"：这一行能解读、AI 对这个人开着、后
     assert.equal(button.text(), '', JSON.stringify([props, state])); assert.deepEqual(button.events, []);
     button.view.open(); assert.equal(button.navigations.length, 0);
   }
-  // 列表行：按钮放在"复制原文链接"后面；勾选导出时隐藏；有按钮时发文机关另起一行腾地方
+  // 列表行：按钮在日期那一行靠右（整行可点，不再另放"查看详情"，10/29）；勾选导出时隐藏；有按钮时发文机关另起一行腾地方
   const rowWxml = read('components/doc-row/index.wxml');
-  assert.match(rowWxml, /<ai-button doc-id="\{\{doc\.id\}\}" doc-title="\{\{doc\.title\}\}" ai="\{\{doc\.ai\}\}" selecting="\{\{selecting\}\}" bind:toggle="aiToggle" \/>/);
-  assert.ok(rowWxml.indexOf('<ai-button') > rowWxml.indexOf('查看详情'));
+  assert.match(rowWxml, /<ai-button class="meta-ai" doc-id="\{\{doc\.id\}\}" doc-title="\{\{doc\.title\}\}" ai="\{\{doc\.ai\}\}" selecting="\{\{selecting\}\}" bind:toggle="aiToggle" \/>/);
+  assert.ok(!rowWxml.replace(/<!--[\s\S]*?-->/g, '').includes('查看详情'));
   const row = load('components/doc-row/index.js', { '../../utils/format.js': format, '../../utils/copy.js': { copyLink() {} }, '../../utils/repost.js': require('../utils/repost.js') });
   row.data.doc = { id: '42', title: '通知', kind: '申报通知', issuer: '山东省科学技术厅', date: '2026-10-16', ai: { interpret: true } };
   row.observers['doc, q, today'].call(row, row.data.doc, '');
@@ -504,7 +504,8 @@ test('AI 首页的几种情况：没同意协议先走同意（通知列表照�
   // 后台处理不了：写暂时不可用，给联系客服
   h = hubPage({ caps: ON({ available: false }) }); h.page.onShow(); await settle();
   assert.match(h.text(), /AI 暂时不可用，请稍后再试。/);
-  assert.equal(findAll(render('pages/ai/index.wxml', h.page.data), (n) => n.tag === 'contact-button').length, 2);
+  // 暂时不可用：上面那张卡里有"联系客服"，底下"用的时候遇到问题？"那张不再放第二个（10/29 独立审阅）
+  assert.equal(findAll(render('pages/ai/index.wxml', h.page.data), (n) => n.tag === 'contact-button').length, 1);
   // 全站当天的上限满了：两项都不给剩几次，写明天恢复
   h = hubPage({ caps: ON({ siteFull: true }) }); h.page.onShow(); await settle();
   assert.match(h.text(), /今天 AI 的总用量满了，明天 0 点恢复；可以先看原文。/); assert.doesNotMatch(h.text(), /今天还剩/);
@@ -541,7 +542,7 @@ function contact(props, { platform = 'ios', email = 'help@example.invalid', getD
   return { view, wx, root: () => render('components/contact-button/index.wxml', { ...view.data, ...view.properties }) };
 }
 
-test('联系客服：微信自带客服按钮，写回复时间和客服管什么；带给客服的只有页面、通知编号、原因代码；在通知页上点带这份通知的卡片；鸿蒙手机换成一行字', () => {
+test('联系客服：微信自带客服按钮，写客服管什么（10/29 起不写回复时间）；带给客服的只有页面、通知编号、原因代码；在通知页上点带这份通知的卡片；鸿蒙手机换成一行字', () => {
   const c = contact({ from: 'ai_result', docId: '42', docTitle: '关于组织申报的通知', reason: 'AI_UNAVAILABLE' });
   const [button] = findAll(c.root(), (n) => n.tag === 'button');
   assert.equal(button.attrs['open-type'], 'contact');
@@ -549,7 +550,7 @@ test('联系客服：微信自带客服按钮，写回复时间和客服管什�
   assert.equal(button.attrs['show-message-card'], true);
   assert.equal(button.attrs['send-message-title'], '关于组织申报的通知');
   assert.equal(button.attrs['send-message-path'], '/pages/detail/index?id=42');
-  assert.equal(textOf(c.root()).trim(), '联系客服 一般当天或第二天回复 客服只解答小程序怎么用，不代办申报、不判断能不能报');
+  assert.equal(textOf(c.root()).trim(), '联系客服 客服解答小程序的使用问题，不代办申报、不判断能否申报');
   // 不认的内容不带（企业名称、长文字、任务编号这类不该进来的）
   const odd = contact({ from: '我的客户 甲公司', docId: 'task-7', reason: 'x'.repeat(80), docTitle: '标题' });
   assert.equal(odd.view.data.sessionFrom, 'youju'); assert.equal(odd.view.data.showCard, false);
@@ -559,17 +560,23 @@ test('联系客服：微信自带客服按钮，写回复时间和客服管什�
   // 鸿蒙版微信不支持客服按钮：一行字，给使用帮助和协议里的邮箱
   for (const platform of ['ohos', 'ohos_pc']) {
     for (const getDeviceInfo of [true, false]) {
-      const harmony = contact({ from: 'ai_home' }, { platform, getDeviceInfo });
+      const harmony = contact({ from: 'ai_result' }, { platform, getDeviceInfo });
       assert.equal(findAll(harmony.root(), (n) => n.tag === 'button').length, 0);
       assert.match(textOf(harmony.root()), /这台手机暂不能打开微信客服。可以先看使用帮助，或发邮件到 help@example\.invalid。/);
       harmony.view.help(); assert.deepEqual(harmony.wx.urls, ['/pages/help/index']);
     }
   }
+  // AI 首页同一张卡里有"使用帮助 ›"、使用帮助页就是它自己：鸿蒙上不再给去使用帮助的入口，改给联系邮箱（10/29 独立审阅）
+  for (const from of ['ai_home', 'help']) {
+    const own = contact({ from }, { platform: 'ohos' });
+    assert.match(textOf(own.root()), /这台手机暂不能打开微信客服，可以发邮件到 help@example\.invalid。/, from);
+    assert.doesNotMatch(textOf(own.root()), /使用帮助/, from);
+  }
   // "我的"页那一行
   const row = contact({ variant: 'row', from: 'me' });
   const [rowButton] = findAll(row.root(), (n) => n.tag === 'button');
   assert.equal(rowButton.attrs['open-type'], 'contact'); assert.equal(rowButton.attrs['session-from'], 'youju|from=me');
-  assert.equal(textOf(row.root()).trim(), '联系客服一般当天或第二天回复');
+  assert.equal(textOf(row.root()).trim(), '联系客服');
   assert.match(textOf(contact({ variant: 'row' }, { platform: 'ohos' }).root()), /这台手机暂不能打开，看使用帮助/);
   // 微信 style v2 的按钮要 !important 才认宽度和外边距
   assert.match(read('components/contact-button/index.wxss'), /width: 100% !important;/);
@@ -621,7 +628,7 @@ test('解读页、对照页：新提交前后台处理不了或全站满了先�
   for (const [page, kind] of [['advisor-interpret', 'interpret'], ['advisor-clause', 'clause']]) {
     for (const [extra, gate, text] of [[{ available: false }, 'paused', 'AI 暂时不可用，请稍后再试。'], [{ siteFull: true }, 'full', '今天 AI 的总用量满了，明天 0 点恢复；可以先看原文。']]) {
       for (const taskId of ['', '7']) {
-        let created = 0; const saved = new Map([[interpret.CONSENT_KEY, true]]);
+        let created = 0; const saved = new Map([[interpret.CONSENT_KEY, interpret.consentRecord()]]);
         const access = control(OPEN);
         const deps = {
           '../../utils/api.js': { advisorCapabilities: () => Promise.resolve(ON(extra)), createAdvisorTask: () => { created += 1; return Promise.resolve({ id: 1, status: 'queued' }); }, advisorTask: (id) => Promise.resolve({ id, status: 'done', result: {} }) },
@@ -643,7 +650,7 @@ test('解读页、对照页：新提交前后台处理不了或全站满了先�
     }
   }
   // 提交时后台说处理不了（429 AI_UNAVAILABLE）：页面写暂时不可用，并让 AI 板块重新问一次
-  const access = control(OPEN); const saved = new Map([[interpret.CONSENT_KEY, true]]);
+  const access = control(OPEN); const saved = new Map([[interpret.CONSENT_KEY, interpret.consentRecord()]]);
   const p = load('pages/advisor-interpret/index.js', {
     '../../utils/api.js': { advisorCapabilities: () => Promise.resolve(ON()), createAdvisorTask: () => Promise.reject(Object.assign(new Error('AI 暂时不可用，请稍后再试'), { status: 429, code: 'AI_UNAVAILABLE' })) },
     '../../utils/ai-interpret.js': interpret, '../../utils/advisor.js': advisor, '../../utils/tool-context.js': context, '../../utils/ai-access.js': access,
@@ -747,7 +754,7 @@ test('Codex 第 1 轮：任务列表按错误代码写失败原因（不重复"�
   assert.match(list, /今天 AI 的总用量满了，明天 0 点恢复。 这次不算次数/);
   // 解读页看到排队后被移出白名单（AI_OFF）的结果：让 AI 板块重新问一次
   for (const errorCode of ['AI_OFF', 'AI_UNAVAILABLE', 'AI_DAILY_CAP']) {
-    const access = control(OPEN); const saved = new Map([[interpret.CONSENT_KEY, true]]);
+    const access = control(OPEN); const saved = new Map([[interpret.CONSENT_KEY, interpret.consentRecord()]]);
     const p = load('pages/advisor-interpret/index.js', {
       '../../utils/api.js': { advisorCapabilities: () => Promise.resolve(ON()), advisorTask: (id) => Promise.resolve({ id, status: 'failed', error: 'x', errorCode }) },
       '../../utils/ai-interpret.js': interpret, '../../utils/advisor.js': advisor, '../../utils/tool-context.js': context, '../../utils/ai-access.js': access,
@@ -826,7 +833,7 @@ test('Codex 第 2 轮："刚才看的通知"的条款对照照这份文件本身
   }
   for (const [page, kind, name] of [['advisor-interpret', 'interpret', 'AI 解读'], ['advisor-clause', 'clause', '条款对照']]) {
     for (const taskId of ['', '7']) {
-      let created = 0; const saved = new Map([[interpret.CONSENT_KEY, true]]); const urls = [];
+      let created = 0; const saved = new Map([[interpret.CONSENT_KEY, interpret.consentRecord()]]); const urls = [];
       const deps = {
         '../../utils/api.js': { advisorCapabilities: () => Promise.resolve(ON({ remaining: { interpret: 5, clause: 5, [kind]: 0 } })), createAdvisorTask: () => { created += 1; return Promise.resolve({ id: 1, status: 'queued' }); }, advisorTask: (id) => Promise.resolve({ id, status: 'done', result: {} }) },
         '../../utils/ai-interpret.js': interpret, '../../utils/advisor.js': advisor, '../../utils/tool-context.js': context, '../../utils/ai-access.js': control(OPEN),
@@ -873,7 +880,7 @@ test('Codex 第 3 轮：第二次进 AI 首页、详情比能力接口先回来�
 test('Codex 第 3 轮：解读页、对照页被拦下时（满了、用完了、暂时不可用）给"看原文"，联系客服带上这份通知的编号和标题', async () => {
   for (const [page, kind] of [['advisor-interpret', 'interpret'], ['advisor-clause', 'clause']]) {
     for (const [extra, gate] of [[{ siteFull: true }, 'full'], [{ remaining: { interpret: 0, clause: 0 } }, 'used'], [{ available: false }, 'paused']]) {
-      const saved = new Map([[interpret.CONSENT_KEY, true]]); const urls = [];
+      const saved = new Map([[interpret.CONSENT_KEY, interpret.consentRecord()]]); const urls = [];
       const deps = {
         '../../utils/api.js': { advisorCapabilities: () => Promise.resolve(ON(extra)), createAdvisorTask: () => Promise.reject(new Error('不该提交')) },
         '../../utils/ai-interpret.js': interpret, '../../utils/advisor.js': advisor, '../../utils/tool-context.js': context, '../../utils/ai-access.js': control(OPEN),
@@ -980,10 +987,10 @@ test('Codex 第 5 轮：AI 首页再次进来先清掉"我的 AI 记录"，离�
   assert.deepEqual(plain(h.page.data.records), []); assert.equal(h.page.data.lastDoc, null);
 });
 
-test('Codex 第 5 轮：任务因全站满了、暂时不可用、被移出白名单失败时不给"重试"；其他失败照旧能重试；AI 首页列表提示只在有按钮时说"点 AI 解读"', async () => {
+test('Codex 第 5 轮：任务因全站满了、暂时不可用、被移出白名单失败时不给"重试"；其他失败照旧能重试；AI 首页列表上不再写"点 AI 解读"（10/29 删提示）', async () => {
   for (const [errorCode, canRetry] of [['AI_DAILY_CAP', false], ['AI_UNAVAILABLE', false], ['AI_OFF', false], [null, true]]) {
     const states = [];
-    const saved = new Map([[interpret.CONSENT_KEY, true]]);
+    const saved = new Map([[interpret.CONSENT_KEY, interpret.consentRecord()]]);
     const session = interpret.createSession({
       api: { advisorTask: (id) => Promise.resolve({ id, status: 'failed', error: '后台的话', errorCode, docId: '42', docTitle: '通知' }) },
       storage: { getStorageSync: (k) => saved.get(k), setStorageSync: (k, v) => saved.set(k, v) },
@@ -994,9 +1001,9 @@ test('Codex 第 5 轮：任务因全站满了、暂时不可用、被移出白�
     assert.equal(lastState.phase, 'failed'); assert.equal(lastState.canRetry, canRetry, String(errorCode));
     session.hide();
   }
-  for (const [caps, mentions] of [[ON(), true], [ON({ siteFull: true }), false], [ON({ remaining: { interpret: 0, clause: 5 } }), false]]) {
+  for (const caps of [ON(), ON({ siteFull: true }), ON({ remaining: { interpret: 0, clause: 5 } })]) {
     const h = hubPage({ caps }); h.page.onShow(); await settle();
-    assert.equal(/点“AI 解读”直接开始/.test(textOf(render('pages/ai/index.wxml', h.page.data))), mentions, JSON.stringify(caps.ai_advisor));
+    assert.doesNotMatch(textOf(render('pages/ai/index.wxml', h.page.data)), /点标题看通知全文|点“AI 解读”直接开始/, JSON.stringify(caps.ai_advisor));
   }
 });
 
@@ -1029,7 +1036,7 @@ test('Codex 第 7 轮：结果页吸顶条开头固定写"AI 生成："（后端
   const backendNotice = 'AI 生成，仅供参考，以原文和主管部门解释为准';
   for (const [page, kind] of [['advisor-interpret', 'interpret'], ['advisor-clause', 'clause']]) {
     for (const [notice, expected] of [['固定原文提示', 'AI 生成：固定原文提示'], [backendNotice, 'AI 生成：仅供参考，以原文和主管部门解释为准']]) {
-      const saved = new Map([[interpret.CONSENT_KEY, true]]);
+      const saved = new Map([[interpret.CONSENT_KEY, interpret.consentRecord()]]);
       const result = kind === 'clause'
         ? { notice, rows: [{ type: '条件', text: '条件原句', refs: [{ pid: 'P001' }], company: [] }] }
         : { notice, items: [{ type: '对象', text: '对象原句', refs: [{ pid: 'P001', quote: '对象原句' }] }] };
@@ -1066,7 +1073,7 @@ test('Codex 第 7 轮：AI 首页用着用着后台处理不了，马上收起"A
   assert.equal((out.match(/暂时不可用/g) || []).length >= 2, true, '两项能力都写暂时不可用');
   assert.ok(out.includes('AI 暂时不可用，请稍后再试。'));
   assert.deepEqual(h.page.data.recent.map((item) => item.ai), [null], '近 7 天那几份上不放按钮');
-  assert.deepEqual(findAll(root, (n) => n.tag === 'contact-button').map((n) => n.attrs.reason), ['paused', undefined]);
+  assert.deepEqual(findAll(root, (n) => n.tag === 'contact-button').map((n) => n.attrs.reason), ['paused']);
   // 页面上还是旧的样子时点了，也不进对照页
   h.page.setData({ clauseOpen: true }); h.page.clauseLast();
   assert.deepEqual(h.navigations, []);
@@ -1074,7 +1081,7 @@ test('Codex 第 7 轮：AI 首页用着用着后台处理不了，马上收起"A
   h.access.set({ available: true });
   assert.equal(h.page.data.gate, ''); assert.equal(h.page.data.interpretOpen, true); assert.equal(h.page.data.clauseOpen, true);
   out = textOf(render('pages/ai/index.wxml', h.page.data));
-  assert.match(out, /今天还剩 5 次/); assert.match(out, /点“AI 解读”直接开始/);
+  assert.match(out, /今天还剩 5 次/);
   h.page.clauseLast(); assert.equal(h.navigations.length, 1);
   // 全站满了的时候后台又处理不了：改写暂时不可用；恢复了回到"今天满了"
   const f = hubPage({ caps: ON({ siteFull: true }) }); f.page.onShow(); await settle();
@@ -1110,21 +1117,21 @@ test('Codex 第 7 轮：我的 AI 记录没加载出来时卡片照样留着，�
   const record = { id: 3, kind: 'interpret', status: 'done', docTitle: '通知3', createdAt: '2026-10-19T09:00:00+08:00' };
   const h = hubPage({ tasks: () => (tasksOk ? Promise.resolve({ items: [record] }) : Promise.reject(new Error('网络'))) });
   h.page.onShow(); await settle();
-  assert.equal(h.page.data.recordsError, '我的 AI 记录没有加载出来');
+  assert.equal(h.page.data.recordsError, '我的记录没有加载出来');
   const root = render('pages/ai/index.wxml', h.page.data);
-  const card = findAll(root, hasClass('card')).find((node) => textOf(node).includes('我的 AI 记录'));
+  const card = findAll(root, hasClass('card')).find((node) => textOf(node).includes('我的记录'));
   assert.ok(card, '卡片还在');
-  assert.match(textOf(card), /我的 AI 记录没有加载出来/);
+  assert.match(textOf(card), /我的记录没有加载出来/);
   assert.equal(findAll(card, tapsTo('retry')).length, 1, '有重试');
   assert.equal(findAll(card, tapsTo('allRecords')).length, 1, '有"全部"');
   h.page.allRecords(); assert.equal(h.navigations.at(-1), '/pages/advisor-tasks/index');
   // 点重试、这次加载出来了：错误去掉、列出记录
   tasksOk = true; h.page.retry(); await settle();
   assert.equal(h.page.data.recordsError, '');
-  assert.match(textOf(render('pages/ai/index.wxml', h.page.data)), /我的 AI 记录.*通知3/);
+  assert.match(textOf(render('pages/ai/index.wxml', h.page.data)), /我的记录.*通知3/);
   // 没有记录：不显示这张卡
   const e = hubPage(); e.page.onShow(); await settle();
-  assert.doesNotMatch(textOf(render('pages/ai/index.wxml', e.page.data)), /我的 AI 记录/);
+  assert.doesNotMatch(textOf(render('pages/ai/index.wxml', e.page.data)), /我的记录/);
   // 再次进来：上次的错误先清掉
   const r = hubPage({ tasks: () => Promise.reject(new Error('网络')) }); r.page.onShow(); await settle();
   r.access.ensure = () => new Promise(() => {});
@@ -1135,7 +1142,7 @@ test('Codex 第 7 轮：我的 AI 记录没加载出来时卡片照样留着，�
 test('Codex 第 8 轮：出了结果吸顶条就一直有——后端没给提示、只有空白或只有"AI 生成"时，用页面自己的说明；上面那条普通提示不再重复', async () => {
   for (const [page, kind] of [['advisor-interpret', 'interpret'], ['advisor-clause', 'clause']]) {
     for (const notice of [undefined, '', '   ', 'AI 生成', ' AI 生成： ']) {
-      const saved = new Map([[interpret.CONSENT_KEY, true]]);
+      const saved = new Map([[interpret.CONSENT_KEY, interpret.consentRecord()]]);
       const result = kind === 'clause'
         ? { rows: [{ type: '条件', text: '条件原句', refs: [{ pid: 'P001' }], company: [] }] }
         : { items: [{ type: '对象', text: '对象原句', refs: [{ pid: 'P001', quote: '对象原句' }] }] };
@@ -1275,15 +1282,15 @@ test('Codex 第 10 轮：对所有人开放、还没同意协议时，"我的 AI
     h.page.onShow(); await settle();
     assert.equal(h.page.data.gate, 'consent'); assert.equal(h.page.data.recordsError, '', String(status));
     const out = textOf(render('pages/ai/index.wxml', h.page.data));
-    assert.doesNotMatch(out, /我的 AI 记录|没有加载出来/, String(status));
+    assert.doesNotMatch(out, /我的记录|没有加载出来/, String(status));
     assert.match(out, /阅读并同意/);
   }
   const n = hubPage({ caps: OFF('consent'), tasks: () => Promise.reject(Object.assign(new Error('网络不太好'), { retryable: true })) });
   n.page.onShow(); await settle();
-  assert.equal(n.page.data.recordsError, '我的 AI 记录没有加载出来');
+  assert.equal(n.page.data.recordsError, '我的记录没有加载出来');
   const s = hubPage({ tasks: () => Promise.reject(Object.assign(new Error('服务出错'), { status: 500 })) });
   s.page.onShow(); await settle();
-  assert.equal(s.page.data.recordsError, '我的 AI 记录没有加载出来', '服务出错也写没加载出来');
+  assert.equal(s.page.data.recordsError, '我的记录没有加载出来', '服务出错也写没加载出来');
 });
 
 // 真的 utils/consent.js，接上真的 ai-access（accessWith 建的 raw）
@@ -1514,7 +1521,7 @@ test('Codex 第 13 轮：从 AI 板块点"阅读并同意"——弹窗写明是�
   assert.equal(a.wxModals.length, 1);
   const modal = a.wxModals[0];
   assert.equal(modal.title, '请先阅读并同意');
-  assert.match(modal.content, /使用AI 解读和条款对照前，请先阅读《用户协议》和《隐私保护指引》全文（里面有 AI 功能的约定），在全文最后同意/);
+  assert.match(modal.content, /使用 AI 解读和条款对照前，请先阅读《用户协议》和《隐私保护指引》全文（里面有 AI 功能的约定），在全文最后同意/);
   assert.equal(modal.confirmText, '阅读全文', '不能直接点同意'); assert.equal(modal.cancelText, '暂不');
   assert.doesNotMatch(modal.content, /关注和纠错/);
   assert.equal(await answer, false);
@@ -1527,7 +1534,7 @@ test('Codex 第 13 轮：从 AI 板块点"阅读并同意"——弹窗写明是�
   // 协议更新过、从 AI 板块来：标题写已更新，用途写 AI 解读和条款对照
   const u = ask({ version: '2026-09', valid: true });
   u.c.mod.ensureConsent({ purpose: 'ai' }); await settle();
-  assert.equal(u.wxModals[0].title, '协议已更新'); assert.match(u.wxModals[0].content, /再使用AI 解读和条款对照/);
+  assert.equal(u.wxModals[0].title, '协议已更新'); assert.match(u.wxModals[0].content, /再使用 AI 解读和条款对照。/);
   u.wxModals[0].success({ confirm: true }); assert.deepEqual(u.c.navigations, ['/pages/agreement/index?consent=1&for=ai']);
   // 别的入口点"先看协议"：去两份全文，不带 for=ai
   d.wxModals[0].success({ confirm: false }); assert.deepEqual(d.c.navigations, ['/pages/agreement/index?consent=1']);
@@ -1706,7 +1713,7 @@ test('Codex 第 18 轮：我的 AI 记录里有处理中的，停在 AI 首页�
   const clock = { now: 1000 * HOUR };
   const h = hubPage({ tasks: () => Promise.resolve({ items: answer.map((t) => ({ ...t })) }), now: () => clock.now });
   h.page.onShow(); await settle();
-  assert.match(textOf(render('pages/ai/index.wxml', h.page.data)), /我的 AI 记录.*处理中/);
+  assert.match(textOf(render('pages/ai/index.wxml', h.page.data)), /我的记录.*处理中/);
   assert.deepEqual([...h.timers.values()].map((t) => t.ms), [5000]);
   // 还在处理：间隔变长
   assert.deepEqual(h.runTimers(), [5000]); await settle();
@@ -1716,7 +1723,7 @@ test('Codex 第 18 轮：我的 AI 记录里有处理中的，停在 AI 首页�
   // 处理完：显示已完成，不再问
   answer = [{ ...running, status: 'done', hasResult: true }];
   h.runTimers(); await settle();
-  assert.match(textOf(render('pages/ai/index.wxml', h.page.data)), /我的 AI 记录.*已完成/);
+  assert.match(textOf(render('pages/ai/index.wxml', h.page.data)), /我的记录.*已完成/);
   assert.equal(h.timers.size, 0, '都处理完了就停');
   // 离开就停
   answer = [running];
@@ -1745,7 +1752,7 @@ test('Codex 第 18 轮：停在 AI 首页跨过零点，今天还剩几次重新
     for (const [extra, gate] of [[{ remaining: { interpret: 0, clause: 0 } }, 'used'], [{ siteFull: true }, 'full']]) {
       let blocked = true; let capsCalls = 0; let created = 0;
       const d = dayStub();
-      const saved = new Map([[interpret.CONSENT_KEY, true]]);
+      const saved = new Map([[interpret.CONSENT_KEY, interpret.consentRecord()]]);
       const deps = {
         '../../utils/api.js': {
           advisorCapabilities: () => { capsCalls += 1; return Promise.resolve(blocked ? ON(extra) : ON()); },
@@ -1793,7 +1800,7 @@ test('Codex 第 19、21 轮：解读页、对照页次数用完或全站满了�
     for (const [extra, gate] of [[{ remaining: { interpret: 0, clause: 0 } }, 'used'], [{ siteFull: true }, 'full'], [{ available: false }, 'paused']]) {
       let blocked = true; let capsCalls = 0; let created = 0;
       const d = dayStub();
-      const saved = new Map([[interpret.CONSENT_KEY, true]]);
+      const saved = new Map([[interpret.CONSENT_KEY, interpret.consentRecord()]]);
       const deps = {
         '../../utils/api.js': {
           advisorCapabilities: () => { capsCalls += 1; return Promise.resolve(blocked ? ON(extra) : ON()); },
@@ -1859,7 +1866,7 @@ test('Codex 第 20、21 轮：被拦下以后，过了 0 点才回话、当天�
   for (const [page, kind] of [['advisor-interpret', 'interpret'], ['advisor-clause', 'clause']]) {
     let blocked = true; let capsCalls = 0; let created = 0; let hold = null;
     const d = dayStub();
-    const saved = new Map([[interpret.CONSENT_KEY, true]]);
+    const saved = new Map([[interpret.CONSENT_KEY, interpret.consentRecord()]]);
     const deps = {
       '../../utils/api.js': {
         advisorCapabilities: () => {
@@ -1894,7 +1901,7 @@ test('Codex 第 20、21 轮：被拦下以后，过了 0 点才回话、当天�
   for (const [page, kind] of [['advisor-interpret', 'interpret'], ['advisor-clause', 'clause']]) {
     let blocked = true; let capsCalls = 0;
     const d = dayStub();
-    const saved = new Map([[interpret.CONSENT_KEY, true]]);
+    const saved = new Map([[interpret.CONSENT_KEY, interpret.consentRecord()]]);
     const deps = {
       '../../utils/api.js': {
         advisorCapabilities: () => { capsCalls += 1; return Promise.resolve(blocked ? ON({ remaining: { interpret: 0, clause: 0 } }) : ON()); },
@@ -1926,7 +1933,7 @@ test('Codex 第 21 轮：0 点以前的"用完了""满了"答复 0 点以后才�
     for (const extra of [{ remaining: { interpret: 0, clause: 0 } }, { siteFull: true }]) {
       let blocked = true; let created = 0; let forgot = 0; let hold = null;
       const d = dayStub();
-      const saved = new Map([[interpret.CONSENT_KEY, true]]);
+      const saved = new Map([[interpret.CONSENT_KEY, interpret.consentRecord()]]);
       const deps = {
         '../../utils/api.js': {
           advisorCapabilities: () => {
@@ -1975,7 +1982,7 @@ test('Codex 第 22 轮：跨零点时还在等能力接口回话就丢掉旧的�
   for (const [page, kind] of [['advisor-interpret', 'interpret'], ['advisor-clause', 'clause']]) {
     let answers = []; let forgot = 0; let created = 0; const holds = [];
     const d = dayStub();
-    const saved = new Map([[interpret.CONSENT_KEY, true]]);
+    const saved = new Map([[interpret.CONSENT_KEY, interpret.consentRecord()]]);
     const deps = {
       '../../utils/api.js': {
         advisorCapabilities: () => new Promise((done) => holds.push(done)),
@@ -2165,7 +2172,7 @@ test('Codex 第 25、26 轮：次数用完的提示只写明天恢复，不管�
 test('Codex 第 27 轮：第 5 次提交以后离开再回来（次数变成 0），解读页、对照页接着显示这次任务的进度和结果，不写"用完了"', async () => {
   for (const [page, kind] of [['advisor-interpret', 'interpret'], ['advisor-clause', 'clause']]) {
     let left = 1; let created = 0; let status = 'queued';
-    const saved = new Map([[interpret.CONSENT_KEY, true]]);
+    const saved = new Map([[interpret.CONSENT_KEY, interpret.consentRecord()]]);
     const result = kind === 'clause'
       ? { notice: 'AI 生成，仅供参考', rows: [{ type: '条件', text: '条件原句', refs: [{ pid: 'P001' }], company: [] }] }
       : { notice: 'AI 生成，仅供参考', items: [{ type: '对象', text: '对象原句', refs: [{ pid: 'P001', quote: '对象原句' }] }] };
@@ -2205,7 +2212,7 @@ test('Codex 第 27 轮：第 5 次提交以后离开再回来（次数变成 0�
 test('Codex 第 28 轮：建任务被明确拒绝不算"这一页有任务"，回来照最新的次数拦下；任务失败后次数变 0，不给会建新任务的"重试""重新填写"，写明原因；没连上的照常能接着试', async () => {
   const make = (page, kind, { create, poll, left }) => {
     const state = { left, created: 0 };
-    const saved = new Map([[interpret.CONSENT_KEY, true]]);
+    const saved = new Map([[interpret.CONSENT_KEY, interpret.consentRecord()]]);
     const deps = {
       '../../utils/api.js': {
         advisorCapabilities: () => Promise.resolve(ON({ remaining: { interpret: state.left, clause: state.left } })),
@@ -2267,7 +2274,7 @@ test('Codex 第 29 轮：失败卡片上的重试因为次数用完收起后，�
   for (const [page, kind] of [['advisor-interpret', 'interpret'], ['advisor-clause', 'clause']]) {
     let left = 1; let created = 0;
     const d = dayStub();
-    const saved = new Map([[interpret.CONSENT_KEY, true]]);
+    const saved = new Map([[interpret.CONSENT_KEY, interpret.consentRecord()]]);
     const failedTask = { id: 9, status: 'failed', errorCode: '', docId: 42, docTitle: '通知' };
     const deps = {
       '../../utils/api.js': {
@@ -2294,7 +2301,7 @@ test('Codex 第 29 轮：失败卡片上的重试因为次数用完收起后，�
   }
   // 对照页：从"我的记录"打开失败任务，点"重新填写"回到表单以后，离开再回来照现在的次数拦下
   let left = 5; let created = 0;
-  const saved = new Map([[interpret.CONSENT_KEY, true]]);
+  const saved = new Map([[interpret.CONSENT_KEY, interpret.consentRecord()]]);
   const deps = {
     '../../utils/api.js': {
       advisorCapabilities: () => Promise.resolve(ON({ remaining: { interpret: left, clause: left } })),

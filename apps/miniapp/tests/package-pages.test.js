@@ -11,7 +11,7 @@ const format = require('../utils/format.js');
 const regions = require('../utils/regions.js');
 const boost = require('../utils/boost.js');
 const { render, textOf, findAll, hasClass, tapsTo } = require('./wxml-render.js');
-const { FIRST_PAGES } = require('../../../tools/miniapp_presubmit_check.js');
+const { FIRST_PAGES, FIRST_AI_PAGES } = require('../../../tools/miniapp_presubmit_check.js');
 
 const ROOT = path.join(__dirname, '..');
 const read = (file) => fs.readFileSync(path.join(ROOT, file), 'utf8');
@@ -44,9 +44,9 @@ const urlsIn = (root) => findAll(root, (n) => n.attrs['data-url'] !== undefined)
 
 test('utils/package-pages.js 和 app.json 的页面一样（打过审版时由 tools/miniapp_pack.js 重写）', () => {
   assert.deepEqual(require('../utils/package-pages.js'), APP_PAGES);
-  assert.equal(FIRST_PAGES.length, 16);
-  assert.deepEqual(plain(FULL.flags()), { advisor: true, records: true, pass: true, orders: true, help: true, ai: true });
-  assert.deepEqual(plain(FIRST.flags()), { advisor: false, records: false, pass: false, orders: false, help: false, ai: false });
+  assert.equal(FIRST_PAGES.length, 17);
+  assert.deepEqual(plain(FULL.flags()), { advisor: true, records: true, pass: true, orders: true, help: true, ai: true, license: true });
+  assert.deepEqual(plain(FIRST.flags()), { advisor: false, records: false, pass: false, orders: false, help: false, ai: false, license: true });
   assert.equal(FIRST.has('my-data'), true); assert.equal(FIRST.has('lists'), true); assert.equal(FIRST.has('advisor-tasks'), false);
 });
 
@@ -54,7 +54,7 @@ function mePage(pages, server) {
   const urls = [];
   const page = load('pages/me/index.js', {
     '../../content/legal.js': { final: true, version: '2026-11' },
-    '../../utils/consent.js': { loginOpen: () => true, consentEpoch: () => 0, applyServer: () => true, withdraw: () => Promise.resolve(false), markAgreed() {}, openPrivacy() {}, CONSENT_PAGE: '', agreeFailed() {}, featureNames: () => '' },
+    '../../utils/consent.js': { loginOpen: () => true, consentEpoch: () => 0, applyServer: () => true, withdraw: () => Promise.resolve(false), withdrawAccount: () => Promise.resolve(false), markAgreed() {}, openPrivacy() {}, CONSENT_PAGE: '', agreeFailed() {}, featureNames: () => '' },
     '../../utils/subscribe.js': { remindOpen: () => false },
     '../../utils/coverage.js': { loadCoverage: () => Promise.resolve(null), notCoveredNames: () => '' },
     '../../utils/pages.js': pages,
@@ -108,7 +108,10 @@ test('首页（过审版）：没有"工具中心"入口、申报季加量一行
   assert.equal(first.page.data.tools, false);
   assert.equal(first.seasonAsked(), 0);
   assert.deepEqual(first.page.data.guideSteps.map((s) => s.key), ['search', 'due', 'clients']);
+  // 没有批量工具的包不写"批量"（11/2 完整测试第 18 条；创始人 11/2 同意，D-112）
+  assert.equal(first.page.data.guideSteps[2].name, '按客户查通知（顾问用）');
   const root = render('pages/home/index.wxml', first.page.data);
+  assert.ok(!textOf(root).includes('批量'));
   const [entries] = findAll(root, hasClass('entries'));
   assert.ok(!hasClass('entries--tools')(entries));
   assert.deepEqual(findAll(entries, hasClass('entry-name')).map((n) => textOf(n)), ['截止', '我的客户', '查名单']);
@@ -143,13 +146,15 @@ test('我的客户（过审版）：顶部没有"打开工具中心"，点了也
   }
 });
 
-test('联系客服（过审版）：鸿蒙手机打不开客服时不给"看使用帮助"，改成去"关于有据"看联系邮箱；完整版照旧给使用帮助', () => {
-  for (const [pages, help] of [[FIRST, false], [FULL, true]]) {
-    for (const variant of ['row', 'block']) {
+test('联系客服（过审版）：鸿蒙手机打不开客服时不给"看使用帮助"，改成去"关于有据"看联系邮箱；完整版照旧给使用帮助；"我的"页上一行就是使用帮助，那里一律改给联系邮箱（10/29）', () => {
+  for (const [pages, packHelp] of [[FIRST, false], [FULL, true]]) {
+    // "我的"页上一行就是使用帮助、AI 首页同一张卡里有"使用帮助 ›"、使用帮助页就是它自己：这三处一律改给联系邮箱（10/29）
+    for (const [variant, from] of [['row', 'me'], ['block', 'me'], ['block', 'ai_result'], ['block', 'ai_home'], ['block', 'help']]) {
+      const help = packHelp && !['me', 'ai_home', 'help'].includes(from);
       const urls = [];
       const view = load('components/contact-button/index.js', { '../../content/legal.js': { operator: { email: 'help@example.invalid' } }, '../../utils/pages.js': pages },
         { wx: { getDeviceInfo: () => ({ platform: 'ohos' }), navigateTo: ({ url }) => urls.push(url) } });
-      Object.assign(view.properties, { from: 'me', docId: '', docTitle: '', reason: '', variant });
+      Object.assign(view.properties, { from, docId: '', docTitle: '', reason: '', variant });
       view.lifetimes.attached.call(view);
       const root = render('components/contact-button/index.wxml', { ...view.data, ...view.properties });
       const text = textOf(root);
@@ -201,8 +206,12 @@ test('AI（过审版）：包里没有 AI 页面时对谁都不显示，白名�
 
 // 首发包里的页面、组件、工具函数写到包外页面的地方，必须用 utils/pages.js 判断过（或只被 AI 入口用，
 // AI 入口在包里没有 AI 页面时整个不显示）。新加的入口没判断时这里会报出来
-test('首发包里写到包外页面的文件都用 utils/pages.js 判断过', () => {
-  const firstNames = FIRST_PAGES.map((p) => p.split('/')[1]);
+test('首发包、过审版加 AI 包里写到包外页面的文件都用 utils/pages.js 判断过', () => {
+  for (const list of [FIRST_PAGES, FIRST_PAGES.concat(FIRST_AI_PAGES)]) guardedIn(list);
+});
+
+function guardedIn(list) {
+  const firstNames = list.map((p) => p.split('/')[1]);
   const files = [];
   const walk = (dir) => {
     for (const entry of fs.readdirSync(path.join(ROOT, dir), { withFileTypes: true })) {
@@ -225,5 +234,115 @@ test('首发包里写到包外页面的文件都用 utils/pages.js 判断过', (
     const guarded = /require\('(\.\.\/)+utils\/pages\.js'\)|require\('\.\/pages\.js'\)/.test(read(owner));
     if (!guarded) offenders.push(`${file}：${[...new Set(outside)].join('、')}`);
   }
-  assert.deepEqual(offenders, []);
+  assert.deepEqual(offenders, [], `${list.length} 页的包`);
+}
+
+test('我的记录（过审版加 AI，D-098）：包里没有工具中心，空的时候只说去通知详情页点"AI 解读"，不提工具中心、不给"去工具中心"；完整版照旧', async () => {
+  const caps = { data_tools: { enabled: false, features: [] }, ai_advisor: { enabled: true, features: ['interpret', 'clause'], remaining: { interpret: 5, clause: 5 } } };
+  for (const [pages, tools] of [[pagesOf(FIRST_PAGES.concat(FIRST_AI_PAGES)), false], [FULL, true]]) {
+    const page = load('pages/advisor-tasks/index.js', {
+      '../../utils/api.js': { advisorCapabilities: () => Promise.resolve(caps), advisorTasks: () => Promise.resolve({ items: [] }) },
+      '../../utils/advisor.js': require('../utils/advisor.js'), '../../utils/pages.js': pages,
+    }, { wx: { setNavigationBarTitle() {}, navigateTo() {} } });
+    page.onShow(); await flush();
+    const root = render('pages/advisor-tasks/index.wxml', page.data);
+    const text = textOf(root);
+    assert.match(text, /还没有记录/);
+    assert.match(text, /在通知详情页点“AI 解读”/);
+    assert.equal(/工具中心/.test(text), tools, String(tools));
+    assert.equal(findAll(root, tapsTo('tools')).length, tools ? 1 : 0);
+    page.onUnload();
+  }
+});
+
+test('营业执照入口：首页最底部一行链接（《电子商务法》第十五条，首页要有），“我的”页另有一行（创始人 11/5），未填写的执照信息不显示', async () => {
+  for (const pages of [FIRST, FULL]) {
+    const h = homePage(pages);
+    assert.equal(h.page.data.businessLicense, true);
+    const root = render('pages/home/index.wxml', h.page.data);
+    // 在首页页脚里，不在入口卡片下面
+    const [footer] = findAll(root, hasClass('footer'));
+    assert.match(textOf(footer), /营业执照信息/);
+    assert.equal(findAll(root, hasClass('license-entry')).length, 0);
+    // “我的”页也有一行，点了进营业执照页
+    const me = mePage(pages, { agreed: { version: '2026-11' }, current: true, follows: 0, subscriptions: {} });
+    const view = render('pages/me/index.wxml', me.page.data);
+    const row = findAll(view, (node) => node.attrs && node.attrs['data-url'] === '/pages/business-license/index');
+    assert.equal(row.length, 1);
+    assert.match(textOf(row[0]), /营业执照信息/);
+  }
+  const without = pagesOf(APP_PAGES.filter((p) => p !== 'pages/business-license/index'));
+  const missing = homePage(without);
+  assert.equal(missing.page.data.businessLicense, false);
+  assert.ok(!textOf(render('pages/home/index.wxml', missing.page.data)).includes('营业执照信息'));
+  // 包里没有营业执照页：“我的”页也不放这一行
+  const noLicense = mePage(without, { agreed: { version: '2026-11' }, current: true, follows: 0, subscriptions: {} });
+  assert.ok(!textOf(render('pages/me/index.wxml', noLicense.page.data)).includes('营业执照信息'));
+  const data = { operator: require('../content/legal.js').operator, license: { creditCode: '', photo: '' } };
+  const empty = textOf(render('pages/business-license/index.wxml', data));
+  assert.ok(empty.includes(data.operator.name)); assert.ok(empty.includes(data.operator.address));
+  assert.ok(!empty.includes('统一社会信用代码'));
+  // 包里真实的执照信息：信用代码已填（创始人 11/4），页面显示出来
+  const real = require('../content/business-license.js');
+  assert.match(real.creditCode, /^[0-9A-HJ-NPQRTUWXY]{18}$/);
+  assert.ok(textOf(render('pages/business-license/index.wxml', { ...data, license: real })).includes(real.creditCode));
+  // 执照照片（创始人 11/4）：包内绝对路径、文件在包里、是 JPEG；控制大小，别把主包撑大（主包上限 2 MB）
+  assert.match(real.photo, /^\/images\/[a-z0-9-]+\.jpg$/);
+  const photo = fs.readFileSync(path.join(__dirname, '..', real.photo.slice(1)));
+  assert.deepEqual([...photo.subarray(0, 3)], [0xff, 0xd8, 0xff]);
+  assert.ok(photo.length <= 200 * 1024, `执照照片 ${photo.length} 字节`);
+  const shown = findAll(render('pages/business-license/index.wxml', { ...data, license: real }), (node) => node.tag === 'image');
+  assert.equal(shown.length, 1); assert.equal(shown[0].attrs.src, real.photo); assert.equal(shown[0].attrs.bindtap, 'preview');
+  // 照片已转正、不带拍摄信息：JPEG 里没有 EXIF（APP1）段，横版，宽不小于 1200（换图时防止带进方向、位置信息或糊成看不清）
+  let at = 2; let size = null; let exif = false;
+  while (at + 4 <= photo.length && photo[at] === 0xff) {
+    const marker = photo[at + 1]; const len = photo.readUInt16BE(at + 2);
+    if (marker === 0xe1) exif = true;
+    if (marker >= 0xc0 && marker <= 0xc2) { size = { height: photo.readUInt16BE(at + 5), width: photo.readUInt16BE(at + 7) }; break; }
+    at += 2 + len;
+  }
+  assert.equal(exif, false); assert.ok(size && size.width > size.height && size.width >= 1200, JSON.stringify(size));
+  // 上传时开着“过滤无依赖文件”，照片路径只在 JS 里：project.config.json 要强制带上照片所在的文件夹
+  const project = JSON.parse(read('project.config.json'));
+  const folder = real.photo.split('/')[1];
+  assert.ok((project.packOptions.include || []).some((item) => item.type === 'folder' && item.value === folder), `packOptions.include 要有 ${folder}`);
+  // 没填照片：不画图片
+  assert.equal(findAll(render('pages/business-license/index.wxml', { ...data, license: { creditCode: real.creditCode, photo: '' } }), (node) => node.tag === 'image').length, 0);
+  const filled = textOf(render('pages/business-license/index.wxml', { ...data, license: { creditCode: '测试代码', photo: '/test.png' } }));
+  assert.ok(filled.includes('测试代码')); assert.ok(filled.includes('营业执照'));
+});
+
+test('营业执照照片点按全屏放大：先把包里的照片写到用户目录再预览，读写不了时用包内路径；没有照片不预览（独立审阅 #437）', () => {
+  const run = ({ photo = '/images/business-license.jpg', fs = 'ok', dir = 'wxfile://usr' } = {}) => {
+    const previews = []; const writes = [];
+    const fsm = {
+      readFile: ({ filePath, success, fail }) => (fs === 'read-fail' ? fail({ errMsg: 'readFile:fail' }) : success({ data: `bytes-of:${filePath}` })),
+      writeFile: ({ filePath, data, success, fail }) => { writes.push([filePath, data]); return fs === 'write-fail' ? fail({ errMsg: 'writeFile:fail' }) : success(); },
+    };
+    const toasts = [];
+    const wx = {
+      previewImage: (opts) => { previews.push({ urls: opts.urls, current: opts.current }); if (fs === 'preview-fail') opts.fail({ errMsg: 'previewImage:fail' }); },
+      showToast: (opts) => toasts.push(opts.title),
+      getFileSystemManager: () => { if (fs === 'none') throw new Error('不支持'); return fsm; },
+      env: dir ? { USER_DATA_PATH: dir } : {},
+    };
+    const page = load('pages/business-license/index.js', {
+      '../../content/legal.js': { operator: { name: '运营者', address: '住所' } },
+      '../../content/business-license.js': { creditCode: 'X', photo },
+    }, { wx });
+    page.preview();
+    // 页面在另一个 vm 上下文里建的对象，比较前转成普通对象
+    return { previews: JSON.parse(JSON.stringify(previews)), writes: JSON.parse(JSON.stringify(writes)), toasts };
+  };
+  const ok = run();
+  assert.deepEqual(ok.writes, [['wxfile://usr/business-license.jpg', 'bytes-of:/images/business-license.jpg']]);
+  assert.deepEqual(ok.previews, [{ urls: ['wxfile://usr/business-license.jpg'], current: 'wxfile://usr/business-license.jpg' }]);
+  for (const fs of ['read-fail', 'write-fail', 'none']) {
+    assert.deepEqual(run({ fs }).previews, [{ urls: ['/images/business-license.jpg'], current: '/images/business-license.jpg' }], fs);
+  }
+  assert.deepEqual(run({ dir: '' }).previews, [{ urls: ['/images/business-license.jpg'], current: '/images/business-license.jpg' }]);
+  assert.deepEqual(run({ photo: '' }).previews, []);
+  // 预览打不开：提示一句
+  assert.deepEqual(run({ fs: 'preview-fail' }).toasts, ['图片打不开，请稍后再试']);
+  assert.deepEqual(ok.toasts, []);
 });

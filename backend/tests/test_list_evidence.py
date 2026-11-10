@@ -573,6 +573,10 @@ def test_record_api_pending_found_and_tampered(client, session) -> None:
     assert pending["evidence"]["state"] == "pending" and pending["evidence"]["rows"] == []
     assert pending["entry"]["name"] == "山东星河科技有限公司"
     assert pending["document"]["status"] == "公示"
+    # 出处只给网站名称（D-097，11/2 完整测试第 2 条）：不给域名、不给原文链接
+    assert pending["document"]["site"].endswith("网站")
+    assert "host" not in pending["document"] and "url" not in pending["document"]
+    assert ".gov.cn" not in json.dumps(pending["document"], ensure_ascii=False)
 
     evidence.refresh(session, fetcher=FakeFetcher(_xlsx(ROWS)), now=NOW)
     found = client.get("/api/v1/lists/record", params={"entry": token}).json()

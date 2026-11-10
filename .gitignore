@@ -1,6 +1,7 @@
 __pycache__/
 *.py[cod]
-.venv/
+# 不带斜杠：各工作区常把 .venv 做成指向别处的软链接，带斜杠只挡目录、挡不住软链接
+.venv
 .DS_Store
 node_modules/
 dist/
@@ -18,3 +19,11 @@ backend/.mysql/
 
 # 构建时写入来源版本，不把生成物提交成过时的SHA。
 backend/src/youju/_build.json
+
+# 根目录下只在本机用的资料，不进仓库（仓库是公开的；里面有给创始人的待办、运营草稿和临时输出）
+/给创始人/
+/output/
+/tmp/
+/.workbuddy/
+/公众号运营/
+/推广素材/

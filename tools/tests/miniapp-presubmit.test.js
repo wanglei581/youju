@@ -2,14 +2,17 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { inspect, SERVER_TOOL_TERMS_VERSION } = require('../miniapp_presubmit_check');
+const presubmit = require('../miniapp_presubmit_check');
+const { SERVER_TOOL_TERMS_VERSION, agreementFingerprint } = presubmit;
+// 下面多数用例只测别的检查项：协议指纹默认按这份样本自己的算（指纹这一项另有用例，D-098）
+const inspect = (args) => presubmit.inspect({ fingerprints: { [args.legal && args.legal.version]: args.legal ? agreementFingerprint(args.legal) : '' }, ...args });
 const releaseIdentity = require('../release/release-identity.json');
 function input() { return {
   // 首发（过审版）协议：不含 AI 条款，版本排在后台 AI 条款版本之前（D-093 ⑤）
   legal:{final:true, version:'2026-10.2', user:{sections:[{h:'一、服务内容与定位',p:['公开信息的检索和查看免费。']}]}, privacy:{sections:[]}, operator:{icp:'测试备案号',email:'contact@example.test'}},
   config:{cloudEnv:releaseIdentity.cloudEnv,cloudService:releaseIdentity.cloudService,devBaseUrl:'',templates:{newDocs:'',deadline:''}},
   project:{appid:releaseIdentity.appid},
-  app:{pages:['home','follow','files','me','search','detail','report','lists','agreement','feedback','follow-new','my-data','about','clients','reader','results'].map(p=>`pages/${p}/index`),tabBar:{list:[['home','首页'],['follow','关注'],['files','导出'],['me','我的']].map(([p,text])=>({pagePath:`pages/${p}/index`,text}))}}
+  app:{pages:['home','follow','files','me','search','detail','report','lists','agreement','feedback','follow-new','my-data','about','business-license','clients','reader','results'].map(p=>`pages/${p}/index`),tabBar:{list:[['home','首页'],['follow','关注'],['files','导出'],['me','我的']].map(([p,text])=>({pagePath:`pages/${p}/index`,text}))}}
 }; }
 function identityText(result) {
   return JSON.stringify(result);
@@ -82,7 +85,12 @@ test('AI内测永远不能通过提审，正式包必须明确关内测',()=>{
  assert.equal(inspect({...x,profile:'ai-internal'}).ok,false);
  assert.equal(inspect({...x,profile:'ai-release'}).ok,false);
  x.config.aiInternal=false; assert.equal(inspect({...x,profile:'ai-release'}).ok,false);
- x.legal.version='2026-11'; const formal=inspect({...x,profile:'ai-release'}); assert.equal(formal.ok,true); assert.equal(formal.readyToSubmit,false);
+ x.legal.version='2026-12';
+ // 只升版本号、协议里没有 AI 那一节：不过（Codex 10/26）
+ assert.equal(inspect({...x,profile:'ai-release'}).checks.find(c=>c.id==='ai-terms').state,'fail');
+ x.legal.user.sections.push({h:'八、AI 功能与生成内容标识',p:['一','二','三']}); x.legal.privacy.sections.push({h:'一、',p:['交给已备案的大模型处理']});
+ const formal=inspect({...x,profile:'ai-release'}); assert.equal(formal.ok,true); assert.equal(formal.readyToSubmit,false);
+ x.legal.user.sections.at(-1).p=['一','二']; assert.equal(inspect({...x,profile:'ai-release'}).checks.find(c=>c.id==='ai-terms').state,'fail');
 });
 test('未知参数失败；结构化输出不含运营者数据',()=>{
  assert.throws(()=>inspect({...input(),mode:'bypass'}));
@@ -111,8 +119,10 @@ test('完整候选严格限定 28 页（含站内阅读与结果页），不能�
    const y=JSON.parse(JSON.stringify(x));change(y);assert.equal(inspect({...y,profile:'complete-candidate',mode:'prepare'}).ok,false);
  }
 });
-test('完整正式包（10/18）：页面同完整候选，必须关 AI 内测、协议 2026-11 以后，备案号齐了才能通过提审检查',()=>{
- const x=input(); x.config.aiInternal=false; x.legal.version='2026-11';
+test('完整正式包（10/18）：页面同完整候选，必须关 AI 内测、协议排在 2026-11.1 以后（D-098），备案号齐了才能通过提审检查',()=>{
+ const x=input(); x.config.aiInternal=false; x.legal.version='2026-12';
+ // 正式 AI 包的协议里要有 AI 那一节、隐私保护指引写到模型（Codex 10/26）
+ x.legal.user.sections.push({h:'八、AI 功能与生成内容标识',p:['一','二','三']}); x.legal.privacy.sections.push({h:'一、',p:['交给已备案的大模型处理']});
  x.app.pages.push(...['advisor','advisor-interpret','advisor-clause','advisor-tasks','complaint','advisor-form','advisor-terms','advisor-trial','pass','orders','ai','help'].map(p=>`pages/${p}/index`)); x.app.tabBar.list.push({pagePath:'pages/ai/index',text:'AI'});
  x.toolTerms={version:SERVER_TOOL_TERMS_VERSION,reviewedForRelease:false,paragraphs:['上传','授权','留存','删除','免费','结果边界']};
  const r=inspect({...x,profile:'complete-release',mode:'submit'});
@@ -126,6 +136,11 @@ test('完整正式包（10/18）：页面同完整候选，必须关 AI 内测�
  assert.equal(inspect({...noIcp,profile:'complete-release',mode:'submit'}).ok,false);
  assert.equal(inspect({...noIcp,profile:'complete-release',mode:'prepare'}).ok,true);
  // 开着 AI 内测、协议还是旧版本、页面不对、工具说明版本不对：都不过
+ // 协议还是 2026-11 或过审版加 AI 那一版：只同意过 2026-11.1 的人在完整版里不会被请去重新同意（D-098）
+ for(const version of ['2026-11','2026-11.1']) { const y=JSON.parse(JSON.stringify(x)); y.legal.version=version; assert.equal(inspect({...y,profile:'complete-release',mode:'submit'}).checks.find(c=>c.id==='tools-terms-order').state,'fail',version); }
+ // 体验准备（prepare）只提示，不挡体验包：完整版协议下次改时再升版本（要创始人点头）
+ { const y=JSON.parse(JSON.stringify(x)); y.legal.version='2026-11'; assert.equal(inspect({...y,profile:'complete-release',mode:'prepare'}).checks.find(c=>c.id==='tools-terms-order').state,'warning'); }
+ assert.equal(r.checks.find(c=>c.id==='tools-terms-order').state,'pass');
  for(const change of [y=>y.config.aiInternal=true,y=>y.legal.version='2026-10',y=>y.app.pages.pop(),y=>y.app.pages.push('pages/rewards/index'),
    y=>{y.app.subPackages=[{root:'pay',pages:['index']}];},y=>y.toolTerms.version='old',y=>y.toolTerms=null]) {
    const y=JSON.parse(JSON.stringify(x));change(y);assert.equal(inspect({...y,profile:'complete-release',mode:'submit'}).ok,false);
@@ -226,4 +241,74 @@ test('过审版协议（D-093 ⑤）：首发包的协议不能写 AI、投诉�
   const x = input(); x.config.aiInternal = false; x.legal.version = '2026-11';
   x.app.pages.push(...['advisor', 'advisor-interpret', 'advisor-clause', 'advisor-tasks', 'complaint'].map((p) => `pages/${p}/index`));
   assert.equal(inspect({ ...x, profile: 'ai-release', mode: 'prepare' }).checks.some((c) => c.id === 'first-terms'), false);
+});
+
+test('协议指纹（D-098）：正文改了没升版本号、这一版没登记都不过；仓库里定稿的协议都已登记，草稿还没登记',()=>{
+ const x=input(); const fingerprints={[x.legal.version]:agreementFingerprint(x.legal)};
+ const state=(y,f)=>presubmit.inspect({...y,profile:'first-release',mode:'prepare',fingerprints:f}).checks.find(c=>c.id==='terms-fingerprint').state;
+ assert.equal(state(x,fingerprints),'pass');
+ const changed=JSON.parse(JSON.stringify(x)); changed.legal.user.sections[0].p[0]+='（改了一个字）';
+ assert.equal(state(changed,fingerprints),'fail','改了正文没升版本号');
+ assert.equal(state(x,{}),'fail','这一版没登记');
+ for(const file of ['legal.js','legal-first-release.js','legal-first-release-ai.js']){
+  const legal=require(path.join(__dirname,'..','..','apps','miniapp','content',file));
+  // 草稿（完整版 2026-12 在创始人定稿前）不登记指纹：定稿时用 --fingerprint 打印、写进登记表
+  if(legal.final!==true){ assert.equal(Object.hasOwn(presubmit.FINGERPRINTS,legal.version),false,`${file} 还是草稿，不该已登记`); continue; }
+  assert.equal(presubmit.FINGERPRINTS[legal.version],agreementFingerprint(legal),file);
+ }
+ // 完整版 2026-11 升到 2026-12 后冻结的底稿（过审版两份协议从它改出来）：一字不差就是登记过的那一版
+ const base=require('../release/legal-2026-11.js');
+ assert.equal(base.version,'2026-11');
+ assert.equal(presubmit.FINGERPRINTS['2026-11'],agreementFingerprint(base),'tools/release/legal-2026-11.js');
+});
+
+test('过审版加 AI（D-098）：协议要是那一版、只写包里有的功能，后台也认它不含工具条款', () => {
+  const real = JSON.parse(JSON.stringify(require('../../apps/miniapp/content/legal-first-release-ai.js')));
+  const x = input();
+  x.legal = { ...real, final: true, operator: x.legal.operator };
+  const state = (y) => inspect({ ...y, profile: 'first-release-ai', mode: 'prepare' }).checks.find((c) => c.id === 'first-ai-terms').state;
+  assert.equal(state(x), 'pass');
+  assert.equal(x.legal.version, presubmit.FIRST_AI_TERMS.VERSION);
+  assert.ok(presubmit.SERVER_WITHOUT_TOOLS_TERMS.includes(presubmit.FIRST_AI_TERMS.VERSION), '后台 agreements.WITHOUT_TOOLS_TERMS 里要有这一版');
+  // 完整版协议（写着批量工具、加量体验、付费）不过
+  const full = JSON.parse(JSON.stringify(require('../../apps/miniapp/content/legal.js')));
+  assert.equal(state({ ...x, legal: { ...full, operator: x.legal.operator } }), 'fail');
+  // 版本号不对不过
+  assert.equal(state({ ...x, legal: { ...x.legal, version: '2026-11' } }), 'fail');
+  // 加回一句包里没有的功能也不过
+  for (const word of ['批量工具', '加量体验', '订单', '原文链接', '统一社会信用代码']) {
+    const y = JSON.parse(JSON.stringify(x));
+    y.legal.privacy.sections[1].p.push(`测试：${word}`);
+    assert.equal(state(y), 'fail', word);
+  }
+  // 别的版本没有这一项
+  assert.equal(inspect({ ...x, profile: 'first-release', mode: 'prepare' }).checks.find((c) => c.id === 'first-ai-terms'), undefined);
+});
+
+test('正式AI包的协议版本不低于后台认 AI 条款的版本（10/28 起 2026-11.1）：体验准备只提示，提审判不过', () => {
+  const { SERVER_AI_TERMS_VERSION } = require('../miniapp_presubmit_check');
+  const x = input();
+  x.config.aiInternal = false;
+  x.legal.user.sections.push({ h: '八、AI 功能与生成内容标识', p: ['一', '二', '三'] });
+  x.legal.privacy.sections.push({ h: '一、', p: ['交给已备案的大模型处理'] });
+  const state = (version, mode) => {
+    const y = JSON.parse(JSON.stringify(x)); y.legal.version = version;
+    return inspect({ ...y, profile: 'ai-release', mode }).checks.find((c) => c.id === 'ai-terms-current').state;
+  };
+  assert.equal(SERVER_AI_TERMS_VERSION, '2026-11.1');
+  assert.equal(state('2026-11', 'prepare'), 'warning');
+  assert.equal(state('2026-11', 'submit'), 'fail');
+  assert.equal(state('2026-11.1', 'submit'), 'pass');
+  assert.equal(state('2026-12', 'submit'), 'pass');
+});
+
+test('营业执照信息（D-107 ③）：能卖的完整版（付费协议定稿）提审时信用代码和照片要填齐、照片要在包里；没定稿或体验准备只提示',()=>{
+ const pay={version:'pay-2026-11',final:true,title:'付费服务协议',text:'正文'};
+ const state=(extra,mode)=>inspect({...input(),profile:'complete-release',mode,payTerms:pay,...extra}).checks.find(c=>c.id==='business-license').state;
+ assert.equal(state({businessLicense:{creditCode:'',photo:''},payTerms:{...pay,final:false}},'submit'),'warning');
+ assert.equal(state({businessLicense:{creditCode:'',photo:''}},'submit'),'fail');
+ assert.equal(state({businessLicense:{creditCode:'',photo:''}},'prepare'),'warning');
+ assert.equal(state({businessLicense:{creditCode:'X',photo:'images/license.jpg'},licensePhotoExists:false},'submit'),'fail');
+ assert.equal(state({businessLicense:{creditCode:'X',photo:'images/license.jpg'},licensePhotoExists:true},'submit'),'fail');
+ assert.equal(state({businessLicense:{creditCode:'X',photo:'/images/license.jpg'},licensePhotoExists:true},'submit'),'pass');
 });

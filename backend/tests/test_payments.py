@@ -131,13 +131,18 @@ def setup_pay(session_factory, monkeypatch):
         _env_file=None,
         pay_enabled=True,
         # 这些用例测售卖本身：对全体开放；测试名单另见 test_invoices。
-        # 沙箱配成 all 也只给测试名单（D-074），所以买东西的 pay-user 在名单里
         pay_audience="all",
         pay_openids="pay-user",
         advisor_enabled=True,
+        advisor_compare_enabled=True,  # D-118 默认关；这些测试照旧测比对
         trust_wx_headers=True,
         xpay_offer_id="offer-test",
+        # 新订单一律现网（沙箱已去掉，创始人 10/29）：现网 AppKey、定稿协议版本、发票类型都配了才卖
+        xpay_appkey_prod="12345",
+        # 去掉沙箱以前下的测试单（订单上记的 env 是 1）查单、退款用
         xpay_appkey_sandbox="12345",
+        pay_terms_version="pay-test",
+        pay_invoice_type="电子普通发票（测试）",
         xpay_price_pass=100,
         agreement_version="2026-11",
         xpay_bill_order_column="trade",
@@ -194,7 +199,7 @@ def payload(order):
         "Event": "xpay_goods_deliver_notify",
         "OpenId": "pay-user",
         "OutTradeNo": order.out_trade_no,
-        "Env": 1,
+        "Env": 0,
         "WeChatPayInfo": {
             "MchOrderNo": "mch-test",
             "TransactionId": "tx-test",
@@ -212,6 +217,11 @@ def payload(order):
 
 def push(setup_pay, data):
     return setup_pay[0].post("/api/wx/push", headers=HEADERS, json=data)
+
+
+def collect(alerts):
+    """告警记下来、当成发出去了（alert 返回 True 才算发出去；返回 None 是没配告警地址，下一轮接着发）。"""
+    return lambda text: alerts.append(text) or True
 
 
 def run(session, setup_pay, stamp=NOW):
@@ -243,17 +253,47 @@ def test_official_signature_vectors():
 
 def test_defaults_and_env_only_secrets(tmp_path, monkeypatch):
     config = Settings(_env_file=None)
-    assert not config.pay_enabled and config.xpay_env == 1
+    # 没有沙箱开关了（创始人 10/29）：线上还留着 YOUJU_XPAY_ENV 也照常启动，不起作用
+    assert not config.pay_enabled and not hasattr(config, "xpay_env")
+    monkeypatch.setenv("YOUJU_XPAY_ENV", "1")
+    assert not hasattr(Settings(_env_file=None), "xpay_env")
     assert not payments.products(config)
     assert config.xpay_product_pass == "workbench_30d"
     monkeypatch.setenv("YOUJU_XPAY_PRICE_PASS", "")
     assert not payments.products(Settings(_env_file=None))
     path = tmp_path / "payment.env"
-    path.write_text("YOUJU_WX_APPSECRET=dotenv-test\nYOUJU_XPAY_APPKEY_SANDBOX=dotenv-test\n")
+    path.write_text(
+        "YOUJU_WX_APPSECRET=dotenv-test\nYOUJU_XPAY_APPKEY_SANDBOX=dotenv-test\n"
+        "YOUJU_XPAY_APPKEY_PROD=dotenv-test\n"
+    )
     assert Settings(_env_file=path).wx_appsecret is None
     assert Settings(_env_file=path).xpay_appkey_sandbox is None
+    assert Settings(_env_file=path).xpay_appkey_prod is None
     monkeypatch.setenv("YOUJU_WX_APPSECRET", "environment-test")
     assert Settings(_env_file=path).wx_appsecret.get_secret_value() == "environment-test"
+
+
+def test_create_requires_agreement_with_tools_terms(setup_pay, session):
+    # settings 是这个用例自己的（setup_pay 每次新建），改它不影响别的用例；
+    # 最低版本放到 2026-10，让两个旧版本都过得了登录那一关，拦它们的只能是 tools_agreed
+    _, settings, fake = setup_pay
+    settings.agreement_version = "2026-12"
+    settings.agreement_min_version = "2026-10"
+    user = session.scalar(select(User))
+    for version in ("2026-10", "2026-11.1"):
+        user.agreement_version = version
+        session.commit()
+        before = len(fake.calls)
+        response = create(setup_pay)
+        assert response.status_code == 403
+        assert response.json()["detail"] == me.OUTDATED
+        assert session.scalar(select(func.count()).select_from(PayOrder)) == 0
+        # 拦在下单前：没去问微信（换登录凭证、下单都没有）
+        assert len(fake.calls) == before
+    user.agreement_version = "2026-12"
+    session.commit()
+    assert create(setup_pay).status_code == 201
+    assert session.scalar(select(func.count()).select_from(PayOrder)) == 1
 
 
 def test_create_signatures_snapshot_and_rate_limit(setup_pay, session):
@@ -265,7 +305,8 @@ def test_create_signatures_snapshot_and_rate_limit(setup_pay, session):
     assert signed == {
         "offerId": "offer-test",
         "buyQuantity": 1,
-        "env": 1,
+        # 现网（沙箱已去掉，创始人 10/29）
+        "env": 0,
         "currencyType": "CNY",
         "productId": "workbench_30d",
         "goodsPrice": 100,
@@ -274,7 +315,7 @@ def test_create_signatures_snapshot_and_rate_limit(setup_pay, session):
     }
     assert data["paySig"] == pay_signature("12345", "requestVirtualPayment", data["signData"])
     assert data["signature"] == signature("9hAb/NEYUlkaMBEsmFgzig==", data["signData"])
-    assert row.price == 100 and row.env == 1
+    assert row.price == 100 and row.env == 0
     assert create(setup_pay).status_code == 201
     assert create(setup_pay).status_code == 201
     assert create(setup_pay).status_code == 429
@@ -292,14 +333,12 @@ def test_create_signatures_snapshot_and_rate_limit(setup_pay, session):
     ],
 )
 def test_query_accepts_both_env_encodings_rejects_other_env(setup_pay, session, env, env_type, ok):
-    """查单返回的 env_type 官方写的是 1 现网、2 沙箱，和请求的 env（0、1）不一样：两种都认，另一个环境的拒绝。"""
-    _, settings, fake = setup_pay
-    settings.xpay_env = env
-    if env == 0:
-        settings.pay_terms_version = "pay-test"
-        settings.pay_invoice_type = "电子普通发票（测试）"
-        settings.xpay_appkey_prod = SecretStr("12345")
+    """查单返回的 env_type 官方写的是 1 现网、2 沙箱，和请求的 env（0、1）不一样：两种都认，另一个环境的拒绝。
+    新订单一律现网；env 1 是去掉沙箱以前下的测试单，照订单上记的环境查。"""
+    _, _, fake = setup_pay
     row = order(session, create(setup_pay))
+    row.env = env
+    session.commit()
     fake.env_type = env_type
     if ok:
         assert payments.query(session, row, fake.client)["order_id"] == row.out_trade_no
@@ -311,7 +350,8 @@ def test_query_accepts_both_env_encodings_rejects_other_env(setup_pay, session, 
 def test_new_order_first_checks_recent_pending_payment(setup_pay, session):
     """下新单前先问微信 10 分钟内的待支付单：已经付了款（推送和补单还没到；小程序取消回调不准、
     付款中途被关掉时本机没记下这一笔）就先开通、不下新单；没付照常下（agy 审阅，10/16）。
-    查不了不挡新单：没调起过支付的单微信那边可能查不到，官方错误码也区分不了。"""
+    查不了的挡新单（最多 10 分钟）：以前放行，旧单其实付了款时会重复扣款（Codex 10/29）；
+    小程序报告过"付款前就被微信拒了"的单当场关掉，不再挡。"""
     _, _, fake = setup_pay
     first = order(session, create(setup_pay))
     fake.calls.clear()
@@ -340,14 +380,26 @@ def test_new_order_first_checks_recent_pending_payment(setup_pay, session):
     assert response.status_code == 409 and "人工核对" in response.json()["detail"]
     session.expire_all()
     assert session.get(PayOrder, fourth.id).status == "manual"
-    # 微信查不了（比如这笔没调起过支付）：不挡新单，上一笔留给补单
+    # 微信查不了（比如下单回应没送到手机、这笔没调起过支付）：挡新单，上一笔留给补单
     fake.status, fake.fee = 1, 100
     fifth = order(session, create(setup_pay))
     fake.bad_order = True
-    sixth = order(session, create(setup_pay))
+    response = create(setup_pay)
+    assert response.status_code == 409 and "查不到结果" in response.json()["detail"]
     session.expire_all()
     assert session.get(PayOrder, fifth.id).status == "pending"
-    assert session.scalar(select(func.count(PayOrder.id))) == 6
+    assert session.scalar(select(func.count(PayOrder.id))) == 5
+    # 查单返回格式不对（unavailable）也一样挡
+    fake.bad_order, fake.status = False, "x"
+    response = create(setup_pay)
+    assert response.status_code == 409 and "查不到结果" in response.json()["detail"]
+    fake.bad_order, fake.status = True, 1
+    # 小程序下一次付款时带上"上一笔付款前就被微信拒了（道具没发布到现网）"：那一单记一笔、照旧待确认，
+    # 查不清时不再挡新单（服务端不凭这一句关单，补单照旧跟踪）
+    sixth = order(session, create(setup_pay, failed_order={"order_id": fifth.id, "code": -15010}))
+    session.expire_all()
+    row = session.get(PayOrder, fifth.id)
+    assert row.status == "pending" and row.error.startswith(payments.NOT_STARTED_PREFIX)
     # 超过 10 分钟的待支付单不在下单时查（交给每分钟的补单）
     fake.bad_order = False
     for row in (fifth, sixth):
@@ -356,6 +408,316 @@ def test_new_order_first_checks_recent_pending_payment(setup_pay, session):
     fake.calls.clear()
     assert create(setup_pay).status_code == 201
     assert "/xpay/query_order" not in [c[0] for c in fake.calls]
+
+
+def test_failed_order_note_only_marks_own_recent_pending_orders_with_known_codes(
+    setup_pay, session
+):
+    """下一次付款带上的"上一笔付款前就被微信拒了"，只认本人 10 分钟内的待确认单和官方表里下单阶段的错误码；
+    记上以后订单照旧待确认、补单照旧查，查单出错不盖掉这一句，查到付了款照样开通（Codex 第 1 轮）。"""
+    _, _, fake = setup_pay
+    first = order(session, create(setup_pay))
+    for code in (-1, -5, -15003, -15015, 0):
+        assert not payments.mark_not_started(session, first.user_id, first.id, code, NOW), code
+    assert not payments.mark_not_started(session, first.user_id + 999, first.id, -15010, NOW)
+    first.status = "closed"
+    session.commit()
+    assert not payments.mark_not_started(session, first.user_id, first.id, -15010, NOW)
+    first.status, first.created_at = "pending", NOW - timedelta(minutes=11)
+    session.commit()
+    assert not payments.mark_not_started(session, first.user_id, first.id, -15010, NOW)
+    session.commit()
+    assert session.get(PayOrder, first.id).error is None
+    # 经下单接口带上：本人 10 分钟内的待确认单记上
+    second = order(session, create(setup_pay))
+    assert (
+        create(setup_pay, failed_order={"order_id": second.id, "code": -15010}).status_code == 201
+    )
+    session.expire_all()
+    row = session.get(PayOrder, second.id)
+    assert row.status == "pending" and row.error.startswith(payments.NOT_STARTED_PREFIX)
+    # 补单查单出错：这一句留着；查到付了款：照样开通
+    row.created_at, row.query_retry_at = NOW - timedelta(minutes=5), None
+    session.commit()
+    fake.bad_order = True
+    run(session, setup_pay)
+    session.expire_all()
+    row = session.get(PayOrder, second.id)
+    assert row.status == "pending" and row.error.startswith(payments.NOT_STARTED_PREFIX)
+    fake.bad_order, fake.status = False, 2
+    row.query_retry_at = None
+    session.commit()
+    run(session, setup_pay)
+    session.expire_all()
+    assert session.get(PayOrder, second.id).status == "completed"
+    # 48 小时都查不到的：照旧关单告警，告警里注明小程序报告过付款前就被拒（独立审阅 #402）
+    fake.status = 1  # 前面那张待确认的单微信说还没付：不挡新单
+    third = order(session, create(setup_pay))
+    assert payments.mark_not_started(session, third.user_id, third.id, -15010, NOW)
+    third.created_at, third.query_retry_at = NOW - timedelta(hours=49), None
+    session.commit()
+    fake.bad_order = True
+    alerts = []
+    payments.run_payments(
+        session, settings=setup_pay[1], client=fake.client, stamp=NOW, alert=collect(alerts)
+    )
+    session.expire_all()
+    assert session.get(PayOrder, third.id).status == "closed"
+    assert any("小程序报告过付款前就被微信拒了" in a for a in alerts)
+
+
+def test_orders_reported_as_never_started_do_not_count_toward_three_pending(setup_pay, session):
+    """10 分钟内最多 3 笔待支付；小程序报告过付款前就被拒的单不算在这 3 笔里（连着被拒也能接着付），
+    但连这些一起最多 10 笔（Codex #402 第 2 轮）。"""
+    _, _, fake = setup_pay
+    fake.bad_order = True  # 微信那边查不到这些单（付款前就被拒了）
+    previous = order(session, create(setup_pay))
+    for _ in range(8):
+        response = create(setup_pay, failed_order={"order_id": previous.id, "code": -15010})
+        assert response.status_code == 201
+        previous = order(session, response)
+    # 8 笔被标记 + 最新这一笔没标：第 10 笔还能下；10 笔都标上了，第 11 笔挡（连这些一起最多 10 笔）
+    tenth = create(setup_pay, failed_order={"order_id": previous.id, "code": -15010})
+    assert tenth.status_code == 201, tenth.json()
+    tenth_id = order(session, tenth).id
+    eleventh = create(setup_pay, failed_order={"order_id": tenth_id, "code": -15010})
+    assert eleventh.status_code == 429, eleventh.json()
+    # 被 429 挡回也存下了这一句（换台手机再付不会被第 10 笔挡，Codex #402 第 3 轮）
+    session.expire_all()
+    assert session.get(PayOrder, tenth_id).error.startswith(payments.NOT_STARTED_PREFIX)
+    session.expire_all()
+    assert session.scalar(select(func.count(PayOrder.id))) == 10
+
+
+def test_failed_order_note_is_kept_when_the_new_order_fails(setup_pay, session):
+    """带上来的"上一笔付款前就被拒"先单独存下：这一次下单失败（换会话密钥失败 503）回滚也不丢。"""
+    _, _, fake = setup_pay
+    first = order(session, create(setup_pay))
+    fake.wrong_owner = True
+    response = create(setup_pay, failed_order={"order_id": first.id, "code": -15014})
+    assert response.status_code == 503
+    session.expire_all()
+    row = session.get(PayOrder, first.id)
+    assert row.status == "pending" and row.error.startswith(payments.NOT_STARTED_PREFIX)
+    assert session.scalar(select(func.count(PayOrder.id))) == 1
+
+
+@pytest.mark.parametrize("status", ["refunding", "refunded", "closed"])
+def test_complaint_on_refunding_refunded_or_closed_order_keeps_status_and_alerts_once(
+    setup_pay, session, status
+):
+    """投诉时订单退款中、已退款、已关闭：不改状态（转人工会让退款中的单停掉自动退款、已退款的单倒退成
+    "人工核对中"），这条投诉单独告警一次；没发出去（返回 False）、没配告警地址（None）的下一轮接着发；
+    之后订单状态变了也照发（收到推送时就定好，Codex 第 1 轮）。"""
+    _, settings, fake = setup_pay
+    row = delivered(setup_pay, session)
+    row.status = status
+    if status != "closed":
+        row.refund_status = "pending" if status == "refunding" else "completed"
+    session.commit()
+    base = {"OpenId": "pay-user", "MchOrderId": row.out_trade_no, "WxOrderId": row.wx_order_id}
+    complaint = {**base, "Event": "xpay_complaint_notify", "ComplaintId": "c-1"}
+    assert push(setup_pay, complaint).json()["ErrCode"] == 0
+    session.expire_all()
+    row = session.get(PayOrder, row.id)
+    assert row.status == status
+    # 补单发告警之前订单变成了已完成：照样发
+    row.status = "completed"
+    session.commit()
+    settings.pay_enabled = False
+    assert payments.has_work(session, settings) is True
+    sent = []
+    answers = iter([False, None, True])
+
+    def flaky(message):
+        sent.append(message)
+        return next(answers)
+
+    for minute in range(4):
+        payments.complaint_alerts(session, NOW + timedelta(minutes=minute), flaky)
+    assert len(sent) == 3 and sent[2].startswith(f"支付订单 #{row.id}（订单")
+    assert payments.COMPLAINT_ERROR in sent[2]
+    event = session.scalar(select(PayEvent).where(PayEvent.kind == "xpay_complaint_notify"))
+    assert event.summary["alert"] == "sent"
+
+
+@pytest.mark.parametrize("case", ["pending", "closed_unconfirmed", "unknown"])
+def test_complaint_on_order_without_wechat_order_id_is_accepted_and_alerted(
+    setup_pay, session, case
+):
+    """本地还没有微信单号的单（没开通的待确认单、48 小时查不到付款结果关掉的单）收到投诉：不比微信单号，
+    照样记下、告警——这正是"扣了钱没开通"最该处理的投诉；本地查不到订单的投诉也告警（独立审阅 #402）。"""
+    _, settings, fake = setup_pay
+    row = order(session, create(setup_pay))
+    if case == "closed_unconfirmed":
+        row.status, row.error = "closed", payments.UNCONFIRMED_PAYMENT_ERROR
+        session.commit()
+    complaint = {
+        "Event": "xpay_complaint_notify",
+        "OpenId": "pay-user",
+        "MchOrderId": "not-ours" if case == "unknown" else row.out_trade_no,
+        "WxOrderId": "wx-from-wechat",
+        "ComplaintId": "c-9",
+    }
+    assert push(setup_pay, complaint).json()["ErrCode"] == 0
+    session.expire_all()
+    current = session.get(PayOrder, row.id)
+    alerts = []
+    payments.run_payments(
+        session, settings=settings, client=fake.client, stamp=NOW, alert=collect(alerts)
+    )
+    if case == "pending":
+        # 待确认的单照旧转人工，由转人工的告警负责
+        assert current.status == "manual" and payments.COMPLAINT_ERROR in current.error
+        assert len(alerts) == 1 and "需人工处理" in alerts[0]
+    elif case == "closed_unconfirmed":
+        assert current.status == "closed"
+        assert any(f"支付订单 #{row.id}（订单已关闭）" in a for a in alerts)
+    else:
+        assert current.status == "pending"
+        assert any("商户单号 not-ours（本地没有这笔订单）" in a for a in alerts)
+        # 同一个投诉重推：不再告警（Codex #402 第 4 轮）
+        assert push(setup_pay, complaint).json()["ErrCode"] == 0
+        more = []
+        payments.run_payments(
+            session,
+            settings=settings,
+            client=fake.client,
+            stamp=NOW + timedelta(minutes=1),
+            alert=collect(more),
+        )
+        assert not any("本地没有这笔订单" in a for a in more)
+        kinds = [
+            e.summary["alert"]
+            for e in session.scalars(
+                select(PayEvent)
+                .where(PayEvent.kind == "xpay_complaint_notify", PayEvent.order_id.is_(None))
+                .order_by(PayEvent.id)
+            )
+        ]
+        assert kinds == ["sent", "duplicate"]
+
+
+def test_same_complaint_arriving_twice_at_once_alerts_once(setup_pay, session):
+    """本地没有订单的同一投诉两次推送同时到，收推送时都没看到对方、都记成 pending：
+    发告警时按事件编号再判一次，只发最早那一条（Codex #402 第 5 轮）。"""
+    summary = {"MchOrderId": "not-ours", "ComplaintId": "c-7", "alert": "pending"}
+    session.add_all(
+        [
+            PayEvent(order_id=None, kind="xpay_complaint_notify", summary=dict(summary)),
+            PayEvent(order_id=None, kind="xpay_complaint_notify", summary=dict(summary)),
+            # 别的投诉照常发
+            PayEvent(
+                order_id=None,
+                kind="xpay_complaint_notify",
+                summary={**summary, "ComplaintId": "c-8"},
+            ),
+        ]
+    )
+    session.commit()
+    alerts = []
+    assert payments.complaint_alerts(session, NOW, collect(alerts)) == 2
+    states = [e.summary["alert"] for e in session.scalars(select(PayEvent).order_by(PayEvent.id))]
+    assert states == ["sent", "duplicate", "sent"]
+
+
+def test_same_complaint_committed_out_of_order_still_alerts_exactly_once(setup_pay, session):
+    """编号大的先提交、先发了告警，编号小的后提交：看到同一投诉已经发过，不再发；
+    收推送时只看编号更小的同伴，编号小的不会因为看到编号大的就记成重复（Codex #402 第 6 轮）。"""
+    summary = {"MchOrderId": "not-ours", "ComplaintId": "c-7"}
+    small = PayEvent(
+        order_id=None, kind="xpay_complaint_notify", summary={**summary, "alert": "pending"}
+    )
+    large = PayEvent(
+        order_id=None, kind="xpay_complaint_notify", summary={**summary, "alert": "sent"}
+    )
+    session.add_all([small, large])
+    session.commit()
+    # 收推送时：编号小的只看更小的，没有同伴，不算重推
+    assert payments.same_complaint(session, small, earlier_only=True) == []
+    alerts = []
+    assert payments.complaint_alerts(session, NOW, collect(alerts)) == 0
+    session.expire_all()
+    assert session.get(PayEvent, small.id).summary["alert"] == "duplicate"
+    # 两条都在等：只发编号小的；编号小的这次没发出去，编号大的也不抢着发，下一轮再发编号小的
+    session.get(PayEvent, small.id).summary = {**summary, "alert": "pending"}
+    session.get(PayEvent, large.id).summary = {**summary, "alert": "pending"}
+    session.commit()
+    answers = iter([False, True])
+    sent = []
+
+    def flaky(text):
+        sent.append(text)
+        return next(answers)
+
+    payments.complaint_alerts(session, NOW, flaky)
+    payments.complaint_alerts(session, NOW + timedelta(minutes=1), flaky)
+    session.expire_all()
+    assert len(sent) == 2
+    assert session.get(PayEvent, small.id).summary["alert"] == "sent"
+    assert session.get(PayEvent, large.id).summary["alert"] == "duplicate"
+
+
+def test_complaint_alerts_run_one_at_a_time(setup_pay, session):
+    """发投诉告警这一段同一时刻只让一个补单跑：锁在别人手里时这一轮不发，放开以后照发（Codex #402 第 7 轮）。"""
+    from sqlalchemy import text
+
+    session.add(
+        PayEvent(
+            order_id=None,
+            kind="xpay_complaint_notify",
+            summary={"MchOrderId": "not-ours", "ComplaintId": "c-3", "alert": "pending"},
+        )
+    )
+    session.commit()
+    engine = session.get_bind()
+    with engine.connect() as other:
+        name = payments.COMPLAINT_ALERT_LOCK
+        assert other.scalar(text("SELECT GET_LOCK(:k, 0)"), {"k": name}) == 1
+        alerts = []
+        assert payments.complaint_alerts(session, NOW, collect(alerts)) == 0
+        assert alerts == []
+        other.execute(text("SELECT RELEASE_LOCK(:k)"), {"k": name})
+    assert payments.complaint_alerts(session, NOW, collect(alerts)) == 1
+    assert len(alerts) == 1
+
+
+def test_complaint_on_completed_order_still_goes_manual_without_a_second_alert(setup_pay, session):
+    """已完成的单收到投诉照旧转人工、由转人工的告警负责（事件记 alert=manual，不单独发）；
+    同一个投诉重推只记事件（duplicate）；人工单里已经有投诉原因时又来一个新投诉，单独告警一次。"""
+    _, settings, fake = setup_pay
+    row = delivered(setup_pay, session)
+    base = {"OpenId": "pay-user", "MchOrderId": row.out_trade_no, "WxOrderId": row.wx_order_id}
+    first = {**base, "Event": "xpay_complaint_notify", "ComplaintId": "c-1"}
+    assert push(setup_pay, first).json()["ErrCode"] == 0
+    assert push(setup_pay, first).json()["ErrCode"] == 0
+    alerts = []
+    for minute in range(2):
+        payments.run_payments(
+            session,
+            settings=settings,
+            client=fake.client,
+            stamp=NOW + timedelta(minutes=minute),
+            alert=collect(alerts),
+        )
+    assert len(alerts) == 1 and "需人工处理" in alerts[0]
+    kinds = [
+        e.summary["alert"]
+        for e in session.scalars(
+            select(PayEvent).where(PayEvent.kind == "xpay_complaint_notify").order_by(PayEvent.id)
+        )
+    ]
+    assert kinds == ["manual", "duplicate"]
+    second = {**base, "Event": "xpay_complaint_notify", "ComplaintId": "c-2"}
+    assert push(setup_pay, second).json()["ErrCode"] == 0
+    payments.run_payments(
+        session,
+        settings=settings,
+        client=fake.client,
+        stamp=NOW + timedelta(minutes=5),
+        alert=collect(alerts),
+    )
+    assert len(alerts) == 2 and payments.COMPLAINT_ERROR in alerts[1]
 
 
 def test_new_order_locks_previous_orders_by_primary_key_only(setup_pay, session):
@@ -410,15 +772,13 @@ def test_products_lists_only_priced_items(setup_pay, session):
         "items": [
             {"productId": "workbench_30d", "name": "批量工具 30 天", "price": 100, "days": 30}
         ],
-        # 默认沙箱：小程序据此在协议定稿前也放开付款按钮给测试名单联调
-        "sandbox": True,
         # 续买多送开关默认关：付款页不提
         "renewBonus": None,
-        # 沙箱联调时发票类型可以还没填
-        "invoiceType": None,
+        "invoiceType": "电子普通发票（测试）",
     }
     assert session.scalar(select(func.count(PayOrder.id))) == 0
-    closed = {"items": [], "sandbox": True, "renewBonus": None, "invoiceType": None}
+    # 没有沙箱了：商品接口不再带 sandbox（创始人 10/29）
+    closed = {"items": [], "renewBonus": None, "invoiceType": None}
     settings.xpay_price_pass = None
     assert client.get("/api/v1/pay/products", headers=HEADERS).json() == closed
     settings.xpay_price_pass = 100
@@ -426,23 +786,28 @@ def test_products_lists_only_priced_items(setup_pay, session):
     assert client.get("/api/v1/pay/products", headers=HEADERS).json() == closed
     assert create(setup_pay).status_code == 404
     assert not fake.calls
-    # 现网（真扣钱）：没配定稿的协议版本时谁也不卖（D-074 只对带定稿协议版本号的包开放）
-    settings.xpay_offer_id, settings.xpay_env = "offer-test", 0
+    settings.xpay_offer_id = "offer-test"
+    # 没配现网 AppKey（或只有空格）：下单签不了名，价格也不显示，不出现看得到价格却付不了款（Codex 10/29）
+    for key in (None, SecretStr(""), SecretStr("  ")):
+        settings.xpay_appkey_prod = key
+        assert client.get("/api/v1/pay/products", headers=HEADERS).json() == closed
+        assert create(setup_pay).status_code == 404
+    settings.xpay_appkey_prod = SecretStr("12345")
+    assert not fake.calls
+    # 没配定稿的协议版本时谁也不卖（D-074 只对带定稿协议版本号的包开放）
+    settings.pay_terms_version = ""
     assert client.get("/api/v1/pay/products", headers=HEADERS).status_code == 404
     assert create(setup_pay).status_code == 404
     assert not fake.calls
     settings.pay_terms_version = "pay-test"
-    # 现网还要写明能开哪种发票（D-070 付款前要看得到）；写成占位也不算
+    # 还要写明能开哪种发票（D-070 付款前要看得到）；写成占位也不算
     for invoice in ("", "【发票类型】", "待确认"):
         settings.pay_invoice_type = invoice
-        assert client.get("/api/v1/pay/products", headers=HEADERS).json() == {
-            **closed,
-            "sandbox": False,
-        }
+        assert client.get("/api/v1/pay/products", headers=HEADERS).json() == closed
         assert create(setup_pay).status_code == 404
     settings.pay_invoice_type = "电子普通发票（测试）"
     listed = client.get("/api/v1/pay/products", headers=HEADERS).json()
-    assert listed["sandbox"] is False and [i["productId"] for i in listed["items"]] == [
+    assert "sandbox" not in listed and [i["productId"] for i in listed["items"]] == [
         "workbench_30d"
     ]
     assert listed["invoiceType"] == "电子普通发票（测试）"
@@ -489,7 +854,8 @@ def test_push_requires_matching_query(setup_pay, session, mismatch):
     elif mismatch == "owner":
         data["OpenId"] = "wrong"
     elif mismatch == "env":
-        data["Env"] = 0
+        # 新订单是现网（0）；推送说沙箱（1）就对不上
+        data["Env"] = 1
     elif mismatch == "trade":
         fake.bad_order = True
     elif mismatch == "unpaid":
@@ -511,7 +877,7 @@ def pay_logs(caplog):
         ("attach", "GoodsInfo.Attach（推送里是空的）"),
         ("no_goods", "GoodsInfo（推送里没有）"),
         ("wx", "WeChatPayInfo.TransactionId（值不同）"),
-        ("sandbox", "WeChatPayInfo.MchOrderNo（查单里是空的）"),
+        ("mch_empty", "WeChatPayInfo.MchOrderNo（查单里是空的）"),
     ],
 )
 def test_push_fields_unlike_query_still_open_what_was_paid(
@@ -533,7 +899,7 @@ def test_push_fields_unlike_query_still_open_what_was_paid(
         del data["GoodsInfo"]
     elif change == "wx":
         data["WeChatPayInfo"]["TransactionId"] = "wrong"
-    elif change == "sandbox":
+    elif change == "mch_empty":
         fake.channel_ids = ("", "")
     caplog.set_level(logging.WARNING, logger="youju")
     assert push(setup_pay, data).json()["ErrCode"] == 0
@@ -800,6 +1166,262 @@ def test_official_refund_and_complaint_fields(setup_pay, session, kind):
     assert "13800138000" not in str(summary) and "ComplaintDetail" not in summary
 
 
+@pytest.mark.parametrize("problem", ["still_paid", "query_error"])
+def test_refund_push_on_completed_order_not_confirmed_goes_manual(setup_pay, session, problem):
+    """已完成的订单（苹果那边或小程序后台退的款）收到退款推送、查单没确认退款：转人工、告警一次，
+    使用期先不动；重推时查单显示退完了（8），照常记成已退款、收回使用期（Codex 10/29）。
+    以前只回"没处理"等微信重推，重推完、每分钟的补单又不查已完成的订单，就没人知道了。"""
+    row = delivered(setup_pay, session)
+    ticket = payments.order_pass(session, row)
+    data = {
+        "Event": "xpay_refund_notify",
+        "OpenId": "pay-user",
+        "MchOrderId": row.out_trade_no,
+        "WxOrderId": row.wx_order_id,
+        "RefundFee": 100,
+        "RetCode": 0,
+    }
+    fake = setup_pay[2]
+    # still_paid：查单还是已付款（2）；query_error：查单返回别的订单，核验失败
+    fake.bad_order = problem == "query_error"
+    assert push(setup_pay, data).json()["ErrCode"] != 0
+    session.expire_all()
+    row = session.get(PayOrder, row.id)
+    assert row.status == "manual" and row.error == payments.REFUND_PUSH_UNCONFIRMED_ERROR
+    assert session.get(WorkbenchPass, ticket.id).revoked_at is None
+    alerts = []
+    payments.run_payments(
+        session, settings=setup_pay[1], client=fake.client, stamp=NOW, alert=collect(alerts)
+    )
+    assert len(alerts) == 1 and f"支付订单 #{row.id} 需人工处理" in alerts[0]
+    # 微信重推、这次还是没核实（查单又出错或还是已付款）：人工核对的原因不被盖掉（Codex 第 3 轮）
+    assert push(setup_pay, data).json()["ErrCode"] != 0
+    session.expire_all()
+    row = session.get(PayOrder, row.id)
+    assert row.status == "manual" and row.error == payments.REFUND_PUSH_UNCONFIRMED_ERROR
+    fake.bad_order, fake.status, fake.left_fee = False, 8, 0
+    assert push(setup_pay, data).json()["ErrCode"] == 0
+    session.expire_all()
+    assert session.get(PayOrder, row.id).status == "refunded"
+    assert session.get(WorkbenchPass, ticket.id).revoked_at is not None
+
+
+def test_unconfirmed_refund_push_on_order_already_manual_alerts_again(setup_pay, session):
+    """已经因为投诉转了人工、也告警过的订单，又收到没核实的退款推送：原来的原因留着，前面加上退款要核对，
+    再告警一次；微信重推时不重复加、不重复告警（Codex 第 4 轮）。"""
+    row = delivered(setup_pay, session)
+    base = {"OpenId": "pay-user", "MchOrderId": row.out_trade_no, "WxOrderId": row.wx_order_id}
+    assert push(setup_pay, {**base, "Event": "xpay_complaint_notify"}).json()["ErrCode"] == 0
+    alerts = []
+
+    def run_alerts(stamp):
+        payments.run_payments(
+            session,
+            settings=setup_pay[1],
+            client=setup_pay[2].client,
+            stamp=stamp,
+            alert=collect(alerts),
+        )
+
+    run_alerts(NOW)
+    session.expire_all()
+    row = session.get(PayOrder, row.id)
+    complaint = row.error
+    assert row.status == "manual" and row.alerted_at is not None and len(alerts) == 1
+    refund = {**base, "Event": "xpay_refund_notify", "RefundFee": 100, "RetCode": 0}
+    for _ in range(2):  # 第二次是微信重推
+        assert push(setup_pay, refund).json()["ErrCode"] != 0
+        session.expire_all()
+        row = session.get(PayOrder, row.id)
+        assert row.error.startswith(payments.REFUND_PUSH_UNCONFIRMED_ERROR)
+        assert row.error.endswith(complaint) and row.error.count("收到退款推送") == 1
+        run_alerts(NOW + timedelta(minutes=1))
+    assert len(alerts) == 2 and payments.REFUND_PUSH_UNCONFIRMED_ERROR in alerts[1]
+
+
+@pytest.mark.parametrize("order_of_events", ["refund_then_complaint", "complaint_then_partial"])
+def test_manual_reasons_are_added_not_overwritten_and_alert_again(
+    setup_pay, session, order_of_events
+):
+    """转人工的原因只加不盖、每来一个新原因再告警一次（payments.escalate，Codex 第 5 轮）：
+    没核实的退款转人工后又来投诉，退款核对那句不能被盖掉；投诉告警过以后查单显示部分退款，要再告警。"""
+    row = delivered(setup_pay, session)
+    base = {"OpenId": "pay-user", "MchOrderId": row.out_trade_no, "WxOrderId": row.wx_order_id}
+    complaint = {**base, "Event": "xpay_complaint_notify"}
+    refund = {**base, "Event": "xpay_refund_notify", "RefundFee": 100, "RetCode": 0}
+    fake = setup_pay[2]
+    alerts = []
+
+    def run_alerts(minutes):
+        payments.run_payments(
+            session,
+            settings=setup_pay[1],
+            client=fake.client,
+            stamp=NOW + timedelta(minutes=minutes),
+            alert=collect(alerts),
+        )
+        session.expire_all()
+        return session.get(PayOrder, row.id)
+
+    if order_of_events == "refund_then_complaint":
+        assert push(setup_pay, refund).json()["ErrCode"] != 0
+        run_alerts(0)
+        assert push(setup_pay, complaint).json()["ErrCode"] == 0
+        current = run_alerts(1)
+        assert current.error.startswith(f"{payments.COMPLAINT_ERROR}，需人工处理；原来的原因：")
+        assert payments.REFUND_PUSH_UNCONFIRMED_ERROR in current.error
+    else:
+        assert push(setup_pay, complaint).json()["ErrCode"] == 0
+        run_alerts(0)
+        fake.status, fake.left_fee = 8, 50  # 查单：退完了，但剩的钱和预期不符
+        assert push(setup_pay, refund).json()["ErrCode"] == 0
+        current = run_alerts(1)
+        assert current.error.startswith(
+            "订单部分退款，退款金额和预期不符，需人工核对；原来的原因："
+        )
+        assert payments.COMPLAINT_ERROR in current.error and current.refund_status == "partial"
+    assert current.status == "manual" and current.alerted_at == NOW + timedelta(minutes=1)
+    assert len(alerts) == 2 and alerts[1] == f"支付订单 #{row.id} 需人工处理：{current.error}"
+    # 同一个原因再来一次：不重复加、不重复告警
+    assert not payments.escalate(current, f"{payments.COMPLAINT_ERROR}，需人工处理", NOW)
+    assert run_alerts(2).alerted_at == NOW + timedelta(minutes=1) and len(alerts) == 2
+
+
+def test_new_problem_on_manual_order_is_added_and_alerts_again(setup_pay, session):
+    """已经转人工的单（这里是投诉），之后的推送查到付款但核验不过：付款信息不改，原因照样追加、
+    再告警一次（Codex 第 6 轮：原来直接跳过，新问题没人知道）。"""
+    row = order(session, create(setup_pay))
+    base = {"OpenId": "pay-user", "MchOrderId": row.out_trade_no, "WxOrderId": row.wx_order_id}
+    assert push(setup_pay, {**base, "Event": "xpay_complaint_notify"}).json()["ErrCode"] == 0
+    alerts = []
+    _, settings, fake = setup_pay
+    payments.run_payments(
+        session, settings=settings, client=fake.client, stamp=NOW, alert=collect(alerts)
+    )
+    fake.status, fake.fee = 2, 101
+    assert push(setup_pay, payload(row)).json()["ErrCode"] != 0
+    session.expire_all()
+    row = session.get(PayOrder, row.id)
+    assert row.status == "manual" and row.error.startswith("微信已确认付款，但支付金额与订单不符")
+    assert payments.COMPLAINT_ERROR in row.error and row.alerted_at is None
+    later = NOW + timedelta(minutes=1)
+    payments.run_payments(
+        session, settings=settings, client=fake.client, stamp=later, alert=collect(alerts)
+    )
+    assert len(alerts) == 2 and "支付金额与订单不符" in alerts[1]
+    assert payments.order_pass(session, row) is None
+
+
+def test_manual_order_is_not_closed_out_by_a_push_before_its_alert_is_sent(setup_pay, session):
+    """转了人工、告警还没发出去的单，推送先不自动开通：等补单把告警发出去再开通（微信会重推）——
+    不然待发的告警跟着状态一起没了，投诉没人处理（Codex 第 7 轮）。"""
+    row = order(session, create(setup_pay))
+    base = {"OpenId": "pay-user", "MchOrderId": row.out_trade_no, "WxOrderId": row.wx_order_id}
+    assert push(setup_pay, {**base, "Event": "xpay_complaint_notify"}).json()["ErrCode"] == 0
+    _, settings, fake = setup_pay
+    fake.status = 2
+    assert push(setup_pay, payload(row)).json()["ErrCode"] != 0
+    session.expire_all()
+    row = session.get(PayOrder, row.id)
+    assert row.status == "manual" and payments.order_pass(session, row) is None
+    alerts = []
+    payments.run_payments(
+        session, settings=settings, client=fake.client, stamp=NOW, alert=collect(alerts)
+    )
+    assert len(alerts) == 1 and payments.COMPLAINT_ERROR in alerts[0]
+    assert push(setup_pay, payload(row)).json()["ErrCode"] == 0
+    session.expire_all()
+    row = session.get(PayOrder, row.id)
+    assert row.status == "completed" and payments.order_pass(session, row) is not None
+
+
+def test_pay_recheck_command_opens_a_paid_order_closed_after_48_hours(
+    setup_pay, session, session_factory, monkeypatch, capsys
+):
+    """48 小时查不到付款结果关了单、告警以后，负责人用 youju pay-recheck 向微信查一次：
+    付了款且核验通过就开通、通知发货；先 --dry-run 只看查单结果（Codex 第 6 轮）。"""
+    from youju import cli, xpay
+
+    _, settings, fake = setup_pay
+    monkeypatch.setattr(cli, "session_factory", lambda: session_factory)
+    monkeypatch.setattr("youju.config.get_settings", lambda: settings)
+    monkeypatch.setattr(
+        xpay, "wx_http", lambda: httpx.Client(transport=httpx.MockTransport(fake.handle))
+    )
+
+    def recheck(*args):
+        code = cli.main(["pay-recheck", *args])
+        return code, capsys.readouterr().out.strip().splitlines()[-1]
+
+    paid, unpaid = (order(session, create(setup_pay)) for _ in range(2))
+    for row in (paid, unpaid):
+        row.created_at = NOW - timedelta(hours=49)
+    session.commit()
+    fake.bad_order = True
+    run(session, setup_pay)
+    assert paid.status == unpaid.status == "closed"
+    fake.bad_order, fake.status = False, 2
+    assert recheck("--order-id", str(paid.id), "--dry-run") == (
+        0,
+        f"pay_recheck order={paid.id} result=dry_run status=closed wx_status=2 dry_run=1",
+    )
+    session.expire_all()
+    assert session.get(PayOrder, paid.id).status == "closed"
+    assert recheck("--order-id", str(paid.id)) == (
+        0,
+        f"pay_recheck order={paid.id} result=paid status=completed wx_status=- dry_run=0",
+    )
+    session.expire_all()
+    row = session.get(PayOrder, paid.id)
+    assert row.status == "completed" and row.goods_notified and payments.order_pass(session, row)
+    # 已开通的不再动；微信说没付款的照旧关着；没有的单号报 missing
+    assert recheck("--order-id", str(paid.id))[1].endswith(
+        "result=skipped status=completed wx_status=- dry_run=0"
+    )
+    fake.status = 1
+    assert recheck("--order-id", str(unpaid.id))[0] == 0
+    session.expire_all()
+    assert session.get(PayOrder, unpaid.id).status == "closed"
+    assert recheck("--order-id", "999999")[0] == 1
+    # 关了的单查到退款中（5）这类少见状态：不能当成已关闭了事，转人工、退出码 1（Codex 第 7 轮）
+    fake.status = 5
+    code, line = recheck("--order-id", str(unpaid.id))
+    assert code == 1 and "result=manual status=manual" in line
+    session.expire_all()
+    row = session.get(PayOrder, unpaid.id)
+    assert row.status == "manual" and row.error.startswith("核对时微信查单状态 5（")
+
+
+def test_pay_recheck_keeps_the_pending_alert_of_a_manual_order_it_cannot_close(
+    setup_pay, session, session_factory, monkeypatch, capsys
+):
+    """负责人核对一张告警还没发出去的人工单（这里是投诉），微信说还没付款：订单照旧是人工、
+    待发的告警照旧由补单发，原因不丢；命令先打印订单上记的原因（Codex 第 8 轮）。"""
+    from youju import cli, xpay
+
+    _, settings, fake = setup_pay
+    monkeypatch.setattr(cli, "session_factory", lambda: session_factory)
+    monkeypatch.setattr("youju.config.get_settings", lambda: settings)
+    monkeypatch.setattr(
+        xpay, "wx_http", lambda: httpx.Client(transport=httpx.MockTransport(fake.handle))
+    )
+    row = order(session, create(setup_pay))
+    base = {"OpenId": "pay-user", "MchOrderId": row.out_trade_no, "WxOrderId": row.wx_order_id}
+    assert push(setup_pay, {**base, "Event": "xpay_complaint_notify"}).json()["ErrCode"] == 0
+    fake.status = 1
+    assert cli.main(["pay-recheck", "--order-id", str(row.id)]) == 0
+    out = capsys.readouterr().out
+    assert f"原因：{payments.COMPLAINT_ERROR}" in out and "result=unpaid status=manual" in out
+    session.expire_all()
+    row = session.get(PayOrder, row.id)
+    assert row.status == "manual" and row.alerted_at is None
+    alerts = []
+    payments.run_payments(
+        session, settings=settings, client=fake.client, stamp=NOW, alert=collect(alerts)
+    )
+    assert len(alerts) == 1 and payments.COMPLAINT_ERROR in alerts[0]
+
+
 def test_pending_order_window_and_confirmed_close(setup_pay, session):
     row = order(session, create(setup_pay))
     assert run(session, setup_pay)["processed"] == 0
@@ -885,8 +1507,10 @@ def test_ios_deadline_when_database_is_slow(setup_pay, monkeypatch):
         release.set()
         assert finished.wait(1)
     assert elapsed < 3
+    # 核验超时也答建议退款，注明暂时无法核验（付费服务协议第二条第 7 项）
     assert response.json()["result_code"] == 0
-    assert "超时" in response.json()["evidence"]
+    assert response.json()["result_info"] == "无法核验"
+    assert response.json()["evidence"] == "暂时无法核验"
 
 
 def test_payment_after_account_deletion_goes_to_manual_without_identity(setup_pay, session):
@@ -1154,17 +1778,43 @@ def test_fix_2_push_amount_mismatch_manual_and_alerted_once(setup_pay, session):
     assert session.scalar(select(func.count(AdvisorTask.id))) == 0
 
 
-def test_fix_3_unconfirmable_pending_closes_after_48_hours(setup_pay, session):
+def test_fix_3_unconfirmable_pending_closes_and_alerts_after_48_hours(setup_pay, session):
+    """查了 48 小时都没查成：关单并告警（现网真扣钱，万一其实付了款、推送和对账也没接上，有人去核对）；
+    告警没发出去，下一轮接着发，发出去以后不再选中（Codex 10/29）。不转人工：没有能把这种单查清楚的工具，
+    订单页"1 个工作日内处理"兑现不了（独立审阅 10/29）。"""
     row = order(session, create(setup_pay))
     row.created_at = NOW - timedelta(hours=47)
     session.commit()
-    setup_pay[2].bad_order = True
+    _, settings, fake = setup_pay
+    fake.bad_order = True
     run(session, setup_pay)
     assert row.status == "pending"
     row.created_at, row.query_retry_at = NOW - timedelta(hours=49), None
     session.commit()
-    run(session, setup_pay)
-    assert row.status == "closed" and row.error == "超过 48 小时无法确认支付，已关闭"
+    sent = []
+
+    def flaky(message):
+        sent.append(message)
+        return len(sent) > 1  # 第一次没发出去
+
+    payments.run_payments(session, settings=settings, client=fake.client, stamp=NOW, alert=flaky)
+    assert row.status == "closed" and row.error == payments.UNCONFIRMED_PAYMENT_ERROR
+    assert row.alerted_at is None
+    # 支付关着也照样补发（定时任务先看 has_work）
+    settings.pay_enabled = False
+    assert payments.has_work(session, settings) is True
+    later = NOW + timedelta(minutes=1)
+    payments.run_payments(session, settings=settings, client=fake.client, stamp=later, alert=flaky)
+    assert row.status == "closed" and row.alerted_at == later
+    assert (
+        sent
+        == [
+            f"支付订单 #{row.id} {payments.UNCONFIRMED_PAYMENT_ERROR}；核实付了款的，"
+            f"在 admin 里运行 youju pay-recheck --order-id {row.id}"
+        ]
+        * 2
+    )
+    assert payments.has_work(session, settings) is False
     assert run(session, setup_pay, NOW + timedelta(hours=1))["processed"] == 0
 
 
@@ -1197,7 +1847,7 @@ def test_fix_4_bill_failures_are_counted_then_failed(setup_pay, session, broken)
             settings=settings,
             client=fake.client,
             stamp=NOW + timedelta(minutes=minute),
-            alert=alerts.append,
+            alert=collect(alerts),
         )
         session.expire_all()
         return {
@@ -1267,7 +1917,8 @@ def test_fix_7_pay_run_is_not_recorded(tmp_path, job):
     assert "pay-reconcile" in jobs.OVERVIEW_JOBS
     for name, content in {
         "timeout": '#!/bin/sh\nshift\nexec "$@"\n',
-        "flock": '#!/bin/sh\nshift 4\nexec "$@"\n',
+        # advisor-run 等锁写成 -w 55 -E 75 <锁>，其他任务是 -n -E 75 <锁>
+        "flock": '#!/bin/sh\ncase "$1" in -w) shift 5 ;; *) shift 4 ;; esac\nexec "$@"\n',
         "youju": '#!/bin/sh\necho "$*" >> "$CALLS"\n[ "$1" = job-start ] && echo 42\nexit 0\n',
     }.items():
         (tmp_path / name).write_text(content)
@@ -1275,6 +1926,7 @@ def test_fix_7_pay_run_is_not_recorded(tmp_path, job):
     script = (Path(__file__).resolve().parents[1] / "deploy" / "job.sh").read_text()
     script = script.replace(". /app/backend/deploy/env.sh", ":").replace("cd /app/backend", ":")
     script = script.replace("/proc/1/fd/1", str(tmp_path / "output"))
+    script = script.replace("/tmp/youju-", f"{tmp_path}/youju-")
     (tmp_path / "job.sh").write_text(script)
     env = {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}", "CALLS": str(tmp_path / "c")}
     result = subprocess.run(["sh", str(tmp_path / "job.sh"), job], env=env, timeout=30)
@@ -1427,7 +2079,13 @@ def test_self_refund_rules(setup_pay, session, monkeypatch, case, expected):
         # 付款后 24 小时多一点：已超过无理由退款时限（D-081，原为 7 天）
         monkeypatch.setattr(v1, "now", lambda: NOW + timedelta(hours=24, microseconds=1))
     if case == "used":
-        assert submit(setup_pay, count=51).status_code == 202
+        # 用过付费的量 = 付费任务出了结果（排队、处理中的另有一句，见 test_pay_sale_prep）
+        task_id = submit(setup_pay, count=51).json()["id"]
+        session.expire_all()
+        task = session.get(AdvisorTask, task_id)
+        task.status, task.finished_at = "done", NOW
+        advisor_tasks.record_pass_completion(session, task)
+        session.commit()
     result = self_refund(setup_pay, row)
     assert result.status_code == expected
     session.expire_all()
@@ -1450,29 +2108,52 @@ def test_self_refund_rules(setup_pay, session, monkeypatch, case, expected):
         assert not _calls(setup_pay[2], "/xpay/refund_order")
 
 
-@pytest.mark.parametrize("state", ["queued", "done", "failed", "cancelled", "deleted"])
-def test_ios_inquiry_uses_any_paid_task_and_retained_evidence(setup_pay, session, state):
+@pytest.mark.parametrize(
+    "state,used",
+    [
+        ("queued", None),
+        ("running", None),
+        ("done", True),
+        ("done_then_deleted", True),
+        ("failed", False),
+        ("cancelled", False),
+        ("deleted_before_run", False),
+    ],
+)
+def test_ios_inquiry_counts_only_paid_tasks_with_results(setup_pay, session, state, used):
+    """苹果问询（付费服务协议第二条第 2、7 项，开卖那一版必做第 13 项）：付费任务出了结果（之后删了也算）
+    才算用过；还在排队、处理中的建议退款并注明暂时无法核验（问询只有一次，没出结果的不能答已使用）；
+    系统出错、取消、处理前删掉的不算用过。凭据不带任务编号和时间（D-081）。"""
     setup_pay[2].order_type = 7
     row = delivered(setup_pay, session)
     assert inquiry(setup_pay, row)["result_info"] == "未使用"
-    response = submit(setup_pay, count=51)
-    task_id = response.json()["id"]
+    task_id = submit(setup_pay, count=51).json()["id"]
     session.expire_all()
     task = session.get(AdvisorTask, task_id)
-    if state == "deleted":
+    if state == "running":
+        task.status, task.started_at = "running", NOW
+        session.commit()
+    elif state in ("done", "done_then_deleted", "failed", "cancelled"):
+        task.status = "done" if state == "done_then_deleted" else state
+        task.finished_at = NOW + timedelta(minutes=1)
+        advisor_tasks.record_pass_completion(session, task)
+        session.commit()
+    if state in ("done_then_deleted", "deleted_before_run"):
         assert (
             setup_pay[0].delete(f"/api/v1/advisor/tasks/{task_id}", headers=HEADERS).status_code
             == 204
         )
-    elif state != "queued":
-        task.status, task.finished_at = state, NOW + timedelta(minutes=1)
-        advisor_tasks.record_pass_completion(session, task)
-        session.commit()
     setup_pay[2].calls.clear()
     result = inquiry(setup_pay, row)
-    assert result["result_code"] == 1 and result["result_info"] == "已使用"
-    # 凭据只说是否在付款后 24 小时内、是否用过付费的量，不带任务编号和时间（D-081）
-    assert result["evidence"] == "付款后 24 小时内；用过付费的量"
+    if used:
+        assert result["result_code"] == 1 and result["result_info"] == "已使用"
+        assert result["evidence"] == "付款后 24 小时内；用过付费的量"
+    elif used is None:
+        assert result["result_code"] == 0 and result["result_info"] == "无法核验"
+        assert result["evidence"] == "付款后 24 小时内；暂时无法核验是否用过付费的量"
+    else:
+        assert result["result_code"] == 0 and result["result_info"] == "未使用"
+        assert result["evidence"] == "付款后 24 小时内；没有用过付费的量"
     assert str(task_id) not in result["evidence"]
     assert not setup_pay[2].calls
 
@@ -1520,15 +2201,23 @@ def test_task_failure_does_not_refund_and_payment_switch_does_not_pause_tasks(se
         advisor_tasks.run_advisor_tasks(session, settings=setup_pay[1], stamp=NOW, max_tasks=1)
     session.expire_all()
     assert session.get(AdvisorTask, task_id).status == "failed"
-    assert payments.paid_usage(session, payments.order_pass(session, row))
+    # 系统出错、没出结果的付费任务不算用过（付费服务协议第二条第 2 项）：不自动退款，用户可以自己申请
+    assert not payments.paid_usage(session, payments.order_pass(session, row))
     run(session, setup_pay)
     assert row.status == "completed" and row.refund_order_id is None
     assert not _calls(setup_pay[2], "/xpay/refund_order")
+    assert payments.refund_reason(session, row, NOW) is None
 
 
 def test_account_deletion_preserves_financial_and_usage_audit(setup_pay, session):
     row = delivered(setup_pay, session)
     task_id = submit(setup_pay, count=51).json()["id"]
+    # 出了结果的付费任务：注销删掉任务以后，使用期上的记录还说明用过（苹果问询、争议时要用）
+    session.expire_all()
+    task = session.get(AdvisorTask, task_id)
+    task.status, task.finished_at = "done", NOW
+    advisor_tasks.record_pass_completion(session, task)
+    session.commit()
     ticket = payments.order_pass(session, row)
     assert setup_pay[0].delete("/api/v1/me", headers=HEADERS).status_code == 204
     session.expire_all()
@@ -1555,7 +2244,7 @@ def test_order_list_only_last_20_and_refund_ownership(setup_pay, session):
             product_id="workbench_30d",
             price=100,
             days=30,
-            env=1,
+            env=0,
             terms_version="pay-test",
             created_at=NOW + timedelta(seconds=n),
         )
@@ -1570,6 +2259,7 @@ def test_order_list_only_last_20_and_refund_ownership(setup_pay, session):
         "days",
         "status",
         "amount",
+        "termsVersion",
         "createdAt",
         "paidAt",
         "paidAmount",
@@ -1616,7 +2306,9 @@ def test_refund_reads_latest_usage_after_waiting_for_user_lock(setup_pay, sessio
             assert not payments.paid_usage(stale, payments.order_pass(stale, seen))
             assert submit(setup_pay, count=51).status_code == 202
             locked = payments.lock_order(stale, row.id)
-            assert "已用过付费的量" in payments.refund_reason(stale, locked, NOW, lock=True)
+            # 等到用户锁以后读到了刚交的付费任务（还在排队：先不能退，处理完没出结果的再退）
+            reason = payments.refund_reason(stale, locked, NOW, lock=True)
+            assert reason == payments.PAID_TASK_RUNNING
 
 
 def test_concurrent_orders_extend_without_overlapping(setup_pay, session_factory, session):
@@ -1690,6 +2382,8 @@ def test_500_rows_execute_compare_engine_without_refund(setup_pay, session, monk
         session.get(AdvisorTask, task_id).result_rows == 1
     )  # duplicate enterprise names are merged
     assert payments.order_pass(session, row).last_task_completed_at == NOW
+    # 出了结果才记"用过付费的量"的时间（提交时不记）
+    assert payments.order_pass(session, row).last_used_at == NOW
     assert row.status == "completed" and row.refund_status is None
 
 
@@ -1822,7 +2516,7 @@ def test_csv_submission_has_same_row_limits_as_inline(setup_pay, paid, count):
             "Event": "xpay_goods_deliver_notify",
             "OpenId": "pay-user",
             "OutTradeNo": signed["outTradeNo"],
-            "Env": 1,
+            "Env": 0,
             "GoodsInfo": {
                 "ProductId": "workbench_30d",
                 "Quantity": 1,
@@ -1862,8 +2556,14 @@ def test_pass_holder_uses_free_quota_first_and_stays_refundable(setup_pay, sessi
     status = setup_pay[0].get("/api/v1/advisor/status", headers=HEADERS).json()
     assert status["quota"]["compare"]["used"] == 3
     # 第 4 次：免费次数用完，才用使用期
-    assert submit(setup_pay, count=1, key="fourth").json()["usageSource"] == "pass"
+    fourth = submit(setup_pay, count=1, key="fourth").json()
+    assert fourth["usageSource"] == "pass"
     session.expire_all()
+    assert payments.refund_reason(session, row, NOW) == payments.PAID_TASK_RUNNING
+    task = session.get(AdvisorTask, fourth["id"])
+    task.status, task.finished_at = "done", NOW
+    advisor_tasks.record_pass_completion(session, task)
+    session.commit()
     assert "已用过付费的量" in payments.refund_reason(session, row, NOW)
 
 
@@ -1924,19 +2624,18 @@ def test_late_confirmation_still_extends_from_the_pass_active_at_payment(
 
 
 def test_order_keeps_agreed_terms_version_and_rejects_outdated(setup_pay, session):
-    """订单记下用户同意的《付费服务协议》版本；服务端配了现行版本时，带旧版本来的不让下单。"""
+    """订单记下用户同意的《付费服务协议》版本；和现行版本不一致的不让下单。
+    没有沙箱了（创始人 10/29）：现行版本必须配（payments.orderable），不再有"不配只记录"。"""
     client, settings, _ = setup_pay
-    response = create(setup_pay, terms_version="pay-2026-10")
+    response = create(setup_pay)
     assert response.status_code == 201
-    assert order(session, response).terms_version == "pay-2026-10"
+    assert order(session, response).terms_version == settings.pay_terms_version == "pay-test"
     missing = client.post(
         "/api/v1/pay/orders", headers=HEADERS, json={"product_id": "workbench_30d", "code": "c"}
     )
     assert missing.status_code == 422
-    settings.pay_terms_version = "pay-2026-11"
     outdated = create(setup_pay, terms_version="pay-2026-10")
     assert outdated.status_code == 409 and "已更新" in outdated.json()["detail"]
-    assert create(setup_pay, terms_version="pay-2026-11").status_code == 201
 
 
 def test_submitting_without_a_pass_never_locks_the_pass_table(setup_pay, session):

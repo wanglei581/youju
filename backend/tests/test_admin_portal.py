@@ -217,7 +217,10 @@ def test_overview_matches_database_and_consoles(client, session, world, monkeypa
         admin,
         "get_settings",
         lambda: SimpleNamespace(
-            role="all", admin_token=HEADERS["X-Admin-Token"], advisor_enabled=True
+            role="all",
+            admin_token=HEADERS["X-Admin-Token"],
+            advisor_enabled=True,
+            advisor_compare_enabled=True,
         ),
     )
     data = client.get("/api/admin/overview", headers=HEADERS).json()
@@ -234,6 +237,7 @@ def test_overview_matches_database_and_consoles(client, session, world, monkeypa
         ("audit", "audit"),
         ("feedback", "feedback"),
         ("sources", "sources/trial"),
+        ("coverage", "coverage/summary"),
         ("details", "detail-failures"),
     ],
 )
@@ -393,6 +397,7 @@ exit 0
     script = script.replace("cd /app/backend", f"cd {tmp_path}")
     script = script.replace("/proc/1/fd/1", str(tmp_path / "output"))
     script = script.replace("/tmp/youju-round.lock", str(tmp_path / "round.lock"))
+    script = script.replace("/tmp/youju-round.wanted", str(tmp_path / "round.wanted"))
     wrapper = tmp_path / "round.sh"
     wrapper.write_text(script)
     env = {
@@ -407,6 +412,8 @@ exit 0
     assert result.returncode == 0, result.stderr
     calls = (tmp_path / "calls").read_text()
     assert "job-start round" in calls and "step notify" in calls
+    # 等锁前留的标记，拿到锁或放弃以后都删掉
+    assert not (tmp_path / "round.wanted").exists()
     if failure == "lock":
         assert "job-finish 42 75" in calls and "step crawl" not in calls
     else:

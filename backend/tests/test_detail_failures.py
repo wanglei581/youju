@@ -200,3 +200,23 @@ def test_details_page_is_static_and_needs_the_token_for_data(client) -> None:
     assert "连续" in page.text and "不再自动重试" in page.text
     portal = client.get("/admin").text
     assert 'data-menu="details"' in portal and "'detail_failures','details'" in portal
+
+
+def test_pdf_reads_that_kept_failing_for_the_environment_are_listed(session) -> None:
+    # 读 PDF 正文的子进程因当时的环境出错（pdf_retry，见 pdf_sandbox）：和网络中断一样按退避重试，
+    # 试满次数也列出来
+    doc = add_document(session, 11)
+    session.add(
+        DocumentDetail(
+            document_id=doc.id,
+            body_text="",
+            fetched_at=datetime.now(UTC),
+            http_status=200,
+            status="pdf_retry",
+            failure_reason="PDF 解析的子进程被系统停掉（可能是容器内存不够）",
+            attempt_count=MAX_ATTEMPTS,
+            next_retry_at=None,
+        )
+    )
+    session.commit()
+    assert stopped_ids(session) == {doc.id}

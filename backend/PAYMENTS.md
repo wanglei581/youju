@@ -16,9 +16,9 @@
   `YOUJU_XPAY_PRICE_PASS`：正整数分，未配或空字符串时不出售；有效天数为代码常量 30。
 - `YOUJU_PAY_TERMS_VERSION`：现行《付费服务协议》的版本号（和小程序 content/pay-terms.js 的 version 一致）。
   下单必须带 `terms_version`（用户勾选同意的版本），随订单保存；配了这个变量时，版本不一致返回 409，
-  不配只记录不比对（Codex 复审后加，10/10）。
+  不配只记录不比对（Codex 复审后加，10/10）。**10/29 起没配就不卖**（见文末"去掉沙箱"）。
   原 100/200 行商品和环境配置已移除。
-- 保留 `YOUJU_XPAY_OFFER_ID`、`YOUJU_XPAY_ENV`（默认 1 沙箱）、对应环境的
+- 保留 `YOUJU_XPAY_OFFER_ID`、`YOUJU_XPAY_ENV`（默认 1 沙箱；**10/29 起去掉，新订单一律现网，见文末**）、对应环境的
   `YOUJU_XPAY_APPKEY_SANDBOX/PROD`，以及可选 `YOUJU_WX_APPID/YOUJU_WX_APPSECRET`。
   密钥只由创始人填环境变量，部署不使用 dotenv / secret 文件来源，不打印密钥。
   初始化参数只用于假客户端测试。
@@ -77,9 +77,11 @@ canRefund,refundUnavailableReason`。不返回名单或任务输入。
 有使用期也先用免费的量：50 行以内、当月免费次数没用完的任务记为免费（`usage_source=free`，不挂 `pass_id`）；
 超过 50 行，或当月免费次数已用完，才记为通行证。这样和付款页写的自助退款条件一致：
 “没有提交过超过 50 家的名单、也没有超出每月免费次数”（Claude 复核时改）。
-“用过付费的量”由 `paid_usage` 统一判断：这段使用期下存在记为通行证的任务，任何状态均算；
-失败、取消、删除任务都不会清除使用事实。
-使用期留最近一次任务编号、提交时间、完成/结束时间；不存企业名称或结果内容。
+“用过付费的量”由 `paid_usage` 统一判断（2026-10-28 改，见文末"开卖那一版的后端必做项"）：
+这段使用期下记为通行证的任务出了结果（完成时记 `last_used_at`，删任务、注销也还在）算用过；还在排队、
+处理中的，自助退款先按用过算、等它出结果，苹果问询答"无法核验"；系统出错、排队时取消、处理前删掉的不算
+（付费服务协议第二条第 2 项）。
+使用期留最近一次任务编号、最近一次出结果的时间、完成/结束时间；不存企业名称或结果内容。
 
 ## 奖励天数（2026-10-10）
 
@@ -147,7 +149,7 @@ canRefund,refundUnavailableReason`。不返回名单或任务输入。
 - `users` 增加 `invite_code`（唯一可空）、`invited_by_user_id`（自关联外键，注销时置空）、
   `invited_at`、`batch_completed_at`（最少首次完成凭据，任务删除后仍能补发、去重）。2026-10-18 起四列都不再写入，
   迁移 0035 删掉了这四列。
-- 正式启用前运行迁移，并执行 `deploy/mysql_accounts.sql` 中新增的授权：deadline_clues 为 INSERT/UPDATE/DELETE，
+- 正式启用前运行迁移，并执行 `deploy/mysql_accounts.sql` 中新增的授权：deadline_clues 为 UPDATE/DELETE（#309 删掉提交接口后不再要 INSERT），
   pass_rewards 仅 UPDATE（API 注销时断开流水关联，发奖 INSERT 由 admin 执行）；reward_claims 已删（迁移 0035）。
   workbench_passes 的 INSERT/UPDATE 仍为支付 API 所需。没有奖励、线索、支付历史且开关关闭时，
   注销对这些新表只做普通 SELECT，兼容迁移已完成、追加授权尚未执行的阶段。
@@ -156,11 +158,11 @@ canRefund,refundUnavailableReason`。不返回名单或任务输入。
 | 接口 | 最终字段 / 行为 |
 |---|---|
 | `GET /api/v1/me/rewards` | `monthDays,monthLimit,items[]`；最近 50 条，`kind,name,requestedDays,days,grantedAt,note,revoked`，不返回关联人或对象编号 |
-| `POST /api/v1/me/deadline-clues` | `{document_id,kind,date,time?,quote}`；201 返回下述线索字段；关闭奖励时 404 |
+| `POST /api/v1/me/deadline-clues` | #309 删除（D-061 删了页面，小程序不调用；个人信息保护影响评估第六节（二）第 13 条）；以前留下的线索照常查看、删除、导出 |
 | `GET /api/v1/me/deadline-clues` | 本人最近 50 条 `items[]`，按提交时间、编号倒序；开关关闭仍可查看 |
 | `DELETE /api/v1/me/deadline-clues/{id}` | 仅本人待核对线索，204；已处理 409；开关关闭、协议更新后仍可删除 |
 | `GET /api/v1/me/data` | 加 `deadlineClues,deadlineCluesTotal`，最多 500 条线索元数据及总数 |
-| `GET /api/v1/documents/{id}` | 加 `can_submit_deadline_clue` 布尔值，不含他人线索 |
+| `GET /api/v1/documents/{id}` | #309 起不再返回 `can_submit_deadline_clue`（提交接口已删）；从不含他人线索 |
 | `GET /api/admin/deadlines` | 候选加 `deadline_clues[]`，只含待核对线索，不含提交人；关闭奖励时为空 |
 | `GET /api/admin/deadline-clues` | `enabled,items[]`；线索字段加 `title,url,can_build_candidate`；关闭时 false/空数组 |
 | `POST /api/admin/deadline-clues/{id}/candidate` | 无业务请求体，返回 `deadline_id,status=pending`；只在整份通知无任何候选时建候选 |
@@ -172,6 +174,7 @@ canRefund,refundUnavailableReason`。不返回名单或任务输入。
 
 线索返回字段：`id,document_id,kind,date,time,quote,status,submitted_at,processed_at,deadline_id`，
 status 给中文“待核对 / 已采纳 / 未采纳”，时间 UTC ISO 8601，日期 YYYY-MM-DD，time 为 HH:MM 或 null。
+提交接口已由 #309 删除：下面讲提交的规则（到“超长返回中文 422”为止）留作记录；API 账号不再需要 app_keys 的 UPDATE 和 deadline_clues 的 INSERT。
 提交须登录并同意当前协议，文件须公开可见且属于申报通知；缺发布日期不接收。
 日期含发布当天至三周年当天（闰日三周年取二月末）；原句去首尾空白后 6–200 字，
 复用纠错的微信内容安全检查并脱敏，所有环境均检查，检查不通过或服务出错均不写库。
@@ -258,8 +261,11 @@ users 的改动合成一条 ALTER 放在最后，重新发布就能接着做完�
 部分退款、余额/状态不符、超过六次尝试或 24 小时未确认转人工，不恢复使用期。
 苹果开发者不主动退款：本地问询未用、付款 24 小时内答 `result_code=0/result_info=未使用`；
 未用但付款已超过 24 小时答 `1/付款已超过 24 小时`（凭据只说超过 24 小时、没用过，不写付款时间，D-081）；
-用过答 `1/已使用`，附最近一次任务编号、完成时间；未完成附提交时间及“尚未完成”。
-问询不调用微信、不锁订单，独立会话两秒超时留出平台三秒应答余量；超时/异常返回 0 和核验原因。
+用过答 `1/已使用`（凭据只写"付款后 24 小时内/已超过 24 小时；用过付费的量"，不带任务编号和时间）。
+负责人核实应当退款的、停止服务公示期间的，答 `0/应当退款`，凭据只写"已核实应当退款"；付费的名单还在排队、
+处理中（没出结果）的答 `0/无法核验`，凭据"付款后 24 小时内；暂时无法核验是否用过付费的量"（10/28）。
+问询不调用微信、不锁订单，独立会话两秒超时留出平台三秒应答余量；查不到订单、超时、异常一律答
+`0/无法核验`，凭据"暂时无法核验"（10/28 起；原来写"未使用"）。
 苹果退款成功通知经查单核验后收回对应使用期，任务结果仍按原留存规则保留。
 原按次包、订单任务绑定、任务失败退款、苹果专门重跑和排队超时转人工已删除。
 工具队列原有暂时失败最多两次重试保留，与付款无关。
@@ -337,15 +343,16 @@ httpx 日志过滤 xpay/code2Session URL；异常稳定中文。
 订单已关闭（或查不到，按已关闭处理）才放开重新支付。用户主动取消支付的不记，约 6 秒后即可重新支付。
 服务端另有“十分钟内最多三张待付订单”的限制。
 
-苹果退款问询在本地核验出错或超过两秒时仍答“未使用”：核验不了时宁可让用户能退，
-不把没用过的人答成“已使用”。平台对这种情况有没有规定的应答，上线前按真实问询确认。
+苹果退款问询在本地核验出错或超过两秒时答建议退款（10/28 起 `result_info` 写"无法核验"、
+凭据"暂时无法核验"，不再写"未使用"）：核验不了时宁可让用户能退，不把没用过的人答成"已使用"。
+平台对这种情况有没有规定的应答，上线前按真实问询确认。
 
 ## 收费第一期补充（2026-10-16，#266，开关仍默认关闭）
 
 - **测试名单**：`YOUJU_PAY_AUDIENCE=whitelist`（默认）时，即使 `YOUJU_PAY_ENABLED=true`，也只有
   `YOUJU_PAY_OPENIDS`（逗号分隔 openid）里的人能看到商品、下单；对全体收费要改成 `all`（创始人另行批准）。
   补单、退款、对账等定时任务只看总开关，已有订单照常处理。判断函数：`payments.selling_to`。
-- **沙箱标记**：`GET /api/v1/pay/products` 返回 `sandbox`（`YOUJU_XPAY_ENV=1` 时为 true）。小程序在沙箱下
+- **沙箱标记**（**10/29 起去掉**，见文末）：`GET /api/v1/pay/products` 返回 `sandbox`（`YOUJU_XPAY_ENV=1` 时为 true）。小程序在沙箱下
   对测试名单放开付款按钮（页面写明沙箱真机付款会真实扣款，10/20 创始人实测），现网仍须《付费服务协议》定稿（`content/pay-terms.js` final）。
   服务端同样把关：现网（`YOUJU_XPAY_ENV=0`）没配 `YOUJU_PAY_TERMS_VERSION`（定稿版本，D-065 起不请律师）时不展示商品、
   不下单、不算在售（`payments.orderable`，商品列表、下单、购买入口共用），不出现看得到价格却付不了款的入口。
@@ -450,7 +457,7 @@ httpx 日志过滤 xpay/code2Session URL；异常稳定中文。
 ### 卖给谁（`payments.selling_to(settings, openid, client)`，商品、下单、能力、我的、提交任务、中间件共用）
 | 阶段 | 配置 | 谁看得到 |
 |---|---|---|
-| 沙箱联调 | `YOUJU_XPAY_ENV=1` | 测试名单里的人，并且只在开发版、体验版。沙箱真机付款也会真实扣钱（10/20 创始人实测），就算 `YOUJU_PAY_AUDIENCE=all` 也只给名单里的人 |
+| 沙箱联调（**10/29 起去掉**，见文末） | `YOUJU_XPAY_ENV=1` | 测试名单里的人，并且只在开发版、体验版。沙箱真机付款也会真实扣钱（10/20 创始人实测），就算 `YOUJU_PAY_AUDIENCE=all` 也只给名单里的人 |
 | 受控真实付款 | `YOUJU_XPAY_ENV=0` + `whitelist` | 测试名单里的人 + 开发版、体验版 + 代码包里的协议版本号等于 `YOUJU_PAY_TERMS_VERSION` |
 | 开卖 | `YOUJU_XPAY_ENV=0` + `all` | 代码包里的协议版本号等于 `YOUJU_PAY_TERMS_VERSION` 的小程序（不看是谁、不看环境，看价格不要求登录）；老版本永远看不到 |
 - 还要满足原来的条件：总开关、能下单（`payments.orderable`：offerId、价格；现网还要协议版本号和发票那一句）。
@@ -469,3 +476,184 @@ httpx 日志过滤 xpay/code2Session URL；异常稳定中文。
 ### 测试
 - `tests/test_pay_versions.py`（请求头解析、各阶段卖给谁、正式版看不到测试购买、现网只给带定稿号的包、免费次数用完的提示）；`test_payments.py`、`test_sale.py`、`test_invoices.py` 的请求头加上体验版和协议版本号，买东西的测试账号加进测试名单。
 
+## 开卖那一版的后端必做项（2026-10-28，迁移 0044，开关仍默认关闭）
+
+按《付费服务协议》"开卖那一版要一起做的"（docs/合规/付费服务协议与退款规则_v2.md）第 8、9、13 项，
+加 Codex 10/28 审阅的对账建议。
+
+### 没出结果的付费任务不算用过（第 13 项）
+- `paid_usage(session, ticket, states=None)`：`last_used_at` 有值（付费任务出过结果），或者这段使用期
+  还有不是 `failed`、`cancelled` 的付费任务（排队、处理中；认不出的状态也算），就算用过。
+- `last_used_at` 改成**出结果时**记（`advisor_tasks.record_pass_completion`，只在 `done` 时、只往后记）；
+  提交任务时不再记。迁移以前的旧行记的是提交时间，只会多算"用过"，不会少算。
+- 自助退款（`refund_reason(lock=True)`）先锁这段使用期的付费任务行（`paid_task_states(lock=True)`，
+  `SELECT … FOR UPDATE`），再锁使用期：锁顺序 用户 → 任务 → 使用期，和任务完成、取消、注销一致；
+  锁定读在可重复读隔离下也读得到别的会话刚交的任务（线上会话是读已提交，这里是保险）。api 账号对
+  advisor_tasks 有 UPDATE，不要新授权（`test_restricted_api_account_can_self_refund_after_a_failed_paid_task`）。
+- 只有还在处理的付费任务时，退款原因是 `PAID_TASK_RUNNING`："这笔的使用期有一份超出免费范围的名单
+  还在处理；处理完没出结果的不算用过，到时可以再申请"。
+
+### 苹果问询（第 8 项②③）
+- 查不到订单、核验出错、超过两秒：`IOS_UNVERIFIABLE` = `0/无法核验/暂时无法核验`。
+- 已核实应当退款：`pay_orders.refund_due_at` 有值，或停止服务公示期间（`YOUJU_PAY_SHUTDOWN_NOTICE=true`）
+  这一笔还有没用完、没收回的使用期（停止服务只退剩余天数，协议第二条第 5 项；独立审阅 10/28），
+  答 `0/应当退款`，凭据只写"已核实应当退款"（和用没用过、过没过 24 小时无关），不写原因（答复经微信给到境外的
+  Apple，只给必要的；agy 10/28）。
+- 付费的名单还在排队、处理中、没出结果（`last_used_at` 为空、没有完成的付费任务）：付款 24 小时内答
+  `0/无法核验`，凭据"付款后 24 小时内；暂时无法核验是否用过付费的量"。问询只有一次，没出结果的不能答已使用
+  （Codex 10/28）；自助退款那边照旧先算用过、等它出结果。
+- 标记命令（admin 容器，开关关闭后也能跑）：
+  `youju pay-refund-due --order-id N --reason "系统故障三天不能用" [--dry-run]`，清除用 `--clear`。
+  只给苹果手机付过款的订单（安卓的直接 `youju pay-refund`）；原因 6–100 字记在 `refund_due_note`，
+  只写情形，不写姓名、证件号、联系方式；每次改动记一笔支付事件 `refund_due_marked`/`refund_due_cleared`
+  （事件里只有订单编号）。最后一行只有英文和数字：`refund_due order=N result=marked|cleared|unchanged|not_ios|missing dry_run=0|1`。
+- `YOUJU_PAY_SHUTDOWN_NOTICE=true`（停止服务公示，付费服务协议第二条第 5 项；api、admin 两个服务都设，
+  卖不卖和苹果问询都在 api 上判断）同时停卖新的使用期
+  （`selling_to` 为假：商品、下单 404；订单、退款、开票照常）。按剩余天数退款仍用 `youju pay-refund --all-active --remaining`。
+
+### 赠送流水 3650 天清理（第 9 项）
+`payments.cleanup`（`youju cleanup` 里跑）：`pass_rewards.granted_at` 满 3650 天的流水，连同引用它的那段
+使用期一起删（任务上的 `pass_id` 外键置空）。结果多一项 `pass_rewards`（删了几笔）。
+
+### 对账告警
+- 没配账单字段（`YOUJU_XPAY_BILL_ORDER_COLUMN`、`YOUJU_XPAY_BILL_FEE_COLUMN`）：那天有本地订单时告警一次。
+- 账单和本地对不上（含账单已付款、本地没开通的，已转人工）：每天第一次对不上时告警一次，只写笔数。
+
+### 订单接口
+订单结构加 `termsVersion`（下单时同意的协议版本）：订单页按它打开《付费服务协议》；版本和包里的对不上时，
+协议页只提示、可点"遇到问题"要那一版全文，不把现在这一版当成那笔同意的。
+
+### 迁移 0044
+`pay_orders` 加可空的 `refund_due_at`（DATETIME(6)）、`refund_due_note`（VARCHAR(100)）。只加列，不改已有数据，
+不要新授权（api 只读，写在 admin 的命令里）。先发 admin（启动时跑迁移），再发 api。
+
+### 测试
+`tests/test_pay_sale_prep.py`（出结果才算用过、还在处理时的退款原因、受限账号自助退款、标记和清除、
+无法核验、停服公示、订单带协议版本、命令行、3650 天清理、对账告警）；`test_payments.py` 里苹果问询和
+退款的用例按新口径改。
+
+## 去掉沙箱、付款一律现网（创始人 10/29，收费开关照旧）
+
+创始人 10/29 原话："支付那一个沙箱支付去掉，确保在正常的使用环境中也可以进行支付等操作"。
+官方《小程序虚拟支付》（2026-09-14 版）写明 Apple 支付不支持沙箱、只支持现网；10/20 实测安卓沙箱真机付款也真实扣钱。
+沙箱只会让测试人员看错，去掉。
+
+### 改了什么
+- 新订单一律现网（`xpay.XPAY_ENV = 0`）：下单签名用现网 AppKey，账单按现网下载。设置里删掉了 `xpay_env`，
+  线上还留着 `YOUJU_XPAY_ENV` 也照常启动、不起作用。
+- `YOUJU_XPAY_APPKEY_SANDBOX` 只给去掉沙箱以前下的测试单（订单上记的 env 是 1）查单、退款用；
+  线上是创始人 10/19–10/20 的几笔测试单。**先别删**：只读查过线上没有没办完的 env=1 订单再删。
+- 能下单（`payments.orderable`）= offerId + 价格 + **现网 AppKey**（`YOUJU_XPAY_APPKEY_PROD`；没配签不了名、只会 503，
+  Codex 10/29）+ 定稿协议版本号 + 发票那一句。少一样：商品列表空、下单 404、购买入口不出现。
+- 卖给谁（`payments.selling_to`）只剩两个阶段，都要代码包里的协议版本号等于 `YOUJU_PAY_TERMS_VERSION`：
+
+  | 阶段 | 配置 | 谁看得到 |
+  |---|---|---|
+  | 受控真实付款（真扣钱） | `YOUJU_PAY_AUDIENCE=whitelist` | 测试名单里的人，只在开发版、体验版 |
+  | 开卖 | `YOUJU_PAY_AUDIENCE=all` | 所有人（不看是谁、不看环境，看价格不要求登录）；老版本永远看不到 |
+
+- 小程序：购买页没有沙箱提示，按钮只写"支付 N 元（M 天）"；"付款前请看清楚"加一句"未成年人请在监护人同意后再购买"（agy 10/29）。协议没定稿（`content/pay-terms.js` 的 final 不是 true）
+  或服务端没给发票那一句，就和没在卖一样回首页，不出现"付费服务暂未开放""能开哪种发票还没确定"（D-074 ⑧）。
+  `utils/api.js` 的 `payHeader` 只在 final 为 true 时带 `X-Youju-Pay-Terms`：服务端版本号配错也不会卖给草稿包。
+- 价格（分）少于 100 服务不启动：Apple 支付最低 1 元，安卓能买、苹果买不了不行。
+- 补单、对账（`youju pay-run`/`pay-reconcile`，定时任务跑的就是它们）和手动退款（`youju pay-refund`）
+  改用 `xpay.wx_http()`（系统证书库），和下单同一套。
+- 补单查了 48 小时都没查成（查单一直出错）：照旧关单，但写明原因（`UNCONFIRMED_PAYMENT_ERROR`）并告警，
+  告警没发出去下一轮接着发（`UNCONFIRMED_CLOSE_UNALERTED`，支付关着也补发，Codex 10/29）。不转人工：
+  没有能把这种单查清楚再处理的工具，订单页"1 个工作日内处理"兑现不了（独立审阅 10/29）；关单后订单页写
+  "如果其实扣了款，点'遇到问题'告诉我们"。付款前就被微信拒了的单（微信那边可能没有这一单）也会走到这里。
+- 已完成的订单收到退款推送、查单没确认退款（苹果那边或小程序后台退的款；查单出错也算）：转人工并告警，
+  使用期先不动；微信重推时查单显示退完了（8），照常记成已退款、收回使用期。以前只回"没处理"等重推，
+  重推完、补单又不查已完成的订单，就没人知道（Codex 10/29）。苹果退款后查单会不会显示已退款，
+  受控真实付款时实测；一直不显示的话再加人工收回使用期的命令。
+- **转人工统一走 `payments.escalate`**（Codex 第 4、5 轮）：原因只加不盖（新的放前面，"；原来的原因："接旧的，
+  超长截到 500 字时截掉的是旧的），每加一条新原因清空 `alerted_at`、补单再告警一次；同一个原因不重复加、
+  不重复告警。投诉、部分退款、退款推送没核实、发起退款时的几种情况、对账发现没发货、退款超时都走它。
+- 小程序付款失败：官方错误码表里付款前就被拒的（1001、-4、-15001～-15014、-15016～-15021，如道具没发布到现网
+  -15010、发布还没生效 -15014、价格不符 -15013、签名错 -15006）和调起付款时就抛异常的，不记"待确认"、不挡下一次付款，
+  照取消那样再查几秒（万一扣了款也能开通；服务端下新单前也会先查 10 分钟内的待支付单），说明写
+  "支付没有完成（错误码 N），请稍后再试。如果其实扣了款，会自动开通……"，不断言没扣钱；-1、-5 和表里没有的
+  错误码照旧当成可能扣了款（独立审阅、Codex 第 6 轮、agy 第 4 轮，10/29）。这类单在服务端还是"待确认"，
+  10 分钟内连试第 4 次会被"待支付订单过多"挡一下（防刷，不改）。
+- `youju pay-recheck --order-id N [--dry-run]`（Codex 第 6 轮）：负责人核对一张已关闭（48 小时查不到付款结果）、
+  人工或待确认的订单，向微信查一次，按补单同一套规则处理：付了款且核验通过就开通、通知发货；退完了记已退款；
+  微信已关单记关单；没付款不动。48 小时关单的告警里写了这条命令。最后一行
+  `pay_recheck order=N result=… status=… wx_status=… dry_run=0|1`。
+- 已经转人工的单，之后查到付款但核验不过：付款信息不改，原因照样追加、再告警（原来直接跳过，Codex 第 6 轮）。
+- 转了人工、告警还没发出去的单（`payments.awaiting_alert`）：推送和查单先不自动开通、不记已退款，等补单把告警发出去
+  （一般一分钟内，微信会重推）——不然待发的告警跟着状态一起没了（Codex 第 7 轮）。`pay-recheck` 是负责人在核对，不受限制；
+  核对完还是人工单的（没付款、核验不过、少见状态），待发的告警照旧发；命令先打印订单上记的原因（Codex 第 8 轮）。
+- `pay-recheck` 查到退款中、退款失败等少见状态（或返回格式不对）：转人工、退出码 1，不当成已关闭（Codex 第 7 轮）。
+- 小程序错误码 -15003"系统错误"说不清发生在哪一步，按可能扣了款处理（Codex 第 7 轮）；其余付款前被拒的码是微信文档写明的
+  下单阶段错误，付款界面没弹出、用户没输密码，不会扣钱，服务端下新单前也会先查 10 分钟内的待支付单。
+- `xpay.XPayClient.appkey` 去掉首尾空格，和 `orderable` 的判断一致。小程序 `payHeader` 判断"定稿"和购买页的
+  `pay.termsFinal` 一致（正文还是占位的也不算），不出现入口还在、购买页却回首页。
+- 商品接口不再返回 `sandbox`。
+
+### 开卖前另开 PR 做的
+- ~~投诉推送一律转人工~~、~~查旧单出错时放行~~：已在 PR #402 做完，见文末"开卖前补的两件"。付款前被拒的单不提前关
+  （Codex 不同意凭小程序一句话关单），只是下新单时不再被它挡；48 小时查不到照旧关单告警，告警里注明小程序报告过付款前被拒。
+- 苹果手机不满足付款条件（iOS 15 以下、非中国大陆账户）时返回什么错误码，真付测试时记下来。
+- 付款前就被拒（-15010 等）的单、用户取消（-2）的单，微信 query_order 返回 0/1 还是报错，真付测试时记下来：
+  要是取消的单也查不到，每次取消后 10 分钟内再买都会被"查不到结果"挡一下，到时再定怎么放行（独立审阅 #402）。
+
+### 上线现网要做的（按顺序）
+1. 付费服务协议定稿（创始人过目），定稿稿进包（final: true）；隐私保护指引并入付费部分、升版本。
+2. 小程序后台 → 虚拟支付 → 道具管理：两个道具（workbench_30d、workbench_90d）发布到现网；
+   基础配置里确认小程序简称（Apple 支付要求）；资金管理里确认提现账户。
+3. 云托管 api、admin 两个服务的环境变量（创始人本人填密钥）：`YOUJU_XPAY_APPKEY_PROD`（现网 AppKey）、
+   `YOUJU_PAY_TERMS_VERSION`（定稿版本号）、`YOUJU_PAY_INVOICE_TYPE`（"电子发票，个人或单位抬头都可以"）；
+   `YOUJU_XPAY_ENV` 可以删。`YOUJU_PAY_AUDIENCE` 保持 whitelist。
+4. 受控真实付款（体验版、测试名单）：安卓付一笔，看开通、订单、发票申请、24 小时内自助退款；苹果手机付一笔
+   （iOS 15+、微信 8.0.68+、中国大陆 App Store 账户），**苹果的钱我们退不了**，要退由付款人向 App Store 申请，
+   顺便看苹果退款问询推送和退款推送是否到达、使用期是否收回。500 家名单完整流程实测（D-070 ④）。
+5. 第一笔现网付款的次日，下载那天的账单样本，核对列名和金额单位，配 `YOUJU_XPAY_BILL_ORDER_COLUMN`、
+   `YOUJU_XPAY_BILL_FEE_COLUMN`、`YOUJU_XPAY_BILL_FEE_UNIT`、`YOUJU_XPAY_BILL_HOSTS`，对账才跑得起来。
+6. 付费那一版提审前（团队再问一次）：`YOUJU_PAY_AUDIENCE=all`（审核员事先不知道是谁；老版本不带定稿协议版本号，
+   看不到价格）。审核通过、发布后所有用户可买；提审被退回、要改包时先切回 `whitelist`（agy 10/29）。
+
+### 测试
+`test_payments.py`、`test_sale.py`、`test_invoices.py`、`test_pay_versions.py` 的夹具改成现网（现网 AppKey、
+定稿协议版本、发票都配）；`test_config.py` 加价格不少于 1 元；小程序 `tests/pay-pages.test.js` 加
+"没有沙箱提示、按钮只写支付""草稿包不带协议版本号""协议没定稿、没写发票就回首页"。
+
+## 开卖前补的两件（10/29，PR #402，接在 PR #400 后面）
+
+### 投诉：每一条投诉收到时就定好由谁告警
+- `payments.note_complaint`（投诉推送里调用）：同一个投诉（`ComplaintId` 相同）重推的只记事件（`alert=duplicate`）；
+  已完成、待确认、人工单转人工（`escalate`），这次加上了原因（转人工的告警会发）就记 `alert=manual`；
+  退款中、已退款、已关闭的单（`COMPLAINT_KEEPS_STATUS`）不改状态——以前一律转人工，退款中的单因此停掉自动退款、
+  已退款的单倒退成"人工核对中"（Codex #400 第 6 轮）——以及人工单里已经有投诉原因、这次没加上的，记 `alert=pending`。
+- `payments.complaint_alerts`（补单每一轮跑）：最近 7 天 `alert=pending` 的投诉事件每条发一次告警，发出去才记 `sent`；
+  不看补单那一刻的订单状态（Codex #402 第 1 轮：投诉后订单变了状态会漏发）。按行 `FOR UPDATE SKIP LOCKED`，
+  两个补单同时跑不会重复发（发出去以后、提交之前进程退出，仍可能多发一次）。近 7 天有投诉时 `has_work` 算有活。
+- 本地还没有微信单号的单（没开通的待确认单、48 小时查不到付款结果关掉的单）收到投诉，不比 `WxOrderId`（OpenId、商户单号已对上，
+  投诉只告警、不动钱）——以前一律回"没处理"，"扣了钱没开通"这类最该处理的投诉反而记不下；本地查不到订单的投诉也记 `pending`，
+  告警里写商户单号；同一个投诉重推的按 `ComplaintId`（本地没有订单的再加商户单号）去重（独立审阅、Codex #402 第 4 轮）。
+  两次重推同时到、收推送时都没看到对方的，`complaint_alerts` 发之前再判一次（`complaint_covered`）：同一投诉已经发过（sent）
+  或转了人工（manual）的不再发，两条都在等的只发编号小的；收推送时只看编号更小的同伴（`same_complaint(earlier_only=True)`）。
+  和事件提交的先后无关（Codex #402 第 5、6 轮）。整段发告警拿着 MySQL 命名锁 `youju_pay_complaint_alerts`（不等待），
+  同一时刻只有一个补单在发，提交以后才放锁；拿不到这一轮就不发（Codex #402 第 7 轮：两个补单交错着发同一投诉的两条）。
+- 告警只有 `alert` 返回 True 才算发出去：没配告警地址（`send_alert` 返回 None）也下一轮接着发（转人工、48 小时关单、
+  投诉三处都这样，Codex #402 第 1 轮）。
+
+### 付款前就被拒的单：下一次付款时带上，查不清的旧单才挡新单
+- 小程序拿到官方错误码表里下单阶段的错误码（`payments.NOT_STARTED_CODES`，和小程序 `utils/pay.js` 一致）时记在本机
+  （`pay.notStarted`，10 分钟），下一次下单把 `failed_order: {order_id, code}` 带上；服务端只认本人 10 分钟内的待确认单和
+  表里的错误码，在那一单的 error 上记一句（`payments.mark_not_started`，`NOT_STARTED_PREFIX`）。订单照旧待确认、补单照旧查，
+  查到付了款照样开通；补单查单出错不盖掉这一句。不凭小程序一句话关单（Codex #402 第 1 轮：客户端说法可以伪造、
+  查不清就关单会丢掉其实付了款的单）。
+- 下新单前查 10 分钟内的待支付单，查单出错或返回格式不对（`unavailable`）都挡新单（409"上一笔付款微信暂时还查不到结果，
+  请过几分钟再试（最多 10 分钟）；如果已经扣了款，会自动开通……"）——以前放行，旧单其实付了款时会重复扣款（Codex #400 第 8 轮）；记过"付款前就被拒"的那一单不挡。
+  没带上、微信又查不到的（下单回应没送到手机等）最多挡 10 分钟。调起付款时就抛异常的（没有错误码）不记。
+- 带上来的那一句先单独提交，再重新加用户锁：这一次下单被 409、429 挡回或 503 失败回滚，它也不丢（Codex #402 第 3 轮）。
+- 10 分钟内最多 3 笔待支付（防刷，429）：记过那一句的单不算在这 3 笔里，连着被拒也能接着付；但连这些一起最多 10 笔，
+  免得靠"报告被拒"无限下单（Codex #402 第 2 轮）。
+- 没有新接口、没有迁移；api 账号对 `pay_orders`、`pay_events` 本来就有 INSERT、UPDATE。
+
+### 测试
+`test_payments.py`：`test_failed_order_note_only_marks_own_recent_pending_orders_with_known_codes`、
+`test_complaint_on_refunding_refunded_or_closed_order_keeps_status_and_alerts_once`、
+`test_complaint_on_completed_order_still_goes_manual_without_a_second_alert`，`test_new_order_first_checks_recent_pending_payment`
+按新规则改（查不了、格式不对都挡，带上的不挡）；告警收集改成返回 True（`collect`）。小程序 `pay-pages.test.js`：有错误码的记下、
+下一次下单带上、下成新单后清掉、超过 10 分钟不带、抛异常的不记。

@@ -1,4 +1,6 @@
 .help-card { padding-top: 32rpx; padding-bottom: 32rpx; }
+/* 从页面上的"说明 ›"跳过来的那一条 */
+.help-card--on { box-shadow: inset 0 0 0 2rpx var(--brand); }
 .help-q { font-size: 32rpx; font-weight: 600; line-height: 1.5; color: var(--t1); }
 .help-a { margin-top: 16rpx; font-size: 28rpx; line-height: 1.75; color: var(--t1); word-break: break-word; }
 .help-contact { margin-top: 24rpx; }

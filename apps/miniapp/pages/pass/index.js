@@ -3,6 +3,21 @@ const pay = require('../../utils/pay.js');
 const payTerms = require('../../content/pay-terms.js');
 const { loginOpen } = require('../../utils/consent.js');
 const { toolConsent } = require('../../utils/data-tools.js');
+const access = require('../../utils/ai-access.js');
+const boost = require('../../utils/boost.js');
+
+// 包含什么里"不含 AI 次数"那句：只在 AI 对这个人开着、后台确认过时显示（和使用帮助一样，D-075 ①：AI 关着时页面没有 AI 字样）
+const aiOn = (state) => !!(state && state.visible === true && state.confirmed === true);
+// 不买也能用里客户相关通知表那一句：次数照额度接口（/advisor/status 的 quota.track.limit）。取不到、不是正整数时不猜次数，
+// 写去工具中心看——只写"每次 50 家以内"像是不限次数（agy 审阅 #436）。
+// 申报季加量期间次数、家数和期限都由下一句 seasonLine 写（D-070 ⑤），这一句只写怎么算次数，同一屏不重复（D-108，独立审阅 #436）
+const COUNT_RULE = '交一份名单算一次，系统出错、没出结果的不算';
+function freeLineOf(limit, inSeason) {
+  if (inSeason) return `客户相关通知表：${COUNT_RULE}`;
+  return Number.isInteger(limit) && limit > 0
+    ? `客户相关通知表：每月 ${limit} 次，每次 50 家以内（${COUNT_RULE}）`
+    : `客户相关通知表：每月免费次数见工具中心，每次 50 家以内（${COUNT_RULE}）`;
+}
 
 // 付款后还没确认完的订单记在本机。有它在就不下新单，先接着查它：
 // 确认超时后再点"支付"，不能变成重复扣款（Codex 复审，10/10）。
@@ -25,59 +40,91 @@ function saveUnsettled(orderId) {
 function clearUnsettled() {
   try { wx.removeStorageSync(UNSETTLED_KEY); } catch (e) { /* 忽略 */ }
 }
+// 上一笔付款前就被微信拒了（pay.notStarted 的错误码）：记下那一单和错误码，10 分钟内下一次付款时带给服务端，
+// 服务端在那一单上记一笔，下新单前查它查不清时不挡新单（服务端不凭这一句关单，照旧跟踪到底）
+const NOT_STARTED_KEY = 'pay.notStarted';
+const NOT_STARTED_TTL = 10 * 60 * 1000;
+function readNotStarted() {
+  try {
+    const saved = wx.getStorageSync(NOT_STARTED_KEY);
+    return saved && saved.orderId && Number.isInteger(saved.code) && Date.now() - saved.at < NOT_STARTED_TTL
+      ? { order_id: saved.orderId, code: saved.code } : null;
+  } catch (e) { return null; }
+}
+function saveNotStarted(orderId, code) {
+  try { wx.setStorageSync(NOT_STARTED_KEY, { orderId, code, at: Date.now() }); } catch (e) { /* 存不了就算了：最多被挡 10 分钟 */ }
+}
+function clearNotStarted() {
+  try { wx.removeStorageSync(NOT_STARTED_KEY); } catch (e) { /* 忽略 */ }
+}
 // 没在卖（商品接口 404 或没有档位）时直接回首页，页面上不出现"暂未开放"之类的字样（D-074）：
 // 首发包带着这一页，从旧链接或分享直接打开时，审核人员和用户都只会回到首页
 function goHome() {
   wx.switchTab({ url: '/pages/home/index', fail: () => wx.reLaunch({ url: '/pages/home/index' }) });
 }
 // 停卖时还留在本页的情形：刚付过款、或还有一笔待确认——不送回首页，告诉他去订单页看
-const CLOSED_NOTE = '现在没有在售的档位。已付款的订单可以在"我的 → 我的订单"查看。';
+const CLOSED_NOTE = '现在没有在售的档位。已付款的订单可以在“我的 → 我的订单”查看。';
 
 Page({
-  // sandbox：服务端在沙箱（只有测试名单看得到商品；真机付款也会真实扣钱，10/20 创始人实测），协议定稿前也可以付款联调
+  // 没有沙箱了（创始人 10/29：付款一律现网、真扣钱）：协议定稿、写明了发票才显示价格和付款按钮
   // tiers：在售的档位（30 天、90 天，D-070），selected 是选中的那一档；product 是选中的那一档（下单用）
   // renew：续买多送的规则一句（和价格同一屏）；expires：现有使用期到哪天；soon：3 天内到期的提示
-  // invoiceText：能开哪种发票（服务端商品接口带回）；没有时现网不能付款，服务端也不卖
+  // invoiceText：能开哪种发票（服务端商品接口带回）；没有时不能付款，服务端也不卖
   data: { loginOpen: loginOpen(), loading: true, error: '', tiers: [], selected: 0, product: null, price: '', renew: null, expires: '', soon: '',
     termsFinal: pay.termsFinal(payTerms), invoiceText: '',
-    sandbox: false, checked: false, busy: false, message: '', payError: false, confirmed: false, closedNote: '',
+    checked: false, busy: false, message: '', payError: false, confirmed: false, closedNote: '',
     // 付款结果没确认到、或转了人工：消息下面放"查看我的订单"
-    ordersLink: false },
+    ordersLink: false,
+    // freeLine、seasonLine：不买也能用里的次数和申报季加量（额度接口答复以后才有）；aiEnabled：见上面 aiOn
+    freeLine: '', seasonLine: '', aiEnabled: false },
+  onLoad() {
+    this.setData({ aiEnabled: aiOn(access.current()) });
+    this.unsubscribeAi = access.subscribe((state) => this.setData({ aiEnabled: aiOn(state) }));
+  },
   onShow() {
     this.visible = true;
+    if (!this.data.loginOpen) { goHome(); return; }
     if (this.payResume && this.poller) {
       this.payResume = false;
       this.payDeadline = Math.max(this.payDeadline || 0, Date.now() + RESUME_CHECK);
       this.poller.start(this.payDeadline);
     }
     if (!this.data.busy) this.load();
+    // 回到前台时再问一次 AI 对这个人开没开（多久真问一次由 ensure 管）
+    access.ensure();
   },
   onHide() {
     this.visible = false;
     if (this.poller && this.poller.isActive()) { this.poller.stop(); this.payResume = true; }
   },
-  onUnload() { this.onHide(); this.unloaded = true; this.payResume = false; this.loadSerial = (this.loadSerial || 0) + 1; },
+  onUnload() { this.onHide(); this.unloaded = true; this.payResume = false; this.loadSerial = (this.loadSerial || 0) + 1; if (this.unsubscribeAi) this.unsubscribeAi(); },
   load() {
+    if (!this.data.loginOpen) { goHome(); return; }
     const serial = this.loadSerial = (this.loadSerial || 0) + 1;
     this.setData({ loading: true, error: '', closedNote: '' });
     api.payProducts().then((res) => {
       if (serial !== this.loadSerial) return;
       const tiers = pay.normalizeProducts(res).map(pay.tierView);
-      if (!tiers.length) { this.closed(); return; }
+      // 协议没定稿、没写明发票：付不了款，和没在卖一样回首页，不出现"暂未开放"（D-074 ⑧）。
+      // 服务端只对带定稿协议版本号、配了发票的包卖，走到这里是配置不一致
+      if (!tiers.length || !(this.data.termsFinal && pay.invoiceType(res))) { this.closed(); return; }
       // 重新载入时保留用户选的那一档（按天数认），没有了就回到第一档
       const keep = this.data.product ? tiers.findIndex((tier) => tier.days === this.data.product.days) : -1;
       const selected = keep >= 0 ? keep : 0;
       this.setData({ loading: false, tiers, selected, product: tiers[selected] || null, price: tiers[selected] ? tiers[selected].price : '',
-        renew: pay.renewRule(res), invoiceText: pay.invoiceType(res), sandbox: !!(res && res.sandbox === true) });
+        renew: pay.renewRule(res), invoiceText: pay.invoiceType(res) });
       if (tiers.length && this.data.loginOpen) api.advisorStatus({ refresh: true }).then((status) => {
         if (serial !== this.loadSerial) return;
         const active = !!(status.pass && status.pass.active);
-        this.setData({ expires: active ? pay.date(status.pass.expiresAt) : '', soon: pay.expiryNotice(status.pass) });
-      }).catch(() => { if (serial === this.loadSerial) this.setData({ expires: '', soon: '' }); });
+        const limit = status.quota && status.quota.track && status.quota.track.limit;
+        const seasonLine = boost.seasonLine(status.season);
+        this.setData({ expires: active ? pay.date(status.pass.expiresAt) : '', soon: pay.expiryNotice(status.pass),
+          freeLine: freeLineOf(limit, !!seasonLine && status.season.active === true), seasonLine });
+      }).catch(() => { if (serial === this.loadSerial) this.setData({ expires: '', soon: '', freeLine: freeLineOf(null), seasonLine: '' }); });
     }).catch((err) => {
       if (serial !== this.loadSerial) return;
       if (err.status === 404) { this.closed(); return; }
-      this.setData({ loading: false, tiers: [], product: null, price: '', renew: null, invoiceText: '', sandbox: false, error: err.message });
+      this.setData({ loading: false, tiers: [], product: null, price: '', renew: null, invoiceText: '', error: err.message });
     });
   },
   // 没在卖：刚开通的照旧显示开通结果；还有待确认的一笔时写去订单页看；页面已隐藏就不跳（回来时 onShow 会重新载入）；
@@ -85,10 +132,10 @@ Page({
   closed() {
     if (this.data.confirmed) { this.setData({ loading: false }); return; }
     if (this.unsettledId || readUnsettled()) {
-      this.setData({ loading: false, tiers: [], product: null, price: '', renew: null, invoiceText: '', sandbox: false, error: '', closedNote: CLOSED_NOTE });
+      this.setData({ loading: false, tiers: [], product: null, price: '', renew: null, invoiceText: '', error: '', closedNote: CLOSED_NOTE });
       return;
     }
-    this.setData({ loading: true, tiers: [], product: null, price: '', renew: null, invoiceText: '', sandbox: false, error: '' });
+    this.setData({ loading: true, tiers: [], product: null, price: '', renew: null, invoiceText: '', error: '' });
     if (this.visible) goHome();
   },
   // 选一档：付款中、已开通时不能换
@@ -103,7 +150,7 @@ Page({
   terms() { wx.navigateTo({ url: '/pages/agreement/index?type=pay' }); },
   buy() {
     if (!this.data.product || this.data.busy || this.data.confirmed || !this.data.loginOpen) return;
-    if (!(this.data.termsFinal && this.data.invoiceText) && !this.data.sandbox) { this.setData({ message: pay.TEXT.termsPending }); return; }
+    if (!(this.data.termsFinal && this.data.invoiceText)) { this.closed(); return; }
     if (!this.data.checked) { this.setData({ message: pay.TEXT.termsRequired, payError: false }); wx.showToast({ title: pay.TEXT.termsRequired, icon: 'none' }); return; }
     if (typeof wx.requestVirtualPayment !== 'function') { this.setData({ message: pay.TEXT.unsupported, payError: true }); return; }
     // 上一笔还没确认完：不下新单，接着查它
@@ -133,7 +180,7 @@ Page({
     });
   },
   recheck(orderId) {
-    this.rechecking = true; this.cancelledPay = false;
+    this.rechecking = true; this.cancelledPay = false; this.payNote = '';
     this.setData({ busy: true, message: pay.TEXT.confirming, payError: false, ordersLink: false });
     this.watch(orderId);
     this.payDeadline = Date.now() + pay.POLL_TIMEOUT;
@@ -147,26 +194,40 @@ Page({
       if (this.unloaded) return null;
       // terms_version：用户刚勾选同意的《付费服务协议》版本，随订单保存
       // invoice_type：页面上写的发票类型，服务端核对和现在的一致才下单（订单记下用户看到的那句）
-      return api.createPayOrder({ product_id: this.data.product.productId, code, terms_version: payTerms.version, invoice_type: this.data.invoiceText });
+      const body = { product_id: this.data.product.productId, code, terms_version: payTerms.version, invoice_type: this.data.invoiceText };
+      const failed = readNotStarted();
+      if (failed) body.failed_order = failed;
+      return api.createPayOrder(body);
     }).then((order) => {
       if (!order || this.unloaded) return;
+      clearNotStarted();
       this.rechecking = false;
       this.watch(order.orderId);
       try {
         wx.requestVirtualPayment(Object.assign(pay.paymentParams(order), {
-          success: () => this.afterPay(false), fail: (err) => this.afterPay(pay.isCancel(err)),
+          success: () => this.afterPay(false), fail: (err) => this.payFailed(err, false),
         }));
-      } catch (err) { this.afterPay(pay.isCancel(err)); }
+      } catch (err) { this.payFailed(err, true); }
     });
   },
-  afterPay(cancelled) {
+  // 付款前就被微信拒了（pay.notStarted，比如道具还没发布到现网），或调起付款时就出错（付款界面没打开）：
+  // 不记"待确认"、不挡下一次付款（原来一律锁 48 小时），照取消那样再查几秒，万一扣了款也能开通；
+  // 说明里写错误码，不断言"没有扣钱"（独立审阅、Codex 第 6 轮、agy 第 4 轮，10/29）
+  payFailed(err, thrown) {
+    if (!thrown && !pay.notStarted(err)) { this.afterPay(pay.isCancel(err)); return; }
+    // 有错误码的记下来，下一次付款时带给服务端：查不清这一单时不挡新单（调起时就抛异常的没有错误码，不记）
+    if (!thrown && this.orderId) saveNotStarted(this.orderId, err.errCode);
+    this.afterPay(true, pay.notStartedText(err));
+  },
+  afterPay(cancelled, note) {
     if (this.unloaded || this.payDeadline) return;
     this.cancelledPay = cancelled;
+    this.payNote = note || '';
     // 没取消：可能已经扣款，记下这一笔，确认之前不再下新单
     if (!cancelled) { this.unsettledId = this.orderId; saveUnsettled(this.orderId); }
     this.payDeadline = Date.now() + (cancelled ? CANCEL_CHECK : pay.POLL_TIMEOUT);
-    this.setData({ message: cancelled ? pay.TEXT.cancelled : pay.TEXT.confirming, payError: false });
-    if (cancelled) wx.showToast({ title: pay.TEXT.cancelled, icon: 'none' });
+    this.setData({ message: this.payNote || (cancelled ? pay.TEXT.cancelled : pay.TEXT.confirming), payError: !!this.payNote });
+    if (cancelled && !this.payNote) wx.showToast({ title: pay.TEXT.cancelled, icon: 'none' });
     if (!this.visible) { this.payResume = true; return; }
     this.poller.start(this.payDeadline);
   },
@@ -183,15 +244,16 @@ Page({
         if (!this.unloaded && status.pass && status.pass.active) this.setData({ expires: pay.date(status.pass.expiresAt), soon: pay.expiryNotice(status.pass), message: `已开通，使用期到 ${pay.date(status.pass.expiresAt)}` });
       }).catch(() => {});
     } else if (result.state === 'timeout') {
-      const message = this.cancelledPay ? pay.TEXT.cancelled : rechecking ? pay.TEXT.unsettled : pay.TEXT.timeout;
+      const message = this.payNote || (this.cancelledPay ? pay.TEXT.cancelled : rechecking ? pay.TEXT.unsettled : pay.TEXT.timeout);
       // 没确认到结果（不是自己取消的）：给一个去订单页的入口，订单页可以"重新核对"
-      this.setData({ busy: false, message, payError: false, ordersLink: !this.cancelledPay });
+      this.setData({ busy: false, message, payError: !!this.payNote, ordersLink: !this.cancelledPay });
     } else {
       const status = result.order.status;
       const closed = status === '已关闭';
       // 转了人工：和订单页同一句说明（钱收到了没有、多久处理、能不能直接申请退款，按这张订单的实际情况写）
-      const message = closed ? pay.TEXT.closed : status === '需人工处理' ? pay.stateNote(result.order) : status === '已退款' ? pay.TEXT.refunded : `订单状态：${status}`;
-      this.setData({ busy: false, message, payError: !closed, ordersLink: !closed });
+      // 付款前就被拒、服务端已关单：照旧显示那句说明（带错误码），不换成"订单已关闭"
+      const message = closed && this.payNote ? this.payNote : closed ? pay.TEXT.closed : status === '需人工处理' ? pay.stateNote(result.order) : status === '已退款' ? pay.TEXT.refunded : `订单状态：${status}`;
+      this.setData({ busy: false, message, payError: !closed || !!this.payNote, ordersLink: !closed });
     }
   },
   orders() { wx.navigateTo({ url: '/pages/orders/index' }); },

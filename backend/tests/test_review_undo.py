@@ -322,3 +322,14 @@ def test_review_shortcuts_js():
         check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_other_kind_cannot_be_approved(client, session):
+    """ "其他"类不对外显示：核对台不让通过，只能驳回（D-099 期 0 补审）。"""
+    row = candidate(session)
+    row.kind = "其他"
+    session.commit()
+    response = post(client, row, "approve")
+    assert response.status_code == 422 and "其他" in response.json()["detail"]
+    assert_pending(session, row)
+    assert post(client, row, "reject").status_code == 200

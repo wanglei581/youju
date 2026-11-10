@@ -47,7 +47,7 @@ test('扫描规则本身：字符串、属性里的禁用说法要报出来，�
 
 test('首发包页面、组件和工具函数：不出现复制链接去浏览器、以原网站为准这类把人送出小程序的说法', () => {
   const pages = firstPages();
-  assert.equal(pages.length, 16, `首发页面清单读成了 ${pages.length} 页`);
+  assert.equal(pages.length, 17, `首发页面清单读成了 ${pages.length} 页`);
   for (const page of ['detail', 'files', 'about', 'reader', 'lists', 'results']) assert.ok(pages.includes(page), `首发清单里没有 ${page}`);
   const files = [
     ...pages.flatMap((page) => ['wxml', 'js'].map((ext) => `pages/${page}/index.${ext}`)).filter((file) => fs.existsSync(path.join(ROOT, file))),
@@ -75,9 +75,12 @@ test('不再有复制原文链接的代码：utils/copy.js 已删，所有页面
   for (const file of ['pages/detail/index.js', 'components/doc-row/index.js']) {
     assert.doesNotMatch(visible(read(file)), /setClipboardData|copyVersion/, file);
   }
+  // D-097：阅读入口（阅读全文 / 阅读附件）在小程序内，10/29 起只在底栏放一个（创始人：上下两个是重复）；出处不写网址
   const detail = visible(read('pages/detail/index.wxml'));
-  assert.match(detail, /bindtap="readBody">站内阅读全文</);
-  assert.match(detail, /正文和附件可在本小程序阅读，链接仅供记录来源/);
+  assert.equal((detail.match(/bindtap="readBody"/g) || []).length, 1);
+  assert.match(detail, /id="bar-read" class="btn-primary bar-main" bindtap="readBody"/);
+  // 页面上不显示网址（AI 入口组件拿 doc.url 作内部参数，不显示）
+  assert.doesNotMatch(detail, /\{\{doc\.host|>[^<]*\{\{doc\.url\}\}|原文网址|链接仅供记录来源/);
 });
 
 // D-090（创始人 10/24 "查名单这组用词按你推荐的改"）：首页小字"政府公开名单"，名单页和转发标题"在政府公开名单里查企业"，
@@ -116,7 +119,8 @@ test('隐私保护指引一·9 剪切板：写剪切板的页面都写进去了�
   const item = JSON.stringify(legal).match(/9\. 剪切板：[^"]*/);
   assert.ok(item, '读不到隐私保护指引一·9');
   const text = item[0];
-  assert.equal(text, '9. 剪切板：我们不读取剪切板，只在您主动点联系邮箱或“复制”时写入对应文字：关于页的联系邮箱；投诉举报页的联系邮箱（开放 AI 功能后才有）；“我的数据”里的全部数据、单条数据和完整微信用户标识（登录后才有）。');
+  // 完整版 2026-12 起去掉"（开放 AI 功能后才有）"：完整版包里就有投诉举报页（和过审版加 AI 2026-11.1 一样）
+  assert.equal(text, '9. 剪切板：我们不读取剪切板，只在您主动点联系邮箱或“复制”时写入对应文字：关于页的联系邮箱；投诉举报页的联系邮箱；“我的数据”里的全部数据、单条数据和完整微信用户标识（登录后才有）。');
   // 页面、组件、工具函数都查（按原文查，不去注释），组件和工具函数里不许写剪切板：写剪切板只能在页面里，好对上一·9
   const code = [
     ...listFiles('pages', (dir) => [`pages/${dir}/index.js`]),

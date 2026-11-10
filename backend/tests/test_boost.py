@@ -45,6 +45,7 @@ def ctx(session_factory, monkeypatch):
     settings = Settings(
         _env_file=None,
         advisor_enabled=True,
+        advisor_compare_enabled=True,  # D-118 默认关；这些测试照旧测比对
         boost_trial_enabled=True,
         trust_wx_headers=True,
         cloud_env="test-env",
@@ -115,6 +116,8 @@ def start(client, identity):
 def test_switches_default_off(session_factory, monkeypatch):
     settings = Settings(_env_file=None, advisor_enabled=True, trust_wx_headers=True)
     assert settings.boost_trial_enabled is False and settings.season_boost_enabled is False
+    # D-118：批量名单比对的开关默认也是关（钉住 Settings 的真实默认值，不靠测试替身的缺省）
+    assert settings.advisor_compare_enabled is False
     for module in (me, advisor, app_module):
         monkeypatch.setattr(module, "get_settings", lambda: settings)
     monkeypatch.setattr(v1, "now", lambda: NOW)
@@ -130,6 +133,7 @@ def test_switches_default_off(session_factory, monkeypatch):
             assert start(client, identity).status_code == 404
             body = status(client, identity)
             assert body["trial"] is None and body["season"] is None
+            assert body["compareEnabled"] is False
             assert body["quota"]["compare"] == {"used": 0, "limit": 3, "maxRows": 50}
             # 批量工具关着时体验接口也不在
             settings.advisor_enabled = False
@@ -185,6 +189,23 @@ def test_old_agreement_kept_for_old_features_cannot_start_a_trial(ctx, session):
     assert response.status_code == 403 and response.json()["detail"] == me.OUTDATED
     assert session.scalar(select(func.count(BoostTrial.id))) == 0
     new = client.post("/api/v1/me/agreement", headers=identity, json={"version": AGREEMENT})
+    assert new.status_code == 200
+    assert start(client, identity).status_code == 200
+
+
+def test_first_release_ai_agreement_cannot_start_a_trial(ctx, session):
+    """D-098：只同意过过审版加 AI 的 2026-11.1（版本排在 2026-11 后面，正文没写加量体验）开始不了体验；
+    同意含体验条款的新版（如 2026-12）以后才行。"""
+    client = ctx.client
+    ctx.settings.agreement_version = "2026-12"
+    ctx.settings.agreement_min_version = "2026-10.2"
+    identity = headers("ai-pack-consent")
+    ai_pack = client.post("/api/v1/me/agreement", headers=identity, json={"version": "2026-11.1"})
+    assert ai_pack.status_code == 200 and ai_pack.json()["valid"] is True
+    response = start(client, identity)
+    assert response.status_code == 403 and response.json()["detail"] == me.OUTDATED
+    assert session.scalar(select(func.count(BoostTrial.id))) == 0
+    new = client.post("/api/v1/me/agreement", headers=identity, json={"version": "2026-12"})
     assert new.status_code == 200
     assert start(client, identity).status_code == 200
 

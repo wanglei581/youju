@@ -5,6 +5,7 @@ import io
 import json
 import struct
 import zipfile
+import zlib
 from datetime import date, datetime, timedelta
 
 import openpyxl
@@ -44,6 +45,7 @@ from .test_attachments import (
     make_ole,
     make_pdf,
     make_png,
+    make_xlsx,
     obj,
     run,
 )
@@ -285,30 +287,30 @@ def test_sniff_recognizes_formats_and_reasons() -> None:
     assert at.sniff(make_ole("WordDocument")) == "doc"  # wps 多半就是这样
     assert at.sniff(XLS) == "xls"  # et 多半就是这样
     assert at.sniff(make_ppt([["标题"]])) == "ppt"
+    # 11/5 起：rar、zip 压缩包和 OFD 也认（里面的文件逐个取文字）
+    assert at.sniff(b"Rar!\x1a\x07\x00xxxx") == "rar"
+    assert at.sniff(b"Rar!\x1a\x07\x01\x00xxxx") == "rar"
+    plain_zip, ofd = io.BytesIO(), io.BytesIO()
+    with zipfile.ZipFile(plain_zip, "w") as zf:
+        zf.writestr("a.txt", "x")
+    with zipfile.ZipFile(ofd, "w") as zf:
+        zf.writestr("OFD.xml", "<ofd/>")
+    assert (at.sniff(plain_zip.getvalue()), at.sniff(ofd.getvalue())) == ("zip", "ofd")
     cases = {
         b"": "broken",
         b"<!DOCTYPE html><html><body>404</body></html>": "webpage",
         b"\r\n  <html><head></head></html>": "webpage",
-        b"Rar!\x1a\x07\x00xxxx": "format",
         b"{\\rtf1\\ansi hello}": "format",
         b"\x00\x01\x02 random": "format",
+        b"7z\xbc\xaf\x27\x1c\x00\x04": "format",
         b"PK\x03\x04garbage": "broken",
     }
     for data, reason in cases.items():
         with pytest.raises(at.Unreadable) as exc:
             at.sniff(data)
         assert exc.value.reason == reason, data
-    plain_zip, ofd = io.BytesIO(), io.BytesIO()
-    with zipfile.ZipFile(plain_zip, "w") as zf:
-        zf.writestr("a.txt", "x")
-    with zipfile.ZipFile(ofd, "w") as zf:
-        zf.writestr("OFD.xml", "<ofd/>")
     encrypted = make_cfb({"EncryptionInfo": b"x", "EncryptedPackage": b"y"})
-    for data, reason, detail in (
-        (plain_zip.getvalue(), "format", "压缩包"),
-        (ofd.getvalue(), "format", "OFD"),
-        (encrypted, "broken", "加密"),
-    ):
+    for data, reason, detail in ((encrypted, "broken", "加密"),):
         with pytest.raises(at.Unreadable) as exc:
             at.sniff(data)
         assert exc.value.reason == reason and detail in exc.value.detail
@@ -910,6 +912,615 @@ def test_long_paragraphs_split_at_sentence_ends_and_char_limit(monkeypatch) -> N
     assert (big.reason, big.segments) == ("too_large", [])
 
 
+# ---- OFD、压缩包（11/5） ----
+
+OFD_NS = "http://www.ofdspec.org/2016"
+
+
+def ofd_text(x, y, text, *, size=5.0, attrs="", inner="", delta=None, code_y=4.0) -> str:
+    """一个 TextObject：对象左上角在 (x, y)（毫米），第一个字的基线在 y + code_y；没给 delta 时
+    每个字按 size 宽写 DeltaX。"""
+    delta = " ".join([f"{size:g}"] * (len(text) - 1)) if delta is None else delta
+    dx = f' DeltaX="{delta}"' if delta else ""
+    box = f"{x:g} {y:g} {size * len(text) + 2:g} {size + 2:g}"
+    return (
+        f'<ofd:TextObject ID="1" Boundary="{box}" Font="1" Size="{size:g}"{attrs}>{inner}'
+        f'<ofd:TextCode X="0" Y="{code_y:g}"{dx}>{text}</ofd:TextCode></ofd:TextObject>'
+    )
+
+
+FULL_PAGE_IMAGE = '<ofd:ImageObject ID="7" Boundary="0 0 210 297" ResourceID="8"/>'
+
+
+def make_ofd(pages: list[str], *, extra: dict | None = None, root="Doc_0/Document.xml") -> bytes:
+    """最小的 OFD（A4，210×297 毫米）：pages 是每页图层里的对象（手写的 TextObject 等）；带一个
+    模板页（上面的字不该取）。extra 是另外放进包里的文件。"""
+    head = '<?xml version="1.0" encoding="UTF-8"?>'
+    refs = "".join(
+        f'<ofd:Page ID="{i + 1}" BaseLoc="Pages/Page_{i}/Content.xml"/>' for i in range(len(pages))
+    )
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w") as zf:
+        zf.writestr(
+            "OFD.xml",
+            f'{head}<ofd:OFD xmlns:ofd="{OFD_NS}" DocType="OFD" Version="1.1"><ofd:DocBody>'
+            f"<ofd:DocInfo><ofd:DocID>1</ofd:DocID></ofd:DocInfo><ofd:DocRoot>{root}</ofd:DocRoot>"
+            "</ofd:DocBody></ofd:OFD>",
+        )
+        zf.writestr(
+            "Doc_0/Document.xml",
+            f'{head}<ofd:Document xmlns:ofd="{OFD_NS}"><ofd:CommonData><ofd:PageArea>'
+            "<ofd:PhysicalBox>0 0 210 297</ofd:PhysicalBox></ofd:PageArea>"
+            '<ofd:TemplatePage ID="90" BaseLoc="Tpls/Tpl_0/Content.xml"/></ofd:CommonData>'
+            f"<ofd:Pages>{refs}</ofd:Pages></ofd:Document>",
+        )
+        zf.writestr(
+            "Doc_0/Tpls/Tpl_0/Content.xml",
+            f'{head}<ofd:Page xmlns:ofd="{OFD_NS}"><ofd:Content><ofd:Layer ID="91">'
+            f"{ofd_text(30, 50, '模板上的字')}</ofd:Layer></ofd:Content></ofd:Page>",
+        )
+        for i, layer in enumerate(pages):
+            zf.writestr(
+                f"Doc_0/Pages/Page_{i}/Content.xml",
+                f'{head}<ofd:Page xmlns:ofd="{OFD_NS}"><ofd:Template TemplateID="90"/><ofd:Content>'
+                f'<ofd:Layer ID="{100 + i}">{layer}</ofd:Layer></ofd:Content></ofd:Page>',
+            )
+        for name, data in (extra or {}).items():
+            zf.writestr(name, data)
+    return out.getvalue()
+
+
+def test_ofd_text_in_reading_order() -> None:
+    wrapped = "各单位要按照本通知要求认真组织申报工作确保申报材料真实完整并在截止"  # 排满一行
+    second = "申报材料一式两份另附电子版光盘一张由各市主管部门统一汇总报送。"
+    page1 = "".join(
+        [
+            # 页脚的页码排在最前面（WPS 导出的 OFD 常这样）："— 1 —"是三个对象
+            ofd_text(95, 270, "—"),
+            ofd_text(101, 270, "1"),
+            ofd_text(106, 270, "—"),
+            # 标题拆成两个对象、顺序颠倒：按位置接起来，挨着的不加空格
+            ofd_text(80, 40, "试点工作的通知"),
+            ofd_text(60, 40, "关于开展"),
+            ofd_text(30, 60, wrapped),
+            ofd_text(30, 70, "日期前报送。"),
+            ofd_text(30, 80, second),
+            ofd_text(30, 90, "联系电话：13812345678。"),
+            # 看不见的字（不填充、填充色透明、隐藏）都不取
+            ofd_text(30, 100, "识别层的字", attrs=' Fill="false"'),
+            ofd_text(30, 105, "透明的字", inner='<ofd:FillColor Value="0 0 0" Alpha="0"/>'),
+            ofd_text(30, 110, "隐藏的字", attrs=' Visible="false"'),
+            # 分组里的字；缩放过的字（CTM），"g 3 10"是 3 个 10 的间距
+            f'<ofd:PageBlock ID="5">{ofd_text(30, 120, "块里的字")}</ofd:PageBlock>',
+            ofd_text(30, 130, "缩放的字", size=10, attrs=' CTM="0.5 0 0 0.5 0 0"', delta="g 3 10"),
+            # 表格的一行：格和格离得远，隔一个空格；西文词之间也隔
+            ofd_text(30, 140, "项目名称"),
+            ofd_text(100, 140, "申报单位"),
+            ofd_text(30, 150, "Hello"),
+            ofd_text(54, 150, "World"),
+            # 为了加粗画了两遍的字只留一遍
+            ofd_text(30, 160, "加粗的字"),
+            ofd_text(30.2, 160, "加粗的字"),
+        ]
+    )
+    # 第 2 页：整页图片盖住，上面的字是看不见的识别层（就算还有几个看得见的字）：扫描页，不取
+    page2 = (
+        FULL_PAGE_IMAGE
+        + ofd_text(30, 60, "识别出来的整页文字", attrs=' Fill="false"')
+        + ofd_text(30, 80, "图上另外加的十几个看得见的字")
+    )
+    page3 = ofd_text(30, 60, "第三页的正文。")
+    result = at.extract(make_ofd([page1, page2, page3]))
+    assert (result.ok, result.file_type, result.pages, result.scanned_pages) == (
+        True,
+        "ofd",
+        3,
+        1,
+    )
+    assert texts(result) == [
+        "关于开展试点工作的通知",
+        wrapped + "日期前报送。",
+        second,
+        "联系电话：[手机号已脱敏]。",
+        "块里的字",
+        "缩放的字",
+        "项目名称 申报单位",
+        "Hello World",
+        "加粗的字",
+        "第三页的正文。",
+    ]
+    assert [s.loc for s in result.segments] == [{"page": 1}] * 9 + [{"page": 3}]
+    assert result.masked == 1
+
+
+def test_ofd_limits_and_errors(monkeypatch) -> None:
+    page = ofd_text(30, 60, "正文。")
+    # DocRoot 写成从包的根算的路径（/ 开头）也认
+    assert texts(at.extract(make_ofd([page], root="/Doc_0/Document.xml"))) == ["正文。"]
+    cases = [
+        (make_ofd([page], extra={"Encryptions.xml": "<x/>"}), "broken", "加密的 OFD 文件"),
+        (make_ofd([page], root="Doc_9/Document.xml"), "broken", "OFD 里找不到文档"),
+        (make_ofd([FULL_PAGE_IMAGE]), "scan", "只有图片，取不出文字（多半是扫描件）"),
+        (make_ofd([""]), "empty", "文件里没有文字"),
+    ]
+    for data, reason, detail in cases:
+        result = at.extract(data)
+        assert (result.file_type, result.reason, result.detail) == ("ofd", reason, detail)
+    monkeypatch.setattr(at, "_PDF_PAGES", 1)
+    result = at.extract(make_ofd([page, page]))
+    assert (result.reason, result.detail) == ("too_large", "OFD 超过 1 页")
+
+
+def make_zip(files, *, gbk=()) -> bytes:
+    """zip 包：files 是 (包里的路径, 内容)，以 / 结尾的是文件夹；gbk 里的名字按 GBK 写、不标
+    UTF-8（中文 Windows 的压缩软件常这样）。"""
+    out = io.BytesIO()
+    stand_ins = {}
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zf:
+        for i, (name, data) in enumerate(files):
+            if name in gbk:
+                raw = name.encode("gbk")
+                stand_in = f"@{i}@".ljust(len(raw), "@").encode()  # 一样长的 ASCII 名字，写完换掉
+                stand_ins[stand_in] = raw
+                name = stand_in.decode()
+            zf.writestr(name, data)
+    data = out.getvalue()
+    for stand_in, raw in stand_ins.items():
+        data = data.replace(stand_in, raw)
+    return data
+
+
+def mark_encrypted(data: bytes, name: str) -> bytes:
+    """把 zip 目录里这个文件标成加了密（Python 写不出加密的 zip）。"""
+    out = bytearray(data)
+    at_ = out.find(b"PK\x01\x02")
+    while at_ >= 0:
+        size = struct.unpack_from("<H", out, at_ + 28)[0]
+        if out[at_ + 46 : at_ + 46 + size] == name.encode():
+            struct.pack_into("<H", out, at_ + 8, struct.unpack_from("<H", out, at_ + 8)[0] | 1)
+        at_ = out.find(b"PK\x01\x02", at_ + 4)
+    return bytes(out)
+
+
+def test_zip_reads_each_inner_file_in_order_with_titles() -> None:
+    nested = make_zip([("x.docx", make_docx("里层"))])
+    data = make_zip(
+        [
+            ("子目录/", b""),
+            ("子目录/附件3：说明.wps", make_word97([("说明文字", "\r", {})])),
+            ("附件10：汇总表.xlsx", make_xlsx(("项目名称", "金额"), ("甲项目", "100"))),
+            ("附件2：申报书.docx", make_docx("申报书内容", "联系电话：13812345678")),
+            ("附件1：申报指南.pdf", make_pdf("Guide 2026")),
+            ("空白.pdf", SCAN),
+            ("假文档.doc", nested),  # 实际是压缩包：压缩包里的压缩包不打开
+            ("图片.jpg", make_png(16)),
+            ("说明.txt", b"text"),
+            ("嵌套.zip", nested),
+            # 苹果电脑、Office 自己生成的文件不算
+            ("__MACOSX/._附件1：申报指南.pdf", b"x"),
+            ("~$附件2：申报书.docx", b"x"),
+            (".DS_Store", b"x"),
+        ],
+        gbk=("附件2：申报书.docx",),
+    )
+    assert at.sniff(data) == "zip"
+    result = at.extract(data)
+    assert (result.ok, result.file_type, result.pages, result.scanned_pages) == (
+        True,
+        "zip",
+        2,
+        1,
+    )
+    # 外层的在前、子文件夹里的在后；同一层按名字（数字按大小）
+    assert texts(result) == [
+        "压缩包里有 6 个文件，下面按顺序列出；其中 2 个没有读出文字，标题后面写了原因；"
+        "另有 3 个其他格式的文件（jpg 1 个、txt 1 个、zip 1 个）暂不能在小程序内阅读。",
+        "第 1 个文件（共 6 个）：假文档.doc（压缩包里的压缩包暂不能阅读）",
+        "第 2 个文件（共 6 个）：空白.pdf（扫描件，暂不能识别文字）",
+        "第 3 个文件（共 6 个）：附件1：申报指南.pdf",
+        "Guide 2026",
+        "第 4 个文件（共 6 个）：附件2：申报书.docx",
+        "申报书内容",
+        "联系电话：[手机号已脱敏]",
+        "第 5 个文件（共 6 个）：附件10：汇总表.xlsx",
+        "项目名称 | 金额",
+        "甲项目 | 100",
+        "第 6 个文件（共 6 个）：附件3：说明.wps",
+        "说明文字",
+    ]
+    # 段号接着编；出处加上第几个文件（里面文件自己的出处照留）
+    assert [s.n for s in result.segments] == list(range(1, 14))
+    locs = [s.loc for s in result.segments]
+    assert locs[0] is None and locs[1:4] == [{"file": 1}, {"file": 2}, {"file": 3}]
+    assert locs[4] == {"file": 3, "page": 1} and locs[6] == {"file": 4}
+    assert locs[9]["file"] == 5 and locs[9]["row"] == 1 and locs[10]["row"] == 2
+    assert result.segments[9].cells == [{"c": 0, "t": "项目名称"}, {"c": 1, "t": "金额"}]
+    assert result.masked == 1
+    assert (
+        result.detail
+        == "压缩包里 6 个文件，读了 4 个；读不了：格式不支持 1 个、扫描件或图片，取不出文字 1 个"
+    )
+    # 只有一个文件：不写开头一段
+    single = at.extract(make_zip([("附件.docx", make_docx("唯一的文件"))]))
+    assert texts(single) == ["压缩包里的文件：附件.docx", "唯一的文件"]
+
+
+def test_zip_limits_mark_files_not_read(monkeypatch) -> None:
+    docx = make_docx("一份正常的文件")
+    # 加了密的、解压后太大的、压缩比异常的（压缩炸弹）不读，别的照读
+    bomb = make_zip([("炸弹.pdf", b"\x00" * 2_000_000), ("正常.docx", docx)])
+    assert texts(at.extract(bomb))[1] == "第 1 个文件（共 2 个）：正常.docx"
+    assert texts(at.extract(bomb))[3] == "第 2 个文件（共 2 个）：炸弹.pdf（文件太大，没有读）"
+    locked = mark_encrypted(make_zip([("a.docx", docx), ("b.docx", docx)]), "b.docx")
+    assert (
+        texts(at.extract(locked))[-1]
+        == "第 2 个文件（共 2 个）：b.docx（文件损坏或加了密，读不出文字）"
+    )
+    monkeypatch.setattr(at, "_ARCHIVE_FILE_MAX", len(docx) + 1000)
+    big = make_zip([("a.docx", docx), ("大.pdf", make_pdf("x") + b"%" * (len(docx) + 2000))])
+    assert texts(at.extract(big))[-1] == "第 2 个文件（共 2 个）：大.pdf（文件太大，没有读）"
+    monkeypatch.setattr(at, "_ARCHIVE_FILE_MAX", 20 * 1024 * 1024)
+    # 解压合计超了：后面的不读
+    monkeypatch.setattr(at, "_ARCHIVE_UNPACK_MAX", len(docx) + 100)
+    many = make_zip([("a.docx", docx), ("b.docx", docx)])
+    assert (
+        texts(at.extract(many))[-1]
+        == "第 2 个文件（共 2 个）：b.docx（压缩包解压后太大，这个文件没有读）"
+    )
+    monkeypatch.setattr(at, "_ARCHIVE_UNPACK_MAX", 64 * 1024 * 1024)
+    # 文件太多：只读前面的
+    monkeypatch.setattr(at, "_ARCHIVE_FILES", 2)
+    three = at.extract(make_zip([("a.docx", docx), ("b.docx", docx), ("c.docx", docx)]))
+    assert texts(three)[0] == "压缩包里有 3 个文件，下面按顺序列出；第 3 个起没有读（文件太多）。"
+    assert texts(three)[-1] == "一份正常的文件" and len(three.segments) == 5
+    # 条目（含文件夹）太多：整个不读
+    monkeypatch.setattr(at, "_ARCHIVE_ENTRIES", 2)
+    result = at.extract(make_zip([("d/", b""), ("d/a.docx", docx), ("d/b.docx", docx)]))
+    assert (result.reason, result.detail) == ("too_large", "压缩包里超过 2 个条目")
+
+
+def test_zip_text_budget_and_time_limit(monkeypatch) -> None:
+    sentence = "申报单位须在省内注册并具有独立法人资格。"  # 20 字
+    files = [("a.docx", make_docx(sentence * 2)), ("b.docx", make_docx(sentence * 2))]
+    # 字数上限按剩下的给：开头一段、每个标题先留出位置，第二个放不下就不读
+    monkeypatch.setattr(at, "MAX_CHARS", at._ARCHIVE_HEAD_CHARS + 2 * at._ARCHIVE_TITLE_CHARS + 60)
+    result = at.extract(make_zip(files))
+    assert (
+        texts(result)[-1] == "第 2 个文件（共 2 个）：b.docx（压缩包里的文字太多，这个文件没有读）"
+    )
+    monkeypatch.setattr(at, "MAX_CHARS", 300_000)
+    # 读到一半超时：已读的照样给，后面的写没读
+    calls = []
+
+    def slow(data):
+        calls.append(1)
+        raise at._Timeout("too_large", "取文字超过 180 秒")
+
+    monkeypatch.setitem(at._EXTRACTORS, "pdf", slow)
+    timed = at.extract(
+        make_zip(
+            [("a.docx", make_docx("先读的")), ("b.pdf", make_pdf("x")), ("c.docx", files[0][1])]
+        )
+    )
+    assert timed.ok and len(calls) == 1
+    assert texts(timed)[1:] == [
+        "第 1 个文件（共 3 个）：a.docx",
+        "先读的",
+        "第 2 个文件（共 3 个）：b.pdf（文件太大或太复杂，暂不能阅读）",
+        "第 3 个文件（共 3 个）：c.docx（前面的文件读的时间太长，这个没有读）",
+    ]
+
+
+def test_zip_file_names_are_masked_like_text() -> None:
+    """包里文件名带的手机号、身份证号和文字一样入库前遮掉（标题也走 _Builder.para）。"""
+    name = "联系人13812345678的申报表.docx"
+    result = at.extract(make_zip([(name, make_docx("申报表"))]))
+    assert texts(result)[0] == "压缩包里的文件：联系人[手机号已脱敏]的申报表.docx"
+    assert "13812345678" not in "".join(texts(result)) and result.masked == 1
+
+
+def test_time_limit_keeps_firing_when_a_parser_swallows_it(monkeypatch) -> None:
+    """解析库的 except Exception 把超时吞掉、接着解析：每秒再提醒一次，照样停得下来；压缩包里
+    后面的文件不读（11/5：只提醒一次的话，后面的文件就不限时了）。"""
+    import contextlib
+    import time
+
+    def stubborn(_data):
+        with contextlib.suppress(Exception):  # 模拟解析库把超时当普通错误吞掉
+            time.sleep(5)
+        time.sleep(5)  # 接着干活：下一次提醒照样打断
+
+    monkeypatch.setattr(at, "EXTRACT_SECONDS", 1)
+    # 单独一份用在本进程里解析的格式（docx）；单独的 PDF 在子进程里按 CPU 时间限，这里的墙上
+    # 时间只兜底（见下一个测试）
+    docx = at._EXTRACTORS["docx"]
+    monkeypatch.setitem(at._EXTRACTORS, "docx", stubborn)
+    started = time.monotonic()
+    single = at.extract(make_docx("x"))
+    assert (single.reason, single.detail) == ("too_large", "取文字超过 1 秒")
+    monkeypatch.setitem(at._EXTRACTORS, "docx", docx)
+    # 压缩包整份一个墙上时间（1 秒）：包里的 PDF 照样被它打断
+    monkeypatch.setitem(at._EXTRACTORS, "pdf", stubborn)
+    data = make_zip(
+        [("a.docx", make_docx("先读的")), ("b.pdf", make_pdf("x")), ("c.docx", make_docx("后面的"))]
+    )
+    result = at.extract(data)
+    assert time.monotonic() - started < 7
+    assert texts(result)[-2:] == [
+        "第 2 个文件（共 3 个）：b.pdf（文件太大或太复杂，暂不能阅读）",
+        "第 3 个文件（共 3 个）：c.docx（前面的文件读的时间太长，这个没有读）",
+    ]
+    assert result.ok and "先读的" in texts(result)
+
+
+def test_single_pdf_gets_only_a_wall_clock_backstop(monkeypatch) -> None:
+    """单独一份 PDF：子进程按 CPU 时间限（seconds 秒），这里的墙上时间只兜底，比子进程自己的墙上
+    时间兜底再晚 5 秒（容器忙时好文件不会因为等 CPU 被记成"太大"）；别的格式照旧是 seconds 秒。"""
+    import contextlib
+    import math
+
+    from youju import pdf_sandbox
+
+    seen = []
+
+    @contextlib.contextmanager
+    def recorded(seconds):
+        seen.append(seconds)
+        yield
+
+    monkeypatch.setattr(at, "_time_limit", recorded)
+    assert at.extract(make_pdf("x")).ok
+    assert at.extract(make_docx("x")).ok
+    assert seen == [math.ceil(pdf_sandbox._wall(at.EXTRACT_SECONDS)) + 5, at.EXTRACT_SECONDS]
+
+
+def bzip2_zip(name: str, size: int) -> bytes:
+    """bzip2 压缩的 zip，目录里把解压后大小写成 1000（11/5 独立审阅的压缩炸弹探针）。"""
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_BZIP2) as zf:
+        zf.writestr(name, b"\x00" * size)
+    data = bytearray(out.getvalue())
+    for sig, offset in ((b"PK\x03\x04", 22), (b"PK\x01\x02", 24)):
+        at_ = data.find(sig)
+        struct.pack_into("<I", data, at_ + offset, 1000)
+    return bytes(data)
+
+
+def test_zip_methods_that_decompress_without_a_limit_are_refused() -> None:
+    """Python 解 bzip2、LZMA 不受 read(n) 限制：包里这样压缩的文件、Office 里这样压缩的部件都不解。"""
+    data = make_zip([("附件2.docx", make_docx("正常的文件"))])
+    mixed = io.BytesIO(data)
+    with zipfile.ZipFile(mixed, "a", zipfile.ZIP_BZIP2) as zf:
+        zf.writestr("附件1.pdf", b"\x00" * 5_000_000)
+    assert texts(at.extract(mixed.getvalue()))[1:] == [
+        "第 1 个文件（共 2 个）：附件1.pdf（压缩方式暂不支持，这个文件没有读）",
+        "第 2 个文件（共 2 个）：附件2.docx",
+        "正常的文件",
+    ]
+    lying = at.extract(bzip2_zip("附件1.pdf", 5_000_000))
+    assert (lying.reason, lying.detail) == ("broken", "压缩包里的 1 个文件都读不出文字")
+    # docx 的部件用 bzip2 压缩：不解
+    docx = io.BytesIO()
+    with (
+        zipfile.ZipFile(io.BytesIO(make_docx("申报指南"))) as src,
+        zipfile.ZipFile(docx, "w", zipfile.ZIP_BZIP2) as dst,
+    ):
+        for info in src.infolist():
+            dst.writestr(info.filename, src.read(info))
+    result = at.extract(docx.getvalue())
+    assert (result.file_type, result.reason, result.detail) == (
+        "docx",
+        "broken",
+        "压缩方式不支持（12）",
+    )
+
+
+def test_archive_stops_at_the_deadline_even_if_every_alarm_is_swallowed(monkeypatch) -> None:
+    """每次提醒都落在解析库吞异常的地方（11/5 独立审阅探针）：每读一个文件前看一下截止时间。"""
+    import contextlib
+    import time
+
+    def swallowing(_data):
+        with contextlib.suppress(Exception):
+            time.sleep(0.8)
+        builder = at._Builder()
+        builder.para("一页")
+        return at._Found(builder)
+
+    monkeypatch.setattr(at, "EXTRACT_SECONDS", 1)
+    monkeypatch.setitem(at._EXTRACTORS, "pdf", swallowing)
+    started = time.monotonic()
+    result = at.extract(make_zip([(f"{i}.pdf", make_pdf("x")) for i in range(1, 6)]))
+    assert time.monotonic() - started < 2.5
+    late = [x for x in texts(result) if x.endswith("（前面的文件读的时间太长，这个没有读）")]
+    assert result.ok and len(late) >= 3
+
+
+def test_zip_with_nothing_readable() -> None:
+    cases = [
+        (
+            make_zip([("图.jpg", make_png(16)), ("说明.txt", b"x")]),
+            "format",
+            "压缩包里没有能读的文件（jpg 1 个、txt 1 个）",
+        ),
+        (
+            make_zip([("__MACOSX/._a.pdf", b"x"), (".DS_Store", b"x"), ("d/", b""), ("e\\", b"")]),
+            "empty",
+            "压缩包里没有文件",
+        ),
+        (
+            make_zip([("a.pdf", SCAN), ("b.pdf", SCAN), ("c.docx", make_docx())]),
+            "scan",
+            "压缩包里的 3 个文件都读不出文字",
+        ),
+    ]
+    for data, reason, detail in cases:
+        result = at.extract(data)
+        assert (result.ok, result.file_type, result.reason, result.detail) == (
+            False,
+            "zip",
+            reason,
+            detail,
+        )
+        assert result.segments == []
+    # OpenDocument、认不出的 Office 文件不当压缩包
+    odt = make_zip(
+        [("mimetype", b"application/vnd.oasis.opendocument.text"), ("content.xml", b"<x/>")]
+    )
+    with pytest.raises(at.Unreadable) as exc:
+        at.sniff(odt)
+    assert (exc.value.reason, exc.value.detail) == ("format", "认不出的 Office 文件")
+
+
+def make_rar4(files) -> bytes:
+    """不压缩的 RAR 4 包（libarchive 能读）：files 是 (ASCII 路径, 内容)，内容是 None 的是文件夹。"""
+
+    def block(kind: int, flags: int, body: bytes) -> bytes:
+        raw = struct.pack("<BHH", kind, flags, 7 + len(body)) + body
+        return struct.pack("<H", zlib.crc32(raw) & 0xFFFF) + raw
+
+    out = b"Rar!\x1a\x07\x00" + block(0x73, 0, bytes(6))
+    for name, data in files:
+        flags, attr = (0x80E0, 0x10) if data is None else (0x8000, 0x20)
+        data = data or b""
+        body = struct.pack(
+            "<IIBIIBBHI",
+            len(data),
+            len(data),
+            2,
+            zlib.crc32(data),
+            0x5A000000,
+            20,
+            0x30,
+            len(name),
+            attr,
+        )
+        out += block(0x74, flags, body + name.encode()) + data
+    return out + bytes.fromhex("c43d7b00400700")
+
+
+def _vint(n: int) -> bytes:
+    out = bytearray()
+    while True:
+        out.append((n & 0x7F) | (0x80 if n >> 7 else 0))
+        n >>= 7
+        if not n:
+            return bytes(out)
+
+
+def make_rar5(files) -> bytes:
+    """不压缩的 RAR 5 包（RAR 5.0 格式说明：每块是 CRC32、块大小、类型、标志、字段、数据；整数用
+    7 位一组的变长写法）：files 是 (UTF-8 路径, 内容)，内容是 None 的是文件夹。"""
+
+    def block(kind: int, fields: bytes, data: bytes | None = None) -> bytes:
+        flags = 0x0002 if data is not None else 0  # 文件块都要带数据区（长度可以是 0）
+        body = _vint(kind) + _vint(flags) + (_vint(len(data)) if data is not None else b"") + fields
+        sized = _vint(len(body)) + body
+        return zlib.crc32(sized).to_bytes(4, "little") + sized + (data or b"")
+
+    out = b"Rar!\x1a\x07\x01\x00" + block(1, _vint(0))
+    for name, data in files:
+        raw = name.encode()
+        tail = _vint(0) + _vint(1) + _vint(len(raw)) + raw  # 不压缩、Unix、文件名
+        if data is None:
+            out += block(2, _vint(0x0001) + _vint(0) + _vint(0o40755) + tail, b"")
+        else:
+            crc = zlib.crc32(data).to_bytes(4, "little")
+            out += block(2, _vint(0x0004) + _vint(len(data)) + _vint(0o100644) + crc + tail, data)
+    return out + block(5, _vint(0))
+
+
+def test_rar5_with_chinese_names() -> None:
+    pytest.importorskip("libarchive", reason="本机没有 libarchive 系统库")
+    data = make_rar5(
+        [
+            ("资料", None),
+            ("资料/附件2：申报表.docx", make_docx("第二个文件")),
+            ("附件1：申报指南.docx", make_docx("第一个文件")),
+        ]
+    )
+    assert data.startswith(at._RAR5) and at.sniff(data) == "rar"
+    assert texts(at.extract(data)) == [
+        "压缩包里有 2 个文件，下面按顺序列出。",
+        "第 1 个文件（共 2 个）：附件1：申报指南.docx",
+        "第一个文件",
+        "第 2 个文件（共 2 个）：附件2：申报表.docx",
+        "第二个文件",
+    ]
+
+
+def test_rar_reads_like_zip(monkeypatch) -> None:
+    pytest.importorskip("libarchive", reason="本机没有 libarchive 系统库")
+    data = make_rar4(
+        [
+            ("docs", None),
+            ("docs/b.docx", make_docx("Second file")),
+            ("a.docx", make_docx("First file")),
+            ("readme.txt", b"hello"),
+        ]
+    )
+    assert at.sniff(data) == "rar"
+    result = at.extract(data)
+    assert (result.ok, result.file_type) == (True, "rar")
+    assert texts(result) == [
+        "压缩包里有 2 个文件，下面按顺序列出；另有 1 个其他格式的文件（txt 1 个）暂不能在小程序内阅读。",
+        "第 1 个文件（共 2 个）：a.docx",
+        "First file",
+        "第 2 个文件（共 2 个）：b.docx",
+        "Second file",
+    ]
+    # 坏的 rar；解压合计超了（rar 只能从头往后解，后面的不再看）
+    broken = at.extract(b"Rar!\x1a\x07\x00" + b"\x00" * 64)
+    assert (broken.file_type, broken.reason) == ("rar", "broken")
+    monkeypatch.setattr(at, "_ARCHIVE_UNPACK_MAX", len(make_docx("First file")) + 10)
+    cut = at.extract(make_rar4([("a.docx", make_docx("First file")), ("b.docx", make_docx("x"))]))
+    assert texts(cut)[0] == (
+        "压缩包解压后太大，后面的文件没有读；下面按顺序列出前面的 2 个文件；"
+        "其中 1 个没有读出文字，标题后面写了原因。"
+    )
+    assert texts(cut)[1] == "第 1 个文件：a.docx"
+    assert texts(cut)[-1] == "第 2 个文件：b.docx（压缩包解压后太大，这个文件没有读）"
+    # 不要的文件（图片、视频）解压后另算一个更大的上限，不占要读的文件的 64MB
+    big = make_rar4([("photos.bin", b"\x00" * 200_000), ("a.docx", make_docx("First file"))])
+    assert texts(at.extract(big))[-1] == "First file"
+    # 连这个上限也超了、一个文档都还没读到：记"太大"，不能说"没有能读的文件"
+    monkeypatch.setattr(at, "_ARCHIVE_SCAN_MAX", 100_000)
+    stopped = at.extract(big)
+    assert (stopped.reason, stopped.detail) == ("too_large", "压缩包解压后太大，后面的文件没有读")
+
+
+def test_rar_without_libarchive_is_unsupported(monkeypatch) -> None:
+    monkeypatch.setenv("LIBARCHIVE", "/nonexistent/libarchive.so")  # 子进程里加载不了系统库
+    result = at.extract(make_rar4([("a.docx", make_docx("x"))]))
+    assert (result.reason, result.detail) == ("format", "RAR 压缩包（服务器缺少解压组件）")
+
+
+def test_rar_child_process_dies_hangs_and_gets_no_secrets(monkeypatch) -> None:
+    """rar 在子进程里解：子进程死了，前面解出来的照样用；卡住了按时杀掉；环境变量不带密钥。"""
+    import time
+
+    pytest.importorskip("libarchive", reason="本机没有 libarchive 系统库")
+    data = make_rar4([("a.docx", make_docx("First file")), ("b.docx", make_docx("Second file"))])
+    last = 'emit({"path": name, "size": size, "kept": keep}, b"".join(chunks))'
+    assert last in at._RAR_CHILD
+    dies = at._RAR_CHILD.replace(last, last + "\n            import os\n            os._exit(3)")
+    monkeypatch.setattr(at, "_RAR_CHILD", dies)
+    result = at.extract(data)
+    assert texts(result) == [
+        "压缩包后面的部分解不开（损坏或加了密），后面的文件没有读；下面按顺序列出前面的 1 个文件。",
+        "第 1 个文件：a.docx",
+        "First file",
+    ]
+    monkeypatch.setattr(at, "_RAR_CHILD", "import time\ntime.sleep(30)")
+    monkeypatch.setattr(at, "EXTRACT_SECONDS", 1)
+    started = time.monotonic()
+    assert at.extract(data).reason == "too_large"
+    assert time.monotonic() - started < 5
+    monkeypatch.setenv("YOUJU_DATABASE_URL", "mysql+pymysql://secret@db/youju")
+    monkeypatch.setenv("LIBARCHIVE", "/usr/lib/libarchive.so")
+    assert set(at._rar_env()) == {"PATH", "LANG", "LIBARCHIVE"}
+
+
 def _row(*texts: str, header: bool = False) -> at._Row:
     return at._Row([at._Cell(i, t) for i, t in enumerate(texts)], {}, header)
 
@@ -1429,12 +2040,12 @@ def test_changed_gone_webpage_and_temporary_failures(session) -> None:
         session.scalar(select(func.count()).where(AttachmentTextSegment.version_id == first)) == 0
     )
     assert report.versions_removed == 1
-    # 网络等临时问题：保留文字，规则版本不改，隔一天再试
+    # 网络等临时问题：按现在的规则取过的，保留文字，什么都不改（不定重试时间，due() 本来就不挑它）
     temporary = copies.Failure("network", "超时", True)
     at.record(session, url, "pdf", later + timedelta(hours=1), report, failure=temporary)
     row = _url_rows(session)[url]
     assert (row.status, row.changed_at, report.kept) == ("ok", later, 1)
-    assert row.retry_at == later + timedelta(hours=1) + at.TEXT_RETRY
+    assert row.retry_at is None
     # 原网站删了：撤下文字
     gone = copies.Failure("gone", "原网站已没有这个附件（HTTP 404）")
     at.record(session, url, "pdf", later + timedelta(days=1), report, failure=gone)
@@ -1451,14 +2062,48 @@ def test_changed_gone_webpage_and_temporary_failures(session) -> None:
     assert report.retracted == 3 and report.failed["webpage"] == 1
     webpages = select(func.count()).where(AttachmentTextVersion.reason == "webpage")
     assert session.scalar(webpages) == 0
-    # 第一次就遇到临时问题：还没有文字，仍是待取；隔一天（或者手动不等）再算到期
+    # 第一次就遇到临时问题：还没有文字，记成"原网站下载不了"、写明这次的原因（D-097 ④：不算等取
+    # 文字）；规则版本不改，隔 TEXT_RETRY（或者手动不等）照样重试
     at.record(session, BASE + "slow.pdf", "pdf", NOW, report, failure=temporary)
     slow = _url_rows(session)[BASE + "slow.pdf"]
-    assert (slow.status, slow.extractor) == ("pending", 0)
+    assert (slow.status, slow.reason, slow.extractor) == ("failed", "unavailable", 0)
+    assert slow.detail == "暂时下载不了，下一轮再试：超时"
+    assert (slow.checked_at, slow.changed_at, slow.retry_at) == (NOW, NOW, NOW + at.TEXT_RETRY)
+    assert report.failed["unavailable"] == 0  # 临时问题记在"保留"里，不当成取不出
     key = {at.url_key(BASE + "slow.pdf")}
     assert at.due(session, key, NOW + timedelta(hours=1)) == set()
     assert at.due(session, key, NOW + timedelta(hours=1), retry_now=True) == key
     assert at.due(session, key, NOW + at.TEXT_RETRY) == key
+    # 下一轮又是临时问题：还是下载不了，换成这次的原因，不再改 changed_at
+    again = copies.Failure("network", "robots.txt 暂时无法获取（HTTP 503），本次跳过", True)
+    at.record(session, BASE + "slow.pdf", "pdf", NOW + at.TEXT_RETRY, report, failure=again)
+    slow = _url_rows(session)[BASE + "slow.pdf"]
+    assert slow.detail == "暂时下载不了，下一轮再试：robots.txt 暂时无法获取（HTTP 503），本次跳过"
+    assert (slow.changed_at, slow.retry_at) == (NOW, NOW + 2 * at.TEXT_RETRY)
+    # 再下一轮下载到了：取文字、能读，重试时间清掉
+    later_ok = NOW + 2 * at.TEXT_RETRY
+    at.record(session, BASE + "slow.pdf", "pdf", later_ok, report, content=make_docx("终于取到"))
+    slow = _url_rows(session)[BASE + "slow.pdf"]
+    assert (slow.status, slow.reason, slow.extractor) == ("ok", None, at.EXTRACTOR_VERSION)
+    assert slow.retry_at is None and slow.version_id is not None
+    assert at.due(session, key, later_ok + at.TEXT_RETRY) == set()
+
+
+def test_text_retry_comes_back_in_the_next_round() -> None:
+    # 每天两轮抓取（6:30、20:30，最长隔 14 小时）：一轮失败，下一轮就重试，不会总落在同一个时段
+    # （10/27 海南工信厅 3 个附件按 24 小时重试，每次都赶上晚上那轮取不到，卡了两天）
+    # 附件文字任务跟在两轮抓取后面（北京时间 6:30、20:30）；附件副本任务（10:15、23:30）也会记临时
+    # 失败。四个时点里哪一次失败都赶得上下一次附件文字任务：两轮跑晚两小时、10:15 那次晚一小时、
+    # 23:30 那次晚半小时也行（23:30 晚一小时正好卡在 6:30，再晚就要靠早上那轮先抓取、补详情占掉的时间）
+    rounds = [datetime(2026, 10, 27, 22, 30), datetime(2026, 10, 28, 12, 30)]  # UTC
+    for failed in (
+        datetime(2026, 10, 27, 12, 30) + timedelta(hours=2),  # 20:30 那轮，晚两小时
+        datetime(2026, 10, 27, 15, 30) + timedelta(minutes=30),  # 23:30 副本任务
+        datetime(2026, 10, 27, 22, 30) + timedelta(hours=2),  # 6:30 那轮，晚两小时
+        datetime(2026, 10, 28, 2, 15) + timedelta(hours=1),  # 10:15 副本任务
+    ):
+        following = min(r for r in rounds if r > failed)
+        assert failed + at.TEXT_RETRY <= following, failed
 
 
 def test_new_extractor_version_reextracts_and_marks_every_link(session, monkeypatch) -> None:
@@ -1474,6 +2119,11 @@ def test_new_extractor_version_reextracts_and_marks_every_link(session, monkeypa
     failure = copies.Failure("network", "超时", True)
     at.record(session, BASE + "b.docx", "docx", NOW, report, failure=failure)
     assert at.due(session, keys, NOW + at.TEXT_RETRY) == keys
+    # 从没取到过文字、下载临时失败的（下载不了）：规则再升级也照常重试
+    at.record(session, BASE + "new", "docx", NOW, report, failure=failure)
+    assert _url_rows(session)[BASE + "new"].reason == "unavailable"
+    monkeypatch.setattr(at, "EXTRACTOR_VERSION", at.EXTRACTOR_VERSION + 1)
+    assert at.url_key(BASE + "new") in at.due(session, keys, NOW + at.TEXT_RETRY)
     later = NOW + timedelta(days=1)
     at.record(session, BASE + "a.docx", "docx", later, report, content=content)
     rows = _url_rows(session)
@@ -1482,6 +2132,99 @@ def test_new_extractor_version_reextracts_and_marks_every_link(session, monkeypa
     assert version.extractor == at.EXTRACTOR_VERSION and version.extracted_at == later
     assert _segment_texts(session, version.id) == ["旧规则取的字"]
     assert report.extracted == 2
+
+
+def test_packages_recorded_as_unsupported_before_are_read_again(session) -> None:
+    """11/5 以前，题录写 pdf、doc 而实际是压缩包、OFD 的，记成了"格式不支持"：规则版本不变，
+    只把这些当成还没按现在的规则取过，再取一次；别的结论（包括新规则下的"格式不支持"）不动。"""
+    report = at.TextReport()
+    packed = make_zip([("申报表.docx", make_docx("压缩包里的申报表"))])
+    other = make_zip([("图.jpg", make_png(16))])
+    at.record(session, BASE + "a.pdf", "pdf", NOW, report, content=packed)
+    at.record(session, BASE + "b.pdf", "pdf", NOW, report, content=other)
+    at.record(session, BASE + "c.doc", "doc", NOW, report, content=packed)
+    # 按 11/5 以前的说法改回去（那时压缩包取不了文字）
+    rows = _url_rows(session)
+    for url in (BASE + "a.pdf", BASE + "c.doc"):
+        version = session.get(AttachmentTextVersion, rows[url].version_id)
+        version.status, version.reason = "failed", "format"
+        version.detail = rows[url].detail = "压缩包或认不出的 Office 文件"
+        rows[url].status, rows[url].reason = "failed", "format"
+    session.execute(sql("DELETE FROM attachment_text_segments"))
+    session.commit()
+    keys = {at.url_key(BASE + u) for u in ("a.pdf", "b.pdf", "c.doc")}
+    assert at.due(session, keys, NOW) == {at.url_key(BASE + "a.pdf"), at.url_key(BASE + "c.doc")}
+    # 重取时网络暂时出错：等 TEXT_RETRY 再试，不是每轮都试
+    slow = copies.Failure("network", "超时", True)
+    at.record(session, BASE + "a.pdf", "pdf", NOW, report, failure=slow)
+    assert at.due(session, keys, NOW) == {at.url_key(BASE + "c.doc")}
+    later = NOW + at.TEXT_RETRY
+    assert at.url_key(BASE + "a.pdf") in at.due(session, keys, later)
+    at.record(session, BASE + "a.pdf", "pdf", later, report, content=packed)
+    rows = _url_rows(session)
+    # 同一份内容的另一个链接跟着改成能读，不用再下载
+    assert [(rows[u].status, rows[u].reason) for u in (BASE + "a.pdf", BASE + "c.doc")] == [
+        ("ok", None),
+        ("ok", None),
+    ]
+    assert at.due(session, keys, later) == set()
+    version = session.get(AttachmentTextVersion, rows[BASE + "a.pdf"].version_id)
+    assert version.file_type == "zip"
+    assert _segment_texts(session, version.id)[-1] == "压缩包里的申报表"
+    # 新规则下的"格式不支持"（压缩包里没有能读的文件）不再重取
+    assert (rows[BASE + "b.pdf"].reason, rows[BASE + "b.pdf"].detail) == (
+        "format",
+        "压缩包里没有能读的文件（jpg 1 个）",
+    )
+
+
+def _as_before_1105(session, url: str) -> None:
+    """把这个链接（和它的内容版本）改回 11/5 以前的样子：压缩包记成"格式不支持"。"""
+    row = _url_rows(session)[url]
+    version = session.get(AttachmentTextVersion, row.version_id)
+    version.status, version.reason = "failed", "format"
+    version.detail = row.detail = "压缩包或认不出的 Office 文件"
+    row.status, row.reason = "failed", "format"
+    session.execute(
+        sql("DELETE FROM attachment_text_segments WHERE version_id = :v"), {"v": version.id}
+    )
+    session.commit()
+
+
+def test_interrupted_targeted_reextraction_is_retried_then_given_up(session, monkeypatch) -> None:
+    """定向重取时进程没了（内存不足被杀、部署重启）：下一轮接着重取，连着两次没了按损坏记；
+    不能停在"格式不支持"、写着"正在取文字"（11/5 独立审阅）。"""
+
+    class Died(BaseException):
+        pass
+
+    def dies(_content):
+        raise Died
+
+    report = at.TextReport()
+    packed = make_zip([("申报表.docx", make_docx("压缩包里的申报表"))])
+    other = make_zip([("通知.docx", make_docx("另一个压缩包"))])
+    for url, content in ((BASE + "a.pdf", packed), (BASE + "b.pdf", other)):
+        at.record(session, url, "pdf", NOW, report, content=content)
+        _as_before_1105(session, url)
+    keys = {at.url_key(BASE + "a.pdf"), at.url_key(BASE + "b.pdf")}
+    monkeypatch.setattr(at, "extract", dies)
+    for url, content in ((BASE + "a.pdf", packed), (BASE + "b.pdf", other)):
+        with pytest.raises(Died):
+            at.record(session, url, "pdf", NOW, report, content=content)
+        session.rollback()
+    assert at.due(session, keys, NOW) == keys
+    # b 又没了一次；a 这次取成了
+    with pytest.raises(Died):
+        at.record(session, BASE + "b.pdf", "pdf", NOW, report, content=other)
+    session.rollback()
+    monkeypatch.undo()
+    at.record(session, BASE + "a.pdf", "pdf", NOW, report, content=packed)
+    at.record(session, BASE + "b.pdf", "pdf", NOW, report, content=other)
+    rows = _url_rows(session)
+    assert (rows[BASE + "a.pdf"].status, rows[BASE + "a.pdf"].reason) == ("ok", None)
+    assert (rows[BASE + "b.pdf"].status, rows[BASE + "b.pdf"].reason) == ("failed", "broken")
+    assert at.due(session, keys, NOW) == set()
 
 
 def test_interrupted_extraction_is_not_retried_and_shared_links_follow(
@@ -1580,21 +2323,28 @@ def test_cache_run_downloads_wps_and_et_only_for_text(session, client) -> None: 
             ("附件2 汇总表", BASE + "sheet.et", "et"),
             ("附件3 指南", BASE + "guide.docx", "docx"),
             ("附件4 打包", BASE + "all.zip", "zip"),
+            ("附件5 打包", BASE + "all.7z", "7z"),
         ],
     )
     wps = make_word97([("申报书：项目名称", "\r", {})])
     docx = make_docx("申报指南：截止时间为2026年11月5日。")
+    packed = make_zip([("申报表.docx", make_docx("申报表"))])
     fetcher = FakeFetcher(
-        {BASE + "form.wps": wps, BASE + "sheet.et": XLS, BASE + "guide.docx": docx}
+        {
+            BASE + "form.wps": wps,
+            BASE + "sheet.et": XLS,
+            BASE + "guide.docx": docx,
+            BASE + "all.zip": packed,
+        }
     )
     cloud = FakeCloud()
     report = run(session, fetcher, cloud)
-    # zip 不下载；wps、et 下载了但不存副本
+    # 7z 不下载；wps、et、zip 下载了但不存副本
     assert sorted(fetcher.calls) == sorted(
-        [BASE + "form.wps", BASE + "sheet.et", BASE + "guide.docx"]
+        [BASE + "form.wps", BASE + "sheet.et", BASE + "guide.docx", BASE + "all.zip"]
     )
     assert cloud.uploads == [obj(docx, "docx")]
-    assert report.text_only == 2 and not report.failed and report.stored == 1
+    assert report.text_only == 3 and not report.failed and report.stored == 1
     copies_by_url = {r.url: r for r in session.scalars(select(AttachmentCopy))}
     assert (copies_by_url[BASE + "form.wps"].status, copies_by_url[BASE + "form.wps"].failure) == (
         "failed",
@@ -1606,23 +2356,31 @@ def test_cache_run_downloads_wps_and_et_only_for_text(session, client) -> None: 
     assert reasons["附件1 申报书"] == (False, "format")
     assert reasons["附件2 汇总表"] == (False, "format")
     assert reasons["附件3 指南"] == (True, None)
-    # 三个都取到了文字（wps 实际是 doc、et 实际是 xls）
+    # 四个都取到了文字（wps 实际是 doc、et 实际是 xls）
     rows = _url_rows(session)
     assert {u: r.status for u, r in rows.items()} == {
         BASE + "form.wps": "ok",
         BASE + "sheet.et": "ok",
         BASE + "guide.docx": "ok",
+        BASE + "all.zip": "ok",
     }
     types = {u: session.get(AttachmentTextVersion, r.version_id).file_type for u, r in rows.items()}
     assert types == {
         BASE + "form.wps": "doc",
         BASE + "sheet.et": "xls",
         BASE + "guide.docx": "docx",
+        BASE + "all.zip": "zip",
     }
-    assert (report.texts.extracted, report.texts.due) == (3, 0)
-    # 读的时候：zip 写格式不支持，其余能读
+    assert (report.texts.extracted, report.texts.due) == (4, 0)
+    # 读的时候：7z 写格式不支持，其余能读
     states = [(x.ext, x.state) for x in at.readings(session, doc.id, NOW)]
-    assert states == [("wps", "ok"), ("et", "ok"), ("docx", "ok"), ("zip", "format")]
+    assert states == [
+        ("wps", "ok"),
+        ("et", "ok"),
+        ("docx", "ok"),
+        ("zip", "ok"),
+        ("7z", "format"),
+    ]
 
 
 def test_existing_copies_get_their_text_on_the_next_run(session) -> None:
@@ -1701,7 +2459,7 @@ def test_text_step_errors_never_stop_copies(session, monkeypatch, caplog) -> Non
 
 
 def test_text_only_run_never_touches_copies_or_storage(session) -> None:
-    add_doc(
+    first = add_doc(
         session,
         1,
         APPLY,
@@ -1726,7 +2484,19 @@ def test_text_only_run_never_touches_copies_or_storage(session) -> None:
     report = copies.extract_texts(session, fetcher=fetcher, now=NOW)
     assert fetcher.calls[-1] == BASE + "slow.doc" and report.texts.kept == 1
     rows = _url_rows(session)
-    assert rows[BASE + "slow.doc"].status == "pending" and BASE + "old.pdf" not in rows
+    assert (rows[BASE + "slow.doc"].status, rows[BASE + "slow.doc"].reason) == (
+        "failed",
+        "unavailable",
+    )
+    assert BASE + "old.pdf" not in rows
+    # robots.txt 取不到（抓取器写明了原因）：原因带进附件的说明，这个附件算下载不了、不算等取文字
+    blocked = "robots.txt 暂时无法获取（HTTP 503），本次跳过"
+    fetcher.files[BASE + "slow.doc"] = FetchResult(BASE + "slow.doc", "robots_error", error=blocked)
+    copies.extract_texts(session, fetcher=fetcher, now=NOW, retry_pending=True)
+    slow_row = _url_rows(session)[BASE + "slow.doc"]
+    assert slow_row.detail == f"暂时下载不了，下一轮再试：{blocked}"
+    states = {x.name: x.state for x in at.readings(session, first.id, NOW)}
+    assert states["附件3"] == "unavailable"
     # 临时问题的不自动重试，加 --retry-pending 才重试
     fetcher.calls.clear()
     copies.extract_texts(session, fetcher=fetcher, now=NOW)
@@ -1753,7 +2523,7 @@ def test_readings_states(session) -> None:
             ("没了", BASE + "gone.pdf", "pdf"),
             ("外站", "https://example.com/x.docx", "docx"),
             ("还没取", BASE + "later.docx", "docx"),
-            ("压缩包", BASE + "x.rar", "rar"),
+            ("压缩包", BASE + "x.7z", "7z"),
         ],
     )
     old = add_doc(session, 2, APPLY, date(2026, 3, 1), [("旧", BASE + "a.docx", "docx")])
@@ -1768,12 +2538,44 @@ def test_readings_states(session) -> None:
         ("能读", "ok"),
         ("扫描件", "scan"),
         ("没了", "gone"),
-        ("外站", "unavailable"),
+        ("外站", "host"),
         ("还没取", "pending"),
         ("压缩包", "format"),
     ]
     assert found[0].chars == 4 and found[0].segments == 1 and found[0].file_type == "docx"
+    # 页面上写的话（D-097 设计稿第三节）
+    assert [x.note for x in found] == [
+        "",
+        "扫描件，暂不能识别文字",
+        "原网站上已没有这个附件",
+        "附件不在政府网站上，暂不能在小程序内阅读",
+        "新附件，一般半天内可读",
+        "此格式暂不能在小程序内阅读",
+    ]
+    assert [x.readable for x in found] == [True, False, False, False, False, False]
     assert [x.state for x in at.readings(session, old.id, NOW)] == ["old"]
+    # 下载暂时失败、等下一轮再试的（从没取到过文字）：说原网站下载不了、给出原因，不算还没取；
+    # 下一轮取到了就能读
+    slow = copies.Failure("network", "robots.txt 暂时无法获取（HTTP 503），本次跳过", True)
+    at.record(session, BASE + "later.docx", "docx", NOW, report, failure=slow)
+    waiting = at.readings(session, doc.id, NOW)[4]
+    assert (waiting.state, waiting.readable, waiting.note) == (
+        "unavailable",
+        False,
+        "原网站下载不了这个附件",
+    )
+    assert (
+        waiting.detail == "暂时下载不了，下一轮再试：robots.txt 暂时无法获取（HTTP 503），本次跳过"
+    )
+    assert waiting.checked_at == NOW
+    later = NOW + at.TEXT_RETRY
+    at.record(session, BASE + "later.docx", "docx", later, report, content=make_docx("后来取到"))
+    assert at.readings(session, doc.id, later)[4].state == "ok"
+    # 按现在的规则已有结论的（原网站已删）：副本任务复查时遇到临时问题，结论不变，不改成"下载不了"
+    at.record(session, BASE + "gone.pdf", "pdf", later, report, failure=slow)
+    gone_row = _url_rows(session)[BASE + "gone.pdf"]
+    assert (gone_row.status, gone_row.reason, gone_row.retry_at) == ("failed", "gone", None)
+    assert at.readings(session, doc.id, later)[2].state == "gone"
     # 合并转载：详情页列的是组里正文最长那份的附件；那份是二级来源，不在下载范围里
     master = add_doc(session, 3, APPLY, RECENT, [])
     session.get(DocumentDetail, master.id).body_text = ""
@@ -1803,7 +2605,7 @@ def test_report_counts_formats_reasons_limits_and_sample(session, monkeypatch) -
     session.get(DocumentDetail, a.id).body_text = long_body
     b = add_doc(session, 2, APPLY, RECENT, [("附件1 申报书", BASE + "b.wps", "wps")])
     session.get(DocumentDetail, b.id).body_text = ""
-    add_doc(session, 3, APPLY, RECENT, [("附件1 打包", BASE + "c.zip", "zip")])
+    add_doc(session, 3, APPLY, RECENT, [("附件1 打包", BASE + "c.7z", "7z")])
     # 库里存的类型是旧规则算的申报通知，按现在的标题规则是"资讯与指南"：在下载范围里，不进抽样
     stale = add_doc(session, 5, "关于举办2026年度政策宣讲培训班的通知", RECENT, [])
     session.get(Document, stale.id).rule_kind = "申报通知"
@@ -1832,10 +2634,12 @@ def test_report_counts_formats_reasons_limits_and_sample(session, monkeypatch) -
         "docx": {"ok": 2},
         "pdf": {"scan": 1},
         "wps": {"ok": 1},
-        "zip": {"format": 1},
+        "7z": {"format": 1},
     }
     assert notice.actual_types == {"wps→doc": 1}
-    assert (notice.notices, notice.with_attachments, notice.with_readable) == (4, 4, 3)
+    # 按现在的标题规则是"资讯与指南"的那份（库里存的是申报通知）：附件在下载范围里、取了文字，
+    # 但小程序里不给读（和阅读页同一个判断，D-097），不算"至少一个附件能读"
+    assert (notice.notices, notice.with_attachments, notice.with_readable) == (4, 4, 2)
     assert notice.stale_kind == 1
     assert (notice.with_body, notice.no_body_but_readable) == (3, 1)
     assert (notice.over_limit, notice.over_only_with_attachments, notice.body_too_long) == (1, 1, 0)
@@ -1861,6 +2665,9 @@ def test_cli_commands(session, monkeypatch, capsys, tmp_path) -> None:
     assert cli.main(["attachment-texts", "--limit", "5"]) == 0
     out = capsys.readouterr().out
     assert "新取 1" in out and "还没取 0" in out
+    # 容器终端里贴回来的中文会乱码：另有一行只有英文和数字
+    assert out.splitlines()[-1].startswith("attachment_texts checked=1 bytes=")
+    assert "extracted=1 reused=0 unchanged=0 kept=0 failed=0 retracted=0 removed=0 due=0" in out
     sheet = tmp_path / "sheet.md"
     assert (
         cli.main(["attachment-text-report", "--now", "2026-10-06", "--worksheet", str(sheet)]) == 0
@@ -1871,6 +2678,38 @@ def test_cli_commands(session, monkeypatch, capsys, tmp_path) -> None:
     assert cli.main(["attachment-text-report", "--now", "2026-10-06", "--json"]) == 0
     data = json.loads(capsys.readouterr().out)
     assert data["kinds"][0]["attachments"] == {"docx": {"ok": 1}}
+
+
+def test_cli_skips_without_failing_while_another_attachment_job_runs(
+    session, monkeypatch, capsys
+) -> None:
+    """每轮抓取里也跑 attachment-texts：附件副本任务或手动补齐拿着锁时这次不取、返回 0（和
+    cache-attachments 一样），job.sh 不误发失败提醒；取文字这步出错才返回 1。"""
+    add_doc(session, 1, APPLY, RECENT, [("附件1", BASE + "a.docx", "docx")])
+    fetcher = FakeFetcher({BASE + "a.docx": make_docx("申报指南")})
+    real = copies.extract_texts
+    monkeypatch.setattr(
+        copies, "extract_texts", lambda s, **kw: real(s, **{**kw, "fetcher": fetcher, "now": NOW})
+    )
+    with session.get_bind().connect() as other:
+        assert other.execute(sql("SELECT GET_LOCK('youju_attachment_copies', 0)")).scalar() == 1
+        try:
+            assert cli.main(["attachment-texts"]) == 0
+        finally:
+            other.execute(sql("SELECT RELEASE_LOCK('youju_attachment_copies')"))
+    out = capsys.readouterr().out
+    assert (
+        "另一个附件任务正在运行（附件副本、重查或另一次取文字），这次一个也没取；定时任务下一轮再取，手动补齐请等它跑完再重跑"
+        in out
+    )
+    assert out.splitlines()[-1] == "attachment_texts skipped=1"
+    assert fetcher.calls == []
+    assert session.scalar(select(func.count()).select_from(AttachmentTextUrl)) == 0
+    monkeypatch.setattr(
+        copies, "extract_texts", lambda s, **kw: copies.CacheReport(texts=at.TextReport(errors=1))
+    )
+    assert cli.main(["attachment-texts"]) == 1
+    assert "取文字这步出错 1 次" in capsys.readouterr().out
 
 
 def test_text_tables_are_not_backed_up() -> None:
@@ -1908,3 +2747,45 @@ def test_migration_0040_downgrade_upgrade(db_engine) -> None:
         "attachment_text_versions",
         "attachment_text_segments",
     }
+
+
+def test_policy_texts_kept_two_years_without_copies(session, client) -> None:  # noqa: F811
+    """D-097 ③：政策附件的文字留 2 年、只存文字；副本还是 90 天。"""
+    title = "辽宁省科学技术厅关于印发《科技计划项目管理办法》的通知"
+    kept = add_doc(
+        session, 1, title, NOW.date() - timedelta(days=200), [("办法", BASE + "rule.docx", "docx")]
+    )
+    expired = add_doc(
+        session, 2, title, NOW.date() - timedelta(days=800), [("旧办法", BASE + "old.docx", "docx")]
+    )
+    fetcher = FakeFetcher(
+        {
+            BASE + "rule.docx": make_docx("第一条 为规范管理，制定本办法。"),
+            BASE + "old.docx": make_docx("旧的办法。"),
+        }
+    )
+    # 只算附件文字的范围：2 年内的政策在，超过的不在；副本的范围（90 天）两个都不在
+    assert set(copies.candidates(session, NOW, texts=True)) == {BASE + "rule.docx"}
+    assert copies.candidates(session, NOW) == {}
+    cloud = FakeCloud()
+    run(session, fetcher, cloud)
+    assert fetcher.calls == [] and cloud.uploads == []
+    report = copies.extract_texts(session, fetcher=fetcher, now=NOW)
+    assert fetcher.calls == [BASE + "rule.docx"] and report.texts.extracted == 1
+    assert [x.state for x in at.readings(session, kept.id, NOW)] == ["ok"]
+    assert [x.state for x in at.readings(session, expired.id, NOW)] == ["old"]
+    # 副本的定时任务再跑一轮：不存副本，也不按副本的 90 天删掉文字
+    run(session, fetcher, cloud)
+    assert cloud.uploads == [] and set(_url_rows(session)) == {BASE + "rule.docx"}
+    [att] = client.get(f"/api/v1/documents/{kept.id}").json()["attachments"]
+    assert (att["readable"], att["state"], att["preview"], att["reason"]) == (
+        True,
+        "ok",
+        False,
+        "old",
+    )
+    # 过了 2 年：文字删掉
+    later = NOW + timedelta(days=600)
+    copies.extract_texts(session, fetcher=fetcher, now=later)
+    assert _url_rows(session) == {}
+    assert [x.state for x in at.readings(session, kept.id, later)] == ["old"]

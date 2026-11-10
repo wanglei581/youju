@@ -19,9 +19,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, defer
 
 from youju import advisor_tasks as service
-from youju import boost, payments
-from youju.agreements import TOOLS_AGREEMENT_VERSION, agreement_at_least
-from youju.ai import heartbeat, interpret
+from youju import boost, chat_store, native_results, payments
+from youju.agreements import tools_agreed
+from youju.ai import content, heartbeat, interpret, result_safety
 from youju.ai.clause import Company
 from youju.ai.skills import AI_KINDS, get_skill
 from youju.api import v1
@@ -33,7 +33,12 @@ from youju.config import get_settings
 from youju.db import get_session
 from youju.models import AdvisorTask, Document, Source, User
 from youju.takedown import available_condition
-from youju.track import read_customer_profiles, validate_customer_rows
+from youju.track import (
+    UNVERIFIED_SUMMARY,
+    UNVERIFIED_TEXT,
+    read_customer_profiles,
+    validate_customer_rows,
+)
 
 router = APIRouter(prefix="/api/v1/advisor", tags=["顾问"])
 native_router = APIRouter(route_class=NoStoreRoute)
@@ -106,6 +111,8 @@ class TaskIn(BaseModel):
     doc_id: int | None = Field(default=None, gt=0, strict=True)
 
     company: Company | None = None
+    # 解读、对照：用户同意过的使用须知版本（interpret.AI_NOTICE_VERSION，D-098）
+    notice: str | None = Field(default=None, max_length=32)
 
     @model_validator(mode="after")
     def validate_input(self) -> TaskIn:
@@ -118,8 +125,8 @@ class TaskIn(BaseModel):
                 )
             if self.kind == "interpret" and "company" in self.model_fields_set:
                 raise ValueError("解读仅接受 doc_id")
-        elif {"doc_id", "company"} & self.model_fields_set:
-            raise ValueError("数据工具不接受 doc_id 或 company")
+        elif {"doc_id", "company", "notice"} & self.model_fields_set:
+            raise ValueError("数据工具不接受 doc_id、company 或 notice")
         elif (self.rows is None) == (self.file is None):
             raise ValueError("请只提供 rows 或 file 中的一项")
         return self
@@ -192,7 +199,7 @@ def _upload_consent(user: User) -> None:
     ):
         raise HTTPException(status_code=403, detail="请先阅读并同意工具使用说明")
     # 同意工具使用说明时已核对过；同意记录只会往新版本走，这里再查一次，不靠那一处
-    if not agreement_at_least(user.agreement_version, TOOLS_AGREEMENT_VERSION):
+    if not tools_agreed(user.agreement_version):
         raise HTTPException(status_code=403, detail=OUTDATED)
 
 
@@ -211,6 +218,7 @@ def status(session: SessionDep, user: KnownUserDep) -> dict:
     wide = ticket is not None or bool(trial and trial["active"])
     return {
         "enabled": True,
+        "compareEnabled": bool(getattr(settings, "advisor_compare_enabled", False)),
         "pass": payments.pass_status(session, user.id, stamp)
         if user
         else {"active": False, "expiresAt": None},
@@ -232,12 +240,12 @@ def start_trial(request: Request, session: SessionDep, user: UserDep) -> dict:
     """开始加量体验：用户在确认页看完规则点"开始体验"。重复点返回同一段体验，不会重新起算。
 
     开始体验不提交客户信息，不要求先同意工具使用说明；要求同意过写进体验记录的那一版用户协议和
-    隐私保护指引（TOOLS_AGREEMENT_VERSION）：过渡期里只同意过旧版的返回 403，小程序清掉本机的
-    同意记录，下次用需要登录的功能时请他重新同意。"""
+    隐私保护指引（agreements.tools_agreed）：过渡期里只同意过旧版、或只同意过不含体验条款的版本的，
+    返回 403，小程序清掉本机的同意记录，下次用需要登录的功能时请他重新同意。"""
     settings = get_settings()
     if not boost.trial_enabled(settings):
         raise HTTPException(status_code=404, detail="没有找到接口")
-    if not agreement_at_least(user.agreement_version, TOOLS_AGREEMENT_VERSION):
+    if not tools_agreed(user.agreement_version):
         raise HTTPException(status_code=403, detail=OUTDATED)
     # 和提交任务、注销同序：先锁用户行，再查体验记录和使用期（连接是 READ COMMITTED，
     # 锁后的查询读得到等锁期间别的请求刚提交的体验和使用期）。开始时间在锁后取：
@@ -264,6 +272,8 @@ def start_trial(request: Request, session: SessionDep, user: UserDep) -> dict:
 
 @router.post("/preview", dependencies=[Depends(_enabled), Depends(_body_size)])
 def preview(body: TaskIn, user: UserDep) -> dict:
+    if body.kind == "compare" and not getattr(get_settings(), "advisor_compare_enabled", False):
+        raise HTTPException(status_code=404, detail="没有找到接口")
     _authorize(body.kind, user)
     if body.kind in AI_KINDS:
         raise HTTPException(status_code=422, detail="预览只支持 compare 或 track")
@@ -330,9 +340,22 @@ def _out(task: AdvisorTask, session: Session, *, include_result: bool = True) ->
     if task.kind in AI_KINDS and not include_result:
         return {**result, "hasResult": bool(task.result_json)}
     if task.kind in AI_KINDS and task.result_json:
-        if task.expires_at is not None and task.expires_at <= _stamp():
+        # 内容安全（门槛第 4 道）：检查上线以前生成的不显示；词库更新以后先用本地词库再查一遍。
+        # 过期的照旧写"已过期"（先判断）
+        expired = task.expires_at is not None and task.expires_at <= _stamp()
+        hidden = (
+            None
+            if expired
+            else result_safety.visible_after_update(
+                task.result_json, get_skill(task.kind).result_field
+            )
+        )
+        if expired:
             result["result"] = None
             result["error"] = "结果已过期，请重新提交"
+        elif hidden:
+            result["result"] = None
+            result["error"] = hidden
         elif task.cache_key:
             try:
                 if not doc_id:
@@ -354,30 +377,72 @@ def _out(task: AdvisorTask, session: Session, *, include_result: bool = True) ->
             except interpret.InterpretRefusal as exc:
                 result["result"] = None
                 result["error"] = str(exc)
+    if task.kind in AI_KINDS and isinstance(result.get("result"), dict):
+        result["result"] = _shown_quotes(result["result"], get_skill(task.kind).result_field)
     return result
 
 
+def _shown_quotes(stored: dict, field: str) -> dict:
+    """AI 结果页显示的原句（条目、出处原句、"已核对"的原句）按页面说法给：网址换成
+    "（这里隐去了网址）"（v1.display_text，D-112）。只改这次返回的副本：存着的结果不动，核对原句
+    在生成时按原文做过，"正文变了没有"比的是存下的段落，都不受影响。"""
+
+    def shown(entry: dict, key: str) -> dict:
+        copy = dict(entry)
+        if isinstance(copy.get(key), str):
+            copy[key] = v1.display_text(copy[key])
+        return copy
+
+    def item_out(item):
+        if not isinstance(item, dict):
+            return item
+        item = shown(item, "text")
+        if isinstance(item.get("refs"), list):
+            item["refs"] = [shown(r, "quote") if isinstance(r, dict) else r for r in item["refs"]]
+        return item
+
+    out = dict(stored)
+    if isinstance(stored.get(field), list):
+        out[field] = [item_out(item) for item in stored[field]]
+    if isinstance(stored.get("verified"), list):
+        out["verified"] = [
+            shown(v, "quote") if isinstance(v, dict) else v for v in stored["verified"]
+        ]
+    return out
+
+
 @contextmanager
-def _submission_lock(session: Session, kind: str):
+def _submission_lock(session: Session, kind: str, day, settings):
+    """AI 任务：全站上限的锁里查全站用量（满了回 429），占次数、建任务、提交都在锁里。
+    数据工具不进锁，也不读 AI 的设置。"""
     try:
         if kind in AI_KINDS:
-            with service.ai_cap_lock(session):
+            cap = settings.ai_advisor_daily_cap
+            with service.ai_cap_slot(session, day, cap, submissions=True):
                 yield
         else:
             yield
     except service.AdvisorBusy:
         raise HTTPException(status_code=503, detail="系统繁忙，请稍后重试") from None
+    except service.AICapReached:
+        raise HTTPException(
+            status_code=429,
+            detail={"code": "AI_DAILY_CAP", "message": "今天的 AI 使用次数已满，请明天再试"},
+        ) from None
 
 
 def _owned(
     session: Session, user: User, task_id: int, *, lock: bool = False, deleting: bool = False
 ) -> AdvisorTask:
-    stmt = select(AdvisorTask).where(AdvisorTask.id == task_id, AdvisorTask.user_id == user.id)
+    # 问这份通知的任务只从对话接口看、删（api/chat.py），这里当作没有（#328 第五节）
+    stmt = select(AdvisorTask).where(
+        AdvisorTask.id == task_id, AdvisorTask.user_id == user.id, AdvisorTask.kind != "ask"
+    )
     if lock:
         stmt = stmt.with_for_update()
     task = session.scalar(stmt)
     if task is None:
-        raise HTTPException(status_code=404, detail="没有找到顾问任务")
+        raise HTTPException(status_code=404, detail="没有找到这条记录，可能已经删除")
     if not deleting:
         # 删除自己的记录不看开关和协议版本（D-093 上线门槛第 8 条）
         _authorize(task.kind, user)
@@ -385,9 +450,8 @@ def _owned(
 
 
 def _site_full(session: Session, settings, day) -> bool:
-    """全站今天的 AI 用量到没到上限：和提交时的检查同一个口径。"""
-    used = max(service.global_ai_usage(session, day), service.global_ai_calls(session, day))
-    return used >= settings.ai_advisor_daily_cap
+    """全站今天的 AI 用量到没到上限：和提交时的检查同一个口径（site_ai_used）。"""
+    return service.site_ai_used(session, day) >= settings.ai_advisor_daily_cap
 
 
 @router.get("/mode")
@@ -414,10 +478,17 @@ def capabilities(request: Request, session: SessionDep, user: UserDep) -> dict:
     ai_enabled = interpret.enabled(settings, user)
     stamp = _stamp()
     heartbeat.note_api(session, settings, stamp)
+    chat_on = chat_store.chat_ready()
+    ask_on = chat_on and heartbeat.ask_ready(session, settings, stamp)
     return {
         "data_tools": {
             "enabled": data_enabled,
-            "features": ["compare", "track"] if data_enabled else [],
+            "compareEnabled": data_enabled
+            and bool(getattr(settings, "advisor_compare_enabled", False)),
+            "features": (["compare"] if getattr(settings, "advisor_compare_enabled", False) else [])
+            + ["track"]
+            if data_enabled
+            else [],
             "remaining": {
                 k: max(0, boost.free_limit(settings, k, day) - counts.get(k, 0))
                 if data_enabled
@@ -427,13 +498,25 @@ def capabilities(request: Request, session: SessionDep, user: UserDep) -> dict:
         },
         "ai_advisor": {
             "enabled": True,
-            "features": list(AI_KINDS),
+            # 问这份通知（ask）和它还剩几次（remaining.ask）同一个条件：问一问开着、admin 的单独
+            # 线路配齐了（心跳 ask_ready，含新鲜度；问一问开发设计第六节第 3 条"只走单独线路"）。
+            # 不给时对话页只有找通知，不写"暂未开放"（Codex 10/28：原来 remaining.ask 只看问一问
+            # 开没开，和 features 对不上）
+            "features": [kind for kind in AI_KINDS if kind != "ask" or ask_on],
             "disclosure": interpret.disclosure(settings),
-            "remaining": {k: max(0, 5 - counts.get(k, 0)) for k in AI_KINDS},
+            "remaining": {
+                k: max(0, 5 - counts.get(k, 0)) for k in AI_KINDS if k != "ask" or ask_on
+            },
             # D-075：后台能不能处理（api 上看 admin 的心跳和设置指纹）、全站今天还能不能用。
             # 两项为假时小程序把按钮变灰、写原因，不收任务
             "available": heartbeat.worker_ready(session, settings, stamp),
             "siteFull": _site_full(session, settings, day),
+            # 问一问（#328 第五节）：chat 是显示不显示问一问（本地高危词库定稿以前为假）；
+            # chatConsent 是同意过当前版本的"问一问使用说明"没有；askTriesFull 是今天交给模型的
+            # 问这份通知满 20 问了没有；remaining.ask 是问这份通知今天还剩几次（找到原句才算）
+            "chat": chat_store.chat_ready(),
+            "chatConsent": chat_store.consented(user),
+            "askTriesFull": counts.get(chat_store.ASK_TRY, 0) >= chat_store.ASK_TRY_LIMIT,
         }
         if ai_enabled
         else {
@@ -452,6 +535,18 @@ def capabilities(request: Request, session: SessionDep, user: UserDep) -> dict:
     }
 
 
+def _same_ai_input(old: dict | None, new: dict | None) -> bool:
+    """同一个请求编号是不是同一份输入。须知版本（notice，D-098）不算输入本身：旧任务没有这一项，
+    新小程序用同一个请求编号重试时仍认作同一个任务，不会 409，也不会重复扣次数。"""
+
+    def strip(value):
+        return (
+            {k: v for k, v in value.items() if k != "notice"} if isinstance(value, dict) else value
+        )
+
+    return strip(old) == strip(new)
+
+
 @router.post(
     "/tasks",
     status_code=202,
@@ -464,6 +559,8 @@ def create_task(
     user: UserDep,
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ) -> dict:
+    if body.kind == "compare" and not getattr(get_settings(), "advisor_compare_enabled", False):
+        raise HTTPException(status_code=404, detail="没有找到接口")
     _authorize(body.kind, user)
     if not idempotency_key or not idempotency_key.strip() or len(idempotency_key) > 128:
         raise HTTPException(
@@ -480,6 +577,9 @@ def create_task(
             input_json["company"].pop("city", None)
         if not input_json["company"].get("district"):
             input_json["company"].pop("district", None)
+    # 同意过的使用须知版本记在任务输入里（D-098）；没带时不写这一项，旧任务的幂等比对不变
+    if body.kind in AI_KINDS and body.notice:
+        input_json["notice"] = body.notice
     existing = session.scalar(
         select(AdvisorTask).where(
             AdvisorTask.user_id == user.id, AdvisorTask.idempotency_key == key
@@ -488,7 +588,7 @@ def create_task(
     if existing is not None:
         _authorize(existing.kind, user)
         if (body.kind in AI_KINDS or existing.kind in AI_KINDS) and (
-            existing.kind != body.kind or existing.input_json != input_json
+            existing.kind != body.kind or not _same_ai_input(existing.input_json, input_json)
         ):
             raise HTTPException(status_code=409, detail="同一幂等键不能用于不同输入")
         return _out(existing, session, include_result=False)
@@ -496,10 +596,21 @@ def create_task(
         _upload_consent(user)
     stamp = _stamp()
     settings = get_settings()
+    if (
+        body.kind in AI_KINDS
+        and getattr(settings, "ai_advisor_audience", "whitelist") == "all"
+        and body.notice != interpret.AI_NOTICE_VERSION
+    ):
+        # 对所有人开放时，第一次用要点过"同意并开始"（D-098，上线门槛第 7 条）：
+        # 没带、或带的是旧须知的版本，不建任务、不扣次数。白名单内部试用不核对
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "AI_NOTICE_REQUIRED", "message": "请先阅读并同意使用须知"},
+        )
     if body.kind in AI_KINDS:
         # D-075：提交时就按原文判断这份能不能做，不能做直接说原因，不建任务、不扣次数
         try:
-            interpret.eligible_body(session, body.doc_id)
+            content.check(session, body.doc_id)
         except interpret.InterpretRefusal as exc:
             raise HTTPException(
                 status_code=422,
@@ -544,19 +655,7 @@ def create_task(
                 "maxRows": row_limit,
             },
         )
-    with _submission_lock(session, body.kind):
-        if (
-            body.kind in AI_KINDS
-            and max(
-                service.global_ai_usage(session, day),
-                service.global_ai_calls(session, day),
-            )
-            >= settings.ai_advisor_daily_cap
-        ):
-            raise HTTPException(
-                status_code=429,
-                detail={"code": "AI_DAILY_CAP", "message": "今天的 AI 使用次数已满，请明天再试"},
-            )
+    with _submission_lock(session, body.kind, day, settings):
         if trial is not None:
             # 体验期先用体验当天的次数（两项合计）；用完了有使用期的用使用期，
             # 否则等第二天——不改用每月免费次数，体验结束后它们照常可用
@@ -628,11 +727,9 @@ def create_task(
         try:
             session.flush()
             if ticket:
-                ticket.last_task_id, ticket.last_used_at, ticket.last_task_completed_at = (
-                    task.id,
-                    stamp,
-                    None,
-                )
+                # 提交时只记最近一次任务编号；"用过付费的量"要等任务出了结果才记
+                # （advisor_tasks.record_pass_completion，付费服务协议第二条第 2 项）
+                ticket.last_task_id, ticket.last_task_completed_at = task.id, None
             session.commit()
         except IntegrityError:
             session.rollback()
@@ -676,6 +773,8 @@ def list_tasks(session: SessionDep, user: UserDep) -> dict:
             AdvisorTask.user_id == user.id,
             AdvisorTask.created_at >= since,
             AdvisorTask.kind.in_(kinds),
+            # 问这份通知的任务只在对话里（PR-3 把 ask 加进 AI_KINDS 以后也不列在这里）
+            AdvisorTask.kind != "ask",
         )
         .order_by(AdvisorTask.created_at.desc(), AdvisorTask.id.desc())
     ).all()
@@ -772,16 +871,14 @@ def read_result(
     if ids is None:
         raise HTTPException(status_code=410, detail="结果依据暂时无法核验，请重新生成")
     # 每一页都复核公开范围和撤回状态，不把旧结果作为绕过下架的副本。
+    # 原文链接已失效（link_gone_at）不算撤回：通知照样公开，列表、详情、导出都只标一句，
+    # 这里也只给那几条标上 linkGone，不整份拒绝（11/4 完整测试 T4b：有一份失效，整份结果打不开）
     visible = (
         set(
             session.scalars(
                 select(Document.id)
                 .join(Source, Document.source_id == Source.id)
-                .where(
-                    Document.id.in_(ids),
-                    v1.public_condition(),
-                    Document.link_gone_at.is_(None),
-                )
+                .where(Document.id.in_(ids), v1.public_condition())
             )
         )
         if ids
@@ -789,6 +886,16 @@ def read_result(
     )
     if visible != set(ids):
         raise HTTPException(status_code=410, detail="结果依据已不可用，请重新生成")
+    gone = (
+        {
+            str(doc_id)
+            for doc_id in session.scalars(
+                select(Document.id).where(Document.id.in_(ids), Document.link_gone_at.is_not(None))
+            )
+        }
+        if ids
+        else set()
+    )
     if (cursor and not revision) or (revision and revision != content["revision"]):
         raise HTTPException(status_code=409, detail="结果版本已变化，请重新加载")
     all_items = content["items"]
@@ -796,6 +903,9 @@ def read_result(
         raise HTTPException(status_code=422, detail="结果页码无效")
     items, used = [], 0
     for item in all_items[cursor : cursor + 20]:
+        # 读的时候当场标：生成以后才失效的也标上；存着的结果不改
+        if item.get("documentId") in gone:
+            item = _gone_item(item)
         size = len(json.dumps(item, ensure_ascii=False).encode())
         if used + size > 200 * 1024:
             if not items:
@@ -810,13 +920,52 @@ def read_result(
                 key: content[key]
                 for key in ("kind", "title", "notice", "revision", "generatedAt", "dataVersion")
             },
-            "items": items,
+            # 站内结果页里的"截止原文句子"按显示层给（v1.shown_quote，F11）；存下的结果和 Excel 不变
+            "items": [_shown_native_item(item) for item in items],
             "total": len(all_items),
+            "summaryCount": sum(
+                item.get("title") == "汇总" and not item.get("documentId") for item in all_items
+            ),
             "rowCount": task.row_count,
             "nextCursor": str(end) if end < len(all_items) else None,
         },
         headers={"Cache-Control": "no-store"},
     )
+
+
+def _gone_item(item: dict) -> dict:
+    """原文链接已失效的那一条：标 linkGone；“截止核对情况”的“未核对，请以原文为准”改成“未核对”
+    （原文已打不开，和导出结果页对失效的不写“见原文”一样；独立审阅 #439 建议）。返回副本。"""
+    status_label = native_results.LABELS["deadline_status"]
+    fields = item.get("fields")
+    if isinstance(fields, list):
+        fields = [
+            {**field, "value": UNVERIFIED_SUMMARY}
+            if isinstance(field, dict)
+            and field.get("label") == status_label
+            and field.get("value") == UNVERIFIED_TEXT
+            else field
+            for field in fields
+        ]
+        return {**item, "linkGone": True, "fields": fields}
+    return {**item, "linkGone": True}
+
+
+def _shown_native_item(item):
+    """返回显示用副本，兼容旧结果中的来源地址。"""
+    if not isinstance(item, dict) or not isinstance(item.get("fields"), list):
+        return item
+    quote_label = native_results.LABELS["deadline_quote"]
+    return {
+        **item,
+        "fields": [
+            {**field, "value": v1.shown_quote(field.get("value"))}
+            if isinstance(field, dict) and field.get("label") == quote_label
+            else field
+            for field in item["fields"]
+            if not isinstance(field, dict) or field.get("label") != "来源地址"
+        ],
+    }
 
 
 @router.get("/tasks/{task_id}/download", dependencies=[Depends(_enabled)])
@@ -890,7 +1039,7 @@ def delete_task(task_id: int, request: Request, session: SessionDep, user: Known
     """删除自己的一条工具或 AI 记录及结果文件。和关注、纠错的删除一样只认本人，不看功能开关，
     也不要求先同意新版协议（D-093 上线门槛第 8 条）；别人的、不存在的都是"没有找到"。"""
     if user is None:
-        raise HTTPException(status_code=404, detail="没有找到顾问任务")
+        raise HTTPException(status_code=404, detail="没有找到这条记录，可能已经删除")
     task = _owned(session, user, task_id, lock=True, deleting=True)
     # 正在处理的等处理结束（结果文件可能正在上传）；开始超过一天的一定没人在跑了
     # （和过期清理同一条线），功能关掉以后不会再有人接着处理，也要能删

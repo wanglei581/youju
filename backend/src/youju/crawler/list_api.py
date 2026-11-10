@@ -5,7 +5,9 @@
 签名参数或验证码，响应头允许任何网站跨域读取，是公开的（2026-10-19 本机核对，D2）。
 
 用哪种接口、哪个栏目编号，在 sources.parser_config 里写明，不从页面推断：
-    {"list_api": "hunan_search", "channel_id": "71043"}
+    {"search_api": "hunan_search", "channel_id": "71043"}
+（和 crawler/adapters.py 的平台适配器不是一回事：那是栏目页自己声明的同站接口，抓栏目页时自动读，
+第一次用上时把适配器名记在配置的 list_api 里。两个键互不相干，这里只认 search_api。）
 栏目编号是栏目页脚本里的 `var channelId = '…'`。来源的网址仍是原来的栏目页：用户看到的、
 条目相对链接的基准都不变。每次只取第一页，和页面上显示的一样（20 条）。
 
@@ -31,7 +33,7 @@ from youju.crawler.urls import normalize_url, page_dir, url_key
 
 HUNAN_SEARCH = "hunan_search"
 LIST_API_KINDS = (HUNAN_SEARCH,)
-CONFIG_KEYS = ("list_api", "channel_id")
+CONFIG_KEYS = ("search_api", "channel_id")
 API_EMPTY_MESSAGE = "列表接口可以访问，但没有返回列表条目：可能接口或栏目编号变了"
 # 要登录、要验证时，网站可能跳到登录页或回一个网页；不去猜是哪一种，写明可能性，由人打开核对
 _CHECK_BY_HAND = "请人工打开栏目页核对，要登录或验证的按 D-013 停用，不绕过"
@@ -67,24 +69,24 @@ class ApiRequest:
 
 
 def valid_api_config(raw: object) -> dict[str, str] | None:
-    """列表接口配置：只收 list_api 和 channel_id 两个键，接口种类要认识、栏目编号只能是字母和数字；
-    不合规返回 None。"""
+    """列表接口配置：只收 search_api 和 channel_id 两个键，接口种类要认识、栏目编号只能是
+    字母和数字；不合规返回 None。"""
     if not isinstance(raw, dict) or set(raw) != set(CONFIG_KEYS):
         return None
-    kind, channel = raw["list_api"], raw["channel_id"]
+    kind, channel = raw["search_api"], raw["channel_id"]
     if (
         kind not in LIST_API_KINDS
         or not isinstance(channel, str)
         or not _CHANNEL.fullmatch(channel)
     ):
         return None
-    return {"list_api": kind, "channel_id": channel}
+    return {"search_api": kind, "channel_id": channel}
 
 
 def _checked(config: dict | None) -> dict[str, str]:
     checked = valid_api_config(config)
     if checked is None:
-        raise ValueError("列表接口配置不对：只能有 list_api、channel_id 两项")
+        raise ValueError("列表接口配置不对：只能有 search_api、channel_id 两项")
     return checked
 
 
@@ -92,7 +94,7 @@ def api_request(config: dict | None) -> ApiRequest | None:
     """来源配了列表接口时返回要发的请求；没配返回 None（照常抓栏目页）。
 
     配置写错时抛 ValueError，不退回抓栏目页：那样只会每轮"没有识别到条目"，看不出是配置的问题。"""
-    if not config or "list_api" not in config:
+    if not config or "search_api" not in config:
         return None
     channel = _checked(config)["channel_id"]
     return ApiRequest(_HUNAN_SEARCH_URL.format(channel=channel), _HUNAN_SEARCH_FORM)

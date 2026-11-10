@@ -26,16 +26,15 @@ def test_api_role_requires_platform_identity_headers() -> None:
         settings(role="admin", trust_wx_headers=True, dev_openid=None)
 
 
-def test_xpay_env_reads_text_from_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    # 云托管的环境变量都是文字；10/19 填 YOUJU_XPAY_ENV=1 后 api 起不来
-    for text, expected in (("1", 1), ("0", 0), (" 0 ", 0)):
-        monkeypatch.setenv("YOUJU_XPAY_ENV", text)
-        assert Settings(_env_file=None).xpay_env == expected
-    monkeypatch.setenv("YOUJU_XPAY_ENV", "2")
-    with pytest.raises(ValidationError, match="xpay_env"):
-        Settings(_env_file=None)
-    monkeypatch.delenv("YOUJU_XPAY_ENV")
-    assert Settings(_env_file=None).xpay_env == 1
+def test_pass_prices_at_least_one_yuan(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 苹果支付最低 1 元（官方文档）：价格按分填，少于 100 安卓能买、苹果买不了，所以不启动
+    assert Settings(_env_file=None, xpay_price_pass=100, xpay_price_pass_90=7900).xpay_price_pass
+    for field in ("xpay_price_pass", "xpay_price_pass_90"):
+        with pytest.raises(ValidationError, match="不能少于 100"):
+            Settings(_env_file=None, **{field: 99})
+    # 没有沙箱开关了（创始人 10/29）：线上还留着 YOUJU_XPAY_ENV 也照常启动，不起作用
+    monkeypatch.setenv("YOUJU_XPAY_ENV", "1")
+    assert not hasattr(Settings(_env_file=None), "xpay_env")
 
 
 def test_startup_errors_do_not_print_secrets() -> None:

@@ -1,10 +1,12 @@
-// 过审版协议（D-093 ⑤）：content/legal-first-release.js 是 content/legal.js（2026-11）去掉首发包里没有的功能
+// 过审版协议（D-093 ⑤）：content/legal-first-release.js 是完整版协议 2026-11 去掉首发包里没有的功能
 // （AI、批量工具、加量体验、付费）那一份，只用于 tools/miniapp_pack.js 打的首发包。守住：只写包里有的功能，
 // 版本排在后台 AI 条款版本之前，编号和互相引用对得上，加粗的段落都找得到；草稿期间和生成脚本的结果一致
 // （定稿以后是固定文本，不再比）。
+// 11/4 起 content/legal.js 升到 2026-12：和"2026-11 一样"比的是冻结的底稿 tools/release/legal-2026-11.js
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const full = require('../content/legal.js');
+const full = require('../../../tools/release/legal-2026-11.js');
+const current = require('../content/legal.js');
 const first = require('../content/legal-first-release.js');
 const { SERVER_AI_TERMS_VERSION, FIRST_RELEASE_TERMS_BANNED } = require('../../../tools/miniapp_presubmit_check.js');
 const { build } = require('../../../tools/make_legal_first_release.js');
@@ -15,7 +17,10 @@ const items = (section) => section.p.filter((p) => /^\d+\. /.test(p)).map((p) =>
 test('版本：比 10/15 首发的 2026-10 新，比后台第一次认 AI 条款的版本早（字符串比较）', () => {
   assert.match(first.version, /^\d{4}-\d{2}/);
   assert.ok(first.version > '2026-10' && first.version < SERVER_AI_TERMS_VERSION, first.version);
-  assert.ok(full.version >= SERVER_AI_TERMS_VERSION);
+  // 完整版 2026-11 含 AI 条款；10/28 起后台从 2026-11.1 起认（完整版没写"AI 结果送微信内容安全检查"），
+  // 完整版要升到 2026-12 以后才能对所有人开放 AI（白名单试用不看版本）
+  assert.ok(full.version >= '2026-11' && full.version > first.version);
+  assert.ok(current.version >= SERVER_AI_TERMS_VERSION && current.version > first.version, current.version);
 });
 
 test('只写首发包里有的：不写 AI、批量工具、加量体验、付费、投诉举报页、原文链接、使用帮助和"我的记录"', () => {

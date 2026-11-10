@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from youju.categories import doc_category
 from youju.classify import doc_kind
+from youju.crawler.adapters import api_html, find_list_api
 from youju.crawler.fetcher import FetchResult
 from youju.crawler.list_api import api_http_problem, api_request, read_api_response
 from youju.crawler.listing import ListItem, extract_items
@@ -33,7 +34,9 @@ _CONFIG_RECHECKS = 2
 
 
 class Fetcher:
-    """抓取器接口；测试时可以换成假的实现。form 只在来源配了列表接口时传（见 list_api）。"""
+    """抓取器接口；测试时可以换成假的实现。
+
+    form 只在来源配了检索接口时传（见 crawler/list_api.py）。"""
 
     def fetch(
         self, url: str, form: Sequence[tuple[str, str]] | None = None
@@ -155,26 +158,80 @@ def _lock_source(session: Session, source: Source) -> None:
     session.scalars(stmt).one()
 
 
-def _fetch_items(
-    fetcher: Fetcher, url: str, parser_config: dict | None, today: date | None
-) -> tuple[FetchResult, str, str | None, list[ListItem]]:
-    """按来源配置抓一次、识别条目，返回（抓取结果，状态，错误，条目）。不碰数据库。"""
+# 通用规则在栏目页上识别出的条目少于这个数，才去看页面有没有声明列表接口
+ADAPTER_MIN_ITEMS = 3
+
+
+@dataclass
+class _AdapterResult:
+    items: list[ListItem]
+    adapter: str | None = None  # 用了哪个平台适配器（认出了列表接口才有）
+    fetch: FetchResult | None = None  # 接口没取到时的抓取结果
+
+
+def _items_via_adapter(
+    fetcher: Fetcher, page: FetchResult, url: str, parser_config: dict, today: date | None
+) -> _AdapterResult:
+    """栏目页自己声明了集约化平台的列表接口（见 crawler/adapters.py）时，按它取列表。"""
+    api = find_list_api(page.text, page.final_url or url)
+    if api is None:
+        return _AdapterResult([])
+    result = fetcher.fetch(api.url)
+    if result.status != "ok":
+        return _AdapterResult([], api.adapter, result)
+    html = api_html(api, result.text)
+    items = extract_items(html, api.base_url, parser_config, today=today) if html else []
+    return _AdapterResult(items, api.adapter)
+
+
+@dataclass
+class _Fetched:
+    result: FetchResult
+    status: str
+    error: str | None
+    items: list[ListItem]
+    # 第一次经平台适配器读出整页时是适配器名（入库时记进来源配置的 list_api），否则为 None
+    new_adapter: str | None = None
+
+
+def _fetch_items(fetcher: Fetcher, url: str, parser_config: dict, today: date | None) -> _Fetched:
+    """按来源配置抓一次、识别条目。不碰数据库。
+
+    两种接口互不相干：配了检索接口（search_api，人工核实后用 youju source-list-api 写入，见
+    crawler/list_api.py）的，直接请求那个接口，不抓栏目页；其余抓栏目页，通用规则认出的条目太少时，
+    再看页面自己有没有声明平台列表接口（crawler/adapters.py，第一次用上时记在 list_api）。"""
     api = api_request(parser_config)
-    result = fetcher.fetch(url) if api is None else fetcher.fetch(api.url, form=api.form)
+    if api is not None:
+        result = fetcher.fetch(api.url, form=api.form)
+        status, error, items = result.status, result.error, []
+        if result.status == "ok":
+            # 每轮都复核：拒绝访问、栏目编号对不上、过半条目不在栏目目录下的都不入库；
+            # 条目链接按栏目页补全，不按接口网址
+            status, error, items, _ = read_api_response(result.text, url, parser_config, today)
+        elif problem := api_http_problem(result):
+            status, error = problem
+        return _Fetched(result, status, error, items)
+    result = fetcher.fetch(url)
     status, error = result.status, result.error
     items: list[ListItem] = []
-    if api is None:
-        if result.status == "ok":
-            items = extract_items(result.text, result.final_url or url, parser_config, today=today)
-            if not items:
-                status, error = "parse_empty", PARSE_EMPTY_MESSAGE
-    elif result.status == "ok":
-        # 每轮都复核：拒绝访问、栏目编号对不上、过半条目不在栏目目录下的都不入库（list_api）；
-        # 条目链接按栏目页补全，不按接口网址
-        status, error, items, _ = read_api_response(result.text, url, parser_config, today)
-    elif problem := api_http_problem(result):
-        status, error = problem
-    return result, status, error, items
+    new_adapter = None
+    if result.status == "ok":
+        items = extract_items(result.text, result.final_url or url, parser_config, today=today)
+        if len(items) < ADAPTER_MIN_ITEMS and not parser_config.get("item_selector"):
+            via = _items_via_adapter(fetcher, result, url, parser_config, today)
+            if via.items:
+                items = via.items
+                # 第一次经列表接口读出整页：以前只认出零星几条的来源，整页旧通知不能算"新增"
+                if parser_config.get("list_api") != via.adapter:
+                    new_adapter = via.adapter
+            elif via.fetch is not None and not items:
+                # 列表接口被 robots 禁止或被拒：照实记，不当成"改版认不出"（以后也不能去绕）
+                status, error = via.fetch.status, f"列表接口（{via.adapter}）：{via.fetch.error}"
+                if via.fetch.http_status:
+                    result = FetchResult(url, "http_error", http_status=via.fetch.http_status)
+        if not items and status == "ok":
+            status, error = "parse_empty", PARSE_EMPTY_MESSAGE
+    return _Fetched(result, status, error, items, new_adapter)
 
 
 def check_source(
@@ -196,15 +253,20 @@ def check_source(
     for _ in range(_CONFIG_RECHECKS + 1):
         url, parser_config = source.url, source.parser_config
         session.commit()
-        result, status, error, items = _fetch_items(fetcher, url, parser_config, today)
+        fetched = _fetch_items(fetcher, url, parser_config, today)
         _lock_source(session, source)
         if (source.url, source.parser_config) == (url, parser_config):
             break
         session.commit()  # 放开锁，按新配置重来
     else:
         raise RuntimeError(f"来源 #{source.id} 的网址或抓取配置在检查期间反复被改")
-    # 来源第一次成功检查时看到的条目算基线，不计入"新增"
-    baseline = bool(items) and source.last_success_at is None
+    result, status, error, items = fetched.result, fetched.status, fetched.error, fetched.items
+    first_via_adapter = fetched.new_adapter is not None
+    if first_via_adapter:
+        # 记下这个栏目要经列表接口读
+        source.parser_config = {**parser_config, "list_api": fetched.new_adapter}
+    # 来源第一次成功检查时看到的条目算基线，不计入"新增"；第一次经列表接口读出的整页也算基线
+    baseline = bool(items) and (source.last_success_at is None or first_via_adapter)
     new_count = save_items(session, source, items, baseline=baseline, seen_at=started)
     finished = _now()
     check = SourceCheck(

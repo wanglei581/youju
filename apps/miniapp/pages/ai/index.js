@@ -6,7 +6,7 @@
 const api = require('../../utils/api.js');
 const access = require('../../utils/ai-access.js');
 const { taskView, allowedKinds, remainingOf, AI_LABEL, SCOPE } = require('../../utils/advisor.js');
-const { disclosureLine } = require('../../utils/ai-interpret.js');
+const { disclosureLine, consentInfo, withdrawConsent } = require('../../utils/ai-interpret.js');
 const context = require('../../utils/tool-context.js');
 const { ensureConsent } = require('../../utils/consent.js');
 const { todayISO } = require('../../utils/format.js');
@@ -99,6 +99,8 @@ Page({
     gateText: '',
     kinds: [],
     disclosure: '',
+    // 已同意 AI 解读、条款对照的使用须知：底部写日期和"撤回同意"（D-098，同意要能撤回）
+    noticeAgreedText: '',
     lastDoc: null,
     recent: [],
     recentLoading: true,
@@ -132,6 +134,8 @@ Page({
   onShow() {
     if (typeof this.getTabBar === 'function' && this.getTabBar()) this.getTabBar().setData({ selected: 4 });
     this.shown = true;
+    // 底部"已同意使用须知 · 撤回同意"（D-098）：可能在解读页、对照页刚同意过
+    this.noticeLine();
     // 连接慢（接口服务在重试）时和其他页面一样写"正在连接，比平时慢一点，请稍等…"（方案第四节，第 15 轮）
     if (api.watchStartup) api.watchStartup(this);
     // 停在这一页跨过零点：今天还剩几次、全站满没满、近 7 天的通知都重新问（第 18 轮）；
@@ -238,7 +242,7 @@ Page({
       // 还没同意协议、没开着（401、403、404）：本来就没有能看的记录，不写"没加载出来"、不给重试（同"我的记录"页，第 10 轮）
       if (err && [401, 403, 404].includes(err.status)) { this.setData({ records: [] }); return; }
       // 没加载出来不当成没有记录：卡片照样留着，写明没加载出来、给重试，"全部"照样能点进去（Codex 小程序第 7 轮）
-      this.setData({ records: [], recordsError: '我的 AI 记录没有加载出来' });
+      this.setData({ records: [], recordsError: '我的记录没有加载出来' });
     });
   },
 
@@ -353,6 +357,28 @@ Page({
 
   help() {
     wx.navigateTo({ url: '/pages/help/index' });
+  },
+
+  // 底部"已同意使用须知"那一行：每次显示时按手机上的记录重写
+  noticeLine() {
+    const info = consentInfo(wx);
+    const text = info ? `已同意 AI 解读、条款对照的使用须知（${info.at.getMonth() + 1}月${info.at.getDate()}日）` : '';
+    if (text !== this.data.noticeAgreedText) this.setData({ noticeAgreedText: text });
+  },
+
+  withdrawNotice() {
+    wx.showModal({
+      title: '撤回同意',
+      content: '撤回后，下次用 AI 解读、条款对照前会再请你同意使用须知。已经出来的结果不受影响。',
+      confirmText: '撤回',
+      cancelText: '不撤回',
+      success: (res) => {
+        if (!res.confirm) return;
+        if (!withdrawConsent(wx)) { wx.showToast({ title: '没能撤回，请稍后再试', icon: 'none' }); return; }
+        this.noticeLine();
+        wx.showToast({ title: '已撤回', icon: 'none' });
+      },
+    });
   },
 
   report() {

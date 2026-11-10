@@ -82,6 +82,7 @@ _TOKEN_SPLIT = re.compile(r"[-_]+")
 _DATASTORE_RECORD = re.compile(r"<record>\s*<!\[CDATA\[(.*?)\]\]>\s*</record>", re.S)
 _XML_DECL = re.compile(r"^\s*<\?xml[^>]*\?>", re.I)
 _BODY_END = re.compile(r"</body\s*>", re.I)
+_STRAY_END = re.compile(r"</(?:body|html)\s*>", re.I)
 # 写在链接文字开头或结尾的日期
 _EDGE_DATE = re.compile(
     r"^\s*[\[(（【]?\s*(20\d{2}[-/.年]\d{1,2}[-/.月]\d{1,2}日?)\s*[\])）】]?"
@@ -552,7 +553,9 @@ def extract_items(
     if not html.strip():
         return []
     try:
-        doc = lxml.html.document_fromstring(html)
+        # 页面中间拼进来的 </html>、</body>（如中国政府网的页头）会让 libxml2 不再往下解析，
+        # 后面的列表整个丢掉；浏览器照常显示。解析前去掉
+        doc = lxml.html.document_fromstring(_STRAY_END.sub("", html))
     except (etree.ParserError, ValueError):
         return []
     page = _Page(doc, page_url, today or date.today())

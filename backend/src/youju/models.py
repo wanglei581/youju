@@ -719,7 +719,7 @@ AI_STORED_REASONS = tuple(reason for reason in AI_REASONS if reason != "link_gon
 class AIEligibility(Base):
     """每份文件能不能做 AI 解读（D-075）：列表行上的"AI 解读"按钮读这里，列表请求不逐份读正文。
 
-    reason 为空表示能解读，否则是 AI_STORED_REASONS 之一。admin 的定时任务按 interpret.eligible_body
+    reason 为空表示能解读，否则是 AI_STORED_REASONS 之一。admin 的定时任务按 content.check
     算好写入（youju/ai/eligibility.py）；详情页和提交任务仍实时判断，以实时为准。原网页撤下不存这里，
     读表时另看 documents.link_gone_at（eligibility.flags、eligible_ids）。
     能不能解读是文件本身的属性，和 AI 开没开无关，所以 admin、api 两个服务回的一样。"""
@@ -765,6 +765,48 @@ class AIHeartbeat(Base):
     alerted_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     notice_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     refunds_pending: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    # admin 那一行：问答能用（对外 AI 的单独线路配齐了，问一问开发设计第六节第 3 条）；api 只读
+    ask_ready: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+
+
+class AISafetyHit(Base):
+    """内容安全的处置记录（迁移 0042）：本地高危词库或微信内容安全接口拦下的 AI 结果和用户提问。
+
+    D-093 门槛第 4 条、《生成式人工智能服务管理暂行办法》第十四条（发现违法内容要停止生成、
+    停止传输、消除，保存有关记录）。kind 是哪个功能（解读、对照、问一问的两个技能）；stage 是
+    拦在用户提问（question）还是 AI 结果（answer）；layer 是哪一层；reason_json 是原因（本地词库的
+    类别、词条编号、词库版本，或微信返回的 suggest、label），不写词本身；解读、对照的另记缓存键、
+    提示词版本和模型（1 天内认同一份内容用，advisor_tasks._recently_blocked）。
+
+    - AI 结果被拦的：只记通知编号和任务编号，不存结果文字（结果全是政府原文的原句，按编号能找回）；
+      解读、对照不记用户编号（uid 为空）：结果不是用户写的。问这份通知的回答被拦的（PR-3 起）
+      另记这一问的编号和提问的人去标识化的用户编号（问一问使用说明第 3 条）。
+    - 问一问的提问被拦的（PR-2 起）：记那句话（最多 200 字）和去标识化的用户编号（同访问日志）。
+    不建外键：删任务、删对话、注销都不动它；190 天到期由每天的清理删除。只在处置违法违规内容、
+    依法向主管部门报告时由创始人在生产库里查；管理台、日报只给次数和类别。"""
+
+    __tablename__ = "ai_safety_hits"
+    __table_args__ = (
+        Index("ix_ai_safety_hits_expires", "expires_at"),
+        CheckConstraint(
+            "kind IN ('interpret', 'clause', 'find', 'ask')", name="ck_ai_safety_hits_kind"
+        ),
+        CheckConstraint("stage IN ('question', 'answer')", name="ck_ai_safety_hits_stage"),
+        CheckConstraint("layer IN ('local', 'wechat')", name="ck_ai_safety_hits_layer"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime())
+    uid: Mapped[str | None] = mapped_column(String(64))
+    kind: Mapped[str] = mapped_column(String(16))
+    stage: Mapped[str] = mapped_column(String(8))
+    layer: Mapped[str] = mapped_column(String(8))
+    reason_json: Mapped[dict | None] = mapped_column(JSONType)
+    text: Mapped[str | None] = mapped_column(String(200))
+    document_id: Mapped[int | None] = mapped_column(Integer)
+    task_id: Mapped[int | None] = mapped_column(Integer)
+    turn_id: Mapped[int | None] = mapped_column(Integer)
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime())
 
 
 # 申报条件的类别（D-052 第④项）：顺序也是对外展示的顺序
@@ -977,6 +1019,9 @@ class User(Base):
     agreement_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     advisor_agreement_version: Mapped[str | None] = mapped_column(String(20))
     advisor_agreement_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    # "问一问使用说明"的同意（agreements.CHAT_AGREEMENT_VERSION），同批量工具的使用说明
+    chat_agreement_version: Mapped[str | None] = mapped_column(String(32))
+    chat_agreement_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 
 
 class AdvisorTask(Base):
@@ -988,7 +1033,8 @@ class AdvisorTask(Base):
         Index("ix_advisor_tasks_user_created", "user_id", "created_at"),
         Index("ix_advisor_tasks_status_created", "status", "created_at"),
         CheckConstraint(
-            "kind IN ('compare', 'track', 'interpret', 'clause')", name="ck_advisor_tasks_kind"
+            "kind IN ('compare', 'track', 'interpret', 'clause', 'ask')",
+            name="ck_advisor_tasks_kind",
         ),
         Index("ix_advisor_tasks_cache", "cache_key", "finished_at"),
         CheckConstraint(
@@ -1024,6 +1070,51 @@ class AdvisorTask(Base):
     started_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     expires_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+
+
+class AIChat(Base):
+    """问一问的一条对话（迁移 0043）：每份通知一条，另有一条不带通知的（doc_key 为 0）。
+
+    doc_key 是建的时候那份通知的编号，建好以后不改；按通知找对话时换成现在的合并组再找
+    （api/chat.py）。updated_at 是最近一问的时间，"我的 AI 记录"按它排。"""
+
+    __tablename__ = "ai_chats"
+    __table_args__ = (
+        UniqueConstraint("user_id", "doc_key", name="uq_ai_chats_user_doc"),
+        Index("ix_ai_chats_user_updated", "user_id", "updated_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    doc_key: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime())
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime())
+
+
+class AIChatTurn(Base):
+    """对话里的一问一答。用户打的字只存在 question 一处（和 answer_json 里从原话取出的
+    keywords、docNumber），保存 30 天（expires_at）。问这份通知有 task_id 和 doc_id；
+    找通知的回答、规则当场答的回答存在 answer_json。"""
+
+    __tablename__ = "ai_chat_turns"
+    __table_args__ = (
+        UniqueConstraint("chat_id", "seq", name="uq_ai_chat_turns_chat_seq"),
+        UniqueConstraint("chat_id", "idempotency_key", name="uq_ai_chat_turns_chat_key"),
+        Index("ix_ai_chat_turns_expires", "expires_at"),
+        CheckConstraint("skill IN ('find', 'ask')", name="ck_ai_chat_turns_skill"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    chat_id: Mapped[int] = mapped_column(ForeignKey("ai_chats.id", ondelete="CASCADE"))
+    seq: Mapped[int] = mapped_column(Integer)
+    skill: Mapped[str] = mapped_column(String(8))
+    question: Mapped[str] = mapped_column(String(200))
+    task_id: Mapped[int | None] = mapped_column(ForeignKey("advisor_tasks.id", ondelete="SET NULL"))
+    doc_id: Mapped[int | None] = mapped_column(Integer)
+    answer_json: Mapped[dict | None] = mapped_column(JSONType)
+    idempotency_key: Mapped[str] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime())
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime())
 
 
 class AdvisorUsage(Base):
@@ -1267,6 +1358,10 @@ class PayOrder(Base):
     refund_attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     refund_retry_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     refund_started_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    # 负责人核实这笔应当退款（因我们的原因不能使用、未成年人未经监护人同意购买等）的时间和原因
+    # （youju pay-refund-due）：苹果退款问询照它答"建议退款"（付费服务协议第二条第 7 项）
+    refund_due_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    refund_due_note: Mapped[str | None] = mapped_column(String(100))
     query_retry_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     goods_notified: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     # 通知发货失败次数；达到上限不再重试，转人工。
@@ -1410,8 +1505,97 @@ class WorkbenchPass(Base):
     ends_at: Mapped[datetime] = mapped_column(UTCDateTime())
     revoked_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     last_task_id: Mapped[int | None] = mapped_column(Integer)
+    # 最近一次付费任务出结果的时间（payments.paid_usage）：任务删了、账号注销了也还在；
+    # 提交时不记，系统出错、取消的不记。迁移 0044 以前的旧行记的是提交时间（只会多算用过，不会少算）
     last_used_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     last_task_completed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+
+
+class AICreditGrant(Base):
+    """卡里的 AI 次数：每给一次记一笔（D-109 甲，迁移 0046；youju/ai_credits.py）。
+
+    kind：purchase 买卡（天数 × 10）、renewal 续买多送（30）、trial 加量体验送的（30）、backfill
+    AI 进卡那一版上线时补给老卡的（剩下的整天数 × 10）。买来的、续买多送的、补给的挂在那一段使用期上
+    （pass_id），到期跟着那一段的 ends_at 走（段往前挪，到期跟着挪）；
+    体验送的挂在加量体验上（trial_id），
+    到期是体验原定的结束时间（expires_at，体验期里买卡、体验提前结束也不变）。
+    used 已扣、held 占着，都记在这一行上：锁住这一行就读到最新的数（读已提交、可重复读都一样）。
+    订单按保存期删掉时随使用期一起删；体验随用户删；注销时断开用户、收回（revoked_at）。"""
+
+    __tablename__ = "ai_credit_grants"
+    __table_args__ = (
+        CheckConstraint(
+            "(pass_id IS NULL) <> (trial_id IS NULL)", name="ck_ai_credit_grants_origin"
+        ),
+        CheckConstraint(
+            "kind IN ('purchase', 'renewal', 'trial', 'backfill')", name="ck_ai_credit_grants_kind"
+        ),
+        CheckConstraint(
+            "amount > 0 AND used >= 0 AND held >= 0 AND used + held <= amount",
+            name="ck_ai_credit_grants_counts",
+        ),
+        UniqueConstraint("pass_id", "kind", name="uq_ai_credit_grants_pass_kind"),
+        UniqueConstraint("trial_id", name="uq_ai_credit_grants_trial"),
+        Index("ix_ai_credit_grants_user", "user_id"),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    pass_id: Mapped[int | None] = mapped_column(
+        ForeignKey("workbench_passes.id", ondelete="CASCADE")
+    )
+    trial_id: Mapped[int | None] = mapped_column(ForeignKey("boost_trials.id", ondelete="CASCADE"))
+    kind: Mapped[str] = mapped_column(String(16))
+    amount: Mapped[int] = mapped_column(Integer)
+    used: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    held: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    expires_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    granted_at: Mapped[datetime] = mapped_column(UTCDateTime())
+    revoked_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+
+
+class AICreditUse(Base):
+    """卡里的 AI 次数每占一次记一行（D-109 甲，迁移 0046）：提交时占（reserved），结果给到用户时扣
+    （charged），没出结果退回（released）。use_key 是调用方给的唯一编号（解读、对照、问一问是
+    task:{任务编号}），不建任务外键：任务 30 天删掉以后这行照样在，退款、苹果问询靠它
+    （方案第三节第 4 条第 6 项）。reason 是为什么走卡（free_used 当天免费次数用完、
+    site_full 全站免费名额满了）；pool_day 是北京日期，数付费全站名额用。不存任务内容。"""
+
+    __tablename__ = "ai_credit_uses"
+    __table_args__ = (
+        UniqueConstraint("use_key", name="uq_ai_credit_uses_key"),
+        CheckConstraint(
+            "state IN ('reserved', 'charged', 'released')", name="ck_ai_credit_uses_state"
+        ),
+        CheckConstraint(
+            "kind IN ('interpret', 'clause', 'ask', 'photo', 'compile')",
+            name="ck_ai_credit_uses_kind",
+        ),
+        CheckConstraint("reason IN ('free_used', 'site_full')", name="ck_ai_credit_uses_reason"),
+        Index("ix_ai_credit_uses_grant_state", "grant_id", "state"),
+        Index("ix_ai_credit_uses_user", "user_id"),
+        Index("ix_ai_credit_uses_pool_day", "pool_day"),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    grant_id: Mapped[int] = mapped_column(ForeignKey("ai_credit_grants.id", ondelete="CASCADE"))
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    use_key: Mapped[str] = mapped_column(String(64))
+    kind: Mapped[str] = mapped_column(String(16))
+    state: Mapped[str] = mapped_column(String(16), default="reserved", server_default="reserved")
+    reason: Mapped[str] = mapped_column(String(16))
+    release_reason: Mapped[str | None] = mapped_column(String(32))
+    reserved_at: Mapped[datetime] = mapped_column(UTCDateTime())
+    settled_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    pool_day: Mapped[date] = mapped_column(Date)
+
+
+class AICreditPoolDay(Base):
+    """付费全站名额的当天计数（D-109 甲，迁移 0046）：从卡里占一次加 1，后来扣了、退了都不减。
+    单独一张表、不存用户：用户注销（体验送的次数随体验删掉）、订单按保存期删掉，都不会让当天的数变少
+    （Codex 10/29）。一天一行。"""
+
+    __tablename__ = "ai_credit_pool_days"
+    day: Mapped[date] = mapped_column(Date, primary_key=True)
+    reserved: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
 
 class PayEvent(Base):
@@ -1440,3 +1624,105 @@ class PayReconciliation(Base):
     attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
+
+
+# —— 覆盖看板（全国数据覆盖，D-122）：一格 = 行政区 × 目标部门，状态由来源抓取结果算出 ——
+
+
+class CoverageDivision(Base):
+    """行政区（国家地名信息库）和盘点找到的门户。国家级用 000000。"""
+
+    __tablename__ = "coverage_divisions"
+
+    code: Mapped[str] = mapped_column(String(6), primary_key=True)
+    name: Mapped[str] = mapped_column(String(64))
+    kind: Mapped[str] = mapped_column(String(16))
+    level: Mapped[str] = mapped_column(String(8), index=True)
+    province: Mapped[str] = mapped_column(String(32), index=True)
+    city: Mapped[str | None] = mapped_column(String(32))
+    district: Mapped[str | None] = mapped_column(String(32))
+    parent_code: Mapped[str | None] = mapped_column(String(6))
+    # 已找到 / 导航未找到 / 打不开 / 不能抓 / 出错
+    portal_status: Mapped[str] = mapped_column(String(8), default="导航未找到")
+    portal_url: Mapped[str | None] = mapped_column(String(512))
+    portal_reason: Mapped[str | None] = mapped_column(String(300))
+    # 在哪个官方页面上找到的（可追溯）
+    portal_nav_source: Mapped[str | None] = mapped_column(String(512))
+    site_id_code: Mapped[str | None] = mapped_column(String(20))
+    platform: Mapped[str | None] = mapped_column(String(64))
+    inventoried_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+
+
+class CoverageCell(Base):
+    """覆盖看板的一格：一个行政区的一个目标部门（开发区可有几个，按 seq 区分）。"""
+
+    __tablename__ = "coverage_cells"
+    __table_args__ = (
+        UniqueConstraint("division_code", "dept", "seq", name="uq_coverage_cells_division_dept"),
+        Index("ix_coverage_cells_state", "state"),
+        Index("ix_coverage_cells_dept", "dept"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    division_code: Mapped[str] = mapped_column(
+        ForeignKey("coverage_divisions.code", ondelete="CASCADE")
+    )
+    dept: Mapped[str] = mapped_column(String(16))
+    seq: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    # 标准部门（11 个，每个行政区都应有）；数据局、开发区是"有就收"
+    required: Mapped[bool] = mapped_column(Boolean, default=True)
+    dept_full_name: Mapped[str | None] = mapped_column(String(128))
+    site_url: Mapped[str | None] = mapped_column(String(512))
+    site_type: Mapped[str | None] = mapped_column(String(8))
+    nav_source: Mapped[str | None] = mapped_column(String(512))
+    # 盘点结论（已找到 / 导航未找到 / 打不开 / 不能抓）和原因
+    inventory_status: Mapped[str] = mapped_column(String(8))
+    inventory_reason: Mapped[str | None] = mapped_column(String(300))
+    # 盘点找到的栏目：[{kind, name, url, source}]；导入时按网址挂到 sources（coverage_cell_sources）
+    columns: Mapped[list] = mapped_column(JSONType, default=list)
+    # 看板状态：已收录 / 抓取失败 / 网站无此栏目 / 需人工 / 不能抓 / 待启用
+    state: Mapped[str] = mapped_column(String(8), default="需人工")
+    reason: Mapped[str | None] = mapped_column(String(300))
+    last_success_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    state_changed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    # 状态最后一次按抓取结果重算的时间（看板据此提示数据是不是旧了）
+    refreshed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    # 人工能改的三件事：确认网站无此栏目、填替代来源、备注（都写审计）
+    confirmed_no_column: Mapped[bool] = mapped_column(Boolean, default=False)
+    confirmed_by: Mapped[str | None] = mapped_column(String(80))
+    confirmed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    alt_source: Mapped[str | None] = mapped_column(String(512))
+    note: Mapped[str | None] = mapped_column(String(300))
+    updated_at: Mapped[datetime] = mapped_column(
+        UTCDateTime(), server_default=NOW, onupdate=func.now(6)
+    )
+
+
+class CoverageCellSource(Base):
+    """格 ↔ 来源（多对多：合并部门的一个栏目可同时服务几格）。来源只停用不删除。"""
+
+    __tablename__ = "coverage_cell_sources"
+
+    cell_id: Mapped[int] = mapped_column(
+        ForeignKey("coverage_cells.id", ondelete="CASCADE"), primary_key=True
+    )
+    source_id: Mapped[int] = mapped_column(
+        ForeignKey("sources.id", ondelete="RESTRICT"), primary_key=True
+    )
+    kind: Mapped[str] = mapped_column(String(8))
+
+
+class CoverageAcceptance(Base):
+    """按省抽查（D-122：每省抽查合格才算接好，没抽查或没过的省新来源先不放给用户）。"""
+
+    __tablename__ = "coverage_acceptances"
+    __table_args__ = (Index("ix_coverage_acceptances_province", "province", "level"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    province: Mapped[str] = mapped_column(String(32))
+    level: Mapped[str] = mapped_column(String(8))  # 省级 / 市级 / 区县级 / 全部
+    sampled_by: Mapped[str] = mapped_column(String(80))
+    sampled_at: Mapped[datetime] = mapped_column(UTCDateTime())
+    sample_size: Mapped[int] = mapped_column(Integer)
+    passed: Mapped[bool] = mapped_column(Boolean)
+    note: Mapped[str | None] = mapped_column(String(300))

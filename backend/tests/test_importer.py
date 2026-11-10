@@ -162,3 +162,107 @@ def test_city_activation_manifest_only_promotes_reviewed_two(session):
     second = import_sources(session, path)
     assert (second.created, second.updated) == (0, 2)
     assert session.scalar(select(func.count(Source.id))) == 53
+
+
+def test_coverage_rows_import_disabled_and_reimport_keeps_admin_switch(
+    session, tmp_path: Path
+) -> None:
+    """全国覆盖栏目清单："试跑可读"按静态抓取导入但不启用；后台打开后重导入不关掉。"""
+    assert mode_for("试跑可读（全国覆盖 v1，未启用）") == ("static", False)
+    row = (
+        "省级,浙江,科技,浙江省科学技术厅,通知通告,https://kjt.zj.gov.cn/col/col1229225203/index.html,"
+        "200,15,2026-11-05,试跑可读（全国覆盖 v1，未启用）,2026-11-05,"
+    )
+    path = write_csv(tmp_path, [row])
+    import_sources(session, path)
+    source = session.scalar(select(Source).where(Source.province == "浙江"))
+    assert (source.fetch_mode, source.enabled) == ("static", False)
+    source.enabled = True
+    session.commit()
+    import_sources(session, path)
+    session.refresh(source)
+    assert source.enabled is True
+
+
+def test_only_new_and_dry_run_leave_existing_sources_alone(session, tmp_path: Path) -> None:
+    live = write_csv(
+        tmp_path,
+        [
+            "省级,北京,科技,北京市科学技术委员会,通知公告,https://kw.beijing.gov.cn/zwgk/tzgg/,200,20,,已验证（列表页，含近期日期）,2026-09-26,线上在收"
+        ],
+    )
+    import_sources(session, live)
+    batch = tmp_path / "batch.csv"
+    batch.write_text(
+        CSV_HEADER
+        + "省级,北京,科技,北京市科委,通知公告,https://kw.beijing.gov.cn/zwgk/tzgg/,200,20,,试跑可读（全国覆盖 v1，未启用）,2026-11-09,\n"
+        + "省级,北京,财政,北京市财政局,通知公告,https://czj.beijing.gov.cn/tzgg/,200,20,,试跑可读（全国覆盖 v1，未启用）,2026-11-09,\n",
+        encoding="utf-8-sig",
+    )
+    # 试算：数得出来、列出库里已有的网址，但不写库
+    trial = import_sources(session, batch, only_new=True, dry_run=True)
+    assert (trial.created, trial.skipped, trial.existing) == (
+        1,
+        1,
+        ["https://kw.beijing.gov.cn/zwgk/tzgg/"],
+    )
+    assert session.scalar(select(func.count(Source.id))) == 1
+    # 只加新的：已经在收的来源一个字段都不动
+    s = import_sources(session, batch, only_new=True)
+    assert (s.created, s.updated, s.skipped) == (1, 0, 1)
+    kept = session.scalar(
+        select(Source).where(Source.url == "https://kw.beijing.gov.cn/zwgk/tzgg/")
+    )
+    assert (kept.enabled, kept.note, kept.dept_full_name) == (
+        True,
+        "线上在收",
+        "北京市科学技术委员会",
+    )
+    new = session.scalar(select(Source).where(Source.dept == "财政"))
+    assert new.enabled is False
+
+
+def test_duplicate_urls_are_refused_before_writing(session, tmp_path: Path) -> None:
+    path = write_csv(
+        tmp_path,
+        [
+            "省级,浙江,科技,浙江省科学技术厅,通知公告,https://kjt.zj.gov.cn/tzgg/,200,20,,试跑可读（全国覆盖 v1，未启用）,2026-11-09,",
+            "区县级,浙江,科技,西湖区科技局,通知公告,https://kjt.zj.gov.cn/tzgg/,200,20,,试跑可读（全国覆盖 v1，未启用）,2026-11-09,",
+        ],
+    )
+    with pytest.raises(ValueError, match="栏目网址重复"):
+        import_sources(session, path)
+    assert session.scalar(select(func.count(Source.id))) == 0
+
+
+def test_only_new_treats_http_and_https_as_the_same_list(session, tmp_path: Path) -> None:
+    live = write_csv(
+        tmp_path,
+        [
+            "省级,北京,科技,北京市科学技术委员会,通知公告,https://kw.beijing.gov.cn/zwgk/tzgg/,200,20,,已验证（列表页，含近期日期）,2026-09-26,"
+        ],
+    )
+    import_sources(session, live)
+    batch = tmp_path / "batch2.csv"
+    batch.write_text(
+        CSV_HEADER
+        + "省级,北京,科技,北京市科委,通知公告,http://kw.beijing.gov.cn/zwgk/tzgg/,200,20,,试跑可读（全国覆盖 v1，未启用）,2026-11-09,\n",
+        encoding="utf-8-sig",
+    )
+    s = import_sources(session, batch, only_new=True)
+    assert (s.created, s.skipped) == (0, 1)
+    assert "库里是 https://kw.beijing.gov.cn/zwgk/tzgg/" in s.near[0]
+    assert session.scalar(select(func.count(Source.id))) == 1
+
+
+def test_only_new_creates_one_source_per_list_within_a_file(session, tmp_path: Path) -> None:
+    batch = tmp_path / "batch3.csv"
+    batch.write_text(
+        CSV_HEADER
+        + "省级,北京,科技,北京市科委,通知公告,https://kw.beijing.gov.cn/tzgg/,200,20,,试跑可读（全国覆盖 v1，未启用）,2026-11-09,\n"
+        + "省级,北京,科技,北京市科委,通知公告,http://kw.beijing.gov.cn/tzgg/,200,20,,试跑可读（全国覆盖 v1，未启用）,2026-11-09,\n",
+        encoding="utf-8-sig",
+    )
+    s = import_sources(session, batch, only_new=True)
+    assert (s.created, s.skipped) == (1, 1)
+    assert session.scalar(select(func.count(Source.id))) == 1

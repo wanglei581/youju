@@ -8,14 +8,14 @@ const format = require('../utils/format.js');
 const mock = require('../mock/data.js');
 
 // 详情页的申报条件卡片（D-052 第④项）：只显示接口给的、人工整份确认过的条件，每条只显示类别和
-// 通知原文里的原句（逐字引用），不显示概括的说法；下方固定一行"条件以原文为准，不作为能否申报的判断"。
+// 通知原文里的原句（逐字引用），不显示概括的说法；下方固定一行"有据不判断能否申报"（10/29 去掉"条件以原文为准"，页底出处里有一处）。
 // 依赖都用替身，不读取 legal.js 或本机配置。
 function load(file, deps = {}, globals = {}) {
   let def;
   const module = { exports: {} };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', file), 'utf8'), {
     module, setTimeout, clearTimeout,
-    require(name) { if (!Object.hasOwn(deps, name) && /ai-access\.js$/.test(name)) return AI_OFF; assert.ok(Object.hasOwn(deps, name), `缺少依赖 ${name}`); return deps[name]; },
+    require(name) { if (!Object.hasOwn(deps, name) && /(^|\/)pages\.js$/.test(name)) return require('./helpers/package-pages-default.js').pages; if (!Object.hasOwn(deps, name) && /ai-access\.js$/.test(name)) return AI_OFF; assert.ok(Object.hasOwn(deps, name), `缺少依赖 ${name}`); return deps[name]; },
     Page(d) { def = d; }, ...globals,
   }, { filename: file });
   return { ...def, data: JSON.parse(JSON.stringify(def.data)), setData(values) { Object.assign(this.data, values); } };
@@ -26,7 +26,7 @@ const plain = (value) => JSON.parse(JSON.stringify(value));
 const read = (file) => fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
 const daywatch = { watchDay() {}, stopDay() {} };
 const FORBIDDEN = ['AI', '智能', '大模型', '模型'];
-const NOTE = '条件以原文为准，不作为能否申报的判断';
+const NOTE = '有据不判断能否申报';
 
 const BASE = { id: '7', kind: '申报通知', tags: ['申报通知'], title: '关于组织申报科技项目的通知', url: 'https://example.gov.cn/7', deadline: null, deadline_state: 'none', attachments: [] };
 const CONFIRMED = {

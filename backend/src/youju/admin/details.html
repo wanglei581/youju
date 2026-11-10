@@ -17,7 +17,7 @@ a{color:var(--brand);overflow-wrap:anywhere}.msg{color:var(--red)}[hidden]{displ
 <body>
 <header><div class="bar"><h1>补详情失败</h1><span id="count" class="meta"></span><div class="auth"><input id="token" type="password" placeholder="管理口令" aria-label="管理口令"><button id="load" class="primary">载入</button></div></div></header>
 <main>
-<p class="hint">补详情（抓文件正文、附件）遇到临时问题——网络中断、robots.txt 暂时取不到、网站返回 5xx——会在 6 小时、24 小时后各再试一次；连续 <span id="attempts">3</span> 次都失败就不再自动重试，列在这里。小程序里这些文件照常显示标题和原文链接，只是没有正文、截止日期和附件。</p>
+<p class="hint">补详情（抓文件正文、附件）遇到临时问题——网络中断、robots.txt 暂时取不到、读 PDF 正文暂时出错（服务器内存不够或太忙）、网站返回 5xx——会在 6 小时、24 小时后各再试一次；连续 <span id="attempts">3</span> 次都失败就不再自动重试，列在这里。小程序里这些文件照常显示标题和原文链接，只是没有正文、截止日期和附件。</p>
 <p class="hint">怎么处理：点"查看原文"在浏览器里打开。打不开、要求验证或拒绝访问的，按规矩不绕过，不用处理；浏览器里能正常打开的，告诉团队查原因。</p>
 <p id="message" role="status" class="msg"></p><p id="hosts" class="meta"></p><div id="list"></div><button id="more" hidden>再载入 20 份</button>
 </main>
@@ -25,7 +25,7 @@ a{color:var(--brand);overflow-wrap:anywhere}.msg{color:var(--red)}[hidden]{displ
 <script>
 (() => {
   const $=id=>document.getElementById(id);let offset=0,sequence=0;
-  const labels={network_error:'网络中断或超时',robots_error:'robots.txt 暂时取不到'};
+  const labels={network_error:'网络中断或超时',robots_error:'robots.txt 暂时取不到',pdf_retry:'读 PDF 正文暂时出错'};
   function node(tag,text,cls){const e=document.createElement(tag);e.textContent=text;if(cls)e.className=cls;return e;}
   function stamp(value){return value?new Date(value).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false}):'—';}
   async function api(path){const r=await fetch(path,{cache:'no-store',headers:{'X-Admin-Token':youjuAdminToken()}});if(r.status===401)throw new Error('管理口令不正确或尚未配置');if(!r.ok)throw new Error(`载入失败（${r.status}），请刷新重试`);return r.json();}

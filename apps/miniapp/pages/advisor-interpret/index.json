@@ -1,4 +1,4 @@
 {
-  "navigationBarTitleText": "工具",
+  "navigationBarTitleText": "",
   "usingComponents": { "contact-button": "/components/contact-button/index" }
 }

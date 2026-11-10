@@ -4,8 +4,9 @@ import copy
 import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
-from threading import Barrier, Lock
+from threading import Barrier, Event, Lock
 from types import SimpleNamespace
 
 import httpx
@@ -14,7 +15,8 @@ from alembic import command
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
-from sqlalchemy import inspect, select, text, update
+from sqlalchemy import func, inspect, select, text, update
+from sqlalchemy.orm import Session, sessionmaker
 
 from youju import advisor_tasks as service
 from youju.agreements import TOOLS_AGREEMENT_VERSION
@@ -23,7 +25,7 @@ from youju.ai.client import AIError, ChatClient
 from youju.api import advisor as api
 from youju.api import app as app_module
 from youju.api import me, v1
-from youju.db import get_session
+from youju.db import create_mysql_engine, get_session
 from youju.migrations import alembic_config
 from youju.models import (
     AdvisorTask,
@@ -93,7 +95,7 @@ def settings(monkeypatch):
         retain_unused_subscriptions_days=365,
         cloud_env=None,
     )
-    for module in (api, me, service, app_module, v1):
+    for module in (api, me, service, app_module):
         monkeypatch.setattr(module, "get_settings", lambda: value)
     monkeypatch.setattr(v1, "now", lambda: NOW)
     # 所有 worker 路径均被替换，配置错误也不会真的连模型。
@@ -153,12 +155,11 @@ def tools_ready(session, openid="internal"):
     session.commit()
 
 
-def create(client, doc_id, key="first"):
-    return client.post(
-        "/api/v1/advisor/tasks",
-        json={"kind": "interpret", "doc_id": doc_id},
-        headers={"Idempotency-Key": key},
-    )
+def create(client, doc_id, key="first", notice=None):
+    body = {"kind": "interpret", "doc_id": doc_id}
+    if notice is not None:
+        body["notice"] = notice
+    return client.post("/api/v1/advisor/tasks", json=body, headers={"Idempotency-Key": key})
 
 
 def direct_task(session, doc, openid="internal", key="direct", stamp=NOW):
@@ -486,14 +487,16 @@ def test_task_routes_check_ownership_before_feature_authorization(
     ]
     # 两个开关都关时整组接口都当作不存在（和上线前的行为一致）；别人的和不存在的任务提示相同。
     # 删除例外（D-093 上线门槛第 8 条）：本人随时能删自己的记录，不看开关和白名单；
-    # 删除接口一直在，别人的、不存在的照样是"没有找到顾问任务"
-    hidden = "没有找到顾问任务" if data_enabled or ai_enabled else "没有找到接口"
+    # 删除接口一直在，别人的、不存在的照样是"没有找到这条记录，可能已经删除"
+    hidden = "没有找到这条记录，可能已经删除" if data_enabled or ai_enabled else "没有找到接口"
     for method, suffix, own_status in routes:
         deleting = method == "DELETE"
         for task_id in (foreign.id, max(own.id, foreign.id) + 1000):
             response = client.request(method, f"/api/v1/advisor/tasks/{task_id}{suffix}")
             assert response.status_code == 404
-            assert response.json() == {"detail": "没有找到顾问任务" if deleting else hidden}
+            assert response.json() == {
+                "detail": "没有找到这条记录，可能已经删除" if deleting else hidden
+            }
         response = client.request(method, f"/api/v1/advisor/tasks/{own.id}{suffix}")
         assert response.status_code == (own_status if allowed or deleting else 404)
         if not allowed and not deleting:
@@ -512,6 +515,7 @@ def test_invalid_kind_does_not_disclose_unavailable_ai(
     client, settings, doc, ai_enabled, whitelisted, kind
 ):
     settings.advisor_enabled = True
+    settings.advisor_compare_enabled = True  # D-118 默认关；这里照旧测比对
     settings.ai_advisor_enabled = ai_enabled
     settings.ai_advisor_openids = "internal" if whitelisted else "second"
     body = {"rows": ["甲公司"]} if kind is None else {"kind": kind, "rows": ["甲公司"]}
@@ -580,6 +584,85 @@ def test_exact_quotes(original, quote, keep):
         assert result["dropped"] == 1 and result["refusal"]
 
 
+# 11/3 评测：从 PDF 复制的正文按固定宽度硬换行，两个汉字、数字和汉字中间断行，模型照常写成不带
+# 换行的。挨着中文的空白和换行比较时去掉；西文之间的空白照旧并成一个空格
+@pytest.mark.parametrize(
+    "wrapped,plain",
+    [
+        ("推荐项\n目汇总表", "推荐项目汇总表"),
+        ("2026\n年6月", "2026年6月"),
+        ("17:30，\n主管部门", "17:30，主管部门"),
+        ("申报书\r\n　　（盖章）", "申报书（盖章）"),
+        ("推荐项 目汇总表", "推荐项目汇总表"),
+        # 中文常用、码位不在汉字和全角区的标点：弯引号、破折号、省略号、间隔号
+        ("“专精特新”\n“小巨人”", "“专精特新”“小巨人”"),
+        ("截止时间——\n2026年6月30日", "截止时间——2026年6月30日"),
+        ("详见附件……\n1.申报书", "详见附件……1.申报书"),
+        ("“4·\n15”国家安全教育日", "“4·15”国家安全教育日"),
+        # 扩展区汉字（扩展 A 区、补充平面）
+        (chr(0x3400) + "\nA", chr(0x3400) + "A"),
+        (chr(0x20000) + "\n2026", chr(0x20000) + "2026"),
+    ],
+)
+def test_normalize_drops_whitespace_next_to_chinese(wrapped, plain):
+    assert interpret.normalize(wrapped)[0] == interpret.normalize(plain)[0]
+
+
+def test_chinese_side_characters_edges():
+    # 每一段的头尾都算中文一侧，紧挨在段外的不算
+    inside = [
+        *(0x4E00, 0x9FFF, 0x3400, 0x4DBF, 0xF900, 0xFAFF, 0x20000, 0x3134F),
+        *(0x3000, 0x303F, 0xFF00, 0xFFEF, 0x2018, 0x201D, 0x2014, 0x2026, 0x00B7),
+    ]
+    outside = [
+        *(ord("A"), ord("1"), ord(":"), 0x4DFF, 0xA000, 0x33FF, 0x4DC0, 0xF8FF, 0xFB00),
+        *(0x1FFFF, 0x31350, 0x2FFF, 0x3040, 0xFEFF, 0xFFF0, 0x2017, 0x201E, 0x2013, 0x2015),
+        *(0x2025, 0x2027, 0x00B6, 0x00B8),
+    ]
+    assert all(interpret._cjk(chr(code)) for code in inside)
+    assert not any(interpret._cjk(chr(code)) for code in outside)
+
+
+def test_normalize_keeps_one_space_between_western_text():
+    assert interpret.normalize("Search API")[0] == "Search API"
+    assert interpret.normalize("17:30 PM")[0] == "17:30 PM"
+    assert interpret.normalize("Search \n\t API")[0] == "Search API"
+    # 看原文的字：全角冒号算中文，换行去掉；半角冒号不算，留一个空格
+    assert interpret.normalize("ABC：\n123")[0] == "ABC:123"
+    assert interpret.normalize("ABC:\n123")[0] == "ABC: 123"
+
+
+def test_normalize_offsets_point_back_to_original():
+    # 保留的字是 (i, i + 1)；去掉的空白不占位置；并成的空格覆盖整段空白
+    normalized, offsets = interpret.normalize("推荐项\n目 A  B")
+    assert normalized == "推荐项目A B"
+    assert offsets == [(0, 1), (1, 2), (2, 3), (4, 5), (6, 7), (7, 9), (9, 10)]
+    text = "　　推荐项\n目汇总表 Search  API\t１７:30，\n　主管部门 \n"
+    normalized, offsets = interpret.normalize(text)
+    assert normalized == "推荐项目汇总表Search API17:30,主管部门"
+    assert len(offsets) == len(normalized)
+    for char, (start, end) in zip(normalized, offsets, strict=True):
+        if char == " ":
+            assert start < end and text[start:end].isspace()
+        else:
+            original = text[start]
+            assert end == start + 1 and not original.isspace()
+            assert char == (chr(ord(original) - 0xFEE0) if "！" <= original <= "～" else original)
+    assert all(offsets[k][1] <= offsets[k + 1][0] for k in range(len(offsets) - 1))
+
+
+def test_quote_without_pdf_line_breaks_is_kept():
+    body = "三、申报时间\n区级推荐截止时间为2026\n年6月2日17:30，推荐项\n目汇总表一式两份报送市科技局。\n"
+    entry = item("区级推荐截止时间为2026年6月2日17:30，推荐项目汇总表", "P002", "时间")
+    result = interpret.validate({"items": [entry]}, interpret.split_paragraphs(body))
+    # 给的原文片段仍是正文里原样的一段，带着中间的换行
+    expected = "区级推荐截止时间为2026\n年6月2日17:30，推荐项\n目汇总表一式两份报送市科技局。"
+    assert result["dropped"] == 0
+    assert result["items"] == [
+        {"type": "时间", "text": expected, "refs": [{"pid": "P002", "quote": expected}]}
+    ]
+
+
 def test_invalid_type_and_ignored_display_deduplicated():
     invalid = [item(kind="结论"), item(pid="P999"), item("可以申报。")]
     mismatched = item()
@@ -627,6 +710,7 @@ def test_switch_whitelist_permissions_and_independent_tools(client, settings, do
     session.expire_all()
     assert session.get(AdvisorTask, task_id) is None
     settings.advisor_enabled = True
+    settings.advisor_compare_enabled = True  # D-118 默认关；这里照旧测比对
     tools_ready(session)
     assert (
         client.post(
@@ -661,15 +745,26 @@ def test_all_audience_submission_worker_and_consent(client, settings, doc, sessi
     user.agreement_version = interpret.AI_AGREEMENT_VERSION
     session.commit()
     assert client.get("/api/v1/advisor/capabilities").json()["ai_advisor"]["enabled"]
-    created = create(client, doc.id)
+    # 对所有人开放时要带上同意过的使用须知版本（D-098）：没带、带旧版本都不建任务
+    for stale in (None, "2026-01-01"):
+        refused = create(client, doc.id, key=f"no-notice-{stale}", notice=stale)
+        assert refused.status_code == 422
+        assert refused.json()["detail"]["code"] == "AI_NOTICE_REQUIRED"
+    assert session.scalar(select(func.count()).select_from(AdvisorTask)) == 0
+    created = create(client, doc.id, notice=interpret.AI_NOTICE_VERSION)
     assert created.status_code == 202
+    task = session.get(AdvisorTask, created.json()["id"])
+    assert task.input_json == {"doc_id": doc.id, "notice": interpret.AI_NOTICE_VERSION}
     assert service.run_advisor_tasks(session, settings=settings, stamp=NOW)["done"] == 1
     assert session.get(AdvisorTask, created.json()["id"]).status == "done"
 
     user = session.scalar(select(User).where(User.openid == "internal"))
     user.agreement_version = "old"
     session.commit()
-    assert create(client, doc.id, key="no-consent").status_code == 403
+    assert (
+        create(client, doc.id, key="no-consent", notice=interpret.AI_NOTICE_VERSION).status_code
+        == 403
+    )
     settings.ai_advisor_enabled = False
     assert create(client, doc.id, key="disabled").status_code == 404
 
@@ -703,6 +798,7 @@ def test_global_ai_daily_cap_keeps_personal_quota(client, settings, session, doc
     assert session.scalar(select(AdvisorTask.id)) is None
 
     settings.advisor_enabled = True
+    settings.advisor_compare_enabled = True  # D-118 默认关；这里照旧测比对
     tools_ready(session)
     assert (
         client.post(
@@ -793,7 +889,7 @@ def test_concurrent_submission_uses_one_global_slot(session_factory, session, se
             barrier.wait(timeout=5)
             try:
                 api.create_task(
-                    api.TaskIn(kind="interpret", doc_id=doc.id),
+                    api.TaskIn(kind="interpret", doc_id=doc.id, notice=interpret.AI_NOTICE_VERSION),
                     SimpleNamespace(state=SimpleNamespace()),
                     work,
                     user,
@@ -807,6 +903,174 @@ def test_concurrent_submission_uses_one_global_slot(session_factory, session, se
         statuses = list(pool.map(submit, ("internal", "second")))
     assert sorted(statuses) == [202, 429]
     assert service.global_ai_usage(session, service.usage_day(NOW)) == 1
+
+
+def take_last_slot(monkeypatch, session_factory, take):
+    """模拟并发：别的请求在本请求读过表（定下快照）以后、拿到全站额度锁之前，占了最后一个名额。
+    第一次拿锁前，take 在另一个会话里占用并提交。"""
+    real = service.ai_cap_lock
+    pending = [take]
+
+    @contextmanager
+    def racing(session):
+        if pending:
+            with session_factory() as other:
+                pending.pop()(other)
+                other.commit()
+        with real(session) as conn:
+            yield conn
+
+    monkeypatch.setattr(service, "ai_cap_lock", racing)
+
+
+def repeatable_read_requests(factory):
+    """接口的会话换成可重复读：请求在拿锁之前读过表，快照就定在那时。用的测试都带 client 夹具，
+    它收尾时清掉所有依赖覆盖。"""
+
+    def override():
+        with factory() as s:
+            yield s
+
+    app_module.app.dependency_overrides[get_session] = override
+
+
+@pytest.mark.parametrize("submissions", [False, True])
+@pytest.mark.parametrize("isolation", ["READ COMMITTED", "REPEATABLE READ"])
+def test_last_slot_goes_to_one_after_old_snapshots(
+    session_factory, session, isolation, submissions
+):
+    """全站上限的查账（#328 设计稿第 44 轮）：两个连接先各开事务、各做一次普通读定下快照，再依次争
+    最后一个名额，只有一个占上。线上连接是读已提交；可重复读时业务事务里读到的是拿锁之前的快照，
+    所以锁里在锁的那条连接上查。submissions 是提交时（占用的次数和实际调用取大的），否则是 admin
+    调模型前（只看实际调用）。"""
+    day = service.usage_day(NOW)
+    users = [
+        User(openid=openid, agreement_version="2026-10", agreement_at=NOW)
+        for openid in ("a", "b", "c")
+    ]
+    session.add_all(users)
+    session.flush()
+    if submissions:
+        session.add(AdvisorUsage(user_id=users[2].id, kind="clause", day=day, used_count=1))
+    else:
+        session.add(AIUsage(day=day, task="clause", model="m", calls=1))
+    session.commit()
+
+    def take(work, user):
+        if submissions:
+            with service.ai_cap_slot(work, day, 2, submissions=True):
+                assert service.reserve_usage(work, user.id, "interpret", day)
+                work.commit()
+        else:
+            service.reserve_ai_call(work, "interpret", "m", NOW, 2)
+
+    with session_factory() as first, session_factory() as second:
+        for work in (first, second):
+            work.connection(execution_options={"isolation_level": isolation})
+            assert service.site_ai_used(work, day, submissions=submissions) == 1
+        take(first, users[0])
+        # 先证明前提：第二个的业务事务里，可重复读时还是旧快照（看不到第一个刚占的），读已提交时看得到
+        stale = isolation == "REPEATABLE READ"
+        assert service.site_ai_used(second, day, submissions=submissions) == (1 if stale else 2)
+        with pytest.raises(service.AICapReached):
+            take(second, users[1])
+    session.expire_all()
+    assert service.site_ai_used(session, day, submissions=submissions) == 2
+
+
+@pytest.mark.parametrize("isolation", ["READ COMMITTED", "READ UNCOMMITTED"])
+def test_cap_check_ignores_uncommitted_refund(session_factory, db_engine, session, isolation):
+    """锁里查账只认已经提交的：别的事务退了次数还没提交（还可能回滚），不能先把名额放出去，提交以后
+    才放。业务会话的引擎是读未提交也一样：锁连接自己定成读已提交（Codex 审阅）。"""
+    day = service.usage_day(NOW)
+    user = User(openid="a", agreement_version="2026-10", agreement_at=NOW)
+    session.add(user)
+    session.flush()
+    session.add(AdvisorUsage(user_id=user.id, kind="interpret", day=day, used_count=2))
+    session.commit()
+    business = sessionmaker(bind=db_engine.execution_options(isolation_level=isolation))
+    with session_factory() as refund, business() as work:
+        row = refund.scalar(
+            select(AdvisorUsage).where(AdvisorUsage.user_id == user.id).with_for_update()
+        )
+        row.used_count -= 1
+        refund.flush()
+        with (
+            pytest.raises(service.AICapReached),
+            service.ai_cap_slot(work, day, 2, submissions=True),
+        ):
+            pass
+        refund.commit()
+        with service.ai_cap_slot(work, day, 2, submissions=True):
+            pass
+
+
+@pytest.mark.parametrize("isolation", [None, "REPEATABLE READ", "READ UNCOMMITTED"])
+def test_cap_lock_connection_is_read_committed_autocommit(db_engine, isolation):
+    """锁连接在锁里是自动提交、读已提交（会话绑的引擎是什么隔离级别都一样）；还回连接池以后恢复成
+    默认（不自动提交、读已提交），后面借到这条连接的不受影响。连接池只放一条，借到的一定是同一条。"""
+    engine = create_mysql_engine(db_engine.url, pool_size=1, max_overflow=0)
+    state = text("SELECT @@autocommit, @@transaction_isolation")
+    try:
+        bind = engine.execution_options(isolation_level=isolation) if isolation else engine
+        with Session(bind) as work, service.ai_cap_lock(work) as conn:
+            assert tuple(conn.execute(state).one()) == (1, "READ-COMMITTED")
+        with engine.connect() as again:
+            assert tuple(again.execute(state).one()) == (0, "READ-COMMITTED")
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.parametrize("kind", ["interpret", "clause"])
+def test_submission_cap_reads_past_old_snapshot(
+    client, settings, session, session_factory, repeatable_read_factory, doc, monkeypatch, kind
+):
+    """提交时查全站用量不靠连接的隔离级别：请求的会话是可重复读、快照早于别人占最后一个名额，
+    锁里也查得到，回 429，不建任务、不扣次数。"""
+    settings.ai_advisor_daily_cap = 1
+    other = User(openid="second", agreement_version="2026-10", agreement_at=NOW)
+    session.add(other)
+    session.commit()
+    day = service.usage_day(NOW)
+    repeatable_read_requests(repeatable_read_factory)
+    take_last_slot(
+        monkeypatch,
+        session_factory,
+        lambda s: s.add(AdvisorUsage(user_id=other.id, kind="clause", day=day, used_count=1)),
+    )
+    response = client.post(
+        "/api/v1/advisor/tasks",
+        json={"kind": kind, "doc_id": doc.id},
+        headers={"Idempotency-Key": "raced"},
+    )
+    assert response.status_code == 429
+    assert response.json()["detail"]["code"] == "AI_DAILY_CAP"
+    assert session.scalar(select(AdvisorTask.id)) is None
+    assert service.global_ai_usage(session, day) == 1
+
+
+def test_model_call_cap_reads_past_old_snapshot(
+    session, session_factory, repeatable_read_factory, settings, doc, monkeypatch
+):
+    """admin 调模型前查全站调用次数也不靠隔离级别：这一轮的会话快照早于别人占最后一次调用，
+    照样挡下：不调模型、记失败、退回次数。"""
+    settings.ai_advisor_daily_cap = 1
+    task = direct_task(session, doc)
+    day = service.usage_day(NOW)
+    take_last_slot(
+        monkeypatch,
+        session_factory,
+        lambda s: s.add(AIUsage(day=day, task="clause", model="m", calls=1)),
+    )
+    fake = FakeChat()
+    with repeatable_read_factory() as stale:
+        row = stale.get(AdvisorTask, task.id)
+        service.process_interpret(stale, row, settings=settings, stamp=NOW, chat_client=fake)
+    session.refresh(task)
+    assert fake.calls == []
+    assert task.status == "failed" and task.error == service.AI_CAP_MESSAGE
+    assert task.usage_released
+    assert service.global_ai_calls(session, day) == 1
 
 
 def test_submission_lock_timeout_returns_503(client, session, doc, monkeypatch):
@@ -873,6 +1137,302 @@ def test_live_worker_records_duration_and_call_day(session, settings, doc):
     session.refresh(row)
     assert row.finished_at > row.started_at
     assert service.global_ai_calls(session, service.usage_day(datetime.now(UTC))) == 1
+
+
+def _finish(work, task, **kwargs):
+    task.status, task.finished_at = "done", NOW
+    work.commit()
+    return True
+
+
+def _no_sleep(_seconds):
+    raise AssertionError("不该等")
+
+
+def test_worker_polls_for_new_ai_tasks_within_window(
+    session, session_factory, settings, doc, monkeypatch
+):
+    # 每分钟的 advisor-run：队里空了不马上退出，隔几秒再领，刚提交的几秒内就开始（10/27 实测排队 48.6 秒）
+    settings.ai_advisor_concurrency = 1
+    first = direct_task(session, doc, key="poll-first")
+    second = direct_task(session, doc, key="poll-second")
+    first.status, second.status = "queued", "failed"  # 第二个先停着，第一次空等时才排上
+    session.commit()
+    first_id, second_id = first.id, second.id
+    seen = []
+
+    def process(work, task, **kwargs):
+        seen.append(task.id)
+        return _finish(work, task)
+
+    clock = [100.0]
+    naps = []
+
+    def sleep(seconds):
+        naps.append(seconds)
+        clock[0] += seconds
+        if len(naps) == 1:
+            with session_factory() as other:
+                other.get(AdvisorTask, second_id).status = "queued"
+                other.commit()
+
+    monkeypatch.setattr(service, "process_task", process)
+    result = service.run_advisor_tasks(
+        session,
+        settings=settings,
+        stamp=NOW,
+        poll_window=50,
+        poll_interval=3,
+        clock=lambda: clock[0],
+        sleep=sleep,
+    )
+    assert seen == [first_id, second_id]
+    assert (result["processed"], result["done"]) == (2, 2)
+    # 不睡过头：最后一次只睡到点（2 秒），正好在 50 秒时再看一次，没有就结束
+    assert naps[-1] == 2 and set(naps[:-1]) == {3}
+    assert clock[0] == 150
+
+
+def _park_then_queue(session_factory, task_id):
+    with session_factory() as other:
+        other.get(AdvisorTask, task_id).status = "queued"
+        other.commit()
+
+
+def test_worker_keeps_draining_after_poll_window(
+    session, session_factory, settings, doc, monkeypatch
+):
+    # 50 秒只管空等：过了 50 秒队里还有任务照常领（和原来一样领到空），不留给下一轮
+    settings.ai_advisor_concurrency = 1
+    first = direct_task(session, doc, key="drain-first")
+    late = direct_task(session, doc, key="drain-late")
+    first.status, late.status = "queued", "failed"
+    session.commit()
+    first_id, late_id = first.id, late.id
+    clock = [100.0]
+
+    def process(work, task, **kwargs):
+        clock[0] += 60  # 做得久，跨过了 50 秒
+        if task.id == first_id:
+            _park_then_queue(session_factory, late_id)
+        return _finish(work, task)
+
+    monkeypatch.setattr(service, "process_task", process)
+    result = service.run_advisor_tasks(
+        session,
+        settings=settings,
+        stamp=NOW,
+        poll_window=50,
+        clock=lambda: clock[0],
+        sleep=_no_sleep,
+    )
+    assert result["processed"] == 2
+    session.expire_all()
+    assert session.get(AdvisorTask, late_id).status == "done"
+
+
+def test_worker_stops_claiming_after_claim_limit(
+    session, session_factory, settings, doc, monkeypatch
+):
+    # 开始满 claim_limit 秒不再领新的，手上的做完就结束：一轮不会一直跑下去，
+    # 不到 job.sh 当作"卡住了"的 10 分钟；剩下的留给下一轮
+    settings.ai_advisor_concurrency = 1
+    first = direct_task(session, doc, key="limit-first")
+    late = direct_task(session, doc, key="limit-late")
+    first.status, late.status = "queued", "failed"
+    session.commit()
+    late_id = late.id
+    clock = [100.0]
+
+    def process(work, task, **kwargs):
+        clock[0] += 250  # 超过 240 秒
+        _park_then_queue(session_factory, late_id)
+        return _finish(work, task)
+
+    monkeypatch.setattr(service, "process_task", process)
+    result = service.run_advisor_tasks(
+        session,
+        settings=settings,
+        stamp=NOW,
+        poll_window=50,
+        claim_limit=240,
+        clock=lambda: clock[0],
+        sleep=_no_sleep,
+    )
+    assert result["processed"] == 1
+    session.expire_all()
+    assert session.get(AdvisorTask, late_id).status == "queued"
+
+
+def test_idle_worker_keeps_polling_while_another_is_busy(
+    session, session_factory, settings, doc, monkeypatch
+):
+    # 一个线程在做长任务时，这一轮反正结束不了：过了 50 秒，空闲的线程也接着隔几秒看，
+    # 新提交的马上领走，不用等长任务做完、再等下一轮（Grok 10/27 审阅）
+    settings.ai_advisor_concurrency = 2
+    long = direct_task(session, doc, key="busy-long")
+    late = direct_task(session, doc, key="busy-late")
+    long.status, late.status = "queued", "failed"
+    session.commit()
+    long_id, late_id = long.id, late.id
+    late_done = Event()
+    clock = [100.0]
+    clock_lock = Lock()
+    queued = []
+
+    def process(work, task, **kwargs):
+        if task.id == long_id:
+            # 长任务一直做到新任务被另一个线程做完
+            assert late_done.wait(timeout=10), "空闲线程没有领到新任务"
+        done = _finish(work, task)
+        if task.id == late_id:
+            late_done.set()
+        return done
+
+    def sleep(seconds):
+        with clock_lock:
+            clock[0] += seconds
+            if clock[0] >= 160 and not queued:  # 过了 50 秒才有人提交
+                queued.append(True)
+                _park_then_queue(session_factory, late_id)
+
+    def now():
+        with clock_lock:
+            return clock[0]
+
+    monkeypatch.setattr(service, "process_task", process)
+    result = service.run_advisor_tasks(
+        session,
+        settings=settings,
+        stamp=NOW,
+        poll_window=50,
+        poll_interval=3,
+        clock=now,
+        sleep=sleep,
+    )
+    assert (result["processed"], result["done"]) == (2, 2)
+    session.expire_all()
+    assert session.get(AdvisorTask, late_id).status == "done"
+    assert now() >= 160
+
+
+def _data_task(session, doc, key):
+    task = direct_task(session, doc, key=key)
+    task.kind = "compare"
+    session.commit()
+    return task
+
+
+def test_data_tools_keep_ai_polling_and_respect_claim_limit(
+    session, session_factory, settings, doc, monkeypatch
+):
+    # 数据工具（批量工具）由入口会话处理：它在跑的整段时间都算"有人在忙"，过了 50 秒空闲的
+    # AI 线程也接着看，新提交的 AI 任务不用等批量任务做完（Grok 10/27 第二轮）
+    settings.advisor_enabled = True
+    settings.advisor_compare_enabled = True  # D-118 默认关；这里照旧测比对
+    settings.ai_advisor_concurrency = 1
+    data = _data_task(session, doc, "data-long")
+    late = direct_task(session, doc, key="data-late-ai")
+    data.status, late.status = "queued", "failed"
+    session.commit()
+    late_id = late.id
+    clock = [100.0]
+    clock_lock = Lock()
+    late_queued, late_done = Event(), Event()
+
+    def advance(seconds):
+        with clock_lock:
+            clock[0] += seconds
+
+    def now():
+        with clock_lock:
+            return clock[0]
+
+    def process(work, task, **kwargs):
+        if task.kind == "compare":
+            advance(70)  # 批量任务做得久，跨过了 50 秒
+            _park_then_queue(session_factory, late_id)
+            late_queued.set()
+            assert late_done.wait(timeout=10), "批量任务在跑时，空闲的 AI 线程没有领到新任务"
+        done = _finish(work, task)
+        if task.id == late_id:
+            late_done.set()
+        return done
+
+    def sleep(seconds):
+        advance(seconds)
+        late_queued.wait(timeout=5)
+
+    monkeypatch.setattr(service, "process_task", process)
+    result = service.run_advisor_tasks(
+        session, settings=settings, stamp=NOW, poll_window=50, clock=now, sleep=sleep
+    )
+    assert (result["processed"], result["done"]) == (2, 2)
+
+    # 批量任务同样开始满 claim_limit 秒不再领新的：剩下的留给下一轮
+    settings.ai_advisor_enabled = False
+    first = _data_task(session, doc, "data-limit-1")
+    second = _data_task(session, doc, "data-limit-2")
+    first.status, second.status = "queued", "failed"
+    session.commit()
+    second_id = second.id
+    clock[0] = 100.0
+
+    def slow(work, task, **kwargs):
+        advance(250)
+        _park_then_queue(session_factory, second_id)
+        return _finish(work, task)
+
+    monkeypatch.setattr(service, "process_task", slow)
+    result = service.run_advisor_tasks(
+        session, settings=settings, stamp=NOW, poll_window=50, clock=now, sleep=_no_sleep
+    )
+    assert result["processed"] == 1
+    session.expire_all()
+    assert session.get(AdvisorTask, second_id).status == "queued"
+
+
+def test_worker_without_poll_window_or_after_cap_does_not_wait(session, settings, doc, monkeypatch):
+    # 不开轮询（测试、手动 --once）和原来一样，排空就结束；领满 max_tasks 也不再空等
+    settings.ai_advisor_concurrency = 1
+    for key in ("once-1", "once-2"):
+        direct_task(session, doc, key=key).status = "queued"
+    session.commit()
+    monkeypatch.setattr(service, "process_task", _finish)
+    result = service.run_advisor_tasks(
+        session, settings=settings, stamp=NOW, max_tasks=1, poll_window=50, sleep=_no_sleep
+    )
+    assert result["processed"] == 1
+    assert (
+        service.run_advisor_tasks(session, settings=settings, stamp=NOW, sleep=_no_sleep)[
+            "processed"
+        ]
+        == 1
+    )
+    # AI 没开时也不轮询（数据工具也关着：直接返回）
+    settings.ai_advisor_enabled = False
+    assert (
+        service.run_advisor_tasks(
+            session, settings=settings, stamp=NOW, poll_window=50, sleep=_no_sleep
+        )["processed"]
+        == 0
+    )
+
+
+def test_advisor_run_command_polls_unless_once(session_factory, monkeypatch):
+    from youju import cli
+
+    seen = []
+
+    def fake_run(session, **kwargs):
+        seen.append(kwargs)
+        return {"processed": 0}
+
+    monkeypatch.setattr(service, "run_advisor_tasks", fake_run)
+    monkeypatch.setattr(cli, "session_factory", lambda: session_factory)
+    assert cli.main(["advisor-run"]) == 0
+    assert cli.main(["advisor-run", "--once"]) == 0
+    assert [kwargs["poll_window"] for kwargs in seen] == [service.POLL_WINDOW, 0.0]
 
 
 def test_public_document_ai_flags_share_prepare_checks(client, session, settings, doc):
@@ -1136,7 +1696,26 @@ def test_worker_enabled_independently(session, settings, doc, monkeypatch):
     monkeypatch.setattr(service, "ChatClient", factory)
     result = service.run_advisor_tasks(session, settings=settings, stamp=NOW)
     assert result["done"] == 1 and fake.closed
-    assert options == [{"timeout": 180, "max_retries": 0, "extra_body": None}]
+    assert options == [{"timeout": 180, "max_retries": 0, "extra_body": None, "stream": False}]
+
+
+def test_worker_passes_stream_switch(session, settings, doc, monkeypatch):
+    """对外 AI 打开流式（经云开发调混元时网关 1 分钟限制，D-098）：建客户端时多传 stream=True，别的不变。"""
+    settings.ai_advisor_stream = True
+    task = direct_task(session, doc)
+    task.status = "queued"
+    session.commit()
+    fake = FakeChat()
+    options = []
+
+    def factory(*args, **kwargs):
+        options.append(kwargs)
+        return fake
+
+    monkeypatch.setattr(service, "ChatClient", factory)
+    result = service.run_advisor_tasks(session, settings=settings, stamp=NOW)
+    assert result["done"] == 1 and fake.closed
+    assert options == [{"timeout": 180, "max_retries": 0, "extra_body": None, "stream": True}]
 
 
 def test_worker_uses_separate_advisor_endpoint(session, settings, doc, monkeypatch):
@@ -1165,7 +1744,7 @@ def test_worker_uses_separate_advisor_endpoint(session, settings, doc, monkeypat
     assert calls == [
         (
             (settings.ai_advisor_base_url, "advisor-test-value", "advisor-model"),
-            {"timeout": 180, "max_retries": 0, "extra_body": {}},
+            {"timeout": 180, "max_retries": 0, "extra_body": {}, "stream": False},
         )
     ]
     session.expire_all()
@@ -1255,6 +1834,7 @@ def test_unregistered_non_whitelisted_user_cannot_access_ai(client, settings, do
     assert create(client, doc.id).status_code == 404
     assert client.get("/api/v1/advisor/tasks").status_code == 404
     settings.advisor_enabled = True
+    settings.advisor_compare_enabled = True  # D-118 默认关；这里照旧测比对
     response = create(client, doc.id)
     assert response.status_code == 422
     assert response.json() == {"detail": "kind 只能是 compare 或 track"}
@@ -1343,6 +1923,18 @@ def test_switch_defaults_and_comma_config(monkeypatch):
     )
     monkeypatch.setenv("YOUJU_AI_ADVISOR_API_KEY", "advisor-test-value")
     monkeypatch.setenv("YOUJU_AI_ADVISOR_MODEL", "advisor-model")
+    # 还要能公示模型名称和备案编号（D-098），缺一项不启动
+    monkeypatch.delenv("YOUJU_AI_MODEL_LABEL", raising=False)
+    monkeypatch.delenv("YOUJU_AI_MODEL_FILING", raising=False)
+    with pytest.raises(ValueError, match="公示用的模型名称和备案编号"):
+        Settings(_env_file=None)
+    monkeypatch.setenv("YOUJU_AI_MODEL_LABEL", "测试模型")
+    with pytest.raises(ValueError, match="公示用的模型名称和备案编号"):
+        Settings(_env_file=None)
+    monkeypatch.setenv("YOUJU_AI_MODEL_FILING", " ")
+    with pytest.raises(ValueError, match="公示用的模型名称和备案编号"):
+        Settings(_env_file=None)
+    monkeypatch.setenv("YOUJU_AI_MODEL_FILING", "测试备案编号-0001")
     settings = Settings(_env_file=None)
     assert settings.ai_advisor_enabled and interpret.openids(settings) == {"user-a", "user-b"}
     assert settings.ai_advisor_audience == "all" and settings.ai_advisor_daily_cap == 12
@@ -1420,6 +2012,7 @@ def test_cache_from_hidden_separate_document_not_reused(session, settings, doc):
 
 def test_request_boundaries_keep_legacy_validation(client, settings, doc):
     settings.advisor_enabled = True
+    settings.advisor_compare_enabled = True  # D-118 默认关；这里照旧测比对
     assert (
         client.post(
             "/api/v1/advisor/tasks",
@@ -1838,7 +2431,10 @@ def test_public_ai_worker_rejects_queued_old_consent(session, settings, doc):
         ("2026-10", NOW, False),
         ("old", NOW, False),
         ("2026-11", None, False),
-        ("2026-11", NOW, True),
+        # 10/28 起从 2026-11.1 起认：完整版 2026-11 没写"AI 结果送微信内容安全检查"
+        ("2026-11", NOW, False),
+        ("2026-11.1", None, False),
+        ("2026-11.1", NOW, True),
         ("2026-12", NOW, True),
     ],
 )
@@ -1849,3 +2445,18 @@ def test_public_ai_user_and_worker_consent_agree(session, settings, version, sta
     session.commit()
     assert interpret.enabled(settings, user) is expected
     assert (user.id in session.scalars(interpret.worker_user_ids(settings)).all()) is expected
+
+
+def test_notice_does_not_break_idempotent_retry(client, settings, session, doc):
+    """旧任务没有须知版本（notice）；新小程序用同一个请求编号重试时带上了，仍是同一个任务：
+    不 409、不多建任务、不重复扣次数（D-098，Codex 10/26）。别的输入不一样照旧 409。"""
+    first = create(client, doc.id, key="same-key")
+    assert first.status_code == 202
+    assert session.get(AdvisorTask, first.json()["id"]).input_json == {"doc_id": doc.id}
+    again = create(client, doc.id, key="same-key", notice=interpret.AI_NOTICE_VERSION)
+    assert again.status_code in (200, 202)
+    assert again.json()["id"] == first.json()["id"]
+    assert session.scalar(select(func.count()).select_from(AdvisorTask)) == 1
+    # 换了通知还用同一个请求编号：照旧 409（比对在查通知之前，编号不存在也一样）
+    clash = create(client, doc.id + 99, key="same-key", notice=interpret.AI_NOTICE_VERSION)
+    assert clash.status_code == 409

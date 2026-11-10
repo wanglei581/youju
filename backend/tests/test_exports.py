@@ -163,7 +163,8 @@ def test_xlsx_export(client, docs):
         "未核项",
     ]
     assert sheet["M1"].value == "截止原文句子"
-    assert sheet["N1"].value == "原文链接" and sheet["O1"].value == "原文链接 2"
+    # 不再有"原文链接"列：这一版协议只写来源网站名称、不给原文链接（D-097、D-112；11/2 复测）
+    assert all(sheet.cell(r, 14).value is None for r in range(1, sheet.max_row + 1))
     assert sheet["B2"].value == "辽宁省关于组织申报科技项目的通知"
     assert sheet["D2"].value is None  # 申报通知没有发布阶段（原叫名单状态），status 契约保持不变
     assert sheet["D3"].value == "公示"
@@ -177,8 +178,8 @@ def test_xlsx_export(client, docs):
     assert sheet["K3"].value == "—"  # 名单没有支持方式
     assert sheet["L2"].value == "支持方式"
     assert sheet["L3"].value == "截止日期（以原文为准）、发布阶段"
-    assert sheet["N2"].hyperlink.target.endswith("/1.html")
-    assert sheet["O2"].hyperlink.target.endswith("/2.html")
+    assert all(cell.hyperlink is None for row in sheet.iter_rows() for cell in row)
+    assert not any("http" in str(cell.value or "") for row in sheet.iter_rows() for cell in row)
     note = book["数据说明"]
     assert "第三方整理，非政府平台" in note["B1"].value
     assert "“截止日期（以原文为准）”列" in note["B1"].value
@@ -197,8 +198,8 @@ def test_docx_export(client, docs):
     assert headings[0].startswith("1. 辽宁省关于组织申报")
     assert "第三方整理，非政府平台" in book.paragraphs[1].text
     text = "\n".join(p.text for p in book.paragraphs)
-    assert "https://gxt.ln.gov.cn/1.html" in text
-    assert "https://gxt.ln.gov.cn/2.html" in text
+    # Word 里也不再写"原文链接："（11/2 复测）
+    assert "原文链接" not in text and "http" not in text
     assert len(book.tables) == 3
     assert len(book.tables[0].rows) == 3
     assert book.tables[0].rows[1].cells[4].text == "2026-09-26"
@@ -209,6 +210,8 @@ def test_docx_export(client, docs):
     assert fields["日期角色"] == "推荐或审核截止；企业申报截止（已延期）"
     assert fields["支持方式"] == "见原文"
     assert fields["未核项"] == "支持方式"
+    # 来源网站只写网站名称，不带域名（和详情页"原文出处"一样，11/2 复测）
+    assert fields["来源网站"].endswith("网站") and "." not in fields["来源网站"]
     listed_fields = {row.cells[0].text: row.cells[1].text for row in book.tables[2].rows}
     assert listed_fields["截止日期（以原文为准）"] == "见原文"
     assert listed_fields["日期角色"] == "截止时间见原文"
@@ -584,17 +587,17 @@ def test_excerpt_export_marks_machine_excerpts(client, session, docs, monkeypatc
     body = {"ids": [str(doc.id)], "format": "xlsx"}
     for request in ({"json": {**body, "excerpts": 1}}, {"json": body, "params": {"excerpts": 1}}):
         row, notice = sheet(**request)
-        assert row["截止日期（以原文为准）"] == "2026-10-25（机器摘录）"
-        assert row["日期角色"] == "企业申报截止（机器摘录）"
+        assert row["截止日期（以原文为准）"] == "2026-10-25（原文摘录）"
+        assert row["日期角色"] == "企业申报截止（原文摘录）"
         assert row["未核项"] == "截止日期（以原文为准）、支持方式"
         assert row["截止原文句子"] == quote
-        assert "机器摘录" in notice and "未经人工核对" in notice
-        assert "机器摘录的“日期角色”也标有“（机器摘录）”" in notice
+        assert "原文摘录" in notice and "未经人工核对" in notice
+        assert "原文摘录的“日期角色”也标有“（原文摘录）”" in notice
         assert "“日期角色”是人工核对时确认的截止类型" not in notice
         assert "“截止日期（以原文为准）”列" in notice
     row, notice = sheet(json=body)
     assert row["截止原文句子"] is None and "2026-10-25" not in str(row["截止日期（以原文为准）"])
-    assert "机器摘录" not in notice
+    assert "原文摘录" not in notice
 
 
 def test_excerpt_export_keeps_all_verified_deadlines_and_cleans_legacy_fields(
@@ -626,7 +629,7 @@ def test_excerpt_export_keeps_all_verified_deadlines_and_cleans_legacy_fields(
     assert "原定 企业申报截止 2026-10-18 已延期" in row["截止日期（以原文为准）"]
     assert row["日期角色"] == "推荐或审核截止；企业申报截止（已延期）"
     assert row["发文机关"] == "安徽省财政厅、福建省职称改革工作办公室"
-    assert row["原文链接"] == "https://gxt.ln.gov.cn/1.html"
+    assert "原文链接" not in row
 
 
 def test_excerpt_export_only_falls_back_when_no_verified_deadline(
@@ -735,3 +738,78 @@ def test_preview_query_compatibility_and_separate_user_limit(client, docs, monke
     limited = client.post("/api/v1/exports/preview", json={"ids": ids})
     assert limited.status_code == 429
     assert limited.headers["cache-control"] == "no-store"
+
+
+def test_preview_marks_unverified_deadline_due_within_7_days(client, session, docs, monkeypatch):
+    """站内结果页（10/29 独立审阅）：没核对的那一类截止有候选在 7 天内时，预览的这一行带 due_soon，
+    小程序写"可能 7 天内截止"，和列表、详情一致；照旧不给日期。导出的文件不加这一列。"""
+    from zoneinfo import ZoneInfo
+
+    from sqlalchemy import select
+
+    from youju.api import v1
+
+    monkeypatch.setattr(
+        v1, "now", lambda: datetime(2026, 10, 12, 9, tzinfo=ZoneInfo("Asia/Shanghai"))
+    )
+    source = session.scalar(select(Source))
+    stamp = datetime.now(UTC)
+    ids = {}
+    for name, day in (("临期", date(2026, 10, 16)), ("较远", date(2026, 11, 30))):
+        doc = Document(
+            source_id=source.id,
+            url=f"https://gxt.ln.gov.cn/{name}.html",
+            url_key=f"gxt.ln.gov.cn/{name}.html",
+            title=f"辽宁省关于组织申报2026年度{name}项目的通知",
+            publish_date=date(2026, 10, 9),
+            first_seen_at=stamp,
+            last_seen_at=stamp,
+        )
+        session.add(doc)
+        session.flush()
+        ids[name] = doc.id
+        quote = f"请于{day.month}月{day.day}日前将申报材料报送。"
+        session.add(
+            DocumentDetail(document_id=doc.id, body_text=quote, status="ok", fetched_at=stamp)
+        )
+        session.add(
+            DocumentDeadline(
+                document_id=doc.id,
+                fingerprint=name,
+                kind="企业申报截止",
+                candidate_date=day,
+                evidence=quote,
+                confidence="高",
+                status="pending",
+            )
+        )
+    session.commit()
+    response = client.post(
+        "/api/v1/exports/preview", json={"ids": [str(i) for i in ids.values()], "excerpts": 1}
+    )
+    assert response.status_code == 200, response.text
+    items = {item["doc_id"]: item for item in response.json()["items"]}
+    assert items[ids["临期"]]["due_soon"] is True
+    assert items[ids["临期"]]["deadline"] == "截止未核对，以原文为准"
+    assert "2026-10-16" not in str(items[ids["临期"]])
+    assert items[ids["较远"]]["due_soon"] is False
+    assert items[ids["临期"]]["link_gone"] is False
+    # 不带 excerpts（老包）：不算临期，和以前一样
+    plain = client.post("/api/v1/exports/preview", json={"ids": [str(ids["临期"])]})
+    assert plain.json()["items"][0]["due_soon"] is False
+    # 原文链接已失效的：预览带 link_gone，小程序不写"截止时间见原文"
+    gone = session.get(Document, ids["较远"])
+    gone.link_gone_at = stamp
+    session.commit()
+    response = client.post(
+        "/api/v1/exports/preview", json={"ids": [str(ids["较远"])], "excerpts": 1}
+    )
+    assert response.json()["items"][0]["link_gone"] is True
+    book = client.post(
+        "/api/v1/exports", json={"ids": [str(ids["临期"])], "format": "xlsx", "excerpts": 1}
+    )
+    assert book.status_code == 200
+    headers = [
+        cell.value for cell in next(load_workbook(BytesIO(book.content))["文件清单"].iter_rows())
+    ]
+    assert "due_soon" not in headers and not any("7 天内" in str(h) for h in headers)

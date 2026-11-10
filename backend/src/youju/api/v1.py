@@ -13,6 +13,7 @@ import re
 import time as _time
 from collections import OrderedDict, deque
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from threading import Lock
 from typing import Annotated, Any
@@ -23,7 +24,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, R
 from sqlalchemy import Select, and_, func, not_, or_, select
 from sqlalchemy.orm import Session, aliased
 
-from youju import deadline_excerpts
+from youju import attachment_text, deadline_excerpts
 from youju import fields as field_rules
 from youju.ai import eligibility
 from youju.attachments import attachment_items, is_recent
@@ -31,6 +32,7 @@ from youju.categories import CATEGORIES, CATEGORY_KINDS, category_filter, shown_
 from youju.classify import (
     GUIDE,
     KINDS,
+    TITLE_EVALUATIONS,
     applicable_region,
     effective_kind,
     kind_filter,
@@ -39,7 +41,6 @@ from youju.classify import (
     status_filter,
 )
 from youju.conditions import public_conditions
-from youju.config import get_settings
 from youju.crawler.detail import _name_like, redact_sensitive
 from youju.crawler.urls import public_url
 from youju.db import get_session
@@ -58,6 +59,7 @@ from youju.lists.lookup import (
 from youju.lists.rules import candidate_key, is_person_query, normalize_name
 from youju.models import (
     Document,
+    DocumentAttachment,
     DocumentDeadline,
     DocumentDetail,
     DocumentField,
@@ -552,7 +554,8 @@ def _items(
         for item in items:
             doc_id = int(item["id"])
             due = deadline_excerpts.selected(views.get(doc_id, []), now().date())
-            item["due"] = due.public(now().date()) if due else None
+            # 列表行带的截止原句按显示层给（shown_due，F11）
+            item["due"] = shown_due(due.public(now().date())) if due else None
             item["dueSoonUnverified"] = soon.get(doc_id, False)
     if grouped:
         versions = repost_versions(session, ids)
@@ -1000,7 +1003,6 @@ def coverage(session: SessionDep) -> dict:
         {"province": p, "city": c, "district": d, "sources": count}
         for (p, c, d), count in sorted(district_columns.items())
     ]
-    lasts = [r["lastUpdatedAt"] for r in regions]
     return {
         "sources": sum(r["sources"] for r in regions),
         "provinces": sum(1 for r in regions if r["name"] != "国家部委"),
@@ -1009,8 +1011,19 @@ def coverage(session: SessionDep) -> dict:
         "cities": cities,
         "districts": districts,
         "notCovered": not_covered,
-        "updatedAt": max(lasts) if lasts else None,
+        "updatedAt": iso(sources_updated_at(session)),
     }
+
+
+def sources_updated_at(session: Session) -> datetime | None:
+    """最近更新：启用的栏目（国家部委和 31 个省级地区，上面"已收录"列的那些）最近一次检查成功的
+    时间。关于页的"最近更新"（/coverage 的 updatedAt）和查名单没查到时的"名单数据更新到哪天"
+    （/lists/lookup 的 coverage.updatedAt）都用它，说的是同一个时间。"""
+    return session.scalar(
+        select(func.max(Source.last_success_at)).where(
+            Source.enabled.is_(True), Source.province.in_(("国家", *_PROVINCE_ORDER))
+        )
+    )
 
 
 def _dept_filter(groups: list[str]):
@@ -1718,8 +1731,8 @@ def _report_payload_excerpts(
                 "file_number": detail[1] if detail else None,
                 "doc_number": detail[1] if detail else None,
                 "source": due.source,
-                "quote": due.quote,
-                "due": due.public(today),
+                "quote": shown_quote(due.quote),
+                "due": shown_due(due.public(today)),
                 "dueSoonUnverified": soon.get(doc.id, False),
             }
         )
@@ -1863,7 +1876,10 @@ def _list_entry_counts(session: Session, lists_revision: tuple) -> dict[int, int
     """{归并组主文件编号: 去重后的企业名称数}，只含至少读到一个名称的组。
 
     口径和改前在程序里逐条去重时完全一样：只算和查名单同一公开来源条件（只取一级来源，或与一级
-    来源归并的同一通知）、人工没改成别的类型的文件的条目；主文件和它当前生效的副本算一组
+    来源归并的同一通知）、人工没改成别的类型的文件的条目；标题是失信、处罚、个人、表彰类的名单
+    不进查名单（list_title_allowed，D-091 ③），这里也不算——查名单页下方的"比对范围"和查名单
+    结果写的"已收录的 N 份"都用这份统计，要和查名单实际比对的名单一致（11/2 完整测试第 6 条）。
+    这类名单早先解析出的条目还留在库里时，以前会算进来；主文件和它当前生效的副本算一组
     （副本只能挂在一个主文件下：document_merges 以副本编号为主键）；同一组里同一个规范化名称只算
     一次，空名称不算。名称列的排序规则是 utf8mb4_0900_bin（迁移 0001），数据库去重和程序里比较
     字符串一样：区分大小写、不忽略尾部空格。"""
@@ -1889,6 +1905,7 @@ def _list_entry_counts(session: Session, lists_revision: tuple) -> dict[int, int
             .where(
                 public_condition(),
                 or_(Document.kind_override.is_(None), Document.kind_override == "名单"),
+                list_title_allowed(),
                 func.char_length(ListEntry.normalized_name) > 0,
             )
             .group_by(master)
@@ -2054,35 +2071,845 @@ def _fmt_deadline_note(d: DocumentDeadline) -> str:
     return f"{d.kind} {day.month}月{day.day}日 {_WEEK[day.weekday()]}{time}"
 
 
-# 详情页的正文（D-030）：从原网页或 PDF 自动提取的文字，未经人工逐字核对，只供阅读；截止日期等
-# 关键字段仍只看"要点"里核对过的。只给申报通知和政策：名单、其他（招聘、职称评审等公示）里
-# 可能有个人姓名。入库时已隐去个人信息，给出前按现行规则再隐去一遍，再换成"见原文"的说法，
-# 去掉网页上几处固定的按钮文字（只按原样整串替换，不做猜测性的清理）。最多给前 2 万字（离
-# callContainer 单次返回 1000 KiB 的上限很远）；不到 200 字的多半没抓全，不给。
+# 详情页、阅读页的正文（D-030、D-097）：从原网页或 PDF 自动提取的文字，未经人工逐字核对，只供阅读；
+# 截止日期等关键字段仍只看"要点"里核对过的。入库时已隐去个人信息，给出前按现行规则再隐去一遍，
+# 遮掉的地方写"（这里隐去了电话）"这类说法（D-097：以前写"（电话见原文）"，像在叫人去原网站），
+# 去掉网页上几处固定的按钮文字（只按原样整串替换，不做猜测性的清理）。
+# 给哪些：申报通知、政策给全文；名单类挡掉名单内容后给（D-092）；资讯与指南、其他两类，标题写着
+# 个人事项的（PERSONAL_MATTER_WORDS）不给，其余给全文（D-097 ②）。
+# 不显示的：像网页导航的（page_chrome_only）。以前不到 200 字的一律不显示（多半没抓全），真短的
+# 通知（"现将《××办法》印发给你们，请遵照执行。"）也被挡掉了，D-097 改成现在这样。
+# 详情最多给前 2 万字（离 callContainer 单次返回 1000 KiB 的上限很远），阅读页分页给全文。
+# BODY_MIN_CHARS 只用来挑合并转载里用哪一份：自己的正文够这么长就用自己的，不够再看组里别的网址
+# （AI 解读取正文也是这个挑法），不再用来挡显示。
 BODY_MIN_CHARS = 200
 BODY_MAX_CHARS = 20_000
-_BODY_REPLACE = (
-    ("[电话已脱敏]", "（电话见原文）"),
-    ("[手机号已脱敏]", "（电话见原文）"),
-    ("[姓名已脱敏]", "（联系人见原文）"),
-    ("[邮箱已脱敏]", "（邮箱见原文）"),
-    ("[身份证号已脱敏]", "（已隐去）"),
-    ("[银行账号已脱敏]", "（已隐去）"),
-    ("【关闭窗口】", ""),
-    ("【打印本页】", ""),
-    ("【字体：大 中 小】", ""),
-    ("扫一扫在手机打开当前页", ""),
+# 入库脱敏留下的标记（crawler.detail.redact_sensitive、attachment_text.mask）→ 页面上的说法
+MASK_MARKS = (
+    ("[电话已脱敏]", "（这里隐去了电话）"),
+    ("[手机号已脱敏]", "（这里隐去了电话）"),
+    ("[姓名已脱敏]", "（这里隐去了联系人）"),
+    ("[邮箱已脱敏]", "（这里隐去了邮箱）"),
+    ("[身份证号已脱敏]", "（这里隐去了证件号）"),
+    ("[银行账号已脱敏]", "（这里隐去了银行账号）"),
 )
+PHONE_MARK = "（这里隐去了电话）"
+_PAGE_BUTTONS = ("【关闭窗口】", "【打印本页】", "【字体：大 中 小】", "扫一扫在手机打开当前页")
 _BLANK_LINES = re.compile(r"\n[ \t]*\n(?:[ \t]*\n)+")
 BODY_KINDS = ("申报通知", "政策")
 # 名单类通知的正文挡掉名单内容后也给读（D-092，youju/lists/body.py）
 LIST_BODY_KINDS = (*BODY_KINDS, "名单")
+# 资讯与指南、其他（D-097 ②）：标题不是个人事项的也给全文。
+# BODY_KINDS 不变：AI 解读只做申报通知和政策（ai/interpret.py 用它）
+OPEN_BODY_KINDS = (GUIDE, "其他")
+# 个人事项（D-097 ②）：招聘、考试、职称、任免、表彰个人、救助、处分等，标题里有这些词的不给正文
+# （正文多半列着个人姓名、成绩、职务）。按 10/27 线上公开快照里这两类全部 841 个标题逐条核过：
+# 宁可多挡（"评审专家培训的通知"也挡），不漏；会误挡普通政府文件的词（"先进"挡了"先进制造业"、
+# "个人"挡了"个人所得税"政策、"体检"挡了"政务新媒体检查"）不用，换成更具体的写法。
+PERSONAL_MATTER_WORDS = (
+    # 招聘、招募、录用、考试
+    "招聘",
+    "招募",
+    "引才",
+    "人才引进",
+    "引进人才",
+    "拟聘",
+    "聘用",
+    "录用",
+    "招录",
+    "选调",
+    "公务员",
+    "面试",
+    "笔试",
+    "考试",
+    "成绩",
+    "招生",
+    "毕业生",
+    "学生",
+    "学员",
+    "博士后",
+    # 职称、资格
+    "职称",
+    "专业技术资格",
+    "任职资格",
+    "专业技术职务",
+    "评审结果",
+    "答辩",
+    "资格证书",
+    "合格证书",
+    "业余无线电",
+    *TITLE_EVALUATIONS,
+    # 任免、人事
+    "任免",
+    "任职",
+    "拟任",
+    "任前",
+    "干部",
+    "人事",
+    "职务",
+    "考察对象",
+    "负责人",
+    "签字人",
+    "矿长",
+    "同志",
+    "人员",
+    "人选",
+    "入选",
+    "专家",
+    "特派员",
+    "外国人",
+    "薪酬",
+    # 表彰个人、奖励
+    "表彰",
+    "表扬",
+    "选树",
+    "劳模",
+    "劳动模范",
+    "奖章",
+    "红旗手",
+    "获奖",
+    "授奖",
+    "授予",
+    "奖金",
+    "初评通过",
+    "技能大赛",
+    "技能竞赛",
+    # 救助、生活
+    "救助",
+    "低保",
+    "抚恤",
+    "慰问",
+    "助学",
+    "奖学金",
+    "退休",
+    "社保",
+    "医保",
+    "工伤",
+    "户籍",
+    "婚姻",
+    # 处分、处罚、考核
+    "处分",
+    "处罚",
+    "违纪",
+    "问责",
+    "通报批评",
+    "免职",
+    "撤职",
+    "失信",
+    "巡察",
+    "考核结果",
+    "考核记分",
+)
+
+
+def personal_matter(title: str | None) -> bool:
+    """资讯与指南、其他类的标题写着个人事项（D-097 ②）：正文、附件都不给。
+    字中间隔着空格的（"招 聘"）也算。"""
+    plain = re.sub(r"\s+", "", title or "")
+    return any(word in plain for word in PERSONAL_MATTER_WORDS)
+
+
+def body_open(title: str | None, kind: str) -> bool:
+    """这类文件的正文给不给读（不含名单类：名单类看 list_body_filter）。"""
+    return kind in BODY_KINDS or (kind in OPEN_BODY_KINDS and not personal_matter(title))
+
+
+# 一句话的标点：中文的句号、逗号、分号、问号、叹号；英文的只算紧跟在汉字或右括号、右引号后面的
+# （"3,716.50""9:00"里的不算）。冒号不算：导航、发布信息里到处是"当前位置：""发布时间："
+_SENTENCE = re.compile(rf"[，。；！？]|(?<=[{chr(0x4E00)}-{chr(0x9FFF)}）」』”])[,.;!?]")
+# 像网页导航的正文最长多少字（10/27 线上公开快照：广东科技厅"首页 政务公开 科技资讯……"31 字、
+# 四川"首页 > 政民互动 > 意见征集……"60 字、青海"当前位置: 首页 - 新闻资讯……上一篇 下一篇"95–215 字、
+# 网站页脚 203–261 字；没有标点的长文多是表格（网站年度报表、名单），照常显示）
+PAGE_CHROME_MAX_CHARS = 300
+
+
+def page_chrome_only(text: str) -> bool:
+    """像网页导航：通篇没有一句话（没有句号、逗号这类标点），而且不长。这样的正文不显示（D-097）；
+    有一句话的短通知照常显示。"""
+    return len(text) <= PAGE_CHROME_MAX_CHARS and _SENTENCE.search(text) is None
+
+
+def display_marks(text: str) -> str:
+    """把入库脱敏留下的"[电话已脱敏]"这类标记换成页面上的说法（"（这里隐去了电话）"）。"""
+    for old, new in MASK_MARKS:
+        text = text.replace(old, new)
+    return text
+
+
+# 已遮号码后面紧跟着的号码（11/2 完整测试第 5 条）："咨询电话：（这里隐去了电话）、87687769""电话:
+# （这里隐去了电话）/62651782"——入库规则只遮带区号的座机和手机号，同一处接着列的不带区号的号码漏了。
+# 只认紧跟在已遮号码后面、用"、""/""，""或"隔开的 7–8 位号码（本地号码不以 0、1 开头，可以带"-801"
+# "转801"这样的分机），一个接一个也认；后面接着小数、金额单位、"年月日号"这类字的不算，8 位像日期
+# （20261101）的不算。别处的数字（金额、年份、文号、编号）不碰
+_PHONE_MARK_ANY = re.compile(r"（这里隐去了电话）|\[电话已脱敏\]|\[手机号已脱敏\]")
+_PHONE_TAIL = re.compile(
+    r"(?P<sep>[ \t\u3000]*(?:[、/／，,；;]|或)[ \t\u3000]*|[ \t\u3000]+"
+    # 下一行接着写的号码（"（这里隐去了电话）转8002⏎4682138转8002"，11/3 全库扫描）
+    r"|[ \t\u3000]*[、/／，,；;]?[ \t\u3000\r]*\n[ \t\u3000]*)"
+    r"(?P<number>0\d{2,3}[2-9]\d{6,7}|[2-9]\d{6,7}(?:(?:[-－]|转)\d{1,8})?)(?!\d)"
+)
+# 已遮号码后面写着的分机（"（这里隐去了电话）转8002"）：照原样留着，再看后面有没有接着的号码
+_PHONE_EXT = re.compile(r"(?:转|[-－])\d{1,6}(?!\d)")
+_NOT_PHONE_NEXT = frozenset("元万亿千百%％‰年月日号个人次家项份字条批期届级名位件页")
+
+
+_MONEY_AFTER_SPACE = frozenset("元万亿%％‰")
+
+
+def _unit_after(text: str, end: int) -> bool:
+    """号码后面紧接着金额单位、"年月日号"这类字：不是号码。隔着空格的只认钱和百分比
+    （"资金 30000000 元"）——"电话：号码 人事处"的"人"不算（11/3 独立审阅）。"""
+    following = text[end : end + 6]
+    if following[:1] and following[0] in _NOT_PHONE_NEXT:
+        return True
+    rest = following.lstrip(" \t\u3000")
+    return bool(rest) and len(rest) < len(following) and rest[0] in _MONEY_AFTER_SPACE
+
+
+_DATE_DIGITS = re.compile(r"(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])")
+
+
+_LINE_REST_EMPTY = re.compile(r"[ \t\u3000]*[。；;，,、]?[ \t\u3000\r]*(?:\n|$)")
+
+
+def _phone_tail(text: str, at: int) -> re.Match[str] | None:
+    """text 在 at 处是不是"、87687769"这样紧跟着的号码；是就给匹配，不是给 None。"""
+    match = _PHONE_TAIL.match(text, at)
+    if match is None:
+        return None
+    # 隔着换行的：下一行只有这个号码才算（"电话：…⏎2060502技术创新服务"的科目编码不算）
+    if "\n" in match.group("sep") and _LINE_REST_EMPTY.match(text, match.end()) is None:
+        return None
+    after = text[match.end() : match.end() + 2]
+    if _unit_after(text, match.end()):
+        return None
+    # 小数（"87687769.5"）不算；句末的英文句点照样算号码
+    if after[:1] in ".．" and after[1:2].isdigit():
+        return None
+    if _DATE_DIGITS.fullmatch(match.group("number")):
+        return None
+    return match
+
+
+def _mask_phone_tails(text: str) -> str:
+    """把紧跟在已遮号码后面的号码也换成"（这里隐去了电话）"，分隔符照原样留着。"""
+    if "隐去了电话" not in text and "已脱敏]" not in text:
+        return text
+    out: list[str] = []
+    done = 0
+    for mark in _PHONE_MARK_ANY.finditer(text):
+        if mark.start() < done:
+            continue
+        out.append(text[done : mark.end()])
+        done = mark.end()
+        ext = _PHONE_EXT.match(text, done)
+        if ext is not None:
+            out.append(ext.group())
+            done = ext.end()
+        while (tail := _phone_tail(text, done)) is not None:
+            out.append(tail.group("sep") + PHONE_MARK)
+            done = tail.end()
+    out.append(text[done:])
+    return "".join(out)
+
+
+# "联系电话：86263938"这样不带区号的本地号码（11/2 F15）：入库规则只遮带区号的座机和手机号，
+# 紧跟在"电话：""手机：""传真："这类标签后面的 7–8 位号码也遮（可以带"-801""转801"这样的分机）；
+# 后面接着金额单位、"年月日号"这类字的，小数，8 位像日期的不算（和 _phone_tail 同一套判断）。
+# 标签后面不是号码（"电话会议""电话：见附件"）的不碰
+_LABELED_PHONE = re.compile(
+    r"(?P<label>(?:电[ \t\u3000]*话|手[ \t\u3000]*机|传[ \t\u3000]*真)"
+    r"(?:号码?)?[ \t\u3000]*[:：][ \t\u3000]*)"
+    r"(?P<number>0\d{2,3}[2-9]\d{6,7}|[2-9]\d{6,7}(?:(?:[-－]|转)\d{1,8})?)(?!\d)"
+)
+
+
+def _mask_labeled_phones(text: str) -> str:
+    """把"电话：86263938"这样标签后面的本地号码换成"（这里隐去了电话）"，标签照原样留着。"""
+    if not any(word in text for word in ("话", "机", "真")):
+        return text
+
+    def repl(match: re.Match[str]) -> str:
+        after = text[match.end() : match.end() + 2]
+        if _unit_after(text, match.end()):
+            return match.group(0)
+        if after[:1] in ".．" and after[1:2].isdigit():
+            return match.group(0)
+        if _DATE_DIGITS.fullmatch(match.group("number")):
+            return match.group(0)
+        return match.group("label") + PHONE_MARK
+
+    return _LABELED_PHONE.sub(repl, text)
+
+
+# 入库规则只认"-""－"连着区号的座机，"022—58832980"（破折号）、"（0591）87882899"（区号带括号）、
+# "0591 87882899"（隔空格）照原样露着（11/2 独立审阅，本机库约 110 份）：显示时整个号码遮掉，
+# 可以带分机
+_AREA_PHONE = re.compile(
+    r"(?<![0-9A-Za-z])(?:[（(]0\d{2,3}[）)][ \t\u3000]*"
+    r"|0\d{2,3}[ \t\u3000]*[-－—–‐−‑]{1,2}[ \t\u3000]*"
+    r"|0\d{2,3}[ \t\u3000]+)"
+    # 本地号码中间隔一个空格的（"0531-8888 8888"，11/3 独立审阅）也算
+    r"(?:[2-9]\d{6,7}|[2-9]\d{2,3}[ \t\u3000]\d{4})(?:(?:[-－]|转)\d{1,6})?(?!\d)"
+)
+# "8610-88828972""+86 10 88828972"这样带国家码的（11/2 复测）
+_INTL_PHONE = re.compile(
+    r"(?<![0-9A-Za-z+])\+?86[ \t\u3000]*[-－—–‐−‑]?[ \t\u3000]*0?(?![48]00)[1-9]\d{1,2}"
+    r"[ \t\u3000]*[-－—–‐−‑ ][ \t\u3000]*[2-9]\d{6,7}(?:(?:[-－]|转)\d{1,6})?(?!\d)"
+)
+# 写在已遮的联系人后面的本地号码（"（这里隐去了联系人）：55520803""（这里隐去了联系人） 55521169"）
+_CONTACT_THEN_NUMBER = re.compile(
+    r"(?P<head>（这里隐去了联系人）[ \t\u3000]*[，,、：:；;/／]?[ \t\u3000]*)"
+    r"(?P<number>0\d{2,3}[2-9]\d{6,7}|1[3-9]\d{8,9}|[2-9]\d{6,7}(?:(?:[-－]|转)\d{1,6})?)(?!\d)"
+)
+
+
+# 前面几个字是"编号""代码"这类的，是编号不是电话
+_CODE_BEFORE = re.compile(
+    r"(?:编号|代码|文号|序号|邮编|批号|编码|账号|卡号)[ \t\u3000]*[:：]?[ \t\u3000]*$"
+)
+
+
+def _mask_area_phones(text: str) -> str:
+    """把入库时漏掉的区号写法（破折号、括号、空格）和国家码写法整个换成"（这里隐去了电话）"。"""
+    if "86" in text:
+        original = text
+
+        def intl(match: re.Match[str]) -> str:
+            # 国家码写法也看金额单位、"编号"这类（Codex 第 7 轮）
+            if _unit_after(original, match.end()):
+                return match.group(0)
+            if _CODE_BEFORE.search(original, max(0, match.start() - 8), match.start()):
+                return match.group(0)
+            return PHONE_MARK
+
+        text = _INTL_PHONE.sub(intl, original)
+    if "0" not in text:
+        return text
+    current = text
+
+    def repl(match: re.Match[str]) -> str:
+        if _CODE_BEFORE.search(current, max(0, match.start() - 8), match.start()):
+            return match.group(0)
+        return PHONE_MARK
+
+    return _AREA_PHONE.sub(repl, current)
+
+
+def _mask_contact_numbers(text: str) -> str:
+    """已遮的联系人后面紧跟着的本地号码也遮；后面接着金额单位、日期的不算（同 _phone_tail）。"""
+    if "隐去了联系人" not in text:
+        return text
+
+    def repl(match: re.Match[str]) -> str:
+        after = text[match.end() : match.end() + 2]
+        if _unit_after(text, match.end()):
+            return match.group(0)
+        if after[:1] in ".．" and after[1:2].isdigit():
+            return match.group(0)
+        if _DATE_DIGITS.fullmatch(match.group("number")):
+            return match.group(0)
+        return match.group("head") + PHONE_MARK
+
+    return _CONTACT_THEN_NUMBER.sub(repl, text)
+
+
+# 同一处连着 3 个以上同样的标记（"（这里隐去了电话）、（这里隐去了电话）、（这里隐去了电话）"）
+# 只留一个；"（网址：（这里隐去了网址））"这样括号里只剩标记、标签明说是网址的
+# （网址、网站、官网、链接……），
+# 收成一个标记；别的标签（"申报入口："）照留（11/2 独立审阅、Codex 第 4 轮）
+_MARK_RUN = re.compile(
+    r"(（这里隐去了(?:电话|邮箱|网址|联系人)）)(?:[ \t\u3000]*[、，,/／；;]?[ \t\u3000]*\1){2,}"
+)
+_MARK_IN_BRACKETS = re.compile(
+    r"[（(](?:(?:网址|网站|官网|网站地址|网页|链接|网络地址|网址链接)[ \t\u3000]*[:：])?"
+    r"[ \t\u3000]*(（这里隐去了网址）)[ \t\u3000]*[）)]"
+    # 邮箱标记外面的括号（"发送至指导邮箱（（这里隐去了邮箱））"，11/2 复测）
+    r"|[（(](?:(?:邮箱|电子邮箱|电子邮件|邮件|[Ee]-?mail)[ \t\u3000]*[:：])?"
+    r"[ \t\u3000]*(（这里隐去了邮箱）)[ \t\u3000]*[）)]"
+)
+# 网址中间断开（原文网址里有空格）留下的一两个字母（"（这里隐去了网址） i （这里隐去了网址）"）
+_URL_REMNANT = re.compile(
+    r"（这里隐去了网址）[ \t\u3000]*[A-Za-z0-9]{1,3}[ \t\u3000]*(?=（这里隐去了网址）)"
+)
+
+
+def _tidy_marks(text: str) -> str:
+    if "（这里隐去了" not in text:
+        return text
+    # 先去括号再合并：去了括号以后才连在一起的标记，一次就合并好；括号套了几层就去几层
+    # （"（（（这里隐去了网址）））"），处理两次结果一样
+    text = _URL_REMNANT.sub("", text)
+    while True:
+        stripped = _MARK_IN_BRACKETS.sub(lambda m: m.group(1) or m.group(2), text)
+        if stripped == text:
+            break
+        text = stripped
+    return _MARK_RUN.sub(r"\1", text)
+
+
+# 正文、附件里政府原文自带的网址（D-112，创始人 11/2 同意）：显示时换成"（这里隐去了网址）"，
+# 和隐去电话一个写法——留着 http/https 网址有被判"引导跳出到浏览器"的风险（10/23 审核退回的原因
+# 之一）。认 http://、https:// 开头的和 www. 开头的（"www"挨着别的字母、数字，或在邮箱里的不算）；
+# 网址只认英文字母、数字和网址里常见的符号，遇到汉字、（"．""／"以外的）全角标点、空白、括号就停，
+# 末尾的句点、逗号这类标点不算网址。网址外面只剩一对括号时连括号一起换：
+# "平台（https://x.gov.cn/login）"→"平台（这里隐去了网址）"。邮箱不在这次范围
+URL_MARK = "（这里隐去了网址）"
+# "http："后面的冒号常写成全角（"http：//www.…"），也有整个网址的标点都是全角的
+# （"http：／／www．ccgp．gov．cn"），都认
+_URL = re.compile(
+    r"(?:(?<![A-Za-z0-9])https?[:：][/／]{2}|(?<![A-Za-z0-9.．@_-])www[.．])"
+    r"[A-Za-z0-9._~:/?#@&+=%,;．／-]+",
+    re.IGNORECASE,
+)
+_URL_TRAILING = ".,;:?．"
+_URL_SPACES = " \t\u3000"
+_URL_EMPTY = re.compile(r"(?:https?[:：][/／]{2}|www[.．])[/.／．]*", re.IGNORECASE)
+# 网址被换行或空格断开（"（https://kxjst.⏎jiangsu.gov.cn/js-home/home）""http://xx. miit.gov.cn"，
+# 网页和 PDF 里常见）：隔着一个换行（断在哪个字后面都行），或者断在"." "/" "-"后面隔着空格，
+# 接着的一段也像网址（带"/"或".字母"）时接上，免得后半截露出来；"2.材料报送"这样的下一行不接
+_URL_GAP = re.compile(r"[ \t\u3000]*\n?[ \t\u3000]*")
+_URL_MORE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._~:/?#@&+=%,;．／-]*")
+_URL_PIECE = re.compile(r"[/／]|[.．][A-Za-z]")
+
+
+def _url_end(text: str, end: int) -> int:
+    """网址到哪里为止（含被换行、空格断开的后半截）。"""
+    while True:
+        gap = _URL_GAP.match(text, end)
+        if gap is None or gap.end() == end:
+            break
+        if "\n" not in gap.group() and text[end - 1] not in "./-．／":
+            break
+        more = _URL_MORE.match(text, gap.end())
+        if more is None or _URL_PIECE.search(more.group()) is None:
+            break
+        end = more.end()
+    return end
+
+
+# 不带 http、www 的域名（11/2 F12）："kxjst.jiangsu.gov.cn""hjrz.chinatorch.org.cn/login"（带路径的
+# 连路径一起）也换成"（这里隐去了网址）"。认以 .gov.cn、.com.cn、.org.cn、.net.cn、.edu.cn、.cn、
+# .com、.net、.org 结尾、前面是字母数字和点、横线的串；两段的后缀（.gov.cn 这类）大小写都认
+# （"KJT.JIANGSU.GOV.CN"，11/2 Codex 审阅），一段的（.cn、.com、.net、.org）只认小写
+# （"ASP.NET"不算），前面挨着
+# 字母数字、点、横线、斜杠或"@""＠"的不算（邮箱的域名由遮邮箱那一步管）。"附件1.docx""3.5""No.1"
+# "V2.0"这些后面不是这几个后缀，不碰
+_BARE_DOMAIN = re.compile(
+    r"(?<![A-Za-z0-9.．@＠_/-])(?:[A-Za-z0-9][A-Za-z0-9-]*[.．])+"
+    r"(?:(?i:gov|com|org|net|edu)[.．](?i:cn)|cn|com|net|org)(?![A-Za-z0-9-])"
+    r"(?:[/／][A-Za-z0-9._~:/?#@&+=%,;．／-]*)?"
+)
+_BARE_HINT = re.compile(r"[.．](?:(?i:cn)|com|net|org)(?![A-Za-z0-9-])")
+
+
+def _hide_urls(text: str) -> str:
+    """把网址换成"（这里隐去了网址）"：先换 http、www 开头的，再换不带这些的域名（F12）。"""
+    lowered = text.lower()
+    if "http" in lowered or "www" in lowered:
+        text = _replace_links(text, _URL)
+    if _BARE_HINT.search(text):
+        text = _replace_links(text, _BARE_DOMAIN)
+    return text
+
+
+def _replace_links(text: str, pattern: re.Pattern[str]) -> str:
+    """把 pattern 认出的网址换成"（这里隐去了网址）"；网址外面只剩一对括号时连括号一起换。"""
+    out: list[str] = []
+    done = 0
+    for match in pattern.finditer(text):
+        start = match.start()
+        if start < done:
+            # 已经算在前一个网址断开的后半截里
+            continue
+        whole = text[start : _url_end(text, match.end())]
+        end = start + len(whole.rstrip(_URL_TRAILING))
+        if _URL_EMPTY.fullmatch(text[start:end]):
+            # 只有"http://"这样的空壳，后面没有网址
+            continue
+        left, right = start, end
+        while left > done and text[left - 1] in _URL_SPACES:
+            left -= 1
+        while right < len(text) and text[right] in _URL_SPACES:
+            right += 1
+        if left > done and right < len(text) and text[left - 1] in "（(" and text[right] in "）)":
+            out.append(text[done : left - 1])
+            done = right + 1
+        else:
+            out.append(text[done:start])
+            done = end
+        out.append(URL_MARK)
+    out.append(text[done:])
+    return "".join(out)
+
+
+# 邮箱（11/2 F14）：全角"＠"写的（"jxkjjcc＠kjt.jiangxi.gov.cn"，入库规则只认半角"@"，漏了）和
+# 半角的都遮成"（这里隐去了邮箱）"，和入库时遮的写法一样；域名里的点、横线写成全角的（"．""—"）
+# 也认。本地部分是一串数字、入库时被当成号码遮了的（"（这里隐去了电话）@163.com"）整个换成邮箱的说法
+EMAIL_MARK = "（这里隐去了邮箱）"
+_EMAIL_ANY = re.compile(
+    r"(?:（这里隐去了电话）|\[(?:电话|手机号)已脱敏\]|(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]{1,64})"
+    r"[ \u3000]?[@＠][ \u3000]?[A-Za-z0-9-]+(?:[.．—－][A-Za-z0-9-]+)*[.．][A-Za-z]{2,63}"
+    r"(?![A-Za-z0-9-])"
+)
+
+
+def _hide_emails(text: str) -> str:
+    """把邮箱换成"（这里隐去了邮箱）"。"""
+    if "@" not in text and "＠" not in text:
+        return text
+    return _EMAIL_ANY.sub(EMAIL_MARK, text)
+
+
+# 电话类标签（电话、手机、传真、技术支持、咨询、联系方式、热线、值班）后面同一句里的本地号码
+# （11/2 复测）："技术支持：83124114""业务咨询：83124079、83124035"
+# "联系电话：业务部门：市科技局科技人才科，65119071"。到句号、问号、叹号、换行（最多 300 个字）
+# 为止；后面接着
+# 金额单位、"年月日号"的，小数，8 位像日期的，"编号""代码"这类后面的不算
+# 电话类词要紧挨着冒号（"咨询电话：""业务咨询：""电话号码："），"电话会议："这类不算
+_PHONE_CONTEXT = re.compile(
+    r"(?:电[ \t\u3000]*话|手[ \t\u3000]*机|传[ \t\u3000]*真|技术支持|咨[ \t\u3000]*询|联系方式"
+    r"|热[ \t\u3000]*线|值[ \t\u3000]*班)(?:号码?)?[ \t\u3000]*[:：]"
+)
+_LOCAL_NUMBER = re.compile(
+    r"(?<![0-9A-Za-z])(?:0\d{2,3}[2-9]\d{6,7}|[2-9]\d{6,7}(?:(?:[-－]|转)\d{1,6})?)(?![0-9])"
+)
+_CONTEXT_STOP = re.compile(r"[。！？!?\n]")
+_CONTEXT_WINDOW = 300
+# 写在已遮号码前面的本地号码（"65119071、（这里隐去了电话）"）
+_NUMBER_BEFORE_MARK = re.compile(
+    r"(?<![0-9A-Za-z])[2-9]\d{6,7}(?![0-9])"
+    r"(?=[ \t\u3000]*[、/／，,或；;][ \t\u3000]*（这里隐去了电话）)"
+)
+
+
+_HOTLINE_HEAD = re.compile(r"(?<![0-9])[48]00[ \t\u3000]*[-－—–‐−‑]?[ \t\u3000]*$")
+
+
+def _is_phone_number(text: str, match: re.Match[str]) -> bool:
+    """一个 7–8 位的数是不是号码：后面不接金额单位、"年月日号"，不是小数，不像日期，
+    前面不是"编号"这类。"""
+    after = text[match.end() : match.end() + 2]
+    if _unit_after(text, match.end()):
+        return False
+    if after[:1] in ".．" and after[1:2].isdigit():
+        return False
+    if _DATE_DIGITS.fullmatch(match.group(0)[:8]):
+        return False
+    # 400/800 热线的后半截（"400-8205114"）：单位的服务热线，整个不遮
+    if _HOTLINE_HEAD.search(text, max(0, match.start() - 8), match.start()):
+        return False
+    return _CODE_BEFORE.search(text, max(0, match.start() - 8), match.start()) is None
+
+
+def _mask_context_numbers(text: str) -> str:
+    """把电话类标签后面同一句里的本地号码、已遮号码前面的本地号码换成"（这里隐去了电话）"。"""
+    spans: list[tuple[int, int]] = []
+    for label in _PHONE_CONTEXT.finditer(text):
+        end = min(len(text), label.end() + _CONTEXT_WINDOW)
+        stop = _CONTEXT_STOP.search(text, label.end(), end)
+        if stop is not None:
+            end = stop.start()
+        for number in _LOCAL_NUMBER.finditer(text, label.end(), end):
+            if _is_phone_number(text, number):
+                spans.append(number.span())
+    for number in _NUMBER_BEFORE_MARK.finditer(text):
+        if _is_phone_number(text, number):
+            spans.append(number.span())
+    if not spans:
+        return text
+    out: list[str] = []
+    done = 0
+    for start, end in sorted(set(spans)):
+        if start < done:
+            continue
+        out.append(text[done:start])
+        out.append(PHONE_MARK)
+        done = end
+    out.append(text[done:])
+    return "".join(out)
+
+
+# 附件表格里列名是电话、手机、联系方式、传真的格子（"联系电话 | 63001576"，11/2 复测）
+_PHONE_HEAD = re.compile(r"电\s*话|手\s*机|联系方式|传\s*真|热\s*线|值\s*班|咨\s*询|技术支持")
+# 只有一个号码的格子：8 位本地号码、区号连写、手机号（7 位的不算，太像编码）
+_SINGLE_PHONE_CELL = re.compile(
+    # 可以带"/分机"（"88888888/801/802"）
+    r"(?:0\d{2,3}[2-9]\d{6,7}|1[3-9]\d{9}|[2-9]\d{7})(?:[/／]转?\d{1,6})*"
+)
+# 以单位用字结尾的格子（局、委、会、园、中心……）
+_ORG_CELL_END = re.compile(
+    r"(?:[处科室局委办厅站所院组队园会]|中心|部门|单位|政府)"
+    # 后面可以跟一段括号（"……委员会（海淀区）"），或者整个名字写在括号里（"……委员会）"）
+    r"(?:[（(][^（）()]{1,12}[）)])?[）)]?$"
+)
+_NUMERIC_HEAD = re.compile(
+    r"金额|经费|资金|元|数|量|额|投资|面积|产值|收入|利润|编号|代码|序号|邮编|日期|时间|年|号"
+)
+# 一格里只写着电话类标签（"联系方式:""联系电话："），右边那格是号码
+_BARE_PHONE_LABEL = re.compile(
+    r"(?:联系|咨询|办公)?(?:电\s*话|手\s*机|联系方式|传\s*真)(?:号码?)?\s*[:：]?"
+)
+
+
+def _mask_local_numbers(text: str) -> str:
+    """一格里所有像号码的本地号码都换成"（这里隐去了电话）"（只用在电话列的格子）。"""
+    return _LOCAL_NUMBER.sub(
+        lambda m: PHONE_MARK if _is_phone_number(text, m) else m.group(0), text
+    )
+
+
+# 正文里还漏着的几种号码写法（11/3：11/2 第 3 轮复测和全库扫描）。只在"电话语境"里认，免得把
+# 预算科目编码、访问量这类数字当成电话：
+# ① "联系方式""联系电话""业务咨询"这类标题下面几行里的号码（标题行是一整句话的不算；
+#    遇到附件、邮箱、地址、下一节标题、空行就停，最多 24 行）；
+# ② 单位名（以处、科、室、局、委、办、中心、部门……结尾）后面隔着冒号、逗号、空格的号码；
+# ③ 人名（常见姓氏开头的 2–3 个字）后面隔着括号、逗号、空格、换行的号码，括号连号码一起换；
+# ④ "致电""电询""拨打"后面同一句里（20 个字以内）的号码；
+# ⑤ 一行里只有一串号码（两个以上）的，整串遮。
+# 号码照旧：7–8 位本地号码（可带分机）或区号连写的 11–12 位；后面接金额单位、"年月日号"的，
+# 小数、像日期的、"编号"这类后面的、400/800 热线的后半截都不算（_is_phone_number）
+_HAN_RANGE = f"{chr(0x4E00)}-{chr(0x9FFF)}"
+_CONTACT_HEADING = re.compile(
+    r"^[ \t\u3000]*(?:[一二三四五六七八九十]+[、.．]|\d{1,2}[、.．]"
+    r"|[（(][一二三四五六七八九十\d]{1,2}[）)])?"
+    r"[ \t\u3000]*(?:联系方式|联系电话|咨询电话|咨询方式|联系人及(?:联系)?(?:电话|方式)"
+    r"|业务咨询|政策咨询|技术咨询)[ \t\u3000]*(?:如下)?[ \t\u3000]*(?:[:：]|$)"
+)
+_BLOCK_STOP = re.compile(
+    r"^[ \t\u3000]*(?:附[ \t\u3000]*件|联系邮箱|电子邮箱|邮[ \t\u3000]*箱|[Ee]-?mail"
+    r"|联系地址|通信地址"
+    r"|通讯地址|地[ \t\u3000]*址|邮政编码|邮[ \t\u3000]*编|网[ \t\u3000]*址|特此"
+    r"|[一二三四五六七八九十]+[、.．]|[（(][一二三四五六七八九十]{1,2}[）)])"
+)
+_BLOCK_LINES = 24
+_UNIT_BEFORE_NUMBER = re.compile(
+    r"(?:[处科室局委办厅站所院组队]|中心|部门|单位|纪委|监委)"
+    r"(?P<sep>[ \t\u3000]*[：:，,][ \t\u3000]*|[ \t\u3000]+|[ \t\u3000]*\r?\n[ \t\u3000]*)$"
+)
+# 单位名、人名后面的数紧接着汉字（"某局，2060502技术创新服务"）是编码，不是号码
+_HAN_AFTER = re.compile(r"[\u4e00-\u9fff]")
+_HAN_AFTER_OK = frozenset("转或至和及")
+_NAME_SEP_BEFORE = re.compile(
+    r"(?P<open>[ \t\u3000]*[（(][ \t\u3000]*)$"
+    r"|(?:[ \t\u3000]*[，,、][ \t\u3000]*|[ \t\u3000]*\n[ \t\u3000]*|[ \t\u3000]+)$"
+)
+_CLOSE_AFTER = re.compile(r"[ \t\u3000]*[）)]")
+# 号码后面紧跟大写字母加数字的编码（"91220101 MA0Y5F26"：统一社会信用代码被空格拆开）不是电话
+_CODE_AFTER = re.compile(r"[ \t\u3000]*[A-Z][A-Z0-9]{3,}")
+_UNIT_LINE_END = re.compile(r"(?:[处科室局委办厅站所院组队]|中心|部门|单位|纪委|监委)[ \t\u3000]*$")
+_VERB_BEFORE_NUMBER = re.compile(r"(?:致电|电询|拨打)[^。！？!?\n]{0,20}$")
+# 一行一串号码只认 8 位或区号连写的：7 位的一串（"2060501、2060502"）更像科目编码（agy 审阅）
+_ONE_NUMBER = r"(?:0\d{2,3}[2-9]\d{6,7}|[2-9]\d{7}(?:(?:[-－]|转)\d{1,6})?)"
+_NUMBER_LIST_LINE = re.compile(
+    rf"[ \t\u3000]*{_ONE_NUMBER}(?:[ \t\u3000]*[、，,/／;；][ \t\u3000]*{_ONE_NUMBER})+"
+    r"[ \t\u3000]*[。；;，,]?[ \t\u3000]*"
+)
+
+
+def _name_before(text: str, start: int) -> tuple[int, int] | None:
+    """号码前面隔着括号、逗号、空格、换行的是不是人名（3 个字不像就看后 2 个字）；
+    是就给这个名字在 text 里的位置。"""
+    base = max(0, start - 12)
+    window = text[base:start]
+    sep = _NAME_SEP_BEFORE.search(window)
+    if sep is None:
+        return None
+    head = window[: sep.start()]
+    for size in (3, 2):
+        token = head[-size:]
+        if (
+            len(token) == size
+            and re.fullmatch(f"[{_HAN_RANGE}]+", token)
+            and token not in _NOT_NAME_WORDS
+            and token not in _ATT_NOT_NAMES
+            and _person(token)
+        ):
+            begin, end = base + sep.start() - size, base + sep.start()
+            if "\n" in sep.group() and not _name_line(text, begin, end):
+                return None
+            return begin, end
+    return None
+
+
+def _name_line(text: str, begin: int, end: int) -> bool:
+    """名字和号码隔着换行时，只认"某处⏎张某⏎号码"这种：名字单独占一行，上一行是单位名或
+    联系方式标题（"最终成绩⏎号码""基金项目⏎号码"这类不算）。"""
+    line_start = text.rfind("\n", 0, begin) + 1
+    if text[line_start:begin].strip():
+        return False
+    if line_start == 0:
+        return False
+    prev_start = text.rfind("\n", 0, line_start - 1) + 1
+    previous = text[prev_start : line_start - 1]
+    return bool(_UNIT_LINE_END.search(previous) or _CONTACT_HEADING.match(previous))
+
+
+_OPEN_BEFORE = re.compile(r"[（(][ \t\u3000]*$")
+
+
+def _with_brackets(text: str, start: int, end: int) -> tuple[int, int]:
+    """号码外面正好一对括号（"王某（55521177）"）时连括号一起算，换成标记后不留两层括号。"""
+    opening = _OPEN_BEFORE.search(text, max(0, start - 4), start)
+    closing = _CLOSE_AFTER.match(text, end)
+    if opening is not None and closing is not None:
+        return opening.start(), closing.end()
+    return start, end
+
+
+def _block_lines(text: str) -> list[tuple[int, int]]:
+    """联系方式类标题下面几行的范围。标题那一行本身不算（同一句里的号码由 _mask_context_numbers
+    管）；标题行冒号后面带句号或超过 60 个字的是一整句话，不当标题。"""
+    spans: list[tuple[int, int]] = []
+    lines = text.split("\n")
+    offsets = []
+    at = 0
+    for line in lines:
+        offsets.append(at)
+        at += len(line) + 1
+    for i, raw in enumerate(lines):
+        line = raw.rstrip("\r")
+        heading = _CONTACT_HEADING.match(line)
+        if heading is None:
+            continue
+        # 冒号后面要么没字，要么本身列着号码（"联系电话：某项目 （这里隐去了电话）"）；
+        # "（一）联系电话：保持畅通"这样后面是一句话的不当标题（agy 审阅）
+        rest = line[heading.end() :].strip()
+        if rest and not (_PHONE_MARK_ANY.search(rest) or _LOCAL_NUMBER.search(rest)):
+            continue
+        if "。" in rest or len(rest) > 60:
+            continue
+        for j in range(i + 1, min(len(lines), i + 1 + _BLOCK_LINES)):
+            following = lines[j].rstrip("\r")
+            stop = _BLOCK_STOP.match(following) or _CONTACT_HEADING.match(following)
+            if not following.strip() or stop:
+                break
+            spans.append((offsets[j], offsets[j] + len(following)))
+    return spans
+
+
+def _mask_more_numbers(text: str) -> str:
+    """把上面 ①–⑤ 几种语境里的号码换成"（这里隐去了电话）"。"""
+    if not any(c.isdigit() for c in text):
+        return text
+    spans: list[tuple[int, int, str]] = []
+    blocks = _block_lines(text)
+    for number in _LOCAL_NUMBER.finditer(text):
+        if not _is_phone_number(text, number) or _CODE_AFTER.match(text, number.end()):
+            continue
+        start, end = number.span()
+        before = text[max(0, start - 30) : start]
+        next_char = text[end : end + 1]
+        coded = bool(_HAN_AFTER.match(next_char)) and next_char not in _HAN_AFTER_OK
+        unit = None if coded else _UNIT_BEFORE_NUMBER.search(before)
+        if (
+            unit is not None
+            and "\n" in unit.group("sep")
+            and (not _LINE_REST_EMPTY.match(text, end) or len(number.group()) < 8)
+        ):
+            # 单位名下一行写的号码：这一行只有号码、而且是 8 位以上才算（"某研究院⏎3000000"不算）
+            unit = None
+        name = None if coded else _name_before(text, start)
+        if name is not None:
+            # 号码前面是人名：名字也遮（"某处⏎张某⏎号码"这样分行写的，遮姓名那一步认不出来）
+            spans.append((*name, _CONTACT_MARK))
+        if (
+            name is not None
+            or unit is not None
+            or any(a <= start and end <= b for a, b in blocks)
+            or _VERB_BEFORE_NUMBER.search(before)
+        ):
+            spans.append((*_with_brackets(text, start, end), PHONE_MARK))
+    at = 0
+    for line in text.split("\n"):
+        if _NUMBER_LIST_LINE.fullmatch(line):
+            for number in _LOCAL_NUMBER.finditer(line):
+                if _is_phone_number(line, number):
+                    spans.append((at + number.start(), at + number.end(), PHONE_MARK))
+        at += len(line) + 1
+    if not spans:
+        return text
+    out: list[str] = []
+    done = 0
+    for start, end, mark in sorted(set(spans)):
+        if start < done:
+            continue
+        out.append(text[done:start])
+        out.append(mark)
+        done = end
+    out.append(text[done:])
+    return "".join(out)
+
+
+def _mask_phones(text: str) -> str:
+    """显示层补遮号码：区号的破折号、括号写法，"电话："标签后面的，已遮联系人后面的，已遮号码后面紧跟着的，
+    再加上面 ①–⑤ 几种语境里的。遮姓名之前也先走一遍（display_body_text、附件），
+    "某某，0531—5178xxxx"号码认出来了，号码前面的姓名才遮得到。"""
+    text = _mask_context_numbers(_mask_labeled_phones(_mask_area_phones(text)))
+    text = _mask_phone_tails(_mask_contact_numbers(text))
+    return _mask_phone_tails(_mask_more_numbers(text))
+
+
+def display_text(text: str) -> str:
+    """只在给页面显示时做的处理（详情页正文、阅读页正文和附件、名单单行页、AI 结果页的原句）：
+    入库标记换成页面上的说法，"电话："这类标签后面不带区号的号码和已遮号码后面紧跟着的号码也遮掉，邮箱（含全角"＠"写的）换成
+    "（这里隐去了邮箱）"，网址（含不带 http、www 的域名）换成"（这里隐去了网址）"。
+    入库的文字不改；交给模型、核对 AI 原句用的是 model_body_text（入库脱敏后按这套规则补遮，
+    ai/content.py），不经过这里，也不改。"""
+    return _tidy_marks(_hide_urls(_hide_emails(_mask_phones(display_marks(text)))))
+
+
+# 返回给页面的原文片段（截止的"原文摘录"原句、申报条件和支持方式、申报对象的原句，列表行、
+# 截止页、日历、站内查看结果里带的原句）和正文走同一个显示层（11/2 F11，D-112）：网址换成
+# "（这里隐去了网址）"，遮过的号码按页面说法写。只改返回的那份：库里存的、核对台看的、交给模型和
+# 核对 AI 原句的都不变
+def shown_quote(text: str | None) -> str | None:
+    """一句原文片段按显示层给；不是字符串（没有原句）照原样。"""
+    return display_text(text) if isinstance(text, str) else text
+
+
+def shown_due(data: dict | None) -> dict | None:
+    """截止的公开写法（deadline_excerpts.View.public）里的原句按显示层给，返回副本。"""
+    if not data or not isinstance(data.get("quote"), str):
+        return data
+    return {**data, "quote": display_text(data["quote"])}
+
+
+def _shown_fields(fields: dict[str, Any]) -> dict[str, Any]:
+    """详情页"支持方式""申报对象"的原句按显示层给，返回副本（_approved_fields 本身不动：
+    AI 解读的"已核对"一栏和它的版本指纹也用它）。"""
+    out = dict(fields)
+    if isinstance(fields.get("support_evidence"), dict):
+        out["support_evidence"] = {
+            value: shown_quote(quote) for value, quote in fields["support_evidence"].items()
+        }
+    if isinstance(fields.get("audience"), dict):
+        audience = fields["audience"]
+        out["audience"] = {
+            **audience,
+            "text": shown_quote(audience.get("text")),
+            "evidence": shown_quote(audience.get("evidence")),
+        }
+    return out
+
+
+def _shown_conditions(conditions: dict | None) -> dict | None:
+    """详情页"申报条件"每条的原文原句按显示层给，返回副本。"""
+    if not conditions:
+        return conditions
+    return {
+        **conditions,
+        "items": [
+            {**item, "quote": shown_quote(item.get("quote"))} if isinstance(item, dict) else item
+            for item in conditions.get("items", [])
+        ],
+    }
 
 
 def _clean_reading_body(text: str | None, *, redact=redact_sensitive) -> str:
-    cleaned = redact((text or "").replace("\r\n", "\n").replace("\r", "\n"))
-    for old, new in _BODY_REPLACE:
-        cleaned = cleaned.replace(old, new)
+    cleaned = display_marks(redact((text or "").replace("\r\n", "\n").replace("\r", "\n")))
+    for button in _PAGE_BUTTONS:
+        cleaned = cleaned.replace(button, "")
     return _BLANK_LINES.sub("\n\n", _mask_contact_names(cleaned)).strip()
 
 
@@ -2091,12 +2918,12 @@ _CONTACT_LABEL = re.compile(r"联\s*系\s*人|联\s*络\s*人|经\s*办\s*人|�
 _LABEL_AT_END = re.compile(
     r"(?:联\s*系\s*人|联\s*络\s*人|经\s*办\s*人|联系方式)(?:及电话)?\s*[:：]\s*$"
 )
-# 写着电话的行：有号码（或入库时遮过的号码）的，像姓名的都遮（"吾慧星、张竞博，电话：（电话见原文）"
-# "刘老师，（电话见原文）""联系电话：88888888（李四）"）；只有"电话""手机"字样、没有号码的（表头
-# "联系电话"、"联系电话：张三、李四"），只遮带称呼的和"电话：""手机："后面的
-_PHONE_LINE = re.compile(r"电话|手机|（电话见原文）")
+# 写着电话的行：有号码（或入库时遮过的号码）的，像姓名的都遮（"吾慧星、张竞博，电话：
+# （这里隐去了电话）""刘老师，（这里隐去了电话）""联系电话：88888888（李四）"）；只有"电话""手机"
+# 字样、没有号码的（表头"联系电话"、"联系电话：张三、李四"），只遮带称呼的和"电话：""手机："后面的
+_PHONE_LINE = re.compile(rf"电话|手机|{PHONE_MARK}")
 _PHONE = (
-    r"(?:（电话见原文）|(?<!\d)0\d{2,3}[-－]?\d{7,8}(?!\d)|(?<!\d)1[3-9]\d{9}(?!\d)"
+    rf"(?:{PHONE_MARK}|(?<!\d)0\d{{2,3}}[-－]?\d{{7,8}}(?!\d)|(?<!\d)1[3-9]\d{{9}}(?!\d)"
     r"|(?<!\d)\d{7,8}(?!\d))"
 )
 _PHONE_ANY = re.compile(_PHONE)
@@ -2119,7 +2946,7 @@ _TITLE_END = (
     "专员",
     "工程师",
 )
-# 网站页脚的编审署名（行里任何位置的"一审：""责编："）：换成"（署名已隐去）"，不冒充联系人
+# 网站页脚的编审署名（行里任何位置的"一审：""责编："）：换成"（这里隐去了署名）"，不冒充联系人
 _EDITOR = re.compile(
     r"(?:[一二三]审|初审|复审|终审|责任编辑|责编|编辑|校对|审核人?|审稿|签发人?|撰稿人?|供稿)\s*[:：]"
 )
@@ -2178,8 +3005,8 @@ _NOT_NAMES = frozenset(
         "公章",
     }
 )
-_CONTACT_MARK = "（联系人见原文）"
-_EDITOR_MARK = "（署名已隐去）"
+_CONTACT_MARK = "（这里隐去了联系人）"
+_EDITOR_MARK = "（这里隐去了署名）"
 
 
 def _person(word: str) -> bool:
@@ -2227,7 +3054,7 @@ def _mask_line(line: str, tokens: list[str], mark: str) -> str:
 def _mask_contact_names(text: str) -> str:
     """给出正文前，联系人所在的行、只写了电话的行、网站编审署名里像姓名的词（常见姓氏开头的
     2–3 个字，和入库脱敏认姓名同一套）再遮一遍。以前入库时只遮了"联系人："后面的第一个词：
-    "联系人：（联系人见原文）某某处 张三"的张三、"刘老师，电话……""一审：张三"都还在
+    "联系人：（这里隐去了联系人）某某处 张三"的张三、"刘老师，电话……""一审：张三"都还在
     （D-092 让名单类通知的正文也能读，10/25 用本机数据副本实测发现；Grok、agy 审阅补了连写、
     拆行、空格隔开的写法）。"""
     out = []
@@ -2264,38 +3091,487 @@ def _mask_contact_names(text: str) -> str:
     return "\n".join(out)
 
 
+# 附件里的联系人姓名（11/2 F13），只在显示时遮。认姓名和正文同一套（_masked：常见姓氏开头的
+# 2–3 个字、"刘老师""张三处长"这类带称呼的、"高新处张三"单位后面的姓名），但只看这几处：
+#   1. "联系人""经办人""电话""一审"这类标签后面，到下一个"××："标签、句末为止（40 个字以内）；
+#   2. 紧挨在号码前面的那个词（"刘老师，（这里隐去了电话）""徐丽萍 （这里隐去了电话）"），
+#      和紧挨在"电话：""联系电话："标签前面的那个词（"电力处 梁弢；联系电话："）；
+#   3. "联系人："写在行尾时，下一行有号码（或只有一个词）的那一行；
+#   4. 表格：列名是"联系人""负责人""姓名"这类的格子，和只写着"联系人"那一格的下一格。
+# 正文那套是整行判断（行里有"联系人""联系方式"就把整行像姓名的词都遮）：附件里的表头、长表格行、
+# 长句子这样遮会误遮"万元""申请日""安装""成长期"这类词（本机库全量对比看到的），所以收窄到上面几处
+_ATT_LABEL = re.compile(
+    rf"(?:联\s*系\s*人|联\s*络\s*人|经\s*办\s*人)(?:及其?(?:电话|手机|职务|联系方式))?\s*[:：]?"
+    rf"|联系方式\s*[:：]|{_PHONE_LABEL.pattern}"
+)
+_ATT_FIELD = re.compile(rf"[{_HAN_CHAR}]{{2,6}}\s*[:：]")
+_ATT_STOP = re.compile(r"[。；;！？!?\n]")
+_ATT_WINDOW = 40
+_ATT_BEFORE_PHONE = re.compile(rf"([{_HAN_CHAR}·](?: ?[{_HAN_CHAR}·]){{1,5}})[\s，,、:：]*$")
+# 紧挨在"电话：""联系电话："这类标签前面的那个词（"电力处 梁弢；联系电话：……"，11/2 Codex 审阅）
+# 词和标签之间要隔着标点或空格："储备课题技术电话""纪检监察组联系电话"这类和标签连在一起的
+# 是部门、事项名，不是姓名（本机库全量对比看到的）
+_ATT_BEFORE_LABEL = re.compile(rf"([{_HAN_CHAR}·](?: ?[{_HAN_CHAR}·]){{1,5}})[\s，,、；;。.]+$")
+_NAME_HEAD = re.compile(r"联\s*系\s*人|联\s*络\s*人|经\s*办\s*人|负\s*责\s*人|姓\s*名|填\s*表\s*人")
+_BARE_NAME_LABEL = re.compile(
+    r"(?:联\s*系\s*人|联\s*络\s*人|经\s*办\s*人|负\s*责\s*人|姓\s*名)"
+    r"(?:及其?(?:电话|手机|职务|联系方式))?\s*[:：]?"
+)
+_ONLY_PHONES = re.compile(rf"(?:{_PHONE}|[\s、/，,;；])+")
+# 附件表格里常见、像姓名（常见姓氏开头的两个字）但不是姓名的词（本机库全量对比看到的）：
+# 金额单位（"总经费（万元）"）、"团队成员"
+_ATT_NOT_NAMES = frozenset(
+    {
+        "万元",
+        "亿元",
+        "千元",
+        "百元",
+        "成员",
+        "韩语",
+        "英语",
+        "日语",
+        "俄语",
+        "法语",
+        "德语",
+        "汉语",
+        "外语",
+        # 职务（"职务 | 科员"，"科"是姓氏，11/2 复测）
+        "科员",
+        "职员",
+        "干部",
+        "专员",
+        "主任",
+        "副主任",
+        "处长",
+        "副处长",
+        "科长",
+        "副科长",
+        "局长",
+        "副局长",
+        "经理",
+        "主管",
+        "会计",
+        "出纳",
+        "文员",
+        "秘书",
+        # 以常见姓氏的字开头、其实是栏目名或常用词的（"成绩 85213456""金额（2060502）"，
+        # 11/3 agy、独立审阅）
+        "成绩",
+        "金额",
+        "方向",
+        "毕业",
+        "关系",
+        "范围",
+        "简介",
+        "分数",
+        "得分",
+        "总分",
+        "名次",
+        "成本",
+        "费用",
+        "经费",
+        "资金",
+        "项目",
+        "代码",
+        "编码",
+        "批次",
+        "期限",
+        "计划",
+        "单价",
+        "数量",
+        "总计",
+        "合计",
+        "小计",
+        "余额",
+        "利润",
+        "收入",
+        "支出",
+        "预算",
+        "定额",
+        "基数",
+    }
+)
+# 少见姓的姓名（"丘珞珈""和文丹"，11/2 复测）：只在把握大的位置上不靠姓氏表认——"联系人：""姓名："
+# 这类标签紧后面的第一个词、列名是"姓名""联系人"的格子、"××中心吴艳丽、（这里隐去了联系人）"这样写在
+# 已遮联系人前面的。2–3 个汉字，不以单位用字结尾，不是"本人""暂无""见附件"这类
+_NOT_NAME_WORDS = frozenset(
+    {
+        "本人",
+        "暂无",
+        "待定",
+        "见附件",
+        "详见",
+        "同上",
+        "姓名",
+        "电话",
+        "手机",
+        "邮箱",
+        "职务",
+        "职称",
+        "地址",
+        "备注",
+        "负责人",
+        "联系人",
+        "经办人",
+        "无",
+        "略",
+        "男",
+        "女",
+        "单位",
+        "本单位",
+        "部门",
+        # 表格里的栏目名（空白表格"姓名 | 性别 | 年龄"，11/2 复测）
+        "序号",
+        "类型",
+        "名称",
+        "语言",
+        "带头人",
+        "性别",
+        "年龄",
+        "国籍",
+        "学历",
+        "学位",
+        "民族",
+        "籍贯",
+        "专业",
+        "职业",
+        "岗位",
+        "身份",
+        "出生",
+        "年月",
+        "日期",
+        "签字",
+        "签名",
+        "盖章",
+        "排名",
+        "分工",
+        "角色",
+        "合计",
+        "小计",
+    }
+)
+_NAME_TAIL_UNITS = tuple(_UNIT_END_CHARS + "心司校县市省位")
+_NAME_LABEL_FIRST = re.compile(
+    rf"(?:联\s*系\s*人|联\s*络\s*人|经\s*办\s*人|负\s*责\s*人|姓\s*名)\s*[:：]\s*"
+    # 后面紧跟冒号的是栏目名（空白表格"负责人： 填表人： 日期："），不是名字
+    rf"([{_HAN_CHAR}]{{2,3}})(?![{_HAN_CHAR}])(?![ \t\u3000]*[:：])"
+)
+# 单位只认"处科室局厅委办心所院站"这些结尾（"社会发展，"里的"会"不算）
+_NAME_BEFORE_CONTACT = re.compile(
+    rf"(?<=[处科室局厅委办心所院站])([{_HAN_CHAR}]{{2,3}})"
+    r"(?=[ \t\u3000]*[、，,][ \t\u3000]*（这里隐去了联系人）)"
+)
+
+
+def _sure_name_word(token: str) -> bool:
+    """把握大的位置上，这个词能不能当姓名遮（不看姓氏表）。"""
+    return (
+        2 <= len(token) <= 3
+        and re.fullmatch(f"[{_HAN_CHAR}]+", token) is not None
+        and token not in _NOT_NAME_WORDS
+        and token not in _ATT_NOT_NAMES
+        and not token.endswith(_NAME_TAIL_UNITS)
+    )
+
+
+def _mask_sure_names(line: str) -> str:
+    """标签紧后面、写在已遮联系人前面的姓名，不靠姓氏表直接遮。"""
+    if "人" not in line and "名" not in line and "隐去了联系人" not in line:
+        return line
+
+    def repl(match: re.Match[str]) -> str:
+        name = match.group(1)
+        if not _sure_name_word(name):
+            return match.group(0)
+        return match.group(0)[: match.start(1) - match.start(0)] + _CONTACT_MARK
+
+    line = _NAME_LABEL_FIRST.sub(repl, line)
+    return _NAME_BEFORE_CONTACT.sub(_before_contact, line)
+
+
+def _before_contact(match: re.Match[str]) -> str:
+    """写在已遮联系人前面的名字：3 个字里后两个字像姓名时只遮后两个（"中国科协高博、"）。"""
+    token = match.group(1)
+    if len(token) == 3 and not _person(token) and _person(token[1:]):
+        return token[0] + _CONTACT_MARK
+    return _CONTACT_MARK if _sure_name_word(token) else token
+
+
+# 列名是"联系人""姓名"这类的格子，内容不超过这么多字才整格按姓名遮；长的（一段话）照 1–3 判断
+_NAME_CELL_MAX = 20
+
+
+def _att_window(line: str, start: int) -> int:
+    """标签后面从 start 起，姓名只看到哪里为止：下一个"××："标签、句末、40 个字。"""
+    end = min(len(line), start + _ATT_WINDOW)
+    for pattern in (_ATT_STOP, _ATT_FIELD):
+        found = pattern.search(line, start, end)
+        if found is not None:
+            end = found.start()
+    return end
+
+
+def _att_name_token(word: str) -> bool:
+    """这个词要不要交给认姓名那一步：不是"万元""成员"，也不是以它们结尾的单位词（"团队成员"）。"""
+    if not word or word in _ATT_NOT_NAMES:
+        return False
+    tail = _UNIT_THEN_NAME.search(word)
+    return tail is None or tail.group(1) not in _ATT_NOT_NAMES
+
+
+def _mask_span(line: str, start: int, end: int, mark: str) -> str:
+    piece = line[start:end]
+    tokens = [w for w in _CONTACT_SPLIT.split(piece) if _att_name_token(w)]
+    return line[:start] + _mask_line(piece, tokens, mark) + line[end:]
+
+
+def _mask_attachment_line(line: str, after_label: bool) -> str:
+    """附件里的一行：按上面 1–3 遮姓名。after_label：上一行以"联系人："这类标签结尾。"""
+    line = _mask_sure_names(line)
+    spans: list[tuple[int, int, str]] = []
+    for label in _ATT_LABEL.finditer(line):
+        spans.append((label.end(), _att_window(line, label.end()), _CONTACT_MARK))
+    for label in _EDITOR.finditer(line):
+        spans.append((label.end(), _att_window(line, label.end()), _EDITOR_MARK))
+    if after_label and (_PHONE_ANY.search(line) or len(line.strip()) <= 8):
+        spans.append((0, _att_window(line, 0), _CONTACT_MARK))
+    for phone in _PHONE_ANY.finditer(line):
+        if phone.group(0) != PHONE_MARK and not _is_phone_number(line, phone):
+            # "金额：3000000元"：后面接金额单位、像日期、"编号"后面的数不是号码，
+            # 前面的词不当姓名（11/3）
+            continue
+        before = _ATT_BEFORE_PHONE.search(line, 0, phone.start())
+        if before is not None:
+            spans.append((before.start(1), before.end(1), _CONTACT_MARK))
+    for label in _PHONE_LABEL.finditer(line):
+        # 标签前面紧挨着的"联系"是标签的一部分（"联系电话："），不算在词里
+        end = label.start() - 2 if line[: label.start()].endswith("联系") else label.start()
+        before = _ATT_BEFORE_LABEL.search(line, 0, end)
+        if before is not None:
+            spans.append((before.start(1), before.end(1), _CONTACT_MARK))
+    # 从后往前遮，前面的位置不变；重叠的只遮一次
+    done = len(line)
+    for start, end, mark in sorted(spans, reverse=True):
+        end = min(end, done)
+        if start < end:
+            line = _mask_span(line, start, end, mark)
+            done = start
+    # 再补一遍：上面刚遮掉的联系人前面写着的名字（"××中心吴艳丽、吴丹，号码"，开头那遍时"吴丹"
+    # 还没遮成标记，11/2 独立审阅）
+    return _mask_sure_names(line)
+
+
+def _mask_attachment_names(text: str) -> str:
+    """附件一段文字里的联系人姓名（按行判断，"联系人："写在行尾时看下一行）。"""
+    out = []
+    after_label = False
+    for line in text.split("\n"):
+        if not line.strip():
+            out.append(line)
+            continue
+        masked = _mask_attachment_line(line, after_label)
+        after_label = _LABEL_AT_END.search(line) is not None
+        out.append(masked)
+    return "\n".join(out)
+
+
+# 附件名里混进的网页脚本（"……信息表.xlsdocument.getElementById('Appendix').style.display='block';"：
+# 采集时把页面脚本连着附件链接的文字一起取了；11/2 复测，本机库 41 份通知 72 个附件）：
+# 显示时从脚本开头截掉
+_SCRIPT_IN_NAME = re.compile(
+    r"document\.|window\.|javascript:|getElementById|function\s*\(|<script|\$\(|onclick",
+    re.IGNORECASE,
+)
+
+
+def display_attachment_name(name: str) -> str:
+    """附件名给页面的写法：网页脚本截掉。"""
+    cut = _SCRIPT_IN_NAME.search(name)
+    if cut is None:
+        return name
+    return name[: cut.start()].rstrip(" ;；,，") or name[: cut.start()]
+
+
+def display_body_text(text: str) -> str:
+    """正文给页面的写法：入库时已经按整行遮过联系人姓名，这里再按上面 1–4 补遮漏掉的
+    （"电力处 梁弢；联系电话："，11/2 Codex 审阅），再走 display_text。"""
+    return display_text(_mask_attachment_names(_mask_phones(display_marks(text))))
+
+
+# 交给模型的正文（D-114 独立审阅）：协议写“发送前隐去其中的身份证号、手机号、电话、邮箱、
+# 银行账号和联系人姓名”。入库那层脱敏之外，再按页面上同一套规则补遮号码、联系人姓名和邮箱；
+# 补遮的地方写回入库的标记（“[电话已脱敏]”这类），和以前交给模型的写法一样，AI 原句核对遇到
+# 标记照旧不用那一句。网址不遮：不是个人信息，申报方式里要用；也不做页面上的标记整理
+_TO_STORE_MARKS = (
+    ("（这里隐去了电话）", "[电话已脱敏]"),
+    ("（这里隐去了联系人）", "[姓名已脱敏]"),
+    ("（这里隐去了署名）", "[姓名已脱敏]"),
+    ("（这里隐去了邮箱）", "[邮箱已脱敏]"),
+    ("（这里隐去了证件号）", "[身份证号已脱敏]"),
+    ("（这里隐去了银行账号）", "[银行账号已脱敏]"),
+)
+
+
+def model_body_text(text: str) -> str:
+    """交给模型的正文：传入入库脱敏后的文字（redact_sensitive 的结果），按页面那套规则补遮，
+    标记写成入库的写法。顺序和页面一样：先按整行遮联系人（_clean_reading_body 里那一道），再补遮
+    号码、姓名，最后邮箱；页面上删按钮、并空行这些整理不做，段落位置和交给模型的文字对得上。
+    处理两次结果一样。"""
+    shown = _mask_contact_names(display_marks(text))
+    shown = _hide_emails(_mask_phones(_mask_attachment_names(_mask_phones(shown))))
+    for old, new in _TO_STORE_MARKS:
+        shown = shown.replace(old, new)
+    return shown
+
+
+def display_attachment_text(text: str) -> str:
+    """附件一段文字（不是表格的格子）给页面的写法：先补遮号码、再遮姓名，再走 display_text。"""
+    return display_text(_mask_attachment_names(_mask_phones(display_marks(text))))
+
+
+def display_attachment_row(cells: list[tuple[str, str]]) -> list[str]:
+    """附件表格一行各格的内容（列名、内容都已按入库规则遮过号码）给页面的写法：遮联系人姓名后走
+    display_text。列名本身照 display_text 给，由调用方处理。"""
+    pairs = [(display_marks(head), _mask_phones(display_marks(value))) for head, value in cells]
+    # 电话列（列名是电话类）的格子，和左边一格只写着"联系方式：""电话"这类标签的格子（两列的
+    # "项目 | 内容"表，11/3 全库扫描），里面像号码的都遮
+    pairs = [
+        (
+            head,
+            _mask_local_numbers(value)
+            if _PHONE_HEAD.search(head)
+            or (i and _BARE_PHONE_LABEL.fullmatch(pairs[i - 1][1].strip()))
+            else value,
+        )
+        for i, (head, value) in enumerate(pairs)
+    ]
+    out = []
+    for i, (head, value) in enumerate(pairs):
+        previous = pairs[i - 1][1].strip() if i else ""
+        by_head = _NAME_HEAD.search(head)
+        named = by_head or (previous and _BARE_NAME_LABEL.fullmatch(previous))
+        if by_head and _sure_name_word(value.strip().replace(" ", "")):
+            # 列名是"姓名""联系人"这类、整格就是一个 2–3 字的名字：不看姓氏表也遮
+            # （"和文丹"，11/2 复测）。只看列名，不看"上一格写着姓名"：空白表格
+            # "姓名 | 性别 | 年龄"里的栏目名不是名字（11/2 独立审阅）
+            masked = value.replace(value.strip(), _CONTACT_MARK)
+        elif named and len(value.strip()) <= _NAME_CELL_MAX:
+            # 列名是"联系人""姓名"这类，或者上一格只写着"联系人"：这一格像姓名的都遮
+            masked = _mask_span(value, 0, len(value), _CONTACT_MARK)
+        else:
+            masked = _mask_attachment_names(value)
+            following = pairs[i + 1][1].strip() if i + 1 < len(pairs) else ""
+            if following and _ONLY_PHONES.fullmatch(following):
+                # 下一格只有号码：这一格整格像姓名就遮（"信推处 | 徐丽萍 | （这里隐去了电话）"）
+                word = value.strip().replace(" ", "")
+                if word and _att_name_token(word) and _masked(word, _CONTACT_MARK) == _CONTACT_MARK:
+                    masked = value.replace(value.strip(), _CONTACT_MARK)
+        out.append(display_text(masked))
+    # 同一行里已经有遮掉的联系人或电话（表头没写"电话"的联系人表，11/3 独立审阅）：
+    # 单独一个号码的格子也遮；列名是金额、数量、编号、日期这类的不算
+    # 左边一格是单位名（"某某局 | 号码 | 地址"这样没写列名的通讯录表）的也遮
+    marked_row = any(_CONTACT_MARK in v or PHONE_MARK in v for v in out)
+    for i, (head, value) in enumerate(pairs):
+        single = _SINGLE_PHONE_CELL.fullmatch(value.strip())
+        if single is None or _NUMERIC_HEAD.search(head):
+            continue
+        if not _is_phone_number(value.strip(), single):
+            continue
+        left = pairs[i - 1][1].strip() if i else ""
+        if marked_row or _ORG_CELL_END.search(left):
+            out[i] = PHONE_MARK
+    return out
+
+
+@dataclass
+class ReadingBody:
+    """一份通知的正文给不给、给哪一份（详情页和阅读页同一个判断，D-097）。
+
+    status：ok 给文字（text 是清理、脱敏后的全文；hidden：名单类挡掉了名单内容）；list 名单类通知的
+    正文几乎全是名单（reason=list），或名单没能和通知文字分开（reason=mixed），只给查名单；
+    personal 个人事项（资讯与指南、其他类的标题写着招聘、职称等）和失信、个人类名单，不给；
+    none 没有能显示的正文，reason 写页面上怎么说：attachments 这份通知列着附件（"这份通知的内容在
+    附件里"），site 没有附件（"这个网站的正文还取不到"），link_gone 原网页已失效（"原网页已打不开，
+    正文暂不提供"）。
+    problem：none 的具体原因（运维日报按网站统计）：empty 没取到正文；chrome 取到的像网页导航；
+    short_list 名单类通知挡完名单剩的字太少（D-092 的下限）；link_gone 原网页已失效。"""
+
+    status: str
+    text: str = ""
+    owner_id: int | None = None
+    hidden: bool = False
+    reason: str | None = None
+    problem: str | None = None
+
+
+def _no_body(problem: str, *, attachments: bool | None, owner_id: int | None = None) -> ReadingBody:
+    reason = None if attachments is None else ("attachments" if attachments else "site")
+    return ReadingBody("none", owner_id=owner_id, reason=reason, problem=problem)
+
+
+def _judge_text(
+    cleaned: str,
+    kind: str,
+    *,
+    list_filter: Callable[[str], list_body.Filtered] | None,
+    attachments: bool | None,
+    owner_id: int | None = None,
+) -> ReadingBody:
+    """已清理、脱敏的正文能不能显示：名单类先挡掉名单内容（D-092），再看是不是像网页导航。"""
+    hidden = False
+    if list_filter is not None:
+        result = list_filter(cleaned)
+        if result.text is None and result.reason == "short":
+            # 没认出名单、挡完剩的字又太少（D-092 的下限，防止短名单漏出来）
+            return _no_body("short_list", attachments=attachments, owner_id=owner_id)
+        if result.text is None:
+            return ReadingBody("list", owner_id=owner_id, reason=result.reason)
+        cleaned, hidden = result.text, result.hidden
+    if not cleaned:
+        return _no_body("empty", attachments=attachments, owner_id=owner_id)
+    if page_chrome_only(cleaned):
+        return _no_body("chrome", attachments=attachments, owner_id=owner_id)
+    return ReadingBody("ok", text=cleaned, owner_id=owner_id, hidden=hidden)
+
+
+def body_payload(body: ReadingBody) -> dict:
+    """详情接口的 body：ok 给前 2 万字和全文字数；个人事项写 original（旧版小程序按"不展示"说）；
+    没有能显示的正文给 none 和原因。"""
+    if body.status == "ok":
+        payload = {
+            "status": "ok",
+            "text": body.text[:BODY_MAX_CHARS],
+            "total": len(body.text),
+            "truncated": len(body.text) > BODY_MAX_CHARS,
+        }
+        if body.hidden:
+            payload["listHidden"] = True
+        return payload
+    if body.status == "personal":
+        return {"status": "original", "reason": "personal"}
+    if body.status == "list":
+        return {"status": "list"}
+    return {"status": "none", "reason": body.reason} if body.reason else {"status": "none"}
+
+
 def body_for_reading(
     text: str | None,
     kind: str,
     *,
     list_filter: Callable[[str], list_body.Filtered] | None = None,
+    title: str | None = None,
 ) -> dict:
-    """详情页正文：ok 给文字；其他类给 original（可能有个人姓名），没抓到完整正文给 none。
-    名单类：给了 list_filter（list_body_filter，D-092）的挡掉名单后给文字（真挡掉了名单的带
-    listHidden，页面给去查名单的入口），挡完剩得太少或没挡住的给 list；没认出名单、正文本来就
-    太短的（没抓到正文、多半没抓全）和别的类一样给 none。"""
+    """一段正文按详情页的规则给不给（不查库、不看附件，没正文时不写原因）。资讯与指南、其他类要
+    给标题（title）才能判断是不是个人事项，没给按个人事项算。名单类：给了 list_filter
+    （list_body_filter，D-092）的挡掉名单后给文字，没给的按 list 说。"""
     if kind == "名单" and list_filter is None:
         return {"status": "list"}
-    if kind not in BODY_KINDS and kind != "名单":
-        return {"status": "original"}
-    cleaned = _clean_reading_body(text)
-    hidden = False
-    if list_filter is not None:
-        result = list_filter(cleaned)
-        if result.text is None:
-            return {"status": "none" if result.reason == "short" else "list"}
-        cleaned, hidden = result.text, result.hidden
-    elif len(cleaned) < BODY_MIN_CHARS:
-        return {"status": "none"}
-    body = {
-        "status": "ok",
-        "text": cleaned[:BODY_MAX_CHARS],
-        "total": len(cleaned),
-        "truncated": len(cleaned) > BODY_MAX_CHARS,
-    }
-    if hidden:
-        body["listHidden"] = True
-    return body
+    if kind != "名单" and not body_open(title if title is not None else "招聘", kind):
+        return body_payload(ReadingBody("personal"))
+    body = _judge_text(_clean_reading_body(text), kind, list_filter=list_filter, attachments=None)
+    if body.status == "ok":
+        body.text = display_body_text(body.text)
+    return body_payload(body)
 
 
 def list_body_filter(session: Session, doc: Document) -> Callable[[str], list_body.Filtered] | None:
@@ -2306,6 +3582,59 @@ def list_body_filter(session: Session, doc: Document) -> Callable[[str], list_bo
     return list_body.filter_for(session, group_ids(session, doc.id), min_chars=list_body.MIN_CHARS)
 
 
+def body_withheld(doc: Document, kind: str) -> bool:
+    """个人事项（资讯与指南、其他类）和失信、个人类名单：正文不给（详情页、阅读页都一样）。"""
+    if kind == "名单":
+        return not list_body.readable(doc.title)
+    return not body_open(doc.title, kind)
+
+
+def reading_body(
+    session: Session,
+    doc: Document,
+    kind: str,
+    *,
+    attachments: bool,
+    redact=redact_sensitive,
+) -> ReadingBody:
+    """详情页和阅读页给的正文（D-097：两处同一个判断）。attachments：这份通知列着附件（没有能显示
+    的正文时，页面说"内容在附件里"还是"正文还取不到"）。原网页已失效的不给（D-097"维持现状不给，
+    统计失效原因后另议"；以前详情页还显示之前收录的正文、阅读页不给，两处不一致），组里原网页已失效
+    的其他网址的正文也不用。"""
+    if body_withheld(doc, kind):
+        # 失信、处罚类和个人类名单：和别的个人事项一样不展示，不引导去查名单
+        return ReadingBody("personal")
+    if doc.link_gone_at is not None:
+        return ReadingBody("none", reason="link_gone", problem="link_gone")
+    list_filter = list_body_filter(session, doc) if kind == "名单" else None
+    if list_filter is not None:
+        allowed: tuple[str, ...] = LIST_BODY_KINDS
+    elif kind in BODY_KINDS:
+        allowed = BODY_KINDS
+    else:
+        allowed = (*BODY_KINDS, *OPEN_BODY_KINDS)
+    chosen = _reading_body_selection(
+        session,
+        doc.id,
+        redact=redact,
+        live_only=True,
+        allowed_kinds=allowed,
+        for_reading=True,
+        list_filter=list_filter,
+    )
+    if chosen is None:
+        return _no_body("empty", attachments=attachments)
+    owner_id, _, cleaned = chosen
+    body = _judge_text(
+        cleaned, kind, list_filter=list_filter, attachments=attachments, owner_id=owner_id
+    )
+    if body.status == "ok":
+        # 只在给页面的文字上做（display_text）；挑用哪一份正文、判断能不能显示都按原来的文字，
+        # AI 解读另取原文（_reading_body），都不受影响
+        body.text = display_body_text(body.text)
+    return body
+
+
 def _reading_body_selection(
     session: Session,
     doc_id: int,
@@ -2313,12 +3642,19 @@ def _reading_body_selection(
     redact=redact_sensitive,
     live_only: bool = False,
     allowed_kinds: tuple[str, ...] | None = BODY_KINDS,
+    for_reading: bool = False,
+    list_filter: Callable[[str], list_body.Filtered] | None = None,
 ) -> tuple[int, str, str] | None:
     """主文足够可读就优先用；否则依长度、编号依次尝试转载，不一次载入全部正文。
 
-    返回实际来源编号、原始文字、清洗后文字。都不足时保留首个候选，让调用方继续显示收录不足；
+    返回实际来源编号、原始文字、清洗后文字。都不足时保留首个候选，让调用方继续说没有正文；
     live_only 由原生阅读启用，旧 AI 结果保留原站撤下后的既有处理规则。
     allowed_kinds=None 仅供管理报告统计历史采集范围，公开阅读保持默认类型限制。
+    for_reading（详情页、阅读页，D-097）：像网页导航的、空的不算可读，跳过去看别的网址；资讯与指南、
+    其他类标题写着个人事项的网址不用；都不可读时给第一个候选（调用方据此说"像网页导航"）。
+    名单类（给了 list_filter）先挡掉名单再看：几乎全是名单、名单分不开的就用这一份（页面说去
+    查名单）；挡完剩的字太少、剩下的像网页导航，才看别的网址。
+    AI 解读不加 for_reading，挑法和以前一样。
     """
     stmt = (
         select(Document.id, Document.title, Document.kind_override)
@@ -2340,9 +3676,12 @@ def _reading_body_selection(
     )
     if live_only:
         stmt = stmt.where(Document.link_gone_at.is_(None))
-    fallback = None
-    for candidate_id, title, kind in session.execute(stmt).all():
-        if allowed_kinds is not None and effective_kind(title, kind) not in allowed_kinds:
+    first = fallback = None
+    for candidate_id, title, override in session.execute(stmt).all():
+        kind = effective_kind(title, override)
+        if allowed_kinds is not None and kind not in allowed_kinds:
+            continue
+        if for_reading and kind in OPEN_BODY_KINDS and personal_matter(title):
             continue
         raw = session.scalar(
             select(DocumentDetail.body_text).where(DocumentDetail.document_id == candidate_id)
@@ -2351,11 +3690,26 @@ def _reading_body_selection(
             continue
         cleaned = _clean_reading_body(raw, redact=redact)
         candidate = candidate_id, raw, cleaned
-        if len(cleaned) >= BODY_MIN_CHARS:
+        usable = not for_reading or _usable_for_reading(cleaned, list_filter)
+        if usable and len(cleaned) >= BODY_MIN_CHARS:
             return candidate
-        if fallback is None:
+        if usable and fallback is None:
             fallback = candidate
-    return fallback
+        if first is None:
+            first = candidate
+    return fallback or first
+
+
+def _usable_for_reading(
+    cleaned: str, list_filter: Callable[[str], list_body.Filtered] | None
+) -> bool:
+    """这一份正文在详情页、阅读页算不算可读（挑合并转载里用哪一份时用）。"""
+    if list_filter is None:
+        return bool(cleaned) and not page_chrome_only(cleaned)
+    result = list_filter(cleaned)
+    if result.text is None:
+        return result.reason in ("list", "mixed")
+    return not page_chrome_only(result.text)
 
 
 def _reading_body(
@@ -2368,7 +3722,7 @@ def _reading_body(
 @router.get("/documents/{doc_id}")
 def document(doc_id: int, session: SessionDep) -> dict:
     """文件详情：要点、附件、原文出处、正文（供阅读）；截止日期只给核对通过的。"""
-    from youju.ai import interpret
+    from youju.ai import content, interpret
 
     if is_taken_down(session, doc_id):
         raise HTTPException(status_code=404, detail="该文件已下架")
@@ -2383,20 +3737,28 @@ def document(doc_id: int, session: SessionDep) -> dict:
     # 不写它自己的开关，免得两个服务设置不一样时入口一边显示、一边拒绝。
     ai_reason: str | None = None
     try:
-        interpret.eligible_body(session, doc.id)
+        content.check(session, doc.id)
     except interpret.InterpretRefusal as exc:
         ai_reason = exc.code or "unavailable"
     ai_eligible = ai_reason is None
     detail = _details(session, [doc.id]).get(doc.id)
+    attachment_rows = sorted(detail.attachments, key=lambda a: a.position) if detail else []
     approved = _approved(session, [doc.id]).get(doc.id, [])
     deadline_views, _, _ = deadline_excerpts.batch(
         session, [doc.id], {doc.id: approved}, now().date()
     )
     pending = not approved and doc.id in _pending(session, [doc.id])
     kind = effective_kind(doc.title, doc.kind_override)
-    fields = _approved_fields(session, [doc.id]).get(doc.id, {}) if kind == "申报通知" else {}
+    # 支持方式、申报对象、申报条件的原句按显示层给（F11），只改返回的这份
+    fields = (
+        _shown_fields(_approved_fields(session, [doc.id]).get(doc.id, {}))
+        if kind == "申报通知"
+        else {}
+    )
     # 申报条件（D-052 第④项）：只给整份人工确认过、和现在这版正文对得上的清单
-    apply_conditions = public_conditions(session, doc.id) if kind == "申报通知" else None
+    apply_conditions = (
+        _shown_conditions(public_conditions(session, doc.id)) if kind == "申报通知" else None
+    )
     status_value = application_status(approved) if kind == "申报通知" else None
     issuer = normalize_issuer(detail.issuer if detail and detail.issuer else src.dept_full_name)
     points = [["发文机关", issuer]]
@@ -2422,8 +3784,8 @@ def document(doc_id: int, session: SessionDep) -> dict:
             "verified": True,
             "notes": [_fmt_deadline_note(d) for d in approved[1:]],
         }
-        # 摘录只给核对过的那句原文证据
-        excerpt = {"section": "截止时间原文", "text": main.evidence}
+        # 摘录只给核对过的那句原文证据（按显示层给，F11）
+        excerpt = {"section": "截止时间原文", "text": shown_quote(main.evidence)}
         checked = main.reviewed_at.astimezone(_TZ).date().isoformat() if main.reviewed_at else None
 
     # 已变更的截止（延期、调整、撤销）：不再当作有效截止，写明原因并链接到新通知
@@ -2463,22 +3825,12 @@ def document(doc_id: int, session: SessionDep) -> dict:
             }
         )
 
-    from youju import deadline_clues as clues
-    from youju import rewards
-
-    can_submit_clue = (
-        rewards.enabled(get_settings())
-        and kind == "申报通知"
-        and not approved
-        and clues.pending_count(session) < 50
-    )
     payload = {
         "ai": {
             "interpret": ai_eligible,
             "clause": ai_eligible,
             "reason": ai_reason,
         },
-        "can_submit_deadline_clue": can_submit_clue,
         "id": str(doc.id),
         "kind": kind,
         "tags": [kind],
@@ -2509,21 +3861,22 @@ def document(doc_id: int, session: SessionDep) -> dict:
         "host": urlsplit(doc.url).hostname or "",
         "deadline": deadline,
         "deadline_state": deadline_state(approved, pending),
-        "deadlines": [view.public(now().date()) for view in deadline_views.get(doc.id, [])]
+        "deadlines": [
+            shown_due(view.public(now().date())) for view in deadline_views.get(doc.id, [])
+        ]
         if effective_kind(doc.title, doc.kind_override) == "申报通知"
         else [],
         "deadline_changes": deadline_changes,
         "points": points,
         "excerpt": excerpt,
-        # 附件：存有副本的可以在小程序里打开（preview），其他的给原因（youju/attachments.py）
-        "attachments": attachment_items(
-            session,
-            detail.attachments if detail else [],
-            kind=kind,
-            recent=is_recent(doc.publish_date, doc.first_seen_at, now(), kind=kind),
-        ),
+        "attachments": _detail_attachments(session, doc, kind, attachment_rows),
         "checked": checked,
-        "body": _detail_body(session, doc, kind),
+        # 正文（D-097）：和阅读页同一个判断（原网页已失效的不给）
+        "body": body_payload(
+            reading_body(
+                session, doc, kind, attachments=bool(attachment_rows), redact=attachment_text.mask
+            )
+        ),
     }
     if fields:
         payload["fields"] = fields
@@ -2538,15 +3891,32 @@ def document(doc_id: int, session: SessionDep) -> dict:
     return payload
 
 
-def _detail_body(session: Session, doc: Document, kind: str) -> dict:
-    list_filter = list_body_filter(session, doc) if kind == "名单" else None
-    if kind == "名单" and list_filter is None:
-        # 失信、处罚类和个人类名单：和站内阅读页一样按"不展示"说，不引导去查名单
-        return {"status": "original"}
-    allowed = LIST_BODY_KINDS if list_filter is not None else BODY_KINDS
-    return body_for_reading(
-        _reading_body(session, doc.id, allowed_kinds=allowed), kind, list_filter=list_filter
+def _detail_attachments(
+    session: Session, doc: Document, kind: str, rows: list[DocumentAttachment]
+) -> list[dict]:
+    """详情页的附件：能不能在小程序里读（readable、state、stateText、scannedPages）和阅读页同一个
+    判断（attachment_text.judge，D-097）。preview、reason 是附件副本能不能下载，旧版小程序还在用，
+    照旧给，不能当成"能不能读"。"""
+    items = attachment_items(
+        session,
+        rows,
+        kind=kind,
+        recent=is_recent(doc.publish_date, doc.first_seen_at, now(), kind=kind),
     )
+    states = {r.attachment_id: r for r in attachment_text.judge(session, doc, rows, now())}
+    for item in items:
+        state = states[int(item["id"])]
+        item.update(
+            # 附件名里混进的网页脚本截掉（11/2 复测）
+            name=display_attachment_name(item["name"])
+            if isinstance(item.get("name"), str)
+            else item.get("name"),
+            readable=state.readable,
+            state=state.state,
+            stateText=state.note,
+            scannedPages=(state.scanned_pages or 0) if state.readable else 0,
+        )
+    return items
 
 
 def _repost_detail(session: Session, doc_id: int, info: dict[str, Any]) -> dict[str, Any]:
@@ -2794,7 +4164,7 @@ def _calendar_payload_excerpts(
                 "city": src.city,
                 "district": src.district,
                 "level": src.level,
-                "due": due.public(today) if due else None,
+                "due": shown_due(due.public(today)) if due else None,
                 "date": view.day.isoformat(),
                 "time": _hhmm(view.clock),
                 "region": (
@@ -2807,7 +4177,7 @@ def _calendar_payload_excerpts(
                 "hasDetail": True,
                 "verified": view.source == "verified",
                 "source": view.source,
-                "quote": view.quote,
+                "quote": shown_quote(view.quote),
                 "dueSoonUnverified": soon.get(doc.id, False),
             }
             (upcoming if open_now else past).append(item)
@@ -2997,19 +4367,30 @@ def _lookup_coverage(session: Session) -> dict[str, Any]:
     current = _time.monotonic()
     if cached and cached[0] == revision and current - cached[1] < LOOKUP_COVERAGE_TTL:
         return dict(cached[2])
-    lists_total, since = session.execute(
-        select(func.count(func.distinct(ListEntry.document_id)), func.min(Document.publish_date))
+    # 收录份数和查名单页下方"比对范围"（名单看板的统计，小程序把各类型的份数加起来）是同一个数，
+    # 直接用那份统计：同一通知的几个网址归并成一份（youju.dedup，查名单结果也是这样只列一次），只算
+    # 读出了企业名称的。以前这里按文件编号数，归并在一起的两个网址都解析出条目时多算一份（11/2 完整
+    # 测试第 6 条："已收录的 231 份名单中未找到"，下方"能查的名单 230 份"）
+    stats = list_board_report(session, days=30, page=1, size=1)["stats"]
+    lists_total = sum(item["lists"] for item in stats["by_type"])
+    since = session.scalar(
+        select(func.min(Document.publish_date))
+        .select_from(ListEntry)
         .join(Document, Document.id == ListEntry.document_id)
         .join(Source, Source.id == Document.source_id)
         .where(Source.rights_level == 1, available_condition(), list_title_allowed())
-    ).one()
+    )
     unread, partial = _unread_lists(session)
+    updated = sources_updated_at(session)
     coverage = {
         "lists": lists_total,
         "since": since.isoformat() if since else None,
         # "没查到"时如实说（D-091）：没读出企业名称的名单份数、只读了前面一部分的份数
         "unreadLists": unread,
         "partialLists": partial,
+        # 名单数据更新到哪天（D-091 设计稿第五节第 2 件"附收录范围和更新日期"）：和关于页的
+        # "最近更新"同一个时间（栏目最近一次检查成功）
+        "updatedAt": updated.astimezone(_TZ).isoformat() if updated else None,
     }
     _LOOKUP_COVERAGE["all"] = (revision, current, coverage)
     return dict(coverage)
@@ -3118,10 +4499,11 @@ def list_record(
         for stored in location.rows:
             # 存的时候已只留公开的列（list_evidence.shown_cell）；这里按列名再挡一次个人信息列
             # （名称列除外），文字再脱敏一遍。name：这一格是名称列（查到的那家单位）
+            # 文字按页面说法显示（display_text：遮过的号码写"（这里隐去了电话）"，紧跟着的号码也遮）
             cells = [
                 {
                     "h": cell.get("h") or "",
-                    "t": redact_sensitive(str(cell.get("t", ""))),
+                    "t": display_text(redact_sensitive(str(cell.get("t", "")))),
                     "name": bool(cell.get("n")),
                 }
                 for cell in stored.get("cells", [])
@@ -3154,9 +4536,10 @@ def list_record(
             "issuer": redact_sensitive(normalize_issuer(source.dept_full_name)),
             "date": document.publish_date.isoformat() if document.publish_date else None,
             "region": region_label(source.province, source.level, source.city, source.district),
-            # 只给网站名称和域名（和站内阅读的出处一样），不给原文链接
+            # 出处只给网站名称（D-097；和详情页"原文出处"同一个写法），不给域名和原文链接。
+            # 以前还给 host（域名），小程序写成"来源 kxjst.jiangsu.gov.cn"（11/2 完整测试第 2 条）；
+            # 旧版小程序拿不到 host 时不显示那一行
             "site": f"{source.dept_full_name}网站",
-            "host": urlsplit(document.url).hostname or "",
             "link_gone": link_gone_date(document.link_gone_at),
         },
         "evidence": {

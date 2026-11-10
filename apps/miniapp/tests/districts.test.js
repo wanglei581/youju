@@ -146,15 +146,18 @@ test('搜索三级选到区县：请求、已选条、弹层、关注保存、�
   const sheet = render('pages/search/index.wxml', page.data);
   const removable = findAll(sheet, (n) => n.attrs['data-group'] === 'district' && n.attrs.bindtap === 'removePicked');
   assert.deepEqual(removable.map((n) => n.attrs['data-option']), ['山东/青岛/市南区', '山东/青岛/市南区']);
-  assert.match(textOf(sheet), /省市区选项由微信提供，选项齐全不代表已收录数据/);
+  assert.doesNotMatch(textOf(sheet), /省市区选项由微信提供|会替换/);
+  assert.match(textOf(sheet), /城市选“全部”查全省；区县选“全部”只查这个市的市级来源，直辖市查整个直辖市。/);
   // 关注：保存的条件带区县，名称、摘要写出区县
   page.follow(); await settle();
   assert.equal(saved.conditions.districts, '山东/青岛/市南区'); assert.equal(saved.conditions.cities, undefined);
   assert.match(saved.name, /江苏、山东·青岛·市南区/);
-  // 关注页：卡片摘要有区县；回搜索时网址带区县，打开后条件完全一样
+  // 关注页：卡片上有区县（默认名称就是条件说明，只写名称一行，11/2 完整测试第 9 条）；回搜索时网址带区县，打开后条件完全一样
   const follow = followPage([{ id: 7, name: saved.name, newCount: 0, conditions: saved.conditions }]);
   follow.page.loadLive(); await settle();
-  assert.match(follow.page.data.follows[0].desc, /江苏、山东·青岛·市南区/);
+  assert.match(follow.page.data.follows[0].name, /江苏、山东·青岛·市南区/);
+  assert.equal(follow.page.data.follows[0].desc, '');
+  assert.match(conditions.describe(saved.conditions), /江苏、山东·青岛·市南区/);
   follow.page.searchFollow(tap({ id: 7 }));
   const back = searchPage();
   back.page.onLoad(Object.fromEntries(new URL(follow.targets.at(-1), URL_BASE).searchParams)); await settle();
@@ -579,7 +582,7 @@ test('真实接口层：搜索、关注、截止、日历、批量和条款对�
 
 const clauseCaps = () => ({ data_tools: { enabled: false, features: [], remaining: {} }, ai_advisor: { enabled: true, features: ['interpret', 'clause'], remaining: { interpret: 3, clause: 2 } } });
 function clauseStorage() {
-  const saved = new Map([[interpret.CONSENT_KEY, true]]);
+  const saved = new Map([[interpret.CONSENT_KEY, interpret.consentRecord()]]);
   return { saved, getStorageSync: (key) => saved.get(key), setStorageSync: (key, value) => saved.set(key, value) };
 }
 function clausePage(api, local) {
@@ -680,7 +683,7 @@ test('收录范围页和我的：区县另列、同名区县按省市分开，�
   assert.match(text, /已收录区县：山东·青岛·市南区（1 个栏目）、北京·朝阳区（2 个栏目）、江苏·南京·鼓楼区（1 个栏目）、福建·福州市·鼓楼区（1 个栏目）/);
   assert.match(text, /省市区选项来自微信，不代表已收录/);
   const me = textOf(render('pages/me/index.wxml', { stats: { sources: 9, provinces: 3, cities: 0, districts: 4 }, loginOpen: false }));
-  assert.match(me, /其中已收录 4 个区县的栏目/); assert.doesNotMatch(me, /个城市的栏目/);
+  assert.match(me, /其中已收录 4 个区县的部分栏目/); assert.doesNotMatch(me, /个城市/);
   for (const file of ['pages/search/index.wxml', 'pages/clients/index.wxml', 'pages/report/index.wxml', 'pages/advisor-clause/index.wxml']) {
     const source = read(file);
     assert.match(source, /<picker mode="region" custom-item="全部" value="\{\{cityRegion\}\}" bindchange="chooseCity">/, file);

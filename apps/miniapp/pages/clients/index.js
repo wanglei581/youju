@@ -141,8 +141,8 @@ Page({
   loadCities() {
     loadCoverage().then((c) => {
       this.coverage = c;
-      const cityNote = c && Array.isArray(c.cities) ? (c.cities.length ? `只已收录 ${c.cities.length} 个城市的部分来源，不代表全市完整覆盖。` : '当前尚未接入市级来源；城市可以保存，相关通知暂不可查询。') : '';
-      const districtNote = c && Array.isArray(c.districts) ? (c.districts.length ? `只已收录 ${c.districts.length} 个区县的部分来源。` : '当前尚未接入区县来源；区县可以保存，相关通知暂不可查询，不会改为全市或全省。') : '';
+      const cityNote = c && Array.isArray(c.cities) ? (c.cities.length ? `已收录 ${c.cities.length} 个城市的部分来源。` : '当前尚未接入市级来源；城市可以保存，相关通知暂不可查询。') : '';
+      const districtNote = c && Array.isArray(c.districts) ? (c.districts.length ? `已收录 ${c.districts.length} 个区县的部分来源。` : '当前尚未接入区县来源；区县可以保存，相关通知暂不可查询，不会改为全市或全省。') : '';
       this.setData({ cityCoverageNote: `${cityNote}${districtNote}`, cityOptions: (c && c.cities || []).map((v) => ({ key: `${v.province}/${v.city}`, label: `${v.province}·${v.city}` })),
         coverageError: c ? '' : '已收录城市、区县未加载，可重试；省级地区仍可选择' });
       if (this.data.editing) this.refreshPicked();
@@ -152,7 +152,8 @@ Page({
     const id = e && e.currentTarget.dataset.id;
     const current = this.data.clients.find((c) => c.id === id);
     if (!current && this.data.clients.length >= MAX_CLIENTS) {
-      wx.showToast({ title: '最多 20 家，更多请用工具中心批量处理', icon: 'none' }); return;
+      // 包里没有工具中心（两个过审包）时不提工具中心（所列即所用，11/2 独立审阅）
+      wx.showToast({ title: pages.has('advisor') ? '最多 20 家，更多请用工具中心批量处理' : '最多 20 家', icon: 'none' }); return;
     }
     const form = normalize(current || {});
     this.setData({ editing: true, form, error: '', placeholder: `客户 ${current ? this.data.clients.indexOf(current) + 1 : this.data.clients.length + 1}` });

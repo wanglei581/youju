@@ -85,7 +85,7 @@ def settings(
 
 
 def agree(client, headers=None):
-    """同意用户协议和隐私保护指引（之后才能关注、订阅、纠错、埋点）。"""
+    """同意用户协议和隐私保护指引（之后才能关注、订阅、纠错）。"""
     response = client.post("/api/v1/me/agreement", json={"version": "2026-09"}, headers=headers)
     assert response.status_code == 200
 
@@ -163,13 +163,11 @@ def test_mask_feedback_boundaries_without_database():
 def test_identity_modes_and_agreement(client, session, monkeypatch):
     assert client.get("/api/v1/me").status_code == 401
     assert client.post("/api/v1/feedback", json={"content": "纠错"}).status_code == 401
-    assert client.post("/api/v1/events", json={"name": "search"}).status_code == 401
     settings(monkeypatch)
     assert client.get("/api/v1/me").json()["agreed"] is None
-    # 同意之前：只查看不建用户记录；关注、纠错、埋点都不收
+    # 同意之前：只查看不建用户记录；关注、纠错都不收
     assert session.scalar(select(func.count(User.id))) == 0
     assert client.post("/api/v1/feedback", json={"content": "纠错"}).status_code == 403
-    assert client.post("/api/v1/events", json={"name": "search"}).status_code == 403
     assert client.get("/api/v1/me/follows").status_code == 403
     assert session.scalar(select(func.count(User.id))) == 0
     assert client.post("/api/v1/me/agreement", json={"version": "v" * 21}).status_code == 422
@@ -362,7 +360,7 @@ def test_deadline_subscription_rejects_passed_time_today(client, session, monkey
     assert client.post("/api/v1/me/subscriptions", json=body).status_code == 201
 
 
-def test_feedback_security_and_events(client, session, monkeypatch):
+def test_feedback_security(client, session, monkeypatch):
     settings(monkeypatch)
     agree(client)
     assert client.post("/api/v1/feedback", json={"content": ""}).status_code == 422
@@ -372,21 +370,6 @@ def test_feedback_security_and_events(client, session, monkeypatch):
     )
     assert client.post("/api/v1/feedback", json={"content": "请核对"}).status_code == 201
     assert session.scalar(select(Feedback.check_result)) == "unchecked"
-    assert client.post("/api/v1/events", json={"name": "wrong"}).status_code == 422
-    assert (
-        client.post("/api/v1/events", json={"name": "search", "props": {"q": "敏感词"}}).status_code
-        == 422
-    )
-    assert (
-        client.post("/api/v1/events", json={"name": "search", "props": {"count": True}}).status_code
-        == 422
-    )
-    for _ in range(60):
-        assert client.post(
-            "/api/v1/events", json={"name": "search", "props": {"count": 1}}
-        ).json() == {"accepted": True}
-    assert client.post("/api/v1/events", json={"name": "search"}).json() == {"accepted": False}
-    assert session.scalar(select(func.count(Event.id))) == 60
     settings(monkeypatch, trust=True)
     headers = {"X-WX-SOURCE": "mini", "X-WX-OPENID": "wx"}
     agree(client, headers)
@@ -431,6 +414,16 @@ def test_feedback_security_and_events(client, session, monkeypatch):
     assert session.scalar(select(func.count(Feedback.id))) == 2
 
 
+def test_event_endpoint_is_gone(client, session, monkeypatch):
+    """写使用记录（埋点）的接口已删（个人信息保护影响评估第六节（二）第 13 条）：已同意的用户
+    自己构造请求也写不进去。以前留下的照常导出、到期清理、注销时删除（见下面几个测试）。"""
+    settings(monkeypatch)
+    agree(client)
+    for body in ({"name": "search"}, {"name": "search", "props": {"count": 1}}):
+        assert client.post("/api/v1/events", json=body).status_code == 404
+    assert session.scalar(select(func.count(Event.id))) == 0
+
+
 def test_account_deletion_cascades(client, session, monkeypatch):
     settings(monkeypatch)
     agree(client)
@@ -443,7 +436,9 @@ def test_account_deletion_cascades(client, session, monkeypatch):
         == 201
     )
     client.post("/api/v1/feedback", json={"content": "请核对"})
-    client.post("/api/v1/events", json={"name": "feedback"})
+    # 写使用记录的接口已删：直接写库模拟以前留下的一条，注销时随用户删除
+    session.add(Event(user_id=session.scalar(select(User.id)), name="feedback", props={}))
+    session.commit()
     assert client.delete("/api/v1/me").status_code == 204
     for model in (User, Follow, Subscription, Feedback, Event):
         assert session.scalar(select(func.count()).select_from(model)) == 0
@@ -464,6 +459,9 @@ def test_personal_data_no_record_and_owned_rows(client, session, monkeypatch):
         "deadlineCluesTotal": 0,
         "events": [],
         "eventsTotal": 0,
+        "aiChats": [],
+        "aiChatsTotal": 0,
+        "aiChatTurnsTotal": 0,
         "boostTrial": None,
         "passGifts": [],
         "passGiftsTotal": 0,
@@ -474,6 +472,7 @@ def test_personal_data_no_record_and_owned_rows(client, session, monkeypatch):
             "unusedSubscriptions": 365,
             "toolInput": 7,
             "toolTasks": 30,
+            "aiChats": 30,
         },
         "exportedAt": NOW.isoformat(),
     }
@@ -1078,10 +1077,15 @@ def test_cleanup_removes_expired_personal_data(client, session, monkeypatch):
         "unused_subscriptions": 0,
         "advisor_input_rows": 0,
         "pay_events": 0,
+        "pass_rewards": 0,
         "advisor_files": 0,
         "advisor_ai_tasks": 0,
         "advisor_data_tasks": 0,
         "advisor_usage_rows": 0,
+        "ai_safety_hits": 0,
+        "ai_results_removed": 0,
+        "ai_chat_turns": 0,
+        "ai_chats": 0,
     }
     assert session.scalar(select(func.count(Event.id))) == 1
     assert [f.content for f in session.scalars(select(Feedback))] == ["新的"]
@@ -1132,6 +1136,23 @@ def test_agreement_min_version_keeps_old_agreements(client, session, monkeypatch
     assert client.get("/api/v1/me").json()["agreed"]["valid"] is True
 
 
+def test_agreeing_again_stores_the_right_time(client, session, monkeypatch):
+    """库里已有这个用户、再次同意（新版本）时，同意时间也按 UTC 存：北京时间 9/29 10:00 同意的，
+    读出来就是这个时刻，不晚 8 小时（11/2 复测，10/15 起就有）。"""
+    settings(monkeypatch, version="2026-12", oldest="2026-09")
+    agree(client)  # 第一次同意：新建用户
+    later = NOW + timedelta(days=1)
+    monkeypatch.setattr(v1, "now", lambda: later)
+    response = client.post("/api/v1/me/agreement", json={"version": "2026-12"})
+    assert response.status_code == 200
+    assert datetime.fromisoformat(response.json()["at"]) == later
+    session.expire_all()
+    user = session.scalar(select(User).where(User.openid == "dev-user"))
+    assert (user.agreement_version, user.agreement_at) == ("2026-12", later)
+    assert user.last_visited_at == later
+    assert datetime.fromisoformat(client.get("/api/v1/me").json()["agreed"]["at"]) == later
+
+
 def test_agreement_version_must_look_like_year_month(client, session, monkeypatch):
     """版本号按"年-月"开头比较：写法不对的同意一律不算；重新同意时也不当成"更新的版本"留着。"""
     settings(monkeypatch)
@@ -1147,6 +1168,18 @@ def test_agreement_version_must_look_like_year_month(client, session, monkeypatc
     assert client.get("/api/v1/me/follows").status_code == 200
 
 
+def test_agreement_accepts_only_well_formed_versions(client, monkeypatch):
+    """同意接口只收完整写法的版本号（年-月，可带 .数字）：在仍认的范围里、写法不对的也不收（D-098）。"""
+    settings(monkeypatch, version="2026-12", oldest="2026-10.2")
+    for version in ("2026-11.0x", "2026-11.1 ", "2026-11-1", "2026-11.", "2026-11.1.2"):
+        response = client.post("/api/v1/me/agreement", json={"version": version})
+        assert response.status_code == 422, version
+    for version in ("2026-10.2", "2026-11", "2026-11.1", "2026-12"):
+        assert client.post("/api/v1/me/agreement", json={"version": version}).status_code == 200, (
+            version
+        )
+
+
 def test_first_release_agreement_without_ai_terms(client, session, monkeypatch):
     """D-093 ⑤：过审版（首发 16 页）带不含 AI 条款的协议 2026-10.2，完整版带 2026-11。后台当前版本仍是
     2026-11、最早认 2026-10.2：两种包都能同意、都能用关注；只同意过 2026-10.2 的人没同意过 AI 和批量工具的
@@ -1158,16 +1191,19 @@ def test_first_release_agreement_without_ai_terms(client, session, monkeypatch):
     assert response.status_code == 200 and response.json()["valid"] is True
     assert client.get("/api/v1/me/follows").status_code == 200
     user = session.scalar(select(User).where(User.openid == "dev-user"))
-    assert not me.agreement_at_least(user.agreement_version, me.TOOLS_AGREEMENT_VERSION)
+    assert not me.tools_agreed(user.agreement_version)
     open_to_all = SimpleNamespace(ai_advisor_audience="all")
     assert not interpret.ai_agreed(open_to_all, user)
     response = client.post("/api/v1/me/agreement", json={"version": "2026-10"})
     assert response.status_code == 422
-    # AI 上线后，完整版请用户读完 2026-11 再同意：AI 和批量工具的条款都覆盖到了
+    # 完整版请用户读完 2026-11 再同意：批量工具的条款覆盖到了；AI 10/28 起要 2026-11.1 或更新的版本
+    # （完整版 2026-11 没写"AI 结果送微信内容安全检查"，完整版升 2026-12 时补上）
     assert client.post("/api/v1/me/agreement", json={"version": "2026-11"}).status_code == 200
     session.expire_all()
     user = session.scalar(select(User).where(User.openid == "dev-user"))
-    assert me.agreement_at_least(user.agreement_version, me.TOOLS_AGREEMENT_VERSION)
+    assert me.tools_agreed(user.agreement_version)
+    assert not interpret.ai_agreed(open_to_all, user)
+    user.agreement_version = "2026-11.1"
     assert interpret.ai_agreed(open_to_all, user)
 
 

@@ -20,19 +20,47 @@ function withKeys(doc) {
 }
 
 Page({
-  data: { docs: [], final: false, status: '', disclaimer: '', consent: false, sending: false, loginOpen: loginOpen() },
+  data: { docs: [], final: false, status: '', disclaimer: '', consent: false, sending: false, loginOpen: loginOpen(), pay: false, mismatch: '' },
 
   onLoad(query) {
     if (!this.data.loginOpen) return;
     const consent = query.consent === '1' && consentOpen();
     this.forAi = consent && query.for === 'ai';
+    const isPay = !consent && query.type === 'pay';
+    this.orderId = query.orderId || '';
+    const mismatch = isPay && query.version && query.version !== payTerms.version ? query.version : '';
+    if (mismatch) {
+      this.setData({ pay: true, mismatch });
+      wx.setNavigationBarTitle({ title: payTerms.title });
+      return;
+    }
     let docs;
     if (consent) docs = [legal.user, legal.privacy];
     // type=pay：购买页的《付费服务协议》（只在协议定稿后由购买页打开，见 utils/pay.js termsFinal）
     else if (query.type === 'pay') docs = [{ title: payTerms.title, sections: [{ h: '', p: String(payTerms.text || '').split(/\n+/).filter(Boolean) }] }];
     else docs = [query.type === 'privacy' ? legal.privacy : legal.user];
-    this.setData({ docs: docs.map(withKeys), final: legal.final, status: legal.status, disclaimer: legal.disclaimer, consent });
+    // 付费协议还没定稿（占位）时不给"保存全文"
+    this.setData({ docs: docs.map(withKeys), final: legal.final, status: legal.status, disclaimer: legal.disclaimer, consent, pay: isPay && require('../../utils/pay.js').termsFinal(payTerms) });
     wx.setNavigationBarTitle({ title: consent ? '用户协议和隐私保护指引' : docs[0].title });
+  },
+
+  feedback() { wx.navigateTo({ url: `/pages/feedback/index?type=pay${this.orderId ? `&orderId=${encodeURIComponent(this.orderId)}` : ''}` }); },
+
+  savePay() {
+    if (typeof wx.shareFileMessage !== 'function') {
+      wx.showToast({ title: '当前微信版本不支持保存文件，请升级微信后再试', icon: 'none' });
+      return;
+    }
+    const fileName = `付费服务协议_${payTerms.version}.txt`;
+    const filePath = `${wx.env.USER_DATA_PATH}/${fileName}`;
+    const fail = () => wx.showToast({ title: '没能保存，请稍后再试', icon: 'none' });
+    try {
+      wx.getFileSystemManager().writeFile({ filePath, data: `《付费服务协议》（版本 ${payTerms.version}）\n\n${payTerms.text}`, encoding: 'utf8',
+        success: () => {
+          try { wx.shareFileMessage({ filePath, fileName, fail: (err) => { if (!err || !/cancel/i.test(err.errMsg || '')) fail(); } }); }
+          catch (err) { fail(); }
+        }, fail });
+    } catch (err) { fail(); }
   },
 
   agree() {

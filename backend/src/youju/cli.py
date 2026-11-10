@@ -3,6 +3,7 @@
 import argparse
 import json
 import logging
+import re
 import sys
 import tempfile
 from collections import Counter
@@ -84,8 +85,18 @@ def _cmd_import_sources(args: argparse.Namespace) -> int:
 
     csv_path: Path = args.csv or get_settings().sources_csv
     with session_factory()() as session:
-        s = import_sources(session, csv_path)
-    print(f"导入完成：新增 {s.created}，更新 {s.updated}；启用 {s.enabled}，暂不抓取 {s.disabled}")
+        s = import_sources(session, csv_path, only_new=args.only_new, dry_run=args.dry_run)
+    head = "试算（没写库）" if args.dry_run else "导入完成"
+    print(
+        f"{head}：新增 {s.created}，更新 {s.updated}，跳过已有 {s.skipped}；"
+        f"启用 {s.enabled}，暂不抓取 {s.disabled}"
+    )
+    if s.existing:
+        shown = "；".join(s.existing[:20])
+        more = f" 等 {len(s.existing)} 个" if len(s.existing) > 20 else ""
+        print(f"库里已有的网址：{shown}{more}")
+    if s.near:
+        print(f"和库里只差 http/https 等写法的（同一个列表，没有新建）：{'；'.join(s.near)}")
     return 0
 
 
@@ -103,9 +114,21 @@ def _cmd_crawl(args: argparse.Namespace) -> int:
             stmt = stmt.where(Source.id.in_(args.source_id))
         if args.province:
             stmt = stmt.where(Source.province == args.province)
+        if args.skip_blocked:
+            # 网站明确拒绝过的（导入时就判了防护拦截，或抓取时被 robots 禁止）不再去请求
+            stmt = stmt.where(Source.fetch_mode != "blocked", Source.health != "blocked")
         if args.limit:
             stmt = stmt.limit(args.limit)
         ids = list(session.scalars(stmt).all())
+        if args.skip_blocked and ids:
+            # 最近一次被 401/403/412/521 拒绝的（含列表接口被拒）也不再请求
+            refused = re.compile(r"HTTP (?:401|403|412|521)\b")
+            errors = dict(
+                session.execute(
+                    select(Source.id, Source.last_error).where(Source.id.in_(ids))
+                ).all()
+            )
+            ids = [i for i in ids if not refused.search(errors.get(i) or "")]
     if not ids:
         print("没有符合条件的来源（先运行 youju import-sources？）")
         return 1
@@ -612,6 +635,122 @@ def _cmd_extract_fields(args: argparse.Namespace) -> int:
     return 0 if usage_ok else 1
 
 
+def _cmd_ai_recheck_deadlines(args: argparse.Namespace) -> int:
+    """旧版本的 AI 截止检查重跑一遍（D-099 期 0）。
+    不加 --apply 只清点、估费用，不调模型、不改数据。"""
+    from youju.ai import get_chat_client
+    from youju.ai.deadlines import RESULT_VERSION
+    from youju.ai.pipeline import (
+        old_deadline_checks,
+        rerun_old_deadlines,
+        round_running,
+        round_slot,
+        round_wanted,
+    )
+    from youju.ai.usage import cost_yuan
+
+    now = datetime.now(UTC)
+    with session_factory()() as session:
+        # （上次用的模型, 输入 tokens, 输出 tokens），新的排前面
+        checks = [
+            (check.model, check.prompt_tokens, check.completion_tokens)
+            for _, _, check in old_deadline_checks(session, now, args.days)
+        ]
+        session.rollback()
+
+    # 这次要用的后台模型（和 get_chat_client 同一个取法，不用密钥）：按它的列表价估，
+    # 没列价的按上次的模型估
+    settings = get_settings()
+    configured = getattr(settings, "ai_background_model", "") or getattr(settings, "ai_model", "")
+
+    def estimate(rows) -> tuple[float, bool]:
+        """按这些文件上次截止检查的用量估（参考、上限）：价钱按这次配置的模型，没列价的按上次用的模型；
+        都没列价时第二项为假。"""
+        total, priced = 0.0, True
+        for model, prompt_tokens, completion_tokens in rows:
+            cost = cost_yuan(configured, prompt_tokens, completion_tokens)
+            if cost is None:
+                cost = cost_yuan(model, prompt_tokens, completion_tokens)
+            if cost is None:
+                priced = False
+            else:
+                total += cost
+        return total, priced
+
+    batch = checks[: args.limit]
+    everything, priced_all = estimate(checks)
+    this_run, priced_run = estimate(batch)
+    print(
+        f"近 {args.days} 天发布、截止检查是旧版本（低于第 {RESULT_VERSION} 版）的主文件 "
+        f"{len(checks)} 份；这次最多重跑 {len(batch)} 份"
+    )
+    models = Counter(model for model, _, _ in checks)
+    print(f"  上次用的模型：{dict(models)}")
+    print(
+        f"  按上次用量、这次配置的模型（{configured or '未配置'}）的列表价估"
+        f"（参考，上限，命中缓存、空闲时段更便宜）：这次约 {this_run:.2f} 元，"
+        f"全部约 {everything:.2f} 元"
+        + ("" if priced_all and priced_run else "；有没列价的模型，没算进去")
+    )
+    if not args.apply:
+        print("只清点，没调模型、没改数据。重跑会覆盖这些旧的 AI 截止检查结果，同意后再加 --apply")
+        return 0
+    if settings.role == "api":
+        # 定时任务在 admin 那边，在 api 容器里看不到它那一轮的锁
+        print("这个命令要在 admin 容器里跑，不能在 api 容器里跑")
+        return 1
+    if round_running() or round_wanted():
+        print("定时任务这一轮正在跑，等它跑完再重跑（06:30、20:30 开始，一般半小时内）")
+        return 1
+    client = get_chat_client()
+    if client is None:
+        print("没有配置 AI 密钥（YOUJU_AI_API_KEY），不能重跑")
+        return 1
+    usage_ok = False
+    try:
+        with session_factory()() as session:
+            report = rerun_old_deadlines(
+                session,
+                client,
+                days=args.days,
+                limit=args.limit,
+                now=now,
+                slot=round_slot,
+                # 写库那一段每条语句等行锁最多 10 秒、整段最多 60 秒：拿着锁的时间有上限，
+                # 定时任务那一轮等得起（它最多等 5 分钟）
+                lock_wait=10,
+                write_limit=60,
+            )
+    finally:
+        usage_ok = _finish_ai(client, "recheck")
+    print(f"重跑 {report.documents} 份文件的 AI 截止检查（模型 {client.model}）")
+    print(
+        f"  写进去 {report.written} 份（出错 {report.errors} 份、"
+        f"正文变了没记 {report.body_changed} 份不算，下次再跑）"
+    )
+    if report.round_busy:
+        print("  中途碰上定时任务那一轮，先停下；做完的已保存，等这一轮跑完再跑一次接着做")
+    if report.write_timeout:
+        print(
+            "  写库那一段超过 60 秒，先停下：这一份可能写进去了，也可能没有（写进去的已是新版本、"
+            "下次不再跑；没写进去的下次接着跑）；稍后再跑一次接着做"
+        )
+    print(
+        f"  截止候选：AI 一致 {report.deadlines_agree} 条，只有规则找到 "
+        f"{report.deadlines_rule_only} 条，AI 新找到 {report.deadlines_ai_only} 条（都要人工核对）"
+    )
+    print(
+        f"  出错 {report.errors} 份（保留旧结果，下次再跑）；用量：输入 {report.prompt_tokens}、"
+        f"输出 {report.completion_tokens} tokens"
+    )
+    if report.body_changed:
+        print(f"  检查期间正文被换掉、这次没记的 {report.body_changed} 份（下次重跑）")
+    if report.stopped_early:
+        print("连续多份文件调用 AI 出错，提前停止（可能是服务不可用或额度用完）")
+        return 1
+    return 0 if usage_ok else 1
+
+
 def _cmd_ai_check(args: argparse.Namespace) -> int:
     from youju.ai import get_chat_client
     from youju.ai.pipeline import run_ai_checks
@@ -725,7 +864,7 @@ def _cmd_audit_deadlines(args: argparse.Namespace) -> int:
 def _cmd_daily_report(args: argparse.Namespace) -> int:
     from youju.ai import get_chat_client
     from youju.alerts import send_alert
-    from youju.digest import build_digest, digest_text, pick_for_review
+    from youju.digest import build_digest, digest_text, pick_for_review, readability_text
 
     client = get_chat_client()
     usage_ok = False
@@ -738,11 +877,20 @@ def _cmd_daily_report(args: argparse.Namespace) -> int:
     finally:
         usage_ok = _finish_ai(client, "report")
     text = digest_text(digest, picks)
+    # 能读情况（D-097 ④）放不进同一条（群机器人一条有字节上限），紧接着另发一条；统计出错时不发
+    # （主日报里已写"取不到"）
+    extra = readability_text(digest)
     print(text)
-    sent = None if args.dry_run else send_alert(text)
-    if not args.dry_run and sent is None:
+    if extra:
+        print(extra)
+    if args.dry_run:
+        return 0 if usage_ok else 1
+    sent = send_alert(text)
+    if sent is None:
         print("未配置告警，日报未发送")
-    return 0 if usage_ok and (args.dry_run or sent is True) else 1
+    elif sent is True and extra:
+        sent = send_alert(extra)
+    return 0 if usage_ok and sent is True else 1
 
 
 def _cmd_reclassify(_: argparse.Namespace) -> int:
@@ -940,6 +1088,13 @@ def _cmd_backup_verify(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_restore_drill(args: argparse.Namespace) -> int:
+    from youju.restore_drill import run
+
+    settings = get_settings()
+    return run(settings.database_url, settings.cloud_env, args.file)
+
+
 def _hhmm(value: str) -> str:
     """命令行参数：HH:MM（北京时间）。"""
     try:
@@ -1003,6 +1158,87 @@ def _cmd_log_uid(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_safety_probe(args: argparse.Namespace) -> int:
+    """开放前量一量微信内容安全会不会误拦政府原文（门槛第 4 道）。只读，不写数据库。
+
+    送检的是 AI 真正会显示的原句：先取最近做完的 AI 结果里的原句；不够数，再从最近收录、能做解读
+    的通知里取像申报要点的段落（对象、条件、材料、时间、支持、方式）补上。交微信检查时带 --openid
+    （这个人两小时内要访问过小程序），只打印各种结果的份数和没通过的编号，不打印文字。每份占一次
+    当天的调用次数（没上架前每天 100 次，纠错也占），所以默认只查 30 份。
+    只能在云托管 admin 容器里跑。"""
+    import re
+
+    from sqlalchemy import select
+    from sqlalchemy.orm import defer
+
+    from youju import wx_security
+    from youju.ai import content, interpret, result_safety
+    from youju.ai.skills import AI_KINDS, get_skill
+    from youju.models import AdvisorTask
+
+    if not wx_security.in_cloud(get_settings()):
+        print("只能在云托管里跑：本机不调微信接口")
+        return 1
+    points = re.compile(r"申报|对象|条件|材料|截止|时间|支持|补助|奖励|方式|系统|报送")
+    samples: list[tuple[str, str]] = []
+    with session_factory()() as session:
+        tasks = session.scalars(
+            select(AdvisorTask)
+            .options(defer(AdvisorTask.snapshot), defer(AdvisorTask.input_json))
+            .where(
+                AdvisorTask.kind.in_(AI_KINDS),
+                AdvisorTask.status == "done",
+                AdvisorTask.result_json.is_not(None),
+            )
+            .order_by(AdvisorTask.finished_at.desc(), AdvisorTask.id.desc())
+            .limit(args.notices)
+        ).all()
+        for task in tasks:
+            text = result_safety.result_text(task.result_json, get_skill(task.kind).result_field)
+            if text.strip():
+                samples.append((f"任务 {task.id}", text[: wx_security.LIMIT]))
+        candidates = session.scalars(
+            select(Document.id)
+            .where(Document.taken_down_at.is_(None))
+            .order_by(Document.first_seen_at.desc(), Document.id.desc())
+            .limit(args.notices * 5)
+        ).all()
+        for doc_id in candidates:
+            if len(samples) >= args.notices:
+                break
+            try:
+                content.check(session, doc_id)
+                loaded = content.load(session, doc_id)
+            except interpret.InterpretRefusal:
+                continue
+            picked = [p["text"] for p in loaded.paragraphs() if points.search(p["text"])]
+            text = "\n".join(picked)[: wx_security.LIMIT]
+            if text.strip():
+                samples.append((f"通知 {doc_id}", text))
+    counts: dict[str, int] = {}
+    blocked: list[str] = []
+    errors = 0
+    for label, text in samples[: args.notices]:
+        try:
+            verdict = wx_security.check_text(args.openid, text)
+        except wx_security.CheckDown as exc:
+            errors += 1
+            print(f"{label}：检测出错（errcode {exc.errcode}）")
+            if exc.errcode in (45009, 61010):
+                break  # 次数用完、openid 两小时内没访问过：后面的也查不了
+            continue
+        key = f"{verdict.suggest}" + (f"（label {verdict.label}）" if verdict.label else "")
+        counts[key] = counts.get(key, 0) + 1
+        if not verdict.passed:
+            blocked.append(f"{label}（{key}）")
+    checked = sum(counts.values())
+    summary = "、".join(f"{key} {n} 份" for key, n in sorted(counts.items())) or "没有查成的"
+    print(f"查了 {checked} 份：{summary}；出错 {errors} 次")
+    if blocked:
+        print("没通过的：" + "，".join(blocked))
+    return 0
+
+
 def _cmd_triage_feedback(args: argparse.Namespace) -> int:
     from youju.ai import get_chat_client
     from youju.ai.triage import triage_feedback
@@ -1059,8 +1295,8 @@ def _cmd_try_source(args: argparse.Namespace) -> int:
 
 def _cmd_source_list_api(args: argparse.Namespace) -> int:
     """给已有来源配上（或去掉）列表接口：线上来源以库里为准（D-025），改库里的抓取配置。
-    先按新配置请求一次接口（遵守 robots、限速），试跑结果过了 list_api 的复核和 trial_problem 的
-    检查、并且加了 --apply 才写入；写入时锁住这一行，试跑期间来源被改过就不写。
+    先按新配置请求一次接口（遵守 robots、限速），试跑结果过了 crawler/list_api.py 的复核和
+    trial_problem 的检查、并且加了 --apply 才写入；写入时锁住这一行，试跑期间来源被改过就不写。
     最后一行是不含中文的结果摘要，方便在容器里核对。"""
     from youju.crawler.list_api import trial_api, trial_problem, valid_api_config
     from youju.sources.onboard import MIN_ITEMS, trial_fetcher
@@ -1082,12 +1318,12 @@ def _cmd_source_list_api(args: argparse.Namespace) -> int:
         print("现在的抓取配置：" + json.dumps(before, ensure_ascii=False))
         if args.clear:
             # 只去掉列表接口；没配接口的来源可能有人工写的抓取规则，这个命令不动它
-            if "list_api" not in before:
-                print("这个来源没有配列表接口，不用去掉")
+            if "search_api" not in before:
+                print("这个来源没有配列表接口（search_api），不用去掉")
                 return 2
             config: dict[str, str] = {}
         else:
-            checked = valid_api_config({"list_api": args.kind, "channel_id": args.channel})
+            checked = valid_api_config({"search_api": args.kind, "channel_id": args.channel})
             if checked is None:
                 print("栏目编号只能是字母和数字（栏目页脚本里 var channelId = '…' 的值）")
                 return 2
@@ -1305,7 +1541,7 @@ def _cmd_cache_attachments(args: argparse.Namespace) -> int:
     with session_factory()() as session:
         report = cache_attachments(session, env, limit=args.limit, retry_failed=args.retry_failed)
     if report.skipped:
-        print("附件副本：另一个附件任务（上一轮或手动重查）正在运行，本轮跳过")
+        print("附件副本：另一个附件任务（上一轮、手动重查或取附件文字）正在运行，本轮跳过")
         return 0
     failed = "，".join(f"{code} {n}" for code, n in report.failed.most_common()) or "无"
     print(
@@ -1353,8 +1589,11 @@ def _beijing_noon(day: date | None) -> datetime | None:
 
 
 def _cmd_attachment_texts(args: argparse.Namespace) -> int:
-    """只取附件文字（不存副本、不访问对象存储）：本机拿数据副本实测；上线后想比定时任务更快补齐
-    时手动跑。和附件定时任务共用一把锁。"""
+    """只取附件文字（不存副本、不访问对象存储）：每轮抓取补完详情后跑一次（deploy/round.sh），
+    新附件当轮就能在小程序里站内阅读；也用来本机拿数据副本实测、手动补齐存量。
+    和附件副本任务（cache-attachments）、手动重查共用一把锁：另一个正在跑时这次不取、返回 0，
+    和 cache-attachments 一样（免得 job.sh 误发失败提醒；没取的下一轮或副本任务接着取）。
+    取文字这步出错才返回 1。"""
     from youju.attachments import extract_texts
 
     with session_factory()() as session:
@@ -1365,10 +1604,21 @@ def _cmd_attachment_texts(args: argparse.Namespace) -> int:
             retry_pending=args.retry_pending,
         )
     if report.skipped:
-        print("附件的定时任务正在运行，这次没有取，请稍后再跑")
-        return 1
+        print(
+            "另一个附件任务正在运行（附件副本、重查或另一次取文字），这次一个也没取；定时任务下一轮再取，手动补齐请等它跑完再重跑"
+        )
+        print("attachment_texts skipped=1")
+        return 0
     print(f"下载 {report.checked} 个（{report.bytes} 字节），这轮没轮到 {report.deferred} 个")
     print(_texts_line(report.texts))
+    # 容器终端里复制出来的中文可能有乱码，以这一行为准（只有英文和数字）
+    texts = report.texts
+    print(
+        f"attachment_texts checked={report.checked} bytes={report.bytes} "
+        f"deferred={report.deferred} extracted={texts.extracted} reused={texts.reused} "
+        f"unchanged={texts.unchanged} kept={texts.kept} failed={sum(texts.failed.values())} "
+        f"retracted={texts.retracted} removed={texts.removed} due={texts.due} errors={texts.errors}"
+    )
     return 1 if report.texts.errors else 0
 
 
@@ -1503,16 +1753,21 @@ def _cmd_ai_heartbeat(_: argparse.Namespace) -> int:
     with session_factory()() as session:
         row = heartbeat.beat(session, settings, "admin", stamp)
         heartbeat.check_and_alert(session, settings, stamp)
-        print(f"AI 设置心跳：admin {'能' if row.ai_enabled else '不能'}处理 AI 任务")
+        print(
+            f"AI 设置心跳：admin {'能' if row.ai_enabled else '不能'}处理 AI 任务，"
+            f"问这份通知{'能' if row.ask_ready else '不能'}用"
+        )
     return 0
 
 
-def _cmd_advisor_run(_: argparse.Namespace) -> int:
-    from youju.advisor_tasks import run_advisor_tasks
+def _cmd_advisor_run(args: argparse.Namespace) -> int:
+    from youju.advisor_tasks import POLL_WINDOW, run_advisor_tasks
 
-    # admin 没开 AI 时退回的任务由 ai-heartbeat 每分钟按任务表数出来提醒（D-075），这里不发
+    # admin 没开 AI 时退回的任务由 ai-heartbeat 每分钟按任务表数出来提醒（D-075），这里不发。
+    # 每分钟那一轮在 POLL_WINDOW 秒里隔几秒领一次新的 AI 任务；
+    # --once 只把现在排着的处理完（手动跑用）
     with session_factory()() as session:
-        report = run_advisor_tasks(session)
+        report = run_advisor_tasks(session, poll_window=0.0 if args.once else POLL_WINDOW)
     print("工具任务：" + "，".join(f"{name} {count}" for name, count in report.items()))
     return 0
 
@@ -1639,11 +1894,10 @@ def _cmd_pay_refund(args: argparse.Namespace) -> int:
     """负责人按规则发起退款（D-070）：系统故障、停止服务按剩余天数退（--remaining），
     重复扣款、整段没法用的全额退（--full）。只退安卓、鸿蒙、电脑版微信付款的；苹果手机的请用户向
     App Store 申请。先加 --dry-run 看清楚要退哪些、退多少。"""
-    import httpx
 
     from youju.config import get_settings
     from youju.models import PayOrder, WorkbenchPass
-    from youju.xpay import XPayClient
+    from youju.xpay import XPayClient, wx_http
 
     if args.all_active and (args.full or args.extra_days):
         # 停止服务按剩余天数退（已开过发票的照样退，退完再冲红）；
@@ -1655,7 +1909,7 @@ def _cmd_pay_refund(args: argparse.Namespace) -> int:
         return 2
     settings = get_settings()
     stamp = datetime.now(UTC)
-    with session_factory()() as session, httpx.Client(trust_env=False) as http:
+    with session_factory()() as session, wx_http() as http:
         client = XPayClient(settings, http)
         if args.order_id is not None:
             ids = [args.order_id]
@@ -1689,14 +1943,99 @@ def _cmd_pay_refund(args: argparse.Namespace) -> int:
     return 1 if report["missing"] else 0
 
 
+def _cmd_pay_refund_due(args: argparse.Namespace) -> int:
+    """负责人核实一笔苹果手机付款的订单应当退款（付费服务协议第二条第 7 项：因我们的原因不能使用、
+    未成年人未经监护人同意购买等），苹果来问时就答"建议退款"；--clear 清除。
+    安卓的直接用 pay-refund 退。
+    最后一行只有英文和数字（Webshell 里中文可能乱码）：refund_due order=N result=marked|cleared|…"""
+    from youju import payments
+
+    stamp = datetime.now(UTC)
+    with session_factory()() as session:
+        result, order = payments.mark_refund_due(
+            session,
+            args.order_id,
+            None if args.clear else args.reason,
+            stamp,
+            dry_run=args.dry_run,
+        )
+    print(
+        {
+            "marked": "演练：会标记为应当退款"
+            if args.dry_run
+            else "已标记为应当退款，苹果问询会答建议退款",
+            "cleared": "演练：会清除标记" if args.dry_run else "已清除标记",
+            "unchanged": "没有变化（已经是这个状态）",
+            "not_ios": "不是苹果手机付过款的订单：安卓等请用 youju pay-refund 退款",
+            "missing": "没找到这笔订单",
+        }[result]
+    )
+    print(f"refund_due order={args.order_id} result={result} dry_run={int(args.dry_run)}")
+    return 0 if result in ("marked", "cleared", "unchanged") else 1
+
+
+def _cmd_pay_recheck(args: argparse.Namespace) -> int:
+    """负责人核对一张订单：48 小时查不到付款结果已关单的、转了人工的、还在待确认的，向微信查一次，
+    付了款且核验通过就开通（再通知发货），退完了记已退款，微信已关单记关单，没付款不动。
+    先加 --dry-run 只看查单结果。最后一行只有英文和数字（Webshell 里中文可能乱码）：
+    pay_recheck order=N result=… status=… wx_status=… dry_run=0|1"""
+    from youju import payments
+    from youju.config import get_settings
+    from youju.xpay import XPayClient, XPayError, wx_http
+
+    settings = get_settings()
+    stamp = datetime.now(UTC)
+    wx_status = "-"
+    with session_factory()() as session, wx_http() as http:
+        client = XPayClient(settings, http)
+        order = payments.lock_order(session, args.order_id)
+        if order is not None and order.error:
+            # 先把订单上记的原因（转人工的原因可能是投诉）给负责人看（Codex 第 8 轮）
+            label = payments.STATUS_LABELS.get(order.status, order.status)
+            print(f"订单现在：{label}；原因：{order.error}")
+        if order is None:
+            result = "missing"
+        elif order.status not in ("closed", "manual", "pending"):
+            result = "skipped"
+        else:
+            try:
+                if args.dry_run:
+                    wx_status = payments.query(session, order, client).get("status", "-")
+                    result = "dry_run"
+                else:
+                    result = payments.recheck(session, order, client, settings, stamp)
+                    session.commit()
+                    if order.status == "completed" and not order.goods_notified:
+                        payments.provide_goods(session, order, client)
+            except XPayError as exc:
+                result = f"query_failed errcode={exc.code}"
+        session.rollback()
+        status = order.status if order is not None else "-"
+    print(
+        {
+            "paid": "核验通过，已开通",
+            "refunded": "微信那边已经退完，记成已退款、收回使用期",
+            "closed": "微信已关单，记成已关闭",
+            "unpaid": "微信那边还没有这笔付款，没改",
+            "manual": "核验不过或状态少见，已转人工（会告警）",
+            "skipped": "这笔订单不是已关闭、人工或待确认的，没动",
+            "missing": "没找到这笔订单",
+            "dry_run": "演练：只查了单，没改",
+        }.get(result.split()[0], "查单出错，没改，稍后再试")
+    )
+    print(
+        f"pay_recheck order={args.order_id} result={result} status={status} "
+        f"wx_status={wx_status} dry_run={int(args.dry_run)}"
+    )
+    return 0 if result.split()[0] in ("paid", "refunded", "closed", "unpaid", "dry_run") else 1
+
+
 def _cmd_pay(args: argparse.Namespace) -> int:
     from datetime import UTC, datetime, timedelta
 
-    import httpx
-
     from youju import payments
     from youju.config import get_settings
-    from youju.xpay import XPayClient
+    from youju.xpay import XPayClient, wx_http
 
     settings = get_settings()
     stamp = datetime.now(UTC)
@@ -1708,7 +2047,9 @@ def _cmd_pay(args: argparse.Namespace) -> int:
                 return 0
         elif not payments.has_work(session, settings):
             return 0
-        with httpx.Client(trust_env=False) as http:
+        # 补单、对账（定时任务跑的就是这个命令）和小程序接口用同一个客户端：
+        # 系统证书库校验 https（xpay.wx_http），不另走一套证书（Codex 10/29）
+        with wx_http() as http:
             client = XPayClient(settings, http)
             if args.command == "pay-reconcile":
                 payments.download_reconcile(session, day, client, stamp)
@@ -1860,8 +2201,18 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("db-upgrade", help="把数据库迁移到最新结构").set_defaults(func=_cmd_db_upgrade)
 
+    from youju.govsites.cli import register as register_coverage
+
+    register_coverage(sub)
+
     p = sub.add_parser("import-sources", help="从全国来源清单 CSV 导入来源")
     p.add_argument("--csv", type=Path, help="默认 docs/数据来源/全国来源清单_P0_v1.csv")
+    p.add_argument(
+        "--only-new",
+        action="store_true",
+        help="库里已有的网址一律不碰（全国覆盖分批上线用，不改已经在收的来源）",
+    )
+    p.add_argument("--dry-run", action="store_true", help="只数一数、列出库里已有的网址，不写库")
     p.set_defaults(func=_cmd_import_sources)
 
     p = sub.add_parser("crawl", help="检查来源列表页，发现新条目")
@@ -1870,6 +2221,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--limit", type=int, help="最多检查多少个来源")
     p.add_argument("--workers", type=int, help="同时抓取的网站数")
     p.add_argument("--include-disabled", action="store_true", help="也检查未启用的来源")
+    p.add_argument(
+        "--skip-blocked",
+        action="store_true",
+        help="跳过网站明确拒绝过的来源（防护拦截、robots 禁止）",
+    )
     p.set_defaults(func=_cmd_crawl)
 
     p = sub.add_parser("fetch-details", help="抓取尚无详情或到期重试的政府文件")
@@ -1992,6 +2348,18 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=_cmd_ai_check)
 
     p = sub.add_parser(
+        "ai-recheck-deadlines",
+        help="旧版本的 AI 截止检查重跑一遍（新结果覆盖旧结果、不删数据）；"
+        "不加 --apply 只清点、估费用",
+    )
+    p.add_argument("--days", type=_positive, default=90, help="只重跑近多少天发布的文件（默认 90）")
+    p.add_argument("--limit", type=_positive, default=300, help="这次最多重跑多少份（默认 300）")
+    p.add_argument(
+        "--apply", action="store_true", help="真的调模型重跑；会覆盖线上已有的 AI 截止检查结果"
+    )
+    p.set_defaults(func=_cmd_ai_recheck_deadlines)
+
+    p = sub.add_parser(
         "extract-conditions",
         help="后台模型从申报通知正文抽申报条件（每条带原文引用），送核对台；没配密钥时跳过",
     )
@@ -2040,6 +2408,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--file", type=Path, help="校验本机备份文件，不从对象存储下载")
     p.set_defaults(func=_cmd_backup_verify)
 
+    p = sub.add_parser("restore-drill", help="在临时库演练备份恢复，结束后删除临时库")
+    p.add_argument("--file", type=Path, help="使用本机备份文件，不从对象存储下载")
+    p.set_defaults(func=_cmd_restore_drill)
+
     p = sub.add_parser(
         "restore", help="把备份文件恢复到当前数据库（要已迁移到同一版本、而且是空的）"
     )
@@ -2072,6 +2444,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument("openid")
     p.set_defaults(func=_cmd_log_uid)
+
+    p = sub.add_parser(
+        "safety-probe",
+        help="开放前量一量微信内容安全会不会误拦政府原文（只读，只能在云托管 admin 容器里跑）",
+    )
+    p.add_argument("--openid", required=True, help="两小时内访问过小程序的人（一般是创始人自己）")
+    p.add_argument("--notices", type=int, default=30, choices=range(1, 91), metavar="1-90")
+    p.set_defaults(func=_cmd_safety_probe)
 
     p = sub.add_parser(
         "triage-feedback",
@@ -2209,9 +2589,36 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument("--dry-run", action="store_true", help="只打印要退哪些、退多少，不写入")
     p.set_defaults(func=_cmd_pay_refund)
-    sub.add_parser("advisor-run", help="处理顾问技能包任务（开关关闭时跳过）").set_defaults(
-        func=_cmd_advisor_run
+    p = sub.add_parser(
+        "pay-refund-due",
+        help="核实一笔苹果手机付款的订单应当退款（苹果问询照它答建议退款）；--clear 清除"
+        "（开关关闭后仍可运行）",
     )
+    p.add_argument("--order-id", type=int, required=True, help="订单编号（用户订单页上的订单号）")
+    mark = p.add_mutually_exclusive_group(required=True)
+    mark.add_argument(
+        "--reason",
+        type=_refund_reason,
+        help="核实的原因，6–100 字，记在订单上"
+        "（只写情形，如“系统故障三天不能用”，不写姓名、证件号、联系方式）",
+    )
+    mark.add_argument("--clear", action="store_true", help="清除标记")
+    p.add_argument("--dry-run", action="store_true", help="只打印，不写入")
+    p.set_defaults(func=_cmd_pay_refund_due)
+    p = sub.add_parser(
+        "pay-recheck",
+        help="核对一张已关闭（48 小时查不到付款结果）、人工或待确认的订单：向微信查一次，"
+        "付了款就开通、退完了记已退款（开关关闭后仍可运行）",
+    )
+    p.add_argument("--order-id", type=int, required=True, help="订单编号（用户订单页上的订单号）")
+    p.add_argument("--dry-run", action="store_true", help="只查单、打印微信那边的状态，不写入")
+    p.set_defaults(func=_cmd_pay_recheck)
+    p = sub.add_parser(
+        "advisor-run",
+        help="处理顾问技能包任务（开关关闭时跳过）；AI 任务在 50 秒里每隔 3 秒领一次新的",
+    )
+    p.add_argument("--once", action="store_true", help="只把现在排着的处理完就退出，不等新任务")
+    p.set_defaults(func=_cmd_advisor_run)
     sub.add_parser(
         "ai-heartbeat", help="写 admin 的 AI 设置心跳；两个服务设置不一致时提醒（D-075）"
     ).set_defaults(func=_cmd_ai_heartbeat)
@@ -2241,7 +2648,8 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=_cmd_list_evidence)
     p = sub.add_parser(
         "attachment-texts",
-        help="只取给 AI 用的附件文字（不存副本、不访问对象存储）：还没取过的补取，清理超出范围的",
+        help="只取附件文字（站内阅读用，不存副本、不访问对象存储）：还没取过的补取（新的先取），"
+        "清理超出范围的；每轮抓取补完详情后跑一次，另一个附件任务正在跑时这次跳过（不算失败）",
     )
     p.add_argument("--limit", type=int, default=200, help="本轮最多下载几个（1–2000，默认 200）")
     p.add_argument(

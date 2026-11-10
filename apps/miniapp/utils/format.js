@@ -96,19 +96,22 @@ function dueInfo(deadline, now) {
   };
 }
 
-// 申报通知没有核对过的截止日期时的说明，只给文字、不给任何日期（合规红线）：
-// 有待核对的候选（deadline_state 为 unverified）写"截止未核对"，没有候选写"截止时间见原文"。
+// 申报通知没有核对过的截止日期时的说明，只给文字、不给任何日期（合规红线）。
+// 10/29 创始人："自动摘取，未经人工核对不要写在页面上，可以写在帮助里面"——有待核对的候选和没有候选的
+// 都写"截止时间见原文"，两者的区别写在使用帮助里（content/help.js 的 deadline 一条）。
 // 有核对过的日期时返回空串，由 dueInfo 显示日期；其他类型的文件不写说明。
-const NOTE_UNVERIFIED = '截止未核对，请以原文为准';
+const NOTE_SEE_ORIGINAL = '截止时间见原文';
+const NOTE_UNVERIFIED = NOTE_SEE_ORIGINAL;
 
 // 首发版（D-061）的截止显示。接口带 excerpts=1 时每条有 due（主截止）、详情有 deadlines（逐个类型）：
 // - verified：人工核对过的，写日期和剩余天数，标"已人工核对"；
-// - excerpt：机器从原文摘出的，只会是 8–30 天到期的，写日期并标"机器摘录·未经人工核对"，必须带原句；
-// - unverified：有候选但不显示日期（7 天内没核对的、30 天以后的、过期的、几个日期对不上的），只写"截止未核对"。
+// - excerpt：机器从原文摘出的，只会是 8–30 天到期的，写日期并标"原文摘录"，必须带原句（和核对过的分得开，
+//   "没经过人工核对"这层意思写在使用帮助里，10/29 创始人）；
+// - unverified：有候选但不显示日期（7 天内没核对的、30 天以后的、过期的、几个日期对不上的），只写"截止时间见原文"。
 // 摘录没带原句、按手机日期算已进入 7 天内（页面放过夜、手机日期和服务端差一天）或在 30 天以后，
-// 这里再拦一次，只写"截止未核对"。
+// 这里再拦一次，不写日期。
 const VERIFIED_LABEL = '已人工核对';
-const EXCERPT_LABEL = '机器摘录·未经人工核对';
+const EXCERPT_LABEL = '原文摘录';
 const EXCERPT_MIN_DAYS = 8;
 const EXCERPT_MAX_DAYS = 30;
 function dueView(due, now) {
@@ -130,17 +133,9 @@ function dueView(due, now) {
   }
   return { source: 'unverified', kind: due.kind || '', days: null, tone: '', text: NOTE_UNVERIFIED, label: '', quote: '' };
 }
-const NOTE_SEE_ORIGINAL = '截止时间见原文';
 function deadlineNote(doc) {
   if (!doc || doc.kind !== '申报通知' || dueInfo(doc.deadline)) return '';
   return doc.deadline_state === 'unverified' ? NOTE_UNVERIFIED : NOTE_SEE_ORIGINAL;
-}
-
-// 截止雷达、申报日历没有内容时的说明；total 是服务端给的已核对条数（不是数字时不写条数）
-function verifyingNote(total) {
-  return typeof total === 'number' && total >= 0
-    ? `截止日期正在人工核对中，目前已核对 ${total} 条`
-    : '截止日期正在人工核对中';
 }
 
 // 类型标签颜色：申报=蓝，名单=橙，政策=绿
@@ -192,30 +187,98 @@ function shortTime(iso) {
   return `${year}${d.getUTCMonth() + 1}月${d.getUTCDate()}日 ${hm}`;
 }
 
-// 截止核对断档（定稿方案第八节）：最近一次人工核对截止之后，已经过了 3 个及以上工作日（周一到周五，
-// 不扣节假日）没再核对，首页写"今日未更新"；从没核对过也写。reviewedAt 是后端给的带时区的时间。
-const STALE_WORKDAYS = 3;
-function workdaysSince(iso, now) {
-  const today = parseISO(todayISO(now));
-  let count = 0;
-  for (let t = parseISO(iso).getTime() + 86400000; t <= today.getTime() && count < STALE_WORKDAYS; t += 86400000) {
-    const day = new Date(t).getUTCDay();
-    if (day !== 0 && day !== 6) count += 1;
-  }
-  return count;
+// ---- 详情页"能读到什么"（D-097）：正文开头在段末停、底栏的阅读入口、正文卡顶上那一行、没正文时说什么 ----
+// 能不能读以服务端为准（详情接口的 body 和 attachments[].readable、state、stateText，和阅读页同一个
+// 判断），这里只决定页面怎么写，不另做判断。
+
+// 不满一屏就全部显示（"全文如下"）：28rpx 字号一行约 18 个字、一屏约 16 行
+const ONE_SCREEN = 300;
+// 长的显示开头约 3 段，在段落末尾停；开头几段太短（"各有关单位："）就多带几段，第一段就很长的
+// 在句末停
+const OPENING_PARAS = 3;
+const OPENING_MIN = 80;
+const OPENING_MAX = 450;
+const OPENING_MAX_PARAS = 6;
+
+function aboutChars(total) {
+  const n = Number(total) || 0;
+  if (n < 1000) return String(Math.max(10, Math.round(n / 10) * 10));
+  return String(Math.round(n / 100) * 100);
 }
-function reviewStaleNote(reviewedAt, now) {
-  if (!reviewedAt) return '今日未更新：截止日期还没有人工核对';
-  const stamp = Date.parse(reviewedAt);
-  if (Number.isNaN(stamp)) return '';
-  const day = todayISO(new Date(stamp));
-  if (workdaysSince(day, now) < STALE_WORKDAYS) return '';
-  return `今日未更新：截止日期最近一次人工核对是 ${monthDay(day)}`;
+
+// 第一段就很长：在 OPENING_MAX 以内最后一个句号、分号后面停；前一半里都没有就停在 OPENING_MAX
+function cutLong(text) {
+  let cut = -1;
+  for (let i = 0; i < Math.min(text.length, OPENING_MAX); i += 1) {
+    if ('。；！？'.includes(text[i])) cut = i + 1;
+  }
+  return text.slice(0, cut >= OPENING_MAX / 2 ? cut : OPENING_MAX);
+}
+
+// body：详情接口的 body（status 为 ok 时有 text、total、truncated）。返回 { text, full, label }：
+// full 为 true 时正文已在详情页全部显示
+function opening(body) {
+  const text = String((body && body.text) || '');
+  const total = Number(body && body.total) || text.length;
+  const truncated = !!(body && body.truncated);
+  // 名单类通知挡掉了名单行（D-092）：不说"全文"，名单在查名单里查（入口就在正文下面）
+  const listHidden = !!(body && body.listHidden);
+  const fullLabel = listHidden ? '正文如下' : '全文如下';
+  if (!truncated && total <= ONE_SCREEN) return { text, full: true, label: fullLabel };
+  const paras = text.split('\n').filter((p) => p.trim());
+  const picked = [];
+  let len = 0;
+  for (const p of paras) {
+    const enough = picked.length >= OPENING_PARAS && len >= OPENING_MIN;
+    if (enough || picked.length >= OPENING_MAX_PARAS || (picked.length && len + p.length > OPENING_MAX)) break;
+    picked.push(p);
+    len += p.length;
+  }
+  let shown = picked.join('\n');
+  if (shown.length > OPENING_MAX) shown = cutLong(shown);
+  if (!truncated && shown.length >= paras.join('\n').length) return { text, full: true, label: fullLabel };
+  return { text: shown, full: false, label: `下面是开头，${listHidden ? '正文' : '全文'}约 ${aboutChars(total)} 字` };
+}
+
+// 能不能读：详情页传的是 attachments.decorate 过的（canOpen，和附件那一行能不能点一致），没有时看 readable
+function canRead(a) {
+  return typeof a.canOpen === 'boolean' ? a.canOpen : a.readable === true;
+}
+
+// 没正文时写的话（设计稿第三节）；名单类正文主要是名单的、个人事项的也在这里。atts：页面上列出的附件，
+// 有没有附件按实际列出的说（"附件在这句下面"要对得上）；不传时按服务端给的原因
+function noBodyText(body, atts) {
+  if (!body) return '';
+  // 名单类：下一行就是"在'查名单'里按企业名称查询 ›"，这里不再写一遍怎么查（10/29 独立审阅）
+  if (body.status === 'list') return '这份通知的正文里有名单';
+  if (body.status === 'original') return '含个人信息，不在小程序内展示全文';
+  // 原网页已失效：正文、附件都不给（D-097 维持现状），不说"内容在附件里"
+  if (body.reason === 'link_gone') return '原网页已打不开，正文暂不提供';
+  const hasAtts = Array.isArray(atts) ? atts.length > 0 : body.reason === 'attachments';
+  return hasAtts ? '这份通知的内容在附件里' : '这个网站的正文还取不到';
+}
+
+// 原网页已失效时详情页标题下的提示（D-097：正文、附件都不再给）。服务端万一还给了能读的正文或附件
+// （readable 为真），不说"不再提供"，免得上面说没有、下面又能读
+function goneNote(linkGone, readable) {
+  if (!linkGone) return '';
+  const head = `原文链接已失效（${linkGone} 检查时打不开）。`;
+  if (readable) return `${head}下面是之前收录的内容，请以发文机关现在公布的为准。`;
+  // 不点名"要点"、也不说"下面是"：要点常常整张不显示，下面可能只剩原文出处（10/29 独立审阅）
+  return `${head}正文和附件不再提供，请以发文机关现在公布的为准。`;
+}
+
+// 底栏去阅读页的入口（D-097；10/29 起正文下面不再放第二个）：正文只显示了开头 → "阅读全文"（去阅读页看正文）；
+// 正文已全部显示或没有正文、但有能读的附件 → "阅读附件"（去阅读页看第一个能读的附件）；都读不了 → 不显示
+function readEntry(body, view, atts) {
+  if (body && body.status === 'ok' && view && !view.full) return { label: '阅读全文', attachment: '' };
+  const first = (atts || []).find(canRead);
+  return first ? { label: '阅读附件', attachment: String(first.id) } : null;
 }
 
 module.exports = {
-  reviewStaleNote,
   shortTime,
   todayISO, daysUntil, monthDay, cnDate, weekday, clockText, dueTone, dueInfo, kindClass, statusClass, highlight, ISSUER_WRAP, regionText,
-  deadlineNote, verifyingNote, NOTE_UNVERIFIED, NOTE_SEE_ORIGINAL, dueView, VERIFIED_LABEL, EXCERPT_LABEL,
+  deadlineNote, NOTE_UNVERIFIED, NOTE_SEE_ORIGINAL, dueView, VERIFIED_LABEL, EXCERPT_LABEL,
+  ONE_SCREEN, OPENING_MAX, aboutChars, opening, noBodyText, goneNote, readEntry,
 };

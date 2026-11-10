@@ -79,6 +79,9 @@ def session_factory(db_engine: Engine) -> sessionmaker[Session]:
     v1._EXCERPT_CACHE.clear()
     v1._LOOKUP_COVERAGE.clear()
     v1._LIST_COUNTS.clear()
+    # 名单看板、截止报告的整份缓存（按数据版本做键，换了一批数据版本可能重复）：查名单的收录份数
+    # 也用名单看板的统计（11/2 完整测试第 6 条），一并清掉
+    v1._REPORT_CACHE.clear()
     return sessionmaker(bind=db_engine, expire_on_commit=False)
 
 
@@ -86,6 +89,34 @@ def session_factory(db_engine: Engine) -> sessionmaker[Session]:
 def session(session_factory: sessionmaker[Session]) -> Iterator[Session]:
     with session_factory() as s:
         yield s
+
+
+@pytest.fixture
+def repeatable_read_factory(
+    db_engine: Engine, session_factory: sessionmaker[Session]
+) -> sessionmaker[Session]:
+    """每个事务都是"可重复读"的会话（线上连接是读已提交，见 youju/db.py）：事务里第一次普通读
+    定下快照，之后读不到别的连接新提交的。用来证明某处检查不靠连接的隔离级别。"""
+    return sessionmaker(
+        bind=db_engine.execution_options(isolation_level="REPEATABLE READ"),
+        expire_on_commit=False,
+    )
+
+
+@pytest.fixture
+def pdf_in_process(monkeypatch) -> None:
+    """读 PDF 不起子进程：pdf_sandbox 在测试进程里跑子进程的那一段（_work，结果照样过一遍
+    JSON）。给冒充 pdfplumber 的测试（再改 pdf_sandbox._open）、要改 pdf_limits 内部参数或量本进程
+    内存的测试用；子进程本身（限内存、限时、环境变量）在 test_pdf_sandbox.py 里测。"""
+    import json
+
+    from youju import pdf_sandbox
+
+    def spawn(cfg: dict, data: bytes, seconds: float) -> dict:
+        answer = pdf_sandbox._work(cfg["task"], data, cfg["options"])
+        return json.loads(json.dumps(answer, ensure_ascii=False))
+
+    monkeypatch.setattr(pdf_sandbox, "_spawn", spawn)
 
 
 def read_fixture_html(name: str) -> str:

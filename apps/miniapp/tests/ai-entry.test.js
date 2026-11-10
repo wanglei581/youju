@@ -19,7 +19,7 @@ const AI_PAGES = ['advisor', 'advisor-interpret', 'advisor-clause', 'advisor-tas
 const liveTimers = new Set();
 test.afterEach(() => { liveTimers.forEach(clearTimeout); liveTimers.clear(); });
 const trackedTimeout = (fn, delay) => { const id = setTimeout(() => { liveTimers.delete(id); fn(); }, delay); liveTimers.add(id); return id; };
-const NOTICE = 'AI 生成 · 内部测试：摘录通知原文原句，可能不全；不判断能否申报，以原文和主管部门解释为准。';
+const NOTICE = 'AI 生成 · 内部测试：摘录通知原文原句，不判断能否申报，以原文和主管部门解释为准。';
 // 10/17：入口是"要点"下面的卡片（标题 AI 解读，能用时有"开始解读"），不再是右下角浮动按钮
 const ENTRY_OPEN = (text) => text.startsWith('AI 解读') && text.includes('开始解读');
 const caps = (enabled, extra = {}) => ({
@@ -183,7 +183,7 @@ test('入口只放在通知详情页，绑定当前通知；其他页面不引�
     if (name === 'detail') {
       assert.match(template, /<view id="ai-entry"><ai-entry blocked="\{\{!doc\}\}" doc-id="\{\{doc.id\}\}" doc-title="\{\{doc.title\}\}" doc-url="\{\{doc.url\}\}" has-attachments="\{\{atts.length > 0\}\}" ai="\{\{doc.ai\}\}" body-status="\{\{doc.body \? doc.body.status : ''\}\}" body-total="\{\{doc.body && doc.body.total \? doc.body.total : 0\}\}" bind:attachments="toAttachments" \/><\/view>/);
       // 卡片紧跟在"要点"后面，不再浮在正文上
-      assert.ok(template.indexOf('<ai-entry') > template.indexOf('要点') && template.indexOf('<ai-entry') < template.indexOf('原文摘录'));
+      assert.ok(template.indexOf('<ai-entry') > template.indexOf('要点') && template.indexOf('<ai-entry') < template.indexOf('支持方式'));
       assert.equal(usesFab, true);
     } else {
       assert.doesNotMatch(template, /<ai-entry\b|<tool-fab\b/, route); assert.equal(usesFab, false, route);
@@ -194,7 +194,7 @@ test('入口只放在通知详情页，绑定当前通知；其他页面不引�
   assert.equal(read('app.json').includes('components/ai-entry'), false); assert.equal(read('app.json').includes('components/tool-fab'), false);
 });
 
-test('非白名单用户在任何页面都看不到 AI 字样：AI 文案全部在 aiEnabled 条件里，原有页面没有新增', () => {
+test('非白名单用户看不到 AI 入口和内部测试文案；购买页“不含 AI 次数”那句也要受 aiEnabled 控制', () => {
   for (const file of ['components/ai-entry/index.wxml'].concat(AI_PAGES.map((name) => `pages/${name}/index.wxml`))) {
     assertAiGuarded(read(file));
     assert.doesNotMatch(read(file), /智能|即将推出/);
@@ -203,7 +203,10 @@ test('非白名单用户在任何页面都看不到 AI 字样：AI 文案全部�
   const aiRoutes = AI_PAGES.concat('ai').map((name) => `pages/${name}/index`);
   for (const route of JSON.parse(read('app.json')).pages.filter((item) => !aiRoutes.includes(item))) {
     const visible = read(`${route}.wxml`).replace(/<!--[^]*?-->/g, '');
-    assert.doesNotMatch(visible, /\bAI\b|内部测试/, route);
+    // 购买页写"不含 AI 次数"（D-109 ④），只在 AI 开着时显示（独立审阅 #436）
+    if (route === 'pages/pass/index') assertAiGuarded(read(`${route}.wxml`));
+    else assert.doesNotMatch(visible, /\bAI\b/, route);
+    assert.doesNotMatch(visible, /内部测试/, route);
   }
 });
 
@@ -371,6 +374,8 @@ test('卡片在做不了的文件上按后台给的原因代码写原因和下�
     [{ ai: none('no_body'), hasAttachments: true }, '还没有拿到完整正文，正文可能在附件里。', '看附件'],
     [{ ai: none('too_long') }, '正文超过 2.4 万字，暂不能解读，请先看要点和原文。', ''],
     [{ ai: none('unavailable') }, '这份文件已下架。', '返回'],
+    // 原文链接已失效：详情页标题下已写"原文链接已失效……"，卡片上不再说一遍原因（11/2 实测）；提交被拒时的提示照旧带原因
+    [{ ai: none('link_gone') }, '这份通知暂不提供 AI 解读和条款对照。', ''],
     // 旧后台：有 ai、没有原因代码时按页面已有的正文信息判断
     [{ ai: none(null), bodyStatus: 'list' }, '名单不需要 AI 解读。要查企业在不在名单上，可以用“查名单”。', '去查名单'],
     [{ ai: none(null), bodyStatus: 'original' }, '这类文件不做 AI 解读。', '站内阅读正文'],

@@ -28,6 +28,7 @@ NOW = datetime(2026, 9, 30, 23, 59, tzinfo=BJ)
 def advisor_settings(monkeypatch):
     settings = SimpleNamespace(
         advisor_enabled=True,
+        advisor_compare_enabled=True,
         cloud_env="test-env",
         dev_openid="advisor-user",
         trust_wx_headers=False,
@@ -85,6 +86,21 @@ def xlsx_content(rows):
     return output.getvalue()
 
 
+def test_compare_disabled_rejects_new_work(client, advisor_settings):
+    agree_advisor(client)
+    old = create(client).json()
+    advisor_settings.advisor_compare_enabled = False
+    assert (
+        client.post("/api/v1/advisor/preview", json={"kind": "compare", "rows": ["甲"]}).status_code
+        == 404
+    )
+    assert create(client, key="disabled").status_code == 404
+    assert client.get(f"/api/v1/advisor/tasks/{old['id']}").status_code == 200
+    caps = client.get("/api/v1/advisor/capabilities").json()["data_tools"]
+    assert caps["features"] == ["track"] and caps["compareEnabled"] is False
+    assert client.get("/api/v1/advisor/status").json()["compareEnabled"] is False
+
+
 def test_advisor_status_public_quota_and_switch(client, advisor_settings, monkeypatch):
     advisor_settings.advisor_enabled = False
     assert client.get("/api/v1/advisor/status").status_code == 404
@@ -93,6 +109,7 @@ def test_advisor_status_public_quota_and_switch(client, advisor_settings, monkey
     # 加量体验、申报季加量的开关默认关：不出现在额度里
     assert client.get("/api/v1/advisor/status").json() == {
         "enabled": True,
+        "compareEnabled": True,
         "pass": {"active": False, "expiresAt": None},
         "quota": {"compare": {**expected, "limit": 3}, "track": expected},
         "trial": None,
@@ -127,6 +144,44 @@ def test_advisor_agreement_is_separate_and_versioned(client, advisor_settings):
         ).status_code
         == 404
     )
+
+
+def test_first_release_ai_agreement_does_not_cover_tools(client, session, advisor_settings):
+    """D-098：过审版加 AI 的协议 2026-11.1 排在 2026-11 后面、含 AI 条款，但去掉了批量工具和加量体验。
+    只同意过它的人同意不了工具使用说明，已经同意过工具使用说明的也提交不了名单；
+    之后同意含工具条款的新版（如 2026-12）才行。"""
+    from youju.agreements import WITHOUT_TOOLS_TERMS, tools_agreed
+
+    assert "2026-11.1" in WITHOUT_TOOLS_TERMS
+    assert tools_agreed("2026-11") and tools_agreed("2026-12") and tools_agreed("2026-11.2")
+    assert (
+        not tools_agreed("2026-11.1") and not tools_agreed("2026-10.2") and not tools_agreed(None)
+    )
+    # 写法不完整、后面多字符的不算（不能用"2026-11.1x"绕过排除）
+    assert (
+        not tools_agreed("2026-11.1x")
+        and not tools_agreed("2026-11.1 ")
+        and not tools_agreed("2026-12a")
+    )
+    advisor_settings.agreement_version = "2026-12"
+    advisor_settings.agreement_min_version = "2026-10.2"
+    assert client.post("/api/v1/me/agreement", json={"version": "2026-11.1"}).status_code == 200
+    response = client.post(
+        "/api/v1/me/agreement",
+        json={"scope": "advisor", "version": service.ADVISOR_AGREEMENT_VERSION},
+    )
+    assert response.status_code == 403 and response.json()["detail"] == me.OUTDATED
+    # 先在完整版里同意过工具使用说明，后来同意的是 2026-11.1：提交名单也拦下，不扣次数
+    user = session.scalar(select(User).where(User.openid == "advisor-user"))
+    user.advisor_agreement_version = service.ADVISOR_AGREEMENT_VERSION
+    user.advisor_agreement_at = NOW
+    session.commit()
+    response = create(client)
+    assert response.status_code == 403 and response.json()["detail"] == me.OUTDATED
+    assert client.get("/api/v1/advisor/status").json()["quota"]["compare"]["used"] == 0
+    # 同意含工具条款的新版以后照常
+    assert client.post("/api/v1/me/agreement", json={"version": "2026-12"}).status_code == 200
+    assert create(client, key="k2").status_code == 202
 
 
 def test_compare_monthly_quota_keeps_daily_ledger_and_refunds_original_month(
@@ -306,7 +361,7 @@ def test_upload_exact_byte_boundary_and_xlsx_expansion(client):
     with ZipFile(archive, "w", compression=8) as book:
         book.writestr("xl/worksheets/sheet1.xml", b" " * (2 * 1024 * 1024 + 1))
     response = client.post("/api/v1/advisor/preview", json=upload_body(archive.getvalue()))
-    assert response.status_code == 422 and "解压后过大" in response.json()["detail"]
+    assert response.status_code == 422 and "多余的工作表" in response.json()["detail"]
 
 
 @pytest.mark.parametrize("sparse", [False, True])
@@ -1081,7 +1136,7 @@ def test_xlsx_cumulative_expansion_limit(client):
         archive.writestr("a", b"x" * (1024 * 1024 + 1))
         archive.writestr("b", b"x" * (1024 * 1024 + 1))
     response = client.post("/api/v1/advisor/preview", json=upload_body(output.getvalue()))
-    assert response.status_code == 422 and "解压后过大" in response.json()["detail"]
+    assert response.status_code == 422 and "多余的工作表" in response.json()["detail"]
 
 
 @pytest.mark.parametrize("content", [b"PK company\nOther company", b"PKbroken"])
@@ -1344,6 +1399,7 @@ def test_native_task_result_pagination_owner_expiry(client, session):
     assert first.headers["cache-control"] == "no-store"
     assert len(data["items"]) == 20 and data["nextCursor"] == "20"
     assert data["total"] == 23
+    assert data["summaryCount"] == 0
     assert data["rowCount"] == 1
     missing_version = client.get(path, params={"cursor": 20})
     assert missing_version.status_code == 409
@@ -1359,6 +1415,7 @@ def test_native_task_result_pagination_owner_expiry(client, session):
     session.commit()
     denied = client.get(path)
     assert denied.status_code == 404
+    assert denied.json()["detail"] == "没有找到这条记录，可能已经删除"
     assert denied.headers["cache-control"] == "no-store"
     row.user_id = session.scalar(select(User.id).where(User.openid == "advisor-user"))
     row.expires_at = NOW.astimezone(UTC)
@@ -1378,6 +1435,31 @@ def test_native_legacy_result_does_not_recalculate(client, session):
     response = client.get(f"/api/v1/advisor/tasks/{task_id}/reading")
     assert response.status_code == 409
     assert "重新生成" in response.json()["detail"]
+
+
+def test_native_reading_filters_legacy_source_url_without_changing_saved_result(client, session):
+    from youju.compare import CompareReport, CompareRow
+    from youju.native_results import build
+
+    agree_advisor(client)
+    task_id = create(client).json()["id"]
+    task = session.get(AdvisorTask, task_id)
+    task.status, task.result_document_ids = "done", []
+    content = build("compare", CompareReport([CompareRow("甲", "甲", "name", "未查到")], [], NOW))
+    content["items"][0]["fields"].extend(
+        [
+            {"label": "来源地址", "value": "https://example.gov.cn/a"},
+            {"label": "来源", "value": "示例网站"},
+        ]
+    )
+    task.result_json = content
+    session.commit()
+    response = client.get(f"/api/v1/advisor/tasks/{task_id}/reading")
+    assert response.status_code == 200
+    assert "来源地址" not in response.text and "https://example.gov.cn/a" not in response.text
+    assert {"label": "来源", "value": "示例网站"} in response.json()["items"][0]["fields"]
+    session.expire(task)
+    assert task.result_json == content
 
 
 def test_native_summary_pagination_keeps_input_row_count(client, session):
@@ -1401,7 +1483,7 @@ def test_native_summary_pagination_keeps_input_row_count(client, session):
         response = client.get(f"/api/v1/advisor/tasks/{task_id}/reading", params=params)
         assert response.status_code == 200
         data = response.json()
-        assert data["total"] == 44 and data["rowCount"] == 22
+        assert data["total"] == 44 and data["rowCount"] == 22 and data["summaryCount"] == 22
         assert response.headers["cache-control"] == "no-store"
         items.extend(data["items"])
         if data["nextCursor"] is None:
@@ -1410,6 +1492,84 @@ def test_native_summary_pagination_keeps_input_row_count(client, session):
     assert [item["n"] for item in items] == list(range(44))
     assert all(item["title"] == "汇总" and item["documentId"] is None for item in items[:22])
     assert all(item["title"] == "本次收录范围内未找到相关通知" for item in items[22:])
+
+
+def test_native_reading_marks_link_gone_documents_instead_of_refusing(client, session):
+    """原文链接已失效的通知照样公开（列表、详情、导出都只标一句）：站内结果只给那几条标 linkGone，
+    不整份拒绝；下架的仍整份拒绝（11/4 完整测试 T4b）。"""
+    import hashlib
+    import json
+
+    from youju.models import Document, Source
+
+    src = Source(
+        level="省级",
+        province="山东",
+        dept="科技",
+        dept_full_name="山东省科学技术厅",
+        column_name="通知",
+        url="https://kjt.shandong.gov.cn/tz/",
+        enabled=True,
+        parser_config={},
+        rights_level=1,
+    )
+    session.add(src)
+    session.flush()
+    stamp = datetime.now(UTC)
+    docs = [
+        Document(
+            source_id=src.id,
+            url=f"https://kjt.shandong.gov.cn/{n}.html",
+            url_key=f"kjt.shandong.gov.cn/{n}.html",
+            title=f"合成通知{n}",
+            publish_date=NOW.date(),
+            first_seen_at=stamp,
+            last_seen_at=stamp,
+        )
+        for n in (1, 2)
+    ]
+    session.add_all(docs)
+    session.flush()
+    docs[1].link_gone_at = stamp
+    agree_advisor(client)
+    task_id = create(client).json()["id"]
+    row = session.get(AdvisorTask, task_id)
+    status = {"label": "截止核对情况", "value": "未核对，请以原文为准"}
+    items = [
+        {"documentId": str(doc.id), "title": doc.title, "fields": [dict(status)], "n": n}
+        for n, doc in enumerate(docs)
+    ]
+    content = {
+        "schema": 1,
+        "kind": "track",
+        "title": "客户相关通知表",
+        "notice": "合成",
+        "generatedAt": NOW.isoformat(),
+        "dataVersion": None,
+        "items": items,
+    }
+    content["revision"] = hashlib.sha256(json.dumps(content, sort_keys=True).encode()).hexdigest()
+    row.kind, row.status = "track", "done"
+    row.result_document_ids = [doc.id for doc in docs]
+    row.result_json = content
+    session.commit()
+    path = f"/api/v1/advisor/tasks/{task_id}/reading"
+    response = client.get(path)
+    assert response.status_code == 200
+    shown = {item["documentId"]: item for item in response.json()["items"]}
+    assert shown[str(docs[1].id)]["linkGone"] is True
+    assert "linkGone" not in shown[str(docs[0].id)]
+    # 失效的那条不再写“请以原文为准”（原文已打不开），其他条照旧
+    assert shown[str(docs[1].id)]["fields"] == [{"label": "截止核对情况", "value": "未核对"}]
+    assert shown[str(docs[0].id)]["fields"] == [status]
+    # 存着的结果不改
+    session.expire(row)
+    assert all("linkGone" not in item for item in row.result_json["items"])
+    assert all(item["fields"] == [status] for item in row.result_json["items"])
+    # 下架的照旧整份拒绝，不把旧结果当作绕过下架的副本
+    docs[0].taken_down_at = stamp
+    session.commit()
+    assert client.get(path).status_code == 410
 
 
 def test_native_result_requires_all_dependencies(client, session):

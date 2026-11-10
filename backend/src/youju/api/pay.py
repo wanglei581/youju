@@ -15,7 +15,7 @@ from xml.etree import ElementTree
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import func, or_, select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
@@ -25,7 +25,7 @@ from youju.api.contact import transfer_to_kf
 from youju.api.me import KnownUserDep, UserDep, request_openid
 from youju.config import get_settings
 from youju.models import InvoiceRequest, PayOrder, User
-from youju.xpay import XPayClient, XPayError, encode, pay_signature, signature, wx_http
+from youju.xpay import XPAY_ENV, XPayClient, XPayError, encode, pay_signature, signature, wx_http
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +68,19 @@ def wx_client():
 WxDep = Annotated[XPayClient, Depends(wx_client)]
 
 
+# 下新单前查不清上一笔付款结果时的说法（挡新单，最多 10 分钟）
+UNVERIFIED_PREVIOUS = (
+    "上一笔付款微信暂时还查不到结果，请过几分钟再试（最多 10 分钟）；"
+    "如果已经扣了款，会自动开通，可到“我的订单”查看"
+)
+
+
+class FailedOrderIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    order_id: int
+    code: int
+
+
 class OrderIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     product_id: str = Field(min_length=1, max_length=128)
@@ -77,6 +90,9 @@ class OrderIn(BaseModel):
     # 购买页上写的"能开哪种发票"（商品接口带回的那句）：和现在的配置不一致就不下单，
     # 订单记下的就是用户付款前看到的那句（Codex 第四轮）
     invoice_type: str = Field(default="", max_length=100)
+    # 上一笔付款前就被微信拒了（小程序拿到官方错误码表里下单阶段的错误码）：带上那一单和错误码，
+    # 服务端在那一单上记一笔，下新单前查它查不清时不挡（payments.mark_not_started）
+    failed_order: FailedOrderIn | None = None
 
 
 @router.get("/products", dependencies=[Depends(require_enabled)])
@@ -86,12 +102,7 @@ def list_products(request: Request, session: SessionDep) -> dict:
     settings = get_settings()
     # 和下单条件一致（payments.orderable）：下不了单就不展示价格。
     if not payments.orderable(settings):
-        return {
-            "items": [],
-            "sandbox": settings.xpay_env == 1,
-            "renewBonus": None,
-            "invoiceType": None,
-        }
+        return {"items": [], "renewBonus": None, "invoiceType": None}
     # 看价格不要求登录；认得出是谁时才算"现在续买送不送"
     try:
         openid = request_openid(request)
@@ -108,11 +119,8 @@ def list_products(request: Request, session: SessionDep) -> dict:
             }
             for product, (price, days) in payments.products(settings).items()
         ],
-        # 沙箱（只有测试名单看得到；真机付款也会真实扣钱，10/20 创始人实测）：
-        # 小程序在《付费服务协议》定稿前也放开付款按钮供联调
-        "sandbox": settings.xpay_env == 1,
         "renewBonus": payments.renew_offer(session, settings, user, _stamp()),
-        # 能开哪种发票（付款前要看得到）；沙箱联调时可以还没填（None），现网没填就不卖
+        # 能开哪种发票（付款前要看得到）；没填就不卖，走到这里一定有
         "invoiceType": payments.invoice_type(settings) or None,
     }
 
@@ -142,8 +150,19 @@ def create_order(body: OrderIn, session: SessionDep, user: UserDep, client: WxDe
         raise HTTPException(status_code=404, detail="没有找到接口")
     # 下新单前先问微信：10 分钟内的待支付单可能已经付了款，只是推送和补单还没到
     # （取消回调不准、付款中途小程序被关掉时，小程序本机没记下这一笔）。付了就先开通、不下新单。
-    # 查不了不挡新单：没调起过支付的单（下单回应没送到手机）微信那边可能查不到，
-    # 官方错误码里也没有「订单不存在」可以区分；这类单交给每分钟的补单处理。
+    # 查不了的旧单挡新单（409，最多挡 10 分钟）：以前放行，
+    # 旧单其实付了款时会重复扣款（Codex 10/29）。
+    # 付款前就被微信拒了的单，小程序下一次付款时会带上（failed_order），记过的不在这里挡人；
+    # 下单回应没送到手机这类没带上、微信那边也查不到的单，最多挡 10 分钟。
+    if body.failed_order is not None and payments.mark_not_started(
+        session, user.id, body.failed_order.order_id, body.failed_order.code, stamp
+    ):
+        # 先单独存下：后面挡新单（409、429）或下单失败（503）回滚时这一句不跟着丢——
+        # 不然用户换台手机再付，那一单查不清还会挡人（Codex #402 第 3 轮）。
+        # 提交会放掉用户锁，重新加上
+        session.commit()
+        if session.scalar(select(User.id).where(User.id == user.id).with_for_update()) is None:
+            raise HTTPException(status_code=404, detail="没有找到接口")
     # 候选先普通查（不加范围锁：两个新用户同时下单时，范围锁加插入会互相等待甚至死锁），
     # 再按主键逐个加锁、复核状态；推送或补单刚开通的这里会看到不是待支付，跳过。
     recent = session.scalars(
@@ -167,10 +186,17 @@ def create_order(body: OrderIn, session: SessionDep, user: UserDep, client: WxDe
         try:
             data = payments.query(session, old, client)
         except XPayError:
-            continue
+            if payments.reported_not_started(old):
+                continue
+            session.commit()
+            raise HTTPException(status_code=409, detail=UNVERIFIED_PREVIOUS) from None
         # 和主动核对同一套处理（payments.settle_pending）：已关单、已退完的不挡新单；
-        # 付了款的开通、转人工的（金额不符、5/7 等少见状态）都返回 409，不再下新单
+        # 付了款的开通、转人工的（金额不符、5/7 等少见状态）都返回 409，不再下新单；
+        # 查单返回格式不对（unavailable）和查不了一样，挡新单（Codex 第 1 轮）
         result = payments.settle_pending(session, old, data, settings, stamp)
+        if result == "unavailable" and not payments.reported_not_started(old):
+            session.commit()
+            raise HTTPException(status_code=409, detail=UNVERIFIED_PREVIOUS)
         if result in ("paid", "manual"):
             session.commit()
             raise HTTPException(
@@ -179,21 +205,27 @@ def create_order(body: OrderIn, session: SessionDep, user: UserDep, client: WxDe
                 if result == "paid"
                 else "上一笔付款需要人工核对，请点“遇到问题”告诉我们",
             )
-    count = session.scalar(
-        select(func.count(PayOrder.id)).where(
+    # 10 分钟内最多 3 笔待支付（防刷）。小程序报告过付款前就被微信拒了的单不算在这 3 笔里——
+    # 不然连着被拒三次（道具还没发布到现网等）第四次就得等 10 分钟（Codex #402 第 2 轮）；
+    # 但连这些一起最多 10 笔，免得靠"报告被拒"无限下单
+    pending = session.scalars(
+        select(PayOrder.error).where(
             PayOrder.user_id == user.id,
             PayOrder.status == "pending",
             PayOrder.created_at > stamp - timedelta(minutes=10),
         )
+    ).all()
+    unmarked = sum(
+        1 for error in pending if not (error or "").startswith(payments.NOT_STARTED_PREFIX)
     )
-    if count >= 3:
+    if unmarked >= 3 or len(pending) >= 10:
         raise HTTPException(status_code=429, detail="待支付订单过多，请稍后再试")
     trade = uuid4().hex
     raw = encode(
         {
             "offerId": settings.xpay_offer_id,
             "buyQuantity": 1,
-            "env": settings.xpay_env,
+            "env": XPAY_ENV,
             "currencyType": "CNY",
             "productId": body.product_id,
             "goodsPrice": price,
@@ -202,7 +234,7 @@ def create_order(body: OrderIn, session: SessionDep, user: UserDep, client: WxDe
         }
     )
     try:
-        pay_sig = pay_signature(client.appkey(settings.xpay_env), "requestVirtualPayment", raw)
+        pay_sig = pay_signature(client.appkey(XPAY_ENV), "requestVirtualPayment", raw)
         # session_key 仅用于此表达式，不赋给订单、日志、异常或任何持久对象。
         user_sig = signature(client.session_key(body.code, user.openid), raw)
     except XPayError:
@@ -215,9 +247,9 @@ def create_order(body: OrderIn, session: SessionDep, user: UserDep, client: WxDe
         days=days,
         # 下单时续买多送开着才算数（付款页这时写着这条规则）；付款时间符合才真的送
         bonus_days=payments.RENEW_BONUS_DAYS if payments.renew_bonus_enabled(settings) else 0,
-        # 购买页上写的发票类型（上面已核对和现在的配置一致；沙箱联调时可能还没填）
+        # 购买页上写的发票类型（上面已核对和现在的配置一致）
         invoice_type=invoice or None,
-        env=settings.xpay_env,
+        env=XPAY_ENV,
         terms_version=body.terms_version,
         created_at=stamp,
         updated_at=stamp,
@@ -245,6 +277,9 @@ def order_out(session: Session, order: PayOrder) -> dict:
         "days": order.days,
         "status": payments.STATUS_LABELS[order.status],
         "amount": order.price,
+        # 下单时同意的《付费服务协议》版本：订单页按它打开协议
+        # （付费服务协议第七条，开卖那一版必做第 7 项）
+        "termsVersion": order.terms_version,
         # 下单时间：待确认的订单写"几点下的单"，用户好对上自己是哪一次付的
         "createdAt": order.created_at,
         "paidAt": order.paid_time,
@@ -489,7 +524,7 @@ def _ios_reply(bind, trade: str | None) -> dict:
                 if trade
                 else None
             )
-            decision = payments.ios_decision(session, order, _stamp())
+            decision = payments.ios_decision(session, order, _stamp(), get_settings())
             payments.event(
                 session,
                 "xpay_subscribe_ios_refund_query_notify",
@@ -498,8 +533,9 @@ def _ios_reply(bind, trade: str | None) -> dict:
             session.commit()
             return decision
     except Exception:
-        # 绝不把数据库连接或支付配置的异常文字放进退款凭据。
-        return {"result_code": 0, "result_info": "未使用", "evidence": "本地任务状态暂不能核验"}
+        # 绝不把数据库连接或支付配置的异常文字放进退款凭据；
+        # 核验不了也答建议退款（付费服务协议第二条第 7 项）
+        return dict(payments.IOS_UNVERIFIABLE)
 
 
 # 路径在服务启动时绑定，配置改变后须重新启动部署服务。
@@ -525,11 +561,7 @@ async def push(
                 asyncio.to_thread(_ios_reply, session.get_bind(), trade), timeout=2.0
             )
         except TimeoutError:
-            decision = {
-                "result_code": 0,
-                "result_info": "未使用",
-                "evidence": "本地任务状态核验超时",
-            }
+            decision = dict(payments.IOS_UNVERIFIABLE)
         return reply(xml, extra=decision)
     return await run_in_threadpool(_transaction_push, data, xml, session, client)
 
@@ -547,7 +579,13 @@ def _transaction_push(data: dict, xml: bool, session: Session, client: XPayClien
     order = payments.lock_order(session, order_id) if order_id is not None else None
     if order is None:
         # 本地没有的订单重推也没用：只记摘要（事件表按白名单字段保存），应答成功。
-        payments.event(session, kind, data, None)
+        # 投诉照样要有人知道：记成单独告警（独立审阅 #402）
+        row = payments.event(session, kind, data, None)
+        if kind == payments.COMPLAINT_EVENT:
+            # 同一个投诉的重推不再告警（和本地有订单的一样，Codex #402 第 4 轮）
+            session.flush()
+            repeated = bool(payments.same_complaint(session, row, earlier_only=True))
+            row.summary = {**row.summary, "alert": "duplicate" if repeated else "pending"}
         session.commit()
         return reply(xml)
     # 推送没处理成的原因记进日志（微信会重推，补单兜底）：只记事件名、订单号和状态码，
@@ -560,15 +598,25 @@ def _transaction_push(data: dict, xml: bool, session: Session, client: XPayClien
             or not isinstance(data.get("OpenId"), str)
             or not 1 <= len(data["OpenId"]) <= 128
             or (kind == "xpay_goods_deliver_notify" and int(data.get("Env", -1)) != order.env)
-            or (kind != "xpay_goods_deliver_notify" and data.get("WxOrderId") != order.wx_order_id)
+            or (
+                kind != "xpay_goods_deliver_notify"
+                and data.get("WxOrderId") != order.wx_order_id
+                # 投诉只告警、不动钱：本地还没有微信单号的单（没开通、查不到付款结果被关掉的）
+                # 不比微信单号——这正是"扣了钱没开通"最该处理的投诉（独立审阅 #402）
+                and not (kind == payments.COMPLAINT_EVENT and order.wx_order_id is None)
+            )
         ):
             logger.warning(
                 "%s 订单 #%s 推送的用户、环境或微信单号和订单对不上，没处理", kind, order_id
             )
             return reply(xml, 1)
-        payments.event(session, kind, data, order)
+        row = payments.event(session, kind, data, order)
         if kind == "xpay_complaint_notify":
-            order.status, order.error = "manual", f"{payments.COMPLAINT_ERROR}，需人工处理"
+            # 每条投诉收到时就定好由谁告警（payments.note_complaint）：
+            # 已完成、待确认、人工单转人工；
+            # 退款中、已退款、已关闭的不改状态，补单单独告警；同一个投诉重推的不再告警
+            session.flush()
+            payments.note_complaint(session, order, row, _stamp())
             session.commit()
             return reply(xml)
         # 退款推送和发货推送一样只是"去查单"的信号，按查单结果走和每分钟补单同一套处理
@@ -612,6 +660,9 @@ def _transaction_push(data: dict, xml: bool, session: Session, client: XPayClien
                 _stamp(),
                 confirmed=ours and ret is not None and str(ret) == "0",
             )
+            if not accepted:
+                # 已完成的订单（苹果那边或小程序后台退的款）没核实退款：转人工，重推完也有人知道
+                payments.flag_unconfirmed_refund(order, _stamp())
         session.commit()
         if (
             accepted
@@ -629,6 +680,11 @@ def _transaction_push(data: dict, xml: bool, session: Session, client: XPayClien
         code = exc.code if isinstance(exc, XPayError) else None
         reason = f"errcode={code}" if code is not None else type(exc).__name__
         logger.warning("%s 订单 #%s 核验失败：%s", kind, order_id, reason)
-        order.error = "推送暂未核验，将通过查单重试"
+        # 每分钟的补单不查已完成的订单：退款推送没核验成就转人工（Codex 10/29）。
+        # 已经转人工的不改原因：重推时查单又出错，不能把要人工核对什么盖成"将通过查单重试"
+        # （补单不查人工单，Codex 第 3 轮）
+        flagged = kind == "xpay_refund_notify" and payments.flag_unconfirmed_refund(order, _stamp())
+        if not flagged and order.status != "manual":
+            order.error = "推送暂未核验，将通过查单重试"
         session.commit()
         return reply(xml, 1)

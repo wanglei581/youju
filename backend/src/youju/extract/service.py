@@ -7,8 +7,9 @@ from types import SimpleNamespace
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from youju.ai.deadlines import stored_items
 from youju.dedup import canonical_ids, groups_for, reviewed_key, sync_reviewed_twins
-from youju.extract.deadlines import extract_deadlines, same_moment
+from youju.extract.deadlines import extract_deadlines, may_be_same, same_moment
 from youju.models import AICheck, Document, DocumentDeadline, DocumentDetail, Source
 
 
@@ -33,8 +34,7 @@ def ai_found_in_group(
             time.fromisoformat(item["time"]) if item["time"] else None,
         )
         for check in checks
-        if isinstance(check.result, list)
-        for item in check.result
+        for item in stored_items(check.result)
     ]
 
 
@@ -117,15 +117,30 @@ def extract_existing(
                 reviewed_key(probe, "rejected") in reviewed
             ):
                 continue
+            # 去重按"可能是同一个截止"（一边没写时刻也算）；"AI 是否一致"按时刻也一样算
             same_ai = [
                 r
                 for r in ai_rows
-                if same_moment(
+                if may_be_same(
                     r.candidate_date, r.candidate_time, candidate.due_date, candidate.due_time
                 )
             ]
             if any(r.status != "pending" for r in same_ai):
                 continue  # AI 先找到、已经核对过这一天
+            agrees = (
+                True
+                if any(
+                    same_moment(
+                        r.candidate_date, r.candidate_time, candidate.due_date, candidate.due_time
+                    )
+                    for r in same_ai
+                )
+                else None
+                if ai_found is None
+                else any(
+                    same_moment(d, t, candidate.due_date, candidate.due_time) for d, t in ai_found
+                )
+            )
             for r in same_ai:
                 session.delete(r)  # 规则也找到了：以规则候选为准，AI 那条待核对的不再重复送审
                 ai_rows.remove(r)
@@ -138,13 +153,7 @@ def extract_existing(
                 evidence=candidate.evidence,
                 confidence=candidate.confidence,
                 status="pending",
-                ai_agrees=True
-                if same_ai
-                else None
-                if ai_found is None
-                else any(
-                    same_moment(d, t, candidate.due_date, candidate.due_time) for d, t in ai_found
-                ),
+                ai_agrees=agrees,
             )
             session.add(row)
             existing[fingerprint] = row

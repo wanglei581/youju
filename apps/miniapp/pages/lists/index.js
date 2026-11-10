@@ -1,5 +1,5 @@
 const api = require('../../utils/api.js');
-const { todayISO, cnDate } = require('../../utils/format.js');
+const { todayISO, cnDate, clockText } = require('../../utils/format.js');
 const { watchDay, stopDay } = require('../../utils/daywatch.js');
 const { readCache, writeCache, cachedLabel } = require('../../utils/cache.js');
 
@@ -20,16 +20,22 @@ const decode = (value) => { try { return decodeURIComponent(value || ''); } catc
 const firstPage = () => typeof getCurrentPages === 'function' && getCurrentPages().length <= 1;
 // 查名单结果里条目编号的样子（服务端加密的 32 位编号，见 youju/lists/evidence.py）
 const TOKEN = /^[A-Za-z0-9_-]{32}$/;
-// 没查到时如实说：已读出企业名称的名单里没有；另有几份没读出、几份只读了一部分，不能据此判断不在名单里
+// 没查到时如实说（D-091）：先说不能据此判断不在名单里，再按份数说没读出、只读了一部分的，不写内部原因
 function missNote(coverage) {
   const unread = Number((coverage && coverage.unreadLists) || 0);
   const partial = Number((coverage && coverage.partialLists) || 0);
-  // 没读出企业名称的不在"已收录的 N 份"里，用"另有"；只读了一部分的在里面，用"其中"
+  // 没读出企业名称的不在"已收录的 N 份"里，用"另有"；只读了一部分的在里面，写明"已收录的名单里有"
   const parts = [];
-  if (unread > 0) parts.push(`另有 ${unread} 份名单没能读出企业名称（扫描件、旧格式、原网页打不开或表格没认出来）`);
-  if (partial > 0) parts.push(`已收录的名单中有 ${partial} 份很长、只读了前面一部分`);
-  const extra = parts.length ? `${parts.join('；')}。` : '';
-  return `${extra}不能据此判断这家企业不在名单里；地市发布的名单也还没收录。`;
+  if (unread > 0) parts.push(`另有 ${unread} 份名单读不出企业名称`);
+  if (partial > 0) parts.push(`已收录的名单里有 ${partial} 份很长、只读了前面一部分`);
+  // 范围总要写上（agy 10/29 复审）：没有读不出、只读一部分的名单时，也不能让人以为"全查过了、就是没有"
+  parts.push('只收录了科技、工信等部门的公开名单，地市发布的还没收录');
+  return `不能据此判断这家企业不在名单里：${parts.join('；')}。`;
+}
+// 名单数据更新到哪天（D-091 设计稿第五节第 2 件"没查到时附收录范围和更新日期"）：服务端给的是关于页
+// "最近更新"同一个时间，这里只写日期（"11月1日"，不是今年的带年份）；旧服务端没给就不写
+function updatedDay(coverage) {
+  return clockText(coverage && coverage.updatedAt).split(' ')[0];
 }
 
 Page({
@@ -47,7 +53,12 @@ Page({
     looking: false,
     result: null,
     lookupError: '',
+    // 查询出错时给不给"重试"：输入不合要求（服务端 422，如"只查企业和机构，请输入企业全称"）时重试只会
+    // 再出同一句，不给（11/2 完整测试第 14 条）；网络、限频、服务出错照旧给
+    lookupRetry: false,
     coverageSince: '',
+    // 没查到时写"名单数据更新到 11月1日"
+    coverageUpdated: '',
     // 没查到时的说明：还有多少份名单没读出企业名称、只读了一部分（D-091，不写成"没上榜"）
     missNote: '',
     demo: false,
@@ -175,16 +186,17 @@ Page({
     }
     const seq = (this.lookupSeq || 0) + 1;
     this.lookupSeq = seq; // 只用最后一次查询的结果
-    this.setData({ queried: name, looking: true, result: null, lookupError: '', demo: !api.isLive() });
+    this.setData({ queried: name, looking: true, result: null, lookupError: '', lookupRetry: false, demo: !api.isLive() });
     api.lookup(name)
       .then((result) => {
         if (seq !== this.lookupSeq || this.visible === false) return;
         const since = result.coverage && result.coverage.since;
-        this.setData({ looking: false, result, coverageSince: since ? cnDate(since) : '', missNote: missNote(result.coverage) });
+        this.setData({ looking: false, result, coverageSince: since ? cnDate(since) : '', coverageUpdated: updatedDay(result.coverage), missNote: missNote(result.coverage) });
       })
       .catch((err) => {
         if (seq !== this.lookupSeq || this.visible === false) return;
-        this.setData({ looking: false, lookupError: err.message });
+        const invalid = Boolean(err) && (err.status === 422 || err.status === 400);
+        this.setData({ looking: false, lookupError: err.message, lookupRetry: !invalid });
       });
   },
 
@@ -192,11 +204,6 @@ Page({
   record(e) {
     const token = String(e.currentTarget.dataset.token || '');
     if (TOKEN.test(token)) wx.navigateTo({ url: `/pages/reader/index?entry=${encodeURIComponent(token)}` });
-  },
-
-  evidence(e) {
-    const id = e.currentTarget.dataset.id;
-    if (id) wx.navigateTo({ url: `/pages/detail/index?id=${encodeURIComponent(id)}` });
   },
 
   toggleRules() {

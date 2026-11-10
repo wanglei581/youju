@@ -35,8 +35,9 @@ jobs:
   backend:
     name: 后端（代码检查 + 测试）
     runs-on: ubuntu-latest
-    # 平时 10–19 分钟；卡住时不按 GitHub 默认跑满 6 小时
-    timeout-minutes: 40
+    # 11/4 起平时 26–30 分钟（测试 5000 多项），同时跑的多时会到 40 分钟被取消（#437）；
+    # 卡住时不按 GitHub 默认跑满 6 小时
+    timeout-minutes: 60
     services:
       # 线上用微信云托管自带的 MySQL 8.0
       mysql:
@@ -102,6 +103,41 @@ jobs:
           docker run --rm --network host
           -e "YOUJU_DATABASE_URL=mysql+pymysql://root:youju@127.0.0.1:3306/youju_image?charset=utf8mb4"
           youju:ci sh -c "youju db-upgrade && youju import-sources && youju report"
+      # rar 附件靠系统库 libarchive 解压：镜像里要装上、Python 能加载，并且认得 rar、rar5
+      - name: 容器里能加载 libarchive（解 rar 附件）
+        run: >-
+          docker run --rm youju:ci python -c
+          "import libarchive.ffi as f; f.get_read_format_function('rar'); f.get_read_format_function('rar5'); print(f.libarchive_path, f.version_number())"
+      # 读 PDF 在限内存、限时的子进程里（youju/pdf_sandbox.py）：镜像里子进程要起得来、设得上内存上限，
+      # 现做的小 PDF 读得出字。不然线上每份 PDF 都按"起不了子进程"等着重试
+      - name: 容器里读 PDF 的子进程起得来、有内存上限
+        run: |
+          docker run --rm -i youju:ci python - <<'PY'
+          import json, resource, subprocess, sys, zlib
+          from youju import pdf_sandbox
+          text = b"BT /F1 12 Tf 20 100 Td (Notice 2026) Tj ET"
+          raw = zlib.compress(text)
+          objs = [b"<< /Type /Catalog /Pages 2 0 R >>", b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+                  b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Contents 4 0 R"
+                  b" /Resources << /Font << /F1 5 0 R >> >> >>",
+                  b"<< /Length %d /Filter /FlateDecode >>\nstream\n" % len(raw) + raw + b"\nendstream",
+                  b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"]
+          pdf, offsets = b"%PDF-1.4\n", []
+          for n, body in enumerate(objs, 1):
+              offsets.append(len(pdf))
+              pdf += b"%d 0 obj\n" % n + body + b"\nendobj\n"
+          xref = len(pdf)
+          pdf += b"xref\n0 6\n0000000000 65535 f \n" + b"".join(b"%010d 00000 n \n" % o for o in offsets)
+          pdf += b"trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % xref
+          assert pdf_sandbox.read("body", pdf, seconds=60, pages=200) == {"pages": 1, "text": "Notice 2026"}
+          cfg = {"memory": pdf_sandbox.MEMORY_MAX, "output": pdf_sandbox.OUTPUT_MAX, "cpu": 60}
+          code = ("import json, resource, sys; sys.path.insert(0, sys.argv[1]); from youju import pdf_sandbox;"
+                  " pdf_sandbox._limit(json.loads(sys.argv[2])); print(resource.getrlimit(resource.RLIMIT_AS)[0])")
+          got = subprocess.run([sys.executable, "-I", "-c", code, str(pdf_sandbox._ROOT), json.dumps(cfg)],
+                               capture_output=True, text=True, check=True).stdout.strip()
+          assert int(got) == pdf_sandbox.MEMORY_MAX, got
+          print("pdf_sandbox ok, RLIMIT_AS", got)
+          PY
       # 按部署方式启动两个服务（start.sh）：admin 迁移、装 cron、写心跳后起接口；api 只起接口。
       # 口令只是 CI 用的假值
       - name: 按部署方式启动 admin、api，健康检查通过

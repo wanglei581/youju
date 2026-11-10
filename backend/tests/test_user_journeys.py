@@ -291,7 +291,7 @@ def _export(client, docs, format_):
             links = [
                 cell.hyperlink.target for row in book["文件清单"] for cell in row if cell.hyperlink
             ]
-            assert links == [d.url for d in docs]
+            assert links == []  # 导出不带原文链接（D-112：不让用户跳出到浏览器）
         finally:
             book.close()
     else:
@@ -301,7 +301,7 @@ def _export(client, docs, format_):
             + [cell.text for table in book.tables for row in table.rows for cell in row.cells]
         )
     for doc in docs:
-        assert doc.title in text and doc.url in text
+        assert doc.title in text and doc.url not in text
     assert "第三方整理" in text and "以发文机关原文为准" in text
     return text
 
@@ -589,9 +589,10 @@ def test_c_consent_feedback_admin_personal_data_delete_and_account_deletion(jour
         and feedback["docTitle"] == doc.title
         and feedback["content"] == row["content"]
     )
-    assert _json(
-        j.client.post("/api/v1/events", json={"name": "feedback", "props": {"count": 1}}), 202
-    )["accepted"]
+    # 写使用记录的接口已删：直接写库模拟以前留下的一条，照常导出、注销时随用户删除
+    owner_id = j.session.scalar(select(User.id).where(User.openid == IDENTITY["X-WX-OPENID"]))
+    j.session.add(Event(user_id=owner_id, name="feedback", props={"count": 1}))
+    j.session.commit()
     assert j.client.delete(f"/api/v1/me/feedback/{feedback_id}").status_code == 204
     assert _json(j.client.get("/api/v1/me/data"))["feedbackTotal"] == 0
     # 留另一条纠错供注销级联检查，避免只验证空表。
@@ -786,6 +787,8 @@ def test_e_advisor_submit_process_download_quota_delete(journey, monkeypatch, ki
     monkeypatch.setenv("YOUJU_ADVISOR_ENABLED", "true")
     j.settings.advisor_enabled = Settings(_env_file=None).advisor_enabled
     assert j.settings.advisor_enabled
+    # D-118：批量名单比对默认关；这条旅程照旧把比对和通知表都走一遍
+    j.settings.advisor_compare_enabled = True
     source = _source(j.session)
     listed, _ = _document(j.session, source, "2026年高新技术企业名单公布", "tool-list")
     application, _ = _document(
@@ -878,7 +881,8 @@ def test_e_advisor_submit_process_download_quota_delete(journey, monkeypatch, ki
     try:
         text = "\n".join(str(cell.value) for sheet in book for row in sheet for cell in row)
         target = listed if kind == "compare" else application
-        assert COMPANY in text and target.title in text and target.url in text
+        assert COMPANY in text and target.title in text
+        assert target.url not in text and "原文链接" not in text
     finally:
         book.close()
     assert _json(j.client.get("/api/v1/me/data"))["advisorTasks"][0]["status"] == "done"
@@ -930,7 +934,7 @@ def test_e_advisor_disabled_blocks_all_endpoints_and_worker(journey, monkeypatch
         assert _json(getattr(j.client, method)(path, **kwargs), 404)["detail"] == "没有找到接口"
     # 删除自己的记录不看开关（D-093 上线门槛第 8 条）：删除接口一直在，没有这条记录照样"没有找到"
     response = j.client.delete("/api/v1/advisor/tasks/1")
-    assert _json(response, 404)["detail"] == "没有找到顾问任务"
+    assert _json(response, 404)["detail"] == "没有找到这条记录，可能已经删除"
     assert advisor_tasks.run_advisor_tasks(j.session, settings=j.settings)["processed"] == 0
     assert _json(j.client.get("/api/v1/me/data"))["advisorTasksTotal"] == 0
 
@@ -990,6 +994,7 @@ def test_identity_missing_headers_never_creates_user(journey):
 def test_account_deletion_cascades_nonempty_tools_and_keeps_other_user(journey, monkeypatch):
     j = journey
     j.settings.advisor_enabled = True
+    j.settings.advisor_compare_enabled = True  # D-118 默认关；这里照旧测比对
     _agree(j)
     _tools_ready(j)
     _json(
@@ -1002,7 +1007,8 @@ def test_account_deletion_cascades_nonempty_tools_and_keeps_other_user(journey, 
     follow = _follow(j, "本人关注", {})
     _subscribe(j, "newDocs", followId=follow["id"])
     _json(j.client.post("/api/v1/feedback", json={"content": "本人纠错"}), 201)
-    _json(j.client.post("/api/v1/events", json={"name": "follow", "props": {"count": 1}}), 202)
+    j.session.add(Event(user_id=owner_id, name="follow", props={"count": 1}))  # 以前留下的使用记录
+    j.session.commit()
     for kind, rows in (("compare", [COMPANY]), ("track", [{"name": COMPANY, "province": "北京"}])):
         created = _json(
             j.client.post(

@@ -638,7 +638,8 @@ def test_document_detail_only_approved_deadlines(client, seeded):
     assert d["deadline"]["label"] == "企业申报截止" and d["deadline"]["date"] == "2026-10-18"
     assert d["deadline"]["notes"] == ["推荐或审核截止 10月20日 周二 17:00"]
     assert ["文号", "辽工信投资〔2026〕130号"] in d["points"]
-    # 还没有副本：不能在小程序里打开，给原因（副本见 test_attachments.py）
+    # 还没有副本、还没取文字：不能在小程序里打开、读，给原因（副本见 test_attachments.py；
+    # 能不能读和阅读页同一个判断，见 test_readers.py）
     [attachment] = d["attachments"]
     assert attachment["id"].isdigit()
     assert {k: v for k, v in attachment.items() if k != "id"} == {
@@ -647,15 +648,19 @@ def test_document_detail_only_approved_deadlines(client, seeded):
         "url": "https://gxt.ln.gov.cn/a1.pdf",
         "preview": False,
         "reason": "pending",
+        "readable": False,
+        "state": "pending",
+        "stateText": "新附件，一般半天内可读",
+        "scannedPages": 0,
     }
     assert d["checked"] == "2026-09-26" and d["host"] == "gxt.ln.gov.cn"
     listed = client.get(f"/api/v1/documents/{seeded['list']}").json()
     assert listed["deadline"] is None and listed["excerpt"] is None
     assert client.get("/api/v1/documents/999999").status_code == 404
-    # 正文太短（多半没抓全）不给；名单类没有正文时也一样给 none（有正文的挡掉名单内容后给，
-    # D-092，见 test_list_body.py）
-    assert d["body"] == {"status": "none"}
-    assert listed["body"] == {"status": "none"}
+    # 正文只有"……"（像网页上的字，没有一句话）不给，列着附件的说内容在附件里；名单类没有正文
+    # 也没有附件的说正文还取不到（有正文的挡掉名单内容后给，D-092，见 test_list_body.py）
+    assert d["body"] == {"status": "none", "reason": "attachments"}
+    assert listed["body"] == {"status": "none", "reason": "site"}
 
 
 def test_body_for_reading_cleans_only_known_strings():
@@ -671,8 +676,8 @@ def test_body_for_reading_cleans_only_known_strings():
     assert body["status"] == "ok" and body["truncated"] is False
     assert "各有关单位：\n\n请于10月18日前报送" in body["text"]
     assert (
-        "联系人：（联系人见原文），电话：（电话见原文），（电话见原文），邮箱 （邮箱见原文）"
-        in body["text"]
+        "联系人：（这里隐去了联系人），电话：（这里隐去了电话），（这里隐去了电话），"
+        "邮箱 （这里隐去了邮箱）" in body["text"]
     )
     for gone in ("【关闭窗口】", "【字体", "扫一扫", "已脱敏"):
         assert gone not in body["text"]
@@ -680,14 +685,31 @@ def test_body_for_reading_cleans_only_known_strings():
     long = body_for_reading("字" * (BODY_MAX_CHARS + 5), "政策")
     assert long["truncated"] is True and long["total"] == BODY_MAX_CHARS + 5
     assert len(long["text"]) == BODY_MAX_CHARS
+    # 像网页导航的（没有一句话、不长）不给；真短的通知照常给（D-097 去掉"不到 200 字不给"）
+    assert body_for_reading("首页\n政务公开\n科技资讯\n搜 索", "申报通知") == {"status": "none"}
     assert body_for_reading("短" * 199, "申报通知") == {"status": "none"}
     assert body_for_reading(None, "申报通知") == {"status": "none"}
+    short = body_for_reading("现将《管理办法》印发给你们，请遵照执行。", "政策")
+    assert short == {
+        "status": "ok",
+        "text": "现将《管理办法》印发给你们，请遵照执行。",
+        "total": 20,
+        "truncated": False,
+    }
+    # 没有标点的长文（表格）照常给
+    assert body_for_reading("序号\n企业名称\n" * 100, "政策")["status"] == "ok"
     assert body_for_reading("字" * 500, "名单") == {"status": "list"}
-    # 其他类（招聘、职称评审等公示）可能有个人姓名，不给正文
-    assert body_for_reading("字" * 500, "其他") == {"status": "original"}
+    # 资讯与指南、其他：标题写着个人事项（招聘、职称评审等）的不给，其余给全文（D-097 ②）；
+    # 不给标题按个人事项算
+    personal = {"status": "original", "reason": "personal"}
+    assert body_for_reading("字" * 500, "其他") == personal
+    assert body_for_reading("字" * 500, "其他", title="2026年职称评审结果公示") == personal
+    assert (
+        body_for_reading("字。" * 250, "资讯与指南", title="关于召开宣讲会的通知")["status"] == "ok"
+    )
     # 给出前按现行规则再隐去一遍；Windows 换行也按换行处理
-    again = body_for_reading("咨询电话：13812345678\r\n\r\n\r\n" + "内容" * 120, "政策")
-    assert "13812345678" not in again["text"] and "（电话见原文）" in again["text"]
+    again = body_for_reading("咨询电话：13812345678\r\n\r\n\r\n" + "内容。" * 80, "政策")
+    assert "13812345678" not in again["text"] and "（这里隐去了电话）" in again["text"]
     assert "\r" not in again["text"] and "\n\n\n" not in again["text"]
 
 
@@ -722,7 +744,7 @@ def test_detail_body_prefers_own_level1_text(client, session, seeded):
     body = client.get(f"/api/v1/documents/{own.id}").json()["body"]
     assert body["status"] == "ok" and body["text"].startswith("一级副本")  # 二级的更长也不用
     session.add(
-        DocumentDetail(document_id=own.id, body_text="本文" * 150, fetched_at=now, status="ok")
+        DocumentDetail(document_id=own.id, body_text="本文。" * 100, fetched_at=now, status="ok")
     )
     session.commit()
     body = client.get(f"/api/v1/documents/{own.id}").json()["body"]
@@ -923,6 +945,8 @@ def test_lists_lookup_exact_similar_and_coverage(client, seeded, session):
         "since": "2026-09-24",
         "unreadLists": 0,
         "partialLists": 0,
+        # 名单数据更新到哪天：和关于页"最近更新"同一个时间（11/2 完整测试第 6 条）
+        "updatedAt": client.get("/api/v1/coverage").json()["updatedAt"],
     }
     # 全角括号、空格不同也能查到；信用代码不分大小写
     assert len(client.get(url, params={"q": "山东星河科技（青岛） 有限公司"}).json()["items"]) == 1
@@ -987,6 +1011,43 @@ def test_lists_lookup_rename_same_name_and_duplicate_notice(client, seeded, sess
     assert body["ambiguous"] is True
     # 更名前的名称已在结果里，不再算"名称相近"
     assert body["similar"] == []
+
+
+def test_lists_lookup_count_is_the_scope_count_and_says_when_updated(client, seeded, session):
+    """查名单写的"已收录的 N 份"和查名单页下方"比对范围"（名单看板各类型的份数加起来）是同一个数：
+    同一通知的两个网址都解析出条目时算一份（以前按文件编号数成两份，11/2 完整测试第 6 条：231 和 230）；
+    标题是失信、处罚、个人类的名单早先解析出的条目还在库里时，两处都不算（查名单不比对它）。
+    没查到时附名单数据更新到哪天，和关于页"最近更新"同一个时间。"""
+    list_doc = session.get(Document, seeded["list"])
+    src = list_doc.source
+    dup_doc = _doc(src, 12, list_doc.title, list_doc.publish_date)  # 同一通知，网址不同
+    punitive = _doc(src, 13, "2026年严重失信企业名单公示", date(2026, 9, 2))
+    session.add_all([dup_doc, punitive])
+    session.flush()
+    for doc in (list_doc, dup_doc, punitive):
+        session.add(
+            ListEntry(
+                document_id=doc.id,
+                source_url=doc.url,
+                name="山东星河科技有限公司",
+                normalized_name="山东星河科技有限公司",
+                sequence="1",
+                category="科技型中小企业",
+            )
+        )
+    src.last_success_at = datetime(2026, 11, 1, 6, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
+    session.commit()
+    reconcile_documents(session)  # 同一机关同名同日的两个网址归为一份
+    session.commit()
+    assert session.scalar(select(DocumentMerge).where(DocumentMerge.duplicate_id == dup_doc.id))
+    missing = client.get("/api/v1/lists/lookup", params={"q": "不存在的科技有限公司"}).json()
+    scope = client.get("/api/v1/reports/lists", params={"days": 30, "page": 1, "size": 1}).json()
+    assert missing["coverage"]["lists"] == sum(t["lists"] for t in scope["stats"]["by_type"]) == 1
+    found = client.get("/api/v1/lists/lookup", params={"q": "山东星河科技有限公司"}).json()
+    assert len(found["items"]) == 1 and found["coverage"]["lists"] == 1
+    about = client.get("/api/v1/coverage").json()
+    assert missing["coverage"]["updatedAt"] == about["updatedAt"]
+    assert missing["coverage"]["updatedAt"].startswith("2026-11-01T06:30:00")
 
 
 def test_lists_lookup_shows_master_even_if_its_source_is_not_parsed(client, seeded, session):

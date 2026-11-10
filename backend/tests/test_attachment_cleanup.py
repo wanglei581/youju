@@ -436,7 +436,7 @@ def test_cache_run_appends_delete_error_after_upload_error(session, monkeypatch)
     monkeypatch.setattr(
         copies,
         "candidates",
-        lambda _session, _now: {"https://example.gov.cn/cache-new.pdf": "pdf"},
+        lambda _session, _now, **_kwargs: {"https://example.gov.cn/cache-new.pdf": "pdf"},
     )
 
     def broken_upload(*_args, **_kwargs) -> None:

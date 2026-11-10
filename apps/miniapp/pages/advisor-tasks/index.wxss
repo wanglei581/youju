@@ -1,1 +1,6 @@
 @import "../../utils/advisor.wxss";
+.task-head { display: flex; align-items: center; justify-content: space-between; gap: 16rpx; }
+.task-card--pressed { opacity: 0.6; }
+/* 结果卡片的按钮：“站内查看结果”单独占一行，重新填写、删除在下一行平分。三个挤一行时每个只有约 200rpx，
+   “站内查看结果”折成两行（11/5 500 家实测）。用 flex-basis，不用 width（微信按钮自带的宽度规则压过普通类名） */
+.advisor-actions .advisor-button.btn-primary { flex: 1 1 100%; }

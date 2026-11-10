@@ -59,7 +59,7 @@ def make_settings(**changes):
 @pytest.fixture
 def settings(monkeypatch):
     value = make_settings()
-    for module in (api, me, service, app_module, v1, cli):
+    for module in (api, me, service, app_module, cli):
         monkeypatch.setattr(module, "get_settings", lambda: value)
     monkeypatch.setattr(v1, "now", lambda: NOW)
     monkeypatch.setattr(heartbeat, "_api_written_at", None)

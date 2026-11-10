@@ -225,7 +225,8 @@ def test_unconfirmed_list_suggestion_does_not_change_public_kind(client, docs, s
     board = client.get("/api/v1/reports/lists").json()
     assert listed not in {int(i["id"]) for i in board["recent"]["items"]}
     detail = client.get(f"/api/v1/documents/{listed}").json()
-    assert detail["kind"] == "其他" and detail["body"]["status"] == "original"
+    # 正文按"其他"类的规则给（D-097 ②：标题不是个人事项的给全文；这份没抓到正文），不按名单挡
+    assert detail["kind"] == "其他" and detail["body"] == {"status": "none", "reason": "site"}
 
 
 def test_confirm_list_suggestion_then_undo(client, docs, session):

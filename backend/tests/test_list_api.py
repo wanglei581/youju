@@ -37,8 +37,8 @@ TODAY = date(2026, 10, 19)
 API = Path(__file__).parent / "fixtures" / "api"
 TZGG = "https://gxt.hunan.gov.cn/gxt/xxgk_71033/tzgg/index.html"
 GSGG = "https://gxt.hunan.gov.cn/gxt/xxgk_71033/gsgg01/index.html"
-TZGG_CONFIG = {"list_api": HUNAN_SEARCH, "channel_id": "71043"}
-GSGG_CONFIG = {"list_api": HUNAN_SEARCH, "channel_id": "b3490a5474f54dc6b592c446321edebc"}
+TZGG_CONFIG = {"search_api": HUNAN_SEARCH, "channel_id": "71043"}
+GSGG_CONFIG = {"search_api": HUNAN_SEARCH, "channel_id": "b3490a5474f54dc6b592c446321edebc"}
 TZGG_API = "https://api.hunan.gov.cn/search/common/search/71043"
 GSGG_API = "https://api.hunan.gov.cn/search/common/search/b3490a5474f54dc6b592c446321edebc"
 # 浏览器打开栏目页时 list_all.js 发出的表单（jQuery 编码），2026-10-19 照页面脚本核对
@@ -102,7 +102,17 @@ def test_request_is_the_same_as_the_page_script() -> None:
     )
 
 
-@pytest.mark.parametrize("config", [None, {}, {"item_selector": "ul li"}])
+@pytest.mark.parametrize(
+    "config",
+    [
+        None,
+        {},
+        {"item_selector": "ul li"},
+        # 平台适配器（crawler/adapters.py）第一次读出整页时记下的适配器名，不是这里的接口配置
+        {"list_api": "大汉jpaas"},
+        {"list_api": "大汉jpaas", "item_selector": "ul li"},
+    ],
+)
 def test_sources_without_list_api_fetch_the_page(config) -> None:
     assert api_request(config) is None
 
@@ -110,13 +120,13 @@ def test_sources_without_list_api_fetch_the_page(config) -> None:
 @pytest.mark.parametrize(
     "config",
     [
-        {"list_api": "other_site", "channel_id": "71043"},
-        {"list_api": HUNAN_SEARCH},
-        {"list_api": HUNAN_SEARCH, "channel_id": ""},
-        {"list_api": HUNAN_SEARCH, "channel_id": "71043/../x"},
-        {"list_api": HUNAN_SEARCH, "channel_id": "7" * 65},
-        {"list_api": HUNAN_SEARCH, "channel_id": 71043},
-        {"list_api": HUNAN_SEARCH, "channel_id": "71043", "item_selector": "ul li"},
+        {"search_api": "other_site", "channel_id": "71043"},
+        {"search_api": HUNAN_SEARCH},
+        {"search_api": HUNAN_SEARCH, "channel_id": ""},
+        {"search_api": HUNAN_SEARCH, "channel_id": "71043/../x"},
+        {"search_api": HUNAN_SEARCH, "channel_id": "7" * 65},
+        {"search_api": HUNAN_SEARCH, "channel_id": 71043},
+        {"search_api": HUNAN_SEARCH, "channel_id": "71043", "item_selector": "ul li"},
     ],
 )
 def test_bad_list_api_config_is_rejected_not_ignored(config) -> None:
@@ -431,7 +441,7 @@ def test_config_that_keeps_changing_is_an_error_not_a_stale_result(session, sess
 
 def test_bad_list_api_config_is_an_internal_error_not_a_page_fetch(session_factory) -> None:
     with session_factory() as session:
-        source = make_source(session, config={"list_api": HUNAN_SEARCH, "channel_id": "a/b"})
+        source = make_source(session, config={"search_api": HUNAN_SEARCH, "channel_id": "a/b"})
         source_id = source.id
     fetcher = FakeFetcher({})
     [summary] = crawl_sources(session_factory, [source_id], fetcher)
@@ -589,7 +599,7 @@ def test_cli_validates_channel_and_source_and_can_clear(run_cli, session, capsys
 def test_cli_clear_leaves_other_parsing_rules_alone(run_cli, session, capsys) -> None:
     source = make_source(session, config={"item_selector": "ul.list li"})
     assert run_cli(str(source.id), "--clear", "--apply") == 2
-    assert "这个来源没有配列表接口，不用去掉" in capsys.readouterr().out
+    assert "这个来源没有配列表接口（search_api），不用去掉" in capsys.readouterr().out
     session.expire_all()
     assert session.get(Source, source.id).parser_config == {"item_selector": "ul.list li"}
 
@@ -750,3 +760,57 @@ def test_page_sources_keep_plain_http_errors(session) -> None:
     failed = FetchResult(TZGG, "http_error", http_status=403, error="HTTP 403")
     check = check_source(session, source, FakeFetcher({TZGG: [failed]}), today=TODAY)
     assert (check.status, check.error) == ("http_error", "HTTP 403")
+
+
+# 栏目页自己声明了同站平台列表接口（crawler/adapters.py 的写法），网站是虚构的
+ADAPTER_PAGE_URL = "https://www.example.gov.cn/col/col1001/index.html"
+ADAPTER_PAGE = (
+    '<html><body><ul><script src="/script/unitbuild.js" '
+    'url="/api-gateway/jpaas-publish-server/front/page/build/unit" '
+    "queryData=\"{'pageType':'column','tagId':'当前栏目list','pageId':'1001'}\"></script>"
+    "</ul></body></html>"
+)
+ADAPTER_JSON = json.dumps(
+    {
+        "success": True,
+        "data": {
+            "html": '<li><a href="/col/col1001/art/2026/art_1.html">关于开展2026年度第一批项目申报的通知</a>'
+            "<span>2026-11-05</span></li>"
+            '<li><a href="/col/col1001/art/2026/art_2.html">关于公布第二批认定名单的公示</a>'
+            "<span>2026-11-04</span></li>"
+        },
+    },
+    ensure_ascii=False,
+)
+
+
+def test_sources_marked_by_the_platform_adapter_still_read_the_page(session) -> None:
+    """平台适配器记在配置里的 list_api 不是这里的检索接口配置：这样的来源照常抓栏目页、按页面声明的
+    接口读，不当成配置写错（内部错误），也不发表单。"""
+    from youju.crawler.adapters import find_list_api
+
+    api_url = find_list_api(ADAPTER_PAGE, ADAPTER_PAGE_URL).url
+    source = make_source(session, url=ADAPTER_PAGE_URL, config={"list_api": "大汉jpaas"})
+    source.last_success_at = datetime(2026, 11, 1, tzinfo=UTC)
+    session.commit()
+    fetcher = FakeFetcher(
+        {
+            ADAPTER_PAGE_URL: [
+                FetchResult(
+                    ADAPTER_PAGE_URL,
+                    "ok",
+                    final_url=ADAPTER_PAGE_URL,
+                    http_status=200,
+                    text=ADAPTER_PAGE,
+                )
+            ],
+            api_url: [
+                FetchResult(api_url, "ok", final_url=api_url, http_status=200, text=ADAPTER_JSON)
+            ],
+        }
+    )
+    check = check_source(session, source, fetcher, today=date(2026, 11, 10))
+    assert (check.status, check.items_found, check.is_baseline) == ("ok", 2, False)
+    assert fetcher.calls == [(ADAPTER_PAGE_URL, None), (api_url, None)]
+    session.refresh(source)
+    assert source.parser_config == {"list_api": "大汉jpaas"}

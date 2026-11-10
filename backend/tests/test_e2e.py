@@ -349,8 +349,11 @@ def test_offline_ingest_to_miniapp_e2e(session_factory, session, tmp_path, monke
         )
         assert feedback.status_code == 201
         feedback_id = feedback.json()["id"]
-        event = client.post("/api/v1/events", json={"name": "search", "props": {"count": 1}})
-        assert event.status_code == 202
+        # 写使用记录的接口已删：直接写库模拟以前留下的一条，注销时随用户删除
+        user_id = session.scalar(select(User.id).where(User.openid == "e2e-user"))
+        session.add(Event(user_id=user_id, name="search", props={"count": 1}))
+        session.commit()
+        assert client.post("/api/v1/events", json={"name": "search"}).status_code == 404
 
         admin_feedback = client.get("/api/admin/feedback", headers=ADMIN_HEADERS)
         assert admin_feedback.status_code == 200
