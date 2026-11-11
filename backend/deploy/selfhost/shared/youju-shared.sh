@@ -580,9 +580,10 @@ import_export() {
   [ -n "$root_pw" ] || die ".env 里没有 MYSQL_ROOT_PASSWORD"
   pause_services
   say "1/3 试恢复：${old} 的镜像在临时库 youju_drill_… 里恢复一遍（核对条数、外键、每张表的 SHA-256），结束删掉；不碰正式库"
-  # 建临时库要 root；连接串经环境变量传进容器（不进命令行参数）。临时库和正式库在同一个 MySQL 里
+  # 建临时库要 root；连接串经环境变量传进容器（不进命令行参数）。临时库和正式库在同一个 MySQL 里；
+  # 每个连接先 SET sql_log_bin=0：旧库的明文不写进 binlog（binlog 留 3 天，不在这个目录里，删不着）
   YOUJU_IMAGE="youju-selfhost:$old" \
-    YOUJU_DATABASE_URL="mysql+pymysql://root:${root_pw}@mysql:3306/youju?charset=utf8mb4" \
+    YOUJU_DATABASE_URL="mysql+pymysql://root:${root_pw}@mysql:3306/youju?charset=utf8mb4&init_command=SET%20sql_log_bin%3D0" \
     compose run --rm --no-deps -e YOUJU_DATABASE_URL -v "$EXPORT_DIR:/export:ro" worker \
     youju restore-drill --file "/export/backups/$name"
   say "2/3 加密存档：整库备份、交易记录分别用 .env 里的 age 公钥加密，存到服务器存储和异地的 archive/，"

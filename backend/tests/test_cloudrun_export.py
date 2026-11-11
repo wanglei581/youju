@@ -429,6 +429,7 @@ def test_pay_records_are_deidentified_like_account_deletion(session):
             status="paid",
             wx_order_id=f"wx-{n}",
             created_at=NOW + timedelta(days=n),
+            refund_note="客户张三电话 138 说不想要了",
         )
         for n in (0, 1)
     )
@@ -445,6 +446,7 @@ def test_pay_records_are_deidentified_like_account_deletion(session):
                 title_type="personal",
                 title="张三",
                 email="someone@example.com",
+                note="张三要求改抬头",
             ),
             InvoiceRequest(
                 order_id=later.id,
@@ -487,6 +489,8 @@ def test_pay_records_are_deidentified_like_account_deletion(session):
     assert text.isascii()
     for secret in ("o-secret-1", "someone@example.com", "finance@example.com", "user_id"):
         assert secret not in text, secret
+    # 人工填的备注清空（可能写到个人信息）
+    assert "\\u5f20\\u4e09" not in text and "138" not in text
     assert "\\u5f20\\u4e09" not in text  # 个人抬头（姓名）去掉
     rows = [json.loads(line) for line in lines[1:]]
     by_table = {}
@@ -503,3 +507,23 @@ def test_pay_records_are_deidentified_like_account_deletion(session):
     assert invoices[1]["title"] is None and "email" not in invoices[1]
     assert by_table["pass_rewards"][0]["ref_id"] is None
     assert "last_task_id" not in by_table["workbench_passes"][0]
+
+
+def test_config_lists_cover_every_production_setting_and_report_the_rest():
+    """白名单和不导的单子合起来要覆盖线上那一版的每一项配置；都不在、又改过的，导出时列出名字。"""
+    listed = set(export_script.CONFIG_KEYS) | set(export_script.CONFIG_SKIPPED)
+    assert not set(export_script.CONFIG_KEYS) & set(export_script.CONFIG_SKIPPED)
+    assert {"xpay_price_pass_90", "xpay_product_pass_90"} <= set(export_script.CONFIG_KEYS)
+    for name in export_script.CONFIG_SKIPPED:
+        assert name in Settings.model_fields, name
+    settings = Settings(_env_file=None, xpay_price_pass_90=7900, per_host_interval=5.0)
+    assert export_script.config_values(settings) == {"YOUJU_XPAY_PRICE_PASS_90": 7900}
+    unlisted = export_script.config_unlisted(settings)
+    assert "YOUJU_PER_HOST_INTERVAL" not in unlisted  # 在不导的单子里
+    assert all(name.removeprefix("YOUJU_").lower() not in listed for name in unlisted)
+
+
+def test_export_stops_when_link_host_is_unexpected():
+    export_script._check_links([f"https://{BUCKET}.tcb.qcloud.la/a.pdf?sign=s"])
+    with pytest.raises(export_script.ExportError, match="example.com"):
+        export_script._check_links(["https://download.example.com/a.pdf"])

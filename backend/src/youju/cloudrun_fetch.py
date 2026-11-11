@@ -7,8 +7,11 @@
 - logs/、attachments/：核对大小，附件再核对文件名里的 SHA-256，.gz 整个解压一遍（gzip 自带
   校验）；对了才写进现在的存储（服务器硬盘）。已有、大小一样的跳过。批量工具结果（advisor/out/）
   清单里有、不下载：旧库不恢复（D-127），都是测试结果，对应的任务记录在加密存档的整库备份里。
-- 访问日志归档按 D-028 留 190 天：已经超过的（文件名里的日期）不下载，到期的由服务器每天的
-  archive-logs 接着删。
+- 访问日志归档按 D-028 留 190 天：已经超过的（文件名里的日期）不下载；下载的不放回 logs/，放到
+  archive/cloudrun-access-<日期>.expires-<日期加 191 天>.jsonl.gz（服务器测试期一直在记访问日志，
+  打开正式定时任务后 archive-logs 会按 logs/access-<日期> 写同名文件，放回 logs/ 会被覆盖），
+  到期由每天的 youju archive-prune 删。
+- 开头先算硬盘够不够：还要下的字节数，加上整库备份的 3 倍（试恢复的临时库、加密副本）和 2G 余量。
 - 最新一份整库备份、下架清单、交易记录（订单、退款、开票、赠送，导出时已去标识化）：写到 --dir
   （服务器上只有 root 能进的目录），不进存储。备份核对大小和 gzip，下架清单、交易记录核对 SHA-256。
   备份和交易记录接着由 youju-shared.sh import-export 试恢复、分别加密存档（youju archive-export）、
@@ -27,6 +30,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import tempfile
 import zlib
 from collections.abc import Callable
@@ -49,6 +53,8 @@ _LOG = re.compile(r"logs/access-(\d{8})\.jsonl\.gz")
 _CHUNK = 1024 * 1024
 MAX_MANIFEST = 64 * 1024 * 1024
 COMPLETE = "fetch-complete"
+# 硬盘至少留这么多余量（和别的项目共用一块盘）
+SPARE_BYTES = 2 * 1024 * 1024 * 1024
 MAX_FILE = 4 * 1024 * 1024 * 1024
 
 
@@ -76,11 +82,11 @@ def _download(client: httpx.Client, url: str, dest: Path, limit: int) -> int:
     size = 0
     with client.stream("GET", url, timeout=600, follow_redirects=True) as response:
         if response.status_code != 200:
-            hint = (
-                "（链接过期了：在云托管上带 --links-only 重出一份清单）"
-                if response.status_code == 403
-                else ""
-            )
+            hint = {
+                403: "（链接过期了：在云托管上带 --links-only 重出一份清单）",
+                404: "（云托管上已经没有这个文件，可能被定时清理删了："
+                "带 --links-only 重出一份清单）",
+            }.get(response.status_code, "")
             raise FetchError(f"HTTP {response.status_code}{hint}")
         with dest.open("wb") as out:
             for chunk in response.iter_bytes(_CHUNK):
@@ -191,11 +197,15 @@ def fetch(
     store: storage.Backend | None = None,
     say: Callable[[str], None] = print,
     today: date | None = None,
+    disk_free: Callable[[Path], int] | None = None,
 ) -> FetchReport:
     workdir = Path(workdir)
     (workdir / "backups").mkdir(parents=True, exist_ok=True)
     # 完成标记：这一次全部下好才写；import-export 没看到它就不存档、不删明文和清单
     (workdir / COMPLETE).unlink(missing_ok=True)
+    # 上次被打断留下的半截文件
+    for leftover in [*workdir.glob(".fetch-*"), *workdir.glob("*.part")]:
+        leftover.unlink(missing_ok=True)
     manifest = load_manifest(client, url, sha256, workdir / "manifest.json")
     if store is None:
         if not storage.emulated():
@@ -206,24 +216,34 @@ def fetch(
     oldest = today - timedelta(days=access_log.KEEP_DAYS)
     wanted = ("logs/", "attachments/", "backups/")
     files = [item for item in manifest["files"] if _prefix(item["path"]) in wanted]
-    say(f"清单里要下载 {len(files)} 个文件（{sum(i['size'] for i in files)} 字节）")
-    for number, item in enumerate(files, start=1):
+    backup_name = next(Path(i["path"]).name for i in files if _prefix(i["path"]) == "backups/")
+    # 重出过清单（跨过了云托管每天 4:00 的备份）时只留这一份清单里的备份
+    for old in (workdir / "backups").glob("youju-*.jsonl.gz"):
+        if old.name != backup_name:
+            old.unlink()
+    plan: list[tuple[dict, str | None]] = []
+    for item in files:
         path, size = item["path"], item["size"]
-        prefix = _prefix(path)
         if not (_PATH.fullmatch(path) and storage.valid_path(path) and 0 <= size <= MAX_FILE):
             report.failed.append((path[:120], "路径或大小不合规，没下载"))
             continue
-        log = _LOG.fullmatch(path)
-        if log and datetime.strptime(log.group(1), "%Y%m%d").date() < oldest:
+        target = _target(path, oldest)
+        if target is None:
             report.expired_logs += 1  # 已经超过 190 天，不导入
             continue
+        plan.append((item, target))
+    _check_disk(workdir, store, plan, disk_free or _free_bytes)
+    say(f"清单里要下载 {len(plan)} 个文件（{sum(i['size'] for i, _ in plan)} 字节）")
+    for number, (item, target) in enumerate(plan, start=1):
+        path, size = item["path"], item["size"]
+        prefix = _prefix(path)
         is_backup = prefix == "backups/"
         final = workdir / path if is_backup else None
         if final is not None and final.is_file() and final.stat().st_size == size:
             report.skipped[prefix] = report.skipped.get(prefix, 0) + 1
             report.backup = path
             continue
-        if not is_backup and store.exists(path) and _disk_size(store, path) == size:
+        if not is_backup and _present(store, target, size):
             report.skipped[prefix] = report.skipped.get(prefix, 0) + 1
             continue
         fd, name = tempfile.mkstemp(dir=workdir, prefix=".fetch-")
@@ -242,7 +262,7 @@ def fetch(
                 os.replace(tmp, final)
                 report.backup = path
             else:
-                store.put_file(path, tmp)
+                store.put_file(target, tmp)
         except (FetchError, httpx.HTTPError, storage.StorageError, OSError) as exc:
             reason = str(exc) if isinstance(exc, FetchError) else type(exc).__name__
             report.failed.append((path, reason))
@@ -269,10 +289,57 @@ def fetch(
     return report
 
 
-def _disk_size(store: storage.Backend, path: str) -> int | None:
+def _target(path: str, oldest: date) -> str | None:
+    """写到存储里的哪里：附件副本照原路径；访问日志放 archive/（到期日写进文件名），超过 190 天的
+    返回 None（不导入）；整库备份不进存储（返回原路径，调用方写到 --dir）。"""
+    log = _LOG.fullmatch(path)
+    if not log:
+        return path
+    day = datetime.strptime(log.group(1), "%Y%m%d").date()
+    if day < oldest:
+        return None
+    expires = day + timedelta(days=access_log.KEEP_DAYS + 1)
+    return f"archive/cloudrun-access-{day:%Y%m%d}.expires-{expires:%Y%m%d}.jsonl.gz"
+
+
+def _present(store: storage.Backend, path: str, size: int) -> bool:
+    if not store.exists(path):
+        return False
     if isinstance(store, storage.DiskBackend):
-        return store._file(path).stat().st_size
-    return None  # s3：不知道大小，当作不一样，重下一遍
+        return store._file(path).stat().st_size == size
+    return False  # s3：不知道大小，当作不一样，重下一遍
+
+
+def _free_bytes(path: Path) -> int:
+    return shutil.disk_usage(path).free
+
+
+def _check_disk(workdir: Path, store, plan: list, free: Callable[[Path], int]) -> None:
+    """还要下的字节数，加上整库备份的 3 倍（试恢复的临时库、binlog 以外的表文件、加密副本）和余量。
+    硬盘和别的项目共用，不够就不下。"""
+    remaining = 0
+    backup = 0
+    for item, target in plan:
+        if item["path"].startswith("backups/"):
+            backup = item["size"]
+            final = workdir / item["path"]
+            if final.is_file() and final.stat().st_size == item["size"]:
+                continue
+        elif _present(store, target, item["size"]):
+            continue
+        remaining += item["size"]
+    need = remaining + 3 * backup + SPARE_BYTES
+    roots = [workdir]
+    if isinstance(store, storage.DiskBackend):
+        store.root.mkdir(parents=True, exist_ok=True)
+        roots.append(store.root)
+    have = min(free(root) for root in roots)
+    if have < need:
+        gib = 1024**3
+        raise FetchError(
+            f"硬盘不够：还要下 {remaining / gib:.1f}G，加上试恢复和加密要的空间、余量共需约 "
+            f"{need / gib:.1f}G，现在只剩 {have / gib:.1f}G（先腾空间，别动别的项目的文件）"
+        )
 
 
 def _fetch_extra(

@@ -153,7 +153,10 @@ def run(
 ARCHIVE_PREFIX = "archive/"
 ARCHIVE_RECORD = ARCHIVE_PREFIX + "deletions.jsonl"
 _STEM = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,80}")
-_ARCHIVED = re.compile(r"archive/([A-Za-z0-9][A-Za-z0-9_-]{0,80})\.expires-(\d{8})\.jsonl\.gz\.age")
+# 加密的存档（.age），和导进来的云托管访问日志（不加密，和服务器自己的访问日志归档一样）
+_ARCHIVED = re.compile(
+    r"archive/([A-Za-z0-9][A-Za-z0-9_-]{0,80})\.expires-(\d{8})\.jsonl\.gz(?:\.age)?"
+)
 BACKUP_KEEP_DAYS = 30
 
 

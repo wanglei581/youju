@@ -13,7 +13,7 @@ import select
 import shutil
 import subprocess
 import time
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -28,6 +28,12 @@ SELFHOST = Path(__file__).resolve().parents[1] / "deploy" / "selfhost"
 SHARED_SH = SELFHOST / "shared" / "youju-shared.sh"
 needs_bash = pytest.mark.skipif(not shutil.which("bash"), reason="没有 bash")
 HOST = "7072-prod-1abc-1250000000.tcb.qcloud.la"
+
+
+@pytest.fixture(autouse=True)
+def _plenty_of_disk(monkeypatch):
+    """下载前算硬盘够不够：测试里当作够（专门的测试另给数）。"""
+    monkeypatch.setattr(cloudrun_fetch, "_free_bytes", lambda path: 1 << 40)
 
 
 def _sha(data: bytes) -> str:
@@ -156,9 +162,12 @@ def test_fetch_checks_and_imports_files(tmp_path):
     # 不对的两个不写进存储、记下来；别的照常下载
     assert sorted(path for path, _ in report.failed) == sorted([bad_hash, broken_gz])
     assert not store.exists(bad_hash) and not store.exists(broken_gz)
-    assert store.exists(f"attachments/{_sha(pdf)}.pdf") and store.exists(
-        "logs/access-20261110.jsonl.gz"
-    )
+    assert store.exists(f"attachments/{_sha(pdf)}.pdf")
+    # 访问日志不放回 logs/（服务器正式归档会写同名文件），放 archive/、到期日写进文件名（190 天）
+    log_day = date(2026, 11, 10)
+    expires = log_day + timedelta(days=191)
+    assert store.exists(f"archive/cloudrun-access-20261110.expires-{expires:%Y%m%d}.jsonl.gz")
+    assert not store.exists("logs/access-20261110.jsonl.gz")
     # 不带批量工具结果（旧库不恢复）；备份、下架清单不进存储，进 --dir
     assert not store.exists("advisor/out/0123456789abcdef/7.xlsx")
     assert "advisor/out/0123456789abcdef/7.xlsx" not in remote.gets
@@ -226,10 +235,67 @@ def test_fetch_refuses_wrong_manifest_and_reports_expired_links(tmp_path):
         sizes={"logs/access-20261110.jsonl.gz": 3},
     )
     report = cloudrun_fetch.fetch(
-        remote.client, url, sha, tmp_path / "c", store=store, say=lambda _: None
+        remote.client,
+        url,
+        sha,
+        tmp_path / "c",
+        store=store,
+        say=lambda _: None,
+        today=date(2026, 11, 12),
     )
     assert [p for p, _ in report.failed] == ["logs/access-20261110.jsonl.gz"]
-    assert not store.exists("logs/access-20261110.jsonl.gz")
+    assert not list(store.list("archive/")) and not store.exists("logs/access-20261110.jsonl.gz")
+
+
+def test_fetch_checks_disk_space_and_cleans_up_leftovers(tmp_path):
+    remote = Remote({})
+    backup = _gz("{}\n" * 10)
+    pdf = b"%PDF-1.7"
+    url, sha = _export(
+        remote,
+        {"backups/youju-20261113.jsonl.gz": backup, f"attachments/{_sha(pdf)}.pdf": pdf},
+        sizes={"backups/youju-20261113.jsonl.gz": len(backup)},
+    )
+    store = storage.DiskBackend(tmp_path / "store")
+    work = tmp_path / "export"
+    (work / "backups").mkdir(parents=True)
+    # 上次被打断的半截文件；跨过 4:00 重出清单以前下的旧备份
+    (work / ".fetch-abc").write_bytes(b"half")
+    (work / "takedowns.jsonl.part").write_bytes(b"half")
+    (work / "backups" / "youju-20261112.jsonl.gz").write_bytes(b"older")
+    need = len(pdf) + 4 * len(backup) + cloudrun_fetch.SPARE_BYTES
+    with pytest.raises(cloudrun_fetch.FetchError, match="硬盘不够"):
+        cloudrun_fetch.fetch(
+            remote.client,
+            url,
+            sha,
+            work,
+            store=store,
+            say=lambda _: None,
+            disk_free=lambda path: need - 1,
+        )
+    assert remote.gets == ["exports/manifest-1.json"]  # 只下了清单，文件一个没下
+    assert not (work / ".fetch-abc").exists() and not (work / "takedowns.jsonl.part").exists()
+    assert not (work / "backups" / "youju-20261112.jsonl.gz").exists()
+    report = cloudrun_fetch.fetch(
+        remote.client,
+        url,
+        sha,
+        work,
+        store=store,
+        say=lambda _: None,
+        disk_free=lambda path: need,
+    )
+    assert not report.failed and report.backup == "backups/youju-20261113.jsonl.gz"
+    remote.files.pop(f"attachments/{_sha(pdf)}.pdf")
+    store.delete(f"attachments/{_sha(pdf)}.pdf")
+    report = cloudrun_fetch.fetch(remote.client, url, sha, work, store=store, say=lambda _: None)
+    assert report.failed == [
+        (
+            f"attachments/{_sha(pdf)}.pdf",
+            "HTTP 404（云托管上已经没有这个文件，可能被定时清理删了：带 --links-only 重出一份清单）",
+        )
+    ]
 
 
 def test_cli_export_fetch_reads_link_from_environment(tmp_path, monkeypatch, capsys):
@@ -447,7 +513,11 @@ def test_shared_import_export_drills_with_old_image_then_archives(tmp_path):
     assert drill.startswith("compose run --rm --no-deps -e YOUJU_DATABASE_URL -v ")
     assert "youju restore-drill --file /export/backups/youju-20261112.jsonl.gz |" in drill
     assert "image=youju-selfhost:a79a0042" in drill
-    assert "db=mysql+pymysql://root:r00tpw@mysql:3306/youju?charset=utf8mb4" in drill
+    # 试恢复的连接不写 binlog：旧库的明文不留在 MySQL 的 binlog 里
+    assert (
+        "db=mysql+pymysql://root:r00tpw@mysql:3306/youju?charset=utf8mb4"
+        "&init_command=SET%20sql_log_bin%3D0" in drill
+    )
     assert "r00tpw" not in drill.split(" | ")[0]
     assert "youju archive-export --dir /export |" in archive and "image= " in archive
     # 明文的整库备份、交易记录和带链接的清单删掉
@@ -791,19 +861,23 @@ def test_prune_archive_deletes_expired_on_both_sides_and_records_it(tmp_path):
         store.put_file(name, blob)
         fake.put_file(name, blob)
     store.put_file("archive/readme.txt", blob)  # 不是存档的文件名：不动
+    # 导进来的云托管访问日志（不加密）也按文件名里的到期日删
+    log = "archive/cloudrun-access-20260601.expires-20261208.jsonl.gz"
+    store.put_file(log, blob)
     early = offsite.prune_archive(settings, today=date(2026, 12, 11), backend=fake)
-    assert (early.deleted, early.kept) == ([], 4)
+    assert (early.deleted, early.kept) == ([f"local:{log}"], 4)
     report = offsite.prune_archive(settings, today=date(2026, 12, 12), backend=fake)
     expired = "archive/cloudrun-youju-20261112.expires-20261212.jsonl.gz.age"
     assert report.deleted == [f"local:{expired}", f"offsite:{expired}"]
-    assert not store.exists(expired) and expired not in fake.files
+    assert not store.exists(expired) and expired not in fake.files and not store.exists(log)
     assert store.exists("archive/readme.txt") and len(fake.files) == 1
     record = tmp_path / "store" / "archive" / "deletions.jsonl"
     rows = [json.loads(line) for line in record.read_text(encoding="utf-8").splitlines()]
     assert [(r["where"], r["path"], r["expires"]) for r in rows] == [
+        ("local", log, "2026-12-08"),
         ("local", expired, "2026-12-12"),
         ("offsite", expired, "2026-12-12"),
     ]
     # 第二天再跑：没有可删的，记录不变
     again = offsite.prune_archive(settings, today=date(2026, 12, 13), backend=fake)
-    assert again.deleted == [] and len(record.read_text(encoding="utf-8").splitlines()) == 2
+    assert again.deleted == [] and len(record.read_text(encoding="utf-8").splitlines()) == 3

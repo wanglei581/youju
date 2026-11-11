@@ -29,6 +29,7 @@ import gzip
 import hashlib
 import hmac
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -112,6 +113,9 @@ CONFIG_KEYS = (
     "xpay_offer_id",
     "xpay_price_pass",
     "xpay_product_pass",
+    "xpay_price_pass_90",
+    "xpay_product_pass_90",
+    "exports_per_10min",
     "xpay_platform_field",
     "xpay_ios_values",
     "xpay_android_values",
@@ -121,6 +125,34 @@ CONFIG_KEYS = (
     "xpay_bill_hosts",
     "wx_push_path",
 )
+
+
+# 故意不导的：密钥和口令、openid 名单、数据库地址和环境，和只在云托管或本机有意义的
+# （抓取参数在本机，服务器的登录方式另配）。白名单和这里都没有、又和默认值不同的，导出时只列名字
+CONFIG_SKIPPED = (
+    "database_url",
+    "admin_token",
+    "alert_webhook",
+    "ai_api_key",
+    "ai_advisor_api_key",
+    "xpay_appkey_prod",
+    "xpay_appkey_sandbox",
+    "wx_appsecret",
+    "ai_advisor_openids",
+    "pay_openids",
+    "dev_openid",
+    "cloud_env",
+    "role",
+    "trust_wx_headers",
+    "user_agent",
+    "request_timeout",
+    "per_host_interval",
+    "max_workers",
+    "failure_alert_threshold",
+    "sources_csv",
+)
+# 下载链接的域名：和服务器上 youju export-fetch 认的一样（youju/cloudrun_fetch.py 的 URL）
+LINK = re.compile(r"https://[A-Za-z0-9.-]+\.(?:tcb\.qcloud\.la|myqcloud\.com)/[!-~]*")
 
 
 class ExportError(RuntimeError):
@@ -296,19 +328,30 @@ def _plain(value):
     return value
 
 
+def _changed(settings, name: str) -> bool:
+    field = type(settings).model_fields[name]
+    default = field.default_factory() if field.default_factory else field.default
+    return getattr(settings, name) != default
+
+
 def config_values(settings) -> dict:
     """白名单里、和默认值不一样的配置（服务器的 .env 照着填）。"""
     fields = type(settings).model_fields
-    values = {}
-    for name in CONFIG_KEYS:
-        if name not in fields:
-            continue
-        value = getattr(settings, name)
-        field = fields[name]
-        default = field.default_factory() if field.default_factory else field.default
-        if value != default:
-            values[f"YOUJU_{name.upper()}"] = _plain(value)
-    return values
+    return {
+        f"YOUJU_{name.upper()}": _plain(getattr(settings, name))
+        for name in CONFIG_KEYS
+        if name in fields and _changed(settings, name)
+    }
+
+
+def config_unlisted(settings) -> list[str]:
+    """白名单、不导的单子里都没有、又和默认值不同的配置：只列名字（值可能是密钥），人工看。"""
+    listed = set(CONFIG_KEYS) | set(CONFIG_SKIPPED)
+    return sorted(
+        f"YOUJU_{name.upper()}"
+        for name in type(settings).model_fields
+        if name not in listed and _changed(settings, name)
+    )
 
 
 def _ascii(value) -> str:
@@ -318,6 +361,11 @@ def _ascii(value) -> str:
 # 交易记录的表（顺序就是文件里的顺序）
 PAY_TABLES = (PayOrder, PayEvent, InvoiceRequest, PassReward, WorkbenchPass, PayReconciliation)
 _IDENTITY_WORDS = ("openid", "unionid")
+_NOTES = {
+    "pay_orders": ("refund_note", "refund_due_note"),
+    "invoice_requests": ("note",),
+    "pass_rewards": ("note",),
+}
 
 
 def _pseudonym(key: str | None, openid: str | None) -> str | None:
@@ -346,6 +394,10 @@ def _deidentify(table: str, row: dict, pseudonyms: dict[int, str | None]) -> dic
         row["ref_id"] = None  # 记的是另一个人的用户编号
     elif table == "workbench_passes":
         row.pop("last_task_id", None)  # 指向这个人的任务
+    # 人工填的备注可能写到个人信息：清空（退款原因、开票情况看结构化的字段）
+    for column in _NOTES.get(table, ()):
+        if column in row:
+            row[column] = None
     return row
 
 
@@ -378,6 +430,14 @@ def pay_records(session: Session, retain_days: int) -> tuple[list[str], dict]:
         "counts": counts,
     }
     return [_ascii(header), *lines], header
+
+
+def _check_links(links) -> None:
+    """服务器只认这两种域名的链接：域名不对现在就停下（不用等贴到服务器上才发现）。"""
+    for link in links:
+        if not LINK.fullmatch(link):
+            host = link.split("/")[2] if link.count("/") >= 2 else "?"
+            raise ExportError(f"下载链接的域名是 {host}，服务器脚本不认：先别往下做，告诉团队")
 
 
 def _human(size: int) -> str:
@@ -413,6 +473,7 @@ def export(env: str, database_url: str, *, client: httpx.Client, settings, workd
     pay_id = backup.upload(client, env, pay_path, pay, what="交易记录")
     ids = [bucket.prefix + key for key, _ in files]
     links = download_links(client, env, [*ids, takedowns_id, pay_id])
+    _check_links(links.values())
     manifest = {
         "format": FORMAT,
         "version": 1,
@@ -442,11 +503,13 @@ def export(env: str, database_url: str, *, client: httpx.Client, settings, workd
         },
         "summary": numbers,
         "config": config_values(settings),
+        "config_unlisted": config_unlisted(settings),
     }
     local = workdir / f"manifest-{stamp}.json"
     local.write_text(_ascii(manifest) + "\n", encoding="ascii")
     manifest_id = backup.upload(client, env, f"exports/{local.name}", local, what="导出清单")
     url = download_links(client, env, [manifest_id])[manifest_id]
+    _check_links([url])
     return {
         "manifest": manifest,
         "url": url,
@@ -470,6 +533,9 @@ def report(result: dict) -> None:
     counts = manifest["pay_records"]["counts"]
     print(f"  交易记录（去标识化）：{'，'.join(f'{k} {v} 条' for k, v in counts.items())}")
     print(f"  不涉密的配置 {len(manifest['config'])} 项（在清单里，服务器上照着填）")
+    if manifest.get("config_unlisted"):
+        names = ", ".join(manifest["config_unlisted"])
+        print(f"  和默认值不同、没导出的配置（只列名字，人工看）：{names}")
     total = sum(size for _, size in per_prefix.values())
     files = ",".join(f"{p.rstrip('/')}:{n}/{size}" for p, (n, size) in per_prefix.items())
     print("== 以下几行只有英文和数字，复制以它们为准")
