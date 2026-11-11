@@ -122,11 +122,34 @@ def test_redirect_to_login_is_refused():
     assert api_refusal(api, _got(_payload(), final=https_api)) == ""
 
 
-def test_login_or_captcha_page_is_refused():
+def test_login_captcha_or_gate_page_is_refused():
     api = _api()
     assert "要登录或验证码" in api_refusal(api, _got('<html><input type="password"></html>'))
     assert "要登录或验证码" in api_refusal(api, _got("<html>请输入验证码</html>"))
-    assert "不是成功" in api_refusal(api, _got("<html>系统维护中</html>"))
+    assert "拦截" in api_refusal(api, _got("<html>访问被拒绝</html>"))
+    # 空白、维护中这类不是 JSON 的返回：不读，但按"这次没读出"记失败、下次再试
+    for text in ("", "<html>系统维护中</html>"):
+        assert api_refusal(api, _got(text)) == ""
+        assert api_html(api, text) == ""
+
+
+def test_nested_permission_fields_are_found():
+    api = _api()
+    text = _payload(data={"html": LIST, "unit": {"meta": {"roles": ["dept"]}}})
+    assert "data.unit.meta.roles" in api_refusal(api, _got(text))
+    assert api_html(api, text) == ""
+
+
+def test_scheme_only_redirect_is_not_a_login_redirect():
+    from youju.crawler.adapters import ListApi
+
+    api = ListApi(
+        "大汉jpaas", f"http://www.cas.cn{HANWEB_JPAAS_PATH}?pageId=1", "http://www.cas.cn/"
+    )
+    same = FetchResult(api.url, "ok", api.url.replace("http://", "https://"), 200, _payload())
+    assert api_refusal(api, same) == ""
+    to_auth = FetchResult(api.url, "unsupported_host", "https://auth.example.com/x?r=1")
+    assert "跳到登录" in api_refusal(api, to_auth)
 
 
 def test_one_off_failures_are_not_refusals():

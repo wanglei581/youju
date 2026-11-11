@@ -101,16 +101,21 @@ def api_html(api: ListApi, text: str) -> str:
 LIST_API_REFUSED = "list_api_refused"
 # 网站明确拒绝或要求登录的 HTTP 状态（和盘点的防护判断一致）
 _REFUSE_HTTP = frozenset({401, 403, 412, 521})
-# 跳转去的网址像登录、验证页面（主机名、路径、参数里的整词）
+# 跳转去的网址像登录、验证页面（跳转改了的主机名、路径、参数里的整词）
 _LOGIN_URL = re.compile(
-    r"(?:^|[/_.?=&-])(?:login|logon|signin|sso|cas|passport|oauth2?|authorize|captcha|"
+    r"(?:^|[/_.?=&-])(?:login|logon|signin|sso|cas|auth|passport|oauth2?|authorize|captcha|"
     r"verify(?:code)?)(?:$|[/_.?=&-])",
     re.I,
 )
-# 返回内容像登录、验证码页面（只看不是成功结果的返回，不看列表本身：通知标题里也会有"验证码"）
+# 返回内容像登录、验证码或防护拦截页面（只看不是 JSON 的返回和失败提示，不看列表本身：
+# 通知标题里也会有"验证码""身份认证"）
 _LOGIN_TEXT = re.compile(
     r"请(?:先)?登录|未登录|重新登录|登录(?:超时|失效|过期)|用户登录|身份认证|验证码|滑块|"
     r"人机验证|安全验证|captcha|geetest|type\s*=\s*[\"']?password",
+    re.I,
+)
+_GATE_TEXT = re.compile(
+    r"访问被拒绝|拒绝访问|禁止访问|访问受限|非法请求|防火墙|安全防护|access denied|forbidden",
     re.I,
 )
 # 权限一类字段：不为空就说明这段内容有阅读权限要求
@@ -130,15 +135,22 @@ def _json_payload(text: str) -> dict | None:
 
 
 def _permission_fields(payload: dict) -> list[str]:
-    """返回里不为空的权限一类字段（顶层和 data 里各看一层）。"""
-    inner = payload.get("data")
-    found = []
-    for prefix, obj in (("", payload), ("data.", inner if isinstance(inner, dict) else {})):
-        for key, value in obj.items():
+    """返回里不为空的权限一类字段（各层字典都看，最多 6 层）。"""
+    found: list[str] = []
+    stack: list[tuple[str, object, int]] = [("", payload, 0)]
+    while stack:
+        prefix, obj, depth = stack.pop()
+        if depth > 6:
+            continue
+        items = obj.items() if isinstance(obj, dict) else enumerate(obj)
+        for key, value in items:
+            name = f"{prefix}{key}"
             empty = value is None or value is False or value in ("", 0, [], {})
             if isinstance(key, str) and _PERMISSION_KEY.match(key) and not empty:
-                found.append(prefix + key)
-    return found
+                found.append(name)
+            elif isinstance(value, (dict, list)):
+                stack.append((f"{name}.", value, depth + 1))
+    return sorted(found)
 
 
 def _payload_refusal(payload: dict) -> str:
@@ -163,9 +175,16 @@ def _payload_refusal(payload: dict) -> str:
     return ""
 
 
-def _url_words(url: str) -> str:
-    parts = urlsplit(url)
-    return f"{parts.netloc}{parts.path}?{parts.query}"
+def _redirect_words(api_url: str, final: str) -> str:
+    """跳转改了什么：主机名变了算主机名，路径变了算路径和参数。只换协议、参数没变的不算跳转
+    （如 http 跳 https 落在 *.cas.cn 这类主机上，不能当成跳到登录）。"""
+    a, b = urlsplit(api_url), urlsplit(final)
+    words = []
+    if a.netloc.lower() != b.netloc.lower():
+        words.append(b.netloc)
+    if a.path != b.path or a.netloc.lower() != b.netloc.lower():
+        words.append(f"{b.path}?{b.query}")
+    return " ".join(words)
 
 
 def api_refusal(api: ListApi, result) -> str:
@@ -182,16 +201,20 @@ def api_refusal(api: ListApi, result) -> str:
     if http_status in _REFUSE_HTTP:
         return f"列表接口 HTTP {http_status}：拒绝访问或要求登录"
     final = getattr(result, "final_url", None) or api.url
-    if final != api.url and _LOGIN_URL.search(_url_words(final)):
+    if _LOGIN_URL.search(_redirect_words(api.url, final)):
         return "列表接口跳到登录或验证页面"
     if status != "ok":
         return ""
     text = getattr(result, "text", "") or ""
     payload = _json_payload(text)
     if payload is None:
+        # 不是 JSON：像登录、验证码、防护拦截页面的记不能抓；别的（空白、维护中）按"这次没读出"，
+        # 不读、照常记失败下次再试
         if _LOGIN_TEXT.search(text[:20000]):
             return "列表接口要登录或验证码"
-        return "列表接口返回不是成功（不是预期的格式）"
+        if _GATE_TEXT.search(text[:20000]):
+            return "列表接口返回拦截页面"
+        return ""
     return _payload_refusal(payload)
 
 

@@ -156,6 +156,11 @@ def _lock_source(session: Session, source: Source) -> None:
 ADAPTER_MIN_ITEMS = 3
 
 
+# 来源 parser_config 里记下列表接口被读取护栏（D-128）拦下的原因：以后不再请求这个接口，
+# 照旧记不能抓；复核后把这一项删掉才会再读（例行抓取不带 --skip-blocked，不能只靠 health）
+LIST_API_REFUSED_KEY = "list_api_refused"
+
+
 @dataclass
 class _AdapterResult:
     items: list[ListItem]
@@ -202,10 +207,15 @@ def check_source(
     result = fetcher.fetch(url)
     status, error = result.status, result.error
     items: list[ListItem] = []
-    first_via_adapter = False
+    first_via_adapter = remember_refusal = False
     if result.status == "ok":
         items = extract_items(result.text, result.final_url or url, parser_config, today=today)
-        if len(items) < ADAPTER_MIN_ITEMS and not parser_config.get("item_selector"):
+        refused_before = parser_config.get(LIST_API_REFUSED_KEY)
+        if len(items) < ADAPTER_MIN_ITEMS and refused_before:
+            # 列表接口之前被读取护栏（D-128）拦下：不再请求，照旧记不能抓
+            items = []
+            status, error = LIST_API_REFUSED, f"{refused_before}（之前被读取护栏拦下，不再请求）"
+        elif len(items) < ADAPTER_MIN_ITEMS and not parser_config.get("item_selector"):
             via = _items_via_adapter(fetcher, result, url, parser_config, today)
             if via.items:
                 items = via.items
@@ -213,12 +223,15 @@ def check_source(
                 first_via_adapter = parser_config.get("list_api") != via.adapter
                 if first_via_adapter:
                     parser_config = {**parser_config, "list_api": via.adapter}
-            elif via.refused and not items:
+            elif via.refused:
                 # 读取护栏（D-128）：接口返回不是成功、带权限要求、要登录或验证码、明确拒绝
-                # → 记不能抓、停抓
+                # → 记不能抓、停抓；栏目页上零星认出的一两条也不收（列表在接口里，读不了）
+                items = []
                 status, error = LIST_API_REFUSED, f"列表接口（{via.adapter}）：{via.refused}"
+                parser_config = {**parser_config, LIST_API_REFUSED_KEY: error}
+                remember_refusal = True
                 if via.fetch is not None and via.fetch.http_status:
-                    result = FetchResult(url, "http_error", http_status=via.fetch.http_status)
+                    result = FetchResult(url, LIST_API_REFUSED, http_status=via.fetch.http_status)
             elif via.fetch is not None and not items:
                 # 列表接口被 robots 禁止或被拒：照实记，不当成"改版认不出"（以后也不能去绕）
                 status, error = via.fetch.status, f"列表接口（{via.adapter}）：{via.fetch.error}"
@@ -228,8 +241,9 @@ def check_source(
             status, error = "parse_empty", PARSE_EMPTY_MESSAGE
 
     _lock_source(session, source)
-    if first_via_adapter:
-        source.parser_config = parser_config  # 记下这个栏目要经列表接口读
+    if first_via_adapter or remember_refusal:
+        # 记下这个栏目要经列表接口读，或列表接口被读取护栏拦下（以后不再请求）
+        source.parser_config = parser_config
     # 来源第一次成功检查时看到的条目算基线，不计入"新增"；第一次经列表接口读出的整页也算基线
     baseline = bool(items) and (source.last_success_at is None or first_via_adapter)
     new_count = save_items(session, source, items, baseline=baseline, seen_at=started)

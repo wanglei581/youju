@@ -308,6 +308,39 @@ def test_list_api_not_success_is_refused_and_crawling_stops(session) -> None:
     assert (check.status, check.items_found, docs) == ("list_api_refused", 0, 0)
     assert "列表接口" in check.error and "不是成功" in check.error
     assert source.health == "blocked"
+    assert source.parser_config["list_api_refused"] == check.error
+
+
+def test_refused_list_api_is_not_requested_again(session) -> None:
+    """例行抓取不跳过 blocked 的来源：拦下过一次就记在来源上，以后不再请求这个接口。"""
+    url = "https://kjt.zj.gov.cn/col/col1229225203/index.html"
+    source = make_source(session, url)
+    body = '{"success":false,"code":"200","message":"","data":{}}'
+    # 第二次只给栏目页：再请求列表接口就会出错
+    fetcher = FakeFetcher(
+        {url: [page(url, JPAAS_PAGE), page(url, JPAAS_PAGE)], JPAAS_API: [page(JPAAS_API, body)]}
+    )
+    first = check_source(session, source, fetcher)
+    second = check_source(session, source, fetcher)
+    assert (first.status, second.status) == ("list_api_refused", "list_api_refused")
+    assert "不再请求" in second.error
+    session.refresh(source)
+    assert source.health == "blocked"
+
+
+def test_refused_list_api_drops_stray_page_items(session) -> None:
+    """栏目页上零星认出一两条、列表在接口里且接口被拦：照样记不能抓，零星条目也不收。"""
+    url = "https://kjt.zj.gov.cn/col/col1229225203/index.html"
+    source = make_source(session, url)
+    stray = JPAAS_PAGE.replace(
+        "</ul>",
+        '<li><a href="/art/9.html">关于开展专项申报工作的通知</a><span>2026-11-01</span></li></ul>',
+    )
+    body = JPAAS_JSON.replace('{"success":true,', '{"success":true,"roles":["dept"],')
+    fetcher = FakeFetcher({url: [page(url, stray)], JPAAS_API: [page(JPAAS_API, body)]})
+    check = check_source(session, source, fetcher)
+    assert (check.status, check.items_found) == ("list_api_refused", 0)
+    assert session.scalar(select(func.count()).select_from(Document)) == 0
 
 
 def test_list_api_with_permission_fields_is_not_read(session) -> None:

@@ -476,3 +476,10 @@ def test_refused_unit_api_is_not_read():
         refused[api] = json.dumps({**json.loads(pages[api]), **bad})
         info = Inventory(INDEX, FakeCache(refused), provinces=["浙江"]).page(JPAAS_DEPT)
         assert not any(link.via == "jpaas分组" for link in info.links)
+        assert info.api_refused
+        # 部门页的栏目全靠这个接口：这一格记不能抓（不是"网站无此栏目"）
+        inv = Inventory(INDEX, FakeCache(refused), provinces=["浙江"], workers=2, per_province=2)
+        inv.run()
+        kj = _depts(inv)[("330522", "科技")]
+        assert (kj.status, kj.columns) == ("不能抓", [])
+        assert "D-128" in kj.reason

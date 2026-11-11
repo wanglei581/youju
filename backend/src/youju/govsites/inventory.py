@@ -29,6 +29,7 @@ from lxml import etree
 
 from youju.crawler.adapters import (
     api_html,
+    api_refusal,
     find_unit_apis,
     jpaas_tree_categories,
     jpaas_xxgk_groups,
@@ -202,6 +203,7 @@ class PageInfo:
     categories: list[tuple[str, str]] = field(default_factory=list)
     level_hint: str = ""  # 门户首页：所属行政区的层级
     directory: bool = False  # 信息公开平台的部门目录页（deptdir.py）：上面的部门网址可以深一些
+    api_refused: str = ""  # 页面声明的列表接口被读取护栏（D-128）拦下的原因（没读它的内容）
 
 
 @dataclass(frozen=True)
@@ -400,6 +402,11 @@ class Inventory:
             # 大汉 jpaas：导航、栏目列表都由页面声明的单元接口拼出来，按页面给的参数取（最多 4 个）
             for api in find_unit_apis(result.text, info.final_url)[:4]:
                 r = self.cache.get(api.url)
+                refused = api_refusal(api, r)
+                if refused:
+                    # 读取护栏（D-128）：不读这个接口，记下原因（部门页栏目全靠它时记不能抓）
+                    info.api_refused = info.api_refused or refused
+                    continue
                 html = api_html(api, r.text) if r.status == "ok" else ""
                 if html:
                     info.links += page_links(html, info.final_url)
@@ -1053,6 +1060,9 @@ class Inventory:
                     # 派出分局在上级网站上的版块：上级网站菜单里的栏目是上级的，只认版块下面的
                     base = page_dir(dp.final_url)
                     row.columns = [c for c in row.columns if urlsplit(c.url).path.startswith(base)]
+                if not row.columns and dp.api_refused:
+                    # 栏目全靠页面声明的列表接口、接口被读取护栏（D-128）拦下：记不能抓
+                    row.status, row.reason = "不能抓", f"{dp.api_refused}（D-128）"
             if cat == "开发区":
                 rows.append(row)
                 if len(rows) >= 6:  # 开发区可能有好几个（国家级、省级各一）
