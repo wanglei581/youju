@@ -118,6 +118,17 @@ _GATE_TEXT = re.compile(
     r"访问被拒绝|拒绝访问|禁止访问|访问受限|非法请求|防火墙|安全防护|access denied|forbidden",
     re.I,
 )
+_TAGS = re.compile(r"<script\b.*?</script>|<style\b.*?</style>|<[^>]+>|\s+", re.S | re.I)
+_LINK = re.compile(r"<a\s[^>]*href=", re.I)
+
+
+def _bare_page(text: str) -> bool:
+    """整页就是一个关卡：正文很少、链接也很少（和盘点的防护判断一样）。网站模板做的 404、
+    维护页页头常有"用户登录""验证码"字样，链接多，不算。"""
+    head = text[:200000]
+    return len(_TAGS.sub("", head)) < 1500 and len(_LINK.findall(head)) < 15
+
+
 # 权限一类字段：不为空就说明这段内容有阅读权限要求
 _PERMISSION_KEY = re.compile(
     r"^(?:roles?|permissions?|authorit(?:y|ies)|privileges?|(?:need|require)s?_?login|"
@@ -157,7 +168,7 @@ def _payload_refusal(payload: dict) -> str:
     """接口 JSON 返回本身的护栏：不是成功、带权限要求时给原因；可以读给空串。"""
     success, code = payload.get("success"), str(payload.get("code", "200"))
     if success is not True or code != "200":
-        message = str(payload.get("message") or "").strip()[:40]
+        message = str(payload.get("message") or payload.get("msg") or "").strip()[:40]
         if _LOGIN_TEXT.search(message):
             return f"列表接口要登录或验证码（{message}）"
         parts = []
@@ -176,13 +187,13 @@ def _payload_refusal(payload: dict) -> str:
 
 
 def _redirect_words(api_url: str, final: str) -> str:
-    """跳转改了什么：主机名变了算主机名，路径变了算路径和参数。只换协议、参数没变的不算跳转
+    """跳转改了什么：主机名变了算主机名，路径或参数变了算路径和参数。只换协议的不算跳转
     （如 http 跳 https 落在 *.cas.cn 这类主机上，不能当成跳到登录）。"""
     a, b = urlsplit(api_url), urlsplit(final)
     words = []
     if a.netloc.lower() != b.netloc.lower():
         words.append(b.netloc)
-    if a.path != b.path or a.netloc.lower() != b.netloc.lower():
+    if (a.netloc.lower(), a.path, a.query) != (b.netloc.lower(), b.path, b.query):
         words.append(f"{b.path}?{b.query}")
     return " ".join(words)
 
@@ -208,11 +219,11 @@ def api_refusal(api: ListApi, result) -> str:
     text = getattr(result, "text", "") or ""
     payload = _json_payload(text)
     if payload is None:
-        # 不是 JSON：像登录、验证码、防护拦截页面的记不能抓；别的（空白、维护中）按"这次没读出"，
-        # 不读、照常记失败下次再试
-        if _LOGIN_TEXT.search(text[:20000]):
+        # 不是 JSON：整页是登录、验证码、防护拦截关卡的记不能抓；别的（空白、维护中、网站模板的
+        # 404 页）按"这次没读出"，不读、照常记失败下次再试
+        if _bare_page(text) and _LOGIN_TEXT.search(text[:20000]):
             return "列表接口要登录或验证码"
-        if _GATE_TEXT.search(text[:20000]):
+        if _bare_page(text) and _GATE_TEXT.search(text[:20000]):
             return "列表接口返回拦截页面"
         return ""
     return _payload_refusal(payload)

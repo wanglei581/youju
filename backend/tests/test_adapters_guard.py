@@ -131,6 +131,14 @@ def test_login_captcha_or_gate_page_is_refused():
     for text in ("", "<html>系统维护中</html>"):
         assert api_refusal(api, _got(text)) == ""
         assert api_html(api, text) == ""
+    # 网站模板做的 404 页：页头有"用户登录""验证码"，链接很多，不算关卡页
+    nav = "".join(f'<a href="/col/col{i}/index.html">栏目{i}</a>' for i in range(30))
+    template = f"<html><div>用户登录 | 验证码</div>{nav}<p>页面不存在</p></html>"
+    assert api_refusal(api, _got(template)) == ""
+    # 失败提示写在 msg 里的也认
+    assert "要登录或验证码" in api_refusal(
+        api, _got(_payload(success=False, message=None, msg="请先登录"))
+    )
 
 
 def test_nested_permission_fields_are_found():
@@ -150,6 +158,9 @@ def test_scheme_only_redirect_is_not_a_login_redirect():
     assert api_refusal(api, same) == ""
     to_auth = FetchResult(api.url, "unsupported_host", "https://auth.example.com/x?r=1")
     assert "跳到登录" in api_refusal(api, to_auth)
+    # 只改了参数的跳转（加上 need_login=1）也看
+    need_login = FetchResult(api.url, "ok", api.url + "&need_login=1", 200, "<html></html>")
+    assert "跳到登录" in api_refusal(api, need_login)
 
 
 def test_one_off_failures_are_not_refusals():

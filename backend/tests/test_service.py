@@ -1,5 +1,5 @@
 import logging
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 from sqlalchemy import func, select
 
@@ -308,7 +308,8 @@ def test_list_api_not_success_is_refused_and_crawling_stops(session) -> None:
     assert (check.status, check.items_found, docs) == ("list_api_refused", 0, 0)
     assert "列表接口" in check.error and "不是成功" in check.error
     assert source.health == "blocked"
-    assert source.parser_config["list_api_refused"] == check.error
+    note = source.parser_config["list_api_refused"]
+    assert (note["url"], note["reason"]) == (JPAAS_API, check.error)
 
 
 def test_refused_list_api_is_not_requested_again(session) -> None:
@@ -377,3 +378,59 @@ def test_list_api_one_off_failure_is_retried_later(session) -> None:
     check, source, _ = _check_with_api(session, got)
     assert check.status == "http_error"
     assert source.health == "degraded"
+
+
+def _refused_note(url: str, days_ago: int) -> dict:
+    at = datetime.now(UTC) - timedelta(days=days_ago)
+    return {
+        "list_api_refused": {
+            "url": url,
+            "reason": "列表接口（大汉jpaas）：旧原因",
+            "at": at.isoformat(),
+        }
+    }
+
+
+def test_refusal_is_rechecked_when_page_declares_another_api_or_after_30_days(session) -> None:
+    """页面换了接口、或拦下已过 30 天：再请求一次；没被拦就照常读，去掉旧记录。"""
+    url = "https://kjt.zj.gov.cn/col/col1229225203/index.html"
+    for note in (_refused_note(JPAAS_API + "&old=1", 1), _refused_note(JPAAS_API, 40)):
+        session.query(Document).delete()
+        session.query(SourceCheck).delete()
+        session.query(Source).delete()
+        session.commit()
+        source = make_source(session, url)
+        source.parser_config = note
+        session.commit()
+        fetcher = FakeFetcher(
+            {url: [page(url, JPAAS_PAGE)], JPAAS_API: [page(JPAAS_API, JPAAS_JSON)]}
+        )
+        check = check_source(session, source, fetcher)
+        assert (check.status, check.items_found) == ("ok", 2)
+        session.refresh(source)
+        assert "list_api_refused" not in source.parser_config
+
+
+def test_blank_list_api_response_is_a_retryable_failure(session) -> None:
+    """接口回空白或维护页：不读，按"这次没读出"记失败，不记不能抓、不停抓。"""
+    check, source, docs = _check_with_api(session, page(JPAAS_API, "<html>系统维护中</html>"))
+    assert (check.status, docs) == ("parse_empty", 0)
+    assert source.health == "degraded"
+    assert "list_api_refused" not in source.parser_config
+
+
+def test_robots_denied_list_api_drops_stray_page_items(session) -> None:
+    url = "https://kjt.zj.gov.cn/col/col1229225203/index.html"
+    source = make_source(session, url)
+    stray = JPAAS_PAGE.replace(
+        "</ul>",
+        '<li><a href="/art/9.html">关于开展专项申报工作的通知</a><span>2026-11-01</span></li></ul>',
+    )
+    denied = FetchResult(
+        JPAAS_API, "robots_disallowed", final_url=JPAAS_API, error="robots.txt 不允许"
+    )
+    fetcher = FakeFetcher({url: [page(url, stray)], JPAAS_API: [denied]})
+    check = check_source(session, source, fetcher)
+    assert (check.status, check.items_found) == ("robots_disallowed", 0)
+    session.refresh(source)
+    assert source.health == "blocked"

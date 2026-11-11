@@ -897,7 +897,12 @@ class Inventory:
         gov.site_url, gov.site_type, gov.nav_source = home.final_url, "门户本身", home.url
         if portal_ok:
             gov.status = "已找到"
-            self._fill_from_page(gov, home, portal_pages if portal_pages is not None else pages)
+            gov_pages = portal_pages if portal_pages is not None else pages
+            self._fill_from_page(gov, home, gov_pages)
+            why = home.api_refused or next((p.api_refused for p in gov_pages if p.api_refused), "")
+            if not gov.columns and why:
+                # 门户的栏目全靠被读取护栏（D-128）拦下的列表接口：记不能抓，不是"网站无此栏目"
+                gov.status, gov.reason = "不能抓", f"{why}（D-128）"
         else:
             # 门户不通：政府办（门户的政府文件、通知公告）照记不通，其他部门从官方入口补充里找
             gov.status = "不能抓" if home.block else "打不开"
@@ -998,6 +1003,7 @@ class Inventory:
     ) -> tuple[list[DeptRow], list[str]]:
         rows: list[DeptRow] = []
         rejected: list[str] = []
+        refused: dict[int, str] = {}  # 部门页上列表接口被读取护栏拦下的原因（按行）
         seen: set[str] = set()
         top_score: int | None = None
         top_weak = False  # 首选是文章、年报、简介、公开指南一类的页面
@@ -1060,9 +1066,8 @@ class Inventory:
                     # 派出分局在上级网站上的版块：上级网站菜单里的栏目是上级的，只认版块下面的
                     base = page_dir(dp.final_url)
                     row.columns = [c for c in row.columns if urlsplit(c.url).path.startswith(base)]
-                if not row.columns and dp.api_refused:
-                    # 栏目全靠页面声明的列表接口、接口被读取护栏（D-128）拦下：记不能抓
-                    row.status, row.reason = "不能抓", f"{dp.api_refused}（D-128）"
+                if dp.api_refused:
+                    refused[id(row)] = dp.api_refused  # 选定以后还没栏目的，记不能抓
             if cat == "开发区":
                 rows.append(row)
                 if len(rows) >= 6:  # 开发区可能有好几个（国家级、省级各一）
@@ -1082,6 +1087,10 @@ class Inventory:
             best = next((r for r in rows if _readable(r)), None)
             best = best or next((r for r in rows if r.columns), None) or rows[0]
             rows = [best]
+        for r in rows:
+            # 选定的部门页没认出栏目、栏目全靠的列表接口被读取护栏（D-128）拦下：记不能抓
+            if r.status == "已找到" and not r.columns and id(r) in refused:
+                r.status, r.reason = "不能抓", f"{refused[id(r)]}（D-128）"
         return rows, rejected
 
     def _local_domain(self, f: Found, home: PageInfo, owner: "_Owner | None") -> bool:
@@ -1213,6 +1222,8 @@ class Inventory:
                     page.final_url
                 ):
                     sub = self.page(link.url)
+                    # 信息公开页上的列表接口被读取护栏（D-128）拦下：记到部门页上
+                    page.api_refused = page.api_refused or sub.api_refused
                     if sub.result.status == "ok" and not sub.block:
                         found = find_columns([sub], exclude, max_depth, topics)
                         found = self._check_group_columns([sub], found, exclude, max_depth, topics)

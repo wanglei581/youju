@@ -483,3 +483,22 @@ def test_refused_unit_api_is_not_read():
         kj = _depts(inv)[("330522", "科技")]
         assert (kj.status, kj.columns) == ("不能抓", [])
         assert "D-128" in kj.reason
+
+
+def test_refused_top_candidate_lets_next_candidate_win():
+    """首选部门页的栏目全靠被拦下的接口时，照常试后面的候选；后面的有栏目就用它。"""
+    pages = _zhejiang_pages()
+    api = find_unit_apis(pages[JPAAS_DEPT], JPAAS_DEPT)[0].url
+    pages[api] = json.dumps({**json.loads(pages[api]), "roles": ["dept"]})
+    directory = "http://www.zjcx.gov.cn/col/col1229211332/index.html"
+    other = "http://www.zjcx.gov.cn/kjj/index.html"
+    pages[directory] += f'<a href="{other}">·长兴县科学技术局</a>'
+    pages[other] = (
+        '<meta name="SiteName" content="长兴县科学技术局"><title>长兴县科学技术局</title>'
+        '<a href="/kjj/tzgg/index.html">通知公告</a>'
+    )
+    inv = Inventory(INDEX, FakeCache(pages), provinces=["浙江"], workers=2, per_province=2)
+    inv.run()
+    kj = _depts(inv)[("330522", "科技")]
+    assert (kj.status, kj.site_url) == ("已找到", other)
+    assert [c.kind for c in kj.columns] == ["通知公告"]
