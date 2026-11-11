@@ -69,6 +69,7 @@ NAV_WORDS = (
     "网站报表",
 )
 _NAV_MAX_LEN = 20
+_TRUNCATED = re.compile(r"(?:\.{2,}|…+)$")
 
 
 @dataclass(frozen=True)
@@ -122,7 +123,13 @@ def page_links(html: str, base_url: str, doc: etree._Element | None = None) -> l
             out.append(Link(text, url, via))
 
     for a in doc.iter("a", "area"):
-        text = _text(a) or _SPACES.sub("", a.get("title") or a.get("alt") or "")
+        title = _SPACES.sub("", a.get("title") or a.get("alt") or "")
+        text = _text(a) or title
+        # 显示的文字被截断了（"长兴县发展和改革局（长兴县人民政府区域合..."），title 里是全称就用它
+        cut = _TRUNCATED.sub("", text)
+        bare = cut.lstrip("·•>»- ")
+        if cut != text and len(title) >= len(bare) and title.startswith(bare):
+            text = title
         href = a.get("href") or ""
         if href.strip().lower().startswith(("javascript", "#")) or not href.strip():
             for attr in ("onclick", "data-href", "data-url", "url"):
