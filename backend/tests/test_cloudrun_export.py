@@ -3,7 +3,9 @@
 脚本在线上镜像里跑，只能用镜像里已有的函数；这些测试也在线上镜像那一版的代码上跑过
 （PYTHONPATH 指到那一版的 backend/src，见手册第六节）。"""
 
+import gzip
 import hashlib
+import hmac
 import importlib.util
 import json
 import os
@@ -25,12 +27,17 @@ except ImportError:  # 在线上那一版的代码上跑时没有这个模块（
     takedown_carry = None
 from youju.config import Settings
 from youju.models import (
+    AppKey,
     Document,
     DocumentMerge,
     DocumentTakedownEvent,
+    InvoiceRequest,
+    PassReward,
+    PayEvent,
     PayOrder,
     Source,
     User,
+    WorkbenchPass,
 )
 from youju.takedown import change_state
 
@@ -316,6 +323,11 @@ def test_export_writes_manifest_with_latest_backup_and_takedowns(session, tmp_pa
         assert [item.url_key for item in listing] == [doc.url_key]
     assert manifest["summary"]["users"] == 1 and manifest["summary"]["takedown_docs"] == 1
     assert manifest["config"] == {"YOUJU_AI_MODEL": "qwen-plus"}
+    (pay_path,) = [p for p in uploaded if p.startswith("exports/pay-records-")]
+    assert manifest["pay_records"]["sha256"] == hashlib.sha256(uploaded[pay_path]).hexdigest()
+    assert manifest["pay_records"]["retain_days"] == 3650
+    pay_lines = gzip.decompress(uploaded[pay_path]).decode().splitlines()
+    assert json.loads(pay_lines[0])["format"] == "youju-pay-records" and len(pay_lines) == 1
     (manifest_path,) = [p for p in uploaded if p.startswith("exports/manifest-")]
     assert result["sha256"] == hashlib.sha256(uploaded[manifest_path]).hexdigest()
     assert json.loads(uploaded[manifest_path]) == manifest
@@ -371,6 +383,7 @@ def test_report_prints_copyable_ascii_lines(capsys):
             {"path": "logs/access-20261110.jsonl.gz", "size": 10},
         ],
         "takedowns": {"count": 2},
+        "pay_records": {"counts": {"pay_orders": 2, "invoice_requests": 1}},
         "summary": {"users": 3, "orders": {}},
         "config": {"YOUJU_AI_MODEL_FILING": "备案"},
     }
@@ -382,14 +395,111 @@ def test_report_prints_copyable_ascii_lines(capsys):
         }
     )
     lines = capsys.readouterr().out.splitlines()
-    copy = [line for line in lines if line.startswith(("EXPORT OK", "SUMMARY", "echo "))]
-    assert len(copy) == 3 and all(line.isascii() for line in copy)
+    copy = [
+        line for line in lines if line.startswith(("EXPORT OK", "SUMMARY", "sudo ", "https://"))
+    ]
+    assert len(copy) == 4 and all(line.isascii() for line in copy)
     assert copy[0] == (
         "EXPORT OK files=backups:1/2048,logs:1/10,attachments:0/0,advisor/out:0/0 total=2058 "
         "revision=0046"
     )
-    # 链接经标准输入给服务器脚本（fetch-export 从标准输入读），命令行参数里只有哈希
-    assert copy[2] == (
-        "echo 'https://x.tcb.qcloud.la/exports/m.json?sign=s' | "
-        f"sudo /opt/youju/bin/youju-shared.sh fetch-export {'0' * 64}"
+    # 命令里只有哈希；链接单独一行，运行后在提示里粘贴（不进命令行参数和 shell 历史）
+    assert copy[2] == f"sudo /opt/youju/bin/youju-shared.sh fetch-export {'0' * 64}"
+    assert copy[3] == "https://x.tcb.qcloud.la/exports/m.json?sign=s"
+    assert any("pay_orders 2 条" in line for line in lines)
+
+
+def test_pay_records_are_deidentified_like_account_deletion(session):
+    """交易记录：和注销账号时（payments.anonymize、rewards.anonymize）一样断开用户、去掉 openid，
+    另外去掉开票联系邮箱和个人抬头（就是姓名）；单位抬头、税号、订单号留着对账。"""
+    key = "ab" * 32
+    session.add(AppKey(name="access_log", value=key))
+    user = User(openid="o-secret-1")
+    session.add(user)
+    session.flush()
+    order, later = (
+        PayOrder(
+            user_id=user.id,
+            out_trade_no=f"T{n}",
+            product_id="workbench_30d",
+            price=2900,
+            days=30,
+            env=0,
+            terms_version="v1",
+            status="paid",
+            wx_order_id=f"wx-{n}",
+            created_at=NOW + timedelta(days=n),
+        )
+        for n in (0, 1)
     )
+    session.add_all([order, later])
+    session.flush()
+    session.add_all(
+        [
+            PayEvent(
+                order_id=order.id, kind="notify", summary={"OpenId": "o-secret-1", "Fee": 2900}
+            ),
+            InvoiceRequest(
+                order_id=order.id,
+                user_id=user.id,
+                title_type="personal",
+                title="张三",
+                email="someone@example.com",
+            ),
+            InvoiceRequest(
+                order_id=later.id,
+                user_id=user.id,
+                title_type="company",
+                title="某某科技有限公司",
+                tax_id="91110000000000000X",
+                email="finance@example.com",
+            ),
+            PassReward(
+                user_id=user.id,
+                kind="referral",
+                requested_days=3,
+                granted_days=3,
+                ref_type="user_referral",
+                ref_id=user.id,
+                granted_at=NOW,
+            ),
+            WorkbenchPass(
+                user_id=user.id,
+                order_id=order.id,
+                starts_at=NOW,
+                ends_at=NOW + timedelta(days=30),
+                last_task_id=7,
+            ),
+        ]
+    )
+    session.commit()
+    lines, header = export_script.pay_records(session, 3650)
+    assert header["counts"] == {
+        "pay_orders": 2,
+        "pay_events": 1,
+        "invoice_requests": 2,
+        "pass_rewards": 1,
+        "workbench_passes": 1,
+        "pay_reconciliations": 0,
+    }
+    assert header["earliest_order_at"] == NOW.isoformat() and header["retain_days"] == 3650
+    text = "\n".join(lines)
+    assert text.isascii()
+    for secret in ("o-secret-1", "someone@example.com", "finance@example.com", "user_id"):
+        assert secret not in text, secret
+    assert "\\u5f20\\u4e09" not in text  # 个人抬头（姓名）去掉
+    rows = [json.loads(line) for line in lines[1:]]
+    by_table = {}
+    for item in rows:
+        by_table.setdefault(item["table"], []).append(item["row"])
+    expected = hmac.new(bytes.fromhex(key), b"o-secret-1", hashlib.sha256).hexdigest()[:16]
+    assert {o["pseudonym"] for o in by_table["pay_orders"]} == {expected}
+    assert [o["out_trade_no"] for o in by_table["pay_orders"]] == ["T0", "T1"]
+    assert by_table["pay_events"][0]["summary"] == {"Fee": 2900}
+    invoices = sorted(by_table["invoice_requests"], key=lambda r: r["title_type"])
+    assert (
+        invoices[0]["title"] == "某某科技有限公司" and invoices[0]["tax_id"] == "91110000000000000X"
+    )
+    assert invoices[1]["title"] is None and "email" not in invoices[1]
+    assert by_table["pass_rewards"][0]["ref_id"] is None
+    assert "last_task_id" not in by_table["workbench_passes"][0]

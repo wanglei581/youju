@@ -24,10 +24,10 @@
 #   logs mysql|api|worker [行数]
 #   uninstall [--purge]    停掉有据、撤掉站点和定时任务；--purge 连数据库、文件、镜像一起删
 # 首发前搬家（D-127，手册第六节）：
-#   fetch-export <哈希>    从标准输入读清单链接，按云托管导出的清单下载：日志、附件副本进存储，
+#   fetch-export <哈希>    提示时粘贴清单链接（不显示），按云托管导出的清单下载：日志、附件副本进存储，
 #                          整库备份和下架清单进 /opt/youju/export（只有 root 能进）；可以重跑
 #   export-show            只读：导出的汇总数、不涉密的配置、各前缀文件数（不含链接）
-#   import-export <旧版本> 乙方案：用迁移版本和备份一样的旧镜像在临时库里试恢复备份，再用 age 公钥加密归档，删掉明文
+#   import-export <旧版本> 用迁移版本和备份一样的旧镜像在临时库里试恢复备份；整库备份、交易记录分别加密存档（到期日写进文件名），删掉明文
 #   takedowns [段号]       只读：打印下架清单（gzip 后 base64，每段 200 行），抄到本机用
 #   takedowns-check        只读：下架清单里的网址在服务器上还有没有对用户可见的文件
 #   secret <名称>          只在交互终端里用：录一个密钥进 .env（输入不显示，只回长度和指纹）
@@ -523,18 +523,26 @@ pause_services() {
   trap resume_services EXIT
 }
 resume_services() {
-  compose up -d --wait --wait-timeout 900 worker && compose up -d --wait --wait-timeout 300 api \
-    || echo "注意：接口、worker 没起来，运行 ${SELF} up" >&2
+  if ! { compose up -d --wait --wait-timeout 900 worker && compose up -d --wait --wait-timeout 300 api; }; then
+    echo "注意：接口、worker 没起来，运行 ${SELF} up" >&2
+    exit 1
+  fi
 }
 
 fetch_export() {
   local sum=${1:-} url=""
   [[ "$sum" =~ ^[0-9a-f]{64}$ ]] && [ "$#" -eq 1 ] \
-    || die "用法：echo '<清单链接>' | ${SELF} fetch-export <哈希>"
+    || die "用法：${SELF} fetch-export <哈希>，再按提示粘贴清单链接"
   [ -f "$SERVER/.env" ] || die "还没装（没有 ${SERVER}/.env）"
-  # 链接从标准输入读：不进命令行参数（别的用户 ps 看得到），也经环境变量传进容器
-  [ -t 0 ] && printf '粘贴清单链接，回车：'
-  IFS= read -r url || true
+  # 链接从标准输入读（终端里按提示粘贴，不显示）：不进命令行参数（别的用户 ps 看得到）、
+  # 不进 shell 历史；也经环境变量传进容器
+  if [ -t 0 ]; then
+    printf '粘贴清单链接（不显示），回车：'
+    IFS= read -rs url || true
+    echo
+  else
+    IFS= read -r url || true
+  fi
   url=${url%$'\r'}
   [[ "$url" =~ ^https://[A-Za-z0-9.-]+\.(tcb\.qcloud\.la|myqcloud\.com)/[!-~]*$ ]] \
     || die "清单链接不对（要是云托管导出脚本打印的那一行里的链接）"
@@ -560,8 +568,11 @@ import_export() {
   [ -f "$SERVER/.env" ] || die "还没装（没有 ${SERVER}/.env）"
   docker image inspect "youju-selfhost:$old" >/dev/null 2>&1 \
     || die "没有镜像 youju-selfhost:${old}（${BASE}/releases/${old} 还在的话，照手册重新构建这一版的镜像）"
+  [ -f "$EXPORT_DIR/fetch-complete" ] \
+    || die "下载还没全部完成（fetch-export 要看到 FETCH OK）：没下好的先重跑 fetch-export"
   local files=("$EXPORT_DIR"/backups/youju-*.jsonl.gz)
   [ -e "${files[0]}" ] || die "${EXPORT_DIR}/backups 里没有整库备份：先 fetch-export"
+  [ -f "$EXPORT_DIR/pay-records.jsonl.gz" ] || die "没有交易记录：先 fetch-export"
   [ "${#files[@]}" -eq 1 ] || die "${EXPORT_DIR}/backups 里不止一份备份，只留要归档的那一份"
   local name root_pw
   name=$(basename "${files[0]}")
@@ -574,12 +585,12 @@ import_export() {
     YOUJU_DATABASE_URL="mysql+pymysql://root:${root_pw}@mysql:3306/youju?charset=utf8mb4" \
     compose run --rm --no-deps -e YOUJU_DATABASE_URL -v "$EXPORT_DIR:/export:ro" worker \
     youju restore-drill --file "/export/backups/$name"
-  say "2/3 加密归档：用 .env 里的 age 公钥加密，存到服务器存储 archive/；配了异地备份再传一份"
-  compose run --rm --no-deps -v "$EXPORT_DIR:/export:ro" worker \
-    youju archive-backup --file "/export/backups/$name" --name "cloudrun-$name"
-  say "3/3 删掉明文备份和带链接的清单"
-  rm -f "$EXPORT_DIR/backups/$name" "$EXPORT_DIR/manifest.json"
-  echo "IMPORT OK archive/cloudrun-${name}.age"
+  say "2/3 加密存档：整库备份、交易记录分别用 .env 里的 age 公钥加密，存到服务器存储和异地的 archive/，"
+  say "    到期日写在文件名里（整库自备份起 30 天，交易记录自最早一笔下单起 3650 天），每天 archive-prune 到期删"
+  compose run --rm --no-deps -v "$EXPORT_DIR:/export:ro" worker youju archive-export --dir /export
+  say "3/3 删掉明文的整库备份、交易记录和带链接的清单"
+  rm -f "$EXPORT_DIR/backups/$name" "$EXPORT_DIR/pay-records.jsonl.gz" "$EXPORT_DIR/manifest.json"
+  echo "IMPORT OK"
 }
 
 takedowns() {

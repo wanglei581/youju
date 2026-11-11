@@ -2309,7 +2309,8 @@ def _cmd_export_fetch(args: argparse.Namespace) -> int:
         )
     print(
         f"共新下载 {report.bytes} 字节；整库备份 {report.backup or '没下好'}；"
-        f"下架清单 {report.takedowns} 个网址"
+        f"下架清单 {report.takedowns} 个网址；交易记录 {sum(report.pay_records.values())} 条；"
+        f"超过 190 天没导入的日志 {report.expired_logs} 个"
     )
     for path, reason in report.failed[:20]:
         print(f"  没下好：{path}（{reason}）")
@@ -2320,16 +2321,38 @@ def _cmd_export_fetch(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_archive_backup(args: argparse.Namespace) -> int:
+def _cmd_archive_export(args: argparse.Namespace) -> int:
+    from youju import cloudrun_fetch
+    from youju.backup import BackupError
+
+    try:
+        reports = cloudrun_fetch.archive_export(get_settings(), args.dir)
+    except (BackupError, cloudrun_fetch.FetchError) as exc:
+        print(f"存档失败：{exc}")
+        return 1
+    for report in reports:
+        print(
+            f"已加密存到本机存储和异地：{report.target}"
+            f"（{report.bytes} 字节，{report.expires} 到期删）"
+        )
+    return 0
+
+
+def _cmd_archive_prune(args: argparse.Namespace) -> int:
     from youju import offsite
     from youju.backup import BackupError
 
     try:
-        report = offsite.archive(get_settings(), args.file, args.name)
+        report = offsite.prune_archive(get_settings())
     except BackupError as exc:
-        print(f"归档失败：{exc}")
+        print(f"删到期存档失败：{exc}")
         return 1
-    print(f"已把 {args.file.name} 加密存到本机存储和异地：{report.target}（{report.bytes} 字节）")
+    for item in report.deleted:
+        print(f"已删到期存档：{item}")
+    print(
+        f"到期存档删了 {len(report.deleted)} 个，没到期的 {report.kept} 个"
+        "（记录在 archive/deletions.jsonl）"
+    )
     return 0
 
 
@@ -2982,14 +3005,18 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.set_defaults(func=_cmd_takedown_carry)
     p = sub.add_parser(
-        "archive-backup",
-        help="（首发前搬家，D-127）把云托管的最后一份整库备份用 age 公钥加密，"
-        "存到本机存储和异地 archive/"
-        "（交易记录留 3 年，不按天清理）",
+        "archive-export",
+        help="（首发前搬家，D-127）把下载好的整库备份、交易记录分别用 age 公钥加密，"
+        "存到本机存储和异地 archive/，到期日写进文件名（整库 30 天，交易记录 3650 天）",
     )
-    p.add_argument("--file", type=Path, required=True, help="备份文件（.jsonl.gz）")
-    p.add_argument("--name", required=True, help="存成的名字，如 cloudrun-youju-20261112.jsonl.gz")
-    p.set_defaults(func=_cmd_archive_backup)
+    p.add_argument("--dir", type=Path, required=True, help="export-fetch 下载到的目录")
+    p.set_defaults(func=_cmd_archive_export)
+    p = sub.add_parser(
+        "archive-prune",
+        help="（服务器，每天）删掉 archive/ 下到期的存档（本机存储和异地），"
+        "记进 archive/deletions.jsonl",
+    )
+    p.set_defaults(func=_cmd_archive_prune)
     p = sub.add_parser(
         "export-fetch",
         help="（首发前搬家，D-127）按云托管导出的清单下载：日志、附件副本进存储，"

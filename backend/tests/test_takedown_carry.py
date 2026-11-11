@@ -1,17 +1,14 @@
 """首发前搬家（D-127）：云托管上已下架的网址带到本机——清单格式、拦截表、整组下架、按网址挡住
-重新收录、核对、旧备份加密归档。"""
+重新收录、核对。"""
 
 import json
 from datetime import UTC, date, datetime
-from pathlib import Path
 
 import pytest
-from pydantic import SecretStr
 from sqlalchemy import func, select
 
-from youju import cli, offsite, takedown_carry
-from youju.backup import BackupError
-from youju.config import Settings, get_settings
+from youju import cli, takedown_carry
+from youju.config import get_settings
 from youju.crawler.listing import ListItem
 from youju.crawler.service import save_items
 from youju.models import Document, DocumentMerge, DocumentTakedownEvent, Source, TakedownBlock
@@ -188,66 +185,3 @@ def test_cli_apply_runs_only_on_the_public_master(tmp_path, monkeypatch, session
         get_settings.cache_clear()
     session.commit()  # 结束测试会话自己的事务，读到命令行那边提交的结果
     assert is_taken_down(session, doc.id)
-
-
-class _FakeS3:
-    def __init__(self):
-        self.files = {}
-
-    def put_file(self, path, local, *, headers=None):
-        self.files[path] = (Path(local).read_bytes(), headers)
-
-
-def _encrypt(source, target, recipient):
-    Path(target).write_bytes(b"sealed:" + recipient.encode() + b":" + Path(source).read_bytes())
-
-
-def test_archive_encrypts_old_backup_locally_and_offsite(tmp_path):
-    source = tmp_path / "youju-20261112.jsonl.gz"
-    source.write_bytes(b"backup")
-    settings = Settings(
-        _env_file=None,
-        hosting="self",
-        storage_backend="disk",
-        storage_dir=tmp_path / "store",
-        cloud_env="test-env",
-        offsite_age_recipient="age1" + "q" * 58,
-    )
-    stored = tmp_path / "store" / "archive" / "cloudrun-youju-20261112.jsonl.gz.age"
-    # 异地没配：不做（调用方归档完会删明文，之后补传不了）
-    fake = _FakeS3()
-    with pytest.raises(BackupError, match="异地备份还没配好"):
-        offsite.archive(
-            settings, source, "cloudrun-youju-20261112.jsonl.gz", backend=fake, encryptor=_encrypt
-        )
-    assert not stored.exists() and not fake.files
-    configured = settings.model_copy(
-        update={
-            "offsite_s3_endpoint": "https://cos.ap-shanghai.myqcloud.com",
-            "offsite_s3_region": "ap-shanghai",
-            "offsite_s3_bucket": "backup-1250000000",
-            "offsite_s3_access_key": SecretStr("ak"),
-            "offsite_s3_secret_key": SecretStr("sk"),
-        }
-    )
-    report = offsite.archive(
-        configured, source, "cloudrun-youju-20261112.jsonl.gz", backend=fake, encryptor=_encrypt
-    )
-    # 本机存储一份、异地 archive/ 一份（不在按天清理的 backups/ 下），低频存储
-    assert (report.target, report.offsite) == ("archive/cloudrun-youju-20261112.jsonl.gz.age", True)
-    assert stored.read_bytes().startswith(b"sealed:age1")
-    assert set(fake.files) == {"archive/cloudrun-youju-20261112.jsonl.gz.age"}
-    assert fake.files["archive/cloudrun-youju-20261112.jsonl.gz.age"][1] == {
-        "x-cos-storage-class": "STANDARD_IA"
-    }
-    for name in ("../x.jsonl.gz", "x.tar", ".hidden.jsonl.gz"):
-        with pytest.raises(BackupError):
-            offsite.archive(configured, source, name, backend=fake, encryptor=_encrypt)
-    with pytest.raises(BackupError):
-        offsite.archive(
-            configured.model_copy(update={"offsite_age_recipient": ""}),
-            source,
-            "cloudrun-youju-20261112.jsonl.gz",
-            backend=fake,
-            encryptor=_encrypt,
-        )

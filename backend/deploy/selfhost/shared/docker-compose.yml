@@ -4,8 +4,8 @@
 # - 接口、worker 只听本机回环地址的 18100、18101（装之前 youju-shared.sh check 确认没人占用）；
 # - 三个容器各设内存硬上限，合计 1.5G（MySQL 576M、接口 320M、worker 640M）；不许用交换区（不拖慢别的
 #   项目）；主机内存不够时内核先挑有据的进程停（oom_score_adj），不连累别的项目；
-# - worker 默认只写心跳、不跑定时任务（测试期没有用户数据）；上线前在 .env 里设
-#   YOUJU_CRONTAB=/app/backend/deploy/selfhost/server/crontab。
+# - worker 默认只写心跳、不跑定时任务（测试期没有用户数据；shared/crontab.idle，只多一条旧库存档的
+#   到期删除）；上线前在 .env 里设 YOUJU_CRONTAB=/app/backend/deploy/selfhost/server/crontab。
 # 都由 youju-shared.sh 调用，见 docs/部署/自建服务器.md 第十节（已有服务器）。
 name: youju-server
 
@@ -76,7 +76,7 @@ services:
     environment:
       YOUJU_ROLE: admin
       PORT: "8000"
-      YOUJU_CRONTAB: ${YOUJU_CRONTAB:-/app/backend/deploy/selfhost/crontab.idle}
+      YOUJU_CRONTAB: ${YOUJU_CRONTAB:-/app/backend/deploy/selfhost/shared/crontab.idle}
     ports:
       - "127.0.0.1:18101:8000"
     healthcheck:

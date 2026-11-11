@@ -18,6 +18,8 @@
 0 4 * * *  /app/backend/deploy/job.sh backup
 40 4 * * *  /app/backend/deploy/job.sh backup-verify
 10 5 * * *  /app/backend/deploy/job.sh offsite-backup
+# 首发前搬家（D-127）存的旧库存档到期删（整库自备份起 30 天、交易记录 3650 天，见 youju/offsite.py）
+50 5 * * *  /app/backend/deploy/job.sh archive-prune
 # 访问日志归档（网络日志留存不少于六个月）
 30 0 * * *  /app/backend/deploy/job.sh archive-logs
 0 9 * * *  /app/backend/deploy/job.sh daily-report

@@ -50,6 +50,8 @@ JOB_NAMES = OVERVIEW_JOBS + (
     "sync-push",
     "offsite-backup",
     "offsite-pull",
+    # 首发前搬家（D-127）的旧库存档到期删除（youju/offsite.py prune_archive）
+    "archive-prune",
 )
 # 每 5 分钟一次的外部健康检查（本机看服务器）不记运行记录，和 advisor-run 一样
 

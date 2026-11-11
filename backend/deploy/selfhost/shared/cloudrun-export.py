@@ -2,17 +2,21 @@
 
 线上镜像（迁移 0046）没有搬家用的命令，这个脚本只用镜像里已有的命令和函数：
 youju archive-logs / backup / backup-verify，backup.upload、backup._open_api，
-storage_list.bucket_of、list_objects，takedown.available_condition。
+storage_list.bucket_of、list_objects，takedown.available_condition，和那一版的表结构。
 
-按顺序做（不删、不改任何数据；只往对象存储写当天的备份、日志归档和 exports/ 下的两个文件）：
+按顺序做（不删、不改任何数据；只往对象存储写当天的备份、日志归档和 exports/ 下的三个文件）：
 1. youju archive-logs、youju backup、youju backup-verify（和每天定时任务做的一样）；
    --links-only 跳过这一步（清单里的链接过期了、只要重出一份清单时用）
 2. 列出 backups/（只要最新一份）、logs/、attachments/、advisor/out/ 下的文件和大小
 3. 下架清单 exports/takedowns-<时间>.jsonl：当前对用户不可见的文件（整组下架的每一份）的规范网址键、
    来源编号、下架时间、原因类别。不带备注、操作人、标题
-4. 给每个文件取 2 小时有效的下载链接，连同汇总数（只有数字）和不涉密的配置写成清单
+4. 交易记录 exports/pay-records-<时间>.jsonl.gz：订单、退款（在订单里）、支付流水、开票申请、
+   赠送天数、使用期、每日对账。隐私保护指引写的是这些记录"与账号断开，去标识化、限制访问"，
+   自下单起保存 retain_pay_orders_days（3650）天；这里照注销账号时（payments.anonymize、
+   rewards.anonymize）的口径对所有人做一遍，另外去掉开票的联系邮箱和个人抬头（就是姓名）
+5. 给每个文件取 2 小时有效的下载链接，连同汇总数（只有数字）和不涉密的配置写成清单
    exports/manifest-<时间>.json
-5. 打印一行给服务器网页终端用的命令（带清单的下载链接和 SHA-256）、各前缀的文件数和大小、汇总数
+6. 打印一行给服务器网页终端用的命令（带清单的下载链接和 SHA-256）、各前缀的文件数和大小、汇总数
 
 清单里有整库备份的下载链接：那一行命令只贴到服务器的网页终端，不发到聊天里。
 不打印任何单个文件的链接、密钥、openid。要复制的几行只有英文和数字（容器终端复制中文会乱码）。
@@ -21,7 +25,9 @@ storage_list.bucket_of、list_objects，takedown.available_condition。
 from __future__ import annotations
 
 import argparse
+import gzip
 import hashlib
+import hmac
 import json
 import subprocess
 import sys
@@ -36,16 +42,21 @@ import httpx
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, aliased
 
-from youju import backup, storage_list
+from youju import access_log, backup, storage_list
 from youju.config import get_settings
 from youju.db import create_mysql_engine
 from youju.models import (
+    AppKey,
     Document,
     DocumentMerge,
     DocumentTakedownEvent,
     InvoiceRequest,
+    PassReward,
+    PayEvent,
     PayOrder,
+    PayReconciliation,
     User,
+    WorkbenchPass,
 )
 from youju.takedown import available_condition
 
@@ -199,6 +210,11 @@ def download_links(
     return links
 
 
+def _utc(value: datetime) -> datetime:
+    """库里读出来的时间按 UTC 算（UTCDateTime 读出来本来就带时区；万一没带，不按容器时区换算）。"""
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
 def takedown_rows(session: Session) -> list[dict]:
     """当前对用户不可见的文件，每份一行。下架按归并组算（takedown.available_condition）：
     组里有一份下架，整组都不可见，组里每一份的网址都带上（本机收进来的可能是其中任何一份）；
@@ -231,7 +247,7 @@ def takedown_rows(session: Session) -> list[dict]:
             {
                 "url_key": row.url_key,
                 "origin_source_id": row.source_id,
-                "taken_down_at": stamp.astimezone(UTC).isoformat(),
+                "taken_down_at": _utc(stamp).isoformat(),
                 "reason": reason or "其他",
             }
         )
@@ -265,7 +281,7 @@ def summary(session: Session, takedown_docs: int) -> dict:
     }
     return {
         "users": count(User),
-        "last_visit": last_visit.astimezone(UTC).date().isoformat() if last_visit else None,
+        "last_visit": _utc(last_visit).date().isoformat() if last_visit else None,
         "orders": dict(sorted(orders.items())),
         "refunds": dict(sorted(refunds.items())),
         "invoices": count(InvoiceRequest),
@@ -299,6 +315,71 @@ def _ascii(value) -> str:
     return json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
 
 
+# 交易记录的表（顺序就是文件里的顺序）
+PAY_TABLES = (PayOrder, PayEvent, InvoiceRequest, PassReward, WorkbenchPass, PayReconciliation)
+_IDENTITY_WORDS = ("openid", "unionid")
+
+
+def _pseudonym(key: str | None, openid: str | None) -> str | None:
+    """和 access_log.log_uid 算法一样（访问日志里的去标识化编号）。密钥直接读，不调 log_key：
+    那个函数库里没有密钥时会新建一个，这个脚本不往库里写。"""
+    if not key or not openid:
+        return None
+    return hmac.new(bytes.fromhex(key), openid.encode(), hashlib.sha256).hexdigest()[:16]
+
+
+def _deidentify(table: str, row: dict, pseudonyms: dict[int, str | None]) -> dict:
+    user_id = row.pop("user_id", None)
+    if table == "pay_orders" and not row.get("pseudonym"):
+        row["pseudonym"] = pseudonyms.get(user_id) if user_id is not None else None
+    elif table == "pay_events" and isinstance(row.get("summary"), dict):
+        row["summary"] = {
+            k: v
+            for k, v in row["summary"].items()
+            if not any(word in str(k).lower() for word in _IDENTITY_WORDS)
+        }
+    elif table == "invoice_requests":
+        row.pop("email", None)  # 开出以后用不着联系邮箱
+        if row.get("title_type") != "company":
+            row["title"] = None  # 个人抬头就是姓名；单位抬头和税号留着对得上开出的发票
+    elif table == "pass_rewards" and row.get("ref_type") in ("user_first_batch", "user_referral"):
+        row["ref_id"] = None  # 记的是另一个人的用户编号
+    elif table == "workbench_passes":
+        row.pop("last_task_id", None)  # 指向这个人的任务
+    return row
+
+
+def pay_records(session: Session, retain_days: int) -> tuple[list[str], dict]:
+    """交易记录（去标识化）：第一行是说明（格式、保存天数、最早一笔订单的下单时间、各表条数），
+    后面每行 {"table": 表名, "row": 一行}。"""
+    key = session.scalar(select(AppKey.value).where(AppKey.name == access_log.KEY_NAME))
+    pseudonyms = {
+        user_id: _pseudonym(key, openid)
+        for user_id, openid in session.execute(select(User.id, User.openid))
+    }
+    lines: list[str] = []
+    counts: dict[str, int] = {}
+    for model in PAY_TABLES:
+        table = model.__table__
+        counts[table.name] = 0
+        for row in session.execute(select(table).order_by(table.c.id)).mappings():
+            data = {column: _plain(value) for column, value in row.items()}
+            lines.append(
+                _ascii({"table": table.name, "row": _deidentify(table.name, data, pseudonyms)})
+            )
+            counts[table.name] += 1
+    earliest = session.scalar(select(func.min(PayOrder.created_at)))
+    header = {
+        "format": "youju-pay-records",
+        "version": 1,
+        "created_at": datetime.now(UTC).isoformat(),
+        "retain_days": retain_days,
+        "earliest_order_at": _utc(earliest).isoformat() if earliest else None,
+        "counts": counts,
+    }
+    return [_ascii(header), *lines], header
+
+
 def _human(size: int) -> str:
     for unit in ("B", "KB", "MB", "GB"):
         if size < 1024 or unit == "GB":
@@ -319,14 +400,19 @@ def export(env: str, database_url: str, *, client: httpx.Client, settings, workd
         with Session(engine) as session:
             rows = takedown_rows(session)
             numbers = summary(session, len(rows))
+            pay_lines, pay_header = pay_records(session, settings.retain_pay_orders_days)
     finally:
         engine.dispose()
     takedowns = workdir / f"takedowns-{stamp}.jsonl"
     takedowns.write_text("".join(_ascii(row) + "\n" for row in rows), encoding="ascii")
     takedowns_path = f"exports/{takedowns.name}"
     takedowns_id = backup.upload(client, env, takedowns_path, takedowns, what="下架清单")
+    pay = workdir / f"pay-records-{stamp}.jsonl.gz"
+    pay.write_bytes(gzip.compress("".join(line + "\n" for line in pay_lines).encode(), mtime=0))
+    pay_path = f"exports/{pay.name}"
+    pay_id = backup.upload(client, env, pay_path, pay, what="交易记录")
     ids = [bucket.prefix + key for key, _ in files]
-    links = download_links(client, env, [*ids, takedowns_id])
+    links = download_links(client, env, [*ids, takedowns_id, pay_id])
     manifest = {
         "format": FORMAT,
         "version": 1,
@@ -344,6 +430,15 @@ def export(env: str, database_url: str, *, client: httpx.Client, settings, workd
             "sha256": hashlib.sha256(takedowns.read_bytes()).hexdigest(),
             "count": len(rows),
             "url": links[takedowns_id],
+        },
+        "pay_records": {
+            "path": pay_path,
+            "size": pay.stat().st_size,
+            "sha256": hashlib.sha256(pay.read_bytes()).hexdigest(),
+            "counts": pay_header["counts"],
+            "earliest_order_at": pay_header["earliest_order_at"],
+            "retain_days": pay_header["retain_days"],
+            "url": links[pay_id],
         },
         "summary": numbers,
         "config": config_values(settings),
@@ -372,21 +467,22 @@ def report(result: dict) -> None:
     backups = [i["path"] for i in manifest["files"] if i["path"].startswith("backups/")]
     print(f"  整库备份：{backups[0]}；迁移版本 {manifest['revision']}")
     print(f"  下架清单：{manifest['takedowns']['count']} 个网址")
+    counts = manifest["pay_records"]["counts"]
+    print(f"  交易记录（去标识化）：{'，'.join(f'{k} {v} 条' for k, v in counts.items())}")
     print(f"  不涉密的配置 {len(manifest['config'])} 项（在清单里，服务器上照着填）")
     total = sum(size for _, size in per_prefix.values())
     files = ",".join(f"{p.rstrip('/')}:{n}/{size}" for p, (n, size) in per_prefix.items())
     print("== 以下几行只有英文和数字，复制以它们为准")
     print(f"EXPORT OK files={files} total={total} revision={manifest['revision']}")
     print(f"SUMMARY {_ascii(manifest['summary'])}")
+    # 链接不写进命令：命令行参数别的用户看得到，命令还会进 shell 历史；运行后在提示里粘贴（不显示）
+    print("== 在服务器的网页终端里先运行这一行：")
+    print(f"sudo /opt/youju/bin/youju-shared.sh fetch-export {result['sha256']}")
     print(
-        "== 下面这一行只贴到服务器的网页终端（清单里有整库备份的下载链接，2 小时内有效），"
-        "不发到聊天里："
+        "== 提示'粘贴清单链接'时贴下面这一行（清单里有整库备份的下载链接，2 小时内有效；"
+        "只贴到那里，不发到聊天里）："
     )
-    # 链接经标准输入给服务器脚本：不进命令行参数（共用服务器上别的用户看得到）
-    print(
-        f"echo '{result['url']}' | sudo /opt/youju/bin/youju-shared.sh fetch-export "
-        f"{result['sha256']}"
-    )
+    print(result["url"])
 
 
 def main(argv: list[str] | None = None, *, runner=subprocess.run) -> int:

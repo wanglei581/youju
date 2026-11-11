@@ -161,9 +161,9 @@ def test_mask_ip():
     assert mask_ip(None) is None
 
 
-@pytest.mark.parametrize("which", ["server", "local"])
+@pytest.mark.parametrize("which", ["server/crontab", "local/crontab", "shared/crontab.idle"])
 def test_selfhost_crontabs_only_use_known_jobs(which):
-    text_ = (SELFHOST / which / "crontab").read_text(encoding="utf-8")
+    text_ = (SELFHOST / which).read_text(encoding="utf-8")
     names = _job_names_in(_cron_commands(text_))
     assert names, which
     assert names <= set(JOB_NAMES) | {"advisor-run", "pay-run", "ai-heartbeat", "ai-eligibility"}
@@ -191,6 +191,9 @@ def test_user_data_jobs_never_run_on_the_local_machine():
         "check-links",
     }
     assert {"sync-push", "backup"} <= local and {"backup", "offsite-backup", "notify"} <= server
+    # 旧库存档到期删除（D-127）：只在服务器上跑；测试期的共用服务器也跑（备份副本最长 30 天）
+    idle = _job_names_in(_cron_commands((SELFHOST / "shared" / "crontab.idle").read_text("utf-8")))
+    assert "archive-prune" in server and idle == {"archive-prune"} and "archive-prune" not in local
 
 
 def test_reclassify_is_skipped_on_the_replica(monkeypatch, capsys):
@@ -365,7 +368,7 @@ def test_shared_server_compose_stays_small_and_local():
     ]
     assert "image: caddy" not in text and '"80:80"' not in text and '"443:443"' not in text
     # 测试期 worker 只写心跳，上线前在 .env 里换成服务器的定时任务表
-    assert "${YOUJU_CRONTAB:-/app/backend/deploy/selfhost/crontab.idle}" in services["worker"]
+    assert "${YOUJU_CRONTAB:-/app/backend/deploy/selfhost/shared/crontab.idle}" in services["worker"]
 
 
 def test_shared_server_nginx_site_only_forwards_app_paths():

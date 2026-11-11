@@ -13,12 +13,15 @@ import select
 import shutil
 import subprocess
 import time
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import httpx
 import pytest
+from pydantic import SecretStr
 
-from youju import cli, cloudrun_fetch, storage
+from youju import cli, cloudrun_fetch, offsite, storage
+from youju.backup import BackupError
 from youju.config import Settings, get_settings
 
 SELFHOST = Path(__file__).resolve().parents[1] / "deploy" / "selfhost"
@@ -57,13 +60,36 @@ class Remote:
         return httpx.Response(200, content=self.files[path])
 
 
+PAY = _gz(
+    json.dumps(
+        {
+            "format": "youju-pay-records",
+            "version": 1,
+            "created_at": "2026-11-12T08:00:00+00:00",
+            "retain_days": 3650,
+            "earliest_order_at": "2026-10-29T16:30:00+00:00",
+            "counts": {"pay_orders": 1},
+        }
+    )
+    + "\n"
+    + json.dumps({"table": "pay_orders", "row": {"id": 1, "out_trade_no": "T1"}})
+    + "\n"
+)
+
+
 def _export(
-    remote: Remote, files: dict[str, bytes], *, sizes=None, takedowns=b'{"url_key":"a.gov.cn/1"}\n'
+    remote: Remote,
+    files: dict[str, bytes],
+    *,
+    sizes=None,
+    takedowns=b'{"url_key":"a.gov.cn/1"}\n',
+    pay=PAY,
 ):
     """按导出脚本的格式造一份清单，返回（链接，SHA-256）。"""
     sizes = sizes or {}
     remote.files.update(files)
     remote.files["exports/takedowns-1.jsonl"] = takedowns
+    remote.files["exports/pay-records-1.jsonl.gz"] = pay
     manifest = {
         "format": "youju-cloudrun-export",
         "version": 1,
@@ -80,6 +106,15 @@ def _export(
             "count": 1,
             "url": remote.url("exports/takedowns-1.jsonl"),
         },
+        "pay_records": {
+            "path": "exports/pay-records-1.jsonl.gz",
+            "size": len(pay),
+            "sha256": _sha(pay),
+            "counts": {"pay_orders": 1},
+            "earliest_order_at": "2026-10-29T16:30:00+00:00",
+            "retain_days": 3650,
+            "url": remote.url("exports/pay-records-1.jsonl.gz"),
+        },
         "summary": {"users": 3},
         "config": {"YOUJU_AI_MODEL_FILING": "备案号"},
     }
@@ -93,6 +128,8 @@ def test_fetch_checks_and_imports_files(tmp_path):
     good = {
         "backups/youju-20261112.jsonl.gz": _gz('{"format":"youju-backup"}\n'),
         "logs/access-20261110.jsonl.gz": _gz('{"path":"/api/v1/x"}\n'),
+        # 超过 190 天的访问日志不导入（到期的由服务器每天的 archive-logs 接着删）
+        "logs/access-20260501.jsonl.gz": _gz('{"path":"/api/v1/old"}\n'),
         f"attachments/{_sha(pdf)}.pdf": pdf,
         "advisor/out/0123456789abcdef/7.xlsx": b"xlsx",
     }
@@ -105,7 +142,17 @@ def test_fetch_checks_and_imports_files(tmp_path):
     )
     store = storage.DiskBackend(tmp_path / "store")
     work = tmp_path / "export"
-    report = cloudrun_fetch.fetch(remote.client, url, sha, work, store=store, say=lambda _: None)
+    today = date(2026, 11, 12)
+    report = cloudrun_fetch.fetch(
+        remote.client, url, sha, work, store=store, say=lambda _: None, today=today
+    )
+    assert report.expired_logs == 1 and not store.exists("logs/access-20260501.jsonl.gz")
+    assert "logs/access-20260501.jsonl.gz" not in remote.gets
+    # 有没下好的：不写完成标记（import-export 看不到它就不存档、不删清单）
+    assert not (work / "fetch-complete").exists()
+    assert json.loads((work / "summary.json").read_text(encoding="utf-8"))["complete"] is False
+    assert (work / "pay-records.jsonl.gz").read_bytes() == PAY
+    assert report.pay_records == {"pay_orders": 1}
     # 不对的两个不写进存储、记下来；别的照常下载
     assert sorted(path for path, _ in report.failed) == sorted([bad_hash, broken_gz])
     assert not store.exists(bad_hash) and not store.exists(broken_gz)
@@ -131,10 +178,21 @@ def test_fetch_checks_and_imports_files(tmp_path):
     # 重跑：已经下好的跳过（不再下载），只再试没下好的
     remote.gets.clear()
     remote.files[bad_hash] = pdf  # 换成对的内容也不行：文件名里的哈希对不上
-    again = cloudrun_fetch.fetch(remote.client, url, sha, work, store=store, say=lambda _: None)
+    again = cloudrun_fetch.fetch(
+        remote.client, url, sha, work, store=store, say=lambda _: None, today=today
+    )
     assert again.skipped == {"backups/": 1, "logs/": 1, "attachments/": 1}
     assert set(remote.gets) == {bad_hash, broken_gz}
     assert sorted(path for path, _ in again.failed) == sorted([bad_hash, broken_gz])
+    assert not (work / "fetch-complete").exists()
+    # 重出一份清单（坏的两个已经不在里面）：全部下好才写完成标记
+    remote2 = Remote({})
+    url2, sha2 = _export(remote2, good)
+    done = cloudrun_fetch.fetch(
+        remote2.client, url2, sha2, work, store=store, say=lambda _: None, today=today
+    )
+    assert not done.failed and (work / "fetch-complete").read_text().startswith(sha2)
+    assert json.loads((work / "summary.json").read_text(encoding="utf-8"))["complete"] is True
 
 
 def test_fetch_refuses_wrong_manifest_and_reports_expired_links(tmp_path):
@@ -353,13 +411,32 @@ def test_shared_fetch_export_takes_link_on_stdin(tmp_path):
     assert (tmp_path / "export").stat().st_mode & 0o777 == 0o700
 
 
-@needs_bash
-def test_shared_import_export_drills_with_old_image_then_archives(tmp_path):
-    _server_env(tmp_path, "MYSQL_ROOT_PASSWORD=r00tpw\n")
+def _downloaded(tmp_path: Path, *, complete: bool = True) -> Path:
     backups = tmp_path / "export" / "backups"
     backups.mkdir(parents=True)
     (backups / "youju-20261112.jsonl.gz").write_bytes(b"x")
+    (tmp_path / "export" / "pay-records.jsonl.gz").write_bytes(b"p")
     (tmp_path / "export" / "manifest.json").write_text("{}", encoding="utf-8")
+    if complete:
+        (tmp_path / "export" / "fetch-complete").write_text("x\n", encoding="utf-8")
+    return backups
+
+
+@needs_bash
+def test_shared_import_export_needs_a_complete_fetch(tmp_path):
+    _server_env(tmp_path, "MYSQL_ROOT_PASSWORD=r00tpw\n")
+    backups = _downloaded(tmp_path, complete=False)
+    done = _bash(tmp_path, "import_export a79a0042")
+    assert done.returncode == 1 and "下载还没全部完成" in done.stderr
+    assert not [c for c in _calls(tmp_path) if c.startswith("compose")]
+    assert (backups / "youju-20261112.jsonl.gz").exists()
+    assert (tmp_path / "export" / "manifest.json").exists()
+
+
+@needs_bash
+def test_shared_import_export_drills_with_old_image_then_archives(tmp_path):
+    _server_env(tmp_path, "MYSQL_ROOT_PASSWORD=r00tpw\n")
+    backups = _downloaded(tmp_path)
     done = _bash(tmp_path, "import_export a79a0042")
     assert done.returncode == 0, done.stderr
     calls = _calls(tmp_path)
@@ -372,26 +449,24 @@ def test_shared_import_export_drills_with_old_image_then_archives(tmp_path):
     assert "image=youju-selfhost:a79a0042" in drill
     assert "db=mysql+pymysql://root:r00tpw@mysql:3306/youju?charset=utf8mb4" in drill
     assert "r00tpw" not in drill.split(" | ")[0]
-    assert "youju archive-backup --file /export/backups/youju-20261112.jsonl.gz" in archive
-    assert "--name cloudrun-youju-20261112.jsonl.gz" in archive and "image= " in archive
-    # 明文备份和带链接的清单删掉
+    assert "youju archive-export --dir /export |" in archive and "image= " in archive
+    # 明文的整库备份、交易记录和带链接的清单删掉
     assert not (backups / "youju-20261112.jsonl.gz").exists()
+    assert not (tmp_path / "export" / "pay-records.jsonl.gz").exists()
     assert not (tmp_path / "export" / "manifest.json").exists()
-    assert "IMPORT OK archive/cloudrun-youju-20261112.jsonl.gz.age" in done.stdout
+    assert "IMPORT OK" in done.stdout
 
 
 @needs_bash
 def test_shared_import_export_stops_when_drill_fails(tmp_path):
     _server_env(tmp_path, "MYSQL_ROOT_PASSWORD=r00tpw\n")
-    backups = tmp_path / "export" / "backups"
-    backups.mkdir(parents=True)
-    (backups / "youju-20261112.jsonl.gz").write_bytes(b"x")
+    backups = _downloaded(tmp_path)
     log = tmp_path / "calls.log"
     failing = f'compose() {{ echo "compose $*" >> "{log}"; [ "$1" != run ]; }}'
     done = _bash(tmp_path, "import_export a79a0042", setup=failing)
     assert done.returncode != 0
     calls = _calls(tmp_path)
-    assert not any("archive-backup" in c for c in calls)  # 试恢复不过就不归档、不删明文
+    assert not any("archive-export" in c for c in calls)  # 试恢复不过就不存档、不删明文
     assert (backups / "youju-20261112.jsonl.gz").exists()
     assert calls[-1].startswith(
         "compose up -d --wait --wait-timeout 300 api"
@@ -585,3 +660,147 @@ def test_shared_plain_config_and_config_from_export(tmp_path, monkeypatch):
     assert settings.template_deadline == {"id": "abc", "page": "pages/detail/detail"}
     assert settings.xpay_ios_values == ["ios"] and settings.pay_enabled is True
     assert settings.xpay_price_pass == 2900 and settings.ai_model_label == "通义千问"
+
+
+# ---- 存档：到期日写进文件名，到期自动删、留记录 ----
+
+
+class FakeS3:
+    def __init__(self):
+        self.files: dict[str, tuple[bytes, dict | None]] = {}
+
+    def put_file(self, path, local, *, headers=None):
+        self.files[path] = (Path(local).read_bytes(), headers)
+
+    def list(self, prefix):
+        return [
+            storage.StoredObject(key, datetime(2026, 11, 12, tzinfo=UTC), len(data))
+            for key, (data, _) in sorted(self.files.items())
+            if key.startswith(prefix)
+        ]
+
+    def delete(self, path):
+        self.files.pop(path, None)
+
+
+def _seal(source, target, recipient):
+    Path(target).write_bytes(b"sealed:" + recipient.encode() + b":" + Path(source).read_bytes())
+
+
+def _archive_settings(tmp_path, *, offsite_ready=True):
+    settings = Settings(
+        _env_file=None,
+        hosting="self",
+        storage_backend="disk",
+        storage_dir=tmp_path / "store",
+        cloud_env="test-env",
+        offsite_age_recipient="age1" + "q" * 58,
+    )
+    if not offsite_ready:
+        return settings
+    return settings.model_copy(
+        update={
+            "offsite_s3_endpoint": "https://cos.ap-shanghai.myqcloud.com",
+            "offsite_s3_region": "ap-shanghai",
+            "offsite_s3_bucket": "backup-1250000000",
+            "offsite_s3_access_key": SecretStr("ak"),
+            "offsite_s3_secret_key": SecretStr("sk"),
+        }
+    )
+
+
+def test_archive_names_files_by_expiry_and_needs_offsite(tmp_path):
+    source = tmp_path / "youju-20261112.jsonl.gz"
+    source.write_bytes(b"backup")
+    today = date(2026, 11, 12)
+    fake = FakeS3()
+    # 异地没配：不做（调用方存完会删明文，之后补传不了）
+    with pytest.raises(BackupError, match="异地备份还没配好"):
+        offsite.archive(
+            _archive_settings(tmp_path, offsite_ready=False),
+            source,
+            "cloudrun-youju-20261112",
+            date(2026, 12, 12),
+            today=today,
+            backend=fake,
+            encryptor=_seal,
+        )
+    assert not fake.files and not (tmp_path / "store" / "archive").exists()
+    settings = _archive_settings(tmp_path)
+    report = offsite.archive(
+        settings,
+        source,
+        "cloudrun-youju-20261112",
+        date(2026, 12, 12),
+        today=today,
+        backend=fake,
+        encryptor=_seal,
+    )
+    target = "archive/cloudrun-youju-20261112.expires-20261212.jsonl.gz.age"
+    assert (report.target, report.expires) == (target, date(2026, 12, 12))
+    assert (tmp_path / "store" / target).read_bytes().startswith(b"sealed:age1")
+    assert fake.files[target][1] == {"x-cos-storage-class": "STANDARD_IA"}
+    for stem, expires in (("../x", date(2026, 12, 12)), ("a.b", date(2026, 12, 12)), ("ok", today)):
+        with pytest.raises(BackupError):
+            offsite.archive(
+                settings, source, stem, expires, today=today, backend=fake, encryptor=_seal
+            )
+
+
+def test_archive_export_keeps_backup_30_days_and_pay_records_3650(tmp_path):
+    work = tmp_path / "export"
+    (work / "backups").mkdir(parents=True)
+    (work / "backups" / "youju-20261112.jsonl.gz").write_bytes(b"backup")
+    (work / "pay-records.jsonl.gz").write_bytes(PAY)
+    fake = FakeS3()
+    reports = cloudrun_fetch.archive_export(
+        _archive_settings(tmp_path), work, today=date(2026, 11, 13), backend=fake, encryptor=_seal
+    )
+    # 整库：自备份那天起 30 天；交易记录：最早一笔下单（北京时间 10-30）起 3650 天
+    assert [r.target for r in reports] == [
+        "archive/cloudrun-youju-20261112.expires-20261212.jsonl.gz.age",
+        "archive/cloudrun-pay-records-20261112.expires-20361027.jsonl.gz.age",
+    ]
+    assert set(fake.files) == {r.target for r in reports}
+    bad = gzip.compress(json.dumps({"format": "youju-pay-records", "version": 1}).encode() + b"\n")
+    (work / "pay-records.jsonl.gz").write_bytes(bad)
+    with pytest.raises(cloudrun_fetch.FetchError, match="说明行"):
+        cloudrun_fetch.archive_export(
+            _archive_settings(tmp_path),
+            work,
+            today=date(2026, 11, 13),
+            backend=fake,
+            encryptor=_seal,
+        )
+
+
+def test_prune_archive_deletes_expired_on_both_sides_and_records_it(tmp_path):
+    settings = _archive_settings(tmp_path)
+    fake = FakeS3()
+    store = storage.DiskBackend(tmp_path / "store")
+    names = {
+        "archive/cloudrun-youju-20261112.expires-20261212.jsonl.gz.age",
+        "archive/cloudrun-pay-records-20261112.expires-20361027.jsonl.gz.age",
+    }
+    blob = tmp_path / "blob"
+    blob.write_bytes(b"sealed")
+    for name in names:
+        store.put_file(name, blob)
+        fake.put_file(name, blob)
+    store.put_file("archive/readme.txt", blob)  # 不是存档的文件名：不动
+    early = offsite.prune_archive(settings, today=date(2026, 12, 11), backend=fake)
+    assert (early.deleted, early.kept) == ([], 4)
+    report = offsite.prune_archive(settings, today=date(2026, 12, 12), backend=fake)
+    expired = "archive/cloudrun-youju-20261112.expires-20261212.jsonl.gz.age"
+    assert report.deleted == [f"local:{expired}", f"offsite:{expired}"]
+    assert not store.exists(expired) and expired not in fake.files
+    assert store.exists("archive/readme.txt") and len(fake.files) == 1
+    record = tmp_path / "store" / "archive" / "deletions.jsonl"
+    rows = [json.loads(line) for line in record.read_text(encoding="utf-8").splitlines()]
+    assert [(r["where"], r["path"], r["expires"]) for r in rows] == [
+        ("local", expired, "2026-12-12"),
+        ("offsite", expired, "2026-12-12"),
+    ]
+    # 第二天再跑：没有可删的，记录不变
+    again = offsite.prune_archive(settings, today=date(2026, 12, 13), backend=fake)
+    assert again.deleted == [] and len(record.read_text(encoding="utf-8").splitlines()) == 2
