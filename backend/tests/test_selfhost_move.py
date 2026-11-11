@@ -547,9 +547,11 @@ def test_local_carry_takedowns_checks_hash_before_applying(tmp_path):
     )
     assert wrong.returncode == 1 and "SHA-256 对不上" in wrong.stderr
     assert not (tmp_path / "docker.log").exists() and not (tmp_path / "takedowns.jsonl").exists()
+    # 服务器 takedowns 每段第一行的中文说明一起贴进来也行（只留 base64 的行）
+    pasted = "下架清单 1 个网址；SHA-256 …；共 1 段，第 1 段：\n" + blob
     done = subprocess.run(
         ["bash", script, _sha(listing.encode())],
-        input=blob.replace("\n", "\r\n"),
+        input=pasted.replace("\n", "\r\n"),
         capture_output=True,
         text=True,
         env=env,
@@ -557,11 +559,12 @@ def test_local_carry_takedowns_checks_hash_before_applying(tmp_path):
     assert done.returncode == 0, done.stderr
     assert (tmp_path / "takedowns.jsonl").read_text(encoding="utf-8") == listing
     log = (tmp_path / "docker.log").read_text(encoding="utf-8").splitlines()
-    assert [line.split()[-3:] for line in log] == [
+    assert [line.split()[-3:] for line in log[:2]] == [
         ["apply", "--file", "/move/takedowns.jsonl"],
         ["check", "--file", "/move/takedowns.jsonl"],
     ]
-    assert all(line.startswith("compose run --rm --no-deps -v ") for line in log)
+    assert all(line.startswith("compose run --rm --no-deps -v ") for line in log[:2])
+    assert log[2] == "compose exec -T worker youju sync-push"  # 马上推一次
 
 
 def test_export_paste_block_is_ascii_and_decodes_to_the_script(tmp_path):
