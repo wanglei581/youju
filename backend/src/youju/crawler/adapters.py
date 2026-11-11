@@ -7,6 +7,9 @@ docs/数据来源/全国覆盖/集约化平台盘点.md）。
 规矩和抓页面一样：
 - 只用页面自己声明的、同一网站上的公开接口，只发 GET；照常遵守 robots.txt、同一网站间隔 3 秒；
 - 只认白名单里的接口路径，不拼别的地址；要登录、签名、验证码的接口一律不碰。
+- 读取护栏（D-128）：接口返回不是成功、返回里带权限要求（roles、permissions 一类字段不为空）、
+  要登录或验证码、网站明确拒绝（HTTP 401/403/412/521、robots 禁止）的，一律记"不能抓"、不读
+  （api_refusal 给出原因；api_html 遇到不是成功或带权限要求的返回只给空串）。
 
 现有适配器：
 - 大汉 jpaas（浙江等省的集约化平台）：<script src=".../unitbuild.js"
@@ -82,16 +85,114 @@ def find_unit_apis(html: str, page_url: str) -> list[ListApi]:
 
 
 def api_html(api: ListApi, text: str) -> str:
-    """接口返回的内容里列表那段 HTML；不是预期格式返回空串。"""
+    """接口返回的内容里列表那段 HTML。不是预期格式，或按读取护栏（D-128）不该读的
+    （返回不是成功、带权限要求）都返回空串。"""
     if api.adapter == "大汉jpaas":
-        try:
-            data = json.loads(text)
-        except ValueError:
+        payload = _json_payload(text)
+        if payload is None or _payload_refusal(payload):
             return ""
-        inner = data.get("data") if isinstance(data, dict) else None
+        inner = payload.get("data")
         html = inner.get("html") if isinstance(inner, dict) else None
         return html if isinstance(html, str) else ""
     return ""
+
+
+# 抓取状态：列表接口被读取护栏（D-128）拦下。和 robots 禁止一样记"不能抓"、停抓
+LIST_API_REFUSED = "list_api_refused"
+# 网站明确拒绝或要求登录的 HTTP 状态（和盘点的防护判断一致）
+_REFUSE_HTTP = frozenset({401, 403, 412, 521})
+# 跳转去的网址像登录、验证页面（主机名、路径、参数里的整词）
+_LOGIN_URL = re.compile(
+    r"(?:^|[/_.?=&-])(?:login|logon|signin|sso|cas|passport|oauth2?|authorize|captcha|"
+    r"verify(?:code)?)(?:$|[/_.?=&-])",
+    re.I,
+)
+# 返回内容像登录、验证码页面（只看不是成功结果的返回，不看列表本身：通知标题里也会有"验证码"）
+_LOGIN_TEXT = re.compile(
+    r"请(?:先)?登录|未登录|重新登录|登录(?:超时|失效|过期)|用户登录|身份认证|验证码|滑块|"
+    r"人机验证|安全验证|captcha|geetest|type\s*=\s*[\"']?password",
+    re.I,
+)
+# 权限一类字段：不为空就说明这段内容有阅读权限要求
+_PERMISSION_KEY = re.compile(
+    r"^(?:roles?|permissions?|authorit(?:y|ies)|privileges?|(?:need|require)s?_?login|"
+    r"login_?required|auth(?:orization)?_?required)$",
+    re.I,
+)
+
+
+def _json_payload(text: str) -> dict | None:
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _permission_fields(payload: dict) -> list[str]:
+    """返回里不为空的权限一类字段（顶层和 data 里各看一层）。"""
+    inner = payload.get("data")
+    found = []
+    for prefix, obj in (("", payload), ("data.", inner if isinstance(inner, dict) else {})):
+        for key, value in obj.items():
+            empty = value is None or value is False or value in ("", 0, [], {})
+            if isinstance(key, str) and _PERMISSION_KEY.match(key) and not empty:
+                found.append(prefix + key)
+    return found
+
+
+def _payload_refusal(payload: dict) -> str:
+    """接口 JSON 返回本身的护栏：不是成功、带权限要求时给原因；可以读给空串。"""
+    success, code = payload.get("success"), str(payload.get("code", "200"))
+    if success is not True or code != "200":
+        message = str(payload.get("message") or "").strip()[:40]
+        if _LOGIN_TEXT.search(message):
+            return f"列表接口要登录或验证码（{message}）"
+        parts = []
+        if success is not True:
+            flag = json.dumps(success, ensure_ascii=False)
+            parts.append("没有成功标志" if success is None else f"success={flag}")
+        if code != "200":
+            parts.append(f"code={code}")
+        if message:
+            parts.append(message)
+        return f"列表接口返回不是成功（{'，'.join(parts)}）"
+    fields = _permission_fields(payload)
+    if fields:
+        return f"列表接口返回带权限要求（{'、'.join(fields)} 不为空）"
+    return ""
+
+
+def _url_words(url: str) -> str:
+    parts = urlsplit(url)
+    return f"{parts.netloc}{parts.path}?{parts.query}"
+
+
+def api_refusal(api: ListApi, result) -> str:
+    """读取护栏（D-128）：列表接口这次的返回要不要记"不能抓"、不读。给原因；可以读给空串。
+
+    result 是抓取结果（FetchResult：status、http_status、final_url、text）。网络不通、超时、
+    5xx 这类"这次没取到"不算，照常记失败、下次再试。"""
+    if api.adapter != "大汉jpaas":
+        return ""
+    status = getattr(result, "status", "")
+    http_status = getattr(result, "http_status", None)
+    if status == "robots_disallowed":
+        return "列表接口 robots.txt 禁止"
+    if http_status in _REFUSE_HTTP:
+        return f"列表接口 HTTP {http_status}：拒绝访问或要求登录"
+    final = getattr(result, "final_url", None) or api.url
+    if final != api.url and _LOGIN_URL.search(_url_words(final)):
+        return "列表接口跳到登录或验证页面"
+    if status != "ok":
+        return ""
+    text = getattr(result, "text", "") or ""
+    payload = _json_payload(text)
+    if payload is None:
+        if _LOGIN_TEXT.search(text[:20000]):
+            return "列表接口要登录或验证码"
+        return "列表接口返回不是成功（不是预期的格式）"
+    return _payload_refusal(payload)
 
 
 _TREE = re.compile(r"""treeStr\s*=\s*(["'])(\[.*?\])\1\s*;""", re.S)

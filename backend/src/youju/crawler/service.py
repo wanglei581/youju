@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from youju.categories import doc_category
 from youju.classify import doc_kind
-from youju.crawler.adapters import api_html, find_list_api
+from youju.crawler.adapters import LIST_API_REFUSED, api_html, api_refusal, find_list_api
 from youju.crawler.fetcher import FetchResult
 from youju.crawler.listing import ListItem, extract_items
 from youju.crawler.urls import host_of, public_url, url_key
@@ -115,7 +115,8 @@ def _update_health(
         source.last_error = None
         return
     source.last_error = error
-    if status == "robots_disallowed":
+    if status in ("robots_disallowed", LIST_API_REFUSED):
+        # robots 禁止、列表接口被读取护栏（D-128）拦下：记不能抓、停抓，不再计失败次数
         source.health = "blocked"
         return
     source.consecutive_failures = (source.consecutive_failures or 0) + 1
@@ -160,6 +161,7 @@ class _AdapterResult:
     items: list[ListItem]
     adapter: str | None = None  # 用了哪个平台适配器（认出了列表接口才有）
     fetch: FetchResult | None = None  # 接口没取到时的抓取结果
+    refused: str = ""  # 读取护栏（D-128）拦下的原因：记"不能抓"、不读
 
 
 def _items_via_adapter(
@@ -170,6 +172,11 @@ def _items_via_adapter(
     if api is None:
         return _AdapterResult([])
     result = fetcher.fetch(api.url)
+    if result.status == "robots_disallowed":
+        return _AdapterResult([], api.adapter, result)  # 照旧按 robots 禁止记
+    refused = api_refusal(api, result)
+    if refused:
+        return _AdapterResult([], api.adapter, result, refused)
     if result.status != "ok":
         return _AdapterResult([], api.adapter, result)
     html = api_html(api, result.text)
@@ -206,6 +213,12 @@ def check_source(
                 first_via_adapter = parser_config.get("list_api") != via.adapter
                 if first_via_adapter:
                     parser_config = {**parser_config, "list_api": via.adapter}
+            elif via.refused and not items:
+                # 读取护栏（D-128）：接口返回不是成功、带权限要求、要登录或验证码、明确拒绝
+                # → 记不能抓、停抓
+                status, error = LIST_API_REFUSED, f"列表接口（{via.adapter}）：{via.refused}"
+                if via.fetch is not None and via.fetch.http_status:
+                    result = FetchResult(url, "http_error", http_status=via.fetch.http_status)
             elif via.fetch is not None and not items:
                 # 列表接口被 robots 禁止或被拒：照实记，不当成"改版认不出"（以后也不能去绕）
                 status, error = via.fetch.status, f"列表接口（{via.adapter}）：{via.fetch.error}"

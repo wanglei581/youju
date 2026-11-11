@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import date
 
-from youju.crawler.adapters import api_html, find_list_api
+from youju.crawler.adapters import api_html, api_refusal, find_list_api
 from youju.crawler.listing import extract_items
 from youju.crawler.urls import host_of
 from youju.govsites.inventory import OPTIONAL_DEPTS, STANDARD_DEPTS, XXGK_TAG, DeptRow
@@ -128,6 +128,12 @@ def check_one(cache: PageCache, col: ColumnCheck, today: date) -> ColumnCheck:
         api = find_list_api(r.text, final)
         if api is not None:
             ar = cache.get(api.url)
+            refused = api_refusal(api, ar)
+            if refused:
+                # 读取护栏（D-128）：接口返回不是成功、带权限要求、要登录或验证码、明确拒绝
+                # → 记不能抓、不读
+                col.result, col.reason = BLOCKED, f"{refused}（D-128）"
+                return col
             html = api_html(api, ar.text) if ar.status == "ok" else ""
             via = extract_items(html, api.base_url, today=today) if html else []
             if len(via) > len(items):

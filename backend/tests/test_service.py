@@ -282,3 +282,65 @@ def test_blocked_list_api_is_recorded_not_parse_empty(session) -> None:
     assert "列表接口" in check.error
     session.refresh(source)
     assert source.health == "blocked"
+
+
+JPAAS_API = (
+    "https://kjt.zj.gov.cn/api-gateway/jpaas-publish-server/front/page/build/unit?parseType=bulidstatic"
+    "&webId=3387&tplSetId=T1&pageType=column&tagId=%E5%BD%93%E5%89%8D%E6%A0%8F%E7%9B%AElist"
+    "&editType=null&pageId=1229225203"
+)
+
+
+def _check_with_api(session, api_result: FetchResult):
+    url = "https://kjt.zj.gov.cn/col/col1229225203/index.html"
+    source = make_source(session, url)
+    fetcher = FakeFetcher({url: [page(url, JPAAS_PAGE)], JPAAS_API: [api_result]})
+    check = check_source(session, source, fetcher)
+    session.refresh(source)
+    docs = session.scalar(select(func.count()).select_from(Document))
+    return check, source, docs
+
+
+def test_list_api_not_success_is_refused_and_crawling_stops(session) -> None:
+    """读取护栏（D-128）：接口返回不是成功 → 记不能抓（和 robots 禁止一样停抓），不读。"""
+    body = '{"success":false,"code":"200","message":"","data":{}}'
+    check, source, docs = _check_with_api(session, page(JPAAS_API, body))
+    assert (check.status, check.items_found, docs) == ("list_api_refused", 0, 0)
+    assert "列表接口" in check.error and "不是成功" in check.error
+    assert source.health == "blocked"
+
+
+def test_list_api_with_permission_fields_is_not_read(session) -> None:
+    body = JPAAS_JSON.replace('{"success":true,', '{"success":true,"roles":["dept"],')
+    check, source, docs = _check_with_api(session, page(JPAAS_API, body))
+    assert (check.status, docs) == ("list_api_refused", 0)
+    assert "roles" in check.error
+    assert source.health == "blocked"
+
+
+def test_list_api_redirected_to_login_is_refused(session) -> None:
+    login = "https://kjt.zj.gov.cn/jpaas-jsam-server/login?redirect=1"
+    form = '<form><input type="password" name="p"></form>'
+    got = FetchResult(JPAAS_API, "ok", final_url=login, http_status=200, text=form)
+    check, source, docs = _check_with_api(session, got)
+    assert (check.status, docs) == ("list_api_refused", 0)
+    assert "登录" in check.error and source.health == "blocked"
+
+
+def test_list_api_refusing_http_status_stops_crawling(session) -> None:
+    got = FetchResult(
+        JPAAS_API, "http_error", final_url=JPAAS_API, http_status=403, error="HTTP 403"
+    )
+    check, source, _ = _check_with_api(session, got)
+    assert (check.status, check.http_status) == ("list_api_refused", 403)
+    assert source.health == "blocked"
+
+
+def test_list_api_one_off_failure_is_retried_later(session) -> None:
+    """网络不通、5xx 只是这次没取到：照常记失败，不记不能抓。"""
+    got = FetchResult(
+        JPAAS_API, "http_error", final_url=JPAAS_API, http_status=502, error="HTTP 502"
+    )
+    check, source, _ = _check_with_api(session, got)
+    assert check.status == "http_error"
+    assert source.health == "degraded"

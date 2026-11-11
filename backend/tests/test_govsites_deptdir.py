@@ -223,7 +223,7 @@ def _zhejiang_pages() -> dict[str, str]:
         JPAAS_DEPT: '<meta name="SiteName" content="长兴县人民政府">' + UNIT_TAG,
     }
     api = find_unit_apis(pages[JPAAS_DEPT], JPAAS_DEPT)[0].url
-    pages[api] = json.dumps({"data": {"html": unit_html}})
+    pages[api] = json.dumps({"success": True, "code": "200", "data": {"html": unit_html}})
     # 还原出来的分类栏目页自己写着栏目名（长兴县实际页面的 meta ColumnName）
     pages["http://www.zjcx.gov.cn/xxgk/zfbmxxgk/zxxkxjsj/fdzdgknr/zcwj/xzbmfgfxwj/index.html"] = (
         '<meta name="ColumnName" content="乡镇、部门非规范性文件"><title>乡镇、部门非规范性文件</title>'
@@ -463,3 +463,16 @@ def test_breadcrumb_title_uses_its_first_segment():
     inv = Inventory(INDEX, FakeCache(pages), provinces=["浙江"], workers=2, per_province=2)
     inv.run()
     assert _depts(inv)[("330522", "科技")].columns == []
+
+
+def test_refused_unit_api_is_not_read():
+    """读取护栏（D-128）：单元接口返回不是成功、或带权限要求时，盘点不用它的内容。"""
+    pages = _zhejiang_pages()
+    api = find_unit_apis(pages[JPAAS_DEPT], JPAAS_DEPT)[0].url
+    good = Inventory(INDEX, FakeCache(dict(pages)), provinces=["浙江"])
+    assert any(link.via == "jpaas分组" for link in good.page(JPAAS_DEPT).links)
+    for bad in ({"success": False, "message": ""}, {"roles": ["dept"]}):
+        refused = dict(pages)
+        refused[api] = json.dumps({**json.loads(pages[api]), **bad})
+        info = Inventory(INDEX, FakeCache(refused), provinces=["浙江"]).page(JPAAS_DEPT)
+        assert not any(link.via == "jpaas分组" for link in info.links)
