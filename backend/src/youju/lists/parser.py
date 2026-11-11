@@ -5,15 +5,13 @@ import re
 import zipfile
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from itertools import islice
 
-import pdfplumber
 import xlrd
 from docx import Document as DocxDocument
 from lxml import html
 from openpyxl import load_workbook
 
-from youju import pdf_limits, zip_limits
+from youju import pdf_sandbox, zip_limits
 from youju.lists import doc97
 from youju.lists.rules import normalize_credit_code, normalize_name, valid_org_name
 
@@ -74,6 +72,9 @@ class _TableBudget:
 # 河南 567 页的入库名单本机实测：300 页读出 6298 家，全读 11903 家、13 秒、83 MB。
 # 以前被截断的，service._should_attempt 按原因里的页数重读一次
 MAX_PDF_PAGES = 1000
+# 读一份 PDF 最多用这么多秒 CPU 时间（pdf_sandbox 到时停掉子进程），和查名单定位名单附件
+# （attachment_text 的 LIST_LIMITS）一样。11/8 实测 341 份真实文件最慢 163 秒（Linux 虚拟机）
+PDF_SECONDS = 600
 _MAX_ZIP_UNCOMPRESSED = 100 * 1024 * 1024
 _MAX_ZIP_MEMBERS = 1_000
 _REGION = re.compile(r"[\u4e00-\u9fffA-Za-z0-9（）()·\-/ ]{2,64}")
@@ -350,6 +351,28 @@ def _word97_entries(
     return entries
 
 
+def _read_pdf(data: bytes) -> dict:
+    """在限内存、限时的子进程里读 PDF 的表格（pdf_sandbox）：前 MAX_PDF_PAGES 页的表格、有没有字。
+    解压后太大、压缩方式不支持、超时、超内存、读出的太多，记"暂不支持这份 PDF（原因）"，不再重试；
+    打不开、读的时候出错的照旧按出错记（解析失败：异常类名，过 6 小时再试），和当时的环境有关的
+    （容器忙、内存不够被系统停掉、子进程崩了等）也一样过 6 小时再试。"""
+    try:
+        return pdf_sandbox.read(
+            "list",
+            data,
+            seconds=PDF_SECONDS,
+            pages=MAX_PDF_PAGES,
+            rows=_MAX_ROWS,
+            cells=_MAX_CELLS,
+            columns=_MAX_COLUMNS,
+            chars=_MAX_TEXT_CHARS,
+        )
+    except pdf_sandbox.Failed as exc:
+        if exc.kind in ("open", "error") or exc.retry:
+            raise
+        raise ValueError(f"暂不支持这份 PDF（{exc.detail}）") from exc
+
+
 def parse_attachment(data: bytes, extension: str) -> list[ParsedEntry]:
     """支持可读取表格的 PDF/XLSX/XLS/DOCX/DOC/WPS（Word 97 二进制）；ET、OFD 和扫描件留失败原因。"""
     return parse_attachment_result(data, extension).entries
@@ -366,36 +389,17 @@ def parse_attachment_result(
     if extension == "pdf":
         if not data.startswith(b"%PDF-"):
             raise ValueError("不是 PDF 文件")
-        # 解数据流有上限（pdf_limits）：解压后太大、压缩方式不支持的记"暂不支持"，不再重试
-        with (
-            pdf_limits.reading(lambda hit: ValueError(f"暂不支持这份 PDF（{hit.detail}）")),
-            pdfplumber.open(io.BytesIO(data)) as pdf,
-        ):
-            rows: list[list[object]] = []
-            has_text = False
-            page_count = len(pdf.pages)
-            if page_count > MAX_PDF_PAGES:
-                failure_reason = f"PDF 共{page_count}页，仅解析前{MAX_PDF_PAGES}页"
-            for page in islice(pdf.pages, MAX_PDF_PAGES):
-                try:
-                    has_text = has_text or bool((page.extract_text() or "").strip())
-                    tables = page.extract_tables()
-                    if not tables:
-                        tables = page.extract_tables(
-                            table_settings={
-                                "vertical_strategy": "text",
-                                "horizontal_strategy": "text",
-                            }
-                        )
-                    for table in tables:
-                        rows.extend(budget.read(table))
-                finally:
-                    # pdfplumber 缓存布局和文本对象；异常或超预算也必须释放当前页。
-                    page.close()
-            if not has_text:
-                reason = f"；{failure_reason}" if failure_reason else ""
-                raise ValueError(f"暂不支持扫描件{reason}")
-            entries.extend(_parse_bounded_rows(rows, pick_name_column))
+        found = _read_pdf(data)
+        rows: list[list[object]] = []
+        page_count = found["pages"]
+        if page_count > MAX_PDF_PAGES:
+            failure_reason = f"PDF 共{page_count}页，仅解析前{MAX_PDF_PAGES}页"
+        for table in found["tables"]:
+            rows.extend(budget.read(table))
+        if not found["has_text"]:
+            reason = f"；{failure_reason}" if failure_reason else ""
+            raise ValueError(f"暂不支持扫描件{reason}")
+        entries.extend(_parse_bounded_rows(rows, pick_name_column))
     elif extension == "xlsx":
         _check_zip(data)
         workbook = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
