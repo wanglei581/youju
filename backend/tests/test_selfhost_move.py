@@ -247,6 +247,19 @@ def test_fetch_refuses_wrong_manifest_and_reports_expired_links(tmp_path):
     assert not list(store.list("archive/")) and not store.exists("logs/access-20261110.jsonl.gz")
 
 
+def test_fetch_refuses_after_the_export_was_archived(tmp_path):
+    remote = Remote({})
+    url, sha = _export(remote, {"backups/youju-20261112.jsonl.gz": _gz("{}\n")})
+    work = tmp_path / "export"
+    work.mkdir()
+    (work / "imported").write_text("2026-11-13 10:00:00\n", encoding="utf-8")
+    with pytest.raises(cloudrun_fetch.FetchError, match="已经存档过"):
+        cloudrun_fetch.fetch(
+            remote.client, url, sha, work, store=storage.DiskBackend(tmp_path / "s")
+        )
+    assert remote.gets == [] and not (work / "backups").exists()
+
+
 def test_fetch_checks_disk_space_and_cleans_up_leftovers(tmp_path):
     remote = Remote({})
     backup = _gz("{}\n" * 10)
@@ -263,7 +276,7 @@ def test_fetch_checks_disk_space_and_cleans_up_leftovers(tmp_path):
     (work / ".fetch-abc").write_bytes(b"half")
     (work / "takedowns.jsonl.part").write_bytes(b"half")
     (work / "backups" / "youju-20261112.jsonl.gz").write_bytes(b"older")
-    need = len(pdf) + 4 * len(backup) + cloudrun_fetch.SPARE_BYTES
+    need = len(pdf) + (1 + cloudrun_fetch.BACKUP_FACTOR) * len(backup) + cloudrun_fetch.SPARE_BYTES
     with pytest.raises(cloudrun_fetch.FetchError, match="硬盘不够"):
         cloudrun_fetch.fetch(
             remote.client,
@@ -508,22 +521,23 @@ def test_shared_import_export_drills_with_old_image_then_archives(tmp_path):
     calls = _calls(tmp_path)
     assert calls[0] == "docker image inspect youju-selfhost:a79a0042"
     assert calls[1].startswith("compose stop api worker")
-    drill, archive = calls[2], calls[3]
+    drill, purge, archive = calls[2], calls[3], calls[4]
     # 试恢复：旧镜像、root 连接串都经环境变量（不在命令行参数里）
     assert drill.startswith("compose run --rm --no-deps -e YOUJU_DATABASE_URL -v ")
     assert "youju restore-drill --file /export/backups/youju-20261112.jsonl.gz |" in drill
     assert "image=youju-selfhost:a79a0042" in drill
-    # 试恢复的连接不写 binlog：旧库的明文不留在 MySQL 的 binlog 里
-    assert (
-        "db=mysql+pymysql://root:r00tpw@mysql:3306/youju?charset=utf8mb4"
-        "&init_command=SET%20sql_log_bin%3D0" in drill
-    )
+    assert "db=mysql+pymysql://root:r00tpw@mysql:3306/youju?charset=utf8mb4 " in drill
     assert "r00tpw" not in drill.split(" | ")[0]
+    # 试恢复写进 binlog 的旧库明文清掉；密码用容器里的环境变量，不在命令里
+    assert purge.startswith("compose exec -T mysql sh -c ")
+    assert "PURGE BINARY LOGS BEFORE NOW()" in purge and 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD"' in purge
+    assert "r00tpw" not in purge
     assert "youju archive-export --dir /export |" in archive and "image= " in archive
-    # 明文的整库备份、交易记录和带链接的清单删掉
+    # 明文的整库备份、交易记录和带链接的清单删掉；留下"存档过"的标记（再跑 fetch-export 会拒绝）
     assert not (backups / "youju-20261112.jsonl.gz").exists()
     assert not (tmp_path / "export" / "pay-records.jsonl.gz").exists()
     assert not (tmp_path / "export" / "manifest.json").exists()
+    assert (tmp_path / "export" / "imported").exists()
     assert "IMPORT OK" in done.stdout
 
 
@@ -537,7 +551,10 @@ def test_shared_import_export_stops_when_drill_fails(tmp_path):
     assert done.returncode != 0
     calls = _calls(tmp_path)
     assert not any("archive-export" in c for c in calls)  # 试恢复不过就不存档、不删明文
+    assert any("PURGE BINARY LOGS" in c for c in calls)  # binlog 照样清
+    assert "试恢复没通过" in done.stderr
     assert (backups / "youju-20261112.jsonl.gz").exists()
+    assert not (tmp_path / "export" / "imported").exists()
     assert calls[-1].startswith(
         "compose up -d --wait --wait-timeout 300 api"
     )  # 接口、worker 照样起来

@@ -580,17 +580,26 @@ import_export() {
   [ -n "$root_pw" ] || die ".env 里没有 MYSQL_ROOT_PASSWORD"
   pause_services
   say "1/3 试恢复：${old} 的镜像在临时库 youju_drill_… 里恢复一遍（核对条数、外键、每张表的 SHA-256），结束删掉；不碰正式库"
-  # 建临时库要 root；连接串经环境变量传进容器（不进命令行参数）。临时库和正式库在同一个 MySQL 里；
-  # 每个连接先 SET sql_log_bin=0：旧库的明文不写进 binlog（binlog 留 3 天，不在这个目录里，删不着）
+  # 建临时库要 root；连接串经环境变量传进容器（不进命令行参数）。临时库和正式库在同一个 MySQL 里
+  local drill_ok=1
   YOUJU_IMAGE="youju-selfhost:$old" \
-    YOUJU_DATABASE_URL="mysql+pymysql://root:${root_pw}@mysql:3306/youju?charset=utf8mb4&init_command=SET%20sql_log_bin%3D0" \
+    YOUJU_DATABASE_URL="mysql+pymysql://root:${root_pw}@mysql:3306/youju?charset=utf8mb4" \
     compose run --rm --no-deps -e YOUJU_DATABASE_URL -v "$EXPORT_DIR:/export:ro" worker \
-    youju restore-drill --file "/export/backups/$name"
+    youju restore-drill --file "/export/backups/$name" || drill_ok=0
+  # 试恢复写进 binlog 的是旧库的明文（binlog 留 3 天）：成不成都清掉。不做主从，binlog 没人用；
+  # 密码用容器里的环境变量给 mysql（MYSQL_PWD），不写成 -p 参数
+  say "    清掉 MySQL 的 binlog（试恢复写进去的是旧库的明文）"
+  # shellcheck disable=SC2016  # $MYSQL_ROOT_PASSWORD 要在容器里展开
+  compose exec -T mysql sh -c \
+    'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot -e "FLUSH BINARY LOGS; PURGE BINARY LOGS BEFORE NOW();"'
+  [ "$drill_ok" = 1 ] || die "试恢复没通过（原因见上面）：没存档、没删明文"
   say "2/3 加密存档：整库备份、交易记录分别用 .env 里的 age 公钥加密，存到服务器存储和异地的 archive/，"
   say "    到期日写在文件名里（整库自备份起 30 天，交易记录自最早一笔下单起 3650 天），每天 archive-prune 到期删"
   compose run --rm --no-deps -v "$EXPORT_DIR:/export:ro" worker youju archive-export --dir /export
   say "3/3 删掉明文的整库备份、交易记录和带链接的清单"
   rm -f "$EXPORT_DIR/backups/$name" "$EXPORT_DIR/pay-records.jsonl.gz" "$EXPORT_DIR/manifest.json"
+  # 存档过了：以后再跑 fetch-export 会拒绝（不再下一份明文备份）
+  date '+%F %T' > "$EXPORT_DIR/imported"
   echo "IMPORT OK"
 }
 

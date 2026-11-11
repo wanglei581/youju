@@ -11,7 +11,9 @@
   archive/cloudrun-access-<日期>.expires-<日期加 191 天>.jsonl.gz（服务器测试期一直在记访问日志，
   打开正式定时任务后 archive-logs 会按 logs/access-<日期> 写同名文件，放回 logs/ 会被覆盖），
   到期由每天的 youju archive-prune 删。
-- 开头先算硬盘够不够：还要下的字节数，加上整库备份的 3 倍（试恢复的临时库、加密副本）和 2G 余量。
+- 开头先算硬盘够不够：还要下的字节数，加上压缩整库备份的 15 倍（试恢复的临时库和它写进的 binlog
+  大约是压缩备份的 10 倍，再加加密副本）和 2G 余量。
+- 已经存档过（import-export 留下 --dir/imported）就不再下载：不再下一份明文备份。
 - 最新一份整库备份、下架清单、交易记录（订单、退款、开票、赠送，导出时已去标识化）：写到 --dir
   （服务器上只有 root 能进的目录），不进存储。备份核对大小和 gzip，下架清单、交易记录核对 SHA-256。
   备份和交易记录接着由 youju-shared.sh import-export 试恢复、分别加密存档（youju archive-export）、
@@ -53,6 +55,9 @@ _LOG = re.compile(r"logs/access-(\d{8})\.jsonl\.gz")
 _CHUNK = 1024 * 1024
 MAX_MANIFEST = 64 * 1024 * 1024
 COMPLETE = "fetch-complete"
+IMPORTED = "imported"
+# 试恢复的临时库和 binlog 大约是压缩整库备份的 10 倍，再加加密副本
+BACKUP_FACTOR = 15
 # 硬盘至少留这么多余量（和别的项目共用一块盘）
 SPARE_BYTES = 2 * 1024 * 1024 * 1024
 MAX_FILE = 4 * 1024 * 1024 * 1024
@@ -185,6 +190,7 @@ def _summary(manifest: dict) -> dict:
         "pay_records": manifest["pay_records"]["counts"],
         "summary": manifest.get("summary"),
         "config": manifest.get("config"),
+        "config_unlisted": manifest.get("config_unlisted", []),
     }
 
 
@@ -200,6 +206,10 @@ def fetch(
     disk_free: Callable[[Path], int] | None = None,
 ) -> FetchReport:
     workdir = Path(workdir)
+    if (workdir / IMPORTED).exists():
+        raise FetchError(
+            f"这批已经存档过（IMPORT OK），不再下载明文备份；真要重来，先删掉 {workdir / IMPORTED}"
+        )
     (workdir / "backups").mkdir(parents=True, exist_ok=True)
     # 完成标记：这一次全部下好才写；import-export 没看到它就不存档、不删明文和清单
     (workdir / COMPLETE).unlink(missing_ok=True)
@@ -315,8 +325,8 @@ def _free_bytes(path: Path) -> int:
 
 
 def _check_disk(workdir: Path, store, plan: list, free: Callable[[Path], int]) -> None:
-    """还要下的字节数，加上整库备份的 3 倍（试恢复的临时库、binlog 以外的表文件、加密副本）和余量。
-    硬盘和别的项目共用，不够就不下。"""
+    """还要下的字节数，加上压缩整库备份的 BACKUP_FACTOR 倍（试恢复的临时库和 binlog、加密副本）
+    和余量。硬盘和别的项目共用，不够就不下。"""
     remaining = 0
     backup = 0
     for item, target in plan:
@@ -328,7 +338,7 @@ def _check_disk(workdir: Path, store, plan: list, free: Callable[[Path], int]) -
         elif _present(store, target, item["size"]):
             continue
         remaining += item["size"]
-    need = remaining + 3 * backup + SPARE_BYTES
+    need = remaining + BACKUP_FACTOR * backup + SPARE_BYTES
     roots = [workdir]
     if isinstance(store, storage.DiskBackend):
         store.root.mkdir(parents=True, exist_ok=True)
