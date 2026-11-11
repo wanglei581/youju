@@ -523,11 +523,20 @@ pause_services() {
   trap on_exit EXIT
 }
 
-# 退出时（成功、失败、被打断都一样）：试恢复开始了还没清 binlog 的先清，再把接口和 worker 起来
+# 退出时（成功、失败、被打断都一样）：试恢复开始了还没清 binlog 的先清，再把接口和 worker 起来。
+# 关掉网页终端、断线时 compose 客户端死了，它起的一次性容器（下载、试恢复）还在跑：先停掉——不然
+# 试恢复接着往 binlog 写，又和接口、worker 叠在一起超内存。试恢复收到停止信号会自己删临时库。
+# 这里每一步失败都接着做下一步（不让 set -e 半途退出，服务至少要起来）
 PURGE_BINLOG=""
 on_exit() {
+  set +e
+  local stray
+  stray=$(docker ps -q --filter label=com.docker.compose.project=youju-server \
+    --filter label=com.docker.compose.oneoff=True)
+  # shellcheck disable=SC2086  # 可能有几个容器编号
+  [ -z "$stray" ] || docker stop -t 60 $stray >/dev/null
   if [ -n "$PURGE_BINLOG" ]; then
-    purge_binlog || echo "注意：binlog 没清掉，手动运行 ${SELF} import-export 之前先查（手册第六节第 7 步）" >&2
+    purge_binlog || echo "注意：binlog 没清掉，再跑 ${SELF} import-export 之前先查（手册第六节第 7 步）" >&2
   fi
   resume_services
 }

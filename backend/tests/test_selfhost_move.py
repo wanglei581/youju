@@ -500,8 +500,12 @@ def test_shared_fetch_export_takes_link_on_stdin(tmp_path):
     assert run.startswith("compose run --rm --no-deps -e YOUJU_EXPORT_URL -v ")
     assert f"youju export-fetch --sha256 {sha} --dir /export |" in run
     assert run.endswith(f"url={link}") and link not in run.split(" | ")[0]
-    assert calls[2].startswith("compose up -d --wait --wait-timeout 900 worker")
-    assert calls[3].startswith("compose up -d --wait --wait-timeout 300 api")
+    # 退出时先看有没有还在跑的一次性容器（这里没有），再起服务
+    assert calls[2].startswith(
+        "docker ps -q --filter label=com.docker.compose.project=youju-server"
+    )
+    assert calls[3].startswith("compose up -d --wait --wait-timeout 900 worker")
+    assert calls[4].startswith("compose up -d --wait --wait-timeout 300 api")
     assert (tmp_path / "export").stat().st_mode & 0o777 == 0o700
 
 
@@ -925,15 +929,38 @@ def test_import_export_purges_binlog_even_when_interrupted(tmp_path):
     interrupted = (
         f'compose() {{ echo "compose $*" >> "{log}"; '
         'if [ "$1" = exec ]; then cat >/dev/null; fi; '
-        'if [ "$1" = run ]; then kill -TERM $$; sleep 1; fi; }'
+        'if [ "$1" = run ]; then kill -TERM $$; sleep 1; fi; }\n'
+        # 终端断了以后还在跑的试恢复容器（compose 起的一次性容器）
+        f'docker() {{ echo "docker $*" >> "{log}"; if [ "$1" = ps ]; then echo abc123; fi; }}'
     )
     done = _bash(tmp_path, "import_export a79a0042", setup=interrupted)
     assert done.returncode != 0
     calls = _calls(tmp_path)
     run = next(i for i, c in enumerate(calls) if c.startswith("compose run"))
-    assert calls[run + 1] == "compose exec -T mysql sh -s"
+    # 先停掉还在跑的一次性容器，再清 binlog，最后把接口、worker 起来
+    assert calls[run + 1].startswith(
+        "docker ps -q --filter label=com.docker.compose.project=youju-server"
+    )
+    assert "com.docker.compose.oneoff=True" in calls[run + 1]
+    assert calls[run + 2] == "docker stop -t 60 abc123"
+    assert calls[run + 3] == "compose exec -T mysql sh -s"
     assert calls[-1].startswith("compose up -d --wait --wait-timeout 300 api")
     assert not any("archive-export" in c for c in calls)
+
+
+@needs_bash
+def test_on_exit_keeps_going_when_a_step_fails(tmp_path):
+    """退出时清 binlog 失败（或往断开的终端写字失败）也要接着把接口、worker 起来。"""
+    _server_env(tmp_path, "MYSQL_ROOT_PASSWORD=r00tpw\n")
+    log = tmp_path / "calls.log"
+    setup = (
+        f'compose() {{ echo "compose $*" >> "{log}"; '
+        'if [ "$1" = exec ]; then cat >/dev/null; return 1; fi; }'
+    )
+    done = _bash(tmp_path, "pause_services; PURGE_BINLOG=1; false", setup=setup)
+    assert done.returncode != 0 and "binlog 没清掉" in done.stderr
+    calls = _calls(tmp_path)
+    assert calls[-1].startswith("compose up -d --wait --wait-timeout 300 api")
 
 
 @needs_bash
