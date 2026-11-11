@@ -90,8 +90,9 @@ def encrypt(source: Path, target: Path, recipient: str) -> None:
         )
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         # age 的报错只说公钥不对、写不进去这类，不含备份内容
-        detail = (exc.stderr or b"").decode("utf-8", "replace").strip().splitlines()[-1:]
-        raise BackupError(f"加密备份失败：{type(exc).__name__} {' '.join(detail)[:200]}") from None
+        lines = (exc.stderr or b"").decode("utf-8", "replace").strip().splitlines()
+        detail = f"（{lines[-1][:200]}）" if lines else ""
+        raise BackupError(f"加密备份失败：{type(exc).__name__}{detail}") from None
 
 
 def _latest_local(settings: Settings, today: date) -> tuple[str, Path] | None:

@@ -536,13 +536,16 @@ on_exit() {
   # shellcheck disable=SC2086  # 可能有几个容器编号
   [ -z "$stray" ] || docker stop -t 60 $stray >/dev/null
   if [ -n "$PURGE_BINLOG" ]; then
+    echo "试恢复被打断：正式库不受影响；临时库 youju_drill_… 它自己会删，没删掉的下次试恢复开头会删" >&2
     purge_binlog || echo "注意：binlog 没清掉，再跑 ${SELF} import-export 之前先查（手册第六节第 7 步）" >&2
   fi
   resume_services
 }
 
 # 在 mysql 容器里跑（sh -s）：轮换 binlog，删掉当前这个以前的全部，再查只剩一个。不用
-# PURGE … BEFORE NOW()：刚轮换出来的文件修改时间就是这一秒，同一秒里删不掉（本机 MySQL 8.0 实测）
+# PURGE … BEFORE NOW()：刚轮换出来的文件修改时间就是这一秒，同一秒里删不掉（本机 MySQL 8.0 实测）。
+# SHOW MASTER STATUS 是 MySQL 8.0 的写法（compose 锁定的是 8.0）；升到 8.2 以后要改成
+# SHOW BINARY LOG STATUS（8.4 删掉了旧的）
 binlog_purge_sql() {
   cat <<'EOF'
 set -eu
@@ -605,6 +608,7 @@ import_export() {
   local old=${1:-}
   [[ "$old" =~ ^[0-9a-f]{8}$ ]] || die "用法：import-export <旧版本号>（迁移版本和备份一样的那一版，如 a79a0042）"
   [ -f "$SERVER/.env" ] || die "还没装（没有 ${SERVER}/.env）"
+  [ ! -f "$EXPORT_DIR/imported" ] || die "这批已经存档过（IMPORT OK），不再重做"
   docker image inspect "youju-selfhost:$old" >/dev/null 2>&1 \
     || die "没有镜像 youju-selfhost:${old}（${BASE}/releases/${old} 还在的话，照手册重新构建这一版的镜像）"
   [ -f "$EXPORT_DIR/fetch-complete" ] \

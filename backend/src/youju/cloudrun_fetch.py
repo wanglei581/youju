@@ -85,7 +85,9 @@ def _prefix(path: str) -> str:
 
 def _download(client: httpx.Client, url: str, dest: Path, limit: int) -> int:
     size = 0
-    with client.stream("GET", url, timeout=600, follow_redirects=True) as response:
+    # 连不上 30 秒就算失败（不白等 10 分钟），传输整体最多 10 分钟
+    timeout = httpx.Timeout(600.0, connect=30.0)
+    with client.stream("GET", url, timeout=timeout, follow_redirects=True) as response:
         if response.status_code != 200:
             hint = {
                 403: "（链接过期了：在云托管上带 --links-only 重出一份清单）",
@@ -281,8 +283,9 @@ def fetch(
             tmp.unlink(missing_ok=True)
         report.fetched[prefix] = report.fetched.get(prefix, 0) + 1
         report.bytes += size
-        if number % 500 == 0:
-            say(f"  已处理 {number}/{len(files)}")
+        if number % 100 == 0:
+            say(f"  已处理 {number}/{len(plan)}")
+    say(f"  文件处理完了（{len(plan)} 个），接着取下架清单和交易记录")
     if _fetch_extra(client, manifest["takedowns"], workdir / "takedowns.jsonl", report):
         report.takedowns = manifest["takedowns"]["count"]
     pay = manifest["pay_records"]

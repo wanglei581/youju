@@ -151,6 +151,8 @@ CONFIG_SKIPPED = (
     "failure_alert_threshold",
     "sources_csv",
 )
+# 整库备份的文件名：和服务器上认的一样（youju/cloudrun_fetch.py 的 _BACKUP）
+_BACKUP = re.compile(r"backups/youju-\d{8}\.jsonl\.gz")
 # 下载链接的域名：和服务器上 youju export-fetch 认的一样（youju/cloudrun_fetch.py 的 URL）
 LINK = re.compile(r"https://[A-Za-z0-9.-]+\.(?:tcb\.qcloud\.la|myqcloud\.com)/[!-~]*")
 
@@ -201,11 +203,7 @@ def pick_files(listed: dict[str, list[tuple[str, int]]]) -> list[tuple[str, int]
     for prefix in PREFIXES:
         items = listed.get(prefix, [])
         if prefix == "backups/":
-            dumps = sorted(
-                (key, size)
-                for key, size in items
-                if key.startswith("backups/youju-") and key.endswith(".jsonl.gz")
-            )
+            dumps = sorted((key, size) for key, size in items if _BACKUP.fullmatch(key))
             if not dumps:
                 raise ExportError("backups/ 下没有整库备份")
             items = dumps[-1:]
