@@ -243,6 +243,25 @@ def test_child_portal_link_to_a_report_page_takes_site_root() -> None:
     assert "取网站首页" in found["371300"].text
 
 
+def test_link_back_to_own_portal_page_is_not_cut_to_a_child_root() -> None:
+    """入口补充页（别的主机）上地市名链回省门户自己的某一页：不截成"地市首页"，照旧跳过。"""
+    from youju.govsites.inventory import PageInfo
+
+    divisions = [
+        Division("370000", "山东省", "省", "省级", "山东", None, None, None),
+        Division("371300", "临沂市", "地级市", "市级", "山东", "临沂", None, "370000"),
+    ]
+    inv = Inventory(DivisionIndex(divisions), FakeCache({}), provinces=["山东"], workers=2)
+    seed = PageInfo(
+        "http://fgw.shandong.gov.cn/col/2/index.html",
+        "http://fgw.shandong.gov.cn/col/2/index.html",
+        FetchResult("http://fgw.shandong.gov.cn/col/2/index.html", "ok", None, 200, ""),
+        links=[Link("临沂市", "https://www.shandong.gov.cn/typt/zfxxgknb.htm", "a")],
+    )
+    found = inv._find_children(divisions[0], [divisions[1]], [seed], {"www.shandong.gov.cn"})
+    assert "371300" not in found
+
+
 def test_channel_pages_that_look_like_articles() -> None:
     from youju.govsites.inventory import _site_like
 
