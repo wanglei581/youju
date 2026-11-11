@@ -335,7 +335,8 @@ def run(
                         passed=r.accepted,
                         note=(
                             f"全检 {r.total} 个栏目：通过 {r.passed}，不通过 {r.failed}，"
-                            f"待重试 {r.retry}，不收 {r.excluded}（都不进本批）；"
+                            f"待重试 {r.retry}，不能抓 {r.blocked}，"
+                            f"不收 {r.excluded}（都不进本批）；"
                             f"证据 docs/数据来源/全国覆盖/抽查/{lv}/{r.province}.csv（sha1 {sha}）"
                         )[:300],
                     )

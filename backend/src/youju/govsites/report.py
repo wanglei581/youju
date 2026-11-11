@@ -22,6 +22,7 @@ from youju.govsites.inventory import (
     portal_rows,
     write_table,
 )
+from youju.govsites.privacy import public_title
 
 LEVELS = ("国家级", "省级", "市级", "区县级")
 
@@ -196,7 +197,7 @@ def column_rows(checks, checked_on: str) -> list[list[str]]:
         if "#xxgk-" in c.url:
             continue  # 信息公开分类树上的分类不是能打开的栏目，不进导入清单（看板里记需人工）
         dept_full = (c.dept_full_name or c.dept)[:120]
-        note = "；".join(c.samples[:2])
+        note = "；".join(public_title(s) for s in c.samples[:2])  # 公开仓库：不写个人姓名
         rows.append(
             [
                 c.level,

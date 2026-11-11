@@ -22,8 +22,9 @@
 - 重复：同一省里去掉参数后是同一个列表的，后面那个记重复。
 
 都过记"自动通过"，否则记"待人工"并写明哪项没过；最后三列（复核人、复核结论、复核备注）
-留给人工复核。复核结论写"通过""不通过""待重试"（这次没抓到）或"不收"（读得对、但不在收录范围，
-如整栏是招聘公示），后面可以加括号说明（见 final_verdict）。只读库、不联网。
+留给人工复核。复核结论写"通过""不通过""待重试"（这次没抓到）、"不能抓"（按访问控制等不读）
+或"不收"（读得对、但不在收录范围，如整栏是招聘公示），后面可以加括号说明（见 final_verdict）。
+只读库、不联网。
 """
 
 import hashlib
@@ -38,6 +39,7 @@ from sqlalchemy.orm import Session
 from youju.govsites.divisions import name_variants
 from youju.govsites.links import registrable
 from youju.govsites.names import column_kind, dept_categories
+from youju.govsites.privacy import public_title
 from youju.models import Document, Source, SourceCheck
 
 SAMPLE_FIELDS = (
@@ -281,7 +283,8 @@ def to_csv_row(row: SampleRow) -> list[str]:
         if i >= len(row.latest):
             return ""
         title, day, url = row.latest[i]
-        return f"{day.isoformat() if day else '无日期'} {title[:40]} {url}"
+        # 公开仓库：个人事项或写着人名的标题不写原文
+        return f"{day.isoformat() if day else '无日期'} {public_title(title)[:40]} {url}"
 
     return [
         s.level,
@@ -341,12 +344,13 @@ class ProvinceResult:
     failed: int = 0
     pending: int = 0  # 待人工、还没复核的
     retry: int = 0  # 这次没抓到、下批重试的（不知道读得准不准，不算进通过率）
+    blocked: int = 0  # 不能抓：按访问控制等不读的（不进本批，读不了也不算进通过率）
     excluded: int = 0  # 不收：读得对、但不在收录范围的（不进本批；读得对，通过率里算对）
 
     @property
     def rate(self) -> float:
-        """读得准的占多少：通过和不收都算读得准，待重试不算进分母。"""
-        judged = self.total - self.retry
+        """读得准的占多少：通过和不收都算读得准，待重试、不能抓不算进分母。"""
+        judged = self.total - self.retry - self.blocked
         return (self.passed + self.excluded) / judged if judged else 0.0
 
     @property
@@ -358,12 +362,13 @@ def final_verdict(row: dict) -> str:
     """一行的最终结论：人工复核写了就按人工（自动通过的也可能被复核否掉），没写看自动结论。
 
     复核结论按开头认（"不通过（部门挂错）"算不通过，首尾空格不算）。"待重试"是这次没抓到：不进
-    本批，也不算进通过率（不知道读得准不准）。"不收"是读得对、但不在收录范围（如整栏都是事业单位
-    招聘公示）：不进本批；通过率量的是读得准不准，所以它算读得对。写了别的词（"有问题"）一律算
-    "待复核"，这个省补上之前不合格。"""
+    本批，也不算进通过率（不知道读得准不准）。"不能抓"是按访问控制等原因不读的（列表要靠页面
+    脚本另取、要登录……，D-013）：不进本批，也不算进通过率（读不了，谈不上读得准不准）。"不收"
+    是读得对、但不在收录范围（如整栏都是事业单位招聘公示）：不进本批；通过率量的是读得准不准，
+    所以它算读得对。写了别的词（"有问题"）一律算"待复核"，这个省补上之前不合格。"""
     verdict = (row.get("复核结论") or "").strip()
     if verdict:
-        for word in ("不通过", "待重试", "不收", "通过"):
+        for word in ("不通过", "待重试", "不能抓", "不收", "通过"):
             if verdict.startswith(word):
                 return word
         return "待复核"
@@ -405,6 +410,8 @@ def evidence_results(folder) -> list[ProvinceResult]:
                     res.retry += 1
                 elif verdict == "不收":
                     res.excluded += 1
+                elif verdict == "不能抓":
+                    res.blocked += 1
                 else:
                     res.pending += 1
         out.append(res)

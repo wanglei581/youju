@@ -562,13 +562,14 @@ def _cmd_accept(args: argparse.Namespace) -> int:
         return 1
     print(
         f"合格标准：每个栏目都有结论，读得准的（通过、不收）占 {PASS_RATE:.0%} 以上"
-        "（待重试不算进分母；只有通过的进本批）"
+        "（待重试、不能抓不算进分母；只有通过的进本批）"
     )
     for r in results:
         verdict = "合格" if r.accepted else "没过"
         print(
             f"{r.province}：{verdict}（{r.total} 个栏目，通过 {r.passed}，不通过 {r.failed}，"
-            f"待重试 {r.retry}，不收 {r.excluded}，没复核 {r.pending}，读得准的 {r.rate:.0%}）"
+            f"待重试 {r.retry}，不能抓 {r.blocked}，不收 {r.excluded}，没复核 {r.pending}，"
+            f"读得准的 {r.rate:.0%}）"
         )
     if args.dry_run:
         print("试算，没写库")
@@ -586,7 +587,7 @@ def _cmd_accept(args: argparse.Namespace) -> int:
                     passed=r.accepted,
                     note=(
                         f"全检 {r.total} 个栏目：通过 {r.passed}，不通过 {r.failed}，"
-                        f"待重试 {r.retry}，不收 {r.excluded}（都不进本批）；"
+                        f"待重试 {r.retry}，不能抓 {r.blocked}，不收 {r.excluded}（都不进本批）；"
                         f"证据 docs/数据来源/全国覆盖/抽查/{args.level}/{r.province}.csv"
                         f"（sha1 {_sha1(folder / f'{r.province}.csv')}）"
                     )[:300],
