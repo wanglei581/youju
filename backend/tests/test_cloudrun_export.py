@@ -382,13 +382,14 @@ def test_report_prints_copyable_ascii_lines(capsys):
         }
     )
     lines = capsys.readouterr().out.splitlines()
-    copy = [line for line in lines if line.startswith(("EXPORT OK", "SUMMARY", "sudo "))]
+    copy = [line for line in lines if line.startswith(("EXPORT OK", "SUMMARY", "echo "))]
     assert len(copy) == 3 and all(line.isascii() for line in copy)
     assert copy[0] == (
         "EXPORT OK files=backups:1/2048,logs:1/10,attachments:0/0,advisor/out:0/0 total=2058 "
         "revision=0046"
     )
+    # 链接经标准输入给服务器脚本（fetch-export 从标准输入读），命令行参数里只有哈希
     assert copy[2] == (
-        "sudo /opt/youju/bin/youju-shared.sh fetch-export "
-        f"'https://x.tcb.qcloud.la/exports/m.json?sign=s' {'0' * 64}"
+        "echo 'https://x.tcb.qcloud.la/exports/m.json?sign=s' | "
+        f"sudo /opt/youju/bin/youju-shared.sh fetch-export {'0' * 64}"
     )

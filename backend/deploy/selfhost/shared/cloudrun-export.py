@@ -382,7 +382,11 @@ def report(result: dict) -> None:
         "== 下面这一行只贴到服务器的网页终端（清单里有整库备份的下载链接，2 小时内有效），"
         "不发到聊天里："
     )
-    print(f"sudo /opt/youju/bin/youju-shared.sh fetch-export '{result['url']}' {result['sha256']}")
+    # 链接经标准输入给服务器脚本：不进命令行参数（共用服务器上别的用户看得到）
+    print(
+        f"echo '{result['url']}' | sudo /opt/youju/bin/youju-shared.sh fetch-export "
+        f"{result['sha256']}"
+    )
 
 
 def main(argv: list[str] | None = None, *, runner=subprocess.run) -> int:
