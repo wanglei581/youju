@@ -1,50 +1,28 @@
 ﻿层级,省份,城市,区县,区划代码,部门,部门全称,状态,原因,最后成功时间,部门网址,导航来源页,栏目网址
-市级,江西,新余,,360500,政府办,新余市人民政府门户网站,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,https://www.xinyu.gov.cn/,http://www.xinyu.gov.cn/,https://www.xinyu.gov.cn/xinyu/gsgg/pc/list.html https://www.xinyu.gov.cn/xinyu/dfxfg/pc/list.html
-市级,江西,新余,,360500,发改委,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,江西,新余,,360500,工信,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,江西,新余,,360500,科技,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,江西,新余,,360500,商务,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,江西,新余,,360500,财政,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,江西,新余,,360500,人社,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,江西,新余,,360500,市场监管,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,江西,新余,,360500,农业农村,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,江西,新余,,360500,文旅,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,江西,新余,,360500,生态环境,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,江西,鹰潭,,360600,政府办,鹰潭市人民政府,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,http://www.yingtan.gov.cn/,http://www.yingtan.gov.cn/,http://www.yingtan.gov.cn/news-list-col50.html http://www.yingtan.gov.cn/news-list-zhengce.html
-市级,江西,鹰潭,,360600,发改委,鹰潭市发展和改革委员会,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,http://fgw.yingtan.gov.cn/,http://www.yingtan.gov.cn/news-list-zhengfujigou.html,http://fgw.yingtan.gov.cn/news-list-col1175.html http://fgw.yingtan.gov.cn/news-list-col1172.html
-市级,江西,鹰潭,,360600,工信,鹰潭市工业和信息化局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,http://gxj.yingtan.gov.cn/,http://www.yingtan.gov.cn/news-list-zhengfujigou.html,http://gxj.yingtan.gov.cn/news-list-col2661.html http://www.yingtan.gov.cn/news-list-bumenguifanxingwenjian.html
-市级,江西,鹰潭,,360600,科技,鹰潭市科学技术局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,http://kjj.yingtan.gov.cn/,http://www.yingtan.gov.cn/news-list-zhengfujigou.html,http://kjj.yingtan.gov.cn/news-list-col2481.html http://kjj.yingtan.gov.cn/news-list-col2466.html
-市级,江西,鹰潭,,360600,商务,鹰潭市商务局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,http://swj.yingtan.gov.cn/,http://www.yingtan.gov.cn/news-list-zhengfujigou.html,http://swj.yingtan.gov.cn/news-list-col2931.html http://swj.yingtan.gov.cn/news-list-col2917.html
-市级,江西,鹰潭,,360600,财政,鹰潭市财政局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,http://czj.yingtan.gov.cn/,http://www.yingtan.gov.cn/news-list-zhengfujigou.html,http://czj.yingtan.gov.cn/news-list-col3217.html http://czj.yingtan.gov.cn/news-list-col3202.html
-市级,江西,鹰潭,,360600,人社,鹰潭市人力资源和社会保障局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,http://rsj.yingtan.gov.cn/,http://www.yingtan.gov.cn/news-list-zhengfujigou.html,http://rsj.yingtan.gov.cn/news-list-col2751.html http://rsj.yingtan.gov.cn/news-list-col2736.html
-市级,江西,鹰潭,,360600,市场监管,鹰潭市市场监督管理局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,http://scjgj.yingtan.gov.cn/,http://www.yingtan.gov.cn/news-list-zhengfujigou.html,http://scjgj.yingtan.gov.cn/news-list-col2571.html http://scjgj.yingtan.gov.cn/news-list-col2556.html
-市级,江西,鹰潭,,360600,农业农村,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,江西,鹰潭,,360600,文旅,鹰潭市文化广电旅游局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,http://wgxlj.yingtan.gov.cn/,http://www.yingtan.gov.cn/news-list-zhengfujigou.html,http://wgxlj.yingtan.gov.cn/news-list-col2541.html http://wgxlj.yingtan.gov.cn/news-list-col2526.html
-市级,江西,鹰潭,,360600,生态环境,鹰潭市生态环境局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,http://sthjj.yingtan.gov.cn/,http://www.yingtan.gov.cn/news-list-zhengfujigou.html,http://sthjj.yingtan.gov.cn/news-list-col2631.html http://sthjj.yingtan.gov.cn/news-list-col2616.html
-市级,江西,鹰潭,,360600,开发区,鹰潭高新技术产业开发区管理委员会,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,http://www.yingtan.gov.cn/news-list-yingtangaoxinjishuchanyekaifaquguanliweiyuanhui.html,http://www.yingtan.gov.cn/news-list-zhengfujigou.html,
-市级,江西,鹰潭,,360600,开发区,鹰潭市信江新区管理委员会,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,http://www.yingtan.gov.cn/news-list-yingtanshixinjiangxinquguanliweiyuanhui.html,http://www.yingtan.gov.cn/news-list-zhengfujigou.html,
-市级,江西,景德镇,,360200,政府办,景德镇市人民政府,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://www.jdz.gov.cn/,http://www.jdz.gov.cn/,
-市级,江西,景德镇,,360200,发改委,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,江西,景德镇,,360200,工信,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,江西,景德镇,,360200,科技,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,江西,景德镇,,360200,商务,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,江西,景德镇,,360200,财政,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,江西,景德镇,,360200,人社,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,江西,景德镇,,360200,市场监管,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,江西,景德镇,,360200,农业农村,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,江西,景德镇,,360200,文旅,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,江西,景德镇,,360200,生态环境,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,江西,宜春,,360900,政府办,宜春市人民政府,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,https://www.yichun.gov.cn/,http://www.yichun.gov.cn/,https://www.yichun.gov.cn/ycsrmzf/zcwjh/pc/list.html
-市级,江西,宜春,,360900,发改委,宜春市发展和改革委员会,已收录,1/2 个栏目已收录,2026-11-09 06:36,https://drc.yichun.gov.cn/,https://www.yichun.gov.cn/,https://drc.yichun.gov.cn/ycsfgw/gggs/pc/list.html https://drc.yichun.gov.cn/ycsfgw/zcfg/pc/list.html
-市级,江西,宜春,,360900,工信,宜春市工业和信息化局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://gxj.yichun.gov.cn/,https://www.yichun.gov.cn/,
-市级,江西,宜春,,360900,科技,宜春市科学技术局,已收录,2/2 个栏目已收录,2026-11-09 06:37,https://kjj.yichun.gov.cn/,https://www.yichun.gov.cn/,https://kjj.yichun.gov.cn/ycskjj/tzgg/pc/list.html https://kjj.yichun.gov.cn/ycskjj/zcfg/pc/list.html
-市级,江西,宜春,,360900,商务,宜春市商务局,已收录,1/1 个栏目已收录,2026-11-09 06:36,https://ycwjmw.yichun.gov.cn/,https://www.yichun.gov.cn/,https://ycwjmw.yichun.gov.cn/ycsswj/tzgg/pc/list.html
-市级,江西,宜春,,360900,财政,宜春市财政局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,https://czj.yichun.gov.cn/,https://www.yichun.gov.cn/,https://czj.yichun.gov.cn/ycsczj/tzgg/pc/list.html
-市级,江西,宜春,,360900,人社,宜春市人力资源和社会保障局,已收录,1/1 个栏目已收录,2026-11-09 06:36,https://hrss.yichun.gov.cn/,https://www.yichun.gov.cn/,https://hrss.yichun.gov.cn/ycsshbzj/gggs/pc/list.html
-市级,江西,宜春,,360900,市场监管,宜春市市场监督管理局,已收录,1/1 个栏目已收录,2026-11-09 06:36,https://sjj.yichun.gov.cn/,https://www.yichun.gov.cn/,https://sjj.yichun.gov.cn/ycsscjgj/gggs/pc/list.html
-市级,江西,宜春,,360900,农业农村,宜春市农业农村局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,https://nyncj.yichun.gov.cn/,https://www.yichun.gov.cn/,https://nyncj.yichun.gov.cn/ycsnyncj/tzgg/pc/list.html https://nyncj.yichun.gov.cn/ycsnyncj/fgzc/pc/list.html
-市级,江西,宜春,,360900,文旅,宜春市文化广电旅游局,已收录,1/2 个栏目已收录,2026-11-09 06:36,https://wh.yichun.gov.cn/,https://www.yichun.gov.cn/,https://wh.yichun.gov.cn/ycswgxlj/tzgg/pc/list.html https://wh.yichun.gov.cn/ycswgxlj/zcwj/pc/list.html
-市级,江西,宜春,,360900,生态环境,宜春市生态环境局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://sthjj.yichun.gov.cn/,https://www.yichun.gov.cn/,
+市级,江西,赣州,,360700,政府办,赣州市人民政府,已收录,2/2 个栏目已收录,2026-11-09 06:36,https://www.ganzhou.gov.cn/,http://www.ganzhou.gov.cn/,https://www.ganzhou.gov.cn/gzszf/c100023/list.shtml https://www.ganzhou.gov.cn/zfxxgk/bmwj/xxgk_list.shtml
+市级,江西,赣州,,360700,发改委,赣州市发展和改革委员会,已收录,1/2 个栏目已收录,2026-11-09 06:37,https://dpc.ganzhou.gov.cn/,https://www.ganzhou.gov.cn/,https://dpc.ganzhou.gov.cn/gzsfgw/tzgg/common_list.shtml https://dpc.ganzhou.gov.cn/gzsfgw/zcfg/common_list.shtml
+市级,江西,赣州,,360700,工信,赣州市工业和信息化局,已收录,1/1 个栏目已收录,2026-11-09 06:36,https://gxj.ganzhou.gov.cn/,https://www.ganzhou.gov.cn/,https://gxj.ganzhou.gov.cn/gzsgxj/c103140/common_list.shtml
+市级,江西,赣州,,360700,科技,赣州市科学技术局,已收录,2/2 个栏目已收录,2026-11-09 06:36,https://kjj.ganzhou.gov.cn/,https://www.ganzhou.gov.cn/,https://kjj.ganzhou.gov.cn/gzskxjsj/c102845/common_list.shtml https://kjj.ganzhou.gov.cn/gzskxjsj/c103481/common_list.shtml
+市级,江西,赣州,,360700,商务,赣州市商务局,已收录,2/2 个栏目已收录,2026-11-09 06:36,https://swj.ganzhou.gov.cn/,https://www.ganzhou.gov.cn/,https://swj.ganzhou.gov.cn/gzsswj/tpxw/common_list.shtml https://swj.ganzhou.gov.cn/gzsswj/c102929/common_list.shtml
+市级,江西,赣州,,360700,财政,赣州市财政局,已收录,1/2 个栏目已收录,2026-11-09 06:36,https://czj.ganzhou.gov.cn/,https://www.ganzhou.gov.cn/,https://czj.ganzhou.gov.cn/gzsczj/c103123/common_list.shtml https://www.ganzhou.gov.cn/zfxxgk/index.shtml?code=c115417d&temp=xxgk_list
+市级,江西,赣州,,360700,人社,赣州市人力资源和社会保障局,已收录,2/2 个栏目已收录,2026-11-09 06:37,https://rsj.ganzhou.gov.cn/,https://www.ganzhou.gov.cn/,https://rsj.ganzhou.gov.cn/gzsrsj/c100232/zwzx.shtml https://rsj.ganzhou.gov.cn/gzsrsj/c129164/zwzx.shtml
+市级,江西,赣州,,360700,市场监管,赣州市市场监督管理局,已收录,1/2 个栏目已收录,2026-11-09 06:36,https://sjj.ganzhou.gov.cn/,https://www.ganzhou.gov.cn/,https://sjj.ganzhou.gov.cn/gzszljsjdj/c101046/list2.shtml https://sjj.ganzhou.gov.cn/gzszljsjdj/c102441/zc_listt.shtml
+市级,江西,赣州,,360700,农业农村,赣州市农业农村局,已收录,2/3 个栏目已收录,2026-11-09 06:37,https://ny.ganzhou.gov.cn/newindex.shtml,https://www.ganzhou.gov.cn/,https://ny.ganzhou.gov.cn/gznw/c100997/zxdc.shtml https://ny.ganzhou.gov.cn/gznw/gsxxa/zxdc.shtml https://ny.ganzhou.gov.cn/gznw/c100998/jump.shtml
+市级,江西,赣州,,360700,文旅,赣州市文化广电旅游局,已收录,2/2 个栏目已收录,2026-11-09 06:36,https://wlj.ganzhou.gov.cn/,https://www.ganzhou.gov.cn/,https://wlj.ganzhou.gov.cn/whgdxwcblyj/tzgg/common_list.shtml https://wlj.ganzhou.gov.cn/whgdxwcblyj/c103373/common_list.shtml
+市级,江西,赣州,,360700,生态环境,赣州市生态环境局,已收录,1/2 个栏目已收录,2026-11-09 06:36,https://sthjj.ganzhou.gov.cn/,https://www.ganzhou.gov.cn/,https://sthjj.ganzhou.gov.cn/gzssthjj/c103309/common_list.shtml https://sthjj.ganzhou.gov.cn/gzssthjj/c103306/common_lists.shtml
+市级,江西,赣州,,360700,开发区,赣州蓉江新区管理委员会,已收录,2/2 个栏目已收录,2026-11-09 06:36,https://rjxq.ganzhou.gov.cn/,https://www.ganzhou.gov.cn/,https://rjxq.ganzhou.gov.cn/rjxq/tzgg/list.shtml https://rjxq.ganzhou.gov.cn/rjxqxxgk/c114014/xxgk_list.shtml
+市级,江西,赣州,,360700,开发区,赣州经济技术开发区管委会,已收录,2/2 个栏目已收录,2026-11-11 08:02,https://gzjkq.ganzhou.gov.cn/,https://www.ganzhou.gov.cn/,https://gzjkq.ganzhou.gov.cn/jkqzf/c105057/list.shtml https://gzjkq.ganzhou.gov.cn/jkqxxgk/c109936/xxgk_list.shtml
+市级,江西,吉安,,360800,政府办,吉安市人民政府,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,http://www.jian.gov.cn/,http://www.jian.gov.cn/,http://www.jian.gov.cn/news-list-gonggaogongshi.html https://www.jian.gov.cn/xxgk-list-zfwjian.html
+市级,江西,吉安,,360800,发改委,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,江西,吉安,,360800,工信,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,江西,吉安,,360800,科技,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,江西,吉安,,360800,商务,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,江西,吉安,,360800,财政,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,江西,吉安,,360800,人社,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,江西,吉安,,360800,市场监管,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,江西,吉安,,360800,农业农村,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,江西,吉安,,360800,文旅,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,江西,吉安,,360800,生态环境,,需人工,官方导航里没找到这个部门的网站或频道,,,,
 市级,江西,九江,,360400,政府办,中国九江网_九江市委市政府门户网站,已收录,2/2 个栏目已收录,2026-11-09 06:36,http://www.jiujiang.gov.cn/,http://www.jiujiang.gov.cn/,http://www.jiujiang.gov.cn/zwzx/gggs/ http://www.jiujiang.gov.cn/fdzdxxgk/01/00/guifanxinwenjian/
 市级,江西,九江,,360400,发改委,九江市发展和改革委员会,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,http://fgw.jiujiang.gov.cn/,http://www.jiujiang.gov.cn/fdzdxxgk/01/01/jgszyzn/jjsrmzf/,http://fgw.jiujiang.gov.cn/zwzx_205/gggs/ http://fgw.jiujiang.gov.cn/zwgk_205/zcfg/zcwj/
 市级,江西,九江,,360400,工信,九江市工业和信息化局,已收录,2/2 个栏目已收录,2026-11-09 06:36,http://gxj.jiujiang.gov.cn/,http://www.jiujiang.gov.cn/fdzdxxgk/01/01/jgszyzn/jjsrmzf/,http://gxj.jiujiang.gov.cn/zwzx_248/gggs/ http://gxj.jiujiang.gov.cn/zwgk_248/zcfg/zcwj/
@@ -58,42 +36,6 @@
 市级,江西,九江,,360400,生态环境,九江市生态环境局,已收录,2/2 个栏目已收录,2026-11-09 06:36,http://sthjj.jiujiang.gov.cn/,http://www.jiujiang.gov.cn/fdzdxxgk/01/01/jgszyzn/jjsrmzf/,http://sthjj.jiujiang.gov.cn/zwzx_215/gggs/ http://sthjj.jiujiang.gov.cn/zwgk_215/zcfg/zcwj/
 市级,江西,九江,,360400,开发区,国家级九江经济技术开发区_九江经济技术开发区管理委员会,已收录,2/2 个栏目已收录,2026-11-09 06:36,http://jkq.jiujiang.gov.cn/,http://www.jiujiang.gov.cn/fdzdxxgk/01/01/jgszyzn/jjsrmzf/,http://jkq.jiujiang.gov.cn/zwzx_303/tzgg/ http://jkq.jiujiang.gov.cn/fdzdgk20251207/fgzc/zcwj/
 市级,江西,九江,,360400,开发区,九江市八里湖新区管理委员会,已收录,2/2 个栏目已收录,2026-11-09 06:36,http://blhxq.jiujiang.gov.cn/,http://www.jiujiang.gov.cn/fdzdxxgk/01/01/jgszyzn/jjsrmzf/,https://blhxq.jiujiang.gov.cn/02/04/ https://blhxq.jiujiang.gov.cn/zwgk/
-市级,江西,抚州,,361000,政府办,抚州市人民政府,已收录,2/2 个栏目已收录,2026-11-09 06:36,https://www.jxfz.gov.cn/,http://www.jxfz.gov.cn/,https://www.jxfz.gov.cn/col/col321/index.html https://www.jxfz.gov.cn/col/col79/index.html
-市级,江西,抚州,,361000,发改委,市发展改革委,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://www.jxfz.gov.cn/col/col224/index.html,https://www.jxfz.gov.cn/col/col102/index.html?number=A00003,
-市级,江西,抚州,,361000,工信,市工业和信息化局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://www.jxfz.gov.cn/col/col225/index.html,https://www.jxfz.gov.cn/col/col102/index.html?number=A00003,
-市级,江西,抚州,,361000,科技,市科技局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://www.jxfz.gov.cn/col/col240/index.html,https://www.jxfz.gov.cn/col/col102/index.html?number=A00003,
-市级,江西,抚州,,361000,商务,市商务局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://www.jxfz.gov.cn/col/col239/index.html,https://www.jxfz.gov.cn/col/col102/index.html?number=A00003,
-市级,江西,抚州,,361000,财政,市财政局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://www.jxfz.gov.cn/col/col230/index.html,https://www.jxfz.gov.cn/col/col102/index.html?number=A00003,
-市级,江西,抚州,,361000,人社,市人力资源和社会保障局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://www.jxfz.gov.cn/col/col231/index.html,https://www.jxfz.gov.cn/col/col102/index.html?number=A00003,
-市级,江西,抚州,,361000,市场监管,市市场监管局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://www.jxfz.gov.cn/col/col245/index.html,https://www.jxfz.gov.cn/col/col102/index.html?number=A00003,
-市级,江西,抚州,,361000,农业农村,市农业农村局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://www.jxfz.gov.cn/col/col237/index.html,https://www.jxfz.gov.cn/col/col102/index.html?number=A00003,
-市级,江西,抚州,,361000,文旅,市文化广电旅游局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://www.jxfz.gov.cn/col/col241/index.html,https://www.jxfz.gov.cn/col/col102/index.html?number=A00003,
-市级,江西,抚州,,361000,生态环境,市生态环境局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://www.jxfz.gov.cn/col/col243/index.html,https://www.jxfz.gov.cn/col/col102/index.html?number=A00003,
-市级,江西,抚州,,361000,数据局,市政务服务和数据局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://www.jxfz.gov.cn/col/col2864/index.html,https://www.jxfz.gov.cn/col/col102/index.html?number=A00003,
-市级,江西,吉安,,360800,政府办,吉安市人民政府,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,http://www.jian.gov.cn/,http://www.jian.gov.cn/,http://www.jian.gov.cn/news-list-gonggaogongshi.html https://www.jian.gov.cn/xxgk-list-zfwjian.html
-市级,江西,吉安,,360800,发改委,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,江西,吉安,,360800,工信,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,江西,吉安,,360800,科技,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,江西,吉安,,360800,商务,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,江西,吉安,,360800,财政,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,江西,吉安,,360800,人社,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,江西,吉安,,360800,市场监管,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,江西,吉安,,360800,农业农村,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,江西,吉安,,360800,文旅,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,江西,吉安,,360800,生态环境,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,江西,赣州,,360700,政府办,赣州市人民政府,已收录,2/2 个栏目已收录,2026-11-09 06:36,https://www.ganzhou.gov.cn/,http://www.ganzhou.gov.cn/,https://www.ganzhou.gov.cn/gzszf/c100023/list.shtml https://www.ganzhou.gov.cn/zfxxgk/bmwj/xxgk_list.shtml
-市级,江西,赣州,,360700,发改委,赣州市发展和改革委员会,已收录,1/2 个栏目已收录,2026-11-09 06:37,https://dpc.ganzhou.gov.cn/,https://www.ganzhou.gov.cn/,https://dpc.ganzhou.gov.cn/gzsfgw/tzgg/common_list.shtml https://dpc.ganzhou.gov.cn/gzsfgw/zcfg/common_list.shtml
-市级,江西,赣州,,360700,工信,赣州市工业和信息化局,已收录,1/1 个栏目已收录,2026-11-09 06:36,https://gxj.ganzhou.gov.cn/,https://www.ganzhou.gov.cn/,https://gxj.ganzhou.gov.cn/gzsgxj/c103140/common_list.shtml
-市级,江西,赣州,,360700,科技,赣州市科学技术局,已收录,2/2 个栏目已收录,2026-11-09 06:36,https://kjj.ganzhou.gov.cn/,https://www.ganzhou.gov.cn/,https://kjj.ganzhou.gov.cn/gzskxjsj/c102845/common_list.shtml https://kjj.ganzhou.gov.cn/gzskxjsj/c103481/common_list.shtml
-市级,江西,赣州,,360700,商务,赣州市商务局,已收录,2/2 个栏目已收录,2026-11-09 06:36,https://swj.ganzhou.gov.cn/,https://www.ganzhou.gov.cn/,https://swj.ganzhou.gov.cn/gzsswj/tpxw/common_list.shtml https://swj.ganzhou.gov.cn/gzsswj/c102929/common_list.shtml
-市级,江西,赣州,,360700,财政,赣州市财政局,已收录,1/2 个栏目已收录,2026-11-09 06:36,https://czj.ganzhou.gov.cn/,https://www.ganzhou.gov.cn/,https://czj.ganzhou.gov.cn/gzsczj/c103123/common_list.shtml https://www.ganzhou.gov.cn/zfxxgk/index.shtml?code=c115417d&temp=xxgk_list
-市级,江西,赣州,,360700,人社,赣州市人力资源和社会保障局,已收录,2/2 个栏目已收录,2026-11-09 06:37,https://rsj.ganzhou.gov.cn/,https://www.ganzhou.gov.cn/,https://rsj.ganzhou.gov.cn/gzsrsj/c100232/zwzx.shtml https://rsj.ganzhou.gov.cn/gzsrsj/c129164/zwzx.shtml
-市级,江西,赣州,,360700,市场监管,赣州市市场监督管理局,已收录,1/2 个栏目已收录,2026-11-09 06:36,https://sjj.ganzhou.gov.cn/,https://www.ganzhou.gov.cn/,https://sjj.ganzhou.gov.cn/gzszljsjdj/c101046/list2.shtml https://sjj.ganzhou.gov.cn/gzszljsjdj/c102441/zc_listt.shtml
-市级,江西,赣州,,360700,农业农村,赣州市农业农村局,已收录,2/3 个栏目已收录,2026-11-09 06:37,https://ny.ganzhou.gov.cn/newindex.shtml,https://www.ganzhou.gov.cn/,https://ny.ganzhou.gov.cn/gznw/c100997/zxdc.shtml https://ny.ganzhou.gov.cn/gznw/gsxxa/zxdc.shtml https://ny.ganzhou.gov.cn/gznw/c100998/jump.shtml
-市级,江西,赣州,,360700,文旅,赣州市文化广电旅游局,已收录,2/2 个栏目已收录,2026-11-09 06:36,https://wlj.ganzhou.gov.cn/,https://www.ganzhou.gov.cn/,https://wlj.ganzhou.gov.cn/whgdxwcblyj/tzgg/common_list.shtml https://wlj.ganzhou.gov.cn/whgdxwcblyj/c103373/common_list.shtml
-市级,江西,赣州,,360700,生态环境,赣州市生态环境局,已收录,1/2 个栏目已收录,2026-11-09 06:36,https://sthjj.ganzhou.gov.cn/,https://www.ganzhou.gov.cn/,https://sthjj.ganzhou.gov.cn/gzssthjj/c103309/common_list.shtml https://sthjj.ganzhou.gov.cn/gzssthjj/c103306/common_lists.shtml
-市级,江西,赣州,,360700,开发区,赣州蓉江新区管理委员会,已收录,2/2 个栏目已收录,2026-11-09 06:36,https://rjxq.ganzhou.gov.cn/,https://www.ganzhou.gov.cn/,https://rjxq.ganzhou.gov.cn/rjxq/tzgg/list.shtml https://rjxq.ganzhou.gov.cn/rjxqxxgk/c114014/xxgk_list.shtml
-市级,江西,赣州,,360700,开发区,赣州经济技术开发区管委会,抓取失败,打不开：HTTP 504,,http://gzjkq.ganzhou.gov.cn/,https://www.ganzhou.gov.cn/,
 市级,江西,萍乡,,360300,政府办,萍乡市人民政府,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://www.pingxiang.gov.cn/,http://www.pingxiang.gov.cn/,
 市级,江西,萍乡,,360300,发改委,,需人工,官方导航里没找到这个部门的网站或频道,,,,
 市级,江西,萍乡,,360300,工信,,需人工,官方导航里没找到这个部门的网站或频道,,,,
@@ -105,6 +47,40 @@
 市级,江西,萍乡,,360300,农业农村,,需人工,官方导航里没找到这个部门的网站或频道,,,,
 市级,江西,萍乡,,360300,文旅,,需人工,官方导航里没找到这个部门的网站或频道,,,,
 市级,江西,萍乡,,360300,生态环境,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,江西,景德镇,,360200,政府办,景德镇市人民政府,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://www.jdz.gov.cn/,http://www.jdz.gov.cn/,
+市级,江西,景德镇,,360200,发改委,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,江西,景德镇,,360200,工信,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,江西,景德镇,,360200,科技,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,江西,景德镇,,360200,商务,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,江西,景德镇,,360200,财政,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,江西,景德镇,,360200,人社,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,江西,景德镇,,360200,市场监管,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,江西,景德镇,,360200,农业农村,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,江西,景德镇,,360200,文旅,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,江西,景德镇,,360200,生态环境,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,江西,抚州,,361000,政府办,抚州市人民政府,已收录,2/2 个栏目已收录,2026-11-09 06:36,https://www.jxfz.gov.cn/,http://www.jxfz.gov.cn/,https://www.jxfz.gov.cn/col/col321/index.html https://www.jxfz.gov.cn/col/col79/index.html
+市级,江西,抚州,,361000,发改委,抚州市发展和改革委员会,已收录,2/2 个栏目已收录,2026-11-11 08:02,https://dpc.jxfz.gov.cn/,https://www.jxfz.gov.cn/,https://dpc.jxfz.gov.cn/col/col5810/index.html https://dpc.jxfz.gov.cn/col/col6086/index.html
+市级,江西,抚州,,361000,工信,抚州市工业和信息化局,已收录,1/1 个栏目已收录,2026-11-11 08:02,https://gxj.jxfz.gov.cn/,https://www.jxfz.gov.cn/,https://gxj.jxfz.gov.cn/col/col5679/index.html
+市级,江西,抚州,,361000,科技,抚州市科技局,已收录,2/2 个栏目已收录,2026-11-11 08:02,https://kjj.jxfz.gov.cn/,https://www.jxfz.gov.cn/,https://kjj.jxfz.gov.cn/col/col5829/index.html?number=A00002A00004 https://kjj.jxfz.gov.cn/col/col5903/index.html
+市级,江西,抚州,,361000,商务,抚州市商务局,已收录,2/2 个栏目已收录,2026-11-11 08:02,https://swj.jxfz.gov.cn/,https://www.jxfz.gov.cn/,https://swj.jxfz.gov.cn/col/col4253/index.html https://swj.jxfz.gov.cn/col/col4251/index.html
+市级,江西,抚州,,361000,财政,抚州市财政局,已收录,2/2 个栏目已收录,2026-11-11 08:02,https://czj.jxfz.gov.cn/,https://www.jxfz.gov.cn/,https://czj.jxfz.gov.cn/col/col3019/index.html https://czj.jxfz.gov.cn/col/col3021/index.html?number=A00002A00004
+市级,江西,抚州,,361000,人社,抚州市人力资源和社会保障局,已收录,1/2 个栏目已收录,2026-11-11 08:02,https://rsj.jxfz.gov.cn/,https://www.jxfz.gov.cn/,https://rsj.jxfz.gov.cn/col/col6426/index.html https://rsj.jxfz.gov.cn/col/col16244/index.html
+市级,江西,抚州,,361000,市场监管,抚州市市场监督管理局（知识产权局）,已收录,1/2 个栏目已收录,2026-11-11 08:02,https://fzscj.jxfz.gov.cn/,https://www.jxfz.gov.cn/,https://fzscj.jxfz.gov.cn/col/col5570/index.html https://fzscj.jxfz.gov.cn/col/col5538/index.html
+市级,江西,抚州,,361000,农业农村,抚州市农业农村局,已收录,2/2 个栏目已收录,2026-11-11 08:02,https://nyj.jxfz.gov.cn/,https://www.jxfz.gov.cn/,https://nyj.jxfz.gov.cn/col/col4848/index.html https://nyj.jxfz.gov.cn/col/col3104/index.html
+市级,江西,抚州,,361000,文旅,抚州市文化广电旅游局,已收录,1/1 个栏目已收录,2026-11-11 08:02,https://wgxlj.jxfz.gov.cn/,https://www.jxfz.gov.cn/,https://www.jxfz.gov.cn/col/col241/index.html?number=A00010A00005
+市级,江西,抚州,,361000,生态环境,抚州市生态环境局,已收录,1/1 个栏目已收录,2026-11-11 08:02,https://hbj.jxfz.gov.cn/,https://www.jxfz.gov.cn/,https://hbj.jxfz.gov.cn/col/col5704/index.html
+市级,江西,抚州,,361000,数据局,市政务服务和数据局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://www.jxfz.gov.cn/col/col2864/index.html,https://www.jxfz.gov.cn/col/col102/index.html?number=A00003,
+市级,江西,新余,,360500,政府办,新余市人民政府门户网站,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,https://www.xinyu.gov.cn/,http://www.xinyu.gov.cn/,https://www.xinyu.gov.cn/xinyu/gsgg/pc/list.html https://www.xinyu.gov.cn/xinyu/dfxfg/pc/list.html
+市级,江西,新余,,360500,发改委,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,江西,新余,,360500,工信,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,江西,新余,,360500,科技,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,江西,新余,,360500,商务,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,江西,新余,,360500,财政,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,江西,新余,,360500,人社,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,江西,新余,,360500,市场监管,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,江西,新余,,360500,农业农村,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,江西,新余,,360500,文旅,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,江西,新余,,360500,生态环境,,需人工,官方导航里没找到这个部门的网站或频道,,,,
 市级,江西,上饶,,361100,政府办,上饶市人民政府,已收录,2/2 个栏目已收录,2026-11-09 06:37,https://www.zgsr.gov.cn/,http://www.zgsr.gov.cn/,https://www.zgsr.gov.cn/search4/s/?uc=1&siteCode=3611000001&column=全部&searchWord=公示公告 https://www.zgsr.gov.cn/zgsr/zcwj/list.shtml
 市级,江西,上饶,,361100,发改委,市人民政府-市发展和改革委员会,已收录,1/1 个栏目已收录,2026-11-09 06:36,https://www.zgsr.gov.cn/fgw/bindex.shtml,https://www.zgsr.gov.cn/zgsr/wzdh/zqdh.shtml,https://www.zgsr.gov.cn/fgw/gsgg/zwgk_xxgklist.shtml
 市级,江西,上饶,,361100,工信,市人民政府-市工业和信息化局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://www.zgsr.gov.cn/gxj/bindex.shtml,https://www.zgsr.gov.cn/zgsr/wzdh/zqdh.shtml,
@@ -119,18 +95,42 @@
 市级,江西,上饶,,361100,数据局,市人民政府-市数据局,已收录,1/1 个栏目已收录,2026-11-09 06:37,https://www.zgsr.gov.cn/dsj/bindex.shtml,https://www.zgsr.gov.cn/zgsr/wzdh/zqdh.shtml,https://www.zgsr.gov.cn/dsj/gsgg/zwgk_xxgklist.shtml
 市级,江西,南昌,,360100,政府办,南昌市人民政府,已收录,2/2 个栏目已收录,2026-11-09 06:37,https://www.nc.gov.cn/,http://www.nc.gov.cn/,https://www.nc.gov.cn/ncszf/tzgg/2021_nav_list.shtml https://www.nc.gov.cn/ncszf/gfxwj/zfxxgk_list_tj.shtml
 市级,江西,南昌,,360100,发改委,南昌市发展和改革委员会,已收录,2/2 个栏目已收录,2026-11-09 06:36,https://fgw.nc.gov.cn/,https://www.nc.gov.cn/ncszf/2020zfbmwzbbcub/2020_list.shtml,https://fgw.nc.gov.cn/ncfzggw/tzgg/nav_list.shtml https://fgw.nc.gov.cn/ncfzggw/gfxwja/bmxxgk_list.shtml
-市级,江西,南昌,,360100,工信,南昌市工业和信息化局,已收录,1/1 个栏目已收录,2026-11-09 06:37,https://gxw.nc.gov.cn/,http://gxw.nc.gov.cn/ncgxw/zfwzndbb/202601/5c38035f3902407fbf30c40465348dee.shtml,https://gxw.nc.gov.cn/ncgxw/gkgsgg/bmxxgk_list.shtml
-市级,江西,南昌,,360100,科技,南昌市科技创新局,已收录,2/2 个栏目已收录,2026-11-09 06:37,https://kjj.nc.gov.cn/,http://kjj.nc.gov.cn/nckjj/zfwzndbb/202601/48f89b8d91d94b5ebefffb9706343529.shtml,https://kjj.nc.gov.cn/nckjj/tztg/nav_list.shtml https://kjj.nc.gov.cn/nckjj/zcfg/list.shtml
-市级,江西,南昌,,360100,商务,南昌市商务局,已收录,1/1 个栏目已收录,2026-11-09 06:36,https://swj.nc.gov.cn/,http://swj.nc.gov.cn/ncsswj/zfwzndbb/202601/7fb6c47ad46049eb9fef0b603e045a59.shtml,https://swj.nc.gov.cn/ncsswj/tzgg/nav_list.shtml
+市级,江西,南昌,,360100,工信,南昌市工业和信息化局,已收录,1/1 个栏目已收录,2026-11-09 06:37,https://gxw.nc.gov.cn/,https://www.nc.gov.cn/ncszf/2020zfbmwzbbcub/2020_list.shtml,https://gxw.nc.gov.cn/ncgxw/gkgsgg/bmxxgk_list.shtml
+市级,江西,南昌,,360100,科技,南昌市科技创新局,已收录,2/2 个栏目已收录,2026-11-09 06:37,https://kjj.nc.gov.cn/,https://www.nc.gov.cn/ncszf/2020zfbmwzbbcub/2020_list.shtml,https://kjj.nc.gov.cn/nckjj/tztg/nav_list.shtml https://kjj.nc.gov.cn/nckjj/zcfg/list.shtml
+市级,江西,南昌,,360100,商务,南昌市商务局,已收录,1/1 个栏目已收录,2026-11-09 06:36,https://swj.nc.gov.cn/,https://www.nc.gov.cn/ncszf/2020zfbmwzbbcub/2020_list.shtml,https://swj.nc.gov.cn/ncsswj/tzgg/nav_list.shtml
 市级,江西,南昌,,360100,财政,南昌市财政局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://czj.nc.gov.cn/,https://www.nc.gov.cn/ncszf/2020zfbmwzbbcub/2020_list.shtml,
-市级,江西,南昌,,360100,人社,南昌市人力资源和社会保障局,已收录,2/2 个栏目已收录,2026-11-09 06:36,https://rsj.nc.gov.cn/,http://rsj.nc.gov.cn/ncsrsj/zfwzndbb/202601/97c2e52844484962b7bdd5d3f0f24c45.shtml,https://rsj.nc.gov.cn/ncsrsj/tzgg/nav_list.shtml https://rsj.nc.gov.cn/ncsrsj/zcfg/nav_list.shtml
-市级,江西,南昌,,360100,市场监管,南昌市市场监督管理局（知识产权局）,已收录,3/3 个栏目已收录,2026-11-09 06:36,https://sgj.nc.gov.cn/,http://sgj.nc.gov.cn/ncsgj/zfwzndbb/202601/cbc3bec3463749259f1edd3134938b30.shtml,https://sgj.nc.gov.cn/ncsgj/tztg/nav_list.shtml https://sgj.nc.gov.cn/ncsgj/gsgg/nav_list.shtml https://sgj.nc.gov.cn/ncsgj/zcfg/nav_list.shtml
-市级,江西,南昌,,360100,农业农村,南昌市农业农村局,已收录,1/1 个栏目已收录,2026-11-09 06:36,https://nyj.nc.gov.cn/ncnyj/index.shtml,http://nyj.nc.gov.cn/ncnyj/zfwzndbb/202601/120cb668b7cd4bdc8c80b5486f9bf037.shtml,https://nyj.nc.gov.cn/ncnyj/wjtz/nav_list.shtml
-市级,江西,南昌,,360100,文旅,南昌市文化广电旅游局,已收录,2/2 个栏目已收录,2026-11-09 06:36,https://wgxj.nc.gov.cn/,http://wgxj.nc.gov.cn/wgxlj/zfwzndbb/202512/04604b02d9904f35add58fb53e5073d1.shtml,https://wgxj.nc.gov.cn/wgxlj/tzgg/nav_list.shtml https://wgxj.nc.gov.cn/wgxlj/zcfg/list.shtml
-市级,江西,南昌,,360100,生态环境,南昌市生态环境局,已收录,1/1 个栏目已收录,2026-11-09 06:37,https://sthjj.nc.gov.cn/,http://sthjj.nc.gov.cn/ncgbj/zfwzndbb/202601/c1d1654e775149f997b19e62b9380dd0.shtml,https://sthjj.nc.gov.cn/ncgbj/tzggh/nav_list.shtml
+市级,江西,南昌,,360100,人社,南昌市人力资源和社会保障局,已收录,2/2 个栏目已收录,2026-11-09 06:36,https://rsj.nc.gov.cn/,https://www.nc.gov.cn/ncszf/2020zfbmwzbbcub/2020_list.shtml,https://rsj.nc.gov.cn/ncsrsj/tzgg/nav_list.shtml https://rsj.nc.gov.cn/ncsrsj/zcfg/nav_list.shtml
+市级,江西,南昌,,360100,市场监管,南昌市市场监督管理局（知识产权局）,已收录,3/3 个栏目已收录,2026-11-09 06:36,https://sgj.nc.gov.cn/,https://www.nc.gov.cn/ncszf/2020zfbmwzbbcub/2020_list.shtml,https://sgj.nc.gov.cn/ncsgj/tztg/nav_list.shtml https://sgj.nc.gov.cn/ncsgj/gsgg/nav_list.shtml https://sgj.nc.gov.cn/ncsgj/zcfg/nav_list.shtml
+市级,江西,南昌,,360100,农业农村,南昌市农业农村局,已收录,1/1 个栏目已收录,2026-11-09 06:36,https://nyj.nc.gov.cn/,https://www.nc.gov.cn/ncszf/2020zfbmwzbbcub/2020_list.shtml,https://nyj.nc.gov.cn/ncnyj/wjtz/nav_list.shtml
+市级,江西,南昌,,360100,文旅,南昌市文化广电旅游局,已收录,2/2 个栏目已收录,2026-11-09 06:36,https://wgxj.nc.gov.cn/,https://www.nc.gov.cn/ncszf/2020zfbmwzbbcub/2020_list.shtml,https://wgxj.nc.gov.cn/wgxlj/tzgg/nav_list.shtml https://wgxj.nc.gov.cn/wgxlj/zcfg/list.shtml
+市级,江西,南昌,,360100,生态环境,南昌市生态环境局,已收录,1/1 个栏目已收录,2026-11-09 06:37,https://sthjj.nc.gov.cn/,https://www.nc.gov.cn/ncszf/2020zfbmwzbbcub/2020_list.shtml,https://sthjj.nc.gov.cn/ncgbj/tzggh/nav_list.shtml
 市级,江西,南昌,,360100,数据局,南昌市政务服务和数据管理局,已收录,1/1 个栏目已收录,2026-11-09 06:37,https://xzspj.nc.gov.cn/,https://www.nc.gov.cn/ncszf/2020zfbmwzbbcub/2020_list.shtml,https://xzspj.nc.gov.cn/ncspj/zcfg/nav_list.shtml
 市级,江西,南昌,,360100,开发区,南昌高新技术产业开发区管委会,已收录,1/2 个栏目已收录,2026-11-09 06:37,https://nchdz.nc.gov.cn/,https://www.nc.gov.cn/ncszf/2020zfbmwzbbcub/2020_list.shtml,https://nchdz.nc.gov.cn/ncgxq/qtfdxx/bmxxgk_btn.shtml https://nchdz.nc.gov.cn/ncgxq/gggs/common_list.shtml
 市级,江西,南昌,,360100,开发区,南昌经济技术开发区管理委员会,已收录,1/1 个栏目已收录,2026-11-09 06:36,https://ncjk.nc.gov.cn/,https://www.nc.gov.cn/ncszf/2020zfbmwzbbcub/2020_list.shtml,https://ncjk.nc.gov.cn/ncjkq/gggs/list.shtml
 市级,江西,南昌,,360100,开发区,南昌小蓝经济技术开发区管理委员会,已收录,2/2 个栏目已收录,2026-11-09 06:37,https://ncxl.nc.gov.cn/,https://www.nc.gov.cn/ncszf/2020zfbmwzbbcub/2020_list.shtml,https://ncxl.nc.gov.cn/ncxljkq/tzgg/list.shtml https://ncxl.nc.gov.cn/ncxljkq/zcfg/list.shtml
 市级,江西,南昌,,360100,开发区,南昌高新技术产业开发区管委会,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://nchdz.nc.gov.cn/ncgxq/xxgkzn/bmxxgk_list.shtml,https://www.nc.gov.cn/ncszf/szxqxxgk/zfxxgk_bmxxgk.shtml,
 市级,江西,南昌,,360100,开发区,经开区管委会,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://ncjk.nc.gov.cn/ncjkq/xxgkznd/bmxxgk_list.shtml,https://www.nc.gov.cn/ncszf/szxqxxgk/zfxxgk_bmxxgk.shtml,
+市级,江西,鹰潭,,360600,政府办,鹰潭市人民政府,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,http://www.yingtan.gov.cn/,http://www.yingtan.gov.cn/,http://www.yingtan.gov.cn/news-list-col50.html http://www.yingtan.gov.cn/news-list-zhengce.html
+市级,江西,鹰潭,,360600,发改委,鹰潭市发展和改革委员会,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,http://fgw.yingtan.gov.cn/,http://www.yingtan.gov.cn/news-list-zhengfujigou.html,http://fgw.yingtan.gov.cn/news-list-col1175.html http://fgw.yingtan.gov.cn/news-list-col1172.html
+市级,江西,鹰潭,,360600,工信,鹰潭市工业和信息化局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,http://gxj.yingtan.gov.cn/,http://www.yingtan.gov.cn/news-list-zhengfujigou.html,http://gxj.yingtan.gov.cn/news-list-col2661.html http://www.yingtan.gov.cn/news-list-bumenguifanxingwenjian.html
+市级,江西,鹰潭,,360600,科技,鹰潭市科学技术局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,http://kjj.yingtan.gov.cn/,http://www.yingtan.gov.cn/news-list-zhengfujigou.html,http://kjj.yingtan.gov.cn/news-list-col2481.html http://kjj.yingtan.gov.cn/news-list-col2466.html
+市级,江西,鹰潭,,360600,商务,鹰潭市商务局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,http://swj.yingtan.gov.cn/,http://www.yingtan.gov.cn/news-list-zhengfujigou.html,http://swj.yingtan.gov.cn/news-list-col2931.html http://swj.yingtan.gov.cn/news-list-col2917.html
+市级,江西,鹰潭,,360600,财政,鹰潭市财政局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,http://czj.yingtan.gov.cn/,http://www.yingtan.gov.cn/news-list-zhengfujigou.html,http://czj.yingtan.gov.cn/news-list-col3217.html http://czj.yingtan.gov.cn/news-list-col3202.html
+市级,江西,鹰潭,,360600,人社,鹰潭市人力资源和社会保障局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,http://rsj.yingtan.gov.cn/,http://www.yingtan.gov.cn/news-list-zhengfujigou.html,http://rsj.yingtan.gov.cn/news-list-col2751.html http://rsj.yingtan.gov.cn/news-list-col2736.html
+市级,江西,鹰潭,,360600,市场监管,鹰潭市市场监督管理局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,http://scjgj.yingtan.gov.cn/,http://www.yingtan.gov.cn/news-list-zhengfujigou.html,http://scjgj.yingtan.gov.cn/news-list-col2571.html http://scjgj.yingtan.gov.cn/news-list-col2556.html
+市级,江西,鹰潭,,360600,农业农村,鹰潭市农业农村粮食局,需人工,需浏览器渲染或接口（全国覆盖 v1）,,http://nynclsj.yingtan.gov.cn/,http://www.yingtan.gov.cn/news-list-zhengfujigou.html,http://nynclsj.yingtan.gov.cn/news-list-col2901.html http://nynclsj.yingtan.gov.cn/news-list-col2886.html
+市级,江西,鹰潭,,360600,文旅,鹰潭市文化广电旅游局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,http://wgxlj.yingtan.gov.cn/,http://www.yingtan.gov.cn/news-list-zhengfujigou.html,http://wgxlj.yingtan.gov.cn/news-list-col2541.html http://wgxlj.yingtan.gov.cn/news-list-col2526.html
+市级,江西,鹰潭,,360600,生态环境,鹰潭市生态环境局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,http://sthjj.yingtan.gov.cn/,http://www.yingtan.gov.cn/news-list-zhengfujigou.html,http://sthjj.yingtan.gov.cn/news-list-col2631.html http://sthjj.yingtan.gov.cn/news-list-col2616.html
+市级,江西,鹰潭,,360600,开发区,鹰潭高新技术产业开发区管理委员会,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,http://www.yingtan.gov.cn/news-list-yingtangaoxinjishuchanyekaifaquguanliweiyuanhui.html,http://www.yingtan.gov.cn/news-list-zhengfujigou.html,
+市级,江西,鹰潭,,360600,开发区,鹰潭市信江新区管理委员会,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,http://www.yingtan.gov.cn/news-list-yingtanshixinjiangxinquguanliweiyuanhui.html,http://www.yingtan.gov.cn/news-list-zhengfujigou.html,
+市级,江西,宜春,,360900,政府办,宜春市人民政府,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,https://www.yichun.gov.cn/,http://www.yichun.gov.cn/,https://www.yichun.gov.cn/ycsrmzf/zcwjh/pc/list.html
+市级,江西,宜春,,360900,发改委,宜春市发展和改革委员会,已收录,1/2 个栏目已收录,2026-11-09 06:36,https://drc.yichun.gov.cn/,https://www.yichun.gov.cn/,https://drc.yichun.gov.cn/ycsfgw/gggs/pc/list.html https://drc.yichun.gov.cn/ycsfgw/zcfg/pc/list.html
+市级,江西,宜春,,360900,工信,宜春市工业和信息化局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://gxj.yichun.gov.cn/,https://www.yichun.gov.cn/,
+市级,江西,宜春,,360900,科技,宜春市科学技术局,已收录,2/2 个栏目已收录,2026-11-09 06:37,https://kjj.yichun.gov.cn/,https://www.yichun.gov.cn/,https://kjj.yichun.gov.cn/ycskjj/tzgg/pc/list.html https://kjj.yichun.gov.cn/ycskjj/zcfg/pc/list.html
+市级,江西,宜春,,360900,商务,宜春市商务局,已收录,1/1 个栏目已收录,2026-11-09 06:36,https://ycwjmw.yichun.gov.cn/,https://www.yichun.gov.cn/,https://ycwjmw.yichun.gov.cn/ycsswj/tzgg/pc/list.html
+市级,江西,宜春,,360900,财政,宜春市财政局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,https://czj.yichun.gov.cn/,https://www.yichun.gov.cn/,https://czj.yichun.gov.cn/ycsczj/tzgg/pc/list.html
+市级,江西,宜春,,360900,人社,宜春市人力资源和社会保障局,已收录,1/1 个栏目已收录,2026-11-09 06:36,https://hrss.yichun.gov.cn/,https://www.yichun.gov.cn/,https://hrss.yichun.gov.cn/ycsshbzj/gggs/pc/list.html
+市级,江西,宜春,,360900,市场监管,宜春市市场监督管理局,已收录,1/1 个栏目已收录,2026-11-09 06:36,https://sjj.yichun.gov.cn/,https://www.yichun.gov.cn/,https://sjj.yichun.gov.cn/ycsscjgj/gggs/pc/list.html
+市级,江西,宜春,,360900,农业农村,宜春市农业农村局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,https://nyncj.yichun.gov.cn/,https://www.yichun.gov.cn/,https://nyncj.yichun.gov.cn/ycsnyncj/tzgg/pc/list.html https://nyncj.yichun.gov.cn/ycsnyncj/fgzc/pc/list.html
+市级,江西,宜春,,360900,文旅,宜春市文化广电旅游局,已收录,1/2 个栏目已收录,2026-11-09 06:36,https://wh.yichun.gov.cn/,https://www.yichun.gov.cn/,https://wh.yichun.gov.cn/ycswgxlj/tzgg/pc/list.html https://wh.yichun.gov.cn/ycswgxlj/zcwj/pc/list.html
+市级,江西,宜春,,360900,生态环境,宜春市生态环境局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://sthjj.yichun.gov.cn/,https://www.yichun.gov.cn/,

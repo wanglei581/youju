@@ -1,15 +1,4 @@
 ﻿层级,省份,城市,区县,区划代码,部门,部门全称,状态,原因,最后成功时间,部门网址,导航来源页,栏目网址
-市级,河北,邯郸,,130400,政府办,邯郸市人民政府,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,https://www.hd.gov.cn/zjhd/,http://www.hd.gov.cn/zjhd/,https://www.hd.gov.cn/hdzfxxgk/fdgknr/fdzc
-市级,河北,邯郸,,130400,发改委,市发展改革委,已收录,2/2 个栏目已收录,2026-11-09 06:37,http://fgw.hd.gov.cn/zwgk/xxgk/gkzn/,https://www.hd.gov.cn/hdzfxxgk/zfxxgkzn/,http://fgw.hd.gov.cn/zwgk/xxgk/fdzdgknr/tzgg/ http://fgw.hd.gov.cn/zwgk/xxgk/zc/
-市级,河北,邯郸,,130400,工信,市工业和信息化局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://www.hd.gov.cn/hdzfxxgk/gszbm/auto23727/gxjxxgkzn/,https://www.hd.gov.cn/hdzfxxgk/zfxxgkzn/,
-市级,河北,邯郸,,130400,科技,市科技局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,http://hdskjj.hd.gov.cn/web/zwxxgk.aspx?newstag=zfxxgkzn,https://www.hd.gov.cn/hdzfxxgk/zfxxgkzn/,http://hdskjj.hd.gov.cn/web/zwxxgk.aspx?newstag=xzgfxwj
-市级,河北,邯郸,,130400,商务,市商务局,已收录,2/2 个栏目已收录,2026-11-09 06:37,http://hdsswj.hd.gov.cn/?p=46,https://www.hd.gov.cn/hdzfxxgk/zfxxgkzn/,http://hdsswj.hd.gov.cn/info/ http://hdsswj.hd.gov.cn/zc_gfxwj/
-市级,河北,邯郸,,130400,财政,市财政局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://www.hd.gov.cn/hdzfxxgk/gszbm/auto23729/czjxxgkzn/,https://www.hd.gov.cn/hdzfxxgk/zfxxgkzn/,
-市级,河北,邯郸,,130400,人社,市人力资源和社会保障局,不能抓,HTTP 412 拒绝访问,,http://rsj.hd.gov.cn/zwgk/gkzn/,https://www.hd.gov.cn/hdzfxxgk/zfxxgkzn/,
-市级,河北,邯郸,,130400,市场监管,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,河北,邯郸,,130400,农业农村,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,河北,邯郸,,130400,文旅,市文化广电和旅游局,已收录,1/1 个栏目已收录,2026-11-09 06:37,http://wgl.hd.gov.cn/xxgk/gkzn/,https://www.hd.gov.cn/hdzfxxgk/zfxxgkzn/,http://wgl.hd.gov.cn/xxgk/gknr/tzgg
-市级,河北,邯郸,,130400,生态环境,市生态环境局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,https://sthj.hd.gov.cn/main/xxgk/index,https://www.hd.gov.cn/hdzfxxgk/zfxxgkzn/,https://sthj.hd.gov.cn/main/list?cid=158 https://sthj.hd.gov.cn/main/xxgk/index?cid=271
 市级,河北,衡水,,131100,政府办,衡水市人民政府,已收录,2/2 个栏目已收录,2026-11-09 06:37,http://www.hengshui.gov.cn/,http://www.hengshui.gov.cn/,http://www.hengshui.gov.cn/col/col48/index.html http://xxgk.hengshui.gov.cn/hssxxgk/sy/zfwj/index.html
 市级,河北,衡水,,131100,发改委,市发改委,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,http://www.hengshui.gov.cn/col/col10370/index.html,http://www.hengshui.gov.cn/col/col10366/index.html,
 市级,河北,衡水,,131100,工信,市工信局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,http://www.hengshui.gov.cn/col/col10376/index.html,http://www.hengshui.gov.cn/col/col10366/index.html,
@@ -22,65 +11,6 @@
 市级,河北,衡水,,131100,文旅,市文广旅游局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,http://www.hengshui.gov.cn/col/col10375/index.html,http://www.hengshui.gov.cn/col/col10366/index.html,
 市级,河北,衡水,,131100,生态环境,衡水市生态环境局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,http://sthjj.hengshui.gov.cn/pubgov1_21/358.html,http://xxgk.hengshui.gov.cn/hssxxgk/zfxxgk29/zfxxgkzn17/index.html,
 市级,河北,衡水,,131100,数据局,市数据和政务服务局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,http://www.hengshui.gov.cn/col/col10398/index.html,http://www.hengshui.gov.cn/col/col10366/index.html,
-市级,河北,石家庄,,130100,政府办,石家庄市人民政府,已收录,1/2 个栏目已收录,2026-11-09 06:46,http://www.sjz.gov.cn/,http://www.sjz.gov.cn/,https://www.sjz.gov.cn/columns/cc9885b6-c241-4241-a121-91dcdea2185a/index.html https://www.sjz.gov.cn/columns/03d81845-647b-4475-8804-915b03e086c0/index.html
-市级,河北,石家庄,,130100,发改委,石家庄市发展和改革委员会,已收录,2/2 个栏目已收录,2026-11-09 06:46,http://fgw.sjz.gov.cn/columns/d22bb361-9143-45a9-9bbc-ce705e100c1d/index.html,http://www.sjz.gov.cn/zfxxgk/columns/eabc8bec-3d23-4898-8110-48b99b209058/index.html,https://fgw.sjz.gov.cn/columns/b6e35b62-c8fa-41a0-a3b1-50fa7b66baeb/index.html https://fgw.sjz.gov.cn/columns/9ec749a1-4ebf-4b44-9fd8-4ed9a24fb5ca/index.html
-市级,河北,石家庄,,130100,工信,石家庄市工业和信息化局,已收录,1/1 个栏目已收录,2026-11-09 06:46,https://gxj.sjz.gov.cn/columns/a041bc52-4804-4aa3-aaff-6e2989ce4fa6/index.html,https://www.sjz.gov.cn/columns/74c77615-6d3d-4e39-ac26-8452ca73d253/index.html,https://gxj.sjz.gov.cn/columns/4a7011d7-f7bc-42d6-93e7-e362892163a8/index.html
-市级,河北,石家庄,,130100,科技,石家庄市科学技术局,已收录,1/1 个栏目已收录,2026-11-09 06:46,https://kjj.sjz.gov.cn/columns/6ef7b391-bbdb-426c-bb75-8f10784ee59f/index.html,https://www.sjz.gov.cn/columns/74c77615-6d3d-4e39-ac26-8452ca73d253/index.html,https://kjj.sjz.gov.cn/columns/f52471fd-5c53-4036-9040-df71973b9db2/index.html
-市级,河北,石家庄,,130100,商务,石家庄市商务局,抓取失败,本机无法访问（加密连接错误：[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred i,,https://swj.sjz.gov.cn/columns/2c85d2d9-fa71-45cf-a76c-f6a1bb8eb645/index.html,https://www.sjz.gov.cn/columns/74c77615-6d3d-4e39-ac26-8452ca73d253/index.html,https://swj.sjz.gov.cn/columns/6fdc3d4e-9c63-48be-bcbc-9711e20203dc/index.html
-市级,河北,石家庄,,130100,财政,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,河北,石家庄,,130100,人社,石家庄市人力资源和社会保障局,需人工,已访问（识别出 1 条、带日期 1 条，需人工确认是否列表页）,,https://rsj.sjz.gov.cn/columns/69b253c7-2fd1-4e8b-be02-0ec72b910647/index.html,https://www.sjz.gov.cn/columns/74c77615-6d3d-4e39-ac26-8452ca73d253/index.html,https://rsj.sjz.gov.cn/columns/c8ba08f6-54e3-4e1f-9aba-5d27b759fe8e/index.html
-市级,河北,石家庄,,130100,市场监管,石家庄市市场监督管理局,抓取失败,本机无法访问（robots.txt 暂时无法获取（加密连接错误：[SSL: UNEXPECTED_EOF_WHILE_READI,,http://scjg.sjz.gov.cn/columns/17219256-f0c5-43ca-ae66-177d8c1e5aca/index.html,https://www.sjz.gov.cn/columns/74c77615-6d3d-4e39-ac26-8452ca73d253/index.html,https://scjg.sjz.gov.cn/columns/76ac7ef9-4d04-434c-99fa-ce9284404f65/index.html
-市级,河北,石家庄,,130100,农业农村,市农业农村局,抓取失败,打不开：加密连接错误：[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol,,https://nyncj.sjz.gov.cn/columns/6bc5633c-9c2a-4b03-8eab-aeb16cc95645/index.html,https://www.sjz.gov.cn/columns/74c77615-6d3d-4e39-ac26-8452ca73d253/index.html,
-市级,河北,石家庄,,130100,文旅,石家庄市文化广电和旅游局,已收录,1/1 个栏目已收录,2026-11-09 06:46,https://wglj.sjz.gov.cn/columns/2b3364df-3f77-4575-ad48-532360b3ebb7/index.html,https://www.sjz.gov.cn/columns/74c77615-6d3d-4e39-ac26-8452ca73d253/index.html,http://wglj.sjz.gov.cn/columns/0bf7f332-8839-4a60-bd5c-40be9944632a/index.html
-市级,河北,石家庄,,130100,生态环境,石家庄市生态环境局,已收录,1/1 个栏目已收录,2026-11-09 06:46,https://sthjj.sjz.gov.cn/columns/51ef3aa1-e483-4647-ba8f-86ab158f760a/index.html,https://www.sjz.gov.cn/columns/74c77615-6d3d-4e39-ac26-8452ca73d253/index.html,https://sthjj.sjz.gov.cn/columns/ca6f2430-7378-4299-a3c8-9377534970ee/index.html
-市级,河北,石家庄,,130100,数据局,石家庄市数据局,已收录,1/1 个栏目已收录,2026-11-09 06:46,http://sjj.sjz.gov.cn/columns/bd0fb8e3-547d-480d-bf66-308793f37b14/index.html,https://www.sjz.gov.cn/columns/74c77615-6d3d-4e39-ac26-8452ca73d253/index.html,https://sjj.sjz.gov.cn/columns/0c343ad8-2ee5-4b0a-abe2-228a929f74ef/index.html
-市级,河北,廊坊,,131000,政府办,廊坊市人民政府,已收录,1/2 个栏目已收录,2026-11-09 06:37,https://www.lf.gov.cn/Category_5/Index.aspx,http://www.lf.gov.cn/Category_5/Index.aspx,https://www.lf.gov.cn/Category_19/Index.aspx https://www.lf.gov.cn/Category_956/Index.aspx
-市级,河北,廊坊,,131000,发改委,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,河北,廊坊,,131000,工信,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,河北,廊坊,,131000,科技,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,河北,廊坊,,131000,商务,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,河北,廊坊,,131000,财政,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,河北,廊坊,,131000,人社,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,河北,廊坊,,131000,市场监管,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,河北,廊坊,,131000,农业农村,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,河北,廊坊,,131000,文旅,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,河北,廊坊,,131000,生态环境,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,河北,秦皇岛,,130300,政府办,秦皇岛市人民政府,已收录,3/3 个栏目已收录,2026-11-09 06:37,https://www.qhd.gov.cn/,https://www.qhd.gov.cn/,https://www.qhd.gov.cn/index/news/index.html?tid=47B8DD1E0D4039780B021F947848EFE2 https://www.qhd.gov.cn/index/zwgk/article_list.html?code=293 https://www.qhd.gov.cn/index/news/index.html?tid=60CC571538AC7C6A009A548656C2C9E2
-市级,河北,秦皇岛,,130300,发改委,市发改委,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,http://fgw.qhd.gov.cn/home/details?code=NDg5MTc0MzIyMTU4&pcode=NjE4MDIzNDc3NTY3&id=466686,https://www.qhd.gov.cn/index/workreport/index.html,
-市级,河北,秦皇岛,,130300,工信,市工信局,已收录,1/1 个栏目已收录,2026-11-09 06:36,http://gxj.qhd.gov.cn/home/details?code=OTkxODM5MzI5NTcz&id=466144,https://www.qhd.gov.cn/index/workreport/index.html,http://gxj.qhd.gov.cn/home/list/?code=NDg0NjI2MTYwOTE4&pcode=MA%ce%b3%ce%b3
-市级,河北,秦皇岛,,130300,科技,市科技局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,http://kjj.qhd.gov.cn/home/detail?id=7853,https://www.qhd.gov.cn/index/workreport/index.html,http://kjj.qhd.gov.cn/home/list?code=NA%ce%b3%ce%b3&pcode=MA%ce%b3%ce%b3
-市级,河北,秦皇岛,,130300,商务,市外事商务局（市投促局）,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.qhd.gov.cn/index/zwgk/bmzb_list.html?deptid=167,https://www.qhd.gov.cn/index/zwgk/zfxx_gknr,
-市级,河北,秦皇岛,,130300,财政,市财政局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.qhd.gov.cn/index/zwgk/bmzb_list.html?deptid=132,https://www.qhd.gov.cn/index/zwgk/zfxx_gknr,
-市级,河北,秦皇岛,,130300,人社,市人社局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://rsj.qhd.gov.cn/home/rNews/detail?code=cmpzTmV3cw%ce%b3%ce%b3&condition=cnNqTmV3c05vdGljZQ%ce%b3%ce%b3&id=1681,https://www.qhd.gov.cn/index/workreport/index.html,
-市级,河北,秦皇岛,,130300,市场监管,市市场监督管理局,已收录,2/2 个栏目已收录,2026-11-09 06:37,http://scj.qhd.gov.cn/home/details?code=MTAw&id=15154,https://www.qhd.gov.cn/index/workreport/index.html,http://scj.qhd.gov.cn/home/list?code=MTU%ce%b3&pcode=MTI%ce%b3 http://scj.qhd.gov.cn/home/list?code=NDAz&pcode=MTY%ce%b3
-市级,河北,秦皇岛,,130300,农业农村,市农业农村局,已收录,1/1 个栏目已收录,2026-11-09 06:36,http://nyncj.qhd.gov.cn/home/list?code=Ng%ce%b3%ce%b3&pcode=MTk%ce%b3,https://www.qhd.gov.cn/index/workreport/index.html,http://nyncj.qhd.gov.cn/home/list?code=Ng%ce%b3%ce%b3&pcode=MTk%ce%b3
-市级,河北,秦皇岛,,130300,文旅,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,河北,秦皇岛,,130300,生态环境,市生态环境局,已收录,2/2 个栏目已收录,2026-11-09 06:37,http://sthj.qhd.gov.cn/home/details?code=NDAyOGFiODE2MzI5MTVjZDAxNjMyOTE5MmI0MTAwMDg%ce%b3&pcode=MA%ce%b3%ce%b3&id=14818,https://www.qhd.gov.cn/index/workreport/index.html,http://sthj.qhd.gov.cn/home/list?pcode=eHdkdA%ce%b3%ce%b3&code=NDAyOGFiODE2MzI5MTVjZDAxNjMyOTE5MmI0MTAwMDg%ce%b3 http://sthj.qhd.gov.cn/home/list?pcode=endmdw%ce%b3%ce%b3&code=emN3ajI2
-市级,河北,秦皇岛,,130300,数据局,市数据和政务服务局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.qhd.gov.cn/index/zwgk/bmzb_list.html?deptid=238,https://www.qhd.gov.cn/index/zwgk/zfxx_gknr,
-市级,河北,张家口,,130700,政府办,张家口市人民政府,已收录,2/2 个栏目已收录,2026-11-09 06:37,https://www.zjk.gov.cn/,http://www.zjk.gov.cn/,https://www.zjk.gov.cn/channel/list/14.html https://www.zjk.gov.cn/xxgk/list/lm_zc.thtml?pid=74
-市级,河北,张家口,,130700,发改委,张家口市发展和改革委员会,已收录,2/2 个栏目已收录,2026-11-09 06:37,https://www.zjk.gov.cn/zjkfgw/,https://www.zjk.gov.cn/,https://www.zjk.gov.cn/zjkfgw/xxgk/list.thtml?classId=14&orgCode=001001057 https://www.zjk.gov.cn/zjkfgw/xxgk/zc.thtml?classId=24&orgCode=001001057
-市级,河北,张家口,,130700,工信,张家口市工业和信息化局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://www.zjk.gov.cn/zjkgxj/xxgk/gkzn.thtml?classId=18&orgCode=001001059,https://www.zjk.gov.cn/__sys_block__/zwxxgk.html,
-市级,河北,张家口,,130700,科技,张家口市科学技术局,已收录,2/2 个栏目已收录,2026-11-09 06:37,http://kjj.zjk.gov.cn/,https://www.zjk.gov.cn/,http://kjj.zjk.gov.cn/xxgk/list.thtml?classId=14&orgCode=001001060 http://kjj.zjk.gov.cn/xxgk/zc.thtml?classId=24&orgCode=001001060
-市级,河北,张家口,,130700,商务,张家口市商务局,已收录,2/2 个栏目已收录,2026-11-09 06:37,http://swj.zjk.gov.cn/,https://www.zjk.gov.cn/,http://swj.zjk.gov.cn/xxgk/list.thtml?classId=14&orgCode=001001068 http://swj.zjk.gov.cn/xxgk/zclist.thtml?classId=24&orgCode=001001068
-市级,河北,张家口,,130700,财政,张家口市财政局,已收录,2/2 个栏目已收录,2026-11-09 06:37,http://czj.zjk.gov.cn/,https://www.zjk.gov.cn/,http://czj.zjk.gov.cn/xxgk/list.thtml?classId=14&orgCode=001001066 http://czj.zjk.gov.cn/xxgk/list_gfxwj.thtml?classId=24&orgCode=001001066
-市级,河北,张家口,,130700,人社,张家口市人力资源和社会保障局,已收录,2/2 个栏目已收录,2026-11-09 06:37,https://rsj.zjk.gov.cn/,https://www.zjk.gov.cn/,https://rsj.zjk.gov.cn/xxgk/list.thtml?classId=14&orgCode=001001069 https://rsj.zjk.gov.cn/xxgk/zc.thtml?classId=24&orgCode=001001069
-市级,河北,张家口,,130700,市场监管,张家口市市场监督管理局,已收录,2/2 个栏目已收录,2026-11-09 06:37,http://scjg.zjk.gov.cn/,https://www.zjk.gov.cn/,http://scjg.zjk.gov.cn/channel/list/666.html http://scjg.zjk.gov.cn/xxgk/zc.thtml?classId=74&orgCode=001001085
-市级,河北,张家口,,130700,农业农村,张家口市农业农村局,已收录,2/2 个栏目已收录,2026-11-09 06:37,http://nyncj.zjk.gov.cn/,https://www.zjk.gov.cn/,http://nyncj.zjk.gov.cn/xxgk/list.thtml?classId=14&orgCode=001001071 http://nyncj.zjk.gov.cn/xxgk/zc.thtml?classId=24&orgCode=001001071
-市级,河北,张家口,,130700,文旅,张家口市文化广电和旅游局,已收录,2/2 个栏目已收录,2026-11-09 06:37,http://whgdly.zjk.gov.cn/,https://www.zjk.gov.cn/,http://whgdly.zjk.gov.cn/xxgk/list.thtml?classId=14&orgCode=001001079 http://whgdly.zjk.gov.cn/xxgk/zc_gfxwj.thtml?classId=24&orgCode=001001079
-市级,河北,张家口,,130700,生态环境,张家口市生态环境局,已收录,1/1 个栏目已收录,2026-11-09 06:37,http://hb.zjk.gov.cn/,https://www.zjk.gov.cn/,http://hb.zjk.gov.cn/channel/list/345.html
-市级,河北,张家口,,130700,数据局,张家口市数据和政务服务局,已收录,1/1 个栏目已收录,2026-11-09 06:37,http://spj.zjk.gov.cn/,https://www.zjk.gov.cn/,http://spj.zjk.gov.cn/list.thtml?classId=14&orgCode=001001089
-市级,河北,沧州,,130900,政府办,沧州市人民政府,已收录,2/2 个栏目已收录,2026-11-09 06:37,https://www.cangzhou.gov.cn:443/,http://www.cangzhou.gov.cn/,https://www.cangzhou.gov.cn:443/cangzhou/gonggaogongshi/listDisplaySelf.shtml https://www.cangzhou.gov.cn:443/cangzhou/c100763/listZhengce.shtml
-市级,河北,沧州,,130900,发改委,沧州市发展和改革委员会,已收录,2/2 个栏目已收录,2026-11-09 06:37,https://fgw.cangzhou.gov.cn/,https://www.cangzhou.gov.cn:443/,https://fgw.cangzhou.gov.cn/fgw/c101688/listDisplaySelf.shtml https://fgw.cangzhou.gov.cn/fgw/c101689/listDisplaySelf.shtml
-市级,河北,沧州,,130900,工信,沧州市工业和信息化局,已收录,2/2 个栏目已收录,2026-11-09 06:37,https://gxj.cangzhou.gov.cn/,https://www.cangzhou.gov.cn:443/,https://gxj.cangzhou.gov.cn/gxj/c100329/listDisplaySelf.shtml https://gxj.cangzhou.gov.cn/gxj/c100330/listDisplaySelf.shtml
-市级,河北,沧州,,130900,科技,沧州市科学技术局,已收录,2/2 个栏目已收录,2026-11-09 06:37,https://kj.cangzhou.gov.cn/,https://www.cangzhou.gov.cn:443/,https://kj.cangzhou.gov.cn/kj/c100628/listDisplaySelf.shtml https://kj.cangzhou.gov.cn/kj/c100629/listDisplaySelf.shtml
-市级,河北,沧州,,130900,商务,沧州市商务局,已收录,2/2 个栏目已收录,2026-11-09 06:37,https://sw.cangzhou.gov.cn/,https://www.cangzhou.gov.cn:443/,https://sw.cangzhou.gov.cn/sw/c100645/listDisplaySelf.shtml https://sw.cangzhou.gov.cn/sw/c100646/listDisplaySelf.shtml
-市级,河北,沧州,,130900,财政,沧州市财政局,已收录,1/1 个栏目已收录,2026-11-09 06:37,https://www.cangzhou.gov.cn:443/czj/c102100/list.shtml,https://www.cangzhou.gov.cn:443/cangzhou/c100534/infoopen_index2.shtml,https://www.cangzhou.gov.cn:443/czj/c102103/list.shtml
-市级,河北,沧州,,130900,人社,沧州市人力资源和社会保障局,已收录,2/2 个栏目已收录,2026-11-09 06:37,https://rs.cangzhou.gov.cn/,https://www.cangzhou.gov.cn:443/,https://rs.cangzhou.gov.cn/rs/c100290/listDisplaySelf.shtml https://rs.cangzhou.gov.cn/rs/c100291/listDisplaySelf.shtml
-市级,河北,沧州,,130900,市场监管,沧州市市场监督管理局,已收录,3/3 个栏目已收录,2026-11-09 06:37,https://scjgj.cangzhou.gov.cn/,https://www.cangzhou.gov.cn:443/,https://scjgj.cangzhou.gov.cn/scjd/tztg/listDisplaySelf.shtml https://scjgj.cangzhou.gov.cn/scjd/c100609/listDisplaySelf.shtml https://scjgj.cangzhou.gov.cn/scjd/c100610/listDisplaySelf.shtml
-市级,河北,沧州,,130900,农业农村,沧州市农业农村局,已收录,2/2 个栏目已收录,2026-11-09 06:37,https://nync.cangzhou.gov.cn/,https://www.cangzhou.gov.cn:443/,https://nync.cangzhou.gov.cn/nync/c100688/listDisplaySelf.shtml https://nync.cangzhou.gov.cn/nync/c100689/listDisplaySelf.shtml
-市级,河北,沧州,,130900,文旅,沧州市文化广电和旅游局,已收录,1/1 个栏目已收录,2026-11-09 06:37,https://lyj.cangzhou.gov.cn/,https://www.cangzhou.gov.cn:443/,https://lyj.cangzhou.gov.cn/lyj/c103771/listDisplaySelf.shtml
-市级,河北,沧州,,130900,生态环境,沧州市生态环境局,已收录,2/2 个栏目已收录,2026-11-09 06:37,https://hb.cangzhou.gov.cn/,https://www.cangzhou.gov.cn:443/,https://hb.cangzhou.gov.cn/hb/c100429/listDisplaySelf.shtml https://hb.cangzhou.gov.cn/hb/c100476/listDisplaySelf.shtml
-市级,河北,沧州,,130900,数据局,市数据局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,https://www.cangzhou.gov.cn:443/shujujuxxgk/add101300/list.shtml,https://www.cangzhou.gov.cn:443/cangzhou/c100534/infoopen_index2.shtml,https://www.cangzhou.gov.cn:443/shujujuxxgk/c102103/list.shtml
 市级,河北,承德,,130800,政府办,承德市人民政府,已收录,1/2 个栏目已收录,2026-11-09 06:37,https://www.chengde.gov.cn/,http://www.chengde.gov.cn/,https://www.chengde.gov.cn/col/col9943/index.html?number=CD0004A00006 https://www.chengde.gov.cn/col/col9933/index.html?number=CD0001A00002
 市级,河北,承德,,130800,发改委,市发展和改革委员会,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://www.chengde.gov.cn/col/col11107/index.html,https://www.chengde.gov.cn/col/col9897/index.html,
 市级,河北,承德,,130800,工信,市工业和信息化局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://www.chengde.gov.cn/col/col11110/index.html,https://www.chengde.gov.cn/col/col9897/index.html,
@@ -93,17 +23,76 @@
 市级,河北,承德,,130800,文旅,,需人工,官方导航里没找到这个部门的网站或频道,,,,
 市级,河北,承德,,130800,生态环境,市生态环境局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://www.chengde.gov.cn/col/col11118/index.html,https://www.chengde.gov.cn/col/col9897/index.html,
 市级,河北,承德,,130800,数据局,市数据和政务服务局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://www.chengde.gov.cn/col/col11136/index.html,https://www.chengde.gov.cn/col/col9897/index.html,
-市级,河北,唐山,,130200,政府办,,抓取失败,打不开：门户打不开：HTTP 405,,,,
-市级,河北,唐山,,130200,发改委,,抓取失败,打不开：门户打不开：HTTP 405,,,,
-市级,河北,唐山,,130200,工信,,抓取失败,打不开：门户打不开：HTTP 405,,,,
-市级,河北,唐山,,130200,科技,,抓取失败,打不开：门户打不开：HTTP 405,,,,
-市级,河北,唐山,,130200,商务,,抓取失败,打不开：门户打不开：HTTP 405,,,,
-市级,河北,唐山,,130200,财政,,抓取失败,打不开：门户打不开：HTTP 405,,,,
-市级,河北,唐山,,130200,人社,,抓取失败,打不开：门户打不开：HTTP 405,,,,
-市级,河北,唐山,,130200,市场监管,,抓取失败,打不开：门户打不开：HTTP 405,,,,
-市级,河北,唐山,,130200,农业农村,,抓取失败,打不开：门户打不开：HTTP 405,,,,
-市级,河北,唐山,,130200,文旅,,抓取失败,打不开：门户打不开：HTTP 405,,,,
-市级,河北,唐山,,130200,生态环境,,抓取失败,打不开：门户打不开：HTTP 405,,,,
+市级,河北,石家庄,,130100,政府办,石家庄市人民政府,已收录,1/2 个栏目已收录,2026-11-09 06:46,http://www.sjz.gov.cn/,http://www.sjz.gov.cn/,https://www.sjz.gov.cn/columns/cc9885b6-c241-4241-a121-91dcdea2185a/index.html https://www.sjz.gov.cn/columns/03d81845-647b-4475-8804-915b03e086c0/index.html
+市级,河北,石家庄,,130100,发改委,石家庄市发展和改革委员会,已收录,2/2 个栏目已收录,2026-11-09 06:46,http://fgw.sjz.gov.cn/columns/d22bb361-9143-45a9-9bbc-ce705e100c1d/index.html,http://www.sjz.gov.cn/zfxxgk/columns/eabc8bec-3d23-4898-8110-48b99b209058/index.html,https://fgw.sjz.gov.cn/columns/b6e35b62-c8fa-41a0-a3b1-50fa7b66baeb/index.html https://fgw.sjz.gov.cn/columns/9ec749a1-4ebf-4b44-9fd8-4ed9a24fb5ca/index.html
+市级,河北,石家庄,,130100,工信,石家庄市工业和信息化局,已收录,1/1 个栏目已收录,2026-11-09 06:46,https://gxj.sjz.gov.cn/columns/a041bc52-4804-4aa3-aaff-6e2989ce4fa6/index.html,https://www.sjz.gov.cn/columns/74c77615-6d3d-4e39-ac26-8452ca73d253/index.html,https://gxj.sjz.gov.cn/columns/4a7011d7-f7bc-42d6-93e7-e362892163a8/index.html
+市级,河北,石家庄,,130100,科技,石家庄市科学技术局,已收录,1/1 个栏目已收录,2026-11-09 06:46,https://kjj.sjz.gov.cn/columns/6ef7b391-bbdb-426c-bb75-8f10784ee59f/index.html,https://www.sjz.gov.cn/columns/74c77615-6d3d-4e39-ac26-8452ca73d253/index.html,https://kjj.sjz.gov.cn/columns/f52471fd-5c53-4036-9040-df71973b9db2/index.html
+市级,河北,石家庄,,130100,商务,石家庄市商务局,已收录,1/1 个栏目已收录,2026-11-11 08:01,https://swj.sjz.gov.cn/columns/2c85d2d9-fa71-45cf-a76c-f6a1bb8eb645/index.html,https://www.sjz.gov.cn/columns/74c77615-6d3d-4e39-ac26-8452ca73d253/index.html,https://swj.sjz.gov.cn/columns/6fdc3d4e-9c63-48be-bcbc-9711e20203dc/index.html
+市级,河北,石家庄,,130100,财政,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,河北,石家庄,,130100,人社,石家庄市人力资源和社会保障局,需人工,已访问（识别出 1 条、带日期 1 条，需人工确认是否列表页）,,https://rsj.sjz.gov.cn/columns/69b253c7-2fd1-4e8b-be02-0ec72b910647/index.html,https://www.sjz.gov.cn/columns/74c77615-6d3d-4e39-ac26-8452ca73d253/index.html,https://rsj.sjz.gov.cn/columns/c8ba08f6-54e3-4e1f-9aba-5d27b759fe8e/index.html
+市级,河北,石家庄,,130100,市场监管,石家庄市市场监督管理局,已收录,1/1 个栏目已收录,2026-11-11 08:01,http://scjg.sjz.gov.cn/columns/17219256-f0c5-43ca-ae66-177d8c1e5aca/index.html,https://www.sjz.gov.cn/columns/74c77615-6d3d-4e39-ac26-8452ca73d253/index.html,https://scjg.sjz.gov.cn/columns/76ac7ef9-4d04-434c-99fa-ce9284404f65/index.html
+市级,河北,石家庄,,130100,农业农村,石家庄市农业农村局,已收录,2/2 个栏目已收录,2026-11-11 08:02,https://nyncj.sjz.gov.cn/columns/6bc5633c-9c2a-4b03-8eab-aeb16cc95645/index.html,https://www.sjz.gov.cn/columns/74c77615-6d3d-4e39-ac26-8452ca73d253/index.html,https://nyncj.sjz.gov.cn/columns/e04b32d9-e68f-4a76-b51e-b0c818d1cc50/index.html https://nyncj.sjz.gov.cn/columns/596d101d-bdc3-47b9-8433-3ecbd308bbc0/index.html
+市级,河北,石家庄,,130100,文旅,石家庄市文化广电和旅游局,已收录,1/1 个栏目已收录,2026-11-09 06:46,https://wglj.sjz.gov.cn/columns/2b3364df-3f77-4575-ad48-532360b3ebb7/index.html,https://www.sjz.gov.cn/columns/74c77615-6d3d-4e39-ac26-8452ca73d253/index.html,http://wglj.sjz.gov.cn/columns/0bf7f332-8839-4a60-bd5c-40be9944632a/index.html
+市级,河北,石家庄,,130100,生态环境,石家庄市生态环境局,已收录,1/1 个栏目已收录,2026-11-09 06:46,https://sthjj.sjz.gov.cn/columns/51ef3aa1-e483-4647-ba8f-86ab158f760a/index.html,https://www.sjz.gov.cn/columns/74c77615-6d3d-4e39-ac26-8452ca73d253/index.html,https://sthjj.sjz.gov.cn/columns/ca6f2430-7378-4299-a3c8-9377534970ee/index.html
+市级,河北,石家庄,,130100,数据局,石家庄市数据局,已收录,1/1 个栏目已收录,2026-11-09 06:46,http://sjj.sjz.gov.cn/columns/bd0fb8e3-547d-480d-bf66-308793f37b14/index.html,https://www.sjz.gov.cn/columns/74c77615-6d3d-4e39-ac26-8452ca73d253/index.html,https://sjj.sjz.gov.cn/columns/0c343ad8-2ee5-4b0a-abe2-228a929f74ef/index.html
+市级,河北,张家口,,130700,政府办,张家口市人民政府,已收录,2/2 个栏目已收录,2026-11-09 06:37,https://www.zjk.gov.cn/,http://www.zjk.gov.cn/,https://www.zjk.gov.cn/channel/list/14.html https://www.zjk.gov.cn/xxgk/list/lm_zc.thtml?pid=74
+市级,河北,张家口,,130700,发改委,张家口市发展和改革委员会,已收录,2/2 个栏目已收录,2026-11-09 06:37,https://www.zjk.gov.cn/zjkfgw/,https://www.zjk.gov.cn/,https://www.zjk.gov.cn/zjkfgw/xxgk/list.thtml?classId=14&orgCode=001001057 https://www.zjk.gov.cn/zjkfgw/xxgk/zc.thtml?classId=24&orgCode=001001057
+市级,河北,张家口,,130700,工信,张家口市工业和信息化局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://www.zjk.gov.cn/zjkgxj/xxgk/gkzn.thtml?classId=18&orgCode=001001059,https://www.zjk.gov.cn/__sys_block__/zwxxgk.html,
+市级,河北,张家口,,130700,科技,张家口市科学技术局,已收录,2/2 个栏目已收录,2026-11-09 06:37,http://kjj.zjk.gov.cn/,https://www.zjk.gov.cn/,http://kjj.zjk.gov.cn/xxgk/list.thtml?classId=14&orgCode=001001060 http://kjj.zjk.gov.cn/xxgk/zc.thtml?classId=24&orgCode=001001060
+市级,河北,张家口,,130700,商务,张家口市商务局,已收录,2/2 个栏目已收录,2026-11-09 06:37,http://swj.zjk.gov.cn/,https://www.zjk.gov.cn/,http://swj.zjk.gov.cn/xxgk/list.thtml?classId=14&orgCode=001001068 http://swj.zjk.gov.cn/xxgk/zclist.thtml?classId=24&orgCode=001001068
+市级,河北,张家口,,130700,财政,张家口市财政局,已收录,2/2 个栏目已收录,2026-11-09 06:37,http://czj.zjk.gov.cn/,https://www.zjk.gov.cn/,http://czj.zjk.gov.cn/xxgk/list.thtml?classId=14&orgCode=001001066 http://czj.zjk.gov.cn/xxgk/list_gfxwj.thtml?classId=24&orgCode=001001066
+市级,河北,张家口,,130700,人社,张家口市人力资源和社会保障局,已收录,2/2 个栏目已收录,2026-11-09 06:37,https://rsj.zjk.gov.cn/,https://www.zjk.gov.cn/,https://rsj.zjk.gov.cn/xxgk/list.thtml?classId=14&orgCode=001001069 https://rsj.zjk.gov.cn/xxgk/zc.thtml?classId=24&orgCode=001001069
+市级,河北,张家口,,130700,市场监管,张家口市市场监督管理局,已收录,2/2 个栏目已收录,2026-11-09 06:37,http://scjg.zjk.gov.cn/,https://www.zjk.gov.cn/,http://scjg.zjk.gov.cn/channel/list/666.html http://scjg.zjk.gov.cn/xxgk/zc.thtml?classId=74&orgCode=001001085
+市级,河北,张家口,,130700,农业农村,张家口市农业农村局,已收录,2/2 个栏目已收录,2026-11-09 06:37,http://nyncj.zjk.gov.cn/,https://www.zjk.gov.cn/,http://nyncj.zjk.gov.cn/xxgk/list.thtml?classId=14&orgCode=001001071 http://nyncj.zjk.gov.cn/xxgk/zc.thtml?classId=24&orgCode=001001071
+市级,河北,张家口,,130700,文旅,张家口市文化广电和旅游局,已收录,2/2 个栏目已收录,2026-11-09 06:37,http://whgdly.zjk.gov.cn/,https://www.zjk.gov.cn/,http://whgdly.zjk.gov.cn/xxgk/list.thtml?classId=14&orgCode=001001079 http://whgdly.zjk.gov.cn/xxgk/zc_gfxwj.thtml?classId=24&orgCode=001001079
+市级,河北,张家口,,130700,生态环境,张家口市生态环境局,已收录,1/1 个栏目已收录,2026-11-09 06:37,http://hb.zjk.gov.cn/,https://www.zjk.gov.cn/,http://hb.zjk.gov.cn/channel/list/345.html
+市级,河北,张家口,,130700,数据局,张家口市数据和政务服务局,已收录,1/1 个栏目已收录,2026-11-09 06:37,http://spj.zjk.gov.cn/,https://www.zjk.gov.cn/,http://spj.zjk.gov.cn/list.thtml?classId=14&orgCode=001001089
+市级,河北,秦皇岛,,130300,政府办,秦皇岛市人民政府,已收录,3/3 个栏目已收录,2026-11-09 06:37,https://www.qhd.gov.cn/,https://www.qhd.gov.cn/,https://www.qhd.gov.cn/index/news/index.html?tid=47B8DD1E0D4039780B021F947848EFE2 https://www.qhd.gov.cn/index/zwgk/article_list.html?code=293 https://www.qhd.gov.cn/index/news/index.html?tid=60CC571538AC7C6A009A548656C2C9E2
+市级,河北,秦皇岛,,130300,发改委,市发改委（市粮食和物资储备局）,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.qhd.gov.cn/index/zwgk/bmzb_list.html?deptid=198,https://www.qhd.gov.cn/index/zwgk/zfxx_gknr,
+市级,河北,秦皇岛,,130300,工信,市工信局,已收录,1/1 个栏目已收录,2026-11-09 06:36,http://gxj.qhd.gov.cn/home/details?code=OTkxODM5MzI5NTcz&id=466144,https://www.qhd.gov.cn/index/workreport/index.html,http://gxj.qhd.gov.cn/home/list/?code=NDg0NjI2MTYwOTE4&pcode=MA%ce%b3%ce%b3
+市级,河北,秦皇岛,,130300,科技,市科技局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,http://kjj.qhd.gov.cn/home/detail?id=7853,https://www.qhd.gov.cn/index/workreport/index.html,http://kjj.qhd.gov.cn/home/list?code=NA%ce%b3%ce%b3&pcode=MA%ce%b3%ce%b3
+市级,河北,秦皇岛,,130300,商务,市外事商务局（市投促局）,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.qhd.gov.cn/index/zwgk/bmzb_list.html?deptid=167,https://www.qhd.gov.cn/index/zwgk/zfxx_gknr,
+市级,河北,秦皇岛,,130300,财政,市财政局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.qhd.gov.cn/index/zwgk/bmzb_list.html?deptid=132,https://www.qhd.gov.cn/index/zwgk/zfxx_gknr,
+市级,河北,秦皇岛,,130300,人社,市人社局,已收录,1/1 个栏目已收录,2026-11-11 08:02,https://rsj.qhd.gov.cn/,https://www.qhd.gov.cn/index/workreport/index.html,https://rsj.qhd.gov.cn/home/rNews/list?code=cmpzTmV3cw%ce%b3%ce%b3&condition=cnNqTmV3c05vdGljZQ%ce%b3%ce%b3
+市级,河北,秦皇岛,,130300,市场监管,市市场监督管理局,已收录,2/2 个栏目已收录,2026-11-09 06:37,http://scj.qhd.gov.cn/home/details?code=MTAw&id=15154,https://www.qhd.gov.cn/index/workreport/index.html,http://scj.qhd.gov.cn/home/list?code=MTU%ce%b3&pcode=MTI%ce%b3 http://scj.qhd.gov.cn/home/list?code=NDAz&pcode=MTY%ce%b3
+市级,河北,秦皇岛,,130300,农业农村,市农业农村局,已收录,1/1 个栏目已收录,2026-11-09 06:36,http://nyncj.qhd.gov.cn/home/list?code=Ng%ce%b3%ce%b3&pcode=MTk%ce%b3,https://www.qhd.gov.cn/index/workreport/index.html,http://nyncj.qhd.gov.cn/home/list?code=Ng%ce%b3%ce%b3&pcode=MTk%ce%b3
+市级,河北,秦皇岛,,130300,文旅,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,河北,秦皇岛,,130300,生态环境,市生态环境局,已收录,2/2 个栏目已收录,2026-11-09 06:37,http://sthj.qhd.gov.cn/home/details?code=NDAyOGFiODE2MzI5MTVjZDAxNjMyOTE5MmI0MTAwMDg%ce%b3&pcode=MA%ce%b3%ce%b3&id=14818,https://www.qhd.gov.cn/index/workreport/index.html,http://sthj.qhd.gov.cn/home/list?pcode=eHdkdA%ce%b3%ce%b3&code=NDAyOGFiODE2MzI5MTVjZDAxNjMyOTE5MmI0MTAwMDg%ce%b3 http://sthj.qhd.gov.cn/home/list?pcode=endmdw%ce%b3%ce%b3&code=emN3ajI2
+市级,河北,秦皇岛,,130300,数据局,市数据和政务服务局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.qhd.gov.cn/index/zwgk/bmzb_list.html?deptid=238,https://www.qhd.gov.cn/index/zwgk/zfxx_gknr,
+市级,河北,邯郸,,130400,政府办,邯郸市人民政府,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,https://www.hd.gov.cn/zjhd/,http://www.hd.gov.cn/zjhd/,https://www.hd.gov.cn/hdzfxxgk/fdgknr/fdzc
+市级,河北,邯郸,,130400,发改委,市发展改革委,已收录,2/2 个栏目已收录,2026-11-09 06:37,http://fgw.hd.gov.cn/zwgk/xxgk/gkzn/,https://www.hd.gov.cn/hdzfxxgk/zfxxgkzn/,http://fgw.hd.gov.cn/zwgk/xxgk/fdzdgknr/tzgg/ http://fgw.hd.gov.cn/zwgk/xxgk/zc/
+市级,河北,邯郸,,130400,工信,市工业和信息化局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://www.hd.gov.cn/hdzfxxgk/gszbm/auto23727/gxjxxgkzn/,https://www.hd.gov.cn/hdzfxxgk/zfxxgkzn/,
+市级,河北,邯郸,,130400,科技,市科技局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,http://hdskjj.hd.gov.cn/web/zwxxgk.aspx?newstag=zfxxgkzn,https://www.hd.gov.cn/hdzfxxgk/zfxxgkzn/,http://hdskjj.hd.gov.cn/web/zwxxgk.aspx?newstag=xzgfxwj
+市级,河北,邯郸,,130400,商务,市商务局,已收录,2/2 个栏目已收录,2026-11-09 06:37,http://hdsswj.hd.gov.cn/?p=46,https://www.hd.gov.cn/hdzfxxgk/zfxxgkzn/,http://hdsswj.hd.gov.cn/info/ http://hdsswj.hd.gov.cn/zc_gfxwj/
+市级,河北,邯郸,,130400,财政,市财政局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://www.hd.gov.cn/hdzfxxgk/gszbm/auto23729/czjxxgkzn/,https://www.hd.gov.cn/hdzfxxgk/zfxxgkzn/,
+市级,河北,邯郸,,130400,人社,市人力资源和社会保障局,不能抓,HTTP 412 拒绝访问,,http://rsj.hd.gov.cn/zwgk/gkzn/,https://www.hd.gov.cn/hdzfxxgk/zfxxgkzn/,
+市级,河北,邯郸,,130400,市场监管,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,河北,邯郸,,130400,农业农村,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,河北,邯郸,,130400,文旅,市文化广电和旅游局,已收录,1/1 个栏目已收录,2026-11-09 06:37,http://wgl.hd.gov.cn/xxgk/gkzn/,https://www.hd.gov.cn/hdzfxxgk/zfxxgkzn/,http://wgl.hd.gov.cn/xxgk/gknr/tzgg
+市级,河北,邯郸,,130400,生态环境,市生态环境局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,https://sthj.hd.gov.cn/main/xxgk/index,https://www.hd.gov.cn/hdzfxxgk/zfxxgkzn/,https://sthj.hd.gov.cn/main/list?cid=158 https://sthj.hd.gov.cn/main/xxgk/index?cid=271
+市级,河北,沧州,,130900,政府办,沧州市人民政府,已收录,2/2 个栏目已收录,2026-11-09 06:37,https://www.cangzhou.gov.cn:443/,http://www.cangzhou.gov.cn/,https://www.cangzhou.gov.cn:443/cangzhou/gonggaogongshi/listDisplaySelf.shtml https://www.cangzhou.gov.cn:443/cangzhou/c100763/listZhengce.shtml
+市级,河北,沧州,,130900,发改委,沧州市发展和改革委员会,已收录,2/2 个栏目已收录,2026-11-09 06:37,https://fgw.cangzhou.gov.cn/,https://www.cangzhou.gov.cn:443/,https://fgw.cangzhou.gov.cn/fgw/c101688/listDisplaySelf.shtml https://fgw.cangzhou.gov.cn/fgw/c101689/listDisplaySelf.shtml
+市级,河北,沧州,,130900,工信,沧州市工业和信息化局,已收录,2/2 个栏目已收录,2026-11-09 06:37,https://gxj.cangzhou.gov.cn/,https://www.cangzhou.gov.cn:443/,https://gxj.cangzhou.gov.cn/gxj/c100329/listDisplaySelf.shtml https://gxj.cangzhou.gov.cn/gxj/c100330/listDisplaySelf.shtml
+市级,河北,沧州,,130900,科技,沧州市科学技术局,已收录,2/2 个栏目已收录,2026-11-09 06:37,https://kj.cangzhou.gov.cn/,https://www.cangzhou.gov.cn:443/,https://kj.cangzhou.gov.cn/kj/c100628/listDisplaySelf.shtml https://kj.cangzhou.gov.cn/kj/c100629/listDisplaySelf.shtml
+市级,河北,沧州,,130900,商务,沧州市商务局,已收录,2/2 个栏目已收录,2026-11-09 06:37,https://sw.cangzhou.gov.cn/,https://www.cangzhou.gov.cn:443/,https://sw.cangzhou.gov.cn/sw/c100645/listDisplaySelf.shtml https://sw.cangzhou.gov.cn/sw/c100646/listDisplaySelf.shtml
+市级,河北,沧州,,130900,财政,沧州市财政局,已收录,1/1 个栏目已收录,2026-11-09 06:37,https://www.cangzhou.gov.cn:443/czj/c102100/list.shtml,https://www.cangzhou.gov.cn:443/cangzhou/c100534/infoopen_index2.shtml,https://www.cangzhou.gov.cn:443/czj/c102103/list.shtml
+市级,河北,沧州,,130900,人社,沧州市人力资源和社会保障局,已收录,2/2 个栏目已收录,2026-11-09 06:37,https://rs.cangzhou.gov.cn/,https://www.cangzhou.gov.cn:443/,https://rs.cangzhou.gov.cn/rs/c100290/listDisplaySelf.shtml https://rs.cangzhou.gov.cn/rs/c100291/listDisplaySelf.shtml
+市级,河北,沧州,,130900,市场监管,沧州市市场监督管理局,已收录,3/3 个栏目已收录,2026-11-09 06:37,https://scjgj.cangzhou.gov.cn/,https://www.cangzhou.gov.cn:443/,https://scjgj.cangzhou.gov.cn/scjd/tztg/listDisplaySelf.shtml https://scjgj.cangzhou.gov.cn/scjd/c100609/listDisplaySelf.shtml https://scjgj.cangzhou.gov.cn/scjd/c100610/listDisplaySelf.shtml
+市级,河北,沧州,,130900,农业农村,沧州市农业农村局,已收录,2/2 个栏目已收录,2026-11-09 06:37,https://nync.cangzhou.gov.cn/,https://www.cangzhou.gov.cn:443/,https://nync.cangzhou.gov.cn/nync/c100688/listDisplaySelf.shtml https://nync.cangzhou.gov.cn/nync/c100689/listDisplaySelf.shtml
+市级,河北,沧州,,130900,文旅,沧州市文化广电和旅游局,已收录,1/1 个栏目已收录,2026-11-09 06:37,https://lyj.cangzhou.gov.cn/,https://www.cangzhou.gov.cn:443/,https://lyj.cangzhou.gov.cn/lyj/c103771/listDisplaySelf.shtml
+市级,河北,沧州,,130900,生态环境,沧州市生态环境局,已收录,2/2 个栏目已收录,2026-11-09 06:37,https://hb.cangzhou.gov.cn/,https://www.cangzhou.gov.cn:443/,https://hb.cangzhou.gov.cn/hb/c100429/listDisplaySelf.shtml https://hb.cangzhou.gov.cn/hb/c100476/listDisplaySelf.shtml
+市级,河北,沧州,,130900,数据局,市数据局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,https://www.cangzhou.gov.cn:443/shujujuxxgk/add101300/list.shtml,https://www.cangzhou.gov.cn:443/cangzhou/c100534/infoopen_index2.shtml,https://www.cangzhou.gov.cn:443/shujujuxxgk/c102103/list.shtml
+市级,河北,廊坊,,131000,政府办,廊坊市人民政府,已收录,1/2 个栏目已收录,2026-11-09 06:37,https://www.lf.gov.cn/Category_5/Index.aspx,http://www.lf.gov.cn/Category_5/Index.aspx,https://www.lf.gov.cn/Category_19/Index.aspx https://www.lf.gov.cn/Category_956/Index.aspx
+市级,河北,廊坊,,131000,发改委,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,河北,廊坊,,131000,工信,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,河北,廊坊,,131000,科技,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,河北,廊坊,,131000,商务,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,河北,廊坊,,131000,财政,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,河北,廊坊,,131000,人社,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,河北,廊坊,,131000,市场监管,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,河北,廊坊,,131000,农业农村,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,河北,廊坊,,131000,文旅,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,河北,廊坊,,131000,生态环境,,需人工,官方导航里没找到这个部门的网站或频道,,,,
 市级,河北,保定,,130600,政府办,,不能抓,门户不能抓：robots.txt 禁止,,,,
 市级,河北,保定,,130600,发改委,,不能抓,门户不能抓：robots.txt 禁止,,,,
 市级,河北,保定,,130600,工信,,不能抓,门户不能抓：robots.txt 禁止,,,,
@@ -115,6 +104,17 @@
 市级,河北,保定,,130600,农业农村,,不能抓,门户不能抓：robots.txt 禁止,,,,
 市级,河北,保定,,130600,文旅,,不能抓,门户不能抓：robots.txt 禁止,,,,
 市级,河北,保定,,130600,生态环境,,不能抓,门户不能抓：robots.txt 禁止,,,,
+市级,河北,唐山,,130200,政府办,,抓取失败,打不开：门户打不开：HTTP 405,,,,
+市级,河北,唐山,,130200,发改委,,抓取失败,打不开：门户打不开：HTTP 405,,,,
+市级,河北,唐山,,130200,工信,,抓取失败,打不开：门户打不开：HTTP 405,,,,
+市级,河北,唐山,,130200,科技,,抓取失败,打不开：门户打不开：HTTP 405,,,,
+市级,河北,唐山,,130200,商务,,抓取失败,打不开：门户打不开：HTTP 405,,,,
+市级,河北,唐山,,130200,财政,,抓取失败,打不开：门户打不开：HTTP 405,,,,
+市级,河北,唐山,,130200,人社,,抓取失败,打不开：门户打不开：HTTP 405,,,,
+市级,河北,唐山,,130200,市场监管,,抓取失败,打不开：门户打不开：HTTP 405,,,,
+市级,河北,唐山,,130200,农业农村,,抓取失败,打不开：门户打不开：HTTP 405,,,,
+市级,河北,唐山,,130200,文旅,,抓取失败,打不开：门户打不开：HTTP 405,,,,
+市级,河北,唐山,,130200,生态环境,,抓取失败,打不开：门户打不开：HTTP 405,,,,
 市级,河北,邢台,,130500,政府办,,抓取失败,打不开：门户打不开：robots.txt 暂时无法获取（RemoteProtocolError: Server disconnected without sending,,,,
 市级,河北,邢台,,130500,发改委,,抓取失败,打不开：门户打不开：robots.txt 暂时无法获取（RemoteProtocolError: Server disconnected without sending,,,,
 市级,河北,邢台,,130500,工信,,抓取失败,打不开：门户打不开：robots.txt 暂时无法获取（RemoteProtocolError: Server disconnected without sending,,,,
