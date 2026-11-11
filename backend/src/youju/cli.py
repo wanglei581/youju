@@ -2298,9 +2298,7 @@ def _cmd_export_fetch(args: argparse.Namespace) -> int:
 
     try:
         with storage.http_client() as client:
-            report = cloudrun_fetch.fetch(
-                client, args.url, args.sha256, args.dir, with_advisor=args.with_advisor
-            )
+            report = cloudrun_fetch.fetch(client, args.url, args.sha256, args.dir)
     except (cloudrun_fetch.FetchError, ValueError, OSError) as exc:
         print(f"没下载：{exc}")
         return 1
@@ -3006,9 +3004,6 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--sha256", required=True, help="清单的 SHA-256")
     p.add_argument(
         "--dir", type=Path, required=True, help="放整库备份、下架清单的目录（只有 root 能进）"
-    )
-    p.add_argument(
-        "--with-advisor", action="store_true", help="甲方案：批量工具结果 advisor/out/ 也带上"
     )
     p.set_defaults(func=_cmd_export_fetch)
     p = sub.add_parser("offsite-backup", help="（服务器）把当天的整库备份加密后传到异地存储")

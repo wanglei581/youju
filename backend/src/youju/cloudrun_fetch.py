@@ -4,9 +4,9 @@
 下载链接，下架清单的 SHA-256，汇总数（只有数字）和不涉密的配置。清单的 SHA-256 和链接一起从云托管
 终端复制过来，先核对清单，再按清单逐个下载、核对：
 
-- logs/、attachments/（甲方案加 --with-advisor 再带 advisor/out/）：核对大小，附件再核对
-  文件名里的 SHA-256，.gz 整个解压一遍（gzip 自带校验）；对了才写进现在的存储（服务器硬盘）。
-  已有、大小一样的跳过。
+- logs/、attachments/：核对大小，附件再核对文件名里的 SHA-256，.gz 整个解压一遍（gzip 自带
+  校验）；对了才写进现在的存储（服务器硬盘）。已有、大小一样的跳过。批量工具结果（advisor/out/）
+  清单里有、不下载：旧库不恢复（D-127），都是测试结果，对应的任务记录在加密存档的整库备份里。
 - 最新一份整库备份、下架清单：写到 --dir（服务器上只有 root 能进的目录），不进存储。备份核对
   大小和 gzip，下架清单核对 SHA-256。备份接着由 youju-shared.sh import-export 试恢复、加密归档、
   删掉明文。
@@ -169,7 +169,6 @@ def fetch(
     sha256: str,
     workdir: Path,
     *,
-    with_advisor: bool = False,
     store: storage.Backend | None = None,
     say: Callable[[str], None] = print,
 ) -> FetchReport:
@@ -181,7 +180,7 @@ def fetch(
             raise FetchError("这台的存储不是服务器硬盘（YOUJU_STORAGE_BACKEND），不导入")
         store = storage.backend()
     report = FetchReport()
-    wanted = ("logs/", "attachments/", "backups/") + (("advisor/out/",) if with_advisor else ())
+    wanted = ("logs/", "attachments/", "backups/")
     files = [item for item in manifest["files"] if _prefix(item["path"]) in wanted]
     say(f"清单里要下载 {len(files)} 个文件（{sum(i['size'] for i in files)} 字节）")
     for number, item in enumerate(files, start=1):

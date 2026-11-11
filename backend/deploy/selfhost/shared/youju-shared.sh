@@ -24,7 +24,7 @@
 #   logs mysql|api|worker [行数]
 #   uninstall [--purge]    停掉有据、撤掉站点和定时任务；--purge 连数据库、文件、镜像一起删
 # 首发前搬家（D-127，手册第六节）：
-#   fetch-export <哈希> [--with-advisor]  从标准输入读清单链接，按云托管导出的清单下载：日志、附件副本进存储，
+#   fetch-export <哈希>    从标准输入读清单链接，按云托管导出的清单下载：日志、附件副本进存储，
 #                          整库备份和下架清单进 /opt/youju/export（只有 root 能进）；可以重跑
 #   export-show            只读：导出的汇总数、不涉密的配置、各前缀文件数（不含链接）
 #   import-export <旧版本> 乙方案：用迁移版本和备份一样的旧镜像在临时库里试恢复备份，再用 age 公钥加密归档，删掉明文
@@ -528,9 +528,9 @@ resume_services() {
 }
 
 fetch_export() {
-  local sum=${1:-} extra=${2:-} url=""
-  [[ "$sum" =~ ^[0-9a-f]{64}$ ]] || die "用法：echo '<清单链接>' | ${SELF} fetch-export <哈希> [--with-advisor]"
-  case "$extra" in "" | --with-advisor) ;; *) die "第二个参数只能是 --with-advisor（甲方案）" ;; esac
+  local sum=${1:-} url=""
+  [[ "$sum" =~ ^[0-9a-f]{64}$ ]] && [ "$#" -eq 1 ] \
+    || die "用法：echo '<清单链接>' | ${SELF} fetch-export <哈希>"
   [ -f "$SERVER/.env" ] || die "还没装（没有 ${SERVER}/.env）"
   # 链接从标准输入读：不进命令行参数（别的用户 ps 看得到），也经环境变量传进容器
   [ -t 0 ] && printf '粘贴清单链接，回车：'
@@ -543,10 +543,9 @@ fetch_export() {
   [ "$free_g" -ge 10 ] || die "硬盘只剩 ${free_g}G，不到 10G，先别下"
   install -d -m 700 "$EXPORT_DIR"
   pause_services
-  # shellcheck disable=SC2086  # extra 是空或 --with-advisor
   YOUJU_EXPORT_URL="$url" compose run --rm --no-deps -e YOUJU_EXPORT_URL -v "$EXPORT_DIR:/export" worker \
-    youju export-fetch --sha256 "$sum" --dir /export $extra
-  echo "下一步：${SELF} export-show 看汇总；乙方案 ${SELF} import-export <旧版本>"
+    youju export-fetch --sha256 "$sum" --dir /export
+  echo "下一步：${SELF} export-show 看汇总；${SELF} import-export <旧版本> 试恢复、加密存档"
 }
 
 export_show() {

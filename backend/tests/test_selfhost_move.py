@@ -112,7 +112,7 @@ def test_fetch_checks_and_imports_files(tmp_path):
     assert store.exists(f"attachments/{_sha(pdf)}.pdf") and store.exists(
         "logs/access-20261110.jsonl.gz"
     )
-    # 乙方案不带批量工具结果；备份、下架清单不进存储，进 --dir
+    # 不带批量工具结果（旧库不恢复）；备份、下架清单不进存储，进 --dir
     assert not store.exists("advisor/out/0123456789abcdef/7.xlsx")
     assert "advisor/out/0123456789abcdef/7.xlsx" not in remote.gets
     assert not store.exists("backups/youju-20261112.jsonl.gz")
@@ -128,15 +128,13 @@ def test_fetch_checks_and_imports_files(tmp_path):
     assert "url" not in json.dumps(summary)  # 汇总里没有链接
     assert not list(work.glob(".fetch-*"))
 
-    # 重跑：已经下好的跳过（不再下载），没下好的再试；带 --with-advisor（甲）再下批量工具结果
+    # 重跑：已经下好的跳过（不再下载），只再试没下好的
     remote.gets.clear()
     remote.files[bad_hash] = pdf  # 换成对的内容也不行：文件名里的哈希对不上
-    again = cloudrun_fetch.fetch(
-        remote.client, url, sha, work, store=store, with_advisor=True, say=lambda _: None
-    )
-    assert store.exists("advisor/out/0123456789abcdef/7.xlsx")
+    again = cloudrun_fetch.fetch(remote.client, url, sha, work, store=store, say=lambda _: None)
     assert again.skipped == {"backups/": 1, "logs/": 1, "attachments/": 1}
-    assert set(remote.gets) == {bad_hash, broken_gz, "advisor/out/0123456789abcdef/7.xlsx"}
+    assert set(remote.gets) == {bad_hash, broken_gz}
+    assert sorted(path for path, _ in again.failed) == sorted([bad_hash, broken_gz])
 
 
 def test_fetch_refuses_wrong_manifest_and_reports_expired_links(tmp_path):
@@ -338,14 +336,17 @@ def test_shared_fetch_export_takes_link_on_stdin(tmp_path):
     done = _bash(tmp_path, f"fetch_export {sha}", stdin="https://evil.example.com/x\n", setup=df)
     assert done.returncode == 1 and "清单链接不对" in done.stderr
     assert _calls(tmp_path) == []  # 链接不对：什么都没停、没下
-    done = _bash(tmp_path, f"fetch_export {sha} --with-advisor", stdin=link + "\r\n", setup=df)
+    done = _bash(tmp_path, f"fetch_export {sha} --with-advisor", stdin=link + "\n", setup=df)
+    assert done.returncode == 1 and "fetch-export <哈希>" in done.stderr  # 只收一个参数
+    assert _calls(tmp_path) == []
+    done = _bash(tmp_path, f"fetch_export {sha}", stdin=link + "\r\n", setup=df)
     assert done.returncode == 0, done.stderr
     calls = _calls(tmp_path)
     # 先停接口和 worker，结束再起来；链接只经环境变量进容器，不在命令行参数里
     assert calls[0].startswith("compose stop api worker")
     run = calls[1]
     assert run.startswith("compose run --rm --no-deps -e YOUJU_EXPORT_URL -v ")
-    assert f"youju export-fetch --sha256 {sha} --dir /export --with-advisor |" in run
+    assert f"youju export-fetch --sha256 {sha} --dir /export |" in run
     assert run.endswith(f"url={link}") and link not in run.split(" | ")[0]
     assert calls[2].startswith("compose up -d --wait --wait-timeout 900 worker")
     assert calls[3].startswith("compose up -d --wait --wait-timeout 300 api")
