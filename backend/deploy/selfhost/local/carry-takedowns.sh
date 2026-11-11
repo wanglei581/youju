@@ -14,8 +14,9 @@ cd "$(dirname "$0")"
 sum=${1:-}
 [[ "$sum" =~ ^[0-9a-f]{64}$ ]] || { echo "用法：bash carry-takedowns.sh <SHA-256> <<'EOF' … EOF" >&2; exit 1; }
 trap 'rm -f takedowns.jsonl.tmp' EXIT
-# 只留 base64 的行（说明行、空行跳过）
-tr -d '\r' | { grep -E '^[A-Za-z0-9+/=]+$' || true; } | base64 -d | gunzip > takedowns.jsonl.tmp
+# 只留 base64 的行（说明行、空行跳过；网页终端复制出来行尾常带空格，先去掉）
+tr -d '\r' | sed -E 's/[[:space:]]+$//' | { grep -E '^[A-Za-z0-9+/=]+$' || true; } | base64 -d | gunzip \
+  > takedowns.jsonl.tmp
 echo "${sum}  takedowns.jsonl.tmp" | sha256sum -c - >/dev/null \
   || { rm -f takedowns.jsonl.tmp; echo "SHA-256 对不上：抄的内容不完整，没有应用" >&2; exit 1; }
 mv -f takedowns.jsonl.tmp takedowns.jsonl

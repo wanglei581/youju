@@ -89,7 +89,9 @@ def encrypt(source: Path, target: Path, recipient: str) -> None:
             timeout=3600,
         )
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
-        raise BackupError(f"加密备份失败：{type(exc).__name__}") from None
+        # age 的报错只说公钥不对、写不进去这类，不含备份内容
+        detail = (exc.stderr or b"").decode("utf-8", "replace").strip().splitlines()[-1:]
+        raise BackupError(f"加密备份失败：{type(exc).__name__} {' '.join(detail)[:200]}") from None
 
 
 def _latest_local(settings: Settings, today: date) -> tuple[str, Path] | None:
@@ -268,7 +270,11 @@ def prune_archive(
         _expired(local, "local", today, report, records)
         if settings.offsite_s3_bucket.strip():
             _expired(
-                backend or storage.S3Backend(_config(settings)), "offsite", today, report, records
+                backend or storage.S3Backend(_config(settings, need_recipient=False)),
+                "offsite",
+                today,
+                report,
+                records,
             )
     except storage.StorageError as exc:
         raise BackupError(f"删到期存档失败（已删的照样记下）：{exc}") from None

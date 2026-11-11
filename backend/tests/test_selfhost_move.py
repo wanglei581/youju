@@ -12,6 +12,7 @@ import re
 import select
 import shutil
 import subprocess
+import termios
 import time
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -350,7 +351,7 @@ def _bash(
     script = f"""
 source "{defs}"
 BASE="{tmp_path}"; SERVER="{tmp_path}/server"; EXPORT_DIR="{tmp_path}/export"; SELF=youju-shared.sh
-compose() {{ printf 'compose %s | image=%s db=%s url=%s\\n' "$*" "${{YOUJU_IMAGE:-}}" "${{YOUJU_DATABASE_URL:-}}" "${{YOUJU_EXPORT_URL:-}}" >> "{log}"; }}
+compose() {{ printf 'compose %s | image=%s db=%s url=%s\\n' "$*" "${{YOUJU_IMAGE:-}}" "${{YOUJU_DATABASE_URL:-}}" "${{YOUJU_EXPORT_URL:-}}" >> "{log}"; if [ "$1" = exec ]; then cat >/dev/null; fi; }}
 docker() {{ printf 'docker %s\\n' "$*" >> "{log}"; }}
 {setup}
 {body}
@@ -412,25 +413,39 @@ def test_shared_secret_show_need_a_terminal(tmp_path):
 def _tty(args: list[str], typed: str, *, env=None, cwd=None, timeout=20) -> tuple[int, str]:
     """在伪终端里跑（read -s 要真的终端），看到提示的"："再输入。"""
     master, slave = pty.openpty()
+    # 终端本身先不回显：看到提示就输入时，bash 的 read -s 可能还没来得及关回显（机器忙时），
+    # 输入会被终端回显出来。这里只验证脚本自己不打印输入的值
+    attrs = termios.tcgetattr(slave)
+    attrs[3] &= ~termios.ECHO
+    termios.tcsetattr(slave, termios.TCSANOW, attrs)
     proc = subprocess.Popen(args, stdin=slave, stdout=slave, stderr=slave, env=env, cwd=cwd)
     os.close(slave)
     out, sent = b"", False
+
+    def read(wait: float) -> bytes | None:
+        """读一块输出；没有（等了 wait 秒）返回 b""；终端已经关了返回 None。"""
+        ready, _, _ = select.select([master], [], [], wait)
+        if not ready:
+            return b""
+        try:
+            return os.read(master, 4096) or None
+        except OSError:  # 子进程退出、终端关了（macOS 上是 EIO）
+            return None
+
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        ready, _, _ = select.select([master], [], [], 0.1)
-        if ready:
-            try:
-                chunk = os.read(master, 4096)
-            except OSError:
-                break
-            if not chunk:
-                break
-            out += chunk
+        chunk = read(0.1)
+        if chunk is None:
+            break
+        out += chunk
         if not sent and "：".encode() in out:
             with contextlib.suppress(OSError):  # 已经退出了（"："是报错信息里的）
                 os.write(master, typed.encode())
             sent = True
-        if not ready and proc.poll() is not None:
+        if not chunk and proc.poll() is not None:
+            # 退出了：把还没读的输出读完再走（机器忙时最后几行会晚一点到）
+            while (rest := read(0.5)) is not None and rest:
+                out += rest
             break
     proc.wait(timeout=5)
     os.close(master)
@@ -528,10 +543,8 @@ def test_shared_import_export_drills_with_old_image_then_archives(tmp_path):
     assert "image=youju-selfhost:a79a0042" in drill
     assert "db=mysql+pymysql://root:r00tpw@mysql:3306/youju?charset=utf8mb4 " in drill
     assert "r00tpw" not in drill.split(" | ")[0]
-    # 试恢复写进 binlog 的旧库明文清掉；密码用容器里的环境变量，不在命令里
-    assert purge.startswith("compose exec -T mysql sh -c ")
-    assert "PURGE BINARY LOGS BEFORE NOW()" in purge and 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD"' in purge
-    assert "r00tpw" not in purge
+    # 试恢复写进 binlog 的旧库明文清掉（脚本经标准输入给容器里的 sh，见下面的测试）
+    assert purge.startswith("compose exec -T mysql sh -s |") and "r00tpw" not in purge
     assert "youju archive-export --dir /export |" in archive and "image= " in archive
     # 明文的整库备份、交易记录和带链接的清单删掉；留下"存档过"的标记（再跑 fetch-export 会拒绝）
     assert not (backups / "youju-20261112.jsonl.gz").exists()
@@ -546,12 +559,15 @@ def test_shared_import_export_stops_when_drill_fails(tmp_path):
     _server_env(tmp_path, "MYSQL_ROOT_PASSWORD=r00tpw\n")
     backups = _downloaded(tmp_path)
     log = tmp_path / "calls.log"
-    failing = f'compose() {{ echo "compose $*" >> "{log}"; [ "$1" != run ]; }}'
+    failing = (
+        f'compose() {{ echo "compose $*" >> "{log}"; '
+        'if [ "$1" = exec ]; then cat >/dev/null; fi; [ "$1" != run ]; }'
+    )
     done = _bash(tmp_path, "import_export a79a0042", setup=failing)
     assert done.returncode != 0
     calls = _calls(tmp_path)
     assert not any("archive-export" in c for c in calls)  # 试恢复不过就不存档、不删明文
-    assert any("PURGE BINARY LOGS" in c for c in calls)  # binlog 照样清
+    assert "compose exec -T mysql sh -s" in calls  # binlog 照样清
     assert "试恢复没通过" in done.stderr
     assert (backups / "youju-20261112.jsonl.gz").exists()
     assert not (tmp_path / "export" / "imported").exists()
@@ -898,3 +914,61 @@ def test_prune_archive_deletes_expired_on_both_sides_and_records_it(tmp_path):
     # 第二天再跑：没有可删的，记录不变
     again = offsite.prune_archive(settings, today=date(2026, 12, 13), backend=fake)
     assert again.deleted == [] and len(record.read_text(encoding="utf-8").splitlines()) == 3
+
+
+@needs_bash
+def test_import_export_purges_binlog_even_when_interrupted(tmp_path):
+    """试恢复中途被打断（关掉网页终端、Ctrl+C）：退出时照样清 binlog，再把接口、worker 起来。"""
+    _server_env(tmp_path, "MYSQL_ROOT_PASSWORD=r00tpw\n")
+    _downloaded(tmp_path)
+    log = tmp_path / "calls.log"
+    interrupted = (
+        f'compose() {{ echo "compose $*" >> "{log}"; '
+        'if [ "$1" = exec ]; then cat >/dev/null; fi; '
+        'if [ "$1" = run ]; then kill -TERM $$; sleep 1; fi; }'
+    )
+    done = _bash(tmp_path, "import_export a79a0042", setup=interrupted)
+    assert done.returncode != 0
+    calls = _calls(tmp_path)
+    run = next(i for i, c in enumerate(calls) if c.startswith("compose run"))
+    assert calls[run + 1] == "compose exec -T mysql sh -s"
+    assert calls[-1].startswith("compose up -d --wait --wait-timeout 300 api")
+    assert not any("archive-export" in c for c in calls)
+
+
+@needs_bash
+@pytest.mark.parametrize("left", [1, 2])
+def test_binlog_purge_script_purges_up_to_the_current_file(tmp_path, left):
+    """容器里跑的那段：轮换以后按文件名删到当前这个（不用 BEFORE NOW()：同一秒里删不掉刚轮换出来的），
+    只剩一个才算清干净；密码只在环境变量里。"""
+    defs = _functions(tmp_path)
+    script = subprocess.run(
+        ["bash", "-c", f'source "{defs}"; binlog_purge_sql'],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "mysql"
+    fake.write_text(
+        "#!/bin/sh\n"
+        f'echo "$* | pwd=$MYSQL_PWD" >> "{tmp_path}/mysql.log"\n'
+        'case "$*" in\n'
+        '  *"SELECT @@log_bin"*) echo 1 ;;\n'
+        "  *\"SHOW MASTER STATUS\"*) printf 'binlog.000045\\t157\\t\\t\\t\\n' ;;\n"
+        f'  *"SHOW BINARY LOGS"*) for i in $(seq {left}); do echo "binlog.00004$i 157 No"; done ;;\n'
+        "esac\n",
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+    env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "MYSQL_ROOT_PASSWORD": "r00t"}
+    done = subprocess.run(["sh", "-s"], input=script, capture_output=True, text=True, env=env)
+    lines = (tmp_path / "mysql.log").read_text(encoding="utf-8").splitlines()
+    assert any("PURGE BINARY LOGS TO 'binlog.000045'" in line for line in lines)
+    assert not any("BEFORE NOW()" in line for line in lines)
+    assert all(line.endswith("| pwd=r00t") and "r00t" not in line.split(" | ")[0] for line in lines)
+    if left == 1:
+        assert done.returncode == 0 and "binlog 已清" in done.stdout
+    else:
+        assert done.returncode != 0 and "没清干净" in done.stderr

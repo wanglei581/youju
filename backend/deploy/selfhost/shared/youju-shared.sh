@@ -520,8 +520,36 @@ logs() {
 # 有据合计不超过 1.5G；结束时（成功、失败都一样）再起来。停着的这段时间本机推同步会失败、下一轮再推
 pause_services() {
   compose stop api worker
-  trap resume_services EXIT
+  trap on_exit EXIT
 }
+
+# 退出时（成功、失败、被打断都一样）：试恢复开始了还没清 binlog 的先清，再把接口和 worker 起来
+PURGE_BINLOG=""
+on_exit() {
+  if [ -n "$PURGE_BINLOG" ]; then
+    purge_binlog || echo "注意：binlog 没清掉，手动运行 ${SELF} import-export 之前先查（手册第六节第 7 步）" >&2
+  fi
+  resume_services
+}
+
+# 在 mysql 容器里跑（sh -s）：轮换 binlog，删掉当前这个以前的全部，再查只剩一个。不用
+# PURGE … BEFORE NOW()：刚轮换出来的文件修改时间就是这一秒，同一秒里删不掉（本机 MySQL 8.0 实测）
+binlog_purge_sql() {
+  cat <<'EOF'
+set -eu
+export MYSQL_PWD="$MYSQL_ROOT_PASSWORD"
+if [ "$(mysql -uroot -N -B -e 'SELECT @@log_bin')" != 1 ]; then echo "binlog 没开，不用清"; exit 0; fi
+current=$(mysql -uroot -N -B -e 'FLUSH BINARY LOGS; SHOW MASTER STATUS' | awk 'NR == 1 {print $1}')
+case "$current" in "" | *[!A-Za-z0-9._-]*) echo "取不到当前的 binlog 文件名" >&2; exit 1 ;; esac
+mysql -uroot -e "PURGE BINARY LOGS TO '$current'"
+left=$(mysql -uroot -N -B -e 'SHOW BINARY LOGS' | wc -l)
+[ "$left" -eq 1 ] || { echo "binlog 还剩 $left 个文件，没清干净" >&2; exit 1; }
+echo "binlog 已清，只剩当前的 $current"
+EOF
+}
+
+# 密码用容器里的环境变量给 mysql（MYSQL_PWD），不写成 -p 参数；脚本从标准输入给
+purge_binlog() { binlog_purge_sql | compose exec -T mysql sh -s; }
 resume_services() {
   if ! { compose up -d --wait --wait-timeout 900 worker && compose up -d --wait --wait-timeout 300 api; }; then
     echo "注意：接口、worker 没起来，运行 ${SELF} up" >&2
@@ -534,6 +562,8 @@ fetch_export() {
   [[ "$sum" =~ ^[0-9a-f]{64}$ ]] && [ "$#" -eq 1 ] \
     || die "用法：${SELF} fetch-export <哈希>，再按提示粘贴清单链接"
   [ -f "$SERVER/.env" ] || die "还没装（没有 ${SERVER}/.env）"
+  # 存档过了就不再下（不再下一份明文备份，也不白停一次服务）；真要重来先删这个标记
+  [ ! -f "$EXPORT_DIR/imported" ] || die "这批已经存档过（IMPORT OK），不再下载；真要重来先删 ${EXPORT_DIR}/imported"
   # 链接从标准输入读（终端里按提示粘贴，不显示）：不进命令行参数（别的用户 ps 看得到）、
   # 不进 shell 历史；也经环境变量传进容器
   if [ -t 0 ]; then
@@ -582,16 +612,16 @@ import_export() {
   say "1/3 试恢复：${old} 的镜像在临时库 youju_drill_… 里恢复一遍（核对条数、外键、每张表的 SHA-256），结束删掉；不碰正式库"
   # 建临时库要 root；连接串经环境变量传进容器（不进命令行参数）。临时库和正式库在同一个 MySQL 里
   local drill_ok=1
+  PURGE_BINLOG=1
   YOUJU_IMAGE="youju-selfhost:$old" \
     YOUJU_DATABASE_URL="mysql+pymysql://root:${root_pw}@mysql:3306/youju?charset=utf8mb4" \
     compose run --rm --no-deps -e YOUJU_DATABASE_URL -v "$EXPORT_DIR:/export:ro" worker \
     youju restore-drill --file "/export/backups/$name" || drill_ok=0
-  # 试恢复写进 binlog 的是旧库的明文（binlog 留 3 天）：成不成都清掉。不做主从，binlog 没人用；
-  # 密码用容器里的环境变量给 mysql（MYSQL_PWD），不写成 -p 参数
+  # 试恢复写进 binlog 的是旧库的明文（binlog 留 3 天）：成不成都清掉（中途被打断的，退出时清）。
+  # 不做主从，binlog 没人用。清不干净就停下：不存档、不删明文
   say "    清掉 MySQL 的 binlog（试恢复写进去的是旧库的明文）"
-  # shellcheck disable=SC2016  # $MYSQL_ROOT_PASSWORD 要在容器里展开
-  compose exec -T mysql sh -c \
-    'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot -e "FLUSH BINARY LOGS; PURGE BINARY LOGS BEFORE NOW();"'
+  purge_binlog
+  PURGE_BINLOG=""
   [ "$drill_ok" = 1 ] || die "试恢复没通过（原因见上面）：没存档、没删明文"
   say "2/3 加密存档：整库备份、交易记录分别用 .env 里的 age 公钥加密，存到服务器存储和异地的 archive/，"
   say "    到期日写在文件名里（整库自备份起 30 天，交易记录自最早一笔下单起 3650 天），每天 archive-prune 到期删"
@@ -780,7 +810,8 @@ uninstall() {
     # 有容器在用的镜像 docker 会拒绝删；构建缓存是全机共用的，不动
     # shellcheck disable=SC2086
     docker image rm $mysql_image "$CERTBOT_IMAGE" >/dev/null 2>&1 || true
-    rm -rf "$SERVER" "$LE_DIR" "$WEBROOT" "$BASE/releases" "$BASE/nginx" "$BASE/staging" "$LOADED_FILE"
+    rm -rf "$SERVER" "$LE_DIR" "$WEBROOT" "$BASE/releases" "$BASE/nginx" "$BASE/staging" "$LOADED_FILE" \
+      "$EXPORT_DIR"
     echo "已删除有据的容器、数据卷、镜像、证书和 ${BASE} 下的文件"
   else
     echo "已停掉有据、撤掉站点和定时任务；数据卷和 ${SERVER}/.env 留着（${SELF} up 重新启动）"
