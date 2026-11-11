@@ -3,6 +3,7 @@
 import argparse
 import json
 import logging
+import os
 import re
 import sys
 import tempfile
@@ -2261,6 +2262,79 @@ def _cmd_sync_import(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_takedown_carry(args: argparse.Namespace) -> int:
+    from youju import takedown_carry
+
+    try:
+        items = takedown_carry.load(args.file)
+    except (OSError, takedown_carry.CarryError) as exc:
+        print(f"下架清单读不了：{exc}")
+        return 1
+    with session_factory()() as session:
+        if args.action == "check":
+            report = takedown_carry.check(session, items)
+            print(
+                f"清单 {report.listed} 个网址：拦截表里有 {report.blocked} 个；"
+                f"库里有 {report.present} 份"
+                f"同网址的文件，其中对用户可见的 {len(report.visible)} 份"
+            )
+            for key in report.visible[:20]:
+                print(f"  仍可见：{key}")
+            return 1 if report.visible else 0
+        if getattr(get_settings(), "public_replica", False):
+            print("这台服务器的公开数据由本机同步过来：在本机跑 apply，下架状态随同步过来")
+            return 1
+        report = takedown_carry.apply(session, items)
+    print(
+        f"清单 {report.listed} 个网址：拦截表新加 {report.blocks_added} 个；"
+        f"本机库里有 {report.found} 份同网址的文件，这次整组下架 {report.taken_down} 份，"
+        f"原来就不可见 {report.already_hidden} 份"
+    )
+    return 0
+
+
+def _cmd_export_fetch(args: argparse.Namespace) -> int:
+    from youju import cloudrun_fetch, storage
+
+    try:
+        with storage.http_client() as client:
+            report = cloudrun_fetch.fetch(
+                client, args.url, args.sha256, args.dir, with_advisor=args.with_advisor
+            )
+    except (cloudrun_fetch.FetchError, ValueError, OSError) as exc:
+        print(f"没下载：{exc}")
+        return 1
+    for prefix in sorted(set(report.fetched) | set(report.skipped)):
+        print(
+            f"  {prefix} 新下载 {report.fetched.get(prefix, 0)} 个，"
+            f"已有跳过 {report.skipped.get(prefix, 0)} 个"
+        )
+    print(
+        f"共新下载 {report.bytes} 字节；整库备份 {report.backup or '没下好'}；"
+        f"下架清单 {report.takedowns} 个网址"
+    )
+    for path, reason in report.failed[:20]:
+        print(f"  没下好：{path}（{reason}）")
+    if report.failed:
+        print(f"FETCH INCOMPLETE failed={len(report.failed)}（重跑这条命令只下没下好的）")
+        return 1
+    print("FETCH OK")
+    return 0
+
+
+def _cmd_archive_backup(args: argparse.Namespace) -> int:
+    from youju import offsite
+    from youju.backup import BackupError
+
+    try:
+        report = offsite.archive(get_settings(), args.file, args.name)
+    except BackupError as exc:
+        print(f"归档失败：{exc}")
+        return 1
+    print(f"已把 {args.file.name} 加密存到本机存储和异地：{report.target}（{report.bytes} 字节）")
+    return 0
+
+
 def _cmd_offsite_backup(args: argparse.Namespace) -> int:
     from youju import offsite
     from youju.backup import BackupError
@@ -2899,6 +2973,44 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("sync-import", help="（本机）导入服务器导出的文件（同步的表要是空的）")
     p.add_argument("--file", type=Path, required=True)
     p.set_defaults(func=_cmd_sync_import)
+    p = sub.add_parser(
+        "takedown-carry",
+        help="（首发前搬家，D-127）apply：把云托管上已下架的网址写进拦截表、本机同网址的文件整组下架；"
+        "check：只读，看清单里的网址还有没有对用户可见的文件",
+    )
+    p.add_argument("action", choices=["apply", "check"])
+    p.add_argument(
+        "--file", type=Path, required=True, help="云托管导出脚本给的下架清单（JSON Lines）"
+    )
+    p.set_defaults(func=_cmd_takedown_carry)
+    p = sub.add_parser(
+        "archive-backup",
+        help="（首发前搬家，D-127）把云托管的最后一份整库备份用 age 公钥加密，"
+        "存到本机存储和异地 archive/"
+        "（交易记录留 3 年，不按天清理）",
+    )
+    p.add_argument("--file", type=Path, required=True, help="备份文件（.jsonl.gz）")
+    p.add_argument("--name", required=True, help="存成的名字，如 cloudrun-youju-20261112.jsonl.gz")
+    p.set_defaults(func=_cmd_archive_backup)
+    p = sub.add_parser(
+        "export-fetch",
+        help="（首发前搬家，D-127）按云托管导出的清单下载：日志、附件副本进存储，"
+        "整库备份和下架清单进 --dir",
+    )
+    p.add_argument(
+        "--url",
+        default=os.environ.get("YOUJU_EXPORT_URL", ""),
+        help="清单的下载链接；不写就读环境变量 YOUJU_EXPORT_URL"
+        "（youju-shared.sh 这样传，链接不进命令行）",
+    )
+    p.add_argument("--sha256", required=True, help="清单的 SHA-256")
+    p.add_argument(
+        "--dir", type=Path, required=True, help="放整库备份、下架清单的目录（只有 root 能进）"
+    )
+    p.add_argument(
+        "--with-advisor", action="store_true", help="甲方案：批量工具结果 advisor/out/ 也带上"
+    )
+    p.set_defaults(func=_cmd_export_fetch)
     p = sub.add_parser("offsite-backup", help="（服务器）把当天的整库备份加密后传到异地存储")
     p.set_defaults(func=_cmd_offsite_backup)
     p = sub.add_parser("offsite-pull", help="（本机）把异地最新的加密备份下到本机再留一份")

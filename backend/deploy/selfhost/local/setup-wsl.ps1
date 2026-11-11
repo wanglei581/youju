@@ -178,7 +178,7 @@ if ($LASTEXITCODE -ne 0 -or -not $src.StartsWith("/")) { Fail "找不到这个�
 # 不拷 .env（发行版里的 .env 里是已经用着的数据库密码，不能被覆盖）
 $copy = "set -euo pipefail; umask 022; rm -rf /opt/youju/local/source; mkdir -p /opt/youju/local; " +
   "tar -C '$src' --exclude=./.env --exclude=./.imported -cf - . " +
-  "| tar -C /opt/youju/local --no-same-owner --no-same-permissions -xf -; sed -i 's/\r`$//' /opt/youju/local/setup-wsl.sh"
+  "| tar -C /opt/youju/local --no-same-owner --no-same-permissions -xf -; sed -i 's/\r`$//' /opt/youju/local/*.sh"
 $code = Run "wsl.exe" @("-d", $Distro, "-u", "root", "-e", "bash", "-c", $copy)
 if ($code -ne 0) { Fail "把安装包拷进 WSL 失败。把 $LogFile 发给 Claude。" }
 $code = 0

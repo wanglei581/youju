@@ -23,6 +23,19 @@
 #   status                 容器、内存、健康检查
 #   logs mysql|api|worker [行数]
 #   uninstall [--purge]    停掉有据、撤掉站点和定时任务；--purge 连数据库、文件、镜像一起删
+# 首发前搬家（D-127，手册第六节）：
+#   fetch-export <哈希> [--with-advisor]  从标准输入读清单链接，按云托管导出的清单下载：日志、附件副本进存储，
+#                          整库备份和下架清单进 /opt/youju/export（只有 root 能进）；可以重跑
+#   export-show            只读：导出的汇总数、不涉密的配置、各前缀文件数（不含链接）
+#   import-export <旧版本> 乙方案：用迁移版本和备份一样的旧镜像在临时库里试恢复备份，再用 age 公钥加密归档，删掉明文
+#   takedowns [段号]       只读：打印下架清单（gzip 后 base64，每段 200 行），抄到本机用
+#   takedowns-check        只读：下架清单里的网址在服务器上还有没有对用户可见的文件
+#   secret <名称>          只在交互终端里用：录一个密钥进 .env（输入不显示，只回长度和指纹）
+#   show push|sync         只在交互终端里用：显示消息推送的 Token、EncodingAESKey / 同步密钥
+#   rotate-sync            换一个新的同步密钥（不显示）
+#   env-set <名称>         改一项不涉密的配置（值从标准输入读，如 echo '<值>' | … env-set YOUJU_CRONTAB）
+#   env-unset <名称>       删掉一项不涉密的配置
+#   config-from-export     把云托管导出的不涉密配置（模型名、价格、模板……）照原值写进 .env
 set -euo pipefail
 umask 022
 
@@ -42,6 +55,15 @@ SFTP_SERVER=/usr/lib/openssh/sftp-server
 SFTP_DENY=read,opendir,readdir,readlink,symlink,hardlink,copy-data
 # nginx 已加载的证书的哈希：续期换了证书但当时重载失败，下周还会再试
 LOADED_FILE=$BASE/letsencrypt-loaded.sha256
+# 首发前搬家（D-127）下载的整库备份、下架清单、汇总（只有 root 能进）
+EXPORT_DIR=$BASE/export
+# secret 能录的密钥（都写进 .env；数据库密码、登录凭证密钥、核对台口令是装的时候随机生成的，不在这里）
+SECRET_NAMES="YOUJU_WX_APPSECRET YOUJU_AI_API_KEY YOUJU_AI_ADVISOR_API_KEY YOUJU_XPAY_APPKEY_PROD
+  YOUJU_XPAY_APPKEY_SANDBOX YOUJU_ALERT_WEBHOOK YOUJU_OFFSITE_S3_ACCESS_KEY YOUJU_OFFSITE_S3_SECRET_KEY
+  YOUJU_OFFSITE_AGE_RECIPIENT"
+# 装的时候随机生成、不用 env-set 改的（密钥另用 secret、rotate-sync）
+PROTECTED_NAMES="MYSQL_ROOT_PASSWORD MYSQL_PASSWORD YOUJU_DATABASE_URL YOUJU_SESSION_SECRET YOUJU_ADMIN_TOKEN
+  YOUJU_SYNC_SECRET YOUJU_WX_PUSH_TOKEN YOUJU_WX_PUSH_AES_KEY YOUJU_IMAGE"
 # 正在跑的这份脚本的绝对路径：提示里的回退命令照抄就能用（停桌面服务时它还在 releases 目录里）
 SELF=$(readlink -f "$0")
 # 按摘要锁定（v5.8.0，2026-09-01 发布）；升级时查 Docker Hub 上该标签的摘要一起改
@@ -492,6 +514,228 @@ logs() {
   compose logs --tail "${2:-100}" "$1"
 }
 
+# ---- 首发前搬家（D-127） ----
+
+# 导出窗口里临时起的容器（下载、试恢复、加密）用 worker 的内存上限（640M）：先停接口和 worker，
+# 有据合计不超过 1.5G；结束时（成功、失败都一样）再起来。停着的这段时间本机推同步会失败、下一轮再推
+pause_services() {
+  compose stop api worker
+  trap resume_services EXIT
+}
+resume_services() {
+  compose up -d --wait --wait-timeout 900 worker && compose up -d --wait --wait-timeout 300 api \
+    || echo "注意：接口、worker 没起来，运行 ${SELF} up" >&2
+}
+
+fetch_export() {
+  local sum=${1:-} extra=${2:-} url=""
+  [[ "$sum" =~ ^[0-9a-f]{64}$ ]] || die "用法：echo '<清单链接>' | ${SELF} fetch-export <哈希> [--with-advisor]"
+  case "$extra" in "" | --with-advisor) ;; *) die "第二个参数只能是 --with-advisor（甲方案）" ;; esac
+  [ -f "$SERVER/.env" ] || die "还没装（没有 ${SERVER}/.env）"
+  # 链接从标准输入读：不进命令行参数（别的用户 ps 看得到），也经环境变量传进容器
+  [ -t 0 ] && printf '粘贴清单链接，回车：'
+  IFS= read -r url || true
+  url=${url%$'\r'}
+  [[ "$url" =~ ^https://[A-Za-z0-9.-]+\.(tcb\.qcloud\.la|myqcloud\.com)/[!-~]*$ ]] \
+    || die "清单链接不对（要是云托管导出脚本打印的那一行里的链接）"
+  local free_g
+  free_g=$(df -BG --output=avail "$BASE" | tail -1 | tr -dc '0-9')
+  [ "$free_g" -ge 10 ] || die "硬盘只剩 ${free_g}G，不到 10G，先别下"
+  install -d -m 700 "$EXPORT_DIR"
+  pause_services
+  # shellcheck disable=SC2086  # extra 是空或 --with-advisor
+  YOUJU_EXPORT_URL="$url" compose run --rm --no-deps -e YOUJU_EXPORT_URL -v "$EXPORT_DIR:/export" worker \
+    youju export-fetch --sha256 "$sum" --dir /export $extra
+  echo "下一步：${SELF} export-show 看汇总；乙方案 ${SELF} import-export <旧版本>"
+}
+
+export_show() {
+  [ -f "$EXPORT_DIR/summary.json" ] || die "还没有导出汇总：先 fetch-export"
+  cat "$EXPORT_DIR/summary.json"
+  ls -l "$EXPORT_DIR" "$EXPORT_DIR/backups"
+}
+
+import_export() {
+  local old=${1:-}
+  [[ "$old" =~ ^[0-9a-f]{8}$ ]] || die "用法：import-export <旧版本号>（迁移版本和备份一样的那一版，如 a79a0042）"
+  [ -f "$SERVER/.env" ] || die "还没装（没有 ${SERVER}/.env）"
+  docker image inspect "youju-selfhost:$old" >/dev/null 2>&1 \
+    || die "没有镜像 youju-selfhost:${old}（${BASE}/releases/${old} 还在的话，照手册重新构建这一版的镜像）"
+  local files=("$EXPORT_DIR"/backups/youju-*.jsonl.gz)
+  [ -e "${files[0]}" ] || die "${EXPORT_DIR}/backups 里没有整库备份：先 fetch-export"
+  [ "${#files[@]}" -eq 1 ] || die "${EXPORT_DIR}/backups 里不止一份备份，只留要归档的那一份"
+  local name root_pw
+  name=$(basename "${files[0]}")
+  root_pw=$(sed -n 's/^MYSQL_ROOT_PASSWORD=//p' "$SERVER/.env")
+  [ -n "$root_pw" ] || die ".env 里没有 MYSQL_ROOT_PASSWORD"
+  pause_services
+  say "1/3 试恢复：${old} 的镜像在临时库 youju_drill_… 里恢复一遍（核对条数、外键、每张表的 SHA-256），结束删掉；不碰正式库"
+  # 建临时库要 root；连接串经环境变量传进容器（不进命令行参数）。临时库和正式库在同一个 MySQL 里
+  YOUJU_IMAGE="youju-selfhost:$old" \
+    YOUJU_DATABASE_URL="mysql+pymysql://root:${root_pw}@mysql:3306/youju?charset=utf8mb4" \
+    compose run --rm --no-deps -e YOUJU_DATABASE_URL -v "$EXPORT_DIR:/export:ro" worker \
+    youju restore-drill --file "/export/backups/$name"
+  say "2/3 加密归档：用 .env 里的 age 公钥加密，存到服务器存储 archive/；配了异地备份再传一份"
+  compose run --rm --no-deps -v "$EXPORT_DIR:/export:ro" worker \
+    youju archive-backup --file "/export/backups/$name" --name "cloudrun-$name"
+  say "3/3 删掉明文备份和带链接的清单"
+  rm -f "$EXPORT_DIR/backups/$name" "$EXPORT_DIR/manifest.json"
+  echo "IMPORT OK archive/cloudrun-${name}.age"
+}
+
+takedowns() {
+  local file=$EXPORT_DIR/takedowns.jsonl part=${1:-1}
+  [ -f "$file" ] || die "还没有下架清单：先 fetch-export"
+  [[ "$part" =~ ^[1-9][0-9]*$ ]] || die "段号要是正整数"
+  local blob lines
+  blob=$(gzip -9nc < "$file" | base64 -w 76)
+  lines=$(printf '%s\n' "$blob" | wc -l)
+  echo "下架清单 $(wc -l < "$file") 个网址；SHA-256 $(sha256sum < "$file" | cut -c1-64)；gzip 后 base64，共 $(( (lines + 199) / 200 )) 段，第 ${part} 段："
+  printf '%s\n' "$blob" | sed -n "$(( (part - 1) * 200 + 1 )),$(( part * 200 ))p"
+}
+
+takedowns_check() {
+  [ -f "$EXPORT_DIR/takedowns.jsonl" ] || die "还没有下架清单：先 fetch-export"
+  # 在正在跑的 worker 里查（不另起容器）；清单从标准输入给
+  compose exec -T worker youju takedown-carry check --file /dev/stdin < "$EXPORT_DIR/takedowns.jsonl"
+}
+
+# .env 里的一项改成新值、没有就加上（先写临时文件再改名）。值经环境变量给 awk，不进命令行参数
+set_env() {
+  (
+    umask 077
+    KEY="$1" VALUE="$2" awk 'BEGIN { k = ENVIRON["KEY"]; v = ENVIRON["VALUE"]; done = 0 }
+      index($0, k "=") == 1 { if (!done) print k "=" v; done = 1; next }
+      { print }
+      END { if (!done) print k "=" v }' "$SERVER/.env" > "$SERVER/.env.tmp"
+  )
+  mv -f "$SERVER/.env.tmp" "$SERVER/.env"
+}
+
+env_get() { sed -n "s/^$1=//p" "$SERVER/.env" | head -n 1; }
+
+fingerprint() { printf '%s' "$1" | sha256sum | cut -c1-4; }
+
+# 密钥的格式：对不上多半是复制少了、多了
+secret_ok() {
+  local re
+  case "$1" in
+    YOUJU_WX_APPSECRET) re='^[0-9a-f]{32}$' ;;
+    YOUJU_OFFSITE_AGE_RECIPIENT) re='^age1[0-9a-z]{58}$' ;;
+    YOUJU_ALERT_WEBHOOK) re='^https://[A-Za-z0-9.-]+/[A-Za-z0-9._~:/?=&%+-]*$' ;;
+    *) re='^[A-Za-z0-9._+/=:-]{8,200}$' ;;
+  esac
+  [[ "$2" =~ $re ]]
+}
+
+need_tty() {
+  [ -t 0 ] && [ -t 1 ] \
+    || die "只能在交互终端里用（轻量控制台的'登录'网页终端）：'执行命令'会把输入输出存进控制台的执行记录"
+}
+
+secret() {
+  local name=${1:-} value=""
+  [[ " $(echo $SECRET_NAMES) " == *" $name "* ]] && [ -n "$name" ] \
+    || die "用法：secret <名称>；名称是 $(echo $SECRET_NAMES)"
+  need_tty
+  [ -f "$SERVER/.env" ] || die "还没装（没有 ${SERVER}/.env）"
+  printf '粘贴 %s 的值（不显示），回车：' "$name"
+  IFS= read -rs value || true
+  echo
+  value=${value%$'\r'}
+  secret_ok "$name" "$value" || die "格式不对（${#value} 位），没有写"
+  set_env "$name" "$value"
+  echo "已写入 ${name}：${#value} 位，指纹 $(fingerprint "$value")。都填完运行 ${SELF} up 生效"
+}
+
+show() {
+  need_tty
+  [ -f "$SERVER/.env" ] || die "还没装（没有 ${SERVER}/.env）"
+  case "${1:-}" in
+    push)
+      echo "消息推送 Token：$(env_get YOUJU_WX_PUSH_TOKEN)"
+      echo "消息推送 EncodingAESKey：$(env_get YOUJU_WX_PUSH_AES_KEY)"
+      ;;
+    sync) echo "同步密钥：$(env_get YOUJU_SYNC_SECRET)" ;;
+    *) die "用法：show push|sync" ;;
+  esac
+  echo "看完关掉这个终端窗口"
+}
+
+rotate_sync() {
+  [ -f "$SERVER/.env" ] || die "还没装（没有 ${SERVER}/.env）"
+  local value
+  value=$(openssl rand -hex 32)
+  [[ "$value" =~ ^[0-9a-f]{64}$ ]] || die "生成同步密钥失败"
+  set_env YOUJU_SYNC_SECRET "$value"
+  echo "已换同步密钥：64 位，指纹 $(fingerprint "$value")（旧的作废）。"
+  echo "接着：${SELF} up；在交互终端里 ${SELF} show sync，填到本机（set-secret.sh YOUJU_SYNC_SECRET）"
+}
+
+# 不涉密的一项能不能这样写进 .env：名称是 YOUJU_ 开头、不是密钥；值写成不加引号的一行要能原样读回来
+# （不能有换行、$、" #"，不能以引号开头）
+plain_ok() {
+  local name=$1 value=$2
+  [[ "$name" =~ ^YOUJU_[A-Z0-9_]{1,60}$ ]] || return 1
+  [[ " $(echo $SECRET_NAMES $PROTECTED_NAMES) " != *" $name "* ]] || return 1
+  [[ "$value" != *'$'* && "$value" != *' #'* && "$value" != \"* && "$value" != \'* ]] || return 1
+  [ "${#value}" -le 4000 ]
+}
+
+env_set() {
+  local name=${1:-} value=""
+  [ -f "$SERVER/.env" ] || die "还没装（没有 ${SERVER}/.env）"
+  IFS= read -r value || true
+  value=${value%$'\r'}
+  plain_ok "$name" "$value" \
+    || die "${name:-（没写名称）} 不能这样改：密钥用 secret；值里不能有换行、\$、' #'，不能以引号开头"
+  set_env "$name" "$value"
+  echo "已写入 ${name}=${value}；运行 ${SELF} up 生效"
+}
+
+env_unset() {
+  local name=${1:-}
+  [ -f "$SERVER/.env" ] || die "还没装（没有 ${SERVER}/.env）"
+  plain_ok "$name" "" || die "${name:-（没写名称）} 不能这样删"
+  (
+    umask 077
+    KEY="$name" awk 'index($0, ENVIRON["KEY"] "=") != 1' "$SERVER/.env" > "$SERVER/.env.tmp"
+  )
+  mv -f "$SERVER/.env.tmp" "$SERVER/.env"
+  echo "已删掉 ${name}；运行 ${SELF} up 生效"
+}
+
+config_from_export() {
+  [ -f "$EXPORT_DIR/summary.json" ] || die "还没有导出汇总：先 fetch-export"
+  [ -f "$SERVER/.env" ] || die "还没装（没有 ${SERVER}/.env）"
+  # 在正在跑的 worker 里把配置转成 .env 的写法（字典、列表写 JSON，真假写 true/false），每项一行"名称<TAB>值"
+  local lines name value n=0
+  lines=$(compose exec -T worker python -I -c '
+import json, sys
+for name, value in sorted((json.load(sys.stdin).get("config") or {}).items()):
+    if value is None:
+        continue
+    if isinstance(value, bool):
+        text = "true" if value else "false"
+    elif isinstance(value, (dict, list)):
+        text = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    else:
+        text = str(value)
+    print(name + "\t" + text.replace("\n", "$").replace("\t", "$"))
+' < "$EXPORT_DIR/summary.json")
+  while IFS=$'\t' read -r name value; do
+    [ -n "$name" ] || continue
+    if plain_ok "$name" "$value"; then
+      set_env "$name" "$value"
+      n=$((n + 1))
+      echo "  ${name}=${value}"
+    else
+      echo "  跳过 ${name}：这样写不进 .env，要手动看" >&2
+    fi
+  done <<< "$lines"
+  echo "已按云托管的值写入 ${n} 项；运行 ${SELF} up 生效"
+}
+
 uninstall() {
   local purge=0
   [ "${1:-}" = "--purge" ] && purge=1
@@ -543,5 +787,16 @@ case "$cmd" in
   status) status ;;
   logs) logs "$@" ;;
   uninstall) need_domain uninstall; uninstall "$@" ;;
+  fetch-export) fetch_export "$@" ;;
+  export-show) export_show ;;
+  import-export) import_export "$@" ;;
+  takedowns) takedowns "$@" ;;
+  takedowns-check) takedowns_check ;;
+  secret) secret "$@" ;;
+  show) show "$@" ;;
+  rotate-sync) rotate_sync ;;
+  env-set) env_set "$@" ;;
+  env-unset) env_unset "$@" ;;
+  config-from-export) config_from_export ;;
   *) awk 'NR > 1 && /^#/ {print; next} NR > 1 {exit}' "$0"; exit 1 ;;
 esac

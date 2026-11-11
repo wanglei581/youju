@@ -4,7 +4,7 @@
 # 由 setup-wsl.ps1 调用（它先把安装包拷到 /opt/youju/local）。也可以手动重跑：
 #   wsl -d youju -u root -e bash /opt/youju/local/setup-wsl.sh
 # 重复运行安全：已有的 .env、数据库都不动；源码换了会重新构建镜像、迁移、重建容器。
-# 起步数据只在「库是空的、还没配服务器」时自动导入；配了服务器的起步按手册第六节第 5 步手动做。
+# 起步数据只在「库是空的、还没配服务器」时自动导入；配了服务器的起步按手册第八节「本机重新起步」手动做。
 # 退出码 10：刚改了发行版设置，要重启一次发行版（setup-wsl.ps1 会自动重启后再跑一遍）。
 set -euo pipefail
 # 全部输出走标准输出：Windows PowerShell 会把外部命令的标准错误当成报错
@@ -111,7 +111,7 @@ fi
 if [ "$sources" = "0" ] && [ -n "$(env_value YOUJU_SYNC_URL)" ]; then
   # 配了服务器的空库：起步数据必须是服务器刚导出的那一份，导入后还要对齐服务器进度，不能自动做；
   # 也先不启动 worker（它一启动就开始抓，抓到的新数据会让导入拒绝——导入只接受空库）
-  echo "已经配了服务器、库是空的：请按手册第六节第 5 步手动起步（导出文件要是服务器刚导出的），做完再启动 worker"
+  echo "已经配了服务器、库是空的：请按手册第八节「本机重新起步」手动起步（导出文件要是服务器刚导出的），做完再启动 worker"
   exit 0
 fi
 if [ "$sources" = "0" ] && [ -f youju-sync-export.jsonl.gz ]; then
@@ -124,6 +124,11 @@ elif [ "$sources" = "0" ]; then
   echo "库是空的，也没有起步数据：定时任务会从头抓取"
 else
   echo "库里已经有数据（来源 ${sources} 个），不导入"
+fi
+if [ "$sources" != "0" ] && [ -n "$(env_value YOUJU_SYNC_URL)" ]; then
+  # 升级可能新加了要同步的表（如 0051 的 takedown_blocks）：按这一版的表重建同步触发器，
+  # 不然推送会停在"少了触发器"。可以重复执行，变更流和待推的变更都不变
+  docker compose run --rm --no-deps worker youju sync-setup
 fi
 docker compose up -d --wait --wait-timeout 900
 curl -fsS http://127.0.0.1:8080/health

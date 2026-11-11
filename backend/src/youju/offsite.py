@@ -142,6 +142,66 @@ def run(
     return report
 
 
+# 首发前搬家（D-127）：云托管的最后一份整库备份不恢复进新库，加密后归档（交易记录按《电子商务法》
+# 第三十一条留 3 年）。放在 archive/ 下，不进上面按天清理的 backups/，到期手动删
+ARCHIVE_PREFIX = "archive/"
+_ARCHIVE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,120}\.jsonl\.gz")
+
+
+@dataclass
+class ArchiveReport:
+    target: str = ""
+    bytes: int = 0
+    offsite: bool = False
+
+
+def archive(
+    settings: Settings,
+    source: Path,
+    name: str,
+    *,
+    backend: storage.S3Backend | None = None,
+    encryptor=encrypt,
+) -> ArchiveReport:
+    """把一份整库备份用 age 公钥加密，存到本机存储 archive/，再传一份到异地 archive/。
+    只有创始人的私钥能解开；可以重跑（覆盖同名的密文）。异地没配好就不做：调用方归档完会删掉明文，
+    之后就没法再补传异地那一份了。"""
+    if not _ARCHIVE_NAME.fullmatch(name):
+        raise BackupError("归档名字只能是字母、数字、点、横线、下划线，以 .jsonl.gz 结尾")
+    recipient = (settings.offsite_age_recipient or "").strip()
+    if not recipient:
+        raise BackupError("还没填 age 公钥（YOUJU_OFFSITE_AGE_RECIPIENT）")
+    if not (
+        settings.offsite_s3_bucket.strip()
+        and settings.offsite_s3_access_key
+        and settings.offsite_s3_secret_key
+    ):
+        raise BackupError("异地备份还没配好（YOUJU_OFFSITE_S3_*）：配好再归档，明文备份先留着")
+    if not Path(source).is_file():
+        raise BackupError(f"没有这个文件：{source}")
+    report = ArchiveReport(target=ARCHIVE_PREFIX + name + ".age")
+    with tempfile.TemporaryDirectory() as tmp:
+        sealed = Path(tmp) / (name + ".age")
+        encryptor(Path(source), sealed, recipient)
+        report.bytes = sealed.stat().st_size
+        try:
+            storage.backend(settings).put_file(report.target, sealed)
+        except storage.StorageError as exc:
+            raise BackupError(f"存到本机存储失败：{exc}") from None
+        config = _config(settings)
+        target = backend or storage.S3Backend(config)
+        try:
+            target.put_file(
+                report.target,
+                sealed,
+                headers=storage_class_header(config.endpoint, settings.offsite_storage_class),
+            )
+        except storage.StorageError as exc:
+            raise BackupError(f"本机存储已存好，传异地失败（重跑这条命令）：{exc}") from None
+        report.offsite = True
+    return report
+
+
 LOCAL_PREFIX = "offsite-backups/"
 
 

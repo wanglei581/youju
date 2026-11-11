@@ -16,8 +16,9 @@ from youju.public_snapshot import PUBLIC_TABLES
 
 # 公开快照的表，加上下架、恢复的操作记录：下架在本机核对台做（公开数据的主库在本机），
 # 服务器靠 documents.taken_down_at 隐藏，各处缓存按操作记录的编号和时间失效
-# （takedown.cache_revision），所以操作记录也要过去；记录里的备注（可能写到投诉人）不传
-SYNC_TABLES = frozenset(PUBLIC_TABLES | {"document_takedown_events"})
+# （takedown.cache_revision），所以操作记录也要过去；记录里的备注（可能写到投诉人）不传。
+# 首发前搬家带过来的已下架网址（takedown_blocks，D-127）也过去：本机重建、从服务器导回时不丢
+SYNC_TABLES = frozenset(PUBLIC_TABLES | {"document_takedown_events", "takedown_blocks"})
 # 传之前清空的字段：人工填写、可能写到投诉人的备注（可为空的写 NULL，不可为空的写空串）
 CLEARED_COLUMNS: dict[str, tuple[str, ...]] = {
     "documents": ("takedown_note", "restore_note"),

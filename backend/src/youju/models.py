@@ -275,6 +275,23 @@ class DocumentTakedownEvent(Base):
     operated_at: Mapped[datetime] = mapped_column(UTCDateTime())
 
 
+class TakedownBlock(Base):
+    """首发前搬家（D-127）从云托管带过来的已下架网址：本机（公开数据的主库）的数据来自不含下架
+    文件的公开导出，不知道哪些通知下架过；这张表让本机以后再抓到同一个规范网址时不再收录
+    （crawler/service.py 的 save_items），本机已经收进来的由 youju takedown-carry apply 整组下架。
+
+    只存规范网址键、原来的来源编号（只作参考，两边的来源编号不一定一样）、下架时间、原因类别；
+    不存备注、操作人和标题（可能写到投诉人或个人信息）。要让某个网址重新收录，删掉这一行。"""
+
+    __tablename__ = "takedown_blocks"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    url_key: Mapped[str] = mapped_column(String(URL_KEY_MAX), unique=True)
+    origin_source_id: Mapped[int | None] = mapped_column(Integer)
+    taken_down_at: Mapped[datetime] = mapped_column(UTCDateTime())
+    reason: Mapped[str] = mapped_column(String(16))
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
+
+
 class DocumentMerge(Base):
     """同一文件的别名关系；停用映射即可撤销，原始文件及衍生记录均保留。"""
 

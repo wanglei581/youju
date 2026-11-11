@@ -20,7 +20,7 @@ from youju.crawler.fetcher import FetchResult
 from youju.crawler.listing import ListItem, extract_items
 from youju.crawler.urls import host_of, public_url, url_key
 from youju.dedup import reconcile_documents
-from youju.models import URL_KEY_MAX, Document, Source, SourceCheck
+from youju.models import URL_KEY_MAX, Document, Source, SourceCheck, TakedownBlock
 from youju.title_tags import INDUSTRY_RULES, SUPPORT_RULES
 
 log = logging.getLogger(__name__)
@@ -70,6 +70,17 @@ def save_items(
             log.warning("网址过长，跳过：来源 #%s %s…", source.id, key[:120])
             continue
         unique.setdefault(key, item)
+    # 首发前搬家（D-127）带过来的已下架网址：不再收录，已经在库里的也不更新
+    # （见 youju/takedown_carry.py）
+    blocked = set(
+        session.scalars(
+            select(TakedownBlock.url_key).where(TakedownBlock.url_key.in_(list(unique)))
+        )
+    )
+    if blocked:
+        log.info("来源 #%s：%d 条是已下架的网址，不收录", source.id, len(blocked))
+        for key in blocked:
+            del unique[key]
     if not unique:
         return 0
     rows = [

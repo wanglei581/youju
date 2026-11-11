@@ -3,6 +3,7 @@
 #   local/
 #     setup-wsl.ps1、setup-wsl.sh        一键安装（WSL 方式，推荐；不要 Docker Desktop）
 #     setup.ps1                           一键安装（Docker Desktop 方式，要 Windows 11 23H2 以上）
+#     set-secret.sh、carry-takedowns.sh    录密钥（同步密钥等）、首发前搬家带下架清单（手册第六节）
 #     docker-compose.yml、env.example、mysql.cnf
 #     source/                             程序源码（只有构建镜像要用的文件）
 #     youju-sync-export.jsonl.gz          （可选）起步用的公开数据
@@ -20,7 +21,8 @@ work="$out_dir/youju-local-$sha"
 pkg="$work/local"
 rm -rf "$work"
 mkdir -p "$pkg/source"
-for name in setup-wsl.ps1 setup-wsl.sh setup.ps1 docker-compose.yml env.example mysql.cnf; do
+for name in setup-wsl.ps1 setup-wsl.sh setup.ps1 docker-compose.yml env.example mysql.cnf \
+  set-secret.sh carry-takedowns.sh; do
   git -C "$root" show "HEAD:backend/deploy/selfhost/local/$name" > "$pkg/$name"
 done
 # 只放构建镜像要用的文件（和根目录 .dockerignore 的白名单一致）
