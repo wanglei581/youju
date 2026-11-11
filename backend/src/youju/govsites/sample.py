@@ -330,8 +330,8 @@ def summary_lines(rows: list[SampleRow]) -> list[str]:
     return lines
 
 
-# 一省一级算合格：每个栏目都有结论，而且读得准的（通过、不收）占八成以上（待重试不算进分母，
-# 见 ProvinceResult.rate）。只有通过的栏目进这一批的导入文件；读得准的太少说明这个省有成片的
+# 一省一级算合格：每个栏目都有结论，而且读得准的（通过、不收）占八成以上（待重试、不能抓不算进
+# 分母，见 ProvinceResult.rate）。只有通过的栏目进这一批的导入文件；读得准的太少说明这个省有成片的
 # 问题，整省先不放。
 PASS_RATE = 0.8
 
