@@ -43,6 +43,12 @@ _NAME_CONTEXT = re.compile(
 # 以这些字结尾的是品类、地名、机构，不算人名（"成长型、龙头型、创新型""车用汽、柴油"
 # "秦淮河、石臼湖""羊毛、毛条"）
 _SEQUENCE = re.compile(rf"{_H}{{2,3}}(?:、{_H}{{2,3}}){{2,}}")
+# 写着人名的补偿安置决定（"关于××的征地补偿安置决定""关于××、××房屋征收补偿决定"）：征地补偿
+# 标准、办法是普通政策，不当词挡，只认"关于 + 人名 + …补偿/安置… + 决定/协议"
+_COMPENSATION = re.compile(
+    rf"关于((?:{_H}{{2,3}}、)*{_H}{{2,3}})[^，。]{{0,12}}(?:补偿|安置)[^，。]{{0,6}}(?:决定|协议)"
+)
+_NOT_NAMES = ("房屋", "房产", "住房", "厂房")  # 以这些词开头的不是人名（"房屋征收补偿决定"）
 _NOT_NAME_END = tuple(
     "型油类业品化性气水电料费税率险款价区县市镇村省局厅委办部站所院校园河湖江苑条"
 )
@@ -53,6 +59,9 @@ def _named(title: str) -> bool:
 
     for m in _NAME_CONTEXT.finditer(title):
         if any(g and _name_like(g) for g in m.groups()):
+            return True
+    for m in _COMPENSATION.finditer(title):
+        if any(_name_like(w) and not w.startswith(_NOT_NAMES) for w in m.group(1).split("、")):
             return True
     for m in _SEQUENCE.finditer(title):
         items = m.group(0).split("、")
