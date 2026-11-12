@@ -223,7 +223,19 @@ def _zhejiang_pages() -> dict[str, str]:
         JPAAS_DEPT: '<meta name="SiteName" content="长兴县人民政府">' + UNIT_TAG,
     }
     api = find_unit_apis(pages[JPAAS_DEPT], JPAAS_DEPT)[0].url
-    pages[api] = json.dumps({"success": True, "code": "200", "data": {"html": unit_html}})
+    pages[api] = json.dumps(
+        {
+            "roles": None,
+            "permissions": None,
+            "success": True,
+            "message": "生成成功",
+            "code": "200",
+            "traceId": "t",
+            "messageType": 2,
+            "data": {"html": unit_html},
+        },
+        ensure_ascii=False,
+    )
     # 还原出来的分类栏目页自己写着栏目名（长兴县实际页面的 meta ColumnName）
     pages["http://www.zjcx.gov.cn/xxgk/zfbmxxgk/zxxkxjsj/fdzdgknr/zcwj/xzbmfgfxwj/index.html"] = (
         '<meta name="ColumnName" content="乡镇、部门非规范性文件"><title>乡镇、部门非规范性文件</title>'

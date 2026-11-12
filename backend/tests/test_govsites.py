@@ -347,6 +347,12 @@ def test_national_ministries_are_target_depts():
     assert dept_categories("外交部") == []
 
 
+NORMAL_X = (
+    '{"roles":null,"permissions":null,"success":true,"message":"生成成功","code":"200",'
+    '"traceId":"t","messageType":2,"data":{"html":"<li>x</li>"}}'
+)
+
+
 def test_list_api_only_accepts_whitelisted_same_site_endpoint():
     from youju.crawler.adapters import api_html, find_list_api
 
@@ -356,9 +362,7 @@ def test_list_api_only_accepts_whitelisted_same_site_endpoint():
     assert api.url.startswith(
         "https://kjt.zj.gov.cn/api-gateway/jpaas-publish-server/front/page/build/unit?"
     )
-    assert (
-        api_html(api, '{"success":true,"code":"200","data":{"html":"<li>x</li>"}}') == "<li>x</li>"
-    )
+    assert api_html(api, NORMAL_X) == "<li>x</li>"
     # 没有成功标志的返回按读取护栏（D-128）不读
     assert api_html(api, '{"data":{"html":"<li>x</li>"}}') == ""
     assert api_html(api, "not json") == ""

@@ -90,10 +90,12 @@ def test_missing_success_flag_is_not_success():
     assert api_html(api, text) == ""
 
 
-def test_empty_permission_fields_are_fine():
+def test_only_null_permission_fields_are_recognized():
+    """认得出才读：roles、permissions 只有和正常返回一样是 null 才读；空列表、空串等都不认。"""
     api = _api()
-    for empty in (None, [], {}, "", False, 0):
-        assert api_refusal(api, _got(_payload(roles=empty, permissions=empty))) == ""
+    assert api_refusal(api, _got(_payload(roles=None, permissions=None))) == ""
+    for other in ([], {}, "", False, 0):
+        assert api_refusal(api, _got(_payload(roles=other, permissions=other))) != ""
 
 
 @pytest.mark.parametrize("code", [401, 403, 412, 521])
@@ -129,14 +131,12 @@ def test_login_captcha_or_gate_page_is_refused():
     assert "要登录或验证码" in api_refusal(api, _got('<html><input type="password"></html>'))
     assert "要登录或验证码" in api_refusal(api, _got("<html>请输入验证码</html>"))
     assert "拦截" in api_refusal(api, _got("<html>访问被拒绝</html>"))
-    # 空白、维护中这类不是 JSON 的返回：不读，但按"这次没读出"记失败、下次再试
-    for text in ("", "<html>系统维护中</html>"):
-        assert api_refusal(api, _got(text)) == ""
-        assert api_html(api, text) == ""
-    # 网站模板做的 404 页：页头有"用户登录""验证码"，链接很多，不算关卡页
+    # 认得出才读：空白、维护中、网站模板的 404 页这类不是 JSON 的返回，一律认不出、不读
     nav = "".join(f'<a href="/col/col{i}/index.html">栏目{i}</a>' for i in range(30))
     template = f"<html><div>用户登录 | 验证码</div>{nav}<p>页面不存在</p></html>"
-    assert api_refusal(api, _got(template)) == ""
+    for text in ("", "<html>系统维护中</html>", template):
+        assert "认不出" in api_refusal(api, _got(text))
+        assert api_html(api, text) == ""
     # 失败提示写在 msg 里的也认
     assert "要登录或验证码" in api_refusal(
         api, _got(_payload(success=False, message=None, msg="请先登录"))
@@ -381,19 +381,19 @@ def test_success_flag_with_login_prompt_is_not_read():
 
 
 def test_verify_unreadable_or_empty_list_api_reply():
-    from youju.govsites.verify import DOWN, NO_ITEMS, check_one
+    from youju.govsites.verify import BLOCKED, NO_ITEMS, check_one
 
     api, today = _api(), date(2026, 11, 12)
     blank = check_one(
         _Cache({PAGE_URL: PAGE, api.url: "<html>系统维护中</html>"}), _column(), today
     )
-    assert blank.result == DOWN and "列表接口" in blank.reason
+    assert blank.result == BLOCKED and "认不出" in blank.reason
     empty = check_one(
         _Cache({PAGE_URL: PAGE, api.url: _payload(data={"html": ""})}), _column(), today
     )
     assert empty.result == NO_ITEMS  # 列表那段在、是空的：这会儿没有条目
     missing = check_one(_Cache({PAGE_URL: PAGE, api.url: _payload(data={})}), _column(), today)
-    assert missing.result == DOWN  # 没有列表那段：这次没读出
+    assert missing.result == BLOCKED  # 没有列表那段：认不出，不读
     one = _payload(data={"html": LIST.split("</li>")[0] + "</li>"})
     few = check_one(_Cache({PAGE_URL: PAGE, api.url: one}), _column(), today)
     assert few.result == NO_ITEMS and "经列表接口" in few.reason
@@ -504,9 +504,9 @@ def test_login_hint_in_list_html_outside_item_links_is_not_read():
     gated = _payload(data={"html": "<p>请先登录后查看</p>" + LIST})
     assert "登录或权限提示" in api_refusal(api, _got(gated))
     assert api_html(api, gated) == ""
-    # 条目标题里写着"登录""type=password"一类的字样照常读
+    # 条目标题里只是提到"登录""type=password"一类字样的照常读
     titles = (
-        '<li><a href="/art/1.html">关于用户登录后申报的说明（type=password 字段）</a>'
+        '<li><a href="/art/1.html">关于启用短信验证码登录的通知（type=password 字段说明）</a>'
         "<span>2026-11-05</span></li>"
     )
     assert api_refusal(api, _got(_payload(data={"html": titles}))) == ""
@@ -620,7 +620,7 @@ def test_string_false_or_null_permission_values_are_not_empty():
         assert api_html(api, text) == ""
 
 
-def test_unreadable_unit_counts_as_not_read_this_time():
+def test_unrecognized_unit_counts_as_refused():
     from youju.crawler.adapters import find_unit_apis
     from youju.govsites.divisions import DivisionIndex, parse_tree
     from youju.govsites.inventory import Inventory
@@ -631,7 +631,7 @@ def test_unreadable_unit_counts_as_not_read_this_time():
     apis = [a.url for a in find_unit_apis(page, PAGE_URL)]
     pages = {PAGE_URL: page, apis[0]: _payload(success=False), apis[1]: "<html>系统维护中</html>"}
     info = Inventory(DivisionIndex(parse_tree({})), _Cache(pages), provinces=[]).page(PAGE_URL)
-    assert info.api_refused and info.api_failed
+    assert info.api_refused and not info.api_failed  # 认不出的单元也算拦下
 
 
 def test_style_blocks_and_click_to_login_links():
@@ -683,8 +683,48 @@ def test_gate_phrases_anywhere_but_plain_mentions_pass():
         LIST + "<span>登录后可见</span>",
     ):
         assert "登录或权限提示" in api_refusal(api, _got(_payload(data={"html": gated}))), gated
-    for fine in (
-        '<li><a href="/x">政策通知</a><span>登录系统操作指南</span></li>' + LIST,
-        '<li><a href="/y">关于启用短信验证码登录的通知</a><span>2026-11-05</span></li>' + LIST,
+    # 条目标题里只是提到的照读
+    fine = '<li><a href="/y">关于启用短信验证码登录的通知</a><span>2026-11-05</span></li>' + LIST
+    assert api_refusal(api, _got(_payload(data={"html": fine}))) == ""
+    # 认得出才读：条目链接以外写着"登录"的，不是普通列表，从严不读（真实返回里一次也没有）
+    summary = '<li><a href="/x">政策通知</a><span>登录系统操作指南</span></li>' + LIST
+    assert "登录或权限提示" in api_refusal(api, _got(_payload(data={"html": summary})))
+
+
+def test_only_the_known_reply_shape_is_read():
+    """认得出才读：多了字段、提示不是"生成成功"、messageType 不对、data 里多东西，一律不读。"""
+    api = _api()
+    for change, why in (
+        ({"extra": 1}, "多了字段"),
+        ({"message": "成功"}, "提示不是"),
+        ({"messageType": 0}, "messageType"),
+        ({"data": {"html": LIST, "more": "x"}}, "data 里"),
+        ({"traceId": 1}, "traceId"),
     ):
-        assert api_refusal(api, _got(_payload(data={"html": fine}))) == "", fine
+        text = _payload(**change)
+        assert why in api_refusal(api, _got(text)), change
+        assert api_html(api, text) == ""
+    missing_type = json.loads(_payload())
+    del missing_type["messageType"]  # 真实返回里有 3 次没有 messageType：照读
+    assert api_refusal(api, _got(json.dumps(missing_type, ensure_ascii=False))) == ""
+
+
+def test_login_hints_that_no_rule_lists_are_still_caught_outside_links():
+    api = _api()
+    for html in ("<p>登录后方能浏览</p>" + LIST, "<p>完成验证码校验</p>" + LIST):
+        assert "登录或权限提示" in api_refusal(api, _got(_payload(data={"html": html}))), html
+
+
+def test_entity_encoded_password_input_is_caught():
+    api = _api()
+    html = LIST + '<input type="&#112;assword" name="p">'
+    assert "登录框" in api_refusal(api, _got(_payload(data={"html": html})))
+
+
+def test_only_known_declaration_attributes_and_parameters_are_recognized():
+    extra_attr = PAGE.replace('id="u1"', 'id="u1" data-x="1"')
+    assert find_list_api(extra_attr, PAGE_URL) is None
+    extra_param = PAGE.replace("'pageId':'1229225203'", "'pageId':'1229225203','page':'2'")
+    assert find_list_api(extra_param, PAGE_URL) is None
+    number = PAGE.replace("'pageId':'1229225203'", "'pageId':1229225203")
+    assert find_list_api(number, PAGE_URL) is None

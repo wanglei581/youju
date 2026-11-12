@@ -43,6 +43,10 @@ class ListApi:
     base_url: str  # 接口返回的列表里的相对链接，以栏目页为准
 
 
+_KNOWN_ATTRS = frozenset({"id", "src", "webid", "parsetype", "url", "querydata"})
+_KNOWN_QUERY = frozenset(
+    {"parseType", "webId", "tplSetId", "pageType", "tagId", "editType", "pageId", "unitType"}
+)
 _STRAY_END = re.compile(r"</(?:html|body)\s*>", re.I)
 
 
@@ -80,6 +84,9 @@ def find_unit_apis(html: str, page_url: str) -> list[ListApi]:
     """页面里声明的全部大汉 jpaas 单元接口（当前栏目的列表排最前，其次导航等其他单元）。"""
     candidates: list[tuple[int, ListApi]] = []
     for attrs in _unit_scripts(html):
+        # 认得出才认：属性只能是已知那几个（缓存里 714 个真实声明全是这 6 个），url、queryData 要有
+        if set(attrs) - _KNOWN_ATTRS or not {"url", "querydata"} <= set(attrs):
+            continue
         declared = urlsplit(urljoin(page_url, attrs.get("url", "")))
         # 只认白名单路径，而且接口必须就在栏目页这个网站上（页面声明到别的主机的不请求）
         if declared.path != HANWEB_JPAAS_PATH:
@@ -90,8 +97,11 @@ def find_unit_apis(html: str, page_url: str) -> list[ListApi]:
             query = ast.literal_eval(attrs.get("querydata", ""))
         except Exception:  # noqa: BLE001 - 页面写的参数什么样都有，解析不了就不用
             continue
-        if not isinstance(query, dict) or not all(
-            isinstance(v, (str, int)) and not isinstance(v, bool) for v in query.values()
+        # 参数名只能是已知那几个（真实声明是 7 个，28 个多一个 unitType），值都是文字
+        if (
+            not isinstance(query, dict)
+            or set(map(str, query)) - _KNOWN_QUERY
+            or not all(isinstance(v, str) for v in query.values())
         ):
             continue
         query = {str(k): str(v) for k, v in query.items()}
@@ -160,8 +170,9 @@ _PASSWORD_INPUT = re.compile(r"<input\b[^>]*type\s*=\s*[\"']?password", re.I)
 _ANCHOR = re.compile(r"<a\b.*?</a>", re.S | re.I)
 # 列表里的登录、没权限提示：认具体说法（在链接文字里、链接以外都看，出现在哪个位置都算）；
 # 只是提到"登录""验证码"的（如"登录系统操作指南""短信验证码登录的通知"）不算
+_OUTSIDE_HINT = re.compile(r"登[录陆]|验证码")
 _GATE_PHRASE = re.compile(
-    r"请(?:先)?(?:完成)?登[录陆]|登[录陆](?:后|才能|才可|方可)(?:查看|访问|阅读|浏览|下载|可见)|"
+    r"请(?:先)?(?:完成)?登[录陆]|登[录陆](?:后|才能|才可|方可)|"
     r"(?:需要|需|须)(?:先)?登[录陆]|(?:仅|只有|只限)登[录陆]用户|登[录陆]用户(?:可|才)|"
     r"(?:您)?(?:没有|无)(?:权限|权访问|权查看|权阅读|访问权限)|权限不足|未授权|"
     r"请输入验证码|请完成验证|人机验证"
@@ -236,9 +247,39 @@ def _messages(payload: dict) -> str:
     )
 
 
+# 认得出才读（D-128）：只有和已知正常返回一模一样的才读。11/12 查缓存里 615 次成功返回，全是
+# 这 8 个字段（3 次少了 messageType），roles、permissions 为 null，提示是"生成成功"，data 里只有
+# html 一段；别的样子一律记不能抓，不靠一条条认登录提示的写法
+_KNOWN_KEYS = frozenset(
+    {"roles", "permissions", "success", "message", "code", "data", "traceId", "messageType"}
+)
+_NORMAL_MESSAGE = "生成成功"
+
+
+def _unknown_shape(payload: dict) -> str:
+    """不是已知的正常返回时说哪里不一样；一样给空串。"""
+    extra = set(payload) - _KNOWN_KEYS
+    if extra:
+        return f"多了字段 {'、'.join(sorted(map(str, extra)))}"
+    for key in ("roles", "permissions"):
+        if key not in payload or payload[key] is not None:
+            return f"{key} 不是 null"
+    if payload.get("message") != _NORMAL_MESSAGE:
+        return f"提示不是“{_NORMAL_MESSAGE}”"
+    if payload.get("messageType", 2) != 2:
+        return "messageType 不是 2"
+    if not isinstance(payload.get("traceId", ""), str):
+        return "traceId 不是文字"
+    data = payload.get("data")
+    if not isinstance(data, dict) or set(data) != {"html"} or not isinstance(data["html"], str):
+        return "data 里不是只有一段列表 HTML"
+    return ""
+
+
 def _payload_refusal(payload: dict) -> str:
-    """接口 JSON 返回本身的护栏：不是成功、带权限要求时给原因；可以读给空串。"""
-    success, code = payload.get("success"), str(payload.get("code", "200"))
+    """接口 JSON 返回的护栏：认得出（和已知正常返回一样、列表里没有登录提示）给空串，可以读；
+    别的给原因，记不能抓、不读。"""
+    success, code = payload.get("success"), payload.get("code")
     messages = _messages(payload)
     message = messages[:40]
     if success is not True or code != "200":
@@ -249,31 +290,33 @@ def _payload_refusal(payload: dict) -> str:
             flag = json.dumps(success, ensure_ascii=False)
             parts.append("没有成功标志" if success is None else f"success={flag}")
         if code != "200":
-            parts.append(f"code={code}")
+            parts.append("没有 code" if code is None else f"code={code}")
         if message:
             parts.append(message)
         return f"列表接口返回不是成功（{'，'.join(parts)}）"
     if _LOGIN_TEXT.search(messages):
         # 标着成功、提示却是要登录或没权限：自相矛盾，按要登录处理，不读
         return f"列表接口要登录或验证码（{message}）"
-    inner = payload.get("data")
-    html = inner.get("html") if isinstance(inner, dict) else None
-    if isinstance(html, str) and _PASSWORD_INPUT.search(html):
-        return "列表接口返回的是登录框"
-    if isinstance(html, str):
-        # 去掉标签、空白后连起来看（"请<b>先</b>登录"这类被标签隔开的提示也认得）；条目链接以外
-        # 只要写着"登录""验证码"就算提示（11/12 查缓存里 616 次返回，链接以外一次也没有）
-        outside = html_lib.unescape(_TAGS.sub("", _ANCHOR.sub(" ", html)))
-        hint = _GATE_PHRASE.search(outside)
-        if hint:
-            return f"列表接口返回里有登录或权限提示（{hint.group(0)}）"
-        for raw in _ANCHOR_TEXT.findall(html):
-            text = html_lib.unescape(_TAGS.sub("", raw)).strip()
-            if _GATE_LINK.search(text) or _GATE_PHRASE.search(text):
-                return f"列表接口返回里有登录或权限提示（{text[:20]}）"
     fields = _permission_fields(payload)
     if fields:
         return f"列表接口返回带权限要求（{'、'.join(fields)} 不为空）"
+    shape = _unknown_shape(payload)
+    if shape:
+        return f"列表接口返回认不出（{shape}）"
+    html = payload["data"]["html"]
+    plain = html_lib.unescape(html)
+    if _PASSWORD_INPUT.search(plain):
+        return "列表接口返回的是登录框"
+    # 条目链接以外写着"登录""验证码"的，不是普通列表（615 次正常返回里一次也没有）；
+    # 链接文字里是"请先登录""登录后…""没有权限"一类说法的同样不读。条目标题里只是提到的照读
+    outside = html_lib.unescape(_TAGS.sub("", _ANCHOR.sub(" ", html)))
+    hint = _OUTSIDE_HINT.search(outside) or _GATE_PHRASE.search(outside)
+    if hint:
+        return f"列表接口返回里有登录或权限提示（{hint.group(0)}）"
+    for raw in _ANCHOR_TEXT.findall(html):
+        text = html_lib.unescape(_TAGS.sub("", raw)).strip()
+        if _GATE_LINK.search(text) or _GATE_PHRASE.search(text):
+            return f"列表接口返回里有登录或权限提示（{text[:20]}）"
     return ""
 
 
@@ -316,15 +359,13 @@ def api_refusal(api: ListApi, result) -> str:
     text = getattr(result, "text", "") or ""
     payload = _json_payload(text)
     if payload is None:
-        # 不是 JSON：整页是登录、验证码、防护拦截关卡的记不能抓；别的（空白、维护中、网站模板的
-        # 404 页）按"这次没读出"，不读、照常记失败下次再试
-        if not _bare_page(text):
-            return ""
-        if _LOGIN_TEXT.search(text[:20000]) or _PASSWORD_INPUT.search(text[:20000]):
+        # 不是 JSON：认不出，一律记不能抓、不读（认得出才读）；原因里分一下是不是登录、拦截关卡
+        head = html_lib.unescape(text[:20000])
+        if _bare_page(text) and (_LOGIN_TEXT.search(head) or _PASSWORD_INPUT.search(head)):
             return "列表接口要登录或验证码"
-        if _GATE_TEXT.search(text[:20000]):
+        if _bare_page(text) and _GATE_TEXT.search(head):
             return "列表接口返回拦截页面"
-        return ""
+        return "列表接口返回认不出（不是 JSON）"
     return _payload_refusal(payload)
 
 

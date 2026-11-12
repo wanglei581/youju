@@ -222,7 +222,7 @@ JPAAS_PAGE = """<html><body><div class="col_right"><ul>
  queryData="{'parseType':'bulidstatic','webId':'3387','tplSetId':'T1','pageType':'column','tagId':'当前栏目list','editType':'null','pageId':'1229225203'}"></script>
 </ul></div></body></html>"""
 JPAAS_JSON = (
-    '{"success":true,"data":{"html":"<li><a href=\\"/col/col1229225203/art/2026/art_1.html\\">'
+    '{"roles":null,"permissions":null,"success":true,"message":"生成成功","code":"200","traceId":"t","messageType":2,"data":{"html":"<li><a href=\\"/col/col1229225203/art/2026/art_1.html\\">'
     "关于开展2026年度第一批项目申报的通知</a><span>2026-11-05</span></li>"
     '<li><a href=\\"/col/col1229225203/art/2026/art_2.html\\">关于公布第二批认定名单的公示</a>'
     '<span>2026-11-04</span></li>"}}'
@@ -337,7 +337,7 @@ def test_refused_list_api_drops_stray_page_items(session) -> None:
         "</ul>",
         '<li><a href="/art/9.html">关于开展专项申报工作的通知</a><span>2026-11-01</span></li></ul>',
     )
-    body = JPAAS_JSON.replace('{"success":true,', '{"success":true,"roles":["dept"],')
+    body = JPAAS_JSON.replace('"roles":null', '"roles":["dept"]')
     fetcher = FakeFetcher({url: [page(url, stray)], JPAAS_API: [page(JPAAS_API, body)]})
     check = check_source(session, source, fetcher)
     assert (check.status, check.items_found) == ("list_api_refused", 0)
@@ -345,7 +345,7 @@ def test_refused_list_api_drops_stray_page_items(session) -> None:
 
 
 def test_list_api_with_permission_fields_is_not_read(session) -> None:
-    body = JPAAS_JSON.replace('{"success":true,', '{"success":true,"roles":["dept"],')
+    body = JPAAS_JSON.replace('"roles":null', '"roles":["dept"]')
     check, source, docs = _check_with_api(session, page(JPAAS_API, body))
     assert (check.status, docs) == ("list_api_refused", 0)
     assert "roles" in check.error
@@ -411,12 +411,12 @@ def test_refusal_is_rechecked_when_page_declares_another_api_or_after_30_days(se
         assert "list_api_refused" not in source.parser_config
 
 
-def test_blank_list_api_response_is_a_retryable_failure(session) -> None:
-    """接口回空白或维护页：不读，按"这次没读出"记失败，不记不能抓、不停抓。"""
+def test_unrecognized_list_api_reply_is_not_read(session) -> None:
+    """认得出才读：接口回空白、维护页这类认不出的返回，不读，记不能抓（30 天后再查）。"""
     check, source, docs = _check_with_api(session, page(JPAAS_API, "<html>系统维护中</html>"))
-    assert (check.status, docs) == ("parse_empty", 0)
-    assert source.health == "degraded"
-    assert "list_api_refused" not in source.parser_config
+    assert (check.status, docs) == ("list_api_refused", 0)
+    assert "认不出" in check.error
+    assert source.health == "blocked"
 
 
 def test_robots_denied_list_api_drops_stray_page_items(session) -> None:
@@ -500,7 +500,13 @@ def test_unreadable_list_api_reply_drops_stray_page_items(session) -> None:
         "</ul>",
         '<li><a href="/art/9.html">关于开展专项申报工作的通知</a><span>2026-11-01</span></li></ul>',
     )
-    for body in ("", "<html>系统维护中</html>", '{"success":true,"code":"200","data":{"html":""}}'):
+    empty = '{"roles":null,"permissions":null,"success":true,"message":"生成成功","code":"200","traceId":"t","messageType":2,"data":{"html":""}}'
+    cases = [
+        ("", "list_api_refused"),
+        ("<html>系统维护中</html>", "list_api_refused"),
+        (empty, "parse_empty"),
+    ]
+    for body, want in cases:
         session.query(Document).delete()
         session.query(SourceCheck).delete()
         session.query(Source).delete()
@@ -508,7 +514,7 @@ def test_unreadable_list_api_reply_drops_stray_page_items(session) -> None:
         source = make_source(session, url)
         fetcher = FakeFetcher({url: [page(url, stray)], JPAAS_API: [page(JPAAS_API, body)]})
         check = check_source(session, source, fetcher)
-        assert (check.status, check.items_found) == ("parse_empty", 0)
+        assert (check.status, check.items_found) == (want, 0)
         assert session.scalar(select(func.count()).select_from(Document)) == 0
 
 
