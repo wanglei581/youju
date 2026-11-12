@@ -645,7 +645,7 @@ test('条款对照页：三级选区县→提交带 district→失败回表单�
   form.onUnload();
 });
 
-test('来源带区县：列表行、详情、截止按月看的地区不丢区县；地区文字已写区县或没有区县时照录；名单结果的命中行只留名单中写作和批次（11/12 简化走查）', async () => {
+test('来源带区县：列表行、详情、截止按月看的地区不丢区县；地区文字已写区县或没有区县时照录；名单结果的命中行平时只留名单中写作和批次，没有入口或同名不同代码时照旧列全（11/12 简化走查）', async () => {
   assert.equal(format.regionText(DISTRICT_DOC), '青岛·市南区 · 区县级');
   assert.equal(format.regionText({ ...DISTRICT_DOC, region: '市南区 · 区级' }), '市南区 · 区级');
   assert.equal(format.regionText({ region: '青岛 · 市级', city: '青岛' }), '青岛 · 市级');
@@ -666,10 +666,17 @@ test('来源带区县：列表行、详情、截止按月看的地区不丢区�
   const matched = { name: '合成科技有限公司', batch: '第二批', sequence: '12', region: '青岛市市南区', creditCode: '91370200MA00000000', via: 'name' };
   const lists = render('pages/lists/index.wxml', { queried: '合成科技有限公司', result: { items: [{ ...DISTRICT_DOC, kind: '名单', matched }], similar: [], coverage: { lists: 3 } }, items: [], shown: [], chips: [] });
   assert.equal(findAll(lists, (n) => n.tag === 'doc-row')[0].attrs.doc.district, '市南区');
-  // 类别、序号、地区、信用代码不再列在命中行上，看"看原名单里的这一行"（原名单那一行里有）
-  assert.equal(textOf(findAll(lists, hasClass('hit-line'))[0]), '名单中写作“合成科技有限公司” · 第二批');
+  // 没有进原名单那一行的入口（没有 entryToken）时，命中行照旧列出批次、序号、企业地区、信用代码
+  assert.match(textOf(findAll(lists, hasClass('hit-line'))[0]), /第二批 · 序号 12 · 青岛市市南区 · 信用代码 91370200MA00000000/);
+  // 11/12 简化走查：有入口且没有同名不同代码时只留“名单中写作……”和批次，序号、地区、信用代码点“看原名单里的这一行”看
+  const withToken = { ...matched, entryToken: 'a'.repeat(32) };
+  const shortLine = render('pages/lists/index.wxml', { queried: '合成科技有限公司', result: { items: [{ ...DISTRICT_DOC, kind: '名单', matched: withToken }], similar: [], coverage: { lists: 3 } }, items: [], shown: [], chips: [] });
+  assert.equal(textOf(findAll(shortLine, hasClass('hit-line'))[0]), '名单中写作“合成科技有限公司” · 第二批');
+  // 同名不同代码（ambiguous）时用代码才分得开：照旧列全
+  const ambiguous = render('pages/lists/index.wxml', { queried: '合成科技有限公司', result: { ambiguous: true, items: [{ ...DISTRICT_DOC, kind: '名单', matched: withToken }], similar: [], coverage: { lists: 3 } }, items: [], shown: [], chips: [] });
+  assert.match(textOf(findAll(ambiguous, hasClass('hit-line'))[0]), /第二批 · 序号 12 · 青岛市市南区 · 信用代码 91370200MA00000000/);
   // 按信用代码对上的（名称写法不同）照旧说明
-  const byCode = render('pages/lists/index.wxml', { queried: '合成科技有限公司', result: { items: [{ ...DISTRICT_DOC, kind: '名单', matched: { ...matched, name: '合成科技（原名）有限公司', via: 'creditCode' } }], similar: [], coverage: { lists: 3 } }, items: [], shown: [], chips: [] });
+  const byCode = render('pages/lists/index.wxml', { queried: '合成科技有限公司', result: { items: [{ ...DISTRICT_DOC, kind: '名单', matched: { ...withToken, name: '合成科技（原名）有限公司', via: 'creditCode' } }], similar: [], coverage: { lists: 3 } }, items: [], shown: [], chips: [] });
   assert.equal(textOf(findAll(byCode, hasClass('hit-line'))[0]), '名单中写作“合成科技（原名）有限公司”（信用代码相同） · 第二批');
   // 截止按月看：日历条目地区文字里没有区县时补上
   const report = reportPage();

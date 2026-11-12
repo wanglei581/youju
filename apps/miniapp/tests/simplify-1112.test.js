@@ -116,7 +116,7 @@ function searchPage(coverage, hasHelp = true) {
 }
 
 test('搜索：已收录的城市、区县个数不再写，没接入、没取到时才说；"全部"的范围有帮助页时只留"范围说明 ›"', async () => {
-  const full = searchPage({ cities: [{ province: '山东', city: '青岛' }], districts: [{ province: '山东', city: '青岛', district: '市南区' }] });
+  const full = searchPage({ cities: [{ province: '山东', city: '烟台' }], districts: [{ province: '山东', city: '烟台', district: '市南区' }] });
   full.page.onLoad({}); await settle();
   assert.equal(full.page.data.cityCoverageNote, '');
   const none = searchPage({ cities: [], districts: [] });
@@ -198,7 +198,7 @@ test('详情页：支持方式、申报对象、申报条件的核对说明合�
 });
 
 test('截止页：选了城市区县时，有帮助页只写"没收录的地方查不到，不代表当地没有通知"，没有帮助页（过审版）时照旧多写"全部"的范围；不写"（按月看不筛部门）"；每行叫"导出"', () => {
-  const note = (has) => findAll(render('pages/report/index.wxml', { city: '青岛', district: '', tab: 0, has }), hasClass('cached-note')).map(textOf);
+  const note = (has) => findAll(render('pages/report/index.wxml', { city: '烟台', district: '', tab: 0, has }), hasClass('cached-note')).map(textOf);
   assert.deepEqual(note({ help: true }), ['没收录的地方查不到，不代表当地没有通知。']);
   assert.deepEqual(note({ help: false }), ['城市选“全部”查全省；区县选“全部”只查这个市的市级来源，直辖市查整个直辖市。没收录的地方查不到，不代表当地没有通知。']);
   assert.deepEqual(note({ help: true }).concat(findAll(render('pages/report/index.wxml', { city: '', district: '', has: {} }), hasClass('cached-note')).map(textOf)), ['没收录的地方查不到，不代表当地没有通知。']);
@@ -208,14 +208,19 @@ test('截止页：选了城市区县时，有帮助页只写"没收录的地方�
   assert.match(page, /导出/);
 });
 
-test('查名单：命中的一行只留"名单中写作……"和批次；查询说明留"不查个人"和发布阶段两条；阅读页的按钮叫"去查名单"', () => {
+test('查名单：命中的一行平时只留"名单中写作……"和批次，有同名不同代码或没有原名单入口时照旧列全；查询说明留三条；阅读页的按钮叫"去查名单"', () => {
   const item = (matched) => ({ id: '9', kind: '名单', title: '某名单', matched });
-  const hit = (matched) => textOf(findAll(render('pages/lists/index.wxml', { queried: '某某科技有限公司', result: { items: [item(matched)], similar: [], coverage: { lists: 3 } }, items: [], shown: [], chips: [] }), hasClass('hit-line'))[0]);
-  const full = { name: '某某科技有限公司', category: '专精特新', batch: '第二批', sequence: '12', region: '青岛市', creditCode: '91370200MA00000000', via: 'name', entryToken: 'x' };
+  const hit = (matched, result = {}) => textOf(findAll(render('pages/lists/index.wxml', { queried: '某某科技有限公司', result: { ...result, items: [item(matched)], similar: [], coverage: { lists: 3 } }, items: [], shown: [], chips: [] }), hasClass('hit-line'))[0]);
+  const full = { name: '某某科技有限公司', category: '专精特新', batch: '第二批', sequence: '12', region: '烟台市', creditCode: '91000000MA00000000', via: 'name', entryToken: 'x' };
   assert.equal(hit(full), '名单中写作“某某科技有限公司” · 第二批');
   assert.equal(hit({ ...full, batch: '', via: 'creditCode', name: '某某科技（原名）' }), '名单中写作“某某科技（原名）”（信用代码相同）');
+  // 同名不同代码：用代码才分得开；没有原名单入口：读不到那一行时阅读页的兜底没有序号和信用代码——这两种照旧列全
+  const everything = '名单中写作“某某科技有限公司” · 专精特新 · 第二批 · 序号 12 · 烟台市 · 信用代码 91000000MA00000000';
+  assert.equal(hit(full, { ambiguous: true }), everything);
+  assert.equal(hit({ ...full, entryToken: '' }), everything);
   const lists = wxml('lists');
   assert.ok(!lists.includes('按企业全称逐行比对名单原文') && !lists.includes('查到后可以看这家企业在原名单里的那一行'));
+  assert.match(lists, /名称相近的企业分开列出，不一定是同一家/);
   assert.match(lists, /只查企业和机构，不查个人/); assert.match(lists, /是否还在公示期以原文为准/);
   assert.match(lists, /名称相近的企业（不一定是同一家，点名称按全称查）/);
   assert.match(wxml('reader'), />去查名单<\/button>/);
