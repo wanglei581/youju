@@ -15,41 +15,55 @@ down_revision = "0053"
 branch_labels = None
 depends_on = None
 
+# 补行每段多少个编号
+_BACKFILL_STEP = 50_000
+
 
 def upgrade():
-    op.create_table(
-        "repost_signals",
-        sa.Column(
-            "document_id",
-            sa.Integer(),
-            sa.ForeignKey("documents.id", ondelete="CASCADE"),
-            primary_key=True,
-        ),
-        sa.Column("cited", sa.JSON(), nullable=False),
-        sa.Column("body_forward", sa.Boolean(), nullable=False, server_default="0"),
-        sa.Column("has_body", sa.Boolean(), nullable=False, server_default="0"),
-        sa.Column("body_at", mysql.DATETIME(fsp=6), nullable=True),
-        sa.Column(
-            "grouped_at",
-            mysql.DATETIME(fsp=6),
-            nullable=False,
-            server_default=sa.text("CURRENT_TIMESTAMP(6)"),
-        ),
-        sa.Column(
-            "computed_at",
-            mysql.DATETIME(fsp=6),
-            nullable=False,
-            server_default=sa.text("CURRENT_TIMESTAMP(6)"),
-        ),
-    )
+    bind = op.get_bind()
+    # 建表和补行不在一个事务里（MySQL 的 DDL 自动提交）：补行中途断了重跑时表已经在，不再建
+    if "repost_signals" not in sa.inspect(bind).get_table_names():
+        op.create_table(
+            "repost_signals",
+            sa.Column(
+                "document_id",
+                sa.Integer(),
+                sa.ForeignKey("documents.id", ondelete="CASCADE"),
+                primary_key=True,
+            ),
+            sa.Column("cited", sa.JSON(), nullable=False),
+            sa.Column("body_forward", sa.Boolean(), nullable=False, server_default="0"),
+            sa.Column("has_body", sa.Boolean(), nullable=False, server_default="0"),
+            sa.Column("body_at", mysql.DATETIME(fsp=6), nullable=True),
+            sa.Column(
+                "grouped_at",
+                mysql.DATETIME(fsp=6),
+                nullable=False,
+                server_default=sa.text("CURRENT_TIMESTAMP(6)"),
+            ),
+            sa.Column(
+                "computed_at",
+                mysql.DATETIME(fsp=6),
+                nullable=False,
+                server_default=sa.text("CURRENT_TIMESTAMP(6)"),
+            ),
+        )
 
-    # 现有文件都补一行"处理过"的标记（只写编号和时间，不读正文；一句 INSERT … SELECT）
-    op.execute(
-        "INSERT INTO repost_signals"
-        " (document_id, cited, body_forward, has_body, body_at, grouped_at, computed_at)"
-        " SELECT id, JSON_ARRAY(), 0, 0, NULL, CURRENT_TIMESTAMP(6), CURRENT_TIMESTAMP(6)"
-        " FROM documents"
-    )
+    # 现有文件都补一行"处理过"的标记（只写编号和时间，不读正文）。按编号分段，每段一句短语句，
+    # 已经有行的跳过：不长时间占表，中途断了重跑也不重复
+    top = bind.execute(sa.text("SELECT COALESCE(MAX(id), 0) FROM documents")).scalar()
+    for start in range(0, top, _BACKFILL_STEP):
+        bind.execute(
+            sa.text(
+                "INSERT INTO repost_signals"
+                " (document_id, cited, body_forward, has_body, body_at, grouped_at, computed_at)"
+                " SELECT d.id, JSON_ARRAY(), 0, 0, NULL, CURRENT_TIMESTAMP(6),"
+                " CURRENT_TIMESTAMP(6) FROM documents d"
+                " WHERE d.id > :start AND d.id <= :end AND NOT EXISTS"
+                " (SELECT 1 FROM repost_signals s WHERE s.document_id = d.id)"
+            ),
+            {"start": start, "end": start + _BACKFILL_STEP},
+        )
 
 
 def downgrade():

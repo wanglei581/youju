@@ -1,5 +1,6 @@
 """转发归组（D-055）：规则、增量建组、管理台转发归组页、核对台对照；截止日期不随转发组同步。"""
 
+from dataclasses import replace
 from datetime import UTC, date, datetime, time, timedelta
 from types import SimpleNamespace
 
@@ -1008,21 +1009,21 @@ def test_refresh_signals_and_window_candidates(session, world):
     old = world["other"]
     old.publish_date = date(2025, 1, 1)
     session.flush()
-    assert refresh_signals(session, today=NOW.date(), stamp=NOW) == 4
+    assert refresh_signals(session, today=NOW.date(), stamp=NOW).computed == 4
     row = session.get(RepostSignal, old.id)
     assert row.grouped_at == NOW and not row.has_body and row.body_at is None
     assert old.id not in {c.id for c in load_candidates(session, NOW.date())}
-    assert refresh_signals(session, today=NOW.date(), stamp=NOW) == 0
+    assert refresh_signals(session, today=NOW.date(), stamp=NOW).computed == 0
     doc = world["tianjin"]
     detail = session.get(DocumentDetail, doc.id)
     detail.body_text = "现将通知转发给你们"
     detail.fetched_at = NOW + timedelta(days=1)
     session.flush()
     stamp = NOW + timedelta(days=2)
-    assert refresh_signals(session, today=NOW.date(), stamp=stamp) == 1
+    assert refresh_signals(session, today=NOW.date(), stamp=stamp).computed == 1
     signal = session.get(RepostSignal, doc.id)
     assert signal.body_forward and signal.grouped_at == NOW and signal.computed_at == stamp
-    assert refresh_signals(session, today=NOW.date(), stamp=stamp, full=True) == 3
+    assert refresh_signals(session, today=NOW.date(), stamp=stamp, full=True).computed == 3
     old_id = old.id
     session.delete(old)
     session.flush()
@@ -1034,16 +1035,19 @@ def test_old_groups_untouched_and_cross_window_member_retained(session, world):
     rebuild(session, now=NOW)
     session.flush()
     group = session.scalars(select(RepostGroup)).one()
-    # 一位老成员跨出窗口，其余成员仍在窗口中。
-    world["shaanxi"].publish_date = date(2026, 3, 23)
+    # 跨窗口边界的合规组（窗口起点 2026-03-24）：陕西那份早于窗口，但和另两份相隔都在 90 天内，照样留在组里
+    world["shaanxi"].publish_date = date(2026, 3, 20)
+    world["tianjin"].publish_date = date(2026, 4, 20)
+    world["fujian"].publish_date = date(2026, 5, 20)
     session.flush()
     rebuild(session, now=NOW)
     session.flush()
-    assert world["shaanxi"].id in _members(session)
+    assert {world[k].id for k in ("shaanxi", "tianjin", "fujian")} <= set(_members(session))
     revision = group.revision
     rebuild(session, now=NOW)
     session.flush()
-    assert group.revision == revision
+    assert group.revision == revision  # 同样输入重跑不改修订号
+    # 全是窗口外的老组：一个字段都不动
     for doc in (world["shaanxi"], world["tianjin"], world["fujian"]):
         doc.publish_date = date(2025, 1, 1)
     session.flush()
@@ -1051,6 +1055,93 @@ def test_old_groups_untouched_and_cross_window_member_retained(session, world):
     rebuild(session, now=NOW)
     session.flush()
     assert (group.revision, group.updated_at, group.topic, set(_members(session))) == snapshot
+
+
+def test_old_member_that_no_longer_fits_is_dropped(session, world):
+    # 窗口里的组：早于窗口的待确认成员也重算，和别的版本相隔超过 90 天的照规则去掉
+    rebuild(session, now=NOW)
+    session.flush()
+    world["shaanxi"].publish_date = date(2026, 3, 23)  # 和天津（9 月 14 日）相隔 175 天
+    session.flush()
+    rebuild(session, now=NOW)
+    session.flush()
+    assert world["shaanxi"].id not in _members(session)
+    assert {world["tianjin"].id, world["fujian"].id} <= set(_members(session))
+
+
+def test_late_document_joins_an_old_group_outside_the_window(session, world):
+    # 新来源回填几个月前的文件：它在窗口里，伙伴在窗口外的老组里，照样连得上
+    rebuild(session, now=NOW)
+    session.flush()
+    for doc in (world["shaanxi"], world["tianjin"], world["fujian"]):
+        doc.publish_date = date(2026, 2, 20)  # 窗口起点 2026-03-24 之前
+    session.flush()
+    rebuild(session, now=NOW)
+    session.flush()
+    group_id = _members(session)[world["tianjin"].id].group_id
+    late = _doc(
+        session, _source(session, "四川"), world["tianjin"].title, day=1, body=UPSTREAM + "四川"
+    )
+    late.publish_date = date(2026, 4, 10)  # 在窗口里，和老组相隔 49 天
+    session.flush()
+    rebuild(session, now=NOW)
+    session.flush()
+    assert _members(session)[late.id].group_id == group_id
+
+
+def test_group_left_without_members_is_deleted(session, world):
+    rebuild(session, now=NOW)
+    session.flush()
+    gid = session.scalars(select(RepostGroup.id)).one()
+    for doc in (world["shaanxi"], world["tianjin"], world["fujian"]):
+        doc.publish_date = date(2025, 1, 1)  # 老组，在窗口外
+    session.flush()
+    for row in list(_members(session).values()):
+        session.delete(row)  # 成员都没了（文件删掉、转给主文件等）
+    session.flush()
+    rebuild(session, now=NOW)
+    session.flush()
+    assert session.get(RepostGroup, gid) is None
+
+
+def test_document_gets_signals_once_its_body_arrives(session):
+    # 先只有标题（没有详情）：照样打"处理过"的标记；正文后补后重算出文号，归组
+    src = _source(session, "陕西")
+    doc = _doc(session, src, "关于组织开展2026年度视听系统典型案例征集工作的通知", day=7)
+    refresh_signals(session, today=NOW.date(), stamp=NOW)
+    row = session.get(RepostSignal, doc.id)
+    assert row.grouped_at == NOW and not row.has_body and row.cited == []
+    session.add(
+        DocumentDetail(
+            document_id=doc.id,
+            body_text=UPSTREAM + "陕西",
+            fetched_at=NOW + timedelta(hours=1),
+            status="ok",
+            http_status=200,
+        )
+    )
+    session.flush()
+    later = NOW + timedelta(hours=2)
+    assert refresh_signals(session, today=NOW.date(), stamp=later).computed == 1
+    session.refresh(row)
+    assert row.has_body and row.cited and row.grouped_at == NOW and row.computed_at == later
+
+
+def test_bucket_limit_keeps_chains_across_dates(monkeypatch):
+    from youju import repost
+
+    title = "关于组织开展2026年度视听系统典型案例征集工作的通知"
+    docs = [
+        replace(
+            _cand(i + 1, title, str(i), body=UPSTREAM),
+            publish_date=date(2026, 1, 1) + timedelta(days=20 * i),
+        )
+        for i in range(6)
+    ]
+    full = propose_groups(docs)
+    monkeypatch.setattr(repost, "BUCKET_NEIGHBORS", 2)
+    limited = propose_groups(docs)
+    assert [p.ids for p in limited] == [p.ids for p in full] == [[1, 2, 3, 4, 5]]
 
 
 def test_old_confirmed_group_rechecks_only_changed_detail(session, client, world):
@@ -1090,7 +1181,7 @@ def test_empty_body_is_not_recomputed_every_round(session, world):
     row = session.get(RepostSignal, world["tianjin"].id)
     assert not row.has_body and row.body_at == detail.fetched_at
     # 详情没再重抓：下一轮不重算
-    assert refresh_signals(session, today=NOW.date(), stamp=NOW + timedelta(hours=12)) == 0
+    assert refresh_signals(session, today=NOW.date(), stamp=NOW + timedelta(hours=12)).computed == 0
 
 
 def test_backfilled_marker_of_old_group_member_gets_signals(session, world):
