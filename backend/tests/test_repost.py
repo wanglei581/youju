@@ -1055,6 +1055,72 @@ def test_full_rebuild_checks_confirmed_groups_outside_the_window(session, world)
     assert group.needs_review
 
 
+def test_refetched_confirmed_member_is_checked_once_per_fetch(session, world, monkeypatch):
+    # 确认以后详情重抓过：这次重抓拿全文核对一次，内容没变就记下核对用的详情时间，以后不再每轮都
+    # 核对；再重抓、内容变了照常转"需复核"
+    from youju import repost
+
+    rebuild(session, now=NOW)
+    session.flush()
+    group = session.scalars(select(RepostGroup)).one()
+    for doc in (world["shaanxi"], world["tianjin"], world["fujian"]):
+        doc.publish_date = date(2025, 1, 1)  # 都在窗口外，只有重抓过的才会拿来核对
+    session.flush()
+    rows = _members(session)
+    _, facts = member_facts(session, list(rows))
+    for row in rows.values():
+        row.confirmed_by, row.confirmed_at = "人工", NOW
+        row.confirmed_fingerprint = facts[row.document_id]
+    tianjin = world["tianjin"].id
+    detail = session.get(DocumentDetail, tianjin)
+    detail.fetched_at = NOW + timedelta(hours=1)  # 重抓了，内容没变
+    session.flush()
+    checked: list[set[int]] = []
+    real = repost.member_facts
+
+    def spy(session_, ids):
+        checked.append(set(ids))
+        return real(session_, ids)
+
+    monkeypatch.setattr(repost, "member_facts", spy)
+    rebuild(session, now=NOW + timedelta(hours=2))
+    session.flush()
+    assert tianjin in checked[0] and not group.needs_review
+    assert session.get(RepostSignal, tianjin).checked_at == detail.fetched_at
+    checked.clear()
+    rebuild(session, now=NOW + timedelta(hours=3))
+    session.flush()
+    assert all(tianjin not in ids for ids in checked)
+    detail.body_text += "（更正）"
+    detail.fetched_at = NOW + timedelta(hours=4)
+    session.flush()
+    rebuild(session, now=NOW + timedelta(hours=5))
+    session.flush()
+    assert group.needs_review
+
+
+def test_many_small_groups_are_each_judged_by_their_own_edges():
+    # 窗口里大量互不相干的小组：每组只看自己的强证据边，全都照样是强证据组
+    docs = []
+    for n in range(600):
+        title = f"关于组织开展2026年度第{n}批视听系统典型案例征集工作的通知"
+        for province in ("陕西", "天津"):
+            docs.append(
+                Candidate(
+                    id=len(docs) + 1,
+                    title=title,
+                    kind="申报通知",
+                    province=province,
+                    dept="工信",
+                    publish_date=date(2026, 9, 7 if province == "陕西" else 14),
+                    body_head=UPSTREAM.replace("376", str(1000 + n)) + province,
+                )
+            )
+    proposals = propose_groups(docs)
+    assert len(proposals) == 600
+    assert all(p.strength == "strong" and len(p.ids) == 2 for p in proposals)
+
+
 def test_old_groups_untouched_and_cross_window_member_retained(session, world):
     rebuild(session, now=NOW)
     session.flush()

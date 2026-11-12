@@ -393,16 +393,20 @@ def link(docs: list[Candidate]) -> tuple[list[Proposal], dict[int, set[int]]]:
     components: dict[int, list[int]] = defaultdict(list)
     for doc_id in sorted(by_id):
         components[_find(parent, doc_id)].append(doc_id)
+    # 组内的强证据边（两端在同一组）先按组分好：每个组只看自己的边，不是每个组都把全部边看一遍
+    # （全国铺开后窗口里有几千个组、几万条边）
+    strong_edges: dict[int, list[tuple[int, int]]] = defaultdict(list)
+    for (left, right), strength in edges.items():
+        if strength == "strong" and (root := _find(parent, left)) == _find(parent, right):
+            strong_edges[root].append((left, right))
     proposals = []
-    for ids in components.values():
+    for root, ids in components.items():
         if len(ids) < 2:
             continue
         # 只用组内的强证据边能把全组连起来，才算强证据组
-        inside = set(ids)
         strong_parent = {doc_id: doc_id for doc_id in ids}
-        for (left, right), strength in edges.items():
-            if strength == "strong" and left in inside and right in inside:
-                strong_parent[_find(strong_parent, left)] = _find(strong_parent, right)
+        for left, right in strong_edges[root]:
+            strong_parent[_find(strong_parent, left)] = _find(strong_parent, right)
         strong = len({_find(strong_parent, doc_id) for doc_id in ids}) == 1
         cited = Counter(c.number for doc_id in ids for c in sig[doc_id].cited)
         number = None
@@ -804,20 +808,27 @@ def rebuild(
     candidates = load_candidates(session, today, cutoff)
     info = {c.id: (c.agency, c.publish_date) for c in candidates}
     # 只有已有成员需要完整正文快照，其余候选沿用上面的轻量数据。
-    changed_confirmed = set(
-        session.scalars(
-            select(RepostGroupMember.document_id)
+    # 确认以后详情重抓过、这次重抓还没核对过的确认成员（核对过、内容没变的记下核对用的详情时间，
+    # 详情没再重抓就不再拿全文核对，免得重抓过一次就每轮都算）：{文件编号: 详情时间}
+    changed_confirmed = dict(
+        session.execute(
+            select(RepostGroupMember.document_id, DocumentDetail.fetched_at)
             .join(DocumentDetail, DocumentDetail.document_id == RepostGroupMember.document_id)
+            .outerjoin(RepostSignal, RepostSignal.document_id == RepostGroupMember.document_id)
             .where(
                 RepostGroupMember.active.is_(True),
                 RepostGroupMember.confirmed_at.is_not(None),
                 DocumentDetail.fetched_at > RepostGroupMember.confirmed_at,
+                or_(
+                    RepostSignal.checked_at.is_(None),
+                    DocumentDetail.fetched_at > RepostSignal.checked_at,
+                ),
             )
-        )
+        ).all()
     )
-    fact_ids = {
-        d for d, row in members.items() if row.group_id in window_groups
-    } | changed_confirmed
+    fact_ids = {d for d, row in members.items() if row.group_id in window_groups} | set(
+        changed_confirmed
+    )
     if full:
         # 维护用（改了标题、正文脱敏重写这类不更新抓取时间的改动以后跑）：窗口外确认过的成员也重算
         # 快照，内容变了照常转"需复核"
@@ -850,6 +861,19 @@ def rebuild(
             group.needs_review = True
             bump(group, stamp)
             summary.needs_review += 1
+    # 重抓以后核对过、内容没变的确认成员：记下这次核对用的详情时间
+    unchanged = [
+        d
+        for d in changed_confirmed
+        if d in members
+        and members[d].confirmed_at is not None
+        and members[d].confirmed_fingerprint == fingerprints.get(d)
+    ]
+    if unchanged:
+        for signal in session.scalars(
+            select(RepostSignal).where(RepostSignal.document_id.in_(unchanged))
+        ):
+            signal.checked_at = changed_confirmed[signal.document_id]
 
     # 先在内存中释放所有未带人工决定的成员；旧归属仅用来尽量复用组编号，绝不约束重算结果。
     # 窗口里的组：没有人工决定的成员（不论发布日期，早于窗口的老成员也一样）都从头重算；它们和同组

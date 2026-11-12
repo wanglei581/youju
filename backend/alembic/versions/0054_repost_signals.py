@@ -36,6 +36,7 @@ def upgrade():
             sa.Column("has_body", sa.Boolean(), nullable=False, server_default="0"),
             sa.Column("own_number", sa.String(64), nullable=True),
             sa.Column("body_at", mysql.DATETIME(fsp=6), nullable=True),
+            sa.Column("checked_at", mysql.DATETIME(fsp=6), nullable=True),
             sa.Column(
                 "grouped_at",
                 mysql.DATETIME(fsp=6),
