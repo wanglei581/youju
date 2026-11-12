@@ -2095,7 +2095,7 @@ def audit_flagged(
             kind=d.kind,
             approved_date=d.approved_date,
             approved_time=d.approved_time.strftime("%H:%M") if d.approved_time else None,
-            evidence=d.evidence,
+            evidence=d.verification_quote or d.evidence,
             note=d.audit_note or "",
             flagged_at=d.audit_at,
         )
@@ -3372,6 +3372,11 @@ def _apply_review(
     twins = [d for d in locked if d.id != row.id and d.status == "pending"]
     for item in {row, *twins}:
         item.status = status
+        item.verification_quote = None
+        item.verification_corrected = None
+        item.verification_unclear_hash = None
+        item.verification_unclear_note = None
+        item.verification_unclear_at = None
         item.reviewed_by = reviewed_by
         item.reviewed_at = reviewed_at
         item.audit_state = None

@@ -658,6 +658,11 @@ class DocumentDeadline(Base):
     status: Mapped[str] = mapped_column(String(16), default="pending")
     reviewed_by: Mapped[str | None] = mapped_column(String(80))
     reviewed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    verification_quote: Mapped[str | None] = mapped_column(Text)
+    verification_unclear_hash: Mapped[str | None] = mapped_column(String(64))
+    verification_unclear_note: Mapped[str | None] = mapped_column(Text)
+    verification_corrected: Mapped[bool | None] = mapped_column(Boolean)
+    verification_unclear_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     approved_date: Mapped[date | None] = mapped_column(Date)
     approved_time: Mapped["time | None"] = mapped_column(Time)
     # 截止变更（验收清单 A7）：发了延期、调整或撤销的通知后，原来通过的截止标为 changed，
