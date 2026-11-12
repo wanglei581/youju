@@ -16,6 +16,7 @@ from youju.repost import (
     signals,
     withdraw_group,
 )
+from youju.repost_checks import _excerpt, _validate
 
 
 @pytest.fixture
@@ -115,6 +116,30 @@ def test_auto_confirmation_and_withdraw(example):
         and r.confirmed_fingerprint is None
         for r in rows
     )
+
+
+def test_validation_and_excerpt():
+    data = {
+        "round": "gate-1",
+        "purpose": "gate",
+        "rule_version": "2026-11-13",
+        "items": [
+            {
+                "group_id": 1,
+                "revision": 1,
+                "members": [{"document_id": 1}, {"document_id": 2}],
+                "verdict": "wrong",
+                "note": "错误",
+            }
+        ],
+    }
+    _validate(data, "核对人")
+    data["items"][0]["note"] = " "
+    with pytest.raises(ValueError):
+        _validate(data, "核对人")
+    body = "前" * 200 + "《创新产业申报通知》（工信厅办函〔2026〕1号）" + "后" * 200
+    assert "工信厅办函〔2026〕1号" in _excerpt(body, "工信厅办函〔2026〕1号")
+    assert _excerpt(body, None) == body[:300]
 
 
 def test_private_table():
