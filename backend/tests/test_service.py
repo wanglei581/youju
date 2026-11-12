@@ -721,3 +721,18 @@ def test_gkmlpt_refused_api_is_not_requested_again_for_30_days(session):
     again = RecordingFetcher({url: [page(page_url, html)]})
     check = check_source(session, source, again, today=date(2026, 11, 12))
     assert check.status == "list_api_refused" and again.requested == [url]
+
+
+def test_gkmlpt_backlink_is_skipped_when_final_url_keeps_the_fragment(session):
+    # 抓取程序给的最终网址带着栏目的 # 片段时，指回部门页的条目照样不收
+    import json
+
+    html, payload, page_url, api_url, url = _gkmlpt_fixture()
+    body = json.loads(payload)
+    body["articles"][0]["url"] = "http://www.sg.gov.cn/fgj/gkmlpt/index"
+    source = make_source(session, url)
+    source.parser_config = {"list_api_open": "数字广东gkmlpt"}
+    session.commit()
+    fetcher = RecordingFetcher({url: [page(url, html)], api_url: [page(api_url, json.dumps(body))]})
+    check = check_source(session, source, fetcher, today=date(2026, 11, 12))
+    assert (check.status, check.items_found) == ("ok", 4)
