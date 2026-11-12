@@ -23,7 +23,8 @@ if [ "$YOUJU_ROLE" = "admin" ]; then
   # cron 看不到容器的环境变量，先写进文件（只有容器内 root 可读），任务脚本里再读
   umask 077
   env | grep -E '^(YOUJU_|TZ=|PATH=)' | sed "s/'/'\\\\''/g; s/=\(.*\)/='\1'/; s/^/export /" > /app/backend/deploy/env.sh
-  crontab /app/backend/deploy/crontab
+  # 定时任务表：云托管用 deploy/crontab；2.0 自建服务器、本机各用 deploy/selfhost/ 里的（YOUJU_CRONTAB）
+  crontab "${YOUJU_CRONTAB:-/app/backend/deploy/crontab}"
   # 先写一次心跳：健康检查要求心跳 15 分钟内更新过，cron 之后每 5 分钟写一次
   date +%s > /tmp/youju-cron-heartbeat
   cron

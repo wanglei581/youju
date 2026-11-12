@@ -1,0 +1,76 @@
+# 2.0 本机（创始人的 Windows 主机，Docker Desktop + WSL2）：抓取、处理，公开数据的主库和原始文件。
+# 不存任何用户数据：只往服务器推公开数据（youju sync-push），不从服务器拉东西。
+# 用法见 docs/部署/自建服务器.md 第五节：一键脚本 setup-wsl.ps1（WSL 里装 Docker 引擎，不要 Docker Desktop）
+# 或 setup.ps1（Docker Desktop，要 Windows 11 23H2 以上）。手动的话在这个目录下：
+#   cp env.example .env   （按说明填好）
+#   docker compose up -d
+# 数据都在 Docker 的卷里：WSL 方式在 E:\youju\wsl 的虚拟磁盘里；Docker Desktop 在设置里把磁盘位置放到空间大的盘。
+name: youju-local
+
+services:
+  mysql:
+    # 基础镜像按摘要锁定：国内要经镜像站拉，Docker 按摘要校验内容；升级时查 Docker Hub 上该标签的摘要一起改
+    image: mysql:8.0@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b
+    restart: unless-stopped
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_bin
+      - --default-time-zone=+00:00
+      # 本机不需要二进制日志（不做主从；省磁盘），同步用的触发器也就不用 SUPER 权限
+      - --skip-log-bin
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?在 .env 里填 MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: youju
+      MYSQL_USER: youju
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?在 .env 里填 MYSQL_PASSWORD}
+    volumes:
+      - mysql:/var/lib/mysql
+      - ./mysql.cnf:/etc/mysql/conf.d/youju.cnf:ro
+    healthcheck:
+      # 密码经环境变量给 mysqladmin，不出现在进程参数里（同机别的用户 ps 看得到参数）
+      test: ["CMD-SHELL", "MYSQL_PWD=\"$$MYSQL_ROOT_PASSWORD\" mysqladmin ping -h 127.0.0.1 -uroot --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    deploy:
+      resources:
+        limits:
+          memory: 4g
+    logging: &logging
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  # 抓取、处理的定时任务 + 核对台（只给这台电脑自己的浏览器用：http://127.0.0.1:8080/admin）
+  worker:
+    image: ${YOUJU_IMAGE:-youju-selfhost:latest}
+    env_file: .env
+    restart: unless-stopped
+    environment:
+      YOUJU_ROLE: admin
+      PORT: "8000"
+      YOUJU_CRONTAB: /app/backend/deploy/selfhost/local/crontab
+    ports:
+      - "127.0.0.1:8080:8000"
+    depends_on:
+      mysql:
+        condition: service_healthy
+    volumes:
+      - storage:/data/storage
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      # 第一次启动要迁移、按标题规则重算全部文件类型，库大时超过 3 分钟：这段时间里失败不算
+      start_period: 600s
+    deploy:
+      resources:
+        limits:
+          memory: 4g
+    logging: *logging
+
+volumes:
+  mysql:
+  storage:

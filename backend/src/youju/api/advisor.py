@@ -19,7 +19,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, defer
 
 from youju import advisor_tasks as service
-from youju import boost, chat_store, native_results, payments
+from youju import boost, chat_store, native_results, payments, storage
 from youju.agreements import tools_agreed
 from youju.ai import content, heartbeat, interpret, result_safety
 from youju.ai.clause import Company
@@ -825,7 +825,7 @@ def _result_link(session: Session, user: User, task_id: int) -> tuple[httpx.Clie
     cloud_env = service.result_env(get_settings(), task.result_file_id)
     if not cloud_env:
         raise HTTPException(status_code=503, detail="对象存储暂不可用")
-    client = httpx.Client(trust_env=False)
+    client = storage.http_client()
     try:
         url = service.download_url(client, cloud_env, task.result_file_id)
         if url and legacy_check:
@@ -1055,7 +1055,7 @@ def delete_task(task_id: int, request: Request, session: SessionDep, user: Known
     file_ids = [task.result_file_id] if task.result_file_id else []
     settings = get_settings()
     if file_ids:
-        with httpx.Client(trust_env=False) as client:
+        with storage.http_client() as client:
             service._delete_and_record(session, file_ids, settings=settings, client=client)
     session.delete(task)
     session.commit()

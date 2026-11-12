@@ -1,6 +1,6 @@
 ﻿层级,省份,城市,区县,区划代码,名称,门户网址,导航来源页,导航文字,状态,原因,网站标识码,网站名称,平台,技术支持
 省级,海南,,,460000,海南省,https://www.hainan.gov.cn/,https://www.gov.cn/home/2023-03/29/content_5748954.htm,海南,打不开,HTTP 400,,,,
-市级,海南,海口,,460100,海口市,http://www.haikou.gov.cn/,https://dost.hainan.gov.cn/,海口市,已找到,,4601000009,海口市人民政府,拓尔思|日期目录/编号,电话：0898-68725613
+市级,海南,海口,,460100,海口市,http://www.haikou.gov.cn/,https://dost.hainan.gov.cn/,海口市,已找到,,4601000009,海口市人民政府,拓尔思|日期目录/编号,
 市级,海南,三亚,,460200,三亚市,http://www.sanya.gov.cn/,https://dost.hainan.gov.cn/,三亚市,打不开,robots.txt 暂时无法获取（HTTP 502），本次跳过,,,,
 市级,海南,三沙,,460300,三沙市,http://www.sansha.gov.cn/,https://dost.hainan.gov.cn/,三沙市,已找到,,4603000001,三沙市人民政府网,开普云|32位编号.shtml,开普云
 市级,海南,儋州,,460400,儋州市,http://www.danzhou.gov.cn/,https://dost.hainan.gov.cn/,儋州市,打不开,HTTP 400,,,,
@@ -26,6 +26,6 @@
 区县级,海南,白沙黎族自治县,白沙黎族自治县,469025,白沙黎族自治县,http://baisha.hainan.gov.cn/,https://dost.hainan.gov.cn/,白沙黎族自治县,打不开,HTTP 400,,,,
 区县级,海南,昌江黎族自治县,昌江黎族自治县,469026,昌江黎族自治县,http://changjiang.hainan.gov.cn/,https://dost.hainan.gov.cn/,昌江黎族自治县,已找到,,4690260001,昌江黎族自治县政府,拓尔思|32位编号.shtml,
 区县级,海南,乐东黎族自治县,乐东黎族自治县,469027,乐东黎族自治县,http://ledong.hainan.gov.cn/,https://dost.hainan.gov.cn/,乐东黎族自治县,已找到,,4690270001,乐东黎族自治县人民政府网,拓尔思|32位编号.shtml,
-区县级,海南,陵水黎族自治县,陵水黎族自治县,469028,陵水黎族自治县,http://lingshui.hainan.gov.cn/,https://dost.hainan.gov.cn/,陵水黎族自治县,已找到,,4690280005,陵水黎族自治县人民政府,拓尔思|t日期_编号(拓尔思),拓尔思信息技术股份有限公司&nbsp;&nbsp;
+区县级,海南,陵水黎族自治县,陵水黎族自治县,469028,陵水黎族自治县,http://lingshui.hainan.gov.cn/,https://dost.hainan.gov.cn/,陵水黎族自治县,已找到,,4690280005,陵水黎族自治县人民政府,拓尔思|t日期_编号(拓尔思),拓尔思信息技术股份有限公司
 区县级,海南,保亭黎族苗族自治县,保亭黎族苗族自治县,469029,保亭黎族苗族自治县,http://baoting.hainan.gov.cn/,https://dost.hainan.gov.cn/,保亭黎族苗族自治县,打不开,HTTP 400,,,,
 区县级,海南,琼中黎族苗族自治县,琼中黎族苗族自治县,469030,琼中黎族苗族自治县,http://qiongzhong.hainan.gov.cn/,https://dost.hainan.gov.cn/,琼中黎族苗族自治县,已找到,,4690300002,琼中黎族苗族自治县人民政府网,拓尔思|t日期_编号(拓尔思),

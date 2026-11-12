@@ -2,6 +2,8 @@
 
 from datetime import date
 
+import pytest
+
 from youju.crawler.fetcher import FetchResult
 from youju.crawler.listing import extract_items
 from youju.govsites.divisions import (
@@ -22,7 +24,7 @@ from youju.govsites.inventory import (
 )
 from youju.govsites.links import nav_links, page_links, parse_html, registrable
 from youju.govsites.names import column_kind, dept_categories
-from youju.govsites.platform import blocker, fingerprint
+from youju.govsites.platform import blocker, clean_support, fingerprint
 
 TREE = {
     "children": [
@@ -196,6 +198,23 @@ def test_dept_categories():
     assert dept_categories("浙江省人民政府办公厅") == ["政府办"]
     assert dept_categories("浙江省农业科学院") == []
     assert dept_categories("省科技厅召开全省科技工作会议") == []
+
+
+def test_zone_names_are_not_departments():
+    # 巴中（地市一组 11/12）："光雾山诺水河文旅融合发展示范区"曾算文旅局。地方、园区、景区和它们的
+    # 管理机构不是部门；开发区照旧要带"管委会"一类字样
+    for zone in (
+        "巴中市光雾山诺水河文旅融合发展示范区",
+        "广州市天河中央商务区管委会",
+        "陵川生态文化旅游示范区管委会",
+        "苏锡通科技产业园区",
+        "杭州高新技术产业开发区",
+    ):
+        assert dept_categories(zone) == [], zone
+    assert dept_categories("巴中市文化广电旅游局") == ["文旅"]
+    assert dept_categories("杭州高新技术产业开发区管理委员会") == ["开发区"]
+    assert dept_categories("中国（浙江）自由贸易试验区杭州片区管理委员会") == ["开发区"]
+    assert dept_categories("西湖区科学技术局") == ["科技"]
     assert dept_categories("浙江省教育厅") == []
 
 
@@ -231,6 +250,36 @@ def test_fingerprint_and_blocker():
     assert blocker("http_error", 412, "<html>$_ts=window['$_ts']</html>") == "瑞数防护"
     assert blocker("robots_disallowed", None, "") == "robots.txt 禁止"
     assert blocker("ok", 200, "<html>" + "正文" * 3000 + "请输入验证码</html>") is None
+
+
+@pytest.mark.parametrize(
+    ("raw", "want"),
+    [
+        ("南京大汉网络有限公司", "南京大汉网络有限公司"),
+        ("与维护：某某科技有限公司", "某某科技有限公司"),
+        ("某某&amp;某某科技有限公司", "某某&某某科技有限公司"),
+        # 电话：带标签的、区号连着分隔符的、括号区号、400 号码、光是一串数字的
+        ("某某科技有限公司 电话：0571-87654321", "某某科技有限公司"),
+        ("某某科技有限公司 010-12345678", "某某科技有限公司"),
+        ("某某科技有限公司（0731）8888888", "某某科技有限公司"),
+        ("某某科技有限公司 400-123-4567", "某某科技有限公司"),
+        ("某某科技有限公司010/12345678", "某某科技有限公司"),
+        ("某某科技有限公司 010.12345678", "某某科技有限公司"),
+        ("某某科技有限公司 13800001111", "某某科技有限公司"),
+        # 邮箱：不能从公司名开头截
+        ("某某科技有限公司abc@example.com", "某某科技有限公司"),
+        ("某某科技有限公司 邮箱：abc@example.com", "某某科技有限公司"),
+        # 备案号：省份简称一起截，没有简称的不吃掉公司名的字
+        ("某某科技有限公司 粤ICP备12345678号", "某某科技有限公司"),
+        ("某某科技有限公司ICP备12345678号", "某某科技有限公司"),
+        ("某某科技有限公司 京公网安备 11010502030143号", "某某科技有限公司"),
+        ("某某信息港滇公网安备12345678901234号", "某某信息港"),
+        ("某某科技有限公司黔ICP备12345678号", "某某科技有限公司"),
+    ],
+)
+def test_clean_support_keeps_only_company(raw, want):
+    """页脚"技术支持"写进公开清单：只留单位名（11/12 地市一组报）。"""
+    assert clean_support(raw) == want
 
 
 def _page(url: str, html: str, final: str | None = None) -> PageInfo:
@@ -269,7 +318,7 @@ class FakeCache:
         self.pages = pages
         self.hits = self.fetches = 0
 
-    def get(self, url: str) -> FetchResult:
+    def get(self, url: str, same_address_only=False) -> FetchResult:
         if url in self.pages:
             return FetchResult(url, "ok", url, 200, self.pages[url])
         return FetchResult(url, "http_error", url, 404, "", "HTTP 404")
@@ -347,16 +396,26 @@ def test_national_ministries_are_target_depts():
     assert dept_categories("外交部") == []
 
 
+NORMAL_X = (
+    '{"roles":null,"permissions":null,"success":true,"message":"生成成功","code":"200",'
+    '"traceId":"t","messageType":2,"data":{"html":"<li>x</li>"}}'
+)
+
+
 def test_list_api_only_accepts_whitelisted_same_site_endpoint():
     from youju.crawler.adapters import api_html, find_list_api
 
-    good = """<script src="/x/unitbuild.js" url="/api-gateway/jpaas-publish-server/front/page/build/unit"
-      queryData="{'pageType':'column','tagId':'当前栏目list','pageId':'1'}"></script>"""
+    good = """<script id="u1" src="/x/unitbuild.js" webId="1" parseType="bulidstatic"
+      url="/api-gateway/jpaas-publish-server/front/page/build/unit"
+      queryData="{'parseType':'bulidstatic','webId':'1','tplSetId':'T','pageType':'column',
+      'tagId':'当前栏目list','editType':'null','pageId':'1'}"></script>"""
     api = find_list_api(good, "https://kjt.zj.gov.cn/col/col1/index.html")
     assert api.url.startswith(
         "https://kjt.zj.gov.cn/api-gateway/jpaas-publish-server/front/page/build/unit?"
     )
-    assert api_html(api, '{"data":{"html":"<li>x</li>"}}') == "<li>x</li>"
+    assert api_html(api, NORMAL_X) == "<li>x</li>"
+    # 没有成功标志的返回按读取护栏（D-128）不读
+    assert api_html(api, '{"data":{"html":"<li>x</li>"}}') == ""
     assert api_html(api, "not json") == ""
     other = good.replace("/api-gateway/jpaas-publish-server/front/page/build/unit", "/api/other")
     assert find_list_api(other, "https://kjt.zj.gov.cn/") is None
@@ -364,7 +423,7 @@ def test_list_api_only_accepts_whitelisted_same_site_endpoint():
     evil = good.replace('url="/api', 'url="https://evil.example.com/api')
     assert find_list_api(evil, "https://kjt.zj.gov.cn/") is None
     assert api_html(api, '{"data":"参数错误"}') == ""
-    bad_query = good.replace("{'pageType'", "{['x']:'1','pageType'")
+    bad_query = good.replace("{'parseType'", "{['x']:'1','parseType'")
     assert find_list_api(bad_query, "https://kjt.zj.gov.cn/") is None
 
 
@@ -874,7 +933,7 @@ def test_dept_levels_skip_upper_level_departments(tmp_path):
             super().__init__(pages)
             self.asked: list[str] = []
 
-        def get(self, url):
+        def get(self, url, same_address_only=False):
             self.asked.append(url)
             return super().get(url)
 

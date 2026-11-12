@@ -8,6 +8,7 @@
 - 页面上文章链接的网址形状（/art/2026/11/5/art_123_456.html、/t20261105_123.html……）。
 """
 
+import html as html_lib
 import re
 from collections import Counter
 from dataclasses import dataclass, field
@@ -48,6 +49,31 @@ MARKERS: tuple[tuple[str, re.Pattern[str]], ...] = (
 _SUPPORT = re.compile(
     r"(?:技术支持|技术支撑|技术保障|建设运维|运维支持|技术服务)\s*[:：]?\s*([^<>|\n\r]{2,40})"
 )
+# 页脚"技术支持"后面常跟着电话、邮箱、备案号（"××公司 电话：0xxx""技术运维电话：…""公网安备…号"）：
+# 清单放在公开仓库里，只留单位名，碰到这些就截断（11/12 地市一组报：main 上市级 49 行、区县
+# 155 行）。备案号前的省份简称一起截（"粤ICP备"）；号码连着区号、横线、斜杠、点、括号算一串
+# （"010-12345678""010/12345678""400-123-4567""（0731）8888888"）；邮箱只认英文字母、数字
+# （"某公司abc@example.com"不能从公司名开头截）
+_SUPPORT_CUT = re.compile(
+    r"(?:联系|运维|咨询|值班)?电话|手机|联系方式|邮箱|e-?mail|地址|传真|备案|网站标识码"
+    r"|[京津沪渝冀豫云滇辽黑湘皖鲁新苏浙赣鄂桂甘陇晋蒙陕吉闽贵黔粤青藏川蜀宁琼]?(?:ICP|公网安备)"
+    r"|\d[\d\-－—–/／.．()（）]{4,}|[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+\.[A-Za-z0-9.]+"
+    r"|总访问量|隐私声明|仅受理|建议使用",
+    re.I,
+)
+_SUPPORT_LEAD = re.compile(r"^(?:与|及|和)?(?:维护|运维|管理)?(?:单位)?[:：]")
+
+
+def clean_support(text: str) -> str:
+    """页脚"技术支持"只留单位名：去掉网页实体、空白，碰到电话、邮箱、备案号这类就截断。"""
+    text = re.sub(r"\s+", "", html_lib.unescape(text or "")).replace("\xa0", "")
+    m = _SUPPORT_CUT.search(text)
+    if m:
+        text = text[: m.start()]
+    text = _SUPPORT_LEAD.sub("", text)
+    return text.strip("：:，,;；|/-—（(")[:30]
+
+
 _VENDOR_WORDS = (
     ("大汉", "大汉"),
     ("拓尔思", "拓尔思"),
@@ -109,7 +135,7 @@ def fingerprint(
             fp.site_id_code = m.group(1)
     m = _SUPPORT.search(re.sub(r"<[^>]+>", " ", html[-20000:] if html else ""))
     if m:
-        fp.support = re.sub(r"\s+", "", m.group(1))[:30]
+        fp.support = clean_support(m.group(1))
     for name, pattern in MARKERS:
         if pattern.search(html or ""):
             fp.markers.append(name)

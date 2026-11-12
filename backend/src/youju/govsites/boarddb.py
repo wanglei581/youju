@@ -18,6 +18,7 @@ from sqlalchemy import delete, func, select, text
 from sqlalchemy.exc import InvalidRequestError
 from sqlalchemy.orm import Session
 
+from youju.crawler.adapters import LIST_API_OPEN_KEY, VIA_API_WORD
 from youju.crawler.urls import url_key
 from youju.govsites.board import STATES, SourceState, _outcome, cell_for
 from youju.govsites.inventory import STANDARD_DEPTS, ColumnHit, DeptRow, PortalRow
@@ -673,14 +674,21 @@ def enable_sources(
     result.candidates = len(candidates)
     if wanted is not None:
         got = {url_key(s.url) for s in candidates[:limit]}
-        for key, url in wanted.items():
-            if key in got:
-                continue
-            src = session.scalar(select(Source).where(Source.url == url))
-            if src is None:
-                why = "库里没有（没导入，或线上是另一种写法）"
-            elif src.enabled:
-                why = "已经在收"
+        rest = {key: url for key, url in wanted.items() if key not in got}
+        # 按规范网址找库里的同一个列表（只差 http/https 等写法的也算），和上线脚本数"已经打开"的
+        # 口径一致：另一种写法已经启用的算"已经在收"
+        same: dict[str, list[Source]] = {}
+        if rest:
+            for src in session.scalars(select(Source)):
+                key = url_key(src.url)
+                if key in rest:
+                    same.setdefault(key, []).append(src)
+        for key, url in rest.items():
+            srcs = same.get(key, [])
+            if not srcs:
+                why = "库里没有（没导入）"
+            elif any(s.enabled for s in srcs):
+                why = "已经在收" + ("" if any(s.url == url for s in srcs) else "：库里是另一种写法")
             else:
                 why = "最近被网站拒绝、读不出、不是静态抓取，或不在这一级的格上"
             result.missing.append(f"{url}（{why}）")
@@ -688,6 +696,14 @@ def enable_sources(
         if not dry_run:
             source.enabled = True
             note = f"全国覆盖：{province}{level}抽查合格（抽查记录 #{acc['id']}）后由 {by} 启用"
+            if VIA_API_WORD in (source.verification_status or ""):
+                # 试读经列表接口读出、这次复检抽查合格后打开：写"经接口读"标记，正式抓取才走接口
+                # （D-128；没有标记的来源一律不走接口）
+                source.parser_config = {
+                    **(source.parser_config or {}),
+                    LIST_API_OPEN_KEY: "大汉jpaas",
+                }
+                note += "，经接口读（D-128）"
             source.note = f"{source.note}；{note}" if source.note else note
         result.enabled += 1
         result.source_ids.append(source.id)

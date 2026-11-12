@@ -22,7 +22,6 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
-import httpx
 from alembic import command
 from alembic.script import ScriptDirectory
 from alembic.util import CommandError
@@ -30,6 +29,7 @@ from sqlalchemy import make_url, text
 from sqlalchemy.engine import URL
 from sqlalchemy.exc import DBAPIError, SQLAlchemyError
 
+from youju import storage
 from youju.backup import (
     BEIJING,
     FORMAT,
@@ -169,7 +169,7 @@ def run(database_url: str, cloud_env: str | None, source: Path | None) -> int:
             start = time.monotonic()
             if source is None:
                 local = Path(directory) / "backup.jsonl.gz"
-                with httpx.Client(trust_env=False) as client:
+                with storage.http_client() as client:
                     filename = Path(download_latest(client, cloud_env, local)).name
                 source = local
             else:

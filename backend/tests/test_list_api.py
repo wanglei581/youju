@@ -316,7 +316,7 @@ class FakeFetcher:
         self.responses = responses
         self.calls: list[tuple[str, tuple | None]] = []
 
-    def fetch(self, url: str, form=None) -> FetchResult:
+    def fetch(self, url: str, same_address_only: bool = False, form=None) -> FetchResult:
         self.calls.append((url, None if form is None else tuple(form)))
         return self.responses[url].pop(0)
 
@@ -390,14 +390,14 @@ class ChangingFetcher(FakeFetcher):
         super().__init__(responses)
         self.session_factory, self.source_id, self.configs = session_factory, source_id, configs
 
-    def fetch(self, url: str, form=None) -> FetchResult:
+    def fetch(self, url: str, same_address_only: bool = False, form=None) -> FetchResult:
         if not self.calls:
             self.first_call_at = datetime.now(UTC)
         if self.configs:
             with self.session_factory() as other:
                 other.get(Source, self.source_id).parser_config = self.configs.pop(0)
                 other.commit()
-        return super().fetch(url, form)
+        return super().fetch(url, same_address_only, form)
 
 
 def test_config_changed_during_the_check_is_rechecked_with_the_new_config(
@@ -765,14 +765,21 @@ def test_page_sources_keep_plain_http_errors(session) -> None:
 # 栏目页自己声明了同站平台列表接口（crawler/adapters.py 的写法），网站是虚构的
 ADAPTER_PAGE_URL = "https://www.example.gov.cn/col/col1001/index.html"
 ADAPTER_PAGE = (
-    '<html><body><ul><script src="/script/unitbuild.js" '
-    'url="/api-gateway/jpaas-publish-server/front/page/build/unit" '
-    "queryData=\"{'pageType':'column','tagId':'当前栏目list','pageId':'1001'}\"></script>"
+    '<html><body><ul><script id="u1" src="/script/unitbuild.js" webId="1001" '
+    'parseType="bulidstatic" url="/api-gateway/jpaas-publish-server/front/page/build/unit" '
+    "queryData=\"{'parseType':'bulidstatic','webId':'1001','tplSetId':'T1','pageType':'column',"
+    "'tagId':'当前栏目list','editType':'null','pageId':'1001'}\"></script>"
     "</ul></body></html>"
 )
 ADAPTER_JSON = json.dumps(
     {
+        "roles": None,
+        "permissions": None,
         "success": True,
+        "message": "生成成功",
+        "code": "200",
+        "traceId": "t",
+        "messageType": 2,
         "data": {
             "html": '<li><a href="/col/col1001/art/2026/art_1.html">关于开展2026年度第一批项目申报的通知</a>'
             "<span>2026-11-05</span></li>"
@@ -784,13 +791,23 @@ ADAPTER_JSON = json.dumps(
 )
 
 
-def test_sources_marked_by_the_platform_adapter_still_read_the_page(session) -> None:
-    """平台适配器记在配置里的 list_api 不是这里的检索接口配置：这样的来源照常抓栏目页、按页面声明的
-    接口读，不当成配置写错（内部错误），也不发表单。"""
+@pytest.mark.parametrize(
+    ("config", "reads_api"),
+    [
+        # 平台适配器记下的标记，没有"经接口读"：照 D-128 不调接口，记待复检
+        ({"list_api": "大汉jpaas"}, False),
+        # 标了"经接口读"：照 main 经页面声明的接口读
+        ({"list_api": "大汉jpaas", "list_api_open": "大汉jpaas"}, True),
+    ],
+)
+def test_platform_adapter_keys_are_not_search_api_config(session, config, reads_api) -> None:
+    """平台适配器（crawler/adapters.py）记在配置里的键不是这里的检索接口配置：这样的来源照常抓栏目页、
+    按 main 的规矩决定读不读页面声明的接口，不当成配置写错（内部错误），也不发表单。"""
     from youju.crawler.adapters import find_list_api
+    from youju.crawler.service import NEEDS_REVIEW_MESSAGE
 
     api_url = find_list_api(ADAPTER_PAGE, ADAPTER_PAGE_URL).url
-    source = make_source(session, url=ADAPTER_PAGE_URL, config={"list_api": "大汉jpaas"})
+    source = make_source(session, url=ADAPTER_PAGE_URL, config=dict(config))
     source.last_success_at = datetime(2026, 11, 1, tzinfo=UTC)
     session.commit()
     fetcher = FakeFetcher(
@@ -810,7 +827,15 @@ def test_sources_marked_by_the_platform_adapter_still_read_the_page(session) -> 
         }
     )
     check = check_source(session, source, fetcher, today=date(2026, 11, 10))
-    assert (check.status, check.items_found, check.is_baseline) == ("ok", 2, False)
-    assert fetcher.calls == [(ADAPTER_PAGE_URL, None), (api_url, None)]
+    if reads_api:
+        assert (check.status, check.items_found, check.is_baseline) == ("ok", 2, False)
+        assert fetcher.calls == [(ADAPTER_PAGE_URL, None), (api_url, None)]
+    else:
+        assert (check.status, check.error, check.items_found) == (
+            "parse_empty",
+            NEEDS_REVIEW_MESSAGE,
+            0,
+        )
+        assert fetcher.calls == [(ADAPTER_PAGE_URL, None)]
     session.refresh(source)
-    assert source.parser_config == {"list_api": "大汉jpaas"}
+    assert source.parser_config == config

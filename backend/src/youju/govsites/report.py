@@ -174,9 +174,13 @@ def import_status(check) -> str:
 
 
 def _import_status(check) -> str:
+    from youju.crawler.adapters import VIA_API_WORD
     from youju.govsites import verify as v
 
     if check.result == v.READABLE:
+        if check.reason.endswith("列表接口读取"):
+            # 经列表接口读出的（D-128）：打开时据此给来源写"经接口读"标记，正式抓取才走接口
+            return f"试跑可读（{VIA_API_WORD}，全国覆盖 v1，未启用）"
         return "试跑可读（全国覆盖 v1，未启用）"
     if check.result == v.NEEDS_SCRIPT:
         return "需浏览器渲染或接口（全国覆盖 v1）"
@@ -196,7 +200,8 @@ def column_rows(checks, checked_on: str) -> list[list[str]]:
         if "#xxgk-" in c.url:
             continue  # 信息公开分类树上的分类不是能打开的栏目，不进导入清单（看板里记需人工）
         dept_full = (c.dept_full_name or c.dept)[:120]
-        note = "；".join(c.samples[:2])
+        # 公开仓库：备注不写样例标题（见 govsites/privacy.py；导入时备注还会写进来源备注）
+        note = ""
         rows.append(
             [
                 c.level,

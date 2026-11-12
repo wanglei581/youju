@@ -33,6 +33,7 @@ import httpx
 from sqlalchemy import Connection, Engine, Table, and_, func, or_, select, text
 from sqlalchemy.exc import SQLAlchemyError
 
+from youju import storage
 from youju.backup import (
     BEIJING,
     BackupError,
@@ -122,8 +123,10 @@ EXCLUDED_TABLES = frozenset(
         # 密钥
         "app_keys",
         "signing_keys",
-        # 下架、恢复的操作记录；周报期刊（正文里有当时的文件标题和链接，可能包括后来下架的）
+        # 下架、恢复的操作记录；周报期刊（正文里有当时的文件标题和链接，可能包括后来下架的）；
+        # 首发前搬家带过来的已下架网址（D-127，同步到服务器，但不进给本机测试用的公开快照）
         "document_takedown_events",
+        "takedown_blocks",
         "digest_issues",
         # 访问日志和运维记录
         "access_logs",
@@ -458,7 +461,7 @@ def run(
     today = now.astimezone(BEIJING).date()
     report = SnapshotReport(path=object_path(today))
     own = client is None
-    client = client or httpx.Client(trust_env=False)
+    client = client or storage.http_client()
     try:
         with tempfile.TemporaryDirectory() as tmp:
             local = Path(tmp) / Path(report.path).name

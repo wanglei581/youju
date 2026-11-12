@@ -31,7 +31,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from youju import storage_list
+from youju import storage, storage_list
 from youju.advisor_tasks import _delete_and_record
 from youju.backup import BackupError
 from youju.config import Settings
@@ -180,7 +180,7 @@ def scan(
     known = _known(session)
     report.unparsed = known.unparsed
     own_client = client is None
-    client = client or httpx.Client(trust_env=False)
+    client = client or storage.http_client()
     try:
         bucket = storage_list.bucket_of(client, env, sleep=sleep)
         report.prefix = bucket.prefix + RESULT_PREFIX

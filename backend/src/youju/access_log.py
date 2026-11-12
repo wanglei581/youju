@@ -40,6 +40,7 @@ import httpx
 from sqlalchemy import Engine, delete, func, select
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 
+from youju import storage
 from youju.alerts import send_alert
 from youju.backup import BEIJING, BackupError, _open_api, _retrying, delete_files, upload
 from youju.config import get_settings
@@ -186,6 +187,10 @@ def write(entry: dict[str, Any], *, engine: Engine | None = None) -> None:
         _note_failure(exc, *_keep(batch))
     try:
         line = {k: v for k, v in row.items() if k != "detail"}
+        if getattr(get_settings(), "log_mask_ip", False):
+            # 自建服务器：容器日志在自己的硬盘上另存一份，只留地址前一半（库里的访问日志照旧完整，
+            # 按网络安全法留存 6 个月，见 docs/部署/自建服务器.md）
+            line["ip"] = mask_ip(line.get("ip"))
         out_log.info(
             json.dumps(
                 {"event": "access", **line, "saved": saved}, ensure_ascii=False, default=_encode
@@ -193,6 +198,16 @@ def write(entry: dict[str, Any], *, engine: Engine | None = None) -> None:
         )
     except Exception:  # noqa: BLE001, S110 - 同上
         pass
+
+
+def mask_ip(ip: str | None) -> str | None:
+    """1.2.3.4 → 1.2.x.x；IPv6 只留前 3 段。"""
+    if not ip:
+        return ip
+    if ":" in ip:
+        return ":".join(ip.split(":")[:3]) + ":x"
+    parts = ip.split(".")
+    return ".".join(parts[:2] + ["x"] * (len(parts) - 2)) if len(parts) == 4 else "x"
 
 
 @dataclass
@@ -335,7 +350,7 @@ def run_archive(
         )
     own = client is None and output is None
     if own:
-        client = httpx.Client(trust_env=False)
+        client = storage.http_client()
     try:
         for day in _pending_days(engine, now):
             path = object_path(day)

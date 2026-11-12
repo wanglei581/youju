@@ -171,8 +171,9 @@ class SourceCheck(Base):
     source_id: Mapped[int] = mapped_column(ForeignKey("sources.id", ondelete="CASCADE"))
     started_at: Mapped[datetime] = mapped_column(UTCDateTime())
     finished_at: Mapped[datetime] = mapped_column(UTCDateTime())
-    # ok / http_error / network_error / ssl_error / robots_disallowed / robots_error / parse_empty；
-    # access_denied：列表接口回了明确的拒绝访问（见 crawler/list_api.py）
+    # ok / http_error / network_error / ssl_error / robots_disallowed / robots_error / parse_empty
+    # / list_api_refused（列表接口被读取护栏拦下，D-128）
+    # / access_denied（检索接口回了明确的拒绝访问，见 crawler/list_api.py）
     status: Mapped[str] = mapped_column(String(32))
     http_status: Mapped[int | None] = mapped_column(Integer)
     items_found: Mapped[int] = mapped_column(Integer, default=0)
@@ -274,6 +275,23 @@ class DocumentTakedownEvent(Base):
     note: Mapped[str] = mapped_column(String(300))
     operated_by: Mapped[str] = mapped_column(String(80))
     operated_at: Mapped[datetime] = mapped_column(UTCDateTime())
+
+
+class TakedownBlock(Base):
+    """首发前搬家（D-127）从云托管带过来的已下架网址：本机（公开数据的主库）的数据来自不含下架
+    文件的公开导出，不知道哪些通知下架过；这张表让本机以后再抓到同一个规范网址时不再收录
+    （crawler/service.py 的 save_items），本机已经收进来的由 youju takedown-carry apply 整组下架。
+
+    只存规范网址键、原来的来源编号（只作参考，两边的来源编号不一定一样）、下架时间、原因类别；
+    不存备注、操作人和标题（可能写到投诉人或个人信息）。要让某个网址重新收录，删掉这一行。"""
+
+    __tablename__ = "takedown_blocks"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    url_key: Mapped[str] = mapped_column(String(URL_KEY_MAX), unique=True)
+    origin_source_id: Mapped[int | None] = mapped_column(Integer)
+    taken_down_at: Mapped[datetime] = mapped_column(UTCDateTime())
+    reason: Mapped[str] = mapped_column(String(16))
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
 
 
 class DocumentMerge(Base):
@@ -641,6 +659,11 @@ class DocumentDeadline(Base):
     status: Mapped[str] = mapped_column(String(16), default="pending")
     reviewed_by: Mapped[str | None] = mapped_column(String(80))
     reviewed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    verification_quote: Mapped[str | None] = mapped_column(Text)
+    verification_unclear_hash: Mapped[str | None] = mapped_column(String(64))
+    verification_unclear_note: Mapped[str | None] = mapped_column(Text)
+    verification_corrected: Mapped[bool | None] = mapped_column(Boolean)
+    verification_unclear_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     approved_date: Mapped[date | None] = mapped_column(Date)
     approved_time: Mapped["time | None"] = mapped_column(Time)
     # 截止变更（验收清单 A7）：发了延期、调整或撤销的通知后，原来通过的截止标为 changed，

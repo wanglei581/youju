@@ -301,7 +301,7 @@ def prepare(
             "kind": d.kind,
             "value": d.approved_date.isoformat(),
             "time": d.approved_time.isoformat() if d.approved_time else None,
-            "quote": d.evidence,
+            "quote": d.verification_quote or d.evidence,
             "doc_id": d.document_id,
         }
         for d in v1._approved(session, [loaded.doc_id]).get(loaded.doc_id, [])

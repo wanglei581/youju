@@ -215,11 +215,22 @@ class PoliteFetcher:
     def _expired(self) -> bool:
         return self._deadline is not None and self._clock() >= self._deadline
 
-    def fetch(self, url: str, form: Sequence[tuple[str, str]] | None = None) -> FetchResult:
+    def fetch(
+        self,
+        url: str,
+        same_address_only: bool = False,
+        form: Sequence[tuple[str, str]] | None = None,
+    ) -> FetchResult:
         """抓取一个页面。重定向逐跳处理：每一跳都检查 robots.txt，并遵守目标网站的限速。
 
-        form：栏目列表由公开接口提供时（youju.crawler.list_api），按页面脚本同样的参数以表单 POST。
-        robots、限速、地址检查都和抓页面一样；接口返回跳转时不跟随（POST 跟随跳转的行为不统一）。"""
+        same_address_only：只取这个地址本身（读页面声明的列表接口时用，D-128 读取护栏 ①）。
+        跳转一律不跟（连 http 升 https 也不跟，只请求页面写明的那个地址）：原样返回 "redirect"
+        （final_url 是要跳去的地址），由调用方判断——跳到别的地址记不能抓，只是换协议的按
+        这次没读出。
+
+        form：栏目列表由公开检索接口提供时（youju.crawler.list_api），按页面脚本同样的参数以表单
+        POST。robots、限速、地址检查都和抓页面一样；接口返回跳转时不跟随（POST 跟随跳转的行为
+        不统一），记 http_error 并写明跳去哪。"""
         current = url
         for _ in range(_MAX_REDIRECTS + 1):
             if self._url_allowed is not None and not self._url_allowed(current):
@@ -256,6 +267,9 @@ class PoliteFetcher:
                         f"HTTP {result.http_status}，接口跳转到 {result.final_url[:200]}，没有跟随"
                     ),
                 )
+            if same_address_only:
+                result.url = url
+                return result
             current = result.final_url
         return FetchResult(
             url, "network_error", final_url=current, error=f"重定向超过 {_MAX_REDIRECTS} 次"

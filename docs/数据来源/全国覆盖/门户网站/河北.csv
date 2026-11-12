@@ -5,9 +5,9 @@
 市级,河北,秦皇岛,,130300,秦皇岛市,https://www.qhd.gov.cn/,http://www.hebei.gov.cn/,秦皇岛（链到 https://www.qhd.gov.cn/index/qhd/index，取网站首页）,已找到,,1303000027,,未识别,
 市级,河北,邯郸,,130400,邯郸市,https://www.hd.gov.cn/zjhd/,http://www.hebei.gov.cn/,邯郸,已找到,,1304000009,邯郸市人民政府,拓尔思|t日期_编号(拓尔思),
 市级,河北,邢台,,130500,邢台市,http://www.xingtai.gov.cn/mlxt/,http://www.hebei.gov.cn/,邢台,打不开,robots.txt 暂时无法获取（RemoteProtocolError: Server disconnected without sending a response.），本次跳过,,,,
-市级,河北,保定,,130600,保定市,http://www.baoding.gov.cn/mlbd-1472-386944.html,http://www.hebei.gov.cn/,保定,不能抓,robots.txt 禁止,,,,
+市级,河北,保定,,130600,保定市,http://www.baoding.gov.cn/,http://www.hebei.gov.cn/,保定（链到 http://www.baoding.gov.cn/mlbd-1472-386944.html，取网站首页）,不能抓,robots.txt 禁止,,,,
 市级,河北,张家口,,130700,张家口市,https://www.zjk.gov.cn/,http://www.hebei.gov.cn/,张家口（链到 http://www.zjk.gov.cn/channel/1/index.html，取网站首页）,已找到,,1307000010,张家口市人民政府,未识别,
-市级,河北,承德,,130800,承德市,https://www.chengde.gov.cn/,http://www.hebei.gov.cn/,承德市,已找到,,1308000009,承德市人民政府,大汉|art_日期_编号(大汉),
+市级,河北,承德,,130800,承德市,https://www.chengde.gov.cn/,http://www.hebei.gov.cn/,承德（链到 http://www.chengde.gov.cn/col/col359/index.html，取网站首页）,已找到,,1308000009,承德市人民政府,大汉|art_日期_编号(大汉),
 市级,河北,沧州,,130900,沧州市,https://www.cangzhou.gov.cn:443/,http://www.hebei.gov.cn/,沧州（链到 http://www.cangzhou.gov.cn/cangzhou/c100053/about.shtml，取网站首页）,已找到,,1309000040,沧州市人民政府,32位编号.shtml,
 市级,河北,廊坊,,131000,廊坊市,https://www.lf.gov.cn/Category_5/Index.aspx,http://www.hebei.gov.cn/,廊坊,已找到,,1310000035,廊坊市人民政府,未识别,
 市级,河北,衡水,,131100,衡水市,http://www.hengshui.gov.cn/,http://www.hebei.gov.cn/,衡水（链到 http://www.hengshui.gov.cn/col/col13/index.html，取网站首页）,已找到,,1311000004,衡水市人民政府,大汉|art_日期_编号(大汉),
@@ -126,7 +126,7 @@
 区县级,河北,张家口,尚义县,130725,尚义县,http://www.zjksy.gov.cn/,https://www.zjk.gov.cn/,尚义县,已找到,,1307250001,尚义县人民政府,动态页?id=,
 区县级,河北,张家口,蔚县,130726,蔚县,http://www.zjkyx.gov.cn/,https://www.zjk.gov.cn/,蔚县,已找到,,1307260006,蔚县人民政府,未识别,
 区县级,河北,张家口,阳原县,130727,阳原县,http://www.zjkyy.gov.cn/,https://www.zjk.gov.cn/,阳原县,已找到,,1307270002,阳原县人民政府,动态页?id=,
-区县级,河北,张家口,怀安县,130728,怀安县,https://www.zjkha.gov.cn/,https://www.zjk.gov.cn/,怀安县,已找到,,1307280007,怀安县人民政府,动态页?id=,项目机构结果的公示2026-10-29
+区县级,河北,张家口,怀安县,130728,怀安县,https://www.zjkha.gov.cn/,https://www.zjk.gov.cn/,怀安县,已找到,,1307280007,怀安县人民政府,动态页?id=,项目机构结果的公示
 区县级,河北,张家口,怀来县,130730,怀来县,http://www.huailai.gov.cn/,https://www.zjk.gov.cn/,怀来县,已找到,,1307300001,怀来县人民政府,动态页?id=,
 区县级,河北,张家口,涿鹿县,130731,涿鹿县,http://www.zjkzl.gov.cn/,https://www.zjk.gov.cn/,涿鹿县,已找到,,1307310002,涿鹿县人民政府,未识别,
 区县级,河北,张家口,赤城县,130732,赤城县,http://www.ccx.gov.cn/,https://www.zjk.gov.cn/,赤城县,已找到,,1307320001,赤城县人民政府,动态页?id=,

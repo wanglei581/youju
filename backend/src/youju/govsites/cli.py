@@ -5,6 +5,7 @@ import json
 import time
 from collections import Counter
 from dataclasses import asdict, dataclass, field
+from datetime import date
 from pathlib import Path
 
 DEFAULT_OUT = Path(__file__).resolve().parents[4] / "docs" / "数据来源" / "全国覆盖"
@@ -505,10 +506,27 @@ def _cmd_sample(args: argparse.Namespace) -> int:
 
     from youju.db import session_factory
     from youju.govsites.inventory import write_table
-    from youju.govsites.sample import SAMPLE_FIELDS, sample_rows, summary_lines, to_csv_row
+    from youju.govsites.sample import (
+        SAMPLE_FIELDS,
+        counties_by_city,
+        sample_rows,
+        summary_lines,
+        to_csv_row,
+    )
 
+    # 地市部门核对要认下辖区县（"南京市玄武区……"不算南京市的部门）：没有行政区划清单就不抽
+    counties = {}
+    if args.level == "市级":
+        divisions = args.divisions or args.out / "行政区划.csv"  # 不指定就用清单目录里的
+        if not divisions.exists():
+            print(
+                f"找不到行政区划清单 {divisions}：地市部门核对要用它认下辖区县。"
+                "先用 coverage-divisions 取一份，或用 --divisions 指定"
+            )
+            return 1
+        counties = counties_by_city(divisions)
     with session_factory()() as session:
-        rows = sample_rows(session, args.level, args.province, args.size)
+        rows = sample_rows(session, args.level, args.province, args.size, counties=counties)
     if not rows:
         print("库里没有这一级的来源（先导入、试抓）")
         return 1
@@ -537,6 +555,53 @@ def _cmd_sample(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_body_gate(args: argparse.Namespace) -> int:
+    """正文能读率门（D-129）：每省每级取 60 份申报通知、政策试取正文，能读 90% 以上才放。"""
+    from contextlib import nullcontext
+
+    from sqlalchemy import select
+
+    from youju.db import session_factory
+    from youju.govsites.bodygate import (
+        check_trial_db,
+        platforms_by_url,
+        polite_fetcher,
+        run_gate,
+        write_gate,
+    )
+    from youju.models import Source
+
+    with session_factory()() as session:
+        if not args.no_fetch and (problem := check_trial_db(session, args.trial_db)):
+            print(f"不取正文：{problem}。正文门只在本机试抓用的库上跑")
+            return 1
+        provinces = args.province or sorted(
+            set(session.scalars(select(Source.province).where(Source.level == args.level)))
+        )
+        if not provinces:
+            print("库里没有这一级的来源（先导入、试抓）")
+            return 1
+        # 整次命令共用一个抓取器：几个省访问同一个网站时，限速记录接得上
+        with nullcontext(None) if args.no_fetch else polite_fetcher() as fetcher:
+            for prov in provinces:
+                gate = run_gate(
+                    session,
+                    args.level,
+                    prov,
+                    seed=args.seed,
+                    evidence=args.out / "抽查" / args.level / f"{prov}.csv",
+                    platforms=platforms_by_url(args.out, prov, args.level),
+                    fetch=not args.no_fetch,
+                    fetcher=fetcher,
+                )
+                path = write_gate(args.out, gate)
+                print(gate.text())
+                for name, ok, n in gate.by_platform():
+                    print(f"  {name}：能读 {ok}/{n}")
+                print(f"  证据 {path}")
+    return 0
+
+
 def _sha1(path: Path) -> str:
     import hashlib
 
@@ -548,7 +613,7 @@ def _cmd_accept(args: argparse.Namespace) -> int:
     from datetime import UTC, datetime
 
     from youju.db import session_factory
-    from youju.govsites.sample import PASS_RATE, evidence_results, unknown_verdicts
+    from youju.govsites.sample import LINE_LEVELS, PASS_RATE, evidence_results, unknown_verdicts
     from youju.models import CoverageAcceptance
 
     folder = args.out / "抽查" / args.level
@@ -560,13 +625,25 @@ def _cmd_accept(args: argparse.Namespace) -> int:
     if not results:
         print(f"{folder} 里没有证据表")
         return 1
-    print(f"合格标准：每个栏目都有结论，通过的占 {PASS_RATE:.0%} 以上（不通过的不进本批）")
+    print(
+        f"合格标准：每个栏目都有结论，读得准的（通过、不收）占 {PASS_RATE:.0%} 以上"
+        "（待重试、不能抓不算进分母；只有通过的进本批）"
+    )
+    if args.level in LINE_LEVELS:
+        print(
+            "地市、区县还要过抽样线（联网核对第 1 次每层抽 40 格、不通过不超过 3 格，"
+            "区县门户 30 格、不超过 2 格；重抽 60 格、不超过 5 格，只看最近一次）"
+            "和正文能读率门（60 份里能读 90% 以上）"
+        )
     for r in results:
         verdict = "合格" if r.accepted else "没过"
         print(
             f"{r.province}：{verdict}（{r.total} 个栏目，通过 {r.passed}，不通过 {r.failed}，"
-            f"待重试 {r.retry}，没复核 {r.pending}，通过率 {r.rate:.0%}）"
+            f"待重试 {r.retry}，不能抓 {r.blocked}，不收 {r.excluded}，没复核 {r.pending}，"
+            f"读得准的 {r.rate:.0%}）"
         )
+        if r.sample_note():
+            print(f"  {r.sample_note()}")
     if args.dry_run:
         print("试算，没写库")
         return 0
@@ -583,9 +660,10 @@ def _cmd_accept(args: argparse.Namespace) -> int:
                     passed=r.accepted,
                     note=(
                         f"全检 {r.total} 个栏目：通过 {r.passed}，不通过 {r.failed}，"
-                        f"待重试 {r.retry}（都不进本批）；"
+                        f"待重试 {r.retry}，不能抓 {r.blocked}，不收 {r.excluded}（都不进本批）；"
                         f"证据 docs/数据来源/全国覆盖/抽查/{args.level}/{r.province}.csv"
                         f"（sha1 {_sha1(folder / f'{r.province}.csv')}）"
+                        + (f"；{r.sample_note()}" if r.sample_note() else "")
                     )[:300],
                 )
             )
@@ -722,6 +800,35 @@ def _cmd_batch(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_golive(args: argparse.Namespace) -> int:
+    """一批来源上线（见 govsites/golive.py）：结论行纯 ASCII，写进 <log-dir>/<tag>-<时间>.txt。"""
+    from youju.db import session_factory
+    from youju.govsites.boarddb import board_lock
+    from youju.govsites.golive import Report, run
+
+    if not str(args.log_dir).isascii():
+        print("--log-dir 要用纯 ASCII 的路径（结论行纯 ASCII）")
+        return 2
+    args.log_dir.mkdir(parents=True, exist_ok=True)
+    report = Report(args.log_dir, args.tag)
+    report.line(f"log={report.path}")  # 第一行就给出文件名：最后一行留给结论
+    with session_factory()() as session, board_lock(session, BOARD_LOCK_WAIT) as got:
+        if not got:
+            report.line("stop=1 step=lock reason=another_board_command_running")
+            return 1
+        ok = run(
+            session,
+            args.out,
+            args.batch,
+            args.level,
+            args.by,
+            args.apply,
+            report,
+            operator=args.operator,
+        )
+    return 0 if ok else 1
+
+
 def register(sub: argparse._SubParsersAction) -> None:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--out", type=Path, default=DEFAULT_OUT, help="清单输出目录")
@@ -833,7 +940,24 @@ def register(sub: argparse._SubParsersAction) -> None:
     p.add_argument(
         "--out", type=Path, default=DEFAULT_OUT, help="清单目录（证据写进 抽查/<层级>/）"
     )
+    p.add_argument(
+        "--divisions", type=Path, help="行政区划清单（不给就用 --out 目录里的 行政区划.csv）"
+    )
     p.set_defaults(func=_cmd_sample)
+
+    p = sub.add_parser(
+        "coverage-body-gate",
+        help="正文能读率门：每省每级取 60 份申报通知、政策试取正文（只在本机试抓用的库上跑）",
+    )
+    p.add_argument("--level", required=True, choices=LEVEL_ORDER)
+    p.add_argument("--province", action="append", help="只测某几个省")
+    p.add_argument("--seed", default=f"{date.today():%Y-%m}", help="抽样种子（默认本月）")
+    p.add_argument("--no-fetch", action="store_true", help="不取正文，只用库里已有的详情算")
+    p.add_argument("--trial-db", help="试抓库的库名（取正文要写库，必须和现在连的本机库对上）")
+    p.add_argument(
+        "--out", type=Path, default=DEFAULT_OUT, help="清单目录（证据写进 抽查/<层级>/正文/）"
+    )
+    p.set_defaults(func=_cmd_body_gate)
 
     p = sub.add_parser(
         "coverage-accept", help="按证据表记每省抽查结论（上线时在线上运行，写抽查记录）"
@@ -852,6 +976,26 @@ def register(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--name", required=True, help="文件名（写到 批次/<名字>.csv）")
     p.add_argument("--out", type=Path, default=DEFAULT_OUT, help="清单目录")
     p.set_defaults(func=_cmd_batch)
+
+    p = sub.add_parser(
+        "coverage-golive",
+        help="一批来源上线：导入→看板→记抽查结论→分省打开，一步一核对，结论行纯 ASCII",
+    )
+    p.add_argument("--batch", required=True, help="批次文件名（批次/<名字>.csv）")
+    p.add_argument("--level", action="append", required=True, choices=LEVEL_ORDER)
+    p.add_argument("--by", required=True, help="抽查人（记进抽查记录）")
+    p.add_argument("--operator", help="打开来源的操作人（记进来源备注和审计），默认同 --by")
+    p.add_argument("--tag", default="batch1", help="日志文件名和最后一行的前缀（只用 ASCII）")
+    p.add_argument("--log-dir", type=Path, default=Path("/tmp"), help="结论和细节写到哪个目录")
+    p.add_argument("--out", type=Path, default=DEFAULT_OUT, help="清单目录")
+    mode = p.add_mutually_exclusive_group(required=True)
+    mode.add_argument(
+        "--check", action="store_true", help="只试算：批次、导入、抽查结论、每省应打开数"
+    )
+    mode.add_argument(
+        "--apply", action="store_true", help="按顺序做，每一步先试算、核对，对不上就停"
+    )
+    p.set_defaults(func=_cmd_golive)
 
     p = sub.add_parser("coverage-refresh", help="按来源抓取结果重算覆盖看板每格的状态")
     p.add_argument("--province", help="只算某个省")

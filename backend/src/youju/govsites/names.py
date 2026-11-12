@@ -23,13 +23,13 @@ DEPT_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("科技", re.compile(r"科学技术|科技(?!馆|园|城|大学|学院|中心|报|馆)|科工信|工科")),
     ("商务", re.compile(r"商务|投资促进|招商|口岸")),
     ("财政", re.compile(r"财政")),
-    ("人社", re.compile(r"人力资源和社会保障|人力资源社会保障|人社")),
-    ("市场监管", re.compile(r"市场监督管理|市场监管|知识产权")),
+    ("人社", re.compile(r"人力资源和社会保障|人力资源社会保障|人力社保|人社")),
+    ("市场监管", re.compile(r"市场监督管理|市场监管|市监局|知识产权")),
     ("农业农村", re.compile(r"农业农村|农业和农村|农牧|农业")),
     (
         "文旅",
         re.compile(
-            r"文化和旅游|文化广电和旅游|文化广电旅游|文化旅游|文旅|文化体育和旅游|文体旅|"
+            r"文化和旅游|文化广电和旅游|文化和广电旅游|文化广电旅游|文化旅游|文旅|文化体育和旅游|文体旅|"
             r"文化广电体育和旅游|文化广电体育旅游|文广旅|文广新旅|文化广电新闻出版和旅游"
         ),
     ),
@@ -57,15 +57,23 @@ _ORG_END = re.compile(
 # 机构名称里不会出现的词：出现了就多半是新闻、事项、专题
 _NOT_ORG = re.compile(
     r"召开|举行|开展|关于|通知|公告|公示|会议|活动|调研|印发|发布|解读|专题|专栏|服务指南|办事服务|"
-    r"在线服务|办理|指南|"
+    r"在线服务|办理|指南|大厅|"
     r"查询|申请|报名|系统|平台|热线|信箱|投诉|举报|在线|视频|图片|新闻|动态|要闻|访谈|直播|"
-    r"领导|局长|主任|书记|讲话|考察|走访|年报|报告|统计|规划|计划|方案|工作动态|工作部署|政策|文件|资讯"
+    r"领导|局长(?!.{0,8}分?局$)|主任|书记|讲话|考察|走访|年报|报告|统计|规划|计划|方案|工作动态|工作部署|政策|文件|资讯"
 )
 _ORG_MAX_LEN = 30
+# 地方、园区、景区（及其管理机构）的名称结尾
+_ZONE_END = re.compile(r"区(?:管理委员会|管委会|工作委员会|管理局|管理办公室)?$")
+
+
+def _bare_org(text: str) -> str:
+    """去掉括号注释；显示时被截断的（"……局（长兴县人民政府区域合..."）连同没合上的括号一起去掉。"""
+    t = re.sub(r"[（(].*?[）)]", "", text or "")
+    return re.sub(r"[（(][^）)]*$|(?:\.{2,}|…+)$", "", t).strip()
 
 
 def looks_like_org(text: str) -> bool:
-    t = re.sub(r"[（(].*?[）)]", "", text or "")
+    t = _bare_org(text)
     if not t or len(t) > _ORG_MAX_LEN or len(t) < 3:
         return False
     if _NOT_ORG.search(t):
@@ -80,14 +88,22 @@ def dept_categories(text: str) -> list[str]:
     """
     if not looks_like_org(text):
         return []
-    t = re.sub(r"[（(].*?[）)]", "", text)
+    t = _bare_org(text)
     out: list[str] = []
     for label, pattern in DEPT_RULES:
         if pattern.search(t):
             out.append(label)
     # "农业农村"的宽松写法"农业"不能吃掉"农业科学院""农业机械化服务中心"这类事业单位
-    if "农业农村" in out and not re.search(
-        r"(农业农村|农业和农村|农牧|农业)(厅|局|委|委员会|部)", t
+    # （"农业农村局和水利局""农业农村和水利局""农业农村水利局"这类合并部门照算，
+    # "农业机械管理局"不算）
+    if (
+        "农业农村" in out
+        and not re.search(r"(农业农村|农业和农村|农牧|农业)(厅|局|委|委员会|部)", t)
+        and not re.search(
+            r"(农业农村|农业和农村|农牧|农业)"
+            r"(?:和?(?:水利|水务|林业|畜牧|乡村振兴|扶贫|渔业|海洋|粮食)){1,2}(厅|局|委|委员会|部)$",
+            t,
+        )
     ):
         out.remove("农业农村")
     # 开发区：只要管委会（不是开发区里的某个局）
@@ -96,9 +112,55 @@ def dept_categories(text: str) -> list[str]:
             out.remove("开发区")
         else:
             out = ["开发区"]  # 开发区管委会下的"经济发展局"等不另算
+    # 不是开发区、名称以"区"或"区管委会"一类结尾的，是地方、园区、景区和它们的管理机构
+    # （巴中"光雾山诺水河文旅融合发展示范区"、"中央商务区"、"文化旅游度假区管理委员会"），不是部门
+    if "开发区" not in out and _ZONE_END.search(t):
+        return []
     # 政府办公厅和其他部门互斥：办公厅名称里不会带别的部门
     if "政府办" in out:
         out = ["政府办"]
+    return out
+
+
+# 商务、市场监管的正名词。投资促进局、招商局、口岸办也算商务（有的地方由它们管招商、口岸，或者没有
+# 商务局），知识产权局也算市场监管；但已经有名称带正名词的候选时，只靠这些兼管词认出来的不拿来顶替
+# （宁波口岸办、舟山港航和口岸管理局、东莞外商投资促进中心、佛山投资促进局顶掉过商务局）
+_CORE_WORDS = {
+    "商务": re.compile(r"商务"),
+    "市场监管": re.compile(r"市场监督管理|市场监管|市监局"),
+}
+
+
+def core_named(cat: str, text: str) -> bool:
+    """名称（不算括号里的牌子）带这一类的正名词；不分正名词、兼管词的类别都算带。"""
+    core = _CORE_WORDS.get(cat)
+    return core is None or bool(core.search(_bare_org(text)))
+
+
+def alias_categories(text: str) -> list[str]:
+    """括号里加挂的牌子带来的目标部门（"经信局（商务局）"的商务）。正名已经算的不重复。
+
+    牌子是这个机关的职能，但"科学技术局（知识产权局）"不该抢走真正的市场监管局：盘点只在
+    这一类没有正名候选时才用它（备用候选）。"""
+    main = dept_categories(text)
+    if not main or main in (["开发区"], ["政府办"]):
+        return []
+    out: list[str] = []
+    for part in _bracket_orgs(text):
+        for label in dept_categories(part):
+            if label not in main and label not in out and label not in ("政府办", "开发区"):
+                out.append(label)
+    return out
+
+
+def _bracket_orgs(text: str) -> list[str]:
+    """括号里像机关名的部分（"……局（商务局）"里的"商务局"；"、"分开的几个都算）。"""
+    out: list[str] = []
+    for inner in re.findall(r"[（(]([^（()）]+)[）)]", text or ""):
+        for part in re.split(r"[、，,；;]", inner):
+            part = part.strip()
+            if re.search(r"(局|委|委员会|办|办公室|中心)$", part):
+                out.append(part)
     return out
 
 

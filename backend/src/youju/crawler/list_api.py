@@ -83,6 +83,12 @@ def valid_api_config(raw: object) -> dict[str, str] | None:
     return {"search_api": kind, "channel_id": channel}
 
 
+def search_config(config: dict | None) -> tuple[object, ...]:
+    """来源配置里属于检索接口的那几项（没配时都是 None）。检查期间这几项被改了，这次结果作废、
+    按新配置重来（见 crawler/service.py 的 check_source）。"""
+    return tuple((config or {}).get(key) for key in CONFIG_KEYS)
+
+
 def _checked(config: dict | None) -> dict[str, str]:
     checked = valid_api_config(config)
     if checked is None:
