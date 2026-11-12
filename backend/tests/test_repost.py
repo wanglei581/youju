@@ -2296,7 +2296,11 @@ def test_weekly_sample_skips_groups_already_checked_at_this_revision(
     path = tmp_path / "weekly.json"
     path.write_text(json.dumps(first, ensure_ascii=False), encoding="utf-8")
     assert repost_checks.record(SimpleNamespace(file=path, by="Codex")) == 0
-    assert _sample(tmp_path, "weekly", seed=4)["items"] == []  # 这一版本已经抽查过
+    assert _sample(tmp_path, "weekly", seed=4)["items"] == []  # 这一版本这一周已经抽查过
+    # 跨周可以再抽同一修订号：稳定的自动组也接着盯，不会过一阵就抽不到
+    monkeypatch.setattr(repost_checks, "_now", lambda: NOW + timedelta(days=7))
+    again = _sample(tmp_path, "weekly", seed=5)
+    assert [i["group_id"] for i in again["items"]] == [first["items"][0]["group_id"]]
 
 
 def test_weekly_sample_includes_partly_folded_auto_groups(

@@ -2,7 +2,7 @@
 
 - repost-auto-sample：抽组。gate 从现在满足自动合并条件的组里抽（开开关前 Claude 带证据判 100 组）；
   weekly 先抽已经自动合并的组、不够的用别的已确认组补（每周 Codex 独立抽查 10 组；窗口外还在自动
-  折叠的组也抽）。抽到的名单连同判的版本的证据指纹当场记进库（repost_auto_checks，结论空着）。只给证据：各版本的标题、机关、日期、网址、引用的文号、
+  折叠的组也抽；同一修订号一周里只抽一次，跨周可以再抽，没抽过的先抽）。抽到的名单连同判的版本的证据指纹当场记进库（repost_auto_checks，结论空着）。只给证据：各版本的标题、机关、日期、网址、引用的文号、
   自己的发文字号（部里原件按它对上）、正文里共同文号前后的原文，结论和备注留空给判的人填。判的版本
   （judge 为真）每个都给摘录：gate 是全部在组版本；weekly 是已经确认（对外折叠）的版本，同组还没
   确认的版本（正文没抓到等，见 repost.rebuild）一并列出、不给摘录，只供对照。
@@ -82,6 +82,8 @@ def _audit(action: str, **fields: object) -> None:
 # gate 默认多抽几组：抽样到记回之间组变了的要跳过，免得记回来不满 AUTO_GATE_SIZE 组、门过不了
 GATE_SAMPLE_DEFAULT = AUTO_GATE_SIZE + 10
 WEEKLY_SAMPLE_DEFAULT = 10
+# 每周抽查：同一组同一修订号这么多天里只抽一次；跨周可以再抽（稳定的自动组也要接着盯），没抽过的先抽
+WEEKLY_REPEAT_DAYS = 6
 
 
 def _versions(rows, duplicates):
@@ -239,15 +241,20 @@ def sample(args):
                     .order_by(RepostGroup.id)
                 )
             )
-            checked = set(
-                session.execute(
-                    select(RepostAutoCheck.group_id, RepostAutoCheck.revision).where(
-                        RepostAutoCheck.purpose == "weekly",
-                        RepostAutoCheck.group_id.in_([g.id for g in groups]),
-                    )
-                ).all()
-            )
-            groups = [g for g in groups if (g.id, g.revision) not in checked]
+            # 每周抽查抽过的：同一修订号 WEEKLY_REPEAT_DAYS 天里不再抽；跨周可以再抽（稳定的自动组
+            # 也要接着盯，不然过一阵就抽不到自动组），没抽过的排在前面
+            history = session.execute(
+                select(
+                    RepostAutoCheck.group_id, RepostAutoCheck.revision, RepostAutoCheck.sampled_at
+                ).where(
+                    RepostAutoCheck.purpose == "weekly",
+                    RepostAutoCheck.group_id.in_([g.id for g in groups]),
+                )
+            ).all()
+            since = stamp - timedelta(days=WEEKLY_REPEAT_DAYS)
+            recent = {(g, r) for g, r, at in history if at >= since}
+            seen = {(g, r) for g, r, _ in history}
+            groups = [g for g in groups if (g.id, g.revision) not in recent]
             rows = list(
                 session.scalars(
                     select(RepostGroupMember)
@@ -267,10 +274,18 @@ def sample(args):
                     eligible.append((group, grouped[group.id]))
             auto = [g for g in eligible if _all_auto(g[1], duplicates)]
             other = [g for g in eligible if g not in auto]
-            rng.shuffle(auto)
-            rng.shuffle(other)
+
+            def unseen_first(items):
+                new = [x for x in items if (x[0].id, x[0].revision) not in seen]
+                old = [x for x in items if (x[0].id, x[0].revision) in seen]
+                rng.shuffle(new)
+                rng.shuffle(old)
+                return new + old
+
             population = len(eligible)
-            selected = (auto + other)[: args.size or WEEKLY_SAMPLE_DEFAULT]
+            selected = (unseen_first(auto) + unseen_first(other))[
+                : args.size or WEEKLY_SAMPLE_DEFAULT
+            ]
         ids = sorted({r.document_id for _, rows in selected for r in rows})
         # 抽到的组按现在的详情重算正文信号再给证据：正文、文号被直接改过（抓取时间不变）时存好的
         # 信号是旧的；展示的证据和记下的证据指纹要是同一份
