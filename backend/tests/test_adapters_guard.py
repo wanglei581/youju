@@ -408,3 +408,18 @@ def test_https_to_http_redirect_is_not_read():
     api = _api()  # https 的接口
     down = api.url.replace("https://", "http://")
     assert "不加密" in api_refusal(api, _got(_payload(), final=down))
+
+
+@pytest.mark.parametrize("prompt", ["需要登录", "您没有权限查看", "未授权访问", "登录后可见"])
+def test_more_login_or_permission_prompts_are_not_read(prompt):
+    api = _api()
+    text = _payload(message=prompt)
+    assert "要登录或验证码" in api_refusal(api, _got(text))
+    assert api_html(api, text) == ""
+
+
+def test_login_form_inside_the_list_html_is_not_read():
+    api = _api()
+    text = _payload(data={"html": LIST + '<form><input type="password" name="p"></form>'})
+    assert "登录框" in api_refusal(api, _got(text))
+    assert api_html(api, text) == ""

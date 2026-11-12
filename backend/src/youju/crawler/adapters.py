@@ -119,10 +119,13 @@ _LOGIN_URL = re.compile(
 # 返回内容像登录、验证码或防护拦截页面（只看不是 JSON 的返回和失败提示，不看列表本身：
 # 通知标题里也会有"验证码""身份认证"）
 _LOGIN_TEXT = re.compile(
-    r"请(?:先)?登录|未登录|重新登录|登录(?:超时|失效|过期)|用户登录|身份认证|验证码|滑块|"
-    r"人机验证|安全验证|captcha|geetest|type\s*=\s*[\"']?password",
+    r"请(?:先)?登[录陆]|(?:需要|需|未|重新)登[录陆]|登[录陆](?:后|超时|失效|过期)|用户登录|身份认证|"
+    r"未授权|无权限|没有权限|权限不足|无权(?:访问|查看|阅读)|验证码|滑块|人机验证|安全验证|"
+    r"captcha|geetest|unauthori[sz]ed|login required|type\s*=\s*[\"']?password",
     re.I,
 )
+# 列表那段里有密码输入框：返回的是登录框，不是公开列表（11/12 查缓存里 616 次返回，一次也没有）
+_PASSWORD_INPUT = re.compile(r"type\s*=\s*[\"']?password", re.I)
 _GATE_TEXT = re.compile(
     r"访问被拒绝|拒绝访问|禁止访问|访问受限|非法请求|防火墙|安全防护|access denied|forbidden",
     re.I,
@@ -184,9 +187,10 @@ def _messages(payload: dict) -> str:
 def _payload_refusal(payload: dict) -> str:
     """接口 JSON 返回本身的护栏：不是成功、带权限要求时给原因；可以读给空串。"""
     success, code = payload.get("success"), str(payload.get("code", "200"))
+    messages = _messages(payload)
+    message = messages[:40]
     if success is not True or code != "200":
-        message = _messages(payload)[:40]
-        if _LOGIN_TEXT.search(_messages(payload)):
+        if _LOGIN_TEXT.search(messages):
             return f"列表接口要登录或验证码（{message}）"
         parts = []
         if success is not True:
@@ -197,9 +201,13 @@ def _payload_refusal(payload: dict) -> str:
         if message:
             parts.append(message)
         return f"列表接口返回不是成功（{'，'.join(parts)}）"
-    if _LOGIN_TEXT.search(_messages(payload)):
-        # 标着成功、提示却是要登录：自相矛盾，按要登录处理，不读
-        return f"列表接口要登录或验证码（{_messages(payload)[:40]}）"
+    if _LOGIN_TEXT.search(messages):
+        # 标着成功、提示却是要登录或没权限：自相矛盾，按要登录处理，不读
+        return f"列表接口要登录或验证码（{message}）"
+    inner = payload.get("data")
+    html = inner.get("html") if isinstance(inner, dict) else None
+    if isinstance(html, str) and _PASSWORD_INPUT.search(html):
+        return "列表接口返回的是登录框"
     fields = _permission_fields(payload)
     if fields:
         return f"列表接口返回带权限要求（{'、'.join(fields)} 不为空）"
@@ -214,7 +222,7 @@ def _redirect_words(api_url: str, final: str) -> str:
     if a.netloc.lower() != b.netloc.lower():
         words.append(b.netloc)
     if (a.netloc.lower(), a.path, a.query) != (b.netloc.lower(), b.path, b.query):
-        words.append(f"{b.path}?{b.query}")
+        words.append(f"{b.path}?{b.query}" if b.query else b.path)
     return " ".join(words)
 
 
