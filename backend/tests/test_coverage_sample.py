@@ -835,3 +835,7 @@ def test_upper_level_title_same_name_places() -> None:
     enshi = Source(level="区县级", province="湖北", city="恩施州", district="恩施市")
     assert upper_level_title(enshi, "恩施州人民政府关于促进民营经济发展的意见")
     assert not upper_level_title(enshi, "恩施市人民政府关于促进民营经济发展的意见")
+    # 直辖市：部门记省级，没有市级来源；区县的"城市"填直辖市简称（divisions.py 的约定）
+    dongcheng = Source(level="区县级", province="北京", city="北京", district="东城区")
+    assert upper_level_title(dongcheng, "北京市人民政府关于促进民营经济发展的意见")
+    assert not upper_level_title(dongcheng, "北京市东城区人民政府关于促进民营经济发展的意见")
