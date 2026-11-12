@@ -1,11 +1,13 @@
 """政府文件详情页解析；只保留可从页面直接确认的字段。"""
 
+import functools
 import hashlib
 import re
 from dataclasses import dataclass, field
 from datetime import date
 from html import unescape as unescape_html
 from itertools import chain
+from pathlib import Path
 from urllib.parse import unquote, urljoin, urlsplit
 
 from lxml import etree, html
@@ -60,22 +62,20 @@ _TITLE_ISSUER = re.compile(
     r"(?:厅|局|委|委员会|部|中心|政府|办公室|研究院|院|署|海关|分行|小组)(?:（[^）]{1,20}）)?)"
     r"(?P<etc>\s*等\s*\d{1,2}\s*个?部门)?\s*(?:关于|印发|转发)"
 )
-# 省级区划名；省级以下的地名（"市场""区域"这类词不算）
+# 标题里的机关要是完整的机关名：以省级区划名、地级县级区划名（data/place_names.txt）、"中共"、
+# 中央机关开头，或者是国务院某个部、审计署、海关总署。"张三代表市政府""住房和城乡建设局"这类开头不是
+# 地名的不算
 _PROVINCE = (
     r"(?:北京市|天津市|上海市|重庆市|内蒙古自治区|广西壮族自治区|西藏自治区|宁夏回族自治区"
     r"|新疆维吾尔自治区|(?:河北|山西|辽宁|吉林|黑龙江|江苏|浙江|安徽|福建|江西|山东|河南|湖北|湖南"
     r"|广东|海南|四川|贵州|云南|陕西|甘肃|青海|台湾)省)"
 )
-_SUB_PLACE = re.compile(
-    r"[\u4e00-\u9fff]{1,4}县|[\u4e00-\u9fff]{2,10}自治[州县旗]"
-    r"|[\u4e00-\u9fff]{2,4}(?:市(?!场)|州|盟|地区|区(?!域|划)|旗|镇|乡|街道|海关"
-    r"|经济技术开发区|高新技术产业开发区|高新区|开发区|新区)"
+_CENTRAL_OR_PROVINCE = re.compile(
+    rf"^(?:国务院|中央|全国|国家|中华人民共和国|最高人民(?:法院|检察院)|{_PROVINCE})"
 )
-# 标题里的机关要是完整的机关名：以地名、"中共"、中央机关开头，或者就是国务院某个部、审计署、海关总署
-_ORG_START = re.compile(
-    rf"^(?:中共)?(?:国务院|中央|全国|国家|中华人民共和国|最高人民(?:法院|检察院)|{_PROVINCE}"
-    rf"|{_SUB_PLACE.pattern})"
-)
+_PLACE_NAMES_FILE = Path(__file__).resolve().parents[1] / "data" / "place_names.txt"
+# 地级市简称后面跟这些的也是机关开头（"雅安经济技术开发区管理委员会""南京海关"）
+_ZONE_WORDS = ("经济技术开发区", "高新技术产业开发区", "高新区", "经开区", "开发区", "新区", "海关")
 _MINISTRY = re.compile(
     r"^(?:(?:外交|国防|教育|科学技术|工业和信息化|公安|国家安全|民政|司法|财政|人力资源和社会保障"
     r"|人力资源社会保障|自然资源|生态环境|住房和城乡建设|住房城乡建设|交通运输|水利|农业农村|商务"
@@ -85,25 +85,13 @@ _MINISTRY = re.compile(
 # 市长某某在……"），"关于""转发"（"转发省商务厅关于……""关于转发财政部关于……"）
 _NOT_ORG = re.compile(
     r"主持|召开|出席|会见|会谈|调研|考察|视察|看望|慰问|会议|座谈|讲话|指出|强调|听取|部署"
-    r"|带队|走访|督导|批示|签署|致信|致电|发表|同志|关于|转发|印发|贯彻|落实|在"
+    r"|带队|走访|批示|签署|致信|致电|发表|同志|关于|转发|印发|贯彻|落实|在|代表"
     r"|市长|县长|区长|省长|州长|部长|厅长|局长|书记|主任|主席|总理|委员长"
 )
 # 只写了部门内设机构的名字，不是发文机关（"发布机构：信息中心"、来源写"办公室"）
 _GENERIC_ISSUERS = frozenset(
     {"信息中心", "办公室", "网站管理中心", "政务公开办公室", "政务服务中心", "大数据中心"}
 )
-# 转载上级文件：发布机构是市县区的单位、页面来源是省级机关，而且文号用的是这个省的简称（攀枝花市
-# 文广旅局网站上的"川文旅规"文件）。省级机关：省级区划名后面不再有市县区
-_PROVINCIAL = re.compile(rf"^(?P<province>{_PROVINCE})(?P<rest>.+)$")
-_PROVINCE_SUFFIX = re.compile(r"(?:省|市|壮族自治区|回族自治区|维吾尔自治区|自治区)$")
-_PROVINCE_ABBR = {
-    "北京": "京", "天津": "津", "河北": "冀", "山西": "晋", "内蒙古": "蒙", "辽宁": "辽",
-    "吉林": "吉", "黑龙江": "黑", "上海": "沪", "江苏": "苏", "浙江": "浙", "安徽": "皖",
-    "福建": "闽", "江西": "赣", "山东": "鲁", "河南": "豫", "湖北": "鄂", "湖南": "湘",
-    "广东": "粤", "广西": "桂", "海南": "琼", "重庆": "渝", "四川": "川蜀", "贵州": "黔贵",
-    "云南": "云滇", "西藏": "藏", "陕西": "陕秦", "甘肃": "甘陇", "青海": "青", "宁夏": "宁",
-    "新疆": "新",
-}  # fmt: skip
 _DATE = re.compile(r"20\d{2}\s*(?:年|[-/.])\s*\d{1,2}\s*(?:月|[-/.])\s*\d{1,2}\s*日?")
 # qr_container：常见的"扫一扫在手机打开当前页"二维码块（四川科技厅、江苏工信厅放在正文区里）
 _JUNK_CLASS = re.compile(
@@ -966,8 +954,7 @@ def _issuer(lines: list[str], root: etree._Element, prefix: str) -> str | None:
     for match in _PUBLISHER_LABEL.finditer(prefix):
         value = match.group(1).strip()
         if _is_agency(value):
-            number = _doc_number(lines, root, prefix)
-            return _republished_from(value, root, number) or normalize_issuer(value)
+            return normalize_issuer(value)
     for name in ("issuer", "publishingorganization", "contentSource"):
         value = (_metadata(root, name) or "").strip()
         if len(value) <= 60 and _is_agency(value):
@@ -993,35 +980,33 @@ def _title_issuer(root: etree._Element) -> str | None:
 
 
 def _full_agency(name: str) -> bool:
-    """以地名、"中共"、中央机关开头的完整机关名，或者某某部、某某总署。缺地名的简称（"市政府办公室"
-    "省财政厅"）、内设机构（"办公室"）、带会议讲话字样的新闻标题都不算。"""
+    """以地名、"中共"、中央机关开头的完整机关名，或者国务院某个部、审计署、海关总署。缺地名的简称
+    （"市政府办公室""省财政厅"）、内设机构（"办公室"）、带会议讲话字样的新闻标题都不算。"""
     return (
         name not in _GENERIC_ISSUERS
         and not _NOT_ORG.search(name)
         and bool(_AGENCY_END.search(name) or name.endswith("小组"))
-        and bool(_ORG_START.match(name) or _MINISTRY.match(name))
+        and (_starts_with_place(name) or bool(_MINISTRY.match(name)))
     )
 
 
-def _is_local(name: str) -> bool:
-    """市县区的单位：去掉开头的省级区划名以后还有市县区（"北京市东城区……"是，"北京市科委""四川省
-    市场监督管理局"不是；没有地名的"市场监督管理局"也不是）。"""
-    match = _PROVINCIAL.match(name)
-    return bool(_SUB_PLACE.search(match.group("rest") if match else name))
+@functools.cache
+def _place_names() -> tuple[frozenset[str], frozenset[str]]:
+    """地级、县级区划名（加自治州、自治县、自治旗的简称），和"某某市"去掉"市"的简称。"""
+    lines = _PLACE_NAMES_FILE.read_text(encoding="utf-8").splitlines()
+    names = frozenset(n for line in lines if (n := line.strip()) and not n.startswith("#"))
+    return names, frozenset(n[:-1] for n in names if n.endswith("市") and len(n) >= 3)
 
 
-def _republished_from(publisher: str, root: etree._Element, number: str | None) -> str | None:
-    """转载的上级文件：发布机构是市县区的单位、页面来源（contentSource）是省级机关，而且文号用的是
-    这个省的简称（攀枝花市文广旅局网站上的"川文旅规〔2026〕3号"，来源四川省文化和旅游厅）。没有文号
-    作证的（比如本地写的政策解读）照旧用发布机构。"""
-    source = (_metadata(root, "contentSource") or "").strip()
-    if not number or not source or len(source) > 60 or source == publisher:
-        return None
-    match = _PROVINCIAL.match(source)
-    if not match or not _is_agency(source) or _is_local(source) or not _is_local(publisher):
-        return None
-    province = _PROVINCE_SUFFIX.sub("", match["province"])
-    return normalize_issuer(source) if number[0] in _PROVINCE_ABBR.get(province, "") else None
+def _starts_with_place(name: str) -> bool:
+    name = name.removeprefix("中共")
+    if _CENTRAL_OR_PROVINCE.match(name):
+        return True
+    places, cities = _place_names()
+    for k in range(2, min(len(name), 12) + 1):
+        if name[:k] in places or (name[:k] in cities and name[k:].startswith(_ZONE_WORDS)):
+            return True
+    return False
 
 
 def _split_issuer_line(line: str) -> str:
