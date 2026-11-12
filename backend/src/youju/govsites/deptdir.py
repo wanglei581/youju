@@ -30,7 +30,6 @@ from collections import Counter
 from typing import TYPE_CHECKING
 from urllib.parse import urljoin, urlsplit
 
-from youju.crawler.adapters import GKMLPT_MAX_CATEGORIES
 from youju.govsites.links import REPORT_WORDS, Link, registrable
 from youju.govsites.names import column_kind, dept_categories, looks_like_org
 from youju.govsites.platform import URL_SHAPES
@@ -247,8 +246,6 @@ _GKML_TREE = re.compile(r"\bTREE\s*:\s*(?=\[)")
 GKMLPT_KEY = "gkmlpt-"
 # "政策"一类父分类下当政策文件读的叶子（全国覆盖主线 11/13 定）：解读和别的子分类不读
 _GKMLPT_POLICY_LEAVES = frozenset({"规范性文件", "其他文件", "其它文件", "部门文件"})
-# 一个栏目最多合读几个分类（父分类加叶子）：就是适配器认的上限
-_GKMLPT_MAX_IDS = GKMLPT_MAX_CATEGORIES
 
 
 def gkmlpt_tree_categories(text: str) -> list[tuple[str, str]]:
@@ -258,10 +255,11 @@ def gkmlpt_tree_categories(text: str) -> list[tuple[str, str]]:
     部门文件这几个叶子的：平台读父分类有时只给挂在它上面的几条、有时混进解读，所以改给一个合读的
     分类（名称照父分类，键"gkmlpt-p父分类编号,叶子编号,…"）：父分类只取直接挂在它上面的条目，
     再加这几个叶子；这几个叶子也不单独给，解读和别的子分类不读。叶子自己下面还有分类的整个读（肇庆
-    "规范性文件"下分现行有效、失效废止）；下面（任意深）有名称带"解读"的，这个叶子也只取直接挂在
-    它上面的（"p叶子编号"；深圳科创"其他文件"下挂着政策解读）。没有这类叶子的父分类照旧给父分类
-    本身。连父分类超过 GKMLPT_MAX_CATEGORIES 个的不截断：照样全写上，适配器不认这个键，试读记
-    待人工处理、不进导入清单（11/13 缓存的 198 个部门页里没有这种）。
+    "规范性文件"下分现行有效、失效废止）；下面（任意深）有名称带"解读"的，见 _leaf_parts：这个叶子
+    只取直接挂在它上面的（"p叶子编号"；深圳科创"其他文件"下挂着政策解读），解读那一支不读，别的
+    下级分支照样读。没有这类叶子的父分类照旧给父分类本身。合读的分类超过 GKMLPT_MAX_CATEGORIES 个
+    的不截断：照样全写上，适配器不认这个键，试读记待人工处理、不进导入清单（11/13 缓存的 198 个
+    部门页里没有这种）。
 
     只读第 1 页（D-013，照平台脚本）：两次抓取之间下级分类新发超过一页时，直接挂在父分类上的新文件
     可能被挤出第 1 页，这是已知限制。"""
@@ -308,17 +306,41 @@ def gkmlpt_tree_categories(text: str) -> list[tuple[str, str]]:
         if isinstance(name, str) and isinstance(nid, int) and not node.get("jump_url"):
             # 父分类本身也读，但只要直接挂在它上面的条目（p 编号）：有的部门把政策直接挂在父分类上，
             # 叶子里没几条（汕头发改 134 条里 83 条直接挂在"政策"上）
-            leaves = ",".join(
-                f"p{child['id']}" if _has_reading(child) else str(child["id"]) for child in selected
-            )
-            ids = f"p{nid},{leaves}" if selected else str(nid)
+            parts, seen = [f"p{nid}"], {nid}
+            for child in selected:
+                for part in _leaf_parts(child):
+                    # 同一个编号只要一次（分类树偶有重复的节点）
+                    if int(part.removeprefix("p")) not in seen:
+                        seen.add(int(part.removeprefix("p")))
+                        parts.append(part)
+            ids = ",".join(parts) if selected else str(nid)
             out.append((name.strip(), f"{GKMLPT_KEY}{ids}"))
         for child in children:
             if child in selected:
                 if isinstance(child.get("children"), list):
-                    stack.extend(child["children"])
+                    stack.extend(c for c in child["children"] if isinstance(c, dict))
             elif isinstance(child, dict):
                 stack.append(child)
+    return out
+
+
+def _leaf_parts(node: dict) -> list[str]:
+    """一个选中的叶子要合读的分类："编号"整个读，"p编号"只取直接挂在它上面的。下面（任意深）没有
+    名称带"解读"的分类，整个读；有的，这个分类只取直接挂在它上面的，它的每个下级分类再照同样的办法
+    ——名称带"解读"的那一支不读，跳到别处的、编号认不出的也不读，别的下级分支照样读。"""
+    if not _has_reading(node):
+        return [str(node["id"])]
+    out = [f"p{node['id']}"]
+    children = node.get("children")
+    for child in children if isinstance(children, list) else []:
+        if (
+            not isinstance(child, dict)
+            or type(child.get("id")) is not int
+            or child.get("jump_url")
+            or (isinstance(child.get("name"), str) and "解读" in child["name"])
+        ):
+            continue
+        out.extend(_leaf_parts(child))
     return out
 
 

@@ -605,8 +605,8 @@ def test_gkmlpt_inventory_keys_are_recognised_by_the_adapter():
 
 
 def test_gkmlpt_policy_leaf_with_children():
-    # 叶子下面还有分类：整个读（现行有效、失效废止都是规范性文件）；下面（任意深）挂着解读的，
-    # 只取直接挂在这个叶子上的（p）
+    # 叶子下面还有分类：没有解读的整个读（现行有效、失效废止都是规范性文件）；下面（任意深）挂着
+    # 解读的，这个叶子只取直接挂在它上面的（p），解读那一支不读，别的下级分支照样读
     from youju.crawler.adapters import find_list_api
 
     def node(nid, name, children=None):
@@ -618,13 +618,16 @@ def test_gkmlpt_policy_leaf_with_children():
             "政策",
             [
                 node(2, "规范性文件", [node(20, "现行有效"), node(21, "失效废止")]),
-                node(3, "其他文件", [node(30, "市级文件", [node(31, "政策解读")])]),
-                node(4, "部门文件"),
+                node(
+                    3, "其他文件", [node(30, "市级文件", [node(31, "政策解读")]), node(32, "图解")]
+                ),
             ],
-        )
+        ),
+        node(5, "政策", [node(6, "规范性文件", [node(60, "现行有效"), node(61, "政策解读")])]),
     ]
     categories = gkmlpt_tree_categories("TREE: " + json.dumps(tree) + "}")
-    assert ("政策", "gkmlpt-p1,2,p3,4") in categories
+    assert ("政策", "gkmlpt-p1,2,p3,p30,32") in categories
+    assert ("政策", "gkmlpt-p5,p6,60") in categories
     # 叶子的下级分类照旧单独给（盘点按名称挑栏目时用不上）
     assert ("现行有效", "gkmlpt-20") in categories and ("政策解读", "gkmlpt-31") in categories
     page = (
@@ -632,10 +635,27 @@ def test_gkmlpt_policy_leaf_with_children():
         "ENV: 'production', TREE: " + json.dumps(tree) + "};</script>"
     )
     url = "https://www.sg.gov.cn/fgj/gkmlpt/index"
-    found = find_list_api(page, url, f"{url}#xxgk-gkmlpt-p1,2,p3,4")
+    found = find_list_api(page, url, f"{url}#xxgk-gkmlpt-p1,2,p3,p30,32")
     assert [(p.category_id, p.direct_only) for p in found.parts] == [
         (1, True),
         (2, False),
         (3, True),
-        (4, False),
+        (30, True),
+        (32, False),
     ]
+
+
+def test_gkmlpt_policy_expanded_over_the_limit_is_left_for_manual_handling():
+    # 去掉解读分支以后要合读的分类超过上限：照样全写上，适配器不认，试读记待人工处理
+    from youju.crawler.adapters import gkmlpt_categories
+
+    def node(nid, name, children=None):
+        return {"id": nid, "name": name, "children": children or [], "jump_url": ""}
+
+    leaf = node(
+        2, "其他文件", [node(20 + i, f"分册{i}") for i in range(4)] + [node(29, "政策解读")]
+    )
+    categories = gkmlpt_tree_categories("TREE: " + json.dumps([node(1, "政策", [leaf])]) + "}")
+    assert ("政策", "gkmlpt-p1,p2,20,21,22,23") in categories
+    url = "https://www.sg.gov.cn/fgj/gkmlpt/index#xxgk-gkmlpt-p1,p2,20,21,22,23"
+    assert gkmlpt_categories(url) is None

@@ -853,3 +853,30 @@ def test_gkmlpt_second_category_blank_is_read_nothing_naming_it(session):
     assert "分类 6：" in check.error and fetcher.requested == [url, first, second]
     session.refresh(source)
     assert "list_api_refused" not in source.parser_config
+
+
+def test_gkmlpt_later_direct_category_end_to_end(session):
+    # p 写在后面的编号前：正式抓取照样一个一个取，后面那个分类只收直接挂在它上面的
+    import json
+
+    html, payload, page_url, first, single_url = _gkmlpt_fixture()
+    url = single_url + ",p8350"
+    second = "https://www.sg.gov.cn/fgj/gkmlpt/api/all/8350?page=1&sid=751012"
+    body = json.loads(payload)
+    body["classify"]["id"] = 8350
+    for n, (row, main) in enumerate(zip(body["articles"], (8350, 6, 8350, 7, 6), strict=True)):
+        row["classify_main"] = main
+        row["url"] = f"http://www.sg.gov.cn/fgj/gkmlpt/content/9/{n}/post_{n}.html"
+    source = make_source(session, url)
+    source.parser_config = {"list_api_open": "数字广东gkmlpt"}
+    session.commit()
+    fetcher = RecordingFetcher(
+        {
+            url: [page(page_url, html)],
+            first: [page(first, payload)],
+            second: [page(second, json.dumps(body))],
+        }
+    )
+    check = check_source(session, source, fetcher, today=date(2026, 11, 12))
+    assert (check.status, check.items_found) == ("ok", 7)
+    assert fetcher.requested == [url, first, second]
