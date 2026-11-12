@@ -182,11 +182,19 @@ _GATE_PHRASE = re.compile(
     r"请完成安全验证|滑块验证|拖动滑块"
 )
 _GATE_TEXT = re.compile(
-    r"访问被拒绝|拒绝访问|禁止访问|访问受限|非法请求|防火墙|安全防护|access denied|forbidden",
+    r"访问被拒绝|拒绝访问|禁止访问|访问受限|非法请求|防火墙|安全防护|访问被拦截|访问被阻断|已被拦截|"
+    r"访问过于频繁|请求过于频繁|access denied|forbidden",
     re.I,
 )
 _TAGS = re.compile(r"<script\b.*?</script>|<style\b.*?</style>|<[^>]+>|\s+", re.S | re.I)
-_MAINTENANCE = re.compile(r"系统维护|升级中|暂停服务|稍后再试|系统繁忙")
+# 维护页的说法：只认明写维护、升级、暂停服务的（"稍后再试""系统繁忙"拦截页也常这样写，不算）
+_MAINTENANCE = re.compile(r"系统维护|升级中|暂停服务")
+# 页面里有脚本、跳转、表单、内嵌页这类会动的东西：不当空白页、维护页（登录跳转、防护挑战页常这样）
+_ACTIVE = re.compile(r"<(?:script|meta|iframe|frame|form|input|object|embed|noscript)\b", re.I)
+# 空白页只剩这些外壳
+_SHELL = re.compile(
+    r"<!--.*?-->|</?(?:html|head|body|div|span|p|br|title|center|h\d)\b[^>]*>", re.S | re.I
+)
 # 去掉脚本、样式和标签（留着空白，"access denied"这类照样认得出）
 _MARKUP = re.compile(r"<script\b.*?</script>|<style\b.*?</style>|<[^>]+>", re.S | re.I)
 _LINK = re.compile(r"<a\s[^>]*href=", re.I)
@@ -327,6 +335,24 @@ def _redirect_words(api_url: str, final: str) -> str:
     return " ".join(words)
 
 
+def _retry_later(text: str) -> bool:
+    """不是 JSON 的返回里，算"这次没取到、下次再试"（照样不读）的：整页很少字、链接也少（不是网站
+    模板），没有脚本、跳转、表单这类会动的东西，没有任何登录、验证、权限、拦截字样，也不是防护页，
+    而且是真空白或明写维护的页面。别的认不出的返回一律记不能抓，免得把关卡当成维护页反复去请求。"""
+    from youju.govsites.platform import blocker
+
+    head = text[:200000]
+    if not _bare_page(head) or _ACTIVE.search(head) or _PASSWORD_INPUT.search(head):
+        return False
+    plain = html_lib.unescape(_MARKUP.sub(" ", head))
+    if any(p.search(plain) for p in (_LOGIN_TEXT, _GATE_TEXT, _GATE_PHRASE, _LIST_HINT)):
+        return False
+    if blocker("ok", 200, head):
+        return False
+    blank = not html_lib.unescape(_SHELL.sub("", head)).strip()
+    return blank or bool(_MAINTENANCE.search(plain))
+
+
 def api_refusal(api: ListApi, result) -> str:
     """读取护栏（D-128）：列表接口这次的返回要不要记"不能抓"、不读。给原因；可以读给空串。
 
@@ -361,14 +387,7 @@ def api_refusal(api: ListApi, result) -> str:
             return "列表接口要登录或验证码"
         if bare and (_GATE_TEXT.search(head) or _GATE_PHRASE.search(head)):
             return "列表接口返回拦截页面"
-        # 只有整页很少字、链接也少（不是网站模板）的空白页、维护页，算这次没取到、下次再试
-        # （照样不读）；页面上有任何登录、验证、权限、拦截字样的照旧不能抓，免得把关卡当成
-        # 维护页反复去请求
-        plain = html_lib.unescape(_MARKUP.sub(" ", text))
-        gated = _PASSWORD_INPUT.search(text) or any(
-            pattern.search(plain) for pattern in (_LOGIN_TEXT, _GATE_TEXT, _GATE_PHRASE, _LIST_HINT)
-        )
-        if bare and not gated and (not plain.strip() or _MAINTENANCE.search(plain)):
+        if _retry_later(text):
             return ""
         return "列表接口返回认不出（不是 JSON）"
     return _payload_refusal(payload)

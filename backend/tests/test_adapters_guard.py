@@ -161,15 +161,33 @@ def test_login_captcha_or_gate_page_is_refused():
 
 @pytest.mark.parametrize(
     "text",
-    ["", "<html><body>&nbsp; </body></html>", "<script>busy()</script>"]
-    + [
-        f"<html><body>{word}</body></html>"
-        for word in ("系统维护", "升级中", "暂停服务", "稍后再试", "系统繁忙")
-    ],
+    ["", "<html><body>&nbsp; </body></html>", "<html><!-- 空 --><body><p> </p></body></html>"]
+    + [f"<html><body>{word}</body></html>" for word in ("系统维护中", "系统升级中", "暂停服务")],
 )
 def test_blank_or_maintenance_is_retryable_but_not_read(text):
     api = _api()
     assert api_refusal(api, _got(text)) == ""
+    assert api_html(api, text) == ""
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # 独立 Claude 审阅：只有脚本、跳转、防护挑战的页面不算空白页，照样不能抓
+        "<script>busy()</script>",
+        "<script>location.href='/cas/login'</script>",
+        '<meta http-equiv=refresh content="0;url=/cas/login">',
+        "<html><head><script>$_ts=window['$_ts']||{};</script></head><body></body></html>",
+        # "稍后再试""系统繁忙"拦截页也常这样写，不算维护页
+        "<html><body>请稍后再试</body></html>",
+        "<html><body>系统繁忙</body></html>",
+        "<html><body>访问被拦截，请稍后再试</body></html>",
+        "<html><body>您的访问被阻断，请稍后再试</body></html>",
+    ],
+)
+def test_scripts_redirects_and_block_pages_are_never_retried(text):
+    api = _api()
+    assert api_refusal(api, _got(text))
     assert api_html(api, text) == ""
 
 
