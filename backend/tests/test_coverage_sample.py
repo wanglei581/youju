@@ -480,7 +480,10 @@ def _city_evidence(folder, province, cells, sample, *, level="市级", body=(60,
     record.unlink(missing_ok=True)
     if log is not None:
         record.parent.mkdir(exist_ok=True)
-        rows = "".join(f"{lay},{r},{seed},2026-11-12,{proof}\n" for lay, r, seed, proof in log)
+        rows = "".join(
+            f"{lay},{r},{seed},{rest[1] if len(rest) > 1 else '2026-11-12'},{rest[0]}\n"
+            for lay, r, seed, *rest in log
+        )
         record.write_text("层,次数,种子,日期,凭据\n" + rows, encoding="utf-8-sig")
     lines = []
     for n in range(cells):
@@ -581,6 +584,21 @@ def test_city_sample_round_evidence(tmp_path):
     assert "整省逐格排查" in result(fourth).sample_note() and not result(fourth).accepted
     eleventh = [(100 + n, "联网核对第十一次", "通过") for n in range(60)]
     assert result(eleventh).sample_lines[0].round == 11 and not result(eleventh).accepted
+    # 次数认不出（"第2回"、记录里次数空着）：不放，不会退回第 1 次
+    odd = [(n, "联网核对第2回", "通过") for n in range(40)]
+    assert "认不出" in result(odd, log=[("部门", "1", "s1", "")]).sample_note()
+    assert (
+        "认不出"
+        in result(first, log=[("部门", "1", "s1", ""), ("部门", "", "s2", "")]).sample_note()
+    )
+    # 记录里已经记了第 2 次、证据表还没填：按第 2 次算，不再按第 1 次放
+    ahead = [("部门", "1", "s1", ""), ("部门", "2", "s2", "改了列表规则")]
+    line = result(first, log=ahead).sample_lines[0]
+    assert (line.round, line.judged) == (2, 0) and not result(first, log=ahead).accepted
+    # 日期要写对；以前那次证据表里写的种子也要和记录对上
+    assert "日期不对" in result(first, log=[("部门", "1", "s1", "", "")]).sample_note()
+    old_seed = [(n, w, v, "种子：s7") for n, w, v in four] + redraw[40:]
+    assert "第 1 次写的种子" in result(old_seed).sample_note()
 
 
 def test_city_sample_counts_cells(tmp_path):
@@ -626,12 +644,16 @@ def test_county_sample_two_layers(tmp_path):
 
 
 def test_province_level_keeps_full_check(tmp_path):
-    """国家级、省级照旧全检：不要抽样线，也不要正文能读率门。"""
+    """国家级、省级照旧全检：不要抽样线，也不要正文能读率门；有联网核对行时，空着的复核结论照旧
+    按自动结论算（"只认人工结论"只用在地市、区县）。"""
     from youju.govsites.sample import evidence_results
 
     _city_evidence(tmp_path, "浙江", 10, [], level="省级", body=None)
     [res] = evidence_results(tmp_path)
     assert res.accepted and res.sample_note() == ""
+    _city_evidence(tmp_path, "浙江", 10, [(n, "联网核对", "") for n in range(3)], level="省级")
+    [res] = evidence_results(tmp_path)
+    assert res.sample_judged == 3 and res.sample_rate == 1.0 and res.accepted
 
 
 def test_city_personal_flag(session):

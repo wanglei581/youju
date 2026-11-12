@@ -476,27 +476,38 @@ MAX_ROUNDS = 3
 ROUND_FIELDS = ("层", "次数", "种子", "日期", "凭据")
 _SEED = re.compile(r"种子\s*[:：=]?\s*([0-9A-Za-z][0-9A-Za-z_.\-]*)")
 LINE_LEVELS = frozenset(level for level, _ in SAMPLE_LINES)
-_SAMPLE_ROUND = re.compile(r"^联网核对(?:第\s*([0-9一二三四五六七八九十百]+)\s*次)?")
 _CN_DIGITS = "一二三四五六七八九"
+UNKNOWN_ROUND = 999  # 次数认不出：当成超过 MAX_ROUNDS，不放
 
 
-def _round_number(text: str | None) -> int:
-    """ "联网核对"后面的"第N次"：没写是第 1 次；阿拉伯数字和"二""十一""二十三"这样的中文数字都认，
-    认不出的当第 999 次（超过 MAX_ROUNDS，不放）。"""
-    if not text:
-        return 1
+def _count(text: str) -> int:
+    """次数：阿拉伯数字和"二""十一""二十三"这样的中文数字；认不出（含空的）是 UNKNOWN_ROUND。"""
+    text = text.strip()
     if text.isdigit():
         return int(text)
     m = re.fullmatch(f"([{_CN_DIGITS}]?)(十?)([{_CN_DIGITS}]?)", text)
     if not m or not text:
-        return 999
+        return UNKNOWN_ROUND
     tens, ten, ones = m.groups()
     if not ten:  # 一位数："二"会落在第一组
         digit = tens or ones
-        return _CN_DIGITS.index(digit) + 1 if digit and not (tens and ones) else 999
+        return _CN_DIGITS.index(digit) + 1 if digit and not (tens and ones) else UNKNOWN_ROUND
     return (_CN_DIGITS.index(tens) + 1 if tens else 1) * 10 + (
         _CN_DIGITS.index(ones) + 1 if ones else 0
     )
+
+
+def _sample_round(who: str) -> int | None:
+    """复核人是联网核对的第几次：只写"联网核对"是第 1 次，"联网核对第N次"是第 N 次；后面写了别的、
+    次数认不出的是 UNKNOWN_ROUND（不放，不会退回第 1 次）；不是联网核对的行是 None。"""
+    who = who.strip()
+    if not who.startswith("联网核对"):
+        return None
+    rest = who.removeprefix("联网核对").strip()
+    if not rest:
+        return 1
+    m = re.fullmatch(r"第\s*(\S+?)\s*次", rest)
+    return _count(m.group(1)) if m else UNKNOWN_ROUND
 
 
 def _layer(level: str, dept: str) -> str:
@@ -558,7 +569,7 @@ class ProvinceResult:
     # 联网核对每层每次抽到的格 → 这一格的结论（"不通过"、"未完"、"通过"），和证据表里写的种子
     rounds: dict[tuple[str, int], dict] = field(default_factory=dict)
     seeds: dict[tuple[str, int], set] = field(default_factory=dict)
-    # 抽查/<层级>/联网核对/<省>.csv 的各行：(层, 第几次) → [(种子, 凭据)]
+    # 抽查/<层级>/联网核对/<省>.csv 的各行：(层, 第几次) → [(种子, 日期, 凭据)]
     round_log: dict[tuple[str, int], list] = field(default_factory=dict)
     # 正文能读率门（地市、区县；govsites/bodygate.py）：抽了几份、能读几份；还没测是 None
     body: tuple[int, int] | None = None
@@ -571,7 +582,11 @@ class ProvinceResult:
             line = SAMPLE_LINES.get((self.level, layer))
             if line is None:
                 continue
-            latest = max((n for lay, n in self.rounds if lay == layer), default=0)
+            # 最近一次：证据表和联网核对记录里最大的那次（记录里已经记了重抽、证据表还没填，
+            # 按重抽算：0 格有结论，不放）
+            latest = max(
+                (n for lay, n in (*self.rounds, *self.round_log) if lay == layer), default=0
+            )
             got = self.rounds.get((layer, latest), {})
             need, allow = line if latest <= 1 else REDRAW_LINE
             need = min(need, len(self.cells[layer]))
@@ -585,6 +600,8 @@ class ProvinceResult:
     def _problem(self, layer: str, latest: int) -> str:
         """最近一次联网核对的凭据（看联网核对记录）：次数没超；第 1 次到这一次每次各记一行、写了
         种子，种子都不一样，重抽写了凭据；证据表里写了种子的，要和记录里这一次的对上。"""
+        if latest == UNKNOWN_ROUND:
+            return '复核人或联网核对记录里的次数认不出（写"联网核对"或"联网核对第N次"）'
         if latest > MAX_ROUNDS:
             return f"重抽两次还不过，要整省逐格排查（第 {latest} 次不算）"
         used: dict[str, int] = {}
@@ -594,17 +611,20 @@ class ProvinceResult:
                 what = "没有" if not logged else "记了几遍"
                 where = f"抽查/{self.level}/联网核对/{self.province}.csv"
                 return f"联网核对记录里第 {n} 次{what}（{where}）"
-            seed, proof = logged[0]
+            seed, day, proof = logged[0]
             if not seed:
                 return f"联网核对记录里第 {n} 次没写种子"
+            if not _is_date(day):
+                return f"联网核对记录里第 {n} 次的日期不对（写成 2026-11-12 这样）"
             if seed in used:
                 return f"第 {n} 次的种子 {seed} 第 {used[seed]} 次用过，重抽要换种子"
             used[seed] = n
             if n > 1 and not proof:
                 return f"第 {n} 次重抽没写凭据（改了哪条规则、那类问题清零了）"
-        written = self.seeds.get((layer, latest), set())
-        if written and written != {self.round_log[(layer, latest)][0][0]}:
-            return f"证据表里写的种子（{'、'.join(sorted(written))}）和联网核对记录对不上"
+            written = self.seeds.get((layer, n), set())
+            if written and written != {seed}:
+                shown = "、".join(sorted(written))
+                return f"证据表里第 {n} 次写的种子（{shown}）和联网核对记录（{seed}）对不上"
         return ""
 
     @property
@@ -678,9 +698,17 @@ def unknown_verdicts(folder) -> list[str]:
     return out
 
 
+def _is_date(text: str) -> bool:
+    try:
+        date.fromisoformat(text)
+    except ValueError:
+        return False
+    return True
+
+
 def read_round_log(folder, province: str) -> dict[tuple[str, int], list]:
-    """读 <抽查/层级>/联网核对/<省>.csv：(层, 第几次) → [(种子, 凭据)]（同一次记了几遍就有
-    几项）。"""
+    """读 <抽查/层级>/联网核对/<省>.csv：(层, 第几次) → [(种子, 日期, 凭据)]（同一次记了几遍就有
+    几项；次数空着、认不出的记成 UNKNOWN_ROUND）。"""
     import csv
     from pathlib import Path
 
@@ -691,9 +719,9 @@ def read_round_log(folder, province: str) -> dict[tuple[str, int], list]:
     with path.open(encoding="utf-8-sig", newline="") as fh:
         for r in csv.DictReader(fh):
             layer = (r.get("层") or "").strip() or "部门"
-            key = (layer, _round_number((r.get("次数") or "").strip() or None))
+            key = (layer, _count(r.get("次数") or ""))
             out.setdefault(key, []).append(
-                ((r.get("种子") or "").strip(), (r.get("凭据") or "").strip())
+                tuple((r.get(k) or "").strip() for k in ("种子", "日期", "凭据"))
             )
     return out
 
@@ -714,16 +742,18 @@ def evidence_results(folder) -> list[ProvinceResult]:
                 layer = _layer(res.level, (r.get("部门") or "").strip())
                 cell = tuple((r.get(k) or "").strip() for k in ("城市", "区县", "部门"))
                 res.cells.setdefault(layer, set()).add(cell)
-                m = _SAMPLE_ROUND.match((r.get("复核人") or "").strip())
-                if m:
-                    # 抽样只认人工写的复核结论：空着的不会退回自动结论
-                    review = verdict if (r.get("复核结论") or "").strip() else ""
+                n_round = _sample_round(r.get("复核人") or "")
+                if n_round is not None:
+                    # 地市、区县的抽样只认人工写的复核结论：空着的不会退回自动结论。国家级、省级照旧
+                    # （全检，抽样过八成那条看最终结论）
+                    manual = (r.get("复核结论") or "").strip() or res.level not in LINE_LEVELS
+                    review = verdict if manual else ""
                     if review in ("通过", "不通过", "不收"):
                         res.sample_judged += 1
                         res.sample_ok += review != "不通过"
                     # 按格算：一格里有一行不通过就不通过；还有待重试、不能抓、没写结论的行就"未完"
                     # （不算样本，要补抽）；都通过或不收才算通过。只要写了这一次，就算有这一次
-                    key = (layer, _round_number(m.group(1)))
+                    key = (layer, n_round)
                     state = (
                         "不通过"
                         if review == "不通过"
