@@ -1184,6 +1184,43 @@ def test_empty_body_is_not_recomputed_every_round(session, world):
     assert refresh_signals(session, today=NOW.date(), stamp=NOW + timedelta(hours=12)).computed == 0
 
 
+@pytest.mark.parametrize(
+    ("raw", "number"),
+    [
+        ("工信厅联电子函〔2026〕376号", "工信厅联电子函〔2026〕376号"),
+        ("工信厅联电子函[2026]0376号", "工信厅联电子函〔2026〕376号"),
+        (" 工信厅联电子函（2026） 376 号", "工信厅联电子函〔2026〕376号"),
+        ("工信厅联电子函〔2026〕376号、377号", None),
+        ("（工信厅联电子函〔2026〕376号）", None),
+        ("", None),
+        (None, None),
+    ],
+)
+def test_own_number_is_written_like_cited_numbers(raw, number):
+    from youju.repost import own_number
+
+    assert own_number(raw) == number
+
+
+def test_signals_store_the_document_own_number(session):
+    # 部里原件自己的发文字号（详情里页面元数据或正文头上的）存进正文信号，候选里带着
+    from youju.repost import load_candidates
+
+    doc = _doc(
+        session,
+        _source(session, "陕西"),
+        "关于组织开展2026年度视听系统典型案例征集工作的通知",
+        day=7,
+        body="各有关单位：现将有关事项通知如下。",
+    )
+    session.get(DocumentDetail, doc.id).doc_number = "工信厅联电子函[2026]376号"
+    session.flush()
+    refresh_signals(session, today=NOW.date(), stamp=NOW)
+    assert session.get(RepostSignal, doc.id).own_number == "工信厅联电子函〔2026〕376号"
+    found = {c.id: c for c in load_candidates(session, NOW.date())}
+    assert found[doc.id].own_number == "工信厅联电子函〔2026〕376号"
+
+
 def test_old_document_pulled_in_by_a_late_one_gets_its_signals_first(session):
     # 新来源回填几个月前的文件、归组范围往前放：放进来的老文件（迁移补的空行，正文信号空着）这一轮
     # 先算出正文信号再参加归组——靠两边引用同一个文号才连得上的照样连上

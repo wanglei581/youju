@@ -314,8 +314,9 @@ class DocumentMerge(Base):
 class RepostSignal(Base):
     """转发归组的正文信号（D-129 ②"归组改增量"，见 youju/repost.py refresh_signals）。
 
-    正文前 1500 字里引用的上游文号（cited）、正文写明转发（body_forward）、有没有正文（has_body）
-    每份文件算一次存起来，以后只在详情重抓（document_details.fetched_at 比 body_at 新）时重算。
+    正文前 1500 字里引用的上游文号（cited）、正文写明转发（body_forward）、有没有正文（has_body）、
+    自己的发文字号（own_number，部里的原件按它对上转发件引用的文号）每份文件算一次存起来，以后只在
+    详情重抓（document_details.fetched_at 比 body_at 新）时重算。
     有这一行也表示归组程序处理过这份文件：同步据此让新文件等归组跑完再推（只看有没有这一行）。
     只在本机用：不进公开快照、不同步。grouped_at 是第一次处理的时间，以后不改。"""
 
@@ -327,6 +328,7 @@ class RepostSignal(Base):
     cited: Mapped[list] = mapped_column(JSONType, default=list)
     body_forward: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     has_body: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    own_number: Mapped[str | None] = mapped_column(String(64))
     body_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     grouped_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
     computed_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)

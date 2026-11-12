@@ -199,6 +199,21 @@ def cited_upstream(body_head: str, publish_year: int | None) -> list[Cited]:
     return found
 
 
+# 文件自己的发文字号整句（详情 doc_number：页面元数据或正文头上的，见 crawler/detail.py）
+_OWN_NUMBER = re.compile(r"([一-龥A-Za-z]{1,16})[〔\[［(（【](\d{4})[〕\]］)）】](\d{1,5})号")
+
+
+def own_number(doc_number: str | None) -> str | None:
+    """这份文件自己的发文字号（详情里页面元数据或正文头上的），按引用文号（cited_upstream）同一个
+    写法统一：去掉空白，年份的括号一律写成〔〕，序号去掉前面的 0。整句不正好是一个文号的给 None。
+    部里的原件不引用自己，归组靠它对上转发件引用的文号（D-129 ②，见 auto_reason）。"""
+    match = _OWN_NUMBER.fullmatch("".join((doc_number or "").split()))
+    if not match:
+        return None
+    prefix, year, serial = match.groups()
+    return f"{prefix}〔{year}〕{int(serial)}号"
+
+
 # ---- 归组规则 ----------------------------------------------------------------
 
 
@@ -219,6 +234,8 @@ class Candidate:
     cited: tuple[Cited, ...] | None = None
     body_forward: bool | None = None
     has_body: bool | None = None
+    # 自己的发文字号（own_number 统一过的，存在 repost_signals 里）
+    own_number: str | None = None
 
     @property
     def agency(self) -> tuple[str, str | None, str | None, str]:
@@ -436,7 +453,7 @@ class SignalRefresh:
 
 
 def _fill_signal(
-    row: RepostSignal, published: date | None, body: str | None, fetched, stamp
+    row: RepostSignal, published: date | None, body: str | None, fetched, stamp, doc_number=None
 ) -> None:
     head = body or ""
     row.cited = [
@@ -445,6 +462,7 @@ def _fill_signal(
     ]
     row.body_forward = bool(_BODY_FORWARD.search(head))
     row.has_body = bool(head.strip())
+    row.own_number = own_number(doc_number)
     # 记下这次用的详情时间（正文是空的也记）：详情没再重抓就不重算
     row.body_at = fetched
     row.computed_at = stamp
@@ -474,6 +492,7 @@ def refresh_signals(
                 Document.publish_date,
                 func.left(DocumentDetail.body_text, BODY_HEAD_CHARS),
                 DocumentDetail.fetched_at,
+                DocumentDetail.doc_number,
             )
             .outerjoin(RepostSignal, RepostSignal.document_id == Document.id)
             .outerjoin(DocumentDetail, DocumentDetail.document_id == Document.id)
@@ -483,9 +502,9 @@ def refresh_signals(
         ).all()
         if not rows:
             break
-        for doc_id, published, body, fetched in rows:
+        for doc_id, published, body, fetched, doc_number in rows:
             row = RepostSignal(document_id=doc_id, grouped_at=stamp)
-            _fill_signal(row, published, body, fetched, stamp)
+            _fill_signal(row, published, body, fetched, stamp, doc_number)
             session.add(row)
             if (
                 published is not None
@@ -518,18 +537,19 @@ def refresh_signals(
     ids = sorted(set(session.scalars(in_window)) | set(session.scalars(old_members)))
     for i in range(0, len(ids), _SIGNAL_BATCH):
         batch = ids[i : i + _SIGNAL_BATCH]
-        for row, published, body, fetched in session.execute(
+        for row, published, body, fetched, doc_number in session.execute(
             select(
                 RepostSignal,
                 Document.publish_date,
                 func.left(DocumentDetail.body_text, BODY_HEAD_CHARS),
                 DocumentDetail.fetched_at,
+                DocumentDetail.doc_number,
             )
             .join(Document, Document.id == RepostSignal.document_id)
             .join(DocumentDetail, DocumentDetail.document_id == RepostSignal.document_id)
             .where(RepostSignal.document_id.in_(batch))
         ):
-            _fill_signal(row, published, body, fetched, stamp)
+            _fill_signal(row, published, body, fetched, stamp, doc_number)
             result.computed += 1
         session.flush()
     return result
@@ -604,6 +624,7 @@ def load_candidates(
             cited=tuple(Cited(**c) for c in signal.cited) if signal else (),
             body_forward=signal.body_forward if signal else False,
             has_body=signal.has_body if signal else False,
+            own_number=signal.own_number if signal else None,
         )
         for doc_id, title, override, published, province, city, district, dept, signal in rows
     ]
