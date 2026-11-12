@@ -2354,3 +2354,54 @@ def test_auto_record_must_cover_exactly_the_sampled_list(
     path.write_text(json.dumps(other, ensure_ascii=False), encoding="utf-8")
     with pytest.raises(ValueError, match="没有抽样名单"):
         repost_checks.record(SimpleNamespace(file=path, by="Claude"))
+
+
+def test_auto_record_counts_evidence_changes_as_changed(
+    session, session_factory, monkeypatch, tmp_path, capsys
+):
+    # 抽样以后修订号、版本都没变，但某个版本的类型（标题、正文、文号同理）变了：旧证据下的结论不算，
+    # 记 changed，也不拿它撤回现在的组
+    import json
+
+    from youju import repost_checks
+    from youju.models import RepostAutoCheck
+
+    monkeypatch.setattr(
+        "youju.repost.get_settings", lambda: SimpleNamespace(repost_auto_merge=False)
+    )
+    monkeypatch.setattr(repost_checks, "session_factory", lambda: session_factory)
+    docs = _auto_world(session)
+    rebuild(session, now=NOW)
+    session.commit()
+    data = _sample(tmp_path, "gate")
+    data["items"][0].update(verdict="wrong", note="判的时候以为是两件事")
+    group = session.get(RepostGroup, data["items"][0]["group_id"])
+    revision = group.revision
+    docs[0].kind_override = "其他"
+    session.commit()
+    path = tmp_path / "filled.json"
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    assert repost_checks.record(SimpleNamespace(file=path, by="Claude")) == 0
+    assert "抽样以后组变了" in capsys.readouterr().out
+    session.expire_all()
+    assert session.query(RepostAutoCheck).one().verdict == "changed"
+    group = session.get(RepostGroup, group.id)
+    assert group.revision == revision and not group.no_auto
+
+
+def test_weekly_sample_includes_auto_groups_outside_the_window(
+    session, session_factory, monkeypatch, tmp_path
+):
+    # 窗口外还在自动折叠的组也进每周抽查（它们每轮照样重判、对外折叠）
+    from youju import repost_checks
+
+    _auto_on(monkeypatch, session)
+    _auto_world(session)
+    rebuild(session, now=NOW)
+    later = NOW + timedelta(days=400)
+    assert rebuild(session, now=later).auto_reverted == 0  # 组里的文件都早于窗口了，照样折叠
+    session.commit()
+    monkeypatch.setattr(repost_checks, "session_factory", lambda: session_factory)
+    monkeypatch.setattr(repost_checks, "_now", lambda: later)
+    data = _sample(tmp_path, "weekly", seed=9)
+    assert len(data["items"]) == 1 and data["items"][0]["auto"] is True

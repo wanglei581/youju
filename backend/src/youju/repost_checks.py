@@ -1,13 +1,14 @@
 """转发组自动合并的质检命令（D-129 ②），都在本机跑，只读写 JSON 文件和 repost_* 表。
 
 - repost-auto-sample：抽组。gate 从现在满足自动合并条件的组里抽（开开关前 Claude 带证据判 100 组）；
-  weekly 先抽已经自动合并的组、不够的用别的已确认组补（每周 Codex 独立抽查 10 组）。抽到的名单当场
-  记进库（repost_auto_checks，结论空着）。只给证据：各版本的标题、机关、日期、网址、引用的文号、
+  weekly 先抽已经自动合并的组、不够的用别的已确认组补（每周 Codex 独立抽查 10 组；窗口外还在自动
+  折叠的组也抽）。抽到的名单连同判的版本的证据指纹当场记进库（repost_auto_checks，结论空着）。只给证据：各版本的标题、机关、日期、网址、引用的文号、
   自己的发文字号（部里原件按它对上）、正文里共同文号前后的原文，结论和备注留空给判的人填。判的版本
   （judge 为真）每个都给摘录：gate 是全部在组版本；weekly 是已经确认（对外折叠）的版本，同组还没
   确认的版本（正文没抓到等，见 repost.rebuild）一并列出、不给摘录，只供对照。
 - repost-auto-record：记回判定。交上来的组必须和这一轮抽样名单一模一样（不能删、不能添），每组都要有
-  结论；格式不对整份拒收。组在抽样后变了（修订号或判的版本不一样）的由程序记 changed、不算进准确率；
+  结论；格式不对整份拒收。组在抽样后变了（修订号、判的版本，或这些版本的标题、类型、正文、文号等
+  证据不一样）的由程序记 changed、不算进准确率；
   判错的组当场整组撤回（以后不再自动合并）。
 - repost-auto-stats：按轮统计（抽了几组、判了几组、对几组、组变了几组、还有几组没判），给出开关那道
   门的结果（只认整份判完、判了对错满 100 组的轮）。
@@ -15,6 +16,7 @@
 撤回都记一行审计日志（youju.audit），和管理台的撤回一样留痕。
 """
 
+import hashlib
 import json
 import logging
 import random
@@ -23,7 +25,7 @@ from collections import defaultdict
 from dataclasses import asdict
 from datetime import UTC, date, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from youju.classify import effective_kind
@@ -53,6 +55,7 @@ from youju.repost import (
     auto_upstream,
     duplicate_members,
     load_candidates,
+    member_facts,
     signals,
     withdraw_group,
 )
@@ -132,6 +135,53 @@ def _excerpt(body, number):
     return body[:300]
 
 
+def _member_candidates(session: Session, ids: list[int]) -> dict[int, Candidate]:
+    """这几份文件的候选（标题、类型、机关、日期、存好的正文信号），不管是不是副本、下架：抽样给证据、
+    算证据指纹都用它。"""
+    cands = {}
+    for doc, source, signal in session.execute(
+        select(Document, Source, RepostSignal)
+        .join(Source, Source.id == Document.source_id)
+        .outerjoin(RepostSignal, RepostSignal.document_id == Document.id)
+        .where(Document.id.in_(ids))
+    ):
+        cands[doc.id] = Candidate(
+            id=doc.id,
+            title=doc.title,
+            kind=effective_kind(doc.title, doc.kind_override),
+            province=source.province,
+            city=source.city,
+            district=source.district,
+            dept=source.dept,
+            publish_date=doc.publish_date,
+            cited=tuple(Cited(**c) for c in signal.cited) if signal else (),
+            has_body=signal.has_body if signal else False,
+            own_number=signal.own_number if signal else None,
+        )
+    return cands
+
+
+def _evidence(session: Session, ids: list[int]) -> str:
+    """判的这几个版本的证据指纹：确认快照用的那些（日期、机关、标题、发文机关、全文，见
+    repost.member_facts）加上类型、自己的发文字号、引用的文号。抽样以后有一样变了，记录时就算组变了
+    （changed），旧证据下的结论不算进准确率、也不拿来撤回现在的组。"""
+    _, facts = member_facts(session, ids)
+    cands = _member_candidates(session, ids)
+    values = []
+    for doc_id in sorted(ids):
+        cand = cands.get(doc_id)
+        values.append(
+            [
+                doc_id,
+                facts.get(doc_id),
+                cand.kind if cand else None,
+                cand.own_number if cand else None,
+                sorted(c.number for c in signals(cand).cited) if cand else None,
+            ]
+        )
+    return hashlib.sha256(json.dumps(values, ensure_ascii=False).encode()).hexdigest()
+
+
 def _judged(rows, duplicates, purpose):
     """这一组要判的版本：gate 是全部在组版本（开关打开以后要整组合并的）；weekly 是已经确认、对外
     折叠的版本。"""
@@ -151,17 +201,25 @@ def sample(args):
             population = len(groups)
             selected = rng.sample(groups, min(args.size or GATE_SAMPLE_DEFAULT, len(groups)))
         else:
-            # 每周抽查：只看窗口里有确认版本的组（自动合并只在窗口里做）；这一版本已经被每周抽查
-            # 抽过的不再抽（gate 抽查是 Claude 判的，不挡 Codex 的独立抽查）
+            # 每周抽查：窗口里有确认版本的组，加上窗口外还在自动折叠的组（它们每轮照样重判、对外
+            # 折叠，也要抽得到）；这一版本已经被每周抽查抽过的不再抽（gate 抽查是 Claude 判的，
+            # 不挡 Codex 的独立抽查）
             confirmed = select(RepostGroupMember.group_id).where(
                 RepostGroupMember.active.is_(True), RepostGroupMember.confirmed_at.is_not(None)
+            )
+            folded_auto = select(RepostGroupMember.group_id).where(
+                RepostGroupMember.active.is_(True), RepostGroupMember.confirmed_by == AUTO_REVIEWER
             )
             cutoff = today - timedelta(days=WINDOW_DAYS)
             groups = list(
                 session.scalars(
                     select(RepostGroup)
                     .where(
-                        RepostGroup.id.in_(_window_groups(cutoff)), RepostGroup.id.in_(confirmed)
+                        RepostGroup.id.in_(confirmed),
+                        or_(
+                            RepostGroup.id.in_(_window_groups(cutoff)),
+                            RepostGroup.id.in_(folded_auto),
+                        ),
                     )
                     .order_by(RepostGroup.id)
                 )
@@ -199,26 +257,7 @@ def sample(args):
             population = len(eligible)
             selected = (auto + other)[: args.size or WEEKLY_SAMPLE_DEFAULT]
             selected_ids = [r.document_id for _, rows in selected for r in rows]
-            cands = {}
-            for doc, source, signal in session.execute(
-                select(Document, Source, RepostSignal)
-                .join(Source, Source.id == Document.source_id)
-                .outerjoin(RepostSignal, RepostSignal.document_id == Document.id)
-                .where(Document.id.in_(selected_ids))
-            ):
-                cands[doc.id] = Candidate(
-                    id=doc.id,
-                    title=doc.title,
-                    kind=effective_kind(doc.title, doc.kind_override),
-                    province=source.province,
-                    city=source.city,
-                    district=source.district,
-                    dept=source.dept,
-                    publish_date=doc.publish_date,
-                    cited=tuple(Cited(**c) for c in signal.cited) if signal else (),
-                    has_body=signal.has_body if signal else False,
-                    own_number=signal.own_number if signal else None,
-                )
+            cands = _member_candidates(session, selected_ids)
         all_rows = [r for _, rows in selected for r in rows]
         duplicates = set(duplicate_members(session, [r.document_id for r in all_rows]))
         ids = [r.document_id for r in all_rows]
@@ -291,23 +330,25 @@ def sample(args):
                     group_id=group.id,
                     revision=group.revision,
                     document_ids=sorted(judged_ids),
+                    evidence=_evidence(session, sorted(judged_ids)),
                     rule_version=AUTO_RULE_VERSION,
                     verdict=None,
                     note="",
                     sampled_at=stamp,
                 )
             )
+        result = dict(
+            round=round_id,
+            purpose=args.purpose,
+            rule_version=AUTO_RULE_VERSION,
+            sampled_at=stamp.isoformat(),
+            seed=args.seed,
+            population=population,
+            items=items,
+        )
+        # 文件写成功了再把名单记进库：写不出来就不记，不让这批组白白算成"抽过"
+        args.out.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
         session.commit()
-    result = dict(
-        round=round_id,
-        purpose=args.purpose,
-        rule_version=AUTO_RULE_VERSION,
-        sampled_at=stamp.isoformat(),
-        seed=args.seed,
-        population=population,
-        items=items,
-    )
-    args.out.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"从 {population} 组里抽了 {len(items)} 组：{args.out}")
     if args.purpose == "gate" and len(items) < AUTO_GATE_SIZE:
         print(f"只抽到 {len(items)} 组，不满 {AUTO_GATE_SIZE} 组：这一轮判完也过不了门")
@@ -426,15 +467,19 @@ def record(args):
                 counts["skip"] += 1
                 continue
             check.checked_by, check.checked_at = reviewer, stamp
+            judged_now = (
+                sorted(r.document_id for r in _judged(grouped[group.id], duplicates, check.purpose))
+                if group is not None
+                else []
+            )
             if (
                 group is None
                 or group.revision != check.revision
-                or sorted(
-                    r.document_id for r in _judged(grouped[group.id], duplicates, check.purpose)
-                )
-                != check.document_ids
+                or judged_now != check.document_ids
+                or _evidence(session, judged_now) != check.evidence
             ):
-                # 抽样以后组变了：程序记 changed、不算进准确率（判的人的结论不用）
+                # 抽样以后组变了（版本或证据）：程序记 changed、不算进准确率（判的人的结论不用，
+                # 也不拿旧证据下的结论撤回现在的组）
                 check.verdict, check.note = "changed", "抽样以后组变了"
                 print(f"组 {item['group_id']}：抽样以后组变了，记 changed、不算")
                 counts["changed"] += 1
@@ -459,8 +504,8 @@ def record(args):
                         reason=f"抽查判错：{item['note']}",
                     )
                 )
-        session.commit()
         judged = sum(1 for r in sampled.values() if r.verdict in ("correct", "wrong"))
+        session.commit()
     for event in withdrawn:
         _audit("repost_withdraw", reviewer=reviewer, **event)
     print(
