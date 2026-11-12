@@ -117,20 +117,23 @@ _NOT_NAME_WORDS = frozenset(
     )
 )
 # ② 领导人、官员的新闻："某某出席……""某某主持召开……""某某签署……""某某同某国总统会谈"
-#   "某某到某县督导调研""某某总书记重要讲话"。"像人名"按常见姓氏认，不常见的姓认不出：开头或标点
-#   后面跟出席、主持这类只有人才做的新闻动词的，不看姓氏；"宣布""签署"（"正式宣布""双方签署"）、
-#   总书记前面（"牢记总书记嘱托"）的要看姓氏，现任中央领导另有名单
-_OPEN_RE = f"(?:^|[{re.escape(_OPEN)}])"
+#   "某某到某县督导调研""某某在某地调研时强调""某某调研……""某某某某某某赴某地调研"（两位连写）
+#   "某某总书记重要讲话"。"像人名"按常见姓氏认，不常见的姓认不出：开头或标点后面跟出席、主持这类
+#   只有人才做的新闻动词的，不看姓氏；"宣布""签署""调研"一类（"正式宣布""专题调研"）、总书记
+#   前面（"牢记总书记嘱托"）的要看姓氏，现任中央领导另有名单
 _TOP = re.compile(rf"({_H}{{2,3}})(?=总书记|总理|委员长)")
 _NOT_TOP_END = tuple("着的了和与及在把将对向")  # "循着总书记足迹"
-_LEAD = re.compile(
-    rf"{_OPEN_RE}({_H}{{2,3}})(?=出席|主持|会见|会谈|致信|致电|回信|看望|慰问|视察|寄语)"
-)
-_LEAD_WEAK = re.compile(rf"{_OPEN_RE}({_H}{{2,3}})(?=宣布|签署)")
-_PAIR = re.compile(rf"{_OPEN_RE}({_H}{{2,3}})(?=同|与)")
+# 新闻动词：前面那串字（到开头或标点为止）是人名的就挡。2–3 个字的按下面各组看不看姓氏；4–9 个字的
+# 能拆成两三个都像人名的词（看姓氏）就挡（两位领导连写："某某某某某某赴某地调研"）
+_LEAD = ("出席", "主持", "会见", "会谈", "致信", "致电", "回信", "看望", "慰问", "视察", "寄语")
+_LEAD_WEAK = ("宣布", "签署", "调研", "考察", "督导", "督查", "检查", "走访", "暗访")
+_PAIR = ("同", "与")  # 后面要有会谈、通电话这类词
 _PAIR_WORDS = ("会谈", "通电话", "会见", "互致")
-_TRIP = re.compile(rf"{_OPEN_RE}({_H}{{2,3}})(?=到|赴|带队|率队|率团)")
+_TRIP = ("到", "赴", "在", "带队", "率队", "率团")  # 后面要有调研、考察这类词
 _TRIP_WORDS = ("调研", "考察", "督导", "督查", "检查", "走访", "慰问", "看望", "暗访")
+_NEWS_VERB = re.compile(
+    "|".join(sorted({*_LEAD, *_LEAD_WEAK, *_PAIR, *_TRIP}, key=len, reverse=True))
+)
 # 中央领导的姓名：转载的中央新闻、"某某思想"的学习材料里最常见，写法太多（"……作出重要指示"
 # "……：在……座谈会上的讲话""……法治思想"），单列；换届时更新
 _LEADERS = ("习近平", "李强", "赵乐际", "王沪宁", "蔡奇", "丁薛祥", "李希", "韩正", "李克强")
@@ -203,18 +206,40 @@ def _news_named(title: str) -> bool:
     for m in _TOP.finditer(title):
         if not m.group(1).endswith(_NOT_TOP_END) and _name_ish(m.group(1)):
             return True
-    if any(_name_ish(m.group(1), any_surname=True) for m in _LEAD.finditer(title)):
-        return True
-    if any(_name_ish(m.group(1)) for m in _LEAD_WEAK.finditer(title)):
-        return True
-    for m in _PAIR.finditer(title):
-        rest = title[m.end() :]
-        if _name_ish(m.group(1), any_surname=True) and any(w in rest for w in _PAIR_WORDS):
-            return True
-    for m in _TRIP.finditer(title):
-        if _name_ish(m.group(1)) and any(w in title[m.end() :] for w in _TRIP_WORDS):
+    for m in _NEWS_VERB.finditer(title):
+        verb, rest = m.group(0), title[m.end() :]
+        if verb in _PAIR and not any(w in rest for w in _PAIR_WORDS):
+            continue
+        if verb in _TRIP and not any(w in rest for w in _TRIP_WORDS):
+            continue
+        if _names_before(title, m.start(), any_surname=verb in _LEAD or verb in _PAIR):
             return True
     return False
+
+
+def _names_before(title: str, i: int, *, any_surname: bool) -> bool:
+    """title[i] 前面那串汉字（到开头或标点为止）是不是人名：2–3 个字的看 any_surname；4–9 个字的
+    拆成两三个 2–3 个字的词，每个都像人名（看姓氏）才算。"""
+    j = i
+    while j > 0 and re.fullmatch(_H, title[j - 1]):
+        j -= 1
+    if j > 0 and title[j - 1] not in _OPEN:
+        return False
+    run = title[j:i]
+    if len(run) in (2, 3):
+        return _name_ish(run, any_surname=any_surname)
+    if not 4 <= len(run) <= 9 or any(w in run for w in _NOT_NAME_WORDS):  # "关于专项执法"
+        return False
+    return any(_split_names(run, parts) for parts in (2, 3))
+
+
+def _split_names(run: str, parts: int) -> bool:
+    """run 能不能正好拆成 parts 个 2–3 个字、都像人名（看姓氏）的词。"""
+    if parts == 1:
+        return len(run) in (2, 3) and _name_ish(run)
+    return any(
+        _name_ish(run[:k]) and _split_names(run[k:], parts - 1) for k in (2, 3) if len(run) > k
+    )
 
 
 def public_title(title: str) -> str:
