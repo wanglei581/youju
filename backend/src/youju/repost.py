@@ -20,7 +20,7 @@ import json
 import logging
 import re
 from collections import Counter, defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta, timezone
 
 from sqlalchemy import Select, case, func, or_, select
@@ -1327,6 +1327,19 @@ def rebuild(
             if r.active and r.confirmed_by == AUTO_REVIEWER and r.document_id not in cands
         }
         cands.update((c.id, c) for c in candidates_for(session, sorted(outside)))
+        # 部里原件按自己的文号对上：国家级来源文件的文号直接读详情（页面元数据被直接改了、抓取时间
+        # 不变时，存好的正文信号还是旧的；指纹不含文号，也看不出变化）
+        national = [doc_id for doc_id, c in cands.items() if c.province == "国家"]
+        if national:
+            raw = dict(
+                session.execute(
+                    select(DocumentDetail.document_id, DocumentDetail.doc_number).where(
+                        DocumentDetail.document_id.in_(national)
+                    )
+                ).all()
+            )
+            for doc_id in national:
+                cands[doc_id] = replace(cands[doc_id], own_number=own_number(raw.get(doc_id)))
     off = "" if on else (f"门没过（{summary.gate_reason}）" if summary.gate_reason else "开关关着")
     for group_id, rows in by_group.items():
         group = groups[group_id]

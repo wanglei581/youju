@@ -1865,6 +1865,30 @@ def test_auto_group_with_rewritten_body_is_rejudged_on_fresh_signals(session, mo
     assert all(r.confirmed_at is None for r in _members(session).values())
 
 
+def test_original_number_rewritten_in_place_is_rejudged(session, monkeypatch):
+    # 部里原件页面上的文号被直接改了（没重抓，存好的信号和指纹都看不出）：重判时文号直接读详情，
+    # 对不上转发件引用的了，整组退回
+    _auto_on(monkeypatch, session)
+    docs = _auto_world(session)
+    original = _doc(
+        session,
+        _source(session, "国家", full="工业和信息化部"),
+        "工业和信息化部办公厅关于组织开展2026年度视听系统典型案例征集工作的通知",
+        day=1,
+        body="各省、自治区、直辖市工业和信息化主管部门：现就组织开展有关工作通知如下。",
+    )
+    detail = session.get(DocumentDetail, original.id)
+    detail.doc_number = "工信厅联电子函〔2026〕376号"
+    session.flush()
+    assert rebuild(session, now=NOW).auto_merged == 1
+    assert {original.id, *(d.id for d in docs)} <= set(_members(session))
+    detail.doc_number = "工信厅联电子函〔2026〕377号"
+    session.flush()
+    result = rebuild(session, now=NOW + timedelta(seconds=1))
+    assert result.auto_reverted == 1
+    assert all(r.confirmed_at is None for r in _members(session).values())
+
+
 def test_new_versions_are_added_one_by_one(session, monkeypatch):
     # 已经自动合并的组同时来了两份新版本：正文齐全、引用同一文号的那份加进来；正文还没抓到的留待确认
     from youju.repost import AUTO_REVIEWER
