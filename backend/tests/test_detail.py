@@ -927,21 +927,38 @@ def test_search_throttle_dialog_only_on_verified_sites_and_page_code() -> None:
         assert result.failure_reason == "防护页或验证码", extra
 
 
-def test_search_throttle_page_code_ignores_only_numbers(monkeypatch: pytest.MonkeyPatch) -> None:
-    """页面代码只是 5 位以上的数字不一样（文章编号、时间戳）还算核实过的样子；字不一样、小的数
-    不一样（版本号、延时）都不算。"""
-    script = "<script>var articleId = 1092076; var delay = 1;</script>"
-    verified = _page(script + _THROTTLE_DIALOG + _NOTICE_BODY)
+def test_search_throttle_page_code_must_match_verified_page(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """页面代码要和核实过的那一页一样：外部资源按完整地址（含协议、参数）和顺序比，页面自带的代码原样
+    比，只有上一篇/下一篇、相关文章接口里的文章编号、栏目编号（_PAGE_IDS）每页不同、不算。"""
+    verified = _page(
+        "<script src='/js/a.js?v=1'></script><script src='/js/b.js'></script>"
+        "<script>related('/Ajax/GetRelatedContent?contentId=1092076&nodeId=37', "
+        '{ excludeIds: "1092076" }); var delay = 1;</script>' + _THROTTLE_DIALOG + _NOTICE_BODY
+    )
     url = "https://kjj.example.gov.cn/1.html"
     fingerprint = detail._page_code_fingerprint(html.fromstring(verified), url)
     monkeypatch.setitem(
         detail._SEARCH_THROTTLE_VERIFIED, "kjj.example.gov.cn", frozenset({fingerprint})
     )
-    assert parse_detail(verified.replace("1092076", "1161839"), url).failure_reason is None
-    other_code = verified.replace("var articleId", "showDialog(); var articleId")
-    assert parse_detail(other_code, url).failure_reason == "防护页或验证码"
-    small_number = verified.replace("delay = 1", "delay = 2")
-    assert parse_detail(small_number, url).failure_reason == "防护页或验证码"
+    assert parse_detail(verified, url).failure_reason is None
+    other_page = verified.replace("1092076", "1161839").replace("nodeId=37", "nodeId=52")
+    assert parse_detail(other_page, url).failure_reason is None
+    swapped = verified.replace(
+        "<script src='/js/a.js?v=1'></script><script src='/js/b.js'></script>",
+        "<script src='/js/b.js'></script><script src='/js/a.js?v=1'></script>",
+    )
+    for changed in (
+        verified.replace("?v=1", "?v=2"),
+        swapped,
+        verified.replace("delay = 1", "delay = 2"),
+        verified.replace("var delay = 1;", "var delay = 1; var shown = 1092076;"),
+        verified.replace("related(", "showDialog(); related("),
+    ):
+        assert parse_detail(changed, url).failure_reason == "防护页或验证码"
+    http_page = parse_detail(verified, "http://kjj.example.gov.cn/1.html")
+    assert http_page.failure_reason == "防护页或验证码"
 
 
 _LONG_NAV = "".join(f"<p>栏目导航第{n}项</p>" for n in range(60))

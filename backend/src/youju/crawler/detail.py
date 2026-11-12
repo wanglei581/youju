@@ -146,31 +146,36 @@ _SEARCH_THROTTLE_DIALOG = '//div[@id="VolidateCodeDiv"][.//input[@id="js-ticket-
 # 字里没有验证码一类的字、正文区正常显示（核对表见 PR #485）。别的网站、别的样子（外部脚本、样式
 # 多一个少一个，页面自带的脚本、样式、事件属性有一处不一样）都不认这个弹窗，照旧当防护页
 _SEARCH_THROTTLE_VERIFIED: dict[str, frozenset[str]] = {
-    "czj.luohe.gov.cn": frozenset({"f914f9178ac67e6c"}),
-    "czj.luzhou.gov.cn": frozenset({"3c7f2461bf9447f8", "d9ca148ca701f514"}),
-    "drc.luohe.gov.cn": frozenset({"7a7c5a4743622672"}),
-    "fgw.luzhou.gov.cn": frozenset({"d08e75356ae86227", "eb345c304c25ce09"}),
-    "gxj.luohe.gov.cn": frozenset({"897cc0762ad5d384"}),
-    "hrss.luohe.gov.cn": frozenset({"108e6211fe710a02"}),
-    "jxj.luzhou.gov.cn": frozenset({"21ab674aded7640a", "51ee0db1122f8a7c", "5cd4d065e54a2cf6"}),
-    "kawlb.luzhou.gov.cn": frozenset({"9b40cb3180bde534"}),
-    "kjj.luohe.gov.cn": frozenset({"ea130bfd63cd5a0a"}),
-    "kjj.luzhou.gov.cn": frozenset({"c016da5d6ed4b4d1", "dc807bd244a01f6d"}),
-    "luohelvyou.luohe.gov.cn": frozenset({"61141f9d3c42b154"}),
-    "nyncj.luzhou.gov.cn": frozenset({"0d501eebed453bbb", "2b7923b4b7f81691", "6427b99ad1abb68d"}),
-    "rsj.luzhou.gov.cn": frozenset({"bd4d0076c845bfa6"}),
-    "scjg.luohe.gov.cn": frozenset({"859296f645f38c5f"}),
-    "scjgj.luzhou.gov.cn": frozenset({"ed6f5cb6210c5bbd", "ee5d14b421d695e2"}),
-    "sthjj.luohe.gov.cn": frozenset({"0c02e092243a5e53"}),
-    "sthjj.luzhou.gov.cn": frozenset({"03e720cf2bc3df16", "df602e23e053c3a6", "fa52f9b205c40a24"}),
+    "czj.luohe.gov.cn": frozenset({"26b3dbf05a6943a8"}),
+    "czj.luzhou.gov.cn": frozenset({"3e0d86007ee3353b", "da9f063cb7dd4f2f"}),
+    "drc.luohe.gov.cn": frozenset({"c68b23a5d3bdb294"}),
+    "fgw.luzhou.gov.cn": frozenset({"a14d9bdbf340e4d2", "d06406ee756a0ced"}),
+    "gxj.luohe.gov.cn": frozenset({"db6f75d8850c5814"}),
+    "hrss.luohe.gov.cn": frozenset({"13ca381f2244e471"}),
+    "jxj.luzhou.gov.cn": frozenset({"34993d8a3389c627", "53d1ad1cd685d078", "6ac8a40fcc661a62"}),
+    "kawlb.luzhou.gov.cn": frozenset({"9aeb5830f187ad15"}),
+    "kjj.luohe.gov.cn": frozenset({"a341e43255813b31"}),
+    "kjj.luzhou.gov.cn": frozenset({"bf8587b7edb7391f", "db21170b400079d9"}),
+    "luohelvyou.luohe.gov.cn": frozenset({"82abca0dffabc7ae"}),
+    "nyncj.luzhou.gov.cn": frozenset({"973f428253becf73", "ac1100e3e7c31c78", "e24dd3c4dd7b0432"}),
+    "rsj.luzhou.gov.cn": frozenset({"a71031f2537a6123"}),
+    "scjg.luohe.gov.cn": frozenset({"1645d3da962f3eb0"}),
+    "scjgj.luzhou.gov.cn": frozenset({"c88e6061371a23b9", "e754315787e29882"}),
+    "sthjj.luohe.gov.cn": frozenset({"416b74733e1401a8"}),
+    "sthjj.luzhou.gov.cn": frozenset({"7dbf126d3b49e3fd", "8797b47f44dc5af2", "c40f34ee5e2f4b4a"}),
     "swj.luohe.gov.cn": frozenset(
-        {"02973530817cdb67", "8dd1893093e4a0b4", "9a498d5d4c5e11a5", "a08a4cd3002e36e7"}
+        {"7e93775eab9fe810", "89e475064876dda2", "919cf8f5e8a30e04", "e3e1a3a561ca5fe9"}
     ),
-    "wtgj.luzhou.gov.cn": frozenset({"0168b7eaf6926970"}),
-    "www.changde.gov.cn": frozenset({"392450966c03a005"}),
-    "www.luohe.gov.cn": frozenset({"1718493888fb7a6b", "6dc14fa5b43475b7"}),
-    "www.luzhou.gov.cn": frozenset({"d5bb0b0fdefb353b"}),
+    "wtgj.luzhou.gov.cn": frozenset({"0fa96aaa738f41c8"}),
+    "www.changde.gov.cn": frozenset({"df4caf7c4c084e78"}),
+    "www.luohe.gov.cn": frozenset({"b7112ed612b2044f", "f9870def54889ce0"}),
+    "www.luzhou.gov.cn": frozenset({"6366cf401679cae4"}),
 }
+# 算页面代码指纹时归一的每页编号：上一篇/下一篇、相关文章接口里的文章编号、栏目编号，以及相关文章
+# 排除的本篇编号。11/12 核实过的 36 个样子、124 份页面上，同一样子的页面代码只在这几处不同
+_PAGE_IDS = re.compile(r'((?:contentId|nodeId)\s*[:=]\s*)\d+|(excludeIds:\s*")\d+(")')
+# 算指纹时记下地址的 <link>：样式表和预加载的脚本、样式
+_CODE_LINKS = {"stylesheet", "import", "preload", "modulepreload"}
 # 放过弹窗的页面整页查挡页字样时也看的属性：按钮上的字、图片说明、输入框提示等
 _WORD_ATTRS = ("value", "alt", "title", "placeholder", "aria-label")
 # 放过弹窗以后要求的"完整正文"：100 字以上、有句号、正文里没有验证码一类的字（11/12 翻过来的
@@ -1241,31 +1246,38 @@ def outside_body_lines(html_text: str, url: str) -> list[str] | None:
 
 
 def _page_code_fingerprint(root: etree._Element, url: str) -> str:
-    """页面上能让弹窗显示出来的东西的指纹：外部脚本、样式表（含预加载的）、框架（主机 + 路径，不带
-    ? 后面的参数），页面自带的脚本、<style>、on… 事件属性、框架里直接写的页面（空白合并；5 位以上的
-    数字当 0，文章编号、时间戳这类每页不同的数不算不一样，版本号、小的数照原样比）。"""
-    external = set()
-    sources = [("js", s) for s in root.xpath("//script/@src")]
-    sources += [
-        ("css", link.get("href") or "")
-        for link in root.xpath("//link[@href]")
-        if {"stylesheet", "import", "preload", "modulepreload"}
-        & set((link.get("rel") or "").lower().split())
-    ]
-    sources += [("frame", s) for s in root.xpath("//iframe/@src | //frame/@src | //object/@data")]
-    sources += [("frame", s) for s in root.xpath("//embed/@src")]
-    sources += [("base", s) for s in root.xpath("//base/@href")]
-    for kind, value in sources:
-        parts = urlsplit(urljoin(url, value.strip()))
-        external.add(f"{kind} {parts.netloc.lower()}{parts.path}")
-    inline = sorted(
-        " ".join(re.sub(r"\d{5,}", "0", code).split())
-        for code in root.xpath(
-            "//script[not(@src)]/text() | //style/text() | //@*[starts-with(name(), 'on')]"
-            " | //iframe/@srcdoc"
+    """页面上能让弹窗显示出来的东西的指纹，按在页面上出现的顺序原样记下：外部脚本、样式表（含预加载
+    的）、框架、<base> 的完整地址（含协议和 ? 后面的参数，重复的也记），页面自带的脚本、<style>、
+    on… 事件属性、框架里直接写的页面。只把 _PAGE_IDS 那几处每页不同的编号当 0。"""
+
+    def page_ids(code: str) -> str:
+        return _PAGE_IDS.sub(lambda m: (m.group(1) or m.group(2)) + "0" + (m.group(3) or ""), code)
+
+    parts: list[str] = []
+    for element in root.iter():
+        if not isinstance(element.tag, str):
+            continue
+        tag = element.tag.lower()
+        rel = set((element.get("rel") or "").lower().split())
+        for kind, name, wanted in (
+            ("js", "src", tag == "script"),
+            ("css", "href", tag == "link" and bool(_CODE_LINKS & rel)),
+            ("frame", "src", tag in ("iframe", "frame", "embed")),
+            ("frame", "data", tag == "object"),
+            ("base", "href", tag == "base"),
+        ):
+            if wanted and (value := element.get(name)) is not None:
+                parts.append(f"{kind} {urljoin(url, value.strip())}")
+        if tag in ("script", "style") and element.get("src") is None and element.text:
+            parts.append(f"{tag} {page_ids(element.text)}")
+        if tag == "iframe" and (srcdoc := element.get("srcdoc")) is not None:
+            parts.append(f"srcdoc {page_ids(srcdoc)}")
+        parts.extend(
+            f"{name.lower()} {page_ids(value)}"
+            for name, value in element.attrib.items()
+            if name.lower().startswith("on")
         )
-    )
-    return hashlib.sha256("\n".join([*sorted(external), *inline]).encode()).hexdigest()[:16]
+    return hashlib.sha256("\n\0".join(parts).encode()).hexdigest()[:16]
 
 
 def _page_words(root: etree._Element, dialogs: frozenset) -> str:
