@@ -25,7 +25,7 @@ import lxml.html
 from lxml import etree
 
 from youju.crawler.dates import date_from_url, parse_date_detail
-from youju.crawler.titles import clean_title, is_truncated
+from youju.crawler.titles import ZERO_WIDTH, clean_title, is_truncated
 from youju.crawler.urls import normalize_url, page_dir
 
 
@@ -58,6 +58,13 @@ _ARCHIVE_SUFFIXES = ("（已归档", "(已归档", "（已归档）", "(已归�
 # 行内的附件链接（"附件：…""下载"，或指向 pdf、Word 等文件）属于同一条文件，不算另一条
 _ATTACHMENT_TEXT = re.compile(r"^(附件|下载|点击下载|查看附件|附件下载)")
 _ATTACHMENT_EXT = re.compile(r"\.(pdf|docx?|xlsx?|wps|et|ofd|zip|rar|7z)$", re.IGNORECASE)
+# 行里文件标题旁边的附带链接（龙岩各局政策文件："……的通告(查看政策解读)"，红字，链到解读栏目；
+# 首页解读那块反过来是"……政策解读(查看政策文件)"），不算另一条；解读、原文在各自的栏目里另收。
+# 放在"像不像标题"里排除：它夹在行里会打乱行结构，日期取成网址里的、单链接的行漏掉（11/12 拿龙岩
+# 文旅两份文件页核对过，页面写的发布日期就是这一行写的日期）
+_COMPANION_LINK = re.compile(
+    r"^[(（\[【]?\s*(?:点击)?(?:查看)?(?:政策)?(?:解读|图解|文件|原文|原件)\s*[)）\]】]?$"
+)
 # 侧栏、页头页脚、友情链接等外围区域的常见标记（标签，或 class/id 里的词）
 _PERIPHERAL_TAGS = {"aside", "nav", "header", "footer"}
 _PERIPHERAL_WORDS = {
@@ -92,7 +99,8 @@ _EDGE_DATE = re.compile(
 )
 
 # title 属性结尾隔着空白写的日期（只认完整的年月日，括号里的日期可能是标题本身的一部分）
-_ATTR_DATE = re.compile(r"\s+(20\d{2}(?:年\d{1,2}月\d{1,2}日|[-/.]\d{1,2}[-/.]\d{1,2}))$")
+# title 属性结尾的发布日期，和标题之间可能隔着空格（济南人社），也可能紧贴着（淄博大数据局）
+_ATTR_DATE = re.compile(r"\s*(20\d{2}(?:年\d{1,2}月\d{1,2}日|[-/.]\d{1,2}[-/.]\d{1,2}))$")
 # 悬浮提示（titles._TOOLTIP）里的发表时间
 _TOOLTIP_DATE = re.compile(
     r"点击数[：:]\s*\d+\s+发表时间[：:]\s*(20\d{2}[-/.年]\d{1,2}[-/.月]\d{1,2}日?)"
@@ -103,7 +111,9 @@ _MARKUP = re.compile(r"<\s*/?\s*[A-Za-z][^>]*>")
 
 
 def _clean(text: str | None) -> str:
-    return re.sub(r"\s+", " ", text or "").strip()
+    # 零宽空格也去掉：标题清理（titles.clean_title）去掉了它，行里的文字也要去掉，找行日期时才挖得掉
+    # 标题（襄阳政府规章列表：标题里夹着零宽空格，曾把标题里的"2017年4月26日"当成行日期）
+    return re.sub(r"\s+", " ", ZERO_WIDTH.sub("", text or "")).strip()
 
 
 def _link_text(a: etree._Element) -> str:
@@ -142,6 +152,8 @@ def _looks_like_title(title: str) -> bool:
     if len(title) < _MIN_TITLE_LEN or _NAV_PATTERN.match(title):
         return False
     if _ATTACHMENT_TEXT.match(title) or title.endswith(_ARCHIVE_SUFFIXES):
+        return False
+    if _COMPANION_LINK.match(title):
         return False
     return not any(word in title for word in _BOILERPLATE)
 
@@ -273,8 +285,9 @@ def _date_inside_anchor(title: str, today: date) -> tuple[str, date | None, bool
 
 
 def _without_attr_date(title: str, a: etree._Element, found: date | None, today: date) -> str:
-    """济南人社：title 属性是"标题 + 空格 + 发布日期"（title="……送达公告 2026年11月05日"），链接文字
-    是不带日期的标题，行里另写着同一个发布日期。结尾这个日期和这一行的发布日期相同、去掉它剩下的
+    """济南人社：title 属性是"标题 + 空格 + 发布日期"（title="……送达公告 2026年11月05日"；
+    淄博大数据局没有空格："……目录2026年04月24日"），链接文字是不带日期的标题，
+    行里另写着同一个发布日期。结尾这个日期和这一行的发布日期相同、去掉它剩下的
     正是链接文字（或它的完整写法）时，日期不算标题；和发布日期不同的（纪要写的会议日期）照旧留着"""
     m = _ATTR_DATE.search(title)
     if not m or found is None:
