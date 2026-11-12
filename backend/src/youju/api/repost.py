@@ -38,7 +38,15 @@ from youju.models import (
     RepostGroupMember,
     Source,
 )
-from youju.repost import bump, duplicate_members, labels_for, member_facts, valid_group
+from youju.repost import (
+    AUTO_REVIEWER,
+    bump,
+    duplicate_members,
+    labels_for,
+    member_facts,
+    valid_group,
+    withdraw_group,
+)
 
 SessionDep = Annotated[Session, Depends(get_session)]
 State = Literal["pending", "confirmed", "removed"]
@@ -471,10 +479,16 @@ def router(require_admin, audit) -> APIRouter:
                     detail="同一机关只能有一份，成员必须有发布日期且跨度不超过 90 天，"
                     "请先移出或拆组",
                 )
+            # 人确认整组：没确认的版本，加上自动合并确认的版本（人看过、接过来，以后不再按自动合并
+            # 退回或重判）；已经由人确认过的不重写
             waiting = (
                 active
                 if group.needs_review
-                else [row for row in active if row.confirmed_at is None]
+                else [
+                    row
+                    for row in active
+                    if row.confirmed_at is None or row.confirmed_by == AUTO_REVIEWER
+                ]
             )
             if not waiting:
                 raise HTTPException(status_code=409, detail="这一组已经确认过")
@@ -509,13 +523,7 @@ def router(require_admin, audit) -> APIRouter:
             if not confirmed:
                 raise HTTPException(status_code=409, detail="这一组没有确认过，不用撤回")
             before = {row.document_id: row.confirmed_by for row in confirmed}
-            for row in rows:
-                if row.active:
-                    _unconfirm(row)
-                    row.joined_by = "human"
-            group.needs_review = False
-            group.no_auto = True
-            bump(group, datetime.now(UTC))
+            withdraw_group(group, rows, datetime.now(UTC))
             session.commit()
         audit(
             request,

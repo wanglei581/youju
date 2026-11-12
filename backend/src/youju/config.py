@@ -50,6 +50,8 @@ class Settings(BaseSettings):
     template_newdocs: dict | None = None
     # 定时任务真正发送订阅消息（云托管开放接口服务）；不开时只演练。与是否信任请求头分开设置
     send_wx_messages: bool = False
+    # 默认关；打开前须先通过 100 组抽查门禁。关闭后下一轮 repost-groups 退回自动确认。
+    repost_auto_merge: bool = False
     # 用户协议和隐私保护指引的当前版本，和小程序 content/legal.js 的 version 一致。
     # 版本号按时间可排序（2026-10、2026-11……），后端和小程序都直接比字符串：
     # 同意过更新的版本也算同意了旧的。
