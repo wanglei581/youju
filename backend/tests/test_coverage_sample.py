@@ -785,6 +785,7 @@ def test_city_upper_flag(session):
     own = [f"南京市工业和信息化局关于第{n}批项目的通知" for n in range(6)]
     upper = source("https://gxj.nanjing.gov.cn/zcfg/", provincial + own[:3])
     mixed = source("https://gxj.nanjing.gov.cn/tzgg/", provincial[:4] + own)
+    few = source("https://gxj.nanjing.gov.cn/few/", provincial[:3])
     county = source(
         "https://www.xuanwu.gov.cn/gxj/",
         [f"南京市工业和信息化局关于第{n}批项目的通知" for n in range(7)]
@@ -796,6 +797,7 @@ def test_city_upper_flag(session):
     city = {r.source.url: r for r in sample_rows(session, "市级", now=NOW)}
     assert "上级" in city[upper.url].failed  # 7/10
     assert "上级" not in city[mixed.url].failed  # 4/10
+    assert "上级" in city[few.url].failed  # 条目少的按现有的算：3/3
     [row] = [r for r in sample_rows(session, "区县级", now=NOW) if r.source.url == county.url]
     assert "上级" in row.failed  # 区县栏目里市里的文件 7/10
     assert not upper_level_title(upper, "南京市人民政府办公厅关于转发《江苏省……》的通知")
@@ -814,3 +816,22 @@ def test_city_upper_flag(session):
     # 区县栏目：本市全称写在中间也算上级；写着本区名称的不算
     assert upper_level_title(county, "贯彻落实南京市营商环境条例的工作方案")
     assert not upper_level_title(county, "玄武区贯彻落实南京市营商环境条例的工作方案")
+    # 本级字样、"财政部门"不算；法律名写在中间算
+    assert not upper_level_title(upper, "市级财政专项资金管理办法")
+    assert not upper_level_title(upper, "财政部门做好专项资金绩效评价的通知")
+    assert upper_level_title(upper, "新修订的安全生产法明年施行")
+    assert upper_level_title(upper, "《数据安全法》实施三周年")
+    assert not upper_level_title(upper, "城市绿化管理办法实施细则修订说明（市级）")
+
+
+def test_upper_level_title_same_name_places() -> None:
+    """本级简称后面紧跟"省""州"的是别的地方：吉林市的栏目里"吉林省……"是上级，恩施市的栏目里
+    "恩施州……"是上级；写着本级全称的照样不算。"""
+    from youju.govsites.sample import upper_level_title
+
+    jilin = Source(level="市级", province="吉林", city="吉林")
+    assert upper_level_title(jilin, "吉林省人民政府关于促进民营经济发展的意见")
+    assert not upper_level_title(jilin, "吉林市人民政府关于促进民营经济发展的意见")
+    enshi = Source(level="区县级", province="湖北", city="恩施州", district="恩施市")
+    assert upper_level_title(enshi, "恩施州人民政府关于促进民营经济发展的意见")
+    assert not upper_level_title(enshi, "恩施市人民政府关于促进民营经济发展的意见")

@@ -94,10 +94,23 @@ _BARE_RULE = re.compile(r"(?:办法|规定|条例|法典|细则|规则|法)$")
 _PROVINCE_ORGANS = re.compile(r"省委|省政府|省人民政府|省人大|省纪委")
 _NATIONAL = re.compile(
     r"中华人民共和国|国务院|中共中央|中办|国办|全国人民代表大会|全国人大"
-    r"|国家[^级]{0,12}(?:局|委|部|署|院)|财政部|商务部|教育部|科技部|工业和信息化部|工信部|公安部"
-    r"|民政部|司法部|人力资源社会保障部|自然资源部|生态环境部|住房城乡建设部|交通运输部|水利部"
-    r"|农业农村部|文化和旅游部|应急管理部|审计署|海关总署|税务总局|市场监管总局|金融监管总局|证监会"
+    r"|国家[^级]{0,12}(?:局|委|部(?!门)|署|院)|(?:财政部|商务部|教育部|科技部|工业和信息化部|工信部"
+    r"|公安部|民政部|司法部|人力资源社会保障部|自然资源部|生态环境部|住房城乡建设部|交通运输部|水利部"
+    r"|农业农村部|文化和旅游部|应急管理部)(?!门)|审计署|海关总署|税务总局|市场监管总局|金融监管总局"
+    r"|证监会"
 )
+# 法律名：书名号里以"法""法典"结尾的（"办法"不算），或常见的"……保护法""……安全法"一类
+_LAW_NAME = re.compile(
+    r"《[^》]{2,40}(?<!办)法(?:典)?》|(?:保护|管理|促进|安全|生产|防治|保障|监督|许可|处罚|登记|评价"
+    r"|标准化|统计|审计|预算|会计|劳动|合同|采购|投标|所得税|增值税)法(?!规|人|院|官)"
+)
+# 标题里写着本级的字样（"市级……办法""全县……"）：本级发的
+_OWN_MARK = {
+    "市级": re.compile(r"本市|我市|全市|市级|市本级"),
+    "区县级": re.compile(r"本县|我县|全县|县级|本区|我区|全区|区级|本旗|全旗"),
+}
+# 本级简称后面紧跟这些的，是别的地方（"吉林省"不是吉林市，"恩施州"不是恩施市）
+_HIGHER_SUFFIX = re.compile(r"省|州|盟|地区|自治")
 # 解读、图解（本级名称已经先排除了，剩下的多是解读上级政策）
 _EXPLAIN = re.compile(r"^(?:一图读懂|图解)|解读")
 _VIEWER = re.compile(r"pdfjs|viewer\.html\?file=", re.I)
@@ -182,13 +195,23 @@ UPPER_RECENT = 10
 UPPER_SHARE = 0.6
 
 
+def _names_place(text: str, names: set[str]) -> bool:
+    """标题里写着这个地方的名称。简称后面紧跟"省""州"一类的不算（"吉林省"不是吉林市）。"""
+    return any(
+        not _HIGHER_SUFFIX.match(text, hit.end())
+        for name in names
+        for hit in re.finditer(re.escape(name), text)
+    )
+
+
 def upper_level_title(s: Source, title: str) -> bool:
-    """地市、区县栏目里像上级文件的标题，粗筛，候选交给人看。标题里写着本级名称的（"南京市……"
-    "某某县……"）不算。下面几种算：
-    - 国家层面的（同省级那条：《》开头、国务院、部委……）或以省名、"省"开头的；区县的还算以本市
-      名称开头的；
-    - 不是本级"关于……""转发……"的（转发上级文件、落实省里部署的，算本级的），标题里任意位置有省的
-      全称、省委省政府一类、国家层面的机关和法律（区县的还算本市全称），或是解读、图解。"""
+    """地市、区县栏目里像上级文件的标题，粗筛，候选交给人看。
+    - 标题里写着本级名称的（"南京市……""某某县……"）不算。
+    - 算上级：国家层面的（同省级那条：《》开头、国务院、部委……），以省名、"省"开头的；区县的还算
+      以本市名称开头的。
+    - 本级发的不算：写着"本市""市级""全县"一类的，"关于……""转发……"（落实上级部署、转发上级文件）。
+    - 剩下的再算：只有规章名、不带"关于"的（同省级那条）；任意位置有省的全称、省委省政府一类、国家
+      层面的机关、法律名（区县的还算本市全称）；解读、图解。"""
     text = title.strip()
     if s.level == "区县级" and s.district:
         own = {v for v in name_variants(s.district) | {s.district} if len(v) >= 2}
@@ -196,21 +219,23 @@ def upper_level_title(s: Source, title: str) -> bool:
     else:
         own = _city_names(s) if s.city else set()
         upper_names = set()
-    if not text or any(v in text for v in own):
+    if not text or _names_place(text, own):
         return False
     prov = {v for v in name_variants(s.province) | {s.province} if len(v) >= 2}
-    if text.startswith((*prov, "省", *upper_names)):
+    if text.startswith((*prov, "省", *upper_names)) or _CENTRAL.search(text):
         return True
-    if _CENTRAL.search(text) or ("关于" not in text and _BARE_RULE.search(text)):
-        return True
-    if text.startswith("关于") or "转发" in text:
+    own_mark = _OWN_MARK["区县级" if s.level == "区县级" else "市级"]
+    if own_mark.search(text) or text.startswith("关于") or "转发" in text:
         return False
+    if "关于" not in text and _BARE_RULE.search(text):
+        return True
     full = {v for v in prov if v.endswith(("省", "自治区", "市"))} | {s.province + "省"}
     full |= {v for v in upper_names if v.endswith(("市", "州", "盟", "地区"))}
     return bool(
         any(v in text for v in full)
         or _PROVINCE_ORGANS.search(text)
         or _NATIONAL.search(text)
+        or _LAW_NAME.search(text)
         or _EXPLAIN.search(text)
     )
 
@@ -400,9 +425,10 @@ def sample_rows(
             share = personal_share([t or "" for t in recent])
             if share is not None and share >= PERSONAL_SHARE:
                 row.failed.append("个人事项")
+            # 条目少的照样按现有的算（3 条都是上级文件的也要转人工）
             newest = [t or "" for t in recent[:UPPER_RECENT]]
             upper = sum(upper_level_title(s, t) for t in newest)
-            if len(newest) >= PERSONAL_MIN_ITEMS and upper >= UPPER_SHARE * len(newest):
+            if newest and upper >= UPPER_SHARE * len(newest):
                 row.failed.append("上级")
         rows.append(row)
     _mark_duplicates(rows)
