@@ -92,16 +92,19 @@ _ROLE = re.compile(
         )
     )
 )
-# "市长""区长"这类职务前一个字是别的字时，多半是地名连着"长"字（"我市长期""宜宾市长江"
-# "城区长沙湾""新区长芦街道"）：前一个字得是标点、"副""代"或同一个字（"市市长"），后面的字才当人名；
+# "市长""区长"这类职务前一个字不是标点、"副""代"或同一个字（"市市长"）时，可能是真职务（"北京市长
+# 某某"），也可能是地名连着"长"字（"宜宾市长江""城区长沙湾""西安市长安区""新区长芦街道"）：
+# "长"后面接的是常和"长"连成地名、词的字，不当人名（"我市长期"的"期照"不像人名，本来就不挡）；
 # 人名在职务前面的，要在标题开头或标点后面（"第三季度局长接待日"不挡）
 _PLACE_ROLES = ("省长", "市长", "县长", "区长", "州长", "旗长", "盟长", "镇长", "乡长")
 _OPEN = '、，,：:；;（(“"《—- 　'
-# 像人名的词里有单位、地名的字不算（"安区""沙市""公室"），以这些开头的也不是人名（"关于我市……"）
-_UNIT_CHARS = frozenset("区县市镇乡村省局厅委办部室组处科站所院校会")
+_CHANG_NEXT = frozenset("江沙安宁乐丰白阳葛武海寿春兴清泰芦城")
+# 像人名的词以单位、地名的字结尾的不算（"安区""沙市""公室"），三个字的前两个字也一样（"安区人"
+# "沙市财"）；名字里间有这些字的照样算（"王会"）。以这些开头的也不是人名（"关于我市……""国家宣布……"）
+_UNIT_ENDS = (*_NOT_NAME_END, *"室组处科乡")
 _NOT_LEAD = (
     *("关于", "对于", "我", "本", "全", "各", "该", "此", "据", "为", "从", "在", "与", "将"),
-    *("把", "经"),
+    *("把", "经", "国家", "中央"),
 )
 # ② 领导人、官员的新闻："某某出席……""某某主持召开……""某某签署国务院令""某某同某国总统会谈"
 #   "某某到某县督导调研""某某总书记重要讲话"。"像人名"按常见姓氏认，不常见的姓认不出：开头或标点
@@ -146,7 +149,7 @@ def _named(title: str) -> bool:
 
 
 def _personish(word: str, *, any_surname: bool = False) -> bool:
-    """新闻标题里这个词像不像人名：不含单位、地名的字，不以"关于""我"这类开头。
+    """新闻标题里这个词像不像人名：不以单位、地名的字结尾，不以"关于""我"这类开头。
 
     any_surname：不看姓氏（不常见的姓认不出）。"""
     from youju.crawler.detail import _name_like
@@ -154,8 +157,8 @@ def _personish(word: str, *, any_surname: bool = False) -> bool:
     return (
         len(word) >= 2
         and re.fullmatch(f"{_H}+", word) is not None
-        and not set(word) & _UNIT_CHARS
-        and not word.endswith(_NOT_NAME_END)
+        and not word.endswith(_UNIT_ENDS)
+        and not (len(word) == 3 and word[:2].endswith(_UNIT_ENDS))
         and not word.startswith(_NOT_LEAD)
         and (any_surname or _name_like(word))
     )
@@ -169,10 +172,12 @@ def _news_named(title: str) -> bool:
         role, i = m.group(0), m.start()
         prev = title[i - 1] if i else ""
         place_ok = not prev or prev in _OPEN or prev in "副代" or prev == role[0]
-        if role not in _PLACE_ROLES or place_ok:
-            after = title[m.end() : m.end() + 3]
-            if any(_personish(after[:k]) for k in (2, 3)):
-                return True
+        after = title[m.end() : m.end() + 3]
+        place_word = (
+            role in _PLACE_ROLES and not place_ok and after[:1] in _CHANG_NEXT
+        )  # "宜宾市长江"
+        if not place_word and any(_personish(after[:k]) for k in (2, 3)):
+            return True
         for k in (2, 3):
             j = i - k
             if j >= 0 and (j == 0 or title[j - 1] in _OPEN) and _personish(title[j:i]):
