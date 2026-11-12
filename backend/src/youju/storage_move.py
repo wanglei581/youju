@@ -134,9 +134,12 @@ def _disk_sha256(store: storage.Backend, path: str) -> str | None:
     if not isinstance(store, storage.DiskBackend) or not store.exists(path):
         return None
     digest = hashlib.sha256()
-    with store._file(path).open("rb") as fh:
-        while chunk := fh.read(CHUNK):
-            digest.update(chunk)
+    try:
+        with store._file(path).open("rb") as fh:
+            while chunk := fh.read(CHUNK):
+                digest.update(chunk)
+    except OSError:
+        return None  # 读不了已有的：当作不知道，照写一遍
     return digest.hexdigest()
 
 

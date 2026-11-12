@@ -773,8 +773,11 @@ def export(engine: Engine, out: IO[bytes]) -> dict[str, int]:
             for t in tables:
                 (col,) = pk_columns(t)
                 stmt = select(t).order_by(t.c[col])
-                if t.name == "document_deadlines":
-                    stmt = stmt.where(t.c.origin != "user")
+                own = sync_tables.SERVER_OWNED.get(t.name)
+                if own is not None:
+                    # 服务器自己的行（用户线索生成的截止日期）不导出：本机不该有，也不能把本机的
+                    # 自增起点带进服务器那段
+                    stmt = stmt.where(own(t))
                 count = 0
                 result = conn.execution_options(stream_results=True, yield_per=1000).execute(stmt)
                 for row in result.mappings():

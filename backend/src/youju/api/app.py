@@ -86,12 +86,25 @@ from youju.sync.server import router as sync_router
 from youju.takedown import available_condition, change_state, is_taken_down
 
 _DOCS = get_settings().role == "all"  # 只在本机开发开放接口文档，线上两个服务都关闭
+
+
+@contextlib.asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    # 2.0 服务器启动时把同步表的编号下限抬好（没配同步的云托管什么都不做，
+    # 见 ensure_floors_on_start）
+    from youju.sync.server import ensure_floors_on_start
+
+    await run_in_threadpool(ensure_floors_on_start)
+    yield
+
+
 app = FastAPI(
     title="有据 API",
     version="0.1.0",
     docs_url="/docs" if _DOCS else None,
     redoc_url="/redoc" if _DOCS else None,
     openapi_url="/openapi.json" if _DOCS else None,
+    lifespan=_lifespan,
 )
 app.include_router(v1_router)
 app.include_router(auth_router)

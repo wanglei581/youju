@@ -139,6 +139,23 @@ def ensure_floors(conn: Connection) -> None:
     _FLOORS_READY = True
 
 
+def ensure_floors_on_start() -> None:
+    """2.0 服务器（配了同步密钥、收本机同步的）启动时就把编号下限抬好：管理台把用户线索送核对时
+    （生成服务器自己的截止日期）不会先拿到小编号。没配同步的（云托管）什么都不做。出错只记日志，
+    收第一批同步时（ensure_state）还会再试。"""
+    settings = get_settings()
+    secret = settings.sync_secret.get_secret_value().strip() if settings.sync_secret else ""
+    if not secret:
+        return
+    try:
+        with get_engine().connect() as conn:
+            ensure_floors(conn)
+    except Exception as exc:  # noqa: BLE001 - 启动不能因为它失败；只记类型
+        log.warning(
+            "启动时抬同步表的编号下限没成功（收第一批同步时会再试）：%s", type(exc).__name__
+        )
+
+
 def ensure_state(engine: Engine) -> None:
     """进度表（不是迁移：只是同步的记账，服务器第一次收同步时建）。"""
     with engine.connect() as conn:

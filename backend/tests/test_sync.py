@@ -439,6 +439,40 @@ def test_server_id_floor_fits_the_key_column():
         assert floor + 100_000_000 < 2**31 - 1
 
 
+def test_server_start_raises_the_id_floor_only_when_sync_is_on(env, monkeypatch):
+    """配了同步密钥的服务器启动时就把编号下限抬好（管理台送核对生成的截止日期不会先拿到小编号）；
+    没配同步的（云托管）启动时什么都不做。"""
+    floor = sync_tables.SERVER_ID_FLOOR["document_deadlines"]
+
+    def auto():
+        with env.server.connect() as conn:
+            conn.execute(text("SET SESSION information_schema_stats_expiry = 0"))
+            return conn.scalar(
+                text(
+                    "SELECT AUTO_INCREMENT FROM information_schema.TABLES"
+                    " WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'document_deadlines'"
+                )
+            )
+
+    def restart():
+        with env.server.begin() as conn:
+            conn.execute(text("SET FOREIGN_KEY_CHECKS = 0"))
+            conn.execute(text("TRUNCATE TABLE document_deadlines"))
+            conn.execute(text("SET FOREIGN_KEY_CHECKS = 1"))
+        sync_server._FLOORS_READY = False
+        with TestClient(app):
+            pass
+
+    monkeypatch.delenv("YOUJU_SYNC_SECRET", raising=False)
+    get_settings.cache_clear()
+    restart()
+    assert auto() is None or auto() < floor
+    monkeypatch.setenv("YOUJU_SYNC_SECRET", SECRET)
+    get_settings.cache_clear()
+    restart()
+    assert auto() >= floor
+
+
 def test_pushed_rows_never_overwrite_server_owned_rows(env):
     """服务器自己的行（用户线索生成的截止日期）从编号下限往上分；万一本机推来的行和它同编号，
     不写、报出来，不盖掉服务器的行。"""
