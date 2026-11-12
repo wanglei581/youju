@@ -73,6 +73,99 @@ _NOT_NAME_END = tuple(
     "型油类业品化性气水电料费税率险款价区县市镇村省局厅委办部站所院校园河湖江苑条"
 )
 
+# 新闻标题里的人名（11/12 #499 复核时在证据表里见过，上面几种写法都认不出）。
+# ① 职务加人名："局长某某现场接听""党组书记、局长某某接听""代区长某某接待来访群众"
+#   "省政协副主席某某来滁调研""某某市长致全市人民的公开信"。职务词前后紧跟像人名的 2–3 个字就挡，
+#   不看后文（"接待""来""致"……写法太多）。"委员""代表""常委"不算职务词（"常务委员会"
+#   "人大代表建议"太常见）
+_ROLE = re.compile(
+    "|".join(
+        sorted(
+            (
+                *("书记", "省长", "市长", "县长", "区长", "州长", "旗长", "盟长", "镇长", "乡长"),
+                *("局长", "主任", "主席", "部长", "厅长", "处长", "科长", "院长", "校长", "董事长"),
+                *("总经理", "秘书长", "行长", "社长", "所长", "队长", "站长", "署长", "司长"),
+                *("关长", "会长", "理事长", "检察长", "庭长", "政委", "总理", "委员长"),
+            ),
+            key=len,
+            reverse=True,
+        )
+    )
+)
+# 职务前后紧挨着的词、新闻动词前面的词，按"宁可多挡"认人名（_name_ish）：常见姓氏开头、不是常用词、
+# 不以地名的字（市县区……）结尾就算（"沙市""安区"不算；三个字的前两个字也一样："沙市财""安区人"），
+# 名字里有"会""江""科"这类字的照样算（"局长王会""局长王江""王科出席"）。不看姓氏的（开头或标点后跟
+# 出席、主持这类新闻动词的）不是常见姓氏开头时，以机构的字结尾的也不算（"市委主持""市政府与"）。
+# 不为"长江""长沙"一类地名开例外（"局长江某某"也是人名）：地名连着"长"字的标题（"宜宾市长江流域"
+# "城区长沙湾"）会多挡，挡了还有日期和网址。职务后面接"单位""质量"的不是人名（"副理事长单位"
+# "市长质量奖"）。人名在职务前面的，要在标题开头或标点后面（"第三季度局长接待日"不挡）
+_OPEN = '、，,：:；;（(“"《—- 　'
+_PLACE_ENDS = tuple("市县区省州镇乡村旗盟")
+_NOT_ROLE_NAMES = ("单位", "质量")
+_ORG_ENDS = tuple("委府办局厅院部司处室署会团社校所站队组科")
+# 候选正好是这些常用词的不是人名（"关于宣布……""全市出席……""我市……""本次……"）；只认整词，不按单字、
+# 不按开头否决（"王在某出席""全力某出席"照样挡，宁可多挡；"关于我市长期……"的"关于我"也会被挡）
+_NOT_NAME_WORDS = frozenset(
+    (
+        *("关于", "对于", "国家", "中央", "全市", "全省", "全国", "全县", "全区", "全州", "全镇"),
+        *("全乡", "全村", "全体", "全面", "全力", "全年", "全民", "全球", "全部", "全新", "全域"),
+        *("全程", "全会", "全员", "本市", "本省", "本县", "本区", "本局", "本次", "本年", "本期"),
+        *("为了", "从严", "从快", "从业", "将于", "经济", "经营"),
+        *("我市", "我省", "我国", "我县", "我区", "我局", "我委", "我院", "我校", "我们", "各地"),
+        *("各级", "各区", "各县", "各市", "各类", "各项", "各界", "该市", "该县", "该区", "该局"),
+        *("此次", "此前", "据悉", "在京", "与会", "把握"),
+        *("关于对", "关于在", "关于向", "关于为", "关于与", "关于将", "关于把", "关于从", "关于以"),
+        *("时间", "日期", "地点", "主题", "内容", "来源", "作者", "标题", "附件", "备注", "说明"),
+        *("地址", "电话", "编号", "文号", "索引"),
+    )
+)
+# ② 领导人、官员的新闻："某某出席……""某某主持召开……""某某签署……""某某同某国总统会谈"
+#   "某某到某县督导调研""某某在某地调研时强调""某某调研……""某某某某某某赴某地调研"（两位连写）
+#   "某某参加……""某某在……会议上强调""某某赴某地出席……""某某等出席……""某某、某某共同出席……"
+#   "某某总书记重要讲话"。"像人名"按常见姓氏认，不常见的姓认不出：开头或标点后面跟出席、主持这类
+#   只有人才做的新闻动词的，不看姓氏；"宣布""签署""调研"一类（"正式宣布""专题调研"）、总书记
+#   前面（"牢记总书记嘱托"）的要看姓氏，现任中央领导另有名单
+_TOP = re.compile(rf"({_H}{{2,3}})(?=总书记|总理|委员长)")
+_NOT_TOP_END = tuple("着的了和与及在把将对向")  # "循着总书记足迹"
+# 新闻动词：前面那串字（到开头或标点为止）是人名的就挡。2–3 个字的按下面各组看不看姓氏；4–9 个字的
+# 能拆成两三个都像人名的词（看姓氏）就挡（两位领导连写："某某某某某某赴某地调研"）
+_LEAD = (
+    *("出席", "主持", "会见", "会谈", "接见", "致信", "致电", "致辞", "回信", "看望", "慰问"),
+    *("视察", "寄语"),
+)
+_LEAD_WEAK = (
+    *("宣布", "签署", "调研", "考察", "督导", "督查", "检查", "走访", "暗访", "参加", "强调"),
+    *("指出", "讲话", "作出", "批示", "接待", "接受", "当选", "发表", "要求"),
+)
+_PAIR = ("同", "与")  # 后面要有会谈、通电话这类词
+_PAIR_WORDS = ("会谈", "通电话", "会见", "互致", "座谈")
+# 后面要有调研、出席、强调这类词（"某某率调研组赴某地调研""某某在《某某》发表署名文章"）
+_TRIP = ("到", "赴", "在", "来", "前往", "带队", "率队", "率团", "率")
+_TRIP_WORDS = (
+    *("调研", "考察", "督导", "督查", "检查", "走访", "慰问", "看望", "暗访", "出席", "参加"),
+    *("主持", "会见", "讲话", "强调", "指出", "视察", "发表", "要求", "指导", "报告"),
+)
+# 人名和动词中间常夹的词（"某某等出席""某某、某某共同出席""某某亲切看望""某某专题调研"），
+# 先去掉再看
+_BETWEEN = (
+    *("等人", "等", "共同", "一行", "同志", "一同", "分别", "亲切", "热情", "专题", "实地"),
+    *("专程", "深入", "亲自"),
+)
+# 开头或标点后"某某："的讲话摘要标题（"某某：推动……"），看姓氏
+_QUOTE = re.compile(rf"(?:^|[{re.escape(_OPEN)}])({_H}{{2,3}})[：:]")
+# "某某作政府工作报告"："作"和"报告"中间隔着几个字
+_NEWS_VERB = re.compile(
+    "|".join(
+        [
+            *sorted({*_LEAD, *_LEAD_WEAK, *_PAIR, *_TRIP}, key=len, reverse=True),
+            r"作(?=[^，。、：:\s]{0,8}报告)",
+        ]
+    )
+)
+# 中央领导的姓名：转载的中央新闻、"某某思想"的学习材料里最常见，写法太多（"……作出重要指示"
+# "……：在……座谈会上的讲话""……法治思想"），单列；换届时更新
+_LEADERS = ("习近平", "李强", "赵乐际", "王沪宁", "蔡奇", "丁薛祥", "李希", "韩正", "李克强")
+
 
 def _named(title: str) -> bool:
     from youju.crawler.detail import _name_like
@@ -98,11 +191,111 @@ def _named(title: str) -> bool:
     return False
 
 
+def _name_ish(word: str, *, any_surname: bool = False) -> bool:
+    """职务旁、新闻动词前的词像不像人名（宁可多挡）：常见姓氏开头、不是常用词或地名、不以地名的字结尾、
+    不以"关于""我"这类开头。any_surname：不看姓氏（不常见的姓认不出）。"""
+    from youju.crawler import detail
+
+    return (
+        2 <= len(word) <= 3
+        and re.fullmatch(f"{_H}+", word) is not None
+        and (
+            word[0] in detail._SURNAMES
+            or word.startswith(detail._COMPOUND_SURNAMES)
+            or (
+                any_surname
+                and not word.endswith(_ORG_ENDS)
+                and not (len(word) == 3 and word[:2].endswith(_ORG_ENDS))
+            )
+        )
+        and word not in detail._COMMON_WORDS
+        and word not in detail._TITLES
+        and word not in detail._PLACE_NAMES
+        and not word.startswith(_NOT_ROLE_NAMES)
+        and not word.endswith(_PLACE_ENDS)
+        and not (len(word) == 3 and word[:2].endswith(_PLACE_ENDS))
+        and word not in _NOT_NAME_WORDS
+    )
+
+
+def _news_named(title: str) -> bool:
+    """新闻标题里写着领导人、官员姓名的（职务加人名、某某出席……、某某到某县调研……）。"""
+    if any(name in title for name in _LEADERS):
+        return True
+    for m in _ROLE.finditer(title):
+        rest = title[m.end() :]
+        if any(_name_ish(rest[:k]) for k in (2, 3)):
+            return True
+        i = m.start()
+        for prefix in ("常务副", "副", "代"):  # "某某副市长""某某常务副市长"
+            if title[:i].endswith(prefix):
+                i -= len(prefix)
+                break
+        for k in (2, 3):
+            j = i - k
+            if j >= 0 and (j == 0 or title[j - 1] in _OPEN) and _name_ish(title[j:i]):
+                return True
+    for m in _TOP.finditer(title):
+        if not m.group(1).endswith(_NOT_TOP_END) and _name_ish(m.group(1)):
+            return True
+    if any(_name_ish(m.group(1)) for m in _QUOTE.finditer(title)):
+        return True
+    for m in _NEWS_VERB.finditer(title):
+        verb, rest = m.group(0), title[m.end() :]
+        if verb in _PAIR and not any(w in rest for w in _PAIR_WORDS):
+            continue
+        if verb in _TRIP and not any(w in rest for w in _TRIP_WORDS):
+            continue
+        if _names_before(title, m.start(), any_surname=verb in _LEAD or verb in _PAIR):
+            return True
+    return False
+
+
+def _names_before(title: str, i: int, *, any_surname: bool) -> bool:
+    """title[i] 前面那串汉字（到开头或标点为止；动词前的空格不算）是不是人名：2–3 个字的看
+    any_surname；4–9 个字的拆成两三个 2–3 个字的词（中间可以有"与""和""及"），每个都像人名
+    （看姓氏）才算。"""
+    while i > 0 and title[i - 1] in " \u3000":  # "某某 出席会议"
+        i -= 1
+    j = i
+    while j > 0 and re.fullmatch(_H, title[j - 1]):
+        j -= 1
+    if j > 0 and title[j - 1] not in _OPEN:
+        return False
+    run = title[j:i]
+    for _ in range(2):  # "某某等亲切看望"：最多去掉两个
+        word = next((w for w in _BETWEEN if run.endswith(w) and len(run) > len(w) + 1), "")
+        run = run[: len(run) - len(word)]
+    if len(run) in (2, 3):
+        return _name_ish(run, any_surname=any_surname)
+    if not 4 <= len(run) <= 11 or any(w in run for w in _NOT_NAME_WORDS):  # "关于专项执法"
+        return False
+    parts = [w for w in re.split("[与和及]", run) if w]  # "某某与某某赴某地调研"
+    if len(parts) > 1:
+        return all(len(w) in (2, 3) and _name_ish(w) for w in parts)
+    return len(run) <= 9 and any(_split_names(run, n) for n in (2, 3))
+
+
+def _split_names(run: str, parts: int) -> bool:
+    """run 能不能正好拆成 parts 个 2–3 个字、都像人名（看姓氏）的词。"""
+    if parts == 1:
+        return len(run) in (2, 3) and _name_ish(run)
+    return any(
+        _name_ish(run[:k]) and _split_names(run[k:], parts - 1) for k in (2, 3) if len(run) > k
+    )
+
+
 def public_title(title: str) -> str:
     """写进公开证据的样例标题：个人事项或写着人名的换成 MASK，其余照原样。"""
     from youju.api.v1 import personal_matter
 
     injury = any(w in title for w in _INJURY_WORDS) and any(w in title for w in _INJURY_PAPERS)
-    if personal_matter(title) or any(w in title for w in _EXTRA_WORDS) or injury or _named(title):
+    if (
+        personal_matter(title)
+        or any(w in title for w in _EXTRA_WORDS)
+        or injury
+        or _named(title)
+        or _news_named(title)
+    ):
         return MASK
     return title
