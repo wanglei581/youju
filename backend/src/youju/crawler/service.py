@@ -226,7 +226,8 @@ def _items_via_adapter(
 
     只请求页面写明的那个接口地址、参数原样照页面（D-128 读取护栏 ①），不另外构造请求。"""
     api = api or find_list_api(page.text, page.final_url or url, url)
-    if api is None:
+    if api is None or parser_config.get(LIST_API_OPEN_KEY) != api.adapter:
+        # 没认出接口，或来源没标"经接口读"（D-128）：不请求接口（调用的地方本来就先查过标记）
         return _AdapterResult([])
     # 只取页面写明的那个地址，跳到别处不跟（D-128 读取护栏 ①）
     result = fetcher.fetch(api.url, same_address_only=True)
@@ -280,7 +281,7 @@ def check_source(
             # 部门页上认不出数字广东的列表接口（改版、分类没了或跳到别处）：不请求接口，记读不出、
             # 写明原因，进失败清单等复检
             status, error = "parse_empty", GKMLPT_UNRECOGNIZED_MESSAGE
-        if api is not None and parser_config.get(LIST_API_OPEN_KEY) != api.adapter:
+        elif api is not None and parser_config.get(LIST_API_OPEN_KEY) != api.adapter:
             # D-128：来源没标"经接口读"（复检、抽查合格、打开时才写）——不走接口、不读，也不悄悄
             # 记成 0 条：记"读不出"并写明待复检，进失败清单等复检
             items = []

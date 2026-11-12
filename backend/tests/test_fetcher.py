@@ -292,6 +292,31 @@ def test_per_host_interval() -> None:
     assert sleeps == [3.0, 3.0, 3.0]
 
 
+def test_default_port_counts_as_the_same_host() -> None:
+    # 汕尾等网站同一个网站的网址有的带 :443、有的不带：算同一个网站，照样隔 3 秒、robots 只读一次
+    now = {"t": 0.0}
+    sleeps: list[float] = []
+    robots: list[str] = []
+
+    def clock() -> float:
+        return now["t"]
+
+    def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        now["t"] += seconds
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/robots.txt":
+            robots.append(str(request.url))
+            return httpx.Response(404)
+        return httpx.Response(200, text=LIST_HTML)
+
+    with make_fetcher(handler, interval=3.0, clock=clock, sleep=sleep) as f:
+        f.fetch("https://a.gov.cn:443/1.html")
+        f.fetch("https://a.gov.cn/2.html")
+    assert sleeps == [3.0, 3.0] and len(robots) == 1
+
+
 def deadline_fetcher(handler, now: dict, deadline: float) -> PoliteFetcher:
     return PoliteFetcher(
         "TestAgent YoujuBot/0.1",

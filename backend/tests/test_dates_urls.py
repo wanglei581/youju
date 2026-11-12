@@ -178,3 +178,15 @@ def test_url_key_preserves_information_categories_only():
     assert url_key(base + "#xxgk-content") == url_key(base)
     assert url_key(base + "#xxgk-1229225203") == url_key(base)
     assert url_key(base + "#xxgk-gkmlpt-8") == "example.gov.cn/fgj/gkmlpt/index#xxgk-gkmlpt-8"
+
+
+def test_host_and_origin_ignore_the_default_port():
+    # 同一网站带不带默认端口是同一个网站：限速、robots、分组都按它（D-013，同站隔 3 秒）
+    from youju.crawler.urls import host_of, origin_of
+
+    assert host_of("https://www.Shanwei.gov.cn:443/a") == host_of("https://www.shanwei.gov.cn/b")
+    assert host_of("http://x.gov.cn:80/a") == "x.gov.cn"
+    assert host_of("https://x.gov.cn:8443/a") == "x.gov.cn:8443"
+    assert host_of("http://x.gov.cn:443/a") == "x.gov.cn:443"  # http 的默认端口是 80
+    assert origin_of("https://X.gov.cn:443/a") == "https://x.gov.cn"
+    assert host_of("https://x.gov.cn:99999/a") == "x.gov.cn:99999"  # 端口写坏的照原样，不报错
