@@ -356,8 +356,10 @@ NORMAL_X = (
 def test_list_api_only_accepts_whitelisted_same_site_endpoint():
     from youju.crawler.adapters import api_html, find_list_api
 
-    good = """<script src="/x/unitbuild.js" url="/api-gateway/jpaas-publish-server/front/page/build/unit"
-      queryData="{'pageType':'column','tagId':'当前栏目list','pageId':'1'}"></script>"""
+    good = """<script id="u1" src="/x/unitbuild.js" webId="1" parseType="bulidstatic"
+      url="/api-gateway/jpaas-publish-server/front/page/build/unit"
+      queryData="{'parseType':'bulidstatic','webId':'1','tplSetId':'T','pageType':'column',
+      'tagId':'当前栏目list','editType':'null','pageId':'1'}"></script>"""
     api = find_list_api(good, "https://kjt.zj.gov.cn/col/col1/index.html")
     assert api.url.startswith(
         "https://kjt.zj.gov.cn/api-gateway/jpaas-publish-server/front/page/build/unit?"
@@ -372,7 +374,7 @@ def test_list_api_only_accepts_whitelisted_same_site_endpoint():
     evil = good.replace('url="/api', 'url="https://evil.example.com/api')
     assert find_list_api(evil, "https://kjt.zj.gov.cn/") is None
     assert api_html(api, '{"data":"参数错误"}') == ""
-    bad_query = good.replace("{'pageType'", "{['x']:'1','pageType'")
+    bad_query = good.replace("{'parseType'", "{['x']:'1','parseType'")
     assert find_list_api(bad_query, "https://kjt.zj.gov.cn/") is None
 
 

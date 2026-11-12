@@ -19,11 +19,28 @@ from youju.crawler.adapters import (
 from youju.crawler.fetcher import FetchResult, PoliteFetcher
 
 PAGE_URL = "https://kjt.zj.gov.cn/col/col1229225203/index.html"
-PAGE = (
-    f'<html><body><ul><script id="u1" src="/x/unitbuild.js" url="{HANWEB_JPAAS_PATH}" '
-    "queryData=\"{'pageType':'column','tagId':'当前栏目list','pageId':'1229225203'}\">"
-    "</script></ul></body></html>"
-)
+# 和真实声明一样的写法：6 个属性，queryData 是那 7 个参数（缓存里 714 个真实声明全是这样）
+BASE_QUERY = {
+    "parseType": "bulidstatic",
+    "webId": "3387",
+    "tplSetId": "T1",
+    "pageType": "column",
+    "tagId": "当前栏目list",
+    "editType": "null",
+    "pageId": "1229225203",
+}
+
+
+def _decl(url: str = HANWEB_JPAAS_PATH, sid: str = "u1", **query: str) -> str:
+    q = {**BASE_QUERY, **query}
+    data = "{" + ",".join(f"'{k}':'{v}'" for k, v in q.items()) + "}"
+    return (
+        f'<script id="{sid}" src="/x/unitbuild.js" webId="3387" parseType="bulidstatic" '
+        f'url="{url}" queryData="{data}"></script>'
+    )
+
+
+PAGE = f"<html><body><ul>{_decl()}</ul></body></html>"
 LIST = "".join(
     f'<li><a href="/art/2026/11/{d}/art_{d}.html">关于开展2026年度第{d}批项目申报的通知</a>'
     f"<span>2026-11-0{d}</span></li>"
@@ -176,15 +193,16 @@ def test_one_off_failures_are_not_refusals():
         assert api_refusal(api, got) == ""
 
 
-def test_list_titles_with_login_words_are_still_read():
+def test_lists_whose_titles_mention_login_are_not_read():
+    """认得出才读：普通列表里不会出现"登录""验证码"（616 次真实返回里一次也没有），标题里有也不读。"""
     api = _api()
     html = (
         '<li><a href="/art/1.html">关于启用统一身份认证和短信验证码登录的通知</a>'
         "<span>2026-11-05</span></li>"
     )
     text = _payload(data={"html": html})
-    assert api_refusal(api, _got(text)) == ""
-    assert api_html(api, text) == html
+    assert "登录或权限提示" in api_refusal(api, _got(text))
+    assert api_html(api, text) == ""
 
 
 def test_list_api_waits_like_any_page_on_the_same_site():
@@ -286,18 +304,8 @@ def test_only_the_page_declared_address_and_parameters_are_requested():
     """D-128 护栏 ①：只按网页写明的地址和参数去取，不改参数、不另外构造请求。"""
     from urllib.parse import parse_qsl
 
-    declared = [
-        ("parseType", "bulidstatic"),
-        ("webId", "3387"),
-        ("tplSetId", "T1"),
-        ("pageType", "column"),
-        ("tagId", "当前栏目list"),
-        ("editType", "null"),
-        ("pageId", "1229225203"),
-    ]
-    query = "{" + ",".join(f"'{k}':'{v}'" for k, v in declared) + "}"
-    page = f'<script src="/x/unitbuild.js" url="{HANWEB_JPAAS_PATH}" queryData="{query}"></script>'
-    api = find_list_api(page, PAGE_URL)
+    declared = list(BASE_QUERY.items())
+    api = find_list_api(_decl(), PAGE_URL)
     parts = urlsplit(api.url)
     assert (parts.scheme, parts.netloc, parts.path) == ("https", "kjt.zj.gov.cn", HANWEB_JPAAS_PATH)
     # 参数和页面写的一模一样：不多、不少、不改（没有分页、检索、时间戳一类）
@@ -324,19 +332,11 @@ def test_declared_address_is_kept_as_written():
     """页面写的接口地址自带参数、写成绝对网址时，原样照用，页面参数接在后面。"""
     from urllib.parse import parse_qsl
 
-    page = (
-        f'<script src="/x/unitbuild.js" url="https://kjt.zj.gov.cn{HANWEB_JPAAS_PATH}?site=zj#top" '
-        "queryData=\"{'pageType':'column','tagId':'当前栏目list','pageId':'1'}\"></script>"
-    )
+    page = _decl(url=f"https://kjt.zj.gov.cn{HANWEB_JPAAS_PATH}?site=zj#top")
     api = find_list_api(page, "http://kjt.zj.gov.cn/col/col1/index.html")
     parts = urlsplit(api.url)
     assert (parts.scheme, parts.path, parts.fragment) == ("https", HANWEB_JPAAS_PATH, "")
-    assert parse_qsl(parts.query) == [
-        ("site", "zj"),
-        ("pageType", "column"),
-        ("tagId", "当前栏目list"),
-        ("pageId", "1"),
-    ]
+    assert parse_qsl(parts.query) == [("site", "zj"), *BASE_QUERY.items()]
 
 
 def test_redirect_away_from_the_declared_address_is_not_read():
@@ -486,17 +486,10 @@ def test_even_http_to_https_upgrade_is_not_followed():
 def test_entities_in_page_attributes_are_decoded_like_a_browser():
     from urllib.parse import parse_qsl
 
-    page = (
-        f'<script src="/x/unitbuild.js" url="{HANWEB_JPAAS_PATH}?a=1&amp;b=2" '
-        "queryData=\"{'tagId':'当前栏目list','pageId':'1&amp;2'}\"></script>"
-    )
+    page = _decl(url=f"{HANWEB_JPAAS_PATH}?a=1&amp;b=2", pageId="1&amp;2")
     api = find_list_api(page, PAGE_URL)
-    assert parse_qsl(urlsplit(api.url).query) == [
-        ("a", "1"),
-        ("b", "2"),
-        ("tagId", "当前栏目list"),
-        ("pageId", "1&2"),
-    ]
+    want = [("a", "1"), ("b", "2"), *{**BASE_QUERY, "pageId": "1&2"}.items()]
+    assert parse_qsl(urlsplit(api.url).query) == want
 
 
 def test_login_hint_in_list_html_outside_item_links_is_not_read():
@@ -504,12 +497,16 @@ def test_login_hint_in_list_html_outside_item_links_is_not_read():
     gated = _payload(data={"html": "<p>请先登录后查看</p>" + LIST})
     assert "登录或权限提示" in api_refusal(api, _got(gated))
     assert api_html(api, gated) == ""
-    # 条目标题里只是提到"登录""type=password"一类字样的照常读
+    # 认得出才读：标题里写着"登录""验证码"的列表也不读（616 次真实返回里一次也没有）；
+    # 只是标题里出现 type=password 字样、没有输入框的，不算登录框
     titles = (
-        '<li><a href="/art/1.html">关于启用短信验证码登录的通知（type=password 字段说明）</a>'
-        "<span>2026-11-05</span></li>"
+        '<li><a href="/art/1.html">关于启用短信验证码登录的通知</a><span>2026-11-05</span></li>'
     )
-    assert api_refusal(api, _got(_payload(data={"html": titles}))) == ""
+    assert "登录或权限提示" in api_refusal(api, _got(_payload(data={"html": titles})))
+    field = (
+        '<li><a href="/art/2.html">关于 type=password 字段的说明</a><span>2026-11-05</span></li>'
+    )
+    assert api_refusal(api, _got(_payload(data={"html": field + LIST}))) == ""
 
 
 def test_login_prompt_written_as_a_link_is_not_read():
@@ -582,12 +579,10 @@ def test_declarations_in_html_comments_are_ignored():
 def test_duplicate_attributes_take_the_first_like_a_browser():
     from urllib.parse import parse_qsl
 
-    page = (
-        f'<script src="/x/unitbuild.js" url="{HANWEB_JPAAS_PATH}" '
-        "queryData=\"{'pageId':'first'}\" queryData=\"{'pageId':'second'}\"></script>"
-    )
+    second = _decl(pageId="second").split('queryData="')[1].split('"')[0]
+    page = _decl(pageId="first").replace("></script>", f' queryData="{second}"></script>')
     api = find_list_api(page, PAGE_URL)
-    assert parse_qsl(urlsplit(api.url).query) == [("pageId", "first")]
+    assert dict(parse_qsl(urlsplit(api.url).query))["pageId"] == "first"
 
 
 def test_login_prompt_split_by_tags_is_not_read():
@@ -601,14 +596,15 @@ def test_declarations_in_textarea_or_template_are_ignored():
         assert find_list_api(wrap.format(PAGE), PAGE_URL) is None
 
 
-def test_gate_links_are_judged_by_how_they_start():
+def test_any_mention_of_login_in_the_list_is_not_read():
+    """认得出才读：不分链接文字还是别处、说法怎么写，列表里出现"登录""验证码"就不读。"""
     api = _api()
-    long_gate = _payload(
-        data={"html": LIST + '<a href="/login">请先登录后查看完整政策文件列表</a>'}
-    )
-    assert "登录或权限提示" in api_refusal(api, _got(long_gate))
-    title = '<li><a href="/notice">关于验证码的通知</a><span>2026-11-05</span></li>'
-    assert api_refusal(api, _got(_payload(data={"html": title + LIST}))) == ""
+    for html in (
+        LIST + '<a href="/login">请先登录后查看完整政策文件列表</a>',
+        LIST + '<a href="/login">登录方能浏览</a>',
+        '<li><a href="/notice">关于验证码的通知</a><span>2026-11-05</span></li>' + LIST,
+    ):
+        assert "登录或权限提示" in api_refusal(api, _got(_payload(data={"html": html}))), html
 
 
 def test_string_false_or_null_permission_values_are_not_empty():
@@ -683,9 +679,9 @@ def test_gate_phrases_anywhere_but_plain_mentions_pass():
         LIST + "<span>登录后可见</span>",
     ):
         assert "登录或权限提示" in api_refusal(api, _got(_payload(data={"html": gated}))), gated
-    # 条目标题里只是提到的照读
-    fine = '<li><a href="/y">关于启用短信验证码登录的通知</a><span>2026-11-05</span></li>' + LIST
-    assert api_refusal(api, _got(_payload(data={"html": fine}))) == ""
+    # 认得出才读：标题里提到"登录""验证码"的也不读
+    titled = '<li><a href="/y">关于启用短信验证码登录的通知</a><span>2026-11-05</span></li>' + LIST
+    assert "登录或权限提示" in api_refusal(api, _got(_payload(data={"html": titled})))
     # 认得出才读：条目链接以外写着"登录"的，不是普通列表，从严不读（真实返回里一次也没有）
     summary = '<li><a href="/x">政策通知</a><span>登录系统操作指南</span></li>' + LIST
     assert "登录或权限提示" in api_refusal(api, _got(_payload(data={"html": summary})))
@@ -728,3 +724,24 @@ def test_only_known_declaration_attributes_and_parameters_are_recognized():
     assert find_list_api(extra_param, PAGE_URL) is None
     number = PAGE.replace("'pageId':'1229225203'", "'pageId':1229225203")
     assert find_list_api(number, PAGE_URL) is None
+
+
+def test_reply_shape_must_match_exactly():
+    api = _api()
+    no_trace = json.loads(_payload())
+    del no_trace["traceId"]
+    assert "traceId" in api_refusal(api, _got(json.dumps(no_trace, ensure_ascii=False)))
+    assert "messageType" in api_refusal(api, _got(_payload(messageType=2.0)))
+    assert "messageType" in api_refusal(api, _got(_payload(messageType=True)))
+
+
+def test_declarations_must_be_a_known_combination():
+    assert find_list_api(PAGE.replace(BASE_QUERY["tplSetId"], "T1"), PAGE_URL) is not None
+    empty_query = _decl().split('queryData="')[0] + 'queryData="{}"></script>'
+    assert find_list_api(empty_query, PAGE_URL) is None
+    fewer = PAGE.replace("'editType':'null',", "")
+    assert find_list_api(fewer, PAGE_URL) is None
+    with_unit_type = PAGE.replace(
+        "'pageId':'1229225203'", "'pageId':'1229225203','unitType':'ajax-xxgk'"
+    )
+    assert find_list_api(with_unit_type, PAGE_URL) is not None

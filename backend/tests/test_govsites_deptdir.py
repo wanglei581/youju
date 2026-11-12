@@ -179,7 +179,8 @@ def test_gkmlpt_tree_categories_skip_jump_links():
 
 JPAAS_DEPT = "http://www.zjcx.gov.cn/xxgk/zfbmxxgk/zxxkxjsj/index.html?number=K001"
 UNIT_TAG = (
-    '<script src="/cms_files/default/script/AuthorizedRead/unitbuild.js" webId="3645" '
+    '<script id="u3645" src="/cms_files/default/script/AuthorizedRead/unitbuild.js" webId="3645" '
+    'parseType="bulidstatic" '
     'url="/api-gateway/jpaas-publish-server/front/page/build/unit" '
     "queryData=\"{'parseType':'bulidstatic','webId':'3645','tplSetId':'x','pageType':'column',"
     "'tagId':'组配分类list','editType':'null','pageId':'p1'}\"></script>"

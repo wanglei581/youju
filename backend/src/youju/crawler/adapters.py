@@ -44,9 +44,10 @@ class ListApi:
 
 
 _KNOWN_ATTRS = frozenset({"id", "src", "webid", "parsetype", "url", "querydata"})
-_KNOWN_QUERY = frozenset(
-    {"parseType", "webId", "tplSetId", "pageType", "tagId", "editType", "pageId", "unitType"}
+_BASE_QUERY = frozenset(
+    {"parseType", "webId", "tplSetId", "pageType", "tagId", "editType", "pageId"}
 )
+_KNOWN_QUERY_SETS = frozenset({_BASE_QUERY, _BASE_QUERY | {"unitType"}})
 _STRAY_END = re.compile(r"</(?:html|body)\s*>", re.I)
 
 
@@ -84,8 +85,8 @@ def find_unit_apis(html: str, page_url: str) -> list[ListApi]:
     """页面里声明的全部大汉 jpaas 单元接口（当前栏目的列表排最前，其次导航等其他单元）。"""
     candidates: list[tuple[int, ListApi]] = []
     for attrs in _unit_scripts(html):
-        # 认得出才认：属性只能是已知那几个（缓存里 714 个真实声明全是这 6 个），url、queryData 要有
-        if set(attrs) - _KNOWN_ATTRS or not {"url", "querydata"} <= set(attrs):
+        # 认得出才认：属性正好是已知那 6 个（缓存里 714 个真实声明全是这样）
+        if set(attrs) != _KNOWN_ATTRS:
             continue
         declared = urlsplit(urljoin(page_url, attrs.get("url", "")))
         # 只认白名单路径，而且接口必须就在栏目页这个网站上（页面声明到别的主机的不请求）
@@ -97,10 +98,10 @@ def find_unit_apis(html: str, page_url: str) -> list[ListApi]:
             query = ast.literal_eval(attrs.get("querydata", ""))
         except Exception:  # noqa: BLE001 - 页面写的参数什么样都有，解析不了就不用
             continue
-        # 参数名只能是已知那几个（真实声明是 7 个，28 个多一个 unitType），值都是文字
+        # 参数名正好是已知的组合（真实声明 686 个是那 7 个，28 个再加 unitType），值都是文字
         if (
             not isinstance(query, dict)
-            or set(map(str, query)) - _KNOWN_QUERY
+            or frozenset(map(str, query)) not in _KNOWN_QUERY_SETS
             or not all(isinstance(v, str) for v in query.values())
         ):
             continue
@@ -166,26 +167,12 @@ _LOGIN_TEXT = re.compile(
 )
 # 列表那段里有密码输入框：返回的是登录框，不是公开列表（11/12 查缓存里 616 次返回，一次也没有）
 _PASSWORD_INPUT = re.compile(r"<input\b[^>]*type\s*=\s*[\"']?password", re.I)
-# 列表那段里条目链接以外的文字（登录、没权限一类提示写在这里；条目标题里出现不算）
-_ANCHOR = re.compile(r"<a\b.*?</a>", re.S | re.I)
-# 列表里的登录、没权限提示：认具体说法（在链接文字里、链接以外都看，出现在哪个位置都算）；
-# 只是提到"登录""验证码"的（如"登录系统操作指南""短信验证码登录的通知"）不算
-_OUTSIDE_HINT = re.compile(r"登[录陆]|验证码")
+# 认得出的列表里不会出现"登录""验证码"（616 次真实返回，条目标题和别处一次也没有）：出现了就
+# 不读。链接地址不看：正常通知也会链到外站的 login.html（湖州门户就有一条直播通知这样写）
+_LIST_HINT = re.compile(r"登[录陆]|验证码")
+# 没权限一类说法（列表里出现同样不读）
 _GATE_PHRASE = re.compile(
-    r"请(?:先)?(?:完成)?登[录陆]|登[录陆](?:后|才能|才可|方可)|"
-    r"(?:需要|需|须)(?:先)?登[录陆]|(?:仅|只有|只限)登[录陆]用户|登[录陆]用户(?:可|才)|"
-    r"(?:您)?(?:没有|无)(?:权限|权访问|权查看|权阅读|访问权限)|权限不足|未授权|"
-    r"请输入验证码|请完成验证|人机验证"
-)
-
-
-# 列表里写成链接的登录提示：链接文字以"请先登录""登录后""需要登录""没有权限""请输入验证码"
-# 这类说法开头的才算（不论长短）；通知标题里只是提到"验证码""登录"的照常读。只看链接文字、
-# 不看链接地址：正常通知也会链到外站的 login.html（湖州门户就有一条直播通知这样写）
-_ANCHOR_TEXT = re.compile(r"<a\b[^>]*>(.*?)</a>", re.S | re.I)
-# 链接文字本身就是"去登录"一类的按钮（整段很短、以这类说法开头或就是"登录"二字）
-_GATE_LINK = re.compile(
-    r"^(?:(?:立即|点击|点此|去|前往|马上)登[录陆]|登[录陆]查看|未登[录陆]|(?:用户)?登[录陆]$)"
+    r"(?:您)?(?:没有|无)(?:权限|权访问|权查看|权阅读|访问权限)|权限不足|未授权|人机验证"
 )
 _GATE_TEXT = re.compile(
     r"访问被拒绝|拒绝访问|禁止访问|访问受限|非法请求|防火墙|安全防护|access denied|forbidden",
@@ -266,10 +253,12 @@ def _unknown_shape(payload: dict) -> str:
             return f"{key} 不是 null"
     if payload.get("message") != _NORMAL_MESSAGE:
         return f"提示不是“{_NORMAL_MESSAGE}”"
-    if payload.get("messageType", 2) != 2:
+    if "messageType" in payload and (
+        type(payload["messageType"]) is not int or payload["messageType"] != 2
+    ):
         return "messageType 不是 2"
-    if not isinstance(payload.get("traceId", ""), str):
-        return "traceId 不是文字"
+    if not isinstance(payload.get("traceId"), str):
+        return "没有 traceId 或不是文字"
     data = payload.get("data")
     if not isinstance(data, dict) or set(data) != {"html"} or not isinstance(data["html"], str):
         return "data 里不是只有一段列表 HTML"
@@ -307,16 +296,12 @@ def _payload_refusal(payload: dict) -> str:
     plain = html_lib.unescape(html)
     if _PASSWORD_INPUT.search(plain):
         return "列表接口返回的是登录框"
-    # 条目链接以外写着"登录""验证码"的，不是普通列表（615 次正常返回里一次也没有）；
-    # 链接文字里是"请先登录""登录后…""没有权限"一类说法的同样不读。条目标题里只是提到的照读
-    outside = html_lib.unescape(_TAGS.sub("", _ANCHOR.sub(" ", html)))
-    hint = _OUTSIDE_HINT.search(outside) or _GATE_PHRASE.search(outside)
+    # 普通列表里不会出现"登录""验证码"（616 次真实返回里，条目标题和别处一次也没有）：
+    # 出现了就不是认得出的列表，不读——不再一条条认登录提示的说法
+    words = html_lib.unescape(_TAGS.sub("", html))
+    hint = _LIST_HINT.search(words) or _GATE_PHRASE.search(words)
     if hint:
         return f"列表接口返回里有登录或权限提示（{hint.group(0)}）"
-    for raw in _ANCHOR_TEXT.findall(html):
-        text = html_lib.unescape(_TAGS.sub("", raw)).strip()
-        if _GATE_LINK.search(text) or _GATE_PHRASE.search(text):
-            return f"列表接口返回里有登录或权限提示（{text[:20]}）"
     return ""
 
 
