@@ -54,6 +54,7 @@ def _attrs(tag: str) -> dict[str, str]:
 
 
 # 浏览器不会执行的地方：注释、文本域、模板、noscript 里写着的声明都不认
+_SCRIPT_BODY = re.compile(r"(<script\b[^>]*>).*?(</script\s*>)", re.S | re.I)
 _INERT = re.compile(
     r"<!--.*?-->|<(textarea|template|noscript|xmp|style)\b[^>]*>.*?</\1\s*>", re.S | re.I
 )
@@ -68,8 +69,8 @@ def find_list_api(html: str, page_url: str) -> ListApi | None:
 def find_unit_apis(html: str, page_url: str) -> list[ListApi]:
     """页面里声明的全部大汉 jpaas 单元接口（当前栏目的列表排最前，其次导航等其他单元）。"""
     candidates: list[tuple[int, ListApi]] = []
-    # 注释里留着的旧声明浏览器不会执行，也不请求
-    for m in _HANWEB_SCRIPT.finditer(_INERT.sub("", html or "")):
+    # 注释、文本域、样式里留着的，和脚本代码字符串里写的标签，浏览器都不会当成声明执行，也不请求
+    for m in _HANWEB_SCRIPT.finditer(_SCRIPT_BODY.sub(r"\1\2", _INERT.sub("", html or ""))):
         attrs = _attrs(m.group(0))
         declared = urlsplit(urljoin(page_url, attrs.get("url", "")))
         # 只认白名单路径，而且接口必须就在栏目页这个网站上（页面声明到别的主机的不请求）
@@ -149,6 +150,7 @@ _LOGIN_TEXT = re.compile(
 _PASSWORD_INPUT = re.compile(r"<input\b[^>]*type\s*=\s*[\"']?password", re.I)
 # 列表那段里条目链接以外的文字（登录、没权限一类提示写在这里；条目标题里出现不算）
 _ANCHOR = re.compile(r"<a\b.*?</a>", re.S | re.I)
+_OUTSIDE_HINT = re.compile(r"登[录陆]|验证码", re.I)
 
 
 # 列表里写成链接的登录提示：链接文字以"请先登录""登录后""需要登录""没有权限""请输入验证码"
@@ -200,15 +202,9 @@ def _permission_fields(payload: dict) -> list[str]:
         items = obj.items() if isinstance(obj, dict) else enumerate(obj)  # type: ignore[arg-type]
         for key, value in items:
             name = f"{prefix}{key}"
-            empty = (
-                value is None
-                or value is False
-                or value in ("", 0, [], {})
-                or (
-                    isinstance(value, str)
-                    and value.strip().lower() in ("0", "false", "null", "none")
-                )
-            )
+            # 只有 JSON 里的空值算空（null、false、0、空串、空列表）；写成 "false" "null" 的
+            # 字符串不算空，从严拦下（实测这两个字段都是 null）
+            empty = value is None or value is False or value in ("", 0, [], {})
             if isinstance(key, str) and _PERMISSION_KEY.match(key) and not empty:
                 found.append(name)
             elif isinstance(value, (dict, list)):
@@ -251,9 +247,10 @@ def _payload_refusal(payload: dict) -> str:
     if isinstance(html, str) and _PASSWORD_INPUT.search(html):
         return "列表接口返回的是登录框"
     if isinstance(html, str):
-        # 去掉标签、空白后连起来看（"请<b>先</b>登录"这类被标签隔开的提示也认得）
+        # 去掉标签、空白后连起来看（"请<b>先</b>登录"这类被标签隔开的提示也认得）；条目链接以外
+        # 只要写着"登录""验证码"就算提示（11/12 查缓存里 616 次返回，链接以外一次也没有）
         outside = html_lib.unescape(_TAGS.sub("", _ANCHOR.sub(" ", html)))
-        hint = _LOGIN_TEXT.search(outside)
+        hint = _OUTSIDE_HINT.search(outside) or _LOGIN_TEXT.search(outside)
         if hint:
             return f"列表接口返回里有登录或权限提示（{hint.group(0)}）"
         for raw in _ANCHOR_TEXT.findall(html):
@@ -294,8 +291,6 @@ def api_refusal(api: ListApi, result) -> str:
     if status in ("network_error", "deadline", "ssl_error", "robots_error", "too_large"):
         return ""  # 网络不通、超时这类：这次没取到，照常记失败、下次再试
     final = getattr(result, "final_url", None) or api.url
-    if urlsplit(api.url).scheme == "https" and urlsplit(final).scheme == "http":
-        return "列表接口跳到了不加密的地址"  # 只认 http 升到 https，不认反过来
     words = _redirect_words(api.url, final)
     if words:
         # 跳到了页面没写的地址（只换协议的不算）：不跟着读（D-128 读取护栏 ①），记不能抓

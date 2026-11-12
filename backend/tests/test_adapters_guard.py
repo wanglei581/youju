@@ -406,10 +406,12 @@ def test_login_prompt_in_any_message_field_is_not_read():
     assert api_html(api, text) == ""
 
 
-def test_https_to_http_redirect_is_not_read():
-    api = _api()  # https 的接口
-    down = api.url.replace("https://", "http://")
-    assert "不加密" in api_refusal(api, _got(_payload(), final=down))
+def test_https_to_http_redirect_is_not_followed_or_read():
+    """https 的接口要跳到同一地址的 http：不跟、不读，按这次没读出（不记不能抓）。"""
+    api = _api()
+    down = FetchResult(api.url, "redirect", api.url.replace("https://", "http://"), 301, "")
+    assert api_refusal(api, down) == ""
+    assert api_html(api, down.text) == ""
 
 
 @pytest.mark.parametrize("prompt", ["需要登录", "您没有权限查看", "未授权访问", "登录后可见"])
@@ -609,10 +611,13 @@ def test_gate_links_are_judged_by_how_they_start():
     assert api_refusal(api, _got(_payload(data={"html": title + LIST}))) == ""
 
 
-def test_string_zero_or_false_permission_values_count_as_empty():
+def test_string_false_or_null_permission_values_are_not_empty():
+    """只有 JSON 的空值算空；写成 "false" "null" 字符串的从严拦下。"""
     api = _api()
-    text = _payload(data={"html": LIST, "needLogin": "0"}, roles="null", permissions="false")
-    assert api_refusal(api, _got(text)) == ""
+    for value in ("false", "null", "0"):
+        text = _payload(roles=value)
+        assert "roles" in api_refusal(api, _got(text))
+        assert api_html(api, text) == ""
 
 
 def test_unreadable_unit_counts_as_not_read_this_time():
@@ -634,3 +639,19 @@ def test_style_blocks_and_click_to_login_links():
     api = _api()
     gated = _payload(data={"html": LIST + '<a href="/login">&nbsp;点击登录</a>'})
     assert "登录或权限提示" in api_refusal(api, _got(gated))
+
+
+def test_pseudo_tags_inside_script_code_are_ignored():
+    fake = PAGE.split("<ul>")[1].split("</ul>")[0].replace('"', "\\'")
+    page = f"<script>var example = '{fake}';</script>"
+    assert find_list_api(page, PAGE_URL) is None
+    assert find_list_api(PAGE, PAGE_URL) is not None  # 真正的声明照认
+
+
+def test_any_login_word_outside_item_links_is_not_read():
+    api = _api()
+    gated = _payload(data={"html": "<p>请先完成登录才能查看</p>" + LIST})
+    assert "登录或权限提示" in api_refusal(api, _got(gated))
+    # 摘要里写着"授权运营"这类字样的不算（真实数据里有）
+    summary = _payload(data={"html": "<p>审议通过了公共数据资源授权运营实施方案</p>" + LIST})
+    assert api_refusal(api, _got(summary)) == ""
