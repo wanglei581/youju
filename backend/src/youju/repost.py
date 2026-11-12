@@ -458,11 +458,13 @@ def refresh_signals(
     1. 还没有行的文件（不管发布日期、有没有正文、是否下架）都算一次、插一行，grouped_at = stamp：
        这一行也是"归组处理过"的标记，同步据此放行新文件。用反连接按编号找，不是按"最大编号"之后
        找：抓取事务提交的先后和编号的先后不一样，编号小、提交晚的文件也要找得到。
-    2. 已经有行、会参加归组的（发布日期在窗口里的，和窗口组的成员——窗口外的老成员也要，迁移补的
-       行正文信号是空的），详情比上次算时新（fetched_at 晚于 body_at，或还没算过）的重算；
-       full=True 时这些不看详情新不新，全部重算（维护用，比如正文脱敏重写之后）。
+    2. 已经有行、会参加归组的（发布日期在归组范围里的，和范围里的组的成员——范围外的老成员也要，
+       迁移补的行正文信号是空的），详情比上次算时新（fetched_at 晚于 body_at，或还没算过）的重算；
+       full=True 时这些不看详情新不新，全部重算（维护用，比如正文脱敏重写之后）。归组范围和 rebuild
+       的候选范围是同一个（candidate_cutoff）：第 1 步新进来的窗口内文件让范围往前放时，这一步也
+       跟着放，放进来的老文件（迁移补的空行、离开窗口以后才抓到正文的）这一轮就有正文信号。
     正文只读前 BODY_HEAD_CHARS 字，按编号分批读写。"""
-    cutoff = today - timedelta(days=WINDOW_DAYS)
+    window = today - timedelta(days=WINDOW_DAYS)
     result = SignalRefresh()
     last_id = 0
     while True:
@@ -487,7 +489,7 @@ def refresh_signals(
             session.add(row)
             if (
                 published is not None
-                and published >= cutoff
+                and published >= window
                 and (result.earliest_new is None or published < result.earliest_new)
             ):
                 result.earliest_new = published
@@ -495,6 +497,7 @@ def refresh_signals(
         last_id = rows[-1][0]
         session.flush()
 
+    cutoff = candidate_cutoff(today, result.earliest_new)
     changed = or_(RepostSignal.body_at.is_(None), DocumentDetail.fetched_at > RepostSignal.body_at)
     stale = select(RepostSignal.document_id).join(
         DocumentDetail, DocumentDetail.document_id == RepostSignal.document_id
@@ -527,9 +530,19 @@ def refresh_signals(
             .where(RepostSignal.document_id.in_(batch))
         ):
             _fill_signal(row, published, body, fetched, stamp)
-        result.computed += len(batch)
+            result.computed += 1
         session.flush()
     return result
+
+
+def candidate_cutoff(today: date, earliest_new: date | None) -> date:
+    """归组范围的起点：窗口起点（今天往前 WINDOW_DAYS 天）；这一轮新进来、发布日期在窗口里的文件，
+    伙伴可能在它前面 MAX_DAYS_APART 天里、已经在窗口外的老组里（新来源回填几个月前的历史），范围
+    往前放到够得着它们。正文信号重算（refresh_signals 第 2 步）和归组候选（rebuild）都用它。"""
+    cutoff = today - timedelta(days=WINDOW_DAYS)
+    if earliest_new is not None:
+        cutoff = min(cutoff, earliest_new - timedelta(days=MAX_DAYS_APART))
+    return cutoff
 
 
 def _window_groups(cutoff: date):
@@ -697,11 +710,8 @@ def rebuild(
     today = today or stamp.astimezone(_BEIJING).date()
     refreshed = refresh_signals(session, today=today, stamp=stamp, full=full)
     summary = RebuildSummary(signals=refreshed.computed)
-    # 候选范围：窗口起点；这一轮新进来、发布日期在窗口里的文件，伙伴可能在它前面 MAX_DAYS_APART
-    # 天里、已经在窗口外的老组里（新来源回填几个月前的历史），范围往前放到够得着它们
-    cutoff = today - timedelta(days=WINDOW_DAYS)
-    if refreshed.earliest_new is not None:
-        cutoff = min(cutoff, refreshed.earliest_new - timedelta(days=MAX_DAYS_APART))
+    # 候选范围：窗口起点，这一轮新进来的窗口内文件往前放（和上面重算正文信号的范围同一个）
+    cutoff = candidate_cutoff(today, refreshed.earliest_new)
     # 先锁组、再锁组员，和管理台的操作（api/repost.py 的 _lock_groups）同一顺序，不会互相等成死锁
     groups = {
         row.id: row

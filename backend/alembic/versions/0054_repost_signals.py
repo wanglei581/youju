@@ -49,21 +49,23 @@ def upgrade():
             ),
         )
 
-    # 现有文件都补一行"处理过"的标记（只写编号和时间，不读正文）。按编号分段，每段一句短语句，
-    # 已经有行的跳过：不长时间占表，中途断了重跑也不重复
+    # 现有文件都补一行"处理过"的标记（只写编号和时间，不读正文）。按编号分段，每段一句短语句、各自
+    # 提交（autocommit_block：不在一个大事务里，不一直占着 documents 的行锁）；已经有行的跳过，中途
+    # 断了重跑也不重复
     top = bind.execute(sa.text("SELECT COALESCE(MAX(id), 0) FROM documents")).scalar()
-    for start in range(0, top, _BACKFILL_STEP):
-        bind.execute(
-            sa.text(
-                "INSERT INTO repost_signals"
-                " (document_id, cited, body_forward, has_body, body_at, grouped_at, computed_at)"
-                " SELECT d.id, JSON_ARRAY(), 0, 0, NULL, CURRENT_TIMESTAMP(6),"
-                " CURRENT_TIMESTAMP(6) FROM documents d"
-                " WHERE d.id > :start AND d.id <= :end AND NOT EXISTS"
-                " (SELECT 1 FROM repost_signals s WHERE s.document_id = d.id)"
-            ),
-            {"start": start, "end": start + _BACKFILL_STEP},
-        )
+    with op.get_context().autocommit_block():
+        for start in range(0, top, _BACKFILL_STEP):
+            op.get_bind().execute(
+                sa.text(
+                    "INSERT INTO repost_signals"
+                    " (document_id, cited, body_forward, has_body, body_at, grouped_at,"
+                    " computed_at) SELECT d.id, JSON_ARRAY(), 0, 0, NULL, CURRENT_TIMESTAMP(6),"
+                    " CURRENT_TIMESTAMP(6) FROM documents d"
+                    " WHERE d.id > :start AND d.id <= :end AND NOT EXISTS"
+                    " (SELECT 1 FROM repost_signals s WHERE s.document_id = d.id)"
+                ),
+                {"start": start, "end": start + _BACKFILL_STEP},
+            )
 
 
 def downgrade():

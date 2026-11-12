@@ -1184,6 +1184,32 @@ def test_empty_body_is_not_recomputed_every_round(session, world):
     assert refresh_signals(session, today=NOW.date(), stamp=NOW + timedelta(hours=12)).computed == 0
 
 
+def test_old_document_pulled_in_by_a_late_one_gets_its_signals_first(session):
+    # 新来源回填几个月前的文件、归组范围往前放：放进来的老文件（迁移补的空行，正文信号空着）这一轮
+    # 先算出正文信号再参加归组——靠两边引用同一个文号才连得上的照样连上
+    old = _doc(
+        session,
+        _source(session, "福建"),
+        # 核心标题和后来那份不一样（多了"应用"），只能靠两边引用同一个文号连上
+        "关于组织开展2026年度视听系统典型应用案例征集工作的通知",
+        day=1,
+        body=UPSTREAM + "福建",
+    )
+    old.publish_date = date(2026, 3, 1)  # 窗口起点 2026-03-24 之前
+    session.add(RepostSignal(document_id=old.id, cited=[], grouped_at=NOW, computed_at=NOW))
+    session.flush()
+    title = "关于组织开展2026年度视听系统典型案例征集工作的通知"
+    late = _doc(session, _source(session, "四川"), title, day=1, body=UPSTREAM + "四川")
+    late.publish_date = date(2026, 4, 10)  # 在窗口里，和老文件相隔 40 天
+    session.flush()
+    rebuild(session, now=NOW)
+    session.flush()
+    row = session.get(RepostSignal, old.id)
+    assert row.has_body and row.cited and row.body_at is not None
+    members = _members(session)
+    assert members[old.id].group_id == members[late.id].group_id
+
+
 def test_backfilled_marker_of_old_group_member_gets_signals(session, world):
     # 迁移补的行：只有"处理过"的标记，正文信号空着（body_at 为空）
     for doc in world.values():
