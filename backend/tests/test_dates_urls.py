@@ -165,3 +165,16 @@ def test_url_key_folds_directory_index_page() -> None:
 )
 def test_page_dir(url: str, expected: str) -> None:
     assert page_dir(url) == expected
+
+
+def test_url_key_preserves_information_categories_only():
+    from youju.crawler.urls import url_key
+
+    base = "https://example.gov.cn/fgj/gkmlpt/index"
+    assert url_key(base + "#xxgk-gkmlpt-8") != url_key(base + "#xxgk-gkmlpt-6")
+    assert url_key(base) == "example.gov.cn/fgj/gkmlpt/index"
+    assert url_key(base + "#abc") == url_key(base)
+    # 只有数字广东分类的片段留着：页面内锚点、大汉信息公开分类树的片段照旧去掉
+    assert url_key(base + "#xxgk-content") == url_key(base)
+    assert url_key(base + "#xxgk-1229225203") == url_key(base)
+    assert url_key(base + "#xxgk-gkmlpt-8") == "example.gov.cn/fgj/gkmlpt/index#xxgk-gkmlpt-8"

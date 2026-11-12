@@ -18,7 +18,7 @@ from sqlalchemy import delete, func, select, text
 from sqlalchemy.exc import InvalidRequestError
 from sqlalchemy.orm import Session
 
-from youju.crawler.adapters import LIST_API_OPEN_KEY, VIA_API_WORD
+from youju.crawler.adapters import LIST_API_OPEN_KEY, VIA_API_WORD, list_api_adapter
 from youju.crawler.urls import url_key
 from youju.govsites.board import STATES, SourceState, _outcome, cell_for
 from youju.govsites.inventory import STANDARD_DEPTS, ColumnHit, DeptRow, PortalRow
@@ -701,7 +701,7 @@ def enable_sources(
                 # （D-128；没有标记的来源一律不走接口）
                 source.parser_config = {
                     **(source.parser_config or {}),
-                    LIST_API_OPEN_KEY: "大汉jpaas",
+                    LIST_API_OPEN_KEY: list_api_adapter(source.url),
                 }
                 note += "，经接口读（D-128）"
             source.note = f"{source.note}；{note}" if source.note else note
