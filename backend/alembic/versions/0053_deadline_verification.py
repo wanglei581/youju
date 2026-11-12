@@ -5,7 +5,7 @@ from alembic import op
 from sqlalchemy.dialects import mysql
 
 revision = "0053"
-down_revision = "0048"
+down_revision = "0051"
 branch_labels = None
 depends_on = None
 
