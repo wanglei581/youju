@@ -22,7 +22,9 @@
 - 重复：同一省里去掉参数后是同一个列表的，后面那个记重复。
 
 都过记"自动通过"，否则记"待人工"并写明哪项没过；最后三列（复核人、复核结论、复核备注）
-留给人工复核。只读库、不联网。
+留给人工复核。复核结论写"通过""不通过""待重试"（这次没抓到）、"不能抓"（按访问控制等不读）
+或"不收"（读得对、但不在收录范围，如整栏是招聘公示），后面可以加括号说明（见 final_verdict）。
+只读库、不联网。
 """
 
 import hashlib
@@ -30,6 +32,7 @@ import re
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -37,6 +40,7 @@ from sqlalchemy.orm import Session
 from youju.govsites.divisions import name_variants
 from youju.govsites.links import registrable
 from youju.govsites.names import column_kind, dept_categories
+from youju.govsites.privacy import public_title
 from youju.models import Document, Source, SourceCheck
 
 SAMPLE_FIELDS = (
@@ -134,9 +138,68 @@ def _kind(name: str | None) -> str | None:
 # 省级部门全称常只写本级前缀（"省农业农村厅""区商务厅""自治区人社厅""市发展改革委"）
 _MUNICIPALITIES = ("北京", "天津", "上海", "重庆")
 _REGIONS = ("内蒙古", "广西", "西藏", "宁夏", "新疆")
+# 省份全称（"吉林省""广西壮族自治区""北京市"）
+_PROVINCE_FULL = re.compile(
+    r"^(?:(?:北京|天津|上海|重庆)市"
+    r"|(?:河北|山西|辽宁|吉林|黑龙江|江苏|浙江|安徽|福建|江西|山东|河南|湖北|湖南|广东|海南"
+    r"|四川|贵州|云南|陕西|甘肃|青海|台湾)省"
+    r"|(?:内蒙古|广西壮族|广西|西藏|宁夏回族|宁夏|新疆维吾尔|新疆)自治区)"
+)
+
+
+def _autonomous(city: str) -> bool:
+    """自治州、盟：部门全称常只写本级前缀"州""盟"。地级市以"州"结尾的都是两个字（"苏州""杭州"，
+    行政区划清单里 293 个地级市核过，测试钉住），自治州写全称或"恩施州"这样三个字以上的简称。"""
+    return city.endswith(("自治州", "盟")) or (city.endswith("州") and len(city) >= 3)
+
+
+def _city_names(s: Source) -> set[str]:
+    names = {v for v in name_variants(s.city) | {s.city} if len(v) >= 2}
+    if not (_autonomous(s.city) or s.city.endswith(("地区", "市"))):
+        names.add(s.city + "市")  # 地级市在库里写简称（"南京""苏州"），部门全称写"南京市……"
+    return names
+
+
+def counties_by_city(path: Path) -> dict[tuple[str, str], frozenset[str]]:
+    """(省份, 城市) → 下辖区县的全称写法（以区、县、市、旗结尾的）。地市部门全称在本市名称后面紧跟
+    这些的，是区县的部门（"南京市玄武区……""苏州市常熟市人民政府"）。不用简称："公安县"的"公安"
+    会碰上"荆州市公安局"。城市认全称和简称（"吉林市""吉林""恩施州"），来源里怎么写都查得到；
+    清单不存在时报错（FileNotFoundError），不静默放过。"""
+    from youju.govsites.divisions import read_csv
+
+    divisions = read_csv(path)
+    by_parent: dict[str, set[str]] = {}
+    for d in divisions:
+        if d.level == "区县级" and d.parent_code:
+            by_parent.setdefault(d.parent_code, set()).update(
+                v
+                for v in name_variants(d.name, d.kind) | {d.name}
+                if len(v) >= 2 and v.endswith(("区", "县", "市", "旗"))
+            )
+    out: dict[tuple[str, str], frozenset[str]] = {}
+    for d in divisions:
+        if d.level == "市级" and d.code in by_parent:
+            names = frozenset(by_parent[d.code])
+            for v in name_variants(d.name, d.kind) | {d.name, d.city or ""}:
+                if len(v) >= 2:
+                    out[(d.province, v)] = names
+    return out
 
 
 def _own_prefixes(s: Source) -> set[str]:
+    if s.level == "市级" and s.city:
+        # 地市部门全称写本市名称（"南京市发展和改革委员会""恩施州农业农村局"）、省名连市名
+        # （"江苏省南京市……"），或只写本级前缀（"市大数据局""州农业农村局""盟行政公署"）。只写省名的
+        # （"江苏省发展和改革委员会"）是省直部门，挂在地市格上不对，不算（11/11 地市一组报：
+        # 原来只认省名，568 个地市栏目里 552 个卡在"部门"）
+        city = _city_names(s)
+        prov = {v for v in name_variants(s.province) | {s.province} if len(v) >= 2}
+        prov |= {s.province + "省", s.province + "自治区"}  # 库里省份写简称（"江苏"）
+        own = city | {p + c for p in prov for c in city}
+        own.add("市")
+        if _autonomous(s.city):  # "苏州""杭州"是地级市，不加"州"
+            own.add(s.city[-1])
+        return own
     own = {v for v in name_variants(s.province) | {s.province} if len(v) >= 2}
     if s.level == "省级":
         if s.province in _MUNICIPALITIES:
@@ -148,7 +211,7 @@ def _own_prefixes(s: Source) -> set[str]:
     return own
 
 
-def _dept_ok(s: Source) -> bool:
+def _dept_ok(s: Source, counties: frozenset[str] = frozenset()) -> bool:
     """部门全称能归到这一格的部门，而且是本省的（以本省名称或本级前缀开头）。
 
     政府办那一格是门户本身（"××人民政府"）；开发区按地名起名、不带省名，只看能不能归到开发区；
@@ -160,13 +223,37 @@ def _dept_ok(s: Source) -> bool:
         return False
     if s.dept == "政府办":
         ok_kind = "人民政府" in name or "办公厅" in name or "政府办" in dept_categories(name)
+        if s.level == "市级":
+            # 地市门户常写"××市政府门户网站""××政府网""××市政府"，或党政合办"中共××市委
+            # ××市人民政府"（只认市级：省级照旧）。下辖区县的政府（"××市××区人民政府"）
+            # 不是本市政府办
+            ok_kind = (
+                ok_kind or bool(re.search(r"政府(?:门户)?网|[市州盟]政府|行政公署", name))
+            ) and not re.search(r"(?<!地)[区县旗](?:人民)?政府", name)
+            name = name.removeprefix("中共")
     else:
         ok_kind = s.dept in dept_categories(name)
     if not ok_kind:
         return False
     if s.province == "国家" or s.dept == "开发区":
         return True  # 部委、开发区没有省名前缀
-    return any(name.startswith(v) for v in _own_prefixes(s))
+    if s.level != "市级" or not s.city:
+        return any(name.startswith(v) for v in _own_prefixes(s))
+    own = _own_prefixes(s)
+    if m := _PROVINCE_FULL.match(name):
+        # 以省份全称开头的，后面紧跟本市名称才算本市（"吉林省吉林市……"）；只写省名的是省直部门。
+        # 吉林市的"吉林"、青海海南州的"海南"和省名撞上，不先认全称会把"吉林省发展和改革委员会"
+        # "海南省……"当成本市的
+        if not m.group(0).startswith(s.province):
+            return False
+        name, own = name[m.end() :], _city_names(s)
+    hit = max((v for v in own if name.startswith(v)), key=len, default=None)
+    if hit is None:
+        return False
+    # 本市名称后面紧跟下辖区县全称的是区县的部门（"南京市玄武区……""苏州市常熟市人民政府"）；
+    # 只写本级前缀"市"的也看（"市中区……"），自治州下辖的县级市也是（恩施州的"恩施市……"）
+    rest = name[len(hit) :]
+    return not any(text.startswith(c) for text in (rest, name) for c in counties)
 
 
 def sample_rows(
@@ -175,6 +262,7 @@ def sample_rows(
     province: list[str] | None = None,
     size: int | None = None,
     now: datetime | None = None,
+    counties: dict[tuple[str, str], frozenset[str]] | None = None,
 ) -> list[SampleRow]:
     now = now or datetime.now(UTC)
     stmt = select(Source).where(Source.level == level).order_by(Source.province, Source.id)
@@ -204,7 +292,7 @@ def sample_rows(
             .limit(3)
         ).all()
         row.latest = [(t or "", d, u or "") for t, d, u in docs]
-        if not _dept_ok(s):
+        if not _dept_ok(s, (counties or {}).get((s.province, s.city or ""), frozenset())):
             row.failed.append("部门")
         if _kind(s.column_name) not in KINDS:
             row.failed.append("栏目")
@@ -280,7 +368,8 @@ def to_csv_row(row: SampleRow) -> list[str]:
         if i >= len(row.latest):
             return ""
         title, day, url = row.latest[i]
-        return f"{day.isoformat() if day else '无日期'} {title[:40]} {url}"
+        # 公开仓库：个人事项或写着人名的标题不写原文
+        return f"{day.isoformat() if day else '无日期'} {public_title(title)[:40]} {url}"
 
     return [
         s.level,
@@ -326,8 +415,9 @@ def summary_lines(rows: list[SampleRow]) -> list[str]:
     return lines
 
 
-# 一省一级算合格：每个栏目都有结论（自动通过，或人工复核通过、不通过），而且通过的占八成以上。
-# 不通过的栏目不进这一批的导入文件（不会被启用）；通过率太低说明这个省有成片的问题，整省先不放。
+# 一省一级算合格：每个栏目都有结论，而且读得准的（通过、不收）占八成以上（待重试、不能抓不算进
+# 分母，见 ProvinceResult.rate）。只有通过的栏目进这一批的导入文件；读得准的太少说明这个省有成片的
+# 问题，整省先不放。
 PASS_RATE = 0.8
 
 
@@ -338,26 +428,44 @@ class ProvinceResult:
     passed: int = 0
     failed: int = 0
     pending: int = 0  # 待人工、还没复核的
-    retry: int = 0  # 这次没抓到、下批重试的（不算进通过率）
+    retry: int = 0  # 这次没抓到、下批重试的（不知道读得准不准，不算进通过率）
+    blocked: int = 0  # 不能抓：按访问控制等不读的（不进本批，读不了也不算进通过率）
+    excluded: int = 0  # 不收：读得对、但不在收录范围的（不进本批；读得对，通过率里算对）
+    # 联网核对抽到的那几格（复核人以"联网核对"开头）：读得准的、算进分母的
+    sample_ok: int = 0
+    sample_judged: int = 0
+
+    @property
+    def sample_rate(self) -> float | None:
+        """联网核对抽样里读得准的占多少；没有抽样时是 None。"""
+        return self.sample_ok / self.sample_judged if self.sample_judged else None
 
     @property
     def rate(self) -> float:
-        judged = self.total - self.retry
-        return self.passed / judged if judged else 0.0
+        """读得准的占多少：通过和不收都算读得准，待重试、不能抓不算进分母。"""
+        judged = self.total - self.retry - self.blocked
+        return (self.passed + self.excluded) / judged if judged else 0.0
 
     @property
     def accepted(self) -> bool:
+        """全表读得准的过八成；有联网核对抽样的，抽样里也要过八成（抽样只看了一部分格，抽样里
+        错得多说明全表的自动核对漏了，就算全表算下来过八成也先不放；11/11 主线定的）。"""
+        if self.sample_rate is not None and self.sample_rate < PASS_RATE:
+            return False
         return self.passed > 0 and self.pending == 0 and self.rate >= PASS_RATE
 
 
 def final_verdict(row: dict) -> str:
     """一行的最终结论：人工复核写了就按人工（自动通过的也可能被复核否掉），没写看自动结论。
 
-    复核结论按开头认（"不通过（部门挂错）"算不通过，首尾空格不算）；"待重试"是这次没抓到
-    （不进本批，也不算进通过率）；写了别的词（"有问题"）一律算"待复核"，这个省补上之前不合格。"""
+    复核结论按开头认（"不通过（部门挂错）"算不通过，首尾空格不算）。"待重试"是这次没抓到：不进
+    本批，也不算进通过率（不知道读得准不准）。"不能抓"是按访问控制等原因不读的（列表要靠页面
+    脚本另取、要登录……，D-013）：不进本批，也不算进通过率（读不了，谈不上读得准不准）。"不收"
+    是读得对、但不在收录范围（如整栏都是事业单位招聘公示）：不进本批；通过率量的是读得准不准，
+    所以它算读得对。写了别的词（"有问题"）一律算"待复核"，这个省补上之前不合格。"""
     verdict = (row.get("复核结论") or "").strip()
     if verdict:
-        for word in ("不通过", "待重试", "通过"):
+        for word in ("不通过", "待重试", "不能抓", "不收", "通过"):
             if verdict.startswith(word):
                 return word
         return "待复核"
@@ -391,12 +499,23 @@ def evidence_results(folder) -> list[ProvinceResult]:
             for r in csv.DictReader(fh):
                 res.total += 1
                 verdict = final_verdict(r)
+                if (r.get("复核人") or "").strip().startswith("联网核对") and verdict in (
+                    "通过",
+                    "不通过",
+                    "不收",
+                ):
+                    res.sample_judged += 1
+                    res.sample_ok += verdict != "不通过"
                 if verdict == "通过":
                     res.passed += 1
                 elif verdict == "不通过":
                     res.failed += 1
                 elif verdict == "待重试":
                     res.retry += 1
+                elif verdict == "不收":
+                    res.excluded += 1
+                elif verdict == "不能抓":
+                    res.blocked += 1
                 else:
                     res.pending += 1
         out.append(res)

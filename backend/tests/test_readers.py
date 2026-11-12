@@ -976,6 +976,8 @@ def test_personal_words_ignore_spaces():
     assert v1.personal_matter("关于公开招 聘工作人员的公告")
     assert v1.personal_matter("关于2026年度“银龄工程师”招募通告")
     assert not v1.personal_matter("关于开展2026年先进制造业领域职业技能提升培训的通知")
+    # 11/9：任命和任免一样是个人事项
+    assert v1.personal_matter("关于任命某市直渔业官方兽医的通知")
 
 
 def test_personal_notices_and_lists_do_not_send_people_to_the_list_lookup(client, session):

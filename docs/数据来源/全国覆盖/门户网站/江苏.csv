@@ -1,13 +1,13 @@
 ﻿层级,省份,城市,区县,区划代码,名称,门户网址,导航来源页,导航文字,状态,原因,网站标识码,网站名称,平台,技术支持
 省级,江苏,,,320000,江苏省,http://www.jiangsu.gov.cn/,https://www.gov.cn/home/2023-03/29/content_5748954.htm,江苏,已找到,,3200000084,江苏省人民政府,大汉|art_日期_编号(大汉),
-市级,江苏,南京,,320100,南京市,http://www.nanjing.gov.cn/,http://www.jiangsu.gov.cn/script/0/1708171610341487.js?v=250914,南京,已找到,,,,未识别,
+市级,江苏,南京,,320100,南京市,http://www.nanjing.gov.cn/index.html,http://www.jiangsu.gov.cn/script/0/1708171610341487.js?v=250914,南京,已找到,,3201000001,中共南京市委 南京市人民政府,拓尔思|t日期_编号(拓尔思),
 市级,江苏,无锡,,320200,无锡市,http://www.wuxi.gov.cn/,http://www.jiangsu.gov.cn/script/0/1708171610341487.js?v=250914,无锡,不能抓,HTTP 403 拒绝访问,,,,
-市级,江苏,徐州,,320300,徐州市,http://www.xz.gov.cn/,http://www.jiangsu.gov.cn/script/0/1708171610341487.js?v=250914,徐州,已找到,网站名称、标题和标识码都对不上这个行政区，待核对,,,未识别,
-市级,江苏,常州,,320400,常州市,https://www.changzhou.gov.cn/,http://www.jiangsu.gov.cn/script/0/1708171610341487.js?v=250914,常州,已找到,,3204000002,常州市人民政府,动态页?id=,电话：0519-85685023
+市级,江苏,徐州,,320300,徐州市,http://www.xz.gov.cn/,http://www.jiangsu.gov.cn/script/0/1708171610341487.js?v=250914,徐州,不能抓,robots.txt 禁止,,,,
+市级,江苏,常州,,320400,常州市,https://www.changzhou.gov.cn/,http://www.jiangsu.gov.cn/script/0/1708171610341487.js?v=250914,常州,已找到,,3204000002,常州市人民政府,动态页?id=,
 市级,江苏,苏州,,320500,苏州市,http://www.suzhou.gov.cn/,http://www.jiangsu.gov.cn/script/0/1708171610341487.js?v=250914,苏州,已找到,,3205000002,苏州市人民政府,32位编号.shtml,
 市级,江苏,南通,,320600,南通市,https://www.nantong.gov.cn/,http://www.jiangsu.gov.cn/script/0/1708171610341487.js?v=250914,南通,已找到,,3206000002,南通市人民政府,未识别,
 市级,江苏,连云港,,320700,连云港市,http://www.lyg.gov.cn/,http://www.jiangsu.gov.cn/script/0/1708171610341487.js?v=250914,连云港,已找到,,3207000001,连云港市人民政府,动态页?id=,
-市级,江苏,淮安,,320800,淮安市,,,,导航未找到,,,,,
+市级,江苏,淮安,,320800,淮安市,http://www.huaian.gov.cn/,http://www.jiangsu.gov.cn/script/0/1708171610341487.js?v=250914,淮安,已找到,,3208000001,淮安市人民政府,未识别,
 市级,江苏,盐城,,320900,盐城市,http://www.yancheng.gov.cn/,http://www.jiangsu.gov.cn/script/0/1708171610341487.js?v=250914,盐城,已找到,,,盐城市人民政府,大汉|art_日期_编号(大汉),
 市级,江苏,扬州,,321000,扬州市,http://www.yangzhou.gov.cn/,http://www.jiangsu.gov.cn/script/0/1708171610341487.js?v=250914,扬州,已找到,,,扬州市人民政府,大汉|动态页?id=,
 市级,江苏,镇江,,321100,镇江市,http://www.zhenjiang.gov.cn/,http://www.jiangsu.gov.cn/script/0/1708171610341487.js?v=250914,镇江,已找到,,3211000002,镇江市人民政府,32位编号.shtml,
@@ -43,7 +43,7 @@
 区县级,江苏,徐州,邳州市,320382,邳州市,,,,导航未找到,,,,,
 区县级,江苏,常州,天宁区,320402,天宁区,https://www.cztn.gov.cn/,https://www.changzhou.gov.cn/,天宁区,已找到,,3204020001,常州市天宁区人民政府,动态页?id=,
 区县级,江苏,常州,钟楼区,320404,钟楼区,https://www.zhonglou.gov.cn/,https://www.changzhou.gov.cn/,钟楼区,已找到,,3204040002,常州市钟楼区人民政府,动态页?id=,
-区县级,江苏,常州,新北区,320411,新北区,https://www.cznd.gov.cn/,https://www.changzhou.gov.cn/,新北区,已找到,,3204110029,常州国家高新区管委会（新北区人民政府）,动态页?id=,电话：0519-85127013总访问量：
+区县级,江苏,常州,新北区,320411,新北区,https://www.cznd.gov.cn/,https://www.changzhou.gov.cn/,新北区,已找到,,3204110029,常州国家高新区管委会（新北区人民政府）,动态页?id=,
 区县级,江苏,常州,武进区,320412,武进区,https://www.wj.gov.cn/,https://www.changzhou.gov.cn/,武进区,已找到,,3204120012,常州市武进区人民政府,动态页?id=,
 区县级,江苏,常州,金坛区,320413,金坛区,https://www.jintan.gov.cn/,https://www.changzhou.gov.cn/,金坛区,已找到,网站标识码 3204820037 和区划代码 320413 不一致（同省，待核对）,3204820037,常州市金坛区人民政府,动态页?id=,
 区县级,江苏,常州,溧阳市,320481,溧阳市,https://www.liyang.gov.cn/,https://www.changzhou.gov.cn/,溧阳市,已找到,,3204810031,常州市溧阳市人民政府,动态页?id=,

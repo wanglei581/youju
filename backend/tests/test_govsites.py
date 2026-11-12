@@ -2,6 +2,8 @@
 
 from datetime import date
 
+import pytest
+
 from youju.crawler.fetcher import FetchResult
 from youju.crawler.listing import extract_items
 from youju.govsites.divisions import (
@@ -22,7 +24,7 @@ from youju.govsites.inventory import (
 )
 from youju.govsites.links import nav_links, page_links, parse_html, registrable
 from youju.govsites.names import column_kind, dept_categories
-from youju.govsites.platform import blocker, fingerprint
+from youju.govsites.platform import blocker, clean_support, fingerprint
 
 TREE = {
     "children": [
@@ -231,6 +233,36 @@ def test_fingerprint_and_blocker():
     assert blocker("http_error", 412, "<html>$_ts=window['$_ts']</html>") == "瑞数防护"
     assert blocker("robots_disallowed", None, "") == "robots.txt 禁止"
     assert blocker("ok", 200, "<html>" + "正文" * 3000 + "请输入验证码</html>") is None
+
+
+@pytest.mark.parametrize(
+    ("raw", "want"),
+    [
+        ("南京大汉网络有限公司", "南京大汉网络有限公司"),
+        ("与维护：某某科技有限公司", "某某科技有限公司"),
+        ("某某&amp;某某科技有限公司", "某某&某某科技有限公司"),
+        # 电话：带标签的、区号连着分隔符的、括号区号、400 号码、光是一串数字的
+        ("某某科技有限公司 电话：0571-87654321", "某某科技有限公司"),
+        ("某某科技有限公司 010-12345678", "某某科技有限公司"),
+        ("某某科技有限公司（0731）8888888", "某某科技有限公司"),
+        ("某某科技有限公司 400-123-4567", "某某科技有限公司"),
+        ("某某科技有限公司010/12345678", "某某科技有限公司"),
+        ("某某科技有限公司 010.12345678", "某某科技有限公司"),
+        ("某某科技有限公司 13800001111", "某某科技有限公司"),
+        # 邮箱：不能从公司名开头截
+        ("某某科技有限公司abc@example.com", "某某科技有限公司"),
+        ("某某科技有限公司 邮箱：abc@example.com", "某某科技有限公司"),
+        # 备案号：省份简称一起截，没有简称的不吃掉公司名的字
+        ("某某科技有限公司 粤ICP备12345678号", "某某科技有限公司"),
+        ("某某科技有限公司ICP备12345678号", "某某科技有限公司"),
+        ("某某科技有限公司 京公网安备 11010502030143号", "某某科技有限公司"),
+        ("某某信息港滇公网安备12345678901234号", "某某信息港"),
+        ("某某科技有限公司黔ICP备12345678号", "某某科技有限公司"),
+    ],
+)
+def test_clean_support_keeps_only_company(raw, want):
+    """页脚"技术支持"写进公开清单：只留单位名（11/12 地市一组报）。"""
+    assert clean_support(raw) == want
 
 
 def _page(url: str, html: str, final: str | None = None) -> PageInfo:

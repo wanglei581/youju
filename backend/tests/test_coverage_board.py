@@ -493,6 +493,29 @@ def test_enable_verified_opens_never_crawled_readable_sources(session):
     assert source.enabled is True
 
 
+def test_enable_with_batch_counts_other_spelling_as_live(session):
+    """批次里是 https、库里同一个列表是 http 写法且已经启用：算"已经在收"（和上线脚本数"已经打开"的
+    口径一致），不算"库里没有"——否则上线脚本每次都停在这个省（#471 独立复核）。"""
+    _source(session, url=COL.replace("https://", "http://"), enabled=True)
+    session.add(
+        CoverageAcceptance(
+            province="浙江",
+            level="省级",
+            sampled_by="王某",
+            sampled_at=NOW,
+            sample_size=11,
+            passed=True,
+        )
+    )
+    session.commit()
+    import_inventory(session, _portals(), _depts())
+    r = enable_sources(
+        session, "浙江", "省级", "王某", now=NOW, verified=True, only_urls=[COL], dry_run=True
+    )
+    assert r.enabled == 0
+    assert r.missing == [f"{COL}（已经在收：库里是另一种写法）"]
+
+
 def test_enable_with_batch_opens_only_listed_sources(session):
     listed = _source(session)
     other = _source(session, url="https://kjt.zj.gov.cn/zcwj/")
