@@ -307,6 +307,12 @@ def test_batch_urls_drop_rows_failed_after_batch(tmp_path, capsys):
         ("湖北", "荆州市", "发改委", "荆州区发展和改革局", False),
         ("湖北", "荆州市", "发改委", "荆州市发展和改革委员会", True),
         ("江苏", "苏州市", "政府办", "苏州市人民政府", True),
+        # 库里地级市写简称（以"州"结尾的也是地级市）
+        ("江苏", "苏州", "政府办", "苏州市常熟市人民政府", False),
+        ("江苏", "苏州", "政府办", "苏州市人民政府", True),
+        ("江苏", "苏州", "发改委", "州发展和改革委员会", False),
+        ("江苏", "南京", "发改委", "南京市玄武区发展和改革委员会", False),
+        ("江苏", "南京", "发改委", "南京市发展和改革委员会", True),
     ],
 )
 def test_city_dept_names(province, city, dept, full, ok):
@@ -318,7 +324,9 @@ def test_city_dept_names(province, city, dept, full, ok):
     counties = {
         "吉林市": {"丰满区", "船营区", "永吉县", "蛟河市"},
         "苏州市": {"姑苏区", "常熟市", "昆山市"},
+        "苏州": {"姑苏区", "常熟市", "昆山市"},
         "南京市": {"玄武区", "秦淮区", "浦口区"},
+        "南京": {"玄武区", "秦淮区", "浦口区"},
         "济南市": {"历下区", "市中区", "平阴县"},
         "恩施土家族苗族自治州": {"恩施市", "利川市", "建始县"},
         "荆州市": {"荆州区", "沙市区", "沙市", "公安县"},
@@ -328,7 +336,8 @@ def test_city_dept_names(province, city, dept, full, ok):
 
 
 def test_counties_by_city_keeps_full_names(tmp_path):
-    """区县名单只取带区、县、市、旗的写法："公安县"的"公安"会碰上"荆州市公安局"。"""
+    """区县名单只取带区、县、市、旗的写法（"公安县"的"公安"会碰上"荆州市公安局"）；城市认全称和
+    简称；清单不存在时报错。"""
     from youju.govsites.sample import counties_by_city
 
     path = tmp_path / "行政区划.csv"
@@ -337,13 +346,72 @@ def test_counties_by_city_keeps_full_names(tmp_path):
         "421000,荆州市,地级市,市级,湖北,荆州,,420000\n"
         "421003,荆州区,市辖区,区县级,湖北,荆州,荆州区,421000\n"
         "421022,公安县,县,区县级,湖北,荆州,公安县,421000\n"
+        "422800,恩施土家族苗族自治州,自治州,市级,湖北,恩施土家族苗族自治州,,420000\n"
         "422801,恩施市,县级市,区县级,湖北,恩施土家族苗族自治州,恩施市,422800\n",
         encoding="utf-8-sig",
     )
     got = counties_by_city(path)
-    assert got[("湖北", "荆州")] == {"荆州区", "公安县"}
-    assert got[("湖北", "恩施土家族苗族自治州")] == {"恩施市"}
-    assert counties_by_city(tmp_path / "没有.csv") == {}
+    assert got[("湖北", "荆州")] == got[("湖北", "荆州市")] == {"荆州区", "公安县"}
+    for city in ("恩施土家族苗族自治州", "恩施州", "恩施"):
+        assert got[("湖北", city)] == {"恩施市"}
+    with pytest.raises(FileNotFoundError):
+        counties_by_city(tmp_path / "没有.csv")
+
+
+def test_city_sample_rows_use_division_list(session):
+    """用仓库里的行政区划清单走 sample_rows：来源写"吉林市"还是"吉林"都认得出下辖区县的部门。"""
+    from pathlib import Path
+
+    from youju.govsites.sample import counties_by_city
+
+    divisions = Path(__file__).parents[2] / "docs" / "数据来源" / "全国覆盖" / "行政区划.csv"
+    urls = {}
+    for city, full in (
+        ("吉林市", "吉林省吉林市丰满区发展和改革局"),
+        ("吉林", "吉林市船营区发展和改革局"),
+        ("苏州", "苏州市常熟市人民政府"),
+        ("吉林市", "吉林市发展和改革委员会"),
+    ):
+        dept = "政府办" if full.endswith("人民政府") else "发改委"
+        s = Source(
+            level="市级",
+            province="江苏" if city == "苏州" else "吉林",
+            city=city,
+            dept=dept,
+            dept_full_name=full,
+            column_name="通知公告",
+            url=f"https://example{len(urls)}.gov.cn/tzgg/",
+            fetch_mode="static",
+            enabled=False,
+            parser_config={},
+            verification_status="试跑可读（全国覆盖 v1，未启用）",
+        )
+        session.add(s)
+        session.flush()
+        _check(session, s, 12)
+        for n, day in enumerate((date(2026, 11, 5), date(2026, 10, 1), date(2026, 9, 1))):
+            _doc(session, s, n + 10 * len(urls), day)
+        urls[full] = s.url
+    session.commit()
+    rows = {
+        r.source.url: r
+        for r in sample_rows(session, "市级", now=NOW, counties=counties_by_city(divisions))
+    }
+    for full, url in urls.items():
+        assert ("部门" in rows[url].failed) is (full != "吉林市发展和改革委员会"), full
+
+
+def test_city_sample_needs_division_list(tmp_path, capsys):
+    """没有行政区划清单就不做地市抽查（少了它会把区县的部门当成本市的）。"""
+    import argparse
+
+    from youju.govsites.cli import _cmd_sample
+
+    args = argparse.Namespace(
+        level="市级", province=None, size=None, out=tmp_path, divisions=tmp_path / "没有.csv"
+    )
+    assert _cmd_sample(args) == 1
+    assert "行政区划清单" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize(

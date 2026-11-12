@@ -148,26 +148,37 @@ _PROVINCE_FULL = re.compile(
 
 
 def _city_names(s: Source) -> set[str]:
-    return {v for v in name_variants(s.city) | {s.city} if len(v) >= 2}
+    names = {v for v in name_variants(s.city) | {s.city} if len(v) >= 2}
+    if not s.city.endswith(("自治州", "盟", "地区", "市")):
+        # 地级市在库里写简称（"南京""苏州"），部门全称写"南京市……""苏州市……"；自治州、盟、地区写全称
+        names.add(s.city + "市")
+    return names
 
 
-def counties_by_city(path: Path | None) -> dict[tuple[str, str], frozenset[str]]:
+def counties_by_city(path: Path) -> dict[tuple[str, str], frozenset[str]]:
     """(省份, 城市) → 下辖区县的全称写法（以区、县、市、旗结尾的）。地市部门全称在本市名称后面紧跟
     这些的，是区县的部门（"南京市玄武区……""苏州市常熟市人民政府"）。不用简称："公安县"的"公安"
-    会碰上"荆州市公安局"。"""
+    会碰上"荆州市公安局"。城市认全称和简称（"吉林市""吉林""恩施州"），来源里怎么写都查得到；
+    清单不存在时报错（FileNotFoundError），不静默放过。"""
     from youju.govsites.divisions import read_csv
 
-    if not path or not path.exists():
-        return {}
-    out: dict[tuple[str, str], set[str]] = {}
-    for d in read_csv(path):
-        if d.level == "区县级" and d.city:
-            out.setdefault((d.province, d.city), set()).update(
+    divisions = read_csv(path)
+    by_parent: dict[str, set[str]] = {}
+    for d in divisions:
+        if d.level == "区县级" and d.parent_code:
+            by_parent.setdefault(d.parent_code, set()).update(
                 v
                 for v in name_variants(d.name, d.kind) | {d.name}
                 if len(v) >= 2 and v.endswith(("区", "县", "市", "旗"))
             )
-    return {key: frozenset(names) for key, names in out.items()}
+    out: dict[tuple[str, str], frozenset[str]] = {}
+    for d in divisions:
+        if d.level == "市级" and d.code in by_parent:
+            names = frozenset(by_parent[d.code])
+            for v in name_variants(d.name, d.kind) | {d.name, d.city or ""}:
+                if len(v) >= 2:
+                    out[(d.province, v)] = names
+    return out
 
 
 def _own_prefixes(s: Source) -> set[str]:
@@ -181,7 +192,7 @@ def _own_prefixes(s: Source) -> set[str]:
         prov |= {s.province + "省", s.province + "自治区"}  # 库里省份写简称（"江苏"）
         own = city | {p + c for p in prov for c in city}
         own.add("市")
-        if s.city.endswith(("州", "盟")):
+        if s.city.endswith(("自治州", "盟")):  # "苏州""杭州"是地级市，不加"州"
             own.add(s.city[-1])
         return own
     own = {v for v in name_variants(s.province) | {s.province} if len(v) >= 2}
