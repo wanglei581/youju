@@ -2057,7 +2057,7 @@ def audit_flagged(
             kind=d.kind,
             approved_date=d.approved_date,
             approved_time=d.approved_time.strftime("%H:%M") if d.approved_time else None,
-            evidence=d.evidence,
+            evidence=d.verification_quote or d.evidence,
             note=d.audit_note or "",
             flagged_at=d.audit_at,
         )

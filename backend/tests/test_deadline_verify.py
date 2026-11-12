@@ -170,3 +170,60 @@ def test_detail_shows_the_quote_recorded_when_verified(client, session, candidat
     d = client.get(f"/api/v1/documents/{candidate.document_id}").json()
     assert d["deadline"]["date"] == "2026-09-30"
     assert d["excerpt"]["text"] == v1.shown_quote(payload(candidate)["quote"])
+
+
+def test_audit_reopened_rows_stay_with_people(session, candidate):
+    # 质检退回的必须由人重新核对：不进清单，写回也不放行（同组沿用、导入同样不放行）
+    candidate.audit_state = "reopened"
+    candidate.audit_note = "原文写的是材料报送截止"
+    session.commit()
+    assert verify.queue(session, TODAY) == []
+    assert "质检退回" in verify.apply_one(session, payload(candidate), True)
+    assert candidate.status == "pending" and candidate.audit_note == "原文写的是材料报送截止"
+
+
+def test_twin_added_later_keeps_the_verified_quote(session, candidate):
+    from youju.dedup import sync_reviewed_twins
+
+    item = payload(
+        candidate,
+        verdict="corrected",
+        date="2026-10-01",
+        time=None,
+        quote="修改后截止2026年10月1日。",
+    )
+    assert verify.apply_one(session, item, True) == "通过并修改日期"
+    session.commit()
+    doc = session.get(Document, candidate.document_id)
+    twin_doc = _doc(doc.source, 98, doc.title, TODAY)
+    session.add(twin_doc)
+    session.flush()
+    session.add_all(
+        [
+            DocumentMerge(
+                duplicate_id=twin_doc.id, canonical_id=doc.id, match_key="same", active=True
+            ),
+            DocumentDeadline(
+                document_id=twin_doc.id,
+                fingerprint="later",
+                kind=candidate.kind,
+                candidate_date=candidate.candidate_date,
+                evidence=candidate.evidence,
+                confidence="高",
+                status="pending",
+                origin="rule",
+            ),
+        ]
+    )
+    session.commit()
+    assert sync_reviewed_twins(session, {doc.id}) == 1
+    session.commit()
+    twin = session.scalar(
+        select(DocumentDeadline).where(DocumentDeadline.document_id == twin_doc.id)
+    )
+    # 沿用改过的日期，也沿用写着这个日期的原句（副本自己的候选原句写的是旧日期）
+    assert (twin.approved_date, twin.verification_quote, twin.verification_corrected) == (
+        date(2026, 10, 1),
+        item["quote"],
+        True,
+    )

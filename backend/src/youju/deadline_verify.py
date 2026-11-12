@@ -33,8 +33,11 @@ def queue(session, today, days=7):
     excerpts.batch(session, ids, v1._approved(session, ids), today, blocked_soon=blocked)
     result = []
     for row in {r.id: r for r in blocked}.values():
-        if row.candidate_date > today + timedelta(days=days):
+        # batch 判"7 天内"时这一类只有一个日期、在今天到 7 天后之间；这里再按 --days 收窄
+        if not today <= row.candidate_date <= today + timedelta(days=days):
             continue
+        if row.audit_state == "reopened":
+            continue  # 质检退回的必须由人重新核对（同组沿用、导入都不放行），不进 Claude 的清单
         doc = session.get(Document, row.document_id)
         detail = session.get(DocumentDetail, row.document_id)
         if not detail or detail.status != "ok":
@@ -88,14 +91,14 @@ def apply_one(session, item, write=False):
     locked = _lock_candidates(session, row)
     if row.status != "pending":
         return "状态已变，不再待核对"
+    if any(d.status == "pending" and d.audit_state == "reopened" for d in locked):
+        return "质检退回，须在核对台由人重新核对"
     if row.kind not in excerpts.DEADLINE_KINDS and verdict != "unclear":
         return "其他类不能通过"
+    stmt = select(DocumentDetail).where(DocumentDetail.document_id == row.document_id)
+    # 读最新的正文，别用会话里上一条留下的旧值（--apply 每条提交，会话不过期）
     detail = session.scalar(
-        select(DocumentDetail)
-        .where(DocumentDetail.document_id == row.document_id)
-        .with_for_update()
-        if write
-        else select(DocumentDetail).where(DocumentDetail.document_id == row.document_id)
+        (stmt.with_for_update() if write else stmt).execution_options(populate_existing=True)
     )
     if detail is None or detail.status != "ok":
         return "当前正文不可用"
@@ -136,6 +139,7 @@ def apply_one(session, item, write=False):
             select(DocumentDetail)
             .where(DocumentDetail.document_id == twin.document_id)
             .with_for_update()
+            .execution_options(populate_existing=True)
         )
         if (
             not twin_detail

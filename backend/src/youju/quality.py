@@ -265,7 +265,11 @@ def sample_notices(session: Session, n: int = 200, seed: int = 1) -> list[dict[s
         checks = [
             _traceable(doc.url),
             _evidence_check(
-                [(_deadline_text(d), d.evidence, d.approved_date) for d in deadlines], texts
+                [
+                    (_deadline_text(d), d.verification_quote or d.evidence, d.approved_date)
+                    for d in deadlines
+                ],
+                texts,
             )
             if deadlines
             else Check(NOT_APPLICABLE, ["没有已核对的截止日期"]),
@@ -286,7 +290,9 @@ def sample_notices(session: Session, n: int = 200, seed: int = 1) -> list[dict[s
                 "发布日期": doc.publish_date.isoformat() if doc.publish_date else "",
                 "原文网址": doc.url,
                 "截止日期（已核对）": "\n".join(_deadline_text(d) for d in deadlines),
-                "截止证据原句": "\n".join(f"{d.kind}：{d.evidence}" for d in deadlines),
+                "截止证据原句": "\n".join(
+                    f"{d.kind}：{d.verification_quote or d.evidence}" for d in deadlines
+                ),
                 "已核对字段": "\n".join(f"{name}：{value}" for name, value, _ in field_rows),
                 "字段证据原句": "\n".join(f"{value}：{ev}" for _, value, ev in field_rows),
                 "正文": f"有（{max(len(t) for t in texts)} 字）" if texts else "无",
