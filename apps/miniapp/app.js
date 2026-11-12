@@ -8,7 +8,8 @@ App({
 
   onLaunch() {
     const config = require('./utils/config.js');
-    if (config.cloudEnv && wx.cloud) wx.cloud.init({ env: config.cloudEnv });
+    // 2.0 自建服务器（apiBaseUrl）不用云托管，不初始化
+    if (!config.apiBaseUrl && config.cloudEnv && wx.cloud) wx.cloud.init({ env: config.cloudEnv });
     try {
       // 尺寸怎么算、电脑版怎么兜底见 utils/nav.js
       Object.assign(this.globalData, require('./utils/nav.js').navMetrics(wx.getWindowInfo(), wx.getMenuButtonBoundingClientRect()));
