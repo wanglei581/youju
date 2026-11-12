@@ -2,6 +2,8 @@
 
 from datetime import UTC, date, datetime
 
+import pytest
+
 from youju.crawler.urls import url_key
 from youju.govsites.sample import evidence_results, sample_rows, to_csv_row
 from youju.models import Document, Source, SourceCheck
@@ -91,13 +93,36 @@ def test_evidence_results_count_reviews(tmp_path):
         encoding="utf-8-sig",
     )
     (tmp_path / "江苏.csv").write_text(head + "省级,江苏,v1,待人工,条目,,,\n", encoding="utf-8-sig")
-    # 这次没抓到的记待重试：不算进通过率（4 个里 3 个通过、1 个待重试 → 100%）
+    # 这次没抓到的记待重试：不算进通过率；读得对、但不在收录范围的记不收：算读得对
+    # （5 个里 3 个通过、1 个不收、1 个待重试 → 4/4 = 100%）
     (tmp_path / "广东.csv").write_text(
         head
         + "省级,广东,w1,自动通过,,,,\n"
         + "省级,广东,w2,自动通过,,,,\n"
         + "省级,广东,w3,自动通过,,,,\n"
-        + "省级,广东,w4,待人工,条目,王某,待重试,robots.txt 暂时取不到\n",
+        + "省级,广东,w4,待人工,条目,王某,待重试,robots.txt 暂时取不到\n"
+        + "省级,广东,w5,自动通过,,协调会话,不收（整栏招聘公示）,和企业政策无关\n",
+        encoding="utf-8-sig",
+    )
+    # 不收算读得对：3 个通过、1 个不通过、1 个不收 → 4/5 = 80%，合格（不算进分母是 3/4、
+    # 算错是 3/5，都不合格）——第 1 批上海就是这样
+    (tmp_path / "上海.csv").write_text(
+        head
+        + "省级,上海,s1,自动通过,,,,\n"
+        + "省级,上海,s2,自动通过,,,,\n"
+        + "省级,上海,s3,自动通过,,,,\n"
+        + "省级,上海,s4,待人工,要闻,王某,不通过,时政要闻\n"
+        + "省级,上海,s5,自动通过,,王某,不收,整栏是个人事项公示\n",
+        encoding="utf-8-sig",
+    )
+    (tmp_path / "四川.csv").write_text(
+        head
+        + "".join(f"省级,四川,c{n},自动通过,,,,\n" for n in (1, 2, 3))
+        + "省级,四川,c4,待人工,年报,王某,不通过,读成年报\n"
+        + "".join(
+            f"省级,四川,c{n},自动通过,,王某,不能抓（列表靠页面脚本另取）,访问控制\n"
+            for n in (5, 6, 7)
+        ),
         encoding="utf-8-sig",
     )
     res = {r.province: r for r in evidence_results(tmp_path)}
@@ -106,7 +131,12 @@ def test_evidence_results_count_reviews(tmp_path):
     assert (zj.total, zj.passed, zj.failed, zj.accepted) == (6, 4, 2, False)
     assert (js.pending, js.accepted) == (1, False)  # 没复核完不算合格
     gd = res["广东"]
-    assert (gd.retry, gd.rate, gd.accepted) == (1, 1.0, True)
+    assert (gd.retry, gd.excluded, gd.rate, gd.accepted) == (1, 1, 1.0, True)
+    sh = res["上海"]
+    assert (sh.passed, sh.failed, sh.excluded, sh.rate, sh.accepted) == (3, 1, 1, 0.8, True)
+    # 不能抓（按访问控制不读）不算进分母：3 个通过、1 个不通过、3 个不能抓 → 3/4 = 75%，不合格
+    zj2 = res["四川"]
+    assert (zj2.blocked, zj2.rate, zj2.accepted) == (3, 0.75, False)
 
 
 def test_batch_keeps_only_passed_columns_of_accepted_provinces(tmp_path):
@@ -133,8 +163,9 @@ def test_batch_keeps_only_passed_columns_of_accepted_provinces(tmp_path):
     head = "层级,省份,栏目URL,自动结论,没过的项,复核人,复核结论,复核备注\n"
     (evid / "浙江.csv").write_text(
         head
-        + "".join(f"省级,浙江,a{n},自动通过,,,,\n" for n in (1, 2, 3, 4))
-        + "省级,浙江,a5,待人工,年报,王某,不通过,读成年报\n",
+        + "".join(f"省级,浙江,a{n},自动通过,,,,\n" for n in (1, 2, 3))
+        + "省级,浙江,a4,待人工,年报,王某,不通过,读成年报\n"
+        + "省级,浙江,a5,自动通过,,协调会话,不收,整栏是事业单位招聘公示\n",
         encoding="utf-8-sig",
     )
     (evid / "福建.csv").write_text(
@@ -145,8 +176,9 @@ def test_batch_keeps_only_passed_columns_of_accepted_provinces(tmp_path):
     assert _cmd_batch(args) == 0
     with (tmp_path / "批次" / "第1批.csv").open(encoding="utf-8-sig", newline="") as fh:
         urls = [r[7] for r in list(csv.reader(fh))[1:]]
-    # 浙江 4/5 合格，只收通过的 4 个；福建 1/2 不合格，整省不收
-    assert urls == ["a1", "a2", "a3", "a4"]
+    # 浙江 4/5 合格（a5 不收：读得对，算进通过率，但不进批次），只收通过的 3 个；
+    # 福建 1/2 不合格，整省不收
+    assert urls == ["a1", "a2", "a3"]
 
 
 def test_final_verdict_reads_wording_by_prefix():
@@ -157,6 +189,8 @@ def test_final_verdict_reads_wording_by_prefix():
     assert final_verdict({**auto, "复核结论": " 通过 "}) == "通过"
     assert final_verdict({**auto, "复核结论": "有问题"}) == "待复核"  # 认不出的词要人看
     assert final_verdict({**auto, "复核结论": "待重试（没抓到）"}) == "待重试"
+    assert final_verdict({**auto, "复核结论": "不收（整栏招聘公示）"}) == "不收"
+    assert final_verdict({**auto, "复核结论": "不能抓（访问控制）"}) == "不能抓"
     assert final_verdict({**auto, "复核结论": ""}) == "通过"
     assert final_verdict({"自动结论": "待人工", "复核结论": ""}) == "待复核"
 
@@ -234,3 +268,206 @@ def test_batch_urls_drop_rows_failed_after_batch(tmp_path, capsys):
     )
     assert _cmd_enable(args) == 1
     assert "--batch" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("province", "city", "dept", "full", "ok"),
+    [
+        # 地市部门全称写本市名称、省名连市名、只写本级前缀"市"：算本市
+        ("江苏", "南京市", "发改委", "南京市发展和改革委员会", True),
+        ("江苏", "南京市", "发改委", "江苏省南京市发展和改革委员会", True),
+        ("江苏", "南京市", "数据局", "市大数据局", True),
+        ("湖北", "恩施土家族苗族自治州", "农业农村", "恩施州农业农村局", True),
+        ("湖北", "恩施土家族苗族自治州", "农业农村", "湖北省恩施州农业农村局", True),
+        ("内蒙古", "阿拉善盟", "发改委", "盟发展和改革委员会", True),
+        # 地市门户的写法
+        ("江苏", "南京市", "政府办", "中共南京市委 南京市人民政府", True),
+        ("江苏", "南京市", "政府办", "南京市政府门户网站", True),
+        ("江苏", "南京市", "政府办", "南京政府网", True),
+        ("内蒙古", "阿拉善盟", "政府办", "阿拉善盟行政公署", True),
+        # 只写省名的是省直部门；别的市的部门、下辖区县的政府：都不算
+        ("江苏", "南京市", "发改委", "江苏省发展和改革委员会", False),
+        ("江苏", "南京市", "发改委", "苏州市发展和改革委员会", False),
+        ("江苏", "南京市", "政府办", "南京市某某区人民政府", False),
+        ("江苏", "南京市", "政府办", "南京市某某区政府", False),
+        ("江苏", "南京市", "政府办", "南京市某某县人民政府", False),
+        # 市名和省名一样（吉林市）、和别的省撞上（青海海南州）：以省份全称开头的要紧跟本市名称
+        ("吉林", "吉林市", "发改委", "吉林市发展和改革委员会", True),
+        ("吉林", "吉林市", "发改委", "吉林省吉林市发展和改革委员会", True),
+        ("吉林", "吉林市", "发改委", "吉林省发展和改革委员会", False),
+        ("吉林", "吉林市", "市场监管", "吉林省市场监督管理厅", False),
+        ("青海", "海南藏族自治州", "发改委", "海南州发展和改革委员会", True),
+        ("青海", "海南藏族自治州", "发改委", "海南省发展和改革委员会", False),
+        # 本市名称后面紧跟下辖区县全称的是区县的部门（区县名单取自行政区划清单）
+        ("吉林", "吉林市", "发改委", "吉林省吉林市丰满区发展和改革局", False),
+        ("江苏", "苏州市", "政府办", "苏州市常熟市人民政府", False),
+        ("江苏", "南京市", "发改委", "南京市玄武区发展和改革委员会", False),
+        ("山东", "济南市", "发改委", "市中区发展和改革局", False),
+        ("湖北", "恩施土家族苗族自治州", "农业农村", "恩施市农业农村局", False),
+        ("湖北", "荆州市", "发改委", "荆州区发展和改革局", False),
+        ("湖北", "荆州市", "发改委", "荆州市发展和改革委员会", True),
+        ("江苏", "苏州市", "政府办", "苏州市人民政府", True),
+        # 库里地级市写简称（以"州"结尾的也是地级市）
+        ("江苏", "苏州", "政府办", "苏州市常熟市人民政府", False),
+        ("江苏", "苏州", "政府办", "苏州市人民政府", True),
+        ("江苏", "苏州", "发改委", "州发展和改革委员会", False),
+        ("江苏", "南京", "发改委", "南京市玄武区发展和改革委员会", False),
+        ("江苏", "南京", "发改委", "南京市发展和改革委员会", True),
+        # 自治州写简称（"恩施州"）也认本级前缀"州"
+        ("湖北", "恩施州", "农业农村", "州农业农村局", True),
+        ("湖北", "恩施州", "农业农村", "恩施州农业农村局", True),
+        ("湖北", "恩施州", "农业农村", "恩施市农业农村局", False),
+    ],
+)
+def test_city_dept_names(province, city, dept, full, ok):
+    """11/11 地市一组报：部门核对原来只认省名，568 个地市栏目里 552 个卡在"部门"。"""
+    from types import SimpleNamespace
+
+    from youju.govsites.sample import _dept_ok
+
+    counties = {
+        "吉林市": {"丰满区", "船营区", "永吉县", "蛟河市"},
+        "苏州市": {"姑苏区", "常熟市", "昆山市"},
+        "苏州": {"姑苏区", "常熟市", "昆山市"},
+        "南京市": {"玄武区", "秦淮区", "浦口区"},
+        "南京": {"玄武区", "秦淮区", "浦口区"},
+        "济南市": {"历下区", "市中区", "平阴县"},
+        "恩施土家族苗族自治州": {"恩施市", "利川市", "建始县"},
+        "恩施州": {"恩施市", "利川市", "建始县"},
+        "荆州市": {"荆州区", "沙市区", "沙市", "公安县"},
+    }.get(city, set())
+    s = SimpleNamespace(level="市级", province=province, city=city, dept=dept, dept_full_name=full)
+    assert _dept_ok(s, frozenset(counties)) is ok
+
+
+def test_counties_by_city_keeps_full_names(tmp_path):
+    """区县名单只取带区、县、市、旗的写法（"公安县"的"公安"会碰上"荆州市公安局"）；城市认全称和
+    简称；清单不存在时报错。"""
+    from youju.govsites.sample import counties_by_city
+
+    path = tmp_path / "行政区划.csv"
+    path.write_text(
+        "区划代码,名称,类型,层级,省份,城市,区县,上级代码\n"
+        "421000,荆州市,地级市,市级,湖北,荆州,,420000\n"
+        "421003,荆州区,市辖区,区县级,湖北,荆州,荆州区,421000\n"
+        "421022,公安县,县,区县级,湖北,荆州,公安县,421000\n"
+        "422800,恩施土家族苗族自治州,自治州,市级,湖北,恩施土家族苗族自治州,,420000\n"
+        "422801,恩施市,县级市,区县级,湖北,恩施土家族苗族自治州,恩施市,422800\n",
+        encoding="utf-8-sig",
+    )
+    got = counties_by_city(path)
+    assert got[("湖北", "荆州")] == got[("湖北", "荆州市")] == {"荆州区", "公安县"}
+    for city in ("恩施土家族苗族自治州", "恩施州", "恩施"):
+        assert got[("湖北", city)] == {"恩施市"}
+    with pytest.raises(FileNotFoundError):
+        counties_by_city(tmp_path / "没有.csv")
+
+
+def test_city_sample_rows_use_division_list(session):
+    """用仓库里的行政区划清单走 sample_rows：来源写"吉林市"还是"吉林"都认得出下辖区县的部门。"""
+    from pathlib import Path
+
+    from youju.govsites.sample import counties_by_city
+
+    divisions = Path(__file__).parents[2] / "docs" / "数据来源" / "全国覆盖" / "行政区划.csv"
+    urls = {}
+    for city, full in (
+        ("吉林市", "吉林省吉林市丰满区发展和改革局"),
+        ("吉林", "吉林市船营区发展和改革局"),
+        ("苏州", "苏州市常熟市人民政府"),
+        ("吉林市", "吉林市发展和改革委员会"),
+    ):
+        dept = "政府办" if full.endswith("人民政府") else "发改委"
+        s = Source(
+            level="市级",
+            province="江苏" if city == "苏州" else "吉林",
+            city=city,
+            dept=dept,
+            dept_full_name=full,
+            column_name="通知公告",
+            url=f"https://example{len(urls)}.gov.cn/tzgg/",
+            fetch_mode="static",
+            enabled=False,
+            parser_config={},
+            verification_status="试跑可读（全国覆盖 v1，未启用）",
+        )
+        session.add(s)
+        session.flush()
+        _check(session, s, 12)
+        for n, day in enumerate((date(2026, 11, 5), date(2026, 10, 1), date(2026, 9, 1))):
+            _doc(session, s, n + 10 * len(urls), day)
+        urls[full] = s.url
+    session.commit()
+    rows = {
+        r.source.url: r
+        for r in sample_rows(session, "市级", now=NOW, counties=counties_by_city(divisions))
+    }
+    for full, url in urls.items():
+        assert ("部门" in rows[url].failed) is (full != "吉林市发展和改革委员会"), full
+
+
+def test_city_sample_needs_division_list(tmp_path, capsys):
+    """没有行政区划清单就不做地市抽查（少了它会把区县的部门当成本市的）；不指定时用 --out 目录里的。"""
+    import argparse
+
+    from youju.govsites.cli import _cmd_sample
+
+    args = argparse.Namespace(
+        level="市级", province=None, size=None, out=tmp_path, divisions=tmp_path / "没有.csv"
+    )
+    assert _cmd_sample(args) == 1
+    assert "没有.csv" in capsys.readouterr().out
+    args.divisions = None
+    assert _cmd_sample(args) == 1
+    assert str(tmp_path / "行政区划.csv") in capsys.readouterr().out
+
+
+def test_autonomous_matches_division_list():
+    """地级市以"州"结尾的都是两个字、自治州和盟写全称：_autonomous 和行政区划清单的类型对得上。"""
+    import csv
+    from pathlib import Path
+
+    from youju.govsites.sample import _autonomous
+
+    path = Path(__file__).parents[2] / "docs" / "数据来源" / "全国覆盖" / "行政区划.csv"
+    with path.open(encoding="utf-8-sig", newline="") as fh:
+        cities = [r for r in csv.DictReader(fh) if r["层级"] == "市级"]
+    assert len(cities) > 300
+    for r in cities:
+        assert _autonomous(r["城市"]) is (r["类型"] in ("自治州", "盟")), r["城市"]
+    assert _autonomous("恩施州") and not _autonomous("苏州")
+
+
+@pytest.mark.parametrize(
+    ("full", "ok"),
+    [
+        ("江苏省人民政府", True),
+        ("江苏省人民政府办公厅", True),
+        # 地市门户的新写法、去掉"中共"只给市级：省级照旧
+        ("中共江苏省委 江苏省人民政府", False),
+        ("江苏省政府门户网站", False),
+    ],
+)
+def test_province_portal_names_unchanged(full, ok):
+    from types import SimpleNamespace
+
+    from youju.govsites.sample import _dept_ok
+
+    s = SimpleNamespace(level="省级", province="江苏", city="", dept="政府办", dept_full_name=full)
+    assert _dept_ok(s) is ok
+
+
+def test_online_sample_failing_holds_province(tmp_path):
+    """联网核对抽的格里错得超过两成：就算全表读得准的过八成，这个省也先不放。"""
+    from youju.govsites.sample import evidence_results
+
+    head = "层级,省份,栏目URL,自动结论,没过的项,复核人,复核结论,复核备注\n"
+    rows = "".join(f"市级,河南,a{n},自动通过,,,,\n" for n in range(20))
+    rows += "".join(f"市级,河南,s{n},自动通过,,联网核对,通过,\n" for n in range(7))
+    rows += "".join(
+        f"市级,河南,f{n},自动通过,,联网核对,不通过,列表标题混进点击数\n" for n in range(3)
+    )
+    (tmp_path / "河南.csv").write_text(head + rows, encoding="utf-8-sig")
+    [res] = evidence_results(tmp_path)
+    # 全表 27/30 = 90%，但联网核对 7/10 = 70% → 不放
+    assert round(res.rate, 2) == 0.9 and res.sample_rate == 0.7 and res.accepted is False

@@ -673,14 +673,21 @@ def enable_sources(
     result.candidates = len(candidates)
     if wanted is not None:
         got = {url_key(s.url) for s in candidates[:limit]}
-        for key, url in wanted.items():
-            if key in got:
-                continue
-            src = session.scalar(select(Source).where(Source.url == url))
-            if src is None:
-                why = "库里没有（没导入，或线上是另一种写法）"
-            elif src.enabled:
-                why = "已经在收"
+        rest = {key: url for key, url in wanted.items() if key not in got}
+        # 按规范网址找库里的同一个列表（只差 http/https 等写法的也算），和上线脚本数"已经打开"的
+        # 口径一致：另一种写法已经启用的算"已经在收"
+        same: dict[str, list[Source]] = {}
+        if rest:
+            for src in session.scalars(select(Source)):
+                key = url_key(src.url)
+                if key in rest:
+                    same.setdefault(key, []).append(src)
+        for key, url in rest.items():
+            srcs = same.get(key, [])
+            if not srcs:
+                why = "库里没有（没导入）"
+            elif any(s.enabled for s in srcs):
+                why = "已经在收" + ("" if any(s.url == url for s in srcs) else "：库里是另一种写法")
             else:
                 why = "最近被网站拒绝、读不出、不是静态抓取，或不在这一级的格上"
             result.missing.append(f"{url}（{why}）")

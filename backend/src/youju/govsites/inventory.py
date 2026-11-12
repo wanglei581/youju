@@ -37,6 +37,7 @@ from youju.crawler.adapters import (
 )
 from youju.crawler.fetcher import FetchResult, resolve_host
 from youju.crawler.urls import page_dir
+from youju.govsites import colrules
 from youju.govsites.attribution import (  # noqa: F401 - level_*、_own_branch 原在本模块，保留旧名字
     NOT_OWN,
     Places,
@@ -92,7 +93,7 @@ from youju.govsites.navrules import (
     specific_page,
 )
 from youju.govsites.pagecache import PageCache
-from youju.govsites.platform import URL_SHAPES, Fingerprint, blocker, fingerprint
+from youju.govsites.platform import URL_SHAPES, Fingerprint, blocker, clean_support, fingerprint
 
 log = logging.getLogger(__name__)
 
@@ -1262,6 +1263,15 @@ class Inventory:
         topics = row.dept != "政府办" and row.site_type == "门户频道"
         hits = find_columns(pages, exclude, max_depth, topics)
         hits = self._check_group_columns(pages, hits, exclude, max_depth, topics)
+        if row.level == "市级" and row.dept != "政府办":
+            # 地市部门：先在部门自己的目录下补（栏目层级深、部门自己的信息公开页，colrules），
+            # 再沿页面上第一个"信息公开"补还缺的——它常是门户公共的政务公开页。
+            # 补抓的页面照同样的规则找栏目（专题路径、大汉分组栏目名核对）
+            def find(ps: list[PageInfo], ex: frozenset[str]) -> dict[str, ColumnHit]:
+                got = find_columns(ps, ex, max_depth, topics)
+                return self._check_group_columns(ps, got, ex, max_depth, topics)
+
+            hits = colrules.more_columns(row, page, hits, exclude, self.page, find, ColumnHit)
         missing = [k for k in COLUMN_KINDS if k not in hits]
         if missing and row.dept != "政府办":
             # 部门首页没有：沿"信息公开"再找一层
@@ -1631,7 +1641,9 @@ def portal_rows(portals: Iterable[PortalRow]) -> list[list[str]]:
             r.site_id_code,
             r.site_name,
             r.platform,
-            r.support,
+            clean_support(
+                r.support
+            ),  # 公开清单只留单位名（旧数据里的电话、邮箱、备案号写出时去掉）
         ]
         for r in rows
     ]
@@ -1668,7 +1680,7 @@ def dept_rows(depts: Iterable[DeptRow]) -> list[list[str]]:
                 " ".join(sources),
                 r.platform,
                 r.site_id_code,
-                r.support,
+                clean_support(r.support),
             ]
         )
     return out
