@@ -32,6 +32,7 @@ import re
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -137,6 +138,52 @@ def _kind(name: str | None) -> str | None:
 # 省级部门全称常只写本级前缀（"省农业农村厅""区商务厅""自治区人社厅""市发展改革委"）
 _MUNICIPALITIES = ("北京", "天津", "上海", "重庆")
 _REGIONS = ("内蒙古", "广西", "西藏", "宁夏", "新疆")
+# 省份全称（"吉林省""广西壮族自治区""北京市"）
+_PROVINCE_FULL = re.compile(
+    r"^(?:(?:北京|天津|上海|重庆)市"
+    r"|(?:河北|山西|辽宁|吉林|黑龙江|江苏|浙江|安徽|福建|江西|山东|河南|湖北|湖南|广东|海南"
+    r"|四川|贵州|云南|陕西|甘肃|青海|台湾)省"
+    r"|(?:内蒙古|广西壮族|广西|西藏|宁夏回族|宁夏|新疆维吾尔|新疆)自治区)"
+)
+
+
+def _autonomous(city: str) -> bool:
+    """自治州、盟：部门全称常只写本级前缀"州""盟"。地级市以"州"结尾的都是两个字（"苏州""杭州"，
+    行政区划清单里 293 个地级市核过，测试钉住），自治州写全称或"恩施州"这样三个字以上的简称。"""
+    return city.endswith(("自治州", "盟")) or (city.endswith("州") and len(city) >= 3)
+
+
+def _city_names(s: Source) -> set[str]:
+    names = {v for v in name_variants(s.city) | {s.city} if len(v) >= 2}
+    if not (_autonomous(s.city) or s.city.endswith(("地区", "市"))):
+        names.add(s.city + "市")  # 地级市在库里写简称（"南京""苏州"），部门全称写"南京市……"
+    return names
+
+
+def counties_by_city(path: Path) -> dict[tuple[str, str], frozenset[str]]:
+    """(省份, 城市) → 下辖区县的全称写法（以区、县、市、旗结尾的）。地市部门全称在本市名称后面紧跟
+    这些的，是区县的部门（"南京市玄武区……""苏州市常熟市人民政府"）。不用简称："公安县"的"公安"
+    会碰上"荆州市公安局"。城市认全称和简称（"吉林市""吉林""恩施州"），来源里怎么写都查得到；
+    清单不存在时报错（FileNotFoundError），不静默放过。"""
+    from youju.govsites.divisions import read_csv
+
+    divisions = read_csv(path)
+    by_parent: dict[str, set[str]] = {}
+    for d in divisions:
+        if d.level == "区县级" and d.parent_code:
+            by_parent.setdefault(d.parent_code, set()).update(
+                v
+                for v in name_variants(d.name, d.kind) | {d.name}
+                if len(v) >= 2 and v.endswith(("区", "县", "市", "旗"))
+            )
+    out: dict[tuple[str, str], frozenset[str]] = {}
+    for d in divisions:
+        if d.level == "市级" and d.code in by_parent:
+            names = frozenset(by_parent[d.code])
+            for v in name_variants(d.name, d.kind) | {d.name, d.city or ""}:
+                if len(v) >= 2:
+                    out[(d.province, v)] = names
+    return out
 
 
 def _own_prefixes(s: Source) -> set[str]:
@@ -145,12 +192,12 @@ def _own_prefixes(s: Source) -> set[str]:
         # （"江苏省南京市……"），或只写本级前缀（"市大数据局""州农业农村局""盟行政公署"）。只写省名的
         # （"江苏省发展和改革委员会"）是省直部门，挂在地市格上不对，不算（11/11 地市一组报：
         # 原来只认省名，568 个地市栏目里 552 个卡在"部门"）
-        city = {v for v in name_variants(s.city) | {s.city} if len(v) >= 2}
+        city = _city_names(s)
         prov = {v for v in name_variants(s.province) | {s.province} if len(v) >= 2}
         prov |= {s.province + "省", s.province + "自治区"}  # 库里省份写简称（"江苏"）
         own = city | {p + c for p in prov for c in city}
         own.add("市")
-        if s.city.endswith(("州", "盟")):
+        if _autonomous(s.city):  # "苏州""杭州"是地级市，不加"州"
             own.add(s.city[-1])
         return own
     own = {v for v in name_variants(s.province) | {s.province} if len(v) >= 2}
@@ -164,7 +211,7 @@ def _own_prefixes(s: Source) -> set[str]:
     return own
 
 
-def _dept_ok(s: Source) -> bool:
+def _dept_ok(s: Source, counties: frozenset[str] = frozenset()) -> bool:
     """部门全称能归到这一格的部门，而且是本省的（以本省名称或本级前缀开头）。
 
     政府办那一格是门户本身（"××人民政府"）；开发区按地名起名、不带省名，只看能不能归到开发区；
@@ -175,21 +222,38 @@ def _dept_ok(s: Source) -> bool:
     if s.dept == "市场监管" and "知识产权" in name and "市场监督" not in name:
         return False
     if s.dept == "政府办":
-        # 地市门户常写"××市政府门户网站""××政府网""××市政府"，或党政合办"中共××市委 ××市人民政府"
-        ok_kind = (
-            "人民政府" in name
-            or "办公厅" in name
-            or "政府办" in dept_categories(name)
-            or bool(re.search(r"政府(?:门户)?网|[市州盟县区]政府|行政公署", name))
-        )
-        name = name.removeprefix("中共")
+        ok_kind = "人民政府" in name or "办公厅" in name or "政府办" in dept_categories(name)
+        if s.level == "市级":
+            # 地市门户常写"××市政府门户网站""××政府网""××市政府"，或党政合办"中共××市委
+            # ××市人民政府"（只认市级：省级照旧）。下辖区县的政府（"××市××区人民政府"）
+            # 不是本市政府办
+            ok_kind = (
+                ok_kind or bool(re.search(r"政府(?:门户)?网|[市州盟]政府|行政公署", name))
+            ) and not re.search(r"(?<!地)[区县旗](?:人民)?政府", name)
+            name = name.removeprefix("中共")
     else:
         ok_kind = s.dept in dept_categories(name)
     if not ok_kind:
         return False
     if s.province == "国家" or s.dept == "开发区":
         return True  # 部委、开发区没有省名前缀
-    return any(name.startswith(v) for v in _own_prefixes(s))
+    if s.level != "市级" or not s.city:
+        return any(name.startswith(v) for v in _own_prefixes(s))
+    own = _own_prefixes(s)
+    if m := _PROVINCE_FULL.match(name):
+        # 以省份全称开头的，后面紧跟本市名称才算本市（"吉林省吉林市……"）；只写省名的是省直部门。
+        # 吉林市的"吉林"、青海海南州的"海南"和省名撞上，不先认全称会把"吉林省发展和改革委员会"
+        # "海南省……"当成本市的
+        if not m.group(0).startswith(s.province):
+            return False
+        name, own = name[m.end() :], _city_names(s)
+    hit = max((v for v in own if name.startswith(v)), key=len, default=None)
+    if hit is None:
+        return False
+    # 本市名称后面紧跟下辖区县全称的是区县的部门（"南京市玄武区……""苏州市常熟市人民政府"）；
+    # 只写本级前缀"市"的也看（"市中区……"），自治州下辖的县级市也是（恩施州的"恩施市……"）
+    rest = name[len(hit) :]
+    return not any(text.startswith(c) for text in (rest, name) for c in counties)
 
 
 def sample_rows(
@@ -198,6 +262,7 @@ def sample_rows(
     province: list[str] | None = None,
     size: int | None = None,
     now: datetime | None = None,
+    counties: dict[tuple[str, str], frozenset[str]] | None = None,
 ) -> list[SampleRow]:
     now = now or datetime.now(UTC)
     stmt = select(Source).where(Source.level == level).order_by(Source.province, Source.id)
@@ -227,7 +292,7 @@ def sample_rows(
             .limit(3)
         ).all()
         row.latest = [(t or "", d, u or "") for t, d, u in docs]
-        if not _dept_ok(s):
+        if not _dept_ok(s, (counties or {}).get((s.province, s.city or ""), frozenset())):
             row.failed.append("部门")
         if _kind(s.column_name) not in KINDS:
             row.failed.append("栏目")

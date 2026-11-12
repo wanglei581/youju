@@ -271,31 +271,189 @@ def test_batch_urls_drop_rows_failed_after_batch(tmp_path, capsys):
 
 
 @pytest.mark.parametrize(
-    ("city", "dept", "full", "ok"),
+    ("province", "city", "dept", "full", "ok"),
     [
         # 地市部门全称写本市名称、省名连市名、只写本级前缀"市"：算本市
-        ("南京市", "发改委", "南京市发展和改革委员会", True),
-        ("南京市", "发改委", "江苏省南京市发展和改革委员会", True),
-        ("南京市", "数据局", "市大数据局", True),
-        ("恩施土家族苗族自治州", "农业农村", "恩施州农业农村局", True),
-        ("阿拉善盟", "发改委", "盟发展和改革委员会", True),
+        ("江苏", "南京市", "发改委", "南京市发展和改革委员会", True),
+        ("江苏", "南京市", "发改委", "江苏省南京市发展和改革委员会", True),
+        ("江苏", "南京市", "数据局", "市大数据局", True),
+        ("湖北", "恩施土家族苗族自治州", "农业农村", "恩施州农业农村局", True),
+        ("湖北", "恩施土家族苗族自治州", "农业农村", "湖北省恩施州农业农村局", True),
+        ("内蒙古", "阿拉善盟", "发改委", "盟发展和改革委员会", True),
         # 地市门户的写法
-        ("南京市", "政府办", "中共南京市委 南京市人民政府", True),
-        ("南京市", "政府办", "南京市政府门户网站", True),
-        ("南京市", "政府办", "南京政府网", True),
-        # 只写省名的是省直部门；别的市的部门：都不算
-        ("南京市", "发改委", "江苏省发展和改革委员会", False),
-        ("南京市", "发改委", "苏州市发展和改革委员会", False),
+        ("江苏", "南京市", "政府办", "中共南京市委 南京市人民政府", True),
+        ("江苏", "南京市", "政府办", "南京市政府门户网站", True),
+        ("江苏", "南京市", "政府办", "南京政府网", True),
+        ("内蒙古", "阿拉善盟", "政府办", "阿拉善盟行政公署", True),
+        # 只写省名的是省直部门；别的市的部门、下辖区县的政府：都不算
+        ("江苏", "南京市", "发改委", "江苏省发展和改革委员会", False),
+        ("江苏", "南京市", "发改委", "苏州市发展和改革委员会", False),
+        ("江苏", "南京市", "政府办", "南京市某某区人民政府", False),
+        ("江苏", "南京市", "政府办", "南京市某某区政府", False),
+        ("江苏", "南京市", "政府办", "南京市某某县人民政府", False),
+        # 市名和省名一样（吉林市）、和别的省撞上（青海海南州）：以省份全称开头的要紧跟本市名称
+        ("吉林", "吉林市", "发改委", "吉林市发展和改革委员会", True),
+        ("吉林", "吉林市", "发改委", "吉林省吉林市发展和改革委员会", True),
+        ("吉林", "吉林市", "发改委", "吉林省发展和改革委员会", False),
+        ("吉林", "吉林市", "市场监管", "吉林省市场监督管理厅", False),
+        ("青海", "海南藏族自治州", "发改委", "海南州发展和改革委员会", True),
+        ("青海", "海南藏族自治州", "发改委", "海南省发展和改革委员会", False),
+        # 本市名称后面紧跟下辖区县全称的是区县的部门（区县名单取自行政区划清单）
+        ("吉林", "吉林市", "发改委", "吉林省吉林市丰满区发展和改革局", False),
+        ("江苏", "苏州市", "政府办", "苏州市常熟市人民政府", False),
+        ("江苏", "南京市", "发改委", "南京市玄武区发展和改革委员会", False),
+        ("山东", "济南市", "发改委", "市中区发展和改革局", False),
+        ("湖北", "恩施土家族苗族自治州", "农业农村", "恩施市农业农村局", False),
+        ("湖北", "荆州市", "发改委", "荆州区发展和改革局", False),
+        ("湖北", "荆州市", "发改委", "荆州市发展和改革委员会", True),
+        ("江苏", "苏州市", "政府办", "苏州市人民政府", True),
+        # 库里地级市写简称（以"州"结尾的也是地级市）
+        ("江苏", "苏州", "政府办", "苏州市常熟市人民政府", False),
+        ("江苏", "苏州", "政府办", "苏州市人民政府", True),
+        ("江苏", "苏州", "发改委", "州发展和改革委员会", False),
+        ("江苏", "南京", "发改委", "南京市玄武区发展和改革委员会", False),
+        ("江苏", "南京", "发改委", "南京市发展和改革委员会", True),
+        # 自治州写简称（"恩施州"）也认本级前缀"州"
+        ("湖北", "恩施州", "农业农村", "州农业农村局", True),
+        ("湖北", "恩施州", "农业农村", "恩施州农业农村局", True),
+        ("湖北", "恩施州", "农业农村", "恩施市农业农村局", False),
     ],
 )
-def test_city_dept_names(city, dept, full, ok):
+def test_city_dept_names(province, city, dept, full, ok):
     """11/11 地市一组报：部门核对原来只认省名，568 个地市栏目里 552 个卡在"部门"。"""
     from types import SimpleNamespace
 
     from youju.govsites.sample import _dept_ok
 
-    province = "内蒙古" if city == "阿拉善盟" else ("湖北" if "恩施" in city else "江苏")
+    counties = {
+        "吉林市": {"丰满区", "船营区", "永吉县", "蛟河市"},
+        "苏州市": {"姑苏区", "常熟市", "昆山市"},
+        "苏州": {"姑苏区", "常熟市", "昆山市"},
+        "南京市": {"玄武区", "秦淮区", "浦口区"},
+        "南京": {"玄武区", "秦淮区", "浦口区"},
+        "济南市": {"历下区", "市中区", "平阴县"},
+        "恩施土家族苗族自治州": {"恩施市", "利川市", "建始县"},
+        "恩施州": {"恩施市", "利川市", "建始县"},
+        "荆州市": {"荆州区", "沙市区", "沙市", "公安县"},
+    }.get(city, set())
     s = SimpleNamespace(level="市级", province=province, city=city, dept=dept, dept_full_name=full)
+    assert _dept_ok(s, frozenset(counties)) is ok
+
+
+def test_counties_by_city_keeps_full_names(tmp_path):
+    """区县名单只取带区、县、市、旗的写法（"公安县"的"公安"会碰上"荆州市公安局"）；城市认全称和
+    简称；清单不存在时报错。"""
+    from youju.govsites.sample import counties_by_city
+
+    path = tmp_path / "行政区划.csv"
+    path.write_text(
+        "区划代码,名称,类型,层级,省份,城市,区县,上级代码\n"
+        "421000,荆州市,地级市,市级,湖北,荆州,,420000\n"
+        "421003,荆州区,市辖区,区县级,湖北,荆州,荆州区,421000\n"
+        "421022,公安县,县,区县级,湖北,荆州,公安县,421000\n"
+        "422800,恩施土家族苗族自治州,自治州,市级,湖北,恩施土家族苗族自治州,,420000\n"
+        "422801,恩施市,县级市,区县级,湖北,恩施土家族苗族自治州,恩施市,422800\n",
+        encoding="utf-8-sig",
+    )
+    got = counties_by_city(path)
+    assert got[("湖北", "荆州")] == got[("湖北", "荆州市")] == {"荆州区", "公安县"}
+    for city in ("恩施土家族苗族自治州", "恩施州", "恩施"):
+        assert got[("湖北", city)] == {"恩施市"}
+    with pytest.raises(FileNotFoundError):
+        counties_by_city(tmp_path / "没有.csv")
+
+
+def test_city_sample_rows_use_division_list(session):
+    """用仓库里的行政区划清单走 sample_rows：来源写"吉林市"还是"吉林"都认得出下辖区县的部门。"""
+    from pathlib import Path
+
+    from youju.govsites.sample import counties_by_city
+
+    divisions = Path(__file__).parents[2] / "docs" / "数据来源" / "全国覆盖" / "行政区划.csv"
+    urls = {}
+    for city, full in (
+        ("吉林市", "吉林省吉林市丰满区发展和改革局"),
+        ("吉林", "吉林市船营区发展和改革局"),
+        ("苏州", "苏州市常熟市人民政府"),
+        ("吉林市", "吉林市发展和改革委员会"),
+    ):
+        dept = "政府办" if full.endswith("人民政府") else "发改委"
+        s = Source(
+            level="市级",
+            province="江苏" if city == "苏州" else "吉林",
+            city=city,
+            dept=dept,
+            dept_full_name=full,
+            column_name="通知公告",
+            url=f"https://example{len(urls)}.gov.cn/tzgg/",
+            fetch_mode="static",
+            enabled=False,
+            parser_config={},
+            verification_status="试跑可读（全国覆盖 v1，未启用）",
+        )
+        session.add(s)
+        session.flush()
+        _check(session, s, 12)
+        for n, day in enumerate((date(2026, 11, 5), date(2026, 10, 1), date(2026, 9, 1))):
+            _doc(session, s, n + 10 * len(urls), day)
+        urls[full] = s.url
+    session.commit()
+    rows = {
+        r.source.url: r
+        for r in sample_rows(session, "市级", now=NOW, counties=counties_by_city(divisions))
+    }
+    for full, url in urls.items():
+        assert ("部门" in rows[url].failed) is (full != "吉林市发展和改革委员会"), full
+
+
+def test_city_sample_needs_division_list(tmp_path, capsys):
+    """没有行政区划清单就不做地市抽查（少了它会把区县的部门当成本市的）；不指定时用 --out 目录里的。"""
+    import argparse
+
+    from youju.govsites.cli import _cmd_sample
+
+    args = argparse.Namespace(
+        level="市级", province=None, size=None, out=tmp_path, divisions=tmp_path / "没有.csv"
+    )
+    assert _cmd_sample(args) == 1
+    assert "没有.csv" in capsys.readouterr().out
+    args.divisions = None
+    assert _cmd_sample(args) == 1
+    assert str(tmp_path / "行政区划.csv") in capsys.readouterr().out
+
+
+def test_autonomous_matches_division_list():
+    """地级市以"州"结尾的都是两个字、自治州和盟写全称：_autonomous 和行政区划清单的类型对得上。"""
+    import csv
+    from pathlib import Path
+
+    from youju.govsites.sample import _autonomous
+
+    path = Path(__file__).parents[2] / "docs" / "数据来源" / "全国覆盖" / "行政区划.csv"
+    with path.open(encoding="utf-8-sig", newline="") as fh:
+        cities = [r for r in csv.DictReader(fh) if r["层级"] == "市级"]
+    assert len(cities) > 300
+    for r in cities:
+        assert _autonomous(r["城市"]) is (r["类型"] in ("自治州", "盟")), r["城市"]
+    assert _autonomous("恩施州") and not _autonomous("苏州")
+
+
+@pytest.mark.parametrize(
+    ("full", "ok"),
+    [
+        ("江苏省人民政府", True),
+        ("江苏省人民政府办公厅", True),
+        # 地市门户的新写法、去掉"中共"只给市级：省级照旧
+        ("中共江苏省委 江苏省人民政府", False),
+        ("江苏省政府门户网站", False),
+    ],
+)
+def test_province_portal_names_unchanged(full, ok):
+    from types import SimpleNamespace
+
+    from youju.govsites.sample import _dept_ok
+
+    s = SimpleNamespace(level="省级", province="江苏", city="", dept="政府办", dept_full_name=full)
     assert _dept_ok(s) is ok
 
 

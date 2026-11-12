@@ -378,7 +378,9 @@ def attribution_check(
     issuers = [m.group(1) for m in _ISSUER.finditer(page_text(doc_html))][:3]
     names = city_names(city) if city else set()
     texts = col_names + doc_names + issuers
-    where = " / ".join(texts)[:160]
+    # 说明写进公开仓库（联网核对表）：网站名、标题里写着人名的整段换成"（标题略）"
+    # （govsites/privacy.py）；核对用的还是原文
+    where = " / ".join(public_title(t) for t in texts)[:160]
     first_col = (cell.get("栏目网址") or "").split(" ")[0]
     same_domain = bool(portal_domain) and registrable(first_col) == portal_domain
     if not same_domain and (not names or not any(n in s for n in names for s in texts)):
