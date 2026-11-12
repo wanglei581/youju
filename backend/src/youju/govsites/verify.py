@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import date
 
-from youju.crawler.adapters import api_html, api_refusal, find_list_api
+from youju.crawler.adapters import api_empty_list, api_html, api_refusal, find_list_api
 from youju.crawler.listing import extract_items
 from youju.crawler.urls import host_of
 from youju.govsites.inventory import OPTIONAL_DEPTS, STANDARD_DEPTS, XXGK_TAG, DeptRow
@@ -140,6 +140,10 @@ def check_one(cache: PageCache, col: ColumnCheck, today: date) -> ColumnCheck:
                 col.result, col.reason = DOWN, f"列表接口：{(ar.error or ar.status)[:100]}"
                 return col
             html = api_html(api, ar.text)
+            if not html and api_empty_list(api, ar.text):
+                # 接口明确成功、列表那段是空的：这会儿没有条目，记未识别出条目
+                col.result, col.reason = NO_ITEMS, "经列表接口识别出 0 条（列表是空的）"
+                return col
             if not html:
                 # 接口回了，但不是预期的样子（空白、不是 JSON、没有列表那段）：这次没读出，记打不开
                 col.result, col.reason = DOWN, "列表接口返回读不出列表（不是预期的格式）"

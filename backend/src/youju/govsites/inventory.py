@@ -213,6 +213,7 @@ class PageInfo:
     level_hint: str = ""  # 门户首页：所属行政区的层级
     directory: bool = False  # 信息公开平台的部门目录页（deptdir.py）：上面的部门网址可以深一些
     api_refused: str = ""  # 页面声明的列表接口被读取护栏（D-128）拦下的原因（没读它的内容）
+    api_failed: bool = False  # 有单元接口这次没取到（超时、5xx 等）：栏目可能就在里面，不能下结论
 
 
 @dataclass(frozen=True)
@@ -425,6 +426,8 @@ class Inventory:
                     # 读取护栏（D-128）：不读这个接口，记下原因（部门页栏目全靠它时记不能抓）
                     info.api_refused = info.api_refused or refused
                     continue
+                if r.status != "ok":
+                    info.api_failed = True
                 html = api_html(api, r.text) if r.status == "ok" else ""
                 if html:
                     info.links += page_links(html, info.final_url)
@@ -941,7 +944,8 @@ class Inventory:
             gov_pages = portal_pages if portal_pages is not None else pages
             self._fill_from_page(gov, home, gov_pages)
             why = home.api_refused or next((p.api_refused for p in gov_pages if p.api_refused), "")
-            if not gov.columns and why:
+            failed = home.api_failed or any(p.api_failed for p in gov_pages)
+            if not gov.columns and why and not failed:
                 # 门户的栏目全靠被读取护栏（D-128）拦下的列表接口：记不能抓，不是"网站无此栏目"
                 gov.status, gov.reason = "不能抓", f"{why}（D-128）"
         else:
@@ -1107,7 +1111,7 @@ class Inventory:
                     # 派出分局在上级网站上的版块：上级网站菜单里的栏目是上级的，只认版块下面的
                     base = page_dir(dp.final_url)
                     row.columns = [c for c in row.columns if urlsplit(c.url).path.startswith(base)]
-                if dp.api_refused:
+                if dp.api_refused and not dp.api_failed:
                     refused[id(row)] = dp.api_refused  # 选定以后还没栏目的，记不能抓
             if cat == "开发区":
                 rows.append(row)
@@ -1263,8 +1267,9 @@ class Inventory:
                     page.final_url
                 ):
                     sub = self.page(link.url)
-                    # 信息公开页上的列表接口被读取护栏（D-128）拦下：记到部门页上
+                    # 信息公开页上的列表接口被读取护栏（D-128）拦下或这次没取到：记到部门页上
                     page.api_refused = page.api_refused or sub.api_refused
+                    page.api_failed = page.api_failed or sub.api_failed
                     if sub.result.status == "ok" and not sub.block:
                         found = find_columns([sub], exclude, max_depth, topics)
                         found = self._check_group_columns([sub], found, exclude, max_depth, topics)

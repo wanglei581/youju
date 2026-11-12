@@ -391,7 +391,9 @@ def test_verify_unreadable_or_empty_list_api_reply():
     empty = check_one(
         _Cache({PAGE_URL: PAGE, api.url: _payload(data={"html": ""})}), _column(), today
     )
-    assert empty.result == DOWN  # 没有列表那段，同样记这次没读出
+    assert empty.result == NO_ITEMS  # 列表那段在、是空的：这会儿没有条目
+    missing = check_one(_Cache({PAGE_URL: PAGE, api.url: _payload(data={})}), _column(), today)
+    assert missing.result == DOWN  # 没有列表那段：这次没读出
     one = _payload(data={"html": LIST.split("</li>")[0] + "</li>"})
     few = check_one(_Cache({PAGE_URL: PAGE, api.url: one}), _column(), today)
     assert few.result == NO_ITEMS and "经列表接口" in few.reason
@@ -503,3 +505,65 @@ def test_login_hint_in_list_html_outside_item_links_is_not_read():
         "<span>2026-11-05</span></li>"
     )
     assert api_refusal(api, _got(_payload(data={"html": titles}))) == ""
+
+
+def test_login_prompt_written_as_a_link_is_not_read():
+    api = _api()
+    gated = _payload(data={"html": LIST + '<a href="/login">请登录</a>'})
+    assert "登录或权限提示" in api_refusal(api, _got(gated))
+    encoded = _payload(data={"html": "<p>&#35831;&#20808;&#30331;&#24405;</p>" + LIST})  # 请先登录
+    assert "登录或权限提示" in api_refusal(api, _got(encoded))
+    # 正常通知链到外站的 login.html（标题是通知本身）：照常读
+    item = (
+        '<li><a href="https://qym.example.gov.cn/login.html#/live?id=1">'
+        "关于举办2026年度企业服务直播活动的通知</a><span>2026-11-05</span></li>"
+    )
+    assert api_refusal(api, _got(_payload(data={"html": item + LIST}))) == ""
+
+
+def test_data_attributes_are_not_taken_as_the_declared_api():
+    page = (
+        f'<script src="/x/unitbuild.js" data-url="{HANWEB_JPAAS_PATH}" '
+        "data-queryData=\"{'pageType':'column','tagId':'当前栏目list','pageId':'1'}\"></script>"
+    )
+    assert find_list_api(page, PAGE_URL) is None
+
+
+def test_strict_fetches_do_not_reuse_old_follow_mode_cache(tmp_path):
+    from youju.govsites.pagecache import PageCache
+
+    calls: list[tuple[str, bool]] = []
+
+    class Fetcher:
+        def fetch(self, url, same_address_only=False):
+            calls.append((url, same_address_only))
+            return FetchResult(url, "ok", url, 200, _payload())
+
+    cache = PageCache(tmp_path, Fetcher())
+    api = _api()
+    cache.get(api.url)  # 以前跟着跳转抓的那种
+    cache.get(api.url, same_address_only=True)  # 只取地址本身：不拿上面的旧结果
+    cache.get(api.url, same_address_only=True)  # 第二次用自己的缓存
+    assert calls == [(api.url, False), (api.url, True)]
+
+
+def test_page_with_a_failed_unit_is_not_concluded_as_cannot_crawl():
+    """一个单元被拦、另一个单元这次没取到：栏目可能在没取到的那个里，记下没取到，不下不能抓的结论。"""
+    from youju.crawler.adapters import find_unit_apis
+    from youju.govsites.divisions import DivisionIndex, parse_tree
+    from youju.govsites.inventory import Inventory
+
+    nav = (
+        PAGE.split("<ul>")[1]
+        .split("</ul>")[0]
+        .replace("当前栏目list", "导航")
+        .replace('id="u1"', 'id="u2"')
+    )
+    page = PAGE.replace("</ul>", nav + "</ul>")
+    apis = [a.url for a in find_unit_apis(page, PAGE_URL)]
+    assert len(apis) == 2
+    failed = FetchResult(apis[1], "http_error", apis[1], 502, "", "HTTP 502")
+    pages = {PAGE_URL: page, apis[0]: _payload(roles=["dept"]), apis[1]: failed}
+    inv = Inventory(DivisionIndex(parse_tree({})), _Cache(pages), provinces=[])
+    info = inv.page(PAGE_URL)
+    assert info.api_refused and info.api_failed

@@ -31,7 +31,8 @@ from dataclasses import dataclass
 from urllib.parse import urlencode, urljoin, urlsplit
 
 _HANWEB_SCRIPT = re.compile(r"<script\b[^>]*unitbuild\.js[^>]*>", re.I)
-_ATTR = re.compile(r"""\b([A-Za-z]+)\s*=\s*("([^"]*)"|'([^']*)')""")
+# 属性名前面必须是空白（data-url、data-queryData 是别的属性，不当成 url、queryData）
+_ATTR = re.compile(r"""(?:^|\s)([A-Za-z][\w:-]*)\s*=\s*("([^"]*)"|'([^']*)')""")
 HANWEB_JPAAS_PATH = "/api-gateway/jpaas-publish-server/front/page/build/unit"
 
 
@@ -95,6 +96,15 @@ def find_unit_apis(html: str, page_url: str) -> list[ListApi]:
     return out
 
 
+def api_empty_list(api: ListApi, text: str) -> bool:
+    """接口明确成功、过了护栏，列表那段在但是空的（这会儿没有条目，不是读不出）。"""
+    payload = _json_payload(text) if api.adapter == "大汉jpaas" else None
+    if payload is None or _payload_refusal(payload):
+        return False
+    inner = payload.get("data")
+    return isinstance(inner, dict) and isinstance(inner.get("html"), str) and not inner["html"]
+
+
 def api_html(api: ListApi, text: str) -> str:
     """接口返回的内容里列表那段 HTML。不是预期格式，或按读取护栏（D-128）不该读的
     （返回不是成功、带权限要求）都返回空串。"""
@@ -130,6 +140,12 @@ _LOGIN_TEXT = re.compile(
 _PASSWORD_INPUT = re.compile(r"<input\b[^>]*type\s*=\s*[\"']?password", re.I)
 # 列表那段里条目链接以外的文字（登录、没权限一类提示写在这里；条目标题里出现不算）
 _ANCHOR = re.compile(r"<a\b.*?</a>", re.S | re.I)
+
+
+# 列表里写成链接的登录提示（"请登录""登录后查看"这类短字样）。只看链接文字、不看链接地址：
+# 正常通知也会链到外站的 login.html（湖州门户就有一条直播通知这样写）
+_ANCHOR_TEXT = re.compile(r"<a\b[^>]*>(.*?)</a>", re.S | re.I)
+_SHORT_HINT = 12  # 链接文字不超过这么多字才算提示；通知标题一般更长
 _GATE_TEXT = re.compile(
     r"访问被拒绝|拒绝访问|禁止访问|访问受限|非法请求|防火墙|安全防护|access denied|forbidden",
     re.I,
@@ -213,10 +229,14 @@ def _payload_refusal(payload: dict) -> str:
     if isinstance(html, str) and _PASSWORD_INPUT.search(html):
         return "列表接口返回的是登录框"
     if isinstance(html, str):
-        outside = _TAGS.sub(" ", _ANCHOR.sub(" ", html))
+        outside = html_lib.unescape(_TAGS.sub(" ", _ANCHOR.sub(" ", html)))
         hint = _LOGIN_TEXT.search(outside)
         if hint:
             return f"列表接口返回里有登录或权限提示（{hint.group(0)}）"
+        for raw in _ANCHOR_TEXT.findall(html):
+            text = html_lib.unescape(_TAGS.sub("", raw))
+            if len(text) <= _SHORT_HINT and _LOGIN_TEXT.search(text):
+                return f"列表接口返回里有登录或权限提示（{text}）"
     fields = _permission_fields(payload)
     if fields:
         return f"列表接口返回带权限要求（{'、'.join(fields)} 不为空）"

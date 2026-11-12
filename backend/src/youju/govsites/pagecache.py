@@ -45,8 +45,10 @@ class PageCache:
         self.hits = 0
         self.fetches = 0
 
-    def _path(self, url: str) -> Path:
-        h = hashlib.sha1(url.encode("utf-8")).hexdigest()
+    def _path(self, url: str, same_address_only: bool = False) -> Path:
+        # 只取地址本身的抓取单独存：不拿以前跟着跳转抓的旧结果（中间可能经过页面没写的地址）
+        key = f"same-address\n{url}" if same_address_only else url
+        h = hashlib.sha1(key.encode("utf-8")).hexdigest()
         return self.root / "pages" / h[:2] / f"{h}.json.gz"
 
     def get(self, url: str, same_address_only: bool = False) -> FetchResult:
@@ -59,7 +61,7 @@ class PageCache:
             return self._get(url, same_address_only)
 
     def _get(self, url: str, same_address_only: bool = False) -> FetchResult:
-        path = self._path(url)
+        path = self._path(url, same_address_only)
         cached = self._read(path)
         if cached is not None:
             age = time.time() - cached.pop("_saved_at", 0)
