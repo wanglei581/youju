@@ -556,6 +556,8 @@ REDRAW_LINE = (60, 5)
 MAX_ROUNDS = 3
 ROUND_FIELDS = ("层", "次数", "种子", "日期", "凭据")
 _SEED = re.compile(r"种子\s*[:：=]?\s*([0-9A-Za-z][0-9A-Za-z_.\-]*)")
+# 复核备注里写的格号（"种子 2026-11 第 25 格：……"）：按种子排的先后，抽样只数判了的前 need 格
+_CELL_NO = re.compile(r"第\s*(\d+)\s*格")
 LINE_LEVELS = frozenset(level for level, _ in SAMPLE_LINES)
 _CN_DIGITS = "一二三四五六七八九"
 UNKNOWN_ROUND = 999  # 次数认不出：当成超过 MAX_ROUNDS，不放
@@ -649,6 +651,9 @@ class ProvinceResult:
     cells: dict[str, set] = field(default_factory=dict)
     # 联网核对每层每次抽到的格 → 这一格的结论（"不通过"、"未完"、"通过"），和证据表里写的种子
     rounds: dict[tuple[str, int], dict] = field(default_factory=dict)
+    # 联网核对每层每次抽到的格 → 这一格在种子顺序里的位置（复核备注写的格号；没写的按证据表里的行序
+    # 排在后面）
+    orders: dict[tuple[str, int], dict] = field(default_factory=dict)
     seeds: dict[tuple[str, int], set] = field(default_factory=dict)
     # 抽查/<层级>/联网核对/<省>.csv 的各行：(层, 第几次) → [(种子, 日期, 凭据)]
     round_log: dict[tuple[str, int], list] = field(default_factory=dict)
@@ -671,8 +676,17 @@ class ProvinceResult:
             got = self.rounds.get((layer, latest), {})
             need, allow = line if latest <= 1 else REDRAW_LINE
             need = min(need, len(self.cells[layer]))
-            judged = sum(state != "未完" for state in got.values())
-            failed = sum(state == "不通过" for state in got.values())
+            # 按种子顺序数：判了的格够 need 个就停（"补到判了的格够 40 个"）。补抽时多抽的格、后来
+            # 才有结论的待重试格（D-128）不能把样本撑大到 need 以上
+            order = self.orders.get((layer, latest), {})
+            judged = failed = 0
+            for cell in sorted(got, key=lambda c: order.get(c, 0)):
+                if got[cell] == "未完":
+                    continue
+                if judged == need:
+                    break
+                judged += 1
+                failed += got[cell] == "不通过"
             problem = self._stray_layers() or self._problem(layer, latest)
             out.append(SampleLine(layer, latest, judged, failed, need, allow, problem))
         return out
@@ -857,6 +871,10 @@ def evidence_results(folder) -> list[ProvinceResult]:
                     got[cell] = max(got.get(cell, "通过"), state, key=order.index)
                     found = _SEED.findall(r.get("复核备注") or "")
                     res.seeds.setdefault(key, set()).update(found)
+                    no = _CELL_NO.search(r.get("复核备注") or "")
+                    pos = int(no.group(1)) if no else 10**6 + res.total
+                    orders = res.orders.setdefault(key, {})
+                    orders[cell] = min(orders.get(cell, pos), pos)
                 if verdict == "通过":
                     res.passed += 1
                 elif verdict == "不通过":

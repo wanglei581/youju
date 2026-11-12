@@ -543,6 +543,36 @@ def test_city_sample_line(tmp_path):
     assert "正文能读率" in result(first).sample_note()
 
 
+def test_city_sample_counts_only_the_first_judged_cells_in_seed_order(tmp_path):
+    """联网核对只数按种子顺序判了的前 40 格（"补到判了的格够 40 个"）：补抽多出来的格、后来才有结论的
+    待重试格（D-128 复检以后）不能把样本撑大。11/12 江苏：58 格记录里前 40 格错 3 格，全数是 6 格。"""
+    from youju.govsites.sample import evidence_results
+
+    def result(sample):
+        _city_evidence(tmp_path, "江苏", 200, sample)
+        [res] = evidence_results(tmp_path)
+        return res
+
+    def note(k):
+        return f"种子：s1 第 {k} 格"
+
+    # 58 格都有结论：前 40 格错 3 格，后 18 格又错 3 格 → 只数前 40 格，放
+    sample = [
+        (n, "联网核对", "不通过" if n in (10, 20, 30, 42, 50, 55) else "通过", note(n + 1))
+        for n in range(58)
+    ]
+    line = result(sample).sample_lines[0]
+    assert (line.judged, line.failed) == (40, 3) and result(sample).accepted
+    # 前面 5 格待重试：跳过，往后补到判了 40 格为止（序号 42 那格的错算进来）
+    retry = [(n, "联网核对", "待重试" if n < 5 else v, k) for n, _, v, k in sample]
+    line = result(retry).sample_lines[0]
+    assert (line.judged, line.failed) == (40, 4) and not result(retry).accepted
+    # 按复核备注里的格号排，不按证据表里的先后：格号小的才在前 40 格里
+    reverse = [(n, "联网核对", "不通过" if n < 6 else "通过", note(58 - n)) for n in range(58)]
+    line = result(reverse).sample_lines[0]
+    assert (line.judged, line.failed) == (40, 0)
+
+
 def test_city_sample_round_evidence(tmp_path):
     """最近一次只要写了就算最近一次（全是待重试也一样）；联网核对记录要每次一行、种子不重复、
     重抽写凭据，证据表里的种子要和记录对上；空着的复核结论不算；第 4 次不算。"""
