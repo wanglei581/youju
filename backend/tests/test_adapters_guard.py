@@ -668,3 +668,23 @@ def test_more_gate_link_wordings():
     for text in ("仅登录用户可查看", "登录", "用户登录"):
         gated = _payload(data={"html": LIST + f'<a href="/login">{text}</a>'})
         assert "登录或权限提示" in api_refusal(api, _got(gated)), text
+
+
+def test_only_scripts_whose_path_is_unitbuild_count():
+    fake = PAGE.replace("/x/unitbuild.js", "/other.js?name=unitbuild.js")
+    assert find_list_api(fake, PAGE_URL) is None
+
+
+def test_gate_phrases_anywhere_but_plain_mentions_pass():
+    api = _api()
+    for gated in (
+        LIST + '<a href="/login">查看详情请先登录</a>',
+        "<p>请先完成登录才能查看</p>" + LIST,
+        LIST + "<span>登录后可见</span>",
+    ):
+        assert "登录或权限提示" in api_refusal(api, _got(_payload(data={"html": gated}))), gated
+    for fine in (
+        '<li><a href="/x">政策通知</a><span>登录系统操作指南</span></li>' + LIST,
+        '<li><a href="/y">关于启用短信验证码登录的通知</a><span>2026-11-05</span></li>' + LIST,
+    ):
+        assert api_refusal(api, _got(_payload(data={"html": fine}))) == "", fine

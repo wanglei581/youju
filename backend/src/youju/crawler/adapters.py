@@ -57,11 +57,12 @@ def _unit_scripts(html: str) -> list[dict[str, str]]:
     try:
         # 页面中间夹着的 </html>、</body>（中国政府网导航页有）会让解析器提前停下：先去掉
         doc = lxml.html.document_fromstring(_STRAY_END.sub("", html))
-    except (etree.ParserError, ValueError):
+    except (etree.LxmlError, ValueError):
         return []
     out = []
     for el in doc.iter("script"):
-        if "unitbuild.js" not in (el.get("src") or "").lower():
+        # 加载的就是 unitbuild.js（路径以它结尾），不是参数里碰巧带着这几个字
+        if not urlsplit(el.get("src") or "").path.lower().endswith("/unitbuild.js"):
             continue
         if any(a.tag in ("noscript", "template") for a in el.iterancestors()):
             continue
@@ -94,7 +95,7 @@ def find_unit_apis(html: str, page_url: str) -> list[ListApi]:
         ):
             continue
         query = {str(k): str(v) for k, v in query.items()}
-        tag = query.get("tagId", "")
+        tag = query.get("tagId") or ""
         # 一页上常有几个占位（导航、侧栏）：当前栏目的列表优先
         rank = 0 if "list" in tag.lower() or "列表" in tag else 1
         if query.get("pageType") != "column":
@@ -157,18 +158,23 @@ _LOGIN_TEXT = re.compile(
 _PASSWORD_INPUT = re.compile(r"<input\b[^>]*type\s*=\s*[\"']?password", re.I)
 # 列表那段里条目链接以外的文字（登录、没权限一类提示写在这里；条目标题里出现不算）
 _ANCHOR = re.compile(r"<a\b.*?</a>", re.S | re.I)
-_OUTSIDE_HINT = re.compile(r"登[录陆]|验证码", re.I)
+# 列表里的登录、没权限提示：认具体说法（在链接文字里、链接以外都看，出现在哪个位置都算）；
+# 只是提到"登录""验证码"的（如"登录系统操作指南""短信验证码登录的通知"）不算
+_GATE_PHRASE = re.compile(
+    r"请(?:先)?(?:完成)?登[录陆]|登[录陆](?:后|才能|才可|方可)(?:查看|访问|阅读|浏览|下载|可见)|"
+    r"(?:需要|需|须)(?:先)?登[录陆]|(?:仅|只有|只限)登[录陆]用户|登[录陆]用户(?:可|才)|"
+    r"(?:您)?(?:没有|无)(?:权限|权访问|权查看|权阅读|访问权限)|权限不足|未授权|"
+    r"请输入验证码|请完成验证|人机验证"
+)
 
 
 # 列表里写成链接的登录提示：链接文字以"请先登录""登录后""需要登录""没有权限""请输入验证码"
 # 这类说法开头的才算（不论长短）；通知标题里只是提到"验证码""登录"的照常读。只看链接文字、
 # 不看链接地址：正常通知也会链到外站的 login.html（湖州门户就有一条直播通知这样写）
 _ANCHOR_TEXT = re.compile(r"<a\b[^>]*>(.*?)</a>", re.S | re.I)
+# 链接文字本身就是"去登录"一类的按钮（整段很短、以这类说法开头或就是"登录"二字）
 _GATE_LINK = re.compile(
-    r"^(?:请(?:先)?登[录陆]|登[录陆]后|(?:需要|需|未)登[录陆]|(?:立即|点击|点此|去|前往)登[录陆]|"
-    r"登[录陆]查看|"
-    r"(?:您)?(?:没有|无)(?:权限|权访问|权查看)|权限不足|未授权|请输入验证码|请完成验证|"
-    r"(?:仅|只有|只限|限)?登[录陆]用户|(?:用户)?登[录陆]$)"
+    r"^(?:(?:立即|点击|点此|去|前往|马上)登[录陆]|登[录陆]查看|未登[录陆]|(?:用户)?登[录陆]$)"
 )
 _GATE_TEXT = re.compile(
     r"访问被拒绝|拒绝访问|禁止访问|访问受限|非法请求|防火墙|安全防护|access denied|forbidden",
@@ -258,12 +264,12 @@ def _payload_refusal(payload: dict) -> str:
         # 去掉标签、空白后连起来看（"请<b>先</b>登录"这类被标签隔开的提示也认得）；条目链接以外
         # 只要写着"登录""验证码"就算提示（11/12 查缓存里 616 次返回，链接以外一次也没有）
         outside = html_lib.unescape(_TAGS.sub("", _ANCHOR.sub(" ", html)))
-        hint = _OUTSIDE_HINT.search(outside) or _LOGIN_TEXT.search(outside)
+        hint = _GATE_PHRASE.search(outside)
         if hint:
             return f"列表接口返回里有登录或权限提示（{hint.group(0)}）"
         for raw in _ANCHOR_TEXT.findall(html):
             text = html_lib.unescape(_TAGS.sub("", raw)).strip()
-            if _GATE_LINK.search(text):
+            if _GATE_LINK.search(text) or _GATE_PHRASE.search(text):
                 return f"列表接口返回里有登录或权限提示（{text[:20]}）"
     fields = _permission_fields(payload)
     if fields:
