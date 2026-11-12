@@ -819,6 +819,13 @@ def test_export_import_bootstrap(env, server_engine, db_engine):
     buf = io.BytesIO()
     counts = local.export(server_engine, buf)
     assert counts["documents"] == 2 and counts["document_deadlines"] == 0
+    # 导到一半出错（文件不完整）：导数据的事务整个回滚，表还是空的（种子行也还在）；自增起点在导数据
+    # 之前、空表上设的，不会出现"数据进去了、重跑又说表不空"的卡住；用好的文件重跑照常
+    lines = gzip.decompress(buf.getvalue()).splitlines(keepends=True)
+    broken = io.BytesIO(gzip.compress(b"".join(lines[:-2])))
+    with pytest.raises(local.SyncError, match="不完整"):
+        local.import_export(db_engine, broken)
+    assert count(db_engine, "documents") == 0 and count(db_engine, "digest_profiles") == 1
     # 本机：先清掉 env 建的触发器写进的东西，导入要求同步的表都是空的
     buf.seek(0)
     local.import_export(db_engine, buf)

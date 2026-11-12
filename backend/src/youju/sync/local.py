@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import IO, Any
 
 import httpx
-from sqlalchemy import Engine, Table, func, select, text
+from sqlalchemy import Connection, Engine, Table, func, select, text
 
 from youju import storage
 from youju.sync import tables as sync_tables
@@ -756,53 +756,64 @@ def export(engine: Engine, out: IO[bytes]) -> dict[str, int]:
 
 
 def import_export(engine: Engine, src: IO[bytes]) -> dict[str, int]:
-    """（本机执行）导入 export() 的文件：同步的表都要是空的、迁移版本一致；写完设自增起点。"""
+    """（本机执行）导入 export() 的文件：同步的表都要是空的、迁移版本一致。
+
+    分三步，中途出错都能原样重跑：先核对（版本、表是空的）；再在空表上设自增起点（ALTER TABLE 会
+    隐式提交，所以不放进导数据的事务里；表还空着，出错了重跑照常）；最后一个事务里导全部数据、
+    核对条数（带着编号写进去，不会把起点往回拉；出错整个回滚，表还是空的）。"""
     tables = {t.name: t for t in sync_tables.tables()}
     counts: dict[str, int] = defaultdict(int)
-    with gzip.GzipFile(fileobj=src, mode="rb") as gz, engine.begin() as conn:
+
+    def busy(conn: Connection) -> list[str]:
+        found = [n for n, t in tables.items() if conn.scalar(select(func.count()).select_from(t))]
+        if found and not set(found) <= SEEDED_TABLES:
+            raise SyncError(f"本机这些表不是空的：{', '.join(found)}")
+        # 只有迁移写进去的种子行（如默认的周报方案）：导数据时删掉，文件里有服务器上的那一份
+        return found
+
+    with gzip.GzipFile(fileobj=src, mode="rb") as gz:
         header = json.loads(gz.readline())
         if header.get("format") != EXPORT_FORMAT:
             raise SyncError("不是同步导出的文件")
-        mine = conn.scalar(text("SELECT version_num FROM alembic_version"))
-        if header.get("revision") != mine:
-            raise SyncError(f"迁移版本不一致：本机 {mine}，文件 {header.get('revision')}")
-        busy = [n for n, t in tables.items() if conn.scalar(select(func.count()).select_from(t))]
-        if busy and set(busy) <= SEEDED_TABLES:
-            # 只有迁移写进去的种子行（如默认的周报方案）：删掉，导入的文件里有服务器上的那一份
-            for name in busy:
+        with engine.connect() as conn:
+            mine = conn.scalar(text("SELECT version_num FROM alembic_version"))
+            if header.get("revision") != mine:
+                raise SyncError(f"迁移版本不一致：本机 {mine}，文件 {header.get('revision')}")
+            busy(conn)
+        with engine.connect() as conn:
+            for name, value in (header.get("next_ids") or {}).items():
+                if name in tables and type(value) is int and value > 1:
+                    conn.execute(text(f"ALTER TABLE `{name}` AUTO_INCREMENT = {int(value)}"))
+        with engine.begin() as conn:
+            for name in busy(conn):
                 conn.execute(tables[name].delete())
-        elif busy:
-            raise SyncError(f"本机这些表不是空的：{', '.join(busy)}")
-        conn.execute(text("SET FOREIGN_KEY_CHECKS = 0"))
-        batch: list[dict] = []
-        current: str | None = None
-        trailer = None
-        for raw in gz:
-            item = json.loads(raw)
-            if item.get("end") is True:
-                trailer = item
-                break
-            name = item.get("t")
-            if name not in tables:
-                raise SyncError(f"文件里有不认识的表：{name}")
-            if name != current or len(batch) >= 1000:
-                if batch:
-                    conn.execute(tables[current].insert(), batch)
-                batch, current = [], name
-            batch.append(sync_tables.decode_row(tables[name], item.get("r")))
-            counts[name] += 1
-        if batch:
-            conn.execute(tables[current].insert(), batch)
-        conn.execute(text("SET FOREIGN_KEY_CHECKS = 1"))
-        expected = trailer.get("counts") if isinstance(trailer, dict) else None
-        if not isinstance(expected, dict) or any(
-            int(expected.get(n, 0)) != counts.get(n, 0) for n in tables
-        ):
-            # 抛出后整个事务回滚，本机的表保持空的
-            raise SyncError("文件不完整或条数对不上")
-        for name, value in (header.get("next_ids") or {}).items():
-            if name in tables and type(value) is int and value > 1:
-                conn.execute(text(f"ALTER TABLE `{name}` AUTO_INCREMENT = {int(value)}"))
+            conn.execute(text("SET FOREIGN_KEY_CHECKS = 0"))
+            batch: list[dict] = []
+            current: str | None = None
+            trailer = None
+            for raw in gz:
+                item = json.loads(raw)
+                if item.get("end") is True:
+                    trailer = item
+                    break
+                name = item.get("t")
+                if name not in tables:
+                    raise SyncError(f"文件里有不认识的表：{name}")
+                if name != current or len(batch) >= 1000:
+                    if batch:
+                        conn.execute(tables[current].insert(), batch)
+                    batch, current = [], name
+                batch.append(sync_tables.decode_row(tables[name], item.get("r")))
+                counts[name] += 1
+            if batch:
+                conn.execute(tables[current].insert(), batch)
+            conn.execute(text("SET FOREIGN_KEY_CHECKS = 1"))
+            expected = trailer.get("counts") if isinstance(trailer, dict) else None
+            if not isinstance(expected, dict) or any(
+                int(expected.get(n, 0)) != counts.get(n, 0) for n in tables
+            ):
+                # 抛出后整个事务回滚，本机的表保持空的
+                raise SyncError("文件不完整或条数对不上")
     return dict(counts)
 
 
