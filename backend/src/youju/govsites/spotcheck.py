@@ -424,10 +424,17 @@ def _first_list_item(cache, url: str, today: date):
 
     数字广东信息公开平台的分类（"部门页#xxgk-gkmlpt-编号"）：列表只在接口里，读部门页（去掉 # 后面）
     再按分类读接口，和试读（verify.check_one）一样。"""
-    from youju.crawler.adapters import api_items, api_refusal, find_list_api, gkmlpt_category
+    from youju.crawler.adapters import (
+        api_items_merged,
+        api_parts,
+        api_readable,
+        api_refusal,
+        find_list_api,
+        gkmlpt_categories,
+    )
     from youju.crawler.listing import extract_items
 
-    gkmlpt = gkmlpt_category(url) is not None
+    gkmlpt = gkmlpt_categories(url) is not None
     page_url = url.split("#", 1)[0] if gkmlpt else url
     r = cache.get(page_url)
     if r.status != "ok":
@@ -438,9 +445,15 @@ def _first_list_item(cache, url: str, today: date):
         api = find_list_api(r.text, final, url)
         if api is not None:
             # 只取页面写明的地址、过读取护栏（D-128）；被拦下的不读
-            ar = cache.get(api.url, same_address_only=True)
-            ok = ar.status == "ok" and not api_refusal(api, ar)
-            via = api_items(api, ar.text, None, today) if ok else []
+            parts = api_parts(api)
+            results = [cache.get(part.url, same_address_only=True) for part in parts]
+            failed = any(
+                ar.status != "ok" or api_refusal(part, ar) or not api_readable(part, ar.text)
+                for part, ar in zip(parts, results, strict=True)
+            )
+            if failed and len(parts) > 1:
+                return None
+            via = [] if failed else api_items_merged(api, [ar.text for ar in results], None, today)
             if len(via) > len(items):
                 items = via
     return next((i for i in items if i.publish_date), None)

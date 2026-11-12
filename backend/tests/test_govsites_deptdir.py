@@ -538,3 +538,32 @@ def test_refused_top_candidate_lets_next_candidate_win():
     kj = _depts(inv)[("330522", "科技")]
     assert (kj.status, kj.site_url) == ("已找到", other)
     assert [c.kind for c in kj.columns] == ["通知公告"]
+
+
+def test_gkmlpt_policy_combines_direct_nonjump_children():
+    def node(nid, name, children=None, jump_url=""):
+        return {"id": nid, "name": name, "children": children or [], "jump_url": jump_url}
+
+    tree = [
+        node(
+            1,
+            "政策",
+            [
+                node(2, "规范性文件"),
+                node(3, "其他文件"),
+                node(4, "政策解读"),
+                node(5, "部门文件", jump_url="/else"),
+            ],
+        ),
+        node(6, "政策", [node(7, "政策解读")]),
+        node(8, "通知公告"),
+    ]
+    categories = gkmlpt_tree_categories("TREE: " + json.dumps(tree) + "}")
+    # 父分类只取直接挂在它上面的条目（p），再加规范性文件、其他文件两个叶子
+    assert ("政策", "gkmlpt-p1,2,3") in categories
+    assert ("政策", "gkmlpt-1") not in categories
+    assert ("规范性文件", "gkmlpt-2") not in categories
+    assert ("其他文件", "gkmlpt-3") not in categories
+    assert ("政策", "gkmlpt-6") in categories
+    assert ("通知公告", "gkmlpt-8") in categories
+    assert ("部门文件", "gkmlpt-5") not in categories

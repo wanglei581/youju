@@ -19,10 +19,12 @@ from youju.crawler.adapters import (
     LIST_API_OPEN_KEY,
     LIST_API_REFUSED,
     ListApi,
-    api_items,
+    api_items_merged,
+    api_parts,
+    api_readable,
     api_refusal,
     find_list_api,
-    gkmlpt_category,
+    gkmlpt_categories,
 )
 from youju.crawler.fetcher import FetchResult
 from youju.crawler.listing import ListItem, extract_items
@@ -230,15 +232,22 @@ def _items_via_adapter(
         # 没认出接口，或来源没标"经接口读"（D-128）：不请求接口（调用的地方本来就先查过标记）
         return _AdapterResult([])
     # 只取页面写明的那个地址，跳到别处不跟（D-128 读取护栏 ①）
-    result = fetcher.fetch(api.url, same_address_only=True)
-    if result.status == "robots_disallowed":
-        return _AdapterResult([], api.adapter, result, api_url=api.url)  # 照旧按 robots 禁止记
-    refused = api_refusal(api, result)
-    if refused:
-        return _AdapterResult([], api.adapter, result, refused, api.url)
-    if result.status != "ok":
-        return _AdapterResult([], api.adapter, result, api_url=api.url)
-    items = api_items(api, result.text, parser_config, today)
+    parts = api_parts(api)
+    results = [fetcher.fetch(part.url, same_address_only=True) for part in parts]
+    for part, result in zip(parts, results, strict=True):
+        if result.status == "robots_disallowed":
+            return _AdapterResult([], api.adapter, result, api_url=api.url)
+        refused = api_refusal(part, result)
+        if refused:
+            reason = f"分类 {part.category_id}：{refused}" if len(parts) > 1 else refused
+            return _AdapterResult([], api.adapter, result, reason, api.url)
+        if result.status != "ok":
+            return _AdapterResult([], api.adapter, result, api_url=api.url)
+        if len(parts) > 1 and not api_readable(part, result.text):
+            # 几个分类合读时，有一个回了但读不出（空白、维护页）：整栏这次没读出，和单个分类
+            # 读不出一样按"没识别到列表条目"记，下次再试；不拿别的分类的条目顶上
+            return _AdapterResult([], api.adapter, api_url=api.url)
+    items = api_items_merged(api, [result.text for result in results], parser_config, today)
     return _AdapterResult(items, api.adapter, api_url=api.url)
 
 
@@ -268,7 +277,7 @@ def check_source(
     if result.status == "ok":
         # 数字广东信息公开平台的分类：列表只在接口里（按分类加载），部门页上识别出的条目不用，
         # 一定去认接口
-        gkmlpt = gkmlpt_category(url) is not None
+        gkmlpt = gkmlpt_categories(url) is not None
         items = (
             []
             if gkmlpt

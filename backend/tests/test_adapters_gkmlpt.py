@@ -7,6 +7,8 @@ import pytest
 from youju.crawler.adapters import (
     api_empty_list,
     api_items,
+    api_items_merged,
+    api_parts,
     api_readable,
     api_refusal,
     find_list_api,
@@ -345,3 +347,82 @@ def test_default_port_only_redirect_is_not_a_redirect_elsewhere():
     # 反过来（不带端口跳到带 :443 的同一地址）也一样
     back = FetchResult(api().url, "redirect", found.url, 301, "")
     assert api_refusal(api(), back) == ""
+
+
+def test_multiple_categories_and_merge():
+    found = api(category="8,6")
+    parts = api_parts(found)
+    assert [p.category_id for p in parts] == [8, 6]
+    assert [p.url for p in parts] == [api(category=8).url, api(category=6).url]
+    assert not api(category="8,999")
+    assert not api(category="8,8")
+    assert not api(category="1,2,3,4,5,6")
+    other = {**BODY, "classify": {"id": 6}, "articles": [BODY["articles"][0]]}
+    rows = api_items_merged(found, [json.dumps(BODY), json.dumps(other)], None, TODAY)
+    assert len(rows) == 5
+    no_date = dict(BODY["articles"][0], url="http://www.sg.gov.cn/undated.html", create_time=None)
+    other["articles"] = [no_date, BODY["articles"][0]]
+    rows = api_items_merged(found, [json.dumps(BODY), json.dumps(other)], None, TODAY)
+    assert len(rows) == 6 and rows[-1].publish_date is None
+    rows = rows[:-1]
+    assert [r.publish_date for r in rows] == sorted([r.publish_date for r in rows], reverse=True)
+
+
+@pytest.mark.parametrize(
+    "failure, expected",
+    [
+        (FetchResult("", "http_error", http_status=403), BLOCKED),
+        (FetchResult("", "network_error", error="超时"), DOWN),
+        ("", DOWN),
+    ],
+)
+def test_multiple_categories_verify_failure(failure, expected):
+    found = api(category="8,6")
+    first, second = api_parts(found)
+    cache = Cache({URL: PAGE, first.url: json.dumps(BODY), second.url: failure})
+    checked = check_one(cache, column("8,6"), TODAY)
+    assert checked.result == expected and checked.items == 0
+    assert cache.calls == [URL, first.url, second.url]
+
+
+def test_multiple_categories_empty_and_spotcheck_failure():
+    from youju.govsites.spotcheck import _first_list_item
+
+    found = api(category="8,6")
+    first, second = api_parts(found)
+    empty = {**BODY, "articles": []}
+    cache = Cache(
+        {
+            URL: PAGE,
+            first.url: json.dumps(empty),
+            second.url: json.dumps({**empty, "classify": {"id": 6}}),
+        }
+    )
+    checked = check_one(cache, column("8,6"), TODAY)
+    assert "经列表接口识别出 0 条" in checked.reason
+    cache = Cache(
+        {
+            URL: PAGE,
+            first.url: json.dumps(BODY),
+            second.url: FetchResult("", "http_error", http_status=403),
+        }
+    )
+    assert _first_list_item(cache, URL + "#xxgk-gkmlpt-8,6", TODAY) is None
+
+
+def test_parent_direct_part_keeps_only_items_attached_to_the_parent():
+    # "政策"父分类（8350）只取直接挂在它上面的条目，挂在子分类（解读等）上的不要；叶子 6 照读
+    column = f"{URL}#xxgk-gkmlpt-p8350,6"
+    found = find_list_api(PAGE, URL, column)
+    parent, leaf = api_parts(found)
+    assert (parent.category_id, parent.direct_only) == (8350, True)
+    assert (leaf.category_id, leaf.direct_only) == (6, False)
+    body = json.loads(json.dumps(BODY))
+    body["classify"]["id"] = 8350
+    for row, main in zip(body["articles"], (8350, 8350, 7, 6, None), strict=True):
+        row["classify_main"] = main
+    kept = api_items(parent, json.dumps(body), {}, TODAY)
+    assert [i.url for i in kept] == [r["url"] for r in BODY["articles"][:2]]
+    # p 只能在第一个编号前；单独一个父分类也认
+    assert find_list_api(PAGE, URL, f"{URL}#xxgk-gkmlpt-6,p8350") is None
+    assert find_list_api(PAGE, URL, f"{URL}#xxgk-gkmlpt-p8350").direct_only

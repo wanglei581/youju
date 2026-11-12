@@ -12,7 +12,9 @@
      带着分类自己的目录（…/fdzdgknr/zcwj/xzbmfgfxwj/art/…），还原成分类栏目页
      …/fdzdgknr/zcwj/xzbmfgfxwj/index.html（这页的列表单元现有大汉 jpaas 适配器能读）；
    - 数字广东（广东省市县的 gkmlpt 信息公开平台）：部门页里写着分类树 TREE（编号、名称），
-     列表由 /gkmlpt/api/all/<编号> 接口按分类加载。记成"部门页#xxgk-gkmlpt-编号"，试读记"需接口"；
+     列表由平台脚本按分类加载。记成"部门页#xxgk-gkmlpt-编号"（"政策"一类父分类合读父分类直接
+     挂的条目和规范性文件等叶子，见 gkmlpt_tree_categories），由数字广东适配器读
+     （crawler/adapters.py）；
    - 山西等拓尔思县级平台：部门页先跳到"公开指南"，侧栏是"法定主动公开内容"下的栏目，
      沿用盘点现有的栏目识别（不另写规则）；部门页网址比别处深，目录页上的链接放宽深度。
 
@@ -29,7 +31,7 @@ from typing import TYPE_CHECKING
 from urllib.parse import urljoin, urlsplit
 
 from youju.govsites.links import REPORT_WORDS, Link, registrable
-from youju.govsites.names import dept_categories, looks_like_org
+from youju.govsites.names import column_kind, dept_categories, looks_like_org
 from youju.govsites.platform import URL_SHAPES
 
 if TYPE_CHECKING:
@@ -242,10 +244,20 @@ def jpaas_path_groups(html: str, page_url: str) -> list[tuple[str, str]]:
 
 _GKML_TREE = re.compile(r"\bTREE\s*:\s*(?=\[)")
 GKMLPT_KEY = "gkmlpt-"
+# "政策"一类父分类下当政策文件读的叶子（全国覆盖主线 11/13 定）：解读和别的子分类不读
+_GKMLPT_POLICY_LEAVES = frozenset({"规范性文件", "其他文件", "其它文件", "部门文件"})
+# 一个栏目最多合读几个分类（父分类加叶子，适配器认的上限）
+_GKMLPT_MAX_IDS = 5
 
 
 def gkmlpt_tree_categories(text: str) -> list[tuple[str, str]]:
-    """数字广东信息公开平台部门页里的分类（名称, "gkmlpt-编号"）；跳到别的网站的分类不要。"""
+    """数字广东信息公开平台部门页里的分类（名称, "gkmlpt-编号"）；跳到别的网站的分类不要。
+
+    "政策"一类父分类（名称按 column_kind 是政策文件）下面有规范性文件、其他文件（其它文件）、
+    部门文件这几个叶子的：平台读父分类有时只给挂在它上面的几条、有时混进解读，所以改给一个合读的
+    分类（名称照父分类，键"gkmlpt-p父分类编号,叶子编号,…"）：父分类只取直接挂在它上面的条目，
+    再加这几个叶子；这几个叶子也不单独给，解读和别的子分类不读。没有这类叶子的父分类照旧给父分类
+    本身。"""
     m = _GKML_TREE.search(text or "")
     if not m:
         return []
@@ -261,9 +273,34 @@ def gkmlpt_tree_categories(text: str) -> list[tuple[str, str]]:
         if not isinstance(node, dict):
             continue
         name, nid = node.get("name"), node.get("id")
-        if isinstance(name, str) and isinstance(nid, int) and not node.get("jump_url"):
-            out.append((name.strip(), f"{GKMLPT_KEY}{nid}"))
         children = node.get("children")
-        if isinstance(children, list):
-            stack.extend(children)
+        children = children if isinstance(children, list) else []
+        selected = []
+        if (
+            isinstance(name, str)
+            and isinstance(nid, int)
+            and not node.get("jump_url")
+            and (column_kind(name) or (None,))[0] == "政策文件"
+        ):
+            selected = [
+                child
+                for child in children
+                if isinstance(child, dict)
+                and isinstance(child.get("name"), str)
+                and child["name"].strip() in _GKMLPT_POLICY_LEAVES
+                and type(child.get("id")) is int
+                and not child.get("jump_url")
+            ][: _GKMLPT_MAX_IDS - 1]
+        if isinstance(name, str) and isinstance(nid, int) and not node.get("jump_url"):
+            # 父分类本身也读，但只要直接挂在它上面的条目（p 编号）：有的部门把政策直接挂在父分类上，
+            # 叶子里没几条（汕头发改 134 条里 83 条直接挂在"政策"上）
+            leaves = ",".join(str(child["id"]) for child in selected)
+            ids = f"p{nid},{leaves}" if selected else str(nid)
+            out.append((name.strip(), f"{GKMLPT_KEY}{ids}"))
+        for child in children:
+            if child in selected:
+                if isinstance(child.get("children"), list):
+                    stack.extend(child["children"])
+            else:
+                stack.append(child)
     return out

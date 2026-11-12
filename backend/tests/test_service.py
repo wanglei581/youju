@@ -736,3 +736,50 @@ def test_gkmlpt_backlink_is_skipped_when_final_url_keeps_the_fragment(session):
     fetcher = RecordingFetcher({url: [page(url, html)], api_url: [page(api_url, json.dumps(body))]})
     check = check_source(session, source, fetcher, today=date(2026, 11, 12))
     assert (check.status, check.items_found) == ("ok", 4)
+
+
+def test_gkmlpt_multiple_categories_fetch_and_marker(session):
+    import json
+
+    html, payload, page_url, first, single_url = _gkmlpt_fixture()
+    second = first.replace("/all/8?", "/all/6?")
+    url = single_url + ",6"
+    source = make_source(session, url)
+    fetcher = RecordingFetcher({url: [page(page_url, html)]})
+    check = check_source(session, source, fetcher, today=date(2026, 11, 12))
+    assert check.status == "parse_empty" and fetcher.requested == [url]
+    source.parser_config = {"list_api_open": "数字广东gkmlpt"}
+    session.commit()
+    body = json.loads(payload)
+    other = {**body, "classify": {"id": 6}, "articles": body["articles"][:1]}
+    other["articles"] = [dict(other["articles"][0], url="http://www.sg.gov.cn/new.html")]
+    fetcher = RecordingFetcher(
+        {
+            url: [page(page_url, html)],
+            first: [page(first, payload)],
+            second: [page(second, json.dumps(other))],
+        }
+    )
+    check = check_source(session, source, fetcher, today=date(2026, 11, 12))
+    assert (check.status, check.items_found) == ("ok", 6)
+    assert fetcher.requested == [url, first, second]
+
+
+def test_gkmlpt_multiple_categories_second_refused_stops_all(session):
+    html, payload, page_url, first, single_url = _gkmlpt_fixture()
+    second = first.replace("/all/8?", "/all/6?")
+    url = single_url + ",6"
+    source = make_source(session, url)
+    source.parser_config = {"list_api_open": "数字广东gkmlpt"}
+    session.commit()
+    blocked = FetchResult(second, "http_error", http_status=403)
+    fetcher = RecordingFetcher(
+        {url: [page(page_url, html)], first: [page(first, payload)], second: [blocked]}
+    )
+    check = check_source(session, source, fetcher, today=date(2026, 11, 12))
+    assert check.status == "list_api_refused" and "分类 6" in check.error
+    session.refresh(source)
+    assert source.parser_config["list_api_refused"]["url"] == first
+    again = RecordingFetcher({url: [page(page_url, html)]})
+    assert check_source(session, source, again).status == "list_api_refused"
+    assert again.requested == [url]

@@ -190,3 +190,10 @@ def test_host_and_origin_ignore_the_default_port():
     assert host_of("http://x.gov.cn:443/a") == "x.gov.cn:443"  # http 的默认端口是 80
     assert origin_of("https://X.gov.cn:443/a") == "https://x.gov.cn"
     assert host_of("https://x.gov.cn:99999/a") == "x.gov.cn:99999"  # 端口写坏的照原样，不报错
+
+
+def test_url_key_multiple_gkmlpt_categories():
+    base = "https://example.gov.cn/gkmlpt/index"
+    assert url_key(base + "#xxgk-gkmlpt-1,2") != url_key(base + "#xxgk-gkmlpt-1,3")
+    assert url_key(base + "#xxgk-gkmlpt-p1,2").endswith("#xxgk-gkmlpt-p1,2")
+    assert url_key(base + "#ordinary") == url_key(base)
