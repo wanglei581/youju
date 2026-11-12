@@ -92,19 +92,15 @@ _ROLE = re.compile(
         )
     )
 )
-# 职务前后紧挨着的词按"宁可多挡"认人名（_role_name）：常见姓氏开头、不是常用词、不以行政单位的字结尾
-# （"安区""沙市"；三个字的前两个字也一样："安区人""沙市财"），名字里有"会""江"这类字的照样算
-# （"局长王会""局长王江"）。地名连着"长"字的（"城区长沙湾""新区长芦街道"）会多挡几条，挡了还有日期
-# 和网址；只为最常见的"长江"开例外：后面接流域、经济带这类词的是长江本身（"宜宾市长江流域"），
-# "北京市长江某某"照样挡。职务后面接"单位"的不是人名（"副理事长单位"）。人名在职务前面的，要在
-# 标题开头或标点后面（"第三季度局长接待日"不挡）
+# 职务前后紧挨着的词按"宁可多挡"认人名（_role_name）：常见姓氏开头、不是常用词、不以地名的字
+# （市县区……）结尾就算（"沙市""安区"不算；三个字的前两个字也一样："沙市财""安区人"），名字里有
+# "会""江""科"这类字的照样算（"局长王会""局长王江""局长王科"）。不为"长江""长沙"一类地名开例外
+# （"局长江某某"也是人名）：地名连着"长"字的标题（"宜宾市长江流域""城区长沙湾"）会多挡，挡了还有
+# 日期和网址。职务后面接"单位""质量"的不是人名（"副理事长单位""市长质量奖"）。人名在职务前面的，
+# 要在标题开头或标点后面（"第三季度局长接待日"不挡）
 _OPEN = '、，,：:；;（(“"《—- 　'
-_ADMIN_ENDS = tuple("区县市镇乡村省局厅委办部室组处科站所院校署府")
-_CHANGJIANG = (
-    *("流域", "经济带", "汇", "沿", "大保护", "保护", "干流", "支流", "航", "口", "中下游", "上游"),
-    *("中游", "下游", "水", "岸", "段", "生态", "禁捕", "新区", "大堤", "大桥", "国家", "文化"),
-    *("港", "三峡", "三角洲", "江豚", "委"),
-)
+_PLACE_ENDS = tuple("市县区省州镇乡村旗盟")
+_NOT_ROLE_NAMES = ("单位", "质量")
 # 新闻动词前后像人名的词（_personish）以单位、地名的字结尾的不算（"安区""沙市""公室"），三个字的
 # 前两个字也一样。以这些开头的也不是人名（"关于我市……""国家宣布……"）
 _UNIT_ENDS = (*_NOT_NAME_END, *"室组处科乡")
@@ -173,7 +169,7 @@ def _personish(word: str, *, any_surname: bool = False) -> bool:
 
 
 def _role_name(word: str) -> bool:
-    """职务前后紧挨着的词像不像人名（宁可多挡）：常见姓氏开头、不是常用词、不以行政单位的字结尾。"""
+    """职务前后紧挨着的词像不像人名（宁可多挡）：常见姓氏开头、不是常用词、不以地名的字结尾。"""
     from youju.crawler import detail
 
     return (
@@ -183,8 +179,9 @@ def _role_name(word: str) -> bool:
         and word not in detail._COMMON_WORDS
         and word not in detail._TITLES
         and word not in detail._PLACE_NAMES
-        and not word.endswith(_ADMIN_ENDS)
-        and not (len(word) == 3 and word[:2].endswith(_ADMIN_ENDS))
+        and not word.startswith(_NOT_ROLE_NAMES)
+        and not word.endswith(_PLACE_ENDS)
+        and not (len(word) == 3 and word[:2].endswith(_PLACE_ENDS))
         and not word.startswith(_NOT_LEAD)
     )
 
@@ -195,10 +192,7 @@ def _news_named(title: str) -> bool:
         return True
     for m in _ROLE.finditer(title):
         rest = title[m.end() :]
-        river = (
-            m.group(0).endswith("长") and rest.startswith("江") and rest[1:].startswith(_CHANGJIANG)
-        )
-        if not river and not rest.startswith("单位") and any(_role_name(rest[:k]) for k in (2, 3)):
+        if any(_role_name(rest[:k]) for k in (2, 3)):
             return True
         i = m.start()
         for k in (2, 3):
