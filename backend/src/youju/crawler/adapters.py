@@ -6,18 +6,21 @@ docs/数据来源/全国覆盖/集约化平台盘点.md）。
 
 规矩和抓页面一样：
 - 只用页面自己声明的、同一网站上的公开接口，只发 GET；照常遵守 robots.txt、同一网站间隔 3 秒；
-- 只认白名单里的接口路径，不拼别的地址；要登录、签名、验证码的接口一律不碰。数字广东的接口
-  地址页面里没有整句写出，由同一网站的平台脚本按页面写明的站点地址、站点编号和分类编号拼出：
-  这里照平台脚本的拼法、只用页面写明的这几个值，和浏览器打开这个分类时发的请求一样（见下）。
-- 读取护栏（D-128）：
+- 只认白名单里的接口路径，不拼别的地址；要登录、签名、验证码的接口一律不碰。
+- 读取护栏（D-128，管的是大汉 jpaas 的授权阅读）：
   ① 只按网页里写明的地址和参数去取，不改参数、不另外构造请求（find_unit_apis 只认白名单路径、
-    同一网站，参数原样照页面的 queryData，不加分页、检索等参数；数字广东照平台脚本的拼法，只取
-    第 1 页）；
+    同一网站，参数原样照页面的 queryData，不加分页、检索等参数）；
   ② 接口返回不是成功、返回里带权限要求（roles、permissions 一类字段不为空）、要登录或验证码、
     网站明确拒绝（HTTP 401/403/412/521、robots 禁止）的，一律记"不能抓"、不读（api_refusal 给出
     原因；api_html 只在返回明确成功、没有权限要求时才给出列表，别的一律空串）；
   ③ 护栏上线之前，这类列表照旧不读：已经记成"不能抓"的栏目，等护栏上线、重新试读、抽查合格
     以后再放（D-122 ①、D-126 ③）；同一网站请求间隔不少于 3 秒（PoliteFetcher）。
+- 数字广东 gkmlpt 不在 D-128 的范围里，看的是 D-013（不伪装、不绕过）。它的接口地址页面里没有
+  整句写出，由这个网站自己的平台脚本按页面写明的站点地址、站点编号和分类编号拼出：这里只用页面
+  写明的这几个值、照平台脚本的拼法得到地址，和它自己的页面在浏览器里发出的请求一模一样，不算
+  另外构造请求；只取第 1 页，不加别的参数。D-128 那几样做法（认得出才读，被拦下记不能抓、停抓，
+  来源标了"经接口读"才读）照样用在它身上。哪个平台的接口参数页面上根本没写、要靠我们自己猜的，
+  不在这条解释里，要另提。
 
 现有适配器：
 - 大汉 jpaas（浙江等省的集约化平台）：<script src=".../unitbuild.js"
@@ -63,6 +66,11 @@ class ListApi:
     base_url: str  # 接口返回的列表里的相对链接，以栏目页为准
     # 数字广东 gkmlpt：请求的分类编号（返回里的 classify.id 要和它一样）
     category_id: int | None = None
+    # 数字广东几个分类合读的栏目：每个分类各一个接口（见 api_parts）；单个分类的为空
+    parts: tuple["ListApi", ...] = ()
+    # 数字广东栏目网址里带 p 的分类（"政策"一类父分类，和下面挂着解读的叶子）：只要直接挂在它上面
+    # 的条目（条目的 classify_main 就是它），挂在下级分类（解读等）上的不要——要的另外按叶子读
+    direct_only: bool = False
 
 
 _KNOWN_ATTRS = frozenset({"id", "src", "webid", "parsetype", "url", "querydata"})
@@ -99,7 +107,10 @@ def _unit_scripts(html: str) -> list[dict[str, str]]:
 
 # 数字广东信息公开平台的分类栏目网址："部门页#xxgk-gkmlpt-分类编号"
 # （盘点 deptdir.gkmlpt_tree_categories 记的）
-_GK_COLUMN = re.compile(r"#xxgk-gkmlpt-([0-9]+)$")
+# 几个分类合读的写成"编号,编号"（最多 GKMLPT_MAX_CATEGORIES 个）；编号前面带 p 的只要直接挂在这个
+# 分类上的条目（"政策"父分类，和下面挂着解读的叶子）
+GKMLPT_MAX_CATEGORIES = 5
+_GK_COLUMN = re.compile(rf"#xxgk-gkmlpt-(p?[0-9]+(?:,p?[0-9]+){{0,{GKMLPT_MAX_CATEGORIES - 1}}})$")
 # 遮住 JS 字符串和注释，避免把其中的文字当作可执行声明或配置项。
 # 页面脚本在声明以后又改写这几项配置（window._CONFIG.SID = '9'、window._CONFIG['ENV'] = …）
 _CONFIG_OVERRIDE = re.compile(r"\b_CONFIG\s*(?:\.\s*(?:APP_URL|SID|ENV|TREE)\s*=(?!=)|\[)")
@@ -108,16 +119,51 @@ _JS_LITERAL = re.compile(
 )
 
 
-def gkmlpt_category(column_url: str | None) -> int | None:
-    """栏目网址是数字广东信息公开平台的分类（"部门页#xxgk-gkmlpt-编号"）时给分类编号，否则 None。"""
+def _gkmlpt_spec(column_url: str | None) -> tuple[tuple[int, ...], tuple[bool, ...]] | None:
+    """栏目网址里的数字广东分类：(编号们, 各自是不是只取直接挂在它上面的条目)；不是给 None。
+    一至 GKMLPT_MAX_CATEGORIES 个、不重复的编号。"""
     match = _GK_COLUMN.search(column_url or "")
-    return int(match.group(1)) if match else None
+    if not match:
+        return None
+    tokens = match.group(1).split(",")
+    ids = tuple(int(token.removeprefix("p")) for token in tokens)
+    direct = tuple(token.startswith("p") for token in tokens)
+    return (ids, direct) if len(set(ids)) == len(ids) else None
+
+
+def gkmlpt_categories(column_url: str | None) -> tuple[int, ...] | None:
+    """栏目网址是数字广东信息公开平台的分类（"部门页#xxgk-gkmlpt-编号[,编号…]"）时给分类编号，
+    否则 None。"""
+    spec = _gkmlpt_spec(column_url)
+    return spec[0] if spec else None
+
+
+def api_parts(api: ListApi) -> tuple[ListApi, ...]:
+    return api.parts or (api,)
+
+
+def api_items_merged(
+    api: ListApi, texts: list[str], parser_config: dict | None, today: date | None
+) -> list[ListItem]:
+    """各分类已通过护栏后合并，按网址去重并按发布日期排序。同一网址在几个分类里都有时留先到的；
+    先到的没有日期、后到的有日期时留有日期的。"""
+    parts = api_parts(api)
+    if len(parts) == 1 and len(texts) == 1:
+        return api_items(parts[0], texts[0], parser_config, today)
+    items: dict[str, ListItem] = {}
+    for part, text in zip(parts, texts, strict=True):
+        for item in api_items(part, text, parser_config, today):
+            key = url_key(item.url)
+            kept = items.get(key)
+            if kept is None or (kept.publish_date is None and item.publish_date is not None):
+                items[key] = item
+    return sorted(items.values(), key=lambda i: i.publish_date or date.min, reverse=True)
 
 
 def list_api_adapter(column_url: str) -> str:
     """打开"经接口读"的栏目时写进 list_api_open 的适配器名：数字广东的分类栏目是 gkmlpt，
     其余（页面上声明 unitbuild.js 的）是大汉 jpaas。和 find_list_api 认接口的分法一样。"""
-    return GKMLPT if gkmlpt_category(column_url) is not None else HANWEB_JPAAS
+    return GKMLPT if gkmlpt_categories(column_url) is not None else HANWEB_JPAAS
 
 
 def find_gkmlpt_api(html: str, page_url: str, column_url: str) -> ListApi | None:
@@ -131,9 +177,10 @@ def find_gkmlpt_api(html: str, page_url: str, column_url: str) -> ListApi | None
     协议跟部门页，主机是 APP_URL 的（和部门页一样），端口是协议的默认端口——部门页不在默认端口上
     的不认。主机、端口原样用部门页网址里的写法（带 :443 的照带），抓取程序按同一个网站排队、隔 3 秒
     （D-013）。page_url 是部门页抓取的最终网址。"""
-    category = gkmlpt_category(column_url)
-    if category is None:
+    spec = _gkmlpt_spec(column_url)
+    if spec is None:
         return None
+    categories, direct = spec
     try:
         doc = lxml.html.document_fromstring(_STRAY_END.sub("", html))
     except (etree.LxmlError, ValueError):
@@ -202,38 +249,56 @@ def find_gkmlpt_api(html: str, page_url: str, column_url: str) -> ListApi | None
         ):
             return None
         stack = list(tree) if isinstance(tree, list) else []
-        found = False
+        found: set[int] = set()
         while stack:
             node = stack.pop()
             if isinstance(node, dict):
                 if (
                     type(node.get("id")) is int
-                    and node["id"] == category
+                    and node["id"] in categories
                     and node.get("jump_url") in (None, "")
                 ):
-                    found = True
-                    break
+                    found.add(node["id"])
                 if isinstance(node.get("children"), list):
                     stack.extend(node["children"])
-        if not found:
+        if found != set(categories):
             return None
         # 浏览器请求的是 APP_URL 的主机、协议的默认端口；部门页不在默认端口上的对不上，不认
         if page.port not in (None, 443 if page.scheme == "https" else 80):
             return None
-        path = f"{app.path.rstrip('/')}/gkmlpt/api/all/{category}"
-        url = urlunsplit((page.scheme, page.netloc, path, f"page=1&sid={values['SID']}", ""))
+        parts = tuple(
+            ListApi(
+                GKMLPT,
+                urlunsplit(
+                    (
+                        page.scheme,
+                        page.netloc,
+                        f"{app.path.rstrip('/')}/gkmlpt/api/all/{category}",
+                        f"page=1&sid={values['SID']}",
+                        "",
+                    )
+                ),
+                page_url.split("#", 1)[0],
+                category,
+                direct_only=direct[index],
+            )
+            for index, category in enumerate(categories)
+        )
     except (ValueError, TypeError):
         return None
     # 条目里的相对网址按部门页解析；部门页网址（抓取的最终网址可能带着栏目的 #xxgk-gkmlpt-编号）
     # 去掉 # 后面，回链判断（url_key）才对得上
-    return ListApi(GKMLPT, url, page_url.split("#", 1)[0], category)
+    first = parts[0]
+    if len(parts) == 1:
+        return first
+    return ListApi(GKMLPT, first.url, first.base_url, first.category_id, parts, first.direct_only)
 
 
 def find_list_api(html: str, page_url: str, column_url: str | None = None) -> ListApi | None:
     """栏目页里声明的列表接口；认不出返回 None。
 
     column_url 是数字广东的分类栏目时只按 gkmlpt 认（认不出就是 None，不再去认大汉）。"""
-    if gkmlpt_category(column_url) is not None:
+    if gkmlpt_categories(column_url) is not None:
         return find_gkmlpt_api(html, page_url, column_url)
     apis = find_unit_apis(html, page_url)
     return apis[0] if apis else None
@@ -499,15 +564,16 @@ def _payload_refusal(payload: dict) -> str:
 
 
 def _gkmlpt_refusal(api: ListApi, payload: dict) -> str:
-    """数字广东列表接口的 JSON 要不要记"不能抓"、不读（D-128 读取护栏 ②，认得出才读）。给原因；
-    可以读给空串。
+    """数字广东列表接口的 JSON 要不要记"不能抓"、不读（照 D-128 读取护栏 ② 的做法，认得出才读）。
+    给原因；可以读给空串。
 
     平台脚本自己把 errcode 不为 0、errmessage 不是 ok 的当失败；带权限要求字段的不读；整份的形状
     要和实测的正常返回一样：顶层正好 articles、classify、offset、total、updated 五项，classify.id
     是请求的分类，offset 是 0（第 1 页），total 是非负整数，articles 是列表、不超过 _GKMLPT_MAX_ROWS
     条（正常一页 100 条）；有条目时至少要有一条带发布时间（create_time），一条都没有多半是平台改了
-    字段，认不出。单条字段不对的（缺标题、网址、发布时间）只跳过那一条或记成没日期（api_items），
-    不拖累整栏。"""
+    字段，认不出；只取直接挂在这个分类上的条目时（p 编号），有条目却没有一条带整数 classify_main
+    的也认不出（平台多半改了字段，不悄悄当成 0 条）。单条字段不对的（缺标题、网址、发布时间）只跳过
+    那一条或记成没日期（api_items），不拖累整栏。"""
     code, message = payload.get("errcode"), payload.get("errmessage")
     if code not in (None, "", 0) or ("errmessage" in payload and message != "ok"):
         hint = str(message or code)[:40]
@@ -523,6 +589,12 @@ def _gkmlpt_refusal(api: ListApi, payload: dict) -> str:
         or not isinstance(articles, list)
         # 有条目却没有一条带发布时间：平台多半改了字段，认不出（不悄悄全记成没日期）
         or (articles and not any(_publish_time(row) for row in articles))
+        # 只取直接挂在这个分类上的（p 编号）：有条目却没有一条带整数 classify_main，同样认不出
+        or (
+            api.direct_only
+            and articles
+            and not any(_classify_main(row) is not None for row in articles)
+        )
         or len(articles) > _GKMLPT_MAX_ROWS
         or not isinstance(classify, dict)
         or type(classify.get("id")) is not int
@@ -551,10 +623,19 @@ def _publish_time(row: object) -> int | None:
     return value if type(value) is int and value > 0 else None
 
 
+def _classify_main(row: object) -> int | None:
+    """数字广东一条挂在哪个分类上（classify_main，整数）；没有的、不是整数的（含 true、false）
+    给 None。"""
+    value = row.get("classify_main") if isinstance(row, dict) else None
+    return value if type(value) is int else None
+
+
 def _gkmlpt_item(api: ListApi, row: object, today: date) -> ListItem | None:
     """数字广东接口的一条 → 列表条目；字段不对、不像标题、网址不能用的给 None（跳过这一条）。"""
     if not isinstance(row, dict):
         return None
+    if api.direct_only and _classify_main(row) != api.category_id:
+        return None  # p 编号：挂在下级分类（解读等）上的、classify_main 认不出的不要
     title, raw_url, published = row.get("title"), row.get("url"), _publish_time(row)
     if not isinstance(title, str) or not isinstance(raw_url, str):
         return None

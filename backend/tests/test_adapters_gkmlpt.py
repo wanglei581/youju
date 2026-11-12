@@ -7,6 +7,8 @@ import pytest
 from youju.crawler.adapters import (
     api_empty_list,
     api_items,
+    api_items_merged,
+    api_parts,
     api_readable,
     api_refusal,
     find_list_api,
@@ -345,3 +347,188 @@ def test_default_port_only_redirect_is_not_a_redirect_elsewhere():
     # 反过来（不带端口跳到带 :443 的同一地址）也一样
     back = FetchResult(api().url, "redirect", found.url, 301, "")
     assert api_refusal(api(), back) == ""
+
+
+def test_multiple_categories_and_merge():
+    found = api(category="8,6")
+    parts = api_parts(found)
+    assert [p.category_id for p in parts] == [8, 6]
+    assert [p.url for p in parts] == [api(category=8).url, api(category=6).url]
+    assert not api(category="8,999")
+    assert not api(category="8,8")
+    assert not api(category="1,2,3,4,5,6")
+    other = {**BODY, "classify": {"id": 6}, "articles": [BODY["articles"][0]]}
+    rows = api_items_merged(found, [json.dumps(BODY), json.dumps(other)], None, TODAY)
+    assert len(rows) == 5
+    no_date = dict(BODY["articles"][0], url="http://www.sg.gov.cn/undated.html", create_time=None)
+    other["articles"] = [no_date, BODY["articles"][0]]
+    rows = api_items_merged(found, [json.dumps(BODY), json.dumps(other)], None, TODAY)
+    assert len(rows) == 6 and rows[-1].publish_date is None
+    rows = rows[:-1]
+    assert [r.publish_date for r in rows] == sorted([r.publish_date for r in rows], reverse=True)
+
+
+@pytest.mark.parametrize(
+    "failure, expected",
+    [
+        (FetchResult("", "http_error", http_status=403), BLOCKED),
+        (FetchResult("", "network_error", error="超时"), DOWN),
+        ("", DOWN),
+    ],
+)
+def test_multiple_categories_verify_failure(failure, expected):
+    found = api(category="8,6")
+    first, second = api_parts(found)
+    cache = Cache({URL: PAGE, first.url: json.dumps(BODY), second.url: failure})
+    checked = check_one(cache, column("8,6"), TODAY)
+    assert checked.result == expected and checked.items == 0
+    assert checked.reason.startswith("分类 6：")  # 写明出问题的是哪个分类
+    assert cache.calls == [URL, first.url, second.url]
+
+
+def test_multiple_categories_empty_and_spotcheck_failure():
+    from youju.govsites.spotcheck import _first_list_item
+
+    found = api(category="8,6")
+    first, second = api_parts(found)
+    empty = {**BODY, "articles": []}
+    cache = Cache(
+        {
+            URL: PAGE,
+            first.url: json.dumps(empty),
+            second.url: json.dumps({**empty, "classify": {"id": 6}}),
+        }
+    )
+    checked = check_one(cache, column("8,6"), TODAY)
+    assert "经列表接口识别出 0 条" in checked.reason
+    cache = Cache(
+        {
+            URL: PAGE,
+            first.url: json.dumps(BODY),
+            second.url: FetchResult("", "http_error", http_status=403),
+        }
+    )
+    assert _first_list_item(cache, URL + "#xxgk-gkmlpt-8,6", TODAY) is None
+
+
+def test_parent_direct_part_keeps_only_items_attached_to_the_parent():
+    # "政策"父分类（8350）只取直接挂在它上面的条目，挂在子分类（解读等）上的不要；叶子 6 照读
+    column = f"{URL}#xxgk-gkmlpt-p8350,6"
+    found = find_list_api(PAGE, URL, column)
+    parent, leaf = api_parts(found)
+    assert (parent.category_id, parent.direct_only) == (8350, True)
+    assert (leaf.category_id, leaf.direct_only) == (6, False)
+    body = json.loads(json.dumps(BODY))
+    body["classify"]["id"] = 8350
+    for row, main in zip(body["articles"], (8350, 8350, 7, 6, None), strict=True):
+        row["classify_main"] = main
+    kept = api_items(parent, json.dumps(body), {}, TODAY)
+    assert [i.url for i in kept] == [r["url"] for r in BODY["articles"][:2]]
+    # 哪个编号前面都能带 p（下面挂着解读的叶子也只取直接挂在它上面的）；单独一个也认
+    later = api_parts(find_list_api(PAGE, URL, f"{URL}#xxgk-gkmlpt-6,p8350"))
+    assert [(p.category_id, p.direct_only) for p in later] == [(6, False), (8350, True)]
+    assert find_list_api(PAGE, URL, f"{URL}#xxgk-gkmlpt-p8350").direct_only
+    for bad in ("pp8350", "p", "8350p", "p8350,", "p8350,p8350"):
+        assert find_list_api(PAGE, URL, f"{URL}#xxgk-gkmlpt-{bad}") is None
+
+
+def test_verify_stops_at_the_first_refused_category():
+    first = api(category=8)  # 单个分类的接口地址就是合读时第一个分类的
+    blocked = FetchResult(first.url, "http_error", first.url, 403, "")
+    cache = Cache({URL: PAGE, first.url: blocked})
+    col = column()
+    col.url = f"{URL}#xxgk-gkmlpt-8,6"
+    assert check_one(cache, col, TODAY).result == BLOCKED
+    assert cache.calls == [URL, first.url]  # 第二个分类不再请求
+
+
+def test_spotcheck_gives_nothing_when_any_category_fails():
+    from youju.govsites.spotcheck import _first_list_item
+
+    for column_url in (f"{URL}#xxgk-gkmlpt-8", f"{URL}#xxgk-gkmlpt-8,6"):
+        cache = Cache(
+            {URL: PAGE, api().url: FetchResult(api().url, "http_error", api().url, 503, "")}
+        )
+        assert _first_list_item(cache, column_url, TODAY) is None
+        assert cache.calls == [URL, api().url]
+
+
+def test_verify_first_category_failure_stops_and_names_it():
+    # 第一个分类没取到（超时）：后面的分类不再请求，原因写明是分类 8
+    first = api(category=8)
+    timeout = FetchResult(first.url, "network_error", error="超时")
+    cache = Cache({URL: PAGE, first.url: timeout})
+    checked = check_one(cache, column("8,6"), TODAY)
+    assert checked.result == DOWN and checked.reason == "分类 8：列表接口：超时"
+    assert cache.calls == [URL, first.url]
+
+
+def _parent_body(main=8350):
+    body = json.loads(json.dumps(BODY))
+    body["classify"]["id"] = 8350
+    for row in body["articles"]:
+        row["classify_main"] = main
+    return body
+
+
+@pytest.mark.parametrize("main", [True, "8350", 8350.0, "missing"])
+def test_parent_direct_part_skips_rows_without_an_integer_classify_main(main):
+    # classify_main 不是整数的（true、"8350"、8350.0、没有这一项）不当成直接挂在父分类上
+    parent = find_list_api(PAGE, URL, f"{URL}#xxgk-gkmlpt-p8350")
+    body = _parent_body()
+    if main == "missing":
+        del body["articles"][0]["classify_main"]
+    else:
+        body["articles"][0]["classify_main"] = main
+    kept = api_items(parent, json.dumps(body), {}, TODAY)
+    assert [i.url for i in kept] == [r["url"] for r in BODY["articles"][1:]]
+
+
+def test_parent_direct_part_without_any_classify_main_is_not_recognised():
+    # 只取直接挂在父分类上的：有条目却没有一条带整数 classify_main，平台多半改了字段，认不出
+    # （记不能抓、不读），不悄悄当成 0 条；不带 p 的分类不看这个字段
+    direct = find_list_api(PAGE, URL, f"{URL}#xxgk-gkmlpt-p8350")
+    plain = find_list_api(PAGE, URL, f"{URL}#xxgk-gkmlpt-8350")
+    body = _parent_body()
+    for row in body["articles"]:
+        del row["classify_main"]
+    text = json.dumps(body)
+    reply = FetchResult(direct.url, "ok", direct.url, 200, text)
+    assert api_refusal(direct, reply) == "列表接口返回认不出"
+    assert not api_readable(direct, text) and api_items(direct, text, {}, TODAY) == []
+    assert not api_empty_list(direct, json.dumps({**body, "articles": [{"x": 1}]}))
+    assert not api_refusal(plain, reply) and len(api_items(plain, text, {}, TODAY)) == 5
+    # 有一条带整数 classify_main（哪怕挂在子分类上）就认得出：这一页直接挂在父分类上的是 0 条
+    body["articles"][0]["classify_main"] = 7
+    text = json.dumps(body)
+    assert api_readable(direct, text) and api_items(direct, text, {}, TODAY) == []
+    # 没有条目的照样是空列表，不算认不出
+    assert api_empty_list(direct, json.dumps({**body, "articles": []}))
+
+
+def test_merged_duplicate_keeps_the_dated_copy():
+    # 同一网址在两个分类里都有：先到的没日期、后到的有日期时留有日期的；反过来也留有日期的
+    found = api(category="8,6")
+    row = BODY["articles"][0]
+    undated = {**BODY, "articles": [dict(row, create_time=0), *BODY["articles"][1:]]}
+    dated = {**BODY, "classify": {"id": 6}, "articles": [row]}
+    url = api_items(api(category=8), json.dumps(undated), None, TODAY)[0].url
+    expected = api_items(api(category=6), json.dumps(dated), None, TODAY)[0].publish_date
+    assert expected is not None
+    rows = api_items_merged(found, [json.dumps(undated), json.dumps(dated)], None, TODAY)
+    assert [r.publish_date for r in rows if r.url == url] == [expected]
+    swapped = {**undated, "classify": {"id": 6}}
+    rows = api_items_merged(
+        found, [json.dumps({**dated, "classify": {"id": 8}}), json.dumps(swapped)], None, TODAY
+    )
+    assert [r.publish_date for r in rows if r.url == url] == [expected]
+
+
+def test_verify_marks_over_limit_gkmlpt_columns_for_manual_handling():
+    # 盘点遇到要合读的分类超过上限时照样全写上：适配器不认、不请求，试读记待人工处理
+    col = column("p8350,1,2,3,4,5")
+    cache = Cache({})
+    checked = check_one(cache, col, TODAY)
+    assert checked.result == NEEDS_SCRIPT and "待人工处理" in checked.reason
+    assert checked.platform == "数字广东" and cache.calls == []
+    assert "#xxgk-gkmlpt-p8350,1,2,3,4,5" in col.url
