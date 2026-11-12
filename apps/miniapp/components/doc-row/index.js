@@ -1,4 +1,4 @@
-const { dueInfo, deadlineNote, dueView, kindClass, statusClass, highlight, ISSUER_WRAP, regionText, NOTE_SEE_ORIGINAL } = require('../../utils/format.js');
+const { dueInfo, deadlineNote, dueView, kindClass, statusClass, highlight, ISSUER_WRAP, regionText } = require('../../utils/format.js');
 const { groupLine } = require('../../utils/repost.js');
 
 // 列表行：类型、状态、地区、截止 → 标题 → 发文机关和日期 + 查看详情
@@ -26,9 +26,9 @@ Component({
       const statusText = doc.kind === '申报通知' ? '' : (appStatus && typeof appStatus === 'object'
         ? ({ open: '征集中', closing: '即将截止', closed: '已截止' }[appStatus.code] || '') : status);
       const statusCls = appStatus && typeof appStatus === 'object' ? appStatus.code : statusClass(status);
-      // 接口带了 due（D-061 首发版）：核对过的写日期；机器摘录的写日期、另起一行附原句；可能 7 天内截止的写
-      // "可能 7 天内截止"（10/29 起不写"未核对"，说明在使用帮助里）；其余不写日期也不写"截止时间见原文"——
-      // 列表行上少一句（11/12 简化走查），这句只在详情页和截止页写
+      // 接口带了 due（D-061 首发版）：核对过的写日期；机器摘录的写日期、另起一行附原句；其余写"截止时间见原文"，
+      // 可能 7 天内截止的写"可能 7 天内截止"（10/29 起不写"未核对"，说明在使用帮助里）。
+      // 原文链接已失效的不写"截止时间见原文"（原文已打不开，同一行还写着"原文链接已失效"）
       const view = Object.prototype.hasOwnProperty.call(doc, 'due') && doc.kind === '申报通知' ? dueView(doc.due) : undefined;
       let due = dueInfo(doc.deadline);
       let dueNote = doc.link_gone ? '' : deadlineNote(doc);
@@ -38,11 +38,9 @@ Component({
         // 另一类截止可能 7 天内到期、这里的日期却在 7 天以后（如推荐截止 8 天后）或已经过了：先说"可能 7 天内截止"，
         // 不写这个日期，免得以为还有 8 天、或以为已截止（10/29 独立审阅）；详情里逐类都写
         if (due && doc.dueSoonUnverified && !(due.days >= 0 && due.days <= 7)) due = null;
-        dueNote = due ? '' : (doc.dueSoonUnverified ? '可能 7 天内截止' : '');
+        dueNote = due ? '' : (doc.dueSoonUnverified ? '可能 7 天内截止' : (doc.link_gone ? '' : '截止时间见原文'));
         excerpt = due && view.source === 'excerpt' ? { label: view.label, quote: view.quote } : null;
       }
-      // 旧接口没有 due 时 deadlineNote 也会给"截止时间见原文"：列表行同样不写
-      if (dueNote === NOTE_SEE_ORIGINAL) dueNote = '';
       this.setData({
         segs: highlight(doc.title, q),
         due,

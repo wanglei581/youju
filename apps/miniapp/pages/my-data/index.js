@@ -8,6 +8,10 @@ const SUB_KIND = { newDocs: '关注有新文件', deadline: '截止前提醒' };
 const SUB_STATUS = { unused: '还没发出', sent: '已发出', failed: '发送失败', refused: '被拒收', expired: '已失效' };
 const CHECK = { pass: '已通过内容安全检查', unchecked: '未做内容安全检查' };
 
+// 页面上把"申请覆盖"叫"申请收录"（11/12 简化走查，和"已收录""收录范围"同一个词）。提交时自动加在内容前面的"申请覆盖："
+// 后台按它认出申请，所以不改；复制完整记录用的是原始数据，这里只改列表里显示的开头
+const shownContent = (text) => (typeof text === 'string' ? text.replace(/^申请覆盖：/, '申请收录：') : text);
+
 // "2026-09-28T01:18:44.868910+08:00" → "2026-09-28 01:18"
 function when(iso) {
   return iso ? iso.slice(0, 16).replace('T', ' ') : '';
@@ -123,7 +127,7 @@ Page({
           feedback: d.feedback.map((f) => ({
             id: f.id,
             title: f.docId ? (f.docTitle || '文件已下线') : '一般建议',
-            content: f.content,
+            content: shownContent(f.content),
             check: CHECK[f.checkResult] || f.checkResult,
             handling: f.handled ? '已处理' : '待处理',
             // 处理结果和处理人写的说明（差距清单 C1）；以前处理的没有结果，照旧只写"已处理"

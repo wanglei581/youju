@@ -437,8 +437,7 @@ test('列表行：原文链接已失效的不写"截止时间见原文"；另一
   };
   const base = { id: '1', kind: '申报通知', title: '关于组织申报的通知', issuer: '某厅', date: '2026-10-28' };
   assert.equal(load({ ...base, due: null, link_gone: '2026-10-27' }).dueNote, '');
-  // 11/12 简化走查：没有日期的列表行不写"截止时间见原文"（详情页、截止页写），原文链接失效与否一样
-  assert.equal(load({ ...base, due: null }).dueNote, '');
+  assert.equal(load({ ...base, due: null }).dueNote, '截止时间见原文');
   assert.equal(load({ ...base, due: null, dueSoonUnverified: true, link_gone: '2026-10-27' }).dueNote, '可能 7 天内截止');
   // 推荐截止 9 天后（原文摘录）、企业申报截止可能 7 天内：先说"可能 7 天内截止"，不写 9 天后那个日期和原句
   const later = load({ ...base, due: { kind: '推荐或审核截止', source: 'excerpt', date: plusDays(9), time: null, remainingDays: 9, quote: '某日前' }, dueSoonUnverified: true });

@@ -43,12 +43,10 @@ test('列表行：申报通知不写状态标签（和截止日期、剩余天�
   assert.match(row(list, { kind: '名单' }), /公示/);
 });
 
-test('列表行：没有日期时不写"截止时间见原文"，可能 7 天内截止的照旧提醒', () => {
-  assert.equal(rowData({ id: '1', kind: '申报通知', title: '甲', due: null }).dueNote, '');
+test('列表行：没有日期时仍写"截止时间见原文"、可能 7 天内截止的照旧提醒（D-061 第八节、D-108②，创始人定的写法，这批没改）', () => {
+  assert.equal(rowData({ id: '1', kind: '申报通知', title: '甲', due: null }).dueNote, '截止时间见原文');
   assert.equal(rowData({ id: '1', kind: '申报通知', title: '甲', due: null, dueSoonUnverified: true }).dueNote, '可能 7 天内截止');
-  // 详情页、截止页照写
-  assert.match(read('pages/detail/index.wxml'), /'截止时间见原文'/);
-  assert.match(wxml('report'), /截止时间见原文/);
+  assert.equal(rowData({ id: '1', kind: '申报通知', title: '甲', due: null, link_gone: '2026-10-27' }).dueNote, '');
 });
 
 // ---- 关注 ----
@@ -262,4 +260,30 @@ test('AI 首页：页头那句说明去掉了，AI 生成标识、"说明"（适
   assert.ok(!ai.includes('在通知原文里找出申报对象') && !ai.includes('hero-sub'));
   for (const text of ['AI 生成 · 以原文为准', "{{scopeOpen ? '收起' : '说明'}}", '{{disclosure}}', '撤回同意', '投诉举报 ›', '使用帮助 ›']) assert.ok(ai.includes(text), text);
   for (const item of ['{{item}}', '{{keep}}']) assert.ok(ai.includes(item), item);
+});
+
+test('我的数据：自己提交过的“申请收录”在列表里也叫“申请收录”；提交时加的前缀“申请覆盖：”不变，复制完整记录用原始内容', async () => {
+  const raw = { user: { openid: 'synthetic-openid', agreed: null }, follows: [], subscriptions: [], advisorTasks: [], advisorTasksTotal: 0, retention: {},
+    feedback: [
+      { id: 1, docId: null, content: '申请覆盖：增加某省科技厅通知公告栏目', checkResult: 'pass', handled: false, createdAt: '2026-11-12T10:00:00+08:00' },
+      { id: 2, docId: 7, docTitle: '某通知', content: '截止日期和原文不一致，申请覆盖：这句不在开头', checkResult: 'pass', handled: false, createdAt: '2026-11-12T11:00:00+08:00' },
+    ] };
+  const copied = [];
+  let def;
+  vm.runInNewContext(read('pages/my-data/index.js'), {
+    module: { exports: {} }, setTimeout, clearTimeout, Date, Promise,
+    require: (name) => ({
+      '../../utils/api.js': { myData: () => Promise.resolve(JSON.parse(JSON.stringify(raw))) },
+      '../../utils/conditions.js': require('../utils/conditions.js'),
+      '../../utils/consent.js': { loginOpen: () => true, remindAny: () => false, withdrawAccount: () => Promise.resolve(false) },
+      '../../utils/advisor.js': require('../utils/advisor.js'),
+      '../../utils/pages.js': require('../utils/pages.js'),
+    })[name],
+    Page(d) { def = d; }, wx: { setClipboardData: ({ data }) => copied.push(JSON.parse(data)), showToast() {} },
+  });
+  const page = { ...def, data: JSON.parse(JSON.stringify(def.data)), setData(v) { Object.assign(this.data, JSON.parse(JSON.stringify(v))); } };
+  page.load(); await settle();
+  assert.deepEqual(page.data.feedback.map((f) => f.content), ['申请收录：增加某省科技厅通知公告栏目', '截止日期和原文不一致，申请覆盖：这句不在开头']);
+  page.copyOne({ currentTarget: { dataset: { kind: 'feedback', id: 1 } } });
+  assert.equal(copied[0].content, '申请覆盖：增加某省科技厅通知公告栏目');
 });
