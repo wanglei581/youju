@@ -2,6 +2,7 @@
 
 import hashlib
 import re
+from collections import Counter
 from datetime import UTC, date, datetime, time, timedelta, timezone
 
 from sqlalchemy import select
@@ -143,6 +144,8 @@ def queue(session, today, days=7):
                 origin=row.origin,
                 ai_agrees=row.ai_agrees,
                 reopened=bool(reopened),
+                # 退回原因：audit_notes 是逐条的（写回时按它比），audit_note 是连成一句给人看的
+                audit_notes=[_reopen_note(r) for r in reopened],
                 audit_note="；".join(_reopen_note(r) for r in reopened) or None,
                 sentences=sentences,
                 body_sha256=digest,
@@ -175,6 +178,7 @@ def apply_one(session, item, write=False):
         "sentences",
         "reopened",
         "audit_note",
+        "audit_notes",
     }:
         return "格式错误：含不支持的字段"
     verdict = item.get("verdict")
@@ -195,10 +199,14 @@ def apply_one(session, item, write=False):
         # 记进留痕
         if item.get("reopened") is not True:
             return "这一截止同组有质检退回，须按带退回原因的清单核对"
-        # 现在每条退回原因都要整段出现在清单给的 audit_note 里（按"；"分段比，短的原因不会被长的
-        # 冒认）；同一截止另一条已在这份结果里先处理掉的，不再要求
-        shown = f"；{item.get('audit_note') or ''}；"
-        if any(f"；{_reopen_note(r)}；" not in shown for r in reopened):
+        # 清单逐条给的退回原因（audit_notes）里，现在的每条退回原因都要有，条数也不能少
+        # （出清单以后同一截止又有一条退回、原因字样相同，也拦得住）；逐条整句比，不拆、
+        # 不按包含比。同一截止另一条已在这份结果里先处理掉的，不再要求
+        shown = item.get("audit_notes")
+        if not isinstance(shown, list) or not all(isinstance(x, str) for x in shown):
+            return "退回原因和清单里的不一样（出清单以后又有退回），等下一份清单"
+        have = Counter(shown)
+        if any(have[note] < count for note, count in Counter(map(_reopen_note, reopened)).items()):
             return "退回原因和清单里的不一样（出清单以后又有退回），等下一份清单"
         if not item.get("note", "").strip():
             return "同组有质检退回，须在 note 里写怎么处理了退回原因"

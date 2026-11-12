@@ -167,7 +167,9 @@ def test_reopened_evidence_and_trace(setup, monkeypatch):
     # 结果不是按带退回原因的清单写的（没有 reopened: true）：不放行
     assert "带退回原因的清单" in verify.apply_one(session, item(), True)
     assert "不一样" in verify.apply_one(session, item(reopened=True, audit_note="日期存疑"), True)
-    context = dict(reopened=True, audit_note="质检退回原因：日期存疑")
+    context = dict(
+        reopened=True, audit_note="质检退回原因：日期存疑", audit_notes=["质检退回原因：日期存疑"]
+    )
     assert "note" in verify.apply_one(session, item(**context), True)
     context["note"] = "核了原文：申报截止就是这一天"
     assert "不在当前正文" in verify.apply_one(
@@ -273,3 +275,24 @@ def test_stats_cli(monkeypatch, capsys):
 def test_has_time_follows_the_extraction_formats(quote, clock, ok):
     # agy 审阅（11/12）：和抽取截止时的时间写法一致，空格、"分"、带秒的都认
     assert verify._has_time(quote, clock) is ok
+
+
+def test_reopen_reason_with_semicolons_still_matches(setup, monkeypatch):
+    # 退回原因本身带"；"（AI 写的备注常这样）：按整段比，照样认得出清单给过
+    session, candidate = setup
+    candidate.audit_state = "reopened"
+    candidate.audit_note = "日期对；但类型应是材料报送截止"
+    monkeypatch.setattr(
+        app,
+        "_apply_review",
+        lambda row, locked, status, by, stamp, day, clock: [
+            setattr(d, "reviewed_by", by) or setattr(d, "reviewed_at", stamp) for d in locked
+        ],
+    )
+    shown = "质检退回原因：日期对；但类型应是材料报送截止"
+    result = item(reopened=True, audit_note=shown, audit_notes=[shown], note="核了原文")
+    assert verify.apply_one(session, result, True) == "通过"
+    # 短的原因不能被长的冒认
+    candidate.status, candidate.reviewed_by = "pending", None
+    candidate.audit_note = "日期对"
+    assert "等下一份清单" in verify.apply_one(session, result, True)

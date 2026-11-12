@@ -440,3 +440,41 @@ def test_same_deadline_on_two_pages_both_reopened_can_be_handled_in_one_file(ses
         assert verify.apply_one(session, result, True) == "通过"
         session.commit()
     assert (candidate.status, other.status) == ("approved", "approved")
+
+
+def test_reopen_with_the_same_reason_after_the_queue_waits(session, candidate):
+    # 出清单以后同一截止又有一条退回、原因字样和已有的一样：按旧清单写的结果也不放行（agy 审阅）
+    candidate.audit_state = "reopened"
+    candidate.audit_note = "原因 X"
+    session.commit()
+    [entry] = verify.queue(session, TODAY)
+    doc = session.get(Document, candidate.document_id)
+    other_doc = _doc(doc.source, 96, doc.title, TODAY)
+    session.add(other_doc)
+    session.flush()
+    session.add_all(
+        [
+            DocumentMerge(
+                duplicate_id=other_doc.id, canonical_id=doc.id, match_key="same", active=True
+            ),
+            DocumentDetail(
+                document_id=other_doc.id, body_text=BODY, status="ok", fetched_at=datetime.now(UTC)
+            ),
+            DocumentDeadline(
+                document_id=other_doc.id,
+                fingerprint="later-reopen",
+                kind=candidate.kind,
+                candidate_date=candidate.candidate_date,
+                evidence="网上申报于9月30日截止",
+                confidence="高",
+                status="pending",
+                origin="rule",
+                audit_state="reopened",
+                audit_note="原因 X",
+            ),
+        ]
+    )
+    session.commit()
+    result = {**entry, **payload(candidate), "note": "核了原文"}
+    assert "等下一份清单" in verify.apply_one(session, result, True)
+    assert candidate.status == "pending"
