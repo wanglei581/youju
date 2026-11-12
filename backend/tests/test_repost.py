@@ -1031,9 +1031,12 @@ def test_refresh_signals_and_window_candidates(session, world):
     assert session.get(RepostSignal, old_id) is None
 
 
-def test_full_rebuild_checks_confirmed_groups_outside_the_window(session, world):
-    # 改了标题（重新分类清标题）、正文脱敏重写这类不更新抓取时间的改动：平常的增量重建看不到窗口外
-    # 确认过的组；--full 重算它们的快照，内容变了照常转"需复核"
+def test_full_rebuild_checks_confirmed_groups_outside_the_window(session, world, monkeypatch):
+    # 改了标题（重新分类清标题）、正文脱敏重写这类不更新抓取时间的改动：平常的增量重建要等定期核对
+    # 轮到（这里一批 1 份，先轮到别的）；--full 马上核对全部确认过的组，内容变了照常转"需复核"
+    from youju import repost
+
+    monkeypatch.setattr(repost, "RECHECK_BATCH", 1)
     rebuild(session, now=NOW)
     session.flush()
     group = session.scalars(select(RepostGroup)).one()
@@ -1083,6 +1086,8 @@ def test_refetched_confirmed_member_is_checked_once_per_fetch(session, world, mo
         return real(session_, ids)
 
     monkeypatch.setattr(repost, "member_facts", spy)
+    monkeypatch.setattr(repost, "RECHECK_BATCH", 1)  # 定期核对一轮 1 份，看得出重抓的单独核对
+    monkeypatch.setattr(repost, "RECHECK_DAYS", 1000)
     rebuild(session, now=NOW + timedelta(hours=2))
     session.flush()
     assert tianjin in checked[0] and not group.needs_review
@@ -1149,11 +1154,14 @@ def test_many_small_groups_are_each_judged_by_their_own_edges():
     assert all(p.strength == "strong" and len(p.ids) == 2 for p in proposals)
 
 
-def test_confirmed_groups_outside_the_window_are_rechecked_periodically(session, world):
-    # 窗口外的确认组：标题、正文被直接改写（抓取时间不变）平常看不到；轮到定期核对（RECHECK_DAYS 天
-    # 轮一遍）时照样发现，转需复核
-    from youju.repost import RECHECK_DAYS
+def test_confirmed_groups_outside_the_window_are_rechecked_periodically(
+    session, world, monkeypatch
+):
+    # 窗口外的确认组：标题、正文被直接改写（抓取时间不变）平常看不到；每轮轮流核对最久没核对的一批，
+    # 轮到它就发现、转需复核（这里一批 1 份）
+    from youju import repost
 
+    monkeypatch.setattr(repost, "RECHECK_BATCH", 1)
     rebuild(session, now=NOW)
     session.flush()
     group = session.scalars(select(RepostGroup)).one()
@@ -1167,12 +1175,45 @@ def test_confirmed_groups_outside_the_window_are_rechecked_periodically(session,
         row.confirmed_fingerprint = facts[row.document_id]
     world["tianjin"].title += "（更正）"
     session.flush()
-    rebuild(session, now=NOW + timedelta(days=1))
+    rebuild(session, now=NOW + timedelta(days=1))  # 轮到陕西那份，没变
     session.flush()
     assert not group.needs_review
-    rebuild(session, now=NOW + timedelta(days=RECHECK_DAYS + 1))
+    rebuild(session, now=NOW + timedelta(days=2))  # 轮到天津那份
     session.flush()
     assert group.needs_review
+
+
+def test_a_batch_confirmed_the_same_day_is_all_rechecked_within_recheck_days(
+    session, world, monkeypatch
+):
+    # 同一天确认的一大批：不等满多少天，一轮接一轮地核对，RECHECK_DAYS 天内全部轮到
+    from youju import repost
+
+    monkeypatch.setattr(repost, "RECHECK_BATCH", 1)
+    monkeypatch.setattr(repost, "RECHECK_DAYS", 3)
+    rebuild(session, now=NOW)
+    session.flush()
+    for doc in (world["shaanxi"], world["tianjin"], world["fujian"]):
+        doc.publish_date = date(2025, 1, 1)
+    session.flush()
+    rows = _members(session)
+    _, facts = member_facts(session, list(rows))
+    for row in rows.values():
+        row.confirmed_by, row.confirmed_at = "人工", NOW
+        row.confirmed_fingerprint = facts[row.document_id]
+    session.flush()
+    checked: list[set[int]] = []
+    real = repost.member_facts
+
+    def spy(session_, ids):
+        checked.append(set(ids))
+        return real(session_, ids)
+
+    monkeypatch.setattr(repost, "member_facts", spy)
+    for day in (1, 2, 3):  # 3 份 ÷ 3 天，一批 1 份
+        rebuild(session, now=NOW + timedelta(days=day))
+        session.flush()
+    assert set().union(*checked) == set(rows)
 
 
 def test_periodic_recheck_batch_grows_with_the_confirmed_members(session, world, monkeypatch):
