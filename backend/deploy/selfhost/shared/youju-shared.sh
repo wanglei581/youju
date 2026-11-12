@@ -615,9 +615,10 @@ import_export() {
   [ -e "${files[0]}" ] || die "${EXPORT_DIR}/backups 里没有整库备份：先 fetch-export"
   [ -f "$EXPORT_DIR/pay-records.jsonl.gz" ] || die "没有交易记录：先 fetch-export"
   [ "${#files[@]}" -eq 1 ] || die "${EXPORT_DIR}/backups 里不止一份备份，只留要归档的那一份"
-  # 试恢复之前按备份解压后的大小再核一次硬盘：临时库加 binlog 大约是它的 3 倍，再留 2G
+  # 试恢复之前按备份解压后的大小再核一次硬盘：临时库加 binlog 大约是它的 3 倍，再留 2G。
+  # 解压后的大小整个解压数一遍（gzip -l 读文件尾的记录，超过 4G 会绕回去）
   local raw need_g free_g
-  raw=$(gzip -l "${files[0]}" | awk 'NR == 2 {print $2}')
+  raw=$(gzip -dc "${files[0]}" | wc -c | tr -d ' ') || die "整库备份解压不了"
   [[ "$raw" =~ ^[0-9]+$ ]] || die "读不出整库备份解压后的大小"
   need_g=$(( raw * 3 / 1073741824 + 2 ))
   free_g=$(df -BG --output=avail "$BASE" | tail -1 | tr -dc '0-9')
