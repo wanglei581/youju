@@ -1809,13 +1809,14 @@ def test_auto_record_skips_groups_changed_after_sampling(
         "youju.repost.get_settings", lambda: SimpleNamespace(repost_auto_merge=False)
     )
     monkeypatch.setattr(repost_checks, "session_factory", lambda: session_factory)
-    _auto_world(session)
+    docs = _auto_world(session)
     rebuild(session, now=NOW)
     session.commit()
     data = _sample(tmp_path, "gate")
     data["items"][0].update(verdict="wrong", note="其实是两件事")
     group = session.get(RepostGroup, data["items"][0]["group_id"])
-    bump(group, NOW)  # 抽样以后组变了（修订号加一）
+    title = docs[1].title
+    docs[1].title += "（更正）"  # 抽样以后判的版本的标题变了
     session.commit()
     path = tmp_path / "filled.json"
     path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
@@ -1824,7 +1825,9 @@ def test_auto_record_skips_groups_changed_after_sampling(
     session.expire_all()
     check = session.query(RepostAutoCheck).one()  # 程序记 changed，判的人的结论不用、不算
     assert check.verdict == "changed" and not group.no_auto
-    # 重新抽一轮：判错的组当场整组撤回，并记一行审计日志
+    # 标题改回来、重新抽一轮：判错的组当场整组撤回，并记一行审计日志
+    docs[1].title = title
+    session.commit()
     data = _sample(tmp_path, "gate", seed=2)
     data["items"][0].update(verdict="wrong", note="其实是两件事")
     path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
@@ -2466,3 +2469,29 @@ def test_sample_without_a_seed_picks_and_records_a_random_one(
     assert repost_checks.sample(args) == 0
     data = json.loads(out.read_text(encoding="utf-8"))
     assert isinstance(data["seed"], int) and len(data["items"]) == 1
+
+
+def test_auto_record_ignores_a_bare_revision_bump(session, session_factory, monkeypatch, tmp_path):
+    # 只是修订号变了、判的版本和证据都没变（开关开着时这一轮没判完、门暂时没过，自动组退回又合上
+    # 之类）：判定照样算，不记 changed
+    import json
+
+    from youju import repost_checks
+    from youju.models import RepostAutoCheck
+
+    monkeypatch.setattr(
+        "youju.repost.get_settings", lambda: SimpleNamespace(repost_auto_merge=False)
+    )
+    monkeypatch.setattr(repost_checks, "session_factory", lambda: session_factory)
+    _auto_world(session)
+    rebuild(session, now=NOW)
+    session.commit()
+    data = _sample(tmp_path, "gate")
+    data["items"][0].update(verdict="correct", note="")
+    bump(session.get(RepostGroup, data["items"][0]["group_id"]), NOW)
+    session.commit()
+    path = tmp_path / "filled.json"
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    assert repost_checks.record(SimpleNamespace(file=path, by="Claude")) == 0
+    session.expire_all()
+    assert session.query(RepostAutoCheck).one().verdict == "correct"

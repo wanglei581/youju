@@ -1,17 +1,20 @@
 """转发组自动合并的质检命令（D-129 ②），都在本机跑，只读写 JSON 文件和 repost_* 表。
 
-- repost-auto-sample：抽组。gate 从现在满足自动合并条件的组里抽（开开关前 Claude 带证据判 100 组）；
-  weekly 先抽已经自动合并的组、不够的用别的已确认组补（每周 Codex 独立抽查 10 组；窗口外还在自动
-  折叠的组也抽；同一修订号一周里只抽一次，跨周可以再抽，没抽过的先抽）。抽到的名单连同判的版本的证据指纹当场记进库（repost_auto_checks，结论空着）。只给证据：各版本的标题、机关、日期、网址、引用的文号、
-  自己的发文字号（部里原件按它对上）、正文里共同文号前后的原文，结论和备注留空给判的人填。判的版本
-  （judge 为真）每个都给摘录：gate 是全部在组版本；weekly 是已经确认（对外折叠）的版本，同组还没
-  确认的版本（正文没抓到等，见 repost.rebuild）一并列出、不给摘录，只供对照。
+- repost-auto-sample：抽组。gate 从现在满足自动合并条件的组里抽（开开关前 Claude 带证据判 100 组；
+  同一规则版本过了门以后不用再抽，每周抽查接着盯）；weekly 先抽已经自动合并的组、不够的用别的已确认
+  组补（每周 Codex 独立抽查 10 组；窗口外还在自动折叠的组也抽；同一修订号一周里只抽一次，跨周可以
+  再抽，没抽过的先抽）。抽到的名单连同判的版本的证据指纹当场记进库（repost_auto_checks，结论空着）。
+  只给证据：各版本的标题、机关、日期、网址、引用的文号、自己的发文字号（部里原件按它对上）、正文里
+  共同文号前后的原文，结论和备注留空给判的人填。判的版本（judge 为真）每个都给摘录：gate 是全部
+  在组版本；weekly 是已经确认（对外折叠）的版本，同组还没确认的版本（正文没抓到等，见
+  repost.rebuild）一并列出、不给摘录，只供对照。
 - repost-auto-record：记回判定。交上来的组必须和这一轮抽样名单一模一样（不能删、不能添），每组都要有
-  结论；格式不对整份拒收。组在抽样后变了（修订号、判的版本，或这些版本的标题、类型、正文、文号等
-  证据不一样）的由程序记 changed、不算进准确率；
-  判错的组当场整组撤回（以后不再自动合并）。
+  结论；格式不对整份拒收。组在抽样后变了（判的版本，或这些版本的标题、类型、正文、文号等证据不一样；
+  只是修订号变了、证据没变的不算）的由程序记 changed、不算进准确率；判错的组当场整组撤回（以后不再
+  自动合并）。
 - repost-auto-stats：按轮统计（抽了几组、判了几组、对几组、组变了几组、还有几组没判），给出开关那道
-  门的结果（只认整份判完、判了对错满 100 组的轮）。
+  门的结果（以最近一轮整轮抽满 100 组的为准：每组都有结论、判了对错满 100 组、准确率够才过，还有
+  没判的就是门没过）。
 - repost-withdraw：命令行整组撤回（收到投诉等抽查以外的场合），要带看到的修订号。
 抽样会按现在的正文重算抽到的组的正文信号：不要和 repost-groups 同时跑（同时写同一批行会互相等，
 MySQL 会挑一边回滚）。
@@ -32,6 +35,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from youju.classify import effective_kind
+from youju.config import get_settings
 from youju.db import session_factory
 from youju.models import (
     Document,
@@ -214,6 +218,12 @@ def sample(args):
     with session_factory()() as session:
         today = stamp.astimezone(_BEIJING).date()
         if args.purpose == "gate":
+            gate = auto_gate(session)
+            if get_settings().repost_auto_merge and gate.passed:
+                print(
+                    "提醒：开关开着、门现在是过的。抽一轮新的 gate 以后，判完记回之前门算没过，"
+                    "下一轮归组会把自动合并的组都退回（同一规则版本过了门以后不用再抽 gate）"
+                )
             groups, cands = auto_candidates(session, today)
             population = len(groups)
             selected = rng.sample(groups, min(args.size or GATE_SAMPLE_DEFAULT, len(groups)))
@@ -519,9 +529,10 @@ def record(args):
                 if group is not None
                 else []
             )
+            # 只看判的版本和证据：只是修订号变了（开关开着时这一轮没判完、门暂时没过，自动组退回又
+            # 合上之类）、证据没变的，判定照样算
             if (
                 group is None
-                or group.revision != check.revision
                 or judged_now != check.document_ids
                 or _evidence(session, judged_now) != check.evidence
             ):
