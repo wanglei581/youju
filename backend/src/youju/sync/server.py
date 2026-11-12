@@ -545,6 +545,8 @@ async def pending_blobs(request: Request) -> dict:
     engine = get_engine()
     ensure_state(engine)
     with engine.begin() as conn:
+        # 和写入、清理排同一把锁：查文件在不在到划掉之间，不会被清理删掉文件、又被新的一批记进待补
+        _take_turn(conn, 0)
         paths = list(
             conn.scalars(
                 text(f"SELECT path FROM `{PENDING}` WHERE path > :a ORDER BY path LIMIT :n"),
@@ -580,5 +582,8 @@ async def put_blob(request: Request, path: str, sha256: str) -> dict:
     engine = get_engine()
     ensure_state(engine)
     with engine.begin() as conn:
-        conn.execute(text(f"DELETE FROM `{PENDING}` WHERE path = :p"), {"p": path})
+        # 同一把锁下确认文件确实在，再划掉待补（写文件不在锁下：大文件不占着锁）
+        _take_turn(conn, 0)
+        if storage.backend().exists(path):
+            conn.execute(text(f"DELETE FROM `{PENDING}` WHERE path = :p"), {"p": path})
     return {"stored": path}

@@ -382,6 +382,50 @@ def test_stale_or_replayed_batches_are_refused(env, monkeypatch):
     assert env.client.json("GET", "/state")["stream"] == stream
 
 
+def test_pending_and_upload_take_the_same_turn(env, monkeypatch, tmp_path):
+    """取待补、收文件划掉待补，都和写入、清理排同一把锁（_take_turn）：查文件在不在到划掉之间不会
+    被清理删掉文件、又被新的一批记进待补。"""
+    turns: list[int] = []
+    real = sync_server._take_turn
+
+    def spy(conn, stamp):
+        turns.append(stamp)
+        return real(conn, stamp)
+
+    monkeypatch.setattr(sync_server, "_take_turn", spy)
+    server_store = storage.DiskBackend(tmp_path / "server")
+    monkeypatch.setattr(
+        sync_server,
+        "storage",
+        SimpleNamespace(
+            backend=lambda *a: server_store,
+            valid_path=storage.valid_path,
+            path_of=storage.path_of,
+            StorageError=storage.StorageError,
+        ),
+    )
+    content = b"%PDF-1.4 turn"
+    path = f"attachments/{hashlib.sha256(content).hexdigest()}.pdf"
+    sync_server.ensure_state(env.server)
+    with env.server.begin() as conn:
+        conn.execute(
+            text(f"INSERT INTO `{sync_server.PENDING}` (path, noted_at) VALUES (:p, NOW())"),
+            {"p": path},
+        )
+    # 文件还没到：取待补时留着
+    assert env.client.json("POST", "/blobs/pending", {"limit": 10})["pending"] == [path]
+    assert turns == [0]
+    env.client.call(
+        "PUT",
+        "/blobs",
+        params={"path": path, "sha256": hashlib.sha256(content).hexdigest()},
+        body=content,
+        content_type="application/octet-stream",
+    )
+    assert turns == [0, 0]
+    assert env.client.json("POST", "/blobs/pending", {"limit": 10})["pending"] == []
+
+
 def test_stream_mismatch_needs_full_push(env):
     source(env.local)
     env.client.json("POST", "/reset", {"stream": "someone-else-stream", "applied_seq": 5})
