@@ -102,6 +102,12 @@ def parse_html(html: str) -> etree._Element | None:
         return None
 
 
+# 跳转包装页：参数里只有链接名称、真正的网址由页面脚本查出来（东莞首页的部门链接都是
+# libs.dg.gov.cn/code/xhtml/loading.html?from=<名称>，那个网站 robots 禁止）。
+# 看不出指向哪里，不当链接用
+_WRAPPED = re.compile(r"/loading\.html?\?(?:[^#]*&)?from=", re.I)
+
+
 def page_links(html: str, base_url: str, doc: etree._Element | None = None) -> list[Link]:
     """页面上所有带文字的链接（去重，保留第一次出现的写法）。"""
     doc = doc if doc is not None else parse_html(html)
@@ -115,7 +121,7 @@ def page_links(html: str, base_url: str, doc: etree._Element | None = None) -> l
     def add(text: str, href: str | None, via: str) -> None:
         url = normalize_url(page, href)
         text = (text or "").strip()
-        if not url or not text or len(text) > 60:
+        if not url or not text or len(text) > 60 or _WRAPPED.search(url):
             return
         key = (text, url)
         if key not in seen:
@@ -233,7 +239,7 @@ def nav_links(links: list[Link], page_url: str, limit: int = 10) -> list[Link]:
     for link in links:
         if len(link.text) > _NAV_MAX_LEN or link.url in seen:
             continue
-        if not any(w in link.text for w in NAV_WORDS):
+        if not any(_word_in(w, link.text) for w in NAV_WORDS):
             continue
         if registrable(link.url) != home:
             continue
@@ -281,9 +287,20 @@ def _nav_rank(text: str) -> int:
     if any(w in text for w in _ELSEWHERE):
         return 20
     for rank, words in enumerate(_NAV_RANKS):
-        if any(w in text for w in words):
+        if any(_word_in(w, text) for w in words):
             return rank
     return 9
+
+
+# "州市"（云南等省的"各州市"）也是"杭州市""福州市"这类地名的一部分：前面紧挨着别的汉字的不算
+# 导航词（11/9：杭州门户上"杭州市稳岗就业"一类链接占满了导航名额，部门网站页反而没走到）
+_ZHOU_SHI = re.compile(r"(?:^|[^一-龥]|[各全及和与])州市")
+
+
+def _word_in(word: str, text: str) -> bool:
+    if word == "州市":
+        return bool(_ZHOU_SHI.search(text))
+    return word in text
 
 
 def is_gov_url(url: str) -> bool:
