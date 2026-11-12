@@ -42,10 +42,11 @@ WINDOW_DAYS = 2 * MAX_DAYS_APART
 # 同一个桶（核心标题相同、引用同一个文号）里，每份只和发布日期排在后面的这么多份比：县里大量转发
 # 同一份部里通知时，桶里可能有几千份，不再两两全比；靠相邻的边照样能连成一组
 BUCKET_NEIGHBORS = 200
-# 窗口外确认过的组：正文、标题被直接改写（抓取时间不变）也要能发现，每轮轮流拿最久没核对的这么多份
-# 全文核对，这么多天轮一遍
-RECHECK_BATCH = 2000
+# 窗口外确认过的组：正文、标题被直接改写（抓取时间不变）也要能发现——超过这么多天没核对的，每轮
+# 轮流拿最久没核对的一批全文核对；一批至少这么多份，确认成员多了按总数加大（见 rebuild），一天哪怕
+# 只跑一轮也能这么多天轮一遍
 RECHECK_DAYS = 30
+RECHECK_BATCH = 2000
 _BEIJING = timezone(timedelta(hours=8))
 # 核心标题至少几个字才拿来比
 MIN_CORE_CHARS = 8
@@ -866,16 +867,26 @@ def rebuild(
     # （维护用：改了标题、正文脱敏重写这类不更新抓取时间的改动以后跑）。没确认的成员只要机关和日期
     # （归组约束用），不读正文
     window_ids = {d for d, row in members.items() if row.group_id in window_groups}
-    # 窗口外确认过的组：正文、标题被直接改写（抓取时间不变）也要能发现——每轮轮流拿最久没核对的
-    # RECHECK_BATCH 份全文核对，RECHECK_DAYS 天轮一遍
+    # 窗口外确认过的组：正文、标题被直接改写（抓取时间不变）也要能发现——超过 RECHECK_DAYS 天没核对
+    # 的，每轮轮流拿最久没核对的一批全文核对。一批 = 窗口外确认成员总数 ÷ RECHECK_DAYS（至少
+    # RECHECK_BATCH 份）：一天哪怕只跑一轮，也能 RECHECK_DAYS 天轮一遍，不会越积越多
+    outside_confirmed = (
+        select(RepostGroupMember.document_id)
+        .where(
+            RepostGroupMember.active.is_(True),
+            RepostGroupMember.confirmed_at.is_not(None),
+            ~RepostGroupMember.group_id.in_(_window_groups(cutoff)),
+        )
+        .subquery()
+    )
+    total = session.scalar(select(func.count()).select_from(outside_confirmed)) or 0
+    batch = max(RECHECK_BATCH, -(-int(total) // RECHECK_DAYS))
     periodic = set(
         session.scalars(
             select(RepostGroupMember.document_id)
             .outerjoin(RepostSignal, RepostSignal.document_id == RepostGroupMember.document_id)
             .where(
-                RepostGroupMember.active.is_(True),
-                RepostGroupMember.confirmed_at.is_not(None),
-                ~RepostGroupMember.group_id.in_(_window_groups(cutoff)),
+                RepostGroupMember.document_id.in_(select(outside_confirmed.c.document_id)),
                 func.coalesce(RepostSignal.checked_at, RepostGroupMember.confirmed_at)
                 < stamp - timedelta(days=RECHECK_DAYS),
             )
@@ -883,7 +894,7 @@ def rebuild(
                 func.coalesce(RepostSignal.checked_at, RepostGroupMember.confirmed_at),
                 RepostGroupMember.document_id,
             )
-            .limit(RECHECK_BATCH)
+            .limit(batch)
         )
     )
     fact_ids = (

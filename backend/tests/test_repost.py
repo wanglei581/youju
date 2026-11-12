@@ -1175,6 +1175,38 @@ def test_confirmed_groups_outside_the_window_are_rechecked_periodically(session,
     assert group.needs_review
 
 
+def test_periodic_recheck_batch_grows_with_the_confirmed_members(session, world, monkeypatch):
+    # 定期核对一批的份数按窗口外确认成员总数 ÷ RECHECK_DAYS 算（至少 RECHECK_BATCH 份）：确认成员
+    # 再多，一天一轮也能按期轮完，不会越积越多
+    from youju import repost
+
+    rebuild(session, now=NOW)
+    session.flush()
+    for doc in (world["shaanxi"], world["tianjin"], world["fujian"]):
+        doc.publish_date = date(2025, 1, 1)  # 都在窗口外
+    session.flush()
+    rows = _members(session)
+    _, facts = member_facts(session, list(rows))
+    for row in rows.values():
+        row.confirmed_by, row.confirmed_at = "人工", NOW
+        row.confirmed_fingerprint = facts[row.document_id]
+    session.flush()
+    checked: list[set[int]] = []
+    real = repost.member_facts
+
+    def spy(session_, ids):
+        checked.append(set(ids))
+        return real(session_, ids)
+
+    monkeypatch.setattr(repost, "member_facts", spy)
+    monkeypatch.setattr(repost, "RECHECK_BATCH", 1)
+    rebuild(session, now=NOW + timedelta(days=31))  # 3 份 ÷ 30 天，一批 1 份
+    assert len(checked[-1]) == 1
+    monkeypatch.setattr(repost, "RECHECK_DAYS", 1)
+    rebuild(session, now=NOW + timedelta(days=33))  # 3 份 ÷ 1 天，一批 3 份
+    assert checked[-1] == set(rows)
+
+
 def test_old_groups_untouched_and_cross_window_member_retained(session, world):
     rebuild(session, now=NOW)
     session.flush()
