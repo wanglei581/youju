@@ -175,6 +175,9 @@ def test_reclassify_drops_tooltip_labels_and_the_publish_date_from_titles(
     assert [stored[f"https://example.gov.cn/a/{i}.html"] for i in range(len(rows))] == [
         expected for _, _, expected in rows
     ]
+    # 再算一遍不再改（标题已经清过，末尾的日期也去掉了）
+    assert cli.main(["reclassify"]) == 0
+    assert "更新 0 份" in capsys.readouterr().out
 
 
 def _sql_size(session, condition) -> int:
