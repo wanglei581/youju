@@ -148,16 +148,79 @@ def test_login_captcha_or_gate_page_is_refused():
     assert "要登录或验证码" in api_refusal(api, _got('<html><input type="password"></html>'))
     assert "要登录或验证码" in api_refusal(api, _got("<html>请输入验证码</html>"))
     assert "拦截" in api_refusal(api, _got("<html>访问被拒绝</html>"))
-    # 认得出才读：空白、维护中、网站模板的 404 页这类不是 JSON 的返回，一律认不出、不读
+    # 网站模板的 404 页仍认不出、不读
     nav = "".join(f'<a href="/col/col{i}/index.html">栏目{i}</a>' for i in range(30))
     template = f"<html><div>用户登录 | 验证码</div>{nav}<p>页面不存在</p></html>"
-    for text in ("", "<html>系统维护中</html>", template):
-        assert "认不出" in api_refusal(api, _got(text))
-        assert api_html(api, text) == ""
+    assert "认不出" in api_refusal(api, _got(template))
+    assert api_html(api, template) == ""
     # 失败提示写在 msg 里的也认
     assert "要登录或验证码" in api_refusal(
         api, _got(_payload(success=False, message=None, msg="请先登录"))
     )
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["", "<html><body>&nbsp; </body></html>", "<html><!-- 空 --><body><p> </p></body></html>"]
+    + [f"<html><body>{word}</body></html>" for word in ("系统维护中", "系统升级中", "暂停服务")],
+)
+def test_blank_or_maintenance_is_retryable_but_not_read(text):
+    api = _api()
+    assert api_refusal(api, _got(text)) == ""
+    assert api_html(api, text) == ""
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # 独立 Claude 审阅：只有脚本、跳转、防护挑战的页面不算空白页，照样不能抓
+        "<script>busy()</script>",
+        "<script>location.href='/cas/login'</script>",
+        '<meta http-equiv=refresh content="0;url=/cas/login">',
+        "<html><head><script>$_ts=window['$_ts']||{};</script></head><body></body></html>",
+        # "稍后再试""系统繁忙"拦截页也常这样写，不算维护页
+        "<html><body>请稍后再试</body></html>",
+        "<html><body>系统繁忙</body></html>",
+        "<html><body>访问被拦截，请稍后再试</body></html>",
+        "<html><body>您的访问被阻断，请稍后再试</body></html>",
+        # 独立 Claude 审阅第二轮：外壳标签上的 onload 跳转、因访问异常暂停服务（封 IP）也不算
+        "<html><body onload=\"location.href='/cas/login'\"></body></html>",
+        "<html><body>您的IP因访问异常已暂停服务</body></html>",
+    ],
+)
+def test_scripts_redirects_and_block_pages_are_never_retried(text):
+    api = _api()
+    assert api_refusal(api, _got(text))
+    assert api_html(api, text) == ""
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "请先登录，系统维护中",
+        "访问被拒绝，请稍后再试",
+        # agy 审阅：关卡、没权限一类说法同时写着"稍后再试"的，照样不能抓，不当维护页反复去请求
+        "您没有访问权限，请稍后再试",
+        "请完成安全验证，稍后再试",
+        "滑块验证，系统繁忙",
+    ],
+)
+def test_gate_takes_priority_over_maintenance(text):
+    api = _api()
+    assert api_refusal(api, _got(f"<html>{text}</html>"))
+    assert api_html(api, f"<html>{text}</html>") == ""
+
+
+def test_only_bare_maintenance_pages_are_retryable():
+    # agy 审阅：带网站模板（链接多）的页面写着"请稍后再试"也不算维护页，照旧认不出、不能抓；
+    # 转义写的维护字样照样认得出
+    api = _api()
+    nav = "".join(f'<a href="/col/col{i}/index.html">栏目{i}</a>' for i in range(30))
+    for word in ("访问受限，请稍后再试", "系统维护中"):
+        page = f"<html><body>{nav}<p>{word}</p></body></html>"
+        assert "认不出" in api_refusal(api, _got(page)) or "拦截" in api_refusal(api, _got(page))
+        assert api_html(api, page) == ""
+    assert api_refusal(api, _got("<html><body>&lt;系统维护&gt;</body></html>")) == ""
 
 
 def test_nested_permission_fields_are_found():
@@ -381,13 +444,13 @@ def test_success_flag_with_login_prompt_is_not_read():
 
 
 def test_verify_unreadable_or_empty_list_api_reply():
-    from youju.govsites.verify import BLOCKED, NO_ITEMS, check_one
+    from youju.govsites.verify import BLOCKED, DOWN, NO_ITEMS, check_one
 
     api, today = _api(), date(2026, 11, 12)
     blank = check_one(
         _Cache({PAGE_URL: PAGE, api.url: "<html>系统维护中</html>"}), _column(), today
     )
-    assert blank.result == BLOCKED and "认不出" in blank.reason
+    assert blank.result == DOWN and "读不出列表" in blank.reason
     empty = check_one(
         _Cache({PAGE_URL: PAGE, api.url: _payload(data={"html": ""})}), _column(), today
     )
@@ -627,7 +690,7 @@ def test_unrecognized_unit_counts_as_refused():
     apis = [a.url for a in find_unit_apis(page, PAGE_URL)]
     pages = {PAGE_URL: page, apis[0]: _payload(success=False), apis[1]: "<html>系统维护中</html>"}
     info = Inventory(DivisionIndex(parse_tree({})), _Cache(pages), provinces=[]).page(PAGE_URL)
-    assert info.api_refused and not info.api_failed  # 认不出的单元也算拦下
+    assert info.api_refused and info.api_failed  # 拦下的单元和本次没取到的单元分别记录
 
 
 def test_style_blocks_and_click_to_login_links():
@@ -687,6 +750,23 @@ def test_gate_phrases_anywhere_but_plain_mentions_pass():
     assert "登录或权限提示" in api_refusal(api, _got(_payload(data={"html": summary})))
 
 
+@pytest.mark.parametrize("phrase", ["请完成安全验证后查看", "滑块验证", "拖动滑块", "人机验证"])
+def test_additional_gate_phrases_are_not_read(phrase):
+    api = _api()
+    text = _payload(data={"html": f"<p>{phrase}</p>" + LIST})
+    assert "登录或权限提示" in api_refusal(api, _got(text))
+    assert api_html(api, text) == ""
+
+
+@pytest.mark.parametrize("title", ["概念验证中心", "认证机构", "安全验证测评"])
+def test_ordinary_validation_titles_are_read(title):
+    api = _api()
+    html = f'<li><a href="/notice">{title}</a></li>' + LIST
+    text = _payload(data={"html": html})
+    assert api_refusal(api, _got(text)) == ""
+    assert api_html(api, text) == html
+
+
 def test_only_the_known_reply_shape_is_read():
     """认得出才读：多了字段、提示不是"生成成功"、messageType 不对、data 里多东西，一律不读。"""
     api = _api()
@@ -696,6 +776,8 @@ def test_only_the_known_reply_shape_is_read():
         ({"messageType": 0}, "messageType"),
         ({"data": {"html": LIST, "more": "x"}}, "data 里"),
         ({"traceId": 1}, "traceId"),
+        ({"traceId": ""}, "traceId"),
+        ({"traceId": "  "}, "traceId"),
     ):
         text = _payload(**change)
         assert why in api_refusal(api, _got(text)), change

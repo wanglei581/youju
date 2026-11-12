@@ -423,11 +423,21 @@ def test_refusal_is_rechecked_when_page_declares_another_api_or_after_30_days(se
 
 
 def test_unrecognized_list_api_reply_is_not_read(session) -> None:
-    """认得出才读：接口回空白、维护页这类认不出的返回，不读，记不能抓（30 天后再查）。"""
-    check, source, docs = _check_with_api(session, page(JPAAS_API, "<html>系统维护中</html>"))
+    """认得出才读：接口回认不出的网页，不读，记不能抓（30 天后再查）。"""
+    check, source, docs = _check_with_api(
+        session, page(JPAAS_API, "<html><body><p>欢迎访问</p></body></html>")
+    )
     assert (check.status, docs) == ("list_api_refused", 0)
     assert "认不出" in check.error
     assert source.health == "blocked"
+
+
+def test_maintenance_list_api_reply_is_retried_not_read(session) -> None:
+    """#475 后续：接口回维护页、空白页，算这次没取到（下次再试），照样不读，不记 30 天的不能抓。"""
+    check, source, docs = _check_with_api(session, page(JPAAS_API, "<html>系统维护中</html>"))
+    assert (check.status, docs) == ("parse_empty", 0)
+    assert source.health != "blocked"
+    assert "list_api_refused" not in (source.parser_config or {})
 
 
 def test_robots_denied_list_api_drops_stray_page_items(session) -> None:
@@ -512,9 +522,11 @@ def test_unreadable_list_api_reply_drops_stray_page_items(session) -> None:
         '<li><a href="/art/9.html">关于开展专项申报工作的通知</a><span>2026-11-01</span></li></ul>',
     )
     empty = '{"roles":null,"permissions":null,"success":true,"message":"生成成功","code":"200","traceId":"t","messageType":2,"data":{"html":""}}'
+    # 空白页、维护页算这次没取到（#475 后续），认不出的网页记不能抓：栏目页上零星的一条都不收
     cases = [
-        ("", "list_api_refused"),
-        ("<html>系统维护中</html>", "list_api_refused"),
+        ("", "parse_empty"),
+        ("<html>系统维护中</html>", "parse_empty"),
+        ("<html><body><p>欢迎访问</p></body></html>", "list_api_refused"),
         (empty, "parse_empty"),
     ]
     for body, want in cases:
