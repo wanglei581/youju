@@ -92,15 +92,21 @@ _ROLE = re.compile(
         )
     )
 )
-# "市长""局长"这类"长"字结尾的职务，前一个字不是标点、"副""代"或同一个字（"市市长""局局长"）时，
-# 可能是真职务（"北京市长某某"），也可能是地名连着"长"字（"宜宾市长江""城区长沙湾""西安市长安区"
-# "新区长芦街道""水务局长江大堤"）："长"后面接的是常和"长"连成地名、词的字，不当人名（"我市长期"
-# 的"期照"不像人名，本来就不挡）。人名在职务前面的，要在标题开头或标点后面
-# （"第三季度局长接待日"不挡）
+# 职务前后紧挨着的词按"宁可多挡"认人名（_role_name）：常见姓氏开头、不是常用词、不以行政单位的字结尾
+# （"安区""沙市"；三个字的前两个字也一样："安区人""沙市财"），名字里有"会""江"这类字的照样算
+# （"局长王会""局长王江"）。地名连着"长"字的（"城区长沙湾""新区长芦街道"）会多挡几条，挡了还有日期
+# 和网址；只为最常见的"长江"开例外：后面接流域、经济带这类词的是长江本身（"宜宾市长江流域"），
+# "北京市长江某某"照样挡。职务后面接"单位"的不是人名（"副理事长单位"）。人名在职务前面的，要在
+# 标题开头或标点后面（"第三季度局长接待日"不挡）
 _OPEN = '、，,：:；;（(“"《—- 　'
-_CHANG_NEXT = frozenset("江沙安宁乐丰白阳葛武海寿春兴清泰芦城")
-# 像人名的词以单位、地名的字结尾的不算（"安区""沙市""公室"），三个字的前两个字也一样（"安区人"
-# "沙市财"）；名字里间有这些字的照样算（"王会"）。以这些开头的也不是人名（"关于我市……""国家宣布……"）
+_ADMIN_ENDS = tuple("区县市镇乡村省局厅委办部室组处科站所院校署府")
+_CHANGJIANG = (
+    *("流域", "经济带", "汇", "沿", "大保护", "保护", "干流", "支流", "航", "口", "中下游", "上游"),
+    *("中游", "下游", "水", "岸", "段", "生态", "禁捕", "新区", "大堤", "大桥", "国家", "文化"),
+    *("港", "三峡", "三角洲", "江豚", "委"),
+)
+# 新闻动词前后像人名的词（_personish）以单位、地名的字结尾的不算（"安区""沙市""公室"），三个字的
+# 前两个字也一样。以这些开头的也不是人名（"关于我市……""国家宣布……"）
 _UNIT_ENDS = (*_NOT_NAME_END, *"室组处科乡")
 _NOT_LEAD = (
     *("关于", "对于", "我", "本", "全", "各", "该", "此", "据", "为", "从", "在", "与", "将"),
@@ -166,22 +172,38 @@ def _personish(word: str, *, any_surname: bool = False) -> bool:
     )
 
 
+def _role_name(word: str) -> bool:
+    """职务前后紧挨着的词像不像人名（宁可多挡）：常见姓氏开头、不是常用词、不以行政单位的字结尾。"""
+    from youju.crawler import detail
+
+    return (
+        2 <= len(word) <= 3
+        and re.fullmatch(f"{_H}+", word) is not None
+        and (word[0] in detail._SURNAMES or word.startswith(detail._COMPOUND_SURNAMES))
+        and word not in detail._COMMON_WORDS
+        and word not in detail._TITLES
+        and word not in detail._PLACE_NAMES
+        and not word.endswith(_ADMIN_ENDS)
+        and not (len(word) == 3 and word[:2].endswith(_ADMIN_ENDS))
+        and not word.startswith(_NOT_LEAD)
+    )
+
+
 def _news_named(title: str) -> bool:
     """新闻标题里写着领导人、官员姓名的（职务加人名、某某出席……、某某到某县调研……）。"""
     if any(name in title for name in _LEADERS):
         return True
     for m in _ROLE.finditer(title):
-        role, i = m.group(0), m.start()
-        prev = title[i - 1] if i else ""
-        place_ok = not prev or prev in _OPEN or prev in "副代" or prev == role[0]
-        after = title[m.end() : m.end() + 3]
-        # "宜宾市长江""水务局长江大堤"
-        place_word = role.endswith("长") and not place_ok and after[:1] in _CHANG_NEXT
-        if not place_word and any(_personish(after[:k]) for k in (2, 3)):
+        rest = title[m.end() :]
+        river = (
+            m.group(0).endswith("长") and rest.startswith("江") and rest[1:].startswith(_CHANGJIANG)
+        )
+        if not river and not rest.startswith("单位") and any(_role_name(rest[:k]) for k in (2, 3)):
             return True
+        i = m.start()
         for k in (2, 3):
             j = i - k
-            if j >= 0 and (j == 0 or title[j - 1] in _OPEN) and _personish(title[j:i]):
+            if j >= 0 and (j == 0 or title[j - 1] in _OPEN) and _role_name(title[j:i]):
                 return True
     for m in _TOP.finditer(title):
         if not m.group(1).endswith(_NOT_TOP_END) and _personish(m.group(1)):
