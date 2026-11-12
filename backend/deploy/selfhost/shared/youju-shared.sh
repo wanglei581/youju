@@ -27,7 +27,7 @@
 #   fetch-export <哈希>    提示时粘贴清单链接（不显示），按云托管导出的清单下载：日志、附件副本进存储，
 #                          整库备份和下架清单进 /opt/youju/export（只有 root 能进）；可以重跑
 #   export-show            只读：导出的汇总数、不涉密的配置、各前缀文件数（不含链接）
-#   import-export <旧版本> 用迁移版本和备份一样的旧镜像在临时库里试恢复备份；整库备份、交易记录分别加密存档（到期日写进文件名），删掉明文
+#   import-export <旧版本> 用迁移版本和备份一样的旧镜像在临时库里试恢复备份；整库备份、交易记录、批量工具结果分别加密存档（到期日写进文件名），删掉明文
 #   takedowns [段号]       只读：打印下架清单（gzip 后 base64，每段 200 行），抄到本机用
 #   takedowns-check        只读：下架清单里的网址在服务器上还有没有对用户可见的文件
 #   secret <名称>          只在交互终端里用：录一个密钥进 .env（输入不显示，只回长度和指纹）
@@ -36,7 +36,8 @@
 #   env-set <名称>         改一项不涉密的配置（值从标准输入读，如 echo '<值>' | … env-set YOUJU_CRONTAB）
 #   env-unset <名称>       删掉一项不涉密的配置
 #   config-from-export     把云托管导出的不涉密配置（模型名、价格、模板……）照原值写进 .env
-#   cloudrun-gone deregistered|deleted  记下云托管里的库和备份已经删了（注销环境 / 手动删），不再提醒
+#   cloudrun-gone deregistered|deleted  记下云托管里的库已经删了（注销环境 / 手动删），不再提醒
+#   alert-probe            往告警通道发一条验收消息（删库期限的提醒走这个通道）
 set -euo pipefail
 umask 022
 
@@ -583,7 +584,8 @@ fetch_export() {
   printf '粘贴清单链接（不显示），回车：'
   IFS= read -rs url || true
   echo
-  url=${url%$'\r'}
+  # 网页终端复制时常带上首尾的空格、制表符、回车
+  url=$(printf '%s' "$url" | tr -d '\r' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
   [[ "$url" =~ ^https://[A-Za-z0-9.-]+\.(tcb\.qcloud\.la|myqcloud\.com)/[!-~]*$ ]] \
     || die "清单链接不对（要是云托管导出脚本打印的那一行里的链接）"
   local free_g
@@ -616,13 +618,22 @@ import_export() {
   [ -f "$EXPORT_DIR/pay-records.jsonl.gz" ] || die "没有交易记录：先 fetch-export"
   [ "${#files[@]}" -eq 1 ] || die "${EXPORT_DIR}/backups 里不止一份备份，只留要归档的那一份"
   # 试恢复之前按备份解压后的大小再核一次硬盘：临时库加 binlog 大约是它的 3 倍，再留 2G。
-  # 解压后的大小整个解压数一遍（gzip -l 读文件尾的记录，超过 4G 会绕回去）
-  local raw need_g free_g
+  # 解压后的大小整个解压数一遍（gzip -l 读文件尾的记录，超过 4G 会绕回去）；按字节比，
+  # ${BASE}（加密副本）和 docker 的数据目录（MySQL 数据卷，临时库写在这里）各核一次
+  local raw need free dir dirs n
   raw=$(gzip -dc "${files[0]}" | wc -c | tr -d ' ') || die "整库备份解压不了"
   [[ "$raw" =~ ^[0-9]+$ ]] || die "读不出整库备份解压后的大小"
-  need_g=$(( raw * 3 / 1073741824 + 2 ))
-  free_g=$(df -BG --output=avail "$BASE" | tail -1 | tr -dc '0-9')
-  [ "$free_g" -ge "$need_g" ] || die "硬盘不够试恢复：要约 ${need_g}G，现在只剩 ${free_g}G（先腾空间，别动别的项目的文件）"
+  need=$(( raw * 3 + 2 * 1073741824 ))
+  dirs=("$BASE")
+  dir=$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || true)
+  [ -n "$dir" ] && [ -d "$dir" ] && dirs+=("$dir")
+  free=""
+  for dir in "${dirs[@]}"; do
+    n=$(df -B1 --output=avail "$dir" | tail -1 | tr -dc '0-9')
+    [ -n "$n" ] || die "读不出 ${dir} 所在硬盘的剩余空间"
+    if [ -z "$free" ] || [ "$n" -lt "$free" ]; then free=$n; fi
+  done
+  [ "$free" -ge "$need" ] || die "硬盘不够试恢复：要 $(( (need + 1073741823) / 1073741824 ))G，现在只剩 $(( free / 1073741824 ))G（先腾空间，别动别的项目的文件）"
   local name root_pw
   name=$(basename "${files[0]}")
   root_pw=$(sed -n 's/^MYSQL_ROOT_PASSWORD=//p' "$SERVER/.env")
@@ -813,6 +824,10 @@ cloudrun_gone() {
   compose exec -T worker youju cloudrun-gone --how "$1"
 }
 
+alert_probe() {
+  compose exec -T worker youju alert-probe --send
+}
+
 uninstall() {
   local purge=0
   [ "${1:-}" = "--purge" ] && purge=1
@@ -877,5 +892,6 @@ case "$cmd" in
   env-unset) env_unset "$@" ;;
   config-from-export) config_from_export ;;
   cloudrun-gone) cloudrun_gone "$@" ;;
+  alert-probe) alert_probe ;;
   *) awk 'NR > 1 && /^#/ {print; next} NR > 1 {exit}' "$0"; exit 1 ;;
 esac

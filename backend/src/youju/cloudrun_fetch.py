@@ -306,7 +306,9 @@ def fetch(
     )
 
     def done_before(item: dict, kind: str, target: str) -> bool:
-        if fetched.get(item["path"]) != item.get("etag", ""):
+        # 清单里没有 ETag 的不算"没变"：照样重下
+        etag = item.get("etag") or ""
+        if not etag or fetched.get(item["path"]) != etag:
             return False
         if kind == "dir":
             final = workdir / target
@@ -560,7 +562,7 @@ def _start_day(stamp) -> date | None:
 def split_pay_records(path: Path, header: dict) -> dict[date, list[tuple[str, dict]]]:
     """交易记录按保存期起算日分组（隐私保护指引：订单、退款、开票自下单起，赠送自发放之日起）：
     订单按下单时间；开票申请、支付流水跟着它的订单；赠送按发放时间；使用期跟着它的订单或赠送；
-    每日对账按那一天。哪一项都读不出的按导出那天（不会留得比指引写的久：导出日晚于任何一笔）。"""
+    每日对账按那一天。有哪一行读不出起算日就停下（拿导出那天顶替会比指引存得久），列出是哪几行。"""
     rows: list[tuple[str, dict]] = []
     with gzip.open(path, "rt", encoding="utf-8") as fh:
         fh.readline()  # 说明行
@@ -590,11 +592,19 @@ def split_pay_records(path: Path, header: dict) -> dict[date, list[tuple[str, di
             return row.get("day")
         return row.get("created_at")
 
-    fallback = _beijing_day(header["created_at"])
     groups: dict[date, list[tuple[str, dict]]] = {}
+    unknown: list[str] = []
     for table, row in rows:
-        day = _start_day(stamp_of(table, row)) or fallback
+        day = _start_day(stamp_of(table, row))
+        if day is None:
+            unknown.append(f"{table} {row.get('id', '?')}")
+            continue
         groups.setdefault(day, []).append((table, row))
+    if unknown:
+        raise FetchError(
+            f"交易记录里有 {len(unknown)} 行读不出保存期的起算日（{'、'.join(unknown[:5])}"
+            f"{'……' if len(unknown) > 5 else ''}）：没有存档，停下核实"
+        )
     return dict(sorted(groups.items()))
 
 
@@ -610,7 +620,7 @@ def archive_export(
     - 整库备份：自备份那天起 30 天；
     - 交易记录：按起算日分组（见 split_pay_records），每组自起算日起 PAY_RETAIN_DAYS（3650）天；
     - 批量工具结果：按文件生成日期分组，每组自那天起 30 天（已经过期的组不存）。
-    另在本机存储记下云托管里的库和备份最晚哪天要删（最后一份整库备份起 30 天，D-127），
+    另在本机存储记下云托管里的数据库最晚哪天要删（最后一份整库备份起 30 天，D-127），
     archive-prune 到期前 7 天起每天提醒，删了用 youju cloudrun-gone 记下来。返回（报告，说明）。"""
     from youju import offsite
     from youju import storage as storage_module
@@ -625,6 +635,8 @@ def archive_export(
     if not pay.is_file():
         raise FetchError("没有交易记录（先 fetch-export）")
     header = _pay_header(pay)
+    # 先把交易记录分好组（读不出起算日的停下），再开始存：不存一半
+    groups = split_pay_records(pay, header)
     extra = {"today": today, "backend": backend}
     if encryptor is not None:
         extra["encryptor"] = encryptor
@@ -639,7 +651,6 @@ def archive_export(
     ]
     notes: list[str] = []
     with tempfile.TemporaryDirectory() as tmp:
-        groups = split_pay_records(pay, header)
         if not groups:
             notes.append("没有交易记录要存")
         for start, rows in groups.items():
@@ -706,5 +717,8 @@ def archive_export(
             encoding="utf-8",
         )
         storage_module.backend(settings).put_file(offsite.CLOUDRUN_DEADLINE, deadline)
-        notes.append(f"云托管里的数据库和备份最晚 {delete_by} 删掉（注销环境，或删库和 backups/）")
+        notes.append(
+            f"云托管里的数据库最晚 {delete_by} 删掉（注销环境，或在控制台删库）；"
+            "对象存储里的用户数据在第 9 步用 export-paste.sh --cleanup 那段清掉"
+        )
     return reports, notes

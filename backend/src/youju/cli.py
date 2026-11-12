@@ -2342,25 +2342,31 @@ def _cmd_archive_export(args: argparse.Namespace) -> int:
 
 def _cmd_archive_prune(args: argparse.Namespace) -> int:
     from youju import offsite
+    from youju.alerts import send_alert
     from youju.backup import BackupError
 
+    settings = get_settings()
+    code = 0
+    # 云托管删库期限的提醒先单独发：后面删到期存档出错也不耽误它。没发出去（告警没配或发送失败）
+    # 任务按失败退出，任务记录里看得到，免得错过期限
+    reminder = offsite.cloudrun_reminder_for(settings)
+    if reminder:
+        print(reminder)
+        if send_alert(reminder) is not True:
+            print("这条提醒没发出去（告警没配好或发送失败）：任务按失败退出")
+            code = 1
     try:
-        report = offsite.prune_archive(get_settings())
+        report = offsite.prune_archive(settings)
     except BackupError as exc:
         print(f"删到期存档失败：{exc}")
         return 1
     for item in report.deleted:
         print(f"已删到期存档：{item}")
-    if report.reminder:
-        from youju.alerts import send_alert
-
-        print(report.reminder)
-        send_alert(report.reminder)
     print(
         f"到期存档删了 {len(report.deleted)} 个，没到期的 {report.kept} 个"
         "（记录在 archive/deletions.jsonl）"
     )
-    return 0
+    return code
 
 
 def _cmd_cloudrun_gone(args: argparse.Namespace) -> int:
@@ -2372,7 +2378,7 @@ def _cmd_cloudrun_gone(args: argparse.Namespace) -> int:
     except BackupError as exc:
         print(f"没记下：{exc}")
         return 1
-    print(f"已记下云托管的库和备份删了（{args.how}）：{path}；archive-prune 不再提醒")
+    print(f"已记下云托管的数据库删了（{args.how}）：{path}；archive-prune 不再提醒")
     return 0
 
 
@@ -3039,7 +3045,7 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=_cmd_archive_prune)
     p = sub.add_parser(
         "cloudrun-gone",
-        help="（首发前搬家，D-127）记下云托管里的库和备份已经删了（注销环境或手动删），"
+        help="（首发前搬家，D-127）记下云托管里的数据库已经删了（注销环境或手动删），"
         "archive-prune 不再提醒",
     )
     p.add_argument("--how", required=True, choices=["deregistered", "deleted"])

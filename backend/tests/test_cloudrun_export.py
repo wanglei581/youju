@@ -205,6 +205,8 @@ class FakeCloud:
         self.objects = dict(objects)
         self.uploads: dict[str, bytes] = {}
         self.link_batches: list[list[str]] = []
+        self.delete_batches: list[list[str]] = []
+        self.stuck: set[str] = set()  # 删不掉的
         self.client = httpx.Client(transport=httpx.MockTransport(self.handle))
 
     def handle(self, request: httpx.Request) -> httpx.Response:
@@ -249,6 +251,18 @@ class FakeCloud:
                     ],
                 },
             )
+        if request.method == "POST" and str(url) == f"{OPEN}/tcb/batchdeletefile":
+            ids = json.loads(request.content)["fileid_list"]
+            self.delete_batches.append(ids)
+            items = []
+            for fid in ids:
+                key = fid.removeprefix(PREFIX)
+                if key in self.stuck or key not in self.objects:
+                    items.append({"fileid": fid, "status": -1, "errmsg": "删不掉"})
+                else:
+                    del self.objects[key]
+                    items.append({"fileid": fid, "status": 0})
+            return httpx.Response(200, json={"errcode": 0, "delete_list": items})
         raise AssertionError(f"没想到的请求：{request.method} {url}")
 
     def page(self, request: httpx.Request) -> httpx.Response:
@@ -393,6 +407,80 @@ def test_fingerprint_sees_updates_that_keep_the_row_count(session):
     finally:
         engine.dispose()
     assert export_script.changed_tables(before, after) == ["users"]
+
+
+def test_fingerprint_stops_when_a_watched_table_is_missing(monkeypatch):
+    monkeypatch.setattr(export_script, "WATCHED", (*export_script.WATCHED, "no_such_table"))
+    with pytest.raises(export_script.ExportError, match="no_such_table"):
+        export_script.fingerprint(None)  # 连库之前就停下
+
+
+def test_watched_tables_cover_every_table_with_user_data():
+    """这一版（线上镜像那版跑这个测试时就是线上的表）里带用户标识的表、指向这些表的表、交易记录里
+    导出的表，都在导出前后的写入核对里。"""
+    from youju.models import Base
+
+    personal = {"user_id", "openid", "uid", "user_hash", "ip"}
+    watched = set(export_script.WATCHED)
+    pay = {model.__table__.name for model in export_script.PAY_TABLES}
+    for name, table in Base.metadata.tables.items():
+        columns = {column.name for column in table.columns}
+        refs = {fk.column.table.name for fk in table.foreign_keys}
+        if columns & personal or refs & watched or name in pay:
+            assert name in watched, name
+
+
+def test_cleanup_deletes_user_data_and_keeps_attachments():
+    logs = {f"logs/access-202610{d:02d}.jsonl.gz": 30 for d in range(1, 31)}
+    logs.update({f"logs/access-202611{d:02d}.jsonl.gz": 30 for d in range(1, 22)})
+    cloud = FakeCloud(
+        {
+            "exports/manifest-1.json": 10,
+            "exports/pay-records-1.jsonl.gz": 10,
+            "backups/youju-20261111.jsonl.gz": 100,
+            "backups/youju-20261112.jsonl.gz": 100,
+            **logs,
+            "advisor/out/0123456789abcdef/7.xlsx": 5,
+            f"attachments/{'ab' * 32}.pdf": 40,
+        }
+    )
+    deleted = export_script.cleanup(cloud.client, ENV, sleep=lambda _: None)
+    assert deleted == {"exports/": 2, "backups/": 2, "logs/": 51, "advisor/": 1}
+    # 公开文件的附件副本不删
+    assert list(cloud.objects) == [f"attachments/{'ab' * 32}.pdf"]
+    assert [len(batch) for batch in cloud.delete_batches] == [2, 2, 50, 1, 1]
+    # 有删不掉的：删完再列一遍时报出来（重跑接着删）
+    cloud = FakeCloud({"backups/youju-20261112.jsonl.gz": 100, "logs/a.gz": 1})
+    cloud.stuck.add("logs/a.gz")
+    with pytest.raises(export_script.ExportError, match="logs/ 1 个"):
+        export_script.cleanup(cloud.client, ENV, sleep=lambda _: None)
+    assert list(cloud.objects) == ["logs/a.gz"]
+
+
+def test_main_cleanup_prints_one_ascii_line(monkeypatch, capsys):
+    monkeypatch.setenv("YOUJU_CLOUD_ENV", ENV)
+    counts = {"exports/": 2, "backups/": 30, "logs/": 41, "advisor/": 0}
+    monkeypatch.setattr(export_script, "cleanup", lambda client, env: counts)
+    export_script.get_settings.cache_clear()
+    try:
+        no_commands = lambda args: pytest.fail("不跑命令")  # noqa: E731
+        assert export_script.main(["--cleanup"], runner=no_commands) == 0
+        out = capsys.readouterr().out
+        (line,) = [row for row in out.splitlines() if row.startswith("CLEANUP")]
+        assert line.isascii()
+        assert (
+            line == "CLEANUP OK exports/2 backups/30 logs/41 advisor/0 left=0 (attachments/ kept)"
+        )
+        assert export_script.main(["--cleanup", "--links-only"], runner=no_commands) == 1
+
+        def stuck(client, env):
+            raise export_script.ExportError("还有没删掉的（logs/ 1 个）：再跑一次 --cleanup")
+
+        monkeypatch.setattr(export_script, "cleanup", stuck)
+        assert export_script.main(["--cleanup"], runner=no_commands) == 1
+        assert "CLEANUP FAILED" in capsys.readouterr().out
+    finally:
+        export_script.get_settings.cache_clear()
 
 
 def test_list_with_sizes_restores_parser_on_error():

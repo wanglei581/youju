@@ -13,14 +13,19 @@ storage_list.bucket_of、list_objects，takedown.available_condition，和那一
    来源编号、下架时间、原因类别。不带备注、操作人、标题
 4. 交易记录 exports/pay-records-<时间>.jsonl.gz：订单、退款（在订单里）、支付流水、开票申请、
    赠送天数、使用期、每日对账。隐私保护指引写的是这些记录"与账号断开，去标识化、限制访问"，
-   自下单起保存 retain_pay_orders_days（3650）天；这里照注销账号时（payments.anonymize、
-   rewards.anonymize）的口径对所有人做一遍，另外去掉开票的联系邮箱和个人抬头（就是姓名）
+   保存 3650 天（D-127；订单、退款、开票自下单起，赠送自发放之日起）；这里照注销账号时
+   （payments.anonymize、rewards.anonymize）的口径对所有人做一遍，另外去掉开票的联系邮箱和个人抬头（就是姓名）
 5. 给每个文件取 2 小时有效的下载链接，连同汇总数（只有数字）和不涉密的配置写成清单
    exports/manifest-<时间>.json
 6. 访问日志暂存表里还没归档的（archive-logs 只归档到昨天）按天导出 exports/access-staging-<日期>-…
 7. 再记一次用户数据各表：和备份前那次对不上，说明导出期间有新写入（D-127：停掉新的写入，或在导出
    前后核对没有新写入），停下、不出清单
 8. 打印一行给服务器网页终端用的命令（带清单的 SHA-256）、清单链接、各前缀的文件数和大小、汇总数
+
+--cleanup（手册第 9 步，服务器上 IMPORT OK 以后）：删掉对象存储里的用户数据（exports/、backups/、
+logs/、advisor/，见 CLEANUP_PREFIXES），删完再列一遍核对删干净。admin 调成 0 以后云托管按期删
+它们的定时任务都停了，留着会超过各自的保存期；服务器上都已加密存档。attachments/ 是公开文件的
+附件副本，不删。
 
 清单里有整库备份的下载链接：那一行命令只贴到服务器的网页终端，不发到聊天里。
 不打印任何单个文件的链接、密钥、openid。要复制的几行只有英文和数字（容器终端复制中文会乱码）。
@@ -66,9 +71,11 @@ from youju.models import (
 from youju.takedown import available_condition
 
 PREFIXES = ("backups/", "logs/", "attachments/", "advisor/out/")
-# 用户数据：带 user_id 的表，加上 users、pay_events、ai_chat_turns、访问日志暂存表。导出前后各记一次
-# 整表校验值（MySQL 的 CHECKSUM TABLE，按每一行的内容算：增、删、改都会变），对不上就是导出期间
-# 有新写入。admin 的定时任务不停：停了 cron，健康检查要的心跳也停了，实例会被判不健康、重启
+# 用户数据：带 user_id、uid、user_hash 的表和 users，跟着它们的 pay_events、ai_chat_turns、
+# follow_repost_notifications，交易记录里一起导出的 pay_reconciliations，访问日志暂存表（测试里核对
+# 这一版的每张表都归了类）。导出前后各记一次整表校验值（MySQL 的 CHECKSUM TABLE，按每一行的内容算：
+# 增、删、改都会变），对不上就是导出期间有新写入。admin 的定时任务不停：停了 cron，健康检查要的心跳
+# 也停了，实例会被判不健康、重启
 WATCHED = (
     "users",
     "follows",
@@ -89,7 +96,13 @@ WATCHED = (
     "ai_credit_grants",
     "ai_credit_uses",
     "access_logs",
+    "ai_safety_hits",
+    "advisor_file_trash",
+    "follow_repost_notifications",
+    "pay_reconciliations",
 )
+# --cleanup 删的前缀（见文件开头）
+CLEANUP_PREFIXES = ("exports/", "backups/", "logs/", "advisor/")
 # 备份前记下的那份：--links-only 重出清单时拿来核对（同一个实例的 /tmp；实例换了就要整个重跑）
 FINGERPRINT = Path("/tmp/youju-export-fingerprint.json")
 MAX_AGE = 7200  # 下载链接 2 小时有效（微信文档的示例值）；过期了带 --links-only 重出一份清单
@@ -198,13 +211,19 @@ def run_command(args: list[str], runner=subprocess.run) -> None:
 
 
 def fingerprint(engine) -> dict:
-    """用户数据各表的整表校验值（CHECKSUM TABLE）。"""
+    """用户数据各表的整表校验值（CHECKSUM TABLE）。哪张表这一版里没有、取不到校验值，都停下。"""
     from youju.models import Base
 
-    names = [name for name in WATCHED if name in Base.metadata.tables]
+    missing = [name for name in WATCHED if name not in Base.metadata.tables]
+    if missing:
+        raise ExportError("这一版的表结构里没有：" + "、".join(missing))
     with engine.connect() as conn:
-        rows = conn.execute(text("CHECKSUM TABLE " + ", ".join(f"`{n}`" for n in names))).all()
-    return {str(table).split(".")[-1]: checksum for table, checksum in rows}
+        rows = conn.execute(text("CHECKSUM TABLE " + ", ".join(f"`{n}`" for n in WATCHED))).all()
+    marks = {str(table).split(".")[-1].strip("`"): checksum for table, checksum in rows}
+    bad = [name for name in WATCHED if marks.get(name) is None]
+    if bad:
+        raise ExportError("这些表取不到整表校验值：" + "、".join(bad))
+    return {name: marks[name] for name in WATCHED}
 
 
 def changed_tables(before: dict, after: dict) -> list[str]:
@@ -670,6 +689,33 @@ def report(result: dict) -> None:
     print(result["url"])
 
 
+def cleanup(client: httpx.Client, env: str, *, sleep=clock.sleep) -> dict[str, int]:
+    """--cleanup：删掉 CLEANUP_PREFIXES 下的全部文件，删完再列一遍，还有剩的就报错（重跑接着删）。
+    返回各前缀删了几个。"""
+    bucket = storage_list.bucket_of(client, env)
+    deleted: dict[str, int] = {}
+    for prefix in CLEANUP_PREFIXES:
+        keys = [item.key for item in storage_list.list_objects(client, bucket, prefix)]
+        for start in range(0, len(keys), BATCH):
+            part = [bucket.prefix + key for key in keys[start : start + BATCH]]
+            backup._retrying(
+                lambda part=part: backup.delete_files(client, env, part, what="云托管上的用户数据"),
+                sleep,
+            )
+        deleted[prefix] = len(keys)
+    left = {
+        prefix: len(storage_list.list_objects(client, bucket, prefix))
+        for prefix in CLEANUP_PREFIXES
+    }
+    if any(left.values()):
+        raise ExportError(
+            "还有没删掉的（"
+            + "，".join(f"{prefix} {n} 个" for prefix, n in left.items() if n)
+            + "）：再跑一次 --cleanup"
+        )
+    return deleted
+
+
 def main(argv: list[str] | None = None, *, runner=subprocess.run) -> int:
     parser = argparse.ArgumentParser(description="有据首发前搬家：云托管导出（D-127）")
     parser.add_argument(
@@ -677,12 +723,34 @@ def main(argv: list[str] | None = None, *, runner=subprocess.run) -> int:
         action="store_true",
         help="不再跑归档、备份、校验，只重新列文件、出一份新清单（链接过期时用）",
     )
+    parser.add_argument(
+        "--cleanup",
+        action="store_true",
+        help="服务器上 IMPORT OK 以后（手册第 9 步）：删掉对象存储里的用户数据，删完核对",
+    )
     args = parser.parse_args(argv)
     settings = get_settings()
     env = settings.cloud_env
     if not env:
         print("没有 YOUJU_CLOUD_ENV：要在云托管 admin 服务的'登录实例'里运行")
         return 1
+    if args.cleanup:
+        if args.links_only:
+            print("--cleanup 和 --links-only 不能一起用")
+            return 1
+        try:
+            with httpx.Client(trust_env=False) as client:
+                deleted = cleanup(client, env)
+        except (ExportError, backup.BackupError) as exc:
+            print(f"清理没做完：{exc}")
+            print("CLEANUP FAILED (run the same block again)")
+            return 1
+        print(
+            "CLEANUP OK "
+            + " ".join(f"{prefix}{n}" for prefix, n in deleted.items())
+            + " left=0 (attachments/ kept)"
+        )
+        return 0
     try:
         if args.links_only:
             if not FINGERPRINT.is_file():
