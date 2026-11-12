@@ -2,6 +2,7 @@
 
 import functools
 import hashlib
+import logging
 import re
 from dataclasses import dataclass, field
 from datetime import date
@@ -15,6 +16,8 @@ from lxml import etree, html
 from youju.crawler.dates import parse_date_detail
 from youju.crawler.urls import normalize_url
 from youju.issuer import normalize_issuer
+
+logger = logging.getLogger(__name__)
 
 _FILE_EXTENSIONS = {"pdf", "doc", "docx", "xls", "xlsx", "wps", "et", "zip", "rar", "ofd"}
 # 一篇通知收录的附件个数上限：正常通知不过几个到几十个，异常页面（整站文件目录等）不全收
@@ -62,20 +65,51 @@ _TITLE_ISSUER = re.compile(
     r"(?:厅|局|委|委员会|部|中心|政府|办公室|研究院|院|署|海关|分行|小组)(?:（[^）]{1,20}）)?)"
     r"(?P<etc>\s*等\s*\d{1,2}\s*个?部门)?\s*(?:关于|印发|转发)"
 )
-# 标题里的机关要是完整的机关名：以省级区划名、地级县级区划名（data/place_names.txt）、"中共"、
-# 中央机关开头，或者是国务院某个部、审计署、海关总署。"张三代表市政府""住房和城乡建设局"这类开头不是
-# 地名的不算
+# 标题里的机关要是完整的机关名：去掉开头的地名（省级区划名、data/place_names.txt 里的地级县级
+# 区划名）以后，剩下的要在机关名称词表（data/agency_bodies.txt）里；"中共"开头的剩下要是党委机构；
+# 中央机关看全称名单。"张三代表市政府""北京市财政局张三建议市政府""住房和城乡建设局"都不算
 _PROVINCE = (
     r"(?:北京市|天津市|上海市|重庆市|内蒙古自治区|广西壮族自治区|西藏自治区|宁夏回族自治区"
     r"|新疆维吾尔自治区|(?:河北|山西|辽宁|吉林|黑龙江|江苏|浙江|安徽|福建|江西|山东|河南|湖北|湖南"
     r"|广东|海南|四川|贵州|云南|陕西|甘肃|青海|台湾)省)"
 )
-_CENTRAL_OR_PROVINCE = re.compile(
-    rf"^(?:国务院|中央|全国|国家|中华人民共和国|最高人民(?:法院|检察院)|{_PROVINCE})"
-)
-_PLACE_NAMES_FILE = Path(__file__).resolve().parents[1] / "data" / "place_names.txt"
-# 地级市简称后面跟这些的也是机关开头（"雅安经济技术开发区管理委员会""南京海关"）
+_PROVINCE_HEAD = re.compile(rf"^{_PROVINCE}")
+_DATA_DIR = Path(__file__).resolve().parents[1] / "data"
+# 地级市简称后面跟这些的也算地名开头（"雅安经济技术开发区管理委员会""南京海关"）
 _ZONE_WORDS = ("经济技术开发区", "高新技术产业开发区", "高新区", "经开区", "开发区", "新区", "海关")
+# "中共某某市"后面的党委机构
+_PARTY_BODIES = frozenset(
+    (
+        "委", "委办公室", "委办公厅", "委组织部", "委宣传部", "委统战部", "委统一战线工作部",
+        "委政法委员会", "委机构编制委员会办公室", "委全面深化改革委员会办公室",
+        "委财经委员会办公室", "委人才工作领导小组办公室", "委军民融合发展委员会办公室",
+        "委网络安全和信息化委员会办公室", "委外事工作委员会办公室", "委农村工作领导小组办公室",
+    )
+)  # fmt: skip
+
+# 中央机关的全称（"中共"去掉以后比；国务院各部见 _MINISTRY）
+_CENTRAL_AGENCIES = frozenset(
+    (
+        "中央", "中央办公厅", "中央组织部", "中央宣传部", "中央统战部",
+        "中央网络安全和信息化委员会办公室", "中央全面深化改革委员会办公室",
+        "中央财经委员会办公室", "国务院", "国务院办公厅", "国务院国有资产监督管理委员会",
+        "国务院国资委", "国家发展和改革委员会", "国家发展改革委", "国家民族事务委员会",
+        "国家民委", "国家林业和草原局", "国家林草局", "国家税务总局", "国家市场监督管理总局",
+        "市场监管总局", "国家知识产权局", "国家统计局", "国家能源局", "国家数据局",
+        "国家医疗保障局", "国家卫生健康委员会", "国家卫生健康委", "国家金融监督管理总局",
+        "国家外汇管理局", "国家文物局", "国家粮食和物资储备局", "国家中医药管理局",
+        "国家药品监督管理局", "国家乡村振兴局", "国家体育总局", "国家广播电视总局",
+        "国家新闻出版署", "国家国防科技工业局", "国家邮政局", "中国人民银行",
+    )
+)  # fmt: skip
+
+# 中央机关在地方的分支：父机关 + 地名 + 这几种名称（"国家税务总局龙岩市税务局"）
+_BRANCH_BODIES = {
+    "国家税务总局": ("税务局",),
+    "国家金融监督管理总局": ("监管局", "监管分局"),
+    "中国人民银行": ("分行", "中心支行"),
+    "国家外汇管理局": ("分局",),
+}
 _MINISTRY = re.compile(
     r"^(?:(?:外交|国防|教育|科学技术|工业和信息化|公安|国家安全|民政|司法|财政|人力资源和社会保障"
     r"|人力资源社会保障|自然资源|生态环境|住房和城乡建设|住房城乡建设|交通运输|水利|农业农村|商务"
@@ -980,33 +1014,65 @@ def _title_issuer(root: etree._Element) -> str | None:
 
 
 def _full_agency(name: str) -> bool:
-    """以地名、"中共"、中央机关开头的完整机关名，或者国务院某个部、审计署、海关总署。缺地名的简称
-    （"市政府办公室""省财政厅"）、内设机构（"办公室"）、带会议讲话字样的新闻标题都不算。"""
-    return (
-        name not in _GENERIC_ISSUERS
-        and not _NOT_ORG.search(name)
-        and bool(_AGENCY_END.search(name) or name.endswith("小组"))
-        and (_starts_with_place(name) or bool(_MINISTRY.match(name)))
-    )
+    """完整的机关名：国务院某个部、中央机关全称、中央机关在地方的分支，或者"地名 + 词表里的机关名称"
+    （"中共"开头的是"地名 + 党委机构"）。缺地名的简称、内设机构、带会议讲话字样的新闻标题、地名后面
+    夹着人名的（"北京市张三建议市政府"）都不算。"""
+    if name in _GENERIC_ISSUERS or _NOT_ORG.search(name):
+        return False
+    bare = name.removeprefix("中华人民共和国")
+    if _MINISTRY.match(bare) or name.removeprefix("中共") in _CENTRAL_AGENCIES:
+        return True
+    for parent, branches in _BRANCH_BODIES.items():
+        if name.startswith(parent):
+            body, stripped = _strip_places(name.removeprefix(parent))
+            return stripped and body in branches
+    party = name.startswith("中共")
+    body, stripped = _strip_places(name.removeprefix("中共"))
+    return stripped and body in (_PARTY_BODIES if party else _agency_names()[2])
 
 
 @functools.cache
-def _place_names() -> tuple[frozenset[str], frozenset[str]]:
-    """地级、县级区划名（加自治州、自治县、自治旗的简称），和"某某市"去掉"市"的简称。"""
-    lines = _PLACE_NAMES_FILE.read_text(encoding="utf-8").splitlines()
-    names = frozenset(n for line in lines if (n := line.strip()) and not n.startswith("#"))
-    return names, frozenset(n[:-1] for n in names if n.endswith("市") and len(n) >= 3)
+def _agency_names() -> tuple[frozenset[str], frozenset[str], frozenset[str]]:
+    """地级、县级区划名，"某某市"去掉"市"的简称，机关名称词表；名单文件读不到时都是空的（标题里的
+    机关一概不用，照旧看发布机构）。"""
+
+    def read(name: str) -> frozenset[str]:
+        try:
+            lines = (_DATA_DIR / name).read_text(encoding="utf-8").splitlines()
+        except OSError:
+            logger.warning("发文机关校验用的名单读不到：%s", name)
+            return frozenset()
+        return frozenset(n for line in lines if (n := line.strip()) and not n.startswith("#"))
+
+    places = read("place_names.txt")
+    # 直辖市不在名单里（省级），简称单独加上（"北京经济技术开发区""上海海关"）
+    cities = frozenset(n[:-1] for n in places if n.endswith("市") and len(n) >= 3)
+    cities |= {"北京", "天津", "上海", "重庆"}
+    return places, cities, read("agency_bodies.txt")
 
 
-def _starts_with_place(name: str) -> bool:
-    name = name.removeprefix("中共")
-    if _CENTRAL_OR_PROVINCE.match(name):
-        return True
-    places, cities = _place_names()
-    for k in range(2, min(len(name), 12) + 1):
-        if name[:k] in places or (name[:k] in cities and name[k:].startswith(_ZONE_WORDS)):
-            return True
-    return False
+def _strip_places(name: str) -> tuple[str, bool]:
+    """去掉开头的地名（省级区划名、名单里的地名，可连着几个；地级市简称后面跟开发区、海关的去掉简称）；
+    返回剩下的和去没去掉。"""
+    places, cities, _ = _agency_names()
+    stripped = False
+    while True:
+        if match := _PROVINCE_HEAD.match(name):
+            name, stripped = name[match.end() :], True
+            continue
+        head = next((k for k in range(min(len(name), 12), 1, -1) if name[:k] in places), 0)
+        if not head:
+            head = next(
+                (
+                    k
+                    for k in range(min(len(name), 8), 1, -1)
+                    if name[:k] in cities and name[k:].startswith(_ZONE_WORDS)
+                ),
+                0,
+            )
+        if not head:
+            return name, stripped
+        name, stripped = name[head:], True
 
 
 def _split_issuer_line(line: str) -> str:

@@ -1223,14 +1223,41 @@ SC = "四川省文化和旅游厅"
         ),
         # 地名名单里的：自治州简称、开发区、单字县名
         (
+            _issuer_page("凉山州人民政府关于印发工作要点的通知", "凉山州经济和信息化局"),
+            "凉山州人民政府",
+        ),
+        # 地名后面的名称不在机关名称词表里的不用（领导小组办公室这类中间是自由文字的、地名后面夹着
+        # 人名的），照旧用发布机构
+        (
             _issuer_page("凉山州工业经济发展领导小组办公室关于印发工作要点的通知", "凉山州经济和信息化局"),
-            "凉山州工业经济发展领导小组办公室",
+            "凉山州经济和信息化局",
+        ),
+        (
+            _issuer_page("北京市某某建议市政府关于加强管理的意见", "北京市人民政府办公厅"),
+            "北京市人民政府办公厅",
+        ),
+        (
+            _issuer_page("北京市财政局某某建议市政府关于加强管理的意见", "北京市财政局"),
+            "北京市财政局",
+        ),
+        # 中央机关在地方的分支、党委机构
+        (
+            _issuer_page("国家税务总局龙岩市税务局关于做好纳税服务的通告", "龙岩市财政局"),
+            "国家税务总局龙岩市税务局",
+        ),
+        (
+            _issuer_page("中共泉州市委人才工作领导小组办公室关于印发人才政策的通知", "泉州市科技局"),
+            "中共泉州市委人才工作领导小组办公室",
         ),
         (
             _issuer_page("雅安经济技术开发区管理委员会关于印发产业扶持办法的通知", "雅安市人民政府"),
             "雅安经济技术开发区管理委员会",
         ),
         (_issuer_page("沛县人民政府关于开展安全检查的通知", "沛县人民政府办公室"), "沛县人民政府"),
+        (
+            _issuer_page("北京经济技术开发区管理委员会关于印发产业政策的通知", "北京市人民政府办公厅"),
+            "北京经济技术开发区管理委员会",
+        ),
         # 机关名里带"城乡""督导"这类词的照样是机关
         (
             _issuer_page("四川省住房和城乡建设厅关于加强物业服务管理的通知", "攀枝花市住房和城乡建设局"),
@@ -1241,8 +1268,8 @@ SC = "四川省文化和旅游厅"
             "沛县教育局",
         ),
         (
-            _issuer_page("沛县人民政府教育督导委员会办公室关于开展督导评估的通知", "沛县教育局"),
-            "沛县人民政府教育督导委员会办公室",
+            _issuer_page("沛县教育局关于开展督导评估的通知", "沛县人民政府办公室"),
+            "沛县教育局",
         ),
         # 来源和发布机构同级（只是简称）：照旧用发布机构
         (
@@ -1269,6 +1296,21 @@ def test_issuer_from_title_and_publisher(page: str, expected: str | None) -> Non
     """发文机关的顺序：落款、明写的发文机关、文件标题开头的机关（要是以地名、中央机关开头的完整
     机关名）、发布机构、元数据；只写内设机构名字的不算。"""
     assert parse_detail(page, "https://www.example.gov.cn/content_6.html").issuer == expected
+
+
+def test_issuer_without_name_lists_falls_back_to_publisher(monkeypatch, tmp_path) -> None:
+    """发文机关校验用的名单读不到：标题里的机关一概不用，照旧看发布机构，不报错。"""
+    import youju.crawler.detail as detail
+
+    monkeypatch.setattr(detail, "_DATA_DIR", tmp_path)
+    detail._agency_names.cache_clear()
+    try:
+        page = _issuer_page("济南市人民政府关于印发计划的通知", "济南市人民政府办公厅")
+        assert parse_detail(page, "https://www.example.gov.cn/content_7.html").issuer == (
+            "济南市人民政府办公厅"
+        )
+    finally:
+        detail._agency_names.cache_clear()
 
 
 def test_dropdown_text_still_counts_for_protection_window() -> None:

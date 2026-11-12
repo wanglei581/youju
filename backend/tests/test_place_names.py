@@ -1,10 +1,23 @@
 """发文机关校验用的地名名单和全国行政区划清单一致（区划清单更新了要重新生成）。"""
 
-from youju.govsites.placenames import OUTPUT, place_names, render, short_form
+from youju.govsites.placenames import (
+    BODIES_OUTPUT,
+    OUTPUT,
+    agency_bodies,
+    place_names,
+    render,
+    render_bodies,
+    short_form,
+)
 
 
-def test_place_names_file_matches_divisions() -> None:
-    assert OUTPUT.read_text(encoding="utf-8") == render(place_names())
+def test_name_lists_match_docs() -> None:
+    """地名名单和区划清单一致，机关名称词表和部门栏目清单、手工补充一致（清单更新了要重新生成）。"""
+    names = place_names()
+    assert OUTPUT.read_text(encoding="utf-8") == render(names)
+    bodies = agency_bodies(places=names)
+    assert BODIES_OUTPUT.read_text(encoding="utf-8") == render_bodies(bodies)
+    assert {"人民政府", "财政局", "发展和改革委员会", "经济技术开发区管理委员会"} <= set(bodies)
 
 
 def test_short_forms_of_autonomous_areas() -> None:
