@@ -24,6 +24,7 @@ docs/数据来源/全国覆盖/集约化平台盘点.md）。
 """
 
 import ast
+import html as html_lib
 import json
 import re
 from dataclasses import dataclass
@@ -42,8 +43,9 @@ class ListApi:
 
 
 def _attrs(tag: str) -> dict[str, str]:
+    # 属性值里的 &amp; 等字符实体按浏览器的读法还原，参数才和浏览器发的一样（D-128 护栏 ①）
     return {
-        m.group(1).lower(): (m.group(3) if m.group(3) is not None else m.group(4))
+        m.group(1).lower(): html_lib.unescape(m.group(3) if m.group(3) is not None else m.group(4))
         for m in _ATTR.finditer(tag)
     }
 
@@ -121,11 +123,13 @@ _LOGIN_URL = re.compile(
 _LOGIN_TEXT = re.compile(
     r"请(?:先)?登[录陆]|(?:需要|需|未|重新)登[录陆]|登[录陆](?:后|超时|失效|过期)|用户登录|身份认证|"
     r"未授权|无权限|没有权限|权限不足|无权(?:访问|查看|阅读)|验证码|滑块|人机验证|安全验证|"
-    r"captcha|geetest|unauthori[sz]ed|login required|type\s*=\s*[\"']?password",
+    r"captcha|geetest|unauthori[sz]ed|login required|<input\b[^>]*type\s*=\s*[\"']?password",
     re.I,
 )
 # 列表那段里有密码输入框：返回的是登录框，不是公开列表（11/12 查缓存里 616 次返回，一次也没有）
-_PASSWORD_INPUT = re.compile(r"type\s*=\s*[\"']?password", re.I)
+_PASSWORD_INPUT = re.compile(r"<input\b[^>]*type\s*=\s*[\"']?password", re.I)
+# 列表那段里条目链接以外的文字（登录、没权限一类提示写在这里；条目标题里出现不算）
+_ANCHOR = re.compile(r"<a\b.*?</a>", re.S | re.I)
 _GATE_TEXT = re.compile(
     r"访问被拒绝|拒绝访问|禁止访问|访问受限|非法请求|防火墙|安全防护|access denied|forbidden",
     re.I,
@@ -208,6 +212,11 @@ def _payload_refusal(payload: dict) -> str:
     html = inner.get("html") if isinstance(inner, dict) else None
     if isinstance(html, str) and _PASSWORD_INPUT.search(html):
         return "列表接口返回的是登录框"
+    if isinstance(html, str):
+        outside = _TAGS.sub(" ", _ANCHOR.sub(" ", html))
+        hint = _LOGIN_TEXT.search(outside)
+        if hint:
+            return f"列表接口返回里有登录或权限提示（{hint.group(0)}）"
     fields = _permission_fields(payload)
     if fields:
         return f"列表接口返回带权限要求（{'、'.join(fields)} 不为空）"

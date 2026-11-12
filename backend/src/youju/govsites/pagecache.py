@@ -49,14 +49,16 @@ class PageCache:
         h = hashlib.sha1(url.encode("utf-8")).hexdigest()
         return self.root / "pages" / h[:2] / f"{h}.json.gz"
 
-    def get(self, url: str) -> FetchResult:
+    def get(self, url: str, same_address_only: bool = False) -> FetchResult:
+        """same_address_only：只取这个地址本身、跳到别处不跟（读列表接口时用，
+        见 PoliteFetcher.fetch）。"""
         # 同一网址同时只抓一次：几个部门共用一个网站时，后来的直接用缓存
         with self._lock:
             lock = self._url_locks.setdefault(url, threading.Lock())
         with lock:
-            return self._get(url)
+            return self._get(url, same_address_only)
 
-    def _get(self, url: str) -> FetchResult:
+    def _get(self, url: str, same_address_only: bool = False) -> FetchResult:
         path = self._path(url)
         cached = self._read(path)
         if cached is not None:
@@ -75,7 +77,11 @@ class PageCache:
                 return FetchResult(**cached)
         if self.offline or self.fetcher is None:
             return FetchResult(url, "not_cached", error="缓存里没有，离线模式不抓")
-        result = self.fetcher.fetch(url)
+        result = (
+            self.fetcher.fetch(url, same_address_only=True)
+            if same_address_only
+            else self.fetcher.fetch(url)
+        )
         if result.status == "ok" and result.content.startswith(b"%PDF-"):
             # 年度报表有的只发 PDF：存它的文字（表里有"首页网址"）
             from youju.crawler.pdf import extract_pdf_text

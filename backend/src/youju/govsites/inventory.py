@@ -419,7 +419,7 @@ class Inventory:
         if "unitbuild.js" in result.text:
             # 大汉 jpaas：导航、栏目列表都由页面声明的单元接口拼出来，按页面给的参数取（最多 4 个）
             for api in find_unit_apis(result.text, info.final_url)[:4]:
-                r = self.cache.get(api.url)
+                r = self.cache.get(api.url, same_address_only=True)  # 跳到别处不跟（D-128 ①）
                 refused = api_refusal(api, r)
                 if refused:
                     # 读取护栏（D-128）：不读这个接口，记下原因（部门页栏目全靠它时记不能抓）

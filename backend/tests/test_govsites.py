@@ -269,7 +269,7 @@ class FakeCache:
         self.pages = pages
         self.hits = self.fetches = 0
 
-    def get(self, url: str) -> FetchResult:
+    def get(self, url: str, same_address_only=False) -> FetchResult:
         if url in self.pages:
             return FetchResult(url, "ok", url, 200, self.pages[url])
         return FetchResult(url, "http_error", url, 404, "", "HTTP 404")
@@ -878,7 +878,7 @@ def test_dept_levels_skip_upper_level_departments(tmp_path):
             super().__init__(pages)
             self.asked: list[str] = []
 
-        def get(self, url):
+        def get(self, url, same_address_only=False):
             self.asked.append(url)
             return super().get(url)
 

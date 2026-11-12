@@ -128,7 +128,7 @@ def check_one(cache: PageCache, col: ColumnCheck, today: date) -> ColumnCheck:
         # 和正式抓取一样：页面声明了集约化平台的列表接口就按它读（crawler/adapters.py）
         api = find_list_api(r.text, final)
         if api is not None:
-            ar = cache.get(api.url)
+            ar = cache.get(api.url, same_address_only=True)  # 跳到别处不跟（D-128 ①）
             refused = api_refusal(api, ar)
             if refused:
                 # 读取护栏（D-128）：接口返回不是成功、带权限要求、要登录或验证码、明确拒绝

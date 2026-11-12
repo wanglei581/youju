@@ -14,7 +14,7 @@ class FakeFetcher:
     def __init__(self, responses: dict[str, list[FetchResult]]) -> None:
         self.responses = responses
 
-    def fetch(self, url: str) -> FetchResult:
+    def fetch(self, url: str, same_address_only: bool = False) -> FetchResult:
         return self.responses[url].pop(0)
 
 
@@ -186,7 +186,7 @@ def test_no_transaction_or_lock_is_held_while_fetching(session_factory) -> None:
     with session_factory() as s:
 
         class CheckingFetcher:
-            def fetch(self, fetch_url: str) -> FetchResult:
+            def fetch(self, fetch_url: str, same_address_only: bool = False) -> FetchResult:
                 # 网络请求期间：本会话没有打开的事务，别的会话能立即锁住来源行
                 assert not s.in_transaction()
                 with session_factory() as other:
@@ -441,9 +441,9 @@ class RecordingFetcher(FakeFetcher):
         super().__init__(responses)
         self.requested: list[str] = []
 
-    def fetch(self, url: str) -> FetchResult:
+    def fetch(self, url: str, same_address_only: bool = False) -> FetchResult:
         self.requested.append(url)
-        return super().fetch(url)
+        return super().fetch(url, same_address_only)
 
 
 def test_only_the_page_and_its_declared_api_are_requested(session) -> None:
@@ -519,14 +519,14 @@ def test_refusal_note_is_merged_into_the_latest_config(session, session_factory)
     body = '{"success":false,"code":"200","message":"","data":{}}'
 
     class EditingFetcher(FakeFetcher):
-        def fetch(self, fetch_url: str) -> FetchResult:
+        def fetch(self, fetch_url: str, same_address_only: bool = False) -> FetchResult:
             if fetch_url == JPAAS_API:
                 # 检查进行中，另一处给这个来源写了别的配置
                 with session_factory() as other:
                     row = other.get(Source, source.id)
                     row.parser_config = {**(row.parser_config or {}), "note": "别处写的"}
                     other.commit()
-            return super().fetch(fetch_url)
+            return super().fetch(fetch_url, same_address_only)
 
     fetcher = EditingFetcher({url: [page(url, JPAAS_PAGE)], JPAAS_API: [page(JPAAS_API, body)]})
     check = check_source(session, source, fetcher)
@@ -545,13 +545,13 @@ def test_dropping_old_refusal_keeps_a_newer_one_written_meanwhile(session, sessi
     newer = _refused_note(JPAAS_API, 0)
 
     class RacingFetcher(FakeFetcher):
-        def fetch(self, fetch_url: str) -> FetchResult:
+        def fetch(self, fetch_url: str, same_address_only: bool = False) -> FetchResult:
             if fetch_url == JPAAS_API:
                 with session_factory() as other:  # 另一次检查刚记下新的拦下记录
                     row = other.get(Source, source.id)
                     row.parser_config = newer
                     other.commit()
-            return super().fetch(fetch_url)
+            return super().fetch(fetch_url, same_address_only)
 
     fetcher = RacingFetcher(
         {url: [page(url, JPAAS_PAGE)], JPAAS_API: [page(JPAAS_API, JPAAS_JSON)]}

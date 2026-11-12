@@ -230,7 +230,7 @@ class _Cache:
     def __init__(self, pages: dict) -> None:
         self.pages = pages
 
-    def get(self, url: str) -> FetchResult:
+    def get(self, url: str, same_address_only=False) -> FetchResult:
         value = self.pages.get(url)
         if isinstance(value, FetchResult):
             return value
@@ -423,3 +423,83 @@ def test_login_form_inside_the_list_html_is_not_read():
     text = _payload(data={"html": LIST + '<form><input type="password" name="p"></form>'})
     assert "登录框" in api_refusal(api, _got(text))
     assert api_html(api, text) == ""
+
+
+def _fetcher(handler, requested: list[str]) -> PoliteFetcher:
+    def recording(request: httpx.Request) -> httpx.Response:
+        requested.append(str(request.url))
+        return handler(request)
+
+    return PoliteFetcher(
+        "TestAgent YoujuBot/0.1",
+        per_host_interval=0.0,
+        transport=httpx.MockTransport(recording),
+        resolver=lambda host: ["1.2.3.4"],
+    )
+
+
+def test_redirect_away_from_the_declared_api_is_never_requested():
+    """D-128 护栏 ①：接口跳到页面没写的地址，抓取器不去请求那个地址，返回跳转本身。"""
+    api = _api()
+    requested: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/robots.txt":
+            return httpx.Response(404)
+        if request.url.path == HANWEB_JPAAS_PATH:
+            return httpx.Response(302, headers={"location": "https://kjt.zj.gov.cn/other/unit"})
+        return httpx.Response(200, json=json.loads(_payload()))
+
+    with _fetcher(handler, requested) as f:
+        got = f.fetch(api.url, same_address_only=True)
+    assert got.status == "redirect" and got.final_url == "https://kjt.zj.gov.cn/other/unit"
+    assert not any("/other/unit" in u for u in requested)
+    assert "没写的地址" in api_refusal(api, got)
+
+
+def test_http_to_https_upgrade_of_the_same_api_is_followed():
+    from youju.crawler.adapters import ListApi
+
+    api = ListApi("大汉jpaas", f"http://kjt.zj.gov.cn{HANWEB_JPAAS_PATH}?pageId=1", PAGE_URL)
+    requested: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/robots.txt":
+            return httpx.Response(404)
+        if request.url.scheme == "http":
+            return httpx.Response(301, headers={"location": api.url.replace("http://", "https://")})
+        return httpx.Response(200, json=json.loads(_payload()))
+
+    with _fetcher(handler, requested) as f:
+        got = f.fetch(api.url, same_address_only=True)
+    assert got.status == "ok" and api_refusal(api, got) == ""
+    assert api_html(api, got.text) == LIST
+
+
+def test_entities_in_page_attributes_are_decoded_like_a_browser():
+    from urllib.parse import parse_qsl
+
+    page = (
+        f'<script src="/x/unitbuild.js" url="{HANWEB_JPAAS_PATH}?a=1&amp;b=2" '
+        "queryData=\"{'tagId':'当前栏目list','pageId':'1&amp;2'}\"></script>"
+    )
+    api = find_list_api(page, PAGE_URL)
+    assert parse_qsl(urlsplit(api.url).query) == [
+        ("a", "1"),
+        ("b", "2"),
+        ("tagId", "当前栏目list"),
+        ("pageId", "1&2"),
+    ]
+
+
+def test_login_hint_in_list_html_outside_item_links_is_not_read():
+    api = _api()
+    gated = _payload(data={"html": "<p>请先登录后查看</p>" + LIST})
+    assert "登录或权限提示" in api_refusal(api, _got(gated))
+    assert api_html(api, gated) == ""
+    # 条目标题里写着"登录""type=password"一类的字样照常读
+    titles = (
+        '<li><a href="/art/1.html">关于用户登录后申报的说明（type=password 字段）</a>'
+        "<span>2026-11-05</span></li>"
+    )
+    assert api_refusal(api, _got(_payload(data={"html": titles}))) == ""

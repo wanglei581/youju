@@ -57,7 +57,7 @@ class FakeCache:
         self.hits = self.fetches = 0
         self.asked: list[str] = []
 
-    def get(self, url: str) -> FetchResult:
+    def get(self, url: str, same_address_only=False) -> FetchResult:
         self.asked.append(url)
         if url in self.pages:
             return FetchResult(url, "ok", url, 200, self.pages[url])
@@ -426,7 +426,7 @@ def test_link_redirecting_to_home_is_not_a_directory():
     )
 
     class Redirect(FakeCache):
-        def get(self, url):
+        def get(self, url, same_address_only=False):
             if url == "http://www.zjcx.gov.cn/jgsz/":
                 r = super().get(home)
                 return FetchResult(url, r.status, home, r.http_status, r.text, r.error)

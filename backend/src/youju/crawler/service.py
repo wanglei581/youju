@@ -39,7 +39,9 @@ PARSE_EMPTY_MESSAGE = (
 class Fetcher:
     """抓取器接口；测试时可以换成假的实现。"""
 
-    def fetch(self, url: str) -> FetchResult:  # pragma: no cover - 接口定义
+    def fetch(
+        self, url: str, same_address_only: bool = False
+    ) -> FetchResult:  # pragma: no cover - 接口定义
         raise NotImplementedError
 
 
@@ -206,7 +208,8 @@ def _items_via_adapter(
     api = api or find_list_api(page.text, page.final_url or url)
     if api is None:
         return _AdapterResult([])
-    result = fetcher.fetch(api.url)
+    # 只取页面写明的那个地址，跳到别处不跟（D-128 读取护栏 ①）
+    result = fetcher.fetch(api.url, same_address_only=True)
     if result.status == "robots_disallowed":
         return _AdapterResult([], api.adapter, result, api_url=api.url)  # 照旧按 robots 禁止记
     refused = api_refusal(api, result)
