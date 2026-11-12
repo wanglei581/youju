@@ -722,3 +722,81 @@ def test_city_personal_flag(session):
         personal_share(["承保机构公开遴选公告"] * 5 + ["拖欠农民工工资失信联合惩戒对象名单"] * 5)
         == 0
     )
+
+
+def test_development_zone_cells_by_full_name(tmp_path):
+    """开发区一个城市有几格（部门都记"开发区"）：按部门全称分开算；别的部门写法不同也算同一格。"""
+    from youju.govsites.sample import evidence_results
+
+    head = "层级,省份,城市,区县,部门,部门全称,栏目URL,自动结论,没过的项,复核人,复核结论,复核备注\n"
+    rows = "".join(
+        f"市级,四川,南充,,开发区,南充{name},z{n},自动通过,,联网核对,通过,\n"
+        for n, name in enumerate(("经济开发区管委会", "高新技术产业园区管委会"))
+    )
+    rows += "市级,四川,南充,,发改委,南充市发展和改革委员会,a,自动通过,,联网核对,通过,\n"
+    rows += "市级,四川,南充,,发改委,南充市发改委,b,自动通过,,联网核对,通过,\n"
+    (tmp_path / "四川.csv").write_text(head + rows, encoding="utf-8-sig")
+    [res] = evidence_results(tmp_path)
+    assert len(res.cells["部门"]) == 3 and res.sample_lines[0].judged == 3
+
+
+def test_city_upper_flag(session):
+    """上级粗筛：地市、区县栏目最新 10 条里像上级文件的占六成以上，记"上级"、转人工；
+    混着本级文件的不记；区县栏目里市里的文件也算上级。"""
+    from youju.govsites.sample import upper_level_title
+
+    def source(url, titles, level="市级", district=None):
+        s = Source(
+            level=level,
+            province="江苏",
+            city="南京",
+            district=district,
+            dept="工信",
+            dept_full_name="南京市工业和信息化局"
+            if level == "市级"
+            else "南京市玄武区工业和信息化局",
+            column_name="政策法规",
+            url=url,
+            fetch_mode="static",
+            enabled=False,
+            parser_config={},
+            verification_status="试跑可读（全国覆盖 v1，未启用）",
+        )
+        session.add(s)
+        session.flush()
+        _check(session, s, len(titles))
+        for n, title in enumerate(titles):
+            doc_url = f"https://{url.split('/')[2]}/art/{s.id}_{n}.html"
+            session.add(
+                Document(
+                    source_id=s.id,
+                    title=title,
+                    url=doc_url,
+                    url_key=url_key(doc_url),
+                    publish_date=date(2026, 11, 1 + n % 9),
+                    first_seen_at=NOW,
+                    last_seen_at=NOW,
+                )
+            )
+        return s
+
+    provincial = [f"江苏省工业和信息化厅关于第{n}批项目的通知" for n in range(5)]
+    provincial += ["省财政厅关于下达专项资金的通知", "国务院办公厅关于促进制造业发展的意见"]
+    own = [f"南京市工业和信息化局关于第{n}批项目的通知" for n in range(6)]
+    upper = source("https://gxj.nanjing.gov.cn/zcfg/", provincial + own[:3])
+    mixed = source("https://gxj.nanjing.gov.cn/tzgg/", provincial[:4] + own)
+    county = source(
+        "https://www.xuanwu.gov.cn/gxj/",
+        [f"南京市工业和信息化局关于第{n}批项目的通知" for n in range(7)]
+        + [f"玄武区工业和信息化局关于第{n}批项目的通知" for n in range(3)],
+        level="区县级",
+        district="玄武区",
+    )
+    session.commit()
+    city = {r.source.url: r for r in sample_rows(session, "市级", now=NOW)}
+    assert "上级" in city[upper.url].failed  # 7/10
+    assert "上级" not in city[mixed.url].failed  # 4/10
+    [row] = [r for r in sample_rows(session, "区县级", now=NOW) if r.source.url == county.url]
+    assert "上级" in row.failed  # 区县栏目里市里的文件 7/10
+    assert not upper_level_title(upper, "南京市人民政府办公厅关于转发《江苏省……》的通知")
+    assert upper_level_title(upper, "《关于促进民营经济发展的若干措施》")

@@ -21,10 +21,13 @@
 - 部门（补充）：国家级按部委名核对；市场监管格挂的是知识产权局；
 - 重复：同一省里去掉参数后是同一个列表的，后面那个记重复。
 
-地市、区县再加一项（D-129 的个人事项门，看最新 20 条）：
+地市、区县再加两项：
 
-- 个人事项：个人名单类和招聘、考试、任免类标题占 60% 以上（见 personal_list_title），交给人看：
-  整栏都是的记"不收"，还有政策、通知的照收（个人事项按 D-097 ② 不给正文）。
+- 个人事项（D-129 的个人事项门，看最新 20 条）：个人名单类和招聘、考试、任免类标题占 60% 以上
+  （见 personal_list_title），交给人看：整栏都是的记"不收"，还有政策、通知的照收（个人事项按
+  D-097 ② 不给正文）。
+- 上级（看最新 10 条）：像上级文件的占 60% 以上（见 upper_level_title；地市的上级是国家、省里的，
+  区县再加市里的），交给人看：整栏是上级文件的记"不通过"，偶尔转载一两条的照收（11/12 定的口径）。
 
 都过记"自动通过"，否则记"待人工"并写明哪项没过；最后三列（复核人、复核结论、复核备注）
 留给人工复核。复核结论写"通过""不通过""待重试"（这次没抓到）、"不能抓"（按访问控制等不读）
@@ -162,6 +165,30 @@ def personal_share(titles: list[str]) -> float | None:
     if len(titles) < PERSONAL_MIN_ITEMS:
         return None
     return sum(personal_list_title(t) for t in titles) / len(titles)
+
+
+# "上级"粗筛（11/12 地市一组用的时候提的）：最新 10 条里像上级文件的占六成以上，转人工
+UPPER_RECENT = 10
+UPPER_SHARE = 0.6
+
+
+def upper_level_title(s: Source, title: str) -> bool:
+    """地市、区县栏目里像上级文件的标题：国家层面的（同省级那条：《》开头、国务院、部委……）或以
+    省名、"省"开头的；区县的还算以本市名称开头的。标题里写着本级名称的（"南京市……""某某县……"）
+    不算。粗筛，候选交给人看。"""
+    text = title.strip()
+    if s.level == "区县级" and s.district:
+        own = {v for v in name_variants(s.district) | {s.district} if len(v) >= 2}
+        upper_starts = _city_names(s) if s.city else set()
+    else:
+        own = _city_names(s) if s.city else set()
+        upper_starts = set()
+    if not text or any(v in text for v in own):
+        return False
+    prov = {v for v in name_variants(s.province) | {s.province} if len(v) >= 2}
+    if text.startswith((*prov, "省", *upper_starts)):
+        return True
+    return bool(_CENTRAL.search(text) or ("关于" not in text and _BARE_RULE.search(text)))
 
 
 def _kind(name: str | None) -> str | None:
@@ -349,6 +376,10 @@ def sample_rows(
             share = personal_share([t or "" for t in recent])
             if share is not None and share >= PERSONAL_SHARE:
                 row.failed.append("个人事项")
+            newest = [t or "" for t in recent[:UPPER_RECENT]]
+            upper = sum(upper_level_title(s, t) for t in newest)
+            if len(newest) >= PERSONAL_MIN_ITEMS and upper >= UPPER_SHARE * len(newest):
+                row.failed.append("上级")
         rows.append(row)
     _mark_duplicates(rows)
     return rows
@@ -749,7 +780,10 @@ def evidence_results(folder) -> list[ProvinceResult]:
                 verdict = final_verdict(r)
                 res.level = res.level or (r.get("层级") or "").strip()
                 layer = _layer(res.level, (r.get("部门") or "").strip())
-                cell = tuple((r.get(k) or "").strip() for k in ("城市", "区县", "部门"))
+                # 格：城市、区县、部门；开发区一个城市有几格（部门都记"开发区"），再加上部门全称
+                dept = (r.get("部门") or "").strip()
+                zone = (r.get("部门全称") or "").strip() if dept == "开发区" else ""
+                cell = ((r.get("城市") or "").strip(), (r.get("区县") or "").strip(), dept, zone)
                 res.cells.setdefault(layer, set()).add(cell)
                 n_round = _sample_round(r.get("复核人") or "")
                 if n_round is not None:
