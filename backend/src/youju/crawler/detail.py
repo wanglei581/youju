@@ -103,6 +103,15 @@ _CENTRAL_AGENCIES = frozenset(
     )
 )  # fmt: skip
 
+# 省级区划的简称：中央机关在地方的分支常这样写（"国家金融监督管理总局四川监管局""中国人民银行上海
+# 分行"）；直辖市简称后面跟开发区、海关的也算地名开头
+_PROVINCE_SHORT = frozenset(
+    (
+        "北京", "天津", "上海", "重庆", "内蒙古", "广西", "西藏", "宁夏", "新疆", "河北", "山西",
+        "辽宁", "吉林", "黑龙江", "江苏", "浙江", "安徽", "福建", "江西", "山东", "河南", "湖北",
+        "湖南", "广东", "海南", "四川", "贵州", "云南", "陕西", "甘肃", "青海", "台湾",
+    )
+)  # fmt: skip
 # 中央机关在地方的分支：父机关 + 地名 + 这几种名称（"国家税务总局龙岩市税务局"）
 _BRANCH_BODIES = {
     "国家税务总局": ("税务局",),
@@ -1028,7 +1037,11 @@ def _full_agency(name: str) -> bool:
         return True
     for parent, branches in _BRANCH_BODIES.items():
         if name.startswith(parent):
-            body, stripped = _strip_places(name.removeprefix(parent))
+            rest = name.removeprefix(parent)
+            body, stripped = _strip_places(rest)
+            short = next((k for k in (3, 2) if rest[:k] in _PROVINCE_SHORT), 0)
+            if not stripped and short:
+                body, stripped = rest[short:], True
             return stripped and body in branches
     party = name.startswith("中共")
     body, stripped = _strip_places(name.removeprefix("中共"))
@@ -1051,7 +1064,7 @@ def _agency_names() -> tuple[frozenset[str], frozenset[str], frozenset[str]]:
     places = read("place_names.txt")
     # 直辖市不在名单里（省级），简称单独加上（"北京经济技术开发区""上海海关"）
     cities = frozenset(n[:-1] for n in places if n.endswith("市") and len(n) >= 3)
-    cities |= {"北京", "天津", "上海", "重庆"}
+    cities |= {"北京", "天津", "上海", "重庆"} & _PROVINCE_SHORT
     return places, cities, read("agency_bodies.txt")
 
 
