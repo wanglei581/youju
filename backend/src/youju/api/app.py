@@ -3334,6 +3334,11 @@ def _apply_review(
     twins = [d for d in locked if d.id != row.id and d.status == "pending"]
     for item in {row, *twins}:
         item.status = status
+        item.verification_quote = None
+        item.verification_corrected = None
+        item.verification_unclear_hash = None
+        item.verification_unclear_note = None
+        item.verification_unclear_at = None
         item.reviewed_by = reviewed_by
         item.reviewed_at = reviewed_at
         item.audit_state = None
