@@ -667,3 +667,74 @@ def test_clean_title_drops_body_text_stuck_after_the_title():
     ]
     for title in untouched:
         assert clean_title(title) == title
+
+
+def test_title_attribute_with_publish_date_after_the_title_drops_the_date() -> None:
+    # 济南人社 col18578（地市一组 11/12）：title 属性是"标题 + 空格 + 发布日期"，行里另写日期。
+    # 曾整个用 title 属性，入库标题后面都带着"2026年11月05日"
+    html = """<ul>
+      <li><a href="/a/1.html" title="济南市劳动能力鉴定委员会劳动能力鉴定结论书送达公告 2026年11月05日">
+        济南市劳动能力鉴定委员会劳动能力鉴定结论书送达公告</a><span>[2026-11-05]</span></li>
+      <li><a href="/a/2.html" title="济南市人力资源和社会保障局2025年度法治政府建设报告 2026-01-16">
+        济南市人力资源和社会保障局2025年度法治政府建设报告</a><span>[2026-01-16]</span></li>
+      <li><a href="/a/3.html" title="关于对拟入选高技能人才培训基地名单进行公示的通知 2026年10月30日">
+        关于对拟入选高技能人才培训基地名单进行...</a><span>[2026-10-30]</span></li>
+    </ul>"""
+    items = extract_items(html, "https://example.gov.cn/a/", today=date(2026, 11, 12))
+    assert [(i.title, i.publish_date) for i in items] == [
+        ("济南市劳动能力鉴定委员会劳动能力鉴定结论书送达公告", date(2026, 11, 5)),
+        ("济南市人力资源和社会保障局2025年度法治政府建设报告", date(2026, 1, 16)),
+        # 链接文字截断时，用 title 属性的完整标题，同样不带日期
+        ("关于对拟入选高技能人才培训基地名单进行公示的通知", date(2026, 10, 30)),
+    ]
+
+
+def test_title_attribute_keeps_dates_that_belong_to_the_title() -> None:
+    # 只去掉"空格 + 完整年月日"、而且剩下的正是链接文字时才去：括号里的日期、
+    # 标题中间的日期都是标题的一部分
+    html = """<ul>
+      <li><a href="/a/1.html" title="国务院政策例行吹风会文字实录（2026年11月5日）">
+        国务院政策例行吹风会文字实录</a><span>2026-11-05</span></li>
+      <li><a href="/a/2.html" title="关于调整2026年11月5日起执行的收费标准的通知">
+        关于调整2026年11月5日起执行的收费标准的通知</a><span>2026-11-04</span></li>
+    </ul>"""
+    items = extract_items(html, "https://example.gov.cn/a/", today=date(2026, 11, 12))
+    assert [i.title for i in items] == [
+        "国务院政策例行吹风会文字实录（2026年11月5日）",
+        "关于调整2026年11月5日起执行的收费标准的通知",
+    ]
+
+
+def test_tooltip_in_title_attribute_gives_only_the_title() -> None:
+    # 漯河、本溪、商丘、泸州一类平台（地市一组 11/9、11/12）：title 属性是悬浮提示
+    # "标题：……（换行）点击数：0（换行）发表时间：……"，曾整段入库
+    html = """<ul>
+      <li><a href="/content_101.html" title="标题：本溪市发展和改革委员会关于宣布废止和失效部分行政规范性文件的通知&#xD;&#xA;点击数：0&#xD;&#xA;发表时间：2026-07-01">本溪市发展和改革委员会关于宣布废止和失效部分行政...</a><span>2026-07-01</span></li>
+      <li><a href="/content_102.html" title="标题：政策解读：《四川省高标准农田工程设施管护实施办法》&#xD;&#xA;点击数：12&#xD;&#xA;发表时间：2026-03-03">政策解读：《四川省高标准农田工程设施管护实施办法》</a><span>2026-03-03</span></li>
+      <li><a href="/content_103.html" title="标题：关于开展专项申报工作的通知
+点击数：110
+发表时间：2026-09-22">关于开展专项申报工作的通知</a><span>2026-09-22</span></li>
+    </ul>"""
+    items = extract_items(html, "https://example.gov.cn/", today=date(2026, 11, 12))
+    assert [i.title for i in items] == [
+        "本溪市发展和改革委员会关于宣布废止和失效部分行政规范性文件的通知",
+        "政策解读：《四川省高标准农田工程设施管护实施办法》",
+        "关于开展专项申报工作的通知",
+    ]
+
+
+def test_clean_title_takes_the_title_out_of_a_tooltip() -> None:
+    # 历史题录重算（reclassify）也用它：库里已经整段入库的提示文字，按同一规则改回标题
+    from youju.crawler.titles import clean_title
+
+    assert (
+        clean_title("标题：关于开展专项申报工作的通知 点击数：110 发表时间：2026-09-22")
+        == "关于开展专项申报工作的通知"
+    )
+    # 三段不全的不动：标题本身以"标题："打头、或只写了点击数
+    for kept in (
+        "标题：关于开展专项申报工作的通知",
+        "关于开展专项申报工作的通知 点击数：110 发表时间：2026-09-22",
+        "标题：关于开展专项申报工作的通知 点击数：很多 发表时间：2026-09-22",
+    ):
+        assert clean_title(kept) == kept

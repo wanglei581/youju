@@ -810,6 +810,82 @@ def test_department_channel_under_a_topic_path_keeps_its_columns():
     assert [c.url for c in fg.columns] == ["http://www.lianxi.gov.cn/ztzl/fgw/tzgg/"]
 
 
+def _commerce_pages(side_first: bool) -> dict[str, str]:
+    core = '<a href="/bm/swj/">濂溪区商务局</a><a href="/bm/scj/">濂溪区市场监督管理局</a>'
+    side = '<a href="/bm/kab/">濂溪区人民政府口岸办公室</a><a href="/bm/zscq/">濂溪区知识产权局</a>'
+    return _lianxi_with(
+        side + core if side_first else core + side,
+        {
+            "http://www.lianxi.gov.cn/bm/swj/": "<p>机构职能</p>",
+            "http://www.lianxi.gov.cn/bm/scj/": "<p>机构职能</p>",
+            "http://www.lianxi.gov.cn/bm/kab/": '<a href="/bm/kab/tzgg/">通知公告</a>',
+            "http://www.lianxi.gov.cn/bm/zscq/": '<a href="/bm/zscq/tzgg/">通知公告</a>',
+        },
+    )
+
+
+def test_commerce_bureau_not_replaced_by_port_or_investment_office():
+    # 宁波、舟山、东莞、佛山（地市一组 11/12）：商务局页认不出能读的栏目时，同分、有栏目的口岸办、
+    # 投资促进局顶掉过它。名称带"商务"的排在前面，也不拿只靠兼管词（口岸、投资促进、招商）认出来的
+    # 顶替；市场监管同理（知识产权局不顶替市场监督管理局）。两种链接先后都一样
+    for side_first in (False, True):
+        depts = _depts(_run(_commerce_pages(side_first), ["江西"]))
+        assert depts[("360402", "商务")].site_url == "http://www.lianxi.gov.cn/bm/swj/"
+        assert depts[("360402", "市场监管")].site_url == "http://www.lianxi.gov.cn/bm/scj/"
+
+
+def test_commerce_bureau_first_even_when_it_only_links_a_weak_page():
+    # 东莞（地市一组 11/12）：商务局只链到信息公开平台页（弱页），外商投资促进中心链到网站首页：
+    # 同分时照样先试商务局
+    pages = _lianxi_with(
+        '<a href="/bm/tzcj/">濂溪区外商投资促进中心</a><a href="/bm/swj/gkmlpt/index">濂溪区商务局</a>',
+        {
+            "http://www.lianxi.gov.cn/bm/tzcj/": '<a href="/bm/tzcj/tzgg/">通知公告</a>',
+            "http://www.lianxi.gov.cn/bm/swj/gkmlpt/index": "<p>信息公开</p>",
+        },
+    )
+    sw = _depts(_run(pages, ["江西"]))[("360402", "商务")]
+    assert sw.site_url == "http://www.lianxi.gov.cn/bm/swj/gkmlpt/index"
+
+
+def test_side_offices_still_count_without_a_core_named_bureau():
+    # 没有商务局、市场监督管理局时，口岸办、知识产权局照旧算商务、市场监管
+    pages = _lianxi_with(
+        '<a href="/bm/kab/">濂溪区人民政府口岸办公室</a><a href="/bm/zscq/">濂溪区知识产权局</a>',
+        {
+            "http://www.lianxi.gov.cn/bm/kab/": '<a href="/bm/kab/tzgg/">通知公告</a>',
+            "http://www.lianxi.gov.cn/bm/zscq/": '<a href="/bm/zscq/tzgg/">通知公告</a>',
+        },
+    )
+    depts = _depts(_run(pages, ["江西"]))
+    assert depts[("360402", "商务")].site_url == "http://www.lianxi.gov.cn/bm/kab/"
+    assert depts[("360402", "市场监管")].site_url == "http://www.lianxi.gov.cn/bm/zscq/"
+
+
+def test_portal_section_above_the_channel_is_not_the_departments_info_page():
+    # 枣庄数据局（地市一组 11/12）：部门频道页（机构简介）上的"政务公开"链到门户一级栏目 /zwgk/，
+    # 曾从那里拿到门户的"财政预决算公开"专题，去掉专题又会拿到门户的规范性文件库
+    tzgg = "http://www.lianxi.gov.cn/zwgk/jgzn/sjj/tzgg/"
+    pages = _lianxi_with(
+        '<a href="/zwgk/jgzn/sjj/jgjj/">濂溪区数据局</a>',
+        {
+            "http://www.lianxi.gov.cn/zwgk/jgzn/sjj/jgjj/": """<a href="/zwgk/">政务公开</a>
+                <a href="/zwgk/jgzn/sjj/tzgg/">通知公告</a>""",
+            "http://www.lianxi.gov.cn/zwgk/": """<a href="/zwgk/zt/czyjsgk/">政策文件</a>
+                <a href="/zcwjk/gfxwjgk/">规范性文件</a><a href="/zwgk/gsgg/">公示公告</a>""",
+        },
+    )
+    sj = _depts(_run(pages, ["江西"]))[("360402", "数据局")]
+    assert [c.url for c in sj.columns] == [tzgg]
+    # "信息公开"链到门户别处（不在频道上面）的页面照常找；那页上的门户专题按部门频道的目录看，不算
+    pages["http://www.lianxi.gov.cn/zwgk/jgzn/sjj/jgjj/"] = """<a href="/xxgk/">信息公开</a>
+        <a href="/zwgk/jgzn/sjj/tzgg/">通知公告</a>"""
+    pages["http://www.lianxi.gov.cn/xxgk/"] = """<a href="/xxgk/zt/czyjsgk/">政策文件</a>
+        <a href="/xxgk/sjj/gsgg/">公示公告</a>"""
+    sj = _depts(_run(pages, ["江西"]))[("360402", "数据局")]
+    assert [c.url for c in sj.columns] == [tzgg, "http://www.lianxi.gov.cn/xxgk/sjj/gsgg/"]
+
+
 def test_weak_top_page_can_be_replaced_by_a_department_site():
     # 潍坊发改委、池州人社（地市一组 11/9）：首选是年报列表、文章一类，后面分低、名称说不清的
     # 部门网站有能读的栏目时换成它

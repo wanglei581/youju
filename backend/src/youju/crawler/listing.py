@@ -91,6 +91,9 @@ _EDGE_DATE = re.compile(
     r"|\s(\d{2}-\d{2})\s*$"
 )
 
+# title 属性结尾隔着空白写的发布日期（只认完整的年月日，括号里的日期可能是标题本身的一部分）
+_ATTR_DATE = re.compile(r"\s+20\d{2}(?:年\d{1,2}月\d{1,2}日|[-/.]\d{1,2}[-/.]\d{1,2})$")
+
 
 _MARKUP = re.compile(r"<\s*/?\s*[A-Za-z][^>]*>")
 
@@ -111,6 +114,11 @@ def _title_of(a: etree._Element) -> str:
     if _MARKUP.search(attr):
         stripped = clean_title(_clean(_MARKUP.sub(" ", attr)))
         return text if _looks_like_title(text) or not stripped else stripped
+    # 济南人社：title 属性是"标题 + 空格 + 发布日期"（title="……送达公告 2026年11月05日"），
+    # 链接文字是不带日期的标题。去掉属性结尾的日期后正是链接文字（或它的完整写法）时，不要这个日期
+    core = _ATTR_DATE.sub("", attr)
+    if core != attr and (core == text or _completes(core, text)):
+        attr = core
     # 链接文字常被截断成"……"，title 属性里才是完整标题
     if attr and (len(attr) >= len(text) or is_truncated(text)):
         return attr

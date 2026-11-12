@@ -13,6 +13,11 @@ _TRAILING_BODY = re.compile(
     rf"^(.{{6,200}}?{_DOC_TYPE})\s+(?:{_SALUTATION}|{_BODY_START}).*$", re.S
 )
 
+# 有的平台（漯河、本溪、商丘、泸州等，文章网址 /content_数字）把悬浮提示写进链接的 title 属性：
+# "标题：……（换行）点击数：0（换行）发表时间：2026-07-01"。只取"标题："后面的标题；
+# 三段都在才算，正文标题里不会这样写
+_TOOLTIP = re.compile(r"^标题[：:]\s*(\S.*?)\s+点击数[：:]\s*\d+\s+发表时间[：:]", re.S)
+
 # 列表页截断长标题时加的省略号："..."（有的多打一个点）或"…"
 # （10/16 验收：天津、青海、河南、湖南、宁夏、重庆）
 _ELLIPSIS = ("...", "…")
@@ -25,9 +30,13 @@ _MARKUP_RESIDUE = re.compile(r"[<>]|&(?:lt|gt|amp|nbsp|quot)", re.I)
 
 
 def clean_title(value: str) -> str:
+    title = value.strip()
+    tip = _TOOLTIP.match(title)
+    if tip:
+        title = tip.group(1)
     # 宁夏列表链接里的“》”是项目装饰符，text_content 会带入标题；只剥离开头孤立闭书名号。
     # 正常《…》以及正文中间的书名号保留，避免损坏正式文件名称。
-    title = re.sub(r"^(?:》\s*)+", "", value.strip())
+    title = re.sub(r"^(?:》\s*)+", "", title)
     match = _TRAILING_BODY.match(title)
     return match.group(1) if match else title
 
