@@ -30,11 +30,28 @@ def _body_quote(body, quote):
 
 # 原句里的时刻：抽取截止时认的写法（extract/deadlines.py 的 _TIME："17:00""17：00""17时"
 # "17 时 30 分"）再加上"点"（AI 找到的截止常写"下午5点"）；前面可以带上午、下午、中午、晚上。
-# 带秒的只认整分（"17:00:00"）；"5点半"不认
+# 冒号后面要有两位分钟（带秒的只认整分，"17:00:00"）；"时""点"后面的分钟要带"分"，免得把后面的
+# "12月"当成分钟；"5点半"不认。时刻前面可以是"截止时间："这类冒号，不能是数字或"数字加冒号"
+# （"17:00:30"里的"00:30"不算一个时刻）
 _CLOCK = re.compile(
-    r"(?:(?P<period>上午|下午|中午|晚上)\s*)?(?<![\d:：])(?P<hour>[01]?\d|2[0-3])\s*[:：时点]"
-    r"\s*(?P<minute>[0-5]\d)?\s*分?(?:[:：](?P<second>[0-5]\d))?(?![\d半])"
+    r"(?:(?P<period>上午|下午|中午|晚上)\s*)?(?<!\d)(?<!\d[:：])(?P<hour>[01]?\d|2[0-3])\s*"
+    r"(?:[:：]\s*(?P<minute>[0-5]\d)(?:[:：](?P<second>[0-5]\d))?\s*分?"
+    r"|[时点](?:\s*(?P<cnminute>[0-5]\d)\s*分)?)"
+    r"(?![\d半])"
 )
+
+
+class _Clock:
+    """把 _CLOCK 的结果交给抽取用的 _clock（它按 hour、minute 两组取值）。"""
+
+    def __init__(self, found):
+        self._groups = {
+            "hour": found.group("hour"),
+            "minute": found.group("minute") or found.group("cnminute"),
+        }
+
+    def group(self, name):
+        return self._groups[name]
 
 
 def _has_time(quote, clock):
@@ -42,7 +59,8 @@ def _has_time(quote, clock):
     from youju.extract.deadlines import _clock
 
     return any(
-        found.group("second") in (None, "00") and _clock(found, found.group("period")) == clock
+        found.group("second") in (None, "00")
+        and _clock(_Clock(found), found.group("period")) == clock
         for found in _CLOCK.finditer(quote)
     )
 

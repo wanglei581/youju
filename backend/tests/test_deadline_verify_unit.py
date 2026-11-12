@@ -226,6 +226,12 @@ def test_stats_cli(monkeypatch, capsys):
         ("请于2026-11-15 18:00:00前提交", time(18), True),
         ("请于2026年11月15日17时 30分前提交", time(17), False),
         ("请于2026年11月15日17时 30分前提交", time(17, 30), True),
+        # 独立 Claude 审阅第二轮：时刻紧跟在"时间："这类冒号后面照认；"时"后面隔着空格的日期
+        # 不当分钟；冒号后面没写分钟的不算
+        ("申报日期：11月15日。截止时间：17:00", time(17), True),
+        ("截止时间：下午5点", time(17), True),
+        ("请于17时 12月1日前提交", time(17), True),
+        ("序号20: 提交申报", time(20), False),
     ],
 )
 def test_has_time_follows_the_extraction_formats(quote, clock, ok):
