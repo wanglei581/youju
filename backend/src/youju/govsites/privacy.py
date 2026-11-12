@@ -92,18 +92,18 @@ _ROLE = re.compile(
         )
     )
 )
-# 职务前后紧挨着的词按"宁可多挡"认人名（_role_name）：常见姓氏开头、不是常用词、不以地名的字
-# （市县区……）结尾就算（"沙市""安区"不算；三个字的前两个字也一样："沙市财""安区人"），名字里有
-# "会""江""科"这类字的照样算（"局长王会""局长王江""局长王科"）。不为"长江""长沙"一类地名开例外
-# （"局长江某某"也是人名）：地名连着"长"字的标题（"宜宾市长江流域""城区长沙湾"）会多挡，挡了还有
-# 日期和网址。职务后面接"单位""质量"的不是人名（"副理事长单位""市长质量奖"）。人名在职务前面的，
-# 要在标题开头或标点后面（"第三季度局长接待日"不挡）
+# 职务前后紧挨着的词、新闻动词前面的词，按"宁可多挡"认人名（_name_ish）：常见姓氏开头、不是常用词、
+# 不以地名的字（市县区……）结尾就算（"沙市""安区"不算；三个字的前两个字也一样："沙市财""安区人"），
+# 名字里有"会""江""科"这类字的照样算（"局长王会""局长王江""王科出席"）。不看姓氏的（开头或标点后跟
+# 出席、主持这类新闻动词的）不是常见姓氏开头时，以机构的字结尾的也不算（"市委主持""市政府与"）。
+# 不为"长江""长沙"一类地名开例外（"局长江某某"也是人名）：地名连着"长"字的标题（"宜宾市长江流域"
+# "城区长沙湾"）会多挡，挡了还有日期和网址。职务后面接"单位""质量"的不是人名（"副理事长单位"
+# "市长质量奖"）。人名在职务前面的，要在标题开头或标点后面（"第三季度局长接待日"不挡）
 _OPEN = '、，,：:；;（(“"《—- 　'
 _PLACE_ENDS = tuple("市县区省州镇乡村旗盟")
 _NOT_ROLE_NAMES = ("单位", "质量")
-# 新闻动词前后像人名的词（_personish）以单位、地名的字结尾的不算（"安区""沙市""公室"），三个字的
-# 前两个字也一样。以这些开头的也不是人名（"关于我市……""国家宣布……"）
-_UNIT_ENDS = (*_NOT_NAME_END, *"室组处科乡")
+_ORG_ENDS = tuple("委府办局厅院部司处室署会团社校所站队组科")
+# 以这些开头的也不是人名（"关于我市……""国家宣布……"）
 _NOT_LEAD = (
     *("关于", "对于", "我", "本", "全", "各", "该", "此", "据", "为", "从", "在", "与", "将"),
     *("把", "经", "国家", "中央"),
@@ -152,30 +152,23 @@ def _named(title: str) -> bool:
     return False
 
 
-def _personish(word: str, *, any_surname: bool = False) -> bool:
-    """新闻标题里这个词像不像人名：不以单位、地名的字结尾，不以"关于""我"这类开头。
-
-    any_surname：不看姓氏（不常见的姓认不出）。"""
-    from youju.crawler.detail import _name_like
-
-    return (
-        len(word) >= 2
-        and re.fullmatch(f"{_H}+", word) is not None
-        and not word.endswith(_UNIT_ENDS)
-        and not (len(word) == 3 and word[:2].endswith(_UNIT_ENDS))
-        and not word.startswith(_NOT_LEAD)
-        and (any_surname or _name_like(word))
-    )
-
-
-def _role_name(word: str) -> bool:
-    """职务前后紧挨着的词像不像人名（宁可多挡）：常见姓氏开头、不是常用词、不以地名的字结尾。"""
+def _name_ish(word: str, *, any_surname: bool = False) -> bool:
+    """职务旁、新闻动词前的词像不像人名（宁可多挡）：常见姓氏开头、不是常用词或地名、不以地名的字结尾、
+    不以"关于""我"这类开头。any_surname：不看姓氏（不常见的姓认不出）。"""
     from youju.crawler import detail
 
     return (
         2 <= len(word) <= 3
         and re.fullmatch(f"{_H}+", word) is not None
-        and (word[0] in detail._SURNAMES or word.startswith(detail._COMPOUND_SURNAMES))
+        and (
+            word[0] in detail._SURNAMES
+            or word.startswith(detail._COMPOUND_SURNAMES)
+            or (
+                any_surname
+                and not word.endswith(_ORG_ENDS)
+                and not (len(word) == 3 and word[:2].endswith(_ORG_ENDS))
+            )
+        )
         and word not in detail._COMMON_WORDS
         and word not in detail._TITLES
         and word not in detail._PLACE_NAMES
@@ -192,26 +185,26 @@ def _news_named(title: str) -> bool:
         return True
     for m in _ROLE.finditer(title):
         rest = title[m.end() :]
-        if any(_role_name(rest[:k]) for k in (2, 3)):
+        if any(_name_ish(rest[:k]) for k in (2, 3)):
             return True
         i = m.start()
         for k in (2, 3):
             j = i - k
-            if j >= 0 and (j == 0 or title[j - 1] in _OPEN) and _role_name(title[j:i]):
+            if j >= 0 and (j == 0 or title[j - 1] in _OPEN) and _name_ish(title[j:i]):
                 return True
     for m in _TOP.finditer(title):
-        if not m.group(1).endswith(_NOT_TOP_END) and _personish(m.group(1)):
+        if not m.group(1).endswith(_NOT_TOP_END) and _name_ish(m.group(1)):
             return True
-    if any(_personish(m.group(1), any_surname=True) for m in _LEAD.finditer(title)):
+    if any(_name_ish(m.group(1), any_surname=True) for m in _LEAD.finditer(title)):
         return True
-    if any(_personish(m.group(1)) for m in _LEAD_WEAK.finditer(title)):
+    if any(_name_ish(m.group(1)) for m in _LEAD_WEAK.finditer(title)):
         return True
     for m in _PAIR.finditer(title):
         rest = title[m.end() :]
-        if _personish(m.group(1), any_surname=True) and any(w in rest for w in _PAIR_WORDS):
+        if _name_ish(m.group(1), any_surname=True) and any(w in rest for w in _PAIR_WORDS):
             return True
     for m in _TRIP.finditer(title):
-        if _personish(m.group(1)) and any(w in title[m.end() :] for w in _TRIP_WORDS):
+        if _name_ish(m.group(1)) and any(w in title[m.end() :] for w in _TRIP_WORDS):
             return True
     return False
 
