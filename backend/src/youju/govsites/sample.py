@@ -481,10 +481,10 @@ UNKNOWN_ROUND = 999  # 次数认不出：当成超过 MAX_ROUNDS，不放
 
 
 def _count(text: str) -> int:
-    """次数：阿拉伯数字和"二""十一""二十三"这样的中文数字；认不出（含空的）是 UNKNOWN_ROUND。"""
+    """次数：阿拉伯数字和"二""十一""二十三"这样的中文数字；认不出（含空的、0）是 UNKNOWN_ROUND。"""
     text = text.strip()
     if text.isdigit():
-        return int(text)
+        return int(text) if int(text) > 0 else UNKNOWN_ROUND
     m = re.fullmatch(f"([{_CN_DIGITS}]?)(十?)([{_CN_DIGITS}]?)", text)
     if not m or not text:
         return UNKNOWN_ROUND
@@ -592,10 +592,19 @@ class ProvinceResult:
             need = min(need, len(self.cells[layer]))
             judged = sum(state != "未完" for state in got.values())
             failed = sum(state == "不通过" for state in got.values())
-            out.append(
-                SampleLine(layer, latest, judged, failed, need, allow, self._problem(layer, latest))
-            )
+            problem = self._stray_layers() or self._problem(layer, latest)
+            out.append(SampleLine(layer, latest, judged, failed, need, allow, problem))
         return out
+
+    def _stray_layers(self) -> str:
+        """联网核对记录里写了证据表里没有的层（地市只有"部门"，区县有"部门""门户"）：整省不放，
+        免得写错层的重抽被漏看。"""
+        stray = sorted({layer for layer, _ in self.round_log} - set(self.cells))
+        if not stray:
+            return ""
+        if stray[0] == "":
+            return "联网核对记录里有行没写层（地市写部门；区县写部门或门户）"
+        return f'联网核对记录里的层"{stray[0]}"证据表里没有（地市写部门；区县写部门或门户）'
 
     def _problem(self, layer: str, latest: int) -> str:
         """最近一次联网核对的凭据（看联网核对记录）：次数没超；第 1 次到这一次每次各记一行、写了
@@ -708,7 +717,7 @@ def _is_date(text: str) -> bool:
 
 def read_round_log(folder, province: str) -> dict[tuple[str, int], list]:
     """读 <抽查/层级>/联网核对/<省>.csv：(层, 第几次) → [(种子, 日期, 凭据)]（同一次记了几遍就有
-    几项；次数空着、认不出的记成 UNKNOWN_ROUND）。"""
+    几项；层照写，空着的也留着；次数空着、认不出的记成 UNKNOWN_ROUND）。"""
     import csv
     from pathlib import Path
 
@@ -718,7 +727,7 @@ def read_round_log(folder, province: str) -> dict[tuple[str, int], list]:
         return out
     with path.open(encoding="utf-8-sig", newline="") as fh:
         for r in csv.DictReader(fh):
-            layer = (r.get("层") or "").strip() or "部门"
+            layer = (r.get("层") or "").strip()  # 空着的不当"部门"：没写层，整省不放
             key = (layer, _count(r.get("次数") or ""))
             out.setdefault(key, []).append(
                 tuple((r.get(k) or "").strip() for k in ("种子", "日期", "凭据"))
