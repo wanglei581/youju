@@ -105,7 +105,7 @@ def test_auto_confirmation_and_withdraw(example):
     for row in rows:
         row.confirmed_by, row.confirmed_at, row.confirmed_fingerprint = AUTO_REVIEWER, stamp, "x"
     assert not auto_reason(group, rows, cands, set())
-    assert withdraw_group(group, rows, "人", stamp + timedelta(seconds=1)) == [1, 2, 3]
+    assert withdraw_group(group, rows, stamp + timedelta(seconds=1)) == [1, 2, 3]
     assert group.no_auto and not group.needs_review and group.revision == 2
     assert all(
         r.joined_by == "human"
@@ -150,3 +150,67 @@ def test_auto_merge_default_off(monkeypatch):
     assert Settings(_env_file=None).repost_auto_merge is False
     monkeypatch.setenv("YOUJU_REPOST_AUTO_MERGE", "true")
     assert Settings(_env_file=None).repost_auto_merge is True
+
+
+def test_short_core_titles_are_not_merged(example):
+    group, rows, cands = example
+    for i in cands:
+        cands[i] = replace(cands[i], title="关于开展申报工作的通知")
+    assert auto_reason(group, rows, cands, set()) == "核心标题太短"
+
+
+def _rule_battery() -> list[str]:
+    """判定条件的一组固定样例的结论：条件、core_title、cited_upstream、分类规则一变，这些结论就可能
+    变（见 test_rule_version_is_bumped_when_the_rules_change）。"""
+    group = RepostGroup(
+        strength="strong", created_by="rule", no_auto=False, needs_review=False, revision=1
+    )
+
+    def cand(i, **changes):
+        base = Candidate(
+            id=i,
+            title="关于开展创新产业发展项目申报工作的通知",
+            kind="申报通知",
+            province=str(i),
+            dept="科技",
+            publish_date=date(2026, 1, i),
+            has_body=True,
+            cited=(Cited("工信厅办函〔2026〕1号", "项目申报通知"),),
+        )
+        return replace(base, **changes)
+
+    variants = [
+        {},
+        {"title": "关于开展创新产业发展另一方向项目申报工作的通知"},
+        {"cited": (Cited("工信厅联节函〔2026〕1号", "通知"),)},
+        {"cited": ()},
+        {"kind": "名单"},
+        {"title": "关于开展省级创新产业发展项目申报工作的通知"},
+        {"has_body": False},
+        {"title": "关于2025年创新产业发展项目申报工作的通知"},
+        {"publish_date": date(2026, 5, 1)},
+        {"title": "转发关于开展创新产业发展项目申报工作的通知"},
+        {"title": "关于组织开展创新产业发展项目申报推荐工作的通知"},
+    ]
+    out = []
+    for changes in variants:
+        rows = [RepostGroupMember(document_id=i, active=True, joined_by="rule") for i in (1, 2, 3)]
+        cands = {1: cand(1), 2: cand(2, **changes), 3: cand(3)}
+        out.append(auto_reason(group, rows, cands, set()))
+    return out
+
+
+# 判定条件的版本和这组样例结论的指纹。测试失败说明判定的结果变了（条件、核心标题、上游文号、分类
+# 规则改了）：放宽了要把 repost.AUTO_RULE_VERSION 换成新日期（旧的抽查不再算数，要重新抽 100 组），
+# 再把这里两项一起更新
+RULE_FINGERPRINT = ("2026-11-13", "c8e5d32e41f68d22")
+
+
+def test_rule_version_is_bumped_when_the_rules_change():
+    import hashlib
+    import json
+
+    from youju.repost import AUTO_RULE_VERSION
+
+    digest = hashlib.sha256(json.dumps(_rule_battery(), ensure_ascii=False).encode()).hexdigest()
+    assert (AUTO_RULE_VERSION, digest[:16]) == RULE_FINGERPRINT

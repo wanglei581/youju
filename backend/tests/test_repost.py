@@ -1627,10 +1627,11 @@ def test_auto_rebuild_changed_content_and_withdrawal(session, monkeypatch):
     docs[0].title += "（修改）"
     session.flush()
     result = rebuild(session, now=NOW + timedelta(seconds=1))
-    assert group.needs_review and result.auto_reverted == 1
+    # 只有自动确认的组：内容变了退回待确认、当轮重判（核心标题变了，不再满足），不转"需复核"
+    assert not group.needs_review and result.auto_reverted == 1
     assert all(r.confirmed_at is None for r in rows)
     assert rebuild(session, now=NOW + timedelta(seconds=2)).auto_merged == 0
-    withdraw_group(group, rows, "人工", NOW)
+    withdraw_group(group, rows, NOW)
     assert rebuild(session, now=NOW + timedelta(seconds=3)).auto_merged == 0
     assert group.no_auto and all(r.confirmed_at is None for r in rows)
 
@@ -1671,3 +1672,113 @@ def test_person_confirming_an_auto_group_takes_it_over(session, client, monkeypa
     assert rebuild(session, now=NOW).auto_reverted == 0
     assert all(r.confirmed_by == "创始人" for r in _members(session).values())
     assert AUTO_REVIEWER not in {r.confirmed_by for r in _members(session).values()}
+
+
+def _auto_on(monkeypatch, session):
+    monkeypatch.setattr(
+        "youju.repost.get_settings", lambda: SimpleNamespace(repost_auto_merge=True)
+    )
+    _gate_records(session, "pass", 100, 100)
+
+
+def test_auto_group_with_changed_but_still_valid_content_is_reconfirmed(session, monkeypatch):
+    from youju.repost import AUTO_REVIEWER
+
+    _auto_on(monkeypatch, session)
+    docs = _auto_world(session)
+    assert rebuild(session, now=NOW).auto_merged == 1
+    detail = session.get(DocumentDetail, docs[0].id)
+    detail.body_text += "（补充说明）"  # 正文重抓、还引用同一个上游文号
+    detail.fetched_at = NOW + timedelta(hours=1)
+    session.flush()
+    result = rebuild(session, now=NOW + timedelta(hours=2))
+    assert (result.auto_reverted, result.auto_merged, result.needs_review) == (1, 1, 0)
+    _, facts = member_facts(session, [d.id for d in docs])
+    rows = list(_members(session).values())
+    assert all(
+        r.confirmed_by == AUTO_REVIEWER and r.confirmed_fingerprint == facts[r.document_id]
+        for r in rows
+    )
+
+
+def test_new_valid_version_joins_an_auto_group(session, monkeypatch):
+    from youju.repost import AUTO_REVIEWER
+
+    _auto_on(monkeypatch, session)
+    docs = _auto_world(session)
+    assert rebuild(session, now=NOW).auto_merged == 1
+    third = _doc(session, _source(session, "福建"), docs[0].title, day=20, body=UPSTREAM + "福建")
+    session.flush()
+    result = rebuild(session, now=NOW + timedelta(seconds=1))
+    assert (result.auto_merged, result.auto_reverted) == (1, 0)
+    rows = _members(session)
+    assert third.id in rows and all(r.confirmed_by == AUTO_REVIEWER for r in rows.values())
+
+
+def test_admin_remove_and_withdraw_end_auto_merging(session, client, monkeypatch):
+    _auto_on(monkeypatch, session)
+    docs = _auto_world(session)
+    third = _doc(session, _source(session, "福建"), docs[0].title, day=20, body=UPSTREAM + "福建")
+    assert rebuild(session, now=NOW).auto_merged == 1
+    session.commit()
+    gid = next(iter(_members(session).values())).group_id
+    # 管理台移出一个版本：组上有了人工决定，剩下的自动确认下一轮退回，不再自动合并
+    assert _post(client, f"/{gid}/members/{third.id}/remove").status_code == 200
+    session.expire_all()
+    result = rebuild(session, now=NOW + timedelta(seconds=1))
+    session.commit()
+    assert result.auto_reverted == 1 and result.auto_merged == 0
+    assert all(r.confirmed_at is None for r in _members(session).values())
+
+
+def test_admin_withdraw_of_an_auto_group(session, client, monkeypatch):
+    _auto_on(monkeypatch, session)
+    _auto_world(session)
+    assert rebuild(session, now=NOW).auto_merged == 1
+    session.commit()
+    gid = next(iter(_members(session).values())).group_id
+    seen = _seen(client, gid)
+    assert _post(client, f"/{gid}/withdraw", revision=seen["revision"]).status_code == 200
+    session.expire_all()
+    assert rebuild(session, now=NOW + timedelta(seconds=1)).auto_merged == 0
+    group = session.get(RepostGroup, gid)
+    assert group.no_auto and all(r.confirmed_at is None for r in _members(session).values())
+
+
+def test_auto_group_outside_the_window_is_left_alone_while_on(session, monkeypatch):
+    from youju.repost import AUTO_REVIEWER
+
+    _auto_on(monkeypatch, session)
+    docs = _auto_world(session)
+    assert rebuild(session, now=NOW).auto_merged == 1
+    later = NOW + timedelta(days=400)  # 组里的文件都早于窗口了
+    result = rebuild(session, now=later)
+    assert (result.auto_merged, result.auto_reverted) == (0, 0)
+    assert all(r.confirmed_by == AUTO_REVIEWER for r in _members(session).values())
+    assert {d.id for d in docs} <= set(_members(session))
+
+
+def test_a_later_partial_gate_round_does_not_override_a_full_one(session):
+    from youju.repost import auto_gate
+
+    _gate_records(session, "full", 100, 99)
+    _gate_records(session, "few", 5, 5, stamp=NOW + timedelta(days=1))
+    gate = auto_gate(session)
+    assert gate.passed and gate.round == "full" and isinstance(gate.correct, int)
+
+
+def test_auto_merges_and_reverts_are_audited(session, monkeypatch, caplog):
+    import json
+    import logging
+
+    _auto_on(monkeypatch, session)
+    docs = _auto_world(session)
+    with caplog.at_level(logging.INFO, logger="youju.audit"):
+        rebuild(session, now=NOW)
+        monkeypatch.setattr(
+            "youju.repost.get_settings", lambda: SimpleNamespace(repost_auto_merge=False)
+        )
+        rebuild(session, now=NOW + timedelta(seconds=1))
+    events = [json.loads(r.getMessage()) for r in caplog.records if r.name == "youju.audit"]
+    assert [e["action"] for e in events] == ["repost_auto_merge", "repost_auto_revert"]
+    assert events[0]["document_ids"] == sorted(d.id for d in docs)

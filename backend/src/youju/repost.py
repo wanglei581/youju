@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
@@ -37,6 +38,9 @@ from youju.models import (
     RepostSignal,
     Source,
 )
+
+# 自动合并、退回和管理台操作记进同一个审计日志
+audit_log = logging.getLogger("youju.audit")
 
 # 发布相隔多少天以内才可能是同一份通知的各地版本
 MAX_DAYS_APART = 90
@@ -676,6 +680,8 @@ class RebuildSummary:
     needs_review: int = 0
     auto_merged: int = 0
     auto_reverted: int = 0
+    # 开关开着但门没过时的原因（命令行据此提示，不用再查一次）
+    gate_reason: str = ""
 
 
 @dataclass
@@ -692,31 +698,46 @@ class AutoGate:
 
 def auto_gate(session: Session) -> AutoGate:
     """开关那道门（D-129 ②）：只看当前规则版本（AUTO_RULE_VERSION）的 gate 抽查记录，按轮汇总，
-    取最近的一轮（这一轮最后一条记录最晚）；判了至少 AUTO_GATE_SIZE 组、准确率不低于
-    AUTO_GATE_ACCURACY 才过。最近一轮没过就是没过，更早一轮过了也不算；规则版本一换，
+    在判满 AUTO_GATE_SIZE 组的轮里取最近的一轮（这一轮最后一条记录最晚），准确率不低于
+    AUTO_GATE_ACCURACY 才过。最近一轮完整的没过就是没过，更早一轮过了也不算；规则版本一换，
     旧记录全不算。"""
-    rounds = session.execute(
+    checked_count = func.count(RepostAutoCheck.id)
+    rounds = (
         select(
             RepostAutoCheck.round,
-            func.count(RepostAutoCheck.id),
+            checked_count,
             func.sum(case((RepostAutoCheck.verdict == "correct", 1), else_=0)),
-            func.max(RepostAutoCheck.checked_at),
-            func.max(RepostAutoCheck.id),
         )
         .where(RepostAutoCheck.purpose == "gate", RepostAutoCheck.rule_version == AUTO_RULE_VERSION)
         .group_by(RepostAutoCheck.round)
         .order_by(func.max(RepostAutoCheck.checked_at).desc(), func.max(RepostAutoCheck.id).desc())
         .limit(1)
-    ).first()
-    if rounds is None:
-        return AutoGate(False, None, 0, 0, "没有记录")
-    round_id, checked, correct, _, _ = rounds
-    reason = (
-        "组数不够"
-        if checked < AUTO_GATE_SIZE
-        else ("准确率不够" if correct / checked < AUTO_GATE_ACCURACY else "")
     )
+    # 只认判满 AUTO_GATE_SIZE 组的轮：另外记的几组零星抽查不顶掉一轮完整的（错的组记的时候已经
+    # 整组撤回了）。库里给的计数是 Decimal，转成整数
+    full = session.execute(rounds.having(checked_count >= AUTO_GATE_SIZE)).first()
+    if full is None:
+        partial = session.execute(rounds).first()
+        if partial is None:
+            return AutoGate(False, None, 0, 0, "没有记录")
+        round_id, checked, correct = partial[0], int(partial[1]), int(partial[2] or 0)
+        return AutoGate(False, round_id, checked, correct, "组数不够")
+    round_id, checked, correct = full[0], int(full[1]), int(full[2] or 0)
+    reason = "准确率不够" if correct / checked < AUTO_GATE_ACCURACY else ""
     return AutoGate(not reason, round_id, checked, correct, reason)
+
+
+def _audit_auto(action: str, group: RepostGroup, rows, reason: str) -> None:
+    """自动合并、退回逐组留痕：记进审计日志（youju.audit，和管理台同一个记录器）。"""
+    record = {
+        "event": "auto",
+        "action": action,
+        "group_id": group.id,
+        "document_ids": sorted(r.document_id for r in rows),
+        "rule_version": AUTO_RULE_VERSION,
+        "reason": reason,
+    }
+    audit_log.info(json.dumps(record, ensure_ascii=False))
 
 
 def has_decision(row: RepostGroupMember) -> bool:
@@ -843,12 +864,13 @@ def auto_reason(group, rows, cands, duplicates) -> str:
     versions = [r for r in rows if r.active and r.document_id not in duplicates]
     if len(versions) < 2:
         return "在组版本不足两份"
-    docs = []
+    docs, cores = [], set()
     for row in versions:
         doc = cands.get(row.document_id)
         if doc is None:
             return "缺少候选文件"
         sig = signals(doc)
+        cores.add(sig.core)
         if doc.kind != "申报通知":
             return "不是申报通知"
         if not doc.has_body:
@@ -860,7 +882,7 @@ def auto_reason(group, rows, cands, duplicates) -> str:
         if not sig.cited:
             return "缺少上游文号"
         docs.append(doc)
-    if len({core_title(d.title) for d in docs}) != 1:
+    if len(cores) != 1:
         return "核心标题不同"
     if not auto_upstream(rows, cands, duplicates):
         return "没有共同上游文号"
@@ -869,10 +891,10 @@ def auto_reason(group, rows, cands, duplicates) -> str:
     return ""
 
 
-def withdraw_group(group, rows, reviewer, stamp) -> list[int]:
+def withdraw_group(group, rows, stamp) -> list[int]:
     """整组撤回（管理台"撤回确认"和命令行 repost-withdraw、抽查判错共用）：在组版本都去掉确认、
     改成人工决定，组设 no_auto（以后不再自动并回、也不再自动合并）。返回撤回前确认过的文件编号。
-    reviewer 由调用的地方记进审计日志。"""
+    谁撤回的由调用的地方记进审计日志。"""
     confirmed = [r.document_id for r in rows if r.active and r.confirmed_at is not None]
     for row in rows:
         if row.active:
@@ -1065,6 +1087,15 @@ def rebuild(
                 )
             )
         ):
+            if all(r.confirmed_by == AUTO_REVIEWER for r in confirmed):
+                # 只有自动确认（没有人工决定要保护）：退回待确认，这一轮后面照常重算、重判，还满足
+                # 条件就按新内容重新自动确认；不转"需复核"，免得一次正文重抓就永久转人工
+                for r in confirmed:
+                    r.confirmed_by = r.confirmed_at = r.confirmed_fingerprint = None
+                bump(group, stamp)
+                summary.auto_reverted += 1
+                _audit_auto("repost_auto_revert", group, confirmed, "确认后内容或整组约束变了")
+                continue
             group.needs_review = True
             bump(group, stamp)
             summary.needs_review += 1
@@ -1194,8 +1225,11 @@ def rebuild(
     session.flush()
     # 自动合并（D-129 ②）：开关开着、门也过了，才把窗口里满足条件的组自动确认；不再满足条件的组、
     # 以及开关关了或门没过时所有组里自动确认的版本，都退回待确认（人工确认的一概不动）
-    on = get_settings().repost_auto_merge and auto_gate(session).passed
-    window_groups = set(session.scalars(_window_groups(today))) if on else set()
+    on = get_settings().repost_auto_merge
+    if on:
+        gate = auto_gate(session)
+        on, summary.gate_reason = gate.passed, gate.reason
+    window_groups = set(session.scalars(_window_groups(cutoff))) if on else set()
     by_group = defaultdict(list)
     for row in members.values():
         by_group[row.group_id].append(row)
@@ -1221,11 +1255,14 @@ def rebuild(
                     row.confirmed_fingerprint = facts[row.document_id]
                 bump(group, stamp)
                 summary.auto_merged += 1
+                _audit_auto("repost_auto_merge", group, waiting, "")
         elif automatic:
+            why = auto_reason(group, rows, cands, duplicates) if on else "开关关着或门没过"
             for row in automatic:
                 row.confirmed_by = row.confirmed_at = row.confirmed_fingerprint = None
             bump(group, stamp)
             summary.auto_reverted += 1
+            _audit_auto("repost_auto_revert", group, automatic, why)
     session.flush()
     return summary
 

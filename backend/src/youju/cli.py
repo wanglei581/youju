@@ -698,11 +698,10 @@ def _cmd_deadline_verify_stats(args: argparse.Namespace) -> int:
 
 def _cmd_repost_groups(args: argparse.Namespace) -> int:
     """按转发归组规则增量更新转发组，确认后才对外合并。"""
-    from youju.repost import auto_gate, rebuild
+    from youju.repost import rebuild
 
     with session_factory()() as session:
         summary = rebuild(session, full=args.full)
-        gate = auto_gate(session) if get_settings().repost_auto_merge else None
         session.commit()
     print(
         f"正文信号计算 {summary.signals} 份；转发归组：规则提出 {summary.proposals} 组；"
@@ -711,8 +710,10 @@ def _cmd_repost_groups(args: argparse.Namespace) -> int:
         f"{summary.moved} 个；需复核 {summary.needs_review} 组；"
         f"自动合并 {summary.auto_merged} 组、退回 {summary.auto_reverted} 组"
     )
-    if gate and not gate.passed:
-        print(f"自动合并门禁未通过：{gate.reason}")
+    if summary.gate_reason:
+        print(
+            f"自动合并开关开着，但门没过（{summary.gate_reason}）：这一轮不自动合并，自动合并过的都退回"
+        )
     return 0
 
 

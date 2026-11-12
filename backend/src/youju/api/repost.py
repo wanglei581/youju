@@ -523,7 +523,7 @@ def router(require_admin, audit) -> APIRouter:
             if not confirmed:
                 raise HTTPException(status_code=409, detail="这一组没有确认过，不用撤回")
             before = {row.document_id: row.confirmed_by for row in confirmed}
-            withdraw_group(group, rows, body.reviewed_by, datetime.now(UTC))
+            withdraw_group(group, rows, datetime.now(UTC))
             session.commit()
         audit(
             request,
