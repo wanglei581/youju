@@ -41,6 +41,8 @@ class MoveReport:
     skipped: int = 0
     # 已经有、但内容和包里的不一样、用包里的覆盖的
     replaced: int = 0
+    # 已经有、但读不出来的：不覆盖、原文件留着，列出来要人看
+    unreadable: list[str] = field(default_factory=list)
     output: str = ""
 
 
@@ -130,16 +132,14 @@ CHUNK = 1024 * 1024
 
 
 def _disk_sha256(store: storage.Backend, path: str) -> str | None:
-    """服务器存储（disk）里已有文件的 SHA-256；没有、或 s3（读不到内容）返回 None。"""
+    """服务器存储（disk）里已有文件的 SHA-256；没有、或 s3（读不到内容）返回 None。已有、但读不出来
+    的抛 OSError（调用方跳过、保留原文件，不当成没有去覆盖）。"""
     if not isinstance(store, storage.DiskBackend) or not store.exists(path):
         return None
     digest = hashlib.sha256()
-    try:
-        with store._file(path).open("rb") as fh:
-            while chunk := fh.read(CHUNK):
-                digest.update(chunk)
-    except OSError:
-        return None  # 读不了已有的：当作不知道，照写一遍
+    with store._file(path).open("rb") as fh:
+        while chunk := fh.read(CHUNK):
+            digest.update(chunk)
     return digest.hexdigest()
 
 
@@ -168,7 +168,13 @@ def import_archive(source: Path) -> MoveReport:
                 while chunk := extracted.read(CHUNK):
                     digest.update(chunk)
                     out.write(chunk)
-            existing = _disk_sha256(store, path)
+            try:
+                existing = _disk_sha256(store, path)
+            except OSError:
+                log.warning("%s 已经有、但读不出来：不覆盖，原文件留着", path)
+                report.unreadable.append(path)
+                report.skipped += 1
+                continue
             if existing == digest.hexdigest():
                 report.skipped += 1
                 continue

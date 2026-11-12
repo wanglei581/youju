@@ -2488,7 +2488,16 @@ def _cmd_storage_import(args: argparse.Namespace) -> int:
     except (BackupError, OSError) as exc:
         print(f"导入失败：{exc}")
         return 1
-    print(f"已导入 {report.files}（{report.bytes} 字节，已有或不合规跳过 {report.skipped} 个）")
+    print(
+        f"已导入 {report.files}（{report.bytes} 字节，已有或不合规跳过 {report.skipped} 个，"
+        f"内容不一样用包里的覆盖 {report.replaced} 个）"
+    )
+    if report.unreadable:
+        print(
+            f"有 {len(report.unreadable)} 个已有文件读不出来，没覆盖、原文件留着，要人看："
+            + "、".join(report.unreadable[:20])
+        )
+        return 1
     return 0
 
 

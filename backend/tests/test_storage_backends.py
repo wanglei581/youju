@@ -268,6 +268,16 @@ def test_storage_export_and_import_keep_paths(disk, tmp_path, monkeypatch):
     again = storage_move.import_archive(archive)
     assert again.replaced == 1 and again.skipped == 1
     assert (tmp_path / "new/logs/access-20261101.jsonl.gz").read_bytes() == b"log"
+    # 已经有、但读不出来的：不当成没有去覆盖，原文件留着、列出来
+    stuck = tmp_path / "new/advisor/out/u1/1.xlsx"
+    stuck.write_bytes(b"keep me")
+    stuck.chmod(0o000)
+    try:
+        locked = storage_move.import_archive(archive)
+    finally:
+        stuck.chmod(0o644)
+    assert locked.unreadable == ["advisor/out/u1/1.xlsx"]
+    assert stuck.read_bytes() == b"keep me"
 
 
 def test_storage_export_since_days_only_moves_recent(disk, tmp_path):
