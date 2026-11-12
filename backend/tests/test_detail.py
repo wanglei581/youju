@@ -841,22 +841,32 @@ def test_protection_page_is_rejected() -> None:
     assert not result.body_text
 
 
+# 和泸州、漯河、商丘、常德等站群页面上一模一样的站内搜索限流弹窗（结构见 detail._SEARCH_THROTTLE_SHAPE）
 _THROTTLE_DIALOG = (
-    "<div id='VolidateCodeDiv' class='modal in' aria-hidden='false' style='display: none;'>"
-    "<div class='modal-dialog'><div class='modal-content'><div class='modal-header'>"
-    "<button type='button' class='close'><span>×</span></button>"
-    "<h4 class='modal-title'>搜索过于频繁，请输入验证码</h4></div><div class='modal-body'>"
-    "<input id='js-ticket-search' name='CaptchaTicket' type='hidden'>"
-    "<input id='js-btn-verify-search' type='button' value='点击验证'></div>"
-    "<div class='modal-footer'><a class='btn' id='confirmNotApprove'>确定</a></div>"
-    "</div></div></div>"
+    '<div id="VolidateCodeDiv" class="modal in" aria-hidden="false" style="display: none;">'
+    '<div class="modal-dialog"><div class="modal-content"><div class="modal-header">'
+    '<button type="button" class="close"><span aria-hidden="true">×</span></button>'
+    '<h4 class="modal-title">搜索过于频繁，请输入验证码</h4></div>'
+    '<div class="modal-body"><div class="container-fluid"><div style="max-height: 600px;">'
+    "<input id='js-ticket-search' name='CaptchaTicket' type='hidden' data-val='true'"
+    " data-val-required='请点击验证!'>"
+    "<input id='js-ticketId-search' name='CaptchaTicketId' type='hidden'>"
+    "<input id='js-btn-verify-search' type='button' value='点击验证'"
+    " class='form-control btn btn-gray btn-block'>"
+    "<span class='field-validation-valid' hidden data-valmsg-for='Ticket'"
+    " id='captchaticketvalid-search' data-valmsg-replace='true'></span>"
+    '<input data-val="true" data-val-captcha-url="/captcha/validate" id="SearchValidateCode"'
+    ' type="hidden"></div></div></div>'
+    '<div class="modal-footer"><a class="btn btn-sm btn-primary" id="confirmNotApprove"'
+    ' data-ajax="true" data-id="search">确定</a></div></div></div></div>'
 )
-_NOTICE_BODY = (
-    "<div id='zoom'><p>各有关单位：</p><p>为做好2026年度市级科技计划项目申报工作，现将有关事项通知如下，"
+_NOTICE_TEXT = (
+    "<p>各有关单位：</p><p>为做好2026年度市级科技计划项目申报工作，现将有关事项通知如下，"
     "请各单位按要求认真组织申报，并于2026年12月1日前将申报材料报送至市科技局。</p>"
     "<p>一、申报范围。本市注册的企业、高校和科研院所均可申报，每家单位限报两项。</p>"
-    "<p>二、申报要求。申报材料须真实完整，逾期不予受理。</p></div>"
+    "<p>二、申报要求。申报材料须真实完整，逾期不予受理。</p>"
 )
+_NOTICE_BODY = f"<div class='conTxt'><div id='zoom'>{_NOTICE_TEXT}</div></div>"
 
 
 def _page(body: str, title: str = "某局关于组织申报的通知") -> str:
@@ -865,19 +875,25 @@ def _page(body: str, title: str = "某局关于组织申报的通知") -> str:
 
 def test_search_throttle_dialog_is_not_a_protection_page() -> None:
     """站内搜索的限流弹窗（泸州、漯河、商丘、常德等站群每一页都带、平时隐藏）不是挡住这一页的验证：
-    完全是这个样子、而且正文完整的才放（D-013：认得出才放）。"""
+    整个结构一模一样、整页没有别的验证字样、正文出自核实过的正文区而且完整，才放（D-013：认得出才放）。"""
     result = parse_detail(
         _page(_THROTTLE_DIALOG + _NOTICE_BODY), "https://kjj.example.gov.cn/1.html"
     )
     assert result.failure_reason is None and "组织申报" in result.body_text
     assert "搜索过于频繁" not in result.body_text
+    # 常德那类站的正文区（div#content.lh-wznr）也认
+    changde = _NOTICE_BODY.replace("<div class='conTxt'>", "<div id='content' class='lh-wznr'>")
+    assert parse_detail(
+        _page(_THROTTLE_DIALOG + changde), "https://www.example.gov.cn/2.html"
+    ).body_text
     # 正文区把弹窗包在里面：弹窗的字不进正文
     inside = _NOTICE_BODY.replace("<p>各有关单位：</p>", f"<p>各有关单位：</p>{_THROTTLE_DIALOG}")
-    result = parse_detail(_page(inside), "https://kjj.example.gov.cn/2.html")
+    result = parse_detail(_page(inside), "https://kjj.example.gov.cn/3.html")
     assert result.failure_reason is None and "搜索过于频繁" not in result.body_text
-    assert "确定" not in result.body_text
+    assert "确定" not in result.body_text and "点击验证" not in result.body_text
 
 
+_LONG_NAV = "".join(f"<p>栏目导航第{n}项</p>" for n in range(60))
 _LONG_TEXT = "".join(
     f"<p>第{n}条，本办法所称项目，是指市级财政资金支持的科技计划项目。</p>" for n in range(30)
 )
@@ -888,44 +904,58 @@ _LONG_TEXT = "".join(
     [
         # 标题写着验证
         _page(_THROTTLE_DIALOG + _NOTICE_BODY, title="安全验证"),
-        # 弹窗外面另有验证码字样
+        # 弹窗外面另有验证码字样：前 500 字里，或者 500 字以后、正文区外面
         _page(_THROTTLE_DIALOG + "<p>请输入验证码后继续访问</p>" + _NOTICE_BODY),
+        _page(_THROTTLE_DIALOG + _LONG_NAV + "<p>访问过于频繁，请稍后再试</p>" + _NOTICE_BODY),
         # 弹窗是显示着的，或 style 后面又改成显示
         _page(_THROTTLE_DIALOG.replace("display: none;", "") + _NOTICE_BODY),
         _page(
             _THROTTLE_DIALOG.replace("display: none;", "display: none; display: block;")
             + _NOTICE_BODY
         ),
-        # 弹窗标题不是这一句、弹窗里多一句别的说明
+        # 结构不一样：标题、多一句说明、按钮上的字、多一张图片、少了票据框
         _page(_THROTTLE_DIALOG.replace("搜索过于频繁，", "访问过于频繁，") + _NOTICE_BODY),
         _page(
             _THROTTLE_DIALOG.replace(
-                "<div class='modal-footer'>", "<p>请先登录</p><div class='modal-footer'>"
+                '<div class="modal-footer">', '<p>请先登录</p><div class="modal-footer">'
             )
             + _NOTICE_BODY
         ),
-        # 没有隐藏的搜索票据框
+        _page(_THROTTLE_DIALOG.replace("value='点击验证'", "value='登录后查看'") + _NOTICE_BODY),
+        _page(
+            _THROTTLE_DIALOG.replace("<span aria-hidden", "<img alt='验证码'><span aria-hidden")
+            + _NOTICE_BODY
+        ),
         _page(_THROTTLE_DIALOG.replace("js-ticket-search", "x") + _NOTICE_BODY),
-        _page(_THROTTLE_DIALOG.replace("type='hidden'>", "type='text'>", 1) + _NOTICE_BODY),
-        # 页面自带的脚本提到这个弹窗（可能一打开就显示）
+        # 页面自带的脚本、样式、事件属性提到这个弹窗（可能一打开就显示）
         _page(_THROTTLE_DIALOG + "<script>$('#VolidateCodeDiv').show();</script>" + _NOTICE_BODY),
+        _page(
+            "<style>#VolidateCodeDiv{display:block!important}</style>"
+            + _THROTTLE_DIALOG
+            + _NOTICE_BODY
+        ),
+        "<html><title>通知</title><body onload=\"$('#VolidateCodeDiv').show()\">"
+        + _THROTTLE_DIALOG
+        + _NOTICE_BODY
+        + "</body></html>",
         # 不是这个弹窗、只是页面上写着这句话
         _page("<p>搜索过于频繁，请输入验证码</p>" + _NOTICE_BODY),
-        # 弹窗认得出、但正文不完整：太短、没有句号、根本没有正文区、正文里另有验证码字样
+        # 弹窗认得出、但正文不对：不在核实过的正文区、太短、没有句号、没有正文区、正文里另有验证码字样
+        _page(_THROTTLE_DIALOG + f"<div id='zoom'>{_NOTICE_TEXT}</div>"),
         _page(
             _THROTTLE_DIALOG
-            + "<div id='zoom'><p>各有关单位：现将申报事项通知如下，请按要求申报。</p></div>"
+            + "<div class='conTxt'><p>各有关单位：现将申报事项通知如下，请按要求申报。</p></div>"
         ),
         _page(
             _THROTTLE_DIALOG
-            + "<div id='zoom'>"
+            + "<div class='conTxt'>"
             + "".join(f"<p>第{n}项，项目名称，申报单位，联系人</p>" for n in range(12))
             + "</div>"
         ),
         _page(_THROTTLE_DIALOG),
         _page(
             _THROTTLE_DIALOG
-            + "<div id='zoom'>"
+            + "<div class='conTxt'>"
             + _LONG_TEXT
             + "<p>请输入验证码后查看全文。</p></div>"
         ),
@@ -956,6 +986,20 @@ def test_dropdown_options_are_not_body() -> None:
     )
     result = parse_detail(with_body, "https://scjg.example.gov.cn/content_2.html")
     assert "组织申报" in result.body_text and "请选择" not in result.body_text
+
+
+def test_dropdown_inside_first_body_line_keeps_fields() -> None:
+    """正文第一行中间夹着下拉框：发文机关、文号照样从正文前面的字里找（不退回整页前 700 字）。"""
+    nav = "".join(f"<p>栏目导航第{n}项</p>" for n in range(80))
+    page = (
+        f"<html><title>某局文件</title><body>{nav}<div class='meta'>发布机构：某某市科学技术局</div>"
+        "<div id='zoom'><p>某科〔2026〕12号</p><p>各有关单位：现将<select><option>某县</option>"
+        "<option>某区</option></select>项目申报有关事项通知如下，请按要求组织申报。</p>"
+        "<p>某某市科学技术局</p><p>2026年11月5日</p></div></body></html>"
+    )
+    result = parse_detail(page, "https://kjj.example.gov.cn/content_4.html")
+    assert "组织申报" in result.body_text and "某县" not in result.body_text
+    assert result.issuer == "某某市科学技术局"
 
 
 def test_dropdown_text_still_counts_for_protection_window() -> None:

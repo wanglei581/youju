@@ -113,6 +113,32 @@ _PROTECTION = re.compile(
 # 是这个样子的弹窗拿掉；拿掉以后这一页还要取到完整的正文（有句子），不然照旧当防护页。别的写法一律
 # 照旧当防护页、不取
 _SEARCH_THROTTLE_TEXT = ("×", "搜索过于频繁，请输入验证码", "确定")
+# 弹窗的整个结构（每个元素的标签、id、class、type、value，按出现顺序）：11/12 在 4 个站群的 219 处
+# 看到的都是这一个样子，多一个元素、少一个、属性上的字（按钮的"点击验证"）不一样，都不认
+_SEARCH_THROTTLE_SHAPE = (
+    ("div", "VolidateCodeDiv", "modal in", "", ""),
+    ("div", "", "modal-dialog", "", ""),
+    ("div", "", "modal-content", "", ""),
+    ("div", "", "modal-header", "", ""),
+    ("button", "", "close", "button", ""),
+    ("span", "", "", "", ""),
+    ("h4", "", "modal-title", "", ""),
+    ("div", "", "modal-body", "", ""),
+    ("div", "", "container-fluid", "", ""),
+    ("div", "", "", "", ""),
+    ("input", "js-ticket-search", "", "hidden", ""),
+    ("input", "js-ticketId-search", "", "hidden", ""),
+    ("input", "js-btn-verify-search", "form-control btn btn-gray btn-block", "button", "点击验证"),
+    ("span", "captchaticketvalid-search", "field-validation-valid", "", ""),
+    ("input", "SearchValidateCode", "", "hidden", ""),
+    ("div", "", "modal-footer", "", ""),
+    ("a", "confirmNotApprove", "btn btn-sm btn-primary", "", ""),
+)
+# 放过弹窗的页面，正文要出自这类站核实过的正文区（或在它里面）：11/12 翻过来的 118 份都是
+_VERIFIED_BODY = (
+    '//div[contains(concat(" ", normalize-space(@class), " "), " conTxt ")]'
+    ' | //div[@id="content"][contains(concat(" ", normalize-space(@class), " "), " lh-wznr ")]'
+)
 _SEARCH_THROTTLE_DIALOG = '//div[@id="VolidateCodeDiv"][.//input[@id="js-ticket-search"]]'
 # 放过弹窗以后要求的"完整正文"：100 字以上、有句号、正文里没有验证码一类的字（11/12 翻过来的
 # 120 份文件页，正文都在 133 字以上，119 份有句号）
@@ -1159,14 +1185,38 @@ def _search_throttle_dialogs(root: etree._Element) -> list[etree._Element]:
     对上：style 正好只有 display:none（不是"display:none;display:block"这类后面又改掉的）；弹窗里的
     字正好是"×""搜索过于频繁，请输入验证码""确定"三段（多一句别的验证、登录、拒绝说明都不认）；有隐藏的
     搜索票据框；页面自带的脚本里没提到这个弹窗（提到了，可能一打开就显示出来，不认）。"""
-    if any("VolidateCodeDiv" in (s or "") for s in root.xpath("//script[not(@src)]/text()")):
+    inline = root.xpath(
+        "//script[not(@src)]/text() | //style/text() | //@*[starts-with(name(), 'on')]"
+    )
+    if any("VolidateCodeDiv" in (s or "") for s in inline):
         return []
     found = []
     for node in root.xpath(_SEARCH_THROTTLE_DIALOG):
         style = "".join((node.get("style") or "").split()).lower().rstrip(";")
         text = tuple("".join(s.split()) for s in node.itertext() if s.strip())
-        hidden = node.xpath('.//input[@id="js-ticket-search"][@type="hidden"]')
-        if style == "display:none" and text == _SEARCH_THROTTLE_TEXT and hidden:
+        shape = tuple(
+            (
+                e.tag,
+                e.get("id") or "",
+                " ".join((e.get("class") or "").split()),
+                e.get("type") or "",
+                e.get("value") or "",
+            )
+            for e in node.iter()
+            if isinstance(e.tag, str)
+        )
+        attributes_ok = not any(
+            name.startswith("on") or name in ("src", "href", "alt", "title", "placeholder")
+            for e in node.iter()
+            if isinstance(e.tag, str)
+            for name in e.attrib
+        )
+        if (
+            style == "display:none"
+            and text == _SEARCH_THROTTLE_TEXT
+            and shape == _SEARCH_THROTTLE_SHAPE
+            and attributes_ok
+        ):
             found.append(node)
     return found
 
@@ -1183,23 +1233,32 @@ def parse_detail(html_text: str, url: str) -> DetailResult:
     body = root.xpath("//body")
     dialogs = frozenset(_search_throttle_dialogs(root))
     visible = "\n".join(_plain_lines(body[0], dialogs, keep_select=True)) if body else ""
+    # 找发文机关、文号、发布日期用不带下拉框的字，和正文的取法一致（正文第一行中间夹着下拉框时，
+    # 带着选项的整页文字里找不到正文第一行，范围会退回整页前 700 字）
+    plain = "\n".join(_plain_lines(body[0], dialogs)) if body else ""
     if _PROTECTION.search(title + visible[:500]):
         return DetailResult(failure_reason="防护页或验证码")
-    # 只因为站内搜索限流弹窗才没被当成防护页的：这一页要取到完整的正文才放
+    # 只因为站内搜索限流弹窗才没被当成防护页的：除了弹窗，整页（不只前 500 字）再没有验证、限流、
+    # 登录这类字，而且正文出自核实过的正文区、是完整的，才放
     with_dialogs = (
         "\n".join(_plain_lines(body[0], keep_select=True)) if body and dialogs else visible
     )
     needs_body = bool(dialogs) and bool(_PROTECTION.search(title + with_dialogs[:500]))
+    if needs_body and _PROTECTION.search(visible):
+        return DetailResult(failure_reason="防护页或验证码")
     host = (urlsplit(url).hostname or "").lower()
     node = _body_node(root, host)
+    verified = frozenset(root.xpath(_VERIFIED_BODY)) if needs_body else frozenset()
+    if needs_body and (
+        node is None or not (node in verified or any(a in verified for a in node.iterancestors()))
+    ):
+        return DetailResult(failure_reason="防护页或验证码")
     if node is None:
-        if needs_body:
-            return DetailResult(failure_reason="防护页或验证码")
         attachments = _attachments(root, url)
         return DetailResult(
-            issuer=_issuer([], root, visible[:700]),
-            doc_number=_doc_number([], root, visible[:700]),
-            publish_date=_publish_date(root, visible[:700]),
+            issuer=_issuer([], root, plain[:700]),
+            doc_number=_doc_number([], root, plain[:700]),
+            publish_date=_publish_date(root, plain[:700]),
             attachments=attachments,
             failure_reason=None if attachments else "未识别到正文容器",
             page_titles=_page_titles(root),
@@ -1207,9 +1266,7 @@ def parse_detail(html_text: str, url: str) -> DetailResult:
     junk = _SITE_JUNK.get(host)
     lines = _plain_lines(node, (frozenset(node.xpath(junk)) if junk else frozenset()) | dialogs)
     raw_body = "\n".join(lines)
-    prefix = (
-        visible.split(lines[0], 1)[0][-700:] if lines and lines[0] in visible else visible[:700]
-    )
+    prefix = plain.split(lines[0], 1)[0][-700:] if lines and lines[0] in plain else plain[:700]
     attachments = _attachments(root, url)
     # PDF-only 页面只有下载入口，HTML 正文为空；仍保留附件题录。
     if len(raw_body) < 30 or ("点击正文" in raw_body and not any(len(line) > 60 for line in lines)):
