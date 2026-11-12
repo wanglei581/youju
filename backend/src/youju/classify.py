@@ -101,6 +101,11 @@ POST_WORK = ("验收", "绩效评价", "绩效考核", "中期检查", "结题")
 NEW_ROUND = ("申报", "推荐", "认定", "征集")
 PROCUREMENT = ("采购", "招标", "比选", "磋商", "询价")
 PERSONAL_CONTEST = ("技能大赛", "职业技能竞赛", "职业技能大赛")
+# 表扬、表彰的通报、决定、命名是结果（多列着个人姓名），不是申报通知。11/9 第 1 批核对：
+# "省政府关于表扬第八届江苏技能状元大赛表现突出选手的通报"原来分成了申报通知、给出正文。
+# "……表彰推荐工作的通知"是征集推荐，不在这里
+COMMENDATION = ("表扬", "表彰")
+COMMENDATION_RESULT = ("通报", "决定", "命名")
 DISBURSEMENT = ("奖金发放", "资金拨付", "资金下达", "拨付资金", "下达资金")
 # 网站专题栏目的归档入口（标题以"（已归档"结尾），不是文件（列表解析已不收，这里兜底）
 JUNK_SUFFIXES = ("（已归档", "(已归档", "（已归档）", "(已归档)")
@@ -521,6 +526,8 @@ def _forced_other(title: str) -> bool:
         return True
     if _has(title, PERSONAL_CONTEST) and "创新创业" not in title:
         return True
+    if _has(title, COMMENDATION) and _has(title, COMMENDATION_RESULT):
+        return True
     if _has(title, ("征求意见", "征集意见建议", "征求", "意见建议")):
         return True
     # 遴选、采购供应商是政府买服务；"征集……供应商目录"是企业申请进目录，仍算申报（10/12 复核）
@@ -717,6 +724,7 @@ def _sql_parts(title: ColumnElement[str]) -> dict[str, ColumnElement[bool]]:
                 _any_in(title, ("资金", "经费", "运行费", "奖金", "补助")),
             ),
             and_(_any_in(title, PERSONAL_CONTEST), not_(title.contains("创新创业"))),
+            and_(_any_in(title, COMMENDATION), _any_in(title, COMMENDATION_RESULT)),
             _any_in(title, ("征求意见", "征集意见建议", "征求", "意见建议")),
             and_(_any_in(title, ("供应商",)), _any_in(title, ("遴选", "采购"))),
             and_(_any_in(title, ("服务机构", "供应商")), title.contains("遴选")),

@@ -25,13 +25,13 @@ from sqlalchemy import Connection, and_, delete, func, or_, select, text, update
 from sqlalchemy.dialects.mysql import insert
 from sqlalchemy.orm import Session, defer, sessionmaker
 
-from youju import access_log, safety_words, wx_security
+from youju import access_log, safety_words, storage, wx_security, zip_limits
 from youju.ai import advisor_endpoint, clause, heartbeat, interpret, result_safety
 from youju.ai.client import AIError, ChatClient
 from youju.ai.skills import AI_KINDS, get_skill
 from youju.ai.usage import record_usage
 from youju.backup import BackupError, _open_api, upload
-from youju.compare import CompareInputError, compare_lists, export_compare_excel
+from youju.compare import MAX_ZIP_ENTRIES, CompareInputError, compare_lists, export_compare_excel
 from youju.config import Settings, get_settings
 from youju.models import (
     AdvisorFileTrash,
@@ -505,8 +505,8 @@ def legacy_result_document_ids(session: Session, client: httpx.Client, url: str)
             if len(data) > 4 * 1024 * 1024:
                 raise ValueError("结果文件过大")
     with ZipFile(BytesIO(data)) as archive:
-        if sum(item.file_size for item in archive.infolist()) > 20 * 1024 * 1024:
-            raise ValueError("结果文件过大")
+        # 按实际解出的大小查（不信 zip 目录里写的）；没通过抛 ZipLimitError，调用方按无法核验处理
+        zip_limits.check(archive, max_bytes=20 * 1024 * 1024, max_members=MAX_ZIP_ENTRIES)
     book = load_workbook(BytesIO(data), read_only=True, data_only=True)
     try:
         sheet = book.worksheets[0]
@@ -934,7 +934,7 @@ def process_task(
             session, task, settings=settings, stamp=stamp, timeout=timeout, live_time=live_time
         )
     own_client = client is None
-    client = client or httpx.Client(trust_env=False)
+    client = client or storage.http_client()
     started = monotonic_clock.monotonic()
     uploaded_file_id: str | None = None
     # 处理途中任务行可能被删（用户注销、过期清理）：rollback 之后再读 task.id
@@ -1317,7 +1317,7 @@ def cleanup_advisor(
         )
     )
     if file_ids:
-        client = client or httpx.Client(trust_env=False)
+        client = client or storage.http_client()
         try:
             successful = _delete_and_record(
                 session,
@@ -1449,7 +1449,7 @@ def delete_user_tasks(
     file_ids = [task.result_file_id for task in tasks if task.result_file_id]
     own_client = client is None
     if file_ids:
-        client = client or httpx.Client(trust_env=False)
+        client = client or storage.http_client()
         try:
             _delete_and_record(session, file_ids, settings=settings, client=client)
         finally:

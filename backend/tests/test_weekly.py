@@ -258,7 +258,7 @@ def test_four_columns_public_reviewed_dedup_no_names(session, profile, world):
         assert word not in text
     assert lines[-1] == weekly.FOOT
     assert lines[-6:-1] == [
-        "30 天内截止从 10 月 5 日算起，只收人工核对过的日期。",
+        "30 天内截止从 10 月 5 日算起，只收核对过原文的日期。",
         weekly.LOCAL_EARLIER,
         "数据截至 2026 年 10 月 5 日 07:30（北京时间）。",
         weekly.GUIDE,
@@ -1050,7 +1050,7 @@ def test_reminder_reviewed_within_seven_days_sorted_like_mini_program(
     assert "企业截止在七天外" not in text
     lines = text.splitlines()
     assert lines[:3] == [
-        "第三方整理，非政府平台，以原文为准。截止从 2026 年 10 月 8 日算起，只列人工核对过的日期。",
+        "第三方整理，非政府平台，以原文为准。截止从 2026 年 10 月 8 日算起，只列核对过原文的日期。",
         "",
         "10 月 8 日—15 日截止的申报项目（6 项）",
     ]
@@ -1669,7 +1669,7 @@ def test_migration_0033_list_flash_upgrade_downgrade(db_engine, session, profile
         return columns, uniques
 
     try:
-        command.downgrade(cfg, "0046")
+        command.downgrade(cfg, "0053")
         columns, uniques = shape()
         assert not {"subject_id", "items", "scope"} & columns
         assert uniques == {"uq_digest_issue_kind_week"}

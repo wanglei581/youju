@@ -2,8 +2,8 @@
 
 - 表：只导出 PUBLIC_TABLES（白名单）——来源、通知、正文、附件和附件文字、截止日期、名单、AI 质检、
   公众号周报方案等，都是政府公开发布的内容和据此整理出的结果。其余表一律不导出：用户、关注、纠错、
-  订阅、订单、发票、AI 工具任务等用户数据，密钥，下架记录、周报期刊，访问日志和运维记录
-  （EXCLUDED_TABLES）。新加的表两边都没写就不导出，测试也会失败，逼着写明归哪一类。
+  订阅、订单、发票、AI 工具任务等用户数据，密钥，下架记录、周报期刊，访问日志和运维记录，
+  覆盖看板（EXCLUDED_TABLES）。新加的表两边都没写就不导出，测试也会失败，逼着写明归哪一类。
 - 行：下架的文件不导出（和小程序同一口径：归并组里有一份下架，整组都不对外。下架多是有人投诉，
   按个保法第二十七条属于个人明确拒绝，不能再以"已公开"为由处理），挂在它们下面的正文、附件、
   名单、截止日期、AI 结果等一起不导出，只被它们用到的附件副本和附件文字、名单文件、转发组也不导出。
@@ -33,6 +33,7 @@ import httpx
 from sqlalchemy import Connection, Engine, Table, and_, func, or_, select, text
 from sqlalchemy.exc import SQLAlchemyError
 
+from youju import storage
 from youju.backup import (
     BEIJING,
     BackupError,
@@ -122,8 +123,10 @@ EXCLUDED_TABLES = frozenset(
         # 密钥
         "app_keys",
         "signing_keys",
-        # 下架、恢复的操作记录；周报期刊（正文里有当时的文件标题和链接，可能包括后来下架的）
+        # 下架、恢复的操作记录；周报期刊（正文里有当时的文件标题和链接，可能包括后来下架的）；
+        # 首发前搬家带过来的已下架网址（D-127，同步到服务器，但不进给本机测试用的公开快照）
         "document_takedown_events",
+        "takedown_blocks",
         "digest_issues",
         # 访问日志和运维记录
         "access_logs",
@@ -132,6 +135,11 @@ EXCLUDED_TABLES = frozenset(
         "ai_usage",
         "job_runs",
         "pay_reconciliations",
+        # 覆盖看板（D-122）：本机用清单文件和抓取记录能重算；里面有人工确认人、抽查人和备注
+        "coverage_divisions",
+        "coverage_cells",
+        "coverage_cell_sources",
+        "coverage_acceptances",
     }
 )
 
@@ -453,7 +461,7 @@ def run(
     today = now.astimezone(BEIJING).date()
     report = SnapshotReport(path=object_path(today))
     own = client is None
-    client = client or httpx.Client(trust_env=False)
+    client = client or storage.http_client()
     try:
         with tempfile.TemporaryDirectory() as tmp:
             local = Path(tmp) / Path(report.path).name

@@ -14,6 +14,11 @@ const RELEASE_IDENTITY = (() => {
   }
   return Object.freeze(identity);
 })();
+// 2.0 自建服务器（小程序 config.apiBaseUrl）的正式接口域名，切换前为空：空的时候填了 apiBaseUrl 的包一律不能通过
+const RELEASE_API_BASE = (() => {
+  const raw = JSON.parse(fs.readFileSync(path.join(__dirname, 'release', 'release-identity.json'), 'utf8'));
+  return typeof raw.apiBaseUrl === 'string' ? raw.apiBaseUrl : '';
+})();
 // 工具使用说明的版本要和后台一致（backend/src/youju/advisor_tasks.py 的 ADVISOR_AGREEMENT_VERSION）：
 // 不一致时用户点了同意也会被后台拒绝。直接读后台的常量，升版本时不用再改这里
 const SERVER_TOOL_TERMS_VERSION = (() => {
@@ -84,7 +89,7 @@ function hasPlaceholder(value) {
   return false;
 }
 function nonempty(value) { return typeof value === 'string' && value.trim().length > 0; }
-function inspect({ legal, config, app, project, toolTerms, payTerms, businessLicense, licensePhotoExists = false, mode = 'submit', profile = 'first-release', fingerprints = FINGERPRINTS }) {
+function inspect({ legal, config, app, project, toolTerms, payTerms, businessLicense, licensePhotoExists = false, mode = 'submit', profile = 'first-release', fingerprints = FINGERPRINTS, releaseApiBase = RELEASE_API_BASE }) {
   if (!['submit', 'prepare'].includes(mode) || !PROFILES.includes(profile)) {
     throw new Error('参数不支持');
   }
@@ -101,9 +106,15 @@ function inspect({ legal, config, app, project, toolTerms, payTerms, businessLic
   }
   add('filing', '关于页有备案号', filed, '备案办理中；号下来后填 operator.icp。体验准备通过不等于可提审', mode === 'prepare');
   add('email', '关于页有联系邮箱', nonempty(op.email) && !hasPlaceholder(op.email), '填写真实联系邮箱');
-  const releaseIdentityOk = !!project && project.appid === RELEASE_IDENTITY.appid
-    && config.cloudEnv === RELEASE_IDENTITY.cloudEnv && config.cloudService === RELEASE_IDENTITY.cloudService;
-  add('cloud', '连接正式云托管', config.cloudEnv === RELEASE_IDENTITY.cloudEnv && config.cloudService === RELEASE_IDENTITY.cloudService, '云环境或云服务缺失，或不是本产品已确认的正式云托管');
+  // 正式后端二选一：云托管（现在）；2.0 自建服务器（apiBaseUrl 和登记的正式 https 域名完全一样，云托管清空）
+  const selfHosted = typeof config.apiBaseUrl === 'string' && config.apiBaseUrl !== '';
+  const backendOk = selfHosted
+    ? /^https:\/\/[A-Za-z0-9.-]+$/.test(releaseApiBase) && config.apiBaseUrl === releaseApiBase && !config.cloudEnv
+    : config.cloudEnv === RELEASE_IDENTITY.cloudEnv && config.cloudService === RELEASE_IDENTITY.cloudService;
+  const releaseIdentityOk = !!project && project.appid === RELEASE_IDENTITY.appid && backendOk;
+  add('cloud', '连接正式后端', backendOk, selfHosted
+    ? '2.0 自建服务器：小程序配置里的接口域名要和发布身份文件登记的正式 https 域名完全一致，云托管环境要清空'
+    : '云环境或云服务缺失，或不是本产品已确认的正式云托管');
   add('release-identity', '发布身份与本产品正式包一致', releaseIdentityOk, 'AppID、云环境或云服务缺失，或与本产品已确认的正式发布身份不一致。本检查只做仓库内静态对照，不验证线上授权');
   add('local', '没有本机开发后端', !config.devBaseUrl, '清空 devBaseUrl');
   add('debug', '没有打开调试', app.debug !== true, '关闭 debug');

@@ -82,12 +82,20 @@ _TOKEN_SPLIT = re.compile(r"[-_]+")
 _DATASTORE_RECORD = re.compile(r"<record>\s*<!\[CDATA\[(.*?)\]\]>\s*</record>", re.S)
 _XML_DECL = re.compile(r"^\s*<\?xml[^>]*\?>", re.I)
 _BODY_END = re.compile(r"</body\s*>", re.I)
+_STRAY_END = re.compile(r"</(?:body|html)\s*>", re.I)
 # 写在链接文字开头或结尾的日期
 _EDGE_DATE = re.compile(
     r"^\s*[\[(（【]?\s*(20\d{2}[-/.年]\d{1,2}[-/.月]\d{1,2}日?)\s*[\])）】]?"
     r"|[\[(（【]?\s*(20\d{2}[-/.年]\d{1,2}[-/.月]\d{1,2}日?)\s*[\])）】]?\s*$"
     r"|[\[(（【]\s*(\d{1,2}-\d{1,2})\s*[\])）】]\s*$"
     r"|\s(\d{2}-\d{2})\s*$"
+)
+
+# title 属性结尾隔着空白写的日期（只认完整的年月日，括号里的日期可能是标题本身的一部分）
+_ATTR_DATE = re.compile(r"\s+(20\d{2}(?:年\d{1,2}月\d{1,2}日|[-/.]\d{1,2}[-/.]\d{1,2}))$")
+# 悬浮提示（titles._TOOLTIP）里的发表时间
+_TOOLTIP_DATE = re.compile(
+    r"点击数[：:]\s*\d+\s+发表时间[：:]\s*(20\d{2}[-/.年]\d{1,2}[-/.月]\d{1,2}日?)"
 )
 
 
@@ -264,6 +272,27 @@ def _date_inside_anchor(title: str, today: date) -> tuple[str, date | None, bool
     return _clean(title[: m.start()] + title[m.end() :]), found, full
 
 
+def _without_attr_date(title: str, a: etree._Element, found: date | None, today: date) -> str:
+    """济南人社：title 属性是"标题 + 空格 + 发布日期"（title="……送达公告 2026年11月05日"），链接文字
+    是不带日期的标题，行里另写着同一个发布日期。结尾这个日期和这一行的发布日期相同、去掉它剩下的
+    正是链接文字（或它的完整写法）时，日期不算标题；和发布日期不同的（纪要写的会议日期）照旧留着"""
+    m = _ATTR_DATE.search(title)
+    if not m or found is None:
+        return title
+    core, text = title[: m.start()], _link_text(a)
+    stated, _ = parse_date_detail(m.group(1), today)
+    if stated == found and (core == text or _completes(core, text)):
+        return core
+    return title
+
+
+def _tooltip_date(a: etree._Element, today: date) -> tuple[date | None, bool]:
+    """悬浮提示里写的发表时间（漯河、本溪等平台：title="标题：…点击数：…发表时间：2026-07-01"）。
+    标题已经只取"标题："那一段（titles.clean_title）；行里没写日期时先用它"""
+    m = _TOOLTIP_DATE.search(_clean(a.get("title")))
+    return parse_date_detail(m.group(1), today) if m else (None, False)
+
+
 # 只表示显示状态的样式名（页签选中、显隐等），比较结构时忽略
 _STATE_CLASSES = {
     "active",
@@ -372,7 +401,10 @@ def _extract_heuristic(page: _Page, require_date: bool) -> tuple[tuple, list[Lis
         title, url = link
         row, found, full = page.find_row(a, title, url)
         if found is None:
-            title, found, full = _date_inside_anchor(title, page.today)
+            # 悬浮提示里写明的发表时间最准（提示里的标题本身可能以会议日期之类结尾）
+            found, full = _tooltip_date(a, page.today)
+            if found is None:
+                title, found, full = _date_inside_anchor(title, page.today)
             if found is None:
                 # 标题取自 title 属性时，链接文字里写的日期（如天津科技局）照样是发布日期
                 _, found, full = _date_inside_anchor(_link_text(a), page.today)
@@ -384,6 +416,7 @@ def _extract_heuristic(page: _Page, require_date: bool) -> tuple[tuple, list[Lis
             found = url_date or found
         if found is None and require_date:
             continue
+        title = _without_attr_date(title, a, found, page.today)
         if not _looks_like_title(title):
             continue
         container = (row if row is not None else a).getparent()
@@ -432,7 +465,7 @@ def _extract_with_config(page: _Page, config: dict) -> list[ListItem]:
             found = url_date or found
         if found is None and require_date:
             continue
-        items.append(ListItem(title, url, found))
+        items.append(ListItem(_without_attr_date(title, a, found, page.today), url, found))
     return items
 
 
@@ -552,7 +585,9 @@ def extract_items(
     if not html.strip():
         return []
     try:
-        doc = lxml.html.document_fromstring(html)
+        # 页面中间拼进来的 </html>、</body>（如中国政府网的页头）会让 libxml2 不再往下解析，
+        # 后面的列表整个丢掉；浏览器照常显示。解析前去掉
+        doc = lxml.html.document_fromstring(_STRAY_END.sub("", html))
     except (etree.ParserError, ValueError):
         return []
     page = _Page(doc, page_url, today or date.today())

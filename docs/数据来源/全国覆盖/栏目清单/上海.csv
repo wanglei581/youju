@@ -1,0 +1,12 @@
+﻿层级,省份,城市,区县,部门,部门全称,栏目名称,栏目URL,HTTP状态,页面日期数,最新日期样例,验证状态,验证日期,备注,栏目类型,网站URL,导航来源页,栏目来源页,平台,区划代码
+省级,上海,,,人社,上海市人力资源和社会保障局,公示公告,https://rsj.sh.gov.cn/tgsgg_17341/index.html,200,20,2026-11-09,试跑可读（全国覆盖 v1，未启用）,2026-11-09,,公示公告,https://rsj.sh.gov.cn/,https://www.shanghai.gov.cn/,https://rsj.sh.gov.cn/,32位编号.shtml,310000
+省级,上海,,,人社,上海市人力资源和社会保障局,规范性文件,https://rsj.sh.gov.cn/tgwgfx_17726/index.html,200,20,2026-09-03,试跑可读（全国覆盖 v1，未启用）,2026-11-09,,政策文件,https://rsj.sh.gov.cn/,https://www.shanghai.gov.cn/,https://rsj.sh.gov.cn/,未识别,310000
+省级,上海,,,发改委,上海市发展和改革委员会,政策文件,https://fgw.sh.gov.cn/fgw_zcwjfl/index.html,200,20,2026-10-29,试跑可读（全国覆盖 v1，未启用）,2026-11-09,,政策文件,https://fgw.sh.gov.cn/,https://www.shanghai.gov.cn/,https://fgw.sh.gov.cn/,32位编号.shtml,310000
+省级,上海,,,商务,上海市商务委员会,政策文件,https://sww.sh.gov.cn/assets/zfxxgk/index-zc.html,200,0,,需浏览器渲染或接口（全国覆盖 v1）,2026-11-09,,政策文件,https://sww.sh.gov.cn/,https://www.shanghai.gov.cn/,https://sww.sh.gov.cn/,未识别,310000
+省级,上海,,,工信,上海市经济和信息化委员会,政策文件,https://www.sheitc.sh.gov.cn/xxgk/index.html,200,0,,需浏览器渲染或接口（全国覆盖 v1）,2026-11-09,,政策文件,https://www.sheitc.sh.gov.cn/,https://www.shanghai.gov.cn/,https://www.sheitc.sh.gov.cn/,未识别,310000
+省级,上海,,,市场监管,上海市市场监督管理局,政策文件,http://fw.scjgj.sh.gov.cn/shaic/gov_info_publish/zfxxgk2.html,200,2,2020-04-24,已访问（识别出 2 条、带日期 2 条，需人工确认是否列表页）,2026-11-09,,政策文件,http://scjgj.sh.gov.cn/,https://www.shanghai.gov.cn/,http://scjgj.sh.gov.cn/,未识别,310000
+省级,上海,,,政府办,上海市人民政府,政策发布,https://www.shanghai.gov.cn/zhengce/list,200,0,,需浏览器渲染或接口（全国覆盖 v1）,2026-11-09,,政策文件,https://www.shanghai.gov.cn/,https://www.shanghai.gov.cn/,https://www.shanghai.gov.cn/,Vue/前端渲染,310000
+省级,上海,,,文旅,上海市文化和旅游局,政策文件,https://whlyj.sh.gov.cn/zw-zcwj/index.html,200,0,,需浏览器渲染或接口（全国覆盖 v1）,2026-11-09,,政策文件,https://whlyj.sh.gov.cn/,https://www.shanghai.gov.cn/,https://whlyj.sh.gov.cn/,未识别,310000
+省级,上海,,,生态环境,上海市生态环境局,政策文件,https://sthj.sh.gov.cn/hbzhywpt1175/hbzhywpt1188/index.html?num=1,200,100,2026-09-29,试跑可读（全国覆盖 v1，未启用）,2026-11-09,,政策文件,https://sthj.sh.gov.cn/,https://www.shanghai.gov.cn/,https://sthj.sh.gov.cn/,32位编号.shtml,310000
+省级,上海,,,生态环境,上海市生态环境局,公告通知,https://sthj.sh.gov.cn/hbzhywpt1272/szyw/index.html,200,10,2026-10-10,试跑可读（全国覆盖 v1，未启用）,2026-11-09,,通知公告,https://sthj.sh.gov.cn/,https://www.shanghai.gov.cn/,https://sthj.sh.gov.cn/,32位编号.shtml,310000
+省级,上海,,,财政,上海市财政局,政策文件,https://czj.sh.gov.cn/zss/zfxx/xxgk/zcwj/,200,0,,需浏览器渲染或接口（全国覆盖 v1）,2026-11-09,,政策文件,https://czj.sh.gov.cn/,https://www.shanghai.gov.cn/,https://czj.sh.gov.cn/zss/zfxx/xxgk/gkzn/,拓尔思,310000

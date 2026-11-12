@@ -245,6 +245,23 @@ def test_notice_sample_is_deterministic_and_stratified(session):
     assert len(sample_notices(session, n=50, seed=1)) == 13
 
 
+def test_sample_uses_the_quote_recorded_when_claude_corrected_the_date(session):
+    # D-130：Claude 把候选日期改成原文写的那个时，抽检表的证据原句和程序核对②用核对时记下的那句
+    src = _source(session, "a")
+    doc = _doc(session, src, 1)
+    _detail(session, doc)
+    _deadline(session, doc, "q1", date(2026, 10, 30), "请各市主管部门于11月5日前完成推荐")
+    from sqlalchemy import select
+
+    row = session.scalars(select(DocumentDeadline)).one()
+    row.verification_quote = "企业申报截止时间为2026年10月30日 17:00，逾期不予受理。"
+    row.verification_corrected = True
+    session.commit()
+    [sample] = sample_notices(session, n=10, seed=1)
+    assert sample["截止证据原句"] == f"企业申报截止：{row.verification_quote}"
+    assert "找不到" not in str(sample)
+
+
 def test_notice_checks_and_scope(session):
     src, other, private = _source(session, "a"), _source(session, "b"), _source(session, "p", 2)
     good = _doc(session, src, 1)

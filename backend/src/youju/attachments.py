@@ -53,7 +53,7 @@ import httpx
 from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.orm import Session
 
-from youju import attachment_text
+from youju import attachment_text, storage, zip_limits
 from youju.backup import _BUSY_CODES, BEIJING, BackupError, _open_api, _retrying, upload
 from youju.classify import effective_kind
 from youju.config import get_settings
@@ -69,8 +69,8 @@ log = logging.getLogger("youju.attachments")
 
 # wx.openDocument 的 fileType 合法值（官方文档）
 PREVIEW_TYPES = ("doc", "docx", "xls", "xlsx", "ppt", "pptx", "pdf")
-# 要下载的：能存副本的 7 种，加上只取文字给 AI 用的 wps、et（小程序打不开，不存副本；
-# 附件读入方案第三节第 1 条）
+# 要下载的：能存副本的 7 种，加上只取文字的 wps、et（附件读入方案第三节第 1 条），11/5 起还有
+# ofd 和 zip、rar 压缩包（小程序打不开，都不存副本，只取文字给站内阅读和 AI）
 DOWNLOAD_TYPES = PREVIEW_TYPES + attachment_text.TEXT_ONLY_TYPES
 # 文件头判断出的格式和扩展名要是同一类（.doc 实际是 docx 这类常见的情况照样能打开）
 _FAMILY = {
@@ -132,6 +132,9 @@ _PLATFORM_HINTS = {
 }
 RUN_BYTES = 1024**3  # 每轮最多下载 1GB
 _PDF_PAGES = 300
+# 查一份 PDF 最多用这么多秒 CPU 时间（pdf_sandbox 到时停掉子进程），到了按取不出文字算。
+# 11/8 实测 341 份真实文件最慢 44 秒（Linux 虚拟机）
+PDF_SECONDS = 180
 _TEXT_MAX = 100 * 1024 * 1024  # Office 文件解压后的文字部分上限（防压缩炸弹）
 _LINK_MAX_AGE = 1800  # 临时链接有效期（秒）
 _LINK_TTL = 1200.0  # api 进程里缓存临时链接的时间，比有效期短
@@ -224,17 +227,6 @@ class HasImages(Exception):
     """附件里有查不了个人信息的图片或嵌入对象（异常说明写在哪里）。"""
 
 
-def _pdf_image_areas(page, images: list[dict]) -> list[float]:
-    """这一页上每张图片占的面积（超出页面的部分不算）。"""
-    x0, top, x1, bottom = page.bbox
-    areas = []
-    for image in images:
-        width = min(image["x1"], x1) - max(image["x0"], x0)
-        height = min(image["bottom"], bottom) - max(image["top"], top)
-        areas.append(width * height if width > 0 and height > 0 else 0.0)
-    return areas
-
-
 def _bitmap_size(raw: bytes) -> tuple[int, int] | None:
     """位图的宽、高（像素）；认不出返回 None。只读文件头，不解码像素。"""
     from PIL import Image
@@ -268,43 +260,59 @@ def _check_bitmap(raw: bytes, size: int, where: str) -> None:
 
 
 def _pdf_text(data: bytes) -> str | None:
-    import pdfplumber
+    """PDF 里的文字：在限内存、限时的子进程里读（pdf_sandbox；某一页几乎没有文字但有图片的，
+    多半是扫描页，查不了，返回 None）。没读成（解压后太大、压缩方式不支持、超时、超内存、损坏）
+    抛 pdf_sandbox.Failed，text_of 按取不出文字算。"""
+    from youju import pdf_sandbox
 
-    texts = []
-    with pdfplumber.open(io.BytesIO(data)) as pdf:
-        if len(pdf.pages) > _PDF_PAGES:
-            return None
-        for number, page in enumerate(pdf.pages, 1):
-            text = page.extract_text() or ""
-            images = page.images
-            # 某一页几乎没有文字但有图片：多半是扫描页，查不了
-            scanned = len(text.strip()) < 10 and bool(images)
-            areas = _pdf_image_areas(page, images) if images else []
-            page_area = page.width * page.height
-            page.close()  # 释放这一页解析出的对象，大文件不至于占满内存
-            if scanned:
-                return None
-            if any(area > page_area * PDF_IMAGE_SHARE for area in areas):
-                raise HasImages(f"PDF 第 {number} 页有超过 1/10 页面的图片")
-            if sum(areas) > page_area * PDF_PAGE_SHARE:
-                raise HasImages(f"PDF 第 {number} 页的图片合计超过半页")
-            texts.append(text)
-    joined = "\n".join(texts)
-    return joined if joined.strip() else None
+    found = pdf_sandbox.read(
+        "copy",
+        data,
+        seconds=PDF_SECONDS,
+        pages=_PDF_PAGES,
+        image_share=PDF_IMAGE_SHARE,
+        page_share=PDF_PAGE_SHARE,
+    )
+    if "images" in found:
+        number, kind = found["images"]
+        if kind == "one":
+            raise HasImages(f"PDF 第 {number} 页有超过 1/10 页面的图片")
+        raise HasImages(f"PDF 第 {number} 页的图片合计超过半页")
+    joined = found["text"]
+    return joined if joined is not None and joined.strip() else None
 
 
 def _xml_text(raw: bytes) -> str:
     return html.unescape(_TAGS.sub("", _BREAK_TAGS.sub("\n", raw.decode("utf-8", "ignore"))))
 
 
+# zip 里只读不压缩（stored）和 deflate 压缩的部件，和附件文字、名单解析、用户上传表格共用一份规则
+# （zip_limits.ZIP_METHODS）：Python 解 bzip2、LZMA 时一次把读进来的压缩数据整段
+# 解开、不受 read(n) 的长度限制，几百字节的文件能解出几百 MB（11/5 独立审阅实测：362 字节的包让
+# 内存从 70MB 涨到 660MB）。Office 只用这两种（11/5 抽查 147 份真实附件的 3,288 个部件也是）。
+
+
+class UnsupportedZip(Exception):
+    """Office 文件里有部件用了别的压缩方式：整份不读（一个部件都不打开），按取不出文字算。"""
+
+
 def _ooxml_text(data: bytes, nested: bool = False) -> str | None:
     """新版 Office 文件里的文字。位图超过 10KB 或 200 像素、矢量图和嵌入的对象（嵌入的表格、
     文档等）超过 50KB，抛 HasImages；小的矢量图取出文字，小的嵌入文档取出它的文字（只往下看
-    一层），一起查。"""
+    一层），一起查。有部件的压缩方式不是 deflate、不压缩，抛 UnsupportedZip（嵌入的文档也一样，
+    整份按取不出文字算，不存副本）。"""
     parts: list[str] = []
     total = 0
     with zipfile.ZipFile(io.BytesIO(data)) as zf:
-        for info in zf.infolist():
+        infos = zf.infolist()
+        for info in infos:
+            if info.compress_type not in zip_limits.ZIP_METHODS:
+                # 记一条：检查结果只写"取不出文字"，看日志才分得清是压缩方式的事
+                log.info("附件副本：Office 部件的压缩方式不支持（%s），不读", info.compress_type)
+                raise UnsupportedZip(
+                    f"压缩方式不支持（{info.compress_type}）：{info.filename[:80]}"
+                )
+        for info in infos:
             name = info.filename.lower()
             embedded = "/embeddings/" in f"/{name}"
             # 文件属性里的首页缩略图是正文首页的样子，正文已经查过
@@ -513,8 +521,11 @@ def _ole_pictures(data: bytes, file_type: str) -> str:
 
 
 def text_of(data: bytes, file_type: str) -> str | None:
-    """附件里的文字，用来查个人信息；取不出（扫描件、损坏、太大）返回 None。
-    有查不了的图片（见 HasImages）抛 HasImages。"""
+    """附件里的文字，用来查个人信息；取不出（扫描件、损坏、太大、Office 部件的压缩方式不支持、
+    PDF 解压后太大、读 PDF 超时超内存）返回 None。有查不了的图片（见 HasImages）抛 HasImages；
+    读 PDF 时遇到和当时的环境有关的问题（pdf_sandbox.Failed，retry 为真）照样抛出，稍后再查。"""
+    from youju import pdf_sandbox
+
     try:
         if file_type == "pdf":
             return _pdf_text(data)
@@ -525,6 +536,10 @@ def text_of(data: bytes, file_type: str) -> str | None:
         return f"{main}\n{pictures}"
     except HasImages:
         raise
+    except pdf_sandbox.Failed as exc:
+        if exc.retry:
+            raise
+        return None
     except Exception:  # noqa: BLE001 - 第三方解析器对损坏文件会抛多种异常
         return None
 
@@ -544,10 +559,16 @@ def check_content(data: bytes, declared: str) -> str | Failure:
     detected = detect_type(data)
     if detected is None or _FAMILY[detected] != _FAMILY.get(declared):
         return Failure("mismatch", "文件内容和扩展名对不上（可能是网页，或文件已损坏、加密）")
+    from youju import pdf_sandbox
+
     try:
         text = text_of(data, detected)
     except HasImages as exc:
         return Failure("image", f"含图片，无法核验个人信息（{exc}）")
+    except (
+        pdf_sandbox.Failed
+    ) as exc:  # 和当时的环境有关（容器忙、内存不够等）：已有副本照用，稍后再查
+        return Failure("unchecked", f"这次没读成 PDF（{exc.detail}），稍后再查", True)
     if text is None:
         return Failure("unchecked", "取不出文字（扫描件或文件损坏），没法检查有没有个人信息")
     if has_personal_numbers(text):
@@ -874,9 +895,9 @@ def _recent(since: date, since_at: datetime):
 
 
 def candidates(session: Session, now: datetime, *, texts: bool = False) -> dict[str, str]:
-    """要下载的附件（存副本，wps、et 只取文字）：原站链接 → 题录里的扩展名，按文件发布日期
-    从新到旧。texts：附件文字的范围（政策近 2 年，POLICY_TEXT_WINDOW_DAYS），不给是副本的范围
-    （政策近 90 天）；申报通知都是近 180 天。"""
+    """要下载的附件（存副本；wps、et、ofd、zip、rar 只取文字）：原站链接 → 题录里的扩展名，
+    按文件发布日期从新到旧。texts：附件文字的范围（政策近 2 年，POLICY_TEXT_WINDOW_DAYS），
+    不给是副本的范围（政策近 90 天）；申报通知都是近 180 天。"""
     since, since_at = _since(now, POLICY_TEXT_WINDOW_DAYS if texts else WINDOW_DAYS)
     apply_since, apply_since_at = _since(now, APPLICATION_WINDOW_DAYS)
     kind = func.coalesce(Document.kind_override, Document.rule_kind)
@@ -992,7 +1013,7 @@ def _store_one(
     if failure is not None:
         outcome: Failure | str = failure
     elif row.declared_type not in PREVIEW_TYPES:
-        # wps、et：小程序打不开，不存副本，只取文字（能不能打开副本的规则不变）
+        # wps、et、ofd、zip、rar：小程序打不开，不存副本，只取文字（能不能打开副本的规则不变）
         outcome = Failure("format", "小程序打不开这种格式，不存副本（只取文字给 AI 用）")
     else:
         outcome = check_content(content, row.declared_type)
@@ -1235,7 +1256,7 @@ def _cache_run(
         key=lambda r: (not copy_due(r), rank[r.status], order[r.url_hash]),
     )
     owns_client, owns_fetcher = client is None, fetcher is None
-    client = client or httpx.Client(trust_env=False)
+    client = client or storage.http_client()
     if fetcher is None:
         settings = get_settings()
         fetcher = PoliteFetcher(
@@ -1442,7 +1463,7 @@ def _recheck(
             groups[row.file_id].append(row)
     picked = list(groups.items())[:limit] if limit is not None else list(groups.items())
     owns_client = client is None
-    client = client or httpx.Client(trust_env=False)
+    client = client or storage.http_client()
     try:
         for file_id, rows in picked:
             first = rows[0]
@@ -1615,7 +1636,7 @@ def settle_missing_copies(
         if not got:
             return MissingReport(skipped=True)
         owns_client = client is None
-        client = client or httpx.Client(trust_env=False)
+        client = client or storage.http_client()
         try:
             return _settle_missing(session, env, listing, client, now, apply, sleep)
         finally:

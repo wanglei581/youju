@@ -28,7 +28,9 @@ from xml.etree import ElementTree
 
 import httpx
 
+from youju import storage
 from youju.backup import _BUSY_CODES, OPEN_API, PROBE_PATH, BackupError, _open_api, _retrying
+from youju.config import get_settings
 
 DEFAULT_REGION = "ap-shanghai"
 # 每页最多 1000 个（COS 的上限）；超过 1000 页（100 万个文件）就停，不当成列完了
@@ -118,6 +120,10 @@ def bucket_of(
     client: httpx.Client, env: str, *, sleep: Callable[[float], None] = clock.sleep
 ) -> Bucket:
     """这个环境的存储桶：文件 ID 前缀、存储桶名、地域。"""
+    if storage.emulated():
+        # 2.0 自建服务器：前缀照 storage.file_id 的写法，地域用不上
+        name = get_settings().storage_bucket
+        return Bucket(f"cloud://{env}.{name}/", name, "self")
     link = _retrying(
         lambda: _open_api(client, "/tcb/uploadfile", {"env": env, "path": PROBE_PATH}), sleep
     )
@@ -266,6 +272,13 @@ def list_objects(
 ) -> list[StoredObject]:
     """列出存储桶里以 prefix 开头的全部文件（按 NextMarker 翻页；每页网络中断、服务繁忙时
     重试两次）。任何一页不对就整个报错，不返回列了一半的结果。"""
+    if storage.emulated():
+        try:
+            return [
+                StoredObject(item.key, item.last_modified) for item in storage.list_objects(prefix)
+            ]
+        except storage.StorageError as exc:
+            raise BackupError(f"列文件失败：{exc}", retryable=True) from None
     host = f"{bucket.name}.cos.{bucket.region}.myqcloud.com"
     creds: Credentials | None = None
     found: list[StoredObject] = []

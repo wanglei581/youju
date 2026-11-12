@@ -18,6 +18,7 @@ from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
 from youju import attachments as copies
+from youju import storage
 from youju.backup import BackupError
 from youju.db import get_session
 
@@ -38,7 +39,7 @@ _slots = threading.BoundedSemaphore(8)
 
 def _client() -> httpx.Client:
     """读对象存储用的连接（测试里替换成模拟的）。"""
-    return httpx.Client(trust_env=False)
+    return storage.http_client()
 
 
 def _caller(request: Request) -> str:

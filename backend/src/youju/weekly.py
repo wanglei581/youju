@@ -489,7 +489,8 @@ def _local_date(stamp: datetime | None) -> date | None:
 def _deadline_text(deadlines, *, linked=False) -> str:
     """已核对的截止：类型、日期、时刻和核对日期。
 
-    如"企业申报截止 10 月 10 日 17:00（10 月 3 日核对）"。只收人工核对通过的截止（调用方保证）；
+    如"企业申报截止 10 月 10 日 17:00（10 月 3 日核对）"。只收核对通过的截止
+    （人工，或 D-130 由 Claude 带证据对照原文核对；调用方保证）；
     没有就写"截止时间见原文"，不写候选日期。
     """
     if not deadlines:
@@ -719,7 +720,7 @@ def render(profile: DigestProfile, start: date, end: date, stamp: datetime, colu
     ]
     if profile.columns.get("deadlines", False):
         today = stamp.astimezone(BEIJING).date()
-        notes.append(f"30 天内截止从 {_month_day(today)}算起，只收人工核对过的日期。")
+        notes.append(f"30 天内截止从 {_month_day(today)}算起，只收核对过原文的日期。")
     page.footer(stamp, notes)
     body_html, body_text, linked = page.done()
     # 本期清单按块的顺序存全部条目（正文每块只列 5 条）；全国性政策文件放最后。
@@ -797,7 +798,7 @@ def render_reminder(profile: DigestProfile, stamp: datetime, items: list[Item]) 
         suffix = "" if area == "全国" else f"（{area}）"
         title = _fit(*(f"临期提醒｜{span}：没有已核对的截止项目{suffix}" for span in spans))
     page = _Page()
-    page.paragraph(f"{HEAD}截止从 {_full_date(today)}算起，只列人工核对过的日期。")
+    page.paragraph(f"{HEAD}截止从 {_full_date(today)}算起，只列核对过原文的日期。")
     shown = items[:REMINDER_LIMIT]
     if items:
         if len(items) > REMINDER_LIMIT:

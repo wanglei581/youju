@@ -6,6 +6,7 @@ import pytest
 from openpyxl import Workbook
 from openpyxl.worksheet._read_only import ReadOnlyWorksheet
 
+from youju import pdf_sandbox
 from youju.lists import parser
 
 
@@ -80,7 +81,7 @@ def test_html_budget_shared_between_tables(monkeypatch):
 
 
 @pytest.mark.parametrize("failure", [None, "budget", "parser"])
-def test_pdf_releases_each_page_before_next_and_on_failure(monkeypatch, failure):
+def test_pdf_releases_each_page_before_next_and_on_failure(monkeypatch, pdf_in_process, failure):
     closed = []
     visited = []
 
@@ -110,14 +111,16 @@ def test_pdf_releases_each_page_before_next_and_on_failure(monkeypatch, failure)
         def __exit__(self, *args):
             return False
 
-    monkeypatch.setattr(parser.pdfplumber, "open", lambda _: Pdf())
+    monkeypatch.setattr("youju.pdf_sandbox._open", lambda _: Pdf())
     if failure == "budget":
         monkeypatch.setattr(parser, "_MAX_CELLS", 3)
         with pytest.raises(ValueError, match="安全解析预算"):
             parser.parse_attachment_result(b"%PDF-fake", "pdf")
     elif failure == "parser":
-        with pytest.raises(RuntimeError, match="synthetic"):
+        # 子进程里出的错：带回异常类名（名单记"解析失败：RuntimeError"），说明不带回
+        with pytest.raises(pdf_sandbox.Failed) as raised:
             parser.parse_attachment_result(b"%PDF-fake", "pdf")
+        assert (raised.value.kind, raised.value.error) == ("error", "RuntimeError")
     else:
         assert len(parser.parse_attachment_result(b"%PDF-fake", "pdf").entries) == 1
     assert closed == visited == ([0, 1] if failure else [0, 1, 2])
