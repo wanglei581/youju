@@ -76,11 +76,13 @@ _BODY_SELECTORS = (
     "//article",
     '//*[contains(concat(" ", normalize-space(@class), " "), " pages_content ")]',
     '//*[contains(concat(" ", normalize-space(@class), " "), " article_area ")]',
-    # 几个站群的正文标记（上海 ivs_content，广州、苏州、黑龙江等 zoomcon，安徽 j-fontContent）：
-    # 排在最后的 .content 前面，只在前面的规则都没匹配上时才用（.content 常是整页外框）
+    # 几个站群的正文标记（上海 ivs_content，广州、苏州、黑龙江等 zoomcon，安徽 j-fontContent，
+    # 四川雅安、遂宁、达州等 xqing-web-box）：排在最后的 .content 前面，只在前面的规则都没匹配上
+    # 时才用（.content 常是整页外框；11/12 雅安一批文件页的 .content 是页尾的"主办单位、地址"）
     '//*[@id="ivs_content"]',
     '//*[@id="zoomcon"]',
     '//*[contains(concat(" ", normalize-space(@class), " "), " j-fontContent ")]',
+    '//*[contains(concat(" ", normalize-space(@class), " "), " xqing-web-box ")]',
     '//*[contains(concat(" ", normalize-space(@class), " "), " content ")]',
 )
 # 个别网站的正文区用的是自家类名（别的网站同名元素未必是正文），只对这个网站用（主机名精确匹配），
