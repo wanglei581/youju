@@ -602,6 +602,8 @@ def test_city_sample_round_evidence(tmp_path):
     wrong_layer = [("部门", "1", "s1", ""), ("门户", "2", "s2", "改了列表规则")]
     assert "层" in result(first, log=wrong_layer).sample_note()
     assert not result(first, log=wrong_layer).accepted
+    # 层空着的也不放（不默认当"部门"）
+    assert "没写层" in result(first, log=[("", "1", "s1", "")]).sample_note()
     # 记录里已经记了第 2 次、证据表还没填：按第 2 次算，不再按第 1 次放
     ahead = [("部门", "1", "s1", ""), ("部门", "2", "s2", "改了列表规则")]
     line = result(first, log=ahead).sample_lines[0]

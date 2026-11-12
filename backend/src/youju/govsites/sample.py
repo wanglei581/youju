@@ -602,6 +602,8 @@ class ProvinceResult:
         stray = sorted({layer for layer, _ in self.round_log} - set(self.cells))
         if not stray:
             return ""
+        if stray[0] == "":
+            return "联网核对记录里有行没写层（地市写部门；区县写部门或门户）"
         return f'联网核对记录里的层"{stray[0]}"证据表里没有（地市写部门；区县写部门或门户）'
 
     def _problem(self, layer: str, latest: int) -> str:
@@ -715,7 +717,7 @@ def _is_date(text: str) -> bool:
 
 def read_round_log(folder, province: str) -> dict[tuple[str, int], list]:
     """读 <抽查/层级>/联网核对/<省>.csv：(层, 第几次) → [(种子, 日期, 凭据)]（同一次记了几遍就有
-    几项；次数空着、认不出的记成 UNKNOWN_ROUND）。"""
+    几项；层照写，空着的也留着；次数空着、认不出的记成 UNKNOWN_ROUND）。"""
     import csv
     from pathlib import Path
 
@@ -725,7 +727,7 @@ def read_round_log(folder, province: str) -> dict[tuple[str, int], list]:
         return out
     with path.open(encoding="utf-8-sig", newline="") as fh:
         for r in csv.DictReader(fh):
-            layer = (r.get("层") or "").strip() or "部门"
+            layer = (r.get("层") or "").strip()  # 空着的不当"部门"：没写层，整省不放
             key = (layer, _count(r.get("次数") or ""))
             out.setdefault(key, []).append(
                 tuple((r.get(k) or "").strip() for k in ("种子", "日期", "凭据"))
