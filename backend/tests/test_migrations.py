@@ -111,3 +111,87 @@ def test_db_upgrade_alerts_and_still_succeeds_when_the_database_is_ahead(monkeyp
     monkeypatch.setattr(migrations, "upgrade", lambda: None)
     monkeypatch.setattr(alerts, "send_alert", lambda message: sent.append(message) or True)
     assert cli.main(["db-upgrade"]) == 0 and len(sent) == 1
+
+
+def test_repost_signals_migration_upgrade_downgrade(monkeypatch):
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).parents[1] / "alembic/versions/0054_repost_signals.py"
+    spec = importlib.util.spec_from_file_location("repost_signals_migration", path)
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+    calls = []
+    monkeypatch.setattr(
+        migration.op, "create_table", lambda name, *cols: calls.append((name, cols))
+    )
+    monkeypatch.setattr(migration.op, "drop_table", lambda name: calls.append((name,)))
+    executed = []
+    monkeypatch.setattr(migration.op, "execute", executed.append)
+    migration.upgrade()
+    migration.downgrade()
+    assert migration.down_revision == "0053"
+    # 现有文件都补一行"处理过"的标记（同步据此放行）
+    assert len(executed) == 1 and "INSERT INTO repost_signals" in executed[0]
+    assert "FROM documents" in executed[0]
+    assert calls[0][0] == calls[1][0] == "repost_signals"
+    assert {col.name for col in calls[0][1]} == {
+        "document_id",
+        "cited",
+        "body_forward",
+        "has_body",
+        "body_at",
+        "grouped_at",
+        "computed_at",
+    }
+
+
+def test_repost_signals_database_downgrade_and_upgrade(db_engine):
+    from alembic import command
+    from sqlalchemy import inspect, text
+
+    from youju.migrations import alembic_config
+
+    from .conftest import TEST_DB_URL
+
+    config = alembic_config(TEST_DB_URL)
+    try:
+        command.downgrade(config, "0053")
+        assert "repost_signals" not in inspect(db_engine).get_table_names()
+        # 迁移前已有的文件：升级时补一行"处理过"的标记（同步据此放行，不然老文件会被扣住）
+        with db_engine.begin() as conn:
+            conn.execute(text("SET FOREIGN_KEY_CHECKS = 0"))
+            conn.execute(text("DELETE FROM documents"))
+            conn.execute(text("SET FOREIGN_KEY_CHECKS = 1"))
+            conn.execute(
+                text(
+                    "INSERT INTO sources (level, province, dept, dept_full_name, column_name, url,"
+                    " fetch_mode, enabled, parser_config, rights_level, health,"
+                    " consecutive_failures) VALUES ('省级', '陕西', '工信', '陕西省工信厅',"
+                    " '通知公告', 'https://migr.example.gov.cn/tzgg/', 'static', 1, '{}',"
+                    " 1, 'unknown', 0)"
+                )
+            )
+            source_id = conn.execute(text("SELECT LAST_INSERT_ID()")).scalar()
+            for n in (1, 2):
+                conn.execute(
+                    text(
+                        "INSERT INTO documents (source_id, url, url_key, title, first_seen_at,"
+                        " last_seen_at, is_baseline, status) VALUES (:s, :u, :k, '迁移前的文件',"
+                        " UTC_TIMESTAMP(6), UTC_TIMESTAMP(6), 0, 'discovered')"
+                    ),
+                    {"s": source_id, "u": f"https://migr.example.gov.cn/{n}", "k": f"migr/{n}"},
+                )
+    finally:
+        command.upgrade(config, "head")
+    assert "repost_signals" in inspect(db_engine).get_table_names()
+    with db_engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                "SELECT s.cited, s.has_body, s.body_at, s.grouped_at FROM repost_signals s"
+                " JOIN documents d ON d.id = s.document_id WHERE d.url_key LIKE 'migr/%'"
+            )
+        ).all()
+    assert len(rows) == 2
+    assert all(r.cited in ("[]", []) and not r.has_body and r.body_at is None for r in rows)
+    assert all(r.grouped_at is not None for r in rows)

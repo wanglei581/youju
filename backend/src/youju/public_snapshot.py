@@ -95,6 +95,8 @@ PUBLIC_TABLES = frozenset(
 # 不导出：用户数据、密钥、日志和运维记录
 EXCLUDED_TABLES = frozenset(
     {
+        # 归组中间数据
+        "repost_signals",
         # 用户数据
         "users",
         "follows",
