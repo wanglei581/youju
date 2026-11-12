@@ -65,6 +65,14 @@ def setup(monkeypatch):
     candidate = row()
     session = Session([candidate], {1: SimpleNamespace(status="ok", body_text=BODY)})
     monkeypatch.setattr(app, "_lock_candidates", lambda session, row: session.rows)
+    # 同一截止同组退回的：离线时就看假会话里这几条
+    monkeypatch.setattr(
+        verify,
+        "_reopened_same_deadline",
+        lambda session, row: [
+            d for d in session.rows if d.status == "pending" and d.audit_state == "reopened"
+        ],
+    )
     monkeypatch.setattr(
         app,
         "_apply_review",
@@ -156,8 +164,10 @@ def test_reopened_evidence_and_trace(setup, monkeypatch):
         row.reviewed_by, row.reviewed_at = by, stamp
 
     monkeypatch.setattr(app, "_apply_review", apply_review)
+    # 结果不是按带退回原因的清单写的（没有 reopened: true）：不放行
+    assert "带退回原因的清单" in verify.apply_one(session, item(), True)
     assert "不在当前正文" in verify.apply_one(
-        session, item(quote="不存在的2026年9月30日截止原句"), True
+        session, item(quote="不存在的2026年9月30日截止原句", reopened=True), True
     )
     assert candidate.audit_note == "日期存疑"
     assert verify.apply_one(session, item(reopened=True, audit_note="日期存疑"), True) == "通过"

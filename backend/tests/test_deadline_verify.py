@@ -158,7 +158,11 @@ def test_twins_follow_confirmation(session, candidate):
         ]
     )
     session.commit()
-    assert verify.apply_one(session, payload(candidate), True) == "通过"
+    # 同组同一截止的副本被退回过：核主文件这条也要看到退回原因（agy 审阅 11/12）
+    entry = next(x for x in verify.queue(session, TODAY) if x["id"] == candidate.id)
+    assert (entry["reopened"], entry["audit_note"]) == (True, "质检退回原因：副本的退回原因")
+    assert "带退回原因的清单" in verify.apply_one(session, payload(candidate), True)
+    assert verify.apply_one(session, payload(candidate, reopened=True), True) == "通过"
     session.commit()
     twin = session.scalar(
         select(DocumentDeadline).where(DocumentDeadline.document_id == twin_doc.id)
@@ -190,9 +194,9 @@ def test_audit_reopened_rows_can_be_verified(session, candidate, verdict):
     session.commit()
     queued = verify.queue(session, TODAY)
     assert len(queued) == 1 and queued[0]["reopened"] is True
-    assert queued[0]["audit_note"] == candidate.audit_note
+    assert queued[0]["audit_note"] == f"质检退回原因：{candidate.audit_note}"
     assert "不在当前正文" in verify.apply_one(
-        session, payload(candidate, quote="不存在的2026年9月30日截止原句"), True
+        session, payload(candidate, quote="不存在的2026年9月30日截止原句", reopened=True), True
     )
     assert candidate.status == "pending" and candidate.audit_note == "原文写的是材料报送截止"
     changes = {"verdict": verdict}
@@ -217,7 +221,7 @@ def test_reopened_unclear_remains_blocked_until_body_changes(session, candidate)
     assert candidate.audit_note == "日期存疑" and not verify.queue(session, TODAY)
     session.get(DocumentDetail, candidate.document_id).body_text += "补充。"
     session.commit()
-    assert verify.queue(session, TODAY)[0]["audit_note"] == "日期存疑"
+    assert verify.queue(session, TODAY)[0]["audit_note"] == "质检退回原因：日期存疑"
 
 
 def test_twin_added_later_keeps_the_verified_quote(session, candidate):
@@ -339,3 +343,16 @@ def test_corrected_with_the_candidate_date_is_refused(session, candidate):
     item = payload(candidate, verdict="corrected", date="2026-09-30", time=None)
     assert "应写 confirmed" in verify.apply_one(session, item, True)
     assert candidate.status == "pending"
+
+
+def test_reopened_without_a_reason_still_leaves_a_trace(session, candidate):
+    # 管理台退回时没写原因：通过以后也要留一笔"质检退回"（agy 审阅 11/12）
+    candidate.audit_state = "reopened"
+    candidate.audit_note = None
+    session.commit()
+    [entry] = verify.queue(session, TODAY)
+    assert (entry["reopened"], entry["audit_note"]) == (True, "质检退回（没写原因）")
+    assert verify.apply_one(session, payload(candidate, reopened=True), True) == "通过"
+    session.commit()
+    assert candidate.audit_state is None
+    assert candidate.verification_unclear_note == "质检退回（没写原因）"

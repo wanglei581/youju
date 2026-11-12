@@ -65,6 +65,36 @@ def _has_time(quote, clock):
     )
 
 
+def _reopened_same_deadline(session, row):
+    """归并组里同一截止（类型、日期、时间相同；证据句可以不同）被质检退回、还待核对的各条。
+    退回时整组同一截止都会退回，页面上也只显示一个，所以退回原因按这一截止整组看。"""
+    from youju.dedup import canonical_ids, groups_for
+
+    master = canonical_ids(session, [row.document_id]).get(row.document_id, row.document_id)
+    members = groups_for(session, [master])[master]
+    return list(
+        session.scalars(
+            select(DocumentDeadline)
+            .where(
+                DocumentDeadline.document_id.in_(members),
+                DocumentDeadline.kind == row.kind,
+                DocumentDeadline.candidate_date == row.candidate_date,
+                DocumentDeadline.candidate_time.is_(None)
+                if row.candidate_time is None
+                else DocumentDeadline.candidate_time == row.candidate_time,
+                DocumentDeadline.status == "pending",
+                DocumentDeadline.audit_state == "reopened",
+            )
+            .order_by(DocumentDeadline.id)
+            .execution_options(populate_existing=True)
+        )
+    )
+
+
+def _reopen_note(row):
+    return f"质检退回原因：{row.audit_note}" if row.audit_note else "质检退回（没写原因）"
+
+
 def queue(session, today, days=7):
     from youju.api import v1
     from youju.classify import effective_kind
@@ -91,6 +121,8 @@ def queue(session, today, days=7):
         digest = body_hash(body)
         if digest == row.verification_unclear_hash:
             continue
+        # 同一截止同组里有退回的：每条都带上退回原因，核哪一条都看得到
+        reopened = _reopened_same_deadline(session, row)
         sentences = [
             s.strip()[:300]
             for s in re.split(r"(?<=[。！？；;\n])", body)
@@ -110,8 +142,8 @@ def queue(session, today, days=7):
                 evidence=row.evidence,
                 origin=row.origin,
                 ai_agrees=row.ai_agrees,
-                reopened=row.audit_state == "reopened",
-                audit_note=row.audit_note if row.audit_state == "reopened" else None,
+                reopened=bool(reopened),
+                audit_note="；".join(_reopen_note(r) for r in reopened) or None,
                 sentences=sentences,
                 body_sha256=digest,
             )
@@ -156,6 +188,13 @@ def apply_one(session, item, write=False):
     locked = _lock_candidates(session, row)
     if row.status != "pending":
         return "状态已变，不再待核对"
+    if (
+        verdict != "unclear"
+        and item.get("reopened") is not True
+        and _reopened_same_deadline(session, row)
+    ):
+        # 结果要来自带着退回原因的清单（reopened 为 true）；退回发生在出清单以后的，等下一份清单
+        return "这一截止同组有质检退回，须按带退回原因的清单核对"
     if row.kind not in excerpts.DEADLINE_KINDS and verdict != "unclear":
         return "其他类不能通过"
     stmt = select(DocumentDetail).where(DocumentDetail.document_id == row.document_id)
@@ -223,18 +262,19 @@ def apply_one(session, item, write=False):
     if write:
         stamp = datetime.now(UTC)
         # _apply_review 会清空质检信息；同组每条各自保存自己的退回原因。
+        # _apply_review 会清掉质检标记；退回过的各自留一笔（没写原因的也留）
         reopen_notes = {
-            d.id: d.audit_note
+            d.id: _reopen_note(d)
             for d in locked
-            if d.status == "pending" and d.audit_state == "reopened" and d.audit_note
+            if d.status == "pending" and d.audit_state == "reopened"
         }
         _apply_review(row, locked, "approved", "Claude", stamp, day, clock)
-        for twin in locked:
-            if twin.reviewed_by == "Claude" and twin.reviewed_at == stamp:
-                twin.verification_quote = twin_quotes[twin.id]
-                twin.verification_corrected = verdict == "corrected"
-                if twin.id in reopen_notes:
-                    twin.verification_unclear_note = f"质检退回原因：{reopen_notes[twin.id]}"
+        for item_row in locked:
+            if item_row.reviewed_by == "Claude" and item_row.reviewed_at == stamp:
+                item_row.verification_quote = twin_quotes[item_row.id]
+                item_row.verification_corrected = verdict == "corrected"
+                if item_row.id in reopen_notes:
+                    item_row.verification_unclear_note = reopen_notes[item_row.id]
     return "通过并修改日期" if verdict == "corrected" else "通过"
 
 
