@@ -73,6 +73,53 @@ _NOT_NAME_END = tuple(
     "型油类业品化性气水电料费税率险款价区县市镇村省局厅委办部站所院校园河湖江苑条"
 )
 
+# 新闻标题里的人名（11/12 #499 复核时在证据表里见过，上面几种写法都认不出）。
+# ① 职务加人名："局长某某现场接听""党组书记、局长某某接听""代区长某某接待来访群众"
+#   "省政协副主席某某来滁调研""某某市长致全市人民的公开信"。职务词前后紧跟像人名的 2–3 个字就挡，
+#   不看后文（"接待""来""致"……写法太多）。"委员""代表""常委"不算职务词（"常务委员会"
+#   "人大代表建议"太常见）
+_ROLE = re.compile(
+    "|".join(
+        sorted(
+            (
+                *("书记", "省长", "市长", "县长", "区长", "州长", "旗长", "盟长", "镇长", "乡长"),
+                *("局长", "主任", "主席", "部长", "厅长", "处长", "科长", "院长", "校长", "董事长"),
+                *("总经理", "秘书长", "行长", "社长", "所长", "队长", "站长", "署长", "司长"),
+                *("关长", "会长", "理事长", "检察长", "庭长", "政委", "总理", "委员长"),
+            ),
+            key=len,
+            reverse=True,
+        )
+    )
+)
+# "市长""区长"这类职务前一个字是别的字时，多半是地名连着"长"字（"我市长期""宜宾市长江"
+# "城区长沙湾""新区长芦街道"）：前一个字得是标点、"副""代"或同一个字（"市市长"），后面的字才当人名；
+# 人名在职务前面的，要在标题开头或标点后面（"第三季度局长接待日"不挡）
+_PLACE_ROLES = ("省长", "市长", "县长", "区长", "州长", "旗长", "盟长", "镇长", "乡长")
+_OPEN = '、，,：:；;（(“"《—- 　'
+# 像人名的词里有单位、地名的字不算（"安区""沙市""公室"），以这些开头的也不是人名（"关于我市……"）
+_UNIT_CHARS = frozenset("区县市镇乡村省局厅委办部室组处科站所院校会")
+_NOT_LEAD = (
+    *("关于", "对于", "我", "本", "全", "各", "该", "此", "据", "为", "从", "在", "与", "将"),
+    *("把", "经"),
+)
+# ② 领导人、官员的新闻："某某出席……""某某主持召开……""某某签署国务院令""某某同某国总统会谈"
+#   "某某到某县督导调研""某某总书记重要讲话"。"像人名"按常见姓氏认，不常见的姓认不出：开头或标点
+#   后面跟出席、主持这类新闻动词的，跟总书记、总理的，不看姓氏
+_OPEN_RE = f"(?:^|[{re.escape(_OPEN)}])"
+_TOP = re.compile(rf"({_H}{{2,3}})(?=总书记|总理|委员长)")
+_NOT_TOP_END = tuple("着的了和与及在把将对向")  # "循着总书记足迹"
+_LEAD = re.compile(
+    rf"{_OPEN_RE}({_H}{{2,3}})(?=出席|主持|签署|会见|会谈|致信|致电|回信|看望|慰问|视察|寄语|宣布)"
+)
+_PAIR = re.compile(rf"{_OPEN_RE}({_H}{{2,3}})(?=同|与)")
+_PAIR_WORDS = ("会谈", "通电话", "会见", "互致", "举行")
+_TRIP = re.compile(rf"{_OPEN_RE}({_H}{{2,3}})(?=到|赴|带队|率队|率团)")
+_TRIP_WORDS = ("调研", "考察", "督导", "督查", "检查", "走访", "慰问", "看望", "暗访")
+# 中央领导的姓名：转载的中央新闻、"某某思想"的学习材料里最常见，写法太多（"……作出重要指示"
+# "……：在……座谈会上的讲话""……法治思想"），单列；换届时更新
+_LEADERS = ("习近平", "李强", "赵乐际", "王沪宁", "蔡奇", "丁薛祥", "李希", "韩正", "李克强")
+
 
 def _named(title: str) -> bool:
     from youju.crawler.detail import _name_like
@@ -98,11 +145,64 @@ def _named(title: str) -> bool:
     return False
 
 
+def _personish(word: str, *, any_surname: bool = False) -> bool:
+    """新闻标题里这个词像不像人名：不含单位、地名的字，不以"关于""我"这类开头。
+
+    any_surname：不看姓氏（不常见的姓认不出）。"""
+    from youju.crawler.detail import _name_like
+
+    return (
+        len(word) >= 2
+        and re.fullmatch(f"{_H}+", word) is not None
+        and not set(word) & _UNIT_CHARS
+        and not word.endswith(_NOT_NAME_END)
+        and not word.startswith(_NOT_LEAD)
+        and (any_surname or _name_like(word))
+    )
+
+
+def _news_named(title: str) -> bool:
+    """新闻标题里写着领导人、官员姓名的（职务加人名、某某出席……、某某到某县调研……）。"""
+    if any(name in title for name in _LEADERS):
+        return True
+    for m in _ROLE.finditer(title):
+        role, i = m.group(0), m.start()
+        prev = title[i - 1] if i else ""
+        place_ok = not prev or prev in _OPEN or prev in "副代" or prev == role[0]
+        if role not in _PLACE_ROLES or place_ok:
+            after = title[m.end() : m.end() + 3]
+            if any(_personish(after[:k]) for k in (2, 3)):
+                return True
+        for k in (2, 3):
+            j = i - k
+            if j >= 0 and (j == 0 or title[j - 1] in _OPEN) and _personish(title[j:i]):
+                return True
+    for m in _TOP.finditer(title):
+        if not m.group(1).endswith(_NOT_TOP_END) and _personish(m.group(1), any_surname=True):
+            return True
+    if any(_personish(m.group(1), any_surname=True) for m in _LEAD.finditer(title)):
+        return True
+    for m in _PAIR.finditer(title):
+        rest = title[m.end() :]
+        if _personish(m.group(1), any_surname=True) and any(w in rest for w in _PAIR_WORDS):
+            return True
+    for m in _TRIP.finditer(title):
+        if _personish(m.group(1)) and any(w in title[m.end() :] for w in _TRIP_WORDS):
+            return True
+    return False
+
+
 def public_title(title: str) -> str:
     """写进公开证据的样例标题：个人事项或写着人名的换成 MASK，其余照原样。"""
     from youju.api.v1 import personal_matter
 
     injury = any(w in title for w in _INJURY_WORDS) and any(w in title for w in _INJURY_PAPERS)
-    if personal_matter(title) or any(w in title for w in _EXTRA_WORDS) or injury or _named(title):
+    if (
+        personal_matter(title)
+        or any(w in title for w in _EXTRA_WORDS)
+        or injury
+        or _named(title)
+        or _news_named(title)
+    ):
         return MASK
     return title
