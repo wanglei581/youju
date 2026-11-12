@@ -1707,6 +1707,29 @@ def test_person_confirming_an_auto_group_takes_it_over(session, client, monkeypa
     assert AUTO_REVIEWER not in {r.confirmed_by for r in _members(session).values()}
 
 
+def test_person_confirmed_group_still_goes_to_review_when_content_changes(
+    session, client, monkeypatch
+):
+    # 人（现在是 Claude，D-129 ①）确认过的组照 v1：确认以后内容变了，转需复核、停止折叠，重新确认
+    # 才恢复；不会像自动组那样当轮按新内容重判、自动确认回去（协调会话 11/13）
+    _auto_on(monkeypatch, session)
+    docs = _auto_world(session)
+    assert rebuild(session, now=NOW).auto_merged == 1
+    session.commit()
+    gid = next(iter(_members(session).values())).group_id
+    assert _post(client, f"/{gid}/confirm", **_shown(client, gid)).status_code == 200
+    session.expire_all()
+    detail = session.get(DocumentDetail, docs[0].id)
+    detail.body_text += "（补充说明）"  # 正文重抓、还引用同一个上游文号，自动判定照样满足
+    detail.fetched_at = NOW + timedelta(hours=1)
+    session.commit()
+    result = rebuild(session, now=NOW + timedelta(hours=2))
+    session.commit()
+    assert session.get(RepostGroup, gid).needs_review
+    assert (result.needs_review, result.auto_reverted, result.auto_merged) == (1, 0, 0)
+    assert all(r.confirmed_by == "创始人" for r in _members(session).values())
+
+
 def _auto_on(monkeypatch, session):
     monkeypatch.setattr(
         "youju.repost.get_settings", lambda: SimpleNamespace(repost_auto_merge=True)
