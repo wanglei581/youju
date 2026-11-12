@@ -638,3 +638,33 @@ def test_manifest_url_check_ignores_locale():
     for lang in ("en_US.UTF-8", "C.UTF-8"):
         for url, code in cases:
             assert run(fn.group(0) + 'manifest_url_ok "$1"', url, lang) == code, (lang, url)
+
+
+def test_pasted_manifest_url_only_trims_the_ends():
+    """粘贴的链接只去掉首尾的空白和回车；中间带回车、空白的原样留着、判不对，不会悄悄拼成另一条链接
+    （Codex 确认轮）。"""
+    sh = (SHARED / "youju-shared.sh").read_text(encoding="utf-8")
+    trim = re.search(r"^trim_pasted\(\) \{.*\}\n", sh, re.M)
+    check = re.search(r"^manifest_url_ok\(\) \(\n.*?\n\)\n", sh, re.S | re.M)
+    assert trim and check
+    assert 'url=$(trim_pasted "$url")' in sh and "tr -d '\\r'" not in sh
+    if not shutil.which("bash"):
+        pytest.skip("没有 bash")
+    script = (
+        trim.group(0)
+        + check.group(0)
+        + 'u=$(trim_pasted "$1"); manifest_url_ok "$u" && printf %s "$u"'
+    )
+    url = "https://x.tcb.qcloud.la/exports/m.json?sign=ab&t=1"
+    for raw, want in [
+        (f"  {url}\r", url),
+        (f"\t{url} \r\r", url),
+        (f"{url}\n", url),
+        ("https://x.tcb.qcloud.la/exports/m.json?si\rgn=ab", None),
+        ("https://x.tcb.qcloud.la/exports/m.json ?sign=ab", None),
+    ]:
+        done = subprocess.run(["bash", "-c", script, "t", raw], capture_output=True, text=True)
+        if want is None:
+            assert done.returncode == 1 and done.stdout == "", repr(raw)
+        else:
+            assert done.returncode == 0 and done.stdout == want, repr(raw)
