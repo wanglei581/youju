@@ -800,3 +800,17 @@ def test_city_upper_flag(session):
     assert "上级" in row.failed  # 区县栏目里市里的文件 7/10
     assert not upper_level_title(upper, "南京市人民政府办公厅关于转发《江苏省……》的通知")
     assert upper_level_title(upper, "《关于促进民营经济发展的若干措施》")
+    # 省的全称、省委省政府、国家层面的机关和法律写在标题中间也算；解读、图解也算
+    assert upper_level_title(upper, "政策解读：《江苏省加快农业农村现代化规划》")
+    assert upper_level_title(upper, "中共江苏省委 江苏省人民政府印发《意见》")
+    assert upper_level_title(upper, "权威发布｜国务院常务会议部署促进消费的政策措施")
+    assert upper_level_title(upper, "新修订的中华人民共和国农业法明年施行")
+    assert upper_level_title(upper, "一图读懂《公平竞争审查条例》")
+    assert upper_level_title(upper, "排污许可管理办法解读")
+    # 本级的"关于……""转发……"不算：转发上级文件、落实省里部署的是本级的事
+    assert not upper_level_title(upper, "关于第三轮江苏省生态环境保护督察整改任务验收销号的公示")
+    assert not upper_level_title(upper, "转发《关于开展2026年江苏省重点实验室申报工作的通知》")
+    assert not upper_level_title(upper, "关于组织申报2026年江苏省科技计划项目的通知")
+    # 区县栏目：本市全称写在中间也算上级；写着本区名称的不算
+    assert upper_level_title(county, "贯彻落实南京市营商环境条例的工作方案")
+    assert not upper_level_title(county, "玄武区贯彻落实南京市营商环境条例的工作方案")

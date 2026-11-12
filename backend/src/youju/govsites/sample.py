@@ -90,6 +90,16 @@ _CENTRAL = re.compile(
 )
 # 只有规章名、不带"关于"的（"博物馆藏品管理办法""市场监督管理所条例"）：省里的规章一般带省名
 _BARE_RULE = re.compile(r"(?:办法|规定|条例|法典|细则|规则|法)$")
+# 地市、区县"上级"粗筛里，标题任意位置出现就算上级的：省里的机关，国家层面的机关、法律
+_PROVINCE_ORGANS = re.compile(r"省委|省政府|省人民政府|省人大|省纪委")
+_NATIONAL = re.compile(
+    r"中华人民共和国|国务院|中共中央|中办|国办|全国人民代表大会|全国人大"
+    r"|国家[^级]{0,12}(?:局|委|部|署|院)|财政部|商务部|教育部|科技部|工业和信息化部|工信部|公安部"
+    r"|民政部|司法部|人力资源社会保障部|自然资源部|生态环境部|住房城乡建设部|交通运输部|水利部"
+    r"|农业农村部|文化和旅游部|应急管理部|审计署|海关总署|税务总局|市场监管总局|金融监管总局|证监会"
+)
+# 解读、图解（本级名称已经先排除了，剩下的多是解读上级政策）
+_EXPLAIN = re.compile(r"^(?:一图读懂|图解)|解读")
 _VIEWER = re.compile(r"pdfjs|viewer\.html\?file=", re.I)
 _NEWS = re.compile(r"习近平|总书记|李强|赵乐际|王沪宁|蔡奇|丁薛祥|李希|主持召开|重要讲话|会见")
 _ATTACH = re.compile(r"\.(?:docx?|xlsx?|pdf|wps|zip|rar|ofd)(?:$|\?)", re.I)
@@ -173,22 +183,36 @@ UPPER_SHARE = 0.6
 
 
 def upper_level_title(s: Source, title: str) -> bool:
-    """地市、区县栏目里像上级文件的标题：国家层面的（同省级那条：《》开头、国务院、部委……）或以
-    省名、"省"开头的；区县的还算以本市名称开头的。标题里写着本级名称的（"南京市……""某某县……"）
-    不算。粗筛，候选交给人看。"""
+    """地市、区县栏目里像上级文件的标题，粗筛，候选交给人看。标题里写着本级名称的（"南京市……"
+    "某某县……"）不算。下面几种算：
+    - 国家层面的（同省级那条：《》开头、国务院、部委……）或以省名、"省"开头的；区县的还算以本市
+      名称开头的；
+    - 不是本级"关于……""转发……"的（转发上级文件、落实省里部署的，算本级的），标题里任意位置有省的
+      全称、省委省政府一类、国家层面的机关和法律（区县的还算本市全称），或是解读、图解。"""
     text = title.strip()
     if s.level == "区县级" and s.district:
         own = {v for v in name_variants(s.district) | {s.district} if len(v) >= 2}
-        upper_starts = _city_names(s) if s.city else set()
+        upper_names = _city_names(s) if s.city else set()
     else:
         own = _city_names(s) if s.city else set()
-        upper_starts = set()
+        upper_names = set()
     if not text or any(v in text for v in own):
         return False
     prov = {v for v in name_variants(s.province) | {s.province} if len(v) >= 2}
-    if text.startswith((*prov, "省", *upper_starts)):
+    if text.startswith((*prov, "省", *upper_names)):
         return True
-    return bool(_CENTRAL.search(text) or ("关于" not in text and _BARE_RULE.search(text)))
+    if _CENTRAL.search(text) or ("关于" not in text and _BARE_RULE.search(text)):
+        return True
+    if text.startswith("关于") or "转发" in text:
+        return False
+    full = {v for v in prov if v.endswith(("省", "自治区", "市"))} | {s.province + "省"}
+    full |= {v for v in upper_names if v.endswith(("市", "州", "盟", "地区"))}
+    return bool(
+        any(v in text for v in full)
+        or _PROVINCE_ORGANS.search(text)
+        or _NATIONAL.search(text)
+        or _EXPLAIN.search(text)
+    )
 
 
 def _kind(name: str | None) -> str | None:
