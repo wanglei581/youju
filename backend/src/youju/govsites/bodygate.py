@@ -94,13 +94,19 @@ def polite_fetcher():
 
 
 def check_trial_db(session: Session, trial_db: str | None) -> str | None:
-    """取正文要写库：只在写明了库名的本机试抓库上跑。不行时返回原因，行就返回 None。"""
-    url = session.get_bind().url
-    where = f"{url.host}/{url.database}"
-    if url.host not in ("127.0.0.1", "localhost", "::1"):
+    """取正文要写库：只在写明了库名的本机试抓库上跑。看的是实际连上的地址和库（连接参数可能
+    盖过网址里写的）。不行时返回原因，行就返回 None。"""
+    from sqlalchemy import text
+
+    raw = session.connection().connection.dbapi_connection
+    socket = getattr(raw, "unix_socket", None)
+    host = getattr(raw, "host", None)
+    database = session.scalar(text("SELECT DATABASE()"))
+    where = f"{socket or host}/{database}"
+    if not socket and host not in ("127.0.0.1", "localhost", "::1"):
         return f"连的不是本机库（{where}）"
-    if not trial_db or url.database != trial_db:
-        return f"要用 --trial-db 写明试抓库的库名，和现在连的库（{where}）对上"
+    if not trial_db or database != trial_db:
+        return f"要用 --trial-db 写明试抓库的库名，和实际连上的库（{where}）对上"
     if session.scalar(select(Source.id).where(Source.enabled.is_(True)).limit(1)) is not None:
         return f"{where} 里有在收的来源，不像试抓库"
     return None

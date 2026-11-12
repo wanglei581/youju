@@ -457,16 +457,31 @@ def test_province_portal_names_unchanged(full, ok):
     assert _dept_ok(s) is ok
 
 
-def _city_evidence(folder, province, cells, sample, *, level="市级", body=(60, 58)):
+def _round_of(who):
+    return who.removeprefix("联网核对").removeprefix("第").removesuffix("次") or "1"
+
+
+def _city_evidence(folder, province, cells, sample, *, level="市级", body=(60, 58), log="auto"):
     """写一省的证据表：cells 个格各一个栏目、都通过；sample 是 [(格号, 复核人, 结论[, 复核备注])]，
-    复核备注默认写这一次的种子（"种子：s1""种子：s2"……）；body 是正文能读率门（抽了几份、能读几份），
-    None 是还没测。"""
+    复核备注默认写这一次的种子（"种子：s1""种子：s2"……）。log 是联网核对记录的行
+    [(层, 次数, 种子, 凭据)]，"auto" 照样本里出现的每层每次各记一行（种子 s1、s2……，重抽写凭据），
+    None 不写。body 是正文能读率门（抽了几份、能读几份），None 是还没测。"""
     head = "层级,省份,城市,区县,部门,栏目URL,自动结论,没过的项,复核人,复核结论,复核备注\n"
     marked = {}
+    rounds = set()
     for n, who, verdict, *note in sample:
-        n_round = who.removeprefix("联网核对").removeprefix("第").removesuffix("次") or "1"
-        default = f"种子：s{n_round}"
+        default = f"种子：s{_round_of(who)}"
         marked[n] = (who, verdict, note[0] if note else default)
+        layer = "门户" if level == "区县级" and n % 3 == 0 else "部门"
+        rounds.add((layer, _round_of(who)))
+    if log == "auto":
+        log = [(lay, r, f"s{r}", "" if r == "1" else "改了列表规则") for lay, r in sorted(rounds)]
+    record = folder / "联网核对" / f"{province}.csv"
+    record.unlink(missing_ok=True)
+    if log is not None:
+        record.parent.mkdir(exist_ok=True)
+        rows = "".join(f"{lay},{r},{seed},2026-11-12,{proof}\n" for lay, r, seed, proof in log)
+        record.write_text("层,次数,种子,日期,凭据\n" + rows, encoding="utf-8-sig")
     lines = []
     for n in range(cells):
         who, verdict, note = marked.get(n, ("", "", ""))
@@ -513,7 +528,7 @@ def test_city_sample_line(tmp_path):
     redraw = four + [(40 + n, "联网核对第2次", "不通过" if n < 5 else "通过") for n in range(60)]
     res = result(redraw)
     assert res.accepted and res.sample_lines[0].need == 60
-    cn = [(40 + n, "联网核对第二次", "不通过" if n < 5 else "通过", "种子：b") for n in range(60)]
+    cn = [(40 + n, "联网核对第二次", "不通过" if n < 5 else "通过", "") for n in range(60)]
     assert result(four + cn).sample_lines[0].round == 2 and result(four + cn).accepted
     assert not result(four + [(40 + n, "联网核对第2次", "通过") for n in range(59)]).accepted
     # 一层的格比 40 少：全抽
@@ -526,11 +541,12 @@ def test_city_sample_line(tmp_path):
 
 
 def test_city_sample_round_evidence(tmp_path):
-    """最近一次只要写了就算最近一次（全是待重试也一样）；种子要写、重抽要换；第 4 次不算。"""
+    """最近一次只要写了就算最近一次（全是待重试也一样）；联网核对记录要每次一行、种子不重复、
+    重抽写凭据，证据表里的种子要和记录对上；空着的复核结论不算；第 4 次不算。"""
     from youju.govsites.sample import evidence_results
 
-    def result(sample):
-        _city_evidence(tmp_path, "河南", 200, sample)
+    def result(sample, log="auto"):
+        _city_evidence(tmp_path, "河南", 200, sample, log=log)
         [res] = evidence_results(tmp_path)
         return res
 
@@ -540,16 +556,31 @@ def test_city_sample_round_evidence(tmp_path):
     pending = first + [(40 + n, "联网核对第2次", "待重试") for n in range(60)]
     line = result(pending).sample_lines[0]
     assert (line.round, line.judged) == (2, 0) and not result(pending).accepted
-    # 没写种子、一次里写了两个种子、重抽用了以前的种子：都不放
-    assert "没写种子" in result([(n, w, v, "") for n, w, v in first]).sample_note()
-    two = first[:20] + [(n, w, v, "种子：s9") for n, w, v in first[20:]]
-    assert "几个种子" in result(two).sample_note()
-    same = [(n, "联网核对", "不通过" if n < 4 else "通过") for n in range(40)]
-    same += [(40 + n, "联网核对第2次", "通过", "种子：s1") for n in range(60)]
-    assert "以前用过" in result(same).sample_note() and not result(same).accepted
-    # 重抽两次还不过：第 4 次不算
+    # 联网核对记录：没有、没写种子、记了两遍
+    assert "没有" in result(first, log=None).sample_note()
+    assert "没写种子" in result(first, log=[("部门", "1", "", "")]).sample_note()
+    twice = [("部门", "1", "s1", ""), ("部门", "1", "s1", "")]
+    assert "记了几遍" in result(first, log=twice).sample_note()
+    # 重抽：要换种子、要写凭据；证据表里写的种子要和记录对上
+    four = [(n, "联网核对", "不通过" if n < 4 else "通过") for n in range(40)]
+    redraw = four + [(40 + n, "联网核对第2次", "通过") for n in range(60)]
+    assert result(redraw).accepted
+    reused = [("部门", "1", "s1", ""), ("部门", "2", "s1", "改了列表规则")]
+    assert "用过" in result(redraw, log=reused).sample_note()
+    no_proof = [("部门", "1", "s1", ""), ("部门", "2", "s2", "")]
+    assert "没写凭据" in result(redraw, log=no_proof).sample_note()
+    other = four + [(40 + n, "联网核对第2次", "通过", "种子：s9") for n in range(60)]
+    assert "对不上" in result(other).sample_note()
+    # 证据表里不写种子也行（以记录为准）
+    assert result(four + [(40 + n, "联网核对第2次", "通过", "") for n in range(60)]).accepted
+    # 空着的复核结论不会退回自动结论：这一格没做完
+    blank = first[:39] + [(39, "联网核对", "")]
+    assert result(blank).sample_lines[0].judged == 39 and not result(blank).accepted
+    # 重抽两次还不过：第 4 次、第十一次都不算
     fourth = [(100 + n, "联网核对第4次", "通过") for n in range(60)]
     assert "整省逐格排查" in result(fourth).sample_note() and not result(fourth).accepted
+    eleventh = [(100 + n, "联网核对第十一次", "通过") for n in range(60)]
+    assert result(eleventh).sample_lines[0].round == 11 and not result(eleventh).accepted
 
 
 def test_city_sample_counts_cells(tmp_path):
@@ -566,9 +597,13 @@ def test_city_sample_counts_cells(tmp_path):
     rows += "市级,河南,城39,,部门,c,自动通过,,联网核对,通过,种子：s1\n"
     rows += "市级,河南,城39,,部门,d,自动通过,,联网核对,待重试,种子：s1\n"
     (tmp_path / "河南.csv").write_text(head + rows, encoding="utf-8-sig")
+    (tmp_path / "联网核对").mkdir()
+    (tmp_path / "联网核对" / "河南.csv").write_text(
+        "层,次数,种子,日期,凭据\n部门,1,s1,2026-11-12,\n", encoding="utf-8-sig"
+    )
     [res] = evidence_results(tmp_path)
     line = res.sample_lines[0]
-    assert (line.judged, line.failed) == (39, 1) and not line.ok
+    assert (line.judged, line.failed, line.problem) == (39, 1, "") and not line.ok
 
 
 def test_county_sample_two_layers(tmp_path):

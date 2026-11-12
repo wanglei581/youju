@@ -28,10 +28,10 @@ class FakeFetcher:
         return FetchResult(url, "ok", final_url=url, http_status=200, text=self.pages[url])
 
 
-def _source(session, n, status="试跑可读（全国覆盖 v1，未启用）"):
+def _source(session, n, status="试跑可读（全国覆盖 v1，未启用）", province="江苏"):
     s = Source(
         level="市级",
-        province="江苏",
+        province=province,
         city="南京",
         dept="工信",
         dept_full_name="南京市工业和信息化局",
@@ -146,3 +146,40 @@ def test_body_gate_fetcher_waits_three_seconds(monkeypatch):
     monkeypatch.setattr(get_settings(), "per_host_interval", 0.5)
     with polite_fetcher() as fetcher:
         assert fetcher._interval == 3.0
+
+
+def test_body_gate_command_shares_one_fetcher(session, tmp_path, monkeypatch, capsys):
+    """整次命令共用一个抓取器：几个省访问同一个网站时，限速记录接得上。"""
+    import argparse
+    from contextlib import contextmanager
+
+    import youju.govsites.bodygate as bodygate
+    from youju.govsites.cli import _cmd_body_gate
+
+    pages = {}
+    for n, prov in enumerate(("江苏", "浙江")):
+        s = _source(session, 10 + n, province=prov)
+        for d in _docs(session, s, [f"关于组织申报第{i}批项目的通知" for i in range(20)]):
+            pages[d.url] = GOOD
+    session.commit()
+    fake = FakeFetcher(pages)
+    opened = []
+
+    @contextmanager
+    def one_fetcher():
+        opened.append(1)
+        yield fake
+
+    monkeypatch.setattr(bodygate, "polite_fetcher", one_fetcher)
+    monkeypatch.setattr(bodygate, "check_trial_db", lambda session, name: None)
+    args = argparse.Namespace(
+        level="市级",
+        province=["江苏", "浙江"],
+        seed="t",
+        no_fetch=False,
+        trial_db="x",
+        out=tmp_path,
+    )
+    assert _cmd_body_gate(args) == 0
+    assert opened == [1] and len(fake.calls) == 40
+    assert capsys.readouterr().out.count("能读 20 份") == 2

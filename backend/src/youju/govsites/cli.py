@@ -557,10 +557,18 @@ def _cmd_sample(args: argparse.Namespace) -> int:
 
 def _cmd_body_gate(args: argparse.Namespace) -> int:
     """正文能读率门（D-129）：每省每级取 60 份申报通知、政策试取正文，能读 90% 以上才放。"""
+    from contextlib import nullcontext
+
     from sqlalchemy import select
 
     from youju.db import session_factory
-    from youju.govsites.bodygate import check_trial_db, platforms_by_url, run_gate, write_gate
+    from youju.govsites.bodygate import (
+        check_trial_db,
+        platforms_by_url,
+        polite_fetcher,
+        run_gate,
+        write_gate,
+    )
     from youju.models import Source
 
     with session_factory()() as session:
@@ -573,21 +581,24 @@ def _cmd_body_gate(args: argparse.Namespace) -> int:
         if not provinces:
             print("库里没有这一级的来源（先导入、试抓）")
             return 1
-        for prov in provinces:
-            gate = run_gate(
-                session,
-                args.level,
-                prov,
-                seed=args.seed,
-                evidence=args.out / "抽查" / args.level / f"{prov}.csv",
-                platforms=platforms_by_url(args.out, prov, args.level),
-                fetch=not args.no_fetch,
-            )
-            path = write_gate(args.out, gate)
-            print(gate.text())
-            for name, ok, n in gate.by_platform():
-                print(f"  {name}：能读 {ok}/{n}")
-            print(f"  证据 {path}")
+        # 整次命令共用一个抓取器：几个省访问同一个网站时，限速记录接得上
+        with nullcontext(None) if args.no_fetch else polite_fetcher() as fetcher:
+            for prov in provinces:
+                gate = run_gate(
+                    session,
+                    args.level,
+                    prov,
+                    seed=args.seed,
+                    evidence=args.out / "抽查" / args.level / f"{prov}.csv",
+                    platforms=platforms_by_url(args.out, prov, args.level),
+                    fetch=not args.no_fetch,
+                    fetcher=fetcher,
+                )
+                path = write_gate(args.out, gate)
+                print(gate.text())
+                for name, ok, n in gate.by_platform():
+                    print(f"  {name}：能读 {ok}/{n}")
+                print(f"  证据 {path}")
     return 0
 
 
