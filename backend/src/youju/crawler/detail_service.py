@@ -13,7 +13,12 @@ from youju import pdf_sandbox
 from youju.categories import doc_category
 from youju.classify import doc_kind
 from youju.config import get_settings
-from youju.crawler.detail import DetailResult, parse_detail, redact_sensitive
+from youju.crawler.detail import (
+    DetailResult,
+    parse_detail,
+    redact_sensitive,
+    search_throttle_site,
+)
 from youju.crawler.fetcher import FetchResult, PoliteFetcher
 from youju.crawler.pdf import extract_pdf_text
 from youju.crawler.titles import clean_title, completed_title, is_truncated
@@ -257,6 +262,16 @@ def _fetch_outcomes(
                         document_id, datetime.now(UTC), None, None, "processing_error", reason
                     )
                 )
+            # 放过站内搜索限流弹窗的网站：一遇到防护页（弹窗显示出来了、页面样子变了、正文取不全
+            # ……），这一轮就停取这个网站（D-013 出验证码就停）。剩下的这一轮不取、不写库，下一轮
+            # 照常选上；要按 PR #485 的做法复核这个网站
+            if results[-1].status == "protected" and search_throttle_site(url):
+                log.warning(
+                    "搜索限流弹窗网站 %s 遇到防护页（文件 %s），这一轮停取，要复核",
+                    urlsplit(url).hostname,
+                    document_id,
+                )
+                break
         return results
 
     # 网络并行只跨网站；数据库写入仍在主线程，避免共享 Session。
@@ -274,7 +289,12 @@ def _fetch_selected(
     if not selected:
         return []
     outcomes = _fetch_outcomes(selected, fetcher, max_workers)
-    return [_save_result(session, outcomes[document_id]) for document_id, _ in selected]
+    return [
+        _save_result(session, outcomes[document_id])
+        if document_id in outcomes
+        else DetailFetchSummary(document_id, "site_paused", "同一网站这一轮遇到防护页，停取")
+        for document_id, _ in selected
+    ]
 
 
 def _polite_fetcher() -> PoliteFetcher:

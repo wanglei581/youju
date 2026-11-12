@@ -144,7 +144,9 @@ _SEARCH_THROTTLE_DIALOG = '//div[@id="VolidateCodeDiv"][.//input[@id="js-ticket-
 # 浏览器里核实过的网站和页面样子：网站 → 页面代码的指纹（_page_code_fingerprint）。11/12 泸州、
 # 漯河、常德 22 个网站的 36 个样子，每个都在浏览器里打开过一页：弹窗没有显示出来、页面上看得到的
 # 字里没有验证码一类的字、正文区正常显示（核对表见 PR #485）。别的网站、别的样子（外部脚本、样式
-# 多一个少一个，页面自带的脚本、样式、事件属性有一处不一样）都不认这个弹窗，照旧当防护页
+# 多一个少一个，页面自带的脚本、样式、事件属性有一处不一样）都不认这个弹窗，照旧当防护页。
+# 兜底：每月在浏览器里按 PR #485 的做法复核一次；取详情时这些网站一遇到防护页，这一轮就停取这个
+# 网站（detail_service），要复核
 _SEARCH_THROTTLE_VERIFIED: dict[str, frozenset[str]] = {
     "czj.luohe.gov.cn": frozenset({"26b3dbf05a6943a8"}),
     "czj.luzhou.gov.cn": frozenset({"3e0d86007ee3353b", "da9f063cb7dd4f2f"}),
@@ -1355,6 +1357,11 @@ def _search_throttle_dialogs(root: etree._Element, url: str) -> list[etree._Elem
         ):
             found.append(node)
     return found
+
+
+def search_throttle_site(url: str) -> bool:
+    """网址是不是放过站内搜索限流弹窗的网站（_SEARCH_THROTTLE_VERIFIED）。"""
+    return (urlsplit(url).hostname or "").lower() in _SEARCH_THROTTLE_VERIFIED
 
 
 def parse_detail(html_text: str, url: str) -> DetailResult:

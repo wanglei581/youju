@@ -93,6 +93,38 @@ def test_fetch_details_records_success_and_failures_once(session) -> None:
     assert len(fake.calls) == 3
 
 
+def test_search_throttle_site_pauses_this_round_after_protection_page(session, monkeypatch):
+    """放过站内搜索限流弹窗的网站，一遇到防护页，这一轮就停取这个网站（D-013 出验证码就停）：剩下的
+    不取、不写库，下一轮照常选上。别的网站遇到防护页照旧往下取（见上一个测试）。"""
+    from youju.crawler import detail
+
+    monkeypatch.setitem(detail._SEARCH_THROTTLE_VERIFIED, "gxt.ln.gov.cn", frozenset({"x"}))
+    first = add_document(session, 1)
+    second = add_document(session, 2, source_id=first.source_id)
+    protected = "<html><title>安全验证</title><body>请输入验证码</body></html>"
+    good = (
+        "<html><body><div id='zoom'><p>这是公开通知正文，需要保存这些段落内容。</p>"
+        "<p>辽宁省工业和信息化厅</p></div></body></html>"
+    )
+    fake = FakeFetcher(
+        {
+            first.url: FetchResult(
+                first.url, "ok", final_url=first.url, http_status=200, text=protected
+            ),
+            second.url: FetchResult(
+                second.url, "ok", final_url=second.url, http_status=200, text=good
+            ),
+        }
+    )
+    results = fetch_details(session, limit=5, source_id=first.source_id, fetcher=fake)
+    assert [r.status for r in results] == ["protected", "site_paused"]
+    assert fake.calls == [first.url]
+    assert session.get(DocumentDetail, second.id) is None
+    results = fetch_details(session, limit=5, source_id=first.source_id, fetcher=fake)
+    assert [r.status for r in results] == ["ok"]
+    assert fake.calls == [first.url, second.url]
+
+
 def test_fetch_details_normalizes_new_issuer_on_ingest(session) -> None:
     doc = add_document(session, 12)
     sample = (
