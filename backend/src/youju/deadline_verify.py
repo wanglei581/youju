@@ -429,17 +429,45 @@ def _has_date(sentence):
     return False
 
 
+_SENTENCE_CHARS = 600
+
+
+def _date_lines(body):
+    """正文里写着日期的句子。日期写在一行、时刻折到下一行（"2026年11月15日\n17:00前提交"）的，
+    把下一行并进来，免得清单里只剩日期、看不到时刻。"""
+    lines = []
+    for part in (s.strip() for s in re.split(r"(?<=[。！？；;\n])", body)):
+        if not part:
+            continue
+        if (
+            lines
+            and lines[-1][1]
+            and lines[-1][0][-1] not in "。！？；;"
+            and not _has_date(part)
+            and _CLOCK.search(part)
+        ):
+            lines[-1] = (f"{lines[-1][0]} {part}", True)
+            continue
+        lines.append((part, _has_date(part)))
+    return [text for text, dated in lines if dated]
+
+
+def _clip(text):
+    """长句截到 600 字：从第一个截止一类字样前一点开始截，免得截止日期落在截掉的后半句里。"""
+    if len(text) <= _SENTENCE_CHARS:
+        return text
+    cue = _DEADLINE_CUE.search(text)
+    start = max(0, cue.start() - 200) if cue else 0
+    return text[start : start + _SENTENCE_CHARS]
+
+
 def _sample_item(session, row):
     doc = session.get(Document, row.document_id)
     detail = session.get(DocumentDetail, row.document_id)
     if not doc or not detail or detail.status != "ok":
         return None
     body = detail.body_text or ""
-    found = [
-        text[:300]
-        for text in (s.strip() for s in re.split(r"(?<=[。！？；;\n])", body))
-        if text and _has_date(text)
-    ]
+    found = [_clip(text) for text in _date_lines(body)]
     ordered = [s for s in found if _DEADLINE_CUE.search(s)]
     ordered += [s for s in found if not _DEADLINE_CUE.search(s)]
     sentences, total = [], 0
@@ -530,7 +558,10 @@ def spotcheck(session, item, write=False, now=None):
         ):
             return done("quote 与日期或时间不匹配")
     else:
-        # 没找到这一类截止：没有可核的原句，quote 不看（写了说明也不当证据），照样退回
+        # 没找到这一类截止：没有可核的原句，quote 不看（写了说明也不当证据），照样退回；
+        # 但要在 note 里写明找过哪里，免得没填完的占位行把对的整组退回
+        if not item["note"].strip():
+            return done("没找到时要在 note 里写明找过哪里、为什么没找到")
         quote = None
     now = now or datetime.now(UTC)
     if day is not None and (day, clock) == (row.approved_date, row.approved_time):
@@ -563,11 +594,15 @@ def spotcheck(session, item, write=False, now=None):
                 if entry:
                     result["follow_up"].append(entry)
                     break  # 这一组有一条能给就够了；正文不可用的接着试组里别的副本
-    reason = f"Codex 抽查不一致：原文{quote or '未找到这一类截止日期'}"
+    # 原来同组有质检存疑的，退回原因带上存疑原因（和管理台退回一样，不丢）；原句先截到 100 字，
+    # 免得 200 字的上限把存疑原因截掉
+    flagged = next((x.audit_note for x in group if x.audit_state == "flagged" and x.audit_note), "")
+    shown = (quote[:100] + "…") if quote and len(quote) > 100 else quote
+    reason = f"Codex 抽查不一致：原文{shown or '未找到这一类截止日期'}"
+    if flagged:
+        reason += f"；原质检存疑：{flagged}"
     if item["note"].strip():
         reason += f"；{item['note'].strip()}"
-    if row.audit_state == "flagged" and row.audit_note:
-        reason += f"；原质检存疑：{row.audit_note}"  # 和管理台退回一样，不丢原来的存疑原因
     if write:
         # audit_note 最长 200 字：原句长时截断（第二天 Claude 的清单里带的就是这段原因）
         reopen_group(group, reason[:_AUDIT_NOTE_MAX], "Codex", now)

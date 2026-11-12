@@ -193,3 +193,37 @@ def test_sample_sentences_find_the_deadline_beyond_the_first_few(monkeypatch):
     assert not any("万元" in x or "第2.1条" in x for x in item["sentences"])
     assert item["truncated"] is True and len(item["sentences"]) <= 20
     assert item["publish_date"] == "2026-11-01"
+
+
+def test_time_on_the_next_line_and_long_sentences_reach_the_sample():
+    # agy、独立 Claude 审阅：时刻折到下一行的并进日期那一行；长句从截止字样附近截，
+    # 截止日期在 300 字以后也看得到
+    long = "根据有关规定，" + "现就有关事项通知如下，" * 40 + "申报截止时间为2026年11月15日"
+    body = "申报时间：2026年11月15日\n17:00前提交。\n" + long + "。"
+    r = row(1)
+    s = Session([r])
+    s.details[1].body_text = body
+    sentences = v._sample_item(s, r)["sentences"]
+    assert "申报时间：2026年11月15日 17:00前提交。" in sentences
+    assert any("2026年11月15日" in x and len(x) <= 600 and "截止时间" in x for x in sentences[1:])
+
+
+def test_reopen_keeps_a_twins_doubt_and_requires_a_note_when_not_found(monkeypatch):
+    # agy 审阅：同组别的副本有质检存疑时，退回原因带上它，原句再长也不被 200 字截掉；
+    # 独立 Claude 审阅：写"没找到"却没写说明的，不退回（免得占位行把对的整组退回）
+    r, twin = row(1), row(2)
+    twin.audit_state, twin.audit_note = "flagged", "AI 说日期应为 11 月 16 日"
+    s = Session([r, twin])
+    monkeypatch.setattr(app, "_lock_group", lambda *args: [r, twin])
+    monkeypatch.setattr(v, "_verified_groups", lambda *args: [[r, twin]])
+    empty = answer(date=None, time=None, quote=None, note="")
+    assert "note" in v.spotcheck(s, empty, True, NOW)["result"]
+    assert r.status == twin.status == "approved"
+    long_quote = BODY * 5
+    s.details[1].body_text = s.details[2].body_text = long_quote
+    found = answer(
+        date="2026-11-15", time=None, quote=long_quote, body_sha256=v.body_hash(long_quote)
+    )
+    assert v.spotcheck(s, found, True, NOW)["result"] == "抽查不一致，退回待核对"
+    assert "原质检存疑：AI 说日期应为 11 月 16 日" in r.audit_note
+    assert len(r.audit_note) <= 200
