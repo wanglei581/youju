@@ -591,6 +591,17 @@ def test_city_sample_round_evidence(tmp_path):
         "认不出"
         in result(first, log=[("部门", "1", "s1", ""), ("部门", "", "s2", "")]).sample_note()
     )
+    # 第 0 次（复核人、记录里）也认不出
+    zero = [(n, "联网核对第0次", "通过") for n in range(40)]
+    assert "认不出" in result(zero, log=[("部门", "1", "s1", "")]).sample_note()
+    assert (
+        "认不出"
+        in result(first, log=[("部门", "1", "s1", ""), ("部门", "0", "s0", "")]).sample_note()
+    )
+    # 记录里写了证据表里没有的层（地市的重抽记成"门户"）：不放
+    wrong_layer = [("部门", "1", "s1", ""), ("门户", "2", "s2", "改了列表规则")]
+    assert "层" in result(first, log=wrong_layer).sample_note()
+    assert not result(first, log=wrong_layer).accepted
     # 记录里已经记了第 2 次、证据表还没填：按第 2 次算，不再按第 1 次放
     ahead = [("部门", "1", "s1", ""), ("部门", "2", "s2", "改了列表规则")]
     line = result(first, log=ahead).sample_lines[0]
