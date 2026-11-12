@@ -117,9 +117,11 @@ def test_redirect_to_login_is_refused():
     # 跳到别处的统一认证（抓取程序不跟去非政府网站）：同样不能抓
     sso = FetchResult(api.url, "unsupported_host", final_url="https://sso.example.com/a?x=1")
     assert "跳到登录" in api_refusal(api, sso)
-    # 只是换了协议、接口没变的跳转照常读
-    https_api = api.url.replace("https://", "http://")
-    assert api_refusal(api, _got(_payload(), final=https_api)) == ""
+    # http 升到 https、接口没变的跳转照常读（反过来降到 http 的不读，见下面的测试）
+    from youju.crawler.adapters import ListApi
+
+    plain = ListApi("大汉jpaas", api.url.replace("https://", "http://"), PAGE_URL)
+    assert api_refusal(plain, _got(_payload(), final=api.url)) == ""
 
 
 def test_login_captcha_or_gate_page_is_refused():
@@ -393,3 +395,16 @@ def test_verify_unreadable_or_empty_list_api_reply():
     one = _payload(data={"html": LIST.split("</li>")[0] + "</li>"})
     few = check_one(_Cache({PAGE_URL: PAGE, api.url: one}), _column(), today)
     assert few.result == NO_ITEMS and "经列表接口" in few.reason
+
+
+def test_login_prompt_in_any_message_field_is_not_read():
+    api = _api()
+    text = _payload(message="生成成功", msg="请先登录")
+    assert "要登录或验证码" in api_refusal(api, _got(text))
+    assert api_html(api, text) == ""
+
+
+def test_https_to_http_redirect_is_not_read():
+    api = _api()  # https 的接口
+    down = api.url.replace("https://", "http://")
+    assert "不加密" in api_refusal(api, _got(_payload(), final=down))

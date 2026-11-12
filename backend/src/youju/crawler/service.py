@@ -241,7 +241,7 @@ def check_source(
     # 要写回来源 parser_config 的改动：加锁以后合到库里最新的配置上，不拿加锁前的旧副本整个
     # 覆盖（两次检查同时进行时，不会把对方刚记下的拦下记录冲掉）
     config_set: dict[str, object] = {}
-    config_drop: set[str] = set()
+    config_drop: dict[str, object] = {}  # 要去掉的项 → 本次看到的旧值（库里还是它才去掉）
     if result.status == "ok":
         items = extract_items(result.text, result.final_url or url, parser_config, today=today)
         api = None
@@ -252,6 +252,7 @@ def check_source(
             # 栏目页还声明着之前被读取护栏（D-128）拦下的接口：30 天内不再请求，照旧记不能抓
             items = []
             status, error = LIST_API_REFUSED, f"{before}（之前被读取护栏拦下，暂不再请求）"
+            result = FetchResult(url, LIST_API_REFUSED, http_status=result.http_status)
         elif api is not None:
             via = _items_via_adapter(fetcher, result, url, parser_config, today, api)
             note = parser_config.get(LIST_API_REFUSED_KEY)
@@ -259,7 +260,7 @@ def check_source(
             if note is not None and not via.refused and (moved or via.fetch is None):
                 # 页面换了接口，或过了 30 天再请求、接口正常返回没被拦：去掉旧记录（这次只是
                 # 网络不通、5xx 的，旧记录留着）
-                config_drop.add(LIST_API_REFUSED_KEY)
+                config_drop[LIST_API_REFUSED_KEY] = note
             if via.items:
                 items = via.items
                 # 第一次经列表接口读出整页：以前只认出零星几条的来源，整页旧通知不能算"新增"
@@ -296,7 +297,12 @@ def check_source(
     _lock_source(session, source)
     if config_set or config_drop:
         # 记下这个栏目要经列表接口读，或列表接口被读取护栏拦下（以后不再请求）、去掉旧记录
-        fresh = {k: v for k, v in (source.parser_config or {}).items() if k not in config_drop}
+        # 要去掉的项，只有库里还是本次看到的那个值才去掉（别的检查刚记下的新拦下记录不动）
+        fresh = {
+            k: v
+            for k, v in (source.parser_config or {}).items()
+            if k not in config_drop or v != config_drop[k]
+        }
         source.parser_config = {**fresh, **config_set}
     # 来源第一次成功检查时看到的条目算基线，不计入"新增"；第一次经列表接口读出的整页也算基线
     baseline = bool(items) and (source.last_success_at is None or first_via_adapter)

@@ -82,7 +82,8 @@ def find_unit_apis(html: str, page_url: str) -> list[ListApi]:
         # 地址原样照页面写的（协议、参数都不动，只去掉 # 后面），页面的参数接在后面，和浏览器
         # 脚本发的一样（D-128 读取护栏 ①：不改参数、不另外构造请求）
         base = declared._replace(fragment="").geturl()
-        url = base + ("&" if declared.query else "?") + urlencode(query)
+        params = urlencode(query)
+        url = base + ("&" if declared.query else "?") + params if params else base
         candidates.append((rank, ListApi("大汉jpaas", url, page_url)))
     candidates.sort(key=lambda c: c[0])
     out: list[ListApi] = []
@@ -170,12 +171,22 @@ def _permission_fields(payload: dict) -> list[str]:
     return sorted(found)
 
 
+# 返回里放提示文字的字段（哪个写了都看）
+_MESSAGE_KEYS = ("message", "msg", "error", "errorMsg", "errMsg", "tip")
+
+
+def _messages(payload: dict) -> str:
+    return " ".join(
+        str(payload[k]).strip() for k in _MESSAGE_KEYS if isinstance(payload.get(k), str)
+    )
+
+
 def _payload_refusal(payload: dict) -> str:
     """接口 JSON 返回本身的护栏：不是成功、带权限要求时给原因；可以读给空串。"""
     success, code = payload.get("success"), str(payload.get("code", "200"))
     if success is not True or code != "200":
-        message = str(payload.get("message") or payload.get("msg") or "").strip()[:40]
-        if _LOGIN_TEXT.search(message):
+        message = _messages(payload)[:40]
+        if _LOGIN_TEXT.search(_messages(payload)):
             return f"列表接口要登录或验证码（{message}）"
         parts = []
         if success is not True:
@@ -186,10 +197,9 @@ def _payload_refusal(payload: dict) -> str:
         if message:
             parts.append(message)
         return f"列表接口返回不是成功（{'，'.join(parts)}）"
-    message = str(payload.get("message") or payload.get("msg") or "").strip()[:40]
-    if _LOGIN_TEXT.search(message):
+    if _LOGIN_TEXT.search(_messages(payload)):
         # 标着成功、提示却是要登录：自相矛盾，按要登录处理，不读
-        return f"列表接口要登录或验证码（{message}）"
+        return f"列表接口要登录或验证码（{_messages(payload)[:40]}）"
     fields = _permission_fields(payload)
     if fields:
         return f"列表接口返回带权限要求（{'、'.join(fields)} 不为空）"
@@ -222,6 +232,8 @@ def api_refusal(api: ListApi, result) -> str:
     if http_status in _REFUSE_HTTP:
         return f"列表接口 HTTP {http_status}：拒绝访问或要求登录"
     final = getattr(result, "final_url", None) or api.url
+    if urlsplit(api.url).scheme == "https" and urlsplit(final).scheme == "http":
+        return "列表接口跳到了不加密的地址"  # 只认 http 升到 https，不认反过来
     words = _redirect_words(api.url, final)
     if words:
         # 跳到了页面没写的地址（只换协议的不算）：不跟着读（D-128 读取护栏 ①），记不能抓

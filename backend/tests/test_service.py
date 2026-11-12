@@ -534,3 +534,29 @@ def test_refusal_note_is_merged_into_the_latest_config(session, session_factory)
     session.refresh(source)
     assert source.parser_config["note"] == "别处写的"
     assert source.parser_config["list_api_refused"]["url"] == JPAAS_API
+
+
+def test_dropping_old_refusal_keeps_a_newer_one_written_meanwhile(session, session_factory) -> None:
+    """过期的旧记录本次去掉时，库里若已换成别的检查刚记下的新记录，就不动它。"""
+    url = "https://kjt.zj.gov.cn/col/col1229225203/index.html"
+    source = make_source(session, url)
+    source.parser_config = _refused_note(JPAAS_API, 40)
+    session.commit()
+    newer = _refused_note(JPAAS_API, 0)
+
+    class RacingFetcher(FakeFetcher):
+        def fetch(self, fetch_url: str) -> FetchResult:
+            if fetch_url == JPAAS_API:
+                with session_factory() as other:  # 另一次检查刚记下新的拦下记录
+                    row = other.get(Source, source.id)
+                    row.parser_config = newer
+                    other.commit()
+            return super().fetch(fetch_url)
+
+    fetcher = RacingFetcher(
+        {url: [page(url, JPAAS_PAGE)], JPAAS_API: [page(JPAAS_API, JPAAS_JSON)]}
+    )
+    check = check_source(session, source, fetcher)
+    assert check.status == "ok"
+    session.refresh(source)
+    assert source.parser_config["list_api_refused"] == newer["list_api_refused"]
