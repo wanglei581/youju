@@ -263,6 +263,9 @@ class _PausingFetcher:
     def __init__(self, inner: DetailFetcher, pause: _SitePause) -> None:
         self.inner, self.pause = inner, pause
         self.visited: list[str] = []
+        # 这份文件每次请求碰过的地址都累计起来（详情页和它的 PDF 附件，含跳转、读 robots.txt
+        # 走过的）
+        self.touched: list[str] = []
 
     def _admit(self, target: str, *, record: bool = True) -> bool:
         with self.pause.lock:
@@ -274,13 +277,15 @@ class _PausingFetcher:
 
     def fetch(self, url: str) -> FetchResult:
         if isinstance(self.inner, PoliteFetcher):
-            return self.inner.fetch(url, hop_allowed=self._admit)
-        # 测试用的假取页器不跟跳转：请求前问一次，请求后记下跳转后的地址
-        if not self._admit(url):
-            return FetchResult(url, "site_paused", error=SITE_PAUSED)
-        result = self.inner.fetch(url)
-        with self.pause.lock:
-            self.visited += [*result.hops, result.final_url or url]
+            result = self.inner.fetch(url, hop_allowed=self._admit)
+        elif not self._admit(url):
+            result = FetchResult(url, "site_paused", error=SITE_PAUSED)
+        else:
+            # 测试用的假取页器不跟跳转：请求前问一次，请求后记下跳转后的地址
+            result = self.inner.fetch(url)
+            with self.pause.lock:
+                self.visited += [*result.hops, result.final_url or url]
+        self.touched += [url, *result.hops, *result.robots_hops, result.final_url or url]
         return result
 
 
@@ -313,11 +318,10 @@ def _fetch_outcomes(
                 )
             visited = guarded.visited
             listed = {_host(u) for u in visited if search_throttle_site(u)}
-            # 这份文件碰过的网站：原网址、取页器走过的每一跳（被挡下、robots 不让去的也算）、读
-            # robots.txt 走过的地址（含跳到别的网站的）、经过的地址
-            fetched = outcome.fetch
-            hops = (*fetched.hops, *fetched.robots_hops) if fetched else ()
-            touched = {_host(u) for u in (url, *hops, *visited)}
+            # 这份文件碰过的网站：原网址、每次请求走过的每一跳（被挡下、robots 不让去的也算）、
+            # 用到的 robots.txt 当初读的时候走过的地址（含跳到别的网站的、用记下来的结果的）、
+            # 经过的地址
+            touched = {_host(u) for u in (url, *guarded.touched, *visited)}
             with pause.lock:
                 if outcome.status == "protected":
                     # 防护页照记；经过的网站里名单上的这一轮停取（别的网站照旧往下取）

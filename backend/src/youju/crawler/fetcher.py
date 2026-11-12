@@ -7,7 +7,7 @@ import ssl
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from urllib.parse import urlsplit, urlunsplit
 from urllib.robotparser import RobotFileParser
 
@@ -55,7 +55,7 @@ class FetchResult:
     content: bytes = b""
     # 这次请求经过的地址（原地址和每一跳要去的地址），按先后：调用方用来判断实际访问了哪些网站
     hops: tuple[str, ...] = ()
-    # 这次请求里读 robots.txt 走过的地址（含跳转）；robots.txt 已经记下来的网站这一次不读、不在这里
+    # 这次请求用到的 robots.txt 当初读的时候走过的地址（含跳转）；用记下来的 robots 结果时也算上
     robots_hops: tuple[str, ...] = ()
 
 
@@ -68,6 +68,9 @@ class _RobotsEntry:
     fetched_at: float
     error: str | None = None  # unsupported_host、unreachable 的原因
     server_error: bool = False  # unreachable 是因为服务器回 5xx（超时、连不上在下层已重试过）
+    chain: tuple[
+        str, ...
+    ] = ()  # 读这份 robots.txt 走过的地址（含跳转），用记下来的结果时也报给调用方
 
 
 def compat_ssl_context() -> ssl.SSLContext:
@@ -307,6 +310,9 @@ class PoliteFetcher:
                 # 到期没读完、被 hop_allowed 挡下的不记下来，不当成读不到
                 if entry.state not in {"deadline", "site_paused"}:
                     self._robots[origin] = entry
+        reported = getattr(self._local, "robots_hops", None)
+        if reported is not None:
+            reported.extend(entry.chain)
         if entry.state in {"unreachable", "unsupported_host", "deadline", "site_paused"}:
             return entry, False
         if entry.state == "allow_all" or entry.parser is None:
@@ -324,19 +330,23 @@ class PoliteFetcher:
 
     def _load_robots_once(self, origin: str) -> _RobotsEntry:
         # 读 robots.txt 的请求（和它的跳转）问 hop_allowed 时只查不记：不算文件经过的地址
+        chain: list[str] = []
         self._local.robots = True
+        self._local.robots_chain = chain
         try:
-            return self._load_robots_from(origin)
+            entry = self._load_robots_from(origin)
         finally:
             self._local.robots = False
+            self._local.robots_chain = None
+        return replace(entry, chain=tuple(chain))
 
     def _load_robots_from(self, origin: str) -> _RobotsEntry:
         current = origin + "/robots.txt"
         # RFC 9309 §2.3.1.2：robots.txt 的重定向至少跟随 5 次；超过则视为不可用（可以抓取）
         for _ in range(_MAX_REDIRECTS + 1):
-            visited = getattr(self._local, "robots_hops", None)
-            if visited is not None:
-                visited.append(current)
+            chain = getattr(self._local, "robots_chain", None)
+            if chain is not None:
+                chain.append(current)
             if self._url_allowed is not None and not self._url_allowed(current):
                 return _RobotsEntry(
                     "unsupported_host", None, self._clock(), "robots.txt 跳到非政府网站，本站跳过"

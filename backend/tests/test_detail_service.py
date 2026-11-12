@@ -442,6 +442,59 @@ def test_body_fetched_just_before_pause_is_kept(session, monkeypatch) -> None:
     assert session.get(DocumentDetail, second.id) is None
 
 
+@pytest.mark.parametrize("route", ["cached_robots", "pdf_after_robots"])
+def test_robots_chain_through_paused_site_is_remembered(session, monkeypatch, route):
+    """a 的 robots.txt 跳到 b，b 后来停了：①读 robots 失败的结果记下来以后，a 后面的文件用这份结果时也
+    算碰过 b，失败不写库；②详情页读 robots 时经过 b、它的 PDF 附件取失败的，也算碰过 b，不写库。"""
+    import httpx
+
+    from youju.crawler import detail, detail_service
+    from youju.crawler.fetcher import PoliteFetcher
+
+    monkeypatch.setitem(detail._SEARCH_THROTTLE_VERIFIED, "b.example.gov.cn", frozenset({"x"}))
+    source_id = _source_on(session, "a.example.gov.cn")
+    docs = [_doc_on(session, source_id, "a.example.gov.cn", n) for n in (1, 2)]
+    paused_hosts: list[set[str]] = []
+    original = detail_service._SitePause.__init__
+
+    def remember(self) -> None:
+        original(self)
+        paused_hosts.append(self.hosts)
+
+    monkeypatch.setattr(detail_service._SitePause, "__init__", remember)
+    pdf_page = (
+        "<html><body><div id='zoom'><a href='https://c.example.gov.cn/files/1.pdf'>附件.pdf</a>"
+        "</div></body></html>"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        host, path = request.url.host, request.url.path
+        if host == "a.example.gov.cn" and path == "/robots.txt":
+            return httpx.Response(302, headers={"location": "https://b.example.gov.cn/robots.txt"})
+        if path == "/robots.txt":
+            return httpx.Response(404)
+        if host == "a.example.gov.cn":
+            paused_hosts[0].add("b.example.gov.cn")  # 别的线程这时停了 b
+            return httpx.Response(200, text=pdf_page, headers={"content-type": "text/html"})
+        return httpx.Response(500)  # c 的 PDF 取失败
+
+    def resolver(name: str) -> list[str]:
+        if route == "cached_robots" and name == "b.example.gov.cn":
+            paused_hosts[0].add("b.example.gov.cn")
+            return ["10.0.0.1"]  # b 解析到内网：a 的 robots 记成取不到
+        return ["93.184.216.34"]
+
+    with PoliteFetcher(
+        "TestAgent YoujuBot/0.1",
+        per_host_interval=0,
+        transport=httpx.MockTransport(handler),
+        resolver=resolver,
+    ) as polite:
+        results = fetch_details(session, limit=5, fetcher=polite, max_workers=1)
+    assert [r.status for r in results] == ["site_paused", "site_paused"]
+    assert all(session.get(DocumentDetail, d.id) is None for d in docs)
+
+
 def test_title_backfill_reports_paused_site_as_unavailable(session, monkeypatch):
     """补全截断标题时，同一网站这一轮停取了的记"没取到（site_paused）"，不当成"没截断"。"""
     from youju.crawler import detail
