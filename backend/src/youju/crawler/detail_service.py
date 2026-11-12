@@ -20,7 +20,7 @@ from youju.crawler.detail import (
     redact_sensitive,
     search_throttle_site,
 )
-from youju.crawler.fetcher import FetchResult, PoliteFetcher
+from youju.crawler.fetcher import SITE_PAUSED, FetchResult, PoliteFetcher
 from youju.crawler.pdf import extract_pdf_text
 from youju.crawler.titles import clean_title, completed_title, is_truncated
 from youju.dbtypes import BODY_TEXT_MAX_CHARS
@@ -255,22 +255,30 @@ def _host(url: str) -> str:
 
 
 class _PausingFetcher:
-    """取一份文件用：每次请求前看这份文件经过的网站（连同要去的）有没有已停的，有就不去取（记
-    site_paused）——详情页跳进已停网站以后，它的 PDF 附件也不再取；请求后记下经过的每个地址（原
-    地址、每一跳、跳转后的；详情页和它的 PDF 附件都算）。"""
+    """取一份文件用：每次请求、每一跳跳转之前，看这份文件已经经过的网站和要去的网站有没有这一轮已停的，
+    有就不去（记 site_paused）——详情页跳进已停网站以后，它的 PDF 附件也不再取；只记真正经过的地址
+    （原地址、每一跳；被挡下没去的不算经过）。"""
 
     def __init__(self, inner: DetailFetcher, pause: _SitePause) -> None:
         self.inner, self.pause = inner, pause
         self.visited: list[str] = []
 
-    def fetch(self, url: str) -> FetchResult:
-        self.visited.append(url)
+    def _allowed(self, target: str) -> bool:
+        hosts = {_host(u) for u in self.visited} | {_host(target)}
         with self.pause.lock:
-            stopped = bool({_host(u) for u in self.visited} & self.pause.hosts)
-        if stopped:
-            return FetchResult(url, "site_paused", error="同一网站这一轮遇到防护页，停取")
-        result = self.inner.fetch(url)
-        self.visited += [*result.hops, result.final_url or url]
+            return not hosts & self.pause.hosts
+
+    def fetch(self, url: str) -> FetchResult:
+        if not self._allowed(url):
+            return FetchResult(url, "site_paused", error=SITE_PAUSED)
+        if isinstance(self.inner, PoliteFetcher):
+            result = self.inner.fetch(url, hop_allowed=self._allowed)
+        else:
+            result = self.inner.fetch(url)
+        if result.status == "site_paused":
+            self.visited += result.hops
+        else:
+            self.visited += [*(result.hops or (url,)), result.final_url or url]
         return result
 
 
@@ -283,9 +291,9 @@ def _fetch_outcomes(
 
     # 放过站内搜索限流弹窗的网站：一遇到防护页（弹窗显示出来了、页面样子变了、正文取不全……），
     # 这一轮就停取这个网站（D-013 出验证码就停）。按实际访问的网站算：一份文件经过的网址（原网址、
-    # 跳转后的、它的 PDF 附件）都算，经过的网站一起停。停了以后每次请求前都先看，停了的不去取；
-    # 取的过程中跳转到已停网站的，这一份不收、经过的网站也停。不收的不写库，下一轮照常选上；
-    # 要按 PR #485 的做法复核这个网站
+    # 每一跳、它的 PDF 附件）里有名单上的网站，就停那个网站。停了以后，每次请求、每一跳跳转之前都先
+    # 看（_PausingFetcher），已停的不去；经过或要去已停网站的那一份不收，所在网站别的文件照常取。
+    # 不收的不写库，下一轮照常选上；要按 PR #485 的做法复核这个网站
     pause = _SitePause()
 
     def run_host(documents: list[tuple[int, str]]) -> list[_FetchOutcome]:
@@ -301,26 +309,26 @@ def _fetch_outcomes(
                 outcome = _FetchOutcome(
                     document_id, datetime.now(UTC), None, None, "processing_error", reason
                 )
-            visited = guarded.visited or [url]
-            touched = {_host(u) for u in visited}
+            visited = guarded.visited
+            listed = {_host(u) for u in visited if search_throttle_site(u)}
             with pause.lock:
-                stopped = bool(touched & pause.hosts)
                 if outcome.status == "protected":
-                    # 防护页先照记；经过名单里的网站、或经过已停的网站，经过的网站一起停
+                    # 防护页照记；经过的网站里名单上的这一轮停取（别的网站照旧往下取）
                     results.append(outcome)
-                    if stopped or any(map(search_throttle_site, visited)):
-                        pause.hosts |= touched
+                    if listed - pause.hosts:
+                        pause.hosts |= listed
                         log.warning(
                             "搜索限流弹窗网站 %s 遇到防护页（文件 %s），这一轮停取，要复核",
-                            "、".join(sorted(touched)),
+                            "、".join(sorted(listed)),
                             document_id,
                         )
-                        break
-                    continue
-                if outcome.status == "site_paused" or stopped:
-                    pause.hosts |= touched
+                elif outcome.status != "site_paused" and not (
+                    {_host(u) for u in visited} & pause.hosts
+                ):
+                    results.append(outcome)
+                # 经过或要去已停的网站（被挡下、或取的时候刚停）：这一份不收，下一轮再取
+                if _host(url) in pause.hosts:
                     break
-                results.append(outcome)
         return results
 
     # 网络并行只跨网站；数据库写入仍在主线程，避免共享 Session。
@@ -341,7 +349,7 @@ def _fetch_selected(
     return [
         _save_result(session, outcomes[document_id])
         if document_id in outcomes
-        else DetailFetchSummary(document_id, "site_paused", "同一网站这一轮遇到防护页，停取")
+        else DetailFetchSummary(document_id, "site_paused", SITE_PAUSED)
         for document_id, _ in selected
     ]
 

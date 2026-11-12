@@ -35,6 +35,10 @@ _NO_KEEPALIVE = httpx.Limits(max_keepalive_connections=0)
 _DEADLINE = "到了这次任务的期限，没有查完"
 
 
+# 取详情时这一轮已停取的网站（见 detail_service）：不去取的原因
+SITE_PAUSED = "同一网站这一轮遇到防护页，停取"
+
+
 @dataclass
 class FetchResult:
     url: str
@@ -217,21 +221,37 @@ class PoliteFetcher:
     def _expired(self) -> bool:
         return self._deadline is not None and self._clock() >= self._deadline
 
-    def fetch(self, url: str, same_address_only: bool = False) -> FetchResult:
+    def fetch(
+        self,
+        url: str,
+        same_address_only: bool = False,
+        hop_allowed: Callable[[str], bool] | None = None,
+    ) -> FetchResult:
         """抓取一个页面。重定向逐跳处理：每一跳都检查 robots.txt，并遵守目标网站的限速。
+
+        hop_allowed：每一跳（连同第一跳）发请求之前再问一次能不能去（取详情时用来挡住这一轮已停取的
+        网站，见 detail_service）；不能去的这一跳不发请求（robots.txt 也不取），返回 "site_paused"。
 
         same_address_only：只取这个地址本身（读页面声明的列表接口时用，D-128 读取护栏 ①）。
         跳转一律不跟（连 http 升 https 也不跟，只请求页面写明的那个地址）：原样返回 "redirect"
         （final_url 是要跳去的地址），由调用方判断——跳到别的地址记不能抓，只是换协议的按
         这次没读出。"""
         hops: list[str] = []
-        result = self._fetch_hops(url, same_address_only, hops)
+        result = self._fetch_hops(url, same_address_only, hops, hop_allowed)
         result.hops = tuple(hops)
         return result
 
-    def _fetch_hops(self, url: str, same_address_only: bool, hops: list[str]) -> FetchResult:
+    def _fetch_hops(
+        self,
+        url: str,
+        same_address_only: bool,
+        hops: list[str],
+        hop_allowed: Callable[[str], bool] | None,
+    ) -> FetchResult:
         current = url
         for _ in range(_MAX_REDIRECTS + 1):
+            if hop_allowed is not None and not hop_allowed(current):
+                return FetchResult(url, "site_paused", final_url=current, error=SITE_PAUSED)
             hops.append(current)
             if self._url_allowed is not None and not self._url_allowed(current):
                 return FetchResult(url, "unsupported_host", final_url=current, error="非政府网站")

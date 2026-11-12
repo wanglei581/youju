@@ -498,6 +498,26 @@ def test_redirect_is_followed_hop_by_hop_with_robots_check() -> None:
     assert blocked.hops == ("https://a.gov.cn/to-b", "https://b.gov.cn/private/x.html")
 
 
+def test_hop_allowed_stops_before_requesting_a_paused_site() -> None:
+    """hop_allowed（取详情时挡住这一轮已停取的网站）：每一跳发请求前都问，不能去的不发请求，
+    连那个网站的 robots.txt 也不取。"""
+    requested: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(f"{request.url.host}{request.url.path}")
+        if request.url.path == "/robots.txt":
+            return httpx.Response(404)
+        if request.url.path == "/old":
+            return httpx.Response(302, headers={"location": "https://b.gov.cn/x.html"})
+        raise AssertionError(f"不应请求 {request.url}")
+
+    with make_fetcher(handler) as f:
+        result = f.fetch("https://a.gov.cn/old", hop_allowed=lambda url: "b.gov.cn" not in url)
+    assert result.status == "site_paused"
+    assert result.hops == ("https://a.gov.cn/old",)
+    assert all(not r.startswith("b.gov.cn") for r in requested)
+
+
 def test_redirect_loop_is_cut_off() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/robots.txt":

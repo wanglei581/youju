@@ -163,10 +163,15 @@ def _doc_on(session, source_id, host, number, title=None):
 _PROTECTED = "<html><title>安全验证</title><body>请输入验证码</body></html>"
 
 
-@pytest.mark.parametrize("listed", ["b.example.gov.cn", "a.example.gov.cn"])
-def test_search_throttle_pause_counts_redirects_both_ways(session, monkeypatch, listed):
-    """按实际访问的网站停：名单外网站跳到名单里的网站遇到防护页，或名单里的网站跳出去遇到防护页，
-    两个网站这一轮都停；另一个网站的文件就不去取了。"""
+@pytest.mark.parametrize(
+    ("listed", "second_status"),
+    [("b.example.gov.cn", "site_paused"), ("a.example.gov.cn", "parse_empty")],
+)
+def test_search_throttle_pause_counts_redirects_both_ways(
+    session, monkeypatch, listed, second_status
+):
+    """按实际访问的网站停：a 跳到 b 遇到防护页，经过的网站里名单上的那个这一轮停。名单上的是 b 时，
+    b 的文件不去取；名单上的是 a 时只停 a，b 照常取。"""
     from youju.crawler import detail
 
     monkeypatch.setitem(detail._SEARCH_THROTTLE_VERIFIED, listed, frozenset({"x"}))
@@ -182,15 +187,16 @@ def test_search_throttle_pause_counts_redirects_both_ways(session, monkeypatch, 
         }
     )
     results = fetch_details(session, limit=5, fetcher=fake, max_workers=1)
-    assert [r.status for r in results] == ["protected", "site_paused"]
-    assert fake.calls == [first.url]
-    assert session.get(DocumentDetail, second.id) is None
+    assert [r.status for r in results] == ["protected", second_status]
+    paused = second_status == "site_paused"
+    assert fake.calls == ([first.url] if paused else [first.url, second.url])
+    assert (session.get(DocumentDetail, second.id) is None) == paused
 
 
 @pytest.mark.parametrize("route", ["redirect", "pdf"])
 def test_paused_site_is_not_reached_from_other_sites(session, monkeypatch, route):
     """名单里的网站这一轮停了以后，别的网站的文件跳转过去、或它的 PDF 附件在那里：不去取（PDF）或
-    这一份不收（跳转），经过的网站也一起停，同一网站剩下的这一轮不取。"""
+    这一份不收（跳转）；那个别的网站不停，它后面的文件照常取。"""
     from youju.crawler import detail
 
     monkeypatch.setitem(detail._SEARCH_THROTTLE_VERIFIED, "b.example.gov.cn", frozenset({"x"}))
@@ -215,22 +221,23 @@ def test_paused_site_is_not_reached_from_other_sites(session, monkeypatch, route
         }
     )
     results = fetch_details(session, limit=5, fetcher=fake, max_workers=1)
-    assert [r.status for r in results] == ["protected", "site_paused", "site_paused"]
-    assert fake.calls == [first.url, second.url]
+    assert [r.status for r in results] == ["protected", "site_paused", "parse_empty"]
+    assert fake.calls == [first.url, second.url, third.url]
     assert session.get(DocumentDetail, second.id) is None
-    assert session.get(DocumentDetail, third.id) is None
+    assert session.get(DocumentDetail, third.id) is not None
 
 
 def test_paused_site_edge_cases(session, monkeypatch):
     """停取的几种边角：①跳进已停网站也是防护页的，防护页照记，经过的网站一起停；②多次跳转中途
-    经过已停网站的，按每一跳算；③详情页跳进已停网站以后，它在别的网站的 PDF 附件不再取。"""
+    经过已停网站的，按每一跳算；③详情页跳进已停网站以后，它在别的网站的 PDF 附件不再取，那个
+    PDF 网站没去过、不停，它自己的文件照常取。"""
     from youju.crawler import detail
 
     monkeypatch.setitem(detail._SEARCH_THROTTLE_VERIFIED, "b.example.gov.cn", frozenset({"x"}))
     first = _doc_on(session, _source_on(session, "b.example.gov.cn"), "b.example.gov.cn", 1)
     docs = [
         _doc_on(session, _source_on(session, f"{name}.example.gov.cn"), f"{name}.example.gov.cn", n)
-        for n, name in ((2, "a"), (3, "c"), (4, "d"))
+        for n, name in ((2, "a"), (3, "c"), (4, "d"), (5, "e"))
     ]
     landed = "https://b.example.gov.cn/detail/9.html"
     pdf_page = (
@@ -252,11 +259,24 @@ def test_paused_site_edge_cases(session, monkeypatch):
             ),
             # ③ 落在已停的 b，页面只有一个 e 网站的 PDF
             docs[2].url: FetchResult(docs[2].url, "ok", final_url=landed, text=pdf_page),
+            docs[3].url: FetchResult(
+                docs[3].url,
+                "ok",
+                final_url=docs[3].url,
+                text="<html><body><div id='zoom'><p>这是公开通知正文，需要保存这些段落内容。</p>"
+                "<p>各有关单位请按要求组织申报，并于月底前报送材料。</p></div></body></html>",
+            ),
         }
     )
     results = fetch_details(session, limit=10, fetcher=fake, max_workers=1)
-    assert [r.status for r in results] == ["protected", "protected", "site_paused", "site_paused"]
-    assert fake.calls == [first.url, docs[0].url, docs[1].url, docs[2].url]
+    assert [r.status for r in results] == [
+        "protected",
+        "protected",
+        "site_paused",
+        "site_paused",
+        "ok",
+    ]
+    assert fake.calls == [first.url, docs[0].url, docs[1].url, docs[2].url, docs[3].url]
     assert session.get(DocumentDetail, docs[0].id).failure_reason == "防护页或验证码"
     assert session.get(DocumentDetail, docs[1].id) is None
     assert session.get(DocumentDetail, docs[2].id) is None
