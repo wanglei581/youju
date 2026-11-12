@@ -572,7 +572,7 @@ def test_attachment_files_follow_their_rows(env, monkeypatch, tmp_path):
         sha256=digest,
     )
     real_send = local._send_blobs
-    monkeypatch.setattr(local, "_send_blobs", lambda *a, **k: 0)
+    monkeypatch.setattr(local, "_send_blobs", lambda *a, **k: (0, []))
     with pytest.raises(local.SyncError) as err:
         local.push(env.local, env.client, store=local_store)
     assert "409" in str(err.value) and "不在服务器上" in str(err.value)
@@ -660,6 +660,44 @@ def test_attachment_files_follow_their_rows(env, monkeypatch, tmp_path):
     assert report.blobs == 1 and report.batches == 1
     assert server_store.exists(good) and not server_store.exists(broken)
     assert sorted(pending()) == sorted([first, broken])
+    # 待补很多、前面一长串一直缺：照样翻到底，最后那个本机有的补传上去
+    late_content = b"%PDF-1.4 at the very end"
+    late = f"attachments/{hashlib.sha256(late_content).hexdigest()}.pdf"
+    with env.server.begin() as conn:
+        for i in range(1, 30):
+            conn.execute(
+                text(f"INSERT INTO `{sync_server.PENDING}` (path, noted_at) VALUES (:p, NOW())"),
+                {"p": f"attachments/{'0' * 62}{i:02d}.pdf"},
+            )
+        conn.execute(
+            text(f"INSERT INTO `{sync_server.PENDING}` (path, noted_at) VALUES (:p, NOW())"),
+            {"p": late},
+        )
+    late_file = tmp_path / "late.pdf"
+    late_file.write_bytes(late_content)
+    local_store.put_file(late, late_file)
+    assert local.push(env.local, env.client, store=local_store).blobs == 1
+    assert server_store.exists(late) and late not in pending()
+    # 这一批正好有指向本机坏文件的行：坏的不传、算"本机给不了"，服务器照写、记进待补，
+    # 不卡住这一批和后面的变更
+    rotten = f"attachments/{'a' * 64}.pdf"
+    local_store.put_file(rotten, lost_file)  # 内容和名字对不上
+    rotten_row = insert(
+        env.local,
+        "attachment_copies",
+        url_hash="e" * 64,
+        url="https://kjt.shandong.gov.cn/d.pdf",
+        declared_type="pdf",
+        status="ready",
+        file_type="pdf",
+        file_id=f"cloud://prod-env.youju-self/{rotten}",
+        size=10,
+        sha256="a" * 64,
+    )
+    report = local.push(env.local, env.client, store=local_store)
+    assert report.batches == 1 and not server_store.exists(rotten)
+    assert rotten_row in [r["id"] for r in rows(env.server, "attachment_copies")]
+    assert rotten in pending()
     # 名字和内容对不上的不收
     bad = hashlib.sha256(b"other").hexdigest()
     with pytest.raises(local.SyncError) as err:

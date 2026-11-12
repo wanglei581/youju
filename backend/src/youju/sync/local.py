@@ -282,78 +282,85 @@ def _read_blob(store: storage.Backend, path: str) -> bytes:
     return response.content
 
 
-def _local_blobs(paths: list[str], store: storage.Backend | None = None) -> list[str]:
-    """这一批指向的附件副本里本机存储有的：随这一批告诉服务器（blobs_local）。服务器只在"本机有、
-    服务器没有"时不写（推之前查过在、随后被清理删了：下一轮补传）；两边都没有的照写，不卡住队列。"""
+def _local_blobs(
+    paths: list[str], store: storage.Backend | None = None, cannot: list[str] | tuple = ()
+) -> list[str]:
+    """这一批指向的附件副本里本机给得了的：随这一批告诉服务器（blobs_local）。服务器只在"本机给得了、
+    服务器没有"时不写（推之前查过在、随后被清理删了：下一轮补传）；本机也给不了的（没有、坏了、这一轮
+    没传上去，即 cannot）照写、记进待补，不卡住队列。"""
     if not paths:
         return []
     store = store or storage.backend()
-    return [path for path in paths if store.exists(path)]
+    return [path for path in paths if path not in cannot and store.exists(path)]
 
 
-def _send_blobs(client: Client, paths: list[str], store: storage.Backend | None = None) -> int:
-    """服务器存储里没有的附件副本先传上去（本机存储里没有的跳过，服务器读不到就当"还在准备"）。"""
+def _upload_one(client: Client, store: storage.Backend, path: str) -> bool:
+    """传一个附件副本文件；本机没有、读不出、内容和名字对不上、传不上去都记一条日志、返回 False，
+    不往外抛（不让一个文件卡住整次推送）。"""
+    try:
+        if not store.exists(path):
+            log.warning("本机存储里没有附件副本 %s，跳过", path)
+            return False
+        data = _read_blob(store, path)
+        digest = hashlib.sha256(data).hexdigest()
+        if path[len("attachments/") :].split(".", 1)[0] != digest:
+            log.warning("本机附件副本 %s 的内容和名字对不上，跳过", path)
+            return False
+        client.call(
+            "PUT",
+            "/blobs",
+            params={"path": path, "sha256": digest},
+            body=data,
+            content_type="application/octet-stream",
+        )
+    except (SyncError, OSError, storage.StorageError, httpx.HTTPError) as exc:
+        log.warning("传附件副本 %s 没成功，跳过：%s", path, exc)
+        return False
+    return True
+
+
+def _send_blobs(
+    client: Client, paths: list[str], store: storage.Backend | None = None
+) -> tuple[int, list[str]]:
+    """服务器存储里没有的附件副本先传上去。返回（传了几个，服务器缺、本机这一轮给不了的）：本机没有、
+    坏了、没传上去的不往外抛，随这一批告诉服务器"本机给不了"，服务器照写、记进待补，以后再补。"""
     if not paths:
-        return 0
+        return 0, []
     missing = client.json("POST", "/blobs/missing", {"paths": paths}).get("missing", [])
     sent = 0
+    cannot: list[str] = []
     store = store or storage.backend()
     for path in missing:
         if not isinstance(path, str) or path not in paths:
             continue
-        if not store.exists(path):
-            log.warning("本机存储里没有附件副本 %s，跳过", path)
-            continue
-        data = _read_blob(store, path)
-        client.call(
-            "PUT",
-            "/blobs",
-            params={"path": path, "sha256": hashlib.sha256(data).hexdigest()},
-            body=data,
-            content_type="application/octet-stream",
-        )
-        sent += 1
-    return sent
+        if _upload_one(client, store, path):
+            sent += 1
+        else:
+            cannot.append(path)
+    return sent, cannot
 
 
 PENDING_PAGE = 500
-PENDING_PAGES = 200  # 一次最多翻这么多页（10 万个），防止服务器回的 next 出错时一直翻
 
 
 def _repair_blobs(client: Client, store: storage.Backend | None = None) -> int:
     """服务器记的待补附件副本（写进去时两边都没有文件的）：本机现在有的补传上去。每次推之前做一次，
-    不用等那一行再变；按页取完（前面一直缺的不挡后面的）。单个文件读不出、内容和名字对不上、传不上去，
-    记一条日志、跳过（留在待补里），不让这一次推送停在这里：后面的下架等变更照常推。"""
+    不用等那一行再变；按页取到底（前面一直缺的不挡后面的；下一页的游标一定往后走，不会一直翻）。
+    单个文件给不了的记日志、跳过（留在待补里），不让这一次推送停在这里。"""
     sent = 0
-    after = None
-    for _ in range(PENDING_PAGES):
+    after = ""
+    while True:
         page = client.json("POST", "/blobs/pending", {"limit": PENDING_PAGE, "after": after})
         for path in page.get("pending") or []:
             if not isinstance(path, str) or not storage.valid_path(path):
                 continue
             store = store or storage.backend()
-            try:
-                if not store.exists(path):
-                    continue
-                data = _read_blob(store, path)
-                digest = hashlib.sha256(data).hexdigest()
-                if path[len("attachments/") :].split(".", 1)[0] != digest:
-                    log.warning("本机附件副本 %s 的内容和名字对不上，跳过（留在待补里）", path)
-                    continue
-                client.call(
-                    "PUT",
-                    "/blobs",
-                    params={"path": path, "sha256": digest},
-                    body=data,
-                    content_type="application/octet-stream",
-                )
-            except (SyncError, OSError, storage.StorageError, httpx.HTTPError) as exc:
-                log.warning("补传附件副本 %s 没成功，跳过（留在待补里）：%s", path, exc)
-                continue
-            sent += 1
-        after = page.get("next")
-        if not isinstance(after, str) or not after:
+            if _upload_one(client, store, path):
+                sent += 1
+        cursor = page.get("next")
+        if not isinstance(cursor, str) or cursor <= after:
             break
+        after = cursor
     return sent
 
 
@@ -480,7 +487,8 @@ def push(
                 size = max(1, len(changes) // 2)
                 continue
             paths = _blob_paths(payload)
-            report.blobs += _send_blobs(client, paths, store)
+            sent, cannot = _send_blobs(client, paths, store)
+            report.blobs += sent
             result = client.json(
                 "POST",
                 "/apply",
@@ -488,7 +496,7 @@ def push(
                     "stream": stream,
                     "max_seq": changes[-1][0],
                     "tables": payload,
-                    "blobs_local": _local_blobs(paths, store),
+                    "blobs_local": _local_blobs(paths, store, cannot),
                 },
             )
             for name, count in (result.get("kept") or {}).items():
@@ -600,11 +608,11 @@ def _send_full(
 ) -> int:
     payload = {t.name: {"upserts": rows, "deletes": []}}
     paths = _blob_paths(payload)
-    sent = _send_blobs(client, paths, store)
+    sent, cannot = _send_blobs(client, paths, store)
     client.json(
         "POST",
         "/apply",
-        {"full": True, "tables": payload, "blobs_local": _local_blobs(paths, store)},
+        {"full": True, "tables": payload, "blobs_local": _local_blobs(paths, store, cannot)},
     )
     return sent
 
