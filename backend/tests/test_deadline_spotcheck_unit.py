@@ -1,0 +1,114 @@
+"""独立抽查的离线行为；SQL 筛选由数据库测试覆盖。"""
+
+from datetime import UTC, date, datetime, time
+from types import SimpleNamespace as Obj
+
+from youju import deadline_verify as v
+from youju.api import app
+from youju.models import Document, DocumentDeadline
+
+NOW = datetime(2026, 11, 12, tzinfo=UTC)
+BODY = "请于2026年11月15日17:00前提交材料。"
+
+
+def row(id, document_id=None):
+    return Obj(
+        id=id,
+        document_id=document_id or id,
+        status="approved",
+        reviewed_by="Claude",
+        reviewed_at=NOW,
+        kind="企业申报截止",
+        candidate_date=date(2026, 11, 15),
+        candidate_time=time(17),
+        approved_date=date(2026, 11, 15),
+        approved_time=time(17),
+        verification_corrected=False,
+        audit_state=None,
+        audit_note=None,
+    )
+
+
+class Session:
+    def __init__(self, rows):
+        self.rows = rows
+        self.docs = {
+            r.document_id: Obj(
+                id=r.document_id, title="标题", url="https://example.org", source_id=1
+            )
+            for r in rows
+        }
+        self.details = {r.document_id: Obj(status="ok", body_text=BODY) for r in rows}
+
+    def get(self, model, key):
+        if model is DocumentDeadline:
+            return next((r for r in self.rows if r.id == key), None)
+        return (self.docs if model is Document else self.details).get(key)
+
+    def scalar(self, stmt):
+        return self.details[1]
+
+
+def answer(**kwargs):
+    return (
+        dict(
+            id=1,
+            date="2026-11-15",
+            time="17:00",
+            quote=BODY,
+            note="已核对",
+            body_sha256=v.body_hash(BODY),
+        )
+        | kwargs
+    )
+
+
+def test_sample_independent_and_reproducible(monkeypatch):
+    rows = [row(1), row(2), row(3)]
+    s = Session(rows)
+    monkeypatch.setattr(v, "_verified_groups", lambda *args: [[rows[0], rows[1]], [rows[2]]])
+    a = v.sample(s, rate=0.5, minimum=0, seed=42, now=NOW)
+    assert a == v.sample(s, rate=0.5, minimum=0, seed=42, now=NOW)
+    assert len(a) == 1
+    assert set(a[0]) == {"id", "title", "url", "kind", "sentences", "body_sha256"}
+    assert len(v.sample(s, minimum=5, now=NOW)) == 2
+
+
+def test_spotcheck_dry_run_and_match(monkeypatch):
+    r = row(1)
+    s = Session([r])
+    monkeypatch.setattr(app, "_lock_group", lambda *args: [r])
+    assert v.spotcheck(s, answer(), now=NOW)["result"] == "抽查一致"
+    assert r.audit_state is None
+    assert v.spotcheck(s, answer(), True, NOW)["result"] == "抽查一致"
+    assert (r.audit_state, r.audit_by, r.audit_at) == ("cleared", "Codex", NOW)
+    r.audit_state = "flagged"
+    assert "未覆盖" in v.spotcheck(s, answer(), True, NOW)["result"]
+    assert r.audit_state == "flagged"
+
+
+def test_reopen_group_followup_and_stale(monkeypatch):
+    r, twin, other = row(1), row(2), row(3)
+    s = Session([r, twin, other])
+    monkeypatch.setattr(app, "_lock_group", lambda *args: [r, twin])
+    monkeypatch.setattr(v, "_verified_groups", lambda *args: [[r, twin], [other]])
+    a = answer(date=None, time=None, quote=None)
+    assert "正文" in v.spotcheck(s, a | {"body_sha256": "old"}, True, NOW)["result"]
+    assert r.status == twin.status == "approved"
+    dry = v.spotcheck(s, a, now=NOW)
+    assert [x["id"] for x in dry["follow_up"]] == [3]
+    assert r.status == twin.status == "approved"
+    assert v.spotcheck(s, a, True, NOW)["result"] == "抽查不一致，退回待核对"
+    for x in (r, twin):
+        assert x.status == "pending" and x.audit_state == "reopened"
+        assert x.audit_by == "Codex" and "未找到" in x.audit_note
+        assert x.approved_date is None and x.reviewed_by is None
+    assert other.status == "approved"
+
+
+def test_quote_must_be_verbatim(monkeypatch):
+    r = row(1)
+    s = Session([r])
+    monkeypatch.setattr(app, "_lock_group", lambda *args: [r])
+    assert "原样" in v.spotcheck(s, answer(quote=BODY + " "), True, NOW)["result"]
+    assert r.status == "approved"

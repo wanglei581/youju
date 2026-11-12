@@ -643,6 +643,37 @@ def _cmd_deadline_verify_apply(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_deadline_verify_sample(args: argparse.Namespace) -> int:
+    from youju.deadline_verify import sample
+
+    with session_factory()() as session:
+        result = sample(session, args.days, args.rate, args.minimum, args.seed)
+    output = json.dumps(result, ensure_ascii=False, indent=2) + "\n"
+    if args.out:
+        args.out.write_text(output, encoding="utf-8")
+    else:
+        print(output, end="")
+    return 0
+
+
+def _cmd_deadline_verify_spotcheck(args: argparse.Namespace) -> int:
+    from youju.deadline_verify import spotcheck
+
+    items = json.loads(args.file.read_text(encoding="utf-8-sig"))
+    if not isinstance(items, list):
+        raise ValueError("输入必须是 JSON 数组")
+    with session_factory()() as session:
+        for item in items:
+            result = spotcheck(session, item, args.apply)
+            if args.apply:
+                session.commit()
+            else:
+                session.rollback()
+            result["write_enabled"] = args.apply
+            print(json.dumps(result, ensure_ascii=False))
+    return 0
+
+
 def _cmd_deadline_verify_stats(args: argparse.Namespace) -> int:
     from youju.deadline_verify import stats
 
@@ -2703,6 +2734,18 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("file", type=Path)
     p.add_argument("--apply", action="store_true")
     p.set_defaults(func=_cmd_deadline_verify_apply)
+
+    p = sub.add_parser("deadline-verify-sample", help="生成独立抽查清单")
+    p.add_argument("--days", type=int, default=7)
+    p.add_argument("--rate", type=float, default=0.05)
+    p.add_argument("--min", dest="minimum", type=int, default=5)
+    p.add_argument("--seed", type=int)
+    p.add_argument("--out", type=Path)
+    p.set_defaults(func=_cmd_deadline_verify_sample)
+    p = sub.add_parser("deadline-verify-spotcheck", help="独立抽查，默认演练")
+    p.add_argument("file", type=Path)
+    p.add_argument("--apply", action="store_true")
+    p.set_defaults(func=_cmd_deadline_verify_spotcheck)
 
     p = sub.add_parser("deadline-verify-stats", help="只读统计截止核对结果")
     p.add_argument("--since", type=date.fromisoformat, help="按北京时间核对日期起算（含当天）")

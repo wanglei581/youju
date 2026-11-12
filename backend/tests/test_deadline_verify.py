@@ -1,6 +1,6 @@
 """需要 MySQL 测试库；清单和写回按真实公开查询及归并规则验证。"""
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 from sqlalchemy import select
@@ -478,3 +478,85 @@ def test_reopen_with_the_same_reason_after_the_queue_waits(session, candidate):
     result = {**entry, **payload(candidate), "note": "核了原文"}
     assert "等下一份清单" in verify.apply_one(session, result, True)
     assert candidate.status == "pending"
+
+
+def test_spotcheck_real_group_and_queue(session, candidate):
+    doc = session.get(Document, candidate.document_id)
+    twin_doc = _doc(doc.source, 199, doc.title, TODAY)
+    session.add(twin_doc)
+    session.flush()
+    session.add_all(
+        [
+            DocumentMerge(
+                duplicate_id=twin_doc.id, canonical_id=doc.id, match_key="spot", active=True
+            ),
+            DocumentDetail(
+                document_id=twin_doc.id, body_text=BODY, status="ok", fetched_at=datetime.now(UTC)
+            ),
+            DocumentDeadline(
+                document_id=twin_doc.id,
+                fingerprint="spot-twin",
+                kind=candidate.kind,
+                candidate_date=candidate.candidate_date,
+                evidence=candidate.evidence,
+                confidence="高",
+                status="pending",
+                origin="rule",
+            ),
+        ]
+    )
+    session.commit()
+    assert verify.apply_one(session, payload(candidate), True) == "通过"
+    session.commit()
+    now = datetime.now(UTC)
+    items = verify.sample(session, days=7, minimum=100, now=now)
+    assert sum(x["id"] == candidate.id for x in items) == 1
+    twin = session.scalar(
+        select(DocumentDeadline).where(DocumentDeadline.document_id == twin_doc.id)
+    )
+    assert twin.id not in [x["id"] for x in items]
+    candidate.reviewed_at = twin.reviewed_at = datetime(2020, 1, 1, tzinfo=UTC)
+    session.flush()
+    assert candidate.id not in [
+        x["id"] for x in verify.sample(session, days=7, minimum=100, now=now)
+    ]
+    candidate.reviewed_at = twin.reviewed_at = now
+    session.flush()
+    result = dict(
+        id=candidate.id,
+        date=None,
+        time=None,
+        quote=None,
+        note="未找到",
+        body_sha256=verify.body_hash(BODY),
+    )
+    assert "不一致" in verify.spotcheck(session, result, True, now)["result"]
+    session.commit()
+    assert candidate.status == twin.status == "pending"
+    entry = next(
+        x for x in verify.queue(session, TODAY + timedelta(days=1)) if x["id"] == candidate.id
+    )
+    assert entry["reopened"] and "Codex 抽查不一致" in entry["audit_note"]
+
+
+def test_spotcheck_with_a_long_quote_and_note_still_reopens(session, candidate):
+    # 退回原因记在 audit_note（最长 200 字）：Codex 给的原句和说明很长时截断，不能写库报错
+    long_body = BODY + "修改后截止2026年10月1日，" + "其余事项按原通知执行" * 30 + "。"
+    session.get(DocumentDetail, candidate.document_id).body_text = long_body
+    session.commit()
+    item = payload(candidate, body_sha256=verify.body_hash(long_body))
+    assert verify.apply_one(session, item, True) == "通过"
+    session.commit()
+    quote = long_body[long_body.index("修改后截止") :]
+    result = dict(
+        id=candidate.id,
+        date="2026-10-01",
+        time=None,
+        quote=quote,
+        note="说明" * 100,
+        body_sha256=verify.body_hash(long_body),
+    )
+    assert "不一致" in verify.spotcheck(session, result, True)["result"]
+    session.commit()
+    assert candidate.status == "pending" and candidate.audit_state == "reopened"
+    assert len(candidate.audit_note) <= 200 and candidate.audit_note.startswith("Codex 抽查不一致")

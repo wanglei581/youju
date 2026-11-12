@@ -358,3 +358,179 @@ def stats(session, since=None):
         n = counts["confirmed"] + counts["corrected"]
         counts["accuracy"] = counts["confirmed"] / n if n else None
     return result
+
+
+_AUDIT_NOTE_MAX = 200  # document_deadlines.audit_note 的长度
+
+
+def reopen_group(group, note, reviewer, stamp):
+    """调用方先按管理台口径锁定同组，并检查目标仍为 approved。"""
+    count = 0
+    for row in group:
+        if row.status != "approved":
+            continue
+        row.status = "pending"
+        row.reviewed_by = row.reviewed_at = None
+        row.approved_date = row.approved_time = None
+        row.audit_state, row.audit_note = "reopened", note
+        row.audit_by, row.audit_at = reviewer, stamp
+        count += 1
+    return count
+
+
+def _verified_groups(session, since, until):
+    from youju.dedup import canonical_ids
+
+    rows = list(
+        session.scalars(
+            select(DocumentDeadline)
+            .where(
+                DocumentDeadline.status == "approved",
+                DocumentDeadline.reviewed_by == "Claude",
+                DocumentDeadline.reviewed_at >= since,
+                DocumentDeadline.reviewed_at <= until,
+            )
+            .order_by(DocumentDeadline.id)
+        )
+    )
+    masters = canonical_ids(session, [r.document_id for r in rows])
+    groups = {}
+    for r in rows:
+        key = (
+            masters.get(r.document_id, r.document_id),
+            r.reviewed_at,
+            r.kind,
+            r.candidate_date,
+            r.candidate_time,
+            bool(r.verification_corrected),
+        )
+        groups.setdefault(key, []).append(r)
+    return list(groups.values())
+
+
+def _sample_item(session, row):
+    doc = session.get(Document, row.document_id)
+    detail = session.get(DocumentDetail, row.document_id)
+    if not doc or not detail or detail.status != "ok":
+        return None
+    body = detail.body_text or ""
+    sentences = []
+    for sentence in re.split(r"(?<=[。！？；;\n])", body):
+        match = excerpts.DATE_IN_QUOTE.search(sentence)
+        if match:
+            start = max(0, match.start() - 100)
+            sentences.append(sentence[start : start + 300].strip())
+            if len(sentences) == 5:
+                break
+    return dict(
+        id=row.id,
+        title=doc.title,
+        url=doc.url,
+        kind=row.kind,
+        sentences=sentences,
+        body_sha256=body_hash(body),
+    )
+
+
+def sample(session, days=7, rate=0.05, minimum=5, seed=None, now=None):
+    import math
+    import random
+
+    if days < 0 or not 0 <= rate <= 1 or minimum < 0:
+        raise ValueError("days、min 须非负，rate 须在 0 至 1 之间")
+    now = now or datetime.now(UTC)
+    groups = _verified_groups(session, now - timedelta(days=days), now)
+    # 先选组再读取正文；不可用的组保留提示，避免悄悄改变抽样概率。
+    chosen = random.Random(seed).sample(
+        groups, min(len(groups), max(minimum, math.ceil(len(groups) * rate)))
+    )
+    return [
+        _sample_item(session, group[0]) or {"id": group[0].id, "error": "当前正文不可用"}
+        for group in chosen
+    ]
+
+
+def spotcheck(session, item, write=False, now=None):
+    from youju.api.app import _lock_group
+
+    result = {"id": item.get("id") if isinstance(item, dict) else None, "follow_up": []}
+
+    def done(message):
+        result["result"] = message
+        return result
+
+    if not isinstance(item, dict) or type(item.get("id")) is not int:
+        return done("格式错误：id 必须是整数")
+    if not {"date", "time", "quote", "note", "body_sha256"} <= item.keys() or not isinstance(
+        item["note"], str
+    ):
+        return done("格式错误：缺少字段或 note 不是字符串")
+    try:
+        day = date.fromisoformat(item["date"]) if item["date"] is not None else None
+        clock = time.fromisoformat(item["time"]) if item["time"] is not None else None
+        if clock and (clock.tzinfo or clock.second or clock.microsecond):
+            raise ValueError
+        if day is None and clock is not None:
+            raise ValueError
+    except (ValueError, TypeError):
+        return done("date 或 time 无效")
+    row = session.get(DocumentDeadline, item["id"])
+    if row is None:
+        return done("截止不存在")
+    group = _lock_group(session, row)
+    if row.status != "approved" or row.reviewed_by != "Claude":
+        return done("状态或核对人已变")
+    stmt = select(DocumentDetail).where(DocumentDetail.document_id == row.document_id)
+    detail = session.scalar(
+        (stmt.with_for_update() if write else stmt).execution_options(populate_existing=True)
+    )
+    if (
+        not detail
+        or detail.status != "ok"
+        or item["body_sha256"] != body_hash(detail.body_text or "")
+    ):
+        return done("正文指纹不一致或正文不可用")
+    body = detail.body_text or ""
+    quote = item["quote"]
+    if day is not None:
+        if not isinstance(quote, str) or not quote.strip() or quote not in body:
+            return done("quote 须原样出现在当前正文")
+        if not excerpts.date_in_quote(day, quote) or (
+            clock is not None and not _has_time(quote, clock)
+        ):
+            return done("quote 与日期或时间不匹配")
+    elif quote is not None and (not isinstance(quote, str) or (quote and quote not in body)):
+        return done("quote 须原样出现在当前正文")
+    now = now or datetime.now(UTC)
+    if day is not None and (day, clock) == (row.approved_date, row.approved_time):
+        if row.audit_state == "flagged":
+            return done("已有质检存疑，未覆盖")
+        if write:
+            row.audit_state, row.audit_by, row.audit_at = "cleared", "Codex", now
+            # audit_note 最长 200 字
+            note = "Codex 抽查一致" + (f"：{item['note']}" if item["note"] else "")
+            row.audit_note = note[:_AUDIT_NOTE_MAX]
+        return done("抽查一致")
+    doc = session.get(Document, row.document_id)
+    if not doc:
+        return done("文件不存在")
+    for other in _verified_groups(session, now - timedelta(days=30), now):
+        for candidate in other:
+            other_doc = session.get(Document, candidate.document_id)
+            if (
+                candidate.id not in {x.id for x in group}
+                and candidate.kind == row.kind
+                and other_doc
+                and other_doc.source_id == doc.source_id
+            ):
+                entry = _sample_item(session, candidate)
+                if entry:
+                    result["follow_up"].append(entry)
+                break
+    reason = f"Codex 抽查不一致：原文{quote or '未找到这一类截止日期'}"
+    if item["note"].strip():
+        reason += f"；{item['note'].strip()}"
+    if write:
+        # audit_note 最长 200 字：原句长时截断（第二天 Claude 的清单里带的就是这段原因）
+        reopen_group(group, reason[:_AUDIT_NOTE_MAX], "Codex", now)
+    return done("抽查不一致，退回待核对")

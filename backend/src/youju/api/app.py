@@ -2144,21 +2144,9 @@ def reopen_deadline(
     if row.status != "approved":
         raise HTTPException(status_code=409, detail="只有已通过的截止能退回待核对")
     note = row.audit_note if row.audit_state == "flagged" and row.audit_note else "人工退回"
-    now = datetime.now(UTC)
-    reopened = 0
-    for item in group:
-        if item.status != "approved":
-            continue
-        item.status = "pending"
-        item.reviewed_by = None
-        item.reviewed_at = None
-        item.approved_date = None
-        item.approved_time = None
-        item.audit_state = "reopened"
-        item.audit_note = note
-        item.audit_at = now
-        item.audit_by = body.reviewed_by
-        reopened += 1
+    from youju.deadline_verify import reopen_group
+
+    reopened = reopen_group(group, note, body.reviewed_by, datetime.now(UTC))
     session.commit()
     _audit(request, "reopen", deadline_id=deadline_id, reviewer=body.reviewed_by, count=reopened)
     return {"status": "pending"}
