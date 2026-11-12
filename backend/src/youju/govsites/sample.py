@@ -21,10 +21,13 @@
 - 部门（补充）：国家级按部委名核对；市场监管格挂的是知识产权局；
 - 重复：同一省里去掉参数后是同一个列表的，后面那个记重复。
 
-地市、区县再加一项（D-129 的个人事项门，看最新 20 条）：
+地市、区县再加两项：
 
-- 个人事项：个人名单类和招聘、考试、任免类标题占 60% 以上（见 personal_list_title），交给人看：
-  整栏都是的记"不收"，还有政策、通知的照收（个人事项按 D-097 ② 不给正文）。
+- 个人事项（D-129 的个人事项门，看最新 20 条）：个人名单类和招聘、考试、任免类标题占 60% 以上
+  （见 personal_list_title），交给人看：整栏都是的记"不收"，还有政策、通知的照收（个人事项按
+  D-097 ② 不给正文）。
+- 上级（看最新 10 条）：像上级文件的占 60% 以上（见 upper_level_title；地市的上级是国家、省里的，
+  区县再加市里的），交给人看：整栏是上级文件的记"不通过"，偶尔转载一两条的照收（11/12 定的口径）。
 
 都过记"自动通过"，否则记"待人工"并写明哪项没过；最后三列（复核人、复核结论、复核备注）
 留给人工复核。复核结论写"通过""不通过""待重试"（这次没抓到）、"不能抓"（按访问控制等不读）
@@ -87,6 +90,29 @@ _CENTRAL = re.compile(
 )
 # 只有规章名、不带"关于"的（"博物馆藏品管理办法""市场监督管理所条例"）：省里的规章一般带省名
 _BARE_RULE = re.compile(r"(?:办法|规定|条例|法典|细则|规则|法)$")
+# 地市、区县"上级"粗筛里，标题任意位置出现就算上级的：省里的机关，国家层面的机关、法律
+_PROVINCE_ORGANS = re.compile(r"省委|省政府|省人民政府|省人大|省纪委")
+_NATIONAL = re.compile(
+    r"中华人民共和国|国务院|中共中央|中办|国办|全国人民代表大会|全国人大"
+    r"|国家[^级]{0,12}(?:局|委|部(?!门)|署|院)|(?:财政部|商务部|教育部|科技部|工业和信息化部|工信部"
+    r"|公安部|民政部|司法部|人力资源社会保障部|自然资源部|生态环境部|住房城乡建设部|交通运输部|水利部"
+    r"|农业农村部|文化和旅游部|应急管理部)(?!门)|审计署|海关总署|税务总局|市场监管总局|金融监管总局"
+    r"|证监会"
+)
+# 法律名：书名号里以"法""法典"结尾的（"办法"不算），或常见的"……保护法""……安全法"一类
+_LAW_NAME = re.compile(
+    r"《[^》]{2,40}(?<!办)法(?:典)?》|(?:保护|管理|促进|安全|生产|防治|保障|监督|许可|处罚|登记|评价"
+    r"|标准化|统计|审计|预算|会计|劳动|合同|采购|投标|所得税|增值税)法(?!规|人|院|官)"
+)
+# 标题里写着本级的字样（"市级……办法""全县……"）：本级发的
+_OWN_MARK = {
+    "市级": re.compile(r"本市|我市|全市|市级|市本级"),
+    "区县级": re.compile(r"本县|我县|全县|县级|本区|我区|全区|区级|本旗|全旗"),
+}
+# 本级简称后面紧跟这些的，是别的地方（"吉林省"不是吉林市，"恩施州"不是恩施市）
+_HIGHER_SUFFIX = re.compile(r"省|州|盟|地区|自治")
+# 解读、图解（本级名称已经先排除了，剩下的多是解读上级政策）
+_EXPLAIN = re.compile(r"^(?:一图读懂|图解)|解读")
 _VIEWER = re.compile(r"pdfjs|viewer\.html\?file=", re.I)
 _NEWS = re.compile(r"习近平|总书记|李强|赵乐际|王沪宁|蔡奇|丁薛祥|李希|主持召开|重要讲话|会见")
 _ATTACH = re.compile(r"\.(?:docx?|xlsx?|pdf|wps|zip|rar|ofd)(?:$|\?)", re.I)
@@ -162,6 +188,56 @@ def personal_share(titles: list[str]) -> float | None:
     if len(titles) < PERSONAL_MIN_ITEMS:
         return None
     return sum(personal_list_title(t) for t in titles) / len(titles)
+
+
+# "上级"粗筛（11/12 地市一组用的时候提的）：最新 10 条里像上级文件的占六成以上，转人工
+UPPER_RECENT = 10
+UPPER_SHARE = 0.6
+
+
+def _names_place(text: str, names: set[str]) -> bool:
+    """标题里写着这个地方的名称。简称后面紧跟"省""州"一类的不算（"吉林省"不是吉林市）。"""
+    return any(
+        not _HIGHER_SUFFIX.match(text, hit.end())
+        for name in names
+        for hit in re.finditer(re.escape(name), text)
+    )
+
+
+def upper_level_title(s: Source, title: str) -> bool:
+    """地市、区县栏目里像上级文件的标题，粗筛，候选交给人看。
+    - 标题里写着本级名称的（"南京市……""某某县……"）不算。
+    - 算上级：国家层面的（同省级那条：《》开头、国务院、部委……），以省名、"省"开头的；区县的还算
+      以本市名称开头的。
+    - 本级发的不算：写着"本市""市级""全县"一类的，"关于……""转发……"（落实上级部署、转发上级文件）。
+    - 剩下的再算：只有规章名、不带"关于"的（同省级那条）；任意位置有省的全称、省委省政府一类、国家
+      层面的机关、法律名（区县的还算本市全称）；解读、图解。"""
+    text = title.strip()
+    if s.level == "区县级" and s.district:
+        own = {v for v in name_variants(s.district) | {s.district} if len(v) >= 2}
+        upper_names = _city_names(s) if s.city else set()
+    else:
+        own = _city_names(s) if s.city else set()
+        upper_names = set()
+    if not text or _names_place(text, own):
+        return False
+    prov = {v for v in name_variants(s.province) | {s.province} if len(v) >= 2}
+    if text.startswith((*prov, "省", *upper_names)) or _CENTRAL.search(text):
+        return True
+    own_mark = _OWN_MARK["区县级" if s.level == "区县级" else "市级"]
+    if own_mark.search(text) or text.startswith("关于") or "转发" in text:
+        return False
+    if "关于" not in text and _BARE_RULE.search(text):
+        return True
+    full = {v for v in prov if v.endswith(("省", "自治区", "市"))} | {s.province + "省"}
+    full |= {v for v in upper_names if v.endswith(("市", "州", "盟", "地区"))}
+    return bool(
+        any(v in text for v in full)
+        or _PROVINCE_ORGANS.search(text)
+        or _NATIONAL.search(text)
+        or _LAW_NAME.search(text)
+        or _EXPLAIN.search(text)
+    )
 
 
 def _kind(name: str | None) -> str | None:
@@ -349,6 +425,11 @@ def sample_rows(
             share = personal_share([t or "" for t in recent])
             if share is not None and share >= PERSONAL_SHARE:
                 row.failed.append("个人事项")
+            # 条目少的照样按现有的算（3 条都是上级文件的也要转人工）
+            newest = [t or "" for t in recent[:UPPER_RECENT]]
+            upper = sum(upper_level_title(s, t) for t in newest)
+            if newest and upper >= UPPER_SHARE * len(newest):
+                row.failed.append("上级")
         rows.append(row)
     _mark_duplicates(rows)
     return rows
@@ -749,7 +830,10 @@ def evidence_results(folder) -> list[ProvinceResult]:
                 verdict = final_verdict(r)
                 res.level = res.level or (r.get("层级") or "").strip()
                 layer = _layer(res.level, (r.get("部门") or "").strip())
-                cell = tuple((r.get(k) or "").strip() for k in ("城市", "区县", "部门"))
+                # 格：城市、区县、部门；开发区一个城市有几格（部门都记"开发区"），再加上部门全称
+                dept = (r.get("部门") or "").strip()
+                zone = (r.get("部门全称") or "").strip() if dept == "开发区" else ""
+                cell = ((r.get("城市") or "").strip(), (r.get("区县") or "").strip(), dept, zone)
                 res.cells.setdefault(layer, set()).add(cell)
                 n_round = _sample_round(r.get("复核人") or "")
                 if n_round is not None:
