@@ -2,7 +2,9 @@
 
 - repost-auto-sample：抽组。gate 从现在满足自动合并条件的组里抽（开开关前 Claude 带证据判 100 组）；
   weekly 先抽已经自动合并的组、不够的用别的已确认组补（每周 Codex 独立抽查 10 组）。只给证据：
-  各版本的标题、机关、日期、网址、引用的文号、正文里共同文号前后的原文，结论和备注留空给判的人填。
+  各版本的标题、机关、日期、网址、引用的文号、自己的发文字号（部里原件按它对上）、正文里共同文号前后
+  的原文，结论和备注留空给判的人填。每周抽查判的是已经确认（对外折叠）的版本；同组还没确认的版本
+  （正文没抓到等，见 repost.rebuild）一并列出、confirmed 为空，只供对照。
 - repost-auto-record：记回判定。格式不对整份拒收；组在抽样后变了（修订号或在组版本不一样）的跳过；
   判错的组当场整组撤回（以后不再自动合并）。
 - repost-auto-stats：按轮统计准确率，给出开关那道门的结果。
@@ -55,6 +57,11 @@ from youju.repost import (
 audit_log = logging.getLogger("youju.audit")
 
 
+def _now() -> datetime:
+    """现在的时间（窗口按它的北京日子算）；测试里固定成测试世界的时间。"""
+    return datetime.now(UTC)
+
+
 def _audit(action: str, **fields: object) -> None:
     """命令行操作留痕：和管理台的审计日志同一个记录器（youju.audit），标明来自命令行。"""
     record = {"event": "cli", "action": action, **fields}
@@ -70,6 +77,17 @@ _EXCERPT_MEMBERS = 20
 
 def _versions(rows, duplicates):
     return [r for r in rows if r.active and r.document_id not in duplicates]
+
+
+def _confirmed(rows, duplicates):
+    """已经确认（对外折叠）的在组版本。"""
+    return [r for r in _versions(rows, duplicates) if r.confirmed_at is not None]
+
+
+def _all_auto(rows, duplicates) -> bool:
+    """确认过的版本都是自动合并确认的（没有人工确认的）。"""
+    confirmed = _confirmed(rows, duplicates)
+    return bool(confirmed) and all(r.confirmed_by == AUTO_REVIEWER for r in confirmed)
 
 
 def auto_candidates(
@@ -116,7 +134,7 @@ def _excerpt(body, number):
 def sample(args):
     if args.size is not None and args.size < 1:
         raise ValueError("抽样数量必须大于零")
-    stamp = datetime.now(UTC)
+    stamp = _now()
     rng = random.Random(args.seed)
     with session_factory()() as session:
         today = stamp.astimezone(_BEIJING).date()
@@ -161,18 +179,11 @@ def sample(args):
                 grouped[row.group_id].append(row)
             eligible = []
             for group in groups:
-                versions = _versions(grouped[group.id], duplicates)
-                if (
-                    len(versions) >= 2
-                    and not group.needs_review
-                    and all(r.confirmed_at for r in versions)
-                ):
+                # 至少两个版本已经确认（对外折叠）：同组还没确认的新版本不妨碍抽它
+                confirmed = _confirmed(grouped[group.id], duplicates)
+                if len(confirmed) >= 2 and not group.needs_review:
                     eligible.append((group, grouped[group.id]))
-            auto = [
-                g
-                for g in eligible
-                if all(r.confirmed_by == AUTO_REVIEWER for r in _versions(g[1], duplicates))
-            ]
+            auto = [g for g in eligible if _all_auto(g[1], duplicates)]
             other = [g for g in eligible if g not in auto]
             rng.shuffle(auto)
             rng.shuffle(other)
@@ -197,6 +208,7 @@ def sample(args):
                     publish_date=doc.publish_date,
                     cited=tuple(Cited(**c) for c in signal.cited) if signal else (),
                     has_body=signal.has_body if signal else False,
+                    own_number=signal.own_number if signal else None,
                 )
         all_rows = [r for _, rows in selected for r in rows]
         duplicates = set(duplicate_members(session, [r.document_id for r in all_rows]))
@@ -230,6 +242,12 @@ def sample(args):
                         url=doc.url,
                         kind=cand.kind,
                         cited=[c.number for c in signals(cand).cited],
+                        own_number=cand.own_number,
+                        confirmed=(
+                            None
+                            if row.confirmed_at is None
+                            else ("自动合并" if row.confirmed_by == AUTO_REVIEWER else "人工")
+                        ),
                         excerpt=(
                             _excerpt(detail.body_text or "" if detail else "", number)
                             if index < _EXCERPT_MEMBERS
@@ -243,7 +261,7 @@ def sample(args):
                     revision=group.revision,
                     topic=group.topic,
                     upstream=number,
-                    auto=all(r.confirmed_by == AUTO_REVIEWER for r in _versions(rows, duplicates)),
+                    auto=_all_auto(rows, duplicates),
                     members=members,
                     verdict="",
                     note="",
@@ -318,7 +336,7 @@ def _validate(data, reviewer):
 def record(args):
     data = json.loads(args.file.read_text(encoding="utf-8-sig"))
     _validate(data, args.by)
-    stamp = datetime.now(UTC)
+    stamp = _now()
     counts = defaultdict(int)
     withdrawn: list[dict] = []
     reviewer = args.by.strip()
@@ -482,7 +500,7 @@ def withdraw(args):
             print("这一组没有确认过，不用撤回")
             return 1
         before = {r.document_id: r.confirmed_by for r in rows if r.active and r.confirmed_at}
-        withdrawn_ids = withdraw_group(group, rows, datetime.now(UTC))
+        withdrawn_ids = withdraw_group(group, rows, _now())
         session.commit()
         _audit(
             "repost_withdraw",

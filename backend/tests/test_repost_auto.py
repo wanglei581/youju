@@ -7,6 +7,7 @@ import pytest
 from youju.models import RepostGroup, RepostGroupMember
 from youju.repost import (
     AUTO_REVIEWER,
+    AUTO_RULE_VERSION,
     Candidate,
     Cited,
     auto_reason,
@@ -122,7 +123,7 @@ def test_validation_and_excerpt():
     data = {
         "round": "gate-1",
         "purpose": "gate",
-        "rule_version": "2026-11-13",
+        "rule_version": AUTO_RULE_VERSION,
         "items": [
             {
                 "group_id": 1,
@@ -285,8 +286,6 @@ def test_rule_version_is_bumped_when_the_rules_change():
     import hashlib
     import json
 
-    from youju.repost import AUTO_RULE_VERSION
-
     digest = hashlib.sha256(json.dumps(_rule_battery(), ensure_ascii=False).encode()).hexdigest()
     assert (AUTO_RULE_VERSION, digest[:16]) == RULE_FINGERPRINT
 
@@ -353,7 +352,7 @@ def test_validation_rejects_bad_items(change, message):
     data = {
         "round": "gate-1",
         "purpose": "gate",
-        "rule_version": "2026-11-13",
+        "rule_version": AUTO_RULE_VERSION,
         "items": [
             {
                 "group_id": 1,
@@ -377,7 +376,7 @@ def test_validation_rejects_duplicates_and_old_rule_versions():
         "verdict": "correct",
         "note": "",
     }
-    base = {"round": "gate-1", "purpose": "gate", "rule_version": "2026-11-13"}
+    base = {"round": "gate-1", "purpose": "gate", "rule_version": AUTO_RULE_VERSION}
     with pytest.raises(ValueError, match="同一组重复"):
         _validate({**base, "items": [item, dict(item)]}, "Claude")
     with pytest.raises(ValueError, match="规则版本"):

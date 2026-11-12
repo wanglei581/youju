@@ -2789,7 +2789,9 @@ def main(argv: list[str] | None = None) -> int:
         help="抽转发组给人判能不能自动合并（gate：开开关前的 100 组；weekly：每周抽查）",
     )
     p.add_argument("--purpose", choices=("gate", "weekly"), required=True)
-    p.add_argument("--size", type=int, help="抽几组（gate 默认 100，weekly 默认 10）")
+    p.add_argument(
+        "--size", type=int, help="抽几组（gate 默认 110：判满 100 组留 10 组余量；weekly 默认 10）"
+    )
     p.add_argument("--seed", type=int, required=True, help="随机种子（同一种子抽到同样的组）")
     p.add_argument("--out", type=Path, required=True, help="抽样结果写到哪个 JSON 文件")
     p.set_defaults(func=_repost_checks("sample"))

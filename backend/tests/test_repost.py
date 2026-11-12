@@ -215,6 +215,14 @@ def _deadline(session, doc, kind="推荐或审核截止", day=30, evidence="请�
     return row
 
 
+@pytest.fixture(autouse=True)
+def _pin_check_clock(monkeypatch):
+    # 抽查命令按"今天"算窗口：固定成测试世界的今天，免得过几个月测试数据出了窗口（日期炸弹）
+    from youju import repost_checks
+
+    monkeypatch.setattr(repost_checks, "_now", lambda: NOW)
+
+
 @pytest.fixture
 def world(session):
     """视听系统典型案例：陕西、天津、福建三省各一版（都引用部里 376 号），另有一份不相干的通知。"""
@@ -1525,6 +1533,7 @@ def test_auto_quality_commands(session, session_factory, world, monkeypatch, tmp
 
     from youju import repost_checks
     from youju.models import RepostAutoCheck
+    from youju.repost import AUTO_RULE_VERSION
 
     rebuild(session, now=NOW)
     session.commit()
@@ -1545,7 +1554,7 @@ def test_auto_quality_commands(session, session_factory, world, monkeypatch, tmp
     data = {
         "round": "weekly-test",
         "purpose": "weekly",
-        "rule_version": "2026-11-13",
+        "rule_version": AUTO_RULE_VERSION,
         "items": [item],
     }
     path.write_text(json.dumps(data), encoding="utf-8")
@@ -2294,3 +2303,25 @@ def test_weekly_sample_skips_groups_already_checked_at_this_revision(
     path.write_text(json.dumps(first, ensure_ascii=False), encoding="utf-8")
     assert repost_checks.record(SimpleNamespace(file=path, by="Codex")) == 0
     assert _sample(tmp_path, "weekly", seed=4)["items"] == []  # 这一版本已经抽查过
+
+
+def test_weekly_sample_includes_partly_folded_auto_groups(
+    session, session_factory, monkeypatch, tmp_path
+):
+    # 已经自动合并的组来了一份还没确认的新版本（正文没抓到）：照样抽。判的是已经确认的版本，新来的
+    # 一并列出、confirmed 为空；各版本带着自己的发文字号
+    from youju import repost_checks
+
+    _auto_on(monkeypatch, session)
+    docs = _auto_world(session)
+    rebuild(session, now=NOW)
+    late = _doc(session, _source(session, "福建"), docs[0].title, day=20)
+    session.flush()
+    rebuild(session, now=NOW + timedelta(seconds=1))
+    session.commit()
+    monkeypatch.setattr(repost_checks, "session_factory", lambda: session_factory)
+    item = _sample(tmp_path, "weekly", seed=5)["items"][0]
+    assert item["auto"] is True
+    flags = {m["document_id"]: m["confirmed"] for m in item["members"]}
+    assert flags == {docs[0].id: "自动合并", docs[1].id: "自动合并", late.id: None}
+    assert all("own_number" in m for m in item["members"])
