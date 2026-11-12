@@ -1,0 +1,2 @@
+# 只写心跳、不跑任何定时任务：切换时云托管 admin 停写用，本机起步导入、本机全栈测试也用
+*/5 * * * * date +\%s > /tmp/youju-cron-heartbeat

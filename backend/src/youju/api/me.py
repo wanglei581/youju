@@ -17,7 +17,7 @@ from sqlalchemy.dialects.mysql import insert
 from sqlalchemy.orm import Session
 
 from youju import advisor_tasks as advisor_service
-from youju import chat_store
+from youju import chat_store, session_auth, wxopen
 from youju.agreements import (
     CHAT_AGREEMENT_VERSION,
     VERSION_FULL,
@@ -62,7 +62,8 @@ _ID_CHECKS = "10X98765432"
 
 
 def request_openid(request: Request) -> str:
-    """当前请求的微信用户：云托管时取平台注入的请求头（且须有 X-WX-SOURCE），本机开发取配置。"""
+    """当前请求的微信用户：云托管时取平台注入的请求头（且须有 X-WX-SOURCE）；自建服务器取自己
+    签发的登录凭证（Authorization: Bearer，youju/session_auth.py）；本机开发取配置。"""
     settings = get_settings()
     if settings.trust_wx_headers:
         openid = (
@@ -70,6 +71,9 @@ def request_openid(request: Request) -> str:
             if "X-WX-SOURCE" in request.headers
             else None
         )
+    elif getattr(settings, "session_login", False):
+        token = session_auth.bearer(request.headers.get("Authorization"))
+        openid = session_auth.verify(token, settings) if token else None
     else:
         openid = settings.dev_openid
     if not openid or not openid.strip() or len(openid) > 128:
@@ -1127,7 +1131,11 @@ def create_feedback(body: FeedbackIn, session: SessionDep, user: UserDep) -> dic
             raise HTTPException(status_code=422, detail="文件不存在")
     content = _mask_feedback(body.content)
     check_result = "unchecked"
-    if get_settings().trust_wx_headers:
+    settings = get_settings()
+    # 云托管的接口服务（信任请求头）照旧检测；自建服务器配了 access_token 时同样检测
+    if settings.trust_wx_headers or (
+        getattr(settings, "hosting", "cloudrun") == "self" and wxopen.token_mode(settings)
+    ):
         try:
             passed = check_feedback(user.openid, content)
         except (httpx.HTTPError, ValueError, KeyError, TypeError, AttributeError) as exc:

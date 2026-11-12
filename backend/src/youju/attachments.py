@@ -53,7 +53,7 @@ import httpx
 from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.orm import Session
 
-from youju import attachment_text, zip_limits
+from youju import attachment_text, storage, zip_limits
 from youju.backup import _BUSY_CODES, BEIJING, BackupError, _open_api, _retrying, upload
 from youju.classify import effective_kind
 from youju.config import get_settings
@@ -1256,7 +1256,7 @@ def _cache_run(
         key=lambda r: (not copy_due(r), rank[r.status], order[r.url_hash]),
     )
     owns_client, owns_fetcher = client is None, fetcher is None
-    client = client or httpx.Client(trust_env=False)
+    client = client or storage.http_client()
     if fetcher is None:
         settings = get_settings()
         fetcher = PoliteFetcher(
@@ -1463,7 +1463,7 @@ def _recheck(
             groups[row.file_id].append(row)
     picked = list(groups.items())[:limit] if limit is not None else list(groups.items())
     owns_client = client is None
-    client = client or httpx.Client(trust_env=False)
+    client = client or storage.http_client()
     try:
         for file_id, rows in picked:
             first = rows[0]
@@ -1636,7 +1636,7 @@ def settle_missing_copies(
         if not got:
             return MissingReport(skipped=True)
         owns_client = client is None
-        client = client or httpx.Client(trust_env=False)
+        client = client or storage.http_client()
         try:
             return _settle_missing(session, env, listing, client, now, apply, sleep)
         finally:

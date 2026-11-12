@@ -39,6 +39,7 @@ from youju.api import v1 as v1_api
 from youju.api import weekly as weekly_api
 from youju.api.advisor import router as advisor_router
 from youju.api.attachments import router as attachments_router
+from youju.api.auth import router as auth_router
 from youju.api.chat import router as chat_router
 from youju.api.exports import router as exports_router
 from youju.api.me import router as me_router
@@ -81,17 +82,32 @@ from youju.models import (
     User,
 )
 from youju.sources.onboard import MIN_ITEMS
+from youju.sync.server import router as sync_router
 from youju.takedown import available_condition, change_state, is_taken_down
 
 _DOCS = get_settings().role == "all"  # 只在本机开发开放接口文档，线上两个服务都关闭
+
+
+@contextlib.asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    # 2.0 服务器启动时把同步表的编号下限抬好（没配同步的云托管什么都不做，
+    # 见 ensure_floors_on_start）
+    from youju.sync.server import ensure_floors_on_start
+
+    await run_in_threadpool(ensure_floors_on_start)
+    yield
+
+
 app = FastAPI(
     title="有据 API",
     version="0.1.0",
     docs_url="/docs" if _DOCS else None,
     redoc_url="/redoc" if _DOCS else None,
     openapi_url="/openapi.json" if _DOCS else None,
+    lifespan=_lifespan,
 )
 app.include_router(v1_router)
+app.include_router(auth_router)
 app.include_router(advisor_router)
 app.include_router(chat_router)
 app.include_router(exports_router)
@@ -101,6 +117,7 @@ app.include_router(readers_router)
 
 app.include_router(pay_router)
 app.include_router(push_router)
+app.include_router(sync_router)
 
 audit_log = logging.getLogger("youju.audit")
 if not audit_log.handlers:
@@ -285,12 +302,30 @@ async def _role_guard(request: Request, call_next):
     mini_path = path.startswith("/api/v1/") or path == getattr(
         get_settings(), "wx_push_path", "/api/wx/push"
     )
-    blocked = (role == "api" and not (mini_path or path == "/health")) or (
-        role == "admin" and not (admin_path or path == "/health" or _admin_read(request, path))
+    # 公开数据同步（2.0 自建服务器，youju/sync/server.py）：配了密钥才有，哪个角色都能收
+    sync_path = path.startswith("/api/sync/") and bool(getattr(get_settings(), "sync_secret", None))
+    blocked = (role == "api" and not (mini_path or sync_path or path == "/health")) or (
+        role == "admin"
+        and not (admin_path or sync_path or path == "/health" or _admin_read(request, path))
     )
     if blocked:
         return JSONResponse(status_code=404, content={"detail": "Not Found"})
+    if (
+        getattr(get_settings(), "public_replica", False)
+        and request.method in ("POST", "PUT", "PATCH", "DELETE")
+        and path.startswith("/api/admin/")
+        and not path.startswith(REPLICA_ADMIN_WRITES)
+    ):
+        # 自建服务器上的公开数据以本机同步来的为准：在这里改了也会被下次同步盖掉
+        return JSONResponse(
+            status_code=409,
+            content={"detail": "这台服务器上的公开数据由本机同步过来，请在本机的核对台操作"},
+        )
     return await call_next(request)
+
+
+# 自建服务器（YOUJU_PUBLIC_REPLICA）的核对台还能改的：只动用户数据的（纠错处理、发票）
+REPLICA_ADMIN_WRITES = ("/api/admin/feedback/", "/api/admin/invoices/")
 
 
 def _openid_or_none(request: Request) -> str | None:
@@ -978,12 +1013,15 @@ _admin_fails_lock = threading.Lock()
 
 
 def client_ip(request: Request) -> str:
-    """客户端地址：云托管把它放在 X-Original-Forwarded-For（官方文档：客户端 IPv4 或 IPv6 地址）。
+    """客户端地址：云托管把它放在 X-Original-Forwarded-For（官方文档：客户端 IPv4 或 IPv6 地址）；
+    自建服务器由反向代理写进 YOUJU_CLIENT_IP_HEADER 配的头（Caddy 是 X-Forwarded-For，见
+    deploy/selfhost/Caddyfile：不信任客户端自带的值，整个覆盖）。
 
     取最后一项：平台覆盖这个头时只有一项；若平台是在请求方自带的值后面追加，最后一项才是平台写的，
     取第一项就能被伪造。平台实际是哪种，首次部署时实测（部署文档"待验证"）。
     """
-    forwarded = request.headers.get("x-original-forwarded-for") or ""
+    header = getattr(get_settings(), "client_ip_header", "x-original-forwarded-for")
+    forwarded = request.headers.get(header) or ""
     return forwarded.split(",")[-1].strip() or (request.client.host if request.client else "")
 
 

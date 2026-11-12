@@ -1,0 +1,5 @@
+# 共用服务器（D-126）测试期的定时任务：只写心跳，加上首发前搬家（D-127）旧库存档的到期删除——
+# 隐私保护指引写的"备份副本最长 30 天"不能等正式定时任务打开才算（没有存档时什么都不做）。
+# 正式上线在 .env 里设 YOUJU_CRONTAB=/app/backend/deploy/selfhost/server/crontab（那里也有这一条）。
+*/5 * * * * date +\%s > /tmp/youju-cron-heartbeat
+50 5 * * *  /app/backend/deploy/job.sh archive-prune

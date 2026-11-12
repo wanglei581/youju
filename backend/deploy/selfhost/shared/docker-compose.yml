@@ -1,0 +1,96 @@
+# 2.0 放在创始人现有的一台腾讯云轻量服务器上（4 核 4G，和别的项目共用，D-126）。
+# 和 ../server/docker-compose.yml（单独一台服务器用的）不同的地方：
+# - 不带 Caddy：80、443 是宝塔的 nginx 在用，有据只在它的站点目录里加一个文件转发（nginx-https.conf）；
+# - 接口、worker 只听本机回环地址的 18100、18101（装之前 youju-shared.sh check 确认没人占用）；
+# - 三个容器各设内存硬上限，合计 1.5G（MySQL 576M、接口 320M、worker 640M）；不许用交换区（不拖慢别的
+#   项目）；主机内存不够时内核先挑有据的进程停（oom_score_adj），不连累别的项目；
+# - worker 默认只写心跳、不跑定时任务（测试期没有用户数据；shared/crontab.idle，只多一条旧库存档的
+#   到期删除）；上线前在 .env 里设 YOUJU_CRONTAB=/app/backend/deploy/selfhost/server/crontab。
+# 都由 youju-shared.sh 调用，见 docs/部署/自建服务器.md 第十节（已有服务器）。
+name: youju-server
+
+x-app: &app
+  image: ${YOUJU_IMAGE:?在 .env 里填 YOUJU_IMAGE}
+  env_file: .env
+  restart: unless-stopped
+  depends_on:
+    mysql:
+      condition: service_healthy
+  volumes:
+    - storage:/data/storage
+  oom_score_adj: 500
+  logging: &logging
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  mysql:
+    # 和单独服务器、本机用同一个摘要锁定的镜像（经腾讯云的 Docker Hub 镜像站拉，Docker 按摘要校验内容）
+    image: mysql:8.0@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b
+    restart: unless-stopped
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_bin
+      - --default-time-zone=+00:00
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?在 .env 里填 MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: youju
+      MYSQL_USER: youju
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?在 .env 里填 MYSQL_PASSWORD}
+    volumes:
+      - mysql:/var/lib/mysql
+      - ./mysql.cnf:/etc/mysql/conf.d/youju.cnf:ro
+    healthcheck:
+      # 密码经环境变量给 mysqladmin，不出现在进程参数里（同机别的用户 ps 看得到参数）
+      test: ["CMD-SHELL", "MYSQL_PWD=\"$$MYSQL_ROOT_PASSWORD\" mysqladmin ping -h 127.0.0.1 -uroot --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    mem_limit: 576m
+    memswap_limit: 576m
+    cpus: 1.0
+    oom_score_adj: 500
+    logging: *logging
+
+  # 小程序接口：只经宝塔 nginx 的 yj 站点对外（/api/v1/、/health、/api/wx/push）
+  api:
+    <<: *app
+    environment:
+      YOUJU_ROLE: api
+      PORT: "8000"
+    ports:
+      - "127.0.0.1:18100:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    mem_limit: 320m
+    memswap_limit: 320m
+    cpus: 1.0
+
+  # 定时任务 + 核对台（不对外，只在服务器上访问）+ 收本机推来的公开数据（/api/sync/，经 nginx）
+  worker:
+    <<: *app
+    environment:
+      YOUJU_ROLE: admin
+      PORT: "8000"
+      YOUJU_CRONTAB: ${YOUJU_CRONTAB:-/app/backend/deploy/selfhost/shared/crontab.idle}
+    ports:
+      - "127.0.0.1:18101:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      # 第一次启动要迁移、按标题规则重算全部文件类型，库大时超过 3 分钟：这段时间里失败不算
+      start_period: 600s
+    mem_limit: 640m
+    memswap_limit: 640m
+    cpus: 1.5
+
+volumes:
+  mysql:
+  storage:

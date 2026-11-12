@@ -1,0 +1,16 @@
+# 2 核 4G 服务器上的 MySQL 8：容器限 1.4G 内存。
+[mysqld]
+innodb_buffer_pool_size = 768M
+innodb_log_file_size = 256M
+innodb_flush_log_at_trx_commit = 1
+max_connections = 80
+# 性能统计要多占 400MB 左右内存，小服务器关掉
+performance_schema = OFF
+table_open_cache = 1024
+tmp_table_size = 32M
+max_heap_table_size = 32M
+# 二进制日志只留 3 天（每天整库备份 + 异地备份；不做主从）
+binlog_expire_logs_seconds = 259200
+# 同步一批最多 64MB（压缩前更大），写库用的单条语句要放得下
+max_allowed_packet = 128M
+skip_name_resolve = ON
