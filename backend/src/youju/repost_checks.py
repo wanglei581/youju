@@ -31,7 +31,7 @@ from collections import defaultdict
 from dataclasses import asdict
 from datetime import UTC, date, datetime, timedelta
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from youju.classify import effective_kind
@@ -172,11 +172,33 @@ def _member_candidates(session: Session, ids: list[int]) -> dict[int, Candidate]
     return cands
 
 
-def _evidence(session: Session, ids: list[int]) -> str:
+def _human_trace(group: RepostGroup, rows) -> list:
+    """组上人动过的痕迹：人工确认（自动合并确认的不算）、人工加入、移出、不再自动合并、需复核、谁建的
+    组。抽样以后有变就算组变了，免得拿旧样本的结论整组撤回人刚做的确认；只是自动合并确认、退回造成的
+    变化（修订号也跟着变）不算。"""
+    return [
+        bool(group.no_auto),
+        bool(group.needs_review),
+        group.created_by,
+        sorted(
+            [
+                r.document_id,
+                bool(r.active),
+                r.joined_by,
+                r.confirmed_by
+                if r.confirmed_at is not None and r.confirmed_by != AUTO_REVIEWER
+                else None,
+            ]
+            for r in rows
+        ),
+    ]
+
+
+def _evidence(session: Session, ids: list[int], human: list) -> str:
     """判的这几个版本的证据指纹：确认快照用的那些（日期、机关、标题、发文机关、全文，见
-    repost.member_facts）加上类型、详情里现在的原始发文字号（直接读，不用存好的信号）、引用的文号。
-    抽样以后有一样变了，记录时就算组变了（changed），旧证据下的结论不算进准确率、也不拿来撤回现在的
-    组。"""
+    repost.member_facts）加上类型、详情里现在的原始发文字号（直接读，不用存好的信号）、引用的文号，
+    再加上组上人动过的痕迹（_human_trace）。抽样以后有一样变了，记录时就算组变了（changed），旧证据
+    下的结论不算进准确率、也不拿来撤回现在的组。"""
     _, facts = member_facts(session, ids)
     cands = _member_candidates(session, ids)
     numbers = dict(
@@ -186,7 +208,7 @@ def _evidence(session: Session, ids: list[int]) -> str:
             )
         ).all()
     )
-    values = []
+    values: list = [human]
     for doc_id in sorted(ids):
         cand = cands.get(doc_id)
         values.append(
@@ -255,11 +277,15 @@ def sample(args):
             # 也要接着盯，不然过一阵就抽不到自动组），没抽过的排在前面
             history = session.execute(
                 select(
-                    RepostAutoCheck.group_id, RepostAutoCheck.revision, RepostAutoCheck.sampled_at
-                ).where(
+                    RepostAutoCheck.group_id,
+                    RepostAutoCheck.revision,
+                    func.max(RepostAutoCheck.sampled_at),
+                )
+                .where(
                     RepostAutoCheck.purpose == "weekly",
                     RepostAutoCheck.group_id.in_([g.id for g in groups]),
                 )
+                .group_by(RepostAutoCheck.group_id, RepostAutoCheck.revision)
             ).all()
             since = stamp - timedelta(days=WEEKLY_REPEAT_DAYS)
             recent = {(g, r) for g, r, at in history if at >= since}
@@ -387,7 +413,7 @@ def sample(args):
                     group_id=group.id,
                     revision=group.revision,
                     document_ids=sorted(judged_ids),
-                    evidence=_evidence(session, sorted(judged_ids)),
+                    evidence=_evidence(session, sorted(judged_ids), _human_trace(group, rows)),
                     rule_version=AUTO_RULE_VERSION,
                     verdict=None,
                     note="",
@@ -534,7 +560,8 @@ def record(args):
             if (
                 group is None
                 or judged_now != check.document_ids
-                or _evidence(session, judged_now) != check.evidence
+                or _evidence(session, judged_now, _human_trace(group, grouped[group.id]))
+                != check.evidence
             ):
                 # 抽样以后组变了（版本或证据）：程序记 changed、不算进准确率（判的人的结论不用，
                 # 也不拿旧证据下的结论撤回现在的组）

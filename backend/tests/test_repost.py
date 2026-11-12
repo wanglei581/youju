@@ -2495,3 +2495,38 @@ def test_auto_record_ignores_a_bare_revision_bump(session, session_factory, monk
     assert repost_checks.record(SimpleNamespace(file=path, by="Claude")) == 0
     session.expire_all()
     assert session.query(RepostAutoCheck).one().verdict == "correct"
+
+
+def test_auto_record_does_not_withdraw_a_group_a_person_confirmed_after_sampling(
+    session, session_factory, monkeypatch, tmp_path
+):
+    # 抽样以后有人确认了这一组（判的版本、正文都没变）：旧样本的"判错"记 changed，不整组撤回，
+    # 人刚做的确认照旧
+    import json
+
+    from youju import repost_checks
+    from youju.models import RepostAutoCheck
+
+    monkeypatch.setattr(
+        "youju.repost.get_settings", lambda: SimpleNamespace(repost_auto_merge=False)
+    )
+    monkeypatch.setattr(repost_checks, "session_factory", lambda: session_factory)
+    _auto_world(session)
+    rebuild(session, now=NOW)
+    session.commit()
+    data = _sample(tmp_path, "gate")
+    data["items"][0].update(verdict="wrong", note="其实是两件事")
+    rows = list(_members(session).values())
+    _, facts = member_facts(session, [r.document_id for r in rows])
+    for row in rows:
+        row.confirmed_by, row.confirmed_at = "创始人", NOW
+        row.confirmed_fingerprint = facts[row.document_id]
+    session.commit()
+    path = tmp_path / "filled.json"
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    assert repost_checks.record(SimpleNamespace(file=path, by="Claude")) == 0
+    session.expire_all()
+    assert session.query(RepostAutoCheck).one().verdict == "changed"
+    group = session.get(RepostGroup, data["items"][0]["group_id"])
+    assert not group.no_auto
+    assert all(r.confirmed_by == "创始人" for r in _members(session).values())
