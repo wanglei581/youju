@@ -81,6 +81,15 @@ from youju.govsites.names import (
     dept_categories,
     looks_like_org,
 )
+from youju.govsites.navrules import (
+    channel_shape,
+    city_menu_scripts,
+    city_nav_pages,
+    demote_weak_lists,
+    device_redirect,
+    https_fallback,
+    specific_page,
+)
 from youju.govsites.pagecache import PageCache
 from youju.govsites.platform import URL_SHAPES, Fingerprint, blocker, fingerprint
 
@@ -318,8 +327,10 @@ def _site_like(url: str, current: str, max_depth: int = 4) -> bool:
     """像不像一个网站（或频道）的入口，而不是一篇文章：不是文章网址形状，路径不太深。"""
     parts = urlsplit(url)
     path = parts.path or "/"
-    for _, pattern in URL_SHAPES:
-        if pattern.search(path + ("?" + parts.query if parts.query else "")):
+    for name, pattern in URL_SHAPES:
+        if pattern.search(path + ("?" + parts.query if parts.query else "")) and not (
+            channel_shape(name, path)
+        ):
             return False
     if path.lower().endswith((".pdf", ".doc", ".docx", ".xls", ".xlsx", ".jpg", ".png", ".zip")):
         return False
@@ -382,6 +393,13 @@ class Inventory:
 
     def page(self, url: str, hops: int = 2) -> PageInfo:
         result = self.cache.get(url)
+        alt = https_fallback(url, result.status, result.error)
+        if alt:
+            # 官方导航给的 http 地址连接被断开、不应答，换同一网站的 https（navrules）。
+            # https 能打开、或在 https 那边明确拒绝（412、403、521、robots 禁止）都以它为准
+            second = self.cache.get(alt)
+            if second.status == "ok" or blocker(second.status, second.http_status, second.text):
+                result = second
         target = _script_redirect(result, url) if hops > 0 else None
         if target:
             # 只有一句 location.href 的跳转页（浙江县级部门频道常见）：跟过去，记跳转后的页面
@@ -456,17 +474,26 @@ class Inventory:
                 ]
                 for g in groups[:6]:
                     visit(g, f"{link.text}/{g.text}")
+        if home.level_hint == "市级":
+            city_nav_pages(home, seen, visit)  # 地市门户的部门列表页（navrules）
+            demote_weak_lists(pages)  # 简介文章、指南页的列表不加分（navrules）
         if home.doc is not None:
             # 省、市门户的"市县网站""部门网站"常由脚本拼出来：多看几个本站脚本
             extra = 6 if home.level_hint in ("省级", "市级", "国家级") else 0
             # 安徽等省每个地市一个导航脚本：省级门户多看一些
             named = 24 if home.level_hint == "省级" else 8
-            for src in footer_scripts(home.doc, home.final_url, extra=extra, named_limit=named):
+            scripts = [
+                (src, "页脚脚本")
+                for src in footer_scripts(home.doc, home.final_url, extra=extra, named_limit=named)
+            ]
+            if home.level_hint == "市级":
+                scripts = city_menu_scripts(home, scripts)  # "市直部门"菜单脚本（navrules）
+            for src, label in scripts:
                 r = self.cache.get(src)
                 if r.status == "ok":
                     links = script_links(r.text, home.final_url)
                     if links:
-                        pages.append(PageInfo(src, src, r, None, links, nav_text="页脚脚本"))
+                        pages.append(PageInfo(src, src, r, None, links, nav_text=label))
         return pages
 
     def _seed_pages(self, div: Division) -> list[PageInfo]:
@@ -742,6 +769,20 @@ class Inventory:
                     continue  # 政务服务网的地区页不是下级门户
                 url = link.url
                 source = p.final_url
+                if (
+                    div.level == "省级"
+                    and d.level == "市级"
+                    and _portal_like(url, p.final_url)
+                    and specific_page(url)
+                    and _hostname(url) not in skip_hosts
+                ):
+                    # 省网站链到地市网站的某一页（年报、文章）：取那个网站的首页（navrules）。
+                    # 只用于省找地市：区县门户常挂在地市网站的子目录、参数页下，不能截；
+                    # 链回本门户、上级门户的照旧跳过（下面 skip_hosts 那句）
+                    parts = urlsplit(url)
+                    root = f"{parts.scheme}://{parts.netloc}/"
+                    found[d.code] = Found(root, f"{link.text}（链到 {url}，取网站首页）", source)
+                    continue
                 if not _portal_like(url, p.final_url):
                     parts = urlsplit(url)
                     if parts.netloc.lower() == urlsplit(p.final_url).netloc.lower():
@@ -1315,9 +1356,11 @@ def _script_redirect(result: FetchResult, url: str) -> str | None:
     if target is None:
         m = _META_REFRESH.search(result.text)
         target = m.group(1) if m else None
-    if not target:
-        return None
     base = result.final_url or url
+    if not target:
+        # 地址放在变量里、带条件的跳转：按设备分手机版电脑版、换 https、按主机名（navrules）
+        full = device_redirect(result.text, base)
+        return full if full and full != base else None
     full = normalize_url(base, target)
     if not full or full == base or registrable(full) != registrable(base):
         return None
