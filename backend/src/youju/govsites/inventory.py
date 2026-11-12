@@ -1317,15 +1317,26 @@ class Inventory:
         row.columns = [hits[k] for k in COLUMN_KINDS if k in hits]
 
 
+# 目录的首页文件名：/sjj/index.html 和 /sjj/ 是同一个部门目录
+_INDEX_FILE = re.compile(r"^(?:index|default|main)\.\w+$", re.I)
+
+
 def _portal_section(url: str, channel_page: str) -> bool:
-    """门户频道部门页上的"信息公开"链到门户首页、或频道所在的门户一级栏目（枣庄数据局频道
+    """门户频道部门页上的"信息公开"链到门户首页、或部门页所在的门户一级栏目（枣庄数据局频道
     /zwgk/jgzn/sdsjj/jgjj/ 上的"政务公开"→ /zwgk/）：那是门户公共的政务公开页，上面的规范性文件库、
     专题是门户的，不是这个部门的。部门自己的信息公开页（频道目录里的、信息公开平台上按部门分的、
     带参数指明部门的 /zwgk/?deptId=…）照常找。"""
     if _hostname(url) != _hostname(channel_page) or urlsplit(url).query:
         return False
-    section, chan = page_dir(url), page_dir(channel_page)
-    return section != chan and chan.startswith(section) and section.count("/") <= 2
+    section = page_dir(url)
+    path = urlsplit(channel_page).path or "/"
+    if section.count("/") > 2 or not path.startswith(section):
+        return False  # 只管门户首页和一级栏目，而且要在部门页上面
+    last = path.rsplit("/", 1)[-1]
+    if last and "." in last and not _INDEX_FILE.match(last):
+        return True  # 部门页是一级栏目里的一个文件（/zwgk/sjj.html）：那个栏目是门户公共的
+    # 部门页是个目录（/sjj/、/sjj/index.html）：它自己的目录不算门户公共的
+    return section != page_dir(channel_page)
 
 
 _REPORT_HOME = re.compile(r"首页网址\s*[:：]?\s*((?:https?://)?[A-Za-z0-9.-]+\.gov\.cn[^\s<>\"']*)")

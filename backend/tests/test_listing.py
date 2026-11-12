@@ -725,6 +725,23 @@ def test_publish_date_written_only_in_the_title_attribute_is_still_used() -> Non
     ]
 
 
+def test_tooltip_publish_date_wins_over_a_date_ending_the_title() -> None:
+    # 悬浮提示里的标题以会议日期结尾、另写着发表时间，行里没写日期：发布日期取发表时间，
+    # 标题里的会议日期留着（Codex 审阅第二轮 11/12）
+    tip = "标题：政策吹风会文字实录 2026年11月5日&#xD;&#xA;点击数：0&#xD;&#xA;发表时间：2026-11-06"
+    html = f"""<ul>
+      <li><a href="/a/1.html" title="{tip}">政策吹风会文字实录 2026年11月5日</a></li>
+      <li><a href="/a/2.html" title="标题：关于开展专项申报工作的通知&#xD;&#xA;点击数：3&#xD;&#xA;发表时间：2026-11-04">关于开展专项申报工作的通知</a></li>
+      <li><a href="/a/3.html" title="标题：关于公布第三批认定名单的公示&#xD;&#xA;点击数：5&#xD;&#xA;发表时间：2026-11-03">关于公布第三批认定名单的公示</a></li>
+    </ul>"""
+    items = extract_items(html, "https://example.gov.cn/a/", today=date(2026, 11, 12))
+    assert [(i.title, i.publish_date) for i in items] == [
+        ("政策吹风会文字实录 2026年11月5日", date(2026, 11, 6)),
+        ("关于开展专项申报工作的通知", date(2026, 11, 4)),
+        ("关于公布第三批认定名单的公示", date(2026, 11, 3)),
+    ]
+
+
 def test_tooltip_in_title_attribute_gives_only_the_title() -> None:
     # 漯河、本溪、商丘、泸州一类平台（地市一组 11/9、11/12）：title 属性是悬浮提示
     # "标题：……（换行）点击数：0（换行）发表时间：……"，曾整段入库

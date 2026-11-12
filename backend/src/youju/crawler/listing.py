@@ -288,7 +288,7 @@ def _without_attr_date(title: str, a: etree._Element, found: date | None, today:
 
 def _tooltip_date(a: etree._Element, today: date) -> tuple[date | None, bool]:
     """悬浮提示里写的发表时间（漯河、本溪等平台：title="标题：…点击数：…发表时间：2026-07-01"）。
-    标题已经只取"标题："那一段（titles.clean_title），行里、链接里都没写日期时用它"""
+    标题已经只取"标题："那一段（titles.clean_title）；行里没写日期时先用它"""
     m = _TOOLTIP_DATE.search(_clean(a.get("title")))
     return parse_date_detail(m.group(1), today) if m else (None, False)
 
@@ -401,12 +401,13 @@ def _extract_heuristic(page: _Page, require_date: bool) -> tuple[tuple, list[Lis
         title, url = link
         row, found, full = page.find_row(a, title, url)
         if found is None:
-            title, found, full = _date_inside_anchor(title, page.today)
+            # 悬浮提示里写明的发表时间最准（提示里的标题本身可能以会议日期之类结尾）
+            found, full = _tooltip_date(a, page.today)
+            if found is None:
+                title, found, full = _date_inside_anchor(title, page.today)
             if found is None:
                 # 标题取自 title 属性时，链接文字里写的日期（如天津科技局）照样是发布日期
                 _, found, full = _date_inside_anchor(_link_text(a), page.today)
-            if found is None:
-                found, full = _tooltip_date(a, page.today)
             if found is not None:
                 row = a
         url_date = date_from_url(url, page.today)

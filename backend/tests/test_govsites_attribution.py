@@ -887,6 +887,24 @@ def test_portal_section_above_the_channel_is_not_the_departments_info_page():
     assert [c.url for c in sj.columns] == [tzgg, "http://www.lianxi.gov.cn/zwgk/sjj/gsgg/"]
 
 
+def test_portal_section_boundaries():
+    from youju.govsites.inventory import _portal_section
+
+    home = "http://www.lianxi.gov.cn"
+    # 部门页是门户一级栏目里的一个文件：那个栏目、门户首页是门户公共的（Codex 审阅第二轮 11/12）
+    assert _portal_section(f"{home}/zwgk/", f"{home}/zwgk/sjj.html")
+    assert _portal_section(f"{home}/zwgk/index.html", f"{home}/zwgk/sjj.html")
+    assert _portal_section(f"{home}/", f"{home}/zwgk/jgzn/sjj/jgjj/")
+    assert _portal_section(f"{home}/zwgk/", f"{home}/zwgk/sjj/index.html")
+    # 部门自己的目录、部门目录下的页、带参数的、别的主机、不在部门页上面的：照常找
+    assert not _portal_section(f"{home}/sjj/xxgk.html", f"{home}/sjj/")
+    assert not _portal_section(f"{home}/sjj/xxgk.html", f"{home}/sjj/index.html")
+    assert not _portal_section(f"{home}/zwgk/sjj/xxgk/", f"{home}/zwgk/sjj.html")
+    assert not _portal_section(f"{home}/zwgk/?deptId=sjj", f"{home}/zwgk/sjj.html")
+    assert not _portal_section("http://xxgk.lianxi.gov.cn/", f"{home}/zwgk/sjj.html")
+    assert not _portal_section(f"{home}/xxgk/", f"{home}/zwgk/sjj.html")
+
+
 def test_department_info_page_under_a_topic_like_path_keeps_its_columns():
     # 部门自己的信息公开页在专题路径下（/xxgk/zt/sjj/）：它目录里的栏目照常认（Codex 审阅 11/12）
     pages = _lianxi_with(
