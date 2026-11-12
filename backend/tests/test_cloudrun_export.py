@@ -9,6 +9,7 @@ import hmac
 import importlib.util
 import json
 import os
+import sys
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -46,7 +47,13 @@ from youju.takedown import change_state
 SCRIPT = Path(__file__).resolve().parents[1] / "deploy/selfhost/shared/cloudrun-export.py"
 _spec = importlib.util.spec_from_file_location("cloudrun_export", SCRIPT)
 export_script = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(export_script)
+# 不在 deploy/selfhost/shared/ 下留 __pycache__：那个目录的文件原样进服务器安装包，测试也逐个读它们
+_dont_write = sys.dont_write_bytecode
+sys.dont_write_bytecode = True
+try:
+    _spec.loader.exec_module(export_script)
+finally:
+    sys.dont_write_bytecode = _dont_write
 
 OPEN = "http://api.weixin.qq.com"
 ENV = "prod-1abc"

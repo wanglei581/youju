@@ -481,7 +481,7 @@ def test_shared_server_script_guards():
 
 def test_shared_server_files_keep_server_details_out_of_the_repo():
     """仓库是公开的：共用服务器的 IP、域名和盘点结果不写进这些文件，用占位符；具体值在创始人电脑上的本地文件。"""
-    texts = [path.read_text(encoding="utf-8") for path in SHARED.iterdir()]
+    texts = [path.read_text(encoding="utf-8") for path in SHARED.iterdir() if path.is_file()]
     doc = Path(__file__).resolve().parents[2] / "docs" / "部署" / "自建服务器.md"
     texts.append(doc.read_text(encoding="utf-8").split("## 十、", 1)[1])
     for body in texts:
