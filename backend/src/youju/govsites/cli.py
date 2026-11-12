@@ -516,13 +516,14 @@ def _cmd_sample(args: argparse.Namespace) -> int:
     # 地市部门核对要认下辖区县（"南京市玄武区……"不算南京市的部门）：没有行政区划清单就不抽
     counties = {}
     if args.level == "市级":
-        if not args.divisions.exists():
+        divisions = args.divisions or args.out / "行政区划.csv"  # 不指定就用清单目录里的
+        if not divisions.exists():
             print(
-                f"找不到行政区划清单 {args.divisions}：地市部门核对要用它认下辖区县。"
+                f"找不到行政区划清单 {divisions}：地市部门核对要用它认下辖区县。"
                 "先用 coverage-divisions 取一份，或用 --divisions 指定"
             )
             return 1
-        counties = counties_by_city(args.divisions)
+        counties = counties_by_city(divisions)
     with session_factory()() as session:
         rows = sample_rows(session, args.level, args.province, args.size, counties=counties)
     if not rows:
@@ -883,7 +884,7 @@ def register(sub: argparse._SubParsersAction) -> None:
         "--out", type=Path, default=DEFAULT_OUT, help="清单目录（证据写进 抽查/<层级>/）"
     )
     p.add_argument(
-        "--divisions", type=Path, default=DEFAULT_OUT / "行政区划.csv", help="行政区划清单"
+        "--divisions", type=Path, help="行政区划清单（不给就用 --out 目录里的 行政区划.csv）"
     )
     p.set_defaults(func=_cmd_sample)
 

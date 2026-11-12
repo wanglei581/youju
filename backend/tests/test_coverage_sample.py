@@ -313,6 +313,10 @@ def test_batch_urls_drop_rows_failed_after_batch(tmp_path, capsys):
         ("江苏", "苏州", "发改委", "州发展和改革委员会", False),
         ("江苏", "南京", "发改委", "南京市玄武区发展和改革委员会", False),
         ("江苏", "南京", "发改委", "南京市发展和改革委员会", True),
+        # 自治州写简称（"恩施州"）也认本级前缀"州"
+        ("湖北", "恩施州", "农业农村", "州农业农村局", True),
+        ("湖北", "恩施州", "农业农村", "恩施州农业农村局", True),
+        ("湖北", "恩施州", "农业农村", "恩施市农业农村局", False),
     ],
 )
 def test_city_dept_names(province, city, dept, full, ok):
@@ -329,6 +333,7 @@ def test_city_dept_names(province, city, dept, full, ok):
         "南京": {"玄武区", "秦淮区", "浦口区"},
         "济南市": {"历下区", "市中区", "平阴县"},
         "恩施土家族苗族自治州": {"恩施市", "利川市", "建始县"},
+        "恩施州": {"恩施市", "利川市", "建始县"},
         "荆州市": {"荆州区", "沙市区", "沙市", "公安县"},
     }.get(city, set())
     s = SimpleNamespace(level="市级", province=province, city=city, dept=dept, dept_full_name=full)
@@ -402,7 +407,7 @@ def test_city_sample_rows_use_division_list(session):
 
 
 def test_city_sample_needs_division_list(tmp_path, capsys):
-    """没有行政区划清单就不做地市抽查（少了它会把区县的部门当成本市的）。"""
+    """没有行政区划清单就不做地市抽查（少了它会把区县的部门当成本市的）；不指定时用 --out 目录里的。"""
     import argparse
 
     from youju.govsites.cli import _cmd_sample
@@ -411,7 +416,26 @@ def test_city_sample_needs_division_list(tmp_path, capsys):
         level="市级", province=None, size=None, out=tmp_path, divisions=tmp_path / "没有.csv"
     )
     assert _cmd_sample(args) == 1
-    assert "行政区划清单" in capsys.readouterr().out
+    assert "没有.csv" in capsys.readouterr().out
+    args.divisions = None
+    assert _cmd_sample(args) == 1
+    assert str(tmp_path / "行政区划.csv") in capsys.readouterr().out
+
+
+def test_autonomous_matches_division_list():
+    """地级市以"州"结尾的都是两个字、自治州和盟写全称：_autonomous 和行政区划清单的类型对得上。"""
+    import csv
+    from pathlib import Path
+
+    from youju.govsites.sample import _autonomous
+
+    path = Path(__file__).parents[2] / "docs" / "数据来源" / "全国覆盖" / "行政区划.csv"
+    with path.open(encoding="utf-8-sig", newline="") as fh:
+        cities = [r for r in csv.DictReader(fh) if r["层级"] == "市级"]
+    assert len(cities) > 300
+    for r in cities:
+        assert _autonomous(r["城市"]) is (r["类型"] in ("自治州", "盟")), r["城市"]
+    assert _autonomous("恩施州") and not _autonomous("苏州")
 
 
 @pytest.mark.parametrize(

@@ -147,11 +147,16 @@ _PROVINCE_FULL = re.compile(
 )
 
 
+def _autonomous(city: str) -> bool:
+    """自治州、盟：部门全称常只写本级前缀"州""盟"。地级市以"州"结尾的都是两个字（"苏州""杭州"，
+    行政区划清单里 293 个地级市核过，测试钉住），自治州写全称或"恩施州"这样三个字以上的简称。"""
+    return city.endswith(("自治州", "盟")) or (city.endswith("州") and len(city) >= 3)
+
+
 def _city_names(s: Source) -> set[str]:
     names = {v for v in name_variants(s.city) | {s.city} if len(v) >= 2}
-    if not s.city.endswith(("自治州", "盟", "地区", "市")):
-        # 地级市在库里写简称（"南京""苏州"），部门全称写"南京市……""苏州市……"；自治州、盟、地区写全称
-        names.add(s.city + "市")
+    if not (_autonomous(s.city) or s.city.endswith(("地区", "市"))):
+        names.add(s.city + "市")  # 地级市在库里写简称（"南京""苏州"），部门全称写"南京市……"
     return names
 
 
@@ -192,7 +197,7 @@ def _own_prefixes(s: Source) -> set[str]:
         prov |= {s.province + "省", s.province + "自治区"}  # 库里省份写简称（"江苏"）
         own = city | {p + c for p in prov for c in city}
         own.add("市")
-        if s.city.endswith(("自治州", "盟")):  # "苏州""杭州"是地级市，不加"州"
+        if _autonomous(s.city):  # "苏州""杭州"是地级市，不加"州"
             own.add(s.city[-1])
         return own
     own = {v for v in name_variants(s.province) | {s.province} if len(v) >= 2}
