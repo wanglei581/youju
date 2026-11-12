@@ -723,6 +723,26 @@ def test_shared_cloudrun_gone_records_through_the_worker(tmp_path):
 
 
 @needs_bash
+def test_shared_export_reset_clears_the_last_batch_marks(tmp_path):
+    export = tmp_path / "export"
+    export.mkdir()
+    done = _bash(tmp_path, "export_reset")
+    assert done.returncode == 1 and "不用重置" in done.stderr
+    for name in ("imported", "fetch-complete", "summary.json", "fetched.json"):
+        (export / name).write_text("{}", encoding="utf-8")
+    # 明文还在：停下查明
+    (export / "pay-records.jsonl.gz").write_bytes(b"p")
+    done = _bash(tmp_path, "export_reset")
+    assert done.returncode == 1 and "明文" in done.stderr and (export / "imported").exists()
+    (export / "pay-records.jsonl.gz").unlink()
+    done = _bash(tmp_path, "export_reset")
+    assert done.returncode == 0, done.stderr
+    assert not (export / "imported").exists() and not (export / "fetch-complete").exists()
+    assert not (export / "summary.json").exists()
+    assert (export / "fetched.json").exists()  # 下载过、没变的照样按 ETag 跳过
+
+
+@needs_bash
 def test_shared_alert_probe_sends_through_the_worker(tmp_path):
     done = _bash(tmp_path, "alert_probe")
     assert done.returncode == 0, done.stderr

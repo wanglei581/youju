@@ -38,6 +38,7 @@
 #   config-from-export     把云托管导出的不涉密配置（模型名、价格、模板……）照原值写进 .env
 #   cloudrun-gone deregistered|deleted  记下云托管里的库已经删了（注销环境 / 手动删），不再提醒
 #   alert-probe            往告警通道发一条验收消息（删库期限的提醒走这个通道）
+#   export-reset           退回云托管以后再切回来时用：清掉上一批"存档过"的标记，好重走导出（手册第七节）
 set -euo pipefail
 umask 022
 
@@ -830,6 +831,18 @@ alert_probe() {
   compose exec -T worker youju alert-probe --send
 }
 
+# 第六节第 9 步以后退回过云托管、再切回服务器时（手册第七节）：上一批已经存档，清掉它的标记，
+# 才能重走第 4–9 步导出新的一批。明文的备份、交易记录应该在存档时就删了，还在就停下查明
+export_reset() {
+  [ -f "$EXPORT_DIR/imported" ] || die "${EXPORT_DIR} 里没有存档过的一批（没有 imported 标记），不用重置"
+  local left=("$EXPORT_DIR"/backups/youju-*.jsonl.gz)
+  if [ -e "${left[0]}" ] || [ -e "$EXPORT_DIR/pay-records.jsonl.gz" ]; then
+    die "${EXPORT_DIR} 里还有明文的整库备份或交易记录（存档时应该已经删了）：先查明再重置"
+  fi
+  rm -f "$EXPORT_DIR/imported" "$EXPORT_DIR/fetch-complete" "$EXPORT_DIR/summary.json"
+  echo "已清掉上一批的标记（下载过、没变的日志和附件照样按 ETag 跳过）；照手册第六节第 4–9 步重走一遍"
+}
+
 uninstall() {
   local purge=0
   [ "${1:-}" = "--purge" ] && purge=1
@@ -895,5 +908,6 @@ case "$cmd" in
   config-from-export) config_from_export ;;
   cloudrun-gone) cloudrun_gone "$@" ;;
   alert-probe) alert_probe ;;
+  export-reset) export_reset ;;
   *) awk 'NR > 1 && /^#/ {print; next} NR > 1 {exit}' "$0"; exit 1 ;;
 esac

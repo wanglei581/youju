@@ -104,10 +104,11 @@ WATCHED = (
 # --cleanup 删的前缀（见文件开头）
 CLEANUP_PREFIXES = ("exports/", "backups/", "logs/", "advisor/")
 # 云托管 admin 每天往这几个前缀写文件的时间（北京时间，线上镜像的 crontab）：0:30 归档访问日志
-# （logs/），4:00 整库备份（backups/）。离下一次不到 CLEANUP_MARGIN 分钟就不清；清完要在下一次之前
-# 把 admin 调成 0（之后就没有定时任务了）
+# （logs/），4:00 整库备份（backups/）。从前 CLEANUP_BEFORE 分钟到后 CLEANUP_AFTER 分钟（任务可能
+# 还在跑）都不清；清完要在下一次之前把 admin 调成 0（之后就没有定时任务了）
 SCHEDULED_WRITES = ((0, 30), (4, 0))
-CLEANUP_MARGIN = 20
+CLEANUP_BEFORE = 20
+CLEANUP_AFTER = 30
 # 备份前记下的那份：--links-only 重出清单时拿来核对（同一个实例的 /tmp；实例换了就要整个重跑）
 FINGERPRINT = Path("/tmp/youju-export-fingerprint.json")
 MAX_AGE = 7200  # 下载链接 2 小时有效（微信文档的示例值）；过期了带 --links-only 重出一份清单
@@ -706,6 +707,19 @@ def next_scheduled_write(now: datetime) -> datetime:
     return min(upcoming)
 
 
+def busy_with(now: datetime) -> datetime | None:
+    """正赶上哪一次定时写文件（它的前 CLEANUP_BEFORE 到后 CLEANUP_AFTER 分钟之间）；没有就 None。"""
+    local = now.astimezone(backup.BEIJING)
+    for days in (-1, 0, 1):
+        day = local + timedelta(days=days)
+        for hour, minute in SCHEDULED_WRITES:
+            at = day.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            start = at - timedelta(minutes=CLEANUP_BEFORE)
+            if start <= local <= at + timedelta(minutes=CLEANUP_AFTER):
+                return at
+    return None
+
+
 def cleanup_counts(client: httpx.Client, env: str) -> dict[str, int]:
     bucket = storage_list.bucket_of(client, env)
     return {
@@ -741,14 +755,24 @@ def cleanup(client: httpx.Client, env: str, *, sleep=clock.sleep) -> dict[str, i
     return deleted
 
 
+def _not_now(at: datetime) -> bool:
+    """正赶上云托管每天写文件：打印几点以后再贴，返回 True。"""
+    busy = busy_with(at)
+    if busy is None:
+        return False
+    resume = busy + timedelta(minutes=CLEANUP_AFTER)
+    print(
+        f"云托管 {busy:%H:%M} 写日志归档或整库备份：前 {CLEANUP_BEFORE} 分钟到后 "
+        f"{CLEANUP_AFTER} 分钟不清"
+    )
+    print(f"CLEANUP NOT STARTED (paste the block again after {resume:%H:%M})")
+    return True
+
+
 def run_cleanup(env: str, *, ask, now) -> int:
-    """--cleanup：先看时间（离云托管每天写文件太近就不清）、列出要删几个、要输入 DELETE 才删。"""
-    upcoming = next_scheduled_write(now())
-    if upcoming - now() < timedelta(minutes=CLEANUP_MARGIN):
-        print(
-            f"离云托管每天写日志归档、整库备份的时间（{upcoming:%H:%M}）不到 {CLEANUP_MARGIN} 分钟"
-        )
-        print(f"CLEANUP NOT STARTED (paste the block again after {upcoming:%H:%M})")
+    """--cleanup：先看时间（正赶上云托管每天写文件就不清）、列出要删几个、要输入 DELETE 才删；
+    输入以后再看一次时间（在提示那里停久了也不会赶上）。"""
+    if _not_now(now()):
         return 1
     try:
         with httpx.Client(trust_env=False) as client:
@@ -762,6 +786,10 @@ def run_cleanup(env: str, *, ask, now) -> int:
             if answer.strip() != "DELETE":
                 print("CLEANUP CANCELLED (nothing deleted)")
                 return 1
+            started = now()
+            if _not_now(started):
+                return 1
+            upcoming = next_scheduled_write(started)
             deleted = cleanup(client, env)
     except (ExportError, backup.BackupError) as exc:
         print(f"清理没做完：{exc}")

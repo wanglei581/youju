@@ -464,6 +464,14 @@ def test_next_scheduled_write_is_the_nearest_of_0030_and_0400():
     assert export_script.next_scheduled_write(at(0, 10)) == at(0, 30)
     assert export_script.next_scheduled_write(at(1, 0)) == at(4, 0)
     assert export_script.next_scheduled_write(at(4, 0)) == at(0, 30) + timedelta(days=1)
+    # 正赶上定时写文件：前 20 分钟到后 30 分钟（任务可能还在跑）
+    assert export_script.busy_with(at(3, 39)) is None
+    assert export_script.busy_with(at(3, 40)) == at(4, 0)
+    assert export_script.busy_with(at(4, 30)) == at(4, 0)
+    assert export_script.busy_with(at(4, 31)) is None
+    assert export_script.busy_with(at(0, 55)) == at(0, 30)
+    assert export_script.busy_with(at(0, 5)) is None
+    assert export_script.busy_with(at(0, 15)) == at(0, 30)
 
 
 def test_main_cleanup_asks_then_prints_one_ascii_line(monkeypatch, capsys):
@@ -488,13 +496,13 @@ def test_main_cleanup_asks_then_prints_one_ascii_line(monkeypatch, capsys):
             )
             assert code == 1 and deleted == []
         assert "CLEANUP CANCELLED" in capsys.readouterr().out
-        # 离 0:30、4:00 不到 20 分钟：不清
+        # 正赶上 0:30、4:00（前 20 分钟到后 30 分钟）：不清
         early = datetime(2026, 11, 13, 3, 45, tzinfo=backup.BEIJING)
         code = export_script.main(
             ["--cleanup"], runner=no_commands, ask=lambda _: "DELETE", now=lambda: early
         )
         assert code == 1 and deleted == []
-        assert "CLEANUP NOT STARTED (paste the block again after 04:00)" in capsys.readouterr().out
+        assert "CLEANUP NOT STARTED (paste the block again after 04:30)" in capsys.readouterr().out
         # 输入 DELETE：删，打印一行英文结果和调 0 的期限
         code = export_script.main(
             ["--cleanup"], runner=no_commands, ask=lambda _: "DELETE\n", now=lambda: noon
@@ -507,6 +515,13 @@ def test_main_cleanup_asks_then_prints_one_ascii_line(monkeypatch, capsys):
         )
         assert line.isascii()
         assert "NOW set the admin service to 0 instances, before 00:30 Beijing time" in out
+        # 在 DELETE 提示那里停久了、赶上了 4:00：不清
+        times = iter([datetime(2026, 11, 13, 3, 30, tzinfo=backup.BEIJING), early])
+        code = export_script.main(
+            ["--cleanup"], runner=no_commands, ask=lambda _: "DELETE", now=lambda: next(times)
+        )
+        assert code == 1 and deleted == [ENV]
+        assert "CLEANUP NOT STARTED" in capsys.readouterr().out
         # 清的时候跨过了 0:30 / 4:00：要再清一次
         times = iter(
             [datetime(2026, 11, 13, 3, 30, tzinfo=backup.BEIJING)] * 2
@@ -703,9 +718,9 @@ def test_pay_records_are_deidentified_like_account_deletion(session):
     assert text.isascii()
     for secret in ("o-secret-1", "someone@example.com", "finance@example.com", "user_id"):
         assert secret not in text, secret
-    # 人工填的备注清空（可能写到个人信息）
-    assert "\\u5f20\\u4e09" not in text and "138" not in text
-    assert "\\u5f20\\u4e09" not in text  # 个人抬头（姓名）去掉
+    # 人工填的备注清空（可能写到个人信息）；个人抬头（姓名）去掉。不在整段文本里找"138"：
+    # 库里自动填的时间带微秒，碰巧会有这三个数字
+    assert "\\u5f20\\u4e09" not in text
     rows = [json.loads(line) for line in lines[1:]]
     by_table = {}
     for item in rows:
@@ -720,6 +735,8 @@ def test_pay_records_are_deidentified_like_account_deletion(session):
     )
     assert invoices[1]["title"] is None and "email" not in invoices[1]
     assert by_table["pass_rewards"][0]["ref_id"] is None
+    assert {o["refund_note"] for o in by_table["pay_orders"]} == {None}
+    assert {r["note"] for r in by_table["invoice_requests"]} == {None}
     assert "last_task_id" not in by_table["workbench_passes"][0]
 
 
