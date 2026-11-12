@@ -776,7 +776,7 @@ def test_restore_drill_interrupted_still_drops(session, db_engine, tmp_path, mon
     source.write_bytes(_dump(db_engine))
     original = signal.getsignal(signal.SIGTERM)
 
-    def stopped(engine, src):
+    def stopped(engine, src, **_):
         # 模拟实例停止：恢复到一半收到 SIGTERM
         signal.raise_signal(signal.SIGTERM)
         raise AssertionError("SIGTERM 应该已经转成中断")
@@ -802,7 +802,7 @@ def test_restore_drill_second_signal_and_nohup(session, db_engine, tmp_path, mon
     source.write_bytes(_dump(db_engine))
     real_restore = restore_drill.restore
 
-    def twice(engine, src):
+    def twice(engine, src, **_):
         # 实例停止时先 SIGTERM，紧接着终端断开 SIGHUP：第一个转成中断，第二个被忽略
         signal.raise_signal(signal.SIGTERM)
         raise AssertionError("SIGTERM 应该已经转成中断")
@@ -835,9 +835,9 @@ def test_restore_drill_second_signal_and_nohup(session, db_engine, tmp_path, mon
     monkeypatch.setattr(restore_drill, "_drill_databases", real_list)
 
     # nohup：SIGHUP 本来就是忽略，演练不覆盖它，断线也不打断
-    def hangup(engine, src):
+    def hangup(engine, src, **kwargs):
         signal.raise_signal(signal.SIGHUP)
-        return real_restore(engine, src)
+        return real_restore(engine, src, **kwargs)
 
     monkeypatch.setattr(restore_drill, "restore", hangup)
     previous = signal.signal(signal.SIGHUP, signal.SIG_IGN)
@@ -966,3 +966,235 @@ def test_restore_drill_works_with_drill_only_grant(session, db_engine, tmp_path,
     finally:
         with db_engine.begin() as conn:
             conn.execute(text("DROP USER IF EXISTS :test_user@:test_host"), account)
+
+
+# ---- D-129 ⑥（创始人 11/12）：2.0 服务器只备用户数据；本机留最近 3 天和最近 4 个周日的 ----
+
+
+def _with_user_rows(session):
+    """populate 的数据，再加一行服务器自己的截止日期（用户线索生成的，编号在服务器那段）和一条
+    截止提醒授权（指着通知，通知删了就级联删）。"""
+    from youju.models import Subscription
+
+    doc = populate(session)
+    user_id = session.scalar(select(User.id))
+    session.add(
+        DocumentDeadline(
+            id=2_000_000_001,
+            document_id=doc.id,
+            fingerprint="u" * 64,
+            kind="企业申报截止",
+            candidate_date=date(2026, 10, 16),
+            evidence="用户线索：10月16日截止",
+            confidence="高",
+            origin="user",
+        )
+    )
+    session.add(
+        Subscription(user_id=user_id, kind="deadline", template_id="tpl", document_id=doc.id)
+    )
+    # 另一份通知没人指着：本机删了上面那份以后，服务器上的公开数据也不是空的
+    session.add(
+        Document(
+            source_id=doc.source_id,
+            url="https://kjt.shandong.gov.cn/tzgg/2.html",
+            url_key="kjt.shandong.gov.cn/tzgg/2.html",
+            title="关于公布2026年度科技计划项目的通知",
+            publish_date=date(2026, 9, 21),
+            first_seen_at=NOW,
+            last_seen_at=NOW,
+        )
+    )
+    session.commit()
+    return doc
+
+
+def _new_server(session, engine, *, public=True, drop_doc=False) -> None:
+    """新服务器：用户数据各表是空的，公开数据是本机推过来的。public=False：公开数据也没有；
+    drop_doc：本机那边已经删了这份通知（像同步删除一样，外键照常级联）。"""
+    from youju.backup import SCOPE_USER, backed_up_tables
+
+    session.rollback()
+    session.expire_all()
+    user_tables = {t.name for t in backed_up_tables(SCOPE_USER)}
+    with engine.begin() as conn:
+        conn.execute(text("SET FOREIGN_KEY_CHECKS = 0"))
+        try:
+            for table in Base.metadata.sorted_tables:
+                if table.name == "document_deadlines" and public:
+                    conn.execute(table.delete().where(table.c.origin == "user"))
+                elif table.name in user_tables or not public:
+                    conn.execute(text(f"TRUNCATE TABLE `{table.name}`"))
+        finally:
+            conn.execute(text("SET FOREIGN_KEY_CHECKS = 1"))
+    if drop_doc:
+        with engine.begin() as conn:
+            docs = Document.__table__
+            conn.execute(docs.delete().where(docs.c.url_key == "kjt.shandong.gov.cn/tzgg/1.html"))
+
+
+def test_user_scope_backs_up_user_data_and_own_deadlines_only(session, db_engine) -> None:
+    from youju.backup import SCOPE_USER, backed_up_tables
+
+    _with_user_rows(session)
+    names = {t.name for t in backed_up_tables(SCOPE_USER)}
+    assert {"users", "follows", "feedback", "subscriptions", "document_deadlines"} <= names
+    assert not names & {"documents", "sources", "document_details", "ai_checks", "takedown_blocks"}
+    out = io.BytesIO()
+    counts = dump(db_engine, out, now=NOW, scope=SCOPE_USER)
+    lines = gzip.decompress(out.getvalue()).splitlines()
+    header = json.loads(lines[0])
+    assert header["scope"] == "user" and header["own_rows_only"] == ["document_deadlines"]
+    assert "documents" not in header["tables"] and counts["subscriptions"] == 1
+    # 本机推来的那条截止日期（origin=rule）不备，只备服务器自己的
+    deadlines = [json.loads(line)["r"] for line in lines[1:-1] if b'"document_deadlines"' in line]
+    assert counts["document_deadlines"] == 1 and [r["origin"] for r in deadlines] == ["user"]
+    assert verify(db_engine, io.BytesIO(out.getvalue())) == counts
+    # 整库备份的说明行和以前一样，没有 scope
+    whole = io.BytesIO()
+    dump(db_engine, whole, now=NOW)
+    assert "scope" not in json.loads(gzip.decompress(whole.getvalue()).splitlines()[0])
+
+
+def test_user_scope_restore_on_a_new_server(session, db_engine) -> None:
+    from youju.backup import SCOPE_USER
+
+    _with_user_rows(session)
+    out = io.BytesIO()
+    counts = dump(db_engine, out, now=NOW, scope=SCOPE_USER)
+    raw = out.getvalue()
+
+    # 公开数据已经推过来：照原样恢复，什么都不用调整
+    _new_server(session, db_engine)
+    report: dict = {}
+    assert restore(db_engine, io.BytesIO(raw), report=report) == counts
+    assert report == {"scope": "user", "settled": {}}
+    with db_engine.connect() as conn:
+        origins = conn.execute(select(DocumentDeadline.origin)).scalars().all()
+        assert sorted(origins) == ["rule", "user"]  # 本机推来的那条照旧在
+    with pytest.raises(BackupError, match="不是空的"):
+        restore(db_engine, io.BytesIO(raw))
+
+    # 本机那边已经删了这份通知：指着它的用户数据照外键规则处理，和线上本来会发生的一样
+    _new_server(session, db_engine, drop_doc=True)
+    report = {}
+    restored = restore(db_engine, io.BytesIO(raw), report=report)
+    assert report["settled"] == {
+        "document_deadlines.document_id": ("CASCADE", 1),
+        "feedback.document_id": ("SET NULL", 1),
+        "subscriptions.document_id": ("CASCADE", 1),
+    }
+    assert restored["subscriptions"] == 0 and restored["document_deadlines"] == 0
+    assert restored["feedback"] == 1 and restored["follows"] == 1
+    with db_engine.connect() as conn:
+        assert conn.scalar(select(Feedback.document_id)) is None
+
+    # 新服务器还没有公开数据：不恢复（不然指着通知的用户数据都会被当成已删的处理掉）
+    _new_server(session, db_engine, public=False)
+    with pytest.raises(BackupError, match="还没有公开数据"):
+        restore(db_engine, io.BytesIO(raw))
+    assert _empty(db_engine)
+
+
+def test_user_scope_restore_rejects_a_tampered_file(session, db_engine) -> None:
+    from youju.backup import SCOPE_USER
+
+    _with_user_rows(session)
+    out = io.BytesIO()
+    dump(db_engine, out, now=NOW, scope=SCOPE_USER)
+    raw = out.getvalue()
+    _new_server(session, db_engine, drop_doc=True)
+    # 改了一行用户数据：调整过的表不比库里的内容，所以先核对文件里的每一行
+    tampered = _rewrite(
+        raw,
+        lambda lines: [line.replace("日期不对".encode(), "日期对了".encode()) for line in lines],
+    )
+    with pytest.raises(BackupError, match="SHA-256"):
+        restore(db_engine, io.BytesIO(tampered))
+    with db_engine.connect() as conn:
+        assert conn.scalar(select(func.count()).select_from(Feedback)) == 0
+
+
+def test_user_scope_restore_drill(session, db_engine, tmp_path, monkeypatch, capsys):
+    from youju import cli
+    from youju.backup import SCOPE_USER
+
+    _with_user_rows(session)
+    out = io.BytesIO()
+    dump(db_engine, out, now=NOW, scope=SCOPE_USER)
+    source = tmp_path / "youju-20260929.jsonl.gz"
+    source.write_bytes(out.getvalue())
+    before = _counts(db_engine)
+    monkeypatch.setattr(
+        cli, "get_settings", lambda: SimpleNamespace(database_url=TEST_DB_URL, cloud_env="test")
+    )
+    assert cli.main(["restore-drill", "--file", str(source)]) == 0
+    output = capsys.readouterr().out
+    # 临时库里没有公开数据：指向公开表的外键不查，其余照常核对
+    assert "范围：只备用户数据" in output and "subscriptions: 1" in output
+    assert "documents:" not in output and "恢复演练成功" in output
+    assert _counts(db_engine) == before
+
+
+def test_backup_command_follows_the_machine(session, db_engine, tmp_path, monkeypatch, capsys):
+    from youju import cli
+
+    populate(session)
+    target = tmp_path / "out.jsonl.gz"
+    for replica, scope in [(True, "user"), (False, None)]:
+        settings = SimpleNamespace(
+            database_url=TEST_DB_URL, cloud_env="", public_replica=replica, hosting="self"
+        )
+        monkeypatch.setattr(cli, "get_settings", lambda s=settings: s)
+        assert cli.main(["backup", "--output", str(target)]) == 0
+        header = json.loads(gzip.decompress(target.read_bytes()).splitlines()[0])
+        assert header.get("scope") == scope
+        assert ("只备用户数据" in capsys.readouterr().out) is replica
+
+
+def test_keep_policy_and_days_to_prune() -> None:
+    from datetime import timedelta
+
+    from youju.backup import (
+        KEEP_3_DAYS_4_WEEKS,
+        KEEP_30_DAYS,
+        SCOPE_USER,
+        backup_scope,
+        days_to_prune,
+        keep_policy,
+    )
+
+    assert keep_policy(SimpleNamespace(hosting="self", public_replica=False)) == KEEP_3_DAYS_4_WEEKS
+    assert keep_policy(SimpleNamespace(hosting="self", public_replica=True)) == KEEP_30_DAYS
+    assert keep_policy(SimpleNamespace(hosting="cloudrun", public_replica=False)) == KEEP_30_DAYS
+    assert backup_scope(SimpleNamespace(public_replica=True)) == SCOPE_USER
+    assert backup_scope(SimpleNamespace(public_replica=False)) == "all"
+    today = date(2026, 11, 12)  # 周四
+    assert days_to_prune(today) == [today - timedelta(days=d) for d in range(31, 41)]
+    window = {today - timedelta(days=d) for d in range(1, 41)}
+    kept = window - set(days_to_prune(today, KEEP_3_DAYS_4_WEEKS))
+    assert kept == {
+        date(2026, 11, 11),
+        date(2026, 11, 10),
+        date(2026, 11, 8),
+        date(2026, 11, 1),
+        date(2026, 10, 25),
+        date(2026, 10, 18),
+    }
+    # 一周里哪天跑都一样：除了今天，最多留 6 份，最早的不超过 27 天（隐私保护指引写的是 30 天以内）
+    for offset in range(7):
+        day = today + timedelta(days=offset)
+        window = {day - timedelta(days=d) for d in range(1, 41)}
+        left = window - set(days_to_prune(day, KEEP_3_DAYS_4_WEEKS))
+        assert len(left) <= 6 and max((day - d).days for d in left) <= 27
+
+
+def test_local_backup_prunes_all_but_recent_days_and_sundays(session, db_engine) -> None:
+    from youju.backup import KEEP_3_DAYS_4_WEEKS, days_to_prune
+
+    populate(session)
+    client, seen, prefix = fake_cloud()
+    report = run_backup(db_engine, "prod-1", client=client, now=NOW, keep=KEEP_3_DAYS_4_WEEKS)
+    today = date(2026, 9, 29)  # NOW 是北京时间 9 月 29 日
+    expected = [prefix + object_path(day) for day in days_to_prune(today, KEEP_3_DAYS_4_WEEKS)]
+    assert seen["deleted"] == expected and report.pruned == 2

@@ -207,6 +207,44 @@ def max_ids(conn: Connection) -> dict[str, int]:
     return out
 
 
+# 进度表里另记一行"本机最近一次来联系"：本机每次推送（10 分钟一次，有没有变更都一样）都先取一次
+# /state。服务器每小时看一次，超过 3 小时没来就提醒（youju sync-watch）；只看最近一次写入不行，
+# 两轮抓取之间可能几个小时没有变更
+CONTACT = "contact"
+
+
+def note_contact(engine: Engine) -> None:
+    now = datetime.now(UTC).replace(tzinfo=None)
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                f"INSERT INTO `{STATE}` (name, stream, applied_seq, updated_at)"
+                " VALUES (:n, '', 0, :u) ON DUPLICATE KEY UPDATE updated_at = :u"
+            ),
+            {"n": CONTACT, "u": now},
+        )
+
+
+def last_contact(engine: Engine) -> datetime | None:
+    """本机最近一次来联系的时间（UTC）。还没起步（没有进度表、没有记录）的返回 None。
+    升级前的版本没记"联系"，那时用最近一次写入的时间。只读，不建表。"""
+    with engine.connect() as conn:
+        made = conn.scalar(
+            text(
+                "SELECT COUNT(*) FROM information_schema.tables"
+                " WHERE table_schema = DATABASE() AND table_name = :t"
+            ),
+            {"t": STATE},
+        )
+        if not made:
+            return None
+        latest = conn.scalar(
+            text(f"SELECT MAX(updated_at) FROM `{STATE}` WHERE name IN (:c, 'public')"),
+            {"c": CONTACT},
+        )
+    return latest.replace(tzinfo=UTC) if latest else None
+
+
 def read_state(engine: Engine, *, with_ids: bool = False) -> dict:
     ensure_state(engine)
     with engine.connect() as conn:
@@ -482,7 +520,11 @@ def _collect_garbage(engine: Engine, paths: set[str]) -> None:
 @router.get("/state")
 async def state(request: Request) -> dict:
     await _body(request)
-    return read_state(get_engine(), with_ids=True)
+    engine = get_engine()
+    out = read_state(engine, with_ids=True)
+    # 验过签名才记：本机来联系过（服务器每小时看，超过 3 小时没来就提醒）
+    note_contact(engine)
+    return out
 
 
 @router.get("/counts")
