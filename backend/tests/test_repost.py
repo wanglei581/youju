@@ -1765,7 +1765,17 @@ def test_auto_sample_gives_evidence_without_conclusions(
     assert data["purpose"] == "gate" and data["rule_version"] == AUTO_RULE_VERSION
     assert data["round"].startswith("gate-") and len(data["items"]) == 1
     item = data["items"][0]
-    assert set(item) == {"group_id", "revision", "topic", "upstream", "members", "verdict", "note"}
+    assert set(item) == {
+        "group_id",
+        "revision",
+        "topic",
+        "upstream",
+        "auto",
+        "members",
+        "verdict",
+        "note",
+    }
+    assert data["seed"] == 1 and data["population"] == 1 and item["auto"] is False
     assert item["verdict"] == "" and item["note"] == ""
     assert item["upstream"] and {m["document_id"] for m in item["members"]} == {d.id for d in docs}
     member = item["members"][0]
@@ -2201,3 +2211,86 @@ def test_ministry_original_is_auto_merged_with_its_forwards(session, monkeypatch
     rows = _members(session)
     assert {original.id, *(d.id for d in docs)} <= set(rows)
     assert all(r.confirmed_by == AUTO_REVIEWER for r in rows.values())
+
+
+def test_auto_stats_with_gate_records(session, session_factory, monkeypatch, capsys):
+    import json
+
+    from youju import repost_checks
+
+    monkeypatch.setattr(repost_checks, "session_factory", lambda: session_factory)
+    _gate_records(session, "pass", 100, 99)
+    session.commit()
+    assert repost_checks.stats(SimpleNamespace(json=True)) == 0
+    report = json.loads(capsys.readouterr().out)  # 计数从库里出来是 Decimal，转了整数才写得出
+    assert report["latest_gate"]["passed"] is True and report["latest_gate"]["correct"] == 99
+    assert report["rounds"][0]["checked"] == 100
+
+
+def test_auto_record_warns_when_a_gate_round_is_short(
+    session, session_factory, monkeypatch, tmp_path, capsys
+):
+    import json
+
+    from youju import repost_checks
+
+    monkeypatch.setattr(
+        "youju.repost.get_settings", lambda: SimpleNamespace(repost_auto_merge=False)
+    )
+    monkeypatch.setattr(repost_checks, "session_factory", lambda: session_factory)
+    _auto_world(session)
+    rebuild(session, now=NOW)
+    session.commit()
+    data = _sample(tmp_path, "gate")
+    data["items"][0].update(verdict="correct", note="")
+    path = tmp_path / "short.json"
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    assert repost_checks.record(SimpleNamespace(file=path, by="Claude")) == 0
+    assert "不满 100 组" in capsys.readouterr().out
+
+
+def test_auto_withdraw_command_succeeds_and_is_audited(
+    session, session_factory, monkeypatch, caplog
+):
+    import json
+    import logging
+
+    from youju import repost_checks
+
+    _auto_on(monkeypatch, session)
+    _auto_world(session)
+    assert rebuild(session, now=NOW).auto_merged == 1
+    session.commit()
+    monkeypatch.setattr(repost_checks, "session_factory", lambda: session_factory)
+    group = session.scalars(select(RepostGroup)).one()
+    args = SimpleNamespace(group_id=group.id, revision=group.revision, by="Claude")
+    with caplog.at_level(logging.INFO, logger="youju.audit"):
+        assert repost_checks.withdraw(args) == 0
+    session.expire_all()
+    group = session.get(RepostGroup, group.id)
+    assert group.no_auto and all(r.confirmed_at is None for r in _members(session).values())
+    events = [json.loads(r.getMessage()) for r in caplog.records if r.name == "youju.audit"]
+    cli = [e for e in events if e["event"] == "cli"]
+    assert cli and cli[0]["action"] == "repost_withdraw" and cli[0]["reviewer"] == "Claude"
+    assert set(cli[0]["confirmed_by"].values()) == {"自动合并"}
+
+
+def test_weekly_sample_skips_groups_already_checked_at_this_revision(
+    session, session_factory, monkeypatch, tmp_path
+):
+    import json
+
+    from youju import repost_checks
+
+    _auto_on(monkeypatch, session)
+    _auto_world(session)
+    rebuild(session, now=NOW)
+    session.commit()
+    monkeypatch.setattr(repost_checks, "session_factory", lambda: session_factory)
+    first = _sample(tmp_path, "weekly", seed=3)
+    assert len(first["items"]) == 1 and first["items"][0]["auto"] is True
+    first["items"][0].update(verdict="correct", note="")
+    path = tmp_path / "weekly.json"
+    path.write_text(json.dumps(first, ensure_ascii=False), encoding="utf-8")
+    assert repost_checks.record(SimpleNamespace(file=path, by="Codex")) == 0
+    assert _sample(tmp_path, "weekly", seed=4)["items"] == []  # 这一版本已经抽查过

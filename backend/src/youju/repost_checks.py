@@ -16,9 +16,9 @@ import random
 import uuid
 from collections import defaultdict
 from dataclasses import asdict
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from youju.classify import effective_kind
@@ -35,8 +35,11 @@ from youju.models import (
 from youju.repost import (
     _BEIJING,
     _CITED,
+    AUTO_GATE_SIZE,
     AUTO_REVIEWER,
     AUTO_RULE_VERSION,
+    BODY_HEAD_CHARS,
+    WINDOW_DAYS,
     Candidate,
     Cited,
     _window_groups,
@@ -58,6 +61,13 @@ def _audit(action: str, **fields: object) -> None:
     audit_log.info(json.dumps(record, ensure_ascii=False, default=str))
 
 
+# gate 默认多抽几组：抽样到记回之间组变了的要跳过，免得记回来不满 AUTO_GATE_SIZE 组、门过不了
+GATE_SAMPLE_DEFAULT = AUTO_GATE_SIZE + 10
+WEEKLY_SAMPLE_DEFAULT = 10
+# 每组最多给几个版本的正文摘录（大组版本很多，判的人读不完；其余版本照样列出标题、机关、日期）
+_EXCERPT_MEMBERS = 20
+
+
 def _versions(rows, duplicates):
     return [r for r in rows if r.active and r.document_id not in duplicates]
 
@@ -66,10 +76,11 @@ def auto_candidates(
     session: Session, today: date
 ) -> tuple[list[tuple[RepostGroup, list[RepostGroupMember]]], dict[int, Candidate]]:
     """现在满足自动合并条件的组（只看窗口里的组），和判定用的候选 {文件编号: Candidate}。"""
+    cutoff = today - timedelta(days=WINDOW_DAYS)
     groups = list(
         session.scalars(
             select(RepostGroup)
-            .where(RepostGroup.id.in_(_window_groups(today)))
+            .where(RepostGroup.id.in_(_window_groups(cutoff)))
             .order_by(RepostGroup.id)
         )
     )
@@ -83,7 +94,7 @@ def auto_candidates(
     by_group = defaultdict(list)
     for row in members:
         by_group[row.group_id].append(row)
-    cands = {c.id: c for c in load_candidates(session, today)}
+    cands = {c.id: c for c in load_candidates(session, today, cutoff)}
     duplicates = set(duplicate_members(session, [r.document_id for r in members]))
     eligible = [
         (g, by_group[g.id]) for g in groups if not auto_reason(g, by_group[g.id], cands, duplicates)
@@ -92,8 +103,10 @@ def auto_candidates(
 
 
 def _excerpt(body, number):
+    """共同文号前后各 120 字的原文：只在正文前 BODY_HEAD_CHARS 字里找（和判定用的同一段）；找不到给
+    正文前 300 字。"""
     if number:
-        for match in _CITED.finditer(body):
+        for match in _CITED.finditer(body[:BODY_HEAD_CHARS]):
             _, prefix, year, serial = match.groups()
             if f"{prefix}〔{year}〕{int(serial)}号" == number:
                 return body[max(0, match.start() - 120) : match.end() + 120]
@@ -106,13 +119,41 @@ def sample(args):
     stamp = datetime.now(UTC)
     rng = random.Random(args.seed)
     with session_factory()() as session:
+        today = stamp.astimezone(_BEIJING).date()
         if args.purpose == "gate":
-            groups, cands = auto_candidates(session, stamp.astimezone(_BEIJING).date())
-            selected = rng.sample(groups, min(args.size or 100, len(groups)))
+            groups, cands = auto_candidates(session, today)
+            population = len(groups)
+            selected = rng.sample(groups, min(args.size or GATE_SAMPLE_DEFAULT, len(groups)))
         else:
-            groups = list(session.scalars(select(RepostGroup).order_by(RepostGroup.id)))
+            # 每周抽查：只看窗口里有确认版本的组（自动合并只在窗口里做）；这一版本已经抽查记过
+            # 的不再抽
+            confirmed = select(RepostGroupMember.group_id).where(
+                RepostGroupMember.active.is_(True), RepostGroupMember.confirmed_at.is_not(None)
+            )
+            cutoff = today - timedelta(days=WINDOW_DAYS)
+            groups = list(
+                session.scalars(
+                    select(RepostGroup)
+                    .where(
+                        RepostGroup.id.in_(_window_groups(cutoff)), RepostGroup.id.in_(confirmed)
+                    )
+                    .order_by(RepostGroup.id)
+                )
+            )
+            checked = set(
+                session.execute(
+                    select(RepostAutoCheck.group_id, RepostAutoCheck.revision).where(
+                        RepostAutoCheck.group_id.in_([g.id for g in groups])
+                    )
+                ).all()
+            )
+            groups = [g for g in groups if (g.id, g.revision) not in checked]
             rows = list(
-                session.scalars(select(RepostGroupMember).order_by(RepostGroupMember.document_id))
+                session.scalars(
+                    select(RepostGroupMember)
+                    .where(RepostGroupMember.group_id.in_([g.id for g in groups]))
+                    .order_by(RepostGroupMember.document_id)
+                )
             )
             duplicates = set(duplicate_members(session, [r.document_id for r in rows]))
             grouped = defaultdict(list)
@@ -135,7 +176,8 @@ def sample(args):
             other = [g for g in eligible if g not in auto]
             rng.shuffle(auto)
             rng.shuffle(other)
-            selected = (auto + other)[: args.size or 10]
+            population = len(eligible)
+            selected = (auto + other)[: args.size or WEEKLY_SAMPLE_DEFAULT]
             selected_ids = [r.document_id for _, rows in selected for r in rows]
             cands = {}
             for doc, source, signal in session.execute(
@@ -171,7 +213,7 @@ def sample(args):
         for group, rows in selected:
             number = auto_upstream(rows, cands, duplicates)
             members = []
-            for row in _versions(rows, duplicates):
+            for index, row in enumerate(_versions(rows, duplicates)):
                 doc, detail = details[row.document_id]
                 cand = cands.get(row.document_id)
                 if cand is None:
@@ -188,7 +230,11 @@ def sample(args):
                         url=doc.url,
                         kind=cand.kind,
                         cited=[c.number for c in signals(cand).cited],
-                        excerpt=_excerpt(detail.body_text or "" if detail else "", number),
+                        excerpt=(
+                            _excerpt(detail.body_text or "" if detail else "", number)
+                            if index < _EXCERPT_MEMBERS
+                            else None
+                        ),
                     )
                 )
             items.append(
@@ -197,6 +243,7 @@ def sample(args):
                     revision=group.revision,
                     topic=group.topic,
                     upstream=number,
+                    auto=all(r.confirmed_by == AUTO_REVIEWER for r in _versions(rows, duplicates)),
                     members=members,
                     verdict="",
                     note="",
@@ -207,10 +254,12 @@ def sample(args):
         purpose=args.purpose,
         rule_version=AUTO_RULE_VERSION,
         sampled_at=stamp.isoformat(),
+        seed=args.seed,
+        population=population,
         items=items,
     )
     args.out.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"抽取 {len(items)} 组：{args.out}")
+    print(f"从 {population} 组里抽了 {len(items)} 组：{args.out}")
     return 0
 
 
@@ -223,12 +272,11 @@ def _validate(data, reviewer):
         or not 1 <= len(data["round"]) <= 40
     ):
         raise ValueError("轮次格式错误")
-    if (
-        data.get("purpose") not in ("gate", "weekly")
-        or not isinstance(data.get("rule_version"), str)
-        or not 1 <= len(data["rule_version"]) <= 16
-    ):
-        raise ValueError("用途或规则版本错误")
+    if data.get("purpose") not in ("gate", "weekly"):
+        raise ValueError("用途错误")
+    if data.get("rule_version") != AUTO_RULE_VERSION:
+        # 旧规则下抽的样本不再算数（门也只认当前版本）：按当前规则重新抽
+        raise ValueError(f"抽样的规则版本不是当前的 {AUTO_RULE_VERSION}，按当前规则重新抽样")
     if not isinstance(data.get("items"), list):
         raise ValueError("抽样项目格式错误")
     seen = set()
@@ -272,6 +320,8 @@ def record(args):
     _validate(data, args.by)
     stamp = datetime.now(UTC)
     counts = defaultdict(int)
+    withdrawn: list[dict] = []
+    reviewer = args.by.strip()
     with session_factory()() as session:
         ids = sorted(i["group_id"] for i in data["items"])
         groups = {
@@ -328,26 +378,44 @@ def record(args):
                     rule_version=data["rule_version"],
                     verdict=item["verdict"],
                     note=item["note"],
-                    checked_by=args.by.strip(),
+                    checked_by=reviewer,
                     checked_at=stamp,
                 )
             )
             counts[item["verdict"]] += 1
             if item["verdict"] == "wrong":
-                ids = withdraw_group(group, grouped[group.id], args.by.strip(), stamp)
+                # 判错的组当场整组撤回（以后不再自动合并）；审计日志等提交成功以后再写
+                before = {
+                    r.document_id: r.confirmed_by
+                    for r in grouped[group.id]
+                    if r.active and r.confirmed_at is not None
+                }
+                withdrawn_ids = withdraw_group(group, grouped[group.id], stamp)
                 counts["withdraw"] += 1
-                _audit(
-                    "repost_withdraw",
-                    group_id=group.id,
-                    document_ids=ids,
-                    reviewer=args.by.strip(),
-                    reason=f"抽查判错（{data['round']}）：{item['note']}",
+                withdrawn.append(
+                    dict(
+                        group_id=group.id,
+                        document_ids=withdrawn_ids,
+                        confirmed_by=before,
+                        round=data["round"],
+                        reason=f"抽查判错：{item['note']}",
+                    )
                 )
         session.commit()
+        recorded = session.scalar(
+            select(func.count(RepostAutoCheck.id)).where(RepostAutoCheck.round == data["round"])
+        )
+    for event in withdrawn:
+        _audit("repost_withdraw", reviewer=reviewer, **event)
     print(
         f"记了 {counts['correct'] + counts['wrong']} 组、对 {counts['correct']} 组、"
         f"错 {counts['wrong']} 组、跳过 {counts['skip']} 组、撤回 {counts['withdraw']} 组"
     )
+    if data["purpose"] == "gate" and recorded < AUTO_GATE_SIZE:
+        print(
+            f"这一轮一共只记了 {recorded} 组，不满 {AUTO_GATE_SIZE} 组，开关那道门过不了："
+            "再抽一轮补满"
+        )
     return 0
 
 
@@ -413,8 +481,15 @@ def withdraw(args):
         if not any(r.active and r.confirmed_at is not None for r in rows):
             print("这一组没有确认过，不用撤回")
             return 1
-        ids = withdraw_group(group, rows, args.by.strip(), datetime.now(UTC))
+        before = {r.document_id: r.confirmed_by for r in rows if r.active and r.confirmed_at}
+        withdrawn_ids = withdraw_group(group, rows, datetime.now(UTC))
         session.commit()
-        _audit("repost_withdraw", group_id=group.id, document_ids=ids, reviewer=args.by.strip())
-        print(f"撤回 {len(ids)} 个版本，修订号 {group.revision}")
+        _audit(
+            "repost_withdraw",
+            group_id=group.id,
+            document_ids=withdrawn_ids,
+            confirmed_by=before,
+            reviewer=args.by.strip(),
+        )
+        print(f"撤回 {len(withdrawn_ids)} 个版本，修订号 {group.revision}")
     return 0
