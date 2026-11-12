@@ -137,7 +137,10 @@ def check_one(cache: PageCache, col: ColumnCheck, today: date) -> ColumnCheck:
                 return col
             if ar.status != "ok":
                 # 列表接口这次没取到（超时、5xx 等）：记打不开，不按栏目页猜成"要脚本"
-                col.result, col.reason = DOWN, f"列表接口：{(ar.error or ar.status)[:100]}"
+                why = ar.error or (
+                    "要跳转，只请求页面写明的地址、不跟" if ar.status == "redirect" else ar.status
+                )
+                col.result, col.reason = DOWN, f"列表接口：{why[:100]}"
                 return col
             html = api_html(api, ar.text)
             if not html and api_empty_list(api, ar.text):

@@ -287,7 +287,12 @@ def check_source(
                 # 列表接口这次没取到（网络不通、超时、5xx 等）：照实记失败、下次再试，不当成
                 # "改版认不出"；栏目页上零星认出的一两条也不收，免得把这次失败盖成成功
                 items = []
-                status, error = via.fetch.status, f"列表接口（{via.adapter}）：{via.fetch.error}"
+                why = via.fetch.error or (
+                    f"要跳转到 {via.fetch.final_url}，只请求页面写明的地址、不跟"
+                    if via.fetch.status == "redirect"
+                    else via.fetch.status
+                )
+                status, error = via.fetch.status, f"列表接口（{via.adapter}）：{why}"
                 if via.fetch.http_status:
                     result = FetchResult(url, "http_error", http_status=via.fetch.http_status)
             else:

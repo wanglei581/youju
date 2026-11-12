@@ -560,3 +560,20 @@ def test_dropping_old_refusal_keeps_a_newer_one_written_meanwhile(session, sessi
     assert check.status == "ok"
     session.refresh(source)
     assert source.parser_config["list_api_refused"] == newer["list_api_refused"]
+
+
+def test_list_api_redirect_is_recorded_as_not_read_this_time(session) -> None:
+    """接口要跳转（哪怕只是 http 升 https）：不跟、不读，记这次没读出，不记不能抓。"""
+    target = JPAAS_API.replace("https://", "http://")
+    got = FetchResult(JPAAS_API, "redirect", final_url=JPAAS_API + "&x=1", http_status=302)
+    check, source, docs = _check_with_api(session, got)
+    assert (check.status, docs) == ("list_api_refused", 0)  # 跳到别的地址：不能抓
+    session.query(Document).delete()
+    session.query(SourceCheck).delete()
+    session.query(Source).delete()
+    session.commit()
+    scheme_only = FetchResult(JPAAS_API, "redirect", final_url=JPAAS_API, http_status=301)
+    check, source, _ = _check_with_api(session, scheme_only)
+    assert check.status == "redirect" and "不跟" in check.error
+    assert source.health == "degraded"
+    assert target  # 只用来说明 http/https 两种写法

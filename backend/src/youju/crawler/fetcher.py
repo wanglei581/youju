@@ -134,18 +134,6 @@ def decode_html(content: bytes, content_type: str | None) -> str:
     return content.decode("utf-8", errors="replace")
 
 
-def _same_address(current: str, target: str | None) -> bool:
-    """跳转后还是同一个地址：只是 http 升到 https，主机、路径、参数都不变。"""
-    if not target:
-        return False
-    a, b = urlsplit(current), urlsplit(target)
-    return (
-        a.scheme == "http"
-        and b.scheme == "https"
-        and (a.netloc.lower(), a.path, a.query) == (b.netloc.lower(), b.path, b.query)
-    )
-
-
 class PoliteFetcher:
     def __init__(
         self,
@@ -231,8 +219,9 @@ class PoliteFetcher:
         """抓取一个页面。重定向逐跳处理：每一跳都检查 robots.txt，并遵守目标网站的限速。
 
         same_address_only：只取这个地址本身（读页面声明的列表接口时用，D-128 读取护栏 ①）。
-        跳转只跟 http 升到 https、主机路径参数都不变的那种；跳到别的地址不去请求，原样返回
-        "redirect"（final_url 是要跳去的地址），由调用方记不能抓。"""
+        跳转一律不跟（连 http 升 https 也不跟，只请求页面写明的那个地址）：原样返回 "redirect"
+        （final_url 是要跳去的地址），由调用方判断——跳到别的地址记不能抓，只是换协议的按
+        这次没读出。"""
         current = url
         for _ in range(_MAX_REDIRECTS + 1):
             if self._url_allowed is not None and not self._url_allowed(current):
@@ -259,7 +248,7 @@ class PoliteFetcher:
             if result.status != "redirect":
                 result.url = url
                 return result
-            if same_address_only and not _same_address(current, result.final_url):
+            if same_address_only:
                 result.url = url
                 return result
             current = result.final_url

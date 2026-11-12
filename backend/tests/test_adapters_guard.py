@@ -349,9 +349,9 @@ def test_redirect_away_from_the_declared_address_is_not_read():
         api.url.replace("kjt.zj.gov.cn", "www.zj.gov.cn"),
     ):
         assert "没写的地址" in api_refusal(api, _got(_payload(), final=final))
-    # 跳走以后又超时：照样按"跳到了页面没写的地址"记，不当成这次没取到
+    # 网络不通（不管记的最后地址是哪里）：这次没取到，不记不能抓
     gone = FetchResult(api.url, "network_error", final_url=f"https://{parts.netloc}/other")
-    assert "没写的地址" in api_refusal(api, gone)
+    assert api_refusal(api, gone) == ""
 
 
 def test_deep_permission_fields_are_found():
@@ -459,7 +459,8 @@ def test_redirect_away_from_the_declared_api_is_never_requested():
     assert "没写的地址" in api_refusal(api, got)
 
 
-def test_http_to_https_upgrade_of_the_same_api_is_followed():
+def test_even_http_to_https_upgrade_is_not_followed():
+    """只请求页面写明的那个地址：连 http 升 https 的跳转也不跟；只是换协议的按这次没读出。"""
     from youju.crawler.adapters import ListApi
 
     api = ListApi("大汉jpaas", f"http://kjt.zj.gov.cn{HANWEB_JPAAS_PATH}?pageId=1", PAGE_URL)
@@ -474,8 +475,10 @@ def test_http_to_https_upgrade_of_the_same_api_is_followed():
 
     with _fetcher(handler, requested) as f:
         got = f.fetch(api.url, same_address_only=True)
-    assert got.status == "ok" and api_refusal(api, got) == ""
-    assert api_html(api, got.text) == LIST
+    assert got.status == "redirect"
+    assert not any(u.startswith("https://") for u in requested)
+    assert api_refusal(api, got) == ""  # 不记不能抓
+    assert api_html(api, got.text) == ""  # 也不读
 
 
 def test_entities_in_page_attributes_are_decoded_like_a_browser():
@@ -624,3 +627,10 @@ def test_unreadable_unit_counts_as_not_read_this_time():
     pages = {PAGE_URL: page, apis[0]: _payload(success=False), apis[1]: "<html>系统维护中</html>"}
     info = Inventory(DivisionIndex(parse_tree({})), _Cache(pages), provinces=[]).page(PAGE_URL)
     assert info.api_refused and info.api_failed
+
+
+def test_style_blocks_and_click_to_login_links():
+    assert find_list_api(f"<style>{PAGE}</style>", PAGE_URL) is None
+    api = _api()
+    gated = _payload(data={"html": LIST + '<a href="/login">&nbsp;点击登录</a>'})
+    assert "登录或权限提示" in api_refusal(api, _got(gated))

@@ -54,7 +54,9 @@ def _attrs(tag: str) -> dict[str, str]:
 
 
 # 浏览器不会执行的地方：注释、文本域、模板、noscript 里写着的声明都不认
-_INERT = re.compile(r"<!--.*?-->|<(textarea|template|noscript|xmp)\b[^>]*>.*?</\1\s*>", re.S | re.I)
+_INERT = re.compile(
+    r"<!--.*?-->|<(textarea|template|noscript|xmp|style)\b[^>]*>.*?</\1\s*>", re.S | re.I
+)
 
 
 def find_list_api(html: str, page_url: str) -> ListApi | None:
@@ -140,7 +142,7 @@ _LOGIN_URL = re.compile(
 _LOGIN_TEXT = re.compile(
     r"请(?:先)?登[录陆]|(?:需要|需|未|重新)登[录陆]|登[录陆](?:后|超时|失效|过期)|用户登录|身份认证|"
     r"未授权|无权限|没有权限|权限不足|无权(?:访问|查看|阅读)|验证码|滑块|人机验证|安全验证|"
-    r"captcha|geetest|unauthori[sz]ed|login required|<input\b[^>]*type\s*=\s*[\"']?password",
+    r"captcha|geetest|unauthori[sz]ed|login required",
     re.I,
 )
 # 列表那段里有密码输入框：返回的是登录框，不是公开列表（11/12 查缓存里 616 次返回，一次也没有）
@@ -154,7 +156,8 @@ _ANCHOR = re.compile(r"<a\b.*?</a>", re.S | re.I)
 # 不看链接地址：正常通知也会链到外站的 login.html（湖州门户就有一条直播通知这样写）
 _ANCHOR_TEXT = re.compile(r"<a\b[^>]*>(.*?)</a>", re.S | re.I)
 _GATE_LINK = re.compile(
-    r"^(?:请(?:先)?登[录陆]|登[录陆]后|(?:需要|需|未)登[录陆]|立即登[录陆]|登[录陆]查看|"
+    r"^(?:请(?:先)?登[录陆]|登[录陆]后|(?:需要|需|未)登[录陆]|(?:立即|点击|点此|去|前往)登[录陆]|"
+    r"登[录陆]查看|"
     r"(?:您)?(?:没有|无)(?:权限|权访问|权查看)|权限不足|未授权|请输入验证码|请完成验证)"
 )
 _GATE_TEXT = re.compile(
@@ -254,7 +257,7 @@ def _payload_refusal(payload: dict) -> str:
         if hint:
             return f"列表接口返回里有登录或权限提示（{hint.group(0)}）"
         for raw in _ANCHOR_TEXT.findall(html):
-            text = html_lib.unescape(_TAGS.sub("", raw))
+            text = html_lib.unescape(_TAGS.sub("", raw)).strip()
             if _GATE_LINK.search(text):
                 return f"列表接口返回里有登录或权限提示（{text[:20]}）"
     fields = _permission_fields(payload)
@@ -288,6 +291,8 @@ def api_refusal(api: ListApi, result) -> str:
         return "列表接口 robots.txt 禁止"
     if http_status in _REFUSE_HTTP:
         return f"列表接口 HTTP {http_status}：拒绝访问或要求登录"
+    if status in ("network_error", "deadline", "ssl_error", "robots_error", "too_large"):
+        return ""  # 网络不通、超时这类：这次没取到，照常记失败、下次再试
     final = getattr(result, "final_url", None) or api.url
     if urlsplit(api.url).scheme == "https" and urlsplit(final).scheme == "http":
         return "列表接口跳到了不加密的地址"  # 只认 http 升到 https，不认反过来
@@ -306,7 +311,7 @@ def api_refusal(api: ListApi, result) -> str:
         # 404 页）按"这次没读出"，不读、照常记失败下次再试
         if not _bare_page(text):
             return ""
-        if _LOGIN_TEXT.search(text[:20000]):
+        if _LOGIN_TEXT.search(text[:20000]) or _PASSWORD_INPUT.search(text[:20000]):
             return "列表接口要登录或验证码"
         if _GATE_TEXT.search(text[:20000]):
             return "列表接口返回拦截页面"
