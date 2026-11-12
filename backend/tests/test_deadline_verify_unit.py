@@ -202,3 +202,24 @@ def test_stats_cli(monkeypatch, capsys):
         assert (
             json.loads(output)["total"]["accuracy"] is None if as_json else "准确率 暂无" in output
         )
+
+
+@pytest.mark.parametrize(
+    ("quote", "clock", "ok"),
+    [
+        ("请于2026年9月30日17:00前提交", time(17), True),
+        ("请于2026年9月30日17：00前提交", time(17), True),
+        ("请于2026年9月30日 17 时前提交", time(17), True),
+        ("请于2026年9月30日17时30分前提交", time(17, 30), True),
+        ("请于2026年9月30日17:00:00前提交", time(17), True),
+        ("请于2026年9月30日17:00分前提交", time(17), True),
+        ("请于2026年9月30日下午 5 时前提交", time(17), True),
+        ("请于2026年9月30日下午5时前提交", time(17), True),
+        ("请于2026年9月30日前提交", time(17), False),
+        ("请于2026年9月30日16:00前提交", time(17), False),
+        ("请于2026年9月30日上午5时前提交", time(17), False),
+    ],
+)
+def test_has_time_follows_the_extraction_formats(quote, clock, ok):
+    # agy 审阅（11/12）：和抽取截止时的时间写法一致，空格、"分"、带秒的都认
+    assert verify._has_time(quote, clock) is ok

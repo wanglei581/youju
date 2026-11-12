@@ -28,23 +28,23 @@ def _body_quote(body, quote):
     return body[positions[start] : positions[start + len(needle) - 1] + 1]
 
 
+# 原句里的时刻：抽取截止时认的写法（extract/deadlines.py 的 _TIME："17:00""17：00""17时"
+# "17 时 30 分"）再加上"点"（AI 找到的截止常写"下午5点"）；前面可以带上午、下午、中午、晚上。
+# 带秒的只认整分（"17:00:00"）；"5点半"不认
+_CLOCK = re.compile(
+    r"(?:(?P<period>上午|下午|中午|晚上)\s*)?(?<![\d:：])(?P<hour>[01]?\d|2[0-3])\s*[:：时点]"
+    r"\s*(?P<minute>[0-5]\d)?\s*分?(?:[:：](?P<second>[0-5]\d))?(?![\d半])"
+)
+
+
 def _has_time(quote, clock):
+    """原句里写着这个时刻（换算上午、下午和抽取截止时同一个 _clock）。"""
     from youju.extract.deadlines import _clock
 
-    pattern = re.compile(
-        r"(?<!\d)(?P<period>上午|下午|中午|晚上)?\s*"
-        r"(?P<hour>[01]?\d|2[0-3])(?:[:：](?P<minute>[0-5]\d)|[时点](?P<cnminute>[0-5]\d)?分?)(?![\d分半:：])"
+    return any(
+        found.group("second") in (None, "00") and _clock(found, found.group("period")) == clock
+        for found in _CLOCK.finditer(quote)
     )
-    for match in pattern.finditer(quote):
-        # _clock 使用 minute 组；中文分钟用同一套换算。
-        text = match.group().replace("点", "时")
-        text = re.sub(r"^(上午|下午|中午|晚上)\s*", "", text)
-        from youju.extract.deadlines import _TIME
-
-        parsed = _TIME.fullmatch(text)
-        if parsed and _clock(parsed, match.group("period")) == clock:
-            return True
-    return False
 
 
 def queue(session, today, days=7):
