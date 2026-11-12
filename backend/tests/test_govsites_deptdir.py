@@ -425,6 +425,29 @@ def test_group_columns_are_checked_by_their_own_name():
     ]
 
 
+def test_group_column_found_after_a_bad_one_is_checked_too():
+    # 地市一组（11/12）：去掉名字不对的分组栏目重找后，顶上来的另一个分组栏目也要看它自己的名字
+    pages = _group_check_pages('<meta name="ColumnName" content="其他文件政策解读">')
+    second = "http://www.zjcx.gov.cn/xxgk/zfbmxxgk/zxxkxjsj/fdzdgknr/zcwj/gfxwj/index.html"
+    api = find_unit_apis(pages[JPAAS_DEPT], JPAAS_DEPT)[0].url
+    reply = json.loads(pages[api])
+    reply["data"]["html"] += (
+        '<label class="label-className">规范性文件</label><ul class="ajax-ul"><li><a href="'
+        'http://www.zjcx.gov.cn/xxgk/zfbmxxgk/zxxkxjsj/fdzdgknr/zcwj/gfxwj/art/2026/art_7.html">'
+        "长科〔2026〕5号</a><span>2026-09-21</span></li></ul>"
+    )
+    pages[api] = json.dumps(reply, ensure_ascii=False)
+
+    def kj_columns(column_page: str) -> list[tuple[str, str]]:
+        pages[second] = column_page
+        inv = Inventory(INDEX, FakeCache(pages), provinces=["浙江"], workers=2, per_province=2)
+        inv.run()
+        return [(c.kind, c.url) for c in _depts(inv)[("330522", "科技")].columns]
+
+    assert kj_columns('<meta name="ColumnName" content="政策解读">') == []
+    assert kj_columns('<meta name="ColumnName" content="规范性文件">') == [("政策文件", second)]
+
+
 def test_link_redirecting_to_home_is_not_a_directory():
     pages = _zhejiang_pages()
     home = "http://www.zjcx.gov.cn/"

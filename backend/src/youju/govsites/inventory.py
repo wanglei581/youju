@@ -80,6 +80,7 @@ from youju.govsites.names import (
     COLUMN_KINDS,
     alias_categories,
     column_kind,
+    core_named,
     dept_categories,
     looks_like_org,
 )
@@ -275,7 +276,10 @@ _WEAK_PAGE = re.compile(
 def _weak_page(url: str) -> int:
     parts = urlsplit(url)
     path = parts.path + ("?" + parts.query if parts.query else "")
-    return int(_WEAK_PAGE.search(path) is not None or any(p.search(path) for _, p in URL_SHAPES))
+    # 文章网址形状里其实是频道页的两种写法（遂宁 /dept/<编号>.html、石家庄 /columns/<编号>/）
+    # 和 _site_like 一样不算文章
+    article = any(p.search(path) and not channel_shape(name, parts.path) for name, p in URL_SHAPES)
+    return int(_WEAK_PAGE.search(path) is not None or article)
 
 
 def _hostname(url: str) -> str:
@@ -1056,13 +1060,21 @@ class Inventory:
         seen: set[str] = set()
         top_score: int | None = None
         top_weak = False  # 首选是文章、年报、简介、公开指南一类的页面
+        top_core = False  # 首选名称带这一类的正名词（"商务局"，不是"投资促进局""口岸办"）
         fetched = 0
         limit = _PICK_FETCHES_ZONE if cat == "开发区" else _PICK_FETCHES
-        # 同分时网站首页、栏目页排在文章、部门年报、脚本页前面
+        # 同分时名称带正名词的排在只靠兼管词的前面（东莞商务局只链到信息公开平台页，也排在外商
+        # 投资促进中心的网站前面）；再按网站首页、栏目页排在文章、部门年报、脚本页前面
         # （锦州"机构简介"文章、葫芦岛部门年报目录）
-        for score, f in sorted(options, key=lambda o: (-o[0], _weak_page(o[1].url))):
+        ranked = sorted(
+            options,
+            key=lambda o: (-o[0], not core_named(cat, o[1].text), _weak_page(o[1].url)),
+        )
+        for score, f in ranked:
             if f.url in seen:
                 continue
+            if rows and top_core and not core_named(cat, f.text):
+                continue  # 首选是商务局时，不拿口岸办、投资促进局顶替它
             if rows and cat != "开发区":
                 # 已有首选、要往后试时，只试同分的、或链接文字明写是本地的：分更低、名称又说不清
                 # 的别家网站（市局独立域名的"科技局"）不能顶掉本地的频道。首选本身是文章、年报、
@@ -1129,6 +1141,7 @@ class Inventory:
                 continue
             if not rows:
                 top_score, top_weak = score, bool(_weak_page(f.url))
+                top_core = core_named(cat, f.text)
             rows.append(row)
             if row.status != "已找到" or _readable(row) or len(rows) >= _PICK_TRIES:
                 break
@@ -1168,21 +1181,30 @@ class Inventory:
         groups = {link.url for p in pages for link in p.links if link.via == "jpaas分组"}
         bad: set[str] = set()
         moved: list[ColumnHit] = []  # 自己的名字是另一类目标栏目的
-        for kind, hit in hits.items():
-            if hit.url not in groups:
-                continue
-            cp = self.page(hit.url)
-            ok = cp.result.status == "ok" and not cp.block
-            name = _column_name(cp) if ok else ""
-            own = column_kind(name) if name else None
-            if own is not None and own[0] == kind:
-                continue
-            bad.add(hit.url)
-            if own is not None:
-                moved.append(ColumnHit(own[0], name, hit.url, hit.source))
-        if not bad:
-            return hits
-        hits = find_columns(pages, exclude | frozenset(bad), max_depth, skip_topics)
+        checked: set[tuple[str, str]] = set()
+        # 去掉不对的重找以后，顶上来的可能又是分组还原的栏目页：一样看它自己的名字，直到都看过
+        while True:
+            found_bad = False
+            fresh = [
+                (kind, hit)
+                for kind, hit in hits.items()
+                if hit.url in groups and (kind, hit.url) not in checked
+            ]
+            for kind, hit in fresh:
+                checked.add((kind, hit.url))
+                cp = self.page(hit.url)
+                ok = cp.result.status == "ok" and not cp.block
+                name = _column_name(cp) if ok else ""
+                own = column_kind(name) if name else None
+                if own is not None and own[0] == kind:
+                    continue
+                bad.add(hit.url)
+                found_bad = True
+                if own is not None:
+                    moved.append(ColumnHit(own[0], name, hit.url, hit.source))
+            if not found_bad:
+                break
+            hits = find_columns(pages, exclude | frozenset(bad), max_depth, skip_topics)
         for hit in moved:
             hits.setdefault(hit.kind, hit)
         return hits
@@ -1279,6 +1301,8 @@ class Inventory:
                 if _INFO_WORDS.search(link.text) and registrable(link.url) == registrable(
                     page.final_url
                 ):
+                    if topics and _portal_section(link.url, page.final_url):
+                        continue
                     sub = self.page(link.url)
                     # 信息公开页上的列表接口被读取护栏（D-128）拦下或这次没取到、或这一页本身
                     # 这次没打开：记到部门页上（没打开的，栏目可能就在里面，不下不能抓的结论）
@@ -1291,6 +1315,31 @@ class Inventory:
                             hits.setdefault(kind, hit)
                     break
         row.columns = [hits[k] for k in COLUMN_KINDS if k in hits]
+
+
+# 目录的首页文件名：/sjj/index.html 和 /sjj/ 是同一个部门目录
+_INDEX_FILE = re.compile(r"^(?:index|default|main)\.\w+$", re.I)
+
+
+def _portal_section(url: str, channel_page: str) -> bool:
+    """门户频道部门页上的"信息公开"链到门户首页、或部门页所在的门户一级栏目（枣庄数据局频道
+    /zwgk/jgzn/sdsjj/jgjj/ 上的"政务公开"→ /zwgk/）：那是门户公共的政务公开页，上面的规范性文件库、
+    专题是门户的，不是这个部门的。部门自己的信息公开页（频道目录里的、信息公开平台上按部门分的、
+    带参数指明部门的 /zwgk/?deptId=…）照常找。"""
+    if _hostname(url) != _hostname(channel_page) or urlsplit(url).query:
+        return False
+    target = (urlsplit(url).path or "/").rsplit("/", 1)[-1]
+    if target and "." in target and not _INDEX_FILE.match(target):
+        return False  # 链到栏目里的某个文件（部门自己的信息公开页 /zwgk/sjj-xxgk.html）：照常找
+    section = page_dir(url)
+    path = urlsplit(channel_page).path or "/"
+    if section.count("/") > 2 or not path.startswith(section):
+        return False  # 只管门户首页和一级栏目，而且要在部门页上面
+    last = path.rsplit("/", 1)[-1]
+    if last and "." in last and not _INDEX_FILE.match(last):
+        return True  # 部门页是一级栏目里的一个文件（/zwgk/sjj.html）：那个栏目是门户公共的
+    # 部门页是个目录（/sjj/、/sjj/index.html）：它自己的目录不算门户公共的
+    return section != page_dir(channel_page)
 
 
 _REPORT_HOME = re.compile(r"首页网址\s*[:：]?\s*((?:https?://)?[A-Za-z0-9.-]+\.gov\.cn[^\s<>\"']*)")

@@ -398,6 +398,21 @@ def test_dept_channel_pages_are_not_weak_targets() -> None:
     assert _weak_target("http://fgw.zhenjiang.gov.cn/fgw/zfxxgkzn/xxgk_tt.shtml")
 
 
+def test_dept_channel_pages_are_not_weak_pages_when_picking() -> None:
+    # 选部门页时同分排序用的弱页判断，和 _site_like 一样不把两种频道页当文章（地市一组 11/12）
+    from youju.govsites.inventory import _weak_page
+
+    assert not _weak_page("https://www.suining.gov.cn/dept/7e713e2e3afdf388b9649e06a874f92b.html")
+    assert not _weak_page(
+        "https://www.sjz.gov.cn/columns/1d0a3f0e-5b6c-4e2f-9a8b-7c6d5e4f3a2b/index.html"
+    )
+    assert _weak_page(
+        "https://www.sjz.gov.cn/columns/1d0a3f0e-5b6c-4e2f-9a8b-7c6d5e4f3a2b/a/1.html"
+    )
+    assert _weak_page("http://www.example.gov.cn/art/2026/9/1/art_1229_12345.html")
+    assert _weak_page("http://www.example.gov.cn/0123456789abcdef0123456789abcdef.shtml")
+
+
 def test_weak_links_only_pruned_for_the_same_site() -> None:
     """泸州：商务会展局的简介页链接不能因为另有一个"商务"类机构（口岸办）的首页链接就被剪掉。"""
     from youju.govsites.navrules import prune_weak_links

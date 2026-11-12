@@ -198,6 +198,23 @@ def test_dept_categories():
     assert dept_categories("浙江省人民政府办公厅") == ["政府办"]
     assert dept_categories("浙江省农业科学院") == []
     assert dept_categories("省科技厅召开全省科技工作会议") == []
+
+
+def test_zone_names_are_not_departments():
+    # 巴中（地市一组 11/12）："光雾山诺水河文旅融合发展示范区"曾算文旅局。地方、园区、景区和它们的
+    # 管理机构不是部门；开发区照旧要带"管委会"一类字样
+    for zone in (
+        "巴中市光雾山诺水河文旅融合发展示范区",
+        "广州市天河中央商务区管委会",
+        "陵川生态文化旅游示范区管委会",
+        "苏锡通科技产业园区",
+        "杭州高新技术产业开发区",
+    ):
+        assert dept_categories(zone) == [], zone
+    assert dept_categories("巴中市文化广电旅游局") == ["文旅"]
+    assert dept_categories("杭州高新技术产业开发区管理委员会") == ["开发区"]
+    assert dept_categories("中国（浙江）自由贸易试验区杭州片区管理委员会") == ["开发区"]
+    assert dept_categories("西湖区科学技术局") == ["科技"]
     assert dept_categories("浙江省教育厅") == []
 
 
