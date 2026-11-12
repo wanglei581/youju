@@ -1,4 +1,6 @@
 // 数据接口：正式版走微信云托管（callContainer），开发时可连本机后端，都没配置时用演示数据。
+// 2.0 自建服务器：config.apiBaseUrl 填了就用 wx.request 连这个 https 域名，带自己的登录凭证（见 ensureSession），
+// 不再走云托管（callContainer、admin 先答、冷启动叫醒都不用：自己的服务器常开）。
 // 接口返回格式与 mock/data.js 一致，页面不用区分数据来自哪里。
 const config = require('./config.js');
 const mock = require('../mock/data.js');
@@ -11,8 +13,96 @@ function copy(value) {
   return Promise.resolve(JSON.parse(JSON.stringify(value)));
 }
 
+// 三种连法：HTTPS（2.0 自建服务器）优先；其次云托管；都没有时开发用的本机后端
+const HTTPS = Boolean(config.apiBaseUrl);
+const CLOUD = !HTTPS && Boolean(config.cloudEnv);
+
 function isLive() {
-  return Boolean(config.cloudEnv || config.devBaseUrl);
+  return Boolean(config.apiBaseUrl || config.cloudEnv || config.devBaseUrl);
+}
+
+// ---- 自己的登录（只在 HTTPS 模式）：wx.login 拿 code → 服务器换 openid、发登录凭证（7 天）→ 每个请求带上 ----
+// 凭证存在手机本地缓存里，过期、服务器回 401 时自动重新登录一次。同意协议前服务器不保存 openid（隐私保护指引一·1）
+const SESSION_KEY = 'youjuSession';
+let sessionPending = null;
+
+function storedSession() {
+  try {
+    const saved = wx.getStorageSync(SESSION_KEY);
+    if (saved && typeof saved.token === 'string' && saved.token && saved.expiresAt > Date.now() + 60000) return saved;
+  } catch (e) { /* 读不到就重新登录 */ }
+  return null;
+}
+
+// token 给了就只在本地存的还是它时才清：几个请求同时拿旧凭证回 401 时，后回来的不能把先回来的
+// 那个刚换好的新凭证清掉
+function forgetSession(token) {
+  try {
+    const saved = wx.getStorageSync(SESSION_KEY);
+    if (token && saved && saved.token !== token) return;
+    wx.removeStorageSync(SESSION_KEY);
+  } catch (e) { /* 忽略 */ }
+}
+
+function loginOnce() {
+  return new Promise((resolve, reject) => {
+    wx.login({ success: (res) => (res && res.code ? resolve(res.code) : reject(new Error('微信登录失败'))), fail: () => reject(new Error('微信登录失败')) });
+  }).then((code) => new Promise((resolve, reject) => {
+    wx.request({
+      url: `${config.apiBaseUrl}/api/v1/auth/login`,
+      method: 'POST',
+      header: { 'content-type': 'application/json' },
+      data: { code },
+      timeout: TIMEOUT,
+      success: (res) => {
+        const data = res && res.data;
+        if (res.statusCode === 200 && data && typeof data.token === 'string' && data.expiresIn > 0) resolve(data);
+        else reject(errorOf(res));
+      },
+      fail: () => reject(new Error('网络连接失败，请检查网络后重试')),
+    });
+  })).then((data) => {
+    const saved = { token: data.token, expiresAt: Date.now() + data.expiresIn * 1000 };
+    try { wx.setStorageSync(SESSION_KEY, saved); } catch (e) { /* 存不下就只用这一次 */ }
+    return saved;
+  });
+}
+
+// 同一时间只登录一次：几个请求一起等这一次
+function ensureSession() {
+  const saved = storedSession();
+  if (saved) return Promise.resolve(saved);
+  if (!sessionPending) {
+    sessionPending = loginOnce().then(
+      (saved) => { sessionPending = null; return saved; },
+      (err) => { sessionPending = null; throw err; },
+    );
+  }
+  return sessionPending;
+}
+
+// HTTPS 模式的一次请求：带上登录凭证；服务器回 401（凭证过期、换过密钥）就清掉、重新登录、再发一次（只重发一次）。
+// 登录失败也照样发（不要身份的接口照常能用，要身份的会回 401，页面按原来的说法提示）
+function httpsRequest(options) {
+  const send = (retried) => ensureSession().then((saved) => saved, () => null).then((saved) => {
+    const header = Object.assign({}, options.header, saved ? { Authorization: `Bearer ${saved.token}` } : {});
+    const request = {
+      url: config.apiBaseUrl + options.url,
+      method: options.method,
+      header,
+      data: options.data,
+      timeout: options.timeout,
+      success: (res) => {
+        if (res && res.statusCode === 401 && !retried) { forgetSession(saved && saved.token); send(true); return; }
+        options.success(res);
+      },
+      fail: options.fail,
+    };
+    if (options.dataType) request.dataType = options.dataType;
+    if (options.responseType) request.responseType = options.responseType;
+    wx.request(request);
+  });
+  send(false);
 }
 
 function query(params) {
@@ -115,7 +205,7 @@ const ADMIN_FIRST_WAIT = 8000;
 const ADMIN_TIMEOUT = 30000;
 
 function adminRead(url, method) {
-  return method === 'GET' && Boolean(config.cloudEnv) && ADMIN_READS.some((re) => re.test(url));
+  return method === 'GET' && CLOUD && ADMIN_READS.some((re) => re.test(url));
 }
 
 function tryApiInstead(err) {
@@ -141,12 +231,12 @@ function noteAnswer(service, statusCode) {
 function availability(service) {
   const generation = answerGeneration;
   const failed = () => {
-    if (config.cloudEnv && service === config.cloudService && generation === answerGeneration) apiAnsweredAt = null;
+    if (CLOUD && service === config.cloudService && generation === answerGeneration) apiAnsweredAt = null;
   };
   return {
     failed,
     answered(code) {
-      if (!config.cloudEnv) return;
+      if (!CLOUD) return;
       if (GATEWAY_CODES.includes(code)) failed();
       else noteAnswer(service, code);
     },
@@ -154,7 +244,7 @@ function availability(service) {
 }
 
 function apiAwake() {
-  return !config.cloudEnv || (apiAnsweredAt !== null && Date.now() - apiAnsweredAt < WARM_FOR);
+  return !CLOUD || (apiAnsweredAt !== null && Date.now() - apiAnsweredAt < WARM_FOR);
 }
 
 // 写操作（同意协议、关注、纠错、删除、导出等）不自动重试，怕重复提交；接口服务刚缩到 0 时直接发，会很快失败
@@ -182,6 +272,8 @@ function wake(extend) {
 }
 
 function prewarm() {
+  // HTTPS 模式：服务器常开不用叫醒，打开时先悄悄登录好（登录不上不提示，真用到时会再登）
+  if (HTTPS) { ensureSession().catch(() => { /* 忽略 */ }); return; }
   wake(false).catch(() => { /* 叫不醒不提示：用户真要提交时会再叫 */ });
 }
 
@@ -276,7 +368,9 @@ function requestOnce(url, method, data, header, service, timeout = TIMEOUT) {
       if (GATEWAY_CODES.includes(res.statusCode)) err.retryable = true;
       finish(reject, err);
     };
-    if (config.cloudEnv) {
+    if (HTTPS) {
+      httpsRequest({ url, method, header, data, timeout, success: done, fail: (res) => fail(callFailure(res)) });
+    } else if (CLOUD) {
       wx.cloud.callContainer({
         config: { env: config.cloudEnv },
         path: url,
@@ -311,8 +405,8 @@ let snapshotMemo = null;
 function snapshotOnce() {
   if (snapshotMemo && Date.now() - snapshotMemo.at < SNAPSHOT_REUSE) return snapshotMemo.promise;
   let promise;
-  if (config.cloudEnv) promise = requestOnce('/api/v1/snapshot', 'GET', undefined, {}, SNAPSHOT_SERVICE);
-  else if (config.devBaseUrl) promise = requestOnce('/api/v1/snapshot', 'GET', undefined, {});
+  if (CLOUD) promise = requestOnce('/api/v1/snapshot', 'GET', undefined, {}, SNAPSHOT_SERVICE);
+  else if (HTTPS || config.devBaseUrl) promise = requestOnce('/api/v1/snapshot', 'GET', undefined, {});
   else promise = Promise.resolve(null);
   promise = promise.then((snap) => (snap && snap.home ? snap : null), () => null);
   snapshotMemo = { at: Date.now(), promise };
@@ -533,7 +627,12 @@ function exportOnce(body) {
       if (res.statusCode === 200) finish(resolve, res.data);
       else finish(reject, Object.assign(new Error(res.statusCode === 409 ? '内容已更新，请重新查看结果后保存' : EXPORT_ERRORS[res.statusCode] || `导出失败（${res.statusCode}）`), { status: res.statusCode }));
     };
-    if (config.cloudEnv) {
+    if (HTTPS) {
+      httpsRequest({
+        url: '/api/v1/exports', method: 'POST', header: { 'content-type': 'application/json' }, data: body,
+        dataType: 'other', responseType: 'arraybuffer', timeout: 30000, success: done, fail,
+      });
+    } else if (CLOUD) {
       wx.cloud.callContainer({
         config: { env: config.cloudEnv },
         path: '/api/v1/exports',
@@ -592,7 +691,9 @@ function binaryPartOnce(path, advisor) {
       finish(reject, err);
     };
     const fail = (res) => failWith(callFailure(res));
-    if (config.cloudEnv) {
+    if (HTTPS) {
+      httpsRequest({ url: path, method: 'GET', header: {}, dataType: 'other', responseType: 'arraybuffer', timeout: TIMEOUT, success: done, fail });
+    } else if (CLOUD) {
       wx.cloud.callContainer({
         config: { env: config.cloudEnv },
         path,
@@ -900,7 +1001,7 @@ function requestInvoice(id, data) {
 }
 
 module.exports = {
-  watchStartup, stopStartup, prewarm, isLive, request, snapshotOnce, coverage, home, search, deadlineReport, listBoard, detail, calendar, lists, lookup, listRecord, exportFile, feedback,
+  watchStartup, stopStartup, prewarm, isLive, ensureSession, forgetSession, request, snapshotOnce, coverage, home, search, deadlineReport, listBoard, detail, calendar, lists, lookup, listRecord, exportFile, feedback,
   attachmentPart, reading, exportPreview, advisorReading,
   AGREED_KEY, forgetAgreed, me, agree, deleteMe, myFollows, createFollow, deleteFollow, seenFollow, followNew, mySubscriptions,
   myData, renameFollow, deleteFeedback, deleteSubscription,

@@ -312,3 +312,35 @@ test('营业执照信息（D-107 ③）：能卖的完整版（付费协议定�
  assert.equal(state({businessLicense:{creditCode:'X',photo:'images/license.jpg'},licensePhotoExists:true},'submit'),'fail');
  assert.equal(state({businessLicense:{creditCode:'X',photo:'/images/license.jpg'},licensePhotoExists:true},'submit'),'pass');
 });
+
+test('2.0 自建服务器：apiBaseUrl 只认登记的正式 https 域名，登记前一律不能通过', () => {
+  const official = 'https://api.example.com';
+  for (const mode of ['prepare', 'submit']) {
+    // 还没登记正式域名（release-identity.json 里是空的）
+    const pending = input();
+    pending.config.cloudEnv = '';
+    pending.config.apiBaseUrl = official;
+    let r = inspect({ ...pending, mode, releaseApiBase: '' });
+    assert.equal(r.checks.find(c => c.id === 'cloud').state, 'fail');
+    assert.equal(r.checks.find(c => c.id === 'release-identity').state, 'fail');
+    // 登记了、包里一致、云托管清空：通过
+    r = inspect({ ...pending, mode, releaseApiBase: official });
+    assert.equal(r.checks.find(c => c.id === 'cloud').state, 'pass');
+    assert.equal(r.checks.find(c => c.id === 'release-identity').state, 'pass');
+    assertNoIdentityValues(r);
+    // 域名不一样、不是 https、还留着云托管：都不行
+    for (const change of [
+      x => { x.config.apiBaseUrl = 'https://other.example.com'; },
+      x => { x.config.apiBaseUrl = 'http://api.example.com'; },
+      x => { x.config.cloudEnv = 'prod-x'; },
+    ]) {
+      const x = input();
+      x.config.cloudEnv = '';
+      x.config.apiBaseUrl = official;
+      change(x);
+      r = inspect({ ...x, mode, releaseApiBase: official });
+      assert.equal(r.checks.find(c => c.id === 'cloud').state, 'fail');
+    }
+  }
+  assert.equal(releaseIdentity.apiBaseUrl, '');
+});

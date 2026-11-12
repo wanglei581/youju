@@ -1569,6 +1569,13 @@ def test_verified_values_and_revision(session, settings, doc):
     verified = task.result_json["verified"]
     assert {v["value"] for v in verified} == {"2026-10-08", "贷款贴息"}
     assert all(v["label"] == "已核对" for v in verified)
+    # D-130：Claude 核对时记下了原句的，"已核对"附那一句
+    deadline.verification_quote = "申报截止时间为2026年10月8日。"
+    session.commit()
+    _, again, _ = interpret.prepare(session, doc.id, settings.ai_model)
+    assert {v.get("quote") for v in again if v["type"] == "时间"} == {deadline.verification_quote}
+    deadline.verification_quote = None
+    session.commit()
     first_key = task.cache_key
     field.status = "stale"
     session.commit()

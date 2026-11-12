@@ -37,6 +37,7 @@ from sqlalchemy import Connection, Engine, Table, func, select, text
 from sqlalchemy import types as sqltypes
 from sqlalchemy.exc import SQLAlchemyError
 
+from youju import storage
 from youju.dbtypes import UTCDateTime
 from youju.models import Base
 
@@ -372,6 +373,15 @@ def verify(engine: Engine, src: IO[bytes]) -> dict[str, int]:
 
 
 def _open_api(client: httpx.Client, api: str, payload: dict) -> dict:
+    if storage.emulated():
+        # 2.0 自建服务器：存储接口在本机目录或 S3 上照原格式做（youju/storage.py）
+        try:
+            data = storage.open_api(api, payload)
+        except storage.StorageError as exc:
+            raise BackupError(f"调用 {api} 失败：{exc}", retryable=True) from None
+        if data.get("errcode") != 0:
+            raise BackupError(f"调用 {api} 失败（errcode {data.get('errcode')}）")
+        return data
     try:
         res = client.post(f"{OPEN_API}{api}", json=payload, timeout=20)
     except httpx.TransportError as exc:
@@ -391,6 +401,12 @@ def _open_api(client: httpx.Client, api: str, payload: dict) -> dict:
 
 def upload(client: httpx.Client, env: str, path: str, local: Path, *, what: str = "备份") -> str:
     """上传到云托管对象存储，返回文件 ID（cloud://…）。what 是出错信息里怎么称呼这个文件。"""
+    if storage.emulated():
+        # 2.0 自建服务器：直接写本机目录或 S3（youju/storage.py）
+        try:
+            return storage.upload(env, path, local)
+        except (storage.StorageError, OSError) as exc:
+            raise BackupError(f"上传{what}失败：{exc.__class__.__name__}", retryable=True) from None
     link = _open_api(client, "/tcb/uploadfile", {"env": env, "path": path})
     needed = ("url", "authorization", "token", "cos_file_id", "file_id")
     missing = [k for k in needed if not link.get(k)]
@@ -554,7 +570,7 @@ def run_backup(
     today = now.astimezone(BEIJING).date()
     report = BackupReport(path=object_path(today))
     own = client is None
-    client = client or httpx.Client(trust_env=False)
+    client = client or storage.http_client()
     try:
         with tempfile.TemporaryDirectory() as tmp:
             local = Path(tmp) / Path(report.path).name

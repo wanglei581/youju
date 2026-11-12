@@ -62,6 +62,8 @@ _NOT_ORG = re.compile(
     r"领导|局长(?!.{0,8}分?局$)|主任|书记|讲话|考察|走访|年报|报告|统计|规划|计划|方案|工作动态|工作部署|政策|文件|资讯"
 )
 _ORG_MAX_LEN = 30
+# 地方、园区、景区（及其管理机构）的名称结尾
+_ZONE_END = re.compile(r"区(?:管理委员会|管委会|工作委员会|管理局|管理办公室)?$")
 
 
 def _bare_org(text: str) -> str:
@@ -110,10 +112,29 @@ def dept_categories(text: str) -> list[str]:
             out.remove("开发区")
         else:
             out = ["开发区"]  # 开发区管委会下的"经济发展局"等不另算
+    # 不是开发区、名称以"区"或"区管委会"一类结尾的，是地方、园区、景区和它们的管理机构
+    # （巴中"光雾山诺水河文旅融合发展示范区"、"中央商务区"、"文化旅游度假区管理委员会"），不是部门
+    if "开发区" not in out and _ZONE_END.search(t):
+        return []
     # 政府办公厅和其他部门互斥：办公厅名称里不会带别的部门
     if "政府办" in out:
         out = ["政府办"]
     return out
+
+
+# 商务、市场监管的正名词。投资促进局、招商局、口岸办也算商务（有的地方由它们管招商、口岸，或者没有
+# 商务局），知识产权局也算市场监管；但已经有名称带正名词的候选时，只靠这些兼管词认出来的不拿来顶替
+# （宁波口岸办、舟山港航和口岸管理局、东莞外商投资促进中心、佛山投资促进局顶掉过商务局）
+_CORE_WORDS = {
+    "商务": re.compile(r"商务"),
+    "市场监管": re.compile(r"市场监督管理|市场监管|市监局"),
+}
+
+
+def core_named(cat: str, text: str) -> bool:
+    """名称（不算括号里的牌子）带这一类的正名词；不分正名词、兼管词的类别都算带。"""
+    core = _CORE_WORDS.get(cat)
+    return core is None or bool(core.search(_bare_org(text)))
 
 
 def alias_categories(text: str) -> list[str]:

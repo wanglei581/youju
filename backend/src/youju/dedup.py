@@ -141,6 +141,10 @@ _REVIEW_FIELDS = (
     "changed_to_document_id",
     "changed_by",
     "changed_at",
+    # D-130：Claude 核对时记下的原句、是否改了日期，跟着结果一起沿用（改了日期时副本自己的候选原句
+    # 写的是旧日期）
+    "verification_quote",
+    "verification_corrected",
 )
 
 
