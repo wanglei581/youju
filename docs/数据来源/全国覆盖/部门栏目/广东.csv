@@ -10,7 +10,7 @@
 省级,广东,,,440000,农业农村,广东省农业农村厅,http://dara.gd.gov.cn/,独立网站,https://www.gd.gov.cn/yw/szfjg/index.html,广东省农业农村厅,打不开,RemoteProtocolError: Server disconnected without sending a response.,,,,,,,,,,
 省级,广东,,,440000,文旅,广东省文化和旅游厅,https://whly.gd.gov.cn/,独立网站,https://www.gd.gov.cn/yw/szfjg/index.html,广东省文化和旅游厅,已找到,,通知公告,https://whly.gd.gov.cn/open_newggl/index.html,政府文件,https://whly.gd.gov.cn/open_new_newzfwj/index.html,,,https://whly.gd.gov.cn/,广东集约化|post_编号(广东集约化),4400000064,
 省级,广东,,,440000,生态环境,广东省生态环境厅,https://gdee.gd.gov.cn/,独立网站,https://www.gd.gov.cn/yw/szfjg/index.html,广东省生态环境厅,已找到,,通知公告,https://gdee.gd.gov.cn/ggtz3126/index.html,规范性文件,https://gdee.gd.gov.cn/hbwj/index.html,审批文件公示公告,https://gdee.gd.gov.cn/gsgg/index.html,https://gdee.gd.gov.cn/,开普云|post_编号(广东集约化),4400000086,机构管理系统
-省级,广东,,,440000,数据局,广东省政务服务和数据管理局,http://zfsg.gd.gov.cn/,独立网站,https://www.gd.gov.cn/yw/szfjg/index.html,广东省政务服务和数据管理局,已找到,,通知公告,https://zfsg.gd.gov.cn/zwgk/gggs/index.html,部门文件,https://zfsg.gd.gov.cn/zwgk/wjk/index.html,,,http://zfsg.gd.gov.cn/,广东集约化|post_编号(广东集约化),4400000163,&nbsp;
+省级,广东,,,440000,数据局,广东省政务服务和数据管理局,http://zfsg.gd.gov.cn/,独立网站,https://www.gd.gov.cn/yw/szfjg/index.html,广东省政务服务和数据管理局,已找到,,通知公告,https://zfsg.gd.gov.cn/zwgk/gggs/index.html,部门文件,https://zfsg.gd.gov.cn/zwgk/wjk/index.html,,,http://zfsg.gd.gov.cn/,广东集约化|post_编号(广东集约化),4400000163,
 市级,广东,广州,,440100,政府办,广州市人民政府门户网站,http://www.gz.gov.cn/,门户本身,http://www.gz.gov.cn/,,已找到,,通知公告,https://www.gz.gov.cn/xw/tzgg/index.html,政府规章,https://www.gz.gov.cn/zwgk/fggw/zfgz/index.html,,,http://www.gz.gov.cn/ https://www.gz.gov.cn/zwgk/index.html,广东集约化|post_编号(广东集约化),4401000004,
 市级,广东,广州,,440100,发改委,市发展改革委,http://fgw.gz.gov.cn/,独立网站,https://www.gz.gov.cn/zt/gzszfwzndbb/zfwzgzndbb/2025n/index.html,市发展改革委,已找到,,通知公告,http://fgw.gz.gov.cn/tzgg/index.html,部门文件,http://fgw.gz.gov.cn/gkmlpt/index,公告公示（信息公开分类）,http://fgw.gz.gov.cn/gkmlpt/index#xxgk-gkmlpt-16672,http://fgw.gz.gov.cn/ http://fgw.gz.gov.cn/gkmlpt/index,广东集约化|post_编号(广东集约化),4401000012,
 市级,广东,广州,,440100,工信,市工业和信息化局,https://gxj.gz.gov.cn/,独立网站,https://www.gz.gov.cn/zt/gzszfwzndbb/zfwzgzndbb/2025n/index.html,市工业和信息化局,已找到,,通知公告,https://gxj.gz.gov.cn/yw/tzgg/index.html,政策,http://gxj.gz.gov.cn/znjqr?k=政策,,,https://gxj.gz.gov.cn/,广东集约化|post_编号(广东集约化),4401000080,
@@ -18,8 +18,8 @@
 市级,广东,广州,,440100,商务,市商务局,http://sw.gz.gov.cn/,独立网站,https://www.gz.gov.cn/zt/gzszfwzndbb/zfwzgzndbb/2025n/index.html,市商务局,已找到,,通知公告,http://sw.gz.gov.cn/xxgk/tzgg/index.html,政策法规,http://sw.gz.gov.cn/xxgk/zcfg/index.html,,,http://sw.gz.gov.cn/ https://sw.gz.gov.cn/xxgk/index.html,广东集约化|post_编号(广东集约化),4401000020,
 市级,广东,广州,,440100,财政,市财政局,https://czj.gz.gov.cn/,独立网站,https://www.gz.gov.cn/zt/gzszfwzndbb/zfwzgzndbb/2025n/index.html,市财政局,已找到,,通知公告,https://czj.gz.gov.cn/tzgg/index.html,政策文件,https://czj.gz.gov.cn/gkmlpt/policy,,,https://czj.gz.gov.cn/,广东集约化|post_编号(广东集约化),4401000001,
 市级,广东,广州,,440100,人社,市人力资源社会保障局,https://rsj.gz.gov.cn/,独立网站,https://www.gz.gov.cn/zt/gzszfwzndbb/zfwzgzndbb/2025n/index.html,市人力资源社会保障局,已找到,,通知公告,https://rsj.gz.gov.cn/zwdt/tzgg,政策法规,https://rsj.gz.gov.cn/zcfg/index.html,,,https://rsj.gz.gov.cn/,广东集约化|post_编号(广东集约化),4401000059,
-市级,广东,广州,,440100,市场监管,市市场监管局,https://scjgj.gz.gov.cn/,独立网站,https://www.gz.gov.cn/zt/gzszfwzndbb/zfwzgzndbb/2025n/index.html,市市场监管局,已找到,,通知公告,http://scjgj.gz.gov.cn/zwdt/tzgg/index.html,政策法规,https://scjgj.gz.gov.cn/zcfg,,,https://scjgj.gz.gov.cn/,广东集约化|post_编号(广东集约化),4401000007,效果中期评估工作的通知11-02
-市级,广东,广州,,440100,农业农村,市农业农村局,http://nyncj.gz.gov.cn/,独立网站,https://www.gz.gov.cn/zt/gzszfwzndbb/zfwzgzndbb/2025n/index.html,市农业农村局,已找到,,通知公告,http://nyncj.gz.gov.cn/zw/tzgg/index.html,政策（信息公开分类）,http://nyncj.gz.gov.cn/gkmlpt/index#xxgk-gkmlpt-16159,,,http://nyncj.gz.gov.cn/ http://nyncj.gz.gov.cn/gkmlpt/index,广东集约化|post_编号(广东集约化),4401000027,广州市农业农村科学院&nbsp;访问人数统计：-setTim
+市级,广东,广州,,440100,市场监管,市市场监管局,https://scjgj.gz.gov.cn/,独立网站,https://www.gz.gov.cn/zt/gzszfwzndbb/zfwzgzndbb/2025n/index.html,市市场监管局,已找到,,通知公告,http://scjgj.gz.gov.cn/zwdt/tzgg/index.html,政策法规,https://scjgj.gz.gov.cn/zcfg,,,https://scjgj.gz.gov.cn/,广东集约化|post_编号(广东集约化),4401000007,效果中期评估工作的通知
+市级,广东,广州,,440100,农业农村,市农业农村局,http://nyncj.gz.gov.cn/,独立网站,https://www.gz.gov.cn/zt/gzszfwzndbb/zfwzgzndbb/2025n/index.html,市农业农村局,已找到,,通知公告,http://nyncj.gz.gov.cn/zw/tzgg/index.html,政策（信息公开分类）,http://nyncj.gz.gov.cn/gkmlpt/index#xxgk-gkmlpt-16159,,,http://nyncj.gz.gov.cn/ http://nyncj.gz.gov.cn/gkmlpt/index,广东集约化|post_编号(广东集约化),4401000027,广州市农业农村科学院访问人数统计：-setTim
 市级,广东,广州,,440100,文旅,市文化广电旅游局,http://wglj.gz.gov.cn/,独立网站,https://www.gz.gov.cn/zt/gzszfwzndbb/zfwzgzndbb/2025n/index.html,市文化广电旅游局,已找到,,通知公告,http://wglj.gz.gov.cn/xxgk/gzdt/tzgsgg/index.html,规范性文件,http://www.gz.gov.cn/gfxwj,通知公示公告,http://wglj.gz.gov.cn/xxgk/gzdt/tzgsgg/index.html,http://wglj.gz.gov.cn/ http://wglj.gz.gov.cn/gkzn/index.html,广东集约化|post_编号(广东集约化),4401000056,
 市级,广东,广州,,440100,生态环境,市生态环境局,http://sthjj.gz.gov.cn/,独立网站,https://www.gz.gov.cn/zt/gzszfwzndbb/zfwzgzndbb/2025n/index.html,市生态环境局,已找到,,通知公告,http://sthjj.gz.gov.cn/tzggwj,,,公示,http://sthjj.gz.gov.cn/zwgk/gs,http://sthjj.gz.gov.cn/,开普云|post_编号(广东集约化),4401000041,
 市级,广东,广州,,440100,数据局,市政务和数据局,http://zsj.gz.gov.cn/,独立网站,https://www.gz.gov.cn/zt/gzszfwzndbb/zfwzgzndbb/2025n/index.html,市政务和数据局,已找到,,通知公告,https://zsj.gz.gov.cn/zwgk/tzgg/index.html,政策（信息公开分类）,http://zsj.gz.gov.cn/gkmlpt/index#xxgk-gkmlpt-840,,,http://zsj.gz.gov.cn/ http://zsj.gz.gov.cn/gkmlpt/index,广东集约化|post_编号(广东集约化),4401000095,
@@ -68,7 +68,7 @@
 市级,广东,汕头,,440500,科技,汕头市科学技术局,https://www.shantou.gov.cn/kjj/,门户频道,https://www.shantou.gov.cn/cnst/?s=7,汕头市科学技术局,已找到,,通知公告,https://www.shantou.gov.cn/kjj/zwgk/tzgg/index.html,政策,https://www.shantou.gov.cn/kjj/zwgk/bmwj/index.html,,,https://www.shantou.gov.cn/kjj/,广东集约化|post_编号(广东集约化),4405000014,汕头市政务服务中心
 市级,广东,汕头,,440500,商务,汕头市商务局（汕头市口岸局）,https://www.shantou.gov.cn/swj/,门户频道,https://www.shantou.gov.cn/cnst/?s=7,汕头市商务局（汕头市口岸局）,已找到,,通知公告,https://www.shantou.gov.cn/swj/zwgk/tzgg/index.html,政策（信息公开分类）,https://www.shantou.gov.cn/stsswbj/gkmlpt/index#xxgk-gkmlpt-3208,,,https://www.shantou.gov.cn/stsswbj/gkmlpt/index https://www.shantou.gov.cn/swj/,广东集约化|post_编号(广东集约化),4405000014,汕头市政务服务中心
 市级,广东,汕头,,440500,财政,汕头市财政局,https://www.shantou.gov.cn/czj/,门户频道,https://www.shantou.gov.cn/cnst/?s=7,汕头市财政局,已找到,,通知公告,https://www.shantou.gov.cn/czj/zwgk/tzgg/index.html,部门文件,https://www.shantou.gov.cn/czj/zwgk/bmwj/index.html,,,https://www.shantou.gov.cn/czj/,广东集约化|post_编号(广东集约化),4405000014,汕头市政务服务中心
-市级,广东,汕头,,440500,人社,汕头市人力资源和社会保障局,https://www.shantou.gov.cn/hrss/,门户频道,https://www.shantou.gov.cn/cnst/?s=7,汕头市人力资源和社会保障局,已找到,,,,部门文件,https://www.shantou.gov.cn/stsrlsbj/gkmlpt/policy,公示公告,https://www.shantou.gov.cn/stsrlsbj/gkmlpt/index,https://www.shantou.gov.cn/hrss/,开普云|post_编号(广东集约化),4405000014,汕头市政务服务中心&nbsp;&nbsp;
+市级,广东,汕头,,440500,人社,汕头市人力资源和社会保障局,https://www.shantou.gov.cn/hrss/,门户频道,https://www.shantou.gov.cn/cnst/?s=7,汕头市人力资源和社会保障局,已找到,,,,部门文件,https://www.shantou.gov.cn/stsrlsbj/gkmlpt/policy,公示公告,https://www.shantou.gov.cn/stsrlsbj/gkmlpt/index,https://www.shantou.gov.cn/hrss/,开普云|post_编号(广东集约化),4405000014,汕头市政务服务中心
 市级,广东,汕头,,440500,市场监管,市市场监督管理局（知识产权局）,https://www.shantou.gov.cn/scjgj/,门户频道,https://www.shantou.gov.cn/cnst/?s=7,汕头市市场监督管理局（汕头市知识产权局）,已找到,,通知公告,https://www.shantou.gov.cn/scjgj/zwgk/tzgg/index.html,政策（信息公开分类）,https://www.shantou.gov.cn/stssjgj/gkmlpt/index#xxgk-gkmlpt-3926,,,https://www.shantou.gov.cn/scjgj/ https://www.shantou.gov.cn/stssjgj/gkmlpt/index,广东集约化|post_编号(广东集约化),4405000014,汕头市政务服务中心
 市级,广东,汕头,,440500,农业农村,市农业农村局（扶贫开发办公室）,https://www.shantou.gov.cn/nyj/,门户频道,https://www.shantou.gov.cn/cnst/?s=7,汕头市农业农村局（汕头市乡村振兴局）,已找到,,通知公告,https://www.shantou.gov.cn/nyj/zwgk/tzgg/index.html,政策,https://www.shantou.gov.cn/nyj/zwgk/bmwj/index.html,,,https://www.shantou.gov.cn/nyj/,广东集约化|post_编号(广东集约化),4405000014,汕头市政务服务中心
 市级,广东,汕头,,440500,文旅,汕头市文化广电旅游体育局(文物局),https://www.shantou.gov.cn/wgxj/,门户频道,https://www.shantou.gov.cn/cnst/?s=7,汕头市文化广电旅游体育局（汕头市文物局）,已找到,,通知公告,https://www.shantou.gov.cn/wgxj/zwgk/tzgg/index.html,政策,https://www.shantou.gov.cn/wgxj/zwgk/bmwj/index.html,,,https://www.shantou.gov.cn/wgxj/,开普云|post_编号(广东集约化),4405000014,汕头市政务服务中心
@@ -84,7 +84,7 @@
 市级,广东,佛山,,440600,商务,佛山市投资促进局,https://www.foshan.gov.cn/fstzcjj/gkmlpt/index,门户频道,https://www.foshan.gov.cn/zwgk/zfjg/index.html,市投资促进局,已找到,,,,政策（信息公开分类）,https://www.foshan.gov.cn/fstzcjj/gkmlpt/index#xxgk-gkmlpt-35050,,,https://www.foshan.gov.cn/fstzcjj/gkmlpt/index,拓尔思,4406000048,
 市级,广东,佛山,,440600,财政,佛山市财政局,http://fscz.foshan.gov.cn/,独立网站,https://www.foshan.gov.cn/attachment/0/588/588824/6946586.pdf,佛山市财政局,已找到,,通知公告,http://fscz.foshan.gov.cn/zxx/tzgg/index.html,政策法规,http://fscz.foshan.gov.cn/cfg/index.html,,,http://fscz.foshan.gov.cn/,广东集约化|post_编号(广东集约化),4406000044,
 市级,广东,佛山,,440600,人社,市人社局,https://hrss.foshan.gov.cn/zwgk/jgzn/,独立网站,https://www.foshan.gov.cn/zwgk/zfjg/index.html,市人社局,已找到,,,,政策法规,https://hrss.foshan.gov.cn/zwgk/jcxxgk/zcfg/index.html,,,https://hrss.foshan.gov.cn/zwgk/,拓尔思|post_编号(广东集约化),4406000020,
-市级,广东,佛山,,440600,市场监管,佛山市市场监督管理局,https://fsamr.foshan.gov.cn/,独立网站,https://www.foshan.gov.cn/attachment/0/588/588773/6946494.pdf,佛山市市场监督管理局,已找到,,通知公告,https://fsamr.foshan.gov.cn/zwdt/tzgg/index.html,政策文件,https://fsamr.foshan.gov.cn/zwgk/zcfg/zcwj/index.html,,,https://fsamr.foshan.gov.cn/,拓尔思|post_编号(广东集约化),4406000086,业高质量发展五年行动计划（2026-2030年）（征求意见稿
+市级,广东,佛山,,440600,市场监管,佛山市市场监督管理局,https://fsamr.foshan.gov.cn/,独立网站,https://www.foshan.gov.cn/attachment/0/588/588773/6946494.pdf,佛山市市场监督管理局,已找到,,通知公告,https://fsamr.foshan.gov.cn/zwdt/tzgg/index.html,政策文件,https://fsamr.foshan.gov.cn/zwgk/zcfg/zcwj/index.html,,,https://fsamr.foshan.gov.cn/,拓尔思|post_编号(广东集约化),4406000086,业高质量发展五年行动计划
 市级,广东,佛山,,440600,农业农村,佛山市农业农村局,http://fsny.foshan.gov.cn/zwgk/jgsz/,独立网站,https://www.foshan.gov.cn/zwgk/zfjg/index.html,市农业农村局,已找到,,,,政策法规,http://fsny.foshan.gov.cn/zcfg/index.html,,,http://fsny.foshan.gov.cn/zwgk/jgsz/,拓尔思|post_编号(广东集约化),4406000008,
 市级,广东,佛山,,440600,文旅,佛山市文化广电旅游体育局,http://www.foshan.gov.cn/fswgdlt/gkmlpt/index,门户频道,https://www.foshan.gov.cn/zwgk/zfjg/index.html,市文广旅体局,已找到,,,,政策（信息公开分类）,http://www.foshan.gov.cn/fswgdlt/gkmlpt/index#xxgk-gkmlpt-3626,,,http://www.foshan.gov.cn/fswgdlt/gkmlpt/index,拓尔思,4406000048,
 市级,广东,佛山,,440600,生态环境,佛山市生态环境局,https://sthj.foshan.gov.cn/,独立网站,https://www.foshan.gov.cn/attachment/0/588/588887/6946854.pdf,佛山市生态环境局,已找到,,通知公告,http://sthj.foshan.gov.cn/tzgg/index.html,政策法规,http://sthj.foshan.gov.cn/zcfg/index.html,,,https://sthj.foshan.gov.cn/,广东集约化|post_编号(广东集约化),4406000029,中心部门决算
@@ -107,7 +107,7 @@
 市级,广东,湛江,,440800,工信,湛江市工业和信息化局,https://www.zhanjiang.gov.cn/zjgxj/gkmlpt/index,门户频道,https://www.zhanjiang.gov.cn/zfjg/index.html,湛江市工业和信息化局,已找到,,,,政策（信息公开分类）,https://www.zhanjiang.gov.cn/zjgxj/gkmlpt/index#xxgk-gkmlpt-422,,,https://www.zhanjiang.gov.cn/zjgxj/gkmlpt/index,拓尔思,4408000026,
 市级,广东,湛江,,440800,科技,湛江市科学技术局,https://www.zhanjiang.gov.cn/zjkjj/gkmlpt/index,门户频道,https://www.zhanjiang.gov.cn/zfjg/index.html,湛江市科学技术局,已找到,,,,政策（信息公开分类）,https://www.zhanjiang.gov.cn/zjkjj/gkmlpt/index#xxgk-gkmlpt-662,,,https://www.zhanjiang.gov.cn/zjkjj/gkmlpt/index,拓尔思,4408000026,
 市级,广东,湛江,,440800,商务,湛江市商务局,https://www.zhanjiang.gov.cn/zjswj/gkmlpt/index,门户频道,https://www.zhanjiang.gov.cn/zfjg/index.html,湛江市商务局,已找到,,通知公告（信息公开分类）,https://www.zhanjiang.gov.cn/zjswj/gkmlpt/index#xxgk-gkmlpt-10109,政策（信息公开分类）,https://www.zhanjiang.gov.cn/zjswj/gkmlpt/index#xxgk-gkmlpt-474,,,https://www.zhanjiang.gov.cn/zjswj/gkmlpt/index,拓尔思,4408000026,
-市级,广东,湛江,,440800,财政,湛江市财政局,http://zjsczj.zhanjiang.gov.cn/,独立网站,https://www.zhanjiang.gov.cn/zjsfw/yqlj/sbmwz/index.html,湛江市财政局,已找到,,通知公告,http://zjsczj.zhanjiang.gov.cn/czj/xxgk/tzgg/index.html,,,,,http://zjsczj.zhanjiang.gov.cn/,广东集约化|post_编号(广东集约化),4408000028,粤公网安备44080202000158号
+市级,广东,湛江,,440800,财政,湛江市财政局,http://zjsczj.zhanjiang.gov.cn/,独立网站,https://www.zhanjiang.gov.cn/zjsfw/yqlj/sbmwz/index.html,湛江市财政局,已找到,,通知公告,http://zjsczj.zhanjiang.gov.cn/czj/xxgk/tzgg/index.html,,,,,http://zjsczj.zhanjiang.gov.cn/,广东集约化|post_编号(广东集约化),4408000028,
 市级,广东,湛江,,440800,人社,湛江市人力资源和社会保障局,https://www.zhanjiang.gov.cn/rsj/gkmlpt/index,门户频道,https://www.zhanjiang.gov.cn/zfjg/index.html,湛江市人力资源和社会保障局,已找到,,,,政策（信息公开分类）,https://www.zhanjiang.gov.cn/rsj/gkmlpt/index#xxgk-gkmlpt-617,,,https://www.zhanjiang.gov.cn/rsj/gkmlpt/index,拓尔思,4408000026,
 市级,广东,湛江,,440800,市场监管,湛江市市场监督管理局,https://zjamr.zhanjiang.gov.cn/,独立网站,https://www.zhanjiang.gov.cn/zjsfw/yqlj/sbmwz/index.html,湛江市市场监督管理局,已找到,,通知公告,http://zjamr.zhanjiang.gov.cn/zwdt/tzgg/index.html,文件发布,http://zjamr.zhanjiang.gov.cn/zwdt/wjfb/index.html,,,https://zjamr.zhanjiang.gov.cn/,广东集约化|post_编号(广东集约化),4408000047,
 市级,广东,湛江,,440800,农业农村,湛江市农业农村局,http://nyncj.zhanjiang.gov.cn/,独立网站,https://www.zhanjiang.gov.cn/zjsfw/yqlj/sbmwz/index.html,湛江市农业农村局,已找到,,,,政策（信息公开分类）,http://nyncj.zhanjiang.gov.cn/gkmlpt/index#xxgk-gkmlpt-8006,,,http://nyncj.zhanjiang.gov.cn/gkmlpt/index,广东集约化|post_编号(广东集约化),4408000003,
@@ -154,7 +154,7 @@
 市级,广东,惠州,,441300,商务,市商务局,http://swj.huizhou.gov.cn/,独立网站,http://www.huizhou.gov.cn/,市商务局,已找到,,通知公告,http://swj.huizhou.gov.cn/zwgk/bmwj/tzgg/index.html,政策（信息公开分类）,http://swj.huizhou.gov.cn/gkmlpt/index#xxgk-gkmlpt-11147,,,http://swj.huizhou.gov.cn/ http://swj.huizhou.gov.cn/gkmlpt/index,广东集约化|post_编号(广东集约化),4413000017,
 市级,广东,惠州,,441300,财政,惠州市财政局,http://www.huizhou.gov.cn/bmpd/hzczj/,门户频道,http://www.huizhou.gov.cn/,惠州市财政局,已找到,,通知公告,http://www.huizhou.gov.cn/bmpd/hzczj/tzgg/index.html,,,,,http://www.huizhou.gov.cn/bmpd/hzczj/,广东集约化|post_编号(广东集约化),4413000038,
 市级,广东,惠州,,441300,人社,市人力资源和社会保障局,http://rsj.huizhou.gov.cn/,独立网站,http://www.huizhou.gov.cn/,市人力资源和社会保障局,已找到,,通知公告,http://rsj.huizhou.gov.cn/zwgk/tzgg/index.html,规范性文件,http://rsj.huizhou.gov.cn/zwgk/bmwj/bmwj/index.html,,,http://rsj.huizhou.gov.cn/,广东集约化|post_编号(广东集约化),4413000058,
-市级,广东,惠州,,441300,市场监管,市市场监督管理局（知识产权局）,http://hzamr.huizhou.gov.cn/,独立网站,http://www.huizhou.gov.cn/,市市场监督管理局（知识产权局）,已找到,,通知公告,http://hzamr.huizhou.gov.cn/zwgk/bmwj/tzgg/index.html,政策（信息公开分类）,http://hzamr.huizhou.gov.cn/gkmlpt/index#xxgk-gkmlpt-11158,,,http://hzamr.huizhou.gov.cn/ http://hzamr.huizhou.gov.cn/gkmlpt/index,广东集约化|post_编号(广东集约化),4413000027,中心--
+市级,广东,惠州,,441300,市场监管,市市场监督管理局（知识产权局）,http://hzamr.huizhou.gov.cn/,独立网站,http://www.huizhou.gov.cn/,市市场监督管理局（知识产权局）,已找到,,通知公告,http://hzamr.huizhou.gov.cn/zwgk/bmwj/tzgg/index.html,政策（信息公开分类）,http://hzamr.huizhou.gov.cn/gkmlpt/index#xxgk-gkmlpt-11158,,,http://hzamr.huizhou.gov.cn/ http://hzamr.huizhou.gov.cn/gkmlpt/index,广东集约化|post_编号(广东集约化),4413000027,中心
 市级,广东,惠州,,441300,农业农村,市农业农村局,http://nyncj.huizhou.gov.cn/,独立网站,http://www.huizhou.gov.cn/,市农业农村局,已找到,,通知公告,http://nyncj.huizhou.gov.cn/zwzc/tzgg/index.html,政策法规,http://nyncj.huizhou.gov.cn/zwzc/zcfg/index.html,,,http://nyncj.huizhou.gov.cn/,广东集约化|post_编号(广东集约化),44130202000071,惠州市农业农村信息中心
 市级,广东,惠州,,441300,文旅,市文化广电旅游体育局,http://wgltj.huizhou.gov.cn/,独立网站,http://www.huizhou.gov.cn/,市文化广电旅游体育局,已找到,,通知公告,http://wgltj.huizhou.gov.cn/zwgk/bmwj/tzgg/index.html,政策法规,http://wgltj.huizhou.gov.cn/zwgk/whzc/index.html,,,http://wgltj.huizhou.gov.cn/,开普云|post_编号(广东集约化),4413000039,
 市级,广东,惠州,,441300,生态环境,市生态环境局,http://shj.huizhou.gov.cn/,独立网站,http://www.huizhou.gov.cn/,市生态环境局,已找到,,通知公告,http://shj.huizhou.gov.cn/zwgk/bmwj/tzgg/index.html,规范性文件,http://shj.huizhou.gov.cn/zwgk/zcwj/gfxwj/index.html,,,http://shj.huizhou.gov.cn/,广东集约化|post_编号(广东集约化),4413000037,
@@ -189,7 +189,7 @@
 市级,广东,汕尾,,441500,开发区,汕尾高新技术产业开发区管理委员会,http://www.swxq.gov.cn/gkmlpt/index,独立网站,https://www.shanwei.gov.cn/gkmlzl/,汕尾高新技术产业开发区管理委员会,已找到,,,,政策（信息公开分类）,http://www.swxq.gov.cn/gkmlpt/index#xxgk-gkmlpt-1268,,,http://www.swxq.gov.cn/gkmlpt/index,拓尔思,4415000065,
 市级,广东,汕尾,,441500,开发区,广东汕尾红海湾经济开发区管理委员会,http://www.hhw.gov.cn/gkmlpt/annualreport,独立网站,https://www.shanwei.gov.cn/shanwei/rmzfgkml/zwgk/gknb/,广东汕尾红海湾经济开发区管理委员会,已找到,,,,政策（信息公开分类）,http://www.hhw.gov.cn/gkmlpt/annualreport#xxgk-gkmlpt-147,公告公示（信息公开分类）,http://www.hhw.gov.cn/gkmlpt/annualreport#xxgk-gkmlpt-163,http://www.hhw.gov.cn/gkmlpt/annualreport,拓尔思,4415000007,
 市级,广东,汕尾,,441500,开发区,汕尾高新技术产业开发区管理委员会,http://www.swxq.gov.cn/gkmlpt/annualreport,独立网站,https://www.shanwei.gov.cn/shanwei/rmzfgkml/zwgk/gknb/,汕尾高新技术产业开发区管理委员会,已找到,,,,政策（信息公开分类）,http://www.swxq.gov.cn/gkmlpt/annualreport#xxgk-gkmlpt-1268,,,http://www.swxq.gov.cn/gkmlpt/annualreport,拓尔思,4415000065,
-市级,广东,河源,,441600,政府办,河源市人民政府门户网站,http://www.heyuan.gov.cn/,门户本身,http://www.heyuan.gov.cn/,,已找到,,通知公告,http://www.heyuan.gov.cn/ywdt/tzgg/,政策法规,http://www.heyuan.gov.cn/zwgk/szfwj/index.html,,,http://www.heyuan.gov.cn/ywdt/tzgg/content/post_686405.html http://www.heyuan.gov.cn/zwgk/index.html,广东集约化|post_编号(广东集约化),4416000024,邮箱：zwxxk3323628@163.com&nbsp;&
+市级,广东,河源,,441600,政府办,河源市人民政府门户网站,http://www.heyuan.gov.cn/,门户本身,http://www.heyuan.gov.cn/,,已找到,,通知公告,http://www.heyuan.gov.cn/ywdt/tzgg/,政策法规,http://www.heyuan.gov.cn/zwgk/szfwj/index.html,,,http://www.heyuan.gov.cn/ywdt/tzgg/content/post_686405.html http://www.heyuan.gov.cn/zwgk/index.html,广东集约化|post_编号(广东集约化),4416000024,
 市级,广东,河源,,441600,发改委,河源市发展和改革局河源市发展和改革局,http://www.heyuan.gov.cn/bmjy/hysfzhggj/index.html,门户频道,http://www.heyuan.gov.cn/zwgk/index.html,河源市发展和改革局河源市发展和改革局,已找到,,,,,,,,,未识别,,
 市级,广东,河源,,441600,工信,,,,,,导航未找到,,,,,,,,,,,
 市级,广东,河源,,441600,科技,河源市科学技术局河源市科学技术局,http://www.heyuan.gov.cn/bmjy/hyskxjsj/index.html,门户频道,http://www.heyuan.gov.cn/zwgk/index.html,河源市科学技术局河源市科学技术局,已找到,,,,,,,,,未识别,,
@@ -223,11 +223,11 @@
 市级,广东,清远,,441800,农业农村,,,,,,打不开,门户打不开：HTTP 405,,,,,,,,,,
 市级,广东,清远,,441800,文旅,,,,,,打不开,门户打不开：HTTP 405,,,,,,,,,,
 市级,广东,清远,,441800,生态环境,,,,,,打不开,门户打不开：HTTP 405,,,,,,,,,,
-市级,广东,东莞,,441900,政府办,东莞市人民政府门户网站,https://www.dg.gov.cn/,门户本身,http://www.dg.gov.cn/,,已找到,,通知公告（信息公开分类）,https://www.dg.gov.cn/gkmlpt/index#xxgk-gkmlpt-702,政府文件,https://www.dg.gov.cn/gkmlpt/policy,公告公示,https://www.dg.gov.cn/jjdz/zwgg/index.html,https://www.dg.gov.cn/gkmlpt/index https://www.dg.gov.cn/zwgk/index.html,开普云|post_编号(广东集约化),4419000098,开普云&nbsp;&nbsp;
+市级,广东,东莞,,441900,政府办,东莞市人民政府门户网站,https://www.dg.gov.cn/,门户本身,http://www.dg.gov.cn/,,已找到,,通知公告（信息公开分类）,https://www.dg.gov.cn/gkmlpt/index#xxgk-gkmlpt-702,政府文件,https://www.dg.gov.cn/gkmlpt/policy,公告公示,https://www.dg.gov.cn/jjdz/zwgg/index.html,https://www.dg.gov.cn/gkmlpt/index https://www.dg.gov.cn/zwgk/index.html,开普云|post_编号(广东集约化),4419000098,开普云
 市级,广东,东莞,,441900,发改委,市发展和改革局,http://dgdp.dg.gov.cn/gkmlpt/guide,独立网站,https://www.dg.gov.cn/gkmlxt/gkml_zn.html,市发展和改革局,已找到,,通知公告（信息公开分类）,http://dgdp.dg.gov.cn/gkmlpt/guide#xxgk-gkmlpt-21,政策（信息公开分类）,http://dgdp.dg.gov.cn/gkmlpt/guide#xxgk-gkmlpt-7,,,http://dgdp.dg.gov.cn/gkmlpt/guide,拓尔思,4419000005,
 市级,广东,东莞,,441900,工信,东莞市工业和信息化局,https://im.dg.gov.cn/gkmlpt/guide,独立网站,https://www.dg.gov.cn/gkmlxt/gkml_zn.html,市工业和信息化局,已找到,,通知公告（信息公开分类）,https://im.dg.gov.cn/gkmlpt/guide#xxgk-gkmlpt-368,政策（信息公开分类）,https://im.dg.gov.cn/gkmlpt/guide#xxgk-gkmlpt-354,,,https://im.dg.gov.cn/gkmlpt/guide,拓尔思,4419000129,
 市级,广东,东莞,,441900,科技,市科学技术局,http://dgstb.dg.gov.cn/gkmlpt/guide,独立网站,https://www.dg.gov.cn/gkmlxt/gkml_zn.html,市科学技术局,已找到,,通知公告（信息公开分类）,http://dgstb.dg.gov.cn/gkmlpt/guide#xxgk-gkmlpt-104,政策（信息公开分类）,http://dgstb.dg.gov.cn/gkmlpt/guide#xxgk-gkmlpt-73,,,http://dgstb.dg.gov.cn/gkmlpt/guide,拓尔思,4419000039,
-市级,广东,东莞,,441900,商务,东莞市外商投资促进中心,http://fipc.dg.gov.cn/gywm/zxzn/index.html,独立网站,https://www.dg.gov.cn/zwgk/jcgk/bm/index.html,东莞市外商投资促进中心,已找到,,通知公告,http://fipc.dg.gov.cn/xxgk/tzzx/index.html,,,,,http://fipc.dg.gov.cn/xxgk/index.html,开普云,4419000028,开普云粤公网安备44190002000375号
+市级,广东,东莞,,441900,商务,东莞市外商投资促进中心,http://fipc.dg.gov.cn/gywm/zxzn/index.html,独立网站,https://www.dg.gov.cn/zwgk/jcgk/bm/index.html,东莞市外商投资促进中心,已找到,,通知公告,http://fipc.dg.gov.cn/xxgk/tzzx/index.html,,,,,http://fipc.dg.gov.cn/xxgk/index.html,开普云,4419000028,开普云
 市级,广东,东莞,,441900,财政,市财政局,http://czj.dg.gov.cn/gkmlpt/guide,独立网站,https://www.dg.gov.cn/gkmlxt/gkml_zn.html,市财政局,已找到,,通知公告（信息公开分类）,http://czj.dg.gov.cn/gkmlpt/guide#xxgk-gkmlpt-1063,政策（信息公开分类）,http://czj.dg.gov.cn/gkmlpt/guide#xxgk-gkmlpt-1044,,,http://czj.dg.gov.cn/gkmlpt/guide,拓尔思,4419000057,
 市级,广东,东莞,,441900,人社,市人力资源和社会保障局,http://dghrss.dg.gov.cn/gkmlpt/guide,独立网站,https://www.dg.gov.cn/gkmlxt/gkml_zn.html,市人力资源和社会保障局,已找到,,通知公告（信息公开分类）,http://dghrss.dg.gov.cn/gkmlpt/guide#xxgk-gkmlpt-453,政策（信息公开分类）,http://dghrss.dg.gov.cn/gkmlpt/guide#xxgk-gkmlpt-431,,,http://dghrss.dg.gov.cn/gkmlpt/guide,拓尔思,4419000075,
 市级,广东,东莞,,441900,市场监管,市市场监督管理局,http://dgamr.dg.gov.cn/gkmlpt/guide,独立网站,https://www.dg.gov.cn/gkmlxt/gkml_zn.html,市市场监督管理局,已找到,,通知公告（信息公开分类）,http://dgamr.dg.gov.cn/gkmlpt/guide#xxgk-gkmlpt-3261,政策（信息公开分类）,http://dgamr.dg.gov.cn/gkmlpt/guide#xxgk-gkmlpt-3246,,,http://dgamr.dg.gov.cn/gkmlpt/guide,拓尔思,4419000108,
@@ -531,7 +531,7 @@
 区县级,广东,韶关,乐昌市,440281,开发区,广东乐昌经济开发区管理委员会,http://www.lechang.gov.cn/sglckfqwyh/gkmlpt/guide,门户频道,http://www.lechang.gov.cn/xxgkzn/,广东乐昌经济开发区管理委员会,已找到,,,,,,,,,拓尔思,4402810025,
 区县级,广东,韶关,乐昌市,440281,开发区,广东乐昌经济开发区管理委员会,http://www.lechang.gov.cn/sglckfqwyh/gkmlpt/index,门户频道,http://www.lechang.gov.cn/gkmlzl/,广东乐昌经济开发区管理委员会,已找到,,,,,,,,,拓尔思,4402810025,
 区县级,广东,韶关,乐昌市,440281,开发区,广东乐昌经济开发区管理委员会,http://www.lechang.gov.cn/sglckfqwyh/gkmlpt/annualreport,门户频道,http://www.lechang.gov.cn/xxgknb/,广东乐昌经济开发区管理委员会,已找到,,,,,,,,,拓尔思,4402810025,
-区县级,广东,韶关,南雄市,440282,政府办,南雄市人民政府公众信息网,https://www.gdnx.gov.cn/,门户本身,http://www.gdnx.gov.cn/,,已找到,,通知公告,https://www.gdnx.gov.cn/zwgk/tzgg/index.html,政策文件,https://www.gdnx.gov.cn/zwgk/zfxxgk/szfwj/index.html,,,https://www.gdnx.gov.cn/ https://www.gdnx.gov.cn/fzgn/wzdt/index.html,广东集约化|post_编号(广东集约化),4402820020,南雄市政务服务和数据管理局电话：0751-3881161
+区县级,广东,韶关,南雄市,440282,政府办,南雄市人民政府公众信息网,https://www.gdnx.gov.cn/,门户本身,http://www.gdnx.gov.cn/,,已找到,,通知公告,https://www.gdnx.gov.cn/zwgk/tzgg/index.html,政策文件,https://www.gdnx.gov.cn/zwgk/zfxxgk/szfwj/index.html,,,https://www.gdnx.gov.cn/ https://www.gdnx.gov.cn/fzgn/wzdt/index.html,广东集约化|post_编号(广东集约化),4402820020,南雄市政务服务和数据管理局
 区县级,广东,韶关,南雄市,440282,发改委,韶关市南雄市发展和改革局,https://www.gdnx.gov.cn/sgnxfgj/gkmlpt/index,门户频道,https://www.gdnx.gov.cn/zwgk/jgsz/index.html,南雄市发展和改革局,已找到,,,,,,,,,拓尔思,4402820020,
 区县级,广东,韶关,南雄市,440282,工信,韶关市南雄市工业和信息化局,https://www.gdnx.gov.cn/sgnxgyj/gkmlpt/index,门户频道,https://www.gdnx.gov.cn/zwgk/jgsz/index.html,南雄市工业和信息化局,已找到,,,,,,,,,拓尔思,4402820020,
 区县级,广东,韶关,南雄市,440282,科技,,,,,,导航未找到,,,,,,,,,,,
@@ -622,7 +622,7 @@
 区县级,广东,深圳,龙华区,440309,农业农村,,,,,,导航未找到,,,,,,,,,,,
 区县级,广东,深圳,龙华区,440309,文旅,,,,,,导航未找到,,,,,,,,,,,
 区县级,广东,深圳,龙华区,440309,生态环境,,,,,,导航未找到,,,,,,,,,,,
-区县级,广东,深圳,坪山区,440310,政府办,坪山区人民政府,https://www.szpsq.gov.cn/,门户本身,https://www.szpsq.gov.cn/,,已找到,,通知公告,https://www.szpsq.gov.cn/zwgk/tzgg/index.html,规范性文件统一查询平台,https://www.szpsq.gov.cn/zwgk/gfxwjtycxpt/index.html,,,https://www.szpsq.gov.cn/ https://www.szpsq.gov.cn/wzdt/index.html,广东集约化|post_编号(广东集约化),4403910001,zwxx@szpsq.gov.cn
+区县级,广东,深圳,坪山区,440310,政府办,坪山区人民政府,https://www.szpsq.gov.cn/,门户本身,https://www.szpsq.gov.cn/,,已找到,,通知公告,https://www.szpsq.gov.cn/zwgk/tzgg/index.html,规范性文件统一查询平台,https://www.szpsq.gov.cn/zwgk/gfxwjtycxpt/index.html,,,https://www.szpsq.gov.cn/ https://www.szpsq.gov.cn/wzdt/index.html,广东集约化|post_编号(广东集约化),4403910001,
 区县级,广东,深圳,坪山区,440310,发改委,,,,,,导航未找到,,,,,,,,,,,
 区县级,广东,深圳,坪山区,440310,工信,,,,,,导航未找到,,,,,,,,,,,
 区县级,广东,深圳,坪山区,440310,科技,,,,,,导航未找到,,,,,,,,,,,
@@ -678,7 +678,7 @@
 区县级,广东,珠海,金湾区,440404,农业农村,,,,,,导航未找到,上级官方导航里没找到这个行政区的门户,,,,,,,,,,
 区县级,广东,珠海,金湾区,440404,文旅,,,,,,导航未找到,上级官方导航里没找到这个行政区的门户,,,,,,,,,,
 区县级,广东,珠海,金湾区,440404,生态环境,,,,,,导航未找到,上级官方导航里没找到这个行政区的门户,,,,,,,,,,
-区县级,广东,汕头,龙湖区,440507,政府办,龙湖区人民政府门户网站,http://www.gdlonghu.gov.cn/,门户本身,http://www.gdlonghu.gov.cn/,,已找到,,,,政策,https://www.gdlonghu.gov.cn/gkmlpt/policy,公告公示,https://www.gdlonghu.gov.cn/lh/zwgk/tzgg,https://www.gdlonghu.gov.cn/lh/ymys/db/wzdt/content/post_2491304.html,广东集约化|post_编号(广东集约化),4405070001,汕头市龙湖区政务大数据中心&nbsp;&nbsp;网站标识码
+区县级,广东,汕头,龙湖区,440507,政府办,龙湖区人民政府门户网站,http://www.gdlonghu.gov.cn/,门户本身,http://www.gdlonghu.gov.cn/,,已找到,,,,政策,https://www.gdlonghu.gov.cn/gkmlpt/policy,公告公示,https://www.gdlonghu.gov.cn/lh/zwgk/tzgg,https://www.gdlonghu.gov.cn/lh/ymys/db/wzdt/content/post_2491304.html,广东集约化|post_编号(广东集约化),4405070001,汕头市龙湖区政务大数据中心
 区县级,广东,汕头,龙湖区,440507,发改委,汕头市龙湖区发展和改革局（粮食和物资储备局）,http://www.gdlonghu.gov.cn/stlhfgj/gkmlpt/index,门户频道,http://www.gdlonghu.gov.cn/gkmlzl/,龙湖区发展和改革局（粮食和物资储备局）,已找到,,,,,,,,,拓尔思,4405070001,
 区县级,广东,汕头,龙湖区,440507,工信,汕头市龙湖区工业和信息化局（科学技术局）,http://www.gdlonghu.gov.cn/stlhgxj/gkmlpt/index,门户频道,http://www.gdlonghu.gov.cn/gkmlzl/,龙湖区工业和信息化局（科学技术局）,已找到,,,,,,,,,拓尔思,4405070001,
 区县级,广东,汕头,龙湖区,440507,科技,,,,,,导航未找到,,,,,,,,,,,
@@ -702,7 +702,7 @@
 区县级,广东,汕头,金平区,440511,文旅,汕头市金平区文化广电旅游体育局,http://www.gdjinping.gov.cn/stjpwgltj/gkmlpt/index,门户频道,http://www.gdjinping.gov.cn/gkmlzl/,金平区文化广电旅游体育局,已找到,,,,,,,,,拓尔思,4405110002,
 区县级,广东,汕头,金平区,440511,生态环境,,,,,,导航未找到,,,,,,,,,,,
 区县级,广东,汕头,金平区,440511,数据局,汕头市金平区政务服务和数据管理局,http://www.gdjinping.gov.cn/stjpzsj/gkmlpt/index,门户频道,http://www.gdjinping.gov.cn/gkmlzl/,金平区政务服务和数据管理局,已找到,,,,,,,,,拓尔思,4405110002,
-区县级,广东,汕头,濠江区,440512,政府办,濠江区人民政府门户网站,http://www.haojiang.gov.cn/,门户本身,http://www.haojiang.gov.cn/,,已找到,,通知公告,http://www.haojiang.gov.cn/gkmlpt/index,,,,,http://www.haojiang.gov.cn/,开普云|post_编号(广东集约化),4405120001,南方网&nbsp;&nbsp;
+区县级,广东,汕头,濠江区,440512,政府办,濠江区人民政府门户网站,http://www.haojiang.gov.cn/,门户本身,http://www.haojiang.gov.cn/,,已找到,,通知公告,http://www.haojiang.gov.cn/gkmlpt/index,,,,,http://www.haojiang.gov.cn/,开普云|post_编号(广东集约化),4405120001,南方网
 区县级,广东,汕头,濠江区,440512,发改委,汕头市濠江区发展和改革局,http://www.haojiang.gov.cn/sthjfgj/gkmlpt/guide,门户频道,http://www.haojiang.gov.cn/gkzn/,濠江区发展和改革局,已找到,,,,,,,,,拓尔思,4405120001,
 区县级,广东,汕头,濠江区,440512,工信,汕头市濠江区工业和信息化局,http://www.haojiang.gov.cn/sthjgxj/gkmlpt/guide,门户频道,http://www.haojiang.gov.cn/gkzn/,濠江区工业和信息化局,已找到,,,,,,,,,拓尔思,4405120001,
 区县级,广东,汕头,濠江区,440512,科技,,,,,,导航未找到,,,,,,,,,,,
@@ -714,7 +714,7 @@
 区县级,广东,汕头,濠江区,440512,文旅,汕头市濠江区文化广电旅游体育局,http://www.haojiang.gov.cn/sthjwgltj/gkmlpt/guide,门户频道,http://www.haojiang.gov.cn/gkzn/,濠江区文化广电旅游体育局,已找到,,,,,,,,,拓尔思,4405120001,
 区县级,广东,汕头,濠江区,440512,生态环境,,,,,,导航未找到,,,,,,,,,,,
 区县级,广东,汕头,濠江区,440512,数据局,汕头市濠江区政务服务和数据管理局,http://www.haojiang.gov.cn/sthjzsj/gkmlpt/guide,门户频道,http://www.haojiang.gov.cn/gkzn/,濠江区政务服务和数据管理局,已找到,,,,,,,,,拓尔思,4405120001,
-区县级,广东,汕头,潮阳区,440513,政府办,潮阳区人民政府门户网站,http://www.gdcy.gov.cn/cy/,门户本身,http://www.gdcy.gov.cn/cy/,,已找到,,通知公告,http://www.gdcy.gov.cn/gkmlpt/index,规范性文件,http://www.gdcy.gov.cn/cy/zwgk/gfxwj/gfxwjj/,,,http://www.gdcy.gov.cn/cy/,开普云|post_编号(广东集约化),4405130001,南方网&nbsp;&nbsp;
+区县级,广东,汕头,潮阳区,440513,政府办,潮阳区人民政府门户网站,http://www.gdcy.gov.cn/cy/,门户本身,http://www.gdcy.gov.cn/cy/,,已找到,,通知公告,http://www.gdcy.gov.cn/gkmlpt/index,规范性文件,http://www.gdcy.gov.cn/cy/zwgk/gfxwj/gfxwjj/,,,http://www.gdcy.gov.cn/cy/,开普云|post_编号(广东集约化),4405130001,南方网
 区县级,广东,汕头,潮阳区,440513,发改委,汕头市潮阳区发展和改革局,http://www.gdcy.gov.cn/stcyfgj/gkmlpt/guide,门户频道,http://www.gdcy.gov.cn/gkzn/,潮阳区发展和改革局,已找到,,,,,,,,,拓尔思,4405130001,
 区县级,广东,汕头,潮阳区,440513,工信,汕头市潮阳区工业和信息化局,http://www.gdcy.gov.cn/stcygxj/gkmlpt/guide,门户频道,http://www.gdcy.gov.cn/gkzn/,潮阳区工业和信息化局,已找到,,,,,,,,,拓尔思,4405130001,
 区县级,广东,汕头,潮阳区,440513,科技,,,,,,导航未找到,,,,,,,,,,,
@@ -738,7 +738,7 @@
 区县级,广东,汕头,潮南区,440514,文旅,汕头市潮南区文化广电旅游体育局,http://www.chaonan.gov.cn/stcnwgltj/gkmlpt/index,门户频道,http://www.chaonan.gov.cn/gkmlzl/,潮南区文化广电旅游体育局,已找到,,,,,,,,,拓尔思,4405140001,
 区县级,广东,汕头,潮南区,440514,生态环境,汕头市潮南区生态环境局,http://www.chaonan.gov.cn/stcnsthjj/gkmlpt/index,门户频道,http://www.chaonan.gov.cn/gkmlzl/,潮南区生态环境局,已找到,,,,,,,,,拓尔思,4405140001,
 区县级,广东,汕头,潮南区,440514,数据局,潮南区政务服务和数据管理局,http://www.chaonan.gov.cn/stcnzsj/gkmlpt/index,门户频道,http://www.chaonan.gov.cn/gkmlzl/,潮南区政务服务和数据管理局,打不开,robots.txt 暂时无法获取（RemoteProtocolError: Server disconnected without sending a response.），本次跳过,,,,,,,,,,
-区县级,广东,汕头,澄海区,440515,政府办,澄海区人民政府门户网站,http://www.chenghai.gov.cn/,门户本身,http://www.chenghai.gov.cn/,,已找到,,通知公告,http://www.chenghai.gov.cn/gkmlpt/index,政府文件,http://www.chenghai.gov.cn/gkmlpt/policy,,,http://www.chenghai.gov.cn/,开普云|post_编号(广东集约化),4405150002,政务服务中心&nbsp;&nbsp;电子邮箱：stchqzf
+区县级,广东,汕头,澄海区,440515,政府办,澄海区人民政府门户网站,http://www.chenghai.gov.cn/,门户本身,http://www.chenghai.gov.cn/,,已找到,,通知公告,http://www.chenghai.gov.cn/gkmlpt/index,政府文件,http://www.chenghai.gov.cn/gkmlpt/policy,,,http://www.chenghai.gov.cn/,开普云|post_编号(广东集约化),4405150002,政务服务中心电子
 区县级,广东,汕头,澄海区,440515,发改委,汕头市澄海区发展和改革局,http://www.chenghai.gov.cn/stchfgj/gkmlpt/guide,门户频道,http://www.chenghai.gov.cn/gkzn/,澄海区发展和改革局,已找到,,,,,,,,,拓尔思,4405150002,
 区县级,广东,汕头,澄海区,440515,工信,汕头市澄海区工业和信息化局,http://www.chenghai.gov.cn/stchgxj/gkmlpt/guide,门户频道,http://www.chenghai.gov.cn/gkzn/,澄海区工业和信息化局,已找到,,,,,,,,,拓尔思,4405150002,
 区县级,广东,汕头,澄海区,440515,科技,,,,,,导航未找到,,,,,,,,,,,
@@ -750,7 +750,7 @@
 区县级,广东,汕头,澄海区,440515,文旅,汕头市澄海区文化广电旅游体育局,http://www.chenghai.gov.cn/stchwgltj/gkmlpt/guide,门户频道,http://www.chenghai.gov.cn/gkzn/,澄海区文化广电旅游体育局,已找到,,,,,,,,,拓尔思,4405150002,
 区县级,广东,汕头,澄海区,440515,生态环境,汕头市生态环境局澄海分局,http://www.chenghai.gov.cn/stsstjchfj/gkmlpt/guide,门户频道,http://www.chenghai.gov.cn/gkzn/,汕头市生态环境局澄海分局,已找到,,,,,,,,,拓尔思,4405150002,
 区县级,广东,汕头,澄海区,440515,数据局,汕头市澄海区政务服务和数据管理局,http://www.chenghai.gov.cn/stchzsj/gkmlpt/guide,门户频道,http://www.chenghai.gov.cn/gkzn/,澄海区政务服务和数据管理局,已找到,,,,,,,,,拓尔思,4405150002,
-区县级,广东,汕头,南澳县,440523,政府办,南澳县人民政府门户网站,http://www.nanao.gov.cn/,门户本身,http://www.nanao.gov.cn/,,已找到,,通知公告,http://www.nanao.gov.cn/gkmlpt/index,规范性文件,http://www.nanao.gov.cn/gkmlpt/policy,,,http://www.nanao.gov.cn/,开普云|post_编号(广东集约化),4405230001,南方网&nbsp;&nbsp;网站地图
+区县级,广东,汕头,南澳县,440523,政府办,南澳县人民政府门户网站,http://www.nanao.gov.cn/,门户本身,http://www.nanao.gov.cn/,,已找到,,通知公告,http://www.nanao.gov.cn/gkmlpt/index,规范性文件,http://www.nanao.gov.cn/gkmlpt/policy,,,http://www.nanao.gov.cn/,开普云|post_编号(广东集约化),4405230001,南方网网站地图
 区县级,广东,汕头,南澳县,440523,发改委,,,,,,导航未找到,,,,,,,,,,,
 区县级,广东,汕头,南澳县,440523,工信,,,,,,导航未找到,,,,,,,,,,,
 区县级,广东,汕头,南澳县,440523,科技,汕头市南澳县工业信息和科技商务局,http://www.nanao.gov.cn/stnagxj/gkmlpt/index,门户频道,http://www.nanao.gov.cn/gkmlzl/,南澳县工业信息和科技商务局,已找到,,,,,,,,,拓尔思,4405230001,
@@ -816,7 +816,7 @@
 区县级,广东,佛山,高明区,440608,农业农村,,,,,,导航未找到,,,,,,,,,,,
 区县级,广东,佛山,高明区,440608,文旅,,,,,,导航未找到,,,,,,,,,,,
 区县级,广东,佛山,高明区,440608,生态环境,,,,,,导航未找到,,,,,,,,,,,
-区县级,广东,江门,蓬江区,440703,政府办,蓬江区人民政府,http://www.pjq.gov.cn/,门户本身,http://www.pjq.gov.cn/,,已找到,,,,政策法规,http://www.pjq.gov.cn/zwgk/zcfg/index.html,公告公示,http://www.pjq.gov.cn/zwgk/gggs/index.html,http://www.pjq.gov.cn/,广东集约化|post_编号(广东集约化),4407030001,江门市蓬江区政务服务和数据管理局&nbsp;&nbsp;网络
+区县级,广东,江门,蓬江区,440703,政府办,蓬江区人民政府,http://www.pjq.gov.cn/,门户本身,http://www.pjq.gov.cn/,,已找到,,,,政策法规,http://www.pjq.gov.cn/zwgk/zcfg/index.html,公告公示,http://www.pjq.gov.cn/zwgk/gggs/index.html,http://www.pjq.gov.cn/,广东集约化|post_编号(广东集约化),4407030001,江门市蓬江区政务服务和数据管理局网络
 区县级,广东,江门,蓬江区,440703,发改委,江门市蓬江区发展和改革局,http://www.pjq.gov.cn/jmpjqfgj/gkmlpt/guide,门户频道,http://www.pjq.gov.cn/xxgkzn/,蓬江区发展和改革局,已找到,,,,,,,,,拓尔思,4407030001,
 区县级,广东,江门,蓬江区,440703,工信,,,,,,导航未找到,,,,,,,,,,,
 区县级,广东,江门,蓬江区,440703,科技,江门市蓬江区科学技术局,http://www.pjq.gov.cn/jmpjqkjj/gkmlpt/guide,门户频道,http://www.pjq.gov.cn/xxgkzn/,蓬江区科学技术局,已找到,,,,,,,,,拓尔思,4407030001,
@@ -1180,18 +1180,18 @@
 区县级,广东,惠州,惠阳区,441303,文旅,惠州市惠阳区文化广电旅游体育局,http://www.huiyang.gov.cn/hzhywgltj/gkmlpt/index,门户频道,http://www.huiyang.gov.cn/gkmlzl/index.html,惠阳区文广旅体局,已找到,,,,,,,,,拓尔思,4413030033,
 区县级,广东,惠州,惠阳区,441303,生态环境,惠州市生态环境局惠阳分局,http://www.huiyang.gov.cn/hzhysthjj/gkmlpt/index,门户频道,http://www.huiyang.gov.cn/gkmlzl/index.html,惠阳生态环境分局,已找到,,,,,,,,,拓尔思,4413030033,
 区县级,广东,惠州,惠阳区,441303,数据局,惠州市惠阳区政务服务和数据管理局,http://www.huiyang.gov.cn/hzhyzsj/gkmlpt/index,门户频道,http://www.huiyang.gov.cn/gkmlzl/index.html,惠阳区政务服务和数据管理局,已找到,,,,,,,,,拓尔思,4413030033,
-区县级,广东,惠州,博罗县,441322,政府办,博罗县人民政府门户网站,http://www.boluo.gov.cn/,门户本身,http://www.boluo.gov.cn/,,已找到,,通知公告,http://www.boluo.gov.cn/zwgk/gzwj/tzgg/index.html,政策文件库,http://www.boluo.gov.cn/zwgk/gzwj/gfxwj/index.html,,,http://www.boluo.gov.cn/ http://www.boluo.gov.cn/sitemap/index.html,广东集约化|post_编号(广东集约化),4413220025,电话：0752-6286745
-区县级,广东,惠州,博罗县,441322,发改委,县发展和改革局,http://www.boluo.gov.cn/xfzhggj/,门户频道,http://www.boluo.gov.cn/,县发展和改革局,已找到,,,,,,,,,广东集约化|post_编号(广东集约化),4413220025,电话：0752-6286745
-区县级,广东,惠州,博罗县,441322,工信,县科技工业和信息化局,http://www.boluo.gov.cn/xkjgyhxxhj/,门户频道,http://www.boluo.gov.cn/,县科技工业和信息化局,已找到,,,,,,,,,广东集约化|post_编号(广东集约化),4413220025,电话：0752-6286745
-区县级,广东,惠州,博罗县,441322,科技,县科技工业和信息化局,http://www.boluo.gov.cn/xkjgyhxxhj/,门户频道,http://www.boluo.gov.cn/,县科技工业和信息化局,已找到,,,,,,,,,广东集约化|post_编号(广东集约化),4413220025,电话：0752-6286745
+区县级,广东,惠州,博罗县,441322,政府办,博罗县人民政府门户网站,http://www.boluo.gov.cn/,门户本身,http://www.boluo.gov.cn/,,已找到,,通知公告,http://www.boluo.gov.cn/zwgk/gzwj/tzgg/index.html,政策文件库,http://www.boluo.gov.cn/zwgk/gzwj/gfxwj/index.html,,,http://www.boluo.gov.cn/ http://www.boluo.gov.cn/sitemap/index.html,广东集约化|post_编号(广东集约化),4413220025,
+区县级,广东,惠州,博罗县,441322,发改委,县发展和改革局,http://www.boluo.gov.cn/xfzhggj/,门户频道,http://www.boluo.gov.cn/,县发展和改革局,已找到,,,,,,,,,广东集约化|post_编号(广东集约化),4413220025,
+区县级,广东,惠州,博罗县,441322,工信,县科技工业和信息化局,http://www.boluo.gov.cn/xkjgyhxxhj/,门户频道,http://www.boluo.gov.cn/,县科技工业和信息化局,已找到,,,,,,,,,广东集约化|post_编号(广东集约化),4413220025,
+区县级,广东,惠州,博罗县,441322,科技,县科技工业和信息化局,http://www.boluo.gov.cn/xkjgyhxxhj/,门户频道,http://www.boluo.gov.cn/,县科技工业和信息化局,已找到,,,,,,,,,广东集约化|post_编号(广东集约化),4413220025,
 区县级,广东,惠州,博罗县,441322,商务,,,,,,导航未找到,,,,,,,,,,,
-区县级,广东,惠州,博罗县,441322,财政,县财政局,http://www.boluo.gov.cn/xczj/,门户频道,http://www.boluo.gov.cn/,县财政局,已找到,,,,,,,,,广东集约化|post_编号(广东集约化),4413220025,电话：0752-6286745
-区县级,广东,惠州,博罗县,441322,人社,县人力资源和社会保障局,http://www.boluo.gov.cn/blxrlzyhshbzj/,门户频道,http://www.boluo.gov.cn/,县人力资源和社会保障局,已找到,,,,,,,,,广东集约化|post_编号(广东集约化),4413220025,电话：0752-6286745
-区县级,广东,惠州,博罗县,441322,市场监管,县市场监督管理局,http://www.boluo.gov.cn/xscjdglj/,门户频道,http://www.boluo.gov.cn/,县市场监督管理局,已找到,,,,,,,,,广东集约化|post_编号(广东集约化),4413220025,电话：0752-6286745
-区县级,广东,惠州,博罗县,441322,农业农村,县农业农村局,http://www.boluo.gov.cn/xnyncj/,门户频道,http://www.boluo.gov.cn/,县农业农村局,已找到,,,,,,,,,广东集约化|post_编号(广东集约化),4413220025,电话：0752-6286745
-区县级,广东,惠州,博罗县,441322,文旅,县文化广电旅游体育局,http://www.boluo.gov.cn/xwhgdlytyj/,门户频道,http://www.boluo.gov.cn/,县文化广电旅游体育局,已找到,,,,,,,,,广东集约化|post_编号(广东集约化),4413220025,电话：0752-6286745
-区县级,广东,惠州,博罗县,441322,生态环境,惠州市生态环境局博罗分局,http://www.boluo.gov.cn/hzssthjjblf/index.html,门户频道,http://www.boluo.gov.cn/,惠州市生态环境局博罗分局,已找到,,,,,,,,,广东集约化|post_编号(广东集约化),4413220025,电话：0752-6286745
-区县级,广东,惠州,博罗县,441322,数据局,县政务服务和数据管理局,http://www.boluo.gov.cn/xzwfwsjgljxxzfwzx/,门户频道,http://www.boluo.gov.cn/,县政务服务和数据管理局,已找到,,,,,,,,,广东集约化|post_编号(广东集约化),4413220025,电话：0752-6286745
+区县级,广东,惠州,博罗县,441322,财政,县财政局,http://www.boluo.gov.cn/xczj/,门户频道,http://www.boluo.gov.cn/,县财政局,已找到,,,,,,,,,广东集约化|post_编号(广东集约化),4413220025,
+区县级,广东,惠州,博罗县,441322,人社,县人力资源和社会保障局,http://www.boluo.gov.cn/blxrlzyhshbzj/,门户频道,http://www.boluo.gov.cn/,县人力资源和社会保障局,已找到,,,,,,,,,广东集约化|post_编号(广东集约化),4413220025,
+区县级,广东,惠州,博罗县,441322,市场监管,县市场监督管理局,http://www.boluo.gov.cn/xscjdglj/,门户频道,http://www.boluo.gov.cn/,县市场监督管理局,已找到,,,,,,,,,广东集约化|post_编号(广东集约化),4413220025,
+区县级,广东,惠州,博罗县,441322,农业农村,县农业农村局,http://www.boluo.gov.cn/xnyncj/,门户频道,http://www.boluo.gov.cn/,县农业农村局,已找到,,,,,,,,,广东集约化|post_编号(广东集约化),4413220025,
+区县级,广东,惠州,博罗县,441322,文旅,县文化广电旅游体育局,http://www.boluo.gov.cn/xwhgdlytyj/,门户频道,http://www.boluo.gov.cn/,县文化广电旅游体育局,已找到,,,,,,,,,广东集约化|post_编号(广东集约化),4413220025,
+区县级,广东,惠州,博罗县,441322,生态环境,惠州市生态环境局博罗分局,http://www.boluo.gov.cn/hzssthjjblf/index.html,门户频道,http://www.boluo.gov.cn/,惠州市生态环境局博罗分局,已找到,,,,,,,,,广东集约化|post_编号(广东集约化),4413220025,
+区县级,广东,惠州,博罗县,441322,数据局,县政务服务和数据管理局,http://www.boluo.gov.cn/xzwfwsjgljxxzfwzx/,门户频道,http://www.boluo.gov.cn/,县政务服务和数据管理局,已找到,,,,,,,,,广东集约化|post_编号(广东集约化),4413220025,
 区县级,广东,惠州,惠东县,441323,政府办,惠东县人民政府门户网站,http://www.huidong.gov.cn/,门户本身,http://www.huidong.gov.cn/,,已找到,,通知公告,http://www.huidong.gov.cn/hdxwz/zwgk/tzgg/index.html,,,,,http://www.huidong.gov.cn/wzdt/wzdt.html,开普云|post_编号(广东集约化),4413230058,
 区县级,广东,惠州,惠东县,441323,发改委,惠东县发展改革和政务数据局,http://www.huidong.gov.cn/hzhdfzgghzwsj/gkmlpt/index,门户频道,http://www.huidong.gov.cn/xxgkzn/index.html,县发展改革和政务数据局,已找到,,,,,,,,,拓尔思,4413230058,
 区县级,广东,惠州,惠东县,441323,工信,惠东县科技工业信息化和商务局,http://www.huidong.gov.cn/hzhdkjgyxxhhswj/gkmlpt/index,门户频道,http://www.huidong.gov.cn/xxgkzn/index.html,县科技工业信息化和商务局,已找到,,,,,,,,,拓尔思,4413230058,
@@ -1204,18 +1204,18 @@
 区县级,广东,惠州,惠东县,441323,文旅,惠州市惠东县文化广电旅游体育局,http://www.huidong.gov.cn/hzhdwgltj/gkmlpt/index,门户频道,http://www.huidong.gov.cn/xxgkzn/index.html,县文化广电旅游体育局,已找到,,,,,,,,,拓尔思,4413230058,
 区县级,广东,惠州,惠东县,441323,生态环境,惠州市生态环境局惠东分局,http://www.huidong.gov.cn/hzhdsthjj/gkmlpt/index,门户频道,http://www.huidong.gov.cn/xxgkzn/index.html,惠州市生态环境局惠东分局,已找到,,,,,,,,,拓尔思,4413230058,
 区县级,广东,惠州,惠东县,441323,数据局,惠东县发展改革和政务数据局,http://www.huidong.gov.cn/hzhdfzgghzwsj/gkmlpt/index,门户频道,http://www.huidong.gov.cn/xxgkzn/index.html,县发展改革和政务数据局,已找到,,,,,,,,,拓尔思,4413230058,
-区县级,广东,惠州,龙门县,441324,政府办,龙门县人民政府门户网站,http://www.longmen.gov.cn/,门户本身,http://www.longmen.gov.cn/,,已找到,,,,政策文件库,http://www.longmen.gov.cn/lmxrmzfmhwz/zwgk/zcwjk/xzfgfxwj/,,,http://www.longmen.gov.cn/,开普云|post_编号(广东集约化),4413240044,开普云&nbsp;&nbsp;&nbsp;
-区县级,广东,惠州,龙门县,441324,发改委,县发展和改革局,http://www.longmen.gov.cn/xzfbm/xfzhggj/index.html,门户频道,http://www.longmen.gov.cn/lmxrmzfmhwz/bmzb/index.html,县发展和改革局,已找到,,,,,,,,,开普云|post_编号(广东集约化),4413240044,开普云&nbsp;&nbsp;&nbsp;
-区县级,广东,惠州,龙门县,441324,工信,县科技工业和信息化局,http://www.longmen.gov.cn/xzfbm/xkjgyhxxhj/index.html,门户频道,http://www.longmen.gov.cn/lmxrmzfmhwz/bmzb/index.html,县科技工业和信息化局,已找到,,,,,,,,,开普云|post_编号(广东集约化),4413240044,开普云&nbsp;&nbsp;&nbsp;
-区县级,广东,惠州,龙门县,441324,科技,县科技工业和信息化局,http://www.longmen.gov.cn/xzfbm/xkjgyhxxhj/index.html,门户频道,http://www.longmen.gov.cn/lmxrmzfmhwz/bmzb/index.html,县科技工业和信息化局,已找到,,,,,,,,,开普云|post_编号(广东集约化),4413240044,开普云&nbsp;&nbsp;&nbsp;
+区县级,广东,惠州,龙门县,441324,政府办,龙门县人民政府门户网站,http://www.longmen.gov.cn/,门户本身,http://www.longmen.gov.cn/,,已找到,,,,政策文件库,http://www.longmen.gov.cn/lmxrmzfmhwz/zwgk/zcwjk/xzfgfxwj/,,,http://www.longmen.gov.cn/,开普云|post_编号(广东集约化),4413240044,开普云
+区县级,广东,惠州,龙门县,441324,发改委,县发展和改革局,http://www.longmen.gov.cn/xzfbm/xfzhggj/index.html,门户频道,http://www.longmen.gov.cn/lmxrmzfmhwz/bmzb/index.html,县发展和改革局,已找到,,,,,,,,,开普云|post_编号(广东集约化),4413240044,开普云
+区县级,广东,惠州,龙门县,441324,工信,县科技工业和信息化局,http://www.longmen.gov.cn/xzfbm/xkjgyhxxhj/index.html,门户频道,http://www.longmen.gov.cn/lmxrmzfmhwz/bmzb/index.html,县科技工业和信息化局,已找到,,,,,,,,,开普云|post_编号(广东集约化),4413240044,开普云
+区县级,广东,惠州,龙门县,441324,科技,县科技工业和信息化局,http://www.longmen.gov.cn/xzfbm/xkjgyhxxhj/index.html,门户频道,http://www.longmen.gov.cn/lmxrmzfmhwz/bmzb/index.html,县科技工业和信息化局,已找到,,,,,,,,,开普云|post_编号(广东集约化),4413240044,开普云
 区县级,广东,惠州,龙门县,441324,商务,,,,,,导航未找到,,,,,,,,,,,
-区县级,广东,惠州,龙门县,441324,财政,县财政局,http://www.longmen.gov.cn/xzfbm/xczj/index.html,门户频道,http://www.longmen.gov.cn/lmxrmzfmhwz/bmzb/index.html,县财政局,已找到,,,,,,,,,开普云|post_编号(广东集约化),4413240044,开普云&nbsp;&nbsp;&nbsp;
-区县级,广东,惠州,龙门县,441324,人社,县人力资源和社会保障局,http://www.longmen.gov.cn/xzfbm/xrlzyhshbzj/index.html,门户频道,http://www.longmen.gov.cn/lmxrmzfmhwz/bmzb/index.html,县人力资源和社会保障局,已找到,,,,,,,,,开普云|post_编号(广东集约化),4413240044,开普云&nbsp;&nbsp;&nbsp;
-区县级,广东,惠州,龙门县,441324,市场监管,县市场监督管理局,http://www.longmen.gov.cn/xzfbm/xscjdglj/index.html,门户频道,http://www.longmen.gov.cn/lmxrmzfmhwz/bmzb/index.html,县市场监督管理局,已找到,,,,,,,,,开普云|post_编号(广东集约化),4413240044,开普云&nbsp;&nbsp;&nbsp;
-区县级,广东,惠州,龙门县,441324,农业农村,县农业农村局,http://www.longmen.gov.cn/xzfbm/xnyncj/index.html,门户频道,http://www.longmen.gov.cn/lmxrmzfmhwz/bmzb/index.html,县农业农村局,已找到,,,,,,,,,开普云|post_编号(广东集约化),4413240044,开普云&nbsp;&nbsp;&nbsp;
-区县级,广东,惠州,龙门县,441324,文旅,县文化广电旅游体育局,http://www.longmen.gov.cn/xzfbm/xwhgdlytyj/index.html,门户频道,http://www.longmen.gov.cn/lmxrmzfmhwz/bmzb/index.html,县文化广电旅游体育局,已找到,,,,,,,,,开普云|post_编号(广东集约化),4413240044,开普云&nbsp;&nbsp;&nbsp;
+区县级,广东,惠州,龙门县,441324,财政,县财政局,http://www.longmen.gov.cn/xzfbm/xczj/index.html,门户频道,http://www.longmen.gov.cn/lmxrmzfmhwz/bmzb/index.html,县财政局,已找到,,,,,,,,,开普云|post_编号(广东集约化),4413240044,开普云
+区县级,广东,惠州,龙门县,441324,人社,县人力资源和社会保障局,http://www.longmen.gov.cn/xzfbm/xrlzyhshbzj/index.html,门户频道,http://www.longmen.gov.cn/lmxrmzfmhwz/bmzb/index.html,县人力资源和社会保障局,已找到,,,,,,,,,开普云|post_编号(广东集约化),4413240044,开普云
+区县级,广东,惠州,龙门县,441324,市场监管,县市场监督管理局,http://www.longmen.gov.cn/xzfbm/xscjdglj/index.html,门户频道,http://www.longmen.gov.cn/lmxrmzfmhwz/bmzb/index.html,县市场监督管理局,已找到,,,,,,,,,开普云|post_编号(广东集约化),4413240044,开普云
+区县级,广东,惠州,龙门县,441324,农业农村,县农业农村局,http://www.longmen.gov.cn/xzfbm/xnyncj/index.html,门户频道,http://www.longmen.gov.cn/lmxrmzfmhwz/bmzb/index.html,县农业农村局,已找到,,,,,,,,,开普云|post_编号(广东集约化),4413240044,开普云
+区县级,广东,惠州,龙门县,441324,文旅,县文化广电旅游体育局,http://www.longmen.gov.cn/xzfbm/xwhgdlytyj/index.html,门户频道,http://www.longmen.gov.cn/lmxrmzfmhwz/bmzb/index.html,县文化广电旅游体育局,已找到,,,,,,,,,开普云|post_编号(广东集约化),4413240044,开普云
 区县级,广东,惠州,龙门县,441324,生态环境,,,,,,导航未找到,,,,,,,,,,,
-区县级,广东,惠州,龙门县,441324,数据局,县政务服务和数据管理局,http://www.longmen.gov.cn/xzfbm/xzwfwsjglj/index.html,门户频道,http://www.longmen.gov.cn/lmxrmzfmhwz/bmzb/index.html,县政务服务和数据管理局,已找到,,,,,,,,,开普云|post_编号(广东集约化),4413240044,开普云&nbsp;&nbsp;&nbsp;
+区县级,广东,惠州,龙门县,441324,数据局,县政务服务和数据管理局,http://www.longmen.gov.cn/xzfbm/xzwfwsjglj/index.html,门户频道,http://www.longmen.gov.cn/lmxrmzfmhwz/bmzb/index.html,县政务服务和数据管理局,已找到,,,,,,,,,开普云|post_编号(广东集约化),4413240044,开普云
 区县级,广东,梅州,梅江区,441402,政府办,,,,,,导航未找到,上级官方导航里没找到这个行政区的门户,,,,,,,,,,
 区县级,广东,梅州,梅江区,441402,发改委,,,,,,导航未找到,上级官方导航里没找到这个行政区的门户,,,,,,,,,,
 区县级,广东,梅州,梅江区,441402,工信,,,,,,导航未找到,上级官方导航里没找到这个行政区的门户,,,,,,,,,,
@@ -1374,7 +1374,7 @@
 区县级,广东,河源,紫金县,441621,农业农村,,,,,,导航未找到,,,,,,,,,,,
 区县级,广东,河源,紫金县,441621,文旅,,,,,,导航未找到,,,,,,,,,,,
 区县级,广东,河源,紫金县,441621,生态环境,,,,,,导航未找到,,,,,,,,,,,
-区县级,广东,河源,龙川县,441622,政府办,龙川县人民政府门户网站,http://www.longchuan.gov.cn/,门户本身,http://www.longchuan.gov.cn/,,已找到,,通知公告,http://www.longchuan.gov.cn/sy/tzgg/,政策法规,http://www.longchuan.gov.cn/zwgk/zcfg/index.html,,,http://www.longchuan.gov.cn/sy/tzgg/content/post_686729.html http://www.longchuan.gov.cn/wzdh/wzdt/,广东集约化|post_编号(广东集约化),4416220001,南方网--
+区县级,广东,河源,龙川县,441622,政府办,龙川县人民政府门户网站,http://www.longchuan.gov.cn/,门户本身,http://www.longchuan.gov.cn/,,已找到,,通知公告,http://www.longchuan.gov.cn/sy/tzgg/,政策法规,http://www.longchuan.gov.cn/zwgk/zcfg/index.html,,,http://www.longchuan.gov.cn/sy/tzgg/content/post_686729.html http://www.longchuan.gov.cn/wzdh/wzdt/,广东集约化|post_编号(广东集约化),4416220001,南方网
 区县级,广东,河源,龙川县,441622,发改委,,,,,,导航未找到,,,,,,,,,,,
 区县级,广东,河源,龙川县,441622,工信,,,,,,导航未找到,,,,,,,,,,,
 区县级,广东,河源,龙川县,441622,科技,,,,,,导航未找到,,,,,,,,,,,
@@ -1385,7 +1385,7 @@
 区县级,广东,河源,龙川县,441622,农业农村,,,,,,导航未找到,,,,,,,,,,,
 区县级,广东,河源,龙川县,441622,文旅,,,,,,导航未找到,,,,,,,,,,,
 区县级,广东,河源,龙川县,441622,生态环境,,,,,,导航未找到,,,,,,,,,,,
-区县级,广东,河源,连平县,441623,政府办,连平县人民政府门户网站,http://www.lianping.gov.cn/,门户本身,http://www.lianping.gov.cn/,,已找到,,通知公告,http://www.lianping.gov.cn/zwgk/zfdt/tzgg/,政府文件,http://www.lianping.gov.cn/gkmlpt/policy,,,http://www.lianping.gov.cn/wzdt/index.html http://www.lianping.gov.cn/zwgk/zfdt/tzgg/content/post_685199.html,广东集约化|post_编号(广东集约化),4416230001,电话：0762-4327511(仅受理网站建设维护相关事宜)
+区县级,广东,河源,连平县,441623,政府办,连平县人民政府门户网站,http://www.lianping.gov.cn/,门户本身,http://www.lianping.gov.cn/,,已找到,,通知公告,http://www.lianping.gov.cn/zwgk/zfdt/tzgg/,政府文件,http://www.lianping.gov.cn/gkmlpt/policy,,,http://www.lianping.gov.cn/wzdt/index.html http://www.lianping.gov.cn/zwgk/zfdt/tzgg/content/post_685199.html,广东集约化|post_编号(广东集约化),4416230001,
 区县级,广东,河源,连平县,441623,发改委,河源市连平县发展和改革局,http://www.lianping.gov.cn/hylpfgj/gkmlpt/index,门户频道,http://www.lianping.gov.cn/zwgk/zfxxgk/index.html,发展和改革局,已找到,,,,,,,,,拓尔思,4416230001,
 区县级,广东,河源,连平县,441623,工信,,,,,,导航未找到,,,,,,,,,,,
 区县级,广东,河源,连平县,441623,科技,,,,,,导航未找到,,,,,,,,,,,

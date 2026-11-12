@@ -23,6 +23,7 @@ from youju.govsites.divisions import name_variants
 from youju.govsites.links import is_gov_url, parse_html, registrable
 from youju.govsites.names import dept_categories
 from youju.govsites.platform import fingerprint
+from youju.govsites.privacy import public_title
 
 DEFAULT_SEED = "2026-11"
 OK = "合格"
@@ -377,7 +378,9 @@ def attribution_check(
     issuers = [m.group(1) for m in _ISSUER.finditer(page_text(doc_html))][:3]
     names = city_names(city) if city else set()
     texts = col_names + doc_names + issuers
-    where = " / ".join(texts)[:160]
+    # 说明写进公开仓库（联网核对表）：网站名、标题里写着人名的整段换成"（标题略）"
+    # （govsites/privacy.py）；核对用的还是原文
+    where = " / ".join(public_title(t) for t in texts)[:160]
     first_col = (cell.get("栏目网址") or "").split(" ")[0]
     same_domain = bool(portal_domain) and registrable(first_col) == portal_domain
     if not same_domain and (not names or not any(n in s for n in names for s in texts)):
@@ -611,6 +614,11 @@ def write_outputs(
     # 抽查/<级>/<省>.csv 是主线 coverage-sample 的统一证据表，这里不写；核对结论填进它的复核三列
     folder = out / province
     folder.mkdir(parents=True, exist_ok=True)
+    # 公开仓库：个人事项或写着人名的标题不写原文（和抽查证据同一个规则，govsites/privacy.py）；
+    # 核对用的是库里的原标题，这里只改写出去的
+    rows = [
+        {**r, "文件标题": public_title(r["文件标题"])} if r.get("文件标题") else r for r in rows
+    ]
     # 换种子复验时文件名带上种子，不覆盖原记录
     name = f"联网核对_{level}" + ("" if seed == DEFAULT_SEED else f"_{seed}")
     csv_path = folder / f"{name}.csv"

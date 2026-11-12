@@ -25,6 +25,15 @@ _EXTRA_WORDS = (
     "作废声明",
     "辞去",
 )
+# 工伤、病残一类的个人事项文书（"关于××停工留薪期确认书的公告""关于对参保职工××病残津贴领取资格的
+# 公示""××伤残等级鉴定结论"，11/12 地市一组报）：标题常直接写人名，有的姓氏不常见、有的以"路""林"
+# 这类字结尾、有的连写几个人，靠猜人名会漏。同样的词也出现在待遇标准、管理办法这类普通政策里，不当
+# 词挡：有这些词、又是公示、公告、确认书、鉴定结论这类文书的，整条挡（不看有没有人名）
+_INJURY_WORDS = ("停工留薪", "病残", "工亡", "伤残", "供养亲属")
+_INJURY_PAPERS = (
+    *("公示", "公告", "确认书", "决定书", "决定", "通知书", "告知书", "鉴定书", "认定书", "结论"),
+    *("名单", "批复", "答复"),
+)
 _H = "[一-鿿]"
 # 人名的几种写法：××同志、××等 3 名/户、××等同志、××等职务、××、××同志、任命××为、
 # 关于对××的、开头就是人名的"××（、××）批前公示"（只认开头：项目的"规划许可批前公示"不挡）、
@@ -49,6 +58,17 @@ _COMPENSATION = re.compile(
     rf"关于((?:{_H}{{2,3}}、)*{_H}{{2,3}})[^，。]{{0,12}}(?:补偿|安置)[^，。]{{0,6}}(?:决定|协议)"
 )
 _NOT_NAMES = ("房屋", "房产", "住房", "厂房")  # 以这些词开头的不是人名（"房屋征收补偿决定"）
+# 括号里只有像人名的词（"作废公告（张三、李四）""送达公告（王五）""名单的公示（赵六、钱七）"）。
+# 政策标题括号里常见、又以常见姓氏的字开头的词不算（11/12 拿 1.2 万个缓存页面的链接文字核对过：
+# "（成交）""（修订版）""（文字版）""（盖章）"……）；括号里的地名（"（浦口）"）照样挡，挡了还有
+# 日期和网址
+_PARENS = re.compile(rf"[（(]((?:{_H}{{2,3}}、)*{_H}{{2,3}})[）)]")
+_PAREN_WORDS = {
+    *("修订", "修正", "修改", "修编", "解读", "简体", "繁体", "范本", "公示", "公告", "通告"),
+    *("图解", "文字", "简版", "简易", "简介", "成交", "盖章", "高级", "施工", "康复", "车辆"),
+    *("房车", "商户", "商贸", "华东", "游泳", "黄色"),
+}
+_PAREN_ENDS = tuple("版稿案制段片篇网式")  # "（修订稿）""（安徽段）""（荆楚网）""（封闭式）"
 _NOT_NAME_END = tuple(
     "型油类业品化性气水电料费税率险款价区县市镇村省局厅委办部站所院校园河湖江苑条"
 )
@@ -59,6 +79,13 @@ def _named(title: str) -> bool:
 
     for m in _NAME_CONTEXT.finditer(title):
         if any(g and _name_like(g) for g in m.groups()):
+            return True
+    for m in _PARENS.finditer(title):
+        parts = m.group(1).split("、")
+        if all(
+            _name_like(w) and w not in _PAREN_WORDS and not w.endswith(_NOT_NAME_END + _PAREN_ENDS)
+            for w in parts
+        ):
             return True
     for m in _COMPENSATION.finditer(title):
         if any(_name_like(w) and not w.startswith(_NOT_NAMES) for w in m.group(1).split("、")):
@@ -75,6 +102,7 @@ def public_title(title: str) -> str:
     """写进公开证据的样例标题：个人事项或写着人名的换成 MASK，其余照原样。"""
     from youju.api.v1 import personal_matter
 
-    if personal_matter(title) or any(w in title for w in _EXTRA_WORDS) or _named(title):
+    injury = any(w in title for w in _INJURY_WORDS) and any(w in title for w in _INJURY_PAPERS)
+    if personal_matter(title) or any(w in title for w in _EXTRA_WORDS) or injury or _named(title):
         return MASK
     return title

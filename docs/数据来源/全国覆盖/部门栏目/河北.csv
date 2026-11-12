@@ -6,7 +6,7 @@
 省级,河北,,,130000,商务,省商务厅,http://swt.hebei.gov.cn/,独立网站,http://www.hebei.gov.cn/,省商务厅,已找到,,,,,,,,,Vue/前端渲染,,
 省级,河北,,,130000,财政,省财政厅,http://czt.hebei.gov.cn/,独立网站,http://www.hebei.gov.cn/,省财政厅,不能抓,HTTP 403 拒绝访问,,,,,,,,,,
 省级,河北,,,130000,人社,省人力资源和社会保障厅,https://rst.hebei.gov.cn/,独立网站,http://www.hebei.gov.cn/,省人力资源和社会保障厅,打不开,robots.txt 暂时无法获取（加密连接错误：[SSL: SSLV3_ALERT_HANDSHAKE_FAILURE] ssl/tls alert handshake failure (_ssl.c:1010)），本次跳过,,,,,,,,,,
-省级,河北,,,130000,市场监管,河北省市场监督管理局,https://scjg.hebei.gov.cn/,独立网站,http://www.hebei.gov.cn/,省市场监督管理局,已找到,,通知公告,https://scjg.hebei.gov.cn/node/919,政策法规,https://scjg.hebei.gov.cn/node/906,,,https://scjg.hebei.gov.cn/,未识别,1300000045,电话
+省级,河北,,,130000,市场监管,河北省市场监督管理局,https://scjg.hebei.gov.cn/,独立网站,http://www.hebei.gov.cn/,省市场监督管理局,已找到,,通知公告,https://scjg.hebei.gov.cn/node/919,政策法规,https://scjg.hebei.gov.cn/node/906,,,https://scjg.hebei.gov.cn/,未识别,1300000045,
 省级,河北,,,130000,农业农村,河北省农业农村厅,http://nync.hebei.gov.cn/,独立网站,http://www.hebei.gov.cn/,省农业农村厅,已找到,,通知公告,http://nync.hebei.gov.cn/html/www//tzgg/index.html,,,,,http://nync.hebei.gov.cn/,未识别,1300000031,
 省级,河北,,,130000,文旅,省文化和旅游厅,https://whly.hebei.gov.cn/,独立网站,http://www.hebei.gov.cn/,省文化和旅游厅,已找到,,通知公告,https://whly.hebei.gov.cn/xwzx/tzgg/,行政规范性文件,https://whly.hebei.gov.cn/zwwj/gfxwjqlxx/,,,https://whly.hebei.gov.cn/,未识别,1300000032,
 省级,河北,,,130000,生态环境,河北省生态环境厅,https://hbepb.hebei.gov.cn/,独立网站,http://www.hebei.gov.cn/,省生态环境厅,已找到,,通知公告,https://hbepb.hebei.gov.cn/hbhjt/zwgk/fdzdgknr/tongzhigonggao/,,,,,https://hbepb.hebei.gov.cn/,未识别,1300000027,
@@ -138,7 +138,7 @@
 市级,河北,衡水,,131100,市场监管,市市场监督管理局,http://www.hengshui.gov.cn/col/col10385/index.html,门户频道,http://www.hengshui.gov.cn/col/col10366/index.html,市市场监督管理局,已找到,,,,,,,,,大汉|art_日期_编号(大汉),1311000004,
 市级,河北,衡水,,131100,农业农村,市农业农村局,http://www.hengshui.gov.cn/col/col10371/index.html,门户频道,http://www.hengshui.gov.cn/col/col10366/index.html,市农业农村局,已找到,,,,,,,,,大汉|art_日期_编号(大汉),1311000004,
 市级,河北,衡水,,131100,文旅,市文广旅游局,http://www.hengshui.gov.cn/col/col10375/index.html,门户频道,http://www.hengshui.gov.cn/col/col10366/index.html,市文广旅游局,已找到,,,,,,,,,大汉|art_日期_编号(大汉),1311000004,
-市级,河北,衡水,,131100,生态环境,衡水市生态环境局,http://sthjj.hengshui.gov.cn/pubgov1_21/358.html,独立网站,http://xxgk.hengshui.gov.cn/hssxxgk/zfxxgk29/zfxxgkzn17/index.html,市生态环境局,已找到,,,,,,,,,未识别,1311000031,衡水市环境信息中心&nbsp;&nbsp;衡水市生态环境局版
+市级,河北,衡水,,131100,生态环境,衡水市生态环境局,http://sthjj.hengshui.gov.cn/pubgov1_21/358.html,独立网站,http://xxgk.hengshui.gov.cn/hssxxgk/zfxxgk29/zfxxgkzn17/index.html,市生态环境局,已找到,,,,,,,,,未识别,1311000031,衡水市环境信息中心衡水市生态环境局版
 市级,河北,衡水,,131100,数据局,市数据和政务服务局,http://www.hengshui.gov.cn/col/col10398/index.html,门户频道,http://www.hengshui.gov.cn/col/col10366/index.html,市数据和政务服务局,已找到,,,,,,,,,大汉|art_日期_编号(大汉),1311000004,
 区县级,河北,石家庄,长安区,130102,政府办,,,,,,导航未找到,上级官方导航里没找到这个行政区的门户,,,,,,,,,,
 区县级,河北,石家庄,长安区,130102,发改委,,,,,,导航未找到,上级官方导航里没找到这个行政区的门户,,,,,,,,,,
@@ -1285,7 +1285,7 @@
 区县级,河北,张家口,桥东区,130702,农业农村,农业农村局（乡村振兴局）,http://www.zjkqd.gov.cn/__sys_block__/nyncj.html,门户频道,http://www.zjkqd.gov.cn/xxgk.jsp,农业农村局（乡村振兴局）,已找到,,,,,,,,,动态页?id=,1307020001,
 区县级,河北,张家口,桥东区,130702,文旅,文化广电和旅游局,http://www.zjkqd.gov.cn/__sys_block__/whgdhlyj.html,门户频道,http://www.zjkqd.gov.cn/xxgk.jsp,文化广电和旅游局,已找到,,,,,,,,,动态页?id=,1307020001,
 区县级,河北,张家口,桥东区,130702,生态环境,,,,,,导航未找到,,,,,,,,,,,
-区县级,河北,张家口,桥东区,130702,数据局,数据和政务服务局,http://www.zjkqd.gov.cn/__sys_block__/xzspj.html,门户频道,http://www.zjkqd.gov.cn/xxgk.jsp,数据和政务服务局,已找到,,,,,,,,,动态页?id=,1307020001,机构执业登记公告2026-11-022026-11-02
+区县级,河北,张家口,桥东区,130702,数据局,数据和政务服务局,http://www.zjkqd.gov.cn/__sys_block__/xzspj.html,门户频道,http://www.zjkqd.gov.cn/xxgk.jsp,数据和政务服务局,已找到,,,,,,,,,动态页?id=,1307020001,机构执业登记公告
 区县级,河北,张家口,桥西区,130703,政府办,张家口桥西区人民政府,http://www.zjkqxq.gov.cn/,门户本身,http://www.zjkqxq.gov.cn/,,已找到,,,,规范性文件,http://www.zjkqxq.gov.cn/channel/list/24.html,公告公示,http://www.zjkqxq.gov.cn/channel/list/77.html,http://www.zjkqxq.gov.cn/channel/list/18.html,未识别,1307030003,
 区县级,河北,张家口,桥西区,130703,发改委,,,,,,导航未找到,,,,,,,,,,,
 区县级,河北,张家口,桥西区,130703,工信,,,,,,导航未找到,,,,,,,,,,,
@@ -1411,7 +1411,7 @@
 区县级,河北,张家口,阳原县,130727,农业农村,,,,,,导航未找到,,,,,,,,,,,
 区县级,河北,张家口,阳原县,130727,文旅,,,,,,导航未找到,,,,,,,,,,,
 区县级,河北,张家口,阳原县,130727,生态环境,,,,,,导航未找到,,,,,,,,,,,
-区县级,河北,张家口,怀安县,130728,政府办,怀安县人民政府,https://www.zjkha.gov.cn/,门户本身,http://www.zjkha.gov.cn/,,已找到,,,,规范性文件,https://www.zjkha.gov.cn/list/10844.html,公告公示,http://www.zjkha.gov.cn/list/10808.html,https://www.zjkha.gov.cn/list/10869.html,动态页?id=,1307280007,项目机构结果的公示2026-10-29
+区县级,河北,张家口,怀安县,130728,政府办,怀安县人民政府,https://www.zjkha.gov.cn/,门户本身,http://www.zjkha.gov.cn/,,已找到,,,,规范性文件,https://www.zjkha.gov.cn/list/10844.html,公告公示,http://www.zjkha.gov.cn/list/10808.html,https://www.zjkha.gov.cn/list/10869.html,动态页?id=,1307280007,项目机构结果的公示
 区县级,河北,张家口,怀安县,130728,发改委,,,,,,导航未找到,,,,,,,,,,,
 区县级,河北,张家口,怀安县,130728,工信,,,,,,导航未找到,,,,,,,,,,,
 区县级,河北,张家口,怀安县,130728,科技,,,,,,导航未找到,,,,,,,,,,,
