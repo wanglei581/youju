@@ -55,6 +55,8 @@ class FetchResult:
     content: bytes = b""
     # 这次请求经过的地址（原地址和每一跳要去的地址），按先后：调用方用来判断实际访问了哪些网站
     hops: tuple[str, ...] = ()
+    # 这次请求里读 robots.txt 走过的地址（含跳转）；robots.txt 已经记下来的网站这一次不读、不在这里
+    robots_hops: tuple[str, ...] = ()
 
 
 @dataclass
@@ -242,12 +244,16 @@ class PoliteFetcher:
         （final_url 是要跳去的地址），由调用方判断——跳到别的地址记不能抓，只是换协议的按
         这次没读出。"""
         hops: list[str] = []
+        robots_hops: list[str] = []
         self._local.gate = hop_allowed
+        self._local.robots_hops = robots_hops
         try:
             result = self._fetch_hops(url, same_address_only, hops)
         finally:
             self._local.gate = None
+            self._local.robots_hops = None
         result.hops = tuple(hops)
+        result.robots_hops = tuple(robots_hops)
         return result
 
     def _fetch_hops(self, url: str, same_address_only: bool, hops: list[str]) -> FetchResult:
@@ -328,6 +334,9 @@ class PoliteFetcher:
         current = origin + "/robots.txt"
         # RFC 9309 §2.3.1.2：robots.txt 的重定向至少跟随 5 次；超过则视为不可用（可以抓取）
         for _ in range(_MAX_REDIRECTS + 1):
+            visited = getattr(self._local, "robots_hops", None)
+            if visited is not None:
+                visited.append(current)
             if self._url_allowed is not None and not self._url_allowed(current):
                 return _RobotsEntry(
                     "unsupported_host", None, self._clock(), "robots.txt 跳到非政府网站，本站跳过"

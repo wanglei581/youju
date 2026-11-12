@@ -352,17 +352,18 @@ def test_robots_redirect_to_listed_site_does_not_pause_it(session, monkeypatch) 
     assert session.get(DocumentDetail, second.id).status == "ok"
 
 
-@pytest.mark.parametrize("failure", ["robots", "dns"])
+@pytest.mark.parametrize("failure", ["robots", "dns", "robots_redirect"])
 def test_failure_while_site_was_being_paused_is_not_written(session, monkeypatch, failure):
-    """取的时候网站刚被停（读 robots.txt、解析域名期间）、结果是"robots 不让""解析到内网"这类失败：
-    这一份不收、不写库，下一轮再取，不会当成永久失败。"""
+    """取的时候网站刚被停（读 robots.txt、解析域名期间；robots.txt 跳到的别的网站在解析期间被停）、
+    结果是"robots 不让""解析到内网"这类失败：这一份不收、不写库，下一轮再取，不会当成永久失败。"""
     import httpx
 
     from youju.crawler import detail, detail_service
     from youju.crawler.fetcher import PoliteFetcher
 
     monkeypatch.setitem(detail._SEARCH_THROTTLE_VERIFIED, "b.example.gov.cn", frozenset({"x"}))
-    doc = _doc_on(session, _source_on(session, "b.example.gov.cn"), "b.example.gov.cn", 1)
+    host = "a.example.gov.cn" if failure == "robots_redirect" else "b.example.gov.cn"
+    doc = _doc_on(session, _source_on(session, host), host, 1)
     paused_hosts: list[set[str]] = []
     original = detail_service._SitePause.__init__
 
@@ -373,13 +374,15 @@ def test_failure_while_site_was_being_paused_is_not_written(session, monkeypatch
     monkeypatch.setattr(detail_service._SitePause, "__init__", remember)
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "a.example.gov.cn" and request.url.path == "/robots.txt":
+            return httpx.Response(302, headers={"location": "https://b.example.gov.cn/robots.txt"})
         if request.url.path == "/robots.txt":
             paused_hosts[0].add("b.example.gov.cn")  # 别的线程这时停了 b
             return httpx.Response(200, text="User-agent: *\nDisallow: /\n")
         return httpx.Response(200, text="<html></html>")
 
-    def resolver(host: str) -> list[str]:
-        if failure == "dns":
+    def resolver(name: str) -> list[str]:
+        if failure == "dns" or (failure == "robots_redirect" and name == "b.example.gov.cn"):
             paused_hosts[0].add("b.example.gov.cn")
             return ["10.0.0.1"]  # 解析到内网
         return ["93.184.216.34"]
@@ -393,6 +396,50 @@ def test_failure_while_site_was_being_paused_is_not_written(session, monkeypatch
         results = fetch_details(session, limit=5, fetcher=polite, max_workers=1)
     assert [r.status for r in results] == ["site_paused"]
     assert session.get(DocumentDetail, doc.id) is None
+
+
+def test_body_fetched_just_before_pause_is_kept(session, monkeypatch) -> None:
+    """取的时候网站刚被别的线程停了、但这份已经取到正文：照收（网站停之前的正常页面）；同一网站剩下的
+    这一轮不取。"""
+    import httpx
+
+    from youju.crawler import detail, detail_service
+    from youju.crawler.fetcher import PoliteFetcher
+
+    monkeypatch.setitem(detail._SEARCH_THROTTLE_VERIFIED, "b.example.gov.cn", frozenset({"x"}))
+    source_id = _source_on(session, "b.example.gov.cn")
+    first = _doc_on(session, source_id, "b.example.gov.cn", 1)
+    second = _doc_on(session, source_id, "b.example.gov.cn", 2)
+    paused_hosts: list[set[str]] = []
+    original = detail_service._SitePause.__init__
+
+    def remember(self) -> None:
+        original(self)
+        paused_hosts.append(self.hosts)
+
+    monkeypatch.setattr(detail_service._SitePause, "__init__", remember)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/robots.txt":
+            return httpx.Response(404)
+        paused_hosts[0].add("b.example.gov.cn")  # 别的线程这时停了 b
+        return httpx.Response(
+            200,
+            text="<html><body><div id='zoom'><p>这是公开通知正文，需要保存这些段落内容。</p>"
+            "<p>各有关单位请按要求组织申报，并于月底前报送材料。</p></div></body></html>",
+            headers={"content-type": "text/html"},
+        )
+
+    with PoliteFetcher(
+        "TestAgent YoujuBot/0.1",
+        per_host_interval=0,
+        transport=httpx.MockTransport(handler),
+        resolver=lambda host: ["93.184.216.34"],
+    ) as polite:
+        results = fetch_details(session, limit=5, fetcher=polite, max_workers=1)
+    assert [r.status for r in results] == ["ok", "site_paused"]
+    assert session.get(DocumentDetail, first.id).status == "ok"
+    assert session.get(DocumentDetail, second.id) is None
 
 
 def test_title_backfill_reports_paused_site_as_unavailable(session, monkeypatch):
