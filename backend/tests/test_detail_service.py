@@ -282,6 +282,36 @@ def test_paused_site_edge_cases(session, monkeypatch):
     assert session.get(DocumentDetail, docs[2].id) is None
 
 
+def test_pausing_fetcher_checks_each_hop_in_real_time() -> None:
+    """跳转途中，刚经过的网站被别的线程停了：下一跳不去（按当场记下的经过地址判断）。"""
+    import httpx
+
+    from youju.crawler.detail_service import _PausingFetcher, _SitePause
+    from youju.crawler.fetcher import PoliteFetcher
+
+    pause = _SitePause()
+    requested: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(f"{request.url.host}{request.url.path}")
+        if request.url.path == "/robots.txt":
+            return httpx.Response(404)
+        if request.url.host == "a.gov.cn":
+            pause.hosts.add("a.gov.cn")  # 别的线程这时停了 a
+            return httpx.Response(302, headers={"location": "https://b.gov.cn/new"})
+        return httpx.Response(200, text="<html></html>")
+
+    with PoliteFetcher(
+        "TestAgent YoujuBot/0.1",
+        per_host_interval=0,
+        transport=httpx.MockTransport(handler),
+        resolver=lambda host: ["93.184.216.34"],
+    ) as polite:
+        result = _PausingFetcher(polite, pause).fetch("https://a.gov.cn/old")
+    assert result.status == "site_paused"
+    assert all(not r.startswith("b.gov.cn") for r in requested)
+
+
 def test_title_backfill_reports_paused_site_as_unavailable(session, monkeypatch):
     """补全截断标题时，同一网站这一轮停取了的记"没取到（site_paused）"，不当成"没截断"。"""
     from youju.crawler import detail

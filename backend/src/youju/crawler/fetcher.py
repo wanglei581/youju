@@ -207,6 +207,8 @@ class PoliteFetcher:
         self._guard = threading.Lock()
         self._robots: dict[str, _RobotsEntry] = {}
         self._robots_locks: dict[str, threading.Lock] = {}
+        # 这一次 fetch() 的 hop_allowed（各线程各自的）：_request 每次真正发请求前再问一次
+        self._local = threading.local()
 
     def close(self) -> None:
         self._client.close()
@@ -229,29 +231,26 @@ class PoliteFetcher:
     ) -> FetchResult:
         """抓取一个页面。重定向逐跳处理：每一跳都检查 robots.txt，并遵守目标网站的限速。
 
-        hop_allowed：每一跳（连同第一跳）发请求之前再问一次能不能去（取详情时用来挡住这一轮已停取的
-        网站，见 detail_service）；不能去的这一跳不发请求（robots.txt 也不取），返回 "site_paused"。
+        hop_allowed：每次真正发请求之前（每一跳、robots.txt 和它的跳转、排队等完限速、网络重试前）
+        再问一次能不能去（取详情时用来挡住这一轮已停取的网站，见 detail_service）；不能去的不发
+        请求，返回 "site_paused"，这时读 robots.txt 不算读到、不记下来。
 
         same_address_only：只取这个地址本身（读页面声明的列表接口时用，D-128 读取护栏 ①）。
         跳转一律不跟（连 http 升 https 也不跟，只请求页面写明的那个地址）：原样返回 "redirect"
         （final_url 是要跳去的地址），由调用方判断——跳到别的地址记不能抓，只是换协议的按
         这次没读出。"""
         hops: list[str] = []
-        result = self._fetch_hops(url, same_address_only, hops, hop_allowed)
+        self._local.gate = hop_allowed
+        try:
+            result = self._fetch_hops(url, same_address_only, hops)
+        finally:
+            self._local.gate = None
         result.hops = tuple(hops)
         return result
 
-    def _fetch_hops(
-        self,
-        url: str,
-        same_address_only: bool,
-        hops: list[str],
-        hop_allowed: Callable[[str], bool] | None,
-    ) -> FetchResult:
+    def _fetch_hops(self, url: str, same_address_only: bool, hops: list[str]) -> FetchResult:
         current = url
         for _ in range(_MAX_REDIRECTS + 1):
-            if hop_allowed is not None and not hop_allowed(current):
-                return FetchResult(url, "site_paused", final_url=current, error=SITE_PAUSED)
             hops.append(current)
             if self._url_allowed is not None and not self._url_allowed(current):
                 return FetchResult(url, "unsupported_host", final_url=current, error="非政府网站")
@@ -259,6 +258,8 @@ class PoliteFetcher:
             state = entry.state
             if state == "deadline":
                 return FetchResult(url, "deadline", final_url=current, error=_DEADLINE)
+            if state == "site_paused":
+                return FetchResult(url, "site_paused", final_url=current, error=SITE_PAUSED)
             if state == "unreachable":
                 # RFC 9309 §2.3.1.4：robots.txt 因服务器错误或网络问题无法获取，视为全部禁止
                 return FetchResult(
@@ -292,9 +293,10 @@ class PoliteFetcher:
             entry = self._robots.get(origin)
             if entry is None or self._clock() - entry.fetched_at > _ROBOTS_TTL_SECONDS:
                 entry = self._load_robots(origin)
-                if entry.state != "deadline":  # 到期没读完不记下来，不当成读不到
+                # 到期没读完、被 hop_allowed 挡下的不记下来，不当成读不到
+                if entry.state not in {"deadline", "site_paused"}:
                     self._robots[origin] = entry
-        if entry.state in {"unreachable", "unsupported_host", "deadline"}:
+        if entry.state in {"unreachable", "unsupported_host", "deadline", "site_paused"}:
             return entry, False
         if entry.state == "allow_all" or entry.parser is None:
             return entry, True
@@ -320,6 +322,8 @@ class PoliteFetcher:
             result = self._get(current)
             if result.status == "deadline":
                 return _RobotsEntry("deadline", None, self._clock())
+            if result.status == "site_paused":
+                return _RobotsEntry("site_paused", None, self._clock(), result.error)
             if result.status == "unsupported_host":
                 return _RobotsEntry("unsupported_host", None, self._clock(), result.error)
             if result.status != "redirect":
@@ -379,6 +383,9 @@ class PoliteFetcher:
         while True:
             if self._expired():
                 return FetchResult(url, "deadline", final_url=url, error=_DEADLINE)
+            gate = getattr(self._local, "gate", None)
+            if gate is not None and not gate(url):
+                return FetchResult(url, "site_paused", final_url=url, error=SITE_PAUSED)
             compat = host in self._compat_hosts
             client = self._compat_client if compat else self._client
             real = self._real["compat" if compat else "main"]

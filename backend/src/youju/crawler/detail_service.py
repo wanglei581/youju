@@ -255,30 +255,30 @@ def _host(url: str) -> str:
 
 
 class _PausingFetcher:
-    """取一份文件用：每次请求、每一跳跳转之前，看这份文件已经经过的网站和要去的网站有没有这一轮已停的，
-    有就不去（记 site_paused）——详情页跳进已停网站以后，它的 PDF 附件也不再取；只记真正经过的地址
-    （原地址、每一跳；被挡下没去的不算经过）。"""
+    """取一份文件用：每次真正发请求之前（每一跳、robots.txt、等完限速以后）问一次 _admit——这份文件
+    已经经过的网站和要去的网站有没有这一轮已停的，有就不去（记 site_paused；详情页跳进已停网站以后，
+    它的 PDF 附件也不再取）；放行时当场记下要去的地址（被挡下没去的不算经过）。"""
 
     def __init__(self, inner: DetailFetcher, pause: _SitePause) -> None:
         self.inner, self.pause = inner, pause
         self.visited: list[str] = []
 
-    def _allowed(self, target: str) -> bool:
-        hosts = {_host(u) for u in self.visited} | {_host(target)}
+    def _admit(self, target: str) -> bool:
         with self.pause.lock:
-            return not hosts & self.pause.hosts
+            if ({_host(u) for u in self.visited} | {_host(target)}) & self.pause.hosts:
+                return False
+            self.visited.append(target)
+            return True
 
     def fetch(self, url: str) -> FetchResult:
-        if not self._allowed(url):
-            return FetchResult(url, "site_paused", error=SITE_PAUSED)
         if isinstance(self.inner, PoliteFetcher):
-            result = self.inner.fetch(url, hop_allowed=self._allowed)
-        else:
-            result = self.inner.fetch(url)
-        if result.status == "site_paused":
-            self.visited += result.hops
-        else:
-            self.visited += [*(result.hops or (url,)), result.final_url or url]
+            return self.inner.fetch(url, hop_allowed=self._admit)
+        # 测试用的假取页器不跟跳转：请求前问一次，请求后记下跳转后的地址
+        if not self._admit(url):
+            return FetchResult(url, "site_paused", error=SITE_PAUSED)
+        result = self.inner.fetch(url)
+        with self.pause.lock:
+            self.visited += [*result.hops, result.final_url or url]
         return result
 
 
