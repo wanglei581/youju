@@ -1,13 +1,16 @@
 """转发组自动合并的质检命令（D-129 ②），都在本机跑，只读写 JSON 文件和 repost_* 表。
 
 - repost-auto-sample：抽组。gate 从现在满足自动合并条件的组里抽（开开关前 Claude 带证据判 100 组）；
-  weekly 先抽已经自动合并的组、不够的用别的已确认组补（每周 Codex 独立抽查 10 组）。只给证据：
-  各版本的标题、机关、日期、网址、引用的文号、自己的发文字号（部里原件按它对上）、正文里共同文号前后
-  的原文，结论和备注留空给判的人填。每周抽查判的是已经确认（对外折叠）的版本；同组还没确认的版本
-  （正文没抓到等，见 repost.rebuild）一并列出、confirmed 为空，只供对照。
-- repost-auto-record：记回判定。格式不对整份拒收；组在抽样后变了（修订号或在组版本不一样）的跳过；
+  weekly 先抽已经自动合并的组、不够的用别的已确认组补（每周 Codex 独立抽查 10 组）。抽到的名单当场
+  记进库（repost_auto_checks，结论空着）。只给证据：各版本的标题、机关、日期、网址、引用的文号、
+  自己的发文字号（部里原件按它对上）、正文里共同文号前后的原文，结论和备注留空给判的人填。判的版本
+  （judge 为真）每个都给摘录：gate 是全部在组版本；weekly 是已经确认（对外折叠）的版本，同组还没
+  确认的版本（正文没抓到等，见 repost.rebuild）一并列出、不给摘录，只供对照。
+- repost-auto-record：记回判定。交上来的组必须和这一轮抽样名单一模一样（不能删、不能添），每组都要有
+  结论；格式不对整份拒收。组在抽样后变了（修订号或判的版本不一样）的由程序记 changed、不算进准确率；
   判错的组当场整组撤回（以后不再自动合并）。
-- repost-auto-stats：按轮统计准确率，给出开关那道门的结果。
+- repost-auto-stats：按轮统计（抽了几组、判了几组、对几组、组变了几组、还有几组没判），给出开关那道
+  门的结果（只认整份判完、判了对错满 100 组的轮）。
 - repost-withdraw：命令行整组撤回（收到投诉等抽查以外的场合），要带看到的修订号。
 撤回都记一行审计日志（youju.audit），和管理台的撤回一样留痕。
 """
@@ -20,7 +23,7 @@ from collections import defaultdict
 from dataclasses import asdict
 from datetime import UTC, date, datetime, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from youju.classify import effective_kind
@@ -71,8 +74,6 @@ def _audit(action: str, **fields: object) -> None:
 # gate 默认多抽几组：抽样到记回之间组变了的要跳过，免得记回来不满 AUTO_GATE_SIZE 组、门过不了
 GATE_SAMPLE_DEFAULT = AUTO_GATE_SIZE + 10
 WEEKLY_SAMPLE_DEFAULT = 10
-# 每组最多给几个版本的正文摘录（大组版本很多，判的人读不完；其余版本照样列出标题、机关、日期）
-_EXCERPT_MEMBERS = 20
 
 
 def _versions(rows, duplicates):
@@ -131,11 +132,18 @@ def _excerpt(body, number):
     return body[:300]
 
 
+def _judged(rows, duplicates, purpose):
+    """这一组要判的版本：gate 是全部在组版本（开关打开以后要整组合并的）；weekly 是已经确认、对外
+    折叠的版本。"""
+    return _versions(rows, duplicates) if purpose == "gate" else _confirmed(rows, duplicates)
+
+
 def sample(args):
     if args.size is not None and args.size < 1:
         raise ValueError("抽样数量必须大于零")
     stamp = _now()
     rng = random.Random(args.seed)
+    round_id = f"{args.purpose}-{stamp:%Y%m%d}-{uuid.uuid4().hex[:12]}"
     with session_factory()() as session:
         today = stamp.astimezone(_BEIJING).date()
         if args.purpose == "gate":
@@ -143,8 +151,8 @@ def sample(args):
             population = len(groups)
             selected = rng.sample(groups, min(args.size or GATE_SAMPLE_DEFAULT, len(groups)))
         else:
-            # 每周抽查：只看窗口里有确认版本的组（自动合并只在窗口里做）；这一版本已经抽查记过
-            # 的不再抽
+            # 每周抽查：只看窗口里有确认版本的组（自动合并只在窗口里做）；这一版本已经被每周抽查
+            # 抽过的不再抽（gate 抽查是 Claude 判的，不挡 Codex 的独立抽查）
             confirmed = select(RepostGroupMember.group_id).where(
                 RepostGroupMember.active.is_(True), RepostGroupMember.confirmed_at.is_not(None)
             )
@@ -161,7 +169,8 @@ def sample(args):
             checked = set(
                 session.execute(
                     select(RepostAutoCheck.group_id, RepostAutoCheck.revision).where(
-                        RepostAutoCheck.group_id.in_([g.id for g in groups])
+                        RepostAutoCheck.purpose == "weekly",
+                        RepostAutoCheck.group_id.in_([g.id for g in groups]),
                     )
                 ).all()
             )
@@ -223,16 +232,21 @@ def sample(args):
         }
         items = []
         for group, rows in selected:
-            number = auto_upstream(rows, cands, duplicates)
+            judged = _judged(rows, duplicates, args.purpose)
+            judged_ids = {r.document_id for r in judged}
+            # 共同文号、摘录都只按判的版本（weekly 时新来的未确认版本不影响已折叠版本的证据）
+            number = auto_upstream(rows, cands, duplicates, versions=judged)
             members = []
-            for index, row in enumerate(_versions(rows, duplicates)):
+            for row in _versions(rows, duplicates):
                 doc, detail = details[row.document_id]
                 cand = cands.get(row.document_id)
                 if cand is None:
                     raise ValueError(f"文件 {row.document_id} 无候选数据，无法生成完整抽样")
+                judge = row.document_id in judged_ids
                 members.append(
                     dict(
                         document_id=doc.id,
+                        judge=judge,
                         title=doc.title,
                         province=cand.province,
                         city=cand.city,
@@ -248,9 +262,10 @@ def sample(args):
                             if row.confirmed_at is None
                             else ("自动合并" if row.confirmed_by == AUTO_REVIEWER else "人工")
                         ),
+                        # 判的版本每个都给摘录（大组也不省），只供对照的不给
                         excerpt=(
                             _excerpt(detail.body_text or "" if detail else "", number)
-                            if index < _EXCERPT_MEMBERS
+                            if judge
                             else None
                         ),
                     )
@@ -261,14 +276,30 @@ def sample(args):
                     revision=group.revision,
                     topic=group.topic,
                     upstream=number,
-                    auto=_all_auto(rows, duplicates),
+                    # weekly：确认过的版本是不是都是自动合并的；gate 时还没合并，不适用
+                    auto=_all_auto(rows, duplicates) if args.purpose == "weekly" else None,
                     members=members,
                     verdict="",
                     note="",
                 )
             )
+            # 抽到的名单当场记进库（结论空着）：记录时交上来的必须和它一模一样
+            session.add(
+                RepostAutoCheck(
+                    round=round_id,
+                    purpose=args.purpose,
+                    group_id=group.id,
+                    revision=group.revision,
+                    document_ids=sorted(judged_ids),
+                    rule_version=AUTO_RULE_VERSION,
+                    verdict=None,
+                    note="",
+                    sampled_at=stamp,
+                )
+            )
+        session.commit()
     result = dict(
-        round=f"{args.purpose}-{stamp:%Y%m%d}-{uuid.uuid4().hex[:12]}",
+        round=round_id,
         purpose=args.purpose,
         rule_version=AUTO_RULE_VERSION,
         sampled_at=stamp.isoformat(),
@@ -278,6 +309,8 @@ def sample(args):
     )
     args.out.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"从 {population} 组里抽了 {len(items)} 组：{args.out}")
+    if args.purpose == "gate" and len(items) < AUTO_GATE_SIZE:
+        print(f"只抽到 {len(items)} 组，不满 {AUTO_GATE_SIZE} 组：这一轮判完也过不了门")
     return 0
 
 
@@ -341,7 +374,29 @@ def record(args):
     withdrawn: list[dict] = []
     reviewer = args.by.strip()
     with session_factory()() as session:
-        ids = sorted(i["group_id"] for i in data["items"])
+        sampled = {
+            row.group_id: row
+            for row in session.scalars(
+                select(RepostAutoCheck)
+                .where(RepostAutoCheck.round == data["round"])
+                .with_for_update()
+            )
+        }
+        if not sampled:
+            raise ValueError("这一轮没有抽样名单：先用 repost-auto-sample 抽")
+        if any(
+            r.purpose != data["purpose"] or r.rule_version != data["rule_version"]
+            for r in sampled.values()
+        ):
+            raise ValueError("用途或规则版本和这一轮抽样名单对不上")
+        given = {i["group_id"] for i in data["items"]}
+        if given != set(sampled):
+            missing, extra = sorted(set(sampled) - given), sorted(given - set(sampled))
+            raise ValueError(
+                f"交上来的组和抽样名单不一样（少了 {missing[:10]}、多了 {extra[:10]}）："
+                "每组都要判，不能删、不能添"
+            )
+        ids = sorted(given)
         groups = {
             g.id: g
             for g in session.scalars(
@@ -363,43 +418,28 @@ def record(args):
         for row in rows:
             grouped[row.group_id].append(row)
         duplicates = set(duplicate_members(session, [r.document_id for r in rows]))
-        existing = set(
-            session.scalars(
-                select(RepostAutoCheck.group_id).where(
-                    RepostAutoCheck.round == data["round"], RepostAutoCheck.group_id.in_(ids)
-                )
-            )
-        )
-        for item in data["items"]:
+        for item in sorted(data["items"], key=lambda i: i["group_id"]):
+            check = sampled[item["group_id"]]
             group = groups.get(item["group_id"])
-            if item["group_id"] in existing:
+            if check.verdict is not None:
                 print(f"组 {item['group_id']}：已记过，跳过")
                 counts["skip"] += 1
                 continue
-            doc_ids = sorted(m["document_id"] for m in item["members"])
+            check.checked_by, check.checked_at = reviewer, stamp
             if (
                 group is None
-                or group.revision != item["revision"]
-                or sorted(r.document_id for r in _versions(grouped[group.id], duplicates))
-                != doc_ids
-            ):
-                print(f"组 {item['group_id']}：组变了，没记")
-                counts["skip"] += 1
-                continue
-            session.add(
-                RepostAutoCheck(
-                    round=data["round"],
-                    purpose=data["purpose"],
-                    group_id=group.id,
-                    revision=item["revision"],
-                    document_ids=doc_ids,
-                    rule_version=data["rule_version"],
-                    verdict=item["verdict"],
-                    note=item["note"],
-                    checked_by=reviewer,
-                    checked_at=stamp,
+                or group.revision != check.revision
+                or sorted(
+                    r.document_id for r in _judged(grouped[group.id], duplicates, check.purpose)
                 )
-            )
+                != check.document_ids
+            ):
+                # 抽样以后组变了：程序记 changed、不算进准确率（判的人的结论不用）
+                check.verdict, check.note = "changed", "抽样以后组变了"
+                print(f"组 {item['group_id']}：抽样以后组变了，记 changed、不算")
+                counts["changed"] += 1
+                continue
+            check.verdict, check.note = item["verdict"], item["note"]
             counts[item["verdict"]] += 1
             if item["verdict"] == "wrong":
                 # 判错的组当场整组撤回（以后不再自动合并）；审计日志等提交成功以后再写
@@ -420,19 +460,18 @@ def record(args):
                     )
                 )
         session.commit()
-        recorded = session.scalar(
-            select(func.count(RepostAutoCheck.id)).where(RepostAutoCheck.round == data["round"])
-        )
+        judged = sum(1 for r in sampled.values() if r.verdict in ("correct", "wrong"))
     for event in withdrawn:
         _audit("repost_withdraw", reviewer=reviewer, **event)
     print(
         f"记了 {counts['correct'] + counts['wrong']} 组、对 {counts['correct']} 组、"
-        f"错 {counts['wrong']} 组、跳过 {counts['skip']} 组、撤回 {counts['withdraw']} 组"
+        f"错 {counts['wrong']} 组、组变了 {counts['changed']} 组、跳过 {counts['skip']} 组、"
+        f"撤回 {counts['withdraw']} 组"
     )
-    if data["purpose"] == "gate" and recorded < AUTO_GATE_SIZE:
+    if data["purpose"] == "gate" and judged < AUTO_GATE_SIZE:
         print(
-            f"这一轮一共只记了 {recorded} 组，不满 {AUTO_GATE_SIZE} 组，开关那道门过不了："
-            "再抽一轮补满"
+            f"这一轮判了对错的一共 {judged} 组，不满 {AUTO_GATE_SIZE} 组，开关那道门过不了："
+            "再抽一轮"
         )
     return 0
 
@@ -441,7 +480,7 @@ def stats(args):
     with session_factory()() as session:
         rows = list(
             session.scalars(
-                select(RepostAutoCheck).order_by(RepostAutoCheck.checked_at, RepostAutoCheck.id)
+                select(RepostAutoCheck).order_by(RepostAutoCheck.sampled_at, RepostAutoCheck.id)
             )
         )
         gate = auto_gate(session)
@@ -454,25 +493,32 @@ def stats(args):
                 round=row.round,
                 purpose=row.purpose,
                 rule_version=row.rule_version,
-                checked=0,
+                sampled=0,
+                judged=0,
                 correct=0,
-                checked_at=None,
+                changed=0,
+                pending=0,
+                sampled_at=row.sampled_at.isoformat(),
             ),
         )
-        entry["checked"] += 1
+        entry["sampled"] += 1
+        entry["judged"] += row.verdict in ("correct", "wrong")
         entry["correct"] += row.verdict == "correct"
-        entry["checked_at"] = row.checked_at.isoformat()
+        entry["changed"] += row.verdict == "changed"
+        entry["pending"] += row.verdict is None
     results = list(rounds.values())
     for entry in results:
-        entry["accuracy"] = entry["correct"] / entry["checked"]
+        entry["accuracy"] = entry["correct"] / entry["judged"] if entry["judged"] else None
     output = {"rounds": results, "latest_gate": asdict(gate)}
     if args.json:
         print(json.dumps(output, ensure_ascii=False))
     else:
         for r in results:
+            accuracy = "暂无" if r["accuracy"] is None else f"{r['accuracy']:.1%}"
             print(
-                f"{r['round']} {r['purpose']} {r['rule_version']}：判 {r['checked']} 组，"
-                f"对 {r['correct']} 组，准确率 {r['accuracy']:.1%}"
+                f"{r['round']} {r['purpose']} {r['rule_version']}：抽 {r['sampled']} 组，"
+                f"判 {r['judged']} 组、对 {r['correct']} 组，准确率 {accuracy}；"
+                f"组变了 {r['changed']} 组，还没判 {r['pending']} 组"
             )
         print("当前规则最近 gate：" + json.dumps(output["latest_gate"], ensure_ascii=False))
     return 0

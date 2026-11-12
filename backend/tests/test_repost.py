@@ -1543,21 +1543,12 @@ def test_auto_quality_commands(session, session_factory, world, monkeypatch, tmp
         row.confirmed_at, row.confirmed_by, row.confirmed_fingerprint = NOW, "人工", "x"
     session.commit()
     monkeypatch.setattr(repost_checks, "session_factory", lambda: session_factory)
-    path = tmp_path / "sample.json"
-    item = {
-        "group_id": group.id,
-        "revision": group.revision,
-        "members": [{"document_id": r.document_id} for r in rows],
-        "verdict": "wrong",
-        "note": "不同项目",
-    }
-    data = {
-        "round": "weekly-test",
-        "purpose": "weekly",
-        "rule_version": AUTO_RULE_VERSION,
-        "items": [item],
-    }
-    path.write_text(json.dumps(data), encoding="utf-8")
+    data = _sample(tmp_path, "weekly", seed=7)
+    assert [i["group_id"] for i in data["items"]] == [group.id]
+    assert data["rule_version"] == AUTO_RULE_VERSION and data["items"][0]["auto"] is False
+    data["items"][0].update(verdict="wrong", note="不同项目")
+    path = tmp_path / "filled.json"
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
     args = SimpleNamespace(file=path, by="核对人")
     assert repost_checks.record(args) == 0
     session.expire_all()
@@ -1570,7 +1561,7 @@ def test_auto_quality_commands(session, session_factory, world, monkeypatch, tmp
     assert "已记过" in capsys.readouterr().out
     assert repost_checks.stats(SimpleNamespace(json=True)) == 0
     report = json.loads(capsys.readouterr().out)
-    assert report["rounds"][0]["checked"] == 1 and report["rounds"][0]["accuracy"] == 0
+    assert (report["rounds"][0]["judged"], report["rounds"][0]["accuracy"]) == (1, 0)
     assert repost_checks.withdraw(SimpleNamespace(group_id=group.id, revision=0, by="人")) == 1
     rebuild(session, now=NOW)
     session.commit()
@@ -1784,7 +1775,8 @@ def test_auto_sample_gives_evidence_without_conclusions(
         "verdict",
         "note",
     }
-    assert data["seed"] == 1 and data["population"] == 1 and item["auto"] is False
+    assert data["seed"] == 1 and data["population"] == 1 and item["auto"] is None
+    assert all(m["judge"] for m in item["members"])  # gate 判的是全部在组版本
     assert item["verdict"] == "" and item["note"] == ""
     assert item["upstream"] and {m["document_id"] for m in item["members"]} == {d.id for d in docs}
     member = item["members"][0]
@@ -1828,11 +1820,13 @@ def test_auto_record_skips_groups_changed_after_sampling(
     path = tmp_path / "filled.json"
     path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
     assert repost_checks.record(SimpleNamespace(file=path, by="Claude")) == 0
-    assert "组变了，没记" in capsys.readouterr().out
+    assert "抽样以后组变了" in capsys.readouterr().out
     session.expire_all()
-    assert session.query(RepostAutoCheck).count() == 0 and not group.no_auto
-    # 修订号对得上时：判错的组当场整组撤回，并记一行审计日志
-    data["items"][0]["revision"] = group.revision
+    check = session.query(RepostAutoCheck).one()  # 程序记 changed，判的人的结论不用、不算
+    assert check.verdict == "changed" and not group.no_auto
+    # 重新抽一轮：判错的组当场整组撤回，并记一行审计日志
+    data = _sample(tmp_path, "gate", seed=2)
+    data["items"][0].update(verdict="wrong", note="其实是两件事")
     path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
     with caplog.at_level(logging.INFO, logger="youju.audit"):
         assert repost_checks.record(SimpleNamespace(file=path, by="Claude")) == 0
@@ -2233,7 +2227,7 @@ def test_auto_stats_with_gate_records(session, session_factory, monkeypatch, cap
     assert repost_checks.stats(SimpleNamespace(json=True)) == 0
     report = json.loads(capsys.readouterr().out)  # 计数从库里出来是 Decimal，转了整数才写得出
     assert report["latest_gate"]["passed"] is True and report["latest_gate"]["correct"] == 99
-    assert report["rounds"][0]["checked"] == 100
+    assert report["rounds"][0]["judged"] == 100 and report["rounds"][0]["pending"] == 0
 
 
 def test_auto_record_warns_when_a_gate_round_is_short(
@@ -2325,3 +2319,38 @@ def test_weekly_sample_includes_partly_folded_auto_groups(
     flags = {m["document_id"]: m["confirmed"] for m in item["members"]}
     assert flags == {docs[0].id: "自动合并", docs[1].id: "自动合并", late.id: None}
     assert all("own_number" in m for m in item["members"])
+    # 判的是已经确认的版本：共同文号、摘录都只按它们；新来的只供对照、不给摘录
+    judge = {m["document_id"]: m["judge"] for m in item["members"]}
+    assert judge == {docs[0].id: True, docs[1].id: True, late.id: False}
+    assert item["upstream"] == "工信厅联电子函〔2026〕376号"
+    excerpts = {m["document_id"]: m["excerpt"] for m in item["members"]}
+    assert excerpts[late.id] is None and "376" in excerpts[docs[0].id]
+
+
+def test_auto_record_must_cover_exactly_the_sampled_list(
+    session, session_factory, monkeypatch, tmp_path
+):
+    # 记录时交上来的组必须和抽样名单一模一样：删掉一组、添一组都整份拒收（不能只交好判的）
+    import json
+
+    from youju import repost_checks
+
+    monkeypatch.setattr(
+        "youju.repost.get_settings", lambda: SimpleNamespace(repost_auto_merge=False)
+    )
+    monkeypatch.setattr(repost_checks, "session_factory", lambda: session_factory)
+    _auto_world(session)
+    rebuild(session, now=NOW)
+    session.commit()
+    data = _sample(tmp_path, "gate")
+    item = data["items"][0]
+    path = tmp_path / "filled.json"
+    filled = dict(item, verdict="correct")
+    for items in ([], [filled, dict(filled, group_id=item["group_id"] + 1)]):
+        path.write_text(json.dumps({**data, "items": items}, ensure_ascii=False), encoding="utf-8")
+        with pytest.raises(ValueError, match="抽样名单"):
+            repost_checks.record(SimpleNamespace(file=path, by="Claude"))
+    other = {**data, "round": "gate-没抽过", "items": [dict(item, verdict="correct")]}
+    path.write_text(json.dumps(other, ensure_ascii=False), encoding="utf-8")
+    with pytest.raises(ValueError, match="没有抽样名单"):
+        repost_checks.record(SimpleNamespace(file=path, by="Claude"))
