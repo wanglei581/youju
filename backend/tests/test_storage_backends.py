@@ -261,8 +261,13 @@ def test_storage_export_and_import_keep_paths(disk, tmp_path, monkeypatch):
     assert moved.files == {"advisor/": 1, "logs/": 1}
     assert (tmp_path / "new/advisor/out/u1/1.xlsx").read_bytes() == b"result"
     assert not (tmp_path / "new/backups").exists()
-    # 再导一次：已经有的跳过
+    # 再导一次：已经有、内容一样的跳过
     assert storage_move.import_archive(archive).skipped == 2
+    # 已经有、大小一样但内容不一样的：不当成搬好了，用包里的覆盖、记数
+    (tmp_path / "new/logs/access-20261101.jsonl.gz").write_bytes(b"LOG")
+    again = storage_move.import_archive(archive)
+    assert again.replaced == 1 and again.skipped == 1
+    assert (tmp_path / "new/logs/access-20261101.jsonl.gz").read_bytes() == b"log"
 
 
 def test_storage_export_since_days_only_moves_recent(disk, tmp_path):

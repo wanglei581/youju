@@ -13,6 +13,7 @@ from datetime import UTC, date, datetime
 from types import SimpleNamespace
 
 import pytest
+import sqlalchemy as sa
 from fastapi.testclient import TestClient
 from sqlalchemy import func, make_url, select, text
 
@@ -63,6 +64,10 @@ def _clear(engine):
         conn.execute(text(f"DROP TABLE IF EXISTS `{sync_server.STATE}`"))
         conn.execute(text(f"DROP TABLE IF EXISTS `{sync_server.ORDER}`"))
         conn.execute(text(f"DROP TABLE IF EXISTS `{sync_server.PENDING}`"))
+    # 清表把自增起点也清了：像服务器第一次收同步时一样，把服务器自己会新建行的表抬到编号下限
+    sync_server._FLOORS_READY = False
+    with engine.connect() as conn:
+        sync_server.ensure_floors(conn)
 
 
 @pytest.fixture
@@ -424,6 +429,57 @@ def test_pending_and_upload_take_the_same_turn(env, monkeypatch, tmp_path):
     )
     assert turns == [0, 0]
     assert env.client.json("POST", "/blobs/pending", {"limit": 10})["pending"] == []
+
+
+def test_server_id_floor_fits_the_key_column():
+    """编号下限要放得进那一列（INT 有符号最大 2147483647），上面还得留够服务器自己用的。"""
+    for name, floor in sync_tables.SERVER_ID_FLOOR.items():
+        column = T[name].c.id
+        assert isinstance(column.type, sa.Integer) and not isinstance(column.type, sa.BigInteger)
+        assert floor + 100_000_000 < 2**31 - 1
+
+
+def test_pushed_rows_never_overwrite_server_owned_rows(env):
+    """服务器自己的行（用户线索生成的截止日期）从编号下限往上分；万一本机推来的行和它同编号，
+    不写、报出来，不盖掉服务器的行。"""
+    src = source(env.local)
+    bootstrap(env)
+    doc = document(env.local, src, "a")
+    local.push(env.local, env.client)
+    floor = sync_tables.SERVER_ID_FLOOR["document_deadlines"]
+    user_row = insert(
+        env.server,
+        "document_deadlines",
+        document_id=doc,
+        fingerprint="u" * 64,
+        kind="企业申报截止",
+        candidate_date=date(2026, 12, 1),
+        evidence="用户填的",
+        confidence="低",
+        origin="user",
+        status="pending",
+    )
+    assert user_row >= floor
+    # 硬造一个撞号的：本机推来一行编号和服务器自己的那一行一样
+    clash = insert(
+        env.local,
+        "document_deadlines",
+        id=user_row,
+        document_id=doc,
+        fingerprint="r" * 64,
+        kind="企业申报截止",
+        candidate_date=date(2026, 12, 2),
+        evidence="原文",
+        confidence="高",
+        origin="rule",
+        status="pending",
+    )
+    assert clash == user_row
+    with pytest.raises(local.SyncError) as err:
+        local.push(env.local, env.client)
+    assert "409" in str(err.value) and "编号撞了" in str(err.value)
+    kept = [r for r in rows(env.server, "document_deadlines") if r["id"] == user_row]
+    assert kept and kept[0]["origin"] == "user"
 
 
 def test_stream_mismatch_needs_full_push(env):
@@ -837,6 +893,15 @@ def test_export_import_bootstrap(env, server_engine, db_engine):
             .where(T["digest_profiles"].c.name == "全国版")
             .values(keywords=[])
         )
+    # 结束行后面还有东西、gzip 校验不过（文件尾损坏）：都不导
+    whole = gzip.decompress(buf.getvalue())
+    with pytest.raises(local.SyncError, match="结束行后面还有内容"):
+        local.import_export(db_engine, io.BytesIO(gzip.compress(whole + b'{"t": "x"}\n')))
+    damaged = bytearray(buf.getvalue())
+    damaged[-6] ^= 0xFF  # 改坏 CRC
+    with pytest.raises(local.SyncError, match="gzip 核对没过"):
+        local.import_export(db_engine, io.BytesIO(bytes(damaged)))
+    assert count(db_engine, "documents") == 0
     # 导到一半出错（文件不完整）：导数据的事务整个回滚，表还是空的（种子行也还在）；自增起点在导数据
     # 之前、空表上设的，不会出现"数据进去了、重跑又说表不空"的卡住；用好的文件重跑照常
     lines = gzip.decompress(buf.getvalue()).splitlines(keepends=True)
@@ -857,7 +922,11 @@ def test_export_import_bootstrap(env, server_engine, db_engine):
                 " WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'document_deadlines'"
             )
         )
-    assert auto >= 2
+    # 服务器上用户线索生成的那一行从编号下限往上分；本机的起点只按公开的那部分算，两段不重叠
+    floor = sync_tables.SERVER_ID_FLOOR["document_deadlines"]
+    with server_engine.connect() as conn:
+        user_ids = list(conn.scalars(text("SELECT id FROM document_deadlines")))
+    assert user_ids and min(user_ids) >= floor and auto < floor
     # 导入时触发器记下的变更：mark-synced 直接把服务器进度设到这里，不再推一遍
     seq = local.mark_synced(db_engine, env.client)
     assert seq > 0 and local.push(db_engine, env.client).batches == 0

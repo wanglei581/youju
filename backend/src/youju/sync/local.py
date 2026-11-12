@@ -12,6 +12,7 @@ import json
 import logging
 import time as clock
 import uuid
+import zlib
 from collections import defaultdict
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -746,6 +747,13 @@ def export(engine: Engine, out: IO[bytes]) -> dict[str, int]:
         }
         for t in tables:
             (col,) = pk_columns(t)
+            own = sync_tables.SERVER_OWNED.get(t.name)
+            if t.name in sync_tables.SERVER_ID_FLOOR and own is not None:
+                # 服务器自己的行从编号下限往上分（自增起点也在那里）：本机的起点只按不是服务器自己
+                # 的那部分算，不能跳进服务器那段
+                top = conn.scalar(select(func.max(t.c[col])).where(own(t)))
+                next_ids[t.name] = int(top) + 1 if top is not None else 1
+                continue
             top = conn.scalar(select(func.max(t.c[col])))
             if t.name in next_ids and top is not None:
                 next_ids[t.name] = max(next_ids[t.name], int(top) + 1)
@@ -832,6 +840,12 @@ def import_export(engine: Engine, src: IO[bytes]) -> dict[str, int]:
                     counts[name] += 1
                 if batch:
                     conn.execute(tables[current].insert(), batch)
+                # 结束行以后一直读到 gzip 流的末尾：gzip 在那里核对 CRC 和长度，截断、损坏的会报错；
+                # 结束行后面不该还有内容
+                if gz.read():
+                    raise SyncError("文件的结束行后面还有内容")
+            except (OSError, EOFError, zlib.error) as exc:
+                raise SyncError(f"文件损坏（gzip 核对没过）：{type(exc).__name__}") from None
             finally:
                 # 出错回滚也不会恢复这个会话变量：照样开回来（连接会放回连接池给别人用）
                 conn.execute(text("SET FOREIGN_KEY_CHECKS = 1"))

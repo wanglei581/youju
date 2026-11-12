@@ -43,8 +43,8 @@ MAX_BODY = 32 * 1024 * 1024
 MAX_PLAIN = 64 * 1024 * 1024
 MAX_BLOB = 25 * 1024 * 1024
 BLOB_PREFIX = "attachments/"
-# 同步表里只属于服务器的行：本机没有，全推删"多出来的行"时要跳过（条件是"不是服务器自己的行"）
-SERVER_OWNED = {"document_deadlines": lambda t: t.c.origin != "user"}
+SERVER_OWNED = sync_tables.SERVER_OWNED
+_FLOORS_READY = False
 
 
 class Replace(Insert):
@@ -118,8 +118,31 @@ def _json(body: bytes) -> Any:
         raise HTTPException(status_code=400, detail="包体不是 JSON") from None
 
 
+def ensure_floors(conn: Connection) -> None:
+    """服务器自己会新建行的同步表（SERVER_ID_FLOOR）：自增起点抬到下限以上，服务器自己的行（如用户
+    线索生成的截止日期）从那里往上分，和本机推来的编号不会撞。每个进程查一次。"""
+    global _FLOORS_READY
+    if _FLOORS_READY:
+        return
+    conn.execute(text("SET SESSION information_schema_stats_expiry = 0"))
+    for name, floor in sync_tables.SERVER_ID_FLOOR.items():
+        row = conn.execute(
+            text(
+                "SELECT AUTO_INCREMENT FROM information_schema.TABLES"
+                " WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :t"
+            ),
+            {"t": name},
+        ).first()
+        # 没写过行、刚清空的表这里是 NULL（本机 MySQL 8 实测），也要抬
+        if row is not None and (row[0] is None or int(row[0]) < floor):
+            conn.execute(text(f"ALTER TABLE `{name}` AUTO_INCREMENT = {int(floor)}"))
+    _FLOORS_READY = True
+
+
 def ensure_state(engine: Engine) -> None:
     """进度表（不是迁移：只是同步的记账，服务器第一次收同步时建）。"""
+    with engine.connect() as conn:
+        ensure_floors(conn)
     with engine.begin() as conn:
         conn.execute(
             text(
@@ -230,6 +253,32 @@ class Stale(Exception):
         self.last = last
 
 
+class OwnedClash(Exception):
+    def __init__(self, table: str, ids: list[Any]) -> None:
+        super().__init__("本机推来的行和服务器自己的行编号撞了")
+        self.table = table
+        self.ids = ids
+
+
+def _owned_clash(conn: Connection, parts: dict) -> None:
+    """要写的行里有和服务器自己的行（SERVER_OWNED 以外的那部分，如用户线索生成的截止日期）同编号的：
+    REPLACE 会把服务器自己的行盖掉，不写、报出来（编号下限之后不该出现，出现就是哪里不对）。"""
+    for name, own in SERVER_OWNED.items():
+        if name not in parts:
+            continue
+        t, upserts, _ = parts[name]
+        (col,) = pk_columns(t)
+        ids = [row[col] for row in upserts if row.get(col) is not None]
+        for start in range(0, len(ids), 1000):
+            clash = list(
+                conn.scalars(
+                    select(t.c[col]).where(t.c[col].in_(ids[start : start + 1000]), ~own(t))
+                )
+            )
+            if clash:
+                raise OwnedClash(name, clash)
+
+
 class MissingBlobs(Exception):
     def __init__(self, paths: list[str]) -> None:
         super().__init__("附件副本文件不在服务器上")
@@ -309,6 +358,7 @@ def apply(engine: Engine, payload: dict, *, stamp: int) -> dict:
         missing, nowhere = _missing_blobs(parts, set(local_has))
         if missing:
             raise MissingBlobs(missing)
+        _owned_clash(conn, parts)
         noted = datetime.now(UTC).replace(tzinfo=None)
         for path in nowhere:
             conn.execute(
@@ -462,6 +512,13 @@ async def apply_batch(request: Request) -> dict:
             "message": "这一批比服务器已经写过的旧（重放、或卡在半路晚到的请求），没有写；"
             "本机时钟往回调过的话，等时钟走过上次推的时间再推",
             "last_stamp": exc.last,
+        }
+        raise HTTPException(status_code=409, detail=detail) from None
+    except OwnedClash as exc:
+        detail = {
+            "message": f"本机推来的 {exc.table} 和服务器自己的行编号撞了，"
+            "没有写（不盖掉服务器的行）；按手册查两边的编号",
+            "ids": exc.ids[:20],
         }
         raise HTTPException(status_code=409, detail=detail) from None
     except MissingBlobs as exc:

@@ -7,13 +7,15 @@
 
 - 导出（在云托管 admin 的"登录实例"里跑）：按前缀列出文件、逐个下载、打成一个 tar.gz；
   不给 --output 时把这个包传回对象存储 exports/ 下，在云托管控制台下载（控制台一次只能下一个文件）。
-- 导入（在新服务器上跑）：解开包，按原路径写进现在配的存储（disk、s3），已经有、大小一样的跳过，
-  不一样的覆盖（可以重复导入）。
+- 导入（在新服务器上跑）：解开包，按原路径写进现在配的存储（disk、s3）。每个文件按块复制到临时文件
+  （不整个读进内存）、边复制边算 SHA-256；服务器存储（disk）里已经有、内容一样的跳过，内容不一样的
+  用包里的覆盖、记数（s3 读不到内容，照写一遍）。可以重复导入。
   文件 ID 只看路径（youju/storage.py），库里的旧文件 ID 不用改。
 """
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import tarfile
 import tempfile
@@ -37,6 +39,8 @@ class MoveReport:
     files: dict[str, int] = field(default_factory=dict)
     bytes: int = 0
     skipped: int = 0
+    # 已经有、但内容和包里的不一样、用包里的覆盖的
+    replaced: int = 0
     output: str = ""
 
 
@@ -122,10 +126,18 @@ def export_and_upload(
     return report
 
 
-def _size(store: storage.Backend, path: str) -> int | None:
-    if isinstance(store, storage.DiskBackend):
-        return store._file(path).stat().st_size
-    return None  # s3：大小不知道，当作不一样，重写一遍
+CHUNK = 1024 * 1024
+
+
+def _disk_sha256(store: storage.Backend, path: str) -> str | None:
+    """服务器存储（disk）里已有文件的 SHA-256；没有、或 s3（读不到内容）返回 None。"""
+    if not isinstance(store, storage.DiskBackend) or not store.exists(path):
+        return None
+    digest = hashlib.sha256()
+    with store._file(path).open("rb") as fh:
+        while chunk := fh.read(CHUNK):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def import_archive(source: Path) -> MoveReport:
@@ -143,15 +155,23 @@ def import_archive(source: Path) -> MoveReport:
             if not storage.valid_path(path) or member.size > MAX_FILE:
                 report.skipped += 1
                 continue
-            if store.exists(path) and _size(store, path) == member.size:
-                report.skipped += 1
-                continue
             extracted = tar.extractfile(member)
             if extracted is None:
                 report.skipped += 1
                 continue
             local = Path(tmp) / "f"
-            local.write_bytes(extracted.read())
+            digest = hashlib.sha256()
+            with local.open("wb") as out:
+                while chunk := extracted.read(CHUNK):
+                    digest.update(chunk)
+                    out.write(chunk)
+            existing = _disk_sha256(store, path)
+            if existing == digest.hexdigest():
+                report.skipped += 1
+                continue
+            if existing is not None:
+                log.warning("%s 已经有、内容和包里的不一样：用包里的覆盖", path)
+                report.replaced += 1
             store.put_file(path, local)
             report.files[prefix] = report.files.get(prefix, 0) + 1
             report.bytes += member.size

@@ -83,6 +83,13 @@ def dumps(payload: Any) -> bytes:
 # 服务器先只看请求头验签，签名对了才读包体（不让没签名的请求塞几十 MB 进来占内存），
 # 读完再核对包体和头里的 SHA-256 一致
 
+# 同步表里只属于服务器的行：本机没有，全推删"多出来的行"时要跳过（条件是"不是服务器自己的行"）
+SERVER_OWNED = {"document_deadlines": lambda t: t.c.origin != "user"}
+# 这些表两边都会新建行（本机抓的、服务器上用户线索生成的）：服务器自己的行从这个编号往上分，
+# 本机的编号远到不了，两边不会撞号（server.ensure_state 把服务器那张表的自增起点抬到这里）。
+# 主键是 INT（最大 2147483647）：服务器那段留 1.47 亿个，本机这段 20 亿个，都远用不完
+SERVER_ID_FLOOR = {"document_deadlines": 2_000_000_000}
+
 HEADER_TIME = "X-Youju-Sync-Time"
 HEADER_SIGNATURE = "X-Youju-Sync-Signature"
 HEADER_BODY = "X-Youju-Sync-Body-Sha256"
