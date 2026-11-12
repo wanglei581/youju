@@ -283,6 +283,23 @@ def test_body_has_no_page_chrome(fixture, url, first, last, issuer, published, a
     assert len(result.attachments) == attachments
 
 
+def test_xqing_web_box_before_outer_content() -> None:
+    """四川雅安、遂宁、达州等站群的正文在 div.xqing-web-box 里；通用规则最后那条 .content 在这些页面上
+    是页尾的"主办单位、地址"（11/12 雅安一批文件页存下的"正文"就是页尾）。"""
+    page = (
+        "<html><title>关于开展项目申报的通知</title><body><div class='nav'><a>首页</a><a>新闻</a></div>"
+        "<div class='xqing-web-box'><p>各县（区）农业农村局：</p><p>现将2026年度项目申报有关事项"
+        "通知如下，请按要求认真组织申报，并于12月1日前报送材料。</p><p>雅安市农业农村局</p>"
+        "<p>2026年11月5日</p></div><div class='id-foot'><div class='id-bottom'><div class='content'>"
+        "<p>站点地图 | 无障碍浏览 | 使用帮助</p><p>主办：雅安市农业农村局 地址：雅安市某某路1号"
+        " 邮编：625000</p></div></div></div></body></html>"
+    )
+    result = parse_detail(page, "https://nyncj.yaan.gov.cn/xinwen/show/1.html")
+    assert result.body_text.startswith("各县（区）农业农村局")
+    assert "主办" not in result.body_text and "站点地图" not in result.body_text
+    assert result.issuer == "雅安市农业农村局"
+
+
 def test_site_body_rules_only_for_listed_hosts() -> None:
     """按网站写的正文区只对这个网站用；页面上找不到时（网站改版）照旧走通用规则。"""
     page = (
