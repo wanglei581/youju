@@ -1032,6 +1032,7 @@ def _cmd_reclassify(_: argparse.Namespace) -> int:
 def _cmd_backup(args: argparse.Namespace) -> int:
     from youju.backup import (
         KEEP_30_DAYS,
+        KEEP_30_DAYS_SERVER,
         SCOPE_USER,
         BackupError,
         backup_scope,
@@ -1064,7 +1065,8 @@ def _cmd_backup(args: argparse.Namespace) -> int:
     finally:
         engine.dispose()
     # 云托管的这一行和以前一字不差
-    old = "份 30 天前的备份" if keep == KEEP_30_DAYS else "份旧备份（留最近 3 天和最近 4 个周日的）"
+    thirty = keep in (KEEP_30_DAYS, KEEP_30_DAYS_SERVER)
+    old = "份 30 天前的备份" if thirty else "份旧备份（留最近 3 天和最近 4 个周日的）"
     total = sum(report.counts.values())
     print(
         f"已备份{what} {total} 条记录（{report.bytes} 字节）到 {report.path}；"
@@ -2356,8 +2358,10 @@ def _sync_contact(settings) -> tuple[datetime | None, str]:
     from youju.backup import BEIJING
     from youju.sync.server import last_contact
 
-    secret = settings.sync_secret.get_secret_value().strip() if settings.sync_secret else ""
-    if not getattr(settings, "public_replica", False) or not secret:
+    if not getattr(settings, "public_replica", False):
+        return None, ""
+    sync_secret = getattr(settings, "sync_secret", None)
+    if not (sync_secret.get_secret_value().strip() if sync_secret else ""):
         return None, ""
     engine = _sync_engine()
     try:

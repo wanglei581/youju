@@ -75,8 +75,13 @@ NOT_BACKED_UP = frozenset(
 # user 只备用户数据（2.0 服务器）
 SCOPE_ALL = "all"
 SCOPE_USER = "user"
-# 留几份：30 天（有用户数据的：隐私保护指引写的是备份保留 30 天）；本机最近 3 天加最近 4 个周日
+# 留几份：
+# - 30d：云托管，和以前一样每天删 31–40 天前的；
+# - 30d-server：2.0 服务器（用户数据，隐私保护指引写的是备份保留 30 天），每天删 30–40 天前的，
+#   每份从备份那天起正好留满 30 天（Codex D-129 第 1 轮：照旧的删法每份要到第 31 天才删）；
+# - 3d4w：2.0 本机（公开数据），最近 3 天加最近 4 个周日
 KEEP_30_DAYS = "30d"
+KEEP_30_DAYS_SERVER = "30d-server"
 KEEP_3_DAYS_4_WEEKS = "3d4w"
 
 
@@ -86,11 +91,11 @@ def backup_scope(settings) -> str:
 
 
 def keep_policy(settings) -> str:
-    """2.0 本机（自建、公开数据的主库，没有用户数据）留最近 3 天和最近 4 个周日的（D-129，11/12）；
-    云托管、服务器照旧 30 天。两种都不超过 30 天（周日那份最多留 27 天）。"""
-    if getattr(settings, "hosting", "cloudrun") == "self" and not getattr(
-        settings, "public_replica", False
-    ):
+    """2.0 本机（自建、公开数据的主库，没有用户数据）留最近 3 天和最近 4 个周日的（D-129，11/12，
+    最早的不超过 27 天）；2.0 服务器每份正好留满 30 天；云托管照旧。"""
+    if getattr(settings, "hosting", "cloudrun") == "self":
+        if getattr(settings, "public_replica", False):
+            return KEEP_30_DAYS_SERVER
         return KEEP_3_DAYS_4_WEEKS
     return KEEP_30_DAYS
 
@@ -236,10 +241,16 @@ def _decoder(column) -> Callable[[Any], Any] | None:
 
 
 def _orphans(
-    conn: Connection, tables: dict[str, Table], *, skip: frozenset[str] = frozenset()
+    conn: Connection,
+    tables: dict[str, Table],
+    *,
+    skip: frozenset[str] = frozenset(),
+    only: dict | None = None,
 ) -> list[str]:
     """外键指向不存在的记录的：子表.字段。skip 里的父表不查（演练只备用户数据的备份时，
-    临时库里的公开表是空的）。"""
+    临时库里的公开表是空的）；only 里有条件的表只查那部分行（截止日期表只查服务器自己的行，
+    本机推来的公开行对不对由本机管）。"""
+    only = only or {}
     found = []
     for table in tables.values():
         for fk in table.foreign_keys:
@@ -253,19 +264,25 @@ def _orphans(
                 parent_table = table.alias(f"{table.name}_{child.name}_parent")
                 parent = parent_table.c[parent.name]
             joined = table.outerjoin(parent_table, child == parent)
-            count = conn.scalar(
-                select(func.count()).select_from(joined).where(child.is_not(None), parent.is_(None))
-            )
+            where = [child.is_not(None), parent.is_(None)]
+            if only.get(table.name) is not None:
+                where.append(only[table.name])
+            count = conn.scalar(select(func.count()).select_from(joined).where(*where))
             if count:
                 found.append(f"{table.name}.{child.name}")
     return found
 
 
-def _settle_orphans(conn: Connection, tables: dict[str, Table]) -> dict[str, tuple[str, int]]:
+def _settle_orphans(
+    conn: Connection, tables: dict[str, Table], only: dict | None = None
+) -> dict[str, tuple[str, int]]:
     """只备用户数据的备份恢复到新服务器（公开数据已经从本机推过来）以后：用户数据指着的公开行
     （通知、转发组、截止日期……）在本机那边已经删了的，照外键本来的规则处理——级联删除的这一行
     不要、置空的置空、不许删上级的报错停下。和线上本来会发生的一样：同步删掉公开行时，数据库就是
-    这样处理指着它的用户数据。返回 {子表.字段: (CASCADE 或 SET NULL, 行数)}。"""
+    这样处理指着它的用户数据。返回 {子表.字段: (CASCADE 或 SET NULL, 行数)}。
+    只备了服务器自己那部分行的表（截止日期）只动服务器自己的行，本机推来的那部分不碰
+    （agy D-129 建议）。"""
+    only = only or {}
     done: dict[str, tuple[str, int]] = {}
     # 级联会一层层传下去（删掉的用户行又有别的用户行指着它），每轮从头再查，最多 10 轮
     for _ in range(10):
@@ -278,6 +295,8 @@ def _settle_orphans(conn: Connection, tables: dict[str, Table]) -> dict[str, tup
                 missing = child.is_not(None) & ~exists(
                     select(1).select_from(parent.table).where(parent == child)
                 )
+                if only.get(table.name) is not None:
+                    missing = missing & only[table.name]
                 n = conn.scalar(_count(table, missing)) or 0
                 if not n:
                     continue
@@ -390,7 +409,7 @@ def _verify(
     wrong = [n for n in tables if counts[n] != expected.get(n, 0) - removed.get(n, 0)]
     if wrong:
         raise BackupError(f"写入后条数和备份说明对不上：{', '.join(wrong)}")
-    orphans = _orphans(conn, tables, skip=skip_parents)
+    orphans = _orphans(conn, tables, skip=skip_parents, only=only)
     if orphans:
         raise BackupError(f"写入后外键对不上：{', '.join(orphans)}")
     digests = trailer["sha256"]
@@ -480,8 +499,13 @@ def restore(
                                 "再恢复用户数据（不然指着通知的用户数据会被当成已删的处理掉）"
                             )
                     trailer = _load(conn, gz, header, tables, only=only, check_raw=user)
-                    settled = _settle_orphans(conn, tables) if user and not drill else {}
-                    skip = frozenset(outside) | frozenset(n for n, w in only.items() if w)
+                    settled = _settle_orphans(conn, tables, only) if user and not drill else {}
+                    # 只备了服务器自己那部分行的表（截止日期）也跳过：用户线索可能指着
+                    # 本机推来的那部分
+                    # （Codex D-129 第 1 轮：条件表达式不能拿来当真假判断）
+                    skip = frozenset(outside) | frozenset(
+                        n for n, w in only.items() if w is not None
+                    )
                     counts = _verify(
                         conn,
                         header,
@@ -647,6 +671,8 @@ def days_to_prune(today: date, keep: str = KEEP_30_DAYS) -> list[date]:
       （今天是周日就算一个）。从 30 天换过来的那天，31 天以内多出来的也一并删掉。"""
     if keep == KEEP_30_DAYS:
         return [today - timedelta(days=d) for d in _PRUNE_DAYS]
+    if keep == KEEP_30_DAYS_SERVER:
+        return [today - timedelta(days=d) for d in range(KEEP_DAYS, _PRUNE_DAYS.stop)]
     if keep != KEEP_3_DAYS_4_WEEKS:
         raise BackupError(f"不认识的备份保留方式：{keep}")
     last_sunday = today - timedelta(days=(today.weekday() + 1) % 7)
@@ -814,7 +840,7 @@ def run_backup(
             )
         except BackupError as exc:
             # 今天的备份已经上传好了；旧的没删掉也要提醒（明天还会再删）。30 天的说法和以前一样
-            which = " 30 天前的备份" if keep == KEEP_30_DAYS else "旧备份"
+            which = " 30 天前的备份" if keep in (KEEP_30_DAYS, KEEP_30_DAYS_SERVER) else "旧备份"
             raise BackupError(f"今天的备份已上传，但删除{which}失败：{exc}") from exc
     finally:
         if own:

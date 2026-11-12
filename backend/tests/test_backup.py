@@ -972,12 +972,24 @@ def test_restore_drill_works_with_drill_only_grant(session, db_engine, tmp_path,
 
 
 def _with_user_rows(session):
-    """populate 的数据，再加一行服务器自己的截止日期（用户线索生成的，编号在服务器那段）和一条
-    截止提醒授权（指着通知，通知删了就级联删）。"""
-    from youju.models import Subscription
+    """populate 的数据，再加一行服务器自己的截止日期（用户线索生成的，编号在服务器那段）、一条
+    截止提醒授权（指着通知，通知删了就级联删），和一条用户线索（指着本机推来的那条截止日期）。"""
+    from youju.models import DeadlineClue, Subscription
 
     doc = populate(session)
     user_id = session.scalar(select(User.id))
+    public_deadline = session.scalar(select(DocumentDeadline.id))
+    session.add(
+        DeadlineClue(
+            user_id=user_id,
+            document_id=doc.id,
+            kind="企业申报截止",
+            date=date(2026, 10, 15),
+            quote="请各单位于2026年10月15日17:00前完成网上申报",
+            submitted_at=NOW,
+            deadline_id=public_deadline,
+        )
+    )
     session.add(
         DocumentDeadline(
             id=2_000_000_001,
@@ -1046,6 +1058,7 @@ def test_user_scope_backs_up_user_data_and_own_deadlines_only(session, db_engine
     header = json.loads(lines[0])
     assert header["scope"] == "user" and header["own_rows_only"] == ["document_deadlines"]
     assert "documents" not in header["tables"] and counts["subscriptions"] == 1
+    assert counts["deadline_clues"] == 1
     # 本机推来的那条截止日期（origin=rule）不备，只备服务器自己的
     deadlines = [json.loads(line)["r"] for line in lines[1:-1] if b'"document_deadlines"' in line]
     assert counts["document_deadlines"] == 1 and [r["origin"] for r in deadlines] == ["user"]
@@ -1079,12 +1092,21 @@ def test_user_scope_restore_on_a_new_server(session, db_engine) -> None:
     _new_server(session, db_engine, drop_doc=True)
     report = {}
     restored = restore(db_engine, io.BytesIO(raw), report=report)
-    assert report["settled"] == {
-        "document_deadlines.document_id": ("CASCADE", 1),
-        "feedback.document_id": ("SET NULL", 1),
-        "subscriptions.document_id": ("CASCADE", 1),
+    settled = report["settled"]
+    assert settled["document_deadlines.document_id"] == ("CASCADE", 1)
+    assert settled["feedback.document_id"] == ("SET NULL", 1)
+    assert settled["subscriptions.document_id"] == ("CASCADE", 1)
+    # 用户线索指着通知（级联）和本机推来的截止日期（置空）：两个外键先查哪个不固定，这一行最后都不在
+    assert settled["deadline_clues.document_id"] == ("CASCADE", 1)
+    assert set(settled) <= {
+        "document_deadlines.document_id",
+        "feedback.document_id",
+        "subscriptions.document_id",
+        "deadline_clues.document_id",
+        "deadline_clues.deadline_id",
     }
     assert restored["subscriptions"] == 0 and restored["document_deadlines"] == 0
+    assert restored["deadline_clues"] == 0
     assert restored["feedback"] == 1 and restored["follows"] == 1
     with db_engine.connect() as conn:
         assert conn.scalar(select(Feedback.document_id)) is None
@@ -1094,6 +1116,37 @@ def test_user_scope_restore_on_a_new_server(session, db_engine) -> None:
     with pytest.raises(BackupError, match="还没有公开数据"):
         restore(db_engine, io.BytesIO(raw))
     assert _empty(db_engine)
+
+
+def test_user_scope_restore_leaves_public_rows_alone(session, db_engine) -> None:
+    """本机推来的公开数据里万一有对不上的（截止日期指着已经没有的通知），只备用户数据的恢复不去删、
+    不去改它，也不因为它恢复不了：那部分由本机管（agy D-129 建议）。"""
+    from youju.backup import SCOPE_USER
+
+    _with_user_rows(session)
+    out = io.BytesIO()
+    counts = dump(db_engine, out, now=NOW, scope=SCOPE_USER)
+    _new_server(session, db_engine)
+    with db_engine.begin() as conn:
+        conn.execute(text("SET FOREIGN_KEY_CHECKS = 0"))
+        conn.execute(
+            DocumentDeadline.__table__.insert().values(
+                id=999,
+                document_id=424242,
+                fingerprint="p" * 64,
+                kind="企业申报截止",
+                candidate_date=date(2026, 10, 20),
+                evidence="本机推来的",
+                confidence="高",
+                origin="rule",
+            )
+        )
+        conn.execute(text("SET FOREIGN_KEY_CHECKS = 1"))
+    report: dict = {}
+    assert restore(db_engine, io.BytesIO(out.getvalue()), report=report) == counts
+    assert report["settled"] == {}
+    with db_engine.connect() as conn:
+        assert conn.scalar(select(DocumentDeadline.document_id).where(DocumentDeadline.id == 999))
 
 
 def test_user_scope_restore_rejects_a_tampered_file(session, db_engine) -> None:
@@ -1130,8 +1183,10 @@ def test_user_scope_restore_drill(session, db_engine, tmp_path, monkeypatch, cap
     )
     assert cli.main(["restore-drill", "--file", str(source)]) == 0
     output = capsys.readouterr().out
-    # 临时库里没有公开数据：指向公开表的外键不查，其余照常核对
+    # 临时库里没有公开数据：指向公开表的外键不查，其余照常核对；用户线索指着本机推来的截止日期
+    # （截止日期表只备了服务器自己的行）也不算对不上（Codex D-129 第 1 轮）
     assert "范围：只备用户数据" in output and "subscriptions: 1" in output
+    assert "deadline_clues: 1" in output
     assert "documents:" not in output and "恢复演练成功" in output
     assert _counts(db_engine) == before
 
@@ -1158,6 +1213,7 @@ def test_keep_policy_and_days_to_prune() -> None:
     from youju.backup import (
         KEEP_3_DAYS_4_WEEKS,
         KEEP_30_DAYS,
+        KEEP_30_DAYS_SERVER,
         SCOPE_USER,
         backup_scope,
         days_to_prune,
@@ -1165,12 +1221,16 @@ def test_keep_policy_and_days_to_prune() -> None:
     )
 
     assert keep_policy(SimpleNamespace(hosting="self", public_replica=False)) == KEEP_3_DAYS_4_WEEKS
-    assert keep_policy(SimpleNamespace(hosting="self", public_replica=True)) == KEEP_30_DAYS
+    assert keep_policy(SimpleNamespace(hosting="self", public_replica=True)) == KEEP_30_DAYS_SERVER
     assert keep_policy(SimpleNamespace(hosting="cloudrun", public_replica=False)) == KEEP_30_DAYS
     assert backup_scope(SimpleNamespace(public_replica=True)) == SCOPE_USER
     assert backup_scope(SimpleNamespace(public_replica=False)) == "all"
     today = date(2026, 11, 12)  # 周四
+    # 云托管照旧删 31–40 天前的；服务器每份正好留满 30 天：删 30–40 天前的
     assert days_to_prune(today) == [today - timedelta(days=d) for d in range(31, 41)]
+    server = days_to_prune(today, KEEP_30_DAYS_SERVER)
+    assert server == [today - timedelta(days=d) for d in range(30, 41)]
+    assert today - timedelta(days=29) not in server
     window = {today - timedelta(days=d) for d in range(1, 41)}
     kept = window - set(days_to_prune(today, KEEP_3_DAYS_4_WEEKS))
     assert kept == {
