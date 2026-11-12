@@ -612,15 +612,21 @@ def has_personal_numbers(text: str) -> bool:
     return any(_luhn(re.sub(r"\D", "", m.group())) for m in cards)
 
 
-def _plain_lines(node: etree._Element, skip: frozenset = frozenset()) -> list[str]:
+def _plain_lines(
+    node: etree._Element, skip: frozenset = frozenset(), *, keep_select: bool = False
+) -> list[str]:
+    """节点里的文字，一行一行。下拉框（"县区网站""省级厅委导航"这类跳转菜单）的选项不是正文：
+    11/12 漯河等站正文区是空的，按文字密度兜底时会把一整串选项当成正文，所以默认跳过。
+    keep_select：防护页判断看页面前 500 字时照旧连下拉框的字一起算，范围不变。"""
     parts: list[str] = []
+    skipped = {"script", "style", "noscript", "nav", "footer"} | (
+        set() if keep_select else {"select"}
+    )
 
     def visit(element: etree._Element) -> None:
         if not isinstance(element.tag, str) or element in skip:
             return
-        # 下拉框（"县区网站""省级厅委导航"这类跳转菜单）的选项不是正文：11/12 漯河等站正文区是空的，
-        # 按文字密度兜底时会把一整串选项当成正文
-        if element.tag.lower() in {"script", "style", "noscript", "nav", "footer", "select"}:
+        if element.tag.lower() in skipped:
             return
         marker = f"{element.get('class', '')} {element.get('id', '')}"
         if _JUNK_CLASS.search(marker):
@@ -1143,7 +1149,7 @@ def parse_detail(html_text: str, url: str) -> DetailResult:
         return DetailResult(failure_reason=f"HTML 无法解析：{exc.__class__.__name__}")
     title = " ".join(root.xpath("//title/text()"))[:200]
     body = root.xpath("//body")
-    visible = "\n".join(_plain_lines(body[0])) if body else ""
+    visible = "\n".join(_plain_lines(body[0], keep_select=True)) if body else ""
     if re.search(
         r"验证码|人机验证|安全验证|访问过于频繁|异常访问|请开启.{0,12}JavaScript",
         title + visible[:500],

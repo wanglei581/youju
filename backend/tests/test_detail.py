@@ -862,6 +862,19 @@ def test_dropdown_options_are_not_body() -> None:
     assert "组织申报" in result.body_text and "请选择" not in result.body_text
 
 
+def test_dropdown_text_still_counts_for_protection_window() -> None:
+    """防护页判断看页面前 500 字，下拉框的字照旧算在里面，范围不变（下拉框后面很远处的
+    验证码字样，原来不当防护页，现在也不当）。"""
+    options = "".join(f"<option>某某市第{n}个部门网站</option>" for n in range(80))
+    page = (
+        f"<html><title>某局文件</title><body><select>{options}</select>"
+        "<p>搜索过于频繁，请输入验证码</p><div id='zoom'><p>各有关单位：</p>"
+        "<p>现将2026年度项目申报有关事项通知如下，请按要求组织申报。</p></div></body></html>"
+    )
+    result = parse_detail(page, "https://www.example.gov.cn/content_3.html")
+    assert result.failure_reason is None and "组织申报" in result.body_text
+
+
 def test_density_fallback_ignores_navigation_and_redacts() -> None:
     sample = (
         "<html><body><div class='top-links'><a href='/a'>网站首页栏目导航公告通知</a>"
