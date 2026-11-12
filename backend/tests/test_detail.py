@@ -841,6 +841,59 @@ def test_protection_page_is_rejected() -> None:
     assert not result.body_text
 
 
+_THROTTLE_DIALOG = (
+    "<div id='VolidateCodeDiv' class='modal in' aria-hidden='false' style='display: none;'>"
+    "<div class='modal-dialog'><div class='modal-content'><div class='modal-header'>"
+    "<button type='button' class='close'><span>×</span></button>"
+    "<h4 class='modal-title'>搜索过于频繁，请输入验证码</h4></div><div class='modal-body'>"
+    "<input id='js-ticket-search' name='CaptchaTicket' type='hidden'></div></div></div></div>"
+)
+_NOTICE_BODY = (
+    "<div id='zoom'><p>各有关单位：</p><p>为做好2026年度项目申报工作，现将有关事项通知如下，"
+    "请按要求组织申报。</p></div>"
+)
+
+
+def test_search_throttle_dialog_is_not_a_protection_page() -> None:
+    """站内搜索的限流弹窗（泸州、漯河、商丘、常德等站群每一页都带、平时隐藏）不是挡住这一页的验证：
+    完全是这个样子、而且正文完整的才放（D-013：认得出才放）。"""
+    page = f"<html><title>某局关于组织申报的通知</title><body>{_THROTTLE_DIALOG}{_NOTICE_BODY}</body></html>"
+    result = parse_detail(page, "https://kjj.example.gov.cn/content_1.html")
+    assert result.failure_reason is None and "组织申报" in result.body_text
+    assert "搜索过于频繁" not in result.body_text
+
+
+@pytest.mark.parametrize(
+    "page",
+    [
+        # 标题写着验证
+        f"<html><title>安全验证</title><body>{_THROTTLE_DIALOG}{_NOTICE_BODY}</body></html>",
+        # 弹窗外面另有验证码字样
+        f"<html><title>通知</title><body>{_THROTTLE_DIALOG}<p>请输入验证码后继续访问</p>{_NOTICE_BODY}"
+        "</body></html>",
+        # 弹窗是显示着的（没有 display:none）：可能就是挡页
+        f"<html><title>通知</title><body>{_THROTTLE_DIALOG.replace('display: none;', '')}"
+        f"{_NOTICE_BODY}</body></html>",
+        # 弹窗标题不是这一句
+        f"<html><title>通知</title><body>{_THROTTLE_DIALOG.replace('搜索过于频繁，', '访问过于频繁，')}"
+        f"{_NOTICE_BODY}</body></html>",
+        # 没有搜索票据输入框
+        f"<html><title>通知</title><body>{_THROTTLE_DIALOG.replace('js-ticket-search', 'x')}"
+        f"{_NOTICE_BODY}</body></html>",
+        # 不是隐藏弹窗、只是页面上写着这句话
+        f"<html><title>通知</title><body><p>搜索过于频繁，请输入验证码</p>{_NOTICE_BODY}</body></html>",
+        # 弹窗认得出、但这一页没取到完整正文（没有句子）
+        f"<html><title>通知</title><body>{_THROTTLE_DIALOG}<div id='zoom'><p>首页</p><p>通知公告</p>"
+        "<p>详细内容</p><p>返回顶部</p></div></body></html>",
+        f"<html><title>通知</title><body>{_THROTTLE_DIALOG}</body></html>",
+    ],
+)
+def test_other_captcha_pages_stay_protection_pages(page) -> None:
+    assert parse_detail(page, "https://kjj.example.gov.cn/a.html").failure_reason == (
+        "防护页或验证码"
+    )
+
+
 def test_dropdown_options_are_not_body() -> None:
     """下拉框里的跳转选项不算正文（11/12 漯河：正文区空着，兜底时把"省级厅委导航"一串选项当正文）。"""
     options = "".join(

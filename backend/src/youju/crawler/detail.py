@@ -102,6 +102,19 @@ _SITE_BODY_SELECTORS = {
     # 按完整类名匹配：标题 zw-title、发布信息和"【打印】""分享到"所在的 zw-info 是别的元素
     "gdstc.gd.gov.cn": '//*[contains(concat(" ", normalize-space(@class), " "), " zw ")]',
 }
+# 防护页：标题和正文前 500 字里有这些字的，整页当成验证码、限流或要开脚本的挡页，不取（D-013）
+_PROTECTION = re.compile(
+    r"验证码|人机验证|安全验证|访问过于频繁|异常访问|请开启.{0,12}JavaScript", re.I
+)
+# 站内搜索的限流弹窗（D-013：认得出才放）。11/12 地市正文门：泸州、漯河、商丘、常德等站群的每一页都
+# 带一个平时隐藏的弹窗——div#VolidateCodeDiv，style 写着 display:none，标题（.modal-title）只有
+# "搜索过于频繁，请输入验证码"，里面是搜索用的验证票据输入框 input#js-ticket-search。它是站内搜索
+# 被限流时才弹出的，不是挡住这一页的验证，这些站的文件页因此都被当成了防护页。判断防护页时只把完全
+# 是这个样子的弹窗拿掉；拿掉以后这一页还要取到完整的正文（有句子），不然照旧当防护页。别的写法一律
+# 照旧当防护页、不取
+_SEARCH_THROTTLE_TITLE = "搜索过于频繁，请输入验证码"
+_SEARCH_THROTTLE_DIALOG = '//div[@id="VolidateCodeDiv"][.//input[@id="js-ticket-search"]]'
+_SENTENCE = re.compile(r"[。，；！？]")
 # 个别网站放在正文区里的按钮（XPath 相对正文区），取正文时跳过
 _SITE_JUNK = {
     # 上海经信委：正文区末尾"[返回]"（history.back）和"【市民留言】"两个链接所在的块
@@ -1133,6 +1146,20 @@ def outside_body_lines(html_text: str, url: str) -> list[str] | None:
     return [line for raw in "".join(parts).splitlines() if (line := " ".join(raw.split()))]
 
 
+def _search_throttle_dialogs(root: etree._Element) -> list[etree._Element]:
+    """页面上完全是站内搜索限流弹窗样子的元素（见 _SEARCH_THROTTLE_DIALOG 上面的说明）。"""
+    found = []
+    for node in root.xpath(_SEARCH_THROTTLE_DIALOG):
+        style = (node.get("style") or "").replace(" ", "").lower()
+        titles = node.xpath(
+            './/*[contains(concat(" ", normalize-space(@class), " "), " modal-title ")]'
+        )
+        text = "".join("".join(t.itertext()) for t in titles)
+        if "display:none" in style and "".join(text.split()) == _SEARCH_THROTTLE_TITLE:
+            found.append(node)
+    return found
+
+
 def parse_detail(html_text: str, url: str) -> DetailResult:
     """解析公开 HTML；防护页返回失败原因，字段不猜测。"""
     if not html_text.strip():
@@ -1143,16 +1170,18 @@ def parse_detail(html_text: str, url: str) -> DetailResult:
         return DetailResult(failure_reason=f"HTML 无法解析：{exc.__class__.__name__}")
     title = " ".join(root.xpath("//title/text()"))[:200]
     body = root.xpath("//body")
-    visible = "\n".join(_plain_lines(body[0])) if body else ""
-    if re.search(
-        r"验证码|人机验证|安全验证|访问过于频繁|异常访问|请开启.{0,12}JavaScript",
-        title + visible[:500],
-        re.I,
-    ):
+    dialogs = _search_throttle_dialogs(root)
+    visible = "\n".join(_plain_lines(body[0], frozenset(dialogs))) if body else ""
+    if _PROTECTION.search(title + visible[:500]):
         return DetailResult(failure_reason="防护页或验证码")
+    # 只因为站内搜索限流弹窗才没被当成防护页的：这一页要取到完整的正文才放
+    with_dialogs = "\n".join(_plain_lines(body[0])) if body and dialogs else visible
+    needs_body = bool(dialogs) and bool(_PROTECTION.search(title + with_dialogs[:500]))
     host = (urlsplit(url).hostname or "").lower()
     node = _body_node(root, host)
     if node is None:
+        if needs_body:
+            return DetailResult(failure_reason="防护页或验证码")
         attachments = _attachments(root, url)
         return DetailResult(
             issuer=_issuer([], root, visible[:700]),
@@ -1172,6 +1201,8 @@ def parse_detail(html_text: str, url: str) -> DetailResult:
     # PDF-only 页面只有下载入口，HTML 正文为空；仍保留附件题录。
     if len(raw_body) < 30 or ("点击正文" in raw_body and not any(len(line) > 60 for line in lines)):
         raw_body = ""
+    if needs_body and not _SENTENCE.search(raw_body):
+        return DetailResult(failure_reason="防护页或验证码")
     return DetailResult(
         body_text=redact_sensitive(raw_body),
         raw_body=raw_body,
