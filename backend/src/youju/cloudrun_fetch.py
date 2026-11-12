@@ -7,13 +7,14 @@
 - logs/、attachments/：核对大小，附件再核对文件名里的 SHA-256，.gz 整个解压一遍（gzip 自带
   校验）；对了才写进现在的存储（服务器硬盘）。已有、大小一样的跳过。批量工具结果（advisor/out/）
   清单里有、不下载：旧库不恢复（D-127），都是测试结果，对应的任务记录在加密存档的整库备份里。
-- 访问日志归档按 D-028 留 190 天：已经超过的（文件名里的日期）不下载；下载的不放回 logs/，放到
-  archive/cloudrun-access-<日期>.expires-<日期加 191 天>.jsonl.gz（服务器测试期一直在记访问日志，
+- 访问日志归档按 D-028 最长留 190 天：已经到期的（文件名里的日期）不下载；下载的不放回 logs/，放到
+  archive/cloudrun-access-<日期>.expires-<日期加 189 天>.jsonl.gz（到期日见 offsite.expiry；服务器
+  测试期一直在记访问日志，
   打开正式定时任务后 archive-logs 会按 logs/access-<日期> 写同名文件，放回 logs/ 会被覆盖），
   到期由每天的 youju archive-prune 删。
 - 访问日志暂存表里还没归档的（导出脚本按天导出的 staging_logs）同样放 archive/，名字带 -staging。
-- 批量工具结果（advisor/out/）：按清单里的修改时间，超过 30 天的不下（隐私保护指引：任务和结果保存
-  30 天），没超过的下到 --dir/advisor-out/（不进存储，旧库不恢复），由 import-export 打包加密存档、
+- 批量工具结果（advisor/out/）：按清单里的修改时间，已经到期的不下（隐私保护指引：任务和结果保存
+  30 天），没到期的下到 --dir/advisor-out/（不进存储，旧库不恢复），由 import-export 打包加密存档、
   到期删。
 - 开头先算硬盘够不够：还要下的字节数，加上压缩整库备份的 15 倍（试恢复的临时库和它写进的 binlog
   大约是压缩备份的 10 倍，再加加密副本）和 2G 余量。
@@ -41,12 +42,12 @@ import tempfile
 import zlib
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import httpx
 
-from youju import access_log, storage
+from youju import access_log, offsite, storage
 from youju.backup import BEIJING
 
 FORMAT = "youju-cloudrun-export"
@@ -254,8 +255,6 @@ def fetch(
         store = storage.backend()
     report = FetchReport()
     today = today or datetime.now(UTC).astimezone(BEIJING).date()
-    oldest = today - timedelta(days=access_log.KEEP_DAYS)
-    advisor_oldest = today - timedelta(days=ADVISOR_KEEP_DAYS)
     wanted = ("logs/", "attachments/", "backups/", "advisor/out/")
     files = [item for item in manifest["files"] if _prefix(item["path"]) in wanted]
     backup_name = next(Path(i["path"]).name for i in files if _prefix(i["path"]) == "backups/")
@@ -274,26 +273,26 @@ def fetch(
             modified = _modified(item)
             if modified is None:
                 report.failed.append((path, "清单里没有修改时间，没下载"))
-            elif modified < advisor_oldest:
-                report.expired_advisor += 1  # 已经超过 30 天，不导入
+            elif offsite.expiry(modified, ADVISOR_KEEP_DAYS) <= today:
+                report.expired_advisor += 1  # 已经到期，不导入
             else:
                 plan.append((item, ("dir", f"{ADVISOR_DIR}/{path.removeprefix('advisor/out/')}")))
             continue
         if path.startswith("backups/"):
             plan.append((item, ("dir", path)))
             continue
-        target = _target(path, oldest)
+        target = _target(path, today)
         if target is None:
-            report.expired_logs += 1  # 已经超过 190 天，不导入
+            report.expired_logs += 1  # 已经到期（190 天），不导入
             continue
         plan.append((item, ("store", target)))
     staged = []
     for entry in manifest["staging_logs"]:
         day = date.fromisoformat(entry["day"])
-        if day < oldest:
+        expires = offsite.expiry(day, access_log.KEEP_DAYS)
+        if expires <= today:
             report.expired_logs += 1
             continue
-        expires = day + timedelta(days=access_log.KEEP_DAYS + 1)
         staged.append(
             (
                 entry,
@@ -425,16 +424,16 @@ def _fetch_to_store(
         tmp.unlink(missing_ok=True)
 
 
-def _target(path: str, oldest: date) -> str | None:
-    """写到存储里的哪里：附件副本照原路径；访问日志放 archive/（到期日写进文件名），超过 190 天的
+def _target(path: str, today: date) -> str | None:
+    """写到存储里的哪里：附件副本照原路径；访问日志放 archive/（到期日写进文件名），已经到期的
     返回 None（不导入）；整库备份不进存储（返回原路径，调用方写到 --dir）。"""
     log = _LOG.fullmatch(path)
     if not log:
         return path
     day = datetime.strptime(log.group(1), "%Y%m%d").date()
-    if day < oldest:
+    expires = offsite.expiry(day, access_log.KEEP_DAYS)
+    if expires <= today:
         return None
-    expires = day + timedelta(days=access_log.KEEP_DAYS + 1)
     return f"archive/cloudrun-access-{day:%Y%m%d}.expires-{expires:%Y%m%d}.jsonl.gz"
 
 
@@ -561,8 +560,9 @@ def _start_day(stamp) -> date | None:
 
 def split_pay_records(path: Path, header: dict) -> dict[date, list[tuple[str, dict]]]:
     """交易记录按保存期起算日分组（隐私保护指引：订单、退款、开票自下单起，赠送自发放之日起）：
-    订单按下单时间；开票申请、支付流水跟着它的订单；赠送按发放时间；使用期跟着它的订单或赠送；
-    每日对账按那一天。有哪一行读不出起算日就停下（拿导出那天顶替会比指引存得久），列出是哪几行。"""
+    订单按下单时间；开票申请跟着它的订单；支付流水跟着它的订单，没有订单的（order_id 为空）按它
+    自己的时间；赠送按发放时间；使用期跟着它的订单或赠送；每日对账按那一天。该关联的关联不上、
+    时间读不出，都停下（拿别的时间顶替可能比指引存得久），列出是哪几行。"""
     rows: list[tuple[str, dict]] = []
     with gzip.open(path, "rt", encoding="utf-8") as fh:
         fh.readline()  # 说明行
@@ -576,21 +576,19 @@ def split_pay_records(path: Path, header: dict) -> dict[date, list[tuple[str, di
     def stamp_of(table: str, row: dict):
         if table == "pay_orders":
             return row.get("created_at")
+        if table == "pay_events" and row.get("order_id") is None:
+            return row.get("created_at")
         if table in ("invoice_requests", "pay_events"):
-            return (orders.get(row.get("order_id")) or {}).get("created_at") or row.get(
-                "created_at"
-            )
+            return (orders.get(row.get("order_id")) or {}).get("created_at")
         if table == "pass_rewards":
             return row.get("granted_at")
         if table == "workbench_passes":
-            if row.get("order_id") in orders:
-                return orders[row["order_id"]].get("created_at")
-            if row.get("reward_id") in rewards:
-                return rewards[row["reward_id"]].get("granted_at")
-            return row.get("starts_at")
+            if row.get("order_id") is not None:
+                return (orders.get(row["order_id"]) or {}).get("created_at")
+            return (rewards.get(row.get("reward_id")) or {}).get("granted_at")
         if table == "pay_reconciliations":
             return row.get("day")
-        return row.get("created_at")
+        return None
 
     groups: dict[date, list[tuple[str, dict]]] = {}
     unknown: list[str] = []
@@ -617,12 +615,12 @@ def archive_export(
     encryptor=None,
 ) -> tuple[list, list[str]]:
     """把下载好的分别加密存档（youju archive-export），到期日写进文件名，每份各自到期：
-    - 整库备份：自备份那天起 30 天；
-    - 交易记录：按起算日分组（见 split_pay_records），每组自起算日起 PAY_RETAIN_DAYS（3650）天；
-    - 批量工具结果：按文件生成日期分组，每组自那天起 30 天（已经过期的组不存）。
+    - 整库备份：自备份那天起最长 30 天；
+    - 交易记录：按起算日分组（见 split_pay_records），每组自起算日起最长 PAY_RETAIN_DAYS（3650）天；
+    - 批量工具结果：按文件生成日期分组，每组自那天起最长 30 天（已经到期的组不存）。
+    到期日都按 offsite.expiry 算。
     另在本机存储记下云托管里的数据库最晚哪天要删（最后一份整库备份起 30 天，D-127），
     archive-prune 到期前 7 天起每天提醒，删了用 youju cloudrun-gone 记下来。返回（报告，说明）。"""
-    from youju import offsite
     from youju import storage as storage_module
 
     workdir = Path(workdir)
@@ -645,7 +643,7 @@ def archive_export(
             settings,
             backups[0],
             f"cloudrun-youju-{day:%Y%m%d}",
-            day + timedelta(days=offsite.BACKUP_KEEP_DAYS),
+            offsite.expiry(day, offsite.BACKUP_KEEP_DAYS),
             **extra,
         )
     ]
@@ -654,7 +652,7 @@ def archive_export(
         if not groups:
             notes.append("没有交易记录要存")
         for start, rows in groups.items():
-            expires = start + timedelta(days=PAY_RETAIN_DAYS)
+            expires = offsite.expiry(start, PAY_RETAIN_DAYS)
             if expires <= today:
                 notes.append(f"{start} 起算的交易记录已经过了保存期，不存")
                 continue
@@ -694,7 +692,7 @@ def archive_export(
         if not by_day:
             notes.append("没有要存的批量工具结果")
         for made, items in sorted(by_day.items()):
-            expires = made + timedelta(days=ADVISOR_KEEP_DAYS)
+            expires = offsite.expiry(made, ADVISOR_KEEP_DAYS)
             if expires <= today:
                 notes.append(f"{made} 生成的批量工具结果已经过了 30 天，不存")
                 continue
@@ -711,7 +709,8 @@ def archive_export(
                 )
             )
         deadline = Path(tmp) / "deadline.json"
-        delete_by = day + timedelta(days=offsite.BACKUP_KEEP_DAYS)
+        # 最晚删的那天（含）：和整库存档同一天到期
+        delete_by = offsite.expiry(day, offsite.BACKUP_KEEP_DAYS)
         deadline.write_text(
             json.dumps({"backup_date": day.isoformat(), "delete_by": delete_by.isoformat()}) + "\n",
             encoding="utf-8",

@@ -103,6 +103,11 @@ WATCHED = (
 )
 # --cleanup 删的前缀（见文件开头）
 CLEANUP_PREFIXES = ("exports/", "backups/", "logs/", "advisor/")
+# 云托管 admin 每天往这几个前缀写文件的时间（北京时间，线上镜像的 crontab）：0:30 归档访问日志
+# （logs/），4:00 整库备份（backups/）。离下一次不到 CLEANUP_MARGIN 分钟就不清；清完要在下一次之前
+# 把 admin 调成 0（之后就没有定时任务了）
+SCHEDULED_WRITES = ((0, 30), (4, 0))
+CLEANUP_MARGIN = 20
 # 备份前记下的那份：--links-only 重出清单时拿来核对（同一个实例的 /tmp；实例换了就要整个重跑）
 FINGERPRINT = Path("/tmp/youju-export-fingerprint.json")
 MAX_AGE = 7200  # 下载链接 2 小时有效（微信文档的示例值）；过期了带 --links-only 重出一份清单
@@ -689,6 +694,26 @@ def report(result: dict) -> None:
     print(result["url"])
 
 
+def next_scheduled_write(now: datetime) -> datetime:
+    """下一次往这几个前缀写文件的时间（北京时间，带时区）。"""
+    local = now.astimezone(backup.BEIJING)
+    upcoming = []
+    for hour, minute in SCHEDULED_WRITES:
+        at = local.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if at <= local:
+            at += timedelta(days=1)
+        upcoming.append(at)
+    return min(upcoming)
+
+
+def cleanup_counts(client: httpx.Client, env: str) -> dict[str, int]:
+    bucket = storage_list.bucket_of(client, env)
+    return {
+        prefix: len(storage_list.list_objects(client, bucket, prefix))
+        for prefix in CLEANUP_PREFIXES
+    }
+
+
 def cleanup(client: httpx.Client, env: str, *, sleep=clock.sleep) -> dict[str, int]:
     """--cleanup：删掉 CLEANUP_PREFIXES 下的全部文件，删完再列一遍，还有剩的就报错（重跑接着删）。
     返回各前缀删了几个。"""
@@ -716,7 +741,52 @@ def cleanup(client: httpx.Client, env: str, *, sleep=clock.sleep) -> dict[str, i
     return deleted
 
 
-def main(argv: list[str] | None = None, *, runner=subprocess.run) -> int:
+def run_cleanup(env: str, *, ask, now) -> int:
+    """--cleanup：先看时间（离云托管每天写文件太近就不清）、列出要删几个、要输入 DELETE 才删。"""
+    upcoming = next_scheduled_write(now())
+    if upcoming - now() < timedelta(minutes=CLEANUP_MARGIN):
+        print(
+            f"离云托管每天写日志归档、整库备份的时间（{upcoming:%H:%M}）不到 {CLEANUP_MARGIN} 分钟"
+        )
+        print(f"CLEANUP NOT STARTED (paste the block again after {upcoming:%H:%M})")
+        return 1
+    try:
+        with httpx.Client(trust_env=False) as client:
+            counts = cleanup_counts(client, env)
+            print("要删的文件数：" + " ".join(f"{prefix}{n}" for prefix, n in counts.items()))
+            print("（服务器上 import-export 看到 IMPORT OK 以后才做这一步；attachments/ 不删）")
+            try:
+                answer = ask("Type DELETE and press Enter to delete them: ")
+            except EOFError:
+                answer = ""
+            if answer.strip() != "DELETE":
+                print("CLEANUP CANCELLED (nothing deleted)")
+                return 1
+            deleted = cleanup(client, env)
+    except (ExportError, backup.BackupError) as exc:
+        print(f"清理没做完：{exc}")
+        print("CLEANUP FAILED (paste the same block again)")
+        return 1
+    if now() >= upcoming:
+        print(f"清理跨过了 {upcoming:%H:%M}（云托管可能又写了文件）")
+        print("CLEANUP CROSSED A SCHEDULED WRITE (paste the same block again)")
+        return 1
+    print(
+        "CLEANUP OK "
+        + " ".join(f"{prefix}{n}" for prefix, n in deleted.items())
+        + " left=0 (attachments/ kept)"
+    )
+    print(f"NOW set the admin service to 0 instances, before {upcoming:%H:%M} Beijing time")
+    return 0
+
+
+def main(
+    argv: list[str] | None = None,
+    *,
+    runner=subprocess.run,
+    ask=input,
+    now=lambda: datetime.now(UTC),
+) -> int:
     parser = argparse.ArgumentParser(description="有据首发前搬家：云托管导出（D-127）")
     parser.add_argument(
         "--links-only",
@@ -738,19 +808,7 @@ def main(argv: list[str] | None = None, *, runner=subprocess.run) -> int:
         if args.links_only:
             print("--cleanup 和 --links-only 不能一起用")
             return 1
-        try:
-            with httpx.Client(trust_env=False) as client:
-                deleted = cleanup(client, env)
-        except (ExportError, backup.BackupError) as exc:
-            print(f"清理没做完：{exc}")
-            print("CLEANUP FAILED (run the same block again)")
-            return 1
-        print(
-            "CLEANUP OK "
-            + " ".join(f"{prefix}{n}" for prefix, n in deleted.items())
-            + " left=0 (attachments/ kept)"
-        )
-        return 0
+        return run_cleanup(env, ask=ask, now=now)
     try:
         if args.links_only:
             if not FINGERPRINT.is_file():

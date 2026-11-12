@@ -210,13 +210,14 @@ def test_fetch_checks_and_imports_files(tmp_path):
     assert sorted(path for path, _ in report.failed) == sorted([bad_hash, broken_gz])
     assert not store.exists(bad_hash) and not store.exists(broken_gz)
     assert store.exists(f"attachments/{_sha(pdf)}.pdf")
-    # 访问日志不放回 logs/（服务器正式归档会写同名文件），放 archive/、到期日写进文件名（190 天）
+    # 访问日志不放回 logs/（服务器正式归档会写同名文件），放 archive/、到期日写进文件名：
+    # 最长 190 天，5:50 删到期日那天的，所以是日志那天加 189 天
     log_day = date(2026, 11, 10)
-    expires = log_day + timedelta(days=191)
+    expires = log_day + timedelta(days=189)
     assert store.exists(f"archive/cloudrun-access-20261110.expires-{expires:%Y%m%d}.jsonl.gz")
     assert not store.exists("logs/access-20261110.jsonl.gz")
     # 还没归档的访问日志：同样放 archive/，名字带 -staging
-    staged_expires = date(2026, 11, 12) + timedelta(days=191)
+    staged_expires = date(2026, 11, 12) + timedelta(days=189)
     assert store.exists(
         f"archive/cloudrun-access-20261112-staging.expires-{staged_expires:%Y%m%d}.jsonl.gz"
     )
@@ -452,7 +453,7 @@ def _script(tmp_path: Path, body: str, setup: str = "") -> str:
 source "{defs}"
 BASE="{tmp_path}"; SERVER="{tmp_path}/server"; EXPORT_DIR="{tmp_path}/export"; SELF=youju-shared.sh
 compose() {{ printf 'compose %s | image=%s db=%s url=%s\\n' "$*" "${{YOUJU_IMAGE:-}}" "${{YOUJU_DATABASE_URL:-}}" "${{YOUJU_EXPORT_URL:-}}" >> "{log}"; if [ "$1" = exec ]; then cat >/dev/null; fi; }}
-docker() {{ printf 'docker %s\\n' "$*" >> "{log}"; }}
+docker() {{ printf 'docker %s\\n' "$*" >> "{log}"; if [ "$1" = info ]; then echo "{tmp_path}"; fi; }}
 df() {{ case "$*" in *-B1*) printf 'Avail\\n 107374182400\\n' ;; *) printf 'Avail\\n 100G\\n' ;; esac; }}
 {setup}
 {body}
@@ -702,6 +703,11 @@ def test_shared_import_export_checks_disk_before_the_drill(tmp_path):
     )
     done = _bash(tmp_path, "import_export a79a0042", setup=setup)
     assert done.returncode == 1 and "硬盘不够试恢复" in done.stderr
+    assert not [c for c in _calls(tmp_path) if c.startswith("compose")]
+    # 读不出 docker 的数据目录：停下，不当作没有这块盘
+    setup = f'docker() {{ printf "docker %s\\n" "$*" >> "{tmp_path}/calls.log"; }}'
+    done = _bash(tmp_path, "import_export a79a0042", setup=setup)
+    assert done.returncode == 1 and "读不出 docker 的数据目录" in done.stderr
     assert not [c for c in _calls(tmp_path) if c.startswith("compose")]
 
 
@@ -1097,34 +1103,35 @@ def test_archive_export_splits_by_start_date(tmp_path):
     reports, notes = cloudrun_fetch.archive_export(
         _archive_settings(tmp_path), work, today=date(2026, 11, 13), backend=fake, encryptor=_seal
     )
-    # 整库：自备份那天起 30 天。交易记录按起算日分组、各自 3650 天：赠送（北京时间 10-20）一组，
-    # 订单和跟着它的开票申请（10-30）一组。批量工具结果按生成日期分组：10-20 那组到 11-19，
-    # 11-10 那组到 12-10
-    gift = date(2026, 10, 20) + timedelta(days=3650)
-    order = date(2026, 10, 30) + timedelta(days=3650)
+    # 到期日 = 起算日加规定天数减 1（5:50 删到期日那天的，最早的一条也不超过规定天数）。
+    # 整库：自备份那天起最长 30 天。交易记录按起算日分组、各自 3650 天：赠送（北京时间 10-20）一组，
+    # 订单和跟着它的开票申请（10-30）一组。批量工具结果按生成日期分组：10-20 那组 11-18 到期，
+    # 11-10 那组 12-09 到期
+    gift = date(2026, 10, 20) + timedelta(days=3649)
+    order = date(2026, 10, 30) + timedelta(days=3649)
     assert [r.target for r in reports] == [
-        "archive/cloudrun-youju-20261112.expires-20261212.jsonl.gz.age",
+        "archive/cloudrun-youju-20261112.expires-20261211.jsonl.gz.age",
         f"archive/cloudrun-pay-records-20261020.expires-{gift:%Y%m%d}.jsonl.gz.age",
         f"archive/cloudrun-pay-records-20261030.expires-{order:%Y%m%d}.jsonl.gz.age",
-        "archive/cloudrun-advisor-out-20261020.expires-20261119.tar.gz.age",
-        "archive/cloudrun-advisor-out-20261110.expires-20261210.tar.gz.age",
+        "archive/cloudrun-advisor-out-20261020.expires-20261118.tar.gz.age",
+        "archive/cloudrun-advisor-out-20261110.expires-20261209.tar.gz.age",
     ]
     assert set(fake.files) == {r.target for r in reports}
     order_part = fake.files[reports[2].target][0].split(b":", 2)[2]
     lines = gzip.decompress(order_part).decode().splitlines()
     assert json.loads(lines[0])["counts"] == {"invoice_requests": 1, "pay_orders": 1}
     assert {json.loads(line)["table"] for line in lines[1:]} == {"pay_orders", "invoice_requests"}
-    # 云托管的数据库最晚哪天删：最后一份整库备份起 30 天
+    # 云托管的数据库最晚哪天删（含这天）：和整库存档同一天到期
     deadline = json.loads((tmp_path / "store" / "archive" / "cloudrun-deadline.json").read_text())
-    assert deadline == {"backup_date": "2026-11-12", "delete_by": "2026-12-12"}
-    assert any("云托管里的数据库最晚 2026-12-12 删掉" in note for note in notes)
+    assert deadline == {"backup_date": "2026-11-12", "delete_by": "2026-12-11"}
+    assert any("云托管里的数据库最晚 2026-12-11 删掉" in note for note in notes)
     # 晚几天再存：已经过了 30 天的那组批量工具结果不存，没过的照存
     fake = FakeS3()
     reports, notes = cloudrun_fetch.archive_export(
         _archive_settings(tmp_path), work, today=date(2026, 11, 19), backend=fake, encryptor=_seal
     )
     assert [r.target for r in reports][-1] == (
-        "archive/cloudrun-advisor-out-20261110.expires-20261210.tar.gz.age"
+        "archive/cloudrun-advisor-out-20261110.expires-20261209.tar.gz.age"
     )
     assert "2026-10-20 生成的批量工具结果已经过了 30 天，不存" in notes
     # 有一行读不出起算日（拿导出日顶替会存得比指引久）：停下，不存
@@ -1158,6 +1165,54 @@ def test_archive_export_splits_by_start_date(tmp_path):
         )
 
 
+def test_split_pay_records_links_rows_and_stops_on_orphans(tmp_path):
+    header = {"format": "youju-pay-records", "version": 1, "retain_days": 3650}
+
+    def split(rows):
+        path = tmp_path / "pay.jsonl.gz"
+        lines = [json.dumps(header)] + [json.dumps({"table": t, "row": r}) for t, r in rows]
+        path.write_bytes(gzip.compress(("\n".join(lines) + "\n").encode()))
+        return {
+            day.isoformat(): sorted(f"{t} {r['id']}" for t, r in group)
+            for day, group in cloudrun_fetch.split_pay_records(path, header).items()
+        }
+
+    order = ("pay_orders", {"id": 1, "created_at": "2026-10-29T16:30:00+00:00"})
+    gift = ("pass_rewards", {"id": 2, "granted_at": "2026-10-20T02:00:00+00:00"})
+    groups = split(
+        [
+            order,
+            gift,
+            # 开票、流水、使用期跟着订单走（它们自己的时间更晚，不用）
+            (
+                "invoice_requests",
+                {"id": 3, "order_id": 1, "created_at": "2026-11-05T00:00:00+00:00"},
+            ),
+            ("pay_events", {"id": 4, "order_id": 1, "created_at": "2026-11-06T00:00:00+00:00"}),
+            ("workbench_passes", {"id": 5, "order_id": 1, "reward_id": None}),
+            # 使用期跟着赠送走
+            ("workbench_passes", {"id": 6, "order_id": None, "reward_id": 2}),
+            # 没有订单的支付流水按它自己的时间；对账按那一天
+            ("pay_events", {"id": 7, "order_id": None, "created_at": "2026-10-25T03:00:00+00:00"}),
+            ("pay_reconciliations", {"id": 8, "day": "2026-10-28"}),
+        ]
+    )
+    assert groups == {
+        "2026-10-20": ["pass_rewards 2", "workbench_passes 6"],
+        "2026-10-25": ["pay_events 7"],
+        "2026-10-28": ["pay_reconciliations 8"],
+        "2026-10-30": ["invoice_requests 3", "pay_events 4", "pay_orders 1", "workbench_passes 5"],
+    }
+    # 该关联的关联不上：不拿它自己的时间顶替，停下
+    for orphan in (
+        ("invoice_requests", {"id": 9, "order_id": 404, "created_at": "2026-11-05T00:00:00+00:00"}),
+        ("pay_events", {"id": 9, "order_id": 404, "created_at": "2026-11-05T00:00:00+00:00"}),
+        ("workbench_passes", {"id": 9, "order_id": None, "reward_id": 404, "starts_at": "x"}),
+    ):
+        with pytest.raises(cloudrun_fetch.FetchError, match=f"{orphan[0]} 9"):
+            split([order, gift, orphan])
+
+
 def test_cloudrun_deletion_reminder_and_record(tmp_path):
     settings = _archive_settings(tmp_path)
     store = storage.DiskBackend(tmp_path / "store")
@@ -1166,9 +1221,12 @@ def test_cloudrun_deletion_reminder_and_record(tmp_path):
     deadline.write_text(json.dumps({"backup_date": "2026-11-12", "delete_by": "2026-12-12"}))
     store.put_file(offsite.CLOUDRUN_DEADLINE, deadline)
     assert offsite.cloudrun_reminder(store, date(2026, 12, 4)) == ""  # 离期限还有 8 天
-    assert "2026-12-12 前删掉" in offsite.cloudrun_reminder(store, date(2026, 12, 5))
+    assert "最晚 2026-12-12 删掉" in offsite.cloudrun_reminder(store, date(2026, 12, 5))
     assert "已经过了期限" in offsite.cloudrun_reminder(store, date(2026, 12, 13))
-    assert "2026-12-12 前删掉" in offsite.cloudrun_reminder_for(settings, today=date(2026, 12, 6))
+    assert "最晚 2026-12-12 删掉" in offsite.cloudrun_reminder_for(
+        settings, today=date(2026, 12, 6)
+    )
+    assert "已经过了期限" not in offsite.cloudrun_reminder(store, date(2026, 12, 12))
     with pytest.raises(BackupError):
         offsite.record_cloudrun_gone(settings, "later")
     offsite.record_cloudrun_gone(settings, "deregistered", now=datetime(2026, 12, 1, tzinfo=UTC))
@@ -1180,7 +1238,7 @@ def test_cloudrun_deletion_reminder_and_record(tmp_path):
 def test_cli_archive_prune_reminds_first_and_fails_when_not_sent(monkeypatch, capsys):
     from youju import alerts
 
-    note = "云托管里的数据库要在 2026-12-12 前删掉"
+    note = "云托管里的数据库最晚 2026-12-12 删掉"
     monkeypatch.setattr(offsite, "cloudrun_reminder_for", lambda settings: note)
     sent: list[str] = []
 
@@ -1255,7 +1313,8 @@ def test_import_export_purges_binlog_even_when_interrupted(tmp_path):
         'if [ "$1" = exec ]; then cat >/dev/null; fi; '
         'if [ "$1" = run ]; then kill -TERM $$; sleep 1; fi; }\n'
         # 终端断了以后还在跑的试恢复容器（compose 起的一次性容器）
-        f'docker() {{ echo "docker $*" >> "{log}"; if [ "$1" = ps ]; then echo abc123; fi; }}'
+        f'docker() {{ echo "docker $*" >> "{log}"; if [ "$1" = ps ]; then echo abc123; fi; '
+        f'if [ "$1" = info ]; then echo "{tmp_path}"; fi; }}'
     )
     done = _bash(tmp_path, "import_export a79a0042", setup=interrupted)
     assert done.returncode != 0

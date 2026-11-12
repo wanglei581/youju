@@ -457,28 +457,75 @@ def test_cleanup_deletes_user_data_and_keeps_attachments():
     assert list(cloud.objects) == ["logs/a.gz"]
 
 
-def test_main_cleanup_prints_one_ascii_line(monkeypatch, capsys):
+def test_next_scheduled_write_is_the_nearest_of_0030_and_0400():
+    def at(hour, minute):
+        return datetime(2026, 11, 13, hour, minute, tzinfo=backup.BEIJING)
+
+    assert export_script.next_scheduled_write(at(0, 10)) == at(0, 30)
+    assert export_script.next_scheduled_write(at(1, 0)) == at(4, 0)
+    assert export_script.next_scheduled_write(at(4, 0)) == at(0, 30) + timedelta(days=1)
+
+
+def test_main_cleanup_asks_then_prints_one_ascii_line(monkeypatch, capsys):
     monkeypatch.setenv("YOUJU_CLOUD_ENV", ENV)
     counts = {"exports/": 2, "backups/": 30, "logs/": 41, "advisor/": 0}
-    monkeypatch.setattr(export_script, "cleanup", lambda client, env: counts)
+    deleted: list[str] = []
+    monkeypatch.setattr(export_script, "cleanup_counts", lambda client, env: counts)
+
+    def cleanup(client, env):
+        deleted.append(env)
+        return counts
+
+    monkeypatch.setattr(export_script, "cleanup", cleanup)
+    noon = datetime(2026, 11, 13, 12, 0, tzinfo=backup.BEIJING)
+    no_commands = lambda args: pytest.fail("不跑命令")  # noqa: E731
     export_script.get_settings.cache_clear()
     try:
-        no_commands = lambda args: pytest.fail("不跑命令")  # noqa: E731
-        assert export_script.main(["--cleanup"], runner=no_commands) == 0
-        out = capsys.readouterr().out
-        (line,) = [row for row in out.splitlines() if row.startswith("CLEANUP")]
-        assert line.isascii()
+        # 没输入 DELETE：一个都不删
+        for answer in ("", "delete", "yes"):
+            code = export_script.main(
+                ["--cleanup"], runner=no_commands, ask=lambda _, a=answer: a, now=lambda: noon
+            )
+            assert code == 1 and deleted == []
+        assert "CLEANUP CANCELLED" in capsys.readouterr().out
+        # 离 0:30、4:00 不到 20 分钟：不清
+        early = datetime(2026, 11, 13, 3, 45, tzinfo=backup.BEIJING)
+        code = export_script.main(
+            ["--cleanup"], runner=no_commands, ask=lambda _: "DELETE", now=lambda: early
+        )
+        assert code == 1 and deleted == []
+        assert "CLEANUP NOT STARTED (paste the block again after 04:00)" in capsys.readouterr().out
+        # 输入 DELETE：删，打印一行英文结果和调 0 的期限
+        code = export_script.main(
+            ["--cleanup"], runner=no_commands, ask=lambda _: "DELETE\n", now=lambda: noon
+        )
+        assert code == 0 and deleted == [ENV]
+        out = capsys.readouterr().out.splitlines()
+        (line,) = [row for row in out if row.startswith("CLEANUP")]
         assert (
             line == "CLEANUP OK exports/2 backups/30 logs/41 advisor/0 left=0 (attachments/ kept)"
         )
+        assert line.isascii()
+        assert "NOW set the admin service to 0 instances, before 00:30 Beijing time" in out
+        # 清的时候跨过了 0:30 / 4:00：要再清一次
+        times = iter(
+            [datetime(2026, 11, 13, 3, 30, tzinfo=backup.BEIJING)] * 2
+            + [early.replace(hour=4, minute=1)]
+        )
+        code = export_script.main(
+            ["--cleanup"], runner=no_commands, ask=lambda _: "DELETE", now=lambda: next(times)
+        )
+        assert code == 1 and "CLEANUP CROSSED" in capsys.readouterr().out
         assert export_script.main(["--cleanup", "--links-only"], runner=no_commands) == 1
 
         def stuck(client, env):
             raise export_script.ExportError("还有没删掉的（logs/ 1 个）：再跑一次 --cleanup")
 
         monkeypatch.setattr(export_script, "cleanup", stuck)
-        assert export_script.main(["--cleanup"], runner=no_commands) == 1
-        assert "CLEANUP FAILED" in capsys.readouterr().out
+        code = export_script.main(
+            ["--cleanup"], runner=no_commands, ask=lambda _: "DELETE", now=lambda: noon
+        )
+        assert code == 1 and "CLEANUP FAILED" in capsys.readouterr().out
     finally:
         export_script.get_settings.cache_clear()
 

@@ -150,9 +150,11 @@ def run(
 # backups/）。文件名里写到期日，到期由每天的 youju archive-prune 删（本机存储和异地各删各的），
 # 删了什么记在 archive/deletions.jsonl。隐私保护指引定的期限：
 # - 整库备份按数据库备份算："数据库备份中的副本在最长 30 天的备份周期内随备份清除"，
-#   自备份那天起 30 天；
-# - 交易记录（订单、退款、开票、赠送，导出时已去标识化）：自下单起 retain_pay_orders_days
-#   （3650）天。一份文件里有多笔订单，按最早一笔算：整份不会留得比指引写的久（最晚一笔早删几天）。
+#   自备份那天起最长 30 天；
+# - 交易记录（订单、退款、开票、赠送，导出时已去标识化）：按起算日分份，每份最长 3650 天；
+# - 批量工具结果 30 天，导进来的云托管访问日志 190 天。
+# 到期日都用 expiry() 算：archive-prune 每天 5:50 删到期日那天的，起算那天最早的一条到删的时候也
+# 不超过规定的天数（最晚的一条少留不到两天）。
 ARCHIVE_PREFIX = "archive/"
 ARCHIVE_RECORD = ARCHIVE_PREFIX + "deletions.jsonl"
 # 云托管里的数据库最晚哪天删（最后一份整库备份起 30 天，D-127），和删了没有（谁、哪天、怎么删的）
@@ -166,6 +168,11 @@ _ARCHIVED = re.compile(
 )
 _EXTS = ("jsonl.gz", "tar.gz")
 BACKUP_KEEP_DAYS = 30
+
+
+def expiry(start: date, keep_days: int) -> date:
+    """按天算的存档的到期日：起算日加 keep_days - 1 天（见上面）。"""
+    return start + timedelta(days=keep_days - 1)
 
 
 @dataclass
@@ -239,7 +246,8 @@ class PruneReport:
 
 
 def cloudrun_reminder(local: storage.DiskBackend, today: date) -> str:
-    """云托管的库还没记"删了"、离最晚期限不到 7 天（或已经过了）时的提醒；不用提醒返回空串。"""
+    """云托管的库还没记"删了"、离最晚那天不到 7 天（或已经过了）时的提醒；不用提醒返回空串。
+    delete_by 是最晚删的那天（含），见 cloudrun_fetch.archive_export。"""
     if not local.exists(CLOUDRUN_DEADLINE) or local.exists(CLOUDRUN_GONE):
         return ""
     try:
@@ -252,7 +260,7 @@ def cloudrun_reminder(local: storage.DiskBackend, today: date) -> str:
         return ""
     late = "已经过了期限，" if today > delete_by else ""
     return (
-        f"云托管里的数据库要在 {delete_by} 前删掉（隐私保护指引，D-127）：{late}注销环境，"
+        f"云托管里的数据库最晚 {delete_by} 删掉（隐私保护指引，D-127）：{late}注销环境，"
         "或在云托管控制台删库（对象存储里的用户数据第 9 步已用 --cleanup 清掉；"
         "admin 后来又起来过的话再清一次）；删了以后运行 youju-shared.sh cloudrun-gone "
         "deregistered（注销）或 deleted（手动删）记下来"

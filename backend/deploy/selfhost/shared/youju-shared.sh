@@ -626,7 +626,9 @@ import_export() {
   need=$(( raw * 3 + 2 * 1073741824 ))
   dirs=("$BASE")
   dir=$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || true)
-  [ -n "$dir" ] && [ -d "$dir" ] && dirs+=("$dir")
+  { [ -n "$dir" ] && [ -d "$dir" ]; } \
+    || die "读不出 docker 的数据目录（docker info），没法核对 MySQL 数据卷那块盘的空间"
+  dirs+=("$dir")
   free=""
   for dir in "${dirs[@]}"; do
     n=$(df -B1 --output=avail "$dir" | tail -1 | tr -dc '0-9')
