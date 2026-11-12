@@ -34,7 +34,11 @@ class Session:
         self.rows = rows
         self.docs = {
             r.document_id: Obj(
-                id=r.document_id, title="标题", url="https://example.org", source_id=1
+                id=r.document_id,
+                title="标题",
+                url="https://example.org",
+                source_id=1,
+                publish_date=date(2026, 11, 1),
             )
             for r in rows
         }
@@ -70,7 +74,17 @@ def test_sample_independent_and_reproducible(monkeypatch):
     a = v.sample(s, rate=0.5, minimum=0, seed=42, now=NOW)
     assert a == v.sample(s, rate=0.5, minimum=0, seed=42, now=NOW)
     assert len(a) == 1
-    assert set(a[0]) == {"id", "title", "url", "kind", "sentences", "body_sha256"}
+    # 只给独立核对要用的，不给 Claude 的结论（日期、时间、原句）
+    assert set(a[0]) == {
+        "id",
+        "title",
+        "url",
+        "kind",
+        "publish_date",
+        "sentences",
+        "truncated",
+        "body_sha256",
+    }
     assert len(v.sample(s, minimum=5, now=NOW)) == 2
 
 
@@ -148,9 +162,34 @@ def test_reopen_group_followup_and_stale(monkeypatch):
     assert other.status == "approved"
 
 
-def test_quote_must_be_verbatim(monkeypatch):
+def test_quote_must_be_in_the_body(monkeypatch):
     r = row(1)
     s = Session([r])
     monkeypatch.setattr(app, "_lock_group", lambda *args: [r])
-    assert "原样" in v.spotcheck(s, answer(quote=BODY + " "), True, NOW)["result"]
+    # 不在正文里的原句不认，不退回
+    wrong = answer(date="2026-11-16", quote="请于2026年11月16日17:00前提交材料。")
+    assert "出现在当前正文" in v.spotcheck(s, wrong, True, NOW)["result"]
     assert r.status == "approved"
+    # 空白抄得不一样照认（独立 Claude 审阅：和 Claude 写回一样按去空白后比）
+    spaced = answer(quote="请于 2026 年 11 月 15 日\u300017:00 前提交材料。")
+    assert v.spotcheck(s, spaced, False, NOW)["result"] == "抽查一致"
+
+
+def test_sample_sentences_find_the_deadline_beyond_the_first_few(monkeypatch):
+    # 独立 Claude 审阅：日期隔着空白、全角写的也找得到；"1.5万元""第2.1条"不算日期；
+    # 写着截止一类字样的句子排前面，截止句排在第 8 句也给得到；截掉了标 truncated
+    filler = "".join(f"第{i}批项目已于2026年{i}月1日公示。" for i in range(1, 8))
+    body = (
+        "资助额度为1.5万元。按第2.1条执行。"
+        + filler
+        + "申报时间：2026 年 11 月 15 日\n17:00前提交。"
+        + "其他说明见2026年1月2日通知。" * 30
+    )
+    r = row(1)
+    s = Session([r])
+    s.details[1].body_text = body
+    item = v._sample_item(s, r)
+    assert item["sentences"][0].startswith("申报时间")
+    assert not any("万元" in x or "第2.1条" in x for x in item["sentences"])
+    assert item["truncated"] is True and len(item["sentences"]) <= 20
+    assert item["publish_date"] == "2026-11-01"

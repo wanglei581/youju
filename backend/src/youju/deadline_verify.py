@@ -408,26 +408,54 @@ def _verified_groups(session, since, until):
     return list(groups.values())
 
 
+# 抽查清单里写着截止一类字样的句子排前面；句数、总字数有上限，截掉了标 truncated
+_DEADLINE_CUE = re.compile(r"截止|截至|之前|前|止|期限|提交|报送|申报|受理|报名")
+_SAMPLE_SENTENCES = 20
+_SAMPLE_CHARS = 4000
+
+
+def _has_date(sentence):
+    """句子里写着日期：和核对时一样先规整（全角、空白）再找；月 1–12、日 1–31；
+    "1.5万元""第2.1条"这类数字不算。"""
+    normal = excerpts._normal(sentence)
+    for found in excerpts.DATE_IN_QUOTE.finditer(normal):
+        month, dom = found.group(2, 3) if found.group(2) else found.group(5, 6)
+        if not (1 <= int(month) <= 12 and 1 <= int(dom) <= 31):
+            continue
+        after = normal[found.end() : found.end() + 1]
+        if not found.group(2) and after and after in "万元%条款项":
+            continue
+        return True
+    return False
+
+
 def _sample_item(session, row):
     doc = session.get(Document, row.document_id)
     detail = session.get(DocumentDetail, row.document_id)
     if not doc or not detail or detail.status != "ok":
         return None
     body = detail.body_text or ""
-    sentences = []
-    for sentence in re.split(r"(?<=[。！？；;\n])", body):
-        match = excerpts.DATE_IN_QUOTE.search(sentence)
-        if match:
-            start = max(0, match.start() - 100)
-            sentences.append(sentence[start : start + 300].strip())
-            if len(sentences) == 5:
-                break
+    found = [
+        text[:300]
+        for text in (s.strip() for s in re.split(r"(?<=[。！？；;\n])", body))
+        if text and _has_date(text)
+    ]
+    ordered = [s for s in found if _DEADLINE_CUE.search(s)]
+    ordered += [s for s in found if not _DEADLINE_CUE.search(s)]
+    sentences, total = [], 0
+    for sentence in ordered:
+        if len(sentences) >= _SAMPLE_SENTENCES or total + len(sentence) > _SAMPLE_CHARS:
+            break
+        sentences.append(sentence)
+        total += len(sentence)
     return dict(
         id=row.id,
         title=doc.title,
         url=doc.url,
         kind=row.kind,
+        publish_date=doc.publish_date.isoformat() if doc.publish_date else None,
         sentences=sentences,
+        truncated=len(sentences) < len(found),
         body_sha256=body_hash(body),
     )
 
@@ -493,8 +521,10 @@ def spotcheck(session, item, write=False, now=None):
     body = detail.body_text or ""
     quote = item["quote"]
     if day is not None:
-        if not isinstance(quote, str) or not quote.strip() or quote not in body:
-            return done("quote 须原样出现在当前正文")
+        # 和 Claude 写回一样按去掉空白后比（全角空格、换行抄得不一样也认），记正文里的原样那段
+        quote = _body_quote(body, quote) if isinstance(quote, str) and quote.strip() else None
+        if quote is None:
+            return done("quote 须出现在当前正文")
         if not excerpts.date_in_quote(day, quote) or (
             clock is not None and not _has_time(quote, clock)
         ):
@@ -536,6 +566,8 @@ def spotcheck(session, item, write=False, now=None):
     reason = f"Codex 抽查不一致：原文{quote or '未找到这一类截止日期'}"
     if item["note"].strip():
         reason += f"；{item['note'].strip()}"
+    if row.audit_state == "flagged" and row.audit_note:
+        reason += f"；原质检存疑：{row.audit_note}"  # 和管理台退回一样，不丢原来的存疑原因
     if write:
         # audit_note 最长 200 字：原句长时截断（第二天 Claude 的清单里带的就是这段原因）
         reopen_group(group, reason[:_AUDIT_NOTE_MAX], "Codex", now)
