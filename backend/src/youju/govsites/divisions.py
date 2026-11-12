@@ -161,6 +161,7 @@ def name_variants(name: str, kind: str = "") -> set[str]:
             stem = stem[:-1]
         if len(stem) >= 2:
             out.add(stem + m.group(2))  # 恩施州
+            out.add(stem + "自治" + m.group(2))  # 湘西自治州（湖南省门户的写法）
             out.add(stem)  # 恩施
     return out
 

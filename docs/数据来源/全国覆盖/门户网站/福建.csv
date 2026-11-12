@@ -1,6 +1,6 @@
 ﻿层级,省份,城市,区县,区划代码,名称,门户网址,导航来源页,导航文字,状态,原因,网站标识码,网站名称,平台,技术支持
 省级,福建,,,350000,福建省,http://www.fujian.gov.cn/,https://www.gov.cn/home/2023-03/29/content_5748954.htm,福建,已找到,,3500000049,福建省人民政府门户网站,拓尔思|t日期_编号(拓尔思),
-市级,福建,福州,,350100,福州市,http://www.fuzhou.gov.cn/,http://www.fujian.gov.cn/,福州市,打不开,robots.txt 暂时无法获取（RemoteProtocolError: Server disconnected without sending a response.），本次跳过,,,,
+市级,福建,福州,,350100,福州市,https://www.fuzhou.gov.cn/,http://www.fujian.gov.cn/,福州市,已找到,,3501000001,福州市人民政府,拓尔思|t日期_编号(拓尔思),
 市级,福建,厦门,,350200,厦门市,http://www.xm.gov.cn/,http://www.fujian.gov.cn/,厦门市,已找到,,3502000001,厦门市人民政府门户网站,拓尔思|t日期_编号(拓尔思),
 市级,福建,莆田,,350300,莆田市,https://www.putian.gov.cn/,http://www.fujian.gov.cn/,莆田市,已找到,,3503000001,莆田市人民政府门户网站,拓尔思|t日期_编号(拓尔思),
 市级,福建,三明,,350400,三明市,http://www.sm.gov.cn/,http://www.fujian.gov.cn/,三明市,已找到,,3504000001,三明市人民政府门户网站,拓尔思|t日期_编号(拓尔思),
