@@ -166,13 +166,20 @@ def test_reopened_evidence_and_trace(setup, monkeypatch):
     monkeypatch.setattr(app, "_apply_review", apply_review)
     # 结果不是按带退回原因的清单写的（没有 reopened: true）：不放行
     assert "带退回原因的清单" in verify.apply_one(session, item(), True)
+    assert "不一样" in verify.apply_one(session, item(reopened=True, audit_note="日期存疑"), True)
+    context = dict(reopened=True, audit_note="质检退回原因：日期存疑")
+    assert "note" in verify.apply_one(session, item(**context), True)
+    context["note"] = "核了原文：申报截止就是这一天"
     assert "不在当前正文" in verify.apply_one(
-        session, item(quote="不存在的2026年9月30日截止原句", reopened=True), True
+        session, item(quote="不存在的2026年9月30日截止原句", **context), True
     )
     assert candidate.audit_note == "日期存疑"
-    assert verify.apply_one(session, item(reopened=True, audit_note="日期存疑"), True) == "通过"
+    assert verify.apply_one(session, item(**context), True) == "通过"
     assert candidate.audit_state is None and candidate.audit_note is None
-    assert candidate.verification_unclear_note == "质检退回原因：日期存疑"
+    assert (
+        candidate.verification_unclear_note
+        == "质检退回原因：日期存疑；Claude 处理：核了原文：申报截止就是这一天"
+    )
 
 
 def test_bom_file(monkeypatch, tmp_path, capsys, setup):

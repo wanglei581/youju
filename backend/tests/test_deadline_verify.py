@@ -162,7 +162,13 @@ def test_twins_follow_confirmation(session, candidate):
     entry = next(x for x in verify.queue(session, TODAY) if x["id"] == candidate.id)
     assert (entry["reopened"], entry["audit_note"]) == (True, "质检退回原因：副本的退回原因")
     assert "带退回原因的清单" in verify.apply_one(session, payload(candidate), True)
-    assert verify.apply_one(session, payload(candidate, reopened=True), True) == "通过"
+    assert "不一样" in verify.apply_one(session, payload(candidate, reopened=True), True)
+    result = {**entry, **payload(candidate)}
+    assert "note" in verify.apply_one(session, result, True)
+    assert (
+        verify.apply_one(session, {**result, "note": "核了原文：申报截止就是这一天"}, True)
+        == "通过"
+    )
     session.commit()
     twin = session.scalar(
         select(DocumentDeadline).where(DocumentDeadline.document_id == twin_doc.id)
@@ -173,7 +179,10 @@ def test_twins_follow_confirmation(session, candidate):
         and twin.verification_quote == payload(candidate)["quote"].replace("申报截止", "申报  截止")
     )
     assert twin.audit_state is None and twin.audit_note is None
-    assert twin.verification_unclear_note == "质检退回原因：副本的退回原因"
+    assert (
+        twin.verification_unclear_note
+        == "质检退回原因：副本的退回原因；Claude 处理：核了原文：申报截止就是这一天"
+    )
 
 
 def test_detail_shows_the_quote_recorded_when_verified(client, session, candidate):  # noqa: F811
@@ -195,18 +204,21 @@ def test_audit_reopened_rows_can_be_verified(session, candidate, verdict):
     queued = verify.queue(session, TODAY)
     assert len(queued) == 1 and queued[0]["reopened"] is True
     assert queued[0]["audit_note"] == f"质检退回原因：{candidate.audit_note}"
+    context = {**queued[0], "note": "核了原文：申报截止就是这一天"}
     assert "不在当前正文" in verify.apply_one(
-        session, payload(candidate, quote="不存在的2026年9月30日截止原句", reopened=True), True
+        session, {**context, **payload(candidate, quote="不存在的2026年9月30日截止原句")}, True
     )
     assert candidate.status == "pending" and candidate.audit_note == "原文写的是材料报送截止"
     changes = {"verdict": verdict}
     if verdict == "corrected":
         changes.update(date="2026-10-01", time=None, quote="修改后截止2026年10月1日。")
-    result = {**queued[0], **payload(candidate, **changes)}
+    result = {**context, **payload(candidate, **changes)}
     assert verify.apply_one(session, result, True).startswith("通过")
     session.commit()
     assert candidate.audit_state is None and candidate.audit_note is None
-    assert candidate.verification_unclear_note == "质检退回原因：原文写的是材料报送截止"
+    assert candidate.verification_unclear_note == (
+        "质检退回原因：原文写的是材料报送截止；Claude 处理：核了原文：申报截止就是这一天"
+    )
 
 
 def test_reopened_unclear_remains_blocked_until_body_changes(session, candidate):
@@ -352,7 +364,35 @@ def test_reopened_without_a_reason_still_leaves_a_trace(session, candidate):
     session.commit()
     [entry] = verify.queue(session, TODAY)
     assert (entry["reopened"], entry["audit_note"]) == (True, "质检退回（没写原因）")
-    assert verify.apply_one(session, payload(candidate, reopened=True), True) == "通过"
+    assert (
+        verify.apply_one(
+            session, {**entry, **payload(candidate), "note": "核了原文：申报截止就是这一天"}, True
+        )
+        == "通过"
+    )
     session.commit()
     assert candidate.audit_state is None
-    assert candidate.verification_unclear_note == "质检退回（没写原因）"
+    assert (
+        candidate.verification_unclear_note
+        == "质检退回（没写原因）；Claude 处理：核了原文：申报截止就是这一天"
+    )
+
+
+def test_reopen_after_the_queue_waits_for_the_next_queue(session, candidate):
+    # 出清单以后同一截止又有退回（原因变了）：按旧清单写的结果不放行，等下一份清单（独立 Claude 审阅）
+    candidate.audit_state = "reopened"
+    candidate.audit_note = "第一次退回"
+    session.commit()
+    [entry] = verify.queue(session, TODAY)
+    candidate.audit_note = "第二次退回，原文另有修改通知"
+    session.commit()
+    result = {**entry, **payload(candidate), "note": "核了原文：申报截止就是这一天"}
+    assert "等下一份清单" in verify.apply_one(session, result, True)
+    assert candidate.status == "pending" and candidate.audit_state == "reopened"
+    [entry] = verify.queue(session, TODAY)
+    assert (
+        verify.apply_one(
+            session, {**entry, **payload(candidate), "note": "核了原文：申报截止就是这一天"}, True
+        )
+        == "通过"
+    )

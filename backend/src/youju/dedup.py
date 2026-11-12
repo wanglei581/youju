@@ -158,7 +158,8 @@ def reviewed_key(row, status: str) -> tuple:
 def sync_reviewed_twins(session: Session, masters: set[int]) -> int:
     """归并组里还在待核对、但同组已有同一截止核对过的（见 reviewed_key），沿用那条的核对结果
     （通过、驳回、已变更），免得同一截止换个网址又送审，或已变更的又被通过。
-    质检退回的（audit_state 为 reopened）不沿用：必须由人重新核对。"""
+    质检退回的（audit_state 为 reopened）不沿用：要带着退回原因重新核对（Claude 按带退回原因的清单
+    写回，D-130；或在核对台核对）。"""
     from youju.models import DocumentDeadline
 
     synced = 0

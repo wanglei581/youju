@@ -188,13 +188,16 @@ def apply_one(session, item, write=False):
     locked = _lock_candidates(session, row)
     if row.status != "pending":
         return "状态已变，不再待核对"
-    if (
-        verdict != "unclear"
-        and item.get("reopened") is not True
-        and _reopened_same_deadline(session, row)
-    ):
-        # 结果要来自带着退回原因的清单（reopened 为 true）；退回发生在出清单以后的，等下一份清单
-        return "这一截止同组有质检退回，须按带退回原因的清单核对"
+    reopened = _reopened_same_deadline(session, row) if verdict != "unclear" else []
+    if reopened:
+        # 结果要来自带着当前退回原因的清单：reopened 为 true、audit_note 和现在整组的退回原因一样；
+        # 出清单以后又有退回的，等下一份清单。还要在 note 里写怎么处理了退回原因，记进留痕
+        if item.get("reopened") is not True:
+            return "这一截止同组有质检退回，须按带退回原因的清单核对"
+        if item.get("audit_note") != "；".join(_reopen_note(r) for r in reopened):
+            return "退回原因和清单里的不一样（出清单以后又有退回），等下一份清单"
+        if not item.get("note", "").strip():
+            return "同组有质检退回，须在 note 里写怎么处理了退回原因"
     if row.kind not in excerpts.DEADLINE_KINDS and verdict != "unclear":
         return "其他类不能通过"
     stmt = select(DocumentDetail).where(DocumentDetail.document_id == row.document_id)
@@ -263,8 +266,9 @@ def apply_one(session, item, write=False):
         stamp = datetime.now(UTC)
         # _apply_review 会清空质检信息；同组每条各自保存自己的退回原因。
         # _apply_review 会清掉质检标记；退回过的各自留一笔（没写原因的也留）
+        handled = item.get("note", "").strip()
         reopen_notes = {
-            d.id: _reopen_note(d)
+            d.id: f"{_reopen_note(d)}；Claude 处理：{handled}" if handled else _reopen_note(d)
             for d in locked
             if d.status == "pending" and d.audit_state == "reopened"
         }
