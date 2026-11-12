@@ -841,6 +841,76 @@ def test_protection_page_is_rejected() -> None:
     assert not result.body_text
 
 
+def test_dropdown_options_are_not_body() -> None:
+    """下拉框里的跳转选项不算正文（11/12 漯河：正文区空着，兜底时把"省级厅委导航"一串选项当正文）。"""
+    options = "".join(
+        f"<option value='https://{n}.gov.cn/'>某某省第{n}厅</option>" for n in range(30)
+    )
+    page = (
+        "<html><title>某局文件</title><body><div class='row'><select><option>--省级厅委导航--</option>"
+        f"{options}</select></div><div class='conTxt'></div></body></html>"
+    )
+    result = parse_detail(page, "https://scjg.example.gov.cn/content_1.html")
+    assert "厅委导航" not in (result.raw_body or "") and not result.body_text
+    # 正文里本来就有的下拉框也不进正文，正文照取
+    with_body = page.replace(
+        "<div class='conTxt'></div>",
+        "<div id='zoom'><p>各有关单位：</p><p>现将2026年度项目申报有关事项通知如下，请按要求组织申报。</p>"
+        "<select><option>请选择</option><option>某县</option></select></div>",
+    )
+    result = parse_detail(with_body, "https://scjg.example.gov.cn/content_2.html")
+    assert "组织申报" in result.body_text and "请选择" not in result.body_text
+
+
+def test_dropdown_inside_first_body_line_keeps_fields() -> None:
+    """正文第一行中间夹着下拉框：发文机关、文号、发布日期照样从正文前面的字里找（不退回整页前 700 字，
+    前面 80 行导航已经超过 700 字）。"""
+    nav = "".join(f"<p>栏目导航第{n}项</p>" for n in range(80))
+    page = (
+        f"<html><title>某局文件</title><body>{nav}<div class='meta'><p>发布机构：某某市科学技术局</p>"
+        "<p>发布日期：2026-11-05</p><p>文号：某科〔2026〕12号</p></div>"
+        "<div id='zoom'><p>各有关单位：现将<select><option>某县</option><option>某区</option>"
+        "</select>项目申报有关事项通知如下，请按要求组织申报。</p>"
+        "<p>申报材料请于本月底前报送。</p></div></body></html>"
+    )
+    result = parse_detail(page, "https://kjj.example.gov.cn/content_4.html")
+    assert (
+        result.body_text.startswith("各有关单位：现将项目申报") and "某县" not in result.body_text
+    )
+    assert result.issuer == "某某市科学技术局"
+    assert result.doc_number == "某科〔2026〕12号"
+    assert result.publish_date == date(2026, 11, 5)
+
+
+def test_body_first_line_repeated_above_meta_keeps_fields() -> None:
+    """正文第一句（标题）在发布信息上面也出现过一遍：按正文节点所在的位置找发布信息，不在上面那一处
+    截断（截断的话发文机关、文号、发布日期都会漏掉）。"""
+    page = (
+        "<html><title>某局文件</title><body><h1>关于开展项目申报工作的通知</h1>"
+        "<div class='meta'><p>发布机构：某某市科学技术局</p><p>发布日期：2026-11-05</p>"
+        "<p>文号：某科〔2026〕12号</p></div><div id='zoom'><p>关于开展项目申报工作的通知</p>"
+        "<p>各有关单位：现将项目申报有关事项通知如下，请按要求组织申报。</p></div></body></html>"
+    )
+    result = parse_detail(page, "https://kjj.example.gov.cn/content_5.html")
+    assert result.body_text.startswith("关于开展项目申报工作的通知")
+    assert result.issuer == "某某市科学技术局"
+    assert result.doc_number == "某科〔2026〕12号"
+    assert result.publish_date == date(2026, 11, 5)
+
+
+def test_dropdown_text_still_counts_for_protection_window() -> None:
+    """防护页判断看页面前 500 字，下拉框的字照旧算在里面，范围不变（下拉框后面很远处的
+    验证码字样，原来不当防护页，现在也不当）。"""
+    options = "".join(f"<option>某某市第{n}个部门网站</option>" for n in range(80))
+    page = (
+        f"<html><title>某局文件</title><body><select>{options}</select>"
+        "<p>搜索过于频繁，请输入验证码</p><div id='zoom'><p>各有关单位：</p>"
+        "<p>现将2026年度项目申报有关事项通知如下，请按要求组织申报。</p></div></body></html>"
+    )
+    result = parse_detail(page, "https://www.example.gov.cn/content_3.html")
+    assert result.failure_reason is None and "组织申报" in result.body_text
+
+
 def test_density_fallback_ignores_navigation_and_redacts() -> None:
     sample = (
         "<html><body><div class='top-links'><a href='/a'>网站首页栏目导航公告通知</a>"

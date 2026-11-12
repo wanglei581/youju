@@ -612,30 +612,65 @@ def has_personal_numbers(text: str) -> bool:
     return any(_luhn(re.sub(r"\D", "", m.group())) for m in cards)
 
 
-def _plain_lines(node: etree._Element, skip: frozenset = frozenset()) -> list[str]:
-    parts: list[str] = []
+def _plain_lines(
+    node: etree._Element, skip: frozenset = frozenset(), *, keep_select: bool = False
+) -> list[str]:
+    """节点里的文字，一行一行。下拉框（"县区网站""省级厅委导航"这类跳转菜单）的选项不是正文：
+    11/12 漯河等站正文区是空的，按文字密度兜底时会把一整串选项当成正文，所以默认跳过。
+    keep_select：防护页判断看页面前 500 字时照旧连下拉框的字一起算，范围不变。"""
+    return _collect_lines(node, skip, keep_select)[0]
 
-    def visit(element: etree._Element) -> None:
+
+def _lines_before(
+    node: etree._Element, until: etree._Element, skip: frozenset = frozenset()
+) -> list[str] | None:
+    """node 里 until 前面的字（分行、跳过哪些都和 _plain_lines 一样，不带下拉框）；碰不到 until
+    （它不在 node 里，或在导航、页尾、下拉框这类不收字的地方）时为 None。找正文前面的发文机关、
+    文号、发布日期用：按正文节点所在的位置截，正文第一句在页面上面别处也出现过（如标题重复一遍）时
+    不会截错地方。"""
+    lines, reached = _collect_lines(node, skip, False, until)
+    return lines if reached else None
+
+
+def _collect_lines(
+    node: etree._Element,
+    skip: frozenset,
+    keep_select: bool,
+    until: etree._Element | None = None,
+) -> tuple[list[str], bool]:
+    """_plain_lines、_lines_before 共用：按顺序收字、分行；碰到 until 就停，第二个值说明碰到了
+    没有。"""
+    parts: list[str] = []
+    skipped = {"script", "style", "noscript", "nav", "footer"} | (
+        set() if keep_select else {"select"}
+    )
+
+    def visit(element: etree._Element) -> bool:
         if not isinstance(element.tag, str) or element in skip:
-            return
-        if element.tag.lower() in {"script", "style", "noscript", "nav", "footer"}:
-            return
+            return False
+        if element is until:
+            return True
+        if element.tag.lower() in skipped:
+            return False
         marker = f"{element.get('class', '')} {element.get('id', '')}"
         if _JUNK_CLASS.search(marker):
-            return
+            return False
         if element.tag.lower() == "br":
             parts.append("\n")
         if element.text:
             parts.append(element.text)
         for child in element:
-            visit(child)
+            if visit(child):
+                return True
             if child.tail:
                 parts.append(child.tail)
         if element.tag.lower() in _BLOCK_TAGS:
             parts.append("\n")
+        return False
 
-    visit(node)
-    return [line for raw in "".join(parts).splitlines() if (line := " ".join(raw.split()))]
+    reached = visit(node)
+    lines = [line for raw in "".join(parts).splitlines() if (line := " ".join(raw.split()))]
+    return lines, reached
 
 
 def _body_node(root: etree._Element, host: str | None = None) -> etree._Element | None:
@@ -1141,7 +1176,9 @@ def parse_detail(html_text: str, url: str) -> DetailResult:
         return DetailResult(failure_reason=f"HTML 无法解析：{exc.__class__.__name__}")
     title = " ".join(root.xpath("//title/text()"))[:200]
     body = root.xpath("//body")
-    visible = "\n".join(_plain_lines(body[0])) if body else ""
+    visible = "\n".join(_plain_lines(body[0], keep_select=True)) if body else ""
+    # 找发文机关、文号、发布日期用不带下拉框的字，和正文的取法一致
+    plain = "\n".join(_plain_lines(body[0])) if body else ""
     if re.search(
         r"验证码|人机验证|安全验证|访问过于频繁|异常访问|请开启.{0,12}JavaScript",
         title + visible[:500],
@@ -1153,9 +1190,9 @@ def parse_detail(html_text: str, url: str) -> DetailResult:
     if node is None:
         attachments = _attachments(root, url)
         return DetailResult(
-            issuer=_issuer([], root, visible[:700]),
-            doc_number=_doc_number([], root, visible[:700]),
-            publish_date=_publish_date(root, visible[:700]),
+            issuer=_issuer([], root, plain[:700]),
+            doc_number=_doc_number([], root, plain[:700]),
+            publish_date=_publish_date(root, plain[:700]),
             attachments=attachments,
             failure_reason=None if attachments else "未识别到正文容器",
             page_titles=_page_titles(root),
@@ -1163,9 +1200,11 @@ def parse_detail(html_text: str, url: str) -> DetailResult:
     junk = _SITE_JUNK.get(host)
     lines = _plain_lines(node, frozenset(node.xpath(junk)) if junk else frozenset())
     raw_body = "\n".join(lines)
-    prefix = (
-        visible.split(lines[0], 1)[0][-700:] if lines and lines[0] in visible else visible[:700]
-    )
+    # 找发文机关、文号、发布日期的范围：页面上正文节点前面的字（最后 700 字）。按节点所在的位置
+    # 截，不按正文第一句在整页文字里第一次出现的地方截（标题在上面重复一遍时会截早，漏掉中间的
+    # 发布信息）；正文不在页面结构里（从页面自带脚本里取的）时用整页前 700 字
+    before = _lines_before(body[0], node) if body else None
+    prefix = "\n".join(before)[-700:] if before is not None else plain[:700]
     attachments = _attachments(root, url)
     # PDF-only 页面只有下载入口，HTML 正文为空；仍保留附件题录。
     if len(raw_body) < 30 or ("点击正文" in raw_body and not any(len(line) > 60 for line in lines)):
