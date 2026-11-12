@@ -224,7 +224,9 @@ def find_gkmlpt_api(html: str, page_url: str, column_url: str) -> ListApi | None
         url = urlunsplit((page.scheme, page.netloc, path, f"page=1&sid={values['SID']}", ""))
     except (ValueError, TypeError):
         return None
-    return ListApi(GKMLPT, url, page_url, category)
+    # 条目里的相对网址按部门页解析；部门页网址（抓取的最终网址可能带着栏目的 #xxgk-gkmlpt-编号）
+    # 去掉 # 后面，回链判断（url_key）才对得上
+    return ListApi(GKMLPT, url, page_url.split("#", 1)[0], category)
 
 
 def find_list_api(html: str, page_url: str, column_url: str | None = None) -> ListApi | None:

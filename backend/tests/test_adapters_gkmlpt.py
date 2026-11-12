@@ -321,3 +321,14 @@ def test_verify_with_fragment_in_final_url():
     cache = Cache({URL: page, api().url: json.dumps(BODY)})
     assert check_one(cache, column(), TODAY).result == READABLE
     assert cache.calls == [URL, api().url]
+
+
+def test_base_url_drops_the_column_fragment():
+    # 正式抓取时部门页的最终网址可能带着栏目的 # 片段：条目按不带片段的部门页解析，回链照样跳过
+    column = f"{URL}#xxgk-gkmlpt-8"
+    found = find_list_api(PAGE, column, column)
+    assert found.base_url == URL and found.url == api().url
+    body = json.loads(json.dumps(BODY))
+    body["articles"][0]["url"] = "http://www.sg.gov.cn/fgj/gkmlpt/index"  # 只差 http 的回链
+    items = api_items(found, json.dumps(body), {}, TODAY)
+    assert len(items) == 4 and all("gkmlpt/index" not in i.url for i in items)
