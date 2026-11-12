@@ -67,6 +67,10 @@ def test_deep_columns_under_the_dept_dir() -> None:
             ("公示公告", f"{JM}/bmpd/jmskxjsj/zwdt/gsgg/202611/t20261101_123.html"),  # 文章
             ("公示公告", "https://www.example.gov.cn/bmpd/jmskxjsj/gsgg/"),  # 别的主机
             ("政策解读", f"{JM}/bmpd/jmskxjsj/a/b/c/d/e/f/g/index.html"),  # 超过 8 层
+            (
+                "公示公告",
+                f"{JM}/bmpd/jmskxjsj/art/2026/11/1/art_12_345.html?from=1",
+            ),  # 带参数的文章
         ],
     )
     got = colrules.deep_columns(page, frozenset(), ColumnHit)
@@ -215,3 +219,30 @@ def test_info_page_picks_among_dept_links_only() -> None:
         ColumnHit,
     )
     assert {k: h.url for k, h in got.items()} == {"政策文件": f"{SG}/bmpdlm/fgw/zcwj/"}
+
+
+def test_portal_channel_needs_the_nav_text_itself() -> None:
+    """导航文字为空时不拿部门全称顶替：证明不了导航链接写的是本部门。"""
+    page = _page(f"{JM}/bmpd/x/", [("通知公告", f"{JM}/bmpd/x/a/b/tzgg/index.html")])
+    row = _row(nav="")
+    row.dept_full_name = "江门市科学技术局"
+    assert colrules.more_columns(row, page, {}, frozenset(), _never, _never, ColumnHit) == {}
+
+
+def test_info_page_group_links_are_left_to_the_standard_path() -> None:
+    """部门信息公开页上大汉分组还原的链接、分类树不在补充规则里认（通用规则另有核对）。"""
+    dept = _page(f"{SG}/bmpdlm/fgw/", [("信息公开", f"{SG}/bmpdlm/fgw/xxgk/")])
+    info = _page(
+        f"{SG}/bmpdlm/fgw/xxgk/", [("政策文件", f"{SG}/bmpdlm/fgw/xxgk/zcwj/")], via="jpaas分组"
+    )
+    info.categories = [("政策文件", "123")]
+    got = colrules.more_columns(
+        _row(dept="发改委"),
+        dept,
+        {},
+        frozenset(),
+        lambda _u: info,
+        lambda ps, ex: find_columns(ps, ex),
+        ColumnHit,
+    )
+    assert got == {}
