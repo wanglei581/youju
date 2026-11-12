@@ -59,11 +59,13 @@ test('D-130：截止标签叫"已核对原文"；使用帮助写明谁核的，�
   const deadline = help.items.find((item) => item.key === 'deadline');
   assert.ok(!deadline.ai, '截止日期怎么看：AI 关着也显示');
   assert.doesNotMatch(deadline.a.join(''), /\bAI\b/);
-  assert.match(deadline.a.join(''), /已核对原文.*原文里写截止的那句话/);
+  assert.match(deadline.a.join(''), /^7 天内到期的截止日期，对照通知原文核对过才显示，标“已核对原文”.*原文里写截止的那句话；这项核对不是人工做的。/);
+  // 8–30 天的原文摘录照旧说明（"看不准不显示"只说 7 天内的，Codex 第 1 轮）
+  assert.match(deadline.a.join(''), /原文摘录.*没有经过核对.*只有 8 到 30 天后到期的才这样显示/);
   const who = help.items.find((item) => item.key === 'deadline-check');
   assert.equal(who.ai, true, '写到 AI 的那一条只在 AI 开着时显示（D-075）');
-  assert.match(who.q, /人工核对/);
-  assert.match(who.a.join(''), /^不是。.*AI 逐条对照通知原文核对/);
+  assert.match(who.q, /谁核对/);
+  assert.match(who.a.join(''), /^7 天内到期的截止日期，由 AI 每天逐条对照通知原文核对.*不是人工核对。7 天内到期的，原文里找不到、看不准的不显示日期/);
   // 紧跟在"截止日期怎么看"后面
   const keys = help.items.map((item) => item.key);
   assert.equal(keys.indexOf('deadline-check'), keys.indexOf('deadline') + 1);
