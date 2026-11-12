@@ -818,6 +818,10 @@ def rebuild(
     fact_ids = {
         d for d, row in members.items() if row.group_id in window_groups
     } | changed_confirmed
+    if full:
+        # 维护用（改了标题、正文脱敏重写这类不更新抓取时间的改动以后跑）：窗口外确认过的成员也重算
+        # 快照，内容变了照常转"需复核"
+        fact_ids |= {d for d, row in members.items() if row.active and row.confirmed_at is not None}
     member_info, fingerprints = member_facts(session, list(fact_ids))
     info.update(member_info)
     by_group: dict[int, list[RepostGroupMember]] = defaultdict(list)

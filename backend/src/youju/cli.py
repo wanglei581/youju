@@ -2759,7 +2759,11 @@ def main(argv: list[str] | None = None) -> int:
         "repost-groups",
         help="把同一份部里通知的各地版本归成转发组（待人工确认；所有组必须人工确认）",
     )
-    p.add_argument("--full", action="store_true", help="重算窗口内全部正文信号")
+    p.add_argument(
+        "--full",
+        action="store_true",
+        help="重算窗口内全部正文信号，并检查窗口外确认过的组（改了标题、正文脱敏重写以后跑）",
+    )
     p.set_defaults(func=_cmd_repost_groups)
 
     p = sub.add_parser("extract-fields", help="从申报通知正文生成支持方式和申报对象候选")

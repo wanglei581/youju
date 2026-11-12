@@ -1031,6 +1031,30 @@ def test_refresh_signals_and_window_candidates(session, world):
     assert session.get(RepostSignal, old_id) is None
 
 
+def test_full_rebuild_checks_confirmed_groups_outside_the_window(session, world):
+    # 改了标题（重新分类清标题）、正文脱敏重写这类不更新抓取时间的改动：平常的增量重建看不到窗口外
+    # 确认过的组；--full 重算它们的快照，内容变了照常转"需复核"
+    rebuild(session, now=NOW)
+    session.flush()
+    group = session.scalars(select(RepostGroup)).one()
+    for doc in (world["shaanxi"], world["tianjin"], world["fujian"]):
+        doc.publish_date = date(2025, 1, 1)  # 都在窗口外
+    session.flush()
+    rows = _members(session)
+    _, facts = member_facts(session, list(rows))
+    for row in rows.values():
+        row.confirmed_by, row.confirmed_at = "人工", NOW
+        row.confirmed_fingerprint = facts[row.document_id]
+    world["tianjin"].title += "（更正）"
+    session.flush()
+    rebuild(session, now=NOW)
+    session.flush()
+    assert not group.needs_review
+    rebuild(session, now=NOW, full=True)
+    session.flush()
+    assert group.needs_review
+
+
 def test_old_groups_untouched_and_cross_window_member_retained(session, world):
     rebuild(session, now=NOW)
     session.flush()
