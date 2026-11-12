@@ -331,7 +331,7 @@ test('详情页：核对过的截止原句只在截止卡片里写一次；"原�
   assert.doesNotMatch(shown, /原文摘录/);
   // 三张核对过的卡片不再各标一遍"已核对原文"（括号写法还不一样），合成一句在页底原文出处里
   assert.match(shown, /申报对象/); assert.doesNotMatch(shown, /申报对象（已核对原文）/);
-  assert.equal(shown.split('已核对原文').length - 1, 1);
+  assert.equal(shown.split('支持方式、申报对象、申报条件已核对原文。').length - 1, 1);
   assert.match(shown, /支持方式、申报对象、申报条件已核对原文。/);
   assert.match(shown, /截止日期已于 2026年10月27日 对照原文核对。/);
   // 旧接口（没有 deadlines、只有核对过的 deadline）：原句跟在日期下面，标"已人工核对"，也只写一次

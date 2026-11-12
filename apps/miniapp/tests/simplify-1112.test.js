@@ -180,7 +180,8 @@ test('详情页：支持方式、申报对象、申报条件的核对说明合�
   const doc = { id: '1', title: '关于公示拟认定企业名单的通知', issuer: '科技厅', date: '2026-10-01', fields: { support: ['资金补助'], audience: { text: '注册在本省的企业' } }, body: { status: 'list' } };
   const data = { doc, loading: false, has: { help: true }, conds: [], checkedText: '', noBody: '这份通知的正文里有名单' };
   const text = textOf(render('pages/detail/index.wxml', data));
-  assert.equal(text.split('已核对原文').length - 1, 1);
+  assert.equal(text.split('支持方式、申报对象、申报条件已核对原文。').length - 1, 1);
+  assert.doesNotMatch(text, /申报对象（已核对原文）|申报条件（已核对原文）|支持方式已核对原文/);
   assert.match(text, /支持方式、申报对象、申报条件已核对原文。内容以原文为准；申报请在主管部门的申报系统办理，有据不提供填报入口。/);
   assert.match(text, /去查名单 ›/); assert.doesNotMatch(text, /按企业名称查询/);
   assert.match(text, /内容怎么来的 ›/); assert.doesNotMatch(text, /数据说明/);
@@ -188,7 +189,7 @@ test('详情页：支持方式、申报对象、申报条件的核对说明合�
   assert.doesNotMatch(text, /结果/);
   // 没有这三张卡片时不写它们的核对说明；有核对日期时两句并排
   const bare = textOf(render('pages/detail/index.wxml', { doc: { id: '1', title: 't', issuer: '厅', date: '2026-10-01' }, loading: false, has: {}, conds: [], checkedText: '2026年11月12日' }));
-  assert.doesNotMatch(bare, /已核对原文/); assert.match(bare, /截止日期已于 2026年11月12日 对照原文核对。内容以原文为准/);
+  assert.doesNotMatch(bare, /支持方式、申报对象、申报条件已核对原文/); assert.match(bare, /截止日期已于 2026年11月12日 对照原文核对。内容以原文为准/);
   // 只有申报条件时也写
   const conds = textOf(render('pages/detail/index.wxml', { doc: { id: '1', title: 't', issuer: '厅', date: '2026-10-01' }, loading: false, has: {}, conds: [{ category: '主体资格', quote: '注册在本省', showCat: true }], checkedText: '' }));
   assert.match(conds, /支持方式、申报对象、申报条件已核对原文。/);
