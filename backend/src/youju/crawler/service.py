@@ -279,8 +279,10 @@ def check_source(
                 # 列表接口被 robots 禁止：和读取护栏一样，零星条目不收，记 robots 禁止（停抓）
                 items = []
                 status, error = via.fetch.status, f"列表接口（{via.adapter}）：{via.fetch.error}"
-            elif via.fetch is not None and not items:
-                # 列表接口被 robots 禁止或被拒：照实记，不当成"改版认不出"（以后也不能去绕）
+            elif via.fetch is not None:
+                # 列表接口这次没取到（网络不通、超时、5xx 等）：照实记失败、下次再试，不当成
+                # "改版认不出"；栏目页上零星认出的一两条也不收，免得把这次失败盖成成功
+                items = []
                 status, error = via.fetch.status, f"列表接口（{via.adapter}）：{via.fetch.error}"
                 if via.fetch.http_status:
                     result = FetchResult(url, "http_error", http_status=via.fetch.http_status)

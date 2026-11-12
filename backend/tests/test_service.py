@@ -472,3 +472,22 @@ def test_recheck_keeps_refusal_on_one_off_failure(session) -> None:
     assert check.status == "http_error"
     session.refresh(source)
     assert source.parser_config["list_api_refused"]["url"] == JPAAS_API
+
+
+def test_one_off_list_api_failure_is_not_hidden_by_stray_page_items(session) -> None:
+    """接口这次 502、栏目页零星认出一条：照实记失败，不把这一条当成功入库。"""
+    url = "https://kjt.zj.gov.cn/col/col1229225203/index.html"
+    source = make_source(session, url)
+    stray = JPAAS_PAGE.replace(
+        "</ul>",
+        '<li><a href="/art/9.html">关于开展专项申报工作的通知</a><span>2026-11-01</span></li></ul>',
+    )
+    failed = FetchResult(
+        JPAAS_API, "http_error", final_url=JPAAS_API, http_status=502, error="HTTP 502"
+    )
+    fetcher = FakeFetcher({url: [page(url, stray)], JPAAS_API: [failed]})
+    check = check_source(session, source, fetcher)
+    assert (check.status, check.items_found) == ("http_error", 0)
+    assert "列表接口" in check.error
+    session.refresh(source)
+    assert source.health == "degraded"

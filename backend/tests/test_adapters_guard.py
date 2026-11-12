@@ -316,3 +316,56 @@ def test_lists_stay_unread_unless_the_guard_passes():
         "",
     ):
         assert api_html(api, text) == ""
+
+
+def test_declared_address_is_kept_as_written():
+    """页面写的接口地址自带参数、写成绝对网址时，原样照用，页面参数接在后面。"""
+    from urllib.parse import parse_qsl
+
+    page = (
+        f'<script src="/x/unitbuild.js" url="https://kjt.zj.gov.cn{HANWEB_JPAAS_PATH}?site=zj#top" '
+        "queryData=\"{'pageType':'column','tagId':'当前栏目list','pageId':'1'}\"></script>"
+    )
+    api = find_list_api(page, "http://kjt.zj.gov.cn/col/col1/index.html")
+    parts = urlsplit(api.url)
+    assert (parts.scheme, parts.path, parts.fragment) == ("https", HANWEB_JPAAS_PATH, "")
+    assert parse_qsl(parts.query) == [
+        ("site", "zj"),
+        ("pageType", "column"),
+        ("tagId", "当前栏目list"),
+        ("pageId", "1"),
+    ]
+
+
+def test_redirect_away_from_the_declared_address_is_not_read():
+    """接口跳到页面没写的地址（别的路径、参数、主机）：哪怕那边回成功，也不跟着读。"""
+    api = _api()
+    parts = urlsplit(api.url)
+    for final in (
+        api.url.replace(HANWEB_JPAAS_PATH, "/other/unit"),
+        api.url + "&page=2",
+        api.url.replace("kjt.zj.gov.cn", "www.zj.gov.cn"),
+    ):
+        assert "没写的地址" in api_refusal(api, _got(_payload(), final=final))
+    # 跳走以后又超时：照样按"跳到了页面没写的地址"记，不当成这次没取到
+    gone = FetchResult(api.url, "network_error", final_url=f"https://{parts.netloc}/other")
+    assert "没写的地址" in api_refusal(api, gone)
+
+
+def test_deep_permission_fields_are_found():
+    api = _api()
+    deep: dict = {"roles": ["dept"]}
+    for level in range(8):
+        deep = {f"l{level}": deep}
+    text = _payload(data={"html": LIST, "meta": deep})
+    assert "roles" in api_refusal(api, _got(text))
+    assert api_html(api, text) == ""
+
+
+def test_verify_records_one_off_list_api_failure_as_down():
+    from youju.govsites.verify import DOWN, check_one
+
+    api = _api()
+    failed = FetchResult(api.url, "http_error", api.url, 502, "", "HTTP 502")
+    col = check_one(_Cache({PAGE_URL: PAGE, api.url: failed}), _column(), date(2026, 11, 12))
+    assert col.result == DOWN and "列表接口" in col.reason

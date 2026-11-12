@@ -79,7 +79,10 @@ def find_unit_apis(html: str, page_url: str) -> list[ListApi]:
         rank = 0 if "list" in tag.lower() or "列表" in tag else 1
         if query.get("pageType") != "column":
             rank += 2
-        url = urljoin(page_url, HANWEB_JPAAS_PATH) + "?" + urlencode(query)
+        # 地址原样照页面写的（协议、参数都不动，只去掉 # 后面），页面的参数接在后面，和浏览器
+        # 脚本发的一样（D-128 读取护栏 ①：不改参数、不另外构造请求）
+        base = declared._replace(fragment="").geturl()
+        url = base + ("&" if declared.query else "?") + urlencode(query)
         candidates.append((rank, ListApi("大汉jpaas", url, page_url)))
     candidates.sort(key=lambda c: c[0])
     out: list[ListApi] = []
@@ -151,21 +154,19 @@ def _json_payload(text: str) -> dict | None:
 
 
 def _permission_fields(payload: dict) -> list[str]:
-    """返回里不为空的权限一类字段（各层字典都看，最多 6 层）。"""
+    """返回里不为空的权限一类字段（各层字典、列表都看，不限层数）。"""
     found: list[str] = []
-    stack: list[tuple[str, object, int]] = [("", payload, 0)]
+    stack: list[tuple[str, object]] = [("", payload)]
     while stack:
-        prefix, obj, depth = stack.pop()
-        if depth > 6:
-            continue
-        items = obj.items() if isinstance(obj, dict) else enumerate(obj)
+        prefix, obj = stack.pop()
+        items = obj.items() if isinstance(obj, dict) else enumerate(obj)  # type: ignore[arg-type]
         for key, value in items:
             name = f"{prefix}{key}"
             empty = value is None or value is False or value in ("", 0, [], {})
             if isinstance(key, str) and _PERMISSION_KEY.match(key) and not empty:
                 found.append(name)
             elif isinstance(value, (dict, list)):
-                stack.append((f"{name}.", value, depth + 1))
+                stack.append((f"{name}.", value))
     return sorted(found)
 
 
@@ -217,8 +218,12 @@ def api_refusal(api: ListApi, result) -> str:
     if http_status in _REFUSE_HTTP:
         return f"列表接口 HTTP {http_status}：拒绝访问或要求登录"
     final = getattr(result, "final_url", None) or api.url
-    if _LOGIN_URL.search(_redirect_words(api.url, final)):
-        return "列表接口跳到登录或验证页面"
+    words = _redirect_words(api.url, final)
+    if words:
+        # 跳到了页面没写的地址（只换协议的不算）：不跟着读（D-128 读取护栏 ①），记不能抓
+        if _LOGIN_URL.search(words):
+            return "列表接口跳到登录或验证页面"
+        return "列表接口跳到了页面没写的地址"
     if status != "ok":
         return ""
     text = getattr(result, "text", "") or ""

@@ -134,7 +134,11 @@ def check_one(cache: PageCache, col: ColumnCheck, today: date) -> ColumnCheck:
                 # → 记不能抓、不读
                 col.result, col.reason = BLOCKED, f"{refused}（D-128）"
                 return col
-            html = api_html(api, ar.text) if ar.status == "ok" else ""
+            if ar.status != "ok":
+                # 列表接口这次没取到（超时、5xx 等）：记打不开，不按栏目页猜成"要脚本"
+                col.result, col.reason = DOWN, f"列表接口：{(ar.error or ar.status)[:100]}"
+                return col
+            html = api_html(api, ar.text)
             via = extract_items(html, api.base_url, today=today) if html else []
             if len(via) > len(items):
                 items = via
