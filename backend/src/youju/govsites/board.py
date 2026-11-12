@@ -17,6 +17,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
+from youju.crawler.adapters import LIST_API_REFUSED
 from youju.govsites.inventory import SHARED_ONLY, DeptRow
 
 STATES = ("已收录", "抓取失败", "网站无此栏目", "需人工", "不能抓")
@@ -85,6 +86,9 @@ def _outcome(
             return "blocked", "robots.txt 禁止"
         if s.last_status == "http_error" and s.last_http in (401, 403, 412, 521):
             return "blocked", f"HTTP {s.last_http} 拒绝访问"
+        if s.last_status == LIST_API_REFUSED:
+            # 列表接口被读取护栏（D-128）拦下：原因写在最近一次的错误里
+            return "blocked", s.last_error or "列表接口按读取护栏不读"
         if _refused(s.verification_status) or s.fetch_mode == "blocked" or s.health == "blocked":
             return "blocked", s.verification_status or s.last_error or "网站拒绝抓取"
         last = s.last_success_at

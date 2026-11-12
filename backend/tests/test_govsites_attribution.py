@@ -139,7 +139,7 @@ class FakeCache:
         self.pages = pages
         self.hits = self.fetches = 0
 
-    def get(self, url: str) -> FetchResult:
+    def get(self, url: str, same_address_only=False) -> FetchResult:
         if url in self.pages:
             return FetchResult(url, "ok", url, 200, self.pages[url])
         return FetchResult(url, "http_error", url, 404, "", "HTTP 404")
@@ -608,7 +608,7 @@ def test_blocked_top_candidate_is_kept_not_replaced():
     }
 
     class Blocked(FakeCache):
-        def get(self, url):
+        def get(self, url, same_address_only=False):
             if url.startswith("http://kjt.jiangxi.gov.cn/"):
                 return FetchResult(url, "http_error", url, 412, "", "HTTP 412")
             return super().get(url)
@@ -705,7 +705,7 @@ class RedirectCache(FakeCache):
         super().__init__(pages)
         self.redirects = redirects
 
-    def get(self, url):
+    def get(self, url, same_address_only=False):
         if url in self.redirects:
             final = self.redirects[url]
             r = super().get(final)
