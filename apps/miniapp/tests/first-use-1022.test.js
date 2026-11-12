@@ -132,7 +132,7 @@ const FORM = {
   remaining: 3, maxRows: 50, mode: 'paste', text: '', rowCount: 0, previewed: false, previewing: false, submitting: false, agreed: true, passActive: false,
 };
 
-test('第 2 条：没预览时"提交任务"是灰的，紧挨着按钮上方写明为什么；先做什么写在"预览并核对行数"正下方；预览通过后都不出现', () => {
+test('第 2 条：没预览时"提交任务"是灰的，紧挨着按钮上方写明为什么；先预览后提交只写这一句（预览按钮下面不再另写，11/12 简化走查）；预览通过后都不出现', () => {
   const submitCard = (data) => {
     const root = render('pages/advisor-form/index.wxml', data);
     return findAll(root, (n) => elements(n).some(tapsTo('submit')))[0];
@@ -142,12 +142,13 @@ test('第 2 条：没预览时"提交任务"是灰的，紧挨着按钮上方写
   let at = kids.findIndex(tapsTo('submit'));
   assert.equal(kids[at].attrs.disabled, true);
   assert.equal(flat(kids[at - 1]), '预览通过后才能提交');
-  // 先做什么：紧跟在"预览并核对行数"按钮下面（10/25 Grok：原来隔着工具说明和保存期限）
+  // 预览按钮下面原来还有一句"填好名单后，先点上面的……"，和上面这句说的是同一件事，去掉了
   const previewCard = findAll(render('pages/advisor-form/index.wxml', FORM), (n) => elements(n).some(tapsTo('preview')))[0];
   const pk = elements(previewCard);
   const pat = pk.findIndex(tapsTo('preview'));
   assert.match(flat(pk[pat]), /预览并核对行数/);
-  assert.equal(flat(pk[pat + 1]), '填好名单后，先点上面的“预览并核对行数”，通过后才能提交');
+  assert.equal(pk[pat + 1], undefined, '预览按钮下面没有别的字了');
+  assert.doesNotMatch(textOf(render('pages/advisor-form/index.wxml', FORM)), /先点上面的/);
   // 正在预览（按钮在转圈）时不催"先点预览"
   assert.doesNotMatch(textOf(render('pages/advisor-form/index.wxml', { ...FORM, previewing: true })), /先点上面的|预览通过后才能提交/);
   card = submitCard({ ...FORM, previewed: true, rowCount: 3 });
@@ -217,9 +218,9 @@ test('第 5 条：直接在"地区"里选省份，和在城市一栏选"全部"�
 const results = (extra) => render('pages/search/index.wxml', { loading: false, error: '', total: 3, totalAll: 9, chipTime: '近 30 天', items: [], activeChips: [], picked: { open: [] }, fold: { text: '' }, entries: {}, groups: [], openNote: '“只看未截止”不含截止日期还不确定的通知', ...extra });
 const OPEN_LINE = '“只看未截止”不含截止日期还不确定的通知';
 
-test('第 6 条：选了"只看未截止"、有结果时，结果上面也写一句不含哪些（10/29 压短，完整口径在筛选面板）；没选、或没有结果时不写这一行', () => {
+test('第 6 条："只看未截止"不含哪些只在没有结果的页面和筛选面板里写（11/12 简化走查：有结果时结果上面不再另写一句，原来 10/22 加、10/29 压短）', () => {
   const lines = (root) => findAll(root, hasClass('fold-note')).map(flat);
-  assert.ok(lines(results({ picked: { open: ['只看未截止'] } })).includes(OPEN_LINE));
+  assert.ok(!lines(results({ picked: { open: ['只看未截止'] } })).includes(OPEN_LINE));
   assert.ok(!lines(results({})).includes(OPEN_LINE));
   // 没有结果时由空状态里的"去掉只看未截止"和下面同一句来讲：结果上面不写，空状态里只写一遍
   const empty = results({ total: 0, totalAll: 0, picked: { open: ['只看未截止'] }, activeChips: [{ key: 'open:只看未截止', group: 'open', option: '只看未截止', label: '只看未截止' }] });
@@ -348,11 +349,14 @@ test('D-087（创始人 10/23 按 #341 推荐定）：工具中心两个工具�
   assert.equal(bar.data.list.length, app.tabBar.list.length);
   for (const t of bar.data.list) assert.equal(t.text, names[t.pagePath], t.pagePath);
   assert.doesNotMatch(read('utils/data-tools.js'), /文件页/);
-  // "导出"现在是底栏这一格的名字：关于有据里说详情页的按钮按它现在的名字"结果"写（和导出记录页的步骤一致），不写点"导出"
+  // 11/12 简化走查：详情页底栏的按钮、搜索选择条、截止页每行的按钮都叫"导出"（和底栏"导出"、"导出记录"同一个词；原来叫"结果""查看结果"）；
+  // 关于有据和导出记录页的步骤按它写
   const about = read('pages/about/index.wxml');
-  assert.ok(about.includes('在文件详情点“结果”')); assert.doesNotMatch(about, /点["“]导出["”]/);
-  assert.match(read('pages/detail/index.wxml'), /bindtap="exportDoc"><t-icon name="download" size="44rpx" \/><text>结果<\/text>/);
-  assert.match(read('pages/files/index.wxml'), /在文件详情点“结果”/);
+  assert.ok(about.includes('在文件详情点“导出”')); assert.doesNotMatch(about, /点["“]结果["”]/);
+  assert.match(read('pages/detail/index.wxml'), /bindtap="exportDoc"><t-icon name="download" size="44rpx" \/><text>导出<\/text>/);
+  assert.match(read('pages/search/index.wxml'), /<t-icon name="download" size="32rpx" color="#FFFFFF" \/>导出<\/view>/);
+  assert.match(read('pages/report/index.wxml'), /catchtap="exportOne">导出<\/text>/);
+  assert.match(read('pages/files/index.wxml'), /在文件详情点“导出”/);
 });
 
 test('10/25 Grok 复审：工具中心不写"追溯官方原文"（像外链）；关于有据写明导出的文件在底栏"导出"；我的客户的移除提示和搜索页同一说法', () => {

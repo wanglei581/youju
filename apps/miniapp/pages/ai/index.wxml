@@ -4,10 +4,8 @@
 <view class="top" style="padding-top: {{statusBarHeight}}px">
   <view class="nav" style="height: {{navHeight}}px"><text wx:if="{{ready}}" class="nav-title">AI</text></view>
   <notice-bar onBlue="{{true}}" />
-  <view wx:if="{{ready}}" class="hero">
-    <!-- "第三方整理 · 非政府平台"上面的出处说明条已经写了，这里不再重复 -->
-    <view class="hero-sub">在通知原文里找出申报对象、条件、时间和材料，每句都能回原文核对；不判断能不能申报。</view>
-  </view>
+  <!-- 页头原来有一句"在通知原文里找出申报对象……不判断能不能申报"，和下面"说明"里的适用人群、场合、用途重复，
+       11/12 简化走查去掉（AI 生成标识、说明、模型和备案号、投诉举报入口都在页面上，没动） -->
 </view>
 
 <!-- 固定一条，不能关：显式标明 AI 生成（标识办法第四条）；"说明"展开适用人群、场合、用途、不适用、保存多久 -->

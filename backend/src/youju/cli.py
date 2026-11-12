@@ -603,6 +603,68 @@ def _cmd_deadline_excerpts(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_deadline_verify_queue(args: argparse.Namespace) -> int:
+    from youju.api.v1 import now
+    from youju.deadline_verify import queue
+
+    with session_factory()() as session:
+        result = queue(session, now().date(), args.days)
+    output = json.dumps(result, ensure_ascii=False, indent=2) + "\n"
+    if args.out:
+        args.out.write_text(output, encoding="utf-8")
+    else:
+        print(output, end="")
+    return 0
+
+
+def _cmd_deadline_verify_apply(args: argparse.Namespace) -> int:
+    from youju.deadline_verify import apply_one
+
+    items = json.loads(args.file.read_text(encoding="utf-8-sig"))
+    if not isinstance(items, list):
+        raise ValueError("输入必须是 JSON 数组")
+    with session_factory()() as session:
+        for item in items:
+            outcome = apply_one(session, item, args.apply)
+            if args.apply:
+                session.commit()
+            else:
+                session.rollback()
+            print(
+                json.dumps(
+                    {
+                        "id": item.get("id") if isinstance(item, dict) else None,
+                        "result": outcome,
+                        "write_enabled": args.apply,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+    return 0
+
+
+def _cmd_deadline_verify_stats(args: argparse.Namespace) -> int:
+    from youju.deadline_verify import stats
+
+    with session_factory()() as session:
+        result = stats(session, args.since)
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False))
+    else:
+        for key, label in (
+            ("total", "全部"),
+            ("ai_agrees", "程序和 AI 一致"),
+            ("other", "不一致或 AI 没看过"),
+        ):
+            counts = result[key]
+            accuracy = "暂无" if counts["accuracy"] is None else f"{counts['accuracy']:.1%}"
+            print(
+                f"{label}：确认 {counts['confirmed']}，修正 {counts['corrected']}，"
+                f"看不准 {counts['unclear']}，准确率 {accuracy}"
+            )
+    return 0
+
+
 def _cmd_repost_groups(_: argparse.Namespace) -> int:
     """按转发归组规则增量更新转发组（D-055）：新组和新加入的版本都待确认，确认后才对外合并。"""
     from youju.repost import rebuild
@@ -2632,6 +2694,20 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("deadline-excerpts", help="只读检查截止摘录来源与拦下原因")
     p.add_argument("--sample", type=int, default=50)
     p.set_defaults(func=_cmd_deadline_excerpts)
+
+    p = sub.add_parser("deadline-verify-queue", help="生成截止核对清单")
+    p.add_argument("--days", type=int, default=7, choices=range(8))
+    p.add_argument("--out", type=Path)
+    p.set_defaults(func=_cmd_deadline_verify_queue)
+    p = sub.add_parser("deadline-verify-apply", help="校验并写回截止核对结果")
+    p.add_argument("file", type=Path)
+    p.add_argument("--apply", action="store_true")
+    p.set_defaults(func=_cmd_deadline_verify_apply)
+
+    p = sub.add_parser("deadline-verify-stats", help="只读统计截止核对结果")
+    p.add_argument("--since", type=date.fromisoformat, help="按北京时间核对日期起算（含当天）")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=_cmd_deadline_verify_stats)
 
     sub.add_parser(
         "repost-groups",

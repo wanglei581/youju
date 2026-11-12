@@ -632,6 +632,29 @@ def test_excerpt_export_keeps_all_verified_deadlines_and_cleans_legacy_fields(
     assert "原文链接" not in row
 
 
+def test_export_quotes_the_sentence_recorded_when_verified(client, session, docs):
+    # D-130：核过的截止，导出附核对时记下的原句；没记的（人工核的、旧数据）照旧用候选原句
+    from sqlalchemy import select
+
+    original, duplicate, _ = docs
+    quotes = {}
+    for d in session.scalars(
+        select(DocumentDeadline).where(DocumentDeadline.document_id == duplicate)
+    ):
+        d.verification_quote = quotes[d.kind] = f"{d.kind}为{d.approved_date:%Y年%m月%d日}。"
+    session.commit()
+    response = client.post(
+        "/api/v1/exports",
+        json={"ids": [str(original)], "format": "xlsx", "excerpts": 1},
+    )
+    assert response.status_code == 200, response.text
+    book = load_workbook(BytesIO(response.content))
+    rows = [[cell.value for cell in row] for row in book["文件清单"].iter_rows()]
+    row = dict(zip(rows[0], rows[1], strict=False))
+    # 企业申报截止那条同组里已标延期（只按改动记，附它的候选原句"核对记录"）
+    assert set(row["截止原文句子"].split("\n")) == {quotes["推荐或审核截止"], "核对记录"}
+
+
 def test_excerpt_export_only_falls_back_when_no_verified_deadline(
     client, session, role_docs, monkeypatch
 ):

@@ -1266,7 +1266,7 @@ test('纠错页在开关开着时写出纠错送天数的采纳标准，申请�
   }
 });
 
-test('购买页写清怎么算次数和苹果手机的付款条件；工具页免费和体验时写"交一份名单算一次"，使用期内不写，防止顾问算不清次数、苹果手机付到一半才知道付不了（D-074）', async () => {
+test('购买页写清怎么算次数和苹果手机的付款条件；工具页免费和体验时在提交按钮上面写一次怎么算次数，使用期内不写，防止顾问算不清次数、苹果手机付到一半才知道付不了（D-074）', async () => {
   const h = passPage();
   await flush();
   const text = shown('pages/pass/index.wxml', h.page.data);
@@ -1275,10 +1275,14 @@ test('购买页写清怎么算次数和苹果手机的付款条件；工具页�
   const free = toolForm();
   await flush();
   assert.equal(free.page.data.countRule, '交一份名单算一次，系统出错、没出结果的不算');
-  assert.match(shown('pages/advisor-form/index.wxml', free.page.data), /交一份名单算一次/);
+  // 11/12 简化走查：工具页的计次规则只在提交按钮上面写一次（"每提交一次算 1 次，不论几家……"，和 countRule 同一个意思，原来页顶还有一句）
+  const FORM_RULE = /每提交一次算 1 次，不论几家；排队中取消、或处理失败没出结果的，不算次数/;
+  assert.match(shown('pages/advisor-form/index.wxml', free.page.data), FORM_RULE);
+  assert.equal((shown('pages/advisor-form/index.wxml', free.page.data).match(/算一次|算 1 次/g) || []).length, 1);
   const paid = toolForm({ api: { advisorStatus: () => Promise.resolve({ ...quota(0), pass: { active: true, expiresAt: '2026-12-01T00:00:00.000Z' } }) } });
   await flush();
   assert.equal(paid.page.data.countRule, '');
+  assert.doesNotMatch(shown('pages/advisor-form/index.wxml', paid.page.data), FORM_RULE);
   assert.doesNotMatch(shown('pages/advisor-form/index.wxml', paid.page.data), /交一份名单算一次/);
 });
 

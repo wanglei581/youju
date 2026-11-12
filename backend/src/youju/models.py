@@ -658,6 +658,11 @@ class DocumentDeadline(Base):
     status: Mapped[str] = mapped_column(String(16), default="pending")
     reviewed_by: Mapped[str | None] = mapped_column(String(80))
     reviewed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    verification_quote: Mapped[str | None] = mapped_column(Text)
+    verification_unclear_hash: Mapped[str | None] = mapped_column(String(64))
+    verification_unclear_note: Mapped[str | None] = mapped_column(Text)
+    verification_corrected: Mapped[bool | None] = mapped_column(Boolean)
+    verification_unclear_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     approved_date: Mapped[date | None] = mapped_column(Date)
     approved_time: Mapped["time | None"] = mapped_column(Time)
     # 截止变更（验收清单 A7）：发了延期、调整或撤销的通知后，原来通过的截止标为 changed，
@@ -674,7 +679,8 @@ class DocumentDeadline(Base):
     # 规则候选里 AI 是否也找到了同一天：True 一致 / False AI 查过但没找到 / 空 AI 还没查
     ai_agrees: Mapped[bool | None] = mapped_column(Boolean)
     # 质检：flagged 已通过但存疑、等人复核 / cleared 人确认无误 / reopened 质检退回、回到待核对，
-    # 必须由人重新核对（不按同组已通过自动沿用，也不按导入结果通过）；空表示没发现问题。
+    # 要带着退回原因重新核对：Claude 按带退回原因的清单写回（D-130），或在核对台核对；
+    # 不按同组已通过自动沿用，也不按导入结果通过；空表示没发现问题。
     # audit_note 存疑原因；audit_at 最近一次质检的时间（AI 抽查过、标存疑、复核或退回）
     audit_state: Mapped[str | None] = mapped_column(String(8))
     audit_note: Mapped[str | None] = mapped_column(String(200))

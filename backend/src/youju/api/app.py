@@ -2095,7 +2095,7 @@ def audit_flagged(
             kind=d.kind,
             approved_date=d.approved_date,
             approved_time=d.approved_time.strftime("%H:%M") if d.approved_time else None,
-            evidence=d.evidence,
+            evidence=d.verification_quote or d.evidence,
             note=d.audit_note or "",
             flagged_at=d.audit_at,
         )
@@ -2133,7 +2133,8 @@ def reopen_deadline(
     _admin: AdminDep,
     request: Request,
 ) -> dict[str, str]:
-    """退回待核对：用户端立即不再显示这个截止，候选回到核对台、标明是质检退回，必须由人重新核对。
+    """退回待核对：用户端立即不再显示这个截止，候选回到核对台、标明是质检退回，要带着退回原因
+    重新核对（Claude 按带退回原因的清单写回，D-130；或在核对台核对）。
     归并组里同一截止（类型、核定日期和时间相同）已通过的副本一起退回：用户端显示的是同一个截止，
     只退一条的话其他副本照样显示。已标变更的不能退回。"""
     row = session.get(DocumentDeadline, deadline_id)
@@ -3372,6 +3373,11 @@ def _apply_review(
     twins = [d for d in locked if d.id != row.id and d.status == "pending"]
     for item in {row, *twins}:
         item.status = status
+        item.verification_quote = None
+        item.verification_corrected = None
+        item.verification_unclear_hash = None
+        item.verification_unclear_note = None
+        item.verification_unclear_at = None
         item.reviewed_by = reviewed_by
         item.reviewed_at = reviewed_at
         item.audit_state = None
