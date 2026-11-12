@@ -21,10 +21,15 @@
 - 部门（补充）：国家级按部委名核对；市场监管格挂的是知识产权局；
 - 重复：同一省里去掉参数后是同一个列表的，后面那个记重复。
 
+地市、区县再加一项（D-129 的个人事项门，看最新 20 条）：
+
+- 个人事项：个人名单类和招聘、考试、任免类标题占 60% 以上（见 personal_list_title），交给人看：
+  整栏都是的记"不收"，还有政策、通知的照收（个人事项按 D-097 ② 不给正文）。
+
 都过记"自动通过"，否则记"待人工"并写明哪项没过；最后三列（复核人、复核结论、复核备注）
 留给人工复核。复核结论写"通过""不通过""待重试"（这次没抓到）、"不能抓"（按访问控制等不读）
 或"不收"（读得对、但不在收录范围，如整栏是招聘公示），后面可以加括号说明（见 final_verdict）。
-只读库、不联网。
+地市、区县每省另有联网核对抽样，按抽样线判（见 SAMPLE_LINES）。只读库、不联网。
 """
 
 import hashlib
@@ -128,6 +133,35 @@ def _pick(sources: list[Source], size: int | None) -> list[Source]:
         group.sort(key=lambda s: hashlib.sha1(s.url.encode()).hexdigest())
         out += group[:size]
     return out
+
+
+# 个人事项门（D-129，方案第三节）：栏目试抓到的最新 20 条里，个人名单类标题（lists/rules.py 的
+# PERSON_TITLE：退休、病残、工伤认定、补贴人员、人才名单、任免任职、负责人……，D-091 ③、D-092 不给
+# 正文的那套）和招聘、考试、任免类占 60% 以上的，交给人看。不用 PERSONAL_MATTER_WORDS：那是"不给
+# 正文"的词表，处罚、失信、社保、职称会把执法公示、政策栏目也算进去；也不认"遴选"（选承保机构、招标
+# 代理也叫遴选）。不足 5 条的不判
+PERSONAL_SHARE = 0.6
+PERSONAL_RECENT = 20
+PERSONAL_MIN_ITEMS = 5
+_RECRUIT_WORDS = (
+    *("招聘", "招录", "录用", "拟聘", "考试", "笔试", "面试", "成绩", "选调"),
+    *("任免", "任职", "任前", "免职", "拟任", "任命"),
+)
+
+
+def personal_list_title(title: str) -> bool:
+    """标题是个人名单类或招聘、考试、任免类（个人事项门用）。"""
+    from youju.lists.rules import PERSON_TITLE
+
+    text = re.sub(r"\s+", "", title or "")
+    return any(w in text for w in PERSON_TITLE) or any(w in text for w in _RECRUIT_WORDS)
+
+
+def personal_share(titles: list[str]) -> float | None:
+    """个人事项门：这些标题里个人名单类的占比；不足 PERSONAL_MIN_ITEMS 条时是 None（不判）。"""
+    if len(titles) < PERSONAL_MIN_ITEMS:
+        return None
+    return sum(personal_list_title(t) for t in titles) / len(titles)
 
 
 def _kind(name: str | None) -> str | None:
@@ -305,6 +339,16 @@ def sample_rows(
         if row.latest and any(registrable(u) != site for _, _, u in row.latest if u):
             row.failed.append("本站")
         row.failed += _content_flags(s, row.latest)
+        if s.level in LINE_LEVELS:
+            recent = session.scalars(
+                select(Document.title)
+                .where(Document.source_id == s.id)
+                .order_by(Document.publish_date.desc(), Document.id.desc())
+                .limit(PERSONAL_RECENT)
+            ).all()
+            share = personal_share([t or "" for t in recent])
+            if share is not None and share >= PERSONAL_SHARE:
+                row.failed.append("个人事项")
         rows.append(row)
     _mark_duplicates(rows)
     return rows
@@ -419,6 +463,51 @@ def summary_lines(rows: list[SampleRow]) -> list[str]:
 # 分母，见 ProvinceResult.rate）。只有通过的栏目进这一批的导入文件；读得准的太少说明这个省有成片的
 # 问题，整省先不放。
 PASS_RATE = 0.8
+# 抽样线（D-129，方案第二节第 3 小节；国家级、省级照旧全检）：联网核对第 1 次每层抽这么多格、不通过
+# 不超过这么多格才放。地市一层；区县分两层各自判（县直部门、县政府门户），免得门户好把部门的毛病
+# 盖住。没过的修完、全量重跑自动核对，换种子重抽 60 格、不通过不超过 5 格；只看最近一次，不和上一次
+# 合并。一层的格比要抽的少时全抽。复核人写"联网核对"（第 1 次）、"联网核对第2次""联网核对第3次"……
+SAMPLE_LINES = {("市级", "部门"): (40, 3), ("区县级", "部门"): (40, 3), ("区县级", "门户"): (30, 2)}
+REDRAW_LINE = (60, 5)
+LINE_LEVELS = frozenset(level for level, _ in SAMPLE_LINES)
+_SAMPLE_ROUND = re.compile(r"^联网核对(?:第\s*([0-9一二三四五六七八九十]+)\s*次)?")
+
+
+def _round_number(text: str | None) -> int:
+    """ "联网核对"后面的"第N次"：没写是第 1 次；阿拉伯数字、一到十都认。"""
+    if not text:
+        return 1
+    if text.isdigit():
+        return int(text)
+    return "一二三四五六七八九十".find(text) + 1 if len(text) == 1 else 1
+
+
+def _layer(level: str, dept: str) -> str:
+    return "门户" if level == "区县级" and dept == "政府办" else "部门"
+
+
+@dataclass
+class SampleLine:
+    """一层最近一次联网核对：抽到几格（通过、不通过、不收的格；待重试、不能抓的不算）、几格不通过。"""
+
+    layer: str
+    round: int  # 第几次；0 是还没抽
+    judged: int
+    failed: int
+    need: int
+    allow: int
+
+    @property
+    def ok(self) -> bool:
+        return self.round > 0 and self.judged >= self.need and self.failed <= self.allow
+
+    def text(self) -> str:
+        if not self.round:
+            return f"{self.layer}还没有联网核对（要抽 {self.need} 格）"
+        return (
+            f"{self.layer}联网核对第 {self.round} 次：抽 {self.judged} 格（要 {self.need}），"
+            f"不通过 {self.failed} 格（最多 {self.allow}）→ {'过' if self.ok else '没过'}"
+        )
 
 
 @dataclass
@@ -434,6 +523,42 @@ class ProvinceResult:
     # 联网核对抽到的那几格（复核人以"联网核对"开头）：读得准的、算进分母的
     sample_ok: int = 0
     sample_judged: int = 0
+    level: str = ""
+    # 每层有哪些格（城市、区县、部门）；联网核对每层每次抽到的格 → 这一格有没有不通过
+    cells: dict[str, set] = field(default_factory=dict)
+    rounds: dict[tuple[str, int], dict] = field(default_factory=dict)
+    # 正文能读率门（地市、区县；govsites/bodygate.py）：抽了几份、能读几份；还没测是 None
+    body: tuple[int, int] | None = None
+
+    @property
+    def sample_lines(self) -> list[SampleLine]:
+        """有抽样线的层级（地市、区县）每层最近一次联网核对的结果。"""
+        out = []
+        for layer in sorted(self.cells):
+            line = SAMPLE_LINES.get((self.level, layer))
+            if line is None:
+                continue
+            latest = max((n for lay, n in self.rounds if lay == layer), default=0)
+            got = self.rounds.get((layer, latest), {})
+            need, allow = line if latest <= 1 else REDRAW_LINE
+            need = min(need, len(self.cells[layer]))
+            out.append(SampleLine(layer, latest, len(got), sum(got.values()), need, allow))
+        return out
+
+    @property
+    def body_ok(self) -> bool:
+        from youju.govsites.bodygate import gate_passed
+
+        return self.body is not None and gate_passed(*self.body)
+
+    def sample_note(self) -> str:
+        """地市、区县：抽样线和正文能读率门的结果（国家级、省级是空的）。"""
+        if self.level not in LINE_LEVELS:
+            return ""
+        from youju.govsites.bodygate import gate_text
+
+        body = gate_text(*self.body) if self.body is not None else "正文能读率：还没测"
+        return "；".join([*(line.text() for line in self.sample_lines), body])
 
     @property
     def sample_rate(self) -> float | None:
@@ -448,11 +573,15 @@ class ProvinceResult:
 
     @property
     def accepted(self) -> bool:
-        """全表读得准的过八成；有联网核对抽样的，抽样里也要过八成（抽样只看了一部分格，抽样里
-        错得多说明全表的自动核对漏了，就算全表算下来过八成也先不放；11/11 主线定的）。"""
-        if self.sample_rate is not None and self.sample_rate < PASS_RATE:
+        """全表每行都有结论、读得准的过八成；地市、区县每层最近一次联网核对还要过抽样线
+        （SAMPLE_LINES），正文能读率门也要过。国家级、省级是全检：有联网核对抽样的，抽样里也要
+        过八成。"""
+        if not (self.passed > 0 and self.pending == 0 and self.rate >= PASS_RATE):
             return False
-        return self.passed > 0 and self.pending == 0 and self.rate >= PASS_RATE
+        if self.level in LINE_LEVELS:
+            lines = self.sample_lines
+            return bool(lines) and all(line.ok for line in lines) and self.body_ok
+        return self.sample_rate is None or self.sample_rate >= PASS_RATE
 
 
 def final_verdict(row: dict) -> str:
@@ -499,13 +628,17 @@ def evidence_results(folder) -> list[ProvinceResult]:
             for r in csv.DictReader(fh):
                 res.total += 1
                 verdict = final_verdict(r)
-                if (r.get("复核人") or "").strip().startswith("联网核对") and verdict in (
-                    "通过",
-                    "不通过",
-                    "不收",
-                ):
+                res.level = res.level or (r.get("层级") or "").strip()
+                layer = _layer(res.level, (r.get("部门") or "").strip())
+                cell = tuple((r.get(k) or "").strip() for k in ("城市", "区县", "部门"))
+                res.cells.setdefault(layer, set()).add(cell)
+                m = _SAMPLE_ROUND.match((r.get("复核人") or "").strip())
+                if m and verdict in ("通过", "不通过", "不收"):
                     res.sample_judged += 1
                     res.sample_ok += verdict != "不通过"
+                    # 按格算：一格里有一行不通过，这一格就不通过
+                    got = res.rounds.setdefault((layer, _round_number(m.group(1))), {})
+                    got[cell] = got.get(cell, False) or verdict == "不通过"
                 if verdict == "通过":
                     res.passed += 1
                 elif verdict == "不通过":
@@ -518,5 +651,9 @@ def evidence_results(folder) -> list[ProvinceResult]:
                     res.blocked += 1
                 else:
                     res.pending += 1
+        if res.level in LINE_LEVELS:
+            from youju.govsites.bodygate import read_gate
+
+            res.body = read_gate(path.parent, res.province)
         out.append(res)
     return out

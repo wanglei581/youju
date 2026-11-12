@@ -339,6 +339,7 @@ def run(
                             f"待重试 {r.retry}，不能抓 {r.blocked}，"
                             f"不收 {r.excluded}（都不进本批）；"
                             f"证据 docs/数据来源/全国覆盖/抽查/{lv}/{r.province}.csv（sha1 {sha}）"
+                            + (f"；{r.sample_note()}" if r.sample_note() else "")
                         )[:300],
                     )
                 )

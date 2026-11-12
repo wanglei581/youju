@@ -457,17 +457,159 @@ def test_province_portal_names_unchanged(full, ok):
     assert _dept_ok(s) is ok
 
 
-def test_online_sample_failing_holds_province(tmp_path):
-    """联网核对抽的格里错得超过两成：就算全表读得准的过八成，这个省也先不放。"""
+def _city_evidence(folder, province, cells, sample, *, level="市级", body=(60, 58)):
+    """写一省的证据表：cells 个格各一个栏目、都通过；sample 是 [(格号, 复核人, 结论)]；
+    body 是正文能读率门（抽了几份、能读几份），None 是还没测。"""
+    head = "层级,省份,城市,区县,部门,栏目URL,自动结论,没过的项,复核人,复核结论,复核备注\n"
+    marked = {n: (who, verdict) for n, who, verdict in sample}
+    lines = []
+    for n in range(cells):
+        who, verdict = marked.get(n, ("", ""))
+        dept = "政府办" if level == "区县级" and n % 3 == 0 else f"部门{n}"
+        lines.append(f"{level},{province},城{n % 7},区{n},{dept},u{n},自动通过,,{who},{verdict},\n")
+    (folder / f"{province}.csv").write_text(head + "".join(lines), encoding="utf-8-sig")
+    gate = folder / "正文"
+    (gate / f"{province}.csv").unlink(missing_ok=True)
+    if body is not None:
+        gate.mkdir(exist_ok=True)
+        rows = "".join(
+            f"{i},,,,u{i},平台,标题{i},d{i},政策,{'能读' if i < body[1] else '读不了'},\n"
+            for i in range(body[0])
+        )
+        (gate / f"{province}.csv").write_text(
+            "序号,城市,区县,部门,栏目URL,平台,文件标题,文件网址,类型,能读,原因\n" + rows,
+            encoding="utf-8-sig",
+        )
+
+
+def test_city_sample_line(tmp_path):
+    """地市：联网核对第 1 次抽 40 格、不通过不超过 3 格才放；重抽 60 格、不超过 5 格，只看最近一次。"""
     from youju.govsites.sample import evidence_results
 
-    head = "层级,省份,栏目URL,自动结论,没过的项,复核人,复核结论,复核备注\n"
-    rows = "".join(f"市级,河南,a{n},自动通过,,,,\n" for n in range(20))
-    rows += "".join(f"市级,河南,s{n},自动通过,,联网核对,通过,\n" for n in range(7))
-    rows += "".join(
-        f"市级,河南,f{n},自动通过,,联网核对,不通过,列表标题混进点击数\n" for n in range(3)
-    )
+    def result(sample, cells=120, body=(60, 58)):
+        _city_evidence(tmp_path, "河南", cells, sample, body=body)
+        [res] = evidence_results(tmp_path)
+        return res
+
+    first = [(n, "联网核对", "不通过" if n < 3 else "通过") for n in range(40)]
+    assert result(first).accepted
+    line = result(first).sample_lines[0]
+    assert (line.round, line.judged, line.failed, line.need, line.allow) == (1, 40, 3, 40, 3)
+    four = [(n, "联网核对", "不通过" if n < 4 else "通过") for n in range(40)]
+    assert not result(four).accepted  # 错 4 格：不放（全表读得准的照样过八成）
+    assert result(four).rate >= 0.8
+    assert not result(first[:39]).accepted  # 不够 40 格
+    # 待重试的格不算样本
+    retry = [*first[:39], (39, "联网核对", "待重试")]
+    assert not result(retry).accepted
+    # 重抽：看最近一次（第 2 次 60 格、错 5 格过；第 1 次的错不算进来）
+    redraw = four + [(40 + n, "联网核对第2次", "不通过" if n < 5 else "通过") for n in range(60)]
+    res = result(redraw)
+    assert res.accepted and res.sample_lines[0].need == 60
+    cn = four + [(40 + n, "联网核对第二次", "不通过" if n < 5 else "通过") for n in range(60)]
+    assert result(cn).sample_lines[0].round == 2
+    assert not result(four + [(40 + n, "联网核对第2次", "通过") for n in range(59)]).accepted
+    # 一层的格比 40 少：全抽
+    small = [(n, "联网核对", "通过") for n in range(25)]
+    assert result(small, cells=25).accepted
+    # 正文能读率门：没测、不到 90% 都不放
+    assert not result(first, body=None).accepted
+    assert not result(first, body=(60, 53)).accepted
+    assert "正文能读率" in result(first).sample_note()
+
+
+def test_city_sample_counts_cells(tmp_path):
+    """按格算：同一格两个栏目都填了联网核对，一个不通过就算这一格不通过，只算一格。"""
+    from youju.govsites.sample import evidence_results
+
+    head = "层级,省份,城市,区县,部门,栏目URL,自动结论,没过的项,复核人,复核结论,复核备注\n"
+    rows = "".join(f"市级,河南,城{n},,部门,u{n},自动通过,,联网核对,通过,\n" for n in range(39))
+    rows += "市级,河南,城39,,部门,a,自动通过,,联网核对,通过,\n"
+    rows += "市级,河南,城39,,部门,b,自动通过,,联网核对,不通过,\n"
     (tmp_path / "河南.csv").write_text(head + rows, encoding="utf-8-sig")
     [res] = evidence_results(tmp_path)
-    # 全表 27/30 = 90%，但联网核对 7/10 = 70% → 不放
-    assert round(res.rate, 2) == 0.9 and res.sample_rate == 0.7 and res.accepted is False
+    line = res.sample_lines[0]
+    assert (line.judged, line.failed) == (40, 1)
+
+
+def test_county_sample_two_layers(tmp_path):
+    """区县分两层各自判：县直部门 40 格 ≤3、县政府门户 30 格 ≤2，门户好盖不住部门的毛病。"""
+    from youju.govsites.sample import evidence_results
+
+    # 150 格：n % 3 == 0 的是门户（50 格），其余是部门（100 格）
+    gov = [n for n in range(150) if n % 3 == 0][:30]
+    dept = [n for n in range(150) if n % 3][:40]
+    sample = [(n, "联网核对", "不通过" if i < 2 else "通过") for i, n in enumerate(gov)]
+    sample += [(n, "联网核对", "不通过" if i < 3 else "通过") for i, n in enumerate(dept)]
+    _city_evidence(tmp_path, "湖南", 150, sample, level="区县级")
+    [res] = evidence_results(tmp_path)
+    assert res.accepted and [line.layer for line in res.sample_lines] == ["部门", "门户"]
+    sample[0] = (gov[0], "联网核对", "不通过")
+    sample[2] = (gov[2], "联网核对", "不通过")  # 门户错 3 格
+    _city_evidence(tmp_path, "湖南", 150, sample, level="区县级")
+    [res] = evidence_results(tmp_path)
+    assert not res.accepted
+
+
+def test_province_level_keeps_full_check(tmp_path):
+    """国家级、省级照旧全检：不要抽样线，也不要正文能读率门。"""
+    from youju.govsites.sample import evidence_results
+
+    _city_evidence(tmp_path, "浙江", 10, [], level="省级", body=None)
+    [res] = evidence_results(tmp_path)
+    assert res.accepted and res.sample_note() == ""
+
+
+def test_city_personal_flag(session):
+    """个人事项门：地市、区县栏目最新 20 条里个人名单类、招聘考试任免类占 60% 以上的交给人看；
+    省级不加这一项；不足 5 条的不判。"""
+    from youju.govsites.sample import personal_share
+
+    def source(url, level, titles):
+        s = Source(
+            level=level,
+            province="江苏",
+            city="南京" if level == "市级" else None,
+            dept="人社",
+            dept_full_name="南京市人力资源和社会保障局" if level == "市级" else "江苏省人社厅",
+            column_name="公示公告",
+            url=url,
+            fetch_mode="static",
+            enabled=False,
+            parser_config={},
+            verification_status="试跑可读（全国覆盖 v1，未启用）",
+        )
+        session.add(s)
+        session.flush()
+        _check(session, s, 20)
+        for n, title in enumerate(titles):
+            doc_url = f"https://{url.split('/')[2]}/art/{s.id}_{n}.html"
+            session.add(
+                Document(
+                    source_id=s.id,
+                    title=title,
+                    url=doc_url,
+                    url_key=url_key(doc_url),
+                    publish_date=date(2026, 11, 1 + n % 9),
+                    first_seen_at=NOW,
+                    last_seen_at=NOW,
+                )
+            )
+        return s
+
+    personal = [f"2026年第{n}批提前退休人员情况公示" for n in range(13)]
+    policies = [f"关于开展第{n}期职业技能培训的通知" for n in range(7)]
+    heavy = source("https://rsj.nanjing.gov.cn/gsgg/", "市级", personal + policies)
+    mixed = source("https://rsj.nanjing.gov.cn/tzgg/", "市级", personal[:5] + policies * 2)
+    source("https://jshrss.jiangsu.gov.cn/gsgg/", "省级", personal + policies)
+    session.commit()
+    city = {r.source.url: r for r in sample_rows(session, "市级", now=NOW)}
+    assert "个人事项" in city[heavy.url].failed  # 13/20 = 65%
+    assert "个人事项" not in city[mixed.url].failed  # 5/19
+    assert "个人事项" not in sample_rows(session, "省级", now=NOW)[0].failed
+    assert personal_share(personal[:4]) is None  # 不足 5 条不判
+    # 不认"遴选"（选承保机构、招标代理也叫遴选），处罚、失信这类也不算个人名单
+    assert (
+        personal_share(["承保机构公开遴选公告"] * 5 + ["拖欠农民工工资失信联合惩戒对象名单"] * 5)
+        == 0
+    )
