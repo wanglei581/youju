@@ -493,6 +493,108 @@ def test_redirect_is_followed_hop_by_hop_with_robots_check() -> None:
     # 跳到另一个网站时，按该网站的 robots.txt 判断；被禁止的页面不发请求
     assert blocked.status == "robots_disallowed"
     assert "b.gov.cn/private/x.html" not in requested
+    # 经过的每个地址按先后记下（调用方据此判断实际访问了哪些网站）
+    assert ok.hops == ("https://a.gov.cn/old", "https://a.gov.cn/new")
+    assert blocked.hops == ("https://a.gov.cn/to-b", "https://b.gov.cn/private/x.html")
+
+
+def test_hop_allowed_stops_before_requesting_a_paused_site() -> None:
+    """hop_allowed（取详情时挡住这一轮已停取的网站）：每一跳发请求前都问，不能去的不发请求，
+    连那个网站的 robots.txt 也不取。"""
+    requested: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(f"{request.url.host}{request.url.path}")
+        if request.url.path == "/robots.txt":
+            return httpx.Response(404)
+        if request.url.path == "/old":
+            return httpx.Response(302, headers={"location": "https://b.gov.cn/x.html"})
+        raise AssertionError(f"不应请求 {request.url}")
+
+    with make_fetcher(handler) as f:
+        result = f.fetch("https://a.gov.cn/old", hop_allowed=lambda url, **_: "b.gov.cn" not in url)
+    assert result.status == "site_paused"
+    assert result.hops == ("https://a.gov.cn/old",)
+    assert all(not r.startswith("b.gov.cn") for r in requested)
+
+
+def test_hop_allowed_covers_robots_redirects_and_is_not_cached() -> None:
+    """robots.txt 跳到已停的网站：不去取，这一次返回 site_paused；读 robots.txt 不算读到、不记下来，
+    下一次不挡时重新读。"""
+    requested: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(f"{request.url.host}{request.url.path}")
+        if request.url.host == "a.gov.cn" and request.url.path == "/robots.txt":
+            return httpx.Response(302, headers={"location": "https://b.gov.cn/robots.txt"})
+        if request.url.path == "/robots.txt":
+            return httpx.Response(404)
+        return httpx.Response(200, text=LIST_HTML)
+
+    with make_fetcher(handler) as f:
+        paused = f.fetch(
+            "https://a.gov.cn/page", hop_allowed=lambda url, **_: "b.gov.cn" not in url
+        )
+        later = f.fetch("https://a.gov.cn/page")
+    assert paused.status == "site_paused"
+    assert later.status == "ok"
+    assert requested == [
+        "a.gov.cn/robots.txt",
+        "a.gov.cn/robots.txt",
+        "b.gov.cn/robots.txt",
+        "a.gov.cn/page",
+    ]
+
+
+def test_hop_allowed_is_asked_again_after_waiting_for_the_rate_limit() -> None:
+    """排队等限速的时候网站停了：等完再问一次，不发请求。"""
+    requested: list[str] = []
+    state = {"paused": False}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(f"{request.url.host}{request.url.path}")
+        if request.url.path == "/robots.txt":
+            return httpx.Response(404)
+        return httpx.Response(200, text=LIST_HTML)
+
+    def sleep(_: float) -> None:
+        state["paused"] = True
+
+    with make_fetcher(handler, interval=3.0, clock=lambda: 0.0, sleep=sleep) as f:
+        result = f.fetch("https://a.gov.cn/page", hop_allowed=lambda url, **_: not state["paused"])
+    assert result.status == "site_paused"
+    assert requested == ["a.gov.cn/robots.txt"]
+
+
+def test_hop_allowed_is_asked_after_dns_and_before_cached_robots() -> None:
+    """解析域名期间网站停了：解析完再问，不发请求；已经缓存了 robots 结果（禁止）的网站停了以后，
+    查 robots 之前就挡下，返回 site_paused（不是"robots 不允许"，不会被当成永久失败写库）。"""
+    requested: list[str] = []
+    state = {"paused": False}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(f"{request.url.host}{request.url.path}")
+        if request.url.path == "/robots.txt":
+            return httpx.Response(200, text="User-agent: *\nDisallow: /\n")
+        return httpx.Response(200, text=LIST_HTML)
+
+    def resolver(host: str) -> list[str]:
+        state["paused"] = True  # 解析的时候别的线程停了这个网站
+        return ["93.184.216.34"]
+
+    with make_fetcher(handler, resolver=resolver) as f:
+        during_dns = f.fetch(
+            "https://a.gov.cn/page", hop_allowed=lambda url, **_: not state["paused"]
+        )
+    assert during_dns.status == "site_paused"
+    assert requested == []
+
+    with make_fetcher(handler) as f:
+        first = f.fetch("https://b.gov.cn/page", hop_allowed=lambda url, **_: True)
+        cached = f.fetch("https://b.gov.cn/other", hop_allowed=lambda url, **_: False)
+    assert first.status == "robots_disallowed"
+    assert cached.status == "site_paused"
+    assert requested == ["b.gov.cn/robots.txt"]
 
 
 def test_redirect_loop_is_cut_off() -> None:

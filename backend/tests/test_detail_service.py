@@ -93,6 +93,506 @@ def test_fetch_details_records_success_and_failures_once(session) -> None:
     assert len(fake.calls) == 3
 
 
+def test_search_throttle_site_pauses_this_round_after_protection_page(session, monkeypatch):
+    """放过站内搜索限流弹窗的网站，一遇到防护页，这一轮就停取这个网站（D-013 出验证码就停）：剩下的
+    不取、不写库，下一轮照常选上。别的网站遇到防护页照旧往下取（见上一个测试）。"""
+    from youju.crawler import detail
+
+    monkeypatch.setitem(detail._SEARCH_THROTTLE_VERIFIED, "gxt.ln.gov.cn", frozenset({"x"}))
+    first = add_document(session, 1)
+    second = add_document(session, 2, source_id=first.source_id)
+    protected = "<html><title>安全验证</title><body>请输入验证码</body></html>"
+    good = (
+        "<html><body><div id='zoom'><p>这是公开通知正文，需要保存这些段落内容。</p>"
+        "<p>辽宁省工业和信息化厅</p></div></body></html>"
+    )
+    fake = FakeFetcher(
+        {
+            first.url: FetchResult(
+                first.url, "ok", final_url=first.url, http_status=200, text=protected
+            ),
+            second.url: FetchResult(
+                second.url, "ok", final_url=second.url, http_status=200, text=good
+            ),
+        }
+    )
+    results = fetch_details(session, limit=5, source_id=first.source_id, fetcher=fake)
+    assert [r.status for r in results] == ["protected", "site_paused"]
+    assert fake.calls == [first.url]
+    assert session.get(DocumentDetail, second.id) is None
+    results = fetch_details(session, limit=5, source_id=first.source_id, fetcher=fake)
+    assert [r.status for r in results] == ["ok"]
+    assert fake.calls == [first.url, second.url]
+
+
+def _source_on(session, host):
+    source = Source(
+        level="市级",
+        province="河南",
+        dept="工信",
+        dept_full_name="某市工业和信息化局",
+        column_name="通知公告",
+        url=f"https://{host}/list/",
+        fetch_mode="static",
+        enabled=True,
+        parser_config={},
+        rights_level=1,
+    )
+    session.add(source)
+    session.flush()
+    return source.id
+
+
+def _doc_on(session, source_id, host, number, title=None):
+    now = datetime.now(UTC)
+    doc = Document(
+        source_id=source_id,
+        url=f"https://{host}/detail/{number}.html",
+        url_key=f"{host}/detail/{number}.html",
+        title=title or f"关于第{number}项公开事项的通知",
+        first_seen_at=now,
+        last_seen_at=now,
+        is_baseline=False,
+        status="discovered",
+    )
+    session.add(doc)
+    session.commit()
+    return doc
+
+
+_PROTECTED = "<html><title>安全验证</title><body>请输入验证码</body></html>"
+
+
+@pytest.mark.parametrize(
+    ("listed", "second_status"),
+    [("b.example.gov.cn", "site_paused"), ("a.example.gov.cn", "parse_empty")],
+)
+def test_search_throttle_pause_counts_redirects_both_ways(
+    session, monkeypatch, listed, second_status
+):
+    """按实际访问的网站停：a 跳到 b 遇到防护页，经过的网站里名单上的那个这一轮停。名单上的是 b 时，
+    b 的文件不去取；名单上的是 a 时只停 a，b 照常取。"""
+    from youju.crawler import detail
+
+    monkeypatch.setitem(detail._SEARCH_THROTTLE_VERIFIED, listed, frozenset({"x"}))
+    first = _doc_on(session, _source_on(session, "a.example.gov.cn"), "a.example.gov.cn", 1)
+    second = _doc_on(session, _source_on(session, "b.example.gov.cn"), "b.example.gov.cn", 2)
+    landed = "https://b.example.gov.cn/detail/9.html"
+    fake = FakeFetcher(
+        {
+            first.url: FetchResult(
+                first.url, "ok", final_url=landed, http_status=200, text=_PROTECTED
+            ),
+            second.url: FetchResult(second.url, "ok", final_url=second.url, http_status=200),
+        }
+    )
+    results = fetch_details(session, limit=5, fetcher=fake, max_workers=1)
+    assert [r.status for r in results] == ["protected", second_status]
+    paused = second_status == "site_paused"
+    assert fake.calls == ([first.url] if paused else [first.url, second.url])
+    assert (session.get(DocumentDetail, second.id) is None) == paused
+
+
+@pytest.mark.parametrize("route", ["redirect", "pdf"])
+def test_paused_site_is_not_reached_from_other_sites(session, monkeypatch, route):
+    """名单里的网站这一轮停了以后，别的网站的文件跳转过去、或它的 PDF 附件在那里：不去取（PDF）或
+    这一份不收（跳转）；那个别的网站不停，它后面的文件照常取。"""
+    from youju.crawler import detail
+
+    monkeypatch.setitem(detail._SEARCH_THROTTLE_VERIFIED, "b.example.gov.cn", frozenset({"x"}))
+    first = _doc_on(session, _source_on(session, "b.example.gov.cn"), "b.example.gov.cn", 1)
+    other = _source_on(session, "a.example.gov.cn")
+    second = _doc_on(session, other, "a.example.gov.cn", 2)
+    third = _doc_on(session, other, "a.example.gov.cn", 3)
+    pdf_page = (
+        "<html><body><div id='zoom'><a href='https://b.example.gov.cn/files/1.pdf'>附件.pdf</a>"
+        "</div></body></html>"
+    )
+    landed = "https://b.example.gov.cn/detail/9.html"
+    fake = FakeFetcher(
+        {
+            first.url: FetchResult(first.url, "ok", final_url=first.url, text=_PROTECTED),
+            second.url: (
+                FetchResult(second.url, "ok", final_url=landed, text="<html></html>")
+                if route == "redirect"
+                else FetchResult(second.url, "ok", final_url=second.url, text=pdf_page)
+            ),
+            third.url: FetchResult(third.url, "ok", final_url=third.url, text="<html></html>"),
+        }
+    )
+    results = fetch_details(session, limit=5, fetcher=fake, max_workers=1)
+    assert [r.status for r in results] == ["protected", "site_paused", "parse_empty"]
+    assert fake.calls == [first.url, second.url, third.url]
+    assert session.get(DocumentDetail, second.id) is None
+    assert session.get(DocumentDetail, third.id) is not None
+
+
+def test_paused_site_edge_cases(session, monkeypatch):
+    """停取的几种边角：①跳进已停网站也是防护页的，防护页照记，经过的网站一起停；②多次跳转中途
+    经过已停网站的，按每一跳算；③详情页跳进已停网站以后，它在别的网站的 PDF 附件不再取，那个
+    PDF 网站没去过、不停，它自己的文件照常取。"""
+    from youju.crawler import detail
+
+    monkeypatch.setitem(detail._SEARCH_THROTTLE_VERIFIED, "b.example.gov.cn", frozenset({"x"}))
+    first = _doc_on(session, _source_on(session, "b.example.gov.cn"), "b.example.gov.cn", 1)
+    docs = [
+        _doc_on(session, _source_on(session, f"{name}.example.gov.cn"), f"{name}.example.gov.cn", n)
+        for n, name in ((2, "a"), (3, "c"), (4, "d"), (5, "e"))
+    ]
+    landed = "https://b.example.gov.cn/detail/9.html"
+    pdf_page = (
+        "<html><body><div id='zoom'><a href='https://e.example.gov.cn/files/1.pdf'>附件.pdf</a>"
+        "</div></body></html>"
+    )
+    fake = FakeFetcher(
+        {
+            first.url: FetchResult(first.url, "ok", final_url=first.url, text=_PROTECTED),
+            # ① 跳进已停的 b，也是防护页
+            docs[0].url: FetchResult(docs[0].url, "ok", final_url=landed, text=_PROTECTED),
+            # ② 中途经过已停的 b，最后落在 c
+            docs[1].url: FetchResult(
+                docs[1].url,
+                "ok",
+                final_url=docs[1].url,
+                text="<html></html>",
+                hops=(docs[1].url, landed, docs[1].url),
+            ),
+            # ③ 落在已停的 b，页面只有一个 e 网站的 PDF
+            docs[2].url: FetchResult(docs[2].url, "ok", final_url=landed, text=pdf_page),
+            docs[3].url: FetchResult(
+                docs[3].url,
+                "ok",
+                final_url=docs[3].url,
+                text="<html><body><div id='zoom'><p>这是公开通知正文，需要保存这些段落内容。</p>"
+                "<p>各有关单位请按要求组织申报，并于月底前报送材料。</p></div></body></html>",
+            ),
+        }
+    )
+    results = fetch_details(session, limit=10, fetcher=fake, max_workers=1)
+    assert [r.status for r in results] == [
+        "protected",
+        "protected",
+        "site_paused",
+        "site_paused",
+        "ok",
+    ]
+    assert fake.calls == [first.url, docs[0].url, docs[1].url, docs[2].url, docs[3].url]
+    assert session.get(DocumentDetail, docs[0].id).failure_reason == "防护页或验证码"
+    assert session.get(DocumentDetail, docs[1].id) is None
+    assert session.get(DocumentDetail, docs[2].id) is None
+
+
+def test_pausing_fetcher_checks_each_hop_in_real_time() -> None:
+    """跳转途中，刚经过的网站被别的线程停了：下一跳不去（按当场记下的经过地址判断）。"""
+    import httpx
+
+    from youju.crawler.detail_service import _PausingFetcher, _SitePause
+    from youju.crawler.fetcher import PoliteFetcher
+
+    pause = _SitePause()
+    requested: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(f"{request.url.host}{request.url.path}")
+        if request.url.path == "/robots.txt":
+            return httpx.Response(404)
+        if request.url.host == "a.gov.cn":
+            pause.hosts.add("a.gov.cn")  # 别的线程这时停了 a
+            return httpx.Response(302, headers={"location": "https://b.gov.cn/new"})
+        return httpx.Response(200, text="<html></html>")
+
+    with PoliteFetcher(
+        "TestAgent YoujuBot/0.1",
+        per_host_interval=0,
+        transport=httpx.MockTransport(handler),
+        resolver=lambda host: ["93.184.216.34"],
+    ) as polite:
+        result = _PausingFetcher(polite, pause).fetch("https://a.gov.cn/old")
+    assert result.status == "site_paused"
+    assert all(not r.startswith("b.gov.cn") for r in requested)
+
+
+def test_robots_redirect_to_listed_site_does_not_pause_it(session, monkeypatch) -> None:
+    """a 的 robots.txt 跳到名单网站 b、a 的页面是防护页：读 robots.txt 不算 a 这份文件经过的网站，
+    b 不停，b 的文件照常取。"""
+    import httpx
+
+    from youju.crawler import detail
+    from youju.crawler.fetcher import PoliteFetcher
+
+    monkeypatch.setitem(detail._SEARCH_THROTTLE_VERIFIED, "b.example.gov.cn", frozenset({"x"}))
+    _doc_on(session, _source_on(session, "a.example.gov.cn"), "a.example.gov.cn", 1)
+    second = _doc_on(session, _source_on(session, "b.example.gov.cn"), "b.example.gov.cn", 2)
+    requested: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(f"{request.url.host}{request.url.path}")
+        if request.url.host == "a.example.gov.cn" and request.url.path == "/robots.txt":
+            return httpx.Response(302, headers={"location": "https://b.example.gov.cn/robots.txt"})
+        if request.url.path == "/robots.txt":
+            return httpx.Response(404)
+        if request.url.host == "a.example.gov.cn":
+            return httpx.Response(200, text=_PROTECTED, headers={"content-type": "text/html"})
+        return httpx.Response(
+            200,
+            text="<html><body><div id='zoom'><p>这是公开通知正文，需要保存这些段落内容。</p>"
+            "<p>各有关单位请按要求组织申报，并于月底前报送材料。</p></div></body></html>",
+            headers={"content-type": "text/html"},
+        )
+
+    with PoliteFetcher(
+        "TestAgent YoujuBot/0.1",
+        per_host_interval=0,
+        transport=httpx.MockTransport(handler),
+        resolver=lambda host: ["93.184.216.34"],
+    ) as polite:
+        results = fetch_details(session, limit=5, fetcher=polite, max_workers=1)
+    assert [r.status for r in results] == ["protected", "ok"]
+    assert "b.example.gov.cn/detail/2.html" in requested
+    assert session.get(DocumentDetail, second.id).status == "ok"
+
+
+@pytest.mark.parametrize("failure", ["robots", "dns", "robots_redirect"])
+def test_failure_while_site_was_being_paused_is_not_written(session, monkeypatch, failure):
+    """取的时候网站刚被停（读 robots.txt、解析域名期间；robots.txt 跳到的别的网站在解析期间被停）、
+    结果是"robots 不让""解析到内网"这类失败：这一份不收、不写库，下一轮再取，不会当成永久失败。"""
+    import httpx
+
+    from youju.crawler import detail, detail_service
+    from youju.crawler.fetcher import PoliteFetcher
+
+    monkeypatch.setitem(detail._SEARCH_THROTTLE_VERIFIED, "b.example.gov.cn", frozenset({"x"}))
+    host = "a.example.gov.cn" if failure == "robots_redirect" else "b.example.gov.cn"
+    doc = _doc_on(session, _source_on(session, host), host, 1)
+    paused_hosts: list[set[str]] = []
+    original = detail_service._SitePause.__init__
+
+    def remember(self) -> None:
+        original(self)
+        paused_hosts.append(self.hosts)
+
+    monkeypatch.setattr(detail_service._SitePause, "__init__", remember)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "a.example.gov.cn" and request.url.path == "/robots.txt":
+            return httpx.Response(302, headers={"location": "https://b.example.gov.cn/robots.txt"})
+        if request.url.path == "/robots.txt":
+            paused_hosts[0].add("b.example.gov.cn")  # 别的线程这时停了 b
+            return httpx.Response(200, text="User-agent: *\nDisallow: /\n")
+        return httpx.Response(200, text="<html></html>")
+
+    def resolver(name: str) -> list[str]:
+        if failure == "dns" or (failure == "robots_redirect" and name == "b.example.gov.cn"):
+            paused_hosts[0].add("b.example.gov.cn")
+            return ["10.0.0.1"]  # 解析到内网
+        return ["93.184.216.34"]
+
+    with PoliteFetcher(
+        "TestAgent YoujuBot/0.1",
+        per_host_interval=0,
+        transport=httpx.MockTransport(handler),
+        resolver=resolver,
+    ) as polite:
+        results = fetch_details(session, limit=5, fetcher=polite, max_workers=1)
+    assert [r.status for r in results] == ["site_paused"]
+    assert session.get(DocumentDetail, doc.id) is None
+
+
+def test_body_fetched_just_before_pause_is_kept(session, monkeypatch) -> None:
+    """取的时候网站刚被别的线程停了、但这份已经取到正文：照收（网站停之前的正常页面）；同一网站剩下的
+    这一轮不取。"""
+    import httpx
+
+    from youju.crawler import detail, detail_service
+    from youju.crawler.fetcher import PoliteFetcher
+
+    monkeypatch.setitem(detail._SEARCH_THROTTLE_VERIFIED, "b.example.gov.cn", frozenset({"x"}))
+    source_id = _source_on(session, "b.example.gov.cn")
+    first = _doc_on(session, source_id, "b.example.gov.cn", 1)
+    second = _doc_on(session, source_id, "b.example.gov.cn", 2)
+    paused_hosts: list[set[str]] = []
+    original = detail_service._SitePause.__init__
+
+    def remember(self) -> None:
+        original(self)
+        paused_hosts.append(self.hosts)
+
+    monkeypatch.setattr(detail_service._SitePause, "__init__", remember)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/robots.txt":
+            return httpx.Response(404)
+        paused_hosts[0].add("b.example.gov.cn")  # 别的线程这时停了 b
+        return httpx.Response(
+            200,
+            text="<html><body><div id='zoom'><p>这是公开通知正文，需要保存这些段落内容。</p>"
+            "<p>各有关单位请按要求组织申报，并于月底前报送材料。</p></div></body></html>",
+            headers={"content-type": "text/html"},
+        )
+
+    with PoliteFetcher(
+        "TestAgent YoujuBot/0.1",
+        per_host_interval=0,
+        transport=httpx.MockTransport(handler),
+        resolver=lambda host: ["93.184.216.34"],
+    ) as polite:
+        results = fetch_details(session, limit=5, fetcher=polite, max_workers=1)
+    assert [r.status for r in results] == ["ok", "site_paused"]
+    assert session.get(DocumentDetail, first.id).status == "ok"
+    assert session.get(DocumentDetail, second.id) is None
+
+
+@pytest.mark.parametrize("route", ["cached_robots", "pdf_after_robots"])
+def test_robots_chain_through_paused_site_is_remembered(session, monkeypatch, route):
+    """a 的 robots.txt 跳到 b，b 后来停了：①读 robots 失败的结果记下来以后，a 后面的文件用这份结果时也
+    算碰过 b，失败不写库；②详情页读 robots 时经过 b、它的 PDF 附件取失败的，也算碰过 b，不写库。"""
+    import httpx
+
+    from youju.crawler import detail, detail_service
+    from youju.crawler.fetcher import PoliteFetcher
+
+    monkeypatch.setitem(detail._SEARCH_THROTTLE_VERIFIED, "b.example.gov.cn", frozenset({"x"}))
+    source_id = _source_on(session, "a.example.gov.cn")
+    docs = [_doc_on(session, source_id, "a.example.gov.cn", n) for n in (1, 2)]
+    paused_hosts: list[set[str]] = []
+    original = detail_service._SitePause.__init__
+
+    def remember(self) -> None:
+        original(self)
+        paused_hosts.append(self.hosts)
+
+    monkeypatch.setattr(detail_service._SitePause, "__init__", remember)
+    pdf_page = (
+        "<html><body><div id='zoom'><a href='https://c.example.gov.cn/files/1.pdf'>附件.pdf</a>"
+        "</div></body></html>"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        host, path = request.url.host, request.url.path
+        if host == "a.example.gov.cn" and path == "/robots.txt":
+            return httpx.Response(302, headers={"location": "https://b.example.gov.cn/robots.txt"})
+        if path == "/robots.txt":
+            return httpx.Response(404)
+        if host == "a.example.gov.cn":
+            paused_hosts[0].add("b.example.gov.cn")  # 别的线程这时停了 b
+            return httpx.Response(200, text=pdf_page, headers={"content-type": "text/html"})
+        return httpx.Response(500)  # c 的 PDF 取失败
+
+    def resolver(name: str) -> list[str]:
+        if route == "cached_robots" and name == "b.example.gov.cn":
+            paused_hosts[0].add("b.example.gov.cn")
+            return ["10.0.0.1"]  # b 解析到内网：a 的 robots 记成取不到
+        return ["93.184.216.34"]
+
+    with PoliteFetcher(
+        "TestAgent YoujuBot/0.1",
+        per_host_interval=0,
+        transport=httpx.MockTransport(handler),
+        resolver=resolver,
+    ) as polite:
+        results = fetch_details(session, limit=5, fetcher=polite, max_workers=1)
+    assert [r.status for r in results] == ["site_paused", "site_paused"]
+    assert all(session.get(DocumentDetail, d.id) is None for d in docs)
+
+
+def test_robots_retry_keeps_both_paths(session, monkeypatch) -> None:
+    """读 robots 第一次经 b 回 5xx、重试改跳到 c：两次走过的地址都记下。b 随后停了，这次和后面用
+    记下来的结果的文件都算碰过 b，"robots 取不到"不写库。"""
+    import httpx
+
+    from youju.crawler import detail, detail_service
+    from youju.crawler.fetcher import PoliteFetcher
+
+    monkeypatch.setitem(detail._SEARCH_THROTTLE_VERIFIED, "b.example.gov.cn", frozenset({"x"}))
+    source_id = _source_on(session, "a.example.gov.cn")
+    docs = [_doc_on(session, source_id, "a.example.gov.cn", n) for n in (1, 2)]
+    paused_hosts: list[set[str]] = []
+    original = detail_service._SitePause.__init__
+
+    def remember(self) -> None:
+        original(self)
+        paused_hosts.append(self.hosts)
+
+    monkeypatch.setattr(detail_service._SitePause, "__init__", remember)
+    tries = {"a": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        host, path = request.url.host, request.url.path
+        if host == "a.example.gov.cn" and path == "/robots.txt":
+            tries["a"] += 1
+            target = "b" if tries["a"] == 1 else "c"
+            return httpx.Response(
+                302, headers={"location": f"https://{target}.example.gov.cn/robots.txt"}
+            )
+        if host == "b.example.gov.cn":
+            paused_hosts[0].add("b.example.gov.cn")  # b 随后被停
+        return httpx.Response(500)
+
+    with PoliteFetcher(
+        "TestAgent YoujuBot/0.1",
+        per_host_interval=0,
+        transport=httpx.MockTransport(handler),
+        resolver=lambda host: ["93.184.216.34"],
+    ) as polite:
+        results = fetch_details(session, limit=5, fetcher=polite, max_workers=1)
+    assert tries["a"] == 2
+    assert [r.status for r in results] == ["site_paused", "site_paused"]
+    assert all(session.get(DocumentDetail, d.id) is None for d in docs)
+
+
+def test_pdf_attachment_answered_with_protection_page_pauses_listed_site(session, monkeypatch):
+    """PDF 附件回来的是网页防护页：记 protected（不当成 PDF 读不出），名单网站这一轮停取。"""
+    from youju.crawler import detail
+
+    monkeypatch.setitem(detail._SEARCH_THROTTLE_VERIFIED, "b.example.gov.cn", frozenset({"x"}))
+    source_id = _source_on(session, "b.example.gov.cn")
+    first = _doc_on(session, source_id, "b.example.gov.cn", 1)
+    second = _doc_on(session, source_id, "b.example.gov.cn", 2)
+    pdf_url = "https://b.example.gov.cn/files/1.pdf"
+    pdf_page = f"<html><body><div id='zoom'><a href='{pdf_url}'>附件.pdf</a></div></body></html>"
+    fake = FakeFetcher(
+        {
+            first.url: FetchResult(first.url, "ok", final_url=first.url, text=pdf_page),
+            pdf_url: FetchResult(
+                pdf_url,
+                "ok",
+                final_url=pdf_url,
+                text=_PROTECTED,
+                content=_PROTECTED.encode(),
+                content_type="text/html; charset=utf-8",
+            ),
+            second.url: FetchResult(second.url, "ok", final_url=second.url, text=pdf_page),
+        }
+    )
+    results = fetch_details(session, limit=5, fetcher=fake, max_workers=1)
+    assert [r.status for r in results] == ["protected", "site_paused"]
+    assert fake.calls == [first.url, pdf_url]
+    assert session.get(DocumentDetail, first.id).failure_reason == "防护页或验证码"
+
+
+def test_title_backfill_reports_paused_site_as_unavailable(session, monkeypatch):
+    """补全截断标题时，同一网站这一轮停取了的记"没取到（site_paused）"，不当成"没截断"。"""
+    from youju.crawler import detail
+    from youju.crawler.detail_service import backfill_truncated_titles
+
+    monkeypatch.setitem(detail._SEARCH_THROTTLE_VERIFIED, "c.example.gov.cn", frozenset({"x"}))
+    source_id = _source_on(session, "c.example.gov.cn")
+    first = _doc_on(session, source_id, "c.example.gov.cn", 1, title="关于开展2026年度项目申报…")
+    second = _doc_on(session, source_id, "c.example.gov.cn", 2, title="关于组织推荐第二批示范…")
+    fake = FakeFetcher(
+        {
+            first.url: FetchResult(first.url, "ok", final_url=first.url, text=_PROTECTED),
+            second.url: FetchResult(second.url, "ok", final_url=second.url, text=_PROTECTED),
+        }
+    )
+    results = backfill_truncated_titles(session, limit=5, fetcher=fake, max_workers=1)
+    assert [(r.document_id, r.result, r.reason) for r in results] == [
+        (first.id, "unavailable", "protected"),
+        (second.id, "unavailable", "site_paused"),
+    ]
+    assert fake.calls == [first.url]
+
+
 def test_fetch_details_normalizes_new_issuer_on_ingest(session) -> None:
     doc = add_document(session, 12)
     sample = (

@@ -1,11 +1,12 @@
 """政府文件详情页解析；只保留可从页面直接确认的字段。"""
 
+import hashlib
 import re
 from dataclasses import dataclass, field
 from datetime import date
 from html import unescape as unescape_html
 from itertools import chain
-from urllib.parse import unquote, urlsplit
+from urllib.parse import unquote, urljoin, urlsplit
 
 from lxml import etree, html
 
@@ -102,6 +103,95 @@ _SITE_BODY_SELECTORS = {
     # 按完整类名匹配：标题 zw-title、发布信息和"【打印】""分享到"所在的 zw-info 是别的元素
     "gdstc.gd.gov.cn": '//*[contains(concat(" ", normalize-space(@class), " "), " zw ")]',
 }
+# 防护页：标题和正文前 500 字里有这些字的，整页当成验证码、限流或要开脚本的挡页，不取（D-013）
+_PROTECTION = re.compile(
+    r"验证码|人机验证|安全验证|访问过于频繁|异常访问|请开启.{0,12}JavaScript", re.I
+)
+# 站内搜索的限流弹窗（D-013：认得出才放）。11/12 地市正文门：泸州、漯河、商丘、常德等站群的每一页都
+# 带一个平时隐藏的弹窗——div#VolidateCodeDiv，style 写着 display:none，标题（.modal-title）只有
+# "搜索过于频繁，请输入验证码"，里面是搜索用的验证票据输入框 input#js-ticket-search。它是站内搜索
+# 被限流时才弹出的，不是挡住这一页的验证，这些站的文件页因此都被当成了防护页。判断防护页时只把完全
+# 是这个样子的弹窗拿掉；拿掉以后这一页还要取到完整的正文（有句子），不然照旧当防护页。别的写法一律
+# 照旧当防护页、不取
+_SEARCH_THROTTLE_TEXT = ("×", "搜索过于频繁，请输入验证码", "确定")
+# 弹窗的整个结构（每个元素的标签、id、class、type、value，按出现顺序）：11/12 在 4 个站群的 219 处
+# 看到的都是这一个样子，多一个元素、少一个、属性上的字（按钮的"点击验证"）不一样，都不认
+_SEARCH_THROTTLE_SHAPE = (
+    ("div", "VolidateCodeDiv", "modal in", "", ""),
+    ("div", "", "modal-dialog", "", ""),
+    ("div", "", "modal-content", "", ""),
+    ("div", "", "modal-header", "", ""),
+    ("button", "", "close", "button", ""),
+    ("span", "", "", "", ""),
+    ("h4", "", "modal-title", "", ""),
+    ("div", "", "modal-body", "", ""),
+    ("div", "", "container-fluid", "", ""),
+    ("div", "", "", "", ""),
+    ("input", "js-ticket-search", "", "hidden", ""),
+    ("input", "js-ticketId-search", "", "hidden", ""),
+    ("input", "js-btn-verify-search", "form-control btn btn-gray btn-block", "button", "点击验证"),
+    ("span", "captchaticketvalid-search", "field-validation-valid", "", ""),
+    ("input", "SearchValidateCode", "", "hidden", ""),
+    ("div", "", "modal-footer", "", ""),
+    ("a", "confirmNotApprove", "btn btn-sm btn-primary", "", ""),
+)
+# 放过弹窗的页面，正文要出自这类站核实过的正文区（或在它里面）：11/12 翻过来的 118 份都是
+_VERIFIED_BODY = (
+    '//div[contains(concat(" ", normalize-space(@class), " "), " conTxt ")]'
+    ' | //div[@id="content"][contains(concat(" ", normalize-space(@class), " "), " lh-wznr ")]'
+)
+_SEARCH_THROTTLE_DIALOG = '//div[@id="VolidateCodeDiv"][.//input[@id="js-ticket-search"]]'
+# 浏览器里核实过的网站和页面样子：网站 → 页面代码的指纹（_page_code_fingerprint）。11/12 泸州、
+# 漯河、常德 22 个网站的 36 个样子，每个都在浏览器里打开过一页：弹窗没有显示出来、页面上看得到的
+# 字里没有验证码一类的字、正文区正常显示（核对表见 PR #485）。别的网站、别的样子（外部脚本、样式
+# 多一个少一个，页面自带的脚本、样式、事件属性有一处不一样）都不认这个弹窗，照旧当防护页。
+# 兜底：每月在浏览器里按 PR #485 的做法复核一次；取详情时这些网站一遇到防护页，这一轮就停取这个
+# 网站（detail_service），要复核
+_SEARCH_THROTTLE_VERIFIED: dict[str, frozenset[str]] = {
+    "czj.luohe.gov.cn": frozenset({"26b3dbf05a6943a8"}),
+    "czj.luzhou.gov.cn": frozenset({"3e0d86007ee3353b", "da9f063cb7dd4f2f"}),
+    "drc.luohe.gov.cn": frozenset({"c68b23a5d3bdb294"}),
+    "fgw.luzhou.gov.cn": frozenset({"a14d9bdbf340e4d2", "d06406ee756a0ced"}),
+    "gxj.luohe.gov.cn": frozenset({"db6f75d8850c5814"}),
+    "hrss.luohe.gov.cn": frozenset({"13ca381f2244e471"}),
+    "jxj.luzhou.gov.cn": frozenset({"34993d8a3389c627", "53d1ad1cd685d078", "6ac8a40fcc661a62"}),
+    "kawlb.luzhou.gov.cn": frozenset({"9aeb5830f187ad15"}),
+    "kjj.luohe.gov.cn": frozenset({"a341e43255813b31"}),
+    "kjj.luzhou.gov.cn": frozenset({"bf8587b7edb7391f", "db21170b400079d9"}),
+    "luohelvyou.luohe.gov.cn": frozenset({"82abca0dffabc7ae"}),
+    "nyncj.luzhou.gov.cn": frozenset({"973f428253becf73", "ac1100e3e7c31c78", "e24dd3c4dd7b0432"}),
+    "rsj.luzhou.gov.cn": frozenset({"a71031f2537a6123"}),
+    "scjg.luohe.gov.cn": frozenset({"1645d3da962f3eb0"}),
+    "scjgj.luzhou.gov.cn": frozenset({"c88e6061371a23b9", "e754315787e29882"}),
+    "sthjj.luohe.gov.cn": frozenset({"416b74733e1401a8"}),
+    "sthjj.luzhou.gov.cn": frozenset({"7dbf126d3b49e3fd", "8797b47f44dc5af2", "c40f34ee5e2f4b4a"}),
+    "swj.luohe.gov.cn": frozenset(
+        {"7e93775eab9fe810", "89e475064876dda2", "919cf8f5e8a30e04", "e3e1a3a561ca5fe9"}
+    ),
+    "wtgj.luzhou.gov.cn": frozenset({"0fa96aaa738f41c8"}),
+    "www.changde.gov.cn": frozenset({"df4caf7c4c084e78"}),
+    "www.luohe.gov.cn": frozenset({"b7112ed612b2044f", "f9870def54889ce0"}),
+    "www.luzhou.gov.cn": frozenset({"6366cf401679cae4"}),
+}
+# 算页面代码指纹时归一的每页编号，只在页面自带脚本里这几句核实过的写法中、只换编号：上一篇/下一篇
+# 两种接口、相关文章接口里的栏目编号和文章编号，相关文章排除的本篇编号，评论区块的文章编号。11/12
+# 核实过的 36 个样子、124 份页面上，同一样子的页面代码只在这几处不同
+_PAGE_ID_CONTEXTS = (
+    re.compile(
+        r"(/contentmanage/ajax/(?:getprevandnextcontent|getpreandnextpublicinformation)\?nodeId=)"
+        r"\d+(&contentId=)\d+(&)"
+    ),
+    re.compile(r"(/ContentManage/Ajax/GetRelatedContent\?contentId=)\d+(&nodeId=)\d+(&moldType=)"),
+    re.compile(r'(data:\s*\{\s*excludeIds:\s*")\d+(",\s*size:)'),
+    re.compile(r'(parameters:\s*"\{\s*contentId:)\d+(,\s*moldType:)'),
+)
+# 算指纹时记下地址的 <link>：样式表和预加载的脚本、样式
+_CODE_LINKS = {"stylesheet", "import", "preload", "modulepreload"}
+# 放过弹窗的页面整页查挡页字样时也看的属性：按钮上的字、图片说明、输入框提示等
+_WORD_ATTRS = ("value", "alt", "title", "placeholder", "aria-label")
+# 放过弹窗以后要求的"完整正文"：100 字以上、有句号、正文里没有验证码一类的字（11/12 翻过来的
+# 120 份文件页，正文都在 133 字以上，119 份有句号）
+_COMPLETE_MIN = 100
 # 个别网站放在正文区里的按钮（XPath 相对正文区），取正文时跳过
 _SITE_JUNK = {
     # 上海经信委：正文区末尾"[返回]"（history.back）和"【市民留言】"两个链接所在的块
@@ -1166,6 +1256,114 @@ def outside_body_lines(html_text: str, url: str) -> list[str] | None:
     return [line for raw in "".join(parts).splitlines() if (line := " ".join(raw.split()))]
 
 
+def _page_code_fingerprint(root: etree._Element, url: str) -> str:
+    """页面上能让弹窗显示出来的东西的指纹，按在页面上出现的顺序原样记下：外部脚本、样式表（含预加载
+    的）、框架、<base> 的完整地址（含协议和 ? 后面的参数，重复的也记），页面自带的脚本、<style>、
+    on… 事件属性、框架里直接写的页面。只把页面自带脚本里 _PAGE_ID_CONTEXTS 那几句的编号当 0。"""
+
+    def page_ids(code: str) -> str:
+        for context in _PAGE_ID_CONTEXTS:
+            code = context.sub(lambda m: "0".join(m.groups()), code)
+        return code
+
+    parts: list[str] = []
+    for element in root.iter():
+        if not isinstance(element.tag, str):
+            continue
+        tag = element.tag.lower()
+        rel = set((element.get("rel") or "").lower().split())
+        for kind, name, wanted in (
+            ("js", "src", tag == "script"),
+            ("css", "href", tag == "link" and bool(_CODE_LINKS & rel)),
+            ("frame", "src", tag in ("iframe", "frame", "embed")),
+            ("frame", "data", tag == "object"),
+            ("base", "href", tag == "base"),
+        ):
+            if wanted and (value := element.get(name)) is not None:
+                parts.append(f"{kind} {urljoin(url, value.strip())}")
+        if tag == "script" and element.get("src") is None and element.text:
+            parts.append(f"script {page_ids(element.text)}")
+        if tag == "style" and element.text:
+            parts.append(f"style {element.text}")
+        if tag == "iframe" and (srcdoc := element.get("srcdoc")) is not None:
+            parts.append(f"srcdoc {srcdoc}")
+        parts.extend(
+            f"{name.lower()} {value}"
+            for name, value in element.attrib.items()
+            if name.lower().startswith("on")
+        )
+    return hashlib.sha256("\n\0".join(parts).encode()).hexdigest()[:16]
+
+
+def _page_words(root: etree._Element, dialogs: frozenset) -> str:
+    """整页的字（认得出的弹窗以外），不去噪：导航、页尾、下拉框、分享栏、noscript 里的都算，只不看
+    脚本、样式的代码；属性上的字（_WORD_ATTRS）也算。放过弹窗的页面用它查还有没有别的验证、限流的字。"""
+    text: list[str] = []
+    attributes: list[str] = []
+
+    def visit(element: etree._Element) -> None:
+        if not isinstance(element.tag, str) or element in dialogs:
+            return
+        if element.tag.lower() in ("script", "style"):
+            return
+        attributes.extend(v for name in _WORD_ATTRS if (v := element.get(name)))
+        if element.text:
+            text.append(element.text)
+        for child in element:
+            visit(child)
+            if child.tail:
+                text.append(child.tail)
+
+    visit(root)
+    return "\n".join(" ".join(part.split()) for part in ["".join(text), *attributes])
+
+
+def _search_throttle_dialogs(root: etree._Element, url: str) -> list[etree._Element]:
+    """页面上认得出的站内搜索限流弹窗（见 _SEARCH_THROTTLE_DIALOG 上面的说明）。网站和页面代码要是
+    浏览器里核实过的（_SEARCH_THROTTLE_VERIFIED）；弹窗本身四样都要对上：style 正好只有 display:none
+    （不是"display:none;display:block"这类后面又改掉的）；弹窗里的字正好是"×""搜索过于频繁，请输入
+    验证码""确定"三段；整个结构和 _SEARCH_THROTTLE_SHAPE 一样；没有图片、链接、说明文字这类属性。"""
+    verified = _SEARCH_THROTTLE_VERIFIED.get((urlsplit(url).hostname or "").lower())
+    if not verified or not root.xpath(_SEARCH_THROTTLE_DIALOG):
+        return []
+    if _page_code_fingerprint(root, url) not in verified:
+        return []
+    found = []
+    for node in root.xpath(_SEARCH_THROTTLE_DIALOG):
+        style = "".join((node.get("style") or "").split()).lower().rstrip(";")
+        text = tuple("".join(s.split()) for s in node.itertext() if s.strip())
+        shape = tuple(
+            (
+                e.tag,
+                e.get("id") or "",
+                " ".join((e.get("class") or "").split()),
+                e.get("type") or "",
+                e.get("value") or "",
+            )
+            for e in node.iter()
+            if isinstance(e.tag, str)
+        )
+        attributes_ok = not any(
+            name.startswith("on") or name in ("src", "href", "alt", "title", "placeholder")
+            for e in node.iter()
+            if isinstance(e.tag, str)
+            for name in e.attrib
+        )
+        if (
+            style == "display:none"
+            and text == _SEARCH_THROTTLE_TEXT
+            and shape == _SEARCH_THROTTLE_SHAPE
+            and attributes_ok
+        ):
+            found.append(node)
+    return found
+
+
+def search_throttle_site(url: str) -> bool:
+    """网址是不是放过站内搜索限流弹窗的网站（_SEARCH_THROTTLE_VERIFIED）。"""
+    return (urlsplit(url).hostname or "").lower() in _SEARCH_THROTTLE_VERIFIED
+
+
 def parse_detail(html_text: str, url: str) -> DetailResult:
     """解析公开 HTML；防护页返回失败原因，字段不猜测。"""
     if not html_text.strip():
@@ -1176,17 +1374,27 @@ def parse_detail(html_text: str, url: str) -> DetailResult:
         return DetailResult(failure_reason=f"HTML 无法解析：{exc.__class__.__name__}")
     title = " ".join(root.xpath("//title/text()"))[:200]
     body = root.xpath("//body")
-    visible = "\n".join(_plain_lines(body[0], keep_select=True)) if body else ""
+    dialogs = frozenset(_search_throttle_dialogs(root, url))
+    visible = "\n".join(_plain_lines(body[0], dialogs, keep_select=True)) if body else ""
     # 找发文机关、文号、发布日期用不带下拉框的字，和正文的取法一致
-    plain = "\n".join(_plain_lines(body[0])) if body else ""
-    if re.search(
-        r"验证码|人机验证|安全验证|访问过于频繁|异常访问|请开启.{0,12}JavaScript",
-        title + visible[:500],
-        re.I,
-    ):
+    plain = "\n".join(_plain_lines(body[0], dialogs)) if body else ""
+    if _PROTECTION.search(title + visible[:500]):
+        return DetailResult(failure_reason="防护页或验证码")
+    # 只因为站内搜索限流弹窗才没被当成防护页的：除了弹窗，整页（不只前 500 字，导航、页尾、属性上的
+    # 字都算）再没有验证、限流这类字，而且正文出自核实过的正文区、是完整的，才放
+    with_dialogs = (
+        "\n".join(_plain_lines(body[0], keep_select=True)) if body and dialogs else visible
+    )
+    needs_body = bool(dialogs) and bool(_PROTECTION.search(title + with_dialogs[:500]))
+    if needs_body and _PROTECTION.search(_page_words(root, dialogs)):
         return DetailResult(failure_reason="防护页或验证码")
     host = (urlsplit(url).hostname or "").lower()
     node = _body_node(root, host)
+    verified = frozenset(root.xpath(_VERIFIED_BODY)) if needs_body else frozenset()
+    if needs_body and (
+        node is None or not (node in verified or any(a in verified for a in node.iterancestors()))
+    ):
+        return DetailResult(failure_reason="防护页或验证码")
     if node is None:
         attachments = _attachments(root, url)
         return DetailResult(
@@ -1198,17 +1406,21 @@ def parse_detail(html_text: str, url: str) -> DetailResult:
             page_titles=_page_titles(root),
         )
     junk = _SITE_JUNK.get(host)
-    lines = _plain_lines(node, frozenset(node.xpath(junk)) if junk else frozenset())
+    lines = _plain_lines(node, (frozenset(node.xpath(junk)) if junk else frozenset()) | dialogs)
     raw_body = "\n".join(lines)
     # 找发文机关、文号、发布日期的范围：页面上正文节点前面的字（最后 700 字）。按节点所在的位置
     # 截，不按正文第一句在整页文字里第一次出现的地方截（标题在上面重复一遍时会截早，漏掉中间的
     # 发布信息）；正文不在页面结构里（从页面自带脚本里取的）时用整页前 700 字
-    before = _lines_before(body[0], node) if body else None
+    before = _lines_before(body[0], node, dialogs) if body else None
     prefix = "\n".join(before)[-700:] if before is not None else plain[:700]
     attachments = _attachments(root, url)
     # PDF-only 页面只有下载入口，HTML 正文为空；仍保留附件题录。
     if len(raw_body) < 30 or ("点击正文" in raw_body and not any(len(line) > 60 for line in lines)):
         raw_body = ""
+    if needs_body and not (
+        len(raw_body) >= _COMPLETE_MIN and "。" in raw_body and not _PROTECTION.search(raw_body)
+    ):
+        return DetailResult(failure_reason="防护页或验证码")
     return DetailResult(
         body_text=redact_sensitive(raw_body),
         raw_body=raw_body,

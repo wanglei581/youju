@@ -1,6 +1,7 @@
 """按网站抓取详情，复用列表抓取器的 robots、限速与标识。"""
 
 import logging
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -13,8 +14,13 @@ from youju import pdf_sandbox
 from youju.categories import doc_category
 from youju.classify import doc_kind
 from youju.config import get_settings
-from youju.crawler.detail import DetailResult, parse_detail, redact_sensitive
-from youju.crawler.fetcher import FetchResult, PoliteFetcher
+from youju.crawler.detail import (
+    DetailResult,
+    parse_detail,
+    redact_sensitive,
+    search_throttle_site,
+)
+from youju.crawler.fetcher import SITE_PAUSED, FetchResult, PoliteFetcher
 from youju.crawler.pdf import extract_pdf_text
 from youju.crawler.titles import clean_title, completed_title, is_truncated
 from youju.dbtypes import BODY_TEXT_MAX_CHARS
@@ -216,6 +222,17 @@ def _fetch_one(document_id: int, url: str, fetcher: DetailFetcher) -> _FetchOutc
             return _FetchOutcome(
                 document_id, now, pdf_fetch, parsed, "unsupported_host", "PDF 非政府网站"
             )
+        # PDF 附件回来的是网页：先看是不是防护页（是就记 protected，名单网站会停取），
+        # 不当成 PDF 读不出
+        pdf_type = (pdf_fetch.content_type or "").split(";", 1)[0].strip().lower()
+        if pdf_type in {"text/html", "application/xhtml+xml"} or (
+            not pdf_fetch.content.startswith(b"%PDF-") and pdf_fetch.text.lstrip().startswith("<")
+        ):
+            page = parse_detail(pdf_fetch.text, pdf_fetch.final_url or pdf_url)
+            if page.failure_reason == "防护页或验证码":
+                return _FetchOutcome(
+                    document_id, now, pdf_fetch, parsed, "protected", page.failure_reason
+                )
         try:
             pdf = _pdf_detail(pdf_fetch.content)
         except pdf_sandbox.Failed as exc:  # 只有 retry 为真的会抛到这里
@@ -236,27 +253,107 @@ def _fetch_one(document_id: int, url: str, fetcher: DetailFetcher) -> _FetchOutc
     return _FetchOutcome(document_id, now, fetched, parsed, status, parsed.failure_reason)
 
 
+class _SitePause:
+    """这一轮停取的网站（见 _fetch_outcomes），几个线程共用。"""
+
+    def __init__(self) -> None:
+        self.hosts: set[str] = set()
+        self.lock = threading.Lock()
+
+
+def _host(url: str) -> str:
+    return (urlsplit(url).hostname or "").lower()
+
+
+class _PausingFetcher:
+    """取一份文件用：取页器每一跳、每次真正发请求之前问 _admit——这份文件已经经过的网站和要去的网站
+    有没有这一轮已停的，有就不去（记 site_paused；详情页跳进已停网站以后，它的 PDF 附件也不再取）。
+    放行的页面请求当场记下（record=True）；查 robots 前的预先检查、读 robots.txt 的请求只查不记，
+    被挡下没去的也不算经过。"""
+
+    def __init__(self, inner: DetailFetcher, pause: _SitePause) -> None:
+        self.inner, self.pause = inner, pause
+        self.visited: list[str] = []
+        # 这份文件每次请求碰过的地址都累计起来（详情页和它的 PDF 附件，含跳转、读 robots.txt
+        # 走过的）
+        self.touched: list[str] = []
+
+    def _admit(self, target: str, *, record: bool = True) -> bool:
+        with self.pause.lock:
+            if ({_host(u) for u in self.visited} | {_host(target)}) & self.pause.hosts:
+                return False
+            if record:
+                self.visited.append(target)
+            return True
+
+    def fetch(self, url: str) -> FetchResult:
+        if isinstance(self.inner, PoliteFetcher):
+            result = self.inner.fetch(url, hop_allowed=self._admit)
+        elif not self._admit(url):
+            result = FetchResult(url, "site_paused", error=SITE_PAUSED)
+        else:
+            # 测试用的假取页器不跟跳转：请求前问一次，请求后记下跳转后的地址
+            result = self.inner.fetch(url)
+            with self.pause.lock:
+                self.visited += [*result.hops, result.final_url or url]
+        self.touched += [url, *result.hops, *result.robots_hops, result.final_url or url]
+        return result
+
+
 def _fetch_outcomes(
     selected: list[tuple[int, str]], fetcher: DetailFetcher, max_workers: int
 ) -> dict[int, _FetchOutcome]:
     by_host: dict[str, list[tuple[int, str]]] = {}
     for document_id, url in selected:
-        by_host.setdefault((urlsplit(url).hostname or "").lower(), []).append((document_id, url))
+        by_host.setdefault(_host(url), []).append((document_id, url))
+
+    # 放过站内搜索限流弹窗的网站：一遇到防护页（弹窗显示出来了、页面样子变了、正文取不全……），
+    # 这一轮就停取这个网站（D-013 出验证码就停）。按实际访问的网站算：一份文件经过的网址（原网址、
+    # 每一跳、它的 PDF 附件）里有名单上的网站，就停那个网站。停了以后，每次请求、每一跳跳转之前都先
+    # 看（_PausingFetcher），已停的不去；经过或要去已停网站的那一份不收，所在网站别的文件照常取。
+    # 不收的不写库，下一轮照常选上；要按 PR #485 的做法复核这个网站
+    pause = _SitePause()
 
     def run_host(documents: list[tuple[int, str]]) -> list[_FetchOutcome]:
         results = []
         for document_id, url in documents:
+            guarded = _PausingFetcher(fetcher, pause)
             try:
-                results.append(_fetch_one(document_id, url, fetcher))
+                outcome = _fetch_one(document_id, url, guarded)
             except Exception as exc:  # noqa: BLE001 - 一份异常文件不阻断整批详情保存
                 # 依赖异常可能带请求信息；只记录类型，不记录异常正文或 traceback。
                 reason = f"详情处理异常：{type(exc).__name__}"
                 log.warning("详情 %s %s", document_id, reason)
-                results.append(
-                    _FetchOutcome(
-                        document_id, datetime.now(UTC), None, None, "processing_error", reason
-                    )
+                outcome = _FetchOutcome(
+                    document_id, datetime.now(UTC), None, None, "processing_error", reason
                 )
+            visited = guarded.visited
+            listed = {_host(u) for u in visited if search_throttle_site(u)}
+            # 这份文件碰过的网站：原网址、每次请求走过的每一跳（被挡下、robots 不让去的也算）、
+            # 用到的 robots.txt 当初读的时候走过的地址（含跳到别的网站的、用记下来的结果的）、
+            # 经过的地址
+            touched = {_host(u) for u in (url, *guarded.touched, *visited)}
+            with pause.lock:
+                if outcome.status == "protected":
+                    # 防护页照记；经过的网站里名单上的这一轮停取（别的网站照旧往下取）
+                    results.append(outcome)
+                    if listed - pause.hosts:
+                        pause.hosts |= listed
+                        log.warning(
+                            "搜索限流弹窗网站 %s 遇到防护页（文件 %s），这一轮停取，要复核",
+                            "、".join(sorted(listed)),
+                            document_id,
+                        )
+                elif outcome.status == "ok" or (
+                    outcome.status != "site_paused" and not touched & pause.hosts
+                ):
+                    # 取到正文的照收：取页器每次发请求前都挡已停的网站，取到的是网站停之前的
+                    # 正常页面
+                    results.append(outcome)
+                # 没收的：被挡下；或碰过的网站取的时候刚停、结果是 robots 不让、解析失败这类
+                # （不是网站本身的问题）。不写库，下一轮再取
+                if _host(url) in pause.hosts:
+                    break
         return results
 
     # 网络并行只跨网站；数据库写入仍在主线程，避免共享 Session。
@@ -274,7 +371,12 @@ def _fetch_selected(
     if not selected:
         return []
     outcomes = _fetch_outcomes(selected, fetcher, max_workers)
-    return [_save_result(session, outcomes[document_id]) for document_id, _ in selected]
+    return [
+        _save_result(session, outcomes[document_id])
+        if document_id in outcomes
+        else DetailFetchSummary(document_id, "site_paused", SITE_PAUSED)
+        for document_id, _ in selected
+    ]
 
 
 def _polite_fetcher() -> PoliteFetcher:
@@ -412,8 +514,13 @@ def backfill_truncated_titles(
         with _polite_fetcher() as polite:
             outcomes = _fetch_outcomes(selected, polite, workers)
     results: list[TitleBackfill] = []
+    chosen = {document_id for document_id, _ in selected}
     for document_id, _, title in rows:
         outcome = outcomes.get(document_id)
+        if outcome is None and document_id in chosen:
+            # 同一网站这一轮停取了（见 _fetch_outcomes），没去取：不是"没截断"
+            results.append(TitleBackfill(document_id, title, "unavailable", reason="site_paused"))
+            continue
         if outcome is None:
             results.append(TitleBackfill(document_id, title, "not_truncated"))
             continue

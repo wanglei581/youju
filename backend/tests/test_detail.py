@@ -1,8 +1,10 @@
 from datetime import date
 
 import pytest
+from lxml import html
 
 from tests.conftest import read_fixture_html
+from youju.crawler import detail
 from youju.crawler.detail import (
     MAX_ATTACHMENTS,
     _split_issuer_line,
@@ -839,6 +841,209 @@ def test_protection_page_is_rejected() -> None:
     )
     assert result.failure_reason == "防护页或验证码"
     assert not result.body_text
+
+
+# 和泸州、漯河、商丘、常德等站群页面上一模一样的站内搜索限流弹窗（结构见 detail._SEARCH_THROTTLE_SHAPE）
+_THROTTLE_DIALOG = (
+    '<div id="VolidateCodeDiv" class="modal in" aria-hidden="false" style="display: none;">'
+    '<div class="modal-dialog"><div class="modal-content"><div class="modal-header">'
+    '<button type="button" class="close"><span aria-hidden="true">×</span></button>'
+    '<h4 class="modal-title">搜索过于频繁，请输入验证码</h4></div>'
+    '<div class="modal-body"><div class="container-fluid"><div style="max-height: 600px;">'
+    "<input id='js-ticket-search' name='CaptchaTicket' type='hidden' data-val='true'"
+    " data-val-required='请点击验证!'>"
+    "<input id='js-ticketId-search' name='CaptchaTicketId' type='hidden'>"
+    "<input id='js-btn-verify-search' type='button' value='点击验证'"
+    " class='form-control btn btn-gray btn-block'>"
+    "<span class='field-validation-valid' hidden data-valmsg-for='Ticket'"
+    " id='captchaticketvalid-search' data-valmsg-replace='true'></span>"
+    '<input data-val="true" data-val-captcha-url="/captcha/validate" id="SearchValidateCode"'
+    ' type="hidden"></div></div></div>'
+    '<div class="modal-footer"><a class="btn btn-sm btn-primary" id="confirmNotApprove"'
+    ' data-ajax="true" data-id="search">确定</a></div></div></div></div>'
+)
+_NOTICE_TEXT = (
+    "<p>各有关单位：</p><p>为做好2026年度市级科技计划项目申报工作，现将有关事项通知如下，"
+    "请各单位按要求认真组织申报，并于2026年12月1日前将申报材料报送至市科技局。</p>"
+    "<p>一、申报范围。本市注册的企业、高校和科研院所均可申报，每家单位限报两项。</p>"
+    "<p>二、申报要求。申报材料须真实完整，逾期不予受理。</p>"
+)
+_NOTICE_BODY = f"<div class='conTxt'><div id='zoom'>{_NOTICE_TEXT}</div></div>"
+
+
+def _page(body: str, title: str = "某局关于组织申报的通知") -> str:
+    return f"<html><title>{title}</title><body>{body}</body></html>"
+
+
+@pytest.fixture
+def verified_throttle_sites(monkeypatch: pytest.MonkeyPatch) -> None:
+    """测试用的两个网站当成浏览器里核实过：页面代码和 _page() 拼出来的页面一样（没有外部脚本、样式，
+    也没有页面自带的脚本）。"""
+    plain_page = html.fromstring(_page(_THROTTLE_DIALOG + _NOTICE_BODY))
+    for host in ("kjj.example.gov.cn", "www.example.gov.cn"):
+        fingerprint = detail._page_code_fingerprint(plain_page, f"https://{host}/")
+        monkeypatch.setitem(detail._SEARCH_THROTTLE_VERIFIED, host, frozenset({fingerprint}))
+
+
+@pytest.mark.usefixtures("verified_throttle_sites")
+def test_search_throttle_dialog_is_not_a_protection_page() -> None:
+    """站内搜索的限流弹窗（泸州、漯河、常德等站群每一页都带、平时隐藏）不是挡住这一页的验证：网站和
+    页面样子在浏览器里核实过、弹窗整个结构一模一样、整页没有别的验证字样、正文出自核实过的正文区而且
+    完整，才放（D-013：认得出才放）。"""
+    result = parse_detail(
+        _page(_THROTTLE_DIALOG + _NOTICE_BODY), "https://kjj.example.gov.cn/1.html"
+    )
+    assert result.failure_reason is None and "组织申报" in result.body_text
+    assert "搜索过于频繁" not in result.body_text
+    # 常德那类站的正文区（div#content.lh-wznr）也认
+    changde = _NOTICE_BODY.replace("<div class='conTxt'>", "<div id='content' class='lh-wznr'>")
+    assert parse_detail(
+        _page(_THROTTLE_DIALOG + changde), "https://www.example.gov.cn/2.html"
+    ).body_text
+    # 正文区把弹窗包在里面：弹窗的字不进正文
+    inside = _NOTICE_BODY.replace("<p>各有关单位：</p>", f"<p>各有关单位：</p>{_THROTTLE_DIALOG}")
+    result = parse_detail(_page(inside), "https://kjj.example.gov.cn/3.html")
+    assert result.failure_reason is None and "搜索过于频繁" not in result.body_text
+    assert "确定" not in result.body_text and "点击验证" not in result.body_text
+
+
+@pytest.mark.usefixtures("verified_throttle_sites")
+def test_search_throttle_dialog_only_on_verified_sites_and_page_code() -> None:
+    """弹窗只在浏览器里核实过的网站、核实过的页面样子上认：换一个网站，或外部脚本、样式、框架多一个，
+    或页面自带的脚本不一样（比如按类名把弹窗显示出来），都照旧当防护页。"""
+    page = _page(_THROTTLE_DIALOG + _NOTICE_BODY)
+    assert parse_detail(page, "https://kjj.example.gov.cn/1.html").failure_reason is None
+    other_site = parse_detail(page, "https://other.example.gov.cn/1.html")
+    assert other_site.failure_reason == "防护页或验证码"
+    for extra in (
+        "<script src='/js/other.js'></script>",
+        "<link rel='stylesheet' href='/css/other.css'>",
+        "<iframe src='/frame.html'></iframe>",
+        "<script>$('.in').show();</script>",
+        "<style>.modal{display:block!important}</style>",
+    ):
+        changed = _page(extra + _THROTTLE_DIALOG + _NOTICE_BODY)
+        result = parse_detail(changed, "https://kjj.example.gov.cn/1.html")
+        assert result.failure_reason == "防护页或验证码", extra
+
+
+def test_search_throttle_page_code_must_match_verified_page(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """页面代码要和核实过的那一页一样：外部资源按完整地址（含协议、参数）和顺序比，页面自带的代码原样
+    比；只有页面自带脚本里核实过的那几句（_PAGE_ID_CONTEXTS）的文章编号、栏目编号每页不同、不算，
+    同样的数写在别处照样要一样。"""
+    verified = _page(
+        "<script src='/js/a.js?v=1'></script><script src='/js/b.js'></script>"
+        '<script>$.ajax({ url: "/ContentManage/Ajax/GetRelatedContent?contentId=1092076&nodeId=37'
+        '&moldType=Article&count=10", data: { excludeIds: "1092076", size: 10 } });'
+        ' var delay = 1; var mark = "contentId=1092076";</script>' + _THROTTLE_DIALOG + _NOTICE_BODY
+    )
+    url = "https://kjj.example.gov.cn/1.html"
+    fingerprint = detail._page_code_fingerprint(html.fromstring(verified), url)
+    monkeypatch.setitem(
+        detail._SEARCH_THROTTLE_VERIFIED, "kjj.example.gov.cn", frozenset({fingerprint})
+    )
+    assert parse_detail(verified, url).failure_reason is None
+    other_page = verified.replace(
+        "contentId=1092076&nodeId=37", "contentId=1161839&nodeId=52"
+    ).replace('excludeIds: "1092076"', 'excludeIds: "1161839"')
+    assert parse_detail(other_page, url).failure_reason is None
+    swapped = verified.replace(
+        "<script src='/js/a.js?v=1'></script><script src='/js/b.js'></script>",
+        "<script src='/js/b.js'></script><script src='/js/a.js?v=1'></script>",
+    )
+    for changed in (
+        verified.replace("?v=1", "?v=2"),
+        swapped,
+        verified.replace("delay = 1", "delay = 2"),
+        verified.replace('mark = "contentId=1092076"', 'mark = "contentId=1161839"'),
+        verified.replace("var delay", "showDialog(); var delay"),
+    ):
+        assert parse_detail(changed, url).failure_reason == "防护页或验证码"
+    http_page = parse_detail(verified, "http://kjj.example.gov.cn/1.html")
+    assert http_page.failure_reason == "防护页或验证码"
+
+
+_LONG_NAV = "".join(f"<p>栏目导航第{n}项</p>" for n in range(60))
+_LONG_TEXT = "".join(
+    f"<p>第{n}条，本办法所称项目，是指市级财政资金支持的科技计划项目。</p>" for n in range(30)
+)
+
+
+@pytest.mark.parametrize(
+    "page",
+    [
+        # 标题写着验证
+        _page(_THROTTLE_DIALOG + _NOTICE_BODY, title="安全验证"),
+        # 弹窗外面另有验证码字样：前 500 字里，或者 500 字以后、正文区外面
+        _page(_THROTTLE_DIALOG + "<p>请输入验证码后继续访问</p>" + _NOTICE_BODY),
+        _page(_THROTTLE_DIALOG + _LONG_NAV + "<p>访问过于频繁，请稍后再试</p>" + _NOTICE_BODY),
+        # 在取正文时会去掉的地方（导航、页尾、分享栏、noscript）或属性上（输入框提示）也算
+        _page("<nav>请输入验证码</nav>" + _THROTTLE_DIALOG + _NOTICE_BODY),
+        _page(_THROTTLE_DIALOG + _NOTICE_BODY + "<footer>访问过于频繁，请稍后再试</footer>"),
+        _page(_THROTTLE_DIALOG + "<div class='share'>安全验证</div>" + _NOTICE_BODY),
+        _page(_THROTTLE_DIALOG + "<noscript>请开启浏览器的 JavaScript</noscript>" + _NOTICE_BODY),
+        _page(_THROTTLE_DIALOG + "<input placeholder='请输入验证码'>" + _NOTICE_BODY),
+        # 弹窗是显示着的，或 style 后面又改成显示
+        _page(_THROTTLE_DIALOG.replace("display: none;", "") + _NOTICE_BODY),
+        _page(
+            _THROTTLE_DIALOG.replace("display: none;", "display: none; display: block;")
+            + _NOTICE_BODY
+        ),
+        # 结构不一样：标题、多一句说明、按钮上的字、多一张图片、少了票据框
+        _page(_THROTTLE_DIALOG.replace("搜索过于频繁，", "访问过于频繁，") + _NOTICE_BODY),
+        _page(
+            _THROTTLE_DIALOG.replace(
+                '<div class="modal-footer">', '<p>请先登录</p><div class="modal-footer">'
+            )
+            + _NOTICE_BODY
+        ),
+        _page(_THROTTLE_DIALOG.replace("value='点击验证'", "value='登录后查看'") + _NOTICE_BODY),
+        _page(
+            _THROTTLE_DIALOG.replace("<span aria-hidden", "<img alt='验证码'><span aria-hidden")
+            + _NOTICE_BODY
+        ),
+        _page(_THROTTLE_DIALOG.replace("js-ticket-search", "x") + _NOTICE_BODY),
+        # 页面自带的脚本、样式、事件属性和核实过的页面不一样（可能一打开就把弹窗显示出来）
+        _page(_THROTTLE_DIALOG + "<script>$('#VolidateCodeDiv').show();</script>" + _NOTICE_BODY),
+        _page(
+            "<style>#VolidateCodeDiv{display:block!important}</style>"
+            + _THROTTLE_DIALOG
+            + _NOTICE_BODY
+        ),
+        "<html><title>通知</title><body onload=\"$('#VolidateCodeDiv').show()\">"
+        + _THROTTLE_DIALOG
+        + _NOTICE_BODY
+        + "</body></html>",
+        # 不是这个弹窗、只是页面上写着这句话
+        _page("<p>搜索过于频繁，请输入验证码</p>" + _NOTICE_BODY),
+        # 弹窗认得出、但正文不对：不在核实过的正文区、太短、没有句号、没有正文区、正文里另有验证码字样
+        _page(_THROTTLE_DIALOG + f"<div id='zoom'>{_NOTICE_TEXT}</div>"),
+        _page(
+            _THROTTLE_DIALOG
+            + "<div class='conTxt'><p>各有关单位：现将申报事项通知如下，请按要求申报。</p></div>"
+        ),
+        _page(
+            _THROTTLE_DIALOG
+            + "<div class='conTxt'>"
+            + "".join(f"<p>第{n}项，项目名称，申报单位，联系人</p>" for n in range(12))
+            + "</div>"
+        ),
+        _page(_THROTTLE_DIALOG),
+        _page(
+            _THROTTLE_DIALOG
+            + "<div class='conTxt'>"
+            + _LONG_TEXT
+            + "<p>请输入验证码后查看全文。</p></div>"
+        ),
+    ],
+)
+@pytest.mark.usefixtures("verified_throttle_sites")
+def test_other_captcha_pages_stay_protection_pages(page) -> None:
+    assert parse_detail(page, "https://kjj.example.gov.cn/a.html").failure_reason == (
+        "防护页或验证码"
+    )
 
 
 def test_dropdown_options_are_not_body() -> None:
