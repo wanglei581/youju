@@ -190,8 +190,9 @@ def apply_one(session, item, write=False):
         return "状态已变，不再待核对"
     reopened = _reopened_same_deadline(session, row) if verdict != "unclear" else []
     if reopened:
-        # 结果要来自带着当前退回原因的清单：reopened 为 true、audit_note 和现在整组的退回原因一样；
-        # 出清单以后又有退回的，等下一份清单。还要在 note 里写怎么处理了退回原因，记进留痕
+        # 结果要来自带着当前退回原因的清单：reopened 为 true，现在整组的每条退回原因都在
+        # audit_note 里；出清单以后又有退回的，等下一份清单。还要在 note 里写怎么处理了退回原因，
+        # 记进留痕
         if item.get("reopened") is not True:
             return "这一截止同组有质检退回，须按带退回原因的清单核对"
         # 现在每条退回原因都要整段出现在清单给的 audit_note 里（按"；"分段比，短的原因不会被长的
