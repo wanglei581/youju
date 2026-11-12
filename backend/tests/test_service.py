@@ -434,3 +434,41 @@ def test_robots_denied_list_api_drops_stray_page_items(session) -> None:
     assert (check.status, check.items_found) == ("robots_disallowed", 0)
     session.refresh(source)
     assert source.health == "blocked"
+
+
+class RecordingFetcher(FakeFetcher):
+    def __init__(self, responses: dict[str, list[FetchResult]]) -> None:
+        super().__init__(responses)
+        self.requested: list[str] = []
+
+    def fetch(self, url: str) -> FetchResult:
+        self.requested.append(url)
+        return super().fetch(url)
+
+
+def test_only_the_page_and_its_declared_api_are_requested(session) -> None:
+    """D-128 护栏 ①：除了栏目页和页面写明的那个接口地址，不发别的请求。"""
+    url = "https://kjt.zj.gov.cn/col/col1229225203/index.html"
+    source = make_source(session, url)
+    fetcher = RecordingFetcher(
+        {url: [page(url, JPAAS_PAGE)], JPAAS_API: [page(JPAAS_API, JPAAS_JSON)]}
+    )
+    check = check_source(session, source, fetcher)
+    assert check.status == "ok"
+    assert fetcher.requested == [url, JPAAS_API]
+
+
+def test_recheck_keeps_refusal_on_one_off_failure(session) -> None:
+    """过了 30 天再请求，这次只是 5xx：旧的拦下记录留着，不当成已经能读。"""
+    url = "https://kjt.zj.gov.cn/col/col1229225203/index.html"
+    source = make_source(session, url)
+    source.parser_config = _refused_note(JPAAS_API, 40)
+    session.commit()
+    failed = FetchResult(
+        JPAAS_API, "http_error", final_url=JPAAS_API, http_status=502, error="HTTP 502"
+    )
+    fetcher = FakeFetcher({url: [page(url, JPAAS_PAGE)], JPAAS_API: [failed]})
+    check = check_source(session, source, fetcher)
+    assert check.status == "http_error"
+    session.refresh(source)
+    assert source.parser_config["list_api_refused"]["url"] == JPAAS_API

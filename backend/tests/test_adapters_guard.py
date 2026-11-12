@@ -278,3 +278,41 @@ def test_board_shows_refused_list_api_as_cannot_crawl():
     cell = cell_for(row, {PAGE_URL: state}, {}, datetime(2026, 11, 11, 12))
     assert cell.state == "不能抓"
     assert "roles" in cell.reason  # 原因是护栏给的，不是"试跑可读"
+
+
+def test_only_the_page_declared_address_and_parameters_are_requested():
+    """D-128 护栏 ①：只按网页写明的地址和参数去取，不改参数、不另外构造请求。"""
+    from urllib.parse import parse_qsl
+
+    declared = [
+        ("parseType", "bulidstatic"),
+        ("webId", "3387"),
+        ("tplSetId", "T1"),
+        ("pageType", "column"),
+        ("tagId", "当前栏目list"),
+        ("editType", "null"),
+        ("pageId", "1229225203"),
+    ]
+    query = "{" + ",".join(f"'{k}':'{v}'" for k, v in declared) + "}"
+    page = f'<script src="/x/unitbuild.js" url="{HANWEB_JPAAS_PATH}" queryData="{query}"></script>'
+    api = find_list_api(page, PAGE_URL)
+    parts = urlsplit(api.url)
+    assert (parts.scheme, parts.netloc, parts.path) == ("https", "kjt.zj.gov.cn", HANWEB_JPAAS_PATH)
+    # 参数和页面写的一模一样：不多、不少、不改（没有分页、检索、时间戳一类）
+    assert parse_qsl(parts.query, keep_blank_values=True) == declared
+
+
+def test_lists_stay_unread_unless_the_guard_passes():
+    """D-128 护栏 ②③：只有返回明确成功、没有权限要求时才读出列表，别的一律不读。"""
+    api = _api()
+    assert api_html(api, _payload()) == LIST
+    for text in (
+        json.dumps({"data": {"html": LIST}}),  # 没有成功标志
+        _payload(success=False),
+        _payload(code="401"),
+        _payload(roles=["dept"]),
+        _payload(permissions=["read"]),
+        "<html>请先登录</html>",
+        "",
+    ):
+        assert api_html(api, text) == ""

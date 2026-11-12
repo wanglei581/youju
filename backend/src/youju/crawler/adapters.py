@@ -7,9 +7,14 @@ docs/数据来源/全国覆盖/集约化平台盘点.md）。
 规矩和抓页面一样：
 - 只用页面自己声明的、同一网站上的公开接口，只发 GET；照常遵守 robots.txt、同一网站间隔 3 秒；
 - 只认白名单里的接口路径，不拼别的地址；要登录、签名、验证码的接口一律不碰。
-- 读取护栏（D-128）：接口返回不是成功、返回里带权限要求（roles、permissions 一类字段不为空）、
-  要登录或验证码、网站明确拒绝（HTTP 401/403/412/521、robots 禁止）的，一律记"不能抓"、不读
-  （api_refusal 给出原因；api_html 遇到不是成功或带权限要求的返回只给空串）。
+- 读取护栏（D-128）：
+  ① 只按网页里写明的地址和参数去取，不改参数、不另外构造请求（find_unit_apis 只认白名单路径、
+    同一网站，参数原样照页面的 queryData，不加分页、检索等参数）；
+  ② 接口返回不是成功、返回里带权限要求（roles、permissions 一类字段不为空）、要登录或验证码、
+    网站明确拒绝（HTTP 401/403/412/521、robots 禁止）的，一律记"不能抓"、不读（api_refusal 给出
+    原因；api_html 只在返回明确成功、没有权限要求时才给出列表，别的一律空串）；
+  ③ 护栏上线之前，这类列表照旧不读：已经记成"不能抓"的栏目，等护栏上线、重新试读、抽查合格
+    以后再放（D-122 ①、D-126 ③）；同一网站请求间隔不少于 3 秒（PoliteFetcher）。
 
 现有适配器：
 - 大汉 jpaas（浙江等省的集约化平台）：<script src=".../unitbuild.js"
@@ -221,9 +226,11 @@ def api_refusal(api: ListApi, result) -> str:
     if payload is None:
         # 不是 JSON：整页是登录、验证码、防护拦截关卡的记不能抓；别的（空白、维护中、网站模板的
         # 404 页）按"这次没读出"，不读、照常记失败下次再试
-        if _bare_page(text) and _LOGIN_TEXT.search(text[:20000]):
+        if not _bare_page(text):
+            return ""
+        if _LOGIN_TEXT.search(text[:20000]):
             return "列表接口要登录或验证码"
-        if _bare_page(text) and _GATE_TEXT.search(text[:20000]):
+        if _GATE_TEXT.search(text[:20000]):
             return "列表接口返回拦截页面"
         return ""
     return _payload_refusal(payload)

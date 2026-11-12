@@ -15,7 +15,13 @@ from sqlalchemy.orm import Session
 
 from youju.categories import doc_category
 from youju.classify import doc_kind
-from youju.crawler.adapters import LIST_API_REFUSED, api_html, api_refusal, find_list_api
+from youju.crawler.adapters import (
+    LIST_API_REFUSED,
+    ListApi,
+    api_html,
+    api_refusal,
+    find_list_api,
+)
 from youju.crawler.fetcher import FetchResult
 from youju.crawler.listing import ListItem, extract_items
 from youju.crawler.urls import host_of, public_url, url_key
@@ -187,10 +193,17 @@ class _AdapterResult:
 
 
 def _items_via_adapter(
-    fetcher: Fetcher, page: FetchResult, url: str, parser_config: dict, today: date | None
+    fetcher: Fetcher,
+    page: FetchResult,
+    url: str,
+    parser_config: dict,
+    today: date | None,
+    api: ListApi | None = None,
 ) -> _AdapterResult:
-    """栏目页自己声明了集约化平台的列表接口（见 crawler/adapters.py）时，按它取列表。"""
-    api = find_list_api(page.text, page.final_url or url)
+    """栏目页自己声明了集约化平台的列表接口（见 crawler/adapters.py）时，按它取列表。
+
+    只请求页面写明的那个接口地址、参数原样照页面（D-128 读取护栏 ①），不另外构造请求。"""
+    api = api or find_list_api(page.text, page.final_url or url)
     if api is None:
         return _AdapterResult([])
     result = fetcher.fetch(api.url)
@@ -236,9 +249,12 @@ def check_source(
             items = []
             status, error = LIST_API_REFUSED, f"{before}（之前被读取护栏拦下，暂不再请求）"
         elif api is not None:
-            via = _items_via_adapter(fetcher, result, url, parser_config, today)
-            if LIST_API_REFUSED_KEY in parser_config and not via.refused:
-                # 页面换了接口，或过了 30 天再请求没被拦：去掉旧记录
+            via = _items_via_adapter(fetcher, result, url, parser_config, today, api)
+            note = parser_config.get(LIST_API_REFUSED_KEY)
+            moved = not isinstance(note, dict) or note.get("url") != via.api_url
+            if note is not None and not via.refused and (moved or via.fetch is None):
+                # 页面换了接口，或过了 30 天再请求、接口正常返回没被拦：去掉旧记录（这次只是
+                # 网络不通、5xx 的，旧记录留着）
                 parser_config = {
                     k: v for k, v in parser_config.items() if k != LIST_API_REFUSED_KEY
                 }
