@@ -1002,7 +1002,11 @@ def _is_agency(value: str) -> bool:
 
 def _title_issuer(root: etree._Element) -> str | None:
     """文件标题开头的机关（"某某市人民政府关于……""某某厅等 7 部门关于印发……"），每个机关都要是
-    完整的机关名（见 _full_agency），有一个不是就不用标题。"""
+    完整的机关名（见 _full_agency），有一个不是就不用标题。校验用的名单有一份读不到，标题一概
+    不用。"""
+    places, _, bodies = _agency_names()
+    if not places or not bodies:
+        return None
     for title in _page_titles(root):
         match = _TITLE_ISSUER.match(title)
         if not match:
@@ -1033,13 +1037,13 @@ def _full_agency(name: str) -> bool:
 
 @functools.cache
 def _agency_names() -> tuple[frozenset[str], frozenset[str], frozenset[str]]:
-    """地级、县级区划名，"某某市"去掉"市"的简称，机关名称词表；名单文件读不到时都是空的（标题里的
-    机关一概不用，照旧看发布机构）。"""
+    """地级、县级区划名，"某某市"去掉"市"的简称，机关名称词表；名单文件读不到（没有文件、不是
+    UTF-8）时是空的，标题里的机关一概不用，照旧看发布机构（见 _title_issuer）。"""
 
     def read(name: str) -> frozenset[str]:
         try:
             lines = (_DATA_DIR / name).read_text(encoding="utf-8").splitlines()
-        except OSError:
+        except (OSError, UnicodeDecodeError):
             logger.warning("发文机关校验用的名单读不到：%s", name)
             return frozenset()
         return frozenset(n for line in lines if (n := line.strip()) and not n.startswith("#"))
