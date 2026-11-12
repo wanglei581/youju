@@ -448,6 +448,10 @@ def _deidentify(table: str, row: dict, pseudonyms: dict[int, str | None]) -> dic
     return row
 
 
+# 交易记录存多久按 D-127（现行隐私保护指引写的 3650 天）定，不看云托管上的 retain_pay_orders_days
+PAY_RETAIN_DAYS = 3650
+
+
 def pay_records(session: Session, retain_days: int) -> tuple[list[str], dict]:
     """交易记录（去标识化）：第一行是说明（格式、保存天数、最早一笔订单的下单时间、各表条数），
     后面每行 {"table": 表名, "row": 一行}。"""
@@ -541,7 +545,7 @@ def export(
         with Session(engine) as session:
             rows = takedown_rows(session)
             numbers = summary(session, len(rows))
-            pay_lines, pay_header = pay_records(session, settings.retain_pay_orders_days)
+            pay_lines, pay_header = pay_records(session, PAY_RETAIN_DAYS)
         staged = staging_logs(engine, workdir, stamp)
         if before is not None:
             changed = changed_tables(before, fingerprint(engine))

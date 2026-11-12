@@ -1071,7 +1071,11 @@ def test_archive_export_splits_by_start_date(tmp_path):
         "archive/cloudrun-advisor-out-20261110.expires-20261210.tar.gz.age"
     )
     assert "2026-10-20 生成的批量工具结果已经过了 30 天，不存" in notes
-    bad = gzip.compress(json.dumps({"format": "youju-pay-records", "version": 1}).encode() + b"\n")
+    # 说明行写的保存天数不是 D-127 定的 3650：停下
+    bad = gzip.compress(
+        json.dumps({"format": "youju-pay-records", "version": 1, "retain_days": 1095}).encode()
+        + b"\n"
+    )
     (work / "pay-records.jsonl.gz").write_bytes(bad)
     with pytest.raises(cloudrun_fetch.FetchError, match="说明行"):
         cloudrun_fetch.archive_export(

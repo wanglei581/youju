@@ -65,6 +65,8 @@ ADVISOR_DIR = "advisor-out"
 ADVISOR_INDEX = "advisor-out.json"
 # 批量工具结果保存 30 天（隐私保护指引：任务和结果保存 30 天）
 ADVISOR_KEEP_DAYS = 30
+# 订单、退款、开票和赠送记录保存 3650 天（D-127，现行隐私保护指引）；导出的说明行要写的就是这个
+PAY_RETAIN_DAYS = 3650
 IMPORTED = "imported"
 # 试恢复的临时库和 binlog 大约是压缩整库备份的 10 倍，再加加密副本
 BACKUP_FACTOR = 15
@@ -524,8 +526,7 @@ def _pay_header(path: Path) -> dict:
         not isinstance(header, dict)
         or header.get("format") != "youju-pay-records"
         or header.get("version") != 1
-        or type(retain) is not int
-        or not 180 <= retain <= 3650
+        or retain != PAY_RETAIN_DAYS
     ):
         raise FetchError("交易记录的说明行不对")
     return header
@@ -607,7 +608,7 @@ def archive_export(
 ) -> tuple[list, list[str]]:
     """把下载好的分别加密存档（youju archive-export），到期日写进文件名，每份各自到期：
     - 整库备份：自备份那天起 30 天；
-    - 交易记录：按起算日分组（见 split_pay_records），每组自起算日起 retain_days（3650）天；
+    - 交易记录：按起算日分组（见 split_pay_records），每组自起算日起 PAY_RETAIN_DAYS（3650）天；
     - 批量工具结果：按文件生成日期分组，每组自那天起 30 天（已经过期的组不存）。
     另在本机存储记下云托管里的库和备份最晚哪天要删（最后一份整库备份起 30 天，D-127），
     archive-prune 到期前 7 天起每天提醒，删了用 youju cloudrun-gone 记下来。返回（报告，说明）。"""
@@ -642,7 +643,7 @@ def archive_export(
         if not groups:
             notes.append("没有交易记录要存")
         for start, rows in groups.items():
-            expires = start + timedelta(days=header["retain_days"])
+            expires = start + timedelta(days=PAY_RETAIN_DAYS)
             if expires <= today:
                 notes.append(f"{start} 起算的交易记录已经过了保存期，不存")
                 continue
@@ -656,7 +657,7 @@ def archive_export(
                         "format": "youju-pay-records",
                         "version": 1,
                         "created_at": header["created_at"],
-                        "retain_days": header["retain_days"],
+                        "retain_days": PAY_RETAIN_DAYS,
                         "start_date": start.isoformat(),
                         "counts": counts,
                     },
