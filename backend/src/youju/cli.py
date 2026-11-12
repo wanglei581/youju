@@ -696,6 +696,17 @@ def _cmd_deadline_verify_stats(args: argparse.Namespace) -> int:
     return 0
 
 
+def _repost_checks(name: str):
+    """转发组质检命令（youju/repost_checks.py）：用到时才导入，不拖慢别的命令的启动。"""
+
+    def run(args: argparse.Namespace) -> int:
+        from youju import repost_checks
+
+        return getattr(repost_checks, name)(args)
+
+    return run
+
+
 def _cmd_repost_groups(args: argparse.Namespace) -> int:
     """按转发归组规则增量更新转发组，确认后才对外合并。"""
     from youju.repost import rebuild, write_audit
@@ -2772,6 +2783,34 @@ def main(argv: list[str] | None = None) -> int:
         help="重算窗口内全部正文信号，并检查窗口外确认过的组（改了标题、正文脱敏重写以后跑）",
     )
     p.set_defaults(func=_cmd_repost_groups)
+
+    p = sub.add_parser(
+        "repost-auto-sample",
+        help="抽转发组给人判能不能自动合并（gate：开开关前的 100 组；weekly：每周抽查）",
+    )
+    p.add_argument("--purpose", choices=("gate", "weekly"), required=True)
+    p.add_argument(
+        "--size", type=int, help="抽几组（gate 默认 110：判满 100 组留 10 组余量；weekly 默认 10）"
+    )
+    p.add_argument(
+        "--seed",
+        type=int,
+        help="随机种子（不给就随机取一个、写进抽样文件；同一种子抽到同样的组，复查时用）",
+    )
+    p.add_argument("--out", type=Path, required=True, help="抽样结果写到哪个 JSON 文件")
+    p.set_defaults(func=_repost_checks("sample"))
+    p = sub.add_parser("repost-auto-record", help="记回转发组抽查的判定（判错的组当场整组撤回）")
+    p.add_argument("file", type=Path)
+    p.add_argument("--by", required=True, help="判的人（如 Claude、Codex）")
+    p.set_defaults(func=_repost_checks("record"))
+    p = sub.add_parser("repost-auto-stats", help="按轮统计转发组抽查的准确率和自动合并的门")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=_repost_checks("stats"))
+    p = sub.add_parser("repost-withdraw", help="整组撤回转发组的确认（以后不再自动合并这一组）")
+    p.add_argument("group_id", type=int)
+    p.add_argument("--revision", type=int, required=True, help="看到的修订号，对不上就不撤回")
+    p.add_argument("--by", required=True)
+    p.set_defaults(func=_repost_checks("withdraw"))
 
     p = sub.add_parser("extract-fields", help="从申报通知正文生成支持方式和申报对象候选")
     p.add_argument("--since", type=date.fromisoformat, help="只处理此发布日期以来的文件")

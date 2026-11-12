@@ -7,6 +7,7 @@ import pytest
 from youju.models import RepostGroup, RepostGroupMember
 from youju.repost import (
     AUTO_REVIEWER,
+    AUTO_RULE_VERSION,
     Candidate,
     Cited,
     auto_reason,
@@ -16,6 +17,7 @@ from youju.repost import (
     signals,
     withdraw_group,
 )
+from youju.repost_checks import _excerpt, _validate
 
 
 @pytest.fixture
@@ -115,6 +117,30 @@ def test_auto_confirmation_and_withdraw(example):
         and r.confirmed_fingerprint is None
         for r in rows
     )
+
+
+def test_validation_and_excerpt():
+    data = {
+        "round": "gate-1",
+        "purpose": "gate",
+        "rule_version": AUTO_RULE_VERSION,
+        "items": [
+            {
+                "group_id": 1,
+                "revision": 1,
+                "members": [{"document_id": 1}, {"document_id": 2}],
+                "verdict": "wrong",
+                "note": "错误",
+            }
+        ],
+    }
+    _validate(data, "核对人")
+    data["items"][0]["note"] = " "
+    with pytest.raises(ValueError):
+        _validate(data, "核对人")
+    body = "前" * 200 + "《创新产业申报通知》（工信厅办函〔2026〕1号）" + "后" * 200
+    assert "工信厅办函〔2026〕1号" in _excerpt(body, "工信厅办函〔2026〕1号")
+    assert _excerpt(body, None) == body[:300]
 
 
 def test_private_table():
@@ -260,8 +286,6 @@ def test_rule_version_is_bumped_when_the_rules_change():
     import hashlib
     import json
 
-    from youju.repost import AUTO_RULE_VERSION
-
     digest = hashlib.sha256(json.dumps(_rule_battery(), ensure_ascii=False).encode()).hexdigest()
     assert (AUTO_RULE_VERSION, digest[:16]) == RULE_FINGERPRINT
 
@@ -314,3 +338,52 @@ def test_only_the_given_versions_are_judged(example):
     assert auto_upstream(rows, cands, set(), versions=rows[:2]) == "工信厅办函〔2026〕1号"
     rows[2].joined_by = "human"
     assert auto_reason(group, rows, cands, set(), versions=rows[:2]) == "组员有人工处理"
+
+
+@pytest.mark.parametrize(
+    "change,message",
+    [
+        ({"verdict": ""}, "结论或备注错误"),
+        ({"verdict": "wrong", "note": "  "}, "结论或备注错误"),
+        ({"members": [{"document_id": 1}]}, "成员清单错误"),
+    ],
+)
+def test_validation_rejects_bad_items(change, message):
+    data = {
+        "round": "gate-1",
+        "purpose": "gate",
+        "rule_version": AUTO_RULE_VERSION,
+        "items": [
+            {
+                "group_id": 1,
+                "revision": 1,
+                "members": [{"document_id": 1}, {"document_id": 2}],
+                "verdict": "correct",
+                "note": "",
+                **change,
+            }
+        ],
+    }
+    with pytest.raises(ValueError, match=message):
+        _validate(data, "Claude")
+
+
+def test_validation_rejects_duplicates_and_old_rule_versions():
+    item = {
+        "group_id": 1,
+        "revision": 1,
+        "members": [{"document_id": 1}, {"document_id": 2}],
+        "verdict": "correct",
+        "note": "",
+    }
+    base = {"round": "gate-1", "purpose": "gate", "rule_version": AUTO_RULE_VERSION}
+    with pytest.raises(ValueError, match="同一组重复"):
+        _validate({**base, "items": [item, dict(item)]}, "Claude")
+    with pytest.raises(ValueError, match="规则版本"):
+        _validate({**base, "rule_version": "2026-01-01", "items": [item]}, "Claude")
+
+
+def test_excerpt_only_looks_at_the_body_head():
+    number = "工信厅办函〔2026〕1号"
+    late = "前" * 1600 + "《创新产业申报通知》（工信厅办函〔2026〕1号）"
+    assert _excerpt(late, number) == late[:300]  # 文号在 1500 字以后：判定也看不到，摘录不取

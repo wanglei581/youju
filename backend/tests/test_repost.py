@@ -23,6 +23,7 @@ from youju.models import (
 )
 from youju.repost import (
     Candidate,
+    bump,
     cited_upstream,
     core_title,
     member_facts,
@@ -212,6 +213,14 @@ def _deadline(session, doc, kind="推荐或审核截止", day=30, evidence="请�
     session.add(row)
     session.flush()
     return row
+
+
+@pytest.fixture(autouse=True)
+def _pin_check_clock(monkeypatch):
+    # 抽查命令按"今天"算窗口：固定成测试世界的今天，免得过几个月测试数据出了窗口（日期炸弹）
+    from youju import repost_checks
+
+    monkeypatch.setattr(repost_checks, "_now", lambda: NOW)
 
 
 @pytest.fixture
@@ -1518,6 +1527,47 @@ def test_backfilled_marker_of_old_group_member_gets_signals(session, world):
     assert _members(session)[world["shaanxi"].id].group_id == gid
 
 
+def test_auto_quality_commands(session, session_factory, world, monkeypatch, tmp_path, capsys):
+    import json
+    from types import SimpleNamespace
+
+    from youju import repost_checks
+    from youju.models import RepostAutoCheck
+    from youju.repost import AUTO_RULE_VERSION
+
+    rebuild(session, now=NOW)
+    session.commit()
+    group = session.scalars(select(RepostGroup)).one()
+    rows = list(session.scalars(select(RepostGroupMember)))
+    for row in rows:
+        row.confirmed_at, row.confirmed_by, row.confirmed_fingerprint = NOW, "人工", "x"
+    session.commit()
+    monkeypatch.setattr(repost_checks, "session_factory", lambda: session_factory)
+    data = _sample(tmp_path, "weekly", seed=7)
+    assert [i["group_id"] for i in data["items"]] == [group.id]
+    assert data["rule_version"] == AUTO_RULE_VERSION and data["items"][0]["auto"] is False
+    data["items"][0].update(verdict="wrong", note="不同项目")
+    path = tmp_path / "filled.json"
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    args = SimpleNamespace(file=path, by="核对人")
+    assert repost_checks.record(args) == 0
+    session.expire_all()
+    assert session.get(RepostGroup, group.id).no_auto
+    assert all(
+        r.confirmed_at is None and r.joined_by == "human" for r in _members(session).values()
+    )
+    assert session.query(RepostAutoCheck).count() == 1
+    assert repost_checks.record(args) == 0
+    assert "已记过" in capsys.readouterr().out
+    assert repost_checks.stats(SimpleNamespace(json=True)) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert (report["rounds"][0]["judged"], report["rounds"][0]["accuracy"]) == (1, 0)
+    assert repost_checks.withdraw(SimpleNamespace(group_id=group.id, revision=0, by="人")) == 1
+    rebuild(session, now=NOW)
+    session.commit()
+    assert all(r.joined_by == "human" for r in _members(session).values())
+
+
 # ---- 自动合并门禁（数据库测试）--------------------------------------------------
 
 
@@ -1686,6 +1736,107 @@ def test_auto_rebuild_new_ineligible_member(session, monkeypatch):
     assert len(rows) == 3 and (result.auto_reverted, result.auto_merged) == (0, 0)
     assert rows[late.id].group_id == group.id and rows[late.id].confirmed_at is None
     assert all(rows[d.id].confirmed_by == AUTO_REVIEWER for d in docs)
+
+
+def _sample(tmp_path, purpose, *, size=None, seed=1):
+    import json
+
+    from youju import repost_checks
+
+    out = tmp_path / f"{purpose}-{seed}.json"
+    args = SimpleNamespace(purpose=purpose, size=size, seed=seed, out=out)
+    assert repost_checks.sample(args) == 0
+    return json.loads(out.read_text(encoding="utf-8"))
+
+
+def test_auto_sample_gives_evidence_without_conclusions(
+    session, session_factory, monkeypatch, tmp_path
+):
+    from youju import repost_checks
+    from youju.repost import AUTO_REVIEWER, AUTO_RULE_VERSION
+
+    setting = SimpleNamespace(repost_auto_merge=False)
+    monkeypatch.setattr("youju.repost.get_settings", lambda: setting)
+    monkeypatch.setattr(repost_checks, "session_factory", lambda: session_factory)
+    docs = _auto_world(session)
+    rebuild(session, now=NOW)
+    session.commit()
+    data = _sample(tmp_path, "gate")
+    assert data["purpose"] == "gate" and data["rule_version"] == AUTO_RULE_VERSION
+    assert data["round"].startswith("gate-") and len(data["items"]) == 1
+    item = data["items"][0]
+    assert set(item) == {
+        "group_id",
+        "revision",
+        "topic",
+        "upstream",
+        "auto",
+        "members",
+        "verdict",
+        "note",
+    }
+    assert data["seed"] == 1 and data["population"] == 1 and item["auto"] is None
+    assert all(m["judge"] for m in item["members"])  # gate 判的是全部在组版本
+    assert item["verdict"] == "" and item["note"] == ""
+    assert item["upstream"] and {m["document_id"] for m in item["members"]} == {d.id for d in docs}
+    member = item["members"][0]
+    assert item["upstream"] in member["cited"]
+    # 摘录是正文里共同文号前后的原文，判的人据此看是不是同一份上游通知
+    assert "376" in member["excerpt"] and member["excerpt"] in UPSTREAM + "陕西天津"
+    # 同一种子抽到同样的组
+    assert _sample(tmp_path, "gate", seed=1)["items"][0]["group_id"] == item["group_id"]
+    # 每周抽查只抽已确认的组：还没有确认的组时抽不到
+    assert _sample(tmp_path, "weekly")["items"] == []
+    setting.repost_auto_merge = True
+    _gate_records(session, "pass", 100, 100)
+    rebuild(session, now=NOW)
+    session.commit()
+    weekly = _sample(tmp_path, "weekly", seed=2)
+    assert [i["group_id"] for i in weekly["items"]] == [item["group_id"]]
+    assert all(r.confirmed_by == AUTO_REVIEWER for r in _members(session).values())
+
+
+def test_auto_record_skips_groups_changed_after_sampling(
+    session, session_factory, monkeypatch, tmp_path, capsys, caplog
+):
+    import json
+    import logging
+
+    from youju import repost_checks
+    from youju.models import RepostAutoCheck
+
+    monkeypatch.setattr(
+        "youju.repost.get_settings", lambda: SimpleNamespace(repost_auto_merge=False)
+    )
+    monkeypatch.setattr(repost_checks, "session_factory", lambda: session_factory)
+    docs = _auto_world(session)
+    rebuild(session, now=NOW)
+    session.commit()
+    data = _sample(tmp_path, "gate")
+    data["items"][0].update(verdict="wrong", note="其实是两件事")
+    group = session.get(RepostGroup, data["items"][0]["group_id"])
+    title = docs[1].title
+    docs[1].title += "（更正）"  # 抽样以后判的版本的标题变了
+    session.commit()
+    path = tmp_path / "filled.json"
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    assert repost_checks.record(SimpleNamespace(file=path, by="Claude")) == 0
+    assert "抽样以后组变了" in capsys.readouterr().out
+    session.expire_all()
+    check = session.query(RepostAutoCheck).one()  # 程序记 changed，判的人的结论不用、不算
+    assert check.verdict == "changed" and not group.no_auto
+    # 标题改回来、重新抽一轮：判错的组当场整组撤回，并记一行审计日志
+    docs[1].title = title
+    session.commit()
+    data = _sample(tmp_path, "gate", seed=2)
+    data["items"][0].update(verdict="wrong", note="其实是两件事")
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    with caplog.at_level(logging.INFO, logger="youju.audit"):
+        assert repost_checks.record(SimpleNamespace(file=path, by="Claude")) == 0
+    session.expire_all()
+    assert session.get(RepostGroup, group.id).no_auto
+    events = [json.loads(r.getMessage()) for r in caplog.records if r.name == "youju.audit"]
+    assert events and events[0]["action"] == "repost_withdraw" and events[0]["event"] == "cli"
 
 
 def test_person_confirming_an_auto_group_takes_it_over(session, client, monkeypatch):
@@ -2066,3 +2217,429 @@ def test_ministry_original_is_auto_merged_with_its_forwards(session, monkeypatch
     rows = _members(session)
     assert {original.id, *(d.id for d in docs)} <= set(rows)
     assert all(r.confirmed_by == AUTO_REVIEWER for r in rows.values())
+
+
+def test_auto_stats_with_gate_records(session, session_factory, monkeypatch, capsys):
+    import json
+
+    from youju import repost_checks
+
+    monkeypatch.setattr(repost_checks, "session_factory", lambda: session_factory)
+    _gate_records(session, "pass", 100, 99)
+    session.commit()
+    assert repost_checks.stats(SimpleNamespace(json=True)) == 0
+    report = json.loads(capsys.readouterr().out)  # 计数从库里出来是 Decimal，转了整数才写得出
+    assert report["latest_gate"]["passed"] is True and report["latest_gate"]["correct"] == 99
+    assert report["rounds"][0]["judged"] == 100 and report["rounds"][0]["pending"] == 0
+
+
+def test_auto_record_warns_when_a_gate_round_is_short(
+    session, session_factory, monkeypatch, tmp_path, capsys
+):
+    import json
+
+    from youju import repost_checks
+
+    monkeypatch.setattr(
+        "youju.repost.get_settings", lambda: SimpleNamespace(repost_auto_merge=False)
+    )
+    monkeypatch.setattr(repost_checks, "session_factory", lambda: session_factory)
+    _auto_world(session)
+    rebuild(session, now=NOW)
+    session.commit()
+    data = _sample(tmp_path, "gate")
+    data["items"][0].update(verdict="correct", note="")
+    path = tmp_path / "short.json"
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    assert repost_checks.record(SimpleNamespace(file=path, by="Claude")) == 0
+    assert "不满 100 组" in capsys.readouterr().out
+
+
+def test_auto_withdraw_command_succeeds_and_is_audited(
+    session, session_factory, monkeypatch, caplog
+):
+    import json
+    import logging
+
+    from youju import repost_checks
+
+    _auto_on(monkeypatch, session)
+    _auto_world(session)
+    assert rebuild(session, now=NOW).auto_merged == 1
+    session.commit()
+    monkeypatch.setattr(repost_checks, "session_factory", lambda: session_factory)
+    group = session.scalars(select(RepostGroup)).one()
+    args = SimpleNamespace(group_id=group.id, revision=group.revision, by="Claude")
+    with caplog.at_level(logging.INFO, logger="youju.audit"):
+        assert repost_checks.withdraw(args) == 0
+    session.expire_all()
+    group = session.get(RepostGroup, group.id)
+    assert group.no_auto and all(r.confirmed_at is None for r in _members(session).values())
+    events = [json.loads(r.getMessage()) for r in caplog.records if r.name == "youju.audit"]
+    cli = [e for e in events if e["event"] == "cli"]
+    assert cli and cli[0]["action"] == "repost_withdraw" and cli[0]["reviewer"] == "Claude"
+    assert set(cli[0]["confirmed_by"].values()) == {"自动合并"}
+
+
+def test_weekly_sample_skips_groups_already_checked_at_this_revision(
+    session, session_factory, monkeypatch, tmp_path
+):
+    import json
+
+    from youju import repost_checks
+
+    _auto_on(monkeypatch, session)
+    _auto_world(session)
+    rebuild(session, now=NOW)
+    session.commit()
+    monkeypatch.setattr(repost_checks, "session_factory", lambda: session_factory)
+    first = _sample(tmp_path, "weekly", seed=3)
+    assert len(first["items"]) == 1 and first["items"][0]["auto"] is True
+    first["items"][0].update(verdict="correct", note="")
+    path = tmp_path / "weekly.json"
+    path.write_text(json.dumps(first, ensure_ascii=False), encoding="utf-8")
+    assert repost_checks.record(SimpleNamespace(file=path, by="Codex")) == 0
+    assert _sample(tmp_path, "weekly", seed=4)["items"] == []  # 这一版本这一周已经抽查过
+    # 跨周可以再抽同一修订号：稳定的自动组也接着盯，不会过一阵就抽不到
+    monkeypatch.setattr(repost_checks, "_now", lambda: NOW + timedelta(days=7))
+    again = _sample(tmp_path, "weekly", seed=5)
+    assert [i["group_id"] for i in again["items"]] == [first["items"][0]["group_id"]]
+
+
+def test_weekly_sample_includes_partly_folded_auto_groups(
+    session, session_factory, monkeypatch, tmp_path
+):
+    # 已经自动合并的组来了一份还没确认的新版本（正文没抓到）：照样抽。判的是已经确认的版本，新来的
+    # 一并列出、confirmed 为空；各版本带着自己的发文字号
+    from youju import repost_checks
+
+    _auto_on(monkeypatch, session)
+    docs = _auto_world(session)
+    rebuild(session, now=NOW)
+    late = _doc(session, _source(session, "福建"), docs[0].title, day=20)
+    session.flush()
+    rebuild(session, now=NOW + timedelta(seconds=1))
+    session.commit()
+    monkeypatch.setattr(repost_checks, "session_factory", lambda: session_factory)
+    item = _sample(tmp_path, "weekly", seed=5)["items"][0]
+    assert item["auto"] is True
+    flags = {m["document_id"]: m["confirmed"] for m in item["members"]}
+    assert flags == {docs[0].id: "自动合并", docs[1].id: "自动合并", late.id: None}
+    assert all("own_number" in m for m in item["members"])
+    # 判的是已经确认的版本：共同文号、摘录都只按它们；新来的只供对照、不给摘录
+    judge = {m["document_id"]: m["judge"] for m in item["members"]}
+    assert judge == {docs[0].id: True, docs[1].id: True, late.id: False}
+    assert item["upstream"] == "工信厅联电子函〔2026〕376号"
+    excerpts = {m["document_id"]: m["excerpt"] for m in item["members"]}
+    assert excerpts[late.id] is None and "376" in excerpts[docs[0].id]
+
+
+def test_auto_record_must_cover_exactly_the_sampled_list(
+    session, session_factory, monkeypatch, tmp_path
+):
+    # 记录时交上来的组必须和抽样名单一模一样：删掉一组、添一组都整份拒收（不能只交好判的）
+    import json
+
+    from youju import repost_checks
+
+    monkeypatch.setattr(
+        "youju.repost.get_settings", lambda: SimpleNamespace(repost_auto_merge=False)
+    )
+    monkeypatch.setattr(repost_checks, "session_factory", lambda: session_factory)
+    _auto_world(session)
+    rebuild(session, now=NOW)
+    session.commit()
+    data = _sample(tmp_path, "gate")
+    item = data["items"][0]
+    path = tmp_path / "filled.json"
+    filled = dict(item, verdict="correct")
+    for items in ([], [filled, dict(filled, group_id=item["group_id"] + 1)]):
+        path.write_text(json.dumps({**data, "items": items}, ensure_ascii=False), encoding="utf-8")
+        with pytest.raises(ValueError, match="抽样名单"):
+            repost_checks.record(SimpleNamespace(file=path, by="Claude"))
+    other = {**data, "round": "gate-没抽过", "items": [dict(item, verdict="correct")]}
+    path.write_text(json.dumps(other, ensure_ascii=False), encoding="utf-8")
+    with pytest.raises(ValueError, match="没有抽样名单"):
+        repost_checks.record(SimpleNamespace(file=path, by="Claude"))
+
+
+def test_auto_record_counts_evidence_changes_as_changed(
+    session, session_factory, monkeypatch, tmp_path, capsys
+):
+    # 抽样以后修订号、版本都没变，但某个版本的类型（标题、正文、文号同理）变了：旧证据下的结论不算，
+    # 记 changed，也不拿它撤回现在的组
+    import json
+
+    from youju import repost_checks
+    from youju.models import RepostAutoCheck
+
+    monkeypatch.setattr(
+        "youju.repost.get_settings", lambda: SimpleNamespace(repost_auto_merge=False)
+    )
+    monkeypatch.setattr(repost_checks, "session_factory", lambda: session_factory)
+    docs = _auto_world(session)
+    rebuild(session, now=NOW)
+    session.commit()
+    data = _sample(tmp_path, "gate")
+    data["items"][0].update(verdict="wrong", note="判的时候以为是两件事")
+    group = session.get(RepostGroup, data["items"][0]["group_id"])
+    revision = group.revision
+    docs[0].kind_override = "其他"
+    session.commit()
+    path = tmp_path / "filled.json"
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    assert repost_checks.record(SimpleNamespace(file=path, by="Claude")) == 0
+    assert "抽样以后组变了" in capsys.readouterr().out
+    session.expire_all()
+    assert session.query(RepostAutoCheck).one().verdict == "changed"
+    group = session.get(RepostGroup, group.id)
+    assert group.revision == revision and not group.no_auto
+    # 页面上的发文字号被直接改了（没重抓，存好的信号还是旧的）：同样算组变了
+    docs[0].kind_override = None
+    session.commit()
+    data = _sample(tmp_path, "gate", seed=3)
+    data["items"][0].update(verdict="wrong", note="判的时候以为是两件事")
+    session.get(DocumentDetail, docs[1].id).doc_number = "工信厅联电子函〔2026〕999号"
+    session.commit()
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    assert repost_checks.record(SimpleNamespace(file=path, by="Claude")) == 0
+    session.expire_all()
+    checks = session.query(RepostAutoCheck).filter_by(round=data["round"]).all()
+    assert [c.verdict for c in checks] == ["changed"]
+    assert not session.get(RepostGroup, group.id).no_auto
+
+
+def test_weekly_sample_includes_auto_groups_outside_the_window(
+    session, session_factory, monkeypatch, tmp_path
+):
+    # 窗口外还在自动折叠的组也进每周抽查（它们每轮照样重判、对外折叠）
+    from youju import repost_checks
+
+    _auto_on(monkeypatch, session)
+    _auto_world(session)
+    rebuild(session, now=NOW)
+    later = NOW + timedelta(days=400)
+    assert rebuild(session, now=later).auto_reverted == 0  # 组里的文件都早于窗口了，照样折叠
+    session.commit()
+    monkeypatch.setattr(repost_checks, "session_factory", lambda: session_factory)
+    monkeypatch.setattr(repost_checks, "_now", lambda: later)
+    data = _sample(tmp_path, "weekly", seed=9)
+    assert len(data["items"]) == 1 and data["items"][0]["auto"] is True
+
+
+def test_gate_sample_recomputes_signals_from_current_details(
+    session, session_factory, monkeypatch, tmp_path, capsys
+):
+    # 抽样前正文被直接改写（抓取时间不变，存好的信号是旧的）：抽样按现在的正文重算信号再给证据；
+    # 重算以后不再满足自动合并条件的组不进这一轮
+    from youju import repost_checks
+
+    monkeypatch.setattr(
+        "youju.repost.get_settings", lambda: SimpleNamespace(repost_auto_merge=False)
+    )
+    monkeypatch.setattr(repost_checks, "session_factory", lambda: session_factory)
+    docs = _auto_world(session)
+    rebuild(session, now=NOW)
+    session.commit()
+    session.get(DocumentDetail, docs[0].id).body_text = "各有关单位：现就有关工作通知如下。陕西"
+    session.commit()
+    data = _sample(tmp_path, "gate")
+    assert data["items"] == [] and "不再满足自动合并条件" in capsys.readouterr().out
+    session.expire_all()
+    assert session.get(RepostSignal, docs[0].id).cited == []
+
+
+def test_sample_without_a_seed_picks_and_records_a_random_one(
+    session, session_factory, monkeypatch, tmp_path
+):
+    # 不给种子就随机取一个、写进抽样文件（不让人挑种子抽"好判的"一批；复查时照这个种子能重抽）
+    import json
+
+    from youju import repost_checks
+
+    monkeypatch.setattr(
+        "youju.repost.get_settings", lambda: SimpleNamespace(repost_auto_merge=False)
+    )
+    monkeypatch.setattr(repost_checks, "session_factory", lambda: session_factory)
+    _auto_world(session)
+    rebuild(session, now=NOW)
+    session.commit()
+    out = tmp_path / "gate.json"
+    args = SimpleNamespace(purpose="gate", size=None, seed=None, out=out)
+    assert repost_checks.sample(args) == 0
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert isinstance(data["seed"], int) and len(data["items"]) == 1
+
+
+def test_auto_record_ignores_a_bare_revision_bump(session, session_factory, monkeypatch, tmp_path):
+    # 只是修订号变了、判的版本和证据都没变（开关开着时这一轮没判完、门暂时没过，自动组退回又合上
+    # 之类）：判定照样算，不记 changed
+    import json
+
+    from youju import repost_checks
+    from youju.models import RepostAutoCheck
+
+    monkeypatch.setattr(
+        "youju.repost.get_settings", lambda: SimpleNamespace(repost_auto_merge=False)
+    )
+    monkeypatch.setattr(repost_checks, "session_factory", lambda: session_factory)
+    _auto_world(session)
+    rebuild(session, now=NOW)
+    session.commit()
+    data = _sample(tmp_path, "gate")
+    data["items"][0].update(verdict="correct", note="")
+    bump(session.get(RepostGroup, data["items"][0]["group_id"]), NOW)
+    session.commit()
+    path = tmp_path / "filled.json"
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    assert repost_checks.record(SimpleNamespace(file=path, by="Claude")) == 0
+    session.expire_all()
+    assert session.query(RepostAutoCheck).one().verdict == "correct"
+
+
+def test_auto_record_does_not_withdraw_a_group_a_person_confirmed_after_sampling(
+    session, session_factory, monkeypatch, tmp_path
+):
+    # 抽样以后有人确认了这一组（判的版本、正文都没变）：旧样本的"判错"记 changed，不整组撤回，
+    # 人刚做的确认照旧
+    import json
+
+    from youju import repost_checks
+    from youju.models import RepostAutoCheck
+
+    monkeypatch.setattr(
+        "youju.repost.get_settings", lambda: SimpleNamespace(repost_auto_merge=False)
+    )
+    monkeypatch.setattr(repost_checks, "session_factory", lambda: session_factory)
+    _auto_world(session)
+    rebuild(session, now=NOW)
+    session.commit()
+    data = _sample(tmp_path, "gate")
+    data["items"][0].update(verdict="wrong", note="其实是两件事")
+    rows = list(_members(session).values())
+    _, facts = member_facts(session, [r.document_id for r in rows])
+    for row in rows:
+        row.confirmed_by, row.confirmed_at = "创始人", NOW
+        row.confirmed_fingerprint = facts[row.document_id]
+    session.commit()
+    path = tmp_path / "filled.json"
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    assert repost_checks.record(SimpleNamespace(file=path, by="Claude")) == 0
+    session.expire_all()
+    assert session.query(RepostAutoCheck).one().verdict == "changed"
+    group = session.get(RepostGroup, data["items"][0]["group_id"])
+    assert not group.no_auto
+    assert all(r.confirmed_by == "创始人" for r in _members(session).values())
+
+
+def _fill_and_record(tmp_path, data, verdict, note=""):
+    import json
+
+    from youju import repost_checks
+
+    for item in data["items"]:
+        item.update(verdict=verdict, note=note)
+    path = tmp_path / f"filled-{data['round']}.json"
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    assert repost_checks.record(SimpleNamespace(file=path, by="Codex")) == 0
+
+
+def test_weekly_judgement_survives_a_rule_added_pending_version(
+    session, session_factory, monkeypatch, tmp_path
+):
+    # 每周抽查抽样以后，规则自动加进一份还不合格的新转发（留待确认、不折叠）：判的已确认版本和证据
+    # 都没变，人也没动过，判定照样算
+    from youju import repost_checks
+    from youju.models import RepostAutoCheck
+
+    _auto_on(monkeypatch, session)
+    docs = _auto_world(session)
+    rebuild(session, now=NOW)
+    session.commit()
+    monkeypatch.setattr(repost_checks, "session_factory", lambda: session_factory)
+    data = _sample(tmp_path, "weekly", seed=11)
+    late = _doc(session, _source(session, "福建"), docs[0].title, day=20)  # 正文还没抓到
+    session.flush()
+    rebuild(session, now=NOW + timedelta(seconds=1))
+    session.commit()
+    assert _members(session)[late.id].confirmed_at is None
+    _fill_and_record(tmp_path, data, "correct")
+    session.expire_all()
+    assert session.query(RepostAutoCheck).filter_by(round=data["round"]).one().verdict == "correct"
+
+
+def test_weekly_wrong_after_a_person_takes_over_is_not_withdrawn(
+    session, session_factory, monkeypatch, tmp_path
+):
+    # 每周抽查抽样以后，有人把这个自动组接过来确认了：旧样本的"判错"记 changed，不整组撤回
+    from youju import repost_checks
+    from youju.models import RepostAutoCheck
+
+    _auto_on(monkeypatch, session)
+    _auto_world(session)
+    rebuild(session, now=NOW)
+    session.commit()
+    monkeypatch.setattr(repost_checks, "session_factory", lambda: session_factory)
+    data = _sample(tmp_path, "weekly", seed=12)
+    rows = list(_members(session).values())
+    _, facts = member_facts(session, [r.document_id for r in rows])
+    for row in rows:
+        row.confirmed_by, row.confirmed_at = "创始人", NOW + timedelta(hours=1)
+        row.confirmed_fingerprint = facts[row.document_id]
+    session.commit()
+    _fill_and_record(tmp_path, data, "wrong", "其实是两件事")
+    session.expire_all()
+    assert session.query(RepostAutoCheck).filter_by(round=data["round"]).one().verdict == "changed"
+    assert all(r.confirmed_by == "创始人" for r in _members(session).values())
+
+
+def test_gate_correct_after_a_person_withdraws_is_not_counted(
+    session, session_factory, monkeypatch, tmp_path
+):
+    # gate 抽样以后，这一组被人整组撤回：旧样本的"判对"记 changed，不计入准确率
+    from youju import repost_checks
+    from youju.models import RepostAutoCheck
+    from youju.repost import withdraw_group
+
+    monkeypatch.setattr(
+        "youju.repost.get_settings", lambda: SimpleNamespace(repost_auto_merge=False)
+    )
+    monkeypatch.setattr(repost_checks, "session_factory", lambda: session_factory)
+    _auto_world(session)
+    rebuild(session, now=NOW)
+    session.commit()
+    data = _sample(tmp_path, "gate", seed=13)
+    group = session.get(RepostGroup, data["items"][0]["group_id"])
+    rows = list(_members(session).values())
+    withdraw_group(group, rows, NOW + timedelta(hours=1))
+    session.commit()
+    _fill_and_record(tmp_path, data, "correct")
+    session.expire_all()
+    assert session.query(RepostAutoCheck).filter_by(round=data["round"]).one().verdict == "changed"
+
+
+def test_record_sees_a_reconfirmation_by_the_same_person(
+    session, session_factory, world, monkeypatch, tmp_path
+):
+    # 每周抽到一个人工确认的组，抽样以后同一个人重新确认了一遍（移出、恢复、再确认之类，确认人
+    # 没变）：确认时间变了，旧样本的"判错"记 changed，不撤回新的确认
+    from youju import repost_checks
+    from youju.models import RepostAutoCheck
+
+    rebuild(session, now=NOW)
+    session.commit()
+    rows = list(_members(session).values())
+    _, facts = member_facts(session, [r.document_id for r in rows])
+    for row in rows:
+        row.confirmed_by, row.confirmed_at = "人工", NOW
+        row.confirmed_fingerprint = facts[row.document_id]
+    session.commit()
+    monkeypatch.setattr(repost_checks, "session_factory", lambda: session_factory)
+    data = _sample(tmp_path, "weekly", seed=14)
+    for row in _members(session).values():
+        row.confirmed_at = NOW + timedelta(hours=2)
+    session.commit()
+    _fill_and_record(tmp_path, data, "wrong", "其实是两件事")
+    session.expire_all()
+    assert session.query(RepostAutoCheck).filter_by(round=data["round"]).one().verdict == "changed"
+    assert all(r.confirmed_by == "人工" for r in _members(session).values())
