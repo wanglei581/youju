@@ -2326,10 +2326,12 @@ def _cmd_archive_export(args: argparse.Namespace) -> int:
     from youju.backup import BackupError
 
     try:
-        reports = cloudrun_fetch.archive_export(get_settings(), args.dir)
+        reports, notes = cloudrun_fetch.archive_export(get_settings(), args.dir)
     except (BackupError, cloudrun_fetch.FetchError) as exc:
         print(f"存档失败：{exc}")
         return 1
+    for note in notes:
+        print(note)
     for report in reports:
         print(
             f"已加密存到本机存储和异地：{report.target}"

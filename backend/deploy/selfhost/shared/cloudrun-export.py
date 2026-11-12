@@ -4,9 +4,10 @@
 youju archive-logs / backup / backup-verify，backup.upload、backup._open_api，
 storage_list.bucket_of、list_objects，takedown.available_condition，和那一版的表结构。
 
-按顺序做（不删、不改任何数据；只往对象存储写当天的备份、日志归档和 exports/ 下的三个文件）：
-1. youju archive-logs、youju backup、youju backup-verify（和每天定时任务做的一样）；
-   --links-only 跳过这一步（清单里的链接过期了、只要重出一份清单时用）
+按顺序做（不删、不改任何数据；只往对象存储写当天的备份、日志归档和 exports/ 下的几个文件）：
+1. youju archive-logs → 记下用户数据各表的条数、最大编号、最近更新时间 → youju backup →
+   youju backup-verify（和每天定时任务做的一样）。--links-only 跳过这一步（清单里的链接过期了、
+   只要重出一份清单时用），用上次记下的那份核对
 2. 列出 backups/（只要最新一份）、logs/、attachments/、advisor/out/ 下的文件和大小
 3. 下架清单 exports/takedowns-<时间>.jsonl：当前对用户不可见的文件（整组下架的每一份）的规范网址键、
    来源编号、下架时间、原因类别。不带备注、操作人、标题
@@ -16,7 +17,10 @@ storage_list.bucket_of、list_objects，takedown.available_condition，和那一
    rewards.anonymize）的口径对所有人做一遍，另外去掉开票的联系邮箱和个人抬头（就是姓名）
 5. 给每个文件取 2 小时有效的下载链接，连同汇总数（只有数字）和不涉密的配置写成清单
    exports/manifest-<时间>.json
-6. 打印一行给服务器网页终端用的命令（带清单的下载链接和 SHA-256）、各前缀的文件数和大小、汇总数
+6. 访问日志暂存表里还没归档的（archive-logs 只归档到昨天）按天导出 exports/access-staging-<日期>-…
+7. 再记一次用户数据各表：和备份前那次对不上，说明导出期间有新写入（D-127：停掉新的写入，或在导出
+   前后核对没有新写入），停下、不出清单
+8. 打印一行给服务器网页终端用的命令（带清单的 SHA-256）、清单链接、各前缀的文件数和大小、汇总数
 
 清单里有整库备份的下载链接：那一行命令只贴到服务器的网页终端，不发到聊天里。
 不打印任何单个文件的链接、密钥、openid。要复制的几行只有英文和数字（容器终端复制中文会乱码）。
@@ -35,7 +39,7 @@ import sys
 import tempfile
 import time as clock
 from collections import Counter
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from xml.etree import ElementTree
 
@@ -62,7 +66,31 @@ from youju.models import (
 from youju.takedown import available_condition
 
 PREFIXES = ("backups/", "logs/", "attachments/", "advisor/out/")
-COMMANDS = (["youju", "archive-logs"], ["youju", "backup"], ["youju", "backup-verify"])
+# 用户数据：带 user_id 的表，加上 users、pay_events、ai_chat_turns、访问日志暂存表。导出前后各记一次
+# 条数、最大编号、最近更新时间（有这一列的），对不上就是导出期间有新写入
+WATCHED = (
+    "users",
+    "follows",
+    "subscriptions",
+    "feedback",
+    "events",
+    "advisor_tasks",
+    "advisor_usage",
+    "ai_chats",
+    "ai_chat_turns",
+    "pay_orders",
+    "pay_events",
+    "invoice_requests",
+    "deadline_clues",
+    "pass_rewards",
+    "boost_trials",
+    "workbench_passes",
+    "ai_credit_grants",
+    "ai_credit_uses",
+    "access_logs",
+)
+# 备份前记下的那份：--links-only 重出清单时拿来核对（同一个实例的 /tmp；实例换了就要整个重跑）
+FINGERPRINT = Path("/tmp/youju-export-fingerprint.json")
 MAX_AGE = 7200  # 下载链接 2 小时有效（微信文档的示例值）；过期了带 --links-only 重出一份清单
 BATCH = 50  # 每次取多少个文件的下载链接
 FORMAT = "youju-cloudrun-export"
@@ -161,19 +189,44 @@ class ExportError(RuntimeError):
     pass
 
 
-def run_commands(runner=subprocess.run) -> None:
-    for args in COMMANDS:
-        print(f"== {' '.join(args)}", flush=True)
-        done = runner(args)
-        if done.returncode != 0:
-            raise ExportError(f"STOP: {' '.join(args)} exit {done.returncode}")
+def run_command(args: list[str], runner=subprocess.run) -> None:
+    print(f"== {' '.join(args)}", flush=True)
+    done = runner(args)
+    if done.returncode != 0:
+        raise ExportError(f"STOP: {' '.join(args)} exit {done.returncode}")
+
+
+def fingerprint(engine) -> dict:
+    """用户数据各表的（条数，最大编号，最近更新时间）。"""
+    from youju.models import Base
+
+    marks = {}
+    with engine.connect() as conn:
+        for name in WATCHED:
+            table = Base.metadata.tables.get(name)
+            if table is None:
+                continue
+            columns = [func.count()]
+            if "id" in table.c:
+                columns.append(func.max(table.c.id))
+            if "updated_at" in table.c:
+                columns.append(func.max(table.c.updated_at))
+            marks[name] = [
+                _plain(value) for value in conn.execute(select(*columns).select_from(table)).one()
+            ]
+    return marks
+
+
+def changed_tables(before: dict, after: dict) -> list[str]:
+    return sorted(name for name in set(before) | set(after) if before.get(name) != after.get(name))
 
 
 def list_with_sizes(
     client: httpx.Client, bucket: storage_list.Bucket, prefix: str
-) -> list[tuple[str, int]]:
+) -> list[tuple[str, int, str]]:
     """storage_list.list_objects 列文件（翻页、校验、临时密钥都用它的），顺带记下每个文件的大小：
-    线上镜像的 list_objects 只返回名字和修改时间，这里在它解析每一页时把 Size 也读出来。"""
+    线上镜像的 list_objects 只返回名字和修改时间，这里在它解析每一页时把 Size 也读出来。
+    返回（路径，大小，修改时间）。"""
     sizes: dict[str, int] = {}
     original = storage_list._parse
 
@@ -194,16 +247,16 @@ def list_with_sizes(
         objects = storage_list.list_objects(client, bucket, prefix)
     finally:
         storage_list._parse = original
-    return [(item.key, sizes[item.key]) for item in objects]
+    return [(item.key, sizes[item.key], _utc(item.last_modified).isoformat()) for item in objects]
 
 
-def pick_files(listed: dict[str, list[tuple[str, int]]]) -> list[tuple[str, int]]:
+def pick_files(listed: dict[str, list[tuple[str, int, str]]]) -> list[tuple[str, int, str]]:
     """backups/ 只要最新一份整库备份（文件名里的日期最大的）；别的前缀全要。"""
-    files: list[tuple[str, int]] = []
+    files: list[tuple[str, int, str]] = []
     for prefix in PREFIXES:
         items = listed.get(prefix, [])
         if prefix == "backups/":
-            dumps = sorted((key, size) for key, size in items if _BACKUP.fullmatch(key))
+            dumps = sorted(item for item in items if _BACKUP.fullmatch(item[0]))
             if not dumps:
                 raise ExportError("backups/ 下没有整库备份")
             items = dumps[-1:]
@@ -418,16 +471,41 @@ def pay_records(session: Session, retain_days: int) -> tuple[list[str], dict]:
                 _ascii({"table": table.name, "row": _deidentify(table.name, data, pseudonyms)})
             )
             counts[table.name] += 1
+    # 保存期起算（隐私保护指引）：订单、退款、开票自下单起，赠送自发放之日起
     earliest = session.scalar(select(func.min(PayOrder.created_at)))
+    earliest_gift = session.scalar(select(func.min(PassReward.granted_at)))
     header = {
         "format": "youju-pay-records",
         "version": 1,
         "created_at": datetime.now(UTC).isoformat(),
         "retain_days": retain_days,
         "earliest_order_at": _utc(earliest).isoformat() if earliest else None,
+        "earliest_gift_at": _utc(earliest_gift).isoformat() if earliest_gift else None,
         "counts": counts,
     }
     return [_ascii(header), *lines], header
+
+
+def staging_logs(engine, workdir: Path, stamp: str) -> list[tuple[date, Path, int]]:
+    """访问日志暂存表里还没归档的（archive-logs 只归档到昨天），按天导出成和归档一样的格式
+    （access_log.export_day）。返回（日期，文件，条数），没有记录的日子不出文件。"""
+    with engine.connect() as conn:
+        first = conn.scalar(select(func.min(access_log.AccessLog.logged_at)))
+    if first is None:
+        return []
+    today = datetime.now(UTC).astimezone(backup.BEIJING).date()
+    day = _utc(first).astimezone(backup.BEIJING).date()
+    out = []
+    while day <= today:
+        path = workdir / f"access-staging-{day:%Y%m%d}-{stamp}.jsonl.gz"
+        with path.open("wb") as fh:
+            rows, _ = access_log.export_day(engine, day, fh)
+        if rows:
+            out.append((day, path, rows))
+        else:
+            path.unlink()
+        day += timedelta(days=1)
+    return out
 
 
 def _check_links(links) -> None:
@@ -446,7 +524,16 @@ def _human(size: int) -> str:
     return str(size)
 
 
-def export(env: str, database_url: str, *, client: httpx.Client, settings, workdir: Path) -> dict:
+def export(
+    env: str,
+    database_url: str,
+    *,
+    client: httpx.Client,
+    settings,
+    workdir: Path,
+    before: dict | None = None,
+) -> dict:
+    """before：备份前记下的用户数据各表（见 fingerprint）；给了就在最后再记一次，对不上就停下。"""
     stamp = datetime.now(UTC).strftime("%Y%m%d%H%M%S")
     bucket = storage_list.bucket_of(client, env)
     listed = {prefix: list_with_sizes(client, bucket, prefix) for prefix in PREFIXES}
@@ -459,6 +546,14 @@ def export(env: str, database_url: str, *, client: httpx.Client, settings, workd
             rows = takedown_rows(session)
             numbers = summary(session, len(rows))
             pay_lines, pay_header = pay_records(session, settings.retain_pay_orders_days)
+        staged = staging_logs(engine, workdir, stamp)
+        if before is not None:
+            changed = changed_tables(before, fingerprint(engine))
+            if changed:
+                raise ExportError(
+                    "备份以后用户数据有新写入（" + "、".join(changed) + "）：清单不出。"
+                    "停掉新的写入（api 调成 0、admin 别有人在用），再不带 --links-only 重跑整个导出"
+                )
     finally:
         engine.dispose()
     takedowns = workdir / f"takedowns-{stamp}.jsonl"
@@ -469,8 +564,12 @@ def export(env: str, database_url: str, *, client: httpx.Client, settings, workd
     pay.write_bytes(gzip.compress("".join(line + "\n" for line in pay_lines).encode(), mtime=0))
     pay_path = f"exports/{pay.name}"
     pay_id = backup.upload(client, env, pay_path, pay, what="交易记录")
-    ids = [bucket.prefix + key for key, _ in files]
-    links = download_links(client, env, [*ids, takedowns_id, pay_id])
+    staged_ids = [
+        backup.upload(client, env, f"exports/{path.name}", path, what="访问日志暂存")
+        for _, path, _ in staged
+    ]
+    ids = [bucket.prefix + key for key, _, _ in files]
+    links = download_links(client, env, [*ids, takedowns_id, pay_id, *staged_ids])
     _check_links(links.values())
     manifest = {
         "format": FORMAT,
@@ -480,8 +579,8 @@ def export(env: str, database_url: str, *, client: httpx.Client, settings, workd
         "revision": revision,
         "max_age": MAX_AGE,
         "files": [
-            {"path": key, "size": size, "url": links[file_id]}
-            for (key, size), file_id in zip(files, ids, strict=True)
+            {"path": key, "size": size, "modified": modified, "url": links[file_id]}
+            for (key, size, modified), file_id in zip(files, ids, strict=True)
         ],
         "takedowns": {
             "path": takedowns_path,
@@ -496,9 +595,21 @@ def export(env: str, database_url: str, *, client: httpx.Client, settings, workd
             "sha256": hashlib.sha256(pay.read_bytes()).hexdigest(),
             "counts": pay_header["counts"],
             "earliest_order_at": pay_header["earliest_order_at"],
+            "earliest_gift_at": pay_header["earliest_gift_at"],
             "retain_days": pay_header["retain_days"],
             "url": links[pay_id],
         },
+        "staging_logs": [
+            {
+                "day": day.isoformat(),
+                "path": f"exports/{path.name}",
+                "size": path.stat().st_size,
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                "rows": rows,
+                "url": links[file_id],
+            }
+            for (day, path, rows), file_id in zip(staged, staged_ids, strict=True)
+        ],
         "summary": numbers,
         "config": config_values(settings),
         "config_unlisted": config_unlisted(settings),
@@ -530,6 +641,10 @@ def report(result: dict) -> None:
     print(f"  下架清单：{manifest['takedowns']['count']} 个网址")
     counts = manifest["pay_records"]["counts"]
     print(f"  交易记录（去标识化）：{'，'.join(f'{k} {v} 条' for k, v in counts.items())}")
+    staged = manifest.get("staging_logs", [])
+    print(
+        f"  还没归档的访问日志：{'，'.join(f'{i["day"]} {i["rows"]} 条' for i in staged) or '没有'}"
+    )
     print(f"  不涉密的配置 {len(manifest['config'])} 项（在清单里，服务器上照着填）")
     if manifest.get("config_unlisted"):
         names = ", ".join(manifest["config_unlisted"])
@@ -563,14 +678,33 @@ def main(argv: list[str] | None = None, *, runner=subprocess.run) -> int:
         print("没有 YOUJU_CLOUD_ENV：要在云托管 admin 服务的'登录实例'里运行")
         return 1
     try:
-        if not args.links_only:
-            run_commands(runner)
+        if args.links_only:
+            if not FINGERPRINT.is_file():
+                raise ExportError(
+                    f"找不到备份前记下的写入核对（{FINGERPRINT}）：不带 --links-only 重跑整个导出"
+                )
+            before = json.loads(FINGERPRINT.read_text(encoding="utf-8"))
+        else:
+            run_command(["youju", "archive-logs"], runner)
+            engine = create_mysql_engine(settings.database_url)
+            try:
+                before = fingerprint(engine)
+            finally:
+                engine.dispose()
+            FINGERPRINT.write_text(json.dumps(before), encoding="utf-8")
+            run_command(["youju", "backup"], runner)
+            run_command(["youju", "backup-verify"], runner)
         with (
             httpx.Client(trust_env=False) as client,
             tempfile.TemporaryDirectory() as tmp,
         ):
             result = export(
-                env, settings.database_url, client=client, settings=settings, workdir=Path(tmp)
+                env,
+                settings.database_url,
+                client=client,
+                settings=settings,
+                workdir=Path(tmp),
+                before=before,
             )
     except (ExportError, backup.BackupError) as exc:
         print(f"导出没做完：{exc}")

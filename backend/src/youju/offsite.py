@@ -158,8 +158,9 @@ ARCHIVE_RECORD = ARCHIVE_PREFIX + "deletions.jsonl"
 _STEM = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,80}")
 # 加密的存档（.age），和导进来的云托管访问日志（不加密，和服务器自己的访问日志归档一样）
 _ARCHIVED = re.compile(
-    r"archive/([A-Za-z0-9][A-Za-z0-9_-]{0,80})\.expires-(\d{8})\.jsonl\.gz(?:\.age)?"
+    r"archive/([A-Za-z0-9][A-Za-z0-9_-]{0,80})\.expires-(\d{8})\.(?:jsonl|tar)\.gz(?:\.age)?"
 )
+_EXTS = ("jsonl.gz", "tar.gz")
 BACKUP_KEEP_DAYS = 30
 
 
@@ -170,10 +171,10 @@ class ArchiveReport:
     expires: date | None = None
 
 
-def archive_name(stem: str, expires: date) -> str:
-    if not _STEM.fullmatch(stem):
-        raise BackupError("存档名字只能是字母、数字、横线、下划线")
-    return f"{ARCHIVE_PREFIX}{stem}.expires-{expires:%Y%m%d}.jsonl.gz.age"
+def archive_name(stem: str, expires: date, ext: str = "jsonl.gz") -> str:
+    if not _STEM.fullmatch(stem) or ext not in _EXTS:
+        raise BackupError("存档名字只能是字母、数字、横线、下划线，扩展名 .jsonl.gz 或 .tar.gz")
+    return f"{ARCHIVE_PREFIX}{stem}.expires-{expires:%Y%m%d}.{ext}.age"
 
 
 def archive(
@@ -182,6 +183,7 @@ def archive(
     stem: str,
     expires: date,
     *,
+    ext: str = "jsonl.gz",
     today: date | None = None,
     backend: storage.S3Backend | None = None,
     encryptor=encrypt,
@@ -190,7 +192,7 @@ def archive(
     只有创始人的私钥能解开；可以重跑（覆盖同名的密文）。异地没配好就不做：调用方存完会删掉明文，
     之后就没法再补传异地那一份了。"""
     today = today or datetime.now(UTC).astimezone(BEIJING).date()
-    target_path = archive_name(stem, expires)
+    target_path = archive_name(stem, expires, ext)
     if expires <= today:
         raise BackupError(f"到期日 {expires} 已经过了，不存")
     recipient = (settings.offsite_age_recipient or "").strip()

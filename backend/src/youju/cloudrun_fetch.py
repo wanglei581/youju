@@ -11,6 +11,10 @@
   archive/cloudrun-access-<日期>.expires-<日期加 191 天>.jsonl.gz（服务器测试期一直在记访问日志，
   打开正式定时任务后 archive-logs 会按 logs/access-<日期> 写同名文件，放回 logs/ 会被覆盖），
   到期由每天的 youju archive-prune 删。
+- 访问日志暂存表里还没归档的（导出脚本按天导出的 staging_logs）同样放 archive/，名字带 -staging。
+- 批量工具结果（advisor/out/）：按清单里的修改时间，超过 30 天的不下（隐私保护指引：任务和结果保存
+  30 天），没超过的下到 --dir/advisor-out/（不进存储，旧库不恢复），由 import-export 打包加密存档、
+  到期删。
 - 开头先算硬盘够不够：还要下的字节数，加上压缩整库备份的 15 倍（试恢复的临时库和它写进的 binlog
   大约是压缩备份的 10 倍，再加加密副本）和 2G 余量。
 - 已经存档过（import-export 留下 --dir/imported）就不再下载：不再下一份明文备份。
@@ -55,6 +59,10 @@ _LOG = re.compile(r"logs/access-(\d{8})\.jsonl\.gz")
 _CHUNK = 1024 * 1024
 MAX_MANIFEST = 64 * 1024 * 1024
 COMPLETE = "fetch-complete"
+ADVISOR_DIR = "advisor-out"
+ADVISOR_INDEX = "advisor-out.json"
+# 批量工具结果保存 30 天（隐私保护指引：任务和结果保存 30 天）
+ADVISOR_KEEP_DAYS = 30
 IMPORTED = "imported"
 # 试恢复的临时库和 binlog 大约是压缩整库备份的 10 倍，再加加密副本
 BACKUP_FACTOR = 15
@@ -77,6 +85,9 @@ class FetchReport:
     takedowns: int = 0
     pay_records: dict[str, int] = field(default_factory=dict)
     expired_logs: int = 0
+    staging_logs: int = 0
+    advisor: int = 0
+    expired_advisor: int = 0
 
 
 def _prefix(path: str) -> str:
@@ -163,6 +174,19 @@ def load_manifest(client: httpx.Client, url: str, sha256: str, dest: Path) -> di
         and type(takedowns.get("count")) is int
     ):
         raise FetchError("清单里的下架清单信息不全")
+    staged = manifest.get("staging_logs")
+    if not isinstance(staged, list) or not all(
+        isinstance(i, dict)
+        and isinstance(i.get("url"), str)
+        and URL.fullmatch(i["url"])
+        and SHA256.fullmatch(str(i.get("sha256")))
+        and type(i.get("size")) is int
+        and type(i.get("rows")) is int
+        and isinstance(i.get("day"), str)
+        and re.fullmatch(r"\d{4}-\d{2}-\d{2}", i["day"])
+        for i in staged
+    ):
+        raise FetchError("清单里的访问日志暂存信息不对")
     pay = manifest.get("pay_records") or {}
     if not (
         isinstance(pay.get("url"), str)
@@ -190,6 +214,7 @@ def _summary(manifest: dict) -> dict:
         "files": {prefix: {"count": n, "bytes": size} for prefix, (n, size) in counts.items()},
         "takedowns": manifest["takedowns"]["count"],
         "pay_records": manifest["pay_records"]["counts"],
+        "staging_logs": [{"day": i["day"], "rows": i["rows"]} for i in manifest["staging_logs"]],
         "summary": manifest.get("summary"),
         "config": manifest.get("config"),
         "config_unlisted": manifest.get("config_unlisted", []),
@@ -226,36 +251,63 @@ def fetch(
     report = FetchReport()
     today = today or datetime.now(UTC).astimezone(BEIJING).date()
     oldest = today - timedelta(days=access_log.KEEP_DAYS)
-    wanted = ("logs/", "attachments/", "backups/")
+    advisor_oldest = today - timedelta(days=ADVISOR_KEEP_DAYS)
+    wanted = ("logs/", "attachments/", "backups/", "advisor/out/")
     files = [item for item in manifest["files"] if _prefix(item["path"]) in wanted]
     backup_name = next(Path(i["path"]).name for i in files if _prefix(i["path"]) == "backups/")
     # 重出过清单（跨过了云托管每天 4:00 的备份）时只留这一份清单里的备份
     for old in (workdir / "backups").glob("youju-*.jsonl.gz"):
         if old.name != backup_name:
             old.unlink()
-    plan: list[tuple[dict, str | None]] = []
+    # 目标：("dir", --dir 里的相对路径) 或 ("store", 存储里的路径)
+    plan: list[tuple[dict, tuple[str, str]]] = []
     for item in files:
         path, size = item["path"], item["size"]
         if not (_PATH.fullmatch(path) and storage.valid_path(path) and 0 <= size <= MAX_FILE):
             report.failed.append((path[:120], "路径或大小不合规，没下载"))
             continue
+        if path.startswith("advisor/out/"):
+            modified = _modified(item)
+            if modified is None:
+                report.failed.append((path, "清单里没有修改时间，没下载"))
+            elif modified < advisor_oldest:
+                report.expired_advisor += 1  # 已经超过 30 天，不导入
+            else:
+                plan.append((item, ("dir", f"{ADVISOR_DIR}/{path.removeprefix('advisor/out/')}")))
+            continue
+        if path.startswith("backups/"):
+            plan.append((item, ("dir", path)))
+            continue
         target = _target(path, oldest)
         if target is None:
             report.expired_logs += 1  # 已经超过 190 天，不导入
             continue
-        plan.append((item, target))
-    _check_disk(workdir, store, plan, disk_free or _free_bytes)
+        plan.append((item, ("store", target)))
+    staged = []
+    for entry in manifest["staging_logs"]:
+        day = date.fromisoformat(entry["day"])
+        if day < oldest:
+            report.expired_logs += 1
+            continue
+        expires = day + timedelta(days=access_log.KEEP_DAYS + 1)
+        staged.append(
+            (
+                entry,
+                f"archive/cloudrun-access-{day:%Y%m%d}-staging.expires-{expires:%Y%m%d}.jsonl.gz",
+            )
+        )
+    _check_disk(workdir, store, plan, staged, disk_free or _free_bytes)
     say(f"清单里要下载 {len(plan)} 个文件（{sum(i['size'] for i, _ in plan)} 字节）")
-    for number, (item, target) in enumerate(plan, start=1):
+    for number, (item, (kind, target)) in enumerate(plan, start=1):
         path, size = item["path"], item["size"]
         prefix = _prefix(path)
-        is_backup = prefix == "backups/"
-        final = workdir / path if is_backup else None
+        final = workdir / target if kind == "dir" else None
         if final is not None and final.is_file() and final.stat().st_size == size:
             report.skipped[prefix] = report.skipped.get(prefix, 0) + 1
-            report.backup = path
+            if prefix == "backups/":
+                report.backup = path
             continue
-        if not is_backup and _present(store, target, size):
+        if kind == "store" and _present(store, target, size):
             report.skipped[prefix] = report.skipped.get(prefix, 0) + 1
             continue
         fd, name = tempfile.mkstemp(dir=workdir, prefix=".fetch-")
@@ -270,9 +322,11 @@ def fetch(
                 raise FetchError("内容和文件名里的 SHA-256 对不上")
             if path.endswith(".gz"):
                 _check_gzip(tmp)
-            if is_backup:
+            if final is not None:
+                final.parent.mkdir(parents=True, exist_ok=True)
                 os.replace(tmp, final)
-                report.backup = path
+                if prefix == "backups/":
+                    report.backup = path
             else:
                 store.put_file(target, tmp)
         except (FetchError, httpx.HTTPError, storage.StorageError, OSError) as exc:
@@ -285,7 +339,21 @@ def fetch(
         report.bytes += size
         if number % 100 == 0:
             say(f"  已处理 {number}/{len(plan)}")
-    say(f"  文件处理完了（{len(plan)} 个），接着取下架清单和交易记录")
+    say(f"  文件处理完了（{len(plan)} 个），接着取还没归档的访问日志、下架清单和交易记录")
+    for entry, target in staged:
+        if _present(store, target, entry["size"]) or _fetch_to_store(
+            client, entry, target, store, report, workdir
+        ):
+            report.staging_logs += 1
+    index = [
+        {"path": item["path"], "modified": item["modified"], "size": item["size"]}
+        for item, (kind, target) in plan
+        if item["path"].startswith("advisor/out/") and (workdir / target).is_file()
+    ]
+    report.advisor = len(index)
+    (workdir / ADVISOR_INDEX).write_text(
+        json.dumps(index, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
     if _fetch_extra(client, manifest["takedowns"], workdir / "takedowns.jsonl", report):
         report.takedowns = manifest["takedowns"]["count"]
     pay = manifest["pay_records"]
@@ -300,6 +368,36 @@ def fetch(
         stamp = datetime.now(UTC).isoformat()
         (workdir / COMPLETE).write_text(f"{sha256} {stamp}\n", encoding="ascii")
     return report
+
+
+def _modified(item: dict) -> date | None:
+    """清单里文件的修改时间（北京时间的日期）；没有或读不出返回 None。"""
+    try:
+        return datetime.fromisoformat(item["modified"]).astimezone(BEIJING).date()
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _fetch_to_store(
+    client: httpx.Client, entry: dict, target: str, store, report, workdir: Path
+) -> bool:
+    """还没归档的访问日志：核对 SHA-256 和 gzip，写进存储。"""
+    fd, name = tempfile.mkstemp(dir=workdir, prefix=".fetch-")
+    os.close(fd)
+    tmp = Path(name)
+    try:
+        _download(client, entry["url"], tmp, entry["size"])
+        if _sha256(tmp) != entry["sha256"]:
+            raise FetchError("SHA-256 对不上")
+        _check_gzip(tmp)
+        store.put_file(target, tmp)
+        return True
+    except (FetchError, httpx.HTTPError, storage.StorageError, OSError) as exc:
+        reason = str(exc) if isinstance(exc, FetchError) else type(exc).__name__
+        report.failed.append((entry.get("path", target), reason))
+        return False
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def _target(path: str, oldest: date) -> str | None:
@@ -327,20 +425,24 @@ def _free_bytes(path: Path) -> int:
     return shutil.disk_usage(path).free
 
 
-def _check_disk(workdir: Path, store, plan: list, free: Callable[[Path], int]) -> None:
+def _check_disk(
+    workdir: Path, store, plan: list, staged: list, free: Callable[[Path], int]
+) -> None:
     """还要下的字节数，加上压缩整库备份的 BACKUP_FACTOR 倍（试恢复的临时库和 binlog、加密副本）
     和余量。硬盘和别的项目共用，不够就不下。"""
     remaining = 0
     backup = 0
-    for item, target in plan:
+    for item, (kind, target) in plan:
         if item["path"].startswith("backups/"):
             backup = item["size"]
-            final = workdir / item["path"]
+        if kind == "dir":
+            final = workdir / target
             if final.is_file() and final.stat().st_size == item["size"]:
                 continue
         elif _present(store, target, item["size"]):
             continue
         remaining += item["size"]
+    remaining += sum(e["size"] for e, target in staged if not _present(store, target, e["size"]))
     need = remaining + BACKUP_FACTOR * backup + SPARE_BYTES
     roots = [workdir]
     if isinstance(store, storage.DiskBackend):
@@ -400,6 +502,15 @@ def _beijing_day(stamp: str) -> date:
     return datetime.fromisoformat(stamp).astimezone(BEIJING).date()
 
 
+def _advisor_tar(workdir: Path, index: list[dict], target: Path) -> None:
+    import tarfile
+
+    with tarfile.open(target, "w:gz") as tar:
+        for item in index:
+            rel = item["path"].removeprefix("advisor/out/")
+            tar.add(workdir / ADVISOR_DIR / rel, arcname=item["path"], recursive=False)
+
+
 def archive_export(
     settings,
     workdir: Path,
@@ -407,12 +518,16 @@ def archive_export(
     today: date | None = None,
     backend=None,
     encryptor=None,
-) -> list:
-    """把下载好的整库备份、交易记录分别加密存档（youju archive-export），到期日写进文件名：
-    整库备份自备份那天起 30 天，交易记录自最早一笔下单起 retain_days（3650）天。"""
+) -> tuple[list, list[str]]:
+    """把下载好的分别加密存档（youju archive-export），到期日写进文件名：
+    - 整库备份：自备份那天起 30 天；
+    - 交易记录：订单、退款、开票自下单起，赠送自发放之日起 retain_days（3650）天，按最早的一笔算；
+    - 批量工具结果：自文件修改时间起 30 天，按最早的一个算（都已过期就不存）。
+    返回（存档的报告，说明）。"""
     from youju import offsite
 
     workdir = Path(workdir)
+    today = today or datetime.now(UTC).astimezone(BEIJING).date()
     backups = sorted((workdir / "backups").glob("youju-*.jsonl.gz"))
     if len(backups) != 1 or not _BACKUP.fullmatch(f"backups/{backups[0].name}"):
         raise FetchError("备份目录里要正好有一份整库备份（先 fetch-export）")
@@ -421,11 +536,15 @@ def archive_export(
     if not pay.is_file():
         raise FetchError("没有交易记录（先 fetch-export）")
     header = _pay_header(pay)
-    start = _beijing_day(header.get("earliest_order_at") or header["created_at"])
+    starts = [header.get("earliest_order_at"), header.get("earliest_gift_at")]
+    start = min(
+        (_beijing_day(stamp) for stamp in starts if stamp),
+        default=_beijing_day(header["created_at"]),
+    )
     extra = {"today": today, "backend": backend}
     if encryptor is not None:
         extra["encryptor"] = encryptor
-    return [
+    reports = [
         offsite.archive(
             settings,
             backups[0],
@@ -441,3 +560,29 @@ def archive_export(
             **extra,
         ),
     ]
+    notes: list[str] = []
+    index_file = workdir / ADVISOR_INDEX
+    index = json.loads(index_file.read_text(encoding="utf-8")) if index_file.is_file() else []
+    if index:
+        expires = min(_beijing_day(i["modified"]) for i in index) + timedelta(
+            days=ADVISOR_KEEP_DAYS
+        )
+        if expires <= today:
+            notes.append("批量工具结果都已经过了 30 天，不存档")
+        else:
+            with tempfile.TemporaryDirectory() as tmp:
+                packed = Path(tmp) / "advisor-out.tar.gz"
+                _advisor_tar(workdir, index, packed)
+                reports.append(
+                    offsite.archive(
+                        settings,
+                        packed,
+                        f"cloudrun-advisor-out-{day:%Y%m%d}",
+                        expires,
+                        ext="tar.gz",
+                        **extra,
+                    )
+                )
+    else:
+        notes.append("没有要存的批量工具结果")
+    return reports, notes

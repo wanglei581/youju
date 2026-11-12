@@ -75,6 +75,8 @@ PAY = _gz(
             "created_at": "2026-11-12T08:00:00+00:00",
             "retain_days": 3650,
             "earliest_order_at": "2026-10-29T16:30:00+00:00",
+            # 赠送比第一笔订单早：保存期从赠送那天算
+            "earliest_gift_at": "2026-10-20T02:00:00+00:00",
             "counts": {"pay_orders": 1},
         }
     )
@@ -91,10 +93,16 @@ def _export(
     sizes=None,
     takedowns=b'{"url_key":"a.gov.cn/1"}\n',
     pay=PAY,
+    modified=None,
+    staging=None,
 ):
-    """按导出脚本的格式造一份清单，返回（链接，SHA-256）。"""
+    """按导出脚本的格式造一份清单，返回（链接，SHA-256）。staging：{日期: 内容} 还没归档的访问日志。"""
     sizes = sizes or {}
+    modified = modified or {}
+    staging = staging or {}
     remote.files.update(files)
+    for day, data in staging.items():
+        remote.files[f"exports/access-staging-{day.replace('-', '')}-1.jsonl.gz"] = data
     remote.files["exports/takedowns-1.jsonl"] = takedowns
     remote.files["exports/pay-records-1.jsonl.gz"] = pay
     manifest = {
@@ -103,8 +111,24 @@ def _export(
         "created_at": "2026-11-12T08:00:00+00:00",
         "revision": "0046",
         "files": [
-            {"path": p, "size": sizes.get(p, len(data)), "url": remote.url(p)}
+            {
+                "path": p,
+                "size": sizes.get(p, len(data)),
+                "modified": modified.get(p, "2026-11-12T00:00:00+00:00"),
+                "url": remote.url(p),
+            }
             for p, data in files.items()
+        ],
+        "staging_logs": [
+            {
+                "day": day,
+                "path": f"exports/access-staging-{day.replace('-', '')}-1.jsonl.gz",
+                "size": len(data),
+                "sha256": _sha(data),
+                "rows": 1,
+                "url": remote.url(f"exports/access-staging-{day.replace('-', '')}-1.jsonl.gz"),
+            }
+            for day, data in staging.items()
         ],
         "takedowns": {
             "path": "exports/takedowns-1.jsonl",
@@ -139,13 +163,19 @@ def test_fetch_checks_and_imports_files(tmp_path):
         "logs/access-20260501.jsonl.gz": _gz('{"path":"/api/v1/old"}\n'),
         f"attachments/{_sha(pdf)}.pdf": pdf,
         "advisor/out/0123456789abcdef/7.xlsx": b"xlsx",
+        # 批量工具结果超过 30 天的不导入
+        "advisor/out/0123456789abcdef/1.xlsx": b"old",
     }
+    modified = {"advisor/out/0123456789abcdef/1.xlsx": "2026-10-01T00:00:00+00:00"}
+    staging = {"2026-11-12": _gz('{"path":"/api/v1/today"}\n')}
     bad_hash = f"attachments/{'0' * 64}.pdf"
     broken_gz = "logs/access-20261111.jsonl.gz"
     remote = Remote({})
     url, sha = _export(
         remote,
         {**good, bad_hash: b"not matching", broken_gz: _gz("x")[:-4]},
+        modified=modified,
+        staging=staging,
     )
     store = storage.DiskBackend(tmp_path / "store")
     work = tmp_path / "export"
@@ -169,9 +199,24 @@ def test_fetch_checks_and_imports_files(tmp_path):
     expires = log_day + timedelta(days=191)
     assert store.exists(f"archive/cloudrun-access-20261110.expires-{expires:%Y%m%d}.jsonl.gz")
     assert not store.exists("logs/access-20261110.jsonl.gz")
-    # 不带批量工具结果（旧库不恢复）；备份、下架清单不进存储，进 --dir
+    # 还没归档的访问日志：同样放 archive/，名字带 -staging
+    staged_expires = date(2026, 11, 12) + timedelta(days=191)
+    assert store.exists(
+        f"archive/cloudrun-access-20261112-staging.expires-{staged_expires:%Y%m%d}.jsonl.gz"
+    )
+    assert report.staging_logs == 1
+    # 批量工具结果：没过 30 天的下到 --dir/advisor-out/（不进存储），过了的不下
     assert not store.exists("advisor/out/0123456789abcdef/7.xlsx")
-    assert "advisor/out/0123456789abcdef/7.xlsx" not in remote.gets
+    assert (work / "advisor-out/0123456789abcdef/7.xlsx").read_bytes() == b"xlsx"
+    assert "advisor/out/0123456789abcdef/1.xlsx" not in remote.gets
+    assert (report.advisor, report.expired_advisor) == (1, 1)
+    assert json.loads((work / "advisor-out.json").read_text(encoding="utf-8")) == [
+        {
+            "path": "advisor/out/0123456789abcdef/7.xlsx",
+            "modified": "2026-11-12T00:00:00+00:00",
+            "size": 4,
+        }
+    ]
     assert not store.exists("backups/youju-20261112.jsonl.gz")
     assert (work / "backups/youju-20261112.jsonl.gz").read_bytes() == good[
         "backups/youju-20261112.jsonl.gz"
@@ -191,13 +236,13 @@ def test_fetch_checks_and_imports_files(tmp_path):
     again = cloudrun_fetch.fetch(
         remote.client, url, sha, work, store=store, say=lambda _: None, today=today
     )
-    assert again.skipped == {"backups/": 1, "logs/": 1, "attachments/": 1}
+    assert again.skipped == {"backups/": 1, "logs/": 1, "attachments/": 1, "advisor/out/": 1}
     assert set(remote.gets) == {bad_hash, broken_gz}
     assert sorted(path for path, _ in again.failed) == sorted([bad_hash, broken_gz])
     assert not (work / "fetch-complete").exists()
     # 重出一份清单（坏的两个已经不在里面）：全部下好才写完成标记
     remote2 = Remote({})
-    url2, sha2 = _export(remote2, good)
+    url2, sha2 = _export(remote2, good, modified=modified, staging=staging)
     done = cloudrun_fetch.fetch(
         remote2.client, url2, sha2, work, store=store, say=lambda _: None, today=today
     )
@@ -515,6 +560,9 @@ def _downloaded(tmp_path: Path, *, complete: bool = True) -> Path:
     (backups / "youju-20261112.jsonl.gz").write_bytes(b"x")
     (tmp_path / "export" / "pay-records.jsonl.gz").write_bytes(b"p")
     (tmp_path / "export" / "manifest.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "export" / "advisor-out" / "u").mkdir(parents=True)
+    (tmp_path / "export" / "advisor-out" / "u" / "1.xlsx").write_bytes(b"x")
+    (tmp_path / "export" / "advisor-out.json").write_text("[]", encoding="utf-8")
     if complete:
         (tmp_path / "export" / "fetch-complete").write_text("x\n", encoding="utf-8")
     return backups
@@ -554,6 +602,8 @@ def test_shared_import_export_drills_with_old_image_then_archives(tmp_path):
     assert not (backups / "youju-20261112.jsonl.gz").exists()
     assert not (tmp_path / "export" / "pay-records.jsonl.gz").exists()
     assert not (tmp_path / "export" / "manifest.json").exists()
+    assert not (tmp_path / "export" / "advisor-out").exists()
+    assert not (tmp_path / "export" / "advisor-out.json").exists()
     assert (tmp_path / "export" / "imported").exists()
     assert "IMPORT OK" in done.stdout
 
@@ -862,16 +912,44 @@ def test_archive_export_keeps_backup_30_days_and_pay_records_3650(tmp_path):
     (work / "backups").mkdir(parents=True)
     (work / "backups" / "youju-20261112.jsonl.gz").write_bytes(b"backup")
     (work / "pay-records.jsonl.gz").write_bytes(PAY)
+    (work / "advisor-out" / "0123456789abcdef").mkdir(parents=True)
+    (work / "advisor-out" / "0123456789abcdef" / "7.xlsx").write_bytes(b"xlsx")
+    (work / "advisor-out.json").write_text(
+        json.dumps(
+            [
+                {
+                    "path": "advisor/out/0123456789abcdef/7.xlsx",
+                    "modified": "2026-10-20T03:00:00+00:00",
+                    "size": 4,
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
     fake = FakeS3()
-    reports = cloudrun_fetch.archive_export(
+    reports, notes = cloudrun_fetch.archive_export(
         _archive_settings(tmp_path), work, today=date(2026, 11, 13), backend=fake, encryptor=_seal
     )
-    # 整库：自备份那天起 30 天；交易记录：最早一笔下单（北京时间 10-30）起 3650 天
+    # 整库：自备份那天起 30 天；交易记录：最早的一笔（赠送，北京时间 10-20）起 3650 天；
+    # 批量工具结果：最早一个文件（10-20）起 30 天
+    pay_expires = date(2026, 10, 20) + timedelta(days=3650)
     assert [r.target for r in reports] == [
         "archive/cloudrun-youju-20261112.expires-20261212.jsonl.gz.age",
-        "archive/cloudrun-pay-records-20261112.expires-20361027.jsonl.gz.age",
+        f"archive/cloudrun-pay-records-20261112.expires-{pay_expires:%Y%m%d}.jsonl.gz.age",
+        "archive/cloudrun-advisor-out-20261112.expires-20261119.tar.gz.age",
     ]
-    assert set(fake.files) == {r.target for r in reports}
+    assert set(fake.files) == {r.target for r in reports} and notes == []
+    packed = fake.files["archive/cloudrun-advisor-out-20261112.expires-20261119.tar.gz.age"][0]
+    import io
+    import tarfile
+
+    with tarfile.open(fileobj=io.BytesIO(packed.split(b":", 2)[2]), mode="r:gz") as tar:
+        assert tar.getnames() == ["advisor/out/0123456789abcdef/7.xlsx"]
+    # 批量工具结果到存档时已经都过了 30 天：不存
+    reports, notes = cloudrun_fetch.archive_export(
+        _archive_settings(tmp_path), work, today=date(2026, 11, 19), backend=fake, encryptor=_seal
+    )
+    assert len(reports) == 2 and notes == ["批量工具结果都已经过了 30 天，不存档"]
     bad = gzip.compress(json.dumps({"format": "youju-pay-records", "version": 1}).encode() + b"\n")
     (work / "pay-records.jsonl.gz").write_bytes(bad)
     with pytest.raises(cloudrun_fetch.FetchError, match="说明行"):
@@ -898,16 +976,19 @@ def test_prune_archive_deletes_expired_on_both_sides_and_records_it(tmp_path):
         store.put_file(name, blob)
         fake.put_file(name, blob)
     store.put_file("archive/readme.txt", blob)  # 不是存档的文件名：不动
+    # 批量工具结果打的包（.tar.gz.age）也认
+    tarball = "archive/cloudrun-advisor-out-20261112.expires-20361027.tar.gz.age"
+    store.put_file(tarball, blob)
     # 导进来的云托管访问日志（不加密）也按文件名里的到期日删
     log = "archive/cloudrun-access-20260601.expires-20261208.jsonl.gz"
     store.put_file(log, blob)
     early = offsite.prune_archive(settings, today=date(2026, 12, 11), backend=fake)
-    assert (early.deleted, early.kept) == ([f"local:{log}"], 4)
+    assert (early.deleted, early.kept) == ([f"local:{log}"], 5)
     report = offsite.prune_archive(settings, today=date(2026, 12, 12), backend=fake)
     expired = "archive/cloudrun-youju-20261112.expires-20261212.jsonl.gz.age"
     assert report.deleted == [f"local:{expired}", f"offsite:{expired}"]
     assert not store.exists(expired) and expired not in fake.files and not store.exists(log)
-    assert store.exists("archive/readme.txt") and len(fake.files) == 1
+    assert store.exists("archive/readme.txt") and len(fake.files) == 1 and store.exists(tarball)
     record = tmp_path / "store" / "archive" / "deletions.jsonl"
     rows = [json.loads(line) for line in record.read_text(encoding="utf-8").splitlines()]
     assert [(r["where"], r["path"], r["expires"]) for r in rows] == [

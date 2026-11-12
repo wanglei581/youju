@@ -26,7 +26,9 @@ try:
 except ImportError:  # 在线上那一版的代码上跑时没有这个模块（见文件开头），跳过读清单的那几句
     takedown_carry = None
 from youju.config import Settings
+from youju.db import create_mysql_engine
 from youju.models import (
+    AccessLog,
     AppKey,
     Document,
     DocumentMerge,
@@ -297,10 +299,39 @@ def test_export_writes_manifest_with_latest_backup_and_takedowns(session, tmp_pa
 
     monkeypatch.setattr(backup, "upload", upload)
     settings = Settings(_env_file=None, cloud_env=ENV, ai_model="qwen-plus")
+    # 访问日志暂存表里还没归档的（今天的）
+    now = datetime.now(UTC)
+    session.add(
+        AccessLog(
+            rid="r1",
+            at=now,
+            logged_at=now,
+            service="api",
+            method="GET",
+            path="/api/v1/x",
+            status=200,
+            ms=5,
+        )
+    )
+    session.commit()
     # conftest 把默认连接指到了测试库
     database_url = os.environ["YOUJU_DATABASE_URL"]
+    engine = create_mysql_engine(database_url)
+    before = export_script.fingerprint(engine)
+    engine.dispose()
+    # 备份以后又有新写入：不出清单
+    with pytest.raises(export_script.ExportError, match="users"):
+        export_script.export(
+            ENV,
+            database_url,
+            client=cloud.client,
+            settings=settings,
+            workdir=tmp_path,
+            before={**before, "users": [0, None]},
+        )
+    uploaded.clear()
     result = export_script.export(
-        ENV, database_url, client=cloud.client, settings=settings, workdir=tmp_path
+        ENV, database_url, client=cloud.client, settings=settings, workdir=tmp_path, before=before
     )
     manifest = result["manifest"]
     assert [(f["path"], f["size"]) for f in manifest["files"]] == [
@@ -312,6 +343,14 @@ def test_export_writes_manifest_with_latest_backup_and_takedowns(session, tmp_pa
         ("advisor/out/1/result.xlsx", 70),
     ]
     assert all(f["url"].startswith(f"https://{BUCKET}.tcb.qcloud.la/") for f in manifest["files"])
+    assert all(f["modified"] == "2026-11-12T00:00:00+00:00" for f in manifest["files"])
+    # 还没归档的访问日志按天导出（和归档一样的格式）
+    (staged,) = manifest["staging_logs"]
+    assert staged["rows"] == 1 and staged["path"].startswith("exports/access-staging-")
+    staged_lines = gzip.decompress(uploaded[staged["path"]]).decode().splitlines()
+    assert json.loads(staged_lines[0])["format"] == "youju-access-log"
+    assert json.loads(staged_lines[1])["path"] == "/api/v1/x"
+    assert staged["sha256"] == hashlib.sha256(uploaded[staged["path"]]).hexdigest()
     assert manifest["revision"] == session.scalar(text("SELECT version_num FROM alembic_version"))
     takedowns = manifest["takedowns"]
     (listing_path,) = [p for p in uploaded if p.startswith("exports/takedowns-")]
@@ -357,7 +396,7 @@ def test_pick_files_needs_a_backup():
         export_script.pick_files({"backups/": [("backups/prefix-probe", 1)]})
 
 
-def test_main_stops_before_listing_when_a_command_fails(monkeypatch, capsys):
+def test_main_stops_before_listing_when_a_command_fails(tmp_path, monkeypatch, capsys):
     calls = []
 
     def runner(args):
@@ -366,13 +405,32 @@ def test_main_stops_before_listing_when_a_command_fails(monkeypatch, capsys):
 
     monkeypatch.setenv("YOUJU_CLOUD_ENV", ENV)
     monkeypatch.setattr(export_script, "export", lambda *a, **k: pytest.fail("不该接着导出"))
+    # 归档日志之后、备份之前记一次用户数据各表（--links-only 重出清单时拿来核对）
+    marks = tmp_path / "fingerprint.json"
+    monkeypatch.setattr(export_script, "FINGERPRINT", marks)
+    monkeypatch.setattr(export_script, "fingerprint", lambda engine: {"users": [3, 3, None]})
     export_script.get_settings.cache_clear()
     try:
         assert export_script.main([], runner=runner) == 1
     finally:
         export_script.get_settings.cache_clear()
     assert calls == [["youju", "archive-logs"], ["youju", "backup"]]
+    assert json.loads(marks.read_text()) == {"users": [3, 3, None]}
     assert "EXPORT FAILED" in capsys.readouterr().out
+
+
+def test_links_only_needs_the_marks_from_the_full_run(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("YOUJU_CLOUD_ENV", ENV)
+    monkeypatch.setattr(export_script, "FINGERPRINT", tmp_path / "missing.json")
+    monkeypatch.setattr(export_script, "export", lambda *a, **k: pytest.fail("不该接着导出"))
+    export_script.get_settings.cache_clear()
+    try:
+        assert (
+            export_script.main(["--links-only"], runner=lambda args: pytest.fail("不跑命令")) == 1
+        )
+    finally:
+        export_script.get_settings.cache_clear()
+    assert "不带 --links-only 重跑整个导出" in capsys.readouterr().out
 
 
 def test_report_prints_copyable_ascii_lines(capsys):
@@ -485,6 +543,7 @@ def test_pay_records_are_deidentified_like_account_deletion(session):
         "pay_reconciliations": 0,
     }
     assert header["earliest_order_at"] == NOW.isoformat() and header["retain_days"] == 3650
+    assert header["earliest_gift_at"] == NOW.isoformat()  # 赠送自发放之日起算
     text = "\n".join(lines)
     assert text.isascii()
     for secret in ("o-secret-1", "someone@example.com", "finance@example.com", "user_id"):

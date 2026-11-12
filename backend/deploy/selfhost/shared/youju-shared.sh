@@ -636,11 +636,14 @@ import_export() {
   purge_binlog
   PURGE_BINLOG=""
   [ "$drill_ok" = 1 ] || die "试恢复没通过（原因见上面）：没存档、没删明文"
-  say "2/3 加密存档：整库备份、交易记录分别用 .env 里的 age 公钥加密，存到服务器存储和异地的 archive/，"
-  say "    到期日写在文件名里（整库自备份起 30 天，交易记录自最早一笔下单起 3650 天），每天 archive-prune 到期删"
+  say "2/3 加密存档：整库备份、交易记录、批量工具结果分别用 .env 里的 age 公钥加密，存到服务器存储和异地的"
+  say "    archive/，到期日写在文件名里（整库自备份起 30 天；交易记录自最早一笔下单或赠送起 3650 天；"
+  say "    批量工具结果自生成起 30 天），每天 archive-prune 到期删"
   compose run --rm --no-deps -v "$EXPORT_DIR:/export:ro" worker youju archive-export --dir /export
-  say "3/3 删掉明文的整库备份、交易记录和带链接的清单"
-  rm -f "$EXPORT_DIR/backups/$name" "$EXPORT_DIR/pay-records.jsonl.gz" "$EXPORT_DIR/manifest.json"
+  say "3/3 删掉明文的整库备份、交易记录、批量工具结果和带链接的清单"
+  rm -f "$EXPORT_DIR/backups/$name" "$EXPORT_DIR/pay-records.jsonl.gz" "$EXPORT_DIR/manifest.json" \
+    "$EXPORT_DIR/advisor-out.json"
+  rm -rf "$EXPORT_DIR/advisor-out"
   # 存档过了：以后再跑 fetch-export 会拒绝（不再下一份明文备份）
   date '+%F %T' > "$EXPORT_DIR/imported"
   echo "IMPORT OK"
