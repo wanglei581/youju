@@ -13,6 +13,8 @@
 - repost-auto-stats：按轮统计（抽了几组、判了几组、对几组、组变了几组、还有几组没判），给出开关那道
   门的结果（只认整份判完、判了对错满 100 组的轮）。
 - repost-withdraw：命令行整组撤回（收到投诉等抽查以外的场合），要带看到的修订号。
+抽样会按现在的正文重算抽到的组的正文信号：不要和 repost-groups 同时跑（同时写同一批行会互相等，
+MySQL 会挑一边回滚）。
 撤回都记一行审计日志（youju.audit），和管理台的撤回一样留痕。
 """
 
@@ -20,6 +22,7 @@ import hashlib
 import json
 import logging
 import random
+import secrets
 import uuid
 from collections import defaultdict
 from dataclasses import asdict
@@ -202,7 +205,9 @@ def sample(args):
     if args.size is not None and args.size < 1:
         raise ValueError("抽样数量必须大于零")
     stamp = _now()
-    rng = random.Random(args.seed)
+    # 种子不给就随机取一个（写进抽样文件）：不让人挑种子抽"好判的"一批
+    seed = args.seed if args.seed is not None else secrets.randbelow(2**31)
+    rng = random.Random(seed)
     round_id = f"{args.purpose}-{stamp:%Y%m%d}-{uuid.uuid4().hex[:12]}"
     with session_factory()() as session:
         today = stamp.astimezone(_BEIJING).date()
@@ -369,14 +374,14 @@ def sample(args):
             purpose=args.purpose,
             rule_version=AUTO_RULE_VERSION,
             sampled_at=stamp.isoformat(),
-            seed=args.seed,
+            seed=seed,
             population=population,
             items=items,
         )
         # 文件写成功了再把名单记进库：写不出来就不记，不让这批组白白算成"抽过"
         args.out.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
         session.commit()
-    print(f"从 {population} 组里抽了 {len(items)} 组：{args.out}")
+    print(f"从 {population} 组里抽了 {len(items)} 组（种子 {seed}）：{args.out}")
     if args.purpose == "gate" and len(items) < AUTO_GATE_SIZE:
         print(f"只抽到 {len(items)} 组，不满 {AUTO_GATE_SIZE} 组：这一轮判完也过不了门")
     return 0

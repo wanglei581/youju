@@ -2440,3 +2440,25 @@ def test_gate_sample_recomputes_signals_from_current_details(
     assert data["items"] == [] and "不再满足自动合并条件" in capsys.readouterr().out
     session.expire_all()
     assert session.get(RepostSignal, docs[0].id).cited == []
+
+
+def test_sample_without_a_seed_picks_and_records_a_random_one(
+    session, session_factory, monkeypatch, tmp_path
+):
+    # 不给种子就随机取一个、写进抽样文件（不让人挑种子抽"好判的"一批；复查时照这个种子能重抽）
+    import json
+
+    from youju import repost_checks
+
+    monkeypatch.setattr(
+        "youju.repost.get_settings", lambda: SimpleNamespace(repost_auto_merge=False)
+    )
+    monkeypatch.setattr(repost_checks, "session_factory", lambda: session_factory)
+    _auto_world(session)
+    rebuild(session, now=NOW)
+    session.commit()
+    out = tmp_path / "gate.json"
+    args = SimpleNamespace(purpose="gate", size=None, seed=None, out=out)
+    assert repost_checks.sample(args) == 0
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert isinstance(data["seed"], int) and len(data["items"]) == 1
