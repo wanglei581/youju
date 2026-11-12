@@ -1,6 +1,7 @@
 """按网站抓取详情，复用列表抓取器的 robots、限速与标识。"""
 
 import logging
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -248,30 +249,44 @@ def _fetch_outcomes(
     for document_id, url in selected:
         by_host.setdefault((urlsplit(url).hostname or "").lower(), []).append((document_id, url))
 
+    # 放过站内搜索限流弹窗的网站：一遇到防护页（弹窗显示出来了、页面样子变了、正文取不全……），
+    # 这一轮就停取这个网站（D-013 出验证码就停），按实际访问的网站算（原网址和跳转后的网址都算）。
+    # 停了以后：这个网站剩下的这一轮不取；别的网站的文件跳转过去的，这一份不收、那个网站也停（跳转
+    # 发生在取的过程中，这一次已经访问了）。不收的不写库，下一轮照常选上；要按 PR #485 的做法复核
+    paused: set[str] = set()
+    lock = threading.Lock()
+
+    def host_of(url: str) -> str:
+        return (urlsplit(url).hostname or "").lower()
+
     def run_host(documents: list[tuple[int, str]]) -> list[_FetchOutcome]:
         results = []
         for document_id, url in documents:
+            with lock:
+                if host_of(url) in paused:
+                    break
             try:
-                results.append(_fetch_one(document_id, url, fetcher))
+                outcome = _fetch_one(document_id, url, fetcher)
             except Exception as exc:  # noqa: BLE001 - 一份异常文件不阻断整批详情保存
                 # 依赖异常可能带请求信息；只记录类型，不记录异常正文或 traceback。
                 reason = f"详情处理异常：{type(exc).__name__}"
                 log.warning("详情 %s %s", document_id, reason)
-                results.append(
-                    _FetchOutcome(
-                        document_id, datetime.now(UTC), None, None, "processing_error", reason
+                outcome = _FetchOutcome(
+                    document_id, datetime.now(UTC), None, None, "processing_error", reason
+                )
+            visited = {url, (outcome.fetch.final_url if outcome.fetch else None) or url}
+            with lock:
+                if {host_of(u) for u in visited} & paused:
+                    break
+                results.append(outcome)
+                if outcome.status == "protected" and any(map(search_throttle_site, visited)):
+                    paused.update(host_of(u) for u in visited)
+                    log.warning(
+                        "搜索限流弹窗网站 %s 遇到防护页（文件 %s），这一轮停取，要复核",
+                        "、".join(sorted(host_of(u) for u in visited)),
+                        document_id,
                     )
-                )
-            # 放过站内搜索限流弹窗的网站：一遇到防护页（弹窗显示出来了、页面样子变了、正文取不全
-            # ……），这一轮就停取这个网站（D-013 出验证码就停）。剩下的这一轮不取、不写库，下一轮
-            # 照常选上；要按 PR #485 的做法复核这个网站
-            if results[-1].status == "protected" and search_throttle_site(url):
-                log.warning(
-                    "搜索限流弹窗网站 %s 遇到防护页（文件 %s），这一轮停取，要复核",
-                    urlsplit(url).hostname,
-                    document_id,
-                )
-                break
+                    break
         return results
 
     # 网络并行只跨网站；数据库写入仍在主线程，避免共享 Session。
@@ -432,8 +447,13 @@ def backfill_truncated_titles(
         with _polite_fetcher() as polite:
             outcomes = _fetch_outcomes(selected, polite, workers)
     results: list[TitleBackfill] = []
+    chosen = {document_id for document_id, _ in selected}
     for document_id, _, title in rows:
         outcome = outcomes.get(document_id)
+        if outcome is None and document_id in chosen:
+            # 同一网站这一轮停取了（见 _fetch_outcomes），没去取：不是"没截断"
+            results.append(TitleBackfill(document_id, title, "unavailable", reason="site_paused"))
+            continue
         if outcome is None:
             results.append(TitleBackfill(document_id, title, "not_truncated"))
             continue

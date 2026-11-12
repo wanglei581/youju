@@ -125,6 +125,91 @@ def test_search_throttle_site_pauses_this_round_after_protection_page(session, m
     assert fake.calls == [first.url, second.url]
 
 
+def _source_on(session, host):
+    source = Source(
+        level="市级",
+        province="河南",
+        dept="工信",
+        dept_full_name="某市工业和信息化局",
+        column_name="通知公告",
+        url=f"https://{host}/list/",
+        fetch_mode="static",
+        enabled=True,
+        parser_config={},
+        rights_level=1,
+    )
+    session.add(source)
+    session.flush()
+    return source.id
+
+
+def _doc_on(session, source_id, host, number, title=None):
+    now = datetime.now(UTC)
+    doc = Document(
+        source_id=source_id,
+        url=f"https://{host}/detail/{number}.html",
+        url_key=f"{host}/detail/{number}.html",
+        title=title or f"关于第{number}项公开事项的通知",
+        first_seen_at=now,
+        last_seen_at=now,
+        is_baseline=False,
+        status="discovered",
+    )
+    session.add(doc)
+    session.commit()
+    return doc
+
+
+_PROTECTED = "<html><title>安全验证</title><body>请输入验证码</body></html>"
+
+
+@pytest.mark.parametrize("listed", ["b.example.gov.cn", "a.example.gov.cn"])
+def test_search_throttle_pause_counts_redirects_both_ways(session, monkeypatch, listed):
+    """按实际访问的网站停：名单外网站跳到名单里的网站遇到防护页，或名单里的网站跳出去遇到防护页，
+    两个网站这一轮都停；另一个网站的文件就不去取了。"""
+    from youju.crawler import detail
+
+    monkeypatch.setitem(detail._SEARCH_THROTTLE_VERIFIED, listed, frozenset({"x"}))
+    first = _doc_on(session, _source_on(session, "a.example.gov.cn"), "a.example.gov.cn", 1)
+    second = _doc_on(session, _source_on(session, "b.example.gov.cn"), "b.example.gov.cn", 2)
+    landed = "https://b.example.gov.cn/detail/9.html"
+    fake = FakeFetcher(
+        {
+            first.url: FetchResult(
+                first.url, "ok", final_url=landed, http_status=200, text=_PROTECTED
+            ),
+            second.url: FetchResult(second.url, "ok", final_url=second.url, http_status=200),
+        }
+    )
+    results = fetch_details(session, limit=5, fetcher=fake, max_workers=1)
+    assert [r.status for r in results] == ["protected", "site_paused"]
+    assert fake.calls == [first.url]
+    assert session.get(DocumentDetail, second.id) is None
+
+
+def test_title_backfill_reports_paused_site_as_unavailable(session, monkeypatch):
+    """补全截断标题时，同一网站这一轮停取了的记"没取到（site_paused）"，不当成"没截断"。"""
+    from youju.crawler import detail
+    from youju.crawler.detail_service import backfill_truncated_titles
+
+    monkeypatch.setitem(detail._SEARCH_THROTTLE_VERIFIED, "c.example.gov.cn", frozenset({"x"}))
+    source_id = _source_on(session, "c.example.gov.cn")
+    first = _doc_on(session, source_id, "c.example.gov.cn", 1, title="关于开展2026年度项目申报…")
+    second = _doc_on(session, source_id, "c.example.gov.cn", 2, title="关于组织推荐第二批示范…")
+    fake = FakeFetcher(
+        {
+            first.url: FetchResult(first.url, "ok", final_url=first.url, text=_PROTECTED),
+            second.url: FetchResult(second.url, "ok", final_url=second.url, text=_PROTECTED),
+        }
+    )
+    results = backfill_truncated_titles(session, limit=5, fetcher=fake, max_workers=1)
+    assert [(r.document_id, r.result, r.reason) for r in results] == [
+        (first.id, "unavailable", "protected"),
+        (second.id, "unavailable", "site_paused"),
+    ]
+    assert fake.calls == [first.url]
+
+
 def test_fetch_details_normalizes_new_issuer_on_ingest(session) -> None:
     doc = add_document(session, 12)
     sample = (
