@@ -540,6 +540,36 @@ def test_robots_retry_keeps_both_paths(session, monkeypatch) -> None:
     assert all(session.get(DocumentDetail, d.id) is None for d in docs)
 
 
+def test_pdf_attachment_answered_with_protection_page_pauses_listed_site(session, monkeypatch):
+    """PDF 附件回来的是网页防护页：记 protected（不当成 PDF 读不出），名单网站这一轮停取。"""
+    from youju.crawler import detail
+
+    monkeypatch.setitem(detail._SEARCH_THROTTLE_VERIFIED, "b.example.gov.cn", frozenset({"x"}))
+    source_id = _source_on(session, "b.example.gov.cn")
+    first = _doc_on(session, source_id, "b.example.gov.cn", 1)
+    second = _doc_on(session, source_id, "b.example.gov.cn", 2)
+    pdf_url = "https://b.example.gov.cn/files/1.pdf"
+    pdf_page = f"<html><body><div id='zoom'><a href='{pdf_url}'>附件.pdf</a></div></body></html>"
+    fake = FakeFetcher(
+        {
+            first.url: FetchResult(first.url, "ok", final_url=first.url, text=pdf_page),
+            pdf_url: FetchResult(
+                pdf_url,
+                "ok",
+                final_url=pdf_url,
+                text=_PROTECTED,
+                content=_PROTECTED.encode(),
+                content_type="text/html; charset=utf-8",
+            ),
+            second.url: FetchResult(second.url, "ok", final_url=second.url, text=pdf_page),
+        }
+    )
+    results = fetch_details(session, limit=5, fetcher=fake, max_workers=1)
+    assert [r.status for r in results] == ["protected", "site_paused"]
+    assert fake.calls == [first.url, pdf_url]
+    assert session.get(DocumentDetail, first.id).failure_reason == "防护页或验证码"
+
+
 def test_title_backfill_reports_paused_site_as_unavailable(session, monkeypatch):
     """补全截断标题时，同一网站这一轮停取了的记"没取到（site_paused）"，不当成"没截断"。"""
     from youju.crawler import detail

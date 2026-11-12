@@ -222,6 +222,17 @@ def _fetch_one(document_id: int, url: str, fetcher: DetailFetcher) -> _FetchOutc
             return _FetchOutcome(
                 document_id, now, pdf_fetch, parsed, "unsupported_host", "PDF 非政府网站"
             )
+        # PDF 附件回来的是网页：先看是不是防护页（是就记 protected，名单网站会停取），
+        # 不当成 PDF 读不出
+        pdf_type = (pdf_fetch.content_type or "").split(";", 1)[0].strip().lower()
+        if pdf_type in {"text/html", "application/xhtml+xml"} or (
+            not pdf_fetch.content.startswith(b"%PDF-") and pdf_fetch.text.lstrip().startswith("<")
+        ):
+            page = parse_detail(pdf_fetch.text, pdf_fetch.final_url or pdf_url)
+            if page.failure_reason == "防护页或验证码":
+                return _FetchOutcome(
+                    document_id, now, pdf_fetch, parsed, "protected", page.failure_reason
+                )
         try:
             pdf = _pdf_detail(pdf_fetch.content)
         except pdf_sandbox.Failed as exc:  # 只有 retry 为真的会抛到这里
