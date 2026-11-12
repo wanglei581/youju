@@ -903,6 +903,11 @@ def test_portal_section_boundaries():
     assert not _portal_section(f"{home}/zwgk/?deptId=sjj", f"{home}/zwgk/sjj.html")
     assert not _portal_section("http://xxgk.lianxi.gov.cn/", f"{home}/zwgk/sjj.html")
     assert not _portal_section(f"{home}/xxgk/", f"{home}/zwgk/sjj.html")
+    # 链到一级栏目里、门户首页旁的某个文件（部门自己的信息公开页）：照常找（Codex 审阅第三轮 11/12）
+    assert not _portal_section(f"{home}/zwgk/sjj-xxgk.html", f"{home}/zwgk/sjj.html")
+    assert not _portal_section(f"{home}/sjjxxgk.html", f"{home}/zwgk/jgzn/sjj/jgjj/")
+    assert _portal_section(f"{home}/index.html", f"{home}/zwgk/jgzn/sjj/jgjj/")
+    assert _portal_section(f"{home}/zwgk", f"{home}/zwgk/jgzn/sjj/jgjj/")
 
 
 def test_department_info_page_under_a_topic_like_path_keeps_its_columns():

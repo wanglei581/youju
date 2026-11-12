@@ -1328,6 +1328,9 @@ def _portal_section(url: str, channel_page: str) -> bool:
     带参数指明部门的 /zwgk/?deptId=…）照常找。"""
     if _hostname(url) != _hostname(channel_page) or urlsplit(url).query:
         return False
+    target = (urlsplit(url).path or "/").rsplit("/", 1)[-1]
+    if target and "." in target and not _INDEX_FILE.match(target):
+        return False  # 链到栏目里的某个文件（部门自己的信息公开页 /zwgk/sjj-xxgk.html）：照常找
     section = page_dir(url)
     path = urlsplit(channel_page).path or "/"
     if section.count("/") > 2 or not path.startswith(section):
