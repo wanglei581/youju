@@ -2387,6 +2387,19 @@ def test_auto_record_counts_evidence_changes_as_changed(
     assert session.query(RepostAutoCheck).one().verdict == "changed"
     group = session.get(RepostGroup, group.id)
     assert group.revision == revision and not group.no_auto
+    # 页面上的发文字号被直接改了（没重抓，存好的信号还是旧的）：同样算组变了
+    docs[0].kind_override = None
+    session.commit()
+    data = _sample(tmp_path, "gate", seed=3)
+    data["items"][0].update(verdict="wrong", note="判的时候以为是两件事")
+    session.get(DocumentDetail, docs[1].id).doc_number = "工信厅联电子函〔2026〕999号"
+    session.commit()
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    assert repost_checks.record(SimpleNamespace(file=path, by="Claude")) == 0
+    session.expire_all()
+    checks = session.query(RepostAutoCheck).filter_by(round=data["round"]).all()
+    assert [c.verdict for c in checks] == ["changed"]
+    assert not session.get(RepostGroup, group.id).no_auto
 
 
 def test_weekly_sample_includes_auto_groups_outside_the_window(

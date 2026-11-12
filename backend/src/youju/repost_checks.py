@@ -163,10 +163,18 @@ def _member_candidates(session: Session, ids: list[int]) -> dict[int, Candidate]
 
 def _evidence(session: Session, ids: list[int]) -> str:
     """判的这几个版本的证据指纹：确认快照用的那些（日期、机关、标题、发文机关、全文，见
-    repost.member_facts）加上类型、自己的发文字号、引用的文号。抽样以后有一样变了，记录时就算组变了
-    （changed），旧证据下的结论不算进准确率、也不拿来撤回现在的组。"""
+    repost.member_facts）加上类型、详情里现在的原始发文字号（直接读，不用存好的信号）、引用的文号。
+    抽样以后有一样变了，记录时就算组变了（changed），旧证据下的结论不算进准确率、也不拿来撤回现在的
+    组。"""
     _, facts = member_facts(session, ids)
     cands = _member_candidates(session, ids)
+    numbers = dict(
+        session.execute(
+            select(DocumentDetail.document_id, DocumentDetail.doc_number).where(
+                DocumentDetail.document_id.in_(ids)
+            )
+        ).all()
+    )
     values = []
     for doc_id in sorted(ids):
         cand = cands.get(doc_id)
@@ -175,7 +183,7 @@ def _evidence(session: Session, ids: list[int]) -> str:
                 doc_id,
                 facts.get(doc_id),
                 cand.kind if cand else None,
-                cand.own_number if cand else None,
+                numbers.get(doc_id),
                 sorted(c.number for c in signals(cand).cited) if cand else None,
             ]
         )
