@@ -607,24 +607,34 @@ def test_manifest_url_check_ignores_locale():
     assert 'manifest_url_ok "$url"' in sh
     if not shutil.which("bash"):
         pytest.skip("没有 bash")
-    env = {k: v for k, v in os.environ.items() if not k.startswith("LC_")}
-    env["LANG"] = "en_US.UTF-8"
     good = (
         "https://7072-prod-x-1.tcb.qcloud.la/exports/manifest-20261112152810.json"
         "?sign=0123456789abcdef&t=1700000000"
     )
+
+    def run(script: str, url: str, lang: str) -> int:
+        env = {k: v for k, v in os.environ.items() if not k.startswith("LC_")}
+        env["LANG"] = lang
+        return subprocess.run(
+            ["bash", "-c", script, "t", url], env=env, capture_output=True
+        ).returncode
+
+    # 对照：不加 LC_ALL=C 的老写法在这台机器上确实判错，才说明复现得了；复现不了（没装这个语言环境，
+    # 或者不是 glibc，比如 macOS）的话测试就证明不了什么：CI 上算失败（该装语言环境了），本机跳过
+    old = fn.group(0).replace("\n  LC_ALL=C\n", "\n")
+    if run(old + 'manifest_url_ok "$1"', good, "en_US.UTF-8") == 0:
+        if os.environ.get("CI"):
+            pytest.fail("CI 上复现不了 en_US.UTF-8 下的老问题：先在工作流里装好这个语言环境")
+        pytest.skip("这台机器复现不了 en_US.UTF-8 下的老问题（没有这个语言环境或不是 glibc）")
     cases = [
         (good, 0),
         ("https://youju-backup-1250000000.cos.ap-shanghai.myqcloud.com/exports/m.json?q=1", 0),
         ("http://x.tcb.qcloud.la/a", 1),
         ("https://evil.example.com/a", 1),
         ("https://x.tcb.qcloud.la/a b", 1),
+        ("https://x.tcb.qcloud.la/a\tb", 1),
         ("", 1),
     ]
-    for url, code in cases:
-        done = subprocess.run(
-            ["bash", "-c", fn.group(0) + 'manifest_url_ok "$1"', "t", url],
-            env=env,
-            capture_output=True,
-        )
-        assert done.returncode == code, url
+    for lang in ("en_US.UTF-8", "C.UTF-8"):
+        for url, code in cases:
+            assert run(fn.group(0) + 'manifest_url_ok "$1"', url, lang) == code, (lang, url)
