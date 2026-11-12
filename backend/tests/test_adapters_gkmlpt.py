@@ -342,3 +342,6 @@ def test_default_port_only_redirect_is_not_a_redirect_elsewhere():
     assert api_refusal(found, moved) == ""
     elsewhere = FetchResult(found.url, "redirect", "https://www.sg.gov.cn/login", 302, "")
     assert api_refusal(found, elsewhere)
+    # 反过来（不带端口跳到带 :443 的同一地址）也一样
+    back = FetchResult(api().url, "redirect", found.url, 301, "")
+    assert api_refusal(api(), back) == ""
