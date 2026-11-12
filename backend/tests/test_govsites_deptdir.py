@@ -576,3 +576,25 @@ def test_gkmlpt_policy_leaves_skip_duplicates_and_the_parent_id():
     tree = [node(1, "政策", [node(2, "规范性文件"), node(2, "规范性文件"), node(1, "其他文件")])]
     categories = gkmlpt_tree_categories("TREE: " + json.dumps(tree) + "}")
     assert ("政策", "gkmlpt-p1,2") in categories
+
+
+def test_gkmlpt_inventory_keys_are_recognised_by_the_adapter():
+    # 盘点记的分类键，适配器都认得出：编号、p 父分类，最多几个分类两边是同一个上限（多的叶子不要）
+    from youju.crawler.adapters import GKMLPT_MAX_CATEGORIES, gkmlpt_categories
+    from youju.govsites.inventory import XXGK_TAG
+
+    def node(nid, name, children=None):
+        return {"id": nid, "name": name, "children": children or [], "jump_url": ""}
+
+    names = ["规范性文件", "其他文件", "其它文件", "部门文件", "规范性文件", "部门文件"]
+    tree = [
+        node(1, "政策", [node(10 + i, name) for i, name in enumerate(names)]),
+        node(2, "通知公告"),
+        node(3, "政策", [node(30, "政策解读")]),
+    ]
+    page = "https://www.sg.gov.cn/fgj/gkmlpt/index"
+    keys = [key for _, key in gkmlpt_tree_categories("TREE: " + json.dumps(tree) + "}")]
+    assert "gkmlpt-p1,10,11,12,13" in keys
+    for key in keys:
+        ids = gkmlpt_categories(f"{page}#{XXGK_TAG}{key}")
+        assert ids is not None and 1 <= len(ids) <= GKMLPT_MAX_CATEGORIES

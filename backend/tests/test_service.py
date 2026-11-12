@@ -817,3 +817,39 @@ def test_gkmlpt_single_parent_direct_category_end_to_end(session):
     )
     check = check_source(session, source, fetcher, today=date(2026, 11, 12))
     assert (check.status, check.items_found) == ("ok", 3) and fetcher.requested == [url, api_url]
+
+
+def test_gkmlpt_first_category_failure_is_a_plain_failure(session):
+    # 合读时第一个分类这次没取到（503）：后面的不再请求，记普通失败、写明是哪个分类，不记"不能抓"，
+    # 下一轮照常再试（FakeFetcher 里没放第二个分类，请求了会出错）
+    html, _, page_url, first, single_url = _gkmlpt_fixture()
+    url = single_url + ",6"
+    source = make_source(session, url)
+    source.parser_config = {"list_api_open": "数字广东gkmlpt"}
+    session.commit()
+    failed = FetchResult(first, "http_error", http_status=503, error="HTTP 503")
+    fetcher = RecordingFetcher({url: [page(page_url, html)], first: [failed]})
+    check = check_source(session, source, fetcher, today=date(2026, 11, 12))
+    assert check.status == "http_error" and "分类 8：" in check.error
+    assert fetcher.requested == [url, first]
+    session.refresh(source)
+    assert "list_api_refused" not in source.parser_config
+
+
+def test_gkmlpt_second_category_blank_is_read_nothing_naming_it(session):
+    # 第二个分类回了空白页（读不出、不算被拦）：整栏这次记读不出、写明分类 6，不收第一个分类的条目，
+    # 不记"不能抓"
+    html, payload, page_url, first, single_url = _gkmlpt_fixture()
+    second = first.replace("/all/8?", "/all/6?")
+    url = single_url + ",6"
+    source = make_source(session, url)
+    source.parser_config = {"list_api_open": "数字广东gkmlpt"}
+    session.commit()
+    fetcher = RecordingFetcher(
+        {url: [page(page_url, html)], first: [page(first, payload)], second: [page(second, "")]}
+    )
+    check = check_source(session, source, fetcher, today=date(2026, 11, 12))
+    assert (check.status, check.items_found) == ("parse_empty", 0)
+    assert "分类 6：" in check.error and fetcher.requested == [url, first, second]
+    session.refresh(source)
+    assert "list_api_refused" not in source.parser_config

@@ -30,6 +30,7 @@ from collections import Counter
 from typing import TYPE_CHECKING
 from urllib.parse import urljoin, urlsplit
 
+from youju.crawler.adapters import GKMLPT_MAX_CATEGORIES
 from youju.govsites.links import REPORT_WORDS, Link, registrable
 from youju.govsites.names import column_kind, dept_categories, looks_like_org
 from youju.govsites.platform import URL_SHAPES
@@ -246,8 +247,8 @@ _GKML_TREE = re.compile(r"\bTREE\s*:\s*(?=\[)")
 GKMLPT_KEY = "gkmlpt-"
 # "政策"一类父分类下当政策文件读的叶子（全国覆盖主线 11/13 定）：解读和别的子分类不读
 _GKMLPT_POLICY_LEAVES = frozenset({"规范性文件", "其他文件", "其它文件", "部门文件"})
-# 一个栏目最多合读几个分类（父分类加叶子，适配器认的上限）
-_GKMLPT_MAX_IDS = 5
+# 一个栏目最多合读几个分类（父分类加叶子）：就是适配器认的上限
+_GKMLPT_MAX_IDS = GKMLPT_MAX_CATEGORIES
 
 
 def gkmlpt_tree_categories(text: str) -> list[tuple[str, str]]:

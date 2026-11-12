@@ -214,6 +214,7 @@ class _AdapterResult:
     fetch: FetchResult | None = None  # 接口没取到时的抓取结果
     refused: str = ""  # 读取护栏（D-128）拦下的原因：记"不能抓"、不读
     api_url: str = ""  # 认出的列表接口网址
+    part: str = ""  # 几个分类合读时出问题的是哪个分类（"分类 编号："），写进原因
 
 
 def _items_via_adapter(
@@ -226,7 +227,9 @@ def _items_via_adapter(
 ) -> _AdapterResult:
     """栏目页自己声明了集约化平台的列表接口（见 crawler/adapters.py）时，按它取列表。
 
-    只请求页面写明的那个接口地址、参数原样照页面（D-128 读取护栏 ①），不另外构造请求。"""
+    只请求页面写明的那个接口地址、参数原样照页面（D-128 读取护栏 ①），不另外构造请求；数字广东的
+    地址只用页面写明的值、照它自己平台脚本的拼法得到，和它自己的页面发出的请求一样（D-013，见
+    crawler/adapters.py 开头的说明）。"""
     api = api or find_list_api(page.text, page.final_url or url, url)
     if api is None or parser_config.get(LIST_API_OPEN_KEY) != api.adapter:
         # 没认出接口，或来源没标"经接口读"（D-128）：不请求接口（调用的地方本来就先查过标记）
@@ -236,20 +239,20 @@ def _items_via_adapter(
     texts: list[str] = []
     for part in parts:
         # 几个分类合读时一个一个取、一个一个查：前一个被拦下、没取到、读不出，后面的不再请求
-        # （D-013、D-128：网站拒绝了就停，不接着敲门）
+        # （D-013、D-128：网站拒绝了就停，不接着敲门）；原因里写明出问题的是哪个分类
+        label = f"分类 {part.category_id}：" if len(parts) > 1 else ""
         result = fetcher.fetch(part.url, same_address_only=True)
         if result.status == "robots_disallowed":
-            return _AdapterResult([], api.adapter, result, api_url=api.url)
+            return _AdapterResult([], api.adapter, result, api_url=api.url, part=label)
         refused = api_refusal(part, result)
         if refused:
-            reason = f"分类 {part.category_id}：{refused}" if len(parts) > 1 else refused
-            return _AdapterResult([], api.adapter, result, reason, api.url)
+            return _AdapterResult([], api.adapter, result, f"{label}{refused}", api.url, label)
         if result.status != "ok":
-            return _AdapterResult([], api.adapter, result, api_url=api.url)
+            return _AdapterResult([], api.adapter, result, api_url=api.url, part=label)
         if len(parts) > 1 and not api_readable(part, result.text):
-            # 几个分类合读时，有一个回了但读不出（空白、维护页）：整栏这次没读出，和单个分类
-            # 读不出一样按"没识别到列表条目"记，下次再试；不拿别的分类的条目顶上
-            return _AdapterResult([], api.adapter, api_url=api.url)
+            # 几个分类合读时，有一个回了但读不出（空白、维护页）：整栏这次没读出，记"读不出"、
+            # 写明是哪个分类，下次再试；不拿别的分类的条目顶上
+            return _AdapterResult([], api.adapter, api_url=api.url, part=label)
         texts.append(result.text)
     items = api_items_merged(api, texts, parser_config, today)
     return _AdapterResult(items, api.adapter, api_url=api.url)
@@ -333,7 +336,8 @@ def check_source(
             elif via.fetch is not None and via.fetch.status == "robots_disallowed":
                 # 列表接口被 robots 禁止：和读取护栏一样，零星条目不收，记 robots 禁止（停抓）
                 items = []
-                status, error = via.fetch.status, f"列表接口（{via.adapter}）：{via.fetch.error}"
+                status = via.fetch.status
+                error = f"列表接口（{via.adapter}）：{via.part}{via.fetch.error}"
             elif via.fetch is not None:
                 # 列表接口这次没取到（网络不通、超时、5xx 等）：照实记失败、下次再试，不当成
                 # "改版认不出"；栏目页上零星认出的一两条也不收，免得把这次失败盖成成功
@@ -343,13 +347,16 @@ def check_source(
                     if via.fetch.status == "redirect"
                     else via.fetch.status
                 )
-                status, error = via.fetch.status, f"列表接口（{via.adapter}）：{why}"
+                status, error = via.fetch.status, f"列表接口（{via.adapter}）：{via.part}{why}"
                 if via.fetch.http_status:
                     result = FetchResult(url, "http_error", http_status=via.fetch.http_status)
             else:
                 # 接口回了，但读不出列表（空白、不是 JSON、没有列表那段，或列表本来就空）：
                 # 栏目页零星认出的一两条也不收，按"没识别到列表条目"记，下次再试
                 items = []
+                if via.part:
+                    status = "parse_empty"
+                    error = f"列表接口（{via.adapter}）：{via.part}返回读不出列表，下次再试"
         if not items and status == "ok":
             status, error = "parse_empty", PARSE_EMPTY_MESSAGE
 

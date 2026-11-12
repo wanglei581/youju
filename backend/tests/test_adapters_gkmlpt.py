@@ -382,6 +382,7 @@ def test_multiple_categories_verify_failure(failure, expected):
     cache = Cache({URL: PAGE, first.url: json.dumps(BODY), second.url: failure})
     checked = check_one(cache, column("8,6"), TODAY)
     assert checked.result == expected and checked.items == 0
+    assert checked.reason.startswith("分类 6：")  # 写明出问题的是哪个分类
     assert cache.calls == [URL, first.url, second.url]
 
 
@@ -447,3 +448,74 @@ def test_spotcheck_gives_nothing_when_any_category_fails():
         )
         assert _first_list_item(cache, column_url, TODAY) is None
         assert cache.calls == [URL, api().url]
+
+
+def test_verify_first_category_failure_stops_and_names_it():
+    # 第一个分类没取到（超时）：后面的分类不再请求，原因写明是分类 8
+    first = api(category=8)
+    timeout = FetchResult(first.url, "network_error", error="超时")
+    cache = Cache({URL: PAGE, first.url: timeout})
+    checked = check_one(cache, column("8,6"), TODAY)
+    assert checked.result == DOWN and checked.reason == "分类 8：列表接口：超时"
+    assert cache.calls == [URL, first.url]
+
+
+def _parent_body(main=8350):
+    body = json.loads(json.dumps(BODY))
+    body["classify"]["id"] = 8350
+    for row in body["articles"]:
+        row["classify_main"] = main
+    return body
+
+
+@pytest.mark.parametrize("main", [True, "8350", 8350.0, "missing"])
+def test_parent_direct_part_skips_rows_without_an_integer_classify_main(main):
+    # classify_main 不是整数的（true、"8350"、8350.0、没有这一项）不当成直接挂在父分类上
+    parent = find_list_api(PAGE, URL, f"{URL}#xxgk-gkmlpt-p8350")
+    body = _parent_body()
+    if main == "missing":
+        del body["articles"][0]["classify_main"]
+    else:
+        body["articles"][0]["classify_main"] = main
+    kept = api_items(parent, json.dumps(body), {}, TODAY)
+    assert [i.url for i in kept] == [r["url"] for r in BODY["articles"][1:]]
+
+
+def test_parent_direct_part_without_any_classify_main_is_not_recognised():
+    # 只取直接挂在父分类上的：有条目却没有一条带整数 classify_main，平台多半改了字段，认不出
+    # （记不能抓、不读），不悄悄当成 0 条；不带 p 的分类不看这个字段
+    direct = find_list_api(PAGE, URL, f"{URL}#xxgk-gkmlpt-p8350")
+    plain = find_list_api(PAGE, URL, f"{URL}#xxgk-gkmlpt-8350")
+    body = _parent_body()
+    for row in body["articles"]:
+        del row["classify_main"]
+    text = json.dumps(body)
+    reply = FetchResult(direct.url, "ok", direct.url, 200, text)
+    assert api_refusal(direct, reply) == "列表接口返回认不出"
+    assert not api_readable(direct, text) and api_items(direct, text, {}, TODAY) == []
+    assert not api_empty_list(direct, json.dumps({**body, "articles": [{"x": 1}]}))
+    assert not api_refusal(plain, reply) and len(api_items(plain, text, {}, TODAY)) == 5
+    # 有一条带整数 classify_main（哪怕挂在子分类上）就认得出：这一页直接挂在父分类上的是 0 条
+    body["articles"][0]["classify_main"] = 7
+    text = json.dumps(body)
+    assert api_readable(direct, text) and api_items(direct, text, {}, TODAY) == []
+    # 没有条目的照样是空列表，不算认不出
+    assert api_empty_list(direct, json.dumps({**body, "articles": []}))
+
+
+def test_merged_duplicate_keeps_the_dated_copy():
+    # 同一网址在两个分类里都有：先到的没日期、后到的有日期时留有日期的；反过来也留有日期的
+    found = api(category="8,6")
+    row = BODY["articles"][0]
+    undated = {**BODY, "articles": [dict(row, create_time=0), *BODY["articles"][1:]]}
+    dated = {**BODY, "classify": {"id": 6}, "articles": [row]}
+    url = api_items(api(category=8), json.dumps(undated), None, TODAY)[0].url
+    expected = api_items(api(category=6), json.dumps(dated), None, TODAY)[0].publish_date
+    assert expected is not None
+    rows = api_items_merged(found, [json.dumps(undated), json.dumps(dated)], None, TODAY)
+    assert [r.publish_date for r in rows if r.url == url] == [expected]
+    swapped = {**undated, "classify": {"id": 6}}
+    rows = api_items_merged(
+        found, [json.dumps({**dated, "classify": {"id": 8}}), json.dumps(swapped)], None, TODAY
+    )
+    assert [r.publish_date for r in rows if r.url == url] == [expected]

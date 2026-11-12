@@ -150,13 +150,14 @@ def check_one(cache: PageCache, col: ColumnCheck, today: date) -> ColumnCheck:
             parts = api_parts(api)
             texts: list[str] = []
             for part in parts:
-                # 一个一个取、一个一个查：前一个出问题，后面的分类不再请求（和正式抓取一样）
+                # 一个一个取、一个一个查：前一个出问题，后面的分类不再请求（和正式抓取一样）；
+                # 原因里写明出问题的是哪个分类
+                which = f"分类 {part.category_id}：" if len(parts) > 1 else ""
                 ar = cache.get(part.url, same_address_only=True)  # 跳到别处不跟（D-128 ①）
                 refused = api_refusal(part, ar)
                 if refused:
                     # 读取护栏（D-128）：接口返回不是成功、带权限要求、要登录或验证码、明确拒绝
                     # → 记不能抓、不读；几个分类合读时，哪一个被拦下都整栏不能抓
-                    which = f"分类 {part.category_id}：" if len(parts) > 1 else ""
                     col.result, col.reason = BLOCKED, f"{which}{refused}（D-128）"
                     return col
                 if ar.status != "ok":
@@ -166,12 +167,13 @@ def check_one(cache: PageCache, col: ColumnCheck, today: date) -> ColumnCheck:
                         if ar.status == "redirect"
                         else ar.status
                     )
-                    col.result, col.reason = DOWN, f"列表接口：{why[:100]}"
+                    col.result, col.reason = DOWN, f"{which}列表接口：{why[:100]}"
                     return col
                 if not api_readable(part, ar.text):
                     # 回了但不是预期的样子（空白、维护页、不是 JSON）：护栏记"这次没取到"，照样
                     # 不读，记打不开
-                    col.result, col.reason = DOWN, "列表接口返回读不出列表（不是预期的格式）"
+                    col.result = DOWN
+                    col.reason = f"{which}列表接口返回读不出列表（不是预期的格式）"
                     return col
                 texts.append(ar.text)
             if all(api_empty_list(part, text) for part, text in zip(parts, texts, strict=True)):
