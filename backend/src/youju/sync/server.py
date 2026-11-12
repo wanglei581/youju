@@ -220,6 +220,48 @@ class Stale(Exception):
         self.last = last
 
 
+class MissingBlobs(Exception):
+    def __init__(self, paths: list[str]) -> None:
+        super().__init__("附件副本文件不在服务器上")
+        self.paths = paths
+
+
+def _take_turn(conn: Connection, stamp: int) -> None:
+    """在 sync_order 那一行上排队（SELECT … FOR UPDATE）：所有写入（apply、reset）和附件副本的
+    清理都先拿这把锁。stamp 是请求签名里的毫秒时间，要比写过的最新一次新，否则抛 Stale；
+    清理不是请求，传 0 只排队、不比时间。"""
+    conn.execute(
+        text(
+            f"INSERT IGNORE INTO `{ORDER}` (name, last_stamp, updated_at) VALUES ('public', 0, :u)"
+        ),
+        {"u": datetime.now(UTC).replace(tzinfo=None)},
+    )
+    last = conn.execute(
+        text(f"SELECT last_stamp FROM `{ORDER}` WHERE name = 'public' FOR UPDATE")
+    ).scalar_one()
+    if stamp and stamp <= last:
+        raise Stale(int(last))
+
+
+def _record_turn(conn: Connection, stamp: int) -> None:
+    conn.execute(
+        text(f"UPDATE `{ORDER}` SET last_stamp = :s, updated_at = :u WHERE name = 'public'"),
+        {"s": stamp, "u": datetime.now(UTC).replace(tzinfo=None)},
+    )
+
+
+def _missing_blobs(parts: dict) -> list[str]:
+    """这一批要写的附件副本行指向的文件，服务器自己的存储（disk）里不在的。清理和写入在同一把锁下，
+    所以核对时在的，写完之前不会被清理删掉；不在的（推之前查过在、随后被清理删了）不写，本机下一轮
+    先补传再写。s3 由本机管，不核对。"""
+    if "attachment_copies" not in parts or get_settings().storage_backend != "disk":
+        return []
+    _, upserts, _ = parts["attachment_copies"]
+    store = storage.backend()
+    paths = {p for row in upserts if (p := storage.path_of(row.get("file_id") or ""))}
+    return sorted(p for p in paths if not store.exists(p))
+
+
 def apply(engine: Engine, payload: dict, *, stamp: int) -> dict:
     """写一批（一个事务）。
 
@@ -239,18 +281,10 @@ def apply(engine: Engine, payload: dict, *, stamp: int) -> dict:
     ensure_state(engine)
     kept: dict[str, int] = {}
     with engine.connect() as conn, conn.begin():
-        conn.execute(
-            text(
-                f"INSERT IGNORE INTO `{ORDER}` (name, last_stamp, updated_at)"
-                " VALUES ('public', 0, :u)"
-            ),
-            {"u": datetime.now(UTC).replace(tzinfo=None)},
-        )
-        last = conn.execute(
-            text(f"SELECT last_stamp FROM `{ORDER}` WHERE name = 'public' FOR UPDATE")
-        ).scalar_one()
-        if stamp <= last:
-            raise Stale(int(last))
+        _take_turn(conn, stamp)
+        missing = _missing_blobs(parts)
+        if missing:
+            raise MissingBlobs(missing)
         if not full:
             row = conn.execute(
                 text(f"SELECT stream, applied_seq FROM `{STATE}` WHERE name = 'public' FOR UPDATE")
@@ -277,10 +311,7 @@ def apply(engine: Engine, payload: dict, *, stamp: int) -> dict:
                     conn.execute(Replace(t), upserts[start : start + 500])
         finally:
             conn.execute(text("SET FOREIGN_KEY_CHECKS = 1"))
-        conn.execute(
-            text(f"UPDATE `{ORDER}` SET last_stamp = :s, updated_at = :u WHERE name = 'public'"),
-            {"s": stamp, "u": datetime.now(UTC).replace(tzinfo=None)},
-        )
+        _record_turn(conn, stamp)
         seq = payload.get("max_seq")
         if not full and type(seq) is int:
             conn.execute(
@@ -332,7 +363,9 @@ def _collect_garbage(engine: Engine, paths: set[str]) -> None:
         return
     t = sync_tables.table("attachment_copies")
     store = storage.backend(settings)
-    with engine.connect() as conn:
+    # 和写入排同一把锁：数引用到删文件之间，不会有新的一批指向它（写入时也在锁下核对文件在不在）
+    with engine.connect() as conn, conn.begin():
+        _take_turn(conn, 0)
         for path in paths:
             used = conn.scalar(
                 select(func.count()).select_from(t).where(t.c.file_id.like(f"cloud://%/{path}"))
@@ -399,6 +432,13 @@ async def apply_batch(request: Request) -> dict:
             "last_stamp": exc.last,
         }
         raise HTTPException(status_code=409, detail=detail) from None
+    except MissingBlobs as exc:
+        detail = {
+            "message": "这一批指向的附件副本文件不在服务器上（推之前查过在、随后被清理删了），"
+            "没有写；下一轮推会先补传再写",
+            "paths": exc.paths[:20],
+        }
+        raise HTTPException(status_code=409, detail=detail) from None
     except Conflict as exc:
         detail = {"message": "进度对不上", **exc.state}
         raise HTTPException(status_code=409, detail=detail) from None
@@ -414,15 +454,28 @@ async def reset(request: Request) -> dict:
         raise HTTPException(status_code=422, detail="stream、applied_seq 不对")
     engine = get_engine()
     ensure_state(engine)
-    with engine.begin() as conn:
-        conn.execute(
-            text(
-                f"INSERT INTO `{STATE}` (name, stream, applied_seq, updated_at)"
-                " VALUES ('public', :st, :s, :u)"
-                " ON DUPLICATE KEY UPDATE stream = :st, applied_seq = :s, updated_at = :u"
-            ),
-            {"st": stream, "s": seq, "u": datetime.now(UTC).replace(tzinfo=None)},
-        )
+    # 和写入排同一把锁、按签名里的时间排先后：重放的旧 reset 不会把变更流改回去
+    stamp = sync_tables.stamp_ms(request.headers.get(sync_tables.HEADER_TIME, ""))
+    try:
+        with engine.begin() as conn:
+            _take_turn(conn, stamp)
+            conn.execute(
+                text(
+                    f"INSERT INTO `{STATE}` (name, stream, applied_seq, updated_at)"
+                    " VALUES ('public', :st, :s, :u)"
+                    " ON DUPLICATE KEY UPDATE stream = :st, applied_seq = :s, updated_at = :u"
+                ),
+                {"st": stream, "s": seq, "u": datetime.now(UTC).replace(tzinfo=None)},
+            )
+            _record_turn(conn, stamp)
+    except Stale as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "这个请求比服务器已经写过的旧（重放），没有改",
+                "last_stamp": exc.last,
+            },
+        ) from None
     return read_state(engine)
 
 

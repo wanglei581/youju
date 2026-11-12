@@ -133,7 +133,8 @@ def _revision(engine: Engine) -> str | None:
 
 
 class Client:
-    """带签名的同步请求（YOUJU_SYNC_URL、YOUJU_SYNC_SECRET）。http 可以换成测试用的客户端。"""
+    """带签名的同步请求（YOUJU_SYNC_URL、YOUJU_SYNC_SECRET）。http 可以换成测试用的客户端。
+    不是线程安全的（每次签的时间要比上一次大，记在实例上）：一个进程里一次只推一路（push_lock）。"""
 
     def __init__(self, url: str, secret: str, *, http: httpx.Client | None = None) -> None:
         host = httpx.URL(url).host if url.startswith(("https://", "http://")) else ""

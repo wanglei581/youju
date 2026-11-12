@@ -61,6 +61,7 @@ def _clear(engine):
             conn.execute(text(f"TRUNCATE TABLE `{t.name}`"))
         conn.execute(text("SET FOREIGN_KEY_CHECKS = 1"))
         conn.execute(text(f"DROP TABLE IF EXISTS `{sync_server.STATE}`"))
+        conn.execute(text(f"DROP TABLE IF EXISTS `{sync_server.ORDER}`"))
 
 
 @pytest.fixture
@@ -371,6 +372,13 @@ def test_stale_or_replayed_batches_are_refused(env, monkeypatch):
         other().json("POST", "/apply", {"stream": stream, "max_seq": applied + 2, "tables": {}})
     assert "409" in str(err.value)
     assert env.client.json("GET", "/state")["applied_seq"] == applied + 1
+    # reset 也排在同一把锁上：重放的旧 reset 不会把变更流改回去
+    now[0] -= 5000
+    monkeypatch.setattr(sync_tables, "new_stamp", stamp)
+    with pytest.raises(local.SyncError) as err:
+        other().json("POST", "/reset", {"stream": "old-stream-00000", "applied_seq": 0})
+    assert "409" in str(err.value)
+    assert env.client.json("GET", "/state")["stream"] == stream
 
 
 def test_stream_mismatch_needs_full_push(env):
@@ -548,6 +556,30 @@ def test_attachment_files_follow_their_rows(env, monkeypatch, tmp_path):
         conn.execute(T["attachment_copies"].delete().where(T["attachment_copies"].c.id == copy))
     local.push(env.local, env.client, store=local_store)
     assert not server_store.exists(path)
+    # 推之前查过"服务器上有"、随后被清理删掉了（这里跳过补传来模拟）：这一批不写（不留指向不存在
+    # 文件的行），下一轮先补传再写
+    again = insert(
+        env.local,
+        "attachment_copies",
+        url_hash="g" * 64,
+        url="https://kjt.shandong.gov.cn/b.pdf",
+        declared_type="pdf",
+        status="ready",
+        file_type="pdf",
+        file_id=f"cloud://prod-env.youju-self/{path}",
+        size=len(content),
+        sha256=digest,
+    )
+    real_send = local._send_blobs
+    monkeypatch.setattr(local, "_send_blobs", lambda *a, **k: 0)
+    with pytest.raises(local.SyncError) as err:
+        local.push(env.local, env.client, store=local_store)
+    assert "409" in str(err.value) and "不在服务器上" in str(err.value)
+    assert not [r for r in rows(env.server, "attachment_copies") if r["id"] == again]
+    monkeypatch.setattr(local, "_send_blobs", real_send)
+    assert local.push(env.local, env.client, store=local_store).blobs == 1
+    assert server_store.exists(path)
+    assert [r["id"] for r in rows(env.server, "attachment_copies")] == [again]
     # 名字和内容对不上的不收
     bad = hashlib.sha256(b"other").hexdigest()
     with pytest.raises(local.SyncError) as err:
