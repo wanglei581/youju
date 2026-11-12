@@ -1053,10 +1053,15 @@ def test_completed_title_joins_the_copy_that_already_had_the_full_title(session)
         doc.publish_date = date(2026, 9, 26)
     session.commit()
     page = detail_page(HENAN_FULL)
+    # 两份都抓正文：标题开头是四个厅局联合"关于"，发文机关从标题取（四家联合），归并键里的机关
+    # 两份一样；没抓正文的那份只能按栏目部门算，和联合发文对不上
     fake = FakeFetcher(
-        {truncated.url: FetchResult(truncated.url, "ok", final_url=truncated.url, text=page)}
+        {
+            doc.url: FetchResult(doc.url, "ok", final_url=doc.url, text=page)
+            for doc in (copy, truncated)
+        }
     )
     assert session.scalars(select(DocumentMerge)).all() == []
-    fetch_details(session, limit=1, document_ids=[truncated.id], fetcher=fake)
+    fetch_details(session, limit=2, document_ids=[copy.id, truncated.id], fetcher=fake)
     merge = session.get(DocumentMerge, truncated.id)
     assert merge is not None and merge.active and merge.canonical_id == copy.id

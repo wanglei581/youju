@@ -48,6 +48,27 @@ _AGENCY = re.compile(
 _AGENCY_END = re.compile(
     r"(?:厅|局|委|委员会|部|中心|政府|办公室|研究院|院|署|海关|分行)(?:（[^）]+）)?$"
 )
+# 发文机关的几处来源（_issuer 按这个顺序找）：
+# - 页面上明写的"发文机关、发文单位、制发机关"；
+# - 文件标题开头的机关："某某市人民政府关于……""某某厅等 7 部门关于印发……"。标题比"发布机构"一栏准：
+#   转载上级文件、市政府发文挂在办公室网站上时，"发布机构"写的是挂文件的单位；
+# - "发布机构"一栏：挂文件的单位，自己发的文件就是发文机关。
+_ISSUER_LABEL = re.compile(r"(?:发文机关|发文单位|制发机关)\s*[:：]\s*([^\n]{2,80})")
+_PUBLISHER_LABEL = re.compile(r"发布机构\s*[:：]\s*([^\n]{2,80})")
+_TITLE_ISSUER = re.compile(
+    r"^\s*(?P<org>[一-鿿（）()、\s]{2,90}?"
+    r"(?:厅|局|委|委员会|部|中心|政府|办公室|研究院|院|署|海关|分行|小组)(?:（[^）]{1,20}）)?)"
+    r"(?P<etc>\s*等\s*\d{1,2}\s*个?部门)?\s*(?:关于|印发|转发)"
+)
+# 只写了部门内设机构的名字，不是发文机关（"发布机构：信息中心"、来源写"办公室"）
+_GENERIC_ISSUERS = frozenset({"信息中心", "办公室", "网站管理中心", "政务公开办公室"})
+# 省级、中央机关的名字：发布机构是市县的、页面来源是这类机关的，是转载上级文件
+_UPPER_AGENCY = re.compile(
+    r"^(?:[一-鿿]{2,3}省|内蒙古自治区|广西壮族自治区|西藏自治区|宁夏回族自治区"
+    r"|新疆维吾尔自治区|国务院|中共中央|全国|国家|中华人民共和国"
+    r"|[^省市县区州盟旗\s]{2,10}(?:部|总局|署)$)"
+)
+_LOCAL_AGENCY = re.compile(r"[市县区州盟旗]")
 _DATE = re.compile(r"20\d{2}\s*(?:年|[-/.])\s*\d{1,2}\s*(?:月|[-/.])\s*\d{1,2}\s*日?")
 # qr_container：常见的"扫一扫在手机打开当前页"二维码块（四川科技厅、江苏工信厅放在正文区里）
 _JUNK_CLASS = re.compile(
@@ -901,17 +922,50 @@ def _issuer(lines: list[str], root: etree._Element, prefix: str) -> str | None:
                 break
         if agencies:
             return "、".join(reversed(agencies))
-    for match in re.finditer(
-        r"(?:发文机关|发文单位|发布机构|制发机关)\s*[:：]\s*([^\n]{2,80})", prefix
-    ):
+    for match in _ISSUER_LABEL.finditer(prefix):
         value = match.group(1).strip()
         if _AGENCY_END.search(value):
             return normalize_issuer(value)
+    if title_issuer := _title_issuer(root):
+        return title_issuer
+    for match in _PUBLISHER_LABEL.finditer(prefix):
+        value = match.group(1).strip()
+        if _is_agency(value):
+            return _republished_from(value, root) or normalize_issuer(value)
     for name in ("issuer", "publishingorganization", "contentSource"):
-        value = _metadata(root, name)
-        if value and len(value) <= 60 and _AGENCY_END.search(value):
+        value = (_metadata(root, name) or "").strip()
+        if len(value) <= 60 and _is_agency(value):
             return normalize_issuer(value)
     return None
+
+
+def _is_agency(value: str) -> bool:
+    return bool(_AGENCY_END.search(value)) and value not in _GENERIC_ISSUERS
+
+
+def _title_issuer(root: etree._Element) -> str | None:
+    """文件标题开头的机关（"某某市人民政府关于……""某某厅等 7 部门关于印发……"）。缺地名的简称
+    （"市政府办公室""省财政厅"）不用，页面上别处往往有全称。"""
+    for title in _page_titles(root):
+        match = _TITLE_ISSUER.match(title)
+        if not match:
+            continue
+        org = " ".join(match.group("org").split())
+        if org[0] in "市县区省镇乡":
+            continue
+        etc = "".join((match.group("etc") or "").split())
+        return normalize_issuer(org) + etc
+    return None
+
+
+def _republished_from(publisher: str, root: etree._Element) -> str | None:
+    """发布机构一栏是市县区的单位、页面来源（contentSource）是省级或中央机关：这一页是转载的上级文件
+    （如攀枝花市文广旅局转发的省文旅厅文件），发文机关是来源。"""
+    source = (_metadata(root, "contentSource") or "").strip()
+    if not source or len(source) > 60 or source == publisher or not _is_agency(source):
+        return None
+    local = _LOCAL_AGENCY.search(publisher) and not _UPPER_AGENCY.search(publisher)
+    return normalize_issuer(source) if local and _UPPER_AGENCY.search(source) else None
 
 
 def _split_issuer_line(line: str) -> str:
