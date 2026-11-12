@@ -359,6 +359,8 @@ class RepostAutoCheck(Base):
     group_id: Mapped[int] = mapped_column(Integer)
     revision: Mapped[int] = mapped_column(Integer)
     document_ids: Mapped[list] = mapped_column(JSONType)
+    # 抽样时判的这几个版本的证据指纹（见 repost_checks._evidence）：记录时对不上就算组变了
+    evidence: Mapped[str] = mapped_column(String(64), default="", server_default="")
     rule_version: Mapped[str] = mapped_column(String(16))
     verdict: Mapped[str | None] = mapped_column(String(8))
     note: Mapped[str] = mapped_column(String(300), default="", server_default="")

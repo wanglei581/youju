@@ -19,6 +19,7 @@ def upgrade():
         sa.Column("group_id", sa.Integer(), nullable=False),
         sa.Column("revision", sa.Integer(), nullable=False),
         sa.Column("document_ids", sa.JSON(), nullable=False),
+        sa.Column("evidence", sa.String(64), nullable=False, server_default=""),
         sa.Column("rule_version", sa.String(16), nullable=False),
         sa.Column("verdict", sa.String(8), nullable=True),
         sa.Column("note", sa.String(300), nullable=False, server_default=""),
