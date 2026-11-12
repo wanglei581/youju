@@ -97,6 +97,7 @@ EXCLUDED_TABLES = frozenset(
     {
         # 归组中间数据
         "repost_signals",
+        "repost_auto_checks",
         # 用户数据
         "users",
         "follows",

@@ -337,6 +337,32 @@ class RepostSignal(Base):
     computed_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
 
 
+class RepostAutoCheck(Base):
+    """转发组抽查记录，仅在本机保存。"""
+
+    __tablename__ = "repost_auto_checks"
+    __table_args__ = (
+        UniqueConstraint("round", "group_id", name="uq_repost_auto_checks_round_group"),
+        CheckConstraint("purpose IN ('gate', 'weekly')", name="ck_repost_auto_checks_purpose"),
+        CheckConstraint("verdict IN ('correct', 'wrong')", name="ck_repost_auto_checks_verdict"),
+        Index(
+            "ix_repost_auto_checks_purpose_version_time", "purpose", "rule_version", "checked_at"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    round: Mapped[str] = mapped_column(String(40))
+    purpose: Mapped[str] = mapped_column(String(8))
+    group_id: Mapped[int] = mapped_column(Integer)
+    revision: Mapped[int] = mapped_column(Integer)
+    document_ids: Mapped[list] = mapped_column(JSONType)
+    rule_version: Mapped[str] = mapped_column(String(16))
+    verdict: Mapped[str] = mapped_column(String(8))
+    note: Mapped[str] = mapped_column(String(300), default="", server_default="")
+    checked_by: Mapped[str] = mapped_column(String(40))
+    checked_at: Mapped[datetime] = mapped_column(UTCDateTime())
+
+
 class RepostGroup(Base):
     """转发组（D-055，见 youju/repost.py）：同一份部里通知的各地版本。
 

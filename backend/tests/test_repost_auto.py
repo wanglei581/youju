@@ -1,0 +1,152 @@
+from dataclasses import replace
+from datetime import UTC, date, datetime, timedelta
+from itertools import combinations
+
+import pytest
+
+from youju.models import RepostGroup, RepostGroupMember
+from youju.repost import (
+    AUTO_REVIEWER,
+    Candidate,
+    Cited,
+    auto_reason,
+    auto_upstream,
+    pair_strength,
+    signals,
+    withdraw_group,
+)
+
+
+@pytest.fixture
+def example():
+    group = RepostGroup(
+        strength="strong", created_by="rule", no_auto=False, needs_review=False, revision=1
+    )
+    rows = [RepostGroupMember(document_id=i, active=True, joined_by="rule") for i in (1, 2, 3)]
+    cands = {
+        i: Candidate(
+            id=i,
+            title="关于开展创新产业发展项目申报工作的通知",
+            kind="申报通知",
+            province=str(i),
+            dept="科技",
+            publish_date=date(2026, 1, i),
+            has_body=True,
+            cited=(Cited("工信厅办函〔2026〕1号", "项目申报通知"),),
+        )
+        for i in (1, 2, 3)
+    }
+    return group, rows, cands
+
+
+def test_eligible_and_pairs(example):
+    group, rows, cands = example
+    assert auto_reason(group, rows, cands, set()) == ""
+    assert auto_upstream(rows, cands, set()) == "工信厅办函〔2026〕1号"
+    for a, b in combinations(cands.values(), 2):
+        assert pair_strength(a, signals(a), b, signals(b)) == "strong"
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"title": "关于开展创新产业发展另一方向项目申报工作的通知"},
+        {"cited": (Cited("工信厅联节函〔2026〕1号", "通知"),)},
+        {"cited": ()},  # 管理办法不会被 cited_upstream 收录
+        {"kind": "名单"},
+        {"kind": "政策"},
+        {"kind": "其他"},
+        {"province": "1"},
+        {"title": "关于开展省级创新产业发展项目申报工作的通知"},
+        {"has_body": False},
+        {"title": "关于2025年创新产业发展项目申报工作的通知"},
+        {"publish_date": date(2026, 5, 1)},
+    ],
+)
+def test_rejects_counterexamples(example, changes):
+    group, rows, cands = example
+    cands[2] = replace(cands[2], **changes)
+    assert auto_reason(group, rows, cands, set())
+
+
+def test_chain_and_duplicates(example):
+    group, rows, cands = example
+    other = Cited("工信厅办函〔2026〕2号", "通知")
+    cands[2] = replace(cands[2], cited=(*cands[2].cited, other))
+    cands[3] = replace(cands[3], cited=(other,))
+    assert auto_reason(group, rows, cands, set())
+    assert not auto_reason(group, rows, cands, {3})
+    assert auto_reason(group, rows, cands, {2, 3})
+    del cands[1]
+    assert auto_reason(group, rows, cands, {3})
+
+
+@pytest.mark.parametrize(
+    "target,field,value",
+    [
+        ("group", "no_auto", True),
+        ("group", "needs_review", True),
+        ("group", "created_by", "human"),
+        ("group", "strength", "weak"),
+        ("row", "active", False),
+        ("row", "joined_by", "human"),
+        ("row", "confirmed_at", datetime(2026, 1, 1, tzinfo=UTC)),
+    ],
+)
+def test_human_traces(example, target, field, value):
+    group, rows, cands = example
+    setattr(group if target == "group" else rows[0], field, value)
+    assert auto_reason(group, rows, cands, set())
+
+
+def test_auto_confirmation_and_withdraw(example):
+    group, rows, cands = example
+    stamp = datetime.now(UTC)
+    for row in rows:
+        row.confirmed_by, row.confirmed_at, row.confirmed_fingerprint = AUTO_REVIEWER, stamp, "x"
+    assert not auto_reason(group, rows, cands, set())
+    assert withdraw_group(group, rows, "人", stamp + timedelta(seconds=1)) == [1, 2, 3]
+    assert group.no_auto and not group.needs_review and group.revision == 2
+    assert all(
+        r.joined_by == "human"
+        and r.confirmed_at is None
+        and r.confirmed_by is None
+        and r.confirmed_fingerprint is None
+        for r in rows
+    )
+
+
+def test_private_table():
+    from youju.public_snapshot import EXCLUDED_TABLES, PUBLIC_TABLES
+    from youju.sync.tables import SYNC_TABLES
+
+    assert "repost_auto_checks" in EXCLUDED_TABLES
+    assert "repost_auto_checks" not in PUBLIC_TABLES | SYNC_TABLES
+
+
+def test_migration_schema_operations(monkeypatch):
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).parents[1] / "alembic/versions/0055_repost_auto_checks.py"
+    spec = importlib.util.spec_from_file_location("repost_auto_checks_migration", path)
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+    calls = []
+    for name in ("create_table", "create_index", "drop_index", "drop_table"):
+        monkeypatch.setattr(
+            migration.op, name, lambda *args, _name=name, **kw: calls.append((_name, args))
+        )
+    migration.upgrade()
+    migration.downgrade()
+    assert migration.revision == "0055" and migration.down_revision == "0054"
+    assert [c[0] for c in calls] == ["create_table", "create_index", "drop_index", "drop_table"]
+
+
+def test_auto_merge_default_off(monkeypatch):
+    from youju.config import Settings
+
+    monkeypatch.delenv("YOUJU_REPOST_AUTO_MERGE", raising=False)
+    assert Settings(_env_file=None).repost_auto_merge is False
+    monkeypatch.setenv("YOUJU_REPOST_AUTO_MERGE", "true")
+    assert Settings(_env_file=None).repost_auto_merge is True

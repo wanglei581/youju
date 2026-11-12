@@ -174,3 +174,21 @@ def test_repost_signals_database_downgrade_and_upgrade(db_engine):
     assert all(not r.has_body and r.body_at is None and r.grouped_at is not None for r in rows)
     # 断之前补的那行原样留着，新补的那行正文信号是空的
     assert sorted(str(r.cited).replace(" ", "") for r in rows) == ['["x"]', "[]"]
+
+
+def test_repost_auto_checks_database_downgrade_and_upgrade(db_engine):
+    from alembic import command
+    from sqlalchemy import inspect
+
+    from youju.migrations import alembic_config
+
+    from .conftest import TEST_DB_URL
+
+    config = alembic_config(TEST_DB_URL)
+    try:
+        command.downgrade(config, "0054")
+        assert "repost_auto_checks" not in inspect(db_engine).get_table_names()
+        command.upgrade(config, "0055")
+        assert "repost_auto_checks" in inspect(db_engine).get_table_names()
+    finally:
+        command.upgrade(config, "heads")

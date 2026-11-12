@@ -6,7 +6,9 @@
 - 正文前 1500 字信号存入 repost_signals，行本身也是文件已处理的标记；只重算 180 天窗口及窗口里的组。
 - 本模块只改 repost_* 表。截止日期不随转发组同步：各版本的截止各自核对、各自显示，
   dedup.sync_reviewed_twins、核对台的 _apply_review、_pending_shown_ids 只认 document_merges。
-- 对外合并必须人工确认；确认后保存成员快照，内容或整组约束变化则需复核，停止对外折叠。
+- 对外合并须确认；自动合并仅限满足 auto_reason 的组，默认关闭，开启须通过当前规则的抽查门。
+  关开关或门未通过时下一轮退回所有自动确认；条件变化退回窗口内自动确认，人工撤回后不再自动合并。
+  确认后保存成员快照，内容或整组约束变化则需复核，停止对外折叠。
 - 人工移出的版本（active=False）不会被下次归组自动加回；人工加入、拆出的不会被自动挪走；
   人工处理过的组保留；没有人工决定的待确认成员仍从头重算（见 rebuild、has_decision）。
 """
@@ -24,10 +26,12 @@ from sqlalchemy import Select, case, func, or_, select
 from sqlalchemy.orm import Session
 
 from youju.classify import GUIDE, effective_kind
+from youju.config import get_settings
 from youju.models import (
     Document,
     DocumentDetail,
     DocumentMerge,
+    RepostAutoCheck,
     RepostGroup,
     RepostGroupMember,
     RepostSignal,
@@ -48,6 +52,15 @@ BUCKET_NEIGHBORS = 200
 RECHECK_DAYS = 30
 RECHECK_BATCH = 2000
 _BEIJING = timezone(timedelta(hours=8))
+
+# ---- 自动合并（D-129 ②）：特征明确的转发组由程序确认、对外折叠 ----
+# 自动确认时写进 confirmed_by 的名字（和人工确认区分开；退回、抽查都按它认）
+AUTO_REVIEWER = "自动合并"
+# 判定条件（auto_reason）的版本：条件一改就换，旧条件下的抽查结果不再算数，要重新抽 100 组
+AUTO_RULE_VERSION = "2026-11-13"
+# 开关打开前的门：当前规则版本最近一轮 gate 抽查判了至少这么多组、准确率不低于这个比例
+AUTO_GATE_SIZE = 100
+AUTO_GATE_ACCURACY = 0.98
 # 核心标题至少几个字才拿来比
 MIN_CORE_CHARS = 8
 # 只看正文前多少字里引用的上游文号（“现将《……》（文号）转发给你们”一般在开头）
@@ -661,6 +674,49 @@ class RebuildSummary:
     conflicts: int = 0
     skipped: int = 0
     needs_review: int = 0
+    auto_merged: int = 0
+    auto_reverted: int = 0
+
+
+@dataclass
+class AutoGate:
+    """自动合并开关那道门的结果：当前规则版本最近一轮 gate 抽查（判了几组、对几组），
+    过没过、没过的原因。"""
+
+    passed: bool
+    round: str | None
+    checked: int
+    correct: int
+    reason: str
+
+
+def auto_gate(session: Session) -> AutoGate:
+    """开关那道门（D-129 ②）：只看当前规则版本（AUTO_RULE_VERSION）的 gate 抽查记录，按轮汇总，
+    取最近的一轮（这一轮最后一条记录最晚）；判了至少 AUTO_GATE_SIZE 组、准确率不低于
+    AUTO_GATE_ACCURACY 才过。最近一轮没过就是没过，更早一轮过了也不算；规则版本一换，
+    旧记录全不算。"""
+    rounds = session.execute(
+        select(
+            RepostAutoCheck.round,
+            func.count(RepostAutoCheck.id),
+            func.sum(case((RepostAutoCheck.verdict == "correct", 1), else_=0)),
+            func.max(RepostAutoCheck.checked_at),
+            func.max(RepostAutoCheck.id),
+        )
+        .where(RepostAutoCheck.purpose == "gate", RepostAutoCheck.rule_version == AUTO_RULE_VERSION)
+        .group_by(RepostAutoCheck.round)
+        .order_by(func.max(RepostAutoCheck.checked_at).desc(), func.max(RepostAutoCheck.id).desc())
+        .limit(1)
+    ).first()
+    if rounds is None:
+        return AutoGate(False, None, 0, 0, "没有记录")
+    round_id, checked, correct, _, _ = rounds
+    reason = (
+        "组数不够"
+        if checked < AUTO_GATE_SIZE
+        else ("准确率不够" if correct / checked < AUTO_GATE_ACCURACY else "")
+    )
+    return AutoGate(not reason, round_id, checked, correct, reason)
 
 
 def has_decision(row: RepostGroupMember) -> bool:
@@ -749,6 +805,83 @@ def bump(group: RepostGroup, stamp: datetime) -> None:
     对不上就不执行，免得确认了没看到的版本。"""
     group.revision = (group.revision or 0) + 1
     group.updated_at = stamp
+
+
+def auto_upstream(rows, cands, duplicates) -> str | None:
+    """组里所有在组版本都引用的上游文号（多个时取排序最前的）；没有共同文号、缺候选的给 None。"""
+    versions = [r for r in rows if r.active and r.document_id not in duplicates]
+    if not versions or any(r.document_id not in cands for r in versions):
+        return None
+    numbers = [{c.number for c in signals(cands[r.document_id]).cited} for r in versions]
+    common = set.intersection(*numbers)
+    return min(common) if common else None
+
+
+def auto_reason(group, rows, cands, duplicates) -> str:
+    """这个转发组能不能自动合并（D-129 ②）：能给空串，不能给第一条不满足的原因。
+
+    rows 是组的全部组员行（含移出的），cands 是 {文件编号: Candidate}（带存好的正文信号），
+    duplicates 是组员里成了同一文件副本的编号（不算版本）。条件（交接说明第 3 节，协调会话定的
+    口径），每个在组版本都要满足，所以两两之间都满足，不靠链着连起来：
+    - 组是强证据组、规则建的，没有 no_auto、needs_review；组员没有人工移出、人工加入，
+      没有被人确认过（自动确认的不算）；在组版本至少 2 份；
+    - 每份都是申报通知、有正文、不是本地项目，核心标题完全一样（至少 MIN_CORE_CHARS 字）；
+    - 所有版本都引用了同一个上游文号（cited_upstream 认的写法，文号完全一致）；
+    - 同一机关只有一份、发布日期跨度不超过 90 天（valid_group）。
+    这些都满足时，任意两份之间 pair_strength 必然是 strong。"""
+    if group.strength != "strong":
+        return "不是强证据组"
+    if group.no_auto or group.needs_review or group.created_by != "rule":
+        return "组有人工处理或需要复核"
+    if any(
+        not r.active
+        or r.joined_by == "human"
+        or (r.confirmed_at is not None and r.confirmed_by != AUTO_REVIEWER)
+        for r in rows
+    ):
+        return "组员有人工处理"
+    versions = [r for r in rows if r.active and r.document_id not in duplicates]
+    if len(versions) < 2:
+        return "在组版本不足两份"
+    docs = []
+    for row in versions:
+        doc = cands.get(row.document_id)
+        if doc is None:
+            return "缺少候选文件"
+        sig = signals(doc)
+        if doc.kind != "申报通知":
+            return "不是申报通知"
+        if not doc.has_body:
+            return "缺少正文"
+        if sig.local:
+            return "本地项目"
+        if len(sig.core) < MIN_CORE_CHARS:
+            return "核心标题太短"
+        if not sig.cited:
+            return "缺少上游文号"
+        docs.append(doc)
+    if len({core_title(d.title) for d in docs}) != 1:
+        return "核心标题不同"
+    if not auto_upstream(rows, cands, duplicates):
+        return "没有共同上游文号"
+    if not valid_group({d.id: (d.agency, d.publish_date) for d in docs}, [d.id for d in docs]):
+        return "机关或日期不符合"
+    return ""
+
+
+def withdraw_group(group, rows, reviewer, stamp) -> list[int]:
+    """整组撤回（管理台"撤回确认"和命令行 repost-withdraw、抽查判错共用）：在组版本都去掉确认、
+    改成人工决定，组设 no_auto（以后不再自动并回、也不再自动合并）。返回撤回前确认过的文件编号。
+    reviewer 由调用的地方记进审计日志。"""
+    confirmed = [r.document_id for r in rows if r.active and r.confirmed_at is not None]
+    for row in rows:
+        if row.active:
+            row.confirmed_by = row.confirmed_at = row.confirmed_fingerprint = None
+            row.joined_by = "human"
+    group.needs_review = False
+    group.no_auto = True
+    bump(group, stamp)
+    return confirmed
 
 
 def _fits(info: dict[int, tuple], ids: list[int], doc_id: int) -> bool:
@@ -1058,6 +1191,41 @@ def rebuild(
         # 空组（成员都去掉了、或都转给了主文件）删掉，不论在不在窗口里；人工处理过的照旧保留
         if group_id not in alive and not group.no_auto:
             session.delete(group)
+    session.flush()
+    # 自动合并（D-129 ②）：开关开着、门也过了，才把窗口里满足条件的组自动确认；不再满足条件的组、
+    # 以及开关关了或门没过时所有组里自动确认的版本，都退回待确认（人工确认的一概不动）
+    on = get_settings().repost_auto_merge and auto_gate(session).passed
+    window_groups = set(session.scalars(_window_groups(today))) if on else set()
+    by_group = defaultdict(list)
+    for row in members.values():
+        by_group[row.group_id].append(row)
+    cands = {c.id: c for c in candidates}
+    duplicates = set(duplicate_members(session, list(members))) if on else set()
+    for group_id, rows in by_group.items():
+        if on and group_id not in window_groups:
+            continue
+        group = groups[group_id]
+        eligible = on and not auto_reason(group, rows, cands, duplicates)
+        automatic = [r for r in rows if r.confirmed_by == AUTO_REVIEWER]
+        if eligible:
+            waiting = [
+                r
+                for r in rows
+                if r.active and r.document_id not in duplicates and r.confirmed_at is None
+            ]
+            if waiting:
+                _, facts = member_facts(session, [r.document_id for r in waiting])
+                for row in waiting:
+                    row.confirmed_by = AUTO_REVIEWER
+                    row.confirmed_at = stamp
+                    row.confirmed_fingerprint = facts[row.document_id]
+                bump(group, stamp)
+                summary.auto_merged += 1
+        elif automatic:
+            for row in automatic:
+                row.confirmed_by = row.confirmed_at = row.confirmed_fingerprint = None
+            bump(group, stamp)
+            summary.auto_reverted += 1
     session.flush()
     return summary
 
