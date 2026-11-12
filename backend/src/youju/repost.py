@@ -563,7 +563,19 @@ def refresh_signals(
             )
         )
     )
-    ids = sorted(set(session.scalars(in_window)) | set(session.scalars(old_members)))
+    # 自动确认过的组员（窗口外的也算）：正文、发文字号变了也重算，自动合并每轮重判全部自动组要用
+    auto_members = stale.where(
+        RepostSignal.document_id.in_(
+            select(RepostGroupMember.document_id).where(
+                RepostGroupMember.active.is_(True), RepostGroupMember.confirmed_by == AUTO_REVIEWER
+            )
+        )
+    )
+    ids = sorted(
+        set(session.scalars(in_window))
+        | set(session.scalars(old_members))
+        | set(session.scalars(auto_members))
+    )
     result.computed += recompute_signals(session, ids, stamp)
     return result
 
@@ -617,14 +629,27 @@ def load_candidates(
     """参加归组的文件：发布日期不早于 cutoff（默认窗口起点：今天往前 WINDOW_DAYS 天）的主文件，加上
     窗口里的组的全部成员（不论日期）；不含已归并的副本、下架的、没有发布日期的。正文信号读存好的
     （repost_signals），不读正文。"""
-    from youju.takedown import available_condition
 
     today = today or datetime.now(_BEIJING).date()
     cutoff = cutoff or today - timedelta(days=WINDOW_DAYS)
-    duplicates = select(DocumentMerge.duplicate_id).where(DocumentMerge.active.is_(True))
     group_members = select(RepostGroupMember.document_id).where(
         RepostGroupMember.group_id.in_(_window_groups(cutoff))
     )
+    return _candidates(
+        session, or_(Document.publish_date >= cutoff, Document.id.in_(group_members))
+    )
+
+
+def candidates_for(session: Session, ids: list[int]) -> list[Candidate]:
+    """这几份文件的候选（自动合并重判窗口外的自动组用）；同样不含已归并的副本、下架的、没有发布
+    日期的。"""
+    return _candidates(session, Document.id.in_(ids)) if ids else []
+
+
+def _candidates(session: Session, condition) -> list[Candidate]:
+    from youju.takedown import available_condition
+
+    duplicates = select(DocumentMerge.duplicate_id).where(DocumentMerge.active.is_(True))
     rows = session.execute(
         select(
             Document.id,
@@ -647,7 +672,7 @@ def load_candidates(
             Document.publish_date.is_not(None),
             ~Document.id.in_(duplicates),
             available_condition(),
-            or_(Document.publish_date >= cutoff, Document.id.in_(group_members)),
+            condition,
         )
         .order_by(Document.id)
     ).all()
@@ -702,34 +727,30 @@ class AutoGate:
 
 
 def auto_gate(session: Session) -> AutoGate:
-    """开关那道门（D-129 ②）：只看当前规则版本（AUTO_RULE_VERSION）的 gate 抽查记录，按轮汇总，
-    在判满 AUTO_GATE_SIZE 组的轮里取最近的一轮（这一轮最后一条记录最晚），准确率不低于
-    AUTO_GATE_ACCURACY 才过。最近一轮完整的没过就是没过，更早一轮过了也不算；规则版本一换，
-    旧记录全不算。"""
-    checked_count = func.count(RepostAutoCheck.id)
-    rounds = (
-        select(
-            RepostAutoCheck.round,
-            checked_count,
-            func.sum(case((RepostAutoCheck.verdict == "correct", 1), else_=0)),
-        )
+    """开关那道门（D-129 ②）：只看当前规则版本（AUTO_RULE_VERSION）的 gate 抽查轮。抽样时整份名单
+    就记进库、结论空着；一轮里每一组都有了结论（判了对错，或者抽样以后组变了、记 changed 不算），
+    判了对错的不少于 AUTO_GATE_SIZE 组，这一轮才算数——不能只交好判的，也不能自己添组。取最近一轮
+    算数的（抽样最晚），准确率不低于 AUTO_GATE_ACCURACY 才过；最近一轮算数的没过就是没过，更早
+    一轮过了也不算。另外抽的几组零星抽查（不满 100 组）不顶掉一轮完整的；规则版本一换，旧记录全
+    不算。库里给的计数是 Decimal，转成整数。"""
+    judged = func.sum(case((RepostAutoCheck.verdict.in_(("correct", "wrong")), 1), else_=0))
+    correct = func.sum(case((RepostAutoCheck.verdict == "correct", 1), else_=0))
+    pending = func.sum(case((RepostAutoCheck.verdict.is_(None), 1), else_=0))
+    rounds = session.execute(
+        select(RepostAutoCheck.round, judged, correct, pending)
         .where(RepostAutoCheck.purpose == "gate", RepostAutoCheck.rule_version == AUTO_RULE_VERSION)
         .group_by(RepostAutoCheck.round)
-        .order_by(func.max(RepostAutoCheck.checked_at).desc(), func.max(RepostAutoCheck.id).desc())
-        .limit(1)
-    )
-    # 只认判满 AUTO_GATE_SIZE 组的轮：另外记的几组零星抽查不顶掉一轮完整的（错的组记的时候已经
-    # 整组撤回了）。库里给的计数是 Decimal，转成整数
-    full = session.execute(rounds.having(checked_count >= AUTO_GATE_SIZE)).first()
-    if full is None:
-        partial = session.execute(rounds).first()
-        if partial is None:
-            return AutoGate(False, None, 0, 0, "没有记录")
-        round_id, checked, correct = partial[0], int(partial[1]), int(partial[2] or 0)
-        return AutoGate(False, round_id, checked, correct, "组数不够")
-    round_id, checked, correct = full[0], int(full[1]), int(full[2] or 0)
-    reason = "准确率不够" if correct / checked < AUTO_GATE_ACCURACY else ""
-    return AutoGate(not reason, round_id, checked, correct, reason)
+        .order_by(func.max(RepostAutoCheck.sampled_at).desc(), func.max(RepostAutoCheck.id).desc())
+    ).all()
+    if not rounds:
+        return AutoGate(False, None, 0, 0, "没有记录")
+    counted = [(r, int(j or 0), int(c or 0), int(p or 0)) for r, j, c, p in rounds]
+    for round_id, n_judged, n_correct, n_pending in counted:
+        if n_pending == 0 and n_judged >= AUTO_GATE_SIZE:
+            reason = "准确率不够" if n_correct / n_judged < AUTO_GATE_ACCURACY else ""
+            return AutoGate(not reason, round_id, n_judged, n_correct, reason)
+    round_id, n_judged, n_correct, n_pending = counted[0]
+    return AutoGate(False, round_id, n_judged, n_correct, "没判完" if n_pending else "组数不够")
 
 
 def _audit_auto(
@@ -851,7 +872,8 @@ def auto_upstream(rows, cands, duplicates, versions=None) -> str | None:
     """判的版本都对得上的上游文号（多个时取排序最前的）：转发件引用了它（cited_upstream 认的写法，
     文号完全一致）；部里的原件不引用自己，它自己的发文字号（Candidate.own_number：详情里页面元数据
     或正文头上的，括号写法统一以后）和它完全一致才算对上（协调会话 11/13 口径）。至少要有一份是
-    引用它的转发件。versions 给了就只看这几行，默认全部在组版本；没有共同文号、缺候选的给 None。"""
+    引用它的转发件。versions 给了就只看这几行（rows、duplicates 这时不用），默认全部在组版本；
+    没有共同文号、缺候选的给 None。"""
     versions = _auto_versions(rows, duplicates) if versions is None else versions
     if not versions or any(r.document_id not in cands for r in versions):
         return None
@@ -1029,7 +1051,9 @@ def rebuild(
             # 自动确认的副本转给主文件：主文件这一行不带确认，这一轮后面照常重判（和别的版本仍满足
             # 条件就自动确认上），不转"需复核"——免得一次去重就让自动组永久转人工
             moved.confirmed_by = moved.confirmed_at = moved.confirmed_fingerprint = None
-            _audit_auto(summary, "repost_auto_revert", group, [moved], "副本转给了主文件")
+            _audit_auto(
+                summary, "repost_auto_revert", group, [row], f"副本转给了主文件 {canonical}"
+            )
         elif row.confirmed_at is not None and not group.needs_review:
             group.needs_review = True
             summary.needs_review += 1
@@ -1276,15 +1300,31 @@ def rebuild(
         by_group[row.group_id].append(row)
     cands = {c.id: c for c in candidates}
     duplicates = set(duplicate_members(session, list(members))) if on else set()
+    if on:
+        # 窗口外的自动组每轮也重判（规则修紧、分类被改、原件文号更正，不再满足就退回；协调会话
+        # 11/13 的规矩），只是不往里加新的：把它们自动确认过的版本的候选补上
+        outside = [
+            r.document_id
+            for group_id, rows in by_group.items()
+            if group_id not in window_groups
+            for r in rows
+            if r.confirmed_by == AUTO_REVIEWER and r.document_id not in cands
+        ]
+        cands.update((c.id, c) for c in candidates_for(session, outside))
     off = "" if on else (f"门没过（{summary.gate_reason}）" if summary.gate_reason else "开关关着")
     for group_id, rows in by_group.items():
-        if on and group_id not in window_groups:
-            continue
         group = groups[group_id]
         automatic = [r for r in rows if r.confirmed_by == AUTO_REVIEWER]
+        inside = group_id in window_groups
+        if on and not inside and not automatic:
+            continue
         waiting: list[RepostGroupMember] = []
         why = off
-        if on:
+        if on and not inside:
+            # 窗口外：只重判已经自动确认的版本，不满足就整组退回，不往里加新的
+            kept = [r for r in automatic if r.active and r.document_id not in duplicates]
+            why = auto_reason(group, rows, cands, duplicates, versions=kept)
+        elif on:
             pending = [
                 r
                 for r in rows

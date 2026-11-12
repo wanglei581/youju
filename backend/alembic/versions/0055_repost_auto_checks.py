@@ -1,4 +1,4 @@
-"""转发组自动合并的本机抽查记录。"""
+"""转发组自动合并的本机抽查记录：抽样时整份名单就记进来（结论空着），判完再填结论。"""
 
 import sqlalchemy as sa
 from alembic import op
@@ -20,18 +20,21 @@ def upgrade():
         sa.Column("revision", sa.Integer(), nullable=False),
         sa.Column("document_ids", sa.JSON(), nullable=False),
         sa.Column("rule_version", sa.String(16), nullable=False),
-        sa.Column("verdict", sa.String(8), nullable=False),
+        sa.Column("verdict", sa.String(8), nullable=True),
         sa.Column("note", sa.String(300), nullable=False, server_default=""),
-        sa.Column("checked_by", sa.String(40), nullable=False),
-        sa.Column("checked_at", mysql.DATETIME(fsp=6), nullable=False),
+        sa.Column("checked_by", sa.String(40), nullable=True),
+        sa.Column("checked_at", mysql.DATETIME(fsp=6), nullable=True),
+        sa.Column("sampled_at", mysql.DATETIME(fsp=6), nullable=False),
         sa.UniqueConstraint("round", "group_id", name="uq_repost_auto_checks_round_group"),
         sa.CheckConstraint("purpose IN ('gate', 'weekly')", name="ck_repost_auto_checks_purpose"),
-        sa.CheckConstraint("verdict IN ('correct', 'wrong')", name="ck_repost_auto_checks_verdict"),
+        sa.CheckConstraint(
+            "verdict IN ('correct', 'wrong', 'changed')", name="ck_repost_auto_checks_verdict"
+        ),
     )
     op.create_index(
         "ix_repost_auto_checks_purpose_version_time",
         "repost_auto_checks",
-        ["purpose", "rule_version", "checked_at"],
+        ["purpose", "rule_version", "sampled_at"],
     )
 
 

@@ -1521,10 +1521,29 @@ def test_backfilled_marker_of_old_group_member_gets_signals(session, world):
 # ---- 自动合并门禁（数据库测试）--------------------------------------------------
 
 
-def _gate_records(session, round_id, count, correct, *, stamp=NOW, purpose="gate", version=None):
+def _gate_records(
+    session,
+    round_id,
+    count,
+    correct,
+    *,
+    stamp=NOW,
+    purpose="gate",
+    version=None,
+    pending=0,
+    changed=0,
+):
+    """一轮抽查记录：count 组判了对错（前 correct 组对），另有 pending 组还没判、changed 组抽样以后
+    组变了。"""
     from youju.models import RepostAutoCheck
     from youju.repost import AUTO_RULE_VERSION
 
+    verdicts = (
+        ["correct"] * correct
+        + ["wrong"] * (count - correct)
+        + [None] * pending
+        + ["changed"] * changed
+    )
     session.add_all(
         RepostAutoCheck(
             round=round_id,
@@ -1533,12 +1552,13 @@ def _gate_records(session, round_id, count, correct, *, stamp=NOW, purpose="gate
             revision=1,
             document_ids=[],
             rule_version=version or AUTO_RULE_VERSION,
-            verdict="correct" if i < correct else "wrong",
+            verdict=verdict,
             note="",
-            checked_by="核对人",
-            checked_at=stamp,
+            checked_by=None if verdict is None else "核对人",
+            checked_at=None if verdict is None else stamp,
+            sampled_at=stamp,
         )
-        for i in range(count)
+        for i, verdict in enumerate(verdicts)
     )
     session.flush()
 
@@ -1557,6 +1577,15 @@ def test_auto_gate_rounds_and_thresholds(session):
     assert gate.passed and (gate.round, gate.checked, gate.correct) == ("pass", 100, 98)
     _gate_records(session, "fail", 100, 97, stamp=NOW + timedelta(seconds=2))
     assert not auto_gate(session).passed and auto_gate(session).reason == "准确率不够"
+    # 抽样名单里还有没判的：这一轮不算（不能只交好判的），门照最近一轮算数的
+    _gate_records(session, "unfinished", 100, 100, stamp=NOW + timedelta(seconds=3), pending=1)
+    assert auto_gate(session).round == "fail"
+    # 抽样以后组变了的（changed）不算进分母；判了对错的满 100 组才算数
+    _gate_records(session, "changed", 100, 99, stamp=NOW + timedelta(seconds=4), changed=10)
+    gate = auto_gate(session)
+    assert gate.passed and (gate.round, gate.checked, gate.correct) == ("changed", 100, 99)
+    _gate_records(session, "short", 95, 95, stamp=NOW + timedelta(seconds=5), changed=15)
+    assert auto_gate(session).round == "changed"
 
 
 def _auto_world(session):
@@ -1747,6 +1776,71 @@ def test_admin_withdraw_of_an_auto_group(session, client, monkeypatch):
     assert rebuild(session, now=NOW + timedelta(seconds=1)).auto_merged == 0
     group = session.get(RepostGroup, gid)
     assert group.no_auto and all(r.confirmed_at is None for r in _members(session).values())
+
+
+def test_auto_groups_outside_the_window_are_rejudged_every_round(session, monkeypatch):
+    # 窗口外的自动组每轮也重判：规则修紧（这里把核心标题最少字数调大）就退回；合规的照旧不动
+    from youju import repost
+
+    _auto_on(monkeypatch, session)
+    _auto_world(session)
+    assert rebuild(session, now=NOW).auto_merged == 1
+    later = NOW + timedelta(days=400)  # 组里的文件都早于窗口了
+    assert rebuild(session, now=later).auto_reverted == 0
+    monkeypatch.setattr(repost, "MIN_CORE_CHARS", 50)
+    result = rebuild(session, now=later + timedelta(seconds=1))
+    assert (result.auto_reverted, result.auto_merged) == (1, 0)
+    assert all(r.confirmed_at is None for r in _members(session).values())
+
+
+def test_outside_auto_group_reverts_when_a_kind_is_overridden(session, monkeypatch):
+    # 窗口外的自动组：人工把其中一份的类型改成不是申报通知，下一轮退回
+    _auto_on(monkeypatch, session)
+    docs = _auto_world(session)
+    assert rebuild(session, now=NOW).auto_merged == 1
+    docs[0].kind_override = "其他"
+    session.flush()
+    assert rebuild(session, now=NOW + timedelta(days=400)).auto_reverted == 1
+
+
+def test_outside_auto_group_reverts_when_the_original_number_is_corrected(session, monkeypatch):
+    # 窗口外的自动组：部里原件的发文字号更正（重抓以后对不上转发件引用的了），下一轮退回
+    _auto_on(monkeypatch, session)
+    docs = _auto_world(session)
+    original = _doc(
+        session,
+        _source(session, "国家", full="工业和信息化部"),
+        "工业和信息化部办公厅关于组织开展2026年度视听系统典型案例征集工作的通知",
+        day=1,
+        body="各省、自治区、直辖市工业和信息化主管部门：现就组织开展有关工作通知如下。",
+    )
+    detail = session.get(DocumentDetail, original.id)
+    detail.doc_number = "工信厅联电子函〔2026〕376号"
+    session.flush()
+    assert rebuild(session, now=NOW).auto_merged == 1
+    assert {original.id, *(d.id for d in docs)} <= set(_members(session))
+    detail.doc_number = "工信厅联电子函〔2026〕377号"
+    detail.fetched_at = NOW + timedelta(days=1)
+    session.flush()
+    result = rebuild(session, now=NOW + timedelta(days=400))
+    assert result.auto_reverted == 1
+    assert session.get(RepostSignal, original.id).own_number == "工信厅联电子函〔2026〕377号"
+
+
+def test_new_versions_are_added_one_by_one(session, monkeypatch):
+    # 已经自动合并的组同时来了两份新版本：正文齐全、引用同一文号的那份加进来；正文还没抓到的留待确认
+    from youju.repost import AUTO_REVIEWER
+
+    _auto_on(monkeypatch, session)
+    docs = _auto_world(session)
+    assert rebuild(session, now=NOW).auto_merged == 1
+    good = _doc(session, _source(session, "福建"), docs[0].title, day=19, body=UPSTREAM + "福建")
+    bare = _doc(session, _source(session, "四川"), docs[0].title, day=18)
+    session.flush()
+    result = rebuild(session, now=NOW + timedelta(seconds=1))
+    assert (result.auto_merged, result.auto_reverted) == (1, 0)
+    rows = _members(session)
+    assert rows[good.id].confirmed_by == AUTO_REVIEWER and rows[bare.id].confirmed_at is None
 
 
 def test_auto_group_outside_the_window_is_left_alone_while_on(session, monkeypatch):
