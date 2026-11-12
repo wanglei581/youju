@@ -237,7 +237,11 @@ def check_source(
     result = fetcher.fetch(url)
     status, error = result.status, result.error
     items: list[ListItem] = []
-    first_via_adapter = config_changed = False
+    first_via_adapter = False
+    # 要写回来源 parser_config 的改动：加锁以后合到库里最新的配置上，不拿加锁前的旧副本整个
+    # 覆盖（两次检查同时进行时，不会把对方刚记下的拦下记录冲掉）
+    config_set: dict[str, object] = {}
+    config_drop: set[str] = set()
     if result.status == "ok":
         items = extract_items(result.text, result.final_url or url, parser_config, today=today)
         api = None
@@ -255,24 +259,20 @@ def check_source(
             if note is not None and not via.refused and (moved or via.fetch is None):
                 # 页面换了接口，或过了 30 天再请求、接口正常返回没被拦：去掉旧记录（这次只是
                 # 网络不通、5xx 的，旧记录留着）
-                parser_config = {
-                    k: v for k, v in parser_config.items() if k != LIST_API_REFUSED_KEY
-                }
-                config_changed = True
+                config_drop.add(LIST_API_REFUSED_KEY)
             if via.items:
                 items = via.items
                 # 第一次经列表接口读出整页：以前只认出零星几条的来源，整页旧通知不能算"新增"
                 first_via_adapter = parser_config.get("list_api") != via.adapter
                 if first_via_adapter:
-                    parser_config = {**parser_config, "list_api": via.adapter}
+                    config_set["list_api"] = via.adapter
             elif via.refused:
                 # 读取护栏（D-128）：接口返回不是成功、带权限要求、要登录或验证码、明确拒绝
                 # → 记不能抓、停抓；栏目页上零星认出的一两条也不收（列表在接口里，读不了）
                 items = []
                 status, error = LIST_API_REFUSED, f"列表接口（{via.adapter}）：{via.refused}"
                 note = {"url": via.api_url, "reason": error, "at": started.isoformat()}
-                parser_config = {**parser_config, LIST_API_REFUSED_KEY: note}
-                config_changed = True
+                config_set[LIST_API_REFUSED_KEY] = note
                 if via.fetch is not None and via.fetch.http_status:
                     result = FetchResult(url, LIST_API_REFUSED, http_status=via.fetch.http_status)
             elif via.fetch is not None and via.fetch.status == "robots_disallowed":
@@ -286,13 +286,18 @@ def check_source(
                 status, error = via.fetch.status, f"列表接口（{via.adapter}）：{via.fetch.error}"
                 if via.fetch.http_status:
                     result = FetchResult(url, "http_error", http_status=via.fetch.http_status)
+            else:
+                # 接口回了，但读不出列表（空白、不是 JSON、没有列表那段，或列表本来就空）：
+                # 栏目页零星认出的一两条也不收，按"没识别到列表条目"记，下次再试
+                items = []
         if not items and status == "ok":
             status, error = "parse_empty", PARSE_EMPTY_MESSAGE
 
     _lock_source(session, source)
-    if first_via_adapter or config_changed:
-        # 记下这个栏目要经列表接口读，或列表接口被读取护栏拦下（以后不再请求）
-        source.parser_config = parser_config
+    if config_set or config_drop:
+        # 记下这个栏目要经列表接口读，或列表接口被读取护栏拦下（以后不再请求）、去掉旧记录
+        fresh = {k: v for k, v in (source.parser_config or {}).items() if k not in config_drop}
+        source.parser_config = {**fresh, **config_set}
     # 来源第一次成功检查时看到的条目算基线，不计入"新增"；第一次经列表接口读出的整页也算基线
     baseline = bool(items) and (source.last_success_at is None or first_via_adapter)
     new_count = save_items(session, source, items, baseline=baseline, seen_at=started)

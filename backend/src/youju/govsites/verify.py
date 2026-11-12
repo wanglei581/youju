@@ -123,6 +123,7 @@ def check_one(cache: PageCache, col: ColumnCheck, today: date) -> ColumnCheck:
         return col
     final = r.final_url or col.url
     items = extract_items(r.text, final, today=today)
+    via_api = False
     if len(items) < 3:
         # 和正式抓取一样：页面声明了集约化平台的列表接口就按它读（crawler/adapters.py）
         api = find_list_api(r.text, final)
@@ -139,10 +140,12 @@ def check_one(cache: PageCache, col: ColumnCheck, today: date) -> ColumnCheck:
                 col.result, col.reason = DOWN, f"列表接口：{(ar.error or ar.status)[:100]}"
                 return col
             html = api_html(api, ar.text)
-            via = extract_items(html, api.base_url, today=today) if html else []
-            if len(via) > len(items):
-                items = via
-                col.reason = f"经{api.adapter}列表接口读取"
+            if not html:
+                # 接口回了，但不是预期的样子（空白、不是 JSON、没有列表那段）：这次没读出，记打不开
+                col.result, col.reason = DOWN, "列表接口返回读不出列表（不是预期的格式）"
+                return col
+            items = extract_items(html, api.base_url, today=today)
+            col.reason, via_api = f"经{api.adapter}列表接口读取", True
     dated = [i for i in items if i.publish_date]
     col.items, col.dated = len(items), len(dated)
     col.latest = max((i.publish_date for i in dated), default=None)  # type: ignore[type-var]
@@ -152,6 +155,10 @@ def check_one(cache: PageCache, col: ColumnCheck, today: date) -> ColumnCheck:
     col.platform = fingerprint(r.text, final, doc, [link.url for link in links]).platform
     if len(dated) >= 3:
         col.result = READABLE
+    elif via_api:
+        # 列表接口读了，带日期的不到 3 条：不再按栏目页猜"要脚本"
+        col.result = NO_ITEMS
+        col.reason = f"经列表接口识别出 {len(items)} 条、带日期 {len(dated)} 条"
     elif _SCRIPT_LIST.search(r.text) or len(re.sub(r"<[^>]+>", "", r.text)) < 1500:
         col.result, col.reason = NEEDS_SCRIPT, "页面上没有带日期的条目，列表像是脚本加载的"
     else:

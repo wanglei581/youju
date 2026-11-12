@@ -369,3 +369,27 @@ def test_verify_records_one_off_list_api_failure_as_down():
     failed = FetchResult(api.url, "http_error", api.url, 502, "", "HTTP 502")
     col = check_one(_Cache({PAGE_URL: PAGE, api.url: failed}), _column(), date(2026, 11, 12))
     assert col.result == DOWN and "列表接口" in col.reason
+
+
+def test_success_flag_with_login_prompt_is_not_read():
+    api = _api()
+    text = _payload(message="请先登录后查看")
+    assert "要登录或验证码" in api_refusal(api, _got(text))
+    assert api_html(api, text) == ""
+
+
+def test_verify_unreadable_or_empty_list_api_reply():
+    from youju.govsites.verify import DOWN, NO_ITEMS, check_one
+
+    api, today = _api(), date(2026, 11, 12)
+    blank = check_one(
+        _Cache({PAGE_URL: PAGE, api.url: "<html>系统维护中</html>"}), _column(), today
+    )
+    assert blank.result == DOWN and "列表接口" in blank.reason
+    empty = check_one(
+        _Cache({PAGE_URL: PAGE, api.url: _payload(data={"html": ""})}), _column(), today
+    )
+    assert empty.result == DOWN  # 没有列表那段，同样记这次没读出
+    one = _payload(data={"html": LIST.split("</li>")[0] + "</li>"})
+    few = check_one(_Cache({PAGE_URL: PAGE, api.url: one}), _column(), today)
+    assert few.result == NO_ITEMS and "经列表接口" in few.reason

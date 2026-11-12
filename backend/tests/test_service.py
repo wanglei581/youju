@@ -491,3 +491,46 @@ def test_one_off_list_api_failure_is_not_hidden_by_stray_page_items(session) -> 
     assert "列表接口" in check.error
     session.refresh(source)
     assert source.health == "degraded"
+
+
+def test_unreadable_list_api_reply_drops_stray_page_items(session) -> None:
+    """接口回 200 但读不出列表（空白、不是 JSON）：栏目页零星认出的一条也不收，记没识别到条目。"""
+    url = "https://kjt.zj.gov.cn/col/col1229225203/index.html"
+    stray = JPAAS_PAGE.replace(
+        "</ul>",
+        '<li><a href="/art/9.html">关于开展专项申报工作的通知</a><span>2026-11-01</span></li></ul>',
+    )
+    for body in ("", "<html>系统维护中</html>", '{"success":true,"code":"200","data":{"html":""}}'):
+        session.query(Document).delete()
+        session.query(SourceCheck).delete()
+        session.query(Source).delete()
+        session.commit()
+        source = make_source(session, url)
+        fetcher = FakeFetcher({url: [page(url, stray)], JPAAS_API: [page(JPAAS_API, body)]})
+        check = check_source(session, source, fetcher)
+        assert (check.status, check.items_found) == ("parse_empty", 0)
+        assert session.scalar(select(func.count()).select_from(Document)) == 0
+
+
+def test_refusal_note_is_merged_into_the_latest_config(session, session_factory) -> None:
+    """拦下记录合到库里最新的配置上：检查期间别处改过的配置项不会被旧副本冲掉。"""
+    url = "https://kjt.zj.gov.cn/col/col1229225203/index.html"
+    source = make_source(session, url)
+    body = '{"success":false,"code":"200","message":"","data":{}}'
+
+    class EditingFetcher(FakeFetcher):
+        def fetch(self, fetch_url: str) -> FetchResult:
+            if fetch_url == JPAAS_API:
+                # 检查进行中，另一处给这个来源写了别的配置
+                with session_factory() as other:
+                    row = other.get(Source, source.id)
+                    row.parser_config = {**(row.parser_config or {}), "note": "别处写的"}
+                    other.commit()
+            return super().fetch(fetch_url)
+
+    fetcher = EditingFetcher({url: [page(url, JPAAS_PAGE)], JPAAS_API: [page(JPAAS_API, body)]})
+    check = check_source(session, source, fetcher)
+    assert check.status == "list_api_refused"
+    session.refresh(source)
+    assert source.parser_config["note"] == "别处写的"
+    assert source.parser_config["list_api_refused"]["url"] == JPAAS_API

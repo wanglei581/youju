@@ -186,6 +186,10 @@ def _payload_refusal(payload: dict) -> str:
         if message:
             parts.append(message)
         return f"列表接口返回不是成功（{'，'.join(parts)}）"
+    message = str(payload.get("message") or payload.get("msg") or "").strip()[:40]
+    if _LOGIN_TEXT.search(message):
+        # 标着成功、提示却是要登录：自相矛盾，按要登录处理，不读
+        return f"列表接口要登录或验证码（{message}）"
     fields = _permission_fields(payload)
     if fields:
         return f"列表接口返回带权限要求（{'、'.join(fields)} 不为空）"
