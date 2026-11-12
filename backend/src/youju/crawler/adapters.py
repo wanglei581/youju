@@ -6,10 +6,13 @@ docs/数据来源/全国覆盖/集约化平台盘点.md）。
 
 规矩和抓页面一样：
 - 只用页面自己声明的、同一网站上的公开接口，只发 GET；照常遵守 robots.txt、同一网站间隔 3 秒；
-- 只认白名单里的接口路径，不拼别的地址；要登录、签名、验证码的接口一律不碰。
+- 只认白名单里的接口路径，不拼别的地址；要登录、签名、验证码的接口一律不碰。数字广东的接口
+  地址页面里没有整句写出，由同一网站的平台脚本按页面写明的站点地址、站点编号和分类编号拼出：
+  这里照平台脚本的拼法、只用页面写明的这几个值，和浏览器打开这个分类时发的请求一样（见下）。
 - 读取护栏（D-128）：
   ① 只按网页里写明的地址和参数去取，不改参数、不另外构造请求（find_unit_apis 只认白名单路径、
-    同一网站，参数原样照页面的 queryData，不加分页、检索等参数）；
+    同一网站，参数原样照页面的 queryData，不加分页、检索等参数；数字广东照平台脚本的拼法，只取
+    第 1 页）；
   ② 接口返回不是成功、返回里带权限要求（roles、permissions 一类字段不为空）、要登录或验证码、
     网站明确拒绝（HTTP 401/403/412/521、robots 禁止）的，一律记"不能抓"、不读（api_refusal 给出
     原因；api_html 只在返回明确成功、没有权限要求时才给出列表，别的一律空串）；
@@ -21,6 +24,14 @@ docs/数据来源/全国覆盖/集约化平台盘点.md）。
   url="/api-gateway/jpaas-publish-server/front/page/build/unit"
   queryData="{'pageId':'…','tagId':'当前栏目list',…}">，GET 同样的参数，返回 JSON，
   data.html 是列表的 HTML。
+- 数字广东 gkmlpt（广东省、市、县的政府信息公开平台）：部门页是脚本应用，页面内联脚本
+  window._CONFIG 里写着站点地址 APP_URL、站点编号 SID、ENV 和分类树 TREE；盘点把分类记成栏目
+  "部门页#xxgk-gkmlpt-分类编号"。列表由同一网站的平台脚本按分类加载：去掉协议的 APP_URL +
+  /gkmlpt/api/all/分类编号?page=1&sid=SID，协议跟页面一样，GET，返回 JSON（articles 是条目）。
+  地址照平台脚本的写法拼，用到的值只取页面写明的那几项；只取第 1 页，不加别的参数。平台脚本
+  带的 X-CSRF-TOKEN 请求头取的是页面里没有的配置项（实际是空的），这里不带令牌；cookie 和抓页面
+  一样，只有网站自己下发的会照常带回（和浏览器一样），不另外造。条目的发布日期取 create_time
+  （平台列表"发布日期"一栏），不取 date（那是"成文日期"）。
 """
 
 import ast
@@ -28,12 +39,21 @@ import html as html_lib
 import json
 import re
 from dataclasses import dataclass
-from urllib.parse import urlencode, urljoin, urlsplit
+from datetime import date, datetime, timedelta, timezone
+from urllib.parse import urlencode, urljoin, urlsplit, urlunsplit
 
 import lxml.html
 from lxml import etree
 
+from youju.crawler.dates import _safe_date
+from youju.crawler.listing import ListItem, _looks_like_title, extract_items
+from youju.crawler.titles import clean_title
+from youju.crawler.urls import normalize_url
+
 HANWEB_JPAAS_PATH = "/api-gateway/jpaas-publish-server/front/page/build/unit"
+# 适配器名（写进来源 parser_config 的"经接口读"标记 list_api_open，正式抓取据此决定走不走接口）
+HANWEB_JPAAS = "大汉jpaas"
+GKMLPT = "数字广东gkmlpt"
 
 
 @dataclass(frozen=True)
@@ -41,6 +61,8 @@ class ListApi:
     adapter: str  # 适配器名
     url: str  # 接口网址（和栏目页同一网站）
     base_url: str  # 接口返回的列表里的相对链接，以栏目页为准
+    # 数字广东 gkmlpt：请求的分类编号（返回里的 classify.id 要和它一样）
+    category_id: int | None = None
 
 
 _KNOWN_ATTRS = frozenset({"id", "src", "webid", "parsetype", "url", "querydata"})
@@ -75,8 +97,139 @@ def _unit_scripts(html: str) -> list[dict[str, str]]:
     return out
 
 
-def find_list_api(html: str, page_url: str) -> ListApi | None:
-    """栏目页里声明的列表接口；认不出返回 None。"""
+# 数字广东信息公开平台的分类栏目网址："部门页#xxgk-gkmlpt-分类编号"
+# （盘点 deptdir.gkmlpt_tree_categories 记的）
+_GK_COLUMN = re.compile(r"#xxgk-gkmlpt-([0-9]+)$")
+# 遮住 JS 字符串和注释，避免把其中的文字当作可执行声明或配置项。
+# 页面脚本在声明以后又改写这几项配置（window._CONFIG.SID = '9'、window._CONFIG['ENV'] = …）
+_CONFIG_OVERRIDE = re.compile(r"_CONFIG\s*(?:\.\s*(?:APP_URL|SID|ENV|TREE)\s*=(?!=)|\[)")
+_JS_LITERAL = re.compile(
+    r"//[^\n]*|/\*[\s\S]*?\*/|'(?:\\[\s\S]|[^'\\])*'|\"(?:\\[\s\S]|[^\"\\])*\"|`(?:\\[\s\S]|[^`\\])*`"
+)
+
+
+def gkmlpt_category(column_url: str | None) -> int | None:
+    """栏目网址是数字广东信息公开平台的分类（"部门页#xxgk-gkmlpt-编号"）时给分类编号，否则 None。"""
+    match = _GK_COLUMN.search(column_url or "")
+    return int(match.group(1)) if match else None
+
+
+def list_api_adapter(column_url: str) -> str:
+    """打开"经接口读"的栏目时写进 list_api_open 的适配器名：数字广东的分类栏目是 gkmlpt，
+    其余（页面上声明 unitbuild.js 的）是大汉 jpaas。和 find_list_api 认接口的分法一样。"""
+    return GKMLPT if gkmlpt_category(column_url) is not None else HANWEB_JPAAS
+
+
+def find_gkmlpt_api(html: str, page_url: str, column_url: str) -> ListApi | None:
+    """数字广东部门页上某个分类的列表接口（第 1 页）；认不出返回 None。
+
+    只认得出才认：页面里真正的内联脚本（不在 noscript、template 里，不算注释和字符串）正好有一个
+    window._CONFIG，APP_URL、SID、ENV、TREE 各出现一次；SID 全是数字，ENV 是 production（不是的话
+    平台脚本走别的地址）；分类在 TREE 里而且不跳到别处（jump_url 为空）；APP_URL 是不带端口、
+    查询的 http(s) 网址，和部门页同一主机，部门页在"APP_URL 路径/gkmlpt/"下面；页面脚本后面又改写
+    这几项（window._CONFIG.SID = … 一类）的不认。地址和浏览器里的平台脚本一样按协议相对地址拼：
+    协议跟部门页，主机是 APP_URL 的（和部门页一样），端口是协议的默认端口——部门页不在默认端口上
+    的不认。主机、端口原样用部门页网址里的写法（带 :443 的照带），抓取程序按同一个网站排队、隔 3 秒
+    （D-013）。page_url 是部门页抓取的最终网址。"""
+    category = gkmlpt_category(column_url)
+    if category is None:
+        return None
+    try:
+        doc = lxml.html.document_fromstring(_STRAY_END.sub("", html))
+    except (etree.LxmlError, ValueError):
+        return None
+    declarations = []
+    for el in doc.iter("script"):
+        if el.get("src") is not None or any(
+            a.tag in ("noscript", "template") for a in el.iterancestors()
+        ):
+            continue
+        source = el.text or ""
+        masked = _JS_LITERAL.sub(lambda m: " " * len(m.group()), source)
+        if _CONFIG_OVERRIDE.search(masked):
+            return None  # 页面脚本另外改写了配置项：浏览器用的不一定是声明里的值，不认
+        declarations.extend(
+            (source, masked, m.end())
+            for m in re.finditer(r"\bwindow\s*\.\s*_CONFIG\s*=\s*\{", masked)
+        )
+    if len(declarations) != 1:
+        return None
+    source, masked, start = declarations[0]
+    depth = 1
+    fields: dict[str, list[int]] = {k: [] for k in ("APP_URL", "SID", "ENV", "TREE")}
+    token = re.compile(r"[{}\[\]]|\b(?:APP_URL|SID|ENV|TREE)\s*:")
+    for m in token.finditer(masked, start):
+        value = m.group()
+        if value in "{[":
+            depth += 1
+        elif value in "}]":
+            depth -= 1
+            if depth == 0:
+                break
+        elif depth == 1:
+            fields[value.split(":")[0].strip()].append(m.end())
+    else:
+        return None
+    if any(len(v) != 1 for v in fields.values()):
+        return None
+    values = {}
+    for key in ("APP_URL", "SID", "ENV"):
+        m = re.match(r"\s*'([^'\\]*)'\s*(?=,|})", source[fields[key][0] :])
+        if not m:
+            return None
+        values[key] = m.group(1)
+    if not re.fullmatch(r"[0-9]+", values["SID"]) or values["ENV"] != "production":
+        return None
+    try:
+        tree_source = source[fields["TREE"][0] :].lstrip()
+        tree, end = json.JSONDecoder().raw_decode(tree_source)
+        if not re.match(r"\s*[,}]", tree_source[end:]):
+            return None
+        app, page = urlsplit(values["APP_URL"]), urlsplit(page_url)
+        if (
+            app.scheme not in ("http", "https")
+            or not app.hostname
+            or app.port is not None
+            or app.username is not None
+            or app.password is not None
+            or app.query
+            or app.fragment
+            or page.scheme not in ("http", "https")
+            or app.hostname != page.hostname
+            or not page.path.startswith(app.path.rstrip("/") + "/gkmlpt/")
+        ):
+            return None
+        stack = list(tree) if isinstance(tree, list) else []
+        found = False
+        while stack:
+            node = stack.pop()
+            if isinstance(node, dict):
+                if (
+                    type(node.get("id")) is int
+                    and node["id"] == category
+                    and node.get("jump_url") in (None, "")
+                ):
+                    found = True
+                if isinstance(node.get("children"), list):
+                    stack.extend(node["children"])
+        if not found:
+            return None
+        # 浏览器请求的是 APP_URL 的主机、协议的默认端口；部门页不在默认端口上的对不上，不认
+        if page.port not in (None, 443 if page.scheme == "https" else 80):
+            return None
+        path = f"{app.path.rstrip('/')}/gkmlpt/api/all/{category}"
+        url = urlunsplit((page.scheme, page.netloc, path, f"page=1&sid={values['SID']}", ""))
+    except (ValueError, TypeError):
+        return None
+    return ListApi(GKMLPT, url, page_url, category)
+
+
+def find_list_api(html: str, page_url: str, column_url: str | None = None) -> ListApi | None:
+    """栏目页里声明的列表接口；认不出返回 None。
+
+    column_url 是数字广东的分类栏目时只按 gkmlpt 认（认不出就是 None，不再去认大汉）。"""
+    if gkmlpt_category(column_url) is not None:
+        return find_gkmlpt_api(html, page_url, column_url)
     apis = find_unit_apis(html, page_url)
     return apis[0] if apis else None
 
@@ -116,7 +269,7 @@ def find_unit_apis(html: str, page_url: str) -> list[ListApi]:
         base = declared._replace(fragment="").geturl()
         params = urlencode(query)
         url = base + ("&" if declared.query else "?") + params if params else base
-        candidates.append((rank, ListApi("大汉jpaas", url, page_url)))
+        candidates.append((rank, ListApi(HANWEB_JPAAS, url, page_url)))
     candidates.sort(key=lambda c: c[0])
     out: list[ListApi] = []
     for _, api in candidates:
@@ -127,17 +280,29 @@ def find_unit_apis(html: str, page_url: str) -> list[ListApi]:
 
 def api_empty_list(api: ListApi, text: str) -> bool:
     """接口明确成功、过了护栏，列表那段在但是空的（这会儿没有条目，不是读不出）。"""
-    payload = _json_payload(text) if api.adapter == "大汉jpaas" else None
+    if api.adapter == GKMLPT:
+        payload = _json_payload(text)
+        return payload is not None and not _gkmlpt_refusal(api, payload) and not payload["articles"]
+    payload = _json_payload(text) if api.adapter == HANWEB_JPAAS else None
     if payload is None or _payload_refusal(payload):
         return False
     inner = payload.get("data")
     return isinstance(inner, dict) and isinstance(inner.get("html"), str) and not inner["html"]
 
 
+def api_readable(api: ListApi, text: str) -> bool:
+    """接口的返回是认得出、过了护栏的列表（条目可能是空的）。空白页、维护页这类护栏记"这次没取到"
+    的返回不算：照样不读。"""
+    if api.adapter == GKMLPT:
+        payload = _json_payload(text)
+        return payload is not None and not _gkmlpt_refusal(api, payload)
+    return bool(api_html(api, text)) or api_empty_list(api, text)
+
+
 def api_html(api: ListApi, text: str) -> str:
     """接口返回的内容里列表那段 HTML。不是预期格式，或按读取护栏（D-128）不该读的
     （返回不是成功、带权限要求）都返回空串。"""
-    if api.adapter == "大汉jpaas":
+    if api.adapter == HANWEB_JPAAS:
         payload = _json_payload(text)
         if payload is None or _payload_refusal(payload):
             return ""
@@ -328,6 +493,101 @@ def _payload_refusal(payload: dict) -> str:
     return ""
 
 
+def _gkmlpt_refusal(api: ListApi, payload: dict) -> str:
+    """数字广东列表接口的 JSON 要不要记"不能抓"、不读（D-128 读取护栏 ②，认得出才读）。给原因；
+    可以读给空串。
+
+    平台脚本自己把 errcode 不为 0、errmessage 不是 ok 的当失败；带权限要求字段的不读；整份的形状
+    要和实测的正常返回一样：顶层正好 articles、classify、offset、total、updated 五项，classify.id
+    是请求的分类，offset 是 0（第 1 页），total 是非负整数，articles 是列表、不超过 _GKMLPT_MAX_ROWS
+    条（正常一页 100 条）。单条字段不对的（缺标题、网址、发布时间）只跳过那一条（api_items），
+    不拖累整栏。"""
+    code, message = payload.get("errcode"), payload.get("errmessage")
+    if code not in (None, "", 0) or ("errmessage" in payload and message != "ok"):
+        hint = str(message or code)[:40]
+        if _LOGIN_TEXT.search(hint):
+            return f"列表接口要登录或验证码（{hint}）"
+        return f"列表接口返回不是成功（{hint}）"
+    fields = _permission_fields(payload)
+    if fields:
+        return f"列表接口返回带权限要求（{'、'.join(fields)} 不为空）"
+    articles, classify = payload.get("articles"), payload.get("classify")
+    if (
+        set(payload) != {"articles", "classify", "offset", "total", "updated"}
+        or not isinstance(articles, list)
+        or len(articles) > _GKMLPT_MAX_ROWS
+        or not isinstance(classify, dict)
+        or type(classify.get("id")) is not int
+        or classify["id"] != api.category_id
+        or type(payload["offset"]) is not int
+        or payload["offset"] != 0
+        or type(payload["total"]) is not int
+        or payload["total"] < 0
+    ):
+        return "列表接口返回认不出"
+    return ""
+
+
+# 数字广东第 1 页正常 100 条；多得离谱的不是认得出的那种返回
+_GKMLPT_MAX_ROWS = 500
+# 数字广东接口的 create_time 是发布时间的 Unix 秒数（平台列表"发布日期"一栏），按北京时间换成日子
+_BEIJING = timezone(timedelta(hours=8))
+# 标题里夹的网页标签（"一图速览<strong> |</strong> ……"）：只认 < 后面紧跟字母或 / 的，
+# "金额<5万元且>3万元"这类正文字符照留
+_TITLE_TAG = re.compile(r"</?[A-Za-z][^<>]*>")
+
+
+def _gkmlpt_item(api: ListApi, row: object, today: date) -> ListItem | None:
+    """数字广东接口的一条 → 列表条目；字段不对、不像标题、网址不能用的给 None（跳过这一条）。"""
+    if not isinstance(row, dict):
+        return None
+    title, raw_url, published = row.get("title"), row.get("url"), row.get("create_time")
+    if not isinstance(title, str) or not isinstance(raw_url, str):
+        return None
+    title = clean_title(" ".join(html_lib.unescape(_TITLE_TAG.sub("", title)).split()))
+    if not _looks_like_title(title) or not raw_url.strip():
+        return None  # 空网址按部门页解析会变成部门页自己，不要
+    url = normalize_url(api.base_url, raw_url.strip())
+    if not url or url == normalize_url(api.base_url, api.base_url):
+        return None
+    try:
+        _ = urlsplit(url).port  # 端口写坏的（:99999）网址存不进库，跳过这一条
+    except ValueError:
+        return None
+    day = None
+    if type(published) is int and published > 0:
+        try:
+            d = datetime.fromtimestamp(published, _BEIJING).date()
+        except (OverflowError, OSError, ValueError):
+            d = None
+        day = _safe_date(d.year, d.month, d.day, today) if d else None
+    return ListItem(title, url, day)
+
+
+def api_items(
+    api: ListApi, text: str, parser_config: dict | None, today: date | None
+) -> list[ListItem]:
+    """接口返回里的条目（两个适配器都用；过不了读取护栏的给空列表）。
+
+    大汉 jpaas：列表那段 HTML 照列表页的识别规则读。数字广东 gkmlpt：每一条按字段读（_gkmlpt_item）
+    ——标题去掉标签、还原字符实体、空白合成一个，再按列表页的规则清理，不像标题的不要；网址去掉
+    前后空白后按部门页解析，空的、解析成部门页自己的、端口写坏的不要（外链照收，和列表页上的外链
+    一样）；发布日期取 create_time 换成北京时间的日子，再过列表页同一个合理性规则（2000 年以前、
+    比今天晚 2 天以上的当没有日期）；同一网址只留一次，顺序照接口。"""
+    if api.adapter == HANWEB_JPAAS:
+        return extract_items(api_html(api, text), api.base_url, parser_config, today=today)
+    payload = _json_payload(text)
+    if api.adapter != GKMLPT or payload is None or _gkmlpt_refusal(api, payload):
+        return []
+    items, seen = [], set()
+    for row in payload["articles"]:
+        item = _gkmlpt_item(api, row, today or date.today())
+        if item is not None and item.url not in seen:
+            items.append(item)
+            seen.add(item.url)
+    return items
+
+
 def _redirect_words(api_url: str, final: str) -> str:
     """跳转改了什么：主机名变了算主机名，路径或参数变了算路径和参数。只换协议的不算跳转
     （如 http 跳 https 落在 *.cas.cn 这类主机上，不能当成跳到登录）。"""
@@ -363,7 +623,7 @@ def api_refusal(api: ListApi, result) -> str:
 
     result 是抓取结果（FetchResult：status、http_status、final_url、text）。网络不通、超时、
     5xx 这类"这次没取到"不算，照常记失败、下次再试。"""
-    if api.adapter != "大汉jpaas":
+    if api.adapter not in (HANWEB_JPAAS, GKMLPT):
         return ""
     status = getattr(result, "status", "")
     http_status = getattr(result, "http_status", None)
@@ -395,7 +655,7 @@ def api_refusal(api: ListApi, result) -> str:
         if _retry_later(text):
             return ""
         return "列表接口返回认不出（不是 JSON）"
-    return _payload_refusal(payload)
+    return _gkmlpt_refusal(api, payload) if api.adapter == GKMLPT else _payload_refusal(payload)
 
 
 _TREE = re.compile(r"""treeStr\s*=\s*(["'])(\[.*?\])\1\s*;""", re.S)

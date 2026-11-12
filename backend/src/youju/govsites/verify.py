@@ -11,7 +11,14 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import date
 
-from youju.crawler.adapters import api_empty_list, api_html, api_refusal, find_list_api
+from youju.crawler.adapters import (
+    api_empty_list,
+    api_items,
+    api_readable,
+    api_refusal,
+    find_list_api,
+    gkmlpt_category,
+)
 from youju.crawler.listing import extract_items
 from youju.crawler.urls import host_of
 from youju.govsites.inventory import OPTIONAL_DEPTS, STANDARD_DEPTS, XXGK_TAG, DeptRow
@@ -106,13 +113,17 @@ def columns_of(depts: Iterable[DeptRow]) -> list[ColumnCheck]:
 
 
 def check_one(cache: PageCache, col: ColumnCheck, today: date) -> ColumnCheck:
-    if f"#{XXGK_TAG}" in col.url:
+    # 数字广东信息公开平台的分类：列表只在接口里（按分类加载），部门页上的条目不算
+    gkmlpt = gkmlpt_category(col.url) is not None
+    if f"#{XXGK_TAG}" in col.url and not gkmlpt:
         # 信息公开分类树上的分类：页面已读过，列表要按分类由脚本加载（大汉信息公开接口，第二阶段写）
         col.result = NEEDS_SCRIPT
         col.reason = "信息公开分类树上的分类，列表由脚本按分类加载（待写大汉信息公开适配器）"
         col.platform = col.platform or "大汉"
         return col
-    r = cache.get(col.url)
+    # 同一部门页的几个分类共用一次部门页缓存（地址去掉 # 后面）
+    page_url = col.url.split("#", 1)[0] if gkmlpt else col.url
+    r = cache.get(page_url)
     col.http_status = r.http_status
     block = blocker(r.status, r.http_status, r.text)
     if block:
@@ -121,12 +132,19 @@ def check_one(cache: PageCache, col: ColumnCheck, today: date) -> ColumnCheck:
     if r.status != "ok":
         col.result, col.reason = DOWN, (r.error or r.status)[:120]
         return col
-    final = r.final_url or col.url
-    items = extract_items(r.text, final, today=today)
+    final = r.final_url or page_url
+    items = [] if gkmlpt else extract_items(r.text, final, today=today)
     via_api = False
     if len(items) < 3:
         # 和正式抓取一样：页面声明了集约化平台的列表接口就按它读（crawler/adapters.py）
-        api = find_list_api(r.text, final)
+        api = find_list_api(r.text, final, col.url)
+        if gkmlpt and api is None:
+            col.result, col.reason = (
+                NEEDS_SCRIPT,
+                "数字广东信息公开平台的分类：部门页上没认出列表接口的写法，或分类不在分类树里、"
+                "跳到别处",
+            )
+            return col
         if api is not None:
             ar = cache.get(api.url, same_address_only=True)  # 跳到别处不跟（D-128 ①）
             refused = api_refusal(api, ar)
@@ -142,16 +160,16 @@ def check_one(cache: PageCache, col: ColumnCheck, today: date) -> ColumnCheck:
                 )
                 col.result, col.reason = DOWN, f"列表接口：{why[:100]}"
                 return col
-            html = api_html(api, ar.text)
-            if not html and api_empty_list(api, ar.text):
+            if api_empty_list(api, ar.text):
                 # 接口明确成功、列表那段是空的：这会儿没有条目，记未识别出条目
                 col.result, col.reason = NO_ITEMS, "经列表接口识别出 0 条（列表是空的）"
                 return col
-            if not html:
-                # 接口回了，但不是预期的样子（空白、不是 JSON、没有列表那段）：这次没读出，记打不开
+            if not api_readable(api, ar.text):
+                # 接口回了，但不是预期的样子（空白、维护页、不是 JSON、没有列表那段）：护栏记的是
+                # "这次没取到"，照样不读，记打不开
                 col.result, col.reason = DOWN, "列表接口返回读不出列表（不是预期的格式）"
                 return col
-            items = extract_items(html, api.base_url, today=today)
+            items = api_items(api, ar.text, None, today)
             col.reason, via_api = f"经{api.adapter}列表接口读取", True
     dated = [i for i in items if i.publish_date]
     col.items, col.dated = len(items), len(dated)
