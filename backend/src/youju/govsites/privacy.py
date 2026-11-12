@@ -115,6 +115,8 @@ _NOT_NAME_WORDS = frozenset(
         *("各级", "各区", "各县", "各市", "各类", "各项", "各界", "该市", "该县", "该区", "该局"),
         *("此次", "此前", "据悉", "在京", "与会", "把握"),
         *("关于对", "关于在", "关于向", "关于为", "关于与", "关于将", "关于把", "关于从", "关于以"),
+        *("时间", "日期", "地点", "主题", "内容", "来源", "作者", "标题", "附件", "备注", "说明"),
+        *("地址", "电话", "编号", "文号", "索引"),
     )
 )
 # ② 领导人、官员的新闻："某某出席……""某某主持召开……""某某签署……""某某同某国总统会谈"
@@ -127,45 +129,29 @@ _TOP = re.compile(rf"({_H}{{2,3}})(?=总书记|总理|委员长)")
 _NOT_TOP_END = tuple("着的了和与及在把将对向")  # "循着总书记足迹"
 # 新闻动词：前面那串字（到开头或标点为止）是人名的就挡。2–3 个字的按下面各组看不看姓氏；4–9 个字的
 # 能拆成两三个都像人名的词（看姓氏）就挡（两位领导连写："某某某某某某赴某地调研"）
-_LEAD = ("出席", "主持", "会见", "会谈", "致信", "致电", "回信", "看望", "慰问", "视察", "寄语")
+_LEAD = (
+    *("出席", "主持", "会见", "会谈", "接见", "致信", "致电", "致辞", "回信", "看望", "慰问"),
+    *("视察", "寄语"),
+)
 _LEAD_WEAK = (
-    *(
-        "宣布",
-        "签署",
-        "调研",
-        "考察",
-        "督导",
-        "督查",
-        "检查",
-        "走访",
-        "暗访",
-        "参加",
-        "强调",
-        "指出",
-    ),
+    *("宣布", "签署", "调研", "考察", "督导", "督查", "检查", "走访", "暗访", "参加", "强调"),
+    *("指出", "讲话", "作出", "批示", "接待", "接受", "当选"),
 )
 _PAIR = ("同", "与")  # 后面要有会谈、通电话这类词
 _PAIR_WORDS = ("会谈", "通电话", "会见", "互致")
-_TRIP = ("到", "赴", "在", "带队", "率队", "率团")  # 后面要有调研、出席、强调这类词
+_TRIP = ("到", "赴", "在", "前往", "带队", "率队", "率团")  # 后面要有调研、出席、强调这类词
 _TRIP_WORDS = (
-    *(
-        "调研",
-        "考察",
-        "督导",
-        "督查",
-        "检查",
-        "走访",
-        "慰问",
-        "看望",
-        "暗访",
-        "出席",
-        "参加",
-        "主持",
-    ),
-    *("会见", "讲话", "强调", "指出"),
+    *("调研", "考察", "督导", "督查", "检查", "走访", "慰问", "看望", "暗访", "出席", "参加"),
+    *("主持", "会见", "讲话", "强调", "指出"),
 )
-# 人名和动词中间常夹的词（"某某等出席""某某、某某共同出席"），先去掉再看
-_BETWEEN = ("等人", "等", "共同", "一行", "同志", "一同", "分别")
+# 人名和动词中间常夹的词（"某某等出席""某某、某某共同出席""某某亲切看望""某某专题调研"），
+# 先去掉再看
+_BETWEEN = (
+    *("等人", "等", "共同", "一行", "同志", "一同", "分别", "亲切", "热情", "专题", "实地"),
+    *("专程", "深入"),
+)
+# 开头或标点后"某某："的讲话摘要标题（"某某：推动……"），看姓氏
+_QUOTE = re.compile(rf"(?:^|[{re.escape(_OPEN)}])({_H}{{2,3}})[：:]")
 _NEWS_VERB = re.compile(
     "|".join(sorted({*_LEAD, *_LEAD_WEAK, *_PAIR, *_TRIP}, key=len, reverse=True))
 )
@@ -241,6 +227,8 @@ def _news_named(title: str) -> bool:
     for m in _TOP.finditer(title):
         if not m.group(1).endswith(_NOT_TOP_END) and _name_ish(m.group(1)):
             return True
+    if any(_name_ish(m.group(1)) for m in _QUOTE.finditer(title)):
+        return True
     for m in _NEWS_VERB.finditer(title):
         verb, rest = m.group(0), title[m.end() :]
         if verb in _PAIR and not any(w in rest for w in _PAIR_WORDS):
@@ -261,10 +249,9 @@ def _names_before(title: str, i: int, *, any_surname: bool) -> bool:
     if j > 0 and title[j - 1] not in _OPEN:
         return False
     run = title[j:i]
-    for word in _BETWEEN:
-        if run.endswith(word) and len(run) > len(word) + 1:
-            run = run[: -len(word)]
-            break
+    for _ in range(2):  # "某某等亲切看望"：最多去掉两个
+        word = next((w for w in _BETWEEN if run.endswith(w) and len(run) > len(w) + 1), "")
+        run = run[: len(run) - len(word)]
     if len(run) in (2, 3):
         return _name_ish(run, any_surname=any_surname)
     if not 4 <= len(run) <= 9 or any(w in run for w in _NOT_NAME_WORDS):  # "关于专项执法"
