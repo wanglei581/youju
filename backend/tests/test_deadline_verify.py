@@ -396,3 +396,47 @@ def test_reopen_after_the_queue_waits_for_the_next_queue(session, candidate):
         )
         == "通过"
     )
+
+
+def test_same_deadline_on_two_pages_both_reopened_can_be_handled_in_one_file(session, candidate):
+    # 同一截止在两个网址上、证据句不同（不在同一组锁里），都退回、原因相同：清单两条的退回原因都是
+    # 两段；同一份结果先处理第一条以后，第二条照样放行，不会成了没人管的孤儿（独立 Claude 审阅）
+    doc = session.get(Document, candidate.document_id)
+    other_doc = _doc(doc.source, 97, doc.title, TODAY)
+    session.add(other_doc)
+    session.flush()
+    other = DocumentDeadline(
+        document_id=other_doc.id,
+        fingerprint="other-page",
+        kind=candidate.kind,
+        candidate_date=candidate.candidate_date,
+        evidence="网上申报于9月30日截止",
+        confidence="高",
+        status="pending",
+        origin="rule",
+        audit_state="reopened",
+        audit_note="原因 X",
+    )
+    session.add_all(
+        [
+            DocumentMerge(
+                duplicate_id=other_doc.id, canonical_id=doc.id, match_key="same", active=True
+            ),
+            DocumentDetail(
+                document_id=other_doc.id, body_text=BODY, status="ok", fetched_at=datetime.now(UTC)
+            ),
+            other,
+        ]
+    )
+    candidate.audit_state = "reopened"
+    candidate.audit_note = "原因 X"
+    session.commit()
+    entries = {x["id"]: x for x in verify.queue(session, TODAY)}
+    assert {e["audit_note"] for e in entries.values()} == {
+        "质检退回原因：原因 X；质检退回原因：原因 X"
+    }
+    for row in (candidate, other):
+        result = {**entries[row.id], **payload(row), "note": "核了原文"}
+        assert verify.apply_one(session, result, True) == "通过"
+        session.commit()
+    assert (candidate.status, other.status) == ("approved", "approved")

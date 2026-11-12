@@ -194,7 +194,10 @@ def apply_one(session, item, write=False):
         # 出清单以后又有退回的，等下一份清单。还要在 note 里写怎么处理了退回原因，记进留痕
         if item.get("reopened") is not True:
             return "这一截止同组有质检退回，须按带退回原因的清单核对"
-        if item.get("audit_note") != "；".join(_reopen_note(r) for r in reopened):
+        # 现在每条退回原因都要整段出现在清单给的 audit_note 里（按"；"分段比，短的原因不会被长的
+        # 冒认）；同一截止另一条已在这份结果里先处理掉的，不再要求
+        shown = f"；{item.get('audit_note') or ''}；"
+        if any(f"；{_reopen_note(r)}；" not in shown for r in reopened):
             return "退回原因和清单里的不一样（出清单以后又有退回），等下一份清单"
         if not item.get("note", "").strip():
             return "同组有质检退回，须在 note 里写怎么处理了退回原因"
