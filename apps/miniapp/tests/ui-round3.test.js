@@ -51,7 +51,7 @@ test('查名单顶部只留标题、副标题和搜索框；"第三方整理 · 
   assert.match(read('components/notice-bar/index.wxml'), /第三方整理 · 非政府平台/);
 });
 
-test('查询说明默认收起成一行（info 图标、向下箭头），点开后逐条列出，原来的说明一字不少', () => {
+test('查询说明默认收起成一行（info 图标、向下箭头），点开后逐条列出；只有第 3 条挪进了使用帮助（11/12 简化走查），其余四条留在页面上', () => {
   const page = listsPage();
   assert.equal(page.data.rulesOpen, false);
   page.toggleRules();
@@ -65,15 +65,15 @@ test('查询说明默认收起成一行（info 图标、向下箭头），点开
   assert.match(head[1], /<t-icon name="info-circle"/);
   assert.match(head[1], /<text>查询说明<\/text>/);
   assert.match(head[1], /<t-icon name="{{rulesOpen \? 'chevron-up' : 'chevron-down'}}"/);
-  // 收起时不渲染内容；点开后的四条拼起来和原来的说明逐字相同（只差标点）
+  // 收起时不渲染内容
   const body = /<view wx:if="{{rulesOpen}}" class="rules-body">([\s\S]*?)\n {2}<\/view>/.exec(template);
   assert.ok(body, '查询说明的内容只在点开后显示');
   const rules = [...body[1].matchAll(/<view class="rule">([^<]+)<\/view>/g)].map((m) => m[1]);
-  // D-091：同名一条改成"不一定是同一家"（输入框不再写信用代码），加一条"查到后可以看原名单里的那一行"
+  // 11/12 简化走查：原来的"查到后可以看这家企业在原名单里的那一行"和"看原名单里的这一行"按钮重复，挪进使用帮助；
+  // 其余四条一字不改（过审版没有帮助页，这几条是查名单去"征信感"的说明，agy、Codex 审阅时指出不能只放帮助里）
   assert.deepEqual(rules, [
     '按企业全称逐行比对名单原文',
     '名称相近的企业分开列出，不一定是同一家',
-    '查到后可以看这家企业在原名单里的那一行',
     '只查企业和机构，不查个人',
     '发布阶段（公示、公布）按名单标题用词标注，是否还在公示期以原文为准',
   ]);
@@ -117,7 +117,7 @@ test('文件页还没导出过：一张卡片，图标、"还没有导出过"、
   assert.match(card[1], /<view class="empty-title">还没有导出过<\/view>/);
   const steps = [...card[1].matchAll(/<text class="step-no">(\d)<\/text><text class="step-text">([^<]+)<\/text>/g)].map((m) => [m[1], m[2]]);
   assert.deepEqual(steps, [
-    ['1', '在搜索结果点“选择”，或在文件详情点“结果”'],
+    ['1', '在搜索结果点“选择”，或在文件详情点“导出”'],
     ['2', '在小程序内查看结果，需要保存时再选 Excel 或 Word'],
     ['3', '导出后可转发给同事或客户'],
   ]);

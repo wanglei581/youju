@@ -22,13 +22,15 @@ function load(file, deps) {
 }
 const flush = () => new Promise((r) => setImmediate(r));
 
-test('首页和我的：无城市时文字与旧版相同，有城市追加数量', () => {
+test('首页和我的：首页不写省份、城市数（11/12 简化走查）；我的里无城市时文字与旧版相同，有城市追加数量', () => {
   for (const count of [undefined, 0, 1]) {
     const value = { ...stats, cities: count };
     const home = shown('home', { stats: value, loaded: true, shown: [], loginOpen: false });
     const me = shown('me', { stats: value, loginOpen: false });
-    assert.ok(home.includes(`来自 28 个省和国家部委${count ? '、1 个城市' : ''}`)); assert.ok(!home.includes('每条都有出处'));
-    // 页底只写栏目数，省份、城市数在本周新增那块已写（10/29 去重）
+    // 11/12 简化走查：本周新增那块不再写"来自 N 个省和国家部委、N 个城市"（和页底"数据来自……"同屏写了两遍）；
+    // 省份、城市数在"我的"和"关于有据"里
+    assert.ok(!home.includes('个省和国家部委')); assert.ok(!home.includes('每条都有出处'));
+    // 页底只写栏目数
     assert.ok(home.includes('数据来自 72 个政府网站栏目，每条都注明出处。'));
     assert.ok(me.includes('28个省 + 国家部委'));
     assert.equal(me.includes('其中已收录 1 个城市的部分栏目'), count === 1);

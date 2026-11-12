@@ -8,6 +8,7 @@ const { previewDocs, MAX } = require('../../utils/exporter.js');
 const { ensureConsent, loginOpen } = require('../../utils/consent.js');
 const { requestOnce, remindOpen } = require('../../utils/subscribe.js');
 const { loadCoverage, notCoveredNames, allUncovered } = require('../../utils/coverage.js');
+const { flags } = require('../../utils/pages.js');
 const access = require('../../utils/ai-access.js');
 const {
   requestScope, categoryConflict, supportConflict, migrateNational, NATIONAL, CATEGORIES, CATEGORY_NOTE, GUIDE,
@@ -92,6 +93,8 @@ Page({
     q: '',
     cityRegion: [], cityError: '', cityCoverageNote: '', districtOptions: [],
     tabs: KIND_TABS,
+    // 这个包里有没有使用帮助页：有才显示筛选里的"范围说明 ›"（utils/pages.js）
+    has: flags(),
     tab: 'all',
     items: [],
     total: 0,
@@ -189,8 +192,9 @@ Page({
       this.coverage = c;
       const names = notCoveredNames(c);
       const extra = names ? `${names}暂未收录` : '';
-      const cityNote = c && Array.isArray(c.cities) ? (c.cities.length ? `已收录 ${c.cities.length} 个城市的部分来源。` : '当前尚未接入市级来源。可以选择城市，数据接入后才能按城市查询和关注。') : '城市收录范围未加载，查询时仍由服务器核实；可重试。';
-      const districtNote = c && Array.isArray(c.districts) ? (c.districts.length ? `已收录 ${c.districts.length} 个区县的部分来源。` : '当前尚未接入区县来源，选择区县后暂不能查询，也不会改为全市或全省查询。') : '区县收录范围没有取到，暂不能按区县查询；可重试。';
+      // 收录范围只在有话要说时写（11/12 简化走查）：已收录几个城市、区县不写；没接入、没取到才说
+      const cityNote = c && Array.isArray(c.cities) ? (c.cities.length ? '' : '当前尚未接入市级来源。可以选择城市，数据接入后才能按城市查询和关注。') : '城市收录范围未加载，查询时仍由服务器核实；可重试。';
+      const districtNote = c && Array.isArray(c.districts) ? (c.districts.length ? '' : '当前尚未接入区县来源，选择区县后暂不能查询，也不会改为全市或全省查询。') : '区县收录范围没有取到，暂不能按区县查询；可重试。';
       this.setData({ groups: this.data.groups.map((g) => g.key === 'region' ? { ...g, extra } : g), cityCoverageNote: `${cityNote}${districtNote}` });
       if (this.data.picked.city.length || this.data.picked.district.length) this.apply(true);
     });
@@ -398,6 +402,11 @@ Page({
 
   cancel() {
     wx.navigateBack({ fail: () => wx.switchTab({ url: '/pages/home/index' }) });
+  },
+
+  // 筛选里城市区县"全部"是什么范围：说明写在使用帮助里（D-108）；包里没有帮助页时入口不显示
+  help() {
+    if (this.data.has.help) wx.navigateTo({ url: '/pages/help/index?topic=region' });
   },
 
   pickTab(e) {
