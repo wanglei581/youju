@@ -1316,15 +1316,26 @@ def test_issuer_from_title_and_publisher(page: str, expected: str | None) -> Non
     assert parse_detail(page, "https://www.example.gov.cn/content_6.html").issuer == expected
 
 
-@pytest.mark.parametrize("broken", ["missing", "one_missing", "not_utf8"])
-def test_issuer_without_name_lists_falls_back_to_publisher(monkeypatch, tmp_path, broken) -> None:
-    """发文机关校验用的名单读不到（没有文件、只缺一份、不是 UTF-8）：标题里的机关一概不用（中央机关
-    也不用），照旧看发布机构，不报错。"""
+@pytest.mark.parametrize(
+    ("broken", "how"),
+    [
+        (("place_names.txt", "agency_bodies.txt"), "missing"),
+        (("place_names.txt",), "missing"),
+        (("agency_bodies.txt",), "missing"),
+        (("place_names.txt",), "not_utf8"),
+        (("agency_bodies.txt",), "not_utf8"),
+    ],
+)
+def test_issuer_without_name_lists_falls_back_to_publisher(
+    monkeypatch, tmp_path, broken, how
+) -> None:
+    """发文机关校验用的名单读不到（没有文件、不是 UTF-8；两份都坏或只坏一份）：标题里的机关一概
+    不用（中央机关也不用），照旧看发布机构，不报错。"""
     data = Path(detail.__file__).resolve().parents[1] / "data"
-    if broken == "one_missing":
-        (tmp_path / "place_names.txt").write_bytes((data / "place_names.txt").read_bytes())
-    elif broken == "not_utf8":
-        for name in ("place_names.txt", "agency_bodies.txt"):
+    for name in ("place_names.txt", "agency_bodies.txt"):
+        if name not in broken:
+            (tmp_path / name).write_bytes((data / name).read_bytes())
+        elif how == "not_utf8":
             (tmp_path / name).write_bytes(b"\xff\xfe\x00broken")
     monkeypatch.setattr(detail, "_DATA_DIR", tmp_path)
     detail._agency_names.cache_clear()
