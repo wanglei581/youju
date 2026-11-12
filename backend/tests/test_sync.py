@@ -580,6 +580,32 @@ def test_attachment_files_follow_their_rows(env, monkeypatch, tmp_path):
     assert local.push(env.local, env.client, store=local_store).blobs == 1
     assert server_store.exists(path)
     assert [r["id"] for r in rows(env.server, "attachment_copies")] == [again]
+    # 两边都没有文件的（本机也没有，比如云托管时期抓的、还没导进来的）：照写，不卡住队列，
+    # 后面的变更照常推
+    lost = f"attachments/{'d' * 64}.pdf"
+    nowhere = insert(
+        env.local,
+        "attachment_copies",
+        url_hash="f" * 64,
+        url="https://kjt.shandong.gov.cn/c.pdf",
+        declared_type="pdf",
+        status="ready",
+        file_type="pdf",
+        file_id=f"cloud://prod-env.youju-self/{lost}",
+        size=10,
+        sha256="d" * 64,
+    )
+    report = local.push(env.local, env.client, store=local_store)
+    assert report.blobs == 0 and not server_store.exists(lost)
+    assert nowhere in [r["id"] for r in rows(env.server, "attachment_copies")]
+    with env.local.begin() as conn:
+        conn.execute(
+            T["attachment_copies"]
+            .update()
+            .where(T["attachment_copies"].c.id == nowhere)
+            .values(attempts=2)
+        )
+    assert local.push(env.local, env.client, store=local_store).batches == 1
     # 名字和内容对不上的不收
     bad = hashlib.sha256(b"other").hexdigest()
     with pytest.raises(local.SyncError) as err:

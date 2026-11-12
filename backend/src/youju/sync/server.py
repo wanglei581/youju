@@ -250,16 +250,24 @@ def _record_turn(conn: Connection, stamp: int) -> None:
     )
 
 
-def _missing_blobs(parts: dict) -> list[str]:
-    """这一批要写的附件副本行指向的文件，服务器自己的存储（disk）里不在的。清理和写入在同一把锁下，
-    所以核对时在的，写完之前不会被清理删掉；不在的（推之前查过在、随后被清理删了）不写，本机下一轮
-    先补传再写。s3 由本机管，不核对。"""
+def _missing_blobs(parts: dict, local_has: set[str]) -> list[str]:
+    """这一批要写的附件副本行指向的文件里，本机有（local_has，本机随这一批告诉的）、服务器自己的
+    存储（disk）里却不在的：推之前查过在、随后被清理删了。清理和写入在同一把锁下，所以核对时在的，
+    写完之前不会被清理删掉；这些不在的不写，本机下一轮先补传再写。两边都没有的（本机也没有文件，
+    比如云托管时期抓的、还没导进来的）照写、记一条日志：不能让整批卡住，后面的下架也推不过来。
+    s3 由本机管，不核对。"""
     if "attachment_copies" not in parts or get_settings().storage_backend != "disk":
         return []
     _, upserts, _ = parts["attachment_copies"]
     store = storage.backend()
     paths = {p for row in upserts if (p := storage.path_of(row.get("file_id") or ""))}
-    return sorted(p for p in paths if not store.exists(p))
+    absent = sorted(p for p in paths if not store.exists(p))
+    nowhere = [p for p in absent if p not in local_has]
+    if nowhere:
+        log.warning(
+            "这一批有 %d 个附件副本两边都没有文件，照写（第一个：%s）", len(nowhere), nowhere[0]
+        )
+    return [p for p in absent if p in local_has]
 
 
 def apply(engine: Engine, payload: dict, *, stamp: int) -> dict:
@@ -278,11 +286,14 @@ def apply(engine: Engine, payload: dict, *, stamp: int) -> dict:
     （见 youju/sync/__init__.py）。"""
     full = payload.get("full") is True
     parts = _decoded(payload.get("tables"))
+    local_has = payload.get("blobs_local", [])
+    if not isinstance(local_has, list) or not all(isinstance(p, str) for p in local_has):
+        raise ValueError("blobs_local 要是路径的列表")
     ensure_state(engine)
     kept: dict[str, int] = {}
     with engine.connect() as conn, conn.begin():
         _take_turn(conn, stamp)
-        missing = _missing_blobs(parts)
+        missing = _missing_blobs(parts, set(local_has))
         if missing:
             raise MissingBlobs(missing)
         if not full:

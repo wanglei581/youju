@@ -282,6 +282,15 @@ def _read_blob(store: storage.Backend, path: str) -> bytes:
     return response.content
 
 
+def _local_blobs(paths: list[str], store: storage.Backend | None = None) -> list[str]:
+    """这一批指向的附件副本里本机存储有的：随这一批告诉服务器（blobs_local）。服务器只在"本机有、
+    服务器没有"时不写（推之前查过在、随后被清理删了：下一轮补传）；两边都没有的照写，不卡住队列。"""
+    if not paths:
+        return []
+    store = store or storage.backend()
+    return [path for path in paths if store.exists(path)]
+
+
 def _send_blobs(client: Client, paths: list[str], store: storage.Backend | None = None) -> int:
     """服务器存储里没有的附件副本先传上去（本机存储里没有的跳过，服务器读不到就当"还在准备"）。"""
     if not paths:
@@ -428,11 +437,17 @@ def push(
             if len(body) > max_bytes and len(changes) > 1:
                 size = max(1, len(changes) // 2)
                 continue
-            report.blobs += _send_blobs(client, _blob_paths(payload), store)
+            paths = _blob_paths(payload)
+            report.blobs += _send_blobs(client, paths, store)
             result = client.json(
                 "POST",
                 "/apply",
-                {"stream": stream, "max_seq": changes[-1][0], "tables": payload},
+                {
+                    "stream": stream,
+                    "max_seq": changes[-1][0],
+                    "tables": payload,
+                    "blobs_local": _local_blobs(paths, store),
+                },
             )
             for name, count in (result.get("kept") or {}).items():
                 report.kept[name] = report.kept.get(name, 0) + int(count)
@@ -542,8 +557,13 @@ def _send_full(
     client: Client, t: Table, rows: list[dict], store: storage.Backend | None = None
 ) -> int:
     payload = {t.name: {"upserts": rows, "deletes": []}}
-    sent = _send_blobs(client, _blob_paths(payload), store)
-    client.json("POST", "/apply", {"full": True, "tables": payload})
+    paths = _blob_paths(payload)
+    sent = _send_blobs(client, paths, store)
+    client.json(
+        "POST",
+        "/apply",
+        {"full": True, "tables": payload, "blobs_local": _local_blobs(paths, store)},
+    )
     return sent
 
 
