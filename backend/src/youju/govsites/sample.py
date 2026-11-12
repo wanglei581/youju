@@ -32,6 +32,7 @@ import re
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -150,6 +151,25 @@ def _city_names(s: Source) -> set[str]:
     return {v for v in name_variants(s.city) | {s.city} if len(v) >= 2}
 
 
+def counties_by_city(path: Path | None) -> dict[tuple[str, str], frozenset[str]]:
+    """(省份, 城市) → 下辖区县的全称写法（以区、县、市、旗结尾的）。地市部门全称在本市名称后面紧跟
+    这些的，是区县的部门（"南京市玄武区……""苏州市常熟市人民政府"）。不用简称："公安县"的"公安"
+    会碰上"荆州市公安局"。"""
+    from youju.govsites.divisions import read_csv
+
+    if not path or not path.exists():
+        return {}
+    out: dict[tuple[str, str], set[str]] = {}
+    for d in read_csv(path):
+        if d.level == "区县级" and d.city:
+            out.setdefault((d.province, d.city), set()).update(
+                v
+                for v in name_variants(d.name, d.kind) | {d.name}
+                if len(v) >= 2 and v.endswith(("区", "县", "市", "旗"))
+            )
+    return {key: frozenset(names) for key, names in out.items()}
+
+
 def _own_prefixes(s: Source) -> set[str]:
     if s.level == "市级" and s.city:
         # 地市部门全称写本市名称（"南京市发展和改革委员会""恩施州农业农村局"）、省名连市名
@@ -175,7 +195,7 @@ def _own_prefixes(s: Source) -> set[str]:
     return own
 
 
-def _dept_ok(s: Source) -> bool:
+def _dept_ok(s: Source, counties: frozenset[str] = frozenset()) -> bool:
     """部门全称能归到这一格的部门，而且是本省的（以本省名称或本级前缀开头）。
 
     政府办那一格是门户本身（"××人民政府"）；开发区按地名起名、不带省名，只看能不能归到开发区；
@@ -201,13 +221,23 @@ def _dept_ok(s: Source) -> bool:
         return False
     if s.province == "国家" or s.dept == "开发区":
         return True  # 部委、开发区没有省名前缀
-    if s.level == "市级" and s.city and (m := _PROVINCE_FULL.match(name)):
+    if s.level != "市级" or not s.city:
+        return any(name.startswith(v) for v in _own_prefixes(s))
+    own = _own_prefixes(s)
+    if m := _PROVINCE_FULL.match(name):
         # 以省份全称开头的，后面紧跟本市名称才算本市（"吉林省吉林市……"）；只写省名的是省直部门。
         # 吉林市的"吉林"、青海海南州的"海南"和省名撞上，不先认全称会把"吉林省发展和改革委员会"
         # "海南省……"当成本市的
-        rest = name[m.end() :]
-        return m.group(0).startswith(s.province) and any(rest.startswith(c) for c in _city_names(s))
-    return any(name.startswith(v) for v in _own_prefixes(s))
+        if not m.group(0).startswith(s.province):
+            return False
+        name, own = name[m.end() :], _city_names(s)
+    hit = max((v for v in own if name.startswith(v)), key=len, default=None)
+    if hit is None:
+        return False
+    # 本市名称后面紧跟下辖区县全称的是区县的部门（"南京市玄武区……""苏州市常熟市人民政府"）；
+    # 只写本级前缀"市"的也看（"市中区……"），自治州下辖的县级市也是（恩施州的"恩施市……"）
+    rest = name[len(hit) :]
+    return not any(text.startswith(c) for text in (rest, name) for c in counties)
 
 
 def sample_rows(
@@ -216,6 +246,7 @@ def sample_rows(
     province: list[str] | None = None,
     size: int | None = None,
     now: datetime | None = None,
+    counties: dict[tuple[str, str], frozenset[str]] | None = None,
 ) -> list[SampleRow]:
     now = now or datetime.now(UTC)
     stmt = select(Source).where(Source.level == level).order_by(Source.province, Source.id)
@@ -245,7 +276,7 @@ def sample_rows(
             .limit(3)
         ).all()
         row.latest = [(t or "", d, u or "") for t, d, u in docs]
-        if not _dept_ok(s):
+        if not _dept_ok(s, (counties or {}).get((s.province, s.city or ""), frozenset())):
             row.failed.append("部门")
         if _kind(s.column_name) not in KINDS:
             row.failed.append("栏目")

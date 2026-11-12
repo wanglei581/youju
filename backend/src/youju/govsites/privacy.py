@@ -25,20 +25,15 @@ _EXTRA_WORDS = (
     "作废声明",
     "辞去",
 )
-# 工伤、病残一类的个人公告，标题把人名直接写在这些词前面（"关于××停工留薪期确认书的公告""关于
-# 对参保职工××病残津贴领取资格的公示"，11/12 地市一组报）。同样的词也出现在待遇标准、管理办法这类
-# 普通政策里（"关于调整伤残津贴标准的通知"），不当词挡：只认"开头/关于/关于对/职工/人员 + 两三个字
-# + 这些词"，而且标题里有公示、公告这类字。这个位置上的两三个字不看是不是常见姓氏（缓存里有不常见
-# 姓氏的人名），只除掉会出现在这里的动词和说法（"关于申领病残津贴人员的公示""非因工伤残"）
-_INJURY = re.compile(
-    r"(?:^|关于对?|职工|人员)([一-鿿]{2,3})(?=停工留薪|病残|工亡|伤残|供养亲属|抚恤)"
+# 工伤、病残一类的个人事项文书（"关于××停工留薪期确认书的公告""关于对参保职工××病残津贴领取资格的
+# 公示""××伤残等级鉴定结论"，11/12 地市一组报）：标题常直接写人名，有的姓氏不常见、有的以"路""林"
+# 这类字结尾、有的连写几个人，靠猜人名会漏。同样的词也出现在待遇标准、管理办法这类普通政策里，不当
+# 词挡：有这些词、又是公示、公告、确认书、鉴定结论这类文书的，整条挡（不看有没有人名）
+_INJURY_WORDS = ("停工留薪", "病残", "工亡", "伤残", "供养亲属")
+_INJURY_PAPERS = (
+    *("公示", "公告", "确认书", "决定书", "决定", "通知书", "告知书", "鉴定书", "认定书", "结论"),
+    *("名单", "批复", "答复"),
 )
-_NOTICE = ("公示", "公告", "确认书", "决定书", "名单", "结论")
-_INJURY_NOT_NAMES = {
-    *("申领", "申请", "领取", "支付", "符合", "严格", "解决", "修订", "调整", "办理", "发放"),
-    *("审核", "核定", "享受", "非因工", "因工", "因病", "因公", "一次性", "定期", "优待", "军人"),
-    *("遗属", "烈属", "丧葬", "什么是"),
-}
 _H = "[一-鿿]"
 # 人名的几种写法：××同志、××等 3 名/户、××等同志、××等职务、××、××同志、任命××为、
 # 关于对××的、开头就是人名的"××（、××）批前公示"（只认开头：项目的"规划许可批前公示"不挡）、
@@ -92,11 +87,6 @@ def _named(title: str) -> bool:
             for w in parts
         ):
             return True
-    if any(w in title for w in _NOTICE):
-        for m in _INJURY.finditer(title):
-            w = m.group(1)
-            if w not in _INJURY_NOT_NAMES and _name_like(w, after_label=True, any_surname=True):
-                return True
     for m in _COMPENSATION.finditer(title):
         if any(_name_like(w) and not w.startswith(_NOT_NAMES) for w in m.group(1).split("、")):
             return True
@@ -112,6 +102,7 @@ def public_title(title: str) -> str:
     """写进公开证据的样例标题：个人事项或写着人名的换成 MASK，其余照原样。"""
     from youju.api.v1 import personal_matter
 
-    if personal_matter(title) or any(w in title for w in _EXTRA_WORDS) or _named(title):
+    injury = any(w in title for w in _INJURY_WORDS) and any(w in title for w in _INJURY_PAPERS)
+    if personal_matter(title) or any(w in title for w in _EXTRA_WORDS) or injury or _named(title):
         return MASK
     return title

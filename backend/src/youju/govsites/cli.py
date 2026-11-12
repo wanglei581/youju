@@ -505,10 +505,18 @@ def _cmd_sample(args: argparse.Namespace) -> int:
 
     from youju.db import session_factory
     from youju.govsites.inventory import write_table
-    from youju.govsites.sample import SAMPLE_FIELDS, sample_rows, summary_lines, to_csv_row
+    from youju.govsites.sample import (
+        SAMPLE_FIELDS,
+        counties_by_city,
+        sample_rows,
+        summary_lines,
+        to_csv_row,
+    )
 
+    # 地市部门核对要认下辖区县（"南京市玄武区……"不算南京市的部门）
+    counties = counties_by_city(args.divisions) if args.level == "市级" else {}
     with session_factory()() as session:
-        rows = sample_rows(session, args.level, args.province, args.size)
+        rows = sample_rows(session, args.level, args.province, args.size, counties=counties)
     if not rows:
         print("库里没有这一级的来源（先导入、试抓）")
         return 1
@@ -865,6 +873,9 @@ def register(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--size", type=int, help="每省抽几个（不给就全查）")
     p.add_argument(
         "--out", type=Path, default=DEFAULT_OUT, help="清单目录（证据写进 抽查/<层级>/）"
+    )
+    p.add_argument(
+        "--divisions", type=Path, default=DEFAULT_OUT / "行政区划.csv", help="行政区划清单"
     )
     p.set_defaults(func=_cmd_sample)
 

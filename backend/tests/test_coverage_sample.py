@@ -298,6 +298,15 @@ def test_batch_urls_drop_rows_failed_after_batch(tmp_path, capsys):
         ("吉林", "吉林市", "市场监管", "吉林省市场监督管理厅", False),
         ("青海", "海南藏族自治州", "发改委", "海南州发展和改革委员会", True),
         ("青海", "海南藏族自治州", "发改委", "海南省发展和改革委员会", False),
+        # 本市名称后面紧跟下辖区县全称的是区县的部门（区县名单取自行政区划清单）
+        ("吉林", "吉林市", "发改委", "吉林省吉林市丰满区发展和改革局", False),
+        ("江苏", "苏州市", "政府办", "苏州市常熟市人民政府", False),
+        ("江苏", "南京市", "发改委", "南京市玄武区发展和改革委员会", False),
+        ("山东", "济南市", "发改委", "市中区发展和改革局", False),
+        ("湖北", "恩施土家族苗族自治州", "农业农村", "恩施市农业农村局", False),
+        ("湖北", "荆州市", "发改委", "荆州区发展和改革局", False),
+        ("湖北", "荆州市", "发改委", "荆州市发展和改革委员会", True),
+        ("江苏", "苏州市", "政府办", "苏州市人民政府", True),
     ],
 )
 def test_city_dept_names(province, city, dept, full, ok):
@@ -306,8 +315,35 @@ def test_city_dept_names(province, city, dept, full, ok):
 
     from youju.govsites.sample import _dept_ok
 
+    counties = {
+        "吉林市": {"丰满区", "船营区", "永吉县", "蛟河市"},
+        "苏州市": {"姑苏区", "常熟市", "昆山市"},
+        "南京市": {"玄武区", "秦淮区", "浦口区"},
+        "济南市": {"历下区", "市中区", "平阴县"},
+        "恩施土家族苗族自治州": {"恩施市", "利川市", "建始县"},
+        "荆州市": {"荆州区", "沙市区", "沙市", "公安县"},
+    }.get(city, set())
     s = SimpleNamespace(level="市级", province=province, city=city, dept=dept, dept_full_name=full)
-    assert _dept_ok(s) is ok
+    assert _dept_ok(s, frozenset(counties)) is ok
+
+
+def test_counties_by_city_keeps_full_names(tmp_path):
+    """区县名单只取带区、县、市、旗的写法："公安县"的"公安"会碰上"荆州市公安局"。"""
+    from youju.govsites.sample import counties_by_city
+
+    path = tmp_path / "行政区划.csv"
+    path.write_text(
+        "区划代码,名称,类型,层级,省份,城市,区县,上级代码\n"
+        "421000,荆州市,地级市,市级,湖北,荆州,,420000\n"
+        "421003,荆州区,市辖区,区县级,湖北,荆州,荆州区,421000\n"
+        "421022,公安县,县,区县级,湖北,荆州,公安县,421000\n"
+        "422801,恩施市,县级市,区县级,湖北,恩施土家族苗族自治州,恩施市,422800\n",
+        encoding="utf-8-sig",
+    )
+    got = counties_by_city(path)
+    assert got[("湖北", "荆州")] == {"荆州区", "公安县"}
+    assert got[("湖北", "恩施土家族苗族自治州")] == {"恩施市"}
+    assert counties_by_city(tmp_path / "没有.csv") == {}
 
 
 @pytest.mark.parametrize(
