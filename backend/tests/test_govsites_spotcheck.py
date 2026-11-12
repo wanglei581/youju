@@ -109,6 +109,26 @@ def test_write_outputs_names_files_by_level(tmp_path) -> None:
     assert csv_path.parent.name == "江苏"
 
 
+def test_write_outputs_masks_personal_titles(tmp_path) -> None:
+    """公开仓库：个人事项或写着人名的标题写成"（标题略）"，别的照写（人名是编的）。"""
+    from youju.govsites.privacy import MASK
+
+    rows = []
+    for i, title in enumerate(
+        ("关于张三停工留薪期确认书的公告", "关于开展2026年度专精特新认定的通知")
+    ):
+        row = {f: "" for f in sc.FIELDS}
+        row.update(序号=i + 1, 文件标题=title, 程序结论=sc.OK)
+        rows.append(row)
+    csv_path, md_path = sc.write_outputs(
+        tmp_path, "江苏", "市级", 2, "2026-11", rows, date(2026, 11, 9)
+    )
+    text = csv_path.read_text(encoding="utf-8-sig") + md_path.read_text(encoding="utf-8")
+    assert "张三" not in text and MASK in text
+    assert "关于开展2026年度专精特新认定的通知" in text
+    assert rows[0]["文件标题"] == "关于张三停工留薪期确认书的公告"  # 只改写出去的
+
+
 def test_attribution_uses_issuer_and_strips_site_noise() -> None:
     cell = {"城市": "焦作", "部门": "农业农村"}
     col = "<title>欢迎访问焦作市农业农村局网站！</title>"

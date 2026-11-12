@@ -140,6 +140,19 @@ _REGIONS = ("内蒙古", "广西", "西藏", "宁夏", "新疆")
 
 
 def _own_prefixes(s: Source) -> set[str]:
+    if s.level == "市级" and s.city:
+        # 地市部门全称写本市名称（"南京市发展和改革委员会""恩施州农业农村局"）、省名连市名
+        # （"江苏省南京市……"），或只写本级前缀（"市大数据局""州农业农村局""盟行政公署"）。只写省名的
+        # （"江苏省发展和改革委员会"）是省直部门，挂在地市格上不对，不算（11/11 地市一组报：
+        # 原来只认省名，568 个地市栏目里 552 个卡在"部门"）
+        city = {v for v in name_variants(s.city) | {s.city} if len(v) >= 2}
+        prov = {v for v in name_variants(s.province) | {s.province} if len(v) >= 2}
+        prov |= {s.province + "省", s.province + "自治区"}  # 库里省份写简称（"江苏"）
+        own = city | {p + c for p in prov for c in city}
+        own.add("市")
+        if s.city.endswith(("州", "盟")):
+            own.add(s.city[-1])
+        return own
     own = {v for v in name_variants(s.province) | {s.province} if len(v) >= 2}
     if s.level == "省级":
         if s.province in _MUNICIPALITIES:
@@ -162,7 +175,14 @@ def _dept_ok(s: Source) -> bool:
     if s.dept == "市场监管" and "知识产权" in name and "市场监督" not in name:
         return False
     if s.dept == "政府办":
-        ok_kind = "人民政府" in name or "办公厅" in name or "政府办" in dept_categories(name)
+        # 地市门户常写"××市政府门户网站""××政府网""××市政府"，或党政合办"中共××市委 ××市人民政府"
+        ok_kind = (
+            "人民政府" in name
+            or "办公厅" in name
+            or "政府办" in dept_categories(name)
+            or bool(re.search(r"政府(?:门户)?网|[市州盟县区]政府|行政公署", name))
+        )
+        name = name.removeprefix("中共")
     else:
         ok_kind = s.dept in dept_categories(name)
     if not ok_kind:
@@ -346,6 +366,14 @@ class ProvinceResult:
     retry: int = 0  # 这次没抓到、下批重试的（不知道读得准不准，不算进通过率）
     blocked: int = 0  # 不能抓：按访问控制等不读的（不进本批，读不了也不算进通过率）
     excluded: int = 0  # 不收：读得对、但不在收录范围的（不进本批；读得对，通过率里算对）
+    # 联网核对抽到的那几格（复核人以"联网核对"开头）：读得准的、算进分母的
+    sample_ok: int = 0
+    sample_judged: int = 0
+
+    @property
+    def sample_rate(self) -> float | None:
+        """联网核对抽样里读得准的占多少；没有抽样时是 None。"""
+        return self.sample_ok / self.sample_judged if self.sample_judged else None
 
     @property
     def rate(self) -> float:
@@ -355,6 +383,10 @@ class ProvinceResult:
 
     @property
     def accepted(self) -> bool:
+        """全表读得准的过八成；有联网核对抽样的，抽样里也要过八成（抽样只看了一部分格，抽样里
+        错得多说明全表的自动核对漏了，就算全表算下来过八成也先不放；11/11 主线定的）。"""
+        if self.sample_rate is not None and self.sample_rate < PASS_RATE:
+            return False
         return self.passed > 0 and self.pending == 0 and self.rate >= PASS_RATE
 
 
@@ -402,6 +434,13 @@ def evidence_results(folder) -> list[ProvinceResult]:
             for r in csv.DictReader(fh):
                 res.total += 1
                 verdict = final_verdict(r)
+                if (r.get("复核人") or "").strip().startswith("联网核对") and verdict in (
+                    "通过",
+                    "不通过",
+                    "不收",
+                ):
+                    res.sample_judged += 1
+                    res.sample_ok += verdict != "不通过"
                 if verdict == "通过":
                     res.passed += 1
                 elif verdict == "不通过":

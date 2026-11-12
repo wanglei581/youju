@@ -24,6 +24,12 @@ _EXTRA_WORDS = (
     "作废公告",
     "作废声明",
     "辞去",
+    # 11/12 地市一组独立审阅查出：工伤、病残一类的个人公告标题里直接写人名
+    "停工留薪",
+    "病残",
+    "工亡",
+    "伤残",
+    "供养亲属",
 )
 _H = "[一-鿿]"
 # 人名的几种写法：××同志、××等 3 名/户、××等同志、××等职务、××、××同志、任命××为、
@@ -49,6 +55,10 @@ _COMPENSATION = re.compile(
     rf"关于((?:{_H}{{2,3}}、)*{_H}{{2,3}})[^，。]{{0,12}}(?:补偿|安置)[^，。]{{0,6}}(?:决定|协议)"
 )
 _NOT_NAMES = ("房屋", "房产", "住房", "厂房")  # 以这些词开头的不是人名（"房屋征收补偿决定"）
+# 括号里只有像人名的词（"作废公告（张三、李四）""遗失声明（王五）"）；政策标题括号里常见、又被
+# 当成姓氏开头的词不算（"（修订）""（解读）""（简体）""（范本）"）
+_PARENS = re.compile(rf"[（(]((?:{_H}{{2,3}}、)*{_H}{{2,3}})[）)]")
+_PAREN_WORDS = {"修订", "修正", "解读", "简体", "繁体", "范本"}
 _NOT_NAME_END = tuple(
     "型油类业品化性气水电料费税率险款价区县市镇村省局厅委办部站所院校园河湖江苑条"
 )
@@ -59,6 +69,12 @@ def _named(title: str) -> bool:
 
     for m in _NAME_CONTEXT.finditer(title):
         if any(g and _name_like(g) for g in m.groups()):
+            return True
+    for m in _PARENS.finditer(title):
+        parts = m.group(1).split("、")
+        if all(
+            _name_like(w) and w not in _PAREN_WORDS and not w.endswith(_NOT_NAME_END) for w in parts
+        ):
             return True
     for m in _COMPENSATION.finditer(title):
         if any(_name_like(w) and not w.startswith(_NOT_NAMES) for w in m.group(1).split("、")):

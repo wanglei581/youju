@@ -2,6 +2,8 @@
 
 from datetime import UTC, date, datetime
 
+import pytest
+
 from youju.crawler.urls import url_key
 from youju.govsites.sample import evidence_results, sample_rows, to_csv_row
 from youju.models import Document, Source, SourceCheck
@@ -266,3 +268,48 @@ def test_batch_urls_drop_rows_failed_after_batch(tmp_path, capsys):
     )
     assert _cmd_enable(args) == 1
     assert "--batch" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("city", "dept", "full", "ok"),
+    [
+        # 地市部门全称写本市名称、省名连市名、只写本级前缀"市"：算本市
+        ("南京市", "发改委", "南京市发展和改革委员会", True),
+        ("南京市", "发改委", "江苏省南京市发展和改革委员会", True),
+        ("南京市", "数据局", "市大数据局", True),
+        ("恩施土家族苗族自治州", "农业农村", "恩施州农业农村局", True),
+        ("阿拉善盟", "发改委", "盟发展和改革委员会", True),
+        # 地市门户的写法
+        ("南京市", "政府办", "中共南京市委 南京市人民政府", True),
+        ("南京市", "政府办", "南京市政府门户网站", True),
+        ("南京市", "政府办", "南京政府网", True),
+        # 只写省名的是省直部门；别的市的部门：都不算
+        ("南京市", "发改委", "江苏省发展和改革委员会", False),
+        ("南京市", "发改委", "苏州市发展和改革委员会", False),
+    ],
+)
+def test_city_dept_names(city, dept, full, ok):
+    """11/11 地市一组报：部门核对原来只认省名，568 个地市栏目里 552 个卡在"部门"。"""
+    from types import SimpleNamespace
+
+    from youju.govsites.sample import _dept_ok
+
+    province = "内蒙古" if city == "阿拉善盟" else ("湖北" if "恩施" in city else "江苏")
+    s = SimpleNamespace(level="市级", province=province, city=city, dept=dept, dept_full_name=full)
+    assert _dept_ok(s) is ok
+
+
+def test_online_sample_failing_holds_province(tmp_path):
+    """联网核对抽的格里错得超过两成：就算全表读得准的过八成，这个省也先不放。"""
+    from youju.govsites.sample import evidence_results
+
+    head = "层级,省份,栏目URL,自动结论,没过的项,复核人,复核结论,复核备注\n"
+    rows = "".join(f"市级,河南,a{n},自动通过,,,,\n" for n in range(20))
+    rows += "".join(f"市级,河南,s{n},自动通过,,联网核对,通过,\n" for n in range(7))
+    rows += "".join(
+        f"市级,河南,f{n},自动通过,,联网核对,不通过,列表标题混进点击数\n" for n in range(3)
+    )
+    (tmp_path / "河南.csv").write_text(head + rows, encoding="utf-8-sig")
+    [res] = evidence_results(tmp_path)
+    # 全表 27/30 = 90%，但联网核对 7/10 = 70% → 不放
+    assert round(res.rate, 2) == 0.9 and res.sample_rate == 0.7 and res.accepted is False

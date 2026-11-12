@@ -90,7 +90,7 @@ from youju.govsites.navrules import (
     specific_page,
 )
 from youju.govsites.pagecache import PageCache
-from youju.govsites.platform import URL_SHAPES, Fingerprint, blocker, fingerprint
+from youju.govsites.platform import URL_SHAPES, Fingerprint, blocker, clean_support, fingerprint
 
 log = logging.getLogger(__name__)
 
@@ -1601,7 +1601,9 @@ def portal_rows(portals: Iterable[PortalRow]) -> list[list[str]]:
             r.site_id_code,
             r.site_name,
             r.platform,
-            r.support,
+            clean_support(
+                r.support
+            ),  # 公开清单只留单位名（旧数据里的电话、邮箱、备案号写出时去掉）
         ]
         for r in rows
     ]
@@ -1638,7 +1640,7 @@ def dept_rows(depts: Iterable[DeptRow]) -> list[list[str]]:
                 " ".join(sources),
                 r.platform,
                 r.site_id_code,
-                r.support,
+                clean_support(r.support),
             ]
         )
     return out

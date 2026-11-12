@@ -1,11 +1,11 @@
 ﻿层级,省份,城市,区县,区划代码,名称,门户网址,导航来源页,导航文字,状态,原因,网站标识码,网站名称,平台,技术支持
 省级,新疆,,,650000,新疆维吾尔自治区,https://www.xinjiang.gov.cn/,https://www.gov.cn/home/2023-03/29/content_5748954.htm,新疆,已找到,,6500000034,新疆维吾尔自治区人民政府网,32位编号.shtml,
 市级,新疆,乌鲁木齐,,650100,乌鲁木齐市,http://www.wlmq.gov.cn/,https://www.xinjiang.gov.cn/,乌鲁木齐市,已找到,,6501000002,乌鲁木齐市人民政府,32位编号.shtml,
-市级,新疆,克拉玛依,,650200,克拉玛依市,https://www.klmy.gov.cn/,https://www.xinjiang.gov.cn/,克拉玛依市,已找到,,6502000043,克拉玛依市人民政府,32位编号.shtml,0990-6537177新ICP备08100610号网站标识
+市级,新疆,克拉玛依,,650200,克拉玛依市,https://www.klmy.gov.cn/,https://www.xinjiang.gov.cn/,克拉玛依市,已找到,,6502000043,克拉玛依市人民政府,32位编号.shtml,0990
 市级,新疆,吐鲁番,,650400,吐鲁番市,https://www.tlf.gov.cn/,https://www.xinjiang.gov.cn/,吐鲁番市,已找到,网站标识码 6521000001 和区划代码 650400 不一致（同省，待核对）,6521000001,吐鲁番市人民政府网,32位编号.shtml,
 市级,新疆,哈密,,650500,哈密市,https://www.hami.gov.cn/,https://www.xinjiang.gov.cn/,哈密市,已找到,网站标识码 6522000001 和区划代码 650500 不一致（同省，待核对）,6522000001,哈密市人民政府,未识别,
 市级,新疆,昌吉回族自治州,,652300,昌吉回族自治州,https://www.cj.gov.cn/,https://www.xinjiang.gov.cn/,昌吉回族自治州,已找到,,6523000001,昌吉回族自治州人民政府网,未识别,
-市级,新疆,博尔塔拉蒙古自治州,,652700,博尔塔拉蒙古自治州,https://www.xjboz.gov.cn/,https://www.xinjiang.gov.cn/,博尔塔拉蒙古自治州,已找到,,6527000001,博尔塔拉蒙古自治州人民政府,32位编号.shtml,0909-2318687
+市级,新疆,博尔塔拉蒙古自治州,,652700,博尔塔拉蒙古自治州,https://www.xjboz.gov.cn/,https://www.xinjiang.gov.cn/,博尔塔拉蒙古自治州,已找到,,6527000001,博尔塔拉蒙古自治州人民政府,32位编号.shtml,0909
 市级,新疆,巴音郭楞蒙古自治州,,652800,巴音郭楞蒙古自治州,http://www.xjbz.gov.cn/,https://www.xinjiang.gov.cn/,巴音郭楞蒙古自治州,已找到,,6528000001,巴音郭楞蒙古自治州人民政府,未识别,
 市级,新疆,阿克苏地区,,652900,阿克苏地区,https://www.aks.gov.cn/,https://www.xinjiang.gov.cn/,阿克苏地区,已找到,,6529000001,阿克苏地区行政公署,未识别,
 市级,新疆,克孜勒苏柯尔克孜自治州,,653000,克孜勒苏柯尔克孜自治州,https://www.xjkz.gov.cn/,https://www.xinjiang.gov.cn/,克孜勒苏柯尔克孜自治州,已找到,,6530000002,克孜勒苏柯尔克孜自治州人民政府,开普云|32位编号.shtml,
@@ -23,7 +23,7 @@
 区县级,新疆,乌鲁木齐,米东区,650109,米东区,http://www.xjmd.gov.cn/,https://www.xinjiang.gov.cn/,米东区,已找到,,6501090004,乌鲁木齐市米东区人民政府,开普云|动态页?id=,
 区县级,新疆,乌鲁木齐,乌鲁木齐县,650121,乌鲁木齐县,http://www.wlmqx.gov.cn/,https://www.xinjiang.gov.cn/,乌鲁木齐县,已找到,,6501210001,乌鲁木齐县人民政府,32位编号.shtml,
 区县级,新疆,克拉玛依,独山子区,650202,独山子区,https://www.dsz.gov.cn/,https://www.xinjiang.gov.cn/,独山子区,已找到,,6502020001,独山子区人民政府,32位编号.shtml,
-区县级,新疆,克拉玛依,克拉玛依区,650203,克拉玛依区,http://www.klmyq.gov.cn/,https://www.xinjiang.gov.cn/,克拉玛依区,已找到,,6502030044,克拉玛依区人民政府,32位编号.shtml,0990-6246061新ICP备09001408号-1政府
+区县级,新疆,克拉玛依,克拉玛依区,650203,克拉玛依区,http://www.klmyq.gov.cn/,https://www.xinjiang.gov.cn/,克拉玛依区,已找到,,6502030044,克拉玛依区人民政府,32位编号.shtml,0990
 区县级,新疆,克拉玛依,白碱滩区,650204,白碱滩区,https://www.bjtq.gov.cn/,https://www.xinjiang.gov.cn/,白碱滩区,已找到,,6502040001,白碱滩区人民政府,32位编号.shtml,
 区县级,新疆,克拉玛依,乌尔禾区,650205,乌尔禾区,https://www.weh.gov.cn/,https://www.xinjiang.gov.cn/,乌尔禾区,已找到,,6502050025,乌尔禾区人民政府,32位编号.shtml,
 区县级,新疆,吐鲁番,高昌区,650402,高昌区,http://gcq.tlf.gov.cn/,https://www.xinjiang.gov.cn/,高昌区,已找到,网站标识码 6521010042 和区划代码 650402 不一致（同省，待核对）,6521010042,高昌区人民政府网,32位编号.shtml,高昌区电子政务服务中心
@@ -52,7 +52,7 @@
 区县级,新疆,巴音郭楞蒙古自治州,和静县,652827,和静县,http://www.xjhj.gov.cn/,https://www.xinjiang.gov.cn/,和静县,打不开,robots.txt 暂时无法获取（RemoteProtocolError: Server disconnected without sending a response.），本次跳过,,,,
 区县级,新疆,巴音郭楞蒙古自治州,和硕县,652828,和硕县,https://www.hoxut.gov.cn/,https://www.xinjiang.gov.cn/,和硕县,已找到,,6528280001,和硕县人民政府,32位编号.shtml,
 区县级,新疆,巴音郭楞蒙古自治州,博湖县,652829,博湖县,http://www.xjbh.gov.cn/,https://www.xinjiang.gov.cn/,博湖县,已找到,,6528290001,博湖县人民政府,开普云|32位编号.shtml,
-区县级,新疆,阿克苏地区,阿克苏市,652901,阿克苏市,https://www.akss.gov.cn/,https://www.xinjiang.gov.cn/,阿克苏市,已找到,,6529010001,阿克苏市人民政府,未识别,0997-2136076
+区县级,新疆,阿克苏地区,阿克苏市,652901,阿克苏市,https://www.akss.gov.cn/,https://www.xinjiang.gov.cn/,阿克苏市,已找到,,6529010001,阿克苏市人民政府,未识别,0997
 区县级,新疆,阿克苏地区,库车市,652902,库车市,https://www.xjkc.gov.cn/,https://www.xinjiang.gov.cn/,库车市,已找到,网站标识码 6529230001 和区划代码 652902 不一致（同省，待核对）,6529230001,库车市人民政府,未识别,
 区县级,新疆,阿克苏地区,温宿县,652922,温宿县,https://www.wszf.gov.cn/,https://www.xinjiang.gov.cn/,温宿县,已找到,,6529220001,温宿县人民政府,未识别,
 区县级,新疆,阿克苏地区,沙雅县,652924,沙雅县,https://www.xjsy.gov.cn/,https://www.xinjiang.gov.cn/,沙雅县,已找到,,6529240001,沙雅县人民政府,未识别,
@@ -88,7 +88,7 @@
 区县级,新疆,和田地区,民丰县,653227,民丰县,http://www.mfx.gov.cn/,https://www.xinjiang.gov.cn/,民丰县,不能抓,HTTP 403 拒绝访问,,,,
 区县级,新疆,和田地区,和康县,653228,和康县,,,,导航未找到,,,,,
 区县级,新疆,和田地区,和安县,653229,和安县,,,,导航未找到,,,,,
-区县级,新疆,伊犁哈萨克自治州,伊宁市,654002,伊宁市,http://www.yining.gov.cn/,https://www.xinjiang.gov.cn/,伊宁市,已找到,,6540020003,伊宁市人民政府网,32位编号.shtml,0999-8359541
+区县级,新疆,伊犁哈萨克自治州,伊宁市,654002,伊宁市,http://www.yining.gov.cn/,https://www.xinjiang.gov.cn/,伊宁市,已找到,,6540020003,伊宁市人民政府网,32位编号.shtml,0999
 区县级,新疆,伊犁哈萨克自治州,奎屯市,654003,奎屯市,http://www.xjkuitun.gov.cn/,https://www.xinjiang.gov.cn/,奎屯市,已找到,,6540030004,奎屯市人民政府,32位编号.shtml,
 区县级,新疆,伊犁哈萨克自治州,霍尔果斯市,654004,霍尔果斯市,http://www.xjhegs.gov.cn/,https://www.xinjiang.gov.cn/,霍尔果斯市,已找到,网站标识码 6540900002 和区划代码 654004 不一致（同省，待核对）,6540900002,霍尔果斯市人民政府网,32位编号.shtml,
 区县级,新疆,伊犁哈萨克自治州,伊宁县,654021,伊宁县,http://www.xjyn.gov.cn/,https://www.xinjiang.gov.cn/,伊宁县,打不开,robots.txt 暂时无法获取（RemoteProtocolError: Server disconnected without sending a response.），本次跳过,,,,
