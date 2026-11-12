@@ -1762,6 +1762,19 @@ def test_auto_group_outside_the_window_is_left_alone_while_on(session, monkeypat
     assert {d.id for d in docs} <= set(_members(session))
 
 
+def test_switch_off_reverts_auto_groups_outside_the_window_too(session, monkeypatch):
+    # 开关关了：窗口外的自动组也退回（组员是全部读进来的，不只看窗口）
+    _auto_on(monkeypatch, session)
+    _auto_world(session)
+    assert rebuild(session, now=NOW).auto_merged == 1
+    monkeypatch.setattr(
+        "youju.repost.get_settings", lambda: SimpleNamespace(repost_auto_merge=False)
+    )
+    result = rebuild(session, now=NOW + timedelta(days=400))  # 组里的文件都早于窗口了
+    assert result.auto_reverted == 1
+    assert all(r.confirmed_at is None for r in _members(session).values())
+
+
 def test_a_later_partial_gate_round_does_not_override_a_full_one(session):
     from youju.repost import auto_gate
 
