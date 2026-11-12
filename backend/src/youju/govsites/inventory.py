@@ -1173,7 +1173,7 @@ class Inventory:
         hits: dict[str, ColumnHit],
         exclude: frozenset[str],
         max_depth: int,
-        channel: str = "",
+        skip_topics: bool = False,
     ) -> dict[str, ColumnHit]:
         """由大汉分组条目还原出来的栏目页，看它自己叫什么（meta ColumnName，没有就看标题）：
         分组"政策文件"里的条目可能发在"其他文件政策解读"栏目（拱墅区），还原出的栏目名不是这一类
@@ -1204,7 +1204,7 @@ class Inventory:
                     moved.append(ColumnHit(own[0], name, hit.url, hit.source))
             if not found_bad:
                 break
-            hits = find_columns(pages, exclude | frozenset(bad), max_depth, channel)
+            hits = find_columns(pages, exclude | frozenset(bad), max_depth, skip_topics)
         for hit in moved:
             hits.setdefault(hit.kind, hit)
         return hits
@@ -1281,19 +1281,17 @@ class Inventory:
         # 部门网站自己写的网站名（meta SiteName）是同一类部门的全称，就用它
         if row.dept != "政府办" and fp.site_name and row.dept in dept_categories(fp.site_name):
             row.dept_full_name = fp.site_name
-        # 门户频道的部门：链到门户专题专栏的不算（独立网站自己的"规范性文件专栏"照常认），
-        # 频道目录按部门频道页算（沿"信息公开"找到的门户公共页不算）
-        portal_channel = row.dept != "政府办" and row.site_type == "门户频道"
-        channel = page_dir(page.final_url) if portal_channel else ""
-        hits = find_columns(pages, exclude, max_depth, channel)
-        hits = self._check_group_columns(pages, hits, exclude, max_depth, channel)
+        # 门户频道的部门：链到门户专题专栏的不算（独立网站自己的"规范性文件专栏"照常认）
+        topics = row.dept != "政府办" and row.site_type == "门户频道"
+        hits = find_columns(pages, exclude, max_depth, topics)
+        hits = self._check_group_columns(pages, hits, exclude, max_depth, topics)
         if row.level == "市级" and row.dept != "政府办":
             # 地市部门：先在部门自己的目录下补（栏目层级深、部门自己的信息公开页，colrules），
             # 再沿页面上第一个"信息公开"补还缺的——它常是门户公共的政务公开页。
             # 补抓的页面照同样的规则找栏目（专题路径、大汉分组栏目名核对）
             def find(ps: list[PageInfo], ex: frozenset[str]) -> dict[str, ColumnHit]:
-                got = find_columns(ps, ex, max_depth, channel)
-                return self._check_group_columns(ps, got, ex, max_depth, channel)
+                got = find_columns(ps, ex, max_depth, topics)
+                return self._check_group_columns(ps, got, ex, max_depth, topics)
 
             hits = colrules.more_columns(row, page, hits, exclude, self.page, find, ColumnHit)
         missing = [k for k in COLUMN_KINDS if k not in hits]
@@ -1303,7 +1301,7 @@ class Inventory:
                 if _INFO_WORDS.search(link.text) and registrable(link.url) == registrable(
                     page.final_url
                 ):
-                    if channel and _portal_section(link.url, page.final_url):
+                    if topics and _portal_section(link.url, page.final_url):
                         continue
                     sub = self.page(link.url)
                     # 信息公开页上的列表接口被读取护栏（D-128）拦下或这次没取到、或这一页本身
@@ -1311,8 +1309,8 @@ class Inventory:
                     page.api_refused = page.api_refused or sub.api_refused
                     page.api_failed = page.api_failed or sub.api_failed or sub.result.status != "ok"
                     if sub.result.status == "ok" and not sub.block:
-                        found = find_columns([sub], exclude, max_depth, channel)
-                        found = self._check_group_columns([sub], found, exclude, max_depth, channel)
+                        found = find_columns([sub], exclude, max_depth, topics)
+                        found = self._check_group_columns([sub], found, exclude, max_depth, topics)
                         for kind, hit in found.items():
                             hits.setdefault(kind, hit)
                     break
@@ -1322,8 +1320,9 @@ class Inventory:
 def _portal_section(url: str, channel_page: str) -> bool:
     """门户频道部门页上的"信息公开"链到门户首页、或频道所在的门户一级栏目（枣庄数据局频道
     /zwgk/jgzn/sdsjj/jgjj/ 上的"政务公开"→ /zwgk/）：那是门户公共的政务公开页，上面的规范性文件库、
-    专题是门户的，不是这个部门的。部门自己的信息公开页（频道目录里的、信息公开平台上按部门分的）照常找。"""
-    if _hostname(url) != _hostname(channel_page):
+    专题是门户的，不是这个部门的。部门自己的信息公开页（频道目录里的、信息公开平台上按部门分的、
+    带参数指明部门的 /zwgk/?deptId=…）照常找。"""
+    if _hostname(url) != _hostname(channel_page) or urlsplit(url).query:
         return False
     section, chan = page_dir(url), page_dir(channel_page)
     return section != chan and chan.startswith(section) and section.count("/") <= 2
@@ -1556,13 +1555,12 @@ def find_columns(
     pages: list[PageInfo],
     exclude: frozenset[str] = frozenset(),
     max_depth: int = 4,
-    channel: str = "",
+    skip_topics: bool = False,
 ) -> dict[str, ColumnHit]:
     """在一组页面上按链接文字找目标栏目。
 
     完全相同的写法优先；同一写法里，在这个页面目录下的优先，其次同一主机，再次同一家网站
     （xx.gov.cn）。别家网站的不要；exclude 里的（门户自己的栏目，部门频道页顶上常有）不要。
-    channel：门户频道里的部门的频道目录（部门页所在目录）。给了时，链到门户专题专栏的不算。
     """
     best: dict[str, tuple[tuple[int, int, int, int], ColumnHit]] = {}
     for p in pages:
@@ -1583,14 +1581,12 @@ def find_columns(
                 continue
             lpath = urlsplit(link.url).path
             if (
-                channel
+                skip_topics
                 and _TOPIC_PATH.search(lpath)
-                and not (channel != "/" and lpath.startswith(channel))
+                and not (pdir != "/" and lpath.startswith(pdir))
             ):
                 # 门户频道页上链到门户专题专栏（枣庄"财政预决算公开"专题）的不是部门自己的栏目；
-                # 频道本身在专题路径下的（通化市发改委 /ztzl/fgw/）、链到频道目录里的照常认。
-                # 按部门频道的目录看，不按正在找的这一页：沿"信息公开"找到门户公共的 /zwgk/ 时，
-                # 它下面的 /zwgk/zt/… 照样是门户专题
+                # 频道本身在专题路径下的（通化市发改委 /ztzl/fgw/）、链到频道目录里的照常认
                 continue
             if registrable(link.url) != home:
                 continue  # 别家网站的栏目（如部门页上链到的省政策文件库）不算这个部门的栏目

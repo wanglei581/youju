@@ -91,8 +91,12 @@ _EDGE_DATE = re.compile(
     r"|\s(\d{2}-\d{2})\s*$"
 )
 
-# title 属性结尾隔着空白写的发布日期（只认完整的年月日，括号里的日期可能是标题本身的一部分）
-_ATTR_DATE = re.compile(r"\s+20\d{2}(?:年\d{1,2}月\d{1,2}日|[-/.]\d{1,2}[-/.]\d{1,2})$")
+# title 属性结尾隔着空白写的日期（只认完整的年月日，括号里的日期可能是标题本身的一部分）
+_ATTR_DATE = re.compile(r"\s+(20\d{2}(?:年\d{1,2}月\d{1,2}日|[-/.]\d{1,2}[-/.]\d{1,2}))$")
+# 悬浮提示（titles._TOOLTIP）里的发表时间
+_TOOLTIP_DATE = re.compile(
+    r"点击数[：:]\s*\d+\s+发表时间[：:]\s*(20\d{2}[-/.年]\d{1,2}[-/.月]\d{1,2}日?)"
+)
 
 
 _MARKUP = re.compile(r"<\s*/?\s*[A-Za-z][^>]*>")
@@ -114,11 +118,6 @@ def _title_of(a: etree._Element) -> str:
     if _MARKUP.search(attr):
         stripped = clean_title(_clean(_MARKUP.sub(" ", attr)))
         return text if _looks_like_title(text) or not stripped else stripped
-    # 济南人社：title 属性是"标题 + 空格 + 发布日期"（title="……送达公告 2026年11月05日"），
-    # 链接文字是不带日期的标题。去掉属性结尾的日期后正是链接文字（或它的完整写法）时，不要这个日期
-    core = _ATTR_DATE.sub("", attr)
-    if core != attr and (core == text or _completes(core, text)):
-        attr = core
     # 链接文字常被截断成"……"，title 属性里才是完整标题
     if attr and (len(attr) >= len(text) or is_truncated(text)):
         return attr
@@ -273,6 +272,27 @@ def _date_inside_anchor(title: str, today: date) -> tuple[str, date | None, bool
     return _clean(title[: m.start()] + title[m.end() :]), found, full
 
 
+def _without_attr_date(title: str, a: etree._Element, found: date | None, today: date) -> str:
+    """济南人社：title 属性是"标题 + 空格 + 发布日期"（title="……送达公告 2026年11月05日"），链接文字
+    是不带日期的标题，行里另写着同一个发布日期。结尾这个日期和这一行的发布日期相同、去掉它剩下的
+    正是链接文字（或它的完整写法）时，日期不算标题；和发布日期不同的（纪要写的会议日期）照旧留着"""
+    m = _ATTR_DATE.search(title)
+    if not m or found is None:
+        return title
+    core, text = title[: m.start()], _link_text(a)
+    stated, _ = parse_date_detail(m.group(1), today)
+    if stated == found and (core == text or _completes(core, text)):
+        return core
+    return title
+
+
+def _tooltip_date(a: etree._Element, today: date) -> tuple[date | None, bool]:
+    """悬浮提示里写的发表时间（漯河、本溪等平台：title="标题：…点击数：…发表时间：2026-07-01"）。
+    标题已经只取"标题："那一段（titles.clean_title），行里、链接里都没写日期时用它"""
+    m = _TOOLTIP_DATE.search(_clean(a.get("title")))
+    return parse_date_detail(m.group(1), today) if m else (None, False)
+
+
 # 只表示显示状态的样式名（页签选中、显隐等），比较结构时忽略
 _STATE_CLASSES = {
     "active",
@@ -385,6 +405,8 @@ def _extract_heuristic(page: _Page, require_date: bool) -> tuple[tuple, list[Lis
             if found is None:
                 # 标题取自 title 属性时，链接文字里写的日期（如天津科技局）照样是发布日期
                 _, found, full = _date_inside_anchor(_link_text(a), page.today)
+            if found is None:
+                found, full = _tooltip_date(a, page.today)
             if found is not None:
                 row = a
         url_date = date_from_url(url, page.today)
@@ -393,6 +415,7 @@ def _extract_heuristic(page: _Page, require_date: bool) -> tuple[tuple, list[Lis
             found = url_date or found
         if found is None and require_date:
             continue
+        title = _without_attr_date(title, a, found, page.today)
         if not _looks_like_title(title):
             continue
         container = (row if row is not None else a).getparent()
@@ -441,7 +464,7 @@ def _extract_with_config(page: _Page, config: dict) -> list[ListItem]:
             found = url_date or found
         if found is None and require_date:
             continue
-        items.append(ListItem(title, url, found))
+        items.append(ListItem(_without_attr_date(title, a, found, page.today), url, found))
     return items
 
 

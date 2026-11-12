@@ -697,11 +697,31 @@ def test_title_attribute_keeps_dates_that_belong_to_the_title() -> None:
         国务院政策例行吹风会文字实录</a><span>2026-11-05</span></li>
       <li><a href="/a/2.html" title="关于调整2026年11月5日起执行的收费标准的通知">
         关于调整2026年11月5日起执行的收费标准的通知</a><span>2026-11-04</span></li>
+      <li><a href="/a/3.html" title="政策例行吹风会文字实录 2026年11月5日">
+        政策例行吹风会文字实录</a><span>2026-11-06</span></li>
     </ul>"""
     items = extract_items(html, "https://example.gov.cn/a/", today=date(2026, 11, 12))
     assert [i.title for i in items] == [
         "国务院政策例行吹风会文字实录（2026年11月5日）",
         "关于调整2026年11月5日起执行的收费标准的通知",
+        # 结尾的日期和这一行的发布日期不同：可能是会议日期，照旧留着（Codex 审阅 11/12）
+        "政策例行吹风会文字实录 2026年11月5日",
+    ]
+
+
+def test_publish_date_written_only_in_the_title_attribute_is_still_used() -> None:
+    # 行里、网址里都没写日期，只有 title 属性结尾、悬浮提示里写着：照旧用它当发布日期，
+    # 标题不带它（Codex 审阅 11/12：只清标题不留日期会把整条漏掉）
+    html = """<ul>
+      <li><a href="/a/1.html" title="关于开展专项申报工作的通知 2026-11-05">关于开展专项申报工作的通知</a></li>
+      <li><a href="/a/2.html" title="关于公布第三批认定名单的公示 2026年11月04日">关于公布第三批认定名单的公示</a></li>
+      <li><a href="/a/3.html" title="标题：关于征集2026年项目需求的通知&#xD;&#xA;点击数：12&#xD;&#xA;发表时间：2026-11-03">关于征集2026年项目需求的通知</a></li>
+    </ul>"""
+    items = extract_items(html, "https://example.gov.cn/a/", today=date(2026, 11, 12))
+    assert [(i.title, i.publish_date) for i in items] == [
+        ("关于开展专项申报工作的通知", date(2026, 11, 5)),
+        ("关于公布第三批认定名单的公示", date(2026, 11, 4)),
+        ("关于征集2026年项目需求的通知", date(2026, 11, 3)),
     ]
 
 

@@ -877,13 +877,27 @@ def test_portal_section_above_the_channel_is_not_the_departments_info_page():
     )
     sj = _depts(_run(pages, ["江西"]))[("360402", "数据局")]
     assert [c.url for c in sj.columns] == [tzgg]
-    # "信息公开"链到门户别处（不在频道上面）的页面照常找；那页上的门户专题按部门频道的目录看，不算
-    pages["http://www.lianxi.gov.cn/zwgk/jgzn/sjj/jgjj/"] = """<a href="/xxgk/">信息公开</a>
+    # 带参数指明部门的信息公开页（/zwgk/?deptId=…）不是门户公共页，照常找（Codex 审阅 11/12）
+    pages[
+        "http://www.lianxi.gov.cn/zwgk/jgzn/sjj/jgjj/"
+    ] = """<a href="/zwgk/?deptId=sjj">政务公开</a>
         <a href="/zwgk/jgzn/sjj/tzgg/">通知公告</a>"""
-    pages["http://www.lianxi.gov.cn/xxgk/"] = """<a href="/xxgk/zt/czyjsgk/">政策文件</a>
-        <a href="/xxgk/sjj/gsgg/">公示公告</a>"""
+    pages["http://www.lianxi.gov.cn/zwgk/?deptId=sjj"] = '<a href="/zwgk/sjj/gsgg/">公示公告</a>'
     sj = _depts(_run(pages, ["江西"]))[("360402", "数据局")]
-    assert [c.url for c in sj.columns] == [tzgg, "http://www.lianxi.gov.cn/xxgk/sjj/gsgg/"]
+    assert [c.url for c in sj.columns] == [tzgg, "http://www.lianxi.gov.cn/zwgk/sjj/gsgg/"]
+
+
+def test_department_info_page_under_a_topic_like_path_keeps_its_columns():
+    # 部门自己的信息公开页在专题路径下（/xxgk/zt/sjj/）：它目录里的栏目照常认（Codex 审阅 11/12）
+    pages = _lianxi_with(
+        '<a href="/bm/sjj/">濂溪区数据局</a>',
+        {
+            "http://www.lianxi.gov.cn/bm/sjj/": '<a href="/xxgk/zt/sjj/">信息公开</a>',
+            "http://www.lianxi.gov.cn/xxgk/zt/sjj/": '<a href="/xxgk/zt/sjj/tzgg/">通知公告</a>',
+        },
+    )
+    sj = _depts(_run(pages, ["江西"]))[("360402", "数据局")]
+    assert [c.url for c in sj.columns] == ["http://www.lianxi.gov.cn/xxgk/zt/sjj/tzgg/"]
 
 
 def test_weak_top_page_can_be_replaced_by_a_department_site():
