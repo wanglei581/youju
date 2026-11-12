@@ -12,12 +12,13 @@ from youju.crawler.adapters import (
     find_list_api,
 )
 from youju.crawler.fetcher import FetchResult
+from youju.crawler.urls import host_of
 from youju.govsites.report import import_status
 from youju.govsites.verify import BLOCKED, DOWN, NEEDS_SCRIPT, READABLE, ColumnCheck, check_one
 
 FIX = Path(__file__).parent / "fixtures/gkmlpt"
-PAGE = (FIX / "dept_page.html").read_text()
-BODY = json.loads((FIX / "api_notice.json").read_text())
+PAGE = (FIX / "dept_page.html").read_text(encoding="utf-8")
+BODY = json.loads((FIX / "api_notice.json").read_text(encoding="utf-8"))
 URL = "https://www.sg.gov.cn/fgj/gkmlpt/index"
 TODAY = date(2026, 11, 12)
 
@@ -39,6 +40,10 @@ def test_address_and_tree():
         == "https://www.sg.gov.cn:443/fgj/gkmlpt/api/all/8?page=1&sid=751012"
     )
     assert api(url=URL.replace(".cn/", ".cn:8443/")) is None  # 浏览器去的是默认端口，对不上
+    assert api(url=URL.replace("https://", "https://u:p@")) is None  # 网址里带用户名密码的不认
+    # 接口和部门页在抓取程序眼里是同一个网站（按它排队、隔 3 秒）
+    for page_url in (URL, URL.replace(".cn/", ".cn:443/")):
+        assert host_of(api(url=page_url).url) == host_of(page_url)
     assert api(category=6)
     assert not api(category=999)
     assert not api(category=24)
@@ -53,6 +58,7 @@ def test_address_and_tree():
         ("<script>if (window._CONFIG.SID == '9') {}</script>", True),
         ("<script>window._CONFIG.isFav = 0;</script>", True),
         ("<script>var s = \"window._CONFIG.SID = '9'\";</script>", True),
+        ("<script>var x = PAGE_CONFIG[0];</script>", True),
     ],
 )
 def test_later_config_overrides_are_not_recognised(extra, recognised):
@@ -123,6 +129,8 @@ def test_guard_rejects(change):
         {"url": "  \n"},
         {"url": "https://www.sg.gov.cn/fgj/gkmlpt/index"},  # 解析成部门页自己
         {"url": "https://www.sg.gov.cn:99999/a.html"},  # 端口写坏，存不进库
+        {"url": "http://[bad"},  # 括号没合上，解析不了
+        {"url": "http://www.sg.gov.cn/fgj/gkmlpt/index"},  # 只差 http 的部门页自己
         {"title": "<strong> </strong>"},
     ],
 )
@@ -133,6 +141,15 @@ def test_bad_article_is_skipped_not_the_whole_column(change):
     assert not api_refusal(api(), result(text))  # 一条字段不对不拖累整栏（不记不能抓）
     items = api_items(api(), text, {}, TODAY)
     assert len(items) == 4 and BODY["articles"][0]["url"] not in {i.url for i in items}
+
+
+def test_no_publish_time_at_all_is_not_recognised():
+    # 整份没有一条带发布时间：平台多半改了字段，认不出（不悄悄全记成没日期）
+    body = json.loads(json.dumps(BODY))
+    for row in body["articles"]:
+        row.pop("create_time")
+    text = json.dumps(body)
+    assert "认不出" in api_refusal(api(), result(text)) and not api_items(api(), text, {}, TODAY)
 
 
 @pytest.mark.parametrize("bad", ["123", True, -5, None])
@@ -290,3 +307,17 @@ def test_spotcheck_reads_gkmlpt_columns_through_the_api():
     item = _first_list_item(cache, f"{URL}#xxgk-gkmlpt-8", TODAY)
     assert item is not None and item.publish_date == date(2026, 11, 11)
     assert cache.calls == [URL, api().url] and cache.same == [False, True]
+
+
+def test_verify_login_json_is_blocked_end_to_end():
+    # 接口 200 但返回要登录：试读记不能抓、不读（D-128 ②）
+    login = json.dumps({"errcode": 1, "errmessage": "请先登录"})
+    checked = check_one(Cache({URL: PAGE, api().url: login}), column(), TODAY)
+    assert checked.result == BLOCKED and "登录" in checked.reason and checked.items == 0
+
+
+def test_verify_with_fragment_in_final_url():
+    page = FetchResult(URL, "ok", URL + "#xxgk-gkmlpt-8", 200, PAGE)
+    cache = Cache({URL: page, api().url: json.dumps(BODY)})
+    assert check_one(cache, column(), TODAY).result == READABLE
+    assert cache.calls == [URL, api().url]

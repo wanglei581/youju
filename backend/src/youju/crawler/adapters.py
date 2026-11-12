@@ -48,7 +48,7 @@ from lxml import etree
 from youju.crawler.dates import _safe_date
 from youju.crawler.listing import ListItem, _looks_like_title, extract_items
 from youju.crawler.titles import clean_title
-from youju.crawler.urls import normalize_url
+from youju.crawler.urls import normalize_url, url_key
 
 HANWEB_JPAAS_PATH = "/api-gateway/jpaas-publish-server/front/page/build/unit"
 # 适配器名（写进来源 parser_config 的"经接口读"标记 list_api_open，正式抓取据此决定走不走接口）
@@ -102,7 +102,7 @@ def _unit_scripts(html: str) -> list[dict[str, str]]:
 _GK_COLUMN = re.compile(r"#xxgk-gkmlpt-([0-9]+)$")
 # 遮住 JS 字符串和注释，避免把其中的文字当作可执行声明或配置项。
 # 页面脚本在声明以后又改写这几项配置（window._CONFIG.SID = '9'、window._CONFIG['ENV'] = …）
-_CONFIG_OVERRIDE = re.compile(r"_CONFIG\s*(?:\.\s*(?:APP_URL|SID|ENV|TREE)\s*=(?!=)|\[)")
+_CONFIG_OVERRIDE = re.compile(r"\b_CONFIG\s*(?:\.\s*(?:APP_URL|SID|ENV|TREE)\s*=(?!=)|\[)")
 _JS_LITERAL = re.compile(
     r"//[^\n]*|/\*[\s\S]*?\*/|'(?:\\[\s\S]|[^'\\])*'|\"(?:\\[\s\S]|[^\"\\])*\"|`(?:\\[\s\S]|[^`\\])*`"
 )
@@ -195,6 +195,8 @@ def find_gkmlpt_api(html: str, page_url: str, column_url: str) -> ListApi | None
             or app.query
             or app.fragment
             or page.scheme not in ("http", "https")
+            or page.username is not None
+            or page.password is not None
             or app.hostname != page.hostname
             or not page.path.startswith(app.path.rstrip("/") + "/gkmlpt/")
         ):
@@ -210,6 +212,7 @@ def find_gkmlpt_api(html: str, page_url: str, column_url: str) -> ListApi | None
                     and node.get("jump_url") in (None, "")
                 ):
                     found = True
+                    break
                 if isinstance(node.get("children"), list):
                     stack.extend(node["children"])
         if not found:
@@ -500,7 +503,8 @@ def _gkmlpt_refusal(api: ListApi, payload: dict) -> str:
     平台脚本自己把 errcode 不为 0、errmessage 不是 ok 的当失败；带权限要求字段的不读；整份的形状
     要和实测的正常返回一样：顶层正好 articles、classify、offset、total、updated 五项，classify.id
     是请求的分类，offset 是 0（第 1 页），total 是非负整数，articles 是列表、不超过 _GKMLPT_MAX_ROWS
-    条（正常一页 100 条）。单条字段不对的（缺标题、网址、发布时间）只跳过那一条（api_items），
+    条（正常一页 100 条）；有条目时至少要有一条带发布时间（create_time），一条都没有多半是平台改了
+    字段，认不出。单条字段不对的（缺标题、网址、发布时间）只跳过那一条或记成没日期（api_items），
     不拖累整栏。"""
     code, message = payload.get("errcode"), payload.get("errmessage")
     if code not in (None, "", 0) or ("errmessage" in payload and message != "ok"):
@@ -515,6 +519,8 @@ def _gkmlpt_refusal(api: ListApi, payload: dict) -> str:
     if (
         set(payload) != {"articles", "classify", "offset", "total", "updated"}
         or not isinstance(articles, list)
+        # 有条目却没有一条带发布时间：平台多半改了字段，认不出（不悄悄全记成没日期）
+        or (articles and not any(_publish_time(row) for row in articles))
         or len(articles) > _GKMLPT_MAX_ROWS
         or not isinstance(classify, dict)
         or type(classify.get("id")) is not int
@@ -537,25 +543,33 @@ _BEIJING = timezone(timedelta(hours=8))
 _TITLE_TAG = re.compile(r"</?[A-Za-z][^<>]*>")
 
 
+def _publish_time(row: object) -> int | None:
+    """数字广东一条的发布时间（create_time，Unix 秒数）；没有、不是正整数的给 None。"""
+    value = row.get("create_time") if isinstance(row, dict) else None
+    return value if type(value) is int and value > 0 else None
+
+
 def _gkmlpt_item(api: ListApi, row: object, today: date) -> ListItem | None:
     """数字广东接口的一条 → 列表条目；字段不对、不像标题、网址不能用的给 None（跳过这一条）。"""
     if not isinstance(row, dict):
         return None
-    title, raw_url, published = row.get("title"), row.get("url"), row.get("create_time")
+    title, raw_url, published = row.get("title"), row.get("url"), _publish_time(row)
     if not isinstance(title, str) or not isinstance(raw_url, str):
         return None
     title = clean_title(" ".join(html_lib.unescape(_TITLE_TAG.sub("", title)).split()))
     if not _looks_like_title(title) or not raw_url.strip():
         return None  # 空网址按部门页解析会变成部门页自己，不要
-    url = normalize_url(api.base_url, raw_url.strip())
-    if not url or url == normalize_url(api.base_url, api.base_url):
-        return None
     try:
-        _ = urlsplit(url).port  # 端口写坏的（:99999）网址存不进库，跳过这一条
+        url = normalize_url(api.base_url, raw_url.strip())
+        # 端口写坏的（:99999）、括号没合上的（http://[bad）网址存不进库，跳过这一条
+        _ = urlsplit(url).port if url else None
+        # 指回部门页自己的（"政府信息公开"外链）不是文件；按规范网址比，只差 http、https 的也算
+        if not url or url_key(url) == url_key(api.base_url):
+            return None
     except ValueError:
         return None
     day = None
-    if type(published) is int and published > 0:
+    if published is not None:
         try:
             d = datetime.fromtimestamp(published, _BEIJING).date()
         except (OverflowError, OSError, ValueError):
