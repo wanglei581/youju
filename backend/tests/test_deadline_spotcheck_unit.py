@@ -81,10 +81,52 @@ def test_spotcheck_dry_run_and_match(monkeypatch):
     assert v.spotcheck(s, answer(), now=NOW)["result"] == "抽查一致"
     assert r.audit_state is None
     assert v.spotcheck(s, answer(), True, NOW)["result"] == "抽查一致"
-    assert (r.audit_state, r.audit_by, r.audit_at) == ("cleared", "Codex", NOW)
+    # 只留痕、不改 audit_state：每天的质检只查 audit_state 为空的，不能因为抽查一致就再也不查
+    assert (r.audit_state, r.audit_by, r.audit_at) == (None, "Codex", NOW)
+    assert r.audit_note.startswith("Codex 抽查一致")
     r.audit_state = "flagged"
     assert "未覆盖" in v.spotcheck(s, answer(), True, NOW)["result"]
     assert r.audit_state == "flagged"
+
+
+def test_match_marks_the_group_but_leaves_flagged_twins(monkeypatch):
+    # 同组同一截止各条都留痕；质检存疑的副本不碰（agy 审阅）
+    r, twin, flagged = row(1), row(2), row(3)
+    flagged.audit_state, flagged.audit_note, flagged.audit_by = "flagged", "AI 说日期不对", None
+    s = Session([r, twin, flagged])
+    monkeypatch.setattr(app, "_lock_group", lambda *args: [r, twin, flagged])
+    assert v.spotcheck(s, answer(), True, NOW)["result"] == "抽查一致"
+    assert (r.audit_by, twin.audit_by) == ("Codex", "Codex")
+    assert (flagged.audit_state, flagged.audit_note, flagged.audit_by) == (
+        "flagged",
+        "AI 说日期不对",
+        None,
+    )
+
+
+def test_not_found_ignores_the_quote_and_reopens(monkeypatch):
+    # 写"没找到"时 quote 里写的说明不当证据、也不拦：照样整组退回（agy 审阅）
+    r = row(1)
+    s = Session([r])
+    monkeypatch.setattr(app, "_lock_group", lambda *args: [r])
+    monkeypatch.setattr(v, "_verified_groups", lambda *args: [[r]])
+    a = answer(date=None, time=None, quote="正文里没有写这一类截止")
+    assert v.spotcheck(s, a, True, NOW)["result"] == "抽查不一致，退回待核对"
+    assert r.status == "pending" and "未找到" in r.audit_note
+
+
+def test_follow_up_tries_other_copies_when_the_first_body_is_unavailable(monkeypatch):
+    # 回查同一类：组里第一条正文不可用时，接着试同组别的副本（agy 审阅）
+    r, gone, other = row(1), row(2, document_id=2), row(3, document_id=3)
+    s = Session([r, gone, other])
+    monkeypatch.setattr(app, "_lock_group", lambda *args: [r])
+    monkeypatch.setattr(v, "_verified_groups", lambda *args: [[r], [gone, other]])
+    real = v._sample_item
+    monkeypatch.setattr(
+        v, "_sample_item", lambda session, row: None if row is gone else real(session, row)
+    )
+    result = v.spotcheck(s, answer(date=None, time=None, quote=None), False, NOW)
+    assert [x["id"] for x in result["follow_up"]] == [3]
 
 
 def test_reopen_group_followup_and_stale(monkeypatch):

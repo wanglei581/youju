@@ -499,17 +499,23 @@ def spotcheck(session, item, write=False, now=None):
             clock is not None and not _has_time(quote, clock)
         ):
             return done("quote 与日期或时间不匹配")
-    elif quote is not None and (not isinstance(quote, str) or (quote and quote not in body)):
-        return done("quote 须原样出现在当前正文")
+    else:
+        # 没找到这一类截止：没有可核的原句，quote 不看（写了说明也不当证据），照样退回
+        quote = None
     now = now or datetime.now(UTC)
     if day is not None and (day, clock) == (row.approved_date, row.approved_time):
         if row.audit_state == "flagged":
             return done("已有质检存疑，未覆盖")
         if write:
-            row.audit_state, row.audit_by, row.audit_at = "cleared", "Codex", now
-            # audit_note 最长 200 字
-            note = "Codex 抽查一致" + (f"：{item['note']}" if item["note"] else "")
-            row.audit_note = note[:_AUDIT_NOTE_MAX]
+            # 只留痕，不改 audit_state：每天的质检只查 audit_state 为空的，标成"复核无误"就
+            # 永远不再查了（以后发了延期通知也查不出来）。同组同一截止各条都记；质检存疑的
+            # 不碰，免得冲掉存疑原因。audit_at 记上，AI 抽查 30 天内不重复抽这条
+            note = ("Codex 抽查一致" + (f"：{item['note']}" if item["note"] else ""))[
+                :_AUDIT_NOTE_MAX
+            ]
+            for same in group:
+                if same.status == "approved" and same.audit_state is None:
+                    same.audit_by, same.audit_at, same.audit_note = "Codex", now, note
         return done("抽查一致")
     doc = session.get(Document, row.document_id)
     if not doc:
@@ -526,7 +532,7 @@ def spotcheck(session, item, write=False, now=None):
                 entry = _sample_item(session, candidate)
                 if entry:
                     result["follow_up"].append(entry)
-                break
+                    break  # 这一组有一条能给就够了；正文不可用的接着试组里别的副本
     reason = f"Codex 抽查不一致：原文{quote or '未找到这一类截止日期'}"
     if item["note"].strip():
         reason += f"；{item['note'].strip()}"
