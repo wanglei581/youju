@@ -180,19 +180,19 @@ test('详情页：支持方式、申报对象、申报条件的核对说明合�
   const doc = { id: '1', title: '关于公示拟认定企业名单的通知', issuer: '科技厅', date: '2026-10-01', fields: { support: ['资金补助'], audience: { text: '注册在本省的企业' } }, body: { status: 'list' } };
   const data = { doc, loading: false, has: { help: true }, conds: [], checkedText: '', noBody: '这份通知的正文里有名单' };
   const text = textOf(render('pages/detail/index.wxml', data));
-  assert.equal(text.split('支持方式、申报对象、申报条件已核对原文。').length - 1, 1);
+  assert.equal(text.split('支持方式、申报对象、申报条件只显示已核对原文的。').length - 1, 1);
   assert.doesNotMatch(text, /申报对象（已核对原文）|申报条件（已核对原文）|支持方式已核对原文/);
-  assert.match(text, /支持方式、申报对象、申报条件已核对原文。内容以原文为准；申报请在主管部门的申报系统办理，有据不提供填报入口。/);
+  assert.match(text, /支持方式、申报对象、申报条件只显示已核对原文的。内容以原文为准；申报请在主管部门的申报系统办理，有据不提供填报入口。/);
   assert.match(text, /去查名单 ›/); assert.doesNotMatch(text, /按企业名称查询/);
   assert.match(text, /内容怎么来的 ›/); assert.doesNotMatch(text, /数据说明/);
   assert.match(text, /内容怎么来的 › 导出 转发/);
   assert.doesNotMatch(text, /结果/);
   // 没有这三张卡片时不写它们的核对说明；有核对日期时两句并排
   const bare = textOf(render('pages/detail/index.wxml', { doc: { id: '1', title: 't', issuer: '厅', date: '2026-10-01' }, loading: false, has: {}, conds: [], checkedText: '2026年11月12日' }));
-  assert.doesNotMatch(bare, /支持方式、申报对象、申报条件已核对原文/); assert.match(bare, /截止日期已于 2026年11月12日 对照原文核对。内容以原文为准/);
+  assert.doesNotMatch(bare, /支持方式、申报对象、申报条件只显示已核对原文的/); assert.match(bare, /截止日期已于 2026年11月12日 对照原文核对。内容以原文为准/);
   // 只有申报条件时也写
   const conds = textOf(render('pages/detail/index.wxml', { doc: { id: '1', title: 't', issuer: '厅', date: '2026-10-01' }, loading: false, has: {}, conds: [{ category: '主体资格', quote: '注册在本省', showCat: true }], checkedText: '' }));
-  assert.match(conds, /支持方式、申报对象、申报条件已核对原文。/);
+  assert.match(conds, /支持方式、申报对象、申报条件只显示已核对原文的。/);
   // 发布阶段的标签 D-090 ③ 没动
   assert.match(wxml('detail'), /class="tag">发布阶段：{{doc.status}}</);
 });
@@ -208,7 +208,7 @@ test('截止页：选了城市区县时，有帮助页只写"没收录的地方�
   assert.match(page, /导出/);
 });
 
-test('查名单：命中的一行平时只留"名单中写作……"和批次，有同名不同代码或没有原名单入口时照旧列全；查询说明留三条；阅读页的按钮叫"去查名单"', () => {
+test('查名单：命中的一行平时只留"名单中写作……"和批次，有同名不同代码或没有原名单入口时照旧列全；查询说明只挪走一条；阅读页的按钮叫"去查名单"', () => {
   const item = (matched) => ({ id: '9', kind: '名单', title: '某名单', matched });
   const hit = (matched, result = {}) => textOf(findAll(render('pages/lists/index.wxml', { queried: '某某科技有限公司', result: { ...result, items: [item(matched)], similar: [], coverage: { lists: 3 } }, items: [], shown: [], chips: [] }), hasClass('hit-line'))[0]);
   const full = { name: '某某科技有限公司', category: '专精特新', batch: '第二批', sequence: '12', region: '烟台市', creditCode: '91000000MA00000000', via: 'name', entryToken: 'x' };
@@ -219,8 +219,8 @@ test('查名单：命中的一行平时只留"名单中写作……"和批次，
   assert.equal(hit(full, { ambiguous: true }), everything);
   assert.equal(hit({ ...full, entryToken: '' }), everything);
   const lists = wxml('lists');
-  assert.ok(!lists.includes('按企业全称逐行比对名单原文') && !lists.includes('查到后可以看这家企业在原名单里的那一行'));
-  assert.match(lists, /名称相近的企业分开列出，不一定是同一家/);
+  assert.ok(!lists.includes('查到后可以看这家企业在原名单里的那一行'));
+  assert.match(lists, /按企业全称逐行比对名单原文/); assert.match(lists, /名称相近的企业分开列出，不一定是同一家/);
   assert.match(lists, /只查企业和机构，不查个人/); assert.match(lists, /是否还在公示期以原文为准/);
   assert.match(lists, /名称相近的企业（不一定是同一家，点名称按全称查）/);
   assert.match(wxml('reader'), />去查名单<\/button>/);

@@ -179,8 +179,9 @@
     <view class="weak source-label">原文出处</view>
     <view class="source-site">{{doc.site || doc.issuer}}</view>
     <!-- 核对日期说的是截止（"要点"常常整张不显示，不再说"以上要点"，10/29 独立审阅） -->
-    <!-- 上面支持方式、申报对象、申报条件三张卡片的核对说明合成这一句，有其中任何一张时才写 -->
-    <view class="source-note"><text wx:if="{{checkedText}}">截止日期已于 {{checkedText}} 对照原文核对。</text><text wx:if="{{(doc.fields && ((doc.fields.support && doc.fields.support.length) || (doc.fields.audience && doc.fields.audience.text))) || conds.length}}">支持方式、申报对象、申报条件已核对原文。</text>内容以原文为准；申报请在主管部门的申报系统办理，有据不提供填报入口。</view>
+    <!-- 上面支持方式、申报对象、申报条件三张卡片原来各标一遍"已核对原文"，合成这一句；有其中任何一张时才写。
+         写成"只显示已核对原文的"，不论这条通知有其中哪几张都说得对（agy 审阅：写死"已核对原文"会和只有一两张卡片对不上） -->
+    <view class="source-note"><text wx:if="{{checkedText}}">截止日期已于 {{checkedText}} 对照原文核对。</text><text wx:if="{{(doc.fields && ((doc.fields.support && doc.fields.support.length) || (doc.fields.audience && doc.fields.audience.text))) || conds.length}}">支持方式、申报对象、申报条件只显示已核对原文的。</text>内容以原文为准；申报请在主管部门的申报系统办理，有据不提供填报入口。</view>
     <view wx:if="{{has.help}}" class="link source-help" bindtap="help" aria-role="link">内容怎么来的 ›</view>
   </view>
   <view style="height: 220rpx"></view>
