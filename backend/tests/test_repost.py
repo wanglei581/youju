@@ -1099,6 +1099,34 @@ def test_refetched_confirmed_member_is_checked_once_per_fetch(session, world, mo
     assert group.needs_review
 
 
+def test_only_confirmed_members_get_full_text_fingerprints(session, world, monkeypatch):
+    # 全文指纹只给确认过的成员算：没确认的只看机关和日期、不读正文；窗口里的确认组每轮核对（D-055：
+    # 确认以后任一版本有变，下一轮就停止折叠）
+    from youju import repost
+
+    checked: list[set[int]] = []
+    real = repost.member_facts
+
+    def spy(session_, ids):
+        checked.append(set(ids))
+        return real(session_, ids)
+
+    monkeypatch.setattr(repost, "member_facts", spy)
+    rebuild(session, now=NOW)
+    session.flush()
+    assert all(not ids for ids in checked)
+    rows = _members(session)
+    _, facts = real(session, list(rows))
+    for row in rows.values():
+        row.confirmed_by, row.confirmed_at = "人工", NOW
+        row.confirmed_fingerprint = facts[row.document_id]
+    session.flush()
+    checked.clear()
+    rebuild(session, now=NOW + timedelta(hours=1))
+    session.flush()
+    assert set(rows) in checked
+
+
 def test_many_small_groups_are_each_judged_by_their_own_edges():
     # 窗口里大量互不相干的小组：每组只看自己的强证据边，全都照样是强证据组
     docs = []

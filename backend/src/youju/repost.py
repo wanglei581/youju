@@ -697,6 +697,27 @@ def member_facts(session: Session, ids: list[int]) -> tuple[dict[int, tuple], di
     return info, fingerprints
 
 
+def member_info(session: Session, ids: list[int]) -> dict[int, tuple]:
+    """组员的机关和发布日期（归组约束用）：只读文件和来源，不读正文。"""
+    if not ids:
+        return {}
+    return {
+        doc_id: ((province, city, district, dept), published)
+        for doc_id, published, province, city, district, dept in session.execute(
+            select(
+                Document.id,
+                Document.publish_date,
+                Source.province,
+                Source.city,
+                Source.district,
+                Source.dept,
+            )
+            .join(Source, Source.id == Document.source_id)
+            .where(Document.id.in_(ids))
+        )
+    }
+
+
 def valid_group(info: dict[int, tuple], ids: list[int]) -> bool:
     """整组必须有日期、同机关只有一份，日期跨度不超过 90 天。"""
     if any(i not in info or info[i][1] is None for i in ids):
@@ -722,7 +743,9 @@ def _fits(info: dict[int, tuple], ids: list[int], doc_id: int) -> bool:
 def rebuild(
     session: Session, *, now: datetime | None = None, today: date | None = None, full: bool = False
 ) -> RebuildSummary:
-    """待确认自动成员从头重算；带人工决定的成员保留。确认组内容或约束变化需复核。
+    """待确认自动成员从头重算；带人工决定的成员保留。确认组内容或约束变化需复核：窗口里的确认组
+    每轮核对；窗口外的确认以后详情重抓过的拿全文核对一次，标题、来源这类不更新抓取时间的改动跑
+    full=True（--full）才核对。
 
     先保存正文信号和已处理标记；只重算窗口里的组（有在组成员的发布日期在窗口里），窗口外的组
     只在副本转主文件、确认成员详情重抓过、成员都没了时处理。窗口默认是最近 WINDOW_DAYS 天；
@@ -826,15 +849,19 @@ def rebuild(
             )
         ).all()
     )
-    fact_ids = {d for d, row in members.items() if row.group_id in window_groups} | set(
-        changed_confirmed
-    )
+    # 确认快照的全文指纹只给确认过的成员算：窗口里的确认组每轮都核对（D-055：确认以后任一版本的
+    # 日期、机关、标题、正文有变，下一轮就停止折叠；正文被直接改写时抓取时间不变，只能重算才看得
+    # 出），量受窗口限制；窗口外的只核对确认以后详情重抓过、还没核对过的；--full 时全部确认过的成员
+    # （维护用：改了标题、正文脱敏重写这类不更新抓取时间的改动以后跑）。没确认的成员只要机关和日期
+    # （归组约束用），不读正文
+    window_ids = {d for d, row in members.items() if row.group_id in window_groups}
+    fact_ids = set(changed_confirmed) | {
+        d for d in window_ids if members[d].active and members[d].confirmed_at is not None
+    }
     if full:
-        # 维护用（改了标题、正文脱敏重写这类不更新抓取时间的改动以后跑）：窗口外确认过的成员也重算
-        # 快照，内容变了照常转"需复核"
         fact_ids |= {d for d, row in members.items() if row.active and row.confirmed_at is not None}
-    member_info, fingerprints = member_facts(session, list(fact_ids))
-    info.update(member_info)
+    info.update(member_info(session, list(window_ids | fact_ids)))
+    _, fingerprints = member_facts(session, list(fact_ids))
     by_group: dict[int, list[RepostGroupMember]] = defaultdict(list)
     for row in members.values():
         if row.active:
