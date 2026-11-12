@@ -862,6 +862,20 @@ def test_dropdown_options_are_not_body() -> None:
     assert "组织申报" in result.body_text and "请选择" not in result.body_text
 
 
+def test_dropdown_inside_first_body_line_keeps_fields() -> None:
+    """正文第一行中间夹着下拉框：发文机关、文号照样从正文前面的字里找（不退回整页前 700 字）。"""
+    nav = "".join(f"<p>栏目导航第{n}项</p>" for n in range(80))
+    page = (
+        f"<html><title>某局文件</title><body>{nav}<div class='meta'>发布机构：某某市科学技术局</div>"
+        "<div id='zoom'><p>某科〔2026〕12号</p><p>各有关单位：现将<select><option>某县</option>"
+        "<option>某区</option></select>项目申报有关事项通知如下，请按要求组织申报。</p>"
+        "<p>某某市科学技术局</p><p>2026年11月5日</p></div></body></html>"
+    )
+    result = parse_detail(page, "https://kjj.example.gov.cn/content_4.html")
+    assert "组织申报" in result.body_text and "某县" not in result.body_text
+    assert result.issuer == "某某市科学技术局"
+
+
 def test_dropdown_text_still_counts_for_protection_window() -> None:
     """防护页判断看页面前 500 字，下拉框的字照旧算在里面，范围不变（下拉框后面很远处的
     验证码字样，原来不当防护页，现在也不当）。"""

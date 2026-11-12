@@ -1150,6 +1150,9 @@ def parse_detail(html_text: str, url: str) -> DetailResult:
     title = " ".join(root.xpath("//title/text()"))[:200]
     body = root.xpath("//body")
     visible = "\n".join(_plain_lines(body[0], keep_select=True)) if body else ""
+    # 找发文机关、文号、发布日期用不带下拉框的字，和正文的取法一致（正文第一行中间夹着下拉框时，
+    # 带着选项的整页文字里找不到正文第一行，范围会退回整页前 700 字）
+    plain = "\n".join(_plain_lines(body[0])) if body else ""
     if re.search(
         r"验证码|人机验证|安全验证|访问过于频繁|异常访问|请开启.{0,12}JavaScript",
         title + visible[:500],
@@ -1161,9 +1164,9 @@ def parse_detail(html_text: str, url: str) -> DetailResult:
     if node is None:
         attachments = _attachments(root, url)
         return DetailResult(
-            issuer=_issuer([], root, visible[:700]),
-            doc_number=_doc_number([], root, visible[:700]),
-            publish_date=_publish_date(root, visible[:700]),
+            issuer=_issuer([], root, plain[:700]),
+            doc_number=_doc_number([], root, plain[:700]),
+            publish_date=_publish_date(root, plain[:700]),
             attachments=attachments,
             failure_reason=None if attachments else "未识别到正文容器",
             page_titles=_page_titles(root),
@@ -1171,9 +1174,7 @@ def parse_detail(html_text: str, url: str) -> DetailResult:
     junk = _SITE_JUNK.get(host)
     lines = _plain_lines(node, frozenset(node.xpath(junk)) if junk else frozenset())
     raw_body = "\n".join(lines)
-    prefix = (
-        visible.split(lines[0], 1)[0][-700:] if lines and lines[0] in visible else visible[:700]
-    )
+    prefix = plain.split(lines[0], 1)[0][-700:] if lines and lines[0] in plain else plain[:700]
     attachments = _attachments(root, url)
     # PDF-only 页面只有下载入口，HTML 正文为空；仍保留附件题录。
     if len(raw_body) < 30 or ("点击正文" in raw_body and not any(len(line) > 60 for line in lines)):
