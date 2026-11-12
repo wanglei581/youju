@@ -316,6 +316,29 @@ def _send_blobs(client: Client, paths: list[str], store: storage.Backend | None 
     return sent
 
 
+def _repair_blobs(client: Client, store: storage.Backend | None = None) -> int:
+    """服务器记的待补附件副本（写进去时两边都没有文件的）：本机现在有的补传上去。每次推之前做一次，
+    不用等那一行再变。"""
+    pending = client.json("POST", "/blobs/pending", {"limit": 500}).get("pending", [])
+    if not pending:
+        return 0
+    store = store or storage.backend()
+    sent = 0
+    for path in pending:
+        if not isinstance(path, str) or not storage.valid_path(path) or not store.exists(path):
+            continue
+        data = _read_blob(store, path)
+        client.call(
+            "PUT",
+            "/blobs",
+            params={"path": path, "sha256": hashlib.sha256(data).hexdigest()},
+            body=data,
+            content_type="application/octet-stream",
+        )
+        sent += 1
+    return sent
+
+
 def _changes(engine: Engine, limit: int) -> list[tuple[int, str, str]]:
     """最早的一批还没推的变更（只看得到已提交的；没提交的下一次再推）。"""
     with engine.connect() as conn:
@@ -427,6 +450,7 @@ def push(
         raise SyncError("服务器记的不是这条变更流（还没起步、或本机库重建过）：" + REBUILD_HINT)
     report = PushReport(applied_seq=int(state.get("applied_seq") or 0))
     with push_lock(engine):
+        report.blobs += _repair_blobs(client, store)
         size = batch
         while max_batches is None or report.batches < max_batches:
             changes = _changes(engine, size)

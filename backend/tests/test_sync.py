@@ -62,6 +62,7 @@ def _clear(engine):
         conn.execute(text("SET FOREIGN_KEY_CHECKS = 1"))
         conn.execute(text(f"DROP TABLE IF EXISTS `{sync_server.STATE}`"))
         conn.execute(text(f"DROP TABLE IF EXISTS `{sync_server.ORDER}`"))
+        conn.execute(text(f"DROP TABLE IF EXISTS `{sync_server.PENDING}`"))
 
 
 @pytest.fixture
@@ -581,8 +582,15 @@ def test_attachment_files_follow_their_rows(env, monkeypatch, tmp_path):
     assert server_store.exists(path)
     assert [r["id"] for r in rows(env.server, "attachment_copies")] == [again]
     # 两边都没有文件的（本机也没有，比如云托管时期抓的、还没导进来的）：照写，不卡住队列，
-    # 后面的变更照常推
-    lost = f"attachments/{'d' * 64}.pdf"
+    # 后面的变更照常推；服务器记进待补
+    lost_content = b"%PDF-1.4 lost attachment"
+    lost_digest = hashlib.sha256(lost_content).hexdigest()
+    lost = f"attachments/{lost_digest}.pdf"
+
+    def pending():
+        with env.server.connect() as conn:
+            return list(conn.scalars(text(f"SELECT path FROM `{sync_server.PENDING}`")))
+
     nowhere = insert(
         env.local,
         "attachment_copies",
@@ -592,12 +600,13 @@ def test_attachment_files_follow_their_rows(env, monkeypatch, tmp_path):
         status="ready",
         file_type="pdf",
         file_id=f"cloud://prod-env.youju-self/{lost}",
-        size=10,
-        sha256="d" * 64,
+        size=len(lost_content),
+        sha256=lost_digest,
     )
     report = local.push(env.local, env.client, store=local_store)
     assert report.blobs == 0 and not server_store.exists(lost)
     assert nowhere in [r["id"] for r in rows(env.server, "attachment_copies")]
+    assert pending() == [lost]
     with env.local.begin() as conn:
         conn.execute(
             T["attachment_copies"]
@@ -606,6 +615,23 @@ def test_attachment_files_follow_their_rows(env, monkeypatch, tmp_path):
             .values(attempts=2)
         )
     assert local.push(env.local, env.client, store=local_store).batches == 1
+    # 以后本机有了这个文件：那一行没再变，下一次推之前照样补传，待补划掉
+    lost_file = tmp_path / "lost.pdf"
+    lost_file.write_bytes(lost_content)
+    local_store.put_file(lost, lost_file)
+    report = local.push(env.local, env.client, store=local_store)
+    assert report.batches == 0 and report.blobs == 1
+    assert server_store.exists(lost) and pending() == []
+    # 首发前从云托管直接导进服务器的（不经本机）：下一次本机来取待补时划掉
+    gone = f"attachments/{'e' * 64}.pdf"
+    with env.server.begin() as conn:
+        conn.execute(
+            text(f"INSERT INTO `{sync_server.PENDING}` (path, noted_at) VALUES (:p, NOW())"),
+            {"p": gone},
+        )
+    server_store.put_file(gone, lost_file)
+    assert local.push(env.local, env.client, store=local_store).blobs == 0
+    assert pending() == []
     # 名字和内容对不上的不收
     bad = hashlib.sha256(b"other").hexdigest()
     with pytest.raises(local.SyncError) as err:

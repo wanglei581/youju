@@ -34,6 +34,8 @@ router = APIRouter(prefix="/api/sync/v1", include_in_schema=False)
 STATE = "sync_state"
 # 写入的先后：记下写过的最新一批的请求时间（毫秒，签名里的），比它旧的不写（server.apply）
 ORDER = "sync_order"
+# 写进来时两边都没有文件的附件副本（待补）：本机每次推之前来取，手上有了就补传；文件到了就划掉
+PENDING = "sync_pending_blobs"
 # 一次请求最多收多少字节（压缩后），解压后最多多少：防止塞爆内存
 # 本机每批按未压缩 8MB 切（local.MAX_BYTES），附件副本最大 20MB：这两个上限都留了余量，
 # 又不至于让几个请求就把 worker（限 640MB 内存）撑爆
@@ -135,6 +137,14 @@ def ensure_state(engine: Engine) -> None:
                 " name VARCHAR(16) NOT NULL PRIMARY KEY,"
                 " last_stamp BIGINT NOT NULL,"
                 " updated_at DATETIME(6) NOT NULL"
+                ") ENGINE=InnoDB"
+            )
+        )
+        conn.execute(
+            text(
+                f"CREATE TABLE IF NOT EXISTS `{PENDING}` ("
+                " path VARCHAR(255) NOT NULL PRIMARY KEY,"
+                " noted_at DATETIME(6) NOT NULL"
                 ") ENGINE=InnoDB"
             )
         )
@@ -250,14 +260,15 @@ def _record_turn(conn: Connection, stamp: int) -> None:
     )
 
 
-def _missing_blobs(parts: dict, local_has: set[str]) -> list[str]:
+def _missing_blobs(parts: dict, local_has: set[str]) -> tuple[list[str], list[str]]:
     """这一批要写的附件副本行指向的文件里，本机有（local_has，本机随这一批告诉的）、服务器自己的
     存储（disk）里却不在的：推之前查过在、随后被清理删了。清理和写入在同一把锁下，所以核对时在的，
     写完之前不会被清理删掉；这些不在的不写，本机下一轮先补传再写。两边都没有的（本机也没有文件，
-    比如云托管时期抓的、还没导进来的）照写、记一条日志：不能让整批卡住，后面的下架也推不过来。
-    s3 由本机管，不核对。"""
+    比如云托管时期抓的、还没导进来的）照写，记进待补（PENDING）：不能让整批卡住，后面的下架也推不过
+    来；以后本机有了文件，推之前来取待补、补传（不用等这一行再变），导进服务器的也会划掉。
+    返回（不写的，待补的）。s3 由本机管，不核对。"""
     if "attachment_copies" not in parts or get_settings().storage_backend != "disk":
-        return []
+        return [], []
     _, upserts, _ = parts["attachment_copies"]
     store = storage.backend()
     paths = {p for row in upserts if (p := storage.path_of(row.get("file_id") or ""))}
@@ -265,9 +276,11 @@ def _missing_blobs(parts: dict, local_has: set[str]) -> list[str]:
     nowhere = [p for p in absent if p not in local_has]
     if nowhere:
         log.warning(
-            "这一批有 %d 个附件副本两边都没有文件，照写（第一个：%s）", len(nowhere), nowhere[0]
+            "这一批有 %d 个附件副本两边都没有文件，照写、记待补（第一个：%s）",
+            len(nowhere),
+            nowhere[0],
         )
-    return [p for p in absent if p in local_has]
+    return [p for p in absent if p in local_has], nowhere
 
 
 def apply(engine: Engine, payload: dict, *, stamp: int) -> dict:
@@ -286,16 +299,22 @@ def apply(engine: Engine, payload: dict, *, stamp: int) -> dict:
     （见 youju/sync/__init__.py）。"""
     full = payload.get("full") is True
     parts = _decoded(payload.get("tables"))
-    local_has = payload.get("blobs_local", [])
+    local_has = payload.get("blobs_local") or []
     if not isinstance(local_has, list) or not all(isinstance(p, str) for p in local_has):
         raise ValueError("blobs_local 要是路径的列表")
     ensure_state(engine)
     kept: dict[str, int] = {}
     with engine.connect() as conn, conn.begin():
         _take_turn(conn, stamp)
-        missing = _missing_blobs(parts, set(local_has))
+        missing, nowhere = _missing_blobs(parts, set(local_has))
         if missing:
             raise MissingBlobs(missing)
+        noted = datetime.now(UTC).replace(tzinfo=None)
+        for path in nowhere:
+            conn.execute(
+                text(f"INSERT IGNORE INTO `{PENDING}` (path, noted_at) VALUES (:p, :u)"),
+                {"p": path, "u": noted},
+            )
         if not full:
             row = conn.execute(
                 text(f"SELECT stream, applied_seq FROM `{STATE}` WHERE name = 'public' FOR UPDATE")
@@ -511,6 +530,29 @@ async def missing_blobs(request: Request) -> dict:
     return {"missing": [p for p in map(_blob_path, paths) if not store.exists(p)]}
 
 
+@router.post("/blobs/pending")
+async def pending_blobs(request: Request) -> dict:
+    """待补的附件副本（写进来时两边都没有文件的）：已经到了的（本机补传的、首发前从云托管导进来的）
+    先划掉，剩下的最多 limit 个给本机，本机手上有的就补传。"""
+    payload = _json(await _body(request))
+    limit = payload.get("limit", 500) if isinstance(payload, dict) else 500
+    if type(limit) is not int or not 1 <= limit <= 2000:
+        raise HTTPException(status_code=422, detail="limit 不对")
+    engine = get_engine()
+    ensure_state(engine)
+    with engine.begin() as conn:
+        paths = list(
+            conn.scalars(text(f"SELECT path FROM `{PENDING}` ORDER BY path LIMIT {2 * limit}"))
+        )
+        if not paths:
+            return {"pending": []}
+        store = storage.backend()
+        arrived = [p for p in paths if store.exists(p)]
+        for path in arrived:
+            conn.execute(text(f"DELETE FROM `{PENDING}` WHERE path = :p"), {"p": path})
+    return {"pending": [p for p in paths if p not in arrived][:limit]}
+
+
 @router.put("/blobs")
 async def put_blob(request: Request, path: str, sha256: str) -> dict:
     """收一个附件副本文件。附件副本按内容的 SHA-256 命名（attachments/<SHA-256>.<格式>），
@@ -525,4 +567,8 @@ async def put_blob(request: Request, path: str, sha256: str) -> dict:
         local = Path(tmp) / "blob"
         local.write_bytes(body)
         storage.backend().put_file(path, local)
+    engine = get_engine()
+    ensure_state(engine)
+    with engine.begin() as conn:
+        conn.execute(text(f"DELETE FROM `{PENDING}` WHERE path = :p"), {"p": path})
     return {"stored": path}
