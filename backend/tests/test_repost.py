@@ -1577,15 +1577,17 @@ def test_auto_gate_rounds_and_thresholds(session):
     assert gate.passed and (gate.round, gate.checked, gate.correct) == ("pass", 100, 98)
     _gate_records(session, "fail", 100, 97, stamp=NOW + timedelta(seconds=2))
     assert not auto_gate(session).passed and auto_gate(session).reason == "准确率不够"
-    # 抽样名单里还有没判的：这一轮不算（不能只交好判的），门照最近一轮算数的
+    # 最近一轮整轮的还有没判的：门没过（不能抽了不交、换个种子重抽，也不能只交好判的）
     _gate_records(session, "unfinished", 100, 100, stamp=NOW + timedelta(seconds=3), pending=1)
-    assert auto_gate(session).round == "fail"
+    gate = auto_gate(session)
+    assert not gate.passed and (gate.round, gate.reason) == ("unfinished", "没判完")
     # 抽样以后组变了的（changed）不算进分母；判了对错的满 100 组才算数
     _gate_records(session, "changed", 100, 99, stamp=NOW + timedelta(seconds=4), changed=10)
     gate = auto_gate(session)
     assert gate.passed and (gate.round, gate.checked, gate.correct) == ("changed", 100, 99)
     _gate_records(session, "short", 95, 95, stamp=NOW + timedelta(seconds=5), changed=15)
-    assert auto_gate(session).round == "changed"
+    gate = auto_gate(session)
+    assert not gate.passed and (gate.round, gate.reason) == ("short", "组数不够")
 
 
 def _auto_world(session):
@@ -1887,6 +1889,23 @@ def test_original_number_rewritten_in_place_is_rejudged(session, monkeypatch):
     result = rebuild(session, now=NOW + timedelta(seconds=1))
     assert result.auto_reverted == 1
     assert all(r.confirmed_at is None for r in _members(session).values())
+
+
+def test_first_auto_merge_rejudges_on_signals_from_the_current_body(session, monkeypatch):
+    # 第一次自动合并前正文被直接改写（抓取时间不变，存好的信号还是旧的）：确认之前先按现在的正文
+    # 重算信号再判，删掉了共同文号就不合并——不会按旧证据合并、又把新正文锁进指纹
+    setting = SimpleNamespace(repost_auto_merge=False)
+    monkeypatch.setattr("youju.repost.get_settings", lambda: setting)
+    docs = _auto_world(session)
+    rebuild(session, now=NOW)  # 开关关着：组建好、正文信号存好
+    session.get(DocumentDetail, docs[0].id).body_text = "各有关单位：现就有关工作通知如下。陕西"
+    session.flush()
+    setting.repost_auto_merge = True
+    _gate_records(session, "pass", 100, 100)
+    result = rebuild(session, now=NOW + timedelta(seconds=1))
+    assert result.auto_merged == 0
+    assert all(r.confirmed_at is None for r in _members(session).values())
+    assert session.get(RepostSignal, docs[0].id).cited == []
 
 
 def test_new_versions_are_added_one_by_one(session, monkeypatch):

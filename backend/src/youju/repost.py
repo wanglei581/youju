@@ -728,29 +728,43 @@ class AutoGate:
 
 def auto_gate(session: Session) -> AutoGate:
     """开关那道门（D-129 ②）：只看当前规则版本（AUTO_RULE_VERSION）的 gate 抽查轮。抽样时整份名单
-    就记进库、结论空着；一轮里每一组都有了结论（判了对错，或者抽样以后组变了、记 changed 不算），
-    判了对错的不少于 AUTO_GATE_SIZE 组，这一轮才算数——不能只交好判的，也不能自己添组。取最近一轮
-    算数的（抽样最晚），准确率不低于 AUTO_GATE_ACCURACY 才过；最近一轮算数的没过就是没过，更早
-    一轮过了也不算。另外抽的几组零星抽查（不满 100 组）不顶掉一轮完整的；规则版本一换，旧记录全
+    就记进库、结论空着。以最近一轮整轮抽满 AUTO_GATE_SIZE 组的为准（零星抽的几组不算一轮）：这一轮
+    每组都有了结论（判了对错，或者抽样以后组变了、记 changed 不算）、判了对错的不少于 AUTO_GATE_SIZE
+    组、准确率不低于 AUTO_GATE_ACCURACY 才过；还有没判的就是门没过——不能抽了不交、换个种子重抽，
+    也不能只交好判的、自己添组。最近一轮没过就是没过，更早一轮过了也不算；规则版本一换，旧记录全
     不算。库里给的计数是 Decimal，转成整数。"""
+    sampled = func.count(RepostAutoCheck.id)
     judged = func.sum(case((RepostAutoCheck.verdict.in_(("correct", "wrong")), 1), else_=0))
     correct = func.sum(case((RepostAutoCheck.verdict == "correct", 1), else_=0))
     pending = func.sum(case((RepostAutoCheck.verdict.is_(None), 1), else_=0))
-    rounds = session.execute(
+    rounds = (
         select(RepostAutoCheck.round, judged, correct, pending)
         .where(RepostAutoCheck.purpose == "gate", RepostAutoCheck.rule_version == AUTO_RULE_VERSION)
         .group_by(RepostAutoCheck.round)
         .order_by(func.max(RepostAutoCheck.sampled_at).desc(), func.max(RepostAutoCheck.id).desc())
-    ).all()
-    if not rounds:
-        return AutoGate(False, None, 0, 0, "没有记录")
-    counted = [(r, int(j or 0), int(c or 0), int(p or 0)) for r, j, c, p in rounds]
-    for round_id, n_judged, n_correct, n_pending in counted:
-        if n_pending == 0 and n_judged >= AUTO_GATE_SIZE:
-            reason = "准确率不够" if n_correct / n_judged < AUTO_GATE_ACCURACY else ""
-            return AutoGate(not reason, round_id, n_judged, n_correct, reason)
-    round_id, n_judged, n_correct, n_pending = counted[0]
-    return AutoGate(False, round_id, n_judged, n_correct, "没判完" if n_pending else "组数不够")
+        .limit(1)
+    )
+    full = session.execute(rounds.having(sampled >= AUTO_GATE_SIZE)).first()
+    if full is None:
+        latest = session.execute(rounds).first()
+        if latest is None:
+            return AutoGate(False, None, 0, 0, "没有记录")
+        return AutoGate(False, latest[0], int(latest[1] or 0), int(latest[2] or 0), "组数不够")
+    round_id, n_judged, n_correct, n_pending = (
+        full[0],
+        int(full[1] or 0),
+        int(full[2] or 0),
+        int(full[3] or 0),
+    )
+    if n_pending:
+        reason = "没判完"
+    elif n_judged < AUTO_GATE_SIZE:
+        reason = "组数不够"
+    elif n_correct / n_judged < AUTO_GATE_ACCURACY:
+        reason = "准确率不够"
+    else:
+        reason = ""
+    return AutoGate(not reason, round_id, n_judged, n_correct, reason)
 
 
 def _audit_auto(
@@ -1341,6 +1355,33 @@ def rebuild(
             for doc_id in national:
                 cands[doc_id] = replace(cands[doc_id], own_number=own_number(raw.get(doc_id)))
     off = "" if on else (f"门没过（{summary.gate_reason}）" if summary.gate_reason else "开关关着")
+
+    def decide(group, rows) -> tuple[str, list[RepostGroupMember]]:
+        """窗口里的组：整组满足条件就确认全部待确认版本；不满足、但已经自动确认的版本之间照样满足，
+        就保持折叠——不因为新来的版本（正文还没抓到等）不满足就整组退回、来回折叠展开，新来的逐个
+        看，和已确认的一起仍满足条件的加进来，不满足的留待确认、不计入判定。
+        给（原因, 要确认的）。"""
+        pending = [
+            r
+            for r in rows
+            if r.active and r.document_id not in duplicates and r.confirmed_at is None
+        ]
+        kept = [
+            r
+            for r in rows
+            if r.confirmed_by == AUTO_REVIEWER and r.active and r.document_id not in duplicates
+        ]
+        why = auto_reason(group, rows, cands, duplicates)
+        if not why:
+            return "", pending
+        if kept and not auto_reason(group, rows, cands, duplicates, versions=kept):
+            waiting: list[RepostGroupMember] = []
+            for row in sorted(pending, key=lambda r: r.document_id):
+                if not auto_reason(group, rows, cands, duplicates, versions=[*kept, *waiting, row]):
+                    waiting.append(row)
+            return "", waiting
+        return why, []
+
     for group_id, rows in by_group.items():
         group = groups[group_id]
         automatic = [r for r in rows if r.confirmed_by == AUTO_REVIEWER]
@@ -1354,24 +1395,17 @@ def rebuild(
             kept = [r for r in automatic if r.active and r.document_id not in duplicates]
             why = auto_reason(group, rows, cands, duplicates, versions=kept)
         elif on:
-            pending = [
-                r
-                for r in rows
-                if r.active and r.document_id not in duplicates and r.confirmed_at is None
-            ]
-            kept = [r for r in automatic if r.active and r.document_id not in duplicates]
-            why = auto_reason(group, rows, cands, duplicates)
-            if not why:
-                waiting = pending
-            elif kept and not auto_reason(group, rows, cands, duplicates, versions=kept):
-                # 已经自动确认的版本之间照样满足条件：保持折叠，不因为新来的版本（正文还没抓到等）
-                # 不满足就整组退回、来回折叠展开。新来的逐个看：和已确认的一起仍满足条件的加进来，
-                # 不满足的留待确认、不计入判定
-                why = ""
-                for row in sorted(pending, key=lambda r: r.document_id):
-                    trial = [*kept, *waiting, row]
-                    if not auto_reason(group, rows, cands, duplicates, versions=trial):
-                        waiting.append(row)
+            why, waiting = decide(group, rows)
+            if waiting:
+                # 要确认新版本之前，先按现在的详情重算这一组在组版本的正文信号、换上新候选再判一遍：
+                # 正文、文号被直接改写过（抓取时间不变）时存好的信号是旧的，确认时却按现在的正文记
+                # 指纹——不重判就会按旧证据合并，又把新正文锁进指纹
+                ids = sorted(
+                    r.document_id for r in rows if r.active and r.document_id not in duplicates
+                )
+                recompute_signals(session, ids, stamp)
+                cands.update((c.id, c) for c in candidates_for(session, ids))
+                why, waiting = decide(group, rows)
         if why:
             if automatic:
                 for row in automatic:
