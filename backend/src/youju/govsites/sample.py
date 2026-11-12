@@ -651,8 +651,8 @@ class ProvinceResult:
     cells: dict[str, set] = field(default_factory=dict)
     # 联网核对每层每次抽到的格 → 这一格的结论（"不通过"、"未完"、"通过"），和证据表里写的种子
     rounds: dict[tuple[str, int], dict] = field(default_factory=dict)
-    # 联网核对每层每次抽到的格 → 这一格在种子顺序里的位置（复核备注写的格号；没写的按证据表里的行序
-    # 排在后面）
+    # 联网核对每层每次抽到的格 → 这一格在种子顺序里的位置：写了格号的是 (0, 复核备注写的格号)，
+    # 没写的是 (1, 证据表里的行序)，排在写了的后面；同一格几行取最前的
     orders: dict[tuple[str, int], dict] = field(default_factory=dict)
     seeds: dict[tuple[str, int], set] = field(default_factory=dict)
     # 抽查/<层级>/联网核对/<省>.csv 的各行：(层, 第几次) → [(种子, 日期, 凭据)]
@@ -680,7 +680,7 @@ class ProvinceResult:
             # 才有结论的待重试格（D-128）不能把样本撑大到 need 以上
             order = self.orders.get((layer, latest), {})
             judged = failed = 0
-            for cell in sorted(got, key=lambda c: order.get(c, 0)):
+            for cell in sorted(got, key=lambda c: order.get(c, (2, 0))):
                 if got[cell] == "未完":
                     continue
                 if judged == need:
@@ -872,7 +872,7 @@ def evidence_results(folder) -> list[ProvinceResult]:
                     found = _SEED.findall(r.get("复核备注") or "")
                     res.seeds.setdefault(key, set()).update(found)
                     no = _CELL_NO.search(r.get("复核备注") or "")
-                    pos = int(no.group(1)) if no else 10**6 + res.total
+                    pos = (0, int(no.group(1))) if no else (1, res.total)
                     orders = res.orders.setdefault(key, {})
                     orders[cell] = min(orders.get(cell, pos), pos)
                 if verdict == "通过":
