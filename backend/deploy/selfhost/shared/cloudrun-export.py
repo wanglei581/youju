@@ -747,8 +747,7 @@ def writer_locks():
         yield
     finally:
         for fh in held:
-            fcntl.flock(fh, fcntl.LOCK_UN)
-            fh.close()
+            fh.close()  # 关掉文件 flock 锁就放开了
 
 
 def cleanup_counts(client: httpx.Client, env: str) -> dict[str, int]:
