@@ -92,11 +92,11 @@ _ROLE = re.compile(
         )
     )
 )
-# "市长""区长"这类职务前一个字不是标点、"副""代"或同一个字（"市市长"）时，可能是真职务（"北京市长
-# 某某"），也可能是地名连着"长"字（"宜宾市长江""城区长沙湾""西安市长安区""新区长芦街道"）：
-# "长"后面接的是常和"长"连成地名、词的字，不当人名（"我市长期"的"期照"不像人名，本来就不挡）；
-# 人名在职务前面的，要在标题开头或标点后面（"第三季度局长接待日"不挡）
-_PLACE_ROLES = ("省长", "市长", "县长", "区长", "州长", "旗长", "盟长", "镇长", "乡长")
+# "市长""局长"这类"长"字结尾的职务，前一个字不是标点、"副""代"或同一个字（"市市长""局局长"）时，
+# 可能是真职务（"北京市长某某"），也可能是地名连着"长"字（"宜宾市长江""城区长沙湾""西安市长安区"
+# "新区长芦街道""水务局长江大堤"）："长"后面接的是常和"长"连成地名、词的字，不当人名（"我市长期"
+# 的"期照"不像人名，本来就不挡）。人名在职务前面的，要在标题开头或标点后面
+# （"第三季度局长接待日"不挡）
 _OPEN = '、，,：:；;（(“"《—- 　'
 _CHANG_NEXT = frozenset("江沙安宁乐丰白阳葛武海寿春兴清泰芦城")
 # 像人名的词以单位、地名的字结尾的不算（"安区""沙市""公室"），三个字的前两个字也一样（"安区人"
@@ -106,17 +106,19 @@ _NOT_LEAD = (
     *("关于", "对于", "我", "本", "全", "各", "该", "此", "据", "为", "从", "在", "与", "将"),
     *("把", "经", "国家", "中央"),
 )
-# ② 领导人、官员的新闻："某某出席……""某某主持召开……""某某签署国务院令""某某同某国总统会谈"
+# ② 领导人、官员的新闻："某某出席……""某某主持召开……""某某签署……""某某同某国总统会谈"
 #   "某某到某县督导调研""某某总书记重要讲话"。"像人名"按常见姓氏认，不常见的姓认不出：开头或标点
-#   后面跟出席、主持这类新闻动词的，跟总书记、总理的，不看姓氏
+#   后面跟出席、主持这类只有人才做的新闻动词的，不看姓氏；"宣布""签署"（"正式宣布""双方签署"）、
+#   总书记前面（"牢记总书记嘱托"）的要看姓氏，现任中央领导另有名单
 _OPEN_RE = f"(?:^|[{re.escape(_OPEN)}])"
 _TOP = re.compile(rf"({_H}{{2,3}})(?=总书记|总理|委员长)")
 _NOT_TOP_END = tuple("着的了和与及在把将对向")  # "循着总书记足迹"
 _LEAD = re.compile(
-    rf"{_OPEN_RE}({_H}{{2,3}})(?=出席|主持|签署|会见|会谈|致信|致电|回信|看望|慰问|视察|寄语|宣布)"
+    rf"{_OPEN_RE}({_H}{{2,3}})(?=出席|主持|会见|会谈|致信|致电|回信|看望|慰问|视察|寄语)"
 )
+_LEAD_WEAK = re.compile(rf"{_OPEN_RE}({_H}{{2,3}})(?=宣布|签署)")
 _PAIR = re.compile(rf"{_OPEN_RE}({_H}{{2,3}})(?=同|与)")
-_PAIR_WORDS = ("会谈", "通电话", "会见", "互致", "举行")
+_PAIR_WORDS = ("会谈", "通电话", "会见", "互致")
 _TRIP = re.compile(rf"{_OPEN_RE}({_H}{{2,3}})(?=到|赴|带队|率队|率团)")
 _TRIP_WORDS = ("调研", "考察", "督导", "督查", "检查", "走访", "慰问", "看望", "暗访")
 # 中央领导的姓名：转载的中央新闻、"某某思想"的学习材料里最常见，写法太多（"……作出重要指示"
@@ -173,9 +175,8 @@ def _news_named(title: str) -> bool:
         prev = title[i - 1] if i else ""
         place_ok = not prev or prev in _OPEN or prev in "副代" or prev == role[0]
         after = title[m.end() : m.end() + 3]
-        place_word = (
-            role in _PLACE_ROLES and not place_ok and after[:1] in _CHANG_NEXT
-        )  # "宜宾市长江"
+        # "宜宾市长江""水务局长江大堤"
+        place_word = role.endswith("长") and not place_ok and after[:1] in _CHANG_NEXT
         if not place_word and any(_personish(after[:k]) for k in (2, 3)):
             return True
         for k in (2, 3):
@@ -183,9 +184,11 @@ def _news_named(title: str) -> bool:
             if j >= 0 and (j == 0 or title[j - 1] in _OPEN) and _personish(title[j:i]):
                 return True
     for m in _TOP.finditer(title):
-        if not m.group(1).endswith(_NOT_TOP_END) and _personish(m.group(1), any_surname=True):
+        if not m.group(1).endswith(_NOT_TOP_END) and _personish(m.group(1)):
             return True
     if any(_personish(m.group(1), any_surname=True) for m in _LEAD.finditer(title)):
+        return True
+    if any(_personish(m.group(1)) for m in _LEAD_WEAK.finditer(title)):
         return True
     for m in _PAIR.finditer(title):
         rest = title[m.end() :]
