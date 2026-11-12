@@ -1303,14 +1303,14 @@ def rebuild(
     if on:
         # 窗口外的自动组每轮也重判（规则修紧、分类被改、原件文号更正，不再满足就退回；协调会话
         # 11/13 的规矩），只是不往里加新的：把它们自动确认过的版本的候选补上
-        outside = [
+        outside = {
             r.document_id
             for group_id, rows in by_group.items()
             if group_id not in window_groups
             for r in rows
-            if r.confirmed_by == AUTO_REVIEWER and r.document_id not in cands
-        ]
-        cands.update((c.id, c) for c in candidates_for(session, outside))
+            if r.active and r.confirmed_by == AUTO_REVIEWER and r.document_id not in cands
+        }
+        cands.update((c.id, c) for c in candidates_for(session, sorted(outside)))
     off = "" if on else (f"门没过（{summary.gate_reason}）" if summary.gate_reason else "开关关着")
     for group_id, rows in by_group.items():
         group = groups[group_id]
