@@ -7,11 +7,16 @@ from youju.govsites.inventory import ColumnHit, DeptRow, Inventory, PageInfo
 from youju.govsites.links import Link
 
 JM = "https://www.jiangmen.gov.cn"
+SG = "https://www.sg.gov.cn"
 
 
-def _page(url: str, links: list[tuple[str, str]]) -> PageInfo:
+def _page(url: str, links: list[tuple[str, str]], via: str = "a", final: str = "") -> PageInfo:
+    final = final or url
     return PageInfo(
-        url, url, FetchResult(url, "ok", url, 200, ""), links=[Link(t, u, "a") for t, u in links]
+        url,
+        final,
+        FetchResult(url, "ok", final, 200, ""),
+        links=[Link(t, u, via) for t, u in links],
     )
 
 
@@ -38,8 +43,12 @@ def _inventory(pages: dict[str, str]) -> Inventory:
     return Inventory(DivisionIndex(divisions), FakeCache(pages), provinces=["广东"], workers=2)
 
 
-def _row(level: str = "市级", dept: str = "科技") -> DeptRow:
-    return DeptRow("440700", level, "广东", "江门", "", dept, site_type="门户频道")
+def _row(level: str = "市级", dept: str = "科技", site_type: str = "门户频道") -> DeptRow:
+    return DeptRow("440700", level, "广东", "江门", "", dept, site_type=site_type)
+
+
+def _never(*_):
+    raise AssertionError("不该再抓、再找")
 
 
 def test_deep_columns_under_the_dept_dir() -> None:
@@ -58,35 +67,46 @@ def test_deep_columns_under_the_dept_dir() -> None:
         "通知公告": f"{JM}/bmpd/jmskxjsj/zwdt/tzgg/index.html"
     }
     # 门户自己的栏目（exclude）照旧不要；部门页就在网站根上时不放宽
-    assert (
-        colrules.deep_columns(
-            page, frozenset({f"{JM}/bmpd/jmskxjsj/zwdt/tzgg/index.html"}), ColumnHit
-        )
-        == {}
-    )
+    excluded = frozenset({f"{JM}/bmpd/jmskxjsj/zwdt/tzgg/index.html"})
+    assert colrules.deep_columns(page, excluded, ColumnHit) == {}
     root = _page(f"{JM}/", [("通知公告", f"{JM}/a/b/c/d/tzgg/index.html")])
     assert colrules.deep_columns(root, frozenset(), ColumnHit) == {}
 
 
-def test_channel_root_is_the_parent_named_after_the_dept() -> None:
-    page = _page(
-        "https://www.sg.gov.cn/bmpdlm/fgw/dt/",
-        [
-            ("首页", "https://www.sg.gov.cn/"),
-            ("韶关市生态环境局", "https://www.sg.gov.cn/bmpdlm/sthjj/"),  # 别的部门
-            ("动态信息", "https://www.sg.gov.cn/bmpdlm/fgw/dt/"),  # 就是当前目录
-            ("韶关市发展和改革局", "https://www.sg.gov.cn/bmpdlm/fgw/"),
-        ],
+def test_deep_columns_leave_group_columns_to_the_standard_check() -> None:
+    """大汉分组还原的栏目由通用规则核对栏目名，这里不认。"""
+    links = [("通知公告", f"{JM}/bmpd/x/fdzdgknr/a/tzgg/index.html")]
+    page = _page(f"{JM}/bmpd/x/", links, via="jpaas分组")
+    assert colrules.deep_columns(page, frozenset(), ColumnHit) == {}
+
+
+def test_dir_page() -> None:
+    assert colrules.dir_page(f"{JM}/bmpd/x/")
+    assert colrules.dir_page(f"{JM}/bmpd/x/index.html")
+    assert colrules.dir_page(f"{JM}/bmpd/x")
+    assert not colrules.dir_page(f"{JM}/zwgk/kjj.html")  # 公共目录里的一篇
+    assert not colrules.dir_page(f"{JM}/zwgk/index.html?dept=kjj")  # 靠参数区分
+
+
+def test_shared_directory_dept_pages_are_left_alone() -> None:
+    """挂在门户上的部门页是公共目录里的一篇、或靠参数区分时，目录不归这个部门：两条规则都不用。"""
+    for url in (f"{JM}/zwgk/kjj.html", f"{JM}/zwgk/index.html?dept=kjj"):
+        page = _page(url, [("通知公告", f"{JM}/zwgk/a/b/c/tzgg/index.html")])
+        assert colrules.more_columns(_row(), page, {}, frozenset(), _never, _never, ColumnHit) == {}
+    # 独立网站整站归这个部门：照常补
+    page = _page(f"{JM}/zwgk/kjj.html", [("通知公告", f"{JM}/zwgk/a/b/c/tzgg/index.html")])
+    got = colrules.more_columns(
+        _row(site_type="独立网站"), page, {}, frozenset(), _never, _never, ColumnHit
     )
-    assert colrules.channel_root(page, "发改委") == "https://www.sg.gov.cn/bmpdlm/fgw/"
-    assert colrules.channel_root(page, "财政") is None
+    assert {k: h.url for k, h in got.items()} == {"通知公告": f"{JM}/zwgk/a/b/c/tzgg/index.html"}
 
 
-def test_own_info_page_only_under_the_dept_dir() -> None:
+def test_own_info_page_same_host_and_under_the_dept_dir() -> None:
     page = _page(
         f"{JM}/bmpd/jmskxjsj/index.html",
         [
             ("政务公开", f"{JM}/zwgk/index.html"),  # 门户顶上公共的
+            ("信息公开", "https://www.example.gov.cn/bmpd/jmskxjsj/xxgk/"),  # 别的主机，同样路径
             ("信息公开", f"{JM}/bmpd/jmskxjsj/xxgk/index.html"),
         ],
     )
@@ -96,15 +116,26 @@ def test_own_info_page_only_under_the_dept_dir() -> None:
 
 def test_more_columns_leaves_complete_and_government_office_rows_alone() -> None:
     page = _page(f"{JM}/bmpd/x/index.html", [("通知公告", f"{JM}/bmpd/x/a/b/tzgg/index.html")])
-
-    def boom(*_):
-        raise AssertionError("不该再抓、再找")
-
     full = {k: ColumnHit(k, k, f"{JM}/{i}/", page.url) for i, k in enumerate(colrules.COLUMN_KINDS)}
-    assert colrules.more_columns(_row(), page, full, frozenset(), boom, boom, ColumnHit) == full
-    gov = colrules.more_columns(_row(dept="政府办"), page, {}, frozenset(), boom, boom, ColumnHit)
+    assert colrules.more_columns(_row(), page, full, frozenset(), _never, _never, ColumnHit) == full
+    gov = colrules.more_columns(
+        _row(dept="政府办"), page, {}, frozenset(), _never, _never, ColumnHit
+    )
     assert gov == {}
-    assert colrules.more_columns(_row(), None, {}, frozenset(), boom, boom, ColumnHit) == {}
+    assert colrules.more_columns(_row(), None, {}, frozenset(), _never, _never, ColumnHit) == {}
+
+
+def test_info_page_that_is_blocked_or_moves_out_of_the_dept_dir_is_not_used() -> None:
+    dept = _page(f"{SG}/bmpdlm/fgw/", [("信息公开", f"{SG}/bmpdlm/fgw/xxgk/")])
+    links = [("政策文件", f"{SG}/bmpdlm/fgw/xxgk/zcwj/")]
+    moved = _page(f"{SG}/bmpdlm/fgw/xxgk/", links, final=f"{SG}/zwgk/")  # 打开后跳到门户公共页
+    blocked = _page(f"{SG}/bmpdlm/fgw/xxgk/", links)
+    blocked.block = "HTTP 412 拒绝访问"
+    for info in (moved, blocked):
+        got = colrules.more_columns(
+            _row(dept="发改委"), dept, {}, frozenset(), lambda _u, i=info: i, _never, ColumnHit
+        )
+        assert got == {}
 
 
 def test_fill_from_page_adds_deep_columns_for_city_rows_only() -> None:
@@ -126,28 +157,28 @@ def test_fill_from_page_adds_deep_columns_for_city_rows_only() -> None:
     assert county.columns == []  # 区县级照旧，不走补充规则
 
 
-def test_fill_from_page_follows_channel_root_and_own_info_page() -> None:
-    sg = "https://www.sg.gov.cn"
-    sub = f"{sg}/bmpdlm/fgw/dt/"
-    root = f"{sg}/bmpdlm/fgw/"
-    info = f"{sg}/bmpdlm/fgw/xxgk/"
+def test_own_info_page_comes_before_the_portal_public_page() -> None:
+    """页面上第一个"信息公开"是门户公共的政务公开：部门自己的信息公开页先补，门户那页只补还缺的；
+    部门信息公开页上链到部门目录外的栏目不收。"""
+    dept = f"{SG}/bmpdlm/fgw/"
+    info = f"{SG}/bmpdlm/fgw/xxgk/"
+    portal = f"{SG}/zwgk/"
     pages = {
-        sub: _html([("韶关市发展和改革局", root), ("动态信息", sub)]),
-        root: _html(
-            [
-                ("政务公开", f"{sg}/zwgk/"),  # 第一个信息公开链接是门户公共的
-                ("信息公开", info),
-                ("通知公告", f"{sg}/bmpdlm/fgw/tzgg/"),
-            ]
+        dept: _html(
+            [("政务公开", portal), ("信息公开", info), ("通知公告", f"{SG}/bmpdlm/fgw/tzgg/")]
         ),
-        f"{sg}/zwgk/": _html([("政策文件", f"{sg}/zwgk/zcwj/")]),
-        info: _html([("政策文件", f"{sg}/bmpdlm/fgw/xxgk/zcwj/")]),
+        portal: _html([("政策文件", f"{SG}/zwgk/zcwj/"), ("公示公告", f"{SG}/zwgk/gsgg/")]),
+        info: _html(
+            [("政策文件", f"{SG}/bmpdlm/fgw/xxgk/zcwj/"), ("公示公告", f"{SG}/zwgk/gsgg/")]
+        ),
     }
     inv = _inventory(pages)
-    page = inv.page(sub)
+    page = inv.page(dept)
     row = _row("市级", "发改委")
-    inv._fill_from_page(row, page, [page], exclude=frozenset({f"{sg}/zwgk/zcwj/"}))
-    assert {c.kind: c.url for c in row.columns} == {
-        "通知公告": f"{sg}/bmpdlm/fgw/tzgg/",
-        "政策文件": f"{sg}/bmpdlm/fgw/xxgk/zcwj/",
-    }
+    inv._fill_from_page(row, page, [page])
+    got = {c.kind: c.url for c in row.columns}
+    assert got["通知公告"] == f"{SG}/bmpdlm/fgw/tzgg/"
+    assert got["政策文件"] == f"{SG}/bmpdlm/fgw/xxgk/zcwj/"  # 不是门户公共页上的 /zwgk/zcwj/
+    # 公示公告部门自己没有：照旧由通用规则从门户那页补（部门信息公开页上链出去的不由这里收）
+    assert got["公示公告"] == f"{SG}/zwgk/gsgg/"
+    assert next(c for c in row.columns if c.kind == "公示公告").source == portal
