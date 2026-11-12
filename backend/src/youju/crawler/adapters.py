@@ -187,6 +187,8 @@ _GATE_TEXT = re.compile(
 )
 _TAGS = re.compile(r"<script\b.*?</script>|<style\b.*?</style>|<[^>]+>|\s+", re.S | re.I)
 _MAINTENANCE = re.compile(r"系统维护|升级中|暂停服务|稍后再试|系统繁忙")
+# 去掉脚本、样式和标签（留着空白，"access denied"这类照样认得出）
+_MARKUP = re.compile(r"<script\b.*?</script>|<style\b.*?</style>|<[^>]+>", re.S | re.I)
 _LINK = re.compile(r"<a\s[^>]*href=", re.I)
 
 
@@ -265,7 +267,7 @@ def _unknown_shape(payload: dict) -> str:
         type(payload["messageType"]) is not int or payload["messageType"] != 2
     ):
         return "messageType 不是 2"
-    if not isinstance(payload.get("traceId"), str) or not payload["traceId"]:
+    if not isinstance(payload.get("traceId"), str) or not payload["traceId"].strip():
         return "没有 traceId 或不是非空文字"
     data = payload.get("data")
     if not isinstance(data, dict) or set(data) != {"html"} or not isinstance(data["html"], str):
@@ -352,14 +354,21 @@ def api_refusal(api: ListApi, result) -> str:
     text = getattr(result, "text", "") or ""
     payload = _json_payload(text)
     if payload is None:
-        # 先识别关卡，再把空白和维护页作为本次未取到；其他认不出的返回仍不读。
+        # 不是 JSON：认不出，记不能抓、不读（认得出才读）；原因里分一下是不是登录、拦截关卡
         head = html_lib.unescape(text[:20000])
-        if _bare_page(text) and (_LOGIN_TEXT.search(head) or _PASSWORD_INPUT.search(head)):
+        bare = _bare_page(text)
+        if bare and (_LOGIN_TEXT.search(head) or _PASSWORD_INPUT.search(head)):
             return "列表接口要登录或验证码"
-        if _bare_page(text) and _GATE_TEXT.search(head):
+        if bare and (_GATE_TEXT.search(head) or _GATE_PHRASE.search(head)):
             return "列表接口返回拦截页面"
-        body = _TAGS.sub("", html_lib.unescape(text))
-        if not body or _MAINTENANCE.search(body):
+        # 只有整页很少字、链接也少（不是网站模板）的空白页、维护页，算这次没取到、下次再试
+        # （照样不读）；页面上有任何登录、验证、权限、拦截字样的照旧不能抓，免得把关卡当成
+        # 维护页反复去请求
+        plain = html_lib.unescape(_MARKUP.sub(" ", text))
+        gated = _PASSWORD_INPUT.search(text) or any(
+            pattern.search(plain) for pattern in (_LOGIN_TEXT, _GATE_TEXT, _GATE_PHRASE, _LIST_HINT)
+        )
+        if bare and not gated and (not plain.strip() or _MAINTENANCE.search(plain)):
             return ""
         return "列表接口返回认不出（不是 JSON）"
     return _payload_refusal(payload)

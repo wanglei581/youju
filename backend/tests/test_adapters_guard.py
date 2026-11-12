@@ -173,11 +173,33 @@ def test_blank_or_maintenance_is_retryable_but_not_read(text):
     assert api_html(api, text) == ""
 
 
-@pytest.mark.parametrize("text", ["请先登录，系统维护中", "访问被拒绝，请稍后再试"])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "请先登录，系统维护中",
+        "访问被拒绝，请稍后再试",
+        # agy 审阅：关卡、没权限一类说法同时写着"稍后再试"的，照样不能抓，不当维护页反复去请求
+        "您没有访问权限，请稍后再试",
+        "请完成安全验证，稍后再试",
+        "滑块验证，系统繁忙",
+    ],
+)
 def test_gate_takes_priority_over_maintenance(text):
     api = _api()
     assert api_refusal(api, _got(f"<html>{text}</html>"))
     assert api_html(api, f"<html>{text}</html>") == ""
+
+
+def test_only_bare_maintenance_pages_are_retryable():
+    # agy 审阅：带网站模板（链接多）的页面写着"请稍后再试"也不算维护页，照旧认不出、不能抓；
+    # 转义写的维护字样照样认得出
+    api = _api()
+    nav = "".join(f'<a href="/col/col{i}/index.html">栏目{i}</a>' for i in range(30))
+    for word in ("访问受限，请稍后再试", "系统维护中"):
+        page = f"<html><body>{nav}<p>{word}</p></body></html>"
+        assert "认不出" in api_refusal(api, _got(page)) or "拦截" in api_refusal(api, _got(page))
+        assert api_html(api, page) == ""
+    assert api_refusal(api, _got("<html><body>&lt;系统维护&gt;</body></html>")) == ""
 
 
 def test_nested_permission_fields_are_found():
@@ -734,6 +756,7 @@ def test_only_the_known_reply_shape_is_read():
         ({"data": {"html": LIST, "more": "x"}}, "data 里"),
         ({"traceId": 1}, "traceId"),
         ({"traceId": ""}, "traceId"),
+        ({"traceId": "  "}, "traceId"),
     ):
         text = _payload(**change)
         assert why in api_refusal(api, _got(text)), change
