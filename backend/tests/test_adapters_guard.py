@@ -655,3 +655,16 @@ def test_any_login_word_outside_item_links_is_not_read():
     # 摘要里写着"授权运营"这类字样的不算（真实数据里有）
     summary = _payload(data={"html": "<p>审议通过了公共数据资源授权运营实施方案</p>" + LIST})
     assert api_refusal(api, _got(summary)) == ""
+
+
+def test_pseudo_tags_in_other_attributes_are_ignored():
+    fake = PAGE.split("<ul>")[1].split("</ul>")[0].replace('"', "&quot;")
+    page = f"<div title='{fake}'>说明</div>"
+    assert find_list_api(page, PAGE_URL) is None
+
+
+def test_more_gate_link_wordings():
+    api = _api()
+    for text in ("仅登录用户可查看", "登录", "用户登录"):
+        gated = _payload(data={"html": LIST + f'<a href="/login">{text}</a>'})
+        assert "登录或权限提示" in api_refusal(api, _got(gated)), text

@@ -418,7 +418,7 @@ def attribution_check(
 
 def _first_list_item(cache, url: str, today: date):
     """库里这一格没有文件时（合并部门共用栏目，文件挂在先抓到的来源下）：重读列表页取第一条带日期的。"""
-    from youju.crawler.adapters import api_html, find_list_api
+    from youju.crawler.adapters import api_html, api_refusal, find_list_api
     from youju.crawler.listing import extract_items
 
     r = cache.get(url)
@@ -429,8 +429,10 @@ def _first_list_item(cache, url: str, today: date):
     if len(items) < 3:
         api = find_list_api(r.text, final)
         if api is not None:
-            ar = cache.get(api.url)
-            body = api_html(api, ar.text) if ar.status == "ok" else ""
+            # 只取页面写明的地址、过读取护栏（D-128）；被拦下的不读
+            ar = cache.get(api.url, same_address_only=True)
+            ok = ar.status == "ok" and not api_refusal(api, ar)
+            body = api_html(api, ar.text) if ok else ""
             via = extract_items(body, api.base_url, today=today) if body else []
             if len(via) > len(items):
                 items = via

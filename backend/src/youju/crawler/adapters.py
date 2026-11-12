@@ -30,9 +30,9 @@ import re
 from dataclasses import dataclass
 from urllib.parse import urlencode, urljoin, urlsplit
 
-_HANWEB_SCRIPT = re.compile(r"<script\b[^>]*unitbuild\.js[^>]*>", re.I)
-# 属性名前面必须是空白（data-url、data-queryData 是别的属性，不当成 url、queryData）
-_ATTR = re.compile(r"""(?:^|\s)([A-Za-z][\w:-]*)\s*=\s*("([^"]*)"|'([^']*)')""")
+import lxml.html
+from lxml import etree
+
 HANWEB_JPAAS_PATH = "/api-gateway/jpaas-publish-server/front/page/build/unit"
 
 
@@ -43,21 +43,30 @@ class ListApi:
     base_url: str  # 接口返回的列表里的相对链接，以栏目页为准
 
 
-def _attrs(tag: str) -> dict[str, str]:
-    # 属性值里的 &amp; 等字符实体按浏览器的读法还原；同名属性写了两次时和浏览器一样取第一个，
-    # 参数才和浏览器发的一样（D-128 护栏 ①）
-    out: dict[str, str] = {}
-    for m in _ATTR.finditer(tag):
-        value = m.group(3) if m.group(3) is not None else m.group(4)
-        out.setdefault(m.group(1).lower(), html_lib.unescape(value))
+_STRAY_END = re.compile(r"</(?:html|body)\s*>", re.I)
+
+
+def _unit_scripts(html: str) -> list[dict[str, str]]:
+    """页面里真正的 <script src=".../unitbuild.js"> 元素上写的属性（属性名小写，字符实体已还原）。
+
+    用 HTML 解析器找元素，不用文字匹配：注释、文本域、样式、脚本代码字符串、别的元素属性值里
+    写着的都不是元素，浏览器不会执行，不认；noscript、template 里的也不认。同名属性和浏览器
+    一样取第一个（D-128 读取护栏 ①：只按页面写明、浏览器真会用的地址和参数去取）。"""
+    if not html or "unitbuild.js" not in html.lower():
+        return []
+    try:
+        # 页面中间夹着的 </html>、</body>（中国政府网导航页有）会让解析器提前停下：先去掉
+        doc = lxml.html.document_fromstring(_STRAY_END.sub("", html))
+    except (etree.ParserError, ValueError):
+        return []
+    out = []
+    for el in doc.iter("script"):
+        if "unitbuild.js" not in (el.get("src") or "").lower():
+            continue
+        if any(a.tag in ("noscript", "template") for a in el.iterancestors()):
+            continue
+        out.append({str(k).lower(): v for k, v in el.attrib.items()})
     return out
-
-
-# 浏览器不会执行的地方：注释、文本域、模板、noscript 里写着的声明都不认
-_SCRIPT_BODY = re.compile(r"(<script\b[^>]*>).*?(</script\s*>)", re.S | re.I)
-_INERT = re.compile(
-    r"<!--.*?-->|<(textarea|template|noscript|xmp|style)\b[^>]*>.*?</\1\s*>", re.S | re.I
-)
 
 
 def find_list_api(html: str, page_url: str) -> ListApi | None:
@@ -69,9 +78,7 @@ def find_list_api(html: str, page_url: str) -> ListApi | None:
 def find_unit_apis(html: str, page_url: str) -> list[ListApi]:
     """页面里声明的全部大汉 jpaas 单元接口（当前栏目的列表排最前，其次导航等其他单元）。"""
     candidates: list[tuple[int, ListApi]] = []
-    # 注释、文本域、样式里留着的，和脚本代码字符串里写的标签，浏览器都不会当成声明执行，也不请求
-    for m in _HANWEB_SCRIPT.finditer(_SCRIPT_BODY.sub(r"\1\2", _INERT.sub("", html or ""))):
-        attrs = _attrs(m.group(0))
+    for attrs in _unit_scripts(html):
         declared = urlsplit(urljoin(page_url, attrs.get("url", "")))
         # 只认白名单路径，而且接口必须就在栏目页这个网站上（页面声明到别的主机的不请求）
         if declared.path != HANWEB_JPAAS_PATH:
@@ -160,7 +167,8 @@ _ANCHOR_TEXT = re.compile(r"<a\b[^>]*>(.*?)</a>", re.S | re.I)
 _GATE_LINK = re.compile(
     r"^(?:请(?:先)?登[录陆]|登[录陆]后|(?:需要|需|未)登[录陆]|(?:立即|点击|点此|去|前往)登[录陆]|"
     r"登[录陆]查看|"
-    r"(?:您)?(?:没有|无)(?:权限|权访问|权查看)|权限不足|未授权|请输入验证码|请完成验证)"
+    r"(?:您)?(?:没有|无)(?:权限|权访问|权查看)|权限不足|未授权|请输入验证码|请完成验证|"
+    r"(?:仅|只有|只限|限)?登[录陆]用户|(?:用户)?登[录陆]$)"
 )
 _GATE_TEXT = re.compile(
     r"访问被拒绝|拒绝访问|禁止访问|访问受限|非法请求|防火墙|安全防护|access denied|forbidden",
