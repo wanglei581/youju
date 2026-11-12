@@ -183,6 +183,9 @@ def test_blank_or_maintenance_is_retryable_but_not_read(text):
         "<html><body>系统繁忙</body></html>",
         "<html><body>访问被拦截，请稍后再试</body></html>",
         "<html><body>您的访问被阻断，请稍后再试</body></html>",
+        # 独立 Claude 审阅第二轮：外壳标签上的 onload 跳转、因访问异常暂停服务（封 IP）也不算
+        "<html><body onload=\"location.href='/cas/login'\"></body></html>",
+        "<html><body>您的IP因访问异常已暂停服务</body></html>",
     ],
 )
 def test_scripts_redirects_and_block_pages_are_never_retried(text):

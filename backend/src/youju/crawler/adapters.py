@@ -183,6 +183,7 @@ _GATE_PHRASE = re.compile(
 )
 _GATE_TEXT = re.compile(
     r"访问被拒绝|拒绝访问|禁止访问|访问受限|非法请求|防火墙|安全防护|访问被拦截|访问被阻断|已被拦截|"
+    r"访问异常|异常访问|"
     r"访问过于频繁|请求过于频繁|access denied|forbidden",
     re.I,
 )
@@ -190,7 +191,11 @@ _TAGS = re.compile(r"<script\b.*?</script>|<style\b.*?</style>|<[^>]+>|\s+", re.
 # 维护页的说法：只认明写维护、升级、暂停服务的（"稍后再试""系统繁忙"拦截页也常这样写，不算）
 _MAINTENANCE = re.compile(r"系统维护|升级中|暂停服务")
 # 页面里有脚本、跳转、表单、内嵌页这类会动的东西：不当空白页、维护页（登录跳转、防护挑战页常这样）
-_ACTIVE = re.compile(r"<(?:script|meta|iframe|frame|form|input|object|embed|noscript)\b", re.I)
+# （包括写在外壳标签上的 onload 一类事件和 javascript: 链接）
+_ACTIVE = re.compile(
+    r"<(?:script|meta|iframe|frame|form|input|object|embed|noscript)\b|\bon[a-z]{3,}\s*=|javascript:",
+    re.I,
+)
 # 空白页只剩这些外壳
 _SHELL = re.compile(
     r"<!--.*?-->|</?(?:html|head|body|div|span|p|br|title|center|h\d)\b[^>]*>", re.S | re.I
