@@ -3,6 +3,7 @@
 import argparse
 import json
 import logging
+import os
 import re
 import sys
 import tempfile
@@ -897,6 +898,10 @@ def _cmd_reclassify(_: argparse.Namespace) -> int:
     """按当前的标题规则重算每份文件的类型（rule_kind）、项目类别（rule_category）和筛选标签
     （rule_supports、rule_industries），并去掉标题开头从列表页带进来的装饰符号（crawler/titles.py），
     只写有变化的。规则改了之后要跑一次；admin 服务每次启动时在迁移之后自动跑。"""
+    if getattr(get_settings(), "public_replica", False):
+        # 2.0 自建服务器：公开数据由本机算好推过来，这里不改（本机启动时会重算）
+        print("这台服务器的公开数据由本机同步过来，不在这里重算类型")
+        return 0
     from collections import defaultdict
 
     from sqlalchemy import update
@@ -983,12 +988,39 @@ def _cmd_backup(args: argparse.Namespace) -> int:
     return 0
 
 
+# 迁移写进去的种子行（恢复会从备份里带回来）
+_SEED_TABLES = frozenset({"signing_keys"})
+
+
+def _clear_seed_rows(engine) -> None:
+    """--fresh：刚迁移好的库里只有迁移写的种子行（signing_keys）时，先删掉它们再恢复。
+    别的表只要有一行数据就不删、报错（防止把有数据的库当成空库）。"""
+    from sqlalchemy import delete, func, select
+
+    from youju.backup import BackupError, backed_up_tables
+
+    tables = backed_up_tables()
+    with engine.begin() as conn:
+        busy = [
+            t.name
+            for t in tables
+            if t.name not in _SEED_TABLES and conn.scalar(select(func.count()).select_from(t))
+        ]
+        if busy:
+            raise BackupError(f"目标库不是刚迁移好的空库（{', '.join(busy[:5])} 有数据），没有动它")
+        for t in tables:
+            if t.name in _SEED_TABLES:
+                conn.execute(delete(t))
+
+
 def _cmd_restore(args: argparse.Namespace) -> int:
     from youju.backup import BackupError, restore
     from youju.db import create_mysql_engine
 
     engine = create_mysql_engine(get_settings().database_url)
     try:
+        if getattr(args, "fresh", False):
+            _clear_seed_rows(engine)
         with args.file.open("rb") as src:
             counts = restore(engine, src)
     except BackupError as exc:
@@ -1056,6 +1088,7 @@ def _cmd_restore_public(args: argparse.Namespace) -> int:
 
 
 def _cmd_backup_verify(args: argparse.Namespace) -> int:
+    from youju import storage
     from youju.backup import BackupError, download_latest, verify
     from youju.db import create_mysql_engine
 
@@ -1070,9 +1103,7 @@ def _cmd_backup_verify(args: argparse.Namespace) -> int:
                 counts = verify(engine, src)
             path = str(args.file)
         else:
-            import httpx
-
-            with tempfile.TemporaryDirectory() as tmp, httpx.Client(trust_env=False) as client:
+            with tempfile.TemporaryDirectory() as tmp, storage.http_client() as client:
                 local = Path(tmp) / "backup.jsonl.gz"
                 path = download_latest(client, settings.cloud_env, local)
                 with local.open("rb") as src:
@@ -2114,6 +2145,362 @@ def _cmd_weekly_digest(args: argparse.Namespace) -> int:
     return 0
 
 
+# ---- 2.0 自建服务器：公开数据同步（youju/sync/）、异地备份（youju/offsite.py） ----
+
+
+def _sync_engine():
+    from youju.db import create_mysql_engine
+
+    return create_mysql_engine(get_settings().database_url)
+
+
+def _cmd_sync_setup(args: argparse.Namespace) -> int:
+    from youju.sync import local
+
+    engine = _sync_engine()
+    try:
+        stream = local.setup(engine)
+    finally:
+        engine.dispose()
+    print(f"本机库已建好同步变更表和 {len(local.trigger_names())} 个触发器（变更流 {stream}）")
+    return 0
+
+
+def _cmd_sync_push(args: argparse.Namespace) -> int:
+    from youju.sync import local
+
+    settings = get_settings()
+    if not settings.sync_url and not settings.sync_secret:
+        # 本机先单独跑（服务器还没买）：定时任务照常调，这里安静跳过，不算失败、不提醒
+        print("还没配服务器（YOUJU_SYNC_URL），先只在本机跑，跳过推送")
+        return 0
+    engine = _sync_engine()
+    client = None
+    try:
+        client = local.client_from_settings(get_settings())
+        if args.mark_synced:
+            cleared = local.mark_synced(engine, client)
+            print(f"起步完成：清掉导入时记下的 {cleared} 条变更，服务器对上了本机的变更流")
+            return 0
+        if args.full:
+            only = set(args.tables.split(",")) if args.tables else None
+            report = local.full_push(
+                engine,
+                client,
+                prune=not args.no_prune,
+                only=only,
+                force=args.force,
+                dry_run=args.dry_run,
+            )
+            if args.dry_run:
+                print(f"只数不改：服务器上多出来、全推会删的行 {report.would_delete or '没有'}")
+                return 0
+        else:
+            report = local.push(engine, client, max_batches=args.max_batches)
+    except local.SyncError as exc:
+        print(f"同步失败：{exc}")
+        return 1
+    finally:
+        if client is not None:
+            client.close()
+        engine.dispose()
+    kept = "；".join(f"{k} {v} 行" for k, v in report.kept.items())
+    print(
+        f"推了 {report.batches} 批：写 {report.upserts} 行、删 {report.deletes} 行、"
+        f"传附件副本 {report.blobs} 个，服务器进度 {report.applied_seq}"
+        + (f"；被用户数据挡住没删的：{kept}" if kept else "")
+    )
+    return 0
+
+
+def _cmd_sync_status(args: argparse.Namespace) -> int:
+    import json as _json
+
+    from youju.sync import local
+
+    engine = _sync_engine()
+    client = None
+    try:
+        settings = get_settings()
+        if settings.sync_url:
+            client = local.client_from_settings(settings)
+        print(_json.dumps(local.status(engine, client), ensure_ascii=False, indent=2))
+    except local.SyncError as exc:
+        print(f"查同步状态失败：{exc}")
+        return 1
+    finally:
+        if client is not None:
+            client.close()
+        engine.dispose()
+    return 0
+
+
+def _cmd_sync_export(args: argparse.Namespace) -> int:
+    from youju.sync import local
+
+    engine = _sync_engine()
+    try:
+        counts = local.export_to_file(engine, args.output)
+    finally:
+        engine.dispose()
+    print(f"已导出 {sum(counts.values())} 行到 {args.output}（{len(counts)} 张表）")
+    return 0
+
+
+def _cmd_sync_import(args: argparse.Namespace) -> int:
+    from youju.sync import local
+
+    engine = _sync_engine()
+    try:
+        counts = local.import_file(engine, args.file)
+    except local.SyncError as exc:
+        print(f"导入失败：{exc}")
+        return 1
+    finally:
+        engine.dispose()
+    print(f"已导入 {sum(counts.values())} 行（{len(counts)} 张表）；下一步 youju sync-setup")
+    return 0
+
+
+def _cmd_takedown_carry(args: argparse.Namespace) -> int:
+    from youju import takedown_carry
+
+    try:
+        items = takedown_carry.load(args.file)
+    except (OSError, takedown_carry.CarryError) as exc:
+        print(f"下架清单读不了：{exc}")
+        return 1
+    with session_factory()() as session:
+        if args.action == "check":
+            report = takedown_carry.check(session, items)
+            print(
+                f"清单 {report.listed} 个网址：拦截表里有 {report.blocked} 个；"
+                f"库里有 {report.present} 份"
+                f"同网址的文件，其中对用户可见的 {len(report.visible)} 份"
+            )
+            for key in report.visible[:20]:
+                print(f"  仍可见：{key}")
+            return 1 if report.visible else 0
+        if getattr(get_settings(), "public_replica", False):
+            print("这台服务器的公开数据由本机同步过来：在本机跑 apply，下架状态随同步过来")
+            return 1
+        report = takedown_carry.apply(session, items)
+    print(
+        f"清单 {report.listed} 个网址：拦截表新加 {report.blocks_added} 个；"
+        f"本机库里有 {report.found} 份同网址的文件，这次整组下架 {report.taken_down} 份，"
+        f"原来就不可见 {report.already_hidden} 份"
+    )
+    return 0
+
+
+def _cmd_export_fetch(args: argparse.Namespace) -> int:
+    from youju import cloudrun_fetch, storage
+
+    try:
+        with storage.http_client() as client:
+            report = cloudrun_fetch.fetch(client, args.url, args.sha256, args.dir)
+    except (cloudrun_fetch.FetchError, ValueError, OSError) as exc:
+        print(f"没下载：{exc}")
+        return 1
+    for prefix in sorted(set(report.fetched) | set(report.skipped)):
+        print(
+            f"  {prefix} 新下载 {report.fetched.get(prefix, 0)} 个，"
+            f"已有跳过 {report.skipped.get(prefix, 0)} 个"
+        )
+    print(
+        f"共新下载 {report.bytes} 字节；整库备份 {report.backup or '没下好'}；"
+        f"下架清单 {report.takedowns} 个网址；交易记录 {sum(report.pay_records.values())} 条；"
+        f"超过 190 天没导入的日志 {report.expired_logs} 个"
+    )
+    for path, reason in report.failed[:20]:
+        print(f"  没下好：{path}（{reason}）")
+    if report.failed:
+        print(f"FETCH INCOMPLETE failed={len(report.failed)}（重跑这条命令只下没下好的）")
+        return 1
+    print("FETCH OK")
+    return 0
+
+
+def _cmd_archive_export(args: argparse.Namespace) -> int:
+    from youju import cloudrun_fetch
+    from youju.backup import BackupError
+
+    try:
+        reports, notes = cloudrun_fetch.archive_export(get_settings(), args.dir)
+    except (BackupError, cloudrun_fetch.FetchError) as exc:
+        print(f"存档失败：{exc}")
+        return 1
+    for note in notes:
+        print(note)
+    for report in reports:
+        print(
+            f"已加密存到本机存储和异地：{report.target}"
+            f"（{report.bytes} 字节，{report.expires} 到期删）"
+        )
+    return 0
+
+
+def _cmd_archive_prune(args: argparse.Namespace) -> int:
+    from youju import offsite
+    from youju.alerts import send_alert
+    from youju.backup import BackupError
+
+    settings = get_settings()
+    code = 0
+    # 云托管删库期限的提醒先单独发：后面删到期存档出错也不耽误它。没发出去（告警没配或发送失败）
+    # 任务按失败退出，任务记录里看得到，免得错过期限
+    reminder = offsite.cloudrun_reminder_for(settings)
+    if reminder:
+        print(reminder)
+        if send_alert(reminder) is not True:
+            print("这条提醒没发出去（告警没配好或发送失败）：任务按失败退出")
+            code = 1
+    try:
+        report = offsite.prune_archive(settings)
+    except BackupError as exc:
+        print(f"删到期存档失败：{exc}")
+        return 1
+    for item in report.deleted:
+        print(f"已删到期存档：{item}")
+    print(
+        f"到期存档删了 {len(report.deleted)} 个，没到期的 {report.kept} 个"
+        "（记录在 archive/deletions.jsonl）"
+    )
+    return code
+
+
+def _cmd_cloudrun_gone(args: argparse.Namespace) -> int:
+    from youju import offsite
+    from youju.backup import BackupError
+
+    try:
+        path = offsite.record_cloudrun_gone(get_settings(), args.how)
+    except BackupError as exc:
+        print(f"没记下：{exc}")
+        return 1
+    print(f"已记下云托管的数据库删了（{args.how}）：{path}；archive-prune 不再提醒")
+    return 0
+
+
+def _cmd_offsite_backup(args: argparse.Namespace) -> int:
+    from youju import offsite
+    from youju.backup import BackupError
+
+    try:
+        report = offsite.run(get_settings())
+    except BackupError as exc:
+        print(f"异地备份失败：{exc}")
+        return 1
+    print(
+        f"已把 {report.source} 加密后传到异地（{report.bytes} 字节）；删掉 {report.pruned} 份过期的"
+    )
+    return 0
+
+
+def _cmd_offsite_pull(args: argparse.Namespace) -> int:
+    from youju import offsite
+    from youju.backup import BackupError
+
+    settings = get_settings()
+    if not (settings.offsite_s3_access_key and settings.offsite_s3_secret_key):
+        print("还没配异地备份的下载密钥（YOUJU_OFFSITE_S3_*），跳过")
+        return 0
+    try:
+        report = offsite.pull(get_settings())
+    except BackupError as exc:
+        print(f"拉异地备份失败：{exc}")
+        return 1
+    print(
+        f"本机已有最新的加密备份 {report.target}（这次下了 {report.bytes} 字节）；"
+        f"删掉 {report.pruned} 份过期的"
+    )
+    return 0
+
+
+def _cmd_uptime_check(args: argparse.Namespace) -> int:
+    """从服务器外面（2.0 的本机）每 5 分钟看一次服务器的 /health：连续 2 次不通就提醒到群里，
+    恢复了再说一声；状态记在 --state 文件里（同一次故障只提醒一次）。"""
+    import json as _json
+
+    import httpx
+
+    from youju.alerts import send_alert
+
+    url = args.url.rstrip("/") + "/health"
+    healthy, reason = True, ""
+    # 接口服务和定时任务服务各看一次（Caddy 把 /health/worker 转给 worker 的 /health）
+    for path, name in (("/health", "接口"), ("/health/worker", "定时任务")):
+        try:
+            response = httpx.get(args.url.rstrip("/") + path, timeout=10, trust_env=False)
+            ok = response.status_code == 200 and response.json().get("status") == "ok"
+            if not ok:
+                healthy, reason = False, f"{name} HTTP {response.status_code}"
+        except (httpx.HTTPError, ValueError, AttributeError) as exc:
+            healthy, reason = False, f"{name} {type(exc).__name__}"
+        if not healthy:
+            break
+    try:
+        state = _json.loads(args.state.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        state = {"fails": 0, "alerted": False}
+    if healthy:
+        if state.get("alerted"):
+            send_alert(f"服务器恢复了：{url} 健康检查通过")
+        state = {"fails": 0, "alerted": False}
+    else:
+        state["fails"] = int(state.get("fails", 0)) + 1
+        if state["fails"] >= 2 and not state.get("alerted"):
+            send_alert(f"服务器连续 {state['fails']} 次健康检查不通（{reason}）：{url}")
+            state["alerted"] = True
+    args.state.write_text(_json.dumps(state), encoding="utf-8")
+    print(f"{url}：{'正常' if healthy else '不通（' + reason + '）'}")
+    return 0 if healthy else 1
+
+
+def _cmd_storage_export(args: argparse.Namespace) -> int:
+    from youju import storage_move
+    from youju.backup import BackupError
+
+    env = get_settings().cloud_env
+    if not env:
+        print("没有设置 YOUJU_CLOUD_ENV")
+        return 1
+    prefixes = tuple(args.prefix) if args.prefix else storage_move.DEFAULT_PREFIXES
+    try:
+        if args.output:
+            report = storage_move.export(env, args.output, prefixes, since_days=args.since_days)
+        else:
+            report = storage_move.export_and_upload(env, prefixes, since_days=args.since_days)
+    except BackupError as exc:
+        print(f"导出失败：{exc}")
+        return 1
+    print(f"已导出 {report.files}（{report.bytes} 字节，跳过 {report.skipped} 个）")
+    print(f"导出包：{report.output}")
+    return 0
+
+
+def _cmd_storage_import(args: argparse.Namespace) -> int:
+    from youju import storage_move
+    from youju.backup import BackupError
+
+    try:
+        report = storage_move.import_archive(args.file)
+    except (BackupError, OSError) as exc:
+        print(f"导入失败：{exc}")
+        return 1
+    print(
+        f"已导入 {report.files}（{report.bytes} 字节，已有或不合规跳过 {report.skipped} 个，"
+        f"内容不一样用包里的覆盖 {report.replaced} 个）"
+    )
+    if report.unreadable:
+        print(
+            f"有 {len(report.unreadable)} 个已有文件读不出来，没覆盖、原文件留着，要人看："
+            + "、".join(report.unreadable[:20])
+        )
+        return 1
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="youju", description="有据数据底座命令行")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -2335,6 +2722,11 @@ def main(argv: list[str] | None = None) -> int:
         "restore", help="把备份文件恢复到当前数据库（要已迁移到同一版本、而且是空的）"
     )
     p.add_argument("file", type=Path, help="备份文件（.jsonl.gz）")
+    p.add_argument(
+        "--fresh",
+        action="store_true",
+        help="目标是刚迁移好的空库：先删掉迁移写的种子行（别的表有数据就拒绝）",
+    )
     p.set_defaults(func=_cmd_restore)
 
     p = sub.add_parser(
@@ -2617,6 +3009,88 @@ def main(argv: list[str] | None = None) -> int:
         help="另外提醒今天正好连续没抓到第 3、7、14、30 天（之后每满 30 天）的栏目（只给早轮用）",
     )
     p.set_defaults(func=_cmd_check_sources)
+
+    p = sub.add_parser("sync-setup", help="（本机）建同步变更表和触发器，可以重复执行")
+    p.set_defaults(func=_cmd_sync_setup)
+    p = sub.add_parser("sync-push", help="（本机）把公开数据的变更推到服务器")
+    p.add_argument("--full", action="store_true", help="整表全推一遍，再删掉服务器上多出来的行")
+    p.add_argument("--no-prune", action="store_true", help="全推时不删服务器上多出来的行")
+    p.add_argument("--tables", help="全推时只推这几张表（逗号分隔）")
+    p.add_argument("--mark-synced", action="store_true", help="起步导入后：把服务器进度设成本机的")
+    p.add_argument("--max-batches", type=int, default=None, help="这次最多推几批")
+    p.add_argument("--dry-run", action="store_true", help="全推时只数服务器上多出来的行，不改")
+    p.add_argument("--force", action="store_true", help="全推要删很多行时也照删（先 --dry-run）")
+    p.set_defaults(func=_cmd_sync_push)
+    p = sub.add_parser("sync-status", help="同步状态：待推的变更、两边各表条数差")
+    p.set_defaults(func=_cmd_sync_status)
+    p = sub.add_parser("sync-export", help="（服务器）导出同步的表，给本机起步导入")
+    p.add_argument("--output", type=Path, required=True)
+    p.set_defaults(func=_cmd_sync_export)
+    p = sub.add_parser("sync-import", help="（本机）导入服务器导出的文件（同步的表要是空的）")
+    p.add_argument("--file", type=Path, required=True)
+    p.set_defaults(func=_cmd_sync_import)
+    p = sub.add_parser(
+        "takedown-carry",
+        help="（首发前搬家，D-127）apply：把云托管上已下架的网址写进拦截表、本机同网址的文件整组下架；"
+        "check：只读，看清单里的网址还有没有对用户可见的文件",
+    )
+    p.add_argument("action", choices=["apply", "check"])
+    p.add_argument(
+        "--file", type=Path, required=True, help="云托管导出脚本给的下架清单（JSON Lines）"
+    )
+    p.set_defaults(func=_cmd_takedown_carry)
+    p = sub.add_parser(
+        "archive-export",
+        help="（首发前搬家，D-127）把下载好的整库备份、交易记录分别用 age 公钥加密，"
+        "存到本机存储和异地 archive/，到期日写进文件名（整库 30 天，交易记录 3650 天）",
+    )
+    p.add_argument("--dir", type=Path, required=True, help="export-fetch 下载到的目录")
+    p.set_defaults(func=_cmd_archive_export)
+    p = sub.add_parser(
+        "archive-prune",
+        help="（服务器，每天）删掉 archive/ 下到期的存档（本机存储和异地），"
+        "记进 archive/deletions.jsonl",
+    )
+    p.set_defaults(func=_cmd_archive_prune)
+    p = sub.add_parser(
+        "cloudrun-gone",
+        help="（首发前搬家，D-127）记下云托管里的数据库已经删了（注销环境或手动删），"
+        "archive-prune 不再提醒",
+    )
+    p.add_argument("--how", required=True, choices=["deregistered", "deleted"])
+    p.set_defaults(func=_cmd_cloudrun_gone)
+    p = sub.add_parser(
+        "export-fetch",
+        help="（首发前搬家，D-127）按云托管导出的清单下载：日志、附件副本进存储，"
+        "整库备份和下架清单进 --dir",
+    )
+    p.add_argument(
+        "--url",
+        default=os.environ.get("YOUJU_EXPORT_URL", ""),
+        help="清单的下载链接；不写就读环境变量 YOUJU_EXPORT_URL"
+        "（youju-shared.sh 这样传，链接不进命令行）",
+    )
+    p.add_argument("--sha256", required=True, help="清单的 SHA-256")
+    p.add_argument(
+        "--dir", type=Path, required=True, help="放整库备份、下架清单的目录（只有 root 能进）"
+    )
+    p.set_defaults(func=_cmd_export_fetch)
+    p = sub.add_parser("offsite-backup", help="（服务器）把当天的整库备份加密后传到异地存储")
+    p.set_defaults(func=_cmd_offsite_backup)
+    p = sub.add_parser("offsite-pull", help="（本机）把异地最新的加密备份下到本机再留一份")
+    p.set_defaults(func=_cmd_offsite_pull)
+    p = sub.add_parser("storage-export", help="（切换）把对象存储里要搬的文件打成一个包")
+    p.add_argument("--prefix", action="append", help="只导出这个前缀（可写多次）")
+    p.add_argument("--output", type=Path, help="写到本机这个文件；不写就传回对象存储 exports/")
+    p.add_argument("--since-days", type=int, help="只搬这么多天以内的（整库备份用，如 7）")
+    p.set_defaults(func=_cmd_storage_export)
+    p = sub.add_parser("storage-import", help="（切换）把导出包按原路径写进现在的存储")
+    p.add_argument("--file", type=Path, required=True)
+    p.set_defaults(func=_cmd_storage_import)
+    p = sub.add_parser("uptime-check", help="（本机）从外面看服务器的 /health，不通就提醒")
+    p.add_argument("--url", required=True, help="服务器地址，如 https://api.example.com")
+    p.add_argument("--state", type=Path, default=Path(tempfile.gettempdir()) / "youju-uptime.json")
+    p.set_defaults(func=_cmd_uptime_check)
 
     p = sub.add_parser("serve", help="启动 API 服务")
     p.add_argument("--host", default="127.0.0.1")
