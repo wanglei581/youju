@@ -134,7 +134,10 @@ def test_twins_follow_confirmation(session, candidate):
                 duplicate_id=twin_doc.id, canonical_id=doc.id, match_key="same", active=True
             ),
             DocumentDetail(
-                document_id=twin_doc.id, body_text=BODY, status="ok", fetched_at=datetime.now(UTC)
+                document_id=twin_doc.id,
+                body_text=BODY.replace("申报截止", "申报  截止"),
+                status="ok",
+                fetched_at=datetime.now(UTC),
             ),
             DocumentDeadline(
                 document_id=twin_doc.id,
@@ -157,7 +160,7 @@ def test_twins_follow_confirmation(session, candidate):
     assert (
         twin.status == "approved"
         and twin.reviewed_by == "Claude"
-        and twin.verification_quote == payload(candidate)["quote"]
+        and twin.verification_quote == payload(candidate)["quote"].replace("申报截止", "申报  截止")
     )
 
 
@@ -227,3 +230,77 @@ def test_twin_added_later_keeps_the_verified_quote(session, candidate):
         item["quote"],
         True,
     )
+
+
+def test_stats_with_real_rows_and_twins(session, candidate):
+    stamp = datetime(2026, 11, 11, 16, tzinfo=UTC)
+    doc = session.get(Document, candidate.document_id)
+    twin_doc = _doc(doc.source, 97, doc.title, TODAY)
+    other_doc = _doc(doc.source, 96, "另一份通知", TODAY)
+    session.add_all([twin_doc, other_doc])
+    session.flush()
+    candidate.status = "approved"
+    candidate.approved_date = candidate.candidate_date
+    candidate.reviewed_by = "Claude"
+    candidate.reviewed_at = stamp
+    candidate.ai_agrees = True
+    session.add_all(
+        [
+            DocumentMerge(
+                duplicate_id=twin_doc.id, canonical_id=doc.id, match_key="same", active=True
+            ),
+            DocumentDeadline(
+                document_id=twin_doc.id,
+                fingerprint="stats-twin",
+                kind=candidate.kind,
+                candidate_date=candidate.candidate_date,
+                evidence=candidate.evidence,
+                confidence="高",
+                origin="rule",
+                status="approved",
+                reviewed_by="Claude",
+                reviewed_at=stamp,
+                approved_date=candidate.candidate_date,
+                ai_agrees=True,
+            ),
+            DocumentDeadline(
+                document_id=other_doc.id,
+                fingerprint="stats-corrected",
+                kind=candidate.kind,
+                candidate_date=candidate.candidate_date,
+                evidence=candidate.evidence,
+                confidence="高",
+                origin="rule",
+                status="approved",
+                reviewed_by="Claude",
+                reviewed_at=stamp,
+                approved_date=candidate.candidate_date,
+                verification_corrected=True,
+                ai_agrees=True,
+            ),
+            DocumentDeadline(
+                document_id=other_doc.id,
+                fingerprint="stats-unclear",
+                kind=candidate.kind,
+                candidate_date=candidate.candidate_date,
+                evidence=candidate.evidence,
+                confidence="高",
+                origin="rule",
+                status="pending",
+                ai_agrees=False,
+                verification_unclear_at=stamp,
+            ),
+        ]
+    )
+    session.commit()
+    result = verify.stats(session, date(2026, 11, 12))
+    assert result["ai_agrees"] == dict(confirmed=1, corrected=1, unclear=0, accuracy=0.5)
+    assert result["other"] == dict(confirmed=0, corrected=0, unclear=1, accuracy=None)
+    assert verify.stats(session, date(2026, 11, 13))["total"]["confirmed"] == 0
+
+
+def test_corrected_with_the_candidate_date_is_refused(session, candidate):
+    # 日期没改却写 corrected 会把准确率统计算错：要求写 confirmed
+    item = payload(candidate, verdict="corrected", date="2026-09-30", time=None)
+    assert "应写 confirmed" in verify.apply_one(session, item, True)
+    assert candidate.status == "pending"

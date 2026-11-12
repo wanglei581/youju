@@ -620,7 +620,7 @@ def _cmd_deadline_verify_queue(args: argparse.Namespace) -> int:
 def _cmd_deadline_verify_apply(args: argparse.Namespace) -> int:
     from youju.deadline_verify import apply_one
 
-    items = json.loads(args.file.read_text(encoding="utf-8"))
+    items = json.loads(args.file.read_text(encoding="utf-8-sig"))
     if not isinstance(items, list):
         raise ValueError("输入必须是 JSON 数组")
     with session_factory()() as session:
@@ -639,6 +639,28 @@ def _cmd_deadline_verify_apply(args: argparse.Namespace) -> int:
                     },
                     ensure_ascii=False,
                 )
+            )
+    return 0
+
+
+def _cmd_deadline_verify_stats(args: argparse.Namespace) -> int:
+    from youju.deadline_verify import stats
+
+    with session_factory()() as session:
+        result = stats(session, args.since)
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False))
+    else:
+        for key, label in (
+            ("total", "全部"),
+            ("ai_agrees", "程序和 AI 一致"),
+            ("other", "不一致或 AI 没看过"),
+        ):
+            counts = result[key]
+            accuracy = "暂无" if counts["accuracy"] is None else f"{counts['accuracy']:.1%}"
+            print(
+                f"{label}：确认 {counts['confirmed']}，修正 {counts['corrected']}，"
+                f"看不准 {counts['unclear']}，准确率 {accuracy}"
             )
     return 0
 
@@ -2681,6 +2703,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("file", type=Path)
     p.add_argument("--apply", action="store_true")
     p.set_defaults(func=_cmd_deadline_verify_apply)
+
+    p = sub.add_parser("deadline-verify-stats", help="只读统计截止核对结果")
+    p.add_argument("--since", type=date.fromisoformat, help="按北京时间核对日期起算（含当天）")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=_cmd_deadline_verify_stats)
 
     sub.add_parser(
         "repost-groups",
