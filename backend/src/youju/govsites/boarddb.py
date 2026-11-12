@@ -18,6 +18,7 @@ from sqlalchemy import delete, func, select, text
 from sqlalchemy.exc import InvalidRequestError
 from sqlalchemy.orm import Session
 
+from youju.crawler.adapters import LIST_API_OPEN_KEY, VIA_API_WORD
 from youju.crawler.urls import url_key
 from youju.govsites.board import STATES, SourceState, _outcome, cell_for
 from youju.govsites.inventory import STANDARD_DEPTS, ColumnHit, DeptRow, PortalRow
@@ -695,6 +696,14 @@ def enable_sources(
         if not dry_run:
             source.enabled = True
             note = f"全国覆盖：{province}{level}抽查合格（抽查记录 #{acc['id']}）后由 {by} 启用"
+            if VIA_API_WORD in (source.verification_status or ""):
+                # 试读经列表接口读出、这次复检抽查合格后打开：写"经接口读"标记，正式抓取才走接口
+                # （D-128；没有标记的来源一律不走接口）
+                source.parser_config = {
+                    **(source.parser_config or {}),
+                    LIST_API_OPEN_KEY: "大汉jpaas",
+                }
+                note += "，经接口读（D-128）"
             source.note = f"{source.note}；{note}" if source.note else note
         result.enabled += 1
         result.source_ids.append(source.id)

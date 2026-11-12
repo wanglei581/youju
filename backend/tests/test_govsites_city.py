@@ -106,7 +106,7 @@ class FakeCache:
         self.pages = pages
         self.hits = self.fetches = 0
 
-    def get(self, url: str) -> FetchResult:
+    def get(self, url: str, same_address_only=False) -> FetchResult:
         if url in self.pages:
             return FetchResult(url, "ok", url, 200, self.pages[url])
         return FetchResult(url, "http_error", url, 404, "", "HTTP 404")
@@ -173,7 +173,7 @@ def test_https_fallback_only_for_dropped_http() -> None:
 
 def test_page_switches_to_https_when_http_is_dropped() -> None:
     class DroppingCache(FakeCache):
-        def get(self, url: str) -> FetchResult:
+        def get(self, url: str, same_address_only=False) -> FetchResult:
             if url.startswith("http://www.fuzhou.gov.cn"):
                 return FetchResult(url, "robots_error", url, None, "", "RemoteProtocolError: x")
             return super().get(url)
@@ -327,7 +327,7 @@ def test_https_refusal_is_kept_as_blocked() -> None:
     """http 断开、https 回 412：以 https 的拒绝为准，记不能抓（成都），不记打不开。"""
 
     class Cache(FakeCache):
-        def get(self, url: str) -> FetchResult:
+        def get(self, url: str, same_address_only=False) -> FetchResult:
             if url.startswith("http://www.chengdu.gov.cn"):
                 return FetchResult(url, "robots_error", url, None, "", "RemoteProtocolError: x")
             if url.startswith("https://www.chengdu.gov.cn"):

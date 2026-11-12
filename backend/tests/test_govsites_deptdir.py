@@ -57,7 +57,7 @@ class FakeCache:
         self.hits = self.fetches = 0
         self.asked: list[str] = []
 
-    def get(self, url: str) -> FetchResult:
+    def get(self, url: str, same_address_only=False) -> FetchResult:
         self.asked.append(url)
         if url in self.pages:
             return FetchResult(url, "ok", url, 200, self.pages[url])
@@ -179,7 +179,8 @@ def test_gkmlpt_tree_categories_skip_jump_links():
 
 JPAAS_DEPT = "http://www.zjcx.gov.cn/xxgk/zfbmxxgk/zxxkxjsj/index.html?number=K001"
 UNIT_TAG = (
-    '<script src="/cms_files/default/script/AuthorizedRead/unitbuild.js" webId="3645" '
+    '<script id="u3645" src="/cms_files/default/script/AuthorizedRead/unitbuild.js" webId="3645" '
+    'parseType="bulidstatic" '
     'url="/api-gateway/jpaas-publish-server/front/page/build/unit" '
     "queryData=\"{'parseType':'bulidstatic','webId':'3645','tplSetId':'x','pageType':'column',"
     "'tagId':'组配分类list','editType':'null','pageId':'p1'}\"></script>"
@@ -223,7 +224,19 @@ def _zhejiang_pages() -> dict[str, str]:
         JPAAS_DEPT: '<meta name="SiteName" content="长兴县人民政府">' + UNIT_TAG,
     }
     api = find_unit_apis(pages[JPAAS_DEPT], JPAAS_DEPT)[0].url
-    pages[api] = json.dumps({"data": {"html": unit_html}})
+    pages[api] = json.dumps(
+        {
+            "roles": None,
+            "permissions": None,
+            "success": True,
+            "message": "生成成功",
+            "code": "200",
+            "traceId": "t",
+            "messageType": 2,
+            "data": {"html": unit_html},
+        },
+        ensure_ascii=False,
+    )
     # 还原出来的分类栏目页自己写着栏目名（长兴县实际页面的 meta ColumnName）
     pages["http://www.zjcx.gov.cn/xxgk/zfbmxxgk/zxxkxjsj/fdzdgknr/zcwj/xzbmfgfxwj/index.html"] = (
         '<meta name="ColumnName" content="乡镇、部门非规范性文件"><title>乡镇、部门非规范性文件</title>'
@@ -426,7 +439,7 @@ def test_link_redirecting_to_home_is_not_a_directory():
     )
 
     class Redirect(FakeCache):
-        def get(self, url):
+        def get(self, url, same_address_only=False):
             if url == "http://www.zjcx.gov.cn/jgsz/":
                 r = super().get(home)
                 return FetchResult(url, r.status, home, r.http_status, r.text, r.error)
@@ -463,3 +476,42 @@ def test_breadcrumb_title_uses_its_first_segment():
     inv = Inventory(INDEX, FakeCache(pages), provinces=["浙江"], workers=2, per_province=2)
     inv.run()
     assert _depts(inv)[("330522", "科技")].columns == []
+
+
+def test_refused_unit_api_is_not_read():
+    """读取护栏（D-128）：单元接口返回不是成功、或带权限要求时，盘点不用它的内容。"""
+    pages = _zhejiang_pages()
+    api = find_unit_apis(pages[JPAAS_DEPT], JPAAS_DEPT)[0].url
+    good = Inventory(INDEX, FakeCache(dict(pages)), provinces=["浙江"])
+    assert any(link.via == "jpaas分组" for link in good.page(JPAAS_DEPT).links)
+    for bad in ({"success": False, "message": ""}, {"roles": ["dept"]}):
+        refused = dict(pages)
+        refused[api] = json.dumps({**json.loads(pages[api]), **bad})
+        info = Inventory(INDEX, FakeCache(refused), provinces=["浙江"]).page(JPAAS_DEPT)
+        assert not any(link.via == "jpaas分组" for link in info.links)
+        assert info.api_refused
+        # 部门页的栏目全靠这个接口：这一格记不能抓（不是"网站无此栏目"）
+        inv = Inventory(INDEX, FakeCache(refused), provinces=["浙江"], workers=2, per_province=2)
+        inv.run()
+        kj = _depts(inv)[("330522", "科技")]
+        assert (kj.status, kj.columns) == ("不能抓", [])
+        assert "D-128" in kj.reason
+
+
+def test_refused_top_candidate_lets_next_candidate_win():
+    """首选部门页的栏目全靠被拦下的接口时，照常试后面的候选；后面的有栏目就用它。"""
+    pages = _zhejiang_pages()
+    api = find_unit_apis(pages[JPAAS_DEPT], JPAAS_DEPT)[0].url
+    pages[api] = json.dumps({**json.loads(pages[api]), "roles": ["dept"]})
+    directory = "http://www.zjcx.gov.cn/col/col1229211332/index.html"
+    other = "http://www.zjcx.gov.cn/kjj/index.html"
+    pages[directory] += f'<a href="{other}">·长兴县科学技术局</a>'
+    pages[other] = (
+        '<meta name="SiteName" content="长兴县科学技术局"><title>长兴县科学技术局</title>'
+        '<a href="/kjj/tzgg/index.html">通知公告</a>'
+    )
+    inv = Inventory(INDEX, FakeCache(pages), provinces=["浙江"], workers=2, per_province=2)
+    inv.run()
+    kj = _depts(inv)[("330522", "科技")]
+    assert (kj.status, kj.site_url) == ("已找到", other)
+    assert [c.kind for c in kj.columns] == ["通知公告"]

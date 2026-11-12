@@ -7,7 +7,7 @@ from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.dialects.mysql import insert as mysql_insert
@@ -15,7 +15,14 @@ from sqlalchemy.orm import Session
 
 from youju.categories import doc_category
 from youju.classify import doc_kind
-from youju.crawler.adapters import api_html, find_list_api
+from youju.crawler.adapters import (
+    LIST_API_OPEN_KEY,
+    LIST_API_REFUSED,
+    ListApi,
+    api_html,
+    api_refusal,
+    find_list_api,
+)
 from youju.crawler.fetcher import FetchResult
 from youju.crawler.listing import ListItem, extract_items
 from youju.crawler.urls import host_of, public_url, url_key
@@ -33,7 +40,9 @@ PARSE_EMPTY_MESSAGE = (
 class Fetcher:
     """抓取器接口；测试时可以换成假的实现。"""
 
-    def fetch(self, url: str) -> FetchResult:  # pragma: no cover - 接口定义
+    def fetch(
+        self, url: str, same_address_only: bool = False
+    ) -> FetchResult:  # pragma: no cover - 接口定义
         raise NotImplementedError
 
 
@@ -115,7 +124,8 @@ def _update_health(
         source.last_error = None
         return
     source.last_error = error
-    if status == "robots_disallowed":
+    if status in ("robots_disallowed", LIST_API_REFUSED):
+        # robots 禁止、列表接口被读取护栏（D-128）拦下：记不能抓、停抓，不再计失败次数
         source.health = "blocked"
         return
     source.consecutive_failures = (source.consecutive_failures or 0) + 1
@@ -153,6 +163,29 @@ def _lock_source(session: Session, source: Source) -> None:
 
 # 通用规则在栏目页上识别出的条目少于这个数，才去看页面有没有声明列表接口
 ADAPTER_MIN_ITEMS = 3
+# 页面上的列表改由接口加载、来源却没标"经接口读"时记的原因（D-128：不读，等复检后再打开）
+NEEDS_REVIEW_MESSAGE = "页面改用接口加载，待复检（来源没有“经接口读”的标记，D-128）"
+
+
+# 来源 parser_config 里记下列表接口被读取护栏（D-128）拦下（接口网址、原因、时间）：例行抓取
+# 不带 --skip-blocked，不能只靠 health。栏目页还声明着同一个接口时，30 天内不再请求、照旧记
+# 不能抓；页面换了接口，或过了 30 天（和试读对 401/403 等的复查间隔一样），再请求一次
+LIST_API_REFUSED_KEY = "list_api_refused"
+LIST_API_RECHECK_DAYS = 30
+
+
+def _refused_before(parser_config: dict, api_url: str, now: datetime) -> str:
+    note = parser_config.get(LIST_API_REFUSED_KEY)
+    if not isinstance(note, dict) or note.get("url") != api_url:
+        return ""
+    try:
+        if now - datetime.fromisoformat(str(note.get("at"))) > timedelta(
+            days=LIST_API_RECHECK_DAYS
+        ):
+            return ""
+    except (TypeError, ValueError):
+        return ""
+    return str(note.get("reason") or "列表接口被读取护栏拦下")
 
 
 @dataclass
@@ -160,21 +193,36 @@ class _AdapterResult:
     items: list[ListItem]
     adapter: str | None = None  # 用了哪个平台适配器（认出了列表接口才有）
     fetch: FetchResult | None = None  # 接口没取到时的抓取结果
+    refused: str = ""  # 读取护栏（D-128）拦下的原因：记"不能抓"、不读
+    api_url: str = ""  # 认出的列表接口网址
 
 
 def _items_via_adapter(
-    fetcher: Fetcher, page: FetchResult, url: str, parser_config: dict, today: date | None
+    fetcher: Fetcher,
+    page: FetchResult,
+    url: str,
+    parser_config: dict,
+    today: date | None,
+    api: ListApi | None = None,
 ) -> _AdapterResult:
-    """栏目页自己声明了集约化平台的列表接口（见 crawler/adapters.py）时，按它取列表。"""
-    api = find_list_api(page.text, page.final_url or url)
+    """栏目页自己声明了集约化平台的列表接口（见 crawler/adapters.py）时，按它取列表。
+
+    只请求页面写明的那个接口地址、参数原样照页面（D-128 读取护栏 ①），不另外构造请求。"""
+    api = api or find_list_api(page.text, page.final_url or url)
     if api is None:
         return _AdapterResult([])
-    result = fetcher.fetch(api.url)
+    # 只取页面写明的那个地址，跳到别处不跟（D-128 读取护栏 ①）
+    result = fetcher.fetch(api.url, same_address_only=True)
+    if result.status == "robots_disallowed":
+        return _AdapterResult([], api.adapter, result, api_url=api.url)  # 照旧按 robots 禁止记
+    refused = api_refusal(api, result)
+    if refused:
+        return _AdapterResult([], api.adapter, result, refused, api.url)
     if result.status != "ok":
-        return _AdapterResult([], api.adapter, result)
+        return _AdapterResult([], api.adapter, result, api_url=api.url)
     html = api_html(api, result.text)
     items = extract_items(html, api.base_url, parser_config, today=today) if html else []
-    return _AdapterResult(items, api.adapter)
+    return _AdapterResult(items, api.adapter, api_url=api.url)
 
 
 def check_source(
@@ -196,27 +244,84 @@ def check_source(
     status, error = result.status, result.error
     items: list[ListItem] = []
     first_via_adapter = False
+    # 要写回来源 parser_config 的改动：加锁以后合到库里最新的配置上，不拿加锁前的旧副本整个
+    # 覆盖（两次检查同时进行时，不会把对方刚记下的拦下记录冲掉）
+    config_set: dict[str, object] = {}
+    config_drop: dict[str, object] = {}  # 要去掉的项 → 本次看到的旧值（库里还是它才去掉）
     if result.status == "ok":
         items = extract_items(result.text, result.final_url or url, parser_config, today=today)
+        api = None
         if len(items) < ADAPTER_MIN_ITEMS and not parser_config.get("item_selector"):
-            via = _items_via_adapter(fetcher, result, url, parser_config, today)
+            api = find_list_api(result.text, result.final_url or url)
+        if api is not None and parser_config.get(LIST_API_OPEN_KEY) != api.adapter:
+            # D-128：来源没标"经接口读"（复检、抽查合格、打开时才写）——不走接口、不读，也不悄悄
+            # 记成 0 条：记"读不出"并写明待复检，进失败清单等复检
+            items = []
+            status, error = "parse_empty", NEEDS_REVIEW_MESSAGE
+            log.warning("来源 #%s 页面改用接口加载，待复检（没有经接口读的标记）", source.id)
+            api = None
+        before = _refused_before(parser_config, api.url, started) if api is not None else ""
+        if before:
+            # 栏目页还声明着之前被读取护栏（D-128）拦下的接口：30 天内不再请求，照旧记不能抓
+            items = []
+            status, error = LIST_API_REFUSED, f"{before}（之前被读取护栏拦下，暂不再请求）"
+            result = FetchResult(url, LIST_API_REFUSED, http_status=result.http_status)
+        elif api is not None:
+            via = _items_via_adapter(fetcher, result, url, parser_config, today, api)
+            note = parser_config.get(LIST_API_REFUSED_KEY)
+            moved = not isinstance(note, dict) or note.get("url") != via.api_url
+            if note is not None and not via.refused and (moved or via.fetch is None):
+                # 页面换了接口，或过了 30 天再请求、接口正常返回没被拦：去掉旧记录（这次只是
+                # 网络不通、5xx 的，旧记录留着）
+                config_drop[LIST_API_REFUSED_KEY] = note
             if via.items:
                 items = via.items
                 # 第一次经列表接口读出整页：以前只认出零星几条的来源，整页旧通知不能算"新增"
                 first_via_adapter = parser_config.get("list_api") != via.adapter
                 if first_via_adapter:
-                    parser_config = {**parser_config, "list_api": via.adapter}
-            elif via.fetch is not None and not items:
-                # 列表接口被 robots 禁止或被拒：照实记，不当成"改版认不出"（以后也不能去绕）
+                    config_set["list_api"] = via.adapter
+            elif via.refused:
+                # 读取护栏（D-128）：接口返回不是成功、带权限要求、要登录或验证码、明确拒绝
+                # → 记不能抓、停抓；栏目页上零星认出的一两条也不收（列表在接口里，读不了）
+                items = []
+                status, error = LIST_API_REFUSED, f"列表接口（{via.adapter}）：{via.refused}"
+                note = {"url": via.api_url, "reason": error, "at": started.isoformat()}
+                config_set[LIST_API_REFUSED_KEY] = note
+                if via.fetch is not None and via.fetch.http_status:
+                    result = FetchResult(url, LIST_API_REFUSED, http_status=via.fetch.http_status)
+            elif via.fetch is not None and via.fetch.status == "robots_disallowed":
+                # 列表接口被 robots 禁止：和读取护栏一样，零星条目不收，记 robots 禁止（停抓）
+                items = []
                 status, error = via.fetch.status, f"列表接口（{via.adapter}）：{via.fetch.error}"
+            elif via.fetch is not None:
+                # 列表接口这次没取到（网络不通、超时、5xx 等）：照实记失败、下次再试，不当成
+                # "改版认不出"；栏目页上零星认出的一两条也不收，免得把这次失败盖成成功
+                items = []
+                why = via.fetch.error or (
+                    f"要跳转到 {via.fetch.final_url}，只请求页面写明的地址、不跟"
+                    if via.fetch.status == "redirect"
+                    else via.fetch.status
+                )
+                status, error = via.fetch.status, f"列表接口（{via.adapter}）：{why}"
                 if via.fetch.http_status:
                     result = FetchResult(url, "http_error", http_status=via.fetch.http_status)
+            else:
+                # 接口回了，但读不出列表（空白、不是 JSON、没有列表那段，或列表本来就空）：
+                # 栏目页零星认出的一两条也不收，按"没识别到列表条目"记，下次再试
+                items = []
         if not items and status == "ok":
             status, error = "parse_empty", PARSE_EMPTY_MESSAGE
 
     _lock_source(session, source)
-    if first_via_adapter:
-        source.parser_config = parser_config  # 记下这个栏目要经列表接口读
+    if config_set or config_drop:
+        # 记下这个栏目要经列表接口读，或列表接口被读取护栏拦下（以后不再请求）、去掉旧记录
+        # 要去掉的项，只有库里还是本次看到的那个值才去掉（别的检查刚记下的新拦下记录不动）
+        fresh = {
+            k: v
+            for k, v in (source.parser_config or {}).items()
+            if k not in config_drop or v != config_drop[k]
+        }
+        source.parser_config = {**fresh, **config_set}
     # 来源第一次成功检查时看到的条目算基线，不计入"新增"；第一次经列表接口读出的整页也算基线
     baseline = bool(items) and (source.last_success_at is None or first_via_adapter)
     new_count = save_items(session, source, items, baseline=baseline, seen_at=started)

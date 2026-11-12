@@ -301,7 +301,7 @@ class FakeCache:
         self.pages = pages
         self.hits = self.fetches = 0
 
-    def get(self, url: str) -> FetchResult:
+    def get(self, url: str, same_address_only=False) -> FetchResult:
         if url in self.pages:
             return FetchResult(url, "ok", url, 200, self.pages[url])
         return FetchResult(url, "http_error", url, 404, "", "HTTP 404")
@@ -379,16 +379,26 @@ def test_national_ministries_are_target_depts():
     assert dept_categories("外交部") == []
 
 
+NORMAL_X = (
+    '{"roles":null,"permissions":null,"success":true,"message":"生成成功","code":"200",'
+    '"traceId":"t","messageType":2,"data":{"html":"<li>x</li>"}}'
+)
+
+
 def test_list_api_only_accepts_whitelisted_same_site_endpoint():
     from youju.crawler.adapters import api_html, find_list_api
 
-    good = """<script src="/x/unitbuild.js" url="/api-gateway/jpaas-publish-server/front/page/build/unit"
-      queryData="{'pageType':'column','tagId':'当前栏目list','pageId':'1'}"></script>"""
+    good = """<script id="u1" src="/x/unitbuild.js" webId="1" parseType="bulidstatic"
+      url="/api-gateway/jpaas-publish-server/front/page/build/unit"
+      queryData="{'parseType':'bulidstatic','webId':'1','tplSetId':'T','pageType':'column',
+      'tagId':'当前栏目list','editType':'null','pageId':'1'}"></script>"""
     api = find_list_api(good, "https://kjt.zj.gov.cn/col/col1/index.html")
     assert api.url.startswith(
         "https://kjt.zj.gov.cn/api-gateway/jpaas-publish-server/front/page/build/unit?"
     )
-    assert api_html(api, '{"data":{"html":"<li>x</li>"}}') == "<li>x</li>"
+    assert api_html(api, NORMAL_X) == "<li>x</li>"
+    # 没有成功标志的返回按读取护栏（D-128）不读
+    assert api_html(api, '{"data":{"html":"<li>x</li>"}}') == ""
     assert api_html(api, "not json") == ""
     other = good.replace("/api-gateway/jpaas-publish-server/front/page/build/unit", "/api/other")
     assert find_list_api(other, "https://kjt.zj.gov.cn/") is None
@@ -396,7 +406,7 @@ def test_list_api_only_accepts_whitelisted_same_site_endpoint():
     evil = good.replace('url="/api', 'url="https://evil.example.com/api')
     assert find_list_api(evil, "https://kjt.zj.gov.cn/") is None
     assert api_html(api, '{"data":"参数错误"}') == ""
-    bad_query = good.replace("{'pageType'", "{['x']:'1','pageType'")
+    bad_query = good.replace("{'parseType'", "{['x']:'1','parseType'")
     assert find_list_api(bad_query, "https://kjt.zj.gov.cn/") is None
 
 
@@ -906,7 +916,7 @@ def test_dept_levels_skip_upper_level_departments(tmp_path):
             super().__init__(pages)
             self.asked: list[str] = []
 
-        def get(self, url):
+        def get(self, url, same_address_only=False):
             self.asked.append(url)
             return super().get(url)
 

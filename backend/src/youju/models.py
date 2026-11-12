@@ -172,6 +172,7 @@ class SourceCheck(Base):
     started_at: Mapped[datetime] = mapped_column(UTCDateTime())
     finished_at: Mapped[datetime] = mapped_column(UTCDateTime())
     # ok / http_error / network_error / ssl_error / robots_disallowed / robots_error / parse_empty
+    # / list_api_refused（列表接口被读取护栏拦下，D-128）
     status: Mapped[str] = mapped_column(String(32))
     http_status: Mapped[int | None] = mapped_column(Integer)
     items_found: Mapped[int] = mapped_column(Integer, default=0)
