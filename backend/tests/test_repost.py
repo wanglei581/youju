@@ -2530,3 +2530,116 @@ def test_auto_record_does_not_withdraw_a_group_a_person_confirmed_after_sampling
     group = session.get(RepostGroup, data["items"][0]["group_id"])
     assert not group.no_auto
     assert all(r.confirmed_by == "创始人" for r in _members(session).values())
+
+
+def _fill_and_record(tmp_path, data, verdict, note=""):
+    import json
+
+    from youju import repost_checks
+
+    for item in data["items"]:
+        item.update(verdict=verdict, note=note)
+    path = tmp_path / f"filled-{data['round']}.json"
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    assert repost_checks.record(SimpleNamespace(file=path, by="Codex")) == 0
+
+
+def test_weekly_judgement_survives_a_rule_added_pending_version(
+    session, session_factory, monkeypatch, tmp_path
+):
+    # 每周抽查抽样以后，规则自动加进一份还不合格的新转发（留待确认、不折叠）：判的已确认版本和证据
+    # 都没变，人也没动过，判定照样算
+    from youju import repost_checks
+    from youju.models import RepostAutoCheck
+
+    _auto_on(monkeypatch, session)
+    docs = _auto_world(session)
+    rebuild(session, now=NOW)
+    session.commit()
+    monkeypatch.setattr(repost_checks, "session_factory", lambda: session_factory)
+    data = _sample(tmp_path, "weekly", seed=11)
+    late = _doc(session, _source(session, "福建"), docs[0].title, day=20)  # 正文还没抓到
+    session.flush()
+    rebuild(session, now=NOW + timedelta(seconds=1))
+    session.commit()
+    assert _members(session)[late.id].confirmed_at is None
+    _fill_and_record(tmp_path, data, "correct")
+    session.expire_all()
+    assert session.query(RepostAutoCheck).filter_by(round=data["round"]).one().verdict == "correct"
+
+
+def test_weekly_wrong_after_a_person_takes_over_is_not_withdrawn(
+    session, session_factory, monkeypatch, tmp_path
+):
+    # 每周抽查抽样以后，有人把这个自动组接过来确认了：旧样本的"判错"记 changed，不整组撤回
+    from youju import repost_checks
+    from youju.models import RepostAutoCheck
+
+    _auto_on(monkeypatch, session)
+    _auto_world(session)
+    rebuild(session, now=NOW)
+    session.commit()
+    monkeypatch.setattr(repost_checks, "session_factory", lambda: session_factory)
+    data = _sample(tmp_path, "weekly", seed=12)
+    rows = list(_members(session).values())
+    _, facts = member_facts(session, [r.document_id for r in rows])
+    for row in rows:
+        row.confirmed_by, row.confirmed_at = "创始人", NOW + timedelta(hours=1)
+        row.confirmed_fingerprint = facts[row.document_id]
+    session.commit()
+    _fill_and_record(tmp_path, data, "wrong", "其实是两件事")
+    session.expire_all()
+    assert session.query(RepostAutoCheck).filter_by(round=data["round"]).one().verdict == "changed"
+    assert all(r.confirmed_by == "创始人" for r in _members(session).values())
+
+
+def test_gate_correct_after_a_person_withdraws_is_not_counted(
+    session, session_factory, monkeypatch, tmp_path
+):
+    # gate 抽样以后，这一组被人整组撤回：旧样本的"判对"记 changed，不计入准确率
+    from youju import repost_checks
+    from youju.models import RepostAutoCheck
+    from youju.repost import withdraw_group
+
+    monkeypatch.setattr(
+        "youju.repost.get_settings", lambda: SimpleNamespace(repost_auto_merge=False)
+    )
+    monkeypatch.setattr(repost_checks, "session_factory", lambda: session_factory)
+    _auto_world(session)
+    rebuild(session, now=NOW)
+    session.commit()
+    data = _sample(tmp_path, "gate", seed=13)
+    group = session.get(RepostGroup, data["items"][0]["group_id"])
+    rows = list(_members(session).values())
+    withdraw_group(group, rows, NOW + timedelta(hours=1))
+    session.commit()
+    _fill_and_record(tmp_path, data, "correct")
+    session.expire_all()
+    assert session.query(RepostAutoCheck).filter_by(round=data["round"]).one().verdict == "changed"
+
+
+def test_record_sees_a_reconfirmation_by_the_same_person(
+    session, session_factory, world, monkeypatch, tmp_path
+):
+    # 每周抽到一个人工确认的组，抽样以后同一个人重新确认了一遍（移出、恢复、再确认之类，确认人
+    # 没变）：确认时间变了，旧样本的"判错"记 changed，不撤回新的确认
+    from youju import repost_checks
+    from youju.models import RepostAutoCheck
+
+    rebuild(session, now=NOW)
+    session.commit()
+    rows = list(_members(session).values())
+    _, facts = member_facts(session, [r.document_id for r in rows])
+    for row in rows:
+        row.confirmed_by, row.confirmed_at = "人工", NOW
+        row.confirmed_fingerprint = facts[row.document_id]
+    session.commit()
+    monkeypatch.setattr(repost_checks, "session_factory", lambda: session_factory)
+    data = _sample(tmp_path, "weekly", seed=14)
+    for row in _members(session).values():
+        row.confirmed_at = NOW + timedelta(hours=2)
+    session.commit()
+    _fill_and_record(tmp_path, data, "wrong", "其实是两件事")
+    session.expire_all()
+    assert session.query(RepostAutoCheck).filter_by(round=data["round"]).one().verdict == "changed"
+    assert all(r.confirmed_by == "人工" for r in _members(session).values())

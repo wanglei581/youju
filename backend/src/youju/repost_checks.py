@@ -173,25 +173,25 @@ def _member_candidates(session: Session, ids: list[int]) -> dict[int, Candidate]
 
 
 def _human_trace(group: RepostGroup, rows) -> list:
-    """组上人动过的痕迹：人工确认（自动合并确认的不算）、人工加入、移出、不再自动合并、需复核、谁建的
-    组。抽样以后有变就算组变了，免得拿旧样本的结论整组撤回人刚做的确认；只是自动合并确认、退回造成的
-    变化（修订号也跟着变）不算。"""
-    return [
-        bool(group.no_auto),
-        bool(group.needs_review),
-        group.created_by,
-        sorted(
+    """组上人动过的痕迹：不再自动合并、需复核、谁建的组，以及人动过的组员——移出的、人工加入的、人工
+    确认的（确认人和确认时间；同一个人移出、恢复、重新确认也看得出）。抽样以后有变就算组变了，免得拿
+    旧样本的结论整组撤回人刚做的确认、或把人刚撤回的组算进准确率。规则加进来、没人动过的组员（包括
+    自动合并确认的）不算：自动合并确认、退回，规则新加一个待确认版本，都不让抽样作废。"""
+    touched = []
+    for r in rows:
+        human = r.confirmed_at is not None and r.confirmed_by != AUTO_REVIEWER
+        if r.active and r.joined_by != "human" and not human:
+            continue
+        touched.append(
             [
                 r.document_id,
                 bool(r.active),
                 r.joined_by,
-                r.confirmed_by
-                if r.confirmed_at is not None and r.confirmed_by != AUTO_REVIEWER
-                else None,
+                r.confirmed_by if human else None,
+                r.confirmed_at.isoformat() if human else None,
             ]
-            for r in rows
-        ),
-    ]
+        )
+    return [bool(group.no_auto), bool(group.needs_review), group.created_by, sorted(touched)]
 
 
 def _evidence(session: Session, ids: list[int], human: list) -> str:
