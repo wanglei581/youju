@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from youju.categories import doc_category
 from youju.classify import doc_kind
 from youju.crawler.adapters import (
+    LIST_API_OPEN_KEY,
     LIST_API_REFUSED,
     ListApi,
     api_html,
@@ -162,6 +163,8 @@ def _lock_source(session: Session, source: Source) -> None:
 
 # 通用规则在栏目页上识别出的条目少于这个数，才去看页面有没有声明列表接口
 ADAPTER_MIN_ITEMS = 3
+# 页面上的列表改由接口加载、来源却没标"经接口读"时记的原因（D-128：不读，等复检后再打开）
+NEEDS_REVIEW_MESSAGE = "页面改用接口加载，待复检（来源没有“经接口读”的标记，D-128）"
 
 
 # 来源 parser_config 里记下列表接口被读取护栏（D-128）拦下（接口网址、原因、时间）：例行抓取
@@ -250,6 +253,13 @@ def check_source(
         api = None
         if len(items) < ADAPTER_MIN_ITEMS and not parser_config.get("item_selector"):
             api = find_list_api(result.text, result.final_url or url)
+        if api is not None and parser_config.get(LIST_API_OPEN_KEY) != api.adapter:
+            # D-128：来源没标"经接口读"（复检、抽查合格、打开时才写）——不走接口、不读，也不悄悄
+            # 记成 0 条：记"读不出"并写明待复检，进失败清单等复检
+            items = []
+            status, error = "parse_empty", NEEDS_REVIEW_MESSAGE
+            log.warning("来源 #%s 页面改用接口加载，待复检（没有经接口读的标记）", source.id)
+            api = None
         before = _refused_before(parser_config, api.url, started) if api is not None else ""
         if before:
             # 栏目页还声明着之前被读取护栏（D-128）拦下的接口：30 天内不再请求，照旧记不能抓

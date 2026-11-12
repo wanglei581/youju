@@ -149,6 +149,12 @@ def api_html(api: ListApi, text: str) -> str:
 
 # 抓取状态：列表接口被读取护栏（D-128）拦下。和 robots 禁止一样记"不能抓"、停抓
 LIST_API_REFUSED = "list_api_refused"
+# 来源上"经接口读"的标记（parser_config 里，值是适配器名）：D-128 要求这类栏目每个都先复检、
+# 抽查合格再打开——只在打开那一步（enable_sources）写上；正式抓取只对有标记的来源走接口，
+# 不看页面内容推断"该读接口了"
+LIST_API_OPEN_KEY = "list_api_open"
+# 试读时经接口读出的栏目，导入清单的验证状态里带这几个字（打开时据此写标记）
+VIA_API_WORD = "经接口读"
 # 网站明确拒绝或要求登录的 HTTP 状态（和盘点的防护判断一致）
 _REFUSE_HTTP = frozenset({401, 403, 412, 521})
 # 跳转去的网址像登录、验证页面（跳转改了的主机名、路径、参数里的整词）

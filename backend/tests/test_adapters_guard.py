@@ -745,3 +745,16 @@ def test_declarations_must_be_a_known_combination():
         "'pageId':'1229225203'", "'pageId':'1229225203','unitType':'ajax-xxgk'"
     )
     assert find_list_api(with_unit_type, PAGE_URL) is not None
+
+
+def test_trial_report_marks_columns_read_via_api():
+    """试读经列表接口读出的栏目，导入清单的验证状态带"经接口读"（打开时据此写标记），开头仍是"试跑可读"。"""
+    from youju.govsites.report import import_status
+    from youju.govsites.verify import READABLE
+
+    col = _column()
+    col.result, col.reason = READABLE, "经大汉jpaas列表接口读取"
+    status = import_status(col)
+    assert status.startswith("试跑可读") and "经接口读" in status
+    col.reason = ""
+    assert import_status(col) == "试跑可读（全国覆盖 v1，未启用）"

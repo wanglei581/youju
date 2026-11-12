@@ -216,6 +216,17 @@ def test_baseline_is_decided_after_taking_the_lock(session_factory) -> None:
         assert new_doc.title == "关于征集第三项需求的通知公告"
 
 
+# 复检、抽查合格、打开时才写上的"经接口读"标记（D-128）：只有带它的来源，正式抓取才走接口
+API_OPEN = {"list_api_open": "大汉jpaas"}
+
+
+def make_api_source(session, url: str) -> Source:
+    source = make_source(session, url)
+    source.parser_config = dict(API_OPEN)
+    session.commit()
+    return source
+
+
 JPAAS_PAGE = """<html><body><div class="col_right"><ul>
 <script id="u1" src="/cms_files/default/script/AuthorizedRead/unitbuild.js" webId="3387"
  parseType="bulidstatic" url="/api-gateway/jpaas-publish-server/front/page/build/unit"
@@ -231,7 +242,7 @@ JPAAS_JSON = (
 
 def test_hanweb_jpaas_list_api_is_used_when_page_has_no_items(session) -> None:
     url = "https://kjt.zj.gov.cn/col/col1229225203/index.html"
-    source = make_source(session, url)
+    source = make_api_source(session, url)
     api = (
         "https://kjt.zj.gov.cn/api-gateway/jpaas-publish-server/front/page/build/unit?parseType=bulidstatic"
         "&webId=3387&tplSetId=T1&pageType=column&tagId=%E5%BD%93%E5%89%8D%E6%A0%8F%E7%9B%AElist"
@@ -250,7 +261,7 @@ def test_hanweb_jpaas_list_api_is_used_when_page_has_no_items(session) -> None:
 def test_first_read_via_list_api_is_baseline_for_existing_source(session) -> None:
     """以前只认出零星条目的来源，第一次经列表接口读出整页：旧通知按基线记，不算新增。"""
     url = "https://kjt.zj.gov.cn/col/col1229225203/index.html"
-    source = make_source(session, url)
+    source = make_api_source(session, url)
     source.last_success_at = datetime(2026, 11, 1, tzinfo=UTC)
     session.commit()
     api = (
@@ -267,7 +278,7 @@ def test_first_read_via_list_api_is_baseline_for_existing_source(session) -> Non
 
 def test_blocked_list_api_is_recorded_not_parse_empty(session) -> None:
     url = "https://kjt.zj.gov.cn/col/col1229225203/index.html"
-    source = make_source(session, url)
+    source = make_api_source(session, url)
     api = (
         "https://kjt.zj.gov.cn/api-gateway/jpaas-publish-server/front/page/build/unit?parseType=bulidstatic"
         "&webId=3387&tplSetId=T1&pageType=column&tagId=%E5%BD%93%E5%89%8D%E6%A0%8F%E7%9B%AElist"
@@ -293,7 +304,7 @@ JPAAS_API = (
 
 def _check_with_api(session, api_result: FetchResult):
     url = "https://kjt.zj.gov.cn/col/col1229225203/index.html"
-    source = make_source(session, url)
+    source = make_api_source(session, url)
     fetcher = FakeFetcher({url: [page(url, JPAAS_PAGE)], JPAAS_API: [api_result]})
     check = check_source(session, source, fetcher)
     session.refresh(source)
@@ -315,7 +326,7 @@ def test_list_api_not_success_is_refused_and_crawling_stops(session) -> None:
 def test_refused_list_api_is_not_requested_again(session) -> None:
     """例行抓取不跳过 blocked 的来源：拦下过一次就记在来源上，以后不再请求这个接口。"""
     url = "https://kjt.zj.gov.cn/col/col1229225203/index.html"
-    source = make_source(session, url)
+    source = make_api_source(session, url)
     body = '{"success":false,"code":"200","message":"","data":{}}'
     # 第二次只给栏目页：再请求列表接口就会出错
     fetcher = FakeFetcher(
@@ -332,7 +343,7 @@ def test_refused_list_api_is_not_requested_again(session) -> None:
 def test_refused_list_api_drops_stray_page_items(session) -> None:
     """栏目页上零星认出一两条、列表在接口里且接口被拦：照样记不能抓，零星条目也不收。"""
     url = "https://kjt.zj.gov.cn/col/col1229225203/index.html"
-    source = make_source(session, url)
+    source = make_api_source(session, url)
     stray = JPAAS_PAGE.replace(
         "</ul>",
         '<li><a href="/art/9.html">关于开展专项申报工作的通知</a><span>2026-11-01</span></li></ul>',
@@ -399,8 +410,8 @@ def test_refusal_is_rechecked_when_page_declares_another_api_or_after_30_days(se
         session.query(SourceCheck).delete()
         session.query(Source).delete()
         session.commit()
-        source = make_source(session, url)
-        source.parser_config = note
+        source = make_api_source(session, url)
+        source.parser_config = {**API_OPEN, **note}
         session.commit()
         fetcher = FakeFetcher(
             {url: [page(url, JPAAS_PAGE)], JPAAS_API: [page(JPAAS_API, JPAAS_JSON)]}
@@ -421,7 +432,7 @@ def test_unrecognized_list_api_reply_is_not_read(session) -> None:
 
 def test_robots_denied_list_api_drops_stray_page_items(session) -> None:
     url = "https://kjt.zj.gov.cn/col/col1229225203/index.html"
-    source = make_source(session, url)
+    source = make_api_source(session, url)
     stray = JPAAS_PAGE.replace(
         "</ul>",
         '<li><a href="/art/9.html">关于开展专项申报工作的通知</a><span>2026-11-01</span></li></ul>',
@@ -449,7 +460,7 @@ class RecordingFetcher(FakeFetcher):
 def test_only_the_page_and_its_declared_api_are_requested(session) -> None:
     """D-128 护栏 ①：除了栏目页和页面写明的那个接口地址，不发别的请求。"""
     url = "https://kjt.zj.gov.cn/col/col1229225203/index.html"
-    source = make_source(session, url)
+    source = make_api_source(session, url)
     fetcher = RecordingFetcher(
         {url: [page(url, JPAAS_PAGE)], JPAAS_API: [page(JPAAS_API, JPAAS_JSON)]}
     )
@@ -461,8 +472,8 @@ def test_only_the_page_and_its_declared_api_are_requested(session) -> None:
 def test_recheck_keeps_refusal_on_one_off_failure(session) -> None:
     """过了 30 天再请求，这次只是 5xx：旧的拦下记录留着，不当成已经能读。"""
     url = "https://kjt.zj.gov.cn/col/col1229225203/index.html"
-    source = make_source(session, url)
-    source.parser_config = _refused_note(JPAAS_API, 40)
+    source = make_api_source(session, url)
+    source.parser_config = {**API_OPEN, **_refused_note(JPAAS_API, 40)}
     session.commit()
     failed = FetchResult(
         JPAAS_API, "http_error", final_url=JPAAS_API, http_status=502, error="HTTP 502"
@@ -477,7 +488,7 @@ def test_recheck_keeps_refusal_on_one_off_failure(session) -> None:
 def test_one_off_list_api_failure_is_not_hidden_by_stray_page_items(session) -> None:
     """接口这次 502、栏目页零星认出一条：照实记失败，不把这一条当成功入库。"""
     url = "https://kjt.zj.gov.cn/col/col1229225203/index.html"
-    source = make_source(session, url)
+    source = make_api_source(session, url)
     stray = JPAAS_PAGE.replace(
         "</ul>",
         '<li><a href="/art/9.html">关于开展专项申报工作的通知</a><span>2026-11-01</span></li></ul>',
@@ -511,7 +522,7 @@ def test_unreadable_list_api_reply_drops_stray_page_items(session) -> None:
         session.query(SourceCheck).delete()
         session.query(Source).delete()
         session.commit()
-        source = make_source(session, url)
+        source = make_api_source(session, url)
         fetcher = FakeFetcher({url: [page(url, stray)], JPAAS_API: [page(JPAAS_API, body)]})
         check = check_source(session, source, fetcher)
         assert (check.status, check.items_found) == (want, 0)
@@ -521,7 +532,7 @@ def test_unreadable_list_api_reply_drops_stray_page_items(session) -> None:
 def test_refusal_note_is_merged_into_the_latest_config(session, session_factory) -> None:
     """拦下记录合到库里最新的配置上：检查期间别处改过的配置项不会被旧副本冲掉。"""
     url = "https://kjt.zj.gov.cn/col/col1229225203/index.html"
-    source = make_source(session, url)
+    source = make_api_source(session, url)
     body = '{"success":false,"code":"200","message":"","data":{}}'
 
     class EditingFetcher(FakeFetcher):
@@ -545,10 +556,10 @@ def test_refusal_note_is_merged_into_the_latest_config(session, session_factory)
 def test_dropping_old_refusal_keeps_a_newer_one_written_meanwhile(session, session_factory) -> None:
     """过期的旧记录本次去掉时，库里若已换成别的检查刚记下的新记录，就不动它。"""
     url = "https://kjt.zj.gov.cn/col/col1229225203/index.html"
-    source = make_source(session, url)
-    source.parser_config = _refused_note(JPAAS_API, 40)
+    source = make_api_source(session, url)
+    source.parser_config = {**API_OPEN, **_refused_note(JPAAS_API, 40)}
     session.commit()
-    newer = _refused_note(JPAAS_API, 0)
+    newer = {**API_OPEN, **_refused_note(JPAAS_API, 0)}
 
     class RacingFetcher(FakeFetcher):
         def fetch(self, fetch_url: str, same_address_only: bool = False) -> FetchResult:
@@ -583,3 +594,40 @@ def test_list_api_redirect_is_recorded_as_not_read_this_time(session) -> None:
     assert check.status == "redirect" and "不跟" in check.error
     assert source.health == "degraded"
     assert target  # 只用来说明 http/https 两种写法
+
+
+def test_unmarked_source_never_calls_the_list_api(session) -> None:
+    """D-128：没有"经接口读"标记的已启用来源，条目少于 3 条、页面又写着接口时也不调接口、不读；
+    记"读不出"并写明待复检，不悄悄记成 0 条。"""
+    url = "https://kjt.zj.gov.cn/col/col1229225203/index.html"
+    source = make_source(session, url)  # 没有标记
+    stray = JPAAS_PAGE.replace(
+        "</ul>",
+        '<li><a href="/art/9.html">关于开展专项申报工作的通知</a><span>2026-11-01</span></li></ul>',
+    )
+    fetcher = RecordingFetcher({url: [page(url, stray)]})  # 只给栏目页：调接口就会出错
+    check = check_source(session, source, fetcher)
+    assert fetcher.requested == [url]
+    assert (check.status, check.items_found) == ("parse_empty", 0)
+    assert "待复检" in check.error
+    session.refresh(source)
+    assert source.health == "degraded"
+    assert session.scalar(select(func.count()).select_from(Document)) == 0
+
+
+def test_marked_source_reads_the_list_api_through_the_guard(session) -> None:
+    url = "https://kjt.zj.gov.cn/col/col1229225203/index.html"
+    source = make_api_source(session, url)
+    fetcher = RecordingFetcher(
+        {url: [page(url, JPAAS_PAGE)], JPAAS_API: [page(JPAAS_API, JPAAS_JSON)]}
+    )
+    check = check_source(session, source, fetcher)
+    assert (check.status, check.items_found) == ("ok", 2)
+    assert fetcher.requested == [url, JPAAS_API]
+    # 标记是别的适配器名（或写错）的，照样不走接口
+    other = make_source(session, "https://kjt.zj.gov.cn/col/col2/index.html")
+    other.parser_config = {"list_api_open": "别的平台"}
+    session.commit()
+    other_url = other.url
+    f2 = RecordingFetcher({other_url: [page(other_url, JPAAS_PAGE)]})
+    assert check_source(session, other, f2).status == "parse_empty" and f2.requested == [other_url]
