@@ -1,8 +1,10 @@
 from datetime import date
 
 import pytest
+from lxml import html
 
 from tests.conftest import read_fixture_html
+from youju.crawler import detail
 from youju.crawler.detail import (
     MAX_ATTACHMENTS,
     _split_issuer_line,
@@ -873,9 +875,21 @@ def _page(body: str, title: str = "某局关于组织申报的通知") -> str:
     return f"<html><title>{title}</title><body>{body}</body></html>"
 
 
+@pytest.fixture
+def verified_throttle_sites(monkeypatch: pytest.MonkeyPatch) -> None:
+    """测试用的两个网站当成浏览器里核实过：页面代码和 _page() 拼出来的页面一样（没有外部脚本、样式，
+    也没有页面自带的脚本）。"""
+    plain_page = html.fromstring(_page(_THROTTLE_DIALOG + _NOTICE_BODY))
+    for host in ("kjj.example.gov.cn", "www.example.gov.cn"):
+        fingerprint = detail._page_code_fingerprint(plain_page, f"https://{host}/")
+        monkeypatch.setitem(detail._SEARCH_THROTTLE_VERIFIED, host, frozenset({fingerprint}))
+
+
+@pytest.mark.usefixtures("verified_throttle_sites")
 def test_search_throttle_dialog_is_not_a_protection_page() -> None:
-    """站内搜索的限流弹窗（泸州、漯河、商丘、常德等站群每一页都带、平时隐藏）不是挡住这一页的验证：
-    整个结构一模一样、整页没有别的验证字样、正文出自核实过的正文区而且完整，才放（D-013：认得出才放）。"""
+    """站内搜索的限流弹窗（泸州、漯河、常德等站群每一页都带、平时隐藏）不是挡住这一页的验证：网站和
+    页面样子在浏览器里核实过、弹窗整个结构一模一样、整页没有别的验证字样、正文出自核实过的正文区而且
+    完整，才放（D-013：认得出才放）。"""
     result = parse_detail(
         _page(_THROTTLE_DIALOG + _NOTICE_BODY), "https://kjj.example.gov.cn/1.html"
     )
@@ -893,6 +907,43 @@ def test_search_throttle_dialog_is_not_a_protection_page() -> None:
     assert "确定" not in result.body_text and "点击验证" not in result.body_text
 
 
+@pytest.mark.usefixtures("verified_throttle_sites")
+def test_search_throttle_dialog_only_on_verified_sites_and_page_code() -> None:
+    """弹窗只在浏览器里核实过的网站、核实过的页面样子上认：换一个网站，或外部脚本、样式、框架多一个，
+    或页面自带的脚本不一样（比如按类名把弹窗显示出来），都照旧当防护页。"""
+    page = _page(_THROTTLE_DIALOG + _NOTICE_BODY)
+    assert parse_detail(page, "https://kjj.example.gov.cn/1.html").failure_reason is None
+    other_site = parse_detail(page, "https://other.example.gov.cn/1.html")
+    assert other_site.failure_reason == "防护页或验证码"
+    for extra in (
+        "<script src='/js/other.js'></script>",
+        "<link rel='stylesheet' href='/css/other.css'>",
+        "<iframe src='/frame.html'></iframe>",
+        "<script>$('.in').show();</script>",
+        "<style>.modal{display:block!important}</style>",
+    ):
+        changed = _page(extra + _THROTTLE_DIALOG + _NOTICE_BODY)
+        result = parse_detail(changed, "https://kjj.example.gov.cn/1.html")
+        assert result.failure_reason == "防护页或验证码", extra
+
+
+def test_search_throttle_page_code_ignores_only_numbers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """页面代码只是 5 位以上的数字不一样（文章编号、时间戳）还算核实过的样子；字不一样、小的数
+    不一样（版本号、延时）都不算。"""
+    script = "<script>var articleId = 1092076; var delay = 1;</script>"
+    verified = _page(script + _THROTTLE_DIALOG + _NOTICE_BODY)
+    url = "https://kjj.example.gov.cn/1.html"
+    fingerprint = detail._page_code_fingerprint(html.fromstring(verified), url)
+    monkeypatch.setitem(
+        detail._SEARCH_THROTTLE_VERIFIED, "kjj.example.gov.cn", frozenset({fingerprint})
+    )
+    assert parse_detail(verified.replace("1092076", "1161839"), url).failure_reason is None
+    other_code = verified.replace("var articleId", "showDialog(); var articleId")
+    assert parse_detail(other_code, url).failure_reason == "防护页或验证码"
+    small_number = verified.replace("delay = 1", "delay = 2")
+    assert parse_detail(small_number, url).failure_reason == "防护页或验证码"
+
+
 _LONG_NAV = "".join(f"<p>栏目导航第{n}项</p>" for n in range(60))
 _LONG_TEXT = "".join(
     f"<p>第{n}条，本办法所称项目，是指市级财政资金支持的科技计划项目。</p>" for n in range(30)
@@ -907,6 +958,12 @@ _LONG_TEXT = "".join(
         # 弹窗外面另有验证码字样：前 500 字里，或者 500 字以后、正文区外面
         _page(_THROTTLE_DIALOG + "<p>请输入验证码后继续访问</p>" + _NOTICE_BODY),
         _page(_THROTTLE_DIALOG + _LONG_NAV + "<p>访问过于频繁，请稍后再试</p>" + _NOTICE_BODY),
+        # 在取正文时会去掉的地方（导航、页尾、分享栏、noscript）或属性上（输入框提示）也算
+        _page("<nav>请输入验证码</nav>" + _THROTTLE_DIALOG + _NOTICE_BODY),
+        _page(_THROTTLE_DIALOG + _NOTICE_BODY + "<footer>访问过于频繁，请稍后再试</footer>"),
+        _page(_THROTTLE_DIALOG + "<div class='share'>安全验证</div>" + _NOTICE_BODY),
+        _page(_THROTTLE_DIALOG + "<noscript>请开启浏览器的 JavaScript</noscript>" + _NOTICE_BODY),
+        _page(_THROTTLE_DIALOG + "<input placeholder='请输入验证码'>" + _NOTICE_BODY),
         # 弹窗是显示着的，或 style 后面又改成显示
         _page(_THROTTLE_DIALOG.replace("display: none;", "") + _NOTICE_BODY),
         _page(
@@ -927,7 +984,7 @@ _LONG_TEXT = "".join(
             + _NOTICE_BODY
         ),
         _page(_THROTTLE_DIALOG.replace("js-ticket-search", "x") + _NOTICE_BODY),
-        # 页面自带的脚本、样式、事件属性提到这个弹窗（可能一打开就显示）
+        # 页面自带的脚本、样式、事件属性和核实过的页面不一样（可能一打开就把弹窗显示出来）
         _page(_THROTTLE_DIALOG + "<script>$('#VolidateCodeDiv').show();</script>" + _NOTICE_BODY),
         _page(
             "<style>#VolidateCodeDiv{display:block!important}</style>"
@@ -961,6 +1018,7 @@ _LONG_TEXT = "".join(
         ),
     ],
 )
+@pytest.mark.usefixtures("verified_throttle_sites")
 def test_other_captcha_pages_stay_protection_pages(page) -> None:
     assert parse_detail(page, "https://kjj.example.gov.cn/a.html").failure_reason == (
         "防护页或验证码"
@@ -989,17 +1047,39 @@ def test_dropdown_options_are_not_body() -> None:
 
 
 def test_dropdown_inside_first_body_line_keeps_fields() -> None:
-    """正文第一行中间夹着下拉框：发文机关、文号照样从正文前面的字里找（不退回整页前 700 字）。"""
+    """正文第一行中间夹着下拉框：发文机关、文号、发布日期照样从正文前面的字里找（不退回整页前 700 字，
+    前面 80 行导航已经超过 700 字）。"""
     nav = "".join(f"<p>栏目导航第{n}项</p>" for n in range(80))
     page = (
-        f"<html><title>某局文件</title><body>{nav}<div class='meta'>发布机构：某某市科学技术局</div>"
-        "<div id='zoom'><p>某科〔2026〕12号</p><p>各有关单位：现将<select><option>某县</option>"
-        "<option>某区</option></select>项目申报有关事项通知如下，请按要求组织申报。</p>"
-        "<p>某某市科学技术局</p><p>2026年11月5日</p></div></body></html>"
+        f"<html><title>某局文件</title><body>{nav}<div class='meta'><p>发布机构：某某市科学技术局</p>"
+        "<p>发布日期：2026-11-05</p><p>文号：某科〔2026〕12号</p></div>"
+        "<div id='zoom'><p>各有关单位：现将<select><option>某县</option><option>某区</option>"
+        "</select>项目申报有关事项通知如下，请按要求组织申报。</p>"
+        "<p>申报材料请于本月底前报送。</p></div></body></html>"
     )
     result = parse_detail(page, "https://kjj.example.gov.cn/content_4.html")
-    assert "组织申报" in result.body_text and "某县" not in result.body_text
+    assert (
+        result.body_text.startswith("各有关单位：现将项目申报") and "某县" not in result.body_text
+    )
     assert result.issuer == "某某市科学技术局"
+    assert result.doc_number == "某科〔2026〕12号"
+    assert result.publish_date == date(2026, 11, 5)
+
+
+def test_body_first_line_repeated_above_meta_keeps_fields() -> None:
+    """正文第一句（标题）在发布信息上面也出现过一遍：按正文节点所在的位置找发布信息，不在上面那一处
+    截断（截断的话发文机关、文号、发布日期都会漏掉）。"""
+    page = (
+        "<html><title>某局文件</title><body><h1>关于开展项目申报工作的通知</h1>"
+        "<div class='meta'><p>发布机构：某某市科学技术局</p><p>发布日期：2026-11-05</p>"
+        "<p>文号：某科〔2026〕12号</p></div><div id='zoom'><p>关于开展项目申报工作的通知</p>"
+        "<p>各有关单位：现将项目申报有关事项通知如下，请按要求组织申报。</p></div></body></html>"
+    )
+    result = parse_detail(page, "https://kjj.example.gov.cn/content_5.html")
+    assert result.body_text.startswith("关于开展项目申报工作的通知")
+    assert result.issuer == "某某市科学技术局"
+    assert result.doc_number == "某科〔2026〕12号"
+    assert result.publish_date == date(2026, 11, 5)
 
 
 def test_dropdown_text_still_counts_for_protection_window() -> None:
