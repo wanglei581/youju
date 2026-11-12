@@ -543,6 +543,86 @@ def test_city_sample_line(tmp_path):
     assert "正文能读率" in result(first).sample_note()
 
 
+def test_city_sample_counts_only_the_first_judged_cells_in_seed_order(tmp_path):
+    """联网核对只数按种子顺序判了的前 40 格（"补到判了的格够 40 个"）：补抽多出来的格、后来才有结论的
+    待重试格（D-128 复检以后）不能把样本撑大。11/12 江苏：58 格记录里前 40 格错 3 格，全数是 6 格。"""
+    from youju.govsites.sample import evidence_results
+
+    def result(sample):
+        _city_evidence(tmp_path, "江苏", 200, sample)
+        [res] = evidence_results(tmp_path)
+        return res
+
+    def note(k):
+        return f"种子：s1 第 {k} 格"
+
+    # 58 格都有结论：前 40 格错 3 格，后 18 格又错 3 格 → 只数前 40 格，放
+    sample = [
+        (n, "联网核对", "不通过" if n in (10, 20, 30, 42, 50, 55) else "通过", note(n + 1))
+        for n in range(58)
+    ]
+    line = result(sample).sample_lines[0]
+    assert (line.judged, line.failed) == (40, 3) and result(sample).accepted
+    # 前面 5 格待重试：跳过，往后补到判了 40 格为止（序号 42 那格的错算进来）
+    retry = [(n, "联网核对", "待重试" if n < 5 else v, k) for n, _, v, k in sample]
+    line = result(retry).sample_lines[0]
+    assert (line.judged, line.failed) == (40, 4) and not result(retry).accepted
+    # 按复核备注里的格号排，不按证据表里的先后：格号小的才在前 40 格里
+    reverse = [(n, "联网核对", "不通过" if n < 6 else "通过", note(58 - n)) for n in range(58)]
+    line = result(reverse).sample_lines[0]
+    assert (line.judged, line.failed) == (40, 0)
+
+
+def test_city_sample_seed_order_edge_cases(tmp_path):
+    """按种子顺序数的边界：重抽只数前 60 格；没写格号的排在写了的后面（按证据表里的行序）；同一格
+    几行取最严的结论、最前的格号；区县门户、部门两层各数各的。"""
+    from youju.govsites.sample import evidence_results
+
+    def result(sample, level="市级", cells=200):
+        _city_evidence(tmp_path, "江苏", cells, sample, level=level)
+        [res] = evidence_results(tmp_path)
+        return res
+
+    # 重抽：第 2 次记了 70 格，前 60 格错 5 格、后 10 格又错 3 格 → 只数前 60 格，放
+    four = [(n, "联网核对", "不通过" if n < 4 else "通过") for n in range(40)]
+    bad = (2, 9, 19, 29, 39, 60, 64, 69)
+    redraw = [
+        (40 + n, "联网核对第2次", "不通过" if n in bad else "通过", f"种子：s2 第 {n + 1} 格")
+        for n in range(70)
+    ]
+    res = result(four + redraw)
+    line = res.sample_lines[0]
+    assert (line.round, line.judged, line.failed, line.need) == (2, 60, 5, 60) and res.accepted
+    # 前 5 行没写格号、都错，后 40 行写了第 1–40 格、都对 → 没写格号的排在后面，0 格错
+    mixed = [(n, "联网核对", "不通过", "种子：s1") for n in range(5)]
+    mixed += [(5 + n, "联网核对", "通过", f"种子：s1 第 {n + 1} 格") for n in range(40)]
+    assert (result(mixed).sample_lines[0].judged, result(mixed).sample_lines[0].failed) == (40, 0)
+    # 都没写格号：按证据表里的行序，第 41 行以后的错不算
+    plain = [(n, "联网核对", "不通过" if n >= 40 else "通过", "种子：s1") for n in range(45)]
+    assert (result(plain).sample_lines[0].judged, result(plain).sample_lines[0].failed) == (40, 0)
+    # 同一格两个栏目两行：先出现的那行错（写第 50 格，或没写格号），后出现的那行对、写第 1 格 →
+    # 这一格错，按第 1 格算进前 40 格（只认先出现那行的位置就会排到 40 格以外、数成 0 格错）
+    for first_note in ("种子：s1 第 50 格", "种子：s1"):
+        same = [(0, "联网核对", "不通过", first_note), (7, "联网核对", "通过", "种子：s1 第 1 格")]
+        same += [(n, "联网核对", "通过", f"种子：s1 第 {n + 1} 格") for n in range(1, 42) if n != 7]
+        _city_evidence(tmp_path, "江苏", 200, same)
+        table = tmp_path / "江苏.csv"
+        text = table.read_text(encoding="utf-8-sig").replace("城0,区7,部门7,", "城0,区0,部门0,")
+        table.write_text(text, encoding="utf-8-sig")
+        [res] = evidence_results(tmp_path)
+        assert (res.sample_lines[0].judged, res.sample_lines[0].failed) == (40, 1), first_note
+    # 区县：门户（每 3 格 1 格）30 格、部门 40 格各数各的；两层排在后面的错都不算
+    county = [
+        (n, "联网核对", "不通过" if n >= 105 else "通过", f"种子：s1 第 {n + 1} 格")
+        for n in range(120)
+    ]
+    got = {
+        x.layer: (x.judged, x.failed, x.need)
+        for x in result(county, level="区县级", cells=120).sample_lines
+    }
+    assert got == {"门户": (30, 0, 30), "部门": (40, 0, 40)}
+
+
 def test_city_sample_round_evidence(tmp_path):
     """最近一次只要写了就算最近一次（全是待重试也一样）；联网核对记录要每次一行、种子不重复、
     重抽写凭据，证据表里的种子要和记录对上；空着的复核结论不算；第 4 次不算。"""
