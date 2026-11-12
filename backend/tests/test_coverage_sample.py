@@ -271,31 +271,61 @@ def test_batch_urls_drop_rows_failed_after_batch(tmp_path, capsys):
 
 
 @pytest.mark.parametrize(
-    ("city", "dept", "full", "ok"),
+    ("province", "city", "dept", "full", "ok"),
     [
         # 地市部门全称写本市名称、省名连市名、只写本级前缀"市"：算本市
-        ("南京市", "发改委", "南京市发展和改革委员会", True),
-        ("南京市", "发改委", "江苏省南京市发展和改革委员会", True),
-        ("南京市", "数据局", "市大数据局", True),
-        ("恩施土家族苗族自治州", "农业农村", "恩施州农业农村局", True),
-        ("阿拉善盟", "发改委", "盟发展和改革委员会", True),
+        ("江苏", "南京市", "发改委", "南京市发展和改革委员会", True),
+        ("江苏", "南京市", "发改委", "江苏省南京市发展和改革委员会", True),
+        ("江苏", "南京市", "数据局", "市大数据局", True),
+        ("湖北", "恩施土家族苗族自治州", "农业农村", "恩施州农业农村局", True),
+        ("湖北", "恩施土家族苗族自治州", "农业农村", "湖北省恩施州农业农村局", True),
+        ("内蒙古", "阿拉善盟", "发改委", "盟发展和改革委员会", True),
         # 地市门户的写法
-        ("南京市", "政府办", "中共南京市委 南京市人民政府", True),
-        ("南京市", "政府办", "南京市政府门户网站", True),
-        ("南京市", "政府办", "南京政府网", True),
-        # 只写省名的是省直部门；别的市的部门：都不算
-        ("南京市", "发改委", "江苏省发展和改革委员会", False),
-        ("南京市", "发改委", "苏州市发展和改革委员会", False),
+        ("江苏", "南京市", "政府办", "中共南京市委 南京市人民政府", True),
+        ("江苏", "南京市", "政府办", "南京市政府门户网站", True),
+        ("江苏", "南京市", "政府办", "南京政府网", True),
+        ("内蒙古", "阿拉善盟", "政府办", "阿拉善盟行政公署", True),
+        # 只写省名的是省直部门；别的市的部门、下辖区县的政府：都不算
+        ("江苏", "南京市", "发改委", "江苏省发展和改革委员会", False),
+        ("江苏", "南京市", "发改委", "苏州市发展和改革委员会", False),
+        ("江苏", "南京市", "政府办", "南京市某某区人民政府", False),
+        ("江苏", "南京市", "政府办", "南京市某某区政府", False),
+        ("江苏", "南京市", "政府办", "南京市某某县人民政府", False),
+        # 市名和省名一样（吉林市）、和别的省撞上（青海海南州）：以省份全称开头的要紧跟本市名称
+        ("吉林", "吉林市", "发改委", "吉林市发展和改革委员会", True),
+        ("吉林", "吉林市", "发改委", "吉林省吉林市发展和改革委员会", True),
+        ("吉林", "吉林市", "发改委", "吉林省发展和改革委员会", False),
+        ("吉林", "吉林市", "市场监管", "吉林省市场监督管理厅", False),
+        ("青海", "海南藏族自治州", "发改委", "海南州发展和改革委员会", True),
+        ("青海", "海南藏族自治州", "发改委", "海南省发展和改革委员会", False),
     ],
 )
-def test_city_dept_names(city, dept, full, ok):
+def test_city_dept_names(province, city, dept, full, ok):
     """11/11 地市一组报：部门核对原来只认省名，568 个地市栏目里 552 个卡在"部门"。"""
     from types import SimpleNamespace
 
     from youju.govsites.sample import _dept_ok
 
-    province = "内蒙古" if city == "阿拉善盟" else ("湖北" if "恩施" in city else "江苏")
     s = SimpleNamespace(level="市级", province=province, city=city, dept=dept, dept_full_name=full)
+    assert _dept_ok(s) is ok
+
+
+@pytest.mark.parametrize(
+    ("full", "ok"),
+    [
+        ("江苏省人民政府", True),
+        ("江苏省人民政府办公厅", True),
+        # 地市门户的新写法、去掉"中共"只给市级：省级照旧
+        ("中共江苏省委 江苏省人民政府", False),
+        ("江苏省政府门户网站", False),
+    ],
+)
+def test_province_portal_names_unchanged(full, ok):
+    from types import SimpleNamespace
+
+    from youju.govsites.sample import _dept_ok
+
+    s = SimpleNamespace(level="省级", province="江苏", city="", dept="政府办", dept_full_name=full)
     assert _dept_ok(s) is ok
 
 

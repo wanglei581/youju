@@ -137,6 +137,17 @@ def _kind(name: str | None) -> str | None:
 # 省级部门全称常只写本级前缀（"省农业农村厅""区商务厅""自治区人社厅""市发展改革委"）
 _MUNICIPALITIES = ("北京", "天津", "上海", "重庆")
 _REGIONS = ("内蒙古", "广西", "西藏", "宁夏", "新疆")
+# 省份全称（"吉林省""广西壮族自治区""北京市"）
+_PROVINCE_FULL = re.compile(
+    r"^(?:(?:北京|天津|上海|重庆)市"
+    r"|(?:河北|山西|辽宁|吉林|黑龙江|江苏|浙江|安徽|福建|江西|山东|河南|湖北|湖南|广东|海南"
+    r"|四川|贵州|云南|陕西|甘肃|青海|台湾)省"
+    r"|(?:内蒙古|广西壮族|广西|西藏|宁夏回族|宁夏|新疆维吾尔|新疆)自治区)"
+)
+
+
+def _city_names(s: Source) -> set[str]:
+    return {v for v in name_variants(s.city) | {s.city} if len(v) >= 2}
 
 
 def _own_prefixes(s: Source) -> set[str]:
@@ -145,7 +156,7 @@ def _own_prefixes(s: Source) -> set[str]:
         # （"江苏省南京市……"），或只写本级前缀（"市大数据局""州农业农村局""盟行政公署"）。只写省名的
         # （"江苏省发展和改革委员会"）是省直部门，挂在地市格上不对，不算（11/11 地市一组报：
         # 原来只认省名，568 个地市栏目里 552 个卡在"部门"）
-        city = {v for v in name_variants(s.city) | {s.city} if len(v) >= 2}
+        city = _city_names(s)
         prov = {v for v in name_variants(s.province) | {s.province} if len(v) >= 2}
         prov |= {s.province + "省", s.province + "自治区"}  # 库里省份写简称（"江苏"）
         own = city | {p + c for p in prov for c in city}
@@ -175,20 +186,27 @@ def _dept_ok(s: Source) -> bool:
     if s.dept == "市场监管" and "知识产权" in name and "市场监督" not in name:
         return False
     if s.dept == "政府办":
-        # 地市门户常写"××市政府门户网站""××政府网""××市政府"，或党政合办"中共××市委 ××市人民政府"
-        ok_kind = (
-            "人民政府" in name
-            or "办公厅" in name
-            or "政府办" in dept_categories(name)
-            or bool(re.search(r"政府(?:门户)?网|[市州盟县区]政府|行政公署", name))
-        )
-        name = name.removeprefix("中共")
+        ok_kind = "人民政府" in name or "办公厅" in name or "政府办" in dept_categories(name)
+        if s.level == "市级":
+            # 地市门户常写"××市政府门户网站""××政府网""××市政府"，或党政合办"中共××市委
+            # ××市人民政府"（只认市级：省级照旧）。下辖区县的政府（"××市××区人民政府"）
+            # 不是本市政府办
+            ok_kind = (
+                ok_kind or bool(re.search(r"政府(?:门户)?网|[市州盟]政府|行政公署", name))
+            ) and not re.search(r"(?<!地)[区县旗](?:人民)?政府", name)
+            name = name.removeprefix("中共")
     else:
         ok_kind = s.dept in dept_categories(name)
     if not ok_kind:
         return False
     if s.province == "国家" or s.dept == "开发区":
         return True  # 部委、开发区没有省名前缀
+    if s.level == "市级" and s.city and (m := _PROVINCE_FULL.match(name)):
+        # 以省份全称开头的，后面紧跟本市名称才算本市（"吉林省吉林市……"）；只写省名的是省直部门。
+        # 吉林市的"吉林"、青海海南州的"海南"和省名撞上，不先认全称会把"吉林省发展和改革委员会"
+        # "海南省……"当成本市的
+        rest = name[m.end() :]
+        return m.group(0).startswith(s.province) and any(rest.startswith(c) for c in _city_names(s))
     return any(name.startswith(v) for v in _own_prefixes(s))
 
 

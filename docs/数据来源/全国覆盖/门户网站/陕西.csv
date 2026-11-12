@@ -1,12 +1,12 @@
 ﻿层级,省份,城市,区县,区划代码,名称,门户网址,导航来源页,导航文字,状态,原因,网站标识码,网站名称,平台,技术支持
-省级,陕西,,,610000,陕西省,https://www.shaanxi.gov.cn/,https://www.gov.cn/home/2023-03/29/content_5748954.htm,陕西,已找到,,6100000017,陕西省人民政府门户网站,拓尔思|t日期_编号(拓尔思),029
+省级,陕西,,,610000,陕西省,https://www.shaanxi.gov.cn/,https://www.gov.cn/home/2023-03/29/content_5748954.htm,陕西,已找到,,6100000017,陕西省人民政府门户网站,拓尔思|t日期_编号(拓尔思),
 市级,陕西,西安,,610100,西安市,http://www.xa.gov.cn/,https://www.shaanxi.gov.cn/,西安市,已找到,,6101000007,西安市人民政府,未识别,
 市级,陕西,铜川,,610200,铜川市,https://www.tongchuan.gov.cn/,https://www.shaanxi.gov.cn/,铜川市,已找到,,6102000017,铜川市人民政府,日期目录/编号,
 市级,陕西,宝鸡,,610300,宝鸡市,https://www.baoji.gov.cn/,https://www.shaanxi.gov.cn/,宝鸡市,已找到,,6103000039,宝鸡市人民政府,拓尔思|t日期_编号(拓尔思),
 市级,陕西,咸阳,,610400,咸阳市,https://www.xianyang.gov.cn/,https://www.shaanxi.gov.cn/,咸阳市,已找到,,6104000004,咸阳市人民政府网,拓尔思|t日期_编号(拓尔思),
 市级,陕西,渭南,,610500,渭南市,https://www.weinan.gov.cn/,https://www.shaanxi.gov.cn/,渭南市,已找到,,6105000008,渭南市人民政府,未识别,
 市级,陕西,延安,,610600,延安市,https://www.yanan.gov.cn/,https://www.shaanxi.gov.cn/,延安市,已找到,,6106000042,延安市人民政府,未识别,
-市级,陕西,汉中,,610700,汉中市,http://www.hanzhong.gov.cn/,https://www.shaanxi.gov.cn/,汉中市,已找到,,6107000003,汉中市人民政府,开普云|32位编号.shtml,0916
+市级,陕西,汉中,,610700,汉中市,http://www.hanzhong.gov.cn/,https://www.shaanxi.gov.cn/,汉中市,已找到,,6107000003,汉中市人民政府,开普云|32位编号.shtml,
 市级,陕西,榆林,,610800,榆林市,https://www.yl.gov.cn/,https://www.shaanxi.gov.cn/,榆林市,已找到,,6108000003,榆林市人民政府,拓尔思|t日期_编号(拓尔思),
 市级,陕西,安康,,610900,安康市,http://www.ankang.gov.cn/,https://www.shaanxi.gov.cn/,安康市,不能抓,robots.txt 禁止,,,,
 市级,陕西,商洛,,611000,商洛市,https://www.shangluo.gov.cn/,https://www.shaanxi.gov.cn/,商洛市,已找到,,6110000040,商洛市人民政府,动态页?id=,
@@ -88,7 +88,7 @@
 区县级,陕西,汉中,镇巴县,610728,镇巴县,http://www.zb.gov.cn/,https://www.shaanxi.gov.cn/,镇巴县,已找到,,6107280012,镇巴县人民政府,开普云|32位编号.shtml,
 区县级,陕西,汉中,留坝县,610729,留坝县,http://www.liuba.gov.cn/,https://www.shaanxi.gov.cn/,留坝县,已找到,,6107290001,留坝县人民政府,32位编号.shtml,
 区县级,陕西,汉中,佛坪县,610730,佛坪县,http://www.foping.gov.cn/,https://www.shaanxi.gov.cn/,佛坪县,已找到,,6107300020,佛坪县人民政府,开普云|32位编号.shtml,
-区县级,陕西,榆林,榆阳区,610802,榆阳区,https://www.yuyang.gov.cn/,https://www.shaanxi.gov.cn/,榆阳区,已找到,,6108020011,榆阳区人民政府,拓尔思|t日期_编号(拓尔思),0912
+区县级,陕西,榆林,榆阳区,610802,榆阳区,https://www.yuyang.gov.cn/,https://www.shaanxi.gov.cn/,榆阳区,已找到,,6108020011,榆阳区人民政府,拓尔思|t日期_编号(拓尔思),
 区县级,陕西,榆林,横山区,610803,横山区,https://www.hszf.gov.cn/,https://www.shaanxi.gov.cn/,横山区,已找到,网站标识码 6108230003 和区划代码 610803 不一致（同省，待核对）,6108230003,榆林市横山区人民政府,拓尔思|t日期_编号(拓尔思),
 区县级,陕西,榆林,府谷县,610822,府谷县,https://www.fg.gov.cn/,https://www.shaanxi.gov.cn/,府谷县,已找到,,6108220006,府谷县人民政府,拓尔思|t日期_编号(拓尔思),
 区县级,陕西,榆林,靖边县,610824,靖边县,https://www.jingbian.gov.cn/,https://www.shaanxi.gov.cn/,靖边县,已找到,,6108240004,靖边县人民政府,拓尔思|t日期_编号(拓尔思),

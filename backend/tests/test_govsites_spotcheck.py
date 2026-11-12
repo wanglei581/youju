@@ -129,6 +129,22 @@ def test_write_outputs_masks_personal_titles(tmp_path) -> None:
     assert rows[0]["文件标题"] == "关于张三停工留薪期确认书的公告"  # 只改写出去的
 
 
+def test_attribution_note_masks_personal_titles() -> None:
+    """归属说明会写进公开的联网核对表：写着人名的网站名、标题换成"（标题略）"（人名是编的）。"""
+    from youju.govsites.privacy import MASK
+
+    cell = {"城市": "南京", "部门": "人社"}
+    col = "<title>南京市人力资源和社会保障局</title>"
+    doc = "<title>关于张三停工留薪期确认书的公告_南京市人力资源和社会保障局</title>"
+    verdict, note = sc.attribution_check(cell, col, doc, doc_titles=["关于李四同志任职的通知"])
+    assert verdict == "本市本部门" and MASK in note  # 结论照旧按原文核对
+    assert "张三" not in note and "李四" not in note
+    other = {"城市": "苏州", "部门": "人社"}
+    verdict, note = sc.attribution_check(other, col, doc, doc_titles=["关于李四同志任职的通知"])
+    assert verdict == "待看" and MASK in note
+    assert "张三" not in note and "李四" not in note and "南京市人力资源和社会保障局" in note
+
+
 def test_attribution_uses_issuer_and_strips_site_noise() -> None:
     cell = {"城市": "焦作", "部门": "农业农村"}
     col = "<title>欢迎访问焦作市农业农村局网站！</title>"
