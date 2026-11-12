@@ -142,7 +142,7 @@ _PAIR_WORDS = ("会谈", "通电话", "会见", "互致")
 _TRIP = ("到", "赴", "在", "前往", "带队", "率队", "率团")  # 后面要有调研、出席、强调这类词
 _TRIP_WORDS = (
     *("调研", "考察", "督导", "督查", "检查", "走访", "慰问", "看望", "暗访", "出席", "参加"),
-    *("主持", "会见", "讲话", "强调", "指出"),
+    *("主持", "会见", "讲话", "强调", "指出", "视察"),
 )
 # 人名和动词中间常夹的词（"某某等出席""某某、某某共同出席""某某亲切看望""某某专题调研"），
 # 先去掉再看
@@ -241,8 +241,11 @@ def _news_named(title: str) -> bool:
 
 
 def _names_before(title: str, i: int, *, any_surname: bool) -> bool:
-    """title[i] 前面那串汉字（到开头或标点为止）是不是人名：2–3 个字的看 any_surname；4–9 个字的
-    拆成两三个 2–3 个字的词，每个都像人名（看姓氏）才算。"""
+    """title[i] 前面那串汉字（到开头或标点为止；动词前的空格不算）是不是人名：2–3 个字的看
+    any_surname；4–9 个字的拆成两三个 2–3 个字的词（中间可以有"与""和""及"），每个都像人名
+    （看姓氏）才算。"""
+    while i > 0 and title[i - 1] in " \u3000":  # "某某 出席会议"
+        i -= 1
     j = i
     while j > 0 and re.fullmatch(_H, title[j - 1]):
         j -= 1
@@ -254,9 +257,12 @@ def _names_before(title: str, i: int, *, any_surname: bool) -> bool:
         run = run[: len(run) - len(word)]
     if len(run) in (2, 3):
         return _name_ish(run, any_surname=any_surname)
-    if not 4 <= len(run) <= 9 or any(w in run for w in _NOT_NAME_WORDS):  # "关于专项执法"
+    if not 4 <= len(run) <= 11 or any(w in run for w in _NOT_NAME_WORDS):  # "关于专项执法"
         return False
-    return any(_split_names(run, parts) for parts in (2, 3))
+    parts = [w for w in re.split("[与和及]", run) if w]  # "某某与某某赴某地调研"
+    if len(parts) > 1:
+        return all(len(w) in (2, 3) and _name_ish(w) for w in parts)
+    return len(run) <= 9 and any(_split_names(run, n) for n in (2, 3))
 
 
 def _split_names(run: str, parts: int) -> bool:
