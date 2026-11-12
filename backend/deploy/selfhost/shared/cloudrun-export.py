@@ -720,6 +720,30 @@ def busy_with(now: datetime) -> datetime | None:
     return None
 
 
+# 往这几个前缀写文件的定时任务（job_runs 里记着）：还在跑就不清
+WRITER_JOBS = ("backup", "archive-logs")
+
+
+def running_writers(database_url: str, now: datetime) -> list[str]:
+    """还在跑的 WRITER_JOBS：job_runs 里 status 是 running、3 小时内开始的（job.sh 单次最长
+    3 小时）。"""
+    from youju.models import JobRun
+
+    engine = create_mysql_engine(database_url)
+    try:
+        with Session(engine) as session:
+            rows = session.scalars(
+                select(JobRun.job).where(
+                    JobRun.job.in_(WRITER_JOBS),
+                    JobRun.status == "running",
+                    JobRun.started_at > now - timedelta(hours=3),
+                )
+            ).all()
+    finally:
+        engine.dispose()
+    return sorted(set(rows))
+
+
 def cleanup_counts(client: httpx.Client, env: str) -> dict[str, int]:
     bucket = storage_list.bucket_of(client, env)
     return {
@@ -769,7 +793,7 @@ def _not_now(at: datetime) -> bool:
     return True
 
 
-def run_cleanup(env: str, *, ask, now) -> int:
+def run_cleanup(env: str, database_url: str, *, ask, now) -> int:
     """--cleanup：先看时间（正赶上云托管每天写文件就不清）、列出要删几个、要输入 DELETE 才删；
     输入以后再看一次时间（在提示那里停久了也不会赶上）。"""
     if _not_now(now()):
@@ -788,6 +812,11 @@ def run_cleanup(env: str, *, ask, now) -> int:
                 return 1
             started = now()
             if _not_now(started):
+                return 1
+            busy = running_writers(database_url, started)
+            if busy:
+                print("云托管的定时任务 " + "、".join(busy) + " 还在跑")
+                print("CLEANUP NOT STARTED (paste the block again in 10 minutes)")
                 return 1
             upcoming = next_scheduled_write(started)
             deleted = cleanup(client, env)
@@ -836,7 +865,7 @@ def main(
         if args.links_only:
             print("--cleanup 和 --links-only 不能一起用")
             return 1
-        return run_cleanup(env, ask=ask, now=now)
+        return run_cleanup(env, settings.database_url, ask=ask, now=now)
     try:
         if args.links_only:
             if not FINGERPRINT.is_file():

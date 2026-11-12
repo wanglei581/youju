@@ -530,6 +530,10 @@ def _pay_header(path: Path) -> dict:
         or retain != PAY_RETAIN_DAYS
     ):
         raise FetchError("交易记录的说明行不对")
+    try:
+        datetime.fromisoformat(header["created_at"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise FetchError("交易记录的说明行里没有导出时间") from exc
     return header
 
 
@@ -635,6 +639,9 @@ def archive_export(
     header = _pay_header(pay)
     # 先把交易记录分好组（读不出起算日的停下），再开始存：不存一半
     groups = split_pay_records(pay, header)
+    # 每一批的存档名都带导出时间：退回云托管、再切回来导第二批时（手册第七节）不会盖掉上一批
+    # （第一批的批量工具结果第 9 步已从云托管删掉，第二批里没有它们）
+    batch = datetime.fromisoformat(header["created_at"]).astimezone(UTC).strftime("%Y%m%d%H%M")
     extra = {"today": today, "backend": backend}
     if encryptor is not None:
         extra["encryptor"] = encryptor
@@ -642,7 +649,7 @@ def archive_export(
         offsite.archive(
             settings,
             backups[0],
-            f"cloudrun-youju-{day:%Y%m%d}",
+            f"cloudrun-youju-{day:%Y%m%d}-{batch}",
             offsite.expiry(day, offsite.BACKUP_KEEP_DAYS),
             **extra,
         )
@@ -681,7 +688,7 @@ def archive_export(
             part.write_bytes(gzip.compress(("\n".join(lines) + "\n").encode(), mtime=0))
             reports.append(
                 offsite.archive(
-                    settings, part, f"cloudrun-pay-records-{start:%Y%m%d}", expires, **extra
+                    settings, part, f"cloudrun-pay-records-{start:%Y%m%d}-{batch}", expires, **extra
                 )
             )
         index_file = workdir / ADVISOR_INDEX
@@ -702,7 +709,7 @@ def archive_export(
                 offsite.archive(
                     settings,
                     packed,
-                    f"cloudrun-advisor-out-{made:%Y%m%d}",
+                    f"cloudrun-advisor-out-{made:%Y%m%d}-{batch}",
                     expires,
                     ext="tar.gz",
                     **extra,

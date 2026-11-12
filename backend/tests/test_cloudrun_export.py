@@ -474,11 +474,30 @@ def test_next_scheduled_write_is_the_nearest_of_0030_and_0400():
     assert export_script.busy_with(at(0, 15)) == at(0, 30)
 
 
+def test_running_writers_reads_job_runs(session):
+    from youju.models import JobRun
+
+    now = datetime.now(UTC)
+    session.add_all(
+        [
+            JobRun(job="backup", started_at=now - timedelta(minutes=3), status="running"),
+            JobRun(job="archive-logs", started_at=now - timedelta(hours=4), status="running"),
+            JobRun(job="archive-logs", started_at=now - timedelta(minutes=1), status="ok"),
+            JobRun(job="check-links", started_at=now - timedelta(minutes=1), status="running"),
+        ]
+    )
+    session.commit()
+    # 4 小时前开始、没记完的当作早就断了（job.sh 单次最长 3 小时）
+    assert export_script.running_writers(os.environ["YOUJU_DATABASE_URL"], now) == ["backup"]
+
+
 def test_main_cleanup_asks_then_prints_one_ascii_line(monkeypatch, capsys):
     monkeypatch.setenv("YOUJU_CLOUD_ENV", ENV)
     counts = {"exports/": 2, "backups/": 30, "logs/": 41, "advisor/": 0}
     deleted: list[str] = []
     monkeypatch.setattr(export_script, "cleanup_counts", lambda client, env: counts)
+    writers: list[str] = []
+    monkeypatch.setattr(export_script, "running_writers", lambda url, at: writers)
 
     def cleanup(client, env):
         deleted.append(env)
@@ -522,6 +541,14 @@ def test_main_cleanup_asks_then_prints_one_ascii_line(monkeypatch, capsys):
         )
         assert code == 1 and deleted == [ENV]
         assert "CLEANUP NOT STARTED" in capsys.readouterr().out
+        # 云托管的整库备份还在跑（job_runs 里是 running）：不清
+        writers.append("backup")
+        code = export_script.main(
+            ["--cleanup"], runner=no_commands, ask=lambda _: "DELETE", now=lambda: noon
+        )
+        assert code == 1 and deleted == [ENV]
+        assert "backup 还在跑" in capsys.readouterr().out
+        writers.clear()
         # 清的时候跨过了 0:30 / 4:00：要再清一次
         times = iter(
             [datetime(2026, 11, 13, 3, 30, tzinfo=backup.BEIJING)] * 2
