@@ -21,10 +21,15 @@
 - 部门（补充）：国家级按部委名核对；市场监管格挂的是知识产权局；
 - 重复：同一省里去掉参数后是同一个列表的，后面那个记重复。
 
+地市、区县再加一项（D-129 的个人事项门，看最新 20 条）：
+
+- 个人事项：个人名单类和招聘、考试、任免类标题占 60% 以上（见 personal_list_title），交给人看：
+  整栏都是的记"不收"，还有政策、通知的照收（个人事项按 D-097 ② 不给正文）。
+
 都过记"自动通过"，否则记"待人工"并写明哪项没过；最后三列（复核人、复核结论、复核备注）
 留给人工复核。复核结论写"通过""不通过""待重试"（这次没抓到）、"不能抓"（按访问控制等不读）
 或"不收"（读得对、但不在收录范围，如整栏是招聘公示），后面可以加括号说明（见 final_verdict）。
-只读库、不联网。
+地市、区县每省另有联网核对抽样，按抽样线判（见 SAMPLE_LINES）。只读库、不联网。
 """
 
 import hashlib
@@ -128,6 +133,35 @@ def _pick(sources: list[Source], size: int | None) -> list[Source]:
         group.sort(key=lambda s: hashlib.sha1(s.url.encode()).hexdigest())
         out += group[:size]
     return out
+
+
+# 个人事项门（D-129，方案第三节）：栏目试抓到的最新 20 条里，个人名单类标题（lists/rules.py 的
+# PERSON_TITLE：退休、病残、工伤认定、补贴人员、人才名单、任免任职、负责人……，D-091 ③、D-092 不给
+# 正文的那套）和招聘、考试、任免类占 60% 以上的，交给人看。不用 PERSONAL_MATTER_WORDS：那是"不给
+# 正文"的词表，处罚、失信、社保、职称会把执法公示、政策栏目也算进去；也不认"遴选"（选承保机构、招标
+# 代理也叫遴选）。不足 5 条的不判
+PERSONAL_SHARE = 0.6
+PERSONAL_RECENT = 20
+PERSONAL_MIN_ITEMS = 5
+_RECRUIT_WORDS = (
+    *("招聘", "招录", "录用", "拟聘", "考试", "笔试", "面试", "成绩", "选调"),
+    *("任免", "任职", "任前", "免职", "拟任", "任命"),
+)
+
+
+def personal_list_title(title: str) -> bool:
+    """标题是个人名单类或招聘、考试、任免类（个人事项门用）。"""
+    from youju.lists.rules import PERSON_TITLE
+
+    text = re.sub(r"\s+", "", title or "")
+    return any(w in text for w in PERSON_TITLE) or any(w in text for w in _RECRUIT_WORDS)
+
+
+def personal_share(titles: list[str]) -> float | None:
+    """个人事项门：这些标题里个人名单类的占比；不足 PERSONAL_MIN_ITEMS 条时是 None（不判）。"""
+    if len(titles) < PERSONAL_MIN_ITEMS:
+        return None
+    return sum(personal_list_title(t) for t in titles) / len(titles)
 
 
 def _kind(name: str | None) -> str | None:
@@ -305,6 +339,16 @@ def sample_rows(
         if row.latest and any(registrable(u) != site for _, _, u in row.latest if u):
             row.failed.append("本站")
         row.failed += _content_flags(s, row.latest)
+        if s.level in LINE_LEVELS:
+            recent = session.scalars(
+                select(Document.title)
+                .where(Document.source_id == s.id)
+                .order_by(Document.publish_date.desc(), Document.id.desc())
+                .limit(PERSONAL_RECENT)
+            ).all()
+            share = personal_share([t or "" for t in recent])
+            if share is not None and share >= PERSONAL_SHARE:
+                row.failed.append("个人事项")
         rows.append(row)
     _mark_duplicates(rows)
     return rows
@@ -419,6 +463,91 @@ def summary_lines(rows: list[SampleRow]) -> list[str]:
 # 分母，见 ProvinceResult.rate）。只有通过的栏目进这一批的导入文件；读得准的太少说明这个省有成片的
 # 问题，整省先不放。
 PASS_RATE = 0.8
+# 抽样线（D-129，方案第二节第 3 小节；国家级、省级照旧全检）：联网核对第 1 次每层抽这么多格、不通过
+# 不超过这么多格才放。地市一层；区县分两层各自判（县直部门、县政府门户），免得门户好把部门的毛病
+# 盖住。没过的修完、全量重跑自动核对，换种子重抽 60 格、不通过不超过 5 格；只看最近一次，不和上一次
+# 合并。一层的格比要抽的少时全抽。复核人写"联网核对"（第 1 次）、"联网核对第2次""联网核对第3次"……
+SAMPLE_LINES = {("市级", "部门"): (40, 3), ("区县级", "部门"): (40, 3), ("区县级", "门户"): (30, 2)}
+REDRAW_LINE = (60, 5)
+# 重抽两次（第 3 次）还不过的整省逐格排查，程序不再放。每一次联网核对另记一行在
+# 抽查/<层级>/联网核对/<省>.csv（ROUND_FIELDS：层、第几次、种子、日期、凭据），证据表的行重抽时会被
+# 盖掉，这份记录只加不改：各次的种子不能重复，重抽要写凭据（改了哪条规则、那类问题清零了）
+MAX_ROUNDS = 3
+ROUND_FIELDS = ("层", "次数", "种子", "日期", "凭据")
+_SEED = re.compile(r"种子\s*[:：=]?\s*([0-9A-Za-z][0-9A-Za-z_.\-]*)")
+LINE_LEVELS = frozenset(level for level, _ in SAMPLE_LINES)
+_CN_DIGITS = "一二三四五六七八九"
+UNKNOWN_ROUND = 999  # 次数认不出：当成超过 MAX_ROUNDS，不放
+
+
+def _count(text: str) -> int:
+    """次数：阿拉伯数字和"二""十一""二十三"这样的中文数字；认不出（含空的）是 UNKNOWN_ROUND。"""
+    text = text.strip()
+    if text.isdigit():
+        return int(text)
+    m = re.fullmatch(f"([{_CN_DIGITS}]?)(十?)([{_CN_DIGITS}]?)", text)
+    if not m or not text:
+        return UNKNOWN_ROUND
+    tens, ten, ones = m.groups()
+    if not ten:  # 一位数："二"会落在第一组
+        digit = tens or ones
+        return _CN_DIGITS.index(digit) + 1 if digit and not (tens and ones) else UNKNOWN_ROUND
+    return (_CN_DIGITS.index(tens) + 1 if tens else 1) * 10 + (
+        _CN_DIGITS.index(ones) + 1 if ones else 0
+    )
+
+
+def _sample_round(who: str) -> int | None:
+    """复核人是联网核对的第几次：只写"联网核对"是第 1 次，"联网核对第N次"是第 N 次；后面写了别的、
+    次数认不出的是 UNKNOWN_ROUND（不放，不会退回第 1 次）；不是联网核对的行是 None。"""
+    who = who.strip()
+    if not who.startswith("联网核对"):
+        return None
+    rest = who.removeprefix("联网核对").strip()
+    if not rest:
+        return 1
+    m = re.fullmatch(r"第\s*(\S+?)\s*次", rest)
+    return _count(m.group(1)) if m else UNKNOWN_ROUND
+
+
+def _layer(level: str, dept: str) -> str:
+    return "门户" if level == "区县级" and dept == "政府办" else "部门"
+
+
+@dataclass
+class SampleLine:
+    """一层最近一次联网核对：抽到几格有结论（通过、不通过、不收；一格里还有待重试、不能抓、没写结论
+    的不算，要补抽）、几格不通过；problem 是种子、次数这类凭据不全的原因。"""
+
+    layer: str
+    round: int  # 第几次；0 是还没抽
+    judged: int
+    failed: int
+    need: int
+    allow: int
+    problem: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return (
+            self.round > 0
+            and not self.problem
+            and self.judged >= self.need
+            and self.failed <= self.allow
+        )
+
+    def text(self) -> str:
+        if not self.round:
+            return f"{self.layer}还没有联网核对（要抽 {self.need} 格）"
+        text = (
+            f"{self.layer}联网核对第 {self.round} 次：抽 {self.judged} 格（要 {self.need}），"
+            f"不通过 {self.failed} 格（最多 {self.allow}）"
+        )
+        return (
+            f"{text}，{self.problem} → 没过"
+            if self.problem
+            else f"{text} → {'过' if self.ok else '没过'}"
+        )
 
 
 @dataclass
@@ -434,6 +563,84 @@ class ProvinceResult:
     # 联网核对抽到的那几格（复核人以"联网核对"开头）：读得准的、算进分母的
     sample_ok: int = 0
     sample_judged: int = 0
+    level: str = ""
+    # 每层有哪些格（城市、区县、部门）；联网核对每层每次抽到的格 → 这一格有没有不通过
+    cells: dict[str, set] = field(default_factory=dict)
+    # 联网核对每层每次抽到的格 → 这一格的结论（"不通过"、"未完"、"通过"），和证据表里写的种子
+    rounds: dict[tuple[str, int], dict] = field(default_factory=dict)
+    seeds: dict[tuple[str, int], set] = field(default_factory=dict)
+    # 抽查/<层级>/联网核对/<省>.csv 的各行：(层, 第几次) → [(种子, 日期, 凭据)]
+    round_log: dict[tuple[str, int], list] = field(default_factory=dict)
+    # 正文能读率门（地市、区县；govsites/bodygate.py）：抽了几份、能读几份；还没测是 None
+    body: tuple[int, int] | None = None
+
+    @property
+    def sample_lines(self) -> list[SampleLine]:
+        """有抽样线的层级（地市、区县）每层最近一次联网核对的结果。"""
+        out = []
+        for layer in sorted(self.cells):
+            line = SAMPLE_LINES.get((self.level, layer))
+            if line is None:
+                continue
+            # 最近一次：证据表和联网核对记录里最大的那次（记录里已经记了重抽、证据表还没填，
+            # 按重抽算：0 格有结论，不放）
+            latest = max(
+                (n for lay, n in (*self.rounds, *self.round_log) if lay == layer), default=0
+            )
+            got = self.rounds.get((layer, latest), {})
+            need, allow = line if latest <= 1 else REDRAW_LINE
+            need = min(need, len(self.cells[layer]))
+            judged = sum(state != "未完" for state in got.values())
+            failed = sum(state == "不通过" for state in got.values())
+            out.append(
+                SampleLine(layer, latest, judged, failed, need, allow, self._problem(layer, latest))
+            )
+        return out
+
+    def _problem(self, layer: str, latest: int) -> str:
+        """最近一次联网核对的凭据（看联网核对记录）：次数没超；第 1 次到这一次每次各记一行、写了
+        种子，种子都不一样，重抽写了凭据；证据表里写了种子的，要和记录里这一次的对上。"""
+        if latest == UNKNOWN_ROUND:
+            return '复核人或联网核对记录里的次数认不出（写"联网核对"或"联网核对第N次"）'
+        if latest > MAX_ROUNDS:
+            return f"重抽两次还不过，要整省逐格排查（第 {latest} 次不算）"
+        used: dict[str, int] = {}
+        for n in range(1, latest + 1):
+            logged = self.round_log.get((layer, n), [])
+            if len(logged) != 1:
+                what = "没有" if not logged else "记了几遍"
+                where = f"抽查/{self.level}/联网核对/{self.province}.csv"
+                return f"联网核对记录里第 {n} 次{what}（{where}）"
+            seed, day, proof = logged[0]
+            if not seed:
+                return f"联网核对记录里第 {n} 次没写种子"
+            if not _is_date(day):
+                return f"联网核对记录里第 {n} 次的日期不对（写成 2026-11-12 这样）"
+            if seed in used:
+                return f"第 {n} 次的种子 {seed} 第 {used[seed]} 次用过，重抽要换种子"
+            used[seed] = n
+            if n > 1 and not proof:
+                return f"第 {n} 次重抽没写凭据（改了哪条规则、那类问题清零了）"
+            written = self.seeds.get((layer, n), set())
+            if written and written != {seed}:
+                shown = "、".join(sorted(written))
+                return f"证据表里第 {n} 次写的种子（{shown}）和联网核对记录（{seed}）对不上"
+        return ""
+
+    @property
+    def body_ok(self) -> bool:
+        from youju.govsites.bodygate import gate_passed
+
+        return self.body is not None and gate_passed(*self.body)
+
+    def sample_note(self) -> str:
+        """地市、区县：抽样线和正文能读率门的结果（国家级、省级是空的）。"""
+        if self.level not in LINE_LEVELS:
+            return ""
+        from youju.govsites.bodygate import gate_text
+
+        body = gate_text(*self.body) if self.body is not None else "正文能读率：还没测"
+        return "；".join([*(line.text() for line in self.sample_lines), body])
 
     @property
     def sample_rate(self) -> float | None:
@@ -448,11 +655,15 @@ class ProvinceResult:
 
     @property
     def accepted(self) -> bool:
-        """全表读得准的过八成；有联网核对抽样的，抽样里也要过八成（抽样只看了一部分格，抽样里
-        错得多说明全表的自动核对漏了，就算全表算下来过八成也先不放；11/11 主线定的）。"""
-        if self.sample_rate is not None and self.sample_rate < PASS_RATE:
+        """全表每行都有结论、读得准的过八成；地市、区县每层最近一次联网核对还要过抽样线
+        （SAMPLE_LINES），正文能读率门也要过。国家级、省级是全检：有联网核对抽样的，抽样里也要
+        过八成。"""
+        if not (self.passed > 0 and self.pending == 0 and self.rate >= PASS_RATE):
             return False
-        return self.passed > 0 and self.pending == 0 and self.rate >= PASS_RATE
+        if self.level in LINE_LEVELS:
+            lines = self.sample_lines
+            return bool(lines) and all(line.ok for line in lines) and self.body_ok
+        return self.sample_rate is None or self.sample_rate >= PASS_RATE
 
 
 def final_verdict(row: dict) -> str:
@@ -487,6 +698,34 @@ def unknown_verdicts(folder) -> list[str]:
     return out
 
 
+def _is_date(text: str) -> bool:
+    try:
+        date.fromisoformat(text)
+    except ValueError:
+        return False
+    return True
+
+
+def read_round_log(folder, province: str) -> dict[tuple[str, int], list]:
+    """读 <抽查/层级>/联网核对/<省>.csv：(层, 第几次) → [(种子, 日期, 凭据)]（同一次记了几遍就有
+    几项；次数空着、认不出的记成 UNKNOWN_ROUND）。"""
+    import csv
+    from pathlib import Path
+
+    path = Path(folder) / "联网核对" / f"{province}.csv"
+    out: dict[tuple[str, int], list] = {}
+    if not path.exists():
+        return out
+    with path.open(encoding="utf-8-sig", newline="") as fh:
+        for r in csv.DictReader(fh):
+            layer = (r.get("层") or "").strip() or "部门"
+            key = (layer, _count(r.get("次数") or ""))
+            out.setdefault(key, []).append(
+                tuple((r.get(k) or "").strip() for k in ("种子", "日期", "凭据"))
+            )
+    return out
+
+
 def evidence_results(folder) -> list[ProvinceResult]:
     """读 抽查/<层级>/<省>.csv，算每省的结论。"""
     import csv
@@ -499,13 +738,32 @@ def evidence_results(folder) -> list[ProvinceResult]:
             for r in csv.DictReader(fh):
                 res.total += 1
                 verdict = final_verdict(r)
-                if (r.get("复核人") or "").strip().startswith("联网核对") and verdict in (
-                    "通过",
-                    "不通过",
-                    "不收",
-                ):
-                    res.sample_judged += 1
-                    res.sample_ok += verdict != "不通过"
+                res.level = res.level or (r.get("层级") or "").strip()
+                layer = _layer(res.level, (r.get("部门") or "").strip())
+                cell = tuple((r.get(k) or "").strip() for k in ("城市", "区县", "部门"))
+                res.cells.setdefault(layer, set()).add(cell)
+                n_round = _sample_round(r.get("复核人") or "")
+                if n_round is not None:
+                    # 地市、区县的抽样只认人工写的复核结论：空着的不会退回自动结论。国家级、省级照旧
+                    # （全检，抽样过八成那条看最终结论）
+                    manual = (r.get("复核结论") or "").strip() or res.level not in LINE_LEVELS
+                    review = verdict if manual else ""
+                    if review in ("通过", "不通过", "不收"):
+                        res.sample_judged += 1
+                        res.sample_ok += review != "不通过"
+                    # 按格算：一格里有一行不通过就不通过；还有待重试、不能抓、没写结论的行就"未完"
+                    # （不算样本，要补抽）；都通过或不收才算通过。只要写了这一次，就算有这一次
+                    key = (layer, n_round)
+                    state = (
+                        "不通过"
+                        if review == "不通过"
+                        else ("通过" if review in ("通过", "不收") else "未完")
+                    )
+                    got = res.rounds.setdefault(key, {})
+                    order = ("通过", "未完", "不通过")
+                    got[cell] = max(got.get(cell, "通过"), state, key=order.index)
+                    found = _SEED.findall(r.get("复核备注") or "")
+                    res.seeds.setdefault(key, set()).update(found)
                 if verdict == "通过":
                     res.passed += 1
                 elif verdict == "不通过":
@@ -518,5 +776,10 @@ def evidence_results(folder) -> list[ProvinceResult]:
                     res.blocked += 1
                 else:
                     res.pending += 1
+        if res.level in LINE_LEVELS:
+            from youju.govsites.bodygate import read_gate
+
+            res.body = read_gate(path.parent, res.province)
+            res.round_log = read_round_log(path.parent, res.province)
         out.append(res)
     return out

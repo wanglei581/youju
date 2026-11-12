@@ -457,17 +457,255 @@ def test_province_portal_names_unchanged(full, ok):
     assert _dept_ok(s) is ok
 
 
-def test_online_sample_failing_holds_province(tmp_path):
-    """联网核对抽的格里错得超过两成：就算全表读得准的过八成，这个省也先不放。"""
+def _round_of(who):
+    return who.removeprefix("联网核对").removeprefix("第").removesuffix("次") or "1"
+
+
+def _city_evidence(folder, province, cells, sample, *, level="市级", body=(60, 58), log="auto"):
+    """写一省的证据表：cells 个格各一个栏目、都通过；sample 是 [(格号, 复核人, 结论[, 复核备注])]，
+    复核备注默认写这一次的种子（"种子：s1""种子：s2"……）。log 是联网核对记录的行
+    [(层, 次数, 种子, 凭据)]，"auto" 照样本里出现的每层每次各记一行（种子 s1、s2……，重抽写凭据），
+    None 不写。body 是正文能读率门（抽了几份、能读几份），None 是还没测。"""
+    head = "层级,省份,城市,区县,部门,栏目URL,自动结论,没过的项,复核人,复核结论,复核备注\n"
+    marked = {}
+    rounds = set()
+    for n, who, verdict, *note in sample:
+        default = f"种子：s{_round_of(who)}"
+        marked[n] = (who, verdict, note[0] if note else default)
+        layer = "门户" if level == "区县级" and n % 3 == 0 else "部门"
+        rounds.add((layer, _round_of(who)))
+    if log == "auto":
+        log = [(lay, r, f"s{r}", "" if r == "1" else "改了列表规则") for lay, r in sorted(rounds)]
+    record = folder / "联网核对" / f"{province}.csv"
+    record.unlink(missing_ok=True)
+    if log is not None:
+        record.parent.mkdir(exist_ok=True)
+        rows = "".join(
+            f"{lay},{r},{seed},{rest[1] if len(rest) > 1 else '2026-11-12'},{rest[0]}\n"
+            for lay, r, seed, *rest in log
+        )
+        record.write_text("层,次数,种子,日期,凭据\n" + rows, encoding="utf-8-sig")
+    lines = []
+    for n in range(cells):
+        who, verdict, note = marked.get(n, ("", "", ""))
+        dept = "政府办" if level == "区县级" and n % 3 == 0 else f"部门{n}"
+        lines.append(
+            f"{level},{province},城{n % 7},区{n},{dept},u{n},自动通过,,{who},{verdict},{note}\n"
+        )
+    (folder / f"{province}.csv").write_text(head + "".join(lines), encoding="utf-8-sig")
+    gate = folder / "正文"
+    (gate / f"{province}.csv").unlink(missing_ok=True)
+    if body is not None:
+        gate.mkdir(exist_ok=True)
+        rows = "".join(
+            f"{i},,,,u{i},平台,标题{i},d{i},政策,{'能读' if i < body[1] else '读不了'},\n"
+            for i in range(body[0])
+        )
+        (gate / f"{province}.csv").write_text(
+            "序号,城市,区县,部门,栏目URL,平台,文件标题,文件网址,类型,能读,原因\n" + rows,
+            encoding="utf-8-sig",
+        )
+
+
+def test_city_sample_line(tmp_path):
+    """地市：联网核对第 1 次抽 40 格、不通过不超过 3 格才放；重抽 60 格、不超过 5 格，只看最近一次。"""
     from youju.govsites.sample import evidence_results
 
-    head = "层级,省份,栏目URL,自动结论,没过的项,复核人,复核结论,复核备注\n"
-    rows = "".join(f"市级,河南,a{n},自动通过,,,,\n" for n in range(20))
-    rows += "".join(f"市级,河南,s{n},自动通过,,联网核对,通过,\n" for n in range(7))
-    rows += "".join(
-        f"市级,河南,f{n},自动通过,,联网核对,不通过,列表标题混进点击数\n" for n in range(3)
+    def result(sample, cells=120, body=(60, 58)):
+        _city_evidence(tmp_path, "河南", cells, sample, body=body)
+        [res] = evidence_results(tmp_path)
+        return res
+
+    first = [(n, "联网核对", "不通过" if n < 3 else "通过") for n in range(40)]
+    assert result(first).accepted
+    line = result(first).sample_lines[0]
+    assert (line.round, line.judged, line.failed, line.need, line.allow) == (1, 40, 3, 40, 3)
+    four = [(n, "联网核对", "不通过" if n < 4 else "通过") for n in range(40)]
+    assert not result(four).accepted  # 错 4 格：不放（全表读得准的照样过八成）
+    assert result(four).rate >= 0.8
+    assert not result(first[:39]).accepted  # 不够 40 格
+    # 待重试的格不算样本
+    retry = [*first[:39], (39, "联网核对", "待重试")]
+    assert not result(retry).accepted
+    # 重抽：看最近一次（第 2 次 60 格、错 5 格过；第 1 次的错不算进来）
+    redraw = four + [(40 + n, "联网核对第2次", "不通过" if n < 5 else "通过") for n in range(60)]
+    res = result(redraw)
+    assert res.accepted and res.sample_lines[0].need == 60
+    cn = [(40 + n, "联网核对第二次", "不通过" if n < 5 else "通过", "") for n in range(60)]
+    assert result(four + cn).sample_lines[0].round == 2 and result(four + cn).accepted
+    assert not result(four + [(40 + n, "联网核对第2次", "通过") for n in range(59)]).accepted
+    # 一层的格比 40 少：全抽
+    small = [(n, "联网核对", "通过") for n in range(25)]
+    assert result(small, cells=25).accepted
+    # 正文能读率门：没测、不到 90% 都不放
+    assert not result(first, body=None).accepted
+    assert not result(first, body=(60, 53)).accepted
+    assert "正文能读率" in result(first).sample_note()
+
+
+def test_city_sample_round_evidence(tmp_path):
+    """最近一次只要写了就算最近一次（全是待重试也一样）；联网核对记录要每次一行、种子不重复、
+    重抽写凭据，证据表里的种子要和记录对上；空着的复核结论不算；第 4 次不算。"""
+    from youju.govsites.sample import evidence_results
+
+    def result(sample, log="auto"):
+        _city_evidence(tmp_path, "河南", 200, sample, log=log)
+        [res] = evidence_results(tmp_path)
+        return res
+
+    first = [(n, "联网核对", "不通过" if n < 3 else "通过") for n in range(40)]
+    assert result(first).accepted
+    # 第 2 次刚开头、全是待重试：按第 2 次算（0 格），不再按第 1 次放
+    pending = first + [(40 + n, "联网核对第2次", "待重试") for n in range(60)]
+    line = result(pending).sample_lines[0]
+    assert (line.round, line.judged) == (2, 0) and not result(pending).accepted
+    # 联网核对记录：没有、没写种子、记了两遍
+    assert "没有" in result(first, log=None).sample_note()
+    assert "没写种子" in result(first, log=[("部门", "1", "", "")]).sample_note()
+    twice = [("部门", "1", "s1", ""), ("部门", "1", "s1", "")]
+    assert "记了几遍" in result(first, log=twice).sample_note()
+    # 重抽：要换种子、要写凭据；证据表里写的种子要和记录对上
+    four = [(n, "联网核对", "不通过" if n < 4 else "通过") for n in range(40)]
+    redraw = four + [(40 + n, "联网核对第2次", "通过") for n in range(60)]
+    assert result(redraw).accepted
+    reused = [("部门", "1", "s1", ""), ("部门", "2", "s1", "改了列表规则")]
+    assert "用过" in result(redraw, log=reused).sample_note()
+    no_proof = [("部门", "1", "s1", ""), ("部门", "2", "s2", "")]
+    assert "没写凭据" in result(redraw, log=no_proof).sample_note()
+    other = four + [(40 + n, "联网核对第2次", "通过", "种子：s9") for n in range(60)]
+    assert "对不上" in result(other).sample_note()
+    # 证据表里不写种子也行（以记录为准）
+    assert result(four + [(40 + n, "联网核对第2次", "通过", "") for n in range(60)]).accepted
+    # 空着的复核结论不会退回自动结论：这一格没做完
+    blank = first[:39] + [(39, "联网核对", "")]
+    assert result(blank).sample_lines[0].judged == 39 and not result(blank).accepted
+    # 重抽两次还不过：第 4 次、第十一次都不算
+    fourth = [(100 + n, "联网核对第4次", "通过") for n in range(60)]
+    assert "整省逐格排查" in result(fourth).sample_note() and not result(fourth).accepted
+    eleventh = [(100 + n, "联网核对第十一次", "通过") for n in range(60)]
+    assert result(eleventh).sample_lines[0].round == 11 and not result(eleventh).accepted
+    # 次数认不出（"第2回"、记录里次数空着）：不放，不会退回第 1 次
+    odd = [(n, "联网核对第2回", "通过") for n in range(40)]
+    assert "认不出" in result(odd, log=[("部门", "1", "s1", "")]).sample_note()
+    assert (
+        "认不出"
+        in result(first, log=[("部门", "1", "s1", ""), ("部门", "", "s2", "")]).sample_note()
     )
+    # 记录里已经记了第 2 次、证据表还没填：按第 2 次算，不再按第 1 次放
+    ahead = [("部门", "1", "s1", ""), ("部门", "2", "s2", "改了列表规则")]
+    line = result(first, log=ahead).sample_lines[0]
+    assert (line.round, line.judged) == (2, 0) and not result(first, log=ahead).accepted
+    # 日期要写对；以前那次证据表里写的种子也要和记录对上
+    assert "日期不对" in result(first, log=[("部门", "1", "s1", "", "")]).sample_note()
+    old_seed = [(n, w, v, "种子：s7") for n, w, v in four] + redraw[40:]
+    assert "第 1 次写的种子" in result(old_seed).sample_note()
+
+
+def test_city_sample_counts_cells(tmp_path):
+    """按格算：同一格两个栏目都填了联网核对，一个不通过就算这一格不通过，只算一格。"""
+    from youju.govsites.sample import evidence_results
+
+    head = "层级,省份,城市,区县,部门,栏目URL,自动结论,没过的项,复核人,复核结论,复核备注\n"
+    rows = "".join(
+        f"市级,河南,城{n},,部门,u{n},自动通过,,联网核对,通过,种子：s1\n" for n in range(38)
+    )
+    rows += "市级,河南,城38,,部门,a,自动通过,,联网核对,通过,种子：s1\n"
+    rows += "市级,河南,城38,,部门,b,自动通过,,联网核对,不通过,种子：s1\n"
+    # 同一格一个通过、一个待重试：这一格没做完，不算样本
+    rows += "市级,河南,城39,,部门,c,自动通过,,联网核对,通过,种子：s1\n"
+    rows += "市级,河南,城39,,部门,d,自动通过,,联网核对,待重试,种子：s1\n"
     (tmp_path / "河南.csv").write_text(head + rows, encoding="utf-8-sig")
+    (tmp_path / "联网核对").mkdir()
+    (tmp_path / "联网核对" / "河南.csv").write_text(
+        "层,次数,种子,日期,凭据\n部门,1,s1,2026-11-12,\n", encoding="utf-8-sig"
+    )
     [res] = evidence_results(tmp_path)
-    # 全表 27/30 = 90%，但联网核对 7/10 = 70% → 不放
-    assert round(res.rate, 2) == 0.9 and res.sample_rate == 0.7 and res.accepted is False
+    line = res.sample_lines[0]
+    assert (line.judged, line.failed, line.problem) == (39, 1, "") and not line.ok
+
+
+def test_county_sample_two_layers(tmp_path):
+    """区县分两层各自判：县直部门 40 格 ≤3、县政府门户 30 格 ≤2，门户好盖不住部门的毛病。"""
+    from youju.govsites.sample import evidence_results
+
+    # 150 格：n % 3 == 0 的是门户（50 格），其余是部门（100 格）
+    gov = [n for n in range(150) if n % 3 == 0][:30]
+    dept = [n for n in range(150) if n % 3][:40]
+    sample = [(n, "联网核对", "不通过" if i < 2 else "通过") for i, n in enumerate(gov)]
+    sample += [(n, "联网核对", "不通过" if i < 3 else "通过") for i, n in enumerate(dept)]
+    _city_evidence(tmp_path, "湖南", 150, sample, level="区县级")
+    [res] = evidence_results(tmp_path)
+    assert res.accepted and [line.layer for line in res.sample_lines] == ["部门", "门户"]
+    sample[0] = (gov[0], "联网核对", "不通过")
+    sample[2] = (gov[2], "联网核对", "不通过")  # 门户错 3 格
+    _city_evidence(tmp_path, "湖南", 150, sample, level="区县级")
+    [res] = evidence_results(tmp_path)
+    assert not res.accepted
+
+
+def test_province_level_keeps_full_check(tmp_path):
+    """国家级、省级照旧全检：不要抽样线，也不要正文能读率门；有联网核对行时，空着的复核结论照旧
+    按自动结论算（"只认人工结论"只用在地市、区县）。"""
+    from youju.govsites.sample import evidence_results
+
+    _city_evidence(tmp_path, "浙江", 10, [], level="省级", body=None)
+    [res] = evidence_results(tmp_path)
+    assert res.accepted and res.sample_note() == ""
+    _city_evidence(tmp_path, "浙江", 10, [(n, "联网核对", "") for n in range(3)], level="省级")
+    [res] = evidence_results(tmp_path)
+    assert res.sample_judged == 3 and res.sample_rate == 1.0 and res.accepted
+
+
+def test_city_personal_flag(session):
+    """个人事项门：地市、区县栏目最新 20 条里个人名单类、招聘考试任免类占 60% 以上的交给人看；
+    省级不加这一项；不足 5 条的不判。"""
+    from youju.govsites.sample import personal_share
+
+    def source(url, level, titles):
+        s = Source(
+            level=level,
+            province="江苏",
+            city="南京" if level == "市级" else None,
+            dept="人社",
+            dept_full_name="南京市人力资源和社会保障局" if level == "市级" else "江苏省人社厅",
+            column_name="公示公告",
+            url=url,
+            fetch_mode="static",
+            enabled=False,
+            parser_config={},
+            verification_status="试跑可读（全国覆盖 v1，未启用）",
+        )
+        session.add(s)
+        session.flush()
+        _check(session, s, 20)
+        for n, title in enumerate(titles):
+            doc_url = f"https://{url.split('/')[2]}/art/{s.id}_{n}.html"
+            session.add(
+                Document(
+                    source_id=s.id,
+                    title=title,
+                    url=doc_url,
+                    url_key=url_key(doc_url),
+                    publish_date=date(2026, 11, 1 + n % 9),
+                    first_seen_at=NOW,
+                    last_seen_at=NOW,
+                )
+            )
+        return s
+
+    personal = [f"2026年第{n}批提前退休人员情况公示" for n in range(13)]
+    policies = [f"关于开展第{n}期职业技能培训的通知" for n in range(7)]
+    heavy = source("https://rsj.nanjing.gov.cn/gsgg/", "市级", personal + policies)
+    mixed = source("https://rsj.nanjing.gov.cn/tzgg/", "市级", personal[:5] + policies * 2)
+    source("https://jshrss.jiangsu.gov.cn/gsgg/", "省级", personal + policies)
+    session.commit()
+    city = {r.source.url: r for r in sample_rows(session, "市级", now=NOW)}
+    assert "个人事项" in city[heavy.url].failed  # 13/20 = 65%
+    assert "个人事项" not in city[mixed.url].failed  # 5/19
+    assert "个人事项" not in sample_rows(session, "省级", now=NOW)[0].failed
+    assert personal_share(personal[:4]) is None  # 不足 5 条不判
+    # 不认"遴选"（选承保机构、招标代理也叫遴选），处罚、失信这类也不算个人名单
+    assert (
+        personal_share(["承保机构公开遴选公告"] * 5 + ["拖欠农民工工资失信联合惩戒对象名单"] * 5)
+        == 0
+    )
