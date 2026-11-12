@@ -445,15 +445,14 @@ def _first_list_item(cache, url: str, today: date):
         api = find_list_api(r.text, final, url)
         if api is not None:
             # 只取页面写明的地址、过读取护栏（D-128）；被拦下的不读
-            parts = api_parts(api)
-            results = [cache.get(part.url, same_address_only=True) for part in parts]
-            failed = any(
-                ar.status != "ok" or api_refusal(part, ar) or not api_readable(part, ar.text)
-                for part, ar in zip(parts, results, strict=True)
-            )
-            if failed and len(parts) > 1:
-                return None
-            via = [] if failed else api_items_merged(api, [ar.text for ar in results], None, today)
+            texts: list[str] = []
+            for part in api_parts(api):
+                # 一个一个取、一个一个查：被拦下、没取到、读不出的，整栏不取证，后面的分类也不再请求
+                ar = cache.get(part.url, same_address_only=True)
+                if ar.status != "ok" or api_refusal(part, ar) or not api_readable(part, ar.text):
+                    return None
+                texts.append(ar.text)
+            via = api_items_merged(api, texts, None, today)
             if len(via) > len(items):
                 items = via
     return next((i for i in items if i.publish_date), None)

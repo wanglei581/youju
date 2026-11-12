@@ -426,3 +426,24 @@ def test_parent_direct_part_keeps_only_items_attached_to_the_parent():
     # p 只能在第一个编号前；单独一个父分类也认
     assert find_list_api(PAGE, URL, f"{URL}#xxgk-gkmlpt-6,p8350") is None
     assert find_list_api(PAGE, URL, f"{URL}#xxgk-gkmlpt-p8350").direct_only
+
+
+def test_verify_stops_at_the_first_refused_category():
+    first = api(category=8)  # 单个分类的接口地址就是合读时第一个分类的
+    blocked = FetchResult(first.url, "http_error", first.url, 403, "")
+    cache = Cache({URL: PAGE, first.url: blocked})
+    col = column()
+    col.url = f"{URL}#xxgk-gkmlpt-8,6"
+    assert check_one(cache, col, TODAY).result == BLOCKED
+    assert cache.calls == [URL, first.url]  # 第二个分类不再请求
+
+
+def test_spotcheck_gives_nothing_when_any_category_fails():
+    from youju.govsites.spotcheck import _first_list_item
+
+    for column_url in (f"{URL}#xxgk-gkmlpt-8", f"{URL}#xxgk-gkmlpt-8,6"):
+        cache = Cache(
+            {URL: PAGE, api().url: FetchResult(api().url, "http_error", api().url, 503, "")}
+        )
+        assert _first_list_item(cache, column_url, TODAY) is None
+        assert cache.calls == [URL, api().url]

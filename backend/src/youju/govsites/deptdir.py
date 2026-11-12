@@ -289,8 +289,15 @@ def gkmlpt_tree_categories(text: str) -> list[tuple[str, str]]:
                 and isinstance(child.get("name"), str)
                 and child["name"].strip() in _GKMLPT_POLICY_LEAVES
                 and type(child.get("id")) is int
+                and child["id"] != nid
                 and not child.get("jump_url")
-            ][: _GKMLPT_MAX_IDS - 1]
+            ]
+            # 同一个编号只要一次（分类树偶有重复的节点），最多 _GKMLPT_MAX_IDS - 1 个叶子
+            unique: list[dict] = []
+            for child in selected:
+                if all(child["id"] != kept["id"] for kept in unique):
+                    unique.append(child)
+            selected = unique[: _GKMLPT_MAX_IDS - 1]
         if isinstance(name, str) and isinstance(nid, int) and not node.get("jump_url"):
             # 父分类本身也读，但只要直接挂在它上面的条目（p 编号）：有的部门把政策直接挂在父分类上，
             # 叶子里没几条（汕头发改 134 条里 83 条直接挂在"政策"上）

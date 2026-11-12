@@ -148,8 +148,10 @@ def check_one(cache: PageCache, col: ColumnCheck, today: date) -> ColumnCheck:
             return col
         if api is not None:
             parts = api_parts(api)
-            results = [cache.get(part.url, same_address_only=True) for part in parts]
-            for part, ar in zip(parts, results, strict=True):
+            texts: list[str] = []
+            for part in parts:
+                # 一个一个取、一个一个查：前一个出问题，后面的分类不再请求（和正式抓取一样）
+                ar = cache.get(part.url, same_address_only=True)  # 跳到别处不跟（D-128 ①）
                 refused = api_refusal(part, ar)
                 if refused:
                     # 读取护栏（D-128）：接口返回不是成功、带权限要求、要登录或验证码、明确拒绝
@@ -171,10 +173,11 @@ def check_one(cache: PageCache, col: ColumnCheck, today: date) -> ColumnCheck:
                     # 不读，记打不开
                     col.result, col.reason = DOWN, "列表接口返回读不出列表（不是预期的格式）"
                     return col
-            if all(api_empty_list(part, ar.text) for part, ar in zip(parts, results, strict=True)):
+                texts.append(ar.text)
+            if all(api_empty_list(part, text) for part, text in zip(parts, texts, strict=True)):
                 col.result, col.reason = NO_ITEMS, "经列表接口识别出 0 条（列表是空的）"
                 return col
-            items = api_items_merged(api, [ar.text for ar in results], None, today)
+            items = api_items_merged(api, texts, None, today)
             col.reason, via_api = f"经{api.adapter}列表接口读取", True
     dated = [i for i in items if i.publish_date]
     col.items, col.dated = len(items), len(dated)

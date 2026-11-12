@@ -783,3 +783,37 @@ def test_gkmlpt_multiple_categories_second_refused_stops_all(session):
     again = RecordingFetcher({url: [page(page_url, html)]})
     assert check_source(session, source, again).status == "list_api_refused"
     assert again.requested == [url]
+
+
+def test_gkmlpt_first_category_refused_stops_before_the_next(session):
+    # 第一个分类就被网站拒绝：后面的分类不再请求（D-013、D-128：拒绝了就停）
+    html, payload, page_url, first, single_url = _gkmlpt_fixture()
+    url = single_url + ",6"
+    source = make_source(session, url)
+    source.parser_config = {"list_api_open": "数字广东gkmlpt"}
+    session.commit()
+    blocked = FetchResult(first, "http_error", http_status=403)
+    fetcher = RecordingFetcher({url: [page(page_url, html)], first: [blocked]})
+    check = check_source(session, source, fetcher, today=date(2026, 11, 12))
+    assert check.status == "list_api_refused" and fetcher.requested == [url, first]
+
+
+def test_gkmlpt_single_parent_direct_category_end_to_end(session):
+    # 单独一个只取直接挂在父分类上的条目（p 编号）：正式抓取照样读、只收挂在它上面的
+    import json
+
+    html, payload, page_url, _, _ = _gkmlpt_fixture()
+    url = page_url + "#xxgk-gkmlpt-p8350"
+    api_url = "https://www.sg.gov.cn/fgj/gkmlpt/api/all/8350?page=1&sid=751012"
+    body = json.loads(payload)
+    body["classify"]["id"] = 8350
+    for row, main in zip(body["articles"], (8350, 8350, 6, 6, 8350), strict=True):
+        row["classify_main"] = main
+    source = make_source(session, url)
+    source.parser_config = {"list_api_open": "数字广东gkmlpt"}
+    session.commit()
+    fetcher = RecordingFetcher(
+        {url: [page(page_url, html)], api_url: [page(api_url, json.dumps(body))]}
+    )
+    check = check_source(session, source, fetcher, today=date(2026, 11, 12))
+    assert (check.status, check.items_found) == ("ok", 3) and fetcher.requested == [url, api_url]

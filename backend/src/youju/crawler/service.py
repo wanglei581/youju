@@ -233,8 +233,11 @@ def _items_via_adapter(
         return _AdapterResult([])
     # 只取页面写明的那个地址，跳到别处不跟（D-128 读取护栏 ①）
     parts = api_parts(api)
-    results = [fetcher.fetch(part.url, same_address_only=True) for part in parts]
-    for part, result in zip(parts, results, strict=True):
+    texts: list[str] = []
+    for part in parts:
+        # 几个分类合读时一个一个取、一个一个查：前一个被拦下、没取到、读不出，后面的不再请求
+        # （D-013、D-128：网站拒绝了就停，不接着敲门）
+        result = fetcher.fetch(part.url, same_address_only=True)
         if result.status == "robots_disallowed":
             return _AdapterResult([], api.adapter, result, api_url=api.url)
         refused = api_refusal(part, result)
@@ -247,7 +250,8 @@ def _items_via_adapter(
             # 几个分类合读时，有一个回了但读不出（空白、维护页）：整栏这次没读出，和单个分类
             # 读不出一样按"没识别到列表条目"记，下次再试；不拿别的分类的条目顶上
             return _AdapterResult([], api.adapter, api_url=api.url)
-    items = api_items_merged(api, [result.text for result in results], parser_config, today)
+        texts.append(result.text)
+    items = api_items_merged(api, texts, parser_config, today)
     return _AdapterResult(items, api.adapter, api_url=api.url)
 
 

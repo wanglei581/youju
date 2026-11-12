@@ -567,3 +567,12 @@ def test_gkmlpt_policy_combines_direct_nonjump_children():
     assert ("政策", "gkmlpt-6") in categories
     assert ("通知公告", "gkmlpt-8") in categories
     assert ("部门文件", "gkmlpt-5") not in categories
+
+
+def test_gkmlpt_policy_leaves_skip_duplicates_and_the_parent_id():
+    def node(nid, name, children=None):
+        return {"id": nid, "name": name, "children": children or [], "jump_url": ""}
+
+    tree = [node(1, "政策", [node(2, "规范性文件"), node(2, "规范性文件"), node(1, "其他文件")])]
+    categories = gkmlpt_tree_categories("TREE: " + json.dumps(tree) + "}")
+    assert ("政策", "gkmlpt-p1,2") in categories
