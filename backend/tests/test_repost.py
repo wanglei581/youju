@@ -1637,6 +1637,8 @@ def test_auto_rebuild_changed_content_and_withdrawal(session, monkeypatch):
 
 
 def test_auto_rebuild_new_ineligible_member(session, monkeypatch):
+    from youju.repost import AUTO_REVIEWER
+
     monkeypatch.setattr(
         "youju.repost.get_settings", lambda: SimpleNamespace(repost_auto_merge=True)
     )
@@ -1645,12 +1647,14 @@ def test_auto_rebuild_new_ineligible_member(session, monkeypatch):
     assert rebuild(session, now=NOW).auto_merged == 1
     rows = list(_members(session).values())
     group = session.get(RepostGroup, rows[0].group_id)
-    # 标题足以归组，但正文缺少共同上游文号，不能自动确认整组。
-    _doc(session, _source(session, "福建"), docs[0].title, day=20, body="普通正文")
+    # 标题足以归组，但正文缺少共同上游文号：新来的这份留待确认、不计入判定；已经自动确认的两份之间
+    # 照样满足条件，保持折叠（不整组退回、来回折叠展开）
+    late = _doc(session, _source(session, "福建"), docs[0].title, day=20, body="普通正文")
     result = rebuild(session, now=NOW + timedelta(seconds=1))
-    rows = list(_members(session).values())
-    assert len(rows) == 3 and result.auto_reverted == 1
-    assert all(r.confirmed_at is None for r in rows if r.group_id == group.id)
+    rows = _members(session)
+    assert len(rows) == 3 and (result.auto_reverted, result.auto_merged) == (0, 0)
+    assert rows[late.id].group_id == group.id and rows[late.id].confirmed_at is None
+    assert all(rows[d.id].confirmed_by == AUTO_REVIEWER for d in docs)
 
 
 def test_person_confirming_an_auto_group_takes_it_over(session, client, monkeypatch):
@@ -1773,12 +1777,104 @@ def test_auto_merges_and_reverts_are_audited(session, monkeypatch, caplog):
 
     _auto_on(monkeypatch, session)
     docs = _auto_world(session)
+    from youju.repost import write_audit
+
     with caplog.at_level(logging.INFO, logger="youju.audit"):
-        rebuild(session, now=NOW)
+        first = rebuild(session, now=NOW)
+        # 重建时只记在结果里，提交成功以后才写进审计日志（提交失败就不留假记录）
+        assert not [r for r in caplog.records if r.name == "youju.audit"]
+        session.commit()
+        write_audit(first)
         monkeypatch.setattr(
             "youju.repost.get_settings", lambda: SimpleNamespace(repost_auto_merge=False)
         )
-        rebuild(session, now=NOW + timedelta(seconds=1))
+        second = rebuild(session, now=NOW + timedelta(seconds=1))
+        session.commit()
+        write_audit(second)
     events = [json.loads(r.getMessage()) for r in caplog.records if r.name == "youju.audit"]
     assert [e["action"] for e in events] == ["repost_auto_merge", "repost_auto_revert"]
     assert events[0]["document_ids"] == sorted(d.id for d in docs)
+    assert events[1]["reason"] == "开关关着"
+
+
+def test_new_version_without_body_waits_without_unfolding_the_auto_group(session, monkeypatch):
+    # 已经自动合并的组来了一份正文还没抓到的新版本：已折叠的不退回（不来回折叠展开），新来的留待
+    # 确认；正文抓到、仍满足条件时这一轮自动确认上
+    from youju.repost import AUTO_REVIEWER
+
+    _auto_on(monkeypatch, session)
+    docs = _auto_world(session)
+    assert rebuild(session, now=NOW).auto_merged == 1
+    late = _doc(session, _source(session, "福建"), docs[0].title, day=20)
+    session.flush()
+    result = rebuild(session, now=NOW + timedelta(seconds=1))
+    assert (result.auto_merged, result.auto_reverted) == (0, 0)
+    rows = _members(session)
+    assert late.id in rows and rows[late.id].confirmed_at is None
+    assert all(rows[d.id].confirmed_by == AUTO_REVIEWER for d in docs)
+    session.add(
+        DocumentDetail(
+            document_id=late.id,
+            body_text=UPSTREAM + "福建",
+            fetched_at=NOW + timedelta(hours=1),
+            status="ok",
+            http_status=200,
+        )
+    )
+    session.flush()
+    result = rebuild(session, now=NOW + timedelta(hours=2))
+    assert (result.auto_merged, result.auto_reverted) == (1, 0)
+    assert _members(session)[late.id].confirmed_by == AUTO_REVIEWER
+
+
+def test_auto_confirmed_duplicate_moves_to_its_canonical_without_review(session, monkeypatch):
+    # 自动确认的版本后来成了同一文件的副本：主文件接过来、不带确认，不转"需复核"；这一轮照常重判，
+    # 仍满足条件就自动确认上
+    from youju.repost import AUTO_REVIEWER
+
+    _auto_on(monkeypatch, session)
+    docs = _auto_world(session)
+    assert rebuild(session, now=NOW).auto_merged == 1
+    session.commit()
+    twin = _doc(
+        session,
+        session.get(Source, docs[1].source_id),
+        docs[1].title,
+        day=14,
+        body=UPSTREAM + "天津",
+        key="tianjin.example.gov.cn/another-column/1.html",
+    )
+    session.add(
+        DocumentMerge(duplicate_id=docs[1].id, canonical_id=twin.id, active=True, match_key="t")
+    )
+    session.commit()
+    result = rebuild(session, now=NOW + timedelta(seconds=1))
+    session.commit()
+    rows = _members(session)
+    assert docs[1].id not in rows and twin.id in rows
+    assert (result.moved, result.needs_review, result.auto_merged) == (1, 0, 1)
+    group = session.get(RepostGroup, rows[twin.id].group_id)
+    assert not group.needs_review
+    assert all(r.confirmed_by == AUTO_REVIEWER for r in rows.values())
+
+
+def test_ministry_original_is_auto_merged_with_its_forwards(session, monkeypatch):
+    # 部里的原件（不引用自己，详情里有自己的发文字号）和引用它的两份转发件：一起自动合并
+    from youju.repost import AUTO_REVIEWER
+
+    _auto_on(monkeypatch, session)
+    docs = _auto_world(session)
+    title = "工业和信息化部办公厅关于组织开展2026年度视听系统典型案例征集工作的通知"
+    original = _doc(
+        session,
+        _source(session, "国家", full="工业和信息化部"),
+        title,
+        day=1,
+        body="各省、自治区、直辖市工业和信息化主管部门：现就组织开展有关工作通知如下。",
+    )
+    session.get(DocumentDetail, original.id).doc_number = "工信厅联电子函〔2026〕376号"
+    session.flush()
+    assert rebuild(session, now=NOW).auto_merged == 1
+    rows = _members(session)
+    assert {original.id, *(d.id for d in docs)} <= set(rows)
+    assert all(r.confirmed_by == AUTO_REVIEWER for r in rows.values())
