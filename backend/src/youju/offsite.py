@@ -161,10 +161,11 @@ ARCHIVE_RECORD = ARCHIVE_PREFIX + "deletions.jsonl"
 CLOUDRUN_DEADLINE = ARCHIVE_PREFIX + "cloudrun-deadline.json"
 CLOUDRUN_GONE = ARCHIVE_PREFIX + "cloudrun-gone.json"
 REMIND_DAYS = 7
-_STEM = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,80}")
+# 名字最长 150 个字符：首发前搬家的存档名里带完整的清单 SHA-256（见 cloudrun_fetch.archive_export）
+_STEM = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,150}")
 # 加密的存档（.age），和导进来的云托管访问日志（不加密，和服务器自己的访问日志归档一样）
 _ARCHIVED = re.compile(
-    r"archive/([A-Za-z0-9][A-Za-z0-9_-]{0,80})\.expires-(\d{8})\.(?:jsonl|tar)\.gz(?:\.age)?"
+    r"archive/([A-Za-z0-9][A-Za-z0-9_-]{0,150})\.expires-(\d{8})\.(?:jsonl|tar)\.gz(?:\.age)?"
 )
 _EXTS = ("jsonl.gz", "tar.gz")
 BACKUP_KEEP_DAYS = 30

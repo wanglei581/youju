@@ -1098,7 +1098,7 @@ def test_archive_export_splits_by_start_date(tmp_path):
     work = tmp_path / "export"
     (work / "backups").mkdir(parents=True)
     (work / "manifest.json").write_text('{"created_at": "2026-11-12T08:00:00+00:00"}')
-    first = _sha((work / "manifest.json").read_bytes())[:8]
+    first = _sha((work / "manifest.json").read_bytes())
     (work / "backups" / "youju-20261112.jsonl.gz").write_bytes(b"backup")
     (work / "pay-records.jsonl.gz").write_bytes(PAY)
     (work / "advisor-out" / "0123456789abcdef").mkdir(parents=True)
@@ -1157,23 +1157,25 @@ def test_archive_export_splits_by_start_date(tmp_path):
         f"archive/cloudrun-advisor-out-20261110-202611120800-{first}.expires-20261209.tar.gz.age"
     )
     assert "2026-10-20 生成的批量工具结果已经过了 30 天，不存" in notes
-    # 退回云托管、再切回来导的第二批（导出时间不同）：同一天的结果另存一份，不盖掉第一批
+    # 退回云托管、再切回来导的第二批，导出时间和第一批在同一分钟、清单不同：同一天的结果另存
+    # 一份，不盖掉第一批（名字里是完整的清单 SHA-256）
     second = (
         gzip.decompress(PAY)
         .decode()
         .replace(
             '"created_at": "2026-11-12T08:00:00+00:00"',
-            '"created_at": "2026-11-20T09:30:00+00:00"',
+            '"created_at": "2026-11-12T08:00:40+00:00"',
             1,
         )
     )
     (work / "pay-records.jsonl.gz").write_bytes(gzip.compress(second.encode()))
-    (work / "manifest.json").write_text('{"created_at": "2026-11-20T09:30:00+00:00"}')
-    again = _sha((work / "manifest.json").read_bytes())[:8]
+    (work / "manifest.json").write_text('{"created_at": "2026-11-12T08:00:40+00:00"}')
+    again = _sha((work / "manifest.json").read_bytes())
+    assert again != first
     cloudrun_fetch.archive_export(
         _archive_settings(tmp_path),
         work,
-        today=date(2026, 11, 20),
+        today=date(2026, 11, 13),
         backend=FakeS3(),
         encryptor=_seal,
     )
@@ -1183,8 +1185,25 @@ def test_archive_export_splits_by_start_date(tmp_path):
     )
     assert kept == [
         f"cloudrun-advisor-out-20261110-202611120800-{first}.expires-20261209.tar.gz.age",
-        f"cloudrun-advisor-out-20261110-202611200930-{again}.expires-20261209.tar.gz.age",
+        f"cloudrun-advisor-out-20261110-202611120800-{again}.expires-20261209.tar.gz.age",
     ]
+    # 同一批重跑：名字不变，覆盖的是同一份
+    (work / "manifest.json").write_text('{"created_at": "2026-11-12T08:00:00+00:00"}')
+    (work / "pay-records.jsonl.gz").write_bytes(PAY)
+    cloudrun_fetch.archive_export(
+        _archive_settings(tmp_path),
+        work,
+        today=date(2026, 11, 13),
+        backend=FakeS3(),
+        encryptor=_seal,
+    )
+    assert (
+        sorted(
+            path.name
+            for path in (tmp_path / "store" / "archive").glob("cloudrun-advisor-out-20261110-*")
+        )
+        == kept
+    )
     (work / "pay-records.jsonl.gz").write_bytes(PAY)
     # 有一行读不出起算日（拿导出日顶替会存得比指引久）：停下，不存
     orphan = gzip.decompress(PAY).decode() + json.dumps(

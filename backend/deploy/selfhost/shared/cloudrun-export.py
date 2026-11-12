@@ -739,12 +739,11 @@ def writer_locks():
     try:
         for job in WRITER_JOBS:
             fh = (LOCK_DIR / f"youju-{job}.lock").open("a")
+            held.append(fh)  # 打开了就归下面统一放开、关掉（没拿到锁的放开也没关系）
             try:
                 fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
-                fh.close()
                 raise JobRunning(f"云托管的定时任务 {job} 正在跑") from None
-            held.append(fh)
         yield
     finally:
         for fh in held:

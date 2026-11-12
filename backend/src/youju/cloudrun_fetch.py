@@ -642,11 +642,12 @@ def archive_export(
     manifest = workdir / "manifest.json"
     if not manifest.is_file():
         raise FetchError("没有清单（先 fetch-export）")
-    # 每一批的存档名都带导出时间和清单 SHA-256 的前 8 位（每次导出的清单都不一样：时间、链接）：
-    # 退回云托管、再切回来导第二批时（手册第七节）不会盖掉上一批（第一批的批量工具结果第 9 步已从
-    # 云托管删掉，第二批里没有它们）；同一批重跑名字不变，照常覆盖
+    # 每一批的存档名都带导出时间和完整的清单 SHA-256（每次导出的清单都不一样：时间、链接）：
+    # 名字一样就是同一份清单、同一批，重跑覆盖的是同一份内容；不同批名字不可能一样，退回云托管、
+    # 再切回来导第二批时（手册第七节）不会盖掉上一批（第一批的批量工具结果第 9 步已从云托管删掉，
+    # 第二批里没有它们）
     stamp = datetime.fromisoformat(header["created_at"]).astimezone(UTC).strftime("%Y%m%d%H%M")
-    batch = f"{stamp}-{hashlib.sha256(manifest.read_bytes()).hexdigest()[:8]}"
+    batch = f"{stamp}-{hashlib.sha256(manifest.read_bytes()).hexdigest()}"
     extra = {"today": today, "backend": backend}
     if encryptor is not None:
         extra["encryptor"] = encryptor
