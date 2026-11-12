@@ -187,6 +187,40 @@ def test_search_throttle_pause_counts_redirects_both_ways(session, monkeypatch, 
     assert session.get(DocumentDetail, second.id) is None
 
 
+@pytest.mark.parametrize("route", ["redirect", "pdf"])
+def test_paused_site_is_not_reached_from_other_sites(session, monkeypatch, route):
+    """名单里的网站这一轮停了以后，别的网站的文件跳转过去、或它的 PDF 附件在那里：不去取（PDF）或
+    这一份不收（跳转），经过的网站也一起停，同一网站剩下的这一轮不取。"""
+    from youju.crawler import detail
+
+    monkeypatch.setitem(detail._SEARCH_THROTTLE_VERIFIED, "b.example.gov.cn", frozenset({"x"}))
+    first = _doc_on(session, _source_on(session, "b.example.gov.cn"), "b.example.gov.cn", 1)
+    other = _source_on(session, "a.example.gov.cn")
+    second = _doc_on(session, other, "a.example.gov.cn", 2)
+    third = _doc_on(session, other, "a.example.gov.cn", 3)
+    pdf_page = (
+        "<html><body><div id='zoom'><a href='https://b.example.gov.cn/files/1.pdf'>附件.pdf</a>"
+        "</div></body></html>"
+    )
+    landed = "https://b.example.gov.cn/detail/9.html"
+    fake = FakeFetcher(
+        {
+            first.url: FetchResult(first.url, "ok", final_url=first.url, text=_PROTECTED),
+            second.url: (
+                FetchResult(second.url, "ok", final_url=landed, text="<html></html>")
+                if route == "redirect"
+                else FetchResult(second.url, "ok", final_url=second.url, text=pdf_page)
+            ),
+            third.url: FetchResult(third.url, "ok", final_url=third.url, text="<html></html>"),
+        }
+    )
+    results = fetch_details(session, limit=5, fetcher=fake, max_workers=1)
+    assert [r.status for r in results] == ["protected", "site_paused", "site_paused"]
+    assert fake.calls == [first.url, second.url]
+    assert session.get(DocumentDetail, second.id) is None
+    assert session.get(DocumentDetail, third.id) is None
+
+
 def test_title_backfill_reports_paused_site_as_unavailable(session, monkeypatch):
     """补全截断标题时，同一网站这一轮停取了的记"没取到（site_paused）"，不当成"没截断"。"""
     from youju.crawler import detail

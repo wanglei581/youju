@@ -242,31 +242,57 @@ def _fetch_one(document_id: int, url: str, fetcher: DetailFetcher) -> _FetchOutc
     return _FetchOutcome(document_id, now, fetched, parsed, status, parsed.failure_reason)
 
 
+class _SitePause:
+    """这一轮停取的网站（见 _fetch_outcomes），几个线程共用。"""
+
+    def __init__(self) -> None:
+        self.hosts: set[str] = set()
+        self.lock = threading.Lock()
+
+
+def _host(url: str) -> str:
+    return (urlsplit(url).hostname or "").lower()
+
+
+class _PausingFetcher:
+    """取一份文件用：每次请求前看网站停了没有，停了就不去取（记 site_paused）；请求后记下经过的网址
+    （原网址和跳转后的；详情页和它的 PDF 附件都算）。"""
+
+    def __init__(self, inner: DetailFetcher, pause: _SitePause) -> None:
+        self.inner, self.pause = inner, pause
+        self.visited: list[str] = []
+
+    def fetch(self, url: str) -> FetchResult:
+        self.visited.append(url)
+        with self.pause.lock:
+            stopped = _host(url) in self.pause.hosts
+        if stopped:
+            return FetchResult(url, "site_paused", error="同一网站这一轮遇到防护页，停取")
+        result = self.inner.fetch(url)
+        self.visited.append(result.final_url or url)
+        return result
+
+
 def _fetch_outcomes(
     selected: list[tuple[int, str]], fetcher: DetailFetcher, max_workers: int
 ) -> dict[int, _FetchOutcome]:
     by_host: dict[str, list[tuple[int, str]]] = {}
     for document_id, url in selected:
-        by_host.setdefault((urlsplit(url).hostname or "").lower(), []).append((document_id, url))
+        by_host.setdefault(_host(url), []).append((document_id, url))
 
     # 放过站内搜索限流弹窗的网站：一遇到防护页（弹窗显示出来了、页面样子变了、正文取不全……），
-    # 这一轮就停取这个网站（D-013 出验证码就停），按实际访问的网站算（原网址和跳转后的网址都算）。
-    # 停了以后：这个网站剩下的这一轮不取；别的网站的文件跳转过去的，这一份不收、那个网站也停（跳转
-    # 发生在取的过程中，这一次已经访问了）。不收的不写库，下一轮照常选上；要按 PR #485 的做法复核
-    paused: set[str] = set()
-    lock = threading.Lock()
-
-    def host_of(url: str) -> str:
-        return (urlsplit(url).hostname or "").lower()
+    # 这一轮就停取这个网站（D-013 出验证码就停）。按实际访问的网站算：一份文件经过的网址（原网址、
+    # 跳转后的、它的 PDF 附件）都算，经过的网站一起停。停了以后每次请求前都先看，停了的不去取；
+    # 取的过程中跳转到已停网站的，这一份不收、经过的网站也停。不收的不写库，下一轮照常选上；
+    # 要按 PR #485 的做法复核这个网站
+    pause = _SitePause()
 
     def run_host(documents: list[tuple[int, str]]) -> list[_FetchOutcome]:
         results = []
         for document_id, url in documents:
-            with lock:
-                if host_of(url) in paused:
-                    break
+            guarded = _PausingFetcher(fetcher, pause)
             try:
-                outcome = _fetch_one(document_id, url, fetcher)
+                outcome = _fetch_one(document_id, url, guarded)
             except Exception as exc:  # noqa: BLE001 - 一份异常文件不阻断整批详情保存
                 # 依赖异常可能带请求信息；只记录类型，不记录异常正文或 traceback。
                 reason = f"详情处理异常：{type(exc).__name__}"
@@ -274,16 +300,18 @@ def _fetch_outcomes(
                 outcome = _FetchOutcome(
                     document_id, datetime.now(UTC), None, None, "processing_error", reason
                 )
-            visited = {url, (outcome.fetch.final_url if outcome.fetch else None) or url}
-            with lock:
-                if {host_of(u) for u in visited} & paused:
+            visited = guarded.visited or [url]
+            touched = {_host(u) for u in visited}
+            with pause.lock:
+                if outcome.status == "site_paused" or touched & pause.hosts:
+                    pause.hosts |= touched
                     break
                 results.append(outcome)
                 if outcome.status == "protected" and any(map(search_throttle_site, visited)):
-                    paused.update(host_of(u) for u in visited)
+                    pause.hosts |= touched
                     log.warning(
                         "搜索限流弹窗网站 %s 遇到防护页（文件 %s），这一轮停取，要复核",
-                        "、".join(sorted(host_of(u) for u in visited)),
+                        "、".join(sorted(touched)),
                         document_id,
                     )
                     break
