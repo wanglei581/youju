@@ -1,207 +1,4 @@
 ﻿层级,省份,城市,区县,区划代码,部门,部门全称,状态,原因,最后成功时间,部门网址,导航来源页,栏目网址
-市级,四川,雅安,,511800,政府办,雅安市人民政府,已收录,1/1 个栏目已收录,2026-11-09 06:33,https://www.yaan.gov.cn/,http://www.yaan.gov.cn/,https://www.yaan.gov.cn/yasrmzf/zfxxgk/pc/zcwj.html
-市级,四川,雅安,,511800,发改委,雅安市发展和改革委员会,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://fgw.yaan.gov.cn/,https://www.yaan.gov.cn/yasrmzf/zwgk/pc/dept.html,
-市级,四川,雅安,,511800,工信,雅安市经济和信息化局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,https://jxj.yaan.gov.cn/,https://www.yaan.gov.cn/yasrmzf/zwgk/pc/dept.html,https://jxj.yaan.gov.cn/yasjjhxxhj/tzgg/pc/list.html https://jxj.yaan.gov.cn/yasjjhxxhj/zcfg/pc/list.html
-市级,四川,雅安,,511800,科技,雅安市科学技术局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,https://kjj.yaan.gov.cn/,https://www.yaan.gov.cn/yasrmzf/zwgk/pc/dept.html,https://kjj.yaan.gov.cn/yaskxjsj/tzgg/pc/list.html https://kjj.yaan.gov.cn/yaskxjsj/zcwj/pc/list.html
-市级,四川,雅安,,511800,商务,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,四川,雅安,,511800,财政,雅安市财政局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://czj.yaan.gov.cn/,https://www.yaan.gov.cn/yasrmzf/zwgk/pc/dept.html,
-市级,四川,雅安,,511800,人社,雅安市人力资源和社会保障局,已收录,2/2 个栏目已收录,2026-11-09 06:33,https://rsj.yaan.gov.cn/,https://www.yaan.gov.cn/yasrmzf/zwgk/pc/dept.html,https://rsj.yaan.gov.cn/xinwen/list/74db2252-37cd-4ef2-a0c6-d0d94375ebc5.html https://rsj.yaan.gov.cn/xinwen/list/5ad02af8-ff62-4871-8f1b-cf5b4ce7898b.html
-市级,四川,雅安,,511800,市场监管,雅安市市场监督管理局,已收录,2/2 个栏目已收录,2026-11-09 06:33,https://scjgj.yaan.gov.cn/,https://www.yaan.gov.cn/yasrmzf/zwgk/pc/dept.html,https://scjgj.yaan.gov.cn/xinwen/list/5d4c6199-0360-4205-bb7b-d953c7f87c08.html https://scjgj.yaan.gov.cn/xinwen/list/a07391de-8c0c-42ef-9500-bb71cfdac8b2.html
-市级,四川,雅安,,511800,农业农村,雅安市农业农村局,已收录,2/2 个栏目已收录,2026-11-09 06:33,https://nyncj.yaan.gov.cn/,https://www.yaan.gov.cn/yasrmzf/zwgk/pc/dept.html,https://nyncj.yaan.gov.cn/xinwen/list/3374f720-74ed-4ef0-8d68-0a9920141cd5.html https://nyncj.yaan.gov.cn/xinwen/list/2511f1de-0bce-40c4-ae2c-44333ebd4a85.html
-市级,四川,雅安,,511800,文旅,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,四川,雅安,,511800,生态环境,雅安市生态环境局,已收录,2/2 个栏目已收录,2026-11-09 06:34,https://sthjj.yaan.gov.cn/,https://www.yaan.gov.cn/yasrmzf/zwgk/pc/dept.html,https://sthjj.yaan.gov.cn/xinwen/columnlist/f8afd4bc-28ae-407b-ac92-139d91beb15f.html https://sthjj.yaan.gov.cn/xinwen/columnlist/aa1a993c-40af-43d7-a782-3a2e20ea9aed.html
-市级,四川,雅安,,511800,开发区,经开区管委会,已收录,1/1 个栏目已收录,2026-11-09 06:33,https://jkq.yaan.gov.cn/,https://www.yaan.gov.cn/yasrmzf/zwgk/pc/dept.html,https://jkq.yaan.gov.cn/xinwen/list/ed38700d-1b4c-4176-a0f7-e9423aa33291.html
-市级,四川,巴中,,511900,政府办,巴中市人民政府,已收录,2/2 个栏目已收录,2026-11-09 06:34,https://www.cnbz.gov.cn/,https://www.cnbz.gov.cn/,https://www.cnbz.gov.cn/xxgk/gsgg/index.html https://www.cnbz.gov.cn/site/tpl/6782961
-市级,四川,巴中,,511900,发改委,巴中市发展和改革委员会,已收录,2/2 个栏目已收录,2026-11-09 06:34,https://fzggw.cnbz.gov.cn/,https://www.cnbz.gov.cn/ljgl/syljgl/yqlj-swdqbmwz/6787741.js?num=100&ect=1794017646640,https://fzggw.cnbz.gov.cn/xwdt/tzgg/index.html https://fzggw.cnbz.gov.cn/xxgk/zcfg/index.html
-市级,四川,巴中,,511900,工信,巴中市经济和信息化局,已收录,2/2 个栏目已收录,2026-11-09 06:34,https://jjhxxhj.cnbz.gov.cn/,https://www.cnbz.gov.cn/ljgl/syljgl/yqlj-swdqbmwz/6787741.js?num=100&ect=1794017646640,https://jjhxxhj.cnbz.gov.cn/xwdt/tzgg/index.html https://jjhxxhj.cnbz.gov.cn/public/column/6596541?type=4&action=list&nav=2&sub=0&catId=6719872
-市级,四川,巴中,,511900,科技,巴中市科学技术局,已收录,2/2 个栏目已收录,2026-11-09 06:34,https://kxjsj.cnbz.gov.cn/,https://www.cnbz.gov.cn/ljgl/syljgl/yqlj-swdqbmwz/6787741.js?num=100&ect=1794017646640,https://kxjsj.cnbz.gov.cn/xwdt/tzgg/index.html https://kxjsj.cnbz.gov.cn/public/column/6596571?type=4&catId=6715831&action=list
-市级,四川,巴中,,511900,商务,巴中市商务局,已收录,2/2 个栏目已收录,2026-11-09 06:34,https://swj.cnbz.gov.cn/,https://www.cnbz.gov.cn/ljgl/syljgl/yqlj-swdqbmwz/6787741.js?num=100&ect=1794017646640,https://swj.cnbz.gov.cn/xwdt/tzgg/index.html https://swj.cnbz.gov.cn/public/column/6596781?type=4&action=list&nav=2&sub=0&catId=6715831
-市级,四川,巴中,,511900,财政,巴中市财政局,已收录,2/2 个栏目已收录,2026-11-09 06:34,https://czj.cnbz.gov.cn/,https://www.cnbz.gov.cn/ljgl/syljgl/yqlj-swdqbmwz/6787741.js?num=100&ect=1794017646640,https://czj.cnbz.gov.cn/xwdt/tzgg/index.html https://czj.cnbz.gov.cn/public/column/6596981?type=4&catId=6715831&action=list
-市级,四川,巴中,,511900,人社,巴中市人力资源和社会保障局,已收录,2/2 个栏目已收录,2026-11-09 06:34,https://rlzyshbzj.cnbz.gov.cn/,https://www.cnbz.gov.cn/ljgl/syljgl/yqlj-swdqbmwz/6787741.js?num=100&ect=1794017646640,https://rlzyshbzj.cnbz.gov.cn/xwdt/tzgg/index.html https://rlzyshbzj.cnbz.gov.cn/public/column/6596481?type=4&action=list&nav=2&sub=0&catId=6715831
-市级,四川,巴中,,511900,市场监管,巴中市市场监督管理局,已收录,2/2 个栏目已收录,2026-11-09 06:34,https://samr.cnbz.gov.cn/,https://www.cnbz.gov.cn/ljgl/syljgl/yqlj-swdqbmwz/6787741.js?num=100&ect=1794017646640,https://samr.cnbz.gov.cn/xwdt/tzgg/index.html https://samr.cnbz.gov.cn/public/column/6596301?type=4&action=list&nav=2&sub=0&catId=6715831
-市级,四川,巴中,,511900,农业农村,巴中市农业农村局,已收录,2/2 个栏目已收录,2026-11-09 06:34,https://nyncj.cnbz.gov.cn/,https://www.cnbz.gov.cn/ljgl/syljgl/yqlj-swdqbmwz/6787741.js?num=100&ect=1794017646640,https://nyncj.cnbz.gov.cn/zwgk/tzgg/index.html https://nyncj.cnbz.gov.cn/public/column/6596741?type=4&action=list&nav=&sub=&catId=6719823
-市级,四川,巴中,,511900,文旅,巴中市光雾山诺水河文旅融合发展示范区,已收录,1/1 个栏目已收录,2026-11-09 06:33,http://bzwlxq.gov.cn/,https://www.cnbz.gov.cn/ljgl/syljgl/yqlj-swdqbmwz/6787741.js?num=100&ect=1794017646640,http://bzwlxq.gov.cn/xwzx/gsgg/index.html
-市级,四川,巴中,,511900,生态环境,巴中市生态环境局,已收录,2/2 个栏目已收录,2026-11-09 06:34,https://sthjj.cnbz.gov.cn/,https://www.cnbz.gov.cn/ljgl/syljgl/yqlj-swdqbmwz/6787741.js?num=100&ect=1794017646640,https://sthjj.cnbz.gov.cn/xwdt/tztg/index.html https://sthjj.cnbz.gov.cn/public/column/6596501?type=4&action=list&nav=2&sub=0&catId=6715831
-市级,四川,巴中,,511900,数据局,巴中市营商环境和数据局,已收录,2/2 个栏目已收录,2026-11-09 06:34,https://yshjhsjj.cnbz.gov.cn/,https://www.cnbz.gov.cn/ljgl/syljgl/yqlj-swdqbmwz/6787741.js?num=100&ect=1794017646640,https://yshjhsjj.cnbz.gov.cn/xwdt/tzgg/index.html https://yshjhsjj.cnbz.gov.cn/public/column/6596921?type=4&action=list&nav=2&sub=0&catId=6715831
-市级,四川,乐山,,511100,政府办,中共乐山市委乐山市人民政府,已收录,1/2 个栏目已收录,2026-11-09 06:34,https://www.leshan.gov.cn/,http://www.leshan.gov.cn/,https://www.leshan.gov.cn/lsswszf/tzgg/index.html https://www.leshan.gov.cn/lsswszf/zcwjk/90053490/index.html
-市级,四川,乐山,,511100,发改委,市发展改革委,已收录,2/2 个栏目已收录,2026-11-09 06:34,https://www.leshan.gov.cn/lsswszf/bmxxgk/92337981/index.html,https://www.leshan.gov.cn/,https://www.leshan.gov.cn/lsswszf/gsgg/92337981/index.html https://www.leshan.gov.cn/lsswszf/zwgkzc/92337981/index.html
-市级,四川,乐山,,511100,工信,市经济信息化局,已收录,2/2 个栏目已收录,2026-11-09 06:34,https://www.leshan.gov.cn/lsswszf/bmxxgk/92337815/index.html,https://www.leshan.gov.cn/,https://www.leshan.gov.cn/lsswszf/gsgg/92337815/index.html https://www.leshan.gov.cn/lsswszf/zwgkzc/92337815/index.html
-市级,四川,乐山,,511100,科技,市科技局,已收录,2/2 个栏目已收录,2026-11-09 06:35,https://www.leshan.gov.cn/lsswszf/bmxxgk/92337829/index.html,https://www.leshan.gov.cn/,https://www.leshan.gov.cn/lsswszf/gsgg/92337829/index.html https://www.leshan.gov.cn/lsswszf/zwgkzc/92337829/index.html
-市级,四川,乐山,,511100,商务,市商务局,已收录,2/2 个栏目已收录,2026-11-09 06:34,https://www.leshan.gov.cn/lsswszf/bmxxgk/92337843/index.html,https://www.leshan.gov.cn/,https://www.leshan.gov.cn/lsswszf/gsgg/92337843/index.html https://www.leshan.gov.cn/lsswszf/zwgkzc/92337843/index.html
-市级,四川,乐山,,511100,财政,市财政局,已收录,2/2 个栏目已收录,2026-11-09 06:35,https://www.leshan.gov.cn/lsswszf/bmxxgk/92337808/index.html,https://www.leshan.gov.cn/,https://www.leshan.gov.cn/lsswszf/gsgg/92337808/index.html https://www.leshan.gov.cn/lsswszf/zwgkzc/92337808/index.html
-市级,四川,乐山,,511100,人社,市人力资源社会保障局,已收录,3/3 个栏目已收录,2026-11-09 06:33,https://www.leshan.gov.cn/lsswszf/bmxxgk/92337841/index.html,https://www.leshan.gov.cn/,https://www.leshan.gov.cn/lsswszf/gsgg/92337841/index.html https://www.leshan.gov.cn/lsswszf/jylygsgg/92337841/index.html https://www.leshan.gov.cn/lsswszf/zwgkzc/92337841/index.html
-市级,四川,乐山,,511100,市场监管,市市场监管局,已收录,2/2 个栏目已收录,2026-11-09 06:34,https://www.leshan.gov.cn/lsswszf/bmxxgk/92337834/index.html,https://www.leshan.gov.cn/,https://www.leshan.gov.cn/lsswszf/gsgg/92337834/index.html https://www.leshan.gov.cn/lsswszf/zwgkzc/92337834/index.html
-市级,四川,乐山,,511100,农业农村,市农业农村局,已收录,2/2 个栏目已收录,2026-11-09 06:34,https://www.leshan.gov.cn/lsswszf/bmxxgk/92337814/index.html,https://www.leshan.gov.cn/,https://www.leshan.gov.cn/lsswszf/gsgg/92337814/index.html https://www.leshan.gov.cn/lsswszf/zwgkzc/92337814/index.html
-市级,四川,乐山,,511100,文旅,市文化广电旅游局,已收录,2/2 个栏目已收录,2026-11-09 06:34,https://www.leshan.gov.cn/lsswszf/bmxxgk/92337818/index.html,https://www.leshan.gov.cn/,https://www.leshan.gov.cn/lsswszf/gsgg/92337818/index.html https://www.leshan.gov.cn/lsswszf/zwgkzc/92337818/index.html
-市级,四川,乐山,,511100,生态环境,市生态环境局,已收录,2/2 个栏目已收录,2026-11-09 06:34,https://www.leshan.gov.cn/lsswszf/bmxxgk/92337822/index.html,https://www.leshan.gov.cn/,https://www.leshan.gov.cn/lsswszf/gsgg/92337822/index.html https://www.leshan.gov.cn/lsswszf/zwgkzc/92337822/index.html
-市级,四川,乐山,,511100,数据局,市数据局,已收录,2/2 个栏目已收录,2026-11-09 06:34,https://www.leshan.gov.cn/lsswszf/bmxxgk/92339087/index.html,https://www.leshan.gov.cn/,https://www.leshan.gov.cn/lsswszf/gsgg/92339087/index.html https://www.leshan.gov.cn/lsswszf/zwgkzc/92339087/index.html
-市级,四川,乐山,,511100,开发区,乐山高新区管委会,已收录,2/2 个栏目已收录,2026-11-09 06:33,https://gxq.leshan.gov.cn/,https://www.leshan.gov.cn/,https://gxq.leshan.gov.cn/gxq/tzgg/index.html https://gxq.leshan.gov.cn/gxq/zcwj/92337854/index.html
-市级,四川,绵阳,,510700,政府办,绵阳市人民政府,已收录,1/2 个栏目已收录,2026-11-09 06:33,https://www.my.gov.cn/,http://www.my.gov.cn/,https://www.my.gov.cn/mysrmzf/c100022/list.shtml https://www.my.gov.cn/mysrmzf/c100061/xxgk_list.shtml
-市级,四川,绵阳,,510700,发改委,绵阳市发展和改革委员会,已收录,1/1 个栏目已收录,2026-11-09 06:33,https://fgw.my.gov.cn/,https://www.my.gov.cn/,https://fgw.my.gov.cn/mysfgw/c100296/list.shtml
-市级,四川,绵阳,,510700,工信,绵阳市经济和信息化局,已收录,3/3 个栏目已收录,2026-11-09 06:33,https://jxj.my.gov.cn/,https://www.my.gov.cn/,https://jxj.my.gov.cn/mysjxj/c100383/list.shtml https://jxj.my.gov.cn/mysjxj/c100380/list.shtml https://jxj.my.gov.cn/mysjxj/c100390/list.shtml
-市级,四川,绵阳,,510700,科技,绵阳市科学技术局,已收录,2/2 个栏目已收录,2026-11-09 06:33,https://kjj.my.gov.cn/,https://www.my.gov.cn/,https://kjj.my.gov.cn/myskjj/c100554/list.shtml https://kjj.my.gov.cn/myskjj/c100540/zcfg.shtml
-市级,四川,绵阳,,510700,商务,绵阳市商务局,已收录,1/1 个栏目已收录,2026-11-09 06:33,https://swj.my.gov.cn/,https://www.my.gov.cn/,https://swj.my.gov.cn/mysswj/c101372/list.shtml
-市级,四川,绵阳,,510700,财政,绵阳市财政局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,https://czj.my.gov.cn/,https://www.my.gov.cn/,https://czj.my.gov.cn/mysczj/c100720/list.shtml
-市级,四川,绵阳,,510700,人社,绵阳市人力资源和社会保障局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,https://rsj.my.gov.cn/,https://www.my.gov.cn/,https://rsj.my.gov.cn/mysrsj/c100763/list.shtml https://rsj.my.gov.cn/mysrsj/c100766/list.shtml
-市级,四川,绵阳,,510700,市场监管,绵阳市市场监督管理局,已收录,2/2 个栏目已收录,2026-11-09 06:33,https://scjg.my.gov.cn/,https://www.my.gov.cn/,https://scjg.my.gov.cn/mysscjgj/c101668/list.shtml https://scjg.my.gov.cn/mysscjgj/c101690/list.shtml
-市级,四川,绵阳,,510700,农业农村,绵阳市农业农村局,已收录,2/2 个栏目已收录,2026-11-09 06:33,https://nyncj.my.gov.cn/,https://www.my.gov.cn/,https://nyncj.my.gov.cn/mysnyncj/c101313/list.shtml https://nyncj.my.gov.cn/mysnyncj/c101315/lists.shtml
-市级,四川,绵阳,,510700,文旅,市文广旅局,已收录,2/2 个栏目已收录,2026-11-09 06:33,https://wgl.my.gov.cn/,https://www.my.gov.cn/,https://wgl.my.gov.cn/myswglj/c101427/list.shtml https://wgl.my.gov.cn/myswglj/c101405/lists.shtml
-市级,四川,绵阳,,510700,生态环境,绵阳市生态环境局,已收录,2/2 个栏目已收录,2026-11-09 06:33,https://sthjj.my.gov.cn/,https://www.my.gov.cn/,https://sthjj.my.gov.cn/myssthjj/c100932/list.shtml https://sthjj.my.gov.cn/myssthjj/c105830/zfxxgk_gknr.shtml
-市级,四川,绵阳,,510700,数据局,绵阳市数据局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://www.my.gov.cn/shujuju/c111081/zfxxgk_gknr.shtml,https://www.my.gov.cn/mysrmzf/c100114/xxgk_jgjj.shtml,
-市级,四川,宜宾,,511500,政府办,宜宾市人民政府网站,已收录,2/2 个栏目已收录,2026-11-09 06:33,http://www.yibin.gov.cn/index.html,http://www.yibin.gov.cn/index.html,https://www.yibin.gov.cn/xxgk/gsgg/ http://www.yibin.gov.cn/ztzl/jczwgk/zcwj/
-市级,四川,宜宾,,511500,发改委,市发展和改革委员会（1）,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.yibin.gov.cn/xxgk/zcfg/bmgfxwj/sczjgfxwj_23615/,https://www.yibin.gov.cn/ztzl/zfxxgk/,
-市级,四川,宜宾,,511500,工信,市经济和信息化局（2）,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.yibin.gov.cn/xxgk/zcfg/bmgfxwj/sjxjgfxwj/,https://www.yibin.gov.cn/ztzl/zfxxgk/,
-市级,四川,宜宾,,511500,科技,市科技局,已收录,1/2 个栏目已收录,2026-11-09 06:33,http://ybkj.yibin.gov.cn/,http://www.yibin.gov.cn/index.html,http://ybkj.yibin.gov.cn/sy/tzgg/ http://ybkj.yibin.gov.cn/xxgkpt/doclist.html?chnlId=1418
-市级,四川,宜宾,,511500,商务,宜宾市商务局,已收录,2/2 个栏目已收录,2026-11-09 06:33,http://ybcom.yibin.gov.cn/,http://www.yibin.gov.cn/index.html,https://ybcom.yibin.gov.cn/zwfw/tzgg/ https://ybcom.yibin.gov.cn/zwfw/zcfg/
-市级,四川,宜宾,,511500,财政,宜宾市财政局,已收录,2/2 个栏目已收录,2026-11-09 06:33,http://czj.yibin.gov.cn/,https://www.yibin.gov.cn/xxgk/zfwzndgzbb/wzndbb2022_25520/sjbmwz/202601/t20260108_2193987.html,http://czj.yibin.gov.cn/tzgg/ http://czj.yibin.gov.cn/zfcgzl/zcfg_14578/
-市级,四川,宜宾,,511500,人社,市人力资源社会保障局（4）,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.yibin.gov.cn/xxgk/zcfg/bmgfxwj/srlzyhshbzj/,https://www.yibin.gov.cn/ztzl/zfxxgk/,
-市级,四川,宜宾,,511500,市场监管,宜宾市市场监督管理局,已收录,1/2 个栏目已收录,2026-11-09 06:33,http://scjgj.yibin.gov.cn/,https://www.yibin.gov.cn/xxgk/zfwzndgzbb/wzndbb2022_25520/sjbmwz/202601/t20260115_2195664.html,http://scjgj.yibin.gov.cn/xbsy/xxfb/gsgg_1/ http://scjgj.yibin.gov.cn/xxgkpt/doclist.html?chnlId=1418
-市级,四川,宜宾,,511500,农业农村,宜宾市农业农村局,已收录,1/1 个栏目已收录,2026-11-09 06:33,http://nyncj.yibin.gov.cn/,https://www.yibin.gov.cn/xxgk/zfwzndgzbb/wzndbb2022_25520/sjbmwz/202601/t20260115_2195642.html,http://nyncj.yibin.gov.cn/xxgk_86/tzgg/
-市级,四川,宜宾,,511500,文旅,市文广旅游局,已收录,1/2 个栏目已收录,2026-11-09 06:33,http://wglyj.yibin.gov.cn/,http://www.yibin.gov.cn/index.html,http://wglyj.yibin.gov.cn/zwgk/gsgg/ http://wglyj.yibin.gov.cn/xxgkpt/doclist.html?chnlId=1418
-市级,四川,宜宾,,511500,生态环境,宜宾市生态环境局,已收录,2/2 个栏目已收录,2026-11-09 06:33,http://sthjj.yibin.gov.cn/,https://www.yibin.gov.cn/xxgk/zfwzndgzbb/wzndbb2022_25520/sjbmwz/202601/t20260112_2194665.html,http://sthjj.yibin.gov.cn/xxgk/gsgg/ http://sthjj.yibin.gov.cn/wjk/bmgfxwj/
-市级,四川,宜宾,,511500,数据局,市数据局,已收录,1/2 个栏目已收录,2026-11-09 06:34,http://www.yibin.gov.cn/ybsszjjfzj/,http://www.yibin.gov.cn/index.html,http://www.yibin.gov.cn/ybsszjjfzj/gk/gsgg/ http://www.yibin.gov.cn/xxgkpt/doclist.html?chnlId=1418
-市级,四川,宜宾,,511500,开发区,宜宾高新区管委会,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://www.yibin.gov.cn/xxgkpt/detail.html?deptId=92339052&docId=1054851&id=fad2571c-829d-4724-8a98-c905b001ff1c,http://www.yibin.gov.cn/xxgk/zfxxgkndbg/2025ndgzbb/,
-市级,四川,眉山,,511400,政府办,中共眉山市委 眉山市人民政府 门户网站,已收录,2/2 个栏目已收录,2026-11-09 08:02,https://www.ms.gov.cn/,http://www.ms.gov.cn/,https://www.ms.gov.cn/zfxxgk/fdzdgknr/gsgg.htm https://www.ms.gov.cn/zfxxgk/z__c.htm
-市级,四川,眉山,,511400,发改委,市发展改革委,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.ms.gov.cn/info/5069/1196113.htm,https://www.ms.gov.cn/xxgkpt/zfxxgk_25nb.jsp?urltype=tree.TreeTempUrl&wbtreeid=5473,
-市级,四川,眉山,,511400,工信,市经济和信息化局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.ms.gov.cn/info/5069/1196260.htm,https://www.ms.gov.cn/xxgkpt/zfxxgk_25nb.jsp?urltype=tree.TreeTempUrl&wbtreeid=5473,
-市级,四川,眉山,,511400,科技,市科技局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.ms.gov.cn/info/5069/1195867.htm,https://www.ms.gov.cn/xxgkpt/zfxxgk_25nb.jsp?urltype=tree.TreeTempUrl&wbtreeid=5473,
-市级,四川,眉山,,511400,商务,市商务局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.ms.gov.cn/info/5069/1196301.htm,https://www.ms.gov.cn/xxgkpt/zfxxgk_25nb.jsp?urltype=tree.TreeTempUrl&wbtreeid=5473,
-市级,四川,眉山,,511400,财政,市财政局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.ms.gov.cn/info/5069/1196242.htm,https://www.ms.gov.cn/xxgkpt/zfxxgk_25nb.jsp?urltype=tree.TreeTempUrl&wbtreeid=5473,
-市级,四川,眉山,,511400,人社,市人力资源社会保障局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.ms.gov.cn/info/5069/1196290.htm,https://www.ms.gov.cn/xxgkpt/zfxxgk_25nb.jsp?urltype=tree.TreeTempUrl&wbtreeid=5473,
-市级,四川,眉山,,511400,市场监管,市市场监管局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.ms.gov.cn/info/5069/1196197.htm,https://www.ms.gov.cn/xxgkpt/zfxxgk_25nb.jsp?urltype=tree.TreeTempUrl&wbtreeid=5473,
-市级,四川,眉山,,511400,农业农村,市农业农村局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.ms.gov.cn/info/5069/1195957.htm,https://www.ms.gov.cn/xxgkpt/zfxxgk_25nb.jsp?urltype=tree.TreeTempUrl&wbtreeid=5473,
-市级,四川,眉山,,511400,文旅,市文广旅局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.ms.gov.cn/info/5069/1196105.htm,https://www.ms.gov.cn/xxgkpt/zfxxgk_25nb.jsp?urltype=tree.TreeTempUrl&wbtreeid=5473,
-市级,四川,眉山,,511400,生态环境,市生态环境局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.ms.gov.cn/info/5069/1195868.htm,https://www.ms.gov.cn/xxgkpt/zfxxgk_25nb.jsp?urltype=tree.TreeTempUrl&wbtreeid=5473,
-市级,四川,眉山,,511400,开发区,眉山高新区管委会,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.ms.gov.cn/info/5069/1196653.htm,https://www.ms.gov.cn/xxgkpt/zfxxgk_25nb.jsp?urltype=tree.TreeTempUrl&wbtreeid=5473,
-市级,四川,广安,,511600,政府办,广安市人民政府,已收录,2/2 个栏目已收录,2026-11-09 06:33,https://www.guang-an.gov.cn/,http://www.guang-an.gov.cn/,https://www.guang-an.gov.cn/gasrmzfw/tzgg/pc/list.html https://www.guang-an.gov.cn/gasrmzfw/c02514/pc/list.html
-市级,四川,广安,,511600,发改委,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,四川,广安,,511600,工信,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,四川,广安,,511600,科技,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,四川,广安,,511600,商务,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,四川,广安,,511600,财政,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,四川,广安,,511600,人社,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,四川,广安,,511600,市场监管,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,四川,广安,,511600,农业农村,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,四川,广安,,511600,文旅,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,四川,广安,,511600,生态环境,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,四川,遂宁,,510900,政府办,遂宁市人民政府门户网站,已收录,2/2 个栏目已收录,2026-11-09 06:33,https://www.suining.gov.cn/,https://www.suining.gov.cn/,https://www.suining.gov.cn/gongkai/jichu/40016.html https://www.suining.gov.cn/zcwjk.html
-市级,四川,遂宁,,510900,发改委,市发展改革委,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.suining.gov.cn/dept/7e713e2e3afdf388b9649e06a874f92b.html,https://www.suining.gov.cn/dept.html,
-市级,四川,遂宁,,510900,工信,市经济和信息化局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.suining.gov.cn/dept/2411ab68b5ba8b5201c4bd83e226e06a.html,https://www.suining.gov.cn/dept.html,
-市级,四川,遂宁,,510900,科技,市科技局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.suining.gov.cn/dept/8f3f3e89f8a000dcba1cca44115c414c.html,https://www.suining.gov.cn/dept.html,
-市级,四川,遂宁,,510900,商务,市商务局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.suining.gov.cn/dept/17808a68f4a322c984c3b2ad941b1b7e.html,https://www.suining.gov.cn/dept.html,
-市级,四川,遂宁,,510900,财政,市财政局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.suining.gov.cn/dept/228e4b6111b203e9a8e4279a776ab683.html,https://www.suining.gov.cn/dept.html,
-市级,四川,遂宁,,510900,人社,市人力资源社会保障局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.suining.gov.cn/dept/d1955db61a607fa5727d374fd02a4e85.html,https://www.suining.gov.cn/dept.html,
-市级,四川,遂宁,,510900,市场监管,市市场监管局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.suining.gov.cn/dept/3adb022f0a51500d62c75034395b90c3.html,https://www.suining.gov.cn/dept.html,
-市级,四川,遂宁,,510900,农业农村,市农业农村局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.suining.gov.cn/dept/e9488fcec2accf064cb51bb23d9dc230.html,https://www.suining.gov.cn/dept.html,
-市级,四川,遂宁,,510900,文旅,市文化广电体育旅游局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.suining.gov.cn/dept/52dc5acf85e5820aa84d7113068be800.html,https://www.suining.gov.cn/dept.html,
-市级,四川,遂宁,,510900,生态环境,市生态环境局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.suining.gov.cn/dept/9942e9ec42c9319f9dbc7a244a32d39d.html,https://www.suining.gov.cn/dept.html,
-市级,四川,遂宁,,510900,数据局,市数据局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.suining.gov.cn/dept/c60a777394b0fc3b3d71b80b07690993.html,https://www.suining.gov.cn/dept.html,
-市级,四川,遂宁,,510900,开发区,遂宁市河东新区管委会,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.suining.gov.cn/dept/a01d6283fa86d52338d3ece9f00d55e5.html,https://www.suining.gov.cn/dept.html,
-市级,四川,内江,,511000,政府办,内江市人民政府,已收录,1/2 个栏目已收录,2026-11-09 06:33,http://www.neijiang.gov.cn/,http://www.neijiang.gov.cn/,http://www.neijiang.gov.cn/njs/gsgg/common_list.shtml https://www.neijiang.gov.cn/njs/zfzc/newzcwjk_index.shtml
-市级,四川,内江,,511000,发改委,内江市发展和改革委员会,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://www.neijiang.gov.cn/fgw/xxgk/gkzn/zfxxgk_xxgkzn.shtml,http://www.neijiang.gov.cn/njs/wzndbb/all_ndbb.shtml,
-市级,四川,内江,,511000,工信,内江市经济和信息化局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://www.neijiang.gov.cn/jxj/xxgk/gkzn/zfxxgk_xxgkzn.shtml,http://www.neijiang.gov.cn/njs/wzndbb/all_ndbb.shtml,
-市级,四川,内江,,511000,科技,内江市科学技术局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://www.neijiang.gov.cn/kjj/zfxxgk/zfxxgkzn/zfxxgk_xxgkzn.shtml,http://www.neijiang.gov.cn/njs/wzndbb/all_ndbb.shtml,
-市级,四川,内江,,511000,商务,内江市商务局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://www.neijiang.gov.cn/njswj/xxgk/gkzn/zfxxgk_xxgkzn.shtml,http://www.neijiang.gov.cn/njs/wzndbb/all_ndbb.shtml,
-市级,四川,内江,,511000,财政,内江市财政局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://www.neijiang.gov.cn/czj/xxgk/gkzn/zfxxgk_xxgkzn.shtml,http://www.neijiang.gov.cn/njs/wzndbb/all_ndbb.shtml,
-市级,四川,内江,,511000,人社,内江市人力资源和社会保障局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://www.neijiang.gov.cn/rsj/xxgk/gkzn/zfxxgk_xxgkzn.shtml,http://www.neijiang.gov.cn/njs/wzndbb/all_ndbb.shtml,
-市级,四川,内江,,511000,市场监管,内江市市场监督管理局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://www.neijiang.gov.cn/scjgj/xxgk/xxgkzn/zfxxgk_xxgkzn.shtml,http://www.neijiang.gov.cn/njs/wzndbb/all_ndbb.shtml,
-市级,四川,内江,,511000,农业农村,内江市农业农村局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://www.neijiang.gov.cn/nyj/xxgk/gkzn/zfxxgk_xxgkzn.shtml,http://www.neijiang.gov.cn/njs/wzndbb/all_ndbb.shtml,
-市级,四川,内江,,511000,文旅,市文化广电和旅游局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://www.neijiang.gov.cn/whj/xxgk/gkzn2/zfxxgk_xxgkzn.shtml,http://www.neijiang.gov.cn/njs/wzndbb/all_ndbb.shtml,
-市级,四川,内江,,511000,生态环境,内江市生态环境局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://www.neijiang.gov.cn/sthjj/zfxxgk/zfxxgkzn/zfxxgk_xxgkzn.shtml,http://www.neijiang.gov.cn/njs/wzndbb/all_ndbb.shtml,
-市级,四川,甘孜藏族自治州,,513300,政府办,甘孜藏族自治州人民政府,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,http://www.gzz.gov.cn/,http://www.gzz.gov.cn/,https://www.gzz.gov.cn/zfwj
-市级,四川,甘孜藏族自治州,,513300,发改委,甘孜藏族自治州发展和改革委员会,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://fgw.gzz.gov.cn/tzgg/article/635172,https://www.gzz.gov.cn/gzz2024gzndbg,
-市级,四川,甘孜藏族自治州,,513300,工信,甘孜藏族自治州经济和信息化局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://jxj.gzz.gov.cn/gsgg1/article/631913,https://www.gzz.gov.cn/gzz2024gzndbg,
-市级,四川,甘孜藏族自治州,,513300,科技,州科技局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,http://www.gzz.gov.cn/zkxjsj2022n/article/452860,http://www.gzz.gov.cn/2022zfnb,
-市级,四川,甘孜藏族自治州,,513300,商务,甘孜藏族自治州商务和经济合作局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://swj.gzz.gov.cn/tzgs/article/632588,https://www.gzz.gov.cn/gzz2024gzndbg,
-市级,四川,甘孜藏族自治州,,513300,财政,州财政局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,http://www.gzz.gov.cn/zczj2022n/article/452982,http://www.gzz.gov.cn/2022zfnb,
-市级,四川,甘孜藏族自治州,,513300,人社,甘孜州人力资源和社会保障局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://rsj.gzz.gov.cn/ggtz/article/632461,https://www.gzz.gov.cn/gzz2024gzndbg,
-市级,四川,甘孜藏族自治州,,513300,市场监管,甘孜藏族自治州市场监督管理局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://scjgj.gzz.gov.cn/gzdt/article/631410,https://www.gzz.gov.cn/gzz2024gzndbg,
-市级,四川,甘孜藏族自治州,,513300,农业农村,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,四川,甘孜藏族自治州,,513300,文旅,州文化广电旅游局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,http://wglj.gzz.gov.cn/zwhgbdshlyj2022n/article/442167,http://www.gzz.gov.cn/2022zfnb,
-市级,四川,甘孜藏族自治州,,513300,生态环境,州生态环境局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,http://www.gzz.gov.cn/zsthjj2022n/article/453318,http://www.gzz.gov.cn/2022zfnb,
-市级,四川,甘孜藏族自治州,,513300,数据局,数据局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://www.gzz.gov.cn/governmentInfo/zjbmzfxxgkgzzzzzzshujj/zjbmzfxxgkgzzzzzzshujjfdzdgknrjgjj,http://www.gzz.gov.cn/zzjgzn,
-市级,四川,自贡,,510300,政府办,自贡市人民政府,已收录,1/2 个栏目已收录,2026-11-09 06:33,https://www.zg.gov.cn/,http://www.zg.gov.cn/,https://www.zg.gov.cn/zgsrmzf/tzgg/pc/list.html https://www.zg.gov.cn/zgsrmzf/szfqtwj/pc/list.html
-市级,四川,自贡,,510300,发改委,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,四川,自贡,,510300,工信,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,四川,自贡,,510300,科技,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,四川,自贡,,510300,商务,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,四川,自贡,,510300,财政,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,四川,自贡,,510300,人社,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,四川,自贡,,510300,市场监管,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,四川,自贡,,510300,农业农村,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,四川,自贡,,510300,文旅,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,四川,自贡,,510300,生态环境,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,四川,自贡,,510300,开发区,自贡高新技术产业开发区管理委员会,已收录,2/3 个栏目已收录,2026-11-09 06:33,https://www.zggx.gov.cn/,https://www.zg.gov.cn/,https://www.zggx.gov.cn/zggx/tzgg3780/pc/list.html https://www.zggx.gov.cn/zggx/tzgg3780/pc/list.html https://www.zggx.gov.cn/zggx/xzgfx3969/pc/list.html
-市级,四川,阿坝藏族羌族自治州,,513200,政府办,阿坝藏族羌族自治州人民政府,已收录,2/2 个栏目已收录,2026-11-09 06:34,http://www.abazhou.gov.cn/,http://www.abazhou.gov.cn/,http://www.abazhou.gov.cn/abazhou/c101961/nav_list.shtml http://www.abazhou.gov.cn/abazhou/c107037/zfxxgk_gkgz.shtml
-市级,四川,阿坝藏族羌族自治州,,513200,发改委,州发展改革委,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,http://www.abazhou.gov.cn/abazhou/c109361/bmzfxxgk_zn.shtml,http://www.abazhou.gov.cn/abazhou/c106383/ndbb.shtml,
-市级,四川,阿坝藏族羌族自治州,,513200,工信,州经济和信息化局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.abazhou.gov.cn/abazhou/c109765/bmzfxxgk_zn.shtml,http://www.abazhou.gov.cn/abazhou/c106383/ndbb.shtml,
-市级,四川,阿坝藏族羌族自治州,,513200,科技,州科技局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.abazhou.gov.cn/abazhou/c109170/bmzfxxgk_zn.shtml,http://www.abazhou.gov.cn/abazhou/c106383/ndbb.shtml,
-市级,四川,阿坝藏族羌族自治州,,513200,商务,州商务局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.abazhou.gov.cn/abazhou/c109566/bmzfxxgk_zn.shtml,http://www.abazhou.gov.cn/abazhou/c106383/ndbb.shtml,
-市级,四川,阿坝藏族羌族自治州,,513200,财政,州财政局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,http://www.abazhou.gov.cn/abazhou/c109407/bmzfxxgk_zn.shtml,http://www.abazhou.gov.cn/abazhou/c106383/ndbb.shtml,
-市级,四川,阿坝藏族羌族自治州,,513200,人社,州人力资源社会保障局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.abazhou.gov.cn/abazhou/c109338/bmzfxxgk_zn.shtml,http://www.abazhou.gov.cn/abazhou/c106383/ndbb.shtml,
-市级,四川,阿坝藏族羌族自治州,,513200,市场监管,州市场监管局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,http://www.abazhou.gov.cn/abazhou/c109426/bmzfxxgk_zn.shtml,http://www.abazhou.gov.cn/abazhou/c106383/ndbb.shtml,
-市级,四川,阿坝藏族羌族自治州,,513200,农业农村,州农业农村局,已收录,1/1 个栏目已收录,2026-11-09 06:34,https://abazhou.gov.cn/abazhou/c109646/bmzfxxgk_zn.shtml,http://www.abazhou.gov.cn/abazhou/c106383/ndbb.shtml,https://abazhou.gov.cn/abazhou/c107037/zfxxgk_gkgz.shtml
-市级,四川,阿坝藏族羌族自治州,,513200,文旅,州文广旅局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.abazhou.gov.cn/abazhou/c109746/bmzfxxgk_zn.shtml,http://www.abazhou.gov.cn/abazhou/c106383/ndbb.shtml,
-市级,四川,阿坝藏族羌族自治州,,513200,生态环境,州生态环境局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.abazhou.gov.cn/abazhou/c109540/bmzfxxgk_zn.shtml,http://www.abazhou.gov.cn/abazhou/c106383/ndbb.shtml,
-市级,四川,攀枝花,,510400,政府办,攀枝花市人民政府,已收录,1/2 个栏目已收录,2026-11-09 06:33,http://www.panzhihua.gov.cn/,http://www.panzhihua.gov.cn/,http://www.panzhihua.gov.cn/zwgk/gzdt/gggs/index.shtml http://www.panzhihua.gov.cn/zwgk/fggw/szcwjk/index.shtml
-市级,四川,攀枝花,,510400,发改委,攀枝花市发展和改革委员会,已收录,1/1 个栏目已收录,2026-11-09 06:33,http://fgw.panzhihua.gov.cn/zfxxgk/zfwzndgzbb/index.shtml,http://www.panzhihua.gov.cn/zwgk/ztxx/2017npzhszfwzndbb_1/index.shtml,http://fgw.panzhihua.gov.cn/zfxxgk/fdzdgknr/zcfg/index.shtml
-市级,四川,攀枝花,,510400,工信,攀枝花市经济和信息化局,已收录,1/1 个栏目已收录,2026-11-09 06:33,http://jxj.panzhihua.gov.cn/zfxxgk/zfwzndgzbb/index.shtml,http://www.panzhihua.gov.cn/zwgk/ztxx/2017npzhszfwzndbb_1/index.shtml,http://jxj.panzhihua.gov.cn/zfxxgk/fdzdgknr/zcfg/index.shtml
-市级,四川,攀枝花,,510400,科技,攀枝花市科学技术局,已收录,1/1 个栏目已收录,2026-11-09 06:33,http://kjj.panzhihua.gov.cn/zfxxgk/zfwzndgzbb/index.shtml,http://www.panzhihua.gov.cn/zwgk/ztxx/2017npzhszfwzndbb_1/index.shtml,http://kjj.panzhihua.gov.cn/zfxxgk/fdzdgknr_1/zcfg/index.shtml
-市级,四川,攀枝花,,510400,商务,攀枝花市商务局,已收录,1/1 个栏目已收录,2026-11-09 06:33,http://sswj.panzhihua.gov.cn/zfxxgk/zfwzndgzbb/index.shtml,http://www.panzhihua.gov.cn/zwgk/ztxx/2017npzhszfwzndbb_1/index.shtml,http://sswj.panzhihua.gov.cn/zfxxgk/fdzdgknr_1/zcfg/index.shtml
-市级,四川,攀枝花,,510400,财政,攀枝花市财政局,已收录,1/1 个栏目已收录,2026-11-09 06:33,http://czj.panzhihua.gov.cn/zfxxgk/zfwzndgzbb/index.shtml,http://www.panzhihua.gov.cn/zwgk/ztxx/2017npzhszfwzndbb_1/index.shtml,http://czj.panzhihua.gov.cn/zfxxgk/fdzdgknr_1/zcfg/index.shtml
-市级,四川,攀枝花,,510400,人社,攀枝花市人力资源和社会保障局,已收录,1/1 个栏目已收录,2026-11-09 06:33,http://rsj.panzhihua.gov.cn/zfxxgk/zfwzndgzbb/index.shtml,http://www.panzhihua.gov.cn/zwgk/ztxx/2017npzhszfwzndbb_1/index.shtml,http://rsj.panzhihua.gov.cn/zfxxgk/fdzdgknr_1/zcfg/index.shtml
-市级,四川,攀枝花,,510400,市场监管,攀枝花市市场监督管理局,已收录,1/1 个栏目已收录,2026-11-09 06:33,http://scjgj.panzhihua.gov.cn/zfxxgk/zfwzndgzbb/index.shtml,http://www.panzhihua.gov.cn/zwgk/ztxx/2017npzhszfwzndbb_1/index.shtml,http://scjgj.panzhihua.gov.cn/zfxxgk/fdzdgknr_1/zcfg/index.shtml
-市级,四川,攀枝花,,510400,农业农村,攀枝花市农业农村局,已收录,1/1 个栏目已收录,2026-11-09 06:33,http://nyncj.panzhihua.gov.cn/zfxxgk/zfwzndgzbb/index.shtml,http://www.panzhihua.gov.cn/zwgk/ztxx/2017npzhszfwzndbb_1/index.shtml,http://nyncj.panzhihua.gov.cn/zfxxgk/fdzdgknr_2/zcfg/index.shtml
-市级,四川,攀枝花,,510400,文旅,市文广旅局,已收录,1/1 个栏目已收录,2026-11-09 06:33,http://wglj.panzhihua.gov.cn/zfxxgk/zfwzndgzbb/index.shtml,http://www.panzhihua.gov.cn/zwgk/ztxx/2017npzhszfwzndbb_1/index.shtml,http://wglj.panzhihua.gov.cn/zfxxgk/fdzdgknr_1/zcfg/index.shtml
-市级,四川,攀枝花,,510400,生态环境,攀枝花市生态环境局,已收录,1/1 个栏目已收录,2026-11-09 06:33,http://sthjj.panzhihua.gov.cn/zfxxgk/zfwzndgzbgbb/index.shtml,http://www.panzhihua.gov.cn/zwgk/ztxx/2017npzhszfwzndbb_1/index.shtml,http://sthjj.panzhihua.gov.cn/zfxxgk/fdzdgknr_1/zcfg/index.shtml
-市级,四川,攀枝花,,510400,开发区,攀枝花市钒钛高新技术产业开发区管理委员会,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,http://ft.panzhihua.gov.cn/zfxxgk/zfwzndgzbb/index.shtml,http://www.panzhihua.gov.cn/zwgk/ztxx/2017npzhszfwzndbb_1/index.shtml,
-市级,四川,攀枝花,,510400,开发区,攀枝花市钒钛高新技术产业开发区管理委员会,已收录,1/1 个栏目已收录,2026-11-09 06:33,http://ft.panzhihua.gov.cn/,http://www.panzhihua.gov.cn/,http://ft.panzhihua.gov.cn/zfxxgk/tzgg/index.shtml
-市级,四川,攀枝花,,510400,开发区,攀枝花市钒钛高新技术产业开发区管理委员会,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,http://ft.panzhihua.gov.cn/zfxxgk/fdzdgknr_1/jgsz/index.shtml,http://www.panzhihua.gov.cn/zfxxgk1/fdzdgknr/jgjj/index.shtml,
-市级,四川,达州,,511700,政府办,达州市人民政府门户网,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,http://www.dazhou.gov.cn/,http://www.dazhou.gov.cn/,http://www.dazhou.gov.cn/news-list-gsgg.html http://www.dazhou.gov.cn/news-list-zfwj.html
-市级,四川,达州,,511700,发改委,达州市发展和改革委员会,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,http://fgw.dazhou.gov.cn/,http://www.dazhou.gov.cn/news-show-272745.html,http://fgw.dazhou.gov.cn/news-list-zhengcefagui.html
-市级,四川,达州,,511700,工信,市经信局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,http://www.dazhou.gov.cn/news-show-160575.html,http://www.dazhou.gov.cn/news-list-jigouzhineng.html,
-市级,四川,达州,,511700,科技,达州市科学技术局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,http://kjj.dazhou.gov.cn/,http://www.dazhou.gov.cn/news-show-272745.html,http://kjj.dazhou.gov.cn/news-list-tongzhi.html http://kjj.dazhou.gov.cn/news-list-gsgg.html http://kjj.dazhou.gov.cn/news-list-zcwj.html
-市级,四川,达州,,511700,商务,市商务局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,http://www.dazhou.gov.cn/news-show-160592.html,http://www.dazhou.gov.cn/news-list-jigouzhineng.html,
-市级,四川,达州,,511700,财政,市财政局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,http://www.dazhou.gov.cn/news-show-160598.html,http://www.dazhou.gov.cn/news-list-jigouzhineng.html,
-市级,四川,达州,,511700,人社,达州市人力资源和社会保障局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,http://rsj.dazhou.gov.cn/,http://www.dazhou.gov.cn/news-show-272745.html,https://rsj.dazhou.gov.cn/news-list-tzgg.html https://rsj.dazhou.gov.cn/news-list-zcwj.html
-市级,四川,达州,,511700,市场监管,达州市市场监督管理局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,http://scjgj.dazhou.gov.cn/,http://www.dazhou.gov.cn/news-show-272745.html,http://scjgj.dazhou.gov.cn/news-list-gsggsgs.html http://scjgj.dazhou.gov.cn/news-list-zcwj.html
-市级,四川,达州,,511700,农业农村,达州达州市农业农村局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,http://nyj.dazhou.gov.cn/,http://www.dazhou.gov.cn/news-show-272745.html,http://nyj.dazhou.gov.cn/news-list-gsgg.html http://nyj.dazhou.gov.cn/news-list-zcwjq.html
-市级,四川,达州,,511700,文旅,达州市文化体育和旅游局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,http://wtlyj.dazhou.gov.cn/,http://www.dazhou.gov.cn/news-show-272745.html,http://wtlyj.dazhou.gov.cn/news-list-gsgg.html http://wtlyj.dazhou.gov.cn/news-list-zcwj.html
-市级,四川,达州,,511700,生态环境,达州市生态环境局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,http://sthjj.dazhou.gov.cn/,http://www.dazhou.gov.cn/news-show-272745.html,http://sthjj.dazhou.gov.cn/news-list-ggtz.html http://sthjj.dazhou.gov.cn/news-list-zhengwuxinxi.html http://sthjj.dazhou.gov.cn/news-list-zcwj.html
-市级,四川,达州,,511700,数据局,市数据局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,http://www.dazhou.gov.cn/news-show-160602.html,http://www.dazhou.gov.cn/news-list-jigouzhineng.html,
-市级,四川,凉山彝族自治州,,513400,政府办,凉山彝族自治州人民政府,已收录,3/3 个栏目已收录,2026-11-09 06:34,http://www.lsz.gov.cn/,http://www.lsz.gov.cn/,https://www.lsz.gov.cn/xxgk/jbxxgk/tzgg/ https://scjg.lsz.gov.cn:443/zfxxgk/fdzdgknr/tzgg_31786/ https://scjg.lsz.gov.cn:443/zfxxgk/lzyj/
-市级,四川,凉山彝族自治州,,513400,发改委,凉山彝族自治州发展和改革委员会,已收录,2/2 个栏目已收录,2026-11-09 08:02,https://fgw.lsz.gov.cn:443/,https://www.lsz.gov.cn/bmxslink/,https://fgw.lsz.gov.cn:443/zfxxgk/fdzdgknr/tzgg_31903/ https://fgw.lsz.gov.cn:443/zfxxgk/zc/zcwj_31881/
-市级,四川,凉山彝族自治州,,513400,工信,州经信局,已收录,2/2 个栏目已收录,2026-11-09 08:02,https://jxj.lsz.gov.cn:443/,https://www.lsz.gov.cn/bmxslink/,https://jxj.lsz.gov.cn:443/zfxxgk/fdzdgknr/tzgg/ https://jxj.lsz.gov.cn:443/zfxxgk/gfxwj/zcwj/
-市级,四川,凉山彝族自治州,,513400,科技,州科学技术局,已收录,2/2 个栏目已收录,2026-11-09 06:34,https://kjj.lsz.gov.cn:443/xxgks/zc/,https://www.lsz.gov.cn/bmxslink/,http://kjj.lsz.gov.cn/xxgks/fdgk/tzgg_39967/ http://kjj.lsz.gov.cn/xxgks/zc/
-市级,四川,凉山彝族自治州,,513400,商务,凉山州商务局,已收录,2/2 个栏目已收录,2026-11-09 08:02,https://swj.lsz.gov.cn:443/,https://www.lsz.gov.cn/bmxslink/,https://swj.lsz.gov.cn:443/sy/tzgg/ https://swj.lsz.gov.cn:443/zfxxgk/fdzdgknr/lzyj/zcwj_32077/
-市级,四川,凉山彝族自治州,,513400,财政,州财政局,已收录,2/2 个栏目已收录,2026-11-09 08:02,https://czj.lsz.gov.cn:443/,https://www.lsz.gov.cn/bmxslink/,https://czj.lsz.gov.cn:443/xxgk/fdzdgknr/tzgg_31101/ https://czj.lsz.gov.cn:443/xxgk/fdzdgknr/zcwjjjd/zcwj_31076/
-市级,四川,凉山彝族自治州,,513400,人社,凉山彝族自治州人力资源和社会保障局,已收录,2/2 个栏目已收录,2026-11-09 06:34,https://rsj.lsz.gov.cn:443/,https://www.lsz.gov.cn/bmxslink/,http://rsj.lsz.gov.cn/xxgk/fdzdgknr/tzgg/ http://rsj.lsz.gov.cn/xxgk/zc/
-市级,四川,凉山彝族自治州,,513400,市场监管,州市场监督管理局,已收录,3/3 个栏目已收录,2026-11-09 06:34,https://scjg.lsz.gov.cn:443/,https://www.lsz.gov.cn/bmxslink/,http://scjg.lsz.gov.cn/zfxxgk/fdzdgknr/tzgg_31786/ http://scjg.lsz.gov.cn/zfxxgk/fdzdgknr/tzgg_31786/ http://scjg.lsz.gov.cn/zfxxgk/lzyj/
-市级,四川,凉山彝族自治州,,513400,农业农村,州农业农村局,已收录,2/2 个栏目已收录,2026-11-09 08:02,https://nyncj.lsz.gov.cn:443/,https://www.lsz.gov.cn/bmxslink/,http://nyncj.lsz.gov.cn/xxgk/fdzdgknr/tzgg_31747/ http://nyncj.lsz.gov.cn/xxgk/fdzdgknr/lzyj/zcwj_31725/
-市级,四川,凉山彝族自治州,,513400,文旅,州文化广电和旅游局,已收录,2/2 个栏目已收录,2026-11-09 08:02,https://wgl.lsz.gov.cn:443/,https://www.lsz.gov.cn/bmxslink/,https://wgl.lsz.gov.cn:443/xwzx/tzgg/ http://wgl.lsz.gov.cn/xxgk/zc2613/
-市级,四川,凉山彝族自治州,,513400,生态环境,凉山彝族自治州生态环境局,已收录,2/2 个栏目已收录,2026-11-09 08:02,https://sthj.lsz.gov.cn:443/,https://www.lsz.gov.cn/bmxslink/,https://sthj.lsz.gov.cn:443/zfxxgk/fdzdgknr/tzgg_31258/ https://sthj.lsz.gov.cn:443/zfxxgk/fdzdgknr/lzyj/zcwj_31236/
-市级,四川,泸州,,510500,政府办,泸州市人民政府门户网站,已收录,2/2 个栏目已收录,2026-11-09 06:33,https://www.luzhou.gov.cn/,http://www.luzhou.gov.cn/,https://www.luzhou.gov.cn/xw/gsgg https://www.luzhou.gov.cn/zw/zcwjs/szfwj
-市级,四川,泸州,,510500,发改委,泸州市发展和改革委员会,已收录,2/2 个栏目已收录,2026-11-09 06:33,https://fgw.luzhou.gov.cn/tzgg/tz/content_1130248,https://www.luzhou.gov.cn/zt/zxzt/zfwzgzndbb2025,https://fgw.luzhou.gov.cn/tzgg https://fgw.luzhou.gov.cn/zwgk/lzyj
-市级,四川,泸州,,510500,工信,泸州市经济和信息化局,已收录,2/2 个栏目已收录,2026-11-09 06:33,https://jxj.luzhou.gov.cn/gzdt/bwdt/content_1130136,https://www.luzhou.gov.cn/zt/zxzt/zfwzgzndbb2025,https://jxj.luzhou.gov.cn/tzgg https://jxj.luzhou.gov.cn/dzwgk/lzyj
-市级,四川,泸州,,510500,科技,泸州市科学技术局,已收录,2/2 个栏目已收录,2026-11-09 06:33,https://kjj.luzhou.gov.cn/tzgg/content_1130141,https://www.luzhou.gov.cn/zt/zxzt/zfwzgzndbb2025,https://kjj.luzhou.gov.cn/tzgg https://kjj.luzhou.gov.cn/zwgk/lzyj
-市级,四川,泸州,,510500,商务,泸州市商务和会展局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,https://swhzj.luzhou.gov.cn/,https://www.luzhou.gov.cn/zt/zxzt/zfwzgzndbb2025/szfmhwz2025,https://swhzj.luzhou.gov.cn/zwgk/lzyj
-市级,四川,泸州,,510500,财政,泸州市财政局,已收录,2/2 个栏目已收录,2026-11-09 06:33,https://czj.luzhou.gov.cn/gsgg/content_1130250,https://www.luzhou.gov.cn/zt/zxzt/zfwzgzndbb2025/sjbmwz2025,https://czj.luzhou.gov.cn/gsgg https://czj.luzhou.gov.cn/zwgk/lzyj
-市级,四川,泸州,,510500,人社,泸州市人力资源和社会保障局,已收录,2/2 个栏目已收录,2026-11-09 06:33,https://rsj.luzhou.gov.cn/gzdt/tzgg/content_1130129,https://www.luzhou.gov.cn/zt/zxzt/zfwzgzndbb2025/sjbmwz2025,https://rsj.luzhou.gov.cn/gzdt/tzgg https://rsj.luzhou.gov.cn/zwgk/lzyj
-市级,四川,泸州,,510500,市场监管,泸州市市场监督管理局,已收录,1/2 个栏目已收录,2026-11-09 06:33,https://scjgj.luzhou.gov.cn/,https://www.luzhou.gov.cn/zt/zxzt/zfwzgzndbb2025/szfmhwz2025,https://scjgj.luzhou.gov.cn/tzgg https://scjgj.luzhou.gov.cn/zwgk/lzyj
-市级,四川,泸州,,510500,农业农村,泸州市农业农村局,已收录,2/2 个栏目已收录,2026-11-09 06:33,https://nyncj.luzhou.gov.cn/,https://www.luzhou.gov.cn/zt/zxzt/zfwzgzndbb2025/szfmhwz2025,https://nyncj.luzhou.gov.cn/tzgg https://nyncj.luzhou.gov.cn/zwgk/lzyj
-市级,四川,泸州,,510500,文旅,市文化广电旅游局,已收录,1/2 个栏目已收录,2026-11-09 06:33,https://wtgj.luzhou.gov.cn/jqjs/dwzn,https://www.luzhou.gov.cn/jg,https://wtgj.luzhou.gov.cn/ggfw https://wtgj.luzhou.gov.cn/zwgk/lzyj
-市级,四川,泸州,,510500,生态环境,泸州市生态环境局,已收录,2/2 个栏目已收录,2026-11-09 06:33,https://sthjj.luzhou.gov.cn/zwgk/gsgg/content_1130164,https://www.luzhou.gov.cn/zt/zxzt/zfwzgzndbb2025/sjbmwz2025,https://sthjj.luzhou.gov.cn/zwgk/gsgg https://sthjj.luzhou.gov.cn/zwgk/lzyj/gfxwj
-市级,四川,资阳,,512000,政府办,资阳市人民政府,已收录,1/2 个栏目已收录,2026-11-09 06:34,http://www.ziyang.gov.cn/,http://www.ziyang.gov.cn/,http://www.ziyang.gov.cn/zysrmzf/gsgg/pc/list.html http://www.ziyang.gov.cn/zysrmzf/c00001/pc/list.html
-市级,四川,资阳,,512000,发改委,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,四川,资阳,,512000,工信,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,四川,资阳,,512000,科技,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,四川,资阳,,512000,商务,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,四川,资阳,,512000,财政,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,四川,资阳,,512000,人社,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,四川,资阳,,512000,市场监管,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,四川,资阳,,512000,农业农村,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,四川,资阳,,512000,文旅,,需人工,官方导航里没找到这个部门的网站或频道,,,,
-市级,四川,资阳,,512000,生态环境,,需人工,官方导航里没找到这个部门的网站或频道,,,,
 市级,四川,南充,,511300,政府办,南充市人民政府,已收录,1/2 个栏目已收录,2026-11-09 06:34,https://www.nanchong.gov.cn/,http://www.nanchong.gov.cn/,https://www.nanchong.gov.cn/xwdt/gsgg/ https://www.nanchong.gov.cn/zwgk/zc/
 市级,四川,南充,,511300,发改委,市发展和改革委员会,已收录,2/2 个栏目已收录,2026-11-09 06:34,https://www.nanchong.gov.cn/fgw/index.html,https://www.nanchong.gov.cn/xwdt/ztzl/zfwzndgzbb/,https://www.nanchong.gov.cn/fgw/xwdt/tzgg/ https://www.nanchong.gov.cn/fgw/zwxx/zcwj/
 市级,四川,南充,,511300,工信,市经济和信息化局,已收录,2/2 个栏目已收录,2026-11-09 06:34,https://www.nanchong.gov.cn/jxj/index.html,https://www.nanchong.gov.cn/xwdt/ztzl/zfwzndgzbb/,https://www.nanchong.gov.cn/jxj/xwdt/tzgg/ https://www.nanchong.gov.cn/jxj/zwxx/zcwj/
@@ -218,6 +15,209 @@
 市级,四川,南充,,511300,开发区,南充临江新区管理委员会,已收录,2/2 个栏目已收录,2026-11-09 06:34,https://www.nanchong.gov.cn/ljxq/index.html,https://www.nanchong.gov.cn/xwdt/ztzl/zfwzndgzbb/,https://www.nanchong.gov.cn/ljxq/xwdt/tzgg/ https://www.nanchong.gov.cn/ljxq/zwxx/zcwj/
 市级,四川,南充,,511300,开发区,南充高新技术产业园区管理委员会,已收录,2/2 个栏目已收录,2026-11-09 06:34,https://www.nanchong.gov.cn/gxq/index.html,https://www.nanchong.gov.cn/xwdt/ztzl/zfwzndgzbb/,https://www.nanchong.gov.cn/gxq/wxdt/tzgg/ https://www.nanchong.gov.cn/gxq/zwxx/zcwj/
 市级,四川,南充,,511300,开发区,四川南充经济开发区管理委员会,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.nanchong.gov.cn/jjkfq/,https://www.nanchong.gov.cn/,
+市级,四川,乐山,,511100,政府办,中共乐山市委乐山市人民政府,已收录,1/2 个栏目已收录,2026-11-09 06:34,https://www.leshan.gov.cn/,http://www.leshan.gov.cn/,https://www.leshan.gov.cn/lsswszf/tzgg/index.html https://www.leshan.gov.cn/lsswszf/zcwjk/90053490/index.html
+市级,四川,乐山,,511100,发改委,市发展改革委,已收录,2/2 个栏目已收录,2026-11-09 06:34,https://www.leshan.gov.cn/lsswszf/bmxxgk/92337981/index.html,https://www.leshan.gov.cn/,https://www.leshan.gov.cn/lsswszf/gsgg/92337981/index.html https://www.leshan.gov.cn/lsswszf/zwgkzc/92337981/index.html
+市级,四川,乐山,,511100,工信,市经济信息化局,已收录,2/2 个栏目已收录,2026-11-09 06:34,https://www.leshan.gov.cn/lsswszf/bmxxgk/92337815/index.html,https://www.leshan.gov.cn/,https://www.leshan.gov.cn/lsswszf/gsgg/92337815/index.html https://www.leshan.gov.cn/lsswszf/zwgkzc/92337815/index.html
+市级,四川,乐山,,511100,科技,市科技局,已收录,2/2 个栏目已收录,2026-11-09 06:35,https://www.leshan.gov.cn/lsswszf/bmxxgk/92337829/index.html,https://www.leshan.gov.cn/,https://www.leshan.gov.cn/lsswszf/gsgg/92337829/index.html https://www.leshan.gov.cn/lsswszf/zwgkzc/92337829/index.html
+市级,四川,乐山,,511100,商务,市商务局,已收录,2/2 个栏目已收录,2026-11-09 06:34,https://www.leshan.gov.cn/lsswszf/bmxxgk/92337843/index.html,https://www.leshan.gov.cn/,https://www.leshan.gov.cn/lsswszf/gsgg/92337843/index.html https://www.leshan.gov.cn/lsswszf/zwgkzc/92337843/index.html
+市级,四川,乐山,,511100,财政,市财政局,已收录,2/2 个栏目已收录,2026-11-09 06:35,https://www.leshan.gov.cn/lsswszf/bmxxgk/92337808/index.html,https://www.leshan.gov.cn/,https://www.leshan.gov.cn/lsswszf/gsgg/92337808/index.html https://www.leshan.gov.cn/lsswszf/zwgkzc/92337808/index.html
+市级,四川,乐山,,511100,人社,市人力资源社会保障局,已收录,3/3 个栏目已收录,2026-11-09 06:33,https://www.leshan.gov.cn/lsswszf/bmxxgk/92337841/index.html,https://www.leshan.gov.cn/,https://www.leshan.gov.cn/lsswszf/gsgg/92337841/index.html https://www.leshan.gov.cn/lsswszf/jylygsgg/92337841/index.html https://www.leshan.gov.cn/lsswszf/zwgkzc/92337841/index.html
+市级,四川,乐山,,511100,市场监管,市市场监管局,已收录,2/2 个栏目已收录,2026-11-09 06:34,https://www.leshan.gov.cn/lsswszf/bmxxgk/92337834/index.html,https://www.leshan.gov.cn/,https://www.leshan.gov.cn/lsswszf/gsgg/92337834/index.html https://www.leshan.gov.cn/lsswszf/zwgkzc/92337834/index.html
+市级,四川,乐山,,511100,农业农村,市农业农村局,已收录,2/2 个栏目已收录,2026-11-09 06:34,https://www.leshan.gov.cn/lsswszf/bmxxgk/92337814/index.html,https://www.leshan.gov.cn/,https://www.leshan.gov.cn/lsswszf/gsgg/92337814/index.html https://www.leshan.gov.cn/lsswszf/zwgkzc/92337814/index.html
+市级,四川,乐山,,511100,文旅,市文化广电旅游局,已收录,2/2 个栏目已收录,2026-11-09 06:34,https://www.leshan.gov.cn/lsswszf/bmxxgk/92337818/index.html,https://www.leshan.gov.cn/,https://www.leshan.gov.cn/lsswszf/gsgg/92337818/index.html https://www.leshan.gov.cn/lsswszf/zwgkzc/92337818/index.html
+市级,四川,乐山,,511100,生态环境,市生态环境局,已收录,2/2 个栏目已收录,2026-11-09 06:34,https://www.leshan.gov.cn/lsswszf/bmxxgk/92337822/index.html,https://www.leshan.gov.cn/,https://www.leshan.gov.cn/lsswszf/gsgg/92337822/index.html https://www.leshan.gov.cn/lsswszf/zwgkzc/92337822/index.html
+市级,四川,乐山,,511100,数据局,市数据局,已收录,2/2 个栏目已收录,2026-11-09 06:34,https://www.leshan.gov.cn/lsswszf/bmxxgk/92339087/index.html,https://www.leshan.gov.cn/,https://www.leshan.gov.cn/lsswszf/gsgg/92339087/index.html https://www.leshan.gov.cn/lsswszf/zwgkzc/92339087/index.html
+市级,四川,乐山,,511100,开发区,乐山高新区管委会,已收录,2/2 个栏目已收录,2026-11-09 06:33,https://gxq.leshan.gov.cn/,https://www.leshan.gov.cn/,https://gxq.leshan.gov.cn/gxq/tzgg/index.html https://gxq.leshan.gov.cn/gxq/zcwj/92337854/index.html
+市级,四川,攀枝花,,510400,政府办,攀枝花市人民政府,已收录,1/2 个栏目已收录,2026-11-09 06:33,http://www.panzhihua.gov.cn/,http://www.panzhihua.gov.cn/,http://www.panzhihua.gov.cn/zwgk/gzdt/gggs/index.shtml http://www.panzhihua.gov.cn/zwgk/fggw/szcwjk/index.shtml
+市级,四川,攀枝花,,510400,发改委,攀枝花市发展和改革委员会,已收录,1/1 个栏目已收录,2026-11-09 06:33,http://fgw.panzhihua.gov.cn/zfxxgk/zfwzndgzbb/index.shtml,http://www.panzhihua.gov.cn/zwgk/ztxx/2017npzhszfwzndbb_1/index.shtml,http://fgw.panzhihua.gov.cn/zfxxgk/fdzdgknr/zcfg/index.shtml
+市级,四川,攀枝花,,510400,工信,攀枝花市经济和信息化局,已收录,1/1 个栏目已收录,2026-11-09 06:33,http://jxj.panzhihua.gov.cn/zfxxgk/zfwzndgzbb/index.shtml,http://www.panzhihua.gov.cn/zwgk/ztxx/2017npzhszfwzndbb_1/index.shtml,http://jxj.panzhihua.gov.cn/zfxxgk/fdzdgknr/zcfg/index.shtml
+市级,四川,攀枝花,,510400,科技,攀枝花市科学技术局,已收录,1/1 个栏目已收录,2026-11-09 06:33,http://kjj.panzhihua.gov.cn/zfxxgk/zfwzndgzbb/index.shtml,http://www.panzhihua.gov.cn/zwgk/ztxx/2017npzhszfwzndbb_1/index.shtml,http://kjj.panzhihua.gov.cn/zfxxgk/fdzdgknr_1/zcfg/index.shtml
+市级,四川,攀枝花,,510400,商务,攀枝花市商务局,已收录,1/1 个栏目已收录,2026-11-09 06:33,http://sswj.panzhihua.gov.cn/zfxxgk/zfwzndgzbb/index.shtml,http://www.panzhihua.gov.cn/zwgk/ztxx/2017npzhszfwzndbb_1/index.shtml,http://sswj.panzhihua.gov.cn/zfxxgk/fdzdgknr_1/zcfg/index.shtml
+市级,四川,攀枝花,,510400,财政,攀枝花市财政局,已收录,1/1 个栏目已收录,2026-11-09 06:33,http://czj.panzhihua.gov.cn/zfxxgk/zfwzndgzbb/index.shtml,http://www.panzhihua.gov.cn/zwgk/ztxx/2017npzhszfwzndbb_1/index.shtml,http://czj.panzhihua.gov.cn/zfxxgk/fdzdgknr_1/zcfg/index.shtml
+市级,四川,攀枝花,,510400,人社,攀枝花市人力资源和社会保障局,已收录,1/1 个栏目已收录,2026-11-09 06:33,http://rsj.panzhihua.gov.cn/zfxxgk/zfwzndgzbb/index.shtml,http://www.panzhihua.gov.cn/zwgk/ztxx/2017npzhszfwzndbb_1/index.shtml,http://rsj.panzhihua.gov.cn/zfxxgk/fdzdgknr_1/zcfg/index.shtml
+市级,四川,攀枝花,,510400,市场监管,攀枝花市市场监督管理局,已收录,1/1 个栏目已收录,2026-11-09 06:33,http://scjgj.panzhihua.gov.cn/zfxxgk/zfwzndgzbb/index.shtml,http://www.panzhihua.gov.cn/zwgk/ztxx/2017npzhszfwzndbb_1/index.shtml,http://scjgj.panzhihua.gov.cn/zfxxgk/fdzdgknr_1/zcfg/index.shtml
+市级,四川,攀枝花,,510400,农业农村,攀枝花市农业农村局,已收录,1/1 个栏目已收录,2026-11-09 06:33,http://nyncj.panzhihua.gov.cn/zfxxgk/zfwzndgzbb/index.shtml,http://www.panzhihua.gov.cn/zwgk/ztxx/2017npzhszfwzndbb_1/index.shtml,http://nyncj.panzhihua.gov.cn/zfxxgk/fdzdgknr_2/zcfg/index.shtml
+市级,四川,攀枝花,,510400,文旅,市文广旅局,已收录,1/1 个栏目已收录,2026-11-09 06:33,http://wglj.panzhihua.gov.cn/zfxxgk/zfwzndgzbb/index.shtml,http://www.panzhihua.gov.cn/zwgk/ztxx/2017npzhszfwzndbb_1/index.shtml,http://wglj.panzhihua.gov.cn/zfxxgk/fdzdgknr_1/zcfg/index.shtml
+市级,四川,攀枝花,,510400,生态环境,攀枝花市生态环境局,已收录,1/1 个栏目已收录,2026-11-09 06:33,http://sthjj.panzhihua.gov.cn/zfxxgk/zfwzndgzbgbb/index.shtml,http://www.panzhihua.gov.cn/zwgk/ztxx/2017npzhszfwzndbb_1/index.shtml,http://sthjj.panzhihua.gov.cn/zfxxgk/fdzdgknr_1/zcfg/index.shtml
+市级,四川,攀枝花,,510400,开发区,攀枝花市钒钛高新技术产业开发区管理委员会,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,http://ft.panzhihua.gov.cn/zfxxgk/zfwzndgzbb/index.shtml,http://www.panzhihua.gov.cn/zwgk/ztxx/2017npzhszfwzndbb_1/index.shtml,
+市级,四川,攀枝花,,510400,开发区,攀枝花市钒钛高新技术产业开发区管理委员会,已收录,1/1 个栏目已收录,2026-11-09 06:33,http://ft.panzhihua.gov.cn/,http://www.panzhihua.gov.cn/,http://ft.panzhihua.gov.cn/zfxxgk/tzgg/index.shtml
+市级,四川,攀枝花,,510400,开发区,攀枝花市钒钛高新技术产业开发区管理委员会,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,http://ft.panzhihua.gov.cn/zfxxgk/fdzdgknr_1/jgsz/index.shtml,http://www.panzhihua.gov.cn/zfxxgk1/fdzdgknr/jgjj/index.shtml,
+市级,四川,眉山,,511400,政府办,中共眉山市委 眉山市人民政府 门户网站,已收录,2/2 个栏目已收录,2026-11-09 08:02,https://www.ms.gov.cn/,http://www.ms.gov.cn/,https://www.ms.gov.cn/zfxxgk/fdzdgknr/gsgg.htm https://www.ms.gov.cn/zfxxgk/z__c.htm
+市级,四川,眉山,,511400,发改委,市发展改革委,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.ms.gov.cn/info/5069/1196113.htm,https://www.ms.gov.cn/xxgkpt/zfxxgk_25nb.jsp?urltype=tree.TreeTempUrl&wbtreeid=5473,
+市级,四川,眉山,,511400,工信,市经济和信息化局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.ms.gov.cn/info/5069/1196260.htm,https://www.ms.gov.cn/xxgkpt/zfxxgk_25nb.jsp?urltype=tree.TreeTempUrl&wbtreeid=5473,
+市级,四川,眉山,,511400,科技,市科技局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.ms.gov.cn/info/5069/1195867.htm,https://www.ms.gov.cn/xxgkpt/zfxxgk_25nb.jsp?urltype=tree.TreeTempUrl&wbtreeid=5473,
+市级,四川,眉山,,511400,商务,市商务局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.ms.gov.cn/info/5069/1196301.htm,https://www.ms.gov.cn/xxgkpt/zfxxgk_25nb.jsp?urltype=tree.TreeTempUrl&wbtreeid=5473,
+市级,四川,眉山,,511400,财政,市财政局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.ms.gov.cn/info/5069/1196242.htm,https://www.ms.gov.cn/xxgkpt/zfxxgk_25nb.jsp?urltype=tree.TreeTempUrl&wbtreeid=5473,
+市级,四川,眉山,,511400,人社,市人力资源社会保障局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.ms.gov.cn/info/5069/1196290.htm,https://www.ms.gov.cn/xxgkpt/zfxxgk_25nb.jsp?urltype=tree.TreeTempUrl&wbtreeid=5473,
+市级,四川,眉山,,511400,市场监管,市市场监管局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.ms.gov.cn/info/5069/1196197.htm,https://www.ms.gov.cn/xxgkpt/zfxxgk_25nb.jsp?urltype=tree.TreeTempUrl&wbtreeid=5473,
+市级,四川,眉山,,511400,农业农村,市农业农村局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.ms.gov.cn/info/5069/1195957.htm,https://www.ms.gov.cn/xxgkpt/zfxxgk_25nb.jsp?urltype=tree.TreeTempUrl&wbtreeid=5473,
+市级,四川,眉山,,511400,文旅,市文广旅局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.ms.gov.cn/info/5069/1196105.htm,https://www.ms.gov.cn/xxgkpt/zfxxgk_25nb.jsp?urltype=tree.TreeTempUrl&wbtreeid=5473,
+市级,四川,眉山,,511400,生态环境,市生态环境局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.ms.gov.cn/info/5069/1195868.htm,https://www.ms.gov.cn/xxgkpt/zfxxgk_25nb.jsp?urltype=tree.TreeTempUrl&wbtreeid=5473,
+市级,四川,眉山,,511400,开发区,眉山高新区管委会,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.ms.gov.cn/info/5069/1196653.htm,https://www.ms.gov.cn/xxgkpt/zfxxgk_25nb.jsp?urltype=tree.TreeTempUrl&wbtreeid=5473,
+市级,四川,凉山彝族自治州,,513400,政府办,凉山彝族自治州人民政府,已收录,3/3 个栏目已收录,2026-11-09 06:34,http://www.lsz.gov.cn/,http://www.lsz.gov.cn/,https://www.lsz.gov.cn/xxgk/jbxxgk/tzgg/ https://scjg.lsz.gov.cn:443/zfxxgk/fdzdgknr/tzgg_31786/ https://scjg.lsz.gov.cn:443/zfxxgk/lzyj/
+市级,四川,凉山彝族自治州,,513400,发改委,凉山彝族自治州发展和改革委员会,已收录,2/2 个栏目已收录,2026-11-09 08:02,https://fgw.lsz.gov.cn:443/,https://www.lsz.gov.cn/bmxslink/,https://fgw.lsz.gov.cn:443/zfxxgk/fdzdgknr/tzgg_31903/ https://fgw.lsz.gov.cn:443/zfxxgk/zc/zcwj_31881/
+市级,四川,凉山彝族自治州,,513400,工信,州经信局,已收录,2/2 个栏目已收录,2026-11-09 08:02,https://jxj.lsz.gov.cn:443/,https://www.lsz.gov.cn/bmxslink/,https://jxj.lsz.gov.cn:443/zfxxgk/fdzdgknr/tzgg/ https://jxj.lsz.gov.cn:443/zfxxgk/gfxwj/zcwj/
+市级,四川,凉山彝族自治州,,513400,科技,州科学技术局,已收录,2/2 个栏目已收录,2026-11-09 06:34,https://kjj.lsz.gov.cn:443/xxgks/zc/,https://www.lsz.gov.cn/bmxslink/,http://kjj.lsz.gov.cn/xxgks/fdgk/tzgg_39967/ http://kjj.lsz.gov.cn/xxgks/zc/
+市级,四川,凉山彝族自治州,,513400,商务,凉山州商务局,已收录,2/2 个栏目已收录,2026-11-09 08:02,https://swj.lsz.gov.cn:443/,https://www.lsz.gov.cn/bmxslink/,https://swj.lsz.gov.cn:443/sy/tzgg/ https://swj.lsz.gov.cn:443/zfxxgk/fdzdgknr/lzyj/zcwj_32077/
+市级,四川,凉山彝族自治州,,513400,财政,州财政局,已收录,2/2 个栏目已收录,2026-11-09 08:02,https://czj.lsz.gov.cn:443/,https://www.lsz.gov.cn/bmxslink/,https://czj.lsz.gov.cn:443/xxgk/fdzdgknr/tzgg_31101/ https://czj.lsz.gov.cn:443/xxgk/fdzdgknr/zcwjjjd/zcwj_31076/
+市级,四川,凉山彝族自治州,,513400,人社,凉山彝族自治州人力资源和社会保障局,已收录,2/2 个栏目已收录,2026-11-09 06:34,https://rsj.lsz.gov.cn:443/,https://www.lsz.gov.cn/bmxslink/,http://rsj.lsz.gov.cn/xxgk/fdzdgknr/tzgg/ http://rsj.lsz.gov.cn/xxgk/zc/
+市级,四川,凉山彝族自治州,,513400,市场监管,州市场监督管理局,已收录,3/3 个栏目已收录,2026-11-09 06:34,https://scjg.lsz.gov.cn:443/,https://www.lsz.gov.cn/bmxslink/,http://scjg.lsz.gov.cn/zfxxgk/fdzdgknr/tzgg_31786/ http://scjg.lsz.gov.cn/zfxxgk/fdzdgknr/tzgg_31786/ http://scjg.lsz.gov.cn/zfxxgk/lzyj/
+市级,四川,凉山彝族自治州,,513400,农业农村,州农业农村局,已收录,2/2 个栏目已收录,2026-11-09 08:02,https://nyncj.lsz.gov.cn:443/,https://www.lsz.gov.cn/bmxslink/,http://nyncj.lsz.gov.cn/xxgk/fdzdgknr/tzgg_31747/ http://nyncj.lsz.gov.cn/xxgk/fdzdgknr/lzyj/zcwj_31725/
+市级,四川,凉山彝族自治州,,513400,文旅,州文化广电和旅游局,已收录,2/2 个栏目已收录,2026-11-09 08:02,https://wgl.lsz.gov.cn:443/,https://www.lsz.gov.cn/bmxslink/,https://wgl.lsz.gov.cn:443/xwzx/tzgg/ http://wgl.lsz.gov.cn/xxgk/zc2613/
+市级,四川,凉山彝族自治州,,513400,生态环境,凉山彝族自治州生态环境局,已收录,2/2 个栏目已收录,2026-11-09 08:02,https://sthj.lsz.gov.cn:443/,https://www.lsz.gov.cn/bmxslink/,https://sthj.lsz.gov.cn:443/zfxxgk/fdzdgknr/tzgg_31258/ https://sthj.lsz.gov.cn:443/zfxxgk/fdzdgknr/lzyj/zcwj_31236/
+市级,四川,广安,,511600,政府办,广安市人民政府,已收录,2/2 个栏目已收录,2026-11-09 06:33,https://www.guang-an.gov.cn/,http://www.guang-an.gov.cn/,https://www.guang-an.gov.cn/gasrmzfw/tzgg/pc/list.html https://www.guang-an.gov.cn/gasrmzfw/c02514/pc/list.html
+市级,四川,广安,,511600,发改委,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,四川,广安,,511600,工信,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,四川,广安,,511600,科技,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,四川,广安,,511600,商务,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,四川,广安,,511600,财政,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,四川,广安,,511600,人社,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,四川,广安,,511600,市场监管,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,四川,广安,,511600,农业农村,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,四川,广安,,511600,文旅,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,四川,广安,,511600,生态环境,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,四川,雅安,,511800,政府办,雅安市人民政府,已收录,1/1 个栏目已收录,2026-11-09 06:33,https://www.yaan.gov.cn/,http://www.yaan.gov.cn/,https://www.yaan.gov.cn/yasrmzf/zfxxgk/pc/zcwj.html
+市级,四川,雅安,,511800,发改委,雅安市发展和改革委员会,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://fgw.yaan.gov.cn/,https://www.yaan.gov.cn/yasrmzf/zwgk/pc/dept.html,
+市级,四川,雅安,,511800,工信,雅安市经济和信息化局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,https://jxj.yaan.gov.cn/,https://www.yaan.gov.cn/yasrmzf/zwgk/pc/dept.html,https://jxj.yaan.gov.cn/yasjjhxxhj/tzgg/pc/list.html https://jxj.yaan.gov.cn/yasjjhxxhj/zcfg/pc/list.html
+市级,四川,雅安,,511800,科技,雅安市科学技术局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,https://kjj.yaan.gov.cn/,https://www.yaan.gov.cn/yasrmzf/zwgk/pc/dept.html,https://kjj.yaan.gov.cn/yaskxjsj/tzgg/pc/list.html https://kjj.yaan.gov.cn/yaskxjsj/zcwj/pc/list.html
+市级,四川,雅安,,511800,商务,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,四川,雅安,,511800,财政,雅安市财政局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://czj.yaan.gov.cn/,https://www.yaan.gov.cn/yasrmzf/zwgk/pc/dept.html,
+市级,四川,雅安,,511800,人社,雅安市人力资源和社会保障局,已收录,2/2 个栏目已收录,2026-11-09 06:33,https://rsj.yaan.gov.cn/,https://www.yaan.gov.cn/yasrmzf/zwgk/pc/dept.html,https://rsj.yaan.gov.cn/xinwen/list/74db2252-37cd-4ef2-a0c6-d0d94375ebc5.html https://rsj.yaan.gov.cn/xinwen/list/5ad02af8-ff62-4871-8f1b-cf5b4ce7898b.html
+市级,四川,雅安,,511800,市场监管,雅安市市场监督管理局,已收录,2/2 个栏目已收录,2026-11-09 06:33,https://scjgj.yaan.gov.cn/,https://www.yaan.gov.cn/yasrmzf/zwgk/pc/dept.html,https://scjgj.yaan.gov.cn/xinwen/list/5d4c6199-0360-4205-bb7b-d953c7f87c08.html https://scjgj.yaan.gov.cn/xinwen/list/a07391de-8c0c-42ef-9500-bb71cfdac8b2.html
+市级,四川,雅安,,511800,农业农村,雅安市农业农村局,已收录,2/2 个栏目已收录,2026-11-09 06:33,https://nyncj.yaan.gov.cn/,https://www.yaan.gov.cn/yasrmzf/zwgk/pc/dept.html,https://nyncj.yaan.gov.cn/xinwen/list/3374f720-74ed-4ef0-8d68-0a9920141cd5.html https://nyncj.yaan.gov.cn/xinwen/list/2511f1de-0bce-40c4-ae2c-44333ebd4a85.html
+市级,四川,雅安,,511800,文旅,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,四川,雅安,,511800,生态环境,雅安市生态环境局,已收录,2/2 个栏目已收录,2026-11-09 06:34,https://sthjj.yaan.gov.cn/,https://www.yaan.gov.cn/yasrmzf/zwgk/pc/dept.html,https://sthjj.yaan.gov.cn/xinwen/columnlist/f8afd4bc-28ae-407b-ac92-139d91beb15f.html https://sthjj.yaan.gov.cn/xinwen/columnlist/aa1a993c-40af-43d7-a782-3a2e20ea9aed.html
+市级,四川,雅安,,511800,开发区,经开区管委会,已收录,1/1 个栏目已收录,2026-11-09 06:33,https://jkq.yaan.gov.cn/,https://www.yaan.gov.cn/yasrmzf/zwgk/pc/dept.html,https://jkq.yaan.gov.cn/xinwen/list/ed38700d-1b4c-4176-a0f7-e9423aa33291.html
+市级,四川,资阳,,512000,政府办,资阳市人民政府,已收录,1/2 个栏目已收录,2026-11-09 06:34,http://www.ziyang.gov.cn/,http://www.ziyang.gov.cn/,http://www.ziyang.gov.cn/zysrmzf/gsgg/pc/list.html http://www.ziyang.gov.cn/zysrmzf/c00001/pc/list.html
+市级,四川,资阳,,512000,发改委,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,四川,资阳,,512000,工信,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,四川,资阳,,512000,科技,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,四川,资阳,,512000,商务,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,四川,资阳,,512000,财政,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,四川,资阳,,512000,人社,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,四川,资阳,,512000,市场监管,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,四川,资阳,,512000,农业农村,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,四川,资阳,,512000,文旅,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,四川,资阳,,512000,生态环境,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,四川,自贡,,510300,政府办,自贡市人民政府,已收录,1/2 个栏目已收录,2026-11-09 06:33,https://www.zg.gov.cn/,http://www.zg.gov.cn/,https://www.zg.gov.cn/zgsrmzf/tzgg/pc/list.html https://www.zg.gov.cn/zgsrmzf/szfqtwj/pc/list.html
+市级,四川,自贡,,510300,发改委,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,四川,自贡,,510300,工信,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,四川,自贡,,510300,科技,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,四川,自贡,,510300,商务,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,四川,自贡,,510300,财政,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,四川,自贡,,510300,人社,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,四川,自贡,,510300,市场监管,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,四川,自贡,,510300,农业农村,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,四川,自贡,,510300,文旅,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,四川,自贡,,510300,生态环境,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,四川,自贡,,510300,开发区,自贡高新技术产业开发区管理委员会,已收录,2/3 个栏目已收录,2026-11-09 06:33,https://www.zggx.gov.cn/,https://www.zg.gov.cn/,https://www.zggx.gov.cn/zggx/tzgg3780/pc/list.html https://www.zggx.gov.cn/zggx/tzgg3780/pc/list.html https://www.zggx.gov.cn/zggx/xzgfx3969/pc/list.html
+市级,四川,内江,,511000,政府办,内江市人民政府,已收录,1/2 个栏目已收录,2026-11-09 06:33,http://www.neijiang.gov.cn/,http://www.neijiang.gov.cn/,http://www.neijiang.gov.cn/njs/gsgg/common_list.shtml https://www.neijiang.gov.cn/njs/zfzc/newzcwjk_index.shtml
+市级,四川,内江,,511000,发改委,内江市发展和改革委员会,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://www.neijiang.gov.cn/fgw/xxgk/gkzn/zfxxgk_xxgkzn.shtml,http://www.neijiang.gov.cn/njs/wzndbb/all_ndbb.shtml,
+市级,四川,内江,,511000,工信,内江市经济和信息化局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://www.neijiang.gov.cn/jxj/xxgk/gkzn/zfxxgk_xxgkzn.shtml,http://www.neijiang.gov.cn/njs/wzndbb/all_ndbb.shtml,
+市级,四川,内江,,511000,科技,内江市科学技术局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://www.neijiang.gov.cn/kjj/zfxxgk/zfxxgkzn/zfxxgk_xxgkzn.shtml,http://www.neijiang.gov.cn/njs/wzndbb/all_ndbb.shtml,
+市级,四川,内江,,511000,商务,内江市商务局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://www.neijiang.gov.cn/njswj/xxgk/gkzn/zfxxgk_xxgkzn.shtml,http://www.neijiang.gov.cn/njs/wzndbb/all_ndbb.shtml,
+市级,四川,内江,,511000,财政,内江市财政局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://www.neijiang.gov.cn/czj/xxgk/gkzn/zfxxgk_xxgkzn.shtml,http://www.neijiang.gov.cn/njs/wzndbb/all_ndbb.shtml,
+市级,四川,内江,,511000,人社,内江市人力资源和社会保障局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://www.neijiang.gov.cn/rsj/xxgk/gkzn/zfxxgk_xxgkzn.shtml,http://www.neijiang.gov.cn/njs/wzndbb/all_ndbb.shtml,
+市级,四川,内江,,511000,市场监管,内江市市场监督管理局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://www.neijiang.gov.cn/scjgj/xxgk/xxgkzn/zfxxgk_xxgkzn.shtml,http://www.neijiang.gov.cn/njs/wzndbb/all_ndbb.shtml,
+市级,四川,内江,,511000,农业农村,内江市农业农村局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://www.neijiang.gov.cn/nyj/xxgk/gkzn/zfxxgk_xxgkzn.shtml,http://www.neijiang.gov.cn/njs/wzndbb/all_ndbb.shtml,
+市级,四川,内江,,511000,文旅,市文化广电和旅游局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://www.neijiang.gov.cn/whj/xxgk/gkzn2/zfxxgk_xxgkzn.shtml,http://www.neijiang.gov.cn/njs/wzndbb/all_ndbb.shtml,
+市级,四川,内江,,511000,生态环境,内江市生态环境局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://www.neijiang.gov.cn/sthjj/zfxxgk/zfxxgkzn/zfxxgk_xxgkzn.shtml,http://www.neijiang.gov.cn/njs/wzndbb/all_ndbb.shtml,
+市级,四川,绵阳,,510700,政府办,绵阳市人民政府,已收录,1/2 个栏目已收录,2026-11-09 06:33,https://www.my.gov.cn/,http://www.my.gov.cn/,https://www.my.gov.cn/mysrmzf/c100022/list.shtml https://www.my.gov.cn/mysrmzf/c100061/xxgk_list.shtml
+市级,四川,绵阳,,510700,发改委,绵阳市发展和改革委员会,已收录,1/1 个栏目已收录,2026-11-09 06:33,https://fgw.my.gov.cn/,https://www.my.gov.cn/,https://fgw.my.gov.cn/mysfgw/c100296/list.shtml
+市级,四川,绵阳,,510700,工信,绵阳市经济和信息化局,已收录,3/3 个栏目已收录,2026-11-09 06:33,https://jxj.my.gov.cn/,https://www.my.gov.cn/,https://jxj.my.gov.cn/mysjxj/c100383/list.shtml https://jxj.my.gov.cn/mysjxj/c100380/list.shtml https://jxj.my.gov.cn/mysjxj/c100390/list.shtml
+市级,四川,绵阳,,510700,科技,绵阳市科学技术局,已收录,2/2 个栏目已收录,2026-11-09 06:33,https://kjj.my.gov.cn/,https://www.my.gov.cn/,https://kjj.my.gov.cn/myskjj/c100554/list.shtml https://kjj.my.gov.cn/myskjj/c100540/zcfg.shtml
+市级,四川,绵阳,,510700,商务,绵阳市商务局,已收录,1/1 个栏目已收录,2026-11-09 06:33,https://swj.my.gov.cn/,https://www.my.gov.cn/,https://swj.my.gov.cn/mysswj/c101372/list.shtml
+市级,四川,绵阳,,510700,财政,绵阳市财政局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,https://czj.my.gov.cn/,https://www.my.gov.cn/,https://czj.my.gov.cn/mysczj/c100720/list.shtml
+市级,四川,绵阳,,510700,人社,绵阳市人力资源和社会保障局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,https://rsj.my.gov.cn/,https://www.my.gov.cn/,https://rsj.my.gov.cn/mysrsj/c100763/list.shtml https://rsj.my.gov.cn/mysrsj/c100766/list.shtml
+市级,四川,绵阳,,510700,市场监管,绵阳市市场监督管理局,已收录,2/2 个栏目已收录,2026-11-09 06:33,https://scjg.my.gov.cn/,https://www.my.gov.cn/,https://scjg.my.gov.cn/mysscjgj/c101668/list.shtml https://scjg.my.gov.cn/mysscjgj/c101690/list.shtml
+市级,四川,绵阳,,510700,农业农村,绵阳市农业农村局,已收录,2/2 个栏目已收录,2026-11-09 06:33,https://nyncj.my.gov.cn/,https://www.my.gov.cn/,https://nyncj.my.gov.cn/mysnyncj/c101313/list.shtml https://nyncj.my.gov.cn/mysnyncj/c101315/lists.shtml
+市级,四川,绵阳,,510700,文旅,市文广旅局,已收录,2/2 个栏目已收录,2026-11-09 06:33,https://wgl.my.gov.cn/,https://www.my.gov.cn/,https://wgl.my.gov.cn/myswglj/c101427/list.shtml https://wgl.my.gov.cn/myswglj/c101405/lists.shtml
+市级,四川,绵阳,,510700,生态环境,绵阳市生态环境局,已收录,2/2 个栏目已收录,2026-11-09 06:33,https://sthjj.my.gov.cn/,https://www.my.gov.cn/,https://sthjj.my.gov.cn/myssthjj/c100932/list.shtml https://sthjj.my.gov.cn/myssthjj/c105830/zfxxgk_gknr.shtml
+市级,四川,绵阳,,510700,数据局,绵阳市数据局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://www.my.gov.cn/shujuju/c111081/zfxxgk_gknr.shtml,https://www.my.gov.cn/mysrmzf/c100114/xxgk_jgjj.shtml,
+市级,四川,遂宁,,510900,政府办,遂宁市人民政府门户网站,已收录,2/2 个栏目已收录,2026-11-09 06:33,https://www.suining.gov.cn/,https://www.suining.gov.cn/,https://www.suining.gov.cn/gongkai/jichu/40016.html https://www.suining.gov.cn/zcwjk.html
+市级,四川,遂宁,,510900,发改委,市发展改革委,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.suining.gov.cn/dept/7e713e2e3afdf388b9649e06a874f92b.html,https://www.suining.gov.cn/dept.html,
+市级,四川,遂宁,,510900,工信,市经济和信息化局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.suining.gov.cn/dept/2411ab68b5ba8b5201c4bd83e226e06a.html,https://www.suining.gov.cn/dept.html,
+市级,四川,遂宁,,510900,科技,市科技局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.suining.gov.cn/dept/8f3f3e89f8a000dcba1cca44115c414c.html,https://www.suining.gov.cn/dept.html,
+市级,四川,遂宁,,510900,商务,市商务局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.suining.gov.cn/dept/17808a68f4a322c984c3b2ad941b1b7e.html,https://www.suining.gov.cn/dept.html,
+市级,四川,遂宁,,510900,财政,市财政局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.suining.gov.cn/dept/228e4b6111b203e9a8e4279a776ab683.html,https://www.suining.gov.cn/dept.html,
+市级,四川,遂宁,,510900,人社,市人力资源社会保障局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.suining.gov.cn/dept/d1955db61a607fa5727d374fd02a4e85.html,https://www.suining.gov.cn/dept.html,
+市级,四川,遂宁,,510900,市场监管,市市场监管局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.suining.gov.cn/dept/3adb022f0a51500d62c75034395b90c3.html,https://www.suining.gov.cn/dept.html,
+市级,四川,遂宁,,510900,农业农村,市农业农村局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.suining.gov.cn/dept/e9488fcec2accf064cb51bb23d9dc230.html,https://www.suining.gov.cn/dept.html,
+市级,四川,遂宁,,510900,文旅,市文化广电体育旅游局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.suining.gov.cn/dept/52dc5acf85e5820aa84d7113068be800.html,https://www.suining.gov.cn/dept.html,
+市级,四川,遂宁,,510900,生态环境,市生态环境局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.suining.gov.cn/dept/9942e9ec42c9319f9dbc7a244a32d39d.html,https://www.suining.gov.cn/dept.html,
+市级,四川,遂宁,,510900,数据局,市数据局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.suining.gov.cn/dept/c60a777394b0fc3b3d71b80b07690993.html,https://www.suining.gov.cn/dept.html,
+市级,四川,遂宁,,510900,开发区,遂宁市河东新区管委会,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.suining.gov.cn/dept/a01d6283fa86d52338d3ece9f00d55e5.html,https://www.suining.gov.cn/dept.html,
+市级,四川,泸州,,510500,政府办,泸州市人民政府门户网站,已收录,2/2 个栏目已收录,2026-11-09 06:33,https://www.luzhou.gov.cn/,http://www.luzhou.gov.cn/,https://www.luzhou.gov.cn/xw/gsgg https://www.luzhou.gov.cn/zw/zcwjs/szfwj
+市级,四川,泸州,,510500,发改委,泸州市发展和改革委员会,已收录,2/2 个栏目已收录,2026-11-09 06:33,https://fgw.luzhou.gov.cn/tzgg/tz/content_1130248,https://www.luzhou.gov.cn/zt/zxzt/zfwzgzndbb2025,https://fgw.luzhou.gov.cn/tzgg https://fgw.luzhou.gov.cn/zwgk/lzyj
+市级,四川,泸州,,510500,工信,泸州市经济和信息化局,已收录,2/2 个栏目已收录,2026-11-09 06:33,https://jxj.luzhou.gov.cn/gzdt/bwdt/content_1130136,https://www.luzhou.gov.cn/zt/zxzt/zfwzgzndbb2025,https://jxj.luzhou.gov.cn/tzgg https://jxj.luzhou.gov.cn/dzwgk/lzyj
+市级,四川,泸州,,510500,科技,泸州市科学技术局,已收录,2/2 个栏目已收录,2026-11-09 06:33,https://kjj.luzhou.gov.cn/tzgg/content_1130141,https://www.luzhou.gov.cn/zt/zxzt/zfwzgzndbb2025,https://kjj.luzhou.gov.cn/tzgg https://kjj.luzhou.gov.cn/zwgk/lzyj
+市级,四川,泸州,,510500,商务,泸州市商务和会展局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,https://swhzj.luzhou.gov.cn/,https://www.luzhou.gov.cn/zt/zxzt/zfwzgzndbb2025/szfmhwz2025,https://swhzj.luzhou.gov.cn/zwgk/lzyj
+市级,四川,泸州,,510500,财政,泸州市财政局,已收录,2/2 个栏目已收录,2026-11-09 06:33,https://czj.luzhou.gov.cn/gsgg/content_1130250,https://www.luzhou.gov.cn/zt/zxzt/zfwzgzndbb2025/sjbmwz2025,https://czj.luzhou.gov.cn/gsgg https://czj.luzhou.gov.cn/zwgk/lzyj
+市级,四川,泸州,,510500,人社,泸州市人力资源和社会保障局,已收录,2/2 个栏目已收录,2026-11-09 06:33,https://rsj.luzhou.gov.cn/gzdt/tzgg/content_1130129,https://www.luzhou.gov.cn/zt/zxzt/zfwzgzndbb2025/sjbmwz2025,https://rsj.luzhou.gov.cn/gzdt/tzgg https://rsj.luzhou.gov.cn/zwgk/lzyj
+市级,四川,泸州,,510500,市场监管,泸州市市场监督管理局,已收录,1/2 个栏目已收录,2026-11-09 06:33,https://scjgj.luzhou.gov.cn/,https://www.luzhou.gov.cn/zt/zxzt/zfwzgzndbb2025/szfmhwz2025,https://scjgj.luzhou.gov.cn/tzgg https://scjgj.luzhou.gov.cn/zwgk/lzyj
+市级,四川,泸州,,510500,农业农村,泸州市农业农村局,已收录,2/2 个栏目已收录,2026-11-09 06:33,https://nyncj.luzhou.gov.cn/,https://www.luzhou.gov.cn/zt/zxzt/zfwzgzndbb2025/szfmhwz2025,https://nyncj.luzhou.gov.cn/tzgg https://nyncj.luzhou.gov.cn/zwgk/lzyj
+市级,四川,泸州,,510500,文旅,市文化广电旅游局,已收录,1/2 个栏目已收录,2026-11-09 06:33,https://wtgj.luzhou.gov.cn/jqjs/dwzn,https://www.luzhou.gov.cn/jg,https://wtgj.luzhou.gov.cn/ggfw https://wtgj.luzhou.gov.cn/zwgk/lzyj
+市级,四川,泸州,,510500,生态环境,泸州市生态环境局,已收录,2/2 个栏目已收录,2026-11-09 06:33,https://sthjj.luzhou.gov.cn/zwgk/gsgg/content_1130164,https://www.luzhou.gov.cn/zt/zxzt/zfwzgzndbb2025/sjbmwz2025,https://sthjj.luzhou.gov.cn/zwgk/gsgg https://sthjj.luzhou.gov.cn/zwgk/lzyj/gfxwj
+市级,四川,巴中,,511900,政府办,巴中市人民政府,已收录,2/2 个栏目已收录,2026-11-09 06:34,https://www.cnbz.gov.cn/,https://www.cnbz.gov.cn/,https://www.cnbz.gov.cn/xxgk/gsgg/index.html https://www.cnbz.gov.cn/site/tpl/6782961
+市级,四川,巴中,,511900,发改委,巴中市发展和改革委员会,已收录,2/2 个栏目已收录,2026-11-09 06:34,https://fzggw.cnbz.gov.cn/,https://www.cnbz.gov.cn/ljgl/syljgl/yqlj-swdqbmwz/6787741.js?num=100&ect=1794017646640,https://fzggw.cnbz.gov.cn/xwdt/tzgg/index.html https://fzggw.cnbz.gov.cn/xxgk/zcfg/index.html
+市级,四川,巴中,,511900,工信,巴中市经济和信息化局,已收录,2/2 个栏目已收录,2026-11-09 06:34,https://jjhxxhj.cnbz.gov.cn/,https://www.cnbz.gov.cn/ljgl/syljgl/yqlj-swdqbmwz/6787741.js?num=100&ect=1794017646640,https://jjhxxhj.cnbz.gov.cn/xwdt/tzgg/index.html https://jjhxxhj.cnbz.gov.cn/public/column/6596541?type=4&action=list&nav=2&sub=0&catId=6719872
+市级,四川,巴中,,511900,科技,巴中市科学技术局,已收录,2/2 个栏目已收录,2026-11-09 06:34,https://kxjsj.cnbz.gov.cn/,https://www.cnbz.gov.cn/ljgl/syljgl/yqlj-swdqbmwz/6787741.js?num=100&ect=1794017646640,https://kxjsj.cnbz.gov.cn/xwdt/tzgg/index.html https://kxjsj.cnbz.gov.cn/public/column/6596571?type=4&catId=6715831&action=list
+市级,四川,巴中,,511900,商务,巴中市商务局,已收录,2/2 个栏目已收录,2026-11-09 06:34,https://swj.cnbz.gov.cn/,https://www.cnbz.gov.cn/ljgl/syljgl/yqlj-swdqbmwz/6787741.js?num=100&ect=1794017646640,https://swj.cnbz.gov.cn/xwdt/tzgg/index.html https://swj.cnbz.gov.cn/public/column/6596781?type=4&action=list&nav=2&sub=0&catId=6715831
+市级,四川,巴中,,511900,财政,巴中市财政局,已收录,2/2 个栏目已收录,2026-11-09 06:34,https://czj.cnbz.gov.cn/,https://www.cnbz.gov.cn/ljgl/syljgl/yqlj-swdqbmwz/6787741.js?num=100&ect=1794017646640,https://czj.cnbz.gov.cn/xwdt/tzgg/index.html https://czj.cnbz.gov.cn/public/column/6596981?type=4&catId=6715831&action=list
+市级,四川,巴中,,511900,人社,巴中市人力资源和社会保障局,已收录,2/2 个栏目已收录,2026-11-09 06:34,https://rlzyshbzj.cnbz.gov.cn/,https://www.cnbz.gov.cn/ljgl/syljgl/yqlj-swdqbmwz/6787741.js?num=100&ect=1794017646640,https://rlzyshbzj.cnbz.gov.cn/xwdt/tzgg/index.html https://rlzyshbzj.cnbz.gov.cn/public/column/6596481?type=4&action=list&nav=2&sub=0&catId=6715831
+市级,四川,巴中,,511900,市场监管,巴中市市场监督管理局,已收录,2/2 个栏目已收录,2026-11-09 06:34,https://samr.cnbz.gov.cn/,https://www.cnbz.gov.cn/ljgl/syljgl/yqlj-swdqbmwz/6787741.js?num=100&ect=1794017646640,https://samr.cnbz.gov.cn/xwdt/tzgg/index.html https://samr.cnbz.gov.cn/public/column/6596301?type=4&action=list&nav=2&sub=0&catId=6715831
+市级,四川,巴中,,511900,农业农村,巴中市农业农村局,已收录,2/2 个栏目已收录,2026-11-09 06:34,https://nyncj.cnbz.gov.cn/,https://www.cnbz.gov.cn/ljgl/syljgl/yqlj-swdqbmwz/6787741.js?num=100&ect=1794017646640,https://nyncj.cnbz.gov.cn/zwgk/tzgg/index.html https://nyncj.cnbz.gov.cn/public/column/6596741?type=4&action=list&nav=&sub=&catId=6719823
+市级,四川,巴中,,511900,文旅,巴中市光雾山诺水河文旅融合发展示范区,已收录,1/1 个栏目已收录,2026-11-09 06:33,http://bzwlxq.gov.cn/,https://www.cnbz.gov.cn/ljgl/syljgl/yqlj-swdqbmwz/6787741.js?num=100&ect=1794017646640,http://bzwlxq.gov.cn/xwzx/gsgg/index.html
+市级,四川,巴中,,511900,生态环境,巴中市生态环境局,已收录,2/2 个栏目已收录,2026-11-09 06:34,https://sthjj.cnbz.gov.cn/,https://www.cnbz.gov.cn/ljgl/syljgl/yqlj-swdqbmwz/6787741.js?num=100&ect=1794017646640,https://sthjj.cnbz.gov.cn/xwdt/tztg/index.html https://sthjj.cnbz.gov.cn/public/column/6596501?type=4&action=list&nav=2&sub=0&catId=6715831
+市级,四川,巴中,,511900,数据局,巴中市营商环境和数据局,已收录,2/2 个栏目已收录,2026-11-09 06:34,https://yshjhsjj.cnbz.gov.cn/,https://www.cnbz.gov.cn/ljgl/syljgl/yqlj-swdqbmwz/6787741.js?num=100&ect=1794017646640,https://yshjhsjj.cnbz.gov.cn/xwdt/tzgg/index.html https://yshjhsjj.cnbz.gov.cn/public/column/6596921?type=4&action=list&nav=2&sub=0&catId=6715831
+市级,四川,宜宾,,511500,政府办,宜宾市人民政府网站,已收录,2/2 个栏目已收录,2026-11-09 06:33,http://www.yibin.gov.cn/index.html,http://www.yibin.gov.cn/index.html,https://www.yibin.gov.cn/xxgk/gsgg/ http://www.yibin.gov.cn/ztzl/jczwgk/zcwj/
+市级,四川,宜宾,,511500,发改委,市发展和改革委员会（1）,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.yibin.gov.cn/xxgk/zcfg/bmgfxwj/sczjgfxwj_23615/,https://www.yibin.gov.cn/ztzl/zfxxgk/,
+市级,四川,宜宾,,511500,工信,市经济和信息化局（2）,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.yibin.gov.cn/xxgk/zcfg/bmgfxwj/sjxjgfxwj/,https://www.yibin.gov.cn/ztzl/zfxxgk/,
+市级,四川,宜宾,,511500,科技,市科技局,已收录,1/2 个栏目已收录,2026-11-09 06:33,http://ybkj.yibin.gov.cn/,http://www.yibin.gov.cn/index.html,http://ybkj.yibin.gov.cn/sy/tzgg/ http://ybkj.yibin.gov.cn/xxgkpt/doclist.html?chnlId=1418
+市级,四川,宜宾,,511500,商务,宜宾市商务局,已收录,2/2 个栏目已收录,2026-11-09 06:33,http://ybcom.yibin.gov.cn/,http://www.yibin.gov.cn/index.html,https://ybcom.yibin.gov.cn/zwfw/tzgg/ https://ybcom.yibin.gov.cn/zwfw/zcfg/
+市级,四川,宜宾,,511500,财政,宜宾市财政局,已收录,2/2 个栏目已收录,2026-11-09 06:33,http://czj.yibin.gov.cn/,https://www.yibin.gov.cn/xxgk/zfwzndgzbb/wzndbb2022_25520/sjbmwz/202601/t20260108_2193987.html,http://czj.yibin.gov.cn/tzgg/ http://czj.yibin.gov.cn/zfcgzl/zcfg_14578/
+市级,四川,宜宾,,511500,人社,市人力资源社会保障局（4）,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.yibin.gov.cn/xxgk/zcfg/bmgfxwj/srlzyhshbzj/,https://www.yibin.gov.cn/ztzl/zfxxgk/,
+市级,四川,宜宾,,511500,市场监管,宜宾市市场监督管理局,已收录,1/2 个栏目已收录,2026-11-09 06:33,http://scjgj.yibin.gov.cn/,https://www.yibin.gov.cn/xxgk/zfwzndgzbb/wzndbb2022_25520/sjbmwz/202601/t20260115_2195664.html,http://scjgj.yibin.gov.cn/xbsy/xxfb/gsgg_1/ http://scjgj.yibin.gov.cn/xxgkpt/doclist.html?chnlId=1418
+市级,四川,宜宾,,511500,农业农村,宜宾市农业农村局,已收录,1/1 个栏目已收录,2026-11-09 06:33,http://nyncj.yibin.gov.cn/,https://www.yibin.gov.cn/xxgk/zfwzndgzbb/wzndbb2022_25520/sjbmwz/202601/t20260115_2195642.html,http://nyncj.yibin.gov.cn/xxgk_86/tzgg/
+市级,四川,宜宾,,511500,文旅,市文广旅游局,已收录,1/2 个栏目已收录,2026-11-09 06:33,http://wglyj.yibin.gov.cn/,http://www.yibin.gov.cn/index.html,http://wglyj.yibin.gov.cn/zwgk/gsgg/ http://wglyj.yibin.gov.cn/xxgkpt/doclist.html?chnlId=1418
+市级,四川,宜宾,,511500,生态环境,宜宾市生态环境局,已收录,2/2 个栏目已收录,2026-11-09 06:33,http://sthjj.yibin.gov.cn/,https://www.yibin.gov.cn/xxgk/zfwzndgzbb/wzndbb2022_25520/sjbmwz/202601/t20260112_2194665.html,http://sthjj.yibin.gov.cn/xxgk/gsgg/ http://sthjj.yibin.gov.cn/wjk/bmgfxwj/
+市级,四川,宜宾,,511500,数据局,市数据局,已收录,1/2 个栏目已收录,2026-11-09 06:34,http://www.yibin.gov.cn/ybsszjjfzj/,http://www.yibin.gov.cn/index.html,http://www.yibin.gov.cn/ybsszjjfzj/gk/gsgg/ http://www.yibin.gov.cn/xxgkpt/doclist.html?chnlId=1418
+市级,四川,宜宾,,511500,开发区,宜宾高新区管委会,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://www.yibin.gov.cn/xxgkpt/detail.html?deptId=92339052&docId=1054851&id=fad2571c-829d-4724-8a98-c905b001ff1c,http://www.yibin.gov.cn/xxgk/zfxxgkndbg/2025ndgzbb/,
+市级,四川,甘孜藏族自治州,,513300,政府办,甘孜藏族自治州人民政府,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,http://www.gzz.gov.cn/,http://www.gzz.gov.cn/,https://www.gzz.gov.cn/zfwj
+市级,四川,甘孜藏族自治州,,513300,发改委,甘孜藏族自治州发展和改革委员会,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://fgw.gzz.gov.cn/tzgg/article/635172,https://www.gzz.gov.cn/gzz2024gzndbg,
+市级,四川,甘孜藏族自治州,,513300,工信,甘孜藏族自治州经济和信息化局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://jxj.gzz.gov.cn/gsgg1/article/631913,https://www.gzz.gov.cn/gzz2024gzndbg,
+市级,四川,甘孜藏族自治州,,513300,科技,州科技局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,http://www.gzz.gov.cn/zkxjsj2022n/article/452860,http://www.gzz.gov.cn/2022zfnb,
+市级,四川,甘孜藏族自治州,,513300,商务,甘孜藏族自治州商务和经济合作局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://swj.gzz.gov.cn/tzgs/article/632588,https://www.gzz.gov.cn/gzz2024gzndbg,
+市级,四川,甘孜藏族自治州,,513300,财政,州财政局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,http://www.gzz.gov.cn/zczj2022n/article/452982,http://www.gzz.gov.cn/2022zfnb,
+市级,四川,甘孜藏族自治州,,513300,人社,甘孜州人力资源和社会保障局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://rsj.gzz.gov.cn/ggtz/article/632461,https://www.gzz.gov.cn/gzz2024gzndbg,
+市级,四川,甘孜藏族自治州,,513300,市场监管,甘孜藏族自治州市场监督管理局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://scjgj.gzz.gov.cn/gzdt/article/631410,https://www.gzz.gov.cn/gzz2024gzndbg,
+市级,四川,甘孜藏族自治州,,513300,农业农村,,需人工,官方导航里没找到这个部门的网站或频道,,,,
+市级,四川,甘孜藏族自治州,,513300,文旅,州文化广电旅游局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,http://wglj.gzz.gov.cn/zwhgbdshlyj2022n/article/442167,http://www.gzz.gov.cn/2022zfnb,
+市级,四川,甘孜藏族自治州,,513300,生态环境,州生态环境局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,http://www.gzz.gov.cn/zsthjj2022n/article/453318,http://www.gzz.gov.cn/2022zfnb,
+市级,四川,甘孜藏族自治州,,513300,数据局,数据局,网站无此栏目,部门网站首页和信息公开页都没有通知公告、政策文件、公示公告栏目（待人工确认）,,https://www.gzz.gov.cn/governmentInfo/zjbmzfxxgkgzzzzzzshujj/zjbmzfxxgkgzzzzzzshujjfdzdgknrjgjj,http://www.gzz.gov.cn/zzjgzn,
+市级,四川,阿坝藏族羌族自治州,,513200,政府办,阿坝藏族羌族自治州人民政府,已收录,2/2 个栏目已收录,2026-11-09 06:34,http://www.abazhou.gov.cn/,http://www.abazhou.gov.cn/,http://www.abazhou.gov.cn/abazhou/c101961/nav_list.shtml http://www.abazhou.gov.cn/abazhou/c107037/zfxxgk_gkgz.shtml
+市级,四川,阿坝藏族羌族自治州,,513200,发改委,州发展改革委,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,http://www.abazhou.gov.cn/abazhou/c109361/bmzfxxgk_zn.shtml,http://www.abazhou.gov.cn/abazhou/c106383/ndbb.shtml,
+市级,四川,阿坝藏族羌族自治州,,513200,工信,州经济和信息化局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.abazhou.gov.cn/abazhou/c109765/bmzfxxgk_zn.shtml,http://www.abazhou.gov.cn/abazhou/c106383/ndbb.shtml,
+市级,四川,阿坝藏族羌族自治州,,513200,科技,州科技局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.abazhou.gov.cn/abazhou/c109170/bmzfxxgk_zn.shtml,http://www.abazhou.gov.cn/abazhou/c106383/ndbb.shtml,
+市级,四川,阿坝藏族羌族自治州,,513200,商务,州商务局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.abazhou.gov.cn/abazhou/c109566/bmzfxxgk_zn.shtml,http://www.abazhou.gov.cn/abazhou/c106383/ndbb.shtml,
+市级,四川,阿坝藏族羌族自治州,,513200,财政,州财政局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,http://www.abazhou.gov.cn/abazhou/c109407/bmzfxxgk_zn.shtml,http://www.abazhou.gov.cn/abazhou/c106383/ndbb.shtml,
+市级,四川,阿坝藏族羌族自治州,,513200,人社,州人力资源社会保障局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.abazhou.gov.cn/abazhou/c109338/bmzfxxgk_zn.shtml,http://www.abazhou.gov.cn/abazhou/c106383/ndbb.shtml,
+市级,四川,阿坝藏族羌族自治州,,513200,市场监管,州市场监管局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,http://www.abazhou.gov.cn/abazhou/c109426/bmzfxxgk_zn.shtml,http://www.abazhou.gov.cn/abazhou/c106383/ndbb.shtml,
+市级,四川,阿坝藏族羌族自治州,,513200,农业农村,州农业农村局,已收录,1/1 个栏目已收录,2026-11-09 06:34,https://abazhou.gov.cn/abazhou/c109646/bmzfxxgk_zn.shtml,http://www.abazhou.gov.cn/abazhou/c106383/ndbb.shtml,https://abazhou.gov.cn/abazhou/c107037/zfxxgk_gkgz.shtml
+市级,四川,阿坝藏族羌族自治州,,513200,文旅,州文广旅局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.abazhou.gov.cn/abazhou/c109746/bmzfxxgk_zn.shtml,http://www.abazhou.gov.cn/abazhou/c106383/ndbb.shtml,
+市级,四川,阿坝藏族羌族自治州,,513200,生态环境,州生态环境局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,https://www.abazhou.gov.cn/abazhou/c109540/bmzfxxgk_zn.shtml,http://www.abazhou.gov.cn/abazhou/c106383/ndbb.shtml,
+市级,四川,达州,,511700,政府办,达州市人民政府门户网,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,http://www.dazhou.gov.cn/,http://www.dazhou.gov.cn/,http://www.dazhou.gov.cn/news-list-gsgg.html http://www.dazhou.gov.cn/news-list-zfwj.html
+市级,四川,达州,,511700,发改委,达州市发展和改革委员会,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,http://fgw.dazhou.gov.cn/,http://www.dazhou.gov.cn/news-show-272745.html,http://fgw.dazhou.gov.cn/news-list-zhengcefagui.html
+市级,四川,达州,,511700,工信,市经信局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,http://www.dazhou.gov.cn/news-show-160575.html,http://www.dazhou.gov.cn/news-list-jigouzhineng.html,
+市级,四川,达州,,511700,科技,达州市科学技术局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,http://kjj.dazhou.gov.cn/,http://www.dazhou.gov.cn/news-show-272745.html,http://kjj.dazhou.gov.cn/news-list-tongzhi.html http://kjj.dazhou.gov.cn/news-list-gsgg.html http://kjj.dazhou.gov.cn/news-list-zcwj.html
+市级,四川,达州,,511700,商务,市商务局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,http://www.dazhou.gov.cn/news-show-160592.html,http://www.dazhou.gov.cn/news-list-jigouzhineng.html,
+市级,四川,达州,,511700,财政,市财政局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,http://www.dazhou.gov.cn/news-show-160598.html,http://www.dazhou.gov.cn/news-list-jigouzhineng.html,
+市级,四川,达州,,511700,人社,达州市人力资源和社会保障局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,http://rsj.dazhou.gov.cn/,http://www.dazhou.gov.cn/news-show-272745.html,https://rsj.dazhou.gov.cn/news-list-tzgg.html https://rsj.dazhou.gov.cn/news-list-zcwj.html
+市级,四川,达州,,511700,市场监管,达州市市场监督管理局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,http://scjgj.dazhou.gov.cn/,http://www.dazhou.gov.cn/news-show-272745.html,http://scjgj.dazhou.gov.cn/news-list-gsggsgs.html http://scjgj.dazhou.gov.cn/news-list-zcwj.html
+市级,四川,达州,,511700,农业农村,达州达州市农业农村局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,http://nyj.dazhou.gov.cn/,http://www.dazhou.gov.cn/news-show-272745.html,http://nyj.dazhou.gov.cn/news-list-gsgg.html http://nyj.dazhou.gov.cn/news-list-zcwjq.html
+市级,四川,达州,,511700,文旅,达州市文化体育和旅游局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,http://wtlyj.dazhou.gov.cn/,http://www.dazhou.gov.cn/news-show-272745.html,http://wtlyj.dazhou.gov.cn/news-list-gsgg.html http://wtlyj.dazhou.gov.cn/news-list-zcwj.html
+市级,四川,达州,,511700,生态环境,达州市生态环境局,需人工,页面能打开，但读不出条目（要浏览器渲染、接口或写规则）,,http://sthjj.dazhou.gov.cn/,http://www.dazhou.gov.cn/news-show-272745.html,http://sthjj.dazhou.gov.cn/news-list-ggtz.html http://sthjj.dazhou.gov.cn/news-list-zhengwuxinxi.html http://sthjj.dazhou.gov.cn/news-list-zcwj.html
+市级,四川,达州,,511700,数据局,市数据局,需人工,部门页上只有本级共用的栏目（按部门筛选的列表要接口或人工确认）,,http://www.dazhou.gov.cn/news-show-160602.html,http://www.dazhou.gov.cn/news-list-jigouzhineng.html,
 市级,四川,成都,,510100,政府办,,不能抓,门户不能抓：HTTP 412 拒绝访问,,,,
 市级,四川,成都,,510100,发改委,,不能抓,门户不能抓：HTTP 412 拒绝访问,,,,
 市级,四川,成都,,510100,工信,,不能抓,门户不能抓：HTTP 412 拒绝访问,,,,
@@ -229,17 +229,6 @@
 市级,四川,成都,,510100,农业农村,,不能抓,门户不能抓：HTTP 412 拒绝访问,,,,
 市级,四川,成都,,510100,文旅,,不能抓,门户不能抓：HTTP 412 拒绝访问,,,,
 市级,四川,成都,,510100,生态环境,,不能抓,门户不能抓：HTTP 412 拒绝访问,,,,
-市级,四川,广元,,510800,政府办,,不能抓,门户不能抓：HTTP 412 拒绝访问,,,,
-市级,四川,广元,,510800,发改委,,不能抓,门户不能抓：HTTP 412 拒绝访问,,,,
-市级,四川,广元,,510800,工信,,不能抓,门户不能抓：HTTP 412 拒绝访问,,,,
-市级,四川,广元,,510800,科技,,不能抓,门户不能抓：HTTP 412 拒绝访问,,,,
-市级,四川,广元,,510800,商务,,不能抓,门户不能抓：HTTP 412 拒绝访问,,,,
-市级,四川,广元,,510800,财政,,不能抓,门户不能抓：HTTP 412 拒绝访问,,,,
-市级,四川,广元,,510800,人社,,不能抓,门户不能抓：HTTP 412 拒绝访问,,,,
-市级,四川,广元,,510800,市场监管,,不能抓,门户不能抓：HTTP 412 拒绝访问,,,,
-市级,四川,广元,,510800,农业农村,,不能抓,门户不能抓：HTTP 412 拒绝访问,,,,
-市级,四川,广元,,510800,文旅,,不能抓,门户不能抓：HTTP 412 拒绝访问,,,,
-市级,四川,广元,,510800,生态环境,,不能抓,门户不能抓：HTTP 412 拒绝访问,,,,
 市级,四川,德阳,,510600,政府办,,抓取失败,打不开：门户打不开：robots.txt 暂时无法获取（RemoteProtocolError: Server disconnected without sending,,,,
 市级,四川,德阳,,510600,发改委,,抓取失败,打不开：门户打不开：robots.txt 暂时无法获取（RemoteProtocolError: Server disconnected without sending,,,,
 市级,四川,德阳,,510600,工信,,抓取失败,打不开：门户打不开：robots.txt 暂时无法获取（RemoteProtocolError: Server disconnected without sending,,,,
@@ -251,3 +240,14 @@
 市级,四川,德阳,,510600,农业农村,,抓取失败,打不开：门户打不开：robots.txt 暂时无法获取（RemoteProtocolError: Server disconnected without sending,,,,
 市级,四川,德阳,,510600,文旅,,抓取失败,打不开：门户打不开：robots.txt 暂时无法获取（RemoteProtocolError: Server disconnected without sending,,,,
 市级,四川,德阳,,510600,生态环境,,抓取失败,打不开：门户打不开：robots.txt 暂时无法获取（RemoteProtocolError: Server disconnected without sending,,,,
+市级,四川,广元,,510800,政府办,,不能抓,门户不能抓：HTTP 412 拒绝访问,,,,
+市级,四川,广元,,510800,发改委,,不能抓,门户不能抓：HTTP 412 拒绝访问,,,,
+市级,四川,广元,,510800,工信,,不能抓,门户不能抓：HTTP 412 拒绝访问,,,,
+市级,四川,广元,,510800,科技,,不能抓,门户不能抓：HTTP 412 拒绝访问,,,,
+市级,四川,广元,,510800,商务,,不能抓,门户不能抓：HTTP 412 拒绝访问,,,,
+市级,四川,广元,,510800,财政,,不能抓,门户不能抓：HTTP 412 拒绝访问,,,,
+市级,四川,广元,,510800,人社,,不能抓,门户不能抓：HTTP 412 拒绝访问,,,,
+市级,四川,广元,,510800,市场监管,,不能抓,门户不能抓：HTTP 412 拒绝访问,,,,
+市级,四川,广元,,510800,农业农村,,不能抓,门户不能抓：HTTP 412 拒绝访问,,,,
+市级,四川,广元,,510800,文旅,,不能抓,门户不能抓：HTTP 412 拒绝访问,,,,
+市级,四川,广元,,510800,生态环境,,不能抓,门户不能抓：HTTP 412 拒绝访问,,,,
