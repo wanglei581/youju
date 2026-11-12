@@ -11,16 +11,18 @@
    规则只跟页面上第一个信息公开链接，常常跟到门户的公共页去了。打开后跳到部门目录外的不用；
    那一页上找到的栏目也只收部门目录下的（独立网站收同一主机的）。
 
-部门目录要确实归这个部门：挂在门户上的部门页（门户频道）得是它所在目录的首页（/x/、/x/index.html），
-不带参数；是公共目录里的一篇（/zwgk/kjj.html）或靠参数区分（?dept=…）时，这两条规则都不用。
+部门目录要确实归这个部门：挂在门户上的部门页（门户频道）得是官方导航上写着本部门名称的链接
+指过来的，而且是它所在目录的首页（/x/、/x/index.html），不带参数；是公共目录里的一篇
+（/zwgk/kjj.html）或靠参数区分（?dept=…）时，这两条规则都不用。
 """
 
 import re
 from collections.abc import Callable
+from dataclasses import replace
 from urllib.parse import urlsplit
 
 from youju.crawler.urls import page_dir
-from youju.govsites.names import COLUMN_KINDS, column_kind
+from youju.govsites.names import COLUMN_KINDS, column_kind, dept_categories
 from youju.govsites.platform import URL_SHAPES
 
 _MAX_DEPTH = 8
@@ -111,7 +113,8 @@ def more_columns(
         return hits
     base = page.final_url
     shared = row.site_type == "门户频道"  # 部门挂在门户主机上：目录要确实归这个部门
-    if shared and not dir_page(base):
+    named = row.dept in dept_categories(row.nav_text or row.dept_full_name or "")
+    if shared and not (named and dir_page(base)):
         return hits
     host = urlsplit(base).netloc.lower()
     prefix = page_dir(base)
@@ -134,7 +137,14 @@ def more_columns(
         parts = urlsplit(url)
         return parts.netloc.lower() == host and (not shared or parts.path.startswith(prefix))
 
-    found = {k: h for k, h in find([info], exclude).items() if own(h.url)}
+    # 先筛候选再择优：通用规则只看这一页上部门目录下的链接（含"更多"链接），目录外的不参与比较
+    from youju.govsites.inventory import heading_more_links  # 延迟引入：inventory 引着本模块
+
+    cand = [link for link in info.links if own(link.url)]
+    if info.doc is not None:
+        cand += [link for link in heading_more_links(info.doc, info.final_url) if own(link.url)]
+    view = replace(info, links=cand, doc=None)
+    found = {k: h for k, h in find([view], exclude).items() if own(h.url)}
     for kind, hit in {**deep_columns(info, exclude, hit_cls), **found}.items():
         out.setdefault(kind, hit)
     return out

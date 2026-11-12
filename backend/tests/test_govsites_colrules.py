@@ -3,7 +3,7 @@
 from youju.crawler.fetcher import FetchResult
 from youju.govsites import colrules
 from youju.govsites.divisions import Division, DivisionIndex
-from youju.govsites.inventory import ColumnHit, DeptRow, Inventory, PageInfo
+from youju.govsites.inventory import ColumnHit, DeptRow, Inventory, PageInfo, find_columns
 from youju.govsites.links import Link
 
 JM = "https://www.jiangmen.gov.cn"
@@ -43,8 +43,15 @@ def _inventory(pages: dict[str, str]) -> Inventory:
     return Inventory(DivisionIndex(divisions), FakeCache(pages), provinces=["广东"], workers=2)
 
 
-def _row(level: str = "市级", dept: str = "科技", site_type: str = "门户频道") -> DeptRow:
-    return DeptRow("440700", level, "广东", "江门", "", dept, site_type=site_type)
+_NAMES = {"科技": "江门市科学技术局", "发改委": "韶关市发展和改革局", "政府办": "江门市人民政府"}
+
+
+def _row(
+    level: str = "市级", dept: str = "科技", site_type: str = "门户频道", nav: str | None = None
+) -> DeptRow:
+    row = DeptRow("440700", level, "广东", "江门", "", dept, site_type=site_type)
+    row.nav_text = row.dept_full_name = _NAMES.get(dept, "") if nav is None else nav
+    return row
 
 
 def _never(*_):
@@ -182,3 +189,29 @@ def test_own_info_page_comes_before_the_portal_public_page() -> None:
     # 公示公告部门自己没有：照旧由通用规则从门户那页补（部门信息公开页上链出去的不由这里收）
     assert got["公示公告"] == f"{SG}/zwgk/gsgg/"
     assert next(c for c in row.columns if c.kind == "公示公告").source == portal
+
+
+def test_portal_channel_needs_a_nav_link_named_after_the_dept() -> None:
+    """挂在门户上的部门页要是官方导航上写着本部门名称的链接指过来的，才认它的目录。"""
+    page = _page(f"{JM}/bmpd/x/", [("通知公告", f"{JM}/bmpd/x/a/b/tzgg/index.html")])
+    row = _row(nav="政务服务")
+    assert colrules.more_columns(row, page, {}, frozenset(), _never, _never, ColumnHit) == {}
+
+
+def test_info_page_picks_among_dept_links_only() -> None:
+    """部门信息公开页上先筛出部门目录下的链接再择优：目录外的同名链接排在前面也挤不掉目录内的。"""
+    dept = _page(f"{SG}/bmpdlm/fgw/", [("信息公开", f"{SG}/bmpdlm/fgw/xxgk/")])
+    info = _page(
+        f"{SG}/bmpdlm/fgw/xxgk/",
+        [("政策文件", f"{SG}/zwgk/zcwj/"), ("政策文件", f"{SG}/bmpdlm/fgw/zcwj/")],
+    )
+    got = colrules.more_columns(
+        _row(dept="发改委"),
+        dept,
+        {},
+        frozenset(),
+        lambda _u: info,
+        lambda ps, ex: find_columns(ps, ex),
+        ColumnHit,
+    )
+    assert {k: h.url for k, h in got.items()} == {"政策文件": f"{SG}/bmpdlm/fgw/zcwj/"}
