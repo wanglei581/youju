@@ -1045,6 +1045,24 @@ def test_fetch_details_completes_truncated_list_title(session) -> None:
     assert session.get(Document, truncated.id).title == HENAN_FULL
 
 
+def test_completed_title_with_joint_issuer_waits_for_the_other_copy(session) -> None:
+    """只抓了截断那份：标题开头是四个厅局联合发文，发文机关从标题取到四家；另一份还没抓正文，按栏目
+    部门算，归并键里的机关对不上，暂时不归并（宁可多显示一条），等那一份也抓了再归到一起。"""
+    copy = add_document(session, 111, title=HENAN_FULL)
+    truncated = add_document(session, 112, source_id=copy.source_id, title=HENAN_TRUNCATED)
+    for doc in (copy, truncated):
+        doc.publish_date = date(2026, 9, 26)
+    session.commit()
+    page = detail_page(HENAN_FULL)
+    fake = FakeFetcher(
+        {truncated.url: FetchResult(truncated.url, "ok", final_url=truncated.url, text=page)}
+    )
+    fetch_details(session, limit=1, document_ids=[truncated.id], fetcher=fake)
+    detail = session.get(DocumentDetail, truncated.id)
+    assert detail is not None and detail.issuer.count("、") == 3
+    assert session.get(DocumentMerge, truncated.id) is None
+
+
 def test_completed_title_joins_the_copy_that_already_had_the_full_title(session) -> None:
     """同一份文件在另一个栏目里是完整标题：截断时不参与归并，补全后按新标题归到一组。"""
     copy = add_document(session, 111, title=HENAN_FULL)
