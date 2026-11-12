@@ -20,7 +20,7 @@
     <text>查询说明</text>
     <t-icon name="{{rulesOpen ? 'chevron-up' : 'chevron-down'}}" size="28rpx" />
   </view>
-  <!-- 11/12 简化走查：前三条（逐行比对、名称相近、看原名单里的那一行）和输入框、结果里的字重复，挪进使用帮助（content/help.js 的 lists 一条）；
+  <!-- 11/12 简化走查：前三条（逐行比对、名称相近、看原名单里的那一行）和输入框、结果里的字重复，挪进使用帮助（content/help.js 的 lists-how 一条）；
        "不查个人"和发布阶段（D-090 ③）两条留在页面上 -->
   <view wx:if="{{rulesOpen}}" class="rules-body">
     <view class="rule">只查企业和机构，不查个人</view>
