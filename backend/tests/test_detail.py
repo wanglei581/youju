@@ -841,6 +841,27 @@ def test_protection_page_is_rejected() -> None:
     assert not result.body_text
 
 
+def test_dropdown_options_are_not_body() -> None:
+    """下拉框里的跳转选项不算正文（11/12 漯河：正文区空着，兜底时把"省级厅委导航"一串选项当正文）。"""
+    options = "".join(
+        f"<option value='https://{n}.gov.cn/'>某某省第{n}厅</option>" for n in range(30)
+    )
+    page = (
+        "<html><title>某局文件</title><body><div class='row'><select><option>--省级厅委导航--</option>"
+        f"{options}</select></div><div class='conTxt'></div></body></html>"
+    )
+    result = parse_detail(page, "https://scjg.example.gov.cn/content_1.html")
+    assert "厅委导航" not in (result.raw_body or "") and not result.body_text
+    # 正文里本来就有的下拉框也不进正文，正文照取
+    with_body = page.replace(
+        "<div class='conTxt'></div>",
+        "<div id='zoom'><p>各有关单位：</p><p>现将2026年度项目申报有关事项通知如下，请按要求组织申报。</p>"
+        "<select><option>请选择</option><option>某县</option></select></div>",
+    )
+    result = parse_detail(with_body, "https://scjg.example.gov.cn/content_2.html")
+    assert "组织申报" in result.body_text and "请选择" not in result.body_text
+
+
 def test_density_fallback_ignores_navigation_and_redacts() -> None:
     sample = (
         "<html><body><div class='top-links'><a href='/a'>网站首页栏目导航公告通知</a>"

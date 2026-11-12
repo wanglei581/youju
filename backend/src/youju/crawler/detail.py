@@ -618,7 +618,9 @@ def _plain_lines(node: etree._Element, skip: frozenset = frozenset()) -> list[st
     def visit(element: etree._Element) -> None:
         if not isinstance(element.tag, str) or element in skip:
             return
-        if element.tag.lower() in {"script", "style", "noscript", "nav", "footer"}:
+        # 下拉框（"县区网站""省级厅委导航"这类跳转菜单）的选项不是正文：11/12 漯河等站正文区是空的，
+        # 按文字密度兜底时会把一整串选项当成正文
+        if element.tag.lower() in {"script", "style", "noscript", "nav", "footer", "select"}:
             return
         marker = f"{element.get('class', '')} {element.get('id', '')}"
         if _JUNK_CLASS.search(marker):
