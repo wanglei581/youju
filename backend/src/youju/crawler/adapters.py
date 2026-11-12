@@ -48,7 +48,7 @@ from lxml import etree
 from youju.crawler.dates import _safe_date
 from youju.crawler.listing import ListItem, _looks_like_title, extract_items
 from youju.crawler.titles import clean_title
-from youju.crawler.urls import normalize_url, url_key
+from youju.crawler.urls import host_of, normalize_url, url_key
 
 HANWEB_JPAAS_PATH = "/api-gateway/jpaas-publish-server/front/page/build/unit"
 # 适配器名（写进来源 parser_config 的"经接口读"标记 list_api_open，正式抓取据此决定走不走接口）
@@ -606,12 +606,14 @@ def api_items(
 
 def _redirect_words(api_url: str, final: str) -> str:
     """跳转改了什么：主机名变了算主机名，路径或参数变了算路径和参数。只换协议的不算跳转
-    （如 http 跳 https 落在 *.cas.cn 这类主机上，不能当成跳到登录）。"""
+    （如 http 跳 https 落在 *.cas.cn 这类主机上，不能当成跳到登录）；只是写不写协议默认端口的
+    （https://x:443 和 https://x）也不算，和抓取程序认网站的口径一样（host_of）。"""
     a, b = urlsplit(api_url), urlsplit(final)
+    host_a, host_b = host_of(api_url), host_of(final)
     words = []
-    if a.netloc.lower() != b.netloc.lower():
+    if host_a != host_b:
         words.append(b.netloc)
-    if (a.netloc.lower(), a.path, a.query) != (b.netloc.lower(), b.path, b.query):
+    if (host_a, a.path, a.query) != (host_b, b.path, b.query):
         words.append(f"{b.path}?{b.query}" if b.query else b.path)
     return " ".join(words)
 

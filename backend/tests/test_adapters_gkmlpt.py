@@ -332,3 +332,16 @@ def test_base_url_drops_the_column_fragment():
     body["articles"][0]["url"] = "http://www.sg.gov.cn/fgj/gkmlpt/index"  # 只差 http 的回链
     items = api_items(found, json.dumps(body), {}, TODAY)
     assert len(items) == 4 and all("gkmlpt/index" not in i.url for i in items)
+
+
+def test_default_port_only_redirect_is_not_a_redirect_elsewhere():
+    # 只是写不写默认端口的跳转：不算"跳到页面没写的地址"（不记不能抓），照常算这次没读出
+    page_url = URL.replace(".cn/", ".cn:443/")
+    found = api(url=page_url)
+    moved = FetchResult(found.url, "redirect", api().url, 301, "")
+    assert api_refusal(found, moved) == ""
+    elsewhere = FetchResult(found.url, "redirect", "https://www.sg.gov.cn/login", 302, "")
+    assert api_refusal(found, elsewhere)
+    # 反过来（不带端口跳到带 :443 的同一地址）也一样
+    back = FetchResult(api().url, "redirect", found.url, 301, "")
+    assert api_refusal(api(), back) == ""

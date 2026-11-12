@@ -266,3 +266,20 @@ def test_only_new_creates_one_source_per_list_within_a_file(session, tmp_path: P
     s = import_sources(session, batch, only_new=True)
     assert (s.created, s.skipped) == (1, 1)
     assert session.scalar(select(func.count(Source.id))) == 1
+
+
+def test_only_new_keeps_two_categories_of_one_department_page(session, tmp_path: Path) -> None:
+    # 数字广东：同一个部门页上的两个信息公开分类是两个来源，不能被当成同一个列表跳过
+    page = "https://www.sg.gov.cn/fgj/gkmlpt/index"
+    status = "试跑可读（经接口读，全国覆盖 v1，未启用）"
+    batch = tmp_path / "gkmlpt.csv"
+    batch.write_text(
+        CSV_HEADER
+        + f"省级,广东,发改委,广东省发展改革委,通知公告,{page}#xxgk-gkmlpt-8,200,100,,{status},2026-11-12,\n"
+        + f"省级,广东,发改委,广东省发展改革委,政策,{page}#xxgk-gkmlpt-8350,200,3,,{status},2026-11-12,\n",
+        encoding="utf-8-sig",
+    )
+    s = import_sources(session, batch, only_new=True)
+    assert (s.created, s.skipped) == (2, 0) and not s.near
+    urls = set(session.scalars(select(Source.url)))
+    assert urls == {f"{page}#xxgk-gkmlpt-8", f"{page}#xxgk-gkmlpt-8350"}

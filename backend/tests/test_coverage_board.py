@@ -586,3 +586,27 @@ def test_enable_does_not_mark_plain_readable_columns(session):
     enable_sources(session, "浙江", "省级", "王某", now=NOW, verified=True)
     session.refresh(plain)
     assert plain.enabled is True and "list_api_open" not in (plain.parser_config or {})
+
+
+def test_enable_marks_gkmlpt_adapter(session):
+    source = _source(session)
+    source.url += "#xxgk-gkmlpt-8"
+    source.verification_status = "试跑可读（经接口读，全国覆盖 v1，未启用）"
+    session.add(
+        CoverageAcceptance(
+            province="浙江",
+            level="省级",
+            sampled_by="王某",
+            sampled_at=NOW,
+            sample_size=11,
+            passed=True,
+        )
+    )
+    session.commit()
+    depts = _depts()
+    depts[0].columns = [ColumnHit("通知公告", "通知通告", source.url, "https://kjt.zj.gov.cn/")]
+    import_inventory(session, _portals(), depts)
+    enabled = enable_sources(session, "浙江", "省级", "王某", now=NOW, verified=True)
+    assert source.id in enabled.source_ids
+    session.refresh(source)
+    assert source.parser_config["list_api_open"] == "数字广东gkmlpt"
