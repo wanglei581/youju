@@ -65,7 +65,7 @@ test('D-130：截止标签叫"已核对原文"；使用帮助写明谁核的，�
   const who = help.items.find((item) => item.key === 'deadline-check');
   assert.equal(who.ai, true, '写到 AI 的那一条只在 AI 开着时显示（D-075）');
   assert.match(who.q, /谁核对/);
-  assert.match(who.a.join(''), /^7 天内到期的截止日期，由 AI 每天逐条对照通知原文核对.*不是人工核对。7 天内到期的，原文里找不到、看不准的不显示日期/);
+  assert.match(who.a.join(''), /^7 天内到期的截止日期，由 AI 每天逐条对照通知原文核对.*不是人工核对。7 天内到期的，原文里找不到、看不准的不显示日期，写“截止时间见原文”或“可能 7 天内截止”/);
   // 紧跟在"截止日期怎么看"后面
   const keys = help.items.map((item) => item.key);
   assert.equal(keys.indexOf('deadline-check'), keys.indexOf('deadline') + 1);
