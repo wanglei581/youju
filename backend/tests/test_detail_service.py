@@ -352,6 +352,49 @@ def test_robots_redirect_to_listed_site_does_not_pause_it(session, monkeypatch) 
     assert session.get(DocumentDetail, second.id).status == "ok"
 
 
+@pytest.mark.parametrize("failure", ["robots", "dns"])
+def test_failure_while_site_was_being_paused_is_not_written(session, monkeypatch, failure):
+    """取的时候网站刚被停（读 robots.txt、解析域名期间）、结果是"robots 不让""解析到内网"这类失败：
+    这一份不收、不写库，下一轮再取，不会当成永久失败。"""
+    import httpx
+
+    from youju.crawler import detail, detail_service
+    from youju.crawler.fetcher import PoliteFetcher
+
+    monkeypatch.setitem(detail._SEARCH_THROTTLE_VERIFIED, "b.example.gov.cn", frozenset({"x"}))
+    doc = _doc_on(session, _source_on(session, "b.example.gov.cn"), "b.example.gov.cn", 1)
+    paused_hosts: list[set[str]] = []
+    original = detail_service._SitePause.__init__
+
+    def remember(self) -> None:
+        original(self)
+        paused_hosts.append(self.hosts)
+
+    monkeypatch.setattr(detail_service._SitePause, "__init__", remember)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/robots.txt":
+            paused_hosts[0].add("b.example.gov.cn")  # 别的线程这时停了 b
+            return httpx.Response(200, text="User-agent: *\nDisallow: /\n")
+        return httpx.Response(200, text="<html></html>")
+
+    def resolver(host: str) -> list[str]:
+        if failure == "dns":
+            paused_hosts[0].add("b.example.gov.cn")
+            return ["10.0.0.1"]  # 解析到内网
+        return ["93.184.216.34"]
+
+    with PoliteFetcher(
+        "TestAgent YoujuBot/0.1",
+        per_host_interval=0,
+        transport=httpx.MockTransport(handler),
+        resolver=resolver,
+    ) as polite:
+        results = fetch_details(session, limit=5, fetcher=polite, max_workers=1)
+    assert [r.status for r in results] == ["site_paused"]
+    assert session.get(DocumentDetail, doc.id) is None
+
+
 def test_title_backfill_reports_paused_site_as_unavailable(session, monkeypatch):
     """补全截断标题时，同一网站这一轮停取了的记"没取到（site_paused）"，不当成"没截断"。"""
     from youju.crawler import detail

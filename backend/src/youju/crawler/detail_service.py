@@ -313,6 +313,10 @@ def _fetch_outcomes(
                 )
             visited = guarded.visited
             listed = {_host(u) for u in visited if search_throttle_site(u)}
+            # 这份文件碰过的网站：原网址、取页器走过的每一跳（被挡下、robots 不让去的也算）、
+            # 经过的地址
+            hops = outcome.fetch.hops if outcome.fetch else ()
+            touched = {_host(u) for u in (url, *hops, *visited)}
             with pause.lock:
                 if outcome.status == "protected":
                     # 防护页照记；经过的网站里名单上的这一轮停取（别的网站照旧往下取）
@@ -324,11 +328,10 @@ def _fetch_outcomes(
                             "、".join(sorted(listed)),
                             document_id,
                         )
-                elif outcome.status != "site_paused" and not (
-                    {_host(u) for u in visited} & pause.hosts
-                ):
+                elif outcome.status != "site_paused" and not touched & pause.hosts:
                     results.append(outcome)
-                # 经过或要去已停的网站（被挡下、或取的时候刚停）：这一份不收，下一轮再取
+                # 碰过已停的网站（被挡下；或取的时候刚停，结果是 robots 不让、解析失败这类，不是网站
+                # 本身的问题）：这一份不收、不写库，下一轮再取
                 if _host(url) in pause.hosts:
                     break
         return results
