@@ -1207,6 +1207,41 @@ def test_periodic_recheck_batch_grows_with_the_confirmed_members(session, world,
     assert checked[-1] == set(rows)
 
 
+def test_review_groups_do_not_take_the_periodic_recheck_slots(session, world, monkeypatch):
+    # 转了"需复核"的组本来就不折叠，不占定期核对的名额：一批只有 1 份时，别的确认组照样轮得到
+    from youju import repost
+
+    title = "关于组织开展2026年度工业互联网平台创新领航应用案例征集工作的通知"
+    body = UPSTREAM.replace("376", "377")
+    second = [
+        _doc(session, _source(session, province), title, day=day, body=body + province)
+        for province, day in (("四川", 8), ("重庆", 15))
+    ]
+    rebuild(session, now=NOW)
+    session.flush()
+    for doc in (*world.values(), *second):
+        doc.publish_date = date(2025, 1, 1)  # 都在窗口外
+    session.flush()
+    rows = _members(session)
+    _, facts = member_facts(session, list(rows))
+    for row in rows.values():
+        row.confirmed_by, row.confirmed_at = "人工", NOW
+        row.confirmed_fingerprint = facts[row.document_id]
+    session.get(RepostGroup, rows[world["shaanxi"].id].group_id).needs_review = True
+    session.flush()
+    checked: list[set[int]] = []
+    real = repost.member_facts
+
+    def spy(session_, ids):
+        checked.append(set(ids))
+        return real(session_, ids)
+
+    monkeypatch.setattr(repost, "member_facts", spy)
+    monkeypatch.setattr(repost, "RECHECK_BATCH", 1)
+    rebuild(session, now=NOW + timedelta(days=31))
+    assert len(checked[-1]) == 1 and checked[-1] <= {d.id for d in second}
+
+
 def test_old_groups_untouched_and_cross_window_member_retained(session, world):
     rebuild(session, now=NOW)
     session.flush()

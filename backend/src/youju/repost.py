@@ -615,7 +615,11 @@ def load_candidates(
             Source.city,
             Source.district,
             Source.dept,
-            RepostSignal,
+            # 只取用得着的几列，不建整行对象：窗口里可能有上百万份
+            RepostSignal.cited,
+            RepostSignal.body_forward,
+            RepostSignal.has_body,
+            RepostSignal.own_number,
         )
         .join(Source, Source.id == Document.source_id)
         .outerjoin(RepostSignal, RepostSignal.document_id == Document.id)
@@ -629,20 +633,20 @@ def load_candidates(
     ).all()
     return [
         Candidate(
-            id=doc_id,
-            title=title,
-            kind=effective_kind(title, override),
-            province=province,
-            city=city,
-            district=district,
-            dept=dept,
-            publish_date=published,
-            cited=tuple(Cited(**c) for c in signal.cited) if signal else (),
-            body_forward=signal.body_forward if signal else False,
-            has_body=signal.has_body if signal else False,
-            own_number=signal.own_number if signal else None,
+            id=row.id,
+            title=row.title,
+            kind=effective_kind(row.title, row.kind_override),
+            province=row.province,
+            city=row.city,
+            district=row.district,
+            dept=row.dept,
+            publish_date=row.publish_date,
+            cited=tuple(Cited(**c) for c in row.cited or ()),
+            body_forward=bool(row.body_forward),
+            has_body=bool(row.has_body),
+            own_number=row.own_number,
         )
-        for doc_id, title, override, published, province, city, district, dept, signal in rows
+        for row in rows
     ]
 
 
@@ -870,11 +874,14 @@ def rebuild(
     # 窗口外确认过的组：正文、标题被直接改写（抓取时间不变）也要能发现——超过 RECHECK_DAYS 天没核对
     # 的，每轮轮流拿最久没核对的一批全文核对。一批 = 窗口外确认成员总数 ÷ RECHECK_DAYS（至少
     # RECHECK_BATCH 份）：一天哪怕只跑一轮，也能 RECHECK_DAYS 天轮一遍，不会越积越多
+    # 转了"需复核"的组本来就不折叠，不占定期核对的名额
     outside_confirmed = (
         select(RepostGroupMember.document_id)
+        .join(RepostGroup, RepostGroup.id == RepostGroupMember.group_id)
         .where(
             RepostGroupMember.active.is_(True),
             RepostGroupMember.confirmed_at.is_not(None),
+            RepostGroup.needs_review.is_(False),
             ~RepostGroupMember.group_id.in_(_window_groups(cutoff)),
         )
         .subquery()
@@ -932,17 +939,12 @@ def rebuild(
             group.needs_review = True
             bump(group, stamp)
             summary.needs_review += 1
-    # 重抓以后、或轮到定期核对的确认成员，核对过、内容没变的：记下核对的时间
-    unchanged = [
-        d
-        for d in set(changed_confirmed) | periodic
-        if d in members
-        and members[d].confirmed_at is not None
-        and members[d].confirmed_fingerprint == fingerprints.get(d)
-    ]
-    if unchanged:
+    # 重抓以后、或轮到定期核对的确认成员：核对过的一律记下核对的时间（内容变了的组已经转需复核或
+    # 退回，不再记着也会一直排在定期核对的最前面，挤掉别的组）
+    checked = [d for d in set(changed_confirmed) | periodic if d in members]
+    if checked:
         for signal in session.scalars(
-            select(RepostSignal).where(RepostSignal.document_id.in_(unchanged))
+            select(RepostSignal).where(RepostSignal.document_id.in_(checked))
         ):
             signal.checked_at = stamp
 
