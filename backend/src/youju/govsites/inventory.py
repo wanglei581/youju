@@ -35,6 +35,7 @@ from youju.crawler.adapters import (
 )
 from youju.crawler.fetcher import FetchResult, resolve_host
 from youju.crawler.urls import page_dir
+from youju.govsites import colrules
 from youju.govsites.attribution import (  # noqa: F401 - level_*、_own_branch 原在本模块，保留旧名字
     NOT_OWN,
     Places,
@@ -1250,6 +1251,14 @@ class Inventory:
                         for kind, hit in found.items():
                             hits.setdefault(kind, hit)
                     break
+        if row.level == "市级" and row.dept != "政府办":
+            # 地市部门频道的几种写法：栏目层级深、认到的是频道子栏目、部门自己的信息公开页
+            # （colrules）。补抓的页面照上面同样的规则找栏目（专题路径、大汉分组栏目名核对）
+            def find(ps: list[PageInfo], ex: frozenset[str]) -> dict[str, ColumnHit]:
+                got = find_columns(ps, ex, max_depth, topics)
+                return self._check_group_columns(ps, got, ex, max_depth, topics)
+
+            hits = colrules.more_columns(row, page, hits, exclude, self.page, find, ColumnHit)
         row.columns = [hits[k] for k in COLUMN_KINDS if k in hits]
 
 
