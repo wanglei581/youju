@@ -589,3 +589,38 @@ def test_login_prompt_split_by_tags_is_not_read():
     api = _api()
     split = _payload(data={"html": "<p>请<b>先</b>登录</p>" + LIST})
     assert "登录或权限提示" in api_refusal(api, _got(split))
+
+
+def test_declarations_in_textarea_or_template_are_ignored():
+    for wrap in ("<textarea>{}</textarea>", "<template>{}</template>", "<noscript>{}</noscript>"):
+        assert find_list_api(wrap.format(PAGE), PAGE_URL) is None
+
+
+def test_gate_links_are_judged_by_how_they_start():
+    api = _api()
+    long_gate = _payload(
+        data={"html": LIST + '<a href="/login">请先登录后查看完整政策文件列表</a>'}
+    )
+    assert "登录或权限提示" in api_refusal(api, _got(long_gate))
+    title = '<li><a href="/notice">关于验证码的通知</a><span>2026-11-05</span></li>'
+    assert api_refusal(api, _got(_payload(data={"html": title + LIST}))) == ""
+
+
+def test_string_zero_or_false_permission_values_count_as_empty():
+    api = _api()
+    text = _payload(data={"html": LIST, "needLogin": "0"}, roles="null", permissions="false")
+    assert api_refusal(api, _got(text)) == ""
+
+
+def test_unreadable_unit_counts_as_not_read_this_time():
+    from youju.crawler.adapters import find_unit_apis
+    from youju.govsites.divisions import DivisionIndex, parse_tree
+    from youju.govsites.inventory import Inventory
+
+    nav = PAGE.split("<ul>")[1].split("</ul>")[0]
+    nav = nav.replace("当前栏目list", "导航").replace('id="u1"', 'id="u2"')
+    page = PAGE.replace("</ul>", nav + "</ul>")
+    apis = [a.url for a in find_unit_apis(page, PAGE_URL)]
+    pages = {PAGE_URL: page, apis[0]: _payload(success=False), apis[1]: "<html>系统维护中</html>"}
+    info = Inventory(DivisionIndex(parse_tree({})), _Cache(pages), provinces=[]).page(PAGE_URL)
+    assert info.api_refused and info.api_failed

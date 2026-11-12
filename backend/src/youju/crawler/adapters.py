@@ -53,7 +53,8 @@ def _attrs(tag: str) -> dict[str, str]:
     return out
 
 
-_COMMENT = re.compile(r"<!--.*?-->", re.S)
+# 浏览器不会执行的地方：注释、文本域、模板、noscript 里写着的声明都不认
+_INERT = re.compile(r"<!--.*?-->|<(textarea|template|noscript|xmp)\b[^>]*>.*?</\1\s*>", re.S | re.I)
 
 
 def find_list_api(html: str, page_url: str) -> ListApi | None:
@@ -66,7 +67,7 @@ def find_unit_apis(html: str, page_url: str) -> list[ListApi]:
     """页面里声明的全部大汉 jpaas 单元接口（当前栏目的列表排最前，其次导航等其他单元）。"""
     candidates: list[tuple[int, ListApi]] = []
     # 注释里留着的旧声明浏览器不会执行，也不请求
-    for m in _HANWEB_SCRIPT.finditer(_COMMENT.sub("", html or "")):
+    for m in _HANWEB_SCRIPT.finditer(_INERT.sub("", html or "")):
         attrs = _attrs(m.group(0))
         declared = urlsplit(urljoin(page_url, attrs.get("url", "")))
         # 只认白名单路径，而且接口必须就在栏目页这个网站上（页面声明到别的主机的不请求）
@@ -148,10 +149,14 @@ _PASSWORD_INPUT = re.compile(r"<input\b[^>]*type\s*=\s*[\"']?password", re.I)
 _ANCHOR = re.compile(r"<a\b.*?</a>", re.S | re.I)
 
 
-# 列表里写成链接的登录提示（"请登录""登录后查看"这类短字样）。只看链接文字、不看链接地址：
-# 正常通知也会链到外站的 login.html（湖州门户就有一条直播通知这样写）
+# 列表里写成链接的登录提示：链接文字以"请先登录""登录后""需要登录""没有权限""请输入验证码"
+# 这类说法开头的才算（不论长短）；通知标题里只是提到"验证码""登录"的照常读。只看链接文字、
+# 不看链接地址：正常通知也会链到外站的 login.html（湖州门户就有一条直播通知这样写）
 _ANCHOR_TEXT = re.compile(r"<a\b[^>]*>(.*?)</a>", re.S | re.I)
-_SHORT_HINT = 12  # 链接文字不超过这么多字才算提示；通知标题一般更长
+_GATE_LINK = re.compile(
+    r"^(?:请(?:先)?登[录陆]|登[录陆]后|(?:需要|需|未)登[录陆]|立即登[录陆]|登[录陆]查看|"
+    r"(?:您)?(?:没有|无)(?:权限|权访问|权查看)|权限不足|未授权|请输入验证码|请完成验证)"
+)
 _GATE_TEXT = re.compile(
     r"访问被拒绝|拒绝访问|禁止访问|访问受限|非法请求|防火墙|安全防护|access denied|forbidden",
     re.I,
@@ -192,7 +197,15 @@ def _permission_fields(payload: dict) -> list[str]:
         items = obj.items() if isinstance(obj, dict) else enumerate(obj)  # type: ignore[arg-type]
         for key, value in items:
             name = f"{prefix}{key}"
-            empty = value is None or value is False or value in ("", 0, [], {})
+            empty = (
+                value is None
+                or value is False
+                or value in ("", 0, [], {})
+                or (
+                    isinstance(value, str)
+                    and value.strip().lower() in ("0", "false", "null", "none")
+                )
+            )
             if isinstance(key, str) and _PERMISSION_KEY.match(key) and not empty:
                 found.append(name)
             elif isinstance(value, (dict, list)):
@@ -242,8 +255,8 @@ def _payload_refusal(payload: dict) -> str:
             return f"列表接口返回里有登录或权限提示（{hint.group(0)}）"
         for raw in _ANCHOR_TEXT.findall(html):
             text = html_lib.unescape(_TAGS.sub("", raw))
-            if len(text) <= _SHORT_HINT and _LOGIN_TEXT.search(text):
-                return f"列表接口返回里有登录或权限提示（{text}）"
+            if _GATE_LINK.search(text):
+                return f"列表接口返回里有登录或权限提示（{text[:20]}）"
     fields = _permission_fields(payload)
     if fields:
         return f"列表接口返回带权限要求（{'、'.join(fields)} 不为空）"

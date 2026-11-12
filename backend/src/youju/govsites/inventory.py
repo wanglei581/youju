@@ -28,6 +28,7 @@ from urllib.parse import urlsplit
 from lxml import etree
 
 from youju.crawler.adapters import (
+    api_empty_list,
     api_html,
     api_refusal,
     find_unit_apis,
@@ -429,6 +430,8 @@ class Inventory:
                 if r.status != "ok":
                     info.api_failed = True
                 html = api_html(api, r.text) if r.status == "ok" else ""
+                if r.status == "ok" and not html and not api_empty_list(api, r.text):
+                    info.api_failed = True  # 回了但读不出（维护页、空白）：这次没读出，不下结论
                 if html:
                     info.links += page_links(html, info.final_url)
                     info.categories += jpaas_tree_categories(html)
