@@ -255,8 +255,9 @@ def _host(url: str) -> str:
 
 
 class _PausingFetcher:
-    """取一份文件用：每次请求前看网站停了没有，停了就不去取（记 site_paused）；请求后记下经过的网址
-    （原网址和跳转后的；详情页和它的 PDF 附件都算）。"""
+    """取一份文件用：每次请求前看这份文件经过的网站（连同要去的）有没有已停的，有就不去取（记
+    site_paused）——详情页跳进已停网站以后，它的 PDF 附件也不再取；请求后记下经过的每个地址（原
+    地址、每一跳、跳转后的；详情页和它的 PDF 附件都算）。"""
 
     def __init__(self, inner: DetailFetcher, pause: _SitePause) -> None:
         self.inner, self.pause = inner, pause
@@ -265,11 +266,11 @@ class _PausingFetcher:
     def fetch(self, url: str) -> FetchResult:
         self.visited.append(url)
         with self.pause.lock:
-            stopped = _host(url) in self.pause.hosts
+            stopped = bool({_host(u) for u in self.visited} & self.pause.hosts)
         if stopped:
             return FetchResult(url, "site_paused", error="同一网站这一轮遇到防护页，停取")
         result = self.inner.fetch(url)
-        self.visited.append(result.final_url or url)
+        self.visited += [*result.hops, result.final_url or url]
         return result
 
 
@@ -303,18 +304,23 @@ def _fetch_outcomes(
             visited = guarded.visited or [url]
             touched = {_host(u) for u in visited}
             with pause.lock:
-                if outcome.status == "site_paused" or touched & pause.hosts:
+                stopped = bool(touched & pause.hosts)
+                if outcome.status == "protected":
+                    # 防护页先照记；经过名单里的网站、或经过已停的网站，经过的网站一起停
+                    results.append(outcome)
+                    if stopped or any(map(search_throttle_site, visited)):
+                        pause.hosts |= touched
+                        log.warning(
+                            "搜索限流弹窗网站 %s 遇到防护页（文件 %s），这一轮停取，要复核",
+                            "、".join(sorted(touched)),
+                            document_id,
+                        )
+                        break
+                    continue
+                if outcome.status == "site_paused" or stopped:
                     pause.hosts |= touched
                     break
                 results.append(outcome)
-                if outcome.status == "protected" and any(map(search_throttle_site, visited)):
-                    pause.hosts |= touched
-                    log.warning(
-                        "搜索限流弹窗网站 %s 遇到防护页（文件 %s），这一轮停取，要复核",
-                        "、".join(sorted(touched)),
-                        document_id,
-                    )
-                    break
         return results
 
     # 网络并行只跨网站；数据库写入仍在主线程，避免共享 Session。

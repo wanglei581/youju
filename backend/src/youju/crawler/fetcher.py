@@ -49,6 +49,8 @@ class FetchResult:
     error: str | None = None
     content_type: str | None = None
     content: bytes = b""
+    # 这次请求经过的地址（原地址和每一跳要去的地址），按先后：调用方用来判断实际访问了哪些网站
+    hops: tuple[str, ...] = ()
 
 
 @dataclass
@@ -222,8 +224,15 @@ class PoliteFetcher:
         跳转一律不跟（连 http 升 https 也不跟，只请求页面写明的那个地址）：原样返回 "redirect"
         （final_url 是要跳去的地址），由调用方判断——跳到别的地址记不能抓，只是换协议的按
         这次没读出。"""
+        hops: list[str] = []
+        result = self._fetch_hops(url, same_address_only, hops)
+        result.hops = tuple(hops)
+        return result
+
+    def _fetch_hops(self, url: str, same_address_only: bool, hops: list[str]) -> FetchResult:
         current = url
         for _ in range(_MAX_REDIRECTS + 1):
+            hops.append(current)
             if self._url_allowed is not None and not self._url_allowed(current):
                 return FetchResult(url, "unsupported_host", final_url=current, error="非政府网站")
             entry, allowed = self._check_robots(current)

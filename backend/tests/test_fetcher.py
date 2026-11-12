@@ -493,6 +493,9 @@ def test_redirect_is_followed_hop_by_hop_with_robots_check() -> None:
     # 跳到另一个网站时，按该网站的 robots.txt 判断；被禁止的页面不发请求
     assert blocked.status == "robots_disallowed"
     assert "b.gov.cn/private/x.html" not in requested
+    # 经过的每个地址按先后记下（调用方据此判断实际访问了哪些网站）
+    assert ok.hops == ("https://a.gov.cn/old", "https://a.gov.cn/new")
+    assert blocked.hops == ("https://a.gov.cn/to-b", "https://b.gov.cn/private/x.html")
 
 
 def test_redirect_loop_is_cut_off() -> None:

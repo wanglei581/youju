@@ -221,6 +221,47 @@ def test_paused_site_is_not_reached_from_other_sites(session, monkeypatch, route
     assert session.get(DocumentDetail, third.id) is None
 
 
+def test_paused_site_edge_cases(session, monkeypatch):
+    """停取的几种边角：①跳进已停网站也是防护页的，防护页照记，经过的网站一起停；②多次跳转中途
+    经过已停网站的，按每一跳算；③详情页跳进已停网站以后，它在别的网站的 PDF 附件不再取。"""
+    from youju.crawler import detail
+
+    monkeypatch.setitem(detail._SEARCH_THROTTLE_VERIFIED, "b.example.gov.cn", frozenset({"x"}))
+    first = _doc_on(session, _source_on(session, "b.example.gov.cn"), "b.example.gov.cn", 1)
+    docs = [
+        _doc_on(session, _source_on(session, f"{name}.example.gov.cn"), f"{name}.example.gov.cn", n)
+        for n, name in ((2, "a"), (3, "c"), (4, "d"))
+    ]
+    landed = "https://b.example.gov.cn/detail/9.html"
+    pdf_page = (
+        "<html><body><div id='zoom'><a href='https://e.example.gov.cn/files/1.pdf'>附件.pdf</a>"
+        "</div></body></html>"
+    )
+    fake = FakeFetcher(
+        {
+            first.url: FetchResult(first.url, "ok", final_url=first.url, text=_PROTECTED),
+            # ① 跳进已停的 b，也是防护页
+            docs[0].url: FetchResult(docs[0].url, "ok", final_url=landed, text=_PROTECTED),
+            # ② 中途经过已停的 b，最后落在 c
+            docs[1].url: FetchResult(
+                docs[1].url,
+                "ok",
+                final_url=docs[1].url,
+                text="<html></html>",
+                hops=(docs[1].url, landed, docs[1].url),
+            ),
+            # ③ 落在已停的 b，页面只有一个 e 网站的 PDF
+            docs[2].url: FetchResult(docs[2].url, "ok", final_url=landed, text=pdf_page),
+        }
+    )
+    results = fetch_details(session, limit=10, fetcher=fake, max_workers=1)
+    assert [r.status for r in results] == ["protected", "protected", "site_paused", "site_paused"]
+    assert fake.calls == [first.url, docs[0].url, docs[1].url, docs[2].url]
+    assert session.get(DocumentDetail, docs[0].id).failure_reason == "防护页或验证码"
+    assert session.get(DocumentDetail, docs[1].id) is None
+    assert session.get(DocumentDetail, docs[2].id) is None
+
+
 def test_title_backfill_reports_paused_site_as_unavailable(session, monkeypatch):
     """补全截断标题时，同一网站这一轮停取了的记"没取到（site_paused）"，不当成"没截断"。"""
     from youju.crawler import detail
