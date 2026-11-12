@@ -40,15 +40,13 @@
 <view wx:if="{{!loading && !error}}" class="summary">
   <view class="summary-left"><text wx:if="{{chipTime !== '不限'}}" class="weak">{{chipTime}} </text><text class="b">{{total}}</text> 份<text wx:if="{{chipTime !== '不限'}}" class="weak summary-all"> · 共 {{totalAll}} 份</text></view>
   <view class="summary-right">
-    <text>按发布时间 ↓</text>
     <text class="link" bindtap="select" aria-role="button">{{selecting ? '完成' : '选择'}}</text>
     <!-- 关注当前搜索条件（含已选条件，有新文件时在关注页标出）。协议定稿前不显示（D-056） -->
     <view wx:if="{{loginOpen}}" class="follow-mini" bindtap="follow" aria-role="button" aria-label="关注当前搜索条件"><t-icon name="notification" size="26rpx" />关注</view>
   </view>
 </view>
 <view wx:if="{{!loading && !error && fold.text}}" class="fold-note" bindtap="toggleGuides" aria-role="button">{{fold.text}}<text class="link">{{fold.link}}</text></view>
-<!-- 选了"只看未截止"、有结果时也说一句不含哪些（10/22 走查：原来只在没有结果时才说）；完整口径在筛选面板里 -->
-<view wx:if="{{!loading && !error && total && picked.open.length}}" class="fold-note">{{openNote}}</view>
+<!-- "只看未截止"不含哪些：口径写在筛选面板里和没有结果的页面上（11/12 简化走查：有结果时不再另写一句，已选条件条上看得到这个条件） -->
 
 <view class="card">
   <view wx:if="{{loading}}" class="empty muted">正在加载…<view wx:if="{{serviceStarting}}">正在连接，比平时慢一点，请稍等…</view></view>
@@ -59,7 +57,7 @@
   </view>
   </block>
   <view wx:if="{{error}}" class="empty">{{error}}<text class="link" bindtap="retry">　重试</text></view>
-  <view wx:elif="{{!items.length && !loading && uncovered}}" class="empty">{{uncovered}}还没收录，暂时查不到这个地区的文件。<text wx:if="{{loginOpen}}">想要这个地区，可以在“我的 → 申请覆盖”告诉我们</text></view>
+  <view wx:elif="{{!items.length && !loading && uncovered}}" class="empty">{{uncovered}}还没收录，暂时查不到这个地区的文件。<text wx:if="{{loginOpen}}">想要这个地区，可以在“我的 → 申请收录”告诉我们</text></view>
   <view wx:elif="{{!items.length && !loading}}" class="empty">
     <view class="empty-title">没有符合条件的文件</view>
     <!-- 出路放在最前面：选了"只看未截止"时先去掉它（它不含没写明截止日期、或截止日期还没理清的通知）；别的时间段有结果时直接去看 -->
@@ -92,7 +90,7 @@
 <view wx:if="{{selecting}}" class="pick-bar">
   <text class="pick-count">已选 {{chosenCount}} 份</text>
   <text class="link pick-all" bindtap="pickAll">全选已加载</text>
-  <view class="btn-primary pick-go {{chosenCount ? '' : 'pick-go--off'}}" bindtap="exportChosen"><t-icon name="download" size="32rpx" color="#FFFFFF" />查看结果</view>
+  <view class="btn-primary pick-go {{chosenCount ? '' : 'pick-go--off'}}" bindtap="exportChosen"><t-icon name="download" size="32rpx" color="#FFFFFF" />导出</view>
 </view>
 
 <!-- 原生省市区选择器在独立层渲染，筛选弹层和遮罩都必须在它下方。 -->
@@ -116,11 +114,14 @@
           <view class="pane-inner">
             <view class="group-title">{{g.title}}<text class="group-hint">{{g.hint}}</text></view>
             <!-- 省市区三级（mode="region" 默认三级），每列顶部的“全部”：城市一栏选它是全省，区县一栏选它只查这个市的市级来源。
-                 规则放在选择器上面（先看规则再选，10/22 走查），10/29 压成一句；"点一下移除"放到已选的城市、区县下面 -->
+                 规则放在选择器上面（先看规则再选，10/22 走查），10/29 压成一句；11/12 简化走查：包里有使用帮助时只留一个
+                 "范围说明 ›"（说明写在帮助里，D-108），没有帮助页时照旧写这一句；"点一下移除"放到已选的城市、区县下面 -->
             <block wx:if="{{g.key === 'city'}}">
-              <view class="group-note">城市选“全部”查全省；区县选“全部”只查这个市的市级来源，直辖市查整个直辖市。</view>
+              <view wx:if="{{has.help}}" class="group-note"><text class="link" bindtap="help" aria-role="link">范围说明 ›</text></view>
+              <view wx:else class="group-note">城市选“全部”查全省；区县选“全部”只查这个市的市级来源，直辖市查整个直辖市。</view>
               <picker mode="region" custom-item="全部" value="{{cityRegion}}" bindchange="chooseCity"><view class="option">选择省、市或区县</view></picker>
-              <view class="group-note">{{cityCoverageNote}}<text class="link" bindtap="loadCities">　刷新收录范围</text></view>
+              <!-- 收录范围只在有话要说时写：已收录的城市、区县个数不写（没收录、没取到时才说） -->
+              <view wx:if="{{cityCoverageNote}}" class="group-note">{{cityCoverageNote}}<text class="link" bindtap="loadCities">　刷新收录范围</text></view>
               <view wx:if="{{cityError}}" class="group-note">{{cityError}}</view>
             </block>
             <view class="options">

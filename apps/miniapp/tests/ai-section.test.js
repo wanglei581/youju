@@ -590,7 +590,7 @@ test('使用帮助：固定文字；AI 那几条只在 AI 对这个人开着时�
   const help = require('../content/help.js');
   const page = (state, final = true) => {
     const access = control(state);
-    const p = load('pages/help/index.js', { '../../content/help.js': help, '../../utils/ai-access.js': access, '../../utils/consent.js': { loginOpen: () => final } },
+    const p = load('pages/help/index.js', { '../../content/help.js': help, '../../utils/ai-access.js': access, '../../utils/consent.js': { loginOpen: () => final }, '../../utils/subscribe.js': { remindOpen: () => false } },
       { wx: { setNavigationBarTitle() {}, navigateTo: (o) => p.urls.push(o.url) } });
     p.urls = []; p.onLoad();
     return { p, access, text: () => textOf(render('pages/help/index.wxml', p.data)) };
@@ -1380,7 +1380,7 @@ test('Codex 第 11 轮：搜索页带 ai=1 时，注销后被擦掉（还没重�
   // 帮助页
   const help = require('../content/help.js');
   const access = control(OPEN);
-  const p = load('pages/help/index.js', { '../../content/help.js': help, '../../utils/ai-access.js': access, '../../utils/consent.js': { loginOpen: () => true } },
+  const p = load('pages/help/index.js', { '../../content/help.js': help, '../../utils/ai-access.js': access, '../../utils/consent.js': { loginOpen: () => true }, '../../utils/subscribe.js': { remindOpen: () => false } },
     { wx: { setNavigationBarTitle() {}, navigateTo() {} } });
   p.onLoad(); const m = access.asks.ensure; p.onShow(); assert.equal(access.asks.ensure, m + 1);
   access.set({ visible: false, confirmed: false, available: false });

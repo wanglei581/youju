@@ -6,7 +6,7 @@
   <view class="card advisor-card">
     <view class="advisor-title">{{title}}</view>
     <view class="advisor-text muted">{{statusLine}}</view>
-    <view wx:if="{{countRule}}" class="advisor-text muted">{{countRule}}</view>
+    <!-- 计次规则只在提交按钮上面写一次（"每提交一次算 1 次……"）；这里原来还有一句 countRule，11/12 简化走查去掉 -->
     <view wx:if="{{trialEnded}}" class="advisor-text muted">{{trialEnded}}</view>
     <view wx:if="{{seasonLine}}" class="advisor-text">{{seasonLine}}</view>
     <!-- 体验中当天次数用完：和免费次数用完一样在上面说清楚，不只写"还能提交 0 次" -->
@@ -51,8 +51,7 @@
     <!-- 提示里推荐了加量体验（超过 50 家、本月免费次数用完）：按钮紧跟在提示下面，不用翻回页面上方找；别的提示下面不出现 -->
     <button wx:if="{{inputError && inputError === trialHint && trialAvailable && !passActive}}" class="advisor-button" bindtap="openTrial">了解加量体验</button>
     <button class="advisor-button" bindtap="preview" loading="{{previewing}}" disabled="{{previewing || submitting}}">预览并核对行数</button>
-    <!-- 10/22 走查 + 10/25 Grok：先做什么写在预览按钮正下方（原来隔着工具说明和保存期限写在提交按钮上面） -->
-    <view wx:if="{{!previewed && !previewing}}" class="advisor-text">填好名单后，先点上面的“预览并核对行数”，通过后才能提交</view>
+    <!-- 先预览后提交只写一次：写在灰着的"提交任务"上面（"预览通过后才能提交"）；预览按钮下面原来还有一句，11/12 简化走查去掉 -->
   </view>
   <view class="card advisor-card">
     <view class="advisor-text">{{agreed ? '已单独同意《工具使用说明》' : '提交前请单独阅读并同意《工具使用说明》'}}</view>
