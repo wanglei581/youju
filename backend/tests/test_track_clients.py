@@ -182,9 +182,9 @@ def test_track_uses_radar_scope_and_customer_filters(session, monkeypatch, tmp_p
         if row[0].value == "北京客户"
     ]
     assert [row[5] for row in rows] == [
-        "已人工核对",
-        "已人工核对",
-        "已人工核对",
+        "已核对原文",
+        "已核对原文",
+        "已核对原文",
         "未核对，请以原文为准",
     ]
     assert [row[7] is not None for row in rows] == [True, True, True, False]
@@ -274,7 +274,7 @@ def test_track_without_verified_deadlines_and_excludes_only_closed(session, monk
     assert [cell.value for cell in summary[2]] == [
         "客户名称",
         "通知数",
-        "人工核对过截止日期的",
+        "核对过截止日期的",
         "7 天内截止",
         "14 天内截止",
         "30 天内截止",
@@ -293,7 +293,7 @@ def test_track_without_verified_deadlines_and_excludes_only_closed(session, monk
         "未核对",
         3,
     ]
-    assert "“7 天内截止”只数人工核对过的" in summary["A1"].value
+    assert "“7 天内截止”只数核对过的" in summary["A1"].value
     session.add(
         DocumentDeadline(
             document_id=closed.id,
@@ -312,7 +312,7 @@ def test_track_without_verified_deadlines_and_excludes_only_closed(session, monk
 
 
 def test_track_marks_machine_excerpts(session, monkeypatch, tmp_path):
-    """D-061：8–30 天的机器摘录写日期、标"原文摘录，未经人工核对"并附原句；汇总里 7 天只认人工核对的，
+    """D-061：8–30 天的机器摘录写日期、标"原文摘录，未经核对"并附原句；汇总里 7 天只认人工核对的，
     14、30 天另含原文摘录的；能看到日期的一条都没有时写"未核对"。"""
     stamp = datetime(2026, 10, 12, 9, tzinfo=BJ)
     monkeypatch.setattr(v1, "now", lambda: stamp)
@@ -361,13 +361,13 @@ def test_track_marks_machine_excerpts(session, monkeypatch, tmp_path):
     session.commit()
     report = track_clients(session, [CustomerProfile("客户", "北京")])
     [item] = report.items
-    assert item.as_dict()["deadline_status"] == "原文摘录，未经人工核对"
+    assert item.as_dict()["deadline_status"] == "原文摘录，未经核对"
     assert item.as_dict()["deadline_quote"] == quote and item.remaining_days == 20
     output = tmp_path / "excerpt.xlsx"
     export_track_excel(report, output)
     book = load_workbook(output)
     assert book["客户相关通知"]["H2"].value == "截止日期（以原文为准）"
     row = [cell.value for cell in book["客户相关通知"][3]]
-    assert row[5:10] == ["原文摘录，未经人工核对", "企业申报截止", "2026-11-01", quote, 20]
+    assert row[5:10] == ["原文摘录，未经核对", "企业申报截止", "2026-11-01", quote, 20]
     summary = [cell.value for cell in book["汇总"][3]]
     assert summary[:7] == ["客户", 1, 0, "未核对", 0, 1, 1]

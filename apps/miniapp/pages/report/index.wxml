@@ -102,4 +102,4 @@
 
 <!-- 截止日期的显示规则写在使用帮助里，这里只留一个入口；包里没有使用帮助（首发 16 页）时照旧写一句 -->
 <view wx:if="{{has.help}}" class="note"><text class="link" bindtap="help" aria-role="link">截止日期怎么看 ›</text></view>
-<view wx:else class="note">7 天内到期的只列人工核对过的日期；8–30 天到期的可能是原文摘录，附原文那句话。截止日期以原文为准。</view>
+<view wx:else class="note">7 天内到期的只列已核对原文的日期；8–30 天到期的可能是原文摘录，附原文那句话。截止日期以原文为准。</view>

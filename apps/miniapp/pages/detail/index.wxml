@@ -30,7 +30,7 @@
     <view wx:if="{{goneNote}}" class="gone-note">{{goneNote}}</view>
   </view>
 
-  <!-- 首发版（D-061、D-108）：按类型逐条写截止。核对过的标"已人工核对"、机器摘出的标"原文摘录"，都附原句；
+  <!-- 首发版（D-061、D-108）：按类型逐条写截止。核对过的标"已核对原文"、机器摘出的标"原文摘录"，都附原句；
        没日期的写"截止时间见原文"，候选在 7 天内的写"可能 7 天内截止" -->
   <view wx:if="{{dls && dls.length}}" class="card due-card">
     <view class="dls-head"><text class="due-label">截止时间</text></view>
@@ -63,7 +63,7 @@
     </view>
     <!-- 核对过的那句原文跟在日期下面（和上面逐类写的一样），不再单列一张卡（10/29 独立审阅：同一句写两遍） -->
     <view class="dl">
-      <text class="src src--verified">已人工核对</text>
+      <text class="src src--verified">已核对原文</text>
       <view wx:if="{{dueQuote}}" class="dl-quote">原文：{{dueQuote}}</view>
     </view>
     <view class="due-notes"><view wx:for="{{doc.deadline.notes}}" wx:key="*this">{{item}}</view></view>

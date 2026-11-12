@@ -8,12 +8,13 @@ const SECTIONS = [
 // 须知改了（NOTICE_VERSION 变了）要重新同意。旧的"我知道了"（youjuInterpretNoticeV1）只算看过，不再算数。
 // 服务端另按协议版本核对：没同意过含 AI 条款的协议，创建、读取任务和后台处理都会拦下
 const CONSENT_KEY = 'youjuAiConsentV2';
-const NOTICE_VERSION = '2026-10-26';
+// D-130（11/12）改了第三句（不再写"人工核对值"），版本从 2026-10-26 升上来
+const NOTICE_VERSION = '2026-11-12';
 const CONTEXT_KEY = 'youjuInterpretTaskContextV1';
 const TERMS = [
   '本服务为第三方工具，不是政府平台，不代办，不判断能否申报。',
   '内容由 AI 摘录通知原文原句，经程序逐字核对，不改写；仅供参考。',
-  '截止日期、支持方式显示的是人工核对值；其余为 AI 摘录的原文原句。',
+  '截止日期、支持方式显示的是已对照原文核对过的值；其余为 AI 摘录的原文原句。',
   '申报请以通知原文和主管部门的解释为准。',
 ];
 

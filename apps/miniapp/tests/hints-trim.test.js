@@ -58,7 +58,7 @@ test('和具体数据挂钩的准确性说明、隐私说明照旧保留', () =>
     detail: ["<view wx:else class=\"due-unverified\">{{item.soon ? '可能 7 天内截止' : '截止时间见原文'}}</view>", '截止日期已于 {{checkedText}} 对照原文核对。', '有据不判断能否申报',
       '内容以原文为准；申报请在主管部门的申报系统办理，有据不提供填报入口。', '数据说明 ›'],
     // 截止页：页底是"截止日期怎么看 ›"；包里没有使用帮助时照旧写那一句
-    report: ['截止日期怎么看 ›', '截止日期以原文为准。', '截止时间见原文', '7 天内到期的只列人工核对过的日期', '不代表当地没有通知', RULE],
+    report: ['截止日期怎么看 ›', '截止日期以原文为准。', '截止时间见原文', '7 天内到期的只列已核对原文的日期', '不代表当地没有通知', RULE],
     search: [RULE, '{{openNote}}'],
     // D-091：没查到的说明按份数写在 missNote 里（不能据此判断不在名单里）；同名提示改成"不一定是同一家"
     lists: ['{{missNote}}', '名称相近的企业分开列出，不一定是同一家', '请核对企业全称再查；'],
@@ -163,7 +163,7 @@ test('10/29 晚：数据说明都写在使用帮助里，页面上只留一个"�
   assert.equal(new Set(keys).size, keys.length, 'key 不重复');
   const text = (key) => help.items.find((item) => item.key === key).a.join('');
   // 页面上撤下来的几句，帮助里都写着
-  assert.match(text('deadline'), /已人工核对.*原文摘录.*没有经过人工核对.*截止时间见原文.*可能 7 天内截止/);
+  assert.match(text('deadline'), /已核对原文.*原文摘录.*没有经过核对.*截止时间见原文.*可能 7 天内截止/);
   assert.match(text('text'), /自动提取的，没有经过人工逐字核对/);
   assert.match(text('tags'), /按标题归类，仅供检索参考，非官方分类/);
   assert.match(text('lists'), /不能这样判断/);
@@ -171,7 +171,7 @@ test('10/29 晚：数据说明都写在使用帮助里，页面上只留一个"�
   // 入口：详情页原文出处下、截止页页底，都按包里有没有帮助页显示
   assert.match(wxml('detail'), /<view wx:if="{{has.help}}" class="link source-help" bindtap="help" aria-role="link">数据说明 ›<\/view>/);
   assert.match(wxml('report'), /<view wx:if="{{has.help}}" class="note"><text class="link" bindtap="help" aria-role="link">截止日期怎么看 ›<\/text><\/view>/);
-  assert.match(wxml('report'), /<view wx:else class="note">7 天内到期的只列人工核对过的日期/);
+  assert.match(wxml('report'), /<view wx:else class="note">7 天内到期的只列已核对原文的日期/);
   // 详情页、阅读页跳到"正文和附件里的文字是怎么来的"，截止页、结果页跳到"截止日期怎么看"（agy、Codex 第 3 轮）
   for (const [page, topic] of [['detail', 'text'], ['reader', 'text'], ['report', 'deadline'], ['results', 'deadline']]) {
     assert.match(read(`pages/${page}/index.js`), new RegExp(`if \\(this\\.data\\.has\\.help\\) wx\\.navigateTo\\(\\{ url: '/pages/help/index\\?topic=${topic}' \\}\\);`), page);
@@ -327,14 +327,14 @@ test('详情页：核对过的截止原句只在截止卡片里写一次；"原�
   assert.doesNotMatch(shown, /原文摘录/);
   assert.match(shown, /申报对象（已核对原文）/);
   assert.match(shown, /截止日期已于 2026年10月27日 对照原文核对。/);
-  // 旧接口（没有 deadlines、只有核对过的 deadline）：原句跟在日期下面，标"已人工核对"，也只写一次
+  // 旧接口（没有 deadlines、只有核对过的 deadline）：原句跟在日期下面，标"已核对原文"（D-130），也只写一次
   doc = { ...base, kind: '政策文件', tags: ['政策文件'], deadline: { label: '截止', date: plusDays(20), time: null, verified: true, notes: [] } };
   delete doc.deadlines;
   page.refreshing = false; page.load(); await settle();
   const root = render('pages/detail/index.wxml', { ...page.data, loading: false });
   shown = textOf(root);
   assert.equal(shown.split('请于11月20日前报送。').length - 1, 1);
-  assert.match(textOf(findAll(root, hasClass('due-card'))[0]), /已人工核对\s*原文：请于11月20日前报送。/);
+  assert.match(textOf(findAll(root, hasClass('due-card'))[0]), /已核对原文\s*原文：请于11月20日前报送。/);
   // 别的节的摘录（演示数据里是"二、申报条件"）不当截止原句写在日期下面（Codex 第 6 轮）
   doc = { ...doc, excerpt: { section: '二、申报条件', text: '（一）申报单位原则上应为制造业企业。' } };
   page.refreshing = false; page.load(); await settle();
