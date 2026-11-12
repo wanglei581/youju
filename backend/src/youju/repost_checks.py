@@ -53,9 +53,11 @@ from youju.repost import (
     auto_gate,
     auto_reason,
     auto_upstream,
+    candidates_for,
     duplicate_members,
     load_candidates,
     member_facts,
+    recompute_signals,
     signals,
     withdraw_group,
 )
@@ -264,11 +266,28 @@ def sample(args):
             rng.shuffle(other)
             population = len(eligible)
             selected = (auto + other)[: args.size or WEEKLY_SAMPLE_DEFAULT]
-            selected_ids = [r.document_id for _, rows in selected for r in rows]
-            cands = _member_candidates(session, selected_ids)
-        all_rows = [r for _, rows in selected for r in rows]
-        duplicates = set(duplicate_members(session, [r.document_id for r in all_rows]))
-        ids = [r.document_id for r in all_rows]
+        ids = sorted({r.document_id for _, rows in selected for r in rows})
+        # 抽到的组按现在的详情重算正文信号再给证据：正文、文号被直接改过（抓取时间不变）时存好的
+        # 信号是旧的；展示的证据和记下的证据指纹要是同一份
+        recompute_signals(session, ids, stamp)
+        duplicates = set(duplicate_members(session, ids))
+        if args.purpose == "gate":
+            # 重算以后不再满足自动合并条件的组不进这一轮
+            cands = {**cands, **{c.id: c for c in candidates_for(session, ids)}}
+            still = [
+                (group, rows)
+                for group, rows in selected
+                if not auto_reason(group, rows, cands, duplicates)
+            ]
+            if len(still) < len(selected):
+                print(
+                    f"有 {len(selected) - len(still)} 组按现在的正文重算以后不再满足自动合并条件，"
+                    "不进这一轮"
+                )
+            selected = still
+            ids = sorted({r.document_id for _, rows in selected for r in rows})
+        else:
+            cands = _member_candidates(session, ids)
         details = {
             doc.id: (doc, detail)
             for doc, detail in session.execute(

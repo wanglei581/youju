@@ -2418,3 +2418,25 @@ def test_weekly_sample_includes_auto_groups_outside_the_window(
     monkeypatch.setattr(repost_checks, "_now", lambda: later)
     data = _sample(tmp_path, "weekly", seed=9)
     assert len(data["items"]) == 1 and data["items"][0]["auto"] is True
+
+
+def test_gate_sample_recomputes_signals_from_current_details(
+    session, session_factory, monkeypatch, tmp_path, capsys
+):
+    # 抽样前正文被直接改写（抓取时间不变，存好的信号是旧的）：抽样按现在的正文重算信号再给证据；
+    # 重算以后不再满足自动合并条件的组不进这一轮
+    from youju import repost_checks
+
+    monkeypatch.setattr(
+        "youju.repost.get_settings", lambda: SimpleNamespace(repost_auto_merge=False)
+    )
+    monkeypatch.setattr(repost_checks, "session_factory", lambda: session_factory)
+    docs = _auto_world(session)
+    rebuild(session, now=NOW)
+    session.commit()
+    session.get(DocumentDetail, docs[0].id).body_text = "各有关单位：现就有关工作通知如下。陕西"
+    session.commit()
+    data = _sample(tmp_path, "gate")
+    assert data["items"] == [] and "不再满足自动合并条件" in capsys.readouterr().out
+    session.expire_all()
+    assert session.get(RepostSignal, docs[0].id).cited == []
