@@ -178,13 +178,15 @@ _PASSWORD_INPUT = re.compile(r"<input\b[^>]*type\s*=\s*[\"']?password", re.I)
 _LIST_HINT = re.compile(r"登[录陆]|验证码")
 # 没权限一类说法（列表里出现同样不读）
 _GATE_PHRASE = re.compile(
-    r"(?:您)?(?:没有|无)(?:权限|权访问|权查看|权阅读|访问权限)|权限不足|未授权|人机验证"
+    r"(?:您)?(?:没有|无)(?:权限|权访问|权查看|权阅读|访问权限)|权限不足|未授权|人机验证|"
+    r"请完成安全验证|滑块验证|拖动滑块"
 )
 _GATE_TEXT = re.compile(
     r"访问被拒绝|拒绝访问|禁止访问|访问受限|非法请求|防火墙|安全防护|access denied|forbidden",
     re.I,
 )
 _TAGS = re.compile(r"<script\b.*?</script>|<style\b.*?</style>|<[^>]+>|\s+", re.S | re.I)
+_MAINTENANCE = re.compile(r"系统维护|升级中|暂停服务|稍后再试|系统繁忙")
 _LINK = re.compile(r"<a\s[^>]*href=", re.I)
 
 
@@ -263,8 +265,8 @@ def _unknown_shape(payload: dict) -> str:
         type(payload["messageType"]) is not int or payload["messageType"] != 2
     ):
         return "messageType 不是 2"
-    if not isinstance(payload.get("traceId"), str):
-        return "没有 traceId 或不是文字"
+    if not isinstance(payload.get("traceId"), str) or not payload["traceId"]:
+        return "没有 traceId 或不是非空文字"
     data = payload.get("data")
     if not isinstance(data, dict) or set(data) != {"html"} or not isinstance(data["html"], str):
         return "data 里不是只有一段列表 HTML"
@@ -350,12 +352,15 @@ def api_refusal(api: ListApi, result) -> str:
     text = getattr(result, "text", "") or ""
     payload = _json_payload(text)
     if payload is None:
-        # 不是 JSON：认不出，一律记不能抓、不读（认得出才读）；原因里分一下是不是登录、拦截关卡
+        # 先识别关卡，再把空白和维护页作为本次未取到；其他认不出的返回仍不读。
         head = html_lib.unescape(text[:20000])
         if _bare_page(text) and (_LOGIN_TEXT.search(head) or _PASSWORD_INPUT.search(head)):
             return "列表接口要登录或验证码"
         if _bare_page(text) and _GATE_TEXT.search(head):
             return "列表接口返回拦截页面"
+        body = _TAGS.sub("", html_lib.unescape(text))
+        if not body or _MAINTENANCE.search(body):
+            return ""
         return "列表接口返回认不出（不是 JSON）"
     return _payload_refusal(payload)
 
