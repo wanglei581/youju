@@ -659,3 +659,24 @@ def test_gkmlpt_policy_expanded_over_the_limit_is_left_for_manual_handling():
     assert ("政策", "gkmlpt-p1,p2,20,21,22,23") in categories
     url = "https://www.sg.gov.cn/fgj/gkmlpt/index#xxgk-gkmlpt-p1,p2,20,21,22,23"
     assert gkmlpt_categories(url) is None
+
+
+def test_gkmlpt_policy_leaf_expansion_skips_jumps_bad_nodes_and_duplicates():
+    # 有解读后代的叶子往下展开时：跳到别处的、编号不是整数的、没有名称的、重复的编号、解读那一支都不要
+    def node(nid, name, children=None, jump_url=""):
+        return {"id": nid, "name": name, "children": children or [], "jump_url": jump_url}
+
+    leaf = node(
+        2,
+        "其他文件",
+        [
+            node(20, "市级文件"),
+            node(21, "外链", jump_url="http://else.example.cn/"),
+            {"id": "22", "name": "编号不是整数"},
+            {"id": 23},
+            node(20, "市级文件"),
+            node(24, "政策解读"),
+        ],
+    )
+    categories = gkmlpt_tree_categories("TREE: " + json.dumps([node(1, "政策", [leaf])]) + "}")
+    assert ("政策", "gkmlpt-p1,p2,20") in categories

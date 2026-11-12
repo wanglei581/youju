@@ -327,7 +327,7 @@ def gkmlpt_tree_categories(text: str) -> list[tuple[str, str]]:
 def _leaf_parts(node: dict) -> list[str]:
     """一个选中的叶子要合读的分类："编号"整个读，"p编号"只取直接挂在它上面的。下面（任意深）没有
     名称带"解读"的分类，整个读；有的，这个分类只取直接挂在它上面的，它的每个下级分类再照同样的办法
-    ——名称带"解读"的那一支不读，跳到别处的、编号认不出的也不读，别的下级分支照样读。"""
+    ——名称带"解读"的那一支不读，跳到别处的、编号或名称认不出的也不读，别的下级分支照样读。"""
     if not _has_reading(node):
         return [str(node["id"])]
     out = [f"p{node['id']}"]
@@ -337,7 +337,8 @@ def _leaf_parts(node: dict) -> list[str]:
             not isinstance(child, dict)
             or type(child.get("id")) is not int
             or child.get("jump_url")
-            or (isinstance(child.get("name"), str) and "解读" in child["name"])
+            or not isinstance(child.get("name"), str)
+            or "解读" in child["name"]
         ):
             continue
         out.extend(_leaf_parts(child))
