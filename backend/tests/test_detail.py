@@ -931,11 +931,13 @@ def test_search_throttle_page_code_must_match_verified_page(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """页面代码要和核实过的那一页一样：外部资源按完整地址（含协议、参数）和顺序比，页面自带的代码原样
-    比，只有上一篇/下一篇、相关文章接口里的文章编号、栏目编号（_PAGE_IDS）每页不同、不算。"""
+    比；只有页面自带脚本里核实过的那几句（_PAGE_ID_CONTEXTS）的文章编号、栏目编号每页不同、不算，
+    同样的数写在别处照样要一样。"""
     verified = _page(
         "<script src='/js/a.js?v=1'></script><script src='/js/b.js'></script>"
-        "<script>related('/Ajax/GetRelatedContent?contentId=1092076&nodeId=37', "
-        '{ excludeIds: "1092076" }); var delay = 1;</script>' + _THROTTLE_DIALOG + _NOTICE_BODY
+        '<script>$.ajax({ url: "/ContentManage/Ajax/GetRelatedContent?contentId=1092076&nodeId=37'
+        '&moldType=Article&count=10", data: { excludeIds: "1092076", size: 10 } });'
+        ' var delay = 1; var mark = "contentId=1092076";</script>' + _THROTTLE_DIALOG + _NOTICE_BODY
     )
     url = "https://kjj.example.gov.cn/1.html"
     fingerprint = detail._page_code_fingerprint(html.fromstring(verified), url)
@@ -943,7 +945,9 @@ def test_search_throttle_page_code_must_match_verified_page(
         detail._SEARCH_THROTTLE_VERIFIED, "kjj.example.gov.cn", frozenset({fingerprint})
     )
     assert parse_detail(verified, url).failure_reason is None
-    other_page = verified.replace("1092076", "1161839").replace("nodeId=37", "nodeId=52")
+    other_page = verified.replace(
+        "contentId=1092076&nodeId=37", "contentId=1161839&nodeId=52"
+    ).replace('excludeIds: "1092076"', 'excludeIds: "1161839"')
     assert parse_detail(other_page, url).failure_reason is None
     swapped = verified.replace(
         "<script src='/js/a.js?v=1'></script><script src='/js/b.js'></script>",
@@ -953,8 +957,8 @@ def test_search_throttle_page_code_must_match_verified_page(
         verified.replace("?v=1", "?v=2"),
         swapped,
         verified.replace("delay = 1", "delay = 2"),
-        verified.replace("var delay = 1;", "var delay = 1; var shown = 1092076;"),
-        verified.replace("related(", "showDialog(); related("),
+        verified.replace('mark = "contentId=1092076"', 'mark = "contentId=1161839"'),
+        verified.replace("var delay", "showDialog(); var delay"),
     ):
         assert parse_detail(changed, url).failure_reason == "防护页或验证码"
     http_page = parse_detail(verified, "http://kjj.example.gov.cn/1.html")

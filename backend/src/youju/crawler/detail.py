@@ -171,9 +171,18 @@ _SEARCH_THROTTLE_VERIFIED: dict[str, frozenset[str]] = {
     "www.luohe.gov.cn": frozenset({"b7112ed612b2044f", "f9870def54889ce0"}),
     "www.luzhou.gov.cn": frozenset({"6366cf401679cae4"}),
 }
-# 算页面代码指纹时归一的每页编号：上一篇/下一篇、相关文章接口里的文章编号、栏目编号，以及相关文章
-# 排除的本篇编号。11/12 核实过的 36 个样子、124 份页面上，同一样子的页面代码只在这几处不同
-_PAGE_IDS = re.compile(r'((?:contentId|nodeId)\s*[:=]\s*)\d+|(excludeIds:\s*")\d+(")')
+# 算页面代码指纹时归一的每页编号，只在页面自带脚本里这几句核实过的写法中、只换编号：上一篇/下一篇
+# 两种接口、相关文章接口里的栏目编号和文章编号，相关文章排除的本篇编号，评论区块的文章编号。11/12
+# 核实过的 36 个样子、124 份页面上，同一样子的页面代码只在这几处不同
+_PAGE_ID_CONTEXTS = (
+    re.compile(
+        r"(/contentmanage/ajax/(?:getprevandnextcontent|getpreandnextpublicinformation)\?nodeId=)"
+        r"\d+(&contentId=)\d+(&)"
+    ),
+    re.compile(r"(/ContentManage/Ajax/GetRelatedContent\?contentId=)\d+(&nodeId=)\d+(&moldType=)"),
+    re.compile(r'(data:\s*\{\s*excludeIds:\s*")\d+(",\s*size:)'),
+    re.compile(r'(parameters:\s*"\{\s*contentId:)\d+(,\s*moldType:)'),
+)
 # 算指纹时记下地址的 <link>：样式表和预加载的脚本、样式
 _CODE_LINKS = {"stylesheet", "import", "preload", "modulepreload"}
 # 放过弹窗的页面整页查挡页字样时也看的属性：按钮上的字、图片说明、输入框提示等
@@ -1248,10 +1257,12 @@ def outside_body_lines(html_text: str, url: str) -> list[str] | None:
 def _page_code_fingerprint(root: etree._Element, url: str) -> str:
     """页面上能让弹窗显示出来的东西的指纹，按在页面上出现的顺序原样记下：外部脚本、样式表（含预加载
     的）、框架、<base> 的完整地址（含协议和 ? 后面的参数，重复的也记），页面自带的脚本、<style>、
-    on… 事件属性、框架里直接写的页面。只把 _PAGE_IDS 那几处每页不同的编号当 0。"""
+    on… 事件属性、框架里直接写的页面。只把页面自带脚本里 _PAGE_ID_CONTEXTS 那几句的编号当 0。"""
 
     def page_ids(code: str) -> str:
-        return _PAGE_IDS.sub(lambda m: (m.group(1) or m.group(2)) + "0" + (m.group(3) or ""), code)
+        for context in _PAGE_ID_CONTEXTS:
+            code = context.sub(lambda m: "0".join(m.groups()), code)
+        return code
 
     parts: list[str] = []
     for element in root.iter():
@@ -1268,12 +1279,14 @@ def _page_code_fingerprint(root: etree._Element, url: str) -> str:
         ):
             if wanted and (value := element.get(name)) is not None:
                 parts.append(f"{kind} {urljoin(url, value.strip())}")
-        if tag in ("script", "style") and element.get("src") is None and element.text:
-            parts.append(f"{tag} {page_ids(element.text)}")
+        if tag == "script" and element.get("src") is None and element.text:
+            parts.append(f"script {page_ids(element.text)}")
+        if tag == "style" and element.text:
+            parts.append(f"style {element.text}")
         if tag == "iframe" and (srcdoc := element.get("srcdoc")) is not None:
-            parts.append(f"srcdoc {page_ids(srcdoc)}")
+            parts.append(f"srcdoc {srcdoc}")
         parts.extend(
-            f"{name.lower()} {page_ids(value)}"
+            f"{name.lower()} {value}"
             for name, value in element.attrib.items()
             if name.lower().startswith("on")
         )
