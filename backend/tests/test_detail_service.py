@@ -495,6 +495,51 @@ def test_robots_chain_through_paused_site_is_remembered(session, monkeypatch, ro
     assert all(session.get(DocumentDetail, d.id) is None for d in docs)
 
 
+def test_robots_retry_keeps_both_paths(session, monkeypatch) -> None:
+    """读 robots 第一次经 b 回 5xx、重试改跳到 c：两次走过的地址都记下。b 随后停了，这次和后面用
+    记下来的结果的文件都算碰过 b，"robots 取不到"不写库。"""
+    import httpx
+
+    from youju.crawler import detail, detail_service
+    from youju.crawler.fetcher import PoliteFetcher
+
+    monkeypatch.setitem(detail._SEARCH_THROTTLE_VERIFIED, "b.example.gov.cn", frozenset({"x"}))
+    source_id = _source_on(session, "a.example.gov.cn")
+    docs = [_doc_on(session, source_id, "a.example.gov.cn", n) for n in (1, 2)]
+    paused_hosts: list[set[str]] = []
+    original = detail_service._SitePause.__init__
+
+    def remember(self) -> None:
+        original(self)
+        paused_hosts.append(self.hosts)
+
+    monkeypatch.setattr(detail_service._SitePause, "__init__", remember)
+    tries = {"a": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        host, path = request.url.host, request.url.path
+        if host == "a.example.gov.cn" and path == "/robots.txt":
+            tries["a"] += 1
+            target = "b" if tries["a"] == 1 else "c"
+            return httpx.Response(
+                302, headers={"location": f"https://{target}.example.gov.cn/robots.txt"}
+            )
+        if host == "b.example.gov.cn":
+            paused_hosts[0].add("b.example.gov.cn")  # b 随后被停
+        return httpx.Response(500)
+
+    with PoliteFetcher(
+        "TestAgent YoujuBot/0.1",
+        per_host_interval=0,
+        transport=httpx.MockTransport(handler),
+        resolver=lambda host: ["93.184.216.34"],
+    ) as polite:
+        results = fetch_details(session, limit=5, fetcher=polite, max_workers=1)
+    assert tries["a"] == 2
+    assert [r.status for r in results] == ["site_paused", "site_paused"]
+    assert all(session.get(DocumentDetail, d.id) is None for d in docs)
+
+
 def test_title_backfill_reports_paused_site_as_unavailable(session, monkeypatch):
     """补全截断标题时，同一网站这一轮停取了的记"没取到（site_paused）"，不当成"没截断"。"""
     from youju.crawler import detail

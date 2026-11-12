@@ -325,7 +325,10 @@ class PoliteFetcher:
         线上偶尔取不到它的 robots.txt，整站的附件、正文跳过，原因却没记下来）。"""
         entry = self._load_robots_once(origin)
         if entry.state == "unreachable" and entry.server_error:
+            first = entry.chain
             entry = self._load_robots_once(origin)
+            # 两次走过的地址都记下（重试可能跳到别的网站）
+            entry = replace(entry, chain=first + entry.chain)
         return entry
 
     def _load_robots_once(self, origin: str) -> _RobotsEntry:
