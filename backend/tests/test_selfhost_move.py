@@ -1097,6 +1097,8 @@ def test_archive_names_files_by_expiry_and_needs_offsite(tmp_path):
 def test_archive_export_splits_by_start_date(tmp_path):
     work = tmp_path / "export"
     (work / "backups").mkdir(parents=True)
+    (work / "manifest.json").write_text('{"created_at": "2026-11-12T08:00:00+00:00"}')
+    first = _sha((work / "manifest.json").read_bytes())[:8]
     (work / "backups" / "youju-20261112.jsonl.gz").write_bytes(b"backup")
     (work / "pay-records.jsonl.gz").write_bytes(PAY)
     (work / "advisor-out" / "0123456789abcdef").mkdir(parents=True)
@@ -1131,11 +1133,11 @@ def test_archive_export_splits_by_start_date(tmp_path):
     order = date(2026, 10, 30) + timedelta(days=3649)
     # 存档名里带这一批的导出时间（交易记录说明行的 created_at，UTC）：第二批不会盖掉第一批
     assert [r.target for r in reports] == [
-        "archive/cloudrun-youju-20261112-202611120800.expires-20261211.jsonl.gz.age",
-        f"archive/cloudrun-pay-records-20261020-202611120800.expires-{gift:%Y%m%d}.jsonl.gz.age",
-        f"archive/cloudrun-pay-records-20261030-202611120800.expires-{order:%Y%m%d}.jsonl.gz.age",
-        "archive/cloudrun-advisor-out-20261020-202611120800.expires-20261118.tar.gz.age",
-        "archive/cloudrun-advisor-out-20261110-202611120800.expires-20261209.tar.gz.age",
+        f"archive/cloudrun-youju-20261112-202611120800-{first}.expires-20261211.jsonl.gz.age",
+        f"archive/cloudrun-pay-records-20261020-202611120800-{first}.expires-{gift:%Y%m%d}.jsonl.gz.age",
+        f"archive/cloudrun-pay-records-20261030-202611120800-{first}.expires-{order:%Y%m%d}.jsonl.gz.age",
+        f"archive/cloudrun-advisor-out-20261020-202611120800-{first}.expires-20261118.tar.gz.age",
+        f"archive/cloudrun-advisor-out-20261110-202611120800-{first}.expires-20261209.tar.gz.age",
     ]
     assert set(fake.files) == {r.target for r in reports}
     order_part = fake.files[reports[2].target][0].split(b":", 2)[2]
@@ -1152,7 +1154,7 @@ def test_archive_export_splits_by_start_date(tmp_path):
         _archive_settings(tmp_path), work, today=date(2026, 11, 19), backend=fake, encryptor=_seal
     )
     assert [r.target for r in reports][-1] == (
-        "archive/cloudrun-advisor-out-20261110-202611120800.expires-20261209.tar.gz.age"
+        f"archive/cloudrun-advisor-out-20261110-202611120800-{first}.expires-20261209.tar.gz.age"
     )
     assert "2026-10-20 生成的批量工具结果已经过了 30 天，不存" in notes
     # 退回云托管、再切回来导的第二批（导出时间不同）：同一天的结果另存一份，不盖掉第一批
@@ -1166,6 +1168,8 @@ def test_archive_export_splits_by_start_date(tmp_path):
         )
     )
     (work / "pay-records.jsonl.gz").write_bytes(gzip.compress(second.encode()))
+    (work / "manifest.json").write_text('{"created_at": "2026-11-20T09:30:00+00:00"}')
+    again = _sha((work / "manifest.json").read_bytes())[:8]
     cloudrun_fetch.archive_export(
         _archive_settings(tmp_path),
         work,
@@ -1178,8 +1182,8 @@ def test_archive_export_splits_by_start_date(tmp_path):
         for path in (tmp_path / "store" / "archive").glob("cloudrun-advisor-out-20261110-*")
     )
     assert kept == [
-        "cloudrun-advisor-out-20261110-202611120800.expires-20261209.tar.gz.age",
-        "cloudrun-advisor-out-20261110-202611200930.expires-20261209.tar.gz.age",
+        f"cloudrun-advisor-out-20261110-202611120800-{first}.expires-20261209.tar.gz.age",
+        f"cloudrun-advisor-out-20261110-202611200930-{again}.expires-20261209.tar.gz.age",
     ]
     (work / "pay-records.jsonl.gz").write_bytes(PAY)
     # 有一行读不出起算日（拿导出日顶替会存得比指引久）：停下，不存

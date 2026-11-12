@@ -474,30 +474,36 @@ def test_next_scheduled_write_is_the_nearest_of_0030_and_0400():
     assert export_script.busy_with(at(0, 15)) == at(0, 30)
 
 
-def test_running_writers_reads_job_runs(session):
-    from youju.models import JobRun
+def test_writer_locks_are_the_cron_jobs_locks(tmp_path, monkeypatch):
+    """清理期间拿着线上 job.sh 用的那两把 flock 锁：任务正在跑就拿不到；拿着的时候任务也拿不到。"""
+    import fcntl
 
-    now = datetime.now(UTC)
-    session.add_all(
-        [
-            JobRun(job="backup", started_at=now - timedelta(minutes=3), status="running"),
-            JobRun(job="archive-logs", started_at=now - timedelta(hours=4), status="running"),
-            JobRun(job="archive-logs", started_at=now - timedelta(minutes=1), status="ok"),
-            JobRun(job="check-links", started_at=now - timedelta(minutes=1), status="running"),
-        ]
-    )
-    session.commit()
-    # 4 小时前开始、没记完的当作早就断了（job.sh 单次最长 3 小时）
-    assert export_script.running_writers(os.environ["YOUJU_DATABASE_URL"], now) == ["backup"]
+    monkeypatch.setattr(export_script, "LOCK_DIR", tmp_path)
+    with export_script.writer_locks():
+        for job in ("backup", "archive-logs"):
+            with (
+                (tmp_path / f"youju-{job}.lock").open("a") as other,
+                pytest.raises(BlockingIOError),
+            ):
+                fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    with (tmp_path / "youju-archive-logs.lock").open("a") as running:
+        fcntl.flock(running, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with (
+            pytest.raises(export_script.JobRunning, match="archive-logs"),
+            export_script.writer_locks(),
+        ):
+            pass
+    # 放开了：拿得到
+    with export_script.writer_locks():
+        pass
 
 
-def test_main_cleanup_asks_then_prints_one_ascii_line(monkeypatch, capsys):
+def test_main_cleanup_asks_then_prints_one_ascii_line(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("YOUJU_CLOUD_ENV", ENV)
     counts = {"exports/": 2, "backups/": 30, "logs/": 41, "advisor/": 0}
     deleted: list[str] = []
     monkeypatch.setattr(export_script, "cleanup_counts", lambda client, env: counts)
-    writers: list[str] = []
-    monkeypatch.setattr(export_script, "running_writers", lambda url, at: writers)
+    monkeypatch.setattr(export_script, "LOCK_DIR", tmp_path)
 
     def cleanup(client, env):
         deleted.append(env)
@@ -541,14 +547,17 @@ def test_main_cleanup_asks_then_prints_one_ascii_line(monkeypatch, capsys):
         )
         assert code == 1 and deleted == [ENV]
         assert "CLEANUP NOT STARTED" in capsys.readouterr().out
-        # 云托管的整库备份还在跑（job_runs 里是 running）：不清
-        writers.append("backup")
-        code = export_script.main(
-            ["--cleanup"], runner=no_commands, ask=lambda _: "DELETE", now=lambda: noon
-        )
+        # 云托管的整库备份正在跑（它拿着 job.sh 的锁）：不清
+        import fcntl
+
+        with (tmp_path / "youju-backup.lock").open("a") as running:
+            fcntl.flock(running, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            code = export_script.main(
+                ["--cleanup"], runner=no_commands, ask=lambda _: "DELETE", now=lambda: noon
+            )
         assert code == 1 and deleted == [ENV]
-        assert "backup 还在跑" in capsys.readouterr().out
-        writers.clear()
+        out = capsys.readouterr().out
+        assert "backup 正在跑" in out and "CLEANUP NOT STARTED" in out
         # 清的时候跨过了 0:30 / 4:00：要再清一次
         times = iter(
             [datetime(2026, 11, 13, 3, 30, tzinfo=backup.BEIJING)] * 2
