@@ -692,8 +692,30 @@ def status(engine: Engine, client: Client | None) -> dict:
 # ---- 起步：服务器导出、本机导入 ----
 
 EXPORT_FORMAT = "youju-sync-export"
-# 迁移会写种子行的同步表（0013 写了默认的周报方案）：刚迁移好的空库里就有，导入时可以清掉
-SEEDED_TABLES = frozenset({"digest_profiles"})
+# 迁移会写种子行的同步表（0013 写了默认的周报方案）：刚迁移好的空库里就有。本机这张表只有这几行、
+# 而且一个字都没改过，导入时才可以清掉（改过、加过的不清，不然会丢）
+SEED_ROWS = {
+    "digest_profiles": [
+        {
+            "name": "全国版",
+            "provinces": [],
+            "keywords": [],
+            "columns": dict.fromkeys(("applications", "deadlines", "lists", "policies"), True),
+            "weekday": 1,
+            "enabled": True,
+        }
+    ]
+}
+SEEDED_TABLES = frozenset(SEED_ROWS)
+
+
+def _only_seeds(conn: Connection, t: Table) -> bool:
+    rows = sorted(conn.execute(select(t)).mappings(), key=lambda r: str(r.get("name")))
+    seeds = sorted(SEED_ROWS[t.name], key=lambda r: str(r["name"]))
+    return len(rows) == len(seeds) and all(
+        all(row.get(key) == value for key, value in seed.items())
+        for row, seed in zip(rows, seeds, strict=True)
+    )
 
 
 def export(engine: Engine, out: IO[bytes]) -> dict[str, int]:
@@ -766,9 +788,11 @@ def import_export(engine: Engine, src: IO[bytes]) -> dict[str, int]:
 
     def busy(conn: Connection) -> list[str]:
         found = [n for n, t in tables.items() if conn.scalar(select(func.count()).select_from(t))]
-        if found and not set(found) <= SEEDED_TABLES:
-            raise SyncError(f"本机这些表不是空的：{', '.join(found)}")
-        # 只有迁移写进去的种子行（如默认的周报方案）：导数据时删掉，文件里有服务器上的那一份
+        # 只有迁移写进去、没改过的种子行（如默认的周报方案）的：导数据时删掉，文件里有服务器上的
+        # 那一份；别的表有数据、种子行改过或加过，都不导
+        kept = [n for n in found if n not in SEEDED_TABLES or not _only_seeds(conn, tables[n])]
+        if kept:
+            raise SyncError(f"本机这些表不是空的（或默认数据改过）：{', '.join(kept)}")
         return found
 
     with gzip.GzipFile(fileobj=src, mode="rb") as gz:
@@ -788,26 +812,29 @@ def import_export(engine: Engine, src: IO[bytes]) -> dict[str, int]:
             for name in busy(conn):
                 conn.execute(tables[name].delete())
             conn.execute(text("SET FOREIGN_KEY_CHECKS = 0"))
-            batch: list[dict] = []
-            current: str | None = None
             trailer = None
-            for raw in gz:
-                item = json.loads(raw)
-                if item.get("end") is True:
-                    trailer = item
-                    break
-                name = item.get("t")
-                if name not in tables:
-                    raise SyncError(f"文件里有不认识的表：{name}")
-                if name != current or len(batch) >= 1000:
-                    if batch:
-                        conn.execute(tables[current].insert(), batch)
-                    batch, current = [], name
-                batch.append(sync_tables.decode_row(tables[name], item.get("r")))
-                counts[name] += 1
-            if batch:
-                conn.execute(tables[current].insert(), batch)
-            conn.execute(text("SET FOREIGN_KEY_CHECKS = 1"))
+            try:
+                batch: list[dict] = []
+                current: str | None = None
+                for raw in gz:
+                    item = json.loads(raw)
+                    if item.get("end") is True:
+                        trailer = item
+                        break
+                    name = item.get("t")
+                    if name not in tables:
+                        raise SyncError(f"文件里有不认识的表：{name}")
+                    if name != current or len(batch) >= 1000:
+                        if batch:
+                            conn.execute(tables[current].insert(), batch)
+                        batch, current = [], name
+                    batch.append(sync_tables.decode_row(tables[name], item.get("r")))
+                    counts[name] += 1
+                if batch:
+                    conn.execute(tables[current].insert(), batch)
+            finally:
+                # 出错回滚也不会恢复这个会话变量：照样开回来（连接会放回连接池给别人用）
+                conn.execute(text("SET FOREIGN_KEY_CHECKS = 1"))
             expected = trailer.get("counts") if isinstance(trailer, dict) else None
             if not isinstance(expected, dict) or any(
                 int(expected.get(n, 0)) != counts.get(n, 0) for n in tables

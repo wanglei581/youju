@@ -819,6 +819,24 @@ def test_export_import_bootstrap(env, server_engine, db_engine):
     buf = io.BytesIO()
     counts = local.export(server_engine, buf)
     assert counts["documents"] == 2 and counts["document_deadlines"] == 0
+    # 本机的默认周报方案改过（不是迁移写的原样）：不当种子行清掉，拒绝导入，免得丢
+    with db_engine.begin() as conn:
+        conn.execute(
+            T["digest_profiles"]
+            .update()
+            .where(T["digest_profiles"].c.name == "全国版")
+            .values(keywords=["自己加的"])
+        )
+    buf.seek(0)
+    with pytest.raises(local.SyncError, match="默认数据改过"):
+        local.import_export(db_engine, buf)
+    with db_engine.begin() as conn:
+        conn.execute(
+            T["digest_profiles"]
+            .update()
+            .where(T["digest_profiles"].c.name == "全国版")
+            .values(keywords=[])
+        )
     # 导到一半出错（文件不完整）：导数据的事务整个回滚，表还是空的（种子行也还在）；自增起点在导数据
     # 之前、空表上设的，不会出现"数据进去了、重跑又说表不空"的卡住；用好的文件重跑照常
     lines = gzip.decompress(buf.getvalue()).splitlines(keepends=True)
