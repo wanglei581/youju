@@ -2351,10 +2351,28 @@ def _cmd_archive_prune(args: argparse.Namespace) -> int:
         return 1
     for item in report.deleted:
         print(f"已删到期存档：{item}")
+    if report.reminder:
+        from youju.alerts import send_alert
+
+        print(report.reminder)
+        send_alert(report.reminder)
     print(
         f"到期存档删了 {len(report.deleted)} 个，没到期的 {report.kept} 个"
         "（记录在 archive/deletions.jsonl）"
     )
+    return 0
+
+
+def _cmd_cloudrun_gone(args: argparse.Namespace) -> int:
+    from youju import offsite
+    from youju.backup import BackupError
+
+    try:
+        path = offsite.record_cloudrun_gone(get_settings(), args.how)
+    except BackupError as exc:
+        print(f"没记下：{exc}")
+        return 1
+    print(f"已记下云托管的库和备份删了（{args.how}）：{path}；archive-prune 不再提醒")
     return 0
 
 
@@ -3019,6 +3037,13 @@ def main(argv: list[str] | None = None) -> int:
         "记进 archive/deletions.jsonl",
     )
     p.set_defaults(func=_cmd_archive_prune)
+    p = sub.add_parser(
+        "cloudrun-gone",
+        help="（首发前搬家，D-127）记下云托管里的库和备份已经删了（注销环境或手动删），"
+        "archive-prune 不再提醒",
+    )
+    p.add_argument("--how", required=True, choices=["deregistered", "deleted"])
+    p.set_defaults(func=_cmd_cloudrun_gone)
     p = sub.add_parser(
         "export-fetch",
         help="（首发前搬家，D-127）按云托管导出的清单下载：日志、附件副本进存储，"

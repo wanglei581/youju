@@ -27,7 +27,8 @@ services:
       - mysql:/var/lib/mysql
       - ./mysql.cnf:/etc/mysql/conf.d/youju.cnf:ro
     healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
+      # 密码经环境变量给 mysqladmin，不出现在进程参数里（同机别的用户 ps 看得到参数）
+      test: ["CMD-SHELL", "MYSQL_PWD=\"$$MYSQL_ROOT_PASSWORD\" mysqladmin ping -h 127.0.0.1 -uroot --silent"]
       interval: 10s
       timeout: 5s
       retries: 30

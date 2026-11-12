@@ -5,7 +5,7 @@ youju archive-logs / backup / backup-verify，backup.upload、backup._open_api�
 storage_list.bucket_of、list_objects，takedown.available_condition，和那一版的表结构。
 
 按顺序做（不删、不改任何数据；只往对象存储写当天的备份、日志归档和 exports/ 下的几个文件）：
-1. youju archive-logs → 记下用户数据各表的条数、最大编号、最近更新时间 → youju backup →
+1. youju archive-logs → 记下用户数据各表的整表校验值（CHECKSUM TABLE）→ youju backup →
    youju backup-verify（和每天定时任务做的一样）。--links-only 跳过这一步（清单里的链接过期了、
    只要重出一份清单时用），用上次记下的那份核对
 2. 列出 backups/（只要最新一份）、logs/、attachments/、advisor/out/ 下的文件和大小
@@ -44,7 +44,7 @@ from pathlib import Path
 from xml.etree import ElementTree
 
 import httpx
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session, aliased
 
 from youju import access_log, backup, storage_list
@@ -67,7 +67,8 @@ from youju.takedown import available_condition
 
 PREFIXES = ("backups/", "logs/", "attachments/", "advisor/out/")
 # 用户数据：带 user_id 的表，加上 users、pay_events、ai_chat_turns、访问日志暂存表。导出前后各记一次
-# 条数、最大编号、最近更新时间（有这一列的），对不上就是导出期间有新写入
+# 整表校验值（MySQL 的 CHECKSUM TABLE，按每一行的内容算：增、删、改都会变），对不上就是导出期间
+# 有新写入。admin 的定时任务不停：停了 cron，健康检查要的心跳也停了，实例会被判不健康、重启
 WATCHED = (
     "users",
     "follows",
@@ -197,24 +198,13 @@ def run_command(args: list[str], runner=subprocess.run) -> None:
 
 
 def fingerprint(engine) -> dict:
-    """用户数据各表的（条数，最大编号，最近更新时间）。"""
+    """用户数据各表的整表校验值（CHECKSUM TABLE）。"""
     from youju.models import Base
 
-    marks = {}
+    names = [name for name in WATCHED if name in Base.metadata.tables]
     with engine.connect() as conn:
-        for name in WATCHED:
-            table = Base.metadata.tables.get(name)
-            if table is None:
-                continue
-            columns = [func.count()]
-            if "id" in table.c:
-                columns.append(func.max(table.c.id))
-            if "updated_at" in table.c:
-                columns.append(func.max(table.c.updated_at))
-            marks[name] = [
-                _plain(value) for value in conn.execute(select(*columns).select_from(table)).one()
-            ]
-    return marks
+        rows = conn.execute(text("CHECKSUM TABLE " + ", ".join(f"`{n}`" for n in names))).all()
+    return {str(table).split(".")[-1]: checksum for table, checksum in rows}
 
 
 def changed_tables(before: dict, after: dict) -> list[str]:
@@ -223,11 +213,13 @@ def changed_tables(before: dict, after: dict) -> list[str]:
 
 def list_with_sizes(
     client: httpx.Client, bucket: storage_list.Bucket, prefix: str
-) -> list[tuple[str, int, str]]:
-    """storage_list.list_objects 列文件（翻页、校验、临时密钥都用它的），顺带记下每个文件的大小：
-    线上镜像的 list_objects 只返回名字和修改时间，这里在它解析每一页时把 Size 也读出来。
-    返回（路径，大小，修改时间）。"""
+) -> list[tuple[str, int, str, str]]:
+    """storage_list.list_objects 列文件（翻页、校验、临时密钥都用它的），顺带记下每个文件的大小和
+    ETag：线上镜像的 list_objects 只返回名字和修改时间，这里在它解析每一页时把 Size、ETag 也读出来。
+    ETag 文件内容一变就变，服务器重跑时拿它判断下好的是不是同一份。
+    返回（路径，大小，修改时间，ETag）。"""
     sizes: dict[str, int] = {}
+    etags: dict[str, str] = {}
     original = storage_list._parse
 
     def parse(content: bytes):
@@ -240,6 +232,7 @@ def list_with_sizes(
             if not size.isdigit():
                 raise ExportError(f"文件列表里 {key} 的大小读不出来")
             sizes[key] = int(size)
+            etags[key] = (storage_list._text(item, "ETag") or "").strip().strip('"')
         return result
 
     storage_list._parse = parse
@@ -247,12 +240,15 @@ def list_with_sizes(
         objects = storage_list.list_objects(client, bucket, prefix)
     finally:
         storage_list._parse = original
-    return [(item.key, sizes[item.key], _utc(item.last_modified).isoformat()) for item in objects]
+    return [
+        (item.key, sizes[item.key], _utc(item.last_modified).isoformat(), etags[item.key])
+        for item in objects
+    ]
 
 
-def pick_files(listed: dict[str, list[tuple[str, int, str]]]) -> list[tuple[str, int, str]]:
+def pick_files(listed: dict[str, list[tuple]]) -> list[tuple]:
     """backups/ 只要最新一份整库备份（文件名里的日期最大的）；别的前缀全要。"""
-    files: list[tuple[str, int, str]] = []
+    files: list[tuple] = []
     for prefix in PREFIXES:
         items = listed.get(prefix, [])
         if prefix == "backups/":
@@ -568,7 +564,7 @@ def export(
         backup.upload(client, env, f"exports/{path.name}", path, what="访问日志暂存")
         for _, path, _ in staged
     ]
-    ids = [bucket.prefix + key for key, _, _ in files]
+    ids = [bucket.prefix + item[0] for item in files]
     links = download_links(client, env, [*ids, takedowns_id, pay_id, *staged_ids])
     _check_links(links.values())
     manifest = {
@@ -579,8 +575,14 @@ def export(
         "revision": revision,
         "max_age": MAX_AGE,
         "files": [
-            {"path": key, "size": size, "modified": modified, "url": links[file_id]}
-            for (key, size, modified), file_id in zip(files, ids, strict=True)
+            {
+                "path": key,
+                "size": size,
+                "modified": modified,
+                "etag": etag,
+                "url": links[file_id],
+            }
+            for (key, size, modified, etag), file_id in zip(files, ids, strict=True)
         ],
         "takedowns": {
             "path": takedowns_path,

@@ -368,7 +368,9 @@ def test_shared_server_compose_stays_small_and_local():
     ]
     assert "image: caddy" not in text and '"80:80"' not in text and '"443:443"' not in text
     # 测试期 worker 只写心跳，上线前在 .env 里换成服务器的定时任务表
-    assert "${YOUJU_CRONTAB:-/app/backend/deploy/selfhost/shared/crontab.idle}" in services["worker"]
+    assert (
+        "${YOUJU_CRONTAB:-/app/backend/deploy/selfhost/shared/crontab.idle}" in services["worker"]
+    )
 
 
 def test_shared_server_nginx_site_only_forwards_app_paths():

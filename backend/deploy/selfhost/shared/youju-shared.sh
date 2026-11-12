@@ -36,6 +36,7 @@
 #   env-set <名称>         改一项不涉密的配置（值从标准输入读，如 echo '<值>' | … env-set YOUJU_CRONTAB）
 #   env-unset <名称>       删掉一项不涉密的配置
 #   config-from-export     把云托管导出的不涉密配置（模型名、价格、模板……）照原值写进 .env
+#   cloudrun-gone deregistered|deleted  记下云托管里的库和备份已经删了（注销环境 / 手动删），不再提醒
 set -euo pipefail
 umask 022
 
@@ -576,15 +577,12 @@ fetch_export() {
   [ -f "$SERVER/.env" ] || die "还没装（没有 ${SERVER}/.env）"
   # 存档过了就不再下（不再下一份明文备份，也不白停一次服务）；真要重来先删这个标记
   [ ! -f "$EXPORT_DIR/imported" ] || die "这批已经存档过（IMPORT OK），不再下载；真要重来先删 ${EXPORT_DIR}/imported"
-  # 链接从标准输入读（终端里按提示粘贴，不显示）：不进命令行参数（别的用户 ps 看得到）、
-  # 不进 shell 历史；也经环境变量传进容器
-  if [ -t 0 ]; then
-    printf '粘贴清单链接（不显示），回车：'
-    IFS= read -rs url || true
-    echo
-  else
-    IFS= read -r url || true
-  fi
+  # 链接只在交互终端里按提示粘贴（不显示）：不进命令行参数（别的用户 ps 看得到）、不进 shell 历史，
+  # 也不能用"执行命令"跑（它会把输入存进控制台的执行记录）；经环境变量传进容器
+  need_tty
+  printf '粘贴清单链接（不显示），回车：'
+  IFS= read -rs url || true
+  echo
   url=${url%$'\r'}
   [[ "$url" =~ ^https://[A-Za-z0-9.-]+\.(tcb\.qcloud\.la|myqcloud\.com)/[!-~]*$ ]] \
     || die "清单链接不对（要是云托管导出脚本打印的那一行里的链接）"
@@ -617,6 +615,13 @@ import_export() {
   [ -e "${files[0]}" ] || die "${EXPORT_DIR}/backups 里没有整库备份：先 fetch-export"
   [ -f "$EXPORT_DIR/pay-records.jsonl.gz" ] || die "没有交易记录：先 fetch-export"
   [ "${#files[@]}" -eq 1 ] || die "${EXPORT_DIR}/backups 里不止一份备份，只留要归档的那一份"
+  # 试恢复之前按备份解压后的大小再核一次硬盘：临时库加 binlog 大约是它的 3 倍，再留 2G
+  local raw need_g free_g
+  raw=$(gzip -l "${files[0]}" | awk 'NR == 2 {print $2}')
+  [[ "$raw" =~ ^[0-9]+$ ]] || die "读不出整库备份解压后的大小"
+  need_g=$(( raw * 3 / 1073741824 + 2 ))
+  free_g=$(df -BG --output=avail "$BASE" | tail -1 | tr -dc '0-9')
+  [ "$free_g" -ge "$need_g" ] || die "硬盘不够试恢复：要约 ${need_g}G，现在只剩 ${free_g}G（先腾空间，别动别的项目的文件）"
   local name root_pw
   name=$(basename "${files[0]}")
   root_pw=$(sed -n 's/^MYSQL_ROOT_PASSWORD=//p' "$SERVER/.env")
@@ -802,6 +807,11 @@ for name, value in sorted((json.load(sys.stdin).get("config") or {}).items()):
   echo "已按云托管的值写入 ${n} 项；运行 ${SELF} up 生效"
 }
 
+cloudrun_gone() {
+  case "${1:-}" in deregistered | deleted) ;; *) die "用法：cloudrun-gone deregistered|deleted" ;; esac
+  compose exec -T worker youju cloudrun-gone --how "$1"
+}
+
 uninstall() {
   local purge=0
   [ "${1:-}" = "--purge" ] && purge=1
@@ -865,5 +875,6 @@ case "$cmd" in
   env-set) env_set "$@" ;;
   env-unset) env_unset "$@" ;;
   config-from-export) config_from_export ;;
+  cloudrun-gone) cloudrun_gone "$@" ;;
   *) awk 'NR > 1 && /^#/ {print; next} NR > 1 {exit}' "$0"; exit 1 ;;
 esac

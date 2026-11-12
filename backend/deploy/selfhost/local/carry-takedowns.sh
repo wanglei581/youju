@@ -25,7 +25,15 @@ docker compose run --rm --no-deps -v "$PWD:/move:ro" worker \
   youju takedown-carry apply --file /move/takedowns.jsonl
 docker compose run --rm --no-deps -v "$PWD:/move:ro" worker \
   youju takedown-carry check --file /move/takedowns.jsonl
-# 同一时间只推一路（youju-sync-push 锁）：定时任务正在推时这里直接退出，不影响
-docker compose exec -T worker youju sync-push \
-  || echo "这次没推成（定时任务可能正在推），10 分钟内的下一轮会推"
-echo "CARRY OK：推到服务器后，在服务器上运行 youju-shared.sh takedowns-check"
+# 同一时间只推一路（youju-sync-push 锁）：定时任务正在推时这里直接退出，等下一轮就行；
+# 别的原因没推成要看上面的错误，修好了再推
+if out=$(docker compose exec -T worker youju sync-push 2>&1); then
+  printf '%s\n' "$out"
+  echo "CARRY OK：已经推到服务器，在服务器上运行 youju-shared.sh takedowns-check"
+elif printf '%s' "$out" | grep -q "另一个同步正在推"; then
+  echo "CARRY OK（本机已应用）：定时任务正在推，10 分钟内会推到服务器，再在服务器上 takedowns-check"
+else
+  printf '%s\n' "$out"
+  echo "本机已应用，但推到服务器没成功（看上面的错误）：修好后运行 docker compose exec -T worker youju sync-push" >&2
+  exit 1
+fi

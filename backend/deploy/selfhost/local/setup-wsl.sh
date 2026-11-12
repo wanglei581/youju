@@ -102,7 +102,7 @@ docker compose stop worker
 docker compose run --rm --no-deps worker youju db-upgrade
 # shellcheck disable=SC2016  # $MYSQL_ROOT_PASSWORD 要在容器里展开
 sources=$(docker compose exec -T mysql sh -c \
-  'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -N -B -e "SELECT COUNT(*) FROM youju.sources"' 2>/dev/null || true)
+  'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot -N -B -e "SELECT COUNT(*) FROM youju.sources"' 2>/dev/null || true)
 if [ -z "$sources" ]; then
   # 查不到就停下：照样起 worker 的话，空库会跳过起步导入、从头抓，之后手动导入会被"表不是空的"拒掉
   echo "查不到库里的数据量（数据库连不上？），worker 先不启动。把上面的输出发给 Claude。"

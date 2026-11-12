@@ -259,7 +259,7 @@ class FakeCloud:
         page, rest = keys[:2], keys[2:]
         contents = "".join(
             f"<Contents><Key>{k}</Key><LastModified>2026-11-12T00:00:00.000Z</LastModified>"
-            f"<Size>{self.objects[k]}</Size></Contents>"
+            f"<Size>{self.objects[k]}</Size><ETag>&quot;etag-{k}&quot;</ETag></Contents>"
             for k in page
         )
         body = (
@@ -327,7 +327,7 @@ def test_export_writes_manifest_with_latest_backup_and_takedowns(session, tmp_pa
             client=cloud.client,
             settings=settings,
             workdir=tmp_path,
-            before={**before, "users": [0, None]},
+            before={**before, "users": -1},
         )
     uploaded.clear()
     result = export_script.export(
@@ -344,6 +344,8 @@ def test_export_writes_manifest_with_latest_backup_and_takedowns(session, tmp_pa
     ]
     assert all(f["url"].startswith(f"https://{BUCKET}.tcb.qcloud.la/") for f in manifest["files"])
     assert all(f["modified"] == "2026-11-12T00:00:00+00:00" for f in manifest["files"])
+    # 对象存储的 ETag（去掉引号）：服务器重跑时拿它判断下好的是不是同一份
+    assert all(f["etag"] == "etag-" + f["path"] for f in manifest["files"])
     # 还没归档的访问日志按天导出（和归档一样的格式）
     (staged,) = manifest["staging_logs"]
     assert staged["rows"] == 1 and staged["path"].startswith("exports/access-staging-")
@@ -373,6 +375,24 @@ def test_export_writes_manifest_with_latest_backup_and_takedowns(session, tmp_pa
     assert result["url"].startswith(f"https://{BUCKET}.tcb.qcloud.la/exports/manifest-")
     # 列文件时临时换掉的解析函数已经换回来
     assert export_script.storage_list._parse.__name__ == "_parse"
+
+
+def test_fingerprint_sees_updates_that_keep_the_row_count(session):
+    """导出前后核对新写入用整表校验值：改了一行（条数、编号都没变）也看得出来。"""
+    session.add(User(openid="o-1"))
+    session.commit()
+    engine = create_mysql_engine(os.environ["YOUJU_DATABASE_URL"])
+    try:
+        before = export_script.fingerprint(engine)
+        assert "users" in before and "access_logs" in before and "pay_orders" in before
+        assert set(before) <= set(export_script.WATCHED)
+        assert export_script.changed_tables(before, export_script.fingerprint(engine)) == []
+        session.execute(text("UPDATE users SET agreement_version = 'x' WHERE openid = 'o-1'"))
+        session.commit()
+        after = export_script.fingerprint(engine)
+    finally:
+        engine.dispose()
+    assert export_script.changed_tables(before, after) == ["users"]
 
 
 def test_list_with_sizes_restores_parser_on_error():

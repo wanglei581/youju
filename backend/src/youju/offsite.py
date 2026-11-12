@@ -155,6 +155,10 @@ def run(
 #   （3650）天。一份文件里有多笔订单，按最早一笔算：整份不会留得比指引写的久（最晚一笔早删几天）。
 ARCHIVE_PREFIX = "archive/"
 ARCHIVE_RECORD = ARCHIVE_PREFIX + "deletions.jsonl"
+# 云托管里的库和备份最晚哪天删（最后一份整库备份起 30 天，D-127），和删了没有（谁、哪天、怎么删的）
+CLOUDRUN_DEADLINE = ARCHIVE_PREFIX + "cloudrun-deadline.json"
+CLOUDRUN_GONE = ARCHIVE_PREFIX + "cloudrun-gone.json"
+REMIND_DAYS = 7
 _STEM = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,80}")
 # 加密的存档（.age），和导进来的云托管访问日志（不加密，和服务器自己的访问日志归档一样）
 _ARCHIVED = re.compile(
@@ -232,6 +236,42 @@ def archive(
 class PruneReport:
     deleted: list[str] = field(default_factory=list)
     kept: int = 0
+    reminder: str = ""
+
+
+def cloudrun_reminder(local: storage.DiskBackend, today: date) -> str:
+    """云托管的库和备份还没记"删了"、离最晚期限不到 7 天（或已经过了）时的提醒；
+    不用提醒返回空串。"""
+    if not local.exists(CLOUDRUN_DEADLINE) or local.exists(CLOUDRUN_GONE):
+        return ""
+    try:
+        delete_by = date.fromisoformat(
+            json.loads(local._file(CLOUDRUN_DEADLINE).read_text(encoding="utf-8"))["delete_by"]
+        )
+    except (OSError, ValueError, KeyError, TypeError):
+        return "云托管删除期限的记录读不出来：看一眼 archive/cloudrun-deadline.json"
+    if today < delete_by - timedelta(days=REMIND_DAYS):
+        return ""
+    late = "已经过了期限，" if today > delete_by else ""
+    return (
+        f"云托管里的数据库和备份要在 {delete_by} 前删掉（隐私保护指引，D-127）：{late}注销环境，"
+        "或在云托管控制台删库和对象存储 backups/；删了以后运行 youju-shared.sh cloudrun-gone "
+        "deregistered（注销）或 deleted（手动删）记下来"
+    )
+
+
+def record_cloudrun_gone(settings: Settings, how: str, *, now: datetime | None = None) -> str:
+    if how not in ("deregistered", "deleted"):
+        raise BackupError("只能是 deregistered（注销了环境）或 deleted（手动删了库和备份）")
+    local = storage.backend(settings)
+    with tempfile.TemporaryDirectory() as tmp:
+        record = Path(tmp) / "gone.json"
+        record.write_text(
+            json.dumps({"at": (now or datetime.now(UTC)).isoformat(), "how": how}) + "\n",
+            encoding="utf-8",
+        )
+        local.put_file(CLOUDRUN_GONE, record)
+    return CLOUDRUN_GONE
 
 
 def _expired(store, where: str, today: date, report: PruneReport, records: list[dict]) -> None:
@@ -288,6 +328,7 @@ def prune_archive(
             with path.open("a", encoding="utf-8") as fh:
                 for row in records:
                     fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+    report.reminder = cloudrun_reminder(local, today)
     return report
 
 

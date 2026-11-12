@@ -81,7 +81,20 @@ PAY = _gz(
         }
     )
     + "\n"
-    + json.dumps({"table": "pay_orders", "row": {"id": 1, "out_trade_no": "T1"}})
+    + json.dumps(
+        {
+            "table": "pay_orders",
+            "row": {"id": 1, "out_trade_no": "T1", "created_at": "2026-10-29T16:30:00+00:00"},
+        }
+    )
+    + "\n"
+    + json.dumps(
+        {"table": "invoice_requests", "row": {"id": 1, "order_id": 1, "title_type": "company"}}
+    )
+    + "\n"
+    + json.dumps(
+        {"table": "pass_rewards", "row": {"id": 1, "granted_at": "2026-10-20T02:00:00+00:00"}}
+    )
     + "\n"
 )
 
@@ -95,11 +108,13 @@ def _export(
     pay=PAY,
     modified=None,
     staging=None,
+    etags=None,
 ):
     """按导出脚本的格式造一份清单，返回（链接，SHA-256）。staging：{日期: 内容} 还没归档的访问日志。"""
     sizes = sizes or {}
     modified = modified or {}
     staging = staging or {}
+    etags = etags or {}
     remote.files.update(files)
     for day, data in staging.items():
         remote.files[f"exports/access-staging-{day.replace('-', '')}-1.jsonl.gz"] = data
@@ -115,6 +130,7 @@ def _export(
                 "path": p,
                 "size": sizes.get(p, len(data)),
                 "modified": modified.get(p, "2026-11-12T00:00:00+00:00"),
+                "etag": etags.get(p, "etag-" + _sha(data)[:8]),
                 "url": remote.url(p),
             }
             for p, data in files.items()
@@ -250,6 +266,26 @@ def test_fetch_checks_and_imports_files(tmp_path):
     assert json.loads((work / "summary.json").read_text(encoding="utf-8"))["complete"] is True
 
 
+def test_fetch_redownloads_when_the_etag_changes(tmp_path):
+    """同一天重做的备份大小可能一样：重跑时按对象存储的 ETag 判断是不是同一份，不只看大小。"""
+    store = storage.DiskBackend(tmp_path / "store")
+    work = tmp_path / "export"
+    remote = Remote({})
+    url, sha = _export(remote, {"backups/youju-20261112.jsonl.gz": _gz("{}\n" * 3)}, etags={})
+    cloudrun_fetch.fetch(remote.client, url, sha, work, store=store, say=lambda _: None)
+    newer = _gz("[]\n" * 3)
+    assert len(newer) == len(_gz("{}\n" * 3))
+    remote2 = Remote({})
+    url2, sha2 = _export(
+        remote2,
+        {"backups/youju-20261112.jsonl.gz": newer},
+        etags={"backups/youju-20261112.jsonl.gz": "etag-newer"},
+    )
+    again = cloudrun_fetch.fetch(remote2.client, url2, sha2, work, store=store, say=lambda _: None)
+    assert again.fetched == {"backups/": 1} and not again.skipped
+    assert (work / "backups" / "youju-20261112.jsonl.gz").read_bytes() == newer
+
+
 def test_fetch_refuses_wrong_manifest_and_reports_expired_links(tmp_path):
     remote = Remote({})
     url, sha = _export(remote, {"backups/youju-20261112.jsonl.gz": _gz("{}\n")})
@@ -310,10 +346,12 @@ def test_fetch_checks_disk_space_and_cleans_up_leftovers(tmp_path):
     remote = Remote({})
     backup = _gz("{}\n" * 10)
     pdf = b"%PDF-1.7"
+    listing = b'{"url_key":"a.gov.cn/1"}\n'
     url, sha = _export(
         remote,
         {"backups/youju-20261113.jsonl.gz": backup, f"attachments/{_sha(pdf)}.pdf": pdf},
         sizes={"backups/youju-20261113.jsonl.gz": len(backup)},
+        takedowns=listing,
     )
     store = storage.DiskBackend(tmp_path / "store")
     work = tmp_path / "export"
@@ -322,7 +360,14 @@ def test_fetch_checks_disk_space_and_cleans_up_leftovers(tmp_path):
     (work / ".fetch-abc").write_bytes(b"half")
     (work / "takedowns.jsonl.part").write_bytes(b"half")
     (work / "backups" / "youju-20261112.jsonl.gz").write_bytes(b"older")
-    need = len(pdf) + (1 + cloudrun_fetch.BACKUP_FACTOR) * len(backup) + cloudrun_fetch.SPARE_BYTES
+    # 要下的（文件、下架清单、交易记录）加上压缩整库备份的 15 倍和余量
+    need = (
+        len(pdf)
+        + len(listing)
+        + len(PAY)
+        + (1 + cloudrun_fetch.BACKUP_FACTOR) * len(backup)
+        + cloudrun_fetch.SPARE_BYTES
+    )
     with pytest.raises(cloudrun_fetch.FetchError, match="硬盘不够"):
         cloudrun_fetch.fetch(
             remote.client,
@@ -387,21 +432,28 @@ def _functions(tmp_path: Path) -> Path:
     return path
 
 
-def _bash(
-    tmp_path: Path, body: str, *, stdin: str = "", setup: str = ""
-) -> subprocess.CompletedProcess:
-    """source 函数后把 BASE、SERVER、EXPORT_DIR 指到临时目录，compose、docker 换成只记录参数的假的。"""
+def _script(tmp_path: Path, body: str, setup: str = "") -> str:
+    """source 函数后把 BASE、SERVER、EXPORT_DIR 指到临时目录，compose、docker 换成只记录参数的假的，
+    df 当作还剩 100G（不看跑测试的机器）。"""
     defs = _functions(tmp_path)
     log = tmp_path / "calls.log"
-    script = f"""
+    return f"""
 source "{defs}"
 BASE="{tmp_path}"; SERVER="{tmp_path}/server"; EXPORT_DIR="{tmp_path}/export"; SELF=youju-shared.sh
 compose() {{ printf 'compose %s | image=%s db=%s url=%s\\n' "$*" "${{YOUJU_IMAGE:-}}" "${{YOUJU_DATABASE_URL:-}}" "${{YOUJU_EXPORT_URL:-}}" >> "{log}"; if [ "$1" = exec ]; then cat >/dev/null; fi; }}
 docker() {{ printf 'docker %s\\n' "$*" >> "{log}"; }}
+df() {{ printf 'Avail\\n 100G\\n'; }}
 {setup}
 {body}
 """
-    return subprocess.run(["bash", "-c", script], input=stdin, capture_output=True, text=True)
+
+
+def _bash(
+    tmp_path: Path, body: str, *, stdin: str = "", setup: str = ""
+) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["bash", "-c", _script(tmp_path, body, setup)], input=stdin, capture_output=True, text=True
+    )
 
 
 def _calls(tmp_path: Path) -> list[str]:
@@ -523,21 +575,25 @@ def test_shared_rotate_sync_prints_only_a_fingerprint(tmp_path):
 
 
 @needs_bash
-def test_shared_fetch_export_takes_link_on_stdin(tmp_path):
+def test_shared_fetch_export_reads_link_in_a_terminal(tmp_path):
     _server_env(tmp_path, "MYSQL_ROOT_PASSWORD=r00t\n")
     sha = "ab" * 32
     link = f"https://{HOST}/exports/manifest-1.json?sign=s&t=1"
-    df = "df() { printf 'Avail\\n 100G\\n'; }"  # 不看跑测试的机器还剩多少硬盘
-    done = _bash(tmp_path, "fetch_export", stdin=link + "\n", setup=df)
-    assert done.returncode == 1 and "fetch-export <哈希>" in done.stderr
-    done = _bash(tmp_path, f"fetch_export {sha}", stdin="https://evil.example.com/x\n", setup=df)
-    assert done.returncode == 1 and "清单链接不对" in done.stderr
-    assert _calls(tmp_path) == []  # 链接不对：什么都没停、没下
-    done = _bash(tmp_path, f"fetch_export {sha} --with-advisor", stdin=link + "\n", setup=df)
-    assert done.returncode == 1 and "fetch-export <哈希>" in done.stderr  # 只收一个参数
+    # 参数不对、不在交互终端里（"执行命令"会把输入存进执行记录）：什么都没停、没下
+    for body in ("fetch_export", f"fetch_export {sha} --with-advisor"):
+        done = _bash(tmp_path, body)
+        assert done.returncode == 1 and "fetch-export <哈希>" in done.stderr
+    done = _bash(tmp_path, f"fetch_export {sha}", stdin=link + "\n")
+    assert done.returncode == 1 and "只能在交互终端里用" in done.stderr
     assert _calls(tmp_path) == []
-    done = _bash(tmp_path, f"fetch_export {sha}", stdin=link + "\r\n", setup=df)
-    assert done.returncode == 0, done.stderr
+    # 交互终端里按提示粘贴：链接不对就停下
+    code, out = _tty(
+        ["bash", "-c", _script(tmp_path, f"fetch_export {sha}")], "https://evil.example.com/x\n"
+    )
+    assert code == 1 and "清单链接不对" in out and _calls(tmp_path) == []
+    code, out = _tty(["bash", "-c", _script(tmp_path, f"fetch_export {sha}")], link + "\r\n")
+    assert code == 0, out
+    assert link not in out  # 粘贴的链接不显示
     calls = _calls(tmp_path)
     # 先停接口和 worker，结束再起来；链接只经环境变量进容器，不在命令行参数里
     assert calls[0].startswith("compose stop api worker")
@@ -557,7 +613,7 @@ def test_shared_fetch_export_takes_link_on_stdin(tmp_path):
 def _downloaded(tmp_path: Path, *, complete: bool = True) -> Path:
     backups = tmp_path / "export" / "backups"
     backups.mkdir(parents=True)
-    (backups / "youju-20261112.jsonl.gz").write_bytes(b"x")
+    (backups / "youju-20261112.jsonl.gz").write_bytes(_gz('{"format":"youju-backup"}\n'))
     (tmp_path / "export" / "pay-records.jsonl.gz").write_bytes(b"p")
     (tmp_path / "export" / "manifest.json").write_text("{}", encoding="utf-8")
     (tmp_path / "export" / "advisor-out" / "u").mkdir(parents=True)
@@ -606,6 +662,26 @@ def test_shared_import_export_drills_with_old_image_then_archives(tmp_path):
     assert not (tmp_path / "export" / "advisor-out.json").exists()
     assert (tmp_path / "export" / "imported").exists()
     assert "IMPORT OK" in done.stdout
+
+
+@needs_bash
+def test_shared_import_export_checks_disk_before_the_drill(tmp_path):
+    _server_env(tmp_path, "MYSQL_ROOT_PASSWORD=r00tpw\n")
+    _downloaded(tmp_path)
+    done = _bash(tmp_path, "import_export a79a0042", setup="df() { printf 'Avail\\n 1G\\n'; }")
+    assert done.returncode == 1 and "硬盘不够试恢复" in done.stderr
+    assert not [c for c in _calls(tmp_path) if c.startswith("compose")]
+
+
+@needs_bash
+def test_shared_cloudrun_gone_records_through_the_worker(tmp_path):
+    done = _bash(tmp_path, "cloudrun_gone later")
+    assert done.returncode == 1 and "deregistered|deleted" in done.stderr
+    done = _bash(tmp_path, "cloudrun_gone deleted")
+    assert done.returncode == 0, done.stderr
+    assert _calls(tmp_path)[0].startswith(
+        "compose exec -T worker youju cloudrun-gone --how deleted"
+    )
 
 
 @needs_bash
@@ -693,7 +769,11 @@ def test_local_carry_takedowns_checks_hash_before_applying(tmp_path):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     fake = bin_dir / "docker"
-    fake.write_text(f'#!/bin/sh\necho "$*" >> "{tmp_path}/docker.log"\n', encoding="utf-8")
+    fake.write_text(
+        f'#!/bin/sh\necho "$*" >> "{tmp_path}/docker.log"\n'
+        'case "$*" in *sync-push*) [ -n "$PUSH_OUT" ] && echo "$PUSH_OUT"; exit "${PUSH_CODE:-0}" ;; esac\n',
+        encoding="utf-8",
+    )
     fake.chmod(0o755)
     env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"}
     listing = '{"url_key":"example.gov.cn/1.html"}\n'
@@ -722,6 +802,29 @@ def test_local_carry_takedowns_checks_hash_before_applying(tmp_path):
     ]
     assert all(line.startswith("compose run --rm --no-deps -v ") for line in log[:2])
     assert log[2] == "compose exec -T worker youju sync-push"  # 马上推一次
+    assert "已经推到服务器" in done.stdout
+    # 定时任务正在推（锁）：本机已应用，等下一轮
+    busy = subprocess.run(
+        ["bash", script, _sha(listing.encode())],
+        input=blob,
+        capture_output=True,
+        text=True,
+        env={
+            **env,
+            "PUSH_OUT": "另一个同步正在推（定时任务或手动全推），等它推完再来",
+            "PUSH_CODE": "1",
+        },
+    )
+    assert busy.returncode == 0 and "10 分钟内会推到服务器" in busy.stdout
+    # 别的原因没推成：说清楚、退出码不是 0
+    broken = subprocess.run(
+        ["bash", script, _sha(listing.encode())],
+        input=blob,
+        capture_output=True,
+        text=True,
+        env={**env, "PUSH_OUT": "连不上服务器", "PUSH_CODE": "1"},
+    )
+    assert broken.returncode == 1 and "推到服务器没成功" in broken.stderr
 
 
 def test_export_paste_block_is_ascii_and_decodes_to_the_script(tmp_path):
@@ -743,7 +846,9 @@ def test_export_paste_block_is_ascii_and_decodes_to_the_script(tmp_path):
     assert data == script.read_bytes()
     last = lines[end + 1]
     assert f"echo '{_sha(data)}  /tmp/youju-export.py' | sha256sum -c -" in last
-    assert "python3 -I /tmp/youju-export.py --links-only 2>&1 | tee /tmp/youju-export.log" in last
+    # 输出不存进容器里的文件：里面有清单链接
+    assert last.endswith(" && python3 -I /tmp/youju-export.py --links-only")
+    assert "tee" not in block and "youju-export.log" not in block
     bad = subprocess.run(
         ["sh", str(SELFHOST / "shared" / "export-paste.sh"), "--delete"],
         capture_output=True,
@@ -907,21 +1012,27 @@ def test_archive_names_files_by_expiry_and_needs_offsite(tmp_path):
             )
 
 
-def test_archive_export_keeps_backup_30_days_and_pay_records_3650(tmp_path):
+def test_archive_export_splits_by_start_date(tmp_path):
     work = tmp_path / "export"
     (work / "backups").mkdir(parents=True)
     (work / "backups" / "youju-20261112.jsonl.gz").write_bytes(b"backup")
     (work / "pay-records.jsonl.gz").write_bytes(PAY)
     (work / "advisor-out" / "0123456789abcdef").mkdir(parents=True)
-    (work / "advisor-out" / "0123456789abcdef" / "7.xlsx").write_bytes(b"xlsx")
+    for name in ("7.xlsx", "8.xlsx"):
+        (work / "advisor-out" / "0123456789abcdef" / name).write_bytes(name.encode())
     (work / "advisor-out.json").write_text(
         json.dumps(
             [
                 {
                     "path": "advisor/out/0123456789abcdef/7.xlsx",
                     "modified": "2026-10-20T03:00:00+00:00",
-                    "size": 4,
-                }
+                    "size": 6,
+                },
+                {
+                    "path": "advisor/out/0123456789abcdef/8.xlsx",
+                    "modified": "2026-11-10T03:00:00+00:00",
+                    "size": 6,
+                },
             ]
         ),
         encoding="utf-8",
@@ -930,26 +1041,36 @@ def test_archive_export_keeps_backup_30_days_and_pay_records_3650(tmp_path):
     reports, notes = cloudrun_fetch.archive_export(
         _archive_settings(tmp_path), work, today=date(2026, 11, 13), backend=fake, encryptor=_seal
     )
-    # 整库：自备份那天起 30 天；交易记录：最早的一笔（赠送，北京时间 10-20）起 3650 天；
-    # 批量工具结果：最早一个文件（10-20）起 30 天
-    pay_expires = date(2026, 10, 20) + timedelta(days=3650)
+    # 整库：自备份那天起 30 天。交易记录按起算日分组、各自 3650 天：赠送（北京时间 10-20）一组，
+    # 订单和跟着它的开票申请（10-30）一组。批量工具结果按生成日期分组：10-20 那组到 11-19，
+    # 11-10 那组到 12-10
+    gift = date(2026, 10, 20) + timedelta(days=3650)
+    order = date(2026, 10, 30) + timedelta(days=3650)
     assert [r.target for r in reports] == [
         "archive/cloudrun-youju-20261112.expires-20261212.jsonl.gz.age",
-        f"archive/cloudrun-pay-records-20261112.expires-{pay_expires:%Y%m%d}.jsonl.gz.age",
-        "archive/cloudrun-advisor-out-20261112.expires-20261119.tar.gz.age",
+        f"archive/cloudrun-pay-records-20261020.expires-{gift:%Y%m%d}.jsonl.gz.age",
+        f"archive/cloudrun-pay-records-20261030.expires-{order:%Y%m%d}.jsonl.gz.age",
+        "archive/cloudrun-advisor-out-20261020.expires-20261119.tar.gz.age",
+        "archive/cloudrun-advisor-out-20261110.expires-20261210.tar.gz.age",
     ]
-    assert set(fake.files) == {r.target for r in reports} and notes == []
-    packed = fake.files["archive/cloudrun-advisor-out-20261112.expires-20261119.tar.gz.age"][0]
-    import io
-    import tarfile
-
-    with tarfile.open(fileobj=io.BytesIO(packed.split(b":", 2)[2]), mode="r:gz") as tar:
-        assert tar.getnames() == ["advisor/out/0123456789abcdef/7.xlsx"]
-    # 批量工具结果到存档时已经都过了 30 天：不存
+    assert set(fake.files) == {r.target for r in reports}
+    order_part = fake.files[reports[2].target][0].split(b":", 2)[2]
+    lines = gzip.decompress(order_part).decode().splitlines()
+    assert json.loads(lines[0])["counts"] == {"invoice_requests": 1, "pay_orders": 1}
+    assert {json.loads(line)["table"] for line in lines[1:]} == {"pay_orders", "invoice_requests"}
+    # 云托管的库和备份最晚哪天删：最后一份整库备份起 30 天
+    deadline = json.loads((tmp_path / "store" / "archive" / "cloudrun-deadline.json").read_text())
+    assert deadline == {"backup_date": "2026-11-12", "delete_by": "2026-12-12"}
+    assert "云托管里的数据库和备份最晚 2026-12-12 删掉（注销环境，或删库和 backups/）" in notes
+    # 晚几天再存：已经过了 30 天的那组批量工具结果不存，没过的照存
+    fake = FakeS3()
     reports, notes = cloudrun_fetch.archive_export(
         _archive_settings(tmp_path), work, today=date(2026, 11, 19), backend=fake, encryptor=_seal
     )
-    assert len(reports) == 2 and notes == ["批量工具结果都已经过了 30 天，不存档"]
+    assert [r.target for r in reports][-1] == (
+        "archive/cloudrun-advisor-out-20261110.expires-20261210.tar.gz.age"
+    )
+    assert "2026-10-20 生成的批量工具结果已经过了 30 天，不存" in notes
     bad = gzip.compress(json.dumps({"format": "youju-pay-records", "version": 1}).encode() + b"\n")
     (work / "pay-records.jsonl.gz").write_bytes(bad)
     with pytest.raises(cloudrun_fetch.FetchError, match="说明行"):
@@ -960,6 +1081,26 @@ def test_archive_export_keeps_backup_30_days_and_pay_records_3650(tmp_path):
             backend=fake,
             encryptor=_seal,
         )
+
+
+def test_cloudrun_deletion_reminder_and_record(tmp_path):
+    settings = _archive_settings(tmp_path)
+    store = storage.DiskBackend(tmp_path / "store")
+    assert offsite.cloudrun_reminder(store, date(2026, 12, 10)) == ""  # 还没有期限
+    deadline = tmp_path / "deadline.json"
+    deadline.write_text(json.dumps({"backup_date": "2026-11-12", "delete_by": "2026-12-12"}))
+    store.put_file(offsite.CLOUDRUN_DEADLINE, deadline)
+    assert offsite.cloudrun_reminder(store, date(2026, 12, 4)) == ""  # 离期限还有 8 天
+    assert "2026-12-12 前删掉" in offsite.cloudrun_reminder(store, date(2026, 12, 5))
+    assert "已经过了期限" in offsite.cloudrun_reminder(store, date(2026, 12, 13))
+    report = offsite.prune_archive(settings, today=date(2026, 12, 6), backend=FakeS3())
+    assert "2026-12-12 前删掉" in report.reminder
+    with pytest.raises(BackupError):
+        offsite.record_cloudrun_gone(settings, "later")
+    offsite.record_cloudrun_gone(settings, "deregistered", now=datetime(2026, 12, 1, tzinfo=UTC))
+    record = json.loads((tmp_path / "store" / "archive" / "cloudrun-gone.json").read_text())
+    assert record == {"at": "2026-12-01T00:00:00+00:00", "how": "deregistered"}
+    assert offsite.cloudrun_reminder(store, date(2026, 12, 13)) == ""  # 记下删了就不再提醒
 
 
 def test_prune_archive_deletes_expired_on_both_sides_and_records_it(tmp_path):
