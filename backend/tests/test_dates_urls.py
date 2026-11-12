@@ -196,4 +196,6 @@ def test_url_key_multiple_gkmlpt_categories():
     base = "https://example.gov.cn/gkmlpt/index"
     assert url_key(base + "#xxgk-gkmlpt-1,2") != url_key(base + "#xxgk-gkmlpt-1,3")
     assert url_key(base + "#xxgk-gkmlpt-p1,2").endswith("#xxgk-gkmlpt-p1,2")
+    assert url_key(base + "#xxgk-gkmlpt-p1,p2").endswith("#xxgk-gkmlpt-p1,p2")
+    assert url_key(base + "#xxgk-gkmlpt-p1,p2") != url_key(base + "#xxgk-gkmlpt-p1,2")
     assert url_key(base + "#ordinary") == url_key(base)

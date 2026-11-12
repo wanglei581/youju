@@ -257,8 +257,14 @@ def gkmlpt_tree_categories(text: str) -> list[tuple[str, str]]:
     "政策"一类父分类（名称按 column_kind 是政策文件）下面有规范性文件、其他文件（其它文件）、
     部门文件这几个叶子的：平台读父分类有时只给挂在它上面的几条、有时混进解读，所以改给一个合读的
     分类（名称照父分类，键"gkmlpt-p父分类编号,叶子编号,…"）：父分类只取直接挂在它上面的条目，
-    再加这几个叶子；这几个叶子也不单独给，解读和别的子分类不读。没有这类叶子的父分类照旧给父分类
-    本身。"""
+    再加这几个叶子；这几个叶子也不单独给，解读和别的子分类不读。叶子自己下面还有分类的整个读（肇庆
+    "规范性文件"下分现行有效、失效废止）；下面（任意深）有名称带"解读"的，这个叶子也只取直接挂在
+    它上面的（"p叶子编号"；深圳科创"其他文件"下挂着政策解读）。没有这类叶子的父分类照旧给父分类
+    本身。连父分类超过 GKMLPT_MAX_CATEGORIES 个的不截断：照样全写上，适配器不认这个键，试读记
+    待人工处理、不进导入清单（11/13 缓存的 198 个部门页里没有这种）。
+
+    只读第 1 页（D-013，照平台脚本）：两次抓取之间下级分类新发超过一页时，直接挂在父分类上的新文件
+    可能被挤出第 1 页，这是已知限制。"""
     m = _GKML_TREE.search(text or "")
     if not m:
         return []
@@ -293,22 +299,39 @@ def gkmlpt_tree_categories(text: str) -> list[tuple[str, str]]:
                 and child["id"] != nid
                 and not child.get("jump_url")
             ]
-            # 同一个编号只要一次（分类树偶有重复的节点），最多 _GKMLPT_MAX_IDS - 1 个叶子
+            # 同一个编号只要一次（分类树偶有重复的节点）；超过上限的不截断（见上）
             unique: list[dict] = []
             for child in selected:
                 if all(child["id"] != kept["id"] for kept in unique):
                     unique.append(child)
-            selected = unique[: _GKMLPT_MAX_IDS - 1]
+            selected = unique
         if isinstance(name, str) and isinstance(nid, int) and not node.get("jump_url"):
             # 父分类本身也读，但只要直接挂在它上面的条目（p 编号）：有的部门把政策直接挂在父分类上，
             # 叶子里没几条（汕头发改 134 条里 83 条直接挂在"政策"上）
-            leaves = ",".join(str(child["id"]) for child in selected)
+            leaves = ",".join(
+                f"p{child['id']}" if _has_reading(child) else str(child["id"]) for child in selected
+            )
             ids = f"p{nid},{leaves}" if selected else str(nid)
             out.append((name.strip(), f"{GKMLPT_KEY}{ids}"))
         for child in children:
             if child in selected:
                 if isinstance(child.get("children"), list):
                     stack.extend(child["children"])
-            else:
+            elif isinstance(child, dict):
                 stack.append(child)
     return out
+
+
+def _has_reading(node: dict) -> bool:
+    """分类下面（任意深）有没有名称带"解读"的分类。"""
+    children = node.get("children")
+    stack = list(children) if isinstance(children, list) else []
+    while stack:
+        child = stack.pop()
+        if not isinstance(child, dict):
+            continue
+        if isinstance(child.get("name"), str) and "解读" in child["name"]:
+            return True
+        if isinstance(child.get("children"), list):
+            stack.extend(child["children"])
+    return False

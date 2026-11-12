@@ -246,7 +246,9 @@ def _items_via_adapter(
             return _AdapterResult([], api.adapter, result, api_url=api.url, part=label)
         refused = api_refusal(part, result)
         if refused:
-            return _AdapterResult([], api.adapter, result, f"{label}{refused}", api.url, label)
+            return _AdapterResult(
+                [], api.adapter, result, refused=f"{label}{refused}", api_url=api.url, part=label
+            )
         if result.status != "ok":
             return _AdapterResult([], api.adapter, result, api_url=api.url, part=label)
         if len(parts) > 1 and not api_readable(part, result.text):

@@ -424,9 +424,12 @@ def test_parent_direct_part_keeps_only_items_attached_to_the_parent():
         row["classify_main"] = main
     kept = api_items(parent, json.dumps(body), {}, TODAY)
     assert [i.url for i in kept] == [r["url"] for r in BODY["articles"][:2]]
-    # p 只能在第一个编号前；单独一个父分类也认
-    assert find_list_api(PAGE, URL, f"{URL}#xxgk-gkmlpt-6,p8350") is None
+    # 哪个编号前面都能带 p（下面挂着解读的叶子也只取直接挂在它上面的）；单独一个也认
+    later = api_parts(find_list_api(PAGE, URL, f"{URL}#xxgk-gkmlpt-6,p8350"))
+    assert [(p.category_id, p.direct_only) for p in later] == [(6, False), (8350, True)]
     assert find_list_api(PAGE, URL, f"{URL}#xxgk-gkmlpt-p8350").direct_only
+    for bad in ("pp8350", "p", "8350p", "p8350,", "p8350,p8350"):
+        assert find_list_api(PAGE, URL, f"{URL}#xxgk-gkmlpt-{bad}") is None
 
 
 def test_verify_stops_at_the_first_refused_category():
@@ -519,3 +522,13 @@ def test_merged_duplicate_keeps_the_dated_copy():
         found, [json.dumps({**dated, "classify": {"id": 8}}), json.dumps(swapped)], None, TODAY
     )
     assert [r.publish_date for r in rows if r.url == url] == [expected]
+
+
+def test_verify_marks_over_limit_gkmlpt_columns_for_manual_handling():
+    # 盘点遇到要合读的分类超过上限时照样全写上：适配器不认、不请求，试读记待人工处理
+    col = column("p8350,1,2,3,4,5")
+    cache = Cache({})
+    checked = check_one(cache, col, TODAY)
+    assert checked.result == NEEDS_SCRIPT and "待人工处理" in checked.reason
+    assert checked.platform == "数字广东" and cache.calls == []
+    assert "#xxgk-gkmlpt-p8350,1,2,3,4,5" in col.url

@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from datetime import date
 
 from youju.crawler.adapters import (
+    GKMLPT_MAX_CATEGORIES,
     api_empty_list,
     api_items_merged,
     api_parts,
@@ -116,6 +117,15 @@ def columns_of(depts: Iterable[DeptRow]) -> list[ColumnCheck]:
 def check_one(cache: PageCache, col: ColumnCheck, today: date) -> ColumnCheck:
     # 数字广东信息公开平台的分类：列表只在接口里（按分类加载），部门页上的条目不算
     gkmlpt = gkmlpt_categories(col.url) is not None
+    if f"#{XXGK_TAG}gkmlpt-" in col.url and not gkmlpt:
+        # 数字广东的分类键适配器不认（"政策"栏目要合读的分类超过上限，盘点照样全写上）：不读、
+        # 不进导入清单，待人工处理
+        col.result = NEEDS_SCRIPT
+        col.reason = (
+            f"数字广东的分类栏目要合读的分类超过 {GKMLPT_MAX_CATEGORIES} 个或写法认不出，待人工处理"
+        )
+        col.platform = col.platform or "数字广东"
+        return col
     if f"#{XXGK_TAG}" in col.url and not gkmlpt:
         # 信息公开分类树上的分类：页面已读过，列表要按分类由脚本加载（大汉信息公开接口，第二阶段写）
         col.result = NEEDS_SCRIPT

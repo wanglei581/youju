@@ -68,8 +68,8 @@ class ListApi:
     category_id: int | None = None
     # 数字广东几个分类合读的栏目：每个分类各一个接口（见 api_parts）；单个分类的为空
     parts: tuple["ListApi", ...] = ()
-    # 数字广东"政策"一类父分类：只要直接挂在它上面的条目（条目的 classify_main 就是它），挂在子分类
-    # （解读等）上的不要——要的子分类另外按叶子读
+    # 数字广东栏目网址里带 p 的分类（"政策"一类父分类，和下面挂着解读的叶子）：只要直接挂在它上面
+    # 的条目（条目的 classify_main 就是它），挂在下级分类（解读等）上的不要——要的另外按叶子读
     direct_only: bool = False
 
 
@@ -107,10 +107,10 @@ def _unit_scripts(html: str) -> list[dict[str, str]]:
 
 # 数字广东信息公开平台的分类栏目网址："部门页#xxgk-gkmlpt-分类编号"
 # （盘点 deptdir.gkmlpt_tree_categories 记的）
-# 几个分类合读的写成"编号,编号"（最多 GKMLPT_MAX_CATEGORIES 个）；第一个前面带 p 的是父分类，
-# 只要直接挂在它上面的条目
+# 几个分类合读的写成"编号,编号"（最多 GKMLPT_MAX_CATEGORIES 个）；编号前面带 p 的只要直接挂在这个
+# 分类上的条目（"政策"父分类，和下面挂着解读的叶子）
 GKMLPT_MAX_CATEGORIES = 5
-_GK_COLUMN = re.compile(rf"#xxgk-gkmlpt-(p?[0-9]+(?:,[0-9]+){{0,{GKMLPT_MAX_CATEGORIES - 1}}})$")
+_GK_COLUMN = re.compile(rf"#xxgk-gkmlpt-(p?[0-9]+(?:,p?[0-9]+){{0,{GKMLPT_MAX_CATEGORIES - 1}}})$")
 # 遮住 JS 字符串和注释，避免把其中的文字当作可执行声明或配置项。
 # 页面脚本在声明以后又改写这几项配置（window._CONFIG.SID = '9'、window._CONFIG['ENV'] = …）
 _CONFIG_OVERRIDE = re.compile(r"\b_CONFIG\s*(?:\.\s*(?:APP_URL|SID|ENV|TREE)\s*=(?!=)|\[)")
@@ -119,15 +119,16 @@ _JS_LITERAL = re.compile(
 )
 
 
-def _gkmlpt_spec(column_url: str | None) -> tuple[tuple[int, ...], bool] | None:
-    """栏目网址里的数字广东分类：(编号们, 第一个是不是只取直接挂在它上面的父分类)；不是给 None。
-    一至五个、不重复的编号。"""
+def _gkmlpt_spec(column_url: str | None) -> tuple[tuple[int, ...], tuple[bool, ...]] | None:
+    """栏目网址里的数字广东分类：(编号们, 各自是不是只取直接挂在它上面的条目)；不是给 None。
+    一至 GKMLPT_MAX_CATEGORIES 个、不重复的编号。"""
     match = _GK_COLUMN.search(column_url or "")
     if not match:
         return None
-    spec = match.group(1)
-    ids = tuple(map(int, spec.lstrip("p").split(",")))
-    return (ids, spec.startswith("p")) if len(set(ids)) == len(ids) else None
+    tokens = match.group(1).split(",")
+    ids = tuple(int(token.removeprefix("p")) for token in tokens)
+    direct = tuple(token.startswith("p") for token in tokens)
+    return (ids, direct) if len(set(ids)) == len(ids) else None
 
 
 def gkmlpt_categories(column_url: str | None) -> tuple[int, ...] | None:
@@ -179,7 +180,7 @@ def find_gkmlpt_api(html: str, page_url: str, column_url: str) -> ListApi | None
     spec = _gkmlpt_spec(column_url)
     if spec is None:
         return None
-    categories, parent_direct = spec
+    categories, direct = spec
     try:
         doc = lxml.html.document_fromstring(_STRAY_END.sub("", html))
     except (etree.LxmlError, ValueError):
@@ -279,7 +280,7 @@ def find_gkmlpt_api(html: str, page_url: str, column_url: str) -> ListApi | None
                 ),
                 page_url.split("#", 1)[0],
                 category,
-                direct_only=parent_direct and index == 0,
+                direct_only=direct[index],
             )
             for index, category in enumerate(categories)
         )
@@ -570,8 +571,8 @@ def _gkmlpt_refusal(api: ListApi, payload: dict) -> str:
     要和实测的正常返回一样：顶层正好 articles、classify、offset、total、updated 五项，classify.id
     是请求的分类，offset 是 0（第 1 页），total 是非负整数，articles 是列表、不超过 _GKMLPT_MAX_ROWS
     条（正常一页 100 条）；有条目时至少要有一条带发布时间（create_time），一条都没有多半是平台改了
-    字段，认不出；只取直接挂在父分类上的条目时（p 编号），有条目却没有一条带整数 classify_main 的
-    也认不出（平台多半改了字段，不悄悄当成 0 条）。单条字段不对的（缺标题、网址、发布时间）只跳过
+    字段，认不出；只取直接挂在这个分类上的条目时（p 编号），有条目却没有一条带整数 classify_main
+    的也认不出（平台多半改了字段，不悄悄当成 0 条）。单条字段不对的（缺标题、网址、发布时间）只跳过
     那一条或记成没日期（api_items），不拖累整栏。"""
     code, message = payload.get("errcode"), payload.get("errmessage")
     if code not in (None, "", 0) or ("errmessage" in payload and message != "ok"):
@@ -588,7 +589,7 @@ def _gkmlpt_refusal(api: ListApi, payload: dict) -> str:
         or not isinstance(articles, list)
         # 有条目却没有一条带发布时间：平台多半改了字段，认不出（不悄悄全记成没日期）
         or (articles and not any(_publish_time(row) for row in articles))
-        # 父分类只取直接挂在它上面的：有条目却没有一条带整数 classify_main，同样认不出
+        # 只取直接挂在这个分类上的（p 编号）：有条目却没有一条带整数 classify_main，同样认不出
         or (
             api.direct_only
             and articles
@@ -634,7 +635,7 @@ def _gkmlpt_item(api: ListApi, row: object, today: date) -> ListItem | None:
     if not isinstance(row, dict):
         return None
     if api.direct_only and _classify_main(row) != api.category_id:
-        return None  # 父分类：挂在子分类（解读等）上的、classify_main 认不出的不要
+        return None  # p 编号：挂在下级分类（解读等）上的、classify_main 认不出的不要
     title, raw_url, published = row.get("title"), row.get("url"), _publish_time(row)
     if not isinstance(title, str) or not isinstance(raw_url, str):
         return None
