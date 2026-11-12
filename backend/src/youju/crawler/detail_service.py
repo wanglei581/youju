@@ -255,19 +255,21 @@ def _host(url: str) -> str:
 
 
 class _PausingFetcher:
-    """取一份文件用：每次真正发请求之前（每一跳、robots.txt、等完限速以后）问一次 _admit——这份文件
-    已经经过的网站和要去的网站有没有这一轮已停的，有就不去（记 site_paused；详情页跳进已停网站以后，
-    它的 PDF 附件也不再取）；放行时当场记下要去的地址（被挡下没去的不算经过）。"""
+    """取一份文件用：取页器每一跳、每次真正发请求之前问 _admit——这份文件已经经过的网站和要去的网站
+    有没有这一轮已停的，有就不去（记 site_paused；详情页跳进已停网站以后，它的 PDF 附件也不再取）。
+    放行的页面请求当场记下（record=True）；查 robots 前的预先检查、读 robots.txt 的请求只查不记，
+    被挡下没去的也不算经过。"""
 
     def __init__(self, inner: DetailFetcher, pause: _SitePause) -> None:
         self.inner, self.pause = inner, pause
         self.visited: list[str] = []
 
-    def _admit(self, target: str) -> bool:
+    def _admit(self, target: str, *, record: bool = True) -> bool:
         with self.pause.lock:
             if ({_host(u) for u in self.visited} | {_host(target)}) & self.pause.hosts:
                 return False
-            self.visited.append(target)
+            if record:
+                self.visited.append(target)
             return True
 
     def fetch(self, url: str) -> FetchResult:

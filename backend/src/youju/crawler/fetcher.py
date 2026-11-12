@@ -227,13 +227,15 @@ class PoliteFetcher:
         self,
         url: str,
         same_address_only: bool = False,
-        hop_allowed: Callable[[str], bool] | None = None,
+        hop_allowed: Callable[..., bool] | None = None,
     ) -> FetchResult:
         """抓取一个页面。重定向逐跳处理：每一跳都检查 robots.txt，并遵守目标网站的限速。
 
-        hop_allowed：每次真正发请求之前（每一跳、robots.txt 和它的跳转、排队等完限速、网络重试前）
-        再问一次能不能去（取详情时用来挡住这一轮已停取的网站，见 detail_service）；不能去的不发
-        请求，返回 "site_paused"，这时读 robots.txt 不算读到、不记下来。
+        hop_allowed(url, record=...)：取详情时用来挡住这一轮已停取的网站（见 detail_service）。
+        每一跳查 robots 之前问一次（record=False，只查）；每次真正发请求之前（解析完域名、排队等完
+        限速、网络重试前）再问一次，页面请求 record=True（放行就当场记下经过），读 robots.txt 的
+        请求和它的跳转 record=False。不能去的不发请求，返回 "site_paused"；读 robots.txt 被挡下
+        不记下来。
 
         same_address_only：只取这个地址本身（读页面声明的列表接口时用，D-128 读取护栏 ①）。
         跳转一律不跟（连 http 升 https 也不跟，只请求页面写明的那个地址）：原样返回 "redirect"
@@ -251,6 +253,9 @@ class PoliteFetcher:
     def _fetch_hops(self, url: str, same_address_only: bool, hops: list[str]) -> FetchResult:
         current = url
         for _ in range(_MAX_REDIRECTS + 1):
+            # 查 robots 之前先问（已停的网站命中缓存的 robots 结果时也不往下走），只查不记
+            if not self._gate(current, record=False):
+                return FetchResult(url, "site_paused", final_url=current, error=SITE_PAUSED)
             hops.append(current)
             if self._url_allowed is not None and not self._url_allowed(current):
                 return FetchResult(url, "unsupported_host", final_url=current, error="非政府网站")
@@ -312,6 +317,14 @@ class PoliteFetcher:
         return entry
 
     def _load_robots_once(self, origin: str) -> _RobotsEntry:
+        # 读 robots.txt 的请求（和它的跳转）问 hop_allowed 时只查不记：不算文件经过的地址
+        self._local.robots = True
+        try:
+            return self._load_robots_from(origin)
+        finally:
+            self._local.robots = False
+
+    def _load_robots_from(self, origin: str) -> _RobotsEntry:
         current = origin + "/robots.txt"
         # RFC 9309 §2.3.1.2：robots.txt 的重定向至少跟随 5 次；超过则视为不可用（可以抓取）
         for _ in range(_MAX_REDIRECTS + 1):
@@ -357,6 +370,13 @@ class PoliteFetcher:
         parser.parse(body.splitlines())
         return _RobotsEntry("rules", parser, now)
 
+    def _gate(self, url: str, *, record: bool) -> bool:
+        """问这一次 fetch() 的 hop_allowed 能不能去 url；读 robots.txt 时只查不记。"""
+        gate = getattr(self._local, "gate", None)
+        if gate is None:
+            return True
+        return gate(url, record=record and not getattr(self._local, "robots", False))
+
     def _lock_for(self, locks: dict[str, threading.Lock], key: str) -> threading.Lock:
         with self._guard:
             return locks.setdefault(key, threading.Lock())
@@ -383,9 +403,6 @@ class PoliteFetcher:
         while True:
             if self._expired():
                 return FetchResult(url, "deadline", final_url=url, error=_DEADLINE)
-            gate = getattr(self._local, "gate", None)
-            if gate is not None and not gate(url):
-                return FetchResult(url, "site_paused", final_url=url, error=SITE_PAUSED)
             compat = host in self._compat_hosts
             client = self._compat_client if compat else self._client
             real = self._real["compat" if compat else "main"]
@@ -412,6 +429,9 @@ class PoliteFetcher:
                     # 临近期限：这一次连接、读取最多等到期限（至少 1 秒）
                     left = max(1.0, self._deadline - self._clock())
                     timing["timeout"] = min(self._timeout, left)
+                # 解析完、真正发请求之前再问一次（排队等限速、解析域名期间网站可能停了）
+                if not self._gate(url, record=True):
+                    return FetchResult(url, "site_paused", final_url=url, error=SITE_PAUSED)
                 with client.stream(
                     "GET", request_url, headers=headers, extensions=extensions, **timing
                 ) as resp:

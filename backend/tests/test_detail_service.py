@@ -312,6 +312,46 @@ def test_pausing_fetcher_checks_each_hop_in_real_time() -> None:
     assert all(not r.startswith("b.gov.cn") for r in requested)
 
 
+def test_robots_redirect_to_listed_site_does_not_pause_it(session, monkeypatch) -> None:
+    """a 的 robots.txt 跳到名单网站 b、a 的页面是防护页：读 robots.txt 不算 a 这份文件经过的网站，
+    b 不停，b 的文件照常取。"""
+    import httpx
+
+    from youju.crawler import detail
+    from youju.crawler.fetcher import PoliteFetcher
+
+    monkeypatch.setitem(detail._SEARCH_THROTTLE_VERIFIED, "b.example.gov.cn", frozenset({"x"}))
+    _doc_on(session, _source_on(session, "a.example.gov.cn"), "a.example.gov.cn", 1)
+    second = _doc_on(session, _source_on(session, "b.example.gov.cn"), "b.example.gov.cn", 2)
+    requested: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(f"{request.url.host}{request.url.path}")
+        if request.url.host == "a.example.gov.cn" and request.url.path == "/robots.txt":
+            return httpx.Response(302, headers={"location": "https://b.example.gov.cn/robots.txt"})
+        if request.url.path == "/robots.txt":
+            return httpx.Response(404)
+        if request.url.host == "a.example.gov.cn":
+            return httpx.Response(200, text=_PROTECTED, headers={"content-type": "text/html"})
+        return httpx.Response(
+            200,
+            text="<html><body><div id='zoom'><p>这是公开通知正文，需要保存这些段落内容。</p>"
+            "<p>各有关单位请按要求组织申报，并于月底前报送材料。</p></div></body></html>",
+            headers={"content-type": "text/html"},
+        )
+
+    with PoliteFetcher(
+        "TestAgent YoujuBot/0.1",
+        per_host_interval=0,
+        transport=httpx.MockTransport(handler),
+        resolver=lambda host: ["93.184.216.34"],
+    ) as polite:
+        results = fetch_details(session, limit=5, fetcher=polite, max_workers=1)
+    assert [r.status for r in results] == ["protected", "ok"]
+    assert "b.example.gov.cn/detail/2.html" in requested
+    assert session.get(DocumentDetail, second.id).status == "ok"
+
+
 def test_title_backfill_reports_paused_site_as_unavailable(session, monkeypatch):
     """补全截断标题时，同一网站这一轮停取了的记"没取到（site_paused）"，不当成"没截断"。"""
     from youju.crawler import detail
