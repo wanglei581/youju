@@ -632,6 +632,34 @@ def test_attachment_files_follow_their_rows(env, monkeypatch, tmp_path):
     server_store.put_file(gone, lost_file)
     assert local.push(env.local, env.client, store=local_store).blobs == 0
     assert pending() == []
+    # 待补按页取完：排在前面、一直缺的不挡后面的；本机那份内容坏了的跳过、留在待补里，
+    # 不让这次推送停下（后面的变更照常推）
+    monkeypatch.setattr(local, "PENDING_PAGE", 1)
+    first = f"attachments/{'0' * 64}.pdf"  # 两边都没有，按路径排在最前
+    good_content = b"%PDF-1.4 found later"
+    good = f"attachments/{hashlib.sha256(good_content).hexdigest()}.pdf"
+    broken = f"attachments/{'f' * 64}.pdf"  # 本机有，但内容和名字对不上
+    with env.server.begin() as conn:
+        for path in (first, good, broken):
+            conn.execute(
+                text(f"INSERT INTO `{sync_server.PENDING}` (path, noted_at) VALUES (:p, NOW())"),
+                {"p": path},
+            )
+    good_file = tmp_path / "good.pdf"
+    good_file.write_bytes(good_content)
+    local_store.put_file(good, good_file)
+    local_store.put_file(broken, lost_file)
+    with env.local.begin() as conn:
+        conn.execute(
+            T["attachment_copies"]
+            .update()
+            .where(T["attachment_copies"].c.id == nowhere)
+            .values(attempts=3)
+        )
+    report = local.push(env.local, env.client, store=local_store)
+    assert report.blobs == 1 and report.batches == 1
+    assert server_store.exists(good) and not server_store.exists(broken)
+    assert sorted(pending()) == sorted([first, broken])
     # 名字和内容对不上的不收
     bad = hashlib.sha256(b"other").hexdigest()
     with pytest.raises(local.SyncError) as err:

@@ -532,25 +532,33 @@ async def missing_blobs(request: Request) -> dict:
 
 @router.post("/blobs/pending")
 async def pending_blobs(request: Request) -> dict:
-    """待补的附件副本（写进来时两边都没有文件的）：已经到了的（本机补传的、首发前从云托管导进来的）
-    先划掉，剩下的最多 limit 个给本机，本机手上有的就补传。"""
+    """待补的附件副本（写进来时两边都没有文件的），按路径分页：after 之后的 limit 个里，已经到了的
+    （本机补传的、首发前从云托管导进来的）先划掉，剩下的给本机，本机手上有的就补传。还有下一页时
+    next 是这一页最后一个路径（本机接着取，所以前面一直缺的不会挡住后面的）。"""
     payload = _json(await _body(request))
-    limit = payload.get("limit", 500) if isinstance(payload, dict) else 500
-    if type(limit) is not int or not 1 <= limit <= 2000:
-        raise HTTPException(status_code=422, detail="limit 不对")
+    payload = payload if isinstance(payload, dict) else {}
+    limit, after = payload.get("limit", 500), payload.get("after") or ""
+    if type(limit) is not int or not 1 <= limit <= 2000 or not isinstance(after, str):
+        raise HTTPException(status_code=422, detail="limit、after 不对")
     engine = get_engine()
     ensure_state(engine)
     with engine.begin() as conn:
         paths = list(
-            conn.scalars(text(f"SELECT path FROM `{PENDING}` ORDER BY path LIMIT {2 * limit}"))
+            conn.scalars(
+                text(f"SELECT path FROM `{PENDING}` WHERE path > :a ORDER BY path LIMIT :n"),
+                {"a": after, "n": limit},
+            )
         )
         if not paths:
-            return {"pending": []}
+            return {"pending": [], "next": None}
         store = storage.backend()
         arrived = [p for p in paths if store.exists(p)]
         for path in arrived:
             conn.execute(text(f"DELETE FROM `{PENDING}` WHERE path = :p"), {"p": path})
-    return {"pending": [p for p in paths if p not in arrived][:limit]}
+    return {
+        "pending": [p for p in paths if p not in arrived],
+        "next": paths[-1] if len(paths) == limit else None,
+    }
 
 
 @router.put("/blobs")

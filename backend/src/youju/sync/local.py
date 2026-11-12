@@ -316,26 +316,44 @@ def _send_blobs(client: Client, paths: list[str], store: storage.Backend | None 
     return sent
 
 
+PENDING_PAGE = 500
+PENDING_PAGES = 200  # 一次最多翻这么多页（10 万个），防止服务器回的 next 出错时一直翻
+
+
 def _repair_blobs(client: Client, store: storage.Backend | None = None) -> int:
     """服务器记的待补附件副本（写进去时两边都没有文件的）：本机现在有的补传上去。每次推之前做一次，
-    不用等那一行再变。"""
-    pending = client.json("POST", "/blobs/pending", {"limit": 500}).get("pending", [])
-    if not pending:
-        return 0
-    store = store or storage.backend()
+    不用等那一行再变；按页取完（前面一直缺的不挡后面的）。单个文件读不出、内容和名字对不上、传不上去，
+    记一条日志、跳过（留在待补里），不让这一次推送停在这里：后面的下架等变更照常推。"""
     sent = 0
-    for path in pending:
-        if not isinstance(path, str) or not storage.valid_path(path) or not store.exists(path):
-            continue
-        data = _read_blob(store, path)
-        client.call(
-            "PUT",
-            "/blobs",
-            params={"path": path, "sha256": hashlib.sha256(data).hexdigest()},
-            body=data,
-            content_type="application/octet-stream",
-        )
-        sent += 1
+    after = None
+    for _ in range(PENDING_PAGES):
+        page = client.json("POST", "/blobs/pending", {"limit": PENDING_PAGE, "after": after})
+        for path in page.get("pending") or []:
+            if not isinstance(path, str) or not storage.valid_path(path):
+                continue
+            store = store or storage.backend()
+            try:
+                if not store.exists(path):
+                    continue
+                data = _read_blob(store, path)
+                digest = hashlib.sha256(data).hexdigest()
+                if path[len("attachments/") :].split(".", 1)[0] != digest:
+                    log.warning("本机附件副本 %s 的内容和名字对不上，跳过（留在待补里）", path)
+                    continue
+                client.call(
+                    "PUT",
+                    "/blobs",
+                    params={"path": path, "sha256": digest},
+                    body=data,
+                    content_type="application/octet-stream",
+                )
+            except (SyncError, OSError, storage.StorageError, httpx.HTTPError) as exc:
+                log.warning("补传附件副本 %s 没成功，跳过（留在待补里）：%s", path, exc)
+                continue
+            sent += 1
+        after = page.get("next")
+        if not isinstance(after, str) or not after:
+            break
     return sent
 
 
