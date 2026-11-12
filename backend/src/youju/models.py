@@ -330,7 +330,8 @@ class RepostSignal(Base):
     has_body: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     own_number: Mapped[str | None] = mapped_column(String(64))
     body_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
-    # 确认过的组员：最近一次拿全文核对确认快照时用的详情时间（详情没再重抓就不再核对，见 rebuild）
+    # 确认过的组员：最近一次拿全文核对确认快照的时间（详情没再重抓、也没轮到定期核对就不再核对，
+    # 见 rebuild）
     checked_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     grouped_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
     computed_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)

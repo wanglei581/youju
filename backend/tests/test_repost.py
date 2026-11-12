@@ -1086,7 +1086,7 @@ def test_refetched_confirmed_member_is_checked_once_per_fetch(session, world, mo
     rebuild(session, now=NOW + timedelta(hours=2))
     session.flush()
     assert tianjin in checked[0] and not group.needs_review
-    assert session.get(RepostSignal, tianjin).checked_at == detail.fetched_at
+    assert session.get(RepostSignal, tianjin).checked_at == NOW + timedelta(hours=2)
     checked.clear()
     rebuild(session, now=NOW + timedelta(hours=3))
     session.flush()
@@ -1147,6 +1147,32 @@ def test_many_small_groups_are_each_judged_by_their_own_edges():
     proposals = propose_groups(docs)
     assert len(proposals) == 600
     assert all(p.strength == "strong" and len(p.ids) == 2 for p in proposals)
+
+
+def test_confirmed_groups_outside_the_window_are_rechecked_periodically(session, world):
+    # 窗口外的确认组：标题、正文被直接改写（抓取时间不变）平常看不到；轮到定期核对（RECHECK_DAYS 天
+    # 轮一遍）时照样发现，转需复核
+    from youju.repost import RECHECK_DAYS
+
+    rebuild(session, now=NOW)
+    session.flush()
+    group = session.scalars(select(RepostGroup)).one()
+    for doc in (world["shaanxi"], world["tianjin"], world["fujian"]):
+        doc.publish_date = date(2025, 1, 1)  # 都在窗口外
+    session.flush()
+    rows = _members(session)
+    _, facts = member_facts(session, list(rows))
+    for row in rows.values():
+        row.confirmed_by, row.confirmed_at = "人工", NOW
+        row.confirmed_fingerprint = facts[row.document_id]
+    world["tianjin"].title += "（更正）"
+    session.flush()
+    rebuild(session, now=NOW + timedelta(days=1))
+    session.flush()
+    assert not group.needs_review
+    rebuild(session, now=NOW + timedelta(days=RECHECK_DAYS + 1))
+    session.flush()
+    assert group.needs_review
 
 
 def test_old_groups_untouched_and_cross_window_member_retained(session, world):

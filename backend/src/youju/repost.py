@@ -42,6 +42,10 @@ WINDOW_DAYS = 2 * MAX_DAYS_APART
 # 同一个桶（核心标题相同、引用同一个文号）里，每份只和发布日期排在后面的这么多份比：县里大量转发
 # 同一份部里通知时，桶里可能有几千份，不再两两全比；靠相邻的边照样能连成一组
 BUCKET_NEIGHBORS = 200
+# 窗口外确认过的组：正文、标题被直接改写（抓取时间不变）也要能发现，每轮轮流拿最久没核对的这么多份
+# 全文核对，这么多天轮一遍
+RECHECK_BATCH = 2000
+RECHECK_DAYS = 30
 _BEIJING = timezone(timedelta(hours=8))
 # 核心标题至少几个字才拿来比
 MIN_CORE_CHARS = 8
@@ -539,6 +543,13 @@ def refresh_signals(
         )
     )
     ids = sorted(set(session.scalars(in_window)) | set(session.scalars(old_members)))
+    result.computed += recompute_signals(session, ids, stamp)
+    return result
+
+
+def recompute_signals(session: Session, ids: list[int], stamp: datetime) -> int:
+    """按这几份文件现在的详情重算正文信号（有详情、已经有行的才算），按编号分批；返回算了几份。"""
+    count = 0
     for i in range(0, len(ids), _SIGNAL_BATCH):
         batch = ids[i : i + _SIGNAL_BATCH]
         for row, published, body, fetched, doc_number in session.execute(
@@ -554,9 +565,9 @@ def refresh_signals(
             .where(RepostSignal.document_id.in_(batch))
         ):
             _fill_signal(row, published, body, fetched, stamp, doc_number)
-            result.computed += 1
+            count += 1
         session.flush()
-    return result
+    return count
 
 
 def candidate_cutoff(today: date, earliest_new: date | None) -> date:
@@ -744,8 +755,8 @@ def rebuild(
     session: Session, *, now: datetime | None = None, today: date | None = None, full: bool = False
 ) -> RebuildSummary:
     """待确认自动成员从头重算；带人工决定的成员保留。确认组内容或约束变化需复核：窗口里的确认组
-    每轮核对；窗口外的确认以后详情重抓过的拿全文核对一次，标题、来源这类不更新抓取时间的改动跑
-    full=True（--full）才核对。
+    每轮核对；窗口外的确认以后详情重抓过的拿全文核对一次，另外每轮轮流核对一批最久没核对的
+    （RECHECK_DAYS 天轮一遍），full=True（--full）时全部核对。
 
     先保存正文信号和已处理标记；只重算窗口里的组（有在组成员的发布日期在窗口里），窗口外的组
     只在副本转主文件、确认成员详情重抓过、成员都没了时处理。窗口默认是最近 WINDOW_DAYS 天；
@@ -831,8 +842,8 @@ def rebuild(
     candidates = load_candidates(session, today, cutoff)
     info = {c.id: (c.agency, c.publish_date) for c in candidates}
     # 只有已有成员需要完整正文快照，其余候选沿用上面的轻量数据。
-    # 确认以后详情重抓过、这次重抓还没核对过的确认成员（核对过、内容没变的记下核对用的详情时间，
-    # 详情没再重抓就不再拿全文核对，免得重抓过一次就每轮都算）：{文件编号: 详情时间}
+    # 确认以后详情重抓过、这次重抓还没核对过的确认成员（核对过、内容没变的记下核对的时间，详情
+    # 没再重抓就不再拿全文核对，免得重抓过一次就每轮都算）：{文件编号: 详情时间}
     changed_confirmed = dict(
         session.execute(
             select(RepostGroupMember.document_id, DocumentDetail.fetched_at)
@@ -855,9 +866,31 @@ def rebuild(
     # （维护用：改了标题、正文脱敏重写这类不更新抓取时间的改动以后跑）。没确认的成员只要机关和日期
     # （归组约束用），不读正文
     window_ids = {d for d, row in members.items() if row.group_id in window_groups}
-    fact_ids = set(changed_confirmed) | {
-        d for d in window_ids if members[d].active and members[d].confirmed_at is not None
-    }
+    # 窗口外确认过的组：正文、标题被直接改写（抓取时间不变）也要能发现——每轮轮流拿最久没核对的
+    # RECHECK_BATCH 份全文核对，RECHECK_DAYS 天轮一遍
+    periodic = set(
+        session.scalars(
+            select(RepostGroupMember.document_id)
+            .outerjoin(RepostSignal, RepostSignal.document_id == RepostGroupMember.document_id)
+            .where(
+                RepostGroupMember.active.is_(True),
+                RepostGroupMember.confirmed_at.is_not(None),
+                ~RepostGroupMember.group_id.in_(_window_groups(cutoff)),
+                func.coalesce(RepostSignal.checked_at, RepostGroupMember.confirmed_at)
+                < stamp - timedelta(days=RECHECK_DAYS),
+            )
+            .order_by(
+                func.coalesce(RepostSignal.checked_at, RepostGroupMember.confirmed_at),
+                RepostGroupMember.document_id,
+            )
+            .limit(RECHECK_BATCH)
+        )
+    )
+    fact_ids = (
+        set(changed_confirmed)
+        | periodic
+        | {d for d in window_ids if members[d].active and members[d].confirmed_at is not None}
+    )
     if full:
         fact_ids |= {d for d, row in members.items() if row.active and row.confirmed_at is not None}
     info.update(member_info(session, list(window_ids | fact_ids)))
@@ -888,10 +921,10 @@ def rebuild(
             group.needs_review = True
             bump(group, stamp)
             summary.needs_review += 1
-    # 重抓以后核对过、内容没变的确认成员：记下这次核对用的详情时间
+    # 重抓以后、或轮到定期核对的确认成员，核对过、内容没变的：记下核对的时间
     unchanged = [
         d
-        for d in changed_confirmed
+        for d in set(changed_confirmed) | periodic
         if d in members
         and members[d].confirmed_at is not None
         and members[d].confirmed_fingerprint == fingerprints.get(d)
@@ -900,7 +933,7 @@ def rebuild(
         for signal in session.scalars(
             select(RepostSignal).where(RepostSignal.document_id.in_(unchanged))
         ):
-            signal.checked_at = changed_confirmed[signal.document_id]
+            signal.checked_at = stamp
 
     # 先在内存中释放所有未带人工决定的成员；旧归属仅用来尽量复用组编号，绝不约束重算结果。
     # 窗口里的组：没有人工决定的成员（不论发布日期，早于窗口的老成员也一样）都从头重算；它们和同组
