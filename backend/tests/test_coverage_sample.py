@@ -91,13 +91,36 @@ def test_evidence_results_count_reviews(tmp_path):
         encoding="utf-8-sig",
     )
     (tmp_path / "江苏.csv").write_text(head + "省级,江苏,v1,待人工,条目,,,\n", encoding="utf-8-sig")
-    # 这次没抓到的记待重试：不算进通过率（4 个里 3 个通过、1 个待重试 → 100%）
+    # 这次没抓到的记待重试：不算进通过率；读得对、但不在收录范围的记不收：算读得对
+    # （5 个里 3 个通过、1 个不收、1 个待重试 → 4/4 = 100%）
     (tmp_path / "广东.csv").write_text(
         head
         + "省级,广东,w1,自动通过,,,,\n"
         + "省级,广东,w2,自动通过,,,,\n"
         + "省级,广东,w3,自动通过,,,,\n"
-        + "省级,广东,w4,待人工,条目,王某,待重试,robots.txt 暂时取不到\n",
+        + "省级,广东,w4,待人工,条目,王某,待重试,robots.txt 暂时取不到\n"
+        + "省级,广东,w5,自动通过,,协调会话,不收（整栏招聘公示）,和企业政策无关\n",
+        encoding="utf-8-sig",
+    )
+    # 不收算读得对：3 个通过、1 个不通过、1 个不收 → 4/5 = 80%，合格（不算进分母是 3/4、
+    # 算错是 3/5，都不合格）——第 1 批上海就是这样
+    (tmp_path / "上海.csv").write_text(
+        head
+        + "省级,上海,s1,自动通过,,,,\n"
+        + "省级,上海,s2,自动通过,,,,\n"
+        + "省级,上海,s3,自动通过,,,,\n"
+        + "省级,上海,s4,待人工,要闻,王某,不通过,时政要闻\n"
+        + "省级,上海,s5,自动通过,,王某,不收,整栏是个人事项公示\n",
+        encoding="utf-8-sig",
+    )
+    (tmp_path / "四川.csv").write_text(
+        head
+        + "".join(f"省级,四川,c{n},自动通过,,,,\n" for n in (1, 2, 3))
+        + "省级,四川,c4,待人工,年报,王某,不通过,读成年报\n"
+        + "".join(
+            f"省级,四川,c{n},自动通过,,王某,不能抓（列表靠页面脚本另取）,访问控制\n"
+            for n in (5, 6, 7)
+        ),
         encoding="utf-8-sig",
     )
     res = {r.province: r for r in evidence_results(tmp_path)}
@@ -106,7 +129,12 @@ def test_evidence_results_count_reviews(tmp_path):
     assert (zj.total, zj.passed, zj.failed, zj.accepted) == (6, 4, 2, False)
     assert (js.pending, js.accepted) == (1, False)  # 没复核完不算合格
     gd = res["广东"]
-    assert (gd.retry, gd.rate, gd.accepted) == (1, 1.0, True)
+    assert (gd.retry, gd.excluded, gd.rate, gd.accepted) == (1, 1, 1.0, True)
+    sh = res["上海"]
+    assert (sh.passed, sh.failed, sh.excluded, sh.rate, sh.accepted) == (3, 1, 1, 0.8, True)
+    # 不能抓（按访问控制不读）不算进分母：3 个通过、1 个不通过、3 个不能抓 → 3/4 = 75%，不合格
+    zj2 = res["四川"]
+    assert (zj2.blocked, zj2.rate, zj2.accepted) == (3, 0.75, False)
 
 
 def test_batch_keeps_only_passed_columns_of_accepted_provinces(tmp_path):
@@ -133,8 +161,9 @@ def test_batch_keeps_only_passed_columns_of_accepted_provinces(tmp_path):
     head = "层级,省份,栏目URL,自动结论,没过的项,复核人,复核结论,复核备注\n"
     (evid / "浙江.csv").write_text(
         head
-        + "".join(f"省级,浙江,a{n},自动通过,,,,\n" for n in (1, 2, 3, 4))
-        + "省级,浙江,a5,待人工,年报,王某,不通过,读成年报\n",
+        + "".join(f"省级,浙江,a{n},自动通过,,,,\n" for n in (1, 2, 3))
+        + "省级,浙江,a4,待人工,年报,王某,不通过,读成年报\n"
+        + "省级,浙江,a5,自动通过,,协调会话,不收,整栏是事业单位招聘公示\n",
         encoding="utf-8-sig",
     )
     (evid / "福建.csv").write_text(
@@ -145,8 +174,9 @@ def test_batch_keeps_only_passed_columns_of_accepted_provinces(tmp_path):
     assert _cmd_batch(args) == 0
     with (tmp_path / "批次" / "第1批.csv").open(encoding="utf-8-sig", newline="") as fh:
         urls = [r[7] for r in list(csv.reader(fh))[1:]]
-    # 浙江 4/5 合格，只收通过的 4 个；福建 1/2 不合格，整省不收
-    assert urls == ["a1", "a2", "a3", "a4"]
+    # 浙江 4/5 合格（a5 不收：读得对，算进通过率，但不进批次），只收通过的 3 个；
+    # 福建 1/2 不合格，整省不收
+    assert urls == ["a1", "a2", "a3"]
 
 
 def test_final_verdict_reads_wording_by_prefix():
@@ -157,6 +187,8 @@ def test_final_verdict_reads_wording_by_prefix():
     assert final_verdict({**auto, "复核结论": " 通过 "}) == "通过"
     assert final_verdict({**auto, "复核结论": "有问题"}) == "待复核"  # 认不出的词要人看
     assert final_verdict({**auto, "复核结论": "待重试（没抓到）"}) == "待重试"
+    assert final_verdict({**auto, "复核结论": "不收（整栏招聘公示）"}) == "不收"
+    assert final_verdict({**auto, "复核结论": "不能抓（访问控制）"}) == "不能抓"
     assert final_verdict({**auto, "复核结论": ""}) == "通过"
     assert final_verdict({"自动结论": "待人工", "复核结论": ""}) == "待复核"
 

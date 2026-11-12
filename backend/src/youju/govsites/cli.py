@@ -560,12 +560,16 @@ def _cmd_accept(args: argparse.Namespace) -> int:
     if not results:
         print(f"{folder} 里没有证据表")
         return 1
-    print(f"合格标准：每个栏目都有结论，通过的占 {PASS_RATE:.0%} 以上（不通过的不进本批）")
+    print(
+        f"合格标准：每个栏目都有结论，读得准的（通过、不收）占 {PASS_RATE:.0%} 以上"
+        "（待重试、不能抓不算进分母；只有通过的进本批）"
+    )
     for r in results:
         verdict = "合格" if r.accepted else "没过"
         print(
             f"{r.province}：{verdict}（{r.total} 个栏目，通过 {r.passed}，不通过 {r.failed}，"
-            f"待重试 {r.retry}，没复核 {r.pending}，通过率 {r.rate:.0%}）"
+            f"待重试 {r.retry}，不能抓 {r.blocked}，不收 {r.excluded}，没复核 {r.pending}，"
+            f"读得准的 {r.rate:.0%}）"
         )
     if args.dry_run:
         print("试算，没写库")
@@ -583,7 +587,7 @@ def _cmd_accept(args: argparse.Namespace) -> int:
                     passed=r.accepted,
                     note=(
                         f"全检 {r.total} 个栏目：通过 {r.passed}，不通过 {r.failed}，"
-                        f"待重试 {r.retry}（都不进本批）；"
+                        f"待重试 {r.retry}，不能抓 {r.blocked}，不收 {r.excluded}（都不进本批）；"
                         f"证据 docs/数据来源/全国覆盖/抽查/{args.level}/{r.province}.csv"
                         f"（sha1 {_sha1(folder / f'{r.province}.csv')}）"
                     )[:300],
@@ -722,6 +726,35 @@ def _cmd_batch(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_golive(args: argparse.Namespace) -> int:
+    """一批来源上线（见 govsites/golive.py）：结论行纯 ASCII，写进 <log-dir>/<tag>-<时间>.txt。"""
+    from youju.db import session_factory
+    from youju.govsites.boarddb import board_lock
+    from youju.govsites.golive import Report, run
+
+    if not str(args.log_dir).isascii():
+        print("--log-dir 要用纯 ASCII 的路径（结论行纯 ASCII）")
+        return 2
+    args.log_dir.mkdir(parents=True, exist_ok=True)
+    report = Report(args.log_dir, args.tag)
+    report.line(f"log={report.path}")  # 第一行就给出文件名：最后一行留给结论
+    with session_factory()() as session, board_lock(session, BOARD_LOCK_WAIT) as got:
+        if not got:
+            report.line("stop=1 step=lock reason=another_board_command_running")
+            return 1
+        ok = run(
+            session,
+            args.out,
+            args.batch,
+            args.level,
+            args.by,
+            args.apply,
+            report,
+            operator=args.operator,
+        )
+    return 0 if ok else 1
+
+
 def register(sub: argparse._SubParsersAction) -> None:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--out", type=Path, default=DEFAULT_OUT, help="清单输出目录")
@@ -852,6 +885,26 @@ def register(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--name", required=True, help="文件名（写到 批次/<名字>.csv）")
     p.add_argument("--out", type=Path, default=DEFAULT_OUT, help="清单目录")
     p.set_defaults(func=_cmd_batch)
+
+    p = sub.add_parser(
+        "coverage-golive",
+        help="一批来源上线：导入→看板→记抽查结论→分省打开，一步一核对，结论行纯 ASCII",
+    )
+    p.add_argument("--batch", required=True, help="批次文件名（批次/<名字>.csv）")
+    p.add_argument("--level", action="append", required=True, choices=LEVEL_ORDER)
+    p.add_argument("--by", required=True, help="抽查人（记进抽查记录）")
+    p.add_argument("--operator", help="打开来源的操作人（记进来源备注和审计），默认同 --by")
+    p.add_argument("--tag", default="batch1", help="日志文件名和最后一行的前缀（只用 ASCII）")
+    p.add_argument("--log-dir", type=Path, default=Path("/tmp"), help="结论和细节写到哪个目录")
+    p.add_argument("--out", type=Path, default=DEFAULT_OUT, help="清单目录")
+    mode = p.add_mutually_exclusive_group(required=True)
+    mode.add_argument(
+        "--check", action="store_true", help="只试算：批次、导入、抽查结论、每省应打开数"
+    )
+    mode.add_argument(
+        "--apply", action="store_true", help="按顺序做，每一步先试算、核对，对不上就停"
+    )
+    p.set_defaults(func=_cmd_golive)
 
     p = sub.add_parser("coverage-refresh", help="按来源抓取结果重算覆盖看板每格的状态")
     p.add_argument("--province", help="只算某个省")

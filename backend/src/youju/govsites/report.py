@@ -196,7 +196,8 @@ def column_rows(checks, checked_on: str) -> list[list[str]]:
         if "#xxgk-" in c.url:
             continue  # 信息公开分类树上的分类不是能打开的栏目，不进导入清单（看板里记需人工）
         dept_full = (c.dept_full_name or c.dept)[:120]
-        note = "；".join(c.samples[:2])
+        # 公开仓库：备注不写样例标题（见 govsites/privacy.py；导入时备注还会写进来源备注）
+        note = ""
         rows.append(
             [
                 c.level,
