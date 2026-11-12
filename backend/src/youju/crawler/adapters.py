@@ -44,11 +44,16 @@ class ListApi:
 
 
 def _attrs(tag: str) -> dict[str, str]:
-    # 属性值里的 &amp; 等字符实体按浏览器的读法还原，参数才和浏览器发的一样（D-128 护栏 ①）
-    return {
-        m.group(1).lower(): html_lib.unescape(m.group(3) if m.group(3) is not None else m.group(4))
-        for m in _ATTR.finditer(tag)
-    }
+    # 属性值里的 &amp; 等字符实体按浏览器的读法还原；同名属性写了两次时和浏览器一样取第一个，
+    # 参数才和浏览器发的一样（D-128 护栏 ①）
+    out: dict[str, str] = {}
+    for m in _ATTR.finditer(tag):
+        value = m.group(3) if m.group(3) is not None else m.group(4)
+        out.setdefault(m.group(1).lower(), html_lib.unescape(value))
+    return out
+
+
+_COMMENT = re.compile(r"<!--.*?-->", re.S)
 
 
 def find_list_api(html: str, page_url: str) -> ListApi | None:
@@ -60,7 +65,8 @@ def find_list_api(html: str, page_url: str) -> ListApi | None:
 def find_unit_apis(html: str, page_url: str) -> list[ListApi]:
     """页面里声明的全部大汉 jpaas 单元接口（当前栏目的列表排最前，其次导航等其他单元）。"""
     candidates: list[tuple[int, ListApi]] = []
-    for m in _HANWEB_SCRIPT.finditer(html or ""):
+    # 注释里留着的旧声明浏览器不会执行，也不请求
+    for m in _HANWEB_SCRIPT.finditer(_COMMENT.sub("", html or "")):
         attrs = _attrs(m.group(0))
         declared = urlsplit(urljoin(page_url, attrs.get("url", "")))
         # 只认白名单路径，而且接口必须就在栏目页这个网站上（页面声明到别的主机的不请求）
@@ -229,7 +235,8 @@ def _payload_refusal(payload: dict) -> str:
     if isinstance(html, str) and _PASSWORD_INPUT.search(html):
         return "列表接口返回的是登录框"
     if isinstance(html, str):
-        outside = html_lib.unescape(_TAGS.sub(" ", _ANCHOR.sub(" ", html)))
+        # 去掉标签、空白后连起来看（"请<b>先</b>登录"这类被标签隔开的提示也认得）
+        outside = html_lib.unescape(_TAGS.sub("", _ANCHOR.sub(" ", html)))
         hint = _LOGIN_TEXT.search(outside)
         if hint:
             return f"列表接口返回里有登录或权限提示（{hint.group(0)}）"

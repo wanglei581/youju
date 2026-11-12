@@ -1267,9 +1267,10 @@ class Inventory:
                     page.final_url
                 ):
                     sub = self.page(link.url)
-                    # 信息公开页上的列表接口被读取护栏（D-128）拦下或这次没取到：记到部门页上
+                    # 信息公开页上的列表接口被读取护栏（D-128）拦下或这次没取到、或这一页本身
+                    # 这次没打开：记到部门页上（没打开的，栏目可能就在里面，不下不能抓的结论）
                     page.api_refused = page.api_refused or sub.api_refused
-                    page.api_failed = page.api_failed or sub.api_failed
+                    page.api_failed = page.api_failed or sub.api_failed or sub.result.status != "ok"
                     if sub.result.status == "ok" and not sub.block:
                         found = find_columns([sub], exclude, max_depth, topics)
                         found = self._check_group_columns([sub], found, exclude, max_depth, topics)

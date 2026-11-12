@@ -567,3 +567,25 @@ def test_page_with_a_failed_unit_is_not_concluded_as_cannot_crawl():
     inv = Inventory(DivisionIndex(parse_tree({})), _Cache(pages), provinces=[])
     info = inv.page(PAGE_URL)
     assert info.api_refused and info.api_failed
+
+
+def test_declarations_in_html_comments_are_ignored():
+    commented = f"<!-- {PAGE} -->"
+    assert find_list_api(commented, PAGE_URL) is None
+
+
+def test_duplicate_attributes_take_the_first_like_a_browser():
+    from urllib.parse import parse_qsl
+
+    page = (
+        f'<script src="/x/unitbuild.js" url="{HANWEB_JPAAS_PATH}" '
+        "queryData=\"{'pageId':'first'}\" queryData=\"{'pageId':'second'}\"></script>"
+    )
+    api = find_list_api(page, PAGE_URL)
+    assert parse_qsl(urlsplit(api.url).query) == [("pageId", "first")]
+
+
+def test_login_prompt_split_by_tags_is_not_read():
+    api = _api()
+    split = _payload(data={"html": "<p>请<b>先</b>登录</p>" + LIST})
+    assert "登录或权限提示" in api_refusal(api, _got(split))
