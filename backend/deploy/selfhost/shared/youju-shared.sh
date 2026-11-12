@@ -572,6 +572,14 @@ resume_services() {
   fi
 }
 
+# 清单链接的格式。在 C 语言环境里比：bash 的 [[ =~ ]] 按当前语言环境的排序规则解释 [!-~] 这种范围，
+# en_US.UTF-8 下字母不在 '!' 到 '~' 之间，合法链接也会判成"不对"（11/12 导出窗口实测：OrcaTerm 的
+# root 就是 LANG=en_US.UTF-8）。整个函数在子 shell 里跑，LC_ALL 不影响外面
+manifest_url_ok() (
+  LC_ALL=C
+  [[ "$1" =~ ^https://[A-Za-z0-9.-]+\.(tcb\.qcloud\.la|myqcloud\.com)/[!-~]*$ ]]
+)
+
 fetch_export() {
   local sum=${1:-} url=""
   [[ "$sum" =~ ^[0-9a-f]{64}$ ]] && [ "$#" -eq 1 ] \
@@ -587,7 +595,7 @@ fetch_export() {
   echo
   # 网页终端复制时常带上首尾的空格、制表符、回车
   url=$(printf '%s' "$url" | tr -d '\r' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
-  [[ "$url" =~ ^https://[A-Za-z0-9.-]+\.(tcb\.qcloud\.la|myqcloud\.com)/[!-~]*$ ]] \
+  manifest_url_ok "$url" \
     || die "清单链接不对（要是云托管导出脚本打印的那一行里的链接）"
   local free_g
   free_g=$(df -BG --output=avail "$BASE" | tail -1 | tr -dc '0-9')

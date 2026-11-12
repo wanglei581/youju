@@ -3,6 +3,7 @@
 import ast
 import gzip
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -594,3 +595,36 @@ def test_local_only_mode_skips_sync_and_offsite_pull(monkeypatch, capsys):
         assert "跳过推送" in out and "跳过" in out
     finally:
         get_settings.cache_clear()
+
+
+def test_manifest_url_check_ignores_locale():
+    """清单链接的格式检查在 C 语言环境里比。11/12 导出窗口：OrcaTerm 的 root 是 LANG=en_US.UTF-8，
+    bash 按排序规则解释 [!-~]，字母不在范围里，合法链接被判成"清单链接不对"。"""
+    sh = (SHARED / "youju-shared.sh").read_text(encoding="utf-8")
+    fn = re.search(r"^manifest_url_ok\(\) \(\n.*?\n\)\n", sh, re.S | re.M)
+    assert fn, "manifest_url_ok 要是一个在子 shell 里跑的函数（LC_ALL 不影响外面）"
+    assert "\n  LC_ALL=C\n" in fn.group(0)
+    assert 'manifest_url_ok "$url"' in sh
+    if not shutil.which("bash"):
+        pytest.skip("没有 bash")
+    env = {k: v for k, v in os.environ.items() if not k.startswith("LC_")}
+    env["LANG"] = "en_US.UTF-8"
+    good = (
+        "https://7072-prod-x-1.tcb.qcloud.la/exports/manifest-20261112152810.json"
+        "?sign=0123456789abcdef&t=1700000000"
+    )
+    cases = [
+        (good, 0),
+        ("https://youju-backup-1250000000.cos.ap-shanghai.myqcloud.com/exports/m.json?q=1", 0),
+        ("http://x.tcb.qcloud.la/a", 1),
+        ("https://evil.example.com/a", 1),
+        ("https://x.tcb.qcloud.la/a b", 1),
+        ("", 1),
+    ]
+    for url, code in cases:
+        done = subprocess.run(
+            ["bash", "-c", fn.group(0) + 'manifest_url_ok "$1"', "t", url],
+            env=env,
+            capture_output=True,
+        )
+        assert done.returncode == code, url
