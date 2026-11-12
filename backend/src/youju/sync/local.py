@@ -291,7 +291,17 @@ def _local_blobs(
     if not paths:
         return []
     store = store or storage.backend()
-    return [path for path in paths if path not in cannot and store.exists(path)]
+    have = []
+    for path in paths:
+        if path in cannot:
+            continue
+        try:
+            if store.exists(path):
+                have.append(path)
+        except (OSError, storage.StorageError, httpx.HTTPError) as exc:
+            # 查不了（本机用 s3 时网络或存储出错）：当作这一轮给不了，服务器照写、记进待补
+            log.warning("查本机附件副本 %s 没成功，当作这一轮给不了：%s", path, exc)
+    return have
 
 
 def _upload_one(client: Client, store: storage.Backend, path: str) -> bool:

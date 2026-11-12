@@ -401,6 +401,8 @@ def _collect_garbage(engine: Engine, paths: set[str]) -> None:
                 select(func.count()).select_from(t).where(t.c.file_id.like(f"cloud://%/{path}"))
             )
             if not used:
+                # 没人引用了：待补里有的也划掉，以后不会再把它补传上来
+                conn.execute(text(f"DELETE FROM `{PENDING}` WHERE path = :p"), {"p": path})
                 try:
                     store.delete(path)
                 except (storage.StorageError, OSError):

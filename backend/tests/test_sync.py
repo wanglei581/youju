@@ -698,6 +698,39 @@ def test_attachment_files_follow_their_rows(env, monkeypatch, tmp_path):
     assert report.batches == 1 and not server_store.exists(rotten)
     assert rotten_row in [r["id"] for r in rows(env.server, "attachment_copies")]
     assert rotten in pending()
+    # 指向它的行删掉了：清理时待补也划掉，以后不会再补传一个没人用的文件
+    with env.local.begin() as conn:
+        conn.execute(
+            T["attachment_copies"].delete().where(T["attachment_copies"].c.id == rotten_row)
+        )
+    local.push(env.local, env.client, store=local_store)
+    assert rotten not in pending()
+
+    # 本机查文件本身出错（本机用 s3 时网络或存储出错）：当作这一轮给不了，这一批照常写
+    class Flaky:
+        def __getattr__(self, name):
+            return getattr(local_store, name)
+
+        def exists(self, path):
+            if path == good:
+                raise storage.StorageError("网络断了")
+            return local_store.exists(path)
+
+    good_row = insert(
+        env.local,
+        "attachment_copies",
+        url_hash="d" * 64,
+        url="https://kjt.shandong.gov.cn/e.pdf",
+        declared_type="pdf",
+        status="ready",
+        file_type="pdf",
+        file_id=f"cloud://prod-env.youju-self/{good}",
+        size=len(good_content),
+        sha256=hashlib.sha256(good_content).hexdigest(),
+    )
+    report = local.push(env.local, env.client, store=Flaky())
+    assert report.batches == 1
+    assert good_row in [r["id"] for r in rows(env.server, "attachment_copies")]
     # 名字和内容对不上的不收
     bad = hashlib.sha256(b"other").hexdigest()
     with pytest.raises(local.SyncError) as err:
