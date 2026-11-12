@@ -21,8 +21,10 @@ Component({
       if (!doc || !doc.title) return;
       const status = doc.status;
       const appStatus = doc.app_status;
-      const statusText = appStatus && typeof appStatus === 'object'
-        ? ({ open: '征集中', closing: '即将截止', closed: '已截止' }[appStatus.code] || '') : status;
+      // 申报通知不写状态标签：征集中、即将截止、已截止和旁边的截止日期、剩余天数说的是同一件事（11/12 简化走查）；
+      // 名单的发布阶段（公示、公布）照旧显示（D-090 ③）
+      const statusText = doc.kind === '申报通知' ? '' : (appStatus && typeof appStatus === 'object'
+        ? ({ open: '征集中', closing: '即将截止', closed: '已截止' }[appStatus.code] || '') : status);
       const statusCls = appStatus && typeof appStatus === 'object' ? appStatus.code : statusClass(status);
       // 接口带了 due（D-061 首发版）：核对过的写日期；机器摘录的写日期、另起一行附原句；其余写"截止时间见原文"，
       // 可能 7 天内截止的写"可能 7 天内截止"（10/29 起不写"未核对"，说明在使用帮助里）。

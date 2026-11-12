@@ -120,7 +120,7 @@ test('"我的"：未定稿时顶部只写"有据"和"检索和导出不需要登
   assert.deepEqual(api.calls, ['latestDigest']);
   const all = textOf(root);
   assert.deepEqual(texts(root, hasClass('brand')), ['有据 检索和导出不需要登录']);
-  for (const word of ['未登录', '微信登录', '我已阅读并同意', '纠错', '申请覆盖', '注销', '我的数据', '登录后']) {
+  for (const word of ['未登录', '微信登录', '我已阅读并同意', '纠错', '申请覆盖', '申请收录', '注销', '我的数据', '登录后']) {
     assert.ok(!all.includes(word), `出现了：${word}`);
   }
   assert.doesNotMatch(all, NO_GATE_WORDS);
@@ -147,7 +147,7 @@ test('"我的"：保留登录与同意，完整候选增加工具中心和共同
   const { api, root } = await mePage(true);
   assert.deepEqual(api.calls, ['me', 'latestDigest']);
   const all = textOf(root);
-  for (const word of ['未登录', '登录后可以关注条件、订阅微信提醒、提交纠错', '微信登录', '我已阅读并同意', '纠错', '申请覆盖：你关心的地区还没有？']) {
+  for (const word of ['未登录', '登录后可以关注条件、订阅微信提醒、提交纠错', '微信登录', '我已阅读并同意', '纠错', '申请收录：你关心的地区还没有？']) {
     assert.ok(all.includes(word), `缺少：${word}`);
   }
   assert.doesNotMatch(all, NO_GATE_WORDS);
@@ -159,7 +159,7 @@ test('"我的"：保留登录与同意，完整候选增加工具中心和共同
   assert.equal(findAll(root, tapsTo('coverage')).length, 1);
   const rows = findAll(root, hasClass('row'));
   // 《用户协议》《隐私保护指引》各一行，名称和打开的文件一致（11/2 完整测试第 8 条）
-  assert.deepEqual(rows.map((n) => textOf(n).trim()), ['我的记录', '申请覆盖：你关心的地区还没有？', '使用帮助', '用户协议', '隐私保护指引', '营业执照信息', '关于有据']);
+  assert.deepEqual(rows.map((n) => textOf(n).trim()), ['我的记录', '申请收录：你关心的地区还没有？', '使用帮助', '用户协议', '隐私保护指引', '营业执照信息', '关于有据']);
   assert.equal(findAll(root, (n) => n.tag === 'contact-button').length, 1);
   assert.equal(rows[3].attrs.bindtap, 'openAgreement');
   assert.equal(rows[3].attrs['data-type'], 'user');
@@ -199,7 +199,7 @@ async function searchPage(final, extra = {}) {
   return shown('pages/search/index.wxml', page.data);
 }
 
-test('搜索页：未定稿时信息栏没有"关注"，底部没有"没找到想要的？告诉我们"，未收录地区不提申请覆盖；定稿后照旧', async () => {
+test('搜索页：未定稿时信息栏没有"关注"，底部没有"没找到想要的？告诉我们"，未收录地区不提申请收录；定稿后照旧', async () => {
   for (const final of STATES) {
     const root = await searchPage(final);
     const follow = findAll(root, hasClass('follow-mini'));
@@ -212,7 +212,7 @@ test('搜索页：未定稿时信息栏没有"关注"，底部没有"没找到�
     assert.doesNotMatch(textOf(root), NO_GATE_WORDS);
     const empty = await searchPage(final, { items: [], total: 0, uncovered: '西藏' });
     const note = texts(empty, (n) => textOf(n).includes('还没收录，暂时查不到')).at(-1);
-    assert.equal(note.includes('申请覆盖'), final);
+    assert.equal(note.includes('申请收录'), final); assert.ok(!note.includes('申请覆盖'));
     assert.match(note, /^西藏还没收录，暂时查不到这个地区的文件。/);
   }
 });
@@ -287,7 +287,7 @@ test('关于有据：未定稿时使用说明不提关注和提醒，没有"去�
     assert.equal(all.includes('在搜索结果页点“关注”，把当前的关键词和筛选条件存下来'), final);
     // 订阅模板申请下来之前没有微信提醒，使用说明不提（10/15 走查）
     assert.equal(all.includes('订阅一次微信提醒'), false);
-    assert.equal(all.includes('申请覆盖'), final);
+    assert.equal(all.includes('申请收录'), final); assert.ok(!all.includes('申请覆盖'));
     assert.equal(all.includes('内容和原文不一致：发邮件至联系邮箱'), !final);
     assert.ok(all.includes('侵权投诉：发邮件至联系邮箱'));
     assert.ok(all.includes('可导出 Excel 或 Word'));

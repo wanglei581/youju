@@ -18,7 +18,7 @@
   <view class="muted plain steps">1. 首页搜索或点入口，按地区、类型、发文部门筛选通知；只看还没截止的，在“申报状态”里选“只看未截止”。
 2. 点开一条看发文机关、文号、正文和截止时间；一份通知有几种截止（如企业申报截止、材料报送截止）的逐条列出。点“阅读全文”在小程序里看正文和附件。
 3. “截止”按 7、14、30 天列出快截止的申报通知，也可以按月看；“查名单”输入企业全称，在政府公开的认定、立项、公示、入库、备案类名单里查这家企业（发布阶段按名单标题写公示或公布）。
-4. <text wx:if="{{loginOpen}}">在搜索结果页点“关注”，把当前的关键词和筛选条件存下来，有新文件时标出<text wx:if="{{remindOpen}}">，也可订阅一次微信提醒</text>；勾选文件可导出 Excel 或 Word，导出的文件在底栏“导出”里。</text><text wx:else>在搜索结果点“选择”勾选文件，或在文件详情点“结果”，可导出 Excel 或 Word，导出的文件在底栏“导出”里。</text>
+4. <text wx:if="{{loginOpen}}">在搜索结果页点“关注”，把当前的关键词和筛选条件存下来，有新文件时标出<text wx:if="{{remindOpen}}">，也可订阅一次微信提醒</text>；勾选文件可导出 Excel 或 Word，导出的文件在底栏“导出”里。</text><text wx:else>在搜索结果点“选择”勾选文件，或在文件详情点“导出”，可导出 Excel 或 Word，导出的文件在底栏“导出”里。</text>
 5. “我的客户”在本机保存最多 20 家客户（名称、地区、产业方向），把相关的申报通知一条一行列出，写明涉及哪几家客户，可以导出；客户信息只存在本机。</view>
 </view>
 
@@ -48,7 +48,7 @@
   <view wx:if="{{cov.cities.length}}" class="muted plain">已收录城市：<text wx:for="{{cov.cities}}" wx:key="city">{{index ? '、' : ''}}{{item.province}}·{{item.city}}（{{item.sources}} 个栏目）</text>。地市目前只收录部分城市。</view>
   <!-- 区县按省、市、区县三项列出：同名区县不同省市分开写；直辖市不重复写市名 -->
   <view wx:if="{{cov.districts.length}}" class="muted plain">已收录区县：<text wx:for="{{cov.districts}}" wx:key="key">{{index ? '、' : ''}}{{item.province}}<text wx:if="{{item.city && item.city !== item.province}}">·{{item.city}}</text>·{{item.district}}<text wx:if="{{item.sources}}">（{{item.sources}} 个栏目）</text></text>。区县目前只收录少数地方；搜索里的省市区选项来自微信，不代表已收录。</view>
-  <view wx:if="{{cov.notCovered.length}}" class="muted plain uncovered">暂未收录：<text wx:for="{{cov.notCovered}}" wx:key="name">{{index ? '、' : ''}}{{item.name}}（{{item.reason}}）</text>。网站不允许程序访问的，我们不绕过<text wx:if="{{loginOpen}}">；想要哪个地区，可以在“我的 → 申请覆盖”告诉我们</text>。</view>
+  <view wx:if="{{cov.notCovered.length}}" class="muted plain uncovered">暂未收录：<text wx:for="{{cov.notCovered}}" wx:key="name">{{index ? '、' : ''}}{{item.name}}（{{item.reason}}）</text>。网站不允许程序访问的，我们不绕过<text wx:if="{{loginOpen}}">；想要哪个地区，可以在“我的 → 申请收录”告诉我们</text>。</view>
 </view>
 
 <!-- 协议定稿前（D-056）：这个版本处理哪些信息。访问日志天数和服务端 access_log.KEEP_DAYS 一致（测试核对） -->

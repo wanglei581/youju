@@ -328,7 +328,7 @@ test('页面文字里没有禁用词', async () => {
   for (const word of banned) assert.equal(text.includes(word), false, word);
 });
 
-test('名单类通知正文挡掉了名单行（D-092）：站内阅读页给在已收录名单中查询企业', async () => {
+test('名单类通知正文挡掉了名单行（D-092）：站内阅读页给去查名单的按钮（11/12 简化走查：三处入口统一写“去查名单”）', async () => {
   const p = load('reader', {
     reading: async () => ({
       status: 'ok', title: '名单通知', revision: 'rev1', nextCursor: null, totalSegments: 1, listHidden: true,
@@ -340,7 +340,7 @@ test('名单类通知正文挡掉了名单行（D-092）：站内阅读页给在
   await p.onShow();
   assert.equal(p.data.listHidden, true);
   const wxml = fs.readFileSync(path.join(root, 'pages/reader/index.wxml'), 'utf8');
-  assert.match(wxml, /wx:if="\{\{status === 'list' \|\| listHidden\}\}"[^>]*bindtap="lookup"/);
+  assert.match(wxml, /wx:if="\{\{status === 'list' \|\| listHidden\}\}"[^>]*bindtap="lookup">去查名单</);
   p.lookup();
   assert.deepEqual(p.navigations, ['/pages/lists/index']);
 });
@@ -348,7 +348,7 @@ test('名单类通知正文挡掉了名单行（D-092）：站内阅读页给在
 test('名单类通知详情页（D-092）：正文里的名单没展开、正文主要是名单时都给去查名单的入口', () => {
   const wxml = fs.readFileSync(path.join(root, 'pages/detail/index.wxml'), 'utf8');
   const js = fs.readFileSync(path.join(root, 'pages/detail/index.js'), 'utf8');
-  assert.match(wxml, /wx:if="\{\{doc\.body\.listHidden\}\}"[^>]*bindtap="toLists"[^>]*>名单请在“查名单”里按企业名称查询 ›</);
-  assert.match(wxml, /wx:if="\{\{doc\.body\.status === 'list'\}\}" class="link body-lookup" bindtap="toLists"[^>]*>在“查名单”里按企业名称查询 ›</);
+  assert.match(wxml, /wx:if="\{\{doc\.body\.listHidden\}\}"[^>]*bindtap="toLists"[^>]*>去查名单 ›</);
+  assert.match(wxml, /wx:if="\{\{doc\.body\.status === 'list'\}\}" class="link body-lookup" bindtap="toLists"[^>]*>去查名单 ›</);
   assert.match(js, /toLists\(\) \{\s*wx\.navigateTo\(\{ url: '\/pages\/lists\/index' \}\);/);
 });

@@ -2,6 +2,8 @@ const api = require('../../utils/api.js');
 const { ensureConsent, loginOpen } = require('../../utils/consent.js');
 
 const MAX = 500;
+// 页面上叫"申请收录"（11/12 简化走查：和"已收录""收录范围"同一个词）；这个前缀不改：后台按它认出申请（api/app.py 的 feedback kind），
+// 用户在页面上看不到
 const COVERAGE_PREFIX = '申请覆盖：';
 // type=pay：从购买页、订单页点"遇到问题"进来；带上订单号，核对台据此找到订单
 const ORDER_ID = /^\d{1,12}$/;
@@ -30,7 +32,7 @@ Page({
       prefix,
       max: MAX - prefix.length,
     });
-    if (coverage) wx.setNavigationBarTitle({ title: '申请覆盖' });
+    if (coverage) wx.setNavigationBarTitle({ title: '申请收录' });
     if (pay) wx.setNavigationBarTitle({ title: '支付和订单问题' });
     if (!coverage && !pay) this.loadReward();
   },

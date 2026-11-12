@@ -116,7 +116,7 @@ test('演示数据：支持方式只在申报通知和名单里找，同组多�
   assert.deepEqual(run({ industries: '先进制造', supports: '资格认定' }), []);
 });
 
-test('按标题算的标签不显示：列表行不读这两项；详情页支持方式只显示核对过的字段，并写明已核对原文', () => {
+test('按标题算的标签不显示：列表行不读这两项；详情页支持方式只显示核对过的字段（核对说明合成一句写在页底，11/12 简化走查）', () => {
   const row = read('components/doc-row/index.wxml') + read('components/doc-row/index.js');
   for (const word of ['supports', 'industries', 'industry']) assert.ok(!row.includes(word), `列表行不应读取 ${word}`);
   for (const file of ['pages/search/index.wxml', 'pages/detail/index.wxml', 'pages/detail/index.js']) {
@@ -125,6 +125,6 @@ test('按标题算的标签不显示：列表行不读这两项；详情页支�
   }
   const detail = read('pages/detail/index.wxml');
   assert.match(detail, /wx:if="{{doc.fields && doc.fields.support && doc.fields.support.length}}" class="card support-card"/);
-  assert.match(detail, /<view class="section-title">支持方式<text class="weak excerpt-sec">已核对原文<\/text><\/view>/);
+  assert.match(detail, /<view class="section-title">支持方式<\/view>/);
   assert.match(detail, /wx:for="{{doc.fields.support}}"/);
 });
