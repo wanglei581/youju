@@ -560,10 +560,13 @@ def _cmd_body_gate(args: argparse.Namespace) -> int:
     from sqlalchemy import select
 
     from youju.db import session_factory
-    from youju.govsites.bodygate import platforms_by_url, run_gate, write_gate
+    from youju.govsites.bodygate import check_trial_db, platforms_by_url, run_gate, write_gate
     from youju.models import Source
 
     with session_factory()() as session:
+        if not args.no_fetch and (problem := check_trial_db(session, args.trial_db)):
+            print(f"不取正文：{problem}。正文门只在本机试抓用的库上跑")
+            return 1
         provinces = args.province or sorted(
             set(session.scalars(select(Source.province).where(Source.level == args.level)))
         )
@@ -939,6 +942,7 @@ def register(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--province", action="append", help="只测某几个省")
     p.add_argument("--seed", default=f"{date.today():%Y-%m}", help="抽样种子（默认本月）")
     p.add_argument("--no-fetch", action="store_true", help="不取正文，只用库里已有的详情算")
+    p.add_argument("--trial-db", help="试抓库的库名（取正文要写库，必须和现在连的本机库对上）")
     p.add_argument(
         "--out", type=Path, default=DEFAULT_OUT, help="清单目录（证据写进 抽查/<层级>/正文/）"
     )

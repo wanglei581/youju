@@ -458,15 +458,22 @@ def test_province_portal_names_unchanged(full, ok):
 
 
 def _city_evidence(folder, province, cells, sample, *, level="市级", body=(60, 58)):
-    """写一省的证据表：cells 个格各一个栏目、都通过；sample 是 [(格号, 复核人, 结论)]；
-    body 是正文能读率门（抽了几份、能读几份），None 是还没测。"""
+    """写一省的证据表：cells 个格各一个栏目、都通过；sample 是 [(格号, 复核人, 结论[, 复核备注])]，
+    复核备注默认写这一次的种子（"种子：s1""种子：s2"……）；body 是正文能读率门（抽了几份、能读几份），
+    None 是还没测。"""
     head = "层级,省份,城市,区县,部门,栏目URL,自动结论,没过的项,复核人,复核结论,复核备注\n"
-    marked = {n: (who, verdict) for n, who, verdict in sample}
+    marked = {}
+    for n, who, verdict, *note in sample:
+        n_round = who.removeprefix("联网核对").removeprefix("第").removesuffix("次") or "1"
+        default = f"种子：s{n_round}"
+        marked[n] = (who, verdict, note[0] if note else default)
     lines = []
     for n in range(cells):
-        who, verdict = marked.get(n, ("", ""))
+        who, verdict, note = marked.get(n, ("", "", ""))
         dept = "政府办" if level == "区县级" and n % 3 == 0 else f"部门{n}"
-        lines.append(f"{level},{province},城{n % 7},区{n},{dept},u{n},自动通过,,{who},{verdict},\n")
+        lines.append(
+            f"{level},{province},城{n % 7},区{n},{dept},u{n},自动通过,,{who},{verdict},{note}\n"
+        )
     (folder / f"{province}.csv").write_text(head + "".join(lines), encoding="utf-8-sig")
     gate = folder / "正文"
     (gate / f"{province}.csv").unlink(missing_ok=True)
@@ -506,8 +513,8 @@ def test_city_sample_line(tmp_path):
     redraw = four + [(40 + n, "联网核对第2次", "不通过" if n < 5 else "通过") for n in range(60)]
     res = result(redraw)
     assert res.accepted and res.sample_lines[0].need == 60
-    cn = four + [(40 + n, "联网核对第二次", "不通过" if n < 5 else "通过") for n in range(60)]
-    assert result(cn).sample_lines[0].round == 2
+    cn = [(40 + n, "联网核对第二次", "不通过" if n < 5 else "通过", "种子：b") for n in range(60)]
+    assert result(four + cn).sample_lines[0].round == 2 and result(four + cn).accepted
     assert not result(four + [(40 + n, "联网核对第2次", "通过") for n in range(59)]).accepted
     # 一层的格比 40 少：全抽
     small = [(n, "联网核对", "通过") for n in range(25)]
@@ -518,18 +525,50 @@ def test_city_sample_line(tmp_path):
     assert "正文能读率" in result(first).sample_note()
 
 
+def test_city_sample_round_evidence(tmp_path):
+    """最近一次只要写了就算最近一次（全是待重试也一样）；种子要写、重抽要换；第 4 次不算。"""
+    from youju.govsites.sample import evidence_results
+
+    def result(sample):
+        _city_evidence(tmp_path, "河南", 200, sample)
+        [res] = evidence_results(tmp_path)
+        return res
+
+    first = [(n, "联网核对", "不通过" if n < 3 else "通过") for n in range(40)]
+    assert result(first).accepted
+    # 第 2 次刚开头、全是待重试：按第 2 次算（0 格），不再按第 1 次放
+    pending = first + [(40 + n, "联网核对第2次", "待重试") for n in range(60)]
+    line = result(pending).sample_lines[0]
+    assert (line.round, line.judged) == (2, 0) and not result(pending).accepted
+    # 没写种子、一次里写了两个种子、重抽用了以前的种子：都不放
+    assert "没写种子" in result([(n, w, v, "") for n, w, v in first]).sample_note()
+    two = first[:20] + [(n, w, v, "种子：s9") for n, w, v in first[20:]]
+    assert "几个种子" in result(two).sample_note()
+    same = [(n, "联网核对", "不通过" if n < 4 else "通过") for n in range(40)]
+    same += [(40 + n, "联网核对第2次", "通过", "种子：s1") for n in range(60)]
+    assert "以前用过" in result(same).sample_note() and not result(same).accepted
+    # 重抽两次还不过：第 4 次不算
+    fourth = [(100 + n, "联网核对第4次", "通过") for n in range(60)]
+    assert "整省逐格排查" in result(fourth).sample_note() and not result(fourth).accepted
+
+
 def test_city_sample_counts_cells(tmp_path):
     """按格算：同一格两个栏目都填了联网核对，一个不通过就算这一格不通过，只算一格。"""
     from youju.govsites.sample import evidence_results
 
     head = "层级,省份,城市,区县,部门,栏目URL,自动结论,没过的项,复核人,复核结论,复核备注\n"
-    rows = "".join(f"市级,河南,城{n},,部门,u{n},自动通过,,联网核对,通过,\n" for n in range(39))
-    rows += "市级,河南,城39,,部门,a,自动通过,,联网核对,通过,\n"
-    rows += "市级,河南,城39,,部门,b,自动通过,,联网核对,不通过,\n"
+    rows = "".join(
+        f"市级,河南,城{n},,部门,u{n},自动通过,,联网核对,通过,种子：s1\n" for n in range(38)
+    )
+    rows += "市级,河南,城38,,部门,a,自动通过,,联网核对,通过,种子：s1\n"
+    rows += "市级,河南,城38,,部门,b,自动通过,,联网核对,不通过,种子：s1\n"
+    # 同一格一个通过、一个待重试：这一格没做完，不算样本
+    rows += "市级,河南,城39,,部门,c,自动通过,,联网核对,通过,种子：s1\n"
+    rows += "市级,河南,城39,,部门,d,自动通过,,联网核对,待重试,种子：s1\n"
     (tmp_path / "河南.csv").write_text(head + rows, encoding="utf-8-sig")
     [res] = evidence_results(tmp_path)
     line = res.sample_lines[0]
-    assert (line.judged, line.failed) == (40, 1)
+    assert (line.judged, line.failed) == (39, 1) and not line.ok
 
 
 def test_county_sample_two_layers(tmp_path):

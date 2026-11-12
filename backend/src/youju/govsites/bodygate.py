@@ -3,8 +3,9 @@
 先不放（等抓到够数再测），也不取正文。
 
 - 能读的判断和日报、详情页同一个：v1.reading_body 的 status == "ok"（D-097）。
-- 取正文用现成的 fetch_details：同一网站间隔 3 秒、只取政府网址、遵守 robots.txt。取到的详情写进
-  YOUJU_DATABASE_URL 指的库，只在本机试抓用的库上跑，不对线上库跑。
+- 取正文用现成的 fetch_details：同一网站间隔至少 3 秒、只取政府网址、遵守 robots.txt。取到的详情写进
+  YOUJU_DATABASE_URL 指的库，所以只在本机试抓用的库上跑：命令行要用 --trial-db 写明库名，连的必须是
+  本机库、库里不能有在收的来源（check_trial_db），不然不取。
 - 来源：这一级这个省试抓过的（验证状态以"试跑可读"开头）；抽查证据表里记了不通过、不收、不能抓、
   待重试的栏目不算。
 - 证据写到 抽查/<层级>/正文/<省>.csv（放子目录：抽查/<层级>/ 下的 CSV 都当省份证据表读）。公开仓库：
@@ -71,6 +72,38 @@ class BodyGate:
         total = Counter(r["平台"] for r in self.rows)
         ok = Counter(r["平台"] for r in self.rows if r["能读"] == "能读")
         return [(name, ok[name], n) for name, n in total.most_common()]
+
+
+MIN_INTERVAL = 3.0  # 同一网站两次请求至少隔 3 秒（不管配置里调成多少）
+
+
+def polite_fetcher():
+    """取正文用的抓取器：和 fetch_details 默认的一样（只取政府网址、遵守 robots.txt），同一网站间隔
+    至少 3 秒。"""
+    from youju.config import get_settings
+    from youju.crawler.detail_service import _government_url
+    from youju.crawler.fetcher import PoliteFetcher
+
+    settings = get_settings()
+    return PoliteFetcher(
+        settings.user_agent,
+        settings.request_timeout,
+        max(settings.per_host_interval, MIN_INTERVAL),
+        url_allowed=_government_url,
+    )
+
+
+def check_trial_db(session: Session, trial_db: str | None) -> str | None:
+    """取正文要写库：只在写明了库名的本机试抓库上跑。不行时返回原因，行就返回 None。"""
+    url = session.get_bind().url
+    where = f"{url.host}/{url.database}"
+    if url.host not in ("127.0.0.1", "localhost", "::1"):
+        return f"连的不是本机库（{where}）"
+    if not trial_db or url.database != trial_db:
+        return f"要用 --trial-db 写明试抓库的库名，和现在连的库（{where}）对上"
+    if session.scalar(select(Source.id).where(Source.enabled.is_(True)).limit(1)) is not None:
+        return f"{where} 里有在收的来源，不像试抓库"
+    return None
 
 
 def gate_passed(picked: int, readable: int) -> bool:
@@ -165,7 +198,11 @@ def run_gate(
     picked = pick(cands, seed)
     if fetch:
         ids = [doc.id for doc, _, _ in picked]
-        fetch_details(session, limit=len(ids), document_ids=ids, fetcher=fetcher)
+        if fetcher is not None:
+            fetch_details(session, limit=len(ids), document_ids=ids, fetcher=fetcher)
+        else:
+            with polite_fetcher() as polite:
+                fetch_details(session, limit=len(ids), document_ids=ids, fetcher=polite)
         session.expire_all()
     now = now or datetime.now(UTC)
     for n, (doc, src, kind) in enumerate(picked, 1):

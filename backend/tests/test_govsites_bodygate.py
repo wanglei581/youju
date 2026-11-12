@@ -114,3 +114,35 @@ def test_body_gate_needs_twenty(session, tmp_path):
     write_gate(tmp_path, gate)
     assert read_gate(tmp_path / "抽查" / "市级", "江苏") == (0, 0)
     assert read_gate(tmp_path / "抽查" / "市级", "浙江") is None
+
+
+def test_body_gate_only_on_named_local_trial_db(session, capsys):
+    """取正文要写库：要写明试抓库的库名、连的是本机库、库里没有在收的来源，不然不取。"""
+    import argparse
+
+    from youju.govsites.bodygate import check_trial_db
+    from youju.govsites.cli import _cmd_body_gate
+
+    name = session.get_bind().url.database
+    assert "--trial-db" in check_trial_db(session, None)
+    assert "--trial-db" in check_trial_db(session, "youju")
+    assert check_trial_db(session, name) is None
+    live = _source(session, 9)
+    live.enabled = True
+    session.commit()
+    assert "在收的来源" in check_trial_db(session, name)
+    args = argparse.Namespace(
+        level="市级", province=["江苏"], seed="t", no_fetch=False, trial_db=None, out=None
+    )
+    assert _cmd_body_gate(args) == 1
+    assert "不取正文" in capsys.readouterr().out
+
+
+def test_body_gate_fetcher_waits_three_seconds(monkeypatch):
+    """同一网站两次请求至少隔 3 秒，不管配置里调成多少。"""
+    from youju.config import get_settings
+    from youju.govsites.bodygate import polite_fetcher
+
+    monkeypatch.setattr(get_settings(), "per_host_interval", 0.5)
+    with polite_fetcher() as fetcher:
+        assert fetcher._interval == 3.0

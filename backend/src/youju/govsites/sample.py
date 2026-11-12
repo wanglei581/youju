@@ -469,6 +469,10 @@ PASS_RATE = 0.8
 # 合并。一层的格比要抽的少时全抽。复核人写"联网核对"（第 1 次）、"联网核对第2次""联网核对第3次"……
 SAMPLE_LINES = {("市级", "部门"): (40, 3), ("区县级", "部门"): (40, 3), ("区县级", "门户"): (30, 2)}
 REDRAW_LINE = (60, 5)
+# 重抽两次（第 3 次）还不过的整省逐格排查，程序不再放；每一次都要在复核备注里写种子
+# （"种子：2026-11b"），重抽的种子不能和以前哪一次一样
+MAX_ROUNDS = 3
+_SEED = re.compile(r"种子\s*[:：=]?\s*([0-9A-Za-z][0-9A-Za-z_.\-]*)")
 LINE_LEVELS = frozenset(level for level, _ in SAMPLE_LINES)
 _SAMPLE_ROUND = re.compile(r"^联网核对(?:第\s*([0-9一二三四五六七八九十]+)\s*次)?")
 
@@ -488,7 +492,8 @@ def _layer(level: str, dept: str) -> str:
 
 @dataclass
 class SampleLine:
-    """一层最近一次联网核对：抽到几格（通过、不通过、不收的格；待重试、不能抓的不算）、几格不通过。"""
+    """一层最近一次联网核对：抽到几格有结论（通过、不通过、不收；一格里还有待重试、不能抓、没写结论
+    的不算，要补抽）、几格不通过；problem 是种子、次数这类凭据不全的原因。"""
 
     layer: str
     round: int  # 第几次；0 是还没抽
@@ -496,17 +501,28 @@ class SampleLine:
     failed: int
     need: int
     allow: int
+    problem: str = ""
 
     @property
     def ok(self) -> bool:
-        return self.round > 0 and self.judged >= self.need and self.failed <= self.allow
+        return (
+            self.round > 0
+            and not self.problem
+            and self.judged >= self.need
+            and self.failed <= self.allow
+        )
 
     def text(self) -> str:
         if not self.round:
             return f"{self.layer}还没有联网核对（要抽 {self.need} 格）"
-        return (
+        text = (
             f"{self.layer}联网核对第 {self.round} 次：抽 {self.judged} 格（要 {self.need}），"
-            f"不通过 {self.failed} 格（最多 {self.allow}）→ {'过' if self.ok else '没过'}"
+            f"不通过 {self.failed} 格（最多 {self.allow}）"
+        )
+        return (
+            f"{text}，{self.problem} → 没过"
+            if self.problem
+            else f"{text} → {'过' if self.ok else '没过'}"
         )
 
 
@@ -526,7 +542,9 @@ class ProvinceResult:
     level: str = ""
     # 每层有哪些格（城市、区县、部门）；联网核对每层每次抽到的格 → 这一格有没有不通过
     cells: dict[str, set] = field(default_factory=dict)
+    # 联网核对每层每次抽到的格 → 这一格的结论（"不通过"、"未完"、"通过"），和每次写的种子
     rounds: dict[tuple[str, int], dict] = field(default_factory=dict)
+    seeds: dict[tuple[str, int], set] = field(default_factory=dict)
     # 正文能读率门（地市、区县；govsites/bodygate.py）：抽了几份、能读几份；还没测是 None
     body: tuple[int, int] | None = None
 
@@ -542,8 +560,26 @@ class ProvinceResult:
             got = self.rounds.get((layer, latest), {})
             need, allow = line if latest <= 1 else REDRAW_LINE
             need = min(need, len(self.cells[layer]))
-            out.append(SampleLine(layer, latest, len(got), sum(got.values()), need, allow))
+            judged = sum(state != "未完" for state in got.values())
+            failed = sum(state == "不通过" for state in got.values())
+            out.append(
+                SampleLine(layer, latest, judged, failed, need, allow, self._problem(layer, latest))
+            )
         return out
+
+    def _problem(self, layer: str, latest: int) -> str:
+        """最近一次联网核对的凭据：次数没超、写了一个种子、和以前哪一次的种子都不一样。"""
+        if latest > MAX_ROUNDS:
+            return f"重抽两次还不过，要整省逐格排查（第 {latest} 次不算）"
+        seeds = self.seeds.get((layer, latest), set())
+        if not seeds or "" in seeds:
+            return "复核备注里没写种子"
+        if len(seeds) > 1:
+            return f"这一次写了几个种子（{'、'.join(sorted(seeds))}）"
+        earlier = set().union(*(self.seeds.get((layer, n), set()) for n in range(1, latest)))
+        if seeds & earlier:
+            return f"种子 {next(iter(seeds))} 以前用过，重抽要换种子"
+        return ""
 
     @property
     def body_ok(self) -> bool:
@@ -633,12 +669,23 @@ def evidence_results(folder) -> list[ProvinceResult]:
                 cell = tuple((r.get(k) or "").strip() for k in ("城市", "区县", "部门"))
                 res.cells.setdefault(layer, set()).add(cell)
                 m = _SAMPLE_ROUND.match((r.get("复核人") or "").strip())
-                if m and verdict in ("通过", "不通过", "不收"):
-                    res.sample_judged += 1
-                    res.sample_ok += verdict != "不通过"
-                    # 按格算：一格里有一行不通过，这一格就不通过
-                    got = res.rounds.setdefault((layer, _round_number(m.group(1))), {})
-                    got[cell] = got.get(cell, False) or verdict == "不通过"
+                if m:
+                    if verdict in ("通过", "不通过", "不收"):
+                        res.sample_judged += 1
+                        res.sample_ok += verdict != "不通过"
+                    # 按格算：一格里有一行不通过就不通过；还有待重试、不能抓、没写结论的行就"未完"
+                    # （不算样本，要补抽）；都通过或不收才算通过。只要写了这一次，就算有这一次
+                    key = (layer, _round_number(m.group(1)))
+                    state = (
+                        "不通过"
+                        if verdict == "不通过"
+                        else ("通过" if verdict in ("通过", "不收") else "未完")
+                    )
+                    got = res.rounds.setdefault(key, {})
+                    order = ("通过", "未完", "不通过")
+                    got[cell] = max(got.get(cell, "通过"), state, key=order.index)
+                    seed = _SEED.search(r.get("复核备注") or "")
+                    res.seeds.setdefault(key, set()).add(seed.group(1) if seed else "")
                 if verdict == "通过":
                     res.passed += 1
                 elif verdict == "不通过":
