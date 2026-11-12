@@ -218,6 +218,14 @@ def test_stats_cli(monkeypatch, capsys):
         ("请于2026年9月30日前提交", time(17), False),
         ("请于2026年9月30日16:00前提交", time(17), False),
         ("请于2026年9月30日上午5时前提交", time(17), False),
+        # 独立 Claude 审阅（11/12）：日期和时刻之间有空白、换行、全角空格的照认；
+        # 分钟隔着空格写的不能当整点
+        ("请于2026年11月15日 17:00前提交", time(17), True),
+        ("请于2026年11月15日\n17时前提交", time(17), True),
+        ("请于2026年11月15日\u300017:00前提交", time(17), True),
+        ("请于2026-11-15 18:00:00前提交", time(18), True),
+        ("请于2026年11月15日17时 30分前提交", time(17), False),
+        ("请于2026年11月15日17时 30分前提交", time(17, 30), True),
     ],
 )
 def test_has_time_follows_the_extraction_formats(quote, clock, ok):
