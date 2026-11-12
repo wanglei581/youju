@@ -600,15 +600,17 @@ def test_city_sample_seed_order_edge_cases(tmp_path):
     # 都没写格号：按证据表里的行序，第 41 行以后的错不算
     plain = [(n, "联网核对", "不通过" if n >= 40 else "通过", "种子：s1") for n in range(45)]
     assert (result(plain).sample_lines[0].judged, result(plain).sample_lines[0].failed) == (40, 0)
-    # 同一格两个栏目两行：第 1 格那行对、第 50 格那行错 → 这一格错，按第 1 格算进前 40 格
-    same = [(n, "联网核对", "通过", f"种子：s1 第 {n + 1} 格") for n in range(42) if n != 7]
-    same.append((7, "联网核对", "不通过", "种子：s1 第 50 格"))
-    _city_evidence(tmp_path, "江苏", 200, same)
-    table = tmp_path / "江苏.csv"
-    text = table.read_text(encoding="utf-8-sig").replace("城0,区7,部门7,", "城0,区0,部门0,")
-    table.write_text(text, encoding="utf-8-sig")
-    [res] = evidence_results(tmp_path)
-    assert (res.sample_lines[0].judged, res.sample_lines[0].failed) == (40, 1)
+    # 同一格两个栏目两行：先出现的那行错（写第 50 格，或没写格号），后出现的那行对、写第 1 格 →
+    # 这一格错，按第 1 格算进前 40 格（只认先出现那行的位置就会排到 40 格以外、数成 0 格错）
+    for first_note in ("种子：s1 第 50 格", "种子：s1"):
+        same = [(0, "联网核对", "不通过", first_note), (7, "联网核对", "通过", "种子：s1 第 1 格")]
+        same += [(n, "联网核对", "通过", f"种子：s1 第 {n + 1} 格") for n in range(1, 42) if n != 7]
+        _city_evidence(tmp_path, "江苏", 200, same)
+        table = tmp_path / "江苏.csv"
+        text = table.read_text(encoding="utf-8-sig").replace("城0,区7,部门7,", "城0,区0,部门0,")
+        table.write_text(text, encoding="utf-8-sig")
+        [res] = evidence_results(tmp_path)
+        assert (res.sample_lines[0].judged, res.sample_lines[0].failed) == (40, 1), first_note
     # 区县：门户（每 3 格 1 格）30 格、部门 40 格各数各的；两层排在后面的错都不算
     county = [
         (n, "联网核对", "不通过" if n >= 105 else "通过", f"种子：s1 第 {n + 1} 格")
