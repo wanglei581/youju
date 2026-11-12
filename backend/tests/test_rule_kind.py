@@ -135,6 +135,51 @@ def test_reclassify_cleans_existing_titles_idempotently(
     assert "更新 0 份" in capsys.readouterr().out
 
 
+def test_reclassify_drops_tooltip_labels_and_the_publish_date_from_titles(
+    session, session_factory, monkeypatch, capsys
+):
+    # 地市一组 11/12：库里已经存着的"标题：……""主题：……日期：……"和末尾的发布日期，重算时改回标题；
+    # 末尾日期和发布日期不同的（纪要写的会议日期）照旧留着
+    from youju import cli
+
+    source = add_source(session)
+    rows = [
+        ("标题：关于开展专项申报工作的通知", date(2026, 10, 8), "关于开展专项申报工作的通知"),
+        (
+            "主题：关于举办某某职业技能大赛选拔赛的通知 日期：2026-11-04",
+            date(2026, 11, 4),
+            "关于举办某某职业技能大赛选拔赛的通知",
+        ),
+        (
+            "某市劳动能力鉴定委员会鉴定结论书送达公告 2026年11月05日",
+            date(2026, 11, 5),
+            "某市劳动能力鉴定委员会鉴定结论书送达公告",
+        ),
+        (
+            "政策例行吹风会文字实录 2026年11月5日",
+            date(2026, 11, 6),
+            "政策例行吹风会文字实录 2026年11月5日",
+        ),
+    ]
+    items = [
+        ListItem(title, f"https://example.gov.cn/a/{i}.html", published)
+        for i, (title, published, _) in enumerate(rows)
+    ]
+    save_items(session, source, items, baseline=False, seen_at=datetime.now(UTC))
+    session.commit()
+    monkeypatch.setattr(cli, "session_factory", lambda: session_factory)
+    assert cli.main(["reclassify"]) == 0
+    capsys.readouterr()
+    session.expire_all()
+    stored = dict(session.execute(select(Document.url, Document.title)).all())
+    assert [stored[f"https://example.gov.cn/a/{i}.html"] for i in range(len(rows))] == [
+        expected for _, _, expected in rows
+    ]
+    # 再算一遍不再改（标题已经清过，末尾的日期也去掉了）
+    assert cli.main(["reclassify"]) == 0
+    assert "更新 0 份" in capsys.readouterr().out
+
+
 def _sql_size(session, condition) -> int:
     stmt = select(Document.id).where(condition)
     return len(str(stmt.compile(session.get_bind(), compile_kwargs={"literal_binds": True})))

@@ -2,6 +2,7 @@
 
 import re
 from collections.abc import Iterable
+from datetime import date
 
 # 有的列表（如上海市经信委）把正文开头也放进了链接文字：标题后面跟着空白，再跟称呼
 # （"有关单位："）或正文第一句（"为规范……""根据……"）。只在"文种词 + 空白 + 称呼或正文起句"
@@ -17,6 +18,16 @@ _TRAILING_BODY = re.compile(
 # "标题：……（换行）点击数：0（换行）发表时间：2026-07-01"。只取"标题："后面的标题；
 # 三段都在才算，正文标题里不会这样写
 _TOOLTIP = re.compile(r"^标题[：:]\s*(\S.*?)\s+点击数[：:]\s*\d+\s+发表时间[：:]", re.S)
+# 只剩"标题："或"主题："开头的提示文字（泸州一类平台的 title 属性只有"标题：……"；临沂人社的链接文字
+# 是"主题：……（换行）日期：2026-11-09"）。11/12 试抓库 35,525 条标题里以这两个词开头的 194 条
+# 全是这种残留（泸州 112、临沂 81、日照 1），正文标题不这样写
+_LABEL_PREFIX = re.compile(r"^(?:标题|主题)[：:]\s*(?=\S)")
+_TRAILING_DATE_LABEL = re.compile(r"\s+日期[：:]\s*20\d{2}[-/.年]\d{1,2}[-/.月]\d{1,2}日?$")
+# 日期拆成两块写在标题前面："09-30（换行）2026（换行）关于……"（武汉财政）
+_LEADING_SPLIT_DATE = re.compile(r"^\d{1,2}-\d{1,2}\s+20\d{2}\s+(?=\S)")
+# 网址里的 32 位编号粘在标题后面："……的通知d17c290e……"（苏州文旅）
+_TRAILING_HEX = re.compile(r"(?<![0-9A-Za-z])[0-9a-f]{32}$")
+ZERO_WIDTH = re.compile("[\u200b\u200c\u200d\u2060\ufeff]")
 
 # 列表页截断长标题时加的省略号："..."（有的多打一个点）或"…"
 # （10/16 验收：天津、青海、河南、湖南、宁夏、重庆）
@@ -30,10 +41,14 @@ _MARKUP_RESIDUE = re.compile(r"[<>]|&(?:lt|gt|amp|nbsp|quot)", re.I)
 
 
 def clean_title(value: str) -> str:
-    title = value.strip()
+    title = " ".join(ZERO_WIDTH.sub("", value).split())
     tip = _TOOLTIP.match(title)
     if tip:
         title = tip.group(1)
+    title = _LABEL_PREFIX.sub("", title)
+    title = _TRAILING_DATE_LABEL.sub("", title)
+    title = _LEADING_SPLIT_DATE.sub("", title)
+    title = _TRAILING_HEX.sub("", title)
     # 宁夏列表链接里的“》”是项目装饰符，text_content 会带入标题；只剥离开头孤立闭书名号。
     # 正常《…》以及正文中间的书名号保留，避免损坏正式文件名称。
     title = re.sub(r"^(?:》\s*)+", "", title)
@@ -72,3 +87,22 @@ def completed_title(stored: str, page_titles: Iterable[str]) -> str | None:
         ):
             found.setdefault(compact, title)
     return next(iter(found.values())) if len(found) == 1 else None
+
+
+# 标题末尾的发布日期（列表页把发布日期写进了链接的 title 属性："……送达公告 2026年11月05日"
+# "……目录2026年04月24日"）
+_END_DATE = re.compile(r"\s*(20\d{2})(?:年(\d{1,2})月(\d{1,2})日|[-/.](\d{1,2})[-/.](\d{1,2}))$")
+
+
+def without_publish_date(title: str, publish_date: date | None) -> str:
+    """历史题录重算用：标题末尾的日期和这份文件的发布日期相同才去掉；不同的（纪要里的会议日期）照旧
+    留着，和列表页的做法一样（listing._without_attr_date）。"""
+    m = _END_DATE.search(title)
+    if not m or publish_date is None or m.start() < _MIN_PREFIX:
+        return title
+    year, month, day = int(m[1]), int(m[2] or m[4]), int(m[3] or m[5])
+    try:
+        stated = date(year, month, day)
+    except ValueError:
+        return title
+    return title[: m.start()].rstrip() if stated == publish_date else title

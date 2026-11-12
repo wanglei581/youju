@@ -989,7 +989,8 @@ def _cmd_daily_report(args: argparse.Namespace) -> int:
 
 def _cmd_reclassify(_: argparse.Namespace) -> int:
     """按当前的标题规则重算每份文件的类型（rule_kind）、项目类别（rule_category）和筛选标签
-    （rule_supports、rule_industries），并去掉标题开头从列表页带进来的装饰符号（crawler/titles.py），
+    （rule_supports、rule_industries），并去掉标题里从列表页带进来的装饰符号、提示文字和末尾的发布日期
+    （crawler/titles.py），
     只写有变化的。规则改了之后要跑一次；admin 服务每次启动时在迁移之后自动跑。"""
     if getattr(get_settings(), "public_replica", False):
         # 2.0 自建服务器：公开数据由本机算好推过来，这里不改（本机启动时会重算）
@@ -1001,7 +1002,7 @@ def _cmd_reclassify(_: argparse.Namespace) -> int:
 
     from youju.categories import doc_category
     from youju.classify import doc_kind
-    from youju.crawler.titles import clean_title
+    from youju.crawler.titles import clean_title, without_publish_date
     from youju.title_tags import INDUSTRY_RULES, SUPPORT_RULES
 
     with session_factory()() as session:
@@ -1009,6 +1010,7 @@ def _cmd_reclassify(_: argparse.Namespace) -> int:
             select(
                 Document.id,
                 Document.title,
+                Document.publish_date,
                 Document.rule_kind,
                 Document.rule_category,
                 Document.rule_supports,
@@ -1017,8 +1019,8 @@ def _cmd_reclassify(_: argparse.Namespace) -> int:
         ).all()
         changed: dict[tuple[str, str, str, str], list[int]] = defaultdict(list)
         cleaned_titles: dict[int, str] = {}
-        for doc_id, title, *stored in rows:
-            cleaned = clean_title(title)
+        for doc_id, title, published, *stored in rows:
+            cleaned = without_publish_date(clean_title(title), published)
             if cleaned != title:
                 cleaned_titles[doc_id] = cleaned
             new = (
