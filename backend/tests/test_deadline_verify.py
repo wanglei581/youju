@@ -65,6 +65,10 @@ def test_queue_only_seven_day_block_and_unclear(session, candidate):
     session.commit()
     assert [x["id"] for x in verify.queue(session, TODAY)] == [row.id]
     assert (
+        verify.queue(session, TODAY)[0]["reopened"],
+        verify.queue(session, TODAY)[0]["audit_note"],
+    ) == (False, None)
+    assert (
         verify.apply_one(session, payload(row, verdict="unclear", note="日期依据不足"), True)
         == "记录看不准"
     )
@@ -148,6 +152,8 @@ def test_twins_follow_confirmation(session, candidate):
                 confidence="高",
                 status="pending",
                 origin="rule",
+                audit_state="reopened",
+                audit_note="副本的退回原因",
             ),
         ]
     )
@@ -162,6 +168,8 @@ def test_twins_follow_confirmation(session, candidate):
         and twin.reviewed_by == "Claude"
         and twin.verification_quote == payload(candidate)["quote"].replace("申报截止", "申报  截止")
     )
+    assert twin.audit_state is None and twin.audit_note is None
+    assert twin.verification_unclear_note == "质检退回原因：副本的退回原因"
 
 
 def test_detail_shows_the_quote_recorded_when_verified(client, session, candidate):  # noqa: F811
@@ -175,14 +183,41 @@ def test_detail_shows_the_quote_recorded_when_verified(client, session, candidat
     assert d["excerpt"]["text"] == v1.shown_quote(payload(candidate)["quote"])
 
 
-def test_audit_reopened_rows_stay_with_people(session, candidate):
-    # 质检退回的必须由人重新核对：不进清单，写回也不放行（同组沿用、导入同样不放行）
+@pytest.mark.parametrize("verdict", ["confirmed", "corrected"])
+def test_audit_reopened_rows_can_be_verified(session, candidate, verdict):
     candidate.audit_state = "reopened"
     candidate.audit_note = "原文写的是材料报送截止"
     session.commit()
-    assert verify.queue(session, TODAY) == []
-    assert "质检退回" in verify.apply_one(session, payload(candidate), True)
+    queued = verify.queue(session, TODAY)
+    assert len(queued) == 1 and queued[0]["reopened"] is True
+    assert queued[0]["audit_note"] == candidate.audit_note
+    assert "不在当前正文" in verify.apply_one(
+        session, payload(candidate, quote="不存在的2026年9月30日截止原句"), True
+    )
     assert candidate.status == "pending" and candidate.audit_note == "原文写的是材料报送截止"
+    changes = {"verdict": verdict}
+    if verdict == "corrected":
+        changes.update(date="2026-10-01", time=None, quote="修改后截止2026年10月1日。")
+    result = {**queued[0], **payload(candidate, **changes)}
+    assert verify.apply_one(session, result, True).startswith("通过")
+    session.commit()
+    assert candidate.audit_state is None and candidate.audit_note is None
+    assert candidate.verification_unclear_note == "质检退回原因：原文写的是材料报送截止"
+
+
+def test_reopened_unclear_remains_blocked_until_body_changes(session, candidate):
+    candidate.audit_state = "reopened"
+    candidate.audit_note = "日期存疑"
+    session.commit()
+    assert (
+        verify.apply_one(session, payload(candidate, verdict="unclear", note="仍看不准"), True)
+        == "记录看不准"
+    )
+    session.commit()
+    assert candidate.audit_note == "日期存疑" and not verify.queue(session, TODAY)
+    session.get(DocumentDetail, candidate.document_id).body_text += "补充。"
+    session.commit()
+    assert verify.queue(session, TODAY)[0]["audit_note"] == "日期存疑"
 
 
 def test_twin_added_later_keeps_the_verified_quote(session, candidate):

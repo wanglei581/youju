@@ -83,8 +83,6 @@ def queue(session, today, days=7):
         # batch 判"7 天内"时这一类只有一个日期、在今天到 7 天后之间；这里再按 --days 收窄
         if not today <= row.candidate_date <= today + timedelta(days=days):
             continue
-        if row.audit_state == "reopened":
-            continue  # 质检退回的必须由人重新核对（同组沿用、导入都不放行），不进 Claude 的清单
         doc = session.get(Document, row.document_id)
         detail = session.get(DocumentDetail, row.document_id)
         if not detail or detail.status != "ok":
@@ -112,6 +110,8 @@ def queue(session, today, days=7):
                 evidence=row.evidence,
                 origin=row.origin,
                 ai_agrees=row.ai_agrees,
+                reopened=row.audit_state == "reopened",
+                audit_note=row.audit_note if row.audit_state == "reopened" else None,
                 sentences=sentences,
                 body_sha256=digest,
             )
@@ -141,6 +141,8 @@ def apply_one(session, item, write=False):
         "origin",
         "ai_agrees",
         "sentences",
+        "reopened",
+        "audit_note",
     }:
         return "格式错误：含不支持的字段"
     verdict = item.get("verdict")
@@ -154,8 +156,6 @@ def apply_one(session, item, write=False):
     locked = _lock_candidates(session, row)
     if row.status != "pending":
         return "状态已变，不再待核对"
-    if any(d.status == "pending" and d.audit_state == "reopened" for d in locked):
-        return "质检退回，须在核对台由人重新核对"
     if row.kind not in excerpts.DEADLINE_KINDS and verdict != "unclear":
         return "其他类不能通过"
     stmt = select(DocumentDetail).where(DocumentDetail.document_id == row.document_id)
@@ -222,11 +222,19 @@ def apply_one(session, item, write=False):
         twin_quotes[twin.id] = twin_quote
     if write:
         stamp = datetime.now(UTC)
+        # _apply_review 会清空质检信息；同组每条各自保存自己的退回原因。
+        reopen_notes = {
+            d.id: d.audit_note
+            for d in locked
+            if d.status == "pending" and d.audit_state == "reopened" and d.audit_note
+        }
         _apply_review(row, locked, "approved", "Claude", stamp, day, clock)
         for twin in locked:
             if twin.reviewed_by == "Claude" and twin.reviewed_at == stamp:
                 twin.verification_quote = twin_quotes[twin.id]
                 twin.verification_corrected = verdict == "corrected"
+                if twin.id in reopen_notes:
+                    twin.verification_unclear_note = f"质检退回原因：{reopen_notes[twin.id]}"
     return "通过并修改日期" if verdict == "corrected" else "通过"
 
 
