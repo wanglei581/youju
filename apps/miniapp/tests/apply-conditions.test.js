@@ -94,7 +94,7 @@ test('概括的说法（旧接口还带着的 text）不显示；同一句原文
   assert.ok(!('toggleCond' in page));
 });
 
-test('卡片标题"申报条件（已核对原文）"，下方固定一行说明；没有条件时不显示；不出现禁用字样', () => {
+test('卡片标题"申报条件"（核对说明合成一句写在页底，11/12 简化走查），下方固定一行说明；没有条件时不显示；不出现禁用字样', () => {
   const wxml = read('pages/detail/index.wxml');
   const start = wxml.indexOf('<view wx:if="{{conds.length}}" class="card cond-card">');
   assert.ok(start > 0, '没有申报条件卡片，或卡片没有按 conds.length 判断显示');
@@ -102,7 +102,7 @@ test('卡片标题"申报条件（已核对原文）"，下方固定一行说明
   assert.ok(end > start, '缺少固定的说明行');
   const card = wxml.slice(start, wxml.indexOf('</view>', end) + 7);
   const title = card.match(/<view class="section-title">([\s\S]*?)<\/view>/)[1].replace(/<[^>]+>/g, '');
-  assert.equal(title, '申报条件（已核对原文）');
+  assert.equal(title, '申报条件');
   // 说明行在逐条循环之外：一张卡片只出现一次
   const loop = card.slice(card.indexOf('wx:for="{{conds}}"'), card.indexOf('class="weak cond-note"'));
   assert.ok(!loop.includes(NOTE));

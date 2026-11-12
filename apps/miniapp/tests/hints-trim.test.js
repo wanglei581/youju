@@ -56,13 +56,14 @@ test('和具体数据挂钩的准确性说明、隐私说明照旧保留', () =>
   const keep = {
     // 详情页：状态标签、页底出处里的"以原文为准"、"不判断能否申报"、不提供填报入口
     detail: ["<view wx:else class=\"due-unverified\">{{item.soon ? '可能 7 天内截止' : '截止时间见原文'}}</view>", '截止日期已于 {{checkedText}} 对照原文核对。', '有据不判断能否申报',
-      '内容以原文为准；申报请在主管部门的申报系统办理，有据不提供填报入口。', '数据说明 ›'],
+      '内容以原文为准；申报请在主管部门的申报系统办理，有据不提供填报入口。', '内容怎么来的 ›'],
     // 截止页：页底是"截止日期怎么看 ›"；包里没有使用帮助时照旧写那一句
     report: ['截止日期怎么看 ›', '截止日期以原文为准。', '截止时间见原文', '7 天内到期的只列人工核对过的日期', '不代表当地没有通知', RULE],
     search: [RULE, '{{openNote}}'],
     // D-091：没查到的说明按份数写在 missNote 里（不能据此判断不在名单里）；同名提示改成"不一定是同一家"
-    lists: ['{{missNote}}', '名称相近的企业分开列出，不一定是同一家', '请核对企业全称再查；'],
-    clients: ['已确认截止的不列', '这里的客户卡片不会自动发送', '要另外确认上传', '选省包含该省已收录的城市、区县', RULE, '不判断客户能不能申报', '客户名称只存在本机，导出的表里不含客户名称。',
+    // 11/12 简化走查：查询说明里"名称相近的企业分开列出"那条和结果里"名称相近的企业（不一定是同一家……）"重复，留结果里那句
+    lists: ['{{missNote}}', '名称相近的企业（不一定是同一家，点名称按全称查）', '请核对企业全称再查；', '只查企业和机构，不查个人', '是否还在公示期以原文为准'],
+    clients: ['已确认截止的不列', '这里的客户卡片不会自动发送', '要另外确认上传', '选省包含该省已收录的城市、区县', RULE, '不判断客户能不能申报', '导出的表里不含客户名称。',
       '这里的客户卡片只保存在本机，不上传'],
     files: ['导出记录只保存在这台手机上'],
     feedback: ['请不要填写姓名、电话等个人信息'],
@@ -86,6 +87,8 @@ test('和具体数据挂钩的准确性说明、隐私说明照旧保留', () =>
     // 日期写成中文、说"已于……对照原文核对"，免得读成截止日是这一天（10/29 独立审阅）
     assert.equal(note.includes('截止日期已于 2026年10月28日 对照原文核对。'), Boolean(checked));
     assert.ok(!note.includes('以上要点'));
+    // 没有支持方式、申报对象、申报条件这几张卡片时，不写它们的核对说明
+    assert.ok(!note.includes('已核对原文'));
   }
 });
 
@@ -169,7 +172,7 @@ test('10/29 晚：数据说明都写在使用帮助里，页面上只留一个"�
   assert.match(text('lists'), /不能这样判断/);
   for (const item of help.items.filter((i) => !i.ai)) assert.doesNotMatch(item.q + item.a.join(''), /\bAI\b/, item.key);
   // 入口：详情页原文出处下、截止页页底，都按包里有没有帮助页显示
-  assert.match(wxml('detail'), /<view wx:if="{{has.help}}" class="link source-help" bindtap="help" aria-role="link">数据说明 ›<\/view>/);
+  assert.match(wxml('detail'), /<view wx:if="{{has.help}}" class="link source-help" bindtap="help" aria-role="link">内容怎么来的 ›<\/view>/);
   assert.match(wxml('report'), /<view wx:if="{{has.help}}" class="note"><text class="link" bindtap="help" aria-role="link">截止日期怎么看 ›<\/text><\/view>/);
   assert.match(wxml('report'), /<view wx:else class="note">7 天内到期的只列人工核对过的日期/);
   // 详情页、阅读页跳到"正文和附件里的文字是怎么来的"，截止页、结果页跳到"截止日期怎么看"（agy、Codex 第 3 轮）
@@ -177,13 +180,14 @@ test('10/29 晚：数据说明都写在使用帮助里，页面上只留一个"�
     assert.match(read(`pages/${page}/index.js`), new RegExp(`if \\(this\\.data\\.has\\.help\\) wx\\.navigateTo\\(\\{ url: '/pages/help/index\\?topic=${topic}' \\}\\);`), page);
     assert.match(read(`pages/${page}/index.js`), /require\('\.\.\/\.\.\/utils\/pages\.js'\)/, page);
   }
-  assert.match(wxml('reader'), /<view wx:if="{{has.help}}" class="help-link"><text class="link" bindtap="help" aria-role="link">数据说明 ›<\/text><\/view>/);
-  assert.match(wxml('results'), /<view wx:if="{{has.help && !advisor}}" class="help-link"><text class="link" bindtap="help" aria-role="link">数据说明 ›<\/text><\/view>/);
+  // 11/12 简化走查：入口按去处起名——阅读页去"文字是怎么来的"，结果页去"截止日期怎么看"（原来都叫"数据说明 ›"）
+  assert.match(wxml('reader'), /<view wx:if="{{has.help}}" class="help-link"><text class="link" bindtap="help" aria-role="link">内容怎么来的 ›<\/text><\/view>/);
+  assert.match(wxml('results'), /<view wx:if="{{has.help && !advisor}}" class="help-link"><text class="link" bindtap="help" aria-role="link">截止日期怎么看 ›<\/text><\/view>/);
   // 帮助页：从"说明 ›"进来滚到那一条并加框
   const vm = require('node:vm');
   let def; const scrolled = [];
   vm.runInNewContext(read('pages/help/index.js'), {
-    require: (name) => ({ '../../content/help.js': help, '../../utils/ai-access.js': { current: () => null, subscribe: () => () => {}, ensure() {} }, '../../utils/consent.js': { loginOpen: () => true } })[name],
+    require: (name) => ({ '../../content/help.js': help, '../../utils/ai-access.js': { current: () => null, subscribe: () => () => {}, ensure() {} }, '../../utils/consent.js': { loginOpen: () => true }, '../../utils/subscribe.js': { remindOpen: () => false } })[name],
     Page: (d) => { def = d; }, wx: { setNavigationBarTitle() {}, pageScrollTo: (o) => scrolled.push(o.selector) },
   });
   const page = { ...def, data: { ...def.data }, setData(v) { Object.assign(this.data, v); } };
@@ -314,7 +318,7 @@ function detailOf(getDoc) {
   });
 }
 
-test('详情页：核对过的截止原句只在截止卡片里写一次；"原文摘录"只标机器摘出的截止，申报对象标"已核对原文"', async () => {
+test('详情页：核对过的截止原句只在截止卡片里写一次；"原文摘录"只标机器摘出的截止；支持方式、申报对象、申报条件的核对说明合成一句写在页底（11/12 简化走查）', async () => {
   const { render, textOf, findAll, hasClass } = require('./wxml-render.js');
   const base = { id: '9', kind: '申报通知', tags: ['申报通知'], title: '关于组织申报的通知', issuer: '某厅', date: '2026-10-28', region: '山东 · 省级', attachments: [], points: [],
     excerpt: { section: '截止时间原文', text: '请于11月20日前报送。' }, checked: '2026-10-27',
@@ -325,7 +329,10 @@ test('详情页：核对过的截止原句只在截止卡片里写一次；"原�
   let shown = textOf(render('pages/detail/index.wxml', { ...page.data, loading: false }));
   assert.equal(shown.split('请于11月20日前报送。').length - 1, 1, '逐类写截止时原句只写一次');
   assert.doesNotMatch(shown, /原文摘录/);
-  assert.match(shown, /申报对象（已核对原文）/);
+  // 三张核对过的卡片不再各标一遍"已核对原文"（括号写法还不一样），合成一句在页底原文出处里
+  assert.match(shown, /申报对象/); assert.doesNotMatch(shown, /申报对象（已核对原文）/);
+  assert.equal(shown.split('已核对原文').length - 1, 1);
+  assert.match(shown, /支持方式、申报对象、申报条件已核对原文。/);
   assert.match(shown, /截止日期已于 2026年10月27日 对照原文核对。/);
   // 旧接口（没有 deadlines、只有核对过的 deadline）：原句跟在日期下面，标"已人工核对"，也只写一次
   doc = { ...base, kind: '政策文件', tags: ['政策文件'], deadline: { label: '截止', date: plusDays(20), time: null, verified: true, notes: [] } };
@@ -430,7 +437,8 @@ test('列表行：原文链接已失效的不写"截止时间见原文"；另一
   };
   const base = { id: '1', kind: '申报通知', title: '关于组织申报的通知', issuer: '某厅', date: '2026-10-28' };
   assert.equal(load({ ...base, due: null, link_gone: '2026-10-27' }).dueNote, '');
-  assert.equal(load({ ...base, due: null }).dueNote, '截止时间见原文');
+  // 11/12 简化走查：没有日期的列表行不写"截止时间见原文"（详情页、截止页写），原文链接失效与否一样
+  assert.equal(load({ ...base, due: null }).dueNote, '');
   assert.equal(load({ ...base, due: null, dueSoonUnverified: true, link_gone: '2026-10-27' }).dueNote, '可能 7 天内截止');
   // 推荐截止 9 天后（原文摘录）、企业申报截止可能 7 天内：先说"可能 7 天内截止"，不写 9 天后那个日期和原句
   const later = load({ ...base, due: { kind: '推荐或审核截止', source: 'excerpt', date: plusDays(9), time: null, remainingDays: 9, quote: '某日前' }, dueSoonUnverified: true });
@@ -500,8 +508,15 @@ test('结果页（站内看所选文件）：空的发布状态不留两个"·"�
   // 原文链接已失效：不写"截止："那一行，出处后面标一句（和列表、详情一致）
   const goneText = textOf(render('pages/results/index.wxml', soonPage.data));
   assert.match(goneText, /出处：某厅 · 原文链接已失效/);
-  assert.doesNotMatch(goneText.split('壬')[1], /截止：|站内阅读正文和依据/);
-  assert.match(goneText.split('壬')[0], /站内阅读正文和依据/);
+  assert.doesNotMatch(goneText.split('壬')[1], /截止：|看正文/);
+  assert.match(goneText.split('壬')[0], /看正文/);
+  // 11/12 简化走查：没有的项不写"未提供"，整行不显示
+  const bare = textOf(render('pages/results/index.wxml', { advisor: false, result: { total: 2, generatedAtText: 'x', items: [
+    { number: 1, doc_id: '1', title: '甲', metaText: '申报通知', siteText: '某厅', issuer: '', doc_number: '', published: '' },
+    { number: 2, doc_id: '2', title: '乙', metaText: '申报通知', siteText: '某厅', issuer: '某厅', doc_number: '某〔2026〕1号', published: '' },
+  ] }, has: {} }));
+  assert.doesNotMatch(bare, /未提供/);
+  assert.match(bare, /发文机关：某厅/); assert.match(bare, /文号：某〔2026〕1号/); assert.doesNotMatch(bare, /发布日期/);
   // 只看还有效的日期（Codex 第 8 轮）："原定……已延期"那条不算；今天带时刻、已经过了点的不算；只有变更的照写，不写"见原文"
   const now = new Date();
   const pastHour = (() => {

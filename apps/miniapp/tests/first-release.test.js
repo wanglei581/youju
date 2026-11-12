@@ -57,7 +57,7 @@ test('dueView：已核对写日期和"已核对"；机器摘录要带原句、8 
   assert.equal(format.dueView(null), null);
 });
 
-test('列表行：接口带 due 时按来源写；机器摘录另起一行写标签和原句；没有 due 时写见原文', () => {
+test('列表行：接口带 due 时按来源写；机器摘录另起一行写标签和原句；没有日期时列表行不写"截止时间见原文"（详情页、截止页写，11/12 简化走查）', () => {
   const row = load('components/doc-row/index.js', { '../../utils/format.js': format, '../../utils/copy.js': {}, '../../utils/repost.js': require('../utils/repost.js') });
   const observe = (doc) => { row.observers['doc, q, today'].call(row, { id: '9', title: '关于组织申报的通知', kind: '申报通知', ...doc }, ''); return plain(row.data); };
   const ex = observe({ due: { kind: '企业申报截止', source: 'excerpt', date: plus(15), quote: QUOTE } });
@@ -70,10 +70,10 @@ test('列表行：接口带 due 时按来源写；机器摘录另起一行写标
   const soon = observe({ due: null, dueSoonUnverified: true });
   assert.equal(soon.due, null); assert.equal(soon.dueNote, '可能 7 天内截止');
   const unv = observe({ due: { kind: '企业申报截止', source: 'unverified', date: null } });
-  assert.equal(unv.dueNote, '截止时间见原文'); assert.equal(unv.excerpt, null);
-  assert.equal(observe({ due: null }).dueNote, '截止时间见原文');
-  // 旧接口（没有 due 字段）照旧：只认核对过的 deadline
-  assert.equal(observe({ deadline: null, deadline_state: 'unverified' }).dueNote, '截止时间见原文');
+  assert.equal(unv.dueNote, ''); assert.equal(unv.excerpt, null);
+  assert.equal(observe({ due: null }).dueNote, '');
+  // 旧接口（没有 due 字段）照旧：只认核对过的 deadline；没核对的同样不写"截止时间见原文"
+  assert.equal(observe({ deadline: null, deadline_state: 'unverified' }).dueNote, '');
   // 不是申报通知的不写截止
   assert.equal(observe({ kind: '政策', due: null }).dueNote, '');
 });

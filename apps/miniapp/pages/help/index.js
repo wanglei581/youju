@@ -3,10 +3,12 @@
 const help = require('../../content/help.js');
 const access = require('../../utils/ai-access.js');
 const { loginOpen } = require('../../utils/consent.js');
+const { remindOpen } = require('../../utils/subscribe.js');
 
 function itemsFor(state) {
   return help.items
-    .filter((item) => (!item.ai || (state && state.visible === true && state.confirmed === true)) && (!item.login || loginOpen()))
+    // remind：微信提醒（订阅消息模板）还没开通时，不写怎么订阅提醒
+    .filter((item) => (!item.ai || (state && state.visible === true && state.confirmed === true)) && (!item.login || loginOpen()) && (!item.remind || remindOpen('newDocs')))
     .map((item) => ({ key: item.key, q: item.q, a: item.a }));
 }
 // 从页面上的"说明 ›"进来（?topic=deadline）：滚到那一条、加一圈框；没有这一条就停在顶上

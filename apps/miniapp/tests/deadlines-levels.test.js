@@ -42,12 +42,12 @@ test('截止说明：未核对、无候选、已核对三种情况，未核对�
   for (const word of ['最', '保证', '智能', 'AI']) assert.ok(!format.deadlineNote(UNVERIFIED).includes(word));
 });
 
-test('列表行：显示截止状态说明，模板不再写死文字', () => {
+test('列表行：没有核对过的日期时不写日期，也不写"截止时间见原文"（这句只在详情页、截止页写，11/12 简化走查），模板不再写死文字', () => {
   const row = load('components/doc-row/index.js', { '../../utils/format.js': format, '../../utils/copy.js': {}, '../../utils/repost.js': require('../utils/repost.js') });
   const observe = (doc) => { row.observers['doc, q, today'].call(row, doc, ''); return row.data; };
-  assert.equal(observe(UNVERIFIED).dueNote, '截止时间见原文');
+  assert.equal(observe(UNVERIFIED).dueNote, '');
   assert.equal(observe(UNVERIFIED).due, null);
-  assert.equal(observe(NONE).dueNote, '截止时间见原文');
+  assert.equal(observe(NONE).dueNote, '');
   const verified = observe(VERIFIED);
   assert.equal(verified.dueNote, ''); assert.match(verified.due.text, /10月18日/);
   const leaked = observe({ ...UNVERIFIED, deadline: { date: '2026-11-23', verified: false } });
