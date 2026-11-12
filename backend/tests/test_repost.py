@@ -1850,6 +1850,21 @@ def test_outside_auto_group_reverts_when_the_original_number_is_corrected(sessio
     assert session.get(RepostSignal, original.id).own_number == "工信厅联电子函〔2026〕377号"
 
 
+def test_auto_group_with_rewritten_body_is_rejudged_on_fresh_signals(session, monkeypatch):
+    # 自动组的正文被直接改写（抓取时间不变，存好的正文信号还是旧的）：指纹看出变了、退回以后，先按
+    # 现在的正文重算信号再重判——删掉了共同引用的文号，就不再自动确认回去
+    _auto_on(monkeypatch, session)
+    docs = _auto_world(session)
+    assert rebuild(session, now=NOW).auto_merged == 1
+    detail = session.get(DocumentDetail, docs[0].id)
+    detail.body_text = "各有关单位：现就有关工作通知如下。陕西"
+    session.flush()
+    result = rebuild(session, now=NOW + timedelta(seconds=1))
+    assert (result.auto_reverted, result.auto_merged) == (1, 0)
+    assert session.get(RepostSignal, docs[0].id).cited == []
+    assert all(r.confirmed_at is None for r in _members(session).values())
+
+
 def test_new_versions_are_added_one_by_one(session, monkeypatch):
     # 已经自动合并的组同时来了两份新版本：正文齐全、引用同一文号的那份加进来；正文还没抓到的留待确认
     from youju.repost import AUTO_REVIEWER

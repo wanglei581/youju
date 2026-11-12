@@ -868,19 +868,25 @@ def _auto_versions(rows, duplicates) -> list:
     return [r for r in rows if r.active and r.document_id not in duplicates]
 
 
+def _original_number(doc: Candidate) -> str | None:
+    """部里原件按自己的发文字号对上转发件引用的文号（协调会话 11/13 口径）：只认国家级来源（省份记
+    "国家"）的文件；省、市、县文件自己的文号不算。"""
+    return doc.own_number if doc.province == "国家" else None
+
+
 def auto_upstream(rows, cands, duplicates, versions=None) -> str | None:
     """判的版本都对得上的上游文号（多个时取排序最前的）：转发件引用了它（cited_upstream 认的写法，
-    文号完全一致）；部里的原件不引用自己，它自己的发文字号（Candidate.own_number：详情里页面元数据
-    或正文头上的，括号写法统一以后）和它完全一致才算对上（协调会话 11/13 口径）。至少要有一份是
-    引用它的转发件。versions 给了就只看这几行（rows、duplicates 这时不用），默认全部在组版本；
-    没有共同文号、缺候选的给 None。"""
+    文号完全一致）；部里的原件（国家级来源）不引用自己，它自己的发文字号（Candidate.own_number：
+    详情里页面元数据或正文头上的，括号写法统一以后）和它完全一致才算对上（协调会话 11/13 口径，
+    _original_number）。至少要有一份是引用它的转发件。versions 给了就只看这几行（rows、duplicates
+    这时不用），默认全部在组版本；没有共同文号、缺候选的给 None。"""
     versions = _auto_versions(rows, duplicates) if versions is None else versions
     if not versions or any(r.document_id not in cands for r in versions):
         return None
     docs = [cands[r.document_id] for r in versions]
     cited = [{c.number for c in signals(d).cited} for d in docs]
     matched = [
-        numbers | {doc.own_number} if doc.own_number else numbers
+        numbers | {own} if (own := _original_number(doc)) else numbers
         for numbers, doc in zip(cited, docs, strict=True)
     ]
     common = set.intersection(*matched) & set().union(*cited)
@@ -898,7 +904,8 @@ def auto_reason(group, rows, cands, duplicates, versions=None) -> str:
       没有被人确认过（自动确认的不算）；判的版本至少 2 份；
     - 每份都是申报通知、有正文、不是本地项目，核心标题完全一样（至少 MIN_CORE_CHARS 字）；
     - 都对得上同一个上游文号（auto_upstream）：转发件引用了它（cited_upstream 认的写法，文号完全
-      一致）；部里的原件不引用自己，按它自己的发文字号，和转发件引用的完全一致才算对上（11/13）；
+      一致）；部里的原件（国家级来源）不引用自己，按它自己的发文字号，和转发件引用的完全一致才算
+      对上（11/13）；
     - 一点上游证据都没有的（没引用文号，标题、正文也没写明转发，标题不带部委）至多一份（原件）；
     - 同一机关只有一份、发布日期跨度不超过 90 天（valid_group）。
     这些都满足时，任意两份核心标题一样、至少一份有上游证据，pair_strength 必然是 strong。"""
@@ -931,7 +938,7 @@ def auto_reason(group, rows, cands, duplicates, versions=None) -> str:
             return "本地项目"
         if len(sig.core) < MIN_CORE_CHARS:
             return "核心标题太短"
-        if not sig.cited and not doc.own_number:
+        if not sig.cited and not _original_number(doc):
             return "缺少上游文号"
         if not sig.upstream:
             bare += 1
@@ -1131,6 +1138,7 @@ def rebuild(
     for row in members.values():
         if row.active:
             by_group[row.group_id].append(row)
+    resignal: set[int] = set()  # 内容变了、退回重判的自动组的成员
     for group_id, rows in by_group.items():
         group = groups[group_id]
         confirmed = [r for r in rows if r.confirmed_at is not None]
@@ -1155,6 +1163,7 @@ def rebuild(
                 # 条件就按新内容重新自动确认；不转"需复核"，免得一次正文重抓就永久转人工
                 for r in confirmed:
                     r.confirmed_by = r.confirmed_at = r.confirmed_fingerprint = None
+                resignal.update(r.document_id for r in rows)
                 bump(group, stamp)
                 summary.auto_reverted += 1
                 _audit_auto(
@@ -1164,6 +1173,13 @@ def rebuild(
             group.needs_review = True
             bump(group, stamp)
             summary.needs_review += 1
+    if resignal:
+        # 内容变了、退回重判的自动组：正文可能是直接改写的（抓取时间不变，存好的正文信号还是旧的），
+        # 先按现在的详情重算这些成员的正文信号，再换上新的候选（只换已经在候选里的；窗口外的组不拿来
+        # 归组，也不往里加新版本）
+        recompute_signals(session, sorted(resignal), stamp)
+        fresh = {c.id: c for c in candidates_for(session, sorted(resignal))}
+        candidates = [fresh.get(c.id, c) for c in candidates]
     # 重抓以后、或轮到定期核对的确认成员：核对过的一律记下核对的时间（内容变了的组已经转需复核或
     # 退回，不再记着也会一直排在定期核对的最前面，挤掉别的组）
     checked = [d for d in set(changed_confirmed) | periodic if d in members]

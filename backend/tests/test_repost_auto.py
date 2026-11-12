@@ -204,17 +204,19 @@ def _rule_battery() -> list:
         out.append(auto_reason(group, rows, cands, set()))
     # 部里的原件不引用自己，按自己的发文字号对上（协调会话 11/13 口径）
     number = "工信厅办函〔2026〕1号"
-    original = {"cited": (), "own_number": number}
+    original = {"cited": (), "own_number": number, "province": "国家"}
+    another = {**original, "dept": "工信"}  # 另一个部委发的同一份（会签）
     ministry = "工业和信息化部办公厅关于开展创新产业发展项目申报工作的通知"
     for changes in (
         {1: original},
-        {1: {"cited": (), "own_number": "工信厅办函〔2026〕2号"}},
-        {1: {"cited": (), "own_number": None}},
-        {1: original, 2: original},
-        {1: {**original, "title": ministry}, 2: original},
-        {1: original, 2: original, 3: original},
+        {1: {**original, "own_number": "工信厅办函〔2026〕2号"}},
+        {1: {**original, "own_number": None}},
+        {1: original, 2: another},
+        {1: {**original, "title": ministry}, 2: another},
+        {1: original, 2: another, 3: {**original, "dept": "财政"}},
         {1: {**original, "kind": "其他"}},
         {1: {**original, "has_body": False}},
+        {1: {"cited": (), "own_number": number}},  # 不是国家级来源：自己的文号不算
     ):
         rows = [RepostGroupMember(document_id=i, active=True, joined_by="rule") for i in (1, 2, 3)]
         cands = {i: cand(i, **changes.get(i, {})) for i in (1, 2, 3)}
@@ -251,7 +253,7 @@ def _rule_battery() -> list:
 # 自己的发文字号、分类规则改了）：放宽了要把 repost.AUTO_RULE_VERSION 换成新日期（旧的抽查不再
 # 算数，要重新抽 100 组），再把这里两项一起更新；修紧不换版本号，只更新指纹（下一轮重建会把不再
 # 满足的组退回待确认，每周 Codex 抽 10 组照常盯着，协调会话 11/13 定的规矩）
-RULE_FINGERPRINT = ("2026-11-13", "20a9852ff391ad8c")
+RULE_FINGERPRINT = ("2026-11-13", "4018a24a2227fb78")
 
 
 def test_rule_version_is_bumped_when_the_rules_change():
@@ -269,7 +271,7 @@ def test_ministry_original_counts_by_its_own_number(example):
     # 一致才算对上（协调会话 11/13 口径）；别的条件一样不放
     group, rows, cands = example
     number = "工信厅办函〔2026〕1号"
-    cands[1] = replace(cands[1], cited=(), own_number=number)
+    cands[1] = replace(cands[1], cited=(), own_number=number, province="国家")
     assert auto_reason(group, rows, cands, set()) == ""
     assert auto_upstream(rows, cands, set()) == number
     for a, b in combinations(cands.values(), 2):
@@ -278,19 +280,27 @@ def test_ministry_original_counts_by_its_own_number(example):
     assert auto_reason(group, rows, {**cands, 1: other}, set()) == "没有共同上游文号"
     none = replace(cands[1], own_number=None)
     assert auto_reason(group, rows, {**cands, 1: none}, set()) == "缺少上游文号"
+    # 只认部里（国家级来源）的原件：省、市、县文件自己的文号不算
+    city = replace(cands[1], province="1")
+    assert auto_reason(group, rows, {**cands, 1: city}, set()) == "缺少上游文号"
     # 两份都一点上游证据没有：这两份之间不是强证据，不合；其中一份标题带部委就行
-    bare = {**cands, 2: replace(cands[2], cited=(), own_number=number)}
+    second = replace(cands[2], cited=(), own_number=number, province="国家", dept="工信")
+    bare = {**cands, 2: second}
     assert auto_reason(group, rows, bare, set()) == "两份以上没有上游证据"
     titled = replace(cands[1], title="工业和信息化部办公厅关于开展创新产业发展项目申报工作的通知")
     assert auto_reason(group, rows, {**bare, 1: titled}, set()) == ""
     # 没有一份转发件引用它：对不上
-    alone = {i: replace(c, cited=(), own_number=number) for i, c in cands.items()}
+    alone = {
+        i: replace(c, cited=(), own_number=number, province="国家", dept=f"部{i}")
+        for i, c in cands.items()
+    }
     assert auto_reason(group, rows, alone, set()) == "没有共同上游文号"
     for changes in (
         {"kind": "其他"},
         {"has_body": False},
         {"title": "关于开展创新产业发展另一方向项目申报工作的通知"},
         {"province": "2"},
+        {"dept": "科技", "province": "2"},
     ):
         assert auto_reason(group, rows, {**cands, 1: replace(cands[1], **changes)}, set())
 
