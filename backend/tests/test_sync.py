@@ -3,6 +3,7 @@
 本机库上的触发器、变更表只在这些测试里建，测试完删掉，不影响别的测试。
 """
 
+import contextlib
 import gzip
 import hashlib
 import io
@@ -290,11 +291,11 @@ def test_failed_batch_changes_nothing_and_resumes(env, monkeypatch):
     real = sync_server.apply
     calls = []
 
-    def broken(engine, payload):
+    def broken(engine, payload, **kw):
         calls.append(1)
         if len(calls) == 1:
             raise RuntimeError("服务器写到一半出错")
-        return real(engine, payload)
+        return real(engine, payload, **kw)
 
     monkeypatch.setattr(sync_server, "apply", broken)
     monkeypatch.setattr(local.clock, "sleep", lambda s: None)
@@ -306,6 +307,70 @@ def test_failed_batch_changes_nothing_and_resumes(env, monkeypatch):
     with pytest.raises(local.SyncError) as err:
         env.client.json("POST", "/apply", stale)
     assert "409" in str(err.value)
+
+
+def test_client_stamps_always_move_forward(monkeypatch):
+    """同一个客户端里每次签的时间都比上一次大（两个请求落在同一毫秒、时钟往回调一点都一样）。"""
+    client = local.Client("http://testserver", SECRET, http=TestClient(app))
+    sent = []
+    monkeypatch.setattr(sync_tables, "new_stamp", lambda: "1731400000000")
+    real = sync_tables.signature
+
+    def spy(secret, method, target, stamp, digest):
+        sent.append(int(stamp))
+        return real(secret, method, target, stamp, digest)
+
+    monkeypatch.setattr(sync_tables, "signature", spy)
+    for _ in range(3):
+        with contextlib.suppress(local.SyncError):
+            client.json("GET", "/state")
+    assert sent == [1731400000000, 1731400000001, 1731400000002]
+
+
+def test_stale_or_replayed_batches_are_refused(env, monkeypatch):
+    """写入按请求签名里的时间（毫秒）排先后：比服务器写过的最新一批旧、或一样的（重放、卡在半路
+    晚到的请求），增量和全推都不写。本机重试会重签新时间，照常写。"""
+    src = source(env.local)
+    bootstrap(env)
+    document(env.local, src, "a")
+    now = [int(time.time() * 1000)]
+    sent: list[str] = []
+
+    def stamp():
+        now[0] += 1
+        sent.append(str(now[0]))
+        return sent[-1]
+
+    monkeypatch.setattr(sync_tables, "new_stamp", stamp)
+    local.push(env.local, env.client)
+    applied = env.client.json("GET", "/state")["applied_seq"]
+    stream = local.stream_of(env.local)
+
+    # 卡在半路晚到、或别人抓去重放的旧请求（另一个客户端，5 秒前签的，签名还有效）：
+    # 比刚才写的那批旧，不写
+    def other():
+        return local.Client(env.client.base, SECRET, http=env.client._http)
+
+    now[0] -= 5000
+    for body in (
+        {"stream": stream, "max_seq": 999999, "tables": {}},
+        {"full": True, "tables": {}},
+    ):
+        with pytest.raises(local.SyncError) as err:
+            other().json("POST", "/apply", body)
+        assert "409" in str(err.value) and "旧" in str(err.value)
+    assert env.client.json("GET", "/state")["applied_seq"] == applied
+    # 时间往前走过了上次写的：照常写
+    now[0] += 10000
+    env.client.json("POST", "/apply", {"stream": stream, "max_seq": applied + 1, "tables": {}})
+    replay_stamp = sent[-1]  # 刚才写成的那一批的时间
+    assert env.client.json("GET", "/state")["applied_seq"] == applied + 1
+    # 同一个时间原样重放：不写
+    monkeypatch.setattr(sync_tables, "new_stamp", lambda: replay_stamp)
+    with pytest.raises(local.SyncError) as err:
+        other().json("POST", "/apply", {"stream": stream, "max_seq": applied + 2, "tables": {}})
+    assert "409" in str(err.value)
+    assert env.client.json("GET", "/state")["applied_seq"] == applied + 1
 
 
 def test_stream_mismatch_needs_full_push(env):
@@ -349,7 +414,7 @@ def test_signatures_are_required(env):
         wrong.json("GET", "/state")
     assert "401" in str(err.value)
     empty = sync_tables.body_digest(b"")
-    stamp = str(int(time.time()) - 3600)
+    stamp = str(int((time.time() - 3600) * 1000))
     sig = sync_tables.signature(SECRET, "GET", "/api/sync/v1/state", stamp, empty)
     old = raw.get(
         "/api/sync/v1/state",
@@ -360,8 +425,20 @@ def test_signatures_are_required(env):
         },
     )
     assert old.status_code == 401
-    # 签名对、包体被换了：不认
+    # 时间按秒写（旧的写法，不是 13 位毫秒）：不认
     stamp = str(int(time.time()))
+    sig = sync_tables.signature(SECRET, "GET", "/api/sync/v1/state", stamp, empty)
+    seconds = raw.get(
+        "/api/sync/v1/state",
+        headers={
+            sync_tables.HEADER_TIME: stamp,
+            sync_tables.HEADER_SIGNATURE: sig,
+            sync_tables.HEADER_BODY: empty,
+        },
+    )
+    assert seconds.status_code == 401
+    # 签名对、包体被换了：不认
+    stamp = sync_tables.new_stamp()
     sig = sync_tables.signature(SECRET, "POST", "/api/sync/v1/apply", stamp, empty)
     swapped = raw.post(
         "/api/sync/v1/apply",
@@ -404,7 +481,7 @@ def test_gzip_bomb_is_refused(env):
 
 
 def _raw_gzip(client, payload):
-    stamp = str(int(time.time()))
+    stamp = sync_tables.new_stamp()
     target = "/api/sync/v1/apply"
     digest = sync_tables.body_digest(payload)
     headers = {

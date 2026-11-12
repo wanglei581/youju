@@ -147,6 +147,9 @@ class Client:
         self.base = url.rstrip("/")
         self._secret = secret
         self._http = http or httpx.Client(trust_env=False, timeout=300)
+        # 发过的最新时间：同一个进程里每次签的时间都比上一次大（服务器按它排写入的先后，
+        # 一样的当作重放不写；两个请求可能落在同一毫秒）
+        self._last_stamp = 0
 
     def close(self) -> None:
         self._http.close()
@@ -168,7 +171,8 @@ class Client:
         digest = sync_tables.body_digest(payload)
         for wait in (5, 30, 120, None):
             # 每次发都重签（签名有 5 分钟时效）
-            stamp = str(int(clock.time()))
+            stamp = str(max(int(sync_tables.new_stamp()), self._last_stamp + 1))
+            self._last_stamp = int(stamp)
             headers = {
                 sync_tables.HEADER_TIME: stamp,
                 sync_tables.HEADER_BODY: digest,

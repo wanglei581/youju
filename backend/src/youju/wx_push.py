@@ -172,14 +172,20 @@ def seal_reply(
     aes = _secret(settings.wx_push_aes_key)
     stamp = int(clock.time()) if timestamp is None else timestamp
     encrypted = encrypt(aes, body, settings.wx_appid.strip(), random16=random16)
-    signature = sha1_signature(token, str(stamp), nonce, encrypted)
+    # 随机数只留字母数字（XML 回包放在 CDATA 里），签名和回包用同一个：微信按回包里的 Nonce 验签
+    safe_nonce = re.sub(r"[^0-9A-Za-z]", "", nonce)
+    signature = sha1_signature(token, str(stamp), safe_nonce, encrypted)
     if not xml:
         return json.dumps(
-            {"Encrypt": encrypted, "MsgSignature": signature, "TimeStamp": stamp, "Nonce": nonce},
+            {
+                "Encrypt": encrypted,
+                "MsgSignature": signature,
+                "TimeStamp": stamp,
+                "Nonce": safe_nonce,
+            },
             separators=(",", ":"),
         ).encode()
-    # 照官方示例的写法：字符串放在 CDATA 里。密文是 Base64、签名是十六进制，随机数只留字母数字
-    safe_nonce = re.sub(r"[^0-9A-Za-z]", "", nonce)
+    # 照官方示例的写法：字符串放在 CDATA 里。密文是 Base64、签名是十六进制
     return (
         f"<xml><Encrypt><![CDATA[{encrypted}]]></Encrypt>"
         f"<MsgSignature><![CDATA[{signature}]]></MsgSignature>"

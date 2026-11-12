@@ -32,6 +32,8 @@ from youju.sync.tables import pk_columns
 log = logging.getLogger("youju.sync")
 router = APIRouter(prefix="/api/sync/v1", include_in_schema=False)
 STATE = "sync_state"
+# 写入的先后：记下写过的最新一批的请求时间（毫秒，签名里的），比它旧的不写（server.apply）
+ORDER = "sync_order"
 # 一次请求最多收多少字节（压缩后），解压后最多多少：防止塞爆内存
 # 本机每批按未压缩 8MB 切（local.MAX_BYTES），附件副本最大 20MB：这两个上限都留了余量，
 # 又不至于让几个请求就把 worker（限 640MB 内存）撑爆
@@ -127,6 +129,15 @@ def ensure_state(engine: Engine) -> None:
                 ") ENGINE=InnoDB"
             )
         )
+        conn.execute(
+            text(
+                f"CREATE TABLE IF NOT EXISTS `{ORDER}` ("
+                " name VARCHAR(16) NOT NULL PRIMARY KEY,"
+                " last_stamp BIGINT NOT NULL,"
+                " updated_at DATETIME(6) NOT NULL"
+                ") ENGINE=InnoDB"
+            )
+        )
 
 
 def max_ids(conn: Connection) -> dict[str, int]:
@@ -203,8 +214,18 @@ def _old_blob_paths(conn: Connection, parts: dict) -> set[str]:
     return paths
 
 
-def apply(engine: Engine, payload: dict) -> dict:
+class Stale(Exception):
+    def __init__(self, last: int) -> None:
+        super().__init__("这一批比服务器已经写过的旧")
+        self.last = last
+
+
+def apply(engine: Engine, payload: dict, *, stamp: int) -> dict:
     """写一批（一个事务）。
+
+    - 先后：stamp 是这个请求签名里的时间（毫秒）。每一批（增量、全推都算）都要比服务器写过的
+      最新一批新，不然不写（抛 Stale，409）：签名 5 分钟内有效，挡住重放；本机重试会重签新时间，
+      卡在半路的旧请求晚到时已经比重试那次旧了，不会用旧的样子盖掉新的。所有写入在这一行上排队。
 
     - 增量（full 不是 true）：stream 要和服务器记的一致（本机换了变更流、或服务器换过，都要先
       重新起步），否则抛 Conflict（409）。不按序号排先后：本机每批推的是这些行"现在"的样子，
@@ -218,6 +239,18 @@ def apply(engine: Engine, payload: dict) -> dict:
     ensure_state(engine)
     kept: dict[str, int] = {}
     with engine.connect() as conn, conn.begin():
+        conn.execute(
+            text(
+                f"INSERT IGNORE INTO `{ORDER}` (name, last_stamp, updated_at)"
+                " VALUES ('public', 0, :u)"
+            ),
+            {"u": datetime.now(UTC).replace(tzinfo=None)},
+        )
+        last = conn.execute(
+            text(f"SELECT last_stamp FROM `{ORDER}` WHERE name = 'public' FOR UPDATE")
+        ).scalar_one()
+        if stamp <= last:
+            raise Stale(int(last))
         if not full:
             row = conn.execute(
                 text(f"SELECT stream, applied_seq FROM `{STATE}` WHERE name = 'public' FOR UPDATE")
@@ -244,6 +277,10 @@ def apply(engine: Engine, payload: dict) -> dict:
                     conn.execute(Replace(t), upserts[start : start + 500])
         finally:
             conn.execute(text("SET FOREIGN_KEY_CHECKS = 1"))
+        conn.execute(
+            text(f"UPDATE `{ORDER}` SET last_stamp = :s, updated_at = :u WHERE name = 'public'"),
+            {"s": stamp, "u": datetime.now(UTC).replace(tzinfo=None)},
+        )
         seq = payload.get("max_seq")
         if not full and type(seq) is int:
             conn.execute(
@@ -351,8 +388,17 @@ async def apply_batch(request: Request) -> dict:
     payload = _json(await _body(request))
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="包体格式不对")
+    # 签名已经核对过（_body），时间是 13 位的毫秒数
+    stamp = sync_tables.stamp_ms(request.headers.get(sync_tables.HEADER_TIME, ""))
     try:
-        return await run_in_threadpool(apply, get_engine(), payload)
+        return await run_in_threadpool(lambda: apply(get_engine(), payload, stamp=stamp))
+    except Stale as exc:
+        detail = {
+            "message": "这一批比服务器已经写过的旧（重放、或卡在半路晚到的请求），没有写；"
+            "本机时钟往回调过的话，等时钟走过上次推的时间再推",
+            "last_stamp": exc.last,
+        }
+        raise HTTPException(status_code=409, detail=detail) from None
     except Conflict as exc:
         detail = {"message": "进度对不上", **exc.state}
         raise HTTPException(status_code=409, detail=detail) from None

@@ -129,6 +129,23 @@ def test_seal_reply_leaves_success_alone():
     assert root.findtext("Nonce") == "9" and root.findtext("TimeStamp") == "5"
     assert root.findtext("MsgSignature") == wx_push.sha1_signature(TOKEN, "5", "9", encrypted)
     assert wx_push.decrypt(AES, encrypted, APPID) == b"<xml><ErrCode>0</ErrCode></xml>"
+    # 随机数带了字母数字以外的字符：回包里只留字母数字，签名按回包里的那个算（微信按它验签）
+    for as_xml in (True, False):
+        out = wx_push.seal_reply(
+            settings(), b'{"ErrCode":0}', xml=as_xml, nonce="ab-c]]>12", timestamp=6
+        )
+        if as_xml:
+            root = ElementTree.fromstring(out)
+            nonce, sig, enc = (
+                root.findtext("Nonce"),
+                root.findtext("MsgSignature"),
+                root.findtext("Encrypt"),
+            )
+        else:
+            reply = json.loads(out)
+            nonce, sig, enc = reply["Nonce"], reply["MsgSignature"], reply["Encrypt"]
+        assert nonce == "abc12"
+        assert sig == wx_push.sha1_signature(TOKEN, "6", nonce, enc)
 
 
 @pytest.fixture

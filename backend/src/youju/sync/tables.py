@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import time as clock
 from datetime import date, datetime, time
 from typing import Any
 
@@ -88,6 +89,16 @@ HEADER_BODY = "X-Youju-Sync-Body-Sha256"
 WINDOW_SECONDS = 300
 
 
+def new_stamp() -> str:
+    """请求时间，毫秒（13 位数字）。签名里有它；服务器还按它排写入的先后（server.apply：比上次写过
+    的旧就不写，挡住重放和卡住后晚到的请求）。本机每次发（包括重试）都重签一个新的。"""
+    return str(int(clock.time() * 1000))
+
+
+def stamp_ms(stamp: str) -> int | None:
+    return int(stamp) if len(stamp) == 13 and stamp.isdigit() else None
+
+
 def body_digest(body: bytes) -> str:
     return hashlib.sha256(body).hexdigest()
 
@@ -102,11 +113,8 @@ def signature(secret: str, method: str, target: str, stamp: str, digest: str) ->
 def signature_ok(
     secret: str, method: str, target: str, stamp: str, digest: str, given: str, now: float
 ) -> bool:
-    try:
-        when = int(stamp)
-    except ValueError:
-        return False
-    if abs(now - when) > WINDOW_SECONDS:
+    when = stamp_ms(stamp)
+    if when is None or abs(now * 1000 - when) > WINDOW_SECONDS * 1000:
         return False
     if len(digest) != 64:
         return False
