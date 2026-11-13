@@ -3,6 +3,7 @@
 import ast
 import gzip
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -604,3 +605,76 @@ def test_local_only_mode_skips_sync_and_offsite_pull(monkeypatch, capsys):
         assert "跳过推送" in out and "跳过" in out
     finally:
         get_settings.cache_clear()
+
+
+def test_manifest_url_check_ignores_locale():
+    """清单链接的格式检查在 C 语言环境里比。11/12 导出窗口：OrcaTerm 的 root 是 LANG=en_US.UTF-8，
+    bash 按排序规则解释 [!-~]，字母不在范围里，合法链接被判成"清单链接不对"。"""
+    sh = (SHARED / "youju-shared.sh").read_text(encoding="utf-8")
+    fn = re.search(r"^manifest_url_ok\(\) \(\n.*?\n\)\n", sh, re.S | re.M)
+    assert fn, "manifest_url_ok 要是一个在子 shell 里跑的函数（LC_ALL 不影响外面）"
+    assert "\n  LC_ALL=C\n" in fn.group(0)
+    assert 'manifest_url_ok "$url"' in sh
+    if not shutil.which("bash"):
+        pytest.skip("没有 bash")
+    good = (
+        "https://7072-prod-x-1.tcb.qcloud.la/exports/manifest-20261112152810.json"
+        "?sign=0123456789abcdef&t=1700000000"
+    )
+
+    def run(script: str, url: str, lang: str) -> int:
+        env = {k: v for k, v in os.environ.items() if not k.startswith("LC_")}
+        env["LANG"] = lang
+        return subprocess.run(
+            ["bash", "-c", script, "t", url], env=env, capture_output=True
+        ).returncode
+
+    # 对照：不加 LC_ALL=C 的老写法在这台机器上确实判错，才说明复现得了；复现不了（没装这个语言环境，
+    # 或者不是 glibc，比如 macOS）的话测试就证明不了什么：CI 上算失败（该装语言环境了），本机跳过
+    old = fn.group(0).replace("\n  LC_ALL=C\n", "\n")
+    if run(old + 'manifest_url_ok "$1"', good, "en_US.UTF-8") == 0:
+        if os.environ.get("CI"):
+            pytest.fail("CI 上复现不了 en_US.UTF-8 下的老问题：先在工作流里装好这个语言环境")
+        pytest.skip("这台机器复现不了 en_US.UTF-8 下的老问题（没有这个语言环境或不是 glibc）")
+    cases = [
+        (good, 0),
+        ("https://youju-backup-1250000000.cos.ap-shanghai.myqcloud.com/exports/m.json?q=1", 0),
+        ("http://x.tcb.qcloud.la/a", 1),
+        ("https://evil.example.com/a", 1),
+        ("https://x.tcb.qcloud.la/a b", 1),
+        ("https://x.tcb.qcloud.la/a\tb", 1),
+        ("", 1),
+    ]
+    for lang in ("en_US.UTF-8", "C.UTF-8"):
+        for url, code in cases:
+            assert run(fn.group(0) + 'manifest_url_ok "$1"', url, lang) == code, (lang, url)
+
+
+def test_pasted_manifest_url_only_trims_the_ends():
+    """粘贴的链接只去掉首尾的空白和回车；中间带回车、空白的原样留着、判不对，不会悄悄拼成另一条链接
+    （Codex 确认轮）。"""
+    sh = (SHARED / "youju-shared.sh").read_text(encoding="utf-8")
+    trim = re.search(r"^trim_pasted\(\) \{.*\}\n", sh, re.M)
+    check = re.search(r"^manifest_url_ok\(\) \(\n.*?\n\)\n", sh, re.S | re.M)
+    assert trim and check
+    assert 'url=$(trim_pasted "$url")' in sh and "tr -d '\\r'" not in sh
+    if not shutil.which("bash"):
+        pytest.skip("没有 bash")
+    script = (
+        trim.group(0)
+        + check.group(0)
+        + 'u=$(trim_pasted "$1"); manifest_url_ok "$u" && printf %s "$u"'
+    )
+    url = "https://x.tcb.qcloud.la/exports/m.json?sign=ab&t=1"
+    for raw, want in [
+        (f"  {url}\r", url),
+        (f"\t{url} \r\r", url),
+        (f"{url}\n", url),
+        ("https://x.tcb.qcloud.la/exports/m.json?si\rgn=ab", None),
+        ("https://x.tcb.qcloud.la/exports/m.json ?sign=ab", None),
+    ]:
+        done = subprocess.run(["bash", "-c", script, "t", raw], capture_output=True, text=True)
+        if want is None:
+            assert done.returncode == 1 and done.stdout == "", repr(raw)
+        else:
+            assert done.returncode == 0 and done.stdout == want, repr(raw)
