@@ -53,6 +53,8 @@
 <view class="card">
   <view wx:if="{{loginOpen && has.records}}" class="row" data-url="/pages/advisor-tasks/index" bindtap="go"><t-icon name="file" size="40rpx" color="#4E5969" /><text class="row-text">我的记录</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
   <view wx:if="{{loginOpen && passEntry}}" class="row" data-url="/pages/pass/index" bindtap="go"><t-icon name="app" size="40rpx" color="#4E5969" /><text class="row-text">批量工具</text><text wx:if="{{passHint}}" class="row-hint">{{passHint}}</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
+  <!-- 我的保存（D-123）：原网页打不开、7 天后清理的通知，保存的正文和附件文字 -->
+  <view wx:if="{{loginOpen && savedEntry}}" class="row" data-url="/pages/saved/index" bindtap="go"><t-icon name="file" size="40rpx" color="#4E5969" /><text class="row-text">我的保存</text><text wx:if="{{savedHint}}" class="row-hint">{{savedHint}}</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
   <view wx:if="{{loginOpen && ordersEntry}}" class="row" data-url="/pages/orders/index" bindtap="go"><t-icon name="bulletpoint" size="40rpx" color="#4E5969" /><text class="row-text">我的订单</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
   <view wx:if="{{loginOpen}}" class="row" bindtap="coverage" aria-role="button"><t-icon name="add" size="40rpx" color="#4E5969" /><text class="row-text">申请收录：你关心的地区还没有？</text><t-icon name="chevron-right" size="32rpx" color="#86909C" /></view>
   <!-- 使用帮助和联系客服（D-075 第七节）：客服每天有人看、周末也看；使用帮助页不在过审版（首发 16 页）里，没有时不显示 -->

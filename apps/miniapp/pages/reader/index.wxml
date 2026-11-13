@@ -49,6 +49,8 @@
     <view class="h1">{{docTitle || title || '站内阅读'}}</view>
     <!-- 出处只写发文机关和日期，不写网址（D-097） -->
     <view wx:if="{{source.issuer || source.date}}" class="muted provenance">{{source.issuer}} <text class="nowrap">{{source.date}}</text></view>
+    <!-- D-123：原网页打不开、7 天后清理的通知（或我的保存里的副本）：打不开的日期、清理或保存的日期 -->
+    <view wx:if="{{goneNote}}" class="notice gone-note">{{goneNote}}</view>
     <!-- 目录（D-097）：正文 · 附件 1 · 附件 2；读不了的也列出来、写状态，不能点 -->
     <view wx:if="{{toc.length > 1}}" class="toc">
       <view wx:for="{{toc}}" wx:key="id" id="toc-{{index}}" class="toc-item {{item.current ? 'toc-item--on' : ''}} {{item.readable ? '' : 'toc-item--off'}}" data-id="{{item.id}}" bindtap="openToc" aria-role="{{item.readable && !item.current ? 'button' : 'text'}}" aria-disabled="{{!item.readable}}">
@@ -79,5 +81,6 @@
       <view wx:if="{{has.help}}" class="help-link"><text class="link" bindtap="help" aria-role="link">内容怎么来的 ›</text></view>
     </block>
   </view>
-  <view class="card actions"><button bindtap="feedback">纠错</button><button bindtap="detail">返回文件详情</button></view>
+  <view wx:if="{{savedMode}}" class="card actions"><button bindtap="backToSaved">返回我的保存</button></view>
+  <view wx:else class="card actions"><button bindtap="feedback">纠错</button><button bindtap="detail">返回文件详情</button></view>
 </block>

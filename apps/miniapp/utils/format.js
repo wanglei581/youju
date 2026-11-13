@@ -260,13 +260,31 @@ function noBodyText(body, atts) {
 }
 
 // 原网页已失效时详情页标题下的提示（D-097：正文、附件都不再给）。服务端万一还给了能读的正文或附件
-// （readable 为真），不说"不再提供"，免得上面说没有、下面又能读
-function goneNote(linkGone, readable) {
+// （readable 为真），不说"不再提供"，免得上面说没有、下面又能读。
+// D-123：还在 7 天清理期里的（服务端给了 gone）写打不开的日期和清理日期，正文、附件照常给
+// actions：这一页实际给的按钮（{ save, export }）。名单类和没给 actions 的照服务端的第二句；
+// 其余按实际按钮写，免得包里没有"我的保存"页（过审版）时写了"可以先保存"却只有导出（独立审阅第 2 轮）
+function goneNote(linkGone, readable, gone, actions) {
+  if (gone && typeof gone.notice === 'string' && gone.notice) {
+    let second = typeof gone.cleanupNotice === 'string' ? gone.cleanupNotice : '';
+    if (actions && gone.list !== true && /^\d{4}-\d{2}-\d{2}$/.test(String(gone.cleanup || ''))) {
+      const tail = actions.save ? '，可以先保存或导出' : (actions.export ? '，可以先导出' : '');
+      second = `这份通知将于${monthDay(gone.cleanup)}清理${tail}`;
+    }
+    return `${gone.notice}。${second ? `${second}。` : ''}`;
+  }
   if (!linkGone) return '';
   const head = `原文链接已失效（${linkGone} 检查时打不开）。`;
   if (readable) return `${head}下面是之前收录的内容，请以发文机关现在公布的为准。`;
   // 不点名"要点"、也不说"下面是"：要点常常整张不显示，下面可能只剩原文出处（10/29 独立审阅）
   return `${head}正文和附件不再提供，请以发文机关现在公布的为准。`;
+}
+
+// D-123：列表卡片上清理期里的那一行（服务端给的提示 + 哪天清理）；不在清理期里给空串
+function goneLine(gone) {
+  if (!gone || typeof gone.notice !== 'string' || !gone.notice) return '';
+  const day = /^\d{4}-\d{2}-\d{2}$/.test(String(gone.cleanup || '')) ? monthDay(gone.cleanup) : '';
+  return day ? `${gone.notice}；${day}清理` : gone.notice;
 }
 
 // 底栏去阅读页的入口（D-097；10/29 起正文下面不再放第二个）：正文只显示了开头 → "阅读全文"（去阅读页看正文）；
@@ -281,5 +299,5 @@ module.exports = {
   shortTime,
   todayISO, daysUntil, monthDay, cnDate, weekday, clockText, dueTone, dueInfo, kindClass, statusClass, highlight, ISSUER_WRAP, regionText,
   deadlineNote, NOTE_UNVERIFIED, NOTE_SEE_ORIGINAL, dueView, VERIFIED_LABEL, EXCERPT_LABEL,
-  ONE_SCREEN, OPENING_MAX, aboutChars, opening, noBodyText, goneNote, readEntry,
+  ONE_SCREEN, OPENING_MAX, aboutChars, opening, noBodyText, goneNote, goneLine, readEntry,
 };

@@ -45,8 +45,8 @@ const urlsIn = (root) => findAll(root, (n) => n.attrs['data-url'] !== undefined)
 test('utils/package-pages.js 和 app.json 的页面一样（打过审版时由 tools/miniapp_pack.js 重写）', () => {
   assert.deepEqual(require('../utils/package-pages.js'), APP_PAGES);
   assert.equal(FIRST_PAGES.length, 17);
-  assert.deepEqual(plain(FULL.flags()), { advisor: true, records: true, pass: true, orders: true, help: true, ai: true, license: true });
-  assert.deepEqual(plain(FIRST.flags()), { advisor: false, records: false, pass: false, orders: false, help: false, ai: false, license: true });
+  assert.deepEqual(plain(FULL.flags()), { advisor: true, records: true, pass: true, orders: true, help: true, ai: true, license: true, saved: true });
+  assert.deepEqual(plain(FIRST.flags()), { advisor: false, records: false, pass: false, orders: false, help: false, ai: false, license: true, saved: false });
   assert.equal(FIRST.has('my-data'), true); assert.equal(FIRST.has('lists'), true); assert.equal(FIRST.has('advisor-tasks'), false);
 });
 

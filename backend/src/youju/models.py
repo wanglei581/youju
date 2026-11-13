@@ -247,6 +247,9 @@ class Document(Base):
     link_checked_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), index=True)
     link_suspect_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     link_gone_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    # 最近一次检查确认还打不开（404、410、撤稿页）的时间：判断不了（网站出错、超时、robots）的不算。
+    # D-123 到期清理要求最近确认过，网站临时出故障时不清理（迁移 0049）
+    link_gone_seen_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 
     source: Mapped[Source] = relationship()
     detail: Mapped["DocumentDetail | None"] = relationship(back_populates="document", uselist=False)
@@ -1193,6 +1196,40 @@ class FollowRepostNotification(Base):
         ForeignKey("repost_groups.id", ondelete="CASCADE"), primary_key=True
     )
     notified_at: Mapped[datetime] = mapped_column(UTCDateTime())
+
+
+class SavedDocument(Base):
+    """我的保存（D-123，youju/saved.py）：用户保存的通知副本，存保存那一刻阅读页给的正文和附件
+    文字（已脱敏、换过说法），不存附件原件。
+
+    document_id 不建外键：原网页失效的通知到期清理（youju/gone.py）删掉以后副本还要在，级联外键会
+    把副本一起删、RESTRICT 又会挡住清理；编号留着，这份通知下架时按它删副本（D-123 ④）。
+    content 是 JSON：{"body": [段落…], "attachments": [{"name", "ext", "note", "segments"}]}，
+    段落和附件的段和阅读接口给的一样（youju/api/readers.py），"我的保存"用阅读页翻页显示。"""
+
+    __tablename__ = "saved_documents"
+    __table_args__ = (
+        UniqueConstraint("user_id", "document_id", name="uq_saved_documents_user_doc"),
+        Index("ix_saved_documents_user_saved", "user_id", "saved_at"),
+        Index("ix_saved_documents_document", "document_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    document_id: Mapped[int] = mapped_column(Integer)
+    title: Mapped[str] = mapped_column(Text)
+    issuer: Mapped[str] = mapped_column(String(500))
+    site: Mapped[str] = mapped_column(String(500))
+    region: Mapped[str] = mapped_column(String(100))
+    kind: Mapped[str] = mapped_column(String(16))
+    publish_date: Mapped[date | None] = mapped_column(Date)
+    # 原网页打不开的日期（北京时间，documents.link_gone_at 那天）
+    gone_on: Mapped[date] = mapped_column(Date)
+    content: Mapped[str] = mapped_column(LongText)
+    chars: Mapped[int] = mapped_column(Integer)
+    # 太长、超过一份副本的上限，后面的附件没存全（saved.MAX_BYTES）
+    truncated: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    saved_at: Mapped[datetime] = mapped_column(UTCDateTime())
 
 
 class Subscription(Base):

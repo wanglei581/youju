@@ -264,7 +264,8 @@ test('新增表单和独立说明均注册，模板完整；工具入口覆盖�
   const app = JSON.parse(fs.readFileSync(path.join(root, 'app.json'), 'utf8'));
   // 21 页完整候选 + 收费第一期的购买页、订单页（D-058，入口只在服务端在售或有订单时出现）
   // + 加量体验的确认页（D-070 ③，服务端开关开着才有入口）+ AI 板块首页和使用帮助（D-075）
-  assert.equal(app.pages.length, 29);
+  // + 我的保存（D-123，入口只在服务端开关开着或保存过时出现）
+  assert.equal(app.pages.length, 30);
   for (const page of ['advisor-form', 'advisor-terms', 'advisor-trial', 'pass', 'orders']) {
     assert.ok(app.pages.includes(`pages/${page}/index`)); parse(fs.readFileSync(path.join(root, `pages/${page}/index.wxml`), 'utf8'));
   }

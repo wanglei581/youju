@@ -1,0 +1,34 @@
+<notice-bar />
+<feature-closed wx:if="{{!loginOpen}}" />
+<block wx:else>
+<view wx:if="{{loading}}" class="card muted loading-card">正在加载…</view>
+
+<view wx:if="{{mode === 'gated' && !loading}}" class="card gate">
+  <view class="gate-title">保存原网页打不开的通知</view>
+  <view class="muted gate-text">原网页打不开的通知，在打不开后的 7 天里可以在文件详情里点“保存”，把正文和附件文字存下来，以后在这里还能看、能导出 Word。</view>
+  <view class="btn-primary gate-btn" bindtap="enable" aria-role="button">登录后使用</view>
+</view>
+
+<block wx:if="{{mode === 'live' && !loading}}">
+  <view wx:if="{{error}}" class="card load-error"><text>{{error}}</text><text class="link retry" bindtap="load" aria-role="button">重试</text></view>
+  <view wx:if="{{!error && items.length}}" class="card">
+    <view class="section-title">我的保存 {{items.length}}</view>
+    <view wx:for="{{items}}" wx:key="id" class="item {{index === items.length - 1 ? 'item--last' : ''}}">
+      <view class="item-title" data-id="{{item.id}}" bindtap="read" aria-role="link">{{item.title}}</view>
+      <view class="muted item-meta">{{item.meta}}</view>
+      <view class="item-note">{{item.note}}</view>
+      <view class="muted item-state">{{item.state}}</view>
+      <view class="actions">
+        <view class="act act--primary" data-id="{{item.id}}" bindtap="read" aria-role="button">阅读</view>
+        <view class="act" data-id="{{item.id}}" bindtap="exportOne" aria-role="button">导出 Word</view>
+        <view class="act act--danger" data-id="{{item.id}}" bindtap="remove" aria-role="button">删除</view>
+      </view>
+    </view>
+  </view>
+  <view wx:if="{{!error && !items.length}}" class="card empty">
+    <view class="empty-title">还没有保存过</view>
+    <view class="muted empty-text">原网页打不开的通知，在打不开后的 7 天里可以在文件详情里点“保存”，保存后在这里看。</view>
+  </view>
+  <view class="tip">保存的是正文和附件文字，不含附件原件；最多 {{max}} 份。删除或注销时一起删除；通知因投诉等原因被下架的，保存的副本也一起删除。</view>
+</block>
+</block>

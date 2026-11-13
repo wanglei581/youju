@@ -112,6 +112,14 @@ class Settings(BaseSettings):
     sources_csv: Path = DEFAULT_SOURCES_CSV
     # 每个用户 10 分钟内最多导出几次（防止刷接口耗尽资源）；验收 C2"连续导出 100 次"时临时调高
     exports_per_10min: int = 30
+    # D-123：原网页失效（youju/link_check.py 两次确认）的通知 7 天后清理，这 7 天里正文、附件照常
+    # 给看，可以保存（我的保存）、导出（youju/gone.py、youju/saved.py）。默认关：关着时照 D-097，
+    # 失效的正文、附件不给，不清理，没有保存、导出。随 2.0 上线，本机（清理）和服务器（接口）两边
+    # 都要设成一样；打开之前先执行 mysql_accounts.sql 里"我的保存"那一段，写明"您保存的通知"的
+    # 新版隐私保护指引要先上线（保存要先同意它）
+    gone_cleanup_enabled: bool = False
+    # 每个用户最多保存几份（每份另有大小上限 saved.MAX_BYTES）
+    saved_max_per_user: int = Field(default=200, ge=1, le=2000)
     # 云托管环境 ID（如 prod-xxxx）：每天的数据库备份存到这个环境的对象存储（验收 A6）
     cloud_env: str | None = None
     # R1.5 顾问技能包总开关；上线前保持关闭。

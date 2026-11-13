@@ -2,8 +2,8 @@ const api = require('../../utils/api.js');
 const { dueInfo, deadlineNote, dueView, cnDate, weekday, kindClass, regionText, opening, noBodyText, goneNote, readEntry } = require('../../utils/format.js');
 const { requestOnce, remindOpen } = require('../../utils/subscribe.js');
 const { remindedDocs } = require('../../utils/reminders.js');
-const { loginOpen } = require('../../utils/consent.js');
-const { previewDocs } = require('../../utils/exporter.js');
+const { loginOpen, ensureConsent } = require('../../utils/consent.js');
+const { previewDocs, exportWord } = require('../../utils/exporter.js');
 const { watchDay, stopDay } = require('../../utils/daywatch.js');
 const attachments = require('../../utils/attachments.js');
 const { versionRows, upstreamLine } = require('../../utils/repost.js');
@@ -96,6 +96,8 @@ Page({
     // 协议定稿前（D-056）不显示"订阅截止提醒"和底栏的"纠错"，定稿后照旧
     this.setData({ loginOpen: loginOpen(), remindOpen: remindOpen('deadline') });
     this.docId = query.id;
+    // 从导出记录回来的清理期导出（D-123）：通知可能已经到期清理，找不到时说清楚，不只写"没有找到这份文件"
+    this.fromGone = query.from === 'gone';
     this.lastShow = Date.now();
     this.load();
   },
@@ -138,6 +140,12 @@ Page({
         const bodyView = body ? opening(body) : null;
         const region = regionText(doc);
         const readable = !!body || atts.some((a) => a.canOpen);
+        // 名单类（D-123 ④）一直标明已撤下、不清理；7 天过后 window 为假，不给保存、导出。
+        // 没有能读的正文和附件（没东西可存，如正文就是名单）也不给（服务端 canExport、canSave，本页
+        // 再看一次）；新版隐私指引还没上线时服务端 canSave 为假，只给导出
+        const goneExport = !!(doc.gone && doc.gone.window === true && doc.gone.canExport === true && readable);
+        const goneSave = !!(doc.gone && doc.gone.window === true && doc.gone.canSave === true && readable);
+        const saveShown = goneSave && loginOpen() && !!this.data.has.saved;
         this.setData({
           doc,
           points: keyPoints(doc, { region: region || doc.region, dated: datedDue(dls, due) }),
@@ -147,9 +155,14 @@ Page({
           // "正文约 N 字 · 附件 N 个"：字数下一行写着、附件下面逐个列着（10/29 独立审阅：同一屏写了两遍）
           bodyView,
           noBody: body ? '' : noBodyText(doc.body, atts),
-          // 原网页已失效：标题下写明（正文、附件都不再给）；写了"不再提供"时正文卡片不再写一遍（goneAll）
-          goneNote: goneNote(doc.link_gone, readable),
+          // 原网页已失效：标题下写明（正文、附件都不再给）；写了"不再提供"时正文卡片不再写一遍（goneAll）。
+          // D-123：还在 7 天清理期里的（服务端给 gone）写打不开的日期和清理日期，正文、附件照常给，
+          // 提示下面给"保存""导出 Word"（goneSave、goneExport）
+          goneNote: goneNote(doc.link_gone, readable, doc.gone, { save: saveShown, export: goneExport }),
           goneAll: !!doc.link_gone && !readable,
+          goneExport,
+          goneSave,
+          savedHere: false,
           // 底栏："阅读全文"（只显示了开头）或"阅读附件"（正文已全部显示或没有正文），都读不了不显示
           entry: readEntry(doc.body, bodyView, atts),
           supportExpanded: '',
@@ -184,9 +197,11 @@ Page({
       })
       .catch((err) => this.setData({
         doc: null, due: null, dueNote: '', changes: [], reminded: false, atts: [], conds: [], versions: [], versionLabel: '', upstream: '',
-        bodyView: null, noBody: '', entry: null, goneNote: '', goneAll: false, dueQuote: '', checkedText: '', points: [],
+        bodyView: null, noBody: '', entry: null, goneNote: '', goneAll: false, goneExport: false, goneSave: false, savedHere: false, dueQuote: '', checkedText: '', points: [],
         takenDown: err.status === 404 && err.message === '该文件已下架',
-        error: err.status === 404 ? err.message : `数据未更新：${err.message}`,
+        error: err.status === 404 && this.fromGone && err.message !== '该文件已下架'
+          ? '这份通知原网页打不开，已经到期清理；保存过的在“我的 → 我的保存”里看'
+          : (err.status === 404 ? err.message : `数据未更新：${err.message}`),
       }))
       .then(() => { this.refreshing = false; this.setData({ loading: false }); });
   },
@@ -313,5 +328,34 @@ Page({
     const doc = this.data.doc;
     if (!doc) return;
     wx.navigateTo({ url: `/pages/feedback/index?id=${doc.id}&title=${encodeURIComponent(doc.title)}` });
+  },
+
+  // D-123：原网页打不开、7 天后清理的通知，保存到"我的保存"（正文和附件文字，清理以后还能看）。
+  // 要先同意协议；保存过再点是换成现在的内容
+  saveGone() {
+    const doc = this.data.doc;
+    if (!doc || !this.data.goneSave || this.savingGone) return undefined;
+    this.savingGone = true;
+    const done = () => { this.savingGone = false; };
+    return ensureConsent({ purpose: 'save' }).then((ok) => {
+      if (!ok) return undefined;
+      wx.showLoading({ title: '正在保存…', mask: true });
+      return api.saveDoc(doc.id).then(() => {
+        wx.hideLoading();
+        this.setData({ savedHere: true });
+        wx.showToast({ title: '已保存，在“我的 → 我的保存”里看', icon: 'none' });
+      }, (err) => {
+        wx.hideLoading();
+        wx.showToast({ title: (err && err.message) || '没能保存，请稍后再试', icon: 'none' });
+      });
+    }).then(done, done);
+  },
+
+  // D-123：清理期里导出这份通知的正文和附件文字（Word，不用登录）
+  exportGone() {
+    const doc = this.data.doc;
+    if (!doc || !this.data.goneExport) return undefined;
+    const label = doc.title.length > 30 ? `${doc.title.slice(0, 30)}…` : doc.title;
+    return exportWord(() => api.exportGone(doc.id), { label, source: 'gone', docId: doc.id });
   },
 });

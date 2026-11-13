@@ -291,5 +291,9 @@ def run_cleanup(
 
     result.update(cleanup_advisor(session, settings=settings, stamp=stamp))
     result.update(cleanup_payments(session, settings, stamp))
+    # 我的保存（D-123 ④）：下架了的通知的副本删掉（2.0 里下架经同步过来，这里删；不受开关影响）
+    from youju.saved import purge_taken_down
+
+    result["saved_taken_down"] = purge_taken_down(session)
     session.commit()
     return result
