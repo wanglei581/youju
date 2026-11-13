@@ -1,4 +1,5 @@
 from datetime import date
+from pathlib import Path
 
 import pytest
 from lxml import html
@@ -1118,6 +1119,237 @@ def test_body_first_line_repeated_above_meta_keeps_fields() -> None:
     assert result.issuer == "某某市科学技术局"
     assert result.doc_number == "某科〔2026〕12号"
     assert result.publish_date == date(2026, 11, 5)
+
+
+def _issuer_page(
+    title: str,
+    publisher: str,
+    source: str = "",
+    label: str = "",
+    signature: str = "",
+    number: str = "",
+) -> str:
+    """仿政府网站文件页：ArticleTitle 是文件标题，信息栏写发布机构（和发文机关、文号），元数据写来源，
+    正文末尾可有落款。"""
+    meta = f"<meta name='ArticleTitle' content='{title}'>"
+    meta += f"<meta name='contentSource' content='{source}'>" if source else ""
+    info = f"<p>发布机构：{publisher}</p>" if publisher else ""
+    info += f"<p>发文机关：{label}</p>" if label else ""
+    info += f"<p>文号：{number}</p>" if number else ""
+    tail = f"<p>{signature}</p><p>2026年11月5日</p>" if signature else ""
+    return (
+        f"<html><head><title>某某网站</title>{meta}</head><body><div class='meta'>{info}"
+        "<p>发布日期：2026-11-05</p></div><div id='zoom'>"
+        "<p>各有关单位：现将有关事项通知如下，请按要求认真组织实施。</p>"
+        f"<p>请各单位于本月底前报送材料。</p>{tail}</div></body></html>"
+    )  # fmt: skip
+
+
+PZH = "攀枝花市文化广播电视和旅游局"
+SC = "四川省文化和旅游厅"
+
+
+@pytest.mark.parametrize(
+    ("page", "expected"),
+    [
+        # 标题开头的机关比"发布机构"准：市政府发文挂在办公厅网站上
+        (
+            _issuer_page(
+                "济南市人民政府关于印发济南市2026年国民经济和社会发展计划的通知",
+                "济南市人民政府办公厅",
+            ),
+            "济南市人民政府",
+        ),
+        # 转载的上级文件：标题写着"某某厅等 7 部门"，来源只写"办公室"
+        (
+            _issuer_page(
+                "浙江省商务厅等7部门关于印发《2026年浙江省消费品以旧换新补贴实施细则》的通知",
+                "绍兴市商务局", "办公室",
+            ),
+            "浙江省商务厅等7部门",
+        ),
+        # 标题里几个机关联合发文
+        (
+            _issuer_page(
+                "湘潭市发展和改革委员会 湘潭市教育局 湘潭市财政局关于规范停车服务收费的通知",
+                "湘潭市发改委",
+            ),
+            "湘潭市发展和改革委员会、湘潭市教育局、湘潭市财政局",
+        ),
+        (_issuer_page("商务部关于印发对外贸易工作要点的通知", "某某市商务局"), "商务部"),
+        # 标题里不是完整机关名的不用：缺地名的简称、内设机构、新闻标题（人名、会议）
+        (
+            _issuer_page(
+                "市政府办公室印发关于进一步加强农村集体资产监督管理的意见", "苏州市人民政府办公室"
+            ),
+            "苏州市人民政府办公室",
+        ),
+        (_issuer_page("办公室关于做好假期值班工作的通知", "某某市科学技术局"), "某某市科学技术局"),
+        (
+            _issuer_page("某某主持召开市政府关于安全生产工作的专题会议", "某某市人民政府办公室"),
+            "某某市人民政府办公室",
+        ),
+        (
+            _issuer_page("某某在国务院关于推进营商环境建设会议上的讲话", "某某市人民政府办公室"),
+            "某某市人民政府办公室",
+        ),
+        (
+            _issuer_page("某某市市长某某在市政府关于安全生产工作会议上的讲话",
+                         "某某市人民政府办公室"),
+            "某某市人民政府办公室",
+        ),
+        # "转发……关于""关于转发……关于"：开头不是发文机关
+        (_issuer_page("转发省商务厅关于做好外贸稳增长工作的通知", "某某市商务局"), "某某市商务局"),
+        (_issuer_page("关于转发财政部关于加强资金管理的通知", "某某市财政局"), "某某市财政局"),
+        (
+            _issuer_page("州政府办公室关于做好防汛工作的通知", "凉山彝族自治州人民政府办公室"),
+            "凉山彝族自治州人民政府办公室",
+        ),
+        # 转载的上级文件不靠来源、文号头一个字替换（"苏府"是苏州市的文号，江苏省的简称也是"苏"），
+        # 照旧用发布机构
+        (_issuer_page("天府旅游名村评选管理办法", PZH, SC, number="川文旅规〔2026〕3号"), PZH),
+        (
+            _issuer_page("关于优化营商环境的若干措施", "苏州市人民政府办公室", "江苏省人民政府",
+                         number="苏府〔2026〕1号"),
+            "苏州市人民政府办公室",
+        ),
+        # 开头不是地名的不算：人名（"某某代表市"）、机关名里的普通词（"城乡"）
+        (
+            _issuer_page("某某代表市政府关于预算执行情况的报告", "某某市人民政府办公室"),
+            "某某市人民政府办公室",
+        ),
+        (
+            _issuer_page("住房和城乡建设局关于做好物业管理工作的通知", "攀枝花市住房和城乡建设局"),
+            "攀枝花市住房和城乡建设局",
+        ),
+        # 地名名单里的：自治州简称、开发区、单字县名
+        (
+            _issuer_page("凉山州人民政府关于印发工作要点的通知", "凉山州经济和信息化局"),
+            "凉山州人民政府",
+        ),
+        # 地名后面的名称不在机关名称词表里的不用（领导小组办公室这类中间是自由文字的、地名后面夹着
+        # 人名的），照旧用发布机构
+        (
+            _issuer_page("凉山州工业经济发展领导小组办公室关于印发工作要点的通知", "凉山州经济和信息化局"),
+            "凉山州经济和信息化局",
+        ),
+        (
+            _issuer_page("北京市某某建议市政府关于加强管理的意见", "北京市人民政府办公厅"),
+            "北京市人民政府办公厅",
+        ),
+        (
+            _issuer_page("北京市财政局某某建议市政府关于加强管理的意见", "北京市财政局"),
+            "北京市财政局",
+        ),
+        # 中央机关在地方的分支、党委机构
+        (
+            _issuer_page("国家税务总局龙岩市税务局关于做好纳税服务的通告", "龙岩市财政局"),
+            "国家税务总局龙岩市税务局",
+        ),
+        (
+            _issuer_page("中共泉州市委人才工作领导小组办公室关于印发人才政策的通知", "泉州市科技局"),
+            "中共泉州市委人才工作领导小组办公室",
+        ),
+        (
+            _issuer_page("中国人民银行上海分行关于做好金融服务的通知", "上海市地方金融管理局"),
+            "中国人民银行上海分行",
+        ),
+        (
+            _issuer_page("国家金融监督管理总局四川监管局关于加强保险服务的通知", "四川省财政厅"),
+            "国家金融监督管理总局四川监管局",
+        ),
+        (
+            _issuer_page("国家外汇管理局江苏省分局关于便利跨境结算的通知", "江苏省商务厅"),
+            "国家外汇管理局江苏省分局",
+        ),
+        # 几级地名连写
+        (
+            _issuer_page("四川省攀枝花市东区人民政府关于开展安全检查的通知", "攀枝花市东区人民政府办公室"),
+            "四川省攀枝花市东区人民政府",
+        ),
+        (
+            _issuer_page("雅安经济技术开发区管理委员会关于印发产业扶持办法的通知", "雅安市人民政府"),
+            "雅安经济技术开发区管理委员会",
+        ),
+        (_issuer_page("沛县人民政府关于开展安全检查的通知", "沛县人民政府办公室"), "沛县人民政府"),
+        (
+            _issuer_page("北京经济技术开发区管理委员会关于印发产业政策的通知", "北京市人民政府办公厅"),
+            "北京经济技术开发区管理委员会",
+        ),
+        # 机关名里带"城乡""督导"这类词的照样是机关
+        (
+            _issuer_page("四川省住房和城乡建设厅关于加强物业服务管理的通知", "攀枝花市住房和城乡建设局"),
+            "四川省住房和城乡建设厅",
+        ),
+        (
+            _issuer_page("某某县人民政府教育督导委员会办公室关于开展督导评估的通知", "沛县教育局"),
+            "沛县教育局",
+        ),
+        (
+            _issuer_page("沛县教育局关于开展督导评估的通知", "沛县人民政府办公室"),
+            "沛县教育局",
+        ),
+        # 来源和发布机构同级（只是简称）：照旧用发布机构
+        (
+            _issuer_page("关于规范停车服务收费的通知", "湘潭市发展和改革委员会", "市发改委"),
+            "湘潭市发展和改革委员会",
+        ),
+        # 只写内设机构的名字（信息中心、办公室）不当发文机关
+        (_issuer_page("关于印发传统工艺美术保护品种的通知", "信息中心", "消费品产业处"), None),
+        (_issuer_page("政府网站工作年度报表（2025年度）", "", "办公室"), None),
+        # 明写的发文机关、正文落款照旧在标题前面
+        (
+            _issuer_page("某某市人民政府关于开展安全检查的通知", "某某市人民政府办公室",
+                         label="某某市科学技术局"),
+            "某某市科学技术局",
+        ),
+        (
+            _issuer_page("某某市人民政府关于开展安全检查的通知", "某某市人民政府办公室",
+                         signature="某某市财政局"),
+            "某某市财政局",
+        ),
+    ],
+)  # fmt: skip
+def test_issuer_from_title_and_publisher(page: str, expected: str | None) -> None:
+    """发文机关的顺序：落款、明写的发文机关、文件标题开头的机关（要是以地名、中央机关开头的完整
+    机关名）、发布机构、元数据；只写内设机构名字的不算。"""
+    assert parse_detail(page, "https://www.example.gov.cn/content_6.html").issuer == expected
+
+
+@pytest.mark.parametrize(
+    ("broken", "how"),
+    [
+        (("place_names.txt", "agency_bodies.txt"), "missing"),
+        (("place_names.txt",), "missing"),
+        (("agency_bodies.txt",), "missing"),
+        (("place_names.txt",), "not_utf8"),
+        (("agency_bodies.txt",), "not_utf8"),
+    ],
+)
+def test_issuer_without_name_lists_falls_back_to_publisher(
+    monkeypatch, tmp_path, broken, how
+) -> None:
+    """发文机关校验用的名单读不到（没有文件、不是 UTF-8；两份都坏或只坏一份）：标题里的机关一概
+    不用（中央机关也不用），照旧看发布机构，不报错。"""
+    data = Path(detail.__file__).resolve().parents[1] / "data"
+    for name in ("place_names.txt", "agency_bodies.txt"):
+        if name not in broken:
+            (tmp_path / name).write_bytes((data / name).read_bytes())
+        elif how == "not_utf8":
+            (tmp_path / name).write_bytes(b"\xff\xfe\x00broken")
+    monkeypatch.setattr(detail, "_DATA_DIR", tmp_path)
+    detail._agency_names.cache_clear()
+    try:
+        for title, publisher in (
+            ("济南市人民政府关于印发计划的通知", "济南市人民政府办公厅"),
+            ("国务院办公厅关于做好政务公开工作的通知", "某某市人民政府办公室"),
+        ):
+            page = _issuer_page(title, publisher)
+            assert (
+                parse_detail(page, "https://www.example.gov.cn/content_7.html").issuer == publisher
+            )
+    finally:
+        detail._agency_names.cache_clear()
 
 
 def test_dropdown_text_still_counts_for_protection_window() -> None:

@@ -3,11 +3,13 @@
 // 其余条款和 2026-11 一字不差；付费部分并进了隐私保护指引；编号、互相引用、加粗段落对得上；
 // 这一版不带批量名单比对（D-104，创始人 11/4 定），原来写到它的分句都删了、原句留在说明文档里；单家查名单照常（D-111）；
 // 付费协议和 docs 里的正文、说明文档里附的全文逐字一致。
+// 11/12 起 content/legal.js 升到首发协议 2026-12.1（D-134）：这里核对的 2026-12 是冻结的定稿 tools/release/legal-2026-12.js；
+// 2026-12.1 只改了哪 11 处见 legal-2026-12-1.test.js。
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const legal = require('../content/legal.js');
+const legal = require('../../../tools/release/legal-2026-12.js');
 const pay = require('../content/pay-terms.js');
 const base = require('../../../tools/release/legal-2026-11.js');
 const ai = require('../content/legal-first-release-ai.js');

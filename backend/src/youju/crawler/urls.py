@@ -12,7 +12,7 @@ _PATH_SESSION = re.compile(r";(?:jsessionid|sessionid)=[^/?#]*", re.IGNORECASE)
 _INDEX_PAGE = re.compile(r"/(?:index|default)\.(?:html?|shtml|jsp|php|aspx?)$", re.IGNORECASE)
 # 数字广东信息公开平台的分类栏目（"部门页#xxgk-gkmlpt-分类编号"，见 crawler/adapters.py）：同一个
 # 部门页上的不同分类是不同的来源，这段片段要留在键里；别的片段（页面内锚点等）照旧去掉
-_GKMLPT_FRAGMENT = re.compile(r"xxgk-gkmlpt-[0-9]+")
+_GKMLPT_FRAGMENT = re.compile(r"xxgk-gkmlpt-p?[0-9]+(?:,p?[0-9]+)*")
 
 
 def public_url(url: str) -> str:

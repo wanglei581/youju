@@ -57,8 +57,9 @@ if [ "$name" = "advisor-run" ] && [ "$code" -eq 75 ]; then
   fi
 fi
 finish "$code"
-if [ "$name" = "check-sources" ] && [ "$code" -eq 20 ]; then
-  log "未达标：youju check-sources（详细提醒已发送；任务按失败退出）"
+# check-sources、sync-watch 自己发了写清楚的提醒（或 6 小时内提醒过）时返回 20，这里不再重复提醒
+if { [ "$name" = "check-sources" ] || [ "$name" = "sync-watch" ]; } && [ "$code" -eq 20 ]; then
+  log "未达标：youju ${name}（详细提醒已发送；任务按失败退出）"
   exit 1
 fi
 case "$code" in

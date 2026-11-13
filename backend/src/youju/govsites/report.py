@@ -8,7 +8,7 @@ from collections import Counter, defaultdict
 from collections.abc import Callable, Collection, Iterable
 from pathlib import Path
 
-from youju.crawler.adapters import gkmlpt_category
+from youju.crawler.adapters import gkmlpt_categories
 from youju.govsites.divisions import DivisionIndex
 from youju.govsites.inventory import (
     _LEVEL_ORDER,
@@ -198,7 +198,7 @@ def column_rows(checks, checked_on: str) -> list[list[str]]:
     order = {"国家级": -1, "省级": 0, "市级": 1, "区县级": 2}
     rows = []
     for c in sorted(checks, key=lambda c: (c.code[:2], order[c.level], c.code, c.dept, c.kind)):
-        if "#xxgk-" in c.url and gkmlpt_category(c.url) is None:
+        if "#xxgk-" in c.url and gkmlpt_categories(c.url) is None:
             # 大汉信息公开分类树上的分类不是能打开的栏目，不进导入清单（看板里记需人工）；数字广东
             # 的分类经列表接口读（crawler/adapters.py），照常进导入清单
             continue

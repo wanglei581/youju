@@ -1086,7 +1086,7 @@ def create_subscription(body: SubscriptionIn, session: SessionDep, user: UserDep
             v1.deadline_open(d, stamp)
             for d in v1._approved(session, [document_id]).get(document_id, [])
         ):
-            raise HTTPException(status_code=422, detail="没有有效的人工核对截止")
+            raise HTTPException(status_code=422, detail="没有核对过、还没到的截止日期")
         # 锁住这个用户，同时点两次也只建一条（下面按"已有未用授权"去重）
         session.execute(select(User.id).where(User.id == user.id).with_for_update())
         # 同一文件已有还没发出的截止提醒：返回已有的，不再新建（否则会提醒两次）

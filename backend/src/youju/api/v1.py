@@ -1154,7 +1154,7 @@ def search(
     offset: Annotated[int, Query(ge=0, le=5000)] = 0,
     open: Annotated[int | None, Query(ge=0, le=1, description="1 只看未截止（含即将截止）")] = None,
     exclude_closed: Annotated[
-        bool, Query(description="只排除人工核对且已截止的申报通知；未核对的保留；不传不改变结果")
+        bool, Query(description="只排除核对过且已截止的申报通知；未核对的保留；不传不改变结果")
     ] = False,
     levels: Annotated[
         str | None, Query(max_length=400, description="国家部委,省级,市级,区县级")

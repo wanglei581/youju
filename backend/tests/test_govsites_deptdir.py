@@ -538,3 +538,145 @@ def test_refused_top_candidate_lets_next_candidate_win():
     kj = _depts(inv)[("330522", "科技")]
     assert (kj.status, kj.site_url) == ("已找到", other)
     assert [c.kind for c in kj.columns] == ["通知公告"]
+
+
+def test_gkmlpt_policy_combines_direct_nonjump_children():
+    def node(nid, name, children=None, jump_url=""):
+        return {"id": nid, "name": name, "children": children or [], "jump_url": jump_url}
+
+    tree = [
+        node(
+            1,
+            "政策",
+            [
+                node(2, "规范性文件"),
+                node(3, "其他文件"),
+                node(4, "政策解读"),
+                node(5, "部门文件", jump_url="/else"),
+            ],
+        ),
+        node(6, "政策", [node(7, "政策解读")]),
+        node(8, "通知公告"),
+    ]
+    categories = gkmlpt_tree_categories("TREE: " + json.dumps(tree) + "}")
+    # 父分类只取直接挂在它上面的条目（p），再加规范性文件、其他文件两个叶子
+    assert ("政策", "gkmlpt-p1,2,3") in categories
+    assert ("政策", "gkmlpt-1") not in categories
+    assert ("规范性文件", "gkmlpt-2") not in categories
+    assert ("其他文件", "gkmlpt-3") not in categories
+    assert ("政策", "gkmlpt-6") in categories
+    assert ("通知公告", "gkmlpt-8") in categories
+    assert ("部门文件", "gkmlpt-5") not in categories
+
+
+def test_gkmlpt_policy_leaves_skip_duplicates_and_the_parent_id():
+    def node(nid, name, children=None):
+        return {"id": nid, "name": name, "children": children or [], "jump_url": ""}
+
+    tree = [node(1, "政策", [node(2, "规范性文件"), node(2, "规范性文件"), node(1, "其他文件")])]
+    categories = gkmlpt_tree_categories("TREE: " + json.dumps(tree) + "}")
+    assert ("政策", "gkmlpt-p1,2") in categories
+
+
+def test_gkmlpt_inventory_keys_are_recognised_by_the_adapter():
+    # 盘点记的分类键，适配器都认得出：编号、p 父分类，最多几个分类两边是同一个上限（多的叶子不要）
+    from youju.crawler.adapters import GKMLPT_MAX_CATEGORIES, gkmlpt_categories
+    from youju.govsites.inventory import XXGK_TAG
+
+    def node(nid, name, children=None):
+        return {"id": nid, "name": name, "children": children or [], "jump_url": ""}
+
+    names = ["规范性文件", "其他文件", "其它文件", "部门文件", "规范性文件", "部门文件"]
+    tree = [
+        node(1, "政策", [node(10 + i, name) for i, name in enumerate(names)]),
+        node(2, "通知公告"),
+        node(3, "政策", [node(30, "政策解读")]),
+    ]
+    page = "https://www.sg.gov.cn/fgj/gkmlpt/index"
+    keys = [key for _, key in gkmlpt_tree_categories("TREE: " + json.dumps(tree) + "}")]
+    # 连父分类超过上限：不截断，照样全写上，适配器不认（试读记待人工处理）
+    over = "gkmlpt-p1,10,11,12,13,14,15"
+    assert over in keys and gkmlpt_categories(f"{page}#{XXGK_TAG}{over}") is None
+    for key in keys:
+        if key == over:
+            continue
+        ids = gkmlpt_categories(f"{page}#{XXGK_TAG}{key}")
+        assert ids is not None and 1 <= len(ids) <= GKMLPT_MAX_CATEGORIES
+
+
+def test_gkmlpt_policy_leaf_with_children():
+    # 叶子下面还有分类：没有解读的整个读（现行有效、失效废止都是规范性文件）；下面（任意深）挂着
+    # 解读的，这个叶子只取直接挂在它上面的（p），解读那一支不读，别的下级分支照样读
+    from youju.crawler.adapters import find_list_api
+
+    def node(nid, name, children=None):
+        return {"id": nid, "name": name, "children": children or [], "jump_url": ""}
+
+    tree = [
+        node(
+            1,
+            "政策",
+            [
+                node(2, "规范性文件", [node(20, "现行有效"), node(21, "失效废止")]),
+                node(
+                    3, "其他文件", [node(30, "市级文件", [node(31, "政策解读")]), node(32, "图解")]
+                ),
+            ],
+        ),
+        node(5, "政策", [node(6, "规范性文件", [node(60, "现行有效"), node(61, "政策解读")])]),
+    ]
+    categories = gkmlpt_tree_categories("TREE: " + json.dumps(tree) + "}")
+    assert ("政策", "gkmlpt-p1,2,p3,p30,32") in categories
+    assert ("政策", "gkmlpt-p5,p6,60") in categories
+    # 叶子的下级分类照旧单独给（盘点按名称挑栏目时用不上）
+    assert ("现行有效", "gkmlpt-20") in categories and ("政策解读", "gkmlpt-31") in categories
+    page = (
+        "<script>window._CONFIG = {APP_URL: 'http://www.sg.gov.cn/fgj', SID: '751012', "
+        "ENV: 'production', TREE: " + json.dumps(tree) + "};</script>"
+    )
+    url = "https://www.sg.gov.cn/fgj/gkmlpt/index"
+    found = find_list_api(page, url, f"{url}#xxgk-gkmlpt-p1,2,p3,p30,32")
+    assert [(p.category_id, p.direct_only) for p in found.parts] == [
+        (1, True),
+        (2, False),
+        (3, True),
+        (30, True),
+        (32, False),
+    ]
+
+
+def test_gkmlpt_policy_expanded_over_the_limit_is_left_for_manual_handling():
+    # 去掉解读分支以后要合读的分类超过上限：照样全写上，适配器不认，试读记待人工处理
+    from youju.crawler.adapters import gkmlpt_categories
+
+    def node(nid, name, children=None):
+        return {"id": nid, "name": name, "children": children or [], "jump_url": ""}
+
+    leaf = node(
+        2, "其他文件", [node(20 + i, f"分册{i}") for i in range(4)] + [node(29, "政策解读")]
+    )
+    categories = gkmlpt_tree_categories("TREE: " + json.dumps([node(1, "政策", [leaf])]) + "}")
+    assert ("政策", "gkmlpt-p1,p2,20,21,22,23") in categories
+    url = "https://www.sg.gov.cn/fgj/gkmlpt/index#xxgk-gkmlpt-p1,p2,20,21,22,23"
+    assert gkmlpt_categories(url) is None
+
+
+def test_gkmlpt_policy_leaf_expansion_skips_jumps_bad_nodes_and_duplicates():
+    # 有解读后代的叶子往下展开时：跳到别处的、编号不是整数的、没有名称的、重复的编号、解读那一支都不要
+    def node(nid, name, children=None, jump_url=""):
+        return {"id": nid, "name": name, "children": children or [], "jump_url": jump_url}
+
+    leaf = node(
+        2,
+        "其他文件",
+        [
+            node(20, "市级文件"),
+            node(21, "外链", jump_url="http://else.example.cn/"),
+            {"id": "22", "name": "编号不是整数"},
+            {"id": 23},
+            node(20, "市级文件"),
+            node(24, "政策解读"),
+        ],
+    )
+    categories = gkmlpt_tree_categories("TREE: " + json.dumps([node(1, "政策", [leaf])]) + "}")
+    assert ("政策", "gkmlpt-p1,p2,20") in categories
