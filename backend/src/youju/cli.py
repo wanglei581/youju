@@ -2518,6 +2518,14 @@ def _cmd_takedown_carry(args: argparse.Namespace) -> int:
                 f"本机没有的 {report.listed - report.found} 个"
             )
             return 0
+        if any(item.emergency is not None for item in items):
+            # 带编号的是服务器 emergency-carry 打印的紧急下架清单：按搬家的应用会写拦截表、
+            # 操作人对不上编号（服务器上撤不掉）
+            print(
+                "这是紧急下架的清单：要加 --origin emergency"
+                "（本机 carry-takedowns.sh 加 emergency）"
+            )
+            return 1
         report = takedown_carry.apply(session, items)
     print(
         f"清单 {report.listed} 个网址：拦截表新加 {report.blocks_added} 个；"

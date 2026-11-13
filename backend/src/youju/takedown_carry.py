@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -40,6 +41,8 @@ REASONS = ("侵权投诉", "主管部门要求", "内容有误", "其他")
 NOTE = "首发前搬家（D-127）：云托管上已下架，按规范网址带过来"
 OPERATOR = "搬家（D-127）"
 EMERGENCY_NOTE = "服务器上紧急下架过（电脑不在线时），按规范网址带回本机"
+# 紧急下架的编号：32 位小写十六进制（emergency_takedown 里 uuid4().hex）
+_EMERGENCY = re.compile(r"[0-9a-f]{32}")
 EMERGENCY_OPERATOR = "服务器紧急下架"
 _CHUNK = 500
 
@@ -54,7 +57,7 @@ class Item:
     origin_source_id: int | None
     taken_down_at: datetime
     reason: str
-    emergency: int | None = None  # 服务器紧急下架的编号（只有紧急下架带回的清单有）
+    emergency: str | None = None  # 服务器紧急下架的编号（只有紧急下架带回的清单有）
 
 
 @dataclass
@@ -101,7 +104,9 @@ def parse(lines: Iterable[str]) -> list[Item]:
             # 清单只该有这几项：多出来的（备注、操作人、标题）可能有个人信息，不收
             raise CarryError(f"第 {number} 行有清单以外的字段：{', '.join(sorted(extra))}")
         emergency = row.get("emergency")
-        if emergency is not None and (type(emergency) is not int or emergency <= 0):
+        if emergency is not None and (
+            not isinstance(emergency, str) or not _EMERGENCY.fullmatch(emergency)
+        ):
             raise CarryError(f"第 {number} 行的紧急下架编号不对")
         key = row.get("url_key")
         if not isinstance(key, str) or not key.strip() or len(key) > URL_KEY_MAX:

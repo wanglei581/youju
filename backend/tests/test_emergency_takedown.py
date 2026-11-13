@@ -232,7 +232,7 @@ def _hold_doc(session_factory, doc):
         EmergencyTakedown(
             document_id=doc.id,
             url_key=doc.url_key,
-            batch_id=999,
+            batch="f" * 32,
             reason="其他",
             note="",
             created_by="甲",
@@ -348,7 +348,7 @@ def test_add_refuses_hidden_unknown_and_bad_input(session, docs):
     ]
     # 同一次的几行：同一时间、同一个编号（第一行的 id）
     assert rows[0].created_at == rows[1].created_at
-    assert rows[0].batch_id == rows[1].batch_id == rows[0].id
+    assert rows[0].batch == rows[1].batch and len(rows[0].batch) == 32
     with pytest.raises(urgent.EmergencyError, match="不能写"):
         urgent.lift(session, docs[0].id, operator=urgent.SYSTEM)
 
@@ -386,7 +386,7 @@ def test_lift_keeps_the_record_and_reports_formal_takedown(session, docs):
     assert urgent.records(session) == []
     text_ = "\n".join(urgent.describe_records(listed))
     # 一次下架的两行合成一条；说明默认不显示
-    assert f"紧急下架 #{rows[0].batch_id}  文件 #{docs[0].id}、#{docs[1].id}" in text_
+    assert f"紧急下架 #{rows[0].batch[:8]}  文件 #{docs[0].id}、#{docs[1].id}" in text_
     assert "已撤销" in text_ and "撤  " not in text_
     assert "主管部门来函" not in text_ and "有说明（加 --notes 看）" in text_
     shown = "\n".join(urgent.describe_records(listed, notes=True))
@@ -474,7 +474,7 @@ def test_settle_lifts_only_what_was_carried_back(session, docs):
         session.commit()
 
     def carried(row):
-        return f"{takedown_carry.EMERGENCY_OPERATOR}#{row.batch_id}"
+        return f"{takedown_carry.EMERGENCY_OPERATOR}#{row.batch}"
 
     # 4：第一次紧急下架导出了清单，后来撤了；又因为新的投诉紧急下架
     first = urgent.add(session, docs[4].id, reason="other")[0]
@@ -589,7 +589,10 @@ def test_cli_changes_only_on_the_server(session, docs, monkeypatch, capsys):
     )
 
 
-def _carry_line(key, emergency=7, **extra):
+BATCH = "0123456789abcdef" * 2
+
+
+def _carry_line(key, emergency=BATCH, **extra):
     row = {
         "url_key": key,
         "origin_source_id": 1,
@@ -603,23 +606,20 @@ def _carry_line(key, emergency=7, **extra):
 
 
 def test_carry_list_takes_only_a_positive_emergency_number():
-    items = takedown_carry.parse([_carry_line("example.gov.cn/1.html", 12)])
-    assert items[0].emergency == 12
+    items = takedown_carry.parse([_carry_line("example.gov.cn/1.html", BATCH)])
+    assert items[0].emergency == BATCH
     assert takedown_carry.parse([_carry_line("example.gov.cn/1.html", None)])[0].emergency is None
-    for bad in (0, -1, "12", 1.5, True):
+    for bad in (12, True, "12", BATCH.upper(), BATCH + "0", "g" * 32):
         with pytest.raises(takedown_carry.CarryError, match="紧急下架编号不对"):
             takedown_carry.parse([_carry_line("example.gov.cn/1.html", bad)])
     with pytest.raises(takedown_carry.CarryError, match="清单以外的字段"):
-        takedown_carry.parse([_carry_line("example.gov.cn/1.html", 12, note="说明")])
+        takedown_carry.parse([_carry_line("example.gov.cn/1.html", BATCH, note="说明")])
 
 
 def test_cli_carry_apply_emergency_origin_on_master(session, docs, tmp_path, monkeypatch, capsys):
     listing = tmp_path / "emergency-takedowns.jsonl"
     listing.write_text(
-        _carry_line(docs[1].url_key, 7)
-        + "\n"
-        + _carry_line("example.gov.cn/missing.html", 7)
-        + "\n",
+        _carry_line(docs[1].url_key) + "\n" + _carry_line("example.gov.cn/missing.html") + "\n",
         encoding="utf-8",
     )
     old = tmp_path / "old.jsonl"
@@ -630,6 +630,9 @@ def test_cli_carry_apply_emergency_origin_on_master(session, docs, tmp_path, mon
         args = ["takedown-carry", "apply", "--file", str(old), "--origin", "emergency"]
         assert cli.main(args) == 1
         assert "每行要有紧急下架的编号" in capsys.readouterr().out
+        # 反过来：带编号的紧急下架清单忘了加 --origin emergency，也不应用（不写拦截表）
+        assert cli.main(["takedown-carry", "apply", "--file", str(listing)]) == 1
+        assert "这是紧急下架的清单" in capsys.readouterr().out
         args = ["takedown-carry", "apply", "--file", str(listing), "--origin", "emergency"]
         assert cli.main(args) == 0
         out = capsys.readouterr().out
@@ -641,4 +644,4 @@ def test_cli_carry_apply_emergency_origin_on_master(session, docs, tmp_path, mon
     assert not is_taken_down(session, docs[4].id)
     assert session.scalar(select(func.count()).select_from(TakedownBlock)) == 0
     operators = set(session.scalars(select(DocumentTakedownEvent.operated_by)))
-    assert operators == {f"{takedown_carry.EMERGENCY_OPERATOR}#7"}
+    assert operators == {f"{takedown_carry.EMERGENCY_OPERATOR}#{BATCH}"}

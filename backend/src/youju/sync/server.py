@@ -357,6 +357,23 @@ def _take_turn(conn: Connection, stamp: int) -> None:
         raise Stale(int(last))
 
 
+def queue_with_sync(conn: Connection) -> bool:
+    """服务器上直接改和公开数据有关的东西（紧急下架，youju/emergency_takedown.py）之前，和同步写入
+    在 sync_order 那一行上排队，一直到这个事务结束：这期间同步改不了归并、文件。进度表还没有
+    （这个库从没收过同步）就不用排，返回 False。"""
+    exists = conn.execute(
+        text(
+            "SELECT COUNT(*) FROM information_schema.tables"
+            " WHERE table_schema = DATABASE() AND table_name = :t"
+        ),
+        {"t": ORDER},
+    ).scalar()
+    if not exists:
+        return False
+    _take_turn(conn, 0)
+    return True
+
+
 def _record_turn(conn: Connection, stamp: int) -> None:
     conn.execute(
         text(f"UPDATE `{ORDER}` SET last_stamp = :s, updated_at = :u WHERE name = 'public'"),

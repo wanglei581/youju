@@ -13,8 +13,8 @@
 - 撤销（lift）：下错了就撤销这份文件所在组的。行不删，撤销的人、时间、说明都记着。已经带回本机
   正式下架的，服务器上撤销不了它的正式下架，要在本机核对台恢复上架。
 - 带回本机（export）：把没撤销的紧急下架写成下架清单（takedown_carry 的格式：规范网址键、
-  来源编号、下架时间、原因类别；不带说明和操作人，说明可能写到投诉人），本机
-  takedown-carry apply --origin emergency 整组正式下架，随同步推回服务器。
+  来源编号、下架时间、原因类别，加上这一次紧急下架的编号；不带说明和操作人，说明可能写到
+  投诉人），本机 takedown-carry apply --origin emergency 整组正式下架，随同步推回服务器。
 - 自动撤销（settle，服务器每小时）：只认带回本机时写的、带着这一次编号的下架记录（操作人
   "服务器紧急下架#编号"，takedown_carry.emergency_operator）——本机因为别的原因下过架又恢复了、
   早先导出的旧清单晚到了，都不能把这一次的投诉一起撤掉；本机原来就下架着、本机没有这个网址的，
@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import re
+import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -78,7 +79,7 @@ class Found:
 @dataclass(frozen=True)
 class Record:
     id: int
-    batch_id: int
+    batch: str
     document_id: int | None
     url_key: str
     reason: str
@@ -170,8 +171,12 @@ def _members(session: Session, document_id: int) -> list[int]:
 def _lock_group(session: Session, document_id: int) -> list[int]:
     """按编号顺序锁住这份文件所在的整组（和 takedown.change_state 同一顺序，不会互相死锁），
     返回锁到的编号：同组不同文件同时下架、撤销时一个一个来，后来的看得到先来的结果。
-    锁上以后再读一遍归并：读和锁之间同步改了归并（拆组、并进新的），放开重来，最多 3 次。"""
+    先和同步写入排队（sync.server.queue_with_sync，一直到提交）：这期间同步改不了归并；锁上以后
+    再读一遍归并，变了（没收过同步的库不排队）就放开重来，最多 3 次。"""
+    from youju.sync.server import queue_with_sync
+
     for _ in range(LOCK_TRIES):
+        queue_with_sync(session.connection())
         ids = _members(session, document_id)
         locked = list(
             session.scalars(
@@ -204,11 +209,12 @@ def add(
             f"文件 #{document_id} 现在已经不对外了（已经下架或紧急下架过），不用再下"
         )
     stamp = datetime.now(UTC)
+    batch = uuid.uuid4().hex
     rows = [
         EmergencyTakedown(
             document_id=doc_id,
             url_key=key,
-            batch_id=0,
+            batch=batch,
             reason=reason,
             note=note,
             created_by=operator,
@@ -219,11 +225,6 @@ def add(
         )
     ]
     session.add_all(rows)
-    session.flush()
-    # 这一次的编号：第一行的 id（几行一起写，同一个事务里补上）
-    batch = min(row.id for row in rows)
-    for row in rows:
-        row.batch_id = batch
     session.commit()
     return rows
 
@@ -267,7 +268,7 @@ def records(session: Session, *, include_lifted: bool = False) -> list[Record]:
     return [
         Record(
             id=row.id,
-            batch_id=row.batch_id,
+            batch=row.batch,
             document_id=row.document_id,
             url_key=row.url_key,
             reason=row.reason,
@@ -303,7 +304,7 @@ def export_lines(session: Session) -> list[str]:
                     "origin_source_id": source_id,
                     "taken_down_at": row.created_at.astimezone(UTC).isoformat(),
                     "reason": row.reason,
-                    "emergency": row.batch_id,
+                    "emergency": row.batch,
                 },
                 ensure_ascii=False,
             ),
@@ -318,7 +319,7 @@ def settle(session: Session) -> int:
         DocumentTakedownEvent.document_id == EmergencyTakedown.document_id,
         DocumentTakedownEvent.action == "takedown",
         DocumentTakedownEvent.operated_by
-        == func.concat(EMERGENCY_OPERATOR, "#", EmergencyTakedown.batch_id),
+        == func.concat(EMERGENCY_OPERATOR, "#", EmergencyTakedown.batch),
     )
     rows = session.scalars(
         select(EmergencyTakedown)
@@ -362,7 +363,7 @@ def describe_records(rows: Iterable[Record], *, notes: bool = False) -> list[str
     投诉人），notes=True 才显示；系统自动撤销的说明是固定的几句，照常显示。"""
     groups: dict[tuple, list[Record]] = {}
     for row in rows:
-        key = (row.batch_id, row.lifted_at, row.lifted_by)
+        key = (row.batch, row.lifted_at, row.lifted_by)
         groups.setdefault(key, []).append(row)
     lines = []
     for members in groups.values():
@@ -373,7 +374,7 @@ def describe_records(rows: Iterable[Record], *, notes: bool = False) -> list[str
         )
         title = next((row.title for row in members if row.title), "")
         lines.append(
-            f"紧急下架 #{first.batch_id}  文件 {what}  {first.reason}  "
+            f"紧急下架 #{first.batch[:8]}  文件 {what}  {first.reason}  "
             f"{_beijing(first.created_at)}  {first.created_by}  {_short(title, 40)}"
         )
         if first.note:

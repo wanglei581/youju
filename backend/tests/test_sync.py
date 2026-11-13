@@ -309,6 +309,7 @@ def test_emergency_takedown_survives_updates_and_keeps_record_on_delete(env):
         "emergency_takedowns",
         document_id=doc,
         url_key=key,
+        batch="0123456789abcdef" * 2,
         reason="侵权投诉",
         note="说明",
         created_by="测试",
@@ -333,6 +334,45 @@ def test_emergency_takedown_survives_updates_and_keeps_record_on_delete(env):
     kept = rows(env.server, "emergency_takedowns")
     assert [(r["document_id"], r["url_key"], r["note"]) for r in kept] == [(None, key, "说明")]
     assert visible() == [other]
+
+
+def test_emergency_takedown_queues_with_sync_writes(env):
+    """紧急下架和同步写入在 sync_order 那一行上排队：同步正在写（可能在改归并）时，紧急下架等它
+    写完再读归并、记行；没收过同步的库（进度表还没有）不用排。"""
+    import threading
+
+    from sqlalchemy.orm import Session
+
+    from youju import emergency_takedown as urgent
+
+    src = source(env.local)
+    warm = document(env.local, src, "warm")
+    doc = document(env.local, src, "a")
+    bootstrap(env)
+    # 先做一次（第一次要建连接、编译查询，一两秒），后面那次不排队的话不到 0.1 秒就做完
+    with Session(env.server) as session:
+        urgent.add(session, warm, reason="other")
+    conn = env.server.connect()
+    trans = conn.begin()
+    sync_server._take_turn(conn, 0)  # 一次同步写入正在进行
+    result = {}
+
+    def run():
+        with Session(env.server) as session:
+            result["rows"] = len(urgent.add(session, doc, reason="other"))
+
+    thread = threading.Thread(target=run)
+    try:
+        thread.start()
+        time.sleep(2.5)
+        assert thread.is_alive()
+    finally:
+        trans.commit()
+        conn.close()
+    thread.join(30)
+    assert not thread.is_alive() and result == {"rows": 1}
+    with env.local.connect() as local_conn:
+        assert not sync_server.queue_with_sync(local_conn)  # 本机库没有进度表：不排
 
 
 def test_failed_batch_changes_nothing_and_resumes(env, monkeypatch):
