@@ -13,6 +13,10 @@
   可以重复执行：已经下架的不重复记。
 - youju takedown-carry check --file（本机、服务器都能跑，只读）：清单里的网址在这个库里有没有
   对用户可见的文件，有就退出码 1。
+
+服务器上的紧急下架（youju/emergency_takedown.py）也用这个格式带回本机：
+takedown-carry apply --origin emergency 只把本机已有的同网址文件整组正式下架，不写拦截表——
+那些文件本机都有，以后本机恢复上架还要照常更新；本机没有的网址数会列出来。
 """
 
 from __future__ import annotations
@@ -34,6 +38,8 @@ from youju.takedown import available_condition, change_state, is_taken_down
 REASONS = ("侵权投诉", "主管部门要求", "内容有误", "其他")
 NOTE = "首发前搬家（D-127）：云托管上已下架，按规范网址带过来"
 OPERATOR = "搬家（D-127）"
+EMERGENCY_NOTE = "服务器上紧急下架过（电脑不在线时），按规范网址带回本机"
+EMERGENCY_OPERATOR = "服务器紧急下架"
 _CHUNK = 500
 
 
@@ -118,11 +124,46 @@ def _chunks(values: list[str]) -> Iterable[list[str]]:
         yield values[start : start + _CHUNK]
 
 
-def apply(session: Session, items: list[Item]) -> ApplyReport:
-    """写拦截表；本机已有的同网址文件整组下架。"""
+def apply(
+    session: Session,
+    items: list[Item],
+    *,
+    block: bool = True,
+    note: str = NOTE,
+    operator: str = OPERATOR,
+) -> ApplyReport:
+    """写拦截表（block=False 时不写）；本机已有的同网址文件整组下架。"""
     report = ApplyReport(listed=len(items))
     if not items:
         return report
+    keys = [item.url_key for item in items]
+    if block:
+        _block(session, items, report)
+    reasons = {item.url_key: item.reason for item in items}
+    found: list[tuple[int, str]] = []
+    for part in _chunks(keys):
+        found += [
+            (doc_id, key)
+            for doc_id, key in session.execute(
+                select(Document.id, Document.url_key)
+                .where(Document.url_key.in_(part))
+                .order_by(Document.id)
+            )
+        ]
+    report.found = len(found)
+    for doc_id, key in found:
+        if is_taken_down(session, doc_id):
+            report.already_hidden += 1
+            continue
+        # 整组下架（归并组里别的副本一起），各副本各记一条下架记录
+        change_state(
+            session, doc_id, action="takedown", note=note, operator=operator, reason=reasons[key]
+        )
+        report.taken_down += 1
+    return report
+
+
+def _block(session: Session, items: list[Item], report: ApplyReport) -> None:
     keys = [item.url_key for item in items]
     existing: set[str] = set()
     for part in _chunks(keys):
@@ -147,28 +188,6 @@ def apply(session: Session, items: list[Item]) -> ApplyReport:
         session.execute(stmt.on_duplicate_key_update(url_key=stmt.inserted.url_key))
     session.commit()
     report.blocks_added = len(fresh)
-    reasons = {item.url_key: item.reason for item in items}
-    found: list[tuple[int, str]] = []
-    for part in _chunks(keys):
-        found += [
-            (doc_id, key)
-            for doc_id, key in session.execute(
-                select(Document.id, Document.url_key)
-                .where(Document.url_key.in_(part))
-                .order_by(Document.id)
-            )
-        ]
-    report.found = len(found)
-    for doc_id, key in found:
-        if is_taken_down(session, doc_id):
-            report.already_hidden += 1
-            continue
-        # 整组下架（归并组里别的副本一起），各副本各记一条下架记录
-        change_state(
-            session, doc_id, action="takedown", note=NOTE, operator=OPERATOR, reason=reasons[key]
-        )
-        report.taken_down += 1
-    return report
 
 
 def check(session: Session, items: list[Item]) -> CheckReport:

@@ -291,6 +291,50 @@ def test_user_data_survives_updates_and_follows_deletes(env):
     assert rows(env.server, "feedback")[0]["document_id"] is None
 
 
+def test_emergency_takedown_survives_updates_and_keeps_record_on_delete(env):
+    """服务器上的紧急下架（只在服务器上、不同步）：本机改文件不动它、文件照样不对外；本机删了
+    文件，记录留着（编号置空、网址留着），别的文件照常对外。"""
+    from sqlalchemy.orm import Session
+
+    from youju.models import Document
+    from youju.takedown import available_condition
+
+    src = source(env.local)
+    doc = document(env.local, src, "a")
+    other = document(env.local, src, "b")
+    bootstrap(env)
+    key = "kjt.shandong.gov.cn/tzgg/a.html"
+    insert(
+        env.server,
+        "emergency_takedowns",
+        document_id=doc,
+        url_key=key,
+        reason="侵权投诉",
+        note="说明",
+        created_by="测试",
+        created_at=NOW,
+    )
+
+    def visible():
+        with Session(env.server) as s:
+            query = select(Document.id).where(available_condition()).order_by(Document.id)
+            return s.scalars(query).all()
+
+    assert visible() == [other]
+    with env.local.begin() as conn:
+        conn.execute(T["documents"].update().where(T["documents"].c.id == doc).values(title="改了"))
+    local.push(env.local, env.client)
+    # 改文件不动它（写用 REPLACE、关外键检查，不置空）
+    assert rows(env.server, "emergency_takedowns")[0]["document_id"] == doc
+    assert visible() == [other]
+    with env.local.begin() as conn:
+        conn.execute(T["documents"].delete().where(T["documents"].c.id == doc))
+    local.push(env.local, env.client)
+    kept = rows(env.server, "emergency_takedowns")
+    assert [(r["document_id"], r["url_key"], r["note"]) for r in kept] == [(None, key, "说明")]
+    assert visible() == [other]
+
+
 def test_failed_batch_changes_nothing_and_resumes(env, monkeypatch):
     src = source(env.local)
     bootstrap(env)

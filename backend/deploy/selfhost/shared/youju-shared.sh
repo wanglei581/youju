@@ -30,6 +30,13 @@
 #   import-export <旧版本> 用迁移版本和备份一样的旧镜像在临时库里试恢复备份；整库备份、交易记录、批量工具结果分别加密存档（到期日写进文件名），删掉明文
 #   takedowns [段号]       只读：打印下架清单（gzip 后 base64，每段 200 行），抄到本机用
 #   takedowns-check        只读：下架清单里的网址在服务器上还有没有对用户可见的文件
+# 紧急下架（电脑不在线时，手册第八节）：操作人写在 YOUJU_BY 里（不写记作"服务器命令行"）
+#   emergency-find <文件编号|网址|标题里的字>   只读：找文件（编号、对不对外、标题、网址）
+#   emergency-takedown <文件编号> <原因> [说明] 紧急下架，整组不对外；原因 complaint|authority|error|other
+#   emergency-lift <文件编号> [说明]            撤销这份文件所在组的紧急下架（下错了用）
+#   emergency-list [--all]                      只读：紧急下架着的（--all 连撤销了的）
+#   emergency-carry [段号]                      只读：打印紧急下架清单（gzip 后 base64），电脑开机后带回本机
+#   emergency-settle                            本机已经接手的紧急下架撤掉（定时任务每小时也做）
 #   secret <名称>          只在交互终端里用：录一个密钥进 .env（输入不显示，只回长度和指纹）
 #   show push|sync         只在交互终端里用：显示消息推送的 Token、EncodingAESKey / 同步密钥
 #   rotate-sync            换一个新的同步密钥（不显示）
@@ -697,6 +704,35 @@ takedowns_check() {
   compose exec -T worker youju takedown-carry check --file /dev/stdin < "$EXPORT_DIR/takedowns.jsonl"
 }
 
+# 紧急下架：都在正在跑的 worker 里执行（不另起容器；worker 没在跑就先 up）
+emergency() {
+  compose exec -T worker youju emergency-takedown "$@"
+}
+
+emergency_takedown() {
+  [ "$#" -ge 2 ] && [ "$#" -le 3 ] \
+    || die "用法：emergency-takedown <文件编号> <原因：complaint|authority|error|other> ['说明']"
+  emergency add "$1" --reason "$2" --note "${3:-}" --by "${YOUJU_BY:-}"
+}
+
+emergency_lift() {
+  [ "$#" -ge 1 ] && [ "$#" -le 2 ] || die "用法：emergency-lift <文件编号> ['说明']"
+  emergency lift "$1" --note "${2:-}" --by "${YOUJU_BY:-}"
+}
+
+# 和 takedowns 一样打印成 gzip 后 base64（中文原因贴进本机终端不会乱码），本机 carry-takedowns.sh
+# <SHA-256> emergency 核对后应用。每次都重新导出：分几段抄的中间又有新的紧急下架，SHA-256 会对不上
+emergency_carry() {
+  local part=${1:-1} data blob lines
+  [[ "$part" =~ ^[1-9][0-9]*$ ]] || die "段号要是正整数"
+  data=$(emergency export) || die "导出紧急下架没成功"
+  [ -n "$data" ] || { echo "没有紧急下架着的，不用带回"; return 0; }
+  blob=$(printf '%s\n' "$data" | gzip -9nc | base64 -w 76)
+  lines=$(printf '%s\n' "$blob" | wc -l)
+  echo "紧急下架清单 $(printf '%s\n' "$data" | wc -l) 个网址；SHA-256 $(printf '%s\n' "$data" | sha256sum | cut -c1-64)；gzip 后 base64，共 $(( (lines + 199) / 200 )) 段，第 ${part} 段："
+  printf '%s\n' "$blob" | sed -n "$(( (part - 1) * 200 + 1 )),$(( part * 200 ))p"
+}
+
 # .env 里的一项改成新值、没有就加上（先写临时文件再改名）。值经环境变量给 awk，不进命令行参数
 set_env() {
   (
@@ -911,6 +947,12 @@ case "$cmd" in
   import-export) import_export "$@" ;;
   takedowns) takedowns "$@" ;;
   takedowns-check) takedowns_check ;;
+  emergency-find) emergency find "$*" ;;
+  emergency-takedown) emergency_takedown "$@" ;;
+  emergency-lift) emergency_lift "$@" ;;
+  emergency-list) emergency list "$@" ;;
+  emergency-carry) emergency_carry "$@" ;;
+  emergency-settle) emergency settle ;;
   secret) secret "$@" ;;
   show) show "$@" ;;
   rotate-sync) rotate_sync ;;

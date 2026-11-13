@@ -2500,6 +2500,21 @@ def _cmd_takedown_carry(args: argparse.Namespace) -> int:
         if getattr(get_settings(), "public_replica", False):
             print("这台服务器的公开数据由本机同步过来：在本机跑 apply，下架状态随同步过来")
             return 1
+        if args.origin == "emergency":
+            # 服务器紧急下架带回来的：文件本机都有，只正式下架，不写拦截表
+            report = takedown_carry.apply(
+                session,
+                items,
+                block=False,
+                note=takedown_carry.EMERGENCY_NOTE,
+                operator=takedown_carry.EMERGENCY_OPERATOR,
+            )
+            print(
+                f"清单 {report.listed} 个网址：本机库里有 {report.found} 份，"
+                f"这次整组下架 {report.taken_down} 份，原来就不可见 {report.already_hidden} 份；"
+                f"本机没有的 {report.listed - report.found} 个"
+            )
+            return 0
         report = takedown_carry.apply(session, items)
     print(
         f"清单 {report.listed} 个网址：拦截表新加 {report.blocks_added} 个；"
@@ -2507,6 +2522,70 @@ def _cmd_takedown_carry(args: argparse.Namespace) -> int:
         f"原来就不可见 {report.already_hidden} 份"
     )
     return 0
+
+
+def _cmd_emergency_takedown(args: argparse.Namespace) -> int:
+    from youju import emergency_takedown as urgent
+
+    if args.action in ("add", "lift", "settle") and not getattr(
+        get_settings(), "public_replica", False
+    ):
+        print("紧急下架只在服务器（公开数据由本机同步过来的那台）上用；本机在核对台下架")
+        return 1
+    if args.action in ("find", "add", "lift") and not args.target:
+        print("要给文件编号（find 也可以给网址或标题里的字）")
+        return 1
+    doc_id = 0
+    if args.action in ("add", "lift"):
+        if not (args.target.isascii() and args.target.isdigit()) or int(args.target) <= 0:
+            print("文件编号要是正整数（先用 find 找）")
+            return 1
+        doc_id = int(args.target)
+    with session_factory()() as session:
+        try:
+            if args.action == "find":
+                found = urgent.find(session, args.target)
+                for line in urgent.describe_found(found):
+                    print(line)
+                more = "（只列最新的 20 份）" if len(found) >= urgent.FIND_LIMIT else ""
+                print(f"找到 {len(found)} 份{more}")
+                return 0
+            if args.action == "add":
+                _, ids = urgent.add(
+                    session, doc_id, reason=args.reason or "", note=args.note, operator=args.by
+                )
+                print(
+                    f"已紧急下架文件 #{doc_id}（归并组里 {len(ids)} 份一起不对外）。"
+                    "小程序最多 2 分钟内看不到（服务器快照和小程序缓存各 60 秒）。"
+                    "电脑开机后可以带回本机正式下架（手册：紧急下架）"
+                )
+                return 0
+            if args.action == "lift":
+                count, visible = urgent.lift(session, doc_id, note=args.note, operator=args.by)
+                state = (
+                    "现在对外可见"
+                    if visible
+                    else "仍不对外（本机正式下架着：要在本机核对台恢复上架）"
+                )
+                print(f"已撤销文件 #{doc_id} 所在组的 {count} 条紧急下架；这份文件{state}")
+                return 0
+            if args.action == "list":
+                rows = urgent.records(session, include_lifted=args.all)
+                for line in urgent.describe_records(rows):
+                    print(line)
+                what = "紧急下架记录" if args.all else "紧急下架着的"
+                print(f"{what} {len(rows)} 条")
+                return 0
+            if args.action == "export":
+                for line in urgent.export_lines(session):
+                    print(line)
+                return 0
+            count = urgent.settle(session)
+            print(f"本机已经接手、自动撤销的紧急下架 {count} 条")
+            return 0
+        except urgent.EmergencyError as exc:
+            print(f"没有做：{exc}")
+            return 1
 
 
 def _cmd_export_fetch(args: argparse.Namespace) -> int:
@@ -3282,7 +3361,29 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument(
         "--file", type=Path, required=True, help="云托管导出脚本给的下架清单（JSON Lines）"
     )
+    p.add_argument(
+        "--origin",
+        choices=["d127", "emergency"],
+        default="d127",
+        help="清单从哪来：d127 云托管导出（写拦截表）；emergency 服务器紧急下架导出"
+        "（emergency-takedown export，只正式下架本机已有的，不写拦截表）",
+    )
     p.set_defaults(func=_cmd_takedown_carry)
+    p = sub.add_parser(
+        "emergency-takedown",
+        help="（服务器）电脑不在线时紧急下架：find 找文件；add 下架（整组不对外）；lift 撤销；"
+        "list 看记录；export 写成下架清单带回本机；settle 本机接手的自动撤销（每小时）",
+    )
+    p.add_argument("action", choices=["find", "add", "lift", "list", "export", "settle"])
+    p.add_argument("target", nargs="?", default="", help="文件编号；find 也可以是网址或标题里的字")
+    p.add_argument(
+        "--reason",
+        help="add 的原因：complaint 侵权投诉、authority 主管部门要求、error 内容有误、other 其他",
+    )
+    p.add_argument("--note", default="", help="说明（最多 300 字；不带回本机）")
+    p.add_argument("--by", default="", help="操作人（不写记作“服务器命令行”）")
+    p.add_argument("--all", action="store_true", help="list 连撤销了的一起列")
+    p.set_defaults(func=_cmd_emergency_takedown)
     p = sub.add_parser(
         "archive-export",
         help="（首发前搬家，D-127）把下载好的整库备份、交易记录分别用 age 公钥加密，"

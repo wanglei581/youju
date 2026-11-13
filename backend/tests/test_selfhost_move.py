@@ -861,10 +861,8 @@ def test_local_carry_takedowns_checks_hash_before_applying(tmp_path):
     assert done.returncode == 0, done.stderr
     assert (tmp_path / "takedowns.jsonl").read_text(encoding="utf-8") == listing
     log = (tmp_path / "docker.log").read_text(encoding="utf-8").splitlines()
-    assert [line.split()[-3:] for line in log[:2]] == [
-        ["apply", "--file", "/move/takedowns.jsonl"],
-        ["check", "--file", "/move/takedowns.jsonl"],
-    ]
+    assert log[0].split()[-5:] == ["apply", "--file", "/move/takedowns.jsonl", "--origin", "d127"]
+    assert log[1].split()[-3:] == ["check", "--file", "/move/takedowns.jsonl"]
     assert all(line.startswith("compose run --rm --no-deps -v ") for line in log[:2])
     assert log[2] == "compose exec -T worker youju sync-push"  # 马上推一次
     assert "已经推到服务器" in done.stdout
@@ -890,6 +888,86 @@ def test_local_carry_takedowns_checks_hash_before_applying(tmp_path):
         env={**env, "PUSH_OUT": "连不上服务器", "PUSH_CODE": "1"},
     )
     assert broken.returncode == 1 and "推到服务器没成功" in broken.stderr
+
+
+@needs_bash
+def test_local_carry_emergency_listing_keeps_the_move_listing(tmp_path):
+    """紧急下架带回本机：另存一个文件（不盖掉搬家的那份），apply 带 --origin emergency。"""
+    shutil.copy(SELFHOST / "local" / "carry-takedowns.sh", tmp_path)
+    (tmp_path / "takedowns.jsonl").write_text("move\n", encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "docker"
+    fake.write_text(f'#!/bin/sh\necho "$*" >> "{tmp_path}/docker.log"\n', encoding="utf-8")
+    fake.chmod(0o755)
+    env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"}
+    listing = '{"url_key":"example.gov.cn/1.html","reason":"侵权投诉"}\n'
+    blob = base64.encodebytes(gzip.compress(listing.encode(), mtime=0)).decode()
+    script = str(tmp_path / "carry-takedowns.sh")
+    sha = _sha(listing.encode())
+    bad = subprocess.run(
+        ["bash", script, sha, "other"], input=blob, capture_output=True, text=True, env=env
+    )
+    assert bad.returncode == 1 and "用法" in bad.stderr
+    done = subprocess.run(
+        ["bash", script, sha, "emergency"], input=blob, capture_output=True, text=True, env=env
+    )
+    assert done.returncode == 0, done.stderr
+    assert (tmp_path / "emergency-takedowns.jsonl").read_text(encoding="utf-8") == listing
+    assert (tmp_path / "takedowns.jsonl").read_text(encoding="utf-8") == "move\n"
+    log = (tmp_path / "docker.log").read_text(encoding="utf-8").splitlines()
+    assert log[0].split()[-5:] == [
+        "apply",
+        "--file",
+        "/move/emergency-takedowns.jsonl",
+        "--origin",
+        "emergency",
+    ]
+    assert log[1].split()[-3:] == ["check", "--file", "/move/emergency-takedowns.jsonl"]
+    assert "emergency-settle" in done.stdout
+
+
+@needs_bash
+def test_shared_emergency_commands_pass_arguments_and_carry_decodes(tmp_path):
+    listing = (
+        json.dumps(
+            {
+                "url_key": "example.gov.cn/1.html",
+                "origin_source_id": 1,
+                "taken_down_at": "2026-11-13T02:00:00+00:00",
+                "reason": "侵权投诉",
+            },
+            ensure_ascii=False,
+        )
+        + "\n"
+    )
+    log = tmp_path / "calls.log"
+    exporting = (
+        f'compose() {{ printf \'compose %s\\n\' "$*" >> "{log}"; '
+        f"case \"$*\" in *' export') printf '%s' '{listing}' ;; esac; }}"
+    )
+    done = _bash(
+        tmp_path,
+        "YOUJU_BY=创始人 emergency_takedown 12 complaint '来电 要求删除'; emergency_lift 12",
+        setup=exporting,
+    )
+    assert done.returncode == 0, done.stderr
+    assert _calls(tmp_path) == [
+        "compose exec -T worker youju emergency-takedown add 12 --reason complaint"
+        " --note 来电 要求删除 --by 创始人",
+        "compose exec -T worker youju emergency-takedown lift 12 --note  --by ",
+    ]
+    for body in ("emergency_takedown 12", "emergency_takedown 12 a b c", "emergency_lift"):
+        wrong = _bash(tmp_path, body, setup=exporting)
+        assert wrong.returncode == 1 and "用法" in wrong.stderr, body
+    carried = _bash(tmp_path, "emergency_carry", setup=exporting)
+    assert carried.returncode == 0, carried.stderr
+    header, *lines = carried.stdout.splitlines()
+    assert _sha(listing.encode()) in header and "共 1 段" in header
+    assert gzip.decompress(base64.b64decode("".join(lines))).decode() == listing
+    empty = _bash(tmp_path, "emergency_carry", setup="compose() { :; }")
+    assert empty.returncode == 0 and "没有紧急下架着的" in empty.stdout
+    assert _bash(tmp_path, "emergency_carry x", setup=exporting).returncode == 1
 
 
 def test_export_paste_block_is_ascii_and_decodes_to_the_script(tmp_path):
