@@ -120,10 +120,10 @@ _NOT_NAME_WORDS = frozenset(
         *("地址", "电话", "编号", "文号", "索引"),
     )
 )
-# 新闻动词前面那串字正好是这些的不是人名（"“党员在身边”宣讲""党委为基层党员讲党课""高校为企业提供
-# 技术指导""林业局在……作交流发言""施工作业人员培训动员会"）：党组织、高校，常见姓氏开头的部门
-# （全称、简称），施工。只认整串、只认这些词，不按"常用词开头、机构的字结尾"推（"安全会出席会议"的
-# 安全会照样挡）；也不放进 _NOT_NAME_WORDS：那里的词在长串里出现也否决，"党组成员张小明出席"会漏
+# #513 新加的新闻写法（第二遍，见 _news_named）前面那串字正好是这些的不是人名（"“党员在身边”宣讲"
+# "党委为基层党员讲党课""高校为企业提供技术指导""林业局在……作交流发言""施工作业安全交流会"）：
+# 党组织、高校，常见姓氏开头的部门（全称、简称），施工。只认整串、只认这些词，不按"常用词开头、机构
+# 的字结尾"推；main 原来的写法（第一遍）不用这份（"文联出席会议""安全会出席会议"照原来挡）
 _NOT_NAME_RUNS = frozenset(
     (
         *("党员", "党委", "党组", "党支部", "党总支", "党工委", "党小组", "党校", "党史办", "纪委"),
@@ -153,15 +153,20 @@ _LEAD_WEAK = (
 )
 _PAIR = ("同", "与")  # 后面要有会谈、通电话这类词
 _PAIR_WORDS = ("会谈", "通电话", "会见", "互致", "座谈")
-# 后面要有调研、出席、强调这类词（"某某率调研组赴某地调研""某某在《某某》发表署名文章"
-# "某某在某某培训班上作开班动员""某某为全体党员讲党课"）
-_TRIP = ("到", "赴", "在", "来", "前往", "带队", "率队", "率团", "率", "为")
+# 后面要有调研、出席、强调这类词（"某某率调研组赴某地调研""某某在《某某》发表署名文章"）
+_TRIP = ("到", "赴", "在", "来", "前往", "带队", "率队", "率团", "率")
 _TRIP_WORDS = (
     *("调研", "考察", "督导", "督查", "检查", "走访", "慰问", "看望", "暗访", "出席", "参加"),
     *("主持", "会见", "讲话", "强调", "指出", "视察", "发表", "要求", "指导", "报告"),
-    *("动员", "部署", "致辞", "发言", "授课", "宣讲", "党课", "辅导", "总结", "交流", "汇报"),
-    *("点评", "表态", "述职", "欢迎辞", "欢迎词", "开幕辞", "开幕词", "闭幕辞", "闭幕词", "贺词"),
-    *("贺信", "致词", "演讲", "讲座"),
+)
+# #513 新加的（第二遍）："某某在某某培训班上作开班动员""某某为全体党员讲党课""某某在开幕式上
+# 致欢迎辞"
+_TRIP_NEW = (*_TRIP, "为")
+_TRIP_WORDS_NEW = (
+    *_TRIP_WORDS,
+    *("动员", "部署", "致辞", "致词", "发言", "授课", "宣讲", "党课", "辅导", "总结", "交流"),
+    *("汇报", "点评", "表态", "述职", "欢迎辞", "欢迎词", "开幕辞", "开幕词", "闭幕辞", "闭幕词"),
+    *("贺词", "贺信", "演讲", "讲座"),
 )
 # 人名和动词中间常夹的词（"某某等出席""某某、某某共同出席""某某亲切看望""某某专题调研"），
 # 先去掉再看
@@ -172,23 +177,39 @@ _BETWEEN = (
 )
 # 开头或标点后"某某："的讲话摘要标题（"某某：推动……"），看姓氏
 _QUOTE = re.compile(rf"(?:^|[{re.escape(_OPEN)}])({_H}{{2,3}})[：:]")
-# "某某作政府工作报告""某某作动员讲话"："作"和"报告"这类词中间隔着几个字；"某某讲授“七一”专题
-# 党课""某某致欢迎辞""某某以“……”为题讲授党课"同样。"作……报告"照原来的看；后加的动员、部署这些
-# 单独一组（zuo），"工作""合作"里的"作"另看（见 _news_named）。中间隔着的字按 _GAP 数：一个字
-# （标点、空格以外），或者一整段引号、书名号算一个（"讲授“学党纪 明规矩 强作风”专题党课"
-# "以“学思想、强党性”为题"：引号里可以有顿号、空格）
-_GAP = r'(?:[^，。、：:\s]|“[^“”]{0,30}”|"[^"]{0,30}"|《[^《》]{0,30}》|「[^「」]{0,30}」)'
+# "某某作政府工作报告"："作"和"报告"中间隔着几个字
 _NEWS_VERB = re.compile(
     "|".join(
         [
             *sorted({*_LEAD, *_LEAD_WEAK, *_PAIR, *_TRIP}, key=len, reverse=True),
-            f"作(?={_GAP}{{0,8}}报告)",
-            f"(?P<zuo>作)(?={_GAP}{{0,8}}(?:动员|部署|讲话|发言|辅导|总结|交流|汇报|点评|表态|述职"
-            "|演讲|讲座|宣讲))",
+            r"作(?=[^，。、：:\s]{0,8}报告)",
+        ]
+    )
+)
+# #513 新加的（第二遍）："某某作动员讲话""某某讲授“七一”专题党课""某某致欢迎辞""某某以“……”为题讲授
+# 党课"：动词和后面的词中间隔着几个字，按 _GAP 数：一个字（标点、空格以外），或者一整段引号、书名号
+# 算一个（"讲授“学党纪 明规矩 强作风”专题党课""以“学思想、强党性”为题"：引号里可以有顿号、空格）
+_GAP = r'(?:[^，。、：:\s]|“[^“”]{0,30}”|"[^"]{0,30}"|《[^《》]{0,30}》|「[^「」]{0,30}」)'
+_NEWS_VERB_NEW = re.compile(
+    "|".join(
+        [
+            *sorted(_TRIP_NEW, key=len, reverse=True),
+            f"作(?={_GAP}{{0,8}}(?:报告|动员|部署|讲话|发言|辅导|总结|交流|汇报|点评|表态|述职|演讲"
+            "|讲座|宣讲))",
             f"讲(?={_GAP}{{0,16}}党课)",
             f"致(?={_GAP}{{0,4}}(?:辞|词|贺信))",
             f"以(?={_GAP}{{0,16}}为题)",
         ]
+    )
+)
+# "工作""合作"里的"作"（第二遍）："作"前面两个字是这些常用词的不是人名（"安全工作部署会召开"
+# "党建工作部署会召开""龙华安全工作部署会"）；"张德合作动员讲话""王合作动员讲话""张小明王合作动员
+# 讲话"照样挡。只列常见姓氏开头、和"工""合"连起来像人名的
+_WORK_HEADS = frozenset(
+    (
+        *("党务", "党建", "卫健", "卫生", "卫监", "司法", "商务", "安全", "安监", "宗教", "师生"),
+        *("应急", "成果", "房产", "文化", "文旅", "林业", "林草", "林长", "武装", "田长", "申报"),
+        *("管理", "纪检", "金税", "金融", "项目", "高新"),
     )
 )
 # 中央领导的姓名：转载的中央新闻、"某某思想"的学习材料里最常见，写法太多（"……作出重要指示"
@@ -269,25 +290,34 @@ def _news_named(title: str) -> bool:
             return True
     if any(_name_ish(m.group(1)) for m in _QUOTE.finditer(title)):
         return True
+    # 第一遍：main 原来的写法，原样看，原来挡得住的照样挡
     for m in _NEWS_VERB.finditer(title):
         verb, rest = m.group(0), title[m.end() :]
         if verb in _PAIR and not any(w in rest for w in _PAIR_WORDS):
             continue
         if verb in _TRIP and not any(w in rest for w in _TRIP_WORDS):
             continue
-        # "工作""合作"里的"作"（"安全工作部署""区域合作交流"）：前面那串字正好是"姓 + 工/合"两个字
-        # 才算人名（"王合作动员讲话"）；"作……报告"照原来的看（"张德合作政府工作报告"照样挡）
-        two = m.group("zuo") is not None and title[m.start() - 1 : m.start()] in ("工", "合")
-        any_surname = verb in _LEAD or verb in _PAIR
-        if _names_before(title, m.start(), any_surname=any_surname, two_only=two):
+        if _names_before(title, m.start(), any_surname=verb in _LEAD or verb in _PAIR):
+            return True
+    # 第二遍：#513 新加的写法。前面那串字正好是部门、党员这类词的不算（_NOT_NAME_RUNS）；"工作"
+    # "合作"里的"作"，前面两个字是安全、党建这类常用词的不算（_WORK_HEADS）
+    for m in _NEWS_VERB_NEW.finditer(title):
+        verb, rest = m.group(0), title[m.end() :]
+        if verb in _TRIP_NEW and not any(w in rest for w in _TRIP_WORDS_NEW):
+            continue
+        work = verb == "作" and title[m.start() - 1 : m.start()] in ("工", "合")
+        if _names_before(title, m.start(), any_surname=False, new=True, work=work):
             return True
     return False
 
 
-def _names_before(title: str, i: int, *, any_surname: bool, two_only: bool = False) -> bool:
+def _names_before(
+    title: str, i: int, *, any_surname: bool, new: bool = False, work: bool = False
+) -> bool:
     """title[i] 前面那串汉字（到开头或标点为止；动词前的空格不算）是不是人名：2–3 个字的看
     any_surname；4–9 个字的拆成两三个 2–3 个字的词（中间可以有"与""和""及"），每个都像人名
-    （看姓氏）才算。two_only：只认正好两个字的。"""
+    （看姓氏）才算。new：#513 新加的写法，整串是 _NOT_NAME_RUNS 里的词的不算；work："工作""合作"
+    里的"作"，"作"前面两个字是 _WORK_HEADS 里的不算。"""
     while i > 0 and title[i - 1] in " \u3000":  # "某某 出席会议"
         i -= 1
     j = i
@@ -299,10 +329,10 @@ def _names_before(title: str, i: int, *, any_surname: bool, two_only: bool = Fal
     for _ in range(2):  # "某某等亲切看望"：最多去掉两个
         word = next((w for w in _BETWEEN if run.endswith(w) and len(run) > len(w) + 1), "")
         run = run[: len(run) - len(word)]
-    if two_only and len(run) != 2:  # 见 _news_named："工作""合作"里的"作"
+    if work and run[-3:-1] in _WORK_HEADS:  # "安全工作部署""龙华安全工作部署"
         return False
     if len(run) in (2, 3):
-        return _name_ish(run, any_surname=any_surname) and run not in _NOT_NAME_RUNS
+        return _name_ish(run, any_surname=any_surname) and not (new and run in _NOT_NAME_RUNS)
     if not 4 <= len(run) <= 11 or any(w in run for w in _NOT_NAME_WORDS):  # "关于专项执法"
         return False
     parts = [w for w in re.split("[与和及]", run) if w]  # "某某与某某赴某地调研"
