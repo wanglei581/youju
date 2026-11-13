@@ -476,7 +476,10 @@ def refetch_redacted(
         if doc_id not in present:
             report.results.append(RefetchResult(doc_id, title, "missing", "详情已删除"))
             continue
-        outcome = outcomes[doc_id]
+        outcome = outcomes.get(doc_id)
+        if outcome is None:
+            report.results.append(RefetchResult(doc_id, title, "unavailable", "site_paused"))
+            continue
         parsed = outcome.parsed
         if outcome.status != "ok" or parsed is None or not parsed.raw_body:
             reason = outcome.failure_reason or outcome.status

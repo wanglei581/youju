@@ -830,3 +830,14 @@ def test_survey_counts_bodies_with_page_chrome(session, capsys) -> None:
     assert f"refetch_bodies survey source={hubei.id} host=kjt.hubei.gov.cn ok=2 hits=1" in out
     assert f"source={clean.id}" not in out
     assert "共 2 个来源，1 个有带网页字样的正文，合计 1 份" in out
+
+
+def test_paused_fetch_is_not_written(session, monkeypatch):
+    from youju.crawler import detail_service
+
+    doc = _document(session, _source(session), HUBEI_URL, OLD)
+    session.commit()
+    monkeypatch.setattr(detail_service, "_fetch_outcomes", lambda *args, **kwargs: {})
+    result = refresh_bodies(session, hosts=[HUBEI], apply=True, fetcher=object())
+    assert [(r.result, r.reason, r.written) for r in result] == [("failed", "site_paused", False)]
+    assert _stored(session, doc.id).body_text == OLD

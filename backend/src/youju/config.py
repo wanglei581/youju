@@ -79,6 +79,7 @@ class Settings(BaseSettings):
     per_host_interval: float = 3.0
     per_address_interval: float = 1.0
     per_address_concurrency: int = 2
+    detail_pause_path: str = "/tmp/youju-detail-pause.json"
     # 同时抓取的网站数；同一网站内始终串行。
     max_workers: int = 8
     # 连续失败多少次后把来源标记为 failing 并告警。

@@ -153,7 +153,10 @@ def rescan_list_details(
             outcomes = detail_service._fetch_outcomes(selected, polite, workers)
     results = []
     for document_id, url in selected:
-        outcome = outcomes[document_id]
+        outcome = outcomes.get(document_id)
+        if outcome is None:
+            results.append(RescanResult(document_id, titles[document_id], reason="site_paused"))
+            continue
         if outcome.status != "ok" or outcome.parsed is None or outcome.fetch is None:
             # 没抓成功：什么都不写，原来的正文和附件照旧
             reason = outcome.failure_reason or outcome.status

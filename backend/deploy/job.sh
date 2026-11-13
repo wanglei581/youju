@@ -38,6 +38,11 @@ if [ "$name" = "advisor-run" ]; then
   flock -w 55 -E 75 "/tmp/youju-${name}.lock" \
     sh -c 'date +%s > "$0.tmp" && mv "$0.tmp" "$0"; exec timeout 3h youju "$@"' \
     "$started" "$@" >> /proc/1/fd/1 2>&1
+elif [ "$name" = "fetch-details-queue" ]; then
+  # 半小时一轮，拿到锁后才记开始时间，重叠不足 90 分钟安静跳过。
+  flock -n -E 75 "/tmp/youju-${name}.lock" \
+    sh -c 'date +%s > "$0.tmp" && mv "$0.tmp" "$0"; exec timeout 3h youju "$@"' \
+    "$started" "$@" >> /proc/1/fd/1 2>&1
 else
   flock -n -E 75 "/tmp/youju-${name}.lock" timeout 3h youju "$@" >> /proc/1/fd/1 2>&1
 fi
@@ -47,12 +52,15 @@ if [ "$code" -eq 0 ]; then
   log "完成：youju $*"
   exit 0
 fi
-if [ "$name" = "advisor-run" ] && [ "$code" -eq 75 ]; then
+if { [ "$name" = "advisor-run" ] || [ "$name" = "fetch-details-queue" ]; } && [ "$code" -eq 75 ]; then
   since=$(cat "$started" 2>/dev/null) || since=0
   case "$since" in '' | *[!0-9]*) since=0 ;; esac
   age=$(($(date +%s) - since))
-  if [ "$age" -ge 0 ] && [ "$age" -lt 600 ]; then
-    log "跳过：youju advisor-run（上一轮还在处理任务，不算失败）"
+  limit=600
+  [ "$name" = "fetch-details-queue" ] && limit=5400
+  if [ "$age" -ge 0 ] && [ "$age" -lt "$limit" ]; then
+    finish 0
+    log "跳过：youju ${name}（上一轮还在处理任务，不算失败）"
     exit 0
   fi
 fi

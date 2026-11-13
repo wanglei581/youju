@@ -25,7 +25,7 @@ uv run youju crawl --source-id 12    # 只检查指定来源
 uv run youju fetch-details --limit 50  # 抓取尚无详情或已到重试时间的公开政府文件
 uv run youju fetch-details --source-id 12 --limit 20  # 只处理指定来源
 uv run youju fetch-details --workers 8  # 跨网站并行，同一网站仍遵守间隔
-uv run youju fetch-details-queue --minutes 28  # 后台分批补正文，每轮抓取要锁时停下
+uv run youju fetch-details-queue --minutes 25  # 后台分批补正文，每轮抓取要锁时停下
 uv run youju fetch-details --since 2026-07-01 --notices-only --limit 300  # 申报类通知回填
 uv run youju backfill-titles          # 列表页截断的历史标题用详情页完整标题补全：默认只预览，加 --apply 才写入
 uv run youju repost-groups           # 同一份部里通知的各地版本归成转发组，送管理台确认（D-055）
@@ -35,6 +35,8 @@ uv run youju rescan-list-details     # 还没读出企业名的名单详情按�
 uv run youju report                  # 来源健康和条目统计
 uv run youju serve                   # 启动 API：http://127.0.0.1:8000/docs
 ```
+
+补正文遇到 HTTP 429 时停取响应主机 6 小时，遇到 401、403、412、521 或防护页时停取 24 小时；记录默认保存在 `/tmp/youju-detail-pause.json`，可通过 `YOUJU_DETAIL_PAUSE_PATH` 配置。后台队列每批每个主机默认最多选 20 份（`--per-host` 可调整）。
 
 ## API
 

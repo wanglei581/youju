@@ -555,9 +555,10 @@ def test_advisor_run_records_start_time_inside_lock(tmp_path, shell):
 
 
 @pytest.mark.parametrize(
-    ("round_locked", "crawl_code", "args", "expected"),
+    ("queue_locked", "round_locked", "crawl_code", "args", "expected"),
     [
         (
+            False,
             False,
             0,
             [],
@@ -577,6 +578,7 @@ def test_advisor_run_records_start_time_inside_lock(tmp_path, shell):
         ),
         # 早上那一轮：全部做完后再发微信提醒
         (
+            False,
             False,
             0,
             ["--notify"],
@@ -598,6 +600,7 @@ def test_advisor_run_records_start_time_inside_lock(tmp_path, shell):
         # 抓取失败（或抓取本身重叠）时不核对栏目，避免把还没检查到的栏目误报成漏检
         (
             False,
+            False,
             1,
             [],
             [
@@ -615,6 +618,7 @@ def test_advisor_run_records_start_time_inside_lock(tmp_path, shell):
         ),
         (
             False,
+            False,
             75,
             [],
             [
@@ -630,13 +634,33 @@ def test_advisor_run_records_start_time_inside_lock(tmp_path, shell):
                 "parse-lists",
             ],
         ),
+        (
+            True,
+            False,
+            0,
+            [],
+            [
+                "alert",
+                "crawl",
+                "check-sources",
+                "fetch-details",
+                "attachment-texts",
+                "repost-groups",
+                "extract-deadlines",
+                "extract-fields",
+                "ai-check",
+                "extract-conditions",
+                "triage-feedback",
+                "parse-lists",
+            ],
+        ),
         # 上一轮还没跑完：整轮跳过并发提醒；早上那一轮照样发微信提醒，当天不漏发
-        (True, 0, [], ["alert"]),
-        (True, 0, ["--notify"], ["alert", "notify"]),
+        (False, True, 0, [], ["alert"]),
+        (False, True, 0, ["--notify"], ["alert", "notify"]),
     ],
 )
 def test_round_runs_in_order_and_checks_only_after_crawl(
-    tmp_path, round_locked, crawl_code, args, expected
+    tmp_path, queue_locked, round_locked, crawl_code, args, expected
 ) -> None:
     original = (Path(__file__).resolve().parents[1] / "deploy" / "round.sh").read_text()
     script = (
@@ -661,7 +685,10 @@ def test_round_runs_in_order_and_checks_only_after_crawl(
     )
     job.chmod(0o755)
     flock = tmp_path / "flock"
-    flock.write_text('#!/bin/sh\nexit "$ROUND_LOCKED"\n')
+    flock.write_text(
+        '#!/bin/sh\ncase "$*" in *youju-fetch-details-queue.lock*) exit "$QUEUE_LOCKED" ;; esac\n'
+        'exit "$ROUND_LOCKED"\n'
+    )
     flock.chmod(0o755)
     env = {
         **os.environ,
@@ -669,11 +696,16 @@ def test_round_runs_in_order_and_checks_only_after_crawl(
         "CALLS": str(tmp_path / "calls"),
         "CRAWL_CODE": str(crawl_code),
         "ROUND_LOCKED": "1" if round_locked else "0",
+        "QUEUE_LOCKED": "1" if queue_locked else "0",
     }
     result = subprocess.run(["sh", str(tmp_path / "round.sh"), *args], env=env, check=False)
     assert result.returncode == 0
     calls = (tmp_path / "calls").read_text().splitlines()
     assert [line.split()[0] for line in calls] == expected
+    if queue_locked:
+        assert [line for line in calls if line.startswith("alert ")] == [
+            "alert 补正文队列 5 分钟没停下，这一轮照常跑"
+        ]
     if "attachment-texts" in expected:
         # 补完详情（这里补详情失败也照跑）紧接着取附件文字，每轮最多 200 个（取舍写在 round.sh 里）
         assert "attachment-texts --limit 200" in calls
@@ -800,3 +832,56 @@ def test_alert_probe_rejects_arbitrary_message_in_marker(monkeypatch, capsys):
     output = capsys.readouterr()
     assert not output.out
     assert "secret" not in output.err
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+@pytest.mark.parametrize(
+    ("started", "expected"),
+    [
+        ("ago:30", 0),
+        ("ago:5390", 0),
+        ("ago:5410", 75),
+        ("ago:-120", 75),
+        ("garbage", 75),
+        (None, 75),
+    ],
+)
+def test_detail_queue_overlap(tmp_path, shell, started, expected):
+    job = _job_script(tmp_path)
+    path = tmp_path / "youju-fetch-details-queue.started"
+    if started == "garbage":
+        path.write_text("abc\n")
+    elif started:
+        path.write_text(f"{int(time.time()) - int(started.split(':')[1])}\n")
+    _stub(tmp_path, "flock", "exit 75\n")
+    _stub(tmp_path, "youju", 'printf "%s\\n" "$*" >> "$CALLS"\nexit 0\n')
+    env = {
+        **os.environ,
+        "PATH": f"{tmp_path}:{os.environ['PATH']}",
+        "CALLS": str(tmp_path / "calls"),
+    }
+    result = subprocess.run([shell, str(job), "fetch-details-queue"], env=env, check=False)
+    assert result.returncode == expected
+    calls = (tmp_path / "calls").read_text()
+    assert ("alert " in calls) == (expected == 75)
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_detail_queue_records_start_inside_lock(tmp_path, shell):
+    job = _job_script(tmp_path)
+    _stub(tmp_path, "flock", 'shift 4\nexec "$@"\n')
+    _stub(tmp_path, "timeout", 'shift\nexec "$@"\n')
+    _stub(tmp_path, "youju", 'printf "%s\\n" "$*" >> "$CALLS"\n')
+    env = {
+        **os.environ,
+        "PATH": f"{tmp_path}:{os.environ['PATH']}",
+        "CALLS": str(tmp_path / "calls"),
+    }
+    before = int(time.time())
+    result = subprocess.run(
+        [shell, str(job), "fetch-details-queue", "--minutes", "25"], env=env, check=False
+    )
+    assert result.returncode == 0
+    started = int((tmp_path / "youju-fetch-details-queue.started").read_text())
+    assert before <= started <= int(time.time())
+    assert "fetch-details-queue --minutes 25" in (tmp_path / "calls").read_text()

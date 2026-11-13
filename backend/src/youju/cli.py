@@ -231,12 +231,30 @@ def _cmd_fetch_details(args: argparse.Namespace) -> int:
     return 0
 
 
+DETAIL_QUEUE_YIELD_JOBS = (
+    "check-links",  # 查原网页，访问同一批网站
+    "cache-attachments",  # 下载附件和取文字，吃内存
+    "list-evidence",  # 抓名单证据页
+    "backup",  # 全库导出时写入会拖慢备份并增大备份
+    "ai-eligibility-rebuild",  # 全量重算
+)
+
+
 def _cmd_fetch_details_queue(args: argparse.Namespace) -> int:
     from youju.ai.pipeline import round_running, round_wanted
     from youju.crawler.detail_service import run_detail_queue
 
-    if round_running() or round_wanted():
-        print("跳过：每轮抓取在跑或在等锁")
+    def stop_reason():
+        if round_wanted() or round_running():
+            return "每轮抓取在跑或在等锁"
+        for name in DETAIL_QUEUE_YIELD_JOBS:
+            if round_running(f"/tmp/youju-{name}.lock"):
+                return f"别的任务在跑：{name}"
+        return None
+
+    reason = stop_reason()
+    if reason:
+        print(f"跳过：{reason}")
         return 0
     with session_factory()() as session:
         summary = run_detail_queue(
@@ -245,7 +263,7 @@ def _cmd_fetch_details_queue(args: argparse.Namespace) -> int:
             workers=args.workers,
             batch=args.batch,
             per_host=args.per_host,
-            stop=round_wanted,
+            stop=stop_reason,
         )
     print(f"写入 {summary.total} 份，{summary.batches} 批，停止：{summary.stop_reason}")
     print("状态：" + "，".join(f"{k} {v}" for k, v in summary.statuses.items()))
@@ -2793,7 +2811,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--minutes", type=float, default=28)
     p.add_argument("--workers", type=int, default=32)
     p.add_argument("--batch", type=int, default=2000)
-    p.add_argument("--per-host", type=int, default=100)
+    p.add_argument("--per-host", type=int, default=20)
     p.set_defaults(func=_cmd_fetch_details_queue)
 
     p = sub.add_parser(

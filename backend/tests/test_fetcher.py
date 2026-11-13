@@ -943,3 +943,22 @@ def test_empty_dns_answer_never_falls_back_to_hostname() -> None:
         result = f._get("https://a.gov.cn/list.html")
     assert result.status == "network_error"
     assert "没有得到地址" in result.error
+
+
+def test_robots_429_does_not_fetch_page():
+    calls = []
+
+    def handler(request):
+        calls.append(request.url.path)
+        return httpx.Response(429)
+
+    with PoliteFetcher(
+        "test",
+        per_host_interval=0,
+        per_address_interval=0,
+        transport=httpx.MockTransport(handler),
+        resolver=lambda host: ["1.2.3.4"],
+    ) as fetcher:
+        result = fetcher.fetch("https://a.gov.cn/page")
+    assert result.status == "robots_error"
+    assert calls == ["/robots.txt"]

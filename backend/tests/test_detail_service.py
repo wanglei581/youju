@@ -24,6 +24,13 @@ class FakeFetcher:
         return response.pop(0) if isinstance(response, list) else response
 
 
+@pytest.fixture(autouse=True)
+def isolated_detail_pause(monkeypatch, tmp_path):
+    from youju.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "detail_pause_path", str(tmp_path / "pause.json"))
+
+
 def add_document(session, number, *, source_id=None, rights_level=1, title=None):
     if source_id is None:
         source = Source(
@@ -95,7 +102,7 @@ def test_fetch_details_records_success_and_failures_once(session) -> None:
 
 def test_search_throttle_site_pauses_this_round_after_protection_page(session, monkeypatch):
     """放过站内搜索限流弹窗的网站，一遇到防护页，这一轮就停取这个网站（D-013 出验证码就停）：剩下的
-    不取、不写库，下一轮照常选上。别的网站遇到防护页照旧往下取（见上一个测试）。"""
+    不取、不写库；跨运行保留停取，直到到期。"""
     from youju.crawler import detail
 
     monkeypatch.setitem(detail._SEARCH_THROTTLE_VERIFIED, "gxt.ln.gov.cn", frozenset({"x"}))
@@ -121,8 +128,8 @@ def test_search_throttle_site_pauses_this_round_after_protection_page(session, m
     assert fake.calls == [first.url]
     assert session.get(DocumentDetail, second.id) is None
     results = fetch_details(session, limit=5, source_id=first.source_id, fetcher=fake)
-    assert [r.status for r in results] == ["ok"]
-    assert fake.calls == [first.url, second.url]
+    assert [r.status for r in results] == ["site_paused"]
+    assert fake.calls == [first.url]
 
 
 def _source_on(session, host):
@@ -165,13 +172,12 @@ _PROTECTED = "<html><title>安全验证</title><body>请输入验证码</body></
 
 @pytest.mark.parametrize(
     ("listed", "second_status"),
-    [("b.example.gov.cn", "site_paused"), ("a.example.gov.cn", "parse_empty")],
+    [("b.example.gov.cn", "site_paused"), ("a.example.gov.cn", "site_paused")],
 )
 def test_search_throttle_pause_counts_redirects_both_ways(
     session, monkeypatch, listed, second_status
 ):
-    """按实际访问的网站停：a 跳到 b 遇到防护页，经过的网站里名单上的那个这一轮停。名单上的是 b 时，
-    b 的文件不去取；名单上的是 a 时只停 a，b 照常取。"""
+    """按实际访问的网站停：a 跳到 b 遇到防护页，b 跨运行停取；名单上的 a 另在本次运行停取。"""
     from youju.crawler import detail
 
     monkeypatch.setitem(detail._SEARCH_THROTTLE_VERIFIED, listed, frozenset({"x"}))
@@ -297,7 +303,7 @@ def test_pausing_fetcher_checks_each_hop_in_real_time() -> None:
         if request.url.path == "/robots.txt":
             return httpx.Response(404)
         if request.url.host == "a.gov.cn":
-            pause.hosts.add("a.gov.cn")  # 别的线程这时停了 a
+            pause.add("a.gov.cn", "测试", persistent=False)  # 别的线程这时停了 a
             return httpx.Response(302, headers={"location": "https://b.gov.cn/new"})
         return httpx.Response(200, text="<html></html>")
 
@@ -366,12 +372,12 @@ def test_failure_while_site_was_being_paused_is_not_written(session, monkeypatch
     monkeypatch.setitem(detail._SEARCH_THROTTLE_VERIFIED, "b.example.gov.cn", frozenset({"x"}))
     host = "a.example.gov.cn" if failure == "robots_redirect" else "b.example.gov.cn"
     doc = _doc_on(session, _source_on(session, host), host, 1)
-    paused_hosts: list[set[str]] = []
+    paused_hosts = []
     original = detail_service._SitePause.__init__
 
-    def remember(self) -> None:
-        original(self)
-        paused_hosts.append(self.hosts)
+    def remember(self, *args, **kwargs) -> None:
+        original(self, *args, **kwargs)
+        paused_hosts.append(self)
 
     monkeypatch.setattr(detail_service._SitePause, "__init__", remember)
 
@@ -379,13 +385,13 @@ def test_failure_while_site_was_being_paused_is_not_written(session, monkeypatch
         if request.url.host == "a.example.gov.cn" and request.url.path == "/robots.txt":
             return httpx.Response(302, headers={"location": "https://b.example.gov.cn/robots.txt"})
         if request.url.path == "/robots.txt":
-            paused_hosts[0].add("b.example.gov.cn")  # 别的线程这时停了 b
+            paused_hosts[0].add("b.example.gov.cn", "测试", persistent=False)  # 别的线程这时停了 b
             return httpx.Response(200, text="User-agent: *\nDisallow: /\n")
         return httpx.Response(200, text="<html></html>")
 
     def resolver(name: str) -> list[str]:
         if failure == "dns" or (failure == "robots_redirect" and name == "b.example.gov.cn"):
-            paused_hosts[0].add("b.example.gov.cn")
+            paused_hosts[0].add("b.example.gov.cn", "测试", persistent=False)
             return ["10.0.0.1"]  # 解析到内网
         return ["93.184.216.34"]
 
@@ -413,19 +419,19 @@ def test_body_fetched_just_before_pause_is_kept(session, monkeypatch) -> None:
     source_id = _source_on(session, "b.example.gov.cn")
     first = _doc_on(session, source_id, "b.example.gov.cn", 1)
     second = _doc_on(session, source_id, "b.example.gov.cn", 2)
-    paused_hosts: list[set[str]] = []
+    paused_hosts = []
     original = detail_service._SitePause.__init__
 
-    def remember(self) -> None:
-        original(self)
-        paused_hosts.append(self.hosts)
+    def remember(self, *args, **kwargs) -> None:
+        original(self, *args, **kwargs)
+        paused_hosts.append(self)
 
     monkeypatch.setattr(detail_service._SitePause, "__init__", remember)
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/robots.txt":
             return httpx.Response(404)
-        paused_hosts[0].add("b.example.gov.cn")  # 别的线程这时停了 b
+        paused_hosts[0].add("b.example.gov.cn", "测试", persistent=False)  # 别的线程这时停了 b
         return httpx.Response(
             200,
             text="<html><body><div id='zoom'><p>这是公开通知正文，需要保存这些段落内容。</p>"
@@ -458,12 +464,12 @@ def test_robots_chain_through_paused_site_is_remembered(session, monkeypatch, ro
     monkeypatch.setitem(detail._SEARCH_THROTTLE_VERIFIED, "b.example.gov.cn", frozenset({"x"}))
     source_id = _source_on(session, "a.example.gov.cn")
     docs = [_doc_on(session, source_id, "a.example.gov.cn", n) for n in (1, 2)]
-    paused_hosts: list[set[str]] = []
+    paused_hosts = []
     original = detail_service._SitePause.__init__
 
-    def remember(self) -> None:
-        original(self)
-        paused_hosts.append(self.hosts)
+    def remember(self, *args, **kwargs) -> None:
+        original(self, *args, **kwargs)
+        paused_hosts.append(self)
 
     monkeypatch.setattr(detail_service._SitePause, "__init__", remember)
     pdf_page = (
@@ -478,13 +484,13 @@ def test_robots_chain_through_paused_site_is_remembered(session, monkeypatch, ro
         if path == "/robots.txt":
             return httpx.Response(404)
         if host == "a.example.gov.cn":
-            paused_hosts[0].add("b.example.gov.cn")  # 别的线程这时停了 b
+            paused_hosts[0].add("b.example.gov.cn", "测试", persistent=False)  # 别的线程这时停了 b
             return httpx.Response(200, text=pdf_page, headers={"content-type": "text/html"})
         return httpx.Response(500)  # c 的 PDF 取失败
 
     def resolver(name: str) -> list[str]:
         if route == "cached_robots" and name == "b.example.gov.cn":
-            paused_hosts[0].add("b.example.gov.cn")
+            paused_hosts[0].add("b.example.gov.cn", "测试", persistent=False)
             return ["10.0.0.1"]  # b 解析到内网：a 的 robots 记成取不到
         return ["93.184.216.34"]
 
@@ -511,12 +517,12 @@ def test_robots_retry_keeps_both_paths(session, monkeypatch) -> None:
     monkeypatch.setitem(detail._SEARCH_THROTTLE_VERIFIED, "b.example.gov.cn", frozenset({"x"}))
     source_id = _source_on(session, "a.example.gov.cn")
     docs = [_doc_on(session, source_id, "a.example.gov.cn", n) for n in (1, 2)]
-    paused_hosts: list[set[str]] = []
+    paused_hosts = []
     original = detail_service._SitePause.__init__
 
-    def remember(self) -> None:
-        original(self)
-        paused_hosts.append(self.hosts)
+    def remember(self, *args, **kwargs) -> None:
+        original(self, *args, **kwargs)
+        paused_hosts.append(self)
 
     monkeypatch.setattr(detail_service._SitePause, "__init__", remember)
     tries = {"a": 0}
@@ -530,7 +536,7 @@ def test_robots_retry_keeps_both_paths(session, monkeypatch) -> None:
                 302, headers={"location": f"https://{target}.example.gov.cn/robots.txt"}
             )
         if host == "b.example.gov.cn":
-            paused_hosts[0].add("b.example.gov.cn")  # b 随后被停
+            paused_hosts[0].add("b.example.gov.cn", "测试", persistent=False)  # b 随后被停
         return httpx.Response(500)
 
     with PoliteFetcher(

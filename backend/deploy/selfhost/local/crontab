@@ -13,7 +13,7 @@
 # 每轮抓取（6:30、20:30）要锁时队列自己停下，每轮在跑时队列这次跳过。
 # 32 个并发，同一网站隔 3 秒，同一地址同时不超过 2 个、每秒不超过 1 个。
 # 近 30 天的、申报通知和政策先补。
-5,35 * * * *  /app/backend/deploy/job.sh fetch-details-queue --minutes 28
+5,35 * * * *  /app/backend/deploy/job.sh fetch-details-queue --minutes 25
 30 7 * * 1  /app/backend/deploy/job.sh weekly-digest --scheduled
 30 7 * * 2-3  /app/backend/deploy/job.sh weekly-digest --scheduled
 30 7 * * 4-7  /app/backend/deploy/job.sh weekly-digest --scheduled; /app/backend/deploy/job.sh weekly-digest --kind reminder --scheduled

@@ -905,3 +905,12 @@ def test_line_diff_inside_work_budget_keeps_precise_changes(monkeypatch):
     monkeypatch.setattr(module.difflib, "SequenceMatcher", bounded)
     assert module._restored(old, new) == ["新", "新尾"]
     assert line_calls
+
+
+def test_paused_fetch_is_not_written(world, session, monkeypatch):
+    docs, fake = world
+    before = {name: body_of(session, doc.id) for name, doc in docs.items()}
+    monkeypatch.setattr(detail_service, "_fetch_outcomes", lambda *args, **kwargs: {})
+    report = refetch_redacted(session, apply=True, fetcher=fake)
+    assert all(r.result == "unavailable" and r.reason == "site_paused" for r in report.results)
+    assert {name: body_of(session, doc.id) for name, doc in docs.items()} == before

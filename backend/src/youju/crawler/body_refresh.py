@@ -387,7 +387,12 @@ def refresh_bodies(
             outcomes = detail_service._fetch_outcomes(selected, polite, workers)
     results: list[BodyRefresh] = []
     for document_id, _, title, old in targets:
-        outcome = outcomes[document_id]
+        outcome = outcomes.get(document_id)
+        if outcome is None:
+            results.append(
+                BodyRefresh(document_id, title, "failed", "site_paused", old_chars=len(old))
+            )
+            continue
         if outcome.status != "ok" or outcome.parsed is None:
             reason = outcome.failure_reason or outcome.status
             results.append(BodyRefresh(document_id, title, "failed", reason, old_chars=len(old)))

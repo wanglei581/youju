@@ -330,3 +330,14 @@ def test_rescan_reads_candidates_in_batches(session, monkeypatch) -> None:
         r.document_id for r in rescan_list_details(session, limit=3, fetcher=FakeFetcher(ok))
     ] == [doc.id for doc in docs[:3]]
     assert len(rescan_list_details(session, limit=50, fetcher=FakeFetcher(ok))) == 5
+
+
+def test_paused_fetch_is_not_written(session, monkeypatch):
+    from youju.crawler import detail_service
+
+    doc, fake = _henan_lists(session)
+    before = _stored(session, doc.id)[1]
+    monkeypatch.setattr(detail_service, "_fetch_outcomes", lambda *args, **kwargs: {})
+    results = rescan_list_details(session, apply=True, fetcher=fake)
+    assert [(r.document_id, r.reason) for r in results] == [(doc.id, "site_paused")]
+    assert _stored(session, doc.id)[1] == before

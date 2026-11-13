@@ -243,6 +243,7 @@ class PoliteFetcher:
         url: str,
         same_address_only: bool = False,
         hop_allowed: Callable[..., bool] | None = None,
+        on_response: Callable[[FetchResult], None] | None = None,
     ) -> FetchResult:
         """抓取一个页面。重定向逐跳处理：每一跳都检查 robots.txt，并遵守目标网站的限速。
 
@@ -259,12 +260,17 @@ class PoliteFetcher:
         hops: list[str] = []
         robots_hops: list[str] = []
         self._local.gate = hop_allowed
+        self._local.on_response = on_response
+        self._local.refusal = None
         self._local.robots_hops = robots_hops
         try:
             result = self._fetch_hops(url, same_address_only, hops)
         finally:
             self._local.gate = None
+            self._local.on_response = None
             self._local.robots_hops = None
+        result = self._local.refusal or result
+        self._local.refusal = None
         result.hops = tuple(hops)
         result.robots_hops = tuple(robots_hops)
         return result
@@ -378,8 +384,9 @@ class PoliteFetcher:
             return _RobotsEntry("allow_all", None, self._clock())
         now = self._clock()
         status = result.http_status
+        # 429 是“请慢一点”，不是“没有 robots”，本次不能抓页面。
         if result.status in ("network_error", "ssl_error") or (
-            status is not None and status >= 500
+            status is not None and (status >= 500 or status == 429)
         ):
             why = f"HTTP {status}" if status is not None else (result.error or result.status)
             return _RobotsEntry(
@@ -424,7 +431,16 @@ class PoliteFetcher:
             if self._expired():
                 return FetchResult(url, "deadline", final_url=url, error=_DEADLINE)
             try:
-                return self._request(url)
+                result = self._request(url)
+                callback = getattr(self._local, "on_response", None)
+                # 只看页面请求：读 robots.txt 回 4xx 照 RFC 9309 是"没有 robots、可以抓"（现有
+                # 抓取一直这样，有的网站防火墙只拦 robots.txt、页面照常能看），不当成网站拒绝；
+                # 回 429 在读 robots 那里按"读不到"处理（不抓、下次再试）
+                if callback and not getattr(self._local, "robots", False):
+                    callback(result)
+                    if result.http_status in {401, 403, 412, 429, 521}:
+                        self._local.refusal = result
+                return result
             finally:
                 self._last_request[host] = self._clock()
 
@@ -479,6 +495,8 @@ class PoliteFetcher:
                             log.debug("地址 %s、主机 %s 等待 %.2f 秒", address, host, waited)
                         return FetchResult(url, "deadline", final_url=url, error=_DEADLINE)
                 try:
+                    if not self._gate(url, record=True):
+                        return FetchResult(url, "site_paused", final_url=url, error=SITE_PAUSED)
                     if address and self._address_interval > 0:
                         with self._lock_for(self._address_locks, address):
                             last = self._address_last.get(address)
@@ -493,9 +511,6 @@ class PoliteFetcher:
                         log.debug("地址 %s、主机 %s 等待 %.2f 秒", address, host, waited)
                     if self._expired():
                         return FetchResult(url, "deadline", final_url=url, error=_DEADLINE)
-                    # 解析完、排完队、真正发请求之前再问一次（排队等限速、解析域名期间网站可能停了）
-                    if not self._gate(url, record=True):
-                        return FetchResult(url, "site_paused", final_url=url, error=SITE_PAUSED)
                     timing = {}
                     if self._deadline is not None:
                         # 临近期限：这一次连接、读取最多等到期限（至少 1 秒）

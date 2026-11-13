@@ -26,9 +26,11 @@ run() {
 exec 9>/tmp/youju-round.lock
 # 先留标记"这一轮要锁"：重跑命令见到它，做完手上这一份就停，不再拿下一份（flock 不排队）
 date +%s > /tmp/youju-round.wanted
-# 队列见到标记，取完手上那几份就停（通常最多十几二十秒）；等它放锁，使每轮和队列不同时跑，
-# 同一地址限速在一个进程内管理就够了。
-flock -w 120 /tmp/youju-fetch-details-queue.lock true || :
+# PDF 取文字可能要约 3 分钟，最多等队列 5 分钟；超时提醒但继续跑。
+# 队列也检查每轮锁，即使超时，完成手上文件后仍会停下。
+if ! flock -w 300 /tmp/youju-fetch-details-queue.lock true; then
+  "$D/job.sh" alert "补正文队列 5 分钟没停下，这一轮照常跑" || :
+fi
 if ! flock -w 300 9; then
   rm -f /tmp/youju-round.wanted
   finish 75
