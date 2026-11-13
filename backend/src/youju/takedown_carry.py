@@ -13,12 +13,18 @@
   可以重复执行：已经下架的不重复记。
 - youju takedown-carry check --file（本机、服务器都能跑，只读）：清单里的网址在这个库里有没有
   对用户可见的文件，有就退出码 1。
+
+服务器上的紧急下架（youju/emergency_takedown.py）也用这个格式带回本机，每行多一项 emergency
+（那一次紧急下架的编号，不含说明）：takedown-carry apply --origin emergency 只把本机已有的同网址
+文件整组正式下架，不写拦截表——那些文件本机都有，以后本机恢复上架还要照常更新；下架记录的操作人
+记"服务器紧急下架#编号"，服务器按编号认是哪一次带回的；本机没有的网址数会列出来。
 """
 
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable
+import re
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -34,6 +40,10 @@ from youju.takedown import available_condition, change_state, is_taken_down
 REASONS = ("侵权投诉", "主管部门要求", "内容有误", "其他")
 NOTE = "首发前搬家（D-127）：云托管上已下架，按规范网址带过来"
 OPERATOR = "搬家（D-127）"
+EMERGENCY_NOTE = "服务器上紧急下架过（电脑不在线时），按规范网址带回本机"
+# 紧急下架的编号：32 位小写十六进制（emergency_takedown 里 uuid4().hex）
+_EMERGENCY = re.compile(r"[0-9a-f]{32}")
+EMERGENCY_OPERATOR = "服务器紧急下架"
 _CHUNK = 500
 
 
@@ -47,6 +57,7 @@ class Item:
     origin_source_id: int | None
     taken_down_at: datetime
     reason: str
+    emergency: str | None = None  # 服务器紧急下架的编号（只有紧急下架带回的清单有）
 
 
 @dataclass
@@ -78,6 +89,7 @@ def _parse_time(value: object) -> datetime:
 def parse(lines: Iterable[str]) -> list[Item]:
     """读清单。格式不对就整份拒绝（不做一半）；同一个网址出现多次只留一条。"""
     items: dict[str, Item] = {}
+    kinds: set[bool] = set()  # 各行带不带紧急下架编号
     for number, raw in enumerate(lines, start=1):
         raw = raw.strip()
         if not raw:
@@ -88,10 +100,19 @@ def parse(lines: Iterable[str]) -> list[Item]:
             raise CarryError(f"第 {number} 行不是 JSON") from exc
         if not isinstance(row, dict):
             raise CarryError(f"第 {number} 行不是一条记录")
-        extra = set(row) - {"url_key", "origin_source_id", "taken_down_at", "reason"}
+        extra = set(row) - {"url_key", "origin_source_id", "taken_down_at", "reason", "emergency"}
         if extra:
-            # 清单只该有这四项：多出来的（备注、操作人、标题）可能有个人信息，不收
+            # 清单只该有这几项：多出来的（备注、操作人、标题）可能有个人信息，不收
             raise CarryError(f"第 {number} 行有清单以外的字段：{', '.join(sorted(extra))}")
+        emergency = row.get("emergency")
+        if emergency is not None and (
+            not isinstance(emergency, str) or not _EMERGENCY.fullmatch(emergency)
+        ):
+            raise CarryError(f"第 {number} 行的紧急下架编号不对")
+        kinds.add(emergency is not None)
+        if len(kinds) > 1:
+            # 去重之前就查：同一个网址先来一行不带编号的，带编号的那行会被去重丢掉
+            raise CarryError(f"第 {number} 行：有的行带紧急下架编号、有的不带，不是同一份清单")
         key = row.get("url_key")
         if not isinstance(key, str) or not key.strip() or len(key) > URL_KEY_MAX:
             raise CarryError(f"第 {number} 行的规范网址不对")
@@ -104,7 +125,7 @@ def parse(lines: Iterable[str]) -> list[Item]:
             raise CarryError(f"第 {number} 行的下架时间不对") from exc
         reason = row.get("reason")
         reason = reason if reason in REASONS else "其他"
-        items.setdefault(key, Item(key, source, stamp, reason))
+        items.setdefault(key, Item(key, source, stamp, reason, emergency))
     return list(items.values())
 
 
@@ -118,11 +139,58 @@ def _chunks(values: list[str]) -> Iterable[list[str]]:
         yield values[start : start + _CHUNK]
 
 
-def apply(session: Session, items: list[Item]) -> ApplyReport:
-    """写拦截表；本机已有的同网址文件整组下架。"""
+def emergency_operator(item: Item) -> str:
+    """紧急下架带回的下架记录的操作人：带上那一次紧急下架的编号（同步到服务器，settle 按它认）。"""
+    return f"{EMERGENCY_OPERATOR}#{item.emergency}"
+
+
+def apply(
+    session: Session,
+    items: list[Item],
+    *,
+    block: bool = True,
+    note: str = NOTE,
+    operator: str | Callable[[Item], str] = OPERATOR,
+) -> ApplyReport:
+    """写拦截表（block=False 时不写）；本机已有的同网址文件整组下架。operator 可以按条给。"""
     report = ApplyReport(listed=len(items))
     if not items:
         return report
+    keys = [item.url_key for item in items]
+    if block:
+        _block(session, items, report)
+    by_key = {item.url_key: item for item in items}
+    operator_of = operator if callable(operator) else (lambda _item: operator)
+    found: list[tuple[int, str]] = []
+    for part in _chunks(keys):
+        found += [
+            (doc_id, key)
+            for doc_id, key in session.execute(
+                select(Document.id, Document.url_key)
+                .where(Document.url_key.in_(part))
+                .order_by(Document.id)
+            )
+        ]
+    report.found = len(found)
+    for doc_id, key in found:
+        if is_taken_down(session, doc_id):
+            report.already_hidden += 1
+            continue
+        # 整组下架（归并组里别的副本一起），各副本各记一条下架记录
+        item = by_key[key]
+        change_state(
+            session,
+            doc_id,
+            action="takedown",
+            note=note,
+            operator=operator_of(item),
+            reason=item.reason,
+        )
+        report.taken_down += 1
+    return report
+
+
+def _block(session: Session, items: list[Item], report: ApplyReport) -> None:
     keys = [item.url_key for item in items]
     existing: set[str] = set()
     for part in _chunks(keys):
@@ -147,28 +215,6 @@ def apply(session: Session, items: list[Item]) -> ApplyReport:
         session.execute(stmt.on_duplicate_key_update(url_key=stmt.inserted.url_key))
     session.commit()
     report.blocks_added = len(fresh)
-    reasons = {item.url_key: item.reason for item in items}
-    found: list[tuple[int, str]] = []
-    for part in _chunks(keys):
-        found += [
-            (doc_id, key)
-            for doc_id, key in session.execute(
-                select(Document.id, Document.url_key)
-                .where(Document.url_key.in_(part))
-                .order_by(Document.id)
-            )
-        ]
-    report.found = len(found)
-    for doc_id, key in found:
-        if is_taken_down(session, doc_id):
-            report.already_hidden += 1
-            continue
-        # 整组下架（归并组里别的副本一起），各副本各记一条下架记录
-        change_state(
-            session, doc_id, action="takedown", note=NOTE, operator=OPERATOR, reason=reasons[key]
-        )
-        report.taken_down += 1
-    return report
 
 
 def check(session: Session, items: list[Item]) -> CheckReport:

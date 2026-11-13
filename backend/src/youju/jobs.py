@@ -54,6 +54,8 @@ JOB_NAMES = OVERVIEW_JOBS + (
     "offsite-pull",
     # 首发前搬家（D-127）的旧库存档到期删除（youju/offsite.py prune_archive）
     "archive-prune",
+    # 服务器每小时：本机已经接手的紧急下架自动撤销（youju/emergency_takedown.py settle）
+    "emergency-takedown",
 )
 # 每 5 分钟一次的外部健康检查（本机看服务器）不记运行记录，和 advisor-run 一样
 
