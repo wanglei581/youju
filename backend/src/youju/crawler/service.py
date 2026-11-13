@@ -19,9 +19,12 @@ from youju.crawler.adapters import (
     LIST_API_OPEN_KEY,
     LIST_API_REFUSED,
     ListApi,
-    api_html,
+    api_items_merged,
+    api_parts,
+    api_readable,
     api_refusal,
     find_list_api,
+    gkmlpt_categories,
 )
 from youju.crawler.fetcher import FetchResult
 from youju.crawler.list_api import (
@@ -190,6 +193,11 @@ def _lock_source(session: Session, source: Source) -> None:
 ADAPTER_MIN_ITEMS = 3
 # 页面上的列表改由接口加载、来源却没标"经接口读"时记的原因（D-128：不读，等复检后再打开）
 NEEDS_REVIEW_MESSAGE = "页面改用接口加载，待复检（来源没有“经接口读”的标记，D-128）"
+# 数字广东信息公开平台的分类栏目，部门页上认不出列表接口时记的原因（不请求接口）
+GKMLPT_UNRECOGNIZED_MESSAGE = (
+    "部门页上认不出数字广东信息公开平台的列表接口（页面可能改版，或分类不在分类树里、跳到别处），"
+    "待复检"
+)
 
 
 # 来源 parser_config 里记下列表接口被读取护栏（D-128）拦下（接口网址、原因、时间）：例行抓取
@@ -220,6 +228,7 @@ class _AdapterResult:
     fetch: FetchResult | None = None  # 接口没取到时的抓取结果
     refused: str = ""  # 读取护栏（D-128）拦下的原因：记"不能抓"、不读
     api_url: str = ""  # 认出的列表接口网址
+    part: str = ""  # 几个分类合读时出问题的是哪个分类（"分类 编号："），写进原因
 
 
 def _items_via_adapter(
@@ -232,21 +241,36 @@ def _items_via_adapter(
 ) -> _AdapterResult:
     """栏目页自己声明了集约化平台的列表接口（见 crawler/adapters.py）时，按它取列表。
 
-    只请求页面写明的那个接口地址、参数原样照页面（D-128 读取护栏 ①），不另外构造请求。"""
-    api = api or find_list_api(page.text, page.final_url or url)
-    if api is None:
+    只请求页面写明的那个接口地址、参数原样照页面（D-128 读取护栏 ①），不另外构造请求；数字广东的
+    地址只用页面写明的值、照它自己平台脚本的拼法得到，和它自己的页面发出的请求一样（D-013，见
+    crawler/adapters.py 开头的说明）。"""
+    api = api or find_list_api(page.text, page.final_url or url, url)
+    if api is None or parser_config.get(LIST_API_OPEN_KEY) != api.adapter:
+        # 没认出接口，或来源没标"经接口读"（D-128）：不请求接口（调用的地方本来就先查过标记）
         return _AdapterResult([])
     # 只取页面写明的那个地址，跳到别处不跟（D-128 读取护栏 ①）
-    result = fetcher.fetch(api.url, same_address_only=True)
-    if result.status == "robots_disallowed":
-        return _AdapterResult([], api.adapter, result, api_url=api.url)  # 照旧按 robots 禁止记
-    refused = api_refusal(api, result)
-    if refused:
-        return _AdapterResult([], api.adapter, result, refused, api.url)
-    if result.status != "ok":
-        return _AdapterResult([], api.adapter, result, api_url=api.url)
-    html = api_html(api, result.text)
-    items = extract_items(html, api.base_url, parser_config, today=today) if html else []
+    parts = api_parts(api)
+    texts: list[str] = []
+    for part in parts:
+        # 几个分类合读时一个一个取、一个一个查：前一个被拦下、没取到、读不出，后面的不再请求
+        # （D-013、D-128：网站拒绝了就停，不接着敲门）；原因里写明出问题的是哪个分类
+        label = f"分类 {part.category_id}：" if len(parts) > 1 else ""
+        result = fetcher.fetch(part.url, same_address_only=True)
+        if result.status == "robots_disallowed":
+            return _AdapterResult([], api.adapter, result, api_url=api.url, part=label)
+        refused = api_refusal(part, result)
+        if refused:
+            return _AdapterResult(
+                [], api.adapter, result, refused=f"{label}{refused}", api_url=api.url, part=label
+            )
+        if result.status != "ok":
+            return _AdapterResult([], api.adapter, result, api_url=api.url, part=label)
+        if len(parts) > 1 and not api_readable(part, result.text):
+            # 几个分类合读时，有一个回了但读不出（空白、维护页）：整栏这次没读出，记"读不出"、
+            # 写明是哪个分类，下次再试；不拿别的分类的条目顶上
+            return _AdapterResult([], api.adapter, api_url=api.url, part=label)
+        texts.append(result.text)
+    items = api_items_merged(api, texts, parser_config, today)
     return _AdapterResult(items, api.adapter, api_url=api.url)
 
 
@@ -295,11 +319,22 @@ def _fetch_items(
     config_set: dict[str, object] = {}
     config_drop: dict[str, object] = {}  # 要去掉的项 → 本次看到的旧值（库里还是它才去掉）
     if result.status == "ok":
-        items = extract_items(result.text, result.final_url or url, parser_config, today=today)
+        # 数字广东信息公开平台的分类：列表只在接口里（按分类加载），部门页上识别出的条目不用，
+        # 一定去认接口
+        gkmlpt = gkmlpt_categories(url) is not None
+        items = (
+            []
+            if gkmlpt
+            else extract_items(result.text, result.final_url or url, parser_config, today=today)
+        )
         api = None
-        if len(items) < ADAPTER_MIN_ITEMS and not parser_config.get("item_selector"):
-            api = find_list_api(result.text, result.final_url or url)
-        if api is not None and parser_config.get(LIST_API_OPEN_KEY) != api.adapter:
+        if gkmlpt or (len(items) < ADAPTER_MIN_ITEMS and not parser_config.get("item_selector")):
+            api = find_list_api(result.text, result.final_url or url, url)
+        if gkmlpt and api is None:
+            # 部门页上认不出数字广东的列表接口（改版、分类没了或跳到别处）：不请求接口，记读不出、
+            # 写明原因，进失败清单等复检
+            status, error = "parse_empty", GKMLPT_UNRECOGNIZED_MESSAGE
+        elif api is not None and parser_config.get(LIST_API_OPEN_KEY) != api.adapter:
             # D-128：来源没标"经接口读"（复检、抽查合格、打开时才写）——不走接口、不读，也不悄悄
             # 记成 0 条：记"读不出"并写明待复检，进失败清单等复检
             items = []
@@ -338,7 +373,8 @@ def _fetch_items(
             elif via.fetch is not None and via.fetch.status == "robots_disallowed":
                 # 列表接口被 robots 禁止：和读取护栏一样，零星条目不收，记 robots 禁止（停抓）
                 items = []
-                status, error = via.fetch.status, f"列表接口（{via.adapter}）：{via.fetch.error}"
+                status = via.fetch.status
+                error = f"列表接口（{via.adapter}）：{via.part}{via.fetch.error}"
             elif via.fetch is not None:
                 # 列表接口这次没取到（网络不通、超时、5xx 等）：照实记失败、下次再试，不当成
                 # "改版认不出"；栏目页上零星认出的一两条也不收，免得把这次失败盖成成功
@@ -348,13 +384,16 @@ def _fetch_items(
                     if via.fetch.status == "redirect"
                     else via.fetch.status
                 )
-                status, error = via.fetch.status, f"列表接口（{via.adapter}）：{why}"
+                status, error = via.fetch.status, f"列表接口（{via.adapter}）：{via.part}{why}"
                 if via.fetch.http_status:
                     result = FetchResult(url, "http_error", http_status=via.fetch.http_status)
             else:
                 # 接口回了，但读不出列表（空白、不是 JSON、没有列表那段，或列表本来就空）：
                 # 栏目页零星认出的一两条也不收，按"没识别到列表条目"记，下次再试
                 items = []
+                if via.part:
+                    status = "parse_empty"
+                    error = f"列表接口（{via.adapter}）：{via.part}返回读不出列表，下次再试"
         if not items and status == "ok":
             status, error = "parse_empty", PARSE_EMPTY_MESSAGE
     return _Fetched(result, status, error, items, first_via_adapter, config_set, config_drop)

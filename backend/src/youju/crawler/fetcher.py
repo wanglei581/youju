@@ -7,7 +7,7 @@ import ssl
 import threading
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from urllib.parse import urlencode, urlsplit, urlunsplit
 from urllib.robotparser import RobotFileParser
 
@@ -35,6 +35,10 @@ _NO_KEEPALIVE = httpx.Limits(max_keepalive_connections=0)
 _DEADLINE = "到了这次任务的期限，没有查完"
 
 
+# 取详情时这一轮已停取的网站（见 detail_service）：不去取的原因
+SITE_PAUSED = "同一网站这一轮遇到防护页，停取"
+
+
 @dataclass
 class FetchResult:
     url: str
@@ -49,6 +53,10 @@ class FetchResult:
     error: str | None = None
     content_type: str | None = None
     content: bytes = b""
+    # 这次请求经过的地址（原地址和每一跳要去的地址），按先后：调用方用来判断实际访问了哪些网站
+    hops: tuple[str, ...] = ()
+    # 这次请求用到的 robots.txt 当初读的时候走过的地址（含跳转）；用记下来的 robots 结果时也算上
+    robots_hops: tuple[str, ...] = ()
 
 
 @dataclass
@@ -60,6 +68,9 @@ class _RobotsEntry:
     fetched_at: float
     error: str | None = None  # unsupported_host、unreachable 的原因
     server_error: bool = False  # unreachable 是因为服务器回 5xx（超时、连不上在下层已重试过）
+    chain: tuple[
+        str, ...
+    ] = ()  # 读这份 robots.txt 走过的地址（含跳转），用记下来的结果时也报给调用方
 
 
 def compat_ssl_context() -> ssl.SSLContext:
@@ -201,6 +212,8 @@ class PoliteFetcher:
         self._guard = threading.Lock()
         self._robots: dict[str, _RobotsEntry] = {}
         self._robots_locks: dict[str, threading.Lock] = {}
+        # 这一次 fetch() 的 hop_allowed（各线程各自的）：_request 每次真正发请求前再问一次
+        self._local = threading.local()
 
     def close(self) -> None:
         self._client.close()
@@ -219,9 +232,16 @@ class PoliteFetcher:
         self,
         url: str,
         same_address_only: bool = False,
+        hop_allowed: Callable[..., bool] | None = None,
         form: Sequence[tuple[str, str]] | None = None,
     ) -> FetchResult:
         """抓取一个页面。重定向逐跳处理：每一跳都检查 robots.txt，并遵守目标网站的限速。
+
+        hop_allowed(url, record=...)：取详情时用来挡住这一轮已停取的网站（见 detail_service）。
+        每一跳查 robots 之前问一次（record=False，只查）；每次真正发请求之前（解析完域名、排队等完
+        限速、网络重试前）再问一次，页面请求 record=True（放行就当场记下经过），读 robots.txt 的
+        请求和它的跳转 record=False。不能去的不发请求，返回 "site_paused"；读 robots.txt 被挡下
+        不记下来。
 
         same_address_only：只取这个地址本身（读页面声明的列表接口时用，D-128 读取护栏 ①）。
         跳转一律不跟（连 http 升 https 也不跟，只请求页面写明的那个地址）：原样返回 "redirect"
@@ -231,14 +251,40 @@ class PoliteFetcher:
         form：栏目列表由公开检索接口提供时（youju.crawler.list_api），按页面脚本同样的参数以表单
         POST。robots、限速、地址检查都和抓页面一样；接口返回跳转时不跟随（POST 跟随跳转的行为
         不统一），记 http_error 并写明跳去哪。"""
+        hops: list[str] = []
+        robots_hops: list[str] = []
+        self._local.gate = hop_allowed
+        self._local.robots_hops = robots_hops
+        try:
+            result = self._fetch_hops(url, same_address_only, hops, form)
+        finally:
+            self._local.gate = None
+            self._local.robots_hops = None
+        result.hops = tuple(hops)
+        result.robots_hops = tuple(robots_hops)
+        return result
+
+    def _fetch_hops(
+        self,
+        url: str,
+        same_address_only: bool,
+        hops: list[str],
+        form: Sequence[tuple[str, str]] | None = None,
+    ) -> FetchResult:
         current = url
         for _ in range(_MAX_REDIRECTS + 1):
+            # 查 robots 之前先问（已停的网站命中缓存的 robots 结果时也不往下走），只查不记
+            if not self._gate(current, record=False):
+                return FetchResult(url, "site_paused", final_url=current, error=SITE_PAUSED)
+            hops.append(current)
             if self._url_allowed is not None and not self._url_allowed(current):
                 return FetchResult(url, "unsupported_host", final_url=current, error="非政府网站")
             entry, allowed = self._check_robots(current)
             state = entry.state
             if state == "deadline":
                 return FetchResult(url, "deadline", final_url=current, error=_DEADLINE)
+            if state == "site_paused":
+                return FetchResult(url, "site_paused", final_url=current, error=SITE_PAUSED)
             if state == "unreachable":
                 # RFC 9309 §2.3.1.4：robots.txt 因服务器错误或网络问题无法获取，视为全部禁止
                 return FetchResult(
@@ -282,9 +328,13 @@ class PoliteFetcher:
             entry = self._robots.get(origin)
             if entry is None or self._clock() - entry.fetched_at > _ROBOTS_TTL_SECONDS:
                 entry = self._load_robots(origin)
-                if entry.state != "deadline":  # 到期没读完不记下来，不当成读不到
+                # 到期没读完、被 hop_allowed 挡下的不记下来，不当成读不到
+                if entry.state not in {"deadline", "site_paused"}:
                     self._robots[origin] = entry
-        if entry.state in {"unreachable", "unsupported_host", "deadline"}:
+        reported = getattr(self._local, "robots_hops", None)
+        if reported is not None:
+            reported.extend(entry.chain)
+        if entry.state in {"unreachable", "unsupported_host", "deadline", "site_paused"}:
             return entry, False
         if entry.state == "allow_all" or entry.parser is None:
             return entry, True
@@ -296,13 +346,31 @@ class PoliteFetcher:
         线上偶尔取不到它的 robots.txt，整站的附件、正文跳过，原因却没记下来）。"""
         entry = self._load_robots_once(origin)
         if entry.state == "unreachable" and entry.server_error:
+            first = entry.chain
             entry = self._load_robots_once(origin)
+            # 两次走过的地址都记下（重试可能跳到别的网站）
+            entry = replace(entry, chain=first + entry.chain)
         return entry
 
     def _load_robots_once(self, origin: str) -> _RobotsEntry:
+        # 读 robots.txt 的请求（和它的跳转）问 hop_allowed 时只查不记：不算文件经过的地址
+        chain: list[str] = []
+        self._local.robots = True
+        self._local.robots_chain = chain
+        try:
+            entry = self._load_robots_from(origin)
+        finally:
+            self._local.robots = False
+            self._local.robots_chain = None
+        return replace(entry, chain=tuple(chain))
+
+    def _load_robots_from(self, origin: str) -> _RobotsEntry:
         current = origin + "/robots.txt"
         # RFC 9309 §2.3.1.2：robots.txt 的重定向至少跟随 5 次；超过则视为不可用（可以抓取）
         for _ in range(_MAX_REDIRECTS + 1):
+            chain = getattr(self._local, "robots_chain", None)
+            if chain is not None:
+                chain.append(current)
             if self._url_allowed is not None and not self._url_allowed(current):
                 return _RobotsEntry(
                     "unsupported_host", None, self._clock(), "robots.txt 跳到非政府网站，本站跳过"
@@ -310,6 +378,8 @@ class PoliteFetcher:
             result = self._get(current)
             if result.status == "deadline":
                 return _RobotsEntry("deadline", None, self._clock())
+            if result.status == "site_paused":
+                return _RobotsEntry("site_paused", None, self._clock(), result.error)
             if result.status == "unsupported_host":
                 return _RobotsEntry("unsupported_host", None, self._clock(), result.error)
             if result.status != "redirect":
@@ -342,6 +412,13 @@ class PoliteFetcher:
         parser = RobotFileParser()
         parser.parse(body.splitlines())
         return _RobotsEntry("rules", parser, now)
+
+    def _gate(self, url: str, *, record: bool) -> bool:
+        """问这一次 fetch() 的 hop_allowed 能不能去 url；读 robots.txt 时只查不记。"""
+        gate = getattr(self._local, "gate", None)
+        if gate is None:
+            return True
+        return gate(url, record=record and not getattr(self._local, "robots", False))
 
     def _lock_for(self, locks: dict[str, threading.Lock], key: str) -> threading.Lock:
         with self._guard:
@@ -398,6 +475,9 @@ class PoliteFetcher:
                     # 临近期限：这一次连接、读取最多等到期限（至少 1 秒）
                     left = max(1.0, self._deadline - self._clock())
                     timing["timeout"] = min(self._timeout, left)
+                # 解析完、真正发请求之前再问一次（排队等限速、解析域名期间网站可能停了）
+                if not self._gate(url, record=True):
+                    return FetchResult(url, "site_paused", final_url=url, error=SITE_PAUSED)
                 with client.stream(
                     method,
                     request_url,

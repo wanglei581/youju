@@ -423,11 +423,21 @@ def test_refusal_is_rechecked_when_page_declares_another_api_or_after_30_days(se
 
 
 def test_unrecognized_list_api_reply_is_not_read(session) -> None:
-    """认得出才读：接口回空白、维护页这类认不出的返回，不读，记不能抓（30 天后再查）。"""
-    check, source, docs = _check_with_api(session, page(JPAAS_API, "<html>系统维护中</html>"))
+    """认得出才读：接口回认不出的网页，不读，记不能抓（30 天后再查）。"""
+    check, source, docs = _check_with_api(
+        session, page(JPAAS_API, "<html><body><p>欢迎访问</p></body></html>")
+    )
     assert (check.status, docs) == ("list_api_refused", 0)
     assert "认不出" in check.error
     assert source.health == "blocked"
+
+
+def test_maintenance_list_api_reply_is_retried_not_read(session) -> None:
+    """#475 后续：接口回维护页、空白页，算这次没取到（下次再试），照样不读，不记 30 天的不能抓。"""
+    check, source, docs = _check_with_api(session, page(JPAAS_API, "<html>系统维护中</html>"))
+    assert (check.status, docs) == ("parse_empty", 0)
+    assert source.health != "blocked"
+    assert "list_api_refused" not in (source.parser_config or {})
 
 
 def test_robots_denied_list_api_drops_stray_page_items(session) -> None:
@@ -512,9 +522,11 @@ def test_unreadable_list_api_reply_drops_stray_page_items(session) -> None:
         '<li><a href="/art/9.html">关于开展专项申报工作的通知</a><span>2026-11-01</span></li></ul>',
     )
     empty = '{"roles":null,"permissions":null,"success":true,"message":"生成成功","code":"200","traceId":"t","messageType":2,"data":{"html":""}}'
+    # 空白页、维护页算这次没取到（#475 后续），认不出的网页记不能抓：栏目页上零星的一条都不收
     cases = [
-        ("", "list_api_refused"),
-        ("<html>系统维护中</html>", "list_api_refused"),
+        ("", "parse_empty"),
+        ("<html>系统维护中</html>", "parse_empty"),
+        ("<html><body><p>欢迎访问</p></body></html>", "list_api_refused"),
         (empty, "parse_empty"),
     ]
     for body, want in cases:
@@ -631,3 +643,240 @@ def test_marked_source_reads_the_list_api_through_the_guard(session) -> None:
     other_url = other.url
     f2 = RecordingFetcher({other_url: [page(other_url, JPAAS_PAGE)]})
     assert check_source(session, other, f2).status == "parse_empty" and f2.requested == [other_url]
+
+
+def test_gkmlpt_requires_matching_marker_and_ignores_page_items(session):
+    from pathlib import Path
+
+    folder = Path(__file__).parent / "fixtures/gkmlpt"
+    html = (folder / "dept_page.html").read_text()
+    html = html.replace("</body>", LIST_V2 + "</body>")
+    from youju.crawler.listing import extract_items
+
+    assert (
+        len(extract_items(html, "https://www.sg.gov.cn/fgj/gkmlpt/index", today=date(2026, 11, 12)))
+        >= 3
+    )
+    payload = (folder / "api_notice.json").read_text()
+    page_url = "https://www.sg.gov.cn/fgj/gkmlpt/index"
+    api_url = "https://www.sg.gov.cn/fgj/gkmlpt/api/all/8?page=1&sid=751012"
+    url = page_url + "#xxgk-gkmlpt-8"
+    source = make_source(session, url)
+    for marker in (None, "大汉jpaas", "数字广东gkmlpt"):
+        source.parser_config = {"list_api_open": marker} if marker else {}
+        session.commit()
+        responses = {url: [page(page_url, html)]}
+        if marker == "数字广东gkmlpt":
+            responses[api_url] = [page(api_url, payload)]
+        fetcher = RecordingFetcher(responses)
+        check = check_source(session, source, fetcher, today=date(2026, 11, 12))
+        if marker == "数字广东gkmlpt":
+            assert (check.status, check.items_found) == ("ok", 5)
+            assert fetcher.requested == [url, api_url]
+        else:
+            assert check.status == "parse_empty" and "待复检" in check.error
+            assert fetcher.requested == [url]
+
+
+def _gkmlpt_fixture():
+    from pathlib import Path
+
+    folder = Path(__file__).parent / "fixtures/gkmlpt"
+    page_url = "https://www.sg.gov.cn/fgj/gkmlpt/index"
+    return (
+        (folder / "dept_page.html").read_text(),
+        (folder / "api_notice.json").read_text(),
+        page_url,
+        "https://www.sg.gov.cn/fgj/gkmlpt/api/all/8?page=1&sid=751012",
+        page_url + "#xxgk-gkmlpt-8",
+    )
+
+
+def test_gkmlpt_page_without_the_api_is_not_requested(session):
+    # 标了"经接口读"，但部门页改版、认不出接口：不请求接口，记读不出并写明原因
+    from youju.crawler.service import GKMLPT_UNRECOGNIZED_MESSAGE
+
+    _, _, page_url, _, url = _gkmlpt_fixture()
+    source = make_source(session, url)
+    source.parser_config = {"list_api_open": "数字广东gkmlpt"}
+    session.commit()
+    fetcher = RecordingFetcher({url: [page(page_url, "<html><body>改版了</body></html>")]})
+    check = check_source(session, source, fetcher, today=date(2026, 11, 12))
+    assert (check.status, check.error) == ("parse_empty", GKMLPT_UNRECOGNIZED_MESSAGE)
+    assert fetcher.requested == [url]
+
+
+def test_gkmlpt_refused_api_is_not_requested_again_for_30_days(session):
+    html, _, page_url, api_url, url = _gkmlpt_fixture()
+    source = make_source(session, url)
+    source.parser_config = {"list_api_open": "数字广东gkmlpt"}
+    session.commit()
+    refused = FetchResult(api_url, "http_error", final_url=api_url, http_status=403, text="")
+    fetcher = RecordingFetcher({url: [page(page_url, html)], api_url: [refused]})
+    check = check_source(session, source, fetcher, today=date(2026, 11, 12))
+    assert check.status == "list_api_refused" and "403" in check.error
+    session.refresh(source)
+    assert source.parser_config["list_api_refused"]["url"] == api_url
+    # 下一轮：栏目页还声明着同一个接口，30 天内不再请求
+    again = RecordingFetcher({url: [page(page_url, html)]})
+    check = check_source(session, source, again, today=date(2026, 11, 12))
+    assert check.status == "list_api_refused" and again.requested == [url]
+
+
+def test_gkmlpt_backlink_is_skipped_when_final_url_keeps_the_fragment(session):
+    # 抓取程序给的最终网址带着栏目的 # 片段时，指回部门页的条目照样不收
+    import json
+
+    html, payload, page_url, api_url, url = _gkmlpt_fixture()
+    body = json.loads(payload)
+    body["articles"][0]["url"] = "http://www.sg.gov.cn/fgj/gkmlpt/index"
+    source = make_source(session, url)
+    source.parser_config = {"list_api_open": "数字广东gkmlpt"}
+    session.commit()
+    fetcher = RecordingFetcher({url: [page(url, html)], api_url: [page(api_url, json.dumps(body))]})
+    check = check_source(session, source, fetcher, today=date(2026, 11, 12))
+    assert (check.status, check.items_found) == ("ok", 4)
+
+
+def test_gkmlpt_multiple_categories_fetch_and_marker(session):
+    import json
+
+    html, payload, page_url, first, single_url = _gkmlpt_fixture()
+    second = first.replace("/all/8?", "/all/6?")
+    url = single_url + ",6"
+    source = make_source(session, url)
+    fetcher = RecordingFetcher({url: [page(page_url, html)]})
+    check = check_source(session, source, fetcher, today=date(2026, 11, 12))
+    assert check.status == "parse_empty" and fetcher.requested == [url]
+    source.parser_config = {"list_api_open": "数字广东gkmlpt"}
+    session.commit()
+    body = json.loads(payload)
+    other = {**body, "classify": {"id": 6}, "articles": body["articles"][:1]}
+    other["articles"] = [dict(other["articles"][0], url="http://www.sg.gov.cn/new.html")]
+    fetcher = RecordingFetcher(
+        {
+            url: [page(page_url, html)],
+            first: [page(first, payload)],
+            second: [page(second, json.dumps(other))],
+        }
+    )
+    check = check_source(session, source, fetcher, today=date(2026, 11, 12))
+    assert (check.status, check.items_found) == ("ok", 6)
+    assert fetcher.requested == [url, first, second]
+
+
+def test_gkmlpt_multiple_categories_second_refused_stops_all(session):
+    html, payload, page_url, first, single_url = _gkmlpt_fixture()
+    second = first.replace("/all/8?", "/all/6?")
+    url = single_url + ",6"
+    source = make_source(session, url)
+    source.parser_config = {"list_api_open": "数字广东gkmlpt"}
+    session.commit()
+    blocked = FetchResult(second, "http_error", http_status=403)
+    fetcher = RecordingFetcher(
+        {url: [page(page_url, html)], first: [page(first, payload)], second: [blocked]}
+    )
+    check = check_source(session, source, fetcher, today=date(2026, 11, 12))
+    assert check.status == "list_api_refused" and "分类 6" in check.error
+    session.refresh(source)
+    assert source.parser_config["list_api_refused"]["url"] == first
+    again = RecordingFetcher({url: [page(page_url, html)]})
+    assert check_source(session, source, again).status == "list_api_refused"
+    assert again.requested == [url]
+
+
+def test_gkmlpt_first_category_refused_stops_before_the_next(session):
+    # 第一个分类就被网站拒绝：后面的分类不再请求（D-013、D-128：拒绝了就停）
+    html, payload, page_url, first, single_url = _gkmlpt_fixture()
+    url = single_url + ",6"
+    source = make_source(session, url)
+    source.parser_config = {"list_api_open": "数字广东gkmlpt"}
+    session.commit()
+    blocked = FetchResult(first, "http_error", http_status=403)
+    fetcher = RecordingFetcher({url: [page(page_url, html)], first: [blocked]})
+    check = check_source(session, source, fetcher, today=date(2026, 11, 12))
+    assert check.status == "list_api_refused" and fetcher.requested == [url, first]
+
+
+def test_gkmlpt_single_parent_direct_category_end_to_end(session):
+    # 单独一个只取直接挂在父分类上的条目（p 编号）：正式抓取照样读、只收挂在它上面的
+    import json
+
+    html, payload, page_url, _, _ = _gkmlpt_fixture()
+    url = page_url + "#xxgk-gkmlpt-p8350"
+    api_url = "https://www.sg.gov.cn/fgj/gkmlpt/api/all/8350?page=1&sid=751012"
+    body = json.loads(payload)
+    body["classify"]["id"] = 8350
+    for row, main in zip(body["articles"], (8350, 8350, 6, 6, 8350), strict=True):
+        row["classify_main"] = main
+    source = make_source(session, url)
+    source.parser_config = {"list_api_open": "数字广东gkmlpt"}
+    session.commit()
+    fetcher = RecordingFetcher(
+        {url: [page(page_url, html)], api_url: [page(api_url, json.dumps(body))]}
+    )
+    check = check_source(session, source, fetcher, today=date(2026, 11, 12))
+    assert (check.status, check.items_found) == ("ok", 3) and fetcher.requested == [url, api_url]
+
+
+def test_gkmlpt_first_category_failure_is_a_plain_failure(session):
+    # 合读时第一个分类这次没取到（503）：后面的不再请求，记普通失败、写明是哪个分类，不记"不能抓"，
+    # 下一轮照常再试（FakeFetcher 里没放第二个分类，请求了会出错）
+    html, _, page_url, first, single_url = _gkmlpt_fixture()
+    url = single_url + ",6"
+    source = make_source(session, url)
+    source.parser_config = {"list_api_open": "数字广东gkmlpt"}
+    session.commit()
+    failed = FetchResult(first, "http_error", http_status=503, error="HTTP 503")
+    fetcher = RecordingFetcher({url: [page(page_url, html)], first: [failed]})
+    check = check_source(session, source, fetcher, today=date(2026, 11, 12))
+    assert check.status == "http_error" and "分类 8：" in check.error
+    assert fetcher.requested == [url, first]
+    session.refresh(source)
+    assert "list_api_refused" not in source.parser_config
+
+
+def test_gkmlpt_second_category_blank_is_read_nothing_naming_it(session):
+    # 第二个分类回了空白页（读不出、不算被拦）：整栏这次记读不出、写明分类 6，不收第一个分类的条目，
+    # 不记"不能抓"
+    html, payload, page_url, first, single_url = _gkmlpt_fixture()
+    second = first.replace("/all/8?", "/all/6?")
+    url = single_url + ",6"
+    source = make_source(session, url)
+    source.parser_config = {"list_api_open": "数字广东gkmlpt"}
+    session.commit()
+    fetcher = RecordingFetcher(
+        {url: [page(page_url, html)], first: [page(first, payload)], second: [page(second, "")]}
+    )
+    check = check_source(session, source, fetcher, today=date(2026, 11, 12))
+    assert (check.status, check.items_found) == ("parse_empty", 0)
+    assert "分类 6：" in check.error and fetcher.requested == [url, first, second]
+    session.refresh(source)
+    assert "list_api_refused" not in source.parser_config
+
+
+def test_gkmlpt_later_direct_category_end_to_end(session):
+    # p 写在后面的编号前：正式抓取照样一个一个取，后面那个分类只收直接挂在它上面的
+    import json
+
+    html, payload, page_url, first, single_url = _gkmlpt_fixture()
+    url = single_url + ",p8350"
+    second = "https://www.sg.gov.cn/fgj/gkmlpt/api/all/8350?page=1&sid=751012"
+    body = json.loads(payload)
+    body["classify"]["id"] = 8350
+    for n, (row, main) in enumerate(zip(body["articles"], (8350, 6, 8350, 7, 6), strict=True)):
+        row["classify_main"] = main
+        row["url"] = f"http://www.sg.gov.cn/fgj/gkmlpt/content/9/{n}/post_{n}.html"
+    source = make_source(session, url)
+    source.parser_config = {"list_api_open": "数字广东gkmlpt"}
+    session.commit()
+    fetcher = RecordingFetcher(
+        {
+            url: [page(page_url, html)],
+            first: [page(first, payload)],
+            second: [page(second, json.dumps(body))],
+        }
+    )
+    check = check_source(session, source, fetcher, today=date(2026, 11, 12))
+    assert (check.status, check.items_found) == ("ok", 7)
+    assert fetcher.requested == [url, first, second]

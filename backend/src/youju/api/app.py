@@ -2139,7 +2139,8 @@ def reopen_deadline(
     _admin: AdminDep,
     request: Request,
 ) -> dict[str, str]:
-    """退回待核对：用户端立即不再显示这个截止，候选回到核对台、标明是质检退回，必须由人重新核对。
+    """退回待核对：用户端立即不再显示这个截止，候选回到核对台、标明是质检退回，要带着退回原因
+    重新核对（Claude 按带退回原因的清单写回，D-130；或在核对台核对）。
     归并组里同一截止（类型、核定日期和时间相同）已通过的副本一起退回：用户端显示的是同一个截止，
     只退一条的话其他副本照样显示。已标变更的不能退回。"""
     row = session.get(DocumentDeadline, deadline_id)
@@ -2149,21 +2150,9 @@ def reopen_deadline(
     if row.status != "approved":
         raise HTTPException(status_code=409, detail="只有已通过的截止能退回待核对")
     note = row.audit_note if row.audit_state == "flagged" and row.audit_note else "人工退回"
-    now = datetime.now(UTC)
-    reopened = 0
-    for item in group:
-        if item.status != "approved":
-            continue
-        item.status = "pending"
-        item.reviewed_by = None
-        item.reviewed_at = None
-        item.approved_date = None
-        item.approved_time = None
-        item.audit_state = "reopened"
-        item.audit_note = note
-        item.audit_at = now
-        item.audit_by = body.reviewed_by
-        reopened += 1
+    from youju.deadline_verify import reopen_group
+
+    reopened = reopen_group(group, note, body.reviewed_by, datetime.now(UTC))
     session.commit()
     _audit(request, "reopen", deadline_id=deadline_id, reviewer=body.reviewed_by, count=reopened)
     return {"status": "pending"}

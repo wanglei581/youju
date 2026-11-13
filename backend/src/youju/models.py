@@ -294,6 +294,38 @@ class TakedownBlock(Base):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
 
 
+class EmergencyTakedown(Base):
+    """电脑（公开数据的主库）不在线时，在服务器上紧急下架（youju/emergency_takedown.py）。
+
+    服务器上的公开数据是本机同步过来的，直接改文件的下架时间会被下一次同步盖回去，所以另记在
+    这张只在服务器上的表里：和正式下架一样，归并组里每份各记一行；没撤销（lifted_at 为空）的行，
+    它指的文件所在的归并组整组不对外（takedown.available_condition）。不同步、不进公开快照，随服务器
+    的用户数据备份。电脑恢复后带回本机正式下架（takedown-carry），带回的下架记录同步过来后自动撤掉
+    （settle）。
+    说明可能写到投诉人，不带回本机。行不删：撤销只填撤销的人、时间和说明。本机删了这份文件
+    （同步删除）时文件编号置空、下架时的规范网址留着，下一次 settle 自动撤销；和纠错一样置空，
+    不挡同步，也不挡用户数据恢复到新服务器（备份恢复遇到不许删上级的外键会整份停下）。"""
+
+    __tablename__ = "emergency_takedowns"
+    __table_args__ = (Index("ix_emergency_takedowns_active", "lifted_at", "document_id"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    document_id: Mapped[int | None] = mapped_column(
+        ForeignKey("documents.id", ondelete="SET NULL"), index=True
+    )
+    url_key: Mapped[str] = mapped_column(String(URL_KEY_MAX))
+    # 同一次紧急下架的几行共用的编号（随机 32 位十六进制，用旧备份恢复的新服务器上也不会重号）：
+    # 带回本机时写进下架记录的操作人（"服务器紧急下架#编号"），settle 按它认是哪一次带回的，
+    # 旧清单晚到也撤不了别的一次
+    batch: Mapped[str] = mapped_column(String(32))
+    reason: Mapped[str] = mapped_column(String(16))
+    note: Mapped[str] = mapped_column(String(300))
+    created_by: Mapped[str] = mapped_column(String(80))
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=NOW)
+    lifted_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    lifted_by: Mapped[str | None] = mapped_column(String(80))
+    lift_note: Mapped[str | None] = mapped_column(String(300))
+
+
 class DocumentMerge(Base):
     """同一文件的别名关系；停用映射即可撤销，原始文件及衍生记录均保留。"""
 
@@ -680,7 +712,8 @@ class DocumentDeadline(Base):
     # 规则候选里 AI 是否也找到了同一天：True 一致 / False AI 查过但没找到 / 空 AI 还没查
     ai_agrees: Mapped[bool | None] = mapped_column(Boolean)
     # 质检：flagged 已通过但存疑、等人复核 / cleared 人确认无误 / reopened 质检退回、回到待核对，
-    # 必须由人重新核对（不按同组已通过自动沿用，也不按导入结果通过）；空表示没发现问题。
+    # 要带着退回原因重新核对：Claude 按带退回原因的清单写回（D-130），或在核对台核对；
+    # 不按同组已通过自动沿用，也不按导入结果通过；空表示没发现问题。
     # audit_note 存疑原因；audit_at 最近一次质检的时间（AI 抽查过、标存疑、复核或退回）
     audit_state: Mapped[str | None] = mapped_column(String(8))
     audit_note: Mapped[str | None] = mapped_column(String(200))

@@ -1,6 +1,7 @@
 """命令行：数据库、来源抓取、详情抓取、报告和 API。"""
 
 import argparse
+import contextlib
 import json
 import logging
 import os
@@ -620,7 +621,7 @@ def _cmd_deadline_verify_queue(args: argparse.Namespace) -> int:
 def _cmd_deadline_verify_apply(args: argparse.Namespace) -> int:
     from youju.deadline_verify import apply_one
 
-    items = json.loads(args.file.read_text(encoding="utf-8"))
+    items = json.loads(args.file.read_text(encoding="utf-8-sig"))
     if not isinstance(items, list):
         raise ValueError("输入必须是 JSON 数组")
     with session_factory()() as session:
@@ -639,6 +640,59 @@ def _cmd_deadline_verify_apply(args: argparse.Namespace) -> int:
                     },
                     ensure_ascii=False,
                 )
+            )
+    return 0
+
+
+def _cmd_deadline_verify_sample(args: argparse.Namespace) -> int:
+    from youju.deadline_verify import sample
+
+    with session_factory()() as session:
+        result = sample(session, args.days, args.rate, args.minimum, args.seed)
+    output = json.dumps(result, ensure_ascii=False, indent=2) + "\n"
+    if args.out:
+        args.out.write_text(output, encoding="utf-8")
+    else:
+        print(output, end="")
+    return 0
+
+
+def _cmd_deadline_verify_spotcheck(args: argparse.Namespace) -> int:
+    from youju.deadline_verify import spotcheck
+
+    items = json.loads(args.file.read_text(encoding="utf-8-sig"))
+    if not isinstance(items, list):
+        raise ValueError("输入必须是 JSON 数组")
+    with session_factory()() as session:
+        for item in items:
+            result = spotcheck(session, item, args.apply)
+            if args.apply:
+                session.commit()
+            else:
+                session.rollback()
+            result["write_enabled"] = args.apply
+            print(json.dumps(result, ensure_ascii=False))
+    return 0
+
+
+def _cmd_deadline_verify_stats(args: argparse.Namespace) -> int:
+    from youju.deadline_verify import stats
+
+    with session_factory()() as session:
+        result = stats(session, args.since)
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False))
+    else:
+        for key, label in (
+            ("total", "全部"),
+            ("ai_agrees", "程序和 AI 一致"),
+            ("other", "不一致或 AI 没看过"),
+        ):
+            counts = result[key]
+            accuracy = "暂无" if counts["accuracy"] is None else f"{counts['accuracy']:.1%}"
+            print(
+                f"{label}：确认 {counts['confirmed']}，修正 {counts['corrected']}，"
+                f"看不准 {counts['unclear']}，准确率 {accuracy}"
             )
     return 0
 
@@ -918,6 +972,13 @@ def _cmd_daily_report(args: argparse.Namespace) -> int:
     finally:
         usage_ok = _finish_ai(client, "report")
     text = digest_text(digest, picks)
+    try:
+        _, sync_line = _sync_contact(get_settings())
+    except Exception:  # noqa: BLE001 - 查不到同步情况不能耽误日报
+        sync_line = "同步：查不到本机最近一次来同步的时间"
+    if sync_line:
+        head, _, rest = text.partition("\n")
+        text = f"{head}\n{sync_line}" + (f"\n{rest}" if rest else "")
     # 能读情况（D-097 ④）放不进同一条（群机器人一条有字节上限），紧接着另发一条；统计出错时不发
     # （主日报里已写"取不到"）
     extra = readability_text(digest)
@@ -936,7 +997,8 @@ def _cmd_daily_report(args: argparse.Namespace) -> int:
 
 def _cmd_reclassify(_: argparse.Namespace) -> int:
     """按当前的标题规则重算每份文件的类型（rule_kind）、项目类别（rule_category）和筛选标签
-    （rule_supports、rule_industries），并去掉标题开头从列表页带进来的装饰符号（crawler/titles.py），
+    （rule_supports、rule_industries），并去掉标题里从列表页带进来的装饰符号、提示文字和末尾的发布日期
+    （crawler/titles.py），
     只写有变化的。规则改了之后要跑一次；admin 服务每次启动时在迁移之后自动跑。"""
     if getattr(get_settings(), "public_replica", False):
         # 2.0 自建服务器：公开数据由本机算好推过来，这里不改（本机启动时会重算）
@@ -948,7 +1010,7 @@ def _cmd_reclassify(_: argparse.Namespace) -> int:
 
     from youju.categories import doc_category
     from youju.classify import doc_kind
-    from youju.crawler.titles import clean_title
+    from youju.crawler.titles import clean_title, without_publish_date
     from youju.title_tags import INDUSTRY_RULES, SUPPORT_RULES
 
     with session_factory()() as session:
@@ -956,6 +1018,7 @@ def _cmd_reclassify(_: argparse.Namespace) -> int:
             select(
                 Document.id,
                 Document.title,
+                Document.publish_date,
                 Document.rule_kind,
                 Document.rule_category,
                 Document.rule_supports,
@@ -964,8 +1027,8 @@ def _cmd_reclassify(_: argparse.Namespace) -> int:
         ).all()
         changed: dict[tuple[str, str, str, str], list[int]] = defaultdict(list)
         cleaned_titles: dict[int, str] = {}
-        for doc_id, title, *stored in rows:
-            cleaned = clean_title(title)
+        for doc_id, title, published, *stored in rows:
+            cleaned = without_publish_date(clean_title(title), published)
             if cleaned != title:
                 cleaned_titles[doc_id] = cleaned
             new = (
@@ -1000,30 +1063,47 @@ def _cmd_reclassify(_: argparse.Namespace) -> int:
 
 
 def _cmd_backup(args: argparse.Namespace) -> int:
-    from youju.backup import BackupError, dump, run_backup
+    from youju.backup import (
+        KEEP_30_DAYS,
+        KEEP_30_DAYS_SERVER,
+        SCOPE_USER,
+        BackupError,
+        backup_scope,
+        dump,
+        keep_policy,
+        run_backup,
+    )
     from youju.db import create_mysql_engine
 
-    engine = create_mysql_engine(get_settings().database_url)
+    settings = get_settings()
+    # 2.0 服务器只备用户数据，本机留最近 3 天加 4 个周日（D-129 ⑥）；云托管和以前一样
+    scope, keep = backup_scope(settings), keep_policy(settings)
+    what = "（只备用户数据）" if scope == SCOPE_USER else ""
+    engine = create_mysql_engine(settings.database_url)
     try:
         if args.output:
             with args.output.open("wb") as out:
-                counts = dump(engine, out)
+                counts = dump(engine, out, scope=scope)
             size = args.output.stat().st_size
-            print(f"已导出到 {args.output}（{size} 字节）：共 {sum(counts.values())} 条记录")
+            print(f"已导出到 {args.output}（{size} 字节）{what}：共 {sum(counts.values())} 条记录")
             return 0
-        env = get_settings().cloud_env
+        env = settings.cloud_env
         if not env:
             print("没有设置 YOUJU_CLOUD_ENV（云托管环境 ID），无法上传备份")
             return 1
-        report = run_backup(engine, env)
+        report = run_backup(engine, env, scope=scope, keep=keep)
     except BackupError as exc:
         print(f"备份失败：{exc}")
         return 1
     finally:
         engine.dispose()
+    # 云托管的这一行和以前一字不差
+    thirty = keep in (KEEP_30_DAYS, KEEP_30_DAYS_SERVER)
+    old = "份 30 天前的备份" if thirty else "份旧备份（留最近 3 天和最近 4 个周日的）"
+    total = sum(report.counts.values())
     print(
-        f"已备份 {sum(report.counts.values())} 条记录（{report.bytes} 字节）到 {report.path}；"
-        f"删掉 {report.pruned} 份 30 天前的备份"
+        f"已备份{what} {total} 条记录（{report.bytes} 字节）到 {report.path}；"
+        f"删掉 {report.pruned} {old}"
     )
     return 0
 
@@ -1032,20 +1112,23 @@ def _cmd_backup(args: argparse.Namespace) -> int:
 _SEED_TABLES = frozenset({"signing_keys"})
 
 
-def _clear_seed_rows(engine) -> None:
+def _clear_seed_rows(engine, scope: str = "all") -> None:
     """--fresh：刚迁移好的库里只有迁移写的种子行（signing_keys）时，先删掉它们再恢复。
-    别的表只要有一行数据就不删、报错（防止把有数据的库当成空库）。"""
+    别的表只要有一行数据就不删、报错（防止把有数据的库当成空库）。只备用户数据的备份（scope=user）
+    只看用户数据各表，截止日期表只看服务器自己的行（公开数据已经从本机推过来了）。"""
     from sqlalchemy import delete, func, select
 
-    from youju.backup import BackupError, backed_up_tables
+    from youju.backup import BackupError, backed_up_tables, own_rows
 
-    tables = backed_up_tables()
+    tables = backed_up_tables(scope)
+
+    def rows(t):
+        where = own_rows(t, scope)
+        stmt = select(func.count()).select_from(t)
+        return conn.scalar(stmt if where is None else stmt.where(where))
+
     with engine.begin() as conn:
-        busy = [
-            t.name
-            for t in tables
-            if t.name not in _SEED_TABLES and conn.scalar(select(func.count()).select_from(t))
-        ]
+        busy = [t.name for t in tables if t.name not in _SEED_TABLES and rows(t)]
         if busy:
             raise BackupError(f"目标库不是刚迁移好的空库（{', '.join(busy[:5])} 有数据），没有动它")
         for t in tables:
@@ -1054,21 +1137,41 @@ def _clear_seed_rows(engine) -> None:
 
 
 def _cmd_restore(args: argparse.Namespace) -> int:
-    from youju.backup import BackupError, restore
+    import gzip
+    import json
+
+    from youju.backup import SCOPE_USER, BackupError, restore, scope_of
     from youju.db import create_mysql_engine
 
     engine = create_mysql_engine(get_settings().database_url)
+    report: dict = {}
     try:
+        try:
+            with gzip.open(args.file, "rb") as src:
+                header = json.loads(src.readline() or b"null")
+            scope = scope_of(header) if isinstance(header, dict) else "all"
+        except (OSError, ValueError, EOFError):
+            scope = "all"  # 读不出来的交给 restore 报"损坏或不完整"
         if getattr(args, "fresh", False):
-            _clear_seed_rows(engine)
+            _clear_seed_rows(engine, scope)
         with args.file.open("rb") as src:
-            counts = restore(engine, src)
+            counts = restore(engine, src, report=report)
     except BackupError as exc:
         print(f"恢复失败：{exc}")
         return 1
     finally:
         engine.dispose()
-    print(f"已恢复 {sum(counts.values())} 条记录，各表条数、外键和内容都和备份一致：")
+    settled = report.get("settled") or {}
+    if report.get("scope") == SCOPE_USER:
+        print("这份只备了用户数据；公开数据用的是本机推过来的。")
+    if settled:
+        print("指着的公开记录在本机那边已经删了的，照外键规则处理了（和线上本来会发生的一样）：")
+        for key, (action, n) in settled.items():
+            how = "这几行不要了" if action == "CASCADE" else "这一项置空"
+            print(f"  {key}: {n} 行，{how}")
+        print(f"已恢复 {sum(counts.values())} 条记录；没调整过的表，条数、外键和内容都和备份一致：")
+    else:
+        print(f"已恢复 {sum(counts.values())} 条记录，各表条数、外键和内容都和备份一致：")
     for name, count in counts.items():
         print(f"  {name}: {count}")
     return 0
@@ -2356,6 +2459,79 @@ def _cmd_sync_status(args: argparse.Namespace) -> int:
     return 0
 
 
+# 服务器多久没收到本机的同步要提醒（D-129，11/12）：本机每 10 分钟推一次，有没有变更都先来取状态；
+# 超过 3 小时没来，多半是 Windows 电脑关机、断网、重启后没登录，或推送任务出错
+SYNC_WATCH_AFTER = timedelta(hours=3)
+# 同一次断开（最近一次来联系的时间没变）6 小时内只提醒一次，免得夜里每小时提醒一遍
+SYNC_WATCH_REPEAT = timedelta(hours=6)
+SYNC_WATCH_STATE = Path("/tmp/youju-sync-watch.json")
+
+
+def _sync_contact(settings) -> tuple[datetime | None, str]:
+    """（服务器）本机最近一次来同步的时间和一句说明；这台不收同步时返回 (None, "")。"""
+    from youju.backup import BEIJING
+    from youju.sync.server import last_contact
+
+    if not getattr(settings, "public_replica", False):
+        return None, ""
+    sync_secret = getattr(settings, "sync_secret", None)
+    if not (sync_secret.get_secret_value().strip() if sync_secret else ""):
+        return None, ""
+    engine = _sync_engine()
+    try:
+        last = last_contact(engine)
+    finally:
+        engine.dispose()
+    if last is None:
+        return None, "同步：还没收到过本机的同步（还没起步）"
+    age = datetime.now(UTC) - last
+    when = last.astimezone(BEIJING).strftime("%m-%d %H:%M")
+    if age <= SYNC_WATCH_AFTER:
+        minutes = max(0, int(age.total_seconds() // 60))
+        return last, f"同步：本机最近一次来同步是 {when}（{minutes} 分钟前）"
+    hours = int(age.total_seconds() // 3600)
+    return last, (
+        f"同步：服务器 {hours} 小时没收到本机的同步了（最近一次 {when}，北京时间）。"
+        "看一下 Windows 电脑是不是关机、断网、重启后没登录，"
+        "或推送任务出错（本机 youju sync-status）"
+    )
+
+
+def _cmd_sync_watch(args: argparse.Namespace) -> int:
+    """（服务器，每小时）本机超过 3 小时没来同步就提醒到群里。提醒发出去（或 6 小时内已提醒过）
+    退出码 20，job.sh 不再重复提醒；提醒发不出去退出码 1，由 job.sh 发通用提醒。"""
+    from youju.alerts import send_alert
+
+    settings = get_settings()
+    last, line = _sync_contact(settings)
+    if not line:
+        print("这台不收本机的同步（没设 YOUJU_PUBLIC_REPLICA 或 YOUJU_SYNC_SECRET），跳过")
+        return 0
+    if last is None or datetime.now(UTC) - last <= SYNC_WATCH_AFTER:
+        print(line)
+        return 0
+    try:
+        noted = json.loads(SYNC_WATCH_STATE.read_text())
+        alerted = datetime.fromisoformat(noted["alerted_at"])
+        same = noted.get("last") == last.isoformat()
+    except (OSError, ValueError, KeyError, TypeError):
+        same, alerted = False, None
+    if same and alerted is not None and datetime.now(UTC) - alerted < SYNC_WATCH_REPEAT:
+        print(line + "（6 小时内提醒过，这次不再发）")
+        return 20
+    sent = send_alert(line)
+    print(line)
+    if sent is not True:
+        print("提醒没发出去" if sent is False else "没配置告警，提醒没发")
+        return 1
+    # 记不下来就下一小时再提醒一次
+    with contextlib.suppress(OSError):
+        SYNC_WATCH_STATE.write_text(
+            json.dumps({"last": last.isoformat(), "alerted_at": datetime.now(UTC).isoformat()})
+        )
+    return 20
+
+
 def _cmd_sync_export(args: argparse.Namespace) -> int:
     from youju.sync import local
 
@@ -2405,6 +2581,32 @@ def _cmd_takedown_carry(args: argparse.Namespace) -> int:
         if getattr(get_settings(), "public_replica", False):
             print("这台服务器的公开数据由本机同步过来：在本机跑 apply，下架状态随同步过来")
             return 1
+        if args.origin == "emergency":
+            if any(item.emergency is None for item in items):
+                print("这份清单不是服务器 emergency-carry 打印的（每行要有紧急下架的编号）")
+                return 1
+            # 服务器紧急下架带回来的：文件本机都有，只正式下架，不写拦截表；操作人带上编号
+            report = takedown_carry.apply(
+                session,
+                items,
+                block=False,
+                note=takedown_carry.EMERGENCY_NOTE,
+                operator=takedown_carry.emergency_operator,
+            )
+            print(
+                f"清单 {report.listed} 个网址：本机库里有 {report.found} 份，"
+                f"这次整组下架 {report.taken_down} 份，原来就不可见 {report.already_hidden} 份；"
+                f"本机没有的 {report.listed - report.found} 个"
+            )
+            return 0
+        if any(item.emergency is not None for item in items):
+            # 带编号的是服务器 emergency-carry 打印的紧急下架清单：按搬家的应用会写拦截表、
+            # 操作人对不上编号（服务器上撤不掉）
+            print(
+                "这是紧急下架的清单：要加 --origin emergency"
+                "（本机 carry-takedowns.sh 加 emergency）"
+            )
+            return 1
         report = takedown_carry.apply(session, items)
     print(
         f"清单 {report.listed} 个网址：拦截表新加 {report.blocks_added} 个；"
@@ -2412,6 +2614,83 @@ def _cmd_takedown_carry(args: argparse.Namespace) -> int:
         f"原来就不可见 {report.already_hidden} 份"
     )
     return 0
+
+
+def _cmd_emergency_takedown(args: argparse.Namespace) -> int:
+    from sqlalchemy.exc import OperationalError
+
+    from youju import emergency_takedown as urgent
+
+    if args.action in ("add", "lift", "settle") and not getattr(
+        get_settings(), "public_replica", False
+    ):
+        print("紧急下架只在服务器（公开数据由本机同步过来的那台）上用；本机在核对台下架")
+        return 1
+    if args.action in ("find", "add", "lift") and not args.target:
+        print("要给文件编号（find 也可以给网址或标题里的字）")
+        return 1
+    doc_id = 0
+    if args.action in ("add", "lift"):
+        if not (args.target.isascii() and args.target.isdigit()) or int(args.target) <= 0:
+            print("文件编号要是正整数（先用 find 找）")
+            return 1
+        doc_id = int(args.target)
+    note = args.note
+    if args.note_stdin and args.action in ("add", "lift"):
+        # 服务器脚本在提示里问说明，经标准输入给：不进命令历史、不出现在进程列表里
+        note = sys.stdin.read()
+    with session_factory()() as session:
+        try:
+            if args.action == "find":
+                found = urgent.find(session, args.target)
+                for line in urgent.describe_found(found):
+                    print(line)
+                more = "（只列最新的 20 份）" if len(found) >= urgent.FIND_LIMIT else ""
+                print(f"找到 {len(found)} 份{more}")
+                return 0
+            if args.action == "add":
+                rows = urgent.add(
+                    session, doc_id, reason=args.reason or "", note=note, operator=args.by
+                )
+                print(
+                    f"已紧急下架文件 #{doc_id}（归并组里 {len(rows)} 份一起不对外）。"
+                    "小程序最晚约 2 分钟看不到（服务器首页快照和小程序缓存各最多 60 秒）。"
+                    "只管服务器：电脑恢复后尽快带回本机（手册第八节），本机的周报草稿在带回前还会有它"
+                )
+                return 0
+            if args.action == "lift":
+                count, visible = urgent.lift(session, doc_id, note=note, operator=args.by)
+                state = (
+                    "现在对外可见"
+                    if visible
+                    else "仍不对外（本机正式下架着：要在本机核对台恢复上架）"
+                )
+                print(f"已撤销文件 #{doc_id} 所在组的 {count} 条紧急下架；这份文件{state}")
+                return 0
+            if args.action == "list":
+                rows = urgent.records(session, include_lifted=args.all)
+                for line in urgent.describe_records(rows, notes=args.notes):
+                    print(line)
+                what = "紧急下架记录" if args.all else "紧急下架着的"
+                print(f"{what} {len(rows)} 行（归并组里每份一行）")
+                return 0
+            if args.action == "export":
+                for line in urgent.export_lines(session):
+                    print(line)
+                return 0
+            count = urgent.settle(session)
+            print(f"本机已经接手、自动撤销的紧急下架 {count} 条")
+            return 0
+        except urgent.EmergencyError as exc:
+            print(f"没有做：{exc}")
+            return 1
+        except OperationalError as exc:
+            # 1205 锁等待超时、1213 死锁：同步正在写（紧急下架和同步写入排同一队）
+            if getattr(exc.orig, "args", (None,))[0] in (1205, 1213):
+                again = "（说明要重新输入）" if args.action in ("add", "lift") else ""
+                print(f"没有做：同步正在写，过一会儿再试{again}")
+                return 1
+            raise
 
 
 def _cmd_export_fetch(args: argparse.Namespace) -> int:
@@ -2762,6 +3041,23 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("file", type=Path)
     p.add_argument("--apply", action="store_true")
     p.set_defaults(func=_cmd_deadline_verify_apply)
+
+    p = sub.add_parser("deadline-verify-sample", help="生成独立抽查清单")
+    p.add_argument("--days", type=int, default=7)
+    p.add_argument("--rate", type=float, default=0.05)
+    p.add_argument("--min", dest="minimum", type=int, default=5)
+    p.add_argument("--seed", type=int)
+    p.add_argument("--out", type=Path)
+    p.set_defaults(func=_cmd_deadline_verify_sample)
+    p = sub.add_parser("deadline-verify-spotcheck", help="独立抽查，默认演练")
+    p.add_argument("file", type=Path)
+    p.add_argument("--apply", action="store_true")
+    p.set_defaults(func=_cmd_deadline_verify_spotcheck)
+
+    p = sub.add_parser("deadline-verify-stats", help="只读统计截止核对结果")
+    p.add_argument("--since", type=date.fromisoformat, help="按北京时间核对日期起算（含当天）")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=_cmd_deadline_verify_stats)
 
     sub.add_parser(
         "repost-groups",
@@ -3171,6 +3467,8 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=_cmd_sync_push)
     p = sub.add_parser("sync-status", help="同步状态：待推的变更、两边各表条数差")
     p.set_defaults(func=_cmd_sync_status)
+    p = sub.add_parser("sync-watch", help="（服务器）本机超过 3 小时没来同步就提醒到群里")
+    p.set_defaults(func=_cmd_sync_watch)
     p = sub.add_parser("sync-export", help="（服务器）导出同步的表，给本机起步导入")
     p.add_argument("--output", type=Path, required=True)
     p.set_defaults(func=_cmd_sync_export)
@@ -3186,7 +3484,33 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument(
         "--file", type=Path, required=True, help="云托管导出脚本给的下架清单（JSON Lines）"
     )
+    p.add_argument(
+        "--origin",
+        choices=["d127", "emergency"],
+        default="d127",
+        help="清单从哪来：d127 云托管导出（写拦截表）；emergency 服务器紧急下架导出"
+        "（emergency-takedown export，只正式下架本机已有的，不写拦截表）",
+    )
     p.set_defaults(func=_cmd_takedown_carry)
+    p = sub.add_parser(
+        "emergency-takedown",
+        help="（服务器）电脑不在线时紧急下架：find 找文件；add 下架（整组不对外）；lift 撤销；"
+        "list 看记录；export 写成下架清单带回本机；settle 本机接手的自动撤销（每小时）",
+    )
+    p.add_argument("action", choices=["find", "add", "lift", "list", "export", "settle"])
+    p.add_argument("target", nargs="?", default="", help="文件编号；find 也可以是网址或标题里的字")
+    p.add_argument(
+        "--reason",
+        help="add 的原因：complaint 侵权投诉、authority 主管部门要求、error 内容有误、other 其他",
+    )
+    p.add_argument("--note", default="", help="说明（最多 300 字；不带回本机）")
+    p.add_argument(
+        "--note-stdin", action="store_true", help="说明从标准输入读（服务器脚本在提示里问）"
+    )
+    p.add_argument("--by", default="", help="操作人（不写记作“服务器命令行”）")
+    p.add_argument("--all", action="store_true", help="list 连撤销了的一起列")
+    p.add_argument("--notes", action="store_true", help="list 显示说明（默认不显示）")
+    p.set_defaults(func=_cmd_emergency_takedown)
     p = sub.add_parser(
         "archive-export",
         help="（首发前搬家，D-127）把下载好的整库备份、交易记录分别用 age 公钥加密，"

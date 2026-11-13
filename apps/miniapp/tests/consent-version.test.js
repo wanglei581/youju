@@ -79,6 +79,6 @@ test('同意的三个入口（10/15）：弹窗同意、协议全文页、"我�
   assert.match(read('utils/consent.js'), /\.catch\(\(err\) => \{ agreeFailed\(err\); resolve\(false\); \}\)/);
   assert.match(read('pages/agreement/index.js'), /agreeFailed\(err\);/);
   assert.match(read('pages/me/index.js'), /\.catch\(agreeFailed\);/);
-  // 版本号要按时间可排序（直接比字符串）
-  assert.match(read('content/legal.js'), /"version": "\d{4}-\d{2}"/);
+  // 版本号要按时间可排序（直接比字符串）：年-月，可带一段 .数字（如 2026-12.1，和后台 agreements.VERSION_FULL 一样）
+  assert.match(read('content/legal.js'), /"version": "\d{4}-\d{2}(\.\d+)?"/);
 });

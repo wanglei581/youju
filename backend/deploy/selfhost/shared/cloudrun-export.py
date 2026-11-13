@@ -15,7 +15,8 @@ storage_list.bucket_of、list_objects，takedown.available_condition，和那一
    赠送天数、使用期、每日对账。隐私保护指引写的是这些记录"与账号断开，去标识化、限制访问"，
    保存 3650 天（D-127；订单、退款、开票自下单起，赠送自发放之日起）；这里照注销账号时
    （payments.anonymize、rewards.anonymize）的口径对所有人做一遍，另外去掉开票的联系邮箱和个人抬头（就是姓名）
-5. 给每个文件取 2 小时有效的下载链接，连同汇总数（只有数字）和不涉密的配置写成清单
+5. 给每个文件取下载链接（按 2 小时申请，11/12 实测不到 40 分钟就过期），连同汇总数（只有数字）
+   和不涉密的配置写成清单
    exports/manifest-<时间>.json
 6. 访问日志暂存表里还没归档的（archive-logs 只归档到昨天）按天导出 exports/access-staging-<日期>-…
 7. 再记一次用户数据各表：和备份前那次对不上，说明导出期间有新写入（D-127：停掉新的写入，或在导出
@@ -112,7 +113,9 @@ CLEANUP_BEFORE = 20
 CLEANUP_AFTER = 30
 # 备份前记下的那份：--links-only 重出清单时拿来核对（同一个实例的 /tmp；实例换了就要整个重跑）
 FINGERPRINT = Path("/tmp/youju-export-fingerprint.json")
-MAX_AGE = 7200  # 下载链接 2 小时有效（微信文档的示例值）；过期了带 --links-only 重出一份清单
+# 下载链接按 2 小时申请（微信文档的示例值）；11/12 实测不到 40 分钟就回 403：
+# 过期了带 --links-only 重出一份清单
+MAX_AGE = 7200
 BATCH = 50  # 每次取多少个文件的下载链接
 FORMAT = "youju-cloudrun-export"
 # 不涉密的配置（服务器上照着填）：模型名、备案号、价格、商品编号、协议版本、模板、开关和保留天数。
@@ -690,8 +693,8 @@ def report(result: dict) -> None:
     print("== 在服务器的网页终端里先运行这一行：")
     print(f"sudo /opt/youju/bin/youju-shared.sh fetch-export {result['sha256']}")
     print(
-        "== 提示'粘贴清单链接'时贴下面这一行（清单里有整库备份的下载链接，2 小时内有效；"
-        "只贴到那里，不发到聊天里）："
+        "== 提示'粘贴清单链接'时贴下面这一行（清单里有整库备份的下载链接，"
+        "半小时左右就过期，出了马上用；只贴到那里，不发到聊天里）："
     )
     print(result["url"])
 
