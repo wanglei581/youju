@@ -137,7 +137,7 @@ def world(session):
     _deadline(session, docs["tianjin"], "企业申报截止", 12, clock=time(16, 0))
     _deadline(session, docs["fujian"], "推荐或审核截止", 15, status="pending")
     session.commit()
-    rebuild(session)
+    rebuild(session, now=NOW)
     session.commit()
     return docs
 
@@ -258,7 +258,7 @@ def test_national_original_is_main_and_called_ministry(client, session, world) -
     )
     _deadline(session, national, "企业申报截止", 20)
     session.commit()
-    rebuild(session)
+    rebuild(session, now=NOW)
     session.commit()
     _confirm(session)
     body = _search(client, group=1)
@@ -320,7 +320,7 @@ def test_grouped_fold_counts_groups_actually_hidden(client, session) -> None:
     docs[1].kind_override = "资讯与指南"
     guide.kind_override = "资讯与指南"
     session.commit()
-    rebuild(session)
+    rebuild(session, now=NOW)
     session.commit()
     _confirm(session)
     assert v1.effective_kind(docs[1].title, docs[1].kind_override) == "资讯与指南"
@@ -418,7 +418,7 @@ def test_changed_confirmed_group_stops_folding_until_reconfirmed(
     else:
         world["fujian"].publish_date = date(2027, 1, 1)
     session.commit()
-    rebuild(session)
+    rebuild(session, now=NOW)
     session.commit()
     session.refresh(group)
     assert group.needs_review is True
@@ -438,7 +438,7 @@ def test_changed_confirmed_group_stops_folding_until_reconfirmed(
     world["fujian"].publish_date = original_date
     world["fujian"].source_id = original_source
     session.commit()
-    rebuild(session)
+    rebuild(session, now=NOW)
     session.commit()
     session.refresh(group)
     assert group.needs_review
@@ -449,7 +449,7 @@ def test_changed_confirmed_group_stops_folding_until_reconfirmed(
     )
     assert response.status_code == 200
     assert _search(client, group=1)["total"] == 2
-    rebuild(session)
+    rebuild(session, now=NOW)
     session.commit()
     session.refresh(group)
     assert not group.needs_review
@@ -501,7 +501,7 @@ def test_group_actions_never_copy_deadline_approval_in_any_output(
                 json={"reviewed_by": "创始人", "revision": group.revision},
             )
             assert response.status_code == 200
-    rebuild(session)
+    rebuild(session, now=NOW)
     reconcile_documents(session)
     from youju.dedup import sync_reviewed_twins
 
@@ -537,7 +537,7 @@ def test_confirm_new_version_cannot_overwrite_changed_confirmed_snapshot(
     assert _admin(client, f"/{group_id}/confirm", **_seen(client, group_id)).status_code == 200
     newcomer = _doc(session, "北京", day=25)
     session.commit()
-    rebuild(session)
+    rebuild(session, now=NOW)
     session.commit()
     seen = _seen(client, group_id)
     old_fingerprint = session.get(RepostGroupMember, world["tianjin"].id).confirmed_fingerprint

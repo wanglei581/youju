@@ -1,6 +1,7 @@
 """转发归组（D-055）：规则、增量建组、管理台转发归组页、核对台对照；截止日期不随转发组同步。"""
 
-from datetime import UTC, date, datetime, time
+from dataclasses import replace
+from datetime import UTC, date, datetime, time, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -17,6 +18,7 @@ from youju.models import (
     DocumentMerge,
     RepostGroup,
     RepostGroupMember,
+    RepostSignal,
     Source,
 )
 from youju.repost import (
@@ -27,6 +29,7 @@ from youju.repost import (
     pair_strength,
     propose_groups,
     rebuild,
+    refresh_signals,
     signals,
     similar_titles,
 )
@@ -861,6 +864,7 @@ def test_pending_group_is_recomputed_from_scratch(session, world, change) -> Non
     else:
         doc.title = "关于申报另外一个完全不同项目的通知"
         session.get(DocumentDetail, doc.id).body_text = "没有原上游引用"
+        session.get(DocumentDetail, doc.id).fetched_at = NOW + timedelta(seconds=1)
     session.commit()
     rebuild(session, now=NOW)
     session.commit()
@@ -892,6 +896,7 @@ def test_pending_groups_can_merge_after_evidence_changes(session, world) -> None
     for doc in other:
         doc.title = world["tianjin"].title
         session.get(DocumentDetail, doc.id).body_text = UPSTREAM
+        session.get(DocumentDetail, doc.id).fetched_at = NOW + timedelta(seconds=1)
     session.commit()
     rebuild(session, now=NOW)
     session.commit()
@@ -954,7 +959,7 @@ def test_city_agencies_group_separately_and_have_city_labels(session):
         docs.append(doc)
         sources[doc.id] = source
     session.commit()
-    candidates = load_candidates(session)
+    candidates = load_candidates(session, NOW.date())
     assert {c.city for c in candidates} == {None, "青岛", "济南"}
     assert _pair(candidates[0], candidates[1]) == "strong"
     assert len(propose_groups(candidates)) == 1
@@ -969,3 +974,545 @@ def test_city_agencies_group_separately_and_have_city_labels(session):
     _, after = member_facts(session, [d.id for d in docs])
     assert before[docs[0].id] == after[docs[0].id]
     assert before[docs[1].id] != after[docs[1].id]
+
+
+def test_stored_signals_match_body_and_bucket_limit(monkeypatch):
+    from youju import repost
+
+    doc = _cand(
+        1,
+        "关于转发2026年视听系统典型案例征集工作的通知",
+        "陕西",
+        body=UPSTREAM + "现将通知转发给你们",
+    )
+    original = signals(doc)
+    stored = Candidate(
+        **{
+            **doc.__dict__,
+            "body_head": "",
+            "cited": original.cited,
+            "body_forward": True,
+            "has_body": True,
+        }
+    )
+    assert signals(stored) == original
+    docs = [_cand(i, doc.title, str(i), body=UPSTREAM) for i in range(1, 9)]
+    baseline = propose_groups(docs[:3])
+    monkeypatch.setattr(repost, "BUCKET_NEIGHBORS", 3)
+    assert propose_groups(docs[:3]) == baseline
+    assert propose_groups(docs)[0].ids == list(range(1, 9))
+
+
+def test_refresh_signals_and_window_candidates(session, world):
+    from youju.repost import load_candidates
+
+    old = world["other"]
+    old.publish_date = date(2025, 1, 1)
+    session.flush()
+    assert refresh_signals(session, today=NOW.date(), stamp=NOW).computed == 4
+    row = session.get(RepostSignal, old.id)
+    assert row.grouped_at == NOW and not row.has_body and row.body_at is None
+    assert old.id not in {c.id for c in load_candidates(session, NOW.date())}
+    assert refresh_signals(session, today=NOW.date(), stamp=NOW).computed == 0
+    doc = world["tianjin"]
+    detail = session.get(DocumentDetail, doc.id)
+    detail.body_text = "现将通知转发给你们"
+    detail.fetched_at = NOW + timedelta(days=1)
+    session.flush()
+    stamp = NOW + timedelta(days=2)
+    assert refresh_signals(session, today=NOW.date(), stamp=stamp).computed == 1
+    signal = session.get(RepostSignal, doc.id)
+    assert signal.body_forward and signal.grouped_at == NOW and signal.computed_at == stamp
+    assert refresh_signals(session, today=NOW.date(), stamp=stamp, full=True).computed == 3
+    old_id = old.id
+    session.delete(old)
+    session.flush()
+    session.expire_all()
+    assert session.get(RepostSignal, old_id) is None
+
+
+def test_full_rebuild_checks_confirmed_groups_outside_the_window(session, world, monkeypatch):
+    # 改了标题（重新分类清标题）、正文脱敏重写这类不更新抓取时间的改动：平常的增量重建要等定期核对
+    # 轮到（这里一批 1 份，先轮到别的）；--full 马上核对全部确认过的组，内容变了照常转"需复核"
+    from youju import repost
+
+    monkeypatch.setattr(repost, "RECHECK_BATCH", 1)
+    rebuild(session, now=NOW)
+    session.flush()
+    group = session.scalars(select(RepostGroup)).one()
+    for doc in (world["shaanxi"], world["tianjin"], world["fujian"]):
+        doc.publish_date = date(2025, 1, 1)  # 都在窗口外
+    session.flush()
+    rows = _members(session)
+    _, facts = member_facts(session, list(rows))
+    for row in rows.values():
+        row.confirmed_by, row.confirmed_at = "人工", NOW
+        row.confirmed_fingerprint = facts[row.document_id]
+    world["tianjin"].title += "（更正）"
+    session.flush()
+    rebuild(session, now=NOW)
+    session.flush()
+    assert not group.needs_review
+    rebuild(session, now=NOW, full=True)
+    session.flush()
+    assert group.needs_review
+
+
+def test_refetched_confirmed_member_is_checked_once_per_fetch(session, world, monkeypatch):
+    # 确认以后详情重抓过：这次重抓拿全文核对一次，内容没变就记下核对用的详情时间，以后不再每轮都
+    # 核对；再重抓、内容变了照常转"需复核"
+    from youju import repost
+
+    rebuild(session, now=NOW)
+    session.flush()
+    group = session.scalars(select(RepostGroup)).one()
+    for doc in (world["shaanxi"], world["tianjin"], world["fujian"]):
+        doc.publish_date = date(2025, 1, 1)  # 都在窗口外，只有重抓过的才会拿来核对
+    session.flush()
+    rows = _members(session)
+    _, facts = member_facts(session, list(rows))
+    for row in rows.values():
+        row.confirmed_by, row.confirmed_at = "人工", NOW
+        row.confirmed_fingerprint = facts[row.document_id]
+    tianjin = world["tianjin"].id
+    detail = session.get(DocumentDetail, tianjin)
+    detail.fetched_at = NOW + timedelta(hours=1)  # 重抓了，内容没变
+    session.flush()
+    checked: list[set[int]] = []
+    real = repost.member_facts
+
+    def spy(session_, ids):
+        checked.append(set(ids))
+        return real(session_, ids)
+
+    monkeypatch.setattr(repost, "member_facts", spy)
+    monkeypatch.setattr(repost, "RECHECK_BATCH", 1)  # 定期核对一轮 1 份，看得出重抓的单独核对
+    monkeypatch.setattr(repost, "RECHECK_DAYS", 1000)
+    rebuild(session, now=NOW + timedelta(hours=2))
+    session.flush()
+    assert tianjin in checked[0] and not group.needs_review
+    assert session.get(RepostSignal, tianjin).checked_at == NOW + timedelta(hours=2)
+    checked.clear()
+    rebuild(session, now=NOW + timedelta(hours=3))
+    session.flush()
+    assert all(tianjin not in ids for ids in checked)
+    detail.body_text += "（更正）"
+    detail.fetched_at = NOW + timedelta(hours=4)
+    session.flush()
+    rebuild(session, now=NOW + timedelta(hours=5))
+    session.flush()
+    assert group.needs_review
+
+
+def test_only_confirmed_members_get_full_text_fingerprints(session, world, monkeypatch):
+    # 全文指纹只给确认过的成员算：没确认的只看机关和日期、不读正文；窗口里的确认组每轮核对（D-055：
+    # 确认以后任一版本有变，下一轮就停止折叠）
+    from youju import repost
+
+    checked: list[set[int]] = []
+    real = repost.member_facts
+
+    def spy(session_, ids):
+        checked.append(set(ids))
+        return real(session_, ids)
+
+    monkeypatch.setattr(repost, "member_facts", spy)
+    rebuild(session, now=NOW)
+    session.flush()
+    assert all(not ids for ids in checked)
+    rows = _members(session)
+    _, facts = real(session, list(rows))
+    for row in rows.values():
+        row.confirmed_by, row.confirmed_at = "人工", NOW
+        row.confirmed_fingerprint = facts[row.document_id]
+    session.flush()
+    checked.clear()
+    rebuild(session, now=NOW + timedelta(hours=1))
+    session.flush()
+    assert set(rows) in checked
+
+
+def test_many_small_groups_are_each_judged_by_their_own_edges():
+    # 窗口里大量互不相干的小组：每组只看自己的强证据边，全都照样是强证据组
+    docs = []
+    for n in range(600):
+        title = f"关于组织开展2026年度第{n}批视听系统典型案例征集工作的通知"
+        for province in ("陕西", "天津"):
+            docs.append(
+                Candidate(
+                    id=len(docs) + 1,
+                    title=title,
+                    kind="申报通知",
+                    province=province,
+                    dept="工信",
+                    publish_date=date(2026, 9, 7 if province == "陕西" else 14),
+                    body_head=UPSTREAM.replace("376", str(1000 + n)) + province,
+                )
+            )
+    proposals = propose_groups(docs)
+    assert len(proposals) == 600
+    assert all(p.strength == "strong" and len(p.ids) == 2 for p in proposals)
+
+
+def test_confirmed_groups_outside_the_window_are_rechecked_periodically(
+    session, world, monkeypatch
+):
+    # 窗口外的确认组：标题、正文被直接改写（抓取时间不变）平常看不到；每轮轮流核对最久没核对的一批，
+    # 轮到它就发现、转需复核（这里一批 1 份）
+    from youju import repost
+
+    monkeypatch.setattr(repost, "RECHECK_BATCH", 1)
+    rebuild(session, now=NOW)
+    session.flush()
+    group = session.scalars(select(RepostGroup)).one()
+    for doc in (world["shaanxi"], world["tianjin"], world["fujian"]):
+        doc.publish_date = date(2025, 1, 1)  # 都在窗口外
+    session.flush()
+    rows = _members(session)
+    _, facts = member_facts(session, list(rows))
+    for row in rows.values():
+        row.confirmed_by, row.confirmed_at = "人工", NOW
+        row.confirmed_fingerprint = facts[row.document_id]
+    world["tianjin"].title += "（更正）"
+    session.flush()
+    rebuild(session, now=NOW + timedelta(days=1))  # 轮到陕西那份，没变
+    session.flush()
+    assert not group.needs_review
+    rebuild(session, now=NOW + timedelta(days=2))  # 轮到天津那份
+    session.flush()
+    assert group.needs_review
+
+
+def test_a_batch_confirmed_the_same_day_is_all_rechecked_within_recheck_days(
+    session, world, monkeypatch
+):
+    # 同一天确认的一大批：不等满多少天，一轮接一轮地核对，RECHECK_DAYS 天内全部轮到
+    from youju import repost
+
+    monkeypatch.setattr(repost, "RECHECK_BATCH", 1)
+    monkeypatch.setattr(repost, "RECHECK_DAYS", 3)
+    rebuild(session, now=NOW)
+    session.flush()
+    for doc in (world["shaanxi"], world["tianjin"], world["fujian"]):
+        doc.publish_date = date(2025, 1, 1)
+    session.flush()
+    rows = _members(session)
+    _, facts = member_facts(session, list(rows))
+    for row in rows.values():
+        row.confirmed_by, row.confirmed_at = "人工", NOW
+        row.confirmed_fingerprint = facts[row.document_id]
+    session.flush()
+    checked: list[set[int]] = []
+    real = repost.member_facts
+
+    def spy(session_, ids):
+        checked.append(set(ids))
+        return real(session_, ids)
+
+    monkeypatch.setattr(repost, "member_facts", spy)
+    for day in (1, 2, 3):  # 3 份 ÷ 3 天，一批 1 份
+        rebuild(session, now=NOW + timedelta(days=day))
+        session.flush()
+    assert set().union(*checked) == set(rows)
+
+
+def test_periodic_recheck_batch_grows_with_the_confirmed_members(session, world, monkeypatch):
+    # 定期核对一批的份数按窗口外确认成员总数 ÷ RECHECK_DAYS 算（至少 RECHECK_BATCH 份）：确认成员
+    # 再多，一天一轮也能按期轮完，不会越积越多
+    from youju import repost
+
+    rebuild(session, now=NOW)
+    session.flush()
+    for doc in (world["shaanxi"], world["tianjin"], world["fujian"]):
+        doc.publish_date = date(2025, 1, 1)  # 都在窗口外
+    session.flush()
+    rows = _members(session)
+    _, facts = member_facts(session, list(rows))
+    for row in rows.values():
+        row.confirmed_by, row.confirmed_at = "人工", NOW
+        row.confirmed_fingerprint = facts[row.document_id]
+    session.flush()
+    checked: list[set[int]] = []
+    real = repost.member_facts
+
+    def spy(session_, ids):
+        checked.append(set(ids))
+        return real(session_, ids)
+
+    monkeypatch.setattr(repost, "member_facts", spy)
+    monkeypatch.setattr(repost, "RECHECK_BATCH", 1)
+    rebuild(session, now=NOW + timedelta(days=31))  # 3 份 ÷ 30 天，一批 1 份
+    assert len(checked[-1]) == 1
+    monkeypatch.setattr(repost, "RECHECK_DAYS", 1)
+    rebuild(session, now=NOW + timedelta(days=33))  # 3 份 ÷ 1 天，一批 3 份
+    assert checked[-1] == set(rows)
+
+
+def test_review_groups_do_not_take_the_periodic_recheck_slots(session, world, monkeypatch):
+    # 转了"需复核"的组本来就不折叠，不占定期核对的名额：一批只有 1 份时，别的确认组照样轮得到
+    from youju import repost
+
+    title = "关于组织开展2026年度工业互联网平台创新领航应用案例征集工作的通知"
+    body = UPSTREAM.replace("376", "377")
+    second = [
+        _doc(session, _source(session, province), title, day=day, body=body + province)
+        for province, day in (("四川", 8), ("重庆", 15))
+    ]
+    rebuild(session, now=NOW)
+    session.flush()
+    for doc in (*world.values(), *second):
+        doc.publish_date = date(2025, 1, 1)  # 都在窗口外
+    session.flush()
+    rows = _members(session)
+    _, facts = member_facts(session, list(rows))
+    for row in rows.values():
+        row.confirmed_by, row.confirmed_at = "人工", NOW
+        row.confirmed_fingerprint = facts[row.document_id]
+    session.get(RepostGroup, rows[world["shaanxi"].id].group_id).needs_review = True
+    session.flush()
+    checked: list[set[int]] = []
+    real = repost.member_facts
+
+    def spy(session_, ids):
+        checked.append(set(ids))
+        return real(session_, ids)
+
+    monkeypatch.setattr(repost, "member_facts", spy)
+    monkeypatch.setattr(repost, "RECHECK_BATCH", 1)
+    rebuild(session, now=NOW + timedelta(days=31))
+    assert len(checked[-1]) == 1 and checked[-1] <= {d.id for d in second}
+
+
+def test_old_groups_untouched_and_cross_window_member_retained(session, world):
+    rebuild(session, now=NOW)
+    session.flush()
+    group = session.scalars(select(RepostGroup)).one()
+    # 跨窗口边界的合规组（窗口起点 2026-03-24）：陕西那份早于窗口，但和另两份相隔都在 90 天内，照样留在组里
+    world["shaanxi"].publish_date = date(2026, 3, 20)
+    world["tianjin"].publish_date = date(2026, 4, 20)
+    world["fujian"].publish_date = date(2026, 5, 20)
+    session.flush()
+    rebuild(session, now=NOW)
+    session.flush()
+    assert {world[k].id for k in ("shaanxi", "tianjin", "fujian")} <= set(_members(session))
+    revision = group.revision
+    rebuild(session, now=NOW)
+    session.flush()
+    assert group.revision == revision  # 同样输入重跑不改修订号
+    # 全是窗口外的老组：一个字段都不动
+    for doc in (world["shaanxi"], world["tianjin"], world["fujian"]):
+        doc.publish_date = date(2025, 1, 1)
+    session.flush()
+    snapshot = (group.revision, group.updated_at, group.topic, set(_members(session)))
+    rebuild(session, now=NOW)
+    session.flush()
+    assert (group.revision, group.updated_at, group.topic, set(_members(session))) == snapshot
+
+
+def test_old_member_that_no_longer_fits_is_dropped(session, world):
+    # 窗口里的组：早于窗口的待确认成员也重算，和别的版本相隔超过 90 天的照规则去掉
+    rebuild(session, now=NOW)
+    session.flush()
+    world["shaanxi"].publish_date = date(2026, 3, 23)  # 和天津（9 月 14 日）相隔 175 天
+    session.flush()
+    rebuild(session, now=NOW)
+    session.flush()
+    assert world["shaanxi"].id not in _members(session)
+    assert {world["tianjin"].id, world["fujian"].id} <= set(_members(session))
+
+
+def test_late_document_joins_an_old_group_outside_the_window(session, world):
+    # 新来源回填几个月前的文件：它在窗口里，伙伴在窗口外的老组里，照样连得上
+    rebuild(session, now=NOW)
+    session.flush()
+    for doc in (world["shaanxi"], world["tianjin"], world["fujian"]):
+        doc.publish_date = date(2026, 2, 20)  # 窗口起点 2026-03-24 之前
+    session.flush()
+    rebuild(session, now=NOW)
+    session.flush()
+    group_id = _members(session)[world["tianjin"].id].group_id
+    late = _doc(
+        session, _source(session, "四川"), world["tianjin"].title, day=1, body=UPSTREAM + "四川"
+    )
+    late.publish_date = date(2026, 4, 10)  # 在窗口里，和老组相隔 49 天
+    session.flush()
+    rebuild(session, now=NOW)
+    session.flush()
+    assert _members(session)[late.id].group_id == group_id
+
+
+def test_group_left_without_members_is_deleted(session, world):
+    rebuild(session, now=NOW)
+    session.flush()
+    gid = session.scalars(select(RepostGroup.id)).one()
+    for doc in (world["shaanxi"], world["tianjin"], world["fujian"]):
+        doc.publish_date = date(2025, 1, 1)  # 老组，在窗口外
+    session.flush()
+    for row in list(_members(session).values()):
+        session.delete(row)  # 成员都没了（文件删掉、转给主文件等）
+    session.flush()
+    rebuild(session, now=NOW)
+    session.flush()
+    assert session.get(RepostGroup, gid) is None
+
+
+def test_document_gets_signals_once_its_body_arrives(session):
+    # 先只有标题（没有详情）：照样打"处理过"的标记；正文后补后重算出文号，归组
+    src = _source(session, "陕西")
+    doc = _doc(session, src, "关于组织开展2026年度视听系统典型案例征集工作的通知", day=7)
+    refresh_signals(session, today=NOW.date(), stamp=NOW)
+    row = session.get(RepostSignal, doc.id)
+    assert row.grouped_at == NOW and not row.has_body and row.cited == []
+    session.add(
+        DocumentDetail(
+            document_id=doc.id,
+            body_text=UPSTREAM + "陕西",
+            fetched_at=NOW + timedelta(hours=1),
+            status="ok",
+            http_status=200,
+        )
+    )
+    session.flush()
+    later = NOW + timedelta(hours=2)
+    assert refresh_signals(session, today=NOW.date(), stamp=later).computed == 1
+    session.refresh(row)
+    assert row.has_body and row.cited and row.grouped_at == NOW and row.computed_at == later
+
+
+def test_bucket_limit_keeps_chains_across_dates(monkeypatch):
+    from youju import repost
+
+    title = "关于组织开展2026年度视听系统典型案例征集工作的通知"
+    docs = [
+        replace(
+            _cand(i + 1, title, str(i), body=UPSTREAM),
+            publish_date=date(2026, 1, 1) + timedelta(days=20 * i),
+        )
+        for i in range(6)
+    ]
+    full = propose_groups(docs)
+    monkeypatch.setattr(repost, "BUCKET_NEIGHBORS", 2)
+    limited = propose_groups(docs)
+    assert [p.ids for p in limited] == [p.ids for p in full] == [[1, 2, 3, 4, 5]]
+
+
+def test_old_confirmed_group_rechecks_only_changed_detail(session, client, world):
+    rebuild(session, now=NOW)
+    session.commit()
+    gid = session.scalars(select(RepostGroup.id)).one()
+    assert _post(client, f"/{gid}/confirm", **_shown(client, gid)).status_code == 200
+    for doc in (world["shaanxi"], world["tianjin"], world["fujian"]):
+        doc.publish_date = date(2025, 1, 1)
+    session.flush()
+    # 先更新确认快照，模拟已经在窗口外的正常确认组。
+    _, fingerprints = member_facts(session, list(_members(session)))
+    for row in _members(session).values():
+        row.confirmed_fingerprint = fingerprints[row.document_id]
+        row.confirmed_at = NOW
+    detail = session.get(DocumentDetail, world["tianjin"].id)
+    detail.body_text += "正文更新"
+    detail.fetched_at = NOW + timedelta(days=2)
+    session.flush()
+    rebuild(session, now=NOW + timedelta(days=3))
+    assert session.get(RepostGroup, gid).needs_review
+
+
+def test_repost_signals_are_not_public_or_synced():
+    from youju.public_snapshot import EXCLUDED_TABLES, PUBLIC_TABLES
+    from youju.sync.tables import SYNC_TABLES
+
+    assert "repost_signals" in EXCLUDED_TABLES
+    assert "repost_signals" not in PUBLIC_TABLES | SYNC_TABLES
+
+
+def test_empty_body_is_not_recomputed_every_round(session, world):
+    detail = session.get(DocumentDetail, world["tianjin"].id)
+    detail.body_text = "   "
+    session.flush()
+    refresh_signals(session, today=NOW.date(), stamp=NOW)
+    row = session.get(RepostSignal, world["tianjin"].id)
+    assert not row.has_body and row.body_at == detail.fetched_at
+    # 详情没再重抓：下一轮不重算
+    assert refresh_signals(session, today=NOW.date(), stamp=NOW + timedelta(hours=12)).computed == 0
+
+
+@pytest.mark.parametrize(
+    ("raw", "number"),
+    [
+        ("工信厅联电子函〔2026〕376号", "工信厅联电子函〔2026〕376号"),
+        ("工信厅联电子函[2026]0376号", "工信厅联电子函〔2026〕376号"),
+        (" 工信厅联电子函（2026） 376 号", "工信厅联电子函〔2026〕376号"),
+        ("工信厅联电子函〔2026〕376号、377号", None),
+        ("（工信厅联电子函〔2026〕376号）", None),
+        ("", None),
+        (None, None),
+    ],
+)
+def test_own_number_is_written_like_cited_numbers(raw, number):
+    from youju.repost import own_number
+
+    assert own_number(raw) == number
+
+
+def test_signals_store_the_document_own_number(session):
+    # 部里原件自己的发文字号（详情里页面元数据或正文头上的）存进正文信号，候选里带着
+    from youju.repost import load_candidates
+
+    doc = _doc(
+        session,
+        _source(session, "陕西"),
+        "关于组织开展2026年度视听系统典型案例征集工作的通知",
+        day=7,
+        body="各有关单位：现将有关事项通知如下。",
+    )
+    session.get(DocumentDetail, doc.id).doc_number = "工信厅联电子函[2026]376号"
+    session.flush()
+    refresh_signals(session, today=NOW.date(), stamp=NOW)
+    assert session.get(RepostSignal, doc.id).own_number == "工信厅联电子函〔2026〕376号"
+    found = {c.id: c for c in load_candidates(session, NOW.date())}
+    assert found[doc.id].own_number == "工信厅联电子函〔2026〕376号"
+
+
+def test_old_document_pulled_in_by_a_late_one_gets_its_signals_first(session):
+    # 新来源回填几个月前的文件、归组范围往前放：放进来的老文件（迁移补的空行，正文信号空着）这一轮
+    # 先算出正文信号再参加归组——靠两边引用同一个文号才连得上的照样连上
+    old = _doc(
+        session,
+        _source(session, "福建"),
+        # 核心标题和后来那份不一样（多了"应用"），只能靠两边引用同一个文号连上
+        "关于组织开展2026年度视听系统典型应用案例征集工作的通知",
+        day=1,
+        body=UPSTREAM + "福建",
+    )
+    old.publish_date = date(2026, 3, 1)  # 窗口起点 2026-03-24 之前
+    session.add(RepostSignal(document_id=old.id, cited=[], grouped_at=NOW, computed_at=NOW))
+    session.flush()
+    title = "关于组织开展2026年度视听系统典型案例征集工作的通知"
+    late = _doc(session, _source(session, "四川"), title, day=1, body=UPSTREAM + "四川")
+    late.publish_date = date(2026, 4, 10)  # 在窗口里，和老文件相隔 40 天
+    session.flush()
+    rebuild(session, now=NOW)
+    session.flush()
+    row = session.get(RepostSignal, old.id)
+    assert row.has_body and row.cited and row.body_at is not None
+    members = _members(session)
+    assert members[old.id].group_id == members[late.id].group_id
+
+
+def test_backfilled_marker_of_old_group_member_gets_signals(session, world):
+    # 迁移补的行：只有"处理过"的标记，正文信号空着（body_at 为空）
+    for doc in world.values():
+        session.add(RepostSignal(document_id=doc.id, cited=[], grouped_at=NOW, computed_at=NOW))
+    session.flush()
+    rebuild(session, now=NOW)
+    session.flush()
+    gid = _members(session)[world["shaanxi"].id].group_id
+    # 陕西那份跨出窗口（发布日期早于 180 天），组里其余成员还在窗口里：它的信号也要补算
+    world["shaanxi"].publish_date = date(2026, 3, 23)
+    row = session.get(RepostSignal, world["shaanxi"].id)
+    row.cited, row.body_at, row.has_body = [], None, False
+    session.flush()
+    refresh_signals(session, today=NOW.date(), stamp=NOW)
+    row = session.get(RepostSignal, world["shaanxi"].id)
+    assert row.has_body and row.cited and row.grouped_at == NOW
+    assert _members(session)[world["shaanxi"].id].group_id == gid

@@ -3,7 +3,8 @@
 三层关系见 docs/迭代/转载去重方案_v1.md 第四节：①同一文件（youju.dedup，document_merges）；
 ②同一上游通知的各地版本（本模块，repost_groups / repost_group_members）；③相关但不同（不处理）。
 
-- 本模块只改 repost_* 两张表。截止日期不随转发组同步：各版本的截止各自核对、各自显示，
+- 正文前 1500 字信号存入 repost_signals，行本身也是文件已处理的标记；只重算 180 天窗口及窗口里的组。
+- 本模块只改 repost_* 表。截止日期不随转发组同步：各版本的截止各自核对、各自显示，
   dedup.sync_reviewed_twins、核对台的 _apply_review、_pending_shown_ids 只认 document_merges。
 - 对外合并必须人工确认；确认后保存成员快照，内容或整组约束变化则需复核，停止对外折叠。
 - 人工移出的版本（active=False）不会被下次归组自动加回；人工加入、拆出的不会被自动挪走；
@@ -17,9 +18,9 @@ import json
 import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta, timezone
 
-from sqlalchemy import Select, case, func, select
+from sqlalchemy import Select, case, func, or_, select
 from sqlalchemy.orm import Session
 
 from youju.classify import GUIDE, effective_kind
@@ -29,11 +30,24 @@ from youju.models import (
     DocumentMerge,
     RepostGroup,
     RepostGroupMember,
+    RepostSignal,
     Source,
 )
 
 # 发布相隔多少天以内才可能是同一份通知的各地版本
 MAX_DAYS_APART = 90
+# 只算最近这么多天发布的文件（和窗口里的组的老成员）：两倍于发布相隔上限，窗口里最新的文件能连到
+# 的都在里面（第二阶段计划"转发归组改增量"）
+WINDOW_DAYS = 2 * MAX_DAYS_APART
+# 同一个桶（核心标题相同、引用同一个文号）里，每份只和发布日期排在后面的这么多份比：县里大量转发
+# 同一份部里通知时，桶里可能有几千份，不再两两全比；靠相邻的边照样能连成一组
+BUCKET_NEIGHBORS = 200
+# 窗口外确认过的组：正文、标题被直接改写（抓取时间不变）也要能发现——每轮轮流拿最久没核对的一批全文
+# 核对；一批至少这么多份，确认成员多了按总数加大（见 rebuild），一天哪怕只跑一轮也能这么多天全部
+# 轮一遍
+RECHECK_DAYS = 30
+RECHECK_BATCH = 2000
+_BEIJING = timezone(timedelta(hours=8))
 # 核心标题至少几个字才拿来比
 MIN_CORE_CHARS = 8
 # 只看正文前多少字里引用的上游文号（“现将《……》（文号）转发给你们”一般在开头）
@@ -190,6 +204,21 @@ def cited_upstream(body_head: str, publish_year: int | None) -> list[Cited]:
     return found
 
 
+# 文件自己的发文字号整句（详情 doc_number：页面元数据或正文头上的，见 crawler/detail.py）
+_OWN_NUMBER = re.compile(r"([一-龥A-Za-z]{1,16})[〔\[［(（【](\d{4})[〕\]］)）】](\d{1,5})号")
+
+
+def own_number(doc_number: str | None) -> str | None:
+    """这份文件自己的发文字号（详情里页面元数据或正文头上的），按引用文号（cited_upstream）同一个
+    写法统一：去掉空白，年份的括号一律写成〔〕，序号去掉前面的 0。整句不正好是一个文号的给 None。
+    部里的原件不引用自己，归组靠它对上转发件引用的文号（D-129 ②，见 auto_reason）。"""
+    match = _OWN_NUMBER.fullmatch("".join((doc_number or "").split()))
+    if not match:
+        return None
+    prefix, year, serial = match.groups()
+    return f"{prefix}〔{year}〕{int(serial)}号"
+
+
 # ---- 归组规则 ----------------------------------------------------------------
 
 
@@ -206,6 +235,12 @@ class Candidate:
     body_head: str = ""
     city: str | None = None
     district: str | None = None
+    # 存好的正文信号（repost_signals）；None 时照旧从 body_head 算
+    cited: tuple[Cited, ...] | None = None
+    body_forward: bool | None = None
+    has_body: bool | None = None
+    # 自己的发文字号（own_number 统一过的，存在 repost_signals 里）
+    own_number: str | None = None
 
     @property
     def agency(self) -> tuple[str, str | None, str | None, str]:
@@ -226,11 +261,15 @@ class Signals:
 
 def signals(doc: Candidate) -> Signals:
     year = doc.publish_date.year if doc.publish_date else None
-    cited = cited_upstream(doc.body_head, year)
+    cited = doc.cited if doc.cited is not None else cited_upstream(doc.body_head, year)
     evidence = []
     if _FORWARD.search(doc.title):
         evidence.append("标题转发")
-    if _BODY_FORWARD.search((doc.body_head or "")[:BODY_HEAD_CHARS]):
+    if (
+        doc.body_forward
+        if doc.body_forward is not None
+        else bool(_BODY_FORWARD.search((doc.body_head or "")[:BODY_HEAD_CHARS]))
+    ):
         evidence.append("正文转发")
     if cited:
         evidence.append("上游文号")
@@ -317,8 +356,13 @@ def link(docs: list[Candidate]) -> tuple[list[Proposal], dict[int, set[int]]]:
     for ids in buckets.values():
         if len(ids) < 2:
             continue
+        ids.sort(key=lambda doc_id: (by_id[doc_id].publish_date or date.min, doc_id))
         for i, left in enumerate(ids):
-            for right in ids[i + 1 :]:
+            for right in ids[i + 1 : i + 1 + BUCKET_NEIGHBORS]:
+                if by_id[left].publish_date is None or by_id[right].publish_date is None:
+                    continue
+                if (by_id[right].publish_date - by_id[left].publish_date).days > MAX_DAYS_APART:
+                    break
                 key = (min(left, right), max(left, right))
                 if edges.get(key) == "strong":
                     continue
@@ -354,16 +398,20 @@ def link(docs: list[Candidate]) -> tuple[list[Proposal], dict[int, set[int]]]:
     components: dict[int, list[int]] = defaultdict(list)
     for doc_id in sorted(by_id):
         components[_find(parent, doc_id)].append(doc_id)
+    # 组内的强证据边（两端在同一组）先按组分好：每个组只看自己的边，不是每个组都把全部边看一遍
+    # （全国铺开后窗口里有几千个组、几万条边）
+    strong_edges: dict[int, list[tuple[int, int]]] = defaultdict(list)
+    for (left, right), strength in edges.items():
+        if strength == "strong" and (root := _find(parent, left)) == _find(parent, right):
+            strong_edges[root].append((left, right))
     proposals = []
-    for ids in components.values():
+    for root, ids in components.items():
         if len(ids) < 2:
             continue
         # 只用组内的强证据边能把全组连起来，才算强证据组
-        inside = set(ids)
         strong_parent = {doc_id: doc_id for doc_id in ids}
-        for (left, right), strength in edges.items():
-            if strength == "strong" and left in inside and right in inside:
-                strong_parent[_find(strong_parent, left)] = _find(strong_parent, right)
+        for left, right in strong_edges[root]:
+            strong_parent[_find(strong_parent, left)] = _find(strong_parent, right)
         strong = len({_find(strong_parent, doc_id) for doc_id in ids}) == 1
         cited = Counter(c.number for doc_id in ids for c in sig[doc_id].cited)
         number = None
@@ -400,11 +448,163 @@ def link(docs: list[Candidate]) -> tuple[list[Proposal], dict[int, set[int]]]:
 # ---- 数据库：取候选、增量建组 ----------------------------------------------------
 
 
-def load_candidates(session: Session) -> list[Candidate]:
-    """同一文件层的主文件（不含已归并的副本），没有下架、有发布日期的。"""
+# 正文信号一批读写多少份
+_SIGNAL_BATCH = 2000
+
+
+@dataclass
+class SignalRefresh:
+    """这一轮算正文信号的结果：算了几份；新打标记的文件里，发布日期在窗口里的最早一天（这些文件的
+    伙伴可能在窗口外的老组里，候选范围要往前放 MAX_DAYS_APART 天，见 rebuild）。"""
+
+    computed: int = 0
+    earliest_new: date | None = None
+
+
+def _fill_signal(
+    row: RepostSignal, published: date | None, body: str | None, fetched, stamp, doc_number=None
+) -> None:
+    head = body or ""
+    row.cited = [
+        {"number": c.number, "title": c.title}
+        for c in cited_upstream(head, published.year if published else None)
+    ]
+    row.body_forward = bool(_BODY_FORWARD.search(head))
+    row.has_body = bool(head.strip())
+    row.own_number = own_number(doc_number)
+    # 记下这次用的详情时间（正文是空的也记）：详情没再重抓就不重算
+    row.body_at = fetched
+    row.computed_at = stamp
+
+
+def refresh_signals(
+    session: Session, *, today: date, stamp: datetime, full: bool = False
+) -> SignalRefresh:
+    """算正文信号存进 repost_signals（D-129 ②"归组改增量"）。分两步，都只碰该碰的文件：
+
+    1. 还没有行的文件（不管发布日期、有没有正文、是否下架）都算一次、插一行，grouped_at = stamp：
+       这一行也是"归组处理过"的标记，同步据此放行新文件。用反连接按编号找，不是按"最大编号"之后
+       找：抓取事务提交的先后和编号的先后不一样，编号小、提交晚的文件也要找得到。
+    2. 已经有行、会参加归组的（发布日期在归组范围里的，和范围里的组的成员——范围外的老成员也要，
+       迁移补的行正文信号是空的），详情比上次算时新（fetched_at 晚于 body_at，或还没算过）的重算；
+       full=True 时这些不看详情新不新，全部重算（维护用，比如正文脱敏重写之后）。归组范围和 rebuild
+       的候选范围是同一个（candidate_cutoff）：第 1 步新进来的窗口内文件让范围往前放时，这一步也
+       跟着放，放进来的老文件（迁移补的空行、离开窗口以后才抓到正文的）这一轮就有正文信号。
+    正文只读前 BODY_HEAD_CHARS 字，按编号分批读写。"""
+    window = today - timedelta(days=WINDOW_DAYS)
+    result = SignalRefresh()
+    last_id = 0
+    while True:
+        rows = session.execute(
+            select(
+                Document.id,
+                Document.publish_date,
+                func.left(DocumentDetail.body_text, BODY_HEAD_CHARS),
+                DocumentDetail.fetched_at,
+                DocumentDetail.doc_number,
+            )
+            .outerjoin(RepostSignal, RepostSignal.document_id == Document.id)
+            .outerjoin(DocumentDetail, DocumentDetail.document_id == Document.id)
+            .where(Document.id > last_id, RepostSignal.document_id.is_(None))
+            .order_by(Document.id)
+            .limit(_SIGNAL_BATCH)
+        ).all()
+        if not rows:
+            break
+        for doc_id, published, body, fetched, doc_number in rows:
+            row = RepostSignal(document_id=doc_id, grouped_at=stamp)
+            _fill_signal(row, published, body, fetched, stamp, doc_number)
+            session.add(row)
+            if (
+                published is not None
+                and published >= window
+                and (result.earliest_new is None or published < result.earliest_new)
+            ):
+                result.earliest_new = published
+        result.computed += len(rows)
+        last_id = rows[-1][0]
+        session.flush()
+
+    cutoff = candidate_cutoff(today, result.earliest_new)
+    changed = or_(RepostSignal.body_at.is_(None), DocumentDetail.fetched_at > RepostSignal.body_at)
+    stale = select(RepostSignal.document_id).join(
+        DocumentDetail, DocumentDetail.document_id == RepostSignal.document_id
+    )
+    if not full:
+        stale = stale.where(changed)
+    # 窗口里的文件（按发布日期的索引找），加上窗口组里早于窗口的老成员
+    in_window = stale.join(Document, Document.id == RepostSignal.document_id).where(
+        Document.publish_date >= cutoff
+    )
+    old_members = stale.where(
+        RepostSignal.document_id.in_(
+            select(RepostGroupMember.document_id).where(
+                RepostGroupMember.group_id.in_(_window_groups(cutoff))
+            )
+        )
+    )
+    ids = sorted(set(session.scalars(in_window)) | set(session.scalars(old_members)))
+    result.computed += recompute_signals(session, ids, stamp)
+    return result
+
+
+def recompute_signals(session: Session, ids: list[int], stamp: datetime) -> int:
+    """按这几份文件现在的详情重算正文信号（有详情、已经有行的才算），按编号分批；返回算了几份。"""
+    count = 0
+    for i in range(0, len(ids), _SIGNAL_BATCH):
+        batch = ids[i : i + _SIGNAL_BATCH]
+        for row, published, body, fetched, doc_number in session.execute(
+            select(
+                RepostSignal,
+                Document.publish_date,
+                func.left(DocumentDetail.body_text, BODY_HEAD_CHARS),
+                DocumentDetail.fetched_at,
+                DocumentDetail.doc_number,
+            )
+            .join(Document, Document.id == RepostSignal.document_id)
+            .join(DocumentDetail, DocumentDetail.document_id == RepostSignal.document_id)
+            .where(RepostSignal.document_id.in_(batch))
+        ):
+            _fill_signal(row, published, body, fetched, stamp, doc_number)
+            count += 1
+        session.flush()
+    return count
+
+
+def candidate_cutoff(today: date, earliest_new: date | None) -> date:
+    """归组范围的起点：窗口起点（今天往前 WINDOW_DAYS 天）；这一轮新进来、发布日期在窗口里的文件，
+    伙伴可能在它前面 MAX_DAYS_APART 天里、已经在窗口外的老组里（新来源回填几个月前的历史），范围
+    往前放到够得着它们。正文信号重算（refresh_signals 第 2 步）和归组候选（rebuild）都用它。"""
+    cutoff = today - timedelta(days=WINDOW_DAYS)
+    if earliest_new is not None:
+        cutoff = min(cutoff, earliest_new - timedelta(days=MAX_DAYS_APART))
+    return cutoff
+
+
+def _window_groups(cutoff: date):
+    """窗口里的组：至少有一个在组成员的发布日期不早于 cutoff（子查询）。"""
+    return (
+        select(RepostGroupMember.group_id)
+        .join(Document, Document.id == RepostGroupMember.document_id)
+        .where(RepostGroupMember.active.is_(True), Document.publish_date >= cutoff)
+        .distinct()
+    )
+
+
+def load_candidates(
+    session: Session, today: date | None = None, cutoff: date | None = None
+) -> list[Candidate]:
+    """参加归组的文件：发布日期不早于 cutoff（默认窗口起点：今天往前 WINDOW_DAYS 天）的主文件，加上
+    窗口里的组的全部成员（不论日期）；不含已归并的副本、下架的、没有发布日期的。正文信号读存好的
+    （repost_signals），不读正文。"""
     from youju.takedown import available_condition
 
+    today = today or datetime.now(_BEIJING).date()
+    cutoff = cutoff or today - timedelta(days=WINDOW_DAYS)
     duplicates = select(DocumentMerge.duplicate_id).where(DocumentMerge.active.is_(True))
+    group_members = select(RepostGroupMember.document_id).where(
+        RepostGroupMember.group_id.in_(_window_groups(cutoff))
+    )
     rows = session.execute(
         select(
             Document.id,
@@ -415,35 +615,44 @@ def load_candidates(session: Session) -> list[Candidate]:
             Source.city,
             Source.district,
             Source.dept,
-            func.left(DocumentDetail.body_text, BODY_HEAD_CHARS),
+            # 只取用得着的几列，不建整行对象：窗口里可能有上百万份
+            RepostSignal.cited,
+            RepostSignal.body_forward,
+            RepostSignal.has_body,
+            RepostSignal.own_number,
         )
         .join(Source, Source.id == Document.source_id)
-        .outerjoin(DocumentDetail, DocumentDetail.document_id == Document.id)
+        .outerjoin(RepostSignal, RepostSignal.document_id == Document.id)
         .where(
             Document.publish_date.is_not(None),
             ~Document.id.in_(duplicates),
             available_condition(),
+            or_(Document.publish_date >= cutoff, Document.id.in_(group_members)),
         )
         .order_by(Document.id)
     ).all()
     return [
         Candidate(
-            id=doc_id,
-            title=title,
-            kind=effective_kind(title, override),
-            province=province,
-            city=city,
-            district=district,
-            dept=dept,
-            publish_date=published,
-            body_head=body or "",
+            id=row.id,
+            title=row.title,
+            kind=effective_kind(row.title, row.kind_override),
+            province=row.province,
+            city=row.city,
+            district=row.district,
+            dept=row.dept,
+            publish_date=row.publish_date,
+            cited=tuple(Cited(**c) for c in row.cited or ()),
+            body_forward=bool(row.body_forward),
+            has_body=bool(row.has_body),
+            own_number=row.own_number,
         )
-        for doc_id, title, override, published, province, city, district, dept, body in rows
+        for row in rows
     ]
 
 
 @dataclass
 class RebuildSummary:
+    signals: int = 0
     proposals: int = 0
     created: int = 0
     joined: int = 0
@@ -462,23 +671,36 @@ def has_decision(row: RepostGroupMember) -> bool:
 def member_facts(session: Session, ids: list[int]) -> tuple[dict[int, tuple], dict[int, str]]:
     """归组约束与确认快照使用同一份当前数据，正文比较全部内容而非归组用的前 1500 字。"""
     info, fingerprints = {}, {}
-    for doc, src, detail in session.execute(
-        select(Document, Source, DocumentDetail)
+    if not ids:
+        return info, fingerprints
+    # 正文的指纹在库里算（SHA2 算的是 utf8mb4 存的字节，和 Python 按 UTF-8 编码算的一样），不把整份
+    # 正文读进内存：窗口里的组成员可能很多
+    body_hash = func.sha2(func.coalesce(DocumentDetail.body_text, ""), 256)
+    for doc, src, detail_id, issuer, detail_date, body_sha in session.execute(
+        select(
+            Document,
+            Source,
+            DocumentDetail.document_id,
+            DocumentDetail.issuer,
+            DocumentDetail.publish_date,
+            body_hash,
+        )
         .join(Source, Source.id == Document.source_id)
         .outerjoin(DocumentDetail, DocumentDetail.document_id == Document.id)
         .where(Document.id.in_(ids))
         .execution_options(populate_existing=True)
     ):
+        detail = detail_id is not None
         info[doc.id] = ((src.province, src.city, src.district, src.dept), doc.publish_date)
         values = [
             doc.publish_date.isoformat() if doc.publish_date else None,
             src.province,
             src.dept,
             src.dept_full_name,
-            detail.issuer if detail else None,
-            detail.publish_date.isoformat() if detail and detail.publish_date else None,
+            issuer if detail else None,
+            detail_date.isoformat() if detail and detail_date else None,
             doc.title,
-            hashlib.sha256((detail.body_text or "").encode()).hexdigest() if detail else None,
+            body_sha if detail else None,
         ]
         # 旧来源的确认快照保持原样，新增城市才加入快照以捕捉城市变更。
         if src.city or src.level == "市级":
@@ -489,6 +711,27 @@ def member_facts(session: Session, ids: list[int]) -> tuple[dict[int, tuple], di
             json.dumps(values, ensure_ascii=False).encode()
         ).hexdigest()
     return info, fingerprints
+
+
+def member_info(session: Session, ids: list[int]) -> dict[int, tuple]:
+    """组员的机关和发布日期（归组约束用）：只读文件和来源，不读正文。"""
+    if not ids:
+        return {}
+    return {
+        doc_id: ((province, city, district, dept), published)
+        for doc_id, published, province, city, district, dept in session.execute(
+            select(
+                Document.id,
+                Document.publish_date,
+                Source.province,
+                Source.city,
+                Source.district,
+                Source.dept,
+            )
+            .join(Source, Source.id == Document.source_id)
+            .where(Document.id.in_(ids))
+        )
+    }
 
 
 def valid_group(info: dict[int, tuple], ids: list[int]) -> bool:
@@ -513,14 +756,26 @@ def _fits(info: dict[int, tuple], ids: list[int], doc_id: int) -> bool:
     return valid_group(info, [*ids, doc_id])
 
 
-def rebuild(session: Session, *, now: datetime | None = None) -> RebuildSummary:
-    """待确认自动成员从头重算；带人工决定的成员保留。确认组内容或约束变化需复核。
+def rebuild(
+    session: Session, *, now: datetime | None = None, today: date | None = None, full: bool = False
+) -> RebuildSummary:
+    """待确认自动成员从头重算；带人工决定的成员保留。确认组内容或约束变化需复核：窗口里的确认组
+    每轮核对；窗口外的确认以后详情重抓过的拿全文核对一次，另外每轮轮流核对一批最久没核对的
+    （RECHECK_DAYS 天轮一遍），full=True（--full）时全部核对。
 
+    先保存正文信号和已处理标记；只重算窗口里的组（有在组成员的发布日期在窗口里），窗口外的组
+    只在副本转主文件、确认成员详情重抓过、成员都没了时处理。窗口默认是最近 WINDOW_DAYS 天；
+    这一轮新进来的窗口内文件，范围再往前放 MAX_DAYS_APART 天。
     规则提出的整组先检查约束；保留人工成员时，加入新成员也检查整组。更新最终差异，
     相同输入重跑不改变修订号。这里只写 repost_*，绝不改截止审批。
     """
     stamp = now or datetime.now(UTC)
-    summary = RebuildSummary()
+    # 窗口按北京时间的日子算（政府网站和本程序的发布日期都是北京时间）
+    today = today or stamp.astimezone(_BEIJING).date()
+    refreshed = refresh_signals(session, today=today, stamp=stamp, full=full)
+    summary = RebuildSummary(signals=refreshed.computed)
+    # 候选范围：窗口起点，这一轮新进来的窗口内文件往前放（和上面重算正文信号的范围同一个）
+    cutoff = candidate_cutoff(today, refreshed.earliest_new)
     # 先锁组、再锁组员，和管理台的操作（api/repost.py 的 _lock_groups）同一顺序，不会互相等成死锁
     groups = {
         row.id: row
@@ -588,11 +843,72 @@ def rebuild(session: Session, *, now: datetime | None = None) -> RebuildSummary:
         summary.moved += 1
     session.flush()
 
-    candidates = load_candidates(session)
+    window_groups = set(session.scalars(_window_groups(cutoff)))
+    candidates = load_candidates(session, today, cutoff)
     info = {c.id: (c.agency, c.publish_date) for c in candidates}
     # 只有已有成员需要完整正文快照，其余候选沿用上面的轻量数据。
-    member_info, fingerprints = member_facts(session, list(members))
-    info.update(member_info)
+    # 确认以后详情重抓过、这次重抓还没核对过的确认成员（核对过、内容没变的记下核对的时间，详情
+    # 没再重抓就不再拿全文核对，免得重抓过一次就每轮都算）：{文件编号: 详情时间}
+    changed_confirmed = dict(
+        session.execute(
+            select(RepostGroupMember.document_id, DocumentDetail.fetched_at)
+            .join(DocumentDetail, DocumentDetail.document_id == RepostGroupMember.document_id)
+            .outerjoin(RepostSignal, RepostSignal.document_id == RepostGroupMember.document_id)
+            .where(
+                RepostGroupMember.active.is_(True),
+                RepostGroupMember.confirmed_at.is_not(None),
+                DocumentDetail.fetched_at > RepostGroupMember.confirmed_at,
+                or_(
+                    RepostSignal.checked_at.is_(None),
+                    DocumentDetail.fetched_at > RepostSignal.checked_at,
+                ),
+            )
+        ).all()
+    )
+    # 确认快照的全文指纹只给确认过的成员算：窗口里的确认组每轮都核对（D-055：确认以后任一版本的
+    # 日期、机关、标题、正文有变，下一轮就停止折叠；正文被直接改写时抓取时间不变，只能重算才看得
+    # 出），量受窗口限制；窗口外的只核对确认以后详情重抓过、还没核对过的；--full 时全部确认过的成员
+    # （维护用：改了标题、正文脱敏重写这类不更新抓取时间的改动以后跑）。没确认的成员只要机关和日期
+    # （归组约束用），不读正文
+    window_ids = {d for d, row in members.items() if row.group_id in window_groups}
+    # 窗口外确认过的组：正文、标题被直接改写（抓取时间不变）也要能发现——每轮轮流拿最久没核对的一批
+    # 全文核对（不等满多少天，同一天确认的一大批也是一轮接一轮地核对）。一批 = 窗口外确认成员总数 ÷
+    # RECHECK_DAYS（至少 RECHECK_BATCH 份）：一天哪怕只跑一轮，RECHECK_DAYS 天也能全部轮一遍
+    # 转了"需复核"的组本来就不折叠，不占定期核对的名额
+    outside_confirmed = (
+        select(RepostGroupMember.document_id)
+        .join(RepostGroup, RepostGroup.id == RepostGroupMember.group_id)
+        .where(
+            RepostGroupMember.active.is_(True),
+            RepostGroupMember.confirmed_at.is_not(None),
+            RepostGroup.needs_review.is_(False),
+            ~RepostGroupMember.group_id.in_(_window_groups(cutoff)),
+        )
+        .subquery()
+    )
+    total = session.scalar(select(func.count()).select_from(outside_confirmed)) or 0
+    batch = max(RECHECK_BATCH, -(-int(total) // RECHECK_DAYS))
+    periodic = set(
+        session.scalars(
+            select(RepostGroupMember.document_id)
+            .outerjoin(RepostSignal, RepostSignal.document_id == RepostGroupMember.document_id)
+            .where(RepostGroupMember.document_id.in_(select(outside_confirmed.c.document_id)))
+            .order_by(
+                func.coalesce(RepostSignal.checked_at, RepostGroupMember.confirmed_at),
+                RepostGroupMember.document_id,
+            )
+            .limit(batch)
+        )
+    )
+    fact_ids = (
+        set(changed_confirmed)
+        | periodic
+        | {d for d in window_ids if members[d].active and members[d].confirmed_at is not None}
+    )
+    if full:
+        fact_ids |= {d for d, row in members.items() if row.active and row.confirmed_at is not None}
+    info.update(member_info(session, list(window_ids | fact_ids)))
+    _, fingerprints = member_facts(session, list(fact_ids))
     by_group: dict[int, list[RepostGroupMember]] = defaultdict(list)
     for row in members.values():
         if row.active:
@@ -600,18 +916,42 @@ def rebuild(session: Session, *, now: datetime | None = None) -> RebuildSummary:
     for group_id, rows in by_group.items():
         group = groups[group_id]
         confirmed = [r for r in rows if r.confirmed_at is not None]
-        changed = any(r.confirmed_fingerprint != fingerprints.get(r.document_id) for r in confirmed)
+        changed = any(
+            r.confirmed_fingerprint != fingerprints.get(r.document_id)
+            for r in confirmed
+            if r.document_id in fact_ids
+        )
         if (
             confirmed
             and not group.needs_review
-            and (changed or not valid_group(info, [r.document_id for r in rows]))
+            and (
+                changed
+                or (
+                    group_id in window_groups
+                    and not valid_group(info, [r.document_id for r in rows])
+                )
+            )
         ):
             group.needs_review = True
             bump(group, stamp)
             summary.needs_review += 1
+    # 重抓以后、或轮到定期核对的确认成员：核对过的一律记下核对的时间（内容变了的组已经转需复核或
+    # 退回，不再记着也会一直排在定期核对的最前面，挤掉别的组）
+    checked = [d for d in set(changed_confirmed) | periodic if d in members]
+    if checked:
+        for signal in session.scalars(
+            select(RepostSignal).where(RepostSignal.document_id.in_(checked))
+        ):
+            signal.checked_at = stamp
 
     # 先在内存中释放所有未带人工决定的成员；旧归属仅用来尽量复用组编号，绝不约束重算结果。
-    free = {d: r for d, r in members.items() if d not in held and not has_decision(r)}
+    # 窗口里的组：没有人工决定的成员（不论发布日期，早于窗口的老成员也一样）都从头重算；它们和同组
+    # 成员都在候选里，合规的照样连回原组，不再合规的（比如和别的版本相隔超过 90 天）照规则去掉
+    free = {
+        d: r
+        for d, r in members.items()
+        if r.group_id in window_groups and d not in held and not has_decision(r)
+    }
     fixed = {d: r for d, r in members.items() if d not in free}
     active_of: dict[int, list[int]] = defaultdict(list)
     for row in fixed.values():
@@ -715,6 +1055,7 @@ def rebuild(session: Session, *, now: datetime | None = None) -> RebuildSummary:
     session.flush()
     alive = {row.group_id for row in members.values()}
     for group_id, group in groups.items():
+        # 空组（成员都去掉了、或都转给了主文件）删掉，不论在不在窗口里；人工处理过的照旧保留
         if group_id not in alive and not group.no_auto:
             session.delete(group)
     session.flush()
