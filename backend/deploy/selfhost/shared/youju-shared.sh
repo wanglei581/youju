@@ -30,6 +30,14 @@
 #   import-export <旧版本> 用迁移版本和备份一样的旧镜像在临时库里试恢复备份；整库备份、交易记录、批量工具结果分别加密存档（到期日写进文件名），删掉明文
 #   takedowns [段号]       只读：打印下架清单（gzip 后 base64，每段 200 行），抄到本机用
 #   takedowns-check        只读：下架清单里的网址在服务器上还有没有对用户可见的文件
+# 紧急下架（电脑不在线时，手册第八节）：操作人写在 YOUJU_BY 里（不写记作"服务器命令行"）；
+# 说明在提示里输入（不进命令历史、不出现在进程列表里；没有终端时不带说明）
+#   emergency-find <文件编号|网址|标题里的字>   只读：找文件（编号、对不对外、标题、网址）
+#   emergency-takedown <文件编号> <原因>        紧急下架，整组不对外；原因 complaint|authority|error|other
+#   emergency-lift <文件编号>                   撤销这份文件所在组的紧急下架（下错了用）
+#   emergency-list [--all] [--notes]            只读：紧急下架着的（--all 连撤销了的，--notes 显示说明）
+#   emergency-carry [段号]                      只读：打印紧急下架清单（gzip 后 base64），电脑恢复后带回本机
+#   emergency-settle                            带回本机已经正式下架的撤掉（定时任务每小时也做）
 #   secret <名称>          只在交互终端里用：录一个密钥进 .env（输入不显示，只回长度和指纹）
 #   show push|sync         只在交互终端里用：显示消息推送的 Token、EncodingAESKey / 同步密钥
 #   rotate-sync            换一个新的同步密钥（不显示）
@@ -572,6 +580,18 @@ resume_services() {
   fi
 }
 
+# 清单链接的格式。在 C 语言环境里比：bash 的 [[ =~ ]] 按当前语言环境的排序规则解释 [!-~] 这种范围，
+# en_US.UTF-8 下字母不在 '!' 到 '~' 之间，合法链接也会判成"不对"（11/12 导出窗口实测：OrcaTerm 的
+# root 就是 LANG=en_US.UTF-8）。整个函数在子 shell 里跑，LC_ALL 不影响外面
+manifest_url_ok() (
+  LC_ALL=C
+  [[ "$1" =~ ^https://[A-Za-z0-9.-]+\.(tcb\.qcloud\.la|myqcloud\.com)/[!-~]*$ ]]
+)
+
+# 网页终端复制时常带上首尾的空格、制表符、回车：只去首尾的（sed 的 [[:space:]] 含回车），
+# 中间带空白或回车的原样留着，manifest_url_ok 会判不对，不会悄悄拼成另一条链接
+trim_pasted() { printf '%s' "$1" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'; }
+
 fetch_export() {
   local sum=${1:-} url=""
   [[ "$sum" =~ ^[0-9a-f]{64}$ ]] && [ "$#" -eq 1 ] \
@@ -585,9 +605,8 @@ fetch_export() {
   printf '粘贴清单链接（不显示），回车：'
   IFS= read -rs url || true
   echo
-  # 网页终端复制时常带上首尾的空格、制表符、回车
-  url=$(printf '%s' "$url" | tr -d '\r' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
-  [[ "$url" =~ ^https://[A-Za-z0-9.-]+\.(tcb\.qcloud\.la|myqcloud\.com)/[!-~]*$ ]] \
+  url=$(trim_pasted "$url")
+  manifest_url_ok "$url" \
     || die "清单链接不对（要是云托管导出脚本打印的那一行里的链接）"
   local free_g
   free_g=$(df -BG --output=avail "$BASE" | tail -1 | tr -dc '0-9')
@@ -684,6 +703,50 @@ takedowns_check() {
   [ -f "$EXPORT_DIR/takedowns.jsonl" ] || die "还没有下架清单：先 fetch-export"
   # 在正在跑的 worker 里查（不另起容器）；清单从标准输入给
   compose exec -T worker youju takedown-carry check --file /dev/stdin < "$EXPORT_DIR/takedowns.jsonl"
+}
+
+# 紧急下架：都在正在跑的 worker 里执行（不另起容器；worker 没在跑就先 up）
+emergency() {
+  compose exec -T worker youju emergency-takedown "$@"
+}
+
+# 说明在提示里问（read 读进来的不进命令历史；经管道给容器里的命令，也不出现在进程列表里）。
+# 没有终端（如控制台"执行命令"）时不问、不带说明：说明可能写到投诉人，不进执行记录。
+# 先读完说明再启动容器里的命令：边问边启动的话，在提示处 Ctrl-C 只停了这边，容器里的命令
+# 读到空说明照样执行（docker exec 的客户端退出不结束容器里的进程）
+ask_note() {
+  local note=""
+  if [ -t 0 ]; then
+    read -r -p "说明（可以不写，直接回车；别写投诉人的姓名、电话；Ctrl-C 取消）：" note || note=""
+  fi
+  printf '%s' "$note"
+}
+
+emergency_takedown() {
+  [ "$#" -eq 2 ] || die "用法：emergency-takedown <文件编号> <原因：complaint|authority|error|other>（说明在提示里输入）"
+  local note
+  note=$(ask_note)
+  printf '%s' "$note" | emergency add "$1" --reason "$2" --note-stdin --by "${YOUJU_BY:-}"
+}
+
+emergency_lift() {
+  [ "$#" -eq 1 ] || die "用法：emergency-lift <文件编号>（说明在提示里输入）"
+  local note
+  note=$(ask_note)
+  printf '%s' "$note" | emergency lift "$1" --note-stdin --by "${YOUJU_BY:-}"
+}
+
+# 和 takedowns 一样打印成 gzip 后 base64（中文原因贴进本机终端不会乱码），本机 carry-takedowns.sh
+# <SHA-256> emergency 核对后应用。每次都重新导出：分几段抄的中间又有新的紧急下架，SHA-256 会对不上
+emergency_carry() {
+  local part=${1:-1} data blob lines
+  [[ "$part" =~ ^[1-9][0-9]*$ ]] || die "段号要是正整数"
+  data=$(emergency export) || die "导出紧急下架没成功"
+  [ -n "$data" ] || { echo "没有紧急下架着的，不用带回"; return 0; }
+  blob=$(printf '%s\n' "$data" | gzip -9nc | base64 -w 76)
+  lines=$(printf '%s\n' "$blob" | wc -l)
+  echo "紧急下架清单 $(printf '%s\n' "$data" | wc -l) 个网址；SHA-256 $(printf '%s\n' "$data" | sha256sum | cut -c1-64)；gzip 后 base64，共 $(( (lines + 199) / 200 )) 段，第 ${part} 段："
+  printf '%s\n' "$blob" | sed -n "$(( (part - 1) * 200 + 1 )),$(( part * 200 ))p"
 }
 
 # .env 里的一项改成新值、没有就加上（先写临时文件再改名）。值经环境变量给 awk，不进命令行参数
@@ -900,6 +963,12 @@ case "$cmd" in
   import-export) import_export "$@" ;;
   takedowns) takedowns "$@" ;;
   takedowns-check) takedowns_check ;;
+  emergency-find) emergency find "$*" ;;
+  emergency-takedown) emergency_takedown "$@" ;;
+  emergency-lift) emergency_lift "$@" ;;
+  emergency-list) emergency list "$@" ;;
+  emergency-carry) emergency_carry "$@" ;;
+  emergency-settle) emergency settle ;;
   secret) secret "$@" ;;
   show) show "$@" ;;
   rotate-sync) rotate_sync ;;

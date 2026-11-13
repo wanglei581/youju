@@ -1,17 +1,23 @@
 """政府文件详情页解析；只保留可从页面直接确认的字段。"""
 
+import functools
+import hashlib
+import logging
 import re
 from dataclasses import dataclass, field
 from datetime import date
 from html import unescape as unescape_html
 from itertools import chain
-from urllib.parse import unquote, urlsplit
+from pathlib import Path
+from urllib.parse import unquote, urljoin, urlsplit
 
 from lxml import etree, html
 
 from youju.crawler.dates import parse_date_detail
 from youju.crawler.urls import normalize_url
 from youju.issuer import normalize_issuer
+
+logger = logging.getLogger(__name__)
 
 _FILE_EXTENSIONS = {"pdf", "doc", "docx", "xls", "xlsx", "wps", "et", "zip", "rar", "ofd"}
 # 一篇通知收录的附件个数上限：正常通知不过几个到几十个，异常页面（整站文件目录等）不全收
@@ -47,6 +53,89 @@ _AGENCY = re.compile(
 _AGENCY_END = re.compile(
     r"(?:厅|局|委|委员会|部|中心|政府|办公室|研究院|院|署|海关|分行)(?:（[^）]+）)?$"
 )
+# 发文机关的几处来源（_issuer 按这个顺序找）：
+# - 页面上明写的"发文机关、发文单位、制发机关"；
+# - 文件标题开头的机关："某某市人民政府关于……""某某厅等 7 部门关于印发……"。标题比"发布机构"一栏准：
+#   市政府发文挂在办公厅网站上、转载上级文件时，"发布机构"写的是挂文件的单位；
+# - "发布机构"一栏：挂文件的单位，自己发的文件就是发文机关。
+_ISSUER_LABEL = re.compile(r"(?:发文机关|发文单位|制发机关)\s*[:：]\s*([^\n]{2,80})")
+_PUBLISHER_LABEL = re.compile(r"发布机构\s*[:：]\s*([^\n]{2,80})")
+_TITLE_ISSUER = re.compile(
+    r"^\s*(?P<org>[\u4e00-\u9fff（）()、\s]{2,90}?"
+    r"(?:厅|局|委|委员会|部|中心|政府|办公室|研究院|院|署|海关|分行|小组)(?:（[^）]{1,20}）)?)"
+    r"(?P<etc>\s*等\s*\d{1,2}\s*个?部门)?\s*(?:关于|印发|转发)"
+)
+# 标题里的机关要是完整的机关名：去掉开头的地名（省级区划名、data/place_names.txt 里的地级县级
+# 区划名）以后，剩下的要在机关名称词表（data/agency_bodies.txt）里；"中共"开头的剩下要是党委机构；
+# 中央机关看全称名单。"张三代表市政府""北京市财政局张三建议市政府""住房和城乡建设局"都不算
+_PROVINCE = (
+    r"(?:北京市|天津市|上海市|重庆市|内蒙古自治区|广西壮族自治区|西藏自治区|宁夏回族自治区"
+    r"|新疆维吾尔自治区|(?:河北|山西|辽宁|吉林|黑龙江|江苏|浙江|安徽|福建|江西|山东|河南|湖北|湖南"
+    r"|广东|海南|四川|贵州|云南|陕西|甘肃|青海|台湾)省)"
+)
+_PROVINCE_HEAD = re.compile(rf"^{_PROVINCE}")
+_DATA_DIR = Path(__file__).resolve().parents[1] / "data"
+# 地级市简称后面跟这些的也算地名开头（"雅安经济技术开发区管理委员会""南京海关"）
+_ZONE_WORDS = ("经济技术开发区", "高新技术产业开发区", "高新区", "经开区", "开发区", "新区", "海关")
+# "中共某某市"后面的党委机构
+_PARTY_BODIES = frozenset(
+    (
+        "委", "委办公室", "委办公厅", "委组织部", "委宣传部", "委统战部", "委统一战线工作部",
+        "委政法委员会", "委机构编制委员会办公室", "委全面深化改革委员会办公室",
+        "委财经委员会办公室", "委人才工作领导小组办公室", "委军民融合发展委员会办公室",
+        "委网络安全和信息化委员会办公室", "委外事工作委员会办公室", "委农村工作领导小组办公室",
+    )
+)  # fmt: skip
+
+# 中央机关的全称（"中共"去掉以后比；国务院各部见 _MINISTRY）
+_CENTRAL_AGENCIES = frozenset(
+    (
+        "中央", "中央办公厅", "中央组织部", "中央宣传部", "中央统战部",
+        "中央网络安全和信息化委员会办公室", "中央全面深化改革委员会办公室",
+        "中央财经委员会办公室", "国务院", "国务院办公厅", "国务院国有资产监督管理委员会",
+        "国务院国资委", "国家发展和改革委员会", "国家发展改革委", "国家民族事务委员会",
+        "国家民委", "国家林业和草原局", "国家林草局", "国家税务总局", "国家市场监督管理总局",
+        "市场监管总局", "国家知识产权局", "国家统计局", "国家能源局", "国家数据局",
+        "国家医疗保障局", "国家卫生健康委员会", "国家卫生健康委", "国家金融监督管理总局",
+        "国家外汇管理局", "国家文物局", "国家粮食和物资储备局", "国家中医药管理局",
+        "国家药品监督管理局", "国家乡村振兴局", "国家体育总局", "国家广播电视总局",
+        "国家新闻出版署", "国家国防科技工业局", "国家邮政局", "中国人民银行",
+    )
+)  # fmt: skip
+
+# 省级区划的简称：中央机关在地方的分支常这样写（"国家金融监督管理总局四川监管局""中国人民银行上海
+# 分行"）；直辖市简称后面跟开发区、海关的也算地名开头
+_MUNICIPALITIES = ("北京", "天津", "上海", "重庆")
+_PROVINCE_SHORT = frozenset(
+    (
+        *_MUNICIPALITIES, "内蒙古", "广西", "西藏", "宁夏", "新疆", "河北", "山西",
+        "辽宁", "吉林", "黑龙江", "江苏", "浙江", "安徽", "福建", "江西", "山东", "河南", "湖北",
+        "湖南", "广东", "海南", "四川", "贵州", "云南", "陕西", "甘肃", "青海", "台湾",
+    )
+)  # fmt: skip
+# 中央机关在地方的分支：父机关 + 地名 + 这几种名称（"国家税务总局龙岩市税务局"）
+_BRANCH_BODIES = {
+    "国家税务总局": ("税务局",),
+    "国家金融监督管理总局": ("监管局", "监管分局"),
+    "中国人民银行": ("分行", "中心支行"),
+    "国家外汇管理局": ("分局",),
+}
+_MINISTRY = re.compile(
+    r"^(?:(?:外交|国防|教育|科学技术|工业和信息化|公安|国家安全|民政|司法|财政|人力资源和社会保障"
+    r"|人力资源社会保障|自然资源|生态环境|住房和城乡建设|住房城乡建设|交通运输|水利|农业农村|商务"
+    r"|文化和旅游|退役军人事务|应急管理)部|审计署|海关总署)$"
+)
+# 机关名里不会有的字：会议、讲话这类新闻标题的字（"某某主持召开市政府……会议"），职务（"某某市
+# 市长某某在……"），"关于""转发"（"转发省商务厅关于……""关于转发财政部关于……"）
+_NOT_ORG = re.compile(
+    r"主持|召开|出席|会见|会谈|调研|考察|视察|看望|慰问|会议|座谈|讲话|指出|强调|听取|部署"
+    r"|带队|走访|批示|签署|致信|致电|发表|同志|关于|转发|印发|贯彻|落实|在|代表"
+    r"|市长|县长|区长|省长|州长|部长|厅长|局长|书记|主任|主席|总理|委员长"
+)
+# 只写了部门内设机构的名字，不是发文机关（"发布机构：信息中心"、来源写"办公室"）
+_GENERIC_ISSUERS = frozenset(
+    {"信息中心", "办公室", "网站管理中心", "政务公开办公室", "政务服务中心", "大数据中心"}
+)
 _DATE = re.compile(r"20\d{2}\s*(?:年|[-/.])\s*\d{1,2}\s*(?:月|[-/.])\s*\d{1,2}\s*日?")
 # qr_container：常见的"扫一扫在手机打开当前页"二维码块（四川科技厅、江苏工信厅放在正文区里）
 _JUNK_CLASS = re.compile(
@@ -75,11 +164,13 @@ _BODY_SELECTORS = (
     "//article",
     '//*[contains(concat(" ", normalize-space(@class), " "), " pages_content ")]',
     '//*[contains(concat(" ", normalize-space(@class), " "), " article_area ")]',
-    # 几个站群的正文标记（上海 ivs_content，广州、苏州、黑龙江等 zoomcon，安徽 j-fontContent）：
-    # 排在最后的 .content 前面，只在前面的规则都没匹配上时才用（.content 常是整页外框）
+    # 几个站群的正文标记（上海 ivs_content，广州、苏州、黑龙江等 zoomcon，安徽 j-fontContent，
+    # 四川雅安、遂宁、达州等 xqing-web-box）：排在最后的 .content 前面，只在前面的规则都没匹配上
+    # 时才用（.content 常是整页外框；11/12 雅安一批文件页的 .content 是页尾的"主办单位、地址"）
     '//*[@id="ivs_content"]',
     '//*[@id="zoomcon"]',
     '//*[contains(concat(" ", normalize-space(@class), " "), " j-fontContent ")]',
+    '//*[contains(concat(" ", normalize-space(@class), " "), " xqing-web-box ")]',
     '//*[contains(concat(" ", normalize-space(@class), " "), " content ")]',
 )
 # 个别网站的正文区用的是自家类名（别的网站同名元素未必是正文），只对这个网站用（主机名精确匹配），
@@ -102,6 +193,95 @@ _SITE_BODY_SELECTORS = {
     # 按完整类名匹配：标题 zw-title、发布信息和"【打印】""分享到"所在的 zw-info 是别的元素
     "gdstc.gd.gov.cn": '//*[contains(concat(" ", normalize-space(@class), " "), " zw ")]',
 }
+# 防护页：标题和正文前 500 字里有这些字的，整页当成验证码、限流或要开脚本的挡页，不取（D-013）
+_PROTECTION = re.compile(
+    r"验证码|人机验证|安全验证|访问过于频繁|异常访问|请开启.{0,12}JavaScript", re.I
+)
+# 站内搜索的限流弹窗（D-013：认得出才放）。11/12 地市正文门：泸州、漯河、商丘、常德等站群的每一页都
+# 带一个平时隐藏的弹窗——div#VolidateCodeDiv，style 写着 display:none，标题（.modal-title）只有
+# "搜索过于频繁，请输入验证码"，里面是搜索用的验证票据输入框 input#js-ticket-search。它是站内搜索
+# 被限流时才弹出的，不是挡住这一页的验证，这些站的文件页因此都被当成了防护页。判断防护页时只把完全
+# 是这个样子的弹窗拿掉；拿掉以后这一页还要取到完整的正文（有句子），不然照旧当防护页。别的写法一律
+# 照旧当防护页、不取
+_SEARCH_THROTTLE_TEXT = ("×", "搜索过于频繁，请输入验证码", "确定")
+# 弹窗的整个结构（每个元素的标签、id、class、type、value，按出现顺序）：11/12 在 4 个站群的 219 处
+# 看到的都是这一个样子，多一个元素、少一个、属性上的字（按钮的"点击验证"）不一样，都不认
+_SEARCH_THROTTLE_SHAPE = (
+    ("div", "VolidateCodeDiv", "modal in", "", ""),
+    ("div", "", "modal-dialog", "", ""),
+    ("div", "", "modal-content", "", ""),
+    ("div", "", "modal-header", "", ""),
+    ("button", "", "close", "button", ""),
+    ("span", "", "", "", ""),
+    ("h4", "", "modal-title", "", ""),
+    ("div", "", "modal-body", "", ""),
+    ("div", "", "container-fluid", "", ""),
+    ("div", "", "", "", ""),
+    ("input", "js-ticket-search", "", "hidden", ""),
+    ("input", "js-ticketId-search", "", "hidden", ""),
+    ("input", "js-btn-verify-search", "form-control btn btn-gray btn-block", "button", "点击验证"),
+    ("span", "captchaticketvalid-search", "field-validation-valid", "", ""),
+    ("input", "SearchValidateCode", "", "hidden", ""),
+    ("div", "", "modal-footer", "", ""),
+    ("a", "confirmNotApprove", "btn btn-sm btn-primary", "", ""),
+)
+# 放过弹窗的页面，正文要出自这类站核实过的正文区（或在它里面）：11/12 翻过来的 118 份都是
+_VERIFIED_BODY = (
+    '//div[contains(concat(" ", normalize-space(@class), " "), " conTxt ")]'
+    ' | //div[@id="content"][contains(concat(" ", normalize-space(@class), " "), " lh-wznr ")]'
+)
+_SEARCH_THROTTLE_DIALOG = '//div[@id="VolidateCodeDiv"][.//input[@id="js-ticket-search"]]'
+# 浏览器里核实过的网站和页面样子：网站 → 页面代码的指纹（_page_code_fingerprint）。11/12 泸州、
+# 漯河、常德 22 个网站的 36 个样子，每个都在浏览器里打开过一页：弹窗没有显示出来、页面上看得到的
+# 字里没有验证码一类的字、正文区正常显示（核对表见 PR #485）。别的网站、别的样子（外部脚本、样式
+# 多一个少一个，页面自带的脚本、样式、事件属性有一处不一样）都不认这个弹窗，照旧当防护页。
+# 兜底：每月在浏览器里按 PR #485 的做法复核一次；取详情时这些网站一遇到防护页，这一轮就停取这个
+# 网站（detail_service），要复核
+_SEARCH_THROTTLE_VERIFIED: dict[str, frozenset[str]] = {
+    "czj.luohe.gov.cn": frozenset({"26b3dbf05a6943a8"}),
+    "czj.luzhou.gov.cn": frozenset({"3e0d86007ee3353b", "da9f063cb7dd4f2f"}),
+    "drc.luohe.gov.cn": frozenset({"c68b23a5d3bdb294"}),
+    "fgw.luzhou.gov.cn": frozenset({"a14d9bdbf340e4d2", "d06406ee756a0ced"}),
+    "gxj.luohe.gov.cn": frozenset({"db6f75d8850c5814"}),
+    "hrss.luohe.gov.cn": frozenset({"13ca381f2244e471"}),
+    "jxj.luzhou.gov.cn": frozenset({"34993d8a3389c627", "53d1ad1cd685d078", "6ac8a40fcc661a62"}),
+    "kawlb.luzhou.gov.cn": frozenset({"9aeb5830f187ad15"}),
+    "kjj.luohe.gov.cn": frozenset({"a341e43255813b31"}),
+    "kjj.luzhou.gov.cn": frozenset({"bf8587b7edb7391f", "db21170b400079d9"}),
+    "luohelvyou.luohe.gov.cn": frozenset({"82abca0dffabc7ae"}),
+    "nyncj.luzhou.gov.cn": frozenset({"973f428253becf73", "ac1100e3e7c31c78", "e24dd3c4dd7b0432"}),
+    "rsj.luzhou.gov.cn": frozenset({"a71031f2537a6123"}),
+    "scjg.luohe.gov.cn": frozenset({"1645d3da962f3eb0"}),
+    "scjgj.luzhou.gov.cn": frozenset({"c88e6061371a23b9", "e754315787e29882"}),
+    "sthjj.luohe.gov.cn": frozenset({"416b74733e1401a8"}),
+    "sthjj.luzhou.gov.cn": frozenset({"7dbf126d3b49e3fd", "8797b47f44dc5af2", "c40f34ee5e2f4b4a"}),
+    "swj.luohe.gov.cn": frozenset(
+        {"7e93775eab9fe810", "89e475064876dda2", "919cf8f5e8a30e04", "e3e1a3a561ca5fe9"}
+    ),
+    "wtgj.luzhou.gov.cn": frozenset({"0fa96aaa738f41c8"}),
+    "www.changde.gov.cn": frozenset({"df4caf7c4c084e78"}),
+    "www.luohe.gov.cn": frozenset({"b7112ed612b2044f", "f9870def54889ce0"}),
+    "www.luzhou.gov.cn": frozenset({"6366cf401679cae4"}),
+}
+# 算页面代码指纹时归一的每页编号，只在页面自带脚本里这几句核实过的写法中、只换编号：上一篇/下一篇
+# 两种接口、相关文章接口里的栏目编号和文章编号，相关文章排除的本篇编号，评论区块的文章编号。11/12
+# 核实过的 36 个样子、124 份页面上，同一样子的页面代码只在这几处不同
+_PAGE_ID_CONTEXTS = (
+    re.compile(
+        r"(/contentmanage/ajax/(?:getprevandnextcontent|getpreandnextpublicinformation)\?nodeId=)"
+        r"\d+(&contentId=)\d+(&)"
+    ),
+    re.compile(r"(/ContentManage/Ajax/GetRelatedContent\?contentId=)\d+(&nodeId=)\d+(&moldType=)"),
+    re.compile(r'(data:\s*\{\s*excludeIds:\s*")\d+(",\s*size:)'),
+    re.compile(r'(parameters:\s*"\{\s*contentId:)\d+(,\s*moldType:)'),
+)
+# 算指纹时记下地址的 <link>：样式表和预加载的脚本、样式
+_CODE_LINKS = {"stylesheet", "import", "preload", "modulepreload"}
+# 放过弹窗的页面整页查挡页字样时也看的属性：按钮上的字、图片说明、输入框提示等
+_WORD_ATTRS = ("value", "alt", "title", "placeholder", "aria-label")
+# 放过弹窗以后要求的"完整正文"：100 字以上、有句号、正文里没有验证码一类的字（11/12 翻过来的
+# 120 份文件页，正文都在 133 字以上，119 份有句号）
+_COMPLETE_MIN = 100
 # 个别网站放在正文区里的按钮（XPath 相对正文区），取正文时跳过
 _SITE_JUNK = {
     # 上海经信委：正文区末尾"[返回]"（history.back）和"【市民留言】"两个链接所在的块
@@ -809,17 +989,108 @@ def _issuer(lines: list[str], root: etree._Element, prefix: str) -> str | None:
                 break
         if agencies:
             return "、".join(reversed(agencies))
-    for match in re.finditer(
-        r"(?:发文机关|发文单位|发布机构|制发机关)\s*[:：]\s*([^\n]{2,80})", prefix
-    ):
+    for match in _ISSUER_LABEL.finditer(prefix):
         value = match.group(1).strip()
         if _AGENCY_END.search(value):
             return normalize_issuer(value)
+    if title_issuer := _title_issuer(root):
+        return title_issuer
+    for match in _PUBLISHER_LABEL.finditer(prefix):
+        value = match.group(1).strip()
+        if _is_agency(value):
+            return normalize_issuer(value)
     for name in ("issuer", "publishingorganization", "contentSource"):
-        value = _metadata(root, name)
-        if value and len(value) <= 60 and _AGENCY_END.search(value):
+        value = (_metadata(root, name) or "").strip()
+        if len(value) <= 60 and _is_agency(value):
             return normalize_issuer(value)
     return None
+
+
+def _is_agency(value: str) -> bool:
+    return bool(_AGENCY_END.search(value)) and value not in _GENERIC_ISSUERS
+
+
+def _title_issuer(root: etree._Element) -> str | None:
+    """文件标题开头的机关（"某某市人民政府关于……""某某厅等 7 部门关于印发……"），每个机关都要是
+    完整的机关名（见 _full_agency），有一个不是就不用标题。校验用的名单有一份读不到，标题一概
+    不用。"""
+    places, _, bodies = _agency_names()
+    if not places or not bodies:
+        return None
+    for title in _page_titles(root):
+        match = _TITLE_ISSUER.match(title)
+        if not match:
+            continue
+        value = normalize_issuer(" ".join(match.group("org").split()))
+        if all(_full_agency(part) for part in value.split("、")):
+            return value + "".join((match.group("etc") or "").split())
+    return None
+
+
+def _full_agency(name: str) -> bool:
+    """完整的机关名：国务院某个部、中央机关全称、中央机关在地方的分支，或者"地名 + 词表里的机关名称"
+    （"中共"开头的是"地名 + 党委机构"）。缺地名的简称、内设机构、带会议讲话字样的新闻标题、地名后面
+    夹着人名的（"北京市张三建议市政府"）都不算。"""
+    if name in _GENERIC_ISSUERS or _NOT_ORG.search(name):
+        return False
+    bare = name.removeprefix("中华人民共和国")
+    if _MINISTRY.match(bare) or name.removeprefix("中共") in _CENTRAL_AGENCIES:
+        return True
+    for parent, branches in _BRANCH_BODIES.items():
+        if name.startswith(parent):
+            rest = name.removeprefix(parent)
+            body, stripped = _strip_places(rest)
+            short = next((k for k in (3, 2) if rest[:k] in _PROVINCE_SHORT), 0)
+            if not stripped and short:
+                body, stripped = rest[short:], True
+            return stripped and body in branches
+    party = name.startswith("中共")
+    body, stripped = _strip_places(name.removeprefix("中共"))
+    return stripped and body in (_PARTY_BODIES if party else _agency_names()[2])
+
+
+@functools.cache
+def _agency_names() -> tuple[frozenset[str], frozenset[str], frozenset[str]]:
+    """地级、县级区划名，"某某市"去掉"市"的简称，机关名称词表；名单文件读不到（没有文件、不是
+    UTF-8）时是空的，标题里的机关一概不用，照旧看发布机构（见 _title_issuer）。"""
+
+    def read(name: str) -> frozenset[str]:
+        try:
+            lines = (_DATA_DIR / name).read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeDecodeError):
+            logger.warning("发文机关校验用的名单读不到：%s", name)
+            return frozenset()
+        return frozenset(n for line in lines if (n := line.strip()) and not n.startswith("#"))
+
+    places = read("place_names.txt")
+    # 直辖市不在名单里（省级），简称单独加上（"北京经济技术开发区""上海海关"）
+    cities = frozenset(n[:-1] for n in places if n.endswith("市") and len(n) >= 3)
+    cities |= frozenset(_MUNICIPALITIES)
+    return places, cities, read("agency_bodies.txt")
+
+
+def _strip_places(name: str) -> tuple[str, bool]:
+    """去掉开头的地名（省级区划名、名单里的地名，可连着几个；地级市简称后面跟开发区、海关的去掉简称）；
+    返回剩下的和去没去掉。"""
+    places, cities, _ = _agency_names()
+    stripped = False
+    while True:
+        if match := _PROVINCE_HEAD.match(name):
+            name, stripped = name[match.end() :], True
+            continue
+        head = next((k for k in range(min(len(name), 12), 1, -1) if name[:k] in places), 0)
+        if not head:
+            head = next(
+                (
+                    k
+                    for k in range(min(len(name), 8), 1, -1)
+                    if name[:k] in cities and name[k:].startswith(_ZONE_WORDS)
+                ),
+                0,
+            )
+        if not head:
+            return name, stripped
+        name, stripped = name[head:], True
 
 
 def _split_issuer_line(line: str) -> str:
@@ -1166,6 +1437,114 @@ def outside_body_lines(html_text: str, url: str) -> list[str] | None:
     return [line for raw in "".join(parts).splitlines() if (line := " ".join(raw.split()))]
 
 
+def _page_code_fingerprint(root: etree._Element, url: str) -> str:
+    """页面上能让弹窗显示出来的东西的指纹，按在页面上出现的顺序原样记下：外部脚本、样式表（含预加载
+    的）、框架、<base> 的完整地址（含协议和 ? 后面的参数，重复的也记），页面自带的脚本、<style>、
+    on… 事件属性、框架里直接写的页面。只把页面自带脚本里 _PAGE_ID_CONTEXTS 那几句的编号当 0。"""
+
+    def page_ids(code: str) -> str:
+        for context in _PAGE_ID_CONTEXTS:
+            code = context.sub(lambda m: "0".join(m.groups()), code)
+        return code
+
+    parts: list[str] = []
+    for element in root.iter():
+        if not isinstance(element.tag, str):
+            continue
+        tag = element.tag.lower()
+        rel = set((element.get("rel") or "").lower().split())
+        for kind, name, wanted in (
+            ("js", "src", tag == "script"),
+            ("css", "href", tag == "link" and bool(_CODE_LINKS & rel)),
+            ("frame", "src", tag in ("iframe", "frame", "embed")),
+            ("frame", "data", tag == "object"),
+            ("base", "href", tag == "base"),
+        ):
+            if wanted and (value := element.get(name)) is not None:
+                parts.append(f"{kind} {urljoin(url, value.strip())}")
+        if tag == "script" and element.get("src") is None and element.text:
+            parts.append(f"script {page_ids(element.text)}")
+        if tag == "style" and element.text:
+            parts.append(f"style {element.text}")
+        if tag == "iframe" and (srcdoc := element.get("srcdoc")) is not None:
+            parts.append(f"srcdoc {srcdoc}")
+        parts.extend(
+            f"{name.lower()} {value}"
+            for name, value in element.attrib.items()
+            if name.lower().startswith("on")
+        )
+    return hashlib.sha256("\n\0".join(parts).encode()).hexdigest()[:16]
+
+
+def _page_words(root: etree._Element, dialogs: frozenset) -> str:
+    """整页的字（认得出的弹窗以外），不去噪：导航、页尾、下拉框、分享栏、noscript 里的都算，只不看
+    脚本、样式的代码；属性上的字（_WORD_ATTRS）也算。放过弹窗的页面用它查还有没有别的验证、限流的字。"""
+    text: list[str] = []
+    attributes: list[str] = []
+
+    def visit(element: etree._Element) -> None:
+        if not isinstance(element.tag, str) or element in dialogs:
+            return
+        if element.tag.lower() in ("script", "style"):
+            return
+        attributes.extend(v for name in _WORD_ATTRS if (v := element.get(name)))
+        if element.text:
+            text.append(element.text)
+        for child in element:
+            visit(child)
+            if child.tail:
+                text.append(child.tail)
+
+    visit(root)
+    return "\n".join(" ".join(part.split()) for part in ["".join(text), *attributes])
+
+
+def _search_throttle_dialogs(root: etree._Element, url: str) -> list[etree._Element]:
+    """页面上认得出的站内搜索限流弹窗（见 _SEARCH_THROTTLE_DIALOG 上面的说明）。网站和页面代码要是
+    浏览器里核实过的（_SEARCH_THROTTLE_VERIFIED）；弹窗本身四样都要对上：style 正好只有 display:none
+    （不是"display:none;display:block"这类后面又改掉的）；弹窗里的字正好是"×""搜索过于频繁，请输入
+    验证码""确定"三段；整个结构和 _SEARCH_THROTTLE_SHAPE 一样；没有图片、链接、说明文字这类属性。"""
+    verified = _SEARCH_THROTTLE_VERIFIED.get((urlsplit(url).hostname or "").lower())
+    if not verified or not root.xpath(_SEARCH_THROTTLE_DIALOG):
+        return []
+    if _page_code_fingerprint(root, url) not in verified:
+        return []
+    found = []
+    for node in root.xpath(_SEARCH_THROTTLE_DIALOG):
+        style = "".join((node.get("style") or "").split()).lower().rstrip(";")
+        text = tuple("".join(s.split()) for s in node.itertext() if s.strip())
+        shape = tuple(
+            (
+                e.tag,
+                e.get("id") or "",
+                " ".join((e.get("class") or "").split()),
+                e.get("type") or "",
+                e.get("value") or "",
+            )
+            for e in node.iter()
+            if isinstance(e.tag, str)
+        )
+        attributes_ok = not any(
+            name.startswith("on") or name in ("src", "href", "alt", "title", "placeholder")
+            for e in node.iter()
+            if isinstance(e.tag, str)
+            for name in e.attrib
+        )
+        if (
+            style == "display:none"
+            and text == _SEARCH_THROTTLE_TEXT
+            and shape == _SEARCH_THROTTLE_SHAPE
+            and attributes_ok
+        ):
+            found.append(node)
+    return found
+
+
+def search_throttle_site(url: str) -> bool:
+    """网址是不是放过站内搜索限流弹窗的网站（_SEARCH_THROTTLE_VERIFIED）。"""
+    return (urlsplit(url).hostname or "").lower() in _SEARCH_THROTTLE_VERIFIED
+
+
 def parse_detail(html_text: str, url: str) -> DetailResult:
     """解析公开 HTML；防护页返回失败原因，字段不猜测。"""
     if not html_text.strip():
@@ -1176,17 +1555,27 @@ def parse_detail(html_text: str, url: str) -> DetailResult:
         return DetailResult(failure_reason=f"HTML 无法解析：{exc.__class__.__name__}")
     title = " ".join(root.xpath("//title/text()"))[:200]
     body = root.xpath("//body")
-    visible = "\n".join(_plain_lines(body[0], keep_select=True)) if body else ""
+    dialogs = frozenset(_search_throttle_dialogs(root, url))
+    visible = "\n".join(_plain_lines(body[0], dialogs, keep_select=True)) if body else ""
     # 找发文机关、文号、发布日期用不带下拉框的字，和正文的取法一致
-    plain = "\n".join(_plain_lines(body[0])) if body else ""
-    if re.search(
-        r"验证码|人机验证|安全验证|访问过于频繁|异常访问|请开启.{0,12}JavaScript",
-        title + visible[:500],
-        re.I,
-    ):
+    plain = "\n".join(_plain_lines(body[0], dialogs)) if body else ""
+    if _PROTECTION.search(title + visible[:500]):
+        return DetailResult(failure_reason="防护页或验证码")
+    # 只因为站内搜索限流弹窗才没被当成防护页的：除了弹窗，整页（不只前 500 字，导航、页尾、属性上的
+    # 字都算）再没有验证、限流这类字，而且正文出自核实过的正文区、是完整的，才放
+    with_dialogs = (
+        "\n".join(_plain_lines(body[0], keep_select=True)) if body and dialogs else visible
+    )
+    needs_body = bool(dialogs) and bool(_PROTECTION.search(title + with_dialogs[:500]))
+    if needs_body and _PROTECTION.search(_page_words(root, dialogs)):
         return DetailResult(failure_reason="防护页或验证码")
     host = (urlsplit(url).hostname or "").lower()
     node = _body_node(root, host)
+    verified = frozenset(root.xpath(_VERIFIED_BODY)) if needs_body else frozenset()
+    if needs_body and (
+        node is None or not (node in verified or any(a in verified for a in node.iterancestors()))
+    ):
+        return DetailResult(failure_reason="防护页或验证码")
     if node is None:
         attachments = _attachments(root, url)
         return DetailResult(
@@ -1198,17 +1587,21 @@ def parse_detail(html_text: str, url: str) -> DetailResult:
             page_titles=_page_titles(root),
         )
     junk = _SITE_JUNK.get(host)
-    lines = _plain_lines(node, frozenset(node.xpath(junk)) if junk else frozenset())
+    lines = _plain_lines(node, (frozenset(node.xpath(junk)) if junk else frozenset()) | dialogs)
     raw_body = "\n".join(lines)
     # 找发文机关、文号、发布日期的范围：页面上正文节点前面的字（最后 700 字）。按节点所在的位置
     # 截，不按正文第一句在整页文字里第一次出现的地方截（标题在上面重复一遍时会截早，漏掉中间的
     # 发布信息）；正文不在页面结构里（从页面自带脚本里取的）时用整页前 700 字
-    before = _lines_before(body[0], node) if body else None
+    before = _lines_before(body[0], node, dialogs) if body else None
     prefix = "\n".join(before)[-700:] if before is not None else plain[:700]
     attachments = _attachments(root, url)
     # PDF-only 页面只有下载入口，HTML 正文为空；仍保留附件题录。
     if len(raw_body) < 30 or ("点击正文" in raw_body and not any(len(line) > 60 for line in lines)):
         raw_body = ""
+    if needs_body and not (
+        len(raw_body) >= _COMPLETE_MIN and "。" in raw_body and not _PROTECTION.search(raw_body)
+    ):
+        return DetailResult(failure_reason="防护页或验证码")
     return DetailResult(
         body_text=redact_sensitive(raw_body),
         raw_body=raw_body,

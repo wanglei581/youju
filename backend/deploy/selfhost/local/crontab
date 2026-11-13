@@ -18,7 +18,7 @@
 45 10 * * *  /app/backend/deploy/job.sh list-evidence --apply
 50 23 * * *  /app/backend/deploy/job.sh list-evidence --apply
 0 8 * * *  /app/backend/deploy/job.sh audit-deadlines --sample 20; /app/backend/deploy/job.sh daily-report
-# 本机主库每天备份一份到本机存储（保留 30 天；出大事时还能从服务器导回来）
+# 本机主库每天备份一份到本机存储（留最近 3 天和最近 4 个周日的，D-129；出大事时还能从服务器导回来）
 0 4 * * *  /app/backend/deploy/job.sh backup
 # 服务器每天 5:10 把加密的整库备份传到 COS（低频）；本机 6:00 下一份密文再留一份（本机没有私钥，
 # 解不开；创始人 11/5 定）。没配 YOUJU_OFFSITE_S3_* 时安静跳过

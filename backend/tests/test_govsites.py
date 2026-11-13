@@ -958,3 +958,18 @@ def test_dept_levels_skip_upper_level_departments(tmp_path):
     portals, depts = load_state(tmp_path / "state.json")
     assert {p.level for p in portals} == {"市级"}
     assert {d.level for d in complete_slots(portals, depts)} == {"市级"}
+
+
+def test_column_rows_include_gkmlpt_only():
+    from youju.govsites.report import column_rows
+    from youju.govsites.verify import ColumnCheck
+
+    def col(url):
+        return ColumnCheck(
+            "440200", "市级", "广东", "韶关", "", "发改", "发改局", "通知", "通知", url, "", "", ""
+        )
+
+    rows = column_rows(
+        [col("https://x.gov.cn/#xxgk-gkmlpt-8"), col("https://x.gov.cn/#xxgk-han-1")], "2026-11-12"
+    )
+    assert len(rows) == 1 and any(value.endswith("#xxgk-gkmlpt-8") for value in rows[0])

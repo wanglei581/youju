@@ -10,6 +10,9 @@ _SESSION_PARAMS = {"jsessionid", "phpsessid", "sessionid", "aspsessionid"}
 _PATH_SESSION = re.compile(r";(?:jsessionid|sessionid)=[^/?#]*", re.IGNORECASE)
 # 目录的默认页：/tzgg/index.html 与 /tzgg/ 是同一页
 _INDEX_PAGE = re.compile(r"/(?:index|default)\.(?:html?|shtml|jsp|php|aspx?)$", re.IGNORECASE)
+# 数字广东信息公开平台的分类栏目（"部门页#xxgk-gkmlpt-分类编号"，见 crawler/adapters.py）：同一个
+# 部门页上的不同分类是不同的来源，这段片段要留在键里；别的片段（页面内锚点等）照旧去掉
+_GKMLPT_FRAGMENT = re.compile(r"xxgk-gkmlpt-p?[0-9]+(?:,p?[0-9]+)*")
 
 
 def public_url(url: str) -> str:
@@ -42,7 +45,8 @@ def url_key(url: str) -> str:
 
     - 不区分 http 和 https，去掉 80、443 端口；
     - 去掉路径里的会话标识（;jsessionid=…）和查询里的会话参数；
-    - 折叠 /./ 与 /../，目录默认页（index.html 等）收成目录，查询参数按名称排序。
+    - 折叠 /./ 与 /../，目录默认页（index.html 等）收成目录，查询参数按名称排序；
+    - 去掉 # 后面的片段，只有数字广东信息公开平台的分类（#xxgk-gkmlpt-编号）留着：那是不同的来源。
     展示和访问仍使用原始网址。
     """
     parts = urlsplit(url)
@@ -62,16 +66,38 @@ def url_key(url: str) -> str:
             if k.lower() not in _SESSION_PARAMS
         )
     )
-    return f"{netloc}{path}" + (f"?{query}" if query else "")
+    return (
+        f"{netloc}{path}"
+        + (f"?{query}" if query else "")
+        + (f"#{parts.fragment}" if _GKMLPT_FRAGMENT.fullmatch(parts.fragment) else "")
+    )
+
+
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def _site_netloc(parts) -> str:
+    """主机名小写；协议的默认端口不算：https://x:443 和 https://x 是同一个网站（限速、robots、
+    抓取分组都按它，同一网站两次请求照样隔 3 秒，D-013）。端口写坏的照原样返回。"""
+    netloc = parts.netloc.lower()
+    try:
+        port = parts.port
+    except ValueError:
+        return netloc
+    if port is not None and port == _DEFAULT_PORTS.get(parts.scheme.lower()):
+        return netloc.rsplit(":", 1)[0]
+    return netloc
 
 
 def host_of(url: str) -> str:
-    return urlsplit(url).netloc.lower()
+    """网站标识：抓取程序按它排队、隔 3 秒，抓取和试读按它分组（同一网站内串行）。"""
+    return _site_netloc(urlsplit(url))
 
 
 def origin_of(url: str) -> str:
+    """协议 + 网站（读 robots.txt、缓存 robots 结果用）。"""
     parts = urlsplit(url)
-    return f"{parts.scheme.lower()}://{parts.netloc.lower()}"
+    return f"{parts.scheme.lower()}://{_site_netloc(parts)}"
 
 
 def page_dir(url: str) -> str:

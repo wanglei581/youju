@@ -9,7 +9,7 @@ import hashlib
 import io
 import json
 import time
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -289,6 +289,118 @@ def test_user_data_survives_updates_and_follows_deletes(env):
     # 删文件照单库时的外键：订阅跟着删，纠错留着、指向置空
     assert count(env.server, "subscriptions") == 0
     assert rows(env.server, "feedback")[0]["document_id"] is None
+
+
+def test_emergency_takedown_survives_updates_and_keeps_record_on_delete(env):
+    """服务器上的紧急下架（只在服务器上、不同步）：本机改文件不动它、文件照样不对外；本机删了
+    文件，记录留着（编号置空、网址留着），别的文件照常对外。"""
+    from sqlalchemy.orm import Session
+
+    from youju.models import Document
+    from youju.takedown import available_condition
+
+    src = source(env.local)
+    doc = document(env.local, src, "a")
+    other = document(env.local, src, "b")
+    bootstrap(env)
+    key = "kjt.shandong.gov.cn/tzgg/a.html"
+    insert(
+        env.server,
+        "emergency_takedowns",
+        document_id=doc,
+        url_key=key,
+        batch="0123456789abcdef" * 2,
+        reason="侵权投诉",
+        note="说明",
+        created_by="测试",
+        created_at=NOW,
+    )
+
+    def visible():
+        with Session(env.server) as s:
+            query = select(Document.id).where(available_condition()).order_by(Document.id)
+            return s.scalars(query).all()
+
+    assert visible() == [other]
+    with env.local.begin() as conn:
+        conn.execute(T["documents"].update().where(T["documents"].c.id == doc).values(title="改了"))
+    local.push(env.local, env.client)
+    # 改文件不动它（写用 REPLACE、关外键检查，不置空）
+    assert rows(env.server, "emergency_takedowns")[0]["document_id"] == doc
+    assert visible() == [other]
+    with env.local.begin() as conn:
+        conn.execute(T["documents"].delete().where(T["documents"].c.id == doc))
+    local.push(env.local, env.client)
+    kept = rows(env.server, "emergency_takedowns")
+    assert [(r["document_id"], r["url_key"], r["note"]) for r in kept] == [(None, key, "说明")]
+    assert visible() == [other]
+
+
+def test_emergency_takedown_queues_with_sync_writes(env):
+    """紧急下架和同步写入在 sync_order 那一行上排队：同步正在写（可能在改归并）时，紧急下架等它
+    写完再读归并、记行；没收过同步的库（进度表还没有）不用排。"""
+    import threading
+
+    from sqlalchemy.orm import Session
+
+    from youju import emergency_takedown as urgent
+
+    src = source(env.local)
+    warm = document(env.local, src, "warm")
+    doc = document(env.local, src, "a")
+    bootstrap(env)
+    # 先做一次（第一次要建连接、编译查询，一两秒），后面那次不排队的话不到 0.1 秒就做完
+    with Session(env.server) as session:
+        urgent.add(session, warm, reason="other")
+    conn = env.server.connect()
+    trans = conn.begin()
+    sync_server._take_turn(conn, 0)  # 一次同步写入正在进行
+    result = {}
+
+    def run():
+        with Session(env.server) as session:
+            result["rows"] = len(urgent.add(session, doc, reason="other"))
+
+    thread = threading.Thread(target=run)
+    try:
+        thread.start()
+        time.sleep(2.5)
+        assert thread.is_alive()
+    finally:
+        trans.commit()
+        conn.close()
+    thread.join(30)
+    assert not thread.is_alive() and result == {"rows": 1}
+    with env.local.connect() as local_conn:
+        assert not sync_server.queue_with_sync(local_conn)  # 本机库没有进度表：不排
+
+
+def test_first_sync_waits_for_an_emergency_takedown_on_the_server(env, monkeypatch):
+    """服务器还没收过同步（进度表还没有）：紧急下架先建好进度表再排队，第一次同步也要等它提交；
+    不是服务器的库（本机、测试库）不建、不排。"""
+    import threading
+
+    src = source(env.local)
+    document(env.local, src, "a")
+    with env.server.connect() as conn:
+        assert not sync_server.queue_with_sync(conn)
+        conn.rollback()
+    monkeypatch.setenv("YOUJU_HOSTING", "self")
+    monkeypatch.setenv("YOUJU_PUBLIC_REPLICA", "true")
+    get_settings.cache_clear()
+    conn = env.server.connect()
+    trans = conn.begin()
+    assert sync_server.queue_with_sync(conn)  # 紧急下架拿着这一队
+    thread = threading.Thread(target=bootstrap, args=(env,))
+    try:
+        thread.start()
+        time.sleep(2.5)
+        assert thread.is_alive() and count(env.server, "documents") == 0
+    finally:
+        trans.commit()
+        conn.close()
+    thread.join(60)
+    assert not thread.is_alive() and count(env.server, "documents") == 1
 
 
 def test_failed_batch_changes_nothing_and_resumes(env, monkeypatch):
@@ -1090,3 +1202,79 @@ def test_only_one_push_at_a_time(env, db_engine):
         assert "正在推" in str(err.value)
         other.scalar(text("SELECT RELEASE_LOCK('youju-sync-push')"))
     local.push(env.local, env.client)
+
+
+# ---- D-129（11/12）：服务器多久没收到本机的同步，超过 3 小时提醒 ----
+
+
+def test_state_request_is_recorded_as_contact(env):
+    """本机每次推送都先取 /state（有没有变更都一样）：验过签名的才记一次"来联系过"。"""
+    assert sync_server.last_contact(env.server) is None  # 还没有进度表
+    before = datetime.now(UTC).replace(microsecond=0)
+    env.client.json("GET", "/state")
+    with env.server.connect() as conn:
+        names = set(conn.execute(text(f"SELECT name FROM `{sync_server.STATE}`")).scalars())
+    assert names == {sync_server.CONTACT}  # 进度那一行照旧只有起步以后才有
+    last = sync_server.last_contact(env.server)
+    assert last is not None and last >= before - timedelta(seconds=1)
+    # 没签名的请求不算
+    with env.server.begin() as conn:
+        conn.execute(text(f"DELETE FROM `{sync_server.STATE}`"))
+    assert TestClient(app).get("/api/sync/v1/state").status_code == 401
+    with env.server.connect() as conn:
+        assert conn.scalar(text(f"SELECT COUNT(*) FROM `{sync_server.STATE}`")) == 0
+
+
+def _contact_ago(engine, hours):
+    when = (datetime.now(UTC) - timedelta(hours=hours)).replace(tzinfo=None)
+    with engine.begin() as conn:
+        conn.execute(
+            text(f"UPDATE `{sync_server.STATE}` SET updated_at = :u WHERE name = :n"),
+            {"u": when, "n": sync_server.CONTACT},
+        )
+
+
+def test_sync_watch_alerts_after_three_hours_once_per_outage(env, monkeypatch, tmp_path, capsys):
+    from youju import alerts, cli
+
+    sent = []
+    monkeypatch.setattr(alerts, "send_alert", lambda text: sent.append(text) or True)
+    monkeypatch.setattr(cli, "SYNC_WATCH_STATE", tmp_path / "sync-watch.json")
+    monkeypatch.setattr(cli, "_sync_engine", lambda: create_mysql_engine(env.server.url))
+
+    # 不收同步的机器（云托管、本机）：跳过
+    assert cli.main(["sync-watch"]) == 0
+    assert "跳过" in capsys.readouterr().out
+
+    monkeypatch.setenv("YOUJU_HOSTING", "self")
+    monkeypatch.setenv("YOUJU_PUBLIC_REPLICA", "true")
+    get_settings.cache_clear()
+    # 还没起步：不提醒
+    assert cli.main(["sync-watch"]) == 0
+    assert "还没收到过" in capsys.readouterr().out and sent == []
+
+    env.client.json("GET", "/state")
+    assert cli.main(["sync-watch"]) == 0
+    assert "分钟前" in capsys.readouterr().out and sent == []
+
+    # 4 小时没来：提醒一次，退出码 20（job.sh 不再重复提醒）
+    _contact_ago(env.server, 4)
+    assert cli.main(["sync-watch"]) == 20
+    assert len(sent) == 1 and "4 小时没收到本机的同步" in sent[0] and "sync-status" in sent[0]
+    # 同一次断开，6 小时内不再发
+    assert cli.main(["sync-watch"]) == 20
+    assert len(sent) == 1 and "6 小时内提醒过" in capsys.readouterr().out
+    # 6 小时以后还没来：再提醒一次
+    noted = json.loads((tmp_path / "sync-watch.json").read_text())
+    noted["alerted_at"] = (datetime.now(UTC) - timedelta(hours=7)).isoformat()
+    (tmp_path / "sync-watch.json").write_text(json.dumps(noted))
+    assert cli.main(["sync-watch"]) == 20 and len(sent) == 2
+    # 本机又来了：照常
+    env.client.json("GET", "/state")
+    assert cli.main(["sync-watch"]) == 0 and len(sent) == 2
+    # 提醒发不出去：退出码 1，由 job.sh 发通用提醒
+    _contact_ago(env.server, 5)
+    (tmp_path / "sync-watch.json").unlink()
+    monkeypatch.setattr(alerts, "send_alert", lambda text: None)
+    assert cli.main(["sync-watch"]) == 1
+    get_settings.cache_clear()

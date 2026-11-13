@@ -134,7 +134,8 @@ def run(
             )
         except storage.StorageError as exc:
             raise BackupError(f"上传异地备份失败：{exc}") from None
-    cutoff = today - timedelta(days=settings.offsite_keep_days)
+    # 每份从备份那天起正好留满保留天数：第 N 天删（D-129，Codex：照旧的删法要到第 N+1 天才删）
+    cutoff = today - timedelta(days=settings.offsite_keep_days - 1)
     try:
         for item in target.list(PREFIX):
             match = _NAME.fullmatch(item.key)
@@ -394,7 +395,8 @@ def pull(
         finally:
             if http is None:
                 client.close()
-    cutoff = now.astimezone(BEIJING).date() - timedelta(days=settings.offsite_keep_days)
+    # 和异地那份一样，第 N 天删
+    cutoff = now.astimezone(BEIJING).date() - timedelta(days=settings.offsite_keep_days - 1)
     for item in local.list(LOCAL_PREFIX):
         match = re.fullmatch(r"offsite-backups/youju-(\d{8})\.jsonl\.gz\.age", item.key)
         if match and datetime.strptime(match.group(1), "%Y%m%d").date() < cutoff:

@@ -111,7 +111,8 @@ AI_AGREEMENT_VERSION = "2026-11.1"
 # 解读、对照第一次用前的"使用须知"版本（D-098，上线门槛第 7 条）：
 # 小程序点了"同意并开始"才在创建任务时带上它；对所有人开放时服务端核对、记在任务输入里。
 # 须知改了就升这个版本，小程序 utils/ai-interpret.js 的 NOTICE_VERSION 同步改
-AI_NOTICE_VERSION = "2026-10-26"
+# D-130（11/12）：须知第三句不再写"人工核对值"，从 2026-10-26 升上来
+AI_NOTICE_VERSION = "2026-11-12"
 
 
 def ai_agreed(settings: Settings, user: User | None) -> bool:

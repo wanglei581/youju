@@ -10,18 +10,18 @@
 
 编号 0033 是并行开发时预留的（0034 #297 也还没合并）；main 上现在是
 0032 → 0037 → 0038 → 0036 → 0039 → 0035 → 0040 → 0041 → 0042 → 0043 → 0044 → 0046 → 0048 → 0051
-→ 0053（11/12；中间没用到的编号是别的分支预留的），本迁移接在 0053 后面，避免出现两个 head。
+→ 0053 → 0052（11/13；编号不按先后，中间没用到的是别的分支预留的），本迁移接在 0052 后面，避免出现两个 head。
 谁后合并谁把 down_revision 接到当时 main 最新的那个。
 
 Revision ID: 0033
-Revises: 0053
+Revises: 0052
 """
 
 import sqlalchemy as sa
 from alembic import op
 
 revision = "0033"
-down_revision = "0053"
+down_revision = "0052"
 branch_labels = None
 depends_on = None
 

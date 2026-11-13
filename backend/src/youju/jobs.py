@@ -48,10 +48,14 @@ JOB_NAMES = OVERVIEW_JOBS + (
     "alert",
     # 2.0 自建服务器（deploy/selfhost/）：本机把公开数据推到服务器；服务器把加密的备份传到异地
     "sync-push",
+    # 服务器每小时看一次本机多久没来同步，超过 3 小时提醒（D-129，11/12）
+    "sync-watch",
     "offsite-backup",
     "offsite-pull",
     # 首发前搬家（D-127）的旧库存档到期删除（youju/offsite.py prune_archive）
     "archive-prune",
+    # 服务器每小时：本机已经接手的紧急下架自动撤销（youju/emergency_takedown.py settle）
+    "emergency-takedown",
 )
 # 每 5 分钟一次的外部健康检查（本机看服务器）不记运行记录，和 advisor-run 一样
 
