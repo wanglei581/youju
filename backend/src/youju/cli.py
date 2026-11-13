@@ -2536,6 +2536,8 @@ def _cmd_takedown_carry(args: argparse.Namespace) -> int:
 
 
 def _cmd_emergency_takedown(args: argparse.Namespace) -> int:
+    from sqlalchemy.exc import OperationalError
+
     from youju import emergency_takedown as urgent
 
     if args.action in ("add", "lift", "settle") and not getattr(
@@ -2601,6 +2603,12 @@ def _cmd_emergency_takedown(args: argparse.Namespace) -> int:
         except urgent.EmergencyError as exc:
             print(f"没有做：{exc}")
             return 1
+        except OperationalError as exc:
+            # 1205 锁等待超时、1213 死锁：同步正在写（紧急下架和同步写入排同一队）
+            if getattr(exc.orig, "args", (None,))[0] in (1205, 1213):
+                print("没有做：同步正在写，过一会儿再试（说明要重新输入）")
+                return 1
+            raise
 
 
 def _cmd_export_fetch(args: argparse.Namespace) -> int:

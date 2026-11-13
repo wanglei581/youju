@@ -38,6 +38,18 @@ from youju.takedown import available_condition, cache_revision, change_state, is
 NOW = datetime(2026, 11, 13, 10, tzinfo=ZoneInfo("Asia/Shanghai"))
 
 
+@pytest.fixture(autouse=True)
+def _no_sync_tables(db_engine):
+    """打开服务器开关的测试里，紧急下架会在测试库里建同步进度表（服务器第一次排队时建）：
+    每条测试结束删掉，不留给后面的测试（迁移和模型对照、同步测试的"本机库不排队"）。"""
+    yield
+    from youju.sync import server as sync_server
+
+    with db_engine.begin() as conn:
+        for name in (sync_server.STATE, sync_server.ORDER, sync_server.PENDING):
+            conn.execute(text(f"DROP TABLE IF EXISTS `{name}`"))
+
+
 @pytest.fixture
 def settings(monkeypatch):
     value = Settings(_env_file=None, admin_token="emergency-test-only", cloud_env="test-env")
@@ -460,50 +472,41 @@ def test_export_carries_back_without_blocks(session, docs):
 
 
 def test_settle_lifts_only_what_was_carried_back(session, docs):
-    def formal(doc_id, action, operator, stamp=None):
-        session.add(
-            DocumentTakedownEvent(
-                document_id=doc_id,
-                action=action,
-                reason="其他" if action == "takedown" else None,
-                note="",
-                operated_by=operator,
-                operated_at=stamp or datetime.now(UTC),
-            )
-        )
-        session.commit()
+    """只认带着这一次编号的下架记录，而且文件现在正式下架着。"""
 
     def carried(row):
         return f"{takedown_carry.EMERGENCY_OPERATOR}#{row.batch}"
 
+    def formal(doc_id, action, operator):
+        reason = "其他" if action == "takedown" else None
+        change_state(session, doc_id, action=action, note="n", operator=operator, reason=reason)
+
     # 4：第一次紧急下架导出了清单，后来撤了；又因为新的投诉紧急下架
     first = urgent.add(session, docs[4].id, reason="other")[0]
     urgent.lift(session, docs[4].id)
-    old = datetime.now(UTC) - timedelta(days=1)
-    formal(docs[4].id, "takedown", "服务器紧急下架", old)  # 不带编号的：不认
-    pair = urgent.add(session, docs[1].id, reason="complaint")  # 0、1：带回本机整组下架
-    urgent.add(session, docs[2].id, reason="complaint")  # 2、3：本机因为别的原因下过架又恢复
+    pair = urgent.add(session, docs[1].id, reason="complaint")  # 0、1：带回本机，一直下架着
+    trio = urgent.add(session, docs[2].id, reason="complaint")  # 2、3：带回以后本机马上恢复了
     second = urgent.add(session, docs[4].id, reason="complaint")[0]
     assert urgent.settle(session) == 0
-    # 第一次的旧清单晚到、才在本机应用：带的是第一次的编号，撤不了第二次
-    formal(docs[4].id, "takedown", carried(first))
-    assert urgent.settle(session) == 0
-    for doc in (docs[0], docs[1]):
-        formal(doc.id, "takedown", carried(pair[0]))
-    for doc in (docs[2], docs[3]):
-        formal(doc.id, "takedown", "核对台")
-        formal(doc.id, "restore", "核对台")
+    formal(docs[4].id, "takedown", carried(first))  # 第一次的旧清单晚到、才在本机应用
+    formal(docs[0].id, "takedown", carried(pair[0]))
+    formal(docs[2].id, "takedown", carried(trio[0]))
+    formal(docs[2].id, "restore", "核对台")  # 自动撤销之前本机就恢复上架了
     assert urgent.settle(session) == 2
     rows = {
         r.document_id: r
-        for r in session.scalars(select(EmergencyTakedown).where(EmergencyTakedown.id != first.id))
+        for r in session.scalars(
+            select(EmergencyTakedown).where(EmergencyTakedown.batch != first.batch)
+        )
     }
     assert {d for d, r in rows.items() if r.lifted_at is not None} == {docs[0].id, docs[1].id}
     assert rows[docs[0].id].lift_note == urgent.SETTLE_NOTE
     assert rows[docs[0].id].lifted_by == urgent.SYSTEM
-    # 本机别的原因下过架又恢复的、旧清单晚到的：紧急下架照样留着
-    assert is_taken_down(session, docs[2].id) and is_taken_down(session, docs[4].id)
+    # 带回后本机马上恢复的、旧清单晚到的：紧急下架照样留着，服务器上照样不对外
+    assert is_taken_down(session, docs[2].id) and rows[docs[2].id].lifted_at is None
     assert rows[docs[4].id].id == second.id and rows[docs[4].id].lifted_at is None
+    # 这一次也带回了：本机先恢复旧清单那次的下架，再按这一次的清单下架
+    formal(docs[4].id, "restore", "核对台")
     formal(docs[4].id, "takedown", carried(second))
     assert urgent.settle(session) == 1
     assert urgent.settle(session) == 0
@@ -612,6 +615,13 @@ def test_carry_list_takes_only_a_positive_emergency_number():
     for bad in (12, True, "12", BATCH.upper(), BATCH + "0", "g" * 32):
         with pytest.raises(takedown_carry.CarryError, match="紧急下架编号不对"):
             takedown_carry.parse([_carry_line("example.gov.cn/1.html", bad)])
+    # 有的行带编号、有的不带：不是同一份清单（去重之前就查，同网址的也查得出）
+    for lines in (
+        [_carry_line("example.gov.cn/1.html", None), _carry_line("example.gov.cn/1.html")],
+        [_carry_line("example.gov.cn/1.html"), _carry_line("example.gov.cn/2.html", None)],
+    ):
+        with pytest.raises(takedown_carry.CarryError, match="不是同一份清单"):
+            takedown_carry.parse(lines)
     with pytest.raises(takedown_carry.CarryError, match="清单以外的字段"):
         takedown_carry.parse([_carry_line("example.gov.cn/1.html", BATCH, note="说明")])
 

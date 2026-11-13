@@ -375,6 +375,34 @@ def test_emergency_takedown_queues_with_sync_writes(env):
         assert not sync_server.queue_with_sync(local_conn)  # 本机库没有进度表：不排
 
 
+def test_first_sync_waits_for_an_emergency_takedown_on_the_server(env, monkeypatch):
+    """服务器还没收过同步（进度表还没有）：紧急下架先建好进度表再排队，第一次同步也要等它提交；
+    不是服务器的库（本机、测试库）不建、不排。"""
+    import threading
+
+    src = source(env.local)
+    document(env.local, src, "a")
+    with env.server.connect() as conn:
+        assert not sync_server.queue_with_sync(conn)
+        conn.rollback()
+    monkeypatch.setenv("YOUJU_HOSTING", "self")
+    monkeypatch.setenv("YOUJU_PUBLIC_REPLICA", "true")
+    get_settings.cache_clear()
+    conn = env.server.connect()
+    trans = conn.begin()
+    assert sync_server.queue_with_sync(conn)  # 紧急下架拿着这一队
+    thread = threading.Thread(target=bootstrap, args=(env,))
+    try:
+        thread.start()
+        time.sleep(2.5)
+        assert thread.is_alive() and count(env.server, "documents") == 0
+    finally:
+        trans.commit()
+        conn.close()
+    thread.join(60)
+    assert not thread.is_alive() and count(env.server, "documents") == 1
+
+
 def test_failed_batch_changes_nothing_and_resumes(env, monkeypatch):
     src = source(env.local)
     bootstrap(env)

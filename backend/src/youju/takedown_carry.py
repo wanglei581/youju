@@ -89,6 +89,7 @@ def _parse_time(value: object) -> datetime:
 def parse(lines: Iterable[str]) -> list[Item]:
     """读清单。格式不对就整份拒绝（不做一半）；同一个网址出现多次只留一条。"""
     items: dict[str, Item] = {}
+    kinds: set[bool] = set()  # 各行带不带紧急下架编号
     for number, raw in enumerate(lines, start=1):
         raw = raw.strip()
         if not raw:
@@ -108,6 +109,10 @@ def parse(lines: Iterable[str]) -> list[Item]:
             not isinstance(emergency, str) or not _EMERGENCY.fullmatch(emergency)
         ):
             raise CarryError(f"第 {number} 行的紧急下架编号不对")
+        kinds.add(emergency is not None)
+        if len(kinds) > 1:
+            # 去重之前就查：同一个网址先来一行不带编号的，带编号的那行会被去重丢掉
+            raise CarryError(f"第 {number} 行：有的行带紧急下架编号、有的不带，不是同一份清单")
         key = row.get("url_key")
         if not isinstance(key, str) or not key.strip() or len(key) > URL_KEY_MAX:
             raise CarryError(f"第 {number} 行的规范网址不对")

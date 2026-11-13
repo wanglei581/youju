@@ -16,10 +16,10 @@
   来源编号、下架时间、原因类别，加上这一次紧急下架的编号；不带说明和操作人，说明可能写到
   投诉人），本机 takedown-carry apply --origin emergency 整组正式下架，随同步推回服务器。
 - 自动撤销（settle，服务器每小时）：只认带回本机时写的、带着这一次编号的下架记录（操作人
-  "服务器紧急下架#编号"，takedown_carry.emergency_operator）——本机因为别的原因下过架又恢复了、
-  早先导出的旧清单晚到了，都不能把这一次的投诉一起撤掉；本机原来就下架着、本机没有这个网址的，
-  带回时不写记录，紧急下架留着，要人看过再撤。本机删了这份文件（同步删除，文件编号置空）的也撤掉，
-  记录和规范网址留着。
+  "服务器紧急下架#编号"，takedown_carry.emergency_operator），而且文件现在正式下架着——本机因为
+  别的原因下过架又恢复了、早先导出的旧清单晚到了、带回以后本机在自动撤销之前就恢复上架了，都不能
+  把这一次的投诉一起撤掉；本机原来就下架着、本机没有这个网址的，带回时不写记录。这些紧急下架留着，
+  要人看过再撤。本机删了这份文件（同步删除，文件编号置空）的也撤掉，记录和规范网址留着。
 """
 
 from __future__ import annotations
@@ -315,17 +315,25 @@ def export_lines(session: Session) -> list[str]:
 def settle(session: Session) -> int:
     """带回本机已经正式下架的、文件已经不在了的紧急下架自动撤销（撤销人"系统"）。返回撤销了几行。
     只认带着这一次编号的下架记录：操作人"服务器紧急下架#编号"（takedown_carry.emergency_operator）。"""
+    from youju.sync.server import queue_with_sync
+
+    # 和同步写入排队：判断到提交之间，同步改不了文件的下架状态
+    queue_with_sync(session.connection())
+    # 编号是紧急下架时随机生成的：带着它的记录一定是这次之后带回本机写的，不用再比两台机器的时间
     carried = exists().where(
         DocumentTakedownEvent.document_id == EmergencyTakedown.document_id,
         DocumentTakedownEvent.action == "takedown",
         DocumentTakedownEvent.operated_by
         == func.concat(EMERGENCY_OPERATOR, "#", EmergencyTakedown.batch),
     )
+    taken = exists().where(
+        Document.id == EmergencyTakedown.document_id, Document.taken_down_at.is_not(None)
+    )
     rows = session.scalars(
         select(EmergencyTakedown)
         .where(
             EmergencyTakedown.lifted_at.is_(None),
-            EmergencyTakedown.document_id.is_(None) | carried,
+            EmergencyTakedown.document_id.is_(None) | (carried & taken),
         )
         .order_by(EmergencyTakedown.id)
         .with_for_update()
