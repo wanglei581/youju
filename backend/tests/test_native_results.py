@@ -161,7 +161,7 @@ def test_track_summary_matches_excel_verified_excerpt_zero_unknown_and_empty(tmp
     assert rows == _excel_summary(output)[0]
     fields = (
         "通知数",
-        "人工核对过截止日期的",
+        "核对过截止日期的",
         "7 天内截止",
         "14 天内截止",
         "30 天内截止",

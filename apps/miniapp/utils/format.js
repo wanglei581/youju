@@ -85,7 +85,7 @@ function dueText(iso, time, days) {
   return `${at}截止 · 剩${days}天`;
 }
 
-// 截止信息：只有人工核对过的才显示（合规红线），否则返回 null
+// 截止信息：只有核对过的才显示（合规红线），否则返回 null
 function dueInfo(deadline, now) {
   if (!deadline || !deadline.verified || !deadline.date) return null;
   const days = daysUntil(deadline.date, now, deadline.time);
@@ -104,13 +104,14 @@ const NOTE_SEE_ORIGINAL = '截止时间见原文';
 const NOTE_UNVERIFIED = NOTE_SEE_ORIGINAL;
 
 // 首发版（D-061）的截止显示。接口带 excerpts=1 时每条有 due（主截止）、详情有 deadlines（逐个类型）：
-// - verified：人工核对过的，写日期和剩余天数，标"已人工核对"；
+// - verified：核对过的（D-130：AI 对照原文逐条核对），写日期和剩余天数，标"已核对原文"；
 // - excerpt：机器从原文摘出的，只会是 8–30 天到期的，写日期并标"原文摘录"，必须带原句（和核对过的分得开，
-//   "没经过人工核对"这层意思写在使用帮助里，10/29 创始人）；
+//   "没经过核对"这层意思写在使用帮助里，10/29 创始人）；
 // - unverified：有候选但不显示日期（7 天内没核对的、30 天以后的、过期的、几个日期对不上的），只写"截止时间见原文"。
 // 摘录没带原句、按手机日期算已进入 7 天内（页面放过夜、手机日期和服务端差一天）或在 30 天以后，
 // 这里再拦一次，不写日期。
-const VERIFIED_LABEL = '已人工核对';
+// D-130：核对改由 AI 对照原文逐条做，页面只写"已核对原文"、不写谁核的；谁核的写在使用帮助和用户协议里
+const VERIFIED_LABEL = '已核对原文';
 const EXCERPT_LABEL = '原文摘录';
 const EXCERPT_MIN_DAYS = 8;
 const EXCERPT_MAX_DAYS = 30;

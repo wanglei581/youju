@@ -53,7 +53,7 @@
     <view wx:if="{{result.attachmentNotice}}" class="card advisor-card">{{result.attachmentNotice}}</view>
     <view wx:if="{{result.verified.length}}" class="card advisor-card">
       <view class="advisor-title">已核对</view>
-      <view class="interpret-meta">截止日期、支持方式由人工对照原文核对。</view>
+      <view class="interpret-meta">截止日期、支持方式已对照原文核对。</view>
       <view wx:for="{{result.verified}}" wx:key="key" class="interpret-item">
         <view>{{item.displayValue}}</view><view class="advisor-text">{{item.quote}}</view>
       </view>
