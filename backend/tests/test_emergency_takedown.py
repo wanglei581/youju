@@ -223,14 +223,16 @@ def test_cache_revision_follows_merges_and_deletes_with_only_emergency_rows(sess
     assert cache_revision(session) != split
 
 
-def _hold_group(session_factory, doc):
-    """另一个会话锁住整组、写了一行紧急下架还没提交（模拟正在进行的下架）。"""
+def _hold_doc(session_factory, doc):
+    """另一个会话只锁住这一份、写了一行紧急下架还没提交（模拟同组另一份正在下架）。
+    只锁这一份：add、lift 要是只锁自己那一份，就不会等它，测试会失败。"""
     first = session_factory()
-    assert doc.id in urgent._lock_group(first, doc.id)
+    first.scalars(select(Document.id).where(Document.id == doc.id).with_for_update()).all()
     first.add(
         EmergencyTakedown(
             document_id=doc.id,
             url_key=doc.url_key,
+            batch_id=999,
             reason="其他",
             note="",
             created_by="甲",
@@ -256,7 +258,7 @@ def _in_thread(fn):
 
 
 def test_add_waits_for_the_same_group_and_then_refuses(session_factory, docs):
-    first = _hold_group(session_factory, docs[0])
+    first = _hold_doc(session_factory, docs[0])
     try:
 
         def second():
@@ -275,7 +277,7 @@ def test_add_waits_for_the_same_group_and_then_refuses(session_factory, docs):
 
 def test_lift_waits_for_an_add_in_flight_and_lifts_it_too(session_factory, session, docs):
     urgent.add(session, docs[0].id, reason="other")  # 0、1 各一行
-    first = _hold_group(session_factory, docs[1])
+    first = _hold_doc(session_factory, docs[1])
     try:
 
         def lifting():
@@ -290,6 +292,34 @@ def test_lift_waits_for_an_add_in_flight_and_lifts_it_too(session_factory, sessi
         first.close()
     thread.join(30)
     assert not thread.is_alive() and result.get("value") == (3, True)
+
+
+def test_lock_rechecks_the_group_after_locking(session, docs, monkeypatch):
+    """读归并和锁文件之间同步改了归并：锁上以后再读一遍，变了就放开重来，按最新的整组记行。"""
+    real = urgent._members
+    calls = []
+
+    def members(sess, document_id):
+        calls.append(document_id)
+        # 第一次读到的是旧的组（0、1）；之后同步把 4 并进了 0 那组
+        return [docs[0].id, docs[1].id] if len(calls) == 1 else real(sess, document_id)
+
+    session.add(
+        DocumentMerge(
+            duplicate_id=docs[4].id, canonical_id=docs[0].id, active=True, match_key="later"
+        )
+    )
+    session.commit()
+    monkeypatch.setattr(urgent, "_members", members)
+    rows = urgent.add(session, docs[0].id, reason="other")
+    assert sorted(r.document_id for r in rows) == sorted([docs[0].id, docs[1].id, docs[4].id])
+    assert len(calls) >= 3
+    # 一直在变：试 3 次就停下，不写
+    monkeypatch.setattr(
+        urgent, "_members", lambda sess, document_id: [len(calls.append(1) or calls)]
+    )
+    with pytest.raises(urgent.EmergencyError, match="归并关系一直在变"):
+        urgent.add(session, docs[2].id, reason="other")
 
 
 def test_add_refuses_hidden_unknown_and_bad_input(session, docs):
@@ -308,12 +338,19 @@ def test_add_refuses_hidden_unknown_and_bad_input(session, docs):
         urgent.add(session, docs[4].id, reason="other", note="长" * 301)
     with pytest.raises(urgent.EmergencyError, match="操作人最多"):
         urgent.add(session, docs[4].id, reason="other", operator="人" * 81)
+    # "系统"只给自动撤销用
+    with pytest.raises(urgent.EmergencyError, match="不能写"):
+        urgent.add(session, docs[4].id, reason="other", operator=urgent.SYSTEM)
     rows = session.scalars(select(EmergencyTakedown).order_by(EmergencyTakedown.id)).all()
     assert [(r.document_id, r.url_key, r.reason, r.created_by) for r in rows] == [
         (docs[0].id, docs[0].url_key, "侵权投诉", urgent.OPERATOR),
         (docs[1].id, docs[1].url_key, "侵权投诉", urgent.OPERATOR),
     ]
+    # 同一次的几行：同一时间、同一个编号（第一行的 id）
     assert rows[0].created_at == rows[1].created_at
+    assert rows[0].batch_id == rows[1].batch_id == rows[0].id
+    with pytest.raises(urgent.EmergencyError, match="不能写"):
+        urgent.lift(session, docs[0].id, operator=urgent.SYSTEM)
 
 
 def test_each_member_stays_hidden_after_the_group_splits(session, docs):
@@ -349,7 +386,8 @@ def test_lift_keeps_the_record_and_reports_formal_takedown(session, docs):
     assert urgent.records(session) == []
     text_ = "\n".join(urgent.describe_records(listed))
     # 一次下架的两行合成一条；说明默认不显示
-    assert f"文件 #{docs[0].id}、#{docs[1].id}" in text_ and "已撤销" in text_
+    assert f"紧急下架 #{rows[0].batch_id}  文件 #{docs[0].id}、#{docs[1].id}" in text_
+    assert "已撤销" in text_ and "撤  " not in text_
     assert "主管部门来函" not in text_ and "有说明（加 --notes 看）" in text_
     shown = "\n".join(urgent.describe_records(listed, notes=True))
     assert "主管部门来函" in shown and "撤" in shown
@@ -390,10 +428,13 @@ def test_export_carries_back_without_blocks(session, docs):
         [docs[0].url_key, docs[1].url_key, docs[4].url_key]
     )
     assert {r["reason"] for r in rows} == {"侵权投诉", "内容有误"}
-    assert all(set(r) == {"url_key", "origin_source_id", "taken_down_at", "reason"} for r in rows)
+    keys = {"url_key", "origin_source_id", "taken_down_at", "reason", "emergency"}
+    assert all(set(r) == keys for r in rows)
+    batch = {r["url_key"]: r["emergency"] for r in rows}
+    assert batch[docs[0].url_key] == batch[docs[1].url_key] != batch[docs[4].url_key]
     assert "不带回本机的说明" not in "\n".join(lines)
     items = takedown_carry.parse(lines)
-    assert len(items) == 3
+    assert len(items) == 3 and {i.emergency for i in items} == set(batch.values())
     # 本机没有紧急下架的行：清掉以后当作本机应用
     session.execute(delete(EmergencyTakedown))
     session.commit()
@@ -402,7 +443,7 @@ def test_export_carries_back_without_blocks(session, docs):
         items,
         block=False,
         note=takedown_carry.EMERGENCY_NOTE,
-        operator=takedown_carry.EMERGENCY_OPERATOR,
+        operator=takedown_carry.emergency_operator,
     )
     assert (report.listed, report.found, report.blocks_added) == (3, 3, 0)
     # 0、1 一组：先遇到的那份整组下架，另一份已经不可见
@@ -411,8 +452,9 @@ def test_export_carries_back_without_blocks(session, docs):
     events = session.execute(
         select(DocumentTakedownEvent.document_id, DocumentTakedownEvent.operated_by)
     ).all()
+    operator = f"{takedown_carry.EMERGENCY_OPERATOR}#"
     assert sorted(events) == sorted(
-        (doc.id, takedown_carry.EMERGENCY_OPERATOR) for doc in (docs[0], docs[1], docs[4])
+        (doc.id, operator + str(batch[doc.url_key])) for doc in (docs[0], docs[1], docs[4])
     )
     assert all(is_taken_down(session, doc.id) for doc in (docs[0], docs[1], docs[4]))
 
@@ -431,24 +473,39 @@ def test_settle_lifts_only_what_was_carried_back(session, docs):
         )
         session.commit()
 
+    def carried(row):
+        return f"{takedown_carry.EMERGENCY_OPERATOR}#{row.batch_id}"
+
+    # 4：第一次紧急下架导出了清单，后来撤了；又因为新的投诉紧急下架
+    first = urgent.add(session, docs[4].id, reason="other")[0]
+    urgent.lift(session, docs[4].id)
     old = datetime.now(UTC) - timedelta(days=1)
-    formal(docs[4].id, "takedown", takedown_carry.EMERGENCY_OPERATOR, old)  # 以前带回过一次
-    urgent.add(session, docs[1].id, reason="complaint")  # 0、1：带回本机整组下架
+    formal(docs[4].id, "takedown", "服务器紧急下架", old)  # 不带编号的：不认
+    pair = urgent.add(session, docs[1].id, reason="complaint")  # 0、1：带回本机整组下架
     urgent.add(session, docs[2].id, reason="complaint")  # 2、3：本机因为别的原因下过架又恢复
-    urgent.add(session, docs[4].id, reason="complaint")  # 4：只有紧急下架之前的旧记录
+    second = urgent.add(session, docs[4].id, reason="complaint")[0]
+    assert urgent.settle(session) == 0
+    # 第一次的旧清单晚到、才在本机应用：带的是第一次的编号，撤不了第二次
+    formal(docs[4].id, "takedown", carried(first))
     assert urgent.settle(session) == 0
     for doc in (docs[0], docs[1]):
-        formal(doc.id, "takedown", takedown_carry.EMERGENCY_OPERATOR)
+        formal(doc.id, "takedown", carried(pair[0]))
     for doc in (docs[2], docs[3]):
         formal(doc.id, "takedown", "核对台")
         formal(doc.id, "restore", "核对台")
     assert urgent.settle(session) == 2
-    rows = {r.document_id: r for r in session.scalars(select(EmergencyTakedown))}
+    rows = {
+        r.document_id: r
+        for r in session.scalars(select(EmergencyTakedown).where(EmergencyTakedown.id != first.id))
+    }
     assert {d for d, r in rows.items() if r.lifted_at is not None} == {docs[0].id, docs[1].id}
     assert rows[docs[0].id].lift_note == urgent.SETTLE_NOTE
     assert rows[docs[0].id].lifted_by == urgent.SYSTEM
-    # 本机别的原因下过架又恢复的、旧记录的：紧急下架照样留着
+    # 本机别的原因下过架又恢复的、旧清单晚到的：紧急下架照样留着
     assert is_taken_down(session, docs[2].id) and is_taken_down(session, docs[4].id)
+    assert rows[docs[4].id].id == second.id and rows[docs[4].id].lifted_at is None
+    formal(docs[4].id, "takedown", carried(second))
+    assert urgent.settle(session) == 1
     assert urgent.settle(session) == 0
 
 
@@ -532,32 +589,47 @@ def test_cli_changes_only_on_the_server(session, docs, monkeypatch, capsys):
     )
 
 
+def _carry_line(key, emergency=7, **extra):
+    row = {
+        "url_key": key,
+        "origin_source_id": 1,
+        "taken_down_at": "2026-11-13T02:00:00+00:00",
+        "reason": "侵权投诉",
+        **extra,
+    }
+    if emergency is not None:
+        row["emergency"] = emergency
+    return json.dumps(row, ensure_ascii=False)
+
+
+def test_carry_list_takes_only_a_positive_emergency_number():
+    items = takedown_carry.parse([_carry_line("example.gov.cn/1.html", 12)])
+    assert items[0].emergency == 12
+    assert takedown_carry.parse([_carry_line("example.gov.cn/1.html", None)])[0].emergency is None
+    for bad in (0, -1, "12", 1.5, True):
+        with pytest.raises(takedown_carry.CarryError, match="紧急下架编号不对"):
+            takedown_carry.parse([_carry_line("example.gov.cn/1.html", bad)])
+    with pytest.raises(takedown_carry.CarryError, match="清单以外的字段"):
+        takedown_carry.parse([_carry_line("example.gov.cn/1.html", 12, note="说明")])
+
+
 def test_cli_carry_apply_emergency_origin_on_master(session, docs, tmp_path, monkeypatch, capsys):
     listing = tmp_path / "emergency-takedowns.jsonl"
     listing.write_text(
-        json.dumps(
-            {
-                "url_key": docs[1].url_key,
-                "origin_source_id": docs[1].source_id,
-                "taken_down_at": "2026-11-13T02:00:00+00:00",
-                "reason": "侵权投诉",
-            },
-            ensure_ascii=False,
-        )
+        _carry_line(docs[1].url_key, 7)
         + "\n"
-        + json.dumps(
-            {
-                "url_key": "example.gov.cn/missing.html",
-                "origin_source_id": 1,
-                "taken_down_at": "2026-11-13T02:00:00+00:00",
-                "reason": "其他",
-            }
-        )
+        + _carry_line("example.gov.cn/missing.html", 7)
         + "\n",
         encoding="utf-8",
     )
+    old = tmp_path / "old.jsonl"
+    old.write_text(_carry_line(docs[4].url_key, None) + "\n", encoding="utf-8")
     try:
         _replica(monkeypatch, False)
+        # 不带编号的（不是 emergency-carry 打印的）：不应用
+        args = ["takedown-carry", "apply", "--file", str(old), "--origin", "emergency"]
+        assert cli.main(args) == 1
+        assert "每行要有紧急下架的编号" in capsys.readouterr().out
         args = ["takedown-carry", "apply", "--file", str(listing), "--origin", "emergency"]
         assert cli.main(args) == 0
         out = capsys.readouterr().out
@@ -566,6 +638,7 @@ def test_cli_carry_apply_emergency_origin_on_master(session, docs, tmp_path, mon
         get_settings.cache_clear()
     session.commit()
     assert is_taken_down(session, docs[0].id) and is_taken_down(session, docs[1].id)
+    assert not is_taken_down(session, docs[4].id)
     assert session.scalar(select(func.count()).select_from(TakedownBlock)) == 0
     operators = set(session.scalars(select(DocumentTakedownEvent.operated_by)))
-    assert operators == {takedown_carry.EMERGENCY_OPERATOR}
+    assert operators == {f"{takedown_carry.EMERGENCY_OPERATOR}#7"}

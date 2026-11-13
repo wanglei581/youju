@@ -23,7 +23,7 @@ fi
 if [ "$origin" = emergency ]; then
   # 和搬家的清单分开存：不盖掉那一份（搬家的可以重跑）
   file=emergency-takedowns.jsonl
-  verify="在服务器上运行 youju-shared.sh emergency-settle，再 emergency-list 看紧急下架是不是都撤了"
+  verify="在服务器上运行 youju-shared.sh emergency-settle，再 emergency-list 看还剩哪些（本机原来就下架着的、本机没有的网址不会自动撤，看过再决定）"
 else
   file=takedowns.jsonl
   verify="在服务器上运行 youju-shared.sh takedowns-check"

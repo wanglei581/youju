@@ -2501,13 +2501,16 @@ def _cmd_takedown_carry(args: argparse.Namespace) -> int:
             print("这台服务器的公开数据由本机同步过来：在本机跑 apply，下架状态随同步过来")
             return 1
         if args.origin == "emergency":
-            # 服务器紧急下架带回来的：文件本机都有，只正式下架，不写拦截表
+            if any(item.emergency is None for item in items):
+                print("这份清单不是服务器 emergency-carry 打印的（每行要有紧急下架的编号）")
+                return 1
+            # 服务器紧急下架带回来的：文件本机都有，只正式下架，不写拦截表；操作人带上编号
             report = takedown_carry.apply(
                 session,
                 items,
                 block=False,
                 note=takedown_carry.EMERGENCY_NOTE,
-                operator=takedown_carry.EMERGENCY_OPERATOR,
+                operator=takedown_carry.emergency_operator,
             )
             print(
                 f"清单 {report.listed} 个网址：本机库里有 {report.found} 份，"

@@ -14,15 +14,16 @@
 - youju takedown-carry check --file（本机、服务器都能跑，只读）：清单里的网址在这个库里有没有
   对用户可见的文件，有就退出码 1。
 
-服务器上的紧急下架（youju/emergency_takedown.py）也用这个格式带回本机：
-takedown-carry apply --origin emergency 只把本机已有的同网址文件整组正式下架，不写拦截表——
-那些文件本机都有，以后本机恢复上架还要照常更新；本机没有的网址数会列出来。
+服务器上的紧急下架（youju/emergency_takedown.py）也用这个格式带回本机，每行多一项 emergency
+（那一次紧急下架的编号，不含说明）：takedown-carry apply --origin emergency 只把本机已有的同网址
+文件整组正式下架，不写拦截表——那些文件本机都有，以后本机恢复上架还要照常更新；下架记录的操作人
+记"服务器紧急下架#编号"，服务器按编号认是哪一次带回的；本机没有的网址数会列出来。
 """
 
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -53,6 +54,7 @@ class Item:
     origin_source_id: int | None
     taken_down_at: datetime
     reason: str
+    emergency: int | None = None  # 服务器紧急下架的编号（只有紧急下架带回的清单有）
 
 
 @dataclass
@@ -94,10 +96,13 @@ def parse(lines: Iterable[str]) -> list[Item]:
             raise CarryError(f"第 {number} 行不是 JSON") from exc
         if not isinstance(row, dict):
             raise CarryError(f"第 {number} 行不是一条记录")
-        extra = set(row) - {"url_key", "origin_source_id", "taken_down_at", "reason"}
+        extra = set(row) - {"url_key", "origin_source_id", "taken_down_at", "reason", "emergency"}
         if extra:
-            # 清单只该有这四项：多出来的（备注、操作人、标题）可能有个人信息，不收
+            # 清单只该有这几项：多出来的（备注、操作人、标题）可能有个人信息，不收
             raise CarryError(f"第 {number} 行有清单以外的字段：{', '.join(sorted(extra))}")
+        emergency = row.get("emergency")
+        if emergency is not None and (type(emergency) is not int or emergency <= 0):
+            raise CarryError(f"第 {number} 行的紧急下架编号不对")
         key = row.get("url_key")
         if not isinstance(key, str) or not key.strip() or len(key) > URL_KEY_MAX:
             raise CarryError(f"第 {number} 行的规范网址不对")
@@ -110,7 +115,7 @@ def parse(lines: Iterable[str]) -> list[Item]:
             raise CarryError(f"第 {number} 行的下架时间不对") from exc
         reason = row.get("reason")
         reason = reason if reason in REASONS else "其他"
-        items.setdefault(key, Item(key, source, stamp, reason))
+        items.setdefault(key, Item(key, source, stamp, reason, emergency))
     return list(items.values())
 
 
@@ -124,22 +129,28 @@ def _chunks(values: list[str]) -> Iterable[list[str]]:
         yield values[start : start + _CHUNK]
 
 
+def emergency_operator(item: Item) -> str:
+    """紧急下架带回的下架记录的操作人：带上那一次紧急下架的编号（同步到服务器，settle 按它认）。"""
+    return f"{EMERGENCY_OPERATOR}#{item.emergency}"
+
+
 def apply(
     session: Session,
     items: list[Item],
     *,
     block: bool = True,
     note: str = NOTE,
-    operator: str = OPERATOR,
+    operator: str | Callable[[Item], str] = OPERATOR,
 ) -> ApplyReport:
-    """写拦截表（block=False 时不写）；本机已有的同网址文件整组下架。"""
+    """写拦截表（block=False 时不写）；本机已有的同网址文件整组下架。operator 可以按条给。"""
     report = ApplyReport(listed=len(items))
     if not items:
         return report
     keys = [item.url_key for item in items]
     if block:
         _block(session, items, report)
-    reasons = {item.url_key: item.reason for item in items}
+    by_key = {item.url_key: item for item in items}
+    operator_of = operator if callable(operator) else (lambda _item: operator)
     found: list[tuple[int, str]] = []
     for part in _chunks(keys):
         found += [
@@ -156,8 +167,14 @@ def apply(
             report.already_hidden += 1
             continue
         # 整组下架（归并组里别的副本一起），各副本各记一条下架记录
+        item = by_key[key]
         change_state(
-            session, doc_id, action="takedown", note=note, operator=operator, reason=reasons[key]
+            session,
+            doc_id,
+            action="takedown",
+            note=note,
+            operator=operator_of(item),
+            reason=item.reason,
         )
         report.taken_down += 1
     return report

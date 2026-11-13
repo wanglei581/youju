@@ -11,6 +11,7 @@ import pty
 import re
 import select
 import shutil
+import signal
 import subprocess
 import termios
 import time
@@ -927,6 +928,28 @@ def test_local_carry_emergency_listing_keeps_the_move_listing(tmp_path):
     assert "emergency-settle" in done.stdout
 
 
+def _interrupt_at_prompt(args: list[str], timeout: float = 10) -> tuple[int, str]:
+    """在伪终端里跑，看到提示的"："先等一会儿（边问边启动的写法这时已经起来了），再给整个进程组
+    发中断（和网页终端里按 Ctrl-C 一样）。"""
+    master, slave = pty.openpty()
+    proc = subprocess.Popen(args, stdin=slave, stdout=slave, stderr=slave, start_new_session=True)
+    os.close(slave)
+    out = b""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline and "：".encode() not in out:
+        ready, _, _ = select.select([master], [], [], 0.1)
+        if ready:
+            try:
+                out += os.read(master, 4096)
+            except OSError:
+                break
+    time.sleep(0.5)
+    os.killpg(proc.pid, signal.SIGINT)
+    proc.wait(timeout=5)
+    os.close(master)
+    return proc.returncode, out.decode("utf-8", "replace")
+
+
 @needs_bash
 def test_shared_emergency_commands_pass_arguments_and_carry_decodes(tmp_path):
     listing = (
@@ -967,10 +990,17 @@ def test_shared_emergency_commands_pass_arguments_and_carry_decodes(tmp_path):
         "来电 要求删除\n",
     )
     assert code == 0, out
-    assert "别写投诉人的姓名、电话" in out
+    assert "别写投诉人的姓名、电话" in out and "Ctrl-C 取消" in out
     assert _calls(tmp_path) == [
         f"{head} [add] [12] [--reason] [other] [--note-stdin] [--by] [] stdin=[来电 要求删除]"
     ]
+    log.unlink()
+    # 在提示处 Ctrl-C：说明还没读完时容器里的命令还没起来（边问边启动的话，这时已经起来了，
+    # 中断只停得了这边），中断以后也什么都没做
+    for body in ("emergency_takedown 12 other", "emergency_lift 12"):
+        code, out = _interrupt_at_prompt(["bash", "-c", _script(tmp_path, body, exporting)])
+        assert "Ctrl-C 取消" in out and code != 0, out
+        assert not log.exists(), body
     for body in (
         "emergency_takedown 12",
         "emergency_takedown 12 complaint 说明",

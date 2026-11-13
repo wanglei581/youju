@@ -15,10 +15,11 @@
 - 带回本机（export）：把没撤销的紧急下架写成下架清单（takedown_carry 的格式：规范网址键、
   来源编号、下架时间、原因类别；不带说明和操作人，说明可能写到投诉人），本机
   takedown-carry apply --origin emergency 整组正式下架，随同步推回服务器。
-- 自动撤销（settle，服务器每小时）：只认带回本机时写的下架记录（操作人是
-  takedown_carry.EMERGENCY_OPERATOR、时间在紧急下架之后）——本机因为别的原因下过架、又恢复了，
-  不能把这次的投诉一起丢掉；本机原来就下架着、本机没有这个网址的，带回时不写记录，紧急下架留着，
-  要人看过再撤。本机删了这份文件（同步删除，文件编号置空）的也撤掉，记录和规范网址留着。
+- 自动撤销（settle，服务器每小时）：只认带回本机时写的、带着这一次编号的下架记录（操作人
+  "服务器紧急下架#编号"，takedown_carry.emergency_operator）——本机因为别的原因下过架又恢复了、
+  早先导出的旧清单晚到了，都不能把这一次的投诉一起撤掉；本机原来就下架着、本机没有这个网址的，
+  带回时不写记录，紧急下架留着，要人看过再撤。本机删了这份文件（同步删除，文件编号置空）的也撤掉，
+  记录和规范网址留着。
 """
 
 from __future__ import annotations
@@ -30,7 +31,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import exists, select
+from sqlalchemy import exists, func, select
 from sqlalchemy.orm import Session
 
 from youju.crawler.urls import url_key
@@ -50,6 +51,8 @@ OPERATOR = "服务器命令行"
 SYSTEM = "系统"
 SETTLE_NOTE = "已经带回本机正式下架（同步过来了），紧急下架自动撤销"
 GONE_NOTE = "文件已经不在了（本机删了），紧急下架自动撤销"
+SYSTEM_NOTES = (SETTLE_NOTE, GONE_NOTE)
+LOCK_TRIES = 3
 FIND_LIMIT = 20
 NOTE_MAX = 300
 BY_MAX = 80
@@ -75,6 +78,7 @@ class Found:
 @dataclass(frozen=True)
 class Record:
     id: int
+    batch_id: int
     document_id: int | None
     url_key: str
     reason: str
@@ -103,6 +107,14 @@ def _text(value: str | None, limit: int, what: str) -> str:
     if len(value) > limit:
         raise EmergencyError(f"{what}最多 {limit} 个字")
     return value
+
+
+def _operator(value: str | None) -> str:
+    operator = _text(value, BY_MAX, "操作人") or OPERATOR
+    if operator == SYSTEM:
+        # "系统"只给自动撤销用：列表照常显示系统撤销的说明，人填的说明默认不显示
+        raise EmergencyError(f"操作人不能写“{SYSTEM}”")
+    return operator
 
 
 def _like(text: str) -> str:
@@ -150,16 +162,29 @@ def find(session: Session, query: str) -> list[Found]:
     ]
 
 
+def _members(session: Session, document_id: int) -> list[int]:
+    master = canonical_ids(session, [document_id]).get(document_id, document_id)
+    return sorted(group_ids(session, master))
+
+
 def _lock_group(session: Session, document_id: int) -> list[int]:
     """按编号顺序锁住这份文件所在的整组（和 takedown.change_state 同一顺序，不会互相死锁），
-    返回锁到的编号：同组不同文件同时下架、撤销时一个一个来，后来的看得到先来的结果。"""
-    master = canonical_ids(session, [document_id]).get(document_id, document_id)
-    ids = group_ids(session, master)
-    return list(
-        session.scalars(
-            select(Document.id).where(Document.id.in_(ids)).order_by(Document.id).with_for_update()
+    返回锁到的编号：同组不同文件同时下架、撤销时一个一个来，后来的看得到先来的结果。
+    锁上以后再读一遍归并：读和锁之间同步改了归并（拆组、并进新的），放开重来，最多 3 次。"""
+    for _ in range(LOCK_TRIES):
+        ids = _members(session, document_id)
+        locked = list(
+            session.scalars(
+                select(Document.id)
+                .where(Document.id.in_(ids))
+                .order_by(Document.id)
+                .with_for_update()
+            )
         )
-    )
+        if _members(session, document_id) == ids:
+            return locked
+        session.rollback()
+    raise EmergencyError("归并关系一直在变（多半正在同步），过一会儿再试")
 
 
 def add(
@@ -168,7 +193,7 @@ def add(
     """紧急下架一份文件：和正式下架一样，归并组里每一份各记一行。返回记下的行。"""
     reason = reason_of(reason)
     note = _text(note, NOTE_MAX, "说明")
-    operator = _text(operator, BY_MAX, "操作人") or OPERATOR
+    operator = _operator(operator)
     ids = _lock_group(session, document_id)
     if document_id not in ids:
         session.rollback()
@@ -183,6 +208,7 @@ def add(
         EmergencyTakedown(
             document_id=doc_id,
             url_key=key,
+            batch_id=0,
             reason=reason,
             note=note,
             created_by=operator,
@@ -193,6 +219,11 @@ def add(
         )
     ]
     session.add_all(rows)
+    session.flush()
+    # 这一次的编号：第一行的 id（几行一起写，同一个事务里补上）
+    batch = min(row.id for row in rows)
+    for row in rows:
+        row.batch_id = batch
     session.commit()
     return rows
 
@@ -202,7 +233,7 @@ def lift(
 ) -> tuple[int, bool]:
     """撤销这份文件所在归并组里没撤销的紧急下架。返回撤销了几行、撤销后这份文件是否对外可见。"""
     note = _text(note, NOTE_MAX, "说明")
-    operator = _text(operator, BY_MAX, "操作人") or OPERATOR
+    operator = _operator(operator)
     # 先锁整组再找：正在提交的同组紧急下架等它提交完，一起撤
     ids = _lock_group(session, document_id)
     if document_id not in ids:
@@ -236,6 +267,7 @@ def records(session: Session, *, include_lifted: bool = False) -> list[Record]:
     return [
         Record(
             id=row.id,
+            batch_id=row.batch_id,
             document_id=row.document_id,
             url_key=row.url_key,
             reason=row.reason,
@@ -255,21 +287,23 @@ def export_lines(session: Session) -> list[str]:
     """没撤销、文件还在的紧急下架写成下架清单（JSON Lines，takedown_carry.parse 读得了），
     一行一份文件；同一个网址只出一行（取最早的紧急下架）。"""
     rows = session.execute(
-        select(EmergencyTakedown, Document.source_id)
+        select(EmergencyTakedown, Document.url_key, Document.source_id)
         .join(Document, Document.id == EmergencyTakedown.document_id)
         .where(EmergencyTakedown.lifted_at.is_(None))
         .order_by(EmergencyTakedown.created_at, EmergencyTakedown.id)
     ).all()
     lines: dict[str, str] = {}
-    for row, source_id in rows:
+    # 用文件现在的规范网址（本机同步过来的，和本机一定一致）；下架时存的那份只给文件删了以后看
+    for row, key, source_id in rows:
         lines.setdefault(
-            row.url_key,
+            key,
             json.dumps(
                 {
-                    "url_key": row.url_key,
+                    "url_key": key,
                     "origin_source_id": source_id,
                     "taken_down_at": row.created_at.astimezone(UTC).isoformat(),
                     "reason": row.reason,
+                    "emergency": row.batch_id,
                 },
                 ensure_ascii=False,
             ),
@@ -278,12 +312,13 @@ def export_lines(session: Session) -> list[str]:
 
 
 def settle(session: Session) -> int:
-    """带回本机已经正式下架的、文件已经不在了的紧急下架自动撤销（撤销人"系统"）。返回撤销了几行。"""
+    """带回本机已经正式下架的、文件已经不在了的紧急下架自动撤销（撤销人"系统"）。返回撤销了几行。
+    只认带着这一次编号的下架记录：操作人"服务器紧急下架#编号"（takedown_carry.emergency_operator）。"""
     carried = exists().where(
         DocumentTakedownEvent.document_id == EmergencyTakedown.document_id,
         DocumentTakedownEvent.action == "takedown",
-        DocumentTakedownEvent.operated_by == EMERGENCY_OPERATOR,
-        DocumentTakedownEvent.operated_at >= EmergencyTakedown.created_at,
+        DocumentTakedownEvent.operated_by
+        == func.concat(EMERGENCY_OPERATOR, "#", EmergencyTakedown.batch_id),
     )
     rows = session.scalars(
         select(EmergencyTakedown)
@@ -323,11 +358,11 @@ def describe_found(found: Iterable[Found]) -> list[str]:
 
 
 def describe_records(rows: Iterable[Record], *, notes: bool = False) -> list[str]:
-    """一次下架（同一时间、同一个人）的几行合成一条。说明默认不显示（可能写到投诉人），
-    notes=True 才显示。"""
+    """同一次紧急下架（同一个编号、撤销情况一样）的几行合成一条。说明默认不显示（可能写到
+    投诉人），notes=True 才显示；系统自动撤销的说明是固定的几句，照常显示。"""
     groups: dict[tuple, list[Record]] = {}
     for row in rows:
-        key = (row.created_at, row.created_by, row.lifted_at, row.lifted_by)
+        key = (row.batch_id, row.lifted_at, row.lifted_by)
         groups.setdefault(key, []).append(row)
     lines = []
     for members in groups.values():
@@ -338,16 +373,16 @@ def describe_records(rows: Iterable[Record], *, notes: bool = False) -> list[str
         )
         title = next((row.title for row in members if row.title), "")
         lines.append(
-            f"文件 {what}  {first.reason}  {_beijing(first.created_at)}  {first.created_by}  "
-            f"{_short(title, 40)}"
+            f"紧急下架 #{first.batch_id}  文件 {what}  {first.reason}  "
+            f"{_beijing(first.created_at)}  {first.created_by}  {_short(title, 40)}"
         )
         if first.note:
             lines.append(f"    说明：{first.note}" if notes else "    有说明（加 --notes 看）")
         if first.lifted_at is not None:
             lift = f"    已撤销：{_beijing(first.lifted_at)}  {first.lifted_by or ''}"
             if first.lift_note:
-                # 系统自动撤销的说明是固定的话，照常显示
-                shown = notes or first.lifted_by == SYSTEM
+                # 系统自动撤销的说明是固定的几句（人不能用"系统"当操作人），照常显示
+                shown = notes or (first.lifted_by == SYSTEM and first.lift_note in SYSTEM_NOTES)
                 lift += f"  {first.lift_note}" if shown else "  （有说明）"
             lines.append(lift)
     return lines

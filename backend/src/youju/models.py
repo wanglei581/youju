@@ -312,6 +312,9 @@ class EmergencyTakedown(Base):
         ForeignKey("documents.id", ondelete="SET NULL"), index=True
     )
     url_key: Mapped[str] = mapped_column(String(URL_KEY_MAX))
+    # 同一次紧急下架的几行共用的编号（这一次第一行的 id）：带回本机时写进下架记录的操作人
+    # （"服务器紧急下架#编号"），settle 按它认是哪一次带回的，旧清单晚到也撤不了别的一次
+    batch_id: Mapped[int] = mapped_column(Integer)
     reason: Mapped[str] = mapped_column(String(16))
     note: Mapped[str] = mapped_column(String(300))
     created_by: Mapped[str] = mapped_column(String(80))

@@ -711,23 +711,29 @@ emergency() {
 }
 
 # 说明在提示里问（read 读进来的不进命令历史；经管道给容器里的命令，也不出现在进程列表里）。
-# 没有终端（如控制台"执行命令"）时不问、不带说明：说明可能写到投诉人，不进执行记录
+# 没有终端（如控制台"执行命令"）时不问、不带说明：说明可能写到投诉人，不进执行记录。
+# 先读完说明再启动容器里的命令：边问边启动的话，在提示处 Ctrl-C 只停了这边，容器里的命令
+# 读到空说明照样执行（docker exec 的客户端退出不结束容器里的进程）
 ask_note() {
   local note=""
   if [ -t 0 ]; then
-    read -r -p "说明（可以不写，直接回车；别写投诉人的姓名、电话）：" note || note=""
+    read -r -p "说明（可以不写，直接回车；别写投诉人的姓名、电话；Ctrl-C 取消）：" note || note=""
   fi
   printf '%s' "$note"
 }
 
 emergency_takedown() {
   [ "$#" -eq 2 ] || die "用法：emergency-takedown <文件编号> <原因：complaint|authority|error|other>（说明在提示里输入）"
-  ask_note | emergency add "$1" --reason "$2" --note-stdin --by "${YOUJU_BY:-}"
+  local note
+  note=$(ask_note)
+  printf '%s' "$note" | emergency add "$1" --reason "$2" --note-stdin --by "${YOUJU_BY:-}"
 }
 
 emergency_lift() {
   [ "$#" -eq 1 ] || die "用法：emergency-lift <文件编号>（说明在提示里输入）"
-  ask_note | emergency lift "$1" --note-stdin --by "${YOUJU_BY:-}"
+  local note
+  note=$(ask_note)
+  printf '%s' "$note" | emergency lift "$1" --note-stdin --by "${YOUJU_BY:-}"
 }
 
 # 和 takedowns 一样打印成 gzip 后 base64（中文原因贴进本机终端不会乱码），本机 carry-takedowns.sh

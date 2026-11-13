@@ -1,8 +1,9 @@
 """电脑不在线时的紧急下架：一张只在服务器上用的新表，只新增、不动已有表。
 
 服务器上的公开数据是本机（公开数据的主库）同步过来的，直接改文件的下架时间会被下一次同步盖回去。
-这张表记服务器上的紧急下架：没撤销（lifted_at 为空）的行，它指的文件所在的归并组整组不对外
-（takedown.available_condition）；本机开机以后可以带回本机正式下架，本机接手后自动撤掉。
+这张表记服务器上的紧急下架：和正式下架一样归并组里每份各记一行（batch_id 是同一次的编号）；
+没撤销（lifted_at 为空）的行，它指的文件所在的归并组整组不对外（takedown.available_condition）。
+电脑恢复后带回本机正式下架，带着这一次编号的下架记录同步过来后自动撤掉。
 行不删（撤销只填撤销的人、时间、说明）；本机删了文件时文件编号置空（和纠错一样，不挡同步和
 用户数据恢复），下架时的规范网址留着。
 本机上也建这张表（两边迁移版本要一样才能同步），但本机不写它。不同步、不进公开快照。
@@ -33,6 +34,7 @@ def upgrade() -> None:
         sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
         sa.Column("document_id", sa.Integer(), nullable=True),
         sa.Column("url_key", sa.String(512), nullable=False),
+        sa.Column("batch_id", sa.Integer(), nullable=False),
         sa.Column("reason", sa.String(16), nullable=False),
         sa.Column("note", sa.String(300), nullable=False),
         sa.Column("created_by", sa.String(80), nullable=False),
