@@ -449,6 +449,7 @@ def attachment_reading(
         )
         .order_by(AttachmentTextSegment.n)
     ).all()
+    # scannedPages 是还没有字的扫描页（识别过的，D-125：是没认出的页；认出的页在文字里标明）
     scanned = version.scanned_pages or 0
     payload.update(
         scannedPages=scanned,

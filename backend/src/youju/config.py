@@ -114,6 +114,12 @@ class Settings(BaseSettings):
     exports_per_10min: int = 30
     # 云托管环境 ID（如 prod-xxxx）：每天的数据库备份存到这个环境的对象存储（验收 A6）
     cloud_env: str | None = None
+    # 扫描件识别文字（D-125，attachments.ocr_scans、youju ocr-scans）：开源的 RapidOCR 在本机
+    # 识别，不接第三方；默认关。要先装识别组件（uv sync --extra ocr，云托管镜像不装）。每轮最多
+    # 识别多少页、用几个线程（2.0 的本地电脑可以多给）
+    ocr_enabled: bool = False
+    ocr_pages_per_run: int = Field(default=60, ge=1, le=2000)
+    ocr_threads: int = Field(default=1, ge=1, le=16)
     # R1.5 顾问技能包总开关；上线前保持关闭。
     rewards_enabled: bool = False
     advisor_enabled: bool = False

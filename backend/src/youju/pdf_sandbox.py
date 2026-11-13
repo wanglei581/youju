@@ -63,6 +63,13 @@ log = logging.getLogger("youju.pdf_sandbox")
 _MB = 1024 * 1024
 # 子进程的虚拟内存上限（RLIMIT_AS，含 Python 自己和各个库占的地址空间）。真实文件最大 276MB
 MEMORY_MAX = 1024 * _MB
+# 识别扫描页（ocr，D-125）的子进程要装下 RapidOCR、onnxruntime、OpenCV 和渲染出的页面图片，
+# 上限另给。实测（11/8，单线程，A4 200dpi、每页 30 行）：Linux（CI 的 x86 机器）识别 3 页地址
+# 空间峰值（VmPeak，RLIMIT_AS 管的）约 1.0GB、实际占用约 0.77GB；本机 macOS 实际占用头两页涨到
+# 约 1.2GB，到第 8 页不再涨（不是每页都涨）。每批最多 10 页（attachment_text._OCR_BATCH），
+# 一批一个子进程，识别完退出、内存还回去。一次只跑一个识别子进程；本地电脑 16G（WSL 默认分到
+# 一半），2G 的上限加上抓取、数据库都够
+OCR_MEMORY_MAX = 2048 * _MB
 # 子进程写回的结果最多这么大（RLIMIT_FSIZE）。真实文件最大 2.6MB
 OUTPUT_MAX = 32 * _MB
 # 一个进程里同时读 PDF 的子进程个数
@@ -73,7 +80,7 @@ _EXIT_OUTPUT = 78
 _EXIT_LIMITS = 79
 _EXIT_WRITE = 80
 # 和当时的环境有关、过一段时间再读的几种（见模块说明）
-_RETRY = {"spawn", "limits", "killed", "busy", "crash", "io"}
+_RETRY = {"spawn", "limits", "killed", "busy", "crash", "io", "setup"}
 _SLOTS = threading.BoundedSemaphore(PARALLEL)
 # youju 包所在的目录：子进程用 -I 启动不读 PYTHONPATH，从这里导入和父进程同一份代码
 _ROOT = Path(__file__).resolve().parents[1]
@@ -92,7 +99,8 @@ class Failed(Exception):
     - spawn、limits、killed、busy、crash、io：起不了子进程、设不了资源上限（或者平台给的上限比
       设定的低，超了不能算文件的）、被系统停掉（多半是容器内存不够）、墙上时间兜底到了、子进程崩了
       或写回的结果不对、读写结果的临时文件出错。和当时的环境有关，retry 为真，error 是一句短的
-      说明（名单记"解析失败：……"，过 6 小时再试）。
+      说明（名单记"解析失败：……"，过 6 小时再试）；
+    - setup：识别扫描页（ocr）的组件在子进程里起不来（导入、载入模型出错），同样和环境有关。
 
     detail 写具体原因，不带"PDF"两个字（调用方自己接）。"""
 
@@ -105,9 +113,9 @@ class Failed(Exception):
         self.retry = kind in _RETRY
 
 
-def read(task: str, data: bytes, *, seconds: float, **options) -> dict:
+def read(task: str, data: bytes, *, seconds: float, memory: int | None = None, **options) -> dict:
     """在子进程里按 task（TASKS 里的一种）读这份 PDF，返回读出的东西（见各个 task 的说明）；
-    没读成抛 Failed。options 原样传给 task。"""
+    没读成抛 Failed。options 原样传给 task。memory：虚拟内存上限，不给是 MEMORY_MAX。"""
     from youju import pdf_limits
 
     cfg = {
@@ -115,7 +123,7 @@ def read(task: str, data: bytes, *, seconds: float, **options) -> dict:
         "options": options,
         "stream_max": pdf_limits.STREAM_MAX,
         "document_max": pdf_limits.DOCUMENT_MAX,
-        "memory": MEMORY_MAX,
+        "memory": memory or MEMORY_MAX,
         "output": OUTPUT_MAX,
         "cpu": max(1, math.ceil(seconds)),
     }
@@ -134,6 +142,9 @@ def _answer(answer: dict) -> dict:
     """子进程的回答 → 读出的东西；没读成抛 Failed。"""
     if "ok" in answer:
         return answer["ok"]
+    if "setup" in answer:
+        detail = f"识别组件起不来（{answer['setup']}）"
+        raise Failed("setup", "broken", detail, "识别组件起不来")
     if "refused" in answer:
         reason, detail = answer["refused"]
         raise Failed("refused", reason, detail)
@@ -170,7 +181,7 @@ def _spawn(cfg: dict, data: bytes, seconds: float) -> dict:
                     stdin=given,
                     stdout=out,
                     stderr=err,
-                    env=_env(),
+                    env=_env(cfg),
                 )
             code = child.wait(timeout=_wall(seconds))
             return _output(code, cfg, seconds, out, err, _reduced(cfg))
@@ -200,9 +211,20 @@ def _alarm_held():
         signal.pthread_sigmask(signal.SIG_SETMASK, old)
 
 
-def _env() -> dict[str, str]:
-    """子进程的环境变量：只有 PATH、LANG，数据库地址、密钥这些一概不带。"""
-    return {"PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"), "LANG": "C.UTF-8"}
+def _env(cfg: dict | None = None) -> dict[str, str]:
+    """子进程的环境变量：只有 PATH、LANG，数据库地址、密钥这些一概不带。识别扫描页（ocr）另带
+    几个线程数：numpy（OpenBLAS）、onnxruntime 默认按 CPU 核数起线程，每个线程都占一块地址空间，
+    核多的机器上会顶到内存上限（RLIMIT_AS）；malloc 的分配区也限成 2 个。"""
+    env = {"PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"), "LANG": "C.UTF-8"}
+    if cfg is not None and cfg.get("task") == "ocr":
+        threads = str(cfg["options"].get("threads", 1))
+        env.update(
+            OMP_NUM_THREADS=threads,
+            OPENBLAS_NUM_THREADS="1",
+            MKL_NUM_THREADS="1",
+            MALLOC_ARENA_MAX="2",
+        )
+    return env
 
 
 def _reduced(cfg: dict) -> dict[str, int]:
@@ -263,7 +285,7 @@ def _output(code: int, cfg: dict, seconds: float, out, err, reduced: dict[str, i
     return answer
 
 
-_ANSWERS = {"ok", "refused", "open", "error"}
+_ANSWERS = {"ok", "refused", "open", "error", "setup"}
 
 
 def _size(n: int) -> str:
@@ -383,6 +405,14 @@ class _Stop(Exception):  # 不是错误：原来的代码抛异常结束的结�
         self.result = result
 
 
+class _SetupFailed(Exception):
+    """识别组件在子进程里起不来（_ocr）：error 是异常类名。"""
+
+    def __init__(self, error: str) -> None:
+        super().__init__(error)
+        self.error = error
+
+
 class _OpenFailed(Exception):
     def __init__(self, error: str) -> None:
         super().__init__(error)
@@ -410,6 +440,8 @@ def _work(task: str, data: bytes, options: dict) -> dict:
                 return {"ok": TASKS[task](pdf, options)}
     except _Stop as stop:
         return {"ok": stop.result}
+    except _SetupFailed as exc:
+        return {"setup": exc.error}
     except Exception as exc:  # noqa: BLE001 - 第三方解析器对坏文件会抛多种异常
         if isinstance(exc, MemoryError):
             raise
@@ -602,4 +634,58 @@ def _body(pdf, opts: dict) -> dict:
     return {"pages": pages, "text": "\n".join(texts)}
 
 
-TASKS = {"copy": _copy, "text": _text, "list": _list, "body": _body}
+def _ocr(pdf, opts: dict) -> dict:
+    """扫描页识别文字（attachment_text 的识别，D-125）：opts["pages"] 里的页（从 1 起）一页一页
+    渲染成图片（opts["dpi"]，一页的像素超过 opts["pixels"] 就降低分辨率），交给开源的 RapidOCR
+    （onnxruntime，模型在安装包里，不联网）。返回 {"pages": {页码: {"height": 页高, "lines": [[上边,
+    下边, 左边, 文字, 置信度, 右边], ...]}}}，坐标是 PDF 的点（和 _text_page 一样从页面上边往下
+    量）。
+    识别组件起不来（没装、装坏了、模型缺了）给 {"setup": 异常类名}（Failed 的 setup，和环境有关）。
+    某一页渲染、识别出错（坏的图片等）只跳过这一页；内存超了照样整个子进程退出
+    （_exit_on_memory_error）。"""
+    try:
+        import cv2
+        from rapidocr_onnxruntime import RapidOCR
+
+        cv2.setNumThreads(opts["threads"])  # OpenCV 自己的线程池也按设定的线程数
+        engine = RapidOCR(intra_op_num_threads=opts["threads"], inter_op_num_threads=1)
+    except Exception as exc:  # noqa: BLE001 - 装坏了、模型文件缺了：和环境有关，不算文件的
+        raise _SetupFailed(exc.__class__.__name__) from exc
+    out: dict[str, dict] = {}
+    for number in opts["pages"]:
+        if not 1 <= number <= len(pdf.pages):
+            continue
+        try:
+            page = pdf.pages[number - 1]
+        except Exception:  # noqa: BLE001 - 这一页的对象坏了：跳过
+            continue
+        try:
+            area = max(float(page.width) * float(page.height), 1.0)
+            # 分辨率（每英寸点数）：按要的给，页面很大时按像素上限降下来（72 点一英寸）
+            dpi = min(float(opts["dpi"]), 72 * math.sqrt(opts["pixels"] / area))
+            image = page.to_image(resolution=dpi).original
+            result, _elapsed = engine(image)
+            scale = 72 / dpi
+            lines = []
+            for box, text, score in result or []:
+                xs = [float(point[0]) for point in box]
+                ys = [float(point[1]) for point in box]
+                lines.append(
+                    [
+                        round(min(ys) * scale, 2),
+                        round(max(ys) * scale, 2),
+                        round(min(xs) * scale, 2),
+                        str(text),
+                        round(float(score), 3),
+                        round(max(xs) * scale, 2),
+                    ]
+                )
+            out[str(number)] = {"height": float(page.height), "lines": lines}
+        except Exception:  # noqa: BLE001 - 这一页渲染、识别出错（坏的图片等）：跳过这一页
+            continue
+        finally:
+            page.close()
+    return {"pages": out}
+
+
+TASKS = {"copy": _copy, "text": _text, "list": _list, "body": _body, "ocr": _ocr}

@@ -31,6 +31,8 @@ JOB_NAMES = OVERVIEW_JOBS + (
     "fetch-details",
     # 每轮补完详情后取附件文字（round.sh）
     "attachment-texts",
+    # 识别附件里的扫描页（D-125，开关默认关；随 2.0 在本地电脑上跑）
+    "ocr-scans",
     "repost-groups",
     "extract-deadlines",
     "extract-fields",
