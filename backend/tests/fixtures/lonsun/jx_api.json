@@ -1,0 +1,39 @@
+{
+ "pageCount": 4,
+ "pageIndex": 0,
+ "pageSize": 20,
+ "startNumber": 0,
+ "total": 64,
+ "data": [
+  {
+   "id": 124234741,
+   "catId": 49949451,
+   "organId": 6991,
+   "title": "安徽省工业和信息化厅等八部门关于印发《安徽省推动制造业数智化转型实施方案（2026—2028年）》的通知",
+   "link": "https://jx.ah.gov.cn/public/6991/150733231.html",
+   "publishDate": "2026-11-06 18:19:48",
+   "fileNum": "皖工信技改〔2026〕134号",
+   "redirectLink": ""
+  },
+  {
+   "id": 124225891,
+   "catId": 49949451,
+   "organId": 6991,
+   "title": "安徽省工业和信息化厅关于印发《安徽省绿色工厂梯度培育管理实施细则》的通知",
+   "link": "https://jx.ah.gov.cn/public/6991/150672901.html",
+   "publishDate": "2026-09-02 15:17:06",
+   "fileNum": "皖工信节能〔2026〕101号",
+   "redirectLink": ""
+  },
+  {
+   "id": 124217781,
+   "catId": 49949451,
+   "organId": 6991,
+   "title": "安徽省工业和信息化厅等部门关于印发安徽省化工园区认定管理办法（2026年修订）的通知",
+   "link": "https://jx.ah.gov.cn/public/6991/150629021.html",
+   "publishDate": "2026-07-09 18:47:34",
+   "fileNum": "皖工信原材料〔2026〕64号",
+   "redirectLink": ""
+  }
+ ]
+}

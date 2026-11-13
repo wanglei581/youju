@@ -610,3 +610,70 @@ def test_enable_marks_gkmlpt_adapter(session):
     assert source.id in enabled.source_ids
     session.refresh(source)
     assert source.parser_config["list_api_open"] == "数字广东gkmlpt"
+
+
+def test_enable_lonsun_records_only_reviewed_city_portals(session):
+    url = "https://www.yjq.gov.cn/public/column/6596381?type=4&catId=6732111&action=list"
+    sources = []
+    depts = []
+    portals = []
+    for code, city in (("340201", "芜湖"), ("340202", "其他城市")):
+        column = url.replace("6596381", "6596381" if city == "芜湖" else "6596382")
+        source = Source(
+            level="区县级",
+            province="安徽",
+            city=city,
+            dept="科技",
+            column_name="通知通告",
+            url=column,
+            fetch_mode="static",
+            enabled=False,
+            parser_config={},
+            verification_status="试跑可读（经接口读，全国覆盖 v1，未启用）",
+        )
+        session.add(source)
+        sources.append(source)
+        portals.append(
+            PortalRow(
+                code,
+                "区县级",
+                "安徽",
+                city,
+                city + "区",
+                city + "区",
+                "https://www.yjq.gov.cn/",
+                status="已找到",
+            )
+        )
+        depts.append(
+            DeptRow(
+                code,
+                "区县级",
+                "安徽",
+                city,
+                city + "区",
+                "科技",
+                site_url="https://www.yjq.gov.cn/",
+                status="已找到",
+                columns=[ColumnHit("通知公告", "通知通告", column, "https://www.yjq.gov.cn/")],
+            )
+        )
+    session.add(
+        CoverageAcceptance(
+            province="安徽",
+            level="区县级",
+            sampled_by="王某",
+            sampled_at=NOW,
+            sample_size=11,
+            passed=True,
+        )
+    )
+    session.commit()
+    import_inventory(session, portals, depts)
+    enabled = enable_sources(session, "安徽", "区县级", "王某", now=NOW, verified=True)
+    assert set(enabled.source_ids) == {s.id for s in sources}
+    for source in sources:
+        session.refresh(source)
+        assert source.parser_config["list_api_open"] == "龙讯public"
+    assert sources[0].parser_config["lonsun_catalog_host"] == "www.wuhu.gov.cn"
+    assert "lonsun_catalog_host" not in sources[1].parser_config

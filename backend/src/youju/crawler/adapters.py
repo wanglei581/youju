@@ -22,6 +22,13 @@ docs/数据来源/全国覆盖/集约化平台盘点.md）。
   来源标了"经接口读"才读）照样用在它身上。哪个平台的接口参数页面上根本没写、要靠我们自己猜的，
   不在这条解释里，要另提。
 
+龙讯 public（龙讯科技政府网站平台）按 D-013 读普通列表和下级栏目汇总，只取第 1 页；
+同城集约化平台的栏目树门户须在审过的白名单中。
+栏目树只取页面原样写明的一个 src；document.write 字面量后的随机数是防缓存的，不加，字面量
+不改不补。只允许同一政府网站域名，遵守脚本主机自己的 robots，打不开 robots 就不读；每轮
+同地址只取一次。栏目树只作 JSON 文本解析，页面内联脚本只用受限求值器，均不执行；认不出不读。
+接口防缓存随机数也不加。六安按钮、xinzheng、蚌埠、POST 和 FN 写法第一版不读。
+
 现有适配器：
 - 大汉 jpaas（浙江等省的集约化平台）：<script src=".../unitbuild.js"
   url="/api-gateway/jpaas-publish-server/front/page/build/unit"
@@ -57,6 +64,7 @@ HANWEB_JPAAS_PATH = "/api-gateway/jpaas-publish-server/front/page/build/unit"
 # 适配器名（写进来源 parser_config 的"经接口读"标记 list_api_open，正式抓取据此决定走不走接口）
 HANWEB_JPAAS = "大汉jpaas"
 GKMLPT = "数字广东gkmlpt"
+LONSUN = "龙讯public"
 
 
 @dataclass(frozen=True)
@@ -71,6 +79,8 @@ class ListApi:
     # 数字广东栏目网址里带 p 的分类（"政策"一类父分类，和下面挂着解读的叶子）：只要直接挂在它上面
     # 的条目（条目的 classify_main 就是它），挂在下级分类（解读等）上的不要——要的另外按叶子读
     direct_only: bool = False
+    # 龙讯两步识别的不可变执行计划；其他适配器不使用。
+    plan: object | None = None
 
 
 _KNOWN_ATTRS = frozenset({"id", "src", "webid", "parsetype", "url", "querydata"})
@@ -161,8 +171,12 @@ def api_items_merged(
 
 
 def list_api_adapter(column_url: str) -> str:
-    """打开"经接口读"的栏目时写进 list_api_open 的适配器名：数字广东的分类栏目是 gkmlpt，
+    """打开"经接口读"时写进 list_api_open：龙讯栏目是 LONSUN、数字广东分类是 gkmlpt，
     其余（页面上声明 unitbuild.js 的）是大汉 jpaas。和 find_list_api 认接口的分法一样。"""
+    from youju.crawler.lonsun import column_spec
+
+    if column_spec(column_url) is not None:
+        return LONSUN
     return GKMLPT if gkmlpt_categories(column_url) is not None else HANWEB_JPAAS
 
 
@@ -294,12 +308,20 @@ def find_gkmlpt_api(html: str, page_url: str, column_url: str) -> ListApi | None
     return ListApi(GKMLPT, first.url, first.base_url, first.category_id, parts, first.direct_only)
 
 
-def find_list_api(html: str, page_url: str, column_url: str | None = None) -> ListApi | None:
+def find_list_api(
+    html: str, page_url: str, column_url: str | None = None, *, catalog_host: str | None = None
+) -> ListApi | None:
     """栏目页里声明的列表接口；认不出返回 None。
 
     column_url 是数字广东的分类栏目时只按 gkmlpt 认（认不出就是 None，不再去认大汉）。"""
     if gkmlpt_categories(column_url) is not None:
         return find_gkmlpt_api(html, page_url, column_url)
+    from youju.crawler.lonsun import column_spec, find_lonsun_api
+
+    if column_spec(column_url or "") is not None and re.search(
+        r"\bfunction\s+PublicTree\s*\(", html
+    ):
+        return find_lonsun_api(html, page_url, column_url, catalog_host=catalog_host)
     apis = find_unit_apis(html, page_url)
     return apis[0] if apis else None
 
@@ -350,6 +372,9 @@ def find_unit_apis(html: str, page_url: str) -> list[ListApi]:
 
 def api_empty_list(api: ListApi, text: str) -> bool:
     """接口明确成功、过了护栏，列表那段在但是空的（这会儿没有条目，不是读不出）。"""
+    if api.adapter == LONSUN:
+        parsed = _lonsun_response(api, text)
+        return parsed is not None and parsed[1]
     if api.adapter == GKMLPT:
         payload = _json_payload(text)
         return payload is not None and not _gkmlpt_refusal(api, payload) and not payload["articles"]
@@ -363,6 +388,8 @@ def api_empty_list(api: ListApi, text: str) -> bool:
 def api_readable(api: ListApi, text: str) -> bool:
     """接口的返回是认得出、过了护栏的列表（条目可能是空的）。空白页、维护页这类护栏记"这次没取到"
     的返回不算：照样不读。"""
+    if api.adapter == LONSUN:
+        return _lonsun_response(api, text) is not None
     if api.adapter == GKMLPT:
         payload = _json_payload(text)
         return payload is not None and not _gkmlpt_refusal(api, payload)
@@ -671,6 +698,9 @@ def api_items(
     前后空白后按部门页解析，空的、解析成部门页自己的、端口写坏的不要（外链照收，和列表页上的外链
     一样）；发布日期取 create_time 换成北京时间的日子，再过列表页同一个合理性规则（2000 年以前、
     比今天晚 2 天以上的当没有日期）；同一网址只留一次，顺序照接口。"""
+    if api.adapter == LONSUN:
+        parsed = _lonsun_response(api, text, today)
+        return parsed[0] if parsed is not None else []
     if api.adapter == HANWEB_JPAAS:
         return extract_items(api_html(api, text), api.base_url, parser_config, today=today)
     payload = _json_payload(text)
@@ -722,14 +752,16 @@ def api_refusal(api: ListApi, result) -> str:
 
     result 是抓取结果（FetchResult：status、http_status、final_url、text）。网络不通、超时、
     5xx 这类"这次没取到"不算，照常记失败、下次再试。"""
-    if api.adapter not in (HANWEB_JPAAS, GKMLPT):
+    if api.adapter not in (HANWEB_JPAAS, GKMLPT, LONSUN):
         return ""
+    tree = api_needs_follow(api)
+    prefix = "栏目树脚本" if tree else "列表接口"
     status = getattr(result, "status", "")
     http_status = getattr(result, "http_status", None)
     if status == "robots_disallowed":
-        return "列表接口 robots.txt 禁止"
+        return f"{prefix}：robots.txt 禁止"
     if http_status in _REFUSE_HTTP:
-        return f"列表接口 HTTP {http_status}：拒绝访问或要求登录"
+        return f"{prefix}：HTTP {http_status}：拒绝访问或要求登录"
     if status in ("network_error", "deadline", "ssl_error", "robots_error", "too_large"):
         return ""  # 网络不通、超时这类：这次没取到，照常记失败、下次再试
     final = getattr(result, "final_url", None) or api.url
@@ -737,24 +769,91 @@ def api_refusal(api: ListApi, result) -> str:
     if words:
         # 跳到了页面没写的地址（只换协议的不算）：不跟着读（D-128 读取护栏 ①），记不能抓
         if _LOGIN_URL.search(words):
-            return "列表接口跳到登录或验证页面"
-        return "列表接口跳到了页面没写的地址"
+            return f"{prefix}：跳到登录或验证页面"
+        return f"{prefix}：跳到了页面没写的地址"
     if status != "ok":
         return ""
     text = getattr(result, "text", "") or ""
+    if api.adapter == LONSUN and tree:
+        if _retry_later(text):
+            return ""
+        from youju.crawler.lonsun import LonsunFormatError, parse_catalog
+
+        try:
+            parse_catalog(text, api.plan.organ_id)
+            return ""
+        except LonsunFormatError:
+            pass  # 登录、拦截页仍需判定；其他格式由 api_follow 说明
+    if api.adapter == LONSUN and not tree and _lonsun_response(api, text) is not None:
+        return ""
     payload = _json_payload(text)
     if payload is None:
         # 不是 JSON：认不出，记不能抓、不读（认得出才读）；原因里分一下是不是登录、拦截关卡
         head = html_lib.unescape(text[:20000])
         bare = _bare_page(text)
         if bare and (_LOGIN_TEXT.search(head) or _PASSWORD_INPUT.search(head)):
-            return "列表接口要登录或验证码"
+            return f"{prefix}：要登录或验证码"
         if bare and (_GATE_TEXT.search(head) or _GATE_PHRASE.search(head)):
-            return "列表接口返回拦截页面"
+            return f"{prefix}：返回拦截页面"
         if _retry_later(text):
             return ""
-        return "列表接口返回认不出（不是 JSON）"
+        return "" if tree else "列表接口：返回认不出（不是 JSON）"
+    if api.adapter == LONSUN:
+        if tree:
+            return ""
+        return "列表接口：返回格式认不出" if _lonsun_response(api, text) is None else ""
     return _gkmlpt_refusal(api, payload) if api.adapter == GKMLPT else _payload_refusal(payload)
+
+
+def _lonsun_response(api: ListApi, text: str, today: date | None = None):
+    from youju.crawler.lonsun import LonsunFormatError, LonsunRequestPlan, parse_response
+
+    if not isinstance(api.plan, LonsunRequestPlan):
+        return None
+    try:
+        return parse_response(
+            text, api.plan.mode, api.base_url, today or date.today(), api.plan.excluded_children
+        )
+    except LonsunFormatError:
+        return None
+
+
+def api_needs_follow(api: ListApi) -> bool:
+    from youju.crawler.lonsun import LonsunPlan
+
+    return api.adapter == LONSUN and isinstance(api.plan, LonsunPlan)
+
+
+def api_follow(api: ListApi, result) -> ListApi | str:
+    from youju.crawler.lonsun import resolve_lonsun
+
+    refused = api_refusal(api, result)
+    if refused:
+        return refused
+    if result.status != "ok":
+        return f"栏目树脚本：{result.error or result.status}"
+    if _retry_later(result.text):
+        return "栏目树脚本：空白或维护页面，这次没取到"
+    resolved = resolve_lonsun(api, result.text)
+    return f"栏目树脚本：{resolved}" if isinstance(resolved, str) else resolved
+
+
+def fetch_api_follow(api: ListApi, fetch):
+    """共用第一步；返回接口、抓取结果、分类和原因。"""
+    if not api_needs_follow(api):
+        return api, None, "", ""
+    result = fetch(api.url, same_address_only=True)
+    refused = api_refusal(api, result)
+    if refused:
+        return None, result, "blocked", refused
+    if result.status != "ok":
+        return None, result, "down", f"栏目树脚本：{result.error or result.status}"
+    if _retry_later(result.text):
+        return None, result, "down", "栏目树脚本：空白或维护页面，这次没取到"
+    resolved = api_follow(api, result)
+    if isinstance(resolved, str):
+        return None, result, "unrecognized", resolved
+    return resolved, result, "", ""
 
 
 _TREE = re.compile(r"""treeStr\s*=\s*(["'])(\[.*?\])\1\s*;""", re.S)

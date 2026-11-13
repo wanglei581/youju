@@ -1,0 +1,94 @@
+[
+ {
+  "catId": 7024011,
+  "name": "部门文件",
+  "link": "/public/column/6608211?type=4&action=list&catId=7024011",
+  "redirectLink": false,
+  "childDataList": [
+   {
+    "catId": 7035521,
+    "name": "规范性文件",
+    "link": "/public/column/6608211?type=4&action=list&catId=7035521",
+    "redirectLink": false,
+    "childPublicContentList": [
+     {
+      "id": 5009504,
+      "catId": 7035521,
+      "organId": 6608211,
+      "title": "六安市人民政府办公室关于进一步加强全市矿产采选尾砂及机制砂石压滤污泥规范处置的实施意见",
+      "link": "https://gxj.luan.gov.cn/public/6608211/10567370.html",
+      "publishDate": "2024-09-02 09:39:23",
+      "fileNum": "六政办〔2024〕63号",
+      "redirectLink": ""
+     },
+     {
+      "id": 4958401,
+      "catId": 7035521,
+      "organId": 6608211,
+      "title": "六安市人民政府办公室关于印发《六安市氢能产业高质量发展三年行动计划》的通知",
+      "link": "https://gxj.luan.gov.cn/public/6608211/10482277.html",
+      "publishDate": "2024-03-01 14:38:18",
+      "fileNum": "六政办〔2024〕7号",
+      "redirectLink": ""
+     }
+    ]
+   },
+   {
+    "catId": 7047479,
+    "name": "废止失效文件",
+    "link": "/public/column/6608211?type=4&action=list&catId=7047479",
+    "redirectLink": false,
+    "childPublicContentList": [
+     {
+      "id": 4766068,
+      "catId": 7047479,
+      "organId": 6608211,
+      "title": "六安市人民政府办公室关于支持小微企业高质量发展的实施意见",
+      "link": "https://gxj.luan.gov.cn/public/6608211/10252414.html",
+      "publishDate": "2023-10-19 17:56:48",
+      "fileNum": "六政办〔2023〕21号",
+      "redirectLink": ""
+     },
+     {
+      "id": 4520722,
+      "catId": 7047479,
+      "organId": 6608211,
+      "title": "六安市人民政府办公室关于推广亩均效益评价工作的实施意见（试行）",
+      "link": "https://gxj.luan.gov.cn/public/6608211/9851881.html",
+      "publishDate": "2021-12-03 17:07:50",
+      "fileNum": "六政办〔2021〕35号",
+      "redirectLink": ""
+     }
+    ]
+   },
+   {
+    "catId": 7035531,
+    "name": "其他政策文件",
+    "link": "/public/column/6608211?type=4&action=list&catId=7035531",
+    "redirectLink": false,
+    "childPublicContentList": [
+     {
+      "id": 5111405,
+      "catId": 7035531,
+      "organId": 6608211,
+      "title": "关于做好2026年度创新型中小企业评价及复核有关工作的通知",
+      "link": "https://gxj.luan.gov.cn/public/6608211/10758623.html",
+      "publishDate": "2026-03-19 17:54:57",
+      "fileNum": "",
+      "redirectLink": ""
+     },
+     {
+      "id": 5105173,
+      "catId": 7035531,
+      "organId": 6608211,
+      "title": "关于公布2025年度基础级智能工厂名单的通知",
+      "link": "https://gxj.luan.gov.cn/public/6608211/10743334.html",
+      "publishDate": "2026-01-12 08:46:02",
+      "fileNum": "",
+      "redirectLink": ""
+     }
+    ]
+   }
+  ]
+ }
+]

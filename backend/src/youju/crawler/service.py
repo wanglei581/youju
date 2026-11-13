@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
+from threading import Lock
 
 from sqlalchemy import select
 from sqlalchemy.dialects.mysql import insert as mysql_insert
@@ -18,16 +19,19 @@ from youju.classify import doc_kind
 from youju.crawler.adapters import (
     LIST_API_OPEN_KEY,
     LIST_API_REFUSED,
+    LONSUN,
     ListApi,
     api_items_merged,
     api_parts,
     api_readable,
     api_refusal,
+    fetch_api_follow,
     find_list_api,
     gkmlpt_categories,
 )
 from youju.crawler.fetcher import FetchResult
 from youju.crawler.listing import ListItem, extract_items
+from youju.crawler.lonsun import lonsun_unrecognized_reason
 from youju.crawler.urls import host_of, public_url, url_key
 from youju.dedup import reconcile_documents
 from youju.models import URL_KEY_MAX, Document, Source, SourceCheck, TakedownBlock
@@ -47,6 +51,23 @@ class Fetcher:
         self, url: str, same_address_only: bool = False
     ) -> FetchResult:  # pragma: no cover - 接口定义
         raise NotImplementedError
+
+
+class CatalogCache:
+    """一轮内共享栏目树结果；同一地址的并发请求只发一次。"""
+
+    def __init__(self):
+        self._lock = Lock()
+        self._locks: dict[str, Lock] = {}
+        self._results: dict[str, FetchResult] = {}
+
+    def get(self, url: str, fetch) -> FetchResult:
+        with self._lock:
+            lock = self._locks.setdefault(url, Lock())
+        with lock:
+            if url not in self._results:
+                self._results[url] = fetch(url, same_address_only=True)
+            return self._results[url]
 
 
 @dataclass
@@ -224,16 +245,35 @@ def _items_via_adapter(
     parser_config: dict,
     today: date | None,
     api: ListApi | None = None,
+    catalog_cache: CatalogCache | None = None,
 ) -> _AdapterResult:
     """栏目页自己声明了集约化平台的列表接口（见 crawler/adapters.py）时，按它取列表。
 
     只请求页面写明的那个接口地址、参数原样照页面（D-128 读取护栏 ①），不另外构造请求；数字广东的
     地址只用页面写明的值、照它自己平台脚本的拼法得到，和它自己的页面发出的请求一样（D-013，见
     crawler/adapters.py 开头的说明）。"""
-    api = api or find_list_api(page.text, page.final_url or url, url)
+    api = api or find_list_api(
+        page.text, page.final_url or url, url, catalog_host=parser_config.get("lonsun_catalog_host")
+    )
     if api is None or parser_config.get(LIST_API_OPEN_KEY) != api.adapter:
         # 没认出接口，或来源没标"经接口读"（D-128）：不请求接口（调用的地方本来就先查过标记）
         return _AdapterResult([])
+    first_url = api.url
+    tree_fetch = (
+        (lambda url, **_kwargs: catalog_cache.get(url, fetcher.fetch))
+        if catalog_cache is not None
+        else fetcher.fetch
+    )
+    followed, first_result, kind, reason = fetch_api_follow(api, tree_fetch)
+    if kind == "blocked":
+        return _AdapterResult([], api.adapter, first_result, refused=reason, api_url=first_url)
+    if kind == "down":
+        if first_result.status == "ok":
+            return _AdapterResult([], api.adapter, api_url=first_url, part=reason)
+        return _AdapterResult([], api.adapter, first_result, api_url=first_url, part="栏目树脚本：")
+    if kind == "unrecognized":
+        return _AdapterResult([], api.adapter, api_url=first_url, part=reason)
+    api = followed
     # 只取页面写明的那个地址，跳到别处不跟（D-128 读取护栏 ①）
     parts = api_parts(api)
     texts: list[str] = []
@@ -243,21 +283,26 @@ def _items_via_adapter(
         label = f"分类 {part.category_id}：" if len(parts) > 1 else ""
         result = fetcher.fetch(part.url, same_address_only=True)
         if result.status == "robots_disallowed":
-            return _AdapterResult([], api.adapter, result, api_url=api.url, part=label)
+            return _AdapterResult([], api.adapter, result, api_url=first_url, part=label)
         refused = api_refusal(part, result)
         if refused:
             return _AdapterResult(
-                [], api.adapter, result, refused=f"{label}{refused}", api_url=api.url, part=label
+                [], api.adapter, result, refused=f"{label}{refused}", api_url=first_url, part=label
             )
         if result.status != "ok":
-            return _AdapterResult([], api.adapter, result, api_url=api.url, part=label)
-        if len(parts) > 1 and not api_readable(part, result.text):
+            return _AdapterResult([], api.adapter, result, api_url=first_url, part=label)
+        if (len(parts) > 1 or api.adapter == LONSUN) and not api_readable(part, result.text):
             # 几个分类合读时，有一个回了但读不出（空白、维护页）：整栏这次没读出，记"读不出"、
             # 写明是哪个分类，下次再试；不拿别的分类的条目顶上
-            return _AdapterResult([], api.adapter, api_url=api.url, part=label)
+            return _AdapterResult(
+                [],
+                api.adapter,
+                api_url=first_url,
+                part=label or "列表接口：空白或维护页面，这次没取到",
+            )
         texts.append(result.text)
     items = api_items_merged(api, texts, parser_config, today)
-    return _AdapterResult(items, api.adapter, api_url=api.url)
+    return _AdapterResult(items, api.adapter, api_url=first_url)
 
 
 def check_source(
@@ -266,6 +311,7 @@ def check_source(
     fetcher: Fetcher,
     failure_threshold: int = 3,
     today: date | None = None,
+    catalog_cache: CatalogCache | None = None,
 ) -> SourceCheck:
     """检查一个来源：先抓取和识别，再在一个短事务里入库、记录结果。
 
@@ -293,12 +339,34 @@ def check_source(
             else extract_items(result.text, result.final_url or url, parser_config, today=today)
         )
         api = None
-        if gkmlpt or (len(items) < ADAPTER_MIN_ITEMS and not parser_config.get("item_selector")):
-            api = find_list_api(result.text, result.final_url or url, url)
+        attempted_api = gkmlpt or (
+            len(items) < ADAPTER_MIN_ITEMS and not parser_config.get("item_selector")
+        )
+        if attempted_api:
+            api = find_list_api(
+                result.text,
+                result.final_url or url,
+                url,
+                catalog_host=parser_config.get("lonsun_catalog_host"),
+            )
         if gkmlpt and api is None:
             # 部门页上认不出数字广东的列表接口（改版、分类没了或跳到别处）：不请求接口，记读不出、
             # 写明原因，进失败清单等复检
             status, error = "parse_empty", GKMLPT_UNRECOGNIZED_MESSAGE
+        elif (
+            attempted_api
+            and api is None
+            and (
+                reason := lonsun_unrecognized_reason(
+                    result.text,
+                    result.final_url or url,
+                    url,
+                    catalog_host=parser_config.get("lonsun_catalog_host"),
+                )
+            )
+        ):
+            items = []
+            status, error = "parse_empty", f"待人工处理：{reason}"
         elif api is not None and parser_config.get(LIST_API_OPEN_KEY) != api.adapter:
             # D-128：来源没标"经接口读"（复检、抽查合格、打开时才写）——不走接口、不读，也不悄悄
             # 记成 0 条：记"读不出"并写明待复检，进失败清单等复检
@@ -313,7 +381,7 @@ def check_source(
             status, error = LIST_API_REFUSED, f"{before}（之前被读取护栏拦下，暂不再请求）"
             result = FetchResult(url, LIST_API_REFUSED, http_status=result.http_status)
         elif api is not None:
-            via = _items_via_adapter(fetcher, result, url, parser_config, today, api)
+            via = _items_via_adapter(fetcher, result, url, parser_config, today, api, catalog_cache)
             note = parser_config.get(LIST_API_REFUSED_KEY)
             moved = not isinstance(note, dict) or note.get("url") != via.api_url
             if note is not None and not via.refused and (moved or via.fetch is None):
@@ -330,7 +398,12 @@ def check_source(
                 # 读取护栏（D-128）：接口返回不是成功、带权限要求、要登录或验证码、明确拒绝
                 # → 记不能抓、停抓；栏目页上零星认出的一两条也不收（列表在接口里，读不了）
                 items = []
-                status, error = LIST_API_REFUSED, f"列表接口（{via.adapter}）：{via.refused}"
+                status = LIST_API_REFUSED
+                error = (
+                    via.refused
+                    if via.adapter == LONSUN
+                    else f"列表接口（{via.adapter}）：{via.refused}"
+                )
                 note = {"url": via.api_url, "reason": error, "at": started.isoformat()}
                 config_set[LIST_API_REFUSED_KEY] = note
                 if via.fetch is not None and via.fetch.http_status:
@@ -339,7 +412,11 @@ def check_source(
                 # 列表接口被 robots 禁止：和读取护栏一样，零星条目不收，记 robots 禁止（停抓）
                 items = []
                 status = via.fetch.status
-                error = f"列表接口（{via.adapter}）：{via.part}{via.fetch.error}"
+                error = (
+                    f"列表接口：{via.fetch.error or 'robots.txt 禁止'}"
+                    if via.adapter == LONSUN
+                    else f"列表接口（{via.adapter}）：{via.part}{via.fetch.error}"
+                )
             elif via.fetch is not None:
                 # 列表接口这次没取到（网络不通、超时、5xx 等）：照实记失败、下次再试，不当成
                 # "改版认不出"；栏目页上零星认出的一两条也不收，免得把这次失败盖成成功
@@ -349,7 +426,11 @@ def check_source(
                     if via.fetch.status == "redirect"
                     else via.fetch.status
                 )
-                status, error = via.fetch.status, f"列表接口（{via.adapter}）：{via.part}{why}"
+                status = via.fetch.status
+                if via.adapter == LONSUN:
+                    error = f"{via.part or '列表接口：'}{why}"
+                else:
+                    error = f"列表接口（{via.adapter}）：{via.part}{why}"
                 if via.fetch.http_status:
                     result = FetchResult(url, "http_error", http_status=via.fetch.http_status)
             else:
@@ -358,7 +439,11 @@ def check_source(
                 items = []
                 if via.part:
                     status = "parse_empty"
-                    error = f"列表接口（{via.adapter}）：{via.part}返回读不出列表，下次再试"
+                    error = (
+                        via.part
+                        if via.part.startswith(("栏目树脚本：", "列表接口："))
+                        else f"列表接口（{via.adapter}）：{via.part}返回读不出列表，下次再试"
+                    )
         if not items and status == "ok":
             status, error = "parse_empty", PARSE_EMPTY_MESSAGE
 
@@ -443,6 +528,8 @@ def crawl_sources(
         for source in sources:
             by_host[host_of(source.url)].append(source.id)
 
+    catalog_cache = CatalogCache()
+
     def run_host(ids: list[int]) -> list[CheckSummary]:
         summaries = []
         with session_factory() as session:
@@ -452,7 +539,9 @@ def crawl_sources(
                     source = session.get(Source, source_id)
                     if source is None:
                         continue
-                    check = check_source(session, source, fetcher, failure_threshold)
+                    check = check_source(
+                        session, source, fetcher, failure_threshold, catalog_cache=catalog_cache
+                    )
                 except Exception:  # 单个来源出错不影响其他来源
                     log.error("检查来源 #%s 时出错（内部错误）", source_id)
                     recorded = _record_internal_error(

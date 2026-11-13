@@ -703,6 +703,16 @@ def enable_sources(
                     **(source.parser_config or {}),
                     LIST_API_OPEN_KEY: list_api_adapter(source.url),
                 }
+                from youju.crawler.adapters import LONSUN
+                from youju.crawler.lonsun import LONSUN_CITY_PORTALS
+
+                if source.parser_config[LIST_API_OPEN_KEY] == LONSUN:
+                    portal = LONSUN_CITY_PORTALS.get((source.province, source.city))
+                    if portal:
+                        source.parser_config = {
+                            **source.parser_config,
+                            "lonsun_catalog_host": portal,
+                        }
                 note += "，经接口读（D-128）"
             source.note = f"{source.note}；{note}" if source.note else note
         result.enabled += 1

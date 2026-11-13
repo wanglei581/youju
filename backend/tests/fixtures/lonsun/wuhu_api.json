@@ -1,0 +1,114 @@
+[
+ {
+  "catId": 6732121,
+  "name": "部门文件",
+  "link": "/public/column/6596381?type=4&action=list&catId=6732121",
+  "redirectLink": false,
+  "childPublicContentList": [
+   {
+    "id": 25583404,
+    "catId": 6732121,
+    "organId": 6596381,
+    "title": "芜湖市财政局关于进一步加强市本级预算单位政府采购工作管理的通知",
+    "link": "https://czgz.wuhu.gov.cn/openness/public/6596381/41373877.html",
+    "publishDate": "2026-10-14 10:10:58",
+    "fileNum": "财采〔2026〕342号",
+    "redirectLink": ""
+   },
+   {
+    "id": 25514077,
+    "catId": 6732121,
+    "organId": 6596381,
+    "title": "芜湖市财政局关于印发《2025年度市级部门决算公开工作方案》的通知",
+    "link": "https://czgz.wuhu.gov.cn/openness/public/6596381/41288197.html",
+    "publishDate": "2026-08-24 10:55:14",
+    "fileNum": "财库〔2026〕283号",
+    "redirectLink": ""
+   }
+  ]
+ },
+ {
+  "catId": 6945921,
+  "name": "现行有效规范性文件",
+  "link": "/public/column/6596381?type=4&action=list&catId=6945921",
+  "redirectLink": false,
+  "childPublicContentList": [
+   {
+    "id": 24794758,
+    "catId": 6945921,
+    "organId": 6596381,
+    "title": "关于印发《芜湖市政府采购代理机构及从业人员管理办法》《芜湖市政府采购代理机构及从业人员综合评价细则》的通知",
+    "link": "https://czgz.wuhu.gov.cn/openness/public/6596381/40415971.html",
+    "publishDate": "2025-09-23 15:55:15",
+    "fileNum": "财采〔2025〕387号",
+    "redirectLink": ""
+   },
+   {
+    "id": 23767776,
+    "catId": 6945921,
+    "organId": 6596381,
+    "title": "芜湖市财政局等部门印发《关于改革完善市级财政科研经费管理的若干措施》的通知",
+    "link": "https://czgz.wuhu.gov.cn/openness/public/6596381/38921637.html",
+    "publishDate": "2023-12-06 11:59:58",
+    "fileNum": "财教〔2023〕522号",
+    "redirectLink": ""
+   }
+  ]
+ },
+ {
+  "catId": 6732131,
+  "name": "规范性文件立改废",
+  "link": "/public/column/6596381?type=4&action=list&catId=6732131",
+  "redirectLink": false,
+  "childPublicContentList": [
+   {
+    "id": 24249990,
+    "catId": 6732131,
+    "organId": 6596381,
+    "title": "文件清理：芜湖市财政局现行有效规范性文件目录（截至2026年10月30日）",
+    "link": "https://czgz.wuhu.gov.cn/openness/public/6596381/39627942.html",
+    "publishDate": "2026-11-02 14:47:21",
+    "fileNum": "",
+    "redirectLink": ""
+   },
+   {
+    "id": 24249978,
+    "catId": 6732131,
+    "organId": 6596381,
+    "title": "文件清理：芜湖市财政局废止和失效规范性文件目录（截至2026年10月30日）",
+    "link": "https://czgz.wuhu.gov.cn/openness/public/6596381/39627927.html",
+    "publishDate": "2026-11-02 14:47:40",
+    "fileNum": "",
+    "redirectLink": ""
+   }
+  ]
+ },
+ {
+  "catId": 6945931,
+  "name": "废止失效规范性文件",
+  "link": "/public/column/6596381?type=4&action=list&catId=6945931",
+  "redirectLink": false,
+  "childPublicContentList": [
+   {
+    "id": 24100856,
+    "catId": 6945931,
+    "organId": 6596381,
+    "title": "芜湖市地方金融监督管理局芜湖市市场监督管理局中国人民银行芜湖市中心支行中国银行保险监督管理委员会芜湖监管分局关于印发芜湖市市场主体贷款财政贴息办法的通知",
+    "link": "https://czgz.wuhu.gov.cn/openness/public/6596381/39401849.html",
+    "publishDate": "2023-06-01 17:24:07",
+    "fileNum": "芜金〔2023〕44号",
+    "redirectLink": ""
+   },
+   {
+    "id": 24100859,
+    "catId": 6945931,
+    "organId": 6596381,
+    "title": "芜湖市地方金融监督管理局  芜湖市财政局中国人民银行芜湖市中心支行中国银行保险监督管理委员会芜湖监管分局关于印发芜湖市普惠型小微企业贷款风险补偿资金管理暂行办法的通知",
+    "link": "https://czgz.wuhu.gov.cn/openness/public/6596381/39401852.html",
+    "publishDate": "2023-04-28 17:48:31",
+    "fileNum": "芜金〔2023〕34号",
+    "redirectLink": ""
+   }
+  ]
+ }
+]

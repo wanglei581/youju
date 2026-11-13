@@ -1,0 +1,845 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>政府信息公开</title>
+<script type="text/javascript" src="/assets/js/common.min.js?h5=true"></script>
+<script>
+    document.write('<script src="https://www.huainan.gov.cn/4964522/118319855.js?v=' + Math.random() + '"><\/script>');
+    </script>
+<script type="text/javascript" src="/assets/js/plugins/ztree/ztree.min.js"></script>
+</head>
+<body>
+<div class="xxgk_lmright fr"><div id="xxgk_lmcon"></div></div>
+<script type="text/html" id="xxgk_list_tpl"><table class="xxgk-table-list"><tbody></tbody></table></script>
+<script>
+        var _organTree = null;
+        var _organTree2 = null;
+        var executiveLevel = "4";
+        function PublicTree() {
+            var me = this;
+            me.organId = '118319855';
+            me.prefix = me.organId === '6596035' ? '' : '/huainan';
+            me.actions = {
+                label: me.prefix + '/site/label/8888',
+            };
+
+            me.dom = {
+                xxgk_lmright: $('.xxgk_lmright')
+            };
+
+            me.ztreeData = catalogs[me.organId];
+            me.ztreeData2 = catalogs[me.organId];
+            me.refresh = true;
+            me.hideIds = [];
+            me.currNode = null;
+            me.currCatId = Ls.url.get('catId');
+            me.query = Ls.url.parseQuery();
+            me.moreParams = {
+                labelName: "publicInfoList",
+                siteId: '4964522',
+                organId: me.organId,
+                pageSize: "10",
+                pageIndex: "1",
+                isDate: "true",
+                dateFormat: "yyyy-MM-dd",
+                length: "50",
+                type: "4",
+                action: "list",
+                result: "",
+                isJson: "true",
+                isSetValue: "true",
+                queryDetail: "true",
+                catId: ""
+            };
+            me.listParams = {
+                labelName: "publicInfoList",
+                siteId: '4964522',
+                organId: me.organId,
+                pageSize: "20",
+                pageIndex: "1",
+                isDate: "true",
+                dateFormat: "yyyy-MM-dd",
+                length: "50",
+                type: "4",
+                action: "list",
+                result: "",
+                isJson: "true",
+                keyWords: "",
+                isSetValue: "true",
+                queryDetail: "true",
+                catIds: ""
+            };
+            me.searchParams = {
+                labelName: "publicInfoList",
+                siteId: '4964522',
+                organId: me.organId,
+                pageSize: "10",
+                pageIndex: "1",
+                isDate: "true",
+                dateFormat: "yyyy-MM-dd",
+                length: "50",
+                type: "4",
+                action: "list",
+                result: "",
+                isJson: "true",
+                keyWords: "",
+                isSetValue: "true",
+                queryDetail: "true",
+                catIds: ""
+            };
+
+            me.init();
+        }
+
+        $.extend(PublicTree.prototype, {
+            bindEvt: function () {
+                var me = this;
+                $(document).on('click', '#gk-navigation a', function (e) {
+                    // 位置
+                    e.preventDefault();
+                    var id = $(this).data('catid');
+                    var href = $(this).attr('href');
+
+                    var node = _organTree2.getNodeByParam('id', id, null);
+                    if (node) {
+                        if (node.link) {
+                            window.open(node.link);
+                        } else {
+                            me.currNode = node;
+                            me.open();
+                        }
+                    } else if (href) {
+                        location.href = href;
+                    }
+                }).on('click', '.xxgk-mlbox .ico-link', function (e) {
+                    // 二级栏目链接图标
+                    var url = $(this).prev().attr('href');
+                    if (url) {
+                        window.open(url);
+                    }
+                }).on('click', '.xxgk-mlbox .ico:not(".ico-link")', function (e) {
+                    // 二级栏目箭头
+                    var mlbox = $(this).closest('.xxgk-mlbox');
+                    var content = mlbox.find('.xxgk-tab-content');
+
+                    if ($(this).hasClass('ico-up')) {
+                        $(this).removeClass('ico-up').addClass('ico-down');
+                    } else {
+                        $(this).removeClass('ico-down').addClass('ico-up');
+                    }
+
+                    content.slideToggle();
+                }).on('click', '.xxgk-tit-cat, .three-nav-a', function (e) {
+                    // 二级栏目名称
+                    if (!me.refresh) {
+                        e.preventDefault();
+                        var id = $(this).data('id');
+                        var href = $(this).attr('href');
+
+                        if ($(this).hasClass('three-nav-a')) {
+                            id = $(this).data('catid');
+                            href = $(this).data('url');
+                        }
+
+                        var node = _organTree2.getNodeByParam('id', id, null);
+                        if (node) {
+                            if (node.link) {
+                                window.open(node.link);
+                            } else {
+                                me.currNode = node;
+                                me.open();
+                            }
+                        } else if (href) {
+                            location.href = href;
+                        }
+                    }
+                }).on('click', '.xxgk-more a', function (e) {
+                    // 查看更多显示分页
+                    me.moreParams.catId = $(this).data('id');
+                    me.moreParams.pageIndex = 1;
+                    me.getMoreList();
+                }).on("shown.ls.tab", '.xxgk-mlbox [data-toggle]', function (e) {
+                    var data = $(this).data();
+                    // console.log('data', data);
+                    me.moreParams.catId = data.catid;
+                }).on('click', '.directory-search', function (e) {
+                    // 目录搜索
+                    var keyWords = $.trim($(this).closest('.gklm_search').find('[name="text"]').val());
+                    var res = /^[0-9a-zA-z\u0391-\uFFE5\s\[\]\(\),.《》]+$/;
+
+                    if (!keyWords) {
+                        Ls.tipsInfo('请输入搜索关键字');
+                        return;
+                    }
+                    if (!res.test(keyWords)) {
+                        Ls.tipsInfo('关键字不允许含有特殊字符');
+                        return;
+                    }
+
+                    var catId = $(this).data('id');
+                    var catIds = [];
+                    var node = _organTree2.getNodeByParam('id', catId, null);
+                    if (node) {
+                        $.each(_organTree2.transformToArray(node), function (i, v) {
+                            catIds.push(v.id);
+                        })
+                    }
+
+                    me.searchParams._list = 0;
+                    me.searchParams.catIds = catId;
+                    me.searchParams.keyWords = keyWords;
+                    me.searchParams.pageIndex = 1;
+                    me.getSearchList();
+                }).on('click', '.directory-search2', function (e) {
+                    // 内页目录搜索
+                    var keyWords = $.trim($(this).closest('.gklm_search_wrap').find('[name="text"]').val());
+                    var res = /^[0-9a-zA-z\u0391-\uFFE5\s\[\]\(\),.《》]+$/;
+
+                    if (!keyWords) {
+                        Ls.tipsInfo('请输入搜索关键字');
+                        return;
+                    }
+                    if (!res.test(keyWords)) {
+                        Ls.tipsInfo('关键字不允许含有特殊字符');
+                        return;
+                    }
+
+                    var catId = me.currNode ? me.currNode.id : me.currCatId;
+                    var catIds = [];
+                    var node = _organTree2.getNodeByParam('id', catId, null);
+                    if (node) {
+                        $.each(_organTree2.transformToArray(node), function (i, v) {
+                            catIds.push(v.id);
+                        })
+                    }
+
+                    me.searchParams._list = 1;
+                    me.searchParams.catIds = catId;
+                    me.searchParams.keyWords = keyWords;
+                    me.searchParams.pageIndex = 1;
+                    me.getSearchList();
+                }).on('click', '.danhui', function (e) {
+                    $(this).closest('.page-search-list').addClass('hide').siblings().removeClass('hide');
+                }).on('click', '.m-scroll .prev, .m-scroll .next', function (e) {
+                    var wrap = $(this).closest('.m-scroll');
+                    wrap.find('a[data-toggle]:first').trigger('mouseover');
+                }).on('click', '#qtzcwj', function (e) {
+                    // 其他政策文件
+                    var id = $(this).data('catid');
+
+                    var node = _organTree2.getNodeByParam('id', id, null);
+                    if (node) {
+                        if (node.link) {
+                            window.open(node.link);
+                        } else {
+                            me.currNode = node;
+                            me.open();
+                        }
+                    }
+                });
+            },
+            validator: function () {
+                var me = this;
+                window.using('validator', function () {
+                    me.Form$.validator({
+                        valid: function (form) {
+                            var params = me.Form$.serializeObject();
+                            me.params = $.extend({}, me.params, params);
+
+                            me.getList();
+                        }
+                    });
+                });
+            },
+            // 目录树数据处理：过滤、隐藏操作等
+            preprocessData: function () {
+                var me = this;
+
+                // 隐藏的栏目
+                var ids = [];
+                $.each(me.ztreeData, function (i, el) {
+                    if (el.isWebShow == false || el.isShow == false || el.staticTreeHide == 1 || hideCatalogId.indexOf(el.id) > -1) {
+                        el.isHidden = true;
+                        // ids.push(el.id);
+                    }
+                });
+                me.hideIds = ids;
+
+                me.ztreeData = $.grep(me.ztreeData, function (el) {
+                    return ids.indexOf(el.id) === -1;
+                })
+            },
+            // 渲染目录树
+            initTree: function () {
+                var me = this;
+
+                var ztree_settings =  { // 树的默认属性
+                    data: {
+                        simpleData: {
+                            idKey: 'id',
+                            pIdKey: 'parentId'
+                        },
+                        key: {
+                            title: 'name'
+                        }
+                    },
+                    view: {
+                        nameIsHTML: true,
+                        fontCss: function setFontCss(treeId, node) {
+                            var ids = [];
+                            if (ids.indexOf(node.id) > -1 || node.link || (node.isTreeShow === 0 && node.treeLink)) {
+                                var color = '#0e76cd';
+                                var organIds = [];
+                                if (organIds.indexOf(me.organId) > -1) {
+                                    color = '#ff0000';
+                                }
+                                return {color:color};
+                            } else {
+                                return {};
+                            }
+                        },
+                        addDiyDom:  function addDiyDom(treeId, node) {
+                            var ids = [];
+                            if (ids.indexOf(node.id) > -1 || node.link || (node.isTreeShow === 0 && node.treeLink)) {
+                                var cls = ''
+                                var organIds = [];
+                                if (organIds.indexOf(me.organId) > -1) {
+                                    cls = 'link-icon2';
+                                }
+                                var aObj = $("#" + node.tId + "_a");
+                                aObj.append('<span class="link-icon '+ cls +'"></span>').addClass('is-link');
+                            }
+                        }
+                    },
+                    callback: {
+                        onClick: function (event, treeId, node) {
+                            $('.gk_container > .xxgk-search-box').removeClass('hide');
+                            me.currNode = _organTree2.getNodeByParam('id', node.id, null);
+                            if (node.link) {
+                                window.open(node.link);
+                                return false;
+                            } else {
+                                me.open();
+                            }
+                        }
+                    }
+                };
+
+                _organTree = $.fn.zTree.init($('#organ_catalog_tree'), ztree_settings, me.ztreeData);
+                _organTree2 = $.fn.zTree.init($('#organ_catalog_tree2'), ztree_settings, me.ztreeData2);
+
+
+                $.each(_organTree.getNodes(), function (i, node) {
+                    delete node.children;
+                    node.isParent = false;
+                    _organTree.updateNode(node);
+                })
+
+                me.setSelect();
+                me.fuzzySearch(_organTree);
+            },
+            // 目录树选中
+            setSelect: function () {
+                var me = this;
+                var currCatId = me.currCatId;
+                if (currCatId) {
+                    var nodeCat = _organTree.getNodeByParam('id', currCatId, null);
+                    if (!nodeCat) {
+                        var pNode = me.findTopLevelParentNode(+currCatId, catalogs[me.organId]);
+                        if (pNode) {
+                            nodeCat = _organTree.getNodeByParam('id', pNode.id, null);
+                        }
+                    }
+
+                    if (nodeCat) {
+                        _organTree.selectNode(nodeCat, false, true);
+                        setTimeout(function () {
+                            $('html').animate({
+                                scrollTop: ($('#ls_position').offset().top - 100) + 'px'
+                            }, 800);
+                            if (nodeCat.isParent) {
+                                _organTree.expandNode(nodeCat, true, true, true);
+                            } else {
+                                _organTree.expandNode(nodeCat.getParentNode(), true, true, true);
+                            }
+                            me.setScroll(nodeCat);
+                        }, 500);
+                    }
+                }
+
+            },
+            findParentId: function () {
+                var me = this;
+                // 获取所有 id
+                var idMap = {};
+                $.each(me.ztreeData2, function(i, item) {
+                    idMap[item.id] = true;
+                });
+
+                // 过滤出一级节点（它们的 parentId 不在 idMap 中且不为 null）
+                var topLevelParentIds = [];
+                $.each(me.ztreeData2, function(i, item) {
+                    if (item.parentId != null && !idMap[item.parentId]) {
+                        topLevelParentIds.push(item.parentId);
+                    }
+                });
+
+                me.topLevelParentId = topLevelParentIds[0];
+            },
+            // 递归查找父节点
+            findTopLevelParentNode: function (nodeId, nodes) {
+                var me = this;
+                var currentNode = $.grep(nodes, function(node) {
+                    return node.id == nodeId;
+                })[0];
+
+                // 循环遍历，直到找到parentId
+                while (currentNode.parentId !== me.topLevelParentId) {
+                    currentNode = $.grep(nodes, function(node) {
+                        return node.id === currentNode.parentId;
+                    })[0];
+                }
+
+                return currentNode;
+            },
+            // 目录树定位
+            setScroll: function (treeNode) {
+                var treeNodeElement = $("#" + treeNode.tId);
+                var treeContainer = $(".wgk_xxknr");
+                var containerScrollTop = treeContainer.scrollTop();
+                var offsetTop = treeNodeElement.offset().top - treeContainer.offset().top;
+                var scrollDistance = offsetTop + containerScrollTop - 100;
+                treeContainer.animate({ scrollTop: scrollDistance }, 500);
+            },
+            // 目录树搜索
+            fuzzySearch: function (zTreeObj) {
+                var nameKey = zTreeObj.setting.data.key.name;
+                var isHighLight = true;
+                var isExpand = true;
+                zTreeObj.setting.view.nameIsHTML = isHighLight;
+
+                var metaChar = '[\\[\\]\\\\\^\\.\\|\\?\\*\\+\\(\\)]';
+                var rexMeta = new RegExp(metaChar, 'gi');
+
+                function ztreeFilter(zTreeObj, _keywords, callBackFunc) {
+                    if (!_keywords) {
+                        _keywords = ''; //default blank for _keywords
+                    }
+
+                    // function to find the matching node
+                    function filterFunc(node) {
+                        if (node && node.oldname && node.oldname.length > 0) {
+                            node[nameKey] = node.oldname; //recover oldname of the node if exist
+                        }
+                        zTreeObj.updateNode(node); //update node to for modifications take effect
+                        if (_keywords.length == 0) {
+                            //return true to show all nodes if the keyword is blank
+                            zTreeObj.showNode(node);
+                            zTreeObj.expandNode(node, isExpand);
+                            return true;
+                        }
+                        //transform node name and keywords to lowercase
+                        if (node[nameKey] && node[nameKey].toLowerCase().indexOf(_keywords.toLowerCase()) != -1) {
+                            if (isHighLight) { //highlight process
+                                var newKeywords = _keywords.replace(rexMeta, function (matchStr) {
+                                    //add escape character before meta characters
+                                    return '\\' + matchStr;
+                                });
+                                node.oldname = node[nameKey]; //store the old name
+                                var rexGlobal = new RegExp(newKeywords, 'gi');//'g' for global,'i' for ignore case
+                                //use replace(RegExp,replacement) since replace(/substr/g,replacement) cannot be used here
+                                node[nameKey] = node.oldname.replace(rexGlobal, function (originalText) {
+                                    //highlight the matching words in node name
+                                    var highLightText =
+                                            '<span style="color: whitesmoke;background-color: #cd2527;">'
+                                            + originalText
+                                            + '</span>';
+                                    return highLightText;
+                                });
+                                zTreeObj.updateNode(node); //update node for modifications take effect
+                            }
+                            zTreeObj.showNode(node);//show node with matching keywords
+                            return true; //return true and show this node
+                        }
+
+                        zTreeObj.hideNode(node); // hide node that not matched
+                        return false; //return false for node not matched
+                    }
+
+                    var nodesShow = zTreeObj.getNodesByFilter(filterFunc); //get all nodes that would be shown
+
+                    processShowNodes(nodesShow, _keywords);//nodes should be reprocessed to show correctly
+                }
+
+
+                function processShowNodes(nodesShow, _keywords) {
+                    var noData$ = $('#noData');
+                    noData$.addClass('dn');
+                    if (nodesShow && nodesShow.length > 0) {
+                        //process the ancient nodes if _keywords is not blank
+                        if (_keywords.length > 0) {
+                            $.each(nodesShow, function (n, obj) {
+                                var pathOfOne = obj.getPath();//get all the ancient nodes including current node
+                                if (pathOfOne && pathOfOne.length > 0) {
+                                    //i < pathOfOne.length-1 process every node in path except self
+                                    for (var i = 0; i < pathOfOne.length - 1; i++) {
+                                        zTreeObj.showNode(pathOfOne[i]); //show node
+                                        zTreeObj.expandNode(pathOfOne[i], true); //expand node
+                                    }
+                                }
+                            });
+                        } else { //show all nodes when _keywords is blank and expand the root nodes
+                            var rootNodes = zTreeObj.getNodesByParam('level', '0');//get all root nodes
+                            $.each(rootNodes, function (n, obj) {
+                                zTreeObj.expandNode(obj, true); //expand all root nodes
+                            });
+                        }
+                        $('.wgk_xxknr').scrollTop(0);
+                    } else {
+                        noData$.removeClass('dn');
+                    }
+                }
+
+                var timeoutId = null;
+                var lastKeyword = '';
+
+                function searchNodeLazy(_keywords) {
+                    if (timeoutId) {
+                        clearTimeout(timeoutId);
+                    }
+                    timeoutId = setTimeout(function () {
+                        if (lastKeyword === _keywords) {
+                            return;
+                        }
+                        ztreeFilter(zTreeObj, _keywords); //lazy load ztreeFilter function
+                        lastKeyword = _keywords;
+                    }, 500);
+                }
+
+                zTreeObj.searchNodeLazy = searchNodeLazy;
+            },
+            // 跳转方式
+            open: function () {
+                var me = this;
+                var url = '' + me.currNode.uri + '&nav=3';
+                if (me.refresh) {
+                    window.location.href = url;
+                    return;
+                } else {
+                    window.history.pushState(null, null, url);
+                }
+                me.setMeta();
+                me.getNav();
+                if (me.currNode.id === 159683764) {
+                    me.zdlyxxgkList();
+                } else if (me.currNode.children) {
+                    me.getNewList();
+                } else {
+                    me.listParams.pageIndex = 1;
+                    me.listParams.catId = me.currNode.id;
+                    me.getList();
+                }
+            },
+            // 左侧导航
+            getNav: function () {
+                var me = this;
+                Ls.ajaxGet({
+                    url: me.actions.label,
+                    dataType: 'HTML',
+                    data: {
+                        labelName: 'publicNav',
+                        organId: me.organId,
+                        catId: me.currNode.id,
+                        type: 4,
+                    },
+                }).done(function (str) {
+                    var nav = $('#publicNav');
+                    nav.html(str);
+                })
+            },
+            // 归档
+            getGd: function () {
+                var me = this;
+                Ls.ajaxGet({
+                    url: me.actions.label,
+                    dataType: 'HTML',
+                    data: {
+                        labelName: 'publicGuiDangPic',
+                        organId: me.organId,
+                        catId: me.currNode.id,
+                        isJson: true
+                    },
+                }).done(function (res) {
+                    if (typeof res === 'string') {
+                        res = JSON.parse(res);
+                    }
+                    if (res.istofile === '1') {
+                        $('.xxgk_lmright').append('<style>.init {background: url('+ res.fileurl +');width: '+ res.width +';height: '+ res.height +';}</style><div class="guidang init"></div>');
+                    }
+                });
+            },
+            // 左侧列表
+            getList: function () {
+                var me = this;
+                var tipsLoading = Ls.tipsLoading('加载中...', {times: 999999});
+                Ls.ajaxGet({
+                    url: me.actions.label,
+                    data: me.listParams,
+                }).done(function (res) {
+                    console.log('res', res)
+                    var data = res.data;
+                    $.each(data, function (i, item) {
+                        item.index = (me.listParams.pageIndex - 1) * me.listParams.pageSize + i + 1;
+                    })
+                    $('.xxgk_lmright #xxgk_lmcon').html(Ls.template('xxgk_list_tpl', {
+                        name: me.currNode.name,
+                        data: data
+                    }));
+
+                    me.setPagination(res);
+                }).always(function () {
+                    // me.getGd();
+                    tipsLoading.hide();
+                });
+            },
+            setPagination: function (res) {
+                var me = this;
+                var total = res.total;
+                var pageCount = res.pageCount;
+                var pageIndex = res.pageIndex;
+                var page_search = $('#page_public_info');
+
+                if (pageCount > 1) {
+                    page_search.show();
+                    Ls.pagination('#page_public_info', function (pageIndex) {
+                        me.listParams.pageIndex = pageIndex;
+                        me.getList();
+                    }, {
+                        currPage: (pageIndex + 1),
+                        pageCount: pageCount
+                    });
+                } else {
+                    page_search.hide();
+                }
+            },
+            // new列表
+            getNewList: function () {
+                var me = this;
+                var tipsLoading = Ls.tipsLoading('加载中...', {times: 999999});
+                Ls.ajaxGet({
+                    url: me.actions.label,
+                    data: {
+                        labelName: 'publicInfoList',
+                        siteId: '4964522',
+                        organId: me.organId,
+                        catId: me.currNode.id,
+                        num: 5,
+                        pageIndex: 1,
+                        pageSize: 15,
+                        action: 'city_page',
+                        type: 4,
+                        isJson: true,
+                    },
+                }).done(function (res) {
+                    // console.log('res', res)
+                    var isLink = [];
+
+                    var data = $.grep(res, function (item) {
+                        return me.hideIds.indexOf(item.catId) === -1;
+                    })
+
+                    $.each(data, function (i, item) {
+                        if (isLink.indexOf(item.catId) > -1) {
+                            item.redirectLink = true;
+                        }
+                    })
+
+
+                    $('.xxgk_lmright #xxgk_lmcon').html(Ls.template('xxgk_list_tpl_2025', {
+                        name: me.currNode.name,
+                        data: data,
+                    }));
+
+                    Ls.www.scroll('.m-scroll');
+                }).always(function () {
+                    // me.getGd();
+                    tipsLoading.hide();
+                });
+            },
+            // 更多列表
+            getMoreList: function () {
+                var me = this;
+                var tipsLoading = Ls.tipsLoading('加载中...', {times: 999999});
+                Ls.ajaxGet({
+                    url: me.actions.label,
+                    data: me.moreParams
+                }).done(function (res) {
+                    // console.log('res', res)
+                    var data = res.data;
+                    res.catId = me.moreParams.catId;
+                    // 设置序号
+                    $.each(data, function (i, item) {
+                        item.index = (me.moreParams.pageIndex - 1) * me.moreParams.pageSize + i + 1;
+                    })
+
+                    $('.list-box[data-id="'+ me.moreParams.catId +'"] .page-list').html(Ls.template('xxgk_table_list_tpl2', {
+                        catId: me.moreParams.catId,
+                        data: data
+                    }));
+
+                    me.setMorePagination(res);
+                }).always(function () {
+                    tipsLoading.hide();
+                });
+            },
+            setMorePagination: function (res) {
+                var me = this;
+                var catId = res.catId;
+                var total = res.total;
+                var pageCount = res.pageCount;
+                var pageIndex = res.pageIndex;
+                var page_search = $('#page_' + res.catId);
+
+                if (pageCount > 1) {
+                    page_search.show();
+                    Ls.pagination('#page_' + res.catId, function (pageIndex) {
+                        me.moreParams.catId = catId;
+                        me.moreParams.pageIndex = pageIndex;
+                        me.getMoreList();
+                    }, {
+                        currPage: (pageIndex + 1),
+                        pageCount: pageCount
+                    });
+                } else {
+                    page_search.hide();
+                }
+            },
+            // 搜索列表
+            getSearchList: function () {
+                var me = this;
+                var tipsLoading = Ls.tipsLoading('加载中...', {times: 999999});
+                Ls.ajaxGet({
+                    url: me.actions.label,
+                    data: me.searchParams
+                }).done(function (res) {
+                    console.log('res', res)
+                    var wrap$;
+                    var tpl = 'xxgk_table_list_tpl3';
+                    var data = res.data;
+                    res.keyWords = me.searchParams.keyWords;
+                    res.catIds = me.searchParams.catIds;
+                    // 设置序号
+                    $.each(data, function (i, item) {
+                        item.index = (me.searchParams.pageIndex - 1) * me.searchParams.pageSize + i + 1;
+                    })
+
+                    if (me.searchParams._list === 0) {
+                        wrap$ = $('.list-box[data-id="'+ me.searchParams.catIds +'"]');
+                        tpl = 'xxgk_table_list_tpl3';
+                    } else {
+                        wrap$ = $('.inner-list');
+                        tpl = 'xxgk_table_list_tpl4';
+                    }
+
+                    wrap$.find('>.page-list').addClass('hide').siblings().removeClass('hide');
+                    wrap$.find('>.page-search-list').html(Ls.template(tpl, res));
+
+
+                    me.setSearchPagination(res);
+                }).always(function () {
+                    tipsLoading.hide();
+                });
+            },
+            setSearchPagination: function (res) {
+                var me = this;
+                var keyWords = res.keyWords;
+                var catIds = res.catIds;
+                var total = res.total;
+                var pageCount = res.pageCount;
+                var pageIndex = res.pageIndex;
+                var page_search = $('#search_page_' + catIds);
+
+                if (pageCount > 1) {
+                    page_search.show();
+                    Ls.pagination('#search_page_' + catIds, function (pageIndex) {
+                        me.searchParams.keyWords = keyWords;
+                        me.searchParams.catIds = catIds;
+                        me.searchParams.pageIndex = pageIndex;
+                        me.getSearchList();
+                    }, {
+                        currPage: (pageIndex + 1),
+                        pageCount: pageCount
+                    });
+                } else {
+                    page_search.hide();
+                }
+            },
+            zdlyxxgkList: function () {
+                var me = this;
+                var data = _organTree2.getNodeByParam('id', me.currNode.id, null).children;
+
+                $('.xxgk_lmright #xxgk_lmcon').html(Ls.template('zDTpl', {
+                    data: data,
+                }));
+
+            },
+            // meta信息修改
+            setMeta: function () {
+                var me = this;
+                $('meta[name="ColumnType"],meta[name="ColumnDescription"],meta[name="ColumnKeywords"]').attr('content', me.currNode.name);
+                $('meta[name="Attribute"]').attr('content', me.currNode.attribute);
+            },
+            // 判断是否兼容改变url
+            isRefresh: function () {
+                var me = this;
+                if ('pushState' in history) {
+                    me.refresh = false;
+                }
+            },
+            getData: function () {
+                var me = this;
+                var node = _organTree2.getNodeByParam('id', me.currCatId, null);
+                if (node && me.query.type === '4' && me.query.action === 'list') {
+                    me.currNode = node;
+                    me.open();
+                }
+            },
+            getReportyear: function () {
+                var me = this;
+                Ls.ajaxGet({
+                    url: '/public/getPublicOrganReportYears?organId=118319855',
+                }).done(function (res) {
+                    var data = res.data ? res.data.split(',').reverse() : [];
+                    var str = '';
+                    var action = me.organId === '6596035' ? 'list' : 'detail';
+                    $.each(data, function (i, item) {
+                        str += '<li><a href="/public/column/118319855?type=3&nav=4&action='+ action +'&title='+ item +'" id="yearReport'+ item +'">'+ item +'年</a></li>';
+                    })
+
+                    $('#report_year_ul').html(str);
+                })
+            },
+            init: function () {
+                var me = this;
+                me.bindEvt();
+                me.isRefresh();
+                me.preprocessData();
+                me.findParentId();
+                me.initTree();
+                me.getData();
+                me.getReportyear();
+            }
+        });
+
+        $(function () {
+            new PublicTree();
+        })
+
+        function searchTree() {
+            var name = $.trim($('#catalogName').val());
+            _organTree.searchNodeLazy(name);
+        }
+    </script>
+</body>
+</html>

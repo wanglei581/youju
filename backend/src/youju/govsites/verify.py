@@ -18,10 +18,12 @@ from youju.crawler.adapters import (
     api_parts,
     api_readable,
     api_refusal,
+    fetch_api_follow,
     find_list_api,
     gkmlpt_categories,
 )
 from youju.crawler.listing import extract_items
+from youju.crawler.lonsun import LONSUN_CITY_PORTALS, lonsun_unrecognized_reason
 from youju.crawler.urls import host_of
 from youju.govsites.inventory import OPTIONAL_DEPTS, STANDARD_DEPTS, XXGK_TAG, DeptRow
 from youju.govsites.links import page_links, parse_html
@@ -148,7 +150,8 @@ def check_one(cache: PageCache, col: ColumnCheck, today: date) -> ColumnCheck:
     via_api = False
     if len(items) < 3:
         # 和正式抓取一样：页面声明了集约化平台的列表接口就按它读（crawler/adapters.py）
-        api = find_list_api(r.text, final, col.url)
+        catalog_host = LONSUN_CITY_PORTALS.get((col.province, col.city))
+        api = find_list_api(r.text, final, col.url, catalog_host=catalog_host)
         if gkmlpt and api is None:
             col.result, col.reason = (
                 NEEDS_SCRIPT,
@@ -156,7 +159,17 @@ def check_one(cache: PageCache, col: ColumnCheck, today: date) -> ColumnCheck:
                 "跳到别处",
             )
             return col
+        if api is None:
+            reason = lonsun_unrecognized_reason(r.text, final, col.url, catalog_host=catalog_host)
+            if reason:
+                col.result, col.reason = NEEDS_SCRIPT, f"待人工处理：{reason}"
+                return col
         if api is not None:
+            api, _, kind, reason = fetch_api_follow(api, cache.get)
+            if kind:
+                col.result = {"blocked": BLOCKED, "down": DOWN, "unrecognized": NEEDS_SCRIPT}[kind]
+                col.reason = f"待人工处理：{reason}" if kind == "unrecognized" else reason
+                return col
             parts = api_parts(api)
             texts: list[str] = []
             for part in parts:

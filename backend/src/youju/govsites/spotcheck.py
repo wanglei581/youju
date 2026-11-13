@@ -419,7 +419,9 @@ def attribution_check(
 # —— 取证（要数据库和页面缓存）——
 
 
-def _first_list_item(cache, url: str, today: date):
+def _first_list_item(
+    cache, url: str, today: date, reasons: list[str] | None = None, *, catalog_host=None
+):
     """库里这一格没有文件时（合并部门共用栏目，文件挂在先抓到的来源下）：重读列表页取第一条带日期的。
 
     数字广东信息公开平台的分类（"部门页#xxgk-gkmlpt-编号"）：列表只在接口里，读部门页（去掉 # 后面）
@@ -429,10 +431,12 @@ def _first_list_item(cache, url: str, today: date):
         api_parts,
         api_readable,
         api_refusal,
+        fetch_api_follow,
         find_list_api,
         gkmlpt_categories,
     )
     from youju.crawler.listing import extract_items
+    from youju.crawler.lonsun import lonsun_unrecognized_reason
 
     gkmlpt = gkmlpt_categories(url) is not None
     page_url = url.split("#", 1)[0] if gkmlpt else url
@@ -442,8 +446,22 @@ def _first_list_item(cache, url: str, today: date):
     final = r.final_url or page_url
     items = [] if gkmlpt else extract_items(r.text, final, today=today)
     if len(items) < 3:
-        api = find_list_api(r.text, final, url)
+        api = find_list_api(r.text, final, url, catalog_host=catalog_host)
+        if api is None:
+            reason = lonsun_unrecognized_reason(r.text, final, url, catalog_host=catalog_host)
+            if reason and reasons is not None:
+                reasons.append(f"待人工处理：{reason}")
         if api is not None:
+            api, _, kind, reason = fetch_api_follow(api, cache.get)
+            if kind:
+                if reasons is not None:
+                    label = {
+                        "blocked": "不能抓",
+                        "down": "这次没取到",
+                        "unrecognized": "待人工处理",
+                    }[kind]
+                    reasons.append(f"{label}：{reason}")
+                return None
             # 只取页面写明的地址、过读取护栏（D-128）；被拦下的不读
             texts: list[str] = []
             for part in api_parts(api):
@@ -482,7 +500,9 @@ def evidence_for(
         ev.update(程序结论=REVIEW, 打开="看板里这一格没有栏目网址")
         return ev
     candidates: list[tuple[str, str, date | None, str]] = []
-    ids = list(session.scalars(select(Source.id).where(Source.url.in_(urls))))
+    sources = list(session.scalars(select(Source).where(Source.url.in_(urls))))
+    ids = [source.id for source in sources]
+    sources_by_url = {source.url: source for source in sources}
     if ids:
         rows = session.execute(
             select(Document.title, Document.url, Document.publish_date)
@@ -491,15 +511,26 @@ def evidence_for(
             .limit(10)
         ).all()
         candidates = [(t, u, d, "库里") for t, u, d in rows]
+    reasons: list[str] = []
     if not candidates:
         for url in urls:
-            item = _first_list_item(cache, url, today)
+            from youju.crawler.lonsun import LONSUN_CITY_PORTALS
+
+            source = sources_by_url.get(url)
+            catalog_host = (
+                (source.parser_config or {}).get("lonsun_catalog_host")
+                if source is not None
+                else LONSUN_CITY_PORTALS.get((cell.get("省份", ""), cell.get("城市", "")))
+            )
+            item = _first_list_item(cache, url, today, reasons, catalog_host=catalog_host)
             if item is not None:
                 candidates = [(item.title, item.url, item.publish_date, "列表页重读")]
                 break
     if not candidates:
         ev.update(
-            来源="列表页重读", 程序结论=REVIEW, 打开="库里没有文件，列表页也没读出带日期的条目"
+            来源="列表页重读",
+            程序结论=REVIEW,
+            打开="；".join(reasons) if reasons else "库里没有文件，列表页也没读出带日期的条目",
         )
         return ev
     # 先挑政府网站上的网页（栏目里转的新华网、公众号外链和附件不核），原文打不开就顺延，最多试 3 份

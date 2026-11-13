@@ -1,6 +1,7 @@
 import logging
 from datetime import UTC, date, datetime, timedelta
 
+import pytest
 from sqlalchemy import func, select
 
 from tests.conftest import read_fixture_html
@@ -880,3 +881,153 @@ def test_gkmlpt_later_direct_category_end_to_end(session):
     check = check_source(session, source, fetcher, today=date(2026, 11, 12))
     assert (check.status, check.items_found) == ("ok", 7)
     assert fetcher.requested == [url, first, second]
+
+
+def _lonsun_service_fixture():
+    from pathlib import Path
+
+    from youju.crawler.adapters import api_follow, find_list_api
+
+    path = Path(__file__).parent / "fixtures" / "lonsun"
+
+    def read(name):
+        return (path / name).read_text(encoding="utf-8")
+
+    url = "https://jx.ah.gov.cn/public/column/6991?type=4&action=list&catId=49949451"
+    html = read("jx_page.html")
+    tree = find_list_api(html, url, url)
+    catalog = read("jx_catalog.js")
+    api = api_follow(tree, page(tree.url, catalog))
+    return url, html, tree.url, catalog, api.url, read("jx_api.json")
+
+
+def test_lonsun_service_two_steps_and_unopened(session):
+    url, html, tree, catalog, api, body = _lonsun_service_fixture()
+    source = make_source(session, url)
+    check = check_source(
+        session, source, RecordingFetcher({url: [page(url, html)]}), today=date(2026, 11, 13)
+    )
+    assert check.status == "parse_empty" and "待复检" in check.error
+    source.parser_config = {"list_api_open": "龙讯public"}
+    session.commit()
+    fetcher = RecordingFetcher(
+        {url: [page(url, html)], tree: [page(tree, catalog)], api: [page(api, body)]}
+    )
+    check = check_source(session, source, fetcher, today=date(2026, 11, 13))
+    assert check.status == "ok" and check.items_found == 3
+    assert fetcher.requested == [url, tree, api]
+
+
+def test_lonsun_service_refusal_remembers_tree(session):
+    url, html, tree, catalog, api, _ = _lonsun_service_fixture()
+    source = make_source(session, url)
+    source.parser_config = {"list_api_open": "龙讯public"}
+    session.commit()
+    denied = FetchResult(api, "http_error", api, 403)
+    fetcher = RecordingFetcher({url: [page(url, html)], tree: [page(tree, catalog)], api: [denied]})
+    result = check_source(session, source, fetcher, today=date(2026, 11, 13))
+    assert result.status == "list_api_refused" and "列表接口" in result.error
+    session.refresh(source)
+    assert source.parser_config["list_api_refused"]["url"] == tree
+    again = RecordingFetcher({url: [page(url, html)]})
+    assert check_source(session, source, again).status == "list_api_refused"
+    assert again.requested == [url]
+
+
+@pytest.mark.parametrize("tree_status", ["ok", "robots_disallowed", "robots_error"])
+def test_lonsun_crawl_shares_tree_per_round(session_factory, tree_status):
+    from youju.crawler.adapters import api_follow, find_list_api
+
+    url, html, tree, catalog, api, body = _lonsun_service_fixture()
+    second = url.replace("49949451", "49949431")
+    second_tree = find_list_api(html, second, second)
+    second_api = api_follow(second_tree, page(tree, catalog))
+    with session_factory() as session:
+        sources = [make_source(session, u) for u in (url, second)]
+        for source in sources:
+            source.parser_config = {"list_api_open": "龙讯public"}
+        session.commit()
+        ids = [source.id for source in sources]
+    response = (
+        page(tree, catalog)
+        if tree_status == "ok"
+        else FetchResult(tree, tree_status, error=tree_status)
+    )
+    fetcher = RecordingFetcher(
+        {
+            url: [page(url, html)],
+            second: [page(second, html)],
+            tree: [response],
+            api: [page(api, body)],
+            second_api.url: [page(second_api.url, "[]")],
+        }
+    )
+    results = crawl_sources(session_factory, ids, fetcher, max_workers=2)
+    assert fetcher.requested.count(tree) == 1
+    if tree_status != "ok":
+        assert all("栏目树脚本" in result.error for result in results)
+        assert all(
+            result.status
+            == ("list_api_refused" if tree_status == "robots_disallowed" else "robots_error")
+            for result in results
+        )
+
+
+@pytest.mark.parametrize("tree_status", ["robots_disallowed", "robots_error"])
+def test_lonsun_source_tree_robots(session, tree_status):
+    url, html, tree, _, _, _ = _lonsun_service_fixture()
+    source = make_source(session, url)
+    source.parser_config = {"list_api_open": "龙讯public"}
+    session.commit()
+    fetcher = RecordingFetcher(
+        {url: [page(url, html)], tree: [FetchResult(tree, tree_status, error=tree_status)]}
+    )
+    result = check_source(session, source, fetcher)
+    assert result.status == (
+        "list_api_refused" if tree_status == "robots_disallowed" else "robots_error"
+    )
+    assert "栏目树脚本" in result.error
+
+
+def test_lonsun_source_unrecognized_reason(session):
+    url, html, _, _, _, _ = _lonsun_service_fixture()
+    html = html.replace("/49631981/6991.js", "https://www.wuhu.gov.cn/49631981/6991.js")
+    source = make_source(session, url)
+    result = check_source(session, source, RecordingFetcher({url: [page(url, html)]}))
+    assert result.status == "parse_empty" and "不在同一个政府网站域名" in result.error
+
+
+def test_lonsun_county_service_uses_configured_city_portal(session):
+    from pathlib import Path
+
+    from youju.crawler.adapters import api_follow, find_list_api
+
+    path = Path(__file__).parent / "fixtures" / "lonsun"
+
+    def read(name):
+        return (path / name).read_text(encoding="utf-8")
+
+    url = "https://www.yjq.gov.cn/public/column/6596381?type=4&catId=6732111&action=list"
+    html = read("wuhu_page.html")
+    tree = find_list_api(html, url, url, catalog_host="www.wuhu.gov.cn")
+    catalog = read("wuhu_catalog.js")
+    api = api_follow(tree, page(tree.url, catalog))
+    source = make_source(session, url)
+    source.parser_config = {"list_api_open": "龙讯public"}
+    session.commit()
+    fetcher = RecordingFetcher({url: [page(url, html)]})
+    check = check_source(session, source, fetcher, today=date(2026, 11, 13))
+    assert check.status == "parse_empty" and "www.wuhu.gov.cn" in check.error
+    assert fetcher.requested == [url]
+    source.parser_config = {"list_api_open": "龙讯public", "lonsun_catalog_host": "www.wuhu.gov.cn"}
+    session.commit()
+    fetcher = RecordingFetcher(
+        {
+            url: [page(url, html)],
+            tree.url: [page(tree.url, catalog)],
+            api.url: [page(api.url, read("wuhu_api.json"))],
+        }
+    )
+    check = check_source(session, source, fetcher, today=date(2026, 11, 13))
+    assert check.status == "ok" and check.items_found == 8
+    assert fetcher.requested == [url, tree.url, api.url]

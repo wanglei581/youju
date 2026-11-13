@@ -1,0 +1,29 @@
+{
+ "pageCount": 1,
+ "pageIndex": 0,
+ "pageSize": 20,
+ "startNumber": 0,
+ "total": 2,
+ "data": [
+  {
+   "id": 40795321,
+   "catId": 14237535,
+   "organId": 50,
+   "title": "关于印发《淮北市重点建设用地土壤污染状况调查实施细则（试行）》的通知",
+   "link": "https://sthjj.huaibei.gov.cn/zwgk/public/50/62413681.html",
+   "publishDate": "2022-09-20 08:48:07",
+   "fileNum": "淮环委办,2022,64",
+   "redirectLink": ""
+  },
+  {
+   "id": 40784391,
+   "catId": 14237535,
+   "organId": 50,
+   "title": "关于印发《淮北市机动车排放检验机构记分制管理办法》的通知",
+   "link": "https://sthjj.huaibei.gov.cn/zwgk/public/50/62396971.html",
+   "publishDate": "2020-12-30 11:55:23",
+   "fileNum": "淮环,2020,17",
+   "redirectLink": ""
+  }
+ ]
+}
