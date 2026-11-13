@@ -86,13 +86,12 @@
     </view>
     <view class="vline"></view>
     <view class="summary-text">
+      <!-- "来自 N 个省和国家部委、N 个城市"原来在这里和页底"数据来自……"同屏写了两遍，11/12 简化走查去掉这一句（收录范围在"关于有据"里） -->
       <view>申报 <text class="b">{{stats.apply}}</text> · 名单与公示 <text class="b">{{stats.lists}}</text> · 其他 <text class="b">{{stats.other}}</text></view>
-      <view>来自 {{stats.provinces}} 个省和国家部委<text wx:if="{{stats.cities}}">、{{stats.cities}} 个城市</text></view>
     </view>
   </block>
   <view wx:else class="summary-text">
     <view class="summary-zero">本周暂无新文件<text wx:if="{{checkedText}}"> · 最近检查 {{checkedText}}</text></view>
-    <view>来自 {{stats.provinces}} 个省和国家部委<text wx:if="{{stats.cities}}">、{{stats.cities}} 个城市</text></view>
   </view>
   <t-icon name="chevron-right" size="32rpx" color="#86909C" />
 </view>
@@ -148,7 +147,7 @@
   <view class="footer-text">
     <!-- 栏目数和省份数到了才写那半句，不出现空着的数字 -->
     <text><text wx:if="{{stats}}">数据来自 {{stats.sources}} 个政府网站栏目，</text>每条都注明出处。有据不代办申报。</text>
-    <view class="link footer-link" bindtap="goCoverage">覆盖说明 ›</view>
+    <view class="link footer-link" bindtap="goCoverage">收录范围 ›</view>
     <!-- 营业执照信息：《电子商务法》第十五条要求在首页显著位置公示（可以是链接，D-107 ③）。创始人 11/5 不要放在入口卡片下面，
          挪到首页最底部这一行，“我的”页另有一行（pages/me） -->
     <view wx:if="{{businessLicense}}" class="link footer-link" data-url="/pages/business-license/index" bindtap="goEntry" aria-role="button">营业执照信息 ›</view>

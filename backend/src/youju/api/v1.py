@@ -3786,7 +3786,10 @@ def document(doc_id: int, session: SessionDep) -> dict:
             "notes": [_fmt_deadline_note(d) for d in approved[1:]],
         }
         # 摘录只给核对过的那句原文证据（按显示层给，F11）
-        excerpt = {"section": "截止时间原文", "text": shown_quote(main.evidence)}
+        excerpt = {
+            "section": "截止时间原文",
+            "text": shown_quote(main.verification_quote or main.evidence),
+        }
         checked = main.reviewed_at.astimezone(_TZ).date().isoformat() if main.reviewed_at else None
 
     # 已变更的截止（延期、调整、撤销）：不再当作有效截止，写明原因并链接到新通知

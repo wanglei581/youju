@@ -338,7 +338,11 @@ def _items(session: Session, raw_ids: list[str], excerpts: bool = False) -> list
         kind = effective_kind(doc.title, doc.kind_override)
         # 截止原句和页面一样走显示层：网址、号码、邮箱不露（11/2 复测，D-112）
         excerpt_quote = "\n".join(
-            dict.fromkeys(v1.display_text(d.evidence) for d in [*approved, *changed] if d.evidence)
+            dict.fromkeys(
+                v1.display_text(d.verification_quote or d.evidence)
+                for d in [*approved, *changed]
+                if d.verification_quote or d.evidence
+            )
         )
         if excerpts and kind == "申报通知" and not (approved or changed):
             from youju.deadline_excerpts import selected

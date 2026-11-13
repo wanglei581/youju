@@ -104,7 +104,7 @@ def deadline_hint(row: DocumentDeadline, found: list[Found] | None) -> Hint:
     if row.candidate_date is None or _date_span(row.evidence or "", row.candidate_date) is None:
         return Hint("agree", "AI 一致，但证据句里没写这个日期")
     if row.audit_state == "reopened":
-        # 质检退回的必须由人重新核对，不给"建议通过"
+        # 质检退回的要带着退回原因重新核对（Claude 写回或核对台），不给"建议通过"
         return Hint("agree", "AI 一致（质检退回，请重核）")
     return Hint("suggest", "建议通过")
 

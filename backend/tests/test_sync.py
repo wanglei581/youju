@@ -9,7 +9,7 @@ import hashlib
 import io
 import json
 import time
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -1090,3 +1090,79 @@ def test_only_one_push_at_a_time(env, db_engine):
         assert "正在推" in str(err.value)
         other.scalar(text("SELECT RELEASE_LOCK('youju-sync-push')"))
     local.push(env.local, env.client)
+
+
+# ---- D-129（11/12）：服务器多久没收到本机的同步，超过 3 小时提醒 ----
+
+
+def test_state_request_is_recorded_as_contact(env):
+    """本机每次推送都先取 /state（有没有变更都一样）：验过签名的才记一次"来联系过"。"""
+    assert sync_server.last_contact(env.server) is None  # 还没有进度表
+    before = datetime.now(UTC).replace(microsecond=0)
+    env.client.json("GET", "/state")
+    with env.server.connect() as conn:
+        names = set(conn.execute(text(f"SELECT name FROM `{sync_server.STATE}`")).scalars())
+    assert names == {sync_server.CONTACT}  # 进度那一行照旧只有起步以后才有
+    last = sync_server.last_contact(env.server)
+    assert last is not None and last >= before - timedelta(seconds=1)
+    # 没签名的请求不算
+    with env.server.begin() as conn:
+        conn.execute(text(f"DELETE FROM `{sync_server.STATE}`"))
+    assert TestClient(app).get("/api/sync/v1/state").status_code == 401
+    with env.server.connect() as conn:
+        assert conn.scalar(text(f"SELECT COUNT(*) FROM `{sync_server.STATE}`")) == 0
+
+
+def _contact_ago(engine, hours):
+    when = (datetime.now(UTC) - timedelta(hours=hours)).replace(tzinfo=None)
+    with engine.begin() as conn:
+        conn.execute(
+            text(f"UPDATE `{sync_server.STATE}` SET updated_at = :u WHERE name = :n"),
+            {"u": when, "n": sync_server.CONTACT},
+        )
+
+
+def test_sync_watch_alerts_after_three_hours_once_per_outage(env, monkeypatch, tmp_path, capsys):
+    from youju import alerts, cli
+
+    sent = []
+    monkeypatch.setattr(alerts, "send_alert", lambda text: sent.append(text) or True)
+    monkeypatch.setattr(cli, "SYNC_WATCH_STATE", tmp_path / "sync-watch.json")
+    monkeypatch.setattr(cli, "_sync_engine", lambda: create_mysql_engine(env.server.url))
+
+    # 不收同步的机器（云托管、本机）：跳过
+    assert cli.main(["sync-watch"]) == 0
+    assert "跳过" in capsys.readouterr().out
+
+    monkeypatch.setenv("YOUJU_HOSTING", "self")
+    monkeypatch.setenv("YOUJU_PUBLIC_REPLICA", "true")
+    get_settings.cache_clear()
+    # 还没起步：不提醒
+    assert cli.main(["sync-watch"]) == 0
+    assert "还没收到过" in capsys.readouterr().out and sent == []
+
+    env.client.json("GET", "/state")
+    assert cli.main(["sync-watch"]) == 0
+    assert "分钟前" in capsys.readouterr().out and sent == []
+
+    # 4 小时没来：提醒一次，退出码 20（job.sh 不再重复提醒）
+    _contact_ago(env.server, 4)
+    assert cli.main(["sync-watch"]) == 20
+    assert len(sent) == 1 and "4 小时没收到本机的同步" in sent[0] and "sync-status" in sent[0]
+    # 同一次断开，6 小时内不再发
+    assert cli.main(["sync-watch"]) == 20
+    assert len(sent) == 1 and "6 小时内提醒过" in capsys.readouterr().out
+    # 6 小时以后还没来：再提醒一次
+    noted = json.loads((tmp_path / "sync-watch.json").read_text())
+    noted["alerted_at"] = (datetime.now(UTC) - timedelta(hours=7)).isoformat()
+    (tmp_path / "sync-watch.json").write_text(json.dumps(noted))
+    assert cli.main(["sync-watch"]) == 20 and len(sent) == 2
+    # 本机又来了：照常
+    env.client.json("GET", "/state")
+    assert cli.main(["sync-watch"]) == 0 and len(sent) == 2
+    # 提醒发不出去：退出码 1，由 job.sh 发通用提醒
+    _contact_ago(env.server, 5)
+    (tmp_path / "sync-watch.json").unlink()
+    monkeypatch.setattr(alerts, "send_alert", lambda text: None)
+    assert cli.main(["sync-watch"]) == 1
+    get_settings.cache_clear()

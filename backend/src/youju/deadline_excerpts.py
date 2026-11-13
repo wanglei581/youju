@@ -133,6 +133,7 @@ def batch(
     approved: dict[int, list[DocumentDeadline]],
     today: date,
     members: dict[int, list[int]] | None = None,
+    blocked_soon: list[DocumentDeadline] | None = None,
 ) -> tuple[dict[int, list[View]], dict[int, bool], Counter[str]]:
     """一次取归并组候选和当前正文；每个候选必须匹配它所属文件的正文。"""
     if not doc_ids:
@@ -219,7 +220,7 @@ def batch(
                     "verified",
                     row.approved_date,
                     row.approved_time,
-                    row.evidence or None,
+                    row.verification_quote or row.evidence or None,
                     row.id,
                 )
         changed = {
@@ -276,6 +277,8 @@ def batch(
                                 View(kind, "excerpt", day, row.candidate_time, row.evidence, row.id)
                             )
             if reason:
+                if reason == "7 天内" and blocked_soon is not None:
+                    blocked_soon.extend(candidates)
                 reasons[reason] += 1
                 near = any(
                     today <= row.candidate_date <= today + timedelta(days=7) for row in candidates

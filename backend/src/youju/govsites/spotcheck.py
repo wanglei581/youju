@@ -420,23 +420,39 @@ def attribution_check(
 
 
 def _first_list_item(cache, url: str, today: date):
-    """库里这一格没有文件时（合并部门共用栏目，文件挂在先抓到的来源下）：重读列表页取第一条带日期的。"""
-    from youju.crawler.adapters import api_html, api_refusal, find_list_api
+    """库里这一格没有文件时（合并部门共用栏目，文件挂在先抓到的来源下）：重读列表页取第一条带日期的。
+
+    数字广东信息公开平台的分类（"部门页#xxgk-gkmlpt-编号"）：列表只在接口里，读部门页（去掉 # 后面）
+    再按分类读接口，和试读（verify.check_one）一样。"""
+    from youju.crawler.adapters import (
+        api_items_merged,
+        api_parts,
+        api_readable,
+        api_refusal,
+        find_list_api,
+        gkmlpt_categories,
+    )
     from youju.crawler.listing import extract_items
 
-    r = cache.get(url)
+    gkmlpt = gkmlpt_categories(url) is not None
+    page_url = url.split("#", 1)[0] if gkmlpt else url
+    r = cache.get(page_url)
     if r.status != "ok":
         return None
-    final = r.final_url or url
-    items = extract_items(r.text, final, today=today)
+    final = r.final_url or page_url
+    items = [] if gkmlpt else extract_items(r.text, final, today=today)
     if len(items) < 3:
-        api = find_list_api(r.text, final)
+        api = find_list_api(r.text, final, url)
         if api is not None:
             # 只取页面写明的地址、过读取护栏（D-128）；被拦下的不读
-            ar = cache.get(api.url, same_address_only=True)
-            ok = ar.status == "ok" and not api_refusal(api, ar)
-            body = api_html(api, ar.text) if ok else ""
-            via = extract_items(body, api.base_url, today=today) if body else []
+            texts: list[str] = []
+            for part in api_parts(api):
+                # 一个一个取、一个一个查：被拦下、没取到、读不出的，整栏不取证，后面的分类也不再请求
+                ar = cache.get(part.url, same_address_only=True)
+                if ar.status != "ok" or api_refusal(part, ar) or not api_readable(part, ar.text):
+                    return None
+                texts.append(ar.text)
+            via = api_items_merged(api, texts, None, today)
             if len(via) > len(items):
                 items = via
     return next((i for i in items if i.publish_date), None)

@@ -33,11 +33,13 @@ from youju import storage
 from youju.backup import (
     BEIJING,
     FORMAT,
+    SCOPE_USER,
     VERSION,
     BackupError,
     backed_up_tables,
     download_latest,
     restore,
+    scope_of,
 )
 from youju.db import create_mysql_engine
 from youju.migrations import alembic_config
@@ -179,6 +181,7 @@ def run(database_url: str, cloud_env: str | None, source: Path | None) -> int:
             download_seconds = time.monotonic() - start
             # 建库之前先看说明行和迁移版本：不对就不建库
             header = _read_header(source)
+            scope = scope_of(header)
             revision = header.get("revision")
             if not isinstance(revision, str) or not revision:
                 raise BackupError("备份说明行没有迁移版本")
@@ -264,16 +267,19 @@ def run(database_url: str, cloud_env: str | None, source: Path | None) -> int:
             with target.begin() as conn:
                 conn.execute(text("SET FOREIGN_KEY_CHECKS = 0"))
                 try:
-                    for table in backed_up_tables():
+                    for table in backed_up_tables(scope):
                         conn.execute(table.delete())
                 finally:
                     conn.execute(text("SET FOREIGN_KEY_CHECKS = 1"))
             migration_seconds = time.monotonic() - start
             start = time.monotonic()
             with source.open("rb") as src:
-                counts = restore(target, src)
+                # drill：只备用户数据的备份，临时库里没有公开数据，指向公开表的外键不查
+                counts = restore(target, src, drill=True)
             restore_seconds = time.monotonic() - start
             lines.append(f"备份文件：{filename}")
+            if scope == SCOPE_USER:
+                lines.append("范围：只备用户数据（公开数据在本机；演练不查指向公开表的外键）")
             if created_at is not None:
                 lines.append(f"备份时间：{created_at}")
             lines.append(f"迁移版本：{revision}；总条数：{sum(counts.values())}")

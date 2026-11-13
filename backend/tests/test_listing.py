@@ -768,10 +768,138 @@ def test_clean_title_takes_the_title_out_of_a_tooltip() -> None:
         clean_title("标题：关于开展专项申报工作的通知 点击数：110 发表时间：2026-09-22")
         == "关于开展专项申报工作的通知"
     )
-    # 三段不全的不动：标题本身以"标题："打头、或只写了点击数
+    # 只剩"标题："的提示文字（泸州一类平台的 title 属性只写"标题：……"）也去掉：11/12 试抓库 35,525 条
+    # 标题里以"标题：""主题："开头的 194 条全是这种残留，正文标题不这样写
+    assert clean_title("标题：关于开展专项申报工作的通知") == "关于开展专项申报工作的通知"
+    assert (
+        clean_title("标题：关于开展专项申报工作的通知 点击数：很多 发表时间：2026-09-22")
+        == "关于开展专项申报工作的通知 点击数：很多 发表时间：2026-09-22"
+    )
+    # 不是以"标题："开头的照旧不动
+    kept = "关于开展专项申报工作的通知 点击数：110 发表时间：2026-09-22"
+    assert clean_title(kept) == kept
+
+
+def test_clean_title_drops_list_artifacts() -> None:
+    # 地市一组 11/12 复核查出、#482 之后还在的几种列表残留（重新解析缓存页面核对过）
+    from youju.crawler.titles import clean_title
+
+    for raw, expected in (
+        # 临沂人社：链接文字"主题：……（换行）日期：……"，有的夹着零宽空格
+        (
+            "主题：2026年重点企业线上招聘会（第三十九期） 日期：2026-11-09",
+            "2026年重点企业线上招聘会（第三十九期）",
+        ),
+        (
+            "主题：\u200b 某市人力资源和社会保障局等14部门关于打造“就业之家”的实施意见 日期：2026-09-30",
+            "某市人力资源和社会保障局等14部门关于打造“就业之家”的实施意见",
+        ),
+        # 武汉财政：日期拆成两块写在标题前面
+        (
+            "09-30 2026 关于超长期特别国债资金全流程管理接口联调安排的通知",
+            "关于超长期特别国债资金全流程管理接口联调安排的通知",
+        ),
+        # 苏州文旅：网址里的 32 位编号粘在标题后面
+        (
+            "市政府关于印发苏州市促进入境旅游若干措施的通知d17c290e3d3f43d8b6eb78420021603b",
+            "市政府关于印发苏州市促进入境旅游若干措施的通知",
+        ),
+    ):
+        assert clean_title(raw) == expected
+    # 标题本身带的日期、年份、编号不动
     for kept in (
-        "标题：关于开展专项申报工作的通知",
-        "关于开展专项申报工作的通知 点击数：110 发表时间：2026-09-22",
-        "标题：关于开展专项申报工作的通知 点击数：很多 发表时间：2026-09-22",
+        "关于调整2026年11月5日起执行的收费标准的通知",
+        "2026-2028年数字经济发展行动方案",
+        "政策例行吹风会文字实录 2026年11月5日",
+        "关于公布第abc123批名单的通知",
+        "关于某某工作的通知（日期：2026-11-09）",
     ):
         assert clean_title(kept) == kept
+
+
+def test_without_publish_date_drops_only_the_publish_date() -> None:
+    # 历史题录重算：标题末尾的日期和这份文件的发布日期相同才去掉（和列表页 _without_attr_date 一样）
+    from youju.crawler.titles import without_publish_date
+
+    assert (
+        without_publish_date(
+            "济南市劳动能力鉴定委员会劳动能力鉴定结论书送达公告 2026年11月05日", date(2026, 11, 5)
+        )
+        == "济南市劳动能力鉴定委员会劳动能力鉴定结论书送达公告"
+    )
+    assert (
+        without_publish_date(
+            "2026年淄博市大数据局部门政府购买服务指导性目录2026年04月24日", date(2026, 4, 24)
+        )
+        == "2026年淄博市大数据局部门政府购买服务指导性目录"
+    )
+    assert (
+        without_publish_date("关于开展某某专项工作的通知 2026-11-05", date(2026, 11, 5))
+        == "关于开展某某专项工作的通知"
+    )
+    # 和发布日期不同（纪要写的会议日期）、没有发布日期、去掉后太短的，都不动
+    for title, published in (
+        ("政策例行吹风会文字实录 2026年11月5日", date(2026, 11, 6)),
+        ("政策例行吹风会文字实录 2026年11月5日", None),
+        ("通知 2026年11月05日", date(2026, 11, 5)),
+        ("某某工作通知 2026年13月45日", date(2026, 11, 5)),
+    ):
+        assert without_publish_date(title, published) == title
+
+
+def test_interpretation_link_after_the_title_is_not_another_item() -> None:
+    # 龙岩各局政策文件（地市一组 11/12）：每份文件后面跟一个红字"(查看政策解读)"，链到解读栏目。
+    # 曾当成另一条入库，库里每个栏目有 15–20 条标题就是"(查看政策解读)"
+    html = """<ul class="zx_ul">
+      <li><span>2026-09-20</span><a href="./202609/t20260920_1.htm" title="龙岩市发展和改革委员会等四部门关于优化中心城区停车收费政策的通告">龙岩市发展和改革委员会等四部门关于优化中心城区停车收费政策的通告</a><a href="http://fgw.longyan.gov.cn/zwgk/zcjd/202609/t20260920_2.htm" style="color:#F00">(查看政策解读)</a></li>
+      <li><span>2026-07-01</span><a href="./202607/t20260723_3.htm" title="龙岩市人民政府关于印发龙岩市营商环境建设规划的通知">龙岩市人民政府关于印发龙岩市营商环境建设规划的通知</a><a href="http://fgw.longyan.gov.cn/zwgk/zcjd/202607/t20260723_4.htm" style="color:#F00">（查看政策解读）</a></li>
+      <li><span>2026-06-29</span><a href="./202606/t20260629_5.htm" title="关于开展2026年度价格监测工作的通知">关于开展2026年度价格监测工作的通知</a></li>
+      <li><span>2026-06-20</span><a href="../zcjd/202606/t20260620_6.htm" title="《龙岩市某某管理办法》政策解读">《龙岩市某某管理办法》政策解读</a><a href="./202606/t20260618_7.htm" style="color:#F00">(查看政策文件)</a></li>
+    </ul>"""
+    items = extract_items(html, "http://fgw.longyan.gov.cn/zwgk/zcwj/", today=date(2026, 11, 12))
+    assert [(i.title, i.publish_date) for i in items] == [
+        ("龙岩市发展和改革委员会等四部门关于优化中心城区停车收费政策的通告", date(2026, 9, 20)),
+        ("龙岩市人民政府关于印发龙岩市营商环境建设规划的通知", date(2026, 7, 1)),
+        ("关于开展2026年度价格监测工作的通知", date(2026, 6, 29)),
+        # 反方向的"(查看政策文件)"也不算一条
+        ("《龙岩市某某管理办法》政策解读", date(2026, 6, 20)),
+    ]
+
+
+def test_zero_width_space_in_the_link_does_not_turn_title_dates_into_the_row_date() -> None:
+    # 襄阳政府规章列表（11/12 重放缓存发现）：链接里夹着零宽空格，标题去掉了它、行文字没去，找行日期时
+    # 挖不掉标题，标题里的"2017年4月26日"被当成行日期，这一条落进别的列表块、整条丢了
+    html = """<table>
+      <tr><td>1</td><td><a href="./zfl/202512/t20251224_1.shtml"><p>某市气象灾害防御办法</p>
+        <span>（2025年12月12日市人民政府第129次常务会议审议通过）</span></a></td></tr>
+      <tr><td>2</td><td><a href="./zfl/202411/t20241112_2.shtml"><p>某市市区公共租赁住房管理办法\u200b</p>
+        <span>（2017年4月26日某市人民政府令第3号公布 根据2024年11月12日决定修正）</span></a></td></tr>
+      <tr><td>3</td><td><a href="./zfl/202301/t20230106_3.shtml"><p>某市城市绿化管理办法</p>
+        <span>(2023年1月4日某市人民政府令第11号公布)</span></a></td></tr>
+    </table>"""
+    items = extract_items(
+        html, "http://xxgk.example.gov.cn/szf/zfxxgk/zc/", today=date(2026, 11, 12)
+    )
+    assert [(i.url.rsplit("/", 1)[-1], i.publish_date) for i in items] == [
+        ("t20251224_1.shtml", date(2025, 12, 24)),
+        ("t20241112_2.shtml", date(2024, 11, 12)),
+        ("t20230106_3.shtml", date(2023, 1, 6)),
+    ]
+    assert "\u200b" not in items[1].title
+
+
+def test_title_attribute_with_publish_date_glued_to_the_title_drops_the_date() -> None:
+    # 淄博大数据局（地市一组 11/12）：title 属性是"标题 + 发布日期"，中间没有空格，行里另写同一个日期
+    html = """<ul>
+      <li><a href="/art/2026/4/24/art_1.html" title="2026年淄博市大数据局部门政府购买服务指导性目录2026年04月24日">        2026年淄博市大数据局部门政府购买服务指导性目录    </a><span>        2026-04-24    </span></li>
+      <li><a href="/art/2026/8/25/art_2.html" title="关于组织开展数据流通服务典型案例征集工作的通知2026年08月25日">关于组织开展数据流通服务典型案例征集工作的通知</a><span>2026-08-25</span></li>
+      <li><a href="/art/2026/7/30/art_3.html" title="2026年“数据要素×”大赛拟获奖名单公示2026年07月30日">2026年“数据要素×”大赛拟获奖名单公示</a><span>2026-07-30</span></li>
+    </ul>"""
+    items = extract_items(
+        html, "https://dsj.zibo.gov.cn/col/col10910/index.html", today=date(2026, 11, 12)
+    )
+    assert [(i.title, i.publish_date) for i in items] == [
+        ("2026年淄博市大数据局部门政府购买服务指导性目录", date(2026, 4, 24)),
+        ("关于组织开展数据流通服务典型案例征集工作的通知", date(2026, 8, 25)),
+        ("2026年“数据要素×”大赛拟获奖名单公示", date(2026, 7, 30)),
+    ]

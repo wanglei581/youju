@@ -116,7 +116,7 @@
   <view id="ai-entry"><ai-entry blocked="{{!doc}}" doc-id="{{doc.id}}" doc-title="{{doc.title}}" doc-url="{{doc.url}}" has-attachments="{{atts.length > 0}}" ai="{{doc.ai}}" body-status="{{doc.body ? doc.body.status : ''}}" body-total="{{doc.body && doc.body.total ? doc.body.total : 0}}" bind:attachments="toAttachments" /></view>
 
   <view wx:if="{{doc.fields && doc.fields.support && doc.fields.support.length}}" class="card support-card">
-    <view class="section-title">支持方式<text class="weak excerpt-sec">已核对原文</text></view>
+    <view class="section-title">支持方式</view>
     <view class="support-tags">
       <view wx:for="{{doc.fields.support}}" wx:key="*this" class="support-tag {{supportExpanded === item ? 'support-tag--on' : ''}}" data-label="{{item}}" bindtap="toggleSupport">{{item}}</view>
     </view>
@@ -124,14 +124,15 @@
   </view>
 
   <view wx:if="{{doc.fields && doc.fields.audience && doc.fields.audience.text}}" class="card audience-card">
-    <!-- 申报对象是人工核对过的原文（和支持方式、申报条件一样标"已核对原文"）；"原文摘录"只用来标机器摘出的截止 -->
-    <view class="section-title">申报对象<text class="weak excerpt-sec">（已核对原文）</text></view>
+    <!-- 支持方式、申报对象、申报条件都是核对过的原文：核对说明不再每张卡片各标一遍（括号写法还不一样），
+         合成一句写在页底"原文出处"里（11/12 简化走查）；"原文摘录"只用来标机器摘出的截止 -->
+    <view class="section-title">申报对象</view>
     <view class="audience-text">{{doc.fields.audience.text}}</view>
   </view>
 
   <!-- 申报条件：只显示人工逐条核对、整份确认过的条目；每条是类别和通知原文里的原句（逐字引用），不显示概括的说法；不作能否申报的判断 -->
   <view wx:if="{{conds.length}}" class="card cond-card">
-    <view class="section-title">申报条件<text class="weak excerpt-sec">（已核对原文）</text></view>
+    <view class="section-title">申报条件</view>
     <view wx:for="{{conds}}" wx:key="index" class="cond">
       <text class="cond-cat">{{item.showCat ? item.category : ''}}</text>
       <text class="cond-text" user-select>{{item.quote}}</text>
@@ -150,11 +151,11 @@
       <view class="body-label">{{bodyView.label}}</view>
       <text class="body-text" user-select>{{bodyView.text}}</text>
       <!-- 名单类通知：正文里的名单没展开（D-092），给去查名单的入口 -->
-      <view wx:if="{{doc.body.listHidden}}" class="link body-lookup" bindtap="toLists" aria-role="button">名单请在“查名单”里按企业名称查询 ›</view>
+      <view wx:if="{{doc.body.listHidden}}" class="link body-lookup" bindtap="toLists" aria-role="button">去查名单 ›</view>
     </block>
     <block wx:else>
       <view class="body-none">{{noBody}}</view>
-      <view wx:if="{{doc.body.status === 'list'}}" class="link body-lookup" bindtap="toLists" aria-role="button">在“查名单”里按企业名称查询 ›</view>
+      <view wx:if="{{doc.body.status === 'list'}}" class="link body-lookup" bindtap="toLists" aria-role="button">去查名单 ›</view>
     </block>
   </view>
 
@@ -178,13 +179,15 @@
     <view class="weak source-label">原文出处</view>
     <view class="source-site">{{doc.site || doc.issuer}}</view>
     <!-- 核对日期说的是截止（"要点"常常整张不显示，不再说"以上要点"，10/29 独立审阅） -->
-    <view class="source-note"><text wx:if="{{checkedText}}">截止日期已于 {{checkedText}} 对照原文核对。</text>内容以原文为准；申报请在主管部门的申报系统办理，有据不提供填报入口。</view>
-    <view wx:if="{{has.help}}" class="link source-help" bindtap="help" aria-role="link">数据说明 ›</view>
+    <!-- 上面支持方式、申报对象、申报条件三张卡片原来各标一遍"已核对原文"，合成这一句；有其中任何一张时才写。
+         写成"只显示已核对原文的"，不论这条通知有其中哪几张都说得对（agy 审阅：写死"已核对原文"会和只有一两张卡片对不上） -->
+    <view class="source-note"><text wx:if="{{checkedText}}">截止日期已于 {{checkedText}} 对照原文核对。</text><text wx:if="{{(doc.fields && ((doc.fields.support && doc.fields.support.length) || (doc.fields.audience && doc.fields.audience.text))) || conds.length}}">支持方式、申报对象、申报条件只显示已核对原文的。</text>内容以原文为准；申报请在主管部门的申报系统办理，有据不提供填报入口。</view>
+    <view wx:if="{{has.help}}" class="link source-help" bindtap="help" aria-role="link">内容怎么来的 ›</view>
   </view>
   <view style="height: 220rpx"></view>
 
   <view class="bar">
-    <view class="bar-item" bindtap="exportDoc"><t-icon name="download" size="44rpx" /><text>结果</text></view>
+    <view class="bar-item" bindtap="exportDoc"><t-icon name="download" size="44rpx" /><text>导出</text></view>
     <view wx:if="{{loginOpen}}" class="bar-item" bindtap="feedback"><t-icon name="flag" size="44rpx" /><text>纠错</text></view>
     <!-- 10/18 验收：只能从右上角"···"转发时，园区专员找不到；按钮和菜单走同一个 onShareAppMessage -->
     <button class="bar-item bar-share" open-type="share" disabled="{{!shareReady}}" hover-class="none" aria-label="转发给好友或群"><t-icon name="share" size="44rpx" /><text>转发</text></button>
