@@ -136,7 +136,11 @@ def _cmd_crawl(args: argparse.Namespace) -> int:
         return 1
     print(f"开始检查 {len(ids)} 个来源……")
     with PoliteFetcher(
-        settings.user_agent, settings.request_timeout, settings.per_host_interval
+        settings.user_agent,
+        settings.request_timeout,
+        settings.per_host_interval,
+        per_address_interval=settings.per_address_interval,
+        per_address_concurrency=settings.per_address_concurrency,
     ) as fetcher:
         results = crawl_sources(
             factory,
@@ -222,6 +226,31 @@ def _cmd_fetch_details(args: argparse.Namespace) -> int:
     for result in results:
         if result.status != "ok":
             print(f"  #{result.document_id} {result.status}：{result.failure_reason or ''}")
+    for host, reason in sorted(getattr(results, "paused_hosts", {}).items()):
+        print(f"停取 {host}：{reason}")
+    return 0
+
+
+def _cmd_fetch_details_queue(args: argparse.Namespace) -> int:
+    from youju.ai.pipeline import round_running, round_wanted
+    from youju.crawler.detail_service import run_detail_queue
+
+    if round_running() or round_wanted():
+        print("跳过：每轮抓取在跑或在等锁")
+        return 0
+    with session_factory()() as session:
+        summary = run_detail_queue(
+            session,
+            minutes=args.minutes,
+            workers=args.workers,
+            batch=args.batch,
+            per_host=args.per_host,
+            stop=round_wanted,
+        )
+    print(f"写入 {summary.total} 份，{summary.batches} 批，停止：{summary.stop_reason}")
+    print("状态：" + "，".join(f"{k} {v}" for k, v in summary.statuses.items()))
+    for host, reason in sorted(summary.paused_hosts.items()):
+        print(f"停取 {host}：{reason}")
     return 0
 
 
@@ -2759,6 +2788,13 @@ def main(argv: list[str] | None = None) -> int:
         "--notices-only", action="store_true", help="只处理标题含申报/征集/推荐/遴选/认定的文件"
     )
     p.set_defaults(func=_cmd_fetch_details)
+
+    p = sub.add_parser("fetch-details-queue", help="后台分批补正文")
+    p.add_argument("--minutes", type=float, default=28)
+    p.add_argument("--workers", type=int, default=32)
+    p.add_argument("--batch", type=int, default=2000)
+    p.add_argument("--per-host", type=int, default=100)
+    p.set_defaults(func=_cmd_fetch_details_queue)
 
     p = sub.add_parser(
         "backfill-titles",

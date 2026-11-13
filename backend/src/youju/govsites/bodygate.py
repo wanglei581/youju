@@ -89,6 +89,8 @@ def polite_fetcher():
         settings.user_agent,
         settings.request_timeout,
         max(settings.per_host_interval, MIN_INTERVAL),
+        per_address_interval=settings.per_address_interval,
+        per_address_concurrency=settings.per_address_concurrency,
         url_allowed=_government_url,
     )
 

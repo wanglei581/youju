@@ -26,6 +26,9 @@ run() {
 exec 9>/tmp/youju-round.lock
 # 先留标记"这一轮要锁"：重跑命令见到它，做完手上这一份就停，不再拿下一份（flock 不排队）
 date +%s > /tmp/youju-round.wanted
+# 队列见到标记，取完手上那几份就停（通常最多十几二十秒）；等它放锁，使每轮和队列不同时跑，
+# 同一地址限速在一个进程内管理就够了。
+flock -w 120 /tmp/youju-fetch-details-queue.lock true || :
 if ! flock -w 300 9; then
   rm -f /tmp/youju-round.wanted
   finish 75
@@ -43,7 +46,7 @@ if [ "$1" = "--notify" ]; then
 else
   run crawl && run check-sources
 fi
-# 每天 2 轮，每轮 600 份，每天补详情总量和原来 4 轮 × 300 份一样
+# 每天 2 轮，每轮 600 份，抓完马上补新文件正文；近 30 天的、申报通知和政策先补。
 run fetch-details --limit 600 --workers 4
 # 附件文字（小程序站内阅读附件用）：补完详情才有新附件的链接，紧接着取，当轮就能读，早上的提醒发出去时
 # 附件已经能读（以前只在 10:15、23:30 的附件副本任务里顺带取，新附件要等半天，点开都是“正在准备”）。

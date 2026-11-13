@@ -32,6 +32,7 @@ def make_fetcher(
     return PoliteFetcher(
         "TestAgent YoujuBot/0.1",
         per_host_interval=interval,
+        per_address_interval=0,
         transport=httpx.MockTransport(handler),
         resolver=resolver,
         **kwargs,
@@ -89,6 +90,7 @@ def test_robots_is_respected_when_content_is_not_decoded(prefix: str) -> None:
     with PoliteFetcher(
         "TestAgent YoujuBot/0.1",
         per_host_interval=0,
+        per_address_interval=0,
         transport=httpx.MockTransport(handler),
         resolver=public_dns,
         decode_text=False,
@@ -112,6 +114,7 @@ def test_redirect_to_disallowed_host_is_not_requested() -> None:
     with PoliteFetcher(
         "TestAgent YoujuBot/0.1",
         per_host_interval=0,
+        per_address_interval=0,
         transport=httpx.MockTransport(handler),
         url_allowed=lambda url: (httpx.URL(url).host or "").endswith(".gov.cn"),
         resolver=public_dns,
@@ -132,6 +135,7 @@ def test_robots_redirect_to_disallowed_host_skips_page() -> None:
     with PoliteFetcher(
         "TestAgent YoujuBot/0.1",
         per_host_interval=0,
+        per_address_interval=0,
         transport=httpx.MockTransport(handler),
         url_allowed=lambda url: (httpx.URL(url).host or "").endswith(".gov.cn"),
         resolver=public_dns,
@@ -321,6 +325,7 @@ def deadline_fetcher(handler, now: dict, deadline: float) -> PoliteFetcher:
     return PoliteFetcher(
         "TestAgent YoujuBot/0.1",
         per_host_interval=0.0,
+        per_address_interval=0,
         transport=httpx.MockTransport(handler),
         resolver=public_dns,
         clock=lambda: now["t"],
@@ -376,6 +381,7 @@ def test_deadline_reached_during_dns_lookup_sends_no_request() -> None:
     f = PoliteFetcher(
         "TestAgent YoujuBot/0.1",
         per_host_interval=0.0,
+        per_address_interval=0,
         transport=httpx.MockTransport(handler),
         resolver=slow_dns,
         clock=lambda: now["t"],
@@ -453,6 +459,7 @@ def test_ssl_handshake_error_retries_in_compat_mode_and_remembers_host() -> None
     fetcher = PoliteFetcher(
         "TestAgent YoujuBot/0.1",
         per_host_interval=0.0,
+        per_address_interval=0,
         transport=httpx.MockTransport(default_handler),
         compat_transport=httpx.MockTransport(compat_handler),
         resolver=public_dns,
@@ -481,6 +488,7 @@ def test_certificate_error_is_never_bypassed() -> None:
     fetcher = PoliteFetcher(
         "TestAgent YoujuBot/0.1",
         per_host_interval=0.0,
+        per_address_interval=0,
         transport=httpx.MockTransport(default_handler),
         compat_transport=httpx.MockTransport(compat_handler),
         resolver=public_dns,
@@ -825,6 +833,7 @@ def test_missing_peer_address_is_refused_when_required() -> None:
     with PoliteFetcher(
         "TestAgent YoujuBot/0.1",
         per_host_interval=0,
+        per_address_interval=0,
         transport=httpx.MockTransport(handler),
         resolver=public_dns,
         real_network=True,
@@ -884,6 +893,7 @@ def test_real_network_connects_to_the_checked_address() -> None:
     with PoliteFetcher(
         "TestAgent YoujuBot/0.1",
         per_host_interval=0,
+        per_address_interval=0,
         transport=httpx.MockTransport(handler),
         resolver=dns,
         real_network=True,
@@ -925,6 +935,7 @@ def test_empty_dns_answer_never_falls_back_to_hostname() -> None:
     with PoliteFetcher(
         "TestAgent YoujuBot/0.1",
         per_host_interval=0,
+        per_address_interval=0,
         transport=httpx.MockTransport(handler),
         resolver=lambda host: [],
         real_network=True,

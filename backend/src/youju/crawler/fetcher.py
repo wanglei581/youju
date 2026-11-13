@@ -1,6 +1,7 @@
 """礼貌抓取：遵守 robots.txt（RFC 9309）、同一网站限速、透明标识，不绕过任何防护。"""
 
 import ipaddress
+import logging
 import re
 import socket
 import ssl
@@ -15,6 +16,8 @@ import certifi
 import httpx
 
 from youju.crawler.urls import host_of, normalize_url, origin_of
+
+log = logging.getLogger(__name__)
 
 ROBOTS_TOKEN = "YoujuBot"
 _MAX_REDIRECTS = 5
@@ -160,6 +163,8 @@ class PoliteFetcher:
         real_network: bool | None = None,
         decode_text: bool = True,
         deadline: float | None = None,
+        per_address_interval: float = 1.0,
+        per_address_concurrency: int = 2,
     ) -> None:
         headers = {
             "User-Agent": user_agent,
@@ -187,6 +192,8 @@ class PoliteFetcher:
         )
         self._compat_hosts: set[str] = set()
         self._interval = per_host_interval
+        self._address_interval = per_address_interval
+        self._address_concurrency = per_address_concurrency
         self._timeout = timeout
         # 整个任务的期限（clock 上的时刻，原网页检查用）：到期后不再发新请求、正在下载的放弃，
         # fetch() 给 deadline；临近期限的请求超时缩短到剩下的时间。不设就和以前一样
@@ -209,6 +216,9 @@ class PoliteFetcher:
             self._real = {"main": real_network, "compat": real_network}
         self._last_request: dict[str, float] = {}
         self._host_locks: dict[str, threading.Lock] = {}
+        self._address_locks: dict[str, threading.Lock] = {}
+        self._address_slots: dict[str, threading.BoundedSemaphore] = {}
+        self._address_last: dict[str, float] = {}
         self._guard = threading.Lock()
         self._robots: dict[str, _RobotsEntry] = {}
         self._robots_locks: dict[str, threading.Lock] = {}
@@ -446,40 +456,82 @@ class PoliteFetcher:
                     if not addresses:
                         return FetchResult(url, "network_error", error="网址里没有主机名，不抓取")
                     request_url, headers, extensions = _pinned_request(url, addresses[0])
-                timing = {}
-                if self._deadline is not None:
-                    # 临近期限：这一次连接、读取最多等到期限（至少 1 秒）
-                    left = max(1.0, self._deadline - self._clock())
-                    timing["timeout"] = min(self._timeout, left)
-                # 解析完、真正发请求之前再问一次（排队等限速、解析域名期间网站可能停了）
-                if not self._gate(url, record=True):
-                    return FetchResult(url, "site_paused", final_url=url, error=SITE_PAUSED)
-                with client.stream(
-                    "GET", request_url, headers=headers, extensions=extensions, **timing
-                ) as resp:
-                    refusal = _peer_refusal(resp, real)
-                    if refusal:
-                        return FetchResult(
-                            url, "unsupported_host", final_url=url, error=f"{host} {refusal}"
+                # 同一地址限速（集约化平台上很多网站共用一个地址）：同时最多
+                # per_address_concurrency 个请求，两次请求开始之间至少隔 per_address_interval 秒。
+                # 锁的先后固定是主机锁（_get 里，在外层）→ 地址名额 → 地址锁，没有反过来拿的地方，
+                # 不会死锁。只管这个取页器实例（一个任务用一个）；跨进程的不管：补正文队列和每轮
+                # 抓取不同时跑，别的任务并发小
+                address = addresses[0] if addresses else None
+                slot = None
+                started_waiting = self._clock()
+                if address and self._address_concurrency > 0:
+                    with self._guard:
+                        slot = self._address_slots.setdefault(
+                            address, threading.BoundedSemaphore(self._address_concurrency)
                         )
-                    if resp.status_code < 300:
-                        size = 0
-                        chunks = []
-                        for chunk in resp.iter_bytes():
-                            if self._expired():
-                                # 一点一点慢慢回的页面：到期放弃，不能拖过期限
-                                return FetchResult(url, "deadline", final_url=url, error=_DEADLINE)
-                            size += len(chunk)
-                            if size > MAX_RESPONSE_BYTES:
-                                return FetchResult(
-                                    url,
-                                    "too_large",
-                                    final_url=url,
-                                    http_status=resp.status_code,
-                                    error="文件超过 20MB",
-                                )
-                            chunks.append(chunk)
-                        content = b"".join(chunks)
+                    if self._deadline is None:
+                        acquired = slot.acquire()
+                    else:
+                        acquired = slot.acquire(timeout=max(0, self._deadline - self._clock()))
+                    if not acquired:
+                        waited = self._clock() - started_waiting
+                        if waited > 10:
+                            log.debug("地址 %s、主机 %s 等待 %.2f 秒", address, host, waited)
+                        return FetchResult(url, "deadline", final_url=url, error=_DEADLINE)
+                try:
+                    if address and self._address_interval > 0:
+                        with self._lock_for(self._address_locks, address):
+                            last = self._address_last.get(address)
+                            if last is not None:
+                                wait = self._address_interval - (self._clock() - last)
+                                if wait > 0:
+                                    self._sleep(wait)
+                            if not self._expired():
+                                self._address_last[address] = self._clock()
+                    waited = self._clock() - started_waiting
+                    if address and waited > 10:
+                        log.debug("地址 %s、主机 %s 等待 %.2f 秒", address, host, waited)
+                    if self._expired():
+                        return FetchResult(url, "deadline", final_url=url, error=_DEADLINE)
+                    # 解析完、排完队、真正发请求之前再问一次（排队等限速、解析域名期间网站可能停了）
+                    if not self._gate(url, record=True):
+                        return FetchResult(url, "site_paused", final_url=url, error=SITE_PAUSED)
+                    timing = {}
+                    if self._deadline is not None:
+                        # 临近期限：这一次连接、读取最多等到期限（至少 1 秒）
+                        left = max(1.0, self._deadline - self._clock())
+                        timing["timeout"] = min(self._timeout, left)
+                    with client.stream(
+                        "GET", request_url, headers=headers, extensions=extensions, **timing
+                    ) as resp:
+                        refusal = _peer_refusal(resp, real)
+                        if refusal:
+                            return FetchResult(
+                                url, "unsupported_host", final_url=url, error=f"{host} {refusal}"
+                            )
+                        if resp.status_code < 300:
+                            size = 0
+                            chunks = []
+                            for chunk in resp.iter_bytes():
+                                if self._expired():
+                                    # 一点一点慢慢回的页面：到期放弃，不能拖过期限
+                                    return FetchResult(
+                                        url, "deadline", final_url=url, error=_DEADLINE
+                                    )
+                                size += len(chunk)
+                                if size > MAX_RESPONSE_BYTES:
+                                    return FetchResult(
+                                        url,
+                                        "too_large",
+                                        final_url=url,
+                                        http_status=resp.status_code,
+                                        error="文件超过 20MB",
+                                    )
+                                chunks.append(chunk)
+                            content = b"".join(chunks)
+                finally:
+                    if slot is not None:
+                        slot.release()
             except httpx.TimeoutException as exc:
                 last_error = f"超时：{exc.__class__.__name__}"
             except httpx.ConnectError as exc:

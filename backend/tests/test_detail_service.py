@@ -304,6 +304,7 @@ def test_pausing_fetcher_checks_each_hop_in_real_time() -> None:
     with PoliteFetcher(
         "TestAgent YoujuBot/0.1",
         per_host_interval=0,
+        per_address_interval=0,
         transport=httpx.MockTransport(handler),
         resolver=lambda host: ["93.184.216.34"],
     ) as polite:
@@ -343,6 +344,7 @@ def test_robots_redirect_to_listed_site_does_not_pause_it(session, monkeypatch) 
     with PoliteFetcher(
         "TestAgent YoujuBot/0.1",
         per_host_interval=0,
+        per_address_interval=0,
         transport=httpx.MockTransport(handler),
         resolver=lambda host: ["93.184.216.34"],
     ) as polite:
@@ -390,6 +392,7 @@ def test_failure_while_site_was_being_paused_is_not_written(session, monkeypatch
     with PoliteFetcher(
         "TestAgent YoujuBot/0.1",
         per_host_interval=0,
+        per_address_interval=0,
         transport=httpx.MockTransport(handler),
         resolver=resolver,
     ) as polite:
@@ -433,6 +436,7 @@ def test_body_fetched_just_before_pause_is_kept(session, monkeypatch) -> None:
     with PoliteFetcher(
         "TestAgent YoujuBot/0.1",
         per_host_interval=0,
+        per_address_interval=0,
         transport=httpx.MockTransport(handler),
         resolver=lambda host: ["93.184.216.34"],
     ) as polite:
@@ -487,6 +491,7 @@ def test_robots_chain_through_paused_site_is_remembered(session, monkeypatch, ro
     with PoliteFetcher(
         "TestAgent YoujuBot/0.1",
         per_host_interval=0,
+        per_address_interval=0,
         transport=httpx.MockTransport(handler),
         resolver=resolver,
     ) as polite:
@@ -531,6 +536,7 @@ def test_robots_retry_keeps_both_paths(session, monkeypatch) -> None:
     with PoliteFetcher(
         "TestAgent YoujuBot/0.1",
         per_host_interval=0,
+        per_address_interval=0,
         transport=httpx.MockTransport(handler),
         resolver=lambda host: ["93.184.216.34"],
     ) as polite:

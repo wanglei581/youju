@@ -25,6 +25,7 @@ uv run youju crawl --source-id 12    # 只检查指定来源
 uv run youju fetch-details --limit 50  # 抓取尚无详情或已到重试时间的公开政府文件
 uv run youju fetch-details --source-id 12 --limit 20  # 只处理指定来源
 uv run youju fetch-details --workers 8  # 跨网站并行，同一网站仍遵守间隔
+uv run youju fetch-details-queue --minutes 28  # 后台分批补正文，每轮抓取要锁时停下
 uv run youju fetch-details --since 2026-07-01 --notices-only --limit 300  # 申报类通知回填
 uv run youju backfill-titles          # 列表页截断的历史标题用详情页完整标题补全：默认只预览，加 --apply 才写入
 uv run youju repost-groups           # 同一份部里通知的各地版本归成转发组，送管理台确认（D-055）
@@ -122,6 +123,8 @@ openid 在 `YOUJU_AI_ADVISOR_OPENIDS` 逗号分隔白名单内才可访问；默
 |---|---|---|
 | `YOUJU_DATABASE_URL` | `mysql+pymysql://root@127.0.0.1:33306/youju?charset=utf8mb4` | 数据库 |
 | `YOUJU_PER_HOST_INTERVAL` | `3.0` | 同一网站两次请求的最小间隔（秒） |
+| `YOUJU_PER_ADDRESS_INTERVAL` | `1.0` | 同一地址两次请求的最小间隔（秒） |
+| `YOUJU_PER_ADDRESS_CONCURRENCY` | `2` | 同一地址同时请求数上限 |
 | `YOUJU_MAX_WORKERS` | `8` | 同时抓取的网站数 |
 | `YOUJU_FAILURE_ALERT_THRESHOLD` | `3` | 连续失败几次告警 |
 | `YOUJU_ADMIN_TOKEN` | 未配置 | 管理接口请求头 `X-Admin-Token`；未配置时一律拒绝 |

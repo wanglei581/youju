@@ -923,6 +923,7 @@ def test_robots_disallowed_attachments_are_not_downloaded(session) -> None:
     fetcher = PoliteFetcher(
         "TestAgent YoujuBot/0.1",
         per_host_interval=0,
+        per_address_interval=0,
         transport=httpx.MockTransport(handler),
         resolver=lambda host: ["1.2.3.4"],
         decode_text=False,

@@ -26,6 +26,8 @@ def _fetcher(timeout: float = 20.0):
         settings.user_agent,
         timeout,
         settings.per_host_interval,
+        per_address_interval=settings.per_address_interval,
+        per_address_concurrency=settings.per_address_concurrency,
         resolver=CachingResolver(),
         url_allowed=is_gov_url,
     )

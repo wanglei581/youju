@@ -293,6 +293,7 @@ def test_list_api_waits_like_any_page_on_the_same_site():
     fetcher = PoliteFetcher(
         "TestAgent YoujuBot/0.1",
         per_host_interval=3.0,
+        per_address_interval=0,
         transport=httpx.MockTransport(handler),
         resolver=lambda host: ["1.2.3.4"],
         clock=clock,
@@ -500,6 +501,7 @@ def _fetcher(handler, requested: list[str]) -> PoliteFetcher:
     return PoliteFetcher(
         "TestAgent YoujuBot/0.1",
         per_host_interval=0.0,
+        per_address_interval=0,
         transport=httpx.MockTransport(recording),
         resolver=lambda host: ["1.2.3.4"],
     )

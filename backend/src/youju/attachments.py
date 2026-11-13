@@ -1263,6 +1263,8 @@ def _cache_run(
             settings.user_agent,
             settings.request_timeout,
             settings.per_host_interval,
+            per_address_interval=settings.per_address_interval,
+            per_address_concurrency=settings.per_address_concurrency,
             url_allowed=_government_url,
             decode_text=False,
         )
@@ -1349,6 +1351,8 @@ def extract_texts(
                 settings.user_agent,
                 settings.request_timeout,
                 settings.per_host_interval,
+                per_address_interval=settings.per_address_interval,
+                per_address_concurrency=settings.per_address_concurrency,
                 url_allowed=_government_url,
                 decode_text=False,
             )

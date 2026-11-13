@@ -1,13 +1,16 @@
 """按网站抓取详情，复用列表抓取器的 robots、限速与标识。"""
 
 import logging
+import queue
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.orm import Session
 
 from youju import pdf_sandbox
@@ -39,6 +42,14 @@ class DetailFetchSummary:
     failure_reason: str | None = None
 
 
+class DetailFetchResults(list[DetailFetchSummary]):
+    """保持列表接口，同时提供本次停取的网站及原因。"""
+
+    def __init__(self, results=(), *, paused_hosts=None):
+        super().__init__(results)
+        self.paused_hosts = dict(paused_hosts or {})
+
+
 class DetailFetcher:
     def fetch(self, url: str) -> FetchResult:  # pragma: no cover - 接口定义
         raise NotImplementedError
@@ -63,7 +74,9 @@ def _retryable(status: str, http_status: int | None) -> bool:
     # robots.txt 暂不可用时禁止本次抓取，但可在退避后重新检查。pdf_retry：读 PDF 正文的子进程
     # 遇到和当时的环境有关的问题（容器内存不够被停掉、太忙等，见 pdf_sandbox），不是文件本身的问题
     return status in {"network_error", "robots_error", "pdf_retry"} or (
-        status == "http_error" and http_status is not None and http_status >= 500
+        status == "http_error"
+        and http_status is not None
+        and (http_status == 429 or http_status >= 500)
     )
 
 
@@ -258,6 +271,8 @@ class _SitePause:
 
     def __init__(self) -> None:
         self.hosts: set[str] = set()
+        self.reasons: dict[str, str] = {}
+        self.forbidden: dict[str, int] = {}
         self.lock = threading.Lock()
 
 
@@ -277,6 +292,7 @@ class _PausingFetcher:
         # 这份文件每次请求碰过的地址都累计起来（详情页和它的 PDF 附件，含跳转、读 robots.txt
         # 走过的）
         self.touched: list[str] = []
+        self.first_result: FetchResult | None = None
 
     def _admit(self, target: str, *, record: bool = True) -> bool:
         with self.pause.lock:
@@ -296,12 +312,20 @@ class _PausingFetcher:
             result = self.inner.fetch(url)
             with self.pause.lock:
                 self.visited += [*result.hops, result.final_url or url]
+        if self.first_result is None:
+            self.first_result = result
         self.touched += [url, *result.hops, *result.robots_hops, result.final_url or url]
         return result
 
 
 def _fetch_outcomes(
-    selected: list[tuple[int, str]], fetcher: DetailFetcher, max_workers: int
+    selected: list[tuple[int, str]],
+    fetcher: DetailFetcher,
+    max_workers: int,
+    *,
+    pause: _SitePause | None = None,
+    on_outcome=None,
+    should_stop=None,
 ) -> dict[int, _FetchOutcome]:
     by_host: dict[str, list[tuple[int, str]]] = {}
     for document_id, url in selected:
@@ -312,11 +336,17 @@ def _fetch_outcomes(
     # 每一跳、它的 PDF 附件）里有名单上的网站，就停那个网站。停了以后，每次请求、每一跳跳转之前都先
     # 看（_PausingFetcher），已停的不去；经过或要去已停网站的那一份不收，所在网站别的文件照常取。
     # 不收的不写库，下一轮照常选上；要按 PR #485 的做法复核这个网站
-    pause = _SitePause()
+    pause = pause or _SitePause()
+    completed: queue.Queue = queue.Queue()
 
     def run_host(documents: list[tuple[int, str]]) -> list[_FetchOutcome]:
         results = []
         for document_id, url in documents:
+            if should_stop and should_stop():
+                break
+            with pause.lock:
+                if _host(url) in pause.reasons:
+                    break
             guarded = _PausingFetcher(fetcher, pause)
             try:
                 outcome = _fetch_one(document_id, url, guarded)
@@ -339,6 +369,8 @@ def _fetch_outcomes(
                     results.append(outcome)
                     if listed - pause.hosts:
                         pause.hosts |= listed
+                        for host in listed:
+                            pause.reasons.setdefault(host, "搜索限流防护页")
                         log.warning(
                             "搜索限流弹窗网站 %s 遇到防护页（文件 %s），这一轮停取，要复核",
                             "、".join(sorted(listed)),
@@ -352,28 +384,74 @@ def _fetch_outcomes(
                     results.append(outcome)
                 # 没收的：被挡下；或碰过的网站取的时候刚停、结果是 robots 不让、解析失败这类
                 # （不是网站本身的问题）。不写库，下一轮再取
-                if _host(url) in pause.hosts:
-                    break
+                host = _host(url)
+                first = guarded.first_result
+                if first and first.status == "http_error" and first.http_status == 403:
+                    pause.forbidden[host] = pause.forbidden.get(host, 0) + 1
+                else:
+                    pause.forbidden[host] = 0
+                reason = None
+                if outcome.fetch and outcome.fetch.http_status == 429:
+                    reason = "HTTP 429"
+                elif pause.forbidden[host] >= 3:
+                    reason = "连续 3 次 HTTP 403"
+                if reason and host not in pause.reasons:
+                    pause.reasons[host] = reason
+                    log.warning("网站 %s %s，这一轮停取", host, reason)
+                accepted = bool(results and results[-1] is outcome)
+                stopped = host in pause.reasons
+            if accepted:
+                completed.put(outcome)
+            if stopped:
+                break
         return results
 
-    # 网络并行只跨网站；数据库写入仍在主线程，避免共享 Session。
+    # 每个主机任务结束时发送哨兵；主线程消费结果并可立即提交。
+    def produce(documents):
+        try:
+            run_host(documents)
+        finally:
+            completed.put(None)
+
+    outcomes = {}
     with ThreadPoolExecutor(max_workers=max(1, max_workers)) as pool:
-        return {
-            outcome.document_id: outcome
-            for group in pool.map(run_host, by_host.values())
-            for outcome in group
-        }
+        futures = [pool.submit(produce, group) for group in by_host.values()]
+        remaining = len(futures)
+        while remaining:
+            outcome = completed.get()
+            if outcome is None:
+                remaining -= 1
+            else:
+                outcomes[outcome.document_id] = outcome
+                if on_outcome:
+                    on_outcome(outcome)
+        for future in futures:
+            future.result()
+    return outcomes
 
 
 def _fetch_selected(
-    session: Session, selected: list[tuple[int, str]], fetcher: DetailFetcher, max_workers: int
+    session: Session,
+    selected: list[tuple[int, str]],
+    fetcher: DetailFetcher,
+    max_workers: int,
+    *,
+    pause: _SitePause | None = None,
+    should_stop=None,
 ) -> list[DetailFetchSummary]:
     if not selected:
         return []
-    outcomes = _fetch_outcomes(selected, fetcher, max_workers)
+    saved = {}
+
+    def save(outcome):
+        saved[outcome.document_id] = _save_result(session, outcome)
+
+    _fetch_outcomes(
+        selected, fetcher, max_workers, pause=pause, on_outcome=save, should_stop=should_stop
+    )
     return [
-        _save_result(session, outcomes[document_id])
-        if document_id in outcomes
+        saved[document_id]
+        if document_id in saved
         else DetailFetchSummary(document_id, "site_paused", SITE_PAUSED)
         for document_id, _ in selected
     ]
@@ -385,7 +463,124 @@ def _polite_fetcher() -> PoliteFetcher:
         settings.user_agent,
         settings.request_timeout,
         settings.per_host_interval,
+        per_address_interval=settings.per_address_interval,
+        per_address_concurrency=settings.per_address_concurrency,
         url_allowed=_government_url,
+    )
+
+
+def _detail_order(today: date | None):
+    today = today or datetime.now(ZoneInfo("Asia/Shanghai")).date()
+    recent = Document.publish_date >= today - timedelta(days=30)
+    priority = func.coalesce(Document.kind_override, Document.rule_kind).in_(("申报通知", "政策"))
+    tier = case((and_(recent, priority), 0), (recent, 1), (priority, 2), else_=3)
+    return (tier, Document.publish_date.is_(None), Document.publish_date.desc(), Document.id)
+
+
+@dataclass(frozen=True)
+class DetailQueueSummary:
+    statuses: dict[str, int]
+    total: int
+    paused_hosts: dict[str, str]
+    stop_reason: str
+    batches: int
+
+
+def run_detail_queue(
+    session: Session,
+    *,
+    minutes: float,
+    workers: int = 32,
+    batch: int = 2000,
+    per_host: int = 100,
+    stop=None,
+    today: date | None = None,
+    fetcher: DetailFetcher | None = None,
+    clock=time.monotonic,
+) -> DetailQueueSummary:
+    if minutes <= 0 or min(workers, batch, per_host) < 1:
+        raise ValueError("minutes、workers、batch、per_host 必须大于 0")
+    deadline = clock() + minutes * 60
+    pause = _SitePause()
+    statuses: dict[str, int] = {}
+    batches = 0
+    skipped: set[int] = set()
+
+    def stop_reason():
+        if clock() >= deadline:
+            return "到时间"
+        if stop and stop():
+            return "每轮要锁"
+        return None
+
+    def run(active_fetcher):
+        nonlocal batches
+        while True:
+            reason = stop_reason()
+            if reason:
+                return reason
+            now = datetime.now(UTC)
+            stmt = (
+                select(Document.id, Document.url)
+                .join(Source, Document.source_id == Source.id)
+                .outerjoin(DocumentDetail, DocumentDetail.document_id == Document.id)
+                .where(
+                    Source.rights_level == 1,
+                    or_(
+                        DocumentDetail.document_id.is_(None),
+                        and_(
+                            DocumentDetail.next_retry_at.is_not(None),
+                            DocumentDetail.next_retry_at <= now,
+                            DocumentDetail.attempt_count < 3,
+                        ),
+                    ),
+                )
+                .order_by(*_detail_order(today))
+                # 流式游标关闭时会读完剩余结果；限制窗口，避免积压时每批传回大量弃用的行。
+                .limit(batch * 10)
+            )
+            selected = []
+            counts: dict[str, int] = {}
+            # 在窗口内按主机限额选取，窗口不足一批时先处理已选文件。
+            rows = session.execute(stmt.execution_options(yield_per=500))
+            for document_id, url in rows:
+                host = _host(url)
+                if (
+                    document_id in skipped
+                    or host in pause.reasons
+                    or counts.get(host, 0) >= per_host
+                ):
+                    continue
+                selected.append((int(document_id), url))
+                counts[host] = counts.get(host, 0) + 1
+                if len(selected) >= batch:
+                    break
+            rows.close()
+            session.commit()
+            if not selected:
+                return "没有了"
+            batches += 1
+            results = _fetch_selected(
+                session,
+                selected,
+                active_fetcher,
+                workers,
+                pause=pause,
+                should_stop=lambda: stop_reason() is not None,
+            )
+            for result in results:
+                if result.status == "site_paused":
+                    skipped.add(result.document_id)
+                elif result.status != "missing":
+                    statuses[result.status] = statuses.get(result.status, 0) + 1
+
+    if fetcher is None:
+        with _polite_fetcher() as active:
+            reason = run(active)
+    else:
+        reason = run(fetcher)
+    return DetailQueueSummary(
+        statuses, sum(statuses.values()), dict(pause.reasons), reason, batches
     )
 
 
@@ -400,6 +595,7 @@ def fetch_details(
     notices_only: bool = False,
     document_ids: list[int] | None = None,
     refetch: bool = False,
+    today: date | None = None,
 ) -> list[DetailFetchSummary]:
     """抓尚无详情或已到重试时间的公开政府文件；临时失败最多尝试三次。
     refetch：和 document_ids 一起用，详情已抓成功的也重抓一次（解析规则改进后补附件等）。"""
@@ -413,7 +609,7 @@ def fetch_details(
         .join(Source, Document.source_id == Source.id)
         .outerjoin(DocumentDetail, DocumentDetail.document_id == Document.id)
         .where(Source.rights_level == 1)
-        .order_by(Document.id)
+        .order_by(*(_detail_order(today) if document_ids is None else (Document.id,)))
         .limit(limit)
     )
     if not (refetch and document_ids is not None):
@@ -442,16 +638,19 @@ def fetch_details(
         )
     if document_ids is not None:
         if not document_ids:
-            return []
+            return DetailFetchResults()
         stmt = stmt.where(Document.id.in_(document_ids))
     selected = [(int(i), url) for i, url in session.execute(stmt).all()]
     # 查询事务先结束；网络请求期间不占用数据库连接和行锁。
     session.commit()
     workers = max_workers if max_workers is not None else get_settings().max_workers
+    pause = _SitePause()
     if fetcher is not None:
-        return _fetch_selected(session, selected, fetcher, workers)
-    with _polite_fetcher() as polite:
-        return _fetch_selected(session, selected, polite, workers)
+        results = _fetch_selected(session, selected, fetcher, workers, pause=pause)
+    else:
+        with _polite_fetcher() as polite:
+            results = _fetch_selected(session, selected, polite, workers, pause=pause)
+    return DetailFetchResults(results, paused_hosts=pause.reasons)
 
 
 @dataclass(frozen=True)
