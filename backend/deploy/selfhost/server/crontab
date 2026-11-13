@@ -22,8 +22,8 @@
 50 5 * * *  /app/backend/deploy/job.sh archive-prune
 # 本机超过 3 小时没来同步就提醒（本机每 10 分钟推一次；同一次断开 6 小时内只提醒一次）
 15 * * * *  /app/backend/deploy/job.sh sync-watch
-# 紧急下架（电脑不在线时在服务器上下的）：带回本机正式下架、带着这一次编号的下架记录同步过来了的，
-# 还有文件已经不在了的，自动撤掉紧急下架
+# 紧急下架（电脑不在线时在服务器上下的）：带回本机正式下架、带着这一次编号的下架记录同步过来了、
+# 而且文件现在正式下架着的，还有文件已经不在了的，自动撤掉紧急下架
 25 * * * *  /app/backend/deploy/job.sh emergency-takedown settle
 # 访问日志归档（网络日志留存不少于六个月）
 30 0 * * *  /app/backend/deploy/job.sh archive-logs

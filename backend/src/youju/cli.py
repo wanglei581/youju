@@ -2606,7 +2606,8 @@ def _cmd_emergency_takedown(args: argparse.Namespace) -> int:
         except OperationalError as exc:
             # 1205 锁等待超时、1213 死锁：同步正在写（紧急下架和同步写入排同一队）
             if getattr(exc.orig, "args", (None,))[0] in (1205, 1213):
-                print("没有做：同步正在写，过一会儿再试（说明要重新输入）")
+                again = "（说明要重新输入）" if args.action in ("add", "lift") else ""
+                print(f"没有做：同步正在写，过一会儿再试{again}")
                 return 1
             raise
 
