@@ -624,6 +624,7 @@ def test_enable_lonsun_records_only_reviewed_city_portals(session):
             province="安徽",
             city=city,
             dept="科技",
+            dept_full_name=f"{city}区科学技术局",
             column_name="通知通告",
             url=column,
             fetch_mode="static",

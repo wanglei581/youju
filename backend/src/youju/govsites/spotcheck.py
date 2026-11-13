@@ -467,7 +467,15 @@ def _first_list_item(
             for part in api_parts(api):
                 # 一个一个取、一个一个查：被拦下、没取到、读不出的，整栏不取证，后面的分类也不再请求
                 ar = cache.get(part.url, same_address_only=True)
-                if ar.status != "ok" or api_refusal(part, ar) or not api_readable(part, ar.text):
+                refusal = api_refusal(part, ar)
+                if refusal or ar.status != "ok" or not api_readable(part, ar.text):
+                    if reasons is not None:
+                        if refusal:
+                            reasons.append(f"不能抓：{refusal}")
+                        elif ar.status != "ok":
+                            reasons.append(f"这次没取到：列表接口：{ar.error or ar.status}")
+                        else:
+                            reasons.append("待人工处理：列表接口：返回格式认不出或为空")
                     return None
                 texts.append(ar.text)
             via = api_items_merged(api, texts, None, today)
@@ -520,7 +528,11 @@ def evidence_for(
             catalog_host = (
                 (source.parser_config or {}).get("lonsun_catalog_host")
                 if source is not None
-                else LONSUN_CITY_PORTALS.get((cell.get("省份", ""), cell.get("城市", "")))
+                else None
+            ) or LONSUN_CITY_PORTALS.get(
+                (source.province, source.city)
+                if source is not None
+                else (cell.get("省份", ""), cell.get("城市", ""))
             )
             item = _first_list_item(cache, url, today, reasons, catalog_host=catalog_host)
             if item is not None:

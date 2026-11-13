@@ -759,7 +759,11 @@ def api_refusal(api: ListApi, result) -> str:
     status = getattr(result, "status", "")
     http_status = getattr(result, "http_status", None)
     if status == "robots_disallowed":
-        return f"{prefix}：robots.txt 禁止"
+        return (
+            f"{prefix}：同一轮已被拒绝"
+            if result.error == "同一轮已被拒绝"
+            else f"{prefix}：robots.txt 禁止"
+        )
     if http_status in _REFUSE_HTTP:
         return f"{prefix}：HTTP {http_status}：拒绝访问或要求登录"
     if status in ("network_error", "deadline", "ssl_error", "robots_error", "too_large"):
@@ -835,7 +839,9 @@ def api_follow(api: ListApi, result) -> ListApi | str:
     if _retry_later(result.text):
         return "栏目树脚本：空白或维护页面，这次没取到"
     resolved = resolve_lonsun(api, result.text)
-    return f"栏目树脚本：{resolved}" if isinstance(resolved, str) else resolved
+    if isinstance(resolved, str) and ("栏目树脚本格式" in resolved or "栏目树存在" in resolved):
+        return f"栏目树脚本：{resolved}"
+    return resolved
 
 
 def fetch_api_follow(api: ListApi, fetch):

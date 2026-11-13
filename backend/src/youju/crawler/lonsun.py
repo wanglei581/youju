@@ -10,6 +10,7 @@ import math
 import re
 from dataclasses import dataclass
 from datetime import date
+from functools import lru_cache
 from urllib.parse import parse_qsl, unquote, urlsplit
 
 from youju.crawler.dates import _safe_date
@@ -18,6 +19,7 @@ from youju.crawler.titles import clean_title
 from youju.crawler.urls import normalize_url, url_key
 
 # 依据 2026-11-13 区县栏目页实测；新增城市须先审查同城集约化平台关系。
+# robots.txt 的 4xx 按 RFC 9309 视为没有规则；5xx、网络错误和超时按不可读处理。
 LONSUN_CITY_PORTALS = {("安徽", "芜湖"): "www.wuhu.gov.cn", ("安徽", "淮南"): "www.huainan.gov.cn"}
 
 
@@ -45,11 +47,13 @@ def column_spec(url: str) -> tuple[str, str] | None:
         params = dict(pairs)
         if (
             len(params) != len(pairs)
-            or set(params) - {"type", "action", "catId", "nav"}
+            or set(params) - {"type", "action", "catId", "nav", "sub", "isParent"}
             or params.get("type") != "4"
             or params.get("action") != "list"
             or not re.fullmatch(r"[0-9]+", params.get("catId", ""))
-            or ("nav" in params and not re.fullmatch(r"[0-9]+", params["nav"]))
+            or ("nav" in params and not re.fullmatch(r"[0-9]*", params["nav"]))
+            or ("sub" in params and params["sub"] != "")
+            or ("isParent" in params and params["isParent"] not in ("true", "false"))
         ):
             return None
         return match.group(1), params["catId"]
@@ -482,7 +486,7 @@ class _JSParser:
         name = None
         if self.peek() != "(":
             name = self.take()
-            if not re.fullmatch(r"[A-Za-z_$][\w$]*", name, re.ASCII):
+            if not re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", name, re.ASCII):
                 raise LonsunFormatError(f"认不出记号 {name}")
         if declaration and name is None:
             raise LonsunFormatError("函数声明缺少名字")
@@ -490,7 +494,7 @@ class _JSParser:
         args = []
         while self.peek() != ")":
             arg = self.take()
-            if not re.fullmatch(r"[A-Za-z_$][\w$]*", arg, re.ASCII):
+            if not re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", arg, re.ASCII):
                 raise LonsunFormatError(f"认不出记号 {arg}")
             args.append(arg)
             if self.peek() != ",":
@@ -748,6 +752,10 @@ def _parse_statements(source: str):
     return tuple(result)
 
 
+class _PartialDict(dict):
+    """只知道列出的属性，不假设其他属性不存在。"""
+
+
 class _Environment:
     def __init__(self, values=None, parent=None, member_resolver=None, call_resolver=None):
         self.values = {} if values is None else values
@@ -880,6 +888,8 @@ def _member(obj, key, env):
     if obj is UNKNOWN or key is UNKNOWN:
         return UNKNOWN
     key = _js_string(key)
+    if isinstance(obj, _PartialDict):
+        return obj.get(key, UNKNOWN)
     if isinstance(obj, dict):
         return obj.get(key, UNDEFINED)
     if isinstance(obj, (list, tuple, str)):
@@ -920,6 +930,8 @@ def _evaluate(tree, env):
             if receiver is UNKNOWN or key is UNKNOWN:
                 return UNKNOWN
             if key == "indexOf" and isinstance(receiver, (list, tuple, str)):
+                if len(tree[2]) >= 2:
+                    return UNKNOWN
                 args = [_evaluate(arg, env) for arg in tree[2]]
                 if any(arg is UNKNOWN for arg in args):
                     return UNKNOWN
@@ -959,6 +971,8 @@ def _evaluate(tree, env):
             return UNKNOWN
         if op == "!":
             return not _truth(value)
+        if op in ("+", "-") and isinstance(value, (list, tuple, dict)):
+            return UNKNOWN
         if op == "+":
             return _js_number(value)
         if op == "-":
@@ -988,6 +1002,10 @@ def _evaluate(tree, env):
             return UNKNOWN
         if op in ("&&", "||"):
             return b
+        if op in ("==", "!=") and (
+            isinstance(a, (dict, list, tuple)) != isinstance(b, (dict, list, tuple))
+        ):
+            return UNKNOWN
         if op in ("===", "!==", "==", "!="):
             equal = _strict_equal(a, b) if op in ("===", "!==") else _loose_equal(a, b)
             return not equal if op in ("!==", "!=") else equal
@@ -1006,6 +1024,8 @@ def _evaluate(tree, env):
                 "<=": lambda: a <= b,
                 ">=": lambda: a >= b,
             }[op]()
+        if isinstance(a, (dict, list, tuple)) or isinstance(b, (dict, list, tuple)):
+            return UNKNOWN
         if op == "+" and (isinstance(a, str) or isinstance(b, str)):
             return _js_string(a) + _js_string(b)
         a, b = _js_number(a), _js_number(b)
@@ -1049,6 +1069,395 @@ def _immutable(value):
     return value
 
 
+_MUTATORS = {"push", "pop", "shift", "unshift", "splice", "sort", "reverse"}
+_TRACKED = {
+    "listParams",
+    "hideIds",
+    "organId",
+    "prefix",
+    "actions",
+    "query",
+    "currCatId",
+    "refresh",
+    "ztreeData",
+    "ztreeData2",
+}
+
+
+def _writes(source, *, skip_functions=False):
+    """找属性、下标、更新运算和常见原地修改；不执行任何脚本。"""
+    tokens = _js_tokens(source)
+    v = [t.value for t in tokens]
+    skipped = set()
+    if skip_functions:
+        for i, token in enumerate(v):
+            if token != "function" or i in skipped:
+                continue
+            j = i + 1
+            if j < len(v) and v[j] != "(":
+                j += 1
+            if j < len(v) and v[j] == "(":
+                j = _matching_token(tokens, j) + 1
+                if j < len(v) and v[j] == "{":
+                    skipped.update(range(i, _matching_token(tokens, j) + 1))
+    result = []
+    for i, name in enumerate(v):
+        if i in skipped or not re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", name):
+            continue
+        if i and v[i - 1] in (".", "var"):
+            continue
+        parts = [name]
+        j = i + 1
+        while j < len(v):
+            if v[j] == "." and j + 1 < len(v):
+                parts.append(v[j + 1])
+                j += 2
+            elif v[j] == "[":
+                end = _matching_token(tokens, j)
+                part = v[j + 1] if end == j + 2 else "*"
+                part = _string_literal(part) if part.startswith(("'", '"')) else "*"
+                parts.append(part)
+                j = end + 1
+            else:
+                break
+        op = v[j] if j < len(v) else ""
+        if op in ("=", "+=", "-=", "*=", "/=", "%=", "++", "--") or (
+            i and v[i - 1] in ("delete", "++", "--")
+        ):
+            result.append((tuple(parts), op))
+        elif op == "(" and len(parts) > 1 and parts[-1] in _MUTATORS:
+            result.append((tuple(parts[:-1]), parts[-1]))
+        elif (
+            parts in (["$", "extend"], ["jQuery", "extend"])
+            or len(parts) == 2
+            and parts[0] in ("Object", "Reflect")
+        ) and op == "(":
+            # 只需要找目标；复杂目标一律作为未知写入。
+            k = j + 1
+            if k < len(v):
+                target = v[k]
+                if (
+                    target in ("me", "this", "window")
+                    and v[k + 1 : k + 2] == ["."]
+                    and k + 2 < len(v)
+                ):
+                    result.append(((target, v[k + 2]), "extend"))
+                elif target in ("me", "this") and v[k + 1 : k + 2] == ["["]:
+                    result.append(((target, "*"), "extend"))
+                elif re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", target):
+                    result.append(((target,), "extend"))
+    return result
+
+
+def _tracked_write(path):
+    return (
+        len(path) > 1 and path[0] in ("me", "this") and (path[1] in _TRACKED or path[1] == "*")
+    ) or path[0] in ("catalogs", "_organTree2")
+
+
+def _computed_method_call(tokens, start):
+    values = [token.value for token in tokens]
+    j = start + 1
+    computed = False
+    while j < len(values):
+        if values[j] == "[":
+            computed = True
+            j = _matching_token(tokens, j) + 1
+        elif values[j] == "." and j + 1 < len(values):
+            j += 2
+        else:
+            break
+    return computed and j < len(values) and values[j] == "("
+
+
+def _safe_event_timer(tokens, start):
+    """只认延时注册点击事件；事件处理函数不会在页面加载时执行。"""
+    values = [token.value for token in tokens]
+    try:
+        if values[start : start + 5] != ["setTimeout", "(", "function", "(", ")"]:
+            return False
+        body = start + 5
+        if values[body : body + 3] != ["{", "$", "("]:
+            return False
+        if not values[body + 3].startswith(("'", '"')):
+            return False
+        if values[body + 4 : body + 9] != [")", ".", "on", "(", "'click'"] and values[
+            body + 4 : body + 9
+        ] != [")", ".", "on", "(", '"click"']:
+            return False
+        if values[body + 9 : body + 12] != [",", "function", "("]:
+            return False
+        callback_body = _matching_token(tokens, body + 11) + 1
+        if values[callback_body] != "{":
+            return False
+        after_callback = _matching_token(tokens, callback_body) + 1
+        if values[after_callback : after_callback + 2] != [")", ";"]:
+            return False
+        end_body = after_callback + 2
+        return (
+            values[end_body : end_body + 2] == ["}", ","]
+            and re.fullmatch(r"[0-9]+", values[end_body + 2]) is not None
+            and values[end_body + 3] == ")"
+        )
+    except (IndexError, LonsunFormatError):
+        return False
+
+
+def _check_pre_methods(raw, globals_):
+    all_globals = set(globals_) - {"_organTree"}
+    used = {
+        t.value
+        for name in ("getData", "open", "getList", "getNewList")
+        for t in _js_tokens(raw.get(name, ""))
+    }
+    globals_ = set(globals_) & used
+    pending = [
+        "init",
+        "isRefresh",
+        "preprocessData",
+        "findParentId",
+        "initTree",
+        "bindEvt",
+        "getReportyear",
+        "setSelect",
+    ]
+    init_tokens = [t.value for t in _js_tokens(raw.get("init", ""))]
+    for i in range(len(init_tokens) - 6):
+        if init_tokens[i : i + 2] == ["me", "."] and init_tokens[i + 3 : i + 7] == [
+            "(",
+            ")",
+            ".",
+            "done",
+        ]:
+            called = init_tokens[i + 2]
+            if called not in raw:
+                raise LonsunFormatError(f"init 调用了未建模的方法 {called}")
+            pending.append(called)
+    checked = set()
+    while pending:
+        name = pending.pop()
+        if name in checked:
+            continue
+        checked.add(name)
+        source = raw.get(name, "")
+        if name != "init":
+            call_tokens = _js_tokens(source)
+            call_values = [token.value for token in call_tokens]
+            local_functions = {
+                call_values[i + 1]
+                for i in range(len(call_values) - 2)
+                if call_values[i] == "function" and call_values[i + 2] == "("
+            }
+            called_locals = {
+                call_values[i]
+                for i in range(len(call_values) - 1)
+                if call_values[i] in local_functions
+                and call_values[i + 1] == "("
+                and (i == 0 or call_values[i - 1] not in ("function", "."))
+                and not _inside_function(source, call_tokens[i].start)
+            }
+            for i in range(len(call_values) - 2):
+                if (
+                    call_values[i] != "function"
+                    or call_values[i + 2] != "("
+                    or call_values[i + 1] not in called_locals
+                    or _inside_function(source, call_tokens[i].start)
+                ):
+                    continue
+                end_args = _matching_token(call_tokens, i + 2)
+                start_body = end_args + 1
+                if start_body >= len(call_values) or call_values[start_body] != "{":
+                    raise LonsunFormatError("局部函数的函数体认不出")
+                end_body = _matching_token(call_tokens, start_body)
+                function_body = source[call_tokens[start_body].end : call_tokens[end_body].start]
+                body_values = [t.value for t in _js_tokens(function_body)]
+                if any(
+                    body_values[j] in ("me", "this") and body_values[j + 1] in (".", "[")
+                    for j in range(len(body_values) - 1)
+                ) or any(v in globals_ or v in {"catalogs", "_organTree2"} for v in body_values):
+                    raise LonsunFormatError(f"{name} 的局部函数引用了依赖状态")
+                if any(
+                    _tracked_write(path) for path, _ in _writes(function_body, skip_functions=True)
+                ):
+                    raise LonsunFormatError(f"{name} 的局部函数改写了依赖状态")
+            for i in range(len(call_values) - 1):
+                if (
+                    re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", call_values[i])
+                    and call_values[i + 1] == "("
+                    and (i == 0 or call_values[i - 1] not in (".", "function"))
+                    and call_values[i]
+                    not in {
+                        "if",
+                        "for",
+                        "while",
+                        "switch",
+                        "catch",
+                        "function",
+                        "$",
+                        "setTimeout",
+                        "RegExp",
+                    }
+                    and call_values[i] not in local_functions
+                    and not _inside_function(source, call_tokens[i].start)
+                ):
+                    raise LonsunFormatError(f"{name} 调用了未建模的函数 {call_values[i]}")
+            for i in range(len(call_values) - 3):
+                if (
+                    call_values[i] in ("me", "this")
+                    and call_values[i + 1] == "."
+                    and call_values[i + 3] == "("
+                    and not _inside_function(source, call_tokens[i].start)
+                ):
+                    called = call_values[i + 2]
+                    if called not in raw:
+                        raise LonsunFormatError(f"{name} 调用了未建模的方法 {called}")
+                    pending.append(called)
+        aliases = set(
+            re.findall(
+                r"\b(?:var\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:me|this)\s*\.\s*(?:listParams|hideIds|actions|query|ztreeData2?)\b",
+                source,
+            )
+        )
+        assignments = re.findall(
+            r"\b(?:var\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*([A-Za-z_$][A-Za-z0-9_$]*)\b",
+            source,
+        )
+        while True:
+            more = {dest for dest, src in assignments if src in aliases} - aliases
+            if not more:
+                break
+            aliases.update(more)
+        if name != "init":
+            for i in range(len(call_values) - 1):
+                if call_values[i] not in local_functions or call_values[i + 1] != "(":
+                    continue
+                if i and call_values[i - 1] in ("function", "."):
+                    continue
+                end = _matching_token(call_tokens, i + 1)
+                arguments = call_values[i + 2 : end]
+                if any(
+                    v in aliases or v in {"me", "this", "catalogs", "_organTree2"}
+                    for v in arguments
+                ):
+                    raise LonsunFormatError(f"{name} 向局部函数传入了依赖状态")
+        writes = _writes(source, skip_functions=True)
+        if any(path[0] in aliases for path, _ in writes):
+            raise LonsunFormatError(f"{name} 通过别名改写了依赖状态")
+        if name != "init":
+            local_names = {
+                call_values[i + 1] for i in range(len(call_values) - 1) if call_values[i] == "var"
+            }
+            uncertain_aliases = {
+                dest
+                for dest, src in assignments
+                if src not in local_names | {"me", "this", "true", "false", "null", "undefined"}
+            }
+            while True:
+                more = {
+                    dest for dest, src in assignments if src in uncertain_aliases
+                } - uncertain_aliases
+                if not more:
+                    break
+                uncertain_aliases.update(more)
+            allowed_roots = local_names | {
+                "me",
+                "this",
+                "$",
+                "jQuery",
+                "Ls",
+                "_organTree",
+                "console",
+            }
+            for i in range(len(call_values) - 3):
+                if (
+                    re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", call_values[i])
+                    and (i == 0 or call_values[i - 1] != ".")
+                    and call_values[i + 1] == "."
+                    and call_values[i + 3] == "("
+                    and call_values[i] not in allowed_roots
+                    and not _inside_function(source, call_tokens[i].start)
+                ):
+                    raise LonsunFormatError(f"{name} 调用了未建模的对象方法")
+                if (
+                    call_values[i]
+                    in aliases
+                    | uncertain_aliases
+                    | all_globals
+                    | {"document", "window", "Object", "Reflect"}
+                    and call_values[i + 1] == "."
+                    and call_values[i + 3] == "("
+                    and not _inside_function(source, call_tokens[i].start)
+                ):
+                    raise LonsunFormatError(f"{name} 调用了未建模的对象方法")
+        for path, op in writes:
+            if path == ("window",) and op == "extend":
+                raise LonsunFormatError(f"{name} 可能改写页面全局变量")
+            if not _tracked_write(path):
+                global_name = path[1] if path[0] == "window" and len(path) > 1 else path[0]
+                if global_name in globals_:
+                    raise LonsunFormatError(f"{name} 改写了页面全局变量 {global_name}")
+                continue
+            if name == "isRefresh" and path == ("me", "refresh") and op == "=":
+                continue
+            if (
+                name == "preprocessData"
+                and path in (("me", "hideIds"), ("me", "ztreeData"))
+                and op == "="
+            ):
+                continue
+            if name == "initTree" and path == ("_organTree2",) and op == "=":
+                continue
+            raise LonsunFormatError(f"{name} 改写了依赖状态 {'.'.join(path)}")
+    # preprocessData 的节点回调加载时运行，parentId 会影响建树。
+    for path, _op in _writes(raw.get("preprocessData", "")):
+        if (
+            len(path) > 1
+            and path[-1] in ("parentId", "*", "children")
+            and path[0] not in ("me", "$", "jQuery")
+        ):
+            raise LonsunFormatError("preprocessData 改写了建树字段")
+    # 删除节点可能通过别名或调用结果发生，无法静态证明不影响目录树。
+    tree_source = raw.get("initTree", "")
+    tree_tokens = _js_tokens(tree_source)
+    for token in tree_tokens:
+        if token.value == "delete" and not _inside_function(tree_source, token.start):
+            raise LonsunFormatError("initTree 含删除操作")
+    tree_values = [t.value for t in tree_tokens]
+    for i in range(len(tree_values) - 3):
+        if tree_values[i : i + 4] == ["$", ".", "each", "("]:
+            end = _matching_token(tree_tokens, i + 3)
+            args = tree_values[i + 4 : end]
+            if "_organTree2" in args and "delete" in args:
+                raise LonsunFormatError("initTree 删除了栏目树节点")
+    # 回调里对目录树的其他改动也不能放行。
+    for path, _op in _writes(raw.get("initTree", "")):
+        if _tracked_write(path) and path != ("_organTree2",):
+            raise LonsunFormatError("initTree 改写了栏目树")
+
+
+@lru_cache(maxsize=128)
+def _function_ranges(source):
+    tokens = _js_tokens(source)
+    v = [t.value for t in tokens]
+    ranges = []
+    for i, token in enumerate(v):
+        if token != "function":
+            continue
+        j = i + 1
+        if j < len(v) and v[j] != "(":
+            j += 1
+        if j < len(v) and v[j] == "(":
+            j = _matching_token(tokens, j) + 1
+            if j < len(v) and v[j] == "{":
+                end = _matching_token(tokens, j)
+                ranges.append((tokens[j].start, tokens[end].end))
+    return tuple(ranges)
+
+
+def _inside_function(source, position):
+    return any(start < position < end for start, end in _function_ranges(source))
+
+
 def _page_globals(scripts):
     declarations = {}
     assignments = {}
@@ -1088,6 +1497,31 @@ def _page_globals(scripts):
                 and re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", values[i])
             ):
                 assignments[values[i]] = assignments.get(values[i], 0) + 1
+    for source in scripts:
+        for path, op in _writes(source):
+            if path == ("window",) and op == "extend":
+                for name in declarations:
+                    assignments[name] = assignments.get(name, 0) + 1
+                continue
+            name = path[1] if path[0] in ("window", "globalThis") and len(path) > 1 else path[0]
+            if name in declarations:
+                assignments[name] = assignments.get(name, 0) + 1
+        tokens = _js_tokens(source)
+        values = [token.value for token in tokens]
+        for i in range(len(values) - 2):
+            if values[i] != "function" or values[i + 1] != "(":
+                continue
+            if values[max(0, i - 2) : i] not in (["$", "("], ["ready", "("]):
+                continue
+            start = _matching_token(tokens, i + 1) + 1
+            if start >= len(values) or values[start] != "{":
+                continue
+            end = _matching_token(tokens, start)
+            body = source[tokens[start].end : tokens[end].start]
+            for path, _op in _writes(body, skip_functions=True):
+                name = path[1] if path[0] == "window" and len(path) > 1 else path[0]
+                if name in declarations:
+                    assignments[name] = assignments.get(name, 0) + 1
     return tuple(
         (name, _immutable(vals[0]) if len(vals) == 1 and assignments.get(name) == 1 else UNKNOWN)
         for name, vals in declarations.items()
@@ -1113,7 +1547,7 @@ def _written_script(source):
     match = re.fullmatch(r'<script\s+src=(["\'])(.*?)', first, re.DOTALL | re.IGNORECASE)
     if not match or last != match.group(1) + "></script>":
         return None
-    return match.group(2)
+    return match.group(2) if re.fullmatch(r"[A-Za-z0-9/_.\-?=&%:]+", match.group(2)) else None
 
 
 def find_lonsun_api(
@@ -1159,19 +1593,78 @@ def find_lonsun_api(
                 written = _written_script(source)
                 if written is not None:
                     candidates.append(written)
-        token_sets = [_js_tokens(s) for s in scripts]
+        token_sets = [_js_tokens(source) for source in scripts]
+        tree_declarations = 0
+        tree_extensions = 0
+        for source, tokens in zip(scripts, token_sets, strict=True):
+            values = [token.value for token in tokens]
+            is_tree_script = any(
+                values[i : i + 3] == ["function", "PublicTree", "("] for i in range(len(values) - 2)
+            )
+            tree_writes = 0
+            for path, op in _writes(source):
+                # window.catalogs 和 window["catalogs"] 同样是页面全局状态。
+                if path[0] in ("window", "globalThis") and len(path) > 1:
+                    path = path[1:]
+                if path[0] == "PublicTree" and op == "extend":
+                    tree_extensions += 1
+                if path[0] == "_organTree2" and is_tree_script:
+                    tree_writes += 1
+                    if path == ("_organTree2",) and op == "=" and tree_writes == 1:
+                        continue
+                if (
+                    path[0] in ("catalogs", "_organTree2")
+                    or path[0] == "PublicTree"
+                    and op != "extend"
+                    or path[:2] in (("Ls", "ajax"), ("Ls", "ajaxGet"), ("Ls", "url"))
+                ):
+                    return fail("内联脚本改写了依赖状态")
+            for i in range(len(values) - 5):
+                if (
+                    values[i] in ("Object", "Reflect")
+                    and values[i + 1] == "."
+                    and values[i + 2] in ("assign", "defineProperty", "defineProperties", "set")
+                    and values[i + 3 : i + 5] in (["(", "window"], ["(", "globalThis"])
+                ):
+                    end = _matching_token(tokens, i + 3)
+                    args = values[i + 5 : end]
+                    if any(
+                        value.strip("\"'") in ("catalogs", "PublicTree", "Ls", "_organTree2")
+                        for value in args
+                    ):
+                        return fail("内联脚本改写了依赖状态")
+            for i in range(len(values) - 2):
+                if (
+                    values[i] == "var"
+                    and values[i + 1] in ("catalogs", "PublicTree")
+                    and values[i + 2] == "="
+                ):
+                    return fail("内联脚本改写了依赖状态")
+                if values[i : i + 3] == ["var", "_organTree2", "="]:
+                    tree_declarations += 1
+                    if (
+                        not is_tree_script
+                        or tree_declarations > 1
+                        or values[i + 3 : i + 5] != ["null", ";"]
+                    ):
+                        return fail("内联脚本改写了栏目树状态")
+                if values[i : i + 3] in (
+                    ["$", ".", "ajaxSetup"],
+                    ["jQuery", ".", "ajaxSetup"],
+                    ["$", ".", "ajaxPrefilter"],
+                    ["jQuery", ".", "ajaxPrefilter"],
+                ) and values[i + 3 : i + 4] == ["("]:
+                    return fail("页面改写了 AJAX 设置")
         constructors = []
+        extends = 0
         for n, tokens in enumerate(token_sets):
             v = [t.value for t in tokens]
             for i in range(len(v) - 2):
+                if v[i : i + 7] == ["$", ".", "extend", "(", "PublicTree", ".", "prototype"]:
+                    extends += 1
                 if v[i : i + 3] == ["function", "PublicTree", "("]:
                     constructors.append((n, i))
-                if v[i : i + 2] == ["PublicTree", "="] or (
-                    v[i : i + 3] == ["PublicTree", ".", "prototype"]
-                    and (i < 4 or v[i - 4 : i] != ["$", ".", "extend", "("])
-                ):
-                    return None
-        if len(constructors) != 1:
+        if len(constructors) != 1 or extends != 1 or tree_extensions != 1:
             return None
         n, index = constructors[0]
         tokens = token_sets[n]
@@ -1229,6 +1722,38 @@ def find_lonsun_api(
                     assigned[key] = expr[3]
                     if key in ("organId", "prefix", "actions"):
                         me[key] = _evaluate(expr[3], env)
+        permitted = set(assigned) | {"ztreeData", "ztreeData2", "refresh"}
+        constructor_writes = _writes(
+            scripts[n][tokens[index + 4].end : tokens[end].start], skip_functions=True
+        )
+        for path, op in constructor_writes:
+            if _tracked_write(path) and not (
+                len(path) == 2 and path[0] == "me" and path[1] in permitted and op == "="
+            ):
+                return None
+        for key in ("ztreeData", "ztreeData2", "refresh"):
+            if sum(path == ("me", key) for path, _ in constructor_writes) != 1:
+                return None
+        init_values = {}
+        for statement in statements:
+            if statement[0] == "expression" and statement[1][0] == "assign":
+                expr = statement[1]
+                target = _path(expr[2])
+                if target in ("me.ztreeData", "me.ztreeData2", "me.refresh"):
+                    if target in init_values or expr[1] != "=":
+                        return None
+                    init_values[target] = expr[3]
+        tree_values = (
+            _parse_expression("catalogs[me.organId]"),
+            _parse_expression("JSON.parse(JSON.stringify(catalogs[me.organId]))"),
+        )
+        if init_values.get("me.ztreeData2") not in tree_values:
+            return fail("构造函数的 ztreeData2 来源认不出")
+        if init_values.get("me.ztreeData") not in tree_values or init_values.get("me.refresh") != (
+            "literal",
+            True,
+        ):
+            return fail("构造函数初值认不出")
         # 字段若在嵌套语句中被改写，不能只采用顶层赋值。
         constructor_values = values[index + 5 : end]
         for key in assigned:
@@ -1249,6 +1774,7 @@ def find_lonsun_api(
         label = me.get("actions", {}).get("label") if isinstance(me.get("actions"), dict) else None
         if (
             not isinstance(label, str)
+            or not re.fullmatch(r"(/[A-Za-z0-9_\-]+)*/site/label/8888", label)
             or not label.startswith("/")
             or label.startswith("//")
             or not label.endswith("/site/label/8888")
@@ -1272,6 +1798,10 @@ def find_lonsun_api(
             params = ("object", ())
         if params[0] != "object" or len(dict(params[1])) != len(params[1]):
             return None
+        if any(
+            re.fullmatch(r"0|[1-9][0-9]*", str(k)) and int(k) < 4294967295 for k, _ in params[1]
+        ):
+            return fail("列表参数含整数键，顺序无法确定")
         organ = _parse_expression("me.organId")
         if any(tree[0] != "literal" and tree != organ for _, tree in params[1]):
             return None
@@ -1281,6 +1811,8 @@ def find_lonsun_api(
             url = urljoin(page_url, candidate)
             parts = urlsplit(url)
             if re.search(r"/[0-9]+/" + re.escape(spec[0]) + r"\.js$", parts.path):
+                if urlsplit(page_url).scheme == "https" and parts.scheme == "http":
+                    return fail("HTTPS 页面引用了 HTTP 栏目树脚本")
                 if not catalog_host_allowed(page_url, url, catalog_host):
                     page_host = urlsplit(page_url).hostname
                     if catalog_host_allowed(f"https://{page_host}/", f"https://{parts.hostname}/"):
@@ -1293,8 +1825,8 @@ def find_lonsun_api(
                 urls.append(url)
         if not urls:
             return fail("没找到栏目树脚本")
-        if len({urlsplit(u).path for u in urls}) != 1:
-            return fail("栏目树脚本有几处、路径不一样")
+        if len({(urlsplit(u).hostname, urlsplit(u).path) for u in urls}) != 1:
+            return fail("栏目树脚本有几处、主机不一样或路径不一样")
         plan = LonsunPlan(
             spec[0],
             me.get("prefix", ""),
@@ -1444,6 +1976,11 @@ def _tree_rules(raw):
             ]
             if tail[10:28] != expected or (len(tail) > 28 and tail[28] not in (";", "}")):
                 raise LonsunFormatError("栏目树过滤方式认不出")
+    modified = modified | frozenset(
+        path[-1]
+        for path, _ in _writes(pre)
+        if len(path) > 1 and path[0] not in ("me", "$", "jQuery")
+    )
     occurrences = [i for i, v in enumerate(tokens) if v == "ids"]
     hide_ok = not pre
     if pre:
@@ -1512,27 +2049,61 @@ def _tree_rules(raw):
 
 def _init_calls_getdata(body):
     direct = _parse_statements("me.getData();")[0]
+    seen = set()
+    allowed = {
+        "bindEvt",
+        "isRefresh",
+        "preprocessData",
+        "findParentId",
+        "initTree",
+        "getReportyear",
+        "setSelect",
+    }
     for st in _parse_statements(body):
         if st == direct:
-            return True
+            return {"isRefresh", "initTree"} <= seen
+        if st == _parse_statements("var me = this;")[0]:
+            continue
         if st[0] != "expression":
-            continue
+            return False
         expr = st[1]
-        if _call_path(expr) is not None or expr[0] != "call" or _path(expr[1]) is not None:
+        path = _call_path(expr)
+        if path and path.startswith("me.") and path[3:] in allowed and not expr[2]:
+            seen.add(path[3:])
             continue
-        callee = expr[1]
-        if callee[0] != "member" or callee[2] != ("literal", "done") or len(expr[2]) != 1:
-            continue
-        inner, callback = callee[1], expr[2][0]
         if (
-            not (_call_path(inner) or "").startswith("me.")
-            or callback[0] != "function"
-            or callback[2]
+            expr[0] == "call"
+            and expr[1][0] == "member"
+            and expr[1][2] == ("literal", "done")
+            and len(expr[2]) == 1
         ):
-            continue
-        if _parse_statements(body[callback[3] : callback[4]]) == (direct,):
-            return True
+            inner, callback = expr[1][1], expr[2][0]
+            if (
+                (_call_path(inner) or "").startswith("me.")
+                and not inner[2]
+                and callback[0] == "function"
+                and not callback[2]
+                and _parse_statements(body[callback[3] : callback[4]]) == (direct,)
+            ):
+                return {"isRefresh", "initTree"} <= seen
+        return False
     return False
+
+
+def _has_unmodeled_call(tree, env):
+    if not isinstance(tree, tuple) or not tree:
+        return False
+    if tree[0] == "function":
+        return False
+    if tree[0] == "call" and _evaluate(tree, env) is UNKNOWN:
+        return True
+    return any(
+        _has_unmodeled_call(x, env)
+        for part in tree[1:]
+        for x in (
+            part if isinstance(part, tuple) and part and isinstance(part[0], tuple) else (part,)
+        )
+    )
 
 
 def _callback_exclusions(source, callback, parent, hide_ok, mode):
@@ -1667,12 +2238,47 @@ def _callback_exclusions(source, callback, parent, hide_ok, mode):
             if (
                 path == "$.each"
                 and len(expr[2]) == 2
-                and expr[2][0] == ("identifier", "data")
-                and data_ready
+                and expr[2][0] in (("identifier", "data"), ("identifier", "res"))
+                and (data_ready or expr[2][0] == ("identifier", response))
             ):
                 fn = expr[2][1]
                 if fn[0] == "function" and len(fn[2]) == 2:
                     index, item = fn[2]
+                    each_body = body[fn[3] : fn[4]]
+                    tokens = [t.value for t in _js_tokens(each_body)]
+                    locals_ = {
+                        tokens[i + 1] for i, token in enumerate(tokens[:-1]) if token == "var"
+                    }
+                    forbidden = {
+                        "push",
+                        "splice",
+                        "pop",
+                        "shift",
+                        "unshift",
+                        "sort",
+                        "reverse",
+                        "filter",
+                        "slice",
+                        "map",
+                        "concat",
+                    }
+                    writes = _writes(each_body)
+                    if (
+                        not ({"data", "res"} & set(tokens))
+                        and not any(
+                            tokens[i] in forbidden and tokens[i + 1] == "("
+                            for i in range(len(tokens) - 1)
+                        )
+                        and all(
+                            (len(path) == 1 and path[0] in locals_)
+                            or path in ((item, "index"), (item, "relInfo"), (item, "relInfo2"))
+                            for path, _ in writes
+                        )
+                        and not any(t in ("function", "=>", "delete") for t in tokens)
+                    ):
+                        if expr[2][0] == ("identifier", response):
+                            data_ready = True
+                        return
                     statements = function_body(fn)
                     link = _parse_statements(
                         f"if (isLink.indexOf({item}.catId) > -1) {{ {item}.redirectLink = true; }}"
@@ -1723,7 +2329,10 @@ def resolve_lonsun(api, catalog_text):
         nodes = parse_catalog(catalog_text, plan.organ_id)
         raw = {name: body for name, _, body in plan.raw_methods}
         methods = {name: (args, body) for name, args, body in plan.methods}
+        _check_pre_methods(raw, dict(plan.globals))
         modified, hide_ok = _tree_rules(raw)
+        if not hide_ok:
+            raise LonsunFormatError("hideIds 的写法无法确定")
         if not _init_calls_getdata(raw["init"]):
             return "init 里找不到可识别的 getData 调用"
         spec = column_spec(api.base_url)
@@ -1743,7 +2352,20 @@ def resolve_lonsun(api, catalog_text):
                 if has_parent is not UNDEFINED and _truth(has_parent) != bool(children)
                 else (children or UNDEFINED)
             )
+            # ztree.min.js 的 simpleData 默认 rootPId=0；页面只改 idKey/pIdKey。
+            # transformTozTreeFormat 仅在真有下级时创建 children（jx、芜湖 11/13 实测）。
             wrapped.append(_Node(node, value, modified))
+
+        def wrap_node(n, ancestors=frozenset()):
+            if id(n.data) in ancestors:
+                raise LonsunFormatError("栏目树存在循环")
+            children = n.children
+            if isinstance(children, list):
+                by_id = {id(item.data): item for item in wrapped}
+                children = [wrap_node(by_id[id(c)], ancestors | {id(n.data)}) for c in children]
+            return _Node(n.data, children, n.modified)
+
+        wrapped = [wrap_node(n) for n in wrapped]
         node = next((n for n in wrapped if _loose_equal(n.data["id"], cat_id)), None)
         query = _platform_query(urlsplit(api.base_url).query)
         refresh_expected = _parse_statements(
@@ -1752,26 +2374,30 @@ def resolve_lonsun(api, catalog_text):
         refresh = (
             False if methods.get("isRefresh", (None, None))[1] == refresh_expected else UNKNOWN
         )
-        me = {
-            "organId": plan.organ_id,
-            "prefix": plan.prefix,
-            "actions": {"label": plan.label},
-            "listParams": dict(plan.list_params),
-            "currCatId": cat_id,
-            "query": query,
-            "refresh": refresh,
-            "currNode": None,
-            "hideIds": [] if hide_ok else UNKNOWN,
-        }
+        me = _PartialDict(
+            {
+                "organId": plan.organ_id,
+                "prefix": plan.prefix,
+                "actions": {"label": plan.label},
+                "listParams": dict(plan.list_params),
+                "currCatId": cat_id,
+                "query": query,
+                "refresh": refresh,
+                "currNode": None,
+                "hideIds": [] if hide_ok else UNKNOWN,
+            }
+        )
         globals_ = dict(plan.globals)
         globals_.update(
             {
                 "this": me,
                 "me": me,
-                "location": {"href": api.base_url},
-                "Ls": {"url": {"get": "url.get"}},
-                "$": {"extend": "extend"},
-                "_organTree2": {"getNodeByParam": "node"},
+                "location": _PartialDict({"href": api.base_url}),
+                "Ls": _PartialDict(
+                    {"url": _PartialDict({"get": "url.get", "stringify": "url.stringify"})}
+                ),
+                "$": _PartialDict({"extend": "extend"}),
+                "_organTree2": _PartialDict({"getNodeByParam": "node"}),
             }
         )
 
@@ -1803,14 +2429,28 @@ def resolve_lonsun(api, catalog_text):
             ):
                 return node
             if fn == "url.get" and len(args) == 1 and isinstance(args[0], str):
+                # 平台 common.min.js：get 通过 TT.isEmpty 将缺失值转为空串。
                 return query.get(args[0], "")
+            if fn == "url.stringify" and len(args) == 1 and isinstance(args[0], dict):
+                from urllib.parse import quote
+
+                if any(
+                    isinstance(v, (dict, list, tuple)) or v is UNKNOWN for v in args[0].values()
+                ):
+                    return UNKNOWN
+                return "&".join(
+                    str(k) + "=" + quote(_js_string(v), safe="-_.!~*'()")
+                    for k, v in args[0].items()
+                )
             if (
                 fn == "extend"
                 and len(args) == 3
                 and all(isinstance(x, dict) for x in args)
                 and not args[0]
             ):
-                return {**args[1], **args[2]}
+                return {
+                    k: v for source in args[1:] for k, v in source.items() if v is not UNDEFINED
+                }
             return UNKNOWN
 
         root = _Environment(globals_, member_resolver=member, call_resolver=call)
@@ -1899,6 +2539,8 @@ def resolve_lonsun(api, catalog_text):
                 v is UNKNOWN or isinstance(v, (list, dict, tuple)) for v in data.values()
             ):
                 raise Stop("列表请求参数无法求值")
+            if any(re.fullmatch(r"0|[1-9][0-9]*", str(k)) and int(k) < 4294967295 for k in data):
+                raise Stop("列表参数含整数键，顺序无法确定")
             strings = {
                 k: "" if v is None or v is UNDEFINED else _js_string(v) for k, v in data.items()
             }
@@ -1975,6 +2617,8 @@ def resolve_lonsun(api, catalog_text):
                         return True
                 elif kind == "var":
                     for key, value in st[1]:
+                        if value and _has_unmodeled_call(value, env):
+                            raise Stop("变量初始化调用了无法识别的方法")
                         env.values[key] = _evaluate(value, env) if value else UNDEFINED
                 elif kind in ("empty", "function"):
                     pass
@@ -1989,9 +2633,35 @@ def resolve_lonsun(api, catalog_text):
                         "me.setMeta",
                         "me.getNav",
                         "me.getGd",
-                        "window.history.pushState",
                         "console.log",
                     ):
+                        return False
+                    if path == "window.history.pushState":
+                        from urllib.parse import urljoin
+
+                        if len(expr[2]) != 3:
+                            raise Stop("pushState 参数认不出")
+                        target = _evaluate(expr[2][2], env)
+                        if not isinstance(target, str):
+                            raise Stop("pushState 地址无法确定")
+                        source_url, target_url = (
+                            urlsplit(api.base_url),
+                            urlsplit(urljoin(api.base_url, target)),
+                        )
+
+                        def origin(u):
+                            return (
+                                u.scheme.lower(),
+                                u.hostname,
+                                u.port or {"http": 80, "https": 443}.get(u.scheme),
+                            )
+
+                        if (
+                            target_url.username is not None
+                            or target_url.password is not None
+                            or origin(source_url) != origin(target_url)
+                        ):
+                            raise Stop("pushState 地址跨源")
                         return False
                     if path == "me.open" and len(expr[2]) <= 1:
                         value = _evaluate(expr[2][0], env) if expr[2] else UNDEFINED
@@ -2017,6 +2687,16 @@ def resolve_lonsun(api, catalog_text):
                             key = expr[2][1]
                             if expr[1] == "=":
                                 env.values[key] = value
+                            elif expr[1] == "+=":
+                                env.values[key] = _evaluate(
+                                    (
+                                        "binary",
+                                        "+",
+                                        ("literal", env.values[key]),
+                                        ("literal", value),
+                                    ),
+                                    env,
+                                )
                             else:
                                 env.values[key] = UNKNOWN
                             return False
@@ -2032,5 +2712,7 @@ def resolve_lonsun(api, catalog_text):
         except Stop as stop:
             return stop.result
         return "栏目树里没有这个栏目，或页面在这个栏目上不加载列表"
-    except (LonsunFormatError, ValueError, TypeError, IndexError, KeyError, RecursionError) as exc:
+    except LonsunFormatError as exc:
         return f"页面或栏目树认不出：{exc}"
+    except (ValueError, TypeError, IndexError, KeyError, RecursionError):
+        return "页面或栏目树认不出：解析失败"

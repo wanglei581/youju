@@ -9,6 +9,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from threading import Lock
+from urllib.parse import urlsplit, urlunsplit
 
 from sqlalchemy import select
 from sqlalchemy.dialects.mysql import insert as mysql_insert
@@ -60,14 +61,26 @@ class CatalogCache:
         self._lock = Lock()
         self._locks: dict[str, Lock] = {}
         self._results: dict[str, FetchResult] = {}
+        self._blocked_hosts: set[str] = set()
 
     def get(self, url: str, fetch) -> FetchResult:
+        host = urlsplit(url).hostname or ""
         with self._lock:
-            lock = self._locks.setdefault(url, Lock())
+            lock = self._locks.setdefault(host, Lock())
         with lock:
-            if url not in self._results:
-                self._results[url] = fetch(url, same_address_only=True)
-            return self._results[url]
+            if url in self._results:
+                return self._results[url]
+            if host in self._blocked_hosts:
+                return FetchResult(url, "robots_disallowed", error="同一轮已被拒绝")
+            result = fetch(url, same_address_only=True)
+            self._results[url] = result
+            if (
+                result.status in ("robots_disallowed", "redirect")
+                or result.http_status in (401, 403, 412, 521)
+                or (result.final_url and url_key(result.final_url) != url_key(url))
+            ):
+                self._blocked_hosts.add(host)
+            return result
 
 
 @dataclass
@@ -214,9 +227,18 @@ LIST_API_REFUSED_KEY = "list_api_refused"
 LIST_API_RECHECK_DAYS = 30
 
 
-def _refused_before(parser_config: dict, api_url: str, now: datetime) -> str:
+def _refused_before(
+    parser_config: dict, api_url: str, now: datetime, *, tree: bool = False, list_url: bool = False
+) -> str:
     note = parser_config.get(LIST_API_REFUSED_KEY)
-    if not isinstance(note, dict) or note.get("url") != api_url:
+    if not isinstance(note, dict):
+        return ""
+    saved = note.get("api_url" if list_url else "url")
+    if tree and isinstance(saved, str):
+        saved_parts, api_parts_ = urlsplit(saved), urlsplit(api_url)
+        saved = urlunsplit(saved_parts._replace(query=""))
+        api_url = urlunsplit(api_parts_._replace(query=""))
+    if saved != api_url:
         return ""
     try:
         if now - datetime.fromisoformat(str(note.get("at"))) > timedelta(
@@ -235,6 +257,7 @@ class _AdapterResult:
     fetch: FetchResult | None = None  # 接口没取到时的抓取结果
     refused: str = ""  # 读取护栏（D-128）拦下的原因：记"不能抓"、不读
     api_url: str = ""  # 认出的列表接口网址
+    list_url: str = ""  # 被拒绝的列表接口地址
     part: str = ""  # 几个分类合读时出问题的是哪个分类（"分类 编号："），写进原因
 
 
@@ -246,6 +269,7 @@ def _items_via_adapter(
     today: date | None,
     api: ListApi | None = None,
     catalog_cache: CatalogCache | None = None,
+    now: datetime | None = None,
 ) -> _AdapterResult:
     """栏目页自己声明了集约化平台的列表接口（见 crawler/adapters.py）时，按它取列表。
 
@@ -272,8 +296,18 @@ def _items_via_adapter(
             return _AdapterResult([], api.adapter, api_url=first_url, part=reason)
         return _AdapterResult([], api.adapter, first_result, api_url=first_url, part="栏目树脚本：")
     if kind == "unrecognized":
-        return _AdapterResult([], api.adapter, api_url=first_url, part=reason)
+        return _AdapterResult([], api.adapter, api_url=first_url, part=f"待人工处理：{reason}")
     api = followed
+    if api.adapter == LONSUN and now is not None:
+        before = _refused_before(parser_config, api.url, now, list_url=True)
+        if before:
+            return _AdapterResult(
+                [],
+                api.adapter,
+                refused=f"{before}（之前被读取护栏拦下，暂不再请求）",
+                api_url=first_url,
+                list_url=api.url,
+            )
     # 只取页面写明的那个地址，跳到别处不跟（D-128 读取护栏 ①）
     parts = api_parts(api)
     texts: list[str] = []
@@ -287,7 +321,13 @@ def _items_via_adapter(
         refused = api_refusal(part, result)
         if refused:
             return _AdapterResult(
-                [], api.adapter, result, refused=f"{label}{refused}", api_url=first_url, part=label
+                [],
+                api.adapter,
+                result,
+                refused=f"{label}{refused}",
+                api_url=first_url,
+                list_url=part.url if api.adapter == LONSUN else "",
+                part=label,
             )
         if result.status != "ok":
             return _AdapterResult([], api.adapter, result, api_url=first_url, part=label)
@@ -374,14 +414,20 @@ def check_source(
             status, error = "parse_empty", NEEDS_REVIEW_MESSAGE
             log.warning("来源 #%s 页面改用接口加载，待复检（没有经接口读的标记）", source.id)
             api = None
-        before = _refused_before(parser_config, api.url, started) if api is not None else ""
+        before = (
+            _refused_before(parser_config, api.url, started, tree=api.adapter == LONSUN)
+            if api is not None
+            else ""
+        )
         if before:
             # 栏目页还声明着之前被读取护栏（D-128）拦下的接口：30 天内不再请求，照旧记不能抓
             items = []
             status, error = LIST_API_REFUSED, f"{before}（之前被读取护栏拦下，暂不再请求）"
             result = FetchResult(url, LIST_API_REFUSED, http_status=result.http_status)
         elif api is not None:
-            via = _items_via_adapter(fetcher, result, url, parser_config, today, api, catalog_cache)
+            via = _items_via_adapter(
+                fetcher, result, url, parser_config, today, api, catalog_cache, started
+            )
             note = parser_config.get(LIST_API_REFUSED_KEY)
             moved = not isinstance(note, dict) or note.get("url") != via.api_url
             if note is not None and not via.refused and (moved or via.fetch is None):
@@ -405,6 +451,8 @@ def check_source(
                     else f"列表接口（{via.adapter}）：{via.refused}"
                 )
                 note = {"url": via.api_url, "reason": error, "at": started.isoformat()}
+                if via.list_url:
+                    note["api_url"] = via.list_url
                 config_set[LIST_API_REFUSED_KEY] = note
                 if via.fetch is not None and via.fetch.http_status:
                     result = FetchResult(url, LIST_API_REFUSED, http_status=via.fetch.http_status)
@@ -441,7 +489,7 @@ def check_source(
                     status = "parse_empty"
                     error = (
                         via.part
-                        if via.part.startswith(("栏目树脚本：", "列表接口："))
+                        if via.part.startswith(("栏目树脚本：", "列表接口：", "待人工处理："))
                         else f"列表接口（{via.adapter}）：{via.part}返回读不出列表，下次再试"
                     )
         if not items and status == "ok":

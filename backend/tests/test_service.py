@@ -929,7 +929,9 @@ def test_lonsun_service_refusal_remembers_tree(session):
     assert result.status == "list_api_refused" and "列表接口" in result.error
     session.refresh(source)
     assert source.parser_config["list_api_refused"]["url"] == tree
-    again = RecordingFetcher({url: [page(url, html)]})
+    assert source.parser_config["list_api_refused"]["api_url"] == api
+    changed_query = html.replace("/49631981/6991.js", "/49631981/6991.js?v=85")
+    again = RecordingFetcher({url: [page(url, changed_query)]})
     assert check_source(session, source, again).status == "list_api_refused"
     assert again.requested == [url]
 
@@ -1031,3 +1033,24 @@ def test_lonsun_county_service_uses_configured_city_portal(session):
     check = check_source(session, source, fetcher, today=date(2026, 11, 13))
     assert check.status == "ok" and check.items_found == 8
     assert fetcher.requested == [url, tree.url, api.url]
+
+
+def test_lonsun_refusal_changed_tree_same_list(session):
+    url, html, tree, catalog, api, _ = _lonsun_service_fixture()
+    source = make_source(session, url)
+    source.parser_config = {"list_api_open": "龙讯public"}
+    session.commit()
+    denied = FetchResult(api, "http_error", api, 403)
+    check_source(
+        session,
+        source,
+        RecordingFetcher({url: [page(url, html)], tree: [page(tree, catalog)], api: [denied]}),
+    )
+    new_tree = tree.replace("/49631981/", "/123456/")
+    changed = html.replace("/49631981/6991.js", "/123456/6991.js")
+    fetcher = RecordingFetcher({url: [page(url, changed)], new_tree: [page(new_tree, catalog)]})
+    result = check_source(session, source, fetcher)
+    assert result.status == "list_api_refused"
+    assert fetcher.requested == [url, new_tree]
+    session.refresh(source)
+    assert source.parser_config["list_api_refused"]["api_url"] == api

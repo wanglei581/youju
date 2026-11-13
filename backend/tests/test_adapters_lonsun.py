@@ -818,3 +818,741 @@ def test_special_chain_reason_uses_source():
     )
     assert "$('.gfxwj-a').trigger(\"click\")" in reason
     assert "('call'" not in reason
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "me.listParams.pageSize = '10';",
+        "$.extend(me.listParams, {pageSize: '10'});",
+        "me.hideIds.push(1);",
+        "if (true) { me.getData(); }",
+        "return;",
+    ],
+)
+def test_init_before_getdata_rejects_state_or_control(change):
+    page = fixture("jx_page.html").replace(
+        "me.getData();\n      // me.getReportyear",
+        change + "\n      me.getData();\n      // me.getReportyear",
+    )
+    assert isinstance(resolve_fixture("jx", "49949451", page=page), str)
+
+
+@pytest.mark.parametrize("removed", ["me.isRefresh();", "me.initTree();"])
+def test_init_requires_refresh_and_tree(removed):
+    page = fixture("jx_page.html").replace(removed, "", 1)
+    assert isinstance(resolve_fixture("jx", "49949451", page=page), str)
+
+
+@pytest.mark.parametrize(
+    "condition",
+    [
+        "me.special",
+        "me.topLevelParentId",
+        "Ls.missing",
+        "location.missing",
+        "_organTree2.missing",
+        "$.missing",
+        "[1].indexOf(1, 1) > -1",
+        "[1] == 1",
+        "[1] + 2 == 12",
+    ],
+)
+def test_unknown_conditions_never_send_list(condition):
+    page = fixture("jx_page.html").replace(
+        "var url = '' + me.currNode.uri",
+        "if (" + condition + ") { me.zdlyxxgkList(); }\n      var url = '' + me.currNode.uri",
+        1,
+    )
+    assert isinstance(resolve_fixture("jx", "49949451", page=page), str)
+
+
+@pytest.mark.parametrize(
+    "injected",
+    [
+        "catalogs[6991] = [];",
+        "Ls.ajaxGet = evil;",
+        "Ls.ajax = evil;",
+        "$.ajaxSetup({});",
+        "jQuery.ajaxSetup({});",
+        "$.ajaxPrefilter(function(){});",
+        "$.extend(PublicTree.prototype, {open: function(){}});",
+    ],
+)
+def test_top_level_changes_rejected(injected):
+    from youju.crawler.lonsun import find_lonsun_api
+
+    page = fixture("jx_page.html").replace("</body>", "<script>" + injected + "</script></body>")
+    assert find_lonsun_api(page, BASE, BASE) is None
+
+
+def test_cross_origin_pushstate_rejected():
+    assert isinstance(resolve_fixture("jx", "49949441"), str)
+
+
+@pytest.mark.parametrize("injected", ["el.parentId = 0;", "el['parentId'] = 0;"])
+def test_preprocess_cannot_change_tree_parent(injected):
+    page = fixture("jx_page.html").replace(
+        "var str = el.name;", injected + " var str = el.name;", 1
+    )
+    assert isinstance(resolve_fixture("jx", "49949451", page=page), str)
+
+
+def test_unknown_initializer_call_rejected():
+    page = fixture("jx_page.html").replace(
+        "var url = '' + me.currNode.uri",
+        "var r = me.something(); var url = '' + me.currNode.uri",
+        1,
+    )
+    assert isinstance(resolve_fixture("jx", "49949451", page=page), str)
+
+
+@pytest.mark.parametrize(
+    "write", ["window.flag = true;", "flag++;", "flag.push(1);", "flag[0] = 1;"]
+)
+def test_top_level_global_mutations_are_unknown(write):
+    from youju.crawler.lonsun import find_lonsun_api, resolve_lonsun
+
+    page = fixture("jx_page.html").replace(
+        "</body>", "<script>var flag = []; " + write + "</script></body>"
+    )
+    page = page.replace(
+        "var url = '' + me.currNode.uri",
+        "if (flag) { me.zdlyxxgkList(); } var url = '' + me.currNode.uri",
+        1,
+    )
+    api = find_lonsun_api(page, BASE, BASE)
+    assert api is None or isinstance(resolve_lonsun(api, fixture("jx_catalog.js")), str)
+
+
+@pytest.mark.parametrize("change", ["el.name += 'x';", "el['link'] = 'x';"])
+def test_preprocess_modified_node_fields_unknown(change):
+    field = "name" if "name" in change else "link"
+    page = fixture("jx_page.html").replace("var str = el.name;", change + " var str = el.name;", 1)
+    page = page.replace(
+        "var url = '' + me.currNode.uri",
+        "if (me.currNode." + field + ") { me.zdlyxxgkList(); } var url = '' + me.currNode.uri",
+        1,
+    )
+    assert isinstance(resolve_fixture("jx", "49949451", page=page), str)
+
+
+def test_extend_omits_undefined_query_value():
+    from youju.crawler.adapters import ListApi
+
+    page = fixture("jx_page.html")
+    page = page.replace("data: me.listParams", "data: params", 1).replace(
+        "getList: function () {\n      var me = this;\n      var tipsLoading = Ls.tipsLoading('加载中...', {times: 999999});",
+        "getList: function () {\n      var me = this;\n      var tipsLoading = Ls.tipsLoading('加载中...', {times: 999999});\n      var params = $.extend({}, me.listParams, {catalogType: me.query.catalogType});",
+        1,
+    )
+    result = resolve_fixture("jx", "49949451", page=page)
+    assert isinstance(result, ListApi), result
+    assert "catalogType" not in result.url
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    [
+        "http://jx.ah.gov.cn/49631981/6991.js",
+    ],
+)
+def test_https_rejects_http_script(replacement):
+    from youju.crawler.lonsun import find_lonsun_api
+
+    page = fixture("jx_page.html").replace("/49631981/6991.js", replacement)
+    assert find_lonsun_api(page, BASE, BASE) is None
+
+
+def test_invalid_label_and_ztree_initial_value_rejected():
+    from youju.crawler.lonsun import find_lonsun_api
+
+    page = fixture("jx_page.html")
+    for changed in (
+        page.replace("me.prefix + '/site/label/8888'", "'/bad space/site/label/8888'"),
+        page.replace("me.ztreeData2 = catalogs[me.organId]", "me.ztreeData2 = []"),
+    ):
+        assert find_lonsun_api(changed, BASE, BASE) is None
+
+
+def test_init_tree_rejects_deleting_second_tree_children():
+    page = fixture("jx_page.html").replace(
+        "$.each(_organTree.getNodes(), function (i, node) {",
+        "$.each(_organTree2.getNodes(), function (i, node) {",
+        1,
+    )
+    assert isinstance(resolve_fixture("jx", "49949451", page=page), str)
+
+
+def test_mutating_global_during_initialization_is_unknown():
+    page = fixture("jx_page.html").replace("</body>", "<script>var flag = [];</script></body>")
+    page = page.replace("me.bindEvt();", "me.bindEvt(); flag.push(1);", 1)
+    page = page.replace(
+        "var url = '' + me.currNode.uri",
+        "if (flag) { me.zdlyxxgkList(); } var url = '' + me.currNode.uri",
+        1,
+    )
+    assert isinstance(resolve_fixture("jx", "49949451", page=page), str)
+
+
+def test_document_write_literal_disallows_space():
+    from youju.crawler.lonsun import find_lonsun_api
+
+    url = PAGES["chuzhou"] + "?type=4&catId=161734542&action=list"
+    page = fixture("chuzhou_page.html").replace("2681525.js?v=", "2681525.js?v=bad value")
+    assert find_lonsun_api(page, url, url) is None
+
+
+def test_children_elements_use_node_rules():
+    page = fixture("jx_page.html").replace(
+        "var url = '' + me.currNode.uri",
+        "if (me.currNode.children[0].notModeled) { me.zdlyxxgkList(); } var url = '' + me.currNode.uri",
+        1,
+    )
+    assert isinstance(resolve_fixture("jx", "49949431", page=page), str)
+
+
+def test_pre_method_alias_mutation_rejected():
+    page = fixture("jx_page.html").replace(
+        "var me = this;\n\n      // 隐藏的栏目",
+        "var me = this; var p = me.listParams; var q = p; q.pageSize = '10';\n\n      // 隐藏的栏目",
+        1,
+    )
+    assert isinstance(resolve_fixture("jx", "49949451", page=page), str)
+
+
+def test_pre_method_nested_call_cannot_mutate_list_params():
+    page = fixture("jx_page.html").replace(
+        "preprocessData: function () {",
+        "mutate: function () { this.listParams.pageSize = '10'; },\n"
+        "    preprocessData: function () { this.mutate();",
+        1,
+    )
+    assert isinstance(resolve_fixture("jx", "49949451", page=page), str)
+
+
+def test_pre_method_unknown_global_call_rejected():
+    page = (
+        fixture("jx_page.html")
+        .replace(
+            "function PublicTree() {",
+            "function mutate(obj) { obj.listParams.pageSize = '10'; }\n  function PublicTree() {",
+            1,
+        )
+        .replace(
+            "var me = this;\n\n      // 隐藏的栏目",
+            "var me = this; mutate(me);\n\n      // 隐藏的栏目",
+            1,
+        )
+    )
+    assert isinstance(resolve_fixture("jx", "49949451", page=page), str)
+
+
+def test_pre_method_local_function_cannot_mutate_state():
+    page = fixture("jx_page.html").replace(
+        "var me = this;\n\n      // 隐藏的栏目",
+        "var me = this; function mutate() { me.listParams.pageSize = '10'; } mutate();\n\n      // 隐藏的栏目",
+        1,
+    )
+    assert isinstance(resolve_fixture("jx", "49949451", page=page), str)
+
+
+def test_pre_method_local_function_cannot_mutate_argument():
+    page = fixture("jx_page.html").replace(
+        "var me = this;\n\n      // 隐藏的栏目",
+        "var me = this; function mutate(o) { o.pageSize = '10'; } mutate(me.listParams);\n\n      // 隐藏的栏目",
+        1,
+    )
+    assert isinstance(resolve_fixture("jx", "49949451", page=page), str)
+
+
+def test_top_level_var_catalogs_rejected():
+    from youju.crawler.lonsun import find_lonsun_api
+
+    page = fixture("jx_page.html").replace("</body>", "<script>var catalogs = {};</script></body>")
+    assert find_lonsun_api(page, BASE, BASE) is None
+
+
+def test_duplicate_top_level_tree_declaration_rejected():
+    from youju.crawler.lonsun import find_lonsun_api
+
+    page = fixture("jx_page.html").replace(
+        "</body>", "<script>var _organTree2 = null;</script></body>"
+    )
+    assert find_lonsun_api(page, BASE, BASE) is None
+
+
+def test_top_level_immediately_invoked_function_rejected():
+    from youju.crawler.lonsun import find_lonsun_api
+
+    page = fixture("jx_page.html").replace(
+        "</body>", "<script>(function(){ catalogs[6991] = []; })();</script></body>"
+    )
+    assert find_lonsun_api(page, BASE, BASE) is None
+
+
+def test_pre_method_object_define_properties_rejected():
+    page = fixture("jx_page.html").replace(
+        "preprocessData: function () {",
+        "preprocessData: function () { Object.defineProperties(this.listParams, {pageSize: {value: '10'}});",
+        1,
+    )
+    assert isinstance(resolve_fixture("jx", "49949451", page=page), str)
+
+
+def test_init_done_method_cannot_mutate_state():
+    page = (
+        fixture("jx_page.html")
+        .replace(
+            "preprocessData: function () {",
+            "mutate: function () { this.listParams.pageSize = '10'; return foo(); },\n    preprocessData: function () {",
+            1,
+        )
+        .replace(
+            "me.getData();\n      // me.getReportyear",
+            "me.mutate().done(function () { me.getData(); });\n      // me.getReportyear",
+            1,
+        )
+    )
+    assert isinstance(resolve_fixture("jx", "49949451", page=page), str)
+
+
+def test_top_level_unrelated_window_property_allowed():
+    from youju.crawler.lonsun import find_lonsun_api
+
+    page = fixture("jx_page.html").replace(
+        "</body>",
+        "<script>Object.defineProperties(window, {flag: {value: true}});</script></body>",
+    )
+    assert find_lonsun_api(page, BASE, BASE) is not None
+
+
+def test_ready_callback_cannot_replace_catalog():
+    from youju.crawler.lonsun import find_lonsun_api
+
+    page = fixture("jx_page.html").replace(
+        "<body>", "<body><script>$(function(){catalogs[6991]=[];});</script>", 1
+    )
+    assert find_lonsun_api(page, BASE, BASE) is None
+
+
+def test_ready_callback_global_mutation_is_unknown():
+    page = fixture("jx_page.html").replace(
+        "<body>",
+        "<body><script>var flag = false; $(function(){ flag = true; });</script>",
+        1,
+    )
+    page = page.replace(
+        "var url = '' + me.currNode.uri",
+        "if (flag) { me.zdlyxxgkList(); } var url = '' + me.currNode.uri",
+        1,
+    )
+    assert isinstance(resolve_fixture("jx", "49949451", page=page), str)
+
+
+def test_top_level_named_function_call_rejected():
+    from youju.crawler.lonsun import find_lonsun_api
+
+    page = fixture("jx_page.html").replace(
+        "</body>", "<script>function mutate(){catalogs[6991]=[];} mutate();</script></body>"
+    )
+    assert find_lonsun_api(page, BASE, BASE) is None
+
+
+def test_ready_callback_cannot_call_unknown_page_function():
+    from youju.crawler.lonsun import find_lonsun_api
+
+    page = fixture("jx_page.html").replace(
+        "<body>",
+        "<body><script>function mutate(){catalogs[6991]=[];} $(function(){mutate();});</script>",
+        1,
+    )
+    assert find_lonsun_api(page, BASE, BASE) is None
+
+
+@pytest.mark.parametrize(
+    "call", ["window.mutate();", "window['mutate']();", "$(function(){window['mutate']();});"]
+)
+def test_window_page_function_calls_rejected(call):
+    from youju.crawler.lonsun import find_lonsun_api
+
+    page = fixture("jx_page.html").replace(
+        "</body>", "<script>function mutate(){catalogs[6991]=[];} " + call + "</script></body>"
+    )
+    assert find_lonsun_api(page, BASE, BASE) is None
+
+
+@pytest.mark.parametrize("target", ["mutate", "window.mutate", "window['mutate']"])
+def test_ready_callback_cannot_call_page_function_alias(target):
+    from youju.crawler.lonsun import find_lonsun_api
+
+    page = fixture("jx_page.html").replace(
+        "<body>",
+        "<body><script>function mutate(){catalogs[6991]=[];} var f="
+        + target
+        + "; $(function(){f();});</script>",
+        1,
+    )
+    assert find_lonsun_api(page, BASE, BASE) is None
+
+
+def test_ready_callback_cannot_call_computed_function_alias():
+    from youju.crawler.lonsun import find_lonsun_api
+
+    page = fixture("jx_page.html").replace(
+        "<body>",
+        "<body><script>function mutate(){catalogs[6991]=[];} var f=window['mu'+'tate']; $(function(){f();});</script>",
+        1,
+    )
+    assert find_lonsun_api(page, BASE, BASE) is None
+
+
+def test_top_level_window_anonymous_function_rejected():
+    from youju.crawler.lonsun import find_lonsun_api
+
+    page = fixture("jx_page.html").replace(
+        "</body>",
+        "<script>window.foreign=function(){catalogs[6991]=[]}; window.foreign();</script></body>",
+    )
+    assert find_lonsun_api(page, BASE, BASE) is None
+
+
+def test_top_level_unknown_object_method_rejected():
+    from youju.crawler.lonsun import find_lonsun_api
+
+    page = fixture("jx_page.html").replace(
+        "</body>",
+        "<script>document.foreign=function(){catalogs[6991]=[]}; document.foreign();</script></body>",
+    )
+    assert find_lonsun_api(page, BASE, BASE) is None
+
+
+def test_top_level_computed_object_method_rejected():
+    from youju.crawler.lonsun import find_lonsun_api
+
+    page = fixture("jx_page.html").replace(
+        "</body>",
+        "<script>document.foreign=function(){catalogs[6991]=[]}; document['foreign']();</script></body>",
+    )
+    assert find_lonsun_api(page, BASE, BASE) is None
+
+
+def test_top_level_chained_computed_method_rejected():
+    from youju.crawler.lonsun import find_lonsun_api
+
+    page = fixture("jx_page.html").replace(
+        "</body>",
+        "<script>document.foreign=function(){catalogs[6991]=[]}; document['foreign']['call'](document);</script></body>",
+    )
+    assert find_lonsun_api(page, BASE, BASE) is None
+
+
+def test_wuhu_event_timer_allows_normal_event_registration():
+    from youju.crawler.lonsun import find_lonsun_api
+
+    url = PAGES["wuhu"] + "?type=4&catId=6732111&action=list"
+    page = fixture("wuhu_page.html").replace(
+        "JSON.parse(JSON.stringify(catalogs[me.organId]))", "catalogs[me.organId]", 1
+    )
+    assert find_lonsun_api(page, url, url) is not None
+
+
+def test_pre_method_unknown_document_method_rejected():
+    page = (
+        fixture("jx_page.html")
+        .replace(
+            "<body>",
+            "<body><script>document.foreign=function(){document.body.innerHTML='x'};</script>",
+            1,
+        )
+        .replace(
+            "preprocessData: function () {",
+            "preprocessData: function () { document.foreign();",
+            1,
+        )
+    )
+    assert isinstance(resolve_fixture("jx", "49949451", page=page), str)
+
+
+def test_pre_method_unknown_global_object_method_rejected():
+    page = (
+        fixture("jx_page.html")
+        .replace(
+            "<body>",
+            "<body><script>var evil={mutate:function(){document.body.innerHTML='x';}};</script>",
+            1,
+        )
+        .replace(
+            "preprocessData: function () {",
+            "preprocessData: function () { evil.mutate();",
+            1,
+        )
+    )
+    assert isinstance(resolve_fixture("jx", "49949451", page=page), str)
+
+
+def test_pre_method_undeclared_object_call_rejected():
+    page = fixture("jx_page.html").replace(
+        "preprocessData: function () {",
+        "preprocessData: function () { externalObject.mutate();",
+        1,
+    )
+    assert isinstance(resolve_fixture("jx", "49949451", page=page), str)
+
+
+def test_pre_method_undeclared_object_alias_call_rejected():
+    page = fixture("jx_page.html").replace(
+        "preprocessData: function () {",
+        "preprocessData: function () { var alias = externalObject; alias.mutate();",
+        1,
+    )
+    assert isinstance(resolve_fixture("jx", "49949451", page=page), str)
+
+
+def test_catalog_duplicates_host_path_and_query():
+    from youju.crawler.lonsun import find_lonsun_api, lonsun_unrecognized_reason
+
+    page = fixture("jx_page.html")
+    src = '<script type="text/javascript" src="/49631981/6991.js"></script>'
+    same = page.replace(src, src + '<script src="/49631981/6991.js?v=85"></script>')
+    assert find_lonsun_api(same, BASE, BASE).url.endswith("6991.js?v=85")
+    different = page.replace(
+        src, src + '<script src="https://www.ah.gov.cn/49631981/6991.js"></script>'
+    )
+    assert "主机不一样" in lonsun_unrecognized_reason(different, BASE, BASE)
+
+
+def test_navigation_parameters_and_integer_keys():
+    from youju.crawler.lonsun import find_lonsun_api
+
+    for extra in ("&nav=", "&nav=123&sub=&isParent=true", "&isParent=false"):
+        assert column_spec(BASE + extra)
+        assert find_lonsun_api(fixture("jx_page.html"), BASE + extra, BASE + extra)
+    for extra in ("&sub=1", "&isParent=1", "&nav=x"):
+        assert column_spec(BASE + extra) is None
+    page = fixture("jx_page.html").replace("me.listParams = {", 'me.listParams = {"1": "x",', 1)
+    assert page != fixture("jx_page.html")
+    assert find_lonsun_api(page, BASE, BASE) is None
+
+
+def test_display_only_each_rel_info_and_unsafe_variants():
+    page = fixture("jx_page.html")
+    needle = "item.index = (me.listParams.pageIndex - 1) * me.listParams.pageSize + i + 1;"
+    extra = """
+      if (item.catId === 49948871 && item.relInfo) {
+        var arr = item.relInfo.split("|");
+        for (var k = 0; k < arr.length; k++) { var tm = arr[k]; if (tm.indexOf("说明") > -1) { item.relInfo = item.relInfo.replace(tm, tm.replace("文件下载", "说明")); } }
+      }
+    """
+    assert not isinstance(
+        resolve_fixture("jx", "49949451", page=page.replace(needle, needle + extra, 1)), str
+    )
+    for bad in ('item.title = "改";', "data.pop();", "item.relInfo = res.data;", 'arr.push("x");'):
+        result = resolve_fixture(
+            "jx", "49949451", page=page.replace(needle, needle + extra + bad, 1)
+        )
+        assert isinstance(result, str) and "另有处理" in result
+
+
+def test_catalog_cache_blocks_other_trees_on_host():
+    from youju.crawler.adapters import api_refusal, find_list_api
+    from youju.crawler.fetcher import FetchResult
+    from youju.crawler.service import CatalogCache
+
+    tree = find_list_api(fixture("jx_page.html"), BASE, BASE)
+    for first in (
+        FetchResult(tree.url, "http_error", http_status=403),
+        FetchResult(tree.url, "robots_disallowed"),
+        FetchResult(tree.url, "redirect"),
+    ):
+        calls = []
+
+        def fetch(url, *, calls=calls, first=first, **kwargs):
+            calls.append(url)
+            return first
+
+        cache = CatalogCache()
+        cache.get(tree.url, fetch)
+        second = cache.get("https://jx.ah.gov.cn/another/2.js", fetch)
+        assert len(calls) == 1
+        assert "同一轮已被拒绝" in api_refusal(tree, second)
+        cache.get("https://other.ah.gov.cn/another/2.js", fetch)
+        assert len(calls) == 2
+
+
+def test_refusal_tree_query_and_list_url():
+    from datetime import UTC, datetime
+
+    from youju.crawler.service import _refused_before
+
+    now = datetime.now(UTC)
+    config = {
+        "list_api_refused": {
+            "url": "https://x.gov.cn/tree.js?v=1",
+            "api_url": "https://x.gov.cn/api?a=1",
+            "at": now.isoformat(),
+            "reason": "拒绝",
+        }
+    }
+    assert _refused_before(config, "https://x.gov.cn/tree.js?v=2", now, tree=True)
+    assert not _refused_before(config, "https://x.gov.cn/new.js?v=2", now, tree=True)
+    assert _refused_before(config, "https://x.gov.cn/api?a=1", now, list_url=True)
+    assert not _refused_before(config, "https://x.gov.cn/api?a=2", now, list_url=True)
+
+
+def test_spotcheck_list_failures_report_reason():
+    from youju.crawler.adapters import api_follow, find_list_api
+    from youju.crawler.fetcher import FetchResult
+    from youju.govsites.spotcheck import _first_list_item
+
+    tree = find_list_api(fixture("jx_page.html"), BASE, BASE)
+    api = api_follow(tree, FetchResult(tree.url, "ok", tree.url, 200, fixture("jx_catalog.js")))
+    pages = {BASE: fixture("jx_page.html"), tree.url: fixture("jx_catalog.js")}
+    for response, expected in (
+        (FetchResult(api.url, "http_error", http_status=403), "不能抓"),
+        (FetchResult(api.url, "network_error", error="网络错误"), "这次没取到"),
+        ("invalid", "认不出"),
+    ):
+        reasons = []
+        assert (
+            _first_list_item(LonsunCache({**pages, api.url: response}), BASE, TODAY, reasons)
+            is None
+        )
+        assert expected in reasons[0] and "列表接口" in reasons[0]
+
+
+def test_spotcheck_existing_source_uses_city_fallback(monkeypatch):
+    from types import SimpleNamespace
+
+    from youju.govsites import spotcheck
+
+    source = SimpleNamespace(id=1, url=BASE, province="安徽", city="芜湖", parser_config={})
+
+    class Session:
+        def scalars(self, query):
+            return [source]
+
+        def execute(self, query):
+            return SimpleNamespace(all=lambda: [])
+
+    hosts = []
+
+    def first(cache, url, today, reasons, *, catalog_host=None):
+        hosts.append(catalog_host)
+
+    monkeypatch.setattr(spotcheck, "_first_list_item", first)
+    spotcheck.evidence_for({"栏目网址": BASE}, Session(), None, TODAY)
+    assert hosts == ["www.wuhu.gov.cn"]
+
+
+def test_navigation_values_are_used_in_conditions():
+    from youju.crawler.lonsun import find_lonsun_api, resolve_lonsun
+
+    url = BASE + "&nav=&sub=&isParent=false"
+    page = fixture("jx_page.html").replace(
+        "me.query.action === 'list'",
+        "me.query.action === 'list' && me.query.nav === '' && me.query.sub === '' && me.query.isParent === 'false'",
+        1,
+    )
+    assert page != fixture("jx_page.html")
+    tree = find_lonsun_api(page, url, url)
+    assert tree is not None
+    assert not isinstance(resolve_lonsun(tree, fixture("jx_catalog.js")), str)
+
+
+def test_each_response_parameter_is_allowed():
+    page = fixture("jx_page.html")
+    page = page.replace("var data = res.data;", "", 1).replace(
+        "$.each(data, function (i, item)", "$.each(res, function (i, item)", 1
+    )
+    result = resolve_fixture("jx", "49949451", page=page)
+    assert not isinstance(result, str)
+
+
+def with_page_noise(page):
+    before = r"""<script>
+(function() { var serMgr = document.createElement("script"); serMgr.src = "https://service.lonsun.cn/assets/cloud/boot.min.js?sid=1"; var s = document.getElementsByTagName("script")[0]; s.parentNode.insertBefore(serMgr, s); })();
+(function() { var wza = document.createElement("script"); wza.src = "https://wza.lonsun.cn/assets/v2/web.min.js?sid=1"; var s = document.getElementsByTagName("script")[0]; s.parentNode.insertBefore(wza, s); })();
+var _hmt = _hmt || []; (function() { var hm = document.createElement("script"); hm.src = "https://example.com/hm.js"; var s = document.getElementsByTagName("script")[0]; s.parentNode.insertBefore(hm, s); })();
+</script>"""
+    after = r"""<script>
+$(function () { if ($('div .xxgk_lmlink').length > 0) { $('.subNav').eq(1).addClass('active'); } $('.tab').click(function () { var me = this; me.listParams = {}; $(this).html('ok'); }); $('.item').each(function (i, el) { $(el).addClass('active'); }); $.get('/tab').done(function (html) { $('#tab_0_0').html(html); }); });
+document.write(unescape("%3Cspan id='_ideConac' %3E%3C/span%3E%3Cscript src='https://dcs.conac.cn/js/CAN.js' type='text/javascript'%3E%3C/script%3E"));
+</script>"""
+    return page.replace("<body>", "<body>" + before, 1).replace("</body>", after + "</body>", 1)
+
+
+@pytest.mark.parametrize(
+    "name,cat_id",
+    [
+        ("jx", "49949451"),
+        ("wuhu", "6732111"),
+        ("huaibei", "14237535"),
+        ("luan", "7024001"),
+        ("chuzhou", "161734542"),
+        ("huainan", "159421266"),
+    ],
+)
+def test_real_page_noise_preserves_both_steps(name, cat_id):
+    from youju.crawler.lonsun import find_lonsun_api, resolve_lonsun
+
+    page = fixture(f"{name}_page.html")
+    if name == "luan":
+        page = page.replace("var isSsbm = true;", "")
+    url = PAGES[name] + f"?type=4&catId={cat_id}&action=list"
+    original = find_lonsun_api(page, url, url)
+    noisy = find_lonsun_api(with_page_noise(page), url, url)
+    assert original is not None and noisy is not None
+    assert (noisy.adapter, noisy.url, noisy.base_url) == (
+        original.adapter,
+        original.url,
+        original.base_url,
+    )
+    assert resolve_lonsun(noisy, fixture(f"{name}_catalog.js")) == resolve_lonsun(
+        original, fixture(f"{name}_catalog.js")
+    )
+
+
+@pytest.mark.parametrize(
+    "injected",
+    [
+        "catalogs[6991] = [];",
+        '$.ajaxSetup({headers: {x: "y"}});',
+        "Ls.ajaxGet = function(){};",
+        "$('.tab').click(function(){ PublicTree.prototype.open = function(){}; });",
+        "jQuery.ajaxPrefilter(function(){});",
+        "Ls.url.get = function(){};",
+        "catalogs[6991].push({});",
+        "delete catalogs[6991];",
+        "_organTree2 = null;",
+        "Object.defineProperty(window, 'catalogs', {value: {}});",
+        "Object.assign(window, {PublicTree: function(){}});",
+    ],
+)
+def test_page_noise_cannot_write_dependencies(injected):
+    from youju.crawler.lonsun import find_lonsun_api
+
+    page = with_page_noise(fixture("jx_page.html")).replace(
+        "</body>", "<script>(function(){" + injected + "})();</script></body>", 1
+    )
+    assert find_lonsun_api(page, BASE, BASE) is None
+
+
+@pytest.mark.parametrize("mutation", ["flag = true", "flag += 1", "window.flag = true"])
+def test_event_callback_global_mutation_is_unknown(mutation):
+    page = (
+        fixture("jx_page.html")
+        .replace(
+            "<body>",
+            "<body><script>var flag = false; $('.tab').click(function(){"
+            + mutation
+            + ";});</script>",
+            1,
+        )
+        .replace(
+            "var url = '' + me.currNode.uri",
+            "if (flag) { me.zdlyxxgkList(); } var url = '' + me.currNode.uri",
+            1,
+        )
+    )
+    assert isinstance(resolve_fixture("jx", "49949451", page=page), str)
