@@ -30,13 +30,14 @@
 #   import-export <旧版本> 用迁移版本和备份一样的旧镜像在临时库里试恢复备份；整库备份、交易记录、批量工具结果分别加密存档（到期日写进文件名），删掉明文
 #   takedowns [段号]       只读：打印下架清单（gzip 后 base64，每段 200 行），抄到本机用
 #   takedowns-check        只读：下架清单里的网址在服务器上还有没有对用户可见的文件
-# 紧急下架（电脑不在线时，手册第八节）：操作人写在 YOUJU_BY 里（不写记作"服务器命令行"）
+# 紧急下架（电脑不在线时，手册第八节）：操作人写在 YOUJU_BY 里（不写记作"服务器命令行"）；
+# 说明在提示里输入（不进命令历史、不出现在进程列表里；没有终端时不带说明）
 #   emergency-find <文件编号|网址|标题里的字>   只读：找文件（编号、对不对外、标题、网址）
-#   emergency-takedown <文件编号> <原因> [说明] 紧急下架，整组不对外；原因 complaint|authority|error|other
-#   emergency-lift <文件编号> [说明]            撤销这份文件所在组的紧急下架（下错了用）
-#   emergency-list [--all]                      只读：紧急下架着的（--all 连撤销了的）
-#   emergency-carry [段号]                      只读：打印紧急下架清单（gzip 后 base64），电脑开机后带回本机
-#   emergency-settle                            本机已经接手的紧急下架撤掉（定时任务每小时也做）
+#   emergency-takedown <文件编号> <原因>        紧急下架，整组不对外；原因 complaint|authority|error|other
+#   emergency-lift <文件编号>                   撤销这份文件所在组的紧急下架（下错了用）
+#   emergency-list [--all] [--notes]            只读：紧急下架着的（--all 连撤销了的，--notes 显示说明）
+#   emergency-carry [段号]                      只读：打印紧急下架清单（gzip 后 base64），电脑恢复后带回本机
+#   emergency-settle                            带回本机已经正式下架的撤掉（定时任务每小时也做）
 #   secret <名称>          只在交互终端里用：录一个密钥进 .env（输入不显示，只回长度和指纹）
 #   show push|sync         只在交互终端里用：显示消息推送的 Token、EncodingAESKey / 同步密钥
 #   rotate-sync            换一个新的同步密钥（不显示）
@@ -709,15 +710,24 @@ emergency() {
   compose exec -T worker youju emergency-takedown "$@"
 }
 
+# 说明在提示里问（read 读进来的不进命令历史；经管道给容器里的命令，也不出现在进程列表里）。
+# 没有终端（如控制台"执行命令"）时不问、不带说明：说明可能写到投诉人，不进执行记录
+ask_note() {
+  local note=""
+  if [ -t 0 ]; then
+    read -r -p "说明（可以不写，直接回车；别写投诉人的姓名、电话）：" note || note=""
+  fi
+  printf '%s' "$note"
+}
+
 emergency_takedown() {
-  [ "$#" -ge 2 ] && [ "$#" -le 3 ] \
-    || die "用法：emergency-takedown <文件编号> <原因：complaint|authority|error|other> ['说明']"
-  emergency add "$1" --reason "$2" --note "${3:-}" --by "${YOUJU_BY:-}"
+  [ "$#" -eq 2 ] || die "用法：emergency-takedown <文件编号> <原因：complaint|authority|error|other>（说明在提示里输入）"
+  ask_note | emergency add "$1" --reason "$2" --note-stdin --by "${YOUJU_BY:-}"
 }
 
 emergency_lift() {
-  [ "$#" -ge 1 ] && [ "$#" -le 2 ] || die "用法：emergency-lift <文件编号> ['说明']"
-  emergency lift "$1" --note "${2:-}" --by "${YOUJU_BY:-}"
+  [ "$#" -eq 1 ] || die "用法：emergency-lift <文件编号>（说明在提示里输入）"
+  ask_note | emergency lift "$1" --note-stdin --by "${YOUJU_BY:-}"
 }
 
 # 和 takedowns 一样打印成 gzip 后 base64（中文原因贴进本机终端不会乱码），本机 carry-takedowns.sh

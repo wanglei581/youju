@@ -942,22 +942,41 @@ def test_shared_emergency_commands_pass_arguments_and_carry_decodes(tmp_path):
         + "\n"
     )
     log = tmp_path / "calls.log"
+    # 假的 compose：每个参数单独加括号记下（引号传错、说明被拆开都看得出来），exec 时连标准输入一起记
     exporting = (
-        f'compose() {{ printf \'compose %s\\n\' "$*" >> "{log}"; '
+        f"compose() {{ {{ printf compose; printf ' [%s]' \"$@\"; "
+        f'if [ "$1" = exec ]; then printf \' stdin=[%s]\' "$(cat)"; fi; echo; }} >> "{log}"; '
         f"case \"$*\" in *' export') printf '%s' '{listing}' ;; esac; }}"
     )
+    head = "compose [exec] [-T] [worker] [youju] [emergency-takedown]"
+    # 没有终端（如控制台"执行命令"）：不问、不带说明
     done = _bash(
         tmp_path,
-        "YOUJU_BY=创始人 emergency_takedown 12 complaint '来电 要求删除'; emergency_lift 12",
+        "YOUJU_BY=创始人 emergency_takedown 12 complaint; emergency_lift 12",
         setup=exporting,
     )
     assert done.returncode == 0, done.stderr
     assert _calls(tmp_path) == [
-        "compose exec -T worker youju emergency-takedown add 12 --reason complaint"
-        " --note 来电 要求删除 --by 创始人",
-        "compose exec -T worker youju emergency-takedown lift 12 --note  --by ",
+        f"{head} [add] [12] [--reason] [complaint] [--note-stdin] [--by] [创始人] stdin=[]",
+        f"{head} [lift] [12] [--note-stdin] [--by] [] stdin=[]",
     ]
-    for body in ("emergency_takedown 12", "emergency_takedown 12 a b c", "emergency_lift"):
+    log.unlink()
+    # 网页终端里：提示里输入的说明经标准输入给，不在命令参数里
+    code, out = _tty(
+        ["bash", "-c", _script(tmp_path, "emergency_takedown 12 other", exporting)],
+        "来电 要求删除\n",
+    )
+    assert code == 0, out
+    assert "别写投诉人的姓名、电话" in out
+    assert _calls(tmp_path) == [
+        f"{head} [add] [12] [--reason] [other] [--note-stdin] [--by] [] stdin=[来电 要求删除]"
+    ]
+    for body in (
+        "emergency_takedown 12",
+        "emergency_takedown 12 complaint 说明",
+        "emergency_lift",
+        "emergency_lift 12 说明",
+    ):
         wrong = _bash(tmp_path, body, setup=exporting)
         assert wrong.returncode == 1 and "用法" in wrong.stderr, body
     carried = _bash(tmp_path, "emergency_carry", setup=exporting)

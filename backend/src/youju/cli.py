@@ -2541,6 +2541,10 @@ def _cmd_emergency_takedown(args: argparse.Namespace) -> int:
             print("文件编号要是正整数（先用 find 找）")
             return 1
         doc_id = int(args.target)
+    note = args.note
+    if args.note_stdin and args.action in ("add", "lift"):
+        # 服务器脚本在提示里问说明，经标准输入给：不进命令历史、不出现在进程列表里
+        note = sys.stdin.read()
     with session_factory()() as session:
         try:
             if args.action == "find":
@@ -2551,17 +2555,17 @@ def _cmd_emergency_takedown(args: argparse.Namespace) -> int:
                 print(f"找到 {len(found)} 份{more}")
                 return 0
             if args.action == "add":
-                _, ids = urgent.add(
-                    session, doc_id, reason=args.reason or "", note=args.note, operator=args.by
+                rows = urgent.add(
+                    session, doc_id, reason=args.reason or "", note=note, operator=args.by
                 )
                 print(
-                    f"已紧急下架文件 #{doc_id}（归并组里 {len(ids)} 份一起不对外）。"
-                    "小程序最多 2 分钟内看不到（服务器快照和小程序缓存各 60 秒）。"
-                    "电脑开机后可以带回本机正式下架（手册：紧急下架）"
+                    f"已紧急下架文件 #{doc_id}（归并组里 {len(rows)} 份一起不对外）。"
+                    "小程序最晚约 2 分钟看不到（服务器首页快照和小程序缓存各最多 60 秒）。"
+                    "只管服务器：电脑恢复后尽快带回本机（手册第八节），本机的周报草稿在带回前还会有它"
                 )
                 return 0
             if args.action == "lift":
-                count, visible = urgent.lift(session, doc_id, note=args.note, operator=args.by)
+                count, visible = urgent.lift(session, doc_id, note=note, operator=args.by)
                 state = (
                     "现在对外可见"
                     if visible
@@ -2571,10 +2575,10 @@ def _cmd_emergency_takedown(args: argparse.Namespace) -> int:
                 return 0
             if args.action == "list":
                 rows = urgent.records(session, include_lifted=args.all)
-                for line in urgent.describe_records(rows):
+                for line in urgent.describe_records(rows, notes=args.notes):
                     print(line)
                 what = "紧急下架记录" if args.all else "紧急下架着的"
-                print(f"{what} {len(rows)} 条")
+                print(f"{what} {len(rows)} 行（归并组里每份一行）")
                 return 0
             if args.action == "export":
                 for line in urgent.export_lines(session):
@@ -3381,8 +3385,12 @@ def main(argv: list[str] | None = None) -> int:
         help="add 的原因：complaint 侵权投诉、authority 主管部门要求、error 内容有误、other 其他",
     )
     p.add_argument("--note", default="", help="说明（最多 300 字；不带回本机）")
+    p.add_argument(
+        "--note-stdin", action="store_true", help="说明从标准输入读（服务器脚本在提示里问）"
+    )
     p.add_argument("--by", default="", help="操作人（不写记作“服务器命令行”）")
     p.add_argument("--all", action="store_true", help="list 连撤销了的一起列")
+    p.add_argument("--notes", action="store_true", help="list 显示说明（默认不显示）")
     p.set_defaults(func=_cmd_emergency_takedown)
     p = sub.add_parser(
         "archive-export",

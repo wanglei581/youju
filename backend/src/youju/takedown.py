@@ -6,7 +6,7 @@
 
 from datetime import UTC, datetime
 
-from sqlalchemy import func, or_, select, true, union_all
+from sqlalchemy import func, or_, select, true
 from sqlalchemy.orm import Session, aliased
 
 from youju.dedup import canonical_ids, group_ids
@@ -14,35 +14,37 @@ from youju.models import Document, DocumentMerge, DocumentTakedownEvent, Emergen
 
 
 def _emergency_ids():
-    """服务器上紧急下架着（没撤销）的文件编号。"""
+    """服务器上紧急下架着（没撤销、文件还在）的文件编号。"""
     return select(EmergencyTakedown.document_id).where(
         EmergencyTakedown.lifted_at.is_(None), EmergencyTakedown.document_id.is_not(None)
     )
 
 
-def _hidden_groups():
+def _taken_groups():
+    """正式下架着的文件所在组的主编号。"""
     member = aliased(Document)
     merge = aliased(DocumentMerge)
-    taken = (
+    return (
         select(func.coalesce(merge.canonical_id, member.id))
         .select_from(member)
         .outerjoin(merge, (merge.duplicate_id == member.id) & merge.active.is_(True))
         .where(member.taken_down_at.is_not(None))
     )
-    # 紧急下架另算一段再合起来：和正式下架写在一个 OR 里，下架时间列的索引就用不上了
+
+
+def _emergency_groups():
+    """紧急下架着的文件所在组的主编号。从 documents 连过去：文件被删、编号置空的行自然不算，
+    选出的值也不会是 NULL——NOT IN 的结果里可能有 NULL 时，MySQL 不能改写成反连接，只能逐行重跑。"""
     urgent = aliased(EmergencyTakedown)
-    urgent_merge = aliased(DocumentMerge)
-    emergency = (
-        select(func.coalesce(urgent_merge.canonical_id, urgent.document_id))
+    doc = aliased(Document)
+    merge = aliased(DocumentMerge)
+    return (
+        select(func.coalesce(merge.canonical_id, doc.id))
         .select_from(urgent)
-        .outerjoin(
-            urgent_merge,
-            (urgent_merge.duplicate_id == urgent.document_id) & urgent_merge.active.is_(True),
-        )
-        # 文件被删、编号置空的行不算：NOT IN 的结果里有 NULL，所有文件都会被当成下架
-        .where(urgent.lifted_at.is_(None), urgent.document_id.is_not(None))
+        .join(doc, doc.id == urgent.document_id)
+        .outerjoin(merge, (merge.duplicate_id == doc.id) & merge.active.is_(True))
+        .where(urgent.lifted_at.is_(None))
     )
-    return union_all(taken, emergency)
 
 
 def available_condition(document=Document):
@@ -54,7 +56,10 @@ def available_condition(document=Document):
         .correlate(document)
         .scalar_subquery()
     )
-    return ~func.coalesce(master, document.id).in_(_hidden_groups())
+    group = func.coalesce(master, document.id)
+    # 正式下架、紧急下架各一个 NOT IN：合成一个 UNION 子查询，MySQL 8.0 就不能改写成反连接，
+    # 每一行都要重跑一遍（EXPLAIN 是 DEPENDENT UNION）
+    return ~group.in_(_taken_groups()) & ~group.in_(_emergency_groups())
 
 
 def cache_revision(session: Session) -> tuple:
@@ -78,7 +83,8 @@ def cache_revision(session: Session) -> tuple:
         .where(
             DocumentMerge.active.is_(True),
             or_(
-                DocumentMerge.canonical_id.in_(_hidden_groups()),
+                DocumentMerge.canonical_id.in_(_taken_groups()),
+                DocumentMerge.canonical_id.in_(_emergency_groups()),
                 DocumentMerge.duplicate_id.in_(
                     select(Document.id).where(Document.taken_down_at.is_not(None))
                 ),
@@ -88,11 +94,13 @@ def cache_revision(session: Session) -> tuple:
         .subquery()
     )
 
-    def urgent(column):
-        # 紧急下架：新加（最大编号、条数）、撤销（已撤销的条数、最晚的撤销时间）都会变。
+    def urgent(column, *where):
         # 写成标量子查询放在列里：再 JOIN 一个子查询会被当成笛卡尔积（SQLAlchemy 的 FROM 检查）
-        return func.max(select(column).select_from(EmergencyTakedown).scalar_subquery())
+        query = select(column).select_from(EmergencyTakedown).where(*where)
+        return func.max(query.scalar_subquery())
 
+    # 紧急下架着的（没撤销、文件还在）：新加、撤销、文件被同步删掉（编号置空）都会变
+    active = (EmergencyTakedown.lifted_at.is_(None), EmergencyTakedown.document_id.is_not(None))
     # 两个子查询都只产出一行；用一条聚合 SQL 保留原有下架和归并失效语义，
     # 避免历史下架后每次请求将整批映射加载到 Python。
     revision = session.execute(
@@ -103,15 +111,17 @@ def cache_revision(session: Session) -> tuple:
             func.max(mappings.c.checksum),
             urgent(func.max(EmergencyTakedown.id)),
             urgent(func.count()),
-            urgent(func.count(EmergencyTakedown.lifted_at)),
-            urgent(func.max(EmergencyTakedown.lifted_at)),
+            urgent(func.count(), *active),
+            urgent(func.coalesce(func.sum(func.crc32(EmergencyTakedown.document_id)), 0), *active),
         )
         .select_from(events)
         .join(mappings, true())
     ).one()
-    base = tuple(revision[:4]) if revision[0] is not None else ()
-    # 从没有过紧急下架（本机一直是这样）：和以前一模一样
-    return base if revision[4] is None else base + tuple(revision[4:])
+    if revision[4] is None:
+        # 从没有过紧急下架（本机一直是这样）：和以前一模一样
+        return tuple(revision[:4]) if revision[0] is not None else ()
+    # 有紧急下架就整份都算上：没有正式下架记录时，归并、拆组也会改变紧急下架那组的范围
+    return tuple(revision)
 
 
 def is_taken_down(session: Session, document_id: int) -> bool:
