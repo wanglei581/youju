@@ -1,0 +1,10 @@
+<view wx:if="{{show && variant === 'row'}}" class="row" bindtap="open" aria-role="button" aria-label="{{text}}">
+  <t-icon name="notification" size="40rpx" color="#4E5969" />
+  <text class="row-text">{{text}}</text>
+  <t-icon name="chevron-right" size="32rpx" color="#86909C" />
+</view>
+<view wx:elif="{{show}}" class="bar" bindtap="open" aria-role="button" aria-label="{{text}}">
+  <t-icon name="notification" size="32rpx" color="#2A5CE0" />
+  <text class="bar-text">{{text}}</text>
+  <t-icon name="chevron-right" size="28rpx" color="#2A5CE0" />
+</view>

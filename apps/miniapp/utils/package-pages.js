@@ -9,6 +9,7 @@ module.exports = [
   'pages/search/index',
   'pages/detail/index',
   'pages/report/index',
+  'pages/digest/index',
   'pages/lists/index',
   'pages/agreement/index',
   'pages/feedback/index',
