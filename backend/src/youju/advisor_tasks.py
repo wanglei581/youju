@@ -50,7 +50,7 @@ BEIJING = ZoneInfo("Asia/Shanghai")
 MAX_ROWS = 50
 MAX_BODY_BYTES = 100 * 1024
 MAX_UPLOAD_BYTES = 60 * 1024
-ADVISOR_AGREEMENT_VERSION = "advisor-2026-12-v1"
+ADVISOR_AGREEMENT_VERSION = "advisor-2026-12-v2"
 TASK_TIMEOUT = timedelta(minutes=5)
 STALE_RUNNING = timedelta(minutes=10)
 # advisor-run 每分钟一轮（crontab）。队里有 AI 任务就一直领（和原来一样领到空）；

@@ -350,8 +350,10 @@ def _province_match(profile: CustomerProfile, source: Source) -> bool:
     )
 
 
-VERIFIED_TEXT = "已人工核对"
-EXCERPT_TEXT = "原文摘录，未经人工核对"
+# D-130（11/12）：截止日期改由 AI 对照原文逐条核对，导出文件只写"已核对原文"、不写谁核的
+# （Excel 里不写 AI 内容，D-075；谁核的写在使用帮助和用户协议里）
+VERIFIED_TEXT = "已核对原文"
+EXCERPT_TEXT = "原文摘录，未经核对"
 UNVERIFIED_TEXT = "未核对，请以原文为准"
 UNVERIFIED_SUMMARY = "未核对"
 
@@ -491,7 +493,7 @@ def _scope_note(profile: CustomerProfile) -> str:
 TRACK_SUMMARY_HEADERS = (
     "客户名称",
     "通知数",
-    "人工核对过截止日期的",
+    "核对过截止日期的",
     "7 天内截止",
     "14 天内截止",
     "30 天内截止",
@@ -549,7 +551,7 @@ def export_track_excel(report: TrackReport, output: str | Path) -> int:
     detail.title = "客户相关通知"
     note = (
         "第三方整理 · 非政府平台；近 90 天发布的申报通知；"
-        f"“截止核对情况”列写“原文摘录”的，“{DEADLINE_HEADER}”列里的日期未经人工核对；"
+        f"“截止核对情况”列写“原文摘录”的，“{DEADLINE_HEADER}”列里的日期未经核对；"
         f"数据截至 {_beijing_minute(report.generated_at)}"
     )
     # 截止日期一列只写日期（原文写了具体时间的带上时间）。没核对的留空，在“截止核对情况”里写明：
@@ -627,7 +629,7 @@ def export_track_excel(report: TrackReport, output: str | Path) -> int:
         1,
         1,
         _safe_cell(
-            note + "；“7 天内截止”只数人工核对过的，“14 天内”“30 天内”另含原文摘录的；"
+            note + "；“7 天内截止”只数核对过的，“14 天内”“30 天内”另含原文摘录的；"
             "“截止未核对的”也可能快截止，请看原文"
         ),
     )
