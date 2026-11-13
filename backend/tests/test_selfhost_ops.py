@@ -116,6 +116,9 @@ def test_offsite_encrypts_uploads_to_archive_and_prunes(tmp_path):
     fake = FakeOffsite()
     fake.objects["backups/youju-20260901.jsonl.gz.age"] = (b"old", {})
     fake.objects["backups/youju-20261101.jsonl.gz.age"] = (b"recent", {})
+    # 北京时间 11/6 跑：每份正好留满 30 天——10/7 那份到今天满 30 天，删；10/8 那份留着
+    fake.objects["backups/youju-20261007.jsonl.gz.age"] = (b"thirty-days", {})
+    fake.objects["backups/youju-20261008.jsonl.gz.age"] = (b"twenty-nine-days", {})
     seen = []
 
     def encryptor(source, target, recipient):
@@ -131,7 +134,9 @@ def test_offsite_encrypts_uploads_to_archive_and_prunes(tmp_path):
     assert seen == [settings.offsite_age_recipient]
     # 30 天以前的删掉，近的留着
     assert "backups/youju-20260901.jsonl.gz.age" not in fake.objects
-    assert "backups/youju-20261101.jsonl.gz.age" in fake.objects and report.pruned == 1
+    assert "backups/youju-20261007.jsonl.gz.age" not in fake.objects
+    assert "backups/youju-20261008.jsonl.gz.age" in fake.objects
+    assert "backups/youju-20261101.jsonl.gz.age" in fake.objects and report.pruned == 2
 
 
 def test_offsite_refuses_without_config_or_backup(tmp_path):
@@ -562,6 +567,9 @@ def test_offsite_pull_keeps_a_ciphertext_copy_locally(tmp_path):
     old_local = tmp_path / "store" / "offsite-backups"
     old_local.mkdir(parents=True)
     (old_local / "youju-20260901.jsonl.gz.age").write_bytes(b"expired")
+    # 北京时间 11/6 跑：10/7 那份满 30 天，删；10/8 那份留着
+    (old_local / "youju-20261007.jsonl.gz.age").write_bytes(b"thirty-days")
+    (old_local / "youju-20261008.jsonl.gz.age").write_bytes(b"twenty-nine-days")
     seen = []
 
     def handle(request):
@@ -574,7 +582,9 @@ def test_offsite_pull_keeps_a_ciphertext_copy_locally(tmp_path):
     )
     assert report.target == "offsite-backups/youju-20261105.jsonl.gz.age"
     assert (old_local / "youju-20261105.jsonl.gz.age").read_bytes() == b"new-cipher"
-    assert not (old_local / "youju-20260901.jsonl.gz.age").exists() and report.pruned == 1
+    assert not (old_local / "youju-20260901.jsonl.gz.age").exists()
+    assert not (old_local / "youju-20261007.jsonl.gz.age").exists()
+    assert (old_local / "youju-20261008.jsonl.gz.age").exists() and report.pruned == 2
     # 再跑一次：已经有了，不再下载
     again = offsite.pull(
         settings, now=datetime(2026, 11, 5, 23, tzinfo=UTC), backend=fake, http=http
