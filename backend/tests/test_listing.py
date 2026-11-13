@@ -888,6 +888,22 @@ def test_zero_width_space_in_the_link_does_not_turn_title_dates_into_the_row_dat
     assert "\u200b" not in items[1].title
 
 
+def test_month_range_at_the_start_of_the_title_is_not_the_publish_date() -> None:
+    # 襄阳财政"规范性文件"列表（#501 留下的）：标题开头是"2026年1-6月"这类月份区间，发布日期写在链接里
+    # 的 span 里。原来开头的"2026年1-6"被当成 2026-01-06 挖掉，标题剩"月某市……清理表2026-06-30"
+    html = """<ul class="info-list">
+      <li><a href="./zcfg/202606/t20260630_1.shtml">2026年1-6月某市财政局规范性文件清理表<span>2026-06-30</span></a></li>
+      <li><a href="./zcfg/202601/t20260106_2.shtml">2025年10-12月某市财政局规范性文件清理表<span>2026-01-06</span></a></li>
+      <li><a href="./zcfg/202509/t20250930_3.shtml">2025年7-9月某市财政局规范性文件清理表<span>2025-09-30</span></a></li>
+    </ul>"""
+    items = extract_items(html, "http://czj.example.gov.cn/zwgk/zc/", today=date(2026, 11, 13))
+    assert [(i.title, i.publish_date) for i in items] == [
+        ("2026年1-6月某市财政局规范性文件清理表", date(2026, 6, 30)),
+        ("2025年10-12月某市财政局规范性文件清理表", date(2026, 1, 6)),
+        ("2025年7-9月某市财政局规范性文件清理表", date(2025, 9, 30)),
+    ]
+
+
 def test_title_attribute_with_publish_date_glued_to_the_title_drops_the_date() -> None:
     # 淄博大数据局（地市一组 11/12）：title 属性是"标题 + 发布日期"，中间没有空格，行里另写同一个日期
     html = """<ul>
