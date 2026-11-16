@@ -708,11 +708,13 @@ def enable_sources(
 
                 if source.parser_config[LIST_API_OPEN_KEY] == LONSUN:
                     portal = LONSUN_CITY_PORTALS.get((source.province, source.city))
+                    config = dict(source.parser_config)
                     if portal:
-                        source.parser_config = {
-                            **source.parser_config,
-                            "lonsun_catalog_host": portal,
-                        }
+                        config["lonsun_catalog_host"] = portal
+                    else:
+                        # 本市不在白名单里：旧的门户配置不留（正式抓取只认配置，不能留着过期的）
+                        config.pop("lonsun_catalog_host", None)
+                    source.parser_config = config
                 note += "，经接口读（D-128）"
             source.note = f"{source.note}；{note}" if source.note else note
         result.enabled += 1

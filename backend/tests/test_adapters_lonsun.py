@@ -457,10 +457,10 @@ def test_resolve_guards_tree_and_request():
     assert "init" in resolve_fixture(
         "jx", "49949451", page=page.replace("me.getData();", "me.other();", 1)
     )
-    changed = page.replace("// ids.push(el.id);", "ids.push(el.id);")
-    if changed != page:
-        result = resolve_fixture("jx", "49949431", page=changed)
-        assert isinstance(result, str) and "隐去" in result
+    changed = page.replace("//ids.push(el.id);", "ids.push(el.id);")
+    assert changed != page
+    result = resolve_fixture("jx", "49949431", page=changed)
+    assert isinstance(result, str) and "hideIds" in result
     changed = page.replace("data: me.listParams,", "data: me.listParams, extra: 1,", 1)
     assert isinstance(resolve_fixture("jx", "49949451", page=changed), str)
     changed = page.replace("me.listParams.catId = me.currNode.id;", "me.unknownAction();", 1)
@@ -1371,8 +1371,9 @@ def test_catalog_cache_blocks_other_trees_on_host():
     tree = find_list_api(fixture("jx_page.html"), BASE, BASE)
     for first in (
         FetchResult(tree.url, "http_error", http_status=403),
+        FetchResult(tree.url, "http_error", http_status=429),
         FetchResult(tree.url, "robots_disallowed"),
-        FetchResult(tree.url, "redirect"),
+        FetchResult(tree.url, "redirect", final_url="https://jx.ah.gov.cn/login"),
     ):
         calls = []
 
@@ -1384,9 +1385,28 @@ def test_catalog_cache_blocks_other_trees_on_host():
         cache.get(tree.url, fetch)
         second = cache.get("https://jx.ah.gov.cn/another/2.js", fetch)
         assert len(calls) == 1
-        assert "同一轮已被拒绝" in api_refusal(tree, second)
+        # 同一主机别的脚本这次不去：它自己没被拒绝，记"这次没取到"，不写不能抓的记录
+        assert second.status == "site_paused" and api_refusal(tree, second) == ""
         cache.get("https://other.ah.gov.cn/another/2.js", fetch)
         assert len(calls) == 2
+
+
+def test_catalog_cache_protocol_only_redirect_does_not_block():
+    from youju.crawler.adapters import find_list_api
+    from youju.crawler.fetcher import FetchResult
+    from youju.crawler.service import CatalogCache
+
+    tree = find_list_api(fixture("jx_page.html"), BASE, BASE)
+    calls = []
+
+    def fetch(url, **kwargs):
+        calls.append(url)
+        return FetchResult(url, "redirect", final_url=url.replace("https://", "http://"))
+
+    cache = CatalogCache()
+    cache.get(tree.url, fetch)
+    cache.get("https://jx.ah.gov.cn/another/2.js", fetch)
+    assert len(calls) == 2
 
 
 def test_refusal_tree_query_and_list_url():
@@ -1697,7 +1717,7 @@ def test_harmless_global_uses_recognized():
     script = (
         "Ls.myHelper = function (id) { return id; };"
         " Ls.tipsInfo('x');"
-        " function later() { return _organTree2.getNodes(); }"
+        " function later() { var n = _organTree2.getNodes(); $('#c').text(n.length); }"
     )
     assert _found(_jx(extra=f"<script>{script}</script>")) is not None
 
@@ -1762,3 +1782,211 @@ def test_other_scripts_may_not_change_globals(script):
     page = _jx(extra=f"<script>{script}</script>")
     assert _found(page) is None
     assert lonsun_unrecognized_reason(page, BASE, BASE).startswith("内联脚本")
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        # 当返回值交出去，调用方再改
+        "function cat() { return catalogs['6991']; } cat().push({});",
+        # $.grep、filter 交回来的还是原来的节点
+        "var hit = $.grep(catalogs['6991'], function (n) { return n.id; }); hit[0].children = [];",
+        "var some = catalogs['6991'].filter(function (n) { return n.id; }); some[0].parentId = 0;",
+        # 存进对象属性、数组元素
+        "var box = {}; box.list = catalogs['6991'];",
+        "var keep = []; keep[0] = catalogs['6991'];",
+        # push 进数组再改
+        "var bag = []; bag.push(catalogs['6991'][0]); bag[0].children = [];",
+        # 页面函数一层层往下交，最后一层改
+        "function a1(x) { a2(x); } function a2(y) { y[0].children = []; } a1(catalogs['6991']);",
+        # 用 arguments 取参数
+        "function g() { arguments[0].push({}); } g(catalogs['6991']);",
+    ],
+)
+def test_other_scripts_escape_routes_refused(script):
+    assert _found(_jx(extra=f"<script>{script}</script>")) is None
+
+
+def test_other_scripts_page_function_returning_plain_value_ok():
+    # 淮南的写法：页面函数收到栏目数据只读，交回来的是编号串，不是栏目数据
+    script = (
+        "function pick(list, ids) { $.each(list, function (i, el) {"
+        " if (ids.indexOf(el.parentId) > -1) { ids += ',' + el.id; } }); return ids; }"
+        " function run(ids) { var all = catalogs['6991']; ids = pick(all, ids); show(ids); }"
+        " function show(text) { $('#x').text(text); }"
+    )
+    assert _found(_jx(extra=f"<script>{script}</script>")) is not None
+
+
+def test_list_request_with_unknown_parameter_not_sent():
+    # 令牌、签名这类参数名不在认得的名单里：不发，待人工处理
+    for extra in ("accessToken: 'x',", "sign: 'abc',"):
+        page = fixture("jx_page.html").replace("me.listParams = {", "me.listParams = {" + extra, 1)
+        assert page != fixture("jx_page.html")
+        reason = resolve_fixture("jx", "49949451", page=page)
+        assert isinstance(reason, str) and "认不出的参数" in reason, extra
+
+
+@pytest.mark.parametrize(
+    "body,refused",
+    [
+        # 防护页、挑战页：不能抓
+        ("<html><script>var yunsuo_session_verify='1';</script></html>", "云锁"),
+        ("<html><script>$_ts=window['$_ts'];</script></html>", "瑞数"),
+        # 回的是网页或 JSON，不是脚本（比如软 404）：不能抓
+        ("<!DOCTYPE html><html><body><p>页面不存在</p></body></html>", "不是脚本"),
+        ('{"code": 404}', "不是脚本"),
+        # 还是脚本、只是格式变了：待人工处理（不算拒绝）
+        ("var catalogs = {'other': []};", None),
+    ],
+)
+def test_catalog_refusal_on_challenge_or_non_script(body, refused):
+    from youju.crawler.adapters import api_refusal, find_list_api
+    from youju.crawler.fetcher import FetchResult
+
+    api = find_list_api(fixture("jx_page.html"), BASE, BASE)
+    reason = api_refusal(api, FetchResult(api.url, "ok", api.url, 200, text=body))
+    if refused is None:
+        assert reason == ""
+    else:
+        assert reason.startswith("栏目树脚本：") and refused in reason
+
+
+def test_catalog_cache_blocks_host_for_round():
+    from youju.crawler.fetcher import FetchResult
+    from youju.crawler.service import CatalogCache
+
+    calls = []
+
+    def fetch(url, same_address_only=False):
+        calls.append(url)
+        return FetchResult(url, "http_error", url, 429)
+
+    cache = CatalogCache()
+    first = cache.get("https://www.example.gov.cn/1/2.js", fetch)
+    assert first.http_status == 429
+    # 回了 429：这一轮同一主机的别的脚本不再去
+    second = cache.get("https://www.example.gov.cn/3/4.js", fetch)
+    assert second.status == "site_paused" and calls == ["https://www.example.gov.cn/1/2.js"]
+    cache.block("https://other.example.gov.cn/x.js")
+    assert cache.blocked("https://other.example.gov.cn/y.js")
+
+
+def test_page_with_base_element_not_read():
+    from youju.crawler.lonsun import lonsun_unrecognized_reason
+
+    page = fixture("jx_page.html").replace(
+        "<head>", "<head><base href='https://other.ah.gov.cn/'>", 1
+    )
+    assert page != fixture("jx_page.html")
+    assert _found(page) is None
+    assert "<base>" in lonsun_unrecognized_reason(page, BASE, BASE)
+
+
+# ---- 第三轮审阅：加载时会跑的回调、跳过的显示方法、建树设置和节点字段、更多全局改写 ----
+
+_PRE = "preprocessData: function () {"
+
+
+@pytest.mark.parametrize(
+    "callback",
+    [
+        "me.listParams.type = '5';",
+        "me.currCatId = '1';",
+        "me.refresh = true;",
+        "me.hideIds.push(49949451);",
+        "$.extend(el, {parentId: 0});",
+        "Object.assign(el, {parentId: 0});",
+    ],
+)
+def test_load_time_callbacks_cannot_change_state(callback):
+    # $.each 的回调在加载时就跑：在里面改依赖状态、改节点，浏览器发的请求就变了
+    page = fixture("jx_page.html").replace(
+        _PRE, _PRE + "\n      $.each(me.ztreeData, function (i, el) { " + callback + " });", 1
+    )
+    assert page != fixture("jx_page.html")
+    assert isinstance(resolve_fixture("jx", "49949451", page=page), str)
+
+
+@pytest.mark.parametrize("line", ["me.listParams.type = '5';", "me.getList();"])
+def test_skipped_ui_methods_must_not_touch_state(line):
+    anchor = "getNav: function () {"
+    page = fixture("jx_page.html").replace(anchor, anchor + "\n      " + line, 1)
+    assert page != fixture("jx_page.html")
+    reason = resolve_fixture("jx", "49949451", page=page)
+    assert isinstance(reason, str) and "getNav" in reason
+
+
+@pytest.mark.parametrize(
+    "old,new",
+    [
+        ("pIdKey: 'parentId'", "pIdKey: 'pid'"),
+        ("title: '_name'", "title: '_name', children: 'nodes'"),
+        ("pIdKey: 'parentId'", "pIdKey: 'parentId', enable: false"),
+    ],
+)
+def test_tree_settings_must_match(old, new):
+    page = fixture("jx_page.html").replace(old, new, 1)
+    assert page != fixture("jx_page.html")
+    reason = resolve_fixture("jx", "49949451", page=page)
+    assert isinstance(reason, str) and "建树设置" in reason
+
+
+@pytest.mark.parametrize("change", ["children", "string_parent", "zero_parent"])
+def test_catalog_node_fields_must_be_plain(change):
+    import json as json_lib
+
+    text = fixture("jx_catalog.js")
+    prefix, payload = text.split("=", 1)
+    data = json_lib.loads(payload.strip().rstrip(";").replace("{6991:", '{"6991":', 1))
+    node = data["6991"][0]
+    if change == "children":
+        node["children"] = []
+    elif change == "string_parent":
+        node["parentId"] = str(node["parentId"])
+    else:
+        node["parentId"] = "0" + str(node["parentId"])
+    bad = prefix + "= {6991:" + json_lib.dumps(data["6991"], ensure_ascii=False) + "};"
+    assert isinstance(resolve_fixture("jx", "49949451", catalog=bad), str)
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        "GLOBAL_CONTEXTPATH = '/x';",
+        "$(document).ajaxSend(function (e, x, s) { s.url = '/x'; });",
+        "$.ajaxSettings.beforeSend = function () {};",
+        "$.fn.zTree.init = function () {};",
+    ],
+)
+def test_more_global_request_changes_refused(script):
+    assert _found(_jx(extra=f"<script>{script}</script>")) is None
+
+
+def test_truncated_get_data_does_not_raise():
+    from youju.crawler.adapters import find_list_api
+    from youju.crawler.lonsun import lonsun_unrecognized_reason
+
+    anchor = "        me.open();\n      }\n    },\n    getReportyear"
+    page = fixture("jx_page.html").replace(
+        anchor, "        me.open();\n      }\n      if (me.x)\n    },\n    getReportyear", 1
+    )
+    assert page != fixture("jx_page.html")
+    # 坏页面、截断的页面（getData 末尾悬空一个 if）：哪一步都不能抛出去，第二步认不出、不读
+    find_list_api(page, BASE, BASE)
+    lonsun_unrecognized_reason(page, BASE, BASE)
+    assert isinstance(resolve_fixture("jx", "49949451", page=page), str)
+    # 整段脚本在语句中间结束
+    cut = fixture("jx_page.html").replace("me.currNode = node;", "if (me.x", 1)
+    assert find_list_api(cut, BASE, BASE) is None
+
+
+def test_encoded_query_and_odd_numbers_not_read():
+    from youju.crawler.lonsun import column_spec
+
+    # 平台按 location.search 原文取参数，编码过的、带加号的认不准
+    assert column_spec(BASE.replace("catId=", "%63atId=")) is None
+    assert column_spec(BASE + "&nav=1+2") is None
+    page = fixture("jx_page.html").replace("me.listParams = {", "me.listParams = {num: 010,", 1)
+    assert page != fixture("jx_page.html")
+    assert _found(page) is None or isinstance(resolve_fixture("jx", "49949451", page=page), str)

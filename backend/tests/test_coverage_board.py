@@ -671,6 +671,13 @@ def test_enable_lonsun_records_only_reviewed_city_portals(session):
     )
     session.commit()
     import_inventory(session, portals, depts)
+    # 不在白名单里的城市：以前留下的门户配置要清掉（正式抓取只认配置）
+    session.refresh(sources[1])
+    sources[1].parser_config = {
+        **(sources[1].parser_config or {}),
+        "lonsun_catalog_host": "www.stale.gov.cn",
+    }
+    session.commit()
     enabled = enable_sources(session, "安徽", "区县级", "王某", now=NOW, verified=True)
     assert set(enabled.source_ids) == {s.id for s in sources}
     for source in sources:

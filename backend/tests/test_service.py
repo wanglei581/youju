@@ -975,6 +975,49 @@ def test_lonsun_crawl_shares_tree_per_round(session_factory, tree_status):
         )
 
 
+def _two_lonsun_sources(session_factory):
+    from youju.crawler.adapters import api_follow, find_list_api
+
+    url, html, tree, catalog, api, body = _lonsun_service_fixture()
+    second = url.replace("49949451", "49949431")
+    second_api = api_follow(find_list_api(html, second, second), page(tree, catalog)).url
+    with session_factory() as session:
+        sources = [make_source(session, u) for u in (url, second)]
+        for source in sources:
+            source.parser_config = {"list_api_open": "龙讯public"}
+        session.commit()
+        ids = [source.id for source in sources]
+    return url, second, html, tree, catalog, api, second_api, ids
+
+
+def test_lonsun_tree_challenge_refused_once_per_round(session_factory):
+    url, second, html, tree, _, _, _, ids = _two_lonsun_sources(session_factory)
+    challenge = page(tree, "<html><script>var yunsuo_session_verify='1';</script></html>")
+    fetcher = RecordingFetcher(
+        {url: [page(url, html)], second: [page(second, html)], tree: [challenge]}
+    )
+    results = crawl_sources(session_factory, ids, fetcher, max_workers=1)
+    # 栏目树脚本回的是挑战页：记不能抓，这一轮只取过一次
+    assert fetcher.requested.count(tree) == 1
+    assert all(r.status == "list_api_refused" and "云锁" in r.error for r in results)
+
+
+def test_lonsun_list_429_stops_host_for_round(session_factory):
+    url, second, html, tree, catalog, api, second_api, ids = _two_lonsun_sources(session_factory)
+    fetcher = RecordingFetcher(
+        {
+            url: [page(url, html)],
+            second: [page(second, html)],
+            tree: [page(tree, catalog)],
+            api: [FetchResult(api, "http_error", api, 429)],
+            second_api: [FetchResult(second_api, "http_error", second_api, 429)],
+        }
+    )
+    crawl_sources(session_factory, ids, fetcher, max_workers=1)
+    # 谁先取都一样：回了 429 以后，这一轮同一主机的列表接口不再去
+    assert sum(fetcher.requested.count(u) for u in (api, second_api)) == 1
+
+
 @pytest.mark.parametrize("tree_status", ["robots_disallowed", "robots_error"])
 def test_lonsun_source_tree_robots(session, tree_status):
     url, html, tree, _, _, _ = _lonsun_service_fixture()

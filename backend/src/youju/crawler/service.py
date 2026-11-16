@@ -22,6 +22,7 @@ from youju.crawler.adapters import (
     LIST_API_REFUSED,
     LONSUN,
     ListApi,
+    _redirect_words,
     api_items_merged,
     api_parts,
     api_readable,
@@ -54,8 +55,19 @@ class Fetcher:
         raise NotImplementedError
 
 
+def _round_skip(url: str) -> FetchResult:
+    """这一轮同一主机拒绝过我们或回过 429：这个地址这次不去。它自己没被拒绝，记"这次没取到"
+    （site_paused，下次照常再试），不写不能抓的记录。"""
+    return FetchResult(url, "site_paused", final_url=url, error=ROUND_SKIP)
+
+
+ROUND_SKIP = "同一轮这个主机拒绝过我们或回了 429，这次不去"
+
+
 class CatalogCache:
-    """一轮内共享栏目树结果；同一地址的并发请求只发一次。"""
+    """一轮内共享龙讯的栏目树结果（同一地址的并发请求只发一次），并记下这一轮拒绝过我们的主机：
+    栏目树或列表接口被拒（401/403/412/521、robots、跳到别处、读取护栏判了不能抓）或者回 429，
+    同一轮这个主机不再去。"""
 
     def __init__(self):
         self._lock = Lock()
@@ -71,16 +83,27 @@ class CatalogCache:
             if url in self._results:
                 return self._results[url]
             if host in self._blocked_hosts:
-                return FetchResult(url, "robots_disallowed", error="同一轮已被拒绝")
+                return _round_skip(url)
             result = fetch(url, same_address_only=True)
             self._results[url] = result
+            moved = result.final_url and url_key(result.final_url) != url_key(url)
             if (
-                result.status in ("robots_disallowed", "redirect")
-                or result.http_status in (401, 403, 412, 521)
-                or (result.final_url and url_key(result.final_url) != url_key(url))
+                result.status == "robots_disallowed"
+                or result.http_status in (401, 403, 412, 429, 521)
+                # 跳到了别的地址（只换协议的不算：对这个脚本也只是"这次没取到"）
+                or (result.status == "redirect" or moved)
+                and _redirect_words(url, result.final_url or url)
             ):
                 self._blocked_hosts.add(host)
             return result
+
+    def blocked(self, url: str) -> bool:
+        with self._lock:
+            return (urlsplit(url).hostname or "") in self._blocked_hosts
+
+    def block(self, url: str) -> None:
+        with self._lock:
+            self._blocked_hosts.add(urlsplit(url).hostname or "")
 
 
 @dataclass
@@ -290,6 +313,8 @@ def _items_via_adapter(
     )
     followed, first_result, kind, reason = fetch_api_follow(api, tree_fetch)
     if kind == "blocked":
+        if catalog_cache is not None:
+            catalog_cache.block(first_url)  # 读取护栏判了不能抓（防护页、不是脚本）：这一轮不再去
         return _AdapterResult([], api.adapter, first_result, refused=reason, api_url=first_url)
     if kind == "down":
         if first_result.status == "ok":
@@ -315,7 +340,15 @@ def _items_via_adapter(
         # 几个分类合读时一个一个取、一个一个查：前一个被拦下、没取到、读不出，后面的不再请求
         # （D-013、D-128：网站拒绝了就停，不接着敲门）；原因里写明出问题的是哪个分类
         label = f"分类 {part.category_id}：" if len(parts) > 1 else ""
-        result = fetcher.fetch(part.url, same_address_only=True)
+        lonsun_round = api.adapter == LONSUN and catalog_cache is not None
+        if lonsun_round and catalog_cache.blocked(part.url):
+            result = _round_skip(part.url)
+        else:
+            result = fetcher.fetch(part.url, same_address_only=True)
+            if lonsun_round and (
+                result.http_status in (401, 403, 412, 429, 521) or api_refusal(part, result)
+            ):
+                catalog_cache.block(part.url)
         if result.status == "robots_disallowed":
             return _AdapterResult([], api.adapter, result, api_url=first_url, part=label)
         refused = api_refusal(part, result)

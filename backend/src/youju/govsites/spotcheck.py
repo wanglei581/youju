@@ -525,6 +525,8 @@ def evidence_for(
             from youju.crawler.lonsun import LONSUN_CITY_PORTALS
 
             source = sources_by_url.get(url)
+            # 来源配置了门户就用配置的；来源还没配置（启用时才写）就按来源自己的省市查审过的
+            # 白名单；还没有来源时按盘点省市查（正式抓取只认配置，见 crawler/service.py）
             catalog_host = (
                 (source.parser_config or {}).get("lonsun_catalog_host")
                 if source is not None

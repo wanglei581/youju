@@ -4,6 +4,7 @@ document.write 字面量后面的随机数用于防缓存，不加；只取字�
 栏目树只按 JSON 解析，内联脚本只用受限求值器，均不执行。
 """
 
+import collections
 import html
 import json
 import math
@@ -40,6 +41,9 @@ def column_spec(url: str) -> tuple[str, str] | None:
         ):
             return None
         _ = parts.port
+        if "%" in parts.query or "+" in parts.query:
+            # 平台按 location.search 原文取参数，我们按解码后的取：编码过的认不准
+            return None
         match = re.search(r"/public/column/([0-9]+)$", parts.path)
         if not match:
             return None
@@ -77,7 +81,8 @@ def catalog_host_allowed(page_url: str, script_url: str, catalog_host: str | Non
         if script_port not in (None, {"http": 80, "https": 443}[script.scheme], page_port):
             return False
         a, b = page.hostname.lower(), script.hostname.lower()
-        if catalog_host and b == catalog_host and b.endswith(".gov.cn"):
+        # 来源配置的本市门户：还得在审过的白名单里（配置写错、白名单撤掉的不认）
+        if catalog_host and b == catalog_host and b in LONSUN_CITY_PORTALS.values():
             return True
         if a == b:
             return a.endswith(".gov.cn")
@@ -111,6 +116,13 @@ def parse_catalog(text: str, organ_id: str) -> list[dict]:
         not isinstance(node, dict) or type(node.get("id")) is not int for node in nodes
     ):
         raise LonsunFormatError("栏目树节点编号无效")
+    for node in nodes:
+        # zTree 按 parentId 原样当键找上级：写成字符串、带前导零的找不到，当成根；节点自带
+        # children（哪怕是空数组）在浏览器里就算有下级。这两种都认不准
+        if "children" in node:
+            raise LonsunFormatError("栏目树节点自带 children")
+        if node.get("parentId") is not None and type(node.get("parentId")) is not int:
+            raise LonsunFormatError("栏目树节点的上级编号不是整数")
     ids = [node["id"] for node in nodes]
     if len(ids) != len(set(ids)):
         raise LonsunFormatError("栏目树节点编号重复")
@@ -436,6 +448,14 @@ UNDEFINED = _Special("undefined")
 UNKNOWN = _Special("UNKNOWN")
 
 
+def _number_literal(token: str) -> float:
+    """数字字面量：0 开头的（010 在 JS 里是八进制）和超过 15 位的整数部分（超出双精度能精确表示的
+    范围）认不出。"""
+    if re.fullmatch(r"0[0-9]+(?:\.[0-9]*)?", token) or len(token.split(".")[0]) > 15:
+        raise LonsunFormatError(f"数字写法认不出 {token}")
+    return float(token)
+
+
 def _string_literal(value: str) -> str:
     result = []
     i = 1
@@ -537,7 +557,7 @@ class _JSParser:
                 if key.startswith(("'", '"')):
                     key = _string_literal(key)
                 elif re.fullmatch(r"(?:\d+(?:\.\d*)?|\.\d+)", key):
-                    key = _js_string(float(key))
+                    key = _js_string(_number_literal(key))
                 elif not re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", key):
                     raise LonsunFormatError(f"认不出记号 {key}")
                 self.take(":")
@@ -552,7 +572,7 @@ class _JSParser:
             left = ("literal", _string_literal(token))
         elif re.fullmatch(r"(?:\d+(?:\.\d*)?|\.\d+)", token):
             self.take()
-            left = ("literal", float(token))
+            left = ("literal", _number_literal(token))
         elif token in ("true", "false", "null", "undefined"):
             self.take()
             left = (
@@ -648,6 +668,8 @@ class _JSParser:
                 self.i += 1
                 if v == ";":
                     break
+        if start >= len(self.tokens):
+            raise LonsunFormatError("脚本在语句中间结束")
         end = self.tokens[self.i - 1].end if self.i > start else self.tokens[start].end
         if self.i == start:
             self.i += 1
@@ -1155,54 +1177,6 @@ def _tracked_write(path):
     ) or path[0] in ("catalogs", "_organTree2")
 
 
-def _computed_method_call(tokens, start):
-    values = [token.value for token in tokens]
-    j = start + 1
-    computed = False
-    while j < len(values):
-        if values[j] == "[":
-            computed = True
-            j = _matching_token(tokens, j) + 1
-        elif values[j] == "." and j + 1 < len(values):
-            j += 2
-        else:
-            break
-    return computed and j < len(values) and values[j] == "("
-
-
-def _safe_event_timer(tokens, start):
-    """只认延时注册点击事件；事件处理函数不会在页面加载时执行。"""
-    values = [token.value for token in tokens]
-    try:
-        if values[start : start + 5] != ["setTimeout", "(", "function", "(", ")"]:
-            return False
-        body = start + 5
-        if values[body : body + 3] != ["{", "$", "("]:
-            return False
-        if not values[body + 3].startswith(("'", '"')):
-            return False
-        if values[body + 4 : body + 9] != [")", ".", "on", "(", "'click'"] and values[
-            body + 4 : body + 9
-        ] != [")", ".", "on", "(", '"click"']:
-            return False
-        if values[body + 9 : body + 12] != [",", "function", "("]:
-            return False
-        callback_body = _matching_token(tokens, body + 11) + 1
-        if values[callback_body] != "{":
-            return False
-        after_callback = _matching_token(tokens, callback_body) + 1
-        if values[after_callback : after_callback + 2] != [")", ";"]:
-            return False
-        end_body = after_callback + 2
-        return (
-            values[end_body : end_body + 2] == ["}", ","]
-            and re.fullmatch(r"[0-9]+", values[end_body + 2]) is not None
-            and values[end_body + 3] == ")"
-        )
-    except (IndexError, LonsunFormatError):
-        return False
-
-
 def _check_pre_methods(raw, globals_):
     all_globals = set(globals_) - {"_organTree"}
     used = {
@@ -1343,6 +1317,12 @@ def _check_pre_methods(raw, globals_):
         writes = _writes(source, skip_functions=True)
         if any(path[0] in aliases for path, _ in writes):
             raise LonsunFormatError(f"{name} 通过别名改写了依赖状态")
+        # 回调里的写入也算：$.each、$.grep 这类同步回调就在加载时跑，.done 这类回调也可能在
+        # getData 之前跑。顶层之外（只在回调里）对依赖状态的写入一律认不出
+        nested = collections.Counter(_writes(source)) - collections.Counter(writes)
+        for path, _op in nested:
+            if _tracked_write(path) or path[0] in aliases:
+                raise LonsunFormatError(f"{name} 的回调改写了依赖状态 {'.'.join(path)}")
         if name != "init":
             local_names = {
                 call_values[i + 1] for i in range(len(call_values) - 1) if call_values[i] == "var"
@@ -1409,11 +1389,12 @@ def _check_pre_methods(raw, globals_):
                 continue
             raise LonsunFormatError(f"{name} 改写了依赖状态 {'.'.join(path)}")
     # preprocessData 的节点回调加载时运行，parentId 会影响建树。
-    for path, _op in _writes(raw.get("preprocessData", "")):
-        if (
+    for path, op in _writes(raw.get("preprocessData", "")):
+        if path[0] not in ("me", "$", "jQuery") and (
             len(path) > 1
             and path[-1] in ("parentId", "*", "children")
-            and path[0] not in ("me", "$", "jQuery")
+            # 对节点整个 $.extend、Object.assign：看不出改了哪些字段
+            or op == "extend"
         ):
             raise LonsunFormatError("preprocessData 改写了建树字段")
     # 删除节点可能通过别名或调用结果发生，无法静态证明不影响目录树。
@@ -1551,7 +1532,7 @@ def _written_script(source):
 
 
 # 改 jQuery 全局 AJAX 设置的调用（可能加令牌、改地址）：不管接收者是谁（$、jQuery 或它们的别名）
-_AJAX_SETTERS = {"ajaxSetup", "ajaxPrefilter", "ajaxTransport"}
+_AJAX_SETTERS = {"ajaxSetup", "ajaxPrefilter", "ajaxTransport", "ajaxSend"}
 # 我们照着推请求、又可能被页面脚本改动的页面全局对象：每次出现都得是认得的写法
 _ROOTS = ("Ls", "catalogs", "PublicTree", "_organTree2")
 _GLOBAL_OBJECTS = ("window", "globalThis", "self", "top", "parent", "frames")
@@ -1860,9 +1841,11 @@ def _method_spans(tokens):
     """PublicTree 脚本里构造函数体（记作 ""）和各原型方法体的记号范围 {名字: (开始, 结束)}。"""
     values = [t.value for t in tokens]
     spans = {}
-    for i in range(len(values) - 4):
-        if values[i : i + 5] == ["function", "PublicTree", "(", ")", "{"]:
-            spans[""] = (i + 4, _matching_token(tokens, i + 4))
+    for i in range(len(values) - 2):
+        if values[i : i + 3] == ["function", "PublicTree", "("]:
+            body = _matching_token(tokens, i + 2) + 1
+            if body < len(values) and values[body] == "{":
+                spans[""] = (body, _matching_token(tokens, body))
     marker = ["$", ".", "extend", "(", "PublicTree", ".", "prototype", ",", "{"]
     for i in range(len(values) - len(marker) + 1):
         if values[i : i + len(marker)] != marker:
@@ -2010,13 +1993,31 @@ def _foreign_problem(source, functions, widget, *, occurrences=True, mask=()):
             if after == "." and at(i + 3) == "(" and reads:
                 continue
             return "_organTree2 的用法认不出"
-    # 别名：反复扫到不再增加
-    sources = {"catalogs", "_organTree2"}
+    return _alias_problem(tokens, source, {"catalogs", "_organTree2"}, functions)
+
+
+# 页面函数里再调用页面函数时最多往下看几层；再深的认不出
+_CALL_DEPTH = 4
+_STORE_METHODS = frozenset({"push", "unshift", "splice"})
+
+
+def _alias_problem(tokens, source, sources, functions, depth=0, visiting=frozenset()):
+    """sources 里的名字是栏目数据（catalogs、_organTree2，或者被调函数里收到栏目数据的参数）。
+    别名：赋值时右边读到栏目数据的（读成员、下标、条件、数组或对象字面量里，函数调用的结果见
+    _tainted_value），$.each/$.grep/$.map、数组 forEach 等遍历别名时回调的参数，push 进别名的数组。
+    认不出（给原因）的：经别名改属性、删属性、用原地修改的数组方法、当 $.extend 的目标；把栏目
+    数据存进对象属性或数组元素；当返回值交出去；交给页面函数（那个函数照同样的规矩查，最多往下
+    _CALL_DEPTH 层）、看不出改不改的函数。"""
+    values = [t.value for t in tokens]
+
+    def at(k):
+        return values[k] if 0 <= k < len(values) else ""
+
     aliases = set()
     changed = True
     while changed:
         changed = False
-        tainted = sources | aliases
+        tainted = set(sources) | aliases
         for i, value in enumerate(values):
             new = set()
             if (
@@ -2026,7 +2027,7 @@ def _foreign_problem(source, functions, widget, *, occurrences=True, mask=()):
                 and at(i - 1) not in tainted
             ):
                 end = _expression_end(tokens, i + 1)
-                if _tainted_value(tokens, i + 1, end, tainted):
+                if _tainted_value(tokens, i + 1, end, tainted, functions):
                     new.add(at(i - 1))
             if values[i : i + 4] in _ITERATORS and at(i + 4) in tainted and at(i + 3) == "(":
                 new |= _callback_params(tokens, i + 3)
@@ -2037,37 +2038,222 @@ def _foreign_problem(source, functions, widget, *, occurrences=True, mask=()):
                 and _chain_root(values, i) in tainted
             ):
                 new |= _callback_params(tokens, i + 2)
+            if value == "." and at(i + 1) in _STORE_METHODS and at(i + 2) == "(":
+                close = _matching_token(tokens, i + 2)
+                root = _chain_root(values, i)
+                if root and _tainted_value(tokens, i + 3, close, tainted, functions):
+                    new.add(root)  # 把栏目数据 push 进数组：数组也是别名
             if new - aliases:
                 aliases |= new
                 changed = True
+    tainted = set(sources) | aliases
     for path, op in _writes(source):
-        if path[0] in aliases and (len(path) > 1 or op in _MUTATORS or op == "extend"):
+        # 被调函数里收到栏目数据的参数也算（catalogs、_organTree2 本身的改写另有规则查）
+        if path[0] in tainted and (len(path) > 1 or op in _MUTATORS or op == "extend"):
             return f"经别名 {path[0]} 改了栏目数据"
     for i, value in enumerate(values):
-        if value not in aliases | sources or at(i - 1) == ".":
+        if value == "=" and (at(i - 1) == "]" or at(i - 2) == "."):
+            end = _expression_end(tokens, i + 1)
+            if _tainted_value(tokens, i + 1, end, tainted, functions):
+                return "把栏目数据存进了对象属性或数组元素"
+        if value == "return":
+            end = _expression_end(tokens, i + 1)
+            if _tainted_value(tokens, i + 1, end, tainted, functions):
+                return "把栏目数据当返回值交出去"
+    for i, value in enumerate(values):
+        if value not in tainted or at(i - 1) == ".":
             continue
+        if not _operand_tainted(tokens, i, _chain_end(tokens, i), tainted, functions):
+            continue  # 交出去的是 .id、.length 这类字符串、数字
         callee = _enclosing_callee(values, i)
         if callee is None:
             continue
         name = values[callee]
         if at(callee - 1) == ".":
-            root = callee
-            while root >= 2 and values[root - 1] == "." and _IDENT.fullmatch(values[root - 2]):
-                root -= 2
-            if values[root] in _SAFE_ROOTS or name in _PURE_METHODS:
+            if _chain_root(values, callee - 1) in _SAFE_ROOTS or name in _PURE_METHODS:
                 continue
             return f"栏目数据交给了 {name}，看不出它改不改"
         if name in _SAFE_CALLS:
             continue
-        function = functions.get(name)
-        if function is None or not _read_only_body(*function):
-            return f"栏目数据交给了页面函数 {name}，它会改或者看不出来"
+        problem = _callee_problem(tokens, callee, tainted, functions, depth, visiting)
+        if problem:
+            return problem
     return None
 
 
-def _tainted_value(tokens, start, end, tainted):
-    """start 到 end 这段表达式的值会不会是 tainted 里的对象或者它的一部分：读成员、下标、条件、
-    或运算里出现就算；函数调用的结果不算（交给函数当参数另查），函数体里的也不算。"""
+def _callee_problem(tokens, callee, tainted, functions, depth, visiting):
+    """页面函数 values[callee](…) 收到了栏目数据：按收到的参数位置，用同样的规矩查它的函数体。"""
+    values = [t.value for t in tokens]
+    name = values[callee]
+    function = functions.get(name)
+    if function is None:
+        return f"栏目数据交给了 {name}，看不出它改不改"
+    open_paren = callee + 1
+    close = _matching_token(tokens, open_paren)
+    positions, position, start = set(), 0, open_paren + 1
+    k = open_paren + 1
+    while k <= close:
+        value = values[k]
+        if value in ("(", "[", "{"):
+            k = _matching_token(tokens, k) + 1
+            continue
+        if value in (",", ")") and k >= start:
+            if _tainted_value(tokens, start, k, tainted, functions):
+                positions.add(position)
+            position, start = position + 1, k + 1
+        k += 1
+    args, body = function
+    params = [a.strip() for a in args.split(",") if a.strip()]
+    if not all(_IDENT.fullmatch(a) for a in params):
+        return f"页面函数 {name} 的参数写法认不出"
+    key = (name, frozenset(positions))
+    if key in visiting:
+        return None  # 递归调用自己：这一层正在查
+    if depth >= _CALL_DEPTH:
+        return f"栏目数据经页面函数一层层往下交，超过 {_CALL_DEPTH} 层，看不过来"
+    received = {params[p] for p in positions if p < len(params)}
+    if "arguments" in [t.value for t in _js_tokens(body)]:
+        return f"页面函数 {name} 用 arguments 取参数，认不出"
+    problem = _alias_problem(
+        _js_tokens(body),
+        body,
+        received | {"catalogs", "_organTree2"},
+        functions,
+        depth + 1,
+        visiting | {key},
+    )
+    return f"页面函数 {name}：{problem}" if problem else None
+
+
+# 节点上这些属性是字符串、数字或真假值：读出来不是栏目数据本身
+_PRIMITIVE_PROPS = frozenset(
+    {
+        "length",
+        "id",
+        "name",
+        "title",
+        "parentId",
+        "pid",
+        "isParent",
+        "isShow",
+        "link",
+        "uri",
+        "url",
+        "redirectLink",
+        "catId",
+        "organId",
+        "code",
+        "level",
+    }
+)
+# 调用结果是字符串、数字或真假值的方法、函数
+_PRIMITIVE_METHODS = frozenset(
+    {"indexOf", "lastIndexOf", "includes", "join", "toString", "some", "every", "findIndex", "test"}
+)
+_PRIMITIVE_CALLS = frozenset(
+    {
+        "parseInt",
+        "parseFloat",
+        "String",
+        "Number",
+        "Boolean",
+        "isNaN",
+        "encodeURIComponent",
+        "decodeURIComponent",
+        "encodeURI",
+        "decodeURI",
+    }
+)
+_PRIMITIVE_OPERATORS = frozenset(
+    {
+        "+",
+        "-",
+        "*",
+        "/",
+        "%",
+        "==",
+        "!=",
+        "===",
+        "!==",
+        "<",
+        ">",
+        "<=",
+        ">=",
+        "instanceof",
+        "in",
+        "&",
+        "|",
+        "^",
+        "<<",
+        ">>",
+        ">>>",
+    }
+)
+
+
+def _depth_zero(tokens, start, end):
+    """start 到 end 里同层（不在括号里）的记号位置。"""
+    values = [t.value for t in tokens]
+    out = []
+    k = start
+    while k < end:
+        if values[k] in ("(", "[", "{"):
+            out.append(k)
+            k = _matching_token(tokens, k) + 1
+            continue
+        out.append(k)
+        k += 1
+    return out
+
+
+def _tainted_value(tokens, start, end, tainted, functions):
+    """start 到 end 这段表达式的值会不会是栏目数据（tainted 里的对象或它的一部分）。
+    看值本身：条件运算只看两个分支，&& 只看最后一项，|| 每项都看；算术、比较、取反、拼字符串的
+    结果是字符串、数字或真假值，不算。读到 .id、.name、.length 这类属性、调 indexOf 这类方法得到的
+    也不算。函数调用：页面自己的函数不算（它收到栏目数据时另按同样的规矩查，不许把栏目数据当
+    返回值交出去），别的调用（$.grep、alias.filter 这类会把原来的对象交回来）参数里有就算。"""
+    values = [t.value for t in tokens]
+    if start >= end:
+        return False
+    top = _depth_zero(tokens, start, end)
+    marks = [values[k] for k in top]
+    if "=" in marks:  # a = b = 值：看最后一个等号右边
+        last = max(k for k in top if values[k] == "=")
+        return _tainted_value(tokens, last + 1, end, tainted, functions)
+    if "?" in marks:
+        q = marks.index("?")
+        depth, colon = 0, None
+        for k in top[q + 1 :]:
+            if values[k] == "?":
+                depth += 1
+            elif values[k] == ":":
+                if depth == 0:
+                    colon = k
+                    break
+                depth -= 1
+        if colon is None:
+            return True  # 认不出：当是
+        return _tainted_value(tokens, top[q] + 1, colon, tainted, functions) or _tainted_value(
+            tokens, colon + 1, end, tainted, functions
+        )
+    if "||" in marks:
+        cuts = [start] + [k + 1 for k in top if values[k] == "||"]
+        stops = [k for k in top if values[k] == "||"] + [end]
+        return any(
+            _tainted_value(tokens, a, b, tainted, functions)
+            for a, b in zip(cuts, stops, strict=True)
+        )
+    if "&&" in marks:
+        last = max(k for k in top if values[k] == "&&")
+        return _tainted_value(tokens, last + 1, end, tainted, functions)
+    if values[start] in ("!", "typeof", "void", "delete") or any(
+        m in _PRIMITIVE_OPERATORS for m in marks[1:]
+    ):
+        return False
+    return _operand_tainted(tokens, start, end, tainted, functions)
+
+
+def _operand_tainted(tokens, start, end, tainted, functions):
     values = [t.value for t in tokens]
     k = start
     while k < end:
@@ -2084,12 +2270,61 @@ def _tainted_value(tokens, start, end, tainted):
                     continue
         call = _IDENT.fullmatch(prev) or prev in (")", "]")
         if value == "(" and call and prev not in _KEYWORD_PARENS:
-            k = _matching_token(tokens, k) + 1
+            close = _matching_token(tokens, k)
+            member = k >= 2 and values[k - 2] == "."
+            page_function = _IDENT.fullmatch(prev) and not member and prev in functions
+            primitive = (
+                prev in _PRIMITIVE_METHODS
+                if member
+                else prev in _PRIMITIVE_CALLS or prev in _SAFE_CALLS and prev != "$"
+            ) or values[k - 3 : k] in (["JSON", ".", "stringify"], ["$", ".", "inArray"])
+            if (
+                not page_function
+                and not primitive
+                and _tainted_value(tokens, k + 1, close, tainted, functions)
+            ):
+                return True
+            k = close + 1
             continue
         if value in tainted and prev != ".":
-            return True
+            # 顺着成员访问往后看：最后读的是 .id、.name 这类，或者调的是 indexOf 这类，就不算
+            j = k + 1
+            last = None
+            while j < end:
+                if values[j] == "." and j + 1 < end and _IDENT.fullmatch(values[j + 1]):
+                    last = values[j + 1]
+                    j += 2
+                elif values[j] == "[":
+                    last = None
+                    j = _matching_token(tokens, j) + 1
+                elif values[j] == "(" and last is not None:
+                    if last in _PRIMITIVE_METHODS:
+                        last = "()"
+                    else:
+                        return True
+                    j = _matching_token(tokens, j) + 1
+                else:
+                    break
+            if last is None or (last not in _PRIMITIVE_PROPS and last != "()"):
+                return True
+            k = j
+            continue
         k += 1
     return False
+
+
+def _chain_end(tokens, start):
+    """start 处的名字连同后面的成员访问、下标、调用（a.b[0].c(…)）到哪里结束。"""
+    values = [t.value for t in tokens]
+    k = start + 1
+    while k < len(values):
+        if values[k] == "." and k + 1 < len(values) and _IDENT.fullmatch(values[k + 1]):
+            k += 2
+        elif values[k] in ("[", "("):
+            k = _matching_token(tokens, k) + 1
+        else:
+            break
+    return k
 
 
 def _chain_root(values, dot):
@@ -2294,6 +2529,9 @@ def find_lonsun_api(
         if url_key(page_url) != url_key(column_url):
             return None
         doc = lxml_html.document_fromstring(_STRAY_END.sub("", html))
+        if next(doc.iter("base"), None) is not None:
+            # 浏览器按 <base> 解析脚本和接口的相对地址，我们按页面地址拼：两边可能不一样
+            return fail("页面有 <base>，脚本和接口的相对地址认不准")
         scripts = []
         candidates = []
         for el in doc.iter("script"):
@@ -2359,6 +2597,10 @@ def find_lonsun_api(
                     # 任何对象上的 .ajax、.ajaxGet 被改写（经别名改 $.ajax 也算）
                     or len(path) > 1
                     and path[-1] in ("ajax", "ajaxGet")
+                    # 平台 Ls.ajax 拼地址用的 GLOBAL_CONTEXTPATH、jQuery 的全局请求设置、建树函数
+                    or path[0] == "GLOBAL_CONTEXTPATH"
+                    or "ajaxSettings" in path
+                    or "zTree" in path
                 ):
                     return fail("内联脚本改写了依赖状态")
             if is_tree_script:
@@ -2596,7 +2838,7 @@ def find_lonsun_api(
             methods,
         )
         return ListApi(adapter=LONSUN, url=urls[-1], base_url=page_url, plan=plan)
-    except (ValueError, etree.LxmlError, TypeError, AttributeError, RecursionError):
+    except (ValueError, etree.LxmlError, TypeError, AttributeError, IndexError, RecursionError):
         return None
 
 
@@ -2657,6 +2899,33 @@ def _platform_query(query: str) -> dict[str, str]:
         key, _, value = part.partition("=")
         result[decode(key)] = decode(value)
     return result
+
+
+# 列表请求里认得的参数名（样本和缓存的真实页面里出现过的）；别的一律不发（令牌、签名这类停下来问）
+_REQUEST_KEYS = frozenset(
+    {
+        "action",
+        "catId",
+        "catIds",
+        "catalogType",
+        "dateFormat",
+        "isDate",
+        "isJson",
+        "isRel",
+        "isSetValue",
+        "keyWords",
+        "labelName",
+        "length",
+        "num",
+        "organId",
+        "pageIndex",
+        "pageSize",
+        "queryDetail",
+        "result",
+        "siteId",
+        "type",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -2801,9 +3070,87 @@ def _tree_rules(raw):
         or args[-4] != ","
     ):
         raise LonsunFormatError("initTree 栏目树写法认不出")
+    cuts, depth = [], 0
+    for k, token in enumerate(args):
+        if token in ("(", "[", "{"):
+            depth += 1
+        elif token in (")", "]", "}"):
+            depth -= 1
+        elif token == "," and depth == 0:
+            cuts.append(k)
+    problem = _tree_settings_problem(raw["initTree"], args[cuts[0] + 1 : cuts[1]])
+    if problem:
+        raise LonsunFormatError(f"initTree {problem}")
     if args[-1] == "ztreeData" and not hide_ok:
         raise LonsunFormatError("页面会按自己的设置隐去部分下级栏目，认不出隐去哪些")
     return modified, hide_ok
+
+
+# getData 以后、发列表请求以前，受限求值当成只动页面显示、直接跳过的方法
+_UI_METHODS = ("setMeta", "getNav", "getGd")
+
+
+def _ui_method_problem(body):
+    """被跳过的方法体里（含回调）不能改 me/this 上的任何东西、不能改那几个全局对象，也不能再调用
+    me/this 的方法（真实页面都不这样写）。"""
+    for path, _op in _writes(body):
+        if path[0] in ("me", "this", "catalogs", "_organTree2", "Ls", "PublicTree"):
+            return f"改了 {'.'.join(path)}"
+    values = [t.value for t in _js_tokens(body)]
+    for i in range(len(values) - 3):
+        if values[i] in ("me", "this") and values[i + 1] == "." and values[i + 3] == "(":
+            return f"调用了 {values[i]}.{values[i + 2]}()"
+    return None
+
+
+def _tree_settings_problem(source, setting):
+    """建树设置：只认 initTree 里 var 声明的一个对象，顶层只有 data、view、callback；data 里
+    simpleData 正好是 idKey 'id'、pIdKey 'parentId'（可带 enable: true），key 只能改显示用的
+    title、name。建好以后不许再改。真实页面都是这样写的。"""
+    tokens = _js_tokens(source)
+    values = [t.value for t in tokens]
+    if len(setting) != 1 or not _IDENT.fullmatch(setting[0]):
+        return "建树设置不是一个变量"
+    name = setting[0]
+    starts = [i for i in range(len(values) - 3) if values[i : i + 4] == ["var", name, "=", "{"]]
+    if len(starts) != 1:
+        return "建树设置找不到或声明了几次"
+    if any(path[0] == name for path, _ in _writes(source)):
+        return "建树设置建好以后又改了"
+    open_brace = starts[0] + 3
+    close = _matching_token(tokens, open_brace)
+    props, k = {}, open_brace + 1
+    while k < close:
+        key = values[k]
+        key = _string_literal(key) if key[:1] in ("'", '"') else key
+        if key in props or values[k + 1 : k + 2] != [":"]:
+            return "建树设置写法认不出"
+        start = k + 2
+        k = start
+        while k < close and values[k] != ",":
+            k = _matching_token(tokens, k) + 1 if values[k] in ("(", "[", "{") else k + 1
+        props[key] = (start, k)
+        k += 1
+    if not set(props) <= {"data", "view", "callback"} or "data" not in props:
+        return "建树设置有认不出的项"
+    start, end = props["data"]
+    data = _evaluate(
+        _parse_expression(source[tokens[start].start : tokens[end - 1].end]), _Environment()
+    )
+    simple = data.get("simpleData") if isinstance(data, dict) else None
+    key = data.get("key", {}) if isinstance(data, dict) else None
+    if (
+        not isinstance(simple, dict)
+        or not set(data) <= {"simpleData", "key"}
+        or {k: v for k, v in simple.items() if k != "enable"}
+        != {"idKey": "id", "pIdKey": "parentId"}
+        or simple.get("enable", True) is not True
+        or not isinstance(key, dict)
+        or not set(key) <= {"title", "name"}
+        or not all(isinstance(v, str) for v in key.values())
+    ):
+        return "建树设置的字段名认不出（要 idKey id、pIdKey parentId，不改 children）"
+    return None
 
 
 def _init_calls_getdata(body):
@@ -3089,6 +3436,10 @@ def resolve_lonsun(api, catalog_text):
         raw = {name: body for name, _, body in plan.raw_methods}
         methods = {name: (args, body) for name, args, body in plan.methods}
         _check_pre_methods(raw, dict(plan.globals))
+        for ui in _UI_METHODS:
+            problem = _ui_method_problem(raw[ui]) if ui in raw else None
+            if problem:
+                raise LonsunFormatError(f"{ui} {problem}")
         modified, hide_ok = _tree_rules(raw)
         if not hide_ok:
             raise LonsunFormatError("hideIds 的写法无法确定")
@@ -3100,11 +3451,7 @@ def resolve_lonsun(api, catalog_text):
         cat_id = spec[1]
         wrapped = []
         for node in nodes:
-            children = [
-                n
-                for n in nodes
-                if n is not node and _loose_equal(n.get("parentId", UNDEFINED), node["id"])
-            ]
+            children = [n for n in nodes if n is not node and n.get("parentId") == node["id"]]
             has_parent = node.get("isParent", UNDEFINED)
             value = (
                 UNKNOWN
@@ -3304,6 +3651,11 @@ def resolve_lonsun(api, catalog_text):
                 k: "" if v is None or v is UNDEFINED else _js_string(v) for k, v in data.items()
             }
             mode = strings.get("action")
+            unknown = set(strings) - _REQUEST_KEYS
+            if unknown:
+                raise Stop(
+                    f"列表请求带着认不出的参数 {'、'.join(sorted(unknown))}（令牌、签名这类不发）"
+                )
             if (
                 strings.get("labelName") != "publicInfoList"
                 or strings.get("organId") != plan.organ_id

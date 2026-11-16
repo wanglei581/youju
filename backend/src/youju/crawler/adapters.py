@@ -24,9 +24,9 @@ docs/数据来源/全国覆盖/集约化平台盘点.md）。
 
 龙讯 public（龙讯科技政府网站平台）按 D-013 读普通列表和下级栏目汇总，只取第 1 页；
 同城集约化平台的栏目树门户须在审过的白名单中。和数字广东同一条解释（协调会话 11/13）：列表接口
-是页面自己的 PublicTree 脚本用页面写明的值拼出的 GET 请求，照它的拼法得到的地址和浏览器发的一模
-一样，不算另外构造请求；要 POST、令牌、签名或者要绕过防护的一律不读、先问（滁州的 POST 列表
-不碰）；robots 不许的不读。
+是页面自己的 PublicTree 脚本用页面写明的值拼出的 GET 请求，照它的拼法得到的地址和浏览器发的
+只少不多（少的是平台加的防缓存随机数和语言请求头），不算另外构造请求；参数名只认样本里见过的。
+要 POST、令牌、签名或者要绕过防护的一律不读、先问（滁州的 POST 列表不碰）；robots 不许的不读。
 栏目树只取页面原样写明的一个 src；document.write 字面量后的随机数是防缓存的，不加，字面量
 不改不补。只允许同一政府网站域名，遵守脚本主机自己的 robots，打不开 robots 就不读；每轮
 同地址只取一次。栏目树只作 JSON 文本解析，页面内联脚本只用受限求值器，均不执行；认不出不读。
@@ -762,14 +762,18 @@ def api_refusal(api: ListApi, result) -> str:
     status = getattr(result, "status", "")
     http_status = getattr(result, "http_status", None)
     if status == "robots_disallowed":
-        return (
-            f"{prefix}：同一轮已被拒绝"
-            if result.error == "同一轮已被拒绝"
-            else f"{prefix}：robots.txt 禁止"
-        )
+        return f"{prefix}：robots.txt 禁止"
     if http_status in _REFUSE_HTTP:
         return f"{prefix}：HTTP {http_status}：拒绝访问或要求登录"
-    if status in ("network_error", "deadline", "ssl_error", "robots_error", "too_large"):
+    if status in (
+        "network_error",
+        "deadline",
+        "ssl_error",
+        "robots_error",
+        "too_large",
+        # 同一轮这个主机拒绝过我们、这次没去（crawler/service.py 的 _round_skip）
+        "site_paused",
+    ):
         return ""  # 网络不通、超时这类：这次没取到，照常记失败、下次再试
     final = getattr(result, "final_url", None) or api.url
     words = _redirect_words(api.url, final)
@@ -790,7 +794,17 @@ def api_refusal(api: ListApi, result) -> str:
             parse_catalog(text, api.plan.organ_id)
             return ""
         except LonsunFormatError:
-            pass  # 登录、拦截页仍需判定；其他格式由 api_follow 说明
+            pass
+        # 栏目树没解析出来：防护页、挑战页（云锁、瑞数这类，blocker 认得出）记不能抓；回的是网页或
+        # JSON、不是脚本的，也记不能抓（认得出才读）；还是脚本、只是格式变了的，才待人工处理
+        from youju.govsites.platform import blocker
+
+        reason = blocker(status, http_status, text)
+        if reason:
+            return f"{prefix}：{reason}"
+        if text.lstrip("\ufeff \t\r\n").startswith("<") or _json_payload(text) is not None:
+            return f"{prefix}：回的不是脚本（网页或 JSON）"
+        return ""
     if api.adapter == LONSUN and not tree and _lonsun_response(api, text) is not None:
         return ""
     payload = _json_payload(text)
