@@ -2434,3 +2434,95 @@ def test_round_guard_cached_refusal_not_reused_for_other_sources():
     ok.get(tree, lambda url, **kwargs: good)
     ok.block("https://www.wuhu.gov.cn/other.js")
     assert ok.get(tree, fetch) is good
+
+
+_PROTO = "$.extend(PublicTree.prototype, {\n    bindEvt: function () {"
+_TWEAK = "tweak: function () {\n      var me = this;\n      me.listParams.siteId = '999';\n    },"
+_PRE_TOP = "preprocessData: function () {\n      var me = this;"
+
+
+def _jx_with_tweak(call):
+    page = fixture("jx_page.html")
+    assert page.count(_PROTO) == 1 and page.count(_PRE_TOP) == 1
+    page = page.replace(
+        _PROTO, _PROTO.replace("{\n    bindEvt", "{\n    " + _TWEAK + "\n    bindEvt")
+    )
+    return page.replace(_PRE_TOP, _PRE_TOP + " " + call, 1)
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        # 回调里调、按字符串下标调、括号包着调、先存进变量：都在加载时跑
+        "$.each([1], function () { me.tweak(); });",
+        "me['tweak']();",
+        "(me.tweak)();",
+        "var f = me.tweak; f.call(me);",
+        "setTimeout(function () { me.tweak(); }, 0);",
+    ],
+)
+def test_load_time_method_references_followed(call):
+    assert _refused(_jx_with_tweak(call)), call
+
+
+def test_load_time_reference_to_modeled_method_or_computed_name_refused():
+    page = fixture("jx_page.html")
+    for call in ("$.each([1], function () { me.getList(); });", "var k = 'tweak'; me[k]();"):
+        assert _refused(page.replace(_PRE_TOP, _PRE_TOP + " " + call, 1)), call
+    # 用户点了才跑的处理函数里调别的方法照常
+    click = "$('#x').on('click', function () { me.getList(); });"
+    assert not _refused(page.replace(_PRE_TOP, _PRE_TOP + " " + click, 1))
+
+
+def test_constructor_callbacks_and_other_methods_refused():
+    page = fixture("jx_page.html")
+    init = "\n    me.init();\n  }"
+    assert page.count(init) == 1
+    for extra in (
+        "$.each([1], function () { me.listParams.siteId = '999'; });",
+        "me.bindEvt();",
+        "(me.preprocessData)();",
+    ):
+        changed = page.replace(init, "\n    " + extra + init, 1)
+        assert _found(changed) is None, extra
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        # 经查找方法的返回值直接改树二的节点
+        "$(function () { _organTree2.getNodeByParam('id', 49949451, null).children = null; });",
+        "_organTree2.getNodes()[0].isParent = false;",
+        # 别的 JavaScript 类型、改发请求用的内置对象
+        '<script type="text/ecmascript">PublicTree.prototype.getList = function () {};</script>',
+        "XMLHttpRequest.prototype.open = function () {};",
+        "var X = XMLHttpRequest.prototype; X.send = null;",
+        # 词法：if (…) 后面的 / 是正则；} 后面的 / 认不准
+        "if (1) /'/.test(''); PublicTree.prototype.getList = 0; //'",
+        "function f() {} /'/.test(''); PublicTree.prototype.getList = 0; //'",
+    ],
+)
+def test_more_hidden_writes_refused(script):
+    extra = script if script.startswith("<script") else f"<script>{script}</script>"
+    assert _found(_jx(extra=extra)) is None, script
+
+
+def test_writes_through_calls_in_load_time_methods():
+    page = fixture("jx_page.html")
+    select = "setSelect: function () {\n      var me = this;"
+    assert page.count(select) == 1
+    for extra in (
+        "setTimeout(function () { _organTree2.getNodeByParam('id', 49949451, null).children = null; }, 0);",
+        "me.getParams().pageSize = '100';",
+    ):
+        assert _refused(page.replace(select, select + " " + extra, 1)), extra
+    # 对 split、slice 这类新建的数组原地排序不碰原数据：照常认
+    fine = "var ys = '2020,2021'.split(',').sort().reverse();"
+    assert not _refused(page.replace(select, select + " " + fine, 1))
+
+
+def test_ui_method_using_other_methods_refused():
+    page = fixture("jx_page.html")
+    meta = "setMeta: function () {\n      var me = this;"
+    for extra in ("(me.getList)();", "me['getNewList']();", "var f = me.open;"):
+        assert _refused(page.replace(meta, meta + " " + extra, 1)), extra

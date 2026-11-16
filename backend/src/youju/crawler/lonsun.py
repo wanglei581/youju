@@ -370,7 +370,45 @@ def _js_tokens(source: str) -> tuple[_Token, ...]:
         "return",
         "case",
         "=>",
+        # 运算符、关键字后面也是表达式开头：/ 是正则
+        "+",
+        "-",
+        "*",
+        "%",
+        "&",
+        "|",
+        "^",
+        "~",
+        "<",
+        ">",
+        "<=",
+        ">=",
+        "+=",
+        "-=",
+        "*=",
+        "/=",
+        "%=",
+        "<<",
+        ">>",
+        ">>>",
+        "**",
+        "??",
+        "typeof",
+        "instanceof",
+        "in",
+        "of",
+        "new",
+        "delete",
+        "void",
+        "throw",
+        "else",
+        "do",
+        "yield",
+        "await",
     }
+    # 每个没合上的 (：前面是不是 if、while、for、with；这种括号合上以后接的是语句，/ 是正则
+    keyword_parens: list[bool] = []
+    closed_keyword = False
     while i < len(source):
         start = i
         c = source[i]
@@ -400,7 +438,20 @@ def _js_tokens(source: str) -> tuple[_Token, ...]:
                     i += 1
             else:
                 raise LonsunFormatError("JavaScript 字符串未闭合")
-        elif c == "/" and (not tokens or tokens[-1].value in regex_after):
+        elif (
+            c == "/"
+            and tokens
+            and tokens[-1].value == "}"
+            and not source.startswith(("//", "/*"), i)
+        ):
+            # } 后面的 / 是除号还是正则要看前面是代码块还是对象字面量：认不准，不读
+            raise LonsunFormatError("} 后面的 / 认不出是除号还是正则")
+        elif c == "/" and (
+            not tokens
+            or tokens[-1].value in regex_after
+            or tokens[-1].value == ")"
+            and closed_keyword
+        ):
             i += 1
             in_class = False
             while i < len(source):
@@ -430,7 +481,14 @@ def _js_tokens(source: str) -> tuple[_Token, ...]:
             else:
                 op = next((op for op in operators if source.startswith(op, i)), c)
                 i += len(op)
-        tokens.append(_Token(source[start:i], start, i))
+        value = source[start:i]
+        if value == "(":
+            keyword_parens.append(
+                bool(tokens) and tokens[-1].value in ("if", "while", "for", "with")
+            )
+        elif value == ")":
+            closed_keyword = keyword_parens.pop() if keyword_parens else False
+        tokens.append(_Token(value, start, i))
     return _Tokens(tokens)
 
 
@@ -1174,6 +1232,26 @@ def _immutable(value):
 
 
 _MUTATORS = {"push", "pop", "shift", "unshift", "splice", "sort", "reverse"}
+# 每次都新建一个数组返回的方法：对返回值本身原地排序、push 碰不到原来的数据（改它的元素不算）
+_FRESH_RESULTS = frozenset(
+    {
+        "split",
+        "slice",
+        "concat",
+        "map",
+        "filter",
+        "keys",
+        "values",
+        "entries",
+        "from",
+        "match",
+        "grep",
+        "makeArray",
+        "toArray",
+        "flat",
+        "flatMap",
+    }
+)
 _TRACKED = {
     "listParams",
     "hideIds",
@@ -1192,7 +1270,8 @@ _ASSIGN_OPS = ("=", "+=", "-=", "*=", "/=", "%=", "++", "--")
 
 
 def _write_sites(tokens, values, skipped=frozenset()):
-    """找属性、下标、更新运算和常见原地修改：(路径, 操作, 根名字的记号位置)；不执行任何脚本。"""
+    """找属性、下标、更新运算和常见原地修改：(路径, 操作, 根名字的记号位置)；不执行任何脚本。
+    经过函数调用的（a.b(…).c = …、a(…)[0].d++）路径里记一个 "()"：改的是函数返回的对象。"""
     v = values
     result = []
     for i, name in enumerate(v):
@@ -1212,12 +1291,33 @@ def _write_sites(tokens, values, skipped=frozenset()):
                 part = _string_literal(part) if part.startswith(("'", '"')) else "*"
                 parts.append(part)
                 j = end + 1
+            elif (
+                v[j] == "("
+                and name not in _KEYWORD_PARENS
+                and (i == 0 or v[i - 1] not in ("function", "new"))
+            ):
+                # 调用以后还接着 .x 或 [ ] 的：接着往后找（末尾是调用的照原来的规矩看）
+                end = _matching_token(tokens, j)
+                if v[end + 1 : end + 2] not in (
+                    [
+                        ".",
+                    ],
+                    ["["],
+                ):
+                    break
+                parts.append("()")
+                j = end + 1
             else:
                 break
         op = v[j] if j < len(v) else ""
         if op in _ASSIGN_OPS or (i and v[i - 1] in ("delete", "++", "--")):
             result.append((tuple(parts), op, i))
         elif op == "(" and len(parts) > 1 and parts[-1] in _MUTATORS:
+            base = parts[:-1]
+            while len(base) > 2 and base[-1] == "()" and base[-2] in ("sort", "reverse"):
+                base = base[:-2]  # sort()、reverse() 返回的还是同一个数组
+            if len(base) > 1 and base[-1] == "()" and base[-2] in _FRESH_RESULTS:
+                continue  # x.split(',').sort().reverse()：改的是新建的数组
             result.append((tuple(parts[:-1]), parts[-1], i))
         elif (
             parts in (["$", "extend"], ["jQuery", "extend"], ["$", "merge"], ["jQuery", "merge"])
@@ -1503,6 +1603,34 @@ def _write_root_problem(source, *, scoped=(), me_ok=True):
     return None
 
 
+def _method_references(source, names):
+    """方法体里用到的 PublicTree 方法：me.X、this.X、me['X']，回调里、括号里、先存进变量的都算
+    （用户点了才跑的事件处理函数除外）。按算出来的名字取 me 的成员（me[k]）给 None：认不出。"""
+    tokens = _js_tokens(source)
+    values = _values(tokens)
+    spans = _handler_spans(tokens, values)
+    found = []
+    for k, value in enumerate(values):
+        if value not in ("me", "this") or k and values[k - 1] == ".":
+            continue
+        if any(a < k < b for a, b in spans):
+            continue
+        after = values[k + 1] if k + 1 < len(values) else ""
+        if after == "." and k + 2 < len(values):
+            name = values[k + 2]
+        elif after == "[":
+            end = _matching_token(tokens, k + 1)
+            key = values[k + 2] if end == k + 3 else ""
+            if key[:1] not in ("'", '"'):
+                return None
+            name = _string_literal(key)
+        else:
+            continue
+        if name in names:
+            found.append(name)
+    return found
+
+
 def _me_alias_problem(source, method_names=frozenset()):
     """me、this 只许直接用成员（me.x、me['x']、this.x）；除了开头的 var me = this，把 me 或 this
     整个当值用（赋给别的变量、当参数传、放进数组或对象、返回）或者给 me 重新赋值的，后面经它调了
@@ -1538,7 +1666,10 @@ def _me_alias_problem(source, method_names=frozenset()):
 
 def _tracked_write(path):
     return (
-        len(path) > 1 and path[0] in ("me", "this") and (path[1] in _TRACKED or path[1] == "*")
+        len(path) > 1
+        and path[0] in ("me", "this")
+        # 经 me 的方法返回的对象改（me.getParams().pageSize = …）：看不出改的是不是请求参数
+        and (path[1] in _TRACKED or path[1] == "*" or "()" in path)
     ) or path[0] in ("catalogs", "_organTree2")
 
 
@@ -1593,6 +1724,16 @@ def _check_pre_methods(raw, globals_, *, widget=False):
         problem = _me_alias_problem(source, frozenset(raw))
         if problem:
             raise LonsunFormatError(f"{name} {problem}")
+        # 方法体里用到的别的方法也在加载时跑（回调里调的、me['X']()、(me.X)() 都算）
+        references = _method_references(source, frozenset(raw))
+        if references is None:
+            raise LonsunFormatError(f"{name} 按算出来的名字用 me 的成员，跟不上调了什么")
+        for called in references:
+            if called in _MODELED:
+                if name == "init" and called == "getData":
+                    continue
+                raise LonsunFormatError(f"{name} 在 getData 之前用了 {called}，跟不上")
+            pending.append(called)
         if name != "init":
             call_tokens = _js_tokens(source)
             call_values = [token.value for token in call_tokens]
@@ -1903,10 +2044,29 @@ _BUILTINS = frozenset(
         "parseFloat",
         "isNaN",
         "isFinite",
+        # 发请求用的：改了它们，请求就可能被加上令牌这类参数（协调会话 11/13：要停下来问）
+        "XMLHttpRequest",
+        "XDomainRequest",
+        "ActiveXObject",
+        "fetch",
+        "Request",
+        "Headers",
     }
 )
 _PROTOTYPE_OWNERS = frozenset(
-    {"Array", "Object", "String", "Function", "Number", "Boolean", "Date", "RegExp", "Error"}
+    {
+        "Array",
+        "Object",
+        "String",
+        "Function",
+        "Number",
+        "Boolean",
+        "Date",
+        "RegExp",
+        "Error",
+        "XMLHttpRequest",
+        "EventTarget",
+    }
 )
 
 
@@ -3318,9 +3478,8 @@ def find_lonsun_api(
                     if key in ("organId", "prefix", "actions"):
                         me[key] = _evaluate(expr[3], env)
         permitted = set(assigned) | {"ztreeData", "ztreeData2", "refresh"}
-        constructor_writes = _writes(
-            scripts[n][tokens[index + 4].end : tokens[end].start], skip_functions=True
-        )
+        # 回调里的写入也算（$.each(…, function () { me.listParams.x = … }) 在 init 之前就跑了）
+        constructor_writes = _writes(scripts[n][tokens[index + 4].end : tokens[end].start])
         for path, op in constructor_writes:
             if _tracked_write(path) and not (
                 len(path) == 2 and path[0] == "me" and path[1] in permitted and op == "="
@@ -3330,11 +3489,15 @@ def find_lonsun_api(
             if sum(path == ("me", key) for path, _ in constructor_writes) != 1:
                 return None
         constructor_source = scripts[n][tokens[index + 4].end : tokens[end].start]
+        method_names = frozenset(m[0] for m in methods)
         problem = _write_root_problem(constructor_source) or _me_alias_problem(
-            constructor_source, frozenset(m[0] for m in methods)
+            constructor_source, method_names
         )
         if problem:
             return fail(f"构造函数{problem}")
+        if _method_references(constructor_source, method_names) != ["init"]:
+            # 只认末尾那一句 me.init()：别的方法在 init 之前跑，跟不上它们做了什么
+            return fail("构造函数在 me.init() 以外用了 PublicTree 的方法")
         init_values = {}
         for statement in statements:
             if statement[0] == "expression" and statement[1][0] == "assign":
@@ -3692,9 +3855,14 @@ def _tree_rules(raw):
 _UI_METHODS = ("setMeta", "getNav", "getGd")
 
 
-def _ui_method_problem(body):
-    """被跳过的方法体里（含回调）不能改 me/this 上的任何东西、不能改那几个全局对象，也不能再调用
-    me/this 的方法（真实页面都不这样写）。"""
+def _ui_method_problem(body, method_names=frozenset()):
+    """被跳过的方法体里（含回调）不能改 me/this 上的任何东西、不能改那几个全局对象，也不能再用
+    PublicTree 的方法（me.X()、me['X']、(me.X)() 都算；真实页面都不这样写）。"""
+    references = _method_references(body, method_names)
+    if references is None:
+        return "按算出来的名字用 me 的成员"
+    if references:
+        return f"用了 PublicTree 的方法 {references[0]}"
     for path, _op in _writes(body):
         if path[0] in ("me", "this", "catalogs", "_organTree2", "Ls", "PublicTree"):
             return f"改了 {'.'.join(path)}"
@@ -4041,7 +4209,7 @@ def resolve_lonsun(api, catalog_text):
             raw, dict(plan.globals), widget=_harmless_search_widget(plan.raw_methods)
         )
         for ui in _UI_METHODS:
-            problem = _ui_method_problem(raw[ui]) if ui in raw else None
+            problem = _ui_method_problem(raw[ui], frozenset(raw)) if ui in raw else None
             if problem:
                 raise LonsunFormatError(f"{ui} {problem}")
         modified, hide_ok = _tree_rules(raw)
