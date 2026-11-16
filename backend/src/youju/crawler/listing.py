@@ -315,6 +315,33 @@ class _Page:
             self._popups[cell] = cached
         return cached
 
+    def is_companion(self, b: etree._Element) -> bool:
+        """b 在一份看得见的文件旁边藏起来的弹层里（泸州政府文件每行"政策解读"弹层里的解读链接）：
+        不当成列表里的一条。弹层所在的格子（往上最多两层）里看得见的文件链接正好一份、弹层里的文件链接
+        不超过 3 个才算；整块藏着的页签（格子里有几个页签标题、面板里一整张列表）不算。"""
+        url = normalize_url(self.page_url, b.get("href"))
+        for h in b.iterancestors():
+            if not isinstance(h.tag, str) or h.tag in ("body", "html"):
+                return False
+            if h.tag == "a" or not _hidden(h):
+                continue
+            if sum(1 for x in h.iter("a") if self.link(x) is not None) > 3:
+                return False
+            cell = h.getparent()
+            for _ in range(2):
+                if cell is None:
+                    return False
+                docs = [
+                    link[1]
+                    for x in cell
+                    if x.tag == "a" and not _hidden(x) and (link := self.link(x)) is not None
+                ]
+                if docs:
+                    return len(docs) == 1 and docs[0] != url
+                cell = cell.getparent()
+            return False
+        return False
+
     def _visible_urls(self, cell: etree._Element) -> frozenset[str]:
         """格子里看得见的文件链接（它和它的上级到格子为止都没藏起来）。按格子缓存。"""
         cached = self._visible.get(cell)
@@ -382,14 +409,18 @@ class _Page:
         """向上找"一行"：只含这一条文件链接、并且写着日期的祖先元素。返回（行，日期，是否写明年份）。"""
         hidden, companions = self.hidden_popups(a, url)
         found = self._climb(a, title, url, hidden, companions)
-        if found[0] is None and companions:
-            # 弹层里有别的文件链接（那里的日期是那份文件的，不用）、提示文字里写着发表时间，同一层的
-            # 别的行日期写在行里：行按结构认（往上到再上一层就有别的文件为止），日期用提示文字里的，
-            # 这样和别的行算同一张列表。别的行也只靠提示文字记日期时不这样认，和它们一样交给外面处理
+        if companions:
             tip, tip_full = _tooltip_date(a, self.today)
-            row = self._row_of(a, url, companions) if tip is not None else None
-            if row is not None and self._siblings_dated(row):
-                found = (row, tip, tip_full)
+            if tip is not None and found[0] is not None:
+                # 有解读弹层、提示文字里写着发表时间：日期照 main 用它（行里的可能是成文日期）
+                found = (found[0], tip, tip_full)
+            elif tip is not None:
+                # 弹层外面没有日期，同一层的别的行日期写在行里：行按结构认（往上到再上一层就有
+                # 别的文件为止），日期用提示文字里的，这样和别的行算同一张列表。别的行也只靠提示文字
+                # 记日期时不这样认，和它们一样交给外面处理
+                row = self._row_of(a, url, companions)
+                if row is not None and self._siblings_dated(row):
+                    found = (row, tip, tip_full)
         return found
 
     def _siblings_dated(self, row: etree._Element) -> bool:
@@ -594,7 +625,7 @@ def _extract_heuristic(page: _Page, require_date: bool) -> tuple[tuple, list[Lis
     # 用 XPath 遍历整个文档：不规范的页面可能在根元素之外还有内容
     for position, a in enumerate(page.doc.xpath("//a")):
         link = page.link(a)
-        if not link:
+        if not link or page.is_companion(a):
             continue
         title, url = link
         row, found, full = page.find_row(a, title, url)
