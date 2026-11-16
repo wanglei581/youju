@@ -72,7 +72,8 @@ _COMPANION_LINK = re.compile(
 _LABELED_TITLE = re.compile(r"^\s*(?:主题|标题)\s*[：:]")
 _TAGS_ONLY = re.compile(r"^\s*(?:[\[【][^\[\]【】]{1,8}[\]】]\s*)*$")
 _TYPE_TAG = re.compile(
-    r"解读|图解|读懂|视频|音频|问答|发布会|直播|废止|废除|失效|作废|撤销|停止执行"
+    r"解读|图解|读懂|视频|音频|问答|发布会|直播"
+    r"|废止|废除|失效|作废|撤销|撤回|停止|暂停|替代|取代|修订|修改|过期|有效"
 )
 # 行里藏起来的弹层（style 写着 display:none）：泸州政府文件列表每行的"政策解读"弹层，
 # 里面是解读的链接
@@ -265,16 +266,16 @@ class _Page:
         """a 本身藏着，同一格子（父元素）里另有一个看得见的同一份文件的链接：a 是附带链接（福建省
         政府最新文件每行藏着的"| AI阅读"，同一网址后面加 ?assistant=true），不是文件。
         "同一份"指 a 的网址是它的网址后面多出参数（问号后面本来就用来区分文件的不算；网址一模一样的
-        也不算，看得见的那个可能只写着"详情"）；"看得见"指它和它的上级到格子为止都没藏起来。单独藏着的
-        文件链接照旧算"""
+        也不算）；"看得见"指它和它的上级到格子为止都没藏起来；它本身还得是带标题的文件链接（只写着
+        "详情"的不算，藏着的那个才是标题）。单独藏着的文件链接照旧算"""
         cell = a.getparent()
         if cell is None:
             return False
         for b in cell.iter("a"):
             if b is a or _hidden_up_to(b, cell):
                 continue
-            other = normalize_url(self.page_url, b.get("href"))
-            if other and url.startswith(other + ("&" if "?" in other else "?")):
+            link = self.link(b)
+            if link and url.startswith(link[1] + ("&" if "?" in link[1] else "?")):
                 return True
         return False
 
@@ -362,8 +363,9 @@ class _Page:
         """向上找"一行"：只含这一条文件链接、并且写着日期的祖先元素。返回（行，日期，是否写明年份）。"""
         hidden, companions = self.hidden_popups(a)
         found = self._climb(a, title, url, hidden, companions)
-        if found[0] is None and hidden:
-            # 弹层外面没有日期：弹层里写的就是这一行唯一的日期（如悬浮卡片里的"发布日期"），照原来读
+        if found[0] is None and hidden and _tooltip_date(a, self.today)[0] is None:
+            # 弹层外面没有日期、提示文字里也没写发表时间：弹层里写的就是这一行唯一的日期
+            # （如悬浮卡片里的"发布日期"），照原来读
             found = self._climb(a, title, url, set(), companions)
         return found
 

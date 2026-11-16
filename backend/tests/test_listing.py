@@ -991,6 +991,7 @@ def test_type_tags_stay_even_when_the_title_attribute_is_labeled() -> None:
       <li><a href="./a/info_3.html" title="标题：某市促进民营经济发展若干措施">[视频]某市促进民营经济发展若干措施</a><span>2026-10-22</span></li>
       <li><a href="./a/info_4.html" title="标题：某市企业技术中心认定管理办法">[已废止]某市企业技术中心认定管理办法</a><span>2026-10-23</span></li>
       <li><a href="./a/info_6.html" title="标题：某市工业设计中心管理办法">[已废除]某市工业设计中心管理办法</a><span>2026-10-25</span></li>
+      <li><a href="./a/info_7.html" title="标题：某市首台套装备认定办法">[已被替代]某市首台套装备认定办法</a><span>2026-10-26</span></li>
       <li><a href="./a/info_5.html" title="标题：招聘简章">[公示公告]招聘简章</a><span>2026-10-24</span></li>
     </ul>"""
     items = extract_items(html, "http://example.gov.cn/a/", today=date(2026, 11, 16))
@@ -1001,6 +1002,7 @@ def test_type_tags_stay_even_when_the_title_attribute_is_labeled() -> None:
         "[视频]某市促进民营经济发展若干措施",
         "[已废止]某市企业技术中心认定管理办法",
         "[已废除]某市工业设计中心管理办法",
+        "[已被替代]某市首台套装备认定办法",
         "[公示公告]招聘简章",
     ]
 
@@ -1104,6 +1106,37 @@ def test_hidden_full_title_link_with_the_same_url_as_a_visible_detail_link_is_ke
       <li><a href="/a/1.html">详情</a><a href="/a/1.html" style="display:none">关于项目申报工作的通知</a><span>2026-10-21</span></li>
       <li><a href="/a/2.html">详情</a><a href="/a/2.html" style="display:none">关于公布第二批名单的通知</a><span>2026-10-20</span></li>
       <li><a href="/a/3.html">详情</a><a href="/a/3.html" style="display:none">关于征集典型案例的通知</a><span>2026-10-19</span></li>
+    </ul>"""
+    items = extract_items(html, "http://example.gov.cn/a/", today=date(2026, 11, 16))
+    assert [(i.title, i.publish_date) for i in items] == [
+        ("关于项目申报工作的通知", date(2026, 10, 21)),
+        ("关于公布第二批名单的通知", date(2026, 10, 20)),
+        ("关于征集典型案例的通知", date(2026, 10, 19)),
+    ]
+
+
+def test_hidden_titled_link_next_to_a_bare_detail_link_is_kept() -> None:
+    # 看得见的只写"详情"（/show.asp），藏着的是带编号的完整标题（?id=3）：看得见的不是带标题的
+    # 文件链接，藏着的照旧当文件
+    html = """<ul class="list">
+      <li><a href="/show.asp">详情</a><a style="display:none" href="/show.asp?id=3">关于项目申报工作的通知</a><span>2026-10-21</span></li>
+      <li><a href="/show.asp">详情</a><a style="display:none" href="/show.asp?id=4">关于公布第二批名单的通知</a><span>2026-10-20</span></li>
+      <li><a href="/show.asp">详情</a><a style="display:none" href="/show.asp?id=5">关于征集典型案例的通知</a><span>2026-10-19</span></li>
+    </ul>"""
+    items = extract_items(html, "http://example.gov.cn/list.asp", today=date(2026, 11, 16))
+    assert [(i.title, i.publish_date) for i in items] == [
+        ("关于项目申报工作的通知", date(2026, 10, 21)),
+        ("关于公布第二批名单的通知", date(2026, 10, 20)),
+        ("关于征集典型案例的通知", date(2026, 10, 19)),
+    ]
+
+
+def test_tooltip_publish_time_wins_over_a_date_inside_a_hidden_popup() -> None:
+    # 提示文字里写着发表时间，弹层里另有日期（解读的）：用提示文字里的
+    html = """<ul class="list">
+      <li><a title="标题：关于项目申报工作的通知 点击数：1 发表时间：2026-10-21" href="/a/1.html">关于项目申报工作的通知</a><div style="display:none"><a href="/b/2.html">政策解读</a><span>2026-09-01</span></div></li>
+      <li><a title="标题：关于公布第二批名单的通知 点击数：1 发表时间：2026-10-20" href="/a/3.html">关于公布第二批名单的通知</a></li>
+      <li><a title="标题：关于征集典型案例的通知 点击数：1 发表时间：2026-10-19" href="/a/4.html">关于征集典型案例的通知</a></li>
     </ul>"""
     items = extract_items(html, "http://example.gov.cn/a/", today=date(2026, 11, 16))
     assert [(i.title, i.publish_date) for i in items] == [
