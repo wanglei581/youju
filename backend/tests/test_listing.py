@@ -925,6 +925,7 @@ def test_year_month_range_with_zero_padding_or_a_day_over_12_at_the_title_start(
     html = """<ul class="info-list">
       <li><a href="./tzgg/info_1.shtml">2026年01-06月某市财政收支情况<span>2026-07-15</span></a></li>
       <li><a href="./tzgg/info_4.shtml">2026.1-6月某市经济运行情况<span>2026-07-16</span></a></li>
+      <li><a href="./tzgg/info_5.shtml">2026年6-24月龄婴幼儿照护补贴公示<span>2026-07-17</span></a></li>
       <li><a href="./tzgg/info_2.shtml">2025年9-20 月度经济运行报告</a></li>
       <li><a href="./tzgg/info_3.shtml">2025年9-21 关于开展第三批项目申报的通知</a></li>
     </ul>"""
@@ -932,6 +933,7 @@ def test_year_month_range_with_zero_padding_or_a_day_over_12_at_the_title_start(
     assert [(i.title, i.publish_date) for i in items] == [
         ("2026年01-06月某市财政收支情况", date(2026, 7, 15)),
         ("2026.1-6月某市经济运行情况", date(2026, 7, 16)),
+        ("2026年6-24月龄婴幼儿照护补贴公示", date(2026, 7, 17)),
         ("月度经济运行报告", date(2025, 9, 20)),
         ("关于开展第三批项目申报的通知", date(2025, 9, 21)),
     ]
