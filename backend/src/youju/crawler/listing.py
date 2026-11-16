@@ -211,11 +211,12 @@ def _hidden_up_to(node: etree._Element, top: etree._Element) -> bool:
     return False
 
 
-def _in_popup(a: etree._Element) -> bool:
-    """a 在藏着的"政策解读"弹层（_POPUP_CLASS）里。"""
-    return any(
-        _POPUP_CLASS in (n.get("class") or "").split() and _hidden(n) for n in a.iterancestors()
-    )
+def _popup_of(a: etree._Element) -> etree._Element | None:
+    """a 所在的、藏着的"政策解读"弹层（_POPUP_CLASS）；不在弹层里时返回 None。"""
+    for n in a.iterancestors():
+        if _POPUP_CLASS in (n.get("class") or "").split() and _hidden(n):
+            return n
+    return None
 
 
 def _visible_text(el: etree._Element, hidden: set[etree._Element]) -> str:
@@ -263,7 +264,9 @@ class _Page:
         self._hrefs: dict[etree._Element, set[str]] = {}
         self._visible: dict[etree._Element, set[str]] = {}
         self._twins: dict[etree._Element, set[str]] = {}
-        self._popups: dict[etree._Element, tuple[set[etree._Element], set[str], set[str]]] = {}
+        self._popups: dict[
+            etree._Element, tuple[set[etree._Element], set[str], set[str], bool]
+        ] = {}
 
     def link(self, a: etree._Element) -> tuple[str, str] | None:
         url = normalize_url(self.page_url, a.get("href"))
@@ -277,7 +280,24 @@ class _Page:
     def companion(self, a: etree._Element, url: str) -> bool:
         """a 是附带链接，不当条目：泸州政府文件藏着的"政策解读"弹层里的解读（解读另有栏目收），
         或者福建省政府最新文件每行藏着的"| AI阅读"。"""
-        return _in_popup(a) or self._assistant_twin(a, url)
+        return self._popup_document(a, url) or self._assistant_twin(a, url)
+
+    def _popup_document(self, a: etree._Element, url: str) -> bool:
+        """a 在藏着的"政策解读"弹层里、链着别的文件。
+
+        弹层所在的格子是往上第一个在弹层外面也有链接的元素（泸州是标题格或者整行）；"别的文件"照
+        find_companion_row 的规矩：附件、格子里弹层外面也链着的都不算，这些照原来读。
+        """
+        popup = _popup_of(a)
+        if popup is None:
+            return False
+        for depth, cell in enumerate(popup.iterancestors()):
+            if depth > _MAX_ROW_DEPTH or cell.tag in ("body", "html"):
+                return False
+            _, linked, documents, has_outside = self._cell_popup(cell)
+            if has_outside:
+                return url in documents
+        return False
 
     def _assistant_twin(self, a: etree._Element, url: str) -> bool:
         """a 是不是阅读助手的附带链接（福建省政府最新文件每行藏着的"| AI阅读"）。
@@ -376,7 +396,7 @@ class _Page:
         cell = a.getparent()
         if cell is None:
             return None, None, False
-        popup, linked, documents = self._cell_popup(cell)
+        popup, linked, documents, _ = self._cell_popup(cell)
         companions = ((linked if _is_attachment(url) else documents) | self._cell_twins(cell)) - {
             url
         }
@@ -384,9 +404,11 @@ class _Page:
             return None, None, False
         return self._climb(a, title, url, popup, companions)
 
-    def _cell_popup(self, cell: etree._Element) -> tuple[set[etree._Element], set[str], set[str]]:
+    def _cell_popup(
+        self, cell: etree._Element
+    ) -> tuple[set[etree._Element], set[str], set[str], bool]:
         """cell 里藏着的"政策解读"弹层（_POPUP_CLASS）和它下面的所有节点；弹层里链着、弹层外没链着的
-        文件网址，以及其中不是附件的。按 cell 算一次。"""
+        文件网址，其中不是附件的；弹层外面有没有文件链接。按 cell 算一次。"""
         cached = self._popups.get(cell)
         if cached is None:
             nodes: set[etree._Element] = set()
@@ -403,7 +425,7 @@ class _Page:
                         (inside if b in nodes else outside).add(link[1])
             linked = inside - outside
             documents = {u for u in linked if not _is_attachment(u)}
-            cached = self._popups[cell] = (nodes, linked, documents)
+            cached = self._popups[cell] = (nodes, linked, documents, bool(outside))
         return cached
 
     def _climb(
@@ -627,6 +649,9 @@ def _extract_heuristic(page: _Page, require_date: bool) -> tuple[tuple, list[Lis
         key, container = max(options, key=lambda option: sizes.get(option[0], 0))
         blocks.setdefault(key, []).append((position, item))
         containers.setdefault(key, container)
+    if pending:
+        # 列表块照原来的先后（按块里第一条在页面上的位置）排：评分一样时取靠前的那块
+        blocks = dict(sorted(blocks.items(), key=lambda kv: min(pos for pos, _ in kv[1])))
 
     if not blocks:
         return _NO_SCORE, []

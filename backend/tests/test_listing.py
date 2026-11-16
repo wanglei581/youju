@@ -1102,6 +1102,28 @@ def test_luzhou_popup_repeating_a_visible_document_follows_main() -> None:
     }
 
 
+def test_attachments_in_a_luzhou_popup_are_read_as_before() -> None:
+    # 弹层里只有附件（各自写着发表时间）：附件不算别的文件，照原来读，不当附带链接跳过
+    # （这种写法 main 读出的是附件那一块）
+    rows = "".join(
+        f'<li><a href="/a{n}.htm" title="标题：关于项目申报工作的通知{n} 点击数：0 发表时间：2026-10-2{n}">'
+        f"关于项目申报工作的通知{n}</a>"
+        f'<div class="address-popup" style="display:none">'
+        f'<a href="/a{n}.pdf" title="标题：关于项目申报工作的附件{n} 点击数：0 发表时间：2026-10-2{n}">'
+        f"关于项目申报工作的附件{n}</a>"
+        f'<a href="/b{n}.pdf" title="标题：关于项目申报工作的材料{n} 点击数：0 发表时间：2026-10-2{n}">'
+        f"关于项目申报工作的材料{n}</a></div></li>"
+        for n in range(1, 4)
+    )
+    urls = {
+        i.url
+        for i in extract_items(
+            f"<ul>{rows}</ul>", "http://example.gov.cn/", today=date(2026, 11, 16)
+        )
+    }
+    assert {f"http://example.gov.cn/{x}{n}.pdf" for x in "ab" for n in range(1, 4)} <= urls
+
+
 def test_same_document_pdf_in_a_luzhou_popup_follows_main() -> None:
     # 弹层里只是同一份文件的 PDF：附件照原来的规矩属于同一行、不算别的文件，日期照原来取行里写的
     html = """<ul class="list">
@@ -1195,6 +1217,27 @@ def test_rows_with_an_assistant_link_keep_the_date_they_had() -> None:
         ("关于项目申报的通知", date(2026, 9, 1)),
         ("关于公布第二批名单的通知", date(2026, 9, 2)),
         ("关于征集典型案例的通知", date(2026, 9, 3)),
+    ]
+
+
+def test_lists_keep_their_page_order_when_they_score_the_same() -> None:
+    # 带附带链接的行等别的行分完才归块；归完以后列表块照原来按页面上的先后排，评分一样时取靠前的那块。
+    # main 读的也是第一张表（外加三条"| AI阅读"）
+    html = """<div class="a"><ul>
+      <li><span>2026-10-21</span><a href="/a/202610/t20261021_1.htm">关于项目申报的通知</a><a href="/a/202610/t20261021_1.htm?assistant=true" style="display:none">| AI阅读</a></li>
+      <li><span>2026-10-20</span><a href="/a/202610/t20261020_2.htm">关于公布第二批名单的通知</a><a href="/a/202610/t20261020_2.htm?assistant=true" style="display:none">| AI阅读</a></li>
+      <li><span>2026-10-19</span><a href="/a/202610/t20261019_3.htm">关于征集典型案例的通知</a><a href="/a/202610/t20261019_3.htm?assistant=true" style="display:none">| AI阅读</a></li>
+    </ul></div>
+    <div class="b"><ul>
+      <li><span>2026-10-21</span><a href="/a/4.htm">关于开展第三批项目申报的通知</a></li>
+      <li><span>2026-10-20</span><a href="/a/5.htm">关于公布第三批名单的通知</a></li>
+      <li><span>2026-10-19</span><a href="/a/6.htm">关于征集优秀案例的通知</a></li>
+    </ul></div>"""
+    items = extract_items(html, "http://example.gov.cn/a/", today=date(2026, 11, 16))
+    assert [i.title for i in items] == [
+        "关于项目申报的通知",
+        "关于公布第二批名单的通知",
+        "关于征集典型案例的通知",
     ]
 
 
