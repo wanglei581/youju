@@ -838,3 +838,86 @@ def test_gate_page_paused_while_holding_host_lock(tmp_path, monkeypatch, where):
         )
     assert seen and seen[0] is True
     assert _SitePause(path).expiry("a.gov.cn") is not None
+
+
+_SAFEDOG = (
+    "<html><head><title>网站防火墙</title></head><body><div>"
+    "<img src='http://404.safedog.cn/images/safedogsite/head.png'>"
+    "<p>您的请求带有不合法参数，已被网站管理员设置拦截！</p>"
+    "<p>可能原因：您提交的内容包含危险的攻击请求</p></div></body></html>"
+)
+_YUNSUO = (
+    "<html><head><script>var yunsuo_session_verify = 'abc'; document.cookie = 'x';"
+    "</script></head><body></body></html>"
+)
+
+
+def _html_result(url, html, content_type="text/html"):
+    return FetchResult(
+        url, "ok", final_url=url, http_status=200, text=html, content_type=content_type
+    )
+
+
+@pytest.mark.parametrize("html", [_SAFEDOG, _YUNSUO], ids=["safedog", "yunsuo"])
+def test_platform_block_page_is_protected(tmp_path, html):
+    # 安全狗拦截页、云锁验证页：网站拦着我们，停这个网站，不把拦截页上的字当正文存下
+    path = str(tmp_path / "pause.json")
+    calls = []
+
+    class Fake:
+        def fetch(self, url):
+            calls.append(url)
+            return _html_result(url, html)
+
+    outcomes = _fetch_outcomes(
+        [(1, "https://a.gov.cn/1"), (2, "https://a.gov.cn/2")], Fake(), 1, pause=_SitePause(path)
+    )
+    assert outcomes[1].status == "protected"
+    assert calls == ["https://a.gov.cn/1"]
+    assert _SitePause(path).expiry("a.gov.cn") is not None
+
+
+def test_normal_page_with_safedog_badge_is_read():
+    # 正常详情页页脚挂"网站安全狗"徽标：有正文、有导航链接，照常读
+    body = "关于开展2026年度专项资金申报工作的通知。各有关单位：现将有关事项通知如下。" * 30
+    nav = "".join(f"<a href='/c{i}.html'>栏目{i}</a>" for i in range(20))
+    html = (
+        f"<html><head><title>通知</title></head><body><div>{nav}</div>"
+        f"<div id='zoom'><p>{body}</p></div>"
+        "<div class='footer'><img src='/images/safedog.png' alt='网站安全狗'></div></body></html>"
+    )
+
+    class Fake:
+        def fetch(self, url):
+            return _html_result(url, html)
+
+    outcome = detail_service._fetch_one(1, "https://a.gov.cn/1", Fake())
+    assert outcome.status == "ok", outcome.reason
+
+
+@pytest.mark.parametrize(
+    "body,content_type,expected",
+    [
+        # 接口的 JSON、长的正常文字：不是拦截页
+        ('{"code":0,"captcha":false,"msg":"ok"}', "text/plain", "unsupported_format"),
+        ("关于开展网络安全防火墙产品采购的通知。" * 200, "text/plain", "unsupported_format"),
+        # 没有 Content-Type 的纯文字拦截页
+        ("Access Denied", None, "protected"),
+    ],
+    ids=["json", "long-notice", "no-content-type"],
+)
+def test_plain_text_gate_edges(body, content_type, expected):
+    class Fake:
+        def fetch(self, url):
+            return FetchResult(
+                url,
+                "ok",
+                final_url=url,
+                http_status=200,
+                text=body,
+                content=body.encode("utf-8"),
+                content_type=content_type,
+            )
+
+    outcome = detail_service._fetch_one(1, "https://a.gov.cn/1", Fake())
+    assert outcome.status == expected, outcome.reason

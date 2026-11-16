@@ -230,3 +230,31 @@ def test_host_stamp_written_right_before_sending(tmp_path):
         started = time.time()
         assert fetcher.fetch("https://a.example.gov.cn/2").status == "ok"
     assert seen[-1] >= started
+
+
+def test_error_while_queued_releases_files(tmp_path):
+    # 排在跨进程锁后面时问停取记录出错（hop_allowed 抛出）：开着的文件、拿到的锁都放掉，下一次照常取
+    import fcntl
+
+    limits = _SharedLimits(str(tmp_path))
+    holder = os.open(limits.path("h", "a.example.gov.cn"), os.O_RDWR | os.O_CREAT, 0o600)
+    with _fetcher(str(tmp_path), host_interval=0.05) as fetcher:
+        assert fetcher.fetch("https://a.example.gov.cn/warm").status == "ok"
+        fcntl.flock(holder, fcntl.LOCK_EX)  # 别的进程占着这个网站
+        asked = []
+
+        def gate(url, record):
+            asked.append(record)
+            if len(asked) >= 3:  # 前两次：查 robots 前、排到主机锁；第三次起是排队时问的
+                raise RuntimeError("停取记录读不出")
+            return True
+
+        before = len(os.listdir("/dev/fd"))
+        with pytest.raises(RuntimeError):
+            fetcher.fetch("https://a.example.gov.cn/page", hop_allowed=gate)
+        assert len(os.listdir("/dev/fd")) == before  # 没漏文件
+        fcntl.flock(holder, fcntl.LOCK_UN)
+        os.close(holder)
+        started = time.monotonic()
+        assert fetcher.fetch("https://a.example.gov.cn/next").status == "ok"
+        assert time.monotonic() - started < 5
