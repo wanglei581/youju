@@ -1679,15 +1679,70 @@ def _widget_statement(statement, param, declared):
     )
 
 
-def _read_only_method(methods, name):
-    """setSelect 把 catalogs[me.organId] 交给页面自己的 me.findTopLevelParentNode(…)。被调方法只能
-    读：函数体里（含回调）只给不带属性的变量赋值，不改对象属性、不删除、不用原地修改的数组方法，
-    函数调用只许 $.grep（过滤出新数组），也不再调用别的 me/this 方法。"""
-    method = _method(methods, name)
-    if method is None:
-        return False
-    _, args, body = method
-    if not all(_IDENT.fullmatch(a.strip()) for a in args.split(",")):
+# 只读检查里放行的调用：不带接收者的只认这几个内置函数，带接收者的认 jQuery、Ls 这类库对象，
+# 或者字符串、数组上不改原值的方法
+_SAFE_CALLS = frozenset(
+    {
+        "$",
+        "parseInt",
+        "parseFloat",
+        "String",
+        "Number",
+        "Boolean",
+        "isNaN",
+        "encodeURIComponent",
+        "decodeURIComponent",
+        "encodeURI",
+        "decodeURI",
+    }
+)
+_SAFE_ROOTS = frozenset({"$", "jQuery", "Ls", "JSON", "Math", "console"})
+_PURE_METHODS = frozenset(
+    {
+        "indexOf",
+        "lastIndexOf",
+        "includes",
+        "slice",
+        "concat",
+        "join",
+        "split",
+        "trim",
+        "replace",
+        "toLowerCase",
+        "toUpperCase",
+        "charAt",
+        "charCodeAt",
+        "substring",
+        "substr",
+        "toString",
+        "valueOf",
+        "startsWith",
+        "endsWith",
+        "match",
+        "test",
+        "filter",
+        "map",
+        "some",
+        "every",
+        "forEach",
+        "find",
+        "findIndex",
+        "reduce",
+        "toFixed",
+        "getTime",
+    }
+)
+_KEYWORD_PARENS = frozenset(
+    {"if", "while", "for", "switch", "return", "function", "catch", "typeof"}
+)
+
+
+def _read_only_body(args, body):
+    """函数只读不写：函数体里（含回调）只给不带属性的变量赋值，不改对象属性、不删除、不用原地修改的
+    数组方法、不当 $.extend、Object.assign 的目标；调用只认 _SAFE_CALLS、_SAFE_ROOTS 开头的和
+    _PURE_METHODS，不调用 me/this 的方法、不调用页面别的函数（它们改不改看不出来）。"""
+    params = [a.strip() for a in args.split(",") if a.strip()]
+    if not all(_IDENT.fullmatch(a) for a in params):
         return False
     try:
         tokens = _js_tokens(body)
@@ -1703,16 +1758,69 @@ def _read_only_method(methods, name):
         if value != "(" or k == 0:
             continue
         prev = values[k - 1]
-        if prev in ("if", "while", "for", "switch", "return", "function", "catch", "typeof"):
-            continue
-        if k > 1 and values[k - 2] == "function":
-            continue  # function 名字(…)
+        if prev in _KEYWORD_PARENS or k > 1 and values[k - 2] == "function":
+            continue  # 条件、循环，或者函数定义
         if not (_IDENT.fullmatch(prev) or prev in (")", "]")):
             continue  # 分组括号
-        if values[k - 3 : k] == ["$", ".", "grep"]:
+        if prev in (")", "]"):
+            return False  # f()(…)、a[0](…)
+        if k < 2 or values[k - 2] != ".":
+            if prev in _SAFE_CALLS:
+                continue
+            return False
+        root = k - 1
+        while root >= 2 and values[root - 1] == "." and _IDENT.fullmatch(values[root - 2]):
+            root -= 2
+        if values[root] in ("me", "this"):
+            return False
+        if values[root] in _SAFE_ROOTS or prev in _PURE_METHODS:
             continue
         return False
     return True
+
+
+def _read_only_method(methods, name):
+    """setSelect 把 catalogs[me.organId] 交给页面自己的 me.findTopLevelParentNode(…)：被调方法
+    必须只读（见 _read_only_body）。"""
+    method = _method(methods, name)
+    return method is not None and _read_only_body(method[1], method[2])
+
+
+def _page_functions(scripts):
+    """各段内联脚本顶层声明的函数 {名字: (参数原文, 函数体原文)}；同名的（后面的会盖掉前面的）
+    记作 None，当认不出。"""
+    found = {}
+    for source in scripts:
+        tokens = _js_tokens(source)
+        values = [t.value for t in tokens]
+        depth = 0
+        k = 0
+        while k < len(values):
+            value = values[k]
+            if value in ("(", "[", "{"):
+                depth += 1
+            elif value in (")", "]", "}"):
+                depth -= 1
+            elif (
+                value == "function"
+                and depth == 0
+                and k + 2 < len(values)
+                and _IDENT.fullmatch(values[k + 1])
+                and values[k + 2] == "("
+            ):
+                args_end = _matching_token(tokens, k + 2)
+                if args_end + 1 < len(values) and values[args_end + 1] == "{":
+                    body_end = _matching_token(tokens, args_end + 1)
+                    entry = (
+                        source[tokens[k + 2].end : tokens[args_end].start],
+                        source[tokens[args_end + 1].end : tokens[body_end].start],
+                    )
+                    name = values[k + 1]
+                    found[name] = None if name in found else entry
+                    k = body_end + 1
+                    continue
+            k += 1
+    return found
 
 
 def _catalog_sink(values, i, methods):
@@ -1785,6 +1893,243 @@ def _load_time_methods(methods):
             if values[k] in ("me", "this") and values[k + 1] == "." and values[k + 3] == "(":
                 pending.append(values[k + 2])
     return seen
+
+
+_ITERATORS = (
+    ["$", ".", "each", "("],
+    ["$", ".", "grep", "("],
+    ["$", ".", "map", "("],
+    ["jQuery", ".", "each", "("],
+    ["jQuery", ".", "grep", "("],
+    ["jQuery", ".", "map", "("],
+)
+_ITERATOR_METHODS = frozenset({"forEach", "map", "filter", "some", "every", "find", "findIndex"})
+
+
+def _expression_end(tokens, start):
+    """从 start 起到这个表达式结束（同层的 ; , ) ] } 之前）；中间的函数体整个跳过。"""
+    values = [t.value for t in tokens]
+    depth = 0
+    k = start
+    while k < len(values):
+        value = values[k]
+        if value == "function":
+            j = k + 1
+            while j < len(values) and values[j] != "(":
+                j += 1
+            if j < len(values):
+                body = _matching_token(tokens, j) + 1
+                if body < len(values) and values[body] == "{":
+                    k = _matching_token(tokens, body) + 1
+                    continue
+        if value in ("(", "[", "{"):
+            depth += 1
+        elif value in (")", "]", "}"):
+            if depth == 0:
+                return k
+            depth -= 1
+        elif value in (";", ",") and depth == 0:
+            return k
+        k += 1
+    return k
+
+
+def _enclosing_callee(values, i):
+    """i 处的值是不是函数调用的参数（含放在参数的对象、数组字面量里）：是的话给出被调函数名的位置，
+    不是（在条件、代码块里）给 None。"""
+    depth = 0
+    for k in range(i - 1, -1, -1):
+        value = values[k]
+        if value in (")", "]", "}"):
+            depth += 1
+            continue
+        if value not in ("(", "[", "{"):
+            continue
+        if depth:
+            depth -= 1
+            continue
+        prev = values[k - 1] if k else ""
+        if value == "[":
+            continue
+        if value == "{":
+            if prev in ("(", ",", ":", "=", "[", "return", "?"):
+                continue  # 对象字面量
+            return None  # 代码块
+        if prev in _KEYWORD_PARENS or k > 1 and values[k - 2] == "function":
+            return None
+        if _IDENT.fullmatch(prev) or prev in (")", "]"):
+            return k - 1
+    return None
+
+
+def _foreign_problem(source, functions, widget, *, occurrences=True, mask=()):
+    """PublicTree 以外的内联脚本（搜索框、标签页、统计这类），以及 PublicTree 脚本里构造函数、原型
+    方法以外的代码：可以读那几个全局对象，不能改它们（直接改的另有规则查）。这里查：
+    - occurrences：PublicTree 出现、名字写成字符串、经 window 访问、Ls/catalogs/_organTree2 整个
+      当值用、Ls.url 当值用、_organTree2 上调查找类以外的方法，都不认；
+    - 别名：从 catalogs[…]、catalogs.x、_organTree2.查找(…) 读出来存进变量的，从别名再读出来的，
+      $.each/$.grep/$.map 和数组 forEach 等遍历别名时回调的参数，都算别名；经别名改属性、删属性、
+      用原地修改的数组方法、当 $.extend/Object.assign 的目标，都不认；
+    - 别名或 catalogs、_organTree2 交给函数当参数：被调的是页面自己声明的函数就要只读
+      （_read_only_body），是 jQuery、Ls 这类库对象的方法或者不改原值的内置方法可以，别的都不认。
+    mask：不查的源码范围（PublicTree 脚本里构造函数体和原型方法体，那里另有规则）。"""
+    for a, b in mask:
+        source = source[:a] + " " * (b - a) + source[b:]
+    tokens = _js_tokens(source)
+    values = [t.value for t in tokens]
+
+    def at(k):
+        return values[k] if 0 <= k < len(values) else ""
+
+    if occurrences:
+        for i, value in enumerate(values):
+            if value[:1] in ("'", '"'):
+                if _string_literal(value) in _ROOTS:
+                    return f"{_string_literal(value)} 写成字符串访问"
+                continue
+            if value not in _ROOTS:
+                continue
+            if at(i - 1) == ".":
+                if at(i - 2) in _GLOBAL_OBJECTS:
+                    return f"经 {at(i - 2)} 访问 {value}"
+                continue
+            after = at(i + 1)
+            if value == "PublicTree":
+                return "PublicTree 脚本以外用到 PublicTree"
+            if value == "Ls":
+                if after != "." or not _IDENT.fullmatch(at(i + 2)):
+                    return "Ls 当值传出去或按下标访问"
+                if at(i + 2) == "url" and at(i + 3) not in (".", "("):
+                    return "Ls.url 当值传出去"
+                continue
+            if value == "catalogs":
+                if after not in (".", "["):
+                    return "catalogs 当值传出去"
+                continue
+            reads = at(i + 2) in _TREE_READS or widget and at(i + 2) == "searchNodeLazy"
+            if after == "." and at(i + 3) == "(" and reads:
+                continue
+            return "_organTree2 的用法认不出"
+    # 别名：反复扫到不再增加
+    sources = {"catalogs", "_organTree2"}
+    aliases = set()
+    changed = True
+    while changed:
+        changed = False
+        tainted = sources | aliases
+        for i, value in enumerate(values):
+            new = set()
+            if (
+                value == "="
+                and _IDENT.fullmatch(at(i - 1))
+                and at(i - 2) != "."
+                and at(i - 1) not in tainted
+            ):
+                end = _expression_end(tokens, i + 1)
+                if _tainted_value(tokens, i + 1, end, tainted):
+                    new.add(at(i - 1))
+            if values[i : i + 4] in _ITERATORS and at(i + 4) in tainted and at(i + 3) == "(":
+                new |= _callback_params(tokens, i + 3)
+            if (
+                value == "."
+                and at(i + 1) in _ITERATOR_METHODS
+                and at(i + 2) == "("
+                and _chain_root(values, i) in tainted
+            ):
+                new |= _callback_params(tokens, i + 2)
+            if new - aliases:
+                aliases |= new
+                changed = True
+    for path, op in _writes(source):
+        if path[0] in aliases and (len(path) > 1 or op in _MUTATORS or op == "extend"):
+            return f"经别名 {path[0]} 改了栏目数据"
+    for i, value in enumerate(values):
+        if value not in aliases | sources or at(i - 1) == ".":
+            continue
+        callee = _enclosing_callee(values, i)
+        if callee is None:
+            continue
+        name = values[callee]
+        if at(callee - 1) == ".":
+            root = callee
+            while root >= 2 and values[root - 1] == "." and _IDENT.fullmatch(values[root - 2]):
+                root -= 2
+            if values[root] in _SAFE_ROOTS or name in _PURE_METHODS:
+                continue
+            return f"栏目数据交给了 {name}，看不出它改不改"
+        if name in _SAFE_CALLS:
+            continue
+        function = functions.get(name)
+        if function is None or not _read_only_body(*function):
+            return f"栏目数据交给了页面函数 {name}，它会改或者看不出来"
+    return None
+
+
+def _tainted_value(tokens, start, end, tainted):
+    """start 到 end 这段表达式的值会不会是 tainted 里的对象或者它的一部分：读成员、下标、条件、
+    或运算里出现就算；函数调用的结果不算（交给函数当参数另查），函数体里的也不算。"""
+    values = [t.value for t in tokens]
+    k = start
+    while k < end:
+        value = values[k]
+        prev = values[k - 1] if k > start else ""
+        if value == "function":
+            j = k + 1
+            while j < end and values[j] != "(":
+                j += 1
+            if j < end:
+                body = _matching_token(tokens, j) + 1
+                if body < end and values[body] == "{":
+                    k = _matching_token(tokens, body) + 1
+                    continue
+        call = _IDENT.fullmatch(prev) or prev in (")", "]")
+        if value == "(" and call and prev not in _KEYWORD_PARENS:
+            k = _matching_token(tokens, k) + 1
+            continue
+        if value in tainted and prev != ".":
+            return True
+        k += 1
+    return False
+
+
+def _chain_root(values, dot):
+    """dot 处的 . 前面那串成员访问（a.b[0].c）最开头的名字；认不出给空串。"""
+    k = dot - 1
+    while k >= 0:
+        if values[k] in ("]", ")"):
+            closer, opener, depth = values[k], "[" if values[k] == "]" else "(", 0
+            while k >= 0:
+                if values[k] == closer:
+                    depth += 1
+                elif values[k] == opener:
+                    depth -= 1
+                    if depth == 0:
+                        break
+                k -= 1
+            k -= 1
+            continue
+        if not _IDENT.fullmatch(values[k]):
+            return ""
+        if k >= 1 and values[k - 1] == ".":
+            k -= 2
+            continue
+        return values[k]
+    return ""
+
+
+def _callback_params(tokens, open_paren):
+    """open_paren 处的调用里第一个 function (…) 回调的参数名。"""
+    values = [t.value for t in tokens]
+    end = _matching_token(tokens, open_paren)
+    for k in range(open_paren + 1, end):
+        if values[k] == "function":
+            j = k + 1
+            if j < end and values[j] != "(":
+                j += 1
+            if j < end and values[j] == "(":
+                close = _matching_token(tokens, j)
+                return {v for v in values[j + 1 : close] if _IDENT.fullmatch(v)}
+    return set()
 
 
 def _root_misuse(tokens, is_tree_script, methods, widget, load):
@@ -1983,6 +2328,7 @@ def find_lonsun_api(
         tree_methods = _public_tree_methods(tree_scripts[0])
         widget = _harmless_search_widget(tree_methods)
         load = _load_time_methods(tree_methods)
+        functions = _page_functions(scripts)
         tree_declarations = 0
         tree_extensions = 0
         for source, tokens in zip(scripts, token_sets, strict=True):
@@ -2015,9 +2361,19 @@ def find_lonsun_api(
                     and path[-1] in ("ajax", "ajaxGet")
                 ):
                     return fail("内联脚本改写了依赖状态")
-            misuse = _root_misuse(tokens, is_tree_script, tree_methods, widget, load)
-            if misuse:
-                return fail(f"内联脚本里 {misuse} 的用法认不出，跟不上它会不会被改写")
+            if is_tree_script:
+                # PublicTree 自己的脚本：每处用法都得认得（白名单）；构造函数、原型方法以外的代码
+                # 再照别的脚本的规矩查别名
+                misuse = _root_misuse(tokens, True, tree_methods, widget, load)
+                if misuse:
+                    return fail(f"内联脚本里 {misuse} 的用法认不出，跟不上它会不会被改写")
+                mask = [(tokens[a].end, tokens[b].start) for a, b in _method_spans(tokens).values()]
+                problem = _foreign_problem(source, functions, widget, occurrences=False, mask=mask)
+            else:
+                # 别的脚本（搜索框、标签页、统计这类）：可以读，不能改
+                problem = _foreign_problem(source, functions, widget)
+            if problem:
+                return fail(f"内联脚本：{problem}")
             for i in range(len(values) - 3):
                 if values[i] == "." and values[i + 1] in _AJAX_SETTERS and values[i + 2] == "(":
                     return fail("页面改写了 AJAX 设置")

@@ -1715,3 +1715,50 @@ def test_catalog_passed_only_to_read_only_method():
         page = fixture("jx_page.html").replace(anchor, change + anchor, 1)
         assert page != fixture("jx_page.html")
         assert _found(page) is None, change
+
+
+# ---- PublicTree 以外的脚本：可以读那几个全局对象，不能改（含经别名、经页面函数改）----
+
+_READ_ONLY_SCRIPTS = [
+    # 真实页面上常见的：判断浏览器、按名字找栏目跳转、从栏目树里挑下级编号
+    "if (Ls.browser.isMobile) { $('.x').hide(); }",
+    "function js() { var arr = catalogs['6991']; for (var i = 0; i < arr.length; i++) {"
+    " if (arr[i].name == 'x') { location.href = '/a?catId=' + arr[i].id; } } }",
+    "function pick(list, ids) { $.each(list, function (i, el) {"
+    " if (ids.indexOf(el.parentId) > -1) { ids += ',' + el.id; } }); return ids; }"
+    " function search(ids) { var all = catalogs['6991']; ids = pick(all, ids); go(ids); }",
+    "function name(id) { var n = _organTree2.getNodeByParam('id', id, null); return n && n.name; }",
+]
+
+
+@pytest.mark.parametrize("script", _READ_ONLY_SCRIPTS)
+def test_other_scripts_may_read_globals(script):
+    assert _found(_jx(extra=f"<script>{script}</script>")) is not None
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        # 读出来存进变量（别名）再改
+        "function fix() { var arr = catalogs['6991']; arr[0].children = []; }",
+        "var c = catalogs['6991']; $.extend(c[0], {children: []});",
+        "var n = _organTree2.getNodeByParam('id', 1, null); n.children = null;",
+        # 遍历时在回调里改
+        "$.each(catalogs['6991'], function (i, n) { n.parentId = 0; });",
+        "catalogs['6991'].forEach(function (n) { delete n.children; });",
+        # 交给会改的页面函数、看不出改不改的函数
+        "function grow(list) { list.push({id: 1}); } grow(catalogs['6991']);",
+        "function tree(data, pid) { var obj = data[0]; obj.children = []; return [obj]; }"
+        " var t = tree(catalogs['6991'], 0);",
+        "someLib.process(catalogs['6991']);",
+        "lookup(catalogs['6991']);",
+        # 栏目树对象整个当值传
+        "function s() { var treeObj = _organTree2; return treeObj.getNodes(); }",
+    ],
+)
+def test_other_scripts_may_not_change_globals(script):
+    from youju.crawler.lonsun import lonsun_unrecognized_reason
+
+    page = _jx(extra=f"<script>{script}</script>")
+    assert _found(page) is None
+    assert lonsun_unrecognized_reason(page, BASE, BASE).startswith("内联脚本")
