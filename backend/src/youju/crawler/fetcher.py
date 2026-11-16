@@ -94,16 +94,54 @@ class _CorruptStamp(OSError):
 # 记录定长写、不先清空：写到一半被杀也不会留下空文件（空文件只表示新建、还没请求过）
 
 
-def robots_gate(result: "FetchResult") -> str | None:
-    """robots.txt 回 2xx 的不是 robots 文件、是防护页或验证码（D-013：网站拦着我们）：给原因。"""
-    body = decode_html(result.content, result.content_type).lstrip("\ufeff \t\r\n")
-    if body.startswith("<") or body and not _ROBOTS_LINE.search(body):
-        from youju.govsites.platform import blocker
+def bare_page(html: str) -> bool:
+    """整页就是一个关卡：去掉脚本以后几乎没字、链接也很少（和 govsites.platform.blocker 一样）。"""
+    head = html[:200000]
+    words = re.sub(r"<[^>]+>|\s+", "", re.sub(r"<script.*?</script>", "", head, flags=re.S | re.I))
+    return len(words) < 1500 and len(re.findall(r"<a\s[^>]*href=", head, re.I)) < 15
 
-        reason = blocker(result.status, result.http_status, body)
-        if reason:
-            return reason
-        if not body.startswith("<") and _GATE_WORDS.search(body):
+
+def challenge_marker(html: str) -> str | None:
+    """云锁、安全狗、瑞数、加速乐、WAF 的拦截页、验证页：整页就是一个关卡（bare_page），又带着这些
+    平台的特征。正常页面页脚挂个"安全狗"徽标、正文里提到"访问受限"都不算（12384 个缓存的真实网页里
+    只有一个真的瑞数挑战页命中）。"""
+    if not bare_page(html):
+        return None
+    from youju.govsites.platform import _BLOCK_MARKERS
+
+    head = html[:200000]
+    return next((name for name, pattern in _BLOCK_MARKERS if pattern.search(head)), None)
+
+
+def html_gate(html: str) -> str | None:
+    """网页是不是关卡：平台的拦截页照 challenge_marker；验证码、登录框要标题写着登录、验证，或者整页
+    就是一个关卡（govsites.platform 的写法；首页角落的登录小框、留言板的验证码不算）。"""
+    reason = challenge_marker(html)
+    if reason:
+        return reason
+    from youju.govsites.platform import _CAPTCHA, _GATE_TITLE, _PASSWORD, _TITLE
+
+    head = html[:200000]
+    m = _TITLE.search(head)
+    title = re.sub(r"\s+", "", m.group(1)) if m else ""
+    if (_PASSWORD.search(head) or _CAPTCHA.search(head)) and (
+        _GATE_TITLE.search(title) or bare_page(html)
+    ):
+        return "需要登录或验证码"
+    return None
+
+
+def robots_gate(result: "FetchResult") -> str | None:
+    """robots.txt 回 2xx 的不是 robots 文件、是防护页或验证码（D-013：网站拦着我们）：给原因。回的是
+    普通网页（没有 robots.txt 时常见的"软 404"，比如首页）照旧当没有 robots；网页只有整页就是一个
+    关卡时才算（html_gate）。"""
+    body = decode_html(result.content, result.content_type).lstrip("\ufeff \t\r\n")
+    if body.startswith("<"):
+        return html_gate(body)
+    if body and not _ROBOTS_LINE.search(body):
+        from youju.govsites.platform import _CAPTCHA
+
+        if _GATE_WORDS.search(body) or _CAPTCHA.search(body):
             return "拦截页"
     return None
 

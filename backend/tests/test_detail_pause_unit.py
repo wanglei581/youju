@@ -892,7 +892,7 @@ def test_normal_page_with_safedog_badge_is_read():
             return _html_result(url, html)
 
     outcome = detail_service._fetch_one(1, "https://a.gov.cn/1", Fake())
-    assert outcome.status == "ok", outcome.reason
+    assert outcome.status == "ok", outcome.failure_reason
 
 
 @pytest.mark.parametrize(
@@ -901,10 +901,15 @@ def test_normal_page_with_safedog_badge_is_read():
         # 接口的 JSON、长的正常文字：不是拦截页
         ('{"code":0,"captcha":false,"msg":"ok"}', "text/plain", "unsupported_format"),
         ("关于开展网络安全防火墙产品采购的通知。" * 200, "text/plain", "unsupported_format"),
-        # 没有 Content-Type 的纯文字拦截页
+        # 没有 Content-Type 的纯文字拦截页；写着 text/html、其实是纯文字的也一样
         ("Access Denied", None, "protected"),
+        ("Access Denied", "text/html", "protected"),
+        # JSON 只看值：拒绝的话写在值里的认，captcha 这类键名不算
+        ('{"code":403,"msg":"访问被拒绝"}', "application/json", "protected"),
+        # 300 字以上的纯文字是正常文件，开头写着"禁止访问"也不算
+        ("禁止访问区域名单的通知。" + "附表说明。" * 80, "text/plain", "unsupported_format"),
     ],
-    ids=["json", "long-notice", "no-content-type"],
+    ids=["json", "long-notice", "no-content-type", "html-type", "json-refusal", "notice-300"],
 )
 def test_plain_text_gate_edges(body, content_type, expected):
     class Fake:
@@ -920,7 +925,7 @@ def test_plain_text_gate_edges(body, content_type, expected):
             )
 
     outcome = detail_service._fetch_one(1, "https://a.gov.cn/1", Fake())
-    assert outcome.status == expected, outcome.reason
+    assert outcome.status == expected, outcome.failure_reason
 
 
 def test_manual_commands_share_pause_file():
@@ -941,3 +946,78 @@ def test_manual_commands_share_pause_file():
     _fetch_outcomes(selected, Fake(), 1)
     assert calls == ["https://b.gov.cn/2"]  # a.gov.cn 在停取中，不去
     assert _SitePause(path).expiry("b.gov.cn") is not None  # b 被拒，写进共享文件
+
+
+def test_block_page_text_not_kept_as_body():
+    # 认出安全狗这类拦截页：交回的结果不带正文，拦截页上的字不会写进详情
+    class Fake:
+        def fetch(self, url):
+            return _html_result(url, _SAFEDOG)
+
+    outcome = detail_service._fetch_one(1, "https://a.gov.cn/1", Fake())
+    assert outcome.status == "protected"
+    assert outcome.parsed is None or not outcome.parsed.body_text
+
+
+@pytest.mark.parametrize(
+    "robots,expected",
+    [
+        # 没有 robots.txt、回首页（软 404）：页脚挂安全狗徽标、标题里有"访问受限"也照常当没有 robots
+        (
+            "<html><head><title>首页</title></head><body>"
+            + "".join(f"<a href='/c{i}.html'>栏目{i}</a>" for i in range(40))
+            + "<p>关于部分系统访问受限的说明</p>"
+            "<img src='/images/safedog.png' alt='网站安全狗'></body></html>",
+            "ok",
+        ),
+        # 只剩云锁脚本的裸页：网站拦着我们
+        (_YUNSUO, "robots_error"),
+    ],
+    ids=["soft-404-homepage", "yunsuo"],
+)
+def test_robots_html_gate_needs_bare_page(robots, expected):
+    def handler(request):
+        if request.url.path == "/robots.txt":
+            return httpx.Response(200, text=robots, headers={"content-type": "text/html"})
+        return httpx.Response(200, text="<html><body>ok</body></html>")
+
+    with PoliteFetcher(
+        "test",
+        per_host_interval=0,
+        per_address_interval=0,
+        transport=httpx.MockTransport(handler),
+        resolver=lambda host: ["1.2.3.4"],
+    ) as fetcher:
+        assert fetcher.fetch("https://a.gov.cn/list.html").status == expected
+
+
+def test_gate_pause_written_while_holding_host_lock(tmp_path, monkeypatch):
+    # 不只是在锁里判过：停取记录也是在还拿着这个网站的跨进程锁时写进去的
+    gate = "<html><title>安全验证</title><body>请输入验证码</body></html>"
+    rate = tmp_path / "rate"
+    writes = []
+    real_add = _SitePause.add
+
+    def add(self, host, reason, **kwargs):
+        writes.append((host, _host_file_locked(rate, host)))
+        return real_add(self, host, reason, **kwargs)
+
+    monkeypatch.setattr(_SitePause, "add", add)
+
+    def handler(request):
+        if request.url.path == "/robots.txt":
+            return httpx.Response(404)
+        return httpx.Response(200, text=gate, headers={"content-type": "text/html"})
+
+    with PoliteFetcher(
+        "test",
+        per_host_interval=0.05,
+        per_address_interval=0,
+        transport=httpx.MockTransport(handler),
+        resolver=lambda host: ["1.2.3.4"],
+        shared_limits_dir=str(rate),
+    ) as fetcher:
+        _fetch_outcomes(
+            [(1, "https://a.gov.cn/1")], fetcher, 1, pause=_SitePause(str(tmp_path / "p.json"))
+        )
+    assert writes and writes[0] == ("a.gov.cn", True)

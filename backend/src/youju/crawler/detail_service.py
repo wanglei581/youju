@@ -5,7 +5,6 @@ import json
 import logging
 import os
 import queue
-import re
 import tempfile
 import threading
 import time
@@ -35,6 +34,7 @@ from youju.crawler.fetcher import (
     FetchResult,
     PoliteFetcher,
     SharedLimitError,
+    challenge_marker,
     decode_html,
     plain_text_gate,
     robots_gate,
@@ -187,43 +187,49 @@ def _pdf_detail(content: bytes) -> DetailResult:
     return DetailResult(body_text=redact_sensitive(raw), failure_reason=error, raw_body=raw)
 
 
-def _challenge_marker(text: str) -> str | None:
-    """云锁、安全狗、瑞数、加速乐、WAF 的拦截页、验证页：页面上几乎没有字、链接也很少（和
-    govsites.platform.blocker 认"整页就是一个关卡"一样），又带着这些平台的特征。正常详情页有正文、
-    有导航链接，页脚挂个"安全狗"徽标、正文里提到"访问受限"都不算（12384 个缓存的真实网页里只有一个
-    真的瑞数挑战页命中）。"""
-    from youju.govsites.platform import _BLOCK_MARKERS
-
-    head = text[:200000]
-    words = re.sub(r"<[^>]+>|\s+", "", re.sub(r"<script.*?</script>", "", head, flags=re.S | re.I))
-    if len(words) >= 1500 or len(re.findall(r"<a\s[^>]*href=", head, re.I)) >= 15:
-        return None
-    return next((name for name, pattern in _BLOCK_MARKERS if pattern.search(head)), None)
+def _json_texts(value, budget=200):
+    """JSON 里的字符串值（不看键），最多 budget 个。"""
+    out, stack = [], [value]
+    while stack and len(out) < budget:
+        item = stack.pop()
+        if isinstance(item, str):
+            out.append(item)
+        elif isinstance(item, dict):
+            stack.extend(item.values())
+        elif isinstance(item, list):
+            stack.extend(item)
+    return out
 
 
 def _gate_page(result: FetchResult, url: str) -> bool:
-    """回来的是不是防护页、验证码（D-013：网站拦着我们，要停取这个网站）。网页照详情页的规矩认，
-    再看云锁、安全狗这类平台的拦截页特征；不是 PDF 也不是网页的短文字（text/plain 这类，或者说是
-    PDF 其实不是，2000 字以内、不是 JSON）看开头有没有验证码、拦截、防火墙这类字。"""
+    """回来的是不是防护页、验证码（D-013：网站拦着我们，要停取这个网站）。网页照详情页的规矩认，再看
+    整页就是一个关卡、带着云锁、安全狗这类平台特征的；不是 PDF 也不是网页的短文字（300 字以内）看
+    有没有验证码、拦截、防火墙这类字，JSON 只看值（captcha 这类键名不算）。判过的记在回应上：取页器
+    还拿着网站锁时判一次（_PausingFetcher._response），_fetch_one 直接用。"""
+    cached = getattr(result, "_gate_decision", None)
+    if cached is not None:
+        return cached
     content = result.content or b""
-    if b"%PDF-" in content[:1024]:
-        return False
     text = result.text or (decode_html(content, result.content_type) if content else "")
     head = text.lstrip("\ufeff \t\r\n")
-    if not head or "\x00" in head[:1024]:
-        return False  # 空的、二进制文件
-    if head.startswith("<"):
+    if b"%PDF-" in content[:1024] or not head or "\x00" in head[:1024]:
+        decision = False  # PDF、空的、二进制文件
+    elif head.startswith("<"):
         parsed = parse_detail(text, result.final_url or url)
-        return parsed.failure_reason == "防护页或验证码" or bool(_challenge_marker(text))
-    if len(head) > 2000:
-        return False  # 长文字是正常文件（通知、规则说明这类），不是拦截页
-    if head[:1] in ("{", "["):
+        decision = parsed.failure_reason == "防护页或验证码" or bool(challenge_marker(text))
+    elif head[:1] in ("{", "["):
         try:
-            json.loads(head)
-            return False  # 接口的 JSON（里面的 captcha、验证码字段不算拦截）
+            values = _json_texts(json.loads(head))
         except ValueError:
-            pass
-    return bool(_PROTECTION.search(head[:500])) or plain_text_gate(head)
+            values = [head] if len(head) <= 300 else []
+        decision = any(
+            _PROTECTION.search(value[:500]) or plain_text_gate(value) for value in values
+        )
+    else:
+        # 长文字是正常文件（通知、规则说明这类），拦截页都很短
+        decision = len(head) <= 300 and bool(_PROTECTION.search(head) or plain_text_gate(head))
+    result._gate_decision = decision
+    return decision
 
 
 def _fetch_one(document_id: int, url: str, fetcher: DetailFetcher) -> _FetchOutcome:
@@ -250,11 +256,9 @@ def _fetch_one(document_id: int, url: str, fetcher: DetailFetcher) -> _FetchOutc
         or fetched.content.startswith(b"%PDF-")
         or fetched.text.lstrip().startswith("%PDF-")
     )
-    # 说是 PDF、或者不是网页的回应，其实是防护页（text/plain 的验证码页、拦截页）：先停这个网站，
-    # 不当成格式不对、PDF 读不出（网页的防护页下面 parse_detail 认）
-    html_types = {"text/html", "application/xhtml+xml"}
-    if (is_pdf or content_type not in html_types) and _gate_page(fetched, url):
-        # 没有 Content-Type 的也看（纯文字的 Access Denied 这类）
+    # 防护页、验证码（网页、纯文字的验证码页、拦截页、说是 PDF 其实不是的）：先停这个网站，不当成
+    # 格式不对、PDF 读不出；不管 Content-Type 写的什么（text/html 回纯文字的 Access Denied 也算）
+    if _gate_page(fetched, url):
         return _FetchOutcome(document_id, now, fetched, None, "protected", "防护页或验证码")
     if is_pdf:
         try:
@@ -276,10 +280,11 @@ def _fetch_one(document_id: int, url: str, fetcher: DetailFetcher) -> _FetchOutc
             document_id, now, fetched, None, "unsupported_format", "响应不是 HTML 详情页"
         )
     parsed = parse_detail(fetched.text, fetched.final_url or url)
-    if parsed.failure_reason == "防护页或验证码" or _challenge_marker(fetched.text):
+    if parsed.failure_reason == "防护页或验证码" or challenge_marker(fetched.text):
         # 详情页本身是验证码、防护页（含云锁、安全狗这类拦截页）：马上按防护页停这个网站（调用方
-        # 登记），不再去取它的 PDF 附件，也不把拦截页上的字当正文存下
-        return _FetchOutcome(document_id, now, fetched, parsed, "protected", "防护页或验证码")
+        # 登记），不再去取它的 PDF 附件，也不把拦截页上的字当正文存下（交回的结果不带正文）
+        blocked = DetailResult(failure_reason="防护页或验证码")
+        return _FetchOutcome(document_id, now, fetched, blocked, "protected", "防护页或验证码")
     pdf_attachments = [a for a in parsed.attachments if a.extension == "pdf"]
     if not parsed.body_text and len(parsed.attachments) == 1 and len(pdf_attachments) == 1:
         pdf_url = pdf_attachments[0].url
