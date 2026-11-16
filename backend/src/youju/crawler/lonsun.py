@@ -31,6 +31,12 @@ window 和函数里的 this 都不许整个当值用（只认 this.名字、$(th
 成员。前提：经事件对象（e.view、e.currentTarget 这类）、jQuery 包装对象取回原对象（$(x)[0]、
 .get(0)、.each 回调的参数）或别的 DOM 属性拿到 window、再按算出来的名字改全局的写法不追踪——只有专门
 构造才会出现，157 个真实页面一处都没有；照名字改的（e.view.jQuery.param = …）照样拦。
+
+还有两条前提（第十二轮审阅）：外链脚本（平台的 common.min.js、ztree.min.js，龙讯云、无障碍、统计这些
+动态插入的脚本）不分析，当它们不改我们照着推请求用的东西——平台脚本的写法核对过（参数顺序、编码、
+跳过 undefined），别的是各站通用的外部服务；异步取回的网页片段（$.get(…).done(h → .html(h)) 这类，
+标签页内容）里的脚本不分析：普通页面在就绪回调里当场发列表请求，片段回来时已经发过了；芜湖这类等前置
+请求的页面，片段可能先执行，当它们不改这些东西（用 .load(地址) 直接插片段的照旧不认）。
 """
 
 import collections
@@ -374,6 +380,10 @@ _COMPOUND_ASSIGNMENTS = (">>>=", "**=", "<<=", ">>=", "&&=", "||=", "??=", "|=",
 
 
 def _js_tokens(source: str) -> tuple[_Token, ...]:
+    if any(ch in source for ch in ("\r", "\u2028", "\u2029")):
+        # JS 还把 \r、U+2028、U+2029 当换行（// 注释到这里就结束，自动补分号也看它们），我们只按
+        # \n 切：注释后面接 U+2028 再写的代码浏览器会执行、我们当成注释（真实页面上都没有）
+        raise LonsunFormatError("脚本里有 \\r、U+2028、U+2029 这类换行符，认不准")
     tokens: list[_Token] = []
     i = 0
     operators = (
@@ -3101,9 +3111,12 @@ def _url_change_problem(tokens, values, mask=()):
         before = values[k - 1] if k else ""
         after = values[k + 1] if k + 1 < len(values) else ""
         text = _string_literal(value) if value[:1] in ("'", '"') else ""
-        if text in names and after == "]":
-            return f"按字符串调用 {text}"
-        if before == "." and value in names:
+        if text in names and after != "in":
+            # history['pushState'](…)、Object.defineProperty(history, 'pushState', …) 这类；
+            # 'pushState' in history 只是看浏览器支不支持（真实页面的 isRefresh 这样写）
+            return f"按字符串用到 {text}"
+        if value in names and (before == "." or after in (":", "(")):
+            # .pushState(…)、$.extend(history, {pushState: …})
             return f"加载时用 {value} 改网址"
     return None
 

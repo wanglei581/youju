@@ -3382,6 +3382,13 @@ def _with_code(where, code):
         # body 上的事件属性、javascript: 链接里，最外层的 this 就是 window
         ("body", "this['GLOBAL_' + 'CONTEXTPATH'] = '/x'"),
         ("link", "this['GLOBAL_' + 'CONTEXTPATH'] = '/x'"),
+        # // 注释后面接 U+2028 再写的代码浏览器会执行（第十二轮独立 Claude）
+        ("script", "// 统计\u2028GLOBAL_CONTEXTPATH = '/x';"),
+        ("bind", "// 调整\u2028me.listParams.siteId = '999';"),
+        ("script", "var a = 1;\r GLOBAL_CONTEXTPATH = '/x';"),
+        # 按字符串、对象键改 pushState
+        ("script", "Object.defineProperty(history, 'pushState', {value: function () {}});"),
+        ("script", "$.extend(history, {pushState: function () {}});"),
     ],
 )
 def test_hidden_writes_refused(where, code):
