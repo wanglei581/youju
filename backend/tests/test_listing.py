@@ -1159,8 +1159,7 @@ def test_same_document_pdf_in_a_luzhou_popup_follows_main() -> None:
 
 
 def test_other_hidden_containers_are_read_as_before() -> None:
-    # 只认泸州弹层的确切写法（class="address-popup"、藏着）：别的藏起来的容器照原来读，
-    # 和不藏的写法读出来一样；class 对、却没藏着的也一样
+    # 只认泸州弹层的 class（address-popup）：别的藏起来的容器照原来读，和不藏的写法读出来一样
     html = """<ul class="list">
       <li><a href="/a/1.html">关于项目申报的通知</a><div class="card" style="display:none"><a href="/b/1.html">关于项目申报工作的政策解读</a><span>2026-09-01</span></div><span>2026-10-21</span></li>
       <li><a href="/a/2.html">关于公布第二批名单的通知</a><div class="card" style="display:none"><a href="/b/2.html">关于第二批名单的政策解读</a><span>2026-09-02</span></div><span>2026-10-20</span></li>
@@ -1171,11 +1170,9 @@ def test_other_hidden_containers_are_read_as_before() -> None:
         html.replace(' style="display:none"', ""), "http://example.gov.cn/a/", today=today
     )
     assert extract_items(html, "http://example.gov.cn/a/", today=today) == shown
-    not_hidden = html.replace('class="card" style="display:none"', 'class="address-popup"')
-    assert extract_items(not_hidden, "http://example.gov.cn/a/", today=today) == shown
 
 
-def test_assistant_link_is_dropped_only_next_to_its_visible_document() -> None:
+def test_assistant_link_is_recognized_by_its_class_and_url() -> None:
     import lxml.html
 
     from youju.crawler.listing import _Page
@@ -1191,7 +1188,7 @@ def test_assistant_link_is_dropped_only_next_to_its_visible_document() -> None:
         '<a href="/a/1.htm?assistant=true" class="tertonAIReaderFlag glwj" '
         'style="display: none; color: #0059a9;"> | AI阅读</a>'
     )
-    # 看得见的文件链接旁边藏着的"同一网址加 assistant=true"：不是文件
+    # 带阅读助手 class、文字是"| AI阅读"、网址是同一格子里的文件链接加 assistant=true：不是文件
     assert documents(f'<li><a href="/a/1.htm">关于项目申报工作的通知</a>{ai}</li>') == [True, False]
     # 网址里原来就有参数时用 &assistant=true
     assert documents(
@@ -1199,25 +1196,31 @@ def test_assistant_link_is_dropped_only_next_to_its_visible_document() -> None:
         '<a href="/a/show.asp?id=1&amp;assistant=true" class="tertonAIReaderFlag" '
         'style="display:none"> | AI阅读</a></li>'
     ) == [True, False]
-    # 同一份文件的链接本身也藏着、不在附带链接的父元素里、或者网址对不上：照旧算文件
+    # 那份文件的链接不在附带链接的父元素里、或者网址对不上：照旧算文件
     doc = '<a href="/a/1.htm">关于项目申报工作的通知</a>'
-    hidden_doc = '<a href="/a/1.htm" style="display:none">关于项目申报工作的通知</a>'
-    assert documents(f"<li>{hidden_doc}{ai}</li>") == [True, True]
     assert documents(f"<li>{doc}<span>{ai}</span></li>") == [True, True]
     # 父元素里套在下一层的也算同一格子
     assert documents(f"<li><span>{doc}</span>{ai}</li>") == [True, False]
     other_doc = '<a href="/a/2.htm">关于项目申报工作的通知</a>'
     assert documents(f"<li>{other_doc}{ai}</li>") == [True, True]
-    # 链接没藏着（style 里最后生效的是 block）：照旧算文件
+    # 按插件的标记认，藏没藏着都一样（那份文件的链接藏着也一样）
     assert documents(
         '<li><a href="/a/1.htm">关于项目申报工作的通知</a>'
         '<a href="/a/1.htm?assistant=true" class="tertonAIReaderFlag" '
         'style="display:none;display:block"> | AI阅读</a></li>'
-    ) == [True, True]
-    # 没有阅读助手的 class：不是这种附带链接，照旧算文件（可能是另一份文件，如补充通知）
+    ) == [True, False]
+    hidden_doc = '<a href="/a/1.htm" style="display:none">关于项目申报工作的通知</a>'
+    assert documents(f"<li>{hidden_doc}{ai}</li>") == [True, False]
+    # 没有阅读助手的 class，或者文字不是"| AI阅读"：不是这种附带链接，照旧算文件（可能是另一份文件，
+    # 如补充通知）
     assert documents(
         '<li><a href="/a/1.htm">关于项目申报工作的通知</a>'
         '<a href="/a/1.htm?assistant=true" style="display:none">关于项目申报工作的补充通知</a></li>'
+    ) == [True, True]
+    assert documents(
+        '<li><a href="/a/1.htm">关于项目申报工作的通知</a>'
+        '<a href="/a/1.htm?assistant=true" class="tertonAIReaderFlag" style="display:none">'
+        "关于项目申报工作的补充通知</a></li>"
     ) == [True, True]
 
 
@@ -1299,46 +1302,6 @@ def test_link_that_is_itself_hidden_is_not_a_document() -> None:
         ("某省人民政府关于某县2026年度农用地转用的批复", date(2026, 10, 9)),
         ("某省人民政府办公厅关于印发某某方案的通知", date(2026, 10, 8)),
     ]
-
-
-def test_display_none_in_a_comment_or_custom_property_is_not_hidden() -> None:
-    # "display:block;/* display:none */"、"--display:none"、"display:none bogus"、字符串里的都不算藏着
-    from lxml import html as lhtml
-
-    from youju.crawler.listing import _hidden
-
-    for style, hidden in (
-        ("display:block;/* display:none */", False),
-        ("--display:none", False),
-        ("color:red; display : none", True),
-        ("display:none;display:block", False),
-        ("display:none !important;display:block", True),
-        ("display:none!important", True),
-        # 看不懂的 display 值（写错的、var() 这类浏览器可能认的）：拿不准，当没藏
-        ("display:none bogus", False),
-        ("display:none bogus;display:none", False),
-        ("display:block;display:none bogus", False),
-        ("display:none;display:var(--d,block)", False),
-        ("display:none;display:env(x)", False),
-        # 名字转义过的拿不准；all 把 display 也重置了
-        ("display:none;disp\\lay:block", False),
-        ("display:none;all:initial", False),
-        ("display:none;all:unset !important", False),
-        ("all:initial;display:none", True),
-        # 字符串、括号（包括 url(…)）里的分号不是分隔；没写完的字符串到结尾
-        ('display:block;--x:";display:none;"', False),
-        ("--x:(;display:none)", False),
-        ("background:url(a;display:none)", False),
-        ('--x:"abc;display:none', False),
-        ('display:none;--x:"a;b"', True),
-        (" display:none;", True),
-        ("display:\tnone\n", True),
-        ("DISPLAY:NONE !IMPORTANT", True),
-        # 不间断空格不是 CSS 的空白：名字或值就不对了
-        ("\xa0display:none", False),
-        ("display:\xa0none", False),
-    ):
-        assert _hidden(lhtml.fromstring(f'<div style="{style}">x</div>')) is hidden, style
 
 
 def test_hidden_full_title_link_with_the_same_url_as_a_visible_detail_link_is_kept() -> None:
