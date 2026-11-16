@@ -205,14 +205,20 @@ def _gate_page(result: FetchResult, url: str) -> bool:
     if cached is not None:
         return cached
     content = result.content or b""
-    text = result.text or (decode_html(content, result.content_type) if content else "")
-    head = text.lstrip("\ufeff \t\r\n")
-    if b"%PDF-" in content[:1024] or not head or "\x00" in head[:1024]:
-        decision = False  # PDF、空的、二进制文件
-    elif head.startswith("<"):
-        decision = _html_page_gate(text, result.final_url or url)
+    if b"%PDF-" in content[:1024] or b"\x00" in content[:1024]:
+        decision = False  # PDF、二进制文件：先看开头，不把整份（最多 20MB）解码一遍
     else:
-        decision = text_gate(head)
+        # 取页器没解码的只解码前一段：网页看开头 20 万字、纯文字只看 300 字以内的
+        text = result.text or (
+            decode_html(content[:400000], result.content_type) if content else ""
+        )
+        head = text.lstrip("\ufeff \t\r\n")
+        if not head or "\x00" in head[:1024]:
+            decision = False
+        elif head.startswith("<"):
+            decision = _html_page_gate(text, result.final_url or url)
+        else:
+            decision = text_gate(head)
     result._gate_decision = decision
     return decision
 

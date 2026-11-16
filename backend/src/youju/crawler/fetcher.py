@@ -15,6 +15,7 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
+from html import unescape as unescape_html
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 from urllib.robotparser import RobotFileParser
@@ -83,6 +84,7 @@ class _SharedLimits:
 _ROBOTS_LINE = re.compile(r"^\s*(?:user-agent|disallow|allow|sitemap|crawl-delay)\s*:", re.I | re.M)
 _GATE_WORDS = re.compile(
     r"拦截|防火墙|访问被拒绝|禁止访问|安全验证|人机验证|安全狗|云锁|请开启\s*JavaScript|"
+    r"访问过于频繁|请求过于频繁|访问太频繁|访问频率过高|"
     r"access denied|forbidden|captcha|verify you are human",
     re.I,
 )
@@ -115,19 +117,27 @@ def challenge_marker(html: str) -> str | None:
 
 
 def html_gate(html: str) -> str | None:
-    """网页是不是关卡：平台的拦截页照 challenge_marker；验证码、登录框要标题写着登录、验证，或者整页
-    就是一个关卡（govsites.platform 的写法；首页角落的登录小框、留言板的验证码不算）。"""
+    """网页是不是关卡（robots.txt 和详情页共用）：平台的拦截页照 challenge_marker；整页几乎没字、
+    标题加正文开头 300 字里写着拦截、访问被拒绝、访问过于频繁、验证码这类字的（防火墙回 200 的
+    拦截页多是网页）；验证码、登录框要标题写着登录、验证，或者整页就是一个关卡（govsites.platform
+    的写法；首页角落的登录小框、留言板的验证码不算）。"""
     reason = challenge_marker(html)
     if reason:
         return reason
+    from youju.crawler.detail import _PROTECTION
     from youju.govsites.platform import _CAPTCHA, _GATE_TITLE, _PASSWORD, _TITLE
 
     head = html[:200000]
     m = _TITLE.search(head)
     title = re.sub(r"\s+", "", m.group(1)) if m else ""
-    if (_PASSWORD.search(head) or _CAPTCHA.search(head)) and (
-        _GATE_TITLE.search(title) or bare_page(html)
-    ):
+    bare = bare_page(html)
+    if bare:
+        visible = re.sub(r"<(script|style)\b.*?</\1\s*>", " ", head, flags=re.S | re.I)
+        visible = re.sub(r"\s+", " ", unescape_html(re.sub(r"<[^>]+>", " ", visible))).strip()
+        words = f"{title} {visible[:300]}"
+        if _GATE_WORDS.search(words) or _PROTECTION.search(words):
+            return "拦截页"
+    if (_PASSWORD.search(head) or _CAPTCHA.search(head)) and (_GATE_TITLE.search(title) or bare):
         return "需要登录或验证码"
     return None
 
@@ -154,6 +164,8 @@ def text_gate(text: str) -> bool:
     from youju.govsites.platform import _CAPTCHA
 
     head = text.lstrip("\ufeff \t\r\n")
+    if len(head) > 300:
+        return False  # 长的是正常文件、正常的接口返回（JSON 也一样），拦截页都很短
     values = [head]
     if head[:1] in ("{", "["):
         with contextlib.suppress(ValueError, RecursionError):

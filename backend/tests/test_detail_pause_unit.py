@@ -1102,3 +1102,92 @@ def test_robots_text_gate_matches_detail_rules(robots):
         resolver=lambda host: ["1.2.3.4"],
     ) as fetcher:
         assert fetcher.fetch("https://a.gov.cn/list.html").status == "ok"
+
+
+_FIREWALL = (
+    "<html><head><title>访问被拒绝</title></head><body>"
+    "<h1>您的访问已被网站防火墙拦截</h1><p>如有疑问请联系网站管理员。</p></body></html>"
+)
+
+
+def test_html_firewall_page_pauses_at_first_document(tmp_path):
+    # 防火墙回 200 的拦截页多是网页：整页几乎没字、标题写着访问被拒绝，第一份就停这个网站
+    path = str(tmp_path / "pause.json")
+    calls = []
+
+    class Fake:
+        def fetch(self, url):
+            calls.append(url)
+            return _html_result(url, _FIREWALL)
+
+    selected = [(i, f"https://a.gov.cn/{i}") for i in range(1, 21)]
+    outcomes = _fetch_outcomes(selected, Fake(), 1, pause=_SitePause(path))
+    assert outcomes[1].status == "protected"
+    assert calls == ["https://a.gov.cn/1"]
+    assert _SitePause(path).expiry("a.gov.cn") is not None
+
+
+@pytest.mark.parametrize(
+    "robots",
+    [
+        _FIREWALL,
+        "<html><head><title>提示</title></head><body>请求过于频繁，请稍后再试</body></html>",
+    ],
+    ids=["firewall", "rate-limit"],
+)
+def test_robots_html_firewall_page_is_protected(robots):
+    # robots.txt 回同样的网页拦截页：网站拦着我们，不当成软 404 接着去请求页面
+    paths = []
+
+    def handler(request):
+        paths.append(request.url.path)
+        if request.url.path == "/robots.txt":
+            return httpx.Response(200, text=robots, headers={"content-type": "text/html"})
+        return httpx.Response(200, text="<html><body>ok</body></html>")
+
+    with PoliteFetcher(
+        "test",
+        per_host_interval=0,
+        per_address_interval=0,
+        transport=httpx.MockTransport(handler),
+        resolver=lambda host: ["1.2.3.4"],
+    ) as fetcher:
+        result = fetcher.fetch("https://a.gov.cn/list.html")
+    assert result.status == "robots_error" and result.robots_failure == "protected"
+    assert paths == ["/robots.txt"]
+
+
+def test_gate_check_does_not_decode_pdfs(monkeypatch):
+    # PDF 先看开头的 %PDF-，不把整份解码一遍（取页器给 PDF 的 text 是空的）
+    def boom(*args, **kwargs):
+        raise AssertionError("PDF 不该整份解码")
+
+    monkeypatch.setattr(detail_service, "decode_html", boom)
+    pdf = FetchResult(
+        "https://a.gov.cn/f.pdf",
+        "ok",
+        final_url="https://a.gov.cn/f.pdf",
+        http_status=200,
+        content=b"%PDF-1.7\n" + b"0" * 1000,
+        content_type="application/pdf",
+    )
+    assert detail_service._gate_page(pdf, pdf.url) is False
+
+
+def test_long_json_with_gate_word_is_not_a_gate():
+    # 长的 JSON（正常接口返回）里有个"请输入验证码"的值也不算拦截页
+    body = '{"tip":"请输入验证码","data":"' + "x" * 400 + '"}'
+
+    class Fake:
+        def fetch(self, url):
+            return FetchResult(
+                url,
+                "ok",
+                final_url=url,
+                http_status=200,
+                text=body,
+                content=body.encode(),
+                content_type="application/json",
+            )
+
+    assert detail_service._fetch_one(1, "https://a.gov.cn/1", Fake()).status == "unsupported_format"
