@@ -67,11 +67,13 @@ _COMPANION_LINK = re.compile(
 )
 # title 属性明写"主题：""标题："的，那就是这一条的标题（临沂人社：title="主题：标题 日期：……"）。
 # 链接文字比它只多出前后的方括号标签时（"[公示公告]标题[图]"）用 title 属性。没这样明写的网站不动；
-# 标签说明这一条是什么、现在怎样的（"【一图读懂】""【政策解读】""[视频]""[已废止]"）也不去掉：
-# 去掉会被当成现行的政策原文
+# 标签说明这一条是什么、现在怎样的（"【一图读懂】""【政策解读】""[视频]""[已废止]""[已废除]"）
+# 也不去掉：去掉会被当成现行的政策原文
 _LABELED_TITLE = re.compile(r"^\s*(?:主题|标题)\s*[：:]")
 _TAGS_ONLY = re.compile(r"^\s*(?:[\[【][^\[\]【】]{1,8}[\]】]\s*)*$")
-_TYPE_TAG = re.compile(r"解读|图解|读懂|视频|音频|问答|发布会|直播|废止|失效|作废")
+_TYPE_TAG = re.compile(
+    r"解读|图解|读懂|视频|音频|问答|发布会|直播|废止|废除|失效|作废|撤销|停止执行"
+)
 # 行里藏起来的弹层（style 写着 display:none）：泸州政府文件列表每行的"政策解读"弹层，
 # 里面是解读的链接
 _HIDDEN_STYLE = re.compile(r"display\s*:\s*none", re.IGNORECASE)
@@ -193,6 +195,16 @@ def _expand_datastore(html: str) -> str:
     return html[:cut] + block + html[cut:]
 
 
+def _hidden_up_to(node: etree._Element, top: etree._Element) -> bool:
+    """node 本身或者它的上级（到 top 为止，不含 top）藏着（style 写着 display:none）。"""
+    for n in (node, *node.iterancestors()):
+        if n is top:
+            return False
+        if _HIDDEN_STYLE.search(n.get("style") or ""):
+            return True
+    return False
+
+
 def _visible_text(el: etree._Element, hidden: set[etree._Element]) -> str:
     """el 的文字，去掉 hidden 里那些节点（藏起来的弹层）的文字。"""
     parts: list[str] = []
@@ -249,18 +261,18 @@ class _Page:
         return title, url
 
     def _visible_twin(self, a: etree._Element, url: str) -> bool:
-        """a 本身藏着，同一格子（父元素）里另有一个看得见、指向同一份文件（网址只差问号后面）的
-        链接：a 是附带链接（福建省政府最新文件每行藏着的"| AI阅读"，同一网址加 ?assistant=true），
-        不是文件。单独藏着的文件链接照旧算"""
+        """a 本身藏着，同一格子（父元素）里另有一个看得见的同一份文件的链接：a 是附带链接（福建省
+        政府最新文件每行藏着的"| AI阅读"，同一网址后面加 ?assistant=true），不是文件。
+        "同一份"指 a 的网址就是它的网址、或者只在它后面多出参数（问号后面本来就用来区分文件的
+        不算）；"看得见"指它和它的上级到格子为止都没藏起来。单独藏着的文件链接照旧算"""
         cell = a.getparent()
         if cell is None:
             return False
-        bare = url.split("?", 1)[0]
         for b in cell.iter("a"):
-            if b is a or _HIDDEN_STYLE.search(b.get("style") or ""):
+            if b is a or _hidden_up_to(b, cell):
                 continue
             other = normalize_url(self.page_url, b.get("href"))
-            if other and other.split("?", 1)[0] == bare:
+            if other and (url == other or url.startswith(other + ("&" if "?" in other else "?"))):
                 return True
         return False
 
