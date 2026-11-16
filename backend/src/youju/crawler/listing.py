@@ -65,9 +65,21 @@ _ATTACHMENT_EXT = re.compile(r"\.(pdf|docx?|xlsx?|wps|et|ofd|zip|rar|7z)$", re.I
 _COMPANION_LINK = re.compile(
     r"^[(（\[【]?\s*(?:点击)?(?:查看)?(?:政策)?(?:解读|图解|文件|原文|原件)\s*[)）\]】]?$"
 )
-# 行里藏起来的弹层（style 写着 display:none）：泸州政府文件列表每行的"政策解读"弹层，
+# 行里藏起来的弹层（style 里实际生效的 display 是 none）：泸州政府文件列表每行的"政策解读"弹层，
 # 里面是解读的链接
-_HIDDEN_STYLE = re.compile(r"display\s*:\s*none", re.IGNORECASE)
+_DISPLAY = re.compile(r"display\s*:\s*([a-z-]+)\s*(!\s*important)?", re.IGNORECASE)
+
+
+def _hidden(el: etree._Element) -> bool:
+    """元素自己的 style 里实际生效的 display 是不是 none：带 !important 的里取最后一个，
+    没有就取最后一个（"display:none;display:block"最后是显示的）。"""
+    found = _DISPLAY.findall(el.get("style") or "")
+    if not found:
+        return False
+    important = [value for value, imp in found if imp]
+    return (important or [value for value, _ in found])[-1].lower() == "none"
+
+
 # 侧栏、页头页脚、友情链接等外围区域的常见标记（标签，或 class/id 里的词）
 _PERIPHERAL_TAGS = {"aside", "nav", "header", "footer"}
 _PERIPHERAL_WORDS = {
@@ -186,7 +198,7 @@ def _hidden_up_to(node: etree._Element, top: etree._Element) -> bool:
     for n in (node, *node.iterancestors()):
         if n is top:
             return False
-        if _HIDDEN_STYLE.search(n.get("style") or ""):
+        if _hidden(n):
             return True
     return False
 
@@ -240,7 +252,7 @@ class _Page:
         url = normalize_url(self.page_url, a.get("href"))
         if not url or url == self.self_url:
             return None
-        if _HIDDEN_STYLE.search(a.get("style") or "") and self._visible_twin(a, url):
+        if _hidden(a) and self._visible_twin(a, url):
             return None
         title = _title_of(a)
         if not _looks_like_title(title):
@@ -282,11 +294,15 @@ class _Page:
             cached = []
             covered: set[etree._Element] = set()
             for node in cell.iter():
-                if node is cell or not isinstance(node.tag, str) or node in covered:
-                    continue
-                if _HIDDEN_STYLE.search(node.get("style") or "") and any(
-                    b.get("href") for b in node.iter("a")
+                # 单独一个藏着的 <a> 不算弹层（那是一份藏着的文件或附带链接，照 main 算）
+                if (
+                    node is cell
+                    or not isinstance(node.tag, str)
+                    or node.tag == "a"
+                    or node in covered
                 ):
+                    continue
+                if _hidden(node) and any(b.get("href") for b in node.iter("a")):
                     sub = frozenset(node.iter())
                     urls = frozenset(
                         link[1] for b in node.iter("a") if (link := self.link(b)) is not None
