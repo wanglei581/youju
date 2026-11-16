@@ -15,10 +15,12 @@
 {"item_selector": "ul.list li", "link_selector": "a", "date_selector": "span", "require_date": true}
 """
 
+import functools
 import json
 import re
 from dataclasses import dataclass
 from datetime import date
+from typing import NamedTuple
 from urllib.parse import urlsplit
 
 import lxml.html
@@ -65,6 +67,18 @@ _ATTACHMENT_EXT = re.compile(r"\.(pdf|docx?|xlsx?|wps|et|ofd|zip|rar|7z)$", re.I
 _COMPANION_LINK = re.compile(
     r"^[(（\[【]?\s*(?:点击)?(?:查看)?(?:政策)?(?:解读|图解|文件|原文|原件)\s*[)）\]】]?$"
 )
+# 泸州政府文件（和同一个平台的栏目）每行里的"政策解读"弹层（鼠标移上去才显示），写法是
+#   <div class="address"><span>政策解读</span>
+#     <div class="address-popup" style="display: none;">解读链接</div></div>
+# 按 class 认（认得出才放），不看 style；别的东西照原来读
+_POPUP_CLASS = "address-popup"
+# 阅读助手的附带链接（福建省政府最新文件每行的"| AI阅读"，插件加的），写法是
+#   <a href="文件网址?assistant=true" class="tertonAIReaderFlag …"
+#      style="display: none;"> | AI阅读</a>
+# 按 class、链接文字（正好是"| AI阅读"、没有 title 属性）和网址一起认，不看 style
+_ASSISTANT_PARAM = "assistant=true"
+_ASSISTANT_CLASS = "tertonAIReaderFlag"
+_ASSISTANT_TEXT = re.compile(r"^\|\s*AI阅读$")
 # 侧栏、页头页脚、友情链接等外围区域的常见标记（标签，或 class/id 里的词）
 _PERIPHERAL_TAGS = {"aside", "nav", "header", "footer"}
 _PERIPHERAL_WORDS = {
@@ -160,7 +174,9 @@ def _looks_like_title(title: str) -> bool:
     return not any(word in title for word in _BOILERPLATE)
 
 
+@functools.lru_cache(maxsize=8192)
 def _is_attachment(url: str) -> bool:
+    # 找行时同一批网址要反复判断（平铺上千个链接的页面会判上百万次），记下结果
     return bool(_ATTACHMENT_EXT.search(urlsplit(url).path))
 
 
@@ -178,6 +194,57 @@ def _expand_datastore(html: str) -> str:
         return html + block
     cut = ends[-1].start()
     return html[:cut] + block + html[cut:]
+
+
+class _CellPopup(NamedTuple):
+    """一个元素（格子）里的"政策解读"弹层。"""
+
+    popups: list[tuple[set[etree._Element], set[str]]]  # 每个弹层：它下面的所有节点、它链着的网址
+    outside: set[str]  # 格子里弹层外面链着的文件网址
+    owner: bool  # 格子的直接子元素里有没有弹层外面的文件链接（格子是那份文件的标题格）
+
+    def others(self, url: str) -> tuple[set[etree._Element], set[str]]:
+        """链着别的文件的那些弹层（它们下面的所有节点），和那些别的文件的网址。
+
+        别的文件：不是 url 这一份、格子里弹层外面也没链着；url 不是附件时，附件也不算（照 find_row
+        的规矩）。只链着这些以外的弹层不算，照原来读。
+        """
+        nodes: set[etree._Element] = set()
+        found: set[str] = set()
+        for popup, links in self.popups:
+            other = links - self.outside - {url}
+            if not _is_attachment(url):
+                other = {u for u in other if not _is_attachment(u)}
+            if other:
+                nodes |= popup
+                found |= other
+        return nodes, found
+
+
+def _is_popup(el: etree._Element) -> bool:
+    return _POPUP_CLASS in (el.get("class") or "").split()
+
+
+def _popup_of(a: etree._Element) -> etree._Element | None:
+    """a 所在的"政策解读"弹层（_POPUP_CLASS）；不在弹层里时返回 None。"""
+    return next((n for n in a.iterancestors() if _is_popup(n)), None)
+
+
+def _visible_text(el: etree._Element, hidden: set[etree._Element]) -> str:
+    """el 的文字，去掉 hidden 里那些节点的文字。"""
+    parts: list[str] = []
+
+    def walk(node: etree._Element) -> None:
+        if isinstance(node.tag, str) and node.text:
+            parts.append(node.text)
+        for child in node:
+            if child not in hidden:
+                walk(child)
+            if child.tail:
+                parts.append(child.tail)
+
+    walk(el)
+    return _clean("".join(parts))
 
 
 def _is_peripheral(el: etree._Element) -> bool:
@@ -206,15 +273,97 @@ class _Page:
         self.page_url = (normalize_url(page_url, base[0]) or page_url) if base else page_url
         self.today = today
         self._hrefs: dict[etree._Element, set[str]] = {}
+        self._urls: dict[etree._Element, set[str]] = {}
+        self._twins: dict[etree._Element, set[etree._Element]] = {}
+        self._popups: dict[etree._Element, _CellPopup] = {}
+        self._rows: dict[tuple, tuple[etree._Element | None, date | None, bool]] = {}
+        self._links: dict[etree._Element, tuple[str, str] | None] = {}
+        self._anchors: dict[etree._Element, list[tuple[etree._Element, str]]] = {}
 
     def link(self, a: etree._Element) -> tuple[str, str] | None:
+        if a in self._links:
+            return self._links[a]
         url = normalize_url(self.page_url, a.get("href"))
-        if not url or url == self.self_url:
-            return None
-        title = _title_of(a)
-        if not _looks_like_title(title):
-            return None
-        return title, url
+        title = _title_of(a) if url and url != self.self_url else ""
+        result = (title, url) if url and _looks_like_title(title) else None
+        self._links[a] = result
+        return result
+
+    def anchor_links(self, el: etree._Element) -> list[tuple[etree._Element, str]]:
+        """el 里的文件链接（链接元素，网址）。按 el 算一次。"""
+        cached = self._anchors.get(el)
+        if cached is None:
+            cached = [(b, link[1]) for b in el.iter("a") if (link := self.link(b))]
+            self._anchors[el] = cached
+        return cached
+
+    def companion(self, a: etree._Element, url: str) -> bool:
+        """a 是附带链接，不当条目：泸州政府文件"政策解读"弹层里的解读（解读另有栏目收），
+        或者福建省政府最新文件每行的"| AI阅读"。"""
+        return self._popup_document(a, url) or self._assistant_twin(a, url)
+
+    def _popup_document(self, a: etree._Element, url: str) -> bool:
+        """a 在"政策解读"弹层里、链着别的文件。
+
+        弹层所在的格子是往上第一个在弹层外面也有链接的元素（泸州是标题格或者整行），它得是某个文件
+        链接的父元素，和 find_companion_row 看的格子一样；"别的文件"也照它的规矩：附件、格子里弹层
+        外面也链着的都不算。不符合的照原来读。
+        """
+        popup = _popup_of(a)
+        if popup is None:
+            return False
+        for depth, cell in enumerate(popup.iterancestors()):
+            if depth > _MAX_ROW_DEPTH or cell.tag in ("body", "html"):
+                return False
+            info = self._cell_popup(cell)
+            if info.outside:
+                if not info.owner or _is_attachment(url) or url in info.outside:
+                    return False
+                return any(url in links for _, links in info.popups)
+        return False
+
+    def _assistant_twin(self, a: etree._Element, url: str) -> bool:
+        """a 是不是阅读助手的附带链接（福建省政府最新文件每行的"| AI阅读"）。
+
+        按插件自己的写法认：class 里有 _ASSISTANT_CLASS，链接文字正好是"| AI阅读"、没有 title 属性，
+        网址正好是同一格子（父元素）里一个文件链接后面加上 assistant=true。它打开的是那份文件的
+        AI 阅读页，不是文件。
+        """
+        cell = a.getparent()
+        if cell is None or _ASSISTANT_CLASS not in (a.get("class") or "").split():
+            return False
+        if a.get("title") is not None or not _ASSISTANT_TEXT.match(_link_text(a)):
+            return False
+        for sep in ("?", "&"):
+            if url.endswith(sep + _ASSISTANT_PARAM):
+                base = url[: -len(sep + _ASSISTANT_PARAM)]
+                # 原来没有参数的用 ?，有参数的用 &
+                return ("?" in base) == (sep == "&") and base in self._cell_urls(cell)
+        return False
+
+    def _cell_urls(self, cell: etree._Element) -> set[str]:
+        """cell 里文件链接的网址。按 cell 算一次。"""
+        cached = self._urls.get(cell)
+        if cached is None:
+            cached = {link[1] for b in cell.iter("a") if (link := self.link(b))}
+            self._urls[cell] = cached
+        return cached
+
+    def _cell_twins(self, cell: etree._Element) -> set[etree._Element]:
+        """cell 里阅读助手的附带链接（链接元素）。按 cell 算一次。"""
+        cached = self._twins.get(cell)
+        if cached is None:
+            cached = set()
+            for b in cell.iter("a"):
+                # 先看 class（便宜），带插件标记的才算网址、比对
+                if (
+                    _ASSISTANT_CLASS in (b.get("class") or "").split()
+                    and (link := self.link(b))
+                    and self._assistant_twin(b, link[1])
+                ):
+                    cached.add(b)
+            self._twins[cell] = cached
+        return cached
 
     def title_hrefs(self, el: etree._Element) -> set[str]:
         cached = self._hrefs.get(el)
@@ -228,18 +377,25 @@ class _Page:
         return cached
 
     def date_node(
-        self, el: etree._Element, a: etree._Element, skip: set
+        self,
+        el: etree._Element,
+        a: etree._Element,
+        skip: set,
+        popup: set[etree._Element] | None = None,
     ) -> tuple[date | None, bool]:
         """行内单独写日期的节点（如 <span>2026-09-20</span>），取最靠后的一个。
 
-        链接自身和包含链接的节点不算，避免把标题里的日期当成发布日期。
+        链接自身和包含链接的节点不算，避免把标题里的日期当成发布日期。popup（"政策解读"弹层）里的
+        节点不算，别的节点的文字也去掉弹层的文字再看。
         """
         found: tuple[date | None, bool] = (None, False)
         inside_anchor = set(a.iter())
         for node in el.iter():
             if node in skip or node in inside_anchor or not isinstance(node.tag, str):
                 continue
-            text = _clean(node.text_content())
+            if popup and node in popup:
+                continue
+            text = _visible_text(node, popup) if popup else _clean(node.text_content())
             if not text or len(text) > _MAX_DATE_NODE_LEN:
                 continue
             d, full = parse_date_detail(text, self.today)
@@ -250,23 +406,92 @@ class _Page:
     def find_row(
         self, a: etree._Element, title: str, url: str
     ) -> tuple[etree._Element | None, date | None, bool]:
-        """向上找"一行"：只含这一条文件链接、并且写着日期的祖先元素。返回（行，日期，是否写明年份）。"""
+        """向上找"一行"：只含这一条文件链接、并且写着日期的祖先元素。返回（行，日期，是否写明年份）。
+
+        有附带链接的页面要读两遍，每个链接的结果记下来，第二遍不再重找。
+        """
+        key = (a, title, url)
+        cached = self._rows.get(key)
+        if cached is None:
+            cached = self._rows[key] = self._climb(a, title, url, set(), set())
+        return cached
+
+    def find_companion_row(
+        self, a: etree._Element, title: str, url: str
+    ) -> tuple[etree._Element | None, date | None, bool]:
+        """附带链接让 find_row 在标题格就停了（当成别的文件）、整行找不到时，不看它们再找一次。
+
+        附带链接指：
+        - 标题格里"政策解读"弹层链着的别的文件（泸州政府文件）。不是这一份、不是标题格里弹层
+          外面也链着的；附件照 find_row 的规矩不算。弹层里的日期和文字也不看。
+        - 标题格里阅读助手的"| AI阅读"（福建省政府最新文件）。
+        没有附带链接时返回 (None, None, False)。
+        """
+        cell = a.getparent()
+        if cell is None:
+            return None, None, False
+        nodes, _ = self._cell_popup(cell).others(url)
+        # 链着别的文件的弹层才算附带链接，里面的链接、日期和文字一起不看；别的弹层照原来读。
+        # 跳过的是这些链接本身：别处（比如下一行）链着同一网址的照样算别的文件
+        companions = {b for b in nodes if b.tag == "a"} | self._cell_twins(cell)
+        companions.discard(a)
+        if not companions:
+            return None, None, False
+        return self._climb(a, title, url, nodes, companions)
+
+    def _cell_popup(self, cell: etree._Element) -> _CellPopup:
+        """cell 里的"政策解读"弹层（_POPUP_CLASS）。按 cell 算一次。"""
+        cached = self._popups.get(cell)
+        if cached is None:
+            popups: list[tuple[set[etree._Element], set[str]]] = []
+            covered: set[etree._Element] = set()
+            for el in cell.iter():
+                if isinstance(el.tag, str) and el not in covered and _is_popup(el):
+                    popup = set(el.iter())  # 弹层里再套的弹层算在外面这个里
+                    covered |= popup
+                    popups.append((popup, set()))
+            outside: set[str] = set()
+            owner = False
+            if popups:
+                for b in cell.iter("a"):
+                    if link := self.link(b):
+                        holder = next((links for popup, links in popups if b in popup), None)
+                        if holder is None:
+                            outside.add(link[1])
+                            owner = owner or b.getparent() is cell
+                        else:
+                            holder.add(link[1])
+            cached = self._popups[cell] = _CellPopup(popups, outside, owner)
+        return cached
+
+    def _climb(
+        self,
+        a: etree._Element,
+        title: str,
+        url: str,
+        popup: set[etree._Element],
+        companions: set[etree._Element],
+    ) -> tuple[etree._Element | None, date | None, bool]:
+        """原来的找法；popup 里的节点、companions 里的链接不看（两个都空时就是原来的找法）。"""
         anchor_text = _link_text(a)
         ancestors = list(a.iterancestors())
         skip = set(ancestors)
         for depth, el in enumerate(ancestors):
             if depth >= _MAX_ROW_DEPTH or el.tag in ("body", "html"):
                 break
-            others = self.title_hrefs(el) - {url}
+            if companions:
+                others = {u for b, u in self.anchor_links(el) if b not in companions} - {url}
+            else:
+                others = self.title_hrefs(el) - {url}
             if not _is_attachment(url):
                 # 正文链接旁边的附件（pdf、Word 等）属于同一行
                 others = {u for u in others if not _is_attachment(u)}
             if others:
                 break  # 已经包含其他文件链接，说明走到了列表容器
-            found, full = self.date_node(el, a, skip)
+            found, full = self.date_node(el, a, skip, popup)
             if found:
                 return el, found, full
-            text = _clean(el.text_content())
+            text = _visible_text(el, popup) if popup else _clean(el.text_content())
             if anchor_text and len(text) <= len(title) + _MAX_ROW_EXTRA:
                 found, full = parse_date_detail(text.replace(anchor_text, " "), self.today)
                 if found:
@@ -403,18 +628,38 @@ def _clusters(
     return list(merged.values())
 
 
-def _extract_heuristic(page: _Page, require_date: bool) -> tuple[tuple, list[ListItem]]:
-    """从页面链接里找正文列表，返回（评分，条目）。"""
-    # 每个列表块里的条目，连同它在页面中的先后位置
-    blocks: dict[tuple, list[tuple[int, ListItem]]] = {}
+def _extract_heuristic(
+    page: _Page, require_date: bool, companions: bool = False
+) -> tuple[tuple, list[ListItem], list[ListItem], bool]:
+    """从页面链接里找正文列表，返回（评分，条目，从条目里去掉的附带链接，页面上有没有附带链接）。
+
+    companions=False 是原来的读法：附带链接（泸州弹层里的解读、福建的"| AI阅读"）照样参与分块、
+    评分，只是不放进结果。companions=True 时附带链接不当条目，被它们挡住的行不看它们再找一次
+    （find_companion_row）。
+    """
+    # 每个列表块里的条目，连同它在页面中的先后位置、是不是附带链接
+    blocks: dict[tuple, list[tuple[int, ListItem, bool]]] = {}
     containers: dict[tuple, etree._Element] = {}
+    used: set[etree._Element] = set()  # 别的行分组用到的父元素
+    # 带附带链接的行：照原来分、按找到的行分两种父元素，等别的行都分完再定
+    pending: list[tuple[int, ListItem, etree._Element | None, etree._Element | None]] = []
+    seen = False
     # 用 XPath 遍历整个文档：不规范的页面可能在根元素之外还有内容
     for position, a in enumerate(page.doc.xpath("//a")):
         link = page.link(a)
         if not link:
             continue
         title, url = link
+        junk = page.companion(a, url)
+        seen = seen or junk
+        if junk and companions:
+            continue
         row, found, full = page.find_row(a, title, url)
+        companion_row, companion_found, _ = (
+            page.find_companion_row(a, title, url)
+            if companions and found is None
+            else (None, None, False)
+        )
         if found is None:
             # 悬浮提示里写明的发表时间最准（提示里的标题本身可能以会议日期之类结尾）
             found, full = _tooltip_date(a, page.today)
@@ -429,30 +674,62 @@ def _extract_heuristic(page: _Page, require_date: bool) -> tuple[tuple, list[Lis
         if found is None or (not full and url_date):
             # 行里只写了"月-日"而网址里有完整日期时，以网址为准（年份不会推错）
             found = url_date or found
+        if companion_row is not None and found is None:
+            # 附带链接让原来的找法停在了标题格：日期照上面原来的取法（提示文字、链接文字、网址），
+            # 都取不到（原来整行漏掉）才用不看附带链接找到的行里写的
+            found = companion_found
         if found is None and require_date:
             continue
         title = _without_attr_date(title, a, found, page.today)
         if not _looks_like_title(title):
             continue
+        item = ListItem(title, url, found)
+        if companion_row is not None:
+            pending.append((position, item, a.getparent(), companion_row.getparent()))
+            continue
         container = (row if row is not None else a).getparent()
         if container is None:
             continue
         key = _group_key(container)
-        blocks.setdefault(key, []).append((position, ListItem(title, url, found)))
+        blocks.setdefault(key, []).append((position, item, junk))
         containers.setdefault(key, container)
+        used.add(container)
+    taken = set(blocks)
+    for position, item, cell, parent in pending:
+        # 照原来（按链接）分的那一块已经有别的行，就归那一块，和原来一样；不然找到的行的父元素已经有
+        # 别的行（泸州：同一张表里行内写着日期的行），就和它们算一张表；都没有照原来分
+        if (
+            parent is not None
+            and (cell is None or _group_key(cell) not in taken)
+            and parent in used
+        ):
+            container = parent
+        elif cell is not None:
+            container = cell
+        else:
+            continue
+        key = _group_key(container)
+        blocks.setdefault(key, []).append((position, item, False))
+        containers.setdefault(key, container)
+    if pending:
+        # 列表块照原来的先后（按块里第一条在页面上的位置）排：评分一样时取靠前的那块
+        blocks = dict(sorted(blocks.items(), key=lambda kv: min(e[0] for e in kv[1])))
 
     if not blocks:
-        return _NO_SCORE, []
+        return _NO_SCORE, [], [], seen
 
     keys = list(blocks)
     peripheral = [k[2] for k in keys]
-    in_dir = [_in_dir([item for _, item in blocks[k]], page) >= 0.5 for k in keys]
+    in_dir = [_in_dir([e[1] for e in blocks[k]], page) >= 0.5 for k in keys]
     candidates = []
     for members in _clusters([containers[k] for k in keys], peripheral, in_dir):
-        entries = sorted(entry for i in members for entry in blocks[keys[i]])
-        items = [item for _, item in entries]
-        candidates.append((_score(items, page, peripheral[members[0]]), items))
-    return max(candidates, key=lambda c: c[0])
+        entries = sorted((e for i in members for e in blocks[keys[i]]), key=lambda e: e[0])
+        score = _score([e[1] for e in entries], page, peripheral[members[0]])
+        candidates.append(
+            (score, [e[1] for e in entries if not e[2]], [e[1] for e in entries if e[2]])
+        )
+    score, items, dropped = max(candidates, key=lambda c: c[0])
+    return score, items, dropped, seen
 
 
 def _extract_with_config(page: _Page, config: dict) -> list[ListItem]:
@@ -608,9 +885,22 @@ def extract_items(
     page = _Page(doc, page_url, today or date.today())
     if config.get("item_selector"):
         return _dedupe(_extract_with_config(page, config))
-    score, items = _extract_heuristic(page, require_date=config.get("require_date", True))
+    require_date = config.get("require_date", True)
+    score, items, dropped, companions = _extract_heuristic(page, require_date)
     # 页面上的链接和脚本里的列表数据都看，取更像正文列表的一种
     json_score, json_items = _extract_embedded_json(html, page)
     if json_score > score:
         items = json_items
+    elif dropped and not items:
+        # 原来读出的全是附带链接（比如整张表就是弹层里的解读）：照原来
+        items = dropped
+    elif companions:
+        # 页面上有附带链接（泸州弹层里的解读、福建的"| AI阅读"）：不看它们再读一遍。原来读出的
+        # （去掉附带链接）一条不少、标题和日期一样、先后也一样，才用新读出的，不然照原来
+        _, better, _, _ = _extract_heuristic(page, require_date, companions=True)
+        old = [(i.title, i.url, i.publish_date) for i in _dedupe(items)]
+        kept = set(old)
+        new = [(i.title, i.url, i.publish_date) for i in _dedupe(better)]
+        if [k for k in new if k in kept] == old:
+            items = better
     return _dedupe(items)
