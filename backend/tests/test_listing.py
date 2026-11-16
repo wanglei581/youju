@@ -1204,3 +1204,19 @@ def test_dates_inside_other_rows_popups_do_not_make_them_dated_rows() -> None:
     ]
     assert "关于项目申报的通知" in titles
     assert "关于征集典型案例的通知" in titles and "关于开展第三批项目申报的通知" in titles
+
+
+def test_one_pinned_row_with_an_inline_date_does_not_split_a_tooltip_dated_list() -> None:
+    # 多数行日期只写在提示文字里，只有一行（置顶）写在行里；带解读弹层的那一行照 main 和多数行算一张列表
+    html = """<ul class="list">
+      <li><a href="/a/0.html">【置顶】关于做好年度申报工作的提示</a><span>2026-10-22</span></li>
+      <li><a href="/a/1.html" title="标题：关于项目申报的通知 点击数：0 发表时间：2026-10-21">关于项目申报的通知</a><div style="display:none"><a href="/b/1.html">关于项目申报工作的政策解读</a></div></li>
+      <li><a href="/a/2.html" title="标题：关于公布第二批名单的通知 点击数：0 发表时间：2026-10-20">关于公布第二批名单的通知</a></li>
+      <li><a href="/a/3.html" title="标题：关于征集典型案例的通知 点击数：0 发表时间：2026-10-19">关于征集典型案例的通知</a></li>
+      <li><a href="/a/4.html" title="标题：关于开展第三批项目申报的通知 点击数：0 发表时间：2026-10-18">关于开展第三批项目申报的通知</a></li>
+    </ul>"""
+    titles = [
+        i.title for i in extract_items(html, "http://example.gov.cn/a/", today=date(2026, 11, 16))
+    ]
+    assert "关于项目申报的通知" in titles
+    assert "关于开展第三批项目申报的通知" in titles

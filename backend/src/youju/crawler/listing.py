@@ -371,21 +371,23 @@ class _Page:
         return found
 
     def _siblings_dated(self, row: etree._Element) -> bool:
-        """同一层（同一个父元素下、标签一样）的别的行里，有没有日期写在行里（链接外面）的。"""
+        """同一层（同一个父元素下、标签一样）带文件链接的别的行里，过半数把日期写在行里（链接外面）。"""
         parent = row.getparent()
         if parent is None:
             return False
+        rows = dated = 0
         for sibling in parent:
             if sibling is row or sibling.tag != row.tag:
                 continue
             for b in sibling.iter("a"):
                 if self.link(b) is None:
                     continue
+                rows += 1
                 popups, _ = self.hidden_popups(b)  # 别的行弹层里写的日期不算行里的日期
                 if self.date_node(sibling, b, set(b.iterancestors()), popups)[0] is not None:
-                    return True
+                    dated += 1
                 break
-        return False
+        return rows > 0 and dated * 2 > rows
 
     def _row_of(self, a: etree._Element, url: str, companions: set[str]) -> etree._Element | None:
         """不看日期往上找"一行"：再上一层就有别的文件链接时，这一层就是行。"""
