@@ -450,7 +450,12 @@ class _PausingFetcher:
 
     def fetch(self, url: str) -> FetchResult:
         if isinstance(self.inner, PoliteFetcher):
-            result = self.inner.fetch(url, hop_allowed=self._admit, on_response=self._response)
+            result = self.inner.fetch(
+                url,
+                hop_allowed=self._admit,
+                on_response=self._response,
+                stop_when=self.should_stop,
+            )
         elif not self._admit(url):
             result = FetchResult(url, "site_paused", error=SITE_PAUSED)
         else:

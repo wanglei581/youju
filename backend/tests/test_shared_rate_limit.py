@@ -161,9 +161,38 @@ def test_wall_clock_rollback_does_not_wait_long(tmp_path):
         assert time.monotonic() - started < 3
 
 
-@pytest.mark.parametrize("value", ["", "abc", "nan", "inf"])
-def test_bad_stamp_counts_as_no_record(tmp_path, value):
+def test_empty_stamp_is_a_new_record(tmp_path):
     limits = _SharedLimits(str(tmp_path))
-    limits.path("h", "a.example.gov.cn").write_text(value)
+    limits.path("h", "a.example.gov.cn").write_text("")
     with _fetcher(str(tmp_path), host_interval=0.2) as fetcher:
         assert fetcher.fetch("https://a.example.gov.cn/page").status == "ok"
+    # 定长写、不先清空：写完的记录不会是空的
+    assert float(limits.path("h", "a.example.gov.cn").read_text().strip()) > 0
+
+
+@pytest.mark.parametrize("value", ["abc", "nan", "inf", "\x00\x00"])
+def test_bad_stamp_waits_full_interval_or_stops_when_required(tmp_path, value):
+    from youju.crawler.fetcher import SharedLimitError
+
+    limits = _SharedLimits(str(tmp_path))
+    limits.path("h", "a.example.gov.cn").write_text(value)
+    # 读不出来的记录（写到一半被杀、乱写）：按刚请求过等满一个间隔，再写上新的时间
+    with _fetcher(str(tmp_path), host_interval=0.3) as fetcher:
+        started = time.monotonic()
+        assert fetcher.fetch("https://a.example.gov.cn/page").status == "ok"
+        assert time.monotonic() - started >= 0.3
+    assert float(limits.path("h", "a.example.gov.cn").read_text().strip()) > 0
+    # 一定要跨进程限速（补正文队列）：停下，不当成没有记录
+    limits.path("h", "a.example.gov.cn").write_text(value)
+    fetcher = PoliteFetcher(
+        "YoujuBot-test",
+        per_host_interval=0.3,
+        transport=httpx.MockTransport(lambda request: httpx.Response(404, request=request)),
+        real_network=False,
+        resolver=lambda host: [ADDRESS],
+        per_address_interval=0,
+        shared_limits_dir=str(tmp_path),
+        require_shared_limits=True,
+    )
+    with fetcher, pytest.raises(SharedLimitError):
+        fetcher.fetch("https://a.example.gov.cn/page")

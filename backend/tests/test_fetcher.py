@@ -472,6 +472,63 @@ def test_ssl_handshake_error_retries_in_compat_mode_and_remembers_host() -> None
     assert compat_calls == ["/robots.txt", "/1.html", "/2.html"]
 
 
+def test_ssl_compat_retry_waits_host_interval() -> None:
+    import time
+
+    times: list[tuple[str, float]] = []
+
+    def default_handler(request: httpx.Request) -> httpx.Response:
+        times.append(("default", time.monotonic()))
+        raise httpx.ConnectError("[SSL: BAD_ECPOINT] bad ecpoint (_ssl.c:1010)", request=request)
+
+    def compat_handler(request: httpx.Request) -> httpx.Response:
+        times.append(("compat", time.monotonic()))
+        return httpx.Response(404 if request.url.path == "/robots.txt" else 200, text=LIST_HTML)
+
+    fetcher = PoliteFetcher(
+        "TestAgent YoujuBot/0.1",
+        per_host_interval=0.3,
+        per_address_interval=0,
+        transport=httpx.MockTransport(default_handler),
+        compat_transport=httpx.MockTransport(compat_handler),
+        resolver=public_dns,
+    )
+    with fetcher as f:
+        assert f.fetch("https://old.gov.cn/1.html").status == "ok"
+    # 握手失败也是连过一次：改用兼容模式重连之前隔够同一网站的间隔
+    assert [kind for kind, _ in times[:2]] == ["default", "compat"]
+    assert times[1][1] - times[0][1] >= 0.3
+
+
+def test_stop_while_reading_body_abandons_response() -> None:
+    state = {"stop": False, "chunks": 0}
+
+    def body():
+        for _ in range(5):
+            state["chunks"] += 1
+            if state["chunks"] == 2:
+                state["stop"] = True  # 读到一半：让路或者网站被停取了
+            yield b"x" * 1000
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/robots.txt":
+            return httpx.Response(404)
+        return httpx.Response(200, content=body())
+
+    fetcher = PoliteFetcher(
+        "TestAgent YoujuBot/0.1",
+        per_host_interval=0.0,
+        per_address_interval=0,
+        transport=httpx.MockTransport(handler),
+        resolver=public_dns,
+    )
+    with fetcher as f:
+        result = f.fetch("https://a.gov.cn/big.pdf", stop_when=lambda: state["stop"])
+    # 放弃这一份（不是网站的问题，调用方当作没查、不写库），没把剩下的读完
+    assert result.status == "deadline" and not result.content
+    assert state["chunks"] < 5
+
+
 def test_certificate_error_is_never_bypassed() -> None:
     compat_calls: list[str] = []
 

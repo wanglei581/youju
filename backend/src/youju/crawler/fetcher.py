@@ -42,6 +42,7 @@ _DNS_SLOTS = threading.BoundedSemaphore(32)
 # 复用连接会把 B 网站的请求发到按 A 网站校验过证书的连接上
 _NO_KEEPALIVE = httpx.Limits(max_keepalive_connections=0)
 _DEADLINE = "到了这次任务的期限，没有查完"
+_STOPPED = "要停下了（让路或停止），这一份没取完"
 
 
 # 取详情时这一轮已停取的网站（见 detail_service）：不去取的原因
@@ -75,20 +76,34 @@ class _SharedLimits:
         return self.root / f"{kind}-{digest}"
 
 
+class _CorruptStamp(OSError):
+    """跨进程限速记录里的时间读不出来（被截断、乱写）。"""
+
+
+# 记录定长写、不先清空：写到一半被杀也不会留下空文件（空文件只表示新建、还没请求过）
+_STAMP_WIDTH = 32
+
+
 def _read_stamp(fd: int) -> float | None:
+    """上次的时间；新建的空记录给 None。读不出来的抛 _CorruptStamp（调用方按"刚请求过"等满一个
+    间隔；一定要跨进程限速时停下）。"""
     os.lseek(fd, 0, os.SEEK_SET)
     raw = os.read(fd, 64)
-    try:
-        value = float(raw.decode("ascii"))
-    except (UnicodeDecodeError, ValueError):
+    if not raw:
         return None
-    return value if math.isfinite(value) else None
+    try:
+        value = float(raw.decode("ascii").strip())
+    except (UnicodeDecodeError, ValueError):
+        value = math.nan
+    if not math.isfinite(value):
+        raise _CorruptStamp(f"跨进程限速记录读不出来：{raw[:40]!r}")
+    return value
 
 
 def _write_stamp(fd: int, value: float) -> None:
-    os.lseek(fd, 0, os.SEEK_SET)
-    os.ftruncate(fd, 0)
-    os.write(fd, repr(value).encode("ascii"))
+    data = f"{value:.6f}".rjust(_STAMP_WIDTH).encode("ascii")
+    if os.pwrite(fd, data, 0) != len(data):
+        raise OSError("跨进程限速记录没写完整")
 
 
 @dataclass
@@ -315,8 +330,13 @@ class PoliteFetcher:
         same_address_only: bool = False,
         hop_allowed: Callable[..., bool] | None = None,
         on_response: Callable[[FetchResult], None] | None = None,
+        stop_when: Callable[[], bool] | None = None,
     ) -> FetchResult:
         """抓取一个页面。重定向逐跳处理：每一跳都检查 robots.txt，并遵守目标网站的限速。
+
+        stop_when()：读响应体的时候也问（补正文队列让路、停下用）；要停下就放弃这一份，返回
+        "deadline"（不是网站的问题，调用方当作没查、不写库）。网站被停取不在这里管：已经正常回来
+        的页面照收。
 
         hop_allowed(url, record=...)：取详情时用来挡住这一轮已停取的网站（见 detail_service）。
         每一跳查 robots 之前问一次（record=False，只查）；每次真正发请求之前（解析完域名、排队等完
@@ -332,6 +352,7 @@ class PoliteFetcher:
         robots_hops: list[str] = []
         self._local.gate = hop_allowed
         self._local.on_response = on_response
+        self._local.stop_when = stop_when
         self._local.refusal = None
         self._local.robots_hops = robots_hops
         try:
@@ -339,6 +360,7 @@ class PoliteFetcher:
         finally:
             self._local.gate = None
             self._local.on_response = None
+            self._local.stop_when = None
             self._local.robots_hops = None
         result = self._local.refusal or result
         self._local.refusal = None
@@ -555,7 +577,14 @@ class PoliteFetcher:
             if fd is None or fd == "paused":
                 inner.close()
                 return "deadline" if fd is None else "paused"
-            last = _read_stamp(fd)
+            try:
+                last = _read_stamp(fd)
+            except _CorruptStamp as exc:
+                if self._require_shared:
+                    raise  # 一定要跨进程限速：停下（见下面的 except）
+                # 只当作刚请求过、等满一个间隔，再写上新的时间
+                log.warning("%s，按刚请求过等满 %.1f 秒", exc, interval)
+                last = math.inf
             now = time.time()
             if last is not None:
                 wait = interval if last > now else min(interval, interval - (now - last))
@@ -750,6 +779,13 @@ class PoliteFetcher:
                                     return FetchResult(
                                         url, "deadline", final_url=url, error=_DEADLINE
                                     )
+                                stop = getattr(self._local, "stop_when", None)
+                                if stop is not None and stop():
+                                    # 读的时候要停下了（让路、停止）：放弃这一份，调用方不写库。
+                                    # 每次读最多等到超时，停下的信号最晚一个超时以内生效
+                                    return FetchResult(
+                                        url, "deadline", final_url=url, error=_STOPPED
+                                    )
                                 size += len(chunk)
                                 if size > MAX_RESPONSE_BYTES:
                                     return FetchResult(
@@ -774,9 +810,11 @@ class PoliteFetcher:
                 if "SSL" in upper:
                     if host in self._compat_hosts:
                         return FetchResult(url, "ssl_error", error=f"加密连接错误：{message[:200]}")
-                    # 老旧服务器与 OpenSSL 3 默认设置不兼容：改用兼容模式立即重试，不占用重试次数
+                    # 老旧服务器与 OpenSSL 3 默认设置不兼容：改用兼容模式重试，不占用重试次数；
+                    # 握手失败也是连过一次，照样隔够同一网站的间隔再连
                     with self._guard:
                         self._compat_hosts.add(host)
+                    self._sleep(self._interval)
                     continue
                 last_error = f"连接失败：{message[:200]}"
             except httpx.HTTPError as exc:
