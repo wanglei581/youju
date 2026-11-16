@@ -402,13 +402,12 @@ class _Page:
         if cell is None:
             return None, None, False
         popup = self._cell_popup(cell)
-        companions = (popup.linked if _is_attachment(url) else popup.documents) | self._cell_twins(
-            cell
-        )
-        companions = companions - {url}
+        others = (popup.linked if _is_attachment(url) else popup.documents) - {url}
+        companions = others | (self._cell_twins(cell) - {url})
         if not companions:
             return None, None, False
-        return self._climb(a, title, url, popup.nodes, companions)
+        # 弹层里链着别的文件才算附带链接、连里面的日期和文字一起不看；不然弹层照原来读
+        return self._climb(a, title, url, popup.nodes if others else set(), companions)
 
     def _cell_popup(self, cell: etree._Element) -> _CellPopup:
         """cell 里的"政策解读"弹层（_POPUP_CLASS）。按 cell 算一次。"""

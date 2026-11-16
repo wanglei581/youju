@@ -1395,6 +1395,25 @@ def test_recovered_row_reads_like_the_same_page_without_the_popup() -> None:
     ]
 
 
+def test_popup_without_other_documents_is_read_as_before_next_to_an_assistant_link() -> None:
+    # 行里有 AI 阅读链接，同一格子里还有个 address-popup，但里面只链着这份文件本身：弹层不算附带链接，
+    # 里面的日期照原来读（和去掉 AI 阅读链接的同一页一样）
+    row = (
+        '<li><a href="/b">关于乙事项的通知</a>{ai}<span>2026-02-01</span>'
+        '<div class="address-popup"><a href="/b">详情</a><span>2026-03-01</span></div></li>'
+    )
+    page = '<ul><li><a href="/a">关于甲事项的通知</a><span>2026-01-01</span></li>{row}</ul>'
+    ai = '<a class="tertonAIReaderFlag" href="/b?assistant=true">| AI阅读</a>'
+    today = date(2026, 11, 16)
+    with_ai = extract_items(page.format(row=row.format(ai=ai)), "http://e.cn/", today=today)
+    without = extract_items(page.format(row=row.format(ai="")), "http://e.cn/", today=today)
+    assert with_ai == without
+    assert [(i.url, i.publish_date) for i in with_ai] == [
+        ("http://e.cn/a", date(2026, 1, 1)),
+        ("http://e.cn/b", date(2026, 3, 1)),
+    ]
+
+
 def test_lists_keep_their_page_order_when_they_score_the_same() -> None:
     # 带附带链接的行等别的行分完才归块；归完以后列表块照原来按页面上的先后排，评分一样时取靠前的那块。
     # main 读的也是第一张表（外加三条"| AI阅读"）
