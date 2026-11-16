@@ -124,6 +124,19 @@ def read_fixture_html(name: str) -> str:
 
 
 @pytest.fixture(autouse=True)
+def _isolated_crawl_state(monkeypatch, tmp_path):
+    """每个测试的补正文停取记录指到自己的临时文件、不用跨进程限速目录：不读写机器上真实的 /tmp
+    状态（同时跑着别的会话的测试，会互相干扰），限速锁文件也不会拖慢测试。测跨进程限速的测试
+    自己传临时目录。中途重建配置（get_settings.cache_clear）的测试靠环境变量照样拿到这两项。"""
+    pause = str(tmp_path / "detail-pause.json")
+    monkeypatch.setenv("YOUJU_DETAIL_PAUSE_PATH", pause)
+    monkeypatch.setenv("YOUJU_RATE_LIMIT_DIR", "")
+    settings = get_settings()
+    monkeypatch.setattr(settings, "detail_pause_path", pause)
+    monkeypatch.setattr(settings, "rate_limit_dir", "")
+
+
+@pytest.fixture(autouse=True)
 def _reset_admin_throttle():
     """管理口令输错计数放在进程内存里，每个测试前清零，免得前面测试的错误次数触发限流。"""
     from youju import access_log

@@ -140,6 +140,7 @@ def _cmd_crawl(args: argparse.Namespace) -> int:
         settings.request_timeout,
         settings.per_host_interval,
         per_address_interval=settings.per_address_interval,
+        shared_limits_dir=settings.rate_limit_dir or None,
         per_address_concurrency=settings.per_address_concurrency,
     ) as fetcher:
         results = crawl_sources(

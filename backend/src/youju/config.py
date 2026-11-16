@@ -79,7 +79,13 @@ class Settings(BaseSettings):
     per_host_interval: float = 3.0
     per_address_interval: float = 1.0
     per_address_concurrency: int = 2
-    detail_pause_path: str = "/tmp/youju-detail-pause.json"
+    # 跨进程限速：同一台机器上各个抓取进程共用的锁文件目录（同一网站隔 3 秒、同一地址限速对整机
+    # 生效）；空串表示不用（只管各自的取页器）。时间戳不需要长期保存，放 /tmp 就行
+    rate_limit_dir: str = "/tmp/youju-rate"
+    # 补正文的停取记录（被拒绝的网站 24 小时内不再去、429 停 6 小时）：要放在重建容器也不丢的
+    # 地方。不填时配了 storage_dir 放 <storage_dir>/state/detail-pause.json（家里电脑上是
+    # /data/storage 卷），没配放 /tmp/youju-detail-pause.json
+    detail_pause_path: str = ""
     # 同时抓取的网站数；同一网站内始终串行。
     max_workers: int = 8
     # 连续失败多少次后把来源标记为 failing 并告警。
@@ -446,6 +452,16 @@ class Settings(BaseSettings):
             r"age1[0-9a-z]{58}", self.offsite_age_recipient.strip()
         ):
             raise ValueError("YOUJU_OFFSITE_AGE_RECIPIENT 是 age-keygen 给的公钥（age1 开头）")
+        return self
+
+    @model_validator(mode="after")
+    def _default_detail_pause_path(self) -> "Settings":
+        if not self.detail_pause_path:
+            self.detail_pause_path = (
+                str(self.storage_dir / "state" / "detail-pause.json")
+                if self.storage_dir is not None
+                else "/tmp/youju-detail-pause.json"
+            )
         return self
 
     @model_validator(mode="after")

@@ -24,13 +24,6 @@ class FakeFetcher:
         return response.pop(0) if isinstance(response, list) else response
 
 
-@pytest.fixture(autouse=True)
-def isolated_detail_pause(monkeypatch, tmp_path):
-    from youju.config import get_settings
-
-    monkeypatch.setattr(get_settings(), "detail_pause_path", str(tmp_path / "pause.json"))
-
-
 def add_document(session, number, *, source_id=None, rights_level=1, title=None):
     if source_id is None:
         source = Source(

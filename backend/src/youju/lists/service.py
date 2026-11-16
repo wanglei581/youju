@@ -481,6 +481,7 @@ def parse_lists(
             settings.request_timeout,
             settings.per_host_interval,
             per_address_interval=settings.per_address_interval,
+            shared_limits_dir=settings.rate_limit_dir or None,
             per_address_concurrency=settings.per_address_concurrency,
             url_allowed=_government_url,
         )

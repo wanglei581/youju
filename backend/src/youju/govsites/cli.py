@@ -27,6 +27,7 @@ def _fetcher(timeout: float = 20.0):
         timeout,
         settings.per_host_interval,
         per_address_interval=settings.per_address_interval,
+        shared_limits_dir=settings.rate_limit_dir or None,
         per_address_concurrency=settings.per_address_concurrency,
         resolver=CachingResolver(),
         url_allowed=is_gov_url,

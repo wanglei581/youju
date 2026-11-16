@@ -1,7 +1,12 @@
 """礼貌抓取：遵守 robots.txt（RFC 9309）、同一网站限速、透明标识，不绕过任何防护。"""
 
+import contextlib
+import fcntl
+import hashlib
 import ipaddress
 import logging
+import math
+import os
 import re
 import socket
 import ssl
@@ -9,6 +14,7 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
+from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 from urllib.robotparser import RobotFileParser
 
@@ -40,6 +46,43 @@ _DEADLINE = "到了这次任务的期限，没有查完"
 
 # 取详情时这一轮已停取的网站（见 detail_service）：不去取的原因
 SITE_PAUSED = "同一网站这一轮遇到防护页，停取"
+# 跨进程的名额文件都占着时，隔这么久再试一次
+_SLOT_POLL = 0.05
+
+
+class _SharedLimits:
+    """同一台机器上各个进程共用的限速记录（补正文队列、每轮抓取、查原网页、附件副本、名单证据
+    是几个独立的进程，各有各的取页器；同一网站隔 3 秒、同一地址限速要对整台机器生效）。
+
+    每个主机、每个地址一个锁文件（fcntl 排他锁，进程退出时系统自动放锁），文件里记上次的时间
+    （墙上时间 time.time()，各进程之间才能比）：
+    - h-<主机名哈希>：上次请求结束的时间；
+    - a-<地址哈希>：上次请求开始的时间；a-<地址哈希>.s0、.s1……：同一地址同时在飞的名额。
+    读写出错（目录不可写、磁盘满）由调用方记警告、这一次退回只用进程内的限速，不让抓取失败。"""
+
+    def __init__(self, root: str) -> None:
+        self.root = Path(root)
+        self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
+
+    def path(self, kind: str, key: str) -> Path:
+        digest = hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
+        return self.root / f"{kind}-{digest}"
+
+
+def _read_stamp(fd: int) -> float | None:
+    os.lseek(fd, 0, os.SEEK_SET)
+    raw = os.read(fd, 64)
+    try:
+        value = float(raw.decode("ascii"))
+    except (UnicodeDecodeError, ValueError):
+        return None
+    return value if math.isfinite(value) else None
+
+
+def _write_stamp(fd: int, value: float) -> None:
+    os.lseek(fd, 0, os.SEEK_SET)
+    os.ftruncate(fd, 0)
+    os.write(fd, repr(value).encode("ascii"))
 
 
 @dataclass
@@ -165,6 +208,7 @@ class PoliteFetcher:
         deadline: float | None = None,
         per_address_interval: float = 1.0,
         per_address_concurrency: int = 2,
+        shared_limits_dir: str | None = None,
     ) -> None:
         headers = {
             "User-Agent": user_agent,
@@ -220,6 +264,14 @@ class PoliteFetcher:
         self._address_slots: dict[str, threading.BoundedSemaphore] = {}
         self._address_last: dict[str, float] = {}
         self._guard = threading.Lock()
+        # 跨进程限速（shared_limits_dir，配置项 rate_limit_dir）：不配就只管这个实例
+        self._shared: _SharedLimits | None = None
+        self._shared_warned = False
+        if shared_limits_dir:
+            try:
+                self._shared = _SharedLimits(shared_limits_dir)
+            except OSError as exc:
+                self._shared_failed(exc)
         self._robots: dict[str, _RobotsEntry] = {}
         self._robots_locks: dict[str, threading.Lock] = {}
         # 这一次 fetch() 的 hop_allowed（各线程各自的）：_request 每次真正发请求前再问一次
@@ -420,15 +472,103 @@ class PoliteFetcher:
         with self._guard:
             return locks.setdefault(key, threading.Lock())
 
+    def _shared_failed(self, exc: OSError) -> None:
+        if not self._shared_warned:
+            self._shared_warned = True
+            log.warning("跨进程限速的目录用不了，这次只按本进程限速：%s", exc)
+
+    def _file_lock(self, path: Path, stack: contextlib.ExitStack) -> int | None:
+        """拿 path 的排他锁（拿不到隔一会儿再试，守期限），锁和文件由 stack 放掉；到期给 None。"""
+        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+        stack.callback(os.close, fd)
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                if self._expired():
+                    return None
+                self._sleep(_SLOT_POLL)
+                continue
+            stack.callback(fcntl.flock, fd, fcntl.LOCK_UN)
+            return fd
+
+    def _shared_wait(
+        self, stack: contextlib.ExitStack, kind: str, key: str, interval: float
+    ) -> int | str | None:
+        """跨进程补足间隔：拿 kind-key 锁文件的锁，按里面记的时间等够 interval。返回拿着的文件
+        （锁由 stack 放），"deadline" 表示等到了期限；不跨进程限速（没配目录、文件出错）给 None。
+        墙上时间往回调过（记的时间比现在还晚）按没有记录处理，最多等 interval 本身。"""
+        if self._shared is None or interval <= 0:
+            return None
+        inner = contextlib.ExitStack()
+        try:
+            fd = self._file_lock(self._shared.path(kind, key), inner)
+            if fd is None:
+                inner.close()
+                return "deadline"
+            last = _read_stamp(fd)
+            now = time.time()
+            if last is not None and last <= now:
+                wait = min(interval, interval - (now - last))
+                if wait > 0:
+                    self._sleep(wait)
+        except OSError as exc:
+            inner.close()
+            self._shared_failed(exc)
+            return None
+        stack.enter_context(inner)
+        return fd
+
+    def _shared_stamp(self, fd: int | str | None) -> None:
+        if isinstance(fd, int):
+            try:
+                _write_stamp(fd, time.time())
+            except OSError as exc:
+                self._shared_failed(exc)
+
+    def _shared_slot(self, stack: contextlib.ExitStack, address: str) -> str | None:
+        """跨进程的同一地址名额：per_address_concurrency 个名额文件逐个试（不等），都占着就隔一会儿
+        再试，守期限；拿到的由 stack 放。到期给 "deadline"，不跨进程限速给 None。"""
+        if self._shared is None:
+            return None
+        base = str(self._shared.path("a", address))
+        try:
+            while True:
+                for n in range(self._address_concurrency):
+                    fd = os.open(f"{base}.s{n}", os.O_RDWR | os.O_CREAT, 0o600)
+                    try:
+                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        os.close(fd)
+                        continue
+                    except OSError:
+                        os.close(fd)
+                        raise
+                    stack.callback(os.close, fd)
+                    stack.callback(fcntl.flock, fd, fcntl.LOCK_UN)
+                    return "ok"
+                if self._expired():
+                    return "deadline"
+                self._sleep(_SLOT_POLL)
+        except OSError as exc:
+            self._shared_failed(exc)
+            return None
+
     def _get(self, url: str) -> FetchResult:
         host = host_of(url)
-        with self._lock_for(self._host_locks, host):
+        # 锁的先后固定：主机（进程内 → 文件）→ 地址名额（进程内 → 文件）→ 地址间隔（进程内 →
+        # 文件），没有反过来拿的地方，不会死锁
+        with self._lock_for(self._host_locks, host), contextlib.ExitStack() as shared:
             last = self._last_request.get(host)
             if last is not None:
                 wait = self._interval - (self._clock() - last)
                 if wait > 0:
                     self._sleep(wait)
             if self._expired():
+                return FetchResult(url, "deadline", final_url=url, error=_DEADLINE)
+            # 跨进程：同一主机的请求整机串行，前一个结束到后一个开始至少隔 per_host_interval
+            host_file = self._shared_wait(shared, "h", host, self._interval)
+            if host_file == "deadline" or self._expired():
                 return FetchResult(url, "deadline", final_url=url, error=_DEADLINE)
             try:
                 result = self._request(url)
@@ -443,6 +583,7 @@ class PoliteFetcher:
                 return result
             finally:
                 self._last_request[host] = self._clock()
+                self._shared_stamp(host_file)
 
     def _request(self, url: str) -> FetchResult:
         host = host_of(url)
@@ -474,43 +615,57 @@ class PoliteFetcher:
                     request_url, headers, extensions = _pinned_request(url, addresses[0])
                 # 同一地址限速（集约化平台上很多网站共用一个地址）：同时最多
                 # per_address_concurrency 个请求，两次请求开始之间至少隔 per_address_interval 秒。
-                # 锁的先后固定是主机锁（_get 里，在外层）→ 地址名额 → 地址锁，没有反过来拿的地方，
-                # 不会死锁。只管这个取页器实例（一个任务用一个）；跨进程的不管：补正文队列和每轮
-                # 抓取不同时跑，别的任务并发小
+                # 进程内的名额、间隔先拿，再拿跨进程的（配了 rate_limit_dir 时）。锁的先后见 _get
                 address = addresses[0] if addresses else None
-                slot = None
                 started_waiting = self._clock()
-                if address and self._address_concurrency > 0:
-                    with self._guard:
-                        slot = self._address_slots.setdefault(
-                            address, threading.BoundedSemaphore(self._address_concurrency)
-                        )
-                    if self._deadline is None:
-                        acquired = slot.acquire()
-                    else:
-                        acquired = slot.acquire(timeout=max(0, self._deadline - self._clock()))
-                    if not acquired:
-                        waited = self._clock() - started_waiting
-                        if waited > 10:
-                            log.debug("地址 %s、主机 %s 等待 %.2f 秒", address, host, waited)
-                        return FetchResult(url, "deadline", final_url=url, error=_DEADLINE)
-                try:
-                    if not self._gate(url, record=True):
+                with contextlib.ExitStack() as hold:
+                    if address and self._address_concurrency > 0:
+                        with self._guard:
+                            slot = self._address_slots.setdefault(
+                                address, threading.BoundedSemaphore(self._address_concurrency)
+                            )
+                        if self._deadline is None:
+                            acquired = slot.acquire()
+                        else:
+                            acquired = slot.acquire(timeout=max(0, self._deadline - self._clock()))
+                        if not acquired:
+                            return FetchResult(url, "deadline", final_url=url, error=_DEADLINE)
+                        hold.callback(slot.release)
+                        if self._shared_slot(hold, address) == "deadline":
+                            return FetchResult(url, "deadline", final_url=url, error=_DEADLINE)
+                    # 占了名额、等间隔之前先查一次（只查不记）
+                    if not self._gate(url, record=False):
                         return FetchResult(url, "site_paused", final_url=url, error=SITE_PAUSED)
+                    # 地址间隔的锁（进程内的和文件的）一直拿到请求发出、收到响应头再放：记下开始
+                    # 时间就放的话，线程可能在真正发出前被挂起，别的线程先发，两次实际开始不到间隔
+                    interval = hold.enter_context(contextlib.ExitStack())
                     if address and self._address_interval > 0:
-                        with self._lock_for(self._address_locks, address):
-                            last = self._address_last.get(address)
-                            if last is not None:
-                                wait = self._address_interval - (self._clock() - last)
-                                if wait > 0:
-                                    self._sleep(wait)
-                            if not self._expired():
-                                self._address_last[address] = self._clock()
+                        lock = self._lock_for(self._address_locks, address)
+                        lock.acquire()
+                        interval.callback(lock.release)
+                        last = self._address_last.get(address)
+                        if last is not None:
+                            wait = self._address_interval - (self._clock() - last)
+                            if wait > 0:
+                                self._sleep(wait)
+                        address_file = self._shared_wait(
+                            interval, "a", address, self._address_interval
+                        )
+                        if address_file == "deadline":
+                            return FetchResult(url, "deadline", final_url=url, error=_DEADLINE)
+                    else:
+                        address_file = None
                     waited = self._clock() - started_waiting
                     if address and waited > 10:
                         log.debug("地址 %s、主机 %s 等待 %.2f 秒", address, host, waited)
                     if self._expired():
                         return FetchResult(url, "deadline", final_url=url, error=_DEADLINE)
+                    # 等完以后、真正发出之前再问一次（等的这段时间网站可能被停了）：放行才记下经过
+                    if not self._gate(url, record=True):
+                        return FetchResult(url, "site_paused", final_url=url, error=SITE_PAUSED)
+                    if address and self._address_interval > 0:
+                        self._address_last[address] = self._clock()
+                        self._shared_stamp(address_file)
                     timing = {}
                     if self._deadline is not None:
                         # 临近期限：这一次连接、读取最多等到期限（至少 1 秒）
@@ -519,6 +674,8 @@ class PoliteFetcher:
                     with client.stream(
                         "GET", request_url, headers=headers, extensions=extensions, **timing
                     ) as resp:
+                        # 收到响应头：请求已经发出，放开地址间隔的锁（读响应体时不拿着）
+                        interval.close()
                         refusal = _peer_refusal(resp, real)
                         if refusal:
                             return FetchResult(
@@ -544,9 +701,6 @@ class PoliteFetcher:
                                     )
                                 chunks.append(chunk)
                             content = b"".join(chunks)
-                finally:
-                    if slot is not None:
-                        slot.release()
             except httpx.TimeoutException as exc:
                 last_error = f"超时：{exc.__class__.__name__}"
             except httpx.ConnectError as exc:

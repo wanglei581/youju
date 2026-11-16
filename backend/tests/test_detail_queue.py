@@ -11,13 +11,6 @@ from youju.crawler.fetcher import FetchResult
 from youju.models import DocumentDetail
 
 
-@pytest.fixture(autouse=True)
-def isolated_detail_pause(monkeypatch, tmp_path):
-    from youju.config import get_settings
-
-    monkeypatch.setattr(get_settings(), "detail_pause_path", str(tmp_path / "pause.json"))
-
-
 def response(doc, status=200):
     return FetchResult(
         doc.url,

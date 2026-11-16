@@ -90,6 +90,7 @@ def polite_fetcher():
         settings.request_timeout,
         max(settings.per_host_interval, MIN_INTERVAL),
         per_address_interval=settings.per_address_interval,
+        shared_limits_dir=settings.rate_limit_dir or None,
         per_address_concurrency=settings.per_address_concurrency,
         url_allowed=_government_url,
     )
