@@ -197,11 +197,26 @@ def _expand_datastore(html: str) -> str:
 class _CellPopup(NamedTuple):
     """一个元素（格子）里的"政策解读"弹层。"""
 
-    nodes: set[etree._Element]  # 弹层和它下面的所有节点
-    linked: set[str]  # 弹层里链着、格子里弹层外面没链着的网址
-    documents: set[str]  # 其中不是附件的（"别的文件"）
-    outside: bool  # 格子里弹层外面有没有文件链接
+    popups: list[tuple[set[etree._Element], set[str]]]  # 每个弹层：它下面的所有节点、它链着的网址
+    outside: set[str]  # 格子里弹层外面链着的文件网址
     owner: bool  # 格子的直接子元素里有没有弹层外面的文件链接（格子是那份文件的标题格）
+
+    def others(self, url: str) -> tuple[set[etree._Element], set[str]]:
+        """链着别的文件的那些弹层（它们下面的所有节点），和那些别的文件的网址。
+
+        别的文件：不是 url 这一份、格子里弹层外面也没链着；url 不是附件时，附件也不算（照 find_row
+        的规矩）。只链着这些以外的弹层不算，照原来读。
+        """
+        nodes: set[etree._Element] = set()
+        found: set[str] = set()
+        for popup, links in self.popups:
+            other = links - self.outside - {url}
+            if not _is_attachment(url):
+                other = {u for u in other if not _is_attachment(u)}
+            if other:
+                nodes |= popup
+                found |= other
+        return nodes, found
 
 
 def _is_popup(el: etree._Element) -> bool:
@@ -290,7 +305,9 @@ class _Page:
                 return False
             info = self._cell_popup(cell)
             if info.outside:
-                return info.owner and url in info.documents
+                if not info.owner or _is_attachment(url) or url in info.outside:
+                    return False
+                return any(url in links for _, links in info.popups)
         return False
 
     def _assistant_twin(self, a: etree._Element, url: str) -> bool:
@@ -401,35 +418,36 @@ class _Page:
         cell = a.getparent()
         if cell is None:
             return None, None, False
-        popup = self._cell_popup(cell)
-        others = (popup.linked if _is_attachment(url) else popup.documents) - {url}
+        nodes, others = self._cell_popup(cell).others(url)
         companions = others | (self._cell_twins(cell) - {url})
         if not companions:
             return None, None, False
-        # 弹层里链着别的文件才算附带链接、连里面的日期和文字一起不看；不然弹层照原来读
-        return self._climb(a, title, url, popup.nodes if others else set(), companions)
+        # 链着别的文件的弹层才算附带链接、连里面的日期和文字一起不看；别的弹层照原来读
+        return self._climb(a, title, url, nodes, companions)
 
     def _cell_popup(self, cell: etree._Element) -> _CellPopup:
         """cell 里的"政策解读"弹层（_POPUP_CLASS）。按 cell 算一次。"""
         cached = self._popups.get(cell)
         if cached is None:
-            nodes: set[etree._Element] = set()
+            popups: list[tuple[set[etree._Element], set[str]]] = []
+            covered: set[etree._Element] = set()
             for el in cell.iter():
-                if not isinstance(el.tag, str) or el in nodes:
-                    continue
-                if _is_popup(el):
-                    nodes.update(el.iter())
-            inside: set[str] = set()
+                if isinstance(el.tag, str) and el not in covered and _is_popup(el):
+                    popup = set(el.iter())  # 弹层里再套的弹层算在外面这个里
+                    covered |= popup
+                    popups.append((popup, set()))
             outside: set[str] = set()
             owner = False
-            if nodes:
+            if popups:
                 for b in cell.iter("a"):
                     if link := self.link(b):
-                        (inside if b in nodes else outside).add(link[1])
-                        owner = owner or (b.getparent() is cell and b not in nodes)
-            linked = inside - outside
-            documents = {u for u in linked if not _is_attachment(u)}
-            cached = self._popups[cell] = _CellPopup(nodes, linked, documents, bool(outside), owner)
+                        holder = next((links for popup, links in popups if b in popup), None)
+                        if holder is None:
+                            outside.add(link[1])
+                            owner = owner or b.getparent() is cell
+                        else:
+                            holder.add(link[1])
+            cached = self._popups[cell] = _CellPopup(popups, outside, owner)
         return cached
 
     def _climb(

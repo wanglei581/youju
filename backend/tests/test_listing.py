@@ -1414,6 +1414,19 @@ def test_popup_without_other_documents_is_read_as_before_next_to_an_assistant_li
     ]
 
 
+def test_only_the_popup_linking_other_documents_is_set_aside() -> None:
+    # 一行里两个弹层：一个只链着这份文件本身、写着日期，一个链着别的文件。只有后一个算附带链接，
+    # 前一个里的日期照原来读（和去掉后一个弹层的同一页一样）
+    first = '<div class="address-popup"><a href="/b">详情</a><span>2026-03-01</span></div>'
+    second = '<div class="address-popup"><a href="/c">关于丙事项的通知</a></div>'
+    page = '<li><a href="/b">关于乙事项的通知</a><span>2026-02-01</span>{first}{second}</li>'
+    today = date(2026, 11, 16)
+    both = extract_items(page.format(first=first, second=second), "http://e.cn/", today=today)
+    without = extract_items(page.format(first=first, second=""), "http://e.cn/", today=today)
+    assert both == without
+    assert [(i.url, i.publish_date) for i in both] == [("http://e.cn/b", date(2026, 3, 1))]
+
+
 def test_lists_keep_their_page_order_when_they_score_the_same() -> None:
     # 带附带链接的行等别的行分完才归块；归完以后列表块照原来按页面上的先后排，评分一样时取靠前的那块。
     # main 读的也是第一张表（外加三条"| AI阅读"）
