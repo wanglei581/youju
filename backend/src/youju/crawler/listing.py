@@ -65,17 +65,6 @@ _ATTACHMENT_EXT = re.compile(r"\.(pdf|docx?|xlsx?|wps|et|ofd|zip|rar|7z)$", re.I
 _COMPANION_LINK = re.compile(
     r"^[(（\[【]?\s*(?:点击)?(?:查看)?(?:政策)?(?:解读|图解|文件|原文|原件)\s*[)）\]】]?$"
 )
-# title 属性明写"主题："的，那就是这一条的标题（临沂人社这个平台：title="主题：标题 日期：……"）。
-# 链接文字比它只多出前后的方括号标签时（"[公示公告]标题[图]"，标签是栏目名）用 title 属性。
-# 别的写法不动（泸州、漯河那个平台写"标题："，链接文字不带标签）；
-# 标签说明这一条是什么、现在怎样的（"【一图读懂】""【政策解读】""[视频]""[已废止]""[已废除]"）
-# 也不去掉：去掉会被当成现行的政策原文
-_LABELED_TITLE = re.compile(r"^\s*主题\s*[：:]")
-_TAGS_ONLY = re.compile(r"^\s*(?:[\[【][^\[\]【】]{1,8}[\]】]\s*)*$")
-_TYPE_TAG = re.compile(
-    r"解读|图解|读懂|视频|音频|问答|发布会|直播"
-    r"|废止|废除|失效|作废|撤销|撤回|停止|暂停|替代|取代|修订|修改|过期|有效|无效|终止"
-)
 # 行里藏起来的弹层（style 写着 display:none）：泸州政府文件列表每行的"政策解读"弹层，
 # 里面是解读的链接
 _HIDDEN_STYLE = re.compile(r"display\s*:\s*none", re.IGNORECASE)
@@ -145,11 +134,6 @@ def _title_of(a: etree._Element) -> str:
     # 链接文字常被截断成"……"，title 属性里才是完整标题
     if attr and (len(attr) >= len(text) or is_truncated(text)):
         return attr
-    if attr and attr in text and _LABELED_TITLE.match(_clean(a.get("title"))):
-        head, _, tail = text.partition(attr)
-        tags_only = _TAGS_ONLY.match(head) and _TAGS_ONLY.match(tail)
-        if tags_only and not _TYPE_TAG.search(head + tail) and _looks_like_title(attr):
-            return attr
     # 日期写在链接里时（天津科技局、工信局：
     # <a title="完整标题">截断的标题...<span>2026-09-09</span></a>），文字结尾是日期，
     # 上面看不出截断，长度也多算了日期。去掉两端的日期再看：title 属性是剩下文字的完整写法、
@@ -364,7 +348,15 @@ class _Page:
         """向上找"一行"：只含这一条文件链接、并且写着日期的祖先元素。返回（行，日期，是否写明年份）。"""
         hidden, companions = self.hidden_popups(a)
         found = self._climb(a, title, url, hidden, companions)
-        if found[0] is None and hidden and not companions:
+        if found[0] is None and hidden and companions:
+            # 弹层里有别的文件链接（那里的日期是那份文件的，不用）、提示文字里写着发表时间：
+            # 行按结构认（往上到再上一层就有别的文件为止），日期用提示文字里的。这样和日期写在行里的
+            # 别的行算同一张列表
+            tip, tip_full = _tooltip_date(a, self.today)
+            row = self._row_of(a, url, companions) if tip is not None else None
+            if row is not None:
+                found = (row, tip, tip_full)
+        elif found[0] is None and hidden:
             # 弹层外面没有日期、弹层里也没有别的文件链接（只有"分享""政策解读"这类短链接）：
             # 行照原来认（连弹层一起看）。提示文字里写着发表时间就用它，没写才用弹层里的（如悬浮卡片
             # 里写着这一行唯一的"发布日期"）。弹层里有别的文件链接时不回头看：那里的日期是那份文件的
@@ -375,6 +367,20 @@ class _Page:
             elif tip is None:
                 found = (row, day, full)
         return found
+
+    def _row_of(self, a: etree._Element, url: str, companions: set[str]) -> etree._Element | None:
+        """不看日期往上找"一行"：再上一层就有别的文件链接时，这一层就是行。"""
+        row = None
+        for depth, el in enumerate(a.iterancestors()):
+            if depth >= _MAX_ROW_DEPTH or el.tag in ("body", "html"):
+                break
+            others = self.title_hrefs(el) - {url} - companions
+            if not _is_attachment(url):
+                others = {u for u in others if not _is_attachment(u)}
+            if others:
+                break
+            row = el
+        return row
 
     def _climb(
         self,

@@ -922,35 +922,19 @@ def test_title_attribute_with_publish_date_glued_to_the_title_drops_the_date() -
     ]
 
 
-def test_labeled_title_attribute_wins_over_link_text_with_bracket_tags() -> None:
-    # 临沂人社：title 属性明写"主题：标题 日期：……"，链接文字是"[栏目名]标题"，有的后面还带"[图]"
-    html = """<ul class="ul_textlie">
-      <li><span class="date">[2026-11-09]</span>&nbsp;<a title="主题：2026年重点企业线上招聘会（第三十九期） 日期：2026-11-09" href="../info/1072/61096.htm"><font color="#003366">[公示公告]</font>2026年重点企业线上招聘会（第三十九期）<span style="color:#993300">[图]</span></a></li>
-      <li><span class="date">[2026-07-29]</span>&nbsp;<a title="主题：关于公布扩大社会保险补贴范围政策申请材料的说明 日期：2026-07-29" href="../info/1072/53796.htm"><font color="#003366">[公示公告]</font>关于公布扩大社会保险补贴范围政策申请材料的说明</a></li>
-      <li><span class="date">[2026-07-20]</span>&nbsp;<a title="主题：关于举办第三届职业技能大赛选拔赛的通知 日期：2026-07-20" href="../info/1072/53700.htm"><font color="#003366">[文件通知]</font> 关于举办第三届职业技能大赛选拔赛的通知</a></li>
-    </ul>"""
-    items = extract_items(
-        html, "http://rsj.example.gov.cn/index/gsgg.htm", today=date(2026, 11, 16)
-    )
-    assert [(i.title, i.publish_date) for i in items] == [
-        ("2026年重点企业线上招聘会（第三十九期）", date(2026, 11, 9)),
-        ("关于公布扩大社会保险补贴范围政策申请材料的说明", date(2026, 7, 29)),
-        ("关于举办第三届职业技能大赛选拔赛的通知", date(2026, 7, 20)),
-    ]
-
-
-def test_bracket_tags_stay_when_the_title_attribute_is_not_labeled() -> None:
-    # title 属性没明写"主题：/标题："的不动："【一图读懂】""[政策解读]"说明这一条是解读，不能去掉
+def test_bracket_tags_in_link_text_stay() -> None:
+    # 链接文字里的方括号标签照旧保留：栏目名和"【一图读懂】""[征求意见稿]""[已废止]"这类说明是什么、
+    # 现在怎样的标签分不开，去掉可能把解读、征求意见稿读成正式文件（临沂人社 title="主题：……"那种也不去）
     html = """<ul class="list">
       <li><a href="./202609/t20260920_1.html" title="某市促进民营经济发展若干措施">【一图读懂】某市促进民营经济发展若干措施</a><span>2026-09-20</span></li>
-      <li><a href="./202609/t20260921_2.html" title="关于开展第三批项目申报的通知">关于开展第三批项目申报的通知</a><span>2026-09-21</span></li>
-      <li><a href="./202609/t20260922_3.html" title="某市数据要素市场化配置改革方案">[政策解读]某市数据要素市场化配置改革方案</a><span>2026-09-22</span></li>
+      <li><a href="./202609/t20260921_2.html" title="主题：关于开展第三批项目申报的通知 日期：2026-09-21">[公示公告]关于开展第三批项目申报的通知</a><span>2026-09-21</span></li>
+      <li><a href="./202609/t20260922_3.html" title="主题：某市企业技术中心管理办法 日期：2026-09-22">[征求意见稿]某市企业技术中心管理办法</a><span>2026-09-22</span></li>
     </ul>"""
     items = extract_items(html, "http://example.gov.cn/zcjd/", today=date(2026, 11, 16))
     assert [i.title for i in items] == [
         "【一图读懂】某市促进民营经济发展若干措施",
-        "关于开展第三批项目申报的通知",
-        "[政策解读]某市数据要素市场化配置改革方案",
+        "[公示公告]关于开展第三批项目申报的通知",
+        "[征求意见稿]某市企业技术中心管理办法",
     ]
 
 
@@ -980,35 +964,6 @@ def test_hidden_companion_popup_in_the_title_cell_does_not_hide_the_row() -> Non
         ("某市人民政府办公室关于印发《某市深入实施“人工智能+”行动方案》的通知", date(2026, 10, 23)),
         ("关于某县2026年第1批次土地征收的批复", date(2026, 9, 30)),
         ("某市人民政府关于印发《某市重点项目管理办法》的通知", date(2026, 9, 20)),
-    ]
-
-
-def test_type_tags_stay_even_when_the_title_attribute_is_labeled() -> None:
-    # title 属性明写"主题："，但链接文字前面的"【政策解读】"说明这一条是解读：保留，不然会被当成原文
-    html = """<ul class="list">
-      <li><a href="./a/info_1.html" title="主题：关于开展第三批项目申报的通知">【政策解读】关于开展第三批项目申报的通知</a><span>2026-10-20</span></li>
-      <li><a href="./a/info_2.html" title="主题：关于公布名单的通知">[通知公告]关于公布名单的通知</a><span>2026-10-21</span></li>
-      <li><a href="./a/info_3.html" title="主题：某市促进民营经济发展若干措施">[视频]某市促进民营经济发展若干措施</a><span>2026-10-22</span></li>
-      <li><a href="./a/info_4.html" title="主题：某市企业技术中心认定管理办法">[已废止]某市企业技术中心认定管理办法</a><span>2026-10-23</span></li>
-      <li><a href="./a/info_6.html" title="主题：某市工业设计中心管理办法">[已废除]某市工业设计中心管理办法</a><span>2026-10-25</span></li>
-      <li><a href="./a/info_7.html" title="主题：某市首台套装备认定办法">[已被替代]某市首台套装备认定办法</a><span>2026-10-26</span></li>
-      <li><a href="./a/info_8.html" title="主题：某市小微企业贷款贴息办法">[无效]某市小微企业贷款贴息办法</a><span>2026-10-27</span></li>
-      <li><a href="./a/info_9.html" title="标题：关于开展企业上云工作的通知">[通知公告]关于开展企业上云工作的通知</a><span>2026-10-28</span></li>
-      <li><a href="./a/info_5.html" title="主题：招聘简章">[公示公告]招聘简章</a><span>2026-10-24</span></li>
-    </ul>"""
-    items = extract_items(html, "http://example.gov.cn/a/", today=date(2026, 11, 16))
-    # 去掉标签后太短、读不成条目的（"招聘简章"）照旧用链接文字
-    assert [i.title for i in items] == [
-        "【政策解读】关于开展第三批项目申报的通知",
-        "关于公布名单的通知",
-        "[视频]某市促进民营经济发展若干措施",
-        "[已废止]某市企业技术中心认定管理办法",
-        "[已废除]某市工业设计中心管理办法",
-        "[已被替代]某市首台套装备认定办法",
-        "[无效]某市小微企业贷款贴息办法",
-        # title 属性写"标题："（不是"主题："）的不去标签
-        "[通知公告]关于开展企业上云工作的通知",
-        "[公示公告]招聘简章",
     ]
 
 
@@ -1156,6 +1111,24 @@ def test_row_with_tooltip_date_and_hidden_popup_stays_in_the_same_list() -> None
     # 算一张列表，日期用提示文字里的
     html = """<ul class="list">
       <li><a href="/a/1.html" title="标题：关于项目申报的通知 点击数：1 发表时间：2026-10-21">关于项目申报的通知</a><div style="display:none"><a href="/x/1.html">政策解读</a><span>2026-09-01</span></div></li>
+      <li><a href="/a/2.html">关于公布第二批名单的通知</a><span>2026-10-20</span></li>
+      <li><a href="/a/3.html">关于征集典型案例的通知</a><span>2026-10-19</span></li>
+      <li><a href="/a/4.html">关于开展第三批项目申报的通知</a><span>2026-10-18</span></li>
+    </ul>"""
+    items = extract_items(html, "http://example.gov.cn/a/", today=date(2026, 11, 16))
+    assert [(i.title, i.publish_date) for i in items] == [
+        ("关于项目申报的通知", date(2026, 10, 21)),
+        ("关于公布第二批名单的通知", date(2026, 10, 20)),
+        ("关于征集典型案例的通知", date(2026, 10, 19)),
+        ("关于开展第三批项目申报的通知", date(2026, 10, 18)),
+    ]
+
+
+def test_row_with_tooltip_date_and_a_titled_link_in_the_hidden_popup_stays_in_the_list() -> None:
+    # 第一行日期只写在提示文字里，弹层里是一份解读（带完整标题、写着解读的日期），别的行日期写在行里：
+    # 第一行照样和别的行算一张列表，日期用提示文字里的，不用弹层里解读的日期
+    html = """<ul class="list">
+      <li><a href="/a/1.html" title="标题：关于项目申报的通知 点击数：1 发表时间：2026-10-21">关于项目申报的通知</a><div style="display:none"><a href="/b/1.html">关于项目申报工作的政策解读</a><span>2026-09-01</span></div></li>
       <li><a href="/a/2.html">关于公布第二批名单的通知</a><span>2026-10-20</span></li>
       <li><a href="/a/3.html">关于征集典型案例的通知</a><span>2026-10-19</span></li>
       <li><a href="/a/4.html">关于开展第三批项目申报的通知</a><span>2026-10-18</span></li>
