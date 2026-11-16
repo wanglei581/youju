@@ -543,6 +543,11 @@ def evidence_for(
     sources = list(session.scalars(select(Source).where(Source.url.in_(urls))))
     ids = [source.id for source in sources]
     sources_by_url = {source.url: source for source in sources}
+    held = _lonsun_hold(sources)
+    if held:
+        # 经龙讯接口读的来源 30 天内被读取护栏拦下过：正式抓取这期间一个请求都不发，抽查也不去
+        ev.update(来源="不请求", 程序结论=REVIEW, 打开=f"{held}（之前被读取护栏拦下，暂不再请求）")
+        return ev
     if ids:
         rows = session.execute(
             select(Document.title, Document.url, Document.publish_date)
@@ -570,6 +575,10 @@ def evidence_for(
             打开="；".join(reasons) if reasons else "库里没有文件，列表页也没读出带日期的条目",
         )
         return ev
+    # 龙讯栏目的原文、栏目页也过这一轮的主机护栏（同一轮这个主机拒绝过我们就不去）
+    from youju.govsites.verify import guarded_fetchers
+
+    page_get = guarded_fetchers(cache, urls[0])[0]
     # 先挑政府网站上的网页（栏目里转的新华网、公众号外链和附件不核），原文打不开就顺延，最多试 3 份
     skipped: list[str] = []
     chosen = None
@@ -582,10 +591,10 @@ def evidence_for(
             skipped.append("附件")
             continue
         tries += 1
-        r = cache.get(doc_url)
+        r = page_get(doc_url)
         chosen = (title, doc_url, published, origin, r)
-        if r.status == "ok" or tries >= 3:
-            break
+        if r.status in ("ok", "site_paused") or tries >= 3:
+            break  # 同一轮这个主机拒绝过我们：后面的文件多半也在这个网站上，不再去敲门
         skipped.append("打不开")
     if chosen is None:
         title, doc_url, published, origin = candidates[0]
@@ -599,11 +608,14 @@ def evidence_for(
     ev["发布日期"] = published.isoformat() if published else ""
     if skipped:
         ev["备注"] = "跳过更新的：" + "、".join(skipped)
+    if r.status == "site_paused":
+        ev.update(打开=f"这次没取到：{(r.error or r.status)[:80]}", 程序结论=REVIEW)
+        return ev
     if r.status != "ok":
         ev.update(打开=f"打不开：{(r.error or r.status)[:80]}", 程序结论=REVIEW)
         return ev
     ev["打开"] = "ok" if (r.final_url or doc_url) == doc_url else f"ok（跳到 {r.final_url}）"
-    col = cache.get(urls[0])
+    col = page_get(urls[0])
     ev["标题核对"], ev["标题说明"] = title_check(title, r.text)
     ev["日期核对"], ev["日期说明"] = date_check(published, r.text, title, doc_url)
     # 原文里核对过的标题（"濮阳市市场监督管理局关于……"）也拿来认部门
@@ -621,6 +633,23 @@ def evidence_for(
 
 
 _ATTACHMENT = re.compile(r"\.(?:pdf|docx?|xlsx?|wps|ofd|zip|rar|7z|txt|jpe?g|png)$", re.I)
+
+
+def _lonsun_hold(sources) -> str:
+    """这一格的来源里有经龙讯接口读、30 天内被读取护栏拦下过的：给原因（和正式抓取同一个判断）。"""
+    from datetime import UTC, datetime
+
+    from youju.crawler.adapters import LIST_API_OPEN_KEY, LONSUN
+    from youju.crawler.service import _refusal_held
+
+    now = datetime.now(UTC)
+    for source in sources:
+        config = source.parser_config or {}
+        if config.get(LIST_API_OPEN_KEY) == LONSUN:
+            held = _refusal_held(config, now)
+            if held:
+                return held
+    return ""
 
 
 def _md_cell(value: str) -> str:

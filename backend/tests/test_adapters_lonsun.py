@@ -1641,6 +1641,68 @@ def test_spotcheck_existing_source_uses_city_fallback(monkeypatch):
     assert hosts == [("www.wuhu.gov.cn", True)]
 
 
+def _spotcheck_session(source, rows=()):
+    from types import SimpleNamespace
+
+    class Session:
+        def scalars(self, query):
+            return [source]
+
+        def execute(self, query):
+            return SimpleNamespace(all=lambda: list(rows))
+
+    return Session()
+
+
+def test_spotcheck_respects_lonsun_hold():
+    from datetime import UTC, datetime, timedelta
+    from types import SimpleNamespace
+
+    from youju.crawler.roundguard import HostRoundGuard
+    from youju.govsites import spotcheck
+
+    note = {
+        "url": "https://jx.ah.gov.cn/49631981/6991.js",
+        "reason": "列表接口：HTTP 403：拒绝访问或要求登录",
+        "at": (datetime.now(UTC) - timedelta(days=1)).isoformat(),
+    }
+    source = SimpleNamespace(
+        id=1,
+        url=BASE,
+        level="省级",
+        province="安徽",
+        city="",
+        parser_config={"list_api_open": "龙讯public", "list_api_refused": note},
+    )
+    doc = "https://jx.ah.gov.cn/art/2026/11/1/art_1.html"
+    cache = LonsunCache({BASE: fixture("jx_page.html"), doc: "<html>x</html>"})
+    cache.round_guard = HostRoundGuard()
+    rows = [("关于开展申报的通知", doc, TODAY)]
+    ev = spotcheck.evidence_for({"栏目网址": BASE}, _spotcheck_session(source, rows), cache, TODAY)
+    # 经龙讯接口读的来源 30 天内被拦下过：抽查也一个请求都不发
+    assert "暂不再请求" in ev["打开"] and ev["程序结论"] != spotcheck.OK
+    assert cache.calls == []
+
+
+def test_spotcheck_evidence_goes_through_round_guard():
+    from types import SimpleNamespace
+
+    from youju.crawler.roundguard import HostRoundGuard
+    from youju.govsites import spotcheck
+
+    source = SimpleNamespace(
+        id=1, url=BASE, level="省级", province="安徽", city="", parser_config={}
+    )
+    doc = "https://jx.ah.gov.cn/art/2026/11/1/art_1.html"
+    cache = LonsunCache({BASE: fixture("jx_page.html"), doc: "<html>x</html>"})
+    cache.round_guard = HostRoundGuard()
+    cache.round_guard.block(BASE)  # 同一轮这个主机拒绝过我们（别的栏目被拒）
+    rows = [("关于开展申报的通知", doc, TODAY)]
+    ev = spotcheck.evidence_for({"栏目网址": BASE}, _spotcheck_session(source, rows), cache, TODAY)
+    # 库里有文件也不去这个网站读原文、栏目页：记这次没取到
+    assert ev["打开"].startswith("这次没取到") and cache.calls == []
+
+
 def test_navigation_values_are_used_in_conditions():
     from youju.crawler.lonsun import find_lonsun_api, resolve_lonsun
 
