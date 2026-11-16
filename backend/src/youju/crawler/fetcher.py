@@ -91,6 +91,13 @@ class _CorruptStamp(OSError):
 
 
 # 记录定长写、不先清空：写到一半被杀也不会留下空文件（空文件只表示新建、还没请求过）
+
+
+def plain_text_gate(text: str) -> bool:
+    """不是网页的纯文字回应（text/plain 这类）开头是不是拦截、防火墙、验证这类字：网站拦着我们。"""
+    return bool(_GATE_WORDS.search(text[:500]))
+
+
 _STAMP_WIDTH = 32
 
 

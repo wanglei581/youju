@@ -709,3 +709,73 @@ def test_fetch_details_prints_at_most_30_paused_hosts(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert out.count("停取 ") == 30
     assert "另有 5 个停取中的主机" in out
+
+
+def _text_result(url, body, content_type):
+    return FetchResult(
+        url,
+        "ok",
+        final_url=url,
+        http_status=200,
+        text=body,
+        content=body.encode("utf-8"),
+        content_type=content_type,
+    )
+
+
+@pytest.mark.parametrize(
+    "first,content_type,body",
+    [
+        # 回 200 的纯文字验证码页、拦截页（D-013：网站拦着我们）
+        ("https://a.gov.cn/1", "text/plain", "请输入验证码"),
+        ("https://a.gov.cn/1", "text/plain; charset=utf-8", "您的访问已被网站防火墙拦截"),
+        # 说是 PDF，其实是验证码页
+        ("https://a.gov.cn/1.pdf", "application/pdf", "请输入验证码后继续访问"),
+    ],
+)
+def test_plain_text_gate_detail_pauses_host(tmp_path, first, content_type, body):
+    path = str(tmp_path / "pause.json")
+    calls = []
+
+    class Fake:
+        def fetch(self, url):
+            calls.append(url)
+            return _text_result(url, body, content_type)
+
+    outcomes = _fetch_outcomes(
+        [(1, first), (2, "https://a.gov.cn/2")], Fake(), 1, pause=_SitePause(path)
+    )
+    assert outcomes[1].status == "protected"
+    # 停这个网站、写进共享文件（24 小时）：同一网站的下一份不再去
+    assert calls == [first]
+    assert _SitePause(path).expiry("a.gov.cn") is not None
+
+
+@pytest.mark.parametrize("content_type", ["text/plain", "application/pdf"])
+def test_plain_text_gate_pdf_attachment_pauses_pdf_host(tmp_path, content_type):
+    path = str(tmp_path / "pause.json")
+    calls = []
+
+    class Fake:
+        def fetch(self, url):
+            calls.append(url)
+            if url.endswith(".pdf"):
+                return _text_result(url, "请输入验证码", content_type)
+            return _page_with_pdf(url)
+
+    outcomes = _fetch_outcomes(
+        [(1, "https://a.gov.cn/1"), (2, "https://a.gov.cn/2")], Fake(), 1, pause=_SitePause(path)
+    )
+    # PDF 附件回的是纯文字验证码页：记防护页、停 PDF 所在网站，不当成 PDF 读不出
+    assert outcomes[1].status == "protected"
+    assert _SitePause(path).expiry("files.gov.cn") is not None
+    assert calls.count("https://files.gov.cn/f.pdf") == 1
+
+
+def test_plain_text_that_is_not_a_gate_stays_unsupported():
+    class Fake:
+        def fetch(self, url):
+            return _text_result(url, "关于印发某某办法的通知", "text/plain")
+
+    outcome = detail_service._fetch_one(1, "https://a.gov.cn/1", Fake())
+    assert outcome.status == "unsupported_format"

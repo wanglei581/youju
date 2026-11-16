@@ -23,12 +23,20 @@ from youju.categories import doc_category
 from youju.classify import doc_kind
 from youju.config import get_settings
 from youju.crawler.detail import (
+    _PROTECTION,
     DetailResult,
     parse_detail,
     redact_sensitive,
     search_throttle_site,
 )
-from youju.crawler.fetcher import SITE_PAUSED, FetchResult, PoliteFetcher, SharedLimitError
+from youju.crawler.fetcher import (
+    SITE_PAUSED,
+    FetchResult,
+    PoliteFetcher,
+    SharedLimitError,
+    decode_html,
+    plain_text_gate,
+)
 from youju.crawler.pdf import extract_pdf_text
 from youju.crawler.titles import clean_title, completed_title, is_truncated
 from youju.dbtypes import BODY_TEXT_MAX_CHARS
@@ -177,6 +185,22 @@ def _pdf_detail(content: bytes) -> DetailResult:
     return DetailResult(body_text=redact_sensitive(raw), failure_reason=error, raw_body=raw)
 
 
+def _gate_page(result: FetchResult, url: str) -> bool:
+    """回来的是不是防护页、验证码（D-013：网站拦着我们，要停取这个网站）。网页照详情页的规矩认；
+    不是 PDF 也不是网页的文字（text/plain 这类，或者说是 PDF 其实不是）看开头有没有验证码、
+    拦截、防火墙这类字。"""
+    content = result.content or b""
+    if b"%PDF-" in content[:1024]:
+        return False
+    text = decode_html(content, result.content_type) if content else (result.text or "")
+    head = text.lstrip("\ufeff \t\r\n")
+    if not head or "\x00" in head[:1024]:
+        return False  # 空的、二进制文件
+    if head.startswith("<"):
+        return parse_detail(text, result.final_url or url).failure_reason == "防护页或验证码"
+    return bool(_PROTECTION.search(head[:500])) or plain_text_gate(head)
+
+
 def _fetch_one(document_id: int, url: str, fetcher: DetailFetcher) -> _FetchOutcome:
     now = datetime.now(UTC)
     if not _government_url(url):
@@ -201,6 +225,11 @@ def _fetch_one(document_id: int, url: str, fetcher: DetailFetcher) -> _FetchOutc
         or fetched.content.startswith(b"%PDF-")
         or fetched.text.lstrip().startswith("%PDF-")
     )
+    # 说是 PDF、或者不是网页的回应，其实是防护页（text/plain 的验证码页、拦截页）：先停这个网站，
+    # 不当成格式不对、PDF 读不出（网页的防护页下面 parse_detail 认）
+    html_types = {"text/html", "application/xhtml+xml"}
+    if (is_pdf or content_type and content_type not in html_types) and _gate_page(fetched, url):
+        return _FetchOutcome(document_id, now, fetched, None, "protected", "防护页或验证码")
     if is_pdf:
         try:
             parsed = _pdf_detail(fetched.content)
@@ -245,17 +274,10 @@ def _fetch_one(document_id: int, url: str, fetcher: DetailFetcher) -> _FetchOutc
             return _FetchOutcome(
                 document_id, now, pdf_fetch, parsed, "unsupported_host", "PDF 非政府网站"
             )
-        # PDF 附件回来的是网页：先看是不是防护页（是就记 protected，名单网站会停取），
-        # 不当成 PDF 读不出
-        pdf_type = (pdf_fetch.content_type or "").split(";", 1)[0].strip().lower()
-        if pdf_type in {"text/html", "application/xhtml+xml"} or (
-            not pdf_fetch.content.startswith(b"%PDF-") and pdf_fetch.text.lstrip().startswith("<")
-        ):
-            page = parse_detail(pdf_fetch.text, pdf_fetch.final_url or pdf_url)
-            if page.failure_reason == "防护页或验证码":
-                return _FetchOutcome(
-                    document_id, now, pdf_fetch, parsed, "protected", page.failure_reason
-                )
+        # PDF 附件回来的不是 PDF（网页、纯文字的验证码页）：先看是不是防护页（是就记 protected、
+        # 停这个网站），不当成 PDF 读不出
+        if _gate_page(pdf_fetch, pdf_url):
+            return _FetchOutcome(document_id, now, pdf_fetch, parsed, "protected", "防护页或验证码")
         try:
             pdf = _pdf_detail(pdf_fetch.content)
         except pdf_sandbox.Cancelled:
