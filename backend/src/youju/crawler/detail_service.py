@@ -639,8 +639,11 @@ def _fetch_outcomes(
 
     outcomes = {}
     pool = ThreadPoolExecutor(max_workers=max(1, max_workers))
-    futures = [pool.submit(produce, group) for group in by_host.values()]
+    futures = []
     try:
+        # 起线程也在 try 里：中途起不来时先让已经起来的停下（不然它们卡在排队上，进程退不出）
+        for group in by_host.values():
+            futures.append(pool.submit(produce, group))
         remaining = len(futures)
         while remaining:
             outcome = completed.get()

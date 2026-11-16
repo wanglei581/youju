@@ -656,3 +656,56 @@ def test_pdf_host_robots_redirect_into_paused_host_defers_document(tmp_path):
     assert pause.expiry("b.gov.cn") == pause.expiry("c.gov.cn")
     assert f"{detail_service.DEFERRED_PREFIX}7" in pause.reasons
     assert "a.gov.cn" not in pause.reasons
+
+
+def test_thread_start_failure_stops_started_groups(monkeypatch):
+    # 中途起不了线程：已经起来的取页线程得停下（不然卡在排队上空转，进程退不出、一直占着队列锁）
+    fetched = threading.Event()
+    threads = set()
+
+    class Pool(ThreadPoolExecutor):
+        submitted = 0
+
+        def submit(self, *args, **kwargs):
+            Pool.submitted += 1
+            if Pool.submitted == 3:
+                assert fetched.wait(5)  # 第一组已经在取、排队排满了
+                raise RuntimeError("can't start new thread")
+            return super().submit(*args, **kwargs)
+
+    class Fake:
+        def fetch(self, url):
+            threads.add(threading.current_thread())
+            if url.endswith("/3"):
+                fetched.set()
+            return FetchResult(url, "ok", text="<html></html>")
+
+    monkeypatch.setattr(detail_service, "ThreadPoolExecutor", Pool)
+    selected = [(i, f"https://h{i % 3}.gov.cn/{i}") for i in range(30)]
+    with pytest.raises(RuntimeError, match="start new thread"):
+        _fetch_outcomes(selected, Fake(), 1)
+    assert threads
+    for thread in threads:
+        thread.join(5)
+        assert not thread.is_alive()
+
+
+def test_fetch_details_prints_at_most_30_paused_hosts(monkeypatch, capsys):
+    import argparse
+    import contextlib
+
+    from youju import cli
+    from youju.crawler.detail_service import DetailFetchResults
+
+    hosts = {f"h{i:02d}.gov.cn": "HTTP 403" for i in range(35)}
+    monkeypatch.setattr(
+        detail_service,
+        "fetch_details",
+        lambda session, **kwargs: DetailFetchResults([], paused_hosts=hosts),
+    )
+    monkeypatch.setattr(cli, "session_factory", lambda: contextlib.nullcontext)
+    args = argparse.Namespace(limit=10, source_id=None, workers=1, since=None, notices_only=False)
+    assert cli._cmd_fetch_details(args) == 0
+    out = capsys.readouterr().out
+    assert out.count("停取 ") == 30
+    assert "另有 5 个停取中的主机" in out

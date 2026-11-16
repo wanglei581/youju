@@ -228,8 +228,11 @@ def _cmd_fetch_details(args: argparse.Namespace) -> int:
     for result in results:
         if result.status != "ok":
             print(f"  #{result.document_id} {result.status}：{result.failure_reason or ''}")
-    for host, reason in sorted(getattr(results, "paused_hosts", {}).items()):
+    paused = sorted(getattr(results, "paused_hosts", {}).items())
+    for host, reason in paused[:30]:
         print(f"停取 {host}：{reason}")
+    if len(paused) > 30:
+        print(f"……另有 {len(paused) - 30} 个停取中的主机")
     return 0
 
 
@@ -288,7 +291,7 @@ def _cmd_fetch_details_queue(args: argparse.Namespace) -> int:
     for host, reason in paused[:30]:
         print(f"停取 {host}：{reason}")
     if len(paused) > 30:
-        print(f"……另有 {len(paused) - 30} 个停取中的主机和延后的文件")
+        print(f"……另有 {len(paused) - 30} 个停取中的主机")
     # 跨进程限速用不了、熔断：按失败退出，job.sh 发提醒（不能悄悄地一直不跑、一直熔断）
     return 1 if summary.stop_reason.startswith((SHARED_LIMIT_STOP, CIRCUIT_STOP)) else 0
 

@@ -63,7 +63,8 @@ class _SharedLimits:
     （墙上时间 time.time()，各进程之间才能比）：
     - h-<主机名哈希>：上次请求结束的时间；
     - a-<地址哈希>：上次请求开始的时间；a-<地址哈希>.s0、.s1……：同一地址同时在飞的名额。
-    读写出错（目录不可写、磁盘满）由调用方记警告、这一次退回只用进程内的限速，不让抓取失败。"""
+    读写出错（目录不可写、磁盘满）：配了目录（或一定要跨进程限速）的取页器抛 SharedLimitError、
+    整批停下；没配的本来就只用进程内的限速。"""
 
     def __init__(self, root: str) -> None:
         self.root = Path(root)
@@ -97,7 +98,8 @@ def _read_stamp(fd: int) -> float | None:
     """上次的时间；新建的空记录给 None。读不出来的抛 _CorruptStamp（调用方按"刚请求过"等满一个
     间隔；一定要跨进程限速时停下）。"""
     os.lseek(fd, 0, os.SEEK_SET)
-    raw = os.read(fd, 64)
+    # 只看定长的那一段：外面写坏的长记录，修过一次后面剩下的尾巴不碍事（写的时候也截掉）
+    raw = os.read(fd, _STAMP_WIDTH)
     if not raw:
         return None
     try:
@@ -113,6 +115,9 @@ def _write_stamp(fd: int, value: float) -> None:
     data = f"{value:.6f}".rjust(_STAMP_WIDTH).encode("ascii")
     if os.pwrite(fd, data, 0) != len(data):
         raise OSError("跨进程限速记录没写完整")
+    # 写完再截到定长（不先清空：拿着文件锁写，别的进程读不到写了一半的；写完截之前被杀也只剩
+    # 读的时候不看的尾巴）
+    os.ftruncate(fd, _STAMP_WIDTH)
 
 
 @dataclass
@@ -703,9 +708,10 @@ class PoliteFetcher:
                 return FetchResult(url, "site_paused", final_url=url, error=SITE_PAUSED)
             if host_file == "deadline" or self._expired():
                 return FetchResult(url, "deadline", final_url=url, error=_DEADLINE)
-            # 开始前也记一次：进程在请求中途被杀，下一个进程照样要隔够间隔
-            self._shared_stamp(host_file)
+            # 真正发出前（_request 里）也记一次：进程在请求中途被杀，下一个进程照样要隔够间隔；
+            # 被挡下、没发出的不记，下一个请求不用为它多等
             self._local.sent = False
+            self._local.before_send = lambda: self._shared_stamp(host_file)
             try:
                 result = self._request(url)
                 callback = getattr(self._local, "on_response", None)
@@ -718,6 +724,7 @@ class PoliteFetcher:
                         self._local.refusal = result
                 return result
             finally:
+                self._local.before_send = None
                 if getattr(self._local, "sent", True):
                     self._last_request[host] = self._clock()
                     self._shared_stamp(host_file)
@@ -822,6 +829,9 @@ class PoliteFetcher:
                         # 临近期限：这一次连接、读取最多等到期限（至少 1 秒）
                         left = max(1.0, self._deadline - self._clock())
                         timing["timeout"] = min(self._timeout, left)
+                    before_send = getattr(self._local, "before_send", None)
+                    if before_send is not None:
+                        before_send()
                     self._local.sent = True
                     with client.stream(
                         "GET", request_url, headers=headers, extensions=extensions, **timing

@@ -576,11 +576,29 @@ def test_address_interval_counts_from_response_headers() -> None:
         assert max(f._address_last.values()) - before >= 0.3
 
 
-def test_stop_while_waiting_for_host_interval_returns_at_once() -> None:
+def test_stop_while_waiting_for_host_interval_returns_at_once(tmp_path) -> None:
+    import threading
     import time
+
+    from youju.crawler.fetcher import _SharedLimits
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(404 if request.url.path == "/robots.txt" else 200, text=LIST_HTML)
+
+    class HostLock:
+        """同一主机的锁：测试先占着，记下有请求排上来了。"""
+
+        def __init__(self) -> None:
+            self.inner = threading.Lock()
+            self.queued = threading.Event()
+
+        def __enter__(self):
+            self.queued.set()
+            self.inner.acquire()
+            return self
+
+        def __exit__(self, *exc) -> None:
+            self.inner.release()
 
     fetcher = PoliteFetcher(
         "TestAgent YoujuBot/0.1",
@@ -588,16 +606,72 @@ def test_stop_while_waiting_for_host_interval_returns_at_once() -> None:
         per_address_interval=0,
         transport=httpx.MockTransport(handler),
         resolver=public_dns,
+        shared_limits_dir=str(tmp_path),
     )
+    stamp = _SharedLimits(str(tmp_path)).path("h", "a.gov.cn")
     with fetcher as f:
         assert f.fetch("https://a.gov.cn/1").status == "ok"
-        last = dict(f._last_request)
+        last, recorded = dict(f._last_request), stamp.read_bytes()
+        lock = HostLock()
+        f._host_locks["a.gov.cn"] = lock
+        lock.inner.acquire()
+        allowed = {"now": True}
+        result = {}
+
+        def run() -> None:
+            result["r"] = f.fetch(
+                "https://a.gov.cn/2", hop_allowed=lambda url, record: allowed["now"]
+            )
+
+        worker = threading.Thread(target=run)
+        worker.start()
+        assert lock.queued.wait(5)
+        allowed["now"] = False  # 排在主机锁上等的时候，网站被停了（或者要让路）
         started = time.monotonic()
-        result = f.fetch("https://a.gov.cn/2", hop_allowed=lambda url, record: False)
-        # 要停了就不再睡一个间隔；没发出的请求也不记结束时间
-        assert result.status == "site_paused"
+        lock.inner.release()
+        worker.join(5)
+        # 拿到锁先问要不要停：不再睡一个间隔；没发出的请求不记结束时间（进程内的、文件里的）
+        assert result["r"].status == "site_paused"
         assert time.monotonic() - started < 0.3
         assert f._last_request == last
+        assert stamp.read_bytes() == recorded
+
+
+def test_blocked_after_taking_address_slot_records_no_end_time(tmp_path) -> None:
+    from youju.crawler.fetcher import _SharedLimits
+
+    paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        return httpx.Response(404 if request.url.path == "/robots.txt" else 200, text=LIST_HTML)
+
+    fetcher = PoliteFetcher(
+        "TestAgent YoujuBot/0.1",
+        per_host_interval=0.05,
+        per_address_interval=0,
+        per_address_concurrency=2,
+        transport=httpx.MockTransport(handler),
+        resolver=public_dns,
+        shared_limits_dir=str(tmp_path),
+    )
+    stamp = _SharedLimits(str(tmp_path)).path("h", "a.gov.cn")
+    with fetcher as f:
+        assert f.fetch("https://a.gov.cn/1").status == "ok"
+        last, recorded = dict(f._last_request), stamp.read_bytes()
+        asked: list[bool] = []
+
+        def gate(url: str, record: bool) -> bool:
+            asked.append(record)
+            # 第一次：查 robots 之前；第二次：排到主机锁；第三次：占了地址名额以后——这次挡下
+            return len(asked) < 3
+
+        assert f.fetch("https://a.gov.cn/2", hop_allowed=gate).status == "site_paused"
+        assert len(asked) == 3
+        # 请求没发出：不记结束时间，下一个请求不用为它多等
+        assert "/2" not in paths
+        assert f._last_request == last
+        assert stamp.read_bytes() == recorded
 
 
 @pytest.mark.parametrize(

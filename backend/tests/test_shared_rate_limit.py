@@ -181,7 +181,11 @@ def test_empty_stamp_is_a_new_record(tmp_path):
     assert float(limits.path("h", "a.example.gov.cn").read_text().strip()) > 0
 
 
-@pytest.mark.parametrize("value", ["abc", "nan", "inf", "\x00\x00"])
+@pytest.mark.parametrize(
+    # 后两种比定长（32 字节）长：修过以后尾巴不能还在（不然以后每次运行都停）
+    "value",
+    ["abc", "nan", "inf", "\x00\x00", "x" * 50, "1700000000.0" + "x" * 40],
+)
 def test_bad_stamp_is_repaired_then_stops(tmp_path, value):
     from youju.crawler.fetcher import SharedLimitError
 
