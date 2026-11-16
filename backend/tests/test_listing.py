@@ -920,3 +920,64 @@ def test_title_attribute_with_publish_date_glued_to_the_title_drops_the_date() -
         ("关于组织开展数据流通服务典型案例征集工作的通知", date(2026, 8, 25)),
         ("2026年“数据要素×”大赛拟获奖名单公示", date(2026, 7, 30)),
     ]
+
+
+def test_labeled_title_attribute_wins_over_link_text_with_bracket_tags() -> None:
+    # 临沂人社：title 属性明写"主题：标题 日期：……"，链接文字是"[栏目名]标题"，有的后面还带"[图]"
+    html = """<ul class="ul_textlie">
+      <li><span class="date">[2026-11-09]</span>&nbsp;<a title="主题：2026年重点企业线上招聘会（第三十九期） 日期：2026-11-09" href="../info/1072/61096.htm"><font color="#003366">[公示公告]</font>2026年重点企业线上招聘会（第三十九期）<span style="color:#993300">[图]</span></a></li>
+      <li><span class="date">[2026-07-29]</span>&nbsp;<a title="主题：关于公布扩大社会保险补贴范围政策申请材料的说明 日期：2026-07-29" href="../info/1072/53796.htm"><font color="#003366">[公示公告]</font>关于公布扩大社会保险补贴范围政策申请材料的说明</a></li>
+      <li><span class="date">[2026-07-20]</span>&nbsp;<a title="主题：关于举办第三届职业技能大赛选拔赛的通知 日期：2026-07-20" href="../info/1072/53700.htm"><font color="#003366">[文件通知]</font> 关于举办第三届职业技能大赛选拔赛的通知</a></li>
+    </ul>"""
+    items = extract_items(
+        html, "http://rsj.example.gov.cn/index/gsgg.htm", today=date(2026, 11, 16)
+    )
+    assert [(i.title, i.publish_date) for i in items] == [
+        ("2026年重点企业线上招聘会（第三十九期）", date(2026, 11, 9)),
+        ("关于公布扩大社会保险补贴范围政策申请材料的说明", date(2026, 7, 29)),
+        ("关于举办第三届职业技能大赛选拔赛的通知", date(2026, 7, 20)),
+    ]
+
+
+def test_bracket_tags_stay_when_the_title_attribute_is_not_labeled() -> None:
+    # title 属性没明写"主题：/标题："的不动："【一图读懂】""[政策解读]"说明这一条是解读，不能去掉
+    html = """<ul class="list">
+      <li><a href="./202609/t20260920_1.html" title="某市促进民营经济发展若干措施">【一图读懂】某市促进民营经济发展若干措施</a><span>2026-09-20</span></li>
+      <li><a href="./202609/t20260921_2.html" title="关于开展第三批项目申报的通知">关于开展第三批项目申报的通知</a><span>2026-09-21</span></li>
+      <li><a href="./202609/t20260922_3.html" title="某市数据要素市场化配置改革方案">[政策解读]某市数据要素市场化配置改革方案</a><span>2026-09-22</span></li>
+    </ul>"""
+    items = extract_items(html, "http://example.gov.cn/zcjd/", today=date(2026, 11, 16))
+    assert [i.title for i in items] == [
+        "【一图读懂】某市促进民营经济发展若干措施",
+        "关于开展第三批项目申报的通知",
+        "[政策解读]某市数据要素市场化配置改革方案",
+    ]
+
+
+def test_hidden_companion_popup_in_the_title_cell_does_not_hide_the_row() -> None:
+    # 泸州政府文件：标题格里除了文件链接，还藏着一个"政策解读"弹层（display: none），里面是解读的链接。
+    # 原来找"一行"时把弹层里的链接当成别的文件，走不到写日期的格子，这一行整行漏掉；解读另有栏目收
+    html = """<table class="list"><tbody>
+      <tr><td class="number"><span>01</span></td><td class="title">
+        <a href="/zw/zcwjs/szfwj/lsfbf/content_1160526" title="标题：某市人民政府办公室关于印发《某市深入实施“人工智能+”行动方案》的通知">某市人民政府办公室关于印发《某市深入实施“人工智能+”行动方案》的通知</a>
+        <div class="address"><span>政策解读</span><div class="address-popup" style="display: none;"><ul class="address-list">
+          <li><a href="/zw/zcwjs/zcjd/yspjd/content_1160550">音频解读：《某市深入实施“人工智能+”行动方案》的政策解读</a></li>
+          <li><a href="/zw/zcwjs/zcjd/wzjd/content_1160548">《某市深入实施“人工智能+”行动方案》的政策解读</a></li>
+        </ul></div></div></td><td class="refno">某府办发〔2026〕11号</td><td class="date">2026-10-20</td><td class="date">2026-10-23</td></tr>
+      <tr><td class="number"><span>02</span></td><td class="title">
+        <a href="/zw/zcwjs/szfwj/lsfbf/content_1158411" title="标题：关于某县2026年第1批次土地征收的批复">关于某县2026年第1批次土地征收的批复</a>
+        </td><td class="refno">某府函〔2026〕90号</td><td class="date">2026-09-28</td><td class="date">2026-09-30</td></tr>
+      <tr><td class="number"><span>03</span></td><td class="title">
+        <a href="/zw/zcwjs/szfwj/lsfg/content_1157502" title="标题：某市人民政府关于印发《某市重点项目管理办法》的通知">某市人民政府关于印发《某市重点项目管理办法》的通知</a>
+        <div class="address"><span>政策解读</span><div class="address-popup" style="display: none;"><ul class="address-list">
+          <li><a href="/zw/zcwjs/zcjd/wzjd/content_1157601">《某市重点项目管理办法》的政策解读</a></li>
+        </ul></div></div></td><td class="refno">某府规〔2026〕1号</td><td class="date">2026-09-18</td><td class="date">2026-09-20</td></tr>
+    </tbody></table>"""
+    items = extract_items(
+        html, "https://www.example.gov.cn/zw/zcwjs/szfwj", today=date(2026, 11, 16)
+    )
+    assert [(i.title, i.publish_date) for i in items] == [
+        ("某市人民政府办公室关于印发《某市深入实施“人工智能+”行动方案》的通知", date(2026, 10, 23)),
+        ("关于某县2026年第1批次土地征收的批复", date(2026, 9, 30)),
+        ("某市人民政府关于印发《某市重点项目管理办法》的通知", date(2026, 9, 20)),
+    ]

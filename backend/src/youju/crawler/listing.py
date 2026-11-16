@@ -65,6 +65,14 @@ _ATTACHMENT_EXT = re.compile(r"\.(pdf|docx?|xlsx?|wps|et|ofd|zip|rar|7z)$", re.I
 _COMPANION_LINK = re.compile(
     r"^[(（\[【]?\s*(?:点击)?(?:查看)?(?:政策)?(?:解读|图解|文件|原文|原件)\s*[)）\]】]?$"
 )
+# title 属性明写"主题：""标题："的，那就是这一条的标题（临沂人社：title="主题：标题 日期：……"）。
+# 链接文字比它只多出前后的方括号标签时（"[公示公告]标题[图]"）用 title 属性。没这样明写的网站不动：
+# "【一图读懂】""[政策解读]""[视频]"这类标签说明这一条是解读、视频，不能去掉
+_LABELED_TITLE = re.compile(r"^\s*(?:主题|标题)\s*[：:]")
+_TAGS_ONLY = re.compile(r"^\s*(?:[\[【][^\[\]【】]{1,8}[\]】]\s*)*$")
+# 行里藏起来的弹层（style 写着 display:none）：泸州政府文件列表每行的"政策解读"弹层，
+# 里面是解读的链接
+_HIDDEN_STYLE = re.compile(r"display\s*:\s*none", re.IGNORECASE)
 # 侧栏、页头页脚、友情链接等外围区域的常见标记（标签，或 class/id 里的词）
 _PERIPHERAL_TAGS = {"aside", "nav", "header", "footer"}
 _PERIPHERAL_WORDS = {
@@ -131,6 +139,10 @@ def _title_of(a: etree._Element) -> str:
     # 链接文字常被截断成"……"，title 属性里才是完整标题
     if attr and (len(attr) >= len(text) or is_truncated(text)):
         return attr
+    if attr and attr in text and _LABELED_TITLE.match(_clean(a.get("title"))):
+        head, _, tail = text.partition(attr)
+        if _TAGS_ONLY.match(head) and _TAGS_ONLY.match(tail):
+            return attr
     # 日期写在链接里时（天津科技局、工信局：
     # <a title="完整标题">截断的标题...<span>2026-09-09</span></a>），文字结尾是日期，
     # 上面看不出截断，长度也多算了日期。去掉两端的日期再看：title 属性是剩下文字的完整写法、
@@ -176,6 +188,16 @@ def _expand_datastore(html: str) -> str:
         return html + block
     cut = ends[-1].start()
     return html[:cut] + block + html[cut:]
+
+
+def _hidden_within(a: etree._Element, el: etree._Element) -> bool:
+    """a 是不是在 el 里面一个藏起来（style 写着 display:none）的元素下。el 本身藏着不算。"""
+    for node in a.iterancestors():
+        if node is el:
+            return False
+        if _HIDDEN_STYLE.search(node.get("style") or ""):
+            return True
+    return False
 
 
 def _is_peripheral(el: etree._Element) -> bool:
@@ -225,6 +247,21 @@ class _Page:
             self._hrefs[el] = cached
         return cached
 
+    def hidden_companions(self, a: etree._Element) -> set[str]:
+        """和 a 同在一个格子（父元素）里、藏起来的弹层里的链接（泸州政府文件列表每行的"政策解读"
+        弹层）。找"一行"时不算别的文件链接：不然这一行会被当成已经走到了列表容器，日期找不到，
+        整行漏掉。"""
+        cell = a.getparent()
+        if cell is None:
+            return set()
+        found = set()
+        for b in cell.iter("a"):
+            if b is not a and _hidden_within(b, cell):
+                link = self.link(b)
+                if link:
+                    found.add(link[1])
+        return found
+
     def date_node(
         self, el: etree._Element, a: etree._Element, skip: set
     ) -> tuple[date | None, bool]:
@@ -252,10 +289,11 @@ class _Page:
         anchor_text = _link_text(a)
         ancestors = list(a.iterancestors())
         skip = set(ancestors)
+        companions = self.hidden_companions(a)
         for depth, el in enumerate(ancestors):
             if depth >= _MAX_ROW_DEPTH or el.tag in ("body", "html"):
                 break
-            others = self.title_hrefs(el) - {url}
+            others = self.title_hrefs(el) - {url} - companions
             if not _is_attachment(url):
                 # 正文链接旁边的附件（pdf、Word 等）属于同一行
                 others = {u for u in others if not _is_attachment(u)}
