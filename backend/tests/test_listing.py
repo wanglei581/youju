@@ -1302,7 +1302,7 @@ def test_link_that_is_itself_hidden_is_not_a_document() -> None:
 
 
 def test_display_none_in_a_comment_or_custom_property_is_not_hidden() -> None:
-    # "display:block;/* display:none */" 和 "--display:none" 都不算藏着
+    # "display:block;/* display:none */"、"--display:none"、"display:none bogus" 都不算藏着
     from lxml import html as lhtml
 
     from youju.crawler.listing import _hidden
@@ -1313,6 +1313,11 @@ def test_display_none_in_a_comment_or_custom_property_is_not_hidden() -> None:
         ("color:red; display : none", True),
         ("display:none;display:block", False),
         ("display:none !important;display:block", True),
+        ("display:none!important", True),
+        # 无效的声明浏览器不认：前面、后面有效的照算
+        ("display:none bogus", False),
+        ("display:none bogus;display:none", True),
+        ("display:block;display:none bogus", False),
     ):
         assert _hidden(lhtml.fromstring(f'<div style="{style}">x</div>')) is hidden, style
 

@@ -67,8 +67,10 @@ _COMPANION_LINK = re.compile(
     r"^[(（\[【]?\s*(?:点击)?(?:查看)?(?:政策)?(?:解读|图解|文件|原文|原件)\s*[)）\]】]?$"
 )
 # 元素自己的 style 里实际生效的 display（带 !important 的优先，否则取最后一个；注释里的、"--display"
-# 这种自定义属性不算）
-_DISPLAY = re.compile(r"(?:^|;)\s*display\s*:\s*([a-z-]+)\s*(!\s*important)?", re.IGNORECASE)
+# 这种自定义属性、"display:none bogus" 这种无效的写法都不算，浏览器也不认）
+_DISPLAY = re.compile(
+    r"(?:^|;)\s*display\s*:\s*([a-z-]+)\s*(!\s*important)?\s*(?=;|$)", re.IGNORECASE
+)
 _CSS_COMMENT = re.compile(r"/\*.*?\*/", re.S)
 # 泸州政府文件（和同一个平台的栏目）每行里藏着的"政策解读"弹层，写法是
 #   <div class="address"><span>政策解读</span>
