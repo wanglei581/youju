@@ -591,7 +591,9 @@ def _fetch_outcomes(
     for document_id, url in selected:
         by_host.setdefault(_host(url), []).append((document_id, url))
 
-    pause = pause or _SitePause()
+    # 没传就用配置的共享停取文件：body_refresh、refetch_redacted、名单 rescan、补标题这些手动命令
+    # 也和补正文队列、每轮抓取共用一份——队列刚停的网站它们不去，它们被拒也写进去
+    pause = pause or _SitePause(get_settings().detail_pause_path)
     completed: queue.Queue = queue.Queue(maxsize=max(1, max_workers))
     failed = threading.Event()
 

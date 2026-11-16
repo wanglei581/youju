@@ -921,3 +921,23 @@ def test_plain_text_gate_edges(body, content_type, expected):
 
     outcome = detail_service._fetch_one(1, "https://a.gov.cn/1", Fake())
     assert outcome.status == expected, outcome.reason
+
+
+def test_manual_commands_share_pause_file():
+    # body_refresh、refetch_redacted、名单 rescan、补标题都不传停取记录：默认用配置的共享文件，
+    # 队列刚停的网站它们不去，它们被拒也写进去（队列下次照样看得到）
+    from youju.config import get_settings
+
+    path = get_settings().detail_pause_path
+    _SitePause(path).add("a.gov.cn", "HTTP 403")
+    calls = []
+
+    class Fake:
+        def fetch(self, url):
+            calls.append(url)
+            return FetchResult(url, "http_error", final_url=url, http_status=403)
+
+    selected = [(1, "https://a.gov.cn/1"), (2, "https://b.gov.cn/2")]
+    _fetch_outcomes(selected, Fake(), 1)
+    assert calls == ["https://b.gov.cn/2"]  # a.gov.cn 在停取中，不去
+    assert _SitePause(path).expiry("b.gov.cn") is not None  # b 被拒，写进共享文件
