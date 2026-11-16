@@ -126,7 +126,8 @@ class FetchResult:
     robots_hops: tuple[str, ...] = ()
     # robots_error 时 robots.txt 回的 HTTP 状态码（连不上、超时没有）：调用方按它决定停多久
     robots_status: int | None = None
-    # robots_error 又没有状态码时：ssl_error（证书、加密连接出错）或 network_error（连不上、超时）
+    # robots_error 时：ssl_error（证书、加密连接出错）、network_error（连不上、超时）或 protected
+    # （robots.txt 回了防护页、验证码）
     robots_failure: str = ""
     # robots_error、因停取挡在 robots.txt 上时，实际出问题的那个 robots.txt 地址（可能跳到了别的
     # 主机）：调用方停的应该是它所在的主机
@@ -143,8 +144,8 @@ class _RobotsEntry:
     error: str | None = None  # unsupported_host、unreachable 的原因
     server_error: bool = False  # unreachable 是因为服务器回 5xx（超时、连不上在下层已重试过）
     http_status: int | None = None  # unreachable 时 robots.txt 回的状态码
-    # unreachable 又没有状态码时读 robots.txt 的结果：ssl_error（证书、加密连接出错，对方的问题）
-    # 或 network_error（连不上、超时、域名解析失败，也可能是我们自己断网）
+    # unreachable 时读 robots.txt 的结果：ssl_error（证书、加密连接出错，对方的问题）、
+    # network_error（连不上、超时、域名解析失败，也可能是我们自己断网）、protected（回了防护页）
     failure: str = ""
     final: str = ""  # unreachable、site_paused 时实际出问题的那个 robots.txt 地址（跟过跳转）
     chain: tuple[
@@ -516,6 +517,21 @@ class PoliteFetcher:
         # 不论 decode_text 怎么设都自己解码：下载附件的抓取器不解码内容（text 是空的），以前读
         # robots.txt 也拿到空文字、按"没有 robots.txt"放行，网站禁止抓取的附件照样下载
         body = decode_html(result.content, result.content_type).lstrip("\ufeff \t\r\n")
+        if body.startswith("<"):
+            from youju.govsites.platform import blocker
+
+            gate = blocker(result.status, status, body)
+            if gate:
+                # 回的是防护页、验证码（D-013）：网站拦着我们，不当成"没有 robots"接着去请求页面
+                return _RobotsEntry(
+                    "unreachable",
+                    None,
+                    now,
+                    f"robots.txt 回了防护页（{gate[:60]}），不抓",
+                    http_status=status,
+                    failure="protected",
+                    final=current,
+                )
         if not body or body.startswith("<"):
             # 返回的是 HTML（常见的"软 404"），视为没有 robots.txt
             return _RobotsEntry("allow_all", None, now)
@@ -762,6 +778,15 @@ class PoliteFetcher:
                     if address and self._address_interval > 0:
                         self._address_last[address] = self._clock()
                         self._shared_stamp(address_file)
+
+                        def stamp_on_release(address=address, address_file=address_file):
+                            # 放间隔的锁之前（收到响应头或请求出错）再记一次：线程记完时间后被
+                            # 挂起、过一会儿才真正发出时，下一个也要从这里起再隔够间隔
+                            self._address_last[address] = self._clock()
+                            self._shared_stamp(address_file)
+
+                        # 后登记的先执行：先记时间，再放文件锁和进程内的锁
+                        interval.callback(stamp_on_release)
                     timing = {}
                     if self._deadline is not None:
                         # 临近期限：这一次连接、读取最多等到期限（至少 1 秒）

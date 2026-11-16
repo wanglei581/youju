@@ -568,7 +568,10 @@ def _fetch_outcomes(
                         actual = outcome.fetch.robots_url
                     code = outcome.fetch.robots_status if outcome.fetch else None
                     failure = outcome.fetch.robots_failure if outcome.fetch else ""
-                    if code in (429, 521):
+                    if failure == "protected":
+                        # robots.txt 回了防护页、验证码：和页面被拦一样停 24 小时
+                        pause.add(_host(actual), "robots.txt 回了防护页或验证码")
+                    elif code in (429, 521):
                         # robots.txt 回 429（服务器忙）、521（防护）：读不到，停 6 小时再来
                         pause.add(_host(actual), f"robots.txt HTTP {code}", hours=6)
                     elif code:

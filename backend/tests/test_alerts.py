@@ -712,7 +712,7 @@ def test_round_runs_in_order_and_checks_only_after_crawl(
 
 
 @pytest.mark.parametrize(
-    ("round_locked", "failing", "expected", "code"),
+    ("round_locked", "failing", "expected", "code", "queue_locked"),
     [
         (
             False,
@@ -725,19 +725,24 @@ def test_round_runs_in_order_and_checks_only_after_crawl(
                 "parse-lists",
             ],
             0,
+            False,
         ),
         # 某一步失败就停下（失败提醒由 job.sh 发）
-        (False, "crawl", ["import-sources", "crawl"], 1),
+        (False, "crawl", ["import-sources", "crawl"], 1, False),
         # 定时任务的一轮正在进行：什么都不做，提示后退出
-        (True, "", [], 1),
+        (True, "", [], 1, False),
+        # 补正文队列 5 分钟没停下：也什么都不做，提示后退出
+        (False, "", [], 1, True),
     ],
 )
 def test_first_round_runs_every_step_through_job_sh(
-    tmp_path, round_locked, failing, expected, code
+    tmp_path, round_locked, failing, expected, code, queue_locked
 ) -> None:
     original = (Path(__file__).resolve().parents[1] / "deploy" / "first-round.sh").read_text()
-    script = original.replace("D=/app/backend/deploy", f"D={tmp_path}").replace(
-        "/tmp/youju-round.lock", str(tmp_path / "round.lock")
+    script = (
+        original.replace("D=/app/backend/deploy", f"D={tmp_path}")
+        .replace("/tmp/youju-round.lock", str(tmp_path / "round.lock"))
+        .replace("/tmp/youju-round.wanted", str(tmp_path / "round.wanted"))
     )
     (tmp_path / "first-round.sh").write_text(script)
     job = tmp_path / "job.sh"
@@ -748,7 +753,10 @@ def test_first_round_runs_every_step_through_job_sh(
     )
     job.chmod(0o755)
     flock = tmp_path / "flock"
-    flock.write_text('#!/bin/sh\nexit "$ROUND_LOCKED"\n')
+    flock.write_text(
+        '#!/bin/sh\ncase "$*" in *youju-fetch-details-queue.lock*) exit "$QUEUE_LOCKED" ;; esac\n'
+        'exit "$ROUND_LOCKED"\n'
+    )
     flock.chmod(0o755)
     env = {
         **os.environ,
@@ -756,9 +764,12 @@ def test_first_round_runs_every_step_through_job_sh(
         "CALLS": str(tmp_path / "calls"),
         "FAILING": failing,
         "ROUND_LOCKED": "1" if round_locked else "0",
+        "QUEUE_LOCKED": "1" if queue_locked else "0",
     }
     result = subprocess.run(["sh", str(tmp_path / "first-round.sh")], env=env, check=False)
     assert result.returncode == code
+    # 先留"这一轮要锁"的标记让队列停下；退出前去掉
+    assert not (tmp_path / "round.wanted").exists()
     calls = (tmp_path / "calls").read_text().splitlines() if (tmp_path / "calls").exists() else []
     assert [line.split()[0] for line in calls] == expected
     if expected[2:3] == ["fetch-details"]:

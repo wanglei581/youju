@@ -529,6 +529,53 @@ def test_stop_while_reading_body_abandons_response() -> None:
     assert state["chunks"] < 5
 
 
+def test_robots_protection_page_is_not_treated_as_missing() -> None:
+    calls: list[str] = []
+    challenge = "<html><script>var yunsuo_session_verify='1';</script></html>"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if request.url.path == "/robots.txt":
+            return httpx.Response(200, text=challenge, headers={"content-type": "text/html"})
+        return httpx.Response(200, text=LIST_HTML)
+
+    fetcher = PoliteFetcher(
+        "TestAgent YoujuBot/0.1",
+        per_host_interval=0.0,
+        per_address_interval=0,
+        transport=httpx.MockTransport(handler),
+        resolver=public_dns,
+    )
+    with fetcher as f:
+        result = f.fetch("https://a.gov.cn/page")
+    # robots.txt 回了防护页：网站拦着我们（D-013），不当成"没有 robots"接着去请求页面
+    assert result.status == "robots_error" and result.robots_failure == "protected"
+    assert calls == ["/robots.txt"]
+
+
+def test_address_interval_counts_from_response_headers() -> None:
+    import time
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/robots.txt":
+            return httpx.Response(404)
+        time.sleep(0.3)  # 发出以后过了一会儿才回响应头
+        return httpx.Response(200, text=LIST_HTML)
+
+    fetcher = PoliteFetcher(
+        "TestAgent YoujuBot/0.1",
+        per_host_interval=0.0,
+        per_address_interval=0.01,
+        transport=httpx.MockTransport(handler),
+        resolver=public_dns,
+    )
+    with fetcher as f:
+        before = f._clock()
+        assert f.fetch("https://a.gov.cn/page").status == "ok"
+        # 放间隔的锁之前（收到响应头时）又记了一次：下一个从这里起再隔够间隔
+        assert max(f._address_last.values()) - before >= 0.3
+
+
 def test_certificate_error_is_never_bypassed() -> None:
     compat_calls: list[str] = []
 

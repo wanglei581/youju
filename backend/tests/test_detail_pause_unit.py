@@ -257,6 +257,19 @@ def test_robots_network_error_pauses_one_hour(tmp_path):
     assert _hours_left(path, "a.gov.cn") == pytest.approx(1, abs=0.05)
 
 
+def test_robots_protection_page_pauses_host(tmp_path):
+    path = tmp_path / "pause.json"
+
+    class Fake:
+        def fetch(self, url):
+            return FetchResult(url, "robots_error", robots_status=200, robots_failure="protected")
+
+    pause = _SitePause(str(path))
+    _fetch_outcomes([(1, "https://a.gov.cn/1")], Fake(), 1, pause=pause)
+    assert pause.reasons == {"a.gov.cn": "robots.txt 回了防护页或验证码"}
+    assert _hours_left(path, "a.gov.cn") == pytest.approx(24, abs=0.05)
+
+
 def test_robots_certificate_error_pauses_six_hours(tmp_path):
     path = tmp_path / "pause.json"
 
