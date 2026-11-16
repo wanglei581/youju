@@ -924,12 +924,14 @@ def test_year_month_range_with_zero_padding_or_a_day_over_12_at_the_title_start(
     # "2026年01-06月"补了零也是月份区间，留在标题里；"2025年9-20 月度报告"的 20 超过 12，是发布日期
     html = """<ul class="info-list">
       <li><a href="./tzgg/info_1.shtml">2026年01-06月某市财政收支情况<span>2026-07-15</span></a></li>
+      <li><a href="./tzgg/info_4.shtml">2026.1-6月某市经济运行情况<span>2026-07-16</span></a></li>
       <li><a href="./tzgg/info_2.shtml">2025年9-20 月度经济运行报告</a></li>
       <li><a href="./tzgg/info_3.shtml">2025年9-21 关于开展第三批项目申报的通知</a></li>
     </ul>"""
     items = extract_items(html, "http://example.gov.cn/tzgg/", today=date(2026, 11, 16))
     assert [(i.title, i.publish_date) for i in items] == [
         ("2026年01-06月某市财政收支情况", date(2026, 7, 15)),
+        ("2026.1-6月某市经济运行情况", date(2026, 7, 16)),
         ("月度经济运行报告", date(2025, 9, 20)),
         ("关于开展第三批项目申报的通知", date(2025, 9, 21)),
     ]
