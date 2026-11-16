@@ -2202,11 +2202,72 @@ _PROTOTYPE_OWNERS = frozenset(
 )
 
 
+def _global_prefix_stripper(tokens, values):
+    """写入路径开头的全局对象去掉以后才是真正改的东西：window.window.GLOBAL_CONTEXTPATH、
+    document.defaultView.XMLHttpRequest 改的就是 GLOBAL_CONTEXTPATH、XMLHttpRequest。self、parent
+    这类在那个位置是局部变量的不去。"""
+    shadowable = tuple(g for g in _GLOBAL_OBJECTS if g not in ("window", "globalThis"))
+    local = _local_name_ranges(tokens, values, shadowable)
+
+    def strip(path, k):
+        path = tuple(path)
+        while len(path) > 1:
+            if path[0] in _GLOBAL_OBJECTS and not any(a < k < b for a, b in local.get(path[0], ())):
+                path = path[1:]
+            elif path[:2] == ("document", "defaultView") and len(path) > 2:
+                path = path[2:]
+            else:
+                break
+        return path
+
+    return strip
+
+
+# 脚本顶层用 var、function 声明这些名字也是改全局（GLOBAL_CONTEXTPATH 一改，浏览器拼的接口地址
+# 就变了）；PublicTree、catalogs、_organTree2 另有规则查
+_PROTECTED_DECLARATIONS = _BUILTINS | {"GLOBAL_CONTEXTPATH", "Ls", "$", "jQuery"}
+
+
+def _window_alias_problem(tokens, values):
+    """内联脚本（不是元素属性里的）：脚本顶层的 this 就是 window，document.defaultView 也是，经它们
+    改了什么看不全，不认（真实页面上都没有）；import(…) 动态加载模块不认；脚本顶层用 var、function
+    声明内置对象、GLOBAL_CONTEXTPATH、Ls、jQuery 的名字不认。"""
+    spans = []
+    for f, value in enumerate(values):
+        if value == "function":
+            found = _function_at(tokens, values, f)
+            if found is not None:
+                spans.append((found[0], found[2]))
+
+    def top(k):
+        return not any(a < k < b for a, b in spans)
+
+    for k, value in enumerate(values):
+        before = values[k - 1] if k else ""
+        after = values[k + 1] if k + 1 < len(values) else ""
+        if value == "this" and top(k):
+            return "脚本顶层用了 this（就是 window），经它改了什么看不全"
+        if value == "defaultView" and before == "." and k >= 2 and values[k - 2] == "document":
+            return "用了 document.defaultView（就是 window），经它改了什么看不全"
+        if value == "import" and after == "(" and before != ".":
+            return "用 import(…) 动态加载代码"
+        if (
+            value in _PROTECTED_DECLARATIONS
+            and before in ("var", "function")
+            and top(k)
+            and (after == "=" or before == "function")
+        ):
+            return f"脚本顶层用 {before} 声明了 {value}（改了全局）"
+    return None
+
+
 def _builtin_problem(tokens, values):
     """改内置对象（Array.prototype.indexOf = …、JSON.parse = …、Object.assign(Math, …)）、
     用 __proto__、setPrototypeOf，或者把 Array.prototype 这类整个当值用（经别名再改）的，不认。
-    Array.prototype.slice.call(…) 这样只读的照常。"""
-    for path, _op, _k in _write_sites(tokens, values):
+    Array.prototype.slice.call(…) 这样只读的照常。前面带 window.、self. 这类的也算。"""
+    strip = _global_prefix_stripper(tokens, values)
+    for path, _op, k in _write_sites(tokens, values):
+        path = strip(path, k)
         if path[0] in _BUILTINS:
             return f"改了内置的 {'.'.join(path)}"
     for k, value in enumerate(values):
@@ -2412,9 +2473,9 @@ def _attribute_script_problem(source, functions, widget):
     全局（GLOBAL_CONTEXTPATH 这类）、jQuery 的请求设置、zTree、内置对象，不能整个改 window。"""
     tokens = _js_tokens(source)
     values = _values(tokens)
-    for path, _op in _writes(source):
-        if path[0] in _GLOBAL_OBJECTS and len(path) > 1:
-            path = path[1:]
+    strip = _global_prefix_stripper(tokens, values)
+    for path, _op, k in _write_sites(tokens, values):
+        path = strip(path, k)
         if path[0] in (*_ROOTS, "GLOBAL_CONTEXTPATH", "$", "jQuery") or {
             "ajax",
             "ajaxGet",
@@ -2472,6 +2533,9 @@ def _dynamic_code_problem(tokens, values):
     """会执行我们看不见的代码的写法：eval、Function、x.constructor(…)、第一个参数是字符串的定时器、
     document.write 写内联脚本（写外链脚本的照常，unescape 编码的也解开看）；改 jQuery 自己的
     方法（$.X = …、单参数的 $.extend(…)；$.fn 下定义插件的照常）。"""
+    local_globals = _local_name_ranges(
+        tokens, values, tuple(g for g in _GLOBAL_NAMES if g not in ("window", "globalThis"))
+    )
     for k, value in enumerate(values):
         text = _string_literal(value) if value[:1] in ("'", '"') else value
         after = values[k + 1] if k + 1 < len(values) else ""
@@ -2491,7 +2555,12 @@ def _dynamic_code_problem(tokens, values):
                 return f"{text} 的第一个参数不是直接写的函数（可能是当代码执行的字符串）"
         if text == "Function" and before != "instanceof":
             return "用了 Function（拼代码）"
-        if value in _GLOBAL_NAMES and after == "[":
+        if (
+            value in _GLOBAL_NAMES
+            and after == "["
+            and before != "."
+            and not any(a < k < b for a, b in local_globals.get(value, ()))
+        ):
             close = _matching_token(tokens, k + 1)
             if close != k + 3 or values[k + 2][:1] not in ("'", '"'):
                 return f"按算出来的名字取 {value} 的成员"
@@ -2539,7 +2608,9 @@ def _dynamic_code_problem(tokens, values):
             flag = values[k + 4] in ("true", "false", "!")
             if len(args) == (1 if flag else 0):
                 return f"用 {value}.extend(…) 改了 jQuery 自己"
-    for path, _op, _k in _write_sites(tokens, values):
+    strip = _global_prefix_stripper(tokens, values)
+    for path, _op, k in _write_sites(tokens, values):
+        path = strip(path, k)
         if path[0] in ("$", "jQuery") and len(path) > 1 and path[1] not in ("fn", "()"):
             return f"改了 jQuery 的 {'.'.join(path)}"
     script_element = any(
@@ -2549,13 +2620,23 @@ def _dynamic_code_problem(tokens, values):
         and _string_literal(values[k + 2]).strip().lower() == "script"
         for k in range(len(values) - 2)
     )
+    code_props = ("text", "textContent", "innerHTML", "innerText", "outerHTML")
     if script_element and (
         "createTextNode" in values
         or any(
             values[k] == "."
-            and values[k + 1] in ("text", "textContent", "innerHTML", "innerText", "outerHTML")
+            and values[k + 1] in code_props
             and values[k + 2 : k + 3] == ["="]
-            for k in range(len(values) - 2)
+            or values[k] == "["
+            and values[k + 1][:1] in ("'", '"')
+            and _string_literal(values[k + 1]) in code_props
+            and values[k + 2 : k + 4] == ["]", "="]
+            for k in range(len(values) - 3)
+        )
+        or any(
+            value[:1] in ("'", '"')
+            and re.match(r"\s*(?:data|javascript):", _string_literal(value), re.I)
+            for value in values
         )
     ):
         # 真实页面上 createElement('script') 都只设 src（统计脚本）；往里写代码的会执行
@@ -2595,6 +2676,8 @@ def _script_text_problem(tokens, values):
             return "字符串里写着 <script（往页面里写脚本，浏览器会执行）"
         if re.search(r"<\s*base\b|%3c\s*base\b", "".join(parts), re.I):
             return "字符串里写着 <base（改了浏览器拼相对地址的基准）"
+        if re.search(r"\bon(?:error|load)\s*=", "".join(parts), re.I):
+            return "字符串里写着 onerror=、onload=（插进页面就会自己执行）"
         k = j + 1
     return None
 
@@ -3717,10 +3800,10 @@ def find_lonsun_api(
                 values[i : i + 3] == ["function", "PublicTree", "("] for i in range(len(values) - 2)
             )
             tree_writes = 0
-            for path, op in _writes(source):
-                # window.catalogs 和 window["catalogs"] 同样是页面全局状态。
-                if path[0] in _GLOBAL_OBJECTS and len(path) > 1:
-                    path = path[1:]
+            strip = _global_prefix_stripper(tokens, values)
+            for path, op, site in _write_sites(tokens, values):
+                # window.catalogs、window.window.catalogs、window["catalogs"] 同样是页面全局状态
+                path = strip(path, site)
                 if path[0] == "PublicTree" and op == "extend":
                     tree_extensions += 1
                 if path[0] == "_organTree2" and is_tree_script:
@@ -3758,6 +3841,7 @@ def find_lonsun_api(
                 _ztree_problem(values)
                 or _builtin_problem(tokens, values)
                 or _global_object_problem(tokens, values)
+                or _window_alias_problem(tokens, values)
                 or _dynamic_code_problem(tokens, values)
                 or _top_level_parent_problem(tokens, values, keep)
             )
@@ -5262,19 +5346,9 @@ def _ancestor_loop(nodes, cat_id):
     return None
 
 
-def _set_select_problem(raw, args, nodes, cat_id, hide_ok, modified=frozenset()):
-    """在 try 外面调的 setSelect 会不会在 getData 之前出错（出错就给原因：浏览器不发列表请求）。"""
-    if any(_member_sites(body, "setSelect", raw) for body in raw.values()):
-        # 包在 try 里也一样：catch 接得住异常，接不住死循环（findTopLevelParentNode 在上级是自己的
-        # 节点上一直转），浏览器到不了 getData
-        problem = _ancestor_loop(nodes, cat_id)
-        if problem:
-            return problem
-    if not _set_select_unguarded(raw):
-        return None
-    problem = _init_order_problem(raw) or _tree_one_problem(raw, args)
-    if problem:
-        return problem
+def _select_shape_problem(raw, args):
+    """setSelect、findTopLevelParentNode、findParentId 照真实写法逐个记号比对（setSelect 只比同步
+    的部分，setTimeout 回调是 500 毫秒以后才跑的）。认不出的给原因。"""
     tokens = _js_tokens(raw.get("setSelect", ""))
     values = _values(tokens)
     n = len(_SET_SELECT_PREFIX)
@@ -5303,9 +5377,31 @@ def _set_select_problem(raw, args, nodes, cat_id, hide_ok, modified=frozenset())
         or _values(_js_tokens(raw.get("findTopLevelParentNode", ""))) != _FIND_TOP
     ):
         return "findTopLevelParentNode 的写法认不出，算不出 setSelect 会不会出错"
-    parent_values = _values(_js_tokens(raw.get("findParentId", "")))
-    if parent_values not in (_FIND_PARENT_FIRST, _FIND_PARENT_FREQUENT):
+    if _values(_js_tokens(raw.get("findParentId", ""))) not in (
+        _FIND_PARENT_FIRST,
+        _FIND_PARENT_FREQUENT,
+    ):
         return "findParentId 的写法认不出，算不出 setSelect 会不会出错"
+    return None
+
+
+def _set_select_problem(raw, args, nodes, cat_id, hide_ok, modified=frozenset()):
+    """在 try 外面调的 setSelect 会不会在 getData 之前出错（出错就给原因：浏览器不发列表请求）。"""
+    if any(_member_sites(body, "setSelect", raw) for body in raw.values()):
+        # 包在 try 里也一样：catch 接得住异常，接不住死循环（findTopLevelParentNode 在上级是自己的
+        # 节点上一直转），浏览器到不了 getData。写法也得是认得的（改了循环的写法就可能转不出来）
+        problem = _ancestor_loop(nodes, cat_id) or _select_shape_problem(raw, args)
+        if problem:
+            return problem
+    if not _set_select_unguarded(raw):
+        return None
+    problem = _init_order_problem(raw) or _tree_one_problem(raw, args)
+    if problem:
+        return problem
+    problem = _select_shape_problem(raw, args)
+    if problem:
+        return problem
+    parent_values = _values(_js_tokens(raw.get("findParentId", "")))
     if not hide_ok:
         return "页面隐去部分栏目，算不出 setSelect 会不会出错"
     if "id" in modified:

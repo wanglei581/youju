@@ -2596,7 +2596,7 @@ def test_executed_code_we_do_not_analyze_refused(extra):
         '<a href="javascript:void(0)" onclick="return false">x</a>',
         "<input type='text' onmouseover=\"this.style.color='red'\">",
         "<script>$(window).on('scroll', function () {}); $(window).scrollTop();</script>",
-        "<script>var self = this; function f(a) { return a; } f(self);</script>",
+        "<script>var self = {}; function f(a) { return a; } f(self);</script>",
         "<script>if (typeof window !== 'undefined' && top !== self) { top.location = self.location; }</script>",
     ],
 )
@@ -2749,7 +2749,7 @@ def test_county_sources_need_configured_portal_even_under_city_domain():
         ("function g(a, self) { return self; } g(1, self);", False),
         # 在自己的作用域里当普通变量用的照常
         ("function g() { var self = this; return self; }", True),
-        ("var self = this; function h(x) { return x; } h(self);", True),
+        ("var self = {}; function h(x) { return x; } h(self);", True),
         ("function k(parent) { return [parent]; }", True),
         ("var a = 1, self = {}; self.x = 1; [self];", True),
     ],
@@ -3233,6 +3233,62 @@ def test_url_get_name_with_regex_chars_unknown():
     )
     result = resolve_fixture("jx", "49949451", page=page)
     assert isinstance(result, str) and "参数名认不准" in result, result
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        # 前面带 window.、this.、document.defaultView. 的改写一样算
+        "window.XMLHttpRequest.prototype.send = function (b) {};",
+        "window.encodeURIComponent = function (x) { return x; };",
+        "window.JSON.parse = null;",
+        "window.window.GLOBAL_CONTEXTPATH = '/x';",
+        "document.defaultView.GLOBAL_CONTEXTPATH = '/x';",
+        "this.GLOBAL_CONTEXTPATH = '/x';",
+        "(function (r) { r.GLOBAL_CONTEXTPATH = '/x'; })(this);",
+        "this.catalogs = {6991: []};",
+        "window.jQuery.param = function () { return ''; };",
+        # 脚本顶层用 var、function 声明这些名字
+        "var GLOBAL_CONTEXTPATH = '/x';",
+        "var XMLHttpRequest = function () {};",
+        "function encodeURIComponent(x) { return x; }",
+        # 插进页面会自己跑的、动态加载的代码
+        "$('body').append('<img src=x onerror=x()>');",
+        "import('data:text/javascript,x()');",
+        "var s = document.createElement('script'); s.src = 'data:text/javascript,x()';",
+        "var s = document.createElement('script'); s['text'] = 'x()';",
+    ],
+)
+def test_global_rewrites_with_prefixes_refused(code):
+    assert _found(_jx(extra=f"<script>{code}</script>")) is None, code
+
+
+def test_shadowed_self_index_is_fine():
+    # self 在那里是局部变量：按算出来的名字取它的成员不算取 window 的
+    code = "function f() { var self = {a: 1}; return self['a' + '']; }"
+    assert _found(_jx(extra=f"<script>{code}</script>")) is not None
+
+
+def test_guarded_set_select_still_needs_known_shapes():
+    # 淮北：setSelect 包在 try 里。findTopLevelParentNode 的循环改成找不到就停在原地：上级不在树里时
+    # 浏览器转不出来，catch 接不住，到不了 getData
+    page = fixture("huaibei_page.html")
+    old = "return node.id === currentNode.parentId;\n                })[0];"
+    assert page.count(old) == 1
+    changed = page.replace(old, old[:-1] + " || currentNode;", 1)
+    node = '"id":14237484,"name":"政策","parentId":4737901'
+    catalog = fixture("huaibei_catalog.js").replace(node, node.replace("4737901", "999999"), 1)
+    reason = resolve_fixture("huaibei", "14237535", page=changed, catalog=catalog)
+    assert isinstance(reason, str) and "写法认不出" in reason, reason
+
+
+def test_ready_reply_with_nan_names_ready_request():
+    from youju.crawler.adapters import api_parts, api_refusal
+    from youju.crawler.fetcher import FetchResult
+
+    ready = api_parts(resolve_fixture("wuhu", "6732121"))[0]
+    reply = FetchResult(ready.url, "ok", ready.url, 200, '{"status":NaN}')
+    assert api_refusal(ready, reply).startswith("前置接口")
 
 
 def test_preprocess_name_member_needs_string_names():

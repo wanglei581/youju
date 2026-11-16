@@ -891,7 +891,7 @@ def api_refusal(api: ListApi, result) -> str:
     if api.adapter == LONSUN:
         if tree:
             return ""
-        return "列表接口：返回格式认不出" if _lonsun_response(api, text) is None else ""
+        return f"{prefix}：返回格式认不出" if _lonsun_response(api, text) is None else ""
     return _gkmlpt_refusal(api, payload) if api.adapter == GKMLPT else _payload_refusal(payload)
 
 
