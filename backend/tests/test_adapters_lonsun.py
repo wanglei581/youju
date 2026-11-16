@@ -3603,3 +3603,92 @@ def test_huge_is_parent_number_does_not_raise():
     assert catalog != fixture("jx_catalog.js")
     result = resolve_fixture("jx", "49949451", catalog=catalog)  # 不抛 OverflowError
     assert result is not None
+
+
+A_COLUMN = "https://a.gov.cn/public/column/1?type=4&catId=1&action=list"
+B_COLUMN = "https://b.gov.cn/public/column/2?type=4&catId=2&action=list"
+
+
+def test_round_guard_blocks_the_host_that_refused_after_redirect():
+    # 栏目页跟着跳转：a 跳到 b、b 回 403，真正拒绝我们的是 b（第十三轮独立 Claude）：a、b 这一轮都停，
+    # b 别的栏目页不再去
+    from youju.crawler.fetcher import FetchResult
+    from youju.crawler.roundguard import HostRoundGuard
+
+    guard, calls = HostRoundGuard(), []
+    b_page = "https://b.gov.cn/public/column/1?type=4&catId=1&action=list"
+
+    def fetch(url):
+        calls.append(url)
+        result = FetchResult(url, "http_error", b_page, 403)
+        result.hops = (url, b_page)
+        return result
+
+    guard.fetch(A_COLUMN, fetch, redirects=False)
+    assert guard.blocked(A_COLUMN) and guard.blocked(B_COLUMN)
+    assert guard.fetch(B_COLUMN, fetch, redirects=False).status == "site_paused"
+    assert calls == [A_COLUMN]
+
+
+def test_round_guard_does_not_follow_redirects_into_blocked_hosts(tmp_path):
+    # b 这一轮已经拒绝过我们：a 的栏目页跳到 b 时不跟进去（不发请求，记这次没取到）；经 PageCache
+    # 取的同样，这样挡下的不进缓存
+    import httpx
+
+    from youju.crawler.fetcher import PoliteFetcher
+    from youju.crawler.roundguard import HostRoundGuard
+    from youju.govsites.pagecache import PageCache
+
+    requested = []
+
+    def handler(request):
+        requested.append(f"{request.url.host}{request.url.path}")
+        if request.url.path == "/robots.txt":
+            return httpx.Response(404)
+        if request.url.host == "a.gov.cn":
+            return httpx.Response(302, headers={"location": B_COLUMN})
+        return httpx.Response(200, text="<html><body>b</body></html>")
+
+    with PoliteFetcher(
+        "test",
+        per_host_interval=0,
+        transport=httpx.MockTransport(handler),
+        resolver=lambda host: ["1.2.3.4"],
+    ) as fetcher:
+        guard = HostRoundGuard()
+        guard.block(B_COLUMN)
+        assert guard.fetch(A_COLUMN, fetcher.fetch, redirects=False).status == "site_paused"
+        cache = PageCache(tmp_path / "cache", fetcher)
+        assert guard.fetch(A_COLUMN, cache.get, redirects=False).status == "site_paused"
+        assert not cache._path(A_COLUMN, False).exists()
+    assert not any(path.startswith("b.gov.cn/public") for path in requested)
+
+
+def test_refusal_label_not_repeated():
+    from youju.crawler.adapters import labeled
+
+    assert labeled("前置接口：", "前置接口：HTTP 403：拒绝访问或要求登录") == (
+        "前置接口：HTTP 403：拒绝访问或要求登录"
+    )
+    assert labeled("分类 3：", "列表接口：HTTP 403") == "分类 3：列表接口：HTTP 403"
+
+
+@pytest.mark.parametrize(
+    "src", ["///jx.ah.gov.cn/49631981/6991.js", "https:///jx.ah.gov.cn/49631981/6991.js"]
+)
+def test_catalog_src_with_odd_slashes_refused(src):
+    # 斜杠个数不对的地址：浏览器把 jx.ah.gov.cn 当主机名，urljoin 当成本站的路径（第十三轮独立 Claude）
+    page = fixture("jx_page.html").replace('src="/49631981/6991.js"', f'src="{src}"', 1)
+    assert page != fixture("jx_page.html")
+    assert _found(page) is None
+
+
+@pytest.mark.parametrize("code", ["me.ztreeData.fill(null);", "me.ztreeData2.copyWithin(0, 1);"])
+def test_fill_and_copy_within_count_as_in_place_writes(code):
+    # fill、copyWithin 和 push、sort 一样原地改数组（第十三轮独立 Claude 建议）：加载时改栏目数据不认
+    page = fixture("jx_page.html")
+    assert page.count(_BIND_TOP) == 1
+    result = resolve_fixture(
+        "jx", "49949451", page=page.replace(_BIND_TOP, f"{_BIND_TOP} {code}", 1)
+    )
+    assert isinstance(result, str) and "改写了依赖状态" in result, result

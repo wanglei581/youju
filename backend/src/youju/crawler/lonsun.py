@@ -32,11 +32,13 @@ window 和函数里的 this 都不许整个当值用（只认 this.名字、$(th
 .get(0)、.each 回调的参数）或别的 DOM 属性拿到 window、再按算出来的名字改全局的写法不追踪——只有专门
 构造才会出现，157 个真实页面一处都没有；照名字改的（e.view.jQuery.param = …）照样拦。
 
-还有两条前提（第十二轮审阅）：外链脚本（平台的 common.min.js、ztree.min.js，龙讯云、无障碍、统计这些
-动态插入的脚本）不分析，当它们不改我们照着推请求用的东西——平台脚本的写法核对过（参数顺序、编码、
-跳过 undefined），别的是各站通用的外部服务；异步取回的网页片段（$.get(…).done(h → .html(h)) 这类，
-标签页内容）里的脚本不分析：普通页面在就绪回调里当场发列表请求，片段回来时已经发过了；芜湖这类等前置
-请求的页面，片段可能先执行，当它们不改这些东西（用 .load(地址) 直接插片段的照旧不认）。
+还有两条前提（第十二、十三轮审阅）：所有外链脚本（平台的 common.min.js、ztree.min.js，龙讯云、
+无障碍、统计这些动态插入的脚本，也包括站点自己的 /assets/js/… 这类）都不分析，当它们不改我们照着推
+请求用的东西、也不让页面在发列表请求之前出错——平台脚本的写法核对过（参数顺序、编码、跳过
+undefined）；页面用到外链脚本定义的变量时（淮南 preprocessData 的 hideCatalogId），当真实页面在
+浏览器里能跑。异步取回的网页片段（$.get(…).done(h → .html(h)) 这类，标签页内容）里的脚本也不分析，
+当它们不改这些东西——片段可能在列表请求发出之前回来、执行（脚本顶层发的请求，在解析器等后面的外链
+脚本下载时就可能回来）；用 .load(地址) 插片段的照旧不认（写法更直接，真实页面没有）。
 """
 
 import collections
@@ -63,7 +65,14 @@ def _odd_url(text: str) -> bool:
     """网址里只认可见的 ASCII 字符（不含反斜杠）。浏览器解析网址前去掉首尾空白和控制字符、删掉中间
     的换行和制表符、把反斜杠当斜杠（\\x.example/… 是别的主机）、空格和汉字转成 %xx；urljoin 都不
     这样做，两边拼出来的地址、读到的 location.href 可能不一样。"""
-    return any(c == "\\" or not "!" <= c <= "~" for c in text)
+    if any(c == "\\" or not "!" <= c <= "~" for c in text):
+        return True
+    # 斜杠个数不对的：///host/x、https:///host/x、https:/host/x 浏览器把 host 当主机名，urljoin 当成
+    # 本站的路径
+    scheme = re.match(r"[A-Za-z][A-Za-z0-9+.\-]*:", text)
+    rest = text[scheme.end() :] if scheme else text
+    slashes = len(rest) - len(rest.lstrip("/"))
+    return slashes >= 3 or bool(scheme) and slashes != 2
 
 
 def _words(text):
@@ -1335,7 +1344,7 @@ def _immutable(value):
     return value
 
 
-_MUTATORS = {"push", "pop", "shift", "unshift", "splice", "sort", "reverse"}
+_MUTATORS = {"push", "pop", "shift", "unshift", "splice", "sort", "reverse", "fill", "copyWithin"}
 # 每次都新建一个数组返回的方法：对返回值本身原地排序、push 碰不到原来的数据（改它的元素不算）
 _FRESH_RESULTS = frozenset(
     {

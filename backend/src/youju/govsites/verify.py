@@ -22,6 +22,7 @@ from youju.crawler.adapters import (
     fetch_api_follow,
     find_list_api,
     gkmlpt_categories,
+    labeled,
 )
 from youju.crawler.listing import extract_items
 from youju.crawler.lonsun import LONSUN_CITY_PORTALS, lonsun_unrecognized_reason
@@ -186,7 +187,7 @@ def check_one(cache: PageCache, col: ColumnCheck, today: date) -> ColumnCheck:
                 if refused:
                     # 读取护栏（D-128）：接口返回不是成功、带权限要求、要登录或验证码、明确拒绝
                     # → 记不能抓、不读；几个分类合读时，哪一个被拦下都整栏不能抓
-                    col.result, col.reason = BLOCKED, f"{which}{refused}（D-128）"
+                    col.result, col.reason = BLOCKED, f"{labeled(which, refused)}（D-128）"
                     return col
                 if ar.status != "ok":
                     # 列表接口这次没取到（超时、5xx 等）：记打不开，不按栏目页猜成"要脚本"

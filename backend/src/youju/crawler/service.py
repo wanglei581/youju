@@ -29,6 +29,7 @@ from youju.crawler.adapters import (
     fetch_api_follow,
     find_list_api,
     gkmlpt_categories,
+    labeled,
 )
 from youju.crawler.fetcher import FetchResult
 from youju.crawler.listing import ListItem, extract_items
@@ -349,7 +350,7 @@ def _items_via_adapter(
                 [],
                 api.adapter,
                 result,
-                refused=f"{label}{refused}",
+                refused=labeled(label, refused),
                 api_url=first_url,
                 list_url=part.url if api.adapter == LONSUN else "",
                 part=label,

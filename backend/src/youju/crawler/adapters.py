@@ -206,6 +206,12 @@ def api_part_label(part: ListApi, parts: tuple[ListApi, ...]) -> str:
     return ""
 
 
+def labeled(label: str, reason: str) -> str:
+    """原因前面加上是哪一个请求（api_part_label）；原因已经写着的（api_refusal 给前置接口的原因自带
+    "前置接口："）不再重复。"""
+    return reason if label and reason.startswith(label) else f"{label}{reason}"
+
+
 def api_items_merged(
     api: ListApi, texts: list[str], parser_config: dict | None, today: date | None
 ) -> list[ListItem]:

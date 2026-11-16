@@ -55,16 +55,17 @@ class PageCache:
         h = hashlib.sha1(key.encode("utf-8")).hexdigest()
         return self.root / "pages" / h[:2] / f"{h}.json.gz"
 
-    def get(self, url: str, same_address_only: bool = False) -> FetchResult:
+    def get(self, url: str, same_address_only: bool = False, hop_allowed=None) -> FetchResult:
         """same_address_only：只取这个地址本身、跳到别处不跟（读列表接口时用，
-        见 PoliteFetcher.fetch）。"""
+        见 PoliteFetcher.fetch）。hop_allowed：交给 PoliteFetcher.fetch，跳转经过这一轮已停的
+        主机就不去（round_guard 用）；这样挡下的不进缓存。"""
         # 同一网址同时只抓一次：几个部门共用一个网站时，后来的直接用缓存
         with self._lock:
             lock = self._url_locks.setdefault(url, threading.Lock())
         with lock:
-            return self._get(url, same_address_only)
+            return self._get(url, same_address_only, hop_allowed)
 
-    def _get(self, url: str, same_address_only: bool = False) -> FetchResult:
+    def _get(self, url: str, same_address_only: bool = False, hop_allowed=None) -> FetchResult:
         path = self._path(url, same_address_only)
         cached = self._read(path)
         if cached is not None:
@@ -83,11 +84,14 @@ class PageCache:
                 return FetchResult(**cached)
         if self.offline or self.fetcher is None:
             return FetchResult(url, "not_cached", error="缓存里没有，离线模式不抓")
+        extra = {"hop_allowed": hop_allowed} if hop_allowed is not None else {}
         result = (
-            self.fetcher.fetch(url, same_address_only=True)
+            self.fetcher.fetch(url, same_address_only=True, **extra)
             if same_address_only
-            else self.fetcher.fetch(url)
+            else self.fetcher.fetch(url, **extra)
         )
+        if result.status == "site_paused":
+            return result  # 这一轮的护栏挡下的：下次照常再取，不进缓存
         if result.status == "ok" and result.content.startswith(b"%PDF-"):
             # 年度报表有的只发 PDF：存它的文字（表里有"首页网址"）
             from youju.crawler.pdf import extract_pdf_text
