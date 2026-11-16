@@ -3376,6 +3376,7 @@ def _with_code(where, code):
         ("script", "GLOBAL_CONTEXTPATH &&= '/x';"),
         ("bind", "me.listParams.pageSize |= 100;"),
         ("script", "var o = {get x() { return 1; }};"),
+        ("script", "function f(e) { with (e) { view['GLOBAL_' + 'CONTEXTPATH'] = '/x'; } }"),
         ("script", "var s = $.ajaxSettings; s.beforeSend = function () {};"),
         ("script", "var setup = $.ajaxSetup; setup({beforeSend: function () {}});"),
         # body 上的事件属性、javascript: 链接里，最外层的 this 就是 window

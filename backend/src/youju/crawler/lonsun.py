@@ -2385,8 +2385,8 @@ def _index_access(values, k):
 def _pattern_write_problem(tokens, values):
     """_write_sites 看不见的写法（第十一轮审阅）：解构赋值（[me.listParams.pageSize] = […]、
     ({x: Ls.ajaxGet} = …)、var [a] = …），for-in/of 每次写进成员、解构或页面依赖的全局名字，
-    for await，class、对象字面量里的简写方法和取值函数（this 跟着谁走、改了什么看不清）。真实页面上
-    都没有（for (var i in …) 这种照常），一律不认。"""
+    for await，class、对象字面量里的简写方法和取值函数（this 跟着谁走、改了什么看不清），with
+    （里面的名字先按对象的成员找）。真实页面上都没有（for (var i in …) 这种照常），一律不认。"""
     for k, value in enumerate(values):
         before = values[k - 1] if k else ""
         after = values[k + 1] if k + 1 < len(values) else ""
@@ -2400,6 +2400,9 @@ def _pattern_write_problem(tokens, values):
                 return "用解构声明变量（var [a] = …），看不出改了什么"
         if value == "class" and before not in (".", "?."):
             return "用了 class（我们不分析）"
+        if value == "with" and after == "(" and before not in (".", "?."):
+            # with (e) { view[k] = … }：里面的名字先按对象的成员找（e.view 就是 window）
+            return "用了 with（名字跟着对象走，改了什么看不清）"
         if (
             before in ("{", ",")
             and (
