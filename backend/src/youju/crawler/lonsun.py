@@ -191,6 +191,15 @@ def catalog_host_allowed(
         return False
 
 
+def _reject_constant(name: str):
+    raise ValueError(f"JSON 里不该有 {name}")
+
+
+def _strict_json(text: str):
+    """严格按 JSON 解析：Python 自带的 json 还认 NaN、Infinity，JSON 里没有，认不出。"""
+    return json.loads(text, parse_constant=_reject_constant)
+
+
 def parse_catalog(text: str, organ_id: str) -> list[dict]:
     """只接受页面对应机构的单个 JSON 栏目树，并拒绝重复编号。"""
     if not re.fullmatch(r"[0-9]+", organ_id):
@@ -203,7 +212,7 @@ def parse_catalog(text: str, organ_id: str) -> list[dict]:
     if not match or match.group(1) != organ_id:
         raise LonsunFormatError("栏目树脚本格式或机构编号不符")
     try:
-        nodes = json.loads(match.group(2))
+        nodes = _strict_json(match.group(2))
     except (ValueError, RecursionError) as exc:  # 嵌套太深也当认不出
         raise LonsunFormatError("栏目树 JSON 无效") from exc
     if not isinstance(nodes, list) or any(
@@ -289,7 +298,7 @@ def parse_response(
 ) -> tuple[list[ListItem], bool]:
     """读取已取得的 JSON；第二项表示接口明确返回空列表。"""
     try:
-        payload = json.loads(text.lstrip("\ufeff").strip())
+        payload = _strict_json(text.lstrip("\ufeff").strip())
     except (ValueError, RecursionError) as exc:  # 嵌套太深也当认不出
         raise LonsunFormatError("列表接口 JSON 无效") from exc
     if mode == "list":

@@ -930,10 +930,21 @@ def test_lonsun_service_refusal_remembers_tree(session):
     session.refresh(source)
     assert source.parser_config["list_api_refused"]["url"] == tree
     assert source.parser_config["list_api_refused"]["api_url"] == api
+    # 30 天内整套不碰：栏目页、栏目树、列表接口都不再请求（栏目页改了栏目树地址也一样）
     changed_query = html.replace("/49631981/6991.js", "/49631981/6991.js?v=85")
     again = RecordingFetcher({url: [page(url, changed_query)]})
-    assert check_source(session, source, again).status == "list_api_refused"
-    assert again.requested == [url]
+    held = check_source(session, source, again)
+    assert held.status == "list_api_refused" and "暂不再请求" in held.error
+    assert again.requested == []
+    # 过了 30 天：照常请求，再看一次
+    session.refresh(source)
+    note = dict(source.parser_config["list_api_refused"])
+    note["at"] = (datetime.now(UTC) - timedelta(days=31)).isoformat()
+    source.parser_config = {**source.parser_config, "list_api_refused": note}
+    session.commit()
+    later = RecordingFetcher({url: [page(url, html)], tree: [page(tree, catalog)], api: [denied]})
+    assert check_source(session, source, later).status == "list_api_refused"
+    assert later.requested == [url, tree, api]
 
 
 @pytest.mark.parametrize("tree_status", ["ok", "robots_disallowed", "robots_error"])
@@ -1124,10 +1135,10 @@ def test_lonsun_ready_request_refused_means_no_list(session):
     assert api.url not in fetcher.requested
     session.refresh(source)
     assert source.parser_config["list_api_refused"]["url"] == tree.url
-    # 30 天内栏目树地址没变：整套不再请求
+    # 30 天内整套不碰：同一网站上的栏目页也不再请求
     again = RecordingFetcher({url: [page(url, html)]})
     assert check_source(session, source, again).status == "list_api_refused"
-    assert again.requested == [url]
+    assert again.requested == []
     # 前面那个请求回来的读不出（status 为真、data 不是字符串）：这次没取到，不发列表请求
     source.parser_config = {"list_api_open": "龙讯public"}
     session.commit()
@@ -1178,8 +1189,9 @@ def test_lonsun_refusal_changed_tree_same_list(session):
     changed = html.replace("/49631981/6991.js", "/123456/6991.js")
     fetcher = RecordingFetcher({url: [page(url, changed)], new_tree: [page(new_tree, catalog)]})
     result = check_source(session, source, fetcher)
+    # 栏目页换了栏目树地址也不去看：30 天内这个来源一个请求都不发
     assert result.status == "list_api_refused"
-    assert fetcher.requested == [url, new_tree]
+    assert fetcher.requested == []
     session.refresh(source)
     assert source.parser_config["list_api_refused"]["api_url"] == api
 

@@ -212,6 +212,21 @@ LIST_API_REFUSED_KEY = "list_api_refused"
 LIST_API_RECHECK_DAYS = 30
 
 
+def _refusal_held(parser_config: dict, now: datetime) -> str:
+    """来源被读取护栏拦下的记录还在 30 天以内：给原因（不比对地址）。"""
+    note = parser_config.get(LIST_API_REFUSED_KEY)
+    if not isinstance(note, dict):
+        return ""
+    try:
+        if now - datetime.fromisoformat(str(note.get("at"))) > timedelta(
+            days=LIST_API_RECHECK_DAYS
+        ):
+            return ""
+    except (TypeError, ValueError):
+        return ""
+    return str(note.get("reason") or "列表接口被读取护栏拦下")
+
+
 def _refused_before(
     parser_config: dict, api_url: str, now: datetime, *, tree: bool = False, list_url: bool = False
 ) -> str:
@@ -368,7 +383,18 @@ def check_source(
         source.province, source.city, parser_config.get("lonsun_catalog_host")
     )
     county = source.level == "区县级"
-    if catalog_cache is not None and (
+    held = (
+        _refusal_held(parser_config, started)
+        if parser_config.get(LIST_API_OPEN_KEY) == LONSUN
+        else ""
+    )
+    if held:
+        # 经龙讯接口读的来源被读取护栏拦下过（栏目树、前置请求或列表接口被拒）：30 天内整套不碰，
+        # 同一网站上的栏目页也不再请求
+        result = FetchResult(
+            url, LIST_API_REFUSED, error=f"{held}（之前被读取护栏拦下，暂不再请求）"
+        )
+    elif catalog_cache is not None and (
         parser_config.get(LIST_API_OPEN_KEY) == LONSUN or column_spec(url) is not None
     ):
         # 龙讯信息公开栏目页（经龙讯接口读的，和还没标的 /public/column/… 都算）：栏目页和栏目树、

@@ -3088,6 +3088,21 @@ def test_preprocess_grep_member_needs_strings():
     assert isinstance(reason, str) and "uri" in reason, reason
 
 
+@pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
+def test_catalog_and_list_json_strict(constant):
+    # 栏目树、列表返回只按 JSON 解析：Python 自带的 json 还认 NaN、Infinity，JSON 里没有
+    catalog = fixture("jx_catalog.js").replace(
+        '"isParent":false', f'"extra":{constant},"isParent":false', 1
+    )
+    assert catalog != fixture("jx_catalog.js")
+    with pytest.raises(LonsunFormatError):
+        parse_catalog(catalog, "6991")
+    reply = fixture("jx_api.json").replace('"total":', f'"extra":{constant},"total":', 1)
+    assert reply != fixture("jx_api.json")
+    with pytest.raises(LonsunFormatError):
+        parse_response(reply, "list", BASE, TODAY)
+
+
 def test_preprocess_name_member_needs_string_names():
     # jx 的 preprocessData 读 el.name.length：哪个节点 name 是 null，浏览器在这里就出错
     broken = '{"id":12,"name":null,"parentId":49938311,"isParent":false,"uri":"","link":""},'
