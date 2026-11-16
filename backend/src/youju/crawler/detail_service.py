@@ -15,6 +15,8 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
+from lxml import etree
+from lxml import html as lxml_html
 from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.orm import Session
 
@@ -24,6 +26,8 @@ from youju.classify import doc_kind
 from youju.config import get_settings
 from youju.crawler.detail import (
     DetailResult,
+    _plain_lines,
+    _search_throttle_dialogs,
     parse_detail,
     redact_sensitive,
     search_throttle_site,
@@ -189,12 +193,43 @@ def _pdf_detail(content: bytes) -> DetailResult:
 
 def _html_page_gate(text: str, url: str) -> bool:
     """网页是不是整页就是一个关卡（D-013：防护页、验证码、登录页，要停取这个网站）：云锁、安全狗这类
-    平台的拦截页，标题写着登录、验证或者整页几乎没字又带着验证码、密码框的（html_gate）；详情页解析
-    认出的验证码、访问过于频繁这类字也要整页几乎没字才算——正常通知讲验证码使用要求、页头挂个登录
-    小框都不算，不停整个网站。"""
-    if html_gate(text):
+    平台的拦截页、整页几乎没字的拦截页、登录页、验证页（html_gate）；详情页解析认出的验证码、访问过于
+    频繁这类字也要整页几乎没字才算——正常通知讲验证码使用要求、页头挂个登录小框都不算，不停整个网站。
+    不是整页几乎没字的详情页，html_gate 说是登录页、验证页的还要过 _login_page。"""
+    reason = html_gate(text)
+    if reason == "需要登录或验证码" and not bare_page(text):
+        return _login_page(text, url)
+    if reason:
         return True
     return bare_page(text) and parse_detail(text, url).failure_reason == "防护页或验证码"
+
+
+def _visible_words(text: str, url: str) -> str:
+    """页面上看得见的字：标题和正文，不含脚本、样式、属性，也不含核实过的站内搜索限流弹窗
+    （detail._search_throttle_dialogs）。"""
+    try:
+        root = lxml_html.fromstring(text)
+    except (etree.ParserError, ValueError):
+        return ""
+    body = root.xpath("//body")
+    if not body:
+        return ""
+    title = " ".join(root.xpath("//title/text()"))
+    dialogs = frozenset(_search_throttle_dialogs(root, url))
+    return title + "\n" + "\n".join(_plain_lines(body[0], dialogs, keep_select=True))
+
+
+def _login_page(text: str, url: str) -> bool:
+    """不是整页几乎没字的详情页，什么时候算登录页、验证页：标题很短的那一段写着登录、验证
+    （html_gate 已经查过）以外，还要有密码框，或者验证码这类字是页面上看得见的（脚本名、属性里的
+    captcha、核实过的站内搜索限流弹窗都不算），并且解析也取不到正文、附件。详情页的标题就是文章
+    标题（"关于开展能力验证工作的通知"），页头的登录小框、限流弹窗也常见，只凭这些不停整个网站。"""
+    from youju.govsites.platform import _CAPTCHA, _PASSWORD
+
+    if not (_PASSWORD.search(text[:200000]) or _CAPTCHA.search(_visible_words(text, url))):
+        return False
+    parsed = parse_detail(text, url)
+    return not parsed.raw_body and not parsed.attachments
 
 
 # 字节顺序标记：浏览器按它定编码（比响应头优先）；UTF-32 的要排在 UTF-16 前面

@@ -1065,8 +1065,19 @@ def _long_page(title, extra=""):
         (_long_page("关于规范使用短信验证码的通知"), "parse_empty"),
         # 页头挂个登录小框：照常读
         (_long_page("关于开展申报工作的通知", "<input type='password' name='p'>"), "ok"),
+        # 文章标题带着验证、登录这类字（第十二轮独立 Claude）：标题长，不像关卡
+        (
+            _long_page(
+                "关于开展2026年度检验检测机构能力验证工作的通知",
+                "<input type='password' name='p'>",
+            ),
+            "ok",
+        ),
+        # 标题短、写着登录，但 captcha 只在脚本名里、页面有正文：照常读
+        (_long_page("登录须知", "<script src='/js/captcha.js'></script>"), "ok"),
+        (_long_page("安全检查 - 某局", "<input type='password' name='p'>"), "ok"),
     ],
-    ids=["captcha-notice", "login-widget"],
+    ids=["captcha-notice", "login-widget", "long-title", "script-captcha", "short-title-body"],
 )
 def test_normal_pages_mentioning_gates_do_not_pause(tmp_path, html, expected):
     path = str(tmp_path / "pause.json")
@@ -1267,3 +1278,36 @@ def test_known_pause_survives_file_losing_records(tmp_path):
     assert pause.hosts == {"a.gov.cn": "HTTP 403", "b.gov.cn": "HTTP 429"}
     pause.add("c.gov.cn", "HTTP 412")
     assert set(json.loads(path.read_text())) == {"a.gov.cn", "b.gov.cn", "c.gov.cn"}
+
+
+def test_login_page_with_navigation_still_pauses(tmp_path):
+    # 真的登录页：标题短、写着登录，有密码框，页面上有导航（不是整页几乎没字）但取不到正文：停这个网站
+    nav = "".join(f"<a href='/c{i}.html'>栏目{i}</a>" for i in range(20))
+    html = (
+        "<html><head><title>用户登录 - 某市人民政府</title></head><body>"
+        f"<div>{nav}</div><form><input name='u'><input type='password' name='p'>"
+        "<button>登录</button></form></body></html>"
+    )
+    path = str(tmp_path / "pause.json")
+
+    class Fake:
+        def fetch(self, url):
+            return _html_result(url, html)
+
+    outcomes = _fetch_outcomes([(1, "https://a.gov.cn/1")], Fake(), 1, pause=_SitePause(path))
+    assert outcomes[1].status == "protected"
+    assert _SitePause(path).expiry("a.gov.cn") is not None
+
+
+def test_bare_short_notice_mentioning_firewall_is_not_a_gate():
+    # 整页几乎没字（链接少），标题是长的文章标题，看得见的字超过 300 字：不按"防火墙"这类字停网站
+    text = "本项目采购防火墙设备一批，经评审确定中标供应商，现将结果公告如下。" * 12
+    html = (
+        "<html><head><title>某局防火墙设备采购结果公告</title></head><body>"
+        f"<div id='zoom'><p>{text}</p></div></body></html>"
+    )
+    result = _html_result("https://a.gov.cn/1", html)
+    assert detail_service._gate_page(result, result.url) is False
+    # 同样很短的拦截页（看得见的字不到 300 字）照样认
+    blocked = _html_result("https://a.gov.cn/2", _FIREWALL)
+    assert detail_service._gate_page(blocked, blocked.url) is True

@@ -904,6 +904,20 @@ def verified_throttle_sites(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.usefixtures("verified_throttle_sites")
+@pytest.mark.parametrize("title", ["关于开展全市网络安全检查工作的通知", "安全检查 - 某局"])
+def test_throttle_dialog_page_with_gate_words_in_title_is_not_a_gate(title):
+    # 核实过的站内搜索限流弹窗、20 个导航链接、标题带"安全检查"（第十二轮独立 Claude）：解析正常，
+    # 判关卡也不能因为弹窗里的"请输入验证码"、标题里的字停整个网站
+    from youju.crawler import detail_service
+
+    nav = "".join(f"<a href='/c{i}.html'>栏目{i}</a>" for i in range(20))
+    page = _page(nav + _THROTTLE_DIALOG + _NOTICE_BODY, title=title)
+    url = "https://kjj.example.gov.cn/1.html"
+    assert detail.parse_detail(page, url).body_text
+    assert detail_service._html_page_gate(page, url) is False
+
+
+@pytest.mark.usefixtures("verified_throttle_sites")
 def test_search_throttle_dialog_is_not_a_protection_page() -> None:
     """站内搜索的限流弹窗（泸州、漯河、常德等站群每一页都带、平时隐藏）不是挡住这一页的验证：网站和
     页面样子在浏览器里核实过、弹窗整个结构一模一样、整页没有别的验证字样、正文出自核实过的正文区而且

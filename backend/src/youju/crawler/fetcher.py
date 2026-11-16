@@ -116,11 +116,24 @@ def challenge_marker(html: str) -> str | None:
     return next((name for name, pattern in _BLOCK_MARKERS if pattern.search(head)), None)
 
 
+# 标题里分开站名和页面名的符号（"用户登录 - 某市人民政府"、"访问被拒绝_某局"）
+_TITLE_SEPARATORS = re.compile(r"[-_|—–丨｜:：·•]+")
+
+
+def short_title_parts(title: str) -> str:
+    """标题拆掉站名以后很短的那几段（10 个字以内），用空格连起来：像关卡的标题本身就短（"访问被
+    拒绝""用户登录""安全验证"），文章标题（"关于开展能力验证工作的通知"）长，只是带着这些字的不算。"""
+    parts = (part.strip() for part in _TITLE_SEPARATORS.split(re.sub(r"\s+", "", title)))
+    return " ".join(part for part in parts if 0 < len(part) <= 10)
+
+
 def html_gate(html: str) -> str | None:
     """网页是不是关卡（robots.txt 和详情页共用）：平台的拦截页照 challenge_marker；整页几乎没字、
-    标题加正文开头 300 字里写着拦截、访问被拒绝、访问过于频繁、验证码这类字的（防火墙回 200 的
-    拦截页多是网页）；验证码、登录框要标题写着登录、验证，或者整页就是一个关卡（govsites.platform
-    的写法；首页角落的登录小框、留言板的验证码不算）。"""
+    又写着拦截、访问被拒绝、访问过于频繁、验证码这类字的（防火墙回 200 的拦截页多是网页）——这些字
+    要在标题拆掉站名以后很短的那一段里（short_title_parts），或者整页看得见的字总共不到 300 字
+    （"防火墙设备采购结果公告"这类短通知不算）；验证码、登录框要标题很短的那一段写着登录、验证，
+    或者整页就是一个关卡（govsites.platform 的写法；首页角落的登录小框、留言板的验证码不算；详情页
+    另有规则，见 detail_service._html_page_gate）。"""
     reason = challenge_marker(html)
     if reason:
         return reason
@@ -129,15 +142,15 @@ def html_gate(html: str) -> str | None:
 
     head = html[:200000]
     m = _TITLE.search(head)
-    title = re.sub(r"\s+", "", m.group(1)) if m else ""
+    short = short_title_parts(unescape_html(m.group(1))) if m else ""
     bare = bare_page(html)
     if bare:
         visible = re.sub(r"<(script|style)\b.*?</\1\s*>", " ", head, flags=re.S | re.I)
         visible = re.sub(r"\s+", " ", unescape_html(re.sub(r"<[^>]+>", " ", visible))).strip()
-        words = f"{title} {visible[:300]}"
+        words = f"{short} {visible}" if len(visible) <= 300 else short
         if _GATE_WORDS.search(words) or _PROTECTION.search(words):
             return "拦截页"
-    if (_PASSWORD.search(head) or _CAPTCHA.search(head)) and (_GATE_TITLE.search(title) or bare):
+    if (_PASSWORD.search(head) or _CAPTCHA.search(head)) and (_GATE_TITLE.search(short) or bare):
         return "需要登录或验证码"
     return None
 
@@ -187,11 +200,6 @@ def robots_gate(result: "FetchResult") -> str | None:
     if body and not _ROBOTS_LINE.search(body) and text_gate(body):
         return "拦截页"
     return None
-
-
-def plain_text_gate(text: str) -> bool:
-    """不是网页的纯文字回应（text/plain 这类）开头是不是拦截、防火墙、验证这类字：网站拦着我们。"""
-    return bool(_GATE_WORDS.search(text[:500]))
 
 
 _STAMP_WIDTH = 32
