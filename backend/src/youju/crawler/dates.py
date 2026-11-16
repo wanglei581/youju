@@ -79,9 +79,10 @@ def parse_date_detail(text: str, today: date | None = None) -> tuple[date | None
         d = _safe_date(int(m.group(1)), int(month), int(day), today)
         if d:
             return d, True
-    for m in reversed(list(_SHORT.finditer(text))):
-        if _not_a_short_date(m, text):
-            continue
+    shorts = [m for m in _SHORT.finditer(text) if not _not_a_short_date(m, text)]
+    # 取最靠后的一个。后面紧跟"月"的（"09-20 月度报告"）可能是日期，也可能是补了零的月份区间
+    # （"01-06月……"）：同一行另有月日时先用另一个（"07-15 01-06月财政收支情况"是 07-15）
+    for m in sorted(reversed(shorts), key=lambda m: bool(_MONTH_AFTER.match(text, m.end()))):
         month, day = (
             (int(m.group(1)), int(m.group(2)))
             if m.group(1)
