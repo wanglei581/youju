@@ -347,6 +347,8 @@ class _Page:
     ) -> tuple[etree._Element | None, date | None, bool]:
         """向上找"一行"：只含这一条文件链接、并且写着日期的祖先元素。返回（行，日期，是否写明年份）。"""
         hidden, companions = self.hidden_popups(a)
+        # 弹层里指向这同一份文件的链接（悬浮卡片里再写一遍标题）不算别的文件
+        companions.discard(url)
         found = self._climb(a, title, url, hidden, companions)
         if found[0] is None and hidden and companions:
             # 弹层里有别的文件链接（那里的日期是那份文件的，不用）、提示文字里写着发表时间：

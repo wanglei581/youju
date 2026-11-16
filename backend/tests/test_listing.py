@@ -1140,3 +1140,19 @@ def test_row_with_tooltip_date_and_a_titled_link_in_the_hidden_popup_stays_in_th
         ("关于征集典型案例的通知", date(2026, 10, 19)),
         ("关于开展第三批项目申报的通知", date(2026, 10, 18)),
     ]
+
+
+def test_hidden_card_linking_to_the_same_file_keeps_its_date() -> None:
+    # 藏起来的悬浮卡片里是同一份文件的链接（网址一样），写着这一行唯一的发布日期，网址里带的是更早的日期：
+    # 卡片不算别的文件，日期照 main 用卡片里的
+    html = """<ul class="list">
+      <li><a href="/a/20260901_1.html">关于项目申报工作的通知</a><div style="display:none"><a href="/a/20260901_1.html">关于项目申报工作的通知</a><span>2026-10-21</span></div></li>
+      <li><a href="/a/20260902_2.html">关于公布第二批名单的通知</a><div style="display:none"><a href="/a/20260902_2.html">关于公布第二批名单的通知</a><span>2026-10-20</span></div></li>
+      <li><a href="/a/20260903_3.html">关于征集典型案例的通知</a><div style="display:none"><a href="/a/20260903_3.html">关于征集典型案例的通知</a><span>2026-10-19</span></div></li>
+    </ul>"""
+    items = extract_items(html, "http://example.gov.cn/a/", today=date(2026, 11, 16))
+    assert [(i.title, i.publish_date) for i in items] == [
+        ("关于项目申报工作的通知", date(2026, 10, 21)),
+        ("关于公布第二批名单的通知", date(2026, 10, 20)),
+        ("关于征集典型案例的通知", date(2026, 10, 19)),
+    ]
