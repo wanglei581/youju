@@ -248,11 +248,11 @@ class _Page:
         return title, url
 
     def _visible_twin(self, a: etree._Element, url: str) -> bool:
-        """a 本身藏着，同一格子（父元素）里另有一个看得见的同一份文件的链接：a 是附带链接（福建省
-        政府最新文件每行藏着的"| AI阅读"，同一网址后面加 ?assistant=true），不是文件。
-        "同一份"指 a 的网址是它的网址后面多出参数（问号后面本来就用来区分文件的不算；网址一模一样的
-        也不算）；"看得见"指它和它的上级到格子为止都没藏起来；它本身还得是带标题的文件链接（只写着
-        "详情"的不算，藏着的那个才是标题）。单独藏着的文件链接照旧算"""
+        """a 本身藏着，同一格子（父元素）里另有一个看得见的同一份文件的链接，a 的网址正好是它的网址
+        后面加上 assistant=true：a 是阅读助手的附带链接（福建省政府最新文件每行藏着的"| AI阅读"），
+        不是文件。只认这一种写法：多出别的参数的可能是另一份文件（同一编号下的另一个版本），照旧算。
+        "看得见"指它和它的上级到格子为止都没藏起来；它本身还得是带标题的文件链接（只写着"详情"的
+        不算）。单独藏着的文件链接照旧算"""
         cell = a.getparent()
         if cell is None:
             return False
@@ -260,7 +260,7 @@ class _Page:
             if b is a or _hidden_up_to(b, cell):
                 continue
             link = self.link(b)
-            if link and url.startswith(link[1] + ("&" if "?" in link[1] else "?")):
+            if link and url == link[1] + ("&" if "?" in link[1] else "?") + "assistant=true":
                 return True
         return False
 
@@ -381,7 +381,8 @@ class _Page:
             for b in sibling.iter("a"):
                 if self.link(b) is None:
                     continue
-                if self.date_node(sibling, b, set(b.iterancestors()))[0] is not None:
+                popups, _ = self.hidden_popups(b)  # 别的行弹层里写的日期不算行里的日期
+                if self.date_node(sibling, b, set(b.iterancestors()), popups)[0] is not None:
                     return True
                 break
         return False

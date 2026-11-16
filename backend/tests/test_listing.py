@@ -1173,3 +1173,34 @@ def test_popup_row_in_a_tooltip_dated_list_stays_in_the_list() -> None:
         ("关于征集典型案例的通知", date(2026, 10, 19)),
         ("关于开展第三批项目申报的通知", date(2026, 10, 18)),
     ]
+
+
+def test_hidden_link_with_another_parameter_is_another_document() -> None:
+    # 藏着的链接比看得见的多出别的参数（同一编号下的另一个版本），各有标题和发表时间：照 main 都读
+    html = """<ul class="list">
+      <li><a href="/show.asp?id=3" title="标题：关于项目申报的通知 点击数：0 发表时间：2026-10-21">关于项目申报的通知</a><a href="/show.asp?id=3&amp;ver=2" style="display:none" title="标题：关于项目申报的通知（第二版） 点击数：0 发表时间：2026-10-22">关于项目申报的通知（第二版）</a></li>
+      <li><a href="/show.asp?id=4" title="标题：关于公布第二批名单的通知 点击数：0 发表时间：2026-10-20">关于公布第二批名单的通知</a></li>
+      <li><a href="/show.asp?id=5" title="标题：关于征集典型案例的通知 点击数：0 发表时间：2026-10-19">关于征集典型案例的通知</a></li>
+    </ul>"""
+    got = {
+        (i.title, i.publish_date)
+        for i in extract_items(html, "http://example.gov.cn/list.asp", today=date(2026, 11, 16))
+    }
+    assert ("关于项目申报的通知（第二版）", date(2026, 10, 22)) in got
+    assert ("关于项目申报的通知", date(2026, 10, 21)) in got
+
+
+def test_dates_inside_other_rows_popups_do_not_make_them_dated_rows() -> None:
+    # 每行日期都只写在提示文字里；第 1 行弹层里是一份解读，第 2 行的分享弹层里写着日期：第 2 行的弹层日期
+    # 不算"别的行日期写在行里"，第 1 行照 main 和第 3、4 行算一张列表
+    html = """<ul class="list">
+      <li><a href="/a/1.html" title="标题：关于项目申报的通知 点击数：0 发表时间：2026-10-21">关于项目申报的通知</a><div style="display:none"><a href="/b/1.html">关于项目申报工作的政策解读</a></div></li>
+      <li><a href="/a/2.html" title="标题：关于公布第二批名单的通知 点击数：0 发表时间：2026-10-20">关于公布第二批名单的通知</a><div style="display:none"><a href="/a/2.html#share">分享</a><span>2026-10-20</span></div></li>
+      <li><a href="/a/3.html" title="标题：关于征集典型案例的通知 点击数：0 发表时间：2026-10-19">关于征集典型案例的通知</a></li>
+      <li><a href="/a/4.html" title="标题：关于开展第三批项目申报的通知 点击数：0 发表时间：2026-10-18">关于开展第三批项目申报的通知</a></li>
+    </ul>"""
+    titles = [
+        i.title for i in extract_items(html, "http://example.gov.cn/a/", today=date(2026, 11, 16))
+    ]
+    assert "关于项目申报的通知" in titles
+    assert "关于征集典型案例的通知" in titles and "关于开展第三批项目申报的通知" in titles
