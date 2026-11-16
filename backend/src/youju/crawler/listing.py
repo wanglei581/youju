@@ -65,23 +65,17 @@ _ATTACHMENT_EXT = re.compile(r"\.(pdf|docx?|xlsx?|wps|et|ofd|zip|rar|7z)$", re.I
 _COMPANION_LINK = re.compile(
     r"^[(（\[【]?\s*(?:点击)?(?:查看)?(?:政策)?(?:解读|图解|文件|原文|原件)\s*[)）\]】]?$"
 )
-# 行里藏起来的弹层（style 里实际生效的 display 是 none）：泸州政府文件列表每行的"政策解读"弹层，
-# 里面是解读的链接
+# 元素自己的 style 里实际生效的 display（带 !important 的优先，否则取最后一个；注释里的、"--display"
+# 这种自定义属性不算）
 _DISPLAY = re.compile(r"(?:^|;)\s*display\s*:\s*([a-z-]+)\s*(!\s*important)?", re.IGNORECASE)
 _CSS_COMMENT = re.compile(r"/\*.*?\*/", re.S)
-
-
-def _hidden(el: etree._Element) -> bool:
-    """元素自己的 style 里实际生效的 display 是不是 none：带 !important 的里取最后一个，
-    没有就取最后一个（"display:none;display:block"最后是显示的）。"""
-    # 注释里的、"--display"这种自定义属性不算
-    found = _DISPLAY.findall(_CSS_COMMENT.sub(" ", el.get("style") or ""))
-    if not found:
-        return False
-    important = [value for value, imp in found if imp]
-    return (important or [value for value, _ in found])[-1].lower() == "none"
-
-
+# 泸州政府文件（和同一个平台的栏目）每行里藏着的"政策解读"弹层，写法是
+#   <div class="address"><span>政策解读</span>
+#     <div class="address-popup" style="display: none;">解读链接</div></div>
+# 只认这个确切写法（认得出才放），别的藏起来的东西照原来读
+_POPUP_CLASS = "address-popup"
+# 阅读助手的附带链接（福建省政府最新文件每行藏着的"| AI阅读"）：网址是文件网址后面加上这个参数
+_ASSISTANT_PARAM = "assistant=true"
 # 侧栏、页头页脚、友情链接等外围区域的常见标记（标签，或 class/id 里的词）
 _PERIPHERAL_TAGS = {"aside", "nav", "header", "footer"}
 _PERIPHERAL_WORDS = {
@@ -195,8 +189,20 @@ def _expand_datastore(html: str) -> str:
     return html[:cut] + block + html[cut:]
 
 
+def _hidden(el: etree._Element) -> bool:
+    """元素自己的 style 里实际生效的 display 是不是 none。
+
+    "display:none;display:block" 最后生效的是 block，不算藏着。
+    """
+    found = _DISPLAY.findall(_CSS_COMMENT.sub(" ", el.get("style") or ""))
+    if not found:
+        return False
+    important = [value for value, imp in found if imp]
+    return (important or [value for value, _ in found])[-1].lower() == "none"
+
+
 def _hidden_up_to(node: etree._Element, top: etree._Element) -> bool:
-    """node 本身或者它的上级（到 top 为止，不含 top）藏着（style 写着 display:none）。"""
+    """node 本身或者它的上级（到 top 为止，不含 top）藏着。"""
     for n in (node, *node.iterancestors()):
         if n is top:
             return False
@@ -205,8 +211,15 @@ def _hidden_up_to(node: etree._Element, top: etree._Element) -> bool:
     return False
 
 
+def _in_popup(a: etree._Element) -> bool:
+    """a 在藏着的"政策解读"弹层（_POPUP_CLASS）里。"""
+    return any(
+        _POPUP_CLASS in (n.get("class") or "").split() and _hidden(n) for n in a.iterancestors()
+    )
+
+
 def _visible_text(el: etree._Element, hidden: set[etree._Element]) -> str:
-    """el 的文字，去掉 hidden 里那些节点（藏起来的弹层）的文字。"""
+    """el 的文字，去掉 hidden 里那些节点的文字。"""
     parts: list[str] = []
 
     def walk(node: etree._Element) -> None:
@@ -248,36 +261,46 @@ class _Page:
         self.page_url = (normalize_url(page_url, base[0]) or page_url) if base else page_url
         self.today = today
         self._hrefs: dict[etree._Element, set[str]] = {}
-        self._popups: dict[etree._Element, list[tuple[frozenset, frozenset[str]]]] = {}
-        self._visible: dict[etree._Element, frozenset[str]] = {}
+        self._visible: dict[etree._Element, set[str]] = {}
+        self._popups: dict[etree._Element, tuple[set[etree._Element], set[str], set[str]]] = {}
 
     def link(self, a: etree._Element) -> tuple[str, str] | None:
         url = normalize_url(self.page_url, a.get("href"))
         if not url or url == self.self_url:
             return None
-        if _hidden(a) and self._visible_twin(a, url):
+        if _hidden(a) and self._assistant_twin(a, url):
             return None
         title = _title_of(a)
         if not _looks_like_title(title):
             return None
         return title, url
 
-    def _visible_twin(self, a: etree._Element, url: str) -> bool:
-        """a 本身藏着，同一格子（父元素）里另有一个看得见的同一份文件的链接，a 的网址正好是它的网址
-        后面加上 assistant=true：a 是阅读助手的附带链接（福建省政府最新文件每行藏着的"| AI阅读"），
-        不是文件。只认这一种写法：多出别的参数的可能是另一份文件（同一编号下的另一个版本），照旧算。
-        "看得见"指它和它的上级到格子为止都没藏起来；它本身还得是带标题的文件链接（只写着"详情"的
-        不算）。单独藏着的文件链接照旧算"""
+    def _assistant_twin(self, a: etree._Element, url: str) -> bool:
+        """a 是不是阅读助手的附带链接（福建省政府最新文件每行藏着的"| AI阅读"），不是文件。
+
+        只认这一种写法：a 本身藏着，网址正好是同一格子（父元素）里一个看得见的文件链接后面加上
+        assistant=true。
+        """
         cell = a.getparent()
         if cell is None:
             return False
-        for b in cell.iter("a"):
-            if b is a or _hidden_up_to(b, cell):
-                continue
-            link = self.link(b)
-            if link and url == link[1] + ("&" if "?" in link[1] else "?") + "assistant=true":
-                return True
+        for sep in ("?", "&"):
+            if url.endswith(sep + _ASSISTANT_PARAM):
+                base = url[: -len(sep + _ASSISTANT_PARAM)]
+                # 原来没有参数的用 ?，有参数的用 &
+                return ("?" in base) == (sep == "&") and base in self._visible_urls(cell)
         return False
+
+    def _visible_urls(self, cell: etree._Element) -> set[str]:
+        """cell 里看得见的（它和上级到 cell 为止都没藏起来）文件链接的网址。按 cell 算一次。"""
+        cached = self._visible.get(cell)
+        if cached is None:
+            cached = set()
+            for b in cell.iter("a"):
+                if not _hidden_up_to(b, cell) and (link := self.link(b)):
+                    cached.add(link[1])
+            self._visible[cell] = cached
+        return cached
 
     def title_hrefs(self, el: etree._Element) -> set[str]:
         cached = self._hrefs.get(el)
@@ -290,102 +313,16 @@ class _Page:
             self._hrefs[el] = cached
         return cached
 
-    def _cell_popups(self, cell: etree._Element) -> list[tuple[frozenset, frozenset[str]]]:
-        """格子里藏起来又带着链接的弹层：每个弹层下面的所有节点，和里面的文件链接。按格子缓存。"""
-        cached = self._popups.get(cell)
-        if cached is None:
-            cached = []
-            covered: set[etree._Element] = set()
-            for node in cell.iter():
-                # 单独一个藏着的 <a> 不算弹层（那是一份藏着的文件或附带链接，照 main 算）
-                if (
-                    node is cell
-                    or not isinstance(node.tag, str)
-                    or node.tag == "a"
-                    or node in covered
-                ):
-                    continue
-                if _hidden(node) and any(b.get("href") for b in node.iter("a")):
-                    sub = frozenset(node.iter())
-                    urls = frozenset(
-                        link[1] for b in node.iter("a") if (link := self.link(b)) is not None
-                    )
-                    cached.append((sub, urls))
-                    covered |= sub
-            self._popups[cell] = cached
-        return cached
-
-    def is_companion(self, b: etree._Element) -> bool:
-        """b 在一份看得见的文件旁边藏起来的弹层里（泸州政府文件每行"政策解读"弹层里的解读链接）：
-        不当成列表里的一条。弹层所在的格子（往上最多两层）里看得见的文件链接正好一份、弹层里的文件链接
-        不超过 3 个才算；整块藏着的页签（格子里有几个页签标题、面板里一整张列表）不算。"""
-        url = normalize_url(self.page_url, b.get("href"))
-        for h in b.iterancestors():
-            if not isinstance(h.tag, str) or h.tag in ("body", "html"):
-                return False
-            if h.tag == "a" or not _hidden(h):
-                continue
-            if sum(1 for x in h.iter("a") if self.link(x) is not None) > 3:
-                return False
-            cell = h.getparent()
-            for _ in range(2):
-                if cell is None:
-                    return False
-                docs = [
-                    link[1]
-                    for x in cell
-                    if x.tag == "a" and not _hidden(x) and (link := self.link(x)) is not None
-                ]
-                if docs:
-                    return len(docs) == 1 and docs[0] != url
-                cell = cell.getparent()
-            return False
-        return False
-
-    def _visible_urls(self, cell: etree._Element) -> frozenset[str]:
-        """格子里看得见的文件链接（它和它的上级到格子为止都没藏起来）。按格子缓存。"""
-        cached = self._visible.get(cell)
-        if cached is None:
-            cached = frozenset(
-                link[1]
-                for b in cell.iter("a")
-                if not _hidden_up_to(b, cell) and (link := self.link(b)) is not None
-            )
-            self._visible[cell] = cached
-        return cached
-
-    def hidden_popups(self, a: etree._Element, url: str) -> tuple[set[etree._Element], set[str]]:
-        """和 a 同在一个格子（父元素）里、藏起来又装着别的文件链接的弹层（泸州政府文件列表每行的
-        "政策解读"弹层，里面是解读的链接）：返回（弹层下面的所有节点，弹层里别的文件的链接）。
-
-        "别的文件"指既不是这一行自己、也不是格子里看得见的文件。只有"分享""政策解读"这类短链接、或者
-        只是同一份文件的卡片，不算弹层，照 main 认。a 自己所在的弹层也不算。
-
-        找"一行"时，弹层里的链接不算别的文件链接（不然这一行会被当成已经走到了列表容器，日期找不到，
-        整行漏掉），弹层里写的日期也不算这一行的日期（那是那份文件的）。"""
-        cell = a.getparent()
-        nodes: set[etree._Element] = set()
-        urls: set[str] = set()
-        if cell is None:
-            return nodes, urls
-        visible = self._visible_urls(cell)
-        for sub, links in self._cell_popups(cell):
-            others = links - {url} - visible
-            if a not in sub and others:
-                nodes |= sub
-                urls |= others
-        return nodes, urls
-
     def date_node(
         self,
         el: etree._Element,
         a: etree._Element,
         skip: set,
-        hidden: set[etree._Element] | None = None,
+        popup: set[etree._Element] | None = None,
     ) -> tuple[date | None, bool]:
         """行内单独写日期的节点（如 <span>2026-09-20</span>），取最靠后的一个。
 
-        链接自身和包含链接的节点不算，避免把标题里的日期当成发布日期。hidden（藏起来的弹层）里的
+        链接自身和包含链接的节点不算，避免把标题里的日期当成发布日期。popup（"政策解读"弹层）里的
         节点不算，别的节点的文字也去掉弹层的文字再看。
         """
         found: tuple[date | None, bool] = (None, False)
@@ -393,9 +330,9 @@ class _Page:
         for node in el.iter():
             if node in skip or node in inside_anchor or not isinstance(node.tag, str):
                 continue
-            if hidden and node in hidden:
+            if popup and node in popup:
                 continue
-            text = _visible_text(node, hidden) if hidden else _clean(node.text_content())
+            text = _visible_text(node, popup) if popup else _clean(node.text_content())
             if not text or len(text) > _MAX_DATE_NODE_LEN:
                 continue
             d, full = parse_date_detail(text, self.today)
@@ -407,64 +344,59 @@ class _Page:
         self, a: etree._Element, title: str, url: str
     ) -> tuple[etree._Element | None, date | None, bool]:
         """向上找"一行"：只含这一条文件链接、并且写着日期的祖先元素。返回（行，日期，是否写明年份）。"""
-        hidden, companions = self.hidden_popups(a, url)
-        found = self._climb(a, title, url, hidden, companions)
-        if companions:
-            tip, tip_full = _tooltip_date(a, self.today)
-            if tip is not None and found[0] is not None:
-                # 有解读弹层、提示文字里写着发表时间：日期照 main 用它（行里的可能是成文日期）
-                found = (found[0], tip, tip_full)
-            elif tip is not None:
-                # 弹层外面没有日期，同一层的别的行日期写在行里：行按结构认（往上到再上一层就有
-                # 别的文件为止），日期用提示文字里的，这样和别的行算同一张列表。别的行也只靠提示文字
-                # 记日期时不这样认，和它们一样交给外面处理
-                row = self._row_of(a, url, companions)
-                if row is not None and self._siblings_dated(row):
-                    found = (row, tip, tip_full)
-        return found
+        return self._climb(a, title, url, set(), set())
 
-    def _siblings_dated(self, row: etree._Element) -> bool:
-        """同一层（同一个父元素下、标签一样）带文件链接的别的行里，过半数把日期写在行里（链接外面）。"""
-        parent = row.getparent()
-        if parent is None:
-            return False
-        rows = dated = 0
-        for sibling in parent:
-            if sibling is row or sibling.tag != row.tag:
-                continue
-            for b in sibling.iter("a"):
-                link_b = self.link(b)
-                if link_b is None:
+    def find_popup_row(
+        self, a: etree._Element, title: str, url: str
+    ) -> tuple[etree._Element | None, date | None, bool]:
+        """泸州政府文件：标题格里藏着"政策解读"弹层、里面链着别的文件时，find_row 在标题格就停了
+        （把解读当成别的文件），整行找不到。这时不看弹层（里面的链接、日期和文字）再找一次。
+
+        "别的文件"指不是这一份、不是标题格里弹层外面也链着的（看得见的文件），附件照 find_row 的规矩
+        不算。没有这样的弹层时返回 (None, None, False)。
+        """
+        cell = a.getparent()
+        if cell is None:
+            return None, None, False
+        popup, linked, documents = self._cell_popup(cell)
+        companions = linked if _is_attachment(url) else documents
+        if url in companions:
+            companions = companions - {url}
+        if not companions:
+            return None, None, False
+        return self._climb(a, title, url, popup, companions)
+
+    def _cell_popup(self, cell: etree._Element) -> tuple[set[etree._Element], set[str], set[str]]:
+        """cell 里藏着的"政策解读"弹层（_POPUP_CLASS）和它下面的所有节点；弹层里链着、弹层外没链着的
+        文件网址，以及其中不是附件的。按 cell 算一次。"""
+        cached = self._popups.get(cell)
+        if cached is None:
+            nodes: set[etree._Element] = set()
+            for el in cell.iter():
+                if not isinstance(el.tag, str) or el in nodes:
                     continue
-                rows += 1
-                popups, _ = self.hidden_popups(b, link_b[1])  # 别的行弹层里写的日期不算行里的日期
-                if self.date_node(sibling, b, set(b.iterancestors()), popups)[0] is not None:
-                    dated += 1
-                break
-        return rows > 0 and dated * 2 > rows
-
-    def _row_of(self, a: etree._Element, url: str, companions: set[str]) -> etree._Element | None:
-        """不看日期往上找"一行"：再上一层就有别的文件链接时，这一层就是行。"""
-        row = None
-        for depth, el in enumerate(a.iterancestors()):
-            if depth >= _MAX_ROW_DEPTH or el.tag in ("body", "html"):
-                break
-            others = self.title_hrefs(el) - {url} - companions
-            if not _is_attachment(url):
-                others = {u for u in others if not _is_attachment(u)}
-            if others:
-                break
-            row = el
-        return row
+                if _POPUP_CLASS in (el.get("class") or "").split() and _hidden(el):
+                    nodes.update(el.iter())
+            inside: set[str] = set()
+            outside: set[str] = set()
+            if nodes:
+                for b in cell.iter("a"):
+                    if link := self.link(b):
+                        (inside if b in nodes else outside).add(link[1])
+            linked = inside - outside
+            documents = {u for u in linked if not _is_attachment(u)}
+            cached = self._popups[cell] = (nodes, linked, documents)
+        return cached
 
     def _climb(
         self,
         a: etree._Element,
         title: str,
         url: str,
-        hidden: set[etree._Element],
+        popup: set[etree._Element],
         companions: set[str],
     ) -> tuple[etree._Element | None, date | None, bool]:
+        """原来的找法；popup 里的节点、companions 里的网址不看（两个都空时就是原来的找法）。"""
         anchor_text = _link_text(a)
         ancestors = list(a.iterancestors())
         skip = set(ancestors)
@@ -477,10 +409,10 @@ class _Page:
                 others = {u for u in others if not _is_attachment(u)}
             if others:
                 break  # 已经包含其他文件链接，说明走到了列表容器
-            found, full = self.date_node(el, a, skip, hidden)
+            found, full = self.date_node(el, a, skip, popup)
             if found:
                 return el, found, full
-            text = _visible_text(el, hidden) if hidden else _clean(el.text_content())
+            text = _visible_text(el, popup) if popup else _clean(el.text_content())
             if anchor_text and len(text) <= len(title) + _MAX_ROW_EXTRA:
                 found, full = parse_date_detail(text.replace(anchor_text, " "), self.today)
                 if found:
@@ -625,10 +557,14 @@ def _extract_heuristic(page: _Page, require_date: bool) -> tuple[tuple, list[Lis
     # 用 XPath 遍历整个文档：不规范的页面可能在根元素之外还有内容
     for position, a in enumerate(page.doc.xpath("//a")):
         link = page.link(a)
-        if not link or page.is_companion(a):
+        if not link or _in_popup(a):
+            # 藏着的"政策解读"弹层里的解读链接不当条目（解读另有栏目收）
             continue
         title, url = link
         row, found, full = page.find_row(a, title, url)
+        popup_row, popup_found, _ = (
+            (None, None, False) if found else page.find_popup_row(a, title, url)
+        )
         if found is None:
             # 悬浮提示里写明的发表时间最准（提示里的标题本身可能以会议日期之类结尾）
             found, full = _tooltip_date(a, page.today)
@@ -643,6 +579,12 @@ def _extract_heuristic(page: _Page, require_date: bool) -> tuple[tuple, list[Lis
         if found is None or (not full and url_date):
             # 行里只写了"月-日"而网址里有完整日期时，以网址为准（年份不会推错）
             found = url_date or found
+        if popup_row is not None:
+            # 泸州的"政策解读"弹层：日期照上面原来的取法（提示文字、链接文字、网址），都取不到（原来
+            # 整行漏掉）才用不看弹层找到的行里写的；分组按这一行，和不带弹层的行一样
+            row = popup_row
+            if found is None:
+                found = popup_found
         if found is None and require_date:
             continue
         title = _without_attr_date(title, a, found, page.today)
