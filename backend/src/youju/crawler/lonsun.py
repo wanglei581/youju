@@ -1550,6 +1550,382 @@ def _written_script(source):
     return match.group(2) if re.fullmatch(r"[A-Za-z0-9/_.\-?=&%:]+", match.group(2)) else None
 
 
+# 改 jQuery 全局 AJAX 设置的调用（可能加令牌、改地址）：不管接收者是谁（$、jQuery 或它们的别名）
+_AJAX_SETTERS = {"ajaxSetup", "ajaxPrefilter", "ajaxTransport"}
+# 我们照着推请求、又可能被页面脚本改动的页面全局对象：每次出现都得是认得的写法
+_ROOTS = ("Ls", "catalogs", "PublicTree", "_organTree2")
+_GLOBAL_OBJECTS = ("window", "globalThis", "self", "top", "parent", "frames")
+# 栏目树对象上只查找、遍历或只改显示的 zTree 方法；改结构的（removeNode、addNodes、moveNode、
+# reAsyncChildNodes 等）不在里面
+_TREE_READS = frozenset(
+    {
+        "getNodeByParam",
+        "getNodesByParam",
+        "getNodes",
+        "getNodeByTId",
+        "transformToArray",
+        "getSelectedNodes",
+        "selectNode",
+        "cancelSelectedNode",
+        "expandNode",
+        "updateNode",
+    }
+)
+_IDENT = re.compile(r"[A-Za-z_$][A-Za-z0-9_$]*")
+
+
+def _method(methods, name):
+    found = [m for m in methods if m[0] == name]
+    return found[0] if len(found) == 1 else None
+
+
+def _collapse_functions(tokens):
+    """顶层记号：每个 function …(…) {…} 收成一个 ("fn", 名字) 占位（匿名的名字是空串）。"""
+    values = [t.value for t in tokens]
+    out = []
+    i = 0
+    while i < len(values):
+        if values[i] != "function":
+            out.append(values[i])
+            i += 1
+            continue
+        j = i + 1
+        name = ""
+        if j < len(values) and values[j] != "(":
+            name = values[j]
+            j += 1
+        if j >= len(values) or values[j] != "(":
+            raise LonsunFormatError("函数写法认不出")
+        body = _matching_token(tokens, j) + 1
+        if body >= len(values) or values[body] != "{":
+            raise LonsunFormatError("函数写法认不出")
+        out.append(("fn", name))
+        i = _matching_token(tokens, body) + 1
+    return out
+
+
+def _harmless_search_widget(methods):
+    """芜湖 initTree 里的 me.fuzzySearch(_organTree2)：网上通用的 zTree 模糊搜索插件。页面加载时
+    它只读 P.setting.data.key.name、把 P.setting.view.nameIsHTML 设成真、把搜索函数挂到
+    P.searchNodeLazy 上（P 是唯一的参数）；过滤节点的几个局部函数只在用户输入搜索词时才跑，
+    不会在发列表请求之前动栏目树。方法逐句照这个样子才认，多一句、换一种写法都不认。"""
+    method = _method(methods, "fuzzySearch")
+    if method is None:
+        return False
+    _, args, body = method
+    param = args.strip()
+    if not _IDENT.fullmatch(param) or param in _ROOTS:
+        return False
+    try:
+        top = _collapse_functions(_js_tokens(body))
+    except LonsunFormatError:
+        return False
+    declared = {item[1] for item in top if isinstance(item, tuple) and item[1]}
+    if len(declared) != sum(isinstance(item, tuple) for item in top):
+        return False  # 匿名函数或同名函数：认不出
+    k = 0
+    while k < len(top):
+        if isinstance(top[k], tuple):
+            k += 1  # 局部函数的声明本身不执行
+            continue
+        end = next((m for m in range(k, len(top)) if top[m] == ";"), None)
+        if end is None:
+            return False
+        statement = top[k:end]
+        if any(isinstance(item, tuple) for item in statement):
+            return False
+        if not _widget_statement(statement, param, declared):
+            return False
+        k = end + 1
+    return True
+
+
+def _widget_statement(statement, param, declared):
+    def plain(value):
+        return (
+            value in ("true", "false", "null")
+            or re.fullmatch(r"[0-9]+", value) is not None
+            or value[:1] in ("'", '"')
+        )
+
+    local = len(statement) > 1 and statement[0] == "var" and _IDENT.fullmatch(statement[1])
+    names = {param, *declared, *_ROOTS, "me", "this"}
+    if statement == ["var", "me", "=", "this"]:
+        return True
+    if local and statement[1] not in names and len(statement) == 4:
+        return statement[2] == "=" and plain(statement[3])
+    if local and statement[1] not in names:
+        if statement[2:] == ["=", param, ".", "setting", ".", "data", ".", "key", ".", "name"]:
+            return True
+        args = statement[6:-1]
+        return (
+            statement[2:6] == ["=", "new", "RegExp", "("]
+            and statement[-1] == ")"
+            and 1 <= len(args) <= 3
+            and all(
+                (_IDENT.fullmatch(a) and a not in names) or a[:1] in ("'", '"') for a in args[0::2]
+            )
+            and all(a == "," for a in args[1::2])
+        )
+    if statement[:8] == [param, ".", "setting", ".", "view", ".", "nameIsHTML", "="]:
+        value = statement[8:]
+        return len(value) == 1 and (
+            value[0] in ("true", "false") or _IDENT.fullmatch(value[0]) and value[0] not in names
+        )
+    return (
+        len(statement) == 5
+        and statement[:4] == [param, ".", "searchNodeLazy", "="]
+        and statement[4] in declared
+    )
+
+
+def _read_only_method(methods, name):
+    """setSelect 把 catalogs[me.organId] 交给页面自己的 me.findTopLevelParentNode(…)。被调方法只能
+    读：函数体里（含回调）只给不带属性的变量赋值，不改对象属性、不删除、不用原地修改的数组方法，
+    函数调用只许 $.grep（过滤出新数组），也不再调用别的 me/this 方法。"""
+    method = _method(methods, name)
+    if method is None:
+        return False
+    _, args, body = method
+    if not all(_IDENT.fullmatch(a.strip()) for a in args.split(",")):
+        return False
+    try:
+        tokens = _js_tokens(body)
+        writes = _writes(body)
+    except LonsunFormatError:
+        return False
+    if any(len(path) != 1 or op in _MUTATORS or op == "extend" for path, op in writes):
+        return False
+    values = [t.value for t in tokens]
+    if "delete" in values:
+        return False
+    for k, value in enumerate(values):
+        if value != "(" or k == 0:
+            continue
+        prev = values[k - 1]
+        if prev in ("if", "while", "for", "switch", "return", "function", "catch", "typeof"):
+            continue
+        if k > 1 and values[k - 2] == "function":
+            continue  # function 名字(…)
+        if not (_IDENT.fullmatch(prev) or prev in (")", "]")):
+            continue  # 分组括号
+        if values[k - 3 : k] == ["$", ".", "grep"]:
+            continue
+        return False
+    return True
+
+
+def _catalog_sink(values, i, methods):
+    """catalogs[me.organId] 只认这几种用处：构造函数里赋给 me.ztreeData、me.ztreeData2，
+    JSON.parse(JSON.stringify(…)) 深拷贝，或者交给只读的页面方法（见 _read_only_method）。"""
+    after = values[i + 6] if i + 6 < len(values) else ""
+    before = values[max(0, i - 4) : i]
+    if before in (["me", ".", "ztreeData", "="], ["me", ".", "ztreeData2", "="]):
+        return after == ";"
+    if before == ["JSON", ".", "stringify", "("]:
+        return after == ")"
+    if after not in (")", ","):
+        return False
+    depth = 0
+    for k in range(i - 1, -1, -1):
+        value = values[k]
+        if value in (")", "]", "}"):
+            depth += 1
+        elif value in ("(", "[", "{"):
+            if depth:
+                depth -= 1
+                continue
+            return (
+                value == "("
+                and k >= 3
+                and values[k - 3 : k - 1] == ["me", "."]
+                and _read_only_method(methods, values[k - 1])
+            )
+    return False
+
+
+# getData 和它之后的这几个方法由受限求值照着走（走到认不出的就不读）
+_MODELED = frozenset({"getData", "open", "getList", "getNewList"})
+
+
+def _method_spans(tokens):
+    """PublicTree 脚本里构造函数体（记作 ""）和各原型方法体的记号范围 {名字: (开始, 结束)}。"""
+    values = [t.value for t in tokens]
+    spans = {}
+    for i in range(len(values) - 4):
+        if values[i : i + 5] == ["function", "PublicTree", "(", ")", "{"]:
+            spans[""] = (i + 4, _matching_token(tokens, i + 4))
+    marker = ["$", ".", "extend", "(", "PublicTree", ".", "prototype", ",", "{"]
+    for i in range(len(values) - len(marker) + 1):
+        if values[i : i + len(marker)] != marker:
+            continue
+        end = _matching_token(tokens, i + len(marker) - 1)
+        k = i + len(marker)
+        while k < end and values[k + 1 : k + 4] == [":", "function", "("]:
+            body = _matching_token(tokens, k + 3) + 1
+            close = _matching_token(tokens, body)
+            spans[values[k]] = (body, close)
+            k = close + 2  # 跳过方法之间的逗号
+    return spans
+
+
+def _load_time_methods(methods):
+    """页面加载、发列表请求之前会跑的原型方法：从 init 起，凡是 me.X(…)、this.X(…) 调到的都算
+    （回调里调的也算，宁严勿漏），getData 及之后由受限求值管的那几个除外。"""
+    bodies = {name: body for name, _, body in methods}
+    seen = set()
+    pending = ["init"]
+    while pending:
+        name = pending.pop()
+        if name in seen or name in _MODELED or name not in bodies:
+            continue
+        seen.add(name)
+        values = [t.value for t in _js_tokens(bodies[name])]
+        for k in range(len(values) - 3):
+            if values[k] in ("me", "this") and values[k + 1] == "." and values[k + 3] == "(":
+                pending.append(values[k + 2])
+    return seen
+
+
+def _root_misuse(tokens, is_tree_script, methods, widget, load):
+    """这几个全局对象每次出现都得是认得的写法，否则给出对象名、认不出：
+    - Ls：只认调用 Ls.a(…)、Ls.a.b(…) 和给成员赋值 Ls.a = …（改哪些成员不行由写入规则查）；
+      当值传出去、读成员再存起来（var u = Ls.url）都不认；
+    - PublicTree：只认 function PublicTree(、new PublicTree(、$.extend(PublicTree.prototype, …；
+    - catalogs：只认 PublicTree 脚本里的 catalogs[me.organId]；在构造函数、加载时会跑的方法里，
+      用处只认 _catalog_sink 那几种，只在 getData 以后才跑的方法里交给受限求值；
+    - _organTree2：只认 PublicTree 脚本里 var _organTree2 = null; 和
+      _organTree2 = $.fn.zTree.init(…)，调用只查找、遍历或只改显示的方法（_TREE_READS），
+      以及核对过的模糊搜索插件（widget）：me.fuzzySearch(_organTree2)、_organTree2.searchNodeLazy(…)。
+    经 window 访问、名字写成字符串（window["Ls"]）一律不认。别的对象上同名的属性（x.Ls）不是这几个
+    全局，不管。zTree 建树时把节点整份深拷贝（平台 ztree.min.js 的 init 用 tools.clone），
+    所以建树以后再动 catalogs 里的对象，影响不到 _organTree2。"""
+    values = [token.value for token in tokens]
+    spans = _method_spans(tokens) if is_tree_script else {}
+
+    def at(k):
+        return values[k] if 0 <= k < len(values) else ""
+
+    def region(k):
+        inside = [name for name, (a, b) in spans.items() if a < k < b]
+        return inside[0] if len(inside) == 1 else None
+
+    for i, name in enumerate(values):
+        if name[:1] in ("'", '"'):
+            if _string_literal(name) in _ROOTS:
+                return _string_literal(name)
+            continue
+        if name not in _ROOTS:
+            continue
+        if at(i - 1) == ".":
+            if at(i - 2) in _GLOBAL_OBJECTS:
+                return name
+            continue  # 别的对象上同名的属性（x.Ls），不是这个全局
+        if name == "catalogs" and is_tree_script:
+            where = region(i)
+            if (
+                where
+                and where not in load
+                and values[i + 1 : i + 6]
+                == [
+                    "[",
+                    "me",
+                    ".",
+                    "organId",
+                    "]",
+                ]
+            ):
+                continue  # 只在 getData 以后才跑的方法（蚌埠 open 里的 zdlyxxgkList）：受限求值管
+        if not _known_root_use(values, i, is_tree_script, methods, widget):
+            return name
+    return None
+
+
+def _known_root_use(values, i, is_tree_script, methods, widget):
+    name = values[i]
+
+    def at(k):
+        return values[k] if 0 <= k < len(values) else ""
+
+    before, after = at(i - 1), at(i + 1)
+    if name == "Ls":
+        j = i + 1
+        while at(j) == "." and _IDENT.fullmatch(at(j + 1)):
+            j += 2
+        # 调用，或者给成员赋值（改哪些成员不行由写入规则查）
+        return j > i + 1 and at(j) in ("(", "=")
+    if name == "PublicTree":
+        if after == "(" and before in ("function", "new"):
+            return True
+        return values[i - 4 : i] in (
+            ["$", ".", "extend", "("],
+            ["jQuery", ".", "extend", "("],
+        ) and values[i + 1 : i + 4] == [".", "prototype", ","]
+    if name == "catalogs":
+        return (
+            is_tree_script
+            and values[i + 1 : i + 6] == ["[", "me", ".", "organId", "]"]
+            and _catalog_sink(values, i, methods)
+        )
+    # _organTree2
+    if after == "." and at(i + 3) == "(":
+        return at(i + 2) in _TREE_READS or widget and at(i + 2) == "searchNodeLazy"
+    if is_tree_script and before == "var":
+        return values[i + 1 : i + 4] == ["=", "null", ";"]
+    if is_tree_script and before in (";", "{", "}") and after == "=":
+        return values[i + 1 : i + 9] == ["=", "$", ".", "fn", ".", "zTree", ".", "init"]
+    return (
+        widget
+        and values[i - 4 : i] == ["me", ".", "fuzzySearch", "("]
+        and values[i + 1 : i + 3] == [")", ";"]
+    )
+
+
+def _instantiated_on_load(scripts, token_sets, tree_index):
+    """new PublicTree() 正好出现一次，就在 PublicTree 所在的脚本里，而且在页面加载时一定会执行：
+    脚本顶层的一句，或者顶层 $(function () {…})、jQuery(function () {…})、$(document).ready(
+    function () {…}) 回调里的一句（回调里只有这一句）。写在 if、别的函数、事件回调里的不算。"""
+    count = sum(
+        [t.value for t in tokens][i : i + 2] == ["new", "PublicTree"]
+        for tokens in token_sets
+        for i in range(len(tokens) - 1)
+    )
+    if count != 1:
+        return False
+    tokens = token_sets[tree_index]
+    values = [token.value for token in tokens]
+    depth = []
+    level = 0
+    for value in values:
+        if value in (")", "]", "}"):
+            level -= 1
+        depth.append(level)
+        if value in ("(", "[", "{"):
+            level += 1
+    for i in range(len(values) - 3):
+        if values[i : i + 4] != ["new", "PublicTree", "(", ")"]:
+            continue
+        after = values[i + 4 : i + 5]
+        if depth[i] == 0 and (i == 0 or values[i - 1] in (";", "}")) and after in ([], [";"]):
+            return True
+        body = ["new", "PublicTree", "(", ")"] + (after if after == [";"] else [])
+        end = i + len(body)
+        for opener in (
+            ["$", "(", "function", "(", ")", "{"],
+            ["jQuery", "(", "function", "(", ")", "{"],
+            ["$", "(", "document", ")", ".", "ready", "(", "function", "(", ")", "{"],
+            ["jQuery", "(", "document", ")", ".", "ready", "(", "function", "(", ")", "{"],
+        ):
+            start = i - len(opener)
+            if start < 0 or values[start:i] != opener or depth[start] != 0:
+                continue
+            if start and values[start - 1] not in (";", "}"):
+                continue
+            if values[end : end + 2] == ["}", ")"]:
+                return True
+    return False
+
+
 def find_lonsun_api(
     html: str, page_url: str, column_url: str, *, catalog_host=None, _diagnosis=None
 ):
@@ -1594,6 +1970,19 @@ def find_lonsun_api(
                 if written is not None:
                     candidates.append(written)
         token_sets = [_js_tokens(source) for source in scripts]
+        tree_scripts = [
+            source
+            for source, tokens in zip(scripts, token_sets, strict=True)
+            if any(
+                [t.value for t in tokens[i : i + 3]] == ["function", "PublicTree", "("]
+                for i in range(len(tokens) - 2)
+            )
+        ]
+        if len(tree_scripts) != 1:
+            return None
+        tree_methods = _public_tree_methods(tree_scripts[0])
+        widget = _harmless_search_widget(tree_methods)
+        load = _load_time_methods(tree_methods)
         tree_declarations = 0
         tree_extensions = 0
         for source, tokens in zip(scripts, token_sets, strict=True):
@@ -1616,9 +2005,22 @@ def find_lonsun_api(
                     path[0] in ("catalogs", "_organTree2")
                     or path[0] == "PublicTree"
                     and op != "extend"
-                    or path[:2] in (("Ls", "ajax"), ("Ls", "ajaxGet"), ("Ls", "url"))
+                    # 整个 Ls、按下标改的、我们照着推请求的那几个成员（发请求、取网址参数）；
+                    # 给 Ls 加新函数（芜湖的 Ls.isPublicQcsmCatIds）不碍事：请求流程里要是用到，
+                    # 受限求值认不出、不读
+                    or path[0] == "Ls"
+                    and (len(path) == 1 or path[1] in ("ajax", "ajaxGet", "url", "*"))
+                    # 任何对象上的 .ajax、.ajaxGet 被改写（经别名改 $.ajax 也算）
+                    or len(path) > 1
+                    and path[-1] in ("ajax", "ajaxGet")
                 ):
                     return fail("内联脚本改写了依赖状态")
+            misuse = _root_misuse(tokens, is_tree_script, tree_methods, widget, load)
+            if misuse:
+                return fail(f"内联脚本里 {misuse} 的用法认不出，跟不上它会不会被改写")
+            for i in range(len(values) - 3):
+                if values[i] == "." and values[i + 1] in _AJAX_SETTERS and values[i + 2] == "(":
+                    return fail("页面改写了 AJAX 设置")
             for i in range(len(values) - 5):
                 if (
                     values[i] in ("Object", "Reflect")
@@ -1671,10 +2073,8 @@ def find_lonsun_api(
         values = [t.value for t in tokens]
         if values[index : index + 5] != ["function", "PublicTree", "(", ")", "{"]:
             return None
-        if not any(
-            values[i : i + 4] == ["new", "PublicTree", "(", ")"] for i in range(len(values) - 3)
-        ):
-            return None
+        if not _instantiated_on_load(scripts, token_sets, n):
+            return fail("页面没有在加载时创建 PublicTree")
         end = _matching_token(tokens, index + 4)
         statements = _parse_statements(scripts[n][tokens[index + 4].end : tokens[end].start])
         methods = _public_tree_methods(scripts[n])
@@ -1825,8 +2225,11 @@ def find_lonsun_api(
                 urls.append(url)
         if not urls:
             return fail("没找到栏目树脚本")
-        if len({(urlsplit(u).hostname, urlsplit(u).path) for u in urls}) != 1:
-            return fail("栏目树脚本有几处、主机不一样或路径不一样")
+        if len(set(urls)) != 1:
+            # 只读页面原样写着的那一个 src（协调会话 11/13）：同一份脚本写了几次可以（地址完全
+            # 一样）；主机、路径或查询串不一样的（比如 ?v=1 和 ?v=2，返回可能不同，浏览器两份都会
+            # 执行），说不清最后用的是哪份栏目树，认不出
+            return fail("栏目树脚本有几处、地址不一样")
         plan = LonsunPlan(
             spec[0],
             me.get("prefix", ""),

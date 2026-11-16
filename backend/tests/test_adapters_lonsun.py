@@ -1,4 +1,4 @@
-"""龙讯返回护栏的离线测试；脚本识别和两步请求尚未完成。"""
+"""龙讯（安徽集约化平台）信息公开列表适配器的离线测试：认页面、受限求值、两步请求、返回护栏。"""
 
 import json
 from datetime import date
@@ -753,7 +753,7 @@ def test_unrecognized_reasons_for_page_and_tree():
     src = '<script type="text/javascript" src="/49631981/6991.js"></script>'
     cases = [
         (page.replace(src, ""), "没找到栏目树脚本"),
-        (page.replace(src, src + '<script src="/123/6991.js"></script>'), "路径不一样"),
+        (page.replace(src, src + '<script src="/123/6991.js"></script>'), "地址不一样"),
         (page.replace("/site/label/8888", "/invalid"), "接口路径认不出"),
         (page.replace("function PublicTree()", "function PublicTree(x)", 1), "页面脚本认不出"),
     ]
@@ -859,11 +859,18 @@ def test_init_requires_refresh_and_tree(removed):
     ],
 )
 def test_unknown_conditions_never_send_list(condition):
+    from youju.crawler.lonsun import find_lonsun_api
+
     page = fixture("jx_page.html").replace(
         "var url = '' + me.currNode.uri",
         "if (" + condition + ") { me.zdlyxxgkList(); }\n      var url = '' + me.currNode.uri",
         1,
     )
+    url = PAGES["jx"] + "?type=4&catId=49949451&action=list"
+    if condition in ("Ls.missing", "_organTree2.missing"):
+        # 读 Ls、栏目树对象上不认识的成员：认页面这一步就不认
+        assert find_lonsun_api(page, url, url) is None
+        return
     assert isinstance(resolve_fixture("jx", "49949451", page=page), str)
 
 
@@ -1314,12 +1321,14 @@ def test_catalog_duplicates_host_path_and_query():
 
     page = fixture("jx_page.html")
     src = '<script type="text/javascript" src="/49631981/6991.js"></script>'
-    same = page.replace(src, src + '<script src="/49631981/6991.js?v=85"></script>')
-    assert find_lonsun_api(same, BASE, BASE).url.endswith("6991.js?v=85")
-    different = page.replace(
-        src, src + '<script src="https://www.ah.gov.cn/49631981/6991.js"></script>'
-    )
-    assert "主机不一样" in lonsun_unrecognized_reason(different, BASE, BASE)
+    # 同一个地址写了两次：一样，照常认
+    twice = page.replace(src, src + "\n" + src, 1)
+    assert find_lonsun_api(twice, BASE, BASE).url == "https://jx.ah.gov.cn/49631981/6991.js"
+    # 同一路径查询串不一样、或者主机不一样：返回可能不同，浏览器几份都会执行，说不清用哪份
+    for other in ("/49631981/6991.js?v=85", "https://www.ah.gov.cn/49631981/6991.js"):
+        variant = page.replace(src, src + f'<script src="{other}"></script>', 1)
+        assert find_lonsun_api(variant, BASE, BASE) is None, other
+        assert "地址不一样" in lonsun_unrecognized_reason(variant, BASE, BASE)
 
 
 def test_navigation_parameters_and_integer_keys():
@@ -1556,3 +1565,153 @@ def test_event_callback_global_mutation_is_unknown(mutation):
         )
     )
     assert isinstance(resolve_fixture("jx", "49949451", page=page), str)
+
+
+# ---- 第二轮审阅：实例化的位置、别名逃逸、栏目树地址唯一 ----
+
+_CREATE = "$(function () {\n    new PublicTree();\n  })"
+
+
+def _jx(old=_CREATE, new=None, extra=""):
+    page = fixture("jx_page.html")
+    if new is not None:
+        assert old in page
+        page = page.replace(old, new, 1)
+    if extra:
+        assert "<body>" in page
+        page = page.replace("<body>", "<body>" + extra, 1)
+    return page
+
+
+def _found(page):
+    from youju.crawler.lonsun import find_lonsun_api
+
+    return find_lonsun_api(page, BASE, BASE)
+
+
+def test_public_tree_created_on_load_only():
+    assert _found(_jx()) is not None
+    # 就绪回调的另外两种写法照样认
+    assert _found(_jx(new="$(document).ready(function () { new PublicTree(); });")) is not None
+    assert _found(_jx(new="jQuery(function () { new PublicTree(); })")) is not None
+    # 写在不会执行或说不准执行的位置：浏览器不会创建它，也就不发列表请求，我们也不能发
+    for wrapped in (
+        "$(function () { if (false) { new PublicTree(); } })",
+        "if (false) { new PublicTree(); }",
+        "$('#go').click(function () { new PublicTree(); })",
+        "function later() { new PublicTree(); }",
+        "$(function () { prepare(); new PublicTree(); })",
+    ):
+        assert _found(_jx(new=wrapped)) is None, wrapped
+    # 创建了两次：说不清列表请求发了几回，认不出
+    assert _found(_jx(new=_CREATE + "\n  $(function () { new PublicTree(); })")) is None
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        "var x = Ls; x.ajaxGet = function () {};",
+        "(function ($) { $.ajax = function () {}; })(jQuery);",
+        "var j = jQuery; j.ajaxSetup({headers: {token: '1'}});",
+        "jQuery.ajaxTransport('json', function () {});",
+        "function keep(c) { return c; } keep(catalogs);",
+        "var tree = PublicTree; tree.prototype.open = function () {};",
+        "window.copy = _organTree2;",
+    ],
+)
+def test_alias_escapes_are_refused(script):
+    assert _found(_jx(extra=f"<script>{script}</script>")) is None
+
+
+def test_harmless_same_names_still_recognized():
+    # 别的对象上同名的属性不是这几个全局；普通的 .ajax 调用（不是改写）也照常
+    script = "var obj = {}; obj.Ls = 1; obj.catalogs = []; $.ajax({url: '/x'});"
+    assert _found(_jx(extra=f"<script>{script}</script>")) is not None
+
+
+WUHU = "https://czgz.wuhu.gov.cn/public/column/6596381?type=4&catId=6732121&action=list"
+
+
+def _wuhu(old=None, new=None):
+    page = fixture("wuhu_page.html")
+    if old is not None:
+        assert page.count(old) == 1
+        page = page.replace(old, new, 1)
+    return page
+
+
+def _wuhu_found(page):
+    from youju.crawler.lonsun import find_lonsun_api
+
+    return find_lonsun_api(page, WUHU, WUHU)
+
+
+def test_search_widget_on_tree_recognized_only_as_checked():
+    # 芜湖把栏目树交给 zTree 模糊搜索插件：加载时只挂搜索函数，照常认
+    assert _wuhu_found(_wuhu()) is not None
+    hook = "zTreeObj.searchNodeLazy = searchNodeLazy;"
+    for variant in (
+        # 加载时就跑过滤（会隐藏、改名节点）
+        "ztreeFilter(zTreeObj, ''); " + hook,
+        # 把栏目树的查找函数换掉
+        "zTreeObj.getNodeByParam = searchNodeLazy;",
+        # 当场改栏目树结构
+        "zTreeObj.removeNode(zTreeObj.getNodes()[0]); " + hook,
+        # 加载时排一个延时任务
+        "setTimeout(function () { ztreeFilter(zTreeObj, 'x'); }, 0); " + hook,
+    ):
+        assert _wuhu_found(_wuhu(hook, variant)) is None, variant
+    # 栏目树交给别的方法：没核对过它做什么，不认
+    call = "me.fuzzySearch(_organTree2);"
+    assert _wuhu_found(_wuhu(call, "me.setSelect(_organTree2);")) is None
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        # 读出 Ls 的成员存起来再改（别名）
+        "var u = Ls.url; u.get = function () { return '1'; };",
+        # 经 window、下标访问这几个全局
+        "window.Ls.ajaxGet = function () {};",
+        "window['catalogs'] = {};",
+        "var t = window.PublicTree;",
+        # 整个换掉，或者改我们照着推请求的成员
+        "Ls = {};",
+        "Ls.url.get = function () { return ''; };",
+        "Ls['ajax' + 'Get'] = function () {};",
+        # 栏目树对象：改结构的方法、别的脚本拿它
+        "$(function () { _organTree2.removeNode(_organTree2.getNodes()[0]); });",
+        "var t2 = _organTree2;",
+        # catalogs 只认 PublicTree 脚本里的 catalogs[me.organId]
+        "var c = catalogs['6991']; c.push({});",
+        # PublicTree 的原型读出来再改
+        "var proto = PublicTree.prototype; proto.open = function () {};",
+    ],
+)
+def test_global_uses_outside_whitelist_refused(script):
+    assert _found(_jx(extra=f"<script>{script}</script>")) is None
+
+
+def test_harmless_global_uses_recognized():
+    # 给 Ls 加个新函数、调用平台的普通函数、栏目树上只查找的方法：照常认
+    script = (
+        "Ls.myHelper = function (id) { return id; };"
+        " Ls.tipsInfo('x');"
+        " function later() { return _organTree2.getNodes(); }"
+    )
+    assert _found(_jx(extra=f"<script>{script}</script>")) is not None
+
+
+def test_catalog_passed_only_to_read_only_method():
+    anchor = "var currentNode = $.grep(nodes, function(node) {"
+    assert _found(_jx()) is not None
+    for change in (
+        "nodes.push({}); ",
+        "nodes[0].children = []; ",
+        "delete nodes[0].children; ",
+        "me.other(nodes); ",
+        "keep(nodes); ",
+    ):
+        page = fixture("jx_page.html").replace(anchor, change + anchor, 1)
+        assert page != fixture("jx_page.html")
+        assert _found(page) is None, change
