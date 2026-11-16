@@ -1432,3 +1432,73 @@ def test_short_captcha_title_with_readable_notice_is_read(tmp_path, title):
     # 明说拦着的（访问被拒绝、拦截）照样直接算拦截页
     blocked = _html_result("https://a.gov.cn/2", _FIREWALL)
     assert detail_service._gate_page(blocked, blocked.url) is True
+
+
+_LOGIN_FORM = (
+    "<div class='content'>欢迎登录某市政府信息公开平台 用户名<input name='u'> "
+    "密码<input type='password' name='p'><button>登录</button> "
+    "如忘记密码，请联系系统管理员重置。</div>"
+)
+
+
+@pytest.mark.parametrize("links", [0, 20], ids=["bare", "with-navigation"])
+def test_login_form_inside_content_is_a_gate(tmp_path, links):
+    # 登录表单放在 .content 里、旁边有提示字（第十四轮独立 Claude）：解析会把它当正文，照样算登录页、
+    # 停这个网站，登录框上的字不当正文存下
+    nav = "".join(f"<a href='/c{i}.html'>栏目{i}</a>" for i in range(links))
+    html = (
+        f"<html><head><title>用户登录 - 某市人民政府</title></head><body><div>{nav}</div>"
+        f"{_LOGIN_FORM}</body></html>"
+    )
+    path = str(tmp_path / "pause.json")
+    calls = []
+
+    class Fake:
+        def fetch(self, url):
+            calls.append(url)
+            return _html_result(url, html)
+
+    outcomes = _fetch_outcomes(
+        [(1, "https://a.gov.cn/1"), (2, "https://a.gov.cn/2")], Fake(), 1, pause=_SitePause(path)
+    )
+    assert outcomes[1].status == "protected"
+    assert calls == ["https://a.gov.cn/1"]
+    assert _SitePause(path).expiry("a.gov.cn") is not None
+
+
+_ATTRIBUTE_CAPTCHA = (
+    "<html><head><title>访问提示</title></head><body><input placeholder='请输入验证码'>"
+    "<img src='/captcha.jpg'><a>看不清？换一张</a></body></html>"
+)
+
+
+def test_captcha_prompt_only_in_attributes_is_a_gate():
+    # 验证码提示只写在 placeholder 里（第十四轮独立 Claude 建议）：详情页、robots.txt 都算关卡
+    result = _html_result("https://a.gov.cn/1", _ATTRIBUTE_CAPTCHA)
+    assert detail_service._gate_page(result, result.url) is True
+    robots, paths = _fetch_with_robots_bytes(_ATTRIBUTE_CAPTCHA.encode(), "text/html")
+    assert robots.status == "robots_error" and robots.robots_failure == "protected"
+
+
+@pytest.mark.parametrize(
+    "sentence",
+    ["现将有关事项通知如下，详见附件。", "自下月起启用短信验证码登录，详见附件。"],
+)
+def test_short_notice_with_captcha_title_is_not_a_gate(tmp_path, sentence):
+    # 标题带"短信验证码"、正文一句话加一个附件（整页看得见的字不到 300 字）：300 字只算标题以外的字，
+    # 单个"验证码"这类字也不算验证码提示，不停网站
+    html = (
+        "<html><head><title>关于政务服务网启用短信验证码登录的通知_某市人民政府</title></head>"
+        f"<body><div id='zoom'><p>{sentence}</p><a href='/f.pdf'>附件.pdf</a></div></body></html>"
+    )
+    result = _html_result("https://a.gov.cn/1", html)
+    assert detail_service._gate_page(result, result.url) is False
+    path = str(tmp_path / "pause.json")
+
+    class Fake:
+        def fetch(self, url):
+            return _html_result(url, html)
+
+    outcomes = _fetch_outcomes([(1, "https://a.gov.cn/1")], Fake(), 1, pause=_SitePause(path))
+    assert outcomes[1].status != "protected"
+    assert _SitePause(path).expiry("a.gov.cn") is None

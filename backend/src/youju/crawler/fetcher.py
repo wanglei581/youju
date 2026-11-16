@@ -126,6 +126,22 @@ _BLOCK_WORDS = re.compile(
 CAPTCHA_WORDS = re.compile(
     r"验证码|人机验证|安全验证|滑动验证|滑块验证|captcha|verify you are human", re.I
 )
+# 提示字常写在这几个属性里（<input placeholder="请输入验证码">、<img alt="验证码">）
+_PROMPT_ATTRIBUTES = re.compile(
+    r"""\b(?:placeholder|alt|title|value)\s*=\s*(?:"([^"]*)"|'([^']*)')""", re.I
+)
+
+
+def prompt_attributes(html: str) -> str:
+    """网页上 placeholder、alt、title、value 这几个属性的值，用空格连起来（脚本、样式里的不算）。"""
+    code = re.sub(r"<(script|style)\b.*?</\1\s*>", " ", html[:200000], flags=re.S | re.I)
+    return " ".join(
+        unescape_html(a or b)
+        for tag in re.findall(r"<[^>]+>", code)
+        for a, b in _PROMPT_ATTRIBUTES.findall(tag)
+    )
+
+
 # 标题里分开站名和页面名的符号（"用户登录 - 某市人民政府"、"访问被拒绝_某局"）
 _TITLE_SEPARATORS = re.compile(r"[-_|—–丨｜:：·•]+")
 
@@ -140,11 +156,11 @@ def short_title_parts(title: str) -> str:
 def html_gate(html: str) -> str | None:
     """网页是不是关卡（robots.txt 和详情页共用）：平台的拦截页照 challenge_marker；整页几乎没字、
     又写着拦截、访问被拒绝、访问过于频繁这类明说拦着的字（_BLOCK_WORDS，防火墙回 200 的拦截页多是
-    网页）——这些字要在标题拆掉站名以后很短的那一段里（short_title_parts），或者整页看得见的字总共
-    不到 300 字（"防火墙设备采购结果公告"这类短通知不算）——算拦截页；验证码一类的字（同样只看这些
-    地方，或者正文里看得见的）、登录框要标题很短的那一段写着登录、验证，或者整页就是一个关卡，算
-    登录、验证页（govsites.platform 的写法；首页角落的登录小框、留言板的验证码不算；详情页另有规则，
-    见 detail_service._html_page_gate）。"""
+    网页）——这些字要在标题拆掉站名以后很短的那一段里（short_title_parts），或者标题以外看得见的字
+    总共不到 300 字（"防火墙设备采购结果公告"这类短通知不算）——算拦截页；验证码提示（正文、
+    placeholder 这类属性里的整句，或很短的标题段里的验证码字样）、登录框要标题很短的那一段写着
+    登录、验证，或者整页就是一个关卡，算登录、验证页（govsites.platform 的写法；首页角落的登录小框、
+    留言板的验证码不算；详情页另有规则，见 detail_service._html_page_gate）。"""
     reason = challenge_marker(html)
     if reason:
         return reason
@@ -154,17 +170,21 @@ def html_gate(html: str) -> str | None:
     m = _TITLE.search(head)
     short = short_title_parts(unescape_html(m.group(1))) if m else ""
     bare = bare_page(html)
-    # 看得见的字：去掉脚本、样式、标签（属性跟着去掉），留言区脚本里的 onCaptcha()、脚本名里的
-    # captcha 都不算
-    visible = re.sub(r"<(script|style)\b.*?</\1\s*>", " ", head, flags=re.S | re.I)
+    # 看得见的字：去掉标题（标题只看很短的那一段）、脚本、样式、标签（属性跟着去掉），留言区脚本里的
+    # onCaptcha()、脚本名里的 captcha 都不算
+    visible = re.sub(r"<(script|style|title)\b.*?</\1\s*>", " ", head, flags=re.S | re.I)
     visible = re.sub(r"\s+", " ", unescape_html(re.sub(r"<[^>]+>", " ", visible))).strip()
-    captcha = bool(_CAPTCHA.search(visible))
+    # 验证码提示：正文里、placeholder 这类属性里写着"请输入验证码"这类整句，或者很短的标题段写着
+    # 验证码、安全验证（单个"验证码"这类字太常见，"启用短信验证码登录的通知"不算）
+    captcha = bool(
+        _CAPTCHA.search(visible)
+        or _CAPTCHA.search(prompt_attributes(head))
+        or CAPTCHA_WORDS.search(short)
+    )
     if bare:
         words = f"{short} {visible}" if len(visible) <= 300 else short
         if _BLOCK_WORDS.search(words):
             return "拦截页"
-        # 验证码一类的字不直接算拦截页：标题写着"安全验证"、正文是正常通知的短页面在详情页上照常读
-        captcha = captcha or bool(CAPTCHA_WORDS.search(words))
     if (_PASSWORD.search(head) or captcha) and (_GATE_TITLE.search(short) or bare):
         return "需要登录或验证码"
     return None

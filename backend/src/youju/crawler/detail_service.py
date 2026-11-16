@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import queue
+import re
 import tempfile
 import threading
 import time
@@ -33,14 +34,15 @@ from youju.crawler.detail import (
     search_throttle_site,
 )
 from youju.crawler.fetcher import (
-    CAPTCHA_WORDS,
     SITE_PAUSED,
     FetchResult,
     PoliteFetcher,
     SharedLimitError,
+    bare_page,
     bom_codec,
     decode_text,
     html_gate,
+    prompt_attributes,
     robots_gate,
     text_gate,
 )
@@ -235,18 +237,32 @@ def _visible_words(text: str, url: str) -> str:
 
 
 def _login_page(text: str, url: str) -> bool:
-    """详情页什么时候算登录页、验证页：html_gate 查过的（整页几乎没字，或者标题很短的那一段写着
-    登录、验证）以外，还要有密码框，或者验证码这类字是正文里看得见的（标题、脚本名、属性里的
-    captcha、核实过的站内搜索限流弹窗都不算），并且解析也取不到正文、附件。详情页的标题就是文章
-    标题（"关于开展能力验证工作的通知"），页头的登录小框、限流弹窗、留言区的验证码也常见，只凭这些
-    不停整个网站。"""
-    from youju.govsites.platform import _PASSWORD
+    """详情页什么时候算登录页、验证页（html_gate 查过的：整页几乎没字，或者标题很短的那一段写着
+    登录、验证）：
+    - 整页几乎没字又有密码框：这一页就是登录表单（表单放在 .content、#zoom 里时，解析会把"用户名
+      密码 登录"当成正文）；
+    - 有密码框或验证码提示（正文里看得见的、placeholder 这类属性里的"请输入验证码"这类整句；标题、
+      脚本、核实过的站内搜索限流弹窗都不算），并且去掉标题解析：正文开头就写着验证码这类字（解析判
+      防护页），解析出的"正文"开头是用户名、密码这类登录表单的字（有密码框时），或者取不到正文、附件。
+    详情页的标题就是文章标题（"关于启用短信验证码登录的通知"），页头的登录小框、限流弹窗、留言区的
+    验证码也常见，只凭这些不停整个网站。"""
+    from youju.govsites.platform import _CAPTCHA, _PASSWORD
 
-    if not (_PASSWORD.search(text[:200000]) or CAPTCHA_WORDS.search(_visible_words(text, url))):
+    head = text[:200000]
+    password = bool(_PASSWORD.search(head))
+    captcha = bool(
+        _CAPTCHA.search(_visible_words(text, url)) or _CAPTCHA.search(prompt_attributes(head))
+    )
+    if not (password or captcha):
         return False
-    parsed = parse_detail(text, url)
+    if password and bare_page(text):
+        return True
+    untitled = re.sub(r"<title\b[^>]*>.*?</title\s*>", " ", text, count=1, flags=re.S | re.I)
+    parsed = parse_detail(untitled, url)
     if parsed.failure_reason == "防护页或验证码":
-        return True  # 解析也认它是防护页：附件、正文都不作数
+        return True
+    if password and re.search(r"用户名|密码|账号|帐号", (parsed.raw_body or "")[:300]):
+        return True
     return not parsed.raw_body and not parsed.attachments
 
 
