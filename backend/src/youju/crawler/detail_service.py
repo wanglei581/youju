@@ -38,7 +38,8 @@ from youju.crawler.fetcher import (
     PoliteFetcher,
     SharedLimitError,
     bare_page,
-    decode_html,
+    bom_codec,
+    decode_text,
     html_gate,
     robots_gate,
     text_gate,
@@ -232,27 +233,14 @@ def _login_page(text: str, url: str) -> bool:
     return not parsed.raw_body and not parsed.attachments
 
 
-# 字节顺序标记：浏览器按它定编码（比响应头优先）；UTF-32 的要排在 UTF-16 前面
-_BOMS = (
-    (b"\xef\xbb\xbf", "utf-8"),
-    (b"\xff\xfe\x00\x00", "utf-32-le"),
-    (b"\x00\x00\xfe\xff", "utf-32-be"),
-    (b"\xff\xfe", "utf-16-le"),
-    (b"\xfe\xff", "utf-16-be"),
-)
-
-
 def _gate_text(result: FetchResult) -> str:
-    """判关卡用的文字：开头有字节顺序标记的照它解码（UTF-16 的登录页满是 NUL 字节，按字节看会当成
-    二进制）；别的用取页器解码好的，取页器没解码的照响应头、meta 解码。都只解码前一段：网页看开头
-    20 万字、纯文字只看 300 字以内的，不把整份（最多 20MB）解码一遍。"""
+    """判关卡用的文字：开头有字节顺序标记的照它解码（fetcher.decode_text：UTF-16 的登录页满是 NUL
+    字节，按字节看会当成二进制）；别的用取页器解码好的，取页器没解码的照响应头、meta 解码。都只解码
+    前一段：网页看开头 20 万字、纯文字只看 300 字以内的，不把整份（最多 20MB）解码一遍。"""
     content = result.content or b""
-    for bom, codec in _BOMS:
-        if content.startswith(bom):
-            return content[len(bom) : 400000].decode(codec, errors="replace")
-    if result.text:
+    if bom_codec(content) is None and result.text:
         return result.text
-    return decode_html(content[:400000], result.content_type) if content else ""
+    return decode_text(content[:400000], result.content_type) if content else ""
 
 
 def _gate_page(result: FetchResult, url: str) -> bool:
@@ -714,6 +702,9 @@ def _fetch_outcomes(
                     elif failure == "too_large":
                         # 太大读不完（回的是 200）：规则看不全，一时好不了，停 6 小时
                         pause.add(_host(actual), "robots.txt 读不到（太大读不完）", hours=6)
+                    elif failure == "unreadable":
+                        # 回 200 却解不出文字（没写编码的 UTF-16 这类）：规则看不全，停 6 小时
+                        pause.add(_host(actual), "robots.txt 读不到（解不出文字）", hours=6)
                     elif code in (429, 521):
                         # robots.txt 回 429（服务器忙）、521（防护）：读不到，停 6 小时再来
                         pause.add(_host(actual), f"robots.txt HTTP {code}", hours=6)

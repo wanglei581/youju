@@ -554,6 +554,58 @@ def test_advisor_run_records_start_time_inside_lock(tmp_path, shell):
     assert flock_args[0].startswith("-w 55 -E 75 ") and flock_args[1].startswith("-w 5 -E 75 ")
 
 
+@pytest.mark.parametrize("shell", SHELLS)
+@pytest.mark.parametrize("queue_locked", [False, True])
+def test_queue_yield_jobs_wait_for_detail_queue(tmp_path, shell, queue_locked):
+    # 补正文队列要让路的任务（备份这类）：拿到自己的锁以后先等正在跑的队列停下，再开始干活（第十三轮
+    # Codex：3:35 的队列拖过 4:00 时，备份不能马上和它重叠）；等 5 分钟还没停就提醒、照常跑
+    job = _job_script(tmp_path)
+    _stub(
+        tmp_path,
+        "flock",
+        'printf "%s|%s|%s|%s|%s\\n" "$1" "$2" "$3" "$4" "$5" >> "$FLOCK_ARGS"\n'
+        'case "$3" in *youju-fetch-details-queue.lock) exit "$QUEUE_LOCKED" ;; esac\n'
+        'case "$1" in -w) shift 5 ;; *) shift 4 ;; esac\nexec "$@"\n',
+    )
+    _stub(tmp_path, "timeout", 'shift\nexec "$@"\n')
+    _stub(tmp_path, "youju", 'printf "%s\\n" "$*" >> "$CALLS"\nexit 0\n')
+    env = {
+        **os.environ,
+        "PATH": f"{tmp_path}:{os.environ['PATH']}",
+        "CALLS": str(tmp_path / "calls"),
+        "FLOCK_ARGS": str(tmp_path / "flock.args"),
+        "QUEUE_LOCKED": "1" if queue_locked else "0",
+    }
+    assert subprocess.run([shell, str(job), "backup"], env=env, check=False).returncode == 0
+    assert (tmp_path / "flock.args").read_text().splitlines() == [
+        f"-w|5|-E|75|{tmp_path}/youju-backup.lock",
+        f"-w|300|{tmp_path}/youju-fetch-details-queue.lock|true|",
+    ]
+    calls = [
+        c
+        for c in (tmp_path / "calls").read_text().splitlines()
+        if c.split()[0] not in ("job-start", "job-finish")
+    ]
+    if queue_locked:
+        assert calls == ["alert 补正文队列 5 分钟没停下，任务 youju backup 照常跑", "backup"]
+    else:
+        assert calls == ["backup"]
+    # 不用让路的任务不等队列
+    (tmp_path / "flock.args").unlink()
+    assert subprocess.run([shell, str(job), "crawl"], env=env, check=False).returncode == 0
+    assert "youju-fetch-details-queue.lock" not in (tmp_path / "flock.args").read_text()
+
+
+def test_job_sh_yield_list_matches_queue():
+    # job.sh 里等队列的任务和队列让路的任务（cli.DETAIL_QUEUE_YIELD_JOBS）是同一批
+    import re
+
+    script = (Path(__file__).resolve().parents[1] / "deploy" / "job.sh").read_text()
+    line = re.search(r"^\s*([a-z-]+(?:\s*\|\s*[a-z-]+)*)\)\s*yields=1", script, re.M)
+    assert line is not None
+    assert {name.strip() for name in line.group(1).split("|")} == set(cli.DETAIL_QUEUE_YIELD_JOBS)
+
+
 @pytest.mark.parametrize(
     ("queue_locked", "round_locked", "crawl_code", "args", "expected"),
     [

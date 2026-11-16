@@ -33,6 +33,13 @@ fi
 #   或时钟往回调过（差值是负数），都当作卡住了，照常按"上一次还没跑完"提醒。
 # sh -c 里 $0 是开始时间文件，"$@" 才是传给 youju 的参数
 started="/tmp/youju-${name}.started"
+# 补正文队列要给它们让路的任务（和 cli.DETAIL_QUEUE_YIELD_JOBS 一致）：拿到自己的锁以后，先等正在跑
+# 的队列停下（队列见到这把锁，做完手上的文件就停；在途的下载、PDF 取文字、写库最多等 5 分钟，超时
+# 提醒但照常跑），再开始干活，不和队列同时占内存、数据库
+case "$name" in
+  check-links | cache-attachments | list-evidence | backup | ai-eligibility-rebuild) yields=1 ;;
+  *) yields="" ;;
+esac
 log "开始：youju $*"
 if [ "$name" = "advisor-run" ]; then
   flock -w 55 -E 75 "/tmp/youju-${name}.lock" \
@@ -43,6 +50,13 @@ elif [ "$name" = "fetch-details-queue" ]; then
   flock -w 5 -E 75 "/tmp/youju-${name}.lock" \
     sh -c 'date +%s > "$0.tmp" && mv "$0.tmp" "$0"; exec timeout 3h youju "$@"' \
     "$started" "$@" >> /proc/1/fd/1 2>&1
+elif [ -n "$yields" ]; then
+  # sh -c 里 $0 是任务名，"$@" 才是传给 youju 的参数
+  flock -w 5 -E 75 "/tmp/youju-${name}.lock" \
+    sh -c 'flock -w 300 /tmp/youju-fetch-details-queue.lock true \
+      || youju alert "补正文队列 5 分钟没停下，任务 youju $0 照常跑" || :
+      exec timeout 3h youju "$@"' \
+    "$name" "$@" >> /proc/1/fd/1 2>&1
 else
   # 等 5 秒再放弃：补正文队列查"别的任务在跑没有"时会瞬间拿一下共享锁，撞上那一下不算重叠
   flock -w 5 -E 75 "/tmp/youju-${name}.lock" timeout 3h youju "$@" >> /proc/1/fd/1 2>&1

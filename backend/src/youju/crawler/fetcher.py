@@ -194,7 +194,7 @@ def robots_gate(result: "FetchResult") -> str | None:
     """robots.txt 回 2xx 的不是 robots 文件、是防护页或验证码（D-013：网站拦着我们）：给原因。回的是
     普通网页（没有 robots.txt 时常见的"软 404"，比如首页）照旧当没有 robots；网页只有整页就是一个
     关卡时才算（html_gate）。"""
-    body = decode_html(result.content, result.content_type).lstrip("\ufeff \t\r\n")
+    body = decode_text(result.content, result.content_type).lstrip("\ufeff \t\r\n")
     if body.startswith("<"):
         return html_gate(body)
     if body and not _ROBOTS_LINE.search(body) and text_gate(body):
@@ -331,6 +331,30 @@ def non_public_address(address: str) -> bool:
         elif ip in _NAT64:
             ip = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
     return not ip.is_global or ip.is_multicast
+
+
+# 字节顺序标记：浏览器照它定编码（比响应头优先）；UTF-32 的要排在 UTF-16 前面
+_BOMS = (
+    (b"\xef\xbb\xbf", "utf-8"),
+    (b"\xff\xfe\x00\x00", "utf-32-le"),
+    (b"\x00\x00\xfe\xff", "utf-32-be"),
+    (b"\xff\xfe", "utf-16-le"),
+    (b"\xfe\xff", "utf-16-be"),
+)
+
+
+def bom_codec(content: bytes) -> str | None:
+    """开头的字节顺序标记说的编码；没有给 None。"""
+    return next((codec for bom, codec in _BOMS if content.startswith(bom)), None)
+
+
+def decode_text(content: bytes, content_type: str | None) -> str:
+    """开头有字节顺序标记的照它解码（UTF-16 的网页、robots.txt 满是 NUL 字节，按 UTF-8、GB18030
+    解出来是乱码），别的照 decode_html。判关卡、读 robots.txt 规则共用。"""
+    for bom, codec in _BOMS:
+        if content.startswith(bom):
+            return content[len(bom) :].decode(codec, errors="replace")
+    return decode_html(content, content_type)
 
 
 def decode_html(content: bytes, content_type: str | None) -> str:
@@ -658,7 +682,19 @@ class PoliteFetcher:
             return _RobotsEntry("allow_all", None, now)
         # 不论 decode_text 怎么设都自己解码：下载附件的抓取器不解码内容（text 是空的），以前读
         # robots.txt 也拿到空文字、按"没有 robots.txt"放行，网站禁止抓取的附件照样下载
-        body = decode_html(result.content, result.content_type).lstrip("\ufeff \t\r\n")
+        body = decode_text(result.content, result.content_type).lstrip("\ufeff \t\r\n")
+        if "\x00" in body:
+            # 解码以后还带 NUL：不是能读的文字（没写编码、也没有字节顺序标记的 UTF-16 这类），规则
+            # 看不全、是不是防护页也看不出，不能当成"没有 robots"放行
+            return _RobotsEntry(
+                "unreachable",
+                None,
+                now,
+                "robots.txt 解不出文字（可能是没写编码的 UTF-16），本次跳过",
+                http_status=status,
+                failure="unreadable",
+                final=current,
+            )
         if body.startswith("<") or body and not _ROBOTS_LINE.search(body):
             gate = robots_gate(result)
             if gate:

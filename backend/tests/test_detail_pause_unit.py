@@ -1173,7 +1173,7 @@ def test_gate_check_does_not_decode_pdfs(monkeypatch):
     def boom(*args, **kwargs):
         raise AssertionError("PDF 不该整份解码")
 
-    monkeypatch.setattr(detail_service, "decode_html", boom)
+    monkeypatch.setattr(detail_service, "decode_text", boom)
     pdf = FetchResult(
         "https://a.gov.cn/f.pdf",
         "ok",
@@ -1311,3 +1311,53 @@ def test_bare_short_notice_mentioning_firewall_is_not_a_gate():
     # 同样很短的拦截页（看得见的字不到 300 字）照样认
     blocked = _html_result("https://a.gov.cn/2", _FIREWALL)
     assert detail_service._gate_page(blocked, blocked.url) is True
+
+
+def _robots_fetch(robots_bytes, content_type="text/plain"):
+    paths = []
+
+    def handler(request):
+        paths.append(request.url.path)
+        if request.url.path == "/robots.txt":
+            return httpx.Response(200, content=robots_bytes, headers={"content-type": content_type})
+        return httpx.Response(200, text="<html><body>ok</body></html>")
+
+    with PoliteFetcher(
+        "test",
+        per_host_interval=0,
+        per_address_interval=0,
+        transport=httpx.MockTransport(handler),
+        resolver=lambda host: ["1.2.3.4"],
+    ) as fetcher:
+        return fetcher.fetch("https://a.gov.cn/list.html"), paths
+
+
+@pytest.mark.parametrize("bom,codec", [(b"\xff\xfe", "utf-16-le"), (b"\xfe\xff", "utf-16-be")])
+def test_utf16_robots_rules_are_respected(bom, codec):
+    # robots.txt 用 UTF-16 写（带字节顺序标记）：照标记解码，Disallow 照样守（第十三轮 Codex）
+    result, paths = _robots_fetch(bom + "User-agent: *\nDisallow: /\n".encode(codec))
+    assert result.status == "robots_disallowed"
+    assert paths == ["/robots.txt"]
+
+
+def test_utf16_robots_login_page_is_protected():
+    page = "<html><head><title>用户登录</title></head><body><input type='password'></body></html>"
+    result, paths = _robots_fetch(b"\xff\xfe" + page.encode("utf-16-le"), "text/html")
+    assert result.status == "robots_error" and result.robots_failure == "protected"
+    assert paths == ["/robots.txt"]
+
+
+def test_robots_without_readable_text_pauses_six_hours(tmp_path):
+    # 没写编码、也没有字节顺序标记的 UTF-16：解出来带 NUL，规则看不全，不当成"没有 robots"放行
+    raw = "User-agent: *\nDisallow: /\n".encode("utf-16-le")
+    result, paths = _robots_fetch(raw)
+    assert result.status == "robots_error" and result.robots_failure == "unreadable"
+    assert paths == ["/robots.txt"]
+    path = tmp_path / "pause.json"
+
+    class Fake:
+        def fetch(self, url):
+            return FetchResult(url, "robots_error", robots_status=200, robots_failure="unreadable")
+
+    _fetch_outcomes([(1, "https://a.gov.cn/1")], Fake(), 1, pause=_SitePause(str(path)))
+    assert _hours_left(path, "a.gov.cn") == pytest.approx(6, abs=0.05)
