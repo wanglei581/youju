@@ -1374,6 +1374,27 @@ def test_old_reading_made_only_of_popup_links_is_kept() -> None:
     assert [i.url for i in items] == [f"http://e.cn/20220201/{i}" for i in range(3)]
 
 
+def test_recovered_row_reads_like_the_same_page_without_the_popup() -> None:
+    # 原来因为弹层整行漏掉的行，现在读出来和去掉弹层的同一页（原来的读法）一样：行里写着几个日期时
+    # 照原来取最后一个（这里是施行日期，原来的读法对别的行也这样）
+    row = (
+        '<li><a href="/b">关于乙事项的通知</a>{popup}'
+        "<span>发布日期：2026-02-01</span><span>施行日期：2026-03-01</span></li>"
+    )
+    page = '<ul><li><a href="/a">关于甲事项的通知</a><span>2026-01-01</span></li>{row}</ul>'
+    popup = '<div class="address-popup"><a href="/c">关于乙事项的解读</a></div>'
+    today = date(2026, 11, 16)
+    with_popup = extract_items(
+        page.format(row=row.format(popup=popup)), "http://e.cn/", today=today
+    )
+    without = extract_items(page.format(row=row.format(popup="")), "http://e.cn/", today=today)
+    assert with_popup == without
+    assert [(i.url, i.publish_date) for i in with_popup] == [
+        ("http://e.cn/a", date(2026, 1, 1)),
+        ("http://e.cn/b", date(2026, 3, 1)),
+    ]
+
+
 def test_lists_keep_their_page_order_when_they_score_the_same() -> None:
     # 带附带链接的行等别的行分完才归块；归完以后列表块照原来按页面上的先后排，评分一样时取靠前的那块。
     # main 读的也是第一张表（外加三条"| AI阅读"）
