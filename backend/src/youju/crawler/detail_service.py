@@ -28,7 +28,7 @@ from youju.crawler.detail import (
     redact_sensitive,
     search_throttle_site,
 )
-from youju.crawler.fetcher import SITE_PAUSED, FetchResult, PoliteFetcher
+from youju.crawler.fetcher import SITE_PAUSED, FetchResult, PoliteFetcher, SharedLimitError
 from youju.crawler.pdf import extract_pdf_text
 from youju.crawler.titles import clean_title, completed_title, is_truncated
 from youju.dbtypes import BODY_TEXT_MAX_CHARS
@@ -204,6 +204,8 @@ def _fetch_one(document_id: int, url: str, fetcher: DetailFetcher) -> _FetchOutc
     if is_pdf:
         try:
             parsed = _pdf_detail(fetched.content)
+        except pdf_sandbox.Cancelled:
+            return _FetchOutcome(document_id, now, fetched, None, "deadline", "停下了，PDF 没读完")
         except pdf_sandbox.Failed as exc:  # 只有 retry 为真的会抛到这里
             return _FetchOutcome(document_id, now, fetched, None, "pdf_retry", f"PDF {exc.detail}")
         return _FetchOutcome(
@@ -256,6 +258,10 @@ def _fetch_one(document_id: int, url: str, fetcher: DetailFetcher) -> _FetchOutc
                 )
         try:
             pdf = _pdf_detail(pdf_fetch.content)
+        except pdf_sandbox.Cancelled:
+            return _FetchOutcome(
+                document_id, now, pdf_fetch, parsed, "deadline", "停下了，PDF 没读完"
+            )
         except pdf_sandbox.Failed as exc:  # 只有 retry 为真的会抛到这里
             reason = f"PDF {exc.detail}"
             return _FetchOutcome(document_id, now, pdf_fetch, parsed, "pdf_retry", reason)
@@ -459,24 +465,39 @@ class _PausingFetcher:
         return result
 
 
+def _follow(pause: _SitePause, host: str, blocked: str, reason: str) -> None:
+    """host 跟着停取中的 blocked 停：blocked 持久停到什么时候 host 也停到那时，只停这次运行的
+    host 也只停这次运行。"""
+    until = pause.expiry(blocked)
+    if until is not None:
+        pause.add(host, reason, until=until)
+    else:
+        pause.add(host, reason, persistent=False)
+
+
 def _follow_paused(pause: _SitePause, document_id: int, url: str, outcome) -> None:
     """这份文件被挡在别的停取中的网站 B 前面：
-    - 详情页自己跳到 B（同站别名、集约化平台的主机）：文件所在的网站 A 跟着停到 B 恢复为止（B 只停
-      这次运行的，A 也只停这次运行），免得每份都先请求一次 A 再被挡；
-    - 详情页取到了、唯一的 PDF 在 B 上：这份延后到 B 恢复（doc:编号），不影响 A 上别的文件。"""
+    - 挡在 robots.txt 上（A 的 robots.txt 跳到 B）：A 上每份文件都要先读这份 robots.txt，A 跟着
+      B 停到 B 恢复；
+    - 详情页自己跳到 B：这份延后到 B 恢复（doc:编号），A 只停这次运行（A 没拒绝过我们，下次运行
+      再试一份）；
+    - 详情页取到了、唯一的 PDF 在 B 上：这份延后到 B 恢复，不影响 A 上别的文件。"""
     own = _host(url)
-    blocked = _host(outcome.fetch.final_url or outcome.fetch.url or "")
+    fetched = outcome.fetch
+    blocked = _host(fetched.robots_url or fetched.final_url or fetched.url or "")
     if not blocked or blocked == own or blocked not in pause.reasons:
         return
     until = pause.expiry(blocked)
-    if outcome.parsed is None:
-        reason = f"跳到停取中的 {blocked}"
+    doc = f"{DEFERRED_PREFIX}{document_id}"
+    if fetched.robots_url:
+        hop = _host(fetched.final_url or url)
+        _follow(pause, hop, blocked, f"robots.txt 跳到停取中的 {blocked}")
+    elif outcome.parsed is None:
         if until is not None:
-            pause.add(own, reason, until=until)
-        else:
-            pause.add(own, reason, persistent=False)
+            pause.add(doc, f"跳到停取中的 {blocked}", until=until)
+        pause.add(own, f"跳到停取中的 {blocked}", persistent=False)
     elif until is not None:
-        pause.add(f"{DEFERRED_PREFIX}{document_id}", f"PDF 在停取中的 {blocked} 上", until=until)
+        pause.add(doc, f"PDF 在停取中的 {blocked} 上", until=until)
 
 
 def _fetch_outcomes(
@@ -487,7 +508,10 @@ def _fetch_outcomes(
     pause: _SitePause | None = None,
     on_outcome=None,
     should_stop=None,
+    strip_content: bool = False,
 ) -> dict[int, _FetchOutcome]:
+    """strip_content：交回的结果不带页面内容（只写库的调用方用；body_refresh 这类要拿原网页核对的
+    不能清）。"""
     by_host: dict[str, list[tuple[int, str]]] = {}
     for document_id, url in selected:
         by_host.setdefault(_host(url), []).append((document_id, url))
@@ -521,8 +545,9 @@ def _fetch_outcomes(
                         continue
                 guarded = _PausingFetcher(fetcher, pause, stopped)
                 try:
-                    outcome = _fetch_one(document_id, url, guarded)
-                except _PauseStoreError:
+                    with pdf_sandbox.stop_when(stopped):
+                        outcome = _fetch_one(document_id, url, guarded)
+                except (_PauseStoreError, SharedLimitError):
                     raise
                 except Exception as exc:  # noqa: BLE001
                     reason = f"详情处理异常：{type(exc).__name__}"
@@ -532,6 +557,10 @@ def _fetch_outcomes(
                     )
                 if outcome.status == "robots_error":
                     actual = outcome.fetch.final_url or outcome.fetch.url if outcome.fetch else url
+                    page_host = _host(actual)
+                    # 停的是实际回了错的那台主机（robots.txt 可能跳到了别的主机）
+                    if outcome.fetch and outcome.fetch.robots_url:
+                        actual = outcome.fetch.robots_url
                     code = outcome.fetch.robots_status if outcome.fetch else None
                     if code in (429, 521):
                         # robots.txt 回 429（服务器忙）、521（防护）：读不到，停 6 小时再来
@@ -546,6 +575,10 @@ def _fetch_outcomes(
                             "robots.txt 读不到（连不上、超时或证书问题）",
                             persistent=False,
                         )
+                    if _host(actual) != page_host:
+                        # A 的 robots.txt 跳到 B、B 读不到：A 上每份文件都要读它，A 跟着 B 停
+                        reason = f"robots.txt 跳到读不到的 {_host(actual)}"
+                        _follow(pause, page_host, _host(actual), reason)
                 if outcome.status == "protected":
                     actual = outcome.fetch.final_url or outcome.fetch.url if outcome.fetch else url
                     pause.add(_host(actual), "防护页或验证码")
@@ -555,7 +588,11 @@ def _fetch_outcomes(
                 if outcome.status == "site_paused" and outcome.fetch is not None:
                     _follow_paused(pause, document_id, url, outcome)
                 own = _host(url)
-                http = outcome.fetch.http_status if outcome.fetch else None
+                answered = (
+                    _host(outcome.fetch.final_url or outcome.fetch.url) if outcome.fetch else ""
+                )
+                # 只算详情页所在网站自己回的（PDF 在别的网站上回的不算到它头上）
+                http = outcome.fetch.http_status if outcome.fetch and answered == own else None
                 odd = http is not None and 400 <= http < 500 and http not in (404, 410)
                 odd_streak = odd_streak + 1 if odd else 0
                 if odd_streak >= 3:
@@ -570,7 +607,7 @@ def _fetch_outcomes(
                     or refused
                     or not touched & pause.reasons.keys()
                 ):
-                    if outcome.fetch is not None:
+                    if strip_content and outcome.fetch is not None:
                         # 写库只用状态码和最后的网址：页面内容（最多 20MB）不跟着排队
                         outcome = replace(
                             outcome, fetch=replace(outcome.fetch, content=b"", text="")
@@ -635,7 +672,13 @@ def _fetch_selected(
             saved[outcome.document_id] = _save_result(session, outcome)
 
     _fetch_outcomes(
-        selected, fetcher, max_workers, pause=pause, on_outcome=save, should_stop=should_stop
+        selected,
+        fetcher,
+        max_workers,
+        pause=pause,
+        on_outcome=save,
+        should_stop=should_stop,
+        strip_content=True,
     )
     return [
         saved[document_id]
@@ -645,7 +688,11 @@ def _fetch_selected(
     ]
 
 
-def _polite_fetcher(deadline: float | None = None) -> PoliteFetcher:
+# 补正文队列因为跨进程限速用不了而停下（命令按失败退出，job.sh 发提醒）
+SHARED_LIMIT_STOP = "跨进程限速用不了，停下"
+
+
+def _polite_fetcher(deadline: float | None = None, require_shared: bool = False) -> PoliteFetcher:
     from youju.govsites.inventory import CachingResolver
 
     settings = get_settings()
@@ -660,6 +707,7 @@ def _polite_fetcher(deadline: float | None = None) -> PoliteFetcher:
         url_allowed=_government_url,
         resolver=CachingResolver(),
         deadline=deadline,
+        require_shared_limits=require_shared,
     )
 
 
@@ -702,6 +750,7 @@ def run_detail_queue(
     # 或者熔断时扔掉了，留给下次运行）；写了库的另记下来，汇总时没写库的才算 site_paused
     chosen: set[int] = set()
     written: set[int] = set()
+    gone: set[int] = set()
     # 还没写库的连续网络失败（到达时刻, 结果）：凑够熔断条件就整批不写
     pending: list[tuple[float, _FetchOutcome]] = []
     tripped = threading.Event()
@@ -714,6 +763,7 @@ def run_detail_queue(
             return None
         result = _save_result(session, outcome)
         if result.status == "missing":
+            gone.add(outcome.document_id)  # 题录已经删了：不算"没写库"
             return None
         written.add(outcome.document_id)
         statuses[result.status] = statuses.get(result.status, 0) + 1
@@ -725,12 +775,19 @@ def run_detail_queue(
         pending.clear()
 
     def receive(outcome):
-        if tripped.is_set():
-            return None
+        if outcome.status == "deadline":
+            return None  # 到了这次运行的期限没取完：不算网络失败、不写库，下次再取
         reason = (outcome.failure_reason or "").lower()
-        network = outcome.status in {"network_error", "robots_error", "deadline"} or any(
-            text in reason for text in ("域名解析失败", "同时在等的域名解析过多", "dns")
+        robots_status = outcome.fetch.robots_status if outcome.fetch else None
+        network = (
+            outcome.status == "network_error"
+            # robots.txt 回了状态码（5xx、429、521）是对方的事，不是我们自己断网
+            or (outcome.status == "robots_error" and robots_status is None)
+            or any(text in reason for text in ("域名解析失败", "同时在等的域名解析过多", "dns"))
         )
+        if tripped.is_set():
+            # 熔断以后网络失败不写库；别的结果（熔断前已经在取的）照常写
+            return None if network else record(outcome)
         if not network:
             flush()
             return record(outcome)
@@ -842,17 +899,22 @@ def run_detail_queue(
 
     if fetcher is None:
         # 到了这次运行的期限，正在下载的也放弃（不拖着每轮抓取等锁）
-        with _polite_fetcher(deadline=time.monotonic() + minutes * 60) as active:
-            if get_settings().rate_limit_dir and active._shared is None:
-                # 跨进程限速的目录用不了：32 个并发的队列不能只按本进程限速，这次不跑
-                return DetailQueueSummary({}, 0, pause.hosts, "跨进程限速的目录用不了，不跑", 0)
-            reason = run(active)
+        # 32 个并发的队列一定要跨进程限速：没配目录、目录用不了、中途锁文件读写出错都停下，
+        # 不退回只按本进程限速
+        try:
+            with _polite_fetcher(
+                deadline=time.monotonic() + minutes * 60, require_shared=True
+            ) as active:
+                reason = run(active)
+        except SharedLimitError as exc:
+            log.error("补正文队列停下：%s", exc)
+            reason = f"{SHARED_LIMIT_STOP}：{exc}"
     else:
         reason = run(fetcher)
     if not tripped.is_set():
         flush()
     # 选了没写库的（被停取挡下、robots 读不到、停下、熔断扔掉）单列 site_paused；total 只算写了库的
-    unsaved = len(chosen - written)
+    unsaved = len(chosen - written - gone)
     if unsaved:
         statuses["site_paused"] = unsaved
     return DetailQueueSummary(statuses, len(written), pause.hosts, reason, batches)
@@ -884,7 +946,6 @@ def fetch_details(
         .outerjoin(DocumentDetail, DocumentDetail.document_id == Document.id)
         .where(Source.rights_level == 1)
         .order_by(*(_detail_order(today) if document_ids is None else (Document.id,)))
-        .limit(limit)
     )
     if not (refetch and document_ids is not None):
         stmt = stmt.where(
@@ -910,15 +971,36 @@ def fetch_details(
                 )
             )
         )
+    pause = _SitePause(get_settings().detail_pause_path)
     if document_ids is not None:
         if not document_ids:
             return DetailFetchResults()
         stmt = stmt.where(Document.id.in_(document_ids))
-    selected = [(int(i), url) for i, url in session.execute(stmt).all()]
+        selected = [(int(i), url) for i, url in session.execute(stmt.limit(limit)).all()]
+    else:
+        # 停取中的网站、延后的文件选取时就跳过，一直翻到选满或真到末尾：不然排在最前面的都是
+        # 停取网站的文件时，每轮都选它们、再一份份跳过，后面的新文件永远补不上
+        selected, seen, page = [], set(), 0
+        while len(selected) < limit:
+            paused = pause.reasons
+            rows = session.execute(stmt.limit(limit).offset(page * limit)).all()
+            for document_id, url in rows:
+                if (
+                    document_id in seen
+                    or _host(url) in paused
+                    or f"{DEFERRED_PREFIX}{document_id}" in paused
+                ):
+                    continue
+                seen.add(document_id)
+                selected.append((int(document_id), url))
+                if len(selected) >= limit:
+                    break
+            if len(rows) < limit:
+                break
+            page += 1
     # 查询事务先结束；网络请求期间不占用数据库连接和行锁。
     session.commit()
     workers = max_workers if max_workers is not None else get_settings().max_workers
-    pause = _SitePause(get_settings().detail_pause_path)
     if fetcher is not None:
         results = _fetch_selected(session, selected, fetcher, workers, pause=pause)
     else:

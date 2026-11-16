@@ -56,6 +56,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from itertools import islice
 from pathlib import Path
 
@@ -105,6 +106,29 @@ class Failed(Exception):
         self.retry = kind in _RETRY
 
 
+class Cancelled(Exception):
+    """调用方要停下（补正文队列到了期限、每轮抓取要锁）：没读完的不读了。"""
+
+
+_stop = threading.local()
+
+
+@contextlib.contextmanager
+def stop_when(check):
+    """这个线程在 with 里读 PDF 时，check() 为真就不再等名额、停掉正在读的子进程，抛 Cancelled。"""
+    old = getattr(_stop, "check", None)
+    _stop.check = check
+    try:
+        yield
+    finally:
+        _stop.check = old
+
+
+def _stopping() -> bool:
+    check = getattr(_stop, "check", None)
+    return bool(check and check())
+
+
 def read(task: str, data: bytes, *, seconds: float, **options) -> dict:
     """在子进程里按 task（TASKS 里的一种）读这份 PDF，返回读出的东西（见各个 task 的说明）；
     没读成抛 Failed。options 原样传给 task。"""
@@ -120,8 +144,14 @@ def read(task: str, data: bytes, *, seconds: float, **options) -> dict:
         "cpu": max(1, math.ceil(seconds)),
     }
     try:
-        with _SLOTS:  # 限时从拿到名额以后算（见模块说明）
+        # 限时从拿到名额以后算（见模块说明）；等名额时也看要不要停下
+        while not _SLOTS.acquire(timeout=0.5):
+            if _stopping():
+                raise Cancelled("停下了，PDF 没读")
+        try:
             return _answer(_spawn(cfg, data, seconds))
+        finally:
+            _SLOTS.release()
     except Failed as exc:
         if exc.retry:  # 和环境有关的要有人看到（连着出现多半是容器或部署出了问题）
             log.warning("读 PDF 的子进程没读成（%s）：%s", exc.kind, exc.detail)
@@ -172,7 +202,16 @@ def _spawn(cfg: dict, data: bytes, seconds: float) -> dict:
                     stderr=err,
                     env=_env(),
                 )
-            code = child.wait(timeout=_wall(seconds))
+            ends = time.monotonic() + _wall(seconds)
+            while True:
+                try:
+                    code = child.wait(timeout=max(0.0, min(0.5, ends - time.monotonic())))
+                    break
+                except subprocess.TimeoutExpired:
+                    if _stopping():
+                        raise Cancelled("停下了，PDF 没读完") from None
+                    if time.monotonic() >= ends:
+                        raise
             return _output(code, cfg, seconds, out, err, _reduced(cfg))
         except OSError as exc:  # 起子进程、读结果的临时文件出错
             if child is not None:

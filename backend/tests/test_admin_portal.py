@@ -333,7 +333,7 @@ def test_job_wrapper_keeps_task_exit_status(tmp_path, record_fails, task_code):
     # 用替身命令执行真实包装器，不连接数据库、不操作真实任务或 /proc。
     for name, content in {
         "timeout": '#!/bin/sh\nshift\nexec "$@"\n',
-        "flock": '#!/bin/sh\nshift 4\nexec "$@"\n',
+        "flock": '#!/bin/sh\nshift 5\nexec "$@"\n',  # flock -w 5 -E 75 <锁文件>
         "youju": """#!/bin/sh
 echo "$*" >> "$CALLS"
 case "$1" in

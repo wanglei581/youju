@@ -50,6 +50,10 @@ SITE_PAUSED = "同一网站这一轮遇到防护页，停取"
 _SLOT_POLL = 0.05
 
 
+class SharedLimitError(RuntimeError):
+    """要求跨进程限速（补正文队列）时锁文件读写出错：停下，不退回只按本进程限速。"""
+
+
 class _SharedLimits:
     """同一台机器上各个进程共用的限速记录（补正文队列、每轮抓取、查原网页、附件副本、名单证据
     是几个独立的进程，各有各的取页器；同一网站隔 3 秒、同一地址限速要对整台机器生效）。
@@ -107,6 +111,9 @@ class FetchResult:
     robots_hops: tuple[str, ...] = ()
     # robots_error 时 robots.txt 回的 HTTP 状态码（连不上、超时没有）：调用方按它决定停多久
     robots_status: int | None = None
+    # robots_error、因停取挡在 robots.txt 上时，实际出问题的那个 robots.txt 地址（可能跳到了别的
+    # 主机）：调用方停的应该是它所在的主机
+    robots_url: str = ""
 
 
 @dataclass
@@ -119,6 +126,7 @@ class _RobotsEntry:
     error: str | None = None  # unsupported_host、unreachable 的原因
     server_error: bool = False  # unreachable 是因为服务器回 5xx（超时、连不上在下层已重试过）
     http_status: int | None = None  # unreachable 时 robots.txt 回的状态码
+    final: str = ""  # unreachable、site_paused 时实际出问题的那个 robots.txt 地址（跟过跳转）
     chain: tuple[
         str, ...
     ] = ()  # 读这份 robots.txt 走过的地址（含跳转），用记下来的结果时也报给调用方
@@ -214,6 +222,7 @@ class PoliteFetcher:
         per_address_interval: float = 1.0,
         per_address_concurrency: int = 2,
         shared_limits_dir: str | None = None,
+        require_shared_limits: bool = False,
     ) -> None:
         headers = {
             "User-Agent": user_agent,
@@ -272,11 +281,15 @@ class PoliteFetcher:
         # 跨进程限速（shared_limits_dir，配置项 rate_limit_dir）：不配就只管这个实例
         self._shared: _SharedLimits | None = None
         self._shared_warned = False
+        # 一定要跨进程限速（补正文队列）：没配目录、目录用不了、中途读写出错都抛 SharedLimitError
+        self._require_shared = require_shared_limits
         if shared_limits_dir:
             try:
                 self._shared = _SharedLimits(shared_limits_dir)
             except OSError as exc:
                 self._shared_failed(exc)
+        elif require_shared_limits:
+            raise SharedLimitError("没配跨进程限速的目录")
         self._robots: dict[str, _RobotsEntry] = {}
         self._robots_locks: dict[str, threading.Lock] = {}
         self._robots_noted: set[str] = set()
@@ -347,7 +360,13 @@ class PoliteFetcher:
             if state == "deadline":
                 return FetchResult(url, "deadline", final_url=current, error=_DEADLINE)
             if state == "site_paused":
-                return FetchResult(url, "site_paused", final_url=current, error=SITE_PAUSED)
+                return FetchResult(
+                    url,
+                    "site_paused",
+                    final_url=current,
+                    error=SITE_PAUSED,
+                    robots_url=entry.final,
+                )
             if state == "unreachable":
                 # RFC 9309 §2.3.1.4：robots.txt 因服务器错误或网络问题无法获取，视为全部禁止
                 return FetchResult(
@@ -356,6 +375,7 @@ class PoliteFetcher:
                     final_url=current,
                     error=entry.error or "robots.txt 暂时无法获取，本次跳过",
                     robots_status=entry.http_status,
+                    robots_url=entry.final,
                 )
             if state == "unsupported_host":
                 return FetchResult(url, "unsupported_host", final_url=current, error=entry.error)
@@ -433,7 +453,7 @@ class PoliteFetcher:
             if result.status == "deadline":
                 return _RobotsEntry("deadline", None, self._clock())
             if result.status == "site_paused":
-                return _RobotsEntry("site_paused", None, self._clock(), result.error)
+                return _RobotsEntry("site_paused", None, self._clock(), result.error, final=current)
             if result.status == "unsupported_host":
                 return _RobotsEntry("unsupported_host", None, self._clock(), result.error)
             if result.status != "redirect":
@@ -456,6 +476,7 @@ class PoliteFetcher:
                 # 521 是防护页，不是服务器一时出错：不当场再请求一次
                 server_error=status is not None and status >= 500 and status != 521,
                 http_status=status,
+                final=current,
             )
         if status is not None and 400 <= status < 500:
             # RFC 9309 §2.3.1.3：4xx（包括 401、403）视为 robots.txt 不可用，可以抓取；"被拒绝就停"
@@ -496,12 +517,15 @@ class PoliteFetcher:
             return locks.setdefault(key, threading.Lock())
 
     def _shared_failed(self, exc: OSError) -> None:
+        if self._require_shared:
+            raise SharedLimitError(f"跨进程限速的锁文件读写出错：{exc}") from exc
         if not self._shared_warned:
             self._shared_warned = True
             log.warning("跨进程限速的目录用不了，这次只按本进程限速：%s", exc)
 
-    def _file_lock(self, path: Path, stack: contextlib.ExitStack) -> int | None:
-        """拿 path 的排他锁（拿不到隔一会儿再试，守期限），锁和文件由 stack 放掉；到期给 None。"""
+    def _file_lock(self, path: Path, stack: contextlib.ExitStack, url: str) -> int | str | None:
+        """拿 path 的排他锁（拿不到隔一会儿再试），锁和文件由 stack 放掉；到期给 None，等的时候
+        要停下了（停取、到期限、让路）给 "paused"。"""
         fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
         stack.callback(os.close, fd)
         while True:
@@ -510,13 +534,15 @@ class PoliteFetcher:
             except BlockingIOError:
                 if self._expired():
                     return None
+                if not self._gate(url, record=False):
+                    return "paused"
                 self._sleep(_SLOT_POLL)
                 continue
             stack.callback(fcntl.flock, fd, fcntl.LOCK_UN)
             return fd
 
     def _shared_wait(
-        self, stack: contextlib.ExitStack, kind: str, key: str, interval: float
+        self, stack: contextlib.ExitStack, kind: str, key: str, interval: float, url: str
     ) -> int | str | None:
         """跨进程补足间隔：拿 kind-key 锁文件的锁，按里面记的时间等够 interval。返回拿着的文件
         （锁由 stack 放），"deadline" 表示等到了期限；不跨进程限速（没配目录、文件出错）给 None。
@@ -525,10 +551,10 @@ class PoliteFetcher:
             return None
         inner = contextlib.ExitStack()
         try:
-            fd = self._file_lock(self._shared.path(kind, key), inner)
-            if fd is None:
+            fd = self._file_lock(self._shared.path(kind, key), inner, url)
+            if fd is None or fd == "paused":
                 inner.close()
-                return "deadline"
+                return "deadline" if fd is None else "paused"
             last = _read_stamp(fd)
             now = time.time()
             if last is not None:
@@ -549,7 +575,7 @@ class PoliteFetcher:
             except OSError as exc:
                 self._shared_failed(exc)
 
-    def _shared_slot(self, stack: contextlib.ExitStack, address: str) -> str | None:
+    def _shared_slot(self, stack: contextlib.ExitStack, address: str, url: str) -> str | None:
         """跨进程的同一地址名额：per_address_concurrency 个名额文件逐个试（不等），都占着就隔一会儿
         再试，守期限；拿到的由 stack 放。到期给 "deadline"，不跨进程限速给 None。"""
         if self._shared is None:
@@ -572,6 +598,8 @@ class PoliteFetcher:
                     return "ok"
                 if self._expired():
                     return "deadline"
+                if not self._gate(url, record=False):
+                    return "paused"
                 self._sleep(_SLOT_POLL)
         except OSError as exc:
             self._shared_failed(exc)
@@ -590,7 +618,9 @@ class PoliteFetcher:
             if self._expired():
                 return FetchResult(url, "deadline", final_url=url, error=_DEADLINE)
             # 跨进程：同一主机的请求整机串行，前一个结束到后一个开始至少隔 per_host_interval
-            host_file = self._shared_wait(shared, "h", host, self._interval)
+            host_file = self._shared_wait(shared, "h", host, self._interval, url)
+            if host_file == "paused":
+                return FetchResult(url, "site_paused", final_url=url, error=SITE_PAUSED)
             if host_file == "deadline" or self._expired():
                 return FetchResult(url, "deadline", final_url=url, error=_DEADLINE)
             # 开始前也记一次：进程在请求中途被杀，下一个进程照样要隔够间隔
@@ -656,7 +686,10 @@ class PoliteFetcher:
                         if not acquired:
                             return FetchResult(url, "deadline", final_url=url, error=_DEADLINE)
                         hold.callback(slot.release)
-                        if self._shared_slot(hold, address) == "deadline":
+                        slot_state = self._shared_slot(hold, address, url)
+                        if slot_state == "paused":
+                            return FetchResult(url, "site_paused", final_url=url, error=SITE_PAUSED)
+                        if slot_state == "deadline":
                             return FetchResult(url, "deadline", final_url=url, error=_DEADLINE)
                     # 占了名额、等间隔之前先查一次（只查不记）
                     if not self._gate(url, record=False):
@@ -674,8 +707,10 @@ class PoliteFetcher:
                             if wait > 0:
                                 self._sleep(wait)
                         address_file = self._shared_wait(
-                            interval, "a", address, self._address_interval
+                            interval, "a", address, self._address_interval, url
                         )
+                        if address_file == "paused":
+                            return FetchResult(url, "site_paused", final_url=url, error=SITE_PAUSED)
                         if address_file == "deadline":
                             return FetchResult(url, "deadline", final_url=url, error=_DEADLINE)
                     else:

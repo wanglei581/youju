@@ -243,27 +243,31 @@ DETAIL_QUEUE_YIELD_JOBS = (
 
 
 def _cmd_fetch_details_queue(args: argparse.Namespace) -> int:
+    import threading
+
     from youju.ai.pipeline import round_running, round_wanted
-    from youju.crawler.detail_service import run_detail_queue
+    from youju.crawler.detail_service import SHARED_LIMIT_STOP, run_detail_queue
 
     checked = {"at": None, "reason": None}
+    probing = threading.Lock()
 
     def stop_reason():
         # 每次请求前都会问；结果用 2 秒，免得一秒几十次去拿别的任务的锁（job.sh、round_slot
-        # 撞上那一瞬会以为有人在跑）
-        now = time.monotonic()
-        if checked["at"] is not None and now - checked["at"] < 2:
-            return checked["reason"]
-        reason = None
-        if round_wanted() or round_running():
-            reason = "每轮抓取在跑或在等锁"
-        else:
-            for name in DETAIL_QUEUE_YIELD_JOBS:
-                if round_running(f"/tmp/youju-{name}.lock"):
-                    reason = f"别的任务在跑：{name}"
-                    break
-        checked.update(at=now, reason=reason)
-        return reason
+        # 撞上那一瞬会以为有人在跑）。过期时只让一个线程去查，别的线程等它的结果
+        with probing:
+            now = time.monotonic()
+            if checked["at"] is not None and now - checked["at"] < 2:
+                return checked["reason"]
+            reason = None
+            if round_wanted() or round_running():
+                reason = "每轮抓取在跑或在等锁"
+            else:
+                for name in DETAIL_QUEUE_YIELD_JOBS:
+                    if round_running(f"/tmp/youju-{name}.lock"):
+                        reason = f"别的任务在跑：{name}"
+                        break
+            checked.update(at=now, reason=reason)
+            return reason
 
     reason = stop_reason()
     if reason:
@@ -282,7 +286,8 @@ def _cmd_fetch_details_queue(args: argparse.Namespace) -> int:
     print("状态：" + "，".join(f"{k} {v}" for k, v in summary.statuses.items()))
     for host, reason in sorted(summary.paused_hosts.items()):
         print(f"停取 {host}：{reason}")
-    return 0
+    # 跨进程限速用不了：按失败退出，job.sh 发提醒（不能悄悄地一直不跑）
+    return 1 if summary.stop_reason.startswith(SHARED_LIMIT_STOP) else 0
 
 
 def _cmd_rescan_list_details(args: argparse.Namespace) -> int:

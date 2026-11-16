@@ -591,3 +591,29 @@ def test_alarm_is_held_while_the_child_starts() -> None:
     with pdf_sandbox._alarm_held():
         assert signal.SIGALRM in signal.pthread_sigmask(signal.SIG_BLOCK, [])
     assert signal.SIGALRM not in signal.pthread_sigmask(signal.SIG_BLOCK, [])
+
+
+def test_waiting_for_a_slot_stops_when_asked() -> None:
+    held = 0
+    while pdf_sandbox._SLOTS.acquire(blocking=False):
+        held += 1
+    try:
+        started = time.monotonic()
+        with pdf_sandbox.stop_when(lambda: True), pytest.raises(pdf_sandbox.Cancelled):
+            pdf_sandbox.read("body", b"%PDF-1.4\n", seconds=5)
+        assert time.monotonic() - started < 3
+    finally:
+        for _ in range(held):
+            pdf_sandbox._SLOTS.release()
+
+
+def test_running_child_is_stopped_when_asked(monkeypatch) -> None:
+    monkeypatch.setattr(pdf_sandbox, "_BOOT", "import time; time.sleep(60)\n")
+    started = time.monotonic()
+    with (
+        pdf_sandbox.stop_when(lambda: time.monotonic() - started > 1),
+        pytest.raises(pdf_sandbox.Cancelled),
+    ):
+        pdf_sandbox.read("body", b"%PDF-1.4\n", seconds=5)
+    # 1 秒后要停：子进程马上停掉，不等满墙上兜底时间
+    assert time.monotonic() - started < 5

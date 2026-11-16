@@ -120,8 +120,10 @@ def test_search_throttle_site_pauses_this_round_after_protection_page(session, m
     assert [r.status for r in results] == ["protected", "site_paused"]
     assert fake.calls == [first.url]
     assert session.get(DocumentDetail, second.id) is None
+    # 下一轮：停取中的网站选取时就跳过，不再去取
     results = fetch_details(session, limit=5, source_id=first.source_id, fetcher=fake)
-    assert [r.status for r in results] == ["site_paused"]
+    assert [r.status for r in results] == []
+    assert results.paused_hosts == {"gxt.ln.gov.cn": "防护页或验证码"}
     assert fake.calls == [first.url]
 
 

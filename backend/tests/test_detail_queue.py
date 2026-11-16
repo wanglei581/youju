@@ -142,12 +142,26 @@ def test_stop_after_committed_result(session, monkeypatch):
             return super().fetch(url)
 
     fake = WaitingFetcher({d.url: response(d) for d in docs})
-    summary = run_detail_queue(session, minutes=1, fetcher=fake, stop=written.is_set)
-    assert summary.stop_reason == "每轮要锁"
-    assert session.get(DocumentDetail, docs[0].id) is not None
-    # 第二份要是去取了，取之前第一份已经写进库（不是整批结束才写）
-    assert waited in ([], [True])
+    # 同一个网站的两份按先后取：第二份取之前，第一份已经写进库（不是整批结束才写）
+    summary = run_detail_queue(session, minutes=1, workers=1, fetcher=fake)
+    assert waited == [True]
     assert "processing_error" not in summary.statuses
+    assert session.get(DocumentDetail, docs[1].id) is not None
+
+
+def test_stop_signal_after_first_write(session):
+    docs = [add_document(session, 9450 + i) for i in range(2)]
+    fake = FakeFetcher({d.url: response(d) for d in docs})
+    written = []
+
+    def stop():
+        return "每轮要锁" if fake.calls else None
+
+    summary = run_detail_queue(session, minutes=1, workers=1, fetcher=fake, stop=stop)
+    assert summary.stop_reason == "每轮要锁"
+    assert fake.calls == [docs[0].url]
+    assert written == []
+    assert session.get(DocumentDetail, docs[0].id) is not None
 
 
 def test_time_stop_without_database():
@@ -223,8 +237,9 @@ def test_refusal_is_saved_once_and_not_retried(session, code):
     assert [r.status for r in first] == ["http_error", "site_paused"]
     assert session.get(DocumentDetail, docs[0].id).next_retry_at is None
     assert session.get(DocumentDetail, docs[1].id) is None
+    # 下一轮：停取中的网站选取时就跳过，不再去取
     second = fetch_details(session, limit=2, fetcher=fake, max_workers=1)
-    assert [r.status for r in second] == ["site_paused"]
+    assert [r.status for r in second] == []
     assert fake.calls == [docs[0].url]
 
 
@@ -555,3 +570,59 @@ def test_queue_command_checks_other_jobs_sparingly(monkeypatch, capsys):
     assert cli._cmd_fetch_details_queue(args) == 0
     # 一开始查一次（6 把锁），2 秒以内都用这个结果，过了 2 秒再查一次
     assert len(probes) == 12
+
+
+def test_deadline_results_do_not_trip_circuit(session):
+    from tests.test_detail_service import _doc_on, _source_on
+
+    docs = []
+    for i in range(6):
+        host = f"d{i}.example.gov.cn"
+        source = _source_on(session, host)
+        docs += [_doc_on(session, source, host, j) for j in range(4)]
+    replies = {d.url: FetchResult(d.url, "deadline", error="到了期限") for d in docs}
+    summary = run_detail_queue(
+        session, minutes=1, workers=1, per_host=30, fetcher=FakeFetcher(replies)
+    )
+    # 到了期限没取完的不算网络失败：不熔断，也不写库
+    assert "熔断" not in summary.stop_reason
+    assert summary.statuses == {"site_paused": 24}
+    assert all(session.get(DocumentDetail, d.id) is None for d in docs)
+
+
+def test_round_fetch_skips_paused_hosts_when_selecting(session):
+    from tests.test_detail_service import _doc_on, _source_on
+
+    a = _source_on(session, "a.example.gov.cn")
+    b = _source_on(session, "b.example.gov.cn")
+    blocked = [_doc_on(session, a, "a.example.gov.cn", i) for i in range(3)]
+    fresh = _doc_on(session, b, "b.example.gov.cn", 9)
+    _SitePause(get_settings().detail_pause_path).add("a.example.gov.cn", "HTTP 403")
+    fake = FakeFetcher({fresh.url: readable(fresh)})
+    results = fetch_details(session, limit=1, fetcher=fake, max_workers=1)
+    # 排在前面的都是停取网站的：选取时就跳过，名额给后面的文件
+    assert [r.document_id for r in results] == [fresh.id]
+    assert fake.calls == [fresh.url]
+    assert all(session.get(DocumentDetail, d.id) is None for d in blocked)
+
+
+def test_queue_stops_when_shared_limits_break(session, monkeypatch):
+    from youju.crawler import detail_service
+    from youju.crawler.fetcher import SharedLimitError
+
+    docs = [add_document(session, 9600 + i) for i in range(2)]
+
+    class Broken:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def fetch(self, url):
+            raise SharedLimitError("磁盘满了")
+
+    monkeypatch.setattr(detail_service, "_polite_fetcher", lambda **kwargs: Broken())
+    summary = run_detail_queue(session, minutes=1, workers=1)
+    assert summary.stop_reason.startswith(detail_service.SHARED_LIMIT_STOP)
+    assert all(session.get(DocumentDetail, d.id) is None for d in docs)

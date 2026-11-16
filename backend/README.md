@@ -36,7 +36,7 @@ uv run youju report                  # 来源健康和条目统计
 uv run youju serve                   # 启动 API：http://127.0.0.1:8000/docs
 ```
 
-补正文遇到 HTTP 429 时停取响应主机 6 小时，遇到 401、403、412、521 或防护页时停取 24 小时；robots.txt 回 429、521 时停 6 小时，回别的 5xx、连不上或超时时停 1 小时（robots.txt 回 401、403、412 照 RFC 9309 当没有 robots，页面被拒才停）。停取记录是每轮抓取的补正文和后台队列共用的一份文件，配了 `YOUJU_STORAGE_DIR` 时默认在 `<storage_dir>/state/detail-pause.json`（重建容器不丢），没配时在 `/tmp/youju-detail-pause.json`，可通过 `YOUJU_DETAIL_PAUSE_PATH` 配置。后台队列每批每个主机默认最多选 20 份（`--per-host` 可调整）；60 秒内连续 20 份网络失败、涉及至少 5 个主机时熔断，这批失败不写库。
+补正文遇到 HTTP 429 时停取响应主机 6 小时，遇到 401、403、412、521 或防护页时停取 24 小时；robots.txt 回 429、521 时停 6 小时，回别的 5xx 时停 1 小时，连不上或超时只停这次运行（可能是我们自己断网）；robots.txt 跳到别的主机时停的是实际回错的那台，原来的主机跟着停（robots.txt 回 401、403、412 照 RFC 9309 当没有 robots，页面被拒才停）。停取记录是每轮抓取的补正文和后台队列共用的一份文件，配了 `YOUJU_STORAGE_DIR` 时默认在 `<storage_dir>/state/detail-pause.json`（重建容器不丢），没配时在 `/tmp/youju-detail-pause.json`，可通过 `YOUJU_DETAIL_PAUSE_PATH` 配置。后台队列每批每个主机默认最多选 20 份（`--per-host` 可调整）；60 秒内连续 20 份网络失败、涉及至少 5 个主机时熔断，这批失败不写库。后台队列一定要跨进程限速：`YOUJU_RATE_LIMIT_DIR` 没配、用不了或中途读写出错时停下、按失败退出。
 
 ## API
 

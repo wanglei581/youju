@@ -20,6 +20,8 @@ def extract_pdf_text(content: bytes) -> tuple[str, str | None]:
         if "text" not in found:
             return "", f"PDF 超过 {MAX_PAGES} 页"
         body = found["text"].strip()
+    except pdf_sandbox.Cancelled:
+        raise  # 调用方要停下：交回去，不当成读不出
     except pdf_sandbox.Failed as exc:
         if exc.retry:
             raise  # 和当时的环境有关（容器内存不够、忙……）：补详情记成 pdf_retry，过一段时间再抓

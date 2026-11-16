@@ -137,9 +137,10 @@ def test_pdf_429_pauses_pdf_host_and_blocks_redirect(tmp_path):
         )
     assert results[1].fetch.http_status == 429
     assert 2 in results and 3 not in results
-    # 第三份跳到停取中的 b.gov.cn：a.gov.cn 跟着停到 b 恢复（429 停 6 小时）
-    assert pause.reasons == {"b.gov.cn": "HTTP 429", "a.gov.cn": "跳到停取中的 b.gov.cn"}
-    assert pause.expiry("a.gov.cn") == pause.expiry("b.gov.cn")
+    # 第三份跳到停取中的 b.gov.cn：这份延后到 b 恢复，a.gov.cn 只停这次运行
+    assert pause.reasons["a.gov.cn"] == "跳到停取中的 b.gov.cn"
+    assert pause.expiry("a.gov.cn") is None
+    assert pause.expiry("doc:3") == pause.expiry("b.gov.cn")
     assert "https://b.gov.cn/target" not in calls
 
 
@@ -424,11 +425,13 @@ def test_redirect_to_paused_host_pauses_source_host(tmp_path):
         outcomes = _fetch_outcomes(
             [(n, f"https://a.gov.cn/{n}") for n in range(1, 6)], fetcher, 1, pause=pause
         )
-    # A 上的文件都跳到停取中的 B：取了第一份就跟着停 A，不再一份一份去敲 A
+    # A 上的文件都跳到停取中的 B：取了第一份，这份延后到 B 恢复，A 这次运行不再去
     assert [c for c in calls if not c.endswith("/robots.txt")] == ["https://a.gov.cn/1"]
     assert outcomes == {}
     assert pause.reasons["a.gov.cn"] == "跳到停取中的 b.gov.cn"
-    assert _SitePause(path).expiry("a.gov.cn") == _SitePause(path).expiry("b.gov.cn")
+    again = _SitePause(path)
+    assert "a.gov.cn" not in again.reasons  # A 没拒绝过我们：不写进共享文件
+    assert again.expiry("doc:1") == again.expiry("b.gov.cn")
 
 
 def test_pdf_on_paused_host_defers_only_that_document(tmp_path, monkeypatch):
@@ -483,15 +486,22 @@ def test_streak_pauses_host_for_this_run(tmp_path, reply, reason):
     assert not path.exists()  # 只停这次运行
 
 
-def test_streamed_outcomes_drop_page_content():
+def test_streamed_outcomes_drop_page_content_only_when_asked():
     class Fake:
         def fetch(self, url):
-            return FetchResult(url, "http_error", final_url=url, http_status=404, content=b"x" * 10)
+            return FetchResult(
+                url, "http_error", final_url=url, http_status=404, content=b"x" * 10, text="页面"
+            )
 
     seen = []
-    _fetch_outcomes([(1, "https://a.gov.cn/1")], Fake(), 1, on_outcome=seen.append)
+    _fetch_outcomes(
+        [(1, "https://a.gov.cn/1")], Fake(), 1, on_outcome=seen.append, strip_content=True
+    )
     assert seen[0].fetch.content == b"" and seen[0].fetch.text == ""
     assert seen[0].fetch.http_status == 404
+    # 默认照旧带着页面：body_refresh 要拿原网页核对去掉的字
+    kept = _fetch_outcomes([(2, "https://a.gov.cn/2")], Fake(), 1)
+    assert kept[2].fetch.text == "页面" and kept[2].fetch.content == b"x" * 10
 
 
 def test_queue_refuses_without_shared_rate_dir(tmp_path, monkeypatch):
@@ -502,5 +512,81 @@ def test_queue_refuses_without_shared_rate_dir(tmp_path, monkeypatch):
     blocked.write_text("x")
     monkeypatch.setattr(get_settings(), "rate_limit_dir", str(blocked))
     summary = run_detail_queue(None, minutes=1)
-    assert summary.stop_reason == "跨进程限速的目录用不了，不跑"
+    assert summary.stop_reason.startswith(detail_service.SHARED_LIMIT_STOP)
     assert summary.total == 0
+    # 没配目录也一样
+    monkeypatch.setattr(get_settings(), "rate_limit_dir", "")
+    assert run_detail_queue(None, minutes=1).stop_reason.startswith(
+        detail_service.SHARED_LIMIT_STOP
+    )
+
+
+def _robots_redirect_fetch(tmp_path, robots_status, paused=None, docs=1):
+    calls = []
+
+    def handler(request):
+        calls.append(str(request.url))
+        if request.url.host == "a.gov.cn" and request.url.path == "/robots.txt":
+            return httpx.Response(302, headers={"location": "https://c.gov.cn/robots.txt"})
+        if request.url.host == "c.gov.cn":
+            return httpx.Response(robots_status)
+        return httpx.Response(200, text="<html>页面</html>", headers={"content-type": "text/html"})
+
+    pause = _SitePause(str(tmp_path / "pause.json"))
+    if paused:
+        pause.add(paused, "HTTP 403")
+    with PoliteFetcher(
+        "test",
+        per_host_interval=0,
+        per_address_interval=0,
+        transport=httpx.MockTransport(handler),
+        resolver=lambda host: ["1.2.3.4"],
+    ) as fetcher:
+        _fetch_outcomes(
+            [(n, f"https://a.gov.cn/{n}") for n in range(1, docs + 1)], fetcher, 1, pause=pause
+        )
+    return calls, pause
+
+
+@pytest.mark.parametrize("code,hours", [(429, 6), (521, 6)])
+def test_robots_redirect_pauses_the_host_that_answered(tmp_path, code, hours):
+    calls, pause = _robots_redirect_fetch(tmp_path, code)
+    # 回 429/521 的是 c：停 c；a 的 robots.txt 跳到 c，a 跟着停
+    assert pause.reasons["c.gov.cn"] == f"robots.txt HTTP {code}"
+    assert pause.reasons["a.gov.cn"] == "robots.txt 跳到读不到的 c.gov.cn"
+    assert _hours_left(tmp_path / "pause.json", "c.gov.cn") == pytest.approx(hours, abs=0.05)
+    assert pause.expiry("a.gov.cn") == pause.expiry("c.gov.cn")
+
+
+def test_robots_redirect_into_paused_host_requests_robots_once(tmp_path):
+    calls, pause = _robots_redirect_fetch(tmp_path, 200, paused="c.gov.cn", docs=4)
+    # c 已停取：a 的 robots.txt 跳进 c 被挡，a 跟着 c 停，4 份文件只请求了一次 a/robots.txt
+    assert calls == ["https://a.gov.cn/robots.txt"]
+    assert pause.reasons["a.gov.cn"] == "robots.txt 跳到停取中的 c.gov.cn"
+    assert pause.expiry("a.gov.cn") == pause.expiry("c.gov.cn")
+
+
+def test_queue_requires_shared_limits(tmp_path):
+    from youju.crawler.fetcher import SharedLimitError
+
+    with pytest.raises(SharedLimitError):
+        PoliteFetcher("test", require_shared_limits=True)
+    shared = tmp_path / "shared"
+    fetcher = PoliteFetcher(
+        "test",
+        per_host_interval=0.01,
+        per_address_interval=0,
+        transport=httpx.MockTransport(lambda request: httpx.Response(404)),
+        resolver=lambda host: ["1.2.3.4"],
+        shared_limits_dir=str(shared),
+        require_shared_limits=True,
+    )
+    with fetcher:
+        for f in shared.iterdir():
+            f.unlink()
+        shared.chmod(0o500)  # 中途目录写不进去了
+        try:
+            with pytest.raises(SharedLimitError):
+                fetcher.fetch("https://a.gov.cn/page")
+        finally:
+            shared.chmod(0o700)
