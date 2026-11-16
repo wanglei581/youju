@@ -1363,6 +1363,17 @@ def test_same_url_twice_keeps_the_date_the_old_reading_gave() -> None:
     assert [i.url.rsplit("/", 1)[-1] for i in items] == ["2.htm", "3.htm", "1.htm"]
 
 
+def test_old_reading_made_only_of_popup_links_is_kept() -> None:
+    # 原来读出的整张表就是弹层里的解读（去掉附带链接就什么都不剩）：照原来，不改读侧栏
+    html = (
+        '<div><a href="/o">关于文件发布的通知</a><div class="address-popup">'
+        + "".join(f'<a href="/20220201/{i}">关于文件政策的解读</a>' for i in range(3))
+        + '</div></div><aside><a href="/x">关于其他文件的通知</a><span>2026-01-02</span></aside>'
+    )
+    items = extract_items(html, "http://e.cn/", today=date(2026, 11, 16))
+    assert [i.url for i in items] == [f"http://e.cn/20220201/{i}" for i in range(3)]
+
+
 def test_lists_keep_their_page_order_when_they_score_the_same() -> None:
     # 带附带链接的行等别的行分完才归块；归完以后列表块照原来按页面上的先后排，评分一样时取靠前的那块。
     # main 读的也是第一张表（外加三条"| AI阅读"）

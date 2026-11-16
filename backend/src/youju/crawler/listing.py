@@ -596,8 +596,8 @@ def _clusters(
 
 def _extract_heuristic(
     page: _Page, require_date: bool, companions: bool = False
-) -> tuple[tuple, list[ListItem], bool]:
-    """从页面链接里找正文列表，返回（评分，条目，页面上有没有附带链接）。
+) -> tuple[tuple, list[ListItem], list[ListItem], bool]:
+    """从页面链接里找正文列表，返回（评分，条目，从条目里去掉的附带链接，页面上有没有附带链接）。
 
     companions=False 是原来的读法：附带链接（泸州弹层里的解读、福建的"| AI阅读"）照样参与分块、
     评分，只是不放进结果。companions=True 时附带链接不当条目，被它们挡住的行不看它们再找一次
@@ -682,7 +682,7 @@ def _extract_heuristic(
         blocks = dict(sorted(blocks.items(), key=lambda kv: min(e[0] for e in kv[1])))
 
     if not blocks:
-        return _NO_SCORE, [], seen
+        return _NO_SCORE, [], [], seen
 
     keys = list(blocks)
     peripheral = [k[2] for k in keys]
@@ -691,9 +691,11 @@ def _extract_heuristic(
     for members in _clusters([containers[k] for k in keys], peripheral, in_dir):
         entries = sorted((e for i in members for e in blocks[keys[i]]), key=lambda e: e[0])
         score = _score([e[1] for e in entries], page, peripheral[members[0]])
-        candidates.append((score, [e[1] for e in entries if not e[2]]))
-    score, items = max(candidates, key=lambda c: c[0])
-    return score, items, seen
+        candidates.append(
+            (score, [e[1] for e in entries if not e[2]], [e[1] for e in entries if e[2]])
+        )
+    score, items, dropped = max(candidates, key=lambda c: c[0])
+    return score, items, dropped, seen
 
 
 def _extract_with_config(page: _Page, config: dict) -> list[ListItem]:
@@ -850,15 +852,18 @@ def extract_items(
     if config.get("item_selector"):
         return _dedupe(_extract_with_config(page, config))
     require_date = config.get("require_date", True)
-    score, items, companions = _extract_heuristic(page, require_date)
+    score, items, dropped, companions = _extract_heuristic(page, require_date)
     # 页面上的链接和脚本里的列表数据都看，取更像正文列表的一种
     json_score, json_items = _extract_embedded_json(html, page)
     if json_score > score:
         items = json_items
+    elif dropped and not items:
+        # 原来读出的全是附带链接（比如整张表就是弹层里的解读）：照原来
+        items = dropped
     elif companions:
         # 页面上有附带链接（泸州弹层里的解读、福建的"| AI阅读"）：不看它们再读一遍。原来读出的
         # （去掉附带链接）一条不少、标题和日期一样、先后也一样，才用新读出的，不然照原来
-        _, better, _ = _extract_heuristic(page, require_date, companions=True)
+        _, better, _, _ = _extract_heuristic(page, require_date, companions=True)
         old = [(i.title, i.url, i.publish_date) for i in _dedupe(items)]
         kept = set(old)
         new = [(i.title, i.url, i.publish_date) for i in _dedupe(better)]
