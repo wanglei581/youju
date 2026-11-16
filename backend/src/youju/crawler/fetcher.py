@@ -103,6 +103,8 @@ class FetchResult:
     hops: tuple[str, ...] = ()
     # 这次请求用到的 robots.txt 当初读的时候走过的地址（含跳转）；用记下来的 robots 结果时也算上
     robots_hops: tuple[str, ...] = ()
+    # robots_error 时 robots.txt 回的 HTTP 状态码（连不上、超时没有）：调用方按它决定停多久
+    robots_status: int | None = None
 
 
 @dataclass
@@ -114,6 +116,7 @@ class _RobotsEntry:
     fetched_at: float
     error: str | None = None  # unsupported_host、unreachable 的原因
     server_error: bool = False  # unreachable 是因为服务器回 5xx（超时、连不上在下层已重试过）
+    http_status: int | None = None  # unreachable 时 robots.txt 回的状态码
     chain: tuple[
         str, ...
     ] = ()  # 读这份 robots.txt 走过的地址（含跳转），用记下来的结果时也报给调用方
@@ -274,6 +277,7 @@ class PoliteFetcher:
                 self._shared_failed(exc)
         self._robots: dict[str, _RobotsEntry] = {}
         self._robots_locks: dict[str, threading.Lock] = {}
+        self._robots_noted: set[str] = set()
         # 这一次 fetch() 的 hop_allowed（各线程各自的）：_request 每次真正发请求前再问一次
         self._local = threading.local()
 
@@ -349,6 +353,7 @@ class PoliteFetcher:
                     "robots_error",
                     final_url=current,
                     error=entry.error or "robots.txt 暂时无法获取，本次跳过",
+                    robots_status=entry.http_status,
                 )
             if state == "unsupported_host":
                 return FetchResult(url, "unsupported_host", final_url=current, error=entry.error)
@@ -446,10 +451,15 @@ class PoliteFetcher:
                 None,
                 now,
                 f"robots.txt 暂时无法获取（{why[:120]}），本次跳过",
-                server_error=status is not None and status >= 500,
+                # 521 是防护页，不是服务器一时出错：不当场再请求一次
+                server_error=status is not None and status >= 500 and status != 521,
+                http_status=status,
             )
         if status is not None and 400 <= status < 500:
-            # RFC 9309 §2.3.1.3：4xx（包括 401、403）视为 robots.txt 不可用，可以抓取
+            # RFC 9309 §2.3.1.3：4xx（包括 401、403）视为 robots.txt 不可用，可以抓取；"被拒绝就停"
+            # 管的是页面这一层（页面回 401/403/412/521 才停）
+            if status in (403, 412):
+                self._note_robots_refusal(origin, status)
             return _RobotsEntry("allow_all", None, now)
         # 不论 decode_text 怎么设都自己解码：下载附件的抓取器不解码内容（text 是空的），以前读
         # robots.txt 也拿到空文字、按"没有 robots.txt"放行，网站禁止抓取的附件照样下载
@@ -460,6 +470,17 @@ class PoliteFetcher:
         parser = RobotFileParser()
         parser.parse(body.splitlines())
         return _RobotsEntry("rules", parser, now)
+
+    def _note_robots_refusal(self, origin: str, status: int) -> None:
+        """robots.txt 回 403、412 的主机记一条日志（每个主机每次运行一次），方便以后抽查。"""
+        host = host_of(origin)
+        with self._guard:
+            if host in self._robots_noted:
+                return
+            self._robots_noted.add(host)
+        log.info(
+            "robots.txt 回 HTTP %s：%s（照 RFC 9309 当没有 robots，页面被拒才停）", status, host
+        )
 
     def _gate(self, url: str, *, record: bool) -> bool:
         """问这一次 fetch() 的 hop_allowed 能不能去 url；读 robots.txt 时只查不记。"""

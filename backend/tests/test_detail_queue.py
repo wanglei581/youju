@@ -6,7 +6,8 @@ import pytest
 from tests.test_detail_service import FakeFetcher, add_document
 from youju import cli
 from youju.ai import pipeline
-from youju.crawler.detail_service import fetch_details, run_detail_queue
+from youju.config import get_settings
+from youju.crawler.detail_service import _SitePause, fetch_details, run_detail_queue
 from youju.crawler.fetcher import FetchResult
 from youju.models import DocumentDetail
 
@@ -264,11 +265,13 @@ def test_queue_robots_error_not_saved(session):
     assert session.get(DocumentDetail, first.id) is None
     assert session.get(DocumentDetail, later.id) is None
     assert session.get(DocumentDetail, other.id) is not None
-    assert summary.paused_hosts == {"ra.example.gov.cn": "robots_error"}
+    assert summary.paused_hosts == {
+        "ra.example.gov.cn": "robots.txt 读不到（连不上、超时或证书问题）"
+    }
 
 
-@pytest.mark.parametrize("robots_status", [403, 429])
-def test_robots_http_status_controls_detail_writes(session, robots_status):
+@pytest.mark.parametrize("robots_status,page_status", [(403, 200), (403, 403), (429, 200)])
+def test_robots_http_status_controls_detail_writes(session, robots_status, page_status):
     import httpx
 
     from youju.crawler.fetcher import PoliteFetcher
@@ -280,6 +283,8 @@ def test_robots_http_status_controls_detail_writes(session, robots_status):
         calls.append(request.url.path)
         if request.url.path == "/robots.txt":
             return httpx.Response(robots_status)
+        if page_status != 200:
+            return httpx.Response(page_status)
         return httpx.Response(
             200,
             text=(
@@ -297,16 +302,24 @@ def test_robots_http_status_controls_detail_writes(session, robots_status):
         resolver=lambda host: ["1.2.3.4"],
     ) as fetcher:
         results = fetch_details(session, limit=2, fetcher=fetcher, max_workers=1)
-    if robots_status == 403:
+    if (robots_status, page_status) == (403, 200):
+        # robots.txt 回 403 照 RFC 9309 当没有 robots：页面照常读、写库
         assert [r.status for r in results] == ["ok", "ok"]
         assert all(session.get(DocumentDetail, doc.id) is not None for doc in docs)
         assert len(calls) == 3
         assert results.paused_hosts == {}
+    elif robots_status == 403:
+        # 页面也回 403 才算被拒绝：第一份记下、网站停取（写进共享的停取文件），第二份不再去
+        assert [r.status for r in results] == ["http_error", "site_paused"]
+        assert session.get(DocumentDetail, docs[1].id) is None
+        assert calls == ["/robots.txt", calls[1]]
+        assert results.paused_hosts == {"gxt.ln.gov.cn": "HTTP 403"}
+        assert _SitePause(get_settings().detail_pause_path).reasons == {"gxt.ln.gov.cn": "HTTP 403"}
     else:
         assert [r.status for r in results] == ["site_paused", "site_paused"]
         assert all(session.get(DocumentDetail, doc.id) is None for doc in docs)
         assert calls == ["/robots.txt"]
-        assert results.paused_hosts == {"gxt.ln.gov.cn": "robots_error"}
+        assert results.paused_hosts == {"gxt.ln.gov.cn": "robots.txt HTTP 429"}
 
 
 @pytest.mark.parametrize("task", cli.DETAIL_QUEUE_YIELD_JOBS)
@@ -369,3 +382,121 @@ class _NoClose:
 
     def __exit__(self, *args):
         pass
+
+
+def readable(doc):
+    """能解析出正文的详情页（写库的状态是 ok）。"""
+    return FetchResult(
+        doc.url,
+        "ok",
+        http_status=200,
+        text=(
+            "<html><body><div id='zoom'><p>这是公开通知正文，需要保存这些段落内容。</p>"
+            "<p>某市工业和信息化局</p></div></body></html>"
+        ),
+        content_type="text/html",
+    )
+
+
+class _TimedFetcher(FakeFetcher):
+    """网络失败的每份要 cost 秒（假时钟）。"""
+
+    def __init__(self, responses, now, cost):
+        super().__init__(responses)
+        self.now, self.cost = now, cost
+
+    def fetch(self, url):
+        result = super().fetch(url)
+        if result.status == "network_error":
+            self.now[0] += self.cost
+        return result
+
+
+@pytest.mark.parametrize("slow", [True, False])
+def test_network_circuit_time_window(session, slow):
+    from tests.test_detail_service import _doc_on, _source_on
+
+    good = [
+        _doc_on(session, _source_on(session, f"g{i}.example.gov.cn"), f"g{i}.example.gov.cn", 1)
+        for i in range(60)
+    ]
+    failing = 6 if slow else 5
+    bad = []
+    for i in range(failing):
+        host = f"f{i}.example.gov.cn"
+        source = _source_on(session, host)
+        bad += [_doc_on(session, source, host, j) for j in range(4)]
+    replies = {d.url: readable(d) for d in good}
+    replies.update({d.url: FetchResult(d.url, "network_error") for d in bad})
+    now = [0.0]
+    fetcher = _TimedFetcher(replies, now, 40.0 if slow else 0.5)
+    summary = run_detail_queue(
+        session, minutes=600, workers=1, per_host=30, fetcher=fetcher, clock=lambda: now[0]
+    )
+    if slow:
+        # 只剩几个超时很慢的坏站：连续 20 份失败跨了 60 秒以上，不是我们自己断网，照常写库、记次数
+        assert "熔断" not in summary.stop_reason
+        assert summary.statuses == {"ok": 60, "network_error": 24}
+        assert all(session.get(DocumentDetail, d.id) is not None for d in bad)
+    else:
+        # 20 份失败在 10 秒内、来自 5 个主机：熔断，这些失败一份都不写
+        assert "熔断" in summary.stop_reason
+        assert summary.statuses == {"ok": 60, "site_paused": 20}
+        assert all(session.get(DocumentDetail, d.id) is None for d in bad)
+
+
+def _bulk_docs(session, source_id, host, count):
+    from datetime import datetime
+
+    from youju.models import Document
+
+    now = datetime.now(UTC)
+    docs = [
+        Document(
+            source_id=source_id,
+            url=f"https://{host}/detail/{n}.html",
+            url_key=f"{host}/detail/{n}.html",
+            title=f"关于第{n}项公开事项的通知",
+            first_seen_at=now,
+            last_seen_at=now,
+            is_baseline=False,
+            status="discovered",
+        )
+        for n in range(count)
+    ]
+    session.add_all(docs)
+    session.commit()
+    return docs
+
+
+def test_queue_scans_past_fifty_pages(session):
+    from tests.test_detail_service import _doc_on, _source_on
+
+    a = _source_on(session, "a.example.gov.cn")
+    b = _source_on(session, "b.example.gov.cn")
+    # 一批选 1 份、一页 10 行：前 51 页全是停取网站的文件，后面那一份照样选得上
+    blocked = _bulk_docs(session, a, "a.example.gov.cn", 510)
+    available = _doc_on(session, b, "b.example.gov.cn", 1)
+    _SitePause(get_settings().detail_pause_path).add("a.example.gov.cn", "HTTP 403")
+    fake = FakeFetcher({available.url: readable(available)})
+    summary = run_detail_queue(session, minutes=1, batch=1, workers=1, fetcher=fake)
+    assert summary.statuses == {"ok": 1}
+    assert fake.calls == [available.url]
+    assert session.get(DocumentDetail, blocked[-1].id) is None
+
+
+def test_queue_summary_counts_saved_and_paused(session):
+    from tests.test_detail_service import _doc_on, _source_on
+
+    a = _source_on(session, "a.example.gov.cn")
+    b = _source_on(session, "b.example.gov.cn")
+    refused = _doc_on(session, a, "a.example.gov.cn", 1)
+    behind = _doc_on(session, a, "a.example.gov.cn", 2)
+    fine = _doc_on(session, b, "b.example.gov.cn", 3)
+    fake = FakeFetcher({refused.url: response(refused, 403), fine.url: readable(fine)})
+    summary = run_detail_queue(session, minutes=1, workers=1, fetcher=fake)
+    # 写了库的照实际状态；被拒绝以后同一网站没去取的那份没写库，算 site_paused（只算一次）
+    assert summary.statuses == {"http_error": 1, "ok": 1, "site_paused": 1}
+    assert summary.total == 2  # 写入的份数
+    assert session.get(DocumentDetail, behind.id) is None
+    assert behind.url not in fake.calls
