@@ -67,10 +67,11 @@ _COMPANION_LINK = re.compile(
 )
 # title 属性明写"主题：""标题："的，那就是这一条的标题（临沂人社：title="主题：标题 日期：……"）。
 # 链接文字比它只多出前后的方括号标签时（"[公示公告]标题[图]"）用 title 属性。没这样明写的网站不动；
-# 标签说明这一条是什么的（"【一图读懂】""【政策解读】""[视频]"）也不去掉：去掉会被当成政策原文
+# 标签说明这一条是什么、现在怎样的（"【一图读懂】""【政策解读】""[视频]""[已废止]"）也不去掉：
+# 去掉会被当成现行的政策原文
 _LABELED_TITLE = re.compile(r"^\s*(?:主题|标题)\s*[：:]")
 _TAGS_ONLY = re.compile(r"^\s*(?:[\[【][^\[\]【】]{1,8}[\]】]\s*)*$")
-_TYPE_TAG = re.compile(r"解读|图解|读懂|视频|音频|问答|发布会|直播")
+_TYPE_TAG = re.compile(r"解读|图解|读懂|视频|音频|问答|发布会|直播|废止|失效|作废")
 # 行里藏起来的弹层（style 写着 display:none）：泸州政府文件列表每行的"政策解读"弹层，
 # 里面是解读的链接
 _HIDDEN_STYLE = re.compile(r"display\s*:\s*none", re.IGNORECASE)
@@ -143,7 +144,7 @@ def _title_of(a: etree._Element) -> str:
     if attr and attr in text and _LABELED_TITLE.match(_clean(a.get("title"))):
         head, _, tail = text.partition(attr)
         tags_only = _TAGS_ONLY.match(head) and _TAGS_ONLY.match(tail)
-        if tags_only and not _TYPE_TAG.search(head + tail):
+        if tags_only and not _TYPE_TAG.search(head + tail) and _looks_like_title(attr):
             return attr
     # 日期写在链接里时（天津科技局、工信局：
     # <a title="完整标题">截断的标题...<span>2026-09-09</span></a>），文字结尾是日期，
@@ -237,17 +238,31 @@ class _Page:
         self._hrefs: dict[etree._Element, set[str]] = {}
 
     def link(self, a: etree._Element) -> tuple[str, str] | None:
-        # 链接本身写着 display:none 的是藏起来的附带链接（福建省政府最新文件每行的"| AI阅读"），
-        # 不是文件
-        if _HIDDEN_STYLE.search(a.get("style") or ""):
-            return None
         url = normalize_url(self.page_url, a.get("href"))
         if not url or url == self.self_url:
+            return None
+        if _HIDDEN_STYLE.search(a.get("style") or "") and self._visible_twin(a, url):
             return None
         title = _title_of(a)
         if not _looks_like_title(title):
             return None
         return title, url
+
+    def _visible_twin(self, a: etree._Element, url: str) -> bool:
+        """a 本身藏着，同一格子（父元素）里另有一个看得见、指向同一份文件（网址只差问号后面）的
+        链接：a 是附带链接（福建省政府最新文件每行藏着的"| AI阅读"，同一网址加 ?assistant=true），
+        不是文件。单独藏着的文件链接照旧算"""
+        cell = a.getparent()
+        if cell is None:
+            return False
+        bare = url.split("?", 1)[0]
+        for b in cell.iter("a"):
+            if b is a or _HIDDEN_STYLE.search(b.get("style") or ""):
+                continue
+            other = normalize_url(self.page_url, b.get("href"))
+            if other and other.split("?", 1)[0] == bare:
+                return True
+        return False
 
     def title_hrefs(self, el: etree._Element) -> set[str]:
         cached = self._hrefs.get(el)
@@ -261,10 +276,12 @@ class _Page:
         return cached
 
     def hidden_popups(self, a: etree._Element) -> set[etree._Element]:
-        """和 a 同在一个格子（父元素）里、藏起来又带着链接的弹层（泸州政府文件列表每行的"政策解读"
-        弹层）和它下面的所有节点。找"一行"时，弹层里的链接不算别的文件链接（不然这一行会被当成已经
-        走到了列表容器，日期找不到，整行漏掉），弹层里写的日期也不算这一行的日期。只藏着日期、没有
-        链接的不算弹层：有的网站把发布日期写在藏起来的 span 里（苏州工信首页）"""
+        """和 a 同在一个格子（父元素）里、藏起来又带着链接的弹层和它下面的所有节点（泸州政府文件
+        列表每行的"政策解读"弹层；里面有带地址的链接就算，"政策解读"这种短链接也算）。
+
+        找"一行"时，弹层里的链接不算别的文件链接（不然这一行会被当成已经走到了列表容器，日期找不到，
+        整行漏掉），弹层里写的日期也不算这一行的日期。只藏着日期、没有链接的不算弹层：有的网站把
+        发布日期写在藏起来的 span 里（苏州工信首页）。"""
         cell = a.getparent()
         if cell is None:
             return set()
@@ -273,24 +290,31 @@ class _Page:
             if node is cell or node is a or not isinstance(node.tag, str) or node in nodes:
                 continue
             if _HIDDEN_STYLE.search(node.get("style") or "") and any(
-                self.link(b) for b in node.iter("a")
+                b.get("href") for b in node.iter("a")
             ):
                 nodes.update(node.iter())
         return nodes
 
     def date_node(
-        self, el: etree._Element, a: etree._Element, skip: set
+        self,
+        el: etree._Element,
+        a: etree._Element,
+        skip: set,
+        hidden: set[etree._Element] | None = None,
     ) -> tuple[date | None, bool]:
         """行内单独写日期的节点（如 <span>2026-09-20</span>），取最靠后的一个。
 
-        链接自身和包含链接的节点不算，避免把标题里的日期当成发布日期。
+        链接自身和包含链接的节点不算，避免把标题里的日期当成发布日期。hidden（藏起来的弹层）里的
+        节点不算，别的节点的文字也去掉弹层的文字再看。
         """
         found: tuple[date | None, bool] = (None, False)
         inside_anchor = set(a.iter())
         for node in el.iter():
             if node in skip or node in inside_anchor or not isinstance(node.tag, str):
                 continue
-            text = _clean(node.text_content())
+            if hidden and node in hidden:
+                continue
+            text = _visible_text(node, hidden) if hidden else _clean(node.text_content())
             if not text or len(text) > _MAX_DATE_NODE_LEN:
                 continue
             d, full = parse_date_detail(text, self.today)
@@ -316,7 +340,7 @@ class _Page:
                 others = {u for u in others if not _is_attachment(u)}
             if others:
                 break  # 已经包含其他文件链接，说明走到了列表容器
-            found, full = self.date_node(el, a, skip | hidden)
+            found, full = self.date_node(el, a, skip, hidden)
             if found:
                 return el, found, full
             text = _visible_text(el, hidden) if hidden else _clean(el.text_content())

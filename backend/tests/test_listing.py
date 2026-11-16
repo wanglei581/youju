@@ -989,12 +989,17 @@ def test_type_tags_stay_even_when_the_title_attribute_is_labeled() -> None:
       <li><a href="./a/info_1.html" title="标题：关于开展第三批项目申报的通知">【政策解读】关于开展第三批项目申报的通知</a><span>2026-10-20</span></li>
       <li><a href="./a/info_2.html" title="标题：关于公布名单的通知">[通知公告]关于公布名单的通知</a><span>2026-10-21</span></li>
       <li><a href="./a/info_3.html" title="标题：某市促进民营经济发展若干措施">[视频]某市促进民营经济发展若干措施</a><span>2026-10-22</span></li>
+      <li><a href="./a/info_4.html" title="标题：某市企业技术中心认定管理办法">[已废止]某市企业技术中心认定管理办法</a><span>2026-10-23</span></li>
+      <li><a href="./a/info_5.html" title="标题：招聘简章">[公示公告]招聘简章</a><span>2026-10-24</span></li>
     </ul>"""
     items = extract_items(html, "http://example.gov.cn/a/", today=date(2026, 11, 16))
+    # 去掉标签后太短、读不成条目的（"招聘简章"）照旧用链接文字
     assert [i.title for i in items] == [
         "【政策解读】关于开展第三批项目申报的通知",
         "关于公布名单的通知",
         "[视频]某市促进民营经济发展若干措施",
+        "[已废止]某市企业技术中心认定管理办法",
+        "[公示公告]招聘简章",
     ]
 
 
@@ -1041,4 +1046,34 @@ def test_link_that_is_itself_hidden_is_not_a_document() -> None:
         ("某省人民政府关于某市2026年度第三批次农用地转用的批复", date(2026, 11, 3)),
         ("某省人民政府关于某县2026年度农用地转用的批复", date(2026, 10, 9)),
         ("某省人民政府办公厅关于印发某某方案的通知", date(2026, 10, 8)),
+    ]
+
+
+def test_hidden_popup_edge_cases_keep_the_row_date() -> None:
+    # 弹层外面再套一层不藏的 div、弹层里只有"政策解读"这种短链接：弹层里的日期都不算这一行的日期
+    html = """<ul class="list">
+      <li><a href="/a/1.html">关于项目申报工作的通知</a><div><div style="display:none"><a href="/b/2.html">相关政策解读说明</a><span>2026-09-01</span></div></div>2026-10-21</li>
+      <li><a href="/a/3.html">关于公布第二批名单的通知</a><div style="display:none"><a href="/b/4.html">政策解读</a><span>2026-09-02</span></div>2026-10-20</li>
+      <li><a href="/a/5.html">关于征集典型案例的通知</a>2026-10-19</li>
+    </ul>"""
+    items = extract_items(html, "http://example.gov.cn/a/", today=date(2026, 11, 16))
+    assert [(i.title, i.publish_date) for i in items] == [
+        ("关于项目申报工作的通知", date(2026, 10, 21)),
+        ("关于公布第二批名单的通知", date(2026, 10, 20)),
+        ("关于征集典型案例的通知", date(2026, 10, 19)),
+    ]
+
+
+def test_hidden_link_without_a_visible_twin_is_still_a_document() -> None:
+    # 链接本身藏着、同一格子里没有看得见的同一份文件链接：照旧算文件（只有附带链接才不算）
+    html = """<ul class="list">
+      <li><a href="/a/1.html" style="display:none">关于项目申报工作的通知</a><span>2026-10-21</span></li>
+      <li><a href="/a/2.html">关于公布第二批名单的通知</a><span>2026-10-20</span></li>
+      <li><a href="/a/3.html">关于征集典型案例的通知</a><span>2026-10-19</span></li>
+    </ul>"""
+    items = extract_items(html, "http://example.gov.cn/a/", today=date(2026, 11, 16))
+    assert [(i.title, i.publish_date) for i in items] == [
+        ("关于项目申报工作的通知", date(2026, 10, 21)),
+        ("关于公布第二批名单的通知", date(2026, 10, 20)),
+        ("关于征集典型案例的通知", date(2026, 10, 19)),
     ]
