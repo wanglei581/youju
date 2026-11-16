@@ -979,11 +979,11 @@ def test_lonsun_crawl_shares_tree_per_round(session_factory, tree_status):
     assert fetcher.requested.count(tree) == 1
     if tree_status != "ok":
         assert all("栏目树脚本" in result.error for result in results)
-        assert all(
-            result.status
-            == ("list_api_refused" if tree_status == "robots_disallowed" else "robots_error")
-            for result in results
-        )
+        assert all(result.status == tree_status for result in results)
+        # 共用这份栏目树的两个来源都不写拒绝记录
+        with session_factory() as session:
+            for source_id in ids:
+                assert "list_api_refused" not in session.get(Source, source_id).parser_config
 
 
 def _two_lonsun_sources(session_factory):
@@ -1043,10 +1043,11 @@ def test_lonsun_source_tree_robots(session, tree_status):
         {url: [page(url, html)], tree: [FetchResult(tree, tree_status, error=tree_status)]}
     )
     result = check_source(session, source, fetcher)
-    assert result.status == (
-        "list_api_refused" if tree_status == "robots_disallowed" else "robots_error"
-    )
+    # robots 不许取栏目树：请求没发出去，记 robots 禁止，不写拒绝记录（不触发 30 天整套不碰）
+    assert result.status == tree_status
     assert "栏目树脚本" in result.error
+    session.refresh(source)
+    assert "list_api_refused" not in source.parser_config
 
 
 def test_lonsun_source_unrecognized_reason(session):

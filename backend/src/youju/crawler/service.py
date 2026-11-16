@@ -297,6 +297,14 @@ def _items_via_adapter(
         else fetcher.fetch
     )
     followed, first_result, kind, reason = fetch_api_follow(api, tree_fetch)
+    if (
+        kind == "blocked"
+        and first_result is not None
+        and first_result.status == "robots_disallowed"
+    ):
+        # robots.txt 不许取栏目树：请求没发出去，不是网站拒绝我们——照 robots 停抓、记 robots 禁止，
+        # 不写读取护栏的拒绝记录（不触发 30 天整套不碰）；共用这份栏目树的来源也一样
+        return _AdapterResult([], api.adapter, first_result, api_url=first_url, part="栏目树脚本：")
     if kind == "blocked":
         return _AdapterResult([], api.adapter, first_result, refused=reason, api_url=first_url)
     if kind == "down":
