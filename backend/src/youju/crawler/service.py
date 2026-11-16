@@ -22,6 +22,7 @@ from youju.crawler.adapters import (
     LONSUN,
     ListApi,
     api_items_merged,
+    api_part_label,
     api_parts,
     api_readable,
     api_refusal,
@@ -31,7 +32,7 @@ from youju.crawler.adapters import (
 )
 from youju.crawler.fetcher import FetchResult
 from youju.crawler.listing import ListItem, extract_items
-from youju.crawler.lonsun import city_catalog_host, lonsun_unrecognized_reason
+from youju.crawler.lonsun import city_catalog_host, column_spec, lonsun_unrecognized_reason
 from youju.crawler.roundguard import HostRoundGuard, round_skip
 from youju.crawler.urls import host_of, public_url, url_key
 from youju.dedup import reconcile_documents
@@ -306,7 +307,7 @@ def _items_via_adapter(
     for part in parts:
         # 几个分类合读时一个一个取、一个一个查：前一个被拦下、没取到、读不出，后面的不再请求
         # （D-013、D-128：网站拒绝了就停，不接着敲门）；原因里写明出问题的是哪个分类
-        label = f"分类 {part.category_id}：" if len(parts) > 1 else ""
+        label = api_part_label(part, parts)
         if api.adapter == LONSUN and catalog_cache is not None:
             # 同一轮这个主机拒绝过我们就不去；查、取、判、记在同一把主机锁里
             result = catalog_cache.fetch(
@@ -367,9 +368,12 @@ def check_source(
         source.province, source.city, parser_config.get("lonsun_catalog_host")
     )
     county = source.level == "区县级"
-    if catalog_cache is not None and parser_config.get(LIST_API_OPEN_KEY) == LONSUN:
-        # 经龙讯接口读的来源：栏目页和栏目树、列表接口共用这一轮的主机护栏（这个主机这一轮拒绝过
-        # 我们就不去，栏目页被拒或回防护页也记下）；栏目页照常跟着跳转，跳转不算被拒
+    if catalog_cache is not None and (
+        parser_config.get(LIST_API_OPEN_KEY) == LONSUN or column_spec(url) is not None
+    ):
+        # 龙讯信息公开栏目页（经龙讯接口读的，和还没标的 /public/column/… 都算）：栏目页和栏目树、
+        # 列表接口共用这一轮的主机护栏（这个主机这一轮拒绝过我们就不去，栏目页被拒或回防护页也
+        # 记下）；栏目页照常跟着跳转，跳转不算被拒
         result = catalog_cache.fetch(url, fetcher.fetch, refused=_page_refused, redirects=False)
     else:
         result = fetcher.fetch(url)
@@ -479,7 +483,7 @@ def check_source(
                 items = []
                 status = via.fetch.status
                 error = (
-                    f"列表接口：{via.fetch.error or 'robots.txt 禁止'}"
+                    f"{via.part or '列表接口：'}{via.fetch.error or 'robots.txt 禁止'}"
                     if via.adapter == LONSUN
                     else f"列表接口（{via.adapter}）：{via.part}{via.fetch.error}"
                 )
@@ -508,6 +512,8 @@ def check_source(
                     error = (
                         via.part
                         if via.part.startswith(("栏目树脚本：", "列表接口：", "待人工处理："))
+                        else f"{via.part}返回读不出，浏览器不会接着发列表请求，下次再试"
+                        if via.part == "前置接口："
                         else f"列表接口（{via.adapter}）：{via.part}返回读不出列表，下次再试"
                     )
         if not items and status == "ok":

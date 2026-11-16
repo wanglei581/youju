@@ -15,6 +15,7 @@ from youju.crawler.adapters import (
     GKMLPT_MAX_CATEGORIES,
     api_empty_list,
     api_items_merged,
+    api_part_label,
     api_parts,
     api_readable,
     api_refusal,
@@ -179,7 +180,7 @@ def check_one(cache: PageCache, col: ColumnCheck, today: date) -> ColumnCheck:
             for part in parts:
                 # 一个一个取、一个一个查：前一个出问题，后面的分类不再请求（和正式抓取一样）；
                 # 原因里写明出问题的是哪个分类
-                which = f"分类 {part.category_id}：" if len(parts) > 1 else ""
+                which = api_part_label(part, parts)
                 ar = list_get(part)  # 跳到别处不跟（D-128 ①）
                 refused = api_refusal(part, ar)
                 if refused:
@@ -194,13 +195,24 @@ def check_one(cache: PageCache, col: ColumnCheck, today: date) -> ColumnCheck:
                         if ar.status == "redirect"
                         else ar.status
                     )
-                    col.result, col.reason = DOWN, f"{which}列表接口：{why[:100]}"
+                    col.result, col.reason = (
+                        DOWN,
+                        (
+                            f"{which}{why[:100]}"
+                            if which == "前置接口："
+                            else f"{which}列表接口：{why[:100]}"
+                        ),
+                    )
                     return col
                 if not api_readable(part, ar.text):
                     # 回了但不是预期的样子（空白、维护页、不是 JSON）：护栏记"这次没取到"，照样
                     # 不读，记打不开
                     col.result = DOWN
-                    col.reason = f"{which}列表接口返回读不出列表（不是预期的格式）"
+                    col.reason = (
+                        f"{which}返回读不出，浏览器不会接着发列表请求"
+                        if which == "前置接口："
+                        else f"{which}列表接口返回读不出列表（不是预期的格式）"
+                    )
                     return col
                 texts.append(ar.text)
             if all(api_empty_list(part, text) for part, text in zip(parts, texts, strict=True)):

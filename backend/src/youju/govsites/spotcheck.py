@@ -451,6 +451,7 @@ def _first_list_item(
     再按分类读接口，和试读（verify.check_one）一样。"""
     from youju.crawler.adapters import (
         api_items_merged,
+        api_part_label,
         api_parts,
         api_readable,
         api_refusal,
@@ -493,8 +494,10 @@ def _first_list_item(
                 return None
             # 只取页面写明的地址、过读取护栏（D-128）；被拦下的不读
             texts: list[str] = []
-            for part in api_parts(api):
+            parts = api_parts(api)
+            for part in parts:
                 # 一个一个取、一个一个查：被拦下、没取到、读不出的，整栏不取证，后面的分类也不再请求
+                which = api_part_label(part, parts) or "列表接口："
                 ar = list_get(part)
                 refusal = api_refusal(part, ar)
                 if refusal or ar.status != "ok" or not api_readable(part, ar.text):
@@ -502,9 +505,9 @@ def _first_list_item(
                         if refusal:
                             reasons.append(f"不能抓：{refusal}")
                         elif ar.status != "ok":
-                            reasons.append(f"这次没取到：列表接口：{ar.error or ar.status}")
+                            reasons.append(f"这次没取到：{which}{ar.error or ar.status}")
                         else:
-                            reasons.append("待人工处理：列表接口：返回格式认不出或为空")
+                            reasons.append(f"待人工处理：{which}返回格式认不出或为空")
                     return None
                 texts.append(ar.text)
             via = api_items_merged(api, texts, None, today)

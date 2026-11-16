@@ -13,13 +13,16 @@
 
 认不出的一律不读，原因写进"待人工处理"；认页面的规则见 docs/数据来源/全国覆盖/部门目录规则.md。
 
-几条前提（第七轮独立审阅的建议，写明）：
-- 加载时会跑的代码只查它改了什么、调了什么，不逐句推算会不会出错；只有 setSelect（在 getData 之前、
-  栏目树不对就出错）和 preprocessData 读节点字段的成员照栏目树算。getData 以后跳过的显示方法
-  （setMeta、getNav、getGd）和建树设置里的显示回调要是出错，浏览器就不发列表请求，我们照发；真实
-  页面上这几处都只读写页面元素。
-- 芜湖这类 init 里 me.getPublicQcsmCatIds().done(getData)：浏览器要等那个请求成功才发列表请求，
-  我们不发那个请求、直接定列表请求（只少不多）。
+浏览器会不会真的发出列表请求（第七、八轮审阅）：
+- 发列表请求之前出错，浏览器就不发。照栏目树算的：setSelect、preprocessData 读节点字段的成员、
+  显示回调给栏目名折行（getNewline）；照真实写法逐个记号比对的：建树设置里建树时就跑的显示回调
+  （fontCss、addDiyDom）、open 里发列表请求之前跑的显示方法（setMeta、getNav、getGd）、包住
+  setSelect 的 try/catch（catch 要真把异常吞掉）。别的加载时会跑的方法（bindEvt、preprocessData、
+  initTree 其余部分、fuzzySearch、getReportyear）只查改了什么、调了什么，不逐句推算会不会出错——
+  前提是真实页面在浏览器里能跑（出错的页面用户也看不到列表）。
+- 芜湖这类 init 里 me.getPublicQcsmCatIds().done(getData)：浏览器等那个请求成功（回 2xx、按
+  JSON 解析得了、done 里的回调不出错）才发列表请求。我们也先发它（同一网站、页面写明的路径），
+  照同样的条件看结果，不成功就不发列表请求（被拒记不能抓，读不出记这次没取到）。
 """
 
 import collections
@@ -27,7 +30,7 @@ import html
 import json
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from functools import cached_property, lru_cache
 from urllib.parse import parse_qsl, unquote, urlsplit
@@ -47,6 +50,11 @@ def _odd_url(text: str) -> bool:
     的换行和制表符、把反斜杠当斜杠（\\x.example/… 是别的主机）、空格和汉字转成 %xx；urljoin 都不
     这样做，两边拼出来的地址、读到的 location.href 可能不一样。"""
     return any(c == "\\" or not "!" <= c <= "~" for c in text)
+
+
+def _words(text):
+    """照写法逐个记号比对用的模板：记号之间用空格隔开写。"""
+    return text.split()
 
 
 def city_catalog_host(province: object, city: object, configured: object) -> str | None:
@@ -1271,6 +1279,8 @@ class LonsunPlan:
     globals: tuple
     methods: tuple
     raw_methods: tuple
+    # init 里 getData 要等着的那个请求的路径（芜湖这类，见 _ready_path）；没有就是空串
+    ready: str = ""
 
 
 def _immutable(value):
@@ -1702,6 +1712,32 @@ def _load_trigger(tokens, values, mask=()):
         ):
             return True
     return False
+
+
+def _ready_path(raw):
+    """init 里 getData 等着的那个请求（me.X().done(function () { me.getData(); })）：照模板逐个
+    记号比对 X，给出它请求的路径；写法认不出给 None。"""
+    init = _values(_js_tokens(raw.get("init", "")))
+    names = [
+        init[k + 2]
+        for k in range(len(init) - 7)
+        if init[k : k + 2] == ["me", "."] and init[k + 3 : k + 8] == ["(", ")", ".", "done", "("]
+    ]
+    if len(names) != 1 or names[0] not in raw:
+        return None
+    values = _values(_js_tokens(raw[names[0]]))
+    n = len(_READY_HEAD)
+    if values[:n] != _READY_HEAD or len(values) <= n or values[n][:1] not in ("'", '"'):
+        return None
+    rest = values[n + 1 :]
+    if rest[:1] == [","]:
+        rest = rest[1:]
+    if rest[-1:] == [";"]:
+        rest = rest[:-1]
+    path = _string_literal(values[n])
+    if rest != _READY_TAIL or not re.fullmatch(r"(/[A-Za-z0-9_\-]+)+", path):
+        return None
+    return path
 
 
 def _getdata_deferred(init_body):
@@ -2384,6 +2420,7 @@ def _attribute_script_problem(source, functions, widget):
         _global_object_problem(tokens, values)
         or _ztree_problem(values)
         or _builtin_problem(tokens, values)
+        or _dynamic_code_problem(tokens, values)
         or _top_level_parent_problem(tokens, values)
         or _foreign_problem(source, functions, widget)
     )
@@ -2434,8 +2471,15 @@ def _dynamic_code_problem(tokens, values):
             return "用 .constructor(…) 拼代码"
         if value in ("setTimeout", "setInterval") and after == "(" and before != ".":
             first = values[k + 2] if k + 2 < len(values) else ""
-            if first[:1] in ("'", '"', "`"):
-                return f"{value} 的第一个参数是字符串（会当代码执行）"
+            if first != "function":
+                # 真实页面都直接写 function：字符串、装着字符串的变量会当代码执行
+                return f"{value} 的第一个参数不是函数（可能是当代码执行的字符串）"
+        if text in ("globalEval", "getScript") and (before == "." or after == "]"):
+            return f"用了 {text}（执行我们看不见的代码）"
+        if value == "load" and before == "." and after == "(":
+            first = values[k + 2] if k + 2 < len(values) else ""
+            if first not in ("function", ")"):
+                return "用 .load(…) 取网页片段（里面的脚本会执行）"
         if value in ("write", "writeln") and before == "." and after == "(":
             close = _matching_token(tokens, k + 1)
             literal, dynamic = _literal_text(tokens, values, k + 2, close)
@@ -2460,6 +2504,40 @@ def _dynamic_code_problem(tokens, values):
     for path, _op, _k in _write_sites(tokens, values):
         if path[0] in ("$", "jQuery") and len(path) > 1 and path[1] not in ("fn", "()"):
             return f"改了 jQuery 的 {'.'.join(path)}"
+    return _script_text_problem(tokens, values)
+
+
+def _script_text_problem(tokens, values):
+    """document.write 以外，字符串里写着 <script（$(…).append、.html、$('<script>…') 这类往页面里
+    写脚本，浏览器会执行）。几个字面量用 + 连起来的连起来看；unescape 编码的 %3Cscript 也算。真实
+    页面上只有 document.write 写栏目树脚本那一处（照 document.write 的规矩查）。"""
+    writes = [
+        (k + 1, _matching_token(tokens, k + 1))
+        for k in range(1, len(values) - 1)
+        if values[k] in ("write", "writeln") and values[k - 1] == "." and values[k + 1] == "("
+    ]
+    pattern = re.compile(r"<\s*scr|%3c\s*scr", re.I)
+    k = 0
+    while k < len(values):
+        if values[k][:1] not in ("'", '"', "`") or any(a < k < b for a, b in writes):
+            k += 1
+            continue
+        parts, j = [], k
+        while j < len(values) and values[j][:1] in ("'", '"', "`"):
+            parts.append(_string_literal(values[j]) if values[j][:1] != "`" else values[j][1:-1])
+            if (
+                values[j + 1 : j + 2] == ["+"]
+                and values[j + 2 : j + 3][:1]
+                and values[j + 2][:1] in ("'", '"', "`")
+            ):
+                j += 2
+                continue
+            break
+        if any(pattern.search(part) for part in parts) or re.search(
+            r"<\s*script|%3c\s*script", "".join(parts), re.I
+        ):
+            return "字符串里写着 <script（往页面里写脚本，浏览器会执行）"
+        k = j + 1
     return None
 
 
@@ -3692,7 +3770,12 @@ def find_lonsun_api(
             if problem:
                 return fail(f"页面元素属性里的脚本（onclick 这类、javascript: 链接）{problem}")
         init_method = _method(tree_methods, "init")
+        ready = ""
         if init_method is not None and _getdata_deferred(init_method[2]):
+            # 浏览器等那个请求成功才发列表请求：我们也先发它、看结果（只认真实页面那一种写法）
+            ready = _ready_path({name: body for name, _, body in tree_methods})
+            if ready is None:
+                return fail("getData 要等页面另一个请求的结果，那个请求的写法认不出")
             # getData 推迟到回调里跑：别的脚本加载时替用户点一下，PublicTree 挂的点击处理函数就可能
             # 在发列表请求之前跑了（我们只把它们当"点了才跑"），跟不上
             for tokens in token_sets:
@@ -3728,6 +3811,10 @@ def find_lonsun_api(
         created = _instantiated_on_load(scripts, token_sets, n)
         if not created:
             return fail("页面没有在加载时创建 PublicTree")
+        if created == "top":
+            # 157 个真实页面都在就绪回调里创建；脚本顶层创建的，原型方法、平台脚本、栏目树脚本是不是
+            # 都已经在前面跑过，先后认不准
+            return fail("PublicTree 在脚本顶层创建，前后脚本的先后认不准")
         tree_position = script_positions[n]
         end = _matching_token(tokens, index + 4)
         statements = _parse_statements(scripts[n][tokens[index + 4].end : tokens[end].start])
@@ -3883,6 +3970,14 @@ def find_lonsun_api(
         list_params = tuple((k, _immutable(_evaluate(v, env))) for k, v in params[1])
         urls = []
         for candidate, (timing, position) in candidates:
+            # 浏览器先去首尾空白、删换行和制表符、把反斜杠当斜杠：规整以后像栏目树脚本、规整前后又不
+            # 一样的，浏览器会去取、我们拼的地址不一样，不读
+            tidy = re.sub(r"[\t\n\r]", "", candidate.strip(" \t\n\f\r")).replace("\\", "/")
+            tidy_path = urlsplit(urljoin(page_url, tidy)).path
+            if tidy != candidate and re.search(
+                r"/[0-9]+/" + re.escape(spec[0]) + r"\.js$", tidy_path
+            ):
+                return fail("栏目树脚本地址里有反斜杠、空白、控制字符或非 ASCII 字符，认不准")
             url = urljoin(page_url, candidate)
             parts = urlsplit(url)
             if re.search(r"/[0-9]+/" + re.escape(spec[0]) + r"\.js$", parts.path):
@@ -3932,6 +4027,7 @@ def find_lonsun_api(
             _page_globals(scripts),
             parsed_methods,
             methods,
+            ready,
         )
         return ListApi(adapter=LONSUN, url=urls[-1], base_url=page_url, plan=plan)
     except LonsunFormatError as exc:
@@ -4050,6 +4146,13 @@ class LonsunRequestPlan:
     mode: str
     cat_id: str
     excluded_children: tuple[int, ...] = ()
+
+
+@dataclass(frozen=True)
+class LonsunReadyPlan:
+    """列表请求前面那个请求（芜湖这类，见 _ready_path）：浏览器等它成功才发列表请求。"""
+
+    path: str
 
 
 @dataclass(frozen=True)
@@ -4225,6 +4328,190 @@ def _ui_method_problem(body, method_names=frozenset()):
     return _write_root_problem(body, me_ok=False) or _me_alias_problem(body)
 
 
+# 建树设置里建树时就跑的显示回调（view.fontCss、view.addDiyDom）和 open 里发列表请求之前跑的显示
+# 方法（setMeta、getNav）：出错的话浏览器不发列表请求。照真实页面的写法逐个记号比对（157 页只有下面
+# 这几种；§A 是一串字符串或数字字面量，§S 是一个字符串字面量），比对上的只读节点字段、me 的字段，
+# 用 $ 选元素、改元素，发不阻塞的请求，不会出错。
+_SHOW_COND = (
+    "( ids . indexOf ( node . id ) > - 1 || node . link "
+    "|| ( node . isTreeShow === 0 && node . treeLink ) )"
+)
+_FONT_CSS = _words(
+    "function setFontCss ( treeId , node ) { var ids = [ §A ] ; "
+    "if " + _SHOW_COND + " { var color = §S ; var organIds = [ §A ] ; "
+    "if ( organIds . indexOf ( me . organId ) > - 1 ) { color = §S ; } "
+    "return { color : color } ; } else { return { } ; } }"
+)
+_DIY_HEAD = "function addDiyDom ( treeId , node ) { var ids = [ §A ] ; "
+_DIY_COND = (
+    "if " + _SHOW_COND + " { var cls = §S var organIds = [ §A ] ; "
+    "if ( organIds . indexOf ( me . organId ) > - 1 ) { cls = §S ; } "
+    'var aObj = $ ( "#" + node . tId + "_a" ) ; '
+)
+_DIY_APPEND = "aObj . append ( §S + cls + §S ) . addClass ( §S ) ; } }"
+_ADD_DIY_DOM = (
+    _words(_DIY_HEAD + _DIY_COND + _DIY_APPEND),
+    # 六安、淮北：名字按级别折行（getNewline 是 initTree 里的局部函数，见 _GET_NEWLINE）
+    _words(
+        _DIY_HEAD
+        + _DIY_COND
+        + "var name = getNewline ( node . name , node . level ) ; "
+        + "aObj . html ( name ) . "
+        + _DIY_APPEND.removeprefix("aObj . ")
+    ),
+    # 省发改委：先给链接加无障碍属性
+    _words(
+        _DIY_HEAD
+        + 'var aObj = $ ( "#" + node . tId + "_a" ) '
+        + ". attr ( { 'tabindex' : 0 , 'data-wza-enter-trigger' : 'click' } ) "
+        + ". removeAttr ( 'aria-expanded' ) . removeAttr ( 'target' ) ; "
+        + 'var switchObj = $ ( "#" + node . tId + "_switch" ) '
+        + ". removeAttr ( 'tabindex' ) ; "
+        + _DIY_COND
+        + _DIY_APPEND
+    ),
+)
+_GET_NEWLINE = _words(
+    "function getNewline ( str , level ) { var newNum = 8 - level || 8 ; var res = '' ; "
+    "for ( var i = 0 , l = str . length ; i < l ; i ++ ) { "
+    "if ( i > 0 && i % newNum == 0 ) { res += str [ i ] + '<br>' ; } "
+    "else { res += str [ i ] ; } } return res ; }"
+)
+_SET_META = _words(
+    "var me = this ; "
+    '$ ( \'meta[name="ColumnType"],meta[name="ColumnDescription"],'
+    "meta[name=\"ColumnKeywords\"]' ) . attr ( 'content' , me . currNode . name ) ; "
+    "$ ( 'meta[name=\"Attribute\"]' ) . attr ( 'content' , me . currNode . attribute ) ;"
+)
+# getNav、getGd：同步的部分只是发一个不阻塞的请求（我们不发，只少不多）；done 里的回调等它回来才跑，
+# 那时列表请求早发出去了（照加载时的规矩另查改了什么）
+_UI_HEAD = (
+    "var me = this ; Ls . ajaxGet ( { url : me . actions . label , dataType : 'HTML' , data : { "
+)
+_UI_REQUEST = {
+    "getNav": _words(
+        _UI_HEAD + "labelName : 'publicNav' , organId : me . organId , "
+        "catId : me . currNode . id , type : 4 , } , } ) . done ( function ( str ) {"
+    ),
+    "getGd": _words(
+        _UI_HEAD + "labelName : 'publicGuiDangPic' , organId : me . organId , "
+        "catId : me . currNode . id , isJson : true } , } ) . done ( function ( res ) {"
+    ),
+}
+_RISKY_TEXT = re.compile(
+    r"script|javascript:|\bon[a-z]+\s*=|<\s*(?:img|iframe|svg|object|embed)", re.I
+)
+
+
+def _shape_match(template, values, start=0):
+    """values 从 start 起是不是照 template 的写法（§A：零个或几个逗号隔开的字符串、数字字面量；
+    §S：一个字符串字面量，里面不许有脚本、事件属性这类字）。是就给比对完的位置，不是给 None。"""
+    k = start
+    for want in template:
+        if want == "§S":
+            if k >= len(values) or values[k][:1] not in ("'", '"') or _RISKY_TEXT.search(values[k]):
+                return None
+            k += 1
+        elif want == "§A":
+            while k < len(values) and values[k] != "]":
+                literal = values[k]
+                if not (
+                    literal[:1] in ("'", '"')
+                    and not _RISKY_TEXT.search(literal)
+                    or re.fullmatch(r"[0-9]+", literal)
+                ):
+                    return None
+                k += 1
+                if k < len(values) and values[k] == ",":
+                    k += 1
+        elif k >= len(values) or values[k] != want:
+            return None
+        else:
+            k += 1
+    return k
+
+
+def _view_problem(source, tokens, values, start, end):
+    """建树设置的 view：只许 nameIsHTML（真假）、fontCss、addDiyDom，回调照真实写法比对。"""
+    if values[start] != "{" or _matching_token(tokens, start) != end - 1:
+        return "建树设置的 view 写法认不出"
+    k, seen = start + 1, set()
+    while k < end - 1:
+        key = values[k]
+        if key in seen or values[k + 1 : k + 2] != [":"]:
+            return "建树设置的 view 写法认不出"
+        seen.add(key)
+        if key == "nameIsHTML" and values[k + 2] in ("true", "false"):
+            k += 3
+        elif key in ("fontCss", "addDiyDom"):
+            templates = (_FONT_CSS,) if key == "fontCss" else _ADD_DIY_DOM
+            ends = [_shape_match(t, values, k + 2) for t in templates]
+            done = next((e for e in ends if e is not None), None)
+            if done is None:
+                return f"建树设置的显示回调 {key} 写法认不出，算不出建树时会不会出错"
+            if "getNewline" in values[k + 2 : done]:
+                locals_ = [
+                    f
+                    for f in range(len(values) - 1)
+                    if values[f : f + 2] == ["function", "getNewline"]
+                ]
+                if len(locals_) != 1 or _shape_match(_GET_NEWLINE, values, locals_[0]) is None:
+                    return "建树设置的显示回调用的 getNewline 写法认不出"
+            k = done
+        else:
+            return f"建树设置的 view 有认不出的项 {key}"
+        if k < end - 1:
+            if values[k] != ",":
+                return "建树设置的 view 写法认不出"
+            k += 1
+    return None
+
+
+def _callback_problem(tokens, values, start, end):
+    """建树设置的 callback：只许用户点了才跑的（onClick 这类）。"""
+    if values[start] != "{" or _matching_token(tokens, start) != end - 1:
+        return "建树设置的 callback 写法认不出"
+    k = start + 1
+    while k < end - 1:
+        key = values[k]
+        if key not in _ZTREE_CLICKS or values[k + 1 : k + 3] != [":", "function"]:
+            return f"建树设置的 callback 有建树时就会跑的项 {key}"
+        found = _function_at(tokens, values, k + 2)
+        if found is None:
+            return "建树设置的 callback 写法认不出"
+        k = found[2] + 1
+        if k < end - 1:
+            if values[k] != ",":
+                return "建树设置的 callback 写法认不出"
+            k += 1
+    return None
+
+
+def _ui_shape_problem(name, body):
+    """open 里发列表请求之前跑的显示方法（setMeta、getNav、getGd）照真实写法比对。"""
+    tokens = _js_tokens(body)
+    values = _values(tokens)
+    if name == "setMeta":
+        return None if values == _SET_META else "写法认不出，算不出发列表请求之前会不会出错"
+    head = _UI_REQUEST[name]
+    if values[: len(head)] != head:
+        return "写法认不出，算不出发列表请求之前会不会出错"
+    close = _matching_token(tokens, len(head) - 1)
+    tail = values[close + 1 :]
+    if tail not in ([")"], [")", ";"]):
+        return "写法认不出，算不出发列表请求之前会不会出错"
+    return None
+
+
+def _display_name_problem(raw, nodes):
+    """六安、淮北的 addDiyDom 用 getNewline 给栏目名折行（str.length、str[i]）：栏目树里有节点的
+    名字不是字符串，建树时就出错，浏览器不发列表请求。"""
+    tree = _values(_js_tokens(raw.get("initTree", "")))
+    if "getNewline" in tree and any(not isinstance(node.get("name"), str) for node in nodes):
+        return "栏目树里有节点的名字不是字符串，建树时显示回调会出错，浏览器不发列表请求"
+    return None
+
+
 def _tree_settings_problem(source, setting):
     """建树设置：只认 initTree 里 var 声明的一个对象，顶层只有 data、view、callback；data 里
     simpleData 正好是 idKey 'id'、pIdKey 'parentId'（可带 enable: true），key 只能改显示用的
@@ -4272,6 +4559,14 @@ def _tree_settings_problem(source, setting):
         or not all(isinstance(v, str) for v in key.values())
     ):
         return "建树设置的字段名认不出（要 idKey id、pIdKey parentId，不改 children）"
+    if "view" in props:
+        problem = _view_problem(source, tokens, values, *props["view"])
+        if problem:
+            return problem
+    if "callback" in props:
+        problem = _callback_problem(tokens, values, *props["callback"])
+        if problem:
+            return problem
     return None
 
 
@@ -4548,8 +4843,17 @@ def _callback_exclusions(source, callback, parent, hide_ok, mode):
 # 定下的上级（topLevelParentId）。栏目树有几个顶层上级、本栏目又不挂在那个下面时，会走到不存在的
 # 节点抛错（或者绕圈出不来），init 就此中断、浏览器不发列表请求。157 个真实页面上这几个方法只有
 # 下面这几种写法：照写法逐个记号比对，算出会不会出错
-def _words(text):
-    return text.split()
+
+# 芜湖这类：init 里 me.getPublicQcsmCatIds().done(function () { me.getData(); })——浏览器要等这个
+# 请求成功（回 2xx、按 JSON 解析得了、done 里的回调不出错）才发列表请求。19 个真实页面上这个方法
+# 只有这一种写法（路径是字面量）；回调在 res.status 为真而 res.data 不是字符串时出错（见
+# adapters.lonsun_ready_ok）
+_READY_HEAD = _words("var me = this ; return Ls . ajaxGet ( { url :")
+_READY_TAIL = _words(
+    "} ) . done ( function ( res ) { if ( res . status ) { var data = res . data ; "
+    "publicQcsmCatIds = [ ] ; $ . each ( data . split ( ',' ) , function ( i , item ) { "
+    "item && publicQcsmCatIds . push ( item ) ; } ) } } )"
+)
 
 
 _SET_SELECT_PREFIX = _words(
@@ -4580,17 +4884,68 @@ _FIND_PARENT_FREQUENT = _FIND_PARENT_HEAD + _words(
 )
 
 
-def _member_sites(body, name):
+# 淮北这类把 setSelect 包在 try 里，catch 里调的 noData（40 个真实页面都是这一种写法）：往页面上写
+# "暂无数据"，Ls.template 是平台的模板函数
+_NO_DATA = _values(
+    _js_tokens(
+        "var me = this; $('.xxgk_lmright #xxgk_lmcon').html(Ls.template("
+        "'noData_xxgk_list_tpl', { name: $('#gk-navigation a:last').text() }));"
+    )
+)
+
+
+def _catch_swallows(tokens, values, close, raw):
+    """try { … } 后面是不是把异常吞掉、接着往下跑：紧跟 catch (标识符) { … }，catch 里只有
+    console.log(…)（参数是字面量或这个标识符）、me.noData()（照真实写法比对）这两种不会出错的语句，
+    没有 finally 或者 finally 是空的。只有 finally、catch 里再抛出或者调别的，异常照样往外抛。"""
+    k = close + 1
+    if (
+        values[k : k + 2] != ["catch", "("]
+        or not _IDENT.fullmatch(values[k + 2] if k + 2 < len(values) else "")
+        or values[k + 3 : k + 5] != [")", "{"]
+    ):
+        return False
+    param, end = values[k + 2], _matching_token(tokens, k + 4)
+    body, i = values[k + 5 : end], 0
+    while i < len(body):
+        if body[i : i + 4] == ["console", ".", "log", "("]:
+            j = i + 4
+            while j < len(body) and body[j] != ")":
+                if not (body[j][:1] in ("'", '"') or body[j] in (param, ",")):
+                    return False
+                j += 1
+            if body[j : j + 2] != [")", ";"]:
+                return False
+            i = j + 2
+        elif body[i : i + 6] == ["me", ".", "noData", "(", ")", ";"]:
+            if _values(_js_tokens((raw or {}).get("noData", ""))) != _NO_DATA:
+                return False
+            i += 6
+        else:
+            return False
+    after = values[end + 1 : end + 2]
+    return after != ["finally"] or values[end + 2 : end + 4] == ["{", "}"]
+
+
+def _member_sites(body, name, raw=None):
     """方法体里用到 me.name 的地方（this.name、me['name'] 也算；用户点了才跑的处理函数里的不算）：
-    [(记号位置, 在不在 try 块里)]。"""
+    [(记号位置, 是不是被 try 接住)]。接住要 catch 把异常吞掉（_catch_swallows），而且调用不在
+    try 里面另起的函数里（回调可能在 try 结束以后才跑）。"""
     tokens = _js_tokens(body)
     values = _values(tokens)
     spans = _handler_spans(tokens, values)
-    guarded = [
-        (j + 1, _matching_token(tokens, j + 1))
-        for j in range(len(values) - 1)
-        if values[j] == "try" and values[j + 1] == "{"
-    ]
+    guarded = []
+    for j in range(len(values) - 1):
+        if values[j] == "try" and values[j + 1] == "{":
+            close = _matching_token(tokens, j + 1)
+            if _catch_swallows(tokens, values, close, raw):
+                guarded.append((j + 1, close))
+    functions = []
+    for f, value in enumerate(values):
+        if value == "function":
+            found = _function_at(tokens, values, f)
+            if found is not None:
+                functions.append((found[1], found[2]))
     sites = []
     for k in range(len(values) - 2):
         member = values[k + 2] if values[k + 1] == "." else ""
@@ -4598,14 +4953,17 @@ def _member_sites(body, name):
             key = values[k + 2]
             member = _string_literal(key) if key[:1] in ("'", '"') else ""
         if values[k] in ("me", "this") and member == name and not any(a < k < b for a, b in spans):
-            sites.append((k, any(a < k < b for a, b in guarded)))
+            caught = any(
+                a < k < b and not any(a < fa < k < fb for fa, fb in functions) for a, b in guarded
+            )
+            sites.append((k, caught))
     return sites
 
 
 def _set_select_unguarded(raw):
-    """有没有方法（用户点了才跑的处理函数以外）在 try 外面调 setSelect。"""
+    """有没有方法（用户点了才跑的处理函数以外）调 setSelect 而异常不会被 try 接住。"""
     return any(
-        not guarded for body in raw.values() for _, guarded in _member_sites(body, "setSelect")
+        not guarded for body in raw.values() for _, guarded in _member_sites(body, "setSelect", raw)
     )
 
 
@@ -4755,7 +5113,7 @@ def _tree_one_problem(raw, args):
     unguarded = [
         (method, k)
         for method, body in raw.items()
-        for k, guarded in _member_sites(body, "setSelect")
+        for k, guarded in _member_sites(body, "setSelect", raw)
         if not guarded
     ]
     if unguarded != [("initTree", call)]:
@@ -4828,7 +5186,7 @@ def _tree_one_problem(raw, args):
             )
         ):
             return f"initTree 在 setSelect 之前用了 {value}" + _UNCLEAR
-    if "script" in "".join(text).lower():
+    if re.search(r"<\s*script|%3c\s*script", "".join(text), re.I):
         return "initTree 在 setSelect 之前往页面里写脚本" + _UNCLEAR
     return None
 
@@ -4928,7 +5286,13 @@ def _node_field_problem(raw, nodes):
     pre = raw.get("preprocessData", "")
     tokens = _js_tokens(pre)
     values = _values(tokens)
-    for names, (a, b) in _node_scopes(pre):
+    grep = [
+        scope
+        for lib in ("$", "jQuery")
+        for key in ("ztreeData", "ztreeData2")
+        for scope in _callback_scopes(tokens, values, [lib, ".", "grep", "(", "me", ".", key])
+    ]
+    for names, (a, b) in [*_node_scopes(pre), *grep]:
         for k in range(a + 1, b - 3):
             if values[k] in names and values[k + 1] == "." and values[k + 3] in (".", "["):
                 field = values[k + 2]
@@ -4957,7 +5321,11 @@ def resolve_lonsun(api, catalog_text):
             raw, dict(plan.globals), widget=_harmless_search_widget(plan.raw_methods)
         )
         for ui in _UI_METHODS:
-            problem = _ui_method_problem(raw[ui], frozenset(raw)) if ui in raw else None
+            if ui not in raw:
+                if any(_member_sites(body, ui) for body in raw.values()):
+                    raise LonsunFormatError(f"{ui} 没有定义，调用它会出错")
+                continue
+            problem = _ui_method_problem(raw[ui], frozenset(raw)) or _ui_shape_problem(ui, raw[ui])
             if problem:
                 raise LonsunFormatError(f"{ui} {problem}")
         modified, hide_ok = _tree_rules(raw)
@@ -4970,13 +5338,17 @@ def resolve_lonsun(api, catalog_text):
             return "栏目网址无效"
         cat_id = spec[1]
         # getData 之前就会出错的（浏览器不发列表请求）：preprocessData 读节点字段的成员、setSelect
-        problem = _node_field_problem(raw, nodes) or _set_select_problem(
-            raw,
-            {name: args for name, args, _ in plan.raw_methods},
-            nodes,
-            cat_id,
-            hide_ok,
-            modified,
+        problem = (
+            _node_field_problem(raw, nodes)
+            or _display_name_problem(raw, nodes)
+            or _set_select_problem(
+                raw,
+                {name: args for name, args, _ in plan.raw_methods},
+                nodes,
+                cat_id,
+                hide_ok,
+                modified,
+            )
         )
         if problem:
             return problem
@@ -5067,6 +5439,10 @@ def resolve_lonsun(api, catalog_text):
             ):
                 return node
             if fn == "url.get" and len(args) == 1 and isinstance(args[0], str):
+                if current["query"] is None:
+                    if not root.unknown_reason:
+                        root.unknown_reason = "pushState 改的网址参数认不准"
+                    return UNKNOWN
                 # 平台 common.min.js：get 通过 TT.isEmpty 将缺失值转为空串。
                 return current["query"].get(args[0], "")
             if fn == "url.stringify" and len(args) == 1 and isinstance(args[0], dict):
@@ -5221,14 +5597,23 @@ def resolve_lonsun(api, catalog_text):
                 quote_plus(k, safe="-_.!~*'()") + "=" + quote_plus(v, safe="-_.!~*'()")
                 for k, v in strings.items()
             )
-            raise Stop(
-                ListApi(
-                    adapter=LONSUN,
-                    url=f"{parts.scheme}://{parts.netloc}{plan.label}?{encoded}",
-                    base_url=api.base_url,
-                    plan=LonsunRequestPlan(mode, cat_id, excluded),
-                )
+            listing = ListApi(
+                adapter=LONSUN,
+                url=f"{parts.scheme}://{parts.netloc}{plan.label}?{encoded}",
+                base_url=api.base_url,
+                plan=LonsunRequestPlan(mode, cat_id, excluded),
             )
+            if plan.ready:
+                # 先发 getData 等着的那个请求（平台 Ls.ajax 加的防缓存随机数不加），成功了
+                # 才发列表请求
+                ready = ListApi(
+                    adapter=LONSUN,
+                    url=f"{parts.scheme}://{parts.netloc}{plan.ready}",
+                    base_url=api.base_url,
+                    plan=LonsunReadyPlan(plan.ready),
+                )
+                listing = replace(listing, parts=(ready, listing))
+            raise Stop(listing)
 
         def execute(name, argument=UNDEFINED):
             args, _ = methods[name]
@@ -5318,7 +5703,16 @@ def resolve_lonsun(api, catalog_text):
                         # 网址改了：之后读网址参数（Ls.url.get）、location 照浏览器按新网址；
                         # me.query 是构造函数时取的，不变
                         current["url"] = urljoin(current["url"], target)
-                        current["query"] = _platform_query(urlsplit(current["url"]).query)
+                        query = urlsplit(current["url"]).query
+                        keys = [part.partition("=")[0] for part in query.split("&")]
+                        # 平台 Ls.url.get 用正则取第一个 ?name= 或 &name=、先把 + 换成空格再解码，
+                        # 我们按 & 切开、同名取后一个：编码过的、带 + 或第二个 ?、有同名参数的两边
+                        # 可能不一样，认不准（进页面时的网址 column_spec 挡掉了这些）
+                        current["query"] = (
+                            None
+                            if {"%", "+", "?"} & set(query) or len(set(keys)) != len(keys)
+                            else _platform_query(query)
+                        )
                         globals_["location"] = _PartialDict({"href": current["url"]})
                         return False
                     if path == "me.open" and len(expr[2]) <= 1:

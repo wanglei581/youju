@@ -11,6 +11,7 @@ from youju.crawler.lonsun import (
     LonsunFormatError,
     catalog_host_allowed,
     column_spec,
+    find_lonsun_api,
     parse_catalog,
     parse_response,
 )
@@ -772,6 +773,115 @@ def test_unrecognized_reasons_for_page_and_tree():
     )
 
 
+_READY_OK = '{"status":true,"desc":"成功","data":"6732111,6732121"}'
+WUHU = PAGES["wuhu"] + "?type=4&catId=6732121&action=list"
+_WUHU_READY = "https://czgz.wuhu.gov.cn/public/getPublicQcsmCatIds"
+
+
+def test_wuhu_list_waits_for_ready_request():
+    from youju.crawler.adapters import api_parts
+    from youju.crawler.lonsun import LonsunReadyPlan, LonsunRequestPlan
+
+    api = resolve_fixture("wuhu", "6732121")
+    ready, listing = api_parts(api)
+    # 浏览器等 getPublicQcsmCatIds 成功才发列表请求：先发它（同一网站、页面写明的路径，平台加的
+    # 防缓存随机数不加），列表请求不变
+    assert ready.url == _WUHU_READY and isinstance(ready.plan, LonsunReadyPlan)
+    assert listing.url == api.url and isinstance(listing.plan, LonsunRequestPlan)
+    # 省经信厅这类 getData 同步跑的：没有前面那个请求
+    assert api_parts(resolve_fixture("jx", "49949451")) == (resolve_fixture("jx", "49949451"),)
+
+
+@pytest.mark.parametrize(
+    "old,new",
+    [
+        ("url: '/public/getPublicQcsmCatIds',", "url: me.readyUrl,"),
+        ("url: '/public/getPublicQcsmCatIds',", "url: '/public/x?a=1',"),
+        (
+            "var data = res.data;\n                    publicQcsmCatIds",
+            "var data = res.data || '';\n                    publicQcsmCatIds",
+        ),
+        ("item && publicQcsmCatIds.push(item);", "item && publicQcsmCatIds.push(+item);"),
+        ("return Ls.ajaxGet({", "me.x = 1; return Ls.ajaxGet({"),
+    ],
+)
+def test_ready_request_unknown_shape_refused(old, new):
+    page = fixture("wuhu_page.html")
+    assert page.count(old) == 1, old
+    reasons = []
+    changed = page.replace(old, new, 1)
+    assert find_lonsun_api(changed, WUHU, WUHU, _diagnosis=reasons) is None
+    assert reasons and ("那个请求的写法认不出" in reasons[0] or "认不出" in reasons[0]), reasons
+
+
+@pytest.mark.parametrize(
+    "text,ok",
+    [
+        (_READY_OK, True),
+        ('{"status":false}', True),
+        ('{"status":0,"data":null}', True),
+        ('{"status":"","data":5}', True),
+        ("[]", True),
+        ('"x"', True),
+        ("\ufeff" + _READY_OK, True),
+        # 浏览器的 done 回调会出错、或者根本不跑：不发列表请求
+        ("null", False),
+        ('{"status":true}', False),
+        ('{"status":1,"data":5}', False),
+        ('{"status":"ok","data":[]}', False),
+        ('{"status":{},"data":null}', False),
+        ("NaN", False),
+        ('{"status":NaN}', False),
+        ("", False),
+        ("<html>系统维护</html>", False),
+        ("{bad", False),
+    ],
+)
+def test_ready_response_judged_like_browser(text, ok):
+    from youju.crawler.adapters import lonsun_ready_ok
+
+    assert lonsun_ready_ok(text) is ok
+
+
+@pytest.mark.parametrize(
+    "reply,expected,words",
+    [
+        ("denied", "BLOCKED", "前置接口：HTTP 403"),
+        ("gate", "BLOCKED", "前置接口"),
+        ("odd", "DOWN", "前置接口：返回读不出"),
+        ("down", "DOWN", "前置接口"),
+    ],
+)
+def test_ready_request_failure_means_no_list_request(reply, expected, words):
+    from youju.crawler.fetcher import FetchResult
+    from youju.govsites import verify
+
+    api = resolve_fixture("wuhu", "6732121")
+    tree = find_lonsun_api(fixture("wuhu_page.html"), WUHU, WUHU).url
+    responses = {
+        "denied": FetchResult(_WUHU_READY, "http_error", _WUHU_READY, 403),
+        "gate": FetchResult(
+            _WUHU_READY, "ok", _WUHU_READY, 200, "<html><title>安全验证</title>请输入验证码</html>"
+        ),
+        "odd": '{"status":true}',
+        "down": FetchResult(_WUHU_READY, "http_error", _WUHU_READY, 502),
+    }
+    cache = LonsunCache(
+        {
+            WUHU: fixture("wuhu_page.html"),
+            tree: fixture("wuhu_catalog.js"),
+            _WUHU_READY: responses[reply],
+            api.url: fixture("wuhu_api.json"),
+        }
+    )
+    col = lonsun_column(WUHU)
+    col.city, col.level = "芜湖", "市级"
+    checked = verify.check_one(cache, col, TODAY)
+    assert checked.result == getattr(verify, expected) and words in checked.reason, checked.reason
+    # 浏览器那边前面的请求没成功就不发列表请求：我们也不发
+    assert api.url not in [u for u, _ in cache.calls]
+
+
 def test_city_flags_at_both_levels():
     payload = json.loads(fixture("luan_api.json"))
     payload[0].update(isParent=True, parent=False)
@@ -807,10 +917,18 @@ def test_county_portal_whitelist_and_verify():
     assert api and "city_page" in api.url
     col = lonsun_column(url)
     col.city, col.level = "芜湖", "区县级"
+    ready = "https://www.yjq.gov.cn/public/getPublicQcsmCatIds"
     cache = LonsunCache(
-        {url: html, tree.url: fixture("wuhu_catalog.js"), api.url: fixture("wuhu_api.json")}
+        {
+            url: html,
+            tree.url: fixture("wuhu_catalog.js"),
+            ready: _READY_OK,
+            api.url: fixture("wuhu_api.json"),
+        }
     )
     assert check_one(cache, col, TODAY).result == READABLE
+    # 先发 getData 等着的那个请求，成功了才发列表请求
+    assert [u for u, _ in cache.calls][-2:] == [ready, api.url]
 
 
 def test_special_chain_reason_uses_source():
@@ -1139,7 +1257,8 @@ def test_init_done_method_cannot_mutate_state():
             1,
         )
     )
-    assert isinstance(resolve_fixture("jx", "49949451", page=page), str)
+    # getData 等着的方法不是真实页面那种写法：认页面这一步就不读
+    assert _refused(page)
 
 
 def test_top_level_window_define_refused():
@@ -2731,29 +2850,52 @@ def test_set_select_top_column_found_in_whole_tree_one():
 
 
 @pytest.mark.parametrize(
-    "old,new",
+    "old,new,why",
     [
         # 树一不是照真实写法用整棵栏目树建的：浏览器在树一里找不到这个栏目，往上找时出错
-        (_CHUZHOU_TREE1, _CHUZHOU_TREE1.replace("me.ztreeData", "[]")),
-        (_CHUZHOU_TREE1, _CHUZHOU_TREE1.replace("ztree_settings", "{}")),
-        (_CHUZHOU_TREE1, "var " + _CHUZHOU_TREE1),  # 局部变量遮住全局的 _organTree
-        ("initTree: function () {", "initTree: function (_organTree) {"),
+        (_CHUZHOU_TREE1, _CHUZHOU_TREE1.replace("me.ztreeData", "[]"), "建树一"),
+        (_CHUZHOU_TREE1, _CHUZHOU_TREE1.replace("ztree_settings", "{}"), "建树一"),
+        (_CHUZHOU_TREE1, "var " + _CHUZHOU_TREE1, ""),  # 局部变量遮住全局的 _organTree
+        ("initTree: function () {", "initTree: function (_organTree) {", "遮住了 _organTree"),
         # 建树一到 setSelect 之间另外动了树一
-        ("me.setSelect();", "_organTree.removeNode(_organTree.getNodes()[0]); me.setSelect();"),
-        ("node.isParent = false;", "node.isParent = false; node.id = 0;"),
+        (
+            "me.setSelect();",
+            "_organTree.removeNode(_organTree.getNodes()[0]); me.setSelect();",
+            "建树一到 setSelect 之间",
+        ),
+        ("node.isParent = false;", "node.isParent = false; node.id = 0;", "建树一到 setSelect"),
         # 建树设置里的显示回调（建树时就跑）：调别的脚本、别的方法，往页面里写脚本，替用户触发事件
-        (_CHUZHOU_COLOR, _CHUZHOU_COLOR + " hack();"),
-        (_CHUZHOU_COLOR, _CHUZHOU_COLOR + " me.getReportyear();"),
-        (_CHUZHOU_COLOR, _CHUZHOU_COLOR + " $('body').append('<scr' + 'ipt>x()</' + 'script>');"),
-        (_CHUZHOU_COLOR, _CHUZHOU_COLOR + " $('#x').trigger('custom');"),
-        (_CHUZHOU_COLOR, _CHUZHOU_COLOR + " _organTree = null;"),
+        (_CHUZHOU_COLOR, _CHUZHOU_COLOR + " hack();", "显示回调 fontCss"),
+        (_CHUZHOU_COLOR, _CHUZHOU_COLOR + " me.getReportyear();", "显示回调 fontCss"),
+        (
+            _CHUZHOU_COLOR,
+            _CHUZHOU_COLOR + " $('body').append('<scr' + 'ipt>x()</' + 'script>');",
+            "",
+        ),
+        (_CHUZHOU_COLOR, _CHUZHOU_COLOR + " $('#x').trigger('custom');", ""),
+        (_CHUZHOU_COLOR, _CHUZHOU_COLOR + " _organTree = null;", ""),
+        # 显示回调里读空值的成员：建树时就出错，浏览器不发列表请求
+        (_CHUZHOU_COLOR, _CHUZHOU_COLOR + " var x = null; x.foo();", "显示回调 fontCss"),
     ],
 )
-def test_set_select_tree_one_changed_refused(old, new):
+def test_set_select_tree_one_changed_refused(old, new, why):
+    from youju.crawler.lonsun import find_lonsun_api
+
     page = fixture("chuzhou_page.html")
     assert page.count(old) == 1, old
-    result = _chuzhou_top(page.replace(old, new, 1))
+    changed = page.replace(old, new, 1)
+    result = _chuzhou_top(changed)
     assert result is None or isinstance(result, str), new
+    if why:
+        # 不读的原因正是这一条（不是别的规则顺带拦下的）
+        url = PAGES["chuzhou"] + "?type=4&catId=161734542&action=list"
+        reasons = []
+        found = find_lonsun_api(changed, url, url, _diagnosis=reasons)
+        assert why in (result if isinstance(result, str) else " ".join(reasons)), (
+            result,
+            reasons,
+            found,
+        )
 
 
 def test_set_select_guarded_needs_no_tree_one_check():
@@ -2826,6 +2968,124 @@ def test_legacy_octal_escapes_not_guessed():
     for text in ("'\\1'", "'\\01'", "'\\7x'"):
         with pytest.raises(LonsunFormatError):
             _string_literal(text)
+
+
+@pytest.mark.parametrize(
+    "guard",
+    [
+        "try { me.setSelect(); } finally {}",  # 没有 catch：异常照样往外抛
+        "try { me.setSelect(); } catch (e) { throw e; }",
+        "try { me.setSelect(); } catch (e) { me.foo(); }",
+        "try { me.setSelect(); } catch (e) {} finally { x.y(); }",
+        # 包在 try 里另起的函数：回调跑的时候 try 早结束了
+        "try { setTimeout(function () { me.setSelect(); }, 0); } catch (e) {}",
+        # catch 里调的 noData 不是真实页面那种写法（jx 页面没有 noData）
+        "try { me.setSelect(); } catch (e) { me.noData(); }",
+    ],
+)
+def test_set_select_try_must_really_swallow(guard):
+    stray = '{"id":11,"name":"别处","parentId":99,"isParent":false,"uri":"","link":""},'
+    page = fixture("jx_page.html").replace("me.setSelect();", guard, 1)
+    url = PAGES["jx"] + "?type=4&catId=49949451&action=list"
+    api = find_lonsun_api(page, url, url)
+    result = None if api is None else resolve_lonsun_text(api, _jx_catalog_with(stray))
+    assert result is None or isinstance(result, str), result
+
+
+def resolve_lonsun_text(api, catalog):
+    from youju.crawler.lonsun import resolve_lonsun
+
+    return resolve_lonsun(api, catalog)
+
+
+def test_set_select_swallowed_by_catch_like_real_pages():
+    from youju.crawler.adapters import ListApi
+
+    # 淮北那样：catch 里 console.log、调真实写法的 noData，异常被吞掉、接着发列表请求
+    stray = '{"id":11,"name":"别处","parentId":99,"isParent":false,"uri":"","link":""},'
+    for guard in (
+        "try { me.setSelect(); } catch (e) {}",
+        "try { me.setSelect(); } catch (err) { console.log('e', err); }",
+    ):
+        page = fixture("jx_page.html").replace("me.setSelect();", guard, 1)
+        result = resolve_fixture("jx", "49949451", page=page, catalog=_jx_catalog_with(stray))
+        assert isinstance(result, ListApi), (guard, result)
+    assert isinstance(resolve_fixture("huaibei", "14237535"), ListApi)
+
+
+@pytest.mark.parametrize(
+    "tail,condition",
+    [
+        ("&x=1&x=2", "Ls.url.get('x') === '1'"),  # 同名参数：平台取第一个
+        ("&x=a+b", "Ls.url.get('x') === 'a b'"),  # 平台先把 + 换成空格
+        ("&x=%31", "Ls.url.get('x') === '1'"),
+        ("&u=a?x=1", "Ls.url.get('x') === '1'"),  # 平台的正则在参数值里也找得到 ?x=
+        ("&catId=49949461", "Ls.url.get('catId') === '49949461'"),
+    ],
+)
+def test_push_state_ambiguous_params_unknown(tail, condition):
+    uri = '"uri":"/public/column/6991?type=4&catId=49949451&action=list"'
+    catalog = fixture("jx_catalog.js").replace(uri, uri[:-1] + tail + '"', 1)
+    page = fixture("jx_page.html").replace("if (me.currNode.children) {", f"if ({condition}) {{", 1)
+    result = resolve_fixture("jx", "49949451", page=page, catalog=catalog)
+    assert isinstance(result, str) and "pushState 改的网址参数认不准" in result, result
+
+
+@pytest.mark.parametrize(
+    "where,code",
+    [
+        ("script", "$('head').append('<script>catalogs={6991:[]};<\\/script>');"),
+        ("script", "$('#a').html('<scr' + 'ipt>x()</scr' + 'ipt>');"),
+        ("script", "$('<script>x()</script>').appendTo('body');"),
+        ("script", "$('body').append(unescape('%3Cscript%3Ex()%3C/script%3E'));"),
+        ("script", "$.globalEval('x()');"),
+        ("script", "jQuery.getScript('/a.js');"),
+        ("script", "$('#a').load('/frag.html');"),
+        ("script", "var code = 'x()'; setTimeout(code, 10);"),
+        ("attribute", "eval('x()')"),
+    ],
+)
+def test_hidden_code_refused(where, code):
+    if where == "script":
+        page = _jx(extra=f"<script>{code}</script>")
+    else:
+        page = _jx(extra=f'<img src="/a.png" onload="{code}">')
+    assert _found(page) is None, code
+
+
+def test_harmless_load_and_timers_still_fine():
+    for code in (
+        "$(window).load(function () { $('#a').show(); });",
+        "setTimeout(function () {}, 5);",
+    ):
+        assert _found(_jx(extra=f"<script>{code}</script>")) is not None, code
+
+
+@pytest.mark.parametrize("src", ["/49631981\\6991.js", "/49631981/6991.js ", "/496319\n81/6991.js"])
+def test_catalog_src_normalized_like_browser(src):
+    # 浏览器规整以后也是栏目树脚本：和正常写法同时出现时不能绕过"几处地址不一样"
+    page = fixture("jx_page.html").replace("</body>", f'<script src="{src}"></script></body>', 1)
+    reasons = []
+    assert find_lonsun_api(page, BASE, BASE, _diagnosis=reasons) is None
+    assert reasons and "栏目树脚本地址" in reasons[0], reasons
+
+
+def test_preprocess_grep_member_needs_strings():
+    from youju.crawler.adapters import ListApi
+
+    page = fixture("jx_page.html")
+    old = "me.hideIds = ids;"
+    assert page.count(old) == 1
+    page = page.replace(
+        old,
+        old
+        + " var named = $.grep(me.ztreeData, function (el) { return el.uri.indexOf('x') > -1; });",
+        1,
+    )
+    assert isinstance(resolve_fixture("jx", "49949451", page=page), ListApi)
+    broken = '{"id":12,"name":"甲","parentId":49938311,"isParent":false,"uri":null,"link":""},'
+    reason = resolve_fixture("jx", "49949451", page=page, catalog=_jx_catalog_with(broken))
+    assert isinstance(reason, str) and "uri" in reason, reason
 
 
 def test_preprocess_name_member_needs_string_names():
@@ -2931,8 +3191,11 @@ def test_catalog_script_must_have_run_before_construction():
     assert _found(moved.replace(_CREATE, top, 1)) is None
     # async 的什么时候跑说不准
     assert _found(page.replace(src, src.replace("<script ", "<script async "), 1)) is None
-    # 写在前面的普通脚本、脚本顶层创建：照常
-    assert _found(page.replace(_CREATE, top, 1)) is not None
+    # 脚本顶层创建的一律不认（157 个真实页面都在就绪回调里创建；顶层创建时原型方法、平台脚本、
+    # 栏目树脚本是不是都已经跑过，先后认不准），栏目树脚本写在前面也一样
+    reasons = []
+    assert find_lonsun_api(page.replace(_CREATE, top, 1), BASE, BASE, _diagnosis=reasons) is None
+    assert reasons and "顶层创建" in reasons[0], reasons
 
 
 def test_huge_is_parent_number_does_not_raise():

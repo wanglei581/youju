@@ -155,16 +155,71 @@ def api_parts(api: ListApi) -> tuple[ListApi, ...]:
     return api.parts or (api,)
 
 
+def _lonsun_ready(api: ListApi) -> bool:
+    """龙讯列表请求前面那个请求（芜湖这类：浏览器等它成功才发列表请求，见 lonsun._ready_path）。"""
+    from youju.crawler.lonsun import LonsunReadyPlan
+
+    return api.adapter == LONSUN and isinstance(api.plan, LonsunReadyPlan)
+
+
+def _reject_constant(name: str):
+    raise ValueError(f"JSON 里不该有 {name}")
+
+
+def _strict_json(text: str):
+    """照浏览器的 JSON.parse 解析（NaN、Infinity 不认）：(解析得了没有, 值)。"""
+    try:
+        return True, json.loads(text.lstrip("\ufeff"), parse_constant=_reject_constant)
+    except (ValueError, RecursionError):
+        return False, None
+
+
+def lonsun_ready_ok(text: str) -> bool:
+    """龙讯列表请求前面那个请求的返回，浏览器会不会接着发列表请求：平台 Ls.ajax 按 JSON 解析，解析
+    不了就不跑 done；done 里的回调（res.status 为真时取 res.data.split）在返回是 null、或者 status
+    为真而 data 不是字符串时出错，后面的 getData 也不跑。这几种都当没成功、不发列表请求。"""
+    parsed, value = _strict_json(text)
+    if not parsed or value is None:
+        return False
+    if isinstance(value, dict):
+        status = value.get("status")
+        falsy = (
+            status is None
+            or status is False
+            or status == ""
+            or isinstance(status, (int, float))
+            and not isinstance(status, bool)
+            and status == 0
+        )
+        if not falsy and not isinstance(value.get("data"), str):
+            return False
+    return True
+
+
+def api_part_label(part: ListApi, parts: tuple[ListApi, ...]) -> str:
+    """几个接口一个一个取时，原因里写明出问题的是哪一个：龙讯前面那个请求、数字广东的哪个分类。"""
+    if _lonsun_ready(part):
+        return "前置接口："
+    if sum(not _lonsun_ready(p) for p in parts) > 1:
+        return f"分类 {part.category_id}："
+    return ""
+
+
 def api_items_merged(
     api: ListApi, texts: list[str], parser_config: dict | None, today: date | None
 ) -> list[ListItem]:
     """各分类已通过护栏后合并，按网址去重并按发布日期排序。同一网址在几个分类里都有时留先到的；
     先到的没有日期、后到的有日期时留有日期的。"""
-    parts = api_parts(api)
-    if len(parts) == 1 and len(texts) == 1:
-        return api_items(parts[0], texts[0], parser_config, today)
+    # 龙讯前面那个请求只看成不成功，没有条目
+    pairs = [
+        (part, text)
+        for part, text in zip(api_parts(api), texts, strict=True)
+        if not _lonsun_ready(part)
+    ]
+    if len(pairs) == 1:
+        return api_items(pairs[0][0], pairs[0][1], parser_config, today)
     items: dict[str, ListItem] = {}
-    for part, text in zip(parts, texts, strict=True):
+    for part, text in pairs:
         for item in api_items(part, text, parser_config, today):
             key = url_key(item.url)
             kept = items.get(key)
@@ -381,6 +436,8 @@ def find_unit_apis(html: str, page_url: str) -> list[ListApi]:
 
 def api_empty_list(api: ListApi, text: str) -> bool:
     """接口明确成功、过了护栏，列表那段在但是空的（这会儿没有条目，不是读不出）。"""
+    if _lonsun_ready(api):
+        return True  # 前面那个请求里本来就没有列表
     if api.adapter == LONSUN:
         parsed = _lonsun_response(api, text)
         return parsed is not None and parsed[1]
@@ -397,6 +454,8 @@ def api_empty_list(api: ListApi, text: str) -> bool:
 def api_readable(api: ListApi, text: str) -> bool:
     """接口的返回是认得出、过了护栏的列表（条目可能是空的）。空白页、维护页这类护栏记"这次没取到"
     的返回不算：照样不读。"""
+    if _lonsun_ready(api):
+        return lonsun_ready_ok(text)
     if api.adapter == LONSUN:
         return _lonsun_response(api, text) is not None
     if api.adapter == GKMLPT:
@@ -764,7 +823,8 @@ def api_refusal(api: ListApi, result) -> str:
     if api.adapter not in (HANWEB_JPAAS, GKMLPT, LONSUN):
         return ""
     tree = api_needs_follow(api)
-    prefix = "栏目树脚本" if tree else "列表接口"
+    ready = _lonsun_ready(api)
+    prefix = "栏目树脚本" if tree else "前置接口" if ready else "列表接口"
     status = getattr(result, "status", "")
     http_status = getattr(result, "http_status", None)
     if status == "robots_disallowed":
@@ -813,6 +873,8 @@ def api_refusal(api: ListApi, result) -> str:
         return ""
     if api.adapter == LONSUN and not tree and _lonsun_response(api, text) is not None:
         return ""
+    if ready and _strict_json(text)[0]:
+        return ""  # 是 JSON：成不成功看 api_readable（lonsun_ready_ok）
     payload = _json_payload(text)
     if payload is None:
         # 不是 JSON：认不出，记不能抓、不读（认得出才读）；原因里分一下是不是登录、拦截关卡
@@ -824,7 +886,7 @@ def api_refusal(api: ListApi, result) -> str:
             return f"{prefix}：返回拦截页面"
         if _retry_later(text):
             return ""
-        return "" if tree else "列表接口：返回认不出（不是 JSON）"
+        return "" if tree else f"{prefix}：返回认不出（不是 JSON）"
     if api.adapter == LONSUN:
         if tree:
             return ""

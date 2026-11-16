@@ -1080,16 +1080,87 @@ def test_lonsun_county_service_uses_configured_city_portal(session):
         assert fetcher.requested == [url]
     source.city = "芜湖"
     session.commit()
+    ready = "https://www.yjq.gov.cn/public/getPublicQcsmCatIds"
     fetcher = RecordingFetcher(
         {
             url: [page(url, html)],
             tree.url: [page(tree.url, catalog)],
+            ready: [page(ready, '{"status":true,"data":"6732111"}')],
             api.url: [page(api.url, read("wuhu_api.json"))],
         }
     )
     check = check_source(session, source, fetcher, today=date(2026, 11, 13))
     assert check.status == "ok" and check.items_found == 8
-    assert fetcher.requested == [url, tree.url, api.url]
+    # 芜湖的页面等 getPublicQcsmCatIds 成功才发列表请求：先发它
+    assert fetcher.requested == [url, tree.url, ready, api.url]
+
+
+def test_lonsun_ready_request_refused_means_no_list(session):
+    from pathlib import Path
+
+    from youju.crawler.adapters import api_follow, find_list_api
+
+    path = Path(__file__).parent / "fixtures" / "lonsun"
+    url = "https://czgz.wuhu.gov.cn/public/column/6596381?type=4&catId=6732111&action=list"
+    html = (path / "wuhu_page.html").read_text(encoding="utf-8")
+    tree = find_list_api(html, url, url)
+    catalog = (path / "wuhu_catalog.js").read_text(encoding="utf-8")
+    api = api_follow(tree, page(tree.url, catalog))
+    ready = "https://czgz.wuhu.gov.cn/public/getPublicQcsmCatIds"
+    source = make_source(session, url)
+    source.parser_config = {"list_api_open": "龙讯public"}
+    session.commit()
+    fetcher = RecordingFetcher(
+        {
+            url: [page(url, html)],
+            tree.url: [page(tree.url, catalog)],
+            ready: [FetchResult(ready, "http_error", ready, 403)],
+        }
+    )
+    check = check_source(session, source, fetcher, today=date(2026, 11, 13))
+    # 前面那个请求被拒：浏览器不发列表请求，我们也不发；记不能抓
+    assert check.status == "list_api_refused" and "前置接口" in check.error
+    assert fetcher.requested == [url, tree.url, ready]
+    assert api.url not in fetcher.requested
+    session.refresh(source)
+    assert source.parser_config["list_api_refused"]["url"] == tree.url
+    # 30 天内栏目树地址没变：整套不再请求
+    again = RecordingFetcher({url: [page(url, html)]})
+    assert check_source(session, source, again).status == "list_api_refused"
+    assert again.requested == [url]
+    # 前面那个请求回来的读不出（status 为真、data 不是字符串）：这次没取到，不发列表请求
+    source.parser_config = {"list_api_open": "龙讯public"}
+    session.commit()
+    odd = RecordingFetcher(
+        {
+            url: [page(url, html)],
+            tree.url: [page(tree.url, catalog)],
+            ready: [page(ready, '{"status":true}')],
+        }
+    )
+    check = check_source(session, source, odd, today=date(2026, 11, 13))
+    assert check.status == "parse_empty" and "前置接口" in check.error
+    assert api.url not in odd.requested
+
+
+def test_unmarked_lonsun_column_pages_share_host_guard(session_factory):
+    url, second, *_rest = _two_lonsun_sources(session_factory)
+    ids = _rest[-1]
+    with session_factory() as session:
+        for source_id in ids:
+            source = session.get(Source, source_id)
+            source.parser_config = {}  # 还没标"经龙讯接口读"
+        session.commit()
+    fetcher = RecordingFetcher(
+        {
+            url: [FetchResult(url, "http_error", url, 403)],
+            second: [FetchResult(second, "http_error", second, 403)],
+        }
+    )
+    results = crawl_sources(session_factory, ids, fetcher, max_workers=1)
+    # /public/column/… 栏目页不管标没标，同一轮这个主机拒绝过我们就不再去
+    assert sum(fetcher.requested.count(u) for u in (url, second)) == 1
+    assert sorted(r.status for r in results)[-1] == "site_paused"
 
 
 def test_lonsun_refusal_changed_tree_same_list(session):
