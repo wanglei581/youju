@@ -1021,3 +1021,84 @@ def test_gate_pause_written_while_holding_host_lock(tmp_path, monkeypatch):
             [(1, "https://a.gov.cn/1")], fetcher, 1, pause=_SitePause(str(tmp_path / "p.json"))
         )
     assert writes and writes[0] == ("a.gov.cn", True)
+
+
+_LOGIN = (
+    "<html><head><title>统一身份认证登录</title></head><body><form>"
+    "<input name='user'><input type='password' name='pwd'><button>登录</button>"
+    "</form></body></html>"
+)
+
+
+@pytest.mark.parametrize("where", ["detail", "pdf"])
+def test_login_page_is_protected_and_carries_no_body(tmp_path, where):
+    # 整页就是登录框（标题写着登录、有密码框）：网站拦着我们，停取；交回的结果不带网页内容
+    path = str(tmp_path / "pause.json")
+
+    class Fake:
+        def fetch(self, url):
+            if where == "pdf" and not url.endswith(".pdf"):
+                return _page_with_pdf(url)
+            return _html_result(url, _LOGIN)
+
+    outcomes = _fetch_outcomes([(1, "https://a.gov.cn/1")], Fake(), 1, pause=_SitePause(path))
+    outcome = outcomes[1]
+    assert outcome.status == "protected"
+    assert outcome.fetch.text == "" and outcome.fetch.content == b""
+    host = "files.gov.cn" if where == "pdf" else "a.gov.cn"
+    assert _SitePause(path).expiry(host) is not None
+
+
+def _long_page(title, extra=""):
+    body = "现将有关事项通知如下。各单位要按要求做好申报工作，材料齐全、内容真实。" * 30
+    nav = "".join(f"<a href='/c{i}.html'>栏目{i}</a>" for i in range(20))
+    return (
+        f"<html><head><title>{title}</title></head><body><div>{nav}{extra}</div>"
+        f"<div id='zoom'><p>{body}</p></div></body></html>"
+    )
+
+
+@pytest.mark.parametrize(
+    "html,expected",
+    [
+        # 正常通知讲验证码使用要求：不是整页关卡，不停网站（这份记读不出、不取正文）
+        (_long_page("关于规范使用短信验证码的通知"), "parse_empty"),
+        # 页头挂个登录小框：照常读
+        (_long_page("关于开展申报工作的通知", "<input type='password' name='p'>"), "ok"),
+    ],
+    ids=["captcha-notice", "login-widget"],
+)
+def test_normal_pages_mentioning_gates_do_not_pause(tmp_path, html, expected):
+    path = str(tmp_path / "pause.json")
+
+    class Fake:
+        def fetch(self, url):
+            return _html_result(url, html)
+
+    outcomes = _fetch_outcomes([(1, "https://a.gov.cn/1")], Fake(), 1, pause=_SitePause(path))
+    assert outcomes[1].status == expected, outcomes[1].failure_reason
+    assert _SitePause(path).expiry("a.gov.cn") is None
+
+
+@pytest.mark.parametrize(
+    "robots",
+    [
+        '{"captcha": false, "rules": []}',  # JSON 的键名不算
+        "本站说明：" + "我们的防火墙会记录异常访问。" * 30,  # 超过 300 字的正常文字
+    ],
+    ids=["json-key", "long-text"],
+)
+def test_robots_text_gate_matches_detail_rules(robots):
+    def handler(request):
+        if request.url.path == "/robots.txt":
+            return httpx.Response(200, text=robots, headers={"content-type": "text/plain"})
+        return httpx.Response(200, text="<html><body>ok</body></html>")
+
+    with PoliteFetcher(
+        "test",
+        per_host_interval=0,
+        per_address_interval=0,
+        transport=httpx.MockTransport(handler),
+        resolver=lambda host: ["1.2.3.4"],
+    ) as fetcher:
+        assert fetcher.fetch("https://a.gov.cn/list.html").status == "ok"

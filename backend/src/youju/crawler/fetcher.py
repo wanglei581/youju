@@ -4,6 +4,7 @@ import contextlib
 import fcntl
 import hashlib
 import ipaddress
+import json
 import logging
 import math
 import os
@@ -131,6 +132,39 @@ def html_gate(html: str) -> str | None:
     return None
 
 
+def _json_texts(value, budget=200):
+    """JSON 里的字符串值（不看键），最多 budget 个。"""
+    out, stack = [], [value]
+    while stack and len(out) < budget:
+        item = stack.pop()
+        if isinstance(item, str):
+            out.append(item)
+        elif isinstance(item, dict):
+            stack.extend(item.values())
+        elif isinstance(item, list):
+            stack.extend(item)
+    return out
+
+
+def text_gate(text: str) -> bool:
+    """不是网页的回应（纯文字、JSON）是不是拦截页、验证码页：拦截页都很短，只看 300 字以内的；JSON
+    只看值（captcha 这类键名不算）；看验证码、拦截、防火墙、访问被拒绝这类字。robots.txt 和详情页
+    共用。"""
+    from youju.crawler.detail import _PROTECTION
+    from youju.govsites.platform import _CAPTCHA
+
+    head = text.lstrip("\ufeff \t\r\n")
+    values = [head]
+    if head[:1] in ("{", "["):
+        with contextlib.suppress(ValueError, RecursionError):
+            values = _json_texts(json.loads(head))
+    return any(
+        len(value) <= 300
+        and bool(_GATE_WORDS.search(value) or _CAPTCHA.search(value) or _PROTECTION.search(value))
+        for value in values
+    )
+
+
 def robots_gate(result: "FetchResult") -> str | None:
     """robots.txt 回 2xx 的不是 robots 文件、是防护页或验证码（D-013：网站拦着我们）：给原因。回的是
     普通网页（没有 robots.txt 时常见的"软 404"，比如首页）照旧当没有 robots；网页只有整页就是一个
@@ -138,11 +172,8 @@ def robots_gate(result: "FetchResult") -> str | None:
     body = decode_html(result.content, result.content_type).lstrip("\ufeff \t\r\n")
     if body.startswith("<"):
         return html_gate(body)
-    if body and not _ROBOTS_LINE.search(body):
-        from youju.govsites.platform import _CAPTCHA
-
-        if _GATE_WORDS.search(body) or _CAPTCHA.search(body):
-            return "拦截页"
+    if body and not _ROBOTS_LINE.search(body) and text_gate(body):
+        return "拦截页"
     return None
 
 
