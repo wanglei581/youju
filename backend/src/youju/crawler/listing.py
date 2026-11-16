@@ -249,6 +249,7 @@ class _Page:
         self.today = today
         self._hrefs: dict[etree._Element, set[str]] = {}
         self._popups: dict[etree._Element, list[tuple[frozenset, frozenset[str]]]] = {}
+        self._visible: dict[etree._Element, frozenset[str]] = {}
 
     def link(self, a: etree._Element) -> tuple[str, str] | None:
         url = normalize_url(self.page_url, a.get("href"))
@@ -314,23 +315,38 @@ class _Page:
             self._popups[cell] = cached
         return cached
 
-    def hidden_popups(self, a: etree._Element) -> tuple[set[etree._Element], set[str]]:
-        """和 a 同在一个格子（父元素）里、藏起来又带着链接的弹层（泸州政府文件列表每行的"政策解读"
-        弹层；里面有带地址的链接就算，"政策解读"这种短链接也算）：返回（弹层下面的所有节点，弹层里的
-        文件链接）。a 自己所在的弹层不算。
+    def _visible_urls(self, cell: etree._Element) -> frozenset[str]:
+        """格子里看得见的文件链接（它和它的上级到格子为止都没藏起来）。按格子缓存。"""
+        cached = self._visible.get(cell)
+        if cached is None:
+            cached = frozenset(
+                link[1]
+                for b in cell.iter("a")
+                if not _hidden_up_to(b, cell) and (link := self.link(b)) is not None
+            )
+            self._visible[cell] = cached
+        return cached
+
+    def hidden_popups(self, a: etree._Element, url: str) -> tuple[set[etree._Element], set[str]]:
+        """和 a 同在一个格子（父元素）里、藏起来又装着别的文件链接的弹层（泸州政府文件列表每行的
+        "政策解读"弹层，里面是解读的链接）：返回（弹层下面的所有节点，弹层里别的文件的链接）。
+
+        "别的文件"指既不是这一行自己、也不是格子里看得见的文件。只有"分享""政策解读"这类短链接、或者
+        只是同一份文件的卡片，不算弹层，照 main 认。a 自己所在的弹层也不算。
 
         找"一行"时，弹层里的链接不算别的文件链接（不然这一行会被当成已经走到了列表容器，日期找不到，
-        整行漏掉），弹层里写的日期也先不算这一行的日期。只藏着日期、没有链接的不算弹层：有的网站把
-        发布日期写在藏起来的 span 里（苏州工信首页）。"""
+        整行漏掉），弹层里写的日期也不算这一行的日期（那是那份文件的）。"""
         cell = a.getparent()
         nodes: set[etree._Element] = set()
         urls: set[str] = set()
         if cell is None:
             return nodes, urls
+        visible = self._visible_urls(cell)
         for sub, links in self._cell_popups(cell):
-            if a not in sub:
+            others = links - {url} - visible
+            if a not in sub and others:
                 nodes |= sub
-                urls |= links
+                urls |= others
         return nodes, urls
 
     def date_node(
@@ -364,11 +380,9 @@ class _Page:
         self, a: etree._Element, title: str, url: str
     ) -> tuple[etree._Element | None, date | None, bool]:
         """向上找"一行"：只含这一条文件链接、并且写着日期的祖先元素。返回（行，日期，是否写明年份）。"""
-        hidden, companions = self.hidden_popups(a)
-        # 弹层里指向这同一份文件的链接（悬浮卡片里再写一遍标题）不算别的文件
-        companions.discard(url)
+        hidden, companions = self.hidden_popups(a, url)
         found = self._climb(a, title, url, hidden, companions)
-        if found[0] is None and hidden and companions:
+        if found[0] is None and companions:
             # 弹层里有别的文件链接（那里的日期是那份文件的，不用）、提示文字里写着发表时间，同一层的
             # 别的行日期写在行里：行按结构认（往上到再上一层就有别的文件为止），日期用提示文字里的，
             # 这样和别的行算同一张列表。别的行也只靠提示文字记日期时不这样认，和它们一样交给外面处理
@@ -376,11 +390,6 @@ class _Page:
             row = self._row_of(a, url, companions) if tip is not None else None
             if row is not None and self._siblings_dated(row):
                 found = (row, tip, tip_full)
-        elif found[0] is None and hidden:
-            # 弹层外面没有日期、弹层里也没有别的文件链接（只有"分享""政策解读"这类短链接）：行和日期
-            # 都照 main（连弹层一起看）。弹层里的日期可能是悬浮卡片里真正的发布日期，也可能是解读的
-            # 日期，分不开。弹层里有别的文件链接时不回头看：那里的日期是那份文件的
-            found = self._climb(a, title, url, set(), companions)
         return found
 
     def _siblings_dated(self, row: etree._Element) -> bool:
@@ -393,10 +402,11 @@ class _Page:
             if sibling is row or sibling.tag != row.tag:
                 continue
             for b in sibling.iter("a"):
-                if self.link(b) is None:
+                link_b = self.link(b)
+                if link_b is None:
                     continue
                 rows += 1
-                popups, _ = self.hidden_popups(b)  # 别的行弹层里写的日期不算行里的日期
+                popups, _ = self.hidden_popups(b, link_b[1])  # 别的行弹层里写的日期不算行里的日期
                 if self.date_node(sibling, b, set(b.iterancestors()), popups)[0] is not None:
                     dated += 1
                 break
