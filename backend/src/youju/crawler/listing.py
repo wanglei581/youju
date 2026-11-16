@@ -67,13 +67,15 @@ _COMPANION_LINK = re.compile(
 )
 # 行里藏起来的弹层（style 里实际生效的 display 是 none）：泸州政府文件列表每行的"政策解读"弹层，
 # 里面是解读的链接
-_DISPLAY = re.compile(r"display\s*:\s*([a-z-]+)\s*(!\s*important)?", re.IGNORECASE)
+_DISPLAY = re.compile(r"(?:^|;)\s*display\s*:\s*([a-z-]+)\s*(!\s*important)?", re.IGNORECASE)
+_CSS_COMMENT = re.compile(r"/\*.*?\*/", re.S)
 
 
 def _hidden(el: etree._Element) -> bool:
     """元素自己的 style 里实际生效的 display 是不是 none：带 !important 的里取最后一个，
     没有就取最后一个（"display:none;display:block"最后是显示的）。"""
-    found = _DISPLAY.findall(el.get("style") or "")
+    # 注释里的、"--display"这种自定义属性不算
+    found = _DISPLAY.findall(_CSS_COMMENT.sub(" ", el.get("style") or ""))
     if not found:
         return False
     important = [value for value, imp in found if imp]
@@ -375,15 +377,10 @@ class _Page:
             if row is not None and self._siblings_dated(row):
                 found = (row, tip, tip_full)
         elif found[0] is None and hidden:
-            # 弹层外面没有日期、弹层里也没有别的文件链接（只有"分享""政策解读"这类短链接）：
-            # 行照原来认（连弹层一起看）。提示文字里写着发表时间就用它，没写才用弹层里的（如悬浮卡片
-            # 里写着这一行唯一的"发布日期"）。弹层里有别的文件链接时不回头看：那里的日期是那份文件的
-            row, day, full = self._climb(a, title, url, set(), companions)
-            tip, tip_full = _tooltip_date(a, self.today)
-            if row is not None and tip is not None:
-                found = (row, tip, tip_full)
-            elif tip is None:
-                found = (row, day, full)
+            # 弹层外面没有日期、弹层里也没有别的文件链接（只有"分享""政策解读"这类短链接）：行和日期
+            # 都照 main（连弹层一起看）。弹层里的日期可能是悬浮卡片里真正的发布日期，也可能是解读的
+            # 日期，分不开。弹层里有别的文件链接时不回头看：那里的日期是那份文件的
+            found = self._climb(a, title, url, set(), companions)
         return found
 
     def _siblings_dated(self, row: etree._Element) -> bool:

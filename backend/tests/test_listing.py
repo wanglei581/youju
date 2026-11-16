@@ -1116,23 +1116,22 @@ def test_hidden_titled_link_next_to_a_bare_detail_link_is_kept() -> None:
 
 
 def test_tooltip_publish_time_wins_over_a_date_inside_a_hidden_popup() -> None:
-    # 提示文字里写着发表时间，每行弹层里另有日期（解读的）：用提示文字里的
+    # 提示文字里写着发表时间，每行弹层里是一份解读、写着解读的日期：弹层里的日期是那份文件的，用提示文字里的
     html = """<ul class="list">
-      <li><a title="标题：关于项目申报工作的通知 点击数：1 发表时间：2026-10-21" href="/a/1.html">关于项目申报工作的通知</a><div style="display:none"><a href="/b/2.html">政策解读</a><span>2026-09-01</span></div></li>
-      <li><a title="标题：关于公布第二批名单的通知 点击数：1 发表时间：2026-10-20" href="/a/3.html">关于公布第二批名单的通知</a><div style="display:none"><a href="/b/4.html">政策解读</a><span>2026-09-02</span></div></li>
-      <li><a title="标题：关于征集典型案例的通知 点击数：1 发表时间：2026-10-19" href="/a/5.html">关于征集典型案例的通知</a><div style="display:none"><a href="/b/6.html">政策解读</a><span>2026-09-03</span></div></li>
+      <li><a title="标题：关于项目申报工作的通知 点击数：1 发表时间：2026-10-21" href="/a/1.html">关于项目申报工作的通知</a><div style="display:none"><a href="/b/2.html">关于项目申报工作的政策解读</a><span>2026-09-01</span></div></li>
+      <li><a title="标题：关于公布第二批名单的通知 点击数：1 发表时间：2026-10-20" href="/a/3.html">关于公布第二批名单的通知</a><div style="display:none"><a href="/b/4.html">关于第二批名单的政策解读</a><span>2026-09-02</span></div></li>
+      <li><a title="标题：关于征集典型案例的通知 点击数：1 发表时间：2026-10-19" href="/a/5.html">关于征集典型案例的通知</a><div style="display:none"><a href="/b/6.html">关于典型案例征集的政策解读</a><span>2026-09-03</span></div></li>
     </ul>"""
     items = extract_items(html, "http://example.gov.cn/a/", today=date(2026, 11, 16))
-    assert [(i.title, i.publish_date) for i in items] == [
-        ("关于项目申报工作的通知", date(2026, 10, 21)),
-        ("关于公布第二批名单的通知", date(2026, 10, 20)),
-        ("关于征集典型案例的通知", date(2026, 10, 19)),
-    ]
+    # 三份文件的日期用提示文字里的，不被弹层里解读的日期顶掉（弹层里写着日期的解读链接照 main 也会读成一条）
+    dates = {i.url: i.publish_date for i in items}
+    assert dates["http://example.gov.cn/a/1.html"] == date(2026, 10, 21)
+    assert dates["http://example.gov.cn/a/3.html"] == date(2026, 10, 20)
+    assert dates["http://example.gov.cn/a/5.html"] == date(2026, 10, 19)
 
 
 def test_row_with_tooltip_date_and_hidden_popup_stays_in_the_same_list() -> None:
-    # 第一行日期只写在提示文字里、行里还藏着带日期的弹层，别的行日期写在行里：第一行照样和别的行
-    # 算一张列表，日期用提示文字里的
+    # 第一行日期写在提示文字里、行里还藏着带日期的弹层（只有"政策解读"短链接），别的行日期写在行里
     html = """<ul class="list">
       <li><a href="/a/1.html" title="标题：关于项目申报的通知 点击数：1 发表时间：2026-10-21">关于项目申报的通知</a><div style="display:none"><a href="/x/1.html">政策解读</a><span>2026-09-01</span></div></li>
       <li><a href="/a/2.html">关于公布第二批名单的通知</a><span>2026-10-20</span></li>
@@ -1140,11 +1139,13 @@ def test_row_with_tooltip_date_and_hidden_popup_stays_in_the_same_list() -> None
       <li><a href="/a/4.html">关于开展第三批项目申报的通知</a><span>2026-10-18</span></li>
     </ul>"""
     items = extract_items(html, "http://example.gov.cn/a/", today=date(2026, 11, 16))
-    assert [(i.title, i.publish_date) for i in items] == [
-        ("关于项目申报的通知", date(2026, 10, 21)),
-        ("关于公布第二批名单的通知", date(2026, 10, 20)),
-        ("关于征集典型案例的通知", date(2026, 10, 19)),
-        ("关于开展第三批项目申报的通知", date(2026, 10, 18)),
+    # 弹层里只有"政策解读"短链接：第一行照 main 和别的行算一张列表；日期照 main 取弹层里的
+    # （分不开那是解读的日期还是悬浮卡片里真正的发布日期）
+    assert [i.title for i in items] == [
+        "关于项目申报的通知",
+        "关于公布第二批名单的通知",
+        "关于征集典型案例的通知",
+        "关于开展第三批项目申报的通知",
     ]
 
 
@@ -1271,3 +1272,34 @@ def test_display_none_overridden_later_in_the_style_is_visible() -> None:
         i.url for i in extract_items(html, "http://example.gov.cn/a/", today=date(2026, 11, 16))
     }
     assert "http://example.gov.cn/a/1.htm?assistant=true" in urls
+
+
+def test_card_date_with_only_a_share_link_follows_main_over_the_tooltip() -> None:
+    # 藏起来的卡片里只有"分享"链接和发布日期，提示文字里另写着一个日期：照 main 用卡片里的
+    html = """<ul class="list">
+      <li><a href="/a/1.html" title="标题：关于项目申报的通知 点击数：0 发表时间：2026-09-01">关于项目申报的通知</a><div style="display:none"><a href="/a/1.html#share">分享</a><span>2026-10-21</span></div></li>
+      <li><a href="/a/2.html" title="标题：关于公布第二批名单的通知 点击数：0 发表时间：2026-09-02">关于公布第二批名单的通知</a><div style="display:none"><a href="/a/2.html#share">分享</a><span>2026-10-20</span></div></li>
+      <li><a href="/a/3.html" title="标题：关于征集典型案例的通知 点击数：0 发表时间：2026-09-03">关于征集典型案例的通知</a><div style="display:none"><a href="/a/3.html#share">分享</a><span>2026-10-19</span></div></li>
+    </ul>"""
+    items = extract_items(html, "http://example.gov.cn/a/", today=date(2026, 11, 16))
+    assert [(i.title, i.publish_date) for i in items] == [
+        ("关于项目申报的通知", date(2026, 10, 21)),
+        ("关于公布第二批名单的通知", date(2026, 10, 20)),
+        ("关于征集典型案例的通知", date(2026, 10, 19)),
+    ]
+
+
+def test_display_none_in_a_comment_or_custom_property_is_not_hidden() -> None:
+    # "display:block;/* display:none */" 和 "--display:none" 都不算藏着
+    from lxml import html as lhtml
+
+    from youju.crawler.listing import _hidden
+
+    for style, hidden in (
+        ("display:block;/* display:none */", False),
+        ("--display:none", False),
+        ("color:red; display : none", True),
+        ("display:none;display:block", False),
+        ("display:none !important;display:block", True),
+    ):
+        assert _hidden(lhtml.fromstring(f'<div style="{style}">x</div>')) is hidden, style
