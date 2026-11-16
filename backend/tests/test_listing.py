@@ -1342,6 +1342,17 @@ def test_what_the_old_reading_kept_is_never_lost() -> None:
     assert [i.title for i in items] == ["关于第4号文件的通知", "关于第5号文件的通知"]
 
 
+def test_same_url_twice_keeps_the_date_the_old_reading_gave() -> None:
+    # 同一份文件出现两次、日期不同：再读的一遍让前面那条（旧日期）排到前头时，原来读出的日期变了，
+    # 照原来
+    html = """<ul>
+      <li><a href="/a">关于政策的通知 2026-01-01</a><a class="tertonAIReaderFlag" href="/a?assistant=true">| AI阅读</a><span>2026-01-01</span></li>
+      <li><a href="/a">关于政策的通知</a><span>2026-02-01</span></li>
+    </ul>"""
+    items = extract_items(html, "http://e.cn/", today=date(2026, 11, 16))
+    assert [(i.url, i.publish_date) for i in items] == [("http://e.cn/a", date(2026, 2, 1))]
+
+
 def test_lists_keep_their_page_order_when_they_score_the_same() -> None:
     # 带附带链接的行等别的行分完才归块；归完以后列表块照原来按页面上的先后排，评分一样时取靠前的那块。
     # main 读的也是第一张表（外加三条"| AI阅读"）

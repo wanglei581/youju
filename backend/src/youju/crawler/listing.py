@@ -857,8 +857,9 @@ def extract_items(
         items = json_items
     elif companions:
         # 页面上有附带链接（泸州弹层里的解读、福建的"| AI阅读"）：不看它们再读一遍。原来读出的
-        # （去掉附带链接）一条不少，才用新读出的，不然照原来
+        # （去掉附带链接）一条不少、标题和日期也一样，才用新读出的，不然照原来
         _, better, _ = _extract_heuristic(page, require_date, companions=True)
-        if {i.url for i in items} <= {i.url for i in better}:
+        new = {(i.title, i.url, i.publish_date) for i in _dedupe(better)}
+        if all((i.title, i.url, i.publish_date) in new for i in _dedupe(items)):
             items = better
     return _dedupe(items)
