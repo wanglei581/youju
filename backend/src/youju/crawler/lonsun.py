@@ -129,8 +129,11 @@ _PROVINCE_LABELS = frozenset(
 )
 
 
-def catalog_host_allowed(page_url: str, script_url: str, catalog_host: str | None = None) -> bool:
-    """栏目树允许同主机，或同一个地方政府域名下的主机。"""
+def catalog_host_allowed(
+    page_url: str, script_url: str, catalog_host: str | None = None, *, county: bool = False
+) -> bool:
+    """栏目树允许同主机，或同一个市政府域名下的主机（协调会话 11/13 口径 2）。区县站（county）
+    跨主机只认来源配置的本市白名单门户（口径 3），不按同城域名放行。"""
     try:
         page, script = urlsplit(page_url), urlsplit(script_url)
         if (
@@ -150,6 +153,8 @@ def catalog_host_allowed(page_url: str, script_url: str, catalog_host: str | Non
             return True
         if a == b:
             return a.endswith(".gov.cn")
+        if county:
+            return False
         a_parts, b_parts = a.split("."), b.split(".")
         return (
             len(a_parts) >= 4
@@ -1631,6 +1636,40 @@ def _method_references(source, names):
     return found
 
 
+def _load_trigger(tokens, values, mask=()):
+    """这段代码在加载时替用户触发点击这类事件没有（.trigger('click')、.click() 这类不带参数的
+    简写、dispatchEvent；事件名认不出的也算，自定义事件不算；用户点了才跑的事件处理函数里的
+    不算）。mask：不看的记号范围。"""
+    spans = [*_handler_spans(tokens, values), *mask]
+    for k in range(len(values) - 2):
+        if values[k] != "." or any(a < k < b for a, b in spans):
+            continue
+        name = values[k + 1]
+        if name in ("trigger", "triggerHandler") and values[k + 2] == "(":
+            first = values[k + 3] if k + 3 < len(values) else ""
+            if first[:1] in ("'", '"'):
+                events = {e.split(".")[0] for e in _string_literal(first).split()}
+                if not events & (_USER_EVENTS | {"focus", "blur"}):
+                    continue  # 自定义事件（validate 这类）：碰不到"点了才跑"的处理函数
+            return True
+        if (name in _TRIGGERS and values[k + 2] == "(") or (
+            name in _EVENT_SHORTHANDS | {"focus", "blur"} and values[k + 2 : k + 4] == ["(", ")"]
+        ):
+            return True
+    return False
+
+
+def _getdata_deferred(init_body):
+    """init 是不是把 me.getData() 放在回调里（.done 这类）推迟着跑：那样页面别的脚本有机会在发
+    列表请求之前跑。"""
+    tokens = _js_tokens(init_body)
+    values = _values(tokens)
+    return any(
+        values[k : k + 3] == ["me", ".", "getData"] and _inside_function(init_body, tokens[k].start)
+        for k in range(len(values) - 2)
+    )
+
+
 def _me_alias_problem(source, method_names=frozenset()):
     """me、this 只许直接用成员（me.x、me['x']、this.x）；除了开头的 var me = this，把 me 或 this
     整个当值用（赋给别的变量、当参数传、放进数组或对象、返回）或者给 me 重新赋值的，后面经它调了
@@ -2161,38 +2200,85 @@ def _attribute_scripts(doc):
     return found
 
 
+def _local_name_ranges(tokens, values, names):
+    """names 里各个名字在哪些记号范围里是局部变量：函数参数（在那个函数里）、var 声明和函数声明
+    （在声明所在的那个函数里，脚本顶层的就是整段）、函数表达式的名字（在它自己里面）。let、const、
+    catch 的参数不算（宁可当成没遮蔽）。{名字: [(开始, 结束)]}，开始和结束都不含。"""
+    functions = []
+    for f, value in enumerate(values):
+        if value == "function":
+            found = _function_at(tokens, values, f)
+            if found is not None:
+                paren, body, close = found
+                functions.append((f, paren, _matching_token(tokens, paren), body, close))
+
+    def scope_of(position):
+        best = (-1, len(values))
+        for _f, _paren, _pclose, body, close in functions:
+            if body < position < close and body > best[0]:
+                best = (body, close)
+        return best
+
+    ranges = {name: [] for name in names}
+    for f, paren, pclose, body, close in functions:
+        for k in range(paren + 1, pclose):
+            if values[k] in names and values[k - 1] in ("(", ","):
+                ranges[values[k]].append((paren, close))  # 参数表和函数体里
+        name = values[f + 1] if f + 1 < len(values) else ""
+        if name in names:
+            ranges[name].append((body, close))
+            if f == 0 or values[f - 1] in (";", "{", "}", ")"):
+                ranges[name].append(scope_of(f))  # 函数声明：名字属于外层
+    for d, value in enumerate(values):
+        if value != "var":
+            continue
+        depth, k, expect = 0, d + 1, True
+        while k < len(values):
+            token = values[k]
+            if token in ("(", "[", "{"):
+                depth += 1
+            elif token in (")", "]", "}"):
+                if depth == 0:
+                    break
+                depth -= 1
+            elif depth == 0 and token == ";":
+                break
+            elif depth == 0 and token == ",":
+                expect = True
+                k += 1
+                continue
+            if expect and depth == 0 and token in names:
+                ranges[token].append(scope_of(d))
+            expect = False
+            k += 1
+    return ranges
+
+
 def _global_object_problem(tokens, values):
     """整个改 window 这类全局对象（$.extend(window, …)、Object.assign(window, …)、window[k] = …），
     或者把它整个当值用（var w = window、交给函数），改了哪些全局就看不出来，不认。只有 $(window)
     挂事件、取尺寸这种可以（经它 .prop、.attr 改属性的不行），typeof window、window === top 这种
-    比较也可以。self、parent 这类在这段脚本里被当成普通变量（var self = this）的不算全局对象。"""
-    shadowed = set()
-    for i, value in enumerate(values):
-        after = values[i + 1] if i + 1 < len(values) else ""
-        if value in ("var", "let", "const") and after in _GLOBAL_OBJECTS:
-            shadowed.add(after)
-        elif value == "function":
-            if after in _GLOBAL_OBJECTS:
-                shadowed.add(after)  # function self() {}
-            found = _function_at(tokens, values, i)
-            if found is not None:
-                params = values[found[0] + 1 : _matching_token(tokens, found[0])]
-                shadowed.update(v for v in params if v in _GLOBAL_OBJECTS)
-        elif value in _GLOBAL_OBJECTS and after == "=" and (i == 0 or values[i - 1] != "."):
-            shadowed.add(value)  # var a = 1, self = this 这类
-    shadowed -= {"window", "globalThis"}
-    present = set(_GLOBAL_OBJECTS) - shadowed
-    for path, _op, _k in _write_sites(tokens, values):
-        if path[0] in present and (len(path) == 1 or path[1] == "*"):
+    比较也可以。self、parent 这类在那个位置是局部变量（var self = this、函数参数）的不算全局对象；
+    按词法作用域判断，外层的 self 照样是窗口。"""
+    shadowable = tuple(g for g in _GLOBAL_OBJECTS if g not in ("window", "globalThis"))
+    local = _local_name_ranges(tokens, values, shadowable)
+
+    def global_at(name, k):
+        return name in _GLOBAL_OBJECTS and not any(a < k < b for a, b in local.get(name, ()))
+
+    for path, _op, k in _write_sites(tokens, values):
+        if global_at(path[0], k) and (len(path) == 1 or path[1] == "*"):
             return f"整个改了 {path[0]}，看不出改了哪些全局"
     compare = ("==", "!=", "===", "!==")
     for i, value in enumerate(values):
-        if value not in present or i and values[i - 1] == ".":
+        if not global_at(value, i) or i and values[i - 1] == ".":
             continue
         before = values[i - 1] if i else ""
         after = values[i + 1] if i + 1 < len(values) else ""
         if after in (".", "[") or before == "typeof" or before in compare or after in compare:
             continue
+        if before == "function":
+            continue  # 函数表达式自己的名字（function self() {}），不是在用它
         if values[max(0, i - 2) : i] in (["$", "("], ["jQuery", "("]) and after == ")":
             chain = values[i - 2 : _chain_end(tokens, i - 2)]
             if any(
@@ -3251,7 +3337,7 @@ def _instantiated_on_load(scripts, token_sets, tree_index):
 
 
 def find_lonsun_api(
-    html: str, page_url: str, column_url: str, *, catalog_host=None, _diagnosis=None
+    html: str, page_url: str, column_url: str, *, catalog_host=None, county=False, _diagnosis=None
 ):
     """识别已确认的栏目页，返回栏目树请求及后续执行所需计划。"""
     from urllib.parse import urljoin
@@ -3412,6 +3498,24 @@ def find_lonsun_api(
             problem = _attribute_script_problem(source, functions, widget)
             if problem:
                 return fail(f"页面元素属性里的脚本（onclick 这类、javascript: 链接）{problem}")
+        init_method = _method(tree_methods, "init")
+        if init_method is not None and _getdata_deferred(init_method[2]):
+            # getData 推迟到回调里跑：别的脚本加载时替用户点一下，PublicTree 挂的点击处理函数就可能
+            # 在发列表请求之前跑了（我们只把它们当"点了才跑"），跟不上
+            for tokens in token_sets:
+                values = _values(tokens)
+                mask = []
+                if any(
+                    values[i : i + 3] == ["function", "PublicTree", "("]
+                    for i in range(len(values) - 2)
+                ):
+                    mask = list(_method_spans(tokens).values())  # PublicTree 的方法另有规则查
+                if _load_trigger(tokens, values, mask):
+                    return fail("getData 推迟到回调里跑，页面别的脚本又在加载时替用户触发事件")
+            for source in attribute_scripts:
+                tokens = _js_tokens(source)
+                if _load_trigger(tokens, _values(tokens)):
+                    return fail("getData 推迟到回调里跑，页面元素属性里的脚本又替用户触发事件")
         constructors = []
         extends = 0
         for n, tokens in enumerate(token_sets):
@@ -3577,10 +3681,20 @@ def find_lonsun_api(
             if re.search(r"/[0-9]+/" + re.escape(spec[0]) + r"\.js$", parts.path):
                 if urlsplit(page_url).scheme == "https" and parts.scheme == "http":
                     return fail("HTTPS 页面引用了 HTTP 栏目树脚本")
-                if not catalog_host_allowed(page_url, url, catalog_host):
+                if not catalog_host_allowed(page_url, url, catalog_host, county=county):
                     page_host = urlsplit(page_url).hostname
-                    if catalog_host_allowed(f"https://{page_host}/", f"https://{parts.hostname}/"):
+                    if catalog_host_allowed(
+                        f"https://{page_host}/",
+                        f"https://{parts.hostname}/",
+                        catalog_host,
+                        county=county,
+                    ):
                         return fail("栏目树脚本的协议、端口或用户名密码不符合要求")
+                    if county:
+                        return fail(
+                            f"区县站的栏目树只认来源配置的本市白名单门户：栏目页 {page_host}，"
+                            f"脚本 {parts.hostname}；没配置、配置的不是本市门户，或本市不在白名单里"
+                        )
                     return fail(
                         f"栏目树脚本不在同一个政府网站域名上：栏目页 {page_host}，"
                         f"脚本 {parts.hostname}；脚本不是本市白名单门户，"
@@ -3609,7 +3723,12 @@ def find_lonsun_api(
 
 
 def lonsun_unrecognized_reason(
-    html: str, page_url: str, column_url: str, *, catalog_host: str | None = None
+    html: str,
+    page_url: str,
+    column_url: str,
+    *,
+    catalog_host: str | None = None,
+    county: bool = False,
 ) -> str | None:
     """仅对龙讯栏目页给出第一步识别失败的原因。"""
     if column_spec(column_url) is None:
@@ -3641,7 +3760,14 @@ def lonsun_unrecognized_reason(
         return None
     reasons = []
     if (
-        find_lonsun_api(html, page_url, column_url, catalog_host=catalog_host, _diagnosis=reasons)
+        find_lonsun_api(
+            html,
+            page_url,
+            column_url,
+            catalog_host=catalog_host,
+            county=county,
+            _diagnosis=reasons,
+        )
         is not None
     ):
         return None

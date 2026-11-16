@@ -255,13 +255,16 @@ def _items_via_adapter(
     catalog_cache: CatalogCache | None = None,
     now: datetime | None = None,
     catalog_host: str | None = None,
+    county: bool = False,
 ) -> _AdapterResult:
     """栏目页自己声明了集约化平台的列表接口（见 crawler/adapters.py）时，按它取列表。
 
     只请求页面写明的那个接口地址、参数原样照页面（D-128 读取护栏 ①），不另外构造请求；数字广东的
     地址只用页面写明的值、照它自己平台脚本的拼法得到，和它自己的页面发出的请求一样（D-013，见
     crawler/adapters.py 开头的说明）。"""
-    api = api or find_list_api(page.text, page.final_url or url, url, catalog_host=catalog_host)
+    api = api or find_list_api(
+        page.text, page.final_url or url, url, catalog_host=catalog_host, county=county
+    )
     if api is None or parser_config.get(LIST_API_OPEN_KEY) != api.adapter:
         # 没认出接口，或来源没标"经接口读"（D-128）：不请求接口（调用的地方本来就先查过标记）
         return _AdapterResult([])
@@ -363,6 +366,7 @@ def check_source(
     catalog_host = city_catalog_host(
         source.province, source.city, parser_config.get("lonsun_catalog_host")
     )
+    county = source.level == "区县级"
     if catalog_cache is not None and parser_config.get(LIST_API_OPEN_KEY) == LONSUN:
         # 经龙讯接口读的来源：栏目页和栏目树、列表接口共用这一轮的主机护栏（这个主机这一轮拒绝过
         # 我们就不去，栏目页被拒或回防护页也记下）；栏目页照常跟着跳转，跳转不算被拒
@@ -391,7 +395,7 @@ def check_source(
         )
         if attempted_api:
             api = find_list_api(
-                result.text, result.final_url or url, url, catalog_host=catalog_host
+                result.text, result.final_url or url, url, catalog_host=catalog_host, county=county
             )
         if gkmlpt and api is None:
             # 部门页上认不出数字广东的列表接口（改版、分类没了或跳到别处）：不请求接口，记读不出、
@@ -402,7 +406,11 @@ def check_source(
             and api is None
             and (
                 reason := lonsun_unrecognized_reason(
-                    result.text, result.final_url or url, url, catalog_host=catalog_host
+                    result.text,
+                    result.final_url or url,
+                    url,
+                    catalog_host=catalog_host,
+                    county=county,
                 )
             )
         ):
@@ -436,6 +444,7 @@ def check_source(
                 catalog_cache,
                 started,
                 catalog_host=catalog_host,
+                county=county,
             )
             note = parser_config.get(LIST_API_REFUSED_KEY)
             moved = not isinstance(note, dict) or note.get("url") != via.api_url

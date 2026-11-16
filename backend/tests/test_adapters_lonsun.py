@@ -1500,7 +1500,9 @@ def test_spotcheck_existing_source_uses_city_fallback(monkeypatch):
 
     from youju.govsites import spotcheck
 
-    source = SimpleNamespace(id=1, url=BASE, province="安徽", city="芜湖", parser_config={})
+    source = SimpleNamespace(
+        id=1, url=BASE, level="区县级", province="安徽", city="芜湖", parser_config={}
+    )
 
     class Session:
         def scalars(self, query):
@@ -1511,12 +1513,12 @@ def test_spotcheck_existing_source_uses_city_fallback(monkeypatch):
 
     hosts = []
 
-    def first(cache, url, today, reasons, *, catalog_host=None):
-        hosts.append(catalog_host)
+    def first(cache, url, today, reasons, *, catalog_host=None, county=False):
+        hosts.append((catalog_host, county))
 
     monkeypatch.setattr(spotcheck, "_first_list_item", first)
     spotcheck.evidence_for({"栏目网址": BASE}, Session(), None, TODAY)
-    assert hosts == ["www.wuhu.gov.cn"]
+    assert hosts == [("www.wuhu.gov.cn", True)]
 
 
 def test_navigation_values_are_used_in_conditions():
@@ -2526,3 +2528,66 @@ def test_ui_method_using_other_methods_refused():
     meta = "setMeta: function () {\n      var me = this;"
     for extra in ("(me.getList)();", "me['getNewList']();", "var f = me.open;"):
         assert _refused(page.replace(meta, meta + " " + extra, 1)), extra
+
+
+def test_county_sources_need_configured_portal_even_under_city_domain():
+    from youju.crawler.lonsun import find_lonsun_api, lonsun_unrecognized_reason
+
+    page = fixture("wuhu_page.html")
+    url = "https://county.wuhu.gov.cn/public/column/6596381?type=4&catId=6732111&action=list"
+    script = "https://www.wuhu.gov.cn/openness/6787891/6596381.js?v=1558"
+    # 省、市级来源：同一个市政府域名下的门户可以读（协调会话 11/13 口径 2）
+    assert catalog_host_allowed(url, script)
+    assert find_lonsun_api(page, url, url) is not None
+    # 区县级来源：跨主机只认配置的本市白名单门户（口径 3），同城域名后缀不放行
+    assert not catalog_host_allowed(url, script, county=True)
+    assert find_lonsun_api(page, url, url, county=True) is None
+    reason = lonsun_unrecognized_reason(page, url, url, county=True)
+    assert "区县站" in reason
+    assert catalog_host_allowed(url, script, "www.wuhu.gov.cn", county=True)
+    assert find_lonsun_api(page, url, url, catalog_host="www.wuhu.gov.cn", county=True)
+    # 同一主机的照常
+    assert catalog_host_allowed(url, url.replace("/public/column", "/x.js"), county=True)
+
+
+@pytest.mark.parametrize(
+    "script,recognized",
+    [
+        # 函数参数只在函数里遮蔽：外面的 self 是窗口
+        ("function f(self) {} var w = self; w.GLOBAL_CONTEXTPATH = '/other';", False),
+        ("function f() { var self = 1; } top.GLOBAL_CONTEXTPATH = '/x'; frames['a'] = 1;", False),
+        ("function g(a, self) { return self; } g(1, self);", False),
+        # 在自己的作用域里当普通变量用的照常
+        ("function g() { var self = this; return self; }", True),
+        ("var self = this; function h(x) { return x; } h(self);", True),
+        ("function k(parent) { return [parent]; }", True),
+        ("var a = 1, self = {}; self.x = 1; [self];", True),
+    ],
+)
+def test_global_object_names_are_lexically_scoped(script, recognized):
+    assert (_found(_jx(extra=f"<script>{script}</script>")) is not None) is recognized, script
+
+
+def test_deferred_getdata_with_load_time_triggers_refused():
+    from youju.crawler.lonsun import find_lonsun_api
+
+    page = fixture("wuhu_page.html")
+    assert _wuhu_found(page) is not None  # 芜湖：getData 放在 .done 回调里推迟着跑
+    for extra in (
+        "<script>$(function () { $('#gk-navigation a:first').trigger('click'); });</script>",
+        "<script>setTimeout(function () { document.getElementById('x').click(); }, 0);</script>",
+        "<body onload=\"$('.subNav:first').click()\">",
+    ):
+        changed = (
+            page.replace("</body>", extra + "</body>", 1)
+            if extra.startswith("<script")
+            else page.replace("<body", extra[:-1] + " data-x='1'", 1)
+        )
+        assert changed != page
+        assert find_lonsun_api(changed, WUHU, WUHU) is None, extra
+    # 用户点了才跑的处理函数里触发的照常
+    harmless = "<script>$('#x').on('click', function () { $('#y').trigger('click'); });</script>"
+    assert _wuhu_found(page.replace("</body>", harmless + "</body>", 1)) is not None
+    # getData 同步跑的页面（省经信厅）：别的脚本加载时触发事件不碍事
+    jx = _jx(extra="<script>$(function () { $('.subNav:first').trigger('click'); });</script>")
+    assert _found(jx) is not None

@@ -152,7 +152,8 @@ def check_one(cache: PageCache, col: ColumnCheck, today: date) -> ColumnCheck:
     if len(items) < 3:
         # 和正式抓取一样：页面声明了集约化平台的列表接口就按它读（crawler/adapters.py）
         catalog_host = LONSUN_CITY_PORTALS.get((col.province, col.city))
-        api = find_list_api(r.text, final, col.url, catalog_host=catalog_host)
+        county = col.level == "区县级"
+        api = find_list_api(r.text, final, col.url, catalog_host=catalog_host, county=county)
         if gkmlpt and api is None:
             col.result, col.reason = (
                 NEEDS_SCRIPT,
@@ -161,7 +162,9 @@ def check_one(cache: PageCache, col: ColumnCheck, today: date) -> ColumnCheck:
             )
             return col
         if api is None:
-            reason = lonsun_unrecognized_reason(r.text, final, col.url, catalog_host=catalog_host)
+            reason = lonsun_unrecognized_reason(
+                r.text, final, col.url, catalog_host=catalog_host, county=county
+            )
             if reason:
                 col.result, col.reason = NEEDS_SCRIPT, f"待人工处理：{reason}"
                 return col

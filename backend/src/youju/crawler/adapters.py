@@ -312,9 +312,15 @@ def find_gkmlpt_api(html: str, page_url: str, column_url: str) -> ListApi | None
 
 
 def find_list_api(
-    html: str, page_url: str, column_url: str | None = None, *, catalog_host: str | None = None
+    html: str,
+    page_url: str,
+    column_url: str | None = None,
+    *,
+    catalog_host: str | None = None,
+    county: bool = False,
 ) -> ListApi | None:
-    """栏目页里声明的列表接口；认不出返回 None。
+    """栏目页里声明的列表接口；认不出返回 None。county：区县级来源（龙讯栏目树跨主机只认配置的
+    本市门户）。
 
     column_url 是数字广东的分类栏目时只按 gkmlpt 认（认不出就是 None，不再去认大汉）。"""
     if gkmlpt_categories(column_url) is not None:
@@ -324,7 +330,7 @@ def find_list_api(
     if column_spec(column_url or "") is not None and re.search(
         r"\bfunction\s+PublicTree\s*\(", html
     ):
-        return find_lonsun_api(html, page_url, column_url, catalog_host=catalog_host)
+        return find_lonsun_api(html, page_url, column_url, catalog_host=catalog_host, county=county)
     apis = find_unit_apis(html, page_url)
     return apis[0] if apis else None
 

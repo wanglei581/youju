@@ -1062,7 +1062,7 @@ def test_lonsun_county_service_uses_configured_city_portal(session):
     catalog = read("wuhu_catalog.js")
     api = api_follow(tree, page(tree.url, catalog))
     source = make_source(session, url)
-    source.province, source.city = "安徽", "芜湖"
+    source.level, source.province, source.city = "区县级", "安徽", "芜湖"
     source.parser_config = {"list_api_open": "龙讯public"}
     session.commit()
     fetcher = RecordingFetcher({url: [page(url, html)]})
@@ -1235,3 +1235,21 @@ def test_lonsun_shared_portal_tree_refusal_only_for_requester(session_factory):
     assert fetcher.requested.count(tree) == 1
     statuses = sorted(r.status for r in results)
     assert statuses == ["list_api_refused", "site_paused"]
+
+
+def test_lonsun_county_source_under_city_domain_needs_config(session):
+    from pathlib import Path
+
+    html = (Path(__file__).parent / "fixtures" / "lonsun" / "wuhu_page.html").read_text(
+        encoding="utf-8"
+    )
+    url = "https://county.wuhu.gov.cn/public/column/6596381?type=4&catId=6732111&action=list"
+    source = make_source(session, url)
+    source.level, source.province, source.city = "区县级", "安徽", "芜湖"
+    source.parser_config = {"list_api_open": "龙讯public"}
+    session.commit()
+    fetcher = RecordingFetcher({url: [page(url, html)]})
+    check = check_source(session, source, fetcher, today=date(2026, 11, 13))
+    # 区县站：没配置本市门户就不认、不请求栏目树，哪怕同在 wuhu.gov.cn 下
+    assert check.status == "parse_empty" and "区县站" in check.error
+    assert fetcher.requested == [url]

@@ -437,7 +437,13 @@ def _catalog_host_for(source, cell) -> str | None:
 
 
 def _first_list_item(
-    cache, url: str, today: date, reasons: list[str] | None = None, *, catalog_host=None
+    cache,
+    url: str,
+    today: date,
+    reasons: list[str] | None = None,
+    *,
+    catalog_host=None,
+    county: bool = False,
 ):
     """库里这一格没有文件时（合并部门共用栏目，文件挂在先抓到的来源下）：重读列表页取第一条带日期的。
 
@@ -467,9 +473,11 @@ def _first_list_item(
     final = r.final_url or page_url
     items = [] if gkmlpt else extract_items(r.text, final, today=today)
     if len(items) < 3:
-        api = find_list_api(r.text, final, url, catalog_host=catalog_host)
+        api = find_list_api(r.text, final, url, catalog_host=catalog_host, county=county)
         if api is None:
-            reason = lonsun_unrecognized_reason(r.text, final, url, catalog_host=catalog_host)
+            reason = lonsun_unrecognized_reason(
+                r.text, final, url, catalog_host=catalog_host, county=county
+            )
             if reason and reasons is not None:
                 reasons.append(f"待人工处理：{reason}")
         if api is not None:
@@ -543,8 +551,12 @@ def evidence_for(
     reasons: list[str] = []
     if not candidates:
         for url in urls:
-            catalog_host = _catalog_host_for(sources_by_url.get(url), cell)
-            item = _first_list_item(cache, url, today, reasons, catalog_host=catalog_host)
+            source = sources_by_url.get(url)
+            catalog_host = _catalog_host_for(source, cell)
+            level = source.level if source is not None else cell.get("层级", "")
+            item = _first_list_item(
+                cache, url, today, reasons, catalog_host=catalog_host, county=level == "区县级"
+            )
             if item is not None:
                 candidates = [(item.title, item.url, item.publish_date, "列表页重读")]
                 break
