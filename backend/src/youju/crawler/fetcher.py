@@ -596,7 +596,8 @@ class PoliteFetcher:
             return None
         inner = contextlib.ExitStack()
         try:
-            fd = self._file_lock(self._shared.path(kind, key), inner, url)
+            path = self._shared.path(kind, key)
+            fd = self._file_lock(path, inner, url)
             if fd is None or fd == "paused":
                 inner.close()
                 return "deadline" if fd is None else "paused"
@@ -604,7 +605,10 @@ class PoliteFetcher:
                 last = _read_stamp(fd)
             except _CorruptStamp as exc:
                 if self._require_shared:
-                    raise  # 一定要跨进程限速：停下（见下面的 except）
+                    # 一定要跨进程限速：先把记录修好（记成现在，下一次照样等满一个间隔），再停下
+                    # （见下面的 except），下次运行不会一直卡在这份坏记录上
+                    _write_stamp(fd, time.time())
+                    raise _CorruptStamp(f"{exc}（{path}，已改成现在的时间）") from exc
                 # 只当作刚请求过、等满一个间隔，再写上新的时间
                 log.warning("%s，按刚请求过等满 %.1f 秒", exc, interval)
                 last = math.inf
@@ -662,6 +666,9 @@ class PoliteFetcher:
         # 锁的先后固定：主机（进程内 → 文件）→ 地址名额（进程内 → 文件）→ 地址间隔（进程内 →
         # 文件），没有反过来拿的地方，不会死锁
         with self._lock_for(self._host_locks, host), contextlib.ExitStack() as shared:
+            if not self._gate(url, record=False):
+                # 排在同一主机的锁上等到的：要停了（让路、停取）就不再睡一个间隔
+                return FetchResult(url, "site_paused", final_url=url, error=SITE_PAUSED)
             last = self._last_request.get(host)
             if last is not None:
                 wait = self._interval - (self._clock() - last)
@@ -677,6 +684,7 @@ class PoliteFetcher:
                 return FetchResult(url, "deadline", final_url=url, error=_DEADLINE)
             # 开始前也记一次：进程在请求中途被杀，下一个进程照样要隔够间隔
             self._shared_stamp(host_file)
+            self._local.sent = False
             try:
                 result = self._request(url)
                 callback = getattr(self._local, "on_response", None)
@@ -689,8 +697,9 @@ class PoliteFetcher:
                         self._local.refusal = result
                 return result
             finally:
-                self._last_request[host] = self._clock()
-                self._shared_stamp(host_file)
+                if getattr(self._local, "sent", True):
+                    self._last_request[host] = self._clock()
+                    self._shared_stamp(host_file)
 
     def _request(self, url: str) -> FetchResult:
         host = host_of(url)
@@ -792,6 +801,7 @@ class PoliteFetcher:
                         # 临近期限：这一次连接、读取最多等到期限（至少 1 秒）
                         left = max(1.0, self._deadline - self._clock())
                         timing["timeout"] = min(self._timeout, left)
+                    self._local.sent = True
                     with client.stream(
                         "GET", request_url, headers=headers, extensions=extensions, **timing
                     ) as resp:

@@ -194,5 +194,8 @@ def test_bad_stamp_waits_full_interval_or_stops_when_required(tmp_path, value):
         shared_limits_dir=str(tmp_path),
         require_shared_limits=True,
     )
-    with fetcher, pytest.raises(SharedLimitError):
+    with fetcher, pytest.raises(SharedLimitError) as raised:
         fetcher.fetch("https://a.example.gov.cn/page")
+    # 停下之前先把记录修好（记成现在的时间），报错里写明是哪个文件
+    assert str(limits.path("h", "a.example.gov.cn")) in str(raised.value)
+    assert float(limits.path("h", "a.example.gov.cn").read_text().strip()) > 0

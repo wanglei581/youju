@@ -576,6 +576,30 @@ def test_address_interval_counts_from_response_headers() -> None:
         assert max(f._address_last.values()) - before >= 0.3
 
 
+def test_stop_while_waiting_for_host_interval_returns_at_once() -> None:
+    import time
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404 if request.url.path == "/robots.txt" else 200, text=LIST_HTML)
+
+    fetcher = PoliteFetcher(
+        "TestAgent YoujuBot/0.1",
+        per_host_interval=0.5,
+        per_address_interval=0,
+        transport=httpx.MockTransport(handler),
+        resolver=public_dns,
+    )
+    with fetcher as f:
+        assert f.fetch("https://a.gov.cn/1").status == "ok"
+        last = dict(f._last_request)
+        started = time.monotonic()
+        result = f.fetch("https://a.gov.cn/2", hop_allowed=lambda url, record: False)
+        # 要停了就不再睡一个间隔；没发出的请求也不记结束时间
+        assert result.status == "site_paused"
+        assert time.monotonic() - started < 0.3
+        assert f._last_request == last
+
+
 def test_certificate_error_is_never_bypassed() -> None:
     compat_calls: list[str] = []
 

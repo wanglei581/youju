@@ -497,6 +497,10 @@ def _follow_paused(pause: _SitePause, document_id: int, url: str, outcome) -> No
     if fetched.robots_url:
         hop = _host(fetched.final_url or url)
         _follow(pause, hop, blocked, f"robots.txt 跳到停取中的 {blocked}")
+        if hop != own and until is not None:
+            # 挡住的是别的网站上的 PDF（那边的 robots.txt 跳进停取中的网站）：这份也延后到那边
+            # 恢复，下次运行不再先把详情页取一遍
+            pause.add(doc, f"PDF 所在网站的 robots.txt 跳到停取中的 {blocked}", until=until)
     elif outcome.parsed is None:
         if until is not None:
             pause.add(doc, f"跳到停取中的 {blocked}", until=until)

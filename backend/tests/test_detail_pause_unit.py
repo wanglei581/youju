@@ -618,3 +618,28 @@ def test_queue_requires_shared_limits(tmp_path):
                 fetcher.fetch("https://a.gov.cn/page")
         finally:
             shared.chmod(0o700)
+
+
+def test_pdf_host_robots_redirect_into_paused_host_defers_document(tmp_path):
+    from datetime import UTC, datetime, timedelta
+
+    from youju.crawler import detail_service
+
+    path = tmp_path / "pause.json"
+    pause = _SitePause(str(path))
+    until = datetime.now(UTC) + timedelta(hours=5)
+    pause.add("c.gov.cn", "HTTP 403", until=until)
+    fetched = FetchResult(
+        "https://b.gov.cn/f.pdf",
+        "site_paused",
+        final_url="https://b.gov.cn/f.pdf",
+        robots_url="https://c.gov.cn/robots.txt",
+    )
+    outcome = detail_service._FetchOutcome(
+        7, datetime.now(UTC), fetched, object(), "site_paused", ""
+    )
+    detail_service._follow_paused(pause, 7, "https://a.gov.cn/detail", outcome)
+    # 详情页在 A、PDF 在 B，B 的 robots.txt 跳进停取中的 C：B 跟着停，这份文件也延后到 C 恢复
+    assert pause.expiry("b.gov.cn") == pause.expiry("c.gov.cn")
+    assert f"{detail_service.DEFERRED_PREFIX}7" in pause.reasons
+    assert "a.gov.cn" not in pause.reasons

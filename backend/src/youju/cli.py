@@ -284,8 +284,11 @@ def _cmd_fetch_details_queue(args: argparse.Namespace) -> int:
         )
     print(f"写入 {summary.total} 份，{summary.batches} 批，停止：{summary.stop_reason}")
     print("状态：" + "，".join(f"{k} {v}" for k, v in summary.statuses.items()))
-    for host, reason in sorted(summary.paused_hosts.items()):
+    paused = sorted(summary.paused_hosts.items())
+    for host, reason in paused[:30]:
         print(f"停取 {host}：{reason}")
+    if len(paused) > 30:
+        print(f"……另有 {len(paused) - 30} 个停取中的主机和延后的文件")
     # 跨进程限速用不了、熔断：按失败退出，job.sh 发提醒（不能悄悄地一直不跑、一直熔断）
     return 1 if summary.stop_reason.startswith((SHARED_LIMIT_STOP, CIRCUIT_STOP)) else 0
 
