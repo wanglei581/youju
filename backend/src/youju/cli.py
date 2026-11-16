@@ -262,6 +262,8 @@ def _cmd_fetch_details_queue(args: argparse.Namespace) -> int:
             if checked["at"] is not None and now - checked["at"] < 2:
                 return checked["reason"]
             reason = None
+            # round 锁不只每轮抓取会拿：ai-recheck-deadlines 这类用 round_slot 写库时也会短暂拿
+            # 一下，撞上那一下也当成"每轮在跑"、让掉这一段（宁可少取一段，不和别的任务抢）
             if round_wanted() or round_running():
                 reason = "每轮抓取在跑或在等锁"
             else:
