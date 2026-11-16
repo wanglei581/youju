@@ -1156,3 +1156,20 @@ def test_hidden_card_linking_to_the_same_file_keeps_its_date() -> None:
         ("关于公布第二批名单的通知", date(2026, 10, 20)),
         ("关于征集典型案例的通知", date(2026, 10, 19)),
     ]
+
+
+def test_popup_row_in_a_tooltip_dated_list_stays_in_the_list() -> None:
+    # 每行日期都只写在提示文字里（商丘那类平台），第 2 行带泸州式的解读弹层：照样和别的行算一张列表
+    html = """<ul class="list">
+      <li><a href="/a/1.html" title="标题：关于项目申报的通知 点击数：0 发表时间：2026-10-21">关于项目申报的通知</a></li>
+      <li><a href="/a/2.html" title="标题：关于公布第二批名单的通知 点击数：0 发表时间：2026-10-20">关于公布第二批名单的通知</a><div class="address-popup" style="display: none;"><a href="/b/2.html">关于第二批名单的政策解读</a></div></li>
+      <li><a href="/a/3.html" title="标题：关于征集典型案例的通知 点击数：0 发表时间：2026-10-19">关于征集典型案例的通知</a></li>
+      <li><a href="/a/4.html" title="标题：关于开展第三批项目申报的通知 点击数：0 发表时间：2026-10-18">关于开展第三批项目申报的通知</a></li>
+    </ul>"""
+    items = extract_items(html, "http://example.gov.cn/a/", today=date(2026, 11, 16))
+    assert [(i.title, i.publish_date) for i in items] == [
+        ("关于项目申报的通知", date(2026, 10, 21)),
+        ("关于公布第二批名单的通知", date(2026, 10, 20)),
+        ("关于征集典型案例的通知", date(2026, 10, 19)),
+        ("关于开展第三批项目申报的通知", date(2026, 10, 18)),
+    ]

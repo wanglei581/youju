@@ -351,12 +351,12 @@ class _Page:
         companions.discard(url)
         found = self._climb(a, title, url, hidden, companions)
         if found[0] is None and hidden and companions:
-            # 弹层里有别的文件链接（那里的日期是那份文件的，不用）、提示文字里写着发表时间：
-            # 行按结构认（往上到再上一层就有别的文件为止），日期用提示文字里的。这样和日期写在行里的
-            # 别的行算同一张列表
+            # 弹层里有别的文件链接（那里的日期是那份文件的，不用）、提示文字里写着发表时间，同一层的
+            # 别的行日期写在行里：行按结构认（往上到再上一层就有别的文件为止），日期用提示文字里的，
+            # 这样和别的行算同一张列表。别的行也只靠提示文字记日期时不这样认，和它们一样交给外面处理
             tip, tip_full = _tooltip_date(a, self.today)
             row = self._row_of(a, url, companions) if tip is not None else None
-            if row is not None:
+            if row is not None and self._siblings_dated(row):
                 found = (row, tip, tip_full)
         elif found[0] is None and hidden:
             # 弹层外面没有日期、弹层里也没有别的文件链接（只有"分享""政策解读"这类短链接）：
@@ -369,6 +369,22 @@ class _Page:
             elif tip is None:
                 found = (row, day, full)
         return found
+
+    def _siblings_dated(self, row: etree._Element) -> bool:
+        """同一层（同一个父元素下、标签一样）的别的行里，有没有日期写在行里（链接外面）的。"""
+        parent = row.getparent()
+        if parent is None:
+            return False
+        for sibling in parent:
+            if sibling is row or sibling.tag != row.tag:
+                continue
+            for b in sibling.iter("a"):
+                if self.link(b) is None:
+                    continue
+                if self.date_node(sibling, b, set(b.iterancestors()))[0] is not None:
+                    return True
+                break
+        return False
 
     def _row_of(self, a: etree._Element, url: str, companions: set[str]) -> etree._Element | None:
         """不看日期往上找"一行"：再上一层就有别的文件链接时，这一层就是行。"""
