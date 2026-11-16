@@ -1313,7 +1313,7 @@ def test_bare_short_notice_mentioning_firewall_is_not_a_gate():
     assert detail_service._gate_page(blocked, blocked.url) is True
 
 
-def _robots_fetch(robots_bytes, content_type="text/plain"):
+def _fetch_with_robots_bytes(robots_bytes, content_type="text/plain"):
     paths = []
 
     def handler(request):
@@ -1335,14 +1335,14 @@ def _robots_fetch(robots_bytes, content_type="text/plain"):
 @pytest.mark.parametrize("bom,codec", [(b"\xff\xfe", "utf-16-le"), (b"\xfe\xff", "utf-16-be")])
 def test_utf16_robots_rules_are_respected(bom, codec):
     # robots.txt 用 UTF-16 写（带字节顺序标记）：照标记解码，Disallow 照样守（第十三轮 Codex）
-    result, paths = _robots_fetch(bom + "User-agent: *\nDisallow: /\n".encode(codec))
+    result, paths = _fetch_with_robots_bytes(bom + "User-agent: *\nDisallow: /\n".encode(codec))
     assert result.status == "robots_disallowed"
     assert paths == ["/robots.txt"]
 
 
 def test_utf16_robots_login_page_is_protected():
     page = "<html><head><title>用户登录</title></head><body><input type='password'></body></html>"
-    result, paths = _robots_fetch(b"\xff\xfe" + page.encode("utf-16-le"), "text/html")
+    result, paths = _fetch_with_robots_bytes(b"\xff\xfe" + page.encode("utf-16-le"), "text/html")
     assert result.status == "robots_error" and result.robots_failure == "protected"
     assert paths == ["/robots.txt"]
 
@@ -1350,7 +1350,7 @@ def test_utf16_robots_login_page_is_protected():
 def test_robots_without_readable_text_pauses_six_hours(tmp_path):
     # 没写编码、也没有字节顺序标记的 UTF-16：解出来带 NUL，规则看不全，不当成"没有 robots"放行
     raw = "User-agent: *\nDisallow: /\n".encode("utf-16-le")
-    result, paths = _robots_fetch(raw)
+    result, paths = _fetch_with_robots_bytes(raw)
     assert result.status == "robots_error" and result.robots_failure == "unreadable"
     assert paths == ["/robots.txt"]
     path = tmp_path / "pause.json"
