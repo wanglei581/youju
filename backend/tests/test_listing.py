@@ -905,6 +905,40 @@ def test_month_range_at_the_start_of_the_title_is_not_the_publish_date() -> None
     ]
 
 
+def test_leading_date_before_a_title_that_starts_with_yue_is_still_the_publish_date() -> None:
+    # 日期写在链接文字开头、标题以"月度……""月报……"开头：不是月份区间，日期照认，也从标题里去掉
+    html = """<ul class="info-list">
+      <li><a href="./tzgg/info_1.shtml">2026-10-08 月度用电情况通报</a></li>
+      <li><a href="./tzgg/info_2.shtml">2026-10-09 关于开展第三批项目申报的通知</a></li>
+      <li><a href="./tzgg/info_3.shtml">2026-09-30 月报：9月全市经济运行</a></li>
+    </ul>"""
+    items = extract_items(html, "http://example.gov.cn/tzgg/", today=date(2026, 11, 16))
+    assert [(i.title, i.publish_date) for i in items] == [
+        ("月度用电情况通报", date(2026, 10, 8)),
+        ("关于开展第三批项目申报的通知", date(2026, 10, 9)),
+        ("月报：9月全市经济运行", date(2026, 9, 30)),
+    ]
+
+
+def test_year_month_range_with_zero_padding_or_a_day_over_12_at_the_title_start() -> None:
+    # "2026年01-06月"补了零也是月份区间，留在标题里；"2025年9-20 月度报告"的 20 超过 12，是发布日期
+    html = """<ul class="info-list">
+      <li><a href="./tzgg/info_1.shtml">2026年01-06月某市财政收支情况<span>2026-07-15</span></a></li>
+      <li><a href="./tzgg/info_4.shtml">2026.1-6月某市经济运行情况<span>2026-07-16</span></a></li>
+      <li><a href="./tzgg/info_5.shtml">2026年6-24月龄婴幼儿照护补贴公示<span>2026-07-17</span></a></li>
+      <li><a href="./tzgg/info_2.shtml">2025年9-20 月度经济运行报告</a></li>
+      <li><a href="./tzgg/info_3.shtml">2025年9-21 关于开展第三批项目申报的通知</a></li>
+    </ul>"""
+    items = extract_items(html, "http://example.gov.cn/tzgg/", today=date(2026, 11, 16))
+    assert [(i.title, i.publish_date) for i in items] == [
+        ("2026年01-06月某市财政收支情况", date(2026, 7, 15)),
+        ("2026.1-6月某市经济运行情况", date(2026, 7, 16)),
+        ("2026年6-24月龄婴幼儿照护补贴公示", date(2026, 7, 17)),
+        ("月度经济运行报告", date(2025, 9, 20)),
+        ("关于开展第三批项目申报的通知", date(2025, 9, 21)),
+    ]
+
+
 def test_title_attribute_with_publish_date_glued_to_the_title_drops_the_date() -> None:
     # 淄博大数据局（地市一组 11/12）：title 属性是"标题 + 发布日期"，中间没有空格，行里另写同一个日期
     html = """<ul>

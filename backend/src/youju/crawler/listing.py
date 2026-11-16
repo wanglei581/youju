@@ -24,7 +24,7 @@ from urllib.parse import urlsplit
 import lxml.html
 from lxml import etree
 
-from youju.crawler.dates import date_from_url, parse_date_detail
+from youju.crawler.dates import YEAR_RANGE_TAIL, date_from_url, parse_date_detail
 from youju.crawler.titles import ZERO_WIDTH, clean_title, is_truncated
 from youju.crawler.urls import normalize_url, page_dir
 
@@ -90,9 +90,11 @@ _DATASTORE_RECORD = re.compile(r"<record>\s*<!\[CDATA\[(.*?)\]\]>\s*</record>", 
 _XML_DECL = re.compile(r"^\s*<\?xml[^>]*\?>", re.I)
 _BODY_END = re.compile(r"</body\s*>", re.I)
 _STRAY_END = re.compile(r"</(?:body|html)\s*>", re.I)
-# 写在链接文字开头或结尾的日期。后面紧跟"月"的是月份区间，是标题的一部分（"2026年1-6月……清理表"）
+# 写在链接文字开头或结尾的日期。开头年份后面写"几-几月"的月份区间（dates.YEAR_RANGE_TAIL）是标题
+# 的一部分（"2026年1-6月……清理表"）；别的写法后面跟着"月"照样是日期（"2026-10-08 月度报告"）
 _EDGE_DATE = re.compile(
-    r"^\s*[\[(（【]?\s*(20\d{2}[-/.年]\d{1,2}[-/.月]\d{1,2}+(?!\s*月)日?)\s*[\])）】]?"
+    r"^\s*[\[(（【]?\s*(20\d{2}(?:[年./]\d{1,2}-(?!" + YEAR_RANGE_TAIL + r")\d{1,2}"
+    r"|(?![年./]\d{1,2}-)[-/.年]\d{1,2}[-/.月]\d{1,2})日?)\s*[\])）】]?"
     r"|[\[(（【]?\s*(20\d{2}[-/.年]\d{1,2}[-/.月]\d{1,2}日?)\s*[\])）】]?\s*$"
     r"|[\[(（【]\s*(\d{1,2}-\d{1,2})\s*[\])）】]\s*$"
     r"|\s(\d{2}-\d{2})\s*$"
