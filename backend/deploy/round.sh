@@ -31,6 +31,8 @@ date +%s > /tmp/youju-round.wanted
 if ! flock -w 300 /tmp/youju-fetch-details-queue.lock true; then
   "$D/job.sh" alert "补正文队列 5 分钟没停下，这一轮照常跑" || :
 fi
+# 等队列最多用了 5 分钟：重写一次标记，再等每轮的锁时标记不会过期（过期时间 10 分钟）
+date +%s > /tmp/youju-round.wanted
 if ! flock -w 300 9; then
   rm -f /tmp/youju-round.wanted
   finish 75

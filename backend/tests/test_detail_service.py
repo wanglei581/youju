@@ -543,8 +543,10 @@ def test_robots_retry_keeps_both_paths(session, monkeypatch) -> None:
     ) as polite:
         results = fetch_details(session, limit=5, fetcher=polite, max_workers=1)
     assert tries["a"] == 2
-    assert [r.status for r in results] == ["site_paused", "site_paused"]
-    assert all(session.get(DocumentDetail, d.id) is None for d in docs)
+    # robots.txt 读不到的第一份照常写库（带重试次数）；同一网站的第二份这一轮不再去
+    assert [r.status for r in results] == ["robots_error", "site_paused"]
+    assert session.get(DocumentDetail, docs[0].id).next_retry_at is not None
+    assert session.get(DocumentDetail, docs[1].id) is None
 
 
 def test_pdf_attachment_answered_with_protection_page_pauses_listed_site(session, monkeypatch):

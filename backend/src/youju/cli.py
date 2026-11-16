@@ -246,7 +246,7 @@ def _cmd_fetch_details_queue(args: argparse.Namespace) -> int:
     import threading
 
     from youju.ai.pipeline import round_running, round_wanted
-    from youju.crawler.detail_service import SHARED_LIMIT_STOP, run_detail_queue
+    from youju.crawler.detail_service import CIRCUIT_STOP, SHARED_LIMIT_STOP, run_detail_queue
 
     checked = {"at": None, "reason": None}
     probing = threading.Lock()
@@ -286,8 +286,8 @@ def _cmd_fetch_details_queue(args: argparse.Namespace) -> int:
     print("状态：" + "，".join(f"{k} {v}" for k, v in summary.statuses.items()))
     for host, reason in sorted(summary.paused_hosts.items()):
         print(f"停取 {host}：{reason}")
-    # 跨进程限速用不了：按失败退出，job.sh 发提醒（不能悄悄地一直不跑）
-    return 1 if summary.stop_reason.startswith(SHARED_LIMIT_STOP) else 0
+    # 跨进程限速用不了、熔断：按失败退出，job.sh 发提醒（不能悄悄地一直不跑、一直熔断）
+    return 1 if summary.stop_reason.startswith((SHARED_LIMIT_STOP, CIRCUIT_STOP)) else 0
 
 
 def _cmd_rescan_list_details(args: argparse.Namespace) -> int:

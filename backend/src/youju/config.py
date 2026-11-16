@@ -83,7 +83,7 @@ class Settings(BaseSettings):
     # 生效）；空串表示不用（只管各自的取页器）。时间戳不需要长期保存，放 /tmp 就行
     rate_limit_dir: str = "/tmp/youju-rate"
     # 补正文的停取记录（被拒绝的网站 24 小时内不再去、429 停 6 小时）：要放在重建容器也不丢的
-    # 地方。不填时配了 storage_dir 放 <storage_dir>/state/detail-pause.json（家里电脑上是
+    # 地方。不填时配了 storage_dir 放 <storage_dir>/state/detail-pause.json（本机部署时是
     # /data/storage 卷），没配放 /tmp/youju-detail-pause.json
     detail_pause_path: str = ""
     # 同时抓取的网站数；同一网站内始终串行。

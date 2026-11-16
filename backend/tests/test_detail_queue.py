@@ -1,4 +1,4 @@
-from datetime import UTC, date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -152,7 +152,6 @@ def test_stop_after_committed_result(session, monkeypatch):
 def test_stop_signal_after_first_write(session):
     docs = [add_document(session, 9450 + i) for i in range(2)]
     fake = FakeFetcher({d.url: response(d) for d in docs})
-    written = []
 
     def stop():
         return "每轮要锁" if fake.calls else None
@@ -160,8 +159,8 @@ def test_stop_signal_after_first_write(session):
     summary = run_detail_queue(session, minutes=1, workers=1, fetcher=fake, stop=stop)
     assert summary.stop_reason == "每轮要锁"
     assert fake.calls == [docs[0].url]
-    assert written == []
     assert session.get(DocumentDetail, docs[0].id) is not None
+    assert session.get(DocumentDetail, docs[1].id) is None
 
 
 def test_time_stop_without_database():
@@ -271,7 +270,7 @@ def test_network_circuit_breaker(session, hosts, interrupt, expected):
         assert all(session.get(DocumentDetail, d.id) is not None for d in docs)
 
 
-def test_queue_robots_error_not_saved(session):
+def test_queue_robots_error_saved_and_host_paused_across_runs(session):
     from tests.test_detail_service import _doc_on, _source_on
 
     a = _source_on(session, "ra.example.gov.cn")
@@ -279,16 +278,81 @@ def test_queue_robots_error_not_saved(session):
     first = _doc_on(session, a, "ra.example.gov.cn", 1)
     later = _doc_on(session, a, "ra.example.gov.cn", 2)
     other = _doc_on(session, b, "rb.example.gov.cn", 3)
-    fake = FakeFetcher(
-        {first.url: FetchResult(first.url, "robots_error"), other.url: response(other)}
-    )
+    unreachable = FetchResult(first.url, "robots_error", robots_failure="network_error")
+    fake = FakeFetcher({first.url: unreachable, other.url: response(other)})
     summary = run_detail_queue(session, minutes=1, workers=1, fetcher=fake)
-    assert session.get(DocumentDetail, first.id) is None
+    # 连不上、超时：照常写库（带重试次数，过几小时再来），主机停 1 小时、写进共享文件
+    saved = session.get(DocumentDetail, first.id)
+    assert saved.status == "robots_error" and saved.next_retry_at is not None
     assert session.get(DocumentDetail, later.id) is None
     assert session.get(DocumentDetail, other.id) is not None
-    assert summary.paused_hosts == {
-        "ra.example.gov.cn": "robots.txt 读不到（连不上、超时或证书问题）"
+    assert summary.paused_hosts == {"ra.example.gov.cn": "robots.txt 读不到（连不上、超时）"}
+    pause = _SitePause(get_settings().detail_pause_path)
+    left = pause.expiry("ra.example.gov.cn") - datetime.now(UTC)
+    assert timedelta(minutes=50) < left <= timedelta(hours=1)
+    # 下一次运行：选取时就跳过这个主机，不会每次都把它选回来
+    again = FakeFetcher({})
+    run_detail_queue(session, minutes=1, workers=1, fetcher=again)
+    assert again.calls == []
+
+
+def test_certificate_errors_do_not_trip_circuit(session):
+    from tests.test_detail_service import _doc_on, _source_on
+
+    good_source = _source_on(session, "good.example.gov.cn")
+    good = _doc_on(session, good_source, "good.example.gov.cn", 99)
+    bad = [
+        _doc_on(session, _source_on(session, f"c{i}.example.gov.cn"), f"c{i}.example.gov.cn", i)
+        for i in range(25)
+    ]
+    replies = {d.url: FetchResult(d.url, "robots_error", robots_failure="ssl_error") for d in bad}
+    replies[good.url] = readable(good)
+    summary = run_detail_queue(
+        session, minutes=1, workers=1, per_host=30, fetcher=FakeFetcher(replies)
+    )
+    # 证书、加密连接出错是对方网站的问题：不算网络失败，不熔断；照常写库，主机停 6 小时
+    assert "熔断" not in summary.stop_reason
+    assert session.get(DocumentDetail, good.id).status == "ok"
+    assert all(session.get(DocumentDetail, d.id).status == "robots_error" for d in bad)
+    assert summary.paused_hosts["c0.example.gov.cn"] == "robots.txt 读不到（证书或加密连接出错）"
+    pause = _SitePause(get_settings().detail_pause_path)
+    assert pause.expiry("c0.example.gov.cn") - datetime.now(UTC) > timedelta(hours=5)
+
+
+def test_circuit_trip_pauses_hosts_and_exits_with_failure(session, monkeypatch):
+    from tests.test_detail_service import _doc_on, _source_on
+    from youju import cli
+    from youju.crawler import detail_service
+
+    bad = [
+        _doc_on(session, _source_on(session, f"n{i}.example.gov.cn"), f"n{i}.example.gov.cn", i)
+        for i in range(20)
+    ]
+    replies = {
+        d.url: FetchResult(d.url, "robots_error", robots_failure="network_error") for d in bad
     }
+    summary = run_detail_queue(
+        session, minutes=1, workers=1, per_host=30, fetcher=FakeFetcher(replies)
+    )
+    assert summary.stop_reason.startswith(detail_service.CIRCUIT_STOP)
+    assert all(session.get(DocumentDetail, d.id) is None for d in bad)
+    # 这些主机停了 1 小时（写进共享文件）：真是一批网站坏了，下次运行也不会卡在它们身上
+    again = FakeFetcher({})
+    run_detail_queue(session, minutes=1, workers=1, fetcher=again)
+    assert again.calls == []
+    # 熔断按失败退出，job.sh 发提醒
+    monkeypatch.setattr(pipeline, "round_wanted", lambda *a, **k: False)
+    monkeypatch.setattr(pipeline, "round_running", lambda *a, **k: False)
+    monkeypatch.setattr(
+        detail_service,
+        "run_detail_queue",
+        lambda session, **kwargs: detail_service.DetailQueueSummary(
+            {}, 0, {}, summary.stop_reason, 0
+        ),
+    )
+    monkeypatch.setattr(cli, "session_factory", lambda: lambda: _NoClose(None))
+    args = SimpleNamespace(minutes=1, workers=1, batch=10, per_host=10)
+    assert cli._cmd_fetch_details_queue(args) == 1
 
 
 @pytest.mark.parametrize("robots_status,page_status", [(403, 200), (403, 403), (429, 200)])
@@ -337,8 +401,10 @@ def test_robots_http_status_controls_detail_writes(session, robots_status, page_
         assert results.paused_hosts == {"gxt.ln.gov.cn": "HTTP 403"}
         assert _SitePause(get_settings().detail_pause_path).reasons == {"gxt.ln.gov.cn": "HTTP 403"}
     else:
-        assert [r.status for r in results] == ["site_paused", "site_paused"]
-        assert all(session.get(DocumentDetail, doc.id) is None for doc in docs)
+        # robots.txt 回 429：不取页面；第一份照常写库（带重试次数），网站停 6 小时
+        assert [r.status for r in results] == ["robots_error", "site_paused"]
+        assert session.get(DocumentDetail, docs[0].id).next_retry_at is not None
+        assert session.get(DocumentDetail, docs[1].id) is None
         assert calls == ["/robots.txt"]
         assert results.paused_hosts == {"gxt.ln.gov.cn": "robots.txt HTTP 429"}
 

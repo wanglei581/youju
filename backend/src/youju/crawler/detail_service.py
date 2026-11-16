@@ -567,19 +567,20 @@ def _fetch_outcomes(
                     if outcome.fetch and outcome.fetch.robots_url:
                         actual = outcome.fetch.robots_url
                     code = outcome.fetch.robots_status if outcome.fetch else None
+                    failure = outcome.fetch.robots_failure if outcome.fetch else ""
                     if code in (429, 521):
                         # robots.txt 回 429（服务器忙）、521（防护）：读不到，停 6 小时再来
                         pause.add(_host(actual), f"robots.txt HTTP {code}", hours=6)
                     elif code:
                         # 回别的 5xx：停 1 小时，免得每次运行都去请求坏掉的 robots.txt
                         pause.add(_host(actual), f"robots.txt 读不到（HTTP {code}）", hours=1)
+                    elif failure == "ssl_error":
+                        # 证书、加密连接出错：对方网站的问题（我们自己断网不会这样），一时好不了
+                        pause.add(_host(actual), "robots.txt 读不到（证书或加密连接出错）", hours=6)
                     else:
-                        # 连不上、超时：可能是我们自己断网，只停这次运行，不写进共享文件
-                        pause.add(
-                            _host(actual),
-                            "robots.txt 读不到（连不上、超时或证书问题）",
-                            persistent=False,
-                        )
+                        # 连不上、超时、域名解析失败：停 1 小时、写进共享文件，下次运行不再先选它
+                        # （真是我们自己断网，熔断会停下这次运行，这些网站最多晚一小时再取）
+                        pause.add(_host(actual), "robots.txt 读不到（连不上、超时）", hours=1)
                     if _host(actual) != page_host:
                         # A 的 robots.txt 跳到 B、B 读不到：A 上每份文件都要读它，A 跟着 B 停
                         reason = f"robots.txt 跳到读不到的 {_host(actual)}"
@@ -669,11 +670,12 @@ def _fetch_selected(
 
     def save(outcome):
         if on_outcome is not None:
-            # 回调写了库就交回结果（照实汇总），没写（熔断前先攒着、robots 读不到）交回 None
+            # 回调写了库就交回结果（照实汇总），没写（熔断前先攒着、到期限没取完）交回 None
             result = on_outcome(outcome)
             if result is not None:
                 saved[outcome.document_id] = result
-        elif outcome.status != "robots_error":
+        elif outcome.status != "deadline":
+            # robots.txt 读不到的也照常写库（带重试次数，过几小时再来），免得每轮都把它选回来
             saved[outcome.document_id] = _save_result(session, outcome)
 
     _fetch_outcomes(
@@ -695,6 +697,8 @@ def _fetch_selected(
 
 # 补正文队列因为跨进程限速用不了而停下（命令按失败退出，job.sh 发提醒）
 SHARED_LIMIT_STOP = "跨进程限速用不了，停下"
+# 熔断停下（多半是我们自己断网，也可能是一批网站同时连不上）：同样按失败退出、发提醒
+CIRCUIT_STOP = "熔断"
 
 
 def _polite_fetcher(deadline: float | None = None, require_shared: bool = False) -> PoliteFetcher:
@@ -762,9 +766,9 @@ def run_detail_queue(
     urls: dict[int, str] = {}
 
     def record(outcome):
-        if outcome.status in ("robots_error", "deadline"):
-            # robots.txt 读不到（网站另按停取处理）、到了这次运行的期限没取完：
-            # 不写库，报 site_paused
+        if outcome.status == "deadline":
+            # 到了这次运行的期限没取完：不写库，报 site_paused。robots.txt 读不到的照常写库
+            # （带重试次数，过几小时再来；网站另按停取处理），免得每次运行都把它选回来
             return None
         result = _save_result(session, outcome)
         if result.status == "missing":
@@ -784,10 +788,16 @@ def run_detail_queue(
             return None  # 到了这次运行的期限没取完：不算网络失败、不写库，下次再取
         reason = (outcome.failure_reason or "").lower()
         robots_status = outcome.fetch.robots_status if outcome.fetch else None
+        robots_failure = outcome.fetch.robots_failure if outcome.fetch else ""
         network = (
             outcome.status == "network_error"
-            # robots.txt 回了状态码（5xx、429、521）是对方的事，不是我们自己断网
-            or (outcome.status == "robots_error" and robots_status is None)
+            # robots.txt 回了状态码（5xx、429、521）、证书或加密连接出错是对方的事，不是我们自己
+            # 断网；连不上、超时才可能是
+            or (
+                outcome.status == "robots_error"
+                and robots_status is None
+                and robots_failure != "ssl_error"
+            )
             or any(text in reason for text in ("域名解析失败", "同时在等的域名解析过多", "dns"))
         )
         if tripped.is_set():
@@ -816,7 +826,7 @@ def run_detail_queue(
 
     def stop_reason():
         if tripped.is_set():
-            return "熔断：60 秒内连续 20 份网络失败，涉及至少 5 个主机"
+            return f"{CIRCUIT_STOP}：60 秒内连续 20 份网络失败，涉及至少 5 个主机"
         if clock() >= deadline:
             return "到时间"
         if stop:

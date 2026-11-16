@@ -201,10 +201,11 @@ def test_robots_response_controls_page_and_persistence(tmp_path, monkeypatch, ro
         assert [r.status for r in results] == ["ok", "ok"]
         assert pause.reasons == {}
     else:
-        # robots.txt 回 429：服务器忙、读不到，不取页面；网站停 6 小时，写进共享的停取文件
+        # robots.txt 回 429：服务器忙、读不到，不取页面；第一份照常写库（带重试次数），网站停
+        # 6 小时、写进共享的停取文件
         assert calls == ["/robots.txt"]
-        assert saved == []
-        assert [r.status for r in results] == ["site_paused", "site_paused"]
+        assert saved == [1]
+        assert [r.status for r in results] == ["robots_error", "site_paused"]
         assert pause.reasons == {"a.gov.cn": "robots.txt HTTP 429"}
         assert _hours_left(tmp_path / "pause.json", "a.gov.cn") == pytest.approx(6, abs=0.05)
 
@@ -230,7 +231,7 @@ def _hours_left(path, host):
     return (until - datetime.now(UTC)).total_seconds() / 3600
 
 
-def test_robots_network_error_pauses_this_run_only(tmp_path):
+def test_robots_network_error_pauses_one_hour(tmp_path):
     calls = []
     path = tmp_path / "pause.json"
 
@@ -248,11 +249,25 @@ def test_robots_network_error_pauses_this_run_only(tmp_path):
     )
     assert set(results) == {1, 3}
     assert len(calls) == 2
-    # 连不上、超时这类读不到 robots.txt：可能是我们自己断网，只停这次运行，不写进共享文件
-    # （回 5xx 的停 1 小时，见 test_robots_server_errors_pause_in_file）
-    reason = "robots.txt 读不到（连不上、超时或证书问题）"
+    # 连不上、超时这类读不到 robots.txt：停 1 小时、写进共享文件，下次运行不再先选它（真是我们
+    # 自己断网，熔断会停下这次运行）；证书、加密连接出错停 6 小时（见下一条）
+    reason = "robots.txt 读不到（连不上、超时）"
     assert pause.reasons == {"a.gov.cn": reason}
-    assert _SitePause(str(path)).reasons == {}
+    assert _SitePause(str(path)).reasons == {"a.gov.cn": reason}
+    assert _hours_left(path, "a.gov.cn") == pytest.approx(1, abs=0.05)
+
+
+def test_robots_certificate_error_pauses_six_hours(tmp_path):
+    path = tmp_path / "pause.json"
+
+    class Fake:
+        def fetch(self, url):
+            return FetchResult(url, "robots_error", robots_failure="ssl_error")
+
+    pause = _SitePause(str(path))
+    _fetch_outcomes([(1, "https://a.gov.cn/1")], Fake(), 1, pause=pause)
+    assert pause.reasons == {"a.gov.cn": "robots.txt 读不到（证书或加密连接出错）"}
+    assert _hours_left(path, "a.gov.cn") == pytest.approx(6, abs=0.05)
 
 
 def _robots_fetch(tmp_path, robots, page=200):

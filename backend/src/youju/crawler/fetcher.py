@@ -126,6 +126,8 @@ class FetchResult:
     robots_hops: tuple[str, ...] = ()
     # robots_error 时 robots.txt 回的 HTTP 状态码（连不上、超时没有）：调用方按它决定停多久
     robots_status: int | None = None
+    # robots_error 又没有状态码时：ssl_error（证书、加密连接出错）或 network_error（连不上、超时）
+    robots_failure: str = ""
     # robots_error、因停取挡在 robots.txt 上时，实际出问题的那个 robots.txt 地址（可能跳到了别的
     # 主机）：调用方停的应该是它所在的主机
     robots_url: str = ""
@@ -141,6 +143,9 @@ class _RobotsEntry:
     error: str | None = None  # unsupported_host、unreachable 的原因
     server_error: bool = False  # unreachable 是因为服务器回 5xx（超时、连不上在下层已重试过）
     http_status: int | None = None  # unreachable 时 robots.txt 回的状态码
+    # unreachable 又没有状态码时读 robots.txt 的结果：ssl_error（证书、加密连接出错，对方的问题）
+    # 或 network_error（连不上、超时、域名解析失败，也可能是我们自己断网）
+    failure: str = ""
     final: str = ""  # unreachable、site_paused 时实际出问题的那个 robots.txt 地址（跟过跳转）
     chain: tuple[
         str, ...
@@ -397,6 +402,7 @@ class PoliteFetcher:
                     final_url=current,
                     error=entry.error or "robots.txt 暂时无法获取，本次跳过",
                     robots_status=entry.http_status,
+                    robots_failure=entry.failure,
                     robots_url=entry.final,
                 )
             if state == "unsupported_host":
@@ -498,6 +504,7 @@ class PoliteFetcher:
                 # 521 是防护页，不是服务器一时出错：不当场再请求一次
                 server_error=status is not None and status >= 500 and status != 521,
                 http_status=status,
+                failure=result.status if status is None else "",
                 final=current,
             )
         if status is not None and 400 <= status < 500:
