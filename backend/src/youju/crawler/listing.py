@@ -272,7 +272,7 @@ class _Page:
         self.today = today
         self._hrefs: dict[etree._Element, set[str]] = {}
         self._urls: dict[etree._Element, set[str]] = {}
-        self._twins: dict[etree._Element, set[str]] = {}
+        self._twins: dict[etree._Element, set[etree._Element]] = {}
         self._popups: dict[etree._Element, _CellPopup] = {}
         self._rows: dict[tuple, tuple[etree._Element | None, date | None, bool]] = {}
 
@@ -337,8 +337,8 @@ class _Page:
             self._urls[cell] = cached
         return cached
 
-    def _cell_twins(self, cell: etree._Element) -> set[str]:
-        """cell 里阅读助手附带链接的网址。按 cell 算一次。"""
+    def _cell_twins(self, cell: etree._Element) -> set[etree._Element]:
+        """cell 里阅读助手的附带链接（链接元素）。按 cell 算一次。"""
         cached = self._twins.get(cell)
         if cached is None:
             cached = set()
@@ -349,7 +349,7 @@ class _Page:
                     and (link := self.link(b))
                     and self._assistant_twin(b, link[1])
                 ):
-                    cached.add(link[1])
+                    cached.add(b)
             self._twins[cell] = cached
         return cached
 
@@ -418,11 +418,13 @@ class _Page:
         cell = a.getparent()
         if cell is None:
             return None, None, False
-        nodes, others = self._cell_popup(cell).others(url)
-        companions = others | (self._cell_twins(cell) - {url})
+        nodes, _ = self._cell_popup(cell).others(url)
+        # 链着别的文件的弹层才算附带链接，里面的链接、日期和文字一起不看；别的弹层照原来读。
+        # 跳过的是这些链接本身：别处（比如下一行）链着同一网址的照样算别的文件
+        companions = {b for b in nodes if b.tag == "a"} | self._cell_twins(cell)
+        companions.discard(a)
         if not companions:
             return None, None, False
-        # 链着别的文件的弹层才算附带链接、连里面的日期和文字一起不看；别的弹层照原来读
         return self._climb(a, title, url, nodes, companions)
 
     def _cell_popup(self, cell: etree._Element) -> _CellPopup:
@@ -456,16 +458,20 @@ class _Page:
         title: str,
         url: str,
         popup: set[etree._Element],
-        companions: set[str],
+        companions: set[etree._Element],
     ) -> tuple[etree._Element | None, date | None, bool]:
-        """原来的找法；popup 里的节点、companions 里的网址不看（两个都空时就是原来的找法）。"""
+        """原来的找法；popup 里的节点、companions 里的链接不看（两个都空时就是原来的找法）。"""
         anchor_text = _link_text(a)
         ancestors = list(a.iterancestors())
         skip = set(ancestors)
         for depth, el in enumerate(ancestors):
             if depth >= _MAX_ROW_DEPTH or el.tag in ("body", "html"):
                 break
-            others = self.title_hrefs(el) - {url} - companions
+            if companions:
+                links = (self.link(b) for b in el.iter("a") if b not in companions)
+                others = {link[1] for link in links if link} - {url}
+            else:
+                others = self.title_hrefs(el) - {url}
             if not _is_attachment(url):
                 # 正文链接旁边的附件（pdf、Word 等）属于同一行
                 others = {u for u in others if not _is_attachment(u)}

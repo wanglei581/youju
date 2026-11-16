@@ -1427,6 +1427,17 @@ def test_only_the_popup_linking_other_documents_is_set_aside() -> None:
     assert [(i.url, i.publish_date) for i in both] == [("http://e.cn/b", date(2026, 3, 1))]
 
 
+def test_popup_link_to_the_next_row_does_not_borrow_its_date() -> None:
+    # 弹层里链着的正好是下一行的文件：找行时只跳过弹层里那个链接，下一行自己的链接照样算别的文件，
+    # 不会一路找上去借下一行的日期
+    html = """<ul>
+      <li><a href="/b">关于乙事项的通知</a><div class="address-popup"><a href="/c">关于丙事项的通知</a></div></li>
+      <li><a href="/c">关于丙事项的通知 2026-03-01</a></li>
+    </ul>"""
+    items = extract_items(html, "http://e.cn/", today=date(2026, 11, 16))
+    assert [(i.url, i.publish_date) for i in items] == [("http://e.cn/c", date(2026, 3, 1))]
+
+
 def test_lists_keep_their_page_order_when_they_score_the_same() -> None:
     # 带附带链接的行等别的行分完才归块；归完以后列表块照原来按页面上的先后排，评分一样时取靠前的那块。
     # main 读的也是第一张表（外加三条"| AI阅读"）
