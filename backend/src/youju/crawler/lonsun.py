@@ -1937,6 +1937,140 @@ def _builtin_problem(tokens, values):
     return None
 
 
+# 浏览器当普通脚本执行的 type（HTML 标准的 JavaScript MIME 类型：去掉首尾空白、不分大小写，
+# 带参数的不算）；没写 type 时看 language
+_JS_TYPES = frozenset(
+    {
+        "",
+        "application/ecmascript",
+        "application/javascript",
+        "application/x-ecmascript",
+        "application/x-javascript",
+        "text/ecmascript",
+        "text/javascript",
+        "text/javascript1.0",
+        "text/javascript1.1",
+        "text/javascript1.2",
+        "text/javascript1.3",
+        "text/javascript1.4",
+        "text/javascript1.5",
+        "text/jscript",
+        "text/livescript",
+        "text/x-ecmascript",
+        "text/x-javascript",
+    }
+)
+# 元素属性里的脚本只在用户操作时才跑的事件（别的 on 属性，如 onload、onerror，加载时就可能跑）；
+# 两种都照别的内联脚本的规矩查，见 _attribute_scripts
+_JS_URL_ATTRIBUTES = ("href", "src", "action", "formaction", "data")
+
+
+def _script_kind(el):
+    """浏览器怎么对待这个 <script>："classic"（当普通脚本执行，我们照着分析）、"module"（会执行，
+    我们不分析）、"data"（不执行：text/html 模板、JSON、写错的 type，以及支持模块的浏览器跳过的
+    nomodule 脚本）。"""
+    kind = el.get("type")
+    if kind is None:
+        language = (el.get("language") or "").strip().lower()
+        classic = not language or "text/" + language in _JS_TYPES
+    else:
+        kind = kind.strip().lower()
+        if kind == "module":
+            return "module"
+        classic = kind in _JS_TYPES
+    return "classic" if classic and el.get("nomodule") is None else "data"
+
+
+def _attribute_scripts(doc):
+    """页面元素属性里的脚本：onclick、onload 这类事件属性的值，javascript: 开头的链接。带 srcdoc 的
+    内嵌页面（里面的脚本能改本页）给 None：我们不分析。"""
+    found = []
+    for el in doc.iter():
+        if not isinstance(el.tag, str) or any(
+            a.tag in ("noscript", "template") for a in el.iterancestors()
+        ):
+            continue
+        for name, value in el.attrib.items():
+            name = name.lower()
+            if name == "srcdoc":
+                return None
+            if name.startswith("on"):
+                found.append(value)
+            elif name in _JS_URL_ATTRIBUTES and value.strip().lower().startswith("javascript:"):
+                found.append(value.strip()[len("javascript:") :])
+    return found
+
+
+def _global_object_problem(tokens, values):
+    """整个改 window 这类全局对象（$.extend(window, …)、Object.assign(window, …)、window[k] = …），
+    或者把它整个当值用（var w = window、交给函数），改了哪些全局就看不出来，不认。只有 $(window)
+    挂事件、取尺寸这种可以（经它 .prop、.attr 改属性的不行），typeof window、window === top 这种
+    比较也可以。self、parent 这类在这段脚本里被当成普通变量（var self = this）的不算全局对象。"""
+    shadowed = set()
+    for i, value in enumerate(values):
+        after = values[i + 1] if i + 1 < len(values) else ""
+        if value in ("var", "let", "const") and after in _GLOBAL_OBJECTS:
+            shadowed.add(after)
+        elif value == "function":
+            if after in _GLOBAL_OBJECTS:
+                shadowed.add(after)  # function self() {}
+            found = _function_at(tokens, values, i)
+            if found is not None:
+                params = values[found[0] + 1 : _matching_token(tokens, found[0])]
+                shadowed.update(v for v in params if v in _GLOBAL_OBJECTS)
+        elif value in _GLOBAL_OBJECTS and after == "=" and (i == 0 or values[i - 1] != "."):
+            shadowed.add(value)  # var a = 1, self = this 这类
+    shadowed -= {"window", "globalThis"}
+    present = set(_GLOBAL_OBJECTS) - shadowed
+    for path, _op, _k in _write_sites(tokens, values):
+        if path[0] in present and (len(path) == 1 or path[1] == "*"):
+            return f"整个改了 {path[0]}，看不出改了哪些全局"
+    compare = ("==", "!=", "===", "!==")
+    for i, value in enumerate(values):
+        if value not in present or i and values[i - 1] == ".":
+            continue
+        before = values[i - 1] if i else ""
+        after = values[i + 1] if i + 1 < len(values) else ""
+        if after in (".", "[") or before == "typeof" or before in compare or after in compare:
+            continue
+        if values[max(0, i - 2) : i] in (["$", "("], ["jQuery", "("]) and after == ")":
+            chain = values[i - 2 : _chain_end(tokens, i - 2)]
+            if any(
+                chain[k] == "." and chain[k + 1] in ("prop", "attr", "removeProp", "removeAttr")
+                for k in range(len(chain) - 1)
+            ):
+                return f"经 $({value}) 改了全局对象的属性"
+            continue
+        return f"把 {value} 整个当值用，跟不上经它改了什么"
+    return None
+
+
+def _attribute_script_problem(source, functions, widget):
+    """元素属性里的脚本：照别的内联脚本的规矩查——可以读那几个全局对象，不能改；不能改依赖的
+    全局（GLOBAL_CONTEXTPATH 这类）、jQuery 的请求设置、zTree、内置对象，不能整个改 window。"""
+    tokens = _js_tokens(source)
+    values = _values(tokens)
+    for path, _op in _writes(source):
+        if path[0] in _GLOBAL_OBJECTS and len(path) > 1:
+            path = path[1:]
+        if path[0] in (*_ROOTS, "GLOBAL_CONTEXTPATH", "$", "jQuery") or {
+            "ajax",
+            "ajaxGet",
+            "ajaxSettings",
+            "zTree",
+        } & set(path):
+            return f"改了 {'.'.join(path)}"
+    for i in range(len(values) - 2):
+        if values[i] == "." and values[i + 1] in _AJAX_SETTERS and values[i + 2] == "(":
+            return "改了 AJAX 设置"
+    return (
+        _global_object_problem(tokens, values)
+        or _ztree_problem(values)
+        or _builtin_problem(tokens, values)
+        or _foreign_problem(source, functions, widget)
+    )
+
+
 def _ztree_problem(values):
     """zTree 只许用 $.fn.zTree.init(…) 建树；getZTreeObj、$.fn.zTree._z 这类拿到的是建好的树
     本身或者内部数据，跟不上会改什么。"""
@@ -2987,12 +3121,11 @@ def find_lonsun_api(
         for el in doc.iter("script"):
             if any(a.tag in ("noscript", "template") for a in el.iterancestors()):
                 continue
-            if (el.get("type") or "").strip().lower() not in (
-                "",
-                "text/javascript",
-                "application/javascript",
-            ):
-                continue
+            kind = _script_kind(el)
+            if kind == "module":
+                return fail("页面有 type=module 的脚本：浏览器会执行，我们不分析")
+            if kind != "classic":
+                continue  # 不执行的模板、数据
             src = el.get("src")
             if src is not None:
                 candidates.append(src)
@@ -3053,7 +3186,11 @@ def find_lonsun_api(
                     or "zTree" in path
                 ):
                     return fail("内联脚本改写了依赖状态")
-            problem = _ztree_problem(values) or _builtin_problem(tokens, values)
+            problem = (
+                _ztree_problem(values)
+                or _builtin_problem(tokens, values)
+                or _global_object_problem(tokens, values)
+            )
             if problem:
                 return fail(f"内联脚本{problem}")
             if is_tree_script:
@@ -3108,6 +3245,13 @@ def find_lonsun_api(
                     ["jQuery", ".", "ajaxPrefilter"],
                 ) and values[i + 3 : i + 4] == ["("]:
                     return fail("页面改写了 AJAX 设置")
+        attribute_scripts = _attribute_scripts(doc)
+        if attribute_scripts is None:
+            return fail("页面有 srcdoc 内嵌页面：里面的脚本能改本页，我们不分析")
+        for source in attribute_scripts:
+            problem = _attribute_script_problem(source, functions, widget)
+            if problem:
+                return fail(f"页面元素属性里的脚本（onclick 这类、javascript: 链接）{problem}")
         constructors = []
         extends = 0
         for n, tokens in enumerate(token_sets):
@@ -3319,8 +3463,7 @@ def lonsun_unrecognized_reason(
             for el in doc.iter("script")
             if el.get("src") is None
             and not any(a.tag in ("noscript", "template") for a in el.iterancestors())
-            and (el.get("type") or "").strip().lower()
-            in ("", "text/javascript", "application/javascript")
+            and _script_kind(el) == "classic"
         ]
 
         def has_constructor(source):

@@ -1198,3 +1198,40 @@ def test_city_catalog_host_binding():
     assert city_catalog_host("安徽", None, "www.wuhu.gov.cn") is None
     assert city_catalog_host("安徽", "芜湖", None) is None
     assert city_catalog_host("安徽", "合肥", "www.hefei.gov.cn") is None
+
+
+def test_lonsun_shared_portal_tree_refusal_only_for_requester(session_factory):
+    from pathlib import Path
+
+    from youju.crawler.adapters import find_list_api
+
+    html = (Path(__file__).parent / "fixtures" / "lonsun" / "wuhu_page.html").read_text(
+        encoding="utf-8"
+    )
+    urls = [
+        f"https://www.{name}.gov.cn/public/column/6596381?type=4&catId=6732111&action=list"
+        for name in ("yjq", "jjq")
+    ]
+    tree = find_list_api(html, urls[0], urls[0], catalog_host="www.wuhu.gov.cn").url
+    with session_factory() as session:
+        sources = [make_source(session, u) for u in urls]
+        for source in sources:
+            source.province, source.city = "安徽", "芜湖"
+            source.parser_config = {
+                "list_api_open": "龙讯public",
+                "lonsun_catalog_host": "www.wuhu.gov.cn",
+            }
+        session.commit()
+        ids = [source.id for source in sources]
+    fetcher = RecordingFetcher(
+        {
+            urls[0]: [page(urls[0], html)],
+            urls[1]: [page(urls[1], html)],
+            tree: [FetchResult(tree, "http_error", tree, 403)],
+        }
+    )
+    results = crawl_sources(session_factory, ids, fetcher, max_workers=1)
+    # 两个区县共用门户的栏目树：门户拒绝了第一个来源，第二个来源没去，记"这次没取到"、不记不能抓
+    assert fetcher.requested.count(tree) == 1
+    statuses = sorted(r.status for r in results)
+    assert statuses == ["list_api_refused", "site_paused"]

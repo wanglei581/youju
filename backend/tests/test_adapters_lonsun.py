@@ -1142,14 +1142,15 @@ def test_init_done_method_cannot_mutate_state():
     assert isinstance(resolve_fixture("jx", "49949451", page=page), str)
 
 
-def test_top_level_unrelated_window_property_allowed():
+def test_top_level_window_define_refused():
     from youju.crawler.lonsun import find_lonsun_api
 
+    # 整个改 window（defineProperties 一次定义好几个全局）：一律不认，不再逐个看定义了哪些（第四轮）
     page = fixture("jx_page.html").replace(
         "</body>",
         "<script>Object.defineProperties(window, {flag: {value: true}});</script></body>",
     )
-    assert find_lonsun_api(page, BASE, BASE) is not None
+    assert find_lonsun_api(page, BASE, BASE) is None
 
 
 def test_ready_callback_cannot_replace_catalog():
@@ -2361,3 +2362,75 @@ def test_spotcheck_catalog_host_bound_to_city():
     assert _catalog_host_for(source("芜湖", "www.huainan.gov.cn"), {}) is None
     assert _catalog_host_for(source("合肥"), {}) is None
     assert _catalog_host_for(None, {"省份": "安徽", "城市": "淮南"}) == "www.huainan.gov.cn"
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        # 模块脚本浏览器会执行（在 DOM 就绪前），我们不分析
+        '<script type="module">window.GLOBAL_CONTEXTPATH = "/other";</script>',
+        '<script type="module" src="/x.js"></script>',
+        # 别的 JavaScript 类型照样执行：照普通脚本分析
+        '<script type="text/ecmascript">catalogs[6991] = [];</script>',
+        '<script type=" Application/X-JavaScript ">catalogs[6991] = [];</script>',
+        '<script language="javascript">catalogs[6991] = [];</script>',
+        # 元素属性里的脚本
+        "<img src='x.png' onerror=\"GLOBAL_CONTEXTPATH = '/x'\">",
+        '<a href="javascript:catalogs[6991] = []">x</a>',
+        '<div onclick="Ls.ajaxGet = null"></div>',
+        "<iframe srcdoc=\"<script>parent.GLOBAL_CONTEXTPATH='/x'</script>\"></iframe>",
+        # 整个改 window、经别名改全局
+        "<script>$.extend(window, {GLOBAL_CONTEXTPATH: '/other'});</script>",
+        "<script>Object.assign(window, {GLOBAL_CONTEXTPATH: '/other'});</script>",
+        "<script>window['GLOBAL_' + 'CONTEXTPATH'] = '/x';</script>",
+        "<script>var w = window; w.GLOBAL_CONTEXTPATH = '/x';</script>",
+        "<script>(function (w) { w.GLOBAL_CONTEXTPATH = '/x'; })(window);</script>",
+        "<script>$(window).prop('GLOBAL_CONTEXTPATH', '/x');</script>",
+        "<script>top['GLOBAL_CONTEXTPATH'] = '/x';</script>",
+    ],
+)
+def test_executed_code_we_do_not_analyze_refused(extra):
+    assert _found(_jx(extra=extra)) is None, extra
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        # 不执行的：模板、写错的 type、支持模块的浏览器跳过的 nomodule
+        '<script type="text/html">catalogs[6991] = [];</script>',
+        '<script type="text/javascriapt">catalogs[6991] = [];</script>',
+        "<script nomodule>catalogs[6991] = [];</script>",
+        # 用户点了才跑、又不碰我们跟踪的东西的属性脚本，常见的 window 用法
+        '<a href="javascript:void(0)" onclick="return false">x</a>',
+        "<input type='text' onmouseover=\"this.style.color='red'\">",
+        "<script>$(window).on('scroll', function () {}); $(window).scrollTop();</script>",
+        "<script>var self = this; function f(a) { return a; } f(self);</script>",
+        "<script>if (typeof window !== 'undefined' && top !== self) { top.location = self.location; }</script>",
+    ],
+)
+def test_harmless_scripts_and_attributes_still_recognized(extra):
+    assert _found(_jx(extra=extra)) is not None, extra
+
+
+def test_round_guard_cached_refusal_not_reused_for_other_sources():
+    from youju.crawler.fetcher import FetchResult
+    from youju.crawler.service import CatalogCache
+
+    calls = []
+
+    def fetch(url, **kwargs):
+        calls.append(url)
+        return FetchResult(url, "http_error", url, 403)
+
+    cache = CatalogCache()
+    tree = "https://www.wuhu.gov.cn/openness/6787891/6596381.js?v=1558"
+    assert cache.get(tree, fetch).http_status == 403
+    # 别的栏目共用同一个栏目树：被拒的是第一个来源去的那一次，后面的没去，记"这次没取到"
+    again = cache.get(tree, fetch)
+    assert again.status == "site_paused" and calls == [tree]
+    # 取到过的正常结果照常共用（不用再去）
+    ok = CatalogCache()
+    good = FetchResult(tree, "ok", tree, 200, "var catalogs = {1:[]}")
+    ok.get(tree, lambda url, **kwargs: good)
+    ok.block("https://www.wuhu.gov.cn/other.js")
+    assert ok.get(tree, fetch) is good

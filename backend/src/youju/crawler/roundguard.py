@@ -52,6 +52,7 @@ class HostRoundGuard:
         self._lock = Lock()
         self._locks: dict[str, Lock] = {}
         self._results: dict[str, FetchResult] = {}
+        self._refused: set[str] = set()  # 缓存的结果里被拒的那些地址
         self._blocked_hosts: set[str] = set()
 
     def fetch(
@@ -72,17 +73,23 @@ class HostRoundGuard:
             lock = self._locks.setdefault(host, Lock())
         with lock:
             if cache and url in self._results:
+                if url in self._refused:
+                    # 被拒的是别的来源去的那一次：这个来源自己没去，记"这次没取到"，不记不能抓
+                    return round_skip(url)
                 return self._results[url]
             if self.blocked(url):
                 return round_skip(url)
             result = fetch(url, **kwargs)
-            if cache:
-                self._results[url] = result
-            if result.status != "robots_disallowed" and (  # robots 不许不算主机拒绝
+            refused_now = result.status != "robots_disallowed" and (  # robots 不许不算主机拒绝
                 refused_result(url, result, redirects=redirects)
                 or refused is not None
                 and refused(result)
-            ):
+            )
+            if cache:
+                self._results[url] = result
+                if refused_now:
+                    self._refused.add(url)
+            if refused_now:
                 self.block(url)
             return result
 
