@@ -2521,6 +2521,32 @@ class GuardedLonsunCache(LonsunCache):
         self.round_guard = HostRoundGuard()
 
 
+def test_verify_and_spotcheck_fetch_each_tree_once_per_round():
+    from youju.crawler.adapters import find_list_api
+    from youju.crawler.fetcher import FetchResult
+    from youju.govsites.spotcheck import _first_list_item
+    from youju.govsites.verify import DOWN, check_one
+
+    # 同一份栏目树第一次超时：同一轮别的栏目共用这个结果，不再去请求（每轮每个脚本只取一次）
+    second = BASE.replace("49949451", "49949431")
+    tree = find_list_api(fixture("jx_page.html"), BASE, BASE)
+    pages = {
+        BASE: fixture("jx_page.html"),
+        second: fixture("jx_page.html"),
+        tree.url: FetchResult(tree.url, "timeout", tree.url, error="timed out"),
+    }
+    cache = GuardedLonsunCache(pages)
+    assert check_one(cache, lonsun_column(), TODAY).result == DOWN
+    assert check_one(cache, lonsun_column(second), TODAY).result == DOWN
+    assert [url for url, _ in cache.calls].count(tree.url) == 1
+    # 抽查同样
+    cache = GuardedLonsunCache(pages)
+    reasons = []
+    assert _first_list_item(cache, BASE, TODAY, reasons) is None
+    assert _first_list_item(cache, second, TODAY, reasons) is None
+    assert [url for url, _ in cache.calls].count(tree.url) == 1
+
+
 def test_verify_and_spotcheck_share_host_refusals():
     from youju.crawler.adapters import api_follow, find_list_api
     from youju.crawler.fetcher import FetchResult

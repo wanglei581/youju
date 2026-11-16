@@ -265,8 +265,10 @@ def guarded_fetchers(cache, page_url: str):
         )
 
     def tree_get(api):
-        return lambda url, **kwargs: guard.fetch(
-            url, cache.get, refused=lambda r: bool(api_refusal(api, r)), **kwargs
+        # 栏目树同一地址这一轮只取一次、各栏目共用（第一次没取到、超时的也不再取；PageCache 的
+        # 持久缓存保证不了，比如带 --retry-failed 时失败的不缓存），只取地址本身、跳转不跟
+        return lambda url, **_kwargs: guard.get(
+            url, cache.get, refused=lambda r: bool(api_refusal(api, r))
         )
 
     def list_get(part):
