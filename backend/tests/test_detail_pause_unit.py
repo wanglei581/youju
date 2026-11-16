@@ -1409,3 +1409,26 @@ def test_bare_notice_titled_captcha_does_not_pause(tmp_path):
     outcomes = _fetch_outcomes([(1, "https://a.gov.cn/1")], Fake(), 1, pause=_SitePause(path))
     assert outcomes[1].status != "protected"
     assert _SitePause(path).expiry("a.gov.cn") is None
+
+
+@pytest.mark.parametrize("title", ["安全验证", "人机验证 - 某局", "captcha"])
+def test_short_captcha_title_with_readable_notice_is_read(tmp_path, title):
+    # 标题很短、写着安全验证这类验证码的字，正文是正常通知（第十四轮 Codex）：验证码一类的字不直接
+    # 算拦截页，详情页上还要看取不取得到正文——取得到，照常读、不停站
+    body = "现将有关事项通知如下。各单位要按要求做好申报工作，材料齐全、内容真实。" * 4
+    html = (
+        f"<html><head><title>{title}</title></head><body>"
+        f"<div id='zoom'><p>{body}</p></div></body></html>"
+    )
+    path = str(tmp_path / "pause.json")
+
+    class Fake:
+        def fetch(self, url):
+            return _html_result(url, html)
+
+    outcomes = _fetch_outcomes([(1, "https://a.gov.cn/1")], Fake(), 1, pause=_SitePause(path))
+    assert outcomes[1].status != "protected"
+    assert _SitePause(path).expiry("a.gov.cn") is None
+    # 明说拦着的（访问被拒绝、拦截）照样直接算拦截页
+    blocked = _html_result("https://a.gov.cn/2", _FIREWALL)
+    assert detail_service._gate_page(blocked, blocked.url) is True

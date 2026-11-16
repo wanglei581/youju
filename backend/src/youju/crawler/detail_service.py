@@ -33,6 +33,7 @@ from youju.crawler.detail import (
     search_throttle_site,
 )
 from youju.crawler.fetcher import (
+    CAPTCHA_WORDS,
     SITE_PAUSED,
     FetchResult,
     PoliteFetcher,
@@ -239,11 +240,13 @@ def _login_page(text: str, url: str) -> bool:
     captcha、核实过的站内搜索限流弹窗都不算），并且解析也取不到正文、附件。详情页的标题就是文章
     标题（"关于开展能力验证工作的通知"），页头的登录小框、限流弹窗、留言区的验证码也常见，只凭这些
     不停整个网站。"""
-    from youju.govsites.platform import _CAPTCHA, _PASSWORD
+    from youju.govsites.platform import _PASSWORD
 
-    if not (_PASSWORD.search(text[:200000]) or _CAPTCHA.search(_visible_words(text, url))):
+    if not (_PASSWORD.search(text[:200000]) or CAPTCHA_WORDS.search(_visible_words(text, url))):
         return False
     parsed = parse_detail(text, url)
+    if parsed.failure_reason == "防护页或验证码":
+        return True  # 解析也认它是防护页：附件、正文都不作数
     return not parsed.raw_body and not parsed.attachments
 
 

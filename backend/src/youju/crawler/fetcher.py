@@ -116,6 +116,16 @@ def challenge_marker(html: str) -> str | None:
     return next((name for name, pattern in _BLOCK_MARKERS if pattern.search(head)), None)
 
 
+# 整页几乎没字的网页上：明说拦着的字（直接算拦截页），验证码一类的字（算登录、验证页，详情页上还要看
+# 取不取得到正文，见 detail_service._login_page）。两张表不重叠
+_BLOCK_WORDS = re.compile(
+    r"拦截|防火墙|访问被拒绝|禁止访问|安全狗|云锁|请开启.{0,12}JavaScript|访问过于频繁|请求过于频繁|"
+    r"访问太频繁|访问频率过高|异常访问|access denied|forbidden",
+    re.I,
+)
+CAPTCHA_WORDS = re.compile(
+    r"验证码|人机验证|安全验证|滑动验证|滑块验证|captcha|verify you are human", re.I
+)
 # 标题里分开站名和页面名的符号（"用户登录 - 某市人民政府"、"访问被拒绝_某局"）
 _TITLE_SEPARATORS = re.compile(r"[-_|—–丨｜:：·•]+")
 
@@ -129,15 +139,15 @@ def short_title_parts(title: str) -> str:
 
 def html_gate(html: str) -> str | None:
     """网页是不是关卡（robots.txt 和详情页共用）：平台的拦截页照 challenge_marker；整页几乎没字、
-    又写着拦截、访问被拒绝、访问过于频繁、验证码这类字的（防火墙回 200 的拦截页多是网页）——这些字
-    要在标题拆掉站名以后很短的那一段里（short_title_parts），或者整页看得见的字总共不到 300 字
-    （"防火墙设备采购结果公告"这类短通知不算）；验证码、登录框要标题很短的那一段写着登录、验证，
-    或者整页就是一个关卡（govsites.platform 的写法；首页角落的登录小框、留言板的验证码不算；详情页
-    另有规则，见 detail_service._html_page_gate）。"""
+    又写着拦截、访问被拒绝、访问过于频繁这类明说拦着的字（_BLOCK_WORDS，防火墙回 200 的拦截页多是
+    网页）——这些字要在标题拆掉站名以后很短的那一段里（short_title_parts），或者整页看得见的字总共
+    不到 300 字（"防火墙设备采购结果公告"这类短通知不算）——算拦截页；验证码一类的字（同样只看这些
+    地方，或者正文里看得见的）、登录框要标题很短的那一段写着登录、验证，或者整页就是一个关卡，算
+    登录、验证页（govsites.platform 的写法；首页角落的登录小框、留言板的验证码不算；详情页另有规则，
+    见 detail_service._html_page_gate）。"""
     reason = challenge_marker(html)
     if reason:
         return reason
-    from youju.crawler.detail import _PROTECTION
     from youju.govsites.platform import _CAPTCHA, _GATE_TITLE, _PASSWORD, _TITLE
 
     head = html[:200000]
@@ -148,11 +158,14 @@ def html_gate(html: str) -> str | None:
     # captcha 都不算
     visible = re.sub(r"<(script|style)\b.*?</\1\s*>", " ", head, flags=re.S | re.I)
     visible = re.sub(r"\s+", " ", unescape_html(re.sub(r"<[^>]+>", " ", visible))).strip()
+    captcha = bool(_CAPTCHA.search(visible))
     if bare:
         words = f"{short} {visible}" if len(visible) <= 300 else short
-        if _GATE_WORDS.search(words) or _PROTECTION.search(words):
+        if _BLOCK_WORDS.search(words):
             return "拦截页"
-    if (_PASSWORD.search(head) or _CAPTCHA.search(visible)) and (_GATE_TITLE.search(short) or bare):
+        # 验证码一类的字不直接算拦截页：标题写着"安全验证"、正文是正常通知的短页面在详情页上照常读
+        captcha = captcha or bool(CAPTCHA_WORDS.search(words))
+    if (_PASSWORD.search(head) or captcha) and (_GATE_TITLE.search(short) or bare):
         return "需要登录或验证码"
     return None
 
