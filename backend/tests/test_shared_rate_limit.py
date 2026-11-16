@@ -109,25 +109,36 @@ def test_same_address_concurrency_across_processes(tmp_path):
     assert pages[2][1] >= min(end for _, _, end in pages[:2]) - 0.01
 
 
-def test_unwritable_dir_falls_back_with_warning(tmp_path, caplog):
+def test_unusable_dir_stops_instead_of_falling_back(tmp_path):
+    from youju.crawler.fetcher import SharedLimitError
+
+    # 配了跨进程限速的目录却用不了：停下不抓（不悄悄只管本进程，整机的同站间隔就保证不了）
     blocked = tmp_path / "file-not-dir"
     blocked.write_text("x")
-    with caplog.at_level("WARNING"), _fetcher(str(blocked)) as fetcher:
-        assert fetcher.fetch("https://a.example.gov.cn/page").status == "ok"
-    assert "跨进程限速的目录用不了" in caplog.text
+    with pytest.raises(SharedLimitError):
+        _fetcher(str(blocked))
 
 
-def test_read_only_dir_falls_back_per_request(tmp_path, caplog):
+def test_read_only_dir_midway_stops(tmp_path):
+    from youju.crawler.fetcher import SharedLimitError
+
     shared = tmp_path / "shared"
     shared.mkdir()
-    shared.chmod(0o500)
-    try:
-        with caplog.at_level("WARNING"), _fetcher(str(shared), host_interval=0.1) as fetcher:
-            assert fetcher.fetch("https://a.example.gov.cn/page").status == "ok"
-            assert fetcher.fetch("https://a.example.gov.cn/other").status == "ok"
-        assert caplog.text.count("跨进程限速的目录用不了") == 1
-    finally:
-        shared.chmod(0o700)
+    with _fetcher(str(shared), host_interval=0.1) as fetcher:
+        for f in shared.iterdir():
+            f.unlink()
+        shared.chmod(0o500)  # 中途写不进去了
+        try:
+            with pytest.raises(SharedLimitError):
+                fetcher.fetch("https://a.example.gov.cn/page")
+        finally:
+            shared.chmod(0o700)
+
+
+def test_not_configured_dir_keeps_process_limits(tmp_path):
+    # 没配目录（空串）的照旧只管本进程，不报错
+    with _fetcher(None) as fetcher:
+        assert fetcher.fetch("https://a.example.gov.cn/page").status == "ok"
 
 
 def test_gate_closing_after_wait_releases_everything(tmp_path):
@@ -171,31 +182,18 @@ def test_empty_stamp_is_a_new_record(tmp_path):
 
 
 @pytest.mark.parametrize("value", ["abc", "nan", "inf", "\x00\x00"])
-def test_bad_stamp_waits_full_interval_or_stops_when_required(tmp_path, value):
+def test_bad_stamp_is_repaired_then_stops(tmp_path, value):
     from youju.crawler.fetcher import SharedLimitError
 
     limits = _SharedLimits(str(tmp_path))
     limits.path("h", "a.example.gov.cn").write_text(value)
-    # 读不出来的记录（写到一半被杀、乱写）：按刚请求过等满一个间隔，再写上新的时间
     with _fetcher(str(tmp_path), host_interval=0.3) as fetcher:
+        # 读不出来的记录（写到一半被杀、乱写）：先改成现在的时间再停下，报错写明是哪个文件
+        with pytest.raises(SharedLimitError) as raised:
+            fetcher.fetch("https://a.example.gov.cn/page")
+        assert str(limits.path("h", "a.example.gov.cn")) in str(raised.value)
+        assert float(limits.path("h", "a.example.gov.cn").read_text().strip()) > 0
+        # 修好以后照常，而且从修好的时间起等满一个间隔
         started = time.monotonic()
         assert fetcher.fetch("https://a.example.gov.cn/page").status == "ok"
-        assert time.monotonic() - started >= 0.3
-    assert float(limits.path("h", "a.example.gov.cn").read_text().strip()) > 0
-    # 一定要跨进程限速（补正文队列）：停下，不当成没有记录
-    limits.path("h", "a.example.gov.cn").write_text(value)
-    fetcher = PoliteFetcher(
-        "YoujuBot-test",
-        per_host_interval=0.3,
-        transport=httpx.MockTransport(lambda request: httpx.Response(404, request=request)),
-        real_network=False,
-        resolver=lambda host: [ADDRESS],
-        per_address_interval=0,
-        shared_limits_dir=str(tmp_path),
-        require_shared_limits=True,
-    )
-    with fetcher, pytest.raises(SharedLimitError) as raised:
-        fetcher.fetch("https://a.example.gov.cn/page")
-    # 停下之前先把记录修好（记成现在的时间），报错里写明是哪个文件
-    assert str(limits.path("h", "a.example.gov.cn")) in str(raised.value)
-    assert float(limits.path("h", "a.example.gov.cn").read_text().strip()) > 0
+        assert time.monotonic() - started >= 0.2

@@ -36,7 +36,7 @@ uv run youju report                  # 来源健康和条目统计
 uv run youju serve                   # 启动 API：http://127.0.0.1:8000/docs
 ```
 
-补正文遇到 HTTP 429 时停取响应主机 6 小时，遇到 401、403、412、521 或防护页时停取 24 小时；robots.txt 回 429、521 时停 6 小时，回别的 5xx 时停 1 小时，证书或加密连接出错停 6 小时，连不上或超时停 1 小时，回了防护页、验证码停 24 小时（这几种第一份文件照常写库、带重试次数）；robots.txt 跳到别的主机时停的是实际回错的那台，原来的主机跟着停（robots.txt 回 401、403、412 照 RFC 9309 当没有 robots，页面被拒才停）。停取记录是每轮抓取的补正文和后台队列共用的一份文件，配了 `YOUJU_STORAGE_DIR` 时默认在 `<storage_dir>/state/detail-pause.json`（重建容器不丢），没配时在 `/tmp/youju-detail-pause.json`，可通过 `YOUJU_DETAIL_PAUSE_PATH` 配置。后台队列每批每个主机默认最多选 20 份（`--per-host` 可调整）；60 秒内连续 20 份网络失败、涉及至少 5 个主机时熔断，这批失败不写库，命令按失败退出（证书、加密连接出错不算网络失败）。后台队列一定要跨进程限速：`YOUJU_RATE_LIMIT_DIR` 没配、用不了或中途读写出错时停下、按失败退出。
+补正文遇到 HTTP 429 时停取响应主机 6 小时，遇到 401、403、412、521 或防护页时停取 24 小时；robots.txt 回 429、521 时停 6 小时，回别的 5xx 时停 1 小时，证书或加密连接出错停 6 小时，连不上或超时停 1 小时，回了防护页、验证码停 24 小时（这几种第一份文件照常写库、带重试次数）；robots.txt 跳到别的主机时停的是实际回错的那台，原来的主机跟着停（robots.txt 回 401、403、412 照 RFC 9309 当没有 robots，页面被拒才停）。停取记录是每轮抓取的补正文和后台队列共用的一份文件，配了 `YOUJU_STORAGE_DIR` 时默认在 `<storage_dir>/state/detail-pause.json`（重建容器不丢），没配时在 `/tmp/youju-detail-pause.json`，可通过 `YOUJU_DETAIL_PAUSE_PATH` 配置。后台队列每批每个主机默认最多选 20 份（`--per-host` 可调整）；60 秒内连续 20 份网络失败、涉及至少 5 个主机时熔断，这批失败不写库，命令按失败退出（证书、加密连接出错不算网络失败）。后台队列一定要跨进程限速：`YOUJU_RATE_LIMIT_DIR` 没配时不跑；所有抓取任务配了这个目录却用不了、中途读写出错时都停下、按失败退出（不悄悄退回只管本进程），robots.txt 太大读不完、回了纯文字的验证码或拦截页也当读不到。
 
 ## API
 
@@ -127,7 +127,7 @@ openid 在 `YOUJU_AI_ADVISOR_OPENIDS` 逗号分隔白名单内才可访问；默
 | `YOUJU_PER_HOST_INTERVAL` | `3.0` | 同一网站两次请求的最小间隔（秒） |
 | `YOUJU_PER_ADDRESS_INTERVAL` | `1.0` | 同一地址两次请求的最小间隔（秒） |
 | `YOUJU_PER_ADDRESS_CONCURRENCY` | `2` | 同一地址同时请求数上限 |
-| `YOUJU_RATE_LIMIT_DIR` | `/tmp/youju-rate` | 跨进程限速的锁文件目录：同一台机器上各抓取进程共用，同一网站间隔、同一地址限速对整机生效；空串表示只管各自进程 |
+| `YOUJU_RATE_LIMIT_DIR` | `/tmp/youju-rate` | 跨进程限速的锁文件目录：同一台机器上各抓取进程共用，同一网站间隔、同一地址限速对整机生效；配了却用不了时抓取任务停下、按失败退出；空串表示只管各自进程（补正文队列不跑） |
 | `YOUJU_MAX_WORKERS` | `8` | 同时抓取的网站数 |
 | `YOUJU_FAILURE_ALERT_THRESHOLD` | `3` | 连续失败几次告警 |
 | `YOUJU_ADMIN_TOKEN` | 未配置 | 管理接口请求头 `X-Admin-Token`；未配置时一律拒绝 |

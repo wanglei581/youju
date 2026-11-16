@@ -600,6 +600,67 @@ def test_stop_while_waiting_for_host_interval_returns_at_once() -> None:
         assert f._last_request == last
 
 
+@pytest.mark.parametrize(
+    "robots_body,expected",
+    [
+        # 纯文本的关卡页：网站拦着我们
+        ("请输入验证码", "protected"),
+        ("您的访问已被网站防火墙拦截", "protected"),
+        # 真的 robots 文件，注释里提到验证码也照常当规则读
+        ("User-agent: *\nDisallow: /admin\n# 验证码页面不要抓", "ok"),
+    ],
+)
+def test_robots_plain_text_gate(robots_body, expected) -> None:
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if request.url.path == "/robots.txt":
+            return httpx.Response(200, text=robots_body, headers={"content-type": "text/plain"})
+        return httpx.Response(200, text=LIST_HTML)
+
+    fetcher = PoliteFetcher(
+        "TestAgent YoujuBot/0.1",
+        per_host_interval=0.0,
+        per_address_interval=0,
+        transport=httpx.MockTransport(handler),
+        resolver=public_dns,
+    )
+    with fetcher as f:
+        result = f.fetch("https://a.gov.cn/page")
+    if expected == "protected":
+        assert result.status == "robots_error" and result.robots_failure == "protected"
+        assert calls == ["/robots.txt"]
+    else:
+        assert result.status == "ok" and calls == ["/robots.txt", "/page"]
+
+
+def test_robots_too_large_is_not_treated_as_missing(monkeypatch) -> None:
+    from youju.crawler import fetcher as fetcher_module
+
+    monkeypatch.setattr(fetcher_module, "MAX_RESPONSE_BYTES", 100)
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if request.url.path == "/robots.txt":
+            return httpx.Response(200, text="User-agent: *\nDisallow: /page\n" + "#" * 500)
+        return httpx.Response(200, text=LIST_HTML)
+
+    fetcher = PoliteFetcher(
+        "TestAgent YoujuBot/0.1",
+        per_host_interval=0.0,
+        per_address_interval=0,
+        transport=httpx.MockTransport(handler),
+        resolver=public_dns,
+    )
+    with fetcher as f:
+        result = f.fetch("https://a.gov.cn/page")
+    # 太大读不完：规则看不全，不当成"没有 robots"，不请求页面
+    assert result.status == "robots_error" and result.robots_failure == "too_large"
+    assert calls == ["/robots.txt"]
+
+
 def test_certificate_error_is_never_bypassed() -> None:
     compat_calls: list[str] = []
 

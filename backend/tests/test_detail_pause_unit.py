@@ -270,6 +270,19 @@ def test_robots_protection_page_pauses_host(tmp_path):
     assert _hours_left(path, "a.gov.cn") == pytest.approx(24, abs=0.05)
 
 
+def test_robots_too_large_pauses_six_hours(tmp_path):
+    path = tmp_path / "pause.json"
+
+    class Fake:
+        def fetch(self, url):
+            return FetchResult(url, "robots_error", robots_status=200, robots_failure="too_large")
+
+    pause = _SitePause(str(path))
+    _fetch_outcomes([(1, "https://a.gov.cn/1")], Fake(), 1, pause=pause)
+    assert pause.reasons == {"a.gov.cn": "robots.txt 读不到（太大读不完）"}
+    assert _hours_left(path, "a.gov.cn") == pytest.approx(6, abs=0.05)
+
+
 def test_robots_certificate_error_pauses_six_hours(tmp_path):
     path = tmp_path / "pause.json"
 

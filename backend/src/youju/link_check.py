@@ -38,7 +38,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from youju.config import get_settings
-from youju.crawler.fetcher import FetchResult, PoliteFetcher
+from youju.crawler.fetcher import FetchResult, PoliteFetcher, SharedLimitError
 from youju.models import Document, Source
 from youju.takedown import available_condition
 
@@ -346,6 +346,8 @@ def check_links(
                     if result.status == "deadline":
                         break  # 到了期限没查完：不是网站的问题，这一份和这个网站剩下的都留到明天
                     verdict = _classify(result, url, title)
+                except SharedLimitError:
+                    raise  # 跨进程限速用不了：整批停下，不当成"判断不了"一份份往下试
                 except Exception as exc:  # noqa: BLE001 - 一份出意外不拖累整批：算判断不了，下次再查
                     log.warning("原网页检查出错：%s（%s）", url, exc.__class__.__name__)
                     verdict = "unknown"

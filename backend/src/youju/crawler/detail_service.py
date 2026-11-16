@@ -575,6 +575,9 @@ def _fetch_outcomes(
                     if failure == "protected":
                         # robots.txt 回了防护页、验证码：和页面被拦一样停 24 小时
                         pause.add(_host(actual), "robots.txt 回了防护页或验证码")
+                    elif failure == "too_large":
+                        # 太大读不完（回的是 200）：规则看不全，一时好不了，停 6 小时
+                        pause.add(_host(actual), "robots.txt 读不到（太大读不完）", hours=6)
                     elif code in (429, 521):
                         # robots.txt 回 429（服务器忙）、521（防护）：读不到，停 6 小时再来
                         pause.add(_host(actual), f"robots.txt HTTP {code}", hours=6)
@@ -803,7 +806,7 @@ def run_detail_queue(
             or (
                 outcome.status == "robots_error"
                 and robots_status is None
-                and robots_failure != "ssl_error"
+                and robots_failure not in ("ssl_error", "too_large")
             )
             or any(text in reason for text in ("域名解析失败", "同时在等的域名解析过多", "dns"))
         )

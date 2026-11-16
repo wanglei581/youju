@@ -21,6 +21,7 @@ from youju.crawler.adapters import (
     find_list_api,
     gkmlpt_categories,
 )
+from youju.crawler.fetcher import SharedLimitError
 from youju.crawler.listing import extract_items
 from youju.crawler.urls import host_of
 from youju.govsites.inventory import OPTIONAL_DEPTS, STANDARD_DEPTS, XXGK_TAG, DeptRow
@@ -225,6 +226,8 @@ def check_columns(
         for col in group:
             try:
                 out.append(check_one(cache, col, today))
+            except SharedLimitError:
+                raise  # 跨进程限速用不了：整批停下，不当成哪个栏目试读出错
             except Exception as exc:  # noqa: BLE001 - 一个栏目出意外不让整批白跑
                 col.result, col.reason = DOWN, f"试读出错：{exc.__class__.__name__}"
                 out.append(col)

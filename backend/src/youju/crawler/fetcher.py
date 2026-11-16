@@ -76,6 +76,15 @@ class _SharedLimits:
         return self.root / f"{kind}-{digest}"
 
 
+# robots.txt 正文里的规则行：一行都没有的不是 robots 文件（看是不是纯文本的关卡页）
+_ROBOTS_LINE = re.compile(r"^\s*(?:user-agent|disallow|allow|sitemap|crawl-delay)\s*:", re.I | re.M)
+_GATE_WORDS = re.compile(
+    r"拦截|防火墙|访问被拒绝|禁止访问|安全验证|人机验证|安全狗|云锁|请开启\s*JavaScript|"
+    r"access denied|forbidden|captcha|verify you are human",
+    re.I,
+)
+
+
 class _CorruptStamp(OSError):
     """跨进程限速记录里的时间读不出来（被截断、乱写）。"""
 
@@ -145,7 +154,8 @@ class _RobotsEntry:
     server_error: bool = False  # unreachable 是因为服务器回 5xx（超时、连不上在下层已重试过）
     http_status: int | None = None  # unreachable 时 robots.txt 回的状态码
     # unreachable 时读 robots.txt 的结果：ssl_error（证书、加密连接出错，对方的问题）、
-    # network_error（连不上、超时、域名解析失败，也可能是我们自己断网）、protected（回了防护页）
+    # network_error（连不上、超时、域名解析失败，也可能是我们自己断网）、protected（回了防护页）、
+    # too_large（太大读不完）
     failure: str = ""
     final: str = ""  # unreachable、site_paused 时实际出问题的那个 robots.txt 地址（跟过跳转）
     chain: tuple[
@@ -302,8 +312,10 @@ class PoliteFetcher:
         # 跨进程限速（shared_limits_dir，配置项 rate_limit_dir）：不配就只管这个实例
         self._shared: _SharedLimits | None = None
         self._shared_warned = False
-        # 一定要跨进程限速（补正文队列）：没配目录、目录用不了、中途读写出错都抛 SharedLimitError
-        self._require_shared = require_shared_limits
+        # 配了跨进程限速的目录就一定要用上：目录用不了、中途读写出错都抛 SharedLimitError，停下
+        # 不抓（不悄悄退回只管本进程，那样整机的同站 3 秒、同一地址名额就保证不了）；补正文队列
+        # 另外要求一定要配（require_shared_limits）
+        self._require_shared = require_shared_limits or bool(shared_limits_dir)
         if shared_limits_dir:
             try:
                 self._shared = _SharedLimits(shared_limits_dir)
@@ -492,6 +504,17 @@ class PoliteFetcher:
             return _RobotsEntry("allow_all", None, self._clock())
         now = self._clock()
         status = result.http_status
+        if result.status == "too_large":
+            # 太大没读完：规则看不全，不能当成"没有 robots"放行
+            return _RobotsEntry(
+                "unreachable",
+                None,
+                now,
+                "robots.txt 超过 20MB，读不完，本次跳过",
+                http_status=status,
+                failure="too_large",
+                final=current,
+            )
         # 429 是“请慢一点”，不是“没有 robots”，本次不能抓页面。
         if result.status in ("network_error", "ssl_error") or (
             status is not None and (status >= 500 or status == 429)
@@ -517,10 +540,12 @@ class PoliteFetcher:
         # 不论 decode_text 怎么设都自己解码：下载附件的抓取器不解码内容（text 是空的），以前读
         # robots.txt 也拿到空文字、按"没有 robots.txt"放行，网站禁止抓取的附件照样下载
         body = decode_html(result.content, result.content_type).lstrip("\ufeff \t\r\n")
-        if body.startswith("<"):
+        if body.startswith("<") or body and not _ROBOTS_LINE.search(body):
             from youju.govsites.platform import blocker
 
-            gate = blocker(result.status, status, body)
+            gate = blocker(result.status, status, body) or (
+                None if body.startswith("<") else (_GATE_WORDS.search(body) and "拦截页")
+            )
             if gate:
                 # 回的是防护页、验证码（D-013）：网站拦着我们，不当成"没有 robots"接着去请求页面
                 return _RobotsEntry(
@@ -604,14 +629,10 @@ class PoliteFetcher:
             try:
                 last = _read_stamp(fd)
             except _CorruptStamp as exc:
-                if self._require_shared:
-                    # 一定要跨进程限速：先把记录修好（记成现在，下一次照样等满一个间隔），再停下
-                    # （见下面的 except），下次运行不会一直卡在这份坏记录上
-                    _write_stamp(fd, time.time())
-                    raise _CorruptStamp(f"{exc}（{path}，已改成现在的时间）") from exc
-                # 只当作刚请求过、等满一个间隔，再写上新的时间
-                log.warning("%s，按刚请求过等满 %.1f 秒", exc, interval)
-                last = math.inf
+                # 先把记录修好（记成现在，下一次照样等满一个间隔），再停下（见下面的 except），
+                # 下次运行不会一直卡在这份坏记录上
+                _write_stamp(fd, time.time())
+                raise _CorruptStamp(f"{exc}（{path}，已改成现在的时间）") from exc
             now = time.time()
             if last is not None:
                 wait = interval if last > now else min(interval, interval - (now - last))

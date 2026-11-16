@@ -41,6 +41,7 @@ from sqlalchemy import delete, func, or_, select, text
 from sqlalchemy.orm import Session
 
 from youju import attachment_text as texts
+from youju.crawler.fetcher import SharedLimitError
 from youju.lists.lookup import list_title_allowed, public_condition
 from youju.lists.rules import normalize_credit_code, normalize_name
 from youju.models import (
@@ -734,6 +735,9 @@ def refresh(
                 try:
                     _read_one(session, url, fetcher, now, report, reason)
                     session.commit()
+                except SharedLimitError:
+                    session.rollback()
+                    raise  # 跨进程限速用不了：整批停下，不给一份份记读取出错
                 except Exception as exc:  # noqa: BLE001 - 一份出错不影响其他份
                     session.rollback()
                     report.errors += 1

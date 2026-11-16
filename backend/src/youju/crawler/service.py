@@ -26,7 +26,7 @@ from youju.crawler.adapters import (
     find_list_api,
     gkmlpt_categories,
 )
-from youju.crawler.fetcher import FetchResult
+from youju.crawler.fetcher import FetchResult, SharedLimitError
 from youju.crawler.listing import ListItem, extract_items
 from youju.crawler.urls import host_of, public_url, url_key
 from youju.dedup import reconcile_documents
@@ -453,6 +453,8 @@ def crawl_sources(
                     if source is None:
                         continue
                     check = check_source(session, source, fetcher, failure_threshold)
+                except SharedLimitError:
+                    raise  # 跨进程限速用不了：整批停下（命令失败、发提醒），不算哪个来源的错
                 except Exception:  # 单个来源出错不影响其他来源
                     log.error("检查来源 #%s 时出错（内部错误）", source_id)
                     recorded = _record_internal_error(

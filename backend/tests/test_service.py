@@ -1,6 +1,7 @@
 import logging
 from datetime import UTC, date, datetime, timedelta
 
+import pytest
 from sqlalchemy import func, select
 
 from tests.conftest import read_fixture_html
@@ -880,3 +881,22 @@ def test_gkmlpt_later_direct_category_end_to_end(session):
     check = check_source(session, source, fetcher, today=date(2026, 11, 12))
     assert (check.status, check.items_found) == ("ok", 7)
     assert fetcher.requested == [url, first, second]
+
+
+def test_crawl_stops_when_shared_limits_break(session_factory):
+    from youju.crawler.fetcher import SharedLimitError
+
+    with session_factory() as session:
+        ids = [make_source(session, f"https://s{i}.example.gov.cn/list").id for i in range(2)]
+
+    class Broken:
+        def fetch(self, url, same_address_only=False):
+            raise SharedLimitError("磁盘满了")
+
+    # 跨进程限速用不了：整批停下（命令失败、发提醒），不给每个来源记内部错误
+    with pytest.raises(SharedLimitError):
+        crawl_sources(session_factory, ids, Broken(), max_workers=1)
+    with session_factory() as session:
+        assert (
+            session.scalars(select(SourceCheck).where(SourceCheck.source_id.in_(ids))).all() == []
+        )
