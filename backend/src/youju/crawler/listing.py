@@ -68,7 +68,7 @@ _COMPANION_LINK = re.compile(
 )
 # CSS 里的空白只有这几个（不间断空格不算，它是名字的一部分）
 _CSS_SPACE = " \t\n\r\f"
-# display 声明的值：一个关键字，可带 !important（"none bogus" 这种无效的值浏览器不认）
+# display（或 all）声明的值：一个关键字，可带 !important
 _DISPLAY_VALUE = re.compile(
     r"([a-z-]+)[ \t\n\r\f]*(![ \t\n\r\f]*important)?", re.IGNORECASE | re.ASCII
 )
@@ -236,18 +236,26 @@ def _declarations(style: str) -> list[str]:
 
 
 def _hidden(el: etree._Element) -> bool:
-    """元素自己的 style 里实际生效的 display 是不是 none。
+    """元素自己的 style 里，能确定实际生效的 display 是 none。
 
     带 !important 的优先，否则取最后一个："display:none;display:block" 最后生效的是 block，不算
-    藏着。"--display" 这种自定义属性、注释和字符串里的、"display:none bogus" 这种无效的声明都不算。
+    藏着；"all: initial" 这类把 display 也重置了。"--display" 这种自定义属性、注释和字符串里的不算。
+    拿不准就当没藏（照原来读）：display、all 的值不是一个关键字（var()、别的函数、写错的），或者
+    声明名字里有转义。
     """
     found: list[tuple[str, bool]] = []
     for declaration in _declarations(el.get("style") or ""):
         name, colon, value = declaration.partition(":")
-        if not colon or name.strip(_CSS_SPACE).lower() != "display":
+        name = name.strip(_CSS_SPACE).lower()
+        if "\\" in name:
+            return False
+        if not colon or name not in ("display", "all"):
             continue
-        if m := _DISPLAY_VALUE.fullmatch(value.strip(_CSS_SPACE)):
-            found.append((m.group(1).lower(), bool(m.group(2))))
+        m = _DISPLAY_VALUE.fullmatch(value.strip(_CSS_SPACE))
+        if not m:
+            return False
+        # all 的关键字（initial、unset……）把 display 也重置了，都不是 none
+        found.append((m.group(1).lower() if name == "display" else "", bool(m.group(2))))
     if not found:
         return False
     important = [value for value, imp in found if imp]

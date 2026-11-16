@@ -1314,10 +1314,17 @@ def test_display_none_in_a_comment_or_custom_property_is_not_hidden() -> None:
         ("display:none;display:block", False),
         ("display:none !important;display:block", True),
         ("display:none!important", True),
-        # 无效的声明浏览器不认：前面、后面有效的照算
+        # 看不懂的 display 值（写错的、var() 这类浏览器可能认的）：拿不准，当没藏
         ("display:none bogus", False),
-        ("display:none bogus;display:none", True),
+        ("display:none bogus;display:none", False),
         ("display:block;display:none bogus", False),
+        ("display:none;display:var(--d,block)", False),
+        ("display:none;display:env(x)", False),
+        # 名字转义过的拿不准；all 把 display 也重置了
+        ("display:none;disp\\lay:block", False),
+        ("display:none;all:initial", False),
+        ("display:none;all:unset !important", False),
+        ("all:initial;display:none", True),
         # 字符串、括号（包括 url(…)）里的分号不是分隔；没写完的字符串到结尾
         ('display:block;--x:";display:none;"', False),
         ("--x:(;display:none)", False),
