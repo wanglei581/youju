@@ -981,3 +981,64 @@ def test_hidden_companion_popup_in_the_title_cell_does_not_hide_the_row() -> Non
         ("关于某县2026年第1批次土地征收的批复", date(2026, 9, 30)),
         ("某市人民政府关于印发《某市重点项目管理办法》的通知", date(2026, 9, 20)),
     ]
+
+
+def test_type_tags_stay_even_when_the_title_attribute_is_labeled() -> None:
+    # title 属性明写"标题："，但链接文字前面的"【政策解读】"说明这一条是解读：保留，不然会被当成原文
+    html = """<ul class="list">
+      <li><a href="./a/info_1.html" title="标题：关于开展第三批项目申报的通知">【政策解读】关于开展第三批项目申报的通知</a><span>2026-10-20</span></li>
+      <li><a href="./a/info_2.html" title="标题：关于公布名单的通知">[通知公告]关于公布名单的通知</a><span>2026-10-21</span></li>
+      <li><a href="./a/info_3.html" title="标题：某市促进民营经济发展若干措施">[视频]某市促进民营经济发展若干措施</a><span>2026-10-22</span></li>
+    </ul>"""
+    items = extract_items(html, "http://example.gov.cn/a/", today=date(2026, 11, 16))
+    assert [i.title for i in items] == [
+        "【政策解读】关于开展第三批项目申报的通知",
+        "关于公布名单的通知",
+        "[视频]某市促进民营经济发展若干措施",
+    ]
+
+
+def test_date_inside_a_hidden_popup_is_not_the_row_date() -> None:
+    # 藏起来的弹层里带着链接、写着日期（解读的日期），不能当成这一行的发布日期
+    html = """<table class="list"><tbody>
+      <tr><td><a href="1.html">关于项目申报工作的通知</a><div style="display:none"><a href="2.html">相关政策解读说明</a><span>2026-09-01</span></div></td><td>2026-10-21</td></tr>
+      <tr><td><a href="3.html">关于公布第二批名单的通知</a></td><td>2026-10-20</td></tr>
+      <tr><td><a href="4.html">关于征集典型案例的通知</a></td><td>2026-10-19</td></tr>
+    </tbody></table>"""
+    items = extract_items(html, "http://example.gov.cn/tzgg/", today=date(2026, 11, 16))
+    assert [(i.title, i.publish_date) for i in items] == [
+        ("关于项目申报工作的通知", date(2026, 10, 21)),
+        ("关于公布第二批名单的通知", date(2026, 10, 20)),
+        ("关于征集典型案例的通知", date(2026, 10, 19)),
+    ]
+
+
+def test_publish_date_kept_in_a_hidden_span_is_still_the_date() -> None:
+    # 苏州工信首页：发布日期写在藏起来的 span 里（没有链接），照旧是这一条的日期
+    html = """<ul>
+      <li><h4><a href="/ggl/202610/a1.shtml" title="某市先导产业促进中心2025年度项目支出绩效自评">某市先导产业促进中心2025年度项目支出绩效自评</a><span class="time" style=" display:none;"><em>2026-10-08</em></span></h4></li>
+      <li><h4><a href="/ggl/202610/a2.shtml" title="某市企业服务中心2025年度单位决算公开">某市企业服务中心2025年度单位决算公开</a><span class="time" style=" display:none;"><em>2026-10-09</em></span></h4></li>
+      <li><h4><a href="/ggl/202610/a3.shtml" title="关于公示化工重点监测点认定审核意见的通知">关于公示化工重点监测点认定审核意见的通知</a><span class="time" style=" display:none;"><em>2026-10-29</em></span></h4></li>
+    </ul>"""
+    items = extract_items(html, "http://gxj.example.gov.cn/ggl/", today=date(2026, 11, 16))
+    assert [(i.title, i.publish_date) for i in items] == [
+        ("某市先导产业促进中心2025年度项目支出绩效自评", date(2026, 10, 8)),
+        ("某市企业服务中心2025年度单位决算公开", date(2026, 10, 9)),
+        ("关于公示化工重点监测点认定审核意见的通知", date(2026, 10, 29)),
+    ]
+
+
+def test_link_that_is_itself_hidden_is_not_a_document() -> None:
+    # 福建省政府最新文件：每行文件链接后面藏着一个"| AI阅读"链接（同一网址加 ?assistant=true，
+    # 链接本身 display:none）。它不是文件，原来会和文件一起读成条目
+    html = """<ul>
+      <li class="inc_list_li"><span class="longdate"> 2026-11-03 </span> <a href="/zwgk/zxwj/szfwj/202611/t20261103_1.htm" title="某省人民政府关于某市2026年度第三批次农用地转用的批复"> 某省人民政府关于某市2026年度第三批次农用地转用的批复 </a> <a href="/zwgk/zxwj/szfwj/202611/t20261103_1.htm?assistant=true" class="tertonAIReaderFlag" style="display: none;"> | AI阅读</a></li>
+      <li class="inc_list_li"><span class="longdate"> 2026-10-09 </span> <a href="/zwgk/zxwj/szfwj/202610/t20261009_2.htm" title="某省人民政府关于某县2026年度农用地转用的批复"> 某省人民政府关于某县2026年度农用地转用的批复 </a> <a href="/zwgk/zxwj/szfwj/202610/t20261009_2.htm?assistant=true" class="tertonAIReaderFlag" style="display: none;"> | AI阅读</a></li>
+      <li class="inc_list_li"><span class="longdate"> 2026-10-08 </span> <a href="/zwgk/zxwj/szfwj/202610/t20261008_3.htm" title="某省人民政府办公厅关于印发某某方案的通知"> 某省人民政府办公厅关于印发某某方案的通知 </a> <a href="/zwgk/zxwj/szfwj/202610/t20261008_3.htm?assistant=true" class="tertonAIReaderFlag" style="display: none;"> | AI阅读</a></li>
+    </ul>"""
+    items = extract_items(html, "http://www.example.gov.cn/zwgk/zxwj/", today=date(2026, 11, 16))
+    assert [(i.title, i.publish_date) for i in items] == [
+        ("某省人民政府关于某市2026年度第三批次农用地转用的批复", date(2026, 11, 3)),
+        ("某省人民政府关于某县2026年度农用地转用的批复", date(2026, 10, 9)),
+        ("某省人民政府办公厅关于印发某某方案的通知", date(2026, 10, 8)),
+    ]

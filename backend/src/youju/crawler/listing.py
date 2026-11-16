@@ -66,10 +66,11 @@ _COMPANION_LINK = re.compile(
     r"^[(（\[【]?\s*(?:点击)?(?:查看)?(?:政策)?(?:解读|图解|文件|原文|原件)\s*[)）\]】]?$"
 )
 # title 属性明写"主题：""标题："的，那就是这一条的标题（临沂人社：title="主题：标题 日期：……"）。
-# 链接文字比它只多出前后的方括号标签时（"[公示公告]标题[图]"）用 title 属性。没这样明写的网站不动：
-# "【一图读懂】""[政策解读]""[视频]"这类标签说明这一条是解读、视频，不能去掉
+# 链接文字比它只多出前后的方括号标签时（"[公示公告]标题[图]"）用 title 属性。没这样明写的网站不动；
+# 标签说明这一条是什么的（"【一图读懂】""【政策解读】""[视频]"）也不去掉：去掉会被当成政策原文
 _LABELED_TITLE = re.compile(r"^\s*(?:主题|标题)\s*[：:]")
 _TAGS_ONLY = re.compile(r"^\s*(?:[\[【][^\[\]【】]{1,8}[\]】]\s*)*$")
+_TYPE_TAG = re.compile(r"解读|图解|读懂|视频|音频|问答|发布会|直播")
 # 行里藏起来的弹层（style 写着 display:none）：泸州政府文件列表每行的"政策解读"弹层，
 # 里面是解读的链接
 _HIDDEN_STYLE = re.compile(r"display\s*:\s*none", re.IGNORECASE)
@@ -141,7 +142,8 @@ def _title_of(a: etree._Element) -> str:
         return attr
     if attr and attr in text and _LABELED_TITLE.match(_clean(a.get("title"))):
         head, _, tail = text.partition(attr)
-        if _TAGS_ONLY.match(head) and _TAGS_ONLY.match(tail):
+        tags_only = _TAGS_ONLY.match(head) and _TAGS_ONLY.match(tail)
+        if tags_only and not _TYPE_TAG.search(head + tail):
             return attr
     # 日期写在链接里时（天津科技局、工信局：
     # <a title="完整标题">截断的标题...<span>2026-09-09</span></a>），文字结尾是日期，
@@ -190,14 +192,21 @@ def _expand_datastore(html: str) -> str:
     return html[:cut] + block + html[cut:]
 
 
-def _hidden_within(a: etree._Element, el: etree._Element) -> bool:
-    """a 是不是在 el 里面一个藏起来（style 写着 display:none）的元素下。el 本身藏着不算。"""
-    for node in a.iterancestors():
-        if node is el:
-            return False
-        if _HIDDEN_STYLE.search(node.get("style") or ""):
-            return True
-    return False
+def _visible_text(el: etree._Element, hidden: set[etree._Element]) -> str:
+    """el 的文字，去掉 hidden 里那些节点（藏起来的弹层）的文字。"""
+    parts: list[str] = []
+
+    def walk(node: etree._Element) -> None:
+        if isinstance(node.tag, str) and node.text:
+            parts.append(node.text)
+        for child in node:
+            if child not in hidden:
+                walk(child)
+            if child.tail:
+                parts.append(child.tail)
+
+    walk(el)
+    return _clean("".join(parts))
 
 
 def _is_peripheral(el: etree._Element) -> bool:
@@ -228,6 +237,10 @@ class _Page:
         self._hrefs: dict[etree._Element, set[str]] = {}
 
     def link(self, a: etree._Element) -> tuple[str, str] | None:
+        # 链接本身写着 display:none 的是藏起来的附带链接（福建省政府最新文件每行的"| AI阅读"），
+        # 不是文件
+        if _HIDDEN_STYLE.search(a.get("style") or ""):
+            return None
         url = normalize_url(self.page_url, a.get("href"))
         if not url or url == self.self_url:
             return None
@@ -247,20 +260,23 @@ class _Page:
             self._hrefs[el] = cached
         return cached
 
-    def hidden_companions(self, a: etree._Element) -> set[str]:
-        """和 a 同在一个格子（父元素）里、藏起来的弹层里的链接（泸州政府文件列表每行的"政策解读"
-        弹层）。找"一行"时不算别的文件链接：不然这一行会被当成已经走到了列表容器，日期找不到，
-        整行漏掉。"""
+    def hidden_popups(self, a: etree._Element) -> set[etree._Element]:
+        """和 a 同在一个格子（父元素）里、藏起来又带着链接的弹层（泸州政府文件列表每行的"政策解读"
+        弹层）和它下面的所有节点。找"一行"时，弹层里的链接不算别的文件链接（不然这一行会被当成已经
+        走到了列表容器，日期找不到，整行漏掉），弹层里写的日期也不算这一行的日期。只藏着日期、没有
+        链接的不算弹层：有的网站把发布日期写在藏起来的 span 里（苏州工信首页）"""
         cell = a.getparent()
         if cell is None:
             return set()
-        found = set()
-        for b in cell.iter("a"):
-            if b is not a and _hidden_within(b, cell):
-                link = self.link(b)
-                if link:
-                    found.add(link[1])
-        return found
+        nodes: set[etree._Element] = set()
+        for node in cell.iter():
+            if node is cell or node is a or not isinstance(node.tag, str) or node in nodes:
+                continue
+            if _HIDDEN_STYLE.search(node.get("style") or "") and any(
+                self.link(b) for b in node.iter("a")
+            ):
+                nodes.update(node.iter())
+        return nodes
 
     def date_node(
         self, el: etree._Element, a: etree._Element, skip: set
@@ -289,7 +305,8 @@ class _Page:
         anchor_text = _link_text(a)
         ancestors = list(a.iterancestors())
         skip = set(ancestors)
-        companions = self.hidden_companions(a)
+        hidden = self.hidden_popups(a)
+        companions = {link[1] for b in hidden if b.tag == "a" and (link := self.link(b))}
         for depth, el in enumerate(ancestors):
             if depth >= _MAX_ROW_DEPTH or el.tag in ("body", "html"):
                 break
@@ -299,10 +316,10 @@ class _Page:
                 others = {u for u in others if not _is_attachment(u)}
             if others:
                 break  # 已经包含其他文件链接，说明走到了列表容器
-            found, full = self.date_node(el, a, skip)
+            found, full = self.date_node(el, a, skip | hidden)
             if found:
                 return el, found, full
-            text = _clean(el.text_content())
+            text = _visible_text(el, hidden) if hidden else _clean(el.text_content())
             if anchor_text and len(text) <= len(title) + _MAX_ROW_EXTRA:
                 found, full = parse_date_detail(text.replace(anchor_text, " "), self.today)
                 if found:
