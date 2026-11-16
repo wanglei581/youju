@@ -624,9 +624,9 @@ def _extract_heuristic(page: _Page, require_date: bool) -> tuple[tuple, list[Lis
         if not _looks_like_title(title):
             continue
         if companion_row is not None:
-            # 分组跟着别的行走：按找到的行分（父元素是列表），或者照原来按链接分（父元素是格子），
-            # 等别的行都分完，归到别的行多的那一块
-            pending.append((position, ListItem(title, url, found), [companion_row, a]))
+            # 分组等别的行都分完再定：照原来按链接分的那一块里有别的行，就归那一块（和原来一样）；
+            # 没有才按找到的行分，和行里写着日期的别的行算同一张表
+            pending.append((position, ListItem(title, url, found), [a, companion_row]))
             continue
         container = (row if row is not None else a).getparent()
         if container is None:
@@ -634,13 +634,12 @@ def _extract_heuristic(page: _Page, require_date: bool) -> tuple[tuple, list[Lis
         key = _group_key(container)
         blocks.setdefault(key, []).append((position, ListItem(title, url, found)))
         containers.setdefault(key, container)
-    sizes = {key: len(entries) for key, entries in blocks.items()}
+    taken = set(blocks)  # 别的行已经分出来的块
     for position, item, rows in pending:
         options = [(_group_key(c), c) for r in rows if (c := r.getparent()) is not None]
         if not options:
             continue
-        # 一样多（比如每行都带附带链接）时按找到的行
-        key, container = max(options, key=lambda option: sizes.get(option[0], 0))
+        key, container = next((o for o in options if o[0] in taken), options[-1])
         blocks.setdefault(key, []).append((position, item))
         containers.setdefault(key, container)
     if pending:

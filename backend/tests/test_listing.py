@@ -1263,6 +1263,28 @@ def test_rows_with_an_assistant_link_keep_the_date_they_had() -> None:
     ]
 
 
+def test_rows_with_companions_keep_the_old_grouping_when_it_has_other_rows() -> None:
+    # 写法混着的一张表：第 1 行日期只在网址里（原来按链接分组），第 4、5 行日期写在行里（按行分组），
+    # 原来就分成两块、留下第 1–3 行那块。带 AI 阅读链接的第 2、3 行照原来归第 1 行那块，留下的还是那块
+    rows = "".join(
+        f'<li><a href="/a/{"20261021_" if i < 4 else ""}{i}.htm">关于第{i}批项目申报的通知</a>'
+        + (
+            f'<a href="/a/20261021_{i}.htm?assistant=true" class="tertonAIReaderFlag">| AI阅读</a>'
+            if i in (2, 3)
+            else ""
+        )
+        + ("<span>2026-10-21</span>" if i > 1 else "")
+        + "</li>"
+        for i in range(1, 6)
+    )
+    items = extract_items(f"<ul>{rows}</ul>", "http://e.cn/a/", today=date(2026, 11, 16))
+    assert [i.title for i in items] == [
+        "关于第1批项目申报的通知",
+        "关于第2批项目申报的通知",
+        "关于第3批项目申报的通知",
+    ]
+
+
 def test_lists_keep_their_page_order_when_they_score_the_same() -> None:
     # 带附带链接的行等别的行分完才归块；归完以后列表块照原来按页面上的先后排，评分一样时取靠前的那块。
     # main 读的也是第一张表（外加三条"| AI阅读"）
