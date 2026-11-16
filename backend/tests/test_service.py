@@ -997,9 +997,13 @@ def test_lonsun_tree_challenge_refused_once_per_round(session_factory):
         {url: [page(url, html)], second: [page(second, html)], tree: [challenge]}
     )
     results = crawl_sources(session_factory, ids, fetcher, max_workers=1)
-    # 栏目树脚本回的是挑战页：记不能抓，这一轮只取过一次
+    # 栏目树脚本回的是挑战页：记不能抓，这一轮只取过一次；栏目页和栏目树在同一个主机上，下一个
+    # 来源连栏目页也不去，记"这次没取到"
     assert fetcher.requested.count(tree) == 1
-    assert all(r.status == "list_api_refused" and "云锁" in r.error for r in results)
+    assert fetcher.requested == [url, tree]
+    first, second_result = sorted(results, key=lambda r: r.status)
+    assert first.status == "list_api_refused" and "云锁" in first.error
+    assert second_result.status == "site_paused" and "同一轮" in second_result.error
 
 
 def test_lonsun_list_429_stops_host_for_round(session_factory):
@@ -1058,13 +1062,23 @@ def test_lonsun_county_service_uses_configured_city_portal(session):
     catalog = read("wuhu_catalog.js")
     api = api_follow(tree, page(tree.url, catalog))
     source = make_source(session, url)
+    source.province, source.city = "安徽", "芜湖"
     source.parser_config = {"list_api_open": "龙讯public"}
     session.commit()
     fetcher = RecordingFetcher({url: [page(url, html)]})
     check = check_source(session, source, fetcher, today=date(2026, 11, 13))
     assert check.status == "parse_empty" and "www.wuhu.gov.cn" in check.error
     assert fetcher.requested == [url]
+    # 配置的门户得正是来源所在城市白名单里的那个：城市对不上、城市缺失的都不认、不请求
     source.parser_config = {"list_api_open": "龙讯public", "lonsun_catalog_host": "www.wuhu.gov.cn"}
+    for city in ("淮南", None):
+        source.city = city
+        session.commit()
+        fetcher = RecordingFetcher({url: [page(url, html)]})
+        check = check_source(session, source, fetcher, today=date(2026, 11, 13))
+        assert check.status == "parse_empty" and "待人工处理" in check.error, city
+        assert fetcher.requested == [url]
+    source.city = "芜湖"
     session.commit()
     fetcher = RecordingFetcher(
         {
@@ -1097,3 +1111,90 @@ def test_lonsun_refusal_changed_tree_same_list(session):
     assert fetcher.requested == [url, new_tree]
     session.refresh(source)
     assert source.parser_config["list_api_refused"]["api_url"] == api
+
+
+def test_lonsun_column_page_refusal_stops_host_for_round(session_factory):
+    url, second, html, *_rest, ids = _two_lonsun_sources(session_factory)
+    fetcher = RecordingFetcher(
+        {
+            url: [FetchResult(url, "http_error", url, 403)],
+            second: [FetchResult(second, "http_error", second, 403)],
+        }
+    )
+    results = crawl_sources(session_factory, ids, fetcher, max_workers=1)
+    # 经龙讯读的来源：栏目页被拒以后，这一轮同一主机的别的栏目页不再去，记"这次没取到"
+    assert sum(fetcher.requested.count(u) for u in (url, second)) == 1
+    skipped = [r for r in results if r.status == "site_paused"]
+    assert len(skipped) == 1 and "同一轮这个主机拒绝过我们" in skipped[0].error
+
+
+def test_lonsun_column_page_challenge_stops_host_for_round(session_factory):
+    url, second, html, *_rest, ids = _two_lonsun_sources(session_factory)
+    challenge = "<html><script>var yunsuo_session_verify='1';</script></html>"
+    fetcher = RecordingFetcher({url: [page(url, challenge)], second: [page(second, challenge)]})
+    crawl_sources(session_factory, ids, fetcher, max_workers=1)
+    assert sum(fetcher.requested.count(u) for u in (url, second)) == 1
+
+
+def test_lonsun_list_refusal_skips_next_column_page(session_factory):
+    url, second, html, tree, catalog, api, second_api, ids = _two_lonsun_sources(session_factory)
+    fetcher = RecordingFetcher(
+        {
+            url: [page(url, html)],
+            second: [page(second, html)],
+            tree: [page(tree, catalog)],
+            api: [FetchResult(api, "http_error", api, 403)],
+            second_api: [FetchResult(second_api, "http_error", second_api, 403)],
+        }
+    )
+    crawl_sources(session_factory, ids, fetcher, max_workers=1)
+    # 列表接口和栏目页在同一个主机上：接口被拒以后，下一个来源连栏目页也不去
+    assert len(fetcher.requested) == 3
+
+
+def test_round_guard_judges_inside_host_lock():
+    import threading
+    import time as time_module
+
+    from youju.crawler.roundguard import HostRoundGuard
+
+    guard = HostRoundGuard()
+    calls = []
+    lock = threading.Lock()
+
+    def fetch(url, **_kwargs):
+        with lock:
+            calls.append(url)
+        time_module.sleep(0.05)
+        # 回的是挑战页：状态 ok，要靠调用方的判断才知道被拒
+        return FetchResult(url, "ok", url, 200, "challenge")
+
+    def worker(n):
+        guard.fetch(f"https://a.gov.cn/{n}.js", fetch, refused=lambda r: r.text == "challenge")
+
+    threads = [threading.Thread(target=worker, args=(n,)) for n in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    # 判出被拒以前，同一主机的第二个请求溜不过去
+    assert len(calls) == 1
+    assert guard.fetch("https://b.gov.cn/1.js", fetch).status == "ok"
+    # 栏目页跟着跳转：跳转不算被拒
+    moved = HostRoundGuard()
+    moved.fetch(
+        "https://c.gov.cn/a",
+        lambda url, **_k: FetchResult(url, "ok", "https://c.gov.cn/b", 200, "x"),
+        redirects=False,
+    )
+    assert not moved.blocked("https://c.gov.cn/z")
+
+
+def test_city_catalog_host_binding():
+    from youju.crawler.lonsun import city_catalog_host
+
+    assert city_catalog_host("安徽", "芜湖", "www.wuhu.gov.cn") == "www.wuhu.gov.cn"
+    assert city_catalog_host("安徽", "淮南", "www.wuhu.gov.cn") is None
+    assert city_catalog_host("安徽", None, "www.wuhu.gov.cn") is None
+    assert city_catalog_host("安徽", "芜湖", None) is None
+    assert city_catalog_host("安徽", "合肥", "www.hefei.gov.cn") is None

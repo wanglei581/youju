@@ -1,7 +1,17 @@
-"""龙讯平台保守解析：栏目树只读页面原样声明的 src。
+"""龙讯（安徽集约化平台）信息公开栏目的列表适配器：认页面（find_lonsun_api）、定请求
+（resolve_lonsun）两步，脚本一律不执行——栏目树只按 JSON 文本解析，内联脚本只用受限求值器。
 
-document.write 字面量后面的随机数用于防缓存，不加；只取字面量，不改不补。
-栏目树只按 JSON 解析，内联脚本只用受限求值器，均不执行。
+协调会话 11/13 的两条口径：
+1. D-013 的读法：列表接口是页面自己的 PublicTree 脚本用页面写明的值拼出的 GET 请求，照它的拼法
+   得到的地址和浏览器发的只少不多，不算另外构造请求；要 POST、令牌、签名或者要绕过防护的一律
+   不读、先问；robots 不许的不读。
+2. 栏目树脚本六个条件：只读页面原样写明的那一个 src（document.write 字面量后面防缓存的随机数
+   不加，字面量不改不补）；主机在 gov.cn 下、和栏目页同一个市的政府网站域名，区县站只认审过的
+   本市门户白名单（LONSUN_CITY_PORTALS，来源配置的门户得正是来源所在城市的那个）；守脚本主机
+   自己的 robots，读不到按不许；门户按一个站守限速，同一地址每轮只取一次；只按文本解析、不执行；
+   写进适配器说明、部门目录规则和 PR。
+
+认不出的一律不读，原因写进"待人工处理"；认页面的规则见 docs/数据来源/全国覆盖/部门目录规则.md。
 """
 
 import collections
@@ -22,6 +32,14 @@ from youju.crawler.urls import normalize_url, url_key
 # 依据 2026-11-13 区县栏目页实测；新增城市须先审查同城集约化平台关系。
 # robots.txt 的 4xx 按 RFC 9309 视为没有规则；5xx、网络错误和超时按不可读处理。
 LONSUN_CITY_PORTALS = {("安徽", "芜湖"): "www.wuhu.gov.cn", ("安徽", "淮南"): "www.huainan.gov.cn"}
+
+
+def city_catalog_host(province: object, city: object, configured: object) -> str | None:
+    """正式抓取用的本市门户：来源配置的（parser_config.lonsun_catalog_host，启用时写）必须正是
+    白名单里来源所在城市的那个门户；城市缺失、配置缺失或对不上的都不认（协调会话 11/13：记待人工
+    处理），不临时推断。"""
+    expected = LONSUN_CITY_PORTALS.get((province, city)) if province and city else None
+    return expected if expected is not None and configured == expected else None
 
 
 class LonsunFormatError(ValueError):

@@ -13,6 +13,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from youju.crawler.fetcher import FetchResult, PoliteFetcher
+from youju.crawler.roundguard import HostRoundGuard
 
 _TEXT_MAX = 3_000_000  # 只存前 300 万字：导航和列表页够用了
 REFUSED_DAYS = 30
@@ -44,6 +45,9 @@ class PageCache:
         self._url_locks: dict[str, threading.Lock] = {}
         self.hits = 0
         self.fetches = 0
+        # 这一次试读、抽查里拒绝过我们的主机（龙讯栏目页、栏目树、列表接口共用，见
+        # crawler/roundguard.py）：一个缓存对应一次运行
+        self.round_guard = HostRoundGuard()
 
     def _path(self, url: str, same_address_only: bool = False) -> Path:
         # 只取地址本身的抓取单独存：不拿以前跟着跳转抓的旧结果（中间可能经过页面没写的地址）

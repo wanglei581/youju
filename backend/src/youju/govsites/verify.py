@@ -136,7 +136,8 @@ def check_one(cache: PageCache, col: ColumnCheck, today: date) -> ColumnCheck:
         return col
     # 同一部门页的几个分类共用一次部门页缓存（地址去掉 # 后面）
     page_url = col.url.split("#", 1)[0] if gkmlpt else col.url
-    r = cache.get(page_url)
+    page_get, tree_get, list_get = guarded_fetchers(cache, page_url)
+    r = page_get(page_url)
     col.http_status = r.http_status
     block = blocker(r.status, r.http_status, r.text)
     if block:
@@ -165,7 +166,7 @@ def check_one(cache: PageCache, col: ColumnCheck, today: date) -> ColumnCheck:
                 col.result, col.reason = NEEDS_SCRIPT, f"待人工处理：{reason}"
                 return col
         if api is not None:
-            api, _, kind, reason = fetch_api_follow(api, cache.get)
+            api, _, kind, reason = fetch_api_follow(api, tree_get(api))
             if kind:
                 col.result = {"blocked": BLOCKED, "down": DOWN, "unrecognized": NEEDS_SCRIPT}[kind]
                 col.reason = f"待人工处理：{reason}" if kind == "unrecognized" else reason
@@ -176,7 +177,7 @@ def check_one(cache: PageCache, col: ColumnCheck, today: date) -> ColumnCheck:
                 # 一个一个取、一个一个查：前一个出问题，后面的分类不再请求（和正式抓取一样）；
                 # 原因里写明出问题的是哪个分类
                 which = f"分类 {part.category_id}：" if len(parts) > 1 else ""
-                ar = cache.get(part.url, same_address_only=True)  # 跳到别处不跟（D-128 ①）
+                ar = list_get(part)  # 跳到别处不跟（D-128 ①）
                 refused = api_refusal(part, ar)
                 if refused:
                     # 读取护栏（D-128）：接口返回不是成功、带权限要求、要登录或验证码、明确拒绝
@@ -222,6 +223,46 @@ def check_one(cache: PageCache, col: ColumnCheck, today: date) -> ColumnCheck:
     else:
         col.result, col.reason = NO_ITEMS, f"识别出 {len(items)} 条、带日期 {len(dated)} 条"
     return col
+
+
+def guarded_fetchers(cache, page_url: str):
+    """试读、抽查取龙讯栏目页（/public/column/…）、栏目树、列表接口时，过这次运行的主机护栏
+    （cache.round_guard，见 crawler/roundguard.py）：这个主机这次拒绝过我们就不去，记"这次没
+    取到"，不当成它拒绝了这一栏；被拒的记下主机。别的平台的栏目照旧直接取。给出取栏目页、取栏目树
+    （传入第一步认出的接口）、取列表接口（传入一个分类）的三个函数。"""
+    from youju.crawler.adapters import api_refusal
+    from youju.crawler.lonsun import column_spec
+
+    guard = getattr(cache, "round_guard", None)
+    if guard is None or column_spec(page_url) is None:
+        return (
+            cache.get,
+            lambda _api: cache.get,
+            lambda part: cache.get(part.url, same_address_only=True),
+        )
+
+    def page_get(url):
+        return guard.fetch(
+            url,
+            cache.get,
+            refused=lambda r: bool(blocker(r.status, r.http_status, r.text or "")),
+            redirects=False,
+        )
+
+    def tree_get(api):
+        return lambda url, **kwargs: guard.fetch(
+            url, cache.get, refused=lambda r: bool(api_refusal(api, r)), **kwargs
+        )
+
+    def list_get(part):
+        return guard.fetch(
+            part.url,
+            cache.get,
+            refused=lambda r: bool(api_refusal(part, r)),
+            same_address_only=True,
+        )
+
+    return page_get, tree_get, list_get
 
 
 def check_columns(

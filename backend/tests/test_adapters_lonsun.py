@@ -1400,7 +1400,6 @@ def test_catalog_cache_blocks_other_trees_on_host():
     for first in (
         FetchResult(tree.url, "http_error", http_status=403),
         FetchResult(tree.url, "http_error", http_status=429),
-        FetchResult(tree.url, "robots_disallowed"),
         FetchResult(tree.url, "redirect", final_url="https://jx.ah.gov.cn/login"),
     ):
         calls = []
@@ -1417,6 +1416,23 @@ def test_catalog_cache_blocks_other_trees_on_host():
         assert second.status == "site_paused" and api_refusal(tree, second) == ""
         cache.get("https://other.ah.gov.cn/another/2.js", fetch)
         assert len(calls) == 2
+
+
+def test_catalog_cache_robots_does_not_block_host():
+    from youju.crawler.fetcher import FetchResult
+    from youju.crawler.service import CatalogCache
+
+    calls = []
+
+    def fetch(url, **kwargs):
+        calls.append(url)
+        return FetchResult(url, "robots_disallowed")
+
+    # robots 不许只是那个路径不读：同一主机别的地址各按 robots 判，不算主机拒绝了我们
+    cache = CatalogCache()
+    cache.get("https://jx.ah.gov.cn/1/2.js", fetch)
+    cache.get("https://jx.ah.gov.cn/3/4.js", fetch)
+    assert len(calls) == 2 and not cache.blocked("https://jx.ah.gov.cn/x")
 
 
 def test_catalog_cache_protocol_only_redirect_does_not_block():
@@ -2279,3 +2295,69 @@ def test_big_unrelated_script_is_fast():
     started = time.monotonic()
     assert _found(_jx(extra=f"<script>{script}</script>")) is not None
     assert time.monotonic() - started < 20
+
+
+class GuardedLonsunCache(LonsunCache):
+    """带这次运行主机护栏的缓存（PageCache 自带 round_guard）。"""
+
+    def __init__(self, pages):
+        from youju.crawler.roundguard import HostRoundGuard
+
+        super().__init__(pages)
+        self.round_guard = HostRoundGuard()
+
+
+def test_verify_and_spotcheck_share_host_refusals():
+    from youju.crawler.adapters import api_follow, find_list_api
+    from youju.crawler.fetcher import FetchResult
+    from youju.govsites.spotcheck import _first_list_item
+    from youju.govsites.verify import BLOCKED, DOWN, check_one
+
+    second = BASE.replace("49949451", "49949431")
+    tree = find_list_api(fixture("jx_page.html"), BASE, BASE)
+    catalog = FetchResult(tree.url, "ok", tree.url, 200, fixture("jx_catalog.js"))
+    api = api_follow(tree, catalog)
+    second_api = api_follow(find_list_api(fixture("jx_page.html"), second, second), catalog)
+    pages = {
+        BASE: fixture("jx_page.html"),
+        second: fixture("jx_page.html"),
+        tree.url: fixture("jx_catalog.js"),
+        api.url: FetchResult(api.url, "http_error", api.url, 403),
+        second_api.url: fixture("jx_api.json"),
+    }
+    cache = GuardedLonsunCache(pages)
+    assert check_one(cache, lonsun_column(), TODAY).result == BLOCKED
+    # 列表接口被拒以后，同一主机的别的栏目这次不去：记打不开（这次没取到），不当成它拒绝了
+    checked = check_one(cache, lonsun_column(second), TODAY)
+    assert checked.result == DOWN and "同一轮这个主机拒绝过我们" in checked.reason
+    assert all(url != second for url, _ in cache.calls)
+    # 抽查同样
+    cache = GuardedLonsunCache(pages)
+    reasons = []
+    assert _first_list_item(cache, BASE, TODAY, reasons) is None
+    assert _first_list_item(cache, second, TODAY, reasons) is None
+    assert "不能抓" in reasons[0] and "这次没取到" in reasons[1]
+    assert all(url != second for url, _ in cache.calls)
+    # 栏目页回挑战页：同一主机别的栏目页也不去
+    challenge = "<html><script>var yunsuo_session_verify='1';</script></html>"
+    cache = GuardedLonsunCache({**pages, BASE: challenge})
+    assert check_one(cache, lonsun_column(), TODAY).result == BLOCKED
+    assert check_one(cache, lonsun_column(second), TODAY).result == DOWN
+    assert [url for url, _ in cache.calls] == [BASE]
+
+
+def test_spotcheck_catalog_host_bound_to_city():
+    from types import SimpleNamespace
+
+    from youju.govsites.spotcheck import _catalog_host_for
+
+    def source(city, configured=None):
+        config = {"lonsun_catalog_host": configured} if configured else {}
+        return SimpleNamespace(province="安徽", city=city, parser_config=config)
+
+    assert _catalog_host_for(source("芜湖"), {}) == "www.wuhu.gov.cn"
+    assert _catalog_host_for(source("芜湖", "www.wuhu.gov.cn"), {}) == "www.wuhu.gov.cn"
+    # 配错（别的城市的门户）不认
+    assert _catalog_host_for(source("芜湖", "www.huainan.gov.cn"), {}) is None
+    assert _catalog_host_for(source("合肥"), {}) is None
+    assert _catalog_host_for(None, {"省份": "安徽", "城市": "淮南"}) == "www.huainan.gov.cn"

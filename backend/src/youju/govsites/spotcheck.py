@@ -419,6 +419,23 @@ def attribution_check(
 # —— 取证（要数据库和页面缓存）——
 
 
+def _catalog_host_for(source, cell) -> str | None:
+    """抽查重读龙讯区县栏目时用的本市门户：按来源自己的省市（还没有来源时按盘点省市）查审过的
+    白名单；来源配置了门户的，还得正是这一个，配错的不认。来源还没配置（启用时才写）也照白名单读
+    （正式抓取只认配置，见 crawler/service.py）。"""
+    from youju.crawler.lonsun import LONSUN_CITY_PORTALS
+
+    expected = LONSUN_CITY_PORTALS.get(
+        (source.province, source.city)
+        if source is not None
+        else (cell.get("省份", ""), cell.get("城市", ""))
+    )
+    configured = (
+        (source.parser_config or {}).get("lonsun_catalog_host") if source is not None else None
+    )
+    return expected if not configured or configured == expected else None
+
+
 def _first_list_item(
     cache, url: str, today: date, reasons: list[str] | None = None, *, catalog_host=None
 ):
@@ -437,11 +454,15 @@ def _first_list_item(
     )
     from youju.crawler.listing import extract_items
     from youju.crawler.lonsun import lonsun_unrecognized_reason
+    from youju.govsites.verify import guarded_fetchers
 
     gkmlpt = gkmlpt_categories(url) is not None
     page_url = url.split("#", 1)[0] if gkmlpt else url
-    r = cache.get(page_url)
+    page_get, tree_get, list_get = guarded_fetchers(cache, page_url)
+    r = page_get(page_url)
     if r.status != "ok":
+        if reasons is not None and r.status == "site_paused":
+            reasons.append(f"这次没取到：{r.error}")
         return None
     final = r.final_url or page_url
     items = [] if gkmlpt else extract_items(r.text, final, today=today)
@@ -452,7 +473,7 @@ def _first_list_item(
             if reason and reasons is not None:
                 reasons.append(f"待人工处理：{reason}")
         if api is not None:
-            api, _, kind, reason = fetch_api_follow(api, cache.get)
+            api, _, kind, reason = fetch_api_follow(api, tree_get(api))
             if kind:
                 if reasons is not None:
                     label = {
@@ -466,7 +487,7 @@ def _first_list_item(
             texts: list[str] = []
             for part in api_parts(api):
                 # 一个一个取、一个一个查：被拦下、没取到、读不出的，整栏不取证，后面的分类也不再请求
-                ar = cache.get(part.url, same_address_only=True)
+                ar = list_get(part)
                 refusal = api_refusal(part, ar)
                 if refusal or ar.status != "ok" or not api_readable(part, ar.text):
                     if reasons is not None:
@@ -522,20 +543,7 @@ def evidence_for(
     reasons: list[str] = []
     if not candidates:
         for url in urls:
-            from youju.crawler.lonsun import LONSUN_CITY_PORTALS
-
-            source = sources_by_url.get(url)
-            # 来源配置了门户就用配置的；来源还没配置（启用时才写）就按来源自己的省市查审过的
-            # 白名单；还没有来源时按盘点省市查（正式抓取只认配置，见 crawler/service.py）
-            catalog_host = (
-                (source.parser_config or {}).get("lonsun_catalog_host")
-                if source is not None
-                else None
-            ) or LONSUN_CITY_PORTALS.get(
-                (source.province, source.city)
-                if source is not None
-                else (cell.get("省份", ""), cell.get("城市", ""))
-            )
+            catalog_host = _catalog_host_for(sources_by_url.get(url), cell)
             item = _first_list_item(cache, url, today, reasons, catalog_host=catalog_host)
             if item is not None:
                 candidates = [(item.title, item.url, item.publish_date, "列表页重读")]

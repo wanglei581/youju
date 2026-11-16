@@ -8,7 +8,6 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
-from threading import Lock
 from urllib.parse import urlsplit, urlunsplit
 
 from sqlalchemy import select
@@ -22,7 +21,6 @@ from youju.crawler.adapters import (
     LIST_API_REFUSED,
     LONSUN,
     ListApi,
-    _redirect_words,
     api_items_merged,
     api_parts,
     api_readable,
@@ -33,7 +31,8 @@ from youju.crawler.adapters import (
 )
 from youju.crawler.fetcher import FetchResult
 from youju.crawler.listing import ListItem, extract_items
-from youju.crawler.lonsun import lonsun_unrecognized_reason
+from youju.crawler.lonsun import city_catalog_host, lonsun_unrecognized_reason
+from youju.crawler.roundguard import HostRoundGuard, round_skip
 from youju.crawler.urls import host_of, public_url, url_key
 from youju.dedup import reconcile_documents
 from youju.models import URL_KEY_MAX, Document, Source, SourceCheck, TakedownBlock
@@ -55,55 +54,17 @@ class Fetcher:
         raise NotImplementedError
 
 
-def _round_skip(url: str) -> FetchResult:
-    """这一轮同一主机拒绝过我们或回过 429：这个地址这次不去。它自己没被拒绝，记"这次没取到"
-    （site_paused，下次照常再试），不写不能抓的记录。"""
-    return FetchResult(url, "site_paused", final_url=url, error=ROUND_SKIP)
+# 一轮内共享龙讯栏目树、记下拒绝过我们的主机（栏目页、栏目树、列表接口共用，见
+# crawler/roundguard.py）
+CatalogCache = HostRoundGuard
+_round_skip = round_skip
 
 
-ROUND_SKIP = "同一轮这个主机拒绝过我们或回了 429，这次不去"
+def _page_refused(result: FetchResult) -> bool:
+    """栏目页回的是防护页、挑战页（云锁、瑞数这类）：和 401/403/412/521 一样算被拒。"""
+    from youju.govsites.platform import blocker
 
-
-class CatalogCache:
-    """一轮内共享龙讯的栏目树结果（同一地址的并发请求只发一次），并记下这一轮拒绝过我们的主机：
-    栏目树或列表接口被拒（401/403/412/521、robots、跳到别处、读取护栏判了不能抓）或者回 429，
-    同一轮这个主机不再去。"""
-
-    def __init__(self):
-        self._lock = Lock()
-        self._locks: dict[str, Lock] = {}
-        self._results: dict[str, FetchResult] = {}
-        self._blocked_hosts: set[str] = set()
-
-    def get(self, url: str, fetch) -> FetchResult:
-        host = urlsplit(url).hostname or ""
-        with self._lock:
-            lock = self._locks.setdefault(host, Lock())
-        with lock:
-            if url in self._results:
-                return self._results[url]
-            if host in self._blocked_hosts:
-                return _round_skip(url)
-            result = fetch(url, same_address_only=True)
-            self._results[url] = result
-            moved = result.final_url and url_key(result.final_url) != url_key(url)
-            if (
-                result.status == "robots_disallowed"
-                or result.http_status in (401, 403, 412, 429, 521)
-                # 跳到了别的地址（只换协议的不算：对这个脚本也只是"这次没取到"）
-                or (result.status == "redirect" or moved)
-                and _redirect_words(url, result.final_url or url)
-            ):
-                self._blocked_hosts.add(host)
-            return result
-
-    def blocked(self, url: str) -> bool:
-        with self._lock:
-            return (urlsplit(url).hostname or "") in self._blocked_hosts
-
-    def block(self, url: str) -> None:
-        with self._lock:
-            self._blocked_hosts.add(urlsplit(url).hostname or "")
+    return bool(blocker(result.status, result.http_status, result.text or ""))
 
 
 @dataclass
@@ -293,28 +254,31 @@ def _items_via_adapter(
     api: ListApi | None = None,
     catalog_cache: CatalogCache | None = None,
     now: datetime | None = None,
+    catalog_host: str | None = None,
 ) -> _AdapterResult:
     """栏目页自己声明了集约化平台的列表接口（见 crawler/adapters.py）时，按它取列表。
 
     只请求页面写明的那个接口地址、参数原样照页面（D-128 读取护栏 ①），不另外构造请求；数字广东的
     地址只用页面写明的值、照它自己平台脚本的拼法得到，和它自己的页面发出的请求一样（D-013，见
     crawler/adapters.py 开头的说明）。"""
-    api = api or find_list_api(
-        page.text, page.final_url or url, url, catalog_host=parser_config.get("lonsun_catalog_host")
-    )
+    api = api or find_list_api(page.text, page.final_url or url, url, catalog_host=catalog_host)
     if api is None or parser_config.get(LIST_API_OPEN_KEY) != api.adapter:
         # 没认出接口，或来源没标"经接口读"（D-128）：不请求接口（调用的地方本来就先查过标记）
         return _AdapterResult([])
     first_url = api.url
+    page_api = api
     tree_fetch = (
-        (lambda url, **_kwargs: catalog_cache.get(url, fetcher.fetch))
+        # 读取护栏判了不能抓（防护页、不是脚本）的也在主机锁里记下：这一轮不再去
+        (
+            lambda url, **_kwargs: catalog_cache.get(
+                url, fetcher.fetch, refused=lambda result: bool(api_refusal(page_api, result))
+            )
+        )
         if catalog_cache is not None
         else fetcher.fetch
     )
     followed, first_result, kind, reason = fetch_api_follow(api, tree_fetch)
     if kind == "blocked":
-        if catalog_cache is not None:
-            catalog_cache.block(first_url)  # 读取护栏判了不能抓（防护页、不是脚本）：这一轮不再去
         return _AdapterResult([], api.adapter, first_result, refused=reason, api_url=first_url)
     if kind == "down":
         if first_result.status == "ok":
@@ -340,15 +304,16 @@ def _items_via_adapter(
         # 几个分类合读时一个一个取、一个一个查：前一个被拦下、没取到、读不出，后面的不再请求
         # （D-013、D-128：网站拒绝了就停，不接着敲门）；原因里写明出问题的是哪个分类
         label = f"分类 {part.category_id}：" if len(parts) > 1 else ""
-        lonsun_round = api.adapter == LONSUN and catalog_cache is not None
-        if lonsun_round and catalog_cache.blocked(part.url):
-            result = _round_skip(part.url)
+        if api.adapter == LONSUN and catalog_cache is not None:
+            # 同一轮这个主机拒绝过我们就不去；查、取、判、记在同一把主机锁里
+            result = catalog_cache.fetch(
+                part.url,
+                fetcher.fetch,
+                refused=lambda result, part=part: bool(api_refusal(part, result)),
+                same_address_only=True,
+            )
         else:
             result = fetcher.fetch(part.url, same_address_only=True)
-            if lonsun_round and (
-                result.http_status in (401, 403, 412, 429, 521) or api_refusal(part, result)
-            ):
-                catalog_cache.block(part.url)
         if result.status == "robots_disallowed":
             return _AdapterResult([], api.adapter, result, api_url=first_url, part=label)
         refused = api_refusal(part, result)
@@ -394,7 +359,16 @@ def check_source(
     session.commit()
     started = _now()
     t0 = time.monotonic()
-    result = fetcher.fetch(url)
+    # 区县站用本市门户的栏目树：配置的门户得正是白名单里来源所在城市的那个，对不上的不认
+    catalog_host = city_catalog_host(
+        source.province, source.city, parser_config.get("lonsun_catalog_host")
+    )
+    if catalog_cache is not None and parser_config.get(LIST_API_OPEN_KEY) == LONSUN:
+        # 经龙讯接口读的来源：栏目页和栏目树、列表接口共用这一轮的主机护栏（这个主机这一轮拒绝过
+        # 我们就不去，栏目页被拒或回防护页也记下）；栏目页照常跟着跳转，跳转不算被拒
+        result = catalog_cache.fetch(url, fetcher.fetch, refused=_page_refused, redirects=False)
+    else:
+        result = fetcher.fetch(url)
     status, error = result.status, result.error
     items: list[ListItem] = []
     first_via_adapter = False
@@ -417,10 +391,7 @@ def check_source(
         )
         if attempted_api:
             api = find_list_api(
-                result.text,
-                result.final_url or url,
-                url,
-                catalog_host=parser_config.get("lonsun_catalog_host"),
+                result.text, result.final_url or url, url, catalog_host=catalog_host
             )
         if gkmlpt and api is None:
             # 部门页上认不出数字广东的列表接口（改版、分类没了或跳到别处）：不请求接口，记读不出、
@@ -431,10 +402,7 @@ def check_source(
             and api is None
             and (
                 reason := lonsun_unrecognized_reason(
-                    result.text,
-                    result.final_url or url,
-                    url,
-                    catalog_host=parser_config.get("lonsun_catalog_host"),
+                    result.text, result.final_url or url, url, catalog_host=catalog_host
                 )
             )
         ):
@@ -459,7 +427,15 @@ def check_source(
             result = FetchResult(url, LIST_API_REFUSED, http_status=result.http_status)
         elif api is not None:
             via = _items_via_adapter(
-                fetcher, result, url, parser_config, today, api, catalog_cache, started
+                fetcher,
+                result,
+                url,
+                parser_config,
+                today,
+                api,
+                catalog_cache,
+                started,
+                catalog_host=catalog_host,
             )
             note = parser_config.get(LIST_API_REFUSED_KEY)
             moved = not isinstance(note, dict) or note.get("url") != via.api_url
