@@ -488,7 +488,7 @@ _PERMISSION_KEY = re.compile(
 def _json_payload(text: str) -> dict | None:
     try:
         data = json.loads(text)
-    except ValueError:
+    except (ValueError, RecursionError):  # 嵌套极深的也当不是 JSON
         return None
     return data if isinstance(data, dict) else None
 

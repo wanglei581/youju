@@ -11,7 +11,7 @@ import math
 import re
 from dataclasses import dataclass
 from datetime import date
-from functools import lru_cache
+from functools import cached_property, lru_cache
 from urllib.parse import parse_qsl, unquote, urlsplit
 
 from youju.crawler.dates import _safe_date
@@ -413,7 +413,20 @@ def _js_tokens(source: str) -> tuple[_Token, ...]:
                 op = next((op for op in operators if source.startswith(op, i)), c)
                 i += len(op)
         tokens.append(_Token(source[start:i], start, i))
-    return tuple(tokens)
+    return _Tokens(tokens)
+
+
+class _Tokens(tuple):
+    """_js_tokens 的结果：values 是各记号的文字，只算一次（别名检查里会对同一段脚本反复取，
+    每次重建整份列表在大脚本上是平方级）。拿到的列表只读，不要改。"""
+
+    @cached_property
+    def values(self):
+        return [token.value for token in self]
+
+
+def _values(tokens):
+    return tokens.values if isinstance(tokens, _Tokens) else [t.value for t in tokens]
 
 
 def _matching_token(tokens: tuple[_Token, ...], start: int) -> int:
@@ -436,7 +449,7 @@ def _matching_token(tokens: tuple[_Token, ...], start: int) -> int:
 def _public_tree_methods(source: str) -> tuple[tuple[str, str, str], ...]:
     """切分原型对象；结果依次为方法名、参数原文、方法体原文。"""
     tokens = _js_tokens(source)
-    values = [t.value for t in tokens]
+    values = _values(tokens)
     marker = ["$", ".", "extend", "(", "PublicTree", ".", "prototype", ",", "{"]
     positions = [
         i for i in range(len(tokens) - len(marker) + 1) if values[i : i + len(marker)] == marker
@@ -842,7 +855,7 @@ class _Environment:
                 while root.parent:
                     root = root.parent
                 if not root.unknown_reason:
-                    root.unknown_reason = f"条件里用到的 {name} 无法确定（可能重复声明或被改写）"
+                    root.unknown_reason = f"条件里用到的 {name} 的值无法确定"
             return value
         if self.parent:
             return self.parent.get(name)
@@ -1157,25 +1170,15 @@ _TRACKED = {
 }
 
 
-def _writes(source, *, skip_functions=False):
-    """找属性、下标、更新运算和常见原地修改；不执行任何脚本。"""
-    tokens = _js_tokens(source)
-    v = [t.value for t in tokens]
-    skipped = set()
-    if skip_functions:
-        for i, token in enumerate(v):
-            if token != "function" or i in skipped:
-                continue
-            j = i + 1
-            if j < len(v) and v[j] != "(":
-                j += 1
-            if j < len(v) and v[j] == "(":
-                j = _matching_token(tokens, j) + 1
-                if j < len(v) and v[j] == "{":
-                    skipped.update(range(i, _matching_token(tokens, j) + 1))
+_ASSIGN_OPS = ("=", "+=", "-=", "*=", "/=", "%=", "++", "--")
+
+
+def _write_sites(tokens, values, skipped=frozenset()):
+    """找属性、下标、更新运算和常见原地修改：(路径, 操作, 根名字的记号位置)；不执行任何脚本。"""
+    v = values
     result = []
     for i, name in enumerate(v):
-        if i in skipped or not re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", name):
+        if i in skipped or not _IDENT.fullmatch(name):
             continue
         if i and v[i - 1] in (".", "var"):
             continue
@@ -1194,12 +1197,10 @@ def _writes(source, *, skip_functions=False):
             else:
                 break
         op = v[j] if j < len(v) else ""
-        if op in ("=", "+=", "-=", "*=", "/=", "%=", "++", "--") or (
-            i and v[i - 1] in ("delete", "++", "--")
-        ):
-            result.append((tuple(parts), op))
+        if op in _ASSIGN_OPS or (i and v[i - 1] in ("delete", "++", "--")):
+            result.append((tuple(parts), op, i))
         elif op == "(" and len(parts) > 1 and parts[-1] in _MUTATORS:
-            result.append((tuple(parts[:-1]), parts[-1]))
+            result.append((tuple(parts[:-1]), parts[-1], i))
         elif (
             parts in (["$", "extend"], ["jQuery", "extend"], ["$", "merge"], ["jQuery", "merge"])
             or len(parts) == 2
@@ -1219,12 +1220,302 @@ def _writes(source, *, skip_functions=False):
                     and v[k + 1 : k + 2] == ["."]
                     and k + 2 < len(v)
                 ):
-                    result.append(((target, v[k + 2]), "extend"))
+                    result.append(((target, v[k + 2]), "extend", k))
                 elif target in ("me", "this") and v[k + 1 : k + 2] == ["["]:
-                    result.append(((target, "*"), "extend"))
-                elif re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", target):
-                    result.append(((target,), "extend"))
+                    result.append(((target, "*"), "extend", k))
+                elif _IDENT.fullmatch(target):
+                    result.append(((target,), "extend", k))
     return result
+
+
+def _writes(source, *, skip_functions=False):
+    """找属性、下标、更新运算和常见原地修改；不执行任何脚本。"""
+    tokens = _js_tokens(source)
+    v = _values(tokens)
+    skipped = set()
+    if skip_functions:
+        for i, token in enumerate(v):
+            if token != "function" or i in skipped:
+                continue
+            j = i + 1
+            if j < len(v) and v[j] != "(":
+                j += 1
+            if j < len(v) and v[j] == "(":
+                j = _matching_token(tokens, j) + 1
+                if j < len(v) and v[j] == "{":
+                    skipped.update(range(i, _matching_token(tokens, j) + 1))
+    return [(path, op) for path, op, _ in _write_sites(tokens, v, skipped)]
+
+
+# 只在用户点击、输入时才跑的事件处理函数（页面加载、发列表请求之前不跑）：jQuery 的 .click(fn)
+# 这类简写、.on/.one/.bind 只挂这些事件的，以及 zTree 设置里的点击回调。focus、blur、load、scroll
+# 这类加载时就可能触发的不算
+_USER_EVENTS = frozenset(
+    {
+        "click",
+        "dblclick",
+        "change",
+        "input",
+        "keyup",
+        "keydown",
+        "keypress",
+        "submit",
+        "mouseenter",
+        "mouseleave",
+        "mouseover",
+        "mouseout",
+        "mousedown",
+        "mouseup",
+        "contextmenu",
+        "touchstart",
+        "touchend",
+    }
+)
+_EVENT_SHORTHANDS = (_USER_EVENTS - {"input", "touchstart", "touchend"}) | {"hover"}
+_ZTREE_CLICKS = frozenset(
+    {"onClick", "beforeClick", "onDblClick", "beforeDblClick", "onRightClick", "beforeRightClick"}
+)
+# 加载时替用户触发事件的写法（另有 .click() 这类不带参数的简写）
+_TRIGGERS = frozenset({"trigger", "triggerHandler", "dispatchEvent", "fireEvent"})
+
+
+def _function_at(tokens, values, f):
+    """f 处的 function：给出 (参数左括号, 函数体左花括号, 函数体右花括号)，认不出给 None。"""
+    j = f + 1
+    if j < len(values) and values[j] != "(":
+        j += 1
+    if j >= len(values) or values[j] != "(":
+        return None
+    body = _matching_token(tokens, j) + 1
+    if body >= len(values) or values[body] != "{":
+        return None
+    return j, body, _matching_token(tokens, body)
+
+
+def _handler_spans(tokens, values):
+    """只在用户点击、输入时才跑的事件处理函数体的记号范围 [(左花括号, 右花括号)]。"""
+    spans = []
+    for f, value in enumerate(values):
+        if value != "function":
+            continue
+        found = _function_at(tokens, values, f)
+        if found is None:
+            continue
+        _, body, close = found
+        if f >= 2 and values[f - 1] == ":" and values[f - 2] in _ZTREE_CLICKS:
+            spans.append((body, close))
+            continue
+        if not f or values[f - 1] not in ("(", ","):
+            continue
+        callee = _enclosing_callee(values, f)
+        if callee is None or callee < 1 or values[callee - 1] != ".":
+            continue
+        name = values[callee]
+        first = values[callee + 2] if callee + 2 < len(values) else ""
+        if name in _EVENT_SHORTHANDS:
+            spans.append((body, close))
+        elif name in ("on", "one", "bind") and first[:1] in ("'", '"'):
+            events = {event.split(".")[0] for event in _string_literal(first).split()}
+            if events and events <= _USER_EVENTS:
+                spans.append((body, close))
+    return spans
+
+
+def _fresh_roots(tokens, values, source):
+    """本段代码自己新建的空对象、空数组：每次赋值（含 var）右边都只是 {} 或 []，名字第一次出现
+    就是这样的赋值，也不当任何函数的参数。给它加一层属性、往里 push 碰不到栏目数据和 me。"""
+    params = set()
+    for f, value in enumerate(values):
+        if value == "function":
+            found = _function_at(tokens, values, f)
+            if found is not None:
+                params.update(values[found[0] + 1 : _matching_token(tokens, found[0])])
+    first, assigned = {}, {}
+    for i, value in enumerate(values):
+        if (
+            not _IDENT.fullmatch(value)
+            or i
+            and values[i - 1] == "."
+            or values[i + 1 : i + 2] == [":"]
+            and i
+            and values[i - 1] in ("{", ",")
+        ):
+            continue  # 成员名、对象字面量的键
+        first.setdefault(value, i)
+        if (
+            values[i + 1 : i + 2]
+            and values[i + 1] in _ASSIGN_OPS
+            or i
+            and values[i - 1] in ("++", "--")
+        ):
+            assigned.setdefault(value, []).append(i)
+
+    def fresh(i):
+        if values[i + 1] != "=" or values[i + 2 : i + 4] not in (["{", "}"], ["[", "]"]):
+            return False
+        k = i + 4
+        if k >= len(values) or values[k] in (";", "}", ")", ","):
+            return True
+        # 换行以后接着写名字：自动补分号，{} 后面接不了别的
+        newline = "\n" in source[tokens[k - 1].end : tokens[k].start]
+        return (
+            newline and bool(_IDENT.fullmatch(values[k])) and values[k] not in ("in", "instanceof")
+        )
+
+    return {
+        name
+        for name, positions in assigned.items()
+        if name not in params
+        and name not in ("me", "this")
+        and first[name] == positions[0]
+        and all(fresh(i) for i in positions)
+    }
+
+
+def _callback_scopes(tokens, values, marker):
+    """每处 marker（如 $ . each ( me . ztreeData2）后面紧跟的 , function (…) {…} 回调：
+    [(参数名, 函数体范围)]。参数在函数体里被重新赋值、var 声明，或者被里面的函数、catch 用作
+    参数名的不算（那里它就不一定是原来的节点了）。"""
+    scopes = []
+    n = len(marker)
+    for i in range(len(values) - n):
+        if values[i : i + n] != marker or values[i + n : i + n + 2] != [",", "function"]:
+            continue
+        found = _function_at(tokens, values, i + n + 1)
+        if found is None:
+            continue
+        paren, body, close = found
+        names = {
+            v for v in values[paren + 1 : _matching_token(tokens, paren)] if _IDENT.fullmatch(v)
+        }
+        rebound = set()
+        for k in range(body + 1, close):
+            value = values[k]
+            if value in names and (
+                values[k - 1] == "var"
+                or values[k + 1] in _ASSIGN_OPS
+                and values[k - 1] != "."
+                or values[k - 1] in ("++", "--")
+            ):
+                rebound.add(value)
+            if value in ("function", "catch"):
+                j = k + 1
+                if j < close and values[j] != "(":
+                    j += 1
+                if j < close and values[j] == "(":
+                    rebound.update(values[j + 1 : _matching_token(tokens, j)])
+        if names - rebound:
+            scopes.append((frozenset(names - rebound), (body, close)))
+    return scopes
+
+
+def _tree1_scopes(source):
+    """initTree 里遍历树一（_organTree，页面左边的机构树）节点的 $.each 回调。zTree 建树时把数据
+    深拷贝一份（tools.clone），树一的节点和我们照着推请求的树二互不相干，改它们不碍事。条件：
+    _organTree 在 initTree 里只赋值这一次（不另行 var 声明）、在顶层、就是 $.fn.zTree.init(…)
+    的结果，回调写在它后面。"""
+    tokens = _js_tokens(source)
+    values = _values(tokens)
+    assigns = [
+        k
+        for path, op, k in _write_sites(tokens, values)
+        if path == ("_organTree",) and op in _ASSIGN_OPS
+    ]
+    declared = any(values[k : k + 2] == ["var", "_organTree"] for k in range(len(values)))
+    if declared or len(assigns) != 1:
+        return []
+    k = assigns[0]
+    if values[k + 1 : k + 9] != ["=", "$", ".", "fn", ".", "zTree", ".", "init"] or (
+        _inside_function(source, tokens[k].start)
+    ):
+        return []
+    marker = ["$", ".", "each", "(", "_organTree", ".", "getNodes", "(", ")"]
+    return [scope for scope in _callback_scopes(tokens, values, marker) if scope[1][0] > k]
+
+
+def _node_scopes(source):
+    """preprocessData 里遍历栏目数据的 $.each(me.ztreeData…, function (i, el) {…}) 回调：改节点的
+    哪些字段另有规则（parentId、children 不许改，别的字段记成改过）。"""
+    tokens = _js_tokens(source)
+    values = _values(tokens)
+    return [
+        scope
+        for lib in ("$", "jQuery")
+        for key in ("ztreeData", "ztreeData2")
+        for scope in _callback_scopes(tokens, values, [lib, ".", "each", "(", "me", ".", key])
+    ]
+
+
+def _write_root_problem(source, *, scoped=(), me_ok=True):
+    """加载时会跑的代码（构造函数、getData 之前的方法和它们的回调；用户点了才跑的事件处理函数
+    除外）只许改这几种对象：me/this（字段另有规则），本段自己新建的空对象、空数组（_fresh_roots：
+    只加一层属性、往里 push），scoped 里各自回调里的参数（核对过的树一节点、preprocessData 遍历
+    栏目时的节点）。别的对象——栏目节点、经别名拿到的 me 或它的字段、函数返回值……——看不出是不是
+    我们照着推请求的那些，改它的属性一律认不出。也不许在加载时用 trigger 这类方法替用户点（那样
+    事件处理函数就在加载时跑了）。"""
+    tokens = _js_tokens(source)
+    values = _values(tokens)
+    spans = _handler_spans(tokens, values)
+
+    def in_handler(k):
+        return any(a < k < b for a, b in spans)
+
+    fresh = _fresh_roots(tokens, values, source)
+    for path, op, k in _write_sites(tokens, values):
+        if in_handler(k) or len(path) == 1 and op not in _MUTATORS and op != "extend":
+            continue  # 用户点了才跑；或者只是给变量赋值，不改对象
+        root = path[0]
+        if root in ("me", "this") and me_ok:
+            continue
+        if any(root in names and a < k < b for names, (a, b) in scoped):
+            continue
+        if root in fresh and (
+            len(path) == 1 if op in _MUTATORS else len(path) == 2 and op != "extend"
+        ):
+            continue
+        return f"改了 {'.'.join(path)}，看不出是不是栏目节点或 me 上的数据"
+    for k in range(len(values) - 2):
+        if values[k] != "." or in_handler(k):
+            continue
+        name = values[k + 1]
+        if (name in _TRIGGERS and values[k + 2] == "(") or (
+            name in _EVENT_SHORTHANDS | {"focus", "blur"} and values[k + 2 : k + 4] == ["(", ")"]
+        ):
+            return f"加载时用 .{name}() 替用户触发了事件"
+    return None
+
+
+def _me_alias_problem(source, method_names=frozenset()):
+    """me、this 只许直接用成员（me.x、me['x']、this.x）；除了开头的 var me = this，把 me 或 this
+    整个当值用（赋给别的变量、当参数传、放进数组或对象、返回）或者给 me 重新赋值的，后面经它调了
+    什么、改了什么都跟不上，认不出。也不许改 PublicTree 的方法（me.open = …，实例属性会盖住原型
+    方法）。嵌套函数里的 this 不是 me，不管；用户点了才跑的事件处理函数也不管。"""
+    tokens = _js_tokens(source)
+    values = _values(tokens)
+    spans = _handler_spans(tokens, values)
+    for path, _op, _k in _write_sites(tokens, values):
+        if path[0] in ("me", "this") and len(path) > 1 and path[1] in method_names:
+            return f"改了 PublicTree 的方法 {path[1]}"
+    for k, value in enumerate(values):
+        if value not in ("me", "this") or k and values[k - 1] == ".":
+            continue
+        if any(a < k < b for a, b in spans):
+            continue
+        after = values[k + 1] if k + 1 < len(values) else ""
+        if after in (".", "[") or after == ":" and k and values[k - 1] in ("{", ","):
+            continue
+        if (
+            value == "me"
+            and values[k - 1 : k] == ["var"]
+            and values[k + 1 : k + 3] == ["=", "this"]
+        ):
+            continue
+        if value == "this" and values[max(0, k - 3) : k] == ["var", "me", "="]:
+            continue
+        if value == "this" and _inside_function(source, tokens[k].start):
+            continue
+        return f"把 {value} 整个当值用或者重新赋值，跟不上经它做了什么"
+    return None
 
 
 def _tracked_write(path):
@@ -1233,7 +1524,7 @@ def _tracked_write(path):
     ) or path[0] in ("catalogs", "_organTree2")
 
 
-def _check_pre_methods(raw, globals_):
+def _check_pre_methods(raw, globals_, *, widget=False):
     all_globals = set(globals_) - {"_organTree"}
     used = {
         t.value
@@ -1270,6 +1561,20 @@ def _check_pre_methods(raw, globals_):
             continue
         checked.add(name)
         source = raw.get(name, "")
+        if not (name == "fuzzySearch" and widget):  # 核对过的搜索插件，见 _harmless_search_widget
+            scoped = (
+                _tree1_scopes(source)
+                if name == "initTree"
+                else _node_scopes(source)
+                if name == "preprocessData"
+                else ()
+            )
+            problem = _write_root_problem(source, scoped=scoped)
+            if problem:
+                raise LonsunFormatError(f"{name} {problem}")
+        problem = _me_alias_problem(source, frozenset(raw))
+        if problem:
+            raise LonsunFormatError(f"{name} {problem}")
         if name != "init":
             call_tokens = _js_tokens(source)
             call_values = [token.value for token in call_tokens]
@@ -1475,7 +1780,7 @@ def _check_pre_methods(raw, globals_):
 @lru_cache(maxsize=128)
 def _function_ranges(source):
     tokens = _js_tokens(source)
-    v = [t.value for t in tokens]
+    v = _values(tokens)
     ranges = []
     for i, token in enumerate(v):
         if token != "function":
@@ -1504,7 +1809,7 @@ def _page_globals(scripts):
     names = {}
     for source in scripts:
         tokens = _js_tokens(source)
-        values = [t.value for t in tokens]
+        values = _values(tokens)
         # 函数体里的 var 是局部声明；块里的 var 仍是页面全局声明。
         local = set()
         for i, value in enumerate(values):
@@ -1525,7 +1830,7 @@ def _page_globals(scripts):
 
 def _written_script(source):
     tokens = _js_tokens(source)
-    values = [t.value for t in tokens]
+    values = list(_values(tokens))
     if len(values) == 15 and values[-1] == ";":
         values.pop()
     if (
@@ -1552,6 +1857,83 @@ _AJAX_SETTERS = {"ajaxSetup", "ajaxPrefilter", "ajaxTransport", "ajaxSend"}
 # 我们照着推请求、又可能被页面脚本改动的页面全局对象：每次出现都得是认得的写法
 _ROOTS = ("Ls", "catalogs", "PublicTree", "_organTree2")
 _GLOBAL_OBJECTS = ("window", "globalThis", "self", "top", "parent", "frames")
+# 内置对象和全局函数：页面脚本改了它们，浏览器的行为就和我们照着推的不一样了
+_BUILTINS = frozenset(
+    {
+        "Array",
+        "Object",
+        "String",
+        "Function",
+        "Number",
+        "Boolean",
+        "Date",
+        "RegExp",
+        "JSON",
+        "Math",
+        "Symbol",
+        "Promise",
+        "Reflect",
+        "Proxy",
+        "Error",
+        "encodeURIComponent",
+        "encodeURI",
+        "decodeURIComponent",
+        "decodeURI",
+        "escape",
+        "unescape",
+        "parseInt",
+        "parseFloat",
+        "isNaN",
+        "isFinite",
+    }
+)
+_PROTOTYPE_OWNERS = frozenset(
+    {"Array", "Object", "String", "Function", "Number", "Boolean", "Date", "RegExp", "Error"}
+)
+
+
+def _builtin_problem(tokens, values):
+    """改内置对象（Array.prototype.indexOf = …、JSON.parse = …、Object.assign(Math, …)）、
+    用 __proto__、setPrototypeOf，或者把 Array.prototype 这类整个当值用（经别名再改）的，不认。
+    Array.prototype.slice.call(…) 这样只读的照常。"""
+    for path, _op, _k in _write_sites(tokens, values):
+        if path[0] in _BUILTINS:
+            return f"改了内置的 {'.'.join(path)}"
+    for k, value in enumerate(values):
+        text = _string_literal(value) if value[:1] in ("'", '"') else value
+        if text in ("__proto__", "setPrototypeOf"):
+            return f"用了 {text}"
+        if (
+            value in _PROTOTYPE_OWNERS
+            and values[k + 1 : k + 3] == [".", "prototype"]
+            and (not k or values[k - 1] != ".")
+            and values[k + 3 : k + 4]
+            not in (
+                [
+                    ".",
+                ],
+                ["["],
+            )
+        ):
+            return f"把 {value}.prototype 整个当值用"
+    return None
+
+
+def _ztree_problem(values):
+    """zTree 只许用 $.fn.zTree.init(…) 建树；getZTreeObj、$.fn.zTree._z 这类拿到的是建好的树
+    本身或者内部数据，跟不上会改什么。"""
+    for k, value in enumerate(values):
+        text = _string_literal(value) if value[:1] in ("'", '"') else value
+        if text == "getZTreeObj" or value[:1] in ("'", '"') and text == "zTree":
+            return f"用了 {text}"
+        if value == "zTree" and not (
+            values[max(0, k - 4) : k] in (["$", ".", "fn", "."], ["jQuery", ".", "fn", "."])
+            and values[k + 1 : k + 4] == [".", "init", "("]
+        ):
+            return "用了 $.fn.zTree.init 以外的 zTree 接口"
+    return None
+
+
 # 栏目树对象上只查找、遍历或只改显示的 zTree 方法；改结构的（removeNode、addNodes、moveNode、
 # reAsyncChildNodes 等）不在里面
 _TREE_READS = frozenset(
@@ -1578,7 +1960,7 @@ def _method(methods, name):
 
 def _collapse_functions(tokens):
     """顶层记号：每个 function …(…) {…} 收成一个 ("fn", 名字) 占位（匿名的名字是空串）。"""
-    values = [t.value for t in tokens]
+    values = _values(tokens)
     out = []
     i = 0
     while i < len(values):
@@ -1694,6 +2076,29 @@ _SAFE_CALLS = frozenset(
     }
 )
 _SAFE_ROOTS = frozenset({"$", "jQuery", "Ls", "JSON", "Math", "console"})
+# jQuery 自己的静态方法里不改参数的（$.merge、$.uniqueSort 这类会原地改，不在里面；$.extend 的
+# 目标由 _writes 另查，栏目数据当来源交给它可以）
+_JQUERY_READS = frozenset(
+    {
+        "each",
+        "grep",
+        "map",
+        "inArray",
+        "isArray",
+        "isFunction",
+        "isPlainObject",
+        "isEmptyObject",
+        "isNumeric",
+        "isWindow",
+        "type",
+        "trim",
+        "param",
+        "extend",
+        "contains",
+        "makeArray",
+        "parseJSON",
+    }
+)
 _PURE_METHODS = frozenset(
     {
         "indexOf",
@@ -1748,7 +2153,7 @@ def _read_only_body(args, body):
         return False
     if any(len(path) != 1 or op in _MUTATORS or op == "extend" for path, op in writes):
         return False
-    values = [t.value for t in tokens]
+    values = _values(tokens)
     if "delete" in values:
         return False
     for k, value in enumerate(values):
@@ -1770,6 +2175,10 @@ def _read_only_body(args, body):
             root -= 2
         if values[root] in ("me", "this"):
             return False
+        if values[root] in ("$", "jQuery"):
+            if root == k - 3 and prev in _JQUERY_READS:
+                continue  # $.each(…) 这类
+            return False
         if values[root] in _SAFE_ROOTS or prev in _PURE_METHODS:
             continue
         return False
@@ -1789,7 +2198,7 @@ def _page_functions(scripts):
     found = {}
     for source in scripts:
         tokens = _js_tokens(source)
-        values = [t.value for t in tokens]
+        values = _values(tokens)
         depth = 0
         k = 0
         while k < len(values):
@@ -1855,7 +2264,7 @@ _MODELED = frozenset({"getData", "open", "getList", "getNewList"})
 
 def _method_spans(tokens):
     """PublicTree 脚本里构造函数体（记作 ""）和各原型方法体的记号范围 {名字: (开始, 结束)}。"""
-    values = [t.value for t in tokens]
+    values = _values(tokens)
     spans = {}
     for i in range(len(values) - 2):
         if values[i : i + 3] == ["function", "PublicTree", "("]:
@@ -1907,7 +2316,7 @@ _ITERATOR_METHODS = frozenset({"forEach", "map", "filter", "some", "every", "fin
 
 def _expression_end(tokens, start):
     """从 start 起到这个表达式结束（同层的 ; , ) ] } 之前）；中间的函数体整个跳过。"""
-    values = [t.value for t in tokens]
+    values = _values(tokens)
     depth = 0
     k = start
     while k < len(values):
@@ -1975,7 +2384,7 @@ def _foreign_problem(source, functions, widget, *, occurrences=True, mask=()):
     for a, b in mask:
         source = source[:a] + " " * (b - a) + source[b:]
     tokens = _js_tokens(source)
-    values = [t.value for t in tokens]
+    values = _values(tokens)
 
     def at(k):
         return values[k] if 0 <= k < len(values) else ""
@@ -2024,7 +2433,7 @@ def _alias_problem(tokens, source, sources, functions, depth=0, visiting=frozens
     认不出（给原因）的：经别名改属性、删属性、用原地修改的数组方法、当 $.extend 的目标；把栏目
     数据存进对象属性或数组元素；当返回值交出去；交给页面函数（那个函数照同样的规矩查，最多往下
     _CALL_DEPTH 层）、看不出改不改的函数。"""
-    values = [t.value for t in tokens]
+    values = _values(tokens)
 
     def at(k):
         return values[k] if 0 <= k < len(values) else ""
@@ -2086,9 +2495,16 @@ def _alias_problem(tokens, source, sources, functions, depth=0, visiting=frozens
             continue
         name = values[callee]
         if at(callee - 1) == ".":
-            if _chain_root(values, callee - 1) in _SAFE_ROOTS or name in _PURE_METHODS:
+            root = _chain_root(values, callee - 1)
+            if root in ("$", "jQuery"):
+                if name in _JQUERY_READS and at(callee - 2) == root:
+                    continue
+                return f"栏目数据交给了 {root} 的 {name}，看不出它改不改"
+            if root in _SAFE_ROOTS or name in _PURE_METHODS:
                 continue
             return f"栏目数据交给了 {name}，看不出它改不改"
+        if name in ("$", "jQuery"):
+            return f"栏目数据交给 {name}(…) 包起来，接着能改它（.prop、.attr 这类）"
         if name in _SAFE_CALLS:
             continue
         problem = _callee_problem(tokens, callee, tainted, functions, depth, visiting)
@@ -2099,7 +2515,7 @@ def _alias_problem(tokens, source, sources, functions, depth=0, visiting=frozens
 
 def _callee_problem(tokens, callee, tainted, functions, depth, visiting):
     """页面函数 values[callee](…) 收到了栏目数据：按收到的参数位置，用同样的规矩查它的函数体。"""
-    values = [t.value for t in tokens]
+    values = _values(tokens)
     name = values[callee]
     function = functions.get(name)
     if function is None:
@@ -2209,7 +2625,7 @@ _PRIMITIVE_OPERATORS = frozenset(
 
 def _depth_zero(tokens, start, end):
     """start 到 end 里同层（不在括号里）的记号位置。"""
-    values = [t.value for t in tokens]
+    values = _values(tokens)
     out = []
     k = start
     while k < end:
@@ -2228,7 +2644,7 @@ def _tainted_value(tokens, start, end, tainted, functions):
     结果是字符串、数字或真假值，不算。读到 .id、.name、.length 这类属性、调 indexOf 这类方法得到的
     也不算。函数调用：页面自己的函数不算（它收到栏目数据时另按同样的规矩查，不许把栏目数据当
     返回值交出去），别的调用（$.grep、alias.filter 这类会把原来的对象交回来）参数里有就算。"""
-    values = [t.value for t in tokens]
+    values = _values(tokens)
     if start >= end:
         return False
     top = _depth_zero(tokens, start, end)
@@ -2270,7 +2686,7 @@ def _tainted_value(tokens, start, end, tainted, functions):
 
 
 def _operand_tainted(tokens, start, end, tainted, functions):
-    values = [t.value for t in tokens]
+    values = _values(tokens)
     k = start
     while k < end:
         value = values[k]
@@ -2331,7 +2747,7 @@ def _operand_tainted(tokens, start, end, tainted, functions):
 
 def _chain_end(tokens, start):
     """start 处的名字连同后面的成员访问、下标、调用（a.b[0].c(…)）到哪里结束。"""
-    values = [t.value for t in tokens]
+    values = _values(tokens)
     k = start + 1
     while k < len(values):
         if values[k] == "." and k + 1 < len(values) and _IDENT.fullmatch(values[k + 1]):
@@ -2370,7 +2786,7 @@ def _chain_root(values, dot):
 
 def _callback_params(tokens, open_paren):
     """open_paren 处的调用里第一个 function (…) 回调的参数名。"""
-    values = [t.value for t in tokens]
+    values = _values(tokens)
     end = _matching_token(tokens, open_paren)
     for k in range(open_paren + 1, end):
         if values[k] == "function":
@@ -2396,7 +2812,7 @@ def _root_misuse(tokens, is_tree_script, methods, widget, load):
     经 window 访问、名字写成字符串（window["Ls"]）一律不认。别的对象上同名的属性（x.Ls）不是这几个
     全局，不管。zTree 建树时把节点整份深拷贝（平台 ztree.min.js 的 init 用 tools.clone），
     所以建树以后再动 catalogs 里的对象，影响不到 _organTree2。"""
-    values = [token.value for token in tokens]
+    values = _values(tokens)
     spans = _method_spans(tokens) if is_tree_script else {}
 
     def at(k):
@@ -2482,14 +2898,14 @@ def _instantiated_on_load(scripts, token_sets, tree_index):
     脚本顶层的一句，或者顶层 $(function () {…})、jQuery(function () {…})、$(document).ready(
     function () {…}) 回调里的一句（回调里只有这一句）。写在 if、别的函数、事件回调里的不算。"""
     count = sum(
-        [t.value for t in tokens][i : i + 2] == ["new", "PublicTree"]
+        _values(tokens)[i : i + 2] == ["new", "PublicTree"]
         for tokens in token_sets
         for i in range(len(tokens) - 1)
     )
     if count != 1:
         return False
     tokens = token_sets[tree_index]
-    values = [token.value for token in tokens]
+    values = _values(tokens)
     depth = []
     level = 0
     for value in values:
@@ -2586,7 +3002,7 @@ def find_lonsun_api(
         tree_declarations = 0
         tree_extensions = 0
         for source, tokens in zip(scripts, token_sets, strict=True):
-            values = [token.value for token in tokens]
+            values = _values(tokens)
             is_tree_script = any(
                 values[i : i + 3] == ["function", "PublicTree", "("] for i in range(len(values) - 2)
             )
@@ -2619,6 +3035,9 @@ def find_lonsun_api(
                     or "zTree" in path
                 ):
                     return fail("内联脚本改写了依赖状态")
+            problem = _ztree_problem(values) or _builtin_problem(tokens, values)
+            if problem:
+                return fail(f"内联脚本{problem}")
             if is_tree_script:
                 # PublicTree 自己的脚本：每处用法都得认得（白名单）；构造函数、原型方法以外的代码
                 # 再照别的脚本的规矩查别名
@@ -2674,7 +3093,7 @@ def find_lonsun_api(
         constructors = []
         extends = 0
         for n, tokens in enumerate(token_sets):
-            v = [t.value for t in tokens]
+            v = _values(tokens)
             for i in range(len(v) - 2):
                 if v[i : i + 7] == ["$", ".", "extend", "(", "PublicTree", ".", "prototype"]:
                     extends += 1
@@ -2684,7 +3103,7 @@ def find_lonsun_api(
             return None
         n, index = constructors[0]
         tokens = token_sets[n]
-        values = [t.value for t in tokens]
+        values = _values(tokens)
         if values[index : index + 5] != ["function", "PublicTree", "(", ")", "{"]:
             return None
         if not _instantiated_on_load(scripts, token_sets, n):
@@ -2748,6 +3167,12 @@ def find_lonsun_api(
         for key in ("ztreeData", "ztreeData2", "refresh"):
             if sum(path == ("me", key) for path, _ in constructor_writes) != 1:
                 return None
+        constructor_source = scripts[n][tokens[index + 4].end : tokens[end].start]
+        problem = _write_root_problem(constructor_source) or _me_alias_problem(
+            constructor_source, frozenset(m[0] for m in methods)
+        )
+        if problem:
+            return fail(f"构造函数{problem}")
         init_values = {}
         for statement in statements:
             if statement[0] == "expression" and statement[1][0] == "assign":
@@ -3116,7 +3541,7 @@ def _ui_method_problem(body):
     for i in range(len(values) - 3):
         if values[i] in ("me", "this") and values[i + 1] == "." and values[i + 3] == "(":
             return f"调用了 {values[i]}.{values[i + 2]}()"
-    return None
+    return _write_root_problem(body, me_ok=False) or _me_alias_problem(body)
 
 
 def _tree_settings_problem(source, setting):
@@ -3124,7 +3549,7 @@ def _tree_settings_problem(source, setting):
     simpleData 正好是 idKey 'id'、pIdKey 'parentId'（可带 enable: true），key 只能改显示用的
     title、name。建好以后不许再改。真实页面都是这样写的。"""
     tokens = _js_tokens(source)
-    values = [t.value for t in tokens]
+    values = _values(tokens)
     if len(setting) != 1 or not _IDENT.fullmatch(setting[0]):
         return "建树设置不是一个变量"
     name = setting[0]
@@ -3451,7 +3876,9 @@ def resolve_lonsun(api, catalog_text):
         nodes = parse_catalog(catalog_text, plan.organ_id)
         raw = {name: body for name, _, body in plan.raw_methods}
         methods = {name: (args, body) for name, args, body in plan.methods}
-        _check_pre_methods(raw, dict(plan.globals))
+        _check_pre_methods(
+            raw, dict(plan.globals), widget=_harmless_search_widget(plan.raw_methods)
+        )
         for ui in _UI_METHODS:
             problem = _ui_method_problem(raw[ui]) if ui in raw else None
             if problem:
@@ -3657,14 +4084,21 @@ def resolve_lonsun(api, catalog_text):
             ):
                 raise Stop("列表请求参数写法认不出")
             data = _evaluate(data_tree, env)
-            if not isinstance(data, dict) or any(
-                v is UNKNOWN or isinstance(v, (list, dict, tuple)) for v in data.values()
+            if not isinstance(data, dict) or not all(
+                v is None
+                or v is UNDEFINED
+                or isinstance(v, (str, bool))
+                or isinstance(v, (int, float))
+                and math.isfinite(v)
+                for v in data.values()
             ):
                 raise Stop("列表请求参数无法求值")
             if any(re.fullmatch(r"0|[1-9][0-9]*", str(k)) and int(k) < 4294967295 for k in data):
                 raise Stop("列表参数含整数键，顺序无法确定")
+            # 平台 Ls.ajaxGet、Ls.ajax 用 $.extend(true, …) 合并请求设置，jQuery 的 extend 跳过值是
+            # undefined 的键：浏览器不带这些参数。null 照 jQuery.param 发成空串
             strings = {
-                k: "" if v is None or v is UNDEFINED else _js_string(v) for k, v in data.items()
+                k: "" if v is None else _js_string(v) for k, v in data.items() if v is not UNDEFINED
             }
             mode = strings.get("action")
             unknown = set(strings) - _REQUEST_KEYS

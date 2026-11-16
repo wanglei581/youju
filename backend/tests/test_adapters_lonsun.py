@@ -926,13 +926,15 @@ def test_unknown_initializer_call_rejected():
 
 
 @pytest.mark.parametrize(
-    "write", ["window.flag = true;", "flag++;", "flag.push(1);", "flag[0] = 1;"]
+    "write",
+    ["", "window.flag = true;", "self.flag = true;", "this.flag = true;", "flag++;", "flag = 1;"],
 )
-def test_top_level_global_mutations_are_unknown(write):
+def test_page_global_values_never_inferred(write):
     from youju.crawler.lonsun import find_lonsun_api, resolve_lonsun
 
+    # 页面全局变量的值一律当不知道：初值是假、没有别处改的也一样；条件用到它就不读，原因写明名字
     page = fixture("jx_page.html").replace(
-        "</body>", "<script>var flag = []; " + write + "</script></body>"
+        "</body>", "<script>var flag = false; " + write + "</script></body>"
     )
     page = page.replace(
         "var url = '' + me.currNode.uri",
@@ -940,7 +942,12 @@ def test_top_level_global_mutations_are_unknown(write):
         1,
     )
     api = find_lonsun_api(page, BASE, BASE)
-    assert api is None or isinstance(resolve_lonsun(api, fixture("jx_catalog.js")), str)
+    if write:
+        assert api is None or isinstance(resolve_lonsun(api, fixture("jx_catalog.js")), str)
+        return
+    assert api is not None
+    reason = resolve_lonsun(api, fixture("jx_catalog.js"))
+    assert isinstance(reason, str) and "flag" in reason and "无法确定" in reason, reason
 
 
 @pytest.mark.parametrize("change", ["el.name += 'x';", "el['link'] = 'x';"])
@@ -2055,3 +2062,220 @@ def test_document_write_random_must_go_into_query():
     changed = page.replace("2681525.js?v=' + Math.random()", "2681525.js' + Math.random()", 1)
     assert changed != page
     assert find_lonsun_api(changed, url, url) is None
+
+
+# ---- 第四轮：加载时的代码只许改认得的对象（me、本方法新建的空对象或数组、核对过的树一节点）----
+
+_FIND_PARENT = "idMap[item.id] = true;"
+_FIND_PARENT_TOP = "findParentId: function () {\n      var me = this;"
+
+
+def _refused(page, cat_id="49949451"):
+    """第一步就不认，或者第二步给出原因：都算没读。"""
+    from youju.crawler.lonsun import find_lonsun_api, resolve_lonsun
+
+    url = PAGES["jx"] + f"?type=4&catId={cat_id}&action=list"
+    api = find_lonsun_api(page, url, url)
+    return api is None or isinstance(resolve_lonsun(api, fixture("jx_catalog.js")), str)
+
+
+def _jx_find_parent(extra):
+    page = fixture("jx_page.html")
+    assert page.count(_FIND_PARENT) == 1
+    return page.replace(_FIND_PARENT, _FIND_PARENT + " " + extra, 1)
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        # 遍历栏目数据时改节点：浏览器里 49949451 就有了下级，发的是下级汇总
+        "if (item.id === 49949461) { item.parentId = 49949451; }",
+        "item.children = [];",
+        "item.uri = 'https://x.example/';",
+        "item['parentId'] = 1;",
+        "$.extend(item, {parentId: 1});",
+        "delete item.parentId;",
+        # 经别名拿到的 me 或它的字段
+        "var that = me; that.currCatId = '49949431';",
+        "var p = me['listParams']; p.pageSize = '100';",
+        "var p = (me.listParams); p.pageSize = '100';",
+        "$.extend(true, me.listParams, {pageSize: '100'});",
+        # 本方法新建的对象里存了节点、再经它改：不只加一层属性的不认
+        "idMap[item.id] = item; idMap[49949461].parentId = 1;",
+        # 树二的节点经查找方法拿到再改
+        "var n = _organTree2.getNodeByParam('id', 1, null); n.isParent = true;",
+    ],
+)
+def test_load_time_writes_to_unknown_objects_refused(extra):
+    result = resolve_fixture("jx", "49949451", page=_jx_find_parent(extra))
+    assert isinstance(result, str), result
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        "me.open = function () {};",
+        "this.getData = function () {};",
+        "me.getList = me.getNewList;",
+        "me['getNewList'] = null;",
+    ],
+)
+def test_overriding_public_tree_methods_refused(extra):
+    # 实例属性会盖住原型方法：浏览器跑的就不是我们照着走的那个了
+    result = resolve_fixture("jx", "49949451", page=_jx_find_parent(extra))
+    assert isinstance(result, str) and "方法" in result, result
+
+
+@pytest.mark.parametrize(
+    "extra",
+    ["var that = this;", "$.proxy(function () {}, me);", "me = {};", "var list = [me];"],
+)
+def test_me_as_value_refused(extra):
+    page = fixture("jx_page.html")
+    assert page.count(_FIND_PARENT_TOP) == 1
+    result = resolve_fixture(
+        "jx", "49949451", page=page.replace(_FIND_PARENT_TOP, _FIND_PARENT_TOP + " " + extra, 1)
+    )
+    assert isinstance(result, str), result
+    # 回调里的 me 也是同一个；回调里的 this 不是 me，不管
+    assert _refused(_jx_find_parent("return me;"))
+    assert not _refused(_jx_find_parent("var el = this;"))
+
+
+def test_constructor_alias_and_ui_method_writes_refused():
+    from youju.crawler.lonsun import find_lonsun_api
+
+    page = fixture("jx_page.html")
+    ctor = "function PublicTree() {\n    var me = this;"
+    for extra in ("var that = this; that.currCatId = '49949431';", "var x = me; x.prefix = '/x';"):
+        assert find_lonsun_api(page.replace(ctor, ctor + " " + extra, 1), BASE, BASE) is None
+    # getData 以后跳过的显示方法（setMeta）里经别名改请求参数
+    meta = "setMeta: function () {\n      var me = this;"
+    assert meta in page
+    for extra in ("var p = me.listParams; p.pageSize = '100';", "var n = me.currNode; n.id = 1;"):
+        changed = page.replace(meta, meta + " " + extra, 1)
+        assert isinstance(resolve_fixture("jx", "49949451", page=changed), str), extra
+
+
+def test_user_event_handlers_may_write_but_triggering_on_load_refused():
+    # 点了才跑的处理函数里改节点不碍事（加载时不跑）
+    handler = "$('#x').on('click', function () { var n = _organTree2.getNodes()[0]; n.isParent = true; });"
+    page = _jx_find_parent(handler)
+    assert not isinstance(resolve_fixture("jx", "49949451", page=page), str)
+    page = _jx_find_parent("$('#x').click(function () { item.parentId = 1; });")
+    assert not isinstance(resolve_fixture("jx", "49949451", page=page), str)
+    # 加载时替用户点一下：处理函数就在加载时跑了
+    for trigger in ("$('#x').trigger('click');", "$('#x').click();", "$('#x').focus();"):
+        assert isinstance(resolve_fixture("jx", "49949451", page=_jx_find_parent(trigger)), str)
+    # focus、load 这类加载时就可能触发的事件不算"点了才跑"
+    load = "$(window).on('load', function () { item.parentId = 1; });"
+    assert isinstance(resolve_fixture("jx", "49949451", page=_jx_find_parent(load)), str)
+
+
+def test_tree1_callback_only_for_verified_tree1():
+    page = fixture("jx_page.html")
+    tree1 = "$.each(_organTree.getNodes(), function (i, node) {"
+    assert page.count(tree1) == 1
+    assert not isinstance(resolve_fixture("jx", "49949451", page=page), str)
+    for changed in (
+        # 遍历的是树二
+        page.replace(
+            tree1 + "\n        delete node.children;",
+            "$.each(_organTree2.getNodes(), function (i, node) {\n        node.isParent = true;",
+            1,
+        ),
+        # 树一的回调里把参数换成树二的节点
+        page.replace(tree1, tree1 + " node = _organTree2.getNodes()[0];", 1),
+        page.replace(
+            tree1, tree1 + " _organTree2.getNodes().forEach(function (node) { node.x = 1; });", 1
+        ),
+        # _organTree 不止赋值一次
+        page.replace(tree1, "_organTree = _organTree2; " + tree1, 1),
+    ):
+        assert changed != page
+        assert _refused(changed)
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        "$.merge(catalogs[6991], [{id: 1, parentId: 49949451}]);",
+        "$.uniqueSort(catalogs[6991]);",
+        "$(catalogs[6991][0]).prop('parentId', 1);",
+        "$.fn.zTree.getZTreeObj('organ_catalog_tree2');",
+        "var z = $.fn.zTree; z.getZTreeObj('organ_catalog_tree2');",
+        "$.fn['zTree'].init();",
+        "Array.prototype.indexOf = function () { return -1; };",
+        "var ap = Array.prototype; ap.indexOf = function () { return -1; };",
+        "JSON.parse = function () { return []; };",
+        "Object.defineProperty(Array.prototype, 'indexOf', {value: 1});",
+        "encodeURIComponent = function (s) { return s; };",
+        "var o = {}; o.__proto__ = null;",
+    ],
+)
+def test_other_script_builtin_ztree_and_jquery_mutations_refused(script):
+    assert _found(_jx(extra=f"<script>{script}</script>")) is None
+
+
+def test_other_script_harmless_reads_still_recognized():
+    script = (
+        "function f() { return Array.prototype.slice.call(arguments); }"
+        " $.each(catalogs[6991], function (i, n) { $('#c').text(n.name); });"
+    )
+    assert _found(_jx(extra=f"<script>{script}</script>")) is not None
+
+
+def test_initTree_ztree_obj_lookup_refused():
+    from youju.crawler.lonsun import find_lonsun_api
+
+    page = fixture("jx_page.html").replace(
+        "me.setSelect();",
+        "$.each($.fn.zTree.getZTreeObj('organ_catalog_tree2').getNodes(), function (i, n) {"
+        " n.children = null; }); me.setSelect();",
+        1,
+    )
+    assert find_lonsun_api(page, BASE, BASE) is None
+
+
+def test_undefined_request_values_not_sent():
+    from youju.crawler.adapters import ListApi
+
+    # 平台用 $.extend(true, …) 合并请求设置，值是 undefined 的键浏览器不带
+    page = fixture("jx_page.html").replace(
+        "me.listParams.catId = me.currNode.id;",
+        "me.listParams.catId = me.currNode.id; me.listParams.keyWords = me.query.keyWords;",
+        1,
+    )
+    result = resolve_fixture("jx", "49949451", page=page)
+    assert isinstance(result, ListApi), result
+    assert "keyWords" not in result.url
+    # 对象、数组这类值认不出
+    page = fixture("jx_page.html").replace(
+        "me.listParams.catId = me.currNode.id;",
+        "me.listParams.catId = me.currNode.id; me.listParams.keyWords = me.currNode;",
+        1,
+    )
+    assert isinstance(resolve_fixture("jx", "49949451", page=page), str)
+
+
+def test_deep_json_in_catalog_response_is_not_an_exception():
+    from youju.crawler.adapters import api_follow, api_refusal, find_list_api
+    from youju.crawler.fetcher import FetchResult
+
+    tree = find_list_api(fixture("jx_page.html"), BASE, BASE)
+    deep = "[" * 100000 + "]" * 100000
+    for text in ("var catalogs = {6991:" + deep + "}", deep):
+        result = FetchResult(tree.url, "ok", tree.url, 200, text)
+        assert isinstance(api_follow(tree, result), str)
+        api_refusal(tree, result)  # 不抛异常
+
+
+def test_big_unrelated_script_is_fast():
+    import time
+
+    # 67KB 无关赋值：以前每处赋值都重建整份记号列表，第一步要一分多钟
+    script = "".join(f"var a{i} = {i}; a{i} = a{i} + 1;\n" for i in range(2500))
+    assert len(script) > 60000
+    started = time.monotonic()
+    assert _found(_jx(extra=f"<script>{script}</script>")) is not None
+    assert time.monotonic() - started < 20
