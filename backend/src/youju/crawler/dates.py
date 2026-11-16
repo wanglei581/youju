@@ -3,15 +3,17 @@
 import re
 from datetime import date, timedelta
 
+# "年"后面写"几-几月"的月份区间（"2026年1-6月""2025年10-12月""2026 年 01-06 月"）：
+# 后一个数不超过 12，后面（可隔空格）紧跟"月"。"2025年9-20 月度报告"的 20 超过 12，是日期。
+# 列表识别的 _EDGE_DATE 也用这一句
+YEAR_RANGE_TAIL = r"(?:0?[1-9]|1[0-2])(?!\d)\s*月"
 # 2026-09-24、2026/9/24、2026.09.24、2026年9月24日。
-# "2026年1-6月""2026 年 1-7 月"这种"年"后面写"几-几月"的是月份区间，不是日期
-# （"2026年1-6月襄阳市财政局规范性文件清理表"不是 2026-01-06）。只有"年"后面跟"-"这一种写法
-# 才当区间看：日子用占有量词，两位数不回退成一位再看（"2025年10-12月"的"1"不算日子）。
-# 别的写法后面跟着"月"也照认日期："2026-10-08 月度报告"、紧贴"10月……"开头的标题
-# "2026-11-0510月……"
+# 只有"年"后面跟"-"这一种写法才可能是上面的月份区间（"2026年1-6月襄阳市财政局规范性文件清理表"
+# 不是 2026-01-06）；别的写法后面跟着"月"照认日期："2026-10-08 月度报告"、紧贴"10月……"开头的
+# 标题"2026-11-0510月……"
 _FULL = re.compile(
     r"(20\d{2})\s*"
-    r"(?:年\s*(\d{1,2})\s*-\s*(\d{1,2}+)(?!\s*月)"
+    r"(?:年\s*(\d{1,2})\s*-\s*(?!" + YEAR_RANGE_TAIL + r")(\d{1,2})"
     r"|(?!年\s*\d{1,2}\s*-)[-/.年]\s*(\d{1,2})\s*[-/.月]\s*(\d{1,2}))"
     r"\s*日?"
 )
@@ -25,6 +27,8 @@ _SHORT = re.compile(
 # "1-6月""10-12 月""11-3月"（跨年）：后面（可隔空格）跟着"月"、前一个数没补零、两个数都不超过 12 的
 # 是月份区间。"09-20 月度报告""09-10 月度报告"这种补了零、或者有一个数超过 12 的照认日期
 _MONTH_AFTER = re.compile(r"\s*月")
+# 紧跟在"年"后面的"几-几"是完整日期或者月份区间的一部分（上面 _FULL 已经看过），不单独当月日
+_AFTER_YEAR = re.compile(r"年\s*$")
 # 政府网站常见的正文网址：/202609/t20260924_4878106.html
 _URL_DAY = re.compile(r"[/_]t?(20\d{2})(\d{2})(\d{2})[_./]")
 # 允许略晚于今天（时区差、提前发布），更晚的视为误识别
@@ -41,11 +45,11 @@ def _safe_date(year: int, month: int, day: int, today: date) -> date | None:
     return d
 
 
-def _month_range(m: re.Match[str], text: str) -> bool:
+def _not_a_short_date(m: re.Match[str], text: str) -> bool:
+    if _AFTER_YEAR.search(text, 0, m.start()):
+        return True
     first, last = m.group(1), m.group(2)
-    if not first or not _MONTH_AFTER.match(text, m.end()):
-        return False
-    if first.startswith("0") or first == last:
+    if not first or first.startswith("0") or not _MONTH_AFTER.match(text, m.end()):
         return False
     return 1 <= int(first) <= 12 and 1 <= int(last) <= 12
 
@@ -72,7 +76,7 @@ def parse_date_detail(text: str, today: date | None = None) -> tuple[date | None
         if d:
             return d, True
     for m in reversed(list(_SHORT.finditer(text))):
-        if _month_range(m, text):
+        if _not_a_short_date(m, text):
             continue
         month, day = (
             (int(m.group(1)), int(m.group(2)))

@@ -55,6 +55,10 @@ TODAY = date(2026, 9, 26)
         ("09-20 月度报告", date(2026, 9, 20)),
         ("09-10 月度报告", date(2026, 9, 10)),
         ("09.20 月报", date(2026, 9, 20)),
+        # "年"后面"几-几"的后一个数超过 12 就不是月份区间；"年"后面的区间不再单独当月日
+        ("2025年9-20 月度报告", date(2025, 9, 20)),
+        ("07-15 2026年01-06月财政收支情况", date(2026, 7, 15)),
+        ("07-15 1-1月累计", date(2026, 7, 15)),
     ],
 )
 def test_parse_date_formats(text: str, expected: date) -> None:
@@ -84,6 +88,8 @@ def test_parse_date_formats(text: str, expected: date) -> None:
         "1-6 月全市财政收支情况",
         "10-12月全市财政收支情况",
         "11-3月供暖期价格调整",
+        "2026年01-06月",
+        "2026年10-1月供暖期",
     ],
 )
 def test_parse_date_rejects_non_dates(text: str) -> None:
