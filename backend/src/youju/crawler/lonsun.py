@@ -65,6 +65,52 @@ def column_spec(url: str) -> tuple[str, str] | None:
         return None
 
 
+# 省级政府网站域名（xx.gov.cn 的 xx）：底下是省里不同部门的网站，不能当同一个市互相取栏目树
+_PROVINCE_LABELS = frozenset(
+    {
+        "beijing",
+        "bj",
+        "tj",
+        "hebei",
+        "shanxi",
+        "nmg",
+        "ln",
+        "jl",
+        "hlj",
+        "shanghai",
+        "sh",
+        "jiangsu",
+        "js",
+        "zj",
+        "ah",
+        "fujian",
+        "fj",
+        "jiangxi",
+        "jx",
+        "shandong",
+        "sd",
+        "henan",
+        "hubei",
+        "hunan",
+        "gd",
+        "gxzf",
+        "gx",
+        "hainan",
+        "cq",
+        "sc",
+        "guizhou",
+        "yn",
+        "xizang",
+        "shaanxi",
+        "gansu",
+        "qinghai",
+        "nx",
+        "xinjiang",
+        "xj",
+    }
+)
+
+
 def catalog_host_allowed(page_url: str, script_url: str, catalog_host: str | None = None) -> bool:
     """栏目树允许同主机，或同一个地方政府域名下的主机。"""
     try:
@@ -92,6 +138,8 @@ def catalog_host_allowed(page_url: str, script_url: str, catalog_host: str | Non
             and len(b_parts) >= 4
             and a_parts[-2:] == b_parts[-2:] == ["gov", "cn"]
             and a_parts[-3] == b_parts[-3]
+            # ah.gov.cn 这类是省的域名，底下是省里各个部门的网站，不是同一个市
+            and a_parts[-3] not in _PROVINCE_LABELS
         )
     except ValueError:
         return False
@@ -110,7 +158,7 @@ def parse_catalog(text: str, organ_id: str) -> list[dict]:
         raise LonsunFormatError("栏目树脚本格式或机构编号不符")
     try:
         nodes = json.loads(match.group(2))
-    except ValueError as exc:
+    except (ValueError, RecursionError) as exc:  # 嵌套太深也当认不出
         raise LonsunFormatError("栏目树 JSON 无效") from exc
     if not isinstance(nodes, list) or any(
         not isinstance(node, dict) or type(node.get("id")) is not int for node in nodes
@@ -196,7 +244,7 @@ def parse_response(
     """读取已取得的 JSON；第二项表示接口明确返回空列表。"""
     try:
         payload = json.loads(text.lstrip("\ufeff").strip())
-    except ValueError as exc:
+    except (ValueError, RecursionError) as exc:  # 嵌套太深也当认不出
         raise LonsunFormatError("列表接口 JSON 无效") from exc
     if mode == "list":
         if (
@@ -860,7 +908,10 @@ def _js_number(value):
             return 0.0
         try:
             if re.fullmatch(r"0[xX][0-9a-fA-F]+|0[bB][01]+|0[oO][0-7]+", value):
-                return float(int(value, 0))
+                try:
+                    return float(int(value, 0))
+                except OverflowError:
+                    return math.inf  # 和 JS 一样，太大的数是 Infinity
             if not re.fullmatch(r"[+-]?(?:Infinity|(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)", value):
                 return math.nan
             return float(value)
@@ -1150,12 +1201,17 @@ def _writes(source, *, skip_functions=False):
         elif op == "(" and len(parts) > 1 and parts[-1] in _MUTATORS:
             result.append((tuple(parts[:-1]), parts[-1]))
         elif (
-            parts in (["$", "extend"], ["jQuery", "extend"])
+            parts in (["$", "extend"], ["jQuery", "extend"], ["$", "merge"], ["jQuery", "merge"])
             or len(parts) == 2
             and parts[0] in ("Object", "Reflect")
         ) and op == "(":
-            # 只需要找目标；复杂目标一律作为未知写入。
+            # 只需要找目标；复杂目标一律作为未知写入。$.extend(true, X, …) 的第一个参数是"深拷贝"
+            # 标志，目标是第二个；$.merge(X, …) 把后面的数组并进 X
             k = j + 1
+            if parts[-1] == "extend" and k < len(v) and v[k] in ("true", "false", "!"):
+                k += 2 if v[k] == "!" else 1
+                if k < len(v) and v[k] == ",":
+                    k += 1
             if k < len(v):
                 target = v[k]
                 if (
@@ -1440,8 +1496,12 @@ def _inside_function(source, position):
 
 
 def _page_globals(scripts):
-    declarations = {}
-    assignments = {}
+    """页面脚本顶层用 var 声明的全局变量：只记名字，值一律当不知道。
+
+    别的脚本改全局变量的写法太多（经别名、this、$.extend(window)、字符串代码……），静态看不全；
+    11/16 用安徽 96 个栏目实测，值全当不知道结果一个不变，所以不推断。PublicTree 的条件用到
+    这些变量的，照"认不出"处理。"""
+    names = {}
     for source in scripts:
         tokens = _js_tokens(source)
         values = [t.value for t in tokens]
@@ -1459,54 +1519,8 @@ def _page_globals(scripts):
                         local.update(range(i, end + 1))
         for i in range(len(tokens) - 2):
             if values[i] == "var" and i not in local and values[i + 2] == "=":
-                name = values[i + 1]
-                try:
-                    parser = _JSParser(source[tokens[i + 2].end :])
-                    tree = parser.expr()
-                    if tree[0] not in ("literal", "array"):
-                        value = UNKNOWN
-                    else:
-                        value = _evaluate(tree, _Environment())
-                        if value is None or value is UNDEFINED:
-                            value = UNKNOWN
-                except LonsunFormatError:
-                    value = UNKNOWN
-                declarations.setdefault(name, []).append(value)
-            if (
-                values[i + 1] in ("=", "+=")
-                and (i == 0 or values[i - 1] != ".")
-                and re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", values[i])
-            ):
-                assignments[values[i]] = assignments.get(values[i], 0) + 1
-    for source in scripts:
-        for path, op in _writes(source):
-            if path == ("window",) and op == "extend":
-                for name in declarations:
-                    assignments[name] = assignments.get(name, 0) + 1
-                continue
-            name = path[1] if path[0] in ("window", "globalThis") and len(path) > 1 else path[0]
-            if name in declarations:
-                assignments[name] = assignments.get(name, 0) + 1
-        tokens = _js_tokens(source)
-        values = [token.value for token in tokens]
-        for i in range(len(values) - 2):
-            if values[i] != "function" or values[i + 1] != "(":
-                continue
-            if values[max(0, i - 2) : i] not in (["$", "("], ["ready", "("]):
-                continue
-            start = _matching_token(tokens, i + 1) + 1
-            if start >= len(values) or values[start] != "{":
-                continue
-            end = _matching_token(tokens, start)
-            body = source[tokens[start].end : tokens[end].start]
-            for path, _op in _writes(body, skip_functions=True):
-                name = path[1] if path[0] == "window" and len(path) > 1 else path[0]
-                if name in declarations:
-                    assignments[name] = assignments.get(name, 0) + 1
-    return tuple(
-        (name, _immutable(vals[0]) if len(vals) == 1 and assignments.get(name) == 1 else UNKNOWN)
-        for name, vals in declarations.items()
-    )
+                names[values[i + 1]] = UNKNOWN
+    return tuple(names.items())
 
 
 def _written_script(source):
@@ -1528,6 +1542,8 @@ def _written_script(source):
     match = re.fullmatch(r'<script\s+src=(["\'])(.*?)', first, re.DOTALL | re.IGNORECASE)
     if not match or last != match.group(1) + "></script>":
         return None
+    if not match.group(2).endswith(("?", "=", "&")):
+        return None  # 随机数会拼进路径里：浏览器从不请求我们去取的那个地址
     return match.group(2) if re.fullmatch(r"[A-Za-z0-9/_.\-?=&%:]+", match.group(2)) else None
 
 
@@ -2577,7 +2593,7 @@ def find_lonsun_api(
             tree_writes = 0
             for path, op in _writes(source):
                 # window.catalogs 和 window["catalogs"] 同样是页面全局状态。
-                if path[0] in ("window", "globalThis") and len(path) > 1:
+                if path[0] in _GLOBAL_OBJECTS and len(path) > 1:
                     path = path[1:]
                 if path[0] == "PublicTree" and op == "extend":
                     tree_extensions += 1

@@ -32,6 +32,11 @@ def test_column_and_catalog_hosts():
     assert catalog_host_allowed("https://czgz.wuhu.gov.cn/", "https://www.wuhu.gov.cn/a.js")
     assert not catalog_host_allowed("https://www.ah.gov.cn/", "https://www.wuhu.gov.cn/a.js")
     assert not catalog_host_allowed("https://www.ah.gov.cn/", "https://www.ah.gov.cn:444/a.js")
+    # ah.gov.cn 是省的域名：底下是省里各个部门的网站，不能互相取栏目树；同一主机照常
+    assert not catalog_host_allowed("https://jx.ah.gov.cn/", "https://www.ah.gov.cn/a.js")
+    assert not catalog_host_allowed("https://sthjt.zj.gov.cn/", "https://www.zj.gov.cn/a.js")
+    assert catalog_host_allowed("https://jx.ah.gov.cn/", "https://jx.ah.gov.cn/a.js")
+    assert catalog_host_allowed("https://a.gz.gov.cn/", "https://www.gz.gov.cn/a.js")  # 广州
 
 
 def test_catalog_fixture_and_bad_input():
@@ -286,8 +291,9 @@ def test_find_lonsun_fixtures(name, page, expected):
         ]
     if name == "luan":
         assert dict(api.plan.globals)["isSsbm"] is UNKNOWN
+        # 页面全局变量的值一律当不知道：只声明一次、没有别处改的也一样（第四轮）
         updated = fixture("luan_page.html").replace("var isSsbm = true;", "")
-        assert dict(find_lonsun_api(updated, page, page).plan.globals)["isSsbm"] is False
+        assert dict(find_lonsun_api(updated, page, page).plan.globals)["isSsbm"] is UNKNOWN
 
 
 def test_find_lonsun_rejects_unsafe_variants():
@@ -415,7 +421,8 @@ def test_special_organ_and_global_conditions():
     assert not isinstance(
         resolve_fixture("huaibei", "14237535", page=page, catalog=catalog, base=base), str
     )
-    page = fixture("luan_page.html").replace("var isSsbm = true;", "")
+    # 页面全局变量的值一律当不知道：把条件里的 isSsbm 换成字面值，测特殊分支本身
+    page = fixture("luan_page.html").replace("(isSsbm && ", "(false && ", 1)
     result = resolve_fixture("luan", "7024001", page=page)
     assert result.plan.mode == "city_page"
     assert "catId=7024001" in result.url
@@ -811,7 +818,7 @@ def test_special_chain_reason_uses_source():
     from youju.crawler.fetcher import FetchResult
 
     url = PAGES["luan"] + "?type=4&catId=7024001&action=list"
-    html = fixture("luan_page.html").replace("var isSsbm = false;", "var other = false;")
+    html = fixture("luan_page.html").replace("(isSsbm && ", "(true && ", 1)
     tree = find_list_api(html, url, url)
     reason = api_follow(
         tree, FetchResult(tree.url, "ok", tree.url, 200, fixture("luan_catalog.js"))
@@ -825,6 +832,10 @@ def test_special_chain_reason_uses_source():
     [
         "me.listParams.pageSize = '10';",
         "$.extend(me.listParams, {pageSize: '10'});",
+        # 第一个参数是深拷贝标志，目标是第二个；$.merge 把后面的数组并进第一个
+        "$.extend(true, me.listParams, {pageSize: '10'});",
+        "$.extend(!0, me.listParams, {pageSize: '10'});",
+        "$.merge(me.hideIds, [1]);",
         "me.hideIds.push(1);",
         "if (true) { me.getData(); }",
         "return;",
@@ -1325,10 +1336,20 @@ def test_catalog_duplicates_host_path_and_query():
     twice = page.replace(src, src + "\n" + src, 1)
     assert find_lonsun_api(twice, BASE, BASE).url == "https://jx.ah.gov.cn/49631981/6991.js"
     # 同一路径查询串不一样、或者主机不一样：返回可能不同，浏览器几份都会执行，说不清用哪份
-    for other in ("/49631981/6991.js?v=85", "https://www.ah.gov.cn/49631981/6991.js"):
-        variant = page.replace(src, src + f'<script src="{other}"></script>', 1)
-        assert find_lonsun_api(variant, BASE, BASE) is None, other
-        assert "地址不一样" in lonsun_unrecognized_reason(variant, BASE, BASE)
+    variant = page.replace(src, src + '<script src="/49631981/6991.js?v=85"></script>', 1)
+    assert find_lonsun_api(variant, BASE, BASE) is None
+    assert "地址不一样" in lonsun_unrecognized_reason(variant, BASE, BASE)
+    url = PAGES["wuhu"] + "?type=4&catId=6732121&action=list"
+    wuhu = fixture("wuhu_page.html")
+    src = "https://www.wuhu.gov.cn/openness/6787891/6596381.js?v=1558"
+    other = src.replace("www.", "xxgk.")
+    assert catalog_host_allowed(url, other)
+    variant = wuhu.replace(
+        f'src="{src}"></script>', f'src="{src}"></script><script src="{other}"></script>', 1
+    )
+    assert variant != wuhu
+    assert find_lonsun_api(variant, url, url) is None
+    assert "地址不一样" in lonsun_unrecognized_reason(variant, url, url)
 
 
 def test_navigation_parameters_and_integer_keys():
@@ -1527,7 +1548,7 @@ def test_real_page_noise_preserves_both_steps(name, cat_id):
 
     page = fixture(f"{name}_page.html")
     if name == "luan":
-        page = page.replace("var isSsbm = true;", "")
+        page = page.replace("(isSsbm && ", "(false && ", 1)
     url = PAGES[name] + f"?type=4&catId={cat_id}&action=list"
     original = find_lonsun_api(page, url, url)
     noisy = find_lonsun_api(with_page_noise(page), url, url)
@@ -1695,6 +1716,11 @@ def test_search_widget_on_tree_recognized_only_as_checked():
         "window.Ls.ajaxGet = function () {};",
         "window['catalogs'] = {};",
         "var t = window.PublicTree;",
+        "self.Ls.ajaxGet = function () {};",
+        "top['catalogs'] = {};",
+        "var t = parent.PublicTree;",
+        "frames.catalogs = {};",
+        "globalThis.Ls.ajaxGet = function () {};",
         # 整个换掉，或者改我们照着推请求的成员
         "Ls = {};",
         "Ls.url.get = function () { return ''; };",
@@ -1990,3 +2016,42 @@ def test_encoded_query_and_odd_numbers_not_read():
     page = fixture("jx_page.html").replace("me.listParams = {", "me.listParams = {num: 010,", 1)
     assert page != fixture("jx_page.html")
     assert _found(page) is None or isinstance(resolve_fixture("jx", "49949451", page=page), str)
+
+
+def test_deeply_nested_json_is_unrecognized():
+    # 嵌套极深的 JSON（Python 解析会递归超限）：当认不出，不抛别的异常
+    deep = "[" * 100000 + "]" * 100000
+    with pytest.raises(LonsunFormatError):
+        parse_catalog("var catalogs = {6991:" + deep + "}", "6991")
+    for mode in ("list", "city_page"):
+        with pytest.raises(LonsunFormatError):
+            parse_response(deep, mode, BASE, TODAY)
+
+
+def test_huge_number_literal_is_infinity():
+    import math
+
+    from youju.crawler.lonsun import _js_number
+
+    # 和 JS 一样：超出浮点范围的十六进制数是 Infinity，不抛 OverflowError
+    assert _js_number("0x" + "f" * 400) == math.inf
+    assert _js_number("0x10") == 16.0
+
+
+@pytest.mark.parametrize("obj", ["window", "self", "top", "parent", "frames", "globalThis"])
+def test_tree_script_writes_through_global_objects_refused(obj):
+    # PublicTree 自己的脚本里经 window、self、top 这类全局对象改依赖的全局：一样不认
+    for write in (f"{obj}.catalogs = {{}};", f"{obj}.PublicTree = function () {{}};"):
+        assert _found(_jx(new=write + "\n  " + _CREATE)) is None, write
+
+
+def test_document_write_random_must_go_into_query():
+    from youju.crawler.lonsun import find_lonsun_api
+
+    url = PAGES["chuzhou"] + "?type=4&catId=161734542&action=list"
+    page = fixture("chuzhou_page.html")
+    assert find_lonsun_api(page, url, url) is not None
+    # 随机数直接拼进路径：浏览器请求的地址每次都不一样，从不请求我们照写法去取的那个
+    changed = page.replace("2681525.js?v=' + Math.random()", "2681525.js' + Math.random()", 1)
+    assert changed != page
+    assert find_lonsun_api(changed, url, url) is None
