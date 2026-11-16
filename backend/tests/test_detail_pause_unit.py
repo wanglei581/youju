@@ -1361,3 +1361,51 @@ def test_robots_without_readable_text_pauses_six_hours(tmp_path):
 
     _fetch_outcomes([(1, "https://a.gov.cn/1")], Fake(), 1, pause=_SitePause(str(path)))
     assert _hours_left(path, "a.gov.cn") == pytest.approx(6, abs=0.05)
+
+
+_STCSM = (
+    "https://stcsm.sh.gov.cn/zwgk/tzgs/gsgg/zhgsgg/20260924/47c0b4118e0540bfab43d7e9af025b14.html"
+)
+
+
+def test_bare_real_notice_with_comment_captcha_script_is_read(tmp_path):
+    # 上海科委的真实页面：链接少（整页几乎没字），留言区脚本里有 onCaptcha()（第十三轮独立 Claude）：
+    # 照常读正文、附件，不停这个网站
+    from tests.conftest import read_fixture_html
+
+    html = read_fixture_html("detail_shanghai_stcsm")
+    result = _html_result(_STCSM, html)
+    assert detail_service._gate_page(result, _STCSM) is False
+    path = str(tmp_path / "pause.json")
+    calls = []
+
+    class Fake:
+        def fetch(self, url):
+            calls.append(url)
+            return _html_result(url, html)
+
+    second = _STCSM.replace("47c0b411", "57c0b411")
+    outcomes = _fetch_outcomes([(1, _STCSM), (2, second)], Fake(), 1, pause=_SitePause(path))
+    assert outcomes[1].status == "ok" and outcomes[1].parsed.attachments
+    assert calls == [_STCSM, second]
+    assert _SitePause(path).expiry("stcsm.sh.gov.cn") is None
+
+
+def test_bare_notice_titled_captcha_does_not_pause(tmp_path):
+    # 链接少、正文约 900 字、标题"关于规范使用短信验证码的通知"：不是关卡，不停网站
+    body = "为加强短信验证码管理，现就有关事项通知如下，请各单位认真贯彻执行。" * 28
+    nav = "".join(f"<a href='/c{i}.html'>栏目{i}</a>" for i in range(5))
+    html = (
+        "<html><head><title>关于规范使用短信验证码的通知</title></head><body>"
+        f"<div>{nav}</div><div id='zoom'><p>{body}</p></div></body></html>"
+    )
+    assert detail_service._gate_page(_html_result("https://a.gov.cn/1", html), "x") is False
+    path = str(tmp_path / "pause.json")
+
+    class Fake:
+        def fetch(self, url):
+            return _html_result(url, html)
+
+    outcomes = _fetch_outcomes([(1, "https://a.gov.cn/1")], Fake(), 1, pause=_SitePause(path))
+    assert outcomes[1].status != "protected"
+    assert _SitePause(path).expiry("a.gov.cn") is None

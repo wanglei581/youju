@@ -904,6 +904,49 @@ def verified_throttle_sites(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.usefixtures("verified_throttle_sites")
+def test_bare_throttle_dialog_page_is_not_a_gate():
+    # 限流弹窗网站上链接少的短通知（整页几乎没字）：弹窗里"请输入验证码"的字不算，不当成拦截页
+    from youju.crawler import detail_service
+
+    page = _page(_THROTTLE_DIALOG + _NOTICE_BODY)
+    url = "https://kjj.example.gov.cn/1.html"
+    assert detail.parse_detail(page, url).body_text
+    assert detail_service._html_page_gate(page, url) is False
+
+
+@pytest.mark.usefixtures("verified_throttle_sites")
+def test_throttle_site_protection_pauses_only_this_run(tmp_path):
+    # 限流弹窗网站拿掉弹窗以后还像防护页（导航里写着请输入验证码）：照原来的做法这一轮停取、要复核，
+    # 不写进共享停取文件
+    from youju.crawler import detail_service
+    from youju.crawler.detail_service import THROTTLE_PROTECTED, _fetch_outcomes, _SitePause
+    from youju.crawler.fetcher import FetchResult
+
+    nav = "".join(f"<a href='/c{i}.html'>栏目{i}</a>" for i in range(20))
+    page = _page(nav + "<nav>请输入验证码</nav>" + _THROTTLE_DIALOG + _NOTICE_BODY)
+    url = "https://kjj.example.gov.cn/1.html"
+    assert detail.parse_detail(page, url).failure_reason == "防护页或验证码"
+    assert detail_service._html_page_gate(page, url) is False
+    calls = []
+
+    class Fake:
+        def fetch(self, target):
+            calls.append(target)
+            return FetchResult(
+                target, "ok", final_url=target, http_status=200, text=page, content_type="text/html"
+            )
+
+    path = tmp_path / "pause.json"
+    pause = _SitePause(str(path))
+    second = url.replace("1.html", "2.html")
+    outcomes = _fetch_outcomes([(1, url), (2, second)], Fake(), 1, pause=pause)
+    assert outcomes[1].status == "protected" and outcomes[1].failure_reason == THROTTLE_PROTECTED
+    assert calls == [url]
+    assert pause.hosts == {"kjj.example.gov.cn": "搜索限流防护页"}
+    assert not path.exists() or "kjj.example.gov.cn" not in path.read_text()
+
+
+@pytest.mark.usefixtures("verified_throttle_sites")
 @pytest.mark.parametrize("title", ["关于开展全市网络安全检查工作的通知", "安全检查 - 某局"])
 def test_throttle_dialog_page_with_gate_words_in_title_is_not_a_gate(title):
     # 核实过的站内搜索限流弹窗、20 个导航链接、标题带"安全检查"（第十二轮独立 Claude）：解析正常，

@@ -144,13 +144,15 @@ def html_gate(html: str) -> str | None:
     m = _TITLE.search(head)
     short = short_title_parts(unescape_html(m.group(1))) if m else ""
     bare = bare_page(html)
+    # 看得见的字：去掉脚本、样式、标签（属性跟着去掉），留言区脚本里的 onCaptcha()、脚本名里的
+    # captcha 都不算
+    visible = re.sub(r"<(script|style)\b.*?</\1\s*>", " ", head, flags=re.S | re.I)
+    visible = re.sub(r"\s+", " ", unescape_html(re.sub(r"<[^>]+>", " ", visible))).strip()
     if bare:
-        visible = re.sub(r"<(script|style)\b.*?</\1\s*>", " ", head, flags=re.S | re.I)
-        visible = re.sub(r"\s+", " ", unescape_html(re.sub(r"<[^>]+>", " ", visible))).strip()
         words = f"{short} {visible}" if len(visible) <= 300 else short
         if _GATE_WORDS.search(words) or _PROTECTION.search(words):
             return "拦截页"
-    if (_PASSWORD.search(head) or _CAPTCHA.search(head)) and (_GATE_TITLE.search(short) or bare):
+    if (_PASSWORD.search(head) or _CAPTCHA.search(visible)) and (_GATE_TITLE.search(short) or bare):
         return "需要登录或验证码"
     return None
 

@@ -37,7 +37,6 @@ from youju.crawler.fetcher import (
     FetchResult,
     PoliteFetcher,
     SharedLimitError,
-    bare_page,
     bom_codec,
     decode_text,
     html_gate,
@@ -194,20 +193,35 @@ def _pdf_detail(content: bytes) -> DetailResult:
 
 def _html_page_gate(text: str, url: str) -> bool:
     """网页是不是整页就是一个关卡（D-013：防护页、验证码、登录页，要停取这个网站）：云锁、安全狗这类
-    平台的拦截页、整页几乎没字的拦截页、登录页、验证页（html_gate）；详情页解析认出的验证码、访问过于
-    频繁这类字也要整页几乎没字才算——正常通知讲验证码使用要求、页头挂个登录小框都不算，不停整个网站。
-    不是整页几乎没字的详情页，html_gate 说是登录页、验证页的还要过 _login_page。"""
-    reason = html_gate(text)
-    if reason == "需要登录或验证码" and not bare_page(text):
+    平台的拦截页、整页几乎没字的拦截页（html_gate）。html_gate 说是登录页、验证页的，详情页上还要过
+    _login_page（整页几乎没字的也一样：链接少的短通知不少，留言区脚本里带着验证码）。详情页解析认出的
+    验证码这类字不在这里判（正常通知讲验证码使用要求、标题带着这些字的都不算），见 _fetch_one。"""
+    reason = html_gate(_without_throttle_dialogs(text, url))
+    if reason == "需要登录或验证码":
         return _login_page(text, url)
-    if reason:
-        return True
-    return bare_page(text) and parse_detail(text, url).failure_reason == "防护页或验证码"
+    return bool(reason)
+
+
+def _without_throttle_dialogs(text: str, url: str) -> str:
+    """核实过的站内搜索限流弹窗先拿掉（只对名单上的网站、认得出的弹窗，detail._search_throttle_dialogs）：
+    弹窗里写着"搜索过于频繁，请输入验证码"，平时隐藏着，链接少的短通知不能因为它当成拦截页。"""
+    if not search_throttle_site(url):
+        return text
+    try:
+        root = lxml_html.fromstring(text)
+    except (etree.ParserError, ValueError):
+        return text
+    dialogs = _search_throttle_dialogs(root, url)
+    if not dialogs:
+        return text
+    for node in dialogs:
+        node.drop_tree()  # 连同里面的字一起去掉，后面跟着的字留着
+    return lxml_html.tostring(root, encoding="unicode")
 
 
 def _visible_words(text: str, url: str) -> str:
-    """页面上看得见的字：标题和正文，不含脚本、样式、属性，也不含核实过的站内搜索限流弹窗
-    （detail._search_throttle_dialogs）。"""
+    """页面正文里看得见的字：不含标题（文章标题会带着验证这类字）、脚本、样式、属性，也不含核实过的
+    站内搜索限流弹窗（detail._search_throttle_dialogs）。"""
     try:
         root = lxml_html.fromstring(text)
     except (etree.ParserError, ValueError):
@@ -215,22 +229,26 @@ def _visible_words(text: str, url: str) -> str:
     body = root.xpath("//body")
     if not body:
         return ""
-    title = " ".join(root.xpath("//title/text()"))
     dialogs = frozenset(_search_throttle_dialogs(root, url))
-    return title + "\n" + "\n".join(_plain_lines(body[0], dialogs, keep_select=True))
+    return "\n".join(_plain_lines(body[0], dialogs, keep_select=True))
 
 
 def _login_page(text: str, url: str) -> bool:
-    """不是整页几乎没字的详情页，什么时候算登录页、验证页：标题很短的那一段写着登录、验证
-    （html_gate 已经查过）以外，还要有密码框，或者验证码这类字是页面上看得见的（脚本名、属性里的
+    """详情页什么时候算登录页、验证页：html_gate 查过的（整页几乎没字，或者标题很短的那一段写着
+    登录、验证）以外，还要有密码框，或者验证码这类字是正文里看得见的（标题、脚本名、属性里的
     captcha、核实过的站内搜索限流弹窗都不算），并且解析也取不到正文、附件。详情页的标题就是文章
-    标题（"关于开展能力验证工作的通知"），页头的登录小框、限流弹窗也常见，只凭这些不停整个网站。"""
+    标题（"关于开展能力验证工作的通知"），页头的登录小框、限流弹窗、留言区的验证码也常见，只凭这些
+    不停整个网站。"""
     from youju.govsites.platform import _CAPTCHA, _PASSWORD
 
     if not (_PASSWORD.search(text[:200000]) or _CAPTCHA.search(_visible_words(text, url))):
         return False
     parsed = parse_detail(text, url)
     return not parsed.raw_body and not parsed.attachments
+
+
+# 放过站内搜索限流弹窗的网站遇到防护页：这一轮停取（不写进共享文件）、要复核
+THROTTLE_PROTECTED = "搜索限流弹窗网站遇到防护页，这一轮停取，要复核"
 
 
 def _gate_text(result: FetchResult) -> str:
@@ -323,6 +341,17 @@ def _fetch_one(document_id: int, url: str, fetcher: DetailFetcher) -> _FetchOutc
         )
     parsed = parse_detail(fetched.text, fetched.final_url or url)
     if parsed.failure_reason == "防护页或验证码":
+        if search_throttle_site(fetched.final_url or url):
+            # 放过站内搜索限流弹窗的网站（PR #485 核实过）拿掉弹窗以后还像防护页（弹窗显示出来了、
+            # 页面样子变了、正文取不全）：照原来的做法这一轮停取这个网站、要复核
+            return _FetchOutcome(
+                document_id,
+                now,
+                _without_body(fetched),
+                DetailResult(failure_reason=THROTTLE_PROTECTED),
+                "protected",
+                THROTTLE_PROTECTED,
+            )
         # 整页关卡上面已经停了网站；这里是页面上有验证码这类字、又不像整页就是一个关卡（正常通知讲
         # 验证码使用要求这类）：不停网站，这份记读不出、不取正文
         why = "页面上有验证码这类字，不像整页就是关卡，没停取网站，也没取正文"
@@ -724,7 +753,15 @@ def _fetch_outcomes(
                         _follow(pause, page_host, _host(actual), reason)
                 if outcome.status == "protected":
                     actual = outcome.fetch.final_url or outcome.fetch.url if outcome.fetch else url
-                    pause.add(_host(actual), "防护页或验证码")
+                    if outcome.failure_reason == THROTTLE_PROTECTED:
+                        pause.add(_host(actual), "搜索限流防护页", persistent=False)
+                        log.warning(
+                            "搜索限流弹窗网站 %s 遇到防护页（文件 %s），这一轮停取，要复核",
+                            _host(actual),
+                            document_id,
+                        )
+                    else:
+                        pause.add(_host(actual), "防护页或验证码")
                     for visited in guarded.visited:
                         if search_throttle_site(visited) and _host(visited) != _host(actual):
                             pause.add(_host(visited), "搜索限流防护页", persistent=False)
