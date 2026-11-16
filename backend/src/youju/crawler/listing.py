@@ -275,15 +275,25 @@ class _Page:
         self._twins: dict[etree._Element, set[etree._Element]] = {}
         self._popups: dict[etree._Element, _CellPopup] = {}
         self._rows: dict[tuple, tuple[etree._Element | None, date | None, bool]] = {}
+        self._links: dict[etree._Element, tuple[str, str] | None] = {}
+        self._anchors: dict[etree._Element, list[tuple[etree._Element, str]]] = {}
 
     def link(self, a: etree._Element) -> tuple[str, str] | None:
+        if a in self._links:
+            return self._links[a]
         url = normalize_url(self.page_url, a.get("href"))
-        if not url or url == self.self_url:
-            return None
-        title = _title_of(a)
-        if not _looks_like_title(title):
-            return None
-        return title, url
+        title = _title_of(a) if url and url != self.self_url else ""
+        result = (title, url) if url and _looks_like_title(title) else None
+        self._links[a] = result
+        return result
+
+    def anchor_links(self, el: etree._Element) -> list[tuple[etree._Element, str]]:
+        """el 里的文件链接（链接元素，网址）。按 el 算一次。"""
+        cached = self._anchors.get(el)
+        if cached is None:
+            cached = [(b, link[1]) for b in el.iter("a") if (link := self.link(b))]
+            self._anchors[el] = cached
+        return cached
 
     def companion(self, a: etree._Element, url: str) -> bool:
         """a 是附带链接，不当条目：泸州政府文件"政策解读"弹层里的解读（解读另有栏目收），
@@ -468,8 +478,7 @@ class _Page:
             if depth >= _MAX_ROW_DEPTH or el.tag in ("body", "html"):
                 break
             if companions:
-                links = (self.link(b) for b in el.iter("a") if b not in companions)
-                others = {link[1] for link in links if link} - {url}
+                others = {u for b, u in self.anchor_links(el) if b not in companions} - {url}
             else:
                 others = self.title_hrefs(el) - {url}
             if not _is_attachment(url):
