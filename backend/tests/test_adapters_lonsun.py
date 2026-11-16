@@ -2085,8 +2085,10 @@ def test_document_write_random_must_go_into_query():
 
 # ---- 第四轮：加载时的代码只许改认得的对象（me、本方法新建的空对象或数组、核对过的树一节点）----
 
-_FIND_PARENT = "idMap[item.id] = true;"
-_FIND_PARENT_TOP = "findParentId: function () {\n      var me = this;"
+# findParentId、setSelect 必须和模板一字不差（推算 setSelect 会不会出错要靠它们），往里插什么都
+# 不认；测加载时的规则改往 bindEvt（也是 getData 之前跑的方法）里插
+_BIND_TOP = "bindEvt: function () {\n      var me = this;"
+_FIND_PARENT_TOP = _BIND_TOP
 
 
 def _refused(page, cat_id="49949451"):
@@ -2099,9 +2101,15 @@ def _refused(page, cat_id="49949451"):
 
 
 def _jx_find_parent(extra):
+    """在 getData 之前跑的方法里遍历栏目数据，回调里插 extra（item 是栏目节点）。"""
     page = fixture("jx_page.html")
-    assert page.count(_FIND_PARENT) == 1
-    return page.replace(_FIND_PARENT, _FIND_PARENT + " " + extra, 1)
+    assert page.count(_BIND_TOP) == 1
+    loop = (
+        " var idMap = {}; $.each(me.ztreeData2, function (i, item) { idMap[item.id] = true; "
+        + extra
+        + " });"
+    )
+    return page.replace(_BIND_TOP, _BIND_TOP + loop, 1)
 
 
 @pytest.mark.parametrize(
@@ -2511,7 +2519,7 @@ def test_more_hidden_writes_refused(script):
 
 def test_writes_through_calls_in_load_time_methods():
     page = fixture("jx_page.html")
-    select = "setSelect: function () {\n      var me = this;"
+    select = _BIND_TOP
     assert page.count(select) == 1
     for extra in (
         "setTimeout(function () { _organTree2.getNodeByParam('id', 49949451, null).children = null; }, 0);",
@@ -2591,3 +2599,148 @@ def test_deferred_getdata_with_load_time_triggers_refused():
     # getData 同步跑的页面（省经信厅）：别的脚本加载时触发事件不碍事
     jx = _jx(extra="<script>$(function () { $('.subNav:first').trigger('click'); });</script>")
     assert _found(jx) is not None
+
+
+def _jx_catalog_with(nodes_prefix):
+    catalog = fixture("jx_catalog.js")
+    head = "var catalogs = {6991:["
+    assert catalog.startswith(head)
+    return head + nodes_prefix + catalog[len(head) :]
+
+
+def test_set_select_error_before_getdata_means_no_request():
+    from youju.crawler.adapters import ListApi
+
+    # 补齐祖先以后只有一个顶层上级：照常认
+    assert isinstance(resolve_fixture("jx", "49949451"), ListApi)
+    # 前面多一个上级不在树里的栏目：findParentId 取第一个顶层上级（99），本栏目往上找不到它，
+    # setSelect 在 getData 之前出错，浏览器不发列表请求
+    stray = '{"id":11,"name":"别处","parentId":99,"isParent":false,"uri":"","link":""},'
+    reason = resolve_fixture("jx", "49949451", catalog=_jx_catalog_with(stray))
+    assert isinstance(reason, str) and "setSelect" in reason
+    # 顶层栏目在树一里直接找到，不往上找：照常
+    top = resolve_fixture("jx", "49949431", catalog=_jx_catalog_with(stray))
+    assert not isinstance(top, str) or "setSelect" not in top
+    # 调用包在 try 里（淮北那样）：出错也不碍事
+    page = fixture("jx_page.html").replace(
+        "me.setSelect();", "try { me.setSelect(); } catch (e) {}", 1
+    )
+    guarded = resolve_fixture("jx", "49949451", page=page, catalog=_jx_catalog_with(stray))
+    assert isinstance(guarded, ListApi), guarded
+    # 上级关系绕圈：栏目树本身就认不出（浏览器的 setSelect 也走不出来）
+    loop = (
+        '{"id":7,"name":"甲","parentId":8,"isParent":true,"uri":"","link":""},'
+        '{"id":8,"name":"乙","parentId":7,"isParent":true,"uri":"","link":""},'
+    )
+    reason = resolve_fixture("jx", "49949451", catalog=_jx_catalog_with(loop))
+    assert isinstance(reason, str) and ("循环" in reason or "绕圈" in reason)
+
+
+def test_set_select_frequent_variant_and_unknown_shapes():
+    from youju.crawler.adapters import ListApi
+
+    # 淮北取出现最多的顶层上级：多出来的一个零星上级不碍事
+    page = fixture("huaibei_page.html")
+    assert not isinstance(resolve_fixture("huaibei", "14237535", page=page), str)
+    # setSelect、findTopLevelParentNode、findParentId 改了写法：算不出，不读
+    jx = fixture("jx_page.html")
+    for old, new in (
+        ("var currCatId = me.currCatId;", "var currCatId = me.currCatId; var x = 1;"),
+        ("return currentNode;", "return currentNode || null;"),
+        (
+            "me.topLevelParentId = topLevelParentIds[0];",
+            "me.topLevelParentId = topLevelParentIds[1];",
+        ),
+    ):
+        assert jx.count(old) == 1, old
+        result = resolve_fixture("jx", "49949451", page=jx.replace(old, new, 1))
+        assert isinstance(result, str) and "写法认不出" in result, (old, result)
+    assert isinstance(resolve_fixture("jx", "49949451"), ListApi)
+
+
+def test_preprocess_name_member_needs_string_names():
+    # jx 的 preprocessData 读 el.name.length：哪个节点 name 是 null，浏览器在这里就出错
+    broken = '{"id":12,"name":null,"parentId":49938311,"isParent":false,"uri":"","link":""},'
+    reason = resolve_fixture("jx", "49949451", catalog=_jx_catalog_with(broken))
+    assert isinstance(reason, str) and "name" in reason and "preprocessData" in reason
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        "history.replaceState(null, '', '?type=4&action=list');",
+        "window.history.pushState(null, '', location.pathname);",
+        "history['replaceState'](null, '', '?');",
+        "Ls.url.updateSearchParam('catId', '1');",
+        "$(function () { history.replaceState(null, '', '?catId=1'); });",
+    ],
+)
+def test_url_rewrites_before_constructor_refused(script):
+    assert _found(_jx(extra=f"<script>{script}</script>")) is None, script
+
+
+def test_url_rewrites_in_constructor_refused_but_navigation_and_handlers_fine():
+    page = fixture("jx_page.html")
+    ctor = "function PublicTree() {\n    var me = this;"
+    changed = page.replace(ctor, ctor + " history.replaceState(null, '', '?type=4');", 1)
+    assert _found(changed) is None
+    # 用户点了才跑的、跳走离开页面的：不改这一页读到的网址
+    for script in (
+        "$('#x').on('click', function () { history.pushState(null, '', '?a=1'); });",
+        "function go(v) { if (v) { location.href = '/search?q=' + v; } }",
+    ):
+        assert _found(_jx(extra=f"<script>{script}</script>")) is not None, script
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        "var a = 1; <!-- '\nPublicTree.prototype.getList = 0; //'",
+        "var t = `${PublicTree.prototype.getList = 0}`;",
+        "var o = {in: 4}; var q = o.in / 2; PublicTree.prototype.getList = 0; var r = 3 / 4;",
+        "var 别名 = window; 别名.GLOBAL_CONTEXTPATH = '/x';",
+        "var \\u0061 = window; a.GLOBAL_CONTEXTPATH = '/x';",
+        "eval('PublicTree.prototype.getList = 0');",
+        "window['eval']('x');",
+        "new Function('PublicTree.prototype.getList = 0')();",
+        "[].constructor.constructor('x')();",
+        "setTimeout('PublicTree.prototype.getList = 0', 0);",
+        "document.write('<script>PublicTree.prototype.getList = 0<\\/script>');",
+        "document.write(unescape('%3Cscript%3Ex%3D1%3C/script%3E'));",
+        "$.param = function () { return 'token=1'; };",
+        "$.extend({ grep: function () { return []; } });",
+        "jQuery.extend(true, { param: null });",
+    ],
+)
+def test_code_we_cannot_see_refused(script):
+    assert _found(_jx(extra=f"<script>{script}</script>")) is None, script
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        "var re = new RegExp(`([?&])${paramName}=[^&#]*(&|#|$)`);",
+        "document.write(unescape(\"%3Cspan id='_ideConac'%3E%3C/span%3E%3Cscript src='https://example.gov.cn/a.js' type='text/javascript'%3E%3C/script%3E\"));",
+        "$.fn.myPlugin = function () { return this; };",
+        "var params = $.extend({}, {a: 1}, {b: 2});",
+    ],
+)
+def test_common_harmless_code_still_recognized(script):
+    assert _found(_jx(extra=f"<script>{script}</script>")) is not None, script
+
+
+def test_constructor_reads_catalog_after_organ_id():
+    page = fixture("jx_page.html")
+    assert "me.organId = '6991';" in page
+    moved = page.replace("me.organId = '6991';", "", 1).replace(
+        "me.prefix = '';", "me.prefix = ''; me.organId = '6991';", 1
+    )
+    # 只要 organId 还在 ztreeData 之前就照常；挪到后面不认
+    ztree = "me.ztreeData = "
+    head, tail = moved.split(ztree, 1)
+    after = (
+        head.replace("me.organId = '6991';", "", 1)
+        + ztree
+        + tail.replace("me.init();", "me.organId = '6991'; me.init();", 1)
+    )
+    assert _found(after) is None

@@ -327,6 +327,7 @@ class _Token:
 
 
 _JS_WORD = re.compile(r"[A-Za-z_$][A-Za-z0-9_$]*|(?:\d+(?:\.\d*)?|\.\d+)")
+_TEMPLATE_NAME = re.compile(r"\s*[A-Za-z_$][A-Za-z0-9_$]*(?:\s*\.\s*[A-Za-z_$][A-Za-z0-9_$]*)*\s*")
 
 
 def _js_tokens(source: str) -> tuple[_Token, ...]:
@@ -417,9 +418,14 @@ def _js_tokens(source: str) -> tuple[_Token, ...]:
     while i < len(source):
         start = i
         c = source[i]
-        if c.isspace():
+        if c.isspace() or c == "\ufeff":
             i += 1
             continue
+        if source.startswith("<!--", i) or (
+            source.startswith("-->", i) and not source[source.rfind("\n", 0, i) + 1 : i].strip()
+        ):
+            # 浏览器把 <!--、行首的 --> 当成单行注释（附录 B），我们照运算符切：两边不一样
+            raise LonsunFormatError("脚本里有 <!-- 或 --> 这种注释写法，认不准")
         if source.startswith("//", i):
             end = source.find("\n", i + 2)
             i = len(source) if end < 0 else end + 1
@@ -443,6 +449,16 @@ def _js_tokens(source: str) -> tuple[_Token, ...]:
                     i += 1
             else:
                 raise LonsunFormatError("JavaScript 字符串未闭合")
+            if quote == "`" and "${" in source[start:i]:
+                # 模板字符串里的 ${…} 会执行：只认插一个变量名或成员访问（${paramName}、${a.b}），
+                # 别的写法（调用、赋值……）不分析
+                body = source[start + 1 : i - 1]
+                parts = body.split("${")[1:]
+                if not all(
+                    "}" in part and _TEMPLATE_NAME.fullmatch(part.split("}", 1)[0])
+                    for part in parts
+                ):
+                    raise LonsunFormatError("模板字符串的 ${…} 里不只是变量名，我们不分析")
         elif (
             c == "/"
             and tokens
@@ -454,6 +470,12 @@ def _js_tokens(source: str) -> tuple[_Token, ...]:
         elif c == "/" and (
             not tokens
             or tokens[-1].value in regex_after
+            # o.in / 2：点号后面的关键字是属性名，后面的 / 是除号
+            and not (
+                len(tokens) > 1
+                and tokens[-2].value in (".", "?.")
+                and _IDENT.fullmatch(tokens[-1].value)
+            )
             or tokens[-1].value == ")"
             and closed_keyword
         ):
@@ -480,6 +502,9 @@ def _js_tokens(source: str) -> tuple[_Token, ...]:
             else:
                 raise LonsunFormatError("JavaScript 正则未闭合")
         else:
+            if c == "\\" or ord(c) > 127:
+                # 非 ASCII 的名字、\u0061 这样转义的名字：我们按 ASCII 切，别名、改写都跟不上
+                raise LonsunFormatError("脚本里有非 ASCII 或转义写的名字，认不准")
             match = _JS_WORD.match(source, i)
             if match:
                 i = match.end()
@@ -1761,6 +1786,9 @@ def _check_pre_methods(raw, globals_, *, widget=False):
             if problem:
                 raise LonsunFormatError(f"{name} {problem}")
         problem = _me_alias_problem(source, frozenset(raw))
+        if not problem:
+            source_tokens = _js_tokens(source)
+            problem = _url_change_problem(source_tokens, _values(source_tokens))
         if problem:
             raise LonsunFormatError(f"{name} {problem}")
         # 方法体里用到的别的方法也在加载时跑（回调里调的、me['X']()、(me.X)() 都算）
@@ -2315,6 +2343,100 @@ def _attribute_script_problem(source, functions, widget):
         or _builtin_problem(tokens, values)
         or _foreign_problem(source, functions, widget)
     )
+
+
+def _literal_text(tokens, values, start, end):
+    """start 到 end 里字符串字面量的文字连起来（unescape("…")、decodeURIComponent("…") 先解码）；
+    第二项：有没有字面量以外的东西（变量、调用结果）。"""
+    from urllib.parse import unquote
+
+    parts, dynamic, k = [], False, start
+    while k < end:
+        value = values[k]
+        if value in ("unescape", "decodeURIComponent", "decodeURI") and values[k + 1 : k + 2] == [
+            "("
+        ]:
+            close = _matching_token(tokens, k + 1)
+            inner = values[k + 2 : close]
+            if len(inner) == 1 and inner[0][:1] in ("'", '"'):
+                parts.append(unquote(_string_literal(inner[0])))
+            else:
+                dynamic = True
+            k = close + 1
+            continue
+        if value[:1] in ("'", '"'):
+            parts.append(_string_literal(value))
+        elif value[:1] == "`":
+            parts.append(value[1:-1])
+        elif value not in ("+", "(", ")", ","):
+            dynamic = True
+        k += 1
+    return "".join(parts), dynamic
+
+
+def _dynamic_code_problem(tokens, values):
+    """会执行我们看不见的代码的写法：eval、Function、x.constructor(…)、第一个参数是字符串的定时器、
+    document.write 写内联脚本（写外链脚本的照常，unescape 编码的也解开看）；改 jQuery 自己的
+    方法（$.X = …、单参数的 $.extend(…)；$.fn 下定义插件的照常）。"""
+    for k, value in enumerate(values):
+        text = _string_literal(value) if value[:1] in ("'", '"') else value
+        after = values[k + 1] if k + 1 < len(values) else ""
+        before = values[k - 1] if k else ""
+        if text == "eval" or text in ("execScript", "setImmediate") and after == "(":
+            return f"用了 {text}"
+        if value == "Function" and after == "(" and before != ".":
+            return "用 Function(…) 拼代码"
+        if value == "constructor" and before == "." and after == "(":
+            return "用 .constructor(…) 拼代码"
+        if value in ("setTimeout", "setInterval") and after == "(" and before != ".":
+            first = values[k + 2] if k + 2 < len(values) else ""
+            if first[:1] in ("'", '"', "`"):
+                return f"{value} 的第一个参数是字符串（会当代码执行）"
+        if value in ("write", "writeln") and before == "." and after == "(":
+            close = _matching_token(tokens, k + 1)
+            literal, dynamic = _literal_text(tokens, values, k + 2, close)
+            lowered = literal.lower()
+            for tag in re.findall(r"<script\b[^>]*>?", lowered):
+                if "src=" not in tag:
+                    return "document.write 写了内联脚本"
+            if dynamic and "<script" in lowered and "src=" not in lowered:
+                return "document.write 写了内联脚本"
+            if dynamic and not literal:
+                return "document.write 写的内容看不出来"
+        if (
+            value in ("$", "jQuery")
+            and before != "."
+            and values[k + 1 : k + 4] == [".", "extend", "("]
+        ):
+            close = _matching_token(tokens, k + 3)
+            args = [t for t in _depth_zero(tokens, k + 4, close) if values[t] == ","]
+            flag = values[k + 4] in ("true", "false", "!")
+            if len(args) == (1 if flag else 0):
+                return f"用 {value}.extend(…) 改了 jQuery 自己"
+    for path, _op, _k in _write_sites(tokens, values):
+        if path[0] in ("$", "jQuery") and len(path) > 1 and path[1] not in ("fn", "()"):
+            return f"改了 jQuery 的 {'.'.join(path)}"
+    return None
+
+
+def _url_change_problem(tokens, values, mask=()):
+    """加载时不跳走、只改网址（history.pushState、replaceState，平台的 Ls.url.updateSearchParam，
+    按字符串调用的也算）：PublicTree 读到的栏目编号就和页面网址不一样了。用户点了才跑的处理函数里
+    的不算；mask 是另有规则查的范围（open 里那句照着走）。给 location 赋值这类跳转是离开页面，不改
+    这一页读到的网址，不管。"""
+    skip = [*_handler_spans(tokens, values), *mask]
+    names = ("pushState", "replaceState", "updateSearchParam")
+    for k, value in enumerate(values):
+        if any(a < k < b for a, b in skip):
+            continue
+        before = values[k - 1] if k else ""
+        after = values[k + 1] if k + 1 < len(values) else ""
+        text = _string_literal(value) if value[:1] in ("'", '"') else ""
+        if text in names and after == "]":
+            return f"按字符串调用 {text}"
+        if before == "." and value in names:
+            return f"加载时用 {value} 改网址"
+    return None
 
 
 def _ztree_problem(values):
@@ -3436,7 +3558,13 @@ def find_lonsun_api(
                 _ztree_problem(values)
                 or _builtin_problem(tokens, values)
                 or _global_object_problem(tokens, values)
+                or _dynamic_code_problem(tokens, values)
             )
+            if not problem:
+                # PublicTree 的原型方法另有规则查（open 里的 pushState 照着走）；构造函数在这里查
+                spans = _method_spans(tokens) if is_tree_script else {}
+                mask = [span for name, span in spans.items() if name]
+                problem = _url_change_problem(tokens, values, mask)
             if problem:
                 return fail(f"内联脚本{problem}")
             if is_tree_script:
@@ -3611,6 +3739,18 @@ def find_lonsun_api(
                     if target in init_values or expr[1] != "=":
                         return None
                     init_values[target] = expr[3]
+        order = [
+            _path(statement[1][2])
+            if statement[0] == "expression" and statement[1][0] == "assign"
+            else None
+            for statement in statements
+        ]
+        if "me.organId" in order and any(
+            order.index(key) < order.index("me.organId")
+            for key in ("me.ztreeData", "me.ztreeData2")
+            if key in order
+        ):
+            return fail("构造函数在定下 organId 之前就取了栏目数据")
         tree_values = (
             _parse_expression("catalogs[me.organId]"),
             _parse_expression("JSON.parse(JSON.stringify(catalogs[me.organId]))"),
@@ -3718,6 +3858,8 @@ def find_lonsun_api(
             methods,
         )
         return ListApi(adapter=LONSUN, url=urls[-1], base_url=page_url, plan=plan)
+    except LonsunFormatError as exc:
+        return fail(f"脚本认不出：{exc}")
     except (ValueError, etree.LxmlError, TypeError, AttributeError, IndexError, RecursionError):
         return None
 
@@ -4318,6 +4460,169 @@ def _callback_exclusions(source, callback, parent, hide_ok, mode):
     return tuple(excluded)
 
 
+# setSelect（initTree 里调，在 getData 之前）：不是树一顶层的栏目，顺着 parentId 往上找 findParentId
+# 定下的上级（topLevelParentId）。栏目树有几个顶层上级、本栏目又不挂在那个下面时，会走到不存在的
+# 节点抛错（或者绕圈出不来），init 就此中断、浏览器不发列表请求。157 个真实页面上这几个方法只有
+# 下面这几种写法：照写法逐个记号比对，算出会不会出错
+def _words(text):
+    return text.split()
+
+
+_SET_SELECT_PREFIX = _words(
+    "var me = this ; var currCatId = me . currCatId ; if ( currCatId ) { var nodeCat = "
+    "_organTree . getNodeByParam ( 'id' , currCatId , null ) ; if ( ! nodeCat ) { var pNode = "
+    "me . findTopLevelParentNode ( + currCatId , catalogs [ me . organId ] ) ; if ( pNode ) { "
+    "nodeCat = _organTree . getNodeByParam ( 'id' , pNode . id , null ) ; } } if ( nodeCat ) { "
+    "_organTree . selectNode ( nodeCat , false , true ) ;"
+)
+_FIND_TOP = _words(
+    "var me = this ; var currentNode = $ . grep ( nodes , function ( node ) { return node . id "
+    "== nodeId ; } ) [ 0 ] ; while ( currentNode . parentId !== me . topLevelParentId ) { "
+    "currentNode = $ . grep ( nodes , function ( node ) { return node . id === currentNode . "
+    "parentId ; } ) [ 0 ] ; } return currentNode ;"
+)
+_FIND_PARENT_HEAD = _words(
+    "var me = this ; var idMap = { } ; $ . each ( me . ztreeData2 , function ( i , item ) { idMap "
+    "[ item . id ] = true ; } ) ; var topLevelParentIds = [ ] ; $ . each ( me . ztreeData2 , "
+    "function ( i , item ) { if ( item . parentId != null && ! idMap [ item . parentId ] ) { "
+    "topLevelParentIds . push ( item . parentId ) ; } } ) ;"
+)
+_FIND_PARENT_FIRST = _FIND_PARENT_HEAD + _words("me . topLevelParentId = topLevelParentIds [ 0 ] ;")
+_FIND_PARENT_FREQUENT = _FIND_PARENT_HEAD + _words(
+    "me . topLevelParentId = findMostFrequent ( topLevelParentIds ) ; function findMostFrequent "
+    "( arr ) { var map = { } ; var maxCount = 0 ; var result = arr [ 0 ] ; for ( var i = 0 ; i "
+    "< arr . length ; i ++ ) { var num = arr [ i ] ; map [ num ] = ( map [ num ] || 0 ) + 1 ; if "
+    "( map [ num ] > maxCount ) { maxCount = map [ num ] ; result = num ; } } return result ; }"
+)
+
+
+def _set_select_unguarded(raw):
+    """有没有方法（用户点了才跑的处理函数以外）在 try 外面调 setSelect。"""
+    for body in raw.values():
+        tokens = _js_tokens(body)
+        values = _values(tokens)
+        spans = _handler_spans(tokens, values)
+        guarded = [
+            (j + 1, _matching_token(tokens, j + 1))
+            for j in range(len(values) - 1)
+            if values[j] == "try" and values[j + 1] == "{"
+        ]
+        for k in range(len(values) - 2):
+            name = values[k + 2] if values[k + 1] == "." else ""
+            if values[k + 1] == "[" and values[k + 3 : k + 4] == ["]"]:
+                key = values[k + 2]
+                name = _string_literal(key) if key[:1] in ("'", '"') else ""
+            if (
+                values[k] in ("me", "this")
+                and name == "setSelect"
+                and not any(a < k < b for a, b in spans)
+                and not any(a < k < b for a, b in guarded)
+            ):
+                return True
+    return False
+
+
+def _set_select_problem(raw, args, nodes, cat_id, hide_ok):
+    """在 try 外面调的 setSelect 会不会在 getData 之前出错（出错就给原因：浏览器不发列表请求）。"""
+    if not _set_select_unguarded(raw):
+        return None
+    tokens = _js_tokens(raw.get("setSelect", ""))
+    values = _values(tokens)
+    n = len(_SET_SELECT_PREFIX)
+    try:
+        timer = (
+            n
+            if values[:n] == _SET_SELECT_PREFIX
+            and values[n : n + 3] == ["setTimeout", "(", "function"]
+            else None
+        )
+        found = _function_at(tokens, values, n + 2) if timer is not None else None
+        close = _matching_token(tokens, n + 1) if found is not None else None
+    except LonsunFormatError:
+        found = close = None
+    # setTimeout 回调是 500 毫秒以后才跑的（里面的写法照加载时的规矩另查）；同步的部分必须一字不差
+    if (
+        found is None
+        or values[found[2] + 1 : found[2] + 2] != [","]
+        or not re.fullmatch(r"[0-9]+", values[found[2] + 2] if found[2] + 2 < len(values) else "")
+        or found[2] + 3 != close
+        or values[close + 1 :] != [";", "}", "}"]
+    ):
+        return "setSelect 的写法认不出，算不出加载时会不会出错"
+    if (
+        args.get("findTopLevelParentNode", "").replace(" ", "") != "nodeId,nodes"
+        or _values(_js_tokens(raw.get("findTopLevelParentNode", ""))) != _FIND_TOP
+    ):
+        return "findTopLevelParentNode 的写法认不出，算不出 setSelect 会不会出错"
+    parent_values = _values(_js_tokens(raw.get("findParentId", "")))
+    if parent_values not in (_FIND_PARENT_FIRST, _FIND_PARENT_FREQUENT):
+        return "findParentId 的写法认不出，算不出 setSelect 会不会出错"
+    if not hide_ok:
+        return "页面隐去部分栏目，算不出 setSelect 会不会出错"
+    ids = {node["id"] for node in nodes}
+    target = int(cat_id)  # Ls.url.get('catId') 是数字串；zTree 按 == 比，就是数值相等
+    # 树一（me.ztreeData，就是整棵栏目树）的顶层节点：上级不在树里的，或者上级是自己的；建完树
+    # 顶层节点的 children 被删掉，getNodeByParam 只找得到顶层
+    if any(
+        node["id"] == target
+        and (node.get("parentId") not in ids or node.get("parentId") == node["id"])
+        for node in nodes
+    ):
+        return None
+    # findParentId：上级不在树里的那些上级编号（按栏目树顺序，空的跳过），取第一个或出现最多的
+    tops = [
+        node["parentId"]
+        for node in nodes
+        if node.get("parentId") is not None and node["parentId"] not in ids
+    ]
+    if parent_values == _FIND_PARENT_FIRST:
+        top = tops[0] if tops else UNDEFINED
+    else:
+        top, best, counts = (tops[0] if tops else UNDEFINED), 0, {}
+        for value in tops:
+            counts[value] = counts.get(value, 0) + 1
+            if counts[value] > best:
+                best, top = counts[value], value
+    # findTopLevelParentNode(+catId, catalogs[organId])：往上走到 parentId === topLevelParentId
+    current = next((node for node in nodes if node["id"] == target), None)
+    seen = set()
+    while True:
+        if current is None:
+            return (
+                f"栏目 {cat_id} 往上找不到 findParentId 定下的上级，页面加载时 setSelect 会出错，"
+                "浏览器不发列表请求"
+            )
+        parent = current.get("parentId", UNDEFINED)
+        if parent is top or isinstance(parent, int) and parent == top and not isinstance(top, bool):
+            return None
+        if current["id"] in seen:
+            return "栏目树的上级关系绕圈，页面加载时 setSelect 走不出来，浏览器不发列表请求"
+        seen.add(current["id"])
+        current = (
+            next((node for node in nodes if node["id"] == parent), None)
+            if isinstance(parent, int)
+            else None
+        )
+
+
+def _node_field_problem(raw, nodes):
+    """preprocessData 遍历栏目树时读节点字段的成员（el.name.length、el.name.slice(…)）：哪个节点
+    的这个字段不是字符串，浏览器在这里就出错，init 中断、不发列表请求。"""
+    pre = raw.get("preprocessData", "")
+    tokens = _js_tokens(pre)
+    values = _values(tokens)
+    for names, (a, b) in _node_scopes(pre):
+        for k in range(a + 1, b - 3):
+            if values[k] in names and values[k + 1] == "." and values[k + 3] in (".", "["):
+                field = values[k + 2]
+                if any(not isinstance(node.get(field), str) for node in nodes):
+                    return (
+                        f"栏目树里有节点的 {field} 不是字符串，页面 preprocessData 读 "
+                        f"{values[k]}.{field} 的成员会出错，浏览器不发列表请求"
+                    )
+    return None
+
+
 def resolve_lonsun(api, catalog_text):
     """按页面受限执行路径推导列表接口；不执行页面脚本。"""
     from urllib.parse import quote_plus
@@ -4347,6 +4652,12 @@ def resolve_lonsun(api, catalog_text):
         if spec is None:
             return "栏目网址无效"
         cat_id = spec[1]
+        # getData 之前就会出错的（浏览器不发列表请求）：preprocessData 读节点字段的成员、setSelect
+        problem = _node_field_problem(raw, nodes) or _set_select_problem(
+            raw, {name: args for name, args, _ in plan.raw_methods}, nodes, cat_id, hide_ok
+        )
+        if problem:
+            return problem
         wrapped = []
         for node in nodes:
             children = [n for n in nodes if n is not node and n.get("parentId") == node["id"]]
