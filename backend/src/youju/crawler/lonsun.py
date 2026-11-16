@@ -23,6 +23,14 @@
 - 芜湖这类 init 里 me.getPublicQcsmCatIds().done(getData)：浏览器等那个请求成功（回 2xx、按
   JSON 解析得了、done 里的回调不出错）才发列表请求。我们也先发它（同一网站、页面写明的路径），
   照同样的条件看结果，不成功就不发列表请求（被拒记不能抓，读不出记这次没取到）。
+
+页面脚本会不会改到我们照着推请求用的东西（第九到十一轮审阅）：查名字——直接写的、前面带 window.、
+this. 这类全局对象的、写入路径里任何一段是页面依赖的全局名字的；查别名——$、jQuery、Ls、内置对象、
+window 和函数里的 this 都不许整个当值用（只认 this.名字、$(this)、var X = this）；查看不见的写法——
+解构、for-in/of、复合赋值、按算出来的名字取全局对象、函数里的 this、调用结果、下标结果、document 的
+成员。前提：经事件对象（e.view、e.currentTarget 这类）、jQuery 包装对象取回原对象（$(x)[0]、
+.get(0)、.each 回调的参数）或别的 DOM 属性拿到 window、再按算出来的名字改全局的写法不追踪——只有专门
+构造才会出现，157 个真实页面一处都没有；照名字改的（e.view.jQuery.param = …）照样拦。
 """
 
 import collections
@@ -362,6 +370,9 @@ _JS_WORD = re.compile(r"[A-Za-z_$][A-Za-z0-9_$]*|(?:\d+(?:\.\d*)?|\.\d+)")
 _TEMPLATE_NAME = re.compile(r"\s*[A-Za-z_$][A-Za-z0-9_$]*(?:\s*\.\s*[A-Za-z_$][A-Za-z0-9_$]*)*\s*")
 
 
+_COMPOUND_ASSIGNMENTS = (">>>=", "**=", "<<=", ">>=", "&&=", "||=", "??=", "|=", "&=", "^=")
+
+
 def _js_tokens(source: str) -> tuple[_Token, ...]:
     tokens: list[_Token] = []
     i = 0
@@ -541,6 +552,10 @@ def _js_tokens(source: str) -> tuple[_Token, ...]:
             if match:
                 i = match.end()
             else:
+                if source.startswith(_COMPOUND_ASSIGNMENTS, i):
+                    # 只认 =、+= 这几种赋值（_ASSIGN_OPS）；|=、&&= 这类会切成两个记号，改了什么就
+                    # 看不见了（真实页面上没有）
+                    raise LonsunFormatError("脚本里有 |=、&&= 这类复合赋值，改了什么看不全")
                 op = next((op for op in operators if source.startswith(op, i)), c)
                 i += len(op)
         value = source[start:i]
@@ -2261,9 +2276,27 @@ def _window_alias_problem(tokens, values):
     return None
 
 
+# 拿到原型、构造函数（经它们就能改内置对象、jQuery），或者给属性挂取值函数的写法（真实页面上都没有）
+_PROTOTYPE_HOOKS = frozenset(
+    {
+        "__proto__",
+        "setPrototypeOf",
+        "getPrototypeOf",
+        "constructor",
+        "__defineGetter__",
+        "__defineSetter__",
+        "__lookupGetter__",
+        "__lookupSetter__",
+        "noConflict",
+    }
+)
+
+
 def _builtin_problem(tokens, values):
     """改内置对象（Array.prototype.indexOf = …、JSON.parse = …、Object.assign(Math, …)）、
-    用 __proto__、setPrototypeOf，或者把 Array.prototype 这类整个当值用（经别名再改）的，不认。
+    用 __proto__、setPrototypeOf、getPrototypeOf、.constructor、__defineGetter__ 这类（拿到原型、
+    构造函数就能改内置对象；jQuery.noConflict() 交回的就是 jQuery），或者把 Array.prototype 这类
+    整个当值用（经别名再改）的，不认。
     Array.prototype.slice.call(…) 这样只读的照常。前面带 window.、self. 这类的也算。"""
     strip = _global_prefix_stripper(tokens, values)
     for path, _op, k in _write_sites(tokens, values):
@@ -2272,7 +2305,7 @@ def _builtin_problem(tokens, values):
             return f"改了内置的 {'.'.join(path)}"
     for k, value in enumerate(values):
         text = _string_literal(value) if value[:1] in ("'", '"') else value
-        if text in ("__proto__", "setPrototypeOf"):
+        if text in _PROTOTYPE_HOOKS:
             return f"用了 {text}"
         if (
             value in _PROTOTYPE_OWNERS
@@ -2287,6 +2320,369 @@ def _builtin_problem(tokens, values):
             )
         ):
             return f"把 {value}.prototype 整个当值用"
+    return None
+
+
+# 页面依赖的全局名字（发请求、拼地址、建树、读栏目数据要用的）：经任何对象的成员写到这些名字都算
+# 改了全局——函数里的 this、事件对象的 view 都可能就是 window（this.GLOBAL_CONTEXTPATH = …）
+_DEPENDED = _PROTECTED_DECLARATIONS | frozenset(_ROOTS)
+# 存进变量、交给函数以后，经别名就能改它成员的全局对象。GLOBAL_CONTEXTPATH 是字符串；
+# encodeURIComponent 这类全局函数经别名也改不了原来的；catalogs、_organTree2 另有别名规则
+_GLOBAL_FUNCTIONS = frozenset(
+    {
+        "encodeURIComponent",
+        "encodeURI",
+        "decodeURIComponent",
+        "decodeURI",
+        "escape",
+        "unescape",
+        "parseInt",
+        "parseFloat",
+        "isNaN",
+        "isFinite",
+        "fetch",
+    }
+)
+_ALIASABLE = (_BUILTINS - _GLOBAL_FUNCTIONS) | {"$", "jQuery", "Ls"}
+# 这些关键字后面的 [ 开始一个数组字面量（解构就从这里开始），不是取成员
+_EXPRESSION_KEYWORDS = frozenset(
+    {
+        "return",
+        "typeof",
+        "in",
+        "of",
+        "case",
+        "do",
+        "else",
+        "void",
+        "delete",
+        "new",
+        "throw",
+        "instanceof",
+        "yield",
+        "await",
+        "var",
+        "let",
+        "const",
+    }
+)
+_COMPARE = ("==", "!=", "===", "!==")
+
+
+def _index_access(values, k):
+    """values[k] 是 [：前面是名字、)、]、字面量、?. 的是取成员（a[0]、f()[0]），别的是
+    数组字面量。"""
+    before = values[k - 1] if k else ""
+    return (
+        before in (")", "]", "?.")
+        or bool(_IDENT.fullmatch(before))
+        and before not in _EXPRESSION_KEYWORDS
+        or before[:1] in ("'", '"', "`")
+        or bool(re.fullmatch(r"[0-9.]+", before))
+    )
+
+
+def _pattern_write_problem(tokens, values):
+    """_write_sites 看不见的写法（第十一轮审阅）：解构赋值（[me.listParams.pageSize] = […]、
+    ({x: Ls.ajaxGet} = …)、var [a] = …），for-in/of 每次写进成员、解构或页面依赖的全局名字，
+    for await，class、对象字面量里的简写方法和取值函数（this 跟着谁走、改了什么看不清）。真实页面上
+    都没有（for (var i in …) 这种照常），一律不认。"""
+    for k, value in enumerate(values):
+        before = values[k - 1] if k else ""
+        after = values[k + 1] if k + 1 < len(values) else ""
+        if value in ("[", "{"):
+            close = _matching_token(tokens, k)
+            if values[close + 1 : close + 2] == ["="] and not (
+                value == "[" and _index_access(values, k)
+            ):
+                return "用解构赋值写变量（[…] = …、{…} = …），看不出改了什么"
+            if before in ("var", "let", "const"):
+                return "用解构声明变量（var [a] = …），看不出改了什么"
+        if value == "class" and before not in (".", "?."):
+            return "用了 class（我们不分析）"
+        if (
+            before in ("{", ",")
+            and (
+                _IDENT.fullmatch(value)
+                and value not in _JS_WORDS
+                or value[:1] in ("'", '"')
+                or re.fullmatch(r"[0-9.]+", value)
+            )
+            and after == "("
+            and values[_matching_token(tokens, k + 1) + 1 : _matching_token(tokens, k + 1) + 2]
+            == ["{"]
+        ) or (
+            before in ("{", ",")
+            and value in ("get", "set", "async", "*")
+            and (_IDENT.fullmatch(after) or after[:1] in ("'", '"', "["))
+        ):
+            return "对象里写了简写方法或取值函数（this 跟着谁走、改了什么看不清）"
+        if value != "for":
+            continue
+        if after == "await":
+            return "用了 for await"
+        if after != "(":
+            continue
+        close = _matching_token(tokens, k + 1)
+        depth, split = 0, None
+        for j in range(k + 2, close):
+            token = values[j]
+            if token in ("(", "[", "{"):
+                depth += 1
+            elif token in (")", "]", "}"):
+                depth -= 1
+            elif depth == 0 and token == ";":
+                break
+            elif depth == 0 and token in ("in", "of"):
+                split = j
+                break
+        if split is None:
+            continue
+        start = k + 2 + (values[k + 2] in ("var", "let", "const"))
+        target = values[start:split]
+        if len(target) != 1 or not _IDENT.fullmatch(target[0]):
+            return "for-in/of 每次写进成员或解构，看不出改了什么"
+        if target[0] in _DEPENDED or target[0] in _GLOBAL_OBJECTS or target[0] == "this":
+            return f"for-in/of 每次把值写进 {target[0]}（改了页面依赖的全局）"
+    return None
+
+
+def _new_only_constructors(token_sets, sources=()):
+    """只用 new 调的函数声明（淮南老日期脚本 function initArray(){ this[i] = … } 配
+    new initArray(…)）：它最外层的 this 是新建的对象，不是 window。名字在各段内联脚本（token_sets）
+    和元素属性脚本（sources）里至少有一处 new 名字(…)，每次出现都得是声明本身、紧跟在 new 后面
+    调用，或者读 名字.arguments；写成字符串的、当别的对象的成员（this.名字()、window.名字 这类
+    调用时 this 就是那个对象）的都不算。"""
+    all_values = [_values(tokens) for tokens in token_sets]
+    all_values += [_values(_js_tokens(source)) for source in sources]
+    declared = set()
+    for values in all_values:
+        for k in range(len(values) - 2):
+            if (
+                values[k] == "function"
+                and _IDENT.fullmatch(values[k + 1])
+                and values[k + 2] == "("
+                and (k == 0 or values[k - 1] in (";", "{", "}", ")"))
+            ):
+                declared.add(values[k + 1])
+    created, refused = set(), set()
+    for values in all_values:
+        for k, value in enumerate(values):
+            text = _string_literal(value) if value[:1] in ("'", '"') else value
+            if text not in declared:
+                continue
+            before = values[k - 1] if k else ""
+            after = values[k + 1] if k + 1 < len(values) else ""
+            if value[:1] in ("'", '"') or before in (".", "?."):
+                refused.add(text)
+            elif before == "new" and after == "(":
+                created.add(text)
+            elif not (
+                before == "function"
+                and after == "("
+                or after == "."
+                and values[k + 2 : k + 3] == ["arguments"]
+            ):
+                refused.add(text)
+    return frozenset(created - refused)
+
+
+def _reach_problem(tokens, values, source="", *, instance=(), element_this=False, constructors=()):
+    """经别的途径改到页面依赖的全局（第十一轮审阅）。不认的：
+    - 写入路径里根以外的某一段是页面依赖的全局名字（this.GLOBAL_CONTEXTPATH、e.view.jQuery.param、
+      x.Ls.ajaxGet = …）：函数里的 this、事件对象的 view 都可能就是 window。只有本段代码新建的空
+      对象上直接加的同名属性（var obj = {}; obj.Ls = 1，见 _fresh_roots）不算；
+    - 整个换掉 $、jQuery（$ = …、window.jQuery = …），声明叫 $、jQuery 的变量、函数、参数；
+    - document.defaultView、parentWindow 不管怎么写（写成字符串也算），按算出来的名字取
+      document 的成员；
+    - $、jQuery、Ls 和内置对象整个当值用（var q = jQuery、交给函数、当返回值），前面带
+      window.、this. 的、window['jQuery'] 也算：经别名改了什么跟不上；
+    - 函数里的 this 可能就是 window（非严格模式直接调用时）。PublicTree 自己的构造函数、原型
+      方法最外层（instance），元素事件属性最外层（element_this），只用 new 调的函数最外层
+      （constructors）以外，只认 this.名字、$(this)、var X = this（X 照同样的规矩查）；按算出来的
+      名字取它的成员、交给函数、当返回值的都不认；
+    - 按算出来的名字取调用结果、下标结果的成员（$(window)[0][k]、f()[k]）；
+    - .attr、.prop 这类设的属性名不是直接写的字符串（包着 window 的 jQuery 对象经它们能改全局），
+      或者正是页面依赖的全局名字；
+    - 用到 jQuery 的全局请求设置（ajaxSetup、ajaxSettings 这类，不只是调用）。"""
+    strip = _global_prefix_stripper(tokens, values)
+    fresh = _fresh_roots(tokens, values, source) if source else set()
+    for path, _op, k in _write_sites(tokens, values):
+        hit = next((part for part in path[1:] if part in _DEPENDED), None)
+        if hit and not (len(path) == 2 and path[0] in fresh):
+            return f"经 {'.'.join(path)} 改了页面依赖的 {hit}"
+        if strip(path, k) in (("$",), ("jQuery",)):
+            return f"整个换掉了 {strip(path, k)[0]}"
+    functions = []
+    for f, value in enumerate(values):
+        if value == "function":
+            found = _function_at(tokens, values, f)
+            if found is not None:
+                functions.append((f, *found))
+    for _f, paren, _body, _close in functions:
+        if {"$", "jQuery"} & set(values[paren + 1 : _matching_token(tokens, paren)]):
+            return "函数参数叫 $ 或 jQuery（在函数里它就不一定是 jQuery 了）"
+    for k, value in enumerate(values):
+        text = _string_literal(value) if value[:1] in ("'", '"') else value
+        before = values[k - 1] if k else ""
+        after = values[k + 1] if k + 1 < len(values) else ""
+        for word in ("defaultView", "parentWindow"):
+            if text == word or value[:1] in ("'", '"', "`") and word in text:
+                return f"用了 {word}（就是 window），经它改了什么看不全"
+        if text in _AJAX_SETTERS or text == "ajaxSettings":
+            return f"用到了 jQuery 的全局请求设置 {text}"
+        if value in ("$", "jQuery") and (
+            before in ("var", "let", "const", "function")
+            or before == "("
+            and k >= 2
+            and values[k - 2] == "catch"
+        ):
+            return f"声明了叫 {value} 的变量（在那里它就不一定是 jQuery 了）"
+        if value == "[" and _index_access(values, k):
+            close = _matching_token(tokens, k)
+            key = values[k + 1 : close]
+            if len(key) == 1 and (key[0][:1] in ("'", '"') or re.fullmatch(r"[0-9]+", key[0])):
+                continue  # 写明的名字、数字下标
+            if before in (")", "]", "?."):
+                return "按算出来的名字取调用结果、下标结果的成员，看不出取的是什么"
+            if before in ("document", "ownerDocument"):
+                return f"按算出来的名字取 {before} 的成员（可能就是 defaultView）"
+            continue
+        # 整个当值用的全局对象：jQuery、window.jQuery、this.jQuery、window['jQuery']
+        name, start, end = None, k, k
+        if value in _ALIASABLE and before not in (".", "?."):
+            name = value
+        elif (
+            value in _ALIASABLE
+            and before == "."
+            and k >= 2
+            and (values[k - 2] in _GLOBAL_OBJECTS or values[k - 2] == "this")
+        ):
+            name, start = value, k - 2
+        elif (
+            value[:1] in ("'", '"')
+            and text in _ALIASABLE
+            and before == "["
+            and after == "]"
+            and k >= 2
+            and (values[k - 2] in _GLOBAL_OBJECTS or values[k - 2] == "this")
+        ):
+            name, start, end = text, k - 2, k + 1
+        if name is None:
+            continue
+        first = values[start - 1] if start else ""
+        last = values[end + 1] if end + 1 < len(values) else ""
+        if (
+            last in (".", "[", "(", "?.", "instanceof")
+            or first in ("typeof", "new", "instanceof", "delete", "var", "let", "const", "function")
+            or first in ("{", ",")
+            and last == ":"
+            or first in _COMPARE
+            or last in _COMPARE
+        ):
+            continue
+        return f"把 {name} 整个当值用（存进变量、交给函数、当返回值），经别名改了什么跟不上"
+
+    def innermost(k):
+        best = None
+        for f, _paren, body, close in functions:
+            if body < k < close and (best is None or body > best[1]):
+                best = (f, body, close)
+        return best
+
+    instance = {tuple(span) for span in instance}
+    aliases = []
+    for k, value in enumerate(values):
+        if value != "this":
+            continue
+        found = innermost(k)
+        if found is None:
+            if element_this:
+                continue
+            return "最外层的 this 就是 window，经它改了什么看不全"
+        f, body, close = found
+        name = values[f + 1] if values[f + 1] != "(" else ""
+        if (body, close) in instance or (
+            name in constructors and (f == 0 or values[f - 1] in (";", "{", "}", ")"))
+        ):
+            continue
+        before = values[k - 1] if k else ""
+        after = values[k + 1] if k + 1 < len(values) else ""
+        if after == "." and _IDENT.fullmatch(values[k + 2] if k + 2 < len(values) else ""):
+            continue  # this.名字：写到页面依赖的名字另有规则拦
+        if values[max(0, k - 2) : k] in (["$", "("], ["jQuery", "("]) and after == ")":
+            continue
+        if (
+            before == "="
+            and k >= 3
+            and values[k - 3] in ("var", "let", "const")
+            and _IDENT.fullmatch(values[k - 2])
+            and after in (";", ",")
+        ):
+            aliases.append((values[k - 2], k - 2, body, close))
+            continue
+        return (
+            "函数里的 this 可能就是 window（不是 PublicTree 自己的方法），按算出来的名字取它的"
+            "成员、交给函数、当返回值都看不出改了什么"
+        )
+    for alias, declared, body, close in aliases:
+        for k in range(body + 1, close):
+            if values[k] != alias or k == declared or values[k - 1] in (".", "?."):
+                continue
+            after = values[k + 1]
+            if values[k - 1] in ("{", ",") and after == ":":
+                continue  # 对象字面量的键
+            if after == "." and _IDENT.fullmatch(values[k + 2]):
+                continue
+            if values[k - 2 : k] in (["$", "("], ["jQuery", "("]) and after == ")":
+                continue
+            return (
+                f"{alias} 就是函数里的 this（可能就是 window），按算出来的名字取它的成员、"
+                "交给函数、当返回值都看不出改了什么"
+            )
+    for k in range(1, len(values) - 1):
+        if (
+            values[k] not in ("attr", "prop", "removeAttr", "removeProp")
+            or values[k - 1] not in (".", "?.")
+            or values[k + 1] != "("
+            or k >= 2
+            and values[k - 2] in ("$", "jQuery")
+        ):
+            continue  # $.attr(元素, 名字, 值)：元素是 this、window 的另有规则拦
+        close = _matching_token(tokens, k + 1)
+        first = values[k + 2] if k + 2 < close else ""
+        names = []
+        if first[:1] in ("'", '"'):
+            names = [_string_literal(first)]
+        elif first == "{":
+            end = _matching_token(tokens, k + 2)
+            j = k + 3
+            while j < end:
+                key = values[j]
+                if values[j + 1 : j + 2] != [":"] or not (
+                    _IDENT.fullmatch(key) or key[:1] in ("'", '"')
+                ):
+                    names = None
+                    break
+                names.append(_string_literal(key) if key[:1] in ("'", '"') else key)
+                depth, j = 0, j + 2
+                while j < end and not (depth == 0 and values[j] == ","):
+                    if values[j] in ("(", "[", "{"):
+                        depth += 1
+                    elif values[j] in (")", "]", "}"):
+                        depth -= 1
+                    j += 1
+                j += 1
+        elif first:
+            names = None
+        if names is None:
+            return (
+                f".{values[k]} 设的属性名不是直接写的字符串（包着 window 的 jQuery 对象经它能"
+                "改全局）"
+            )
+        hit = next((n for n in names if n in _DEPENDED), None)
+        if hit:
+            return f".{values[k]} 设了页面依赖的 {hit}"
     return None
 
 
@@ -2335,8 +2731,10 @@ def _script_kind(el):
 
 
 def _attribute_scripts(doc):
-    """页面元素属性里的脚本：onclick、onload 这类事件属性的值，javascript: 开头的链接。带 srcdoc 的
-    内嵌页面（里面的脚本能改本页）给 None：我们不分析。"""
+    """页面元素属性里的脚本：[(脚本, 最外层的 this 是不是这个元素)]。onclick、onload 这类事件属性
+    最外层的 this 是元素；body、frameset 上的事件属性挂在 window 上，javascript: 开头的链接也在
+    window 上跑，this 就是 window。带 srcdoc 的内嵌页面（里面的脚本能改本页）给 None：我们
+    不分析。"""
     found = []
     for el in doc.iter():
         if not isinstance(el.tag, str) or any(
@@ -2348,9 +2746,9 @@ def _attribute_scripts(doc):
             if name == "srcdoc":
                 return None
             if name.startswith("on"):
-                found.append(value)
+                found.append((value, el.tag.lower() not in ("body", "frameset")))
             elif name in _JS_URL_ATTRIBUTES and value.strip().lower().startswith("javascript:"):
-                found.append(value.strip()[len("javascript:") :])
+                found.append((value.strip()[len("javascript:") :], False))
     return found
 
 
@@ -2468,9 +2866,10 @@ def _top_level_parent_problem(tokens, values, keep=()):
     return None
 
 
-def _attribute_script_problem(source, functions, widget):
+def _attribute_script_problem(source, functions, widget, element_this=True, constructors=()):
     """元素属性里的脚本：照别的内联脚本的规矩查——可以读那几个全局对象，不能改；不能改依赖的
-    全局（GLOBAL_CONTEXTPATH 这类）、jQuery 的请求设置、zTree、内置对象，不能整个改 window。"""
+    全局（GLOBAL_CONTEXTPATH 这类）、jQuery 的请求设置、zTree、内置对象，不能整个改 window。
+    element_this：最外层的 this 是元素（见 _attribute_scripts）。"""
     tokens = _js_tokens(source)
     values = _values(tokens)
     strip = _global_prefix_stripper(tokens, values)
@@ -2492,6 +2891,10 @@ def _attribute_script_problem(source, functions, widget):
         or _builtin_problem(tokens, values)
         or _dynamic_code_problem(tokens, values)
         or _top_level_parent_problem(tokens, values)
+        or _pattern_write_problem(tokens, values)
+        or _reach_problem(
+            tokens, values, source, element_this=element_this, constructors=constructors
+        )
         or _foreign_problem(source, functions, widget)
     )
 
@@ -3792,6 +4195,11 @@ def find_lonsun_api(
         widget = _harmless_search_widget(tree_methods)
         load = _load_time_methods(tree_methods)
         functions = _page_functions(scripts)
+        # 元素属性脚本先取出来（只用 new 调的函数要连它们一起看），srcdoc 照原来的位置报
+        attribute_scripts = _attribute_scripts(doc)
+        new_only = _new_only_constructors(
+            token_sets, [source for source, _ in attribute_scripts or ()]
+        )
         tree_declarations = 0
         tree_extensions = 0
         for source, tokens in zip(scripts, token_sets, strict=True):
@@ -3844,6 +4252,14 @@ def find_lonsun_api(
                 or _window_alias_problem(tokens, values)
                 or _dynamic_code_problem(tokens, values)
                 or _top_level_parent_problem(tokens, values, keep)
+                or _pattern_write_problem(tokens, values)
+                or _reach_problem(
+                    tokens,
+                    values,
+                    source,
+                    instance=_method_spans(tokens).values() if is_tree_script else (),
+                    constructors=new_only,
+                )
             )
             if not problem:
                 # PublicTree 的原型方法另有规则查（open 里的 pushState 照着走）；构造函数在这里查
@@ -3904,11 +4320,10 @@ def find_lonsun_api(
                     ["jQuery", ".", "ajaxPrefilter"],
                 ) and values[i + 3 : i + 4] == ["("]:
                     return fail("页面改写了 AJAX 设置")
-        attribute_scripts = _attribute_scripts(doc)
         if attribute_scripts is None:
             return fail("页面有 srcdoc 内嵌页面：里面的脚本能改本页，我们不分析")
-        for source in attribute_scripts:
-            problem = _attribute_script_problem(source, functions, widget)
+        for source, element_this in attribute_scripts:
+            problem = _attribute_script_problem(source, functions, widget, element_this, new_only)
             if problem:
                 return fail(f"页面元素属性里的脚本（onclick 这类、javascript: 链接）{problem}")
         init_method = _method(tree_methods, "init")
@@ -3930,7 +4345,7 @@ def find_lonsun_api(
                     mask = list(_method_spans(tokens).values())  # PublicTree 的方法另有规则查
                 if _load_trigger(tokens, values, mask):
                     return fail("getData 推迟到回调里跑，页面别的脚本又在加载时替用户触发事件")
-            for source in attribute_scripts:
+            for source, _ in attribute_scripts:
                 tokens = _js_tokens(source)
                 if _load_trigger(tokens, _values(tokens)):
                     return fail("getData 推迟到回调里跑，页面元素属性里的脚本又替用户触发事件")

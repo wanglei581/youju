@@ -575,10 +575,13 @@ def evidence_for(
             打开="；".join(reasons) if reasons else "库里没有文件，列表页也没读出带日期的条目",
         )
         return ev
-    # 龙讯栏目的原文、栏目页也过这一轮的主机护栏（同一轮这个主机拒绝过我们就不去）
+    # 龙讯栏目的原文、栏目页也过这一轮的主机护栏（同一轮这个主机拒绝过我们就不去）：一格里有
+    # 几个网址的，只要有一个是龙讯栏目就过护栏（库里的文件可能是从哪一个来源读的都有）
+    from youju.crawler.lonsun import column_spec
     from youju.govsites.verify import guarded_fetchers
 
-    page_get = guarded_fetchers(cache, urls[0])[0]
+    lonsun_url = next((url for url in urls if column_spec(url) is not None), urls[0])
+    page_get = guarded_fetchers(cache, lonsun_url)[0]
     # 先挑政府网站上的网页（栏目里转的新华网、公众号外链和附件不核），原文打不开就顺延，最多试 3 份
     skipped: list[str] = []
     chosen = None

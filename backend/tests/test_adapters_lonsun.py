@@ -1703,6 +1703,27 @@ def test_spotcheck_evidence_goes_through_round_guard():
     assert ev["打开"].startswith("这次没取到") and cache.calls == []
 
 
+def test_spotcheck_guard_when_lonsun_column_is_not_first():
+    from types import SimpleNamespace
+
+    from youju.crawler.roundguard import HostRoundGuard
+    from youju.govsites import spotcheck
+
+    # 一格两个网址、第一个不是龙讯栏目：库里的文件照样过这一轮的主机护栏（第十一轮建议）
+    other = "https://jx.ah.gov.cn/xxgk/index.html"
+    source = SimpleNamespace(
+        id=1, url=BASE, level="省级", province="安徽", city="", parser_config={}
+    )
+    doc = "https://jx.ah.gov.cn/art/2026/11/1/art_1.html"
+    cache = LonsunCache({BASE: fixture("jx_page.html"), doc: "<html>x</html>", other: "x"})
+    cache.round_guard = HostRoundGuard()
+    cache.round_guard.block(BASE)
+    rows = [("关于开展申报的通知", doc, TODAY)]
+    cell = {"栏目网址": f"{other} {BASE}"}
+    ev = spotcheck.evidence_for(cell, _spotcheck_session(source, rows), cache, TODAY)
+    assert ev["打开"].startswith("这次没取到") and cache.calls == []
+
+
 def test_navigation_values_are_used_in_conditions():
     from youju.crawler.lonsun import find_lonsun_api, resolve_lonsun
 
@@ -2747,8 +2768,8 @@ def test_county_sources_need_configured_portal_even_under_city_domain():
         ("function f(self) {} var w = self; w.GLOBAL_CONTEXTPATH = '/other';", False),
         ("function f() { var self = 1; } top.GLOBAL_CONTEXTPATH = '/x'; frames['a'] = 1;", False),
         ("function g(a, self) { return self; } g(1, self);", False),
-        # 在自己的作用域里当普通变量用的照常
-        ("function g() { var self = this; return self; }", True),
+        # 在自己的作用域里当普通变量用的照常（self 是函数里的 this：只当 self.名字 用）
+        ("function g() { var self = this; self.x = 1; }", True),
         ("var self = {}; function h(x) { return x; } h(self);", True),
         ("function k(parent) { return [parent]; }", True),
         ("var a = 1, self = {}; self.x = 1; [self];", True),
@@ -3263,6 +3284,116 @@ def test_global_rewrites_with_prefixes_refused(code):
     assert _found(_jx(extra=f"<script>{code}</script>")) is None, code
 
 
+def _with_code(where, code):
+    """把 code 放进 jx 页面：bind = bindEvt 开头（加载时跑），ctor = 构造函数开头，body = <body>
+    的 onload，link = javascript: 链接，别的 = 单独一段内联脚本。"""
+    page = fixture("jx_page.html")
+    if where == "bind":
+        assert page.count(_BIND_TOP) == 1
+        return page.replace(_BIND_TOP, _BIND_TOP + " " + code, 1)
+    if where == "ctor":
+        head = "function PublicTree() {\n    var me = this;"
+        assert page.count(head) == 1
+        return page.replace(head, head + " " + code, 1)
+    if where == "body":
+        return page.replace("<body>", f'<body onload="{code}">', 1)
+    if where == "link":
+        return _jx(extra=f'<a href="javascript:{code}">x</a>')
+    return _jx(extra=f"<script>{code}</script>")
+
+
+@pytest.mark.parametrize(
+    "where,code",
+    [
+        # 解构赋值、解构声明、for-in/of 每次写进成员或解构（第十一轮独立 Claude）
+        ("bind", "[me.listParams.pageSize] = ['100'];"),
+        ("ctor", "[me.listParams] = [{labelName: 'x'}];"),
+        ("script", "[GLOBAL_CONTEXTPATH] = ['/x'];"),
+        ("script", "var f = function () {}; ({x: Ls.ajaxGet} = {x: f});"),
+        ("script", "var [GLOBAL_CONTEXTPATH] = ['/x'];"),
+        ("bind", "for (me.listParams.pageSize in {'100': 1}) {}"),
+        ("script", "for (GLOBAL_CONTEXTPATH in {'/x': 1}) {}"),
+        ("script", "for ([a] of [[1]]) {}"),
+        # 函数里的 this 可能就是 window
+        ("script", "(function () { this.GLOBAL_CONTEXTPATH = '/x'; })();"),
+        ("bind", "(function () { this.jQuery.param = function () { return 't=1'; }; })();"),
+        ("script", "(function () { this['GLOBAL_' + 'CONTEXTPATH'] = '/x'; })();"),
+        ("script", "(function () { var w = this; w['GLOBAL_' + 'CONTEXTPATH'] = '/x'; })();"),
+        ("script", "var w = (function () { return this; })(); w['GLOBAL_' + 'CONTEXTPATH'] = 1;"),
+        ("script", "(function () { $.extend(this, {GLOBAL_CONTEXTPATH: '/x'}); })();"),
+        ("script", "function g() { this[0] = 1; } g();"),
+        ("script", "function g() { this['a' + 'b'] = 1; } new g(); (function () { this.g(); })();"),
+        ("script", "$.fn.p = function () { return this; };"),
+        # defaultView、parentWindow 不管怎么写
+        ("script", "document['defaultView'].GLOBAL_CONTEXTPATH = '/x';"),
+        ("script", "document['default' + 'View'].GLOBAL_CONTEXTPATH = '/x';"),
+        ("script", "var w = document.parentWindow;"),
+        # 整个当值用：经别名改
+        ("script", "var q = jQuery; q.param = function () { return 't=1'; };"),
+        ("bind", "var q = jQuery; q.param = function () { return 't=1'; };"),
+        ("script", "var q = window.jQuery; q.param = function () { return 't=1'; };"),
+        ("script", "(function (q) { q.param = function () { return 't=1'; }; })(jQuery);"),
+        ("script", "var J = $('a').constructor; J.param = function () { return 't=1'; };"),
+        # 整个换掉 $、jQuery，或者叫 $ 的参数、变量
+        ("script", "window.$ = jQuery.extend(function (s, c) { return jQuery(s, c); }, {});"),
+        ("script", "$ = function () {};"),
+        ("script", "(function ($) { $.param = function () { return 't=1'; }; })(jQuery);"),
+        ("script", "function f() { var $ = {}; }"),
+        # 按算出来的名字取调用结果、下标结果、document 的成员
+        ("script", "$(window)[0]['GLOBAL_' + 'CONTEXTPATH'] = '/x';"),
+        ("script", "$(window).get(0)['GLOBAL_' + 'CONTEXTPATH'] = '/x';"),
+        # .attr、.prop 设的属性名不是直接写的，或者正是依赖的全局
+        ("script", "(function () { $(this).attr('GLOBAL_CONTEXTPATH', '/x'); })();"),
+        ("script", "$('a').attr({GLOBAL_CONTEXTPATH: '/x'});"),
+        ("script", "var k = 'x'; $('a').attr(k, '/x');"),
+        # 复合赋值、取值函数、原型、jQuery 的全局请求设置
+        ("script", "GLOBAL_CONTEXTPATH &&= '/x';"),
+        ("bind", "me.listParams.pageSize |= 100;"),
+        ("script", "var o = {get x() { return 1; }};"),
+        ("script", "var s = $.ajaxSettings; s.beforeSend = function () {};"),
+        ("script", "var setup = $.ajaxSetup; setup({beforeSend: function () {}});"),
+        # body 上的事件属性、javascript: 链接里，最外层的 this 就是 window
+        ("body", "this['GLOBAL_' + 'CONTEXTPATH'] = '/x'"),
+        ("link", "this['GLOBAL_' + 'CONTEXTPATH'] = '/x'"),
+    ],
+)
+def test_hidden_writes_refused(where, code):
+    assert _found(_with_code(where, code)) is None, (where, code)
+
+
+@pytest.mark.parametrize(
+    "where,code",
+    [
+        # 真实页面上有的写法照常认
+        ("script", "for (var k in {a: 1}) {}"),
+        ("script", "$('a').click(function () { var id = $(this).data('id'); this.blur(); });"),
+        ("script", "var v = {valid: function (form) { var me = this; me.holdSubmit(); }};"),
+        # 淮南的老日期脚本：只用 new 调，里面的 this 是新建的对象
+        (
+            "script",
+            "function initArray() { for (i = 0; i < initArray.arguments.length; i++) "
+            "this[i] = initArray.arguments[i]; } var m = new initArray('1月', '2月');",
+        ),
+        ("script", "$('a').attr('href', 'javascript:void(0);').attr({'tabindex': 0});"),
+        ("script", "if (typeof jQuery !== 'undefined' && jQuery.fn) {}"),
+        ("script", "var obj = {}; obj.Ls = 1; var arr = []; arr[0] = 1;"),
+        ("link", "void(0)"),
+        ("script", "function f(id, el) {} "),
+    ],
+)
+def test_similar_harmless_code_still_recognized(where, code):
+    assert _found(_with_code(where, code)) is not None, (where, code)
+
+
+def test_element_this_in_handler_attributes_is_the_element():
+    # <a onclick="fn(id, this)">：事件属性最外层的 this 是元素（真实页面 172 处）；body 上的不是
+    page = _jx(extra="<script>function fn(id, el) {}</script>")
+    handler = page.replace("<body>", '<body><a onclick="javascript:fn(1, this)">x</a>', 1)
+    assert _found(handler) is not None
+    on_body = page.replace("<body>", '<body onload="fn(1, this)">', 1)
+    assert _found(on_body) is None
+
+
 def test_shadowed_self_index_is_fine():
     # self 在那里是局部变量：按算出来的名字取它的成员不算取 window 的
     code = "function f() { var self = {a: 1}; return self['a' + '']; }"
@@ -3354,7 +3485,7 @@ def test_code_we_cannot_see_refused(script):
     [
         "var re = new RegExp(`([?&])${paramName}=[^&#]*(&|#|$)`);",
         "document.write(unescape(\"%3Cspan id='_ideConac'%3E%3C/span%3E%3Cscript src='https://example.gov.cn/a.js' type='text/javascript'%3E%3C/script%3E\"));",
-        "$.fn.myPlugin = function () { return this; };",
+        "$.fn.myPlugin = function () { return this.each(function () {}); };",
         "var params = $.extend({}, {a: 1}, {b: 2});",
     ],
 )
