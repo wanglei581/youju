@@ -94,6 +94,20 @@ class _CorruptStamp(OSError):
 # 记录定长写、不先清空：写到一半被杀也不会留下空文件（空文件只表示新建、还没请求过）
 
 
+def robots_gate(result: "FetchResult") -> str | None:
+    """robots.txt 回 2xx 的不是 robots 文件、是防护页或验证码（D-013：网站拦着我们）：给原因。"""
+    body = decode_html(result.content, result.content_type).lstrip("\ufeff \t\r\n")
+    if body.startswith("<") or body and not _ROBOTS_LINE.search(body):
+        from youju.govsites.platform import blocker
+
+        reason = blocker(result.status, result.http_status, body)
+        if reason:
+            return reason
+        if not body.startswith("<") and _GATE_WORDS.search(body):
+            return "拦截页"
+    return None
+
+
 def plain_text_gate(text: str) -> bool:
     """不是网页的纯文字回应（text/plain 这类）开头是不是拦截、防火墙、验证这类字：网站拦着我们。"""
     return bool(_GATE_WORDS.search(text[:500]))
@@ -361,6 +375,7 @@ class PoliteFetcher:
         same_address_only: bool = False,
         hop_allowed: Callable[..., bool] | None = None,
         on_response: Callable[[FetchResult], None] | None = None,
+        on_robots: Callable[[FetchResult], None] | None = None,
         stop_when: Callable[[], bool] | None = None,
     ) -> FetchResult:
         """抓取一个页面。重定向逐跳处理：每一跳都检查 robots.txt，并遵守目标网站的限速。
@@ -383,6 +398,7 @@ class PoliteFetcher:
         robots_hops: list[str] = []
         self._local.gate = hop_allowed
         self._local.on_response = on_response
+        self._local.on_robots = on_robots
         self._local.stop_when = stop_when
         self._local.refusal = None
         self._local.robots_hops = robots_hops
@@ -391,6 +407,7 @@ class PoliteFetcher:
         finally:
             self._local.gate = None
             self._local.on_response = None
+            self._local.on_robots = None
             self._local.stop_when = None
             self._local.robots_hops = None
         result = self._local.refusal or result
@@ -554,11 +571,7 @@ class PoliteFetcher:
         # robots.txt 也拿到空文字、按"没有 robots.txt"放行，网站禁止抓取的附件照样下载
         body = decode_html(result.content, result.content_type).lstrip("\ufeff \t\r\n")
         if body.startswith("<") or body and not _ROBOTS_LINE.search(body):
-            from youju.govsites.platform import blocker
-
-            gate = blocker(result.status, status, body) or (
-                None if body.startswith("<") else (_GATE_WORDS.search(body) and "拦截页")
-            )
+            gate = robots_gate(result)
             if gate:
                 # 回的是防护页、验证码（D-013）：网站拦着我们，不当成"没有 robots"接着去请求页面
                 return _RobotsEntry(
@@ -735,6 +748,11 @@ class PoliteFetcher:
                     callback(result)
                     if result.http_status in {401, 403, 412, 429, 521}:
                         self._local.refusal = result
+                robots_callback = getattr(self._local, "on_robots", None)
+                if robots_callback and getattr(self._local, "robots", False):
+                    # 读 robots.txt 的回应也在还拿着这个网站的锁时交给调用方（回了防护页这类，当场
+                    # 记下停取，别的进程排在后面）
+                    robots_callback(result)
                 return result
             finally:
                 self._local.before_send = None

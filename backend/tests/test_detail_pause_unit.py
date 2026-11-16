@@ -779,3 +779,62 @@ def test_plain_text_that_is_not_a_gate_stays_unsupported():
 
     outcome = detail_service._fetch_one(1, "https://a.gov.cn/1", Fake())
     assert outcome.status == "unsupported_format"
+
+
+def _host_file_locked(rate_dir, host):
+    """别的进程这时能不能拿到这个网站的跨进程锁（另开一个文件描述符试，拿不到就是被占着）。"""
+    import fcntl
+    import os
+
+    from youju.crawler.fetcher import _SharedLimits
+
+    fd = os.open(_SharedLimits(str(rate_dir)).path("h", host), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return True
+    finally:
+        os.close(fd)
+    return False
+
+
+@pytest.mark.parametrize("where", ["page", "robots"])
+def test_gate_page_paused_while_holding_host_lock(tmp_path, monkeypatch, where):
+    # 回 200 的验证码页：判防护页、写停取的时候还拿着这个网站的跨进程锁，别的进程排在后面，等它
+    # 放锁时停取已经写好，不会等够 3 秒又去敲门（robots.txt 回防护页也一样）
+    gate = "<html><title>安全验证</title><body>请输入验证码</body></html>"
+    rate = tmp_path / "rate"
+    seen = []
+    name = "_gate_page" if where == "page" else "robots_gate"
+    real = getattr(detail_service, name)
+
+    def checking(*args):
+        seen.append(_host_file_locked(rate, "a.gov.cn"))
+        return real(*args)
+
+    monkeypatch.setattr(detail_service, name, checking)
+
+    def handler(request):
+        if request.url.path == "/robots.txt":
+            if where == "robots":
+                return httpx.Response(200, text=gate, headers={"content-type": "text/html"})
+            return httpx.Response(404)
+        return httpx.Response(200, text=gate, headers={"content-type": "text/html"})
+
+    path = str(tmp_path / "pause.json")
+    with PoliteFetcher(
+        "test",
+        per_host_interval=0.05,
+        per_address_interval=0,
+        transport=httpx.MockTransport(handler),
+        resolver=lambda host: ["1.2.3.4"],
+        shared_limits_dir=str(rate),
+    ) as fetcher:
+        _fetch_outcomes(
+            [(1, "https://a.gov.cn/1"), (2, "https://a.gov.cn/2")],
+            fetcher,
+            1,
+            pause=_SitePause(path),
+        )
+    assert seen and seen[0] is True
+    assert _SitePause(path).expiry("a.gov.cn") is not None

@@ -36,6 +36,7 @@ from youju.crawler.fetcher import (
     SharedLimitError,
     decode_html,
     plain_text_gate,
+    robots_gate,
 )
 from youju.crawler.pdf import extract_pdf_text
 from youju.crawler.titles import clean_title, completed_title, is_truncated
@@ -467,8 +468,24 @@ class _PausingFetcher:
             return True
 
     def _response(self, result: FetchResult) -> None:
+        """页面的回应（取页器还拿着这个网站的锁，进程内的和跨进程的）：被拒、回 200 的验证码或
+        防护页，当场记下停取。别的线程、进程排在这个网站的锁后面，等它放锁时停取已经写好，不会
+        等够间隔又去敲门。"""
+        host = _host(result.final_url or result.url)
         if result.http_status in {401, 403, 412, 429, 521}:
-            self.pause.add(_host(result.final_url or result.url), f"HTTP {result.http_status}")
+            self.pause.add(host, f"HTTP {result.http_status}")
+        elif result.status == "ok" and _gate_page(result, result.final_url or result.url):
+            self.pause.add(host, "防护页或验证码")
+
+    def _robots(self, result: FetchResult) -> None:
+        """读 robots.txt 的回应（同样还拿着锁）：回了防护页、429、521，当场记下停取（和事后按
+        robots 读不到停取的时长一样）。"""
+        host = _host(result.final_url or result.url)
+        status = result.http_status
+        if result.status == "ok" and robots_gate(result):
+            self.pause.add(host, "robots.txt 回了防护页或验证码")
+        elif status in (429, 521):
+            self.pause.add(host, f"robots.txt HTTP {status}", hours=6)
 
     def fetch(self, url: str) -> FetchResult:
         if isinstance(self.inner, PoliteFetcher):
@@ -476,6 +493,7 @@ class _PausingFetcher:
                 url,
                 hop_allowed=self._admit,
                 on_response=self._response,
+                on_robots=self._robots,
                 stop_when=self.should_stop,
             )
         elif not self._admit(url):
