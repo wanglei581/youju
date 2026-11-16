@@ -201,3 +201,32 @@ def test_bad_stamp_is_repaired_then_stops(tmp_path, value):
         started = time.monotonic()
         assert fetcher.fetch("https://a.example.gov.cn/page").status == "ok"
         assert time.monotonic() - started >= 0.2
+
+
+def test_host_stamp_written_right_before_sending(tmp_path):
+    # 真正发出前记一次开始时间：请求进行中别的进程读到的就是这次的开始（进程在请求中途被杀，下一个
+    # 也照样要隔够间隔），不是上一个请求结束的时间
+    limits = _SharedLimits(str(tmp_path))
+    seen = []
+
+    def handler(request):
+        if request.url.path == "/robots.txt":
+            return httpx.Response(404, request=request)
+        seen.append(float(limits.path("h", "a.example.gov.cn").read_text().strip()))
+        return httpx.Response(200, text="<html>ok</html>", request=request)
+
+    with PoliteFetcher(
+        "YoujuBot-test",
+        per_host_interval=0.05,
+        transport=httpx.MockTransport(handler),
+        real_network=False,
+        resolver=lambda host: [ADDRESS],
+        per_address_interval=0.0,
+        per_address_concurrency=2,
+        shared_limits_dir=str(tmp_path),
+    ) as fetcher:
+        assert fetcher.fetch("https://a.example.gov.cn/1").status == "ok"
+        time.sleep(0.2)
+        started = time.time()
+        assert fetcher.fetch("https://a.example.gov.cn/2").status == "ok"
+    assert seen[-1] >= started

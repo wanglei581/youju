@@ -61,7 +61,8 @@ class _SharedLimits:
 
     每个主机、每个地址一个锁文件（fcntl 排他锁，进程退出时系统自动放锁），文件里记上次的时间
     （墙上时间 time.time()，各进程之间才能比）：
-    - h-<主机名哈希>：上次请求结束的时间；
+    - h-<主机名哈希>：上次请求的时间（真正发出前记一次开始、结束后再记一次结束；被挡下、没发出的
+      不记）；
     - a-<地址哈希>：上次请求开始的时间；a-<地址哈希>.s0、.s1……：同一地址同时在飞的名额。
     读写出错（目录不可写、磁盘满）：配了目录（或一定要跨进程限速）的取页器抛 SharedLimitError、
     整批停下；没配的本来就只用进程内的限速。"""
@@ -627,7 +628,8 @@ class PoliteFetcher:
         self, stack: contextlib.ExitStack, kind: str, key: str, interval: float, url: str
     ) -> int | str | None:
         """跨进程补足间隔：拿 kind-key 锁文件的锁，按里面记的时间等够 interval。返回拿着的文件
-        （锁由 stack 放），"deadline" 表示等到了期限；不跨进程限速（没配目录、文件出错）给 None。
+        （锁由 stack 放），"deadline" 表示等到了期限，"paused" 表示排队时这次 fetch 的 hop_allowed
+        说要停；不跨进程限速（没配目录、文件出错）给 None。
         墙上时间往回调过（记的时间比现在还晚）时等满一个 interval；最多等 interval 本身。"""
         if self._shared is None or interval <= 0:
             return None
@@ -654,6 +656,10 @@ class PoliteFetcher:
             inner.close()
             self._shared_failed(exc)
             return None
+        except BaseException:
+            # 排队时问停取记录出错这类：开着的文件、拿到的锁先放掉再往外抛
+            inner.close()
+            raise
         stack.enter_context(inner)
         return fd
 
