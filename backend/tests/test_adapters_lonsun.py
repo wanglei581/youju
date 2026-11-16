@@ -878,8 +878,8 @@ def test_unknown_conditions_never_send_list(condition):
         1,
     )
     url = PAGES["jx"] + "?type=4&catId=49949451&action=list"
-    if condition in ("Ls.missing", "_organTree2.missing"):
-        # 读 Ls、栏目树对象上不认识的成员：认页面这一步就不认
+    if condition in ("Ls.missing", "_organTree2.missing", "me.topLevelParentId"):
+        # 读 Ls、栏目树对象上不认识的成员，别处用到 topLevelParentId：认页面这一步就不认
         assert find_lonsun_api(page, url, url) is None
         return
     assert isinstance(resolve_fixture("jx", "49949451", page=page), str)
@@ -2656,6 +2656,176 @@ def test_set_select_frequent_variant_and_unknown_shapes():
         result = resolve_fixture("jx", "49949451", page=jx.replace(old, new, 1))
         assert isinstance(result, str) and "写法认不出" in result, (old, result)
     assert isinstance(resolve_fixture("jx", "49949451"), ListApi)
+
+
+# ---- 第七轮独立 Claude：推算 setSelect 的三个前提——findParentId 先跑、topLevelParentId 别处
+# 不写、树一就是整棵栏目树 ----
+
+_JX_INIT = "me.findParentId();\n      me.initTree();"
+
+
+@pytest.mark.parametrize(
+    "new",
+    [
+        # 不调 findParentId：浏览器里 topLevelParentId 是 undefined，从 49949451 往上找会出错
+        "me.initTree();",
+        # 挪到 initTree（它调 setSelect）后面
+        "me.initTree();\n      me.findParentId();",
+    ],
+)
+def test_set_select_needs_find_parent_before_init_tree(new):
+    page = fixture("jx_page.html")
+    assert page.count(_JX_INIT) == 1
+    result = resolve_fixture("jx", "49949451", page=page.replace(_JX_INIT, new, 1))
+    assert isinstance(result, str) and "findParentId" in result, result
+
+
+def test_set_select_init_tree_called_from_other_method_refused():
+    # 别的方法加载时调 initTree：那时 findParentId 可能还没跑
+    page = fixture("jx_page.html")
+    assert page.count(_BIND_TOP) == 1
+    assert _refused(page.replace(_BIND_TOP, _BIND_TOP + " me.initTree();", 1))
+
+
+@pytest.mark.parametrize(
+    "where,code",
+    [
+        ("initTree", "me.topLevelParentId = 1;"),
+        ("initTree", "me['topLevelParentId'] = 1;"),
+        ("script", "var o = {topLevelParentId: 1};"),
+        ("attribute", "window.topLevelParentId = 1"),
+    ],
+)
+def test_top_level_parent_only_from_find_parent(where, code):
+    page = fixture("jx_page.html")
+    if where == "initTree":
+        assert page.count("me.setSelect();") == 1
+        page = page.replace("me.setSelect();", code + " me.setSelect();", 1)
+    elif where == "script":
+        page = _jx(extra=f"<script>{code}</script>")
+    else:
+        page = _jx(extra=f'<a href="#" onclick="{code}">x</a>')
+    assert _found(page) is None
+
+
+_CHUZHOU_TREE1 = (
+    "_organTree = $.fn.zTree.init($('#organ_catalog_tree'), ztree_settings, me.ztreeData);"
+)
+_CHUZHOU_COLOR = "var color = '#0e76cd';"
+
+
+def _chuzhou_top(page):
+    """滁州 161734542：整棵树的顶层栏目，上级不是 findParentId 取的第一个顶层上级。"""
+    from youju.crawler.lonsun import find_lonsun_api, resolve_lonsun
+
+    url = PAGES["chuzhou"] + "?type=4&catId=161734542&action=list"
+    api = find_lonsun_api(page, url, url)
+    return None if api is None else resolve_lonsun(api, fixture("chuzhou_catalog.js"))
+
+
+def test_set_select_top_column_found_in_whole_tree_one():
+    from youju.crawler.adapters import ListApi
+
+    # 树一是整棵栏目树建的：这个顶层栏目直接找到，不往上找，照常读
+    assert isinstance(_chuzhou_top(fixture("chuzhou_page.html")), ListApi)
+
+
+@pytest.mark.parametrize(
+    "old,new",
+    [
+        # 树一不是照真实写法用整棵栏目树建的：浏览器在树一里找不到这个栏目，往上找时出错
+        (_CHUZHOU_TREE1, _CHUZHOU_TREE1.replace("me.ztreeData", "[]")),
+        (_CHUZHOU_TREE1, _CHUZHOU_TREE1.replace("ztree_settings", "{}")),
+        (_CHUZHOU_TREE1, "var " + _CHUZHOU_TREE1),  # 局部变量遮住全局的 _organTree
+        ("initTree: function () {", "initTree: function (_organTree) {"),
+        # 建树一到 setSelect 之间另外动了树一
+        ("me.setSelect();", "_organTree.removeNode(_organTree.getNodes()[0]); me.setSelect();"),
+        ("node.isParent = false;", "node.isParent = false; node.id = 0;"),
+        # 建树设置里的显示回调（建树时就跑）：调别的脚本、别的方法，往页面里写脚本，替用户触发事件
+        (_CHUZHOU_COLOR, _CHUZHOU_COLOR + " hack();"),
+        (_CHUZHOU_COLOR, _CHUZHOU_COLOR + " me.getReportyear();"),
+        (_CHUZHOU_COLOR, _CHUZHOU_COLOR + " $('body').append('<scr' + 'ipt>x()</' + 'script>');"),
+        (_CHUZHOU_COLOR, _CHUZHOU_COLOR + " $('#x').trigger('custom');"),
+        (_CHUZHOU_COLOR, _CHUZHOU_COLOR + " _organTree = null;"),
+    ],
+)
+def test_set_select_tree_one_changed_refused(old, new):
+    page = fixture("chuzhou_page.html")
+    assert page.count(old) == 1, old
+    result = _chuzhou_top(page.replace(old, new, 1))
+    assert result is None or isinstance(result, str), new
+
+
+def test_set_select_guarded_needs_no_tree_one_check():
+    from youju.crawler.adapters import ListApi
+
+    # setSelect 包在 try 里：出错也接着跑 getData，树一怎么建都不碍事
+    page = fixture("chuzhou_page.html")
+    page = page.replace("me.setSelect();", "try { me.setSelect(); } catch (e) {}", 1)
+    page = page.replace(_CHUZHOU_TREE1, _CHUZHOU_TREE1.replace("me.ztreeData", "[]"), 1)
+    assert isinstance(_chuzhou_top(page), ListApi)
+
+
+def test_set_select_preprocess_changing_ids_refused():
+    # 树一按 id 找栏目：preprocessData 改了节点的 id，算不出
+    page = fixture("jx_page.html")
+    old = "el._name = el.name;"
+    assert page.count(old) == 1
+    result = resolve_fixture("jx", "49949451", page=page.replace(old, old + " el.id = +el.id;", 1))
+    assert isinstance(result, str) and "id" in result, result
+
+
+def test_url_params_after_push_state_follow_new_url():
+    # open 先 pushState 到栏目自己的地址（后面加 &nav=3），再读网址参数：浏览器读的是新地址
+    page = fixture("jx_page.html")
+    old = "if (me.currNode.children) {"
+    assert page.count(old) == 1
+    result = resolve_fixture(
+        "jx", "49949451", page=page.replace(old, "if (Ls.url.get('nav') === '3') {", 1)
+    )
+    assert not isinstance(result, str) and result.plan.mode == "city_page", result
+    # 栏目地址里带着的参数也按新地址读
+    uri = '"uri":"/public/column/6991?type=4&catId=49949451&action=list"'
+    catalog = fixture("jx_catalog.js")
+    assert catalog.count(uri) == 1
+    tagged = catalog.replace(uri, uri[:-1] + '&x=1"', 1)
+    changed = page.replace(old, "if (Ls.url.get('x') === '') {", 1)
+    result = resolve_fixture("jx", "49949451", page=changed, catalog=tagged)
+    assert not isinstance(result, str) and result.plan.mode == "list", result
+
+
+@pytest.mark.parametrize("tail", ["&q=a b", "&q=\\\\x.example", "&q=中"])
+def test_push_state_target_with_odd_characters_refused(tail):
+    uri = '"uri":"/public/column/6991?type=4&catId=49949451&action=list"'
+    catalog = fixture("jx_catalog.js")
+    result = resolve_fixture(
+        "jx", "49949451", catalog=catalog.replace(uri, uri[:-1] + tail + '"', 1)
+    )
+    assert isinstance(result, str) and "pushState" in result, result
+
+
+@pytest.mark.parametrize(
+    "src", ["\\\\x.ah.gov.cn/49631981/6991.js", " /49631981/6991.js", "/49631981/6991.js\t"]
+)
+def test_catalog_src_with_odd_characters_refused(src):
+    from youju.crawler.lonsun import find_lonsun_api
+
+    page = fixture("jx_page.html")
+    old = 'src="/49631981/6991.js"'
+    assert page.count(old) == 1
+    reasons = []
+    changed = page.replace(old, f'src="{src}"', 1)
+    assert find_lonsun_api(changed, BASE, BASE, _diagnosis=reasons) is None
+    assert reasons and "栏目树脚本地址" in reasons[0], reasons
+
+
+def test_legacy_octal_escapes_not_guessed():
+    from youju.crawler.lonsun import LonsunFormatError, _string_literal
+
+    assert _string_literal("'a\\0b'") == "a\0b"
+    for text in ("'\\1'", "'\\01'", "'\\7x'"):
+        with pytest.raises(LonsunFormatError):
+            _string_literal(text)
 
 
 def test_preprocess_name_member_needs_string_names():

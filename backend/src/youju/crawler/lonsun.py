@@ -12,6 +12,14 @@
    写进适配器说明、部门目录规则和 PR。
 
 认不出的一律不读，原因写进"待人工处理"；认页面的规则见 docs/数据来源/全国覆盖/部门目录规则.md。
+
+几条前提（第七轮独立审阅的建议，写明）：
+- 加载时会跑的代码只查它改了什么、调了什么，不逐句推算会不会出错；只有 setSelect（在 getData 之前、
+  栏目树不对就出错）和 preprocessData 读节点字段的成员照栏目树算。getData 以后跳过的显示方法
+  （setMeta、getNav、getGd）和建树设置里的显示回调要是出错，浏览器就不发列表请求，我们照发；真实
+  页面上这几处都只读写页面元素。
+- 芜湖这类 init 里 me.getPublicQcsmCatIds().done(getData)：浏览器要等那个请求成功才发列表请求，
+  我们不发那个请求、直接定列表请求（只少不多）。
 """
 
 import collections
@@ -32,6 +40,13 @@ from youju.crawler.urls import normalize_url, url_key
 # 依据 2026-11-13 区县栏目页实测；新增城市须先审查同城集约化平台关系。
 # robots.txt 的 4xx 按 RFC 9309 视为没有规则；5xx、网络错误和超时按不可读处理。
 LONSUN_CITY_PORTALS = {("安徽", "芜湖"): "www.wuhu.gov.cn", ("安徽", "淮南"): "www.huainan.gov.cn"}
+
+
+def _odd_url(text: str) -> bool:
+    """网址里只认可见的 ASCII 字符（不含反斜杠）。浏览器解析网址前去掉首尾空白和控制字符、删掉中间
+    的换行和制表符、把反斜杠当斜杠（\\x.example/… 是别的主机）、空格和汉字转成 %xx；urljoin 都不
+    这样做，两边拼出来的地址、读到的 location.href 可能不一样。"""
+    return any(c == "\\" or not "!" <= c <= "~" for c in text)
 
 
 def city_catalog_host(province: object, city: object, configured: object) -> str | None:
@@ -646,6 +661,9 @@ def _string_literal(value: str) -> str:
                 if c == "\r" and i < len(value) - 1 and value[i] == "\n":
                     i += 1
                 continue
+            elif c in "1234567" or c == "0" and value[i : i + 1] in set("0123456789"):
+                # 非严格模式下是八进制（'\1' 是 \x01），严格模式下是语法错误：认不准
+                raise LonsunFormatError("字符串里有老式八进制转义")
             else:
                 c = escapes.get(c, c)
         result.append(c)
@@ -2321,6 +2339,29 @@ def _global_object_problem(tokens, values):
     return None
 
 
+def _name_positions(values, name):
+    """name 出现在哪些记号上：名字本身，或者字符串、模板字符串里含着这几个字。"""
+    found = []
+    for k, value in enumerate(values):
+        text = _string_literal(value) if value[:1] in ("'", '"') else value
+        if text == name or value[:1] in ("'", '"', "`") and name in text:
+            found.append(k)
+    return found
+
+
+def _top_level_parent_problem(tokens, values, keep=()):
+    """setSelect 往上找到 me.topLevelParentId 为止：这个值只许 findParentId 定、
+    findTopLevelParentNode 读（keep 是这两个方法体的记号范围）。别处出现（名字、字符串都算）
+    就算不出 setSelect 会不会出错。"""
+    for k in _name_positions(values, "topLevelParentId"):
+        if not any(a < k < b for a, b in keep):
+            return (
+                "别处也用到 topLevelParentId（只许 findParentId 定、findTopLevelParentNode 读）"
+                + _UNCLEAR
+            )
+    return None
+
+
 def _attribute_script_problem(source, functions, widget):
     """元素属性里的脚本：照别的内联脚本的规矩查——可以读那几个全局对象，不能改；不能改依赖的
     全局（GLOBAL_CONTEXTPATH 这类）、jQuery 的请求设置、zTree、内置对象，不能整个改 window。"""
@@ -2343,6 +2384,7 @@ def _attribute_script_problem(source, functions, widget):
         _global_object_problem(tokens, values)
         or _ztree_problem(values)
         or _builtin_problem(tokens, values)
+        or _top_level_parent_problem(tokens, values)
         or _foreign_problem(source, functions, widget)
     )
 
@@ -3567,11 +3609,21 @@ def find_lonsun_api(
                     or "zTree" in path
                 ):
                     return fail("内联脚本改写了依赖状态")
+            keep = (
+                [
+                    span
+                    for name, span in _method_spans(tokens).items()
+                    if name in ("findParentId", "findTopLevelParentNode")
+                ]
+                if is_tree_script
+                else []
+            )
             problem = (
                 _ztree_problem(values)
                 or _builtin_problem(tokens, values)
                 or _global_object_problem(tokens, values)
                 or _dynamic_code_problem(tokens, values)
+                or _top_level_parent_problem(tokens, values, keep)
             )
             if not problem:
                 # PublicTree 的原型方法另有规则查（open 里的 pushState 照着走）；构造函数在这里查
@@ -3834,6 +3886,8 @@ def find_lonsun_api(
             url = urljoin(page_url, candidate)
             parts = urlsplit(url)
             if re.search(r"/[0-9]+/" + re.escape(spec[0]) + r"\.js$", parts.path):
+                if _odd_url(candidate):
+                    return fail("栏目树脚本地址里有反斜杠、空白、控制字符或非 ASCII 字符，认不准")
                 # 构造函数执行时栏目树脚本得已经跑过（catalogs 有了），浏览器才会发列表请求：
                 # async 的什么时候跑说不准；就绪回调里创建的，defer、写在后面的都来得及；脚本
                 # 顶层创建的，栏目树脚本得是写在前面的普通脚本（或者前面的脚本 document.write 的）
@@ -4526,36 +4580,266 @@ _FIND_PARENT_FREQUENT = _FIND_PARENT_HEAD + _words(
 )
 
 
+def _member_sites(body, name):
+    """方法体里用到 me.name 的地方（this.name、me['name'] 也算；用户点了才跑的处理函数里的不算）：
+    [(记号位置, 在不在 try 块里)]。"""
+    tokens = _js_tokens(body)
+    values = _values(tokens)
+    spans = _handler_spans(tokens, values)
+    guarded = [
+        (j + 1, _matching_token(tokens, j + 1))
+        for j in range(len(values) - 1)
+        if values[j] == "try" and values[j + 1] == "{"
+    ]
+    sites = []
+    for k in range(len(values) - 2):
+        member = values[k + 2] if values[k + 1] == "." else ""
+        if values[k + 1] == "[" and values[k + 3 : k + 4] == ["]"]:
+            key = values[k + 2]
+            member = _string_literal(key) if key[:1] in ("'", '"') else ""
+        if values[k] in ("me", "this") and member == name and not any(a < k < b for a, b in spans):
+            sites.append((k, any(a < k < b for a, b in guarded)))
+    return sites
+
+
 def _set_select_unguarded(raw):
     """有没有方法（用户点了才跑的处理函数以外）在 try 外面调 setSelect。"""
-    for body in raw.values():
-        tokens = _js_tokens(body)
-        values = _values(tokens)
-        spans = _handler_spans(tokens, values)
-        guarded = [
-            (j + 1, _matching_token(tokens, j + 1))
-            for j in range(len(values) - 1)
-            if values[j] == "try" and values[j + 1] == "{"
-        ]
-        for k in range(len(values) - 2):
-            name = values[k + 2] if values[k + 1] == "." else ""
-            if values[k + 1] == "[" and values[k + 3 : k + 4] == ["]"]:
-                key = values[k + 2]
-                name = _string_literal(key) if key[:1] in ("'", '"') else ""
+    return any(
+        not guarded for body in raw.values() for _, guarded in _member_sites(body, "setSelect")
+    )
+
+
+_UNCLEAR = "，算不出 setSelect 会不会出错"
+
+
+def _init_order_problem(raw):
+    """setSelect 往上找到 me.topLevelParentId 为止，这个值是 findParentId 定的：init 顶层得正好
+    调一次 findParentId，而且在 initTree（它调 setSelect）之前；别的方法不许在加载时调 initTree、
+    findParentId（157 个真实页面都这样）。"""
+    calls = []
+    for st in _parse_statements(raw.get("init", "")):
+        expr = st[1] if st[0] == "expression" else None
+        plain = expr is not None and expr[0] == "call" and not expr[2]
+        calls.append(_call_path(expr) if plain else None)
+    if (
+        calls.count("me.findParentId") != 1
+        or "me.initTree" not in calls
+        or calls.index("me.findParentId") > calls.index("me.initTree")
+    ):
+        return "init 没有在 initTree 之前正好调一次 findParentId" + _UNCLEAR
+    for name in ("findParentId", "initTree"):
+        for method, body in raw.items():
+            if method != "init" and _member_sites(body, name):
+                return f"{method} 在加载时用到 {name}" + _UNCLEAR
+    return None
+
+
+_TREE_INIT = ["=", "$", ".", "fn", ".", "zTree", ".", "init", "("]
+# 建完树一，删掉顶层节点的 children（setSelect 在树一里就只找得到顶层栏目）：157 个真实页面里不在
+# try 里调 setSelect 的都是这样写的
+_TREE1_EACH = _words(
+    "$ . each ( _organTree . getNodes ( ) , function ( i , node ) { delete node . children ; "
+    "node . isParent = false ; _organTree . updateNode ( node ) ; } )"
+)
+_NOT_A_READ = frozenset(
+    {
+        "(",
+        ".",
+        "[",
+        *_ASSIGN_OPS,
+        "**=",
+        "<<=",
+        ">>=",
+        ">>>=",
+        "&=",
+        "|=",
+        "^=",
+        "&&=",
+        "||=",
+        "??=",
+    }
+)
+# 不当名字看的关键字（let、of 这类可以当变量名的不在里面：当成别处的名字，宁严）
+_JS_WORDS = frozenset(
+    {
+        "var",
+        "const",
+        "if",
+        "else",
+        "for",
+        "while",
+        "do",
+        "return",
+        "break",
+        "continue",
+        "switch",
+        "case",
+        "default",
+        "function",
+        "new",
+        "delete",
+        "typeof",
+        "instanceof",
+        "in",
+        "void",
+        "try",
+        "catch",
+        "finally",
+        "throw",
+        "true",
+        "false",
+        "null",
+        "this",
+    }
+)
+
+
+def _tree_statement(tokens, values, k, tree, data):
+    """k 处是 `<tree> = $.fn.zTree.init($('…'), <建树设置>, me.<data>);`：给 (分号后面的位置,
+    建树设置的名字)；不是给 None。"""
+    if values[k : k + 1] != [tree] or values[k + 1 : k + 10] != _TREE_INIT:
+        return None
+    close = _matching_token(tokens, k + 9)
+    args = values[k + 10 : close]
+    if (
+        len(args) != 10
+        or args[:2] != ["$", "("]
+        or args[2][:1] not in ("'", '"')
+        or args[3:5] != [")", ","]
+        or not _IDENT.fullmatch(args[5])
+        or args[6:9] != [",", "me", "."]
+        or args[9] not in data
+        or values[close + 1 : close + 2] != [";"]
+    ):
+        return None
+    return close + 2, args[5]
+
+
+def _tree_one_problem(raw, args):
+    """推算 setSelect 时当树一（_organTree）是整棵栏目树建的、只删了顶层节点的 children。照真实页面
+    的写法核对：initTree 顶层先用和树二同一个建树设置、me.ztreeData 建树一，紧接着建树二、删顶层
+    children，然后直接调 setSelect。这之前会跑的代码（含建树设置里的显示回调；用户点了才跑的除外）
+    只许用局部变量、$ 选元素、$.each、zTree.init、读 me 的字段，碰不到别的脚本和 PublicTree 的别的
+    方法；_organTree 除了上面这几处不许再用；字符串里不许有 script（往页面里写脚本），不许替用户
+    触发事件。"""
+    source = raw.get("initTree", "")
+    tokens = _js_tokens(source)
+    values = _values(tokens)
+    if "_organTree" in {a.strip() for a in args.get("initTree", "").split(",")}:
+        return "initTree 的参数遮住了 _organTree" + _UNCLEAR
+    first = next((k for k, value in enumerate(values) if value == "_organTree"), None)
+    one = (
+        None
+        if first is None
+        else _tree_statement(tokens, values, first, "_organTree", ("ztreeData",))
+    )
+    if (
+        one is None
+        or first
+        and values[first - 1] not in (";", "}")
+        or first not in _depth_zero(tokens, 0, len(tokens))
+    ):
+        return "initTree 没有在顶层先用整棵栏目树（me.ztreeData）建树一" + _UNCLEAR
+    after, setting = one
+    two = _tree_statement(tokens, values, after, "_organTree2", ("ztreeData2", "ztreeData"))
+    each = two[0] if two is not None and two[1] == setting else None
+    call = None if each is None else each + len(_TREE1_EACH)
+    if call is not None and values[call : call + 1] == [";"]:
+        call += 1
+    if (
+        each is None
+        or values[each:call][: len(_TREE1_EACH)] != _TREE1_EACH
+        or values[call : call + 6] != ["me", ".", "setSelect", "(", ")", ";"]
+    ):
+        return "initTree 建树一到 setSelect 之间的写法认不出" + _UNCLEAR
+    unguarded = [
+        (method, k)
+        for method, body in raw.items()
+        for k, guarded in _member_sites(body, "setSelect")
+        if not guarded
+    ]
+    if unguarded != [("initTree", call)]:
+        return "setSelect 不是只在 initTree 建好树以后直接调一次" + _UNCLEAR
+    spans = _handler_spans(tokens, values)
+    keep = {first, after, each + 4, each + 28}  # 上面那几处 _organTree、_organTree2
+    positions = [k for k in range(call) if not any(a < k < b for a, b in spans)]
+    local = _local_name_ranges(
+        tokens, values, {values[k] for k in positions if _IDENT.fullmatch(values[k])}
+    )
+    declared = {
+        values[f + 1]: f
+        for f in range(len(values) - 2)
+        if values[f] == "function"
+        and _IDENT.fullmatch(values[f + 1])
+        and values[f + 2] == "("
+        and (f == 0 or values[f - 1] in (";", "{", "}", ")"))
+    }
+    text = []
+    for k in positions:
+        value = values[k]
+        prev = values[k - 1] if k else ""
+        following = values[k + 1] if k + 1 < len(values) else ""
+        if value[:1] in ("'", '"'):
+            text.append(_string_literal(value))
+        elif value[:1] == "`":
+            text.append(value[1:-1])
+        elif value in ("_organTree", "_organTree2"):
+            if k not in keep:
+                return f"initTree 在 setSelect 之前另外用了 {value}" + _UNCLEAR
+        elif value == "this":
+            if values[max(0, k - 3) : k] != ["var", "me", "="]:
+                return "initTree 在 setSelect 之前用了 this" + _UNCLEAR
+        elif prev == ".":
             if (
-                values[k] in ("me", "this")
-                and name == "setSelect"
-                and not any(a < k < b for a, b in spans)
-                and not any(a < k < b for a, b in guarded)
+                value in _TRIGGERS
+                or value in _EVENT_SHORTHANDS
+                and values[k + 1 : k + 3] == ["(", ")"]
             ):
-                return True
-    return False
+                return f"initTree 在 setSelect 之前替用户触发事件（.{value}）" + _UNCLEAR
+        elif (
+            not _IDENT.fullmatch(value)
+            or value in _JS_WORDS
+            or prev == "function"  # 函数的名字
+            or following == ":"
+            and prev in ("{", ",")  # 对象的键
+        ):
+            continue
+        elif value == "me":
+            reads = (
+                following == "."
+                and _IDENT.fullmatch(values[k + 2] if k + 2 < len(values) else "")
+                and values[k + 3 : k + 4] != []
+                and values[k + 3] not in _NOT_A_READ
+                and prev not in ("++", "--", "delete")
+            )
+            if not (reads or prev == "var" and values[k + 1 : k + 3] == ["=", "this"]):
+                return "initTree 在 setSelect 之前除了读字段还用了 me" + _UNCLEAR
+        elif any(a < k < b for a, b in local.get(value, ())):
+            # 局部函数只许调写在 setSelect 之前的函数声明（它们的函数体照这里的规矩查过）
+            if following == "(" and declared.get(value, call) >= call:
+                return f"initTree 在 setSelect 之前调用了 {value}" + _UNCLEAR
+        elif not (
+            value == "undefined"
+            or value == "$"
+            and (
+                following == "("
+                or values[k + 1 : k + 4] == [".", "each", "("]
+                or values[k + 1 : k + 8] == [".", "fn", ".", "zTree", ".", "init", "("]
+            )
+        ):
+            return f"initTree 在 setSelect 之前用了 {value}" + _UNCLEAR
+    if "script" in "".join(text).lower():
+        return "initTree 在 setSelect 之前往页面里写脚本" + _UNCLEAR
+    return None
 
 
-def _set_select_problem(raw, args, nodes, cat_id, hide_ok):
+def _set_select_problem(raw, args, nodes, cat_id, hide_ok, modified=frozenset()):
     """在 try 外面调的 setSelect 会不会在 getData 之前出错（出错就给原因：浏览器不发列表请求）。"""
     if not _set_select_unguarded(raw):
         return None
+    problem = _init_order_problem(raw) or _tree_one_problem(raw, args)
+    if problem:
+        return problem
     tokens = _js_tokens(raw.get("setSelect", ""))
     values = _values(tokens)
     n = len(_SET_SELECT_PREFIX)
@@ -4589,6 +4873,9 @@ def _set_select_problem(raw, args, nodes, cat_id, hide_ok):
         return "findParentId 的写法认不出，算不出 setSelect 会不会出错"
     if not hide_ok:
         return "页面隐去部分栏目，算不出 setSelect 会不会出错"
+    if "id" in modified:
+        # 树一按 id 找栏目（getNodeByParam('id', …)）
+        return "preprocessData 改了栏目节点的 id" + _UNCLEAR
     ids = {node["id"] for node in nodes}
     target = int(cat_id)  # Ls.url.get('catId') 是数字串；zTree 按 == 比，就是数值相等
     # 树一（me.ztreeData，就是整棵栏目树）的顶层节点：上级不在树里的，或者上级是自己的；建完树
@@ -4684,7 +4971,12 @@ def resolve_lonsun(api, catalog_text):
         cat_id = spec[1]
         # getData 之前就会出错的（浏览器不发列表请求）：preprocessData 读节点字段的成员、setSelect
         problem = _node_field_problem(raw, nodes) or _set_select_problem(
-            raw, {name: args for name, args, _ in plan.raw_methods}, nodes, cat_id, hide_ok
+            raw,
+            {name: args for name, args, _ in plan.raw_methods},
+            nodes,
+            cat_id,
+            hide_ok,
+            modified,
         )
         if problem:
             return problem
@@ -4733,6 +5025,7 @@ def resolve_lonsun(api, catalog_text):
             }
         )
         globals_ = dict(plan.globals)
+        current = {"url": api.base_url, "query": query}  # 现在的网址（pushState 会改）
         globals_.update(
             {
                 "this": me,
@@ -4775,7 +5068,7 @@ def resolve_lonsun(api, catalog_text):
                 return node
             if fn == "url.get" and len(args) == 1 and isinstance(args[0], str):
                 # 平台 common.min.js：get 通过 TT.isEmpty 将缺失值转为空串。
-                return query.get(args[0], "")
+                return current["query"].get(args[0], "")
             if fn == "url.stringify" and len(args) == 1 and isinstance(args[0], dict):
                 from urllib.parse import quote
 
@@ -5001,9 +5294,12 @@ def resolve_lonsun(api, catalog_text):
                         target = _evaluate(expr[2][2], env)
                         if not isinstance(target, str):
                             raise Stop("pushState 地址无法确定")
+                        if _odd_url(target):
+                            raise Stop("pushState 地址里有反斜杠、空白、控制字符或非 ASCII 字符")
+                        # 相对的是现在的网址（前面 pushState 过就是改过的）
                         source_url, target_url = (
-                            urlsplit(api.base_url),
-                            urlsplit(urljoin(api.base_url, target)),
+                            urlsplit(current["url"]),
+                            urlsplit(urljoin(current["url"], target)),
                         )
 
                         def origin(u):
@@ -5019,6 +5315,11 @@ def resolve_lonsun(api, catalog_text):
                             or origin(source_url) != origin(target_url)
                         ):
                             raise Stop("pushState 地址跨源")
+                        # 网址改了：之后读网址参数（Ls.url.get）、location 照浏览器按新网址；
+                        # me.query 是构造函数时取的，不变
+                        current["url"] = urljoin(current["url"], target)
+                        current["query"] = _platform_query(urlsplit(current["url"]).query)
+                        globals_["location"] = _PartialDict({"href": current["url"]})
                         return False
                     if path == "me.open" and len(expr[2]) <= 1:
                         value = _evaluate(expr[2][0], env) if expr[2] else UNDEFINED
