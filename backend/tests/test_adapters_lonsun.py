@@ -2837,6 +2837,37 @@ def _jx_catalog_with(nodes_prefix):
     return head + nodes_prefix + catalog[len(head) :]
 
 
+@pytest.mark.parametrize(
+    "node",
+    [
+        # 浏览器按双精度读：2^53 和 2^53+1 在浏览器里是同一个数，建树和我们按整数比对的结果不一样
+        '{"id":9007199254740992,"name":"x","parentId":49938311,"isParent":false,'
+        '"uri":"","link":""},',
+        '{"id":12,"name":"x","parentId":9007199254740993,"isParent":false,"uri":"","link":""},',
+    ],
+    ids=["id", "parentId"],
+)
+def test_catalog_ids_beyond_js_safe_integers_refused(node):
+    # 第十三轮 Codex
+    reason = resolve_fixture("jx", "49949451", catalog=_jx_catalog_with(node))
+    assert isinstance(reason, str) and "精确表示" in reason, reason
+
+
+def test_city_page_catids_beyond_js_safe_integers_refused():
+    from youju.crawler.lonsun import LonsunFormatError, parse_response
+
+    payload = [
+        {
+            "catId": 9007199254740993,
+            "name": "x",
+            "redirectLink": False,
+            "childPublicContentList": [],
+        }
+    ]
+    with pytest.raises(LonsunFormatError):
+        parse_response(json.dumps(payload), "city_page", BASE, TODAY, (9007199254740992,))
+
+
 def test_set_select_error_before_getdata_means_no_request():
     from youju.crawler.adapters import ListApi
 

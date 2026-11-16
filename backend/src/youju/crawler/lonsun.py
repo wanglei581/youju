@@ -214,6 +214,16 @@ def _strict_json(text: str):
     return json.loads(text, parse_constant=_reject_constant)
 
 
+# 浏览器按双精度读 JSON 数字：超出这个范围的整数，几个不同的编号在浏览器里会变成同一个（建树、
+# 排除下级时和我们按 Python 整数比对的结果不一样）
+_JS_SAFE_INT = 2**53 - 1
+
+
+def _js_int(value: object) -> bool:
+    """value 是不是浏览器也能精确表示的整数（不是 True、False）。"""
+    return type(value) is int and -_JS_SAFE_INT <= value <= _JS_SAFE_INT
+
+
 def parse_catalog(text: str, organ_id: str) -> list[dict]:
     """只接受页面对应机构的单个 JSON 栏目树，并拒绝重复编号。"""
     if not re.fullmatch(r"[0-9]+", organ_id):
@@ -230,16 +240,16 @@ def parse_catalog(text: str, organ_id: str) -> list[dict]:
     except (ValueError, RecursionError) as exc:  # 嵌套太深也当认不出
         raise LonsunFormatError("栏目树 JSON 无效") from exc
     if not isinstance(nodes, list) or any(
-        not isinstance(node, dict) or type(node.get("id")) is not int for node in nodes
+        not isinstance(node, dict) or not _js_int(node.get("id")) for node in nodes
     ):
-        raise LonsunFormatError("栏目树节点编号无效")
+        raise LonsunFormatError("栏目树节点编号无效（不是整数，或者超出浏览器能精确表示的范围）")
     for node in nodes:
         # zTree 按 parentId 原样当键找上级：写成字符串、带前导零的找不到，当成根；节点自带
         # children（哪怕是空数组）在浏览器里就算有下级。这两种都认不准
         if "children" in node:
             raise LonsunFormatError("栏目树节点自带 children")
-        if node.get("parentId") is not None and type(node.get("parentId")) is not int:
-            raise LonsunFormatError("栏目树节点的上级编号不是整数")
+        if node.get("parentId") is not None and not _js_int(node.get("parentId")):
+            raise LonsunFormatError("栏目树节点的上级编号不是整数，或者超出浏览器能精确表示的范围")
     ids = [node["id"] for node in nodes]
     if len(ids) != len(set(ids)):
         raise LonsunFormatError("栏目树节点编号重复")
@@ -279,7 +289,7 @@ def _city_rows(nodes: object, *, nested: bool = False, excluded: tuple[int, ...]
         if (
             not isinstance(node, dict)
             or set(node) - _CITY_KEYS
-            or type(node.get("catId")) is not int
+            or not _js_int(node.get("catId"))
             or not isinstance(node.get("name"), str)
             or type(node.get("redirectLink")) is not bool
             or any(type(node[key]) is not bool for key in ("isParent", "parent") if key in node)
