@@ -1081,3 +1081,33 @@ def test_hidden_link_without_a_visible_twin_is_still_a_document() -> None:
         ("关于公布第二批名单的通知", date(2026, 10, 20)),
         ("关于征集典型案例的通知", date(2026, 10, 19)),
     ]
+
+
+def test_only_date_of_the_row_inside_a_hidden_card_is_still_read() -> None:
+    # 藏起来的悬浮卡片里有链接，也写着这一行唯一的日期：弹层外面找不到日期时照原来读
+    html = """<ul class="list">
+      <li><a href="/a/1.html">关于项目申报工作的通知</a><div style="display:none"><a href="/a/1.html#share">分享</a><span>发布日期：2026-10-21</span></div></li>
+      <li><a href="/a/2.html">关于公布第二批名单的通知</a><div style="display:none"><a href="/a/2.html#share">分享</a><span>发布日期：2026-10-20</span></div></li>
+      <li><a href="/a/3.html">关于征集典型案例的通知</a><div style="display:none"><a href="/a/3.html#share">分享</a><span>发布日期：2026-10-19</span></div></li>
+    </ul>"""
+    items = extract_items(html, "http://example.gov.cn/a/", today=date(2026, 11, 16))
+    assert [(i.title, i.publish_date) for i in items] == [
+        ("关于项目申报工作的通知", date(2026, 10, 21)),
+        ("关于公布第二批名单的通知", date(2026, 10, 20)),
+        ("关于征集典型案例的通知", date(2026, 10, 19)),
+    ]
+
+
+def test_hidden_full_title_link_with_the_same_url_as_a_visible_detail_link_is_kept() -> None:
+    # 看得见的只写"详情"、藏着的写着完整标题，两个网址一模一样：藏着的照旧当文件（只有多出参数的才算附带链接）
+    html = """<ul class="list">
+      <li><a href="/a/1.html">详情</a><a href="/a/1.html" style="display:none">关于项目申报工作的通知</a><span>2026-10-21</span></li>
+      <li><a href="/a/2.html">详情</a><a href="/a/2.html" style="display:none">关于公布第二批名单的通知</a><span>2026-10-20</span></li>
+      <li><a href="/a/3.html">详情</a><a href="/a/3.html" style="display:none">关于征集典型案例的通知</a><span>2026-10-19</span></li>
+    </ul>"""
+    items = extract_items(html, "http://example.gov.cn/a/", today=date(2026, 11, 16))
+    assert [(i.title, i.publish_date) for i in items] == [
+        ("关于项目申报工作的通知", date(2026, 10, 21)),
+        ("关于公布第二批名单的通知", date(2026, 10, 20)),
+        ("关于征集典型案例的通知", date(2026, 10, 19)),
+    ]
