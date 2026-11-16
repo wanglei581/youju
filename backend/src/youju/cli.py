@@ -8,6 +8,7 @@ import os
 import re
 import sys
 import tempfile
+import time
 from collections import Counter
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -245,13 +246,24 @@ def _cmd_fetch_details_queue(args: argparse.Namespace) -> int:
     from youju.ai.pipeline import round_running, round_wanted
     from youju.crawler.detail_service import run_detail_queue
 
+    checked = {"at": None, "reason": None}
+
     def stop_reason():
+        # 每次请求前都会问；结果用 2 秒，免得一秒几十次去拿别的任务的锁（job.sh、round_slot
+        # 撞上那一瞬会以为有人在跑）
+        now = time.monotonic()
+        if checked["at"] is not None and now - checked["at"] < 2:
+            return checked["reason"]
+        reason = None
         if round_wanted() or round_running():
-            return "每轮抓取在跑或在等锁"
-        for name in DETAIL_QUEUE_YIELD_JOBS:
-            if round_running(f"/tmp/youju-{name}.lock"):
-                return f"别的任务在跑：{name}"
-        return None
+            reason = "每轮抓取在跑或在等锁"
+        else:
+            for name in DETAIL_QUEUE_YIELD_JOBS:
+                if round_running(f"/tmp/youju-{name}.lock"):
+                    reason = f"别的任务在跑：{name}"
+                    break
+        checked.update(at=now, reason=reason)
+        return reason
 
     reason = stop_reason()
     if reason:

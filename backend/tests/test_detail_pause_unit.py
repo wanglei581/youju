@@ -137,7 +137,9 @@ def test_pdf_429_pauses_pdf_host_and_blocks_redirect(tmp_path):
         )
     assert results[1].fetch.http_status == 429
     assert 2 in results and 3 not in results
-    assert pause.reasons == {"b.gov.cn": "HTTP 429"}
+    # 第三份跳到停取中的 b.gov.cn：a.gov.cn 跟着停到 b 恢复（429 停 6 小时）
+    assert pause.reasons == {"b.gov.cn": "HTTP 429", "a.gov.cn": "跳到停取中的 b.gov.cn"}
+    assert pause.expiry("a.gov.cn") == pause.expiry("b.gov.cn")
     assert "https://b.gov.cn/target" not in calls
 
 
@@ -227,7 +229,7 @@ def _hours_left(path, host):
     return (until - datetime.now(UTC)).total_seconds() / 3600
 
 
-def test_robots_error_pauses_an_hour_in_file(tmp_path):
+def test_robots_network_error_pauses_this_run_only(tmp_path):
     calls = []
     path = tmp_path / "pause.json"
 
@@ -245,12 +247,11 @@ def test_robots_error_pauses_an_hour_in_file(tmp_path):
     )
     assert set(results) == {1, 3}
     assert len(calls) == 2
-    # 连不上、超时这类读不到 robots.txt：停 1 小时（写进文件，下次运行照样挡），免得每 30 分钟
-    # 都去请求一次坏掉的 robots.txt
+    # 连不上、超时这类读不到 robots.txt：可能是我们自己断网，只停这次运行，不写进共享文件
+    # （回 5xx 的停 1 小时，见 test_robots_server_errors_pause_in_file）
     reason = "robots.txt 读不到（连不上、超时或证书问题）"
     assert pause.reasons == {"a.gov.cn": reason}
-    assert _SitePause(str(path)).reasons == {"a.gov.cn": reason}
-    assert _hours_left(path, "a.gov.cn") == pytest.approx(1, abs=0.05)
+    assert _SitePause(str(path)).reasons == {}
 
 
 def _robots_fetch(tmp_path, robots, page=200):
@@ -387,3 +388,119 @@ def test_protected_detail_page_skips_its_pdf(monkeypatch):
     outcome = detail_service._fetch_one(1, "https://a.gov.cn/detail", Fake())
     assert outcome.status == "protected"
     assert calls == ["https://a.gov.cn/detail"]
+
+
+def _page_with_pdf(url):
+    return FetchResult(
+        url,
+        "ok",
+        final_url=url,
+        http_status=200,
+        text="<html><body><div id='zoom'><a href='https://files.gov.cn/f.pdf'>附件.pdf</a></div>"
+        "</body></html>",
+        content_type="text/html",
+    )
+
+
+def test_redirect_to_paused_host_pauses_source_host(tmp_path):
+    path = str(tmp_path / "pause.json")
+    pause = _SitePause(path)
+    pause.add("b.gov.cn", "HTTP 403")
+    calls = []
+
+    def handler(request):
+        calls.append(str(request.url))
+        if request.url.path == "/robots.txt":
+            return httpx.Response(404)
+        return httpx.Response(302, headers={"location": "https://b.gov.cn/same"})
+
+    with PoliteFetcher(
+        "test",
+        per_host_interval=0,
+        per_address_interval=0,
+        transport=httpx.MockTransport(handler),
+        resolver=lambda host: ["1.2.3.4"],
+    ) as fetcher:
+        outcomes = _fetch_outcomes(
+            [(n, f"https://a.gov.cn/{n}") for n in range(1, 6)], fetcher, 1, pause=pause
+        )
+    # A 上的文件都跳到停取中的 B：取了第一份就跟着停 A，不再一份一份去敲 A
+    assert [c for c in calls if not c.endswith("/robots.txt")] == ["https://a.gov.cn/1"]
+    assert outcomes == {}
+    assert pause.reasons["a.gov.cn"] == "跳到停取中的 b.gov.cn"
+    assert _SitePause(path).expiry("a.gov.cn") == _SitePause(path).expiry("b.gov.cn")
+
+
+def test_pdf_on_paused_host_defers_only_that_document(tmp_path, monkeypatch):
+    from youju.crawler.detail import Attachment, DetailResult
+
+    path = str(tmp_path / "pause.json")
+    pause = _SitePause(path)
+    pause.add("files.gov.cn", "HTTP 403")
+    calls = []
+
+    class Fake:
+        def fetch(self, url):
+            calls.append(url)
+            return _page_with_pdf(url)
+
+    monkeypatch.setattr(
+        detail_service,
+        "parse_detail",
+        lambda text, url: DetailResult(
+            attachments=[Attachment("附件.pdf", "https://files.gov.cn/f.pdf", "pdf")]
+        ),
+    )
+    _fetch_outcomes([(1, "https://a.gov.cn/1"), (2, "https://a.gov.cn/2")], Fake(), 1, pause=pause)
+    # 两份都去取了详情页（A 没拒绝过我们），PDF 在停取中的网站上：这两份延后，A 不停
+    assert calls == ["https://a.gov.cn/1", "https://a.gov.cn/2"]
+    again = _SitePause(path)
+    assert "a.gov.cn" not in again.reasons
+    assert {"doc:1", "doc:2"} <= set(again.reasons)
+    assert "doc:1" not in again.hosts
+    # 下次运行不再选这两份
+    calls.clear()
+    _fetch_outcomes([(1, "https://a.gov.cn/1"), (2, "https://a.gov.cn/2")], Fake(), 1, pause=again)
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "reply,reason", [(FetchResult("", "http_error", http_status=405), "连续 3 份 HTTP 405")]
+)
+def test_streak_pauses_host_for_this_run(tmp_path, reply, reason):
+    calls = []
+
+    class Fake:
+        def fetch(self, url):
+            calls.append(url)
+            return FetchResult(url, reply.status, final_url=url, http_status=reply.http_status)
+
+    path = tmp_path / "pause.json"
+    pause = _SitePause(str(path))
+    _fetch_outcomes([(n, f"https://a.gov.cn/{n}") for n in range(1, 7)], Fake(), 1, pause=pause)
+    assert len(calls) == 3
+    assert pause.reasons == {"a.gov.cn": reason}
+    assert not path.exists()  # 只停这次运行
+
+
+def test_streamed_outcomes_drop_page_content():
+    class Fake:
+        def fetch(self, url):
+            return FetchResult(url, "http_error", final_url=url, http_status=404, content=b"x" * 10)
+
+    seen = []
+    _fetch_outcomes([(1, "https://a.gov.cn/1")], Fake(), 1, on_outcome=seen.append)
+    assert seen[0].fetch.content == b"" and seen[0].fetch.text == ""
+    assert seen[0].fetch.http_status == 404
+
+
+def test_queue_refuses_without_shared_rate_dir(tmp_path, monkeypatch):
+    from youju.config import get_settings
+    from youju.crawler.detail_service import run_detail_queue
+
+    blocked = tmp_path / "not-a-dir"
+    blocked.write_text("x")
+    monkeypatch.setattr(get_settings(), "rate_limit_dir", str(blocked))
+    summary = run_detail_queue(None, minutes=1)
+    assert summary.stop_reason == "跨进程限速的目录用不了，不跑"
+    assert summary.total == 0

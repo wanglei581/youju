@@ -132,16 +132,22 @@ def test_stop_after_committed_result(session, monkeypatch):
 
     monkeypatch.setattr(detail_service, "_save_result", save_signal)
 
+    waited = []
+
     class WaitingFetcher(FakeFetcher):
         def fetch(self, url):
             if url == docs[1].url:
-                assert written.wait(5)
+                # 在取页线程里断言会被当成处理异常吞掉：记下来，运行完再断言
+                waited.append(written.wait(5))
             return super().fetch(url)
 
     fake = WaitingFetcher({d.url: response(d) for d in docs})
     summary = run_detail_queue(session, minutes=1, fetcher=fake, stop=written.is_set)
     assert summary.stop_reason == "每轮要锁"
     assert session.get(DocumentDetail, docs[0].id) is not None
+    # 第二份要是去取了，取之前第一份已经写进库（不是整批结束才写）
+    assert waited in ([], [True])
+    assert "processing_error" not in summary.statuses
 
 
 def test_time_stop_without_database():
@@ -363,8 +369,11 @@ def test_running_job_stops_queue_before_next_document(session, monkeypatch, task
     )
     from youju.crawler import detail_service
 
-    monkeypatch.setattr(detail_service, "_polite_fetcher", Fake)
+    monkeypatch.setattr(detail_service, "_polite_fetcher", lambda **kwargs: Fake())
     monkeypatch.setattr(cli, "session_factory", lambda: lambda: _NoClose(session))
+    # 让路的判断结果用 2 秒：这里每问一次就过 3 秒，每次都重新查
+    ticks = iter(range(0, 10_000, 3))
+    monkeypatch.setattr(cli.time, "monotonic", lambda: float(next(ticks)))
     assert (
         cli._cmd_fetch_details_queue(SimpleNamespace(minutes=1, workers=1, batch=10, per_host=10))
         == 0
@@ -500,3 +509,49 @@ def test_queue_summary_counts_saved_and_paused(session):
     assert summary.total == 2  # 写入的份数
     assert session.get(DocumentDetail, behind.id) is None
     assert behind.url not in fake.calls
+
+
+def test_queue_skips_deferred_documents(session):
+    from datetime import datetime
+
+    from tests.test_detail_service import _doc_on, _source_on
+
+    a = _source_on(session, "a.example.gov.cn")
+    deferred = _doc_on(session, a, "a.example.gov.cn", 1)
+    other = _doc_on(session, a, "a.example.gov.cn", 2)
+    _SitePause(get_settings().detail_pause_path).add(
+        f"doc:{deferred.id}",
+        "PDF 在停取中的 files.example.gov.cn 上",
+        until=datetime.now(UTC) + timedelta(hours=1),
+    )
+    fake = FakeFetcher({other.url: readable(other)})
+    summary = run_detail_queue(session, minutes=1, workers=1, fetcher=fake)
+    assert fake.calls == [other.url]
+    assert summary.statuses == {"ok": 1}
+    assert not any(h.startswith("doc:") for h in summary.paused_hosts)
+
+
+def test_queue_command_checks_other_jobs_sparingly(monkeypatch, capsys):
+    from youju import cli
+    from youju.ai import pipeline
+    from youju.crawler import detail_service
+
+    probes = []
+    monkeypatch.setattr(pipeline, "round_wanted", lambda *a, **k: False)
+    monkeypatch.setattr(pipeline, "round_running", lambda *a, **k: probes.append(a) or False)
+    now = [100.0]
+    monkeypatch.setattr(cli.time, "monotonic", lambda: now[0])
+
+    def fake_run(session, *, stop, **kwargs):
+        for _ in range(50):
+            stop()  # 每次请求前都会问一次
+        now[0] += 2.5
+        stop()
+        return detail_service.DetailQueueSummary({}, 0, {}, "没有了", 0)
+
+    monkeypatch.setattr(detail_service, "run_detail_queue", fake_run)
+    monkeypatch.setattr(cli, "session_factory", lambda: lambda: _NoClose(None))
+    args = SimpleNamespace(minutes=1, workers=1, batch=10, per_host=10)
+    assert cli._cmd_fetch_details_queue(args) == 0
+    # 一开始查一次（6 把锁），2 秒以内都用这个结果，过了 2 秒再查一次
+    assert len(probes) == 12

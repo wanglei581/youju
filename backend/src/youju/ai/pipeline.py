@@ -104,11 +104,16 @@ def round_slot(path: str = ROUND_LOCK, wanted: str = ROUND_WANTED) -> Iterator[b
         return
     fd = os.open(path, os.O_WRONLY | os.O_CREAT, 0o644)
     try:
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            yield False
-            return
+        # 补正文队列查"每轮在跑没有"时会瞬间拿一下共享锁：撞上那一下不算，隔一会儿再试两次
+        for attempt in range(3):
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if attempt == 2:
+                    yield False
+                    return
+                _time.sleep(0.02)
         try:
             yield not round_wanted(wanted)
         finally:

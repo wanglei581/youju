@@ -150,7 +150,7 @@ def test_gate_closing_after_wait_releases_everything(tmp_path):
 
 def test_wall_clock_rollback_does_not_wait_long(tmp_path):
     limits = _SharedLimits(str(tmp_path))
-    # 别的进程记下的时间比现在晚一小时（墙上时间往回调过）：按没有记录处理
+    # 别的进程记下的时间比现在晚一小时（墙上时间往回调过）：等满一个间隔，不会等出一小时
     future = repr(time.time() + 3600)
     limits.path("h", "a.example.gov.cn").write_text(future)
     limits.path("a", ADDRESS).write_text(future)

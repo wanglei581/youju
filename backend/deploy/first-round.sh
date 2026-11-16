@@ -5,7 +5,8 @@
 # 执行期间拿着每轮任务的锁：定时任务那一轮会跳过并发提醒（属正常）。
 D=/app/backend/deploy
 exec 9>/tmp/youju-round.lock
-if ! flock -n 9; then
+# 等 5 秒：补正文队列查"每轮在跑没有"时会瞬间拿一下共享锁
+if ! flock -w 5 9; then
   echo "定时任务的一轮正在进行，等它结束后再执行" >&2
   exit 1
 fi

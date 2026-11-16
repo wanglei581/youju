@@ -40,11 +40,12 @@ if [ "$name" = "advisor-run" ]; then
     "$started" "$@" >> /proc/1/fd/1 2>&1
 elif [ "$name" = "fetch-details-queue" ]; then
   # 半小时一轮，拿到锁后才记开始时间，重叠不足 90 分钟安静跳过。
-  flock -n -E 75 "/tmp/youju-${name}.lock" \
+  flock -w 5 -E 75 "/tmp/youju-${name}.lock" \
     sh -c 'date +%s > "$0.tmp" && mv "$0.tmp" "$0"; exec timeout 3h youju "$@"' \
     "$started" "$@" >> /proc/1/fd/1 2>&1
 else
-  flock -n -E 75 "/tmp/youju-${name}.lock" timeout 3h youju "$@" >> /proc/1/fd/1 2>&1
+  # 等 5 秒再放弃：补正文队列查"别的任务在跑没有"时会瞬间拿一下共享锁，撞上那一下不算重叠
+  flock -w 5 -E 75 "/tmp/youju-${name}.lock" timeout 3h youju "$@" >> /proc/1/fd/1 2>&1
 fi
 code=$?
 if [ "$code" -eq 0 ]; then

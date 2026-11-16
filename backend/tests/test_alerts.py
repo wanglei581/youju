@@ -443,7 +443,7 @@ def test_job_alerts_without_changing_failure_code(
     }
     result = subprocess.run(["sh", str(tmp_path / "job.sh"), task], env=env, check=False)
     assert result.returncode == expected_code
-    assert "-n -E 75" in (tmp_path / "flock.args").read_text()
+    assert "-w 5 -E 75" in (tmp_path / "flock.args").read_text()
     calls = (tmp_path / "alert.calls").read_text() if (tmp_path / "alert.calls").exists() else ""
     if expected_alert:
         assert expected_alert in calls
@@ -551,7 +551,7 @@ def test_advisor_run_records_start_time_inside_lock(tmp_path, shell):
     assert subprocess.run([shell, str(job), "crawl"], env=env, check=False).returncode == 0
     assert not (tmp_path / "youju-crawl.started").exists()
     flock_args = (tmp_path / "flock.args").read_text().splitlines()
-    assert flock_args[0].startswith("-w 55 -E 75 ") and flock_args[1].startswith("-n -E 75 ")
+    assert flock_args[0].startswith("-w 55 -E 75 ") and flock_args[1].startswith("-w 5 -E 75 ")
 
 
 @pytest.mark.parametrize(
@@ -869,7 +869,7 @@ def test_detail_queue_overlap(tmp_path, shell, started, expected):
 @pytest.mark.parametrize("shell", SHELLS)
 def test_detail_queue_records_start_inside_lock(tmp_path, shell):
     job = _job_script(tmp_path)
-    _stub(tmp_path, "flock", 'shift 4\nexec "$@"\n')
+    _stub(tmp_path, "flock", 'shift 5\nexec "$@"\n')
     _stub(tmp_path, "timeout", 'shift\nexec "$@"\n')
     _stub(tmp_path, "youju", 'printf "%s\\n" "$*" >> "$CALLS"\n')
     env = {

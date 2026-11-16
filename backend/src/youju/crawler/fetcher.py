@@ -63,6 +63,8 @@ class _SharedLimits:
     def __init__(self, root: str) -> None:
         self.root = Path(root)
         self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        # 先试着建一个锁文件：目录在、但写不进去的，一开始就知道
+        os.close(os.open(self.root / "probe", os.O_RDWR | os.O_CREAT, 0o600))
 
     def path(self, kind: str, key: str) -> Path:
         digest = hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
@@ -518,7 +520,7 @@ class PoliteFetcher:
     ) -> int | str | None:
         """跨进程补足间隔：拿 kind-key 锁文件的锁，按里面记的时间等够 interval。返回拿着的文件
         （锁由 stack 放），"deadline" 表示等到了期限；不跨进程限速（没配目录、文件出错）给 None。
-        墙上时间往回调过（记的时间比现在还晚）按没有记录处理，最多等 interval 本身。"""
+        墙上时间往回调过（记的时间比现在还晚）时等满一个 interval；最多等 interval 本身。"""
         if self._shared is None or interval <= 0:
             return None
         inner = contextlib.ExitStack()
@@ -529,8 +531,8 @@ class PoliteFetcher:
                 return "deadline"
             last = _read_stamp(fd)
             now = time.time()
-            if last is not None and last <= now:
-                wait = min(interval, interval - (now - last))
+            if last is not None:
+                wait = interval if last > now else min(interval, interval - (now - last))
                 if wait > 0:
                     self._sleep(wait)
         except OSError as exc:
@@ -591,6 +593,8 @@ class PoliteFetcher:
             host_file = self._shared_wait(shared, "h", host, self._interval)
             if host_file == "deadline" or self._expired():
                 return FetchResult(url, "deadline", final_url=url, error=_DEADLINE)
+            # 开始前也记一次：进程在请求中途被杀，下一个进程照样要隔够间隔
+            self._shared_stamp(host_file)
             try:
                 result = self._request(url)
                 callback = getattr(self._local, "on_response", None)
