@@ -169,7 +169,8 @@ def _reject_constant(name: str):
 def _strict_json(text: str):
     """照浏览器的 JSON.parse 解析（NaN、Infinity 不认）：(解析得了没有, 值)。"""
     try:
-        return True, json.loads(text.lstrip("\ufeff"), parse_constant=_reject_constant)
+        # 浏览器只去掉开头的一个 BOM
+        return True, json.loads(text.removeprefix("\ufeff"), parse_constant=_reject_constant)
     except (ValueError, RecursionError):
         return False, None
 

@@ -824,6 +824,7 @@ def test_ready_request_unknown_shape_refused(old, new):
         ("[]", True),
         ('"x"', True),
         ("\ufeff" + _READY_OK, True),
+        ("\ufeff\ufeff" + _READY_OK, False),  # 浏览器只去掉开头一个 BOM
         # 浏览器的 done 回调会出错、或者根本不跑：不发列表请求
         ("null", False),
         ('{"status":true}', False),
@@ -3101,6 +3102,75 @@ def test_catalog_and_list_json_strict(constant):
     assert reply != fixture("jx_api.json")
     with pytest.raises(LonsunFormatError):
         parse_response(reply, "list", BASE, TODAY)
+
+
+def test_guarded_set_select_still_checks_ancestor_loop():
+    from youju.crawler.adapters import ListApi
+
+    # 淮北：setSelect 包在 try 里。祖先节点的上级是自己：浏览器卡在 findTopLevelParentNode 的循环里
+    # （catch 接不住死循环），到不了 getData
+    node = '"id":14237484,"name":"政策","parentId":4737901'
+    catalog = fixture("huaibei_catalog.js")
+    assert catalog.count(node) == 1
+    looped = catalog.replace(node, node.replace("4737901", "14237484"), 1)
+    reason = resolve_fixture("huaibei", "14237535", catalog=looped)
+    assert isinstance(reason, str) and "绕圈" in reason, reason
+    assert isinstance(resolve_fixture("huaibei", "14237535"), ListApi)
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        'window.setTimeout("x()", 1);',
+        "this.setTimeout('x()', 1);",
+        'window.setInterval("x()", 5);',
+        "window['setTimeout']('x()', 1);",
+        "setTimeout.call(window, 'x()', 1);",
+        "Function.call(null, 'PublicTree.prototype.getList = function () {}')();",
+        "var F = Function;",
+        "window.Function('x()')();",
+        "var s = document.createElement('script'); s.text = 'x()'; document.body.appendChild(s);",
+        "var s = document.createElement('script');"
+        " s.appendChild(document.createTextNode('x()')); document.body.appendChild(s);",
+        "window['ev' + 'al']('x()');",
+        "location.href = 'javascript:x()';",
+        "window.location.assign('javascript:x()');",
+        "window.open('javascript:x()');",
+        "$('head').append('<base href=\"https://x.example/\">');",
+        "document.write('<base href=\"/x/\">');",
+    ],
+)
+def test_more_hidden_code_refused(code):
+    assert _found(_jx(extra=f"<script>{code}</script>")) is None, code
+
+
+def test_ordinary_script_elements_and_links_still_fine():
+    for code in (
+        "var hm = document.createElement('script'); hm.src = 'https://a.example/hm.js';"
+        " document.getElementsByTagName('head')[0].appendChild(hm);",
+        "$('#a').attr('href', 'javascript:void(0)');",
+        "var cfg = { links: 'javascript:void(0)' };",
+    ):
+        assert _found(_jx(extra=f"<script>{code}</script>")) is not None, code
+
+
+def test_push_state_state_argument_must_be_null():
+    # 前两个参数浏览器要结构化克隆：带函数的对象会抛 DataCloneError，open 中断、不发列表请求
+    page = fixture("jx_page.html").replace(
+        "window.history.pushState(null, null, url);",
+        "window.history.pushState(me.currNode, null, url);",
+        1,
+    )
+    result = resolve_fixture("jx", "49949451", page=page)
+    assert isinstance(result, str) and "pushState" in result, result
+
+
+def test_url_get_name_with_regex_chars_unknown():
+    page = fixture("jx_page.html").replace(
+        "if (me.currNode.children) {", "if (Ls.url.get('x.y') === '') {", 1
+    )
+    result = resolve_fixture("jx", "49949451", page=page)
+    assert isinstance(result, str) and "参数名认不准" in result, result
 
 
 def test_preprocess_name_member_needs_string_names():

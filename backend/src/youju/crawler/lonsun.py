@@ -2464,6 +2464,10 @@ def _literal_text(tokens, values, start, end):
     return "".join(parts), dynamic
 
 
+# 全局对象：按算出来的名字取它的成员（window['ev' + 'al']）看不出调了什么
+_GLOBAL_NAMES = frozenset({"window", "self", "top", "parent", "frames", "globalThis"})
+
+
 def _dynamic_code_problem(tokens, values):
     """会执行我们看不见的代码的写法：eval、Function、x.constructor(…)、第一个参数是字符串的定时器、
     document.write 写内联脚本（写外链脚本的照常，unescape 编码的也解开看）；改 jQuery 自己的
@@ -2478,11 +2482,34 @@ def _dynamic_code_problem(tokens, values):
             return "用 Function(…) 拼代码"
         if value == "constructor" and before == "." and after == "(":
             return "用 .constructor(…) 拼代码"
-        if value in ("setTimeout", "setInterval") and after == "(" and before != ".":
-            first = values[k + 2] if k + 2 < len(values) else ""
-            if first != "function":
-                # 真实页面都直接写 function：字符串、装着字符串的变量会当代码执行
-                return f"{value} 的第一个参数不是函数（可能是当代码执行的字符串）"
+        if text in ("setTimeout", "setInterval") and (value == text or after == "]"):
+            # 不管前面有没有 window.、this.，也不管是不是按字符串取的：只认直接调、第一个参数写着
+            # function（真实页面都这样）；字符串、装着字符串的变量、.call/.apply 都会当代码执行
+            call = k + 1 if value == text else k + 2
+            first = values[call + 1] if call + 1 < len(values) else ""
+            if values[call : call + 1] != ["("] or first != "function":
+                return f"{text} 的第一个参数不是直接写的函数（可能是当代码执行的字符串）"
+        if text == "Function" and before != "instanceof":
+            return "用了 Function（拼代码）"
+        if value in _GLOBAL_NAMES and after == "[":
+            close = _matching_token(tokens, k + 1)
+            if close != k + 3 or values[k + 2][:1] not in ("'", '"'):
+                return f"按算出来的名字取 {value} 的成员"
+        if value[:1] in ("'", '"') and re.match(r"\s*javascript:", text, re.I):
+            lhs = values[max(0, k - 4) : k]
+            if (
+                lhs[-2:] in (["location", "="],)
+                or lhs[-4:] == ["location", ".", "href", "="]
+                or lhs[-1:] == ["("]
+                and (
+                    values[max(0, k - 4) : k - 1]
+                    in (["location", ".", "assign"], ["location", ".", "replace"])
+                    or before == "("
+                    and k >= 2
+                    and values[k - 2] == "open"
+                )
+            ):
+                return "把 javascript: 地址交给 location、open（会当代码执行）"
         if text in ("globalEval", "getScript") and (before == "." or after == "]"):
             return f"用了 {text}（执行我们看不见的代码）"
         if value == "load" and before == "." and after == "(":
@@ -2496,6 +2523,8 @@ def _dynamic_code_problem(tokens, values):
             for tag in re.findall(r"<script\b[^>]*>?", lowered):
                 if "src=" not in tag:
                     return "document.write 写了内联脚本"
+            if re.search(r"<\s*base\b", lowered):
+                return "document.write 写了 <base>（改了浏览器拼相对地址的基准）"
             if dynamic and "<script" in lowered and "src=" not in lowered:
                 return "document.write 写了内联脚本"
             if dynamic and not literal:
@@ -2513,6 +2542,24 @@ def _dynamic_code_problem(tokens, values):
     for path, _op, _k in _write_sites(tokens, values):
         if path[0] in ("$", "jQuery") and len(path) > 1 and path[1] not in ("fn", "()"):
             return f"改了 jQuery 的 {'.'.join(path)}"
+    script_element = any(
+        values[k] == "createElement"
+        and values[k + 1 : k + 2] == ["("]
+        and values[k + 2][:1] in ("'", '"')
+        and _string_literal(values[k + 2]).strip().lower() == "script"
+        for k in range(len(values) - 2)
+    )
+    if script_element and (
+        "createTextNode" in values
+        or any(
+            values[k] == "."
+            and values[k + 1] in ("text", "textContent", "innerHTML", "innerText", "outerHTML")
+            and values[k + 2 : k + 3] == ["="]
+            for k in range(len(values) - 2)
+        )
+    ):
+        # 真实页面上 createElement('script') 都只设 src（统计脚本）；往里写代码的会执行
+        return "新建 script 元素往里写代码"
     return _script_text_problem(tokens, values)
 
 
@@ -2546,6 +2593,8 @@ def _script_text_problem(tokens, values):
             r"<\s*script|%3c\s*script", "".join(parts), re.I
         ):
             return "字符串里写着 <script（往页面里写脚本，浏览器会执行）"
+        if re.search(r"<\s*base\b|%3c\s*base\b", "".join(parts), re.I):
+            return "字符串里写着 <base（改了浏览器拼相对地址的基准）"
         k = j + 1
     return None
 
@@ -4408,7 +4457,7 @@ _UI_REQUEST = {
     ),
 }
 _RISKY_TEXT = re.compile(
-    r"script|javascript:|\bon[a-z]+\s*=|<\s*(?:img|iframe|svg|object|embed)", re.I
+    r"script|javascript:|\bon[a-z]+\s*=|<\s*(?:img|iframe|svg|object|embed|base|meta|link)", re.I
 )
 
 
@@ -5200,8 +5249,27 @@ def _tree_one_problem(raw, args):
     return None
 
 
+def _ancestor_loop(nodes, cat_id):
+    """从这个栏目顺着 parentId 往上走，碰到走过的节点（含上级是自己的）：给原因。"""
+    by_id = {node["id"]: node for node in nodes}
+    current, seen = by_id.get(int(cat_id)), set()
+    while current is not None:
+        if current["id"] in seen or current.get("parentId") == current["id"]:
+            return "栏目树里这个栏目的上级关系绕圈（含上级是自己），页面加载时 setSelect 走不出来"
+        seen.add(current["id"])
+        parent = current.get("parentId")
+        current = by_id.get(parent) if isinstance(parent, int) else None
+    return None
+
+
 def _set_select_problem(raw, args, nodes, cat_id, hide_ok, modified=frozenset()):
     """在 try 外面调的 setSelect 会不会在 getData 之前出错（出错就给原因：浏览器不发列表请求）。"""
+    if any(_member_sites(body, "setSelect", raw) for body in raw.values()):
+        # 包在 try 里也一样：catch 接得住异常，接不住死循环（findTopLevelParentNode 在上级是自己的
+        # 节点上一直转），浏览器到不了 getData
+        problem = _ancestor_loop(nodes, cat_id)
+        if problem:
+            return problem
     if not _set_select_unguarded(raw):
         return None
     problem = _init_order_problem(raw) or _tree_one_problem(raw, args)
@@ -5448,6 +5516,11 @@ def resolve_lonsun(api, catalog_text):
             ):
                 return node
             if fn == "url.get" and len(args) == 1 and isinstance(args[0], str):
+                if not re.fullmatch(r"[A-Za-z0-9_]+", args[0]):
+                    # 平台把参数名拼进正则：名字里有元字符的，两边取到的不一样
+                    if not root.unknown_reason:
+                        root.unknown_reason = "Ls.url.get 的参数名认不准"
+                    return UNKNOWN
                 if current["query"] is None:
                     if not root.unknown_reason:
                         root.unknown_reason = "pushState 改的网址参数认不准"
@@ -5683,7 +5756,10 @@ def resolve_lonsun(api, catalog_text):
                     if path == "window.history.pushState":
                         from urllib.parse import urljoin
 
-                        if len(expr[2]) != 3:
+                        if len(expr[2]) != 3 or any(
+                            arg != ("literal", None) for arg in expr[2][:2]
+                        ):
+                            # 前两个参数浏览器要结构化克隆：带函数的对象（me.currNode）会抛错
                             raise Stop("pushState 参数认不出")
                         target = _evaluate(expr[2][2], env)
                         if not isinstance(target, str):
