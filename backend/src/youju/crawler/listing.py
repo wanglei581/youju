@@ -15,6 +15,7 @@
 {"item_selector": "ul.list li", "link_selector": "a", "date_selector": "span", "require_date": true}
 """
 
+import functools
 import json
 import re
 from dataclasses import dataclass
@@ -171,7 +172,9 @@ def _looks_like_title(title: str) -> bool:
     return not any(word in title for word in _BOILERPLATE)
 
 
+@functools.lru_cache(maxsize=8192)
 def _is_attachment(url: str) -> bool:
+    # 找行时同一批网址要反复判断（平铺上千个链接的页面会判上百万次），记下结果
     return bool(_ATTACHMENT_EXT.search(urlsplit(url).path))
 
 
@@ -256,6 +259,7 @@ class _Page:
         self._urls: dict[etree._Element, set[str]] = {}
         self._twins: dict[etree._Element, set[str]] = {}
         self._popups: dict[etree._Element, _CellPopup] = {}
+        self._rows: dict[tuple, tuple[etree._Element | None, date | None, bool]] = {}
 
     def link(self, a: etree._Element) -> tuple[str, str] | None:
         url = normalize_url(self.page_url, a.get("href"))
@@ -373,8 +377,15 @@ class _Page:
     def find_row(
         self, a: etree._Element, title: str, url: str
     ) -> tuple[etree._Element | None, date | None, bool]:
-        """向上找"一行"：只含这一条文件链接、并且写着日期的祖先元素。返回（行，日期，是否写明年份）。"""
-        return self._climb(a, title, url, set(), set())
+        """向上找"一行"：只含这一条文件链接、并且写着日期的祖先元素。返回（行，日期，是否写明年份）。
+
+        有附带链接的页面要读两遍，每个链接的结果记下来，第二遍不再重找。
+        """
+        key = (a, title, url)
+        cached = self._rows.get(key)
+        if cached is None:
+            cached = self._rows[key] = self._climb(a, title, url, set(), set())
+        return cached
 
     def find_companion_row(
         self, a: etree._Element, title: str, url: str
@@ -583,22 +594,37 @@ def _clusters(
     return list(merged.values())
 
 
-def _extract_heuristic(page: _Page, require_date: bool) -> tuple[tuple, list[ListItem]]:
-    """从页面链接里找正文列表，返回（评分，条目）。"""
-    # 每个列表块里的条目，连同它在页面中的先后位置
-    blocks: dict[tuple, list[tuple[int, ListItem]]] = {}
+def _extract_heuristic(
+    page: _Page, require_date: bool, companions: bool = False
+) -> tuple[tuple, list[ListItem], bool]:
+    """从页面链接里找正文列表，返回（评分，条目，页面上有没有附带链接）。
+
+    companions=False 是原来的读法：附带链接（泸州弹层里的解读、福建的"| AI阅读"）照样参与分块、
+    评分，只是不放进结果。companions=True 时附带链接不当条目，被它们挡住的行不看它们再找一次
+    （find_companion_row）。
+    """
+    # 每个列表块里的条目，连同它在页面中的先后位置、是不是附带链接
+    blocks: dict[tuple, list[tuple[int, ListItem, bool]]] = {}
     containers: dict[tuple, etree._Element] = {}
-    # 带附带链接的行：可以归到哪几个列表块（按优先顺序），等别的行都分完再定
-    pending: list[tuple[int, ListItem, list[etree._Element]]] = []
+    used: set[etree._Element] = set()  # 别的行分组用到的父元素
+    # 带附带链接的行：照原来分、按找到的行分两种父元素，等别的行都分完再定
+    pending: list[tuple[int, ListItem, etree._Element | None, etree._Element | None]] = []
+    seen = False
     # 用 XPath 遍历整个文档：不规范的页面可能在根元素之外还有内容
     for position, a in enumerate(page.doc.xpath("//a")):
         link = page.link(a)
-        if not link or page.companion(a, link[1]):
+        if not link:
             continue
         title, url = link
+        junk = page.companion(a, url)
+        seen = seen or junk
+        if junk and companions:
+            continue
         row, found, full = page.find_row(a, title, url)
         companion_row, companion_found, _ = (
-            (None, None, False) if found else page.find_companion_row(a, title, url)
+            page.find_companion_row(a, title, url)
+            if companions and found is None
+            else (None, None, False)
         )
         if found is None:
             # 悬浮提示里写明的发表时间最准（提示里的标题本身可能以会议日期之类结尾）
@@ -623,41 +649,51 @@ def _extract_heuristic(page: _Page, require_date: bool) -> tuple[tuple, list[Lis
         title = _without_attr_date(title, a, found, page.today)
         if not _looks_like_title(title):
             continue
+        item = ListItem(title, url, found)
         if companion_row is not None:
-            # 分组等别的行都分完再定：照原来按链接分的那一块里有别的行，就归那一块（和原来一样）；
-            # 没有才按找到的行分，和行里写着日期的别的行算同一张表
-            pending.append((position, ListItem(title, url, found), [a, companion_row]))
+            pending.append((position, item, a.getparent(), companion_row.getparent()))
             continue
         container = (row if row is not None else a).getparent()
         if container is None:
             continue
         key = _group_key(container)
-        blocks.setdefault(key, []).append((position, ListItem(title, url, found)))
+        blocks.setdefault(key, []).append((position, item, junk))
         containers.setdefault(key, container)
-    taken = set(blocks)  # 别的行已经分出来的块
-    for position, item, rows in pending:
-        options = [(_group_key(c), c) for r in rows if (c := r.getparent()) is not None]
-        if not options:
+        used.add(container)
+    taken = set(blocks)
+    for position, item, cell, parent in pending:
+        # 照原来（按链接）分的那一块已经有别的行，就归那一块，和原来一样；不然找到的行的父元素已经有
+        # 别的行（泸州：同一张表里行内写着日期的行），就和它们算一张表；都没有照原来分
+        if (
+            parent is not None
+            and (cell is None or _group_key(cell) not in taken)
+            and parent in used
+        ):
+            container = parent
+        elif cell is not None:
+            container = cell
+        else:
             continue
-        key, container = next((o for o in options if o[0] in taken), options[-1])
-        blocks.setdefault(key, []).append((position, item))
+        key = _group_key(container)
+        blocks.setdefault(key, []).append((position, item, False))
         containers.setdefault(key, container)
     if pending:
         # 列表块照原来的先后（按块里第一条在页面上的位置）排：评分一样时取靠前的那块
-        blocks = dict(sorted(blocks.items(), key=lambda kv: min(pos for pos, _ in kv[1])))
+        blocks = dict(sorted(blocks.items(), key=lambda kv: min(e[0] for e in kv[1])))
 
     if not blocks:
-        return _NO_SCORE, []
+        return _NO_SCORE, [], seen
 
     keys = list(blocks)
     peripheral = [k[2] for k in keys]
-    in_dir = [_in_dir([item for _, item in blocks[k]], page) >= 0.5 for k in keys]
+    in_dir = [_in_dir([e[1] for e in blocks[k]], page) >= 0.5 for k in keys]
     candidates = []
     for members in _clusters([containers[k] for k in keys], peripheral, in_dir):
-        entries = sorted(entry for i in members for entry in blocks[keys[i]])
-        items = [item for _, item in entries]
-        candidates.append((_score(items, page, peripheral[members[0]]), items))
-    return max(candidates, key=lambda c: c[0])
+        entries = sorted((e for i in members for e in blocks[keys[i]]), key=lambda e: e[0])
+        score = _score([e[1] for e in entries], page, peripheral[members[0]])
+        candidates.append((score, [e[1] for e in entries if not e[2]]))
+    score, items = max(candidates, key=lambda c: c[0])
+    return score, items, seen
 
 
 def _extract_with_config(page: _Page, config: dict) -> list[ListItem]:
@@ -813,9 +849,16 @@ def extract_items(
     page = _Page(doc, page_url, today or date.today())
     if config.get("item_selector"):
         return _dedupe(_extract_with_config(page, config))
-    score, items = _extract_heuristic(page, require_date=config.get("require_date", True))
+    require_date = config.get("require_date", True)
+    score, items, companions = _extract_heuristic(page, require_date)
     # 页面上的链接和脚本里的列表数据都看，取更像正文列表的一种
     json_score, json_items = _extract_embedded_json(html, page)
     if json_score > score:
         items = json_items
+    elif companions:
+        # 页面上有附带链接（泸州弹层里的解读、福建的"| AI阅读"）：不看它们再读一遍。原来读出的
+        # （去掉附带链接）一条不少，才用新读出的，不然照原来
+        _, better, _ = _extract_heuristic(page, require_date, companions=True)
+        if {i.url for i in items} <= {i.url for i in better}:
+            items = better
     return _dedupe(items)

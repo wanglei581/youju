@@ -1285,6 +1285,63 @@ def test_rows_with_companions_keep_the_old_grouping_when_it_has_other_rows() -> 
     ]
 
 
+def test_neighbouring_lists_with_assistant_links_stay_apart() -> None:
+    # 两张挨着的表，每行都带 AI 阅读链接：原来分成两块、留下第一张；不能因为按行分组把两张并成一张
+    def row(i: int) -> str:
+        return (
+            f'<li><a href="/20261021_{i}.htm">关于第{i}号文件的通知</a>'
+            f'<a class="tertonAIReaderFlag" href="/20261021_{i}.htm?assistant=true">| AI阅读</a>'
+            "<span>2026-10-21</span></li>"
+        )
+
+    html = "".join(
+        f'<ul class="{c}">' + "".join(row(i) for i in ids) + "</ul>"
+        for c, ids in (("a", range(1, 4)), ("b", range(4, 7)))
+    )
+    items = extract_items(html, "http://e.cn/", today=date(2026, 11, 16))
+    assert [i.title for i in items] == [f"关于第{i}号文件的通知" for i in range(1, 4)]
+
+
+def test_what_the_old_reading_kept_is_never_lost() -> None:
+    # 原来那块靠三条之外的两条"| AI阅读"凑数胜过另一块；去掉它们再读如果丢了原来读出的文件，
+    # 就照原来（只去掉"| AI阅读"）
+    html = (
+        '<ul><li><a href="/a/20261021_1.htm">关于第1号文件的通知</a></li>'
+        + "".join(
+            f'<li><a href="/a/20261021_{i}.htm">关于第{i}号文件的通知</a>'
+            f'<a class="tertonAIReaderFlag" href="/a/20261021_{i}.htm?assistant=true">| AI阅读</a>'
+            "<span>2026-10-21</span></li>"
+            for i in (2, 3)
+        )
+        + "".join(
+            f'<li><a href="/{i}.htm">关于第{i}号文件的通知</a><span>2026-10-21</span></li>'
+            for i in range(4, 8)
+        )
+        + "</ul>"
+    )
+    items = extract_items(html, "http://e.cn/", today=date(2026, 11, 16))
+    assert [i.title for i in items] == [f"关于第{i}号文件的通知" for i in range(1, 4)]
+
+    # 写法混着的表：原来留下第 4、5 行那块（第 2、3 行没有日期、整行漏掉）；带 AI 阅读链接的第 2、3 行
+    # 照原来分到第 1 行那块会胜过第 4、5 行，丢了原来读出的，所以照原来
+    html = (
+        '<ul><li><a href="/a/t20261021_1.htm">关于第1号文件的通知</a></li>'
+        + "".join(
+            f'<li><a href="/a/{i}.htm">关于第{i}号文件的通知</a>'
+            f'<a class="tertonAIReaderFlag" href="/a/{i}.htm?assistant=true">| AI阅读</a>'
+            "<span>2026-10-21</span></li>"
+            for i in (2, 3)
+        )
+        + "".join(
+            f'<li><a href="/a/x{i}.htm">关于第{i}号文件的通知</a><span>2026-10-21</span></li>'
+            for i in (4, 5)
+        )
+        + "</ul>"
+    )
+    items = extract_items(html, "http://e.cn/a/", today=date(2026, 11, 16))
+    assert [i.title for i in items] == ["关于第4号文件的通知", "关于第5号文件的通知"]
+
+
 def test_lists_keep_their_page_order_when_they_score_the_same() -> None:
     # 带附带链接的行等别的行分完才归块；归完以后列表块照原来按页面上的先后排，评分一样时取靠前的那块。
     # main 读的也是第一张表（外加三条"| AI阅读"）
