@@ -29,9 +29,9 @@ _SHORT = re.compile(
 _MONTH_AFTER = re.compile(r"\s*月")
 # "6-24月龄"是月龄区间，不是日期
 _MONTH_AGE = re.compile(r"\s*月龄")
-# 紧跟在"2026年""2026.""2026/"这种年份后面（可隔空格）的"几-几"是完整日期或者月份区间的一部分
-# （上面 _FULL 已经看过），不单独当月日。"建校80周年 09-17"的"年"前面不是年份，照认
-_AFTER_YEAR = re.compile(r"20\d{2}\s*[年./]\s*$")
+# 年份后面的月份区间整段（"2026年1-6月""2026. 01-06月"）：里面的"几-几"不单独当月日。
+# "建校80周年 09-17""规划2026-2030年 09-20"后面没跟着"几-几月"，照认月日
+_YEAR_RANGE = re.compile(r"20\d{2}\s*[年./]\s*\d{1,2}\s*-\s*" + YEAR_RANGE_TAIL)
 # 政府网站常见的正文网址：/202609/t20260924_4878106.html
 _URL_DAY = re.compile(r"[/_]t?(20\d{2})(\d{2})(\d{2})[_./]")
 # 允许略晚于今天（时区差、提前发布），更晚的视为误识别
@@ -48,8 +48,8 @@ def _safe_date(year: int, month: int, day: int, today: date) -> date | None:
     return d
 
 
-def _not_a_short_date(m: re.Match[str], text: str) -> bool:
-    if _AFTER_YEAR.search(text, 0, m.start()) or _MONTH_AGE.match(text, m.end()):
+def _not_a_short_date(m: re.Match[str], text: str, ranges: list[tuple[int, int]]) -> bool:
+    if _MONTH_AGE.match(text, m.end()) or any(s <= m.start() < e for s, e in ranges):
         return True
     first, last = m.group(1), m.group(2)
     if not first or first.startswith("0") or last.startswith("0"):
@@ -80,7 +80,8 @@ def parse_date_detail(text: str, today: date | None = None) -> tuple[date | None
         d = _safe_date(int(m.group(1)), int(month), int(day), today)
         if d:
             return d, True
-    shorts = [m for m in _SHORT.finditer(text) if not _not_a_short_date(m, text)]
+    ranges = [r.span() for r in _YEAR_RANGE.finditer(text)]
+    shorts = [m for m in _SHORT.finditer(text) if not _not_a_short_date(m, text, ranges)]
     # 取最靠后的一个。后面紧跟"月"的（"09-20 月度报告"）可能是日期，也可能是补了零的月份区间
     # （"01-06月……"）：同一行另有月日时先用另一个（"07-15 01-06月财政收支情况"是 07-15）
     for m in sorted(reversed(shorts), key=lambda m: bool(_MONTH_AFTER.match(text, m.end()))):
