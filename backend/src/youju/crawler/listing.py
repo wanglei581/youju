@@ -262,27 +262,31 @@ class _Page:
         self.today = today
         self._hrefs: dict[etree._Element, set[str]] = {}
         self._visible: dict[etree._Element, set[str]] = {}
+        self._twins: dict[etree._Element, set[str]] = {}
         self._popups: dict[etree._Element, tuple[set[etree._Element], set[str], set[str]]] = {}
 
     def link(self, a: etree._Element) -> tuple[str, str] | None:
         url = normalize_url(self.page_url, a.get("href"))
         if not url or url == self.self_url:
             return None
-        if _hidden(a) and self._assistant_twin(a, url):
-            return None
         title = _title_of(a)
         if not _looks_like_title(title):
             return None
         return title, url
 
+    def companion(self, a: etree._Element, url: str) -> bool:
+        """a 是附带链接，不当条目：泸州政府文件藏着的"政策解读"弹层里的解读（解读另有栏目收），
+        或者福建省政府最新文件每行藏着的"| AI阅读"。"""
+        return _in_popup(a) or self._assistant_twin(a, url)
+
     def _assistant_twin(self, a: etree._Element, url: str) -> bool:
-        """a 是不是阅读助手的附带链接（福建省政府最新文件每行藏着的"| AI阅读"），不是文件。
+        """a 是不是阅读助手的附带链接（福建省政府最新文件每行藏着的"| AI阅读"）。
 
         只认这一种写法：a 本身藏着，网址正好是同一格子（父元素）里一个看得见的文件链接后面加上
         assistant=true。
         """
         cell = a.getparent()
-        if cell is None:
+        if cell is None or not _hidden(a):
             return False
         for sep in ("?", "&"):
             if url.endswith(sep + _ASSISTANT_PARAM):
@@ -300,6 +304,18 @@ class _Page:
                 if not _hidden_up_to(b, cell) and (link := self.link(b)):
                     cached.add(link[1])
             self._visible[cell] = cached
+        return cached
+
+    def _cell_twins(self, cell: etree._Element) -> set[str]:
+        """cell 里阅读助手附带链接的网址。按 cell 算一次。"""
+        cached = self._twins.get(cell)
+        if cached is None:
+            cached = set()
+            for b in cell.iter("a"):
+                # 先看藏没藏着（便宜），藏着的才算网址、比对
+                if _hidden(b) and (link := self.link(b)) and self._assistant_twin(b, link[1]):
+                    cached.add(link[1])
+            self._twins[cell] = cached
         return cached
 
     def title_hrefs(self, el: etree._Element) -> set[str]:
@@ -346,22 +362,24 @@ class _Page:
         """向上找"一行"：只含这一条文件链接、并且写着日期的祖先元素。返回（行，日期，是否写明年份）。"""
         return self._climb(a, title, url, set(), set())
 
-    def find_popup_row(
+    def find_companion_row(
         self, a: etree._Element, title: str, url: str
     ) -> tuple[etree._Element | None, date | None, bool]:
-        """泸州政府文件：标题格里藏着"政策解读"弹层、里面链着别的文件时，find_row 在标题格就停了
-        （把解读当成别的文件），整行找不到。这时不看弹层（里面的链接、日期和文字）再找一次。
+        """附带链接让 find_row 在标题格就停了（当成别的文件）、整行找不到时，不看它们再找一次。
 
-        "别的文件"指不是这一份、不是标题格里弹层外面也链着的（看得见的文件），附件照 find_row 的规矩
-        不算。没有这样的弹层时返回 (None, None, False)。
+        附带链接指：
+        - 标题格里藏着的"政策解读"弹层链着的别的文件（泸州政府文件）。不是这一份、不是标题格里弹层
+          外面也链着的；附件照 find_row 的规矩不算。弹层里的日期和文字也不看。
+        - 标题格里阅读助手的"| AI阅读"（福建省政府最新文件）。
+        没有附带链接时返回 (None, None, False)。
         """
         cell = a.getparent()
         if cell is None:
             return None, None, False
         popup, linked, documents = self._cell_popup(cell)
-        companions = linked if _is_attachment(url) else documents
-        if url in companions:
-            companions = companions - {url}
+        companions = ((linked if _is_attachment(url) else documents) | self._cell_twins(cell)) - {
+            url
+        }
         if not companions:
             return None, None, False
         return self._climb(a, title, url, popup, companions)
@@ -554,16 +572,17 @@ def _extract_heuristic(page: _Page, require_date: bool) -> tuple[tuple, list[Lis
     # 每个列表块里的条目，连同它在页面中的先后位置
     blocks: dict[tuple, list[tuple[int, ListItem]]] = {}
     containers: dict[tuple, etree._Element] = {}
+    # 带附带链接的行：可以归到哪几个列表块（按优先顺序），等别的行都分完再定
+    pending: list[tuple[int, ListItem, list[etree._Element]]] = []
     # 用 XPath 遍历整个文档：不规范的页面可能在根元素之外还有内容
     for position, a in enumerate(page.doc.xpath("//a")):
         link = page.link(a)
-        if not link or _in_popup(a):
-            # 藏着的"政策解读"弹层里的解读链接不当条目（解读另有栏目收）
+        if not link or page.companion(a, link[1]):
             continue
         title, url = link
         row, found, full = page.find_row(a, title, url)
-        popup_row, popup_found, _ = (
-            (None, None, False) if found else page.find_popup_row(a, title, url)
+        companion_row, companion_found, _ = (
+            (None, None, False) if found else page.find_companion_row(a, title, url)
         )
         if found is None:
             # 悬浮提示里写明的发表时间最准（提示里的标题本身可能以会议日期之类结尾）
@@ -579,22 +598,34 @@ def _extract_heuristic(page: _Page, require_date: bool) -> tuple[tuple, list[Lis
         if found is None or (not full and url_date):
             # 行里只写了"月-日"而网址里有完整日期时，以网址为准（年份不会推错）
             found = url_date or found
-        if popup_row is not None:
-            # 泸州的"政策解读"弹层：日期照上面原来的取法（提示文字、链接文字、网址），都取不到（原来
-            # 整行漏掉）才用不看弹层找到的行里写的；分组按这一行，和不带弹层的行一样
-            row = popup_row
-            if found is None:
-                found = popup_found
+        if companion_row is not None and found is None:
+            # 附带链接让原来的找法停在了标题格：日期照上面原来的取法（提示文字、链接文字、网址），
+            # 都取不到（原来整行漏掉）才用不看附带链接找到的行里写的
+            found = companion_found
         if found is None and require_date:
             continue
         title = _without_attr_date(title, a, found, page.today)
         if not _looks_like_title(title):
+            continue
+        if companion_row is not None:
+            # 分组跟着别的行走：按找到的行分（父元素是列表），或者照原来按链接分（父元素是格子），
+            # 等别的行都分完，归到别的行多的那一块
+            pending.append((position, ListItem(title, url, found), [companion_row, a]))
             continue
         container = (row if row is not None else a).getparent()
         if container is None:
             continue
         key = _group_key(container)
         blocks.setdefault(key, []).append((position, ListItem(title, url, found)))
+        containers.setdefault(key, container)
+    sizes = {key: len(entries) for key, entries in blocks.items()}
+    for position, item, rows in pending:
+        options = [(_group_key(c), c) for r in rows if (c := r.getparent()) is not None]
+        if not options:
+            continue
+        # 一样多（比如每行都带附带链接）时按找到的行
+        key, container = max(options, key=lambda option: sizes.get(option[0], 0))
+        blocks.setdefault(key, []).append((position, item))
         containers.setdefault(key, container)
 
     if not blocks:

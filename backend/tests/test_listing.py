@@ -1035,6 +1035,36 @@ def test_luzhou_popup_row_takes_the_date_the_old_way_first() -> None:
     ]
 
 
+def test_luzhou_popup_row_goes_with_the_other_rows() -> None:
+    # 别的行日期只写在提示文字里（照原来按链接分组），只有带弹层的那一行另写着行内日期：这一行照样
+    # 和别的行算一张列表，日期用提示文字里的
+    html = """<ul class="list">
+      <li><a href="/a/1.html" title="标题：关于项目申报的通知 点击数：0 发表时间：2026-10-21">关于项目申报的通知</a></li>
+      <li><a href="/a/2.html" title="标题：关于公布第二批名单的通知 点击数：0 发表时间：2026-10-20">关于公布第二批名单的通知</a><div class="address-popup" style="display: none;"><a href="/b/2.html">关于第二批名单的政策解读</a></div><span class="date">2026-09-20</span></li>
+      <li><a href="/a/3.html" title="标题：关于征集典型案例的通知 点击数：0 发表时间：2026-10-19">关于征集典型案例的通知</a></li>
+      <li><a href="/a/4.html" title="标题：关于开展第三批项目申报的通知 点击数：0 发表时间：2026-10-18">关于开展第三批项目申报的通知</a></li>
+    </ul>"""
+    today = date(2026, 11, 16)
+    items = extract_items(html, "http://example.gov.cn/a/", today=today)
+    assert [(i.title, i.publish_date) for i in items] == [
+        ("关于项目申报的通知", date(2026, 10, 21)),
+        ("关于公布第二批名单的通知", date(2026, 10, 20)),
+        ("关于征集典型案例的通知", date(2026, 10, 19)),
+        ("关于开展第三批项目申报的通知", date(2026, 10, 18)),
+    ]
+    # 那一行的提示文字里没写发表时间（原来整行漏掉）：用行里写的日期，照样和别的行算一张列表
+    html = html.replace(
+        ' title="标题：关于公布第二批名单的通知 点击数：0 发表时间：2026-10-20"', ""
+    )
+    items = extract_items(html, "http://example.gov.cn/a/", today=today)
+    assert [(i.title, i.publish_date) for i in items] == [
+        ("关于项目申报的通知", date(2026, 10, 21)),
+        ("关于公布第二批名单的通知", date(2026, 9, 20)),
+        ("关于征集典型案例的通知", date(2026, 10, 19)),
+        ("关于开展第三批项目申报的通知", date(2026, 10, 18)),
+    ]
+
+
 def test_dated_links_inside_luzhou_popups_are_not_items() -> None:
     # 弹层里的解读链接也带着各自的发表时间：它们不当条目（解读另有栏目收），列表照旧是三份正文
     html = """<ul class="list">
@@ -1110,9 +1140,11 @@ def test_assistant_link_is_dropped_only_next_to_its_visible_document() -> None:
     from youju.crawler.listing import _Page
 
     def documents(html: str) -> list[bool]:
+        # 每个链接算不算条目候选：是文件链接、又不是附带链接
         doc = lxml.html.document_fromstring(html)
         page = _Page(doc, "http://example.gov.cn/a/", date(2026, 11, 16))
-        return [page.link(a) is not None for a in doc.xpath("//a")]
+        links = [(a, page.link(a)) for a in doc.xpath("//a")]
+        return [link is not None and not page.companion(a, link[1]) for a, link in links]
 
     ai = '<a href="/a/1.htm?assistant=true" style="display: none; color: #0059a9;"> | AI阅读</a>'
     # 看得见的文件链接旁边藏着的"同一网址加 assistant=true"：不是文件
@@ -1136,6 +1168,34 @@ def test_assistant_link_is_dropped_only_next_to_its_visible_document() -> None:
         '<li><a href="/a/1.htm">关于项目申报工作的通知</a>'
         '<a href="/a/1.htm?assistant=true" style="display:none;display:block"> | AI阅读</a></li>'
     ) == [True, True]
+
+
+def test_rows_with_an_assistant_link_keep_the_date_they_had() -> None:
+    # 原来这种行把"| AI阅读"当成别的文件、找不到行，日期靠提示文字、链接文字、网址：这些地方有日期
+    # 就照旧用（行里写的可能是成文日期），都没有才用行里写的
+    html = """<ul class="list">
+      <li><span>2026-09-01</span><a href="/a/1.htm" title="标题：关于项目申报的通知 点击数：0 发表时间：2026-10-21">关于项目申报的通知</a><a href="/a/1.htm?assistant=true" style="display:none">| AI阅读</a></li>
+      <li><span>2026-09-02</span><a href="/a/2.htm" title="标题：关于公布第二批名单的通知 点击数：0 发表时间：2026-10-20">关于公布第二批名单的通知</a><a href="/a/2.htm?assistant=true" style="display:none">| AI阅读</a></li>
+      <li><span>2026-09-03</span><a href="/a/3.htm" title="标题：关于征集典型案例的通知 点击数：0 发表时间：2026-10-19">关于征集典型案例的通知</a><a href="/a/3.htm?assistant=true" style="display:none">| AI阅读</a></li>
+    </ul>"""
+    today = date(2026, 11, 16)
+    items = extract_items(html, "http://example.gov.cn/a/", today=today)
+    assert [(i.title, i.publish_date) for i in items] == [
+        ("关于项目申报的通知", date(2026, 10, 21)),
+        ("关于公布第二批名单的通知", date(2026, 10, 20)),
+        ("关于征集典型案例的通知", date(2026, 10, 19)),
+    ]
+    # 提示文字里没写、网址里也没有日期：用行里写的（原来整行漏掉）
+    plain = html.replace(" 点击数：0 发表时间：2026-10-21", "").replace(
+        " 点击数：0 发表时间：2026-10-20", ""
+    )
+    plain = plain.replace(" 点击数：0 发表时间：2026-10-19", "")
+    items = extract_items(plain, "http://example.gov.cn/a/", today=today)
+    assert [(i.title, i.publish_date) for i in items] == [
+        ("关于项目申报的通知", date(2026, 9, 1)),
+        ("关于公布第二批名单的通知", date(2026, 9, 2)),
+        ("关于征集典型案例的通知", date(2026, 9, 3)),
+    ]
 
 
 def test_publish_date_kept_in_a_hidden_span_is_still_the_date() -> None:
