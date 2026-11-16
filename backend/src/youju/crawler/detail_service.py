@@ -197,21 +197,42 @@ def _html_page_gate(text: str, url: str) -> bool:
     return bare_page(text) and parse_detail(text, url).failure_reason == "防护页或验证码"
 
 
+# 字节顺序标记：浏览器按它定编码（比响应头优先）；UTF-32 的要排在 UTF-16 前面
+_BOMS = (
+    (b"\xef\xbb\xbf", "utf-8"),
+    (b"\xff\xfe\x00\x00", "utf-32-le"),
+    (b"\x00\x00\xfe\xff", "utf-32-be"),
+    (b"\xff\xfe", "utf-16-le"),
+    (b"\xfe\xff", "utf-16-be"),
+)
+
+
+def _gate_text(result: FetchResult) -> str:
+    """判关卡用的文字：开头有字节顺序标记的照它解码（UTF-16 的登录页满是 NUL 字节，按字节看会当成
+    二进制）；别的用取页器解码好的，取页器没解码的照响应头、meta 解码。都只解码前一段：网页看开头
+    20 万字、纯文字只看 300 字以内的，不把整份（最多 20MB）解码一遍。"""
+    content = result.content or b""
+    for bom, codec in _BOMS:
+        if content.startswith(bom):
+            return content[len(bom) : 400000].decode(codec, errors="replace")
+    if result.text:
+        return result.text
+    return decode_html(content[:400000], result.content_type) if content else ""
+
+
 def _gate_page(result: FetchResult, url: str) -> bool:
     """回来的是不是防护页、验证码（D-013：网站拦着我们，要停取这个网站）。网页按整页是不是一个关卡
-    认（_html_page_gate）；不是 PDF 也不是网页的回应（纯文字、JSON）照 text_gate。判过的记在回应上：
-    取页器还拿着网站锁时判一次（_PausingFetcher._response），_fetch_one 直接用。"""
+    认（_html_page_gate）；不是 PDF 也不是网页的回应（纯文字、JSON）照 text_gate。PDF 先看开头的
+    %PDF-；解码以后还带 NUL 的是二进制文件，都不算关卡。判过的记在回应上：取页器还拿着网站锁时判
+    一次（_PausingFetcher._response），_fetch_one 直接用。"""
     cached = getattr(result, "_gate_decision", None)
     if cached is not None:
         return cached
     content = result.content or b""
-    if b"%PDF-" in content[:1024] or b"\x00" in content[:1024]:
-        decision = False  # PDF、二进制文件：先看开头，不把整份（最多 20MB）解码一遍
+    if b"%PDF-" in content[:1024]:
+        decision = False
     else:
-        # 取页器没解码的只解码前一段：网页看开头 20 万字、纯文字只看 300 字以内的
-        text = result.text or (
-            decode_html(content[:400000], result.content_type) if content else ""
-        )
+        text = _gate_text(result)
         head = text.lstrip("\ufeff \t\r\n")
         if not head or "\x00" in head[:1024]:
             decision = False
@@ -412,12 +433,17 @@ class _SitePause:
                 try:
                     data = json.loads(path.read_text(encoding="utf-8"))
                 except FileNotFoundError:
+                    if self._seen is not None:
+                        # 运行中读到过的文件不见了（被删、挂载的目录没了）：不能当成没有停取接着
+                        # 抓，停下这次运行
+                        raise
                     data = {}
                 now = datetime.now(UTC)
-                records = {}
+                # 停取只会变长、到期才去掉：这个进程已经知道、还没到期的记录，文件里少了也留着
+                records = {h: rec for h, rec in self.persistent.items() if rec[1] > now}
                 for host, value in data.items():
                     until = datetime.fromisoformat(value["until"])
-                    if until > now:
+                    if until > now and (host not in records or records[host][1] < until):
                         records[host] = (value["reason"], until)
                 if addition:
                     host, reason, until = addition

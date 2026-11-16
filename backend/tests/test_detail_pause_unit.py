@@ -1191,3 +1191,79 @@ def test_long_json_with_gate_word_is_not_a_gate():
             )
 
     assert detail_service._fetch_one(1, "https://a.gov.cn/1", Fake()).status == "unsupported_format"
+
+
+_UTF16_LOGIN = (
+    "<html><head><title>用户登录</title></head><body><input type='password'></body></html>"
+)
+
+
+@pytest.mark.parametrize(
+    "content,content_type,text",
+    [
+        # 响应头写明 UTF-16：取页器解码好的文字是对的，不能按字节里的 NUL 当成二进制
+        (_UTF16_LOGIN.encode("utf-16-le"), "text/html; charset=utf-16le", _UTF16_LOGIN),
+        # 只有字节顺序标记：浏览器照它解码，取页器按 UTF-8、GB18030 解出来是乱码
+        (b"\xff\xfe" + _UTF16_LOGIN.encode("utf-16-le"), "text/html", "\x00乱码\x00"),
+        (b"\xfe\xff" + _UTF16_LOGIN.encode("utf-16-be"), "text/html", ""),
+    ],
+    ids=["declared", "bom-le", "bom-be"],
+)
+def test_utf16_login_page_is_a_gate(content, content_type, text):
+    result = FetchResult(
+        "https://a.gov.cn/1",
+        "ok",
+        final_url="https://a.gov.cn/1",
+        http_status=200,
+        text=text,
+        content=content,
+        content_type=content_type,
+    )
+    assert detail_service._gate_page(result, result.url) is True
+
+
+def test_binary_file_is_not_a_gate():
+    # 解码以后还带 NUL 的是二进制文件（.doc 这类），不算关卡
+    content = b"\xd0\xcf\x11\xe0" + b"\x00" * 600 + "验证码".encode()
+    result = FetchResult(
+        "https://a.gov.cn/f",
+        "ok",
+        final_url="https://a.gov.cn/f",
+        http_status=200,
+        content=content,
+        content_type="application/octet-stream",
+    )
+    assert detail_service._gate_page(result, result.url) is False
+
+
+def test_vanished_pause_file_stops_run(tmp_path):
+    # 运行中读到过的停取文件不见了（被删、挂载的目录没了）：不当成没有停取接着抓
+    path = tmp_path / "pause.json"
+    pause = _SitePause(str(path))
+    pause.add("a.gov.cn", "HTTP 403")
+    assert pause.hosts == {"a.gov.cn": "HTTP 403"}
+    path.unlink()
+    with pytest.raises(detail_service._PauseStoreError):
+        pause.reasons  # noqa: B018
+    with pytest.raises(detail_service._PauseStoreError):
+        pause.add("b.gov.cn", "HTTP 403")
+
+
+def test_missing_pause_file_at_start_is_empty(tmp_path):
+    # 一开始就没有停取文件：当成没有停取（第一次写的时候建）
+    pause = _SitePause(str(tmp_path / "sub" / "pause.json"))
+    assert pause.reasons == {}
+    pause.add("a.gov.cn", "HTTP 403")
+    assert pause.hosts == {"a.gov.cn": "HTTP 403"}
+
+
+def test_known_pause_survives_file_losing_records(tmp_path):
+    # 文件被换成少了记录的（停取只会变长、到期才去掉）：这个进程知道、没到期的照样停
+    path = tmp_path / "pause.json"
+    pause = _SitePause(str(path))
+    pause.add("a.gov.cn", "HTTP 403")
+    until = (datetime.now(UTC) + timedelta(hours=6)).isoformat()
+    path.write_text(json.dumps({"b.gov.cn": {"reason": "HTTP 429", "until": until}}))
+    assert pause.hosts == {"a.gov.cn": "HTTP 403", "b.gov.cn": "HTTP 429"}
+    pause.add("c.gov.cn", "HTTP 412")
+    assert set(json.loads(path.read_text())) == {"a.gov.cn", "b.gov.cn", "c.gov.cn"}
