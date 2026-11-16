@@ -74,10 +74,10 @@ _POPUP_CLASS = "address-popup"
 # 阅读助手的附带链接（福建省政府最新文件每行的"| AI阅读"，插件加的），写法是
 #   <a href="文件网址?assistant=true" class="tertonAIReaderFlag …"
 #      style="display: none;"> | AI阅读</a>
-# 按 class、链接文字和网址一起认，不看 style
+# 按 class、链接文字（正好是"| AI阅读"、没有 title 属性）和网址一起认，不看 style
 _ASSISTANT_PARAM = "assistant=true"
 _ASSISTANT_CLASS = "tertonAIReaderFlag"
-_ASSISTANT_TEXT = re.compile(r"^[|｜]?\s*AI\s*阅读$", re.IGNORECASE)
+_ASSISTANT_TEXT = re.compile(r"^\|\s*AI阅读$")
 # 侧栏、页头页脚、友情链接等外围区域的常见标记（标签，或 class/id 里的词）
 _PERIPHERAL_TAGS = {"aside", "nav", "header", "footer"}
 _PERIPHERAL_WORDS = {
@@ -292,13 +292,14 @@ class _Page:
     def _assistant_twin(self, a: etree._Element, url: str) -> bool:
         """a 是不是阅读助手的附带链接（福建省政府最新文件每行的"| AI阅读"）。
 
-        按插件自己的写法认：class 里有 _ASSISTANT_CLASS，链接文字是"| AI阅读"，网址正好是同一格子
-        （父元素）里一个文件链接后面加上 assistant=true。它打开的是那份文件的 AI 阅读页，不是文件。
+        按插件自己的写法认：class 里有 _ASSISTANT_CLASS，链接文字正好是"| AI阅读"、没有 title 属性，
+        网址正好是同一格子（父元素）里一个文件链接后面加上 assistant=true。它打开的是那份文件的
+        AI 阅读页，不是文件。
         """
         cell = a.getparent()
         if cell is None or _ASSISTANT_CLASS not in (a.get("class") or "").split():
             return False
-        if not _ASSISTANT_TEXT.match(_link_text(a)):
+        if a.get("title") is not None or not _ASSISTANT_TEXT.match(_link_text(a)):
             return False
         for sep in ("?", "&"):
             if url.endswith(sep + _ASSISTANT_PARAM):

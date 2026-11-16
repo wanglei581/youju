@@ -1222,6 +1222,17 @@ def test_assistant_link_is_recognized_by_its_class_and_url() -> None:
         '<a href="/a/1.htm?assistant=true" class="tertonAIReaderFlag" style="display:none">'
         "关于项目申报工作的补充通知</a></li>"
     ) == [True, True]
+    # 文字不是正好"| AI阅读"（少了竖线），或者另有 title 属性（插件的链接没有）：照旧算文件
+    assert documents(
+        '<li><a href="/a/1.htm">关于项目申报工作的通知</a>'
+        '<a href="/a/1.htm?assistant=true" class="tertonAIReaderFlag" '
+        'title="关于项目申报工作的补充通知">AI阅读</a></li>'
+    ) == [True, True]
+    assert documents(
+        '<li><a href="/a/1.htm">关于项目申报工作的通知</a>'
+        '<a href="/a/1.htm?assistant=true" class="tertonAIReaderFlag" '
+        'title="关于项目申报工作的补充通知"> | AI阅读</a></li>'
+    ) == [True, True]
 
 
 def test_rows_with_an_assistant_link_keep_the_date_they_had() -> None:
