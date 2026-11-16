@@ -1124,6 +1124,25 @@ def test_attachments_in_a_luzhou_popup_are_read_as_before() -> None:
     assert {f"http://example.gov.cn/{x}{n}.pdf" for x in "ab" for n in range(1, 4)} <= urls
 
 
+def test_popup_beside_a_wrapped_document_link_is_read_as_before() -> None:
+    # 文件链接外面多套了一层（<span><a>…</a></span>），弹层不在文件链接的父元素里：不算附带链接，
+    # 行和弹层里的链接都照原来读（这种写法 main 读出的是弹层里带发表时间的解读）
+    rows = "".join(
+        f'<li><span><a href="/a/{n}.html">关于开展第{n}批项目申报工作的通知</a></span>'
+        f'<div class="address-popup" style="display:none"><a href="/b/{n}.html" '
+        f'title="标题：关于第{n}批项目申报工作的政策解读 点击数：0 发表时间：2026-10-2{n}">'
+        f"关于第{n}批项目申报工作的政策解读</a></div></li>"
+        for n in range(1, 4)
+    )
+    urls = {
+        i.url
+        for i in extract_items(
+            f"<ul>{rows}</ul>", "http://example.gov.cn/a/", today=date(2026, 11, 16)
+        )
+    }
+    assert {f"http://example.gov.cn/b/{n}.html" for n in range(1, 4)} <= urls
+
+
 def test_same_document_pdf_in_a_luzhou_popup_follows_main() -> None:
     # 弹层里只是同一份文件的 PDF：附件照原来的规矩属于同一行、不算别的文件，日期照原来取行里写的
     html = """<ul class="list">
@@ -1168,13 +1187,17 @@ def test_assistant_link_is_dropped_only_next_to_its_visible_document() -> None:
         links = [(a, page.link(a)) for a in doc.xpath("//a")]
         return [link is not None and not page.companion(a, link[1]) for a, link in links]
 
-    ai = '<a href="/a/1.htm?assistant=true" style="display: none; color: #0059a9;"> | AI阅读</a>'
+    ai = (
+        '<a href="/a/1.htm?assistant=true" class="tertonAIReaderFlag glwj" '
+        'style="display: none; color: #0059a9;"> | AI阅读</a>'
+    )
     # 看得见的文件链接旁边藏着的"同一网址加 assistant=true"：不是文件
     assert documents(f'<li><a href="/a/1.htm">关于项目申报工作的通知</a>{ai}</li>') == [True, False]
     # 网址里原来就有参数时用 &assistant=true
     assert documents(
         '<li><a href="/a/show.asp?id=1">关于项目申报工作的通知</a>'
-        '<a href="/a/show.asp?id=1&amp;assistant=true" style="display:none"> | AI阅读</a></li>'
+        '<a href="/a/show.asp?id=1&amp;assistant=true" class="tertonAIReaderFlag" '
+        'style="display:none"> | AI阅读</a></li>'
     ) == [True, False]
     # 同一份文件的链接本身也藏着、不在附带链接的父元素里、或者网址对不上：照旧算文件
     doc = '<a href="/a/1.htm">关于项目申报工作的通知</a>'
@@ -1188,7 +1211,13 @@ def test_assistant_link_is_dropped_only_next_to_its_visible_document() -> None:
     # 链接没藏着（style 里最后生效的是 block）：照旧算文件
     assert documents(
         '<li><a href="/a/1.htm">关于项目申报工作的通知</a>'
-        '<a href="/a/1.htm?assistant=true" style="display:none;display:block"> | AI阅读</a></li>'
+        '<a href="/a/1.htm?assistant=true" class="tertonAIReaderFlag" '
+        'style="display:none;display:block"> | AI阅读</a></li>'
+    ) == [True, True]
+    # 没有阅读助手的 class：不是这种附带链接，照旧算文件（可能是另一份文件，如补充通知）
+    assert documents(
+        '<li><a href="/a/1.htm">关于项目申报工作的通知</a>'
+        '<a href="/a/1.htm?assistant=true" style="display:none">关于项目申报工作的补充通知</a></li>'
     ) == [True, True]
 
 
@@ -1196,9 +1225,9 @@ def test_rows_with_an_assistant_link_keep_the_date_they_had() -> None:
     # 原来这种行把"| AI阅读"当成别的文件、找不到行，日期靠提示文字、链接文字、网址：这些地方有日期
     # 就照旧用（行里写的可能是成文日期），都没有才用行里写的
     html = """<ul class="list">
-      <li><span>2026-09-01</span><a href="/a/1.htm" title="标题：关于项目申报的通知 点击数：0 发表时间：2026-10-21">关于项目申报的通知</a><a href="/a/1.htm?assistant=true" style="display:none">| AI阅读</a></li>
-      <li><span>2026-09-02</span><a href="/a/2.htm" title="标题：关于公布第二批名单的通知 点击数：0 发表时间：2026-10-20">关于公布第二批名单的通知</a><a href="/a/2.htm?assistant=true" style="display:none">| AI阅读</a></li>
-      <li><span>2026-09-03</span><a href="/a/3.htm" title="标题：关于征集典型案例的通知 点击数：0 发表时间：2026-10-19">关于征集典型案例的通知</a><a href="/a/3.htm?assistant=true" style="display:none">| AI阅读</a></li>
+      <li><span>2026-09-01</span><a href="/a/1.htm" title="标题：关于项目申报的通知 点击数：0 发表时间：2026-10-21">关于项目申报的通知</a><a href="/a/1.htm?assistant=true" class="tertonAIReaderFlag" style="display:none">| AI阅读</a></li>
+      <li><span>2026-09-02</span><a href="/a/2.htm" title="标题：关于公布第二批名单的通知 点击数：0 发表时间：2026-10-20">关于公布第二批名单的通知</a><a href="/a/2.htm?assistant=true" class="tertonAIReaderFlag" style="display:none">| AI阅读</a></li>
+      <li><span>2026-09-03</span><a href="/a/3.htm" title="标题：关于征集典型案例的通知 点击数：0 发表时间：2026-10-19">关于征集典型案例的通知</a><a href="/a/3.htm?assistant=true" class="tertonAIReaderFlag" style="display:none">| AI阅读</a></li>
     </ul>"""
     today = date(2026, 11, 16)
     items = extract_items(html, "http://example.gov.cn/a/", today=today)
@@ -1224,9 +1253,9 @@ def test_lists_keep_their_page_order_when_they_score_the_same() -> None:
     # 带附带链接的行等别的行分完才归块；归完以后列表块照原来按页面上的先后排，评分一样时取靠前的那块。
     # main 读的也是第一张表（外加三条"| AI阅读"）
     html = """<div class="a"><ul>
-      <li><span>2026-10-21</span><a href="/a/202610/t20261021_1.htm">关于项目申报的通知</a><a href="/a/202610/t20261021_1.htm?assistant=true" style="display:none">| AI阅读</a></li>
-      <li><span>2026-10-20</span><a href="/a/202610/t20261020_2.htm">关于公布第二批名单的通知</a><a href="/a/202610/t20261020_2.htm?assistant=true" style="display:none">| AI阅读</a></li>
-      <li><span>2026-10-19</span><a href="/a/202610/t20261019_3.htm">关于征集典型案例的通知</a><a href="/a/202610/t20261019_3.htm?assistant=true" style="display:none">| AI阅读</a></li>
+      <li><span>2026-10-21</span><a href="/a/202610/t20261021_1.htm">关于项目申报的通知</a><a href="/a/202610/t20261021_1.htm?assistant=true" class="tertonAIReaderFlag" style="display:none">| AI阅读</a></li>
+      <li><span>2026-10-20</span><a href="/a/202610/t20261020_2.htm">关于公布第二批名单的通知</a><a href="/a/202610/t20261020_2.htm?assistant=true" class="tertonAIReaderFlag" style="display:none">| AI阅读</a></li>
+      <li><span>2026-10-19</span><a href="/a/202610/t20261019_3.htm">关于征集典型案例的通知</a><a href="/a/202610/t20261019_3.htm?assistant=true" class="tertonAIReaderFlag" style="display:none">| AI阅读</a></li>
     </ul></div>
     <div class="b"><ul>
       <li><span>2026-10-21</span><a href="/a/4.htm">关于开展第三批项目申报的通知</a></li>

@@ -19,6 +19,7 @@ import json
 import re
 from dataclasses import dataclass
 from datetime import date
+from typing import NamedTuple
 from urllib.parse import urlsplit
 
 import lxml.html
@@ -74,8 +75,11 @@ _CSS_COMMENT = re.compile(r"/\*.*?\*/", re.S)
 #     <div class="address-popup" style="display: none;">解读链接</div></div>
 # 只认这个确切写法（认得出才放），别的藏起来的东西照原来读
 _POPUP_CLASS = "address-popup"
-# 阅读助手的附带链接（福建省政府最新文件每行藏着的"| AI阅读"）：网址是文件网址后面加上这个参数
+# 阅读助手的附带链接（福建省政府最新文件每行藏着的"| AI阅读"），写法是
+#   <a href="文件网址?assistant=true" class="tertonAIReaderFlag …"
+#      style="display: none;"> | AI阅读</a>
 _ASSISTANT_PARAM = "assistant=true"
+_ASSISTANT_CLASS = "tertonAIReaderFlag"
 # 侧栏、页头页脚、友情链接等外围区域的常见标记（标签，或 class/id 里的词）
 _PERIPHERAL_TAGS = {"aside", "nav", "header", "footer"}
 _PERIPHERAL_WORDS = {
@@ -211,6 +215,16 @@ def _hidden_up_to(node: etree._Element, top: etree._Element) -> bool:
     return False
 
 
+class _CellPopup(NamedTuple):
+    """一个元素（格子）里藏着的"政策解读"弹层。"""
+
+    nodes: set[etree._Element]  # 弹层和它下面的所有节点
+    linked: set[str]  # 弹层里链着、格子里弹层外面没链着的网址
+    documents: set[str]  # 其中不是附件的（"别的文件"）
+    outside: bool  # 格子里弹层外面有没有文件链接
+    owner: bool  # 格子的直接子元素里有没有弹层外面的文件链接（格子是那份文件的标题格）
+
+
 def _popup_of(a: etree._Element) -> etree._Element | None:
     """a 所在的、藏着的"政策解读"弹层（_POPUP_CLASS）；不在弹层里时返回 None。"""
     for n in a.iterancestors():
@@ -264,9 +278,7 @@ class _Page:
         self._hrefs: dict[etree._Element, set[str]] = {}
         self._visible: dict[etree._Element, set[str]] = {}
         self._twins: dict[etree._Element, set[str]] = {}
-        self._popups: dict[
-            etree._Element, tuple[set[etree._Element], set[str], set[str], bool]
-        ] = {}
+        self._popups: dict[etree._Element, _CellPopup] = {}
 
     def link(self, a: etree._Element) -> tuple[str, str] | None:
         url = normalize_url(self.page_url, a.get("href"))
@@ -285,8 +297,9 @@ class _Page:
     def _popup_document(self, a: etree._Element, url: str) -> bool:
         """a 在藏着的"政策解读"弹层里、链着别的文件。
 
-        弹层所在的格子是往上第一个在弹层外面也有链接的元素（泸州是标题格或者整行）；"别的文件"照
-        find_companion_row 的规矩：附件、格子里弹层外面也链着的都不算，这些照原来读。
+        弹层所在的格子是往上第一个在弹层外面也有链接的元素（泸州是标题格或者整行），它得是某个文件
+        链接的父元素，和 find_companion_row 看的格子一样；"别的文件"也照它的规矩：附件、格子里弹层
+        外面也链着的都不算。不符合的照原来读。
         """
         popup = _popup_of(a)
         if popup is None:
@@ -294,19 +307,21 @@ class _Page:
         for depth, cell in enumerate(popup.iterancestors()):
             if depth > _MAX_ROW_DEPTH or cell.tag in ("body", "html"):
                 return False
-            _, linked, documents, has_outside = self._cell_popup(cell)
-            if has_outside:
-                return url in documents
+            info = self._cell_popup(cell)
+            if info.outside:
+                return info.owner and url in info.documents
         return False
 
     def _assistant_twin(self, a: etree._Element, url: str) -> bool:
         """a 是不是阅读助手的附带链接（福建省政府最新文件每行藏着的"| AI阅读"）。
 
-        只认这一种写法：a 本身藏着，网址正好是同一格子（父元素）里一个看得见的文件链接后面加上
-        assistant=true。
+        只认这一种写法：a 本身藏着、class 里有阅读助手的标记（_ASSISTANT_CLASS），网址正好是同一格子
+        （父元素）里一个看得见的文件链接后面加上 assistant=true。
         """
         cell = a.getparent()
         if cell is None or not _hidden(a):
+            return False
+        if _ASSISTANT_CLASS not in (a.get("class") or "").split():
             return False
         for sep in ("?", "&"):
             if url.endswith(sep + _ASSISTANT_PARAM):
@@ -396,19 +411,17 @@ class _Page:
         cell = a.getparent()
         if cell is None:
             return None, None, False
-        popup, linked, documents, _ = self._cell_popup(cell)
-        companions = ((linked if _is_attachment(url) else documents) | self._cell_twins(cell)) - {
-            url
-        }
+        popup = self._cell_popup(cell)
+        companions = (popup.linked if _is_attachment(url) else popup.documents) | self._cell_twins(
+            cell
+        )
+        companions = companions - {url}
         if not companions:
             return None, None, False
-        return self._climb(a, title, url, popup, companions)
+        return self._climb(a, title, url, popup.nodes, companions)
 
-    def _cell_popup(
-        self, cell: etree._Element
-    ) -> tuple[set[etree._Element], set[str], set[str], bool]:
-        """cell 里藏着的"政策解读"弹层（_POPUP_CLASS）和它下面的所有节点；弹层里链着、弹层外没链着的
-        文件网址，其中不是附件的；弹层外面有没有文件链接。按 cell 算一次。"""
+    def _cell_popup(self, cell: etree._Element) -> _CellPopup:
+        """cell 里藏着的"政策解读"弹层（_POPUP_CLASS）。按 cell 算一次。"""
         cached = self._popups.get(cell)
         if cached is None:
             nodes: set[etree._Element] = set()
@@ -419,13 +432,15 @@ class _Page:
                     nodes.update(el.iter())
             inside: set[str] = set()
             outside: set[str] = set()
+            owner = False
             if nodes:
                 for b in cell.iter("a"):
                     if link := self.link(b):
                         (inside if b in nodes else outside).add(link[1])
+                        owner = owner or (b.getparent() is cell and b not in nodes)
             linked = inside - outside
             documents = {u for u in linked if not _is_attachment(u)}
-            cached = self._popups[cell] = (nodes, linked, documents, bool(outside))
+            cached = self._popups[cell] = _CellPopup(nodes, linked, documents, bool(outside), owner)
         return cached
 
     def _climb(
