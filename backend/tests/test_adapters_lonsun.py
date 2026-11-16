@@ -2744,3 +2744,30 @@ def test_constructor_reads_catalog_after_organ_id():
         + tail.replace("me.init();", "me.organId = '6991'; me.init();", 1)
     )
     assert _found(after) is None
+
+
+def test_catalog_script_must_have_run_before_construction():
+    page = fixture("jx_page.html")
+    src = '<script type="text/javascript" src="/49631981/6991.js"></script>'
+    assert page.count(src) == 1 and page.count(_CREATE) == 1
+    top = "new PublicTree();"
+    # 就绪回调里创建：defer 的栏目树脚本在 DOM 解析完之前跑过，来得及
+    deferred = page.replace(src, src.replace("<script ", "<script defer "), 1)
+    assert _found(deferred) is not None
+    # 脚本顶层创建：defer 的、写在后面的栏目树脚本那时还没跑，浏览器不发列表请求
+    assert _found(deferred.replace(_CREATE, top, 1)) is None
+    moved = page.replace(src, "", 1).replace("</body>", src + "</body>", 1)
+    assert _found(moved) is not None  # 就绪回调里创建：写在后面也来得及
+    assert _found(moved.replace(_CREATE, top, 1)) is None
+    # async 的什么时候跑说不准
+    assert _found(page.replace(src, src.replace("<script ", "<script async "), 1)) is None
+    # 写在前面的普通脚本、脚本顶层创建：照常
+    assert _found(page.replace(_CREATE, top, 1)) is not None
+
+
+def test_huge_is_parent_number_does_not_raise():
+    big = "1" + "0" * 400
+    catalog = fixture("jx_catalog.js").replace('"isParent":false', '"isParent":' + big, 1)
+    assert catalog != fixture("jx_catalog.js")
+    result = resolve_fixture("jx", "49949451", catalog=catalog)  # 不抛 OverflowError
+    assert result is not None

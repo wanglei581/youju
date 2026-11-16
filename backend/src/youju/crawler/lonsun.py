@@ -1042,7 +1042,9 @@ def _js_number(value):
 def _truth(value):
     if value is None or value is UNDEFINED or value is False:
         return False
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value != 0  # 超大整数也照常（math.isnan 会溢出）
+    if isinstance(value, float):
         return value != 0 and not math.isnan(value)
     return value != "" if isinstance(value, str) else True
 
@@ -3415,8 +3417,9 @@ def _known_root_use(values, i, is_tree_script, methods, widget):
 
 def _instantiated_on_load(scripts, token_sets, tree_index):
     """new PublicTree() 正好出现一次，就在 PublicTree 所在的脚本里，而且在页面加载时一定会执行：
-    脚本顶层的一句，或者顶层 $(function () {…})、jQuery(function () {…})、$(document).ready(
-    function () {…}) 回调里的一句（回调里只有这一句）。写在 if、别的函数、事件回调里的不算。"""
+    脚本顶层的一句（给 "top"：解析到这里就执行），或者顶层 $(function () {…})、jQuery(function
+    () {…})、$(document).ready(function () {…}) 回调里的一句（回调里只有这一句；给 "ready"：DOM
+    解析完才执行）。写在 if、别的函数、事件回调里的不算（给 None）。"""
     count = sum(
         _values(tokens)[i : i + 2] == ["new", "PublicTree"]
         for tokens in token_sets
@@ -3439,7 +3442,7 @@ def _instantiated_on_load(scripts, token_sets, tree_index):
             continue
         after = values[i + 4 : i + 5]
         if depth[i] == 0 and (i == 0 or values[i - 1] in (";", "}")) and after in ([], [";"]):
-            return True
+            return "top"
         body = ["new", "PublicTree", "(", ")"] + (after if after == [";"] else [])
         end = i + len(body)
         for opener in (
@@ -3454,8 +3457,8 @@ def _instantiated_on_load(scripts, token_sets, tree_index):
             if start and values[start - 1] not in (";", "}"):
                 continue
             if values[end : end + 2] == ["}", ")"]:
-                return True
-    return False
+                return "ready"
+    return None
 
 
 def find_lonsun_api(
@@ -3485,8 +3488,9 @@ def find_lonsun_api(
             # 浏览器按 <base> 解析脚本和接口的相对地址，我们按页面地址拼：两边可能不一样
             return fail("页面有 <base>，脚本和接口的相对地址认不准")
         scripts = []
-        candidates = []
-        for el in doc.iter("script"):
+        candidates = []  # (地址, 什么时候执行)：("sync"/"defer"/"async", 在第几段脚本的位置)
+        script_positions = []  # 各段内联脚本在页面脚本里的先后
+        for position, el in enumerate(doc.iter("script")):
             if any(a.tag in ("noscript", "template") for a in el.iterancestors()):
                 continue
             kind = _script_kind(el)
@@ -3496,13 +3500,22 @@ def find_lonsun_api(
                 continue  # 不执行的模板、数据
             src = el.get("src")
             if src is not None:
-                candidates.append(src)
+                timing = (
+                    "async"
+                    if el.get("async") is not None
+                    else "defer"
+                    if el.get("defer") is not None
+                    else "sync"
+                )
+                candidates.append((src, (timing, position)))
             else:
                 source = el.text or ""
                 scripts.append(source)
+                script_positions.append(position)
                 written = _written_script(source)
                 if written is not None:
-                    candidates.append(written)
+                    # document.write 写出来的脚本在写它的这段脚本跑完以后、接着往下解析之前执行
+                    candidates.append((written, ("written", position)))
         token_sets = [_js_tokens(source) for source in scripts]
         tree_scripts = [
             source
@@ -3660,8 +3673,10 @@ def find_lonsun_api(
         values = _values(tokens)
         if values[index : index + 5] != ["function", "PublicTree", "(", ")", "{"]:
             return None
-        if not _instantiated_on_load(scripts, token_sets, n):
+        created = _instantiated_on_load(scripts, token_sets, n)
+        if not created:
             return fail("页面没有在加载时创建 PublicTree")
+        tree_position = script_positions[n]
         end = _matching_token(tokens, index + 4)
         statements = _parse_statements(scripts[n][tokens[index + 4].end : tokens[end].start])
         methods = _public_tree_methods(scripts[n])
@@ -3815,10 +3830,17 @@ def find_lonsun_api(
             return None
         list_params = tuple((k, _immutable(_evaluate(v, env))) for k, v in params[1])
         urls = []
-        for candidate in candidates:
+        for candidate, (timing, position) in candidates:
             url = urljoin(page_url, candidate)
             parts = urlsplit(url)
             if re.search(r"/[0-9]+/" + re.escape(spec[0]) + r"\.js$", parts.path):
+                # 构造函数执行时栏目树脚本得已经跑过（catalogs 有了），浏览器才会发列表请求：
+                # async 的什么时候跑说不准；就绪回调里创建的，defer、写在后面的都来得及；脚本
+                # 顶层创建的，栏目树脚本得是写在前面的普通脚本（或者前面的脚本 document.write 的）
+                if timing == "async":
+                    return fail("栏目树脚本带 async，什么时候执行说不准")
+                if created == "top" and (timing == "defer" or position >= tree_position):
+                    return fail("PublicTree 在脚本顶层创建，栏目树脚本那时还没执行")
                 if urlsplit(page_url).scheme == "https" and parts.scheme == "http":
                     return fail("HTTPS 页面引用了 HTTP 栏目树脚本")
                 if not catalog_host_allowed(page_url, url, catalog_host, county=county):
@@ -3860,7 +3882,15 @@ def find_lonsun_api(
         return ListApi(adapter=LONSUN, url=urls[-1], base_url=page_url, plan=plan)
     except LonsunFormatError as exc:
         return fail(f"脚本认不出：{exc}")
-    except (ValueError, etree.LxmlError, TypeError, AttributeError, IndexError, RecursionError):
+    except (
+        ValueError,
+        etree.LxmlError,
+        TypeError,
+        AttributeError,
+        IndexError,
+        RecursionError,
+        OverflowError,
+    ):
         return None
 
 
@@ -5041,5 +5071,5 @@ def resolve_lonsun(api, catalog_text):
         return "栏目树里没有这个栏目，或页面在这个栏目上不加载列表"
     except LonsunFormatError as exc:
         return f"页面或栏目树认不出：{exc}"
-    except (ValueError, TypeError, IndexError, KeyError, RecursionError):
+    except (ValueError, TypeError, IndexError, KeyError, RecursionError, OverflowError):
         return "页面或栏目树认不出：解析失败"
