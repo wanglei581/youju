@@ -1352,6 +1352,16 @@ def test_same_url_twice_keeps_the_date_the_old_reading_gave() -> None:
     items = extract_items(html, "http://e.cn/", today=date(2026, 11, 16))
     assert [(i.url, i.publish_date) for i in items] == [("http://e.cn/a", date(2026, 2, 1))]
 
+    # 日期一样、只是先后变了（前面那条排到了前头）：也照原来
+    html = """<ul>
+      <li><a href="/a/1.htm">关于第1号文件的通知</a><a class="tertonAIReaderFlag" href="/a/1.htm?assistant=true">| AI阅读</a><span>2026-09-01</span></li>
+      <li><a href="/a/2.htm">关于第2号文件的通知</a><span>2026-10-20</span></li>
+      <li><a href="/a/3.htm">关于第3号文件的通知</a><span>2026-10-10</span></li>
+      <li><a href="/a/1.htm">关于第1号文件的通知</a><span>2026-09-01</span></li>
+    </ul>"""
+    items = extract_items(html, "http://e.cn/a/", today=date(2026, 11, 16))
+    assert [i.url.rsplit("/", 1)[-1] for i in items] == ["2.htm", "3.htm", "1.htm"]
+
 
 def test_lists_keep_their_page_order_when_they_score_the_same() -> None:
     # 带附带链接的行等别的行分完才归块；归完以后列表块照原来按页面上的先后排，评分一样时取靠前的那块。
