@@ -66,12 +66,12 @@ _ATTACHMENT_EXT = re.compile(r"\.(pdf|docx?|xlsx?|wps|et|ofd|zip|rar|7z)$", re.I
 _COMPANION_LINK = re.compile(
     r"^[(（\[【]?\s*(?:点击)?(?:查看)?(?:政策)?(?:解读|图解|文件|原文|原件)\s*[)）\]】]?$"
 )
-# 元素自己的 style 里实际生效的 display（带 !important 的优先，否则取最后一个；注释里的、"--display"
-# 这种自定义属性、"display:none bogus" 这种无效的写法都不算，浏览器也不认）
-_DISPLAY = re.compile(
-    r"(?:^|;)\s*display\s*:\s*([a-z-]+)\s*(!\s*important)?\s*(?=;|$)", re.IGNORECASE
+# CSS 里的空白只有这几个（不间断空格不算，它是名字的一部分）
+_CSS_SPACE = " \t\n\r\f"
+# display 声明的值：一个关键字，可带 !important（"none bogus" 这种无效的值浏览器不认）
+_DISPLAY_VALUE = re.compile(
+    r"([a-z-]+)[ \t\n\r\f]*(![ \t\n\r\f]*important)?", re.IGNORECASE | re.ASCII
 )
-_CSS_COMMENT = re.compile(r"/\*.*?\*/", re.S)
 # 泸州政府文件（和同一个平台的栏目）每行里藏着的"政策解读"弹层，写法是
 #   <div class="address"><span>政策解读</span>
 #     <div class="address-popup" style="display: none;">解读链接</div></div>
@@ -195,16 +195,63 @@ def _expand_datastore(html: str) -> str:
     return html[:cut] + block + html[cut:]
 
 
+def _declarations(style: str) -> list[str]:
+    """style 属性切成一条条声明，和浏览器一样：注释不算，引号里的字符串（没写完的到结尾）、括号里
+    （包括 url(…)）的分号都不是分隔。"""
+    parts: list[str] = []
+    buf: list[str] = []
+    depth = 0
+    i, n = 0, len(style)
+    while i < n:
+        c = style[i]
+        if style.startswith("/*", i):
+            end = style.find("*/", i + 2)
+            i = n if end < 0 else end + 2
+            buf.append(" ")
+            continue
+        if c in "\"'":
+            j = i + 1
+            while j < n and style[j] != c:
+                j += 2 if style[j] == "\\" else 1
+            buf.append('""')  # 字符串里的内容不要
+            i = j + 1
+            continue
+        if c == "\\":
+            buf.append(style[i : i + 2])
+            i += 2
+            continue
+        if c in "([{":
+            depth += 1
+        elif c in ")]}" and depth:
+            depth -= 1
+        elif c == ";" and not depth:
+            parts.append("".join(buf))
+            buf = []
+            i += 1
+            continue
+        buf.append(c)
+        i += 1
+    parts.append("".join(buf))
+    return parts
+
+
 def _hidden(el: etree._Element) -> bool:
     """元素自己的 style 里实际生效的 display 是不是 none。
 
-    "display:none;display:block" 最后生效的是 block，不算藏着。
+    带 !important 的优先，否则取最后一个："display:none;display:block" 最后生效的是 block，不算
+    藏着。"--display" 这种自定义属性、注释和字符串里的、"display:none bogus" 这种无效的声明都不算。
     """
-    found = _DISPLAY.findall(_CSS_COMMENT.sub(" ", el.get("style") or ""))
+    found: list[tuple[str, bool]] = []
+    for declaration in _declarations(el.get("style") or ""):
+        name, colon, value = declaration.partition(":")
+        if not colon or name.strip(_CSS_SPACE).lower() != "display":
+            continue
+        if m := _DISPLAY_VALUE.fullmatch(value.strip(_CSS_SPACE)):
+            found.append((m.group(1).lower(), bool(m.group(2))))
     if not found:
         return False
     important = [value for value, imp in found if imp]
-    return (important or [value for value, _ in found])[-1].lower() == "none"
+    return (important or [value for value, _ in found])[-1] == "none"
 
 
 def _hidden_up_to(node: etree._Element, top: etree._Element) -> bool:

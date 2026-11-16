@@ -1302,7 +1302,7 @@ def test_link_that_is_itself_hidden_is_not_a_document() -> None:
 
 
 def test_display_none_in_a_comment_or_custom_property_is_not_hidden() -> None:
-    # "display:block;/* display:none */"、"--display:none"、"display:none bogus" 都不算藏着
+    # "display:block;/* display:none */"、"--display:none"、"display:none bogus"、字符串里的都不算藏着
     from lxml import html as lhtml
 
     from youju.crawler.listing import _hidden
@@ -1318,6 +1318,18 @@ def test_display_none_in_a_comment_or_custom_property_is_not_hidden() -> None:
         ("display:none bogus", False),
         ("display:none bogus;display:none", True),
         ("display:block;display:none bogus", False),
+        # 字符串、括号（包括 url(…)）里的分号不是分隔；没写完的字符串到结尾
+        ('display:block;--x:";display:none;"', False),
+        ("--x:(;display:none)", False),
+        ("background:url(a;display:none)", False),
+        ('--x:"abc;display:none', False),
+        ('display:none;--x:"a;b"', True),
+        (" display:none;", True),
+        ("display:\tnone\n", True),
+        ("DISPLAY:NONE !IMPORTANT", True),
+        # 不间断空格不是 CSS 的空白：名字或值就不对了
+        ("\xa0display:none", False),
+        ("display:\xa0none", False),
     ):
         assert _hidden(lhtml.fromstring(f'<div style="{style}">x</div>')) is hidden, style
 
