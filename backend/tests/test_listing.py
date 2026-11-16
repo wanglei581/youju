@@ -984,15 +984,17 @@ def test_hidden_companion_popup_in_the_title_cell_does_not_hide_the_row() -> Non
 
 
 def test_type_tags_stay_even_when_the_title_attribute_is_labeled() -> None:
-    # title 属性明写"标题："，但链接文字前面的"【政策解读】"说明这一条是解读：保留，不然会被当成原文
+    # title 属性明写"主题："，但链接文字前面的"【政策解读】"说明这一条是解读：保留，不然会被当成原文
     html = """<ul class="list">
-      <li><a href="./a/info_1.html" title="标题：关于开展第三批项目申报的通知">【政策解读】关于开展第三批项目申报的通知</a><span>2026-10-20</span></li>
-      <li><a href="./a/info_2.html" title="标题：关于公布名单的通知">[通知公告]关于公布名单的通知</a><span>2026-10-21</span></li>
-      <li><a href="./a/info_3.html" title="标题：某市促进民营经济发展若干措施">[视频]某市促进民营经济发展若干措施</a><span>2026-10-22</span></li>
-      <li><a href="./a/info_4.html" title="标题：某市企业技术中心认定管理办法">[已废止]某市企业技术中心认定管理办法</a><span>2026-10-23</span></li>
-      <li><a href="./a/info_6.html" title="标题：某市工业设计中心管理办法">[已废除]某市工业设计中心管理办法</a><span>2026-10-25</span></li>
-      <li><a href="./a/info_7.html" title="标题：某市首台套装备认定办法">[已被替代]某市首台套装备认定办法</a><span>2026-10-26</span></li>
-      <li><a href="./a/info_5.html" title="标题：招聘简章">[公示公告]招聘简章</a><span>2026-10-24</span></li>
+      <li><a href="./a/info_1.html" title="主题：关于开展第三批项目申报的通知">【政策解读】关于开展第三批项目申报的通知</a><span>2026-10-20</span></li>
+      <li><a href="./a/info_2.html" title="主题：关于公布名单的通知">[通知公告]关于公布名单的通知</a><span>2026-10-21</span></li>
+      <li><a href="./a/info_3.html" title="主题：某市促进民营经济发展若干措施">[视频]某市促进民营经济发展若干措施</a><span>2026-10-22</span></li>
+      <li><a href="./a/info_4.html" title="主题：某市企业技术中心认定管理办法">[已废止]某市企业技术中心认定管理办法</a><span>2026-10-23</span></li>
+      <li><a href="./a/info_6.html" title="主题：某市工业设计中心管理办法">[已废除]某市工业设计中心管理办法</a><span>2026-10-25</span></li>
+      <li><a href="./a/info_7.html" title="主题：某市首台套装备认定办法">[已被替代]某市首台套装备认定办法</a><span>2026-10-26</span></li>
+      <li><a href="./a/info_8.html" title="主题：某市小微企业贷款贴息办法">[无效]某市小微企业贷款贴息办法</a><span>2026-10-27</span></li>
+      <li><a href="./a/info_9.html" title="标题：关于开展企业上云工作的通知">[通知公告]关于开展企业上云工作的通知</a><span>2026-10-28</span></li>
+      <li><a href="./a/info_5.html" title="主题：招聘简章">[公示公告]招聘简章</a><span>2026-10-24</span></li>
     </ul>"""
     items = extract_items(html, "http://example.gov.cn/a/", today=date(2026, 11, 16))
     # 去掉标签后太短、读不成条目的（"招聘简章"）照旧用链接文字
@@ -1003,6 +1005,9 @@ def test_type_tags_stay_even_when_the_title_attribute_is_labeled() -> None:
         "[已废止]某市企业技术中心认定管理办法",
         "[已废除]某市工业设计中心管理办法",
         "[已被替代]某市首台套装备认定办法",
+        "[无效]某市小微企业贷款贴息办法",
+        # title 属性写"标题："（不是"主题："）的不去标签
+        "[通知公告]关于开展企业上云工作的通知",
         "[公示公告]招聘简章",
     ]
 
@@ -1072,7 +1077,7 @@ def test_hidden_link_without_a_visible_twin_is_still_a_document() -> None:
     # 链接本身藏着、同一格子里没有看得见的同一份文件链接：照旧算文件（只有附带链接才不算）
     html = """<ul class="list">
       <li><a href="/a/1.html" style="display:none">关于项目申报工作的通知</a><span>2026-10-21</span></li>
-      <li><a href="/a/2.html" style="display:none">关于公布第二批名单的通知</a><div style="display:none"><a href="/a/2.html">政策解读</a></div><span>2026-10-20</span></li>
+      <li><a href="/a/2.html?assistant=true" style="display:none">关于公布第二批名单的通知</a><div style="display:none"><a href="/a/2.html">关于公布第二批名单的通知（解读）</a></div><span>2026-10-20</span></li>
       <li><a href="/a/show.asp?id=3">关于征集典型案例的通知</a><a href="/a/show.asp?id=4" style="display:none">关于开展第三批项目申报的通知</a><span>2026-10-19</span></li>
     </ul>"""
     items = extract_items(html, "http://example.gov.cn/a/", today=date(2026, 11, 16))
@@ -1132,15 +1137,33 @@ def test_hidden_titled_link_next_to_a_bare_detail_link_is_kept() -> None:
 
 
 def test_tooltip_publish_time_wins_over_a_date_inside_a_hidden_popup() -> None:
-    # 提示文字里写着发表时间，弹层里另有日期（解读的）：用提示文字里的
+    # 提示文字里写着发表时间，每行弹层里另有日期（解读的）：用提示文字里的
     html = """<ul class="list">
       <li><a title="标题：关于项目申报工作的通知 点击数：1 发表时间：2026-10-21" href="/a/1.html">关于项目申报工作的通知</a><div style="display:none"><a href="/b/2.html">政策解读</a><span>2026-09-01</span></div></li>
-      <li><a title="标题：关于公布第二批名单的通知 点击数：1 发表时间：2026-10-20" href="/a/3.html">关于公布第二批名单的通知</a></li>
-      <li><a title="标题：关于征集典型案例的通知 点击数：1 发表时间：2026-10-19" href="/a/4.html">关于征集典型案例的通知</a></li>
+      <li><a title="标题：关于公布第二批名单的通知 点击数：1 发表时间：2026-10-20" href="/a/3.html">关于公布第二批名单的通知</a><div style="display:none"><a href="/b/4.html">政策解读</a><span>2026-09-02</span></div></li>
+      <li><a title="标题：关于征集典型案例的通知 点击数：1 发表时间：2026-10-19" href="/a/5.html">关于征集典型案例的通知</a><div style="display:none"><a href="/b/6.html">政策解读</a><span>2026-09-03</span></div></li>
     </ul>"""
     items = extract_items(html, "http://example.gov.cn/a/", today=date(2026, 11, 16))
     assert [(i.title, i.publish_date) for i in items] == [
         ("关于项目申报工作的通知", date(2026, 10, 21)),
         ("关于公布第二批名单的通知", date(2026, 10, 20)),
         ("关于征集典型案例的通知", date(2026, 10, 19)),
+    ]
+
+
+def test_row_with_tooltip_date_and_hidden_popup_stays_in_the_same_list() -> None:
+    # 第一行日期只写在提示文字里、行里还藏着带日期的弹层，别的行日期写在行里：第一行照样和别的行
+    # 算一张列表，日期用提示文字里的
+    html = """<ul class="list">
+      <li><a href="/a/1.html" title="标题：关于项目申报的通知 点击数：1 发表时间：2026-10-21">关于项目申报的通知</a><div style="display:none"><a href="/x/1.html">政策解读</a><span>2026-09-01</span></div></li>
+      <li><a href="/a/2.html">关于公布第二批名单的通知</a><span>2026-10-20</span></li>
+      <li><a href="/a/3.html">关于征集典型案例的通知</a><span>2026-10-19</span></li>
+      <li><a href="/a/4.html">关于开展第三批项目申报的通知</a><span>2026-10-18</span></li>
+    </ul>"""
+    items = extract_items(html, "http://example.gov.cn/a/", today=date(2026, 11, 16))
+    assert [(i.title, i.publish_date) for i in items] == [
+        ("关于项目申报的通知", date(2026, 10, 21)),
+        ("关于公布第二批名单的通知", date(2026, 10, 20)),
+        ("关于征集典型案例的通知", date(2026, 10, 19)),
+        ("关于开展第三批项目申报的通知", date(2026, 10, 18)),
     ]

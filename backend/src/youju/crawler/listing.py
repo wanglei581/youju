@@ -65,15 +65,16 @@ _ATTACHMENT_EXT = re.compile(r"\.(pdf|docx?|xlsx?|wps|et|ofd|zip|rar|7z)$", re.I
 _COMPANION_LINK = re.compile(
     r"^[(（\[【]?\s*(?:点击)?(?:查看)?(?:政策)?(?:解读|图解|文件|原文|原件)\s*[)）\]】]?$"
 )
-# title 属性明写"主题：""标题："的，那就是这一条的标题（临沂人社：title="主题：标题 日期：……"）。
-# 链接文字比它只多出前后的方括号标签时（"[公示公告]标题[图]"）用 title 属性。没这样明写的网站不动；
+# title 属性明写"主题："的，那就是这一条的标题（临沂人社这个平台：title="主题：标题 日期：……"）。
+# 链接文字比它只多出前后的方括号标签时（"[公示公告]标题[图]"，标签是栏目名）用 title 属性。
+# 别的写法不动（泸州、漯河那个平台写"标题："，链接文字不带标签）；
 # 标签说明这一条是什么、现在怎样的（"【一图读懂】""【政策解读】""[视频]""[已废止]""[已废除]"）
 # 也不去掉：去掉会被当成现行的政策原文
-_LABELED_TITLE = re.compile(r"^\s*(?:主题|标题)\s*[：:]")
+_LABELED_TITLE = re.compile(r"^\s*主题\s*[：:]")
 _TAGS_ONLY = re.compile(r"^\s*(?:[\[【][^\[\]【】]{1,8}[\]】]\s*)*$")
 _TYPE_TAG = re.compile(
     r"解读|图解|读懂|视频|音频|问答|发布会|直播"
-    r"|废止|废除|失效|作废|撤销|撤回|停止|暂停|替代|取代|修订|修改|过期|有效"
+    r"|废止|废除|失效|作废|撤销|撤回|停止|暂停|替代|取代|修订|修改|过期|有效|无效|终止"
 )
 # 行里藏起来的弹层（style 写着 display:none）：泸州政府文件列表每行的"政策解读"弹层，
 # 里面是解读的链接
@@ -363,10 +364,16 @@ class _Page:
         """向上找"一行"：只含这一条文件链接、并且写着日期的祖先元素。返回（行，日期，是否写明年份）。"""
         hidden, companions = self.hidden_popups(a)
         found = self._climb(a, title, url, hidden, companions)
-        if found[0] is None and hidden and _tooltip_date(a, self.today)[0] is None:
-            # 弹层外面没有日期、提示文字里也没写发表时间：弹层里写的就是这一行唯一的日期
-            # （如悬浮卡片里的"发布日期"），照原来读
-            found = self._climb(a, title, url, set(), companions)
+        if found[0] is None and hidden and not companions:
+            # 弹层外面没有日期、弹层里也没有别的文件链接（只有"分享""政策解读"这类短链接）：
+            # 行照原来认（连弹层一起看）。提示文字里写着发表时间就用它，没写才用弹层里的（如悬浮卡片
+            # 里写着这一行唯一的"发布日期"）。弹层里有别的文件链接时不回头看：那里的日期是那份文件的
+            row, day, full = self._climb(a, title, url, set(), companions)
+            tip, tip_full = _tooltip_date(a, self.today)
+            if row is not None and tip is not None:
+                found = (row, tip, tip_full)
+            elif tip is None:
+                found = (row, day, full)
         return found
 
     def _climb(
