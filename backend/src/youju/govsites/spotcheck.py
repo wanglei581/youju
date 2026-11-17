@@ -450,6 +450,7 @@ def _first_list_item(
     数字广东信息公开平台的分类（"部门页#xxgk-gkmlpt-编号"）：列表只在接口里，读部门页（去掉 # 后面）
     再按分类读接口，和试读（verify.check_one）一样。"""
     from youju.crawler.adapters import (
+        LONSUN,
         api_items_merged,
         api_part_label,
         api_parts,
@@ -460,7 +461,11 @@ def _first_list_item(
         gkmlpt_categories,
     )
     from youju.crawler.listing import extract_items
-    from youju.crawler.lonsun import lonsun_unrecognized_reason
+    from youju.crawler.lonsun import (
+        lonsun_column_page,
+        lonsun_page_items,
+        lonsun_unrecognized_reason,
+    )
     from youju.govsites.verify import guarded_fetchers
 
     gkmlpt = gkmlpt_categories(url) is not None
@@ -473,14 +478,22 @@ def _first_list_item(
         return None
     final = r.final_url or page_url
     items = [] if gkmlpt else extract_items(r.text, final, today=today)
+    # 龙讯栏目页：通用规则认出的只算这个机构的文件页，导航里带日期的链接不拿来取证；不够数就照龙讯
+    # 的写法读，认不出不取证
+    lonsun = lonsun_column_page(r.text, url)
+    if lonsun:
+        items = lonsun_page_items(items, url)
     if len(items) < 3:
         api = find_list_api(r.text, final, url, catalog_host=catalog_host, county=county)
         if api is None:
             reason = lonsun_unrecognized_reason(
                 r.text, final, url, catalog_host=catalog_host, county=county
             )
-            if reason and reasons is not None:
-                reasons.append(f"待人工处理：{reason}")
+            if reason or lonsun:
+                # 龙讯栏目页认不出：不取证（不拿页面上的链接顶替）
+                if reasons is not None:
+                    reasons.append(f"待人工处理：{reason or '页面认不出龙讯栏目（PublicTree）'}")
+                return None
         if api is not None:
             api, _, kind, reason = fetch_api_follow(api, tree_get(api))
             if kind:
@@ -511,8 +524,8 @@ def _first_list_item(
                     return None
                 texts.append(ar.text)
             via = api_items_merged(api, texts, None, today)
-            if len(via) > len(items):
-                items = via
+            if api.adapter == LONSUN or len(via) > len(items):
+                items = via  # 龙讯的照接口结果（空的也算），不拿页面上的链接顶替
     return next((i for i in items if i.publish_date), None)
 
 

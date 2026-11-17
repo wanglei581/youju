@@ -3808,3 +3808,78 @@ def test_unrecognized_reason_kept_when_another_script_cannot_be_tokenized():
     assert _found(page) is None
     reason = lonsun_unrecognized_reason(page, BASE, BASE)
     assert reason and "<!--" in reason, reason
+
+
+_DATED_NAV = "".join(
+    f"<li><a href='/art/2026/11/{d}/art_{d}.html'>关于开展第{d}批申报工作的通知</a>"
+    f"<span>2026-11-{d:02d}</span></li>"
+    for d in (1, 2, 3)
+)
+
+
+def _jx_with_nav(broken=False):
+    page = fixture("jx_page.html").replace("<body>", f"<body><ul>{_DATED_NAV}</ul>", 1)
+    if broken:
+        page = page.replace("function PublicTree()", "function PublicTree(x)", 1)
+    return page
+
+
+def _jx_cache(page, api_body=None):
+    from youju.crawler.adapters import api_follow, find_list_api
+    from youju.crawler.fetcher import FetchResult
+
+    tree = find_list_api(fixture("jx_page.html"), BASE, BASE)
+    catalog = FetchResult(tree.url, "ok", tree.url, 200, fixture("jx_catalog.js"))
+    api = api_follow(tree, catalog)
+    pages = {
+        BASE: page,
+        tree.url: fixture("jx_catalog.js"),
+        api.url: api_body if api_body is not None else fixture("jx_api.json"),
+    }
+    return GuardedLonsunCache(pages)
+
+
+def test_trial_reads_lonsun_pages_only_the_lonsun_way():
+    # 龙讯栏目页上有 3 条带日期的导航链接（第十五轮 Codex）：认不出就待人工处理，不判可读；认得出就照
+    # 接口结果读
+    from youju.govsites.verify import NEEDS_SCRIPT, check_one
+
+    broken = check_one(_jx_cache(_jx_with_nav(broken=True)), lonsun_column(), TODAY)
+    assert broken.result == NEEDS_SCRIPT and broken.reason.startswith("待人工处理"), broken.reason
+    ok = check_one(_jx_cache(_jx_with_nav()), lonsun_column(), TODAY)
+    assert ok.reason.startswith("经龙讯"), ok.reason
+
+
+def test_spotcheck_reads_lonsun_pages_only_the_lonsun_way():
+    # 认不出就不取证（不拿导航链接顶替）；认得出时照接口结果，哪怕接口只有 1 条、页面上有 3 条
+    import json as _json
+
+    from youju.govsites.spotcheck import _first_list_item
+
+    reasons = []
+    assert _first_list_item(_jx_cache(_jx_with_nav(broken=True)), BASE, TODAY, reasons) is None
+    assert reasons and reasons[0].startswith("待人工处理"), reasons
+    payload = _json.loads(fixture("jx_api.json"))
+    payload["data"] = payload["data"][:1]
+    payload["total"] = 1
+    item = _first_list_item(_jx_cache(_jx_with_nav(), _json.dumps(payload)), BASE, TODAY, [])
+    assert item is not None and "/art/2026/11/" not in item.url
+
+
+def test_server_rendered_column_list_is_still_read_from_the_page():
+    # 页面上直接写着这个机构的文件页（/public/6991/编号.html，淮南、霍邱这类）够 3 条：照常按页面读，
+    # PublicTree 认不出也一样；导航、别的栏目的链接（/xwdt/…、/site/tpl/…）不算
+    from youju.govsites.spotcheck import _first_list_item
+    from youju.govsites.verify import READABLE, check_one
+
+    own = "".join(
+        f"<li><a href='/public/6991/{1000 + d}.html'>关于开展第{d}批申报工作的通知</a>"
+        f"<span>2026-11-{d:02d}</span></li>"
+        for d in (1, 2, 3)
+    )
+    page = fixture("jx_page.html").replace("<body>", f"<body><ul>{own}</ul>", 1)
+    page = page.replace("function PublicTree()", "function PublicTree(x)", 1)
+    col = check_one(_jx_cache(page), lonsun_column(), TODAY)
+    assert col.result == READABLE and not col.reason, col.reason
+    item = _first_list_item(_jx_cache(page), BASE, TODAY, [])
+    assert item is not None and "/public/6991/" in item.url

@@ -25,7 +25,12 @@ from youju.crawler.adapters import (
     labeled,
 )
 from youju.crawler.listing import extract_items
-from youju.crawler.lonsun import LONSUN_CITY_PORTALS, lonsun_unrecognized_reason
+from youju.crawler.lonsun import (
+    LONSUN_CITY_PORTALS,
+    lonsun_column_page,
+    lonsun_page_items,
+    lonsun_unrecognized_reason,
+)
 from youju.crawler.urls import host_of
 from youju.govsites.inventory import OPTIONAL_DEPTS, STANDARD_DEPTS, XXGK_TAG, DeptRow
 from youju.govsites.links import page_links, parse_html
@@ -150,6 +155,11 @@ def check_one(cache: PageCache, col: ColumnCheck, today: date) -> ColumnCheck:
         return col
     final = r.final_url or page_url
     items = [] if gkmlpt else extract_items(r.text, final, today=today)
+    # 龙讯栏目页：通用规则认出的只算这个机构的文件页（和正式抓取一样），导航里带日期的链接不算；
+    # 不够数就照龙讯的写法读，认不出待人工处理
+    lonsun = lonsun_column_page(r.text, col.url)
+    if lonsun:
+        items = lonsun_page_items(items, col.url)
     via_api = False
     if len(items) < 3:
         # 和正式抓取一样：页面声明了集约化平台的列表接口就按它读（crawler/adapters.py）
@@ -167,8 +177,9 @@ def check_one(cache: PageCache, col: ColumnCheck, today: date) -> ColumnCheck:
             reason = lonsun_unrecognized_reason(
                 r.text, final, col.url, catalog_host=catalog_host, county=county
             )
-            if reason:
-                col.result, col.reason = NEEDS_SCRIPT, f"待人工处理：{reason}"
+            if reason or lonsun:
+                why = reason or "页面认不出龙讯栏目（PublicTree）"
+                col.result, col.reason = NEEDS_SCRIPT, f"待人工处理：{why}"
                 return col
         if api is not None:
             api, _, kind, reason = fetch_api_follow(api, tree_get(api))

@@ -4636,19 +4636,14 @@ def find_lonsun_api(
         return None
 
 
-def lonsun_unrecognized_reason(
-    html: str,
-    page_url: str,
-    column_url: str,
-    *,
-    catalog_host: str | None = None,
-    county: bool = False,
-) -> str | None:
-    """仅对龙讯栏目页给出第一步识别失败的原因：页面有一段会执行的内联脚本声明了 PublicTree。各段
-    分开看——切得开的照记号认（字符串里写着的不算），切不开的（老式的 <script><!-- … //--></script>
-    这类）照文字认；别的脚本切不开时，原因不能丢。"""
+def lonsun_column_page(html: str, column_url: str) -> bool:
+    """龙讯栏目页：栏目网址对、页面有一段会执行的内联脚本声明了 PublicTree。这种页面上通用规则认出的
+    条目只算这个机构的文件页（lonsun_page_items，服务器写好的栏目列表）；不够 3 条就照龙讯的写法读
+    （认得出用接口结果，空的也算；认不出待人工处理），导航里带日期的链接不当栏目条目。各段分开看——
+    切得开的照记号认（字符串里写着的不算），切不开的（老式的 <script><!-- … //--></script> 这类）
+    照文字认。"""
     if column_spec(column_url) is None:
-        return None
+        return False
     from lxml import etree
     from lxml import html as lxml_html
 
@@ -4665,16 +4660,39 @@ def lonsun_unrecognized_reason(
 
     try:
         doc = lxml_html.document_fromstring(_STRAY_END.sub("", html))
-        sources = [
-            el.text or ""
+        return any(
+            has_constructor(el.text or "")
             for el in doc.iter("script")
             if el.get("src") is None
             and not any(a.tag in ("noscript", "template") for a in el.iterancestors())
             and _script_kind(el) == "classic"
-        ]
-        if not any(has_constructor(source) for source in sources):
-            return None
+        )
     except (ValueError, etree.LxmlError):
+        return False
+
+
+def lonsun_page_items(items: list, column_url: str) -> list:
+    """龙讯栏目页上通用规则认出的条目里，只留这个机构的文件页（…/public/<机构编号>/<编号>.html，前面
+    可以带 /zwgk 这类前缀）：页面上直接写着的栏目列表（服务器写好的）。导航、别的栏目、外链里带日期
+    的链接不当栏目条目。不是龙讯栏目网址的原样交回。"""
+    spec = column_spec(column_url)
+    if spec is None:
+        return items
+    document = re.compile(rf"/public/{re.escape(spec[0])}/[0-9]+\.html?$")
+    return [item for item in items if document.search(urlsplit(item.url).path)]
+
+
+def lonsun_unrecognized_reason(
+    html: str,
+    page_url: str,
+    column_url: str,
+    *,
+    catalog_host: str | None = None,
+    county: bool = False,
+) -> str | None:
+    """龙讯栏目页（lonsun_column_page）第一步认不出时给原因；别的页面给 None。别的脚本切不开时
+    原因也不丢。"""
+    if not lonsun_column_page(html, column_url):
         return None
     reasons = []
     if (

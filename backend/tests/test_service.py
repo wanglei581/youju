@@ -943,6 +943,24 @@ def test_lonsun_marked_source_never_falls_back_to_generic_items(session, old_sty
     assert check.items_found == 0 and fetcher.requested == [url]
 
 
+def test_unmarked_lonsun_page_with_dated_navigation_waits_for_review(session):
+    # 还没标经龙讯接口读的栏目页，上面有 3 条带日期的导航链接（第十五轮 Codex）：照样先认龙讯写法，
+    # 认出来了记待复检，导航链接不当栏目条目
+    url, html, *_ = _lonsun_service_fixture()
+    links = "".join(
+        f"<li><a href='/art/2026/11/{d}/art_{d}.html'>关于开展第{d}批申报工作的通知</a>"
+        f"<span>2026-11-{d:02d}</span></li>"
+        for d in (1, 2, 3)
+    )
+    source = make_source(session, url)
+    fetcher = RecordingFetcher(
+        {url: [page(url, html.replace("<body>", f"<body><ul>{links}</ul>", 1))]}
+    )
+    check = check_source(session, source, fetcher, today=date(2026, 11, 13))
+    assert check.status == "parse_empty" and "待复检" in check.error
+    assert check.items_found == 0
+
+
 def test_lonsun_service_refusal_remembers_tree(session):
     url, html, tree, catalog, api, _ = _lonsun_service_fixture()
     source = make_source(session, url)
