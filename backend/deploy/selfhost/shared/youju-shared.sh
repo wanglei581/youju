@@ -799,7 +799,7 @@ secret() {
 }
 
 # show ai 打出来之前逐项核一遍：这几项只该是线路、模型名、附加参数。看着像夹带了密钥的不打：地址里有
-# ?、@ 之类（只认 https://主机[:端口][/路径]），附加参数里有 authorization、api_key、token 之类的键，
+# ?、@ 之类（只认 https://主机[:端口][/路径]），附加参数里有 authorization、api_key、token、authToken 之类的键，
 # 或者 sk-、Bearer 开头的值。附加参数用 python 按 JSON 查（值从标准输入给，不进命令行参数）
 ai_show_ok() {
   local name=$1 value=$2 port
@@ -818,11 +818,15 @@ ai_show_ok() {
       [ "${#value}" -le 2000 ] || return 1
       local check='
 import json, re, sys
-bad_key = re.compile(r"(?i)(^|[_-])(api[_-]?key|authorization|access[_-]?token|token|secret|password|passwd|cookie)($|[_-])")
+# 键名拆成词再看（驼峰也拆：authToken -> auth token），max_tokens 这类不算
+SECRET_WORDS = {"token", "secret", "password", "passwd", "cookie", "authorization", "auth", "credential", "credentials", "apikey", "key"}
+def bad_key(name):
+    words = re.split(r"[^a-z0-9]+", re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", str(name)).lower())
+    return any(w in SECRET_WORDS for w in words)
 bad_value = re.compile(r"(?i)^(sk-|bearer\s)")
 def ok(x):
     if isinstance(x, dict):
-        return all(not bad_key.search(str(k)) and ok(v) for k, v in x.items())
+        return all(not bad_key(k) and ok(v) for k, v in x.items())
     if isinstance(x, list):
         return all(ok(v) for v in x)
     if isinstance(x, str):

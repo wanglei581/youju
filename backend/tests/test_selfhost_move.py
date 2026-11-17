@@ -13,6 +13,7 @@ import select
 import shutil
 import signal
 import subprocess
+import sys
 import termios
 import time
 from datetime import UTC, date, datetime, timedelta
@@ -949,6 +950,37 @@ def test_local_set_config(tmp_path, monkeypatch):
 
 
 @needs_bash
+def test_local_set_config_checks_json_in_the_worker_without_python(tmp_path):
+    """电脑的发行版里没有 python3 时，附加参数改在 worker 镜像里查（docker compose run）。"""
+    shutil.copy(SELFHOST / "local" / "set-config.sh", tmp_path)
+    env = tmp_path / ".env"
+    env.write_text("YOUJU_SYNC_URL=https://yj.example.cn\n", encoding="utf-8")
+    # PATH 里只有脚本要用的几个命令，没有 python3；docker 换成假的：记下参数，用真的 python 查
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for tool in ("dirname", "stty", "dd", "wc", "tr", "grep", "mktemp", "mv", "rm", "seq", "cat"):
+        os.symlink(shutil.which(tool), bin_dir / tool)
+    log = tmp_path / "docker.log"
+    real_python = sys.executable
+    (bin_dir / "docker").write_text(
+        f'#!/bin/bash\necho "$@" >> "{log}"\n'
+        # docker compose run --rm --no-deps -T worker python -I -c <代码>
+        f'[ "$1 $2 $6 $7" = "compose run worker python" ] || exit 99\nshift 7\nexec "{real_python}" "$@"\n',
+        encoding="utf-8",
+    )
+    (bin_dir / "docker").chmod(0o755)
+    run_env = {**os.environ, "PATH": str(bin_dir)}
+    script = [shutil.which("bash"), str(tmp_path / "set-config.sh")]
+    extra = '{"thinking":{"type":"disabled"}}'
+    code, out = _tty(script, f"YOUJU_AI_REQUEST_EXTRA={extra}\n{_end_line(1)}\n", env=run_env)
+    assert code == 0, out
+    assert env.read_text(encoding="utf-8").endswith(f"YOUJU_AI_REQUEST_EXTRA={extra}\n")
+    assert "compose run --rm --no-deps -T worker python -I -c" in log.read_text(encoding="utf-8")
+    code, out = _tty(script, f"YOUJU_AI_REQUEST_EXTRA=[1]\n{_end_line(1)}\n", env=run_env)
+    assert code == 1 and "格式不对" in out
+
+
+@needs_bash
 def test_local_set_config_drains_leftover_paste_and_restores_the_terminal(tmp_path):
     """读完、出错、中途被停下都先把终端里没读完的粘贴内容丢掉（不然会交给外面的终端当命令执行，
     万一是密钥还会在报错里打出来），再恢复回显。"""
@@ -965,9 +997,11 @@ def test_local_set_config_drains_leftover_paste_and_restores_the_terminal(tmp_pa
     run = f'stty echo; bash "{tmp_path}/set-config.sh"; {after}'
     # 中途被停下：测试的伪终端不是控制终端，Ctrl-C 发不出信号，这里直接发 TERM（和 INT 走同一段恢复）；
     # 放到后台时标准输入要明写 <&0，不然是 /dev/null
+    # 等它关掉回显再发（关回显之前已经装好了信号处理），不靠固定等几秒
     stopped = (
-        f'stty echo; bash "{tmp_path}/set-config.sh" <&0 & pid=$!; sleep 2; kill -TERM $pid; '
-        f"wait $pid; {after}"
+        f'stty echo; bash "{tmp_path}/set-config.sh" <&0 & pid=$!; '
+        'for i in $(seq 100); do stty -a | tr " " "\\n" | grep -qx -- -echo && break; sleep 0.1; done; '
+        f"kill -TERM $pid; wait $pid; {after}"
     )
     cases = {
         "读完": (
@@ -1116,6 +1150,8 @@ def test_shared_show_ai_prints_route_and_only_a_key_fingerprint(tmp_path):
     refused = {
         f'YOUJU_AI_REQUEST_EXTRA={{"headers":{{"Authorization":"Bearer {token}"}}}}': "YOUJU_AI_REQUEST_EXTRA",
         f'YOUJU_AI_REQUEST_EXTRA={{"api_key":"{token}"}}': "YOUJU_AI_REQUEST_EXTRA",
+        'YOUJU_AI_REQUEST_EXTRA={"authToken":"short1"}': "YOUJU_AI_REQUEST_EXTRA",
+        'YOUJU_AI_REQUEST_EXTRA={"x":{"clientSecret":"short2"}}': "YOUJU_AI_REQUEST_EXTRA",
         f'YOUJU_AI_REQUEST_EXTRA={{"x":["{token}"]}}': "YOUJU_AI_REQUEST_EXTRA",
         f"YOUJU_AI_BASE_URL=https://api.deepseek.com/v1?key={token}": "YOUJU_AI_BASE_URL",
         f"YOUJU_AI_BASE_URL=https://user:{token}@api.deepseek.com/v1": "YOUJU_AI_BASE_URL",
@@ -1156,6 +1192,17 @@ def test_shared_show_ai_prints_route_and_only_a_key_fingerprint(tmp_path):
     # "执行命令"里（没有交互终端）不显示
     done = _bash(tmp_path, "show ai")
     assert done.returncode == 1 and "只能在交互终端里用" in done.stderr
+    # show push、show sync 照旧以"看完关掉这个终端窗口"结尾（show ai 不打这行，见上）
+    _server_env(
+        tmp_path,
+        f"YOUJU_SYNC_SECRET={'a' * 64}\nYOUJU_WX_PUSH_TOKEN=t0ken\nYOUJU_WX_PUSH_AES_KEY=aes\n",
+    )
+    for sub in ("push", "sync"):
+        code, out = _tty(
+            ["bash", "-c", f'source "{defs}"; SERVER="{tmp_path}/server"; show {sub}'], ""
+        )
+        lines = [line for line in out.replace("\r", "").splitlines() if line]
+        assert code == 0 and lines[-1] == "看完关掉这个终端窗口", (sub, out)
 
 
 @needs_bash
