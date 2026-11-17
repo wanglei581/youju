@@ -165,6 +165,28 @@ def test_stop_signal_after_first_write(session):
     assert session.get(DocumentDetail, docs[1].id) is None
 
 
+def test_document_cut_off_before_its_pdf_counts_as_interrupted(session):
+    # 详情页取到了、正要取它唯一的 PDF 时别的任务开始了（第十七轮 Codex）：这份是开始了又被打断，
+    # 记 interrupted（为什么停看 stop_reason），不算还没开始，也不算网站停取
+    doc = add_document(session, 9470)
+    page = FetchResult(
+        doc.url,
+        "ok",
+        http_status=200,
+        text="<div id='zoom'><a href='https://gxt.ln.gov.cn/f/1.pdf'>附件.pdf</a></div>",
+    )
+    fake = FakeFetcher({doc.url: page})
+
+    def stop():
+        return "别的任务在跑：backup" if fake.calls else None
+
+    summary = run_detail_queue(session, minutes=1, workers=1, fetcher=fake, stop=stop)
+    assert fake.calls == [doc.url]
+    assert summary.stop_reason == "别的任务在跑：backup"
+    assert summary.statuses == {"interrupted": 1}
+    assert session.get(DocumentDetail, doc.id) is None
+
+
 def test_time_stop_without_database():
     ticks = iter([0, 60])
     summary = run_detail_queue(None, minutes=1, fetcher=object(), clock=lambda: next(ticks))
@@ -654,7 +676,7 @@ def test_deadline_results_do_not_trip_circuit(session):
     )
     # 到了期限没取完的不算网络失败：不熔断，也不写库
     assert "熔断" not in summary.stop_reason
-    assert summary.statuses == {"deadline": 24}
+    assert summary.statuses == {"interrupted": 24}
     assert all(session.get(DocumentDetail, d.id) is None for d in docs)
 
 

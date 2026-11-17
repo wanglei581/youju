@@ -725,9 +725,11 @@ def _fetch_outcomes(
     on_outcome=None,
     should_stop=None,
     strip_content: bool = False,
+    on_start=None,
 ) -> dict[int, _FetchOutcome]:
     """strip_content：交回的结果不带页面内容（只写库的调用方用；body_refresh 这类要拿原网页核对的
-    不能清）。"""
+    不能清）。on_start(document_id)：一份文件开始取时（取页线程里）调一次，汇总时分得出哪些是开始
+    了又被停下打断的。"""
     by_host: dict[str, list[tuple[int, str]]] = {}
     for document_id, url in selected:
         by_host.setdefault(_host(url), []).append((document_id, url))
@@ -762,6 +764,8 @@ def _fetch_outcomes(
                     if f"{DEFERRED_PREFIX}{document_id}" in reasons:
                         continue
                 guarded = _PausingFetcher(fetcher, pause, stopped)
+                if on_start is not None:
+                    on_start(document_id)
                 try:
                     with pdf_sandbox.stop_when(stopped):
                         outcome = _fetch_one(document_id, url, guarded)
@@ -896,6 +900,7 @@ def _fetch_selected(
     pause: _SitePause | None = None,
     should_stop=None,
     on_outcome=None,
+    on_start=None,
 ) -> list[DetailFetchSummary]:
     if not selected:
         return []
@@ -919,6 +924,7 @@ def _fetch_selected(
         on_outcome=save,
         should_stop=should_stop,
         strip_content=True,
+        on_start=on_start,
     )
     return [
         saved[document_id]
@@ -993,9 +999,16 @@ def run_detail_queue(
     chosen: set[int] = set()
     written: set[int] = set()
     gone: set[int] = set()
-    # 没写库的各是为什么：到了期限没取完、熔断时扔掉（别的到汇总时按网站停没停取分）
+    # 没写库的各是为什么：到了期限没取完、熔断时扔掉、开始取了（别的到汇总时按网站停没停取分）
     timed_out: set[int] = set()
     dropped: set[int] = set()
+    started: set[int] = set()
+    started_lock = threading.Lock()
+
+    def on_start(document_id):
+        with started_lock:
+            started.add(document_id)
+
     # 还没写库的连续网络失败（到达时刻, 结果）：凑够熔断条件就整批不写
     pending: list[tuple[float, _FetchOutcome]] = []
     tripped = threading.Event()
@@ -1151,6 +1164,7 @@ def run_detail_queue(
                 pause=pause,
                 should_stop=lambda: stop_reason() is not None,
                 on_outcome=receive,
+                on_start=on_start,
             )
 
     if fetcher is None:
@@ -1169,20 +1183,20 @@ def run_detail_queue(
         reason = run(fetcher)
     if not tripped.is_set():
         flush()
-    # 选了没写库的分开数（total 只算写了库的）：deadline 到了期限没取完，circuit_dropped 熔断时
-    # 扔掉，site_paused 所在网站（或这份文件）在停取中，not_started 停下（到时间、给别的任务让路）
-    # 时还没开始
+    # 选了没写库的分开数（total 只算写了库的）：circuit_dropped 熔断时扔掉，site_paused 所在网站（或
+    # 这份文件）在停取中，interrupted 开始取了、停下时（到时间、给别的任务让路、每轮要锁——为什么停
+    # 看 stop_reason）被打断（取到一半、正要取 PDF），not_started 停下时还没开始
     paused_now = pause.reasons
     for document_id in sorted(chosen - written - gone):
-        if document_id in timed_out:
-            key = "deadline"
-        elif document_id in dropped:
+        if document_id in dropped:
             key = "circuit_dropped"
         elif (
             _host(urls[document_id]) in paused_now
             or f"{DEFERRED_PREFIX}{document_id}" in paused_now
         ):
             key = "site_paused"
+        elif document_id in timed_out or document_id in started:
+            key = "interrupted"
         else:
             key = "not_started"
         statuses[key] = statuses.get(key, 0) + 1
