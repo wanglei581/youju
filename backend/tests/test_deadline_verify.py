@@ -714,10 +714,11 @@ def test_auto_result_carries_over_only_to_twins_with_their_own_sentence(
 
     from youju.dedup import sync_reviewed_twins
 
-    # 沿用时按当时的北京时间判断过期：固定在 9 月 27 日
+    # 沿用时按当时的北京时间判断过期：固定在 9 月 27 日；自动核对开着（开关 1、配了 AI 密钥）
     monkeypatch.setattr(
         v1, "now", lambda: datetime(2026, 9, 27, 12, tzinfo=ZoneInfo("Asia/Shanghai"))
     )
+    monkeypatch.setattr(verify, "auto_enabled", lambda settings=None: True)
     _auto_ai_record(session, candidate)
     session.commit()
     results = list(verify.auto_verify(session, TODAY, datetime(2026, 9, 27, 12), True))
@@ -964,14 +965,19 @@ def test_auto_holds_the_whole_notice_while_deciding(
         assert deciding.wait(30)
         with session_factory() as probe:
             probe.execute(text("SET SESSION innodb_lock_wait_timeout = 1"))
-            with pytest.raises(OperationalError) as caught:
-                probe.scalars(
-                    select(DocumentDeadline)
-                    .where(DocumentDeadline.id == other.id)
-                    .with_for_update()
-                ).all()
-            assert caught.value.orig.args[0] == 1205
-            probe.rollback()
+            try:
+                with pytest.raises(OperationalError) as caught:
+                    probe.scalars(
+                        select(DocumentDeadline)
+                        .where(DocumentDeadline.id == other.id)
+                        .with_for_update()
+                    ).all()
+                assert caught.value.orig.args[0] == 1205
+            finally:
+                # 这条连接要还回整个测试共用的连接池：等锁时间改回默认，免得后面的测试只等 1 秒
+                probe.rollback()
+                probe.execute(text("SET SESSION innodb_lock_wait_timeout = DEFAULT"))
+                probe.commit()
     finally:
         release.set()
         thread.join(30)
@@ -982,12 +988,14 @@ def test_auto_holds_the_whole_notice_while_deciding(
 def test_auto_result_is_not_carried_over_when_ai_changed_or_expired(
     session, candidate, monkeypatch
 ):
-    """沿用前对副本把自动核对的条件再核一遍：同组当前的 AI 结果不再相符的、已经过期的，都不沿用。"""
+    """沿用前对副本把自动核对的条件再核一遍：同组当前的 AI 结果不再相符的、已经过期的、自动核对关着的
+    （开关不是 1 或没配 AI 密钥），都不沿用。"""
     from zoneinfo import ZoneInfo
 
     from youju.dedup import sync_reviewed_twins
     from youju.models import AICheck
 
+    monkeypatch.setattr(verify, "auto_enabled", lambda settings=None: True)
     _auto_ai_record(session, candidate)
     session.commit()
     results = list(verify.auto_verify(session, TODAY, datetime(2026, 9, 27, 12), True))
@@ -1039,12 +1047,18 @@ def test_auto_result_is_not_carried_over_when_ai_changed_or_expired(
     sync_reviewed_twins(session, {doc.id})
     session.commit()
     assert twin.status == "pending"
-    # AI 改回来：这一回沿用，原句记它自己的
+    # AI 改回来，但自动核对关了（开关改回 0 或去掉了 AI 密钥）：不沿用
     record.result = {
         **record.result,
         "items": [{**record.result["items"][0], "kind": candidate.kind}],
     }
     session.commit()
+    monkeypatch.setattr(verify, "auto_enabled", lambda settings=None: False)
+    sync_reviewed_twins(session, {doc.id})
+    session.commit()
+    assert twin.status == "pending"
+    # 自动核对开着：这一回沿用，原句记它自己的
+    monkeypatch.setattr(verify, "auto_enabled", lambda settings=None: True)
     sync_reviewed_twins(session, {doc.id})
     session.commit()
     assert twin.status == "approved" and twin.reviewed_by == verify.AUTO_REVIEWER

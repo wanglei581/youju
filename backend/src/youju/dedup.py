@@ -163,11 +163,13 @@ def sync_reviewed_twins(session: Session, masters: set[int]) -> int:
     AI 自动核对通过的（D-135）不凭"同一份通知"直接沿用：只沿用给证据句相同（同一句话，说的是同一件
     事）、规则抽出、AI 也一致的副本，而且对这条副本把自动核对的条件再核一遍（没过期、当前 AI 结果
     相符、这句在它自己的当前正文里写着这个日期和时刻，见 deadline_verify.auto_twin_quote），原句记
-    它自己的；不行就留在待核对。同一截止另有人核过的（Claude、管理台），先沿用人核的。"""
-    from youju.deadline_verify import AUTO_REVIEWER, auto_twin_quote
+    它自己的；不行就留在待核对。自动核对关着（开关不是 1，或没配 AI 密钥）时一律不沿用自动结果。
+    同一截止另有人核过的（Claude、管理台），先沿用人核的。"""
+    from youju.deadline_verify import AUTO_REVIEWER, auto_enabled, auto_twin_quote
     from youju.models import DocumentDeadline
 
     synced = 0
+    auto_on = None  # 用到时才读一次配置
     for members in groups_for(session, sorted(masters)).values():
         if len(members) < 2:
             continue
@@ -202,6 +204,10 @@ def sync_reviewed_twins(session: Session, masters: set[int]) -> int:
             if source is None:
                 source = auto.get(reviewed_key(d, "rejected"))
                 if source is None or d.origin != "rule" or d.ai_agrees is not True:
+                    continue
+                if auto_on is None:
+                    auto_on = auto_enabled()
+                if not auto_on:
                     continue
                 own_quote = auto_twin_quote(session, d, members)
                 if own_quote is None:

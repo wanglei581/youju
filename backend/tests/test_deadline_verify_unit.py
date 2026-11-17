@@ -426,6 +426,23 @@ def test_auto_apply_and_expired(monkeypatch, setup):
     assert candidate.verification_quote == BODY
 
 
+def test_auto_enabled_needs_the_switch_and_an_ai_key():
+    """自动核对开着 = 开关是 1，而且配了 AI 密钥（沿用自动结果给副本前也看它）。"""
+    from pydantic import SecretStr
+
+    def settings(switch, key):
+        return SimpleNamespace(
+            deadline_auto_verify=switch, ai_api_key=SecretStr(key) if key is not None else None
+        )
+
+    assert verify.auto_enabled(settings("1", "k")) is True
+    assert verify.auto_enabled(settings("1", "")) is False
+    assert verify.auto_enabled(settings("1", None)) is False
+    assert verify.auto_enabled(settings("0", "k")) is False
+    assert verify.auto_enabled(settings("", "k")) is False
+    assert verify.auto_enabled(settings("true", "k")) is False
+
+
 def test_auto_tries_next_candidate_until_one_passes(monkeypatch):
     """同一截止有几条规则候选：前一条没通过接着试下一条，有一条通过了后面的不再核（D-135）。"""
     from youju import dedup

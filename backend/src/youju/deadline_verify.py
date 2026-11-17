@@ -501,6 +501,17 @@ def auto_switch(value):
     return None
 
 
+def auto_enabled(settings=None):
+    """D-135 自动核对现在开着没有：开关（YOUJU_DEADLINE_AUTO_VERIFY）是 1，而且配了 AI 密钥（和
+    ai-check、youju.ai.get_chat_client 同一个判断）。沿用自动通过的结果给副本
+    （dedup.sync_reviewed_twins）前也看它：开关改回 0、密钥去掉以后，不再生出新的自动通过。"""
+    from youju.config import get_settings
+
+    settings = settings or get_settings()
+    key = settings.ai_api_key.get_secret_value() if settings.ai_api_key else ""
+    return auto_switch(settings.deadline_auto_verify) is True and bool(key)
+
+
 def auto_verify(session, today, now, write=False, clock=None, stop=None):
     """D-135：核对清单（queue，7 天内）里同时满足下面几条的，按 apply_one 同一套校验写成核对通过，
     核对人记 AUTO_REVIEWER；不满足的不动，照旧显示"截止时间见原文"。
