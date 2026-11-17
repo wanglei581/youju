@@ -107,13 +107,15 @@ else
   saved_tty=$(stty -g)
   finished=0
   finish_paste() {
-    # 只做一次（Ctrl-C 时信号和退出都会来叫）。换成非规范模式再读：没按回车的半行也读得到；一直读到
-    # 连续 1 秒没有新内容，最多 30 秒，读到的都丢掉；然后恢复终端
+    # 只做一次（Ctrl-C 时信号和退出都会来叫），做的时候不让 Ctrl-C 打断：恢复终端之前不退出。
+    # 换成非规范模式再读：没按回车的半行也读得到；一直读到连续 1 秒没有新内容，读到的都丢掉，然后恢复终端。
+    # 不设总时长：还在往里粘就不回到外面的终端（回去了，剩下的会被当命令执行）
     [ "$finished" -eq 0 ] || return 0
     finished=1
-    local n start=$SECONDS
+    trap '' INT TERM
+    local n
     stty -icanon min 0 time 10 2>/dev/null || true
-    while [ $((SECONDS - start)) -lt 30 ]; do
+    while :; do
       n=$(dd bs=65536 count=1 2>/dev/null | wc -c | tr -d ' ')
       [ "$n" -gt 0 ] || break
     done
