@@ -1580,3 +1580,75 @@ def test_short_notices_with_attachments_are_not_gates(tmp_path, html):
     # 第十五轮独立 Claude：取得到正文或附件就不算关卡，不停站
     result = _html_result("https://a.gov.cn/1", html)
     assert detail_service._gate_page(result, result.url) is False
+
+
+def test_login_page_saying_access_forbidden_still_pauses(tmp_path):
+    # 登录页上写着"非授权用户禁止访问"（第十六轮独立 Claude）：拦截页那条取得到正文，也照样查登录页
+    html = (
+        "<html><head><title>用户登录 - 某市人民政府</title></head><body>"
+        f"{_LOGIN_FORM}<p>非授权用户禁止访问。</p></body></html>"
+    )
+    path = str(tmp_path / "pause.json")
+
+    class Fake:
+        def fetch(self, url):
+            return _html_result(url, html)
+
+    outcomes = _fetch_outcomes([(1, "https://a.gov.cn/1")], Fake(), 1, pause=_SitePause(path))
+    assert outcomes[1].status == "protected"
+    assert _SitePause(path).expiry("a.gov.cn") is not None
+
+
+_HEADER_LOGIN = (
+    "<div class='top'><form>用户名<input name='u'>密码<input type='password' name='p'>"
+    "<button>登录</button></form></div>"
+)
+_NAV30 = "".join(f"<a href='/c{i}.html'>栏目{i}</a>" for i in range(30))
+
+
+@pytest.mark.parametrize(
+    "header,body",
+    [
+        (
+            _HEADER_LOGIN,
+            "<p>因工作调整，经研究决定关停“某市发布”政务微博账号，特此公告。</p>",
+        ),
+        (
+            _HEADER_LOGIN,
+            "<p>政务邮箱账号密码重置办法详见附件。</p><a href='/f.pdf'>重置办法.pdf</a>",
+        ),
+        (
+            "<script>var tpl = '<input type=password name=p>';</script>",
+            "<p>因工作调整，经研究决定关停政务微博账号，特此公告。</p>",
+        ),
+    ],
+    ids=["header-login-weibo", "header-login-pdf", "password-in-script"],
+)
+def test_short_notices_mentioning_accounts_do_not_pause(tmp_path, header, body):
+    # 页头挂着登录框（或密码框只在脚本模板里）、正文是提到账号的短通知（第十六轮独立 Claude）：
+    # 密码框要在解析选中的正文里才算登录表单，不停站
+    html = (
+        "<html><head><title>关于关停政务微博账号的公告</title></head><body>"
+        f"<div>{_NAV30}</div>{header}<div id='zoom'>{body}</div></body></html>"
+    )
+    result = _html_result("https://a.gov.cn/1", html)
+    assert detail_service._gate_page(result, result.url) is False
+
+
+def test_comment_box_placeholder_alone_is_not_a_signal():
+    # 整站留言框上写着 placeholder="验证码"，页面又有完整的导航（不是整页几乎没字）：弱信号，不停站
+    html = (
+        "<html><head><title>关于开展申报工作的通知</title></head><body>"
+        f"<div>{_NAV30}</div><form class='comment'><input placeholder='验证码'></form>"
+        "</body></html>"
+    )
+    result = _html_result("https://a.gov.cn/1", html)
+    assert detail_service._gate_page(result, result.url) is False
+
+
+def test_pause_file_that_is_not_an_object_stops_run(tmp_path):
+    path = tmp_path / "pause.json"
+    pause = _SitePause(str(path))
+    path.write_text("[]")
+    with pytest.raises(detail_service._PauseStoreError):
+        pause.reasons  # noqa: B018
