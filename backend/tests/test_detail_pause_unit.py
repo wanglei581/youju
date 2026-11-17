@@ -1502,3 +1502,40 @@ def test_short_notice_with_captcha_title_is_not_a_gate(tmp_path, sentence):
     outcomes = _fetch_outcomes([(1, "https://a.gov.cn/1")], Fake(), 1, pause=_SitePause(path))
     assert outcomes[1].status != "protected"
     assert _SitePause(path).expiry("a.gov.cn") is None
+
+
+def test_captcha_page_with_only_short_title_and_attributes_pauses(tmp_path):
+    # 验证码只写在很短的标题、图片 alt、输入框 placeholder 里（第十五轮 Codex）：照样算验证页、停站
+    html = (
+        "<html><head><title>验证码</title></head><body><form>"
+        "<img src='/code.jpg' alt='验证码'><input name='code' placeholder='验证码'>"
+        "<button>提交</button></form></body></html>"
+    )
+    path = str(tmp_path / "pause.json")
+
+    class Fake:
+        def fetch(self, url):
+            return _html_result(url, html)
+
+    outcomes = _fetch_outcomes([(1, "https://a.gov.cn/1")], Fake(), 1, pause=_SitePause(path))
+    assert outcomes[1].status == "protected"
+    assert _SitePause(path).expiry("a.gov.cn") is not None
+
+
+def test_login_page_with_navigation_and_plain_title_pauses(tmp_path):
+    # 有 15 个导航链接、标题不像登录（"政务服务平台"）的登录页（第十五轮 Codex）：html_gate 不报，
+    # 详情页另查——有密码框、解析出的"正文"就是登录表单，照样算登录页、停站，登录框上的字不当正文
+    nav = "".join(f"<a href='/c{i}.html'>栏目{i}</a>" for i in range(15))
+    html = (
+        "<html><head><title>政务服务平台</title></head><body>"
+        f"<div>{nav}</div>{_LOGIN_FORM}</body></html>"
+    )
+    path = str(tmp_path / "pause.json")
+
+    class Fake:
+        def fetch(self, url):
+            return _html_result(url, html)
+
+    outcomes = _fetch_outcomes([(1, "https://a.gov.cn/1")], Fake(), 1, pause=_SitePause(path))
+    assert outcomes[1].status == "protected"
+    assert _SitePause(path).expiry("a.gov.cn") is not None

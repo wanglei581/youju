@@ -12,6 +12,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
+from html import unescape as unescape_html
 from pathlib import Path
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
@@ -34,6 +35,7 @@ from youju.crawler.detail import (
     search_throttle_site,
 )
 from youju.crawler.fetcher import (
+    CAPTCHA_WORDS,
     SITE_PAUSED,
     FetchResult,
     PoliteFetcher,
@@ -44,6 +46,7 @@ from youju.crawler.fetcher import (
     html_gate,
     prompt_attributes,
     robots_gate,
+    short_title_parts,
     text_gate,
 )
 from youju.crawler.pdf import extract_pdf_text
@@ -200,9 +203,10 @@ def _html_page_gate(text: str, url: str) -> bool:
     _login_page（整页几乎没字的也一样：链接少的短通知不少，留言区脚本里带着验证码）。详情页解析认出的
     验证码这类字不在这里判（正常通知讲验证码使用要求、标题带着这些字的都不算），见 _fetch_one。"""
     reason = html_gate(_without_throttle_dialogs(text, url))
-    if reason == "需要登录或验证码":
-        return _login_page(text, url)
-    return bool(reason)
+    if reason and reason != "需要登录或验证码":
+        return True
+    # 登录页、验证页详情页另有一套（不靠 html_gate 先认出：带导航、标题不像登录的登录页也有）
+    return _login_page(text, url)
 
 
 def _without_throttle_dialogs(text: str, url: str) -> str:
@@ -237,21 +241,27 @@ def _visible_words(text: str, url: str) -> str:
 
 
 def _login_page(text: str, url: str) -> bool:
-    """详情页什么时候算登录页、验证页（html_gate 查过的：整页几乎没字，或者标题很短的那一段写着
-    登录、验证）：
-    - 整页几乎没字又有密码框：这一页就是登录表单（表单放在 .content、#zoom 里时，解析会把"用户名
-      密码 登录"当成正文）；
-    - 有密码框或验证码提示（正文里看得见的、placeholder 这类属性里的"请输入验证码"这类整句；标题、
-      脚本、核实过的站内搜索限流弹窗都不算），并且去掉标题解析：正文开头就写着验证码这类字（解析判
-      防护页），解析出的"正文"开头是用户名、密码这类登录表单的字（有密码框时），或者取不到正文、附件。
+    """详情页是不是登录页、验证页（每个详情页都查，不靠 html_gate 先认出）：
+    - 先看有没有信号：密码框，或者验证码提示——很短的标题段（标题拆掉站名以后 10 个字以内）、
+      placeholder 这类属性里写着验证码、安全验证这类字，或者正文里看得见的"请输入验证码"这类整句
+      （标题、脚本、核实过的站内搜索限流弹窗都不算）；没有信号的不是；
+    - 整页几乎没字又有密码框：这一页就是登录表单；
+    - 别的去掉标题解析：正文开头就写着验证码这类字（解析判防护页），解析出的"正文"很短（不到 300
+      字）、开头是用户名、密码这类登录表单的字（有密码框时；表单放在 .content、#zoom 里时解析会把它
+      当正文），或者取不到正文、附件，才算。
     详情页的标题就是文章标题（"关于启用短信验证码登录的通知"），页头的登录小框、限流弹窗、留言区的
     验证码也常见，只凭这些不停整个网站。"""
-    from youju.govsites.platform import _CAPTCHA, _PASSWORD
+    from youju.govsites.platform import _CAPTCHA, _PASSWORD, _TITLE
 
     head = text[:200000]
     password = bool(_PASSWORD.search(head))
+    m = _TITLE.search(head)
+    short = short_title_parts(unescape_html(m.group(1))) if m else ""
     captcha = bool(
-        _CAPTCHA.search(_visible_words(text, url)) or _CAPTCHA.search(prompt_attributes(head))
+        CAPTCHA_WORDS.search(short)
+        or CAPTCHA_WORDS.search(prompt_attributes(_without_throttle_dialogs(text, url)))
+        or _CAPTCHA.search(head)
+        and _CAPTCHA.search(_visible_words(text, url))
     )
     if not (password or captcha):
         return False
@@ -261,9 +271,10 @@ def _login_page(text: str, url: str) -> bool:
     parsed = parse_detail(untitled, url)
     if parsed.failure_reason == "防护页或验证码":
         return True
-    if password and re.search(r"用户名|密码|账号|帐号", (parsed.raw_body or "")[:300]):
+    body = parsed.raw_body or ""
+    if password and len(body) < 300 and re.search(r"用户名|密码|账号|帐号", body):
         return True
-    return not parsed.raw_body and not parsed.attachments
+    return not body and not parsed.attachments
 
 
 # 放过站内搜索限流弹窗的网站遇到防护页：这一轮停取（不写进共享文件）、要复核
