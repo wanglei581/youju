@@ -989,7 +989,7 @@ def test_auto_result_is_not_carried_over_when_ai_changed_or_expired(
     session, candidate, monkeypatch
 ):
     """沿用前对副本把自动核对的条件再核一遍：同组当前的 AI 结果不再相符的、已经过期的、自动核对关着的
-    （开关不是 1 或没配 AI 密钥），都不沿用。"""
+    （开关不是 1 或没配 AI 密钥）、同一天有质检退回还待核对的，都不沿用。"""
     from zoneinfo import ZoneInfo
 
     from youju.dedup import sync_reviewed_twins
@@ -1057,8 +1057,29 @@ def test_auto_result_is_not_carried_over_when_ai_changed_or_expired(
     sync_reviewed_twins(session, {doc.id})
     session.commit()
     assert twin.status == "pending"
-    # 自动核对开着：这一回沿用，原句记它自己的
+    # 自动核对开着，但同组同一天有一条质检退回还待核对：不沿用（免得把退回的截止遮住）
     monkeypatch.setattr(verify, "auto_enabled", lambda settings=None: True)
+    returned = DocumentDeadline(
+        document_id=twin_doc.id,
+        fingerprint="carry-returned",
+        kind=candidate.kind,
+        candidate_date=candidate.candidate_date,
+        evidence="另一句：申报截止2026年9月30日。",
+        confidence="高",
+        status="pending",
+        origin="rule",
+        ai_agrees=True,
+        audit_state="reopened",
+        audit_note="Codex 抽查不一致：原文不符",
+    )
+    session.add(returned)
+    session.commit()
+    sync_reviewed_twins(session, {doc.id})
+    session.commit()
+    assert twin.status == "pending"
+    # 退回那条处理掉以后（这里直接驳回）：这一回沿用，原句记它自己的
+    returned.status, returned.audit_state = "rejected", None
+    session.commit()
     sync_reviewed_twins(session, {doc.id})
     session.commit()
     assert twin.status == "approved" and twin.reviewed_by == verify.AUTO_REVIEWER

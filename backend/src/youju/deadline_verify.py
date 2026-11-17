@@ -420,6 +420,25 @@ def _auto_reason(session, row, members, now):
     )
     if any(other.status in ("approved", "changed") for other in same_kind):
         return "这一类已有核对结果"
+    if reason := _same_day_reason(session, row, members, same_kind):
+        return reason
+    if not _ai_supports(session, row, members):
+        return "没有符合条件的 AI 证据"
+    return None
+
+
+def _same_day_reason(session, row, members, same_kind=None):
+    """同一归并组（members）里同一类型、同一天的整组检查，自动核对（_auto_reason）和沿用自动结果
+    （auto_twin_quote）共用：有待核对的质检退回、有人对当前正文标过看不准、待核对候选和 AI 结果的
+    时刻不止一种（没写时刻也算一种），就返回原因；都没有返回 None。"""
+    if same_kind is None:
+        same_kind = list(
+            session.scalars(
+                select(DocumentDeadline)
+                .where(DocumentDeadline.document_id.in_(members), DocumentDeadline.kind == row.kind)
+                .execution_options(populate_existing=True)
+            )
+        )
     candidates = [
         other
         for other in same_kind
@@ -446,18 +465,21 @@ def _auto_reason(session, row, members, now):
     )
     if len(clocks) > 1:
         return "同一天有几个不同的时刻"
-    if not _ai_supports(session, row, members):
-        return "没有符合条件的 AI 证据"
     return None
 
 
 def auto_twin_quote(session, row, members, now=None):
     """D-135：AI 自动通过的结果沿用给同组副本（dedup.sync_reviewed_twins）前，把自动核对的条件对这条
-    副本再核一遍：没过期（按当时的北京时间）；同组当前的 AI 结果也标企业申报截止、和它同一天同一
-    时刻、AI 原句在正文里写着这个日期和时刻（_ai_supports）；它自己的原句去掉空白后 12–300 字、在它
-    自己的当前正文里、写着这个日期（有时刻的也写着这个时刻）；它没被标过对当前正文的看不准。行就
-    返回正文里原样的那段（记成它自己的 verification_quote），不行返回 None（留在待核对）。自动核对
-    不像人核过整份通知，所以不凭"同一份通知"直接沿用。"""
+    副本再核一遍：
+    - 没过期（按当时的北京时间）；
+    - 同一天没有待核对的质检退回、没有人对当前正文标过看不准、时刻只有一种（_same_day_reason，
+      和自动核对同一个检查）；
+    - 同组当前的 AI 结果也标企业申报截止、和它同一天同一时刻，AI 原句在正文里写着这个日期和时刻
+      （_ai_supports）；
+    - 它自己的原句去掉空白后 12–300 字、在它自己的当前正文里、写着这个日期（有时刻的也写着这个
+      时刻），它没被标过对当前正文的看不准。
+    行就返回正文里原样的那段（记成它自己的 verification_quote），不行返回 None（留在待核对）。
+    自动核对不像人核过整份通知，所以不凭"同一份通知"直接沿用。"""
     if now is None:
         from youju.api.v1 import now as beijing_now
 
@@ -469,7 +491,7 @@ def auto_twin_quote(session, row, members, now=None):
         and row.candidate_time <= local_now.time().replace(tzinfo=None)
     ):
         return None
-    if not _ai_supports(session, row, members):
+    if _same_day_reason(session, row, members) or not _ai_supports(session, row, members):
         return None
     detail = session.scalar(
         select(DocumentDetail)
