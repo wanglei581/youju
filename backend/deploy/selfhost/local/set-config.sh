@@ -105,12 +105,16 @@ else
   # 再打提示：看到提示马上粘贴也不会显示出来。结束时（读完、出错、Ctrl-C）先把终端里没读完的粘贴内容
   # 读掉丢弃，再恢复回显：不然剩下的会交给外面的终端当命令执行，万一是密钥还会在报错里打出来
   saved_tty=$(stty -g)
+  finished=0
   finish_paste() {
-    # 换成非规范模式再读：没按回车的半行也读得到；连续 1 秒没有新内容才停（最多 30 秒），读到的都丢掉
-    local k n
+    # 只做一次（Ctrl-C 时信号和退出都会来叫）。换成非规范模式再读：没按回车的半行也读得到；一直读到
+    # 连续 1 秒没有新内容，最多 30 秒，读到的都丢掉；然后恢复终端
+    [ "$finished" -eq 0 ] || return 0
+    finished=1
+    local n start=$SECONDS
     stty -icanon min 0 time 10 2>/dev/null || true
-    for k in $(seq 30); do
-      n=$(dd bs=4096 count=1 2>/dev/null | wc -c | tr -d ' ')
+    while [ $((SECONDS - start)) -lt 30 ]; do
+      n=$(dd bs=65536 count=1 2>/dev/null | wc -c | tr -d ' ')
       [ "$n" -gt 0 ] || break
     done
     stty "$saved_tty" 2>/dev/null || true

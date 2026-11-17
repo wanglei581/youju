@@ -983,6 +983,14 @@ def test_local_set_config_drains_leftover_paste_and_restores_the_terminal(tmp_pa
         "停下": (stopped, "", "EXIT=130"),
         # 最后一行没按回车（规范模式下读不到的半行）也要丢掉
         "半行": (run, f"YOUJU_AI_MODEL=deepseek-chat\n{_end_line(1)}\n{secret}", "EXIT=0"),
+        # 一下子粘了很多（远多于 30 次 4KB 的读）：照样全丢掉
+        "很多": (
+            run,
+            f"YOUJU_AI_MODEL=deepseek-chat\n{_end_line(1)}\n"
+            + "".join(f"echo PWNED-{i:05d} {'y' * 40}\n" for i in range(3000))
+            + secret,
+            "EXIT=0",
+        ),
     }
     for label, (wrapper, typed, exit_line) in cases.items():
         code, out = _tty(["bash", "-c", wrapper], typed)
@@ -1113,17 +1121,27 @@ def test_shared_show_ai_prints_route_and_only_a_key_fingerprint(tmp_path):
         f"YOUJU_AI_BASE_URL=https://user:{token}@api.deepseek.com/v1": "YOUJU_AI_BASE_URL",
         f"YOUJU_AI_BACKGROUND_MODEL={token}": "YOUJU_AI_BACKGROUND_MODEL",
         f"YOUJU_AI_BACKGROUND_MODEL=m{'a1' * 16}": "YOUJU_AI_BACKGROUND_MODEL",
+        # 用转义写的 sk-：按 JSON 解开以后查，打之前就拦下
+        'YOUJU_AI_REQUEST_EXTRA={"k":"'
+        + chr(92)
+        + "u0073k-"
+        + token[3:]
+        + '"}': "YOUJU_AI_REQUEST_EXTRA",
     }
     for line, name in refused.items():
         _server_env(tmp_path, f"YOUJU_AI_MODEL=deepseek-chat\n{line}\n")
         code, out = _tty(show, "")
         assert code == 1 and f"{name} 看着不像" in out, (line, out)
         assert token not in out and "YOUJU_AI_MODEL=deepseek-chat" not in out
-    # 转成纯 ASCII 以后本机收不了的也不打：转义的 $ 会还原成 $；中文转义以后超过 2000 字
-    dollar = '{"k":"' + chr(92) + 'u0024x"}'
+    # 转成纯 ASCII 以后本机收不了的也不打：转义的 $ 会还原成 $；中文转义以后超过 2000 字；
+    # 用转义藏起来的长串（转写后现出来）
+    esc = chr(92) + "u00"
+    dollar = '{"k":"' + esc + '24x"}'
+    hidden_run = '{"k":"' + (esc + "61") * 40 + '"}'
     for line in (
         f"YOUJU_AI_REQUEST_EXTRA={dollar}",
         'YOUJU_AI_REQUEST_EXTRA={"k":"' + "中" * 400 + '"}',
+        f"YOUJU_AI_REQUEST_EXTRA={hidden_run}",
     ):
         _server_env(tmp_path, f"YOUJU_AI_MODEL=deepseek-chat\n{line}\n")
         code, out = _tty(show, "")
