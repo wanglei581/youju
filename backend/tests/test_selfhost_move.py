@@ -850,7 +850,12 @@ def test_local_set_config(tmp_path, monkeypatch):
     )
     env.write_text(before, encoding="utf-8", newline="")
     script = ["bash", str(tmp_path / "set-config.sh")]
-    extra = '{"thinking":{"type":"disabled"},"stop":["\\n"],"note":"中文 a#b"}'
+    # 附加参数照 show ai 的打法：纯 ASCII、紧凑，中文写成转义
+    extra = json.dumps(
+        {"thinking": {"type": "disabled"}, "stop": ["\n"], "note": "中文 a#b"},
+        ensure_ascii=True,
+        separators=(",", ":"),
+    )
 
     done = subprocess.run(script, input="x\n", capture_output=True, text=True)
     assert done.returncode == 1 and "只能在交互终端里用" in done.stderr
@@ -914,6 +919,7 @@ def test_local_set_config(tmp_path, monkeypatch):
         f"YOUJU_AI_REQUEST_EXTRA={{bad\n{_end_line(1)}\n": "格式不对",
         f'YOUJU_AI_REQUEST_EXTRA={{"k": "{secret} #x"}}\n{_end_line(1)}\n': "格式不对",
         f'YOUJU_AI_REQUEST_EXTRA={{"k": "$HOME"}}\n{_end_line(1)}\n': "格式不对",
+        f'YOUJU_AI_REQUEST_EXTRA={{"note": "{chr(0xFFFD) * 2}"}}\n{_end_line(1)}\n': "格式不对",
         f"YOUJU_AI_MODEL=model-$(reboot)\n{_end_line(1)}\n": "格式不对",
         f"YOUJU_AI_BASE_URL=http://api.deepseek.com/v1\n{_end_line(1)}\n": "格式不对",
         f"YOUJU_AI_BASE_URL=https://api.deepseek.com:99999/v1\n{_end_line(1)}\n": "格式不对",
@@ -992,7 +998,8 @@ def test_local_set_config_switch(tmp_path):
         "YOUJU_AI_MODEL=deepseek-chat\nYOUJU_SYNC_URL=https://yj.example.cn\n", encoding="utf-8"
     )
     script = ["bash", str(tmp_path / "set-config.sh")]
-    paste = f"YOUJU_AI_MODEL=deepseek-chat\n{_end_line(1)}\n"
+    # #END 后面什么都没有也认
+    paste = "YOUJU_AI_MODEL=deepseek-chat\n#END 1\n"
 
     # 上线那天：命令后面带开关，再粘贴 show ai 的几行
     code, out = _tty([*script, "YOUJU_DEADLINE_AUTO_VERIFY=1"], paste)
@@ -1051,11 +1058,13 @@ def test_local_set_config_switch(tmp_path):
 def test_shared_show_ai_prints_route_and_only_a_key_fingerprint(tmp_path):
     defs = _functions(tmp_path)
     key = "sk-0123456789abcdef0123456789abcdef"
-    extra = '{"thinking":{"type":"disabled"}}'
+    # 服务器 .env 里附加参数带中文、有空格：show ai 按纯 ASCII、紧凑写法打（意思不变）
+    raw_extra = '{"thinking": {"type": "disabled"}, "note": "中文"}'
+    extra = json.dumps(json.loads(raw_extra), ensure_ascii=True, separators=(",", ":"))
     _server_env(
         tmp_path,
         "YOUJU_AI_BASE_URL=https://api.deepseek.com/v1\nYOUJU_AI_MODEL=deepseek-chat\n"
-        f"YOUJU_AI_REQUEST_EXTRA={extra}\nYOUJU_AI_API_KEY={key}\nYOUJU_SYNC_SECRET={'a' * 64}\n",
+        f"YOUJU_AI_REQUEST_EXTRA={raw_extra}\nYOUJU_AI_API_KEY={key}\nYOUJU_SYNC_SECRET={'a' * 64}\n",
     )
     show = ["bash", "-c", f'source "{defs}"; SERVER="{tmp_path}/server"; show ai']
     code, out = _tty(show, "")

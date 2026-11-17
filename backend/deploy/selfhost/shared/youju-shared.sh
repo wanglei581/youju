@@ -838,6 +838,16 @@ sys.exit(0 if isinstance(value, dict) and ok(value) else 1)
   esac
 }
 
+# 附加参数（已经核过是 JSON 对象）按纯 ASCII、紧凑写法重写：值从标准输入给，不进命令行参数
+ai_extra_ascii() {
+  local code='import json, sys; print(json.dumps(json.load(sys.stdin), ensure_ascii=True, separators=(",", ":")))'
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -I -c "$code"
+  else
+    compose exec -T worker python -I -c "$code"
+  fi
+}
+
 show() {
   need_tty
   [ -f "$SERVER/.env" ] || die "还没装（没有 ${SERVER}/.env）"
@@ -866,6 +876,9 @@ show() {
       for name in YOUJU_AI_BASE_URL YOUJU_AI_MODEL YOUJU_AI_BACKGROUND_MODEL YOUJU_AI_REQUEST_EXTRA; do
         value=$(env_get "$name")
         [ -n "$value" ] || continue
+        # 附加参数按纯 ASCII 重写一遍再打（中文写成 \uXXXX，意思不变）：网页终端复制中文到 UU 可能变成乱码，
+        # 乱码也是合法 JSON，会被悄悄写进本机；本机 set-config.sh 只收纯 ASCII
+        [ "$name" != YOUJU_AI_REQUEST_EXTRA ] || value=$(printf '%s' "$value" | ai_extra_ascii)
         echo "${name}=${value}"
         count=$((count + 1))
       done

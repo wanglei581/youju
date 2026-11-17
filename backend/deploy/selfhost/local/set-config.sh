@@ -41,6 +41,8 @@ json_object() {
 value_ok() {
   local name=$1 value=$2 port
   [[ "$value" != *'$'* && "$value" != *' #'* && "$value" != \"* && "$value" != \'* ]] || return 1
+  # 只收纯 ASCII 的可见字符：show ai 打出来的都是（附加参数里的中文写成 \uXXXX），有别的多半是复制出了乱码
+  ! printf '%s' "$value" | LC_ALL=C grep -q '[^ -~]' || return 1
   case "$name" in
     YOUJU_AI_BASE_URL)
       [[ "$value" =~ ^https://[A-Za-z0-9.-]+(:([0-9]{1,5}))?(/[A-Za-z0-9._~/-]*)?$ ]] || return 1
