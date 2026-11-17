@@ -728,7 +728,7 @@ def test_round_auto_verify_switch_only_accepts_zero_and_one(tmp_path, value, run
     calls = (tmp_path / "calls").read_text().splitlines()
     names = [line.split()[0] for line in calls]
     if runs:
-        assert calls[names.index("ai-check") + 1] == "deadline-verify-auto --apply"
+        assert calls[names.index("ai-check") + 1] == "deadline-verify-auto --apply --in-round"
     else:
         assert "deadline-verify-auto" not in names
     log = (tmp_path / "round.log").read_text() if (tmp_path / "round.log").exists() else ""

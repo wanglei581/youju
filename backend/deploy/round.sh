@@ -66,9 +66,10 @@ run ai-check --limit 600 --due-first 30
 # 截止日期自动核对（D-135）：7 天内的企业申报截止，规则和 AI 一致、原句在正文里的写成核对通过。
 # 规则和 AI 都抽完才能比，所以紧跟在 ai-check 后面。开关是 .env 里的 YOUJU_DEADLINE_AUTO_VERIFY，
 # 只认 0 和 1，没配当 0（关）；是 1 才跑这一步，别的值按关处理、日志里记一行。
-# 命令自己也按同样的规则再判断一次；没配 AI 密钥时什么都不做
+# 命令自己也按同样的规则再判断一次；没配 AI 密钥时什么都不做。--in-round：这一轮已经拿着整轮的锁
+# （手工跑不传，命令会先拿这把锁，每轮任务在跑就跳过）
 case "${YOUJU_DEADLINE_AUTO_VERIFY:-0}" in
-  1) run deadline-verify-auto --apply ;;
+  1) run deadline-verify-auto --apply --in-round ;;
   0) ;;
   *) log "截止日期自动核对的开关 YOUJU_DEADLINE_AUTO_VERIFY 只认 0 或 1，现在的值按关处理，这一轮不跑" ;;
 esac

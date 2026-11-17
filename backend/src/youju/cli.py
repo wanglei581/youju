@@ -645,10 +645,7 @@ def _cmd_deadline_verify_apply(args: argparse.Namespace) -> int:
 
 
 def _cmd_deadline_verify_auto(args: argparse.Namespace) -> int:
-    from collections import Counter
-
-    from youju.api.v1 import now
-    from youju.deadline_verify import auto_switch, auto_verify
+    from youju.deadline_verify import auto_switch
 
     if args.apply:
         # D-135：开关只认 0 和 1（round.sh 先按同一个规则判断，值是 1 才调用这一步）
@@ -667,6 +664,26 @@ def _cmd_deadline_verify_auto(args: argparse.Namespace) -> int:
         if get_chat_client() is None:
             print("没有配置 AI 密钥（YOUJU_AI_API_KEY），跳过截止日期自动核对")
             return 0
+    if args.apply and not getattr(args, "in_round", False):
+        # 手工跑：先拿每轮任务的锁（不等），每轮任务正在跑或在等锁就跳过。这样自动核对写库时，
+        # 抽截止、AI 检查、补详情都不会同时在改候选、AI 结果和正文
+        # （round.sh 里跑时它已经拿着这把锁）
+        from youju.ai.pipeline import round_slot
+
+        with round_slot() as free:
+            if not free:
+                print("每轮抓取和处理正在跑或在等锁，跳过截止日期自动核对（不和每轮任务同时写）")
+                return 0
+            return _run_deadline_verify_auto(args)
+    return _run_deadline_verify_auto(args)
+
+
+def _run_deadline_verify_auto(args: argparse.Namespace) -> int:
+    from collections import Counter
+
+    from youju.api.v1 import now
+    from youju.deadline_verify import auto_verify
+
     current = now()
     counts = Counter()
     with session_factory()() as session:
@@ -3022,6 +3039,11 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser("deadline-verify-auto", help="自动核对规则和 AI 一致的截止")
     p.add_argument("--apply", action="store_true")
+    p.add_argument(
+        "--in-round",
+        action="store_true",
+        help="只由 round.sh 传：这一轮已经拿着每轮任务的锁；手工跑不要传（会先拿锁，拿不到就跳过）",
+    )
     p.set_defaults(func=_cmd_deadline_verify_auto)
     p = sub.add_parser("deadline-verify-sample", help="生成独立抽查清单")
     p.add_argument("--days", type=int, default=7)

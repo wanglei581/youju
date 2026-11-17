@@ -777,15 +777,21 @@ def test_reopen_auto_preserves_long_reason():
 
 
 def test_auto_cli_apply(monkeypatch, capsys):
+    """带 --apply：round.sh 传 --in-round 直接跑；手工跑先拿每轮任务的锁，拿不到（每轮任务在跑或
+    在等锁）就跳过，不和抽截止、AI 检查、补详情同时写。"""
+    from contextlib import contextmanager
+
     from youju import ai
+    from youju.ai import pipeline
 
     monkeypatch.setattr(cli, "get_settings", lambda: SimpleNamespace(deadline_auto_verify="1"))
     monkeypatch.setattr(ai, "get_chat_client", lambda: object())
     monkeypatch.setattr(cli, "session_factory", lambda: lambda: Session([]))
-    monkeypatch.setattr(
-        verify,
-        "auto_verify",
-        lambda session, today, now, write, clock=None: iter(
+    writes = []
+
+    def fake_auto(session, today, now, write, clock=None):
+        writes.append(write)
+        return iter(
             [
                 {
                     "id": 1,
@@ -796,10 +802,40 @@ def test_auto_cli_apply(monkeypatch, capsys):
                     "result": "通过",
                 }
             ]
-        ),
-    )
-    assert cli._cmd_deadline_verify_auto(argparse.Namespace(apply=True)) == 0
+        )
+
+    monkeypatch.setattr(verify, "auto_verify", fake_auto)
+    slots = []
+
+    def slot(free):
+        @contextmanager
+        def fake():
+            slots.append(free)
+            yield free
+
+        return fake
+
+    monkeypatch.setattr(pipeline, "round_slot", slot(True))
+    assert cli._cmd_deadline_verify_auto(argparse.Namespace(apply=True, in_round=False)) == 0
     assert "截止日期自动核对：候选 1 条，通过 1 条" in capsys.readouterr().out
+    assert (slots, writes) == ([True], [True])
+    monkeypatch.setattr(pipeline, "round_slot", slot(False))
+    assert cli._cmd_deadline_verify_auto(argparse.Namespace(apply=True, in_round=False)) == 0
+    assert "跳过截止日期自动核对" in capsys.readouterr().out
+    assert (slots, writes) == ([True, False], [True])
+    # round.sh 里跑：不再拿锁（它已经拿着）
+    assert cli._cmd_deadline_verify_auto(argparse.Namespace(apply=True, in_round=True)) == 0
+    assert (slots, writes) == ([True, False], [True, True])
+
+
+def test_precheck_again_right_before_writing(setup, monkeypatch):
+    """正文都锁住、证据都核过以后、写入之前再判断一次：等锁期间跨过截止时刻的不写。"""
+    session, candidate = setup
+    monkeypatch.setattr(app, "_lock_candidates", lambda session, row: [row])
+    answers = iter([None, "截止已过"])
+    result = verify.apply_one(session, item(), True, precheck=lambda r: next(answers))
+    assert result == "截止已过"
+    assert candidate.reviewed_by is None and candidate.status == "pending"
 
 
 def test_auto_group_ai_time_and_stale_unclear(setup, monkeypatch):

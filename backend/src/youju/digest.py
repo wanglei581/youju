@@ -895,22 +895,17 @@ def _access_line(digest: Digest) -> str:
     return f"接口（{yesterday}，小程序接口）：" + "；".join(parts)
 
 
-_REOPENED_IDS = 10  # 日报正文里最多列几个质检退回的文件编号，多了另发（reopened_messages）
-
-
 def _reopened_line(digest: Digest) -> str:
     """质检退回、等人看的截止（D-135：自动核对不碰，攒着由 Claude 一起核）；没有的不写这一行。
-    编号多了正文里只列前几个，完整的紧接着另发（群提醒一条有字节上限）。"""
-    ids = "、".join(f"#{doc_id}" for doc_id in digest.reopened_docs[:_REOPENED_IDS])
-    more = "等，完整编号见下一条" if len(digest.reopened_docs) > _REOPENED_IDS else ""
-    return f"质检退回待人看：{digest.reopened} 条（文件 {ids}{more}）"
+    正文里只写条数，文件编号一律另发（reopened_messages）：正文超长被截掉一段时，编号也不会丢。"""
+    return f"质检退回待人看：{digest.reopened} 条（文件编号另发一条）"
 
 
 def reopened_messages(digest: Digest) -> list[str]:
-    """质检退回待人看的完整文件编号：正文里列不下（超过 _REOPENED_IDS 个）时另发，一条放不下就
-    分几条，每条都在群提醒的字节上限以内；列得下的不另发。"""
+    """质检退回待人看的完整文件编号，紧接着日报另发；一条放不下就分几条，每条都在群提醒的字节上限
+    以内，合起来一个不漏。没有退回的不发。"""
     docs = digest.reopened_docs
-    if len(docs) <= _REOPENED_IDS:
+    if not docs:
         return []
     budget = MAX_ALERT_BYTES - len("【有据】".encode())
     messages: list[str] = []

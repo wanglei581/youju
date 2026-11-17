@@ -233,9 +233,9 @@ def test_digest_numbers_match_the_consoles(session, world) -> None:
 
 
 def test_digest_reports_auto_verified_and_reopened_waiting(session, world) -> None:
-    """D-135：24 小时通过的里写明其中 AI 自动通过几条；质检退回、还待核对的截止列出条数和文件编号
-    （同一通知同一截止只算一条，过期的也算）。没有退回的不写这一行；编号多了正文只列前 10 个，完整的
-    另发，每条都在群提醒的字节上限以内。"""
+    """D-135：24 小时通过的里写明其中 AI 自动通过几条；质检退回、还待核对的截止写条数（同一通知同一
+    截止只算一条，过期的也算），文件编号一律另发（正文超长被截时也不丢），一条放不下分几条，每条都在
+    群提醒的字节上限以内。没有退回的不写这一行，也不另发。"""
     from youju.alerts import MAX_ALERT_BYTES
     from youju.deadline_verify import AUTO_REVIEWER
     from youju.digest import reopened_messages
@@ -255,13 +255,12 @@ def test_digest_reports_auto_verified_and_reopened_waiting(session, world) -> No
     assert (d.reopened, d.reopened_docs) == (2, (world["apply"].id,))
     text = digest_text(d, [])
     assert "24 小时通过 2（其中 AI 自动 1）、驳回 1；" in text
-    assert f"质检退回待人看：2 条（文件 #{world['apply'].id}）" in text
-    assert reopened_messages(d) == []
+    assert "质检退回待人看：2 条（文件编号另发一条）" in text
+    assert reopened_messages(d) == [
+        f"质检退回待人看的文件编号（共 1 份，第 1 条）：#{world['apply'].id}"
+    ]
     d.reopened, d.reopened_docs = 12, tuple(range(1, 13))
-    assert (
-        "质检退回待人看：12 条（文件 #1、#2、#3、#4、#5、#6、#7、#8、#9、#10等，完整编号见下一条）"
-        in digest_text(d, [])
-    )
+    assert "质检退回待人看：12 条（文件编号另发一条）" in digest_text(d, [])
     assert reopened_messages(d) == [
         "质检退回待人看的文件编号（共 12 份，第 1 条）：" + "、".join(f"#{i}" for i in range(1, 13))
     ]

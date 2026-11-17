@@ -705,8 +705,9 @@ def test_admin_reopens_auto_verified(session, candidate, client, monkeypatch):  
 
 
 def test_auto_result_carries_over_only_to_twins_with_their_own_sentence(session, candidate):
-    """D-135：AI 自动通过的结果沿用给同组副本前，要核副本自己的原句在它自己的当前正文里、写着这个
-    日期（原句记它自己的）；不在的留在待核对，不凭"同一份通知"直接沿用。"""
+    """D-135：AI 自动通过的结果只沿用给证据句相同（同一句话）、规则抽出、AI 也一致的副本，而且这句也在
+    副本自己的当前正文里（原句记它自己的）；正文里没有这句的、证据句不同的都留在待核对。同一截止另有
+    人核过的，按人核的沿用。"""
     from youju.dedup import sync_reviewed_twins
 
     _auto_ai_record(session, candidate)
@@ -714,15 +715,15 @@ def test_auto_result_carries_over_only_to_twins_with_their_own_sentence(session,
     results = list(verify.auto_verify(session, TODAY, datetime(2026, 9, 27, 12), True))
     assert [r["result"] for r in results] == ["通过"]
     doc = session.get(Document, candidate.document_id)
-    sentence = "各单位请于2026年9月30日前完成网上申报。"
+    same = candidate.evidence
+    other = "各单位请于2026年9月30日前完成网上申报。"
     rows = {}
-    for n, (body, evidence) in enumerate(
-        (
-            (f"通知正文。{sentence}", sentence),
-            ("正文改过，没有那一句。", "请于9月30日前完成网上申报工作。"),
-        ),
-        start=1,
-    ):
+    cases = (
+        (f"通知正文。{same}", same),  # 同一句、在自己正文里：沿用，原句记自己的
+        ("正文改过，没有那一句。", same),  # 同一句、自己正文里没有：不沿用
+        (f"通知正文。{other}", other),  # 不是同一句：不沿用
+    )
+    for n, (body, evidence) in enumerate(cases, start=1):
         twin_doc = _doc(doc.source, 90 + n, doc.title, TODAY)
         session.add(twin_doc)
         session.flush()
@@ -758,8 +759,30 @@ def test_auto_result_carries_over_only_to_twins_with_their_own_sentence(session,
     sync_reviewed_twins(session, {doc.id})
     session.commit()
     assert rows[1].status == "approved" and rows[1].reviewed_by == verify.AUTO_REVIEWER
-    assert rows[1].verification_quote == sentence
-    assert rows[2].status == "pending" and rows[2].reviewed_by is None
+    assert rows[1].verification_quote == same
+    assert rows[2].status == rows[3].status == "pending"
+    # 同一截止另有人核过的：照原来的规则，人核的结果沿用给这一截止（类型、日期、时刻相同）的各份副本，
+    # 不被自动通过的那条挡住
+    human = DocumentDeadline(
+        document_id=rows[1].document_id,
+        fingerprint="carry-human",
+        kind=candidate.kind,
+        candidate_date=candidate.candidate_date,
+        evidence=other,
+        confidence="高",
+        status="approved",
+        origin="rule",
+        reviewed_by="创始人",
+        reviewed_at=datetime.now(UTC),
+        approved_date=candidate.candidate_date,
+    )
+    session.add(human)
+    session.commit()
+    sync_reviewed_twins(session, {doc.id})
+    session.commit()
+    assert rows[2].reviewed_by == rows[3].reviewed_by == "创始人"
+    assert rows[2].status == rows[3].status == "approved"
+    assert rows[1].reviewed_by == verify.AUTO_REVIEWER  # 已经沿用过的不动
 
 
 def test_auto_skips_when_another_time_of_the_same_day_was_reopened(session, candidate):

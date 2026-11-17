@@ -283,6 +283,11 @@ def apply_one(session, item, write=False, reviewer="Claude", precheck=None):
         if twin_quote is None:
             return "同组副本正文不含 quote，未写入"
         twin_quotes[twin.id] = twin_quote
+    # 正文都锁住、证据都核过以后、写入之前再判断一次（等锁期间可能跨过截止时刻，D-135）
+    if precheck is not None:
+        reason = precheck(row)
+        if reason:
+            return reason
     if write:
         stamp = datetime.now(UTC)
         # _apply_review 会清空质检信息；同组每条各自保存自己的退回原因。
