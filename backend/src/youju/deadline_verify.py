@@ -545,12 +545,14 @@ def auto_verify(session, today, now, write=False, clock=None):
         key = (master, item["kind"], item["date"], item["time"])
         try:
             result = one(item, key, groups.get(master, [master]))
-            if result == "通过":
-                passed.add(key)
             if write:
                 session.commit()
             else:
                 session.rollback()
+            # 提交成功（演练：模拟通过）以后才记"同一截止已通过"：提交时撞锁回滚的，后面同一截止的
+            # 候选照样再试
+            if result == "通过":
+                passed.add(key)
         except OperationalError as exc:
             # 和管理台、抽查撞锁（等锁超时、死锁）：这一条回滚、下一轮再试，接着做下一条
             if getattr(exc.orig, "args", (None,))[0] not in _LOCK_ERRORS:

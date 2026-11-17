@@ -814,6 +814,48 @@ def test_auto_lock_conflict_rolls_back_one_and_goes_on(monkeypatch):
         list(verify.auto_verify(session, date(2026, 9, 29), datetime(2026, 9, 29), True))
 
 
+def test_auto_commit_conflict_does_not_mark_the_deadline_passed(monkeypatch):
+    """提交时撞锁回滚的那一条不算"同一截止已通过"：同一截止的下一条候选照样再试。"""
+    from sqlalchemy.exc import OperationalError
+
+    from youju import dedup
+
+    def entry(i):
+        return dict(
+            id=i,
+            document_id=1,
+            kind="企业申报截止",
+            date="2026-09-30",
+            time=None,
+            origin="rule",
+            ai_agrees=True,
+            reopened=False,
+            evidence=QUOTE,
+            body_sha256="x",
+        )
+
+    commits = iter([OperationalError("COMMIT", {}, Exception(1213, "Deadlock found")), None])
+
+    def commit():
+        error = next(commits)
+        if error is not None:
+            raise error
+
+    session = SimpleNamespace(
+        get=lambda model, key: SimpleNamespace(id=key, document_id=1),
+        commit=commit,
+        rollback=lambda: None,
+    )
+    monkeypatch.setattr(verify, "queue", lambda *args: [entry(1), entry(2)])
+    monkeypatch.setattr(dedup, "canonical_ids", lambda *args: {1: 1})
+    monkeypatch.setattr(dedup, "groups_for", lambda *args: {1: [1]})
+    monkeypatch.setattr(verify, "_lock_notice", lambda session, members: None)
+    monkeypatch.setattr(verify, "_auto_reason", lambda *args: None)
+    monkeypatch.setattr(verify, "apply_one", lambda *args, **kw: "通过")
+    result = list(verify.auto_verify(session, date(2026, 9, 29), datetime(2026, 9, 29), True))
+    assert [r["result"] for r in result] == ["加锁冲突，下一轮再试", "通过"]
+
+
 def test_reopen_auto_preserves_long_reason():
     candidate = row(status="approved", reviewed_by=verify.AUTO_REVIEWER)
     reason = "退" * 200
