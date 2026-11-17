@@ -972,10 +972,13 @@ def run_detail_queue(
     statuses: dict[str, int] = {}
     batches = 0
     # 这次运行选过的都不再选（写了库的有了详情；没写的被停取挡下、读不到 robots、到时间停了，
-    # 或者熔断时扔掉了，留给下次运行）；写了库的另记下来，汇总时没写库的才算 site_paused
+    # 或者熔断时扔掉了，留给下次运行）；写了库的另记下来，没写库的汇总时按原因分开数
     chosen: set[int] = set()
     written: set[int] = set()
     gone: set[int] = set()
+    # 没写库的各是为什么：到了期限没取完、熔断时扔掉（别的到汇总时按网站停没停取分）
+    timed_out: set[int] = set()
+    dropped: set[int] = set()
     # 还没写库的连续网络失败（到达时刻, 结果）：凑够熔断条件就整批不写
     pending: list[tuple[float, _FetchOutcome]] = []
     tripped = threading.Event()
@@ -1001,6 +1004,7 @@ def run_detail_queue(
 
     def receive(outcome):
         if outcome.status == "deadline":
+            timed_out.add(outcome.document_id)
             return None  # 到了这次运行的期限没取完：不算网络失败、不写库，下次再取
         reason = (outcome.failure_reason or "").lower()
         robots_status = outcome.fetch.robots_status if outcome.fetch else None
@@ -1018,7 +1022,10 @@ def run_detail_queue(
         )
         if tripped.is_set():
             # 熔断以后网络失败不写库；别的结果（熔断前已经在取的）照常写
-            return None if network else record(outcome)
+            if network:
+                dropped.add(outcome.document_id)
+                return None
+            return record(outcome)
         if not network:
             flush()
             return record(outcome)
@@ -1034,6 +1041,7 @@ def run_detail_queue(
             and now - window[0][0] <= 60
             and len({_host(urls[x.document_id]) for _, x in window}) >= 5
         ):
+            dropped.update(x.document_id for _, x in pending)
             pending.clear()
             tripped.set()
         elif len(pending) > 20:
@@ -1144,10 +1152,23 @@ def run_detail_queue(
         reason = run(fetcher)
     if not tripped.is_set():
         flush()
-    # 选了没写库的（被停取挡下、robots 读不到、停下、熔断扔掉）单列 site_paused；total 只算写了库的
-    unsaved = len(chosen - written - gone)
-    if unsaved:
-        statuses["site_paused"] = unsaved
+    # 选了没写库的分开数（total 只算写了库的）：deadline 到了期限没取完，circuit_dropped 熔断时
+    # 扔掉，site_paused 所在网站（或这份文件）在停取中，not_started 停下（到时间、给别的任务让路）
+    # 时还没开始
+    paused_now = pause.reasons
+    for document_id in sorted(chosen - written - gone):
+        if document_id in timed_out:
+            key = "deadline"
+        elif document_id in dropped:
+            key = "circuit_dropped"
+        elif (
+            _host(urls[document_id]) in paused_now
+            or f"{DEFERRED_PREFIX}{document_id}" in paused_now
+        ):
+            key = "site_paused"
+        else:
+            key = "not_started"
+        statuses[key] = statuses.get(key, 0) + 1
     return DetailQueueSummary(statuses, len(written), pause.hosts, reason, batches)
 
 

@@ -159,6 +159,8 @@ def test_stop_signal_after_first_write(session):
     summary = run_detail_queue(session, minutes=1, workers=1, fetcher=fake, stop=stop)
     assert summary.stop_reason == "每轮要锁"
     assert fake.calls == [docs[0].url]
+    # 没写库的那份是停下时还没开始取的，不算网站停取（第十六轮 Codex）
+    assert summary.statuses.get("not_started") == 1 and "site_paused" not in summary.statuses
     assert session.get(DocumentDetail, docs[0].id) is not None
     assert session.get(DocumentDetail, docs[1].id) is None
 
@@ -531,7 +533,7 @@ def test_network_circuit_time_window(session, slow):
     else:
         # 20 份失败在 10 秒内、来自 5 个主机：熔断，这些失败一份都不写
         assert "熔断" in summary.stop_reason
-        assert summary.statuses == {"ok": 60, "site_paused": 20}
+        assert summary.statuses == {"ok": 60, "circuit_dropped": 20}
         assert all(session.get(DocumentDetail, d.id) is None for d in bad)
 
 
@@ -652,7 +654,7 @@ def test_deadline_results_do_not_trip_circuit(session):
     )
     # 到了期限没取完的不算网络失败：不熔断，也不写库
     assert "熔断" not in summary.stop_reason
-    assert summary.statuses == {"site_paused": 24}
+    assert summary.statuses == {"deadline": 24}
     assert all(session.get(DocumentDetail, d.id) is None for d in docs)
 
 
