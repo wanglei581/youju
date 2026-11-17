@@ -86,14 +86,16 @@ class HostRoundGuard:
         redirects: bool = True,
         **kwargs,
     ) -> FetchResult:
-        """按本轮的主机护栏取 url：这个主机这一轮拒绝过我们就不去（round_skip）；跟着跳转时，跳转
-        经过本轮已停的主机也不去（取的函数认 hop_allowed 就交给它，返回 site_paused；用的是缓存、
-        替身时，跳进已停主机的结果不用）；取回来照通用规则（refused_result）和 refused(结果) 判，
-        被拒就记下请求的主机和这次回了话的每个主机（a 跳到 b、b 回 403：真正拒绝我们的是 b）。
-        cache：同一地址这一轮只取一次。"""
+        """按本轮的主机护栏取 url：这个主机这一轮拒绝过我们就不去（round_skip）；取回来照通用
+        规则（refused_result）和 refused(结果) 判，被拒就记下请求的主机和这次回了话的每个主机
+        （a 跳到 b、b 回 403：真正拒绝我们的是 b）。cache：同一地址这一轮只取一次。
+
+        跟着跳转时（取的函数认 hop_allowed 就交给它）：跳转经过本轮已停的主机不去；去别的主机之前
+        不等待地拿那个主机的锁，拿到的一直拿着、判完再放（别的线程这时直接去 b 要排在后面，判出 b
+        拒绝之前不会有第二个请求溜过去）；拿不到（别的线程正在取 b）就不跟、记这次没取到——不等它，
+        两把锁不会互相等。用的是缓存、替身（不认 hop_allowed）时，跳进已停主机的结果不用。"""
         host = _host(url)
-        with self._lock:
-            lock = self._locks.setdefault(host, Lock())
+        lock = self._lock_for(host)
         with lock:
             if cache and url in self._results:
                 if url in self._refused:
@@ -102,28 +104,52 @@ class HostRoundGuard:
                 return self._results[url]
             if self.blocked(url):
                 return round_skip(url)
-            if _accepts_hops(fetch):
-                kwargs["hop_allowed"] = lambda target, record=True: not self.blocked(target)
-            result = fetch(url, **kwargs)
-            answered = answered_hosts(url, result)
-            if result.status != "site_paused" and any(
-                self._host_blocked(name) for name in answered - {host}
-            ):
-                # 跳进了本轮已停的主机（缓存里的结果、不认 hop_allowed 的取法）：这次的结果不用
-                return round_skip(url)
-            refused_now = result.status != "robots_disallowed" and (  # robots 不许不算主机拒绝
-                refused_result(url, result, redirects=redirects)
-                or refused is not None
-                and refused(result)
-            )
-            if cache:
-                self._results[url] = result
+            held: list[Lock] = []
+            held_hosts = {host}
+
+            def hop_allowed(target: str, record: bool = True) -> bool:
+                name = _host(target)
+                if name not in held_hosts:
+                    other = self._lock_for(name)
+                    if not other.acquire(blocking=False):
+                        return False
+                    held.append(other)
+                    held_hosts.add(name)
+                return not self._host_blocked(name)
+
+            try:
+                if _accepts_hops(fetch):
+                    kwargs["hop_allowed"] = hop_allowed
+                result = fetch(url, **kwargs)
+                answered = answered_hosts(url, result)
+                # 先按这次实际的回应判、记（a 跳到 b 的请求在途时别的线程停了 b，b 回的 403 照样
+                # 把 a 记下），再决定这次的结果用不用
+                refused_now = result.status != "robots_disallowed" and (  # robots 不许不算拒绝
+                    refused_result(url, result, redirects=redirects)
+                    or refused is not None
+                    and refused(result)
+                )
+                if cache:
+                    self._results[url] = result
+                    if refused_now:
+                        self._refused.add(url)
                 if refused_now:
-                    self._refused.add(url)
-            if refused_now:
-                with self._lock:
-                    self._blocked_hosts |= answered | {host}
-            return result
+                    with self._lock:
+                        self._blocked_hosts |= answered | {host}
+                    return result
+                if result.status != "site_paused" and any(
+                    self._host_blocked(name) for name in answered - {host}
+                ):
+                    # 跳进了本轮已停的主机（缓存里的结果、不认 hop_allowed 的取法）：这次的结果不用
+                    return round_skip(url)
+                return result
+            finally:
+                for other in held:
+                    other.release()
+
+    def _lock_for(self, host: str) -> Lock:
+        with self._lock:
+            return self._locks.setdefault(host, Lock())
 
     def get(
         self,

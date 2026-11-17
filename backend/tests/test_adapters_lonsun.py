@@ -3692,3 +3692,108 @@ def test_fill_and_copy_within_count_as_in_place_writes(code):
         "jx", "49949451", page=page.replace(_BIND_TOP, f"{_BIND_TOP} {code}", 1)
     )
     assert isinstance(result, str) and "改写了依赖状态" in result, result
+
+
+_B_PAGE = "https://b.gov.cn/public/column/1?type=4&catId=1&action=list"
+
+
+def _refused_redirect(url):
+    from youju.crawler.fetcher import FetchResult
+
+    result = FetchResult(url, "http_error", _B_PAGE, 403)
+    result.hops = (url, _B_PAGE)
+    return result
+
+
+def test_round_guard_serializes_redirect_target_host():
+    # a 跳到 b 的请求还没判完时（第十四轮 Codex），别的线程直接去 b 要排在后面；判出 b 拒绝以后不再去
+    import threading
+
+    from youju.crawler.fetcher import FetchResult
+    from youju.crawler.roundguard import HostRoundGuard
+
+    guard, calls, results = HostRoundGuard(), [], {}
+    started, release = threading.Event(), threading.Event()
+
+    def fetch_a(url, hop_allowed=None):
+        assert hop_allowed(_B_PAGE)
+        started.set()
+        release.wait(5)
+        return _refused_redirect(url)
+
+    def fetch_b(url, hop_allowed=None):
+        calls.append(url)
+        return FetchResult(url, "ok", url, 200, "<html></html>")
+
+    def run(key, url, fetch):
+        results[key] = guard.fetch(url, fetch, redirects=False)
+
+    first = threading.Thread(target=run, args=("a", A_COLUMN, fetch_a))
+    first.start()
+    assert started.wait(5)
+    second = threading.Thread(target=run, args=("b", B_COLUMN, fetch_b))
+    second.start()
+    second.join(0.3)
+    assert second.is_alive() and calls == []
+    release.set()
+    first.join(5)
+    second.join(5)
+    assert results["b"].status == "site_paused" and calls == []
+    assert guard.blocked(A_COLUMN) and guard.blocked(B_COLUMN)
+
+
+def test_round_guard_does_not_wait_for_a_busy_redirect_host():
+    # b 正被别的线程取着：a 跳过去不等它（两把锁不会互相等），这次不跟、记这次没取到
+    import threading
+
+    from youju.crawler.fetcher import FetchResult
+    from youju.crawler.roundguard import HostRoundGuard
+
+    guard = HostRoundGuard()
+    started, release = threading.Event(), threading.Event()
+    allowed = []
+
+    def fetch_b(url, hop_allowed=None):
+        started.set()
+        release.wait(5)
+        return FetchResult(url, "ok", url, 200, "<html></html>")
+
+    def fetch_a(url, hop_allowed=None):
+        allowed.append(hop_allowed(_B_PAGE))
+        return FetchResult(url, "site_paused", _B_PAGE, error="stopped")
+
+    busy = threading.Thread(target=lambda: guard.fetch(B_COLUMN, fetch_b, redirects=False))
+    busy.start()
+    assert started.wait(5)
+    try:
+        assert guard.fetch(A_COLUMN, fetch_a, redirects=False).status == "site_paused"
+        assert allowed == [False]
+    finally:
+        release.set()
+        busy.join(5)
+
+
+def test_round_guard_records_refusal_even_if_target_blocked_meanwhile():
+    # a 跳到 b 的请求在途时别的线程先停了 b（第十四轮 Codex）：b 回的 403 照样把 a 记下
+    import threading
+
+    from youju.crawler.roundguard import HostRoundGuard
+
+    guard, out = HostRoundGuard(), []
+    started, release = threading.Event(), threading.Event()
+
+    def fetch_a(url, hop_allowed=None):
+        assert hop_allowed(_B_PAGE)
+        started.set()
+        release.wait(5)
+        return _refused_redirect(url)
+
+    worker = threading.Thread(
+        target=lambda: out.append(guard.fetch(A_COLUMN, fetch_a, redirects=False))
+    )
+    worker.start()
+    assert started.wait(5)
+    guard.block(B_COLUMN)
+    release.set()
+    worker.join(5)
+    assert out[0].http_status == 403 and guard.blocked(A_COLUMN)
