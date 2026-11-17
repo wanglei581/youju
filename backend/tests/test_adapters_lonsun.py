@@ -3420,6 +3420,15 @@ def _with_code(where, code):
         # 按字符串、对象键改 pushState
         ("script", "Object.defineProperty(history, 'pushState', {value: function () {}});"),
         ("script", "$.extend(history, {pushState: function () {}});"),
+        # 经 call、apply 调数组的原地修改方法、可选链、按算出来的名字调用（第十五轮独立 Claude）
+        (
+            "bind",
+            "Array.prototype.push.apply(me.ztreeData, [{id: 1, name: 'x', parentId: 49949451}]);",
+        ),
+        ("bind", "[].splice.call(me.ztreeData, 7, 1);"),
+        ("script", "catalogs[6991]?.push({id: 1, name: 'x', parentId: 49949451});"),
+        ("script", "var p = [].push; p.call(catalogs[6991], {});"),
+        ("bind", "me.ztreeData['pu' + 'sh']({});"),
     ],
 )
 def test_hidden_writes_refused(where, code):
@@ -3441,6 +3450,7 @@ def test_hidden_writes_refused(where, code):
         ),
         ("script", "$('a').attr('href', 'javascript:void(0);').attr({'tabindex': 0});"),
         ("script", "if (typeof jQuery !== 'undefined' && jQuery.fn) {}"),
+        ("script", "var a = Array.prototype.slice.call(document.querySelectorAll('a'));"),
         ("script", "var obj = {}; obj.Ls = 1; var arr = []; arr[0] = 1;"),
         ("link", "void(0)"),
         ("script", "function f(id, el) {} "),
@@ -3883,3 +3893,20 @@ def test_server_rendered_column_list_is_still_read_from_the_page():
     assert col.result == READABLE and not col.reason, col.reason
     item = _first_list_item(_jx_cache(page), BASE, TODAY, [])
     assert item is not None and "/public/6991/" in item.url
+
+
+def test_in_operator_follows_javascript():
+    # 'toString' in 普通对象在 JS 里是真（继承来的）；只知道列出的属性的对象，没列出的键不知道
+    from youju.crawler.lonsun import (
+        UNKNOWN,
+        _Environment,
+        _evaluate,
+        _parse_expression,
+        _PartialDict,
+    )
+
+    env = _Environment({"q": {"catId": "1"}, "p": _PartialDict({"a": 1})})
+    assert _evaluate(_parse_expression("'catId' in q"), env) is True
+    assert _evaluate(_parse_expression("'toString' in q"), env) is True
+    assert _evaluate(_parse_expression("'dom' in q"), env) is False
+    assert _evaluate(_parse_expression("'b' in p"), env) is UNKNOWN

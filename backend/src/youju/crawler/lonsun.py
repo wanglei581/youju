@@ -1024,6 +1024,25 @@ class _PartialDict(dict):
     """只知道列出的属性，不假设其他属性不存在。"""
 
 
+# 普通对象从 Object.prototype 继承来的属性：'toString' in {} 在 JS 里是真
+_OBJECT_PROTOTYPE_KEYS = frozenset(
+    {
+        "constructor",
+        "hasOwnProperty",
+        "isPrototypeOf",
+        "propertyIsEnumerable",
+        "toLocaleString",
+        "toString",
+        "valueOf",
+        "__proto__",
+        "__defineGetter__",
+        "__defineSetter__",
+        "__lookupGetter__",
+        "__lookupSetter__",
+    }
+)
+
+
 class _Environment:
     def __init__(self, values=None, parent=None, member_resolver=None, call_resolver=None):
         self.values = {} if values is None else values
@@ -1283,7 +1302,15 @@ def _evaluate(tree, env):
             equal = _strict_equal(a, b) if op in ("===", "!==") else _loose_equal(a, b)
             return not equal if op in ("!==", "!=") else equal
         if op == "in":
-            return _js_string(a) in b if isinstance(b, dict) else UNKNOWN
+            if not isinstance(b, dict):
+                return UNKNOWN
+            key = _js_string(a)
+            if key in b:
+                return True
+            if key in _OBJECT_PROTOTYPE_KEYS:
+                return True  # 继承来的属性（'toString' in me.query 在 JS 里是真）
+            # 只知道列出的属性（_PartialDict）：没列出的不等于没有
+            return UNKNOWN if isinstance(b, _PartialDict) else False
         if op in ("<", ">", "<=", ">="):
             numbers = all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in (a, b))
             if not numbers and not (isinstance(a, str) and isinstance(b, str)):
@@ -1359,7 +1386,6 @@ _FRESH_RESULTS = frozenset(
         "from",
         "match",
         "grep",
-        "makeArray",
         "toArray",
         "flat",
         "flatMap",
@@ -2415,7 +2441,9 @@ def _pattern_write_problem(tokens, values):
     """_write_sites 看不见的写法（第十一轮审阅）：解构赋值（[me.listParams.pageSize] = […]、
     ({x: Ls.ajaxGet} = …)、var [a] = …），for-in/of 每次写进成员、解构或页面依赖的全局名字，
     for await，class、对象字面量里的简写方法和取值函数（this 跟着谁走、改了什么看不清），with
-    （里面的名字先按对象的成员找）。真实页面上都没有（for (var i in …) 这种照常），一律不认。"""
+    （里面的名字先按对象的成员找），可选链 ?.，经 call、apply 调用或存起来的数组原地修改方法
+    （push、splice 这类），按算出来的名字调用方法。真实页面上都没有（for (var i in …)、
+    Array.prototype.slice.call(…) 这种照常），一律不认。"""
     for k, value in enumerate(values):
         before = values[k - 1] if k else ""
         after = values[k + 1] if k + 1 < len(values) else ""
@@ -2449,6 +2477,20 @@ def _pattern_write_problem(tokens, values):
             and (_IDENT.fullmatch(after) or after[:1] in ("'", '"', "["))
         ):
             return "对象里写了简写方法或取值函数（this 跟着谁走、改了什么看不清）"
+        if value == "?.":
+            return "用了 ?.（可选链；写法认不全，真实页面上没有）"
+        if value in _MUTATORS and before in (".", "?.") and after != "(":
+            # Array.prototype.push.apply(me.ztreeData, …)、[].splice.call(…)、var p = [].push：
+            # 经 call、apply 调用或存起来再调，原地改了谁看不出来
+            return f"把数组的原地修改方法 {value} 当值用（经 call、apply 调用，或者存起来再调）"
+        if value == "[" and _index_access(values, k):
+            close = _matching_token(tokens, k)
+            key = values[k + 1 : close]
+            literal = len(key) == 1 and (
+                key[0][:1] in ("'", '"') or bool(re.fullmatch(r"[0-9]+", key[0]))
+            )
+            if not literal and values[close + 1 : close + 2] == ["("]:
+                return "按算出来的名字调用方法（x[k](…)），看不出调了什么"
         if value != "for":
             continue
         if after == "await":
@@ -3316,7 +3358,6 @@ _JQUERY_READS = frozenset(
         "param",
         "extend",
         "contains",
-        "makeArray",
         "parseJSON",
     }
 )

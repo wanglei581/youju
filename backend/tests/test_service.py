@@ -961,6 +961,24 @@ def test_unmarked_lonsun_page_with_dated_navigation_waits_for_review(session):
     assert check.items_found == 0
 
 
+def test_lonsun_marked_source_whose_page_lost_public_tree_waits_for_review(session):
+    # 经龙讯接口读的来源，页面改版、连 PublicTree 都没有了，通用规则认出 3 条带日期的链接：
+    # 不用这些链接，记待人工处理（第十五轮独立 Claude 建议补的测试）
+    url, *_ = _lonsun_service_fixture()
+    links = "".join(
+        f"<li><a href='/public/6991/{1000 + d}.html'>关于开展第{d}批申报工作的通知</a>"
+        f"<span>2026-11-{d:02d}</span></li>"
+        for d in (1, 2, 3)
+    )
+    source = make_source(session, url)
+    source.parser_config = {"list_api_open": "龙讯public"}
+    session.commit()
+    fetcher = RecordingFetcher({url: [page(url, f"<html><body><ul>{links}</ul></body></html>")]})
+    check = check_source(session, source, fetcher, today=date(2026, 11, 13))
+    assert check.status == "parse_empty" and "认不出龙讯栏目" in check.error, check.error
+    assert check.items_found == 0 and fetcher.requested == [url]
+
+
 def test_lonsun_service_refusal_remembers_tree(session):
     url, html, tree, catalog, api, _ = _lonsun_service_fixture()
     source = make_source(session, url)
