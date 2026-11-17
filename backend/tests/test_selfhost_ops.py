@@ -281,7 +281,14 @@ def test_windows_package_marks_chinese_names_utf8(tmp_path):
         assert all(name.startswith("local/") for name in names)
         assert any(name.startswith("local/source/docs/数据来源/") for name in names)
         assert all(i.flag_bits & 0x800 for i in z.infolist() if not i.filename.isascii())
-        for wanted in ("setup-wsl.ps1", "setup-wsl.sh", "setup.ps1", "docker-compose.yml"):
+        for wanted in (
+            "setup-wsl.ps1",
+            "setup-wsl.sh",
+            "setup.ps1",
+            "docker-compose.yml",
+            "set-secret.sh",
+            "set-config.sh",
+        ):
             assert f"local/{wanted}" in names, wanted
 
 

@@ -39,7 +39,8 @@
 #   emergency-carry [段号]                      只读：打印紧急下架清单（gzip 后 base64），电脑恢复后带回本机
 #   emergency-settle                            带回本机已经正式下架的撤掉（定时任务每小时也做）
 #   secret <名称>          只在交互终端里用：录一个密钥进 .env（输入不显示，只回长度和指纹）
-#   show push|sync         只在交互终端里用：显示消息推送的 Token、EncodingAESKey / 同步密钥
+#   show push|sync|ai      只在交互终端里用：显示消息推送的 Token、EncodingAESKey / 同步密钥 /
+#                          后台 AI 的线路、模型（不涉密，照抄到本机 set-config.sh；密钥只给指纹）
 #   rotate-sync            换一个新的同步密钥（不显示）
 #   env-set <名称>         改一项不涉密的配置（值从标准输入读，如 echo '<值>' | … env-set YOUJU_CRONTAB）
 #   env-unset <名称>       删掉一项不涉密的配置
@@ -797,6 +798,68 @@ secret() {
   echo "已写入 ${name}：${#value} 位，指纹 $(fingerprint "$value")。都填完运行 ${SELF} up 生效"
 }
 
+# show ai 打出来之前逐项核一遍：这几项只该是线路、模型名、附加参数。看着像夹带了密钥的不打：地址里有
+# ?、@ 之类（只认 https://主机[:端口][/路径]），附加参数里有 authorization、api_key、token、authToken 之类的键，
+# 或者 sk-、Bearer 开头的值。附加参数用 python 按 JSON 查（值从标准输入给，不进命令行参数）
+ai_show_ok() {
+  local name=$1 value=$2 port
+  local key_like='(^|[^A-Za-z0-9])sk-[A-Za-z0-9_-]{8,}' long_run='[A-Za-z0-9]{32,}'
+  [[ "$value" != *'$'* && "$value" != *' #'* && "$value" != \"* && "$value" != \'* ]] || return 1
+  # 哪一项都不该像密钥：sk- 开头的一长串、32 个以上连着的字母数字（比如模型名误填了密钥）
+  [[ ! "$value" =~ $key_like && ! "$value" =~ $long_run ]] || return 1
+  case "$name" in
+    YOUJU_AI_BASE_URL)
+      [[ "$value" =~ ^https://[A-Za-z0-9.-]+(:([0-9]{1,5}))?(/[A-Za-z0-9._~/-]*)?$ ]] || return 1
+      port=${BASH_REMATCH[2]}
+      [ -z "$port" ] || { [ $((10#$port)) -ge 1 ] && [ $((10#$port)) -le 65535 ]; }
+      ;;
+    YOUJU_AI_MODEL | YOUJU_AI_BACKGROUND_MODEL) [[ "$value" =~ ^[A-Za-z0-9._:/-]{1,100}$ ]] ;;
+    YOUJU_AI_REQUEST_EXTRA)
+      [ "${#value}" -le 2000 ] || return 1
+      local check='
+import json, re, sys
+# 键名：去掉分隔符以后含这些的都算（apisecret、APISecret、client_secret 都拦）；再拆成词（驼峰、缩写
+# 也拆：authToken -> auth token），词是 token、key、auth、pwd 或以 token 结尾的也算；max_tokens 不算
+STRONG = ("secret", "password", "passwd", "credential", "authorization", "apikey", "accesskey", "privatekey", "cookie", "bearer")
+WORDS = {"token", "key", "auth", "pwd"}
+def bad_key(name):
+    name = str(name)
+    if any(w in re.sub(r"[^a-z0-9]", "", name.lower()) for w in STRONG):
+        return True
+    spaced = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])|(?<=[a-z0-9])(?=[A-Z])", "_", name).lower()
+    return any(w in WORDS or w.endswith("token") for w in re.split(r"[^a-z0-9]+", spaced))
+bad_value = re.compile(r"(?i)^(sk-|bearer\s)")
+def ok(x):
+    if isinstance(x, dict):
+        return all(not bad_key(k) and ok(v) for k, v in x.items())
+    if isinstance(x, list):
+        return all(ok(v) for v in x)
+    if isinstance(x, str):
+        return not bad_value.search(x)
+    return True
+value = json.load(sys.stdin)
+sys.exit(0 if isinstance(value, dict) and ok(value) else 1)
+'
+      if command -v python3 >/dev/null 2>&1; then
+        printf '%s' "$value" | python3 -I -c "$check" >/dev/null 2>&1
+      else
+        printf '%s' "$value" | compose exec -T worker python -I -c "$check" >/dev/null 2>&1
+      fi
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+# 附加参数（已经核过是 JSON 对象）按纯 ASCII、紧凑写法重写：值从标准输入给，不进命令行参数
+ai_extra_ascii() {
+  local code='import json, sys; print(json.dumps(json.load(sys.stdin), ensure_ascii=True, separators=(",", ":")))'
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -I -c "$code"
+  else
+    compose exec -T worker python -I -c "$code"
+  fi
+}
+
 show() {
   need_tty
   [ -f "$SERVER/.env" ] || die "还没装（没有 ${SERVER}/.env）"
@@ -804,11 +867,47 @@ show() {
     push)
       echo "消息推送 Token：$(env_get YOUJU_WX_PUSH_TOKEN)"
       echo "消息推送 EncodingAESKey：$(env_get YOUJU_WX_PUSH_AES_KEY)"
+      echo "看完关掉这个终端窗口"
       ;;
-    sync) echo "同步密钥：$(env_get YOUJU_SYNC_SECRET)" ;;
-    *) die "用法：show push|sync" ;;
+    sync)
+      echo "同步密钥：$(env_get YOUJU_SYNC_SECRET)"
+      echo "看完关掉这个终端窗口"
+      ;;
+    ai)
+      # 本机的后台 AI 要和服务器同一条线路、同一个模型：全部几行照抄到本机 set-config.sh（它把这几项在
+      # 本机改成和这里一样：没打出来的，本机也去掉、用程序默认的）。密钥不打，只给长度和指纹。
+      # 最后一行以 "#END <项数>" 开头（纯 ASCII，网页终端复制中文出乱码也认得出）：set-config.sh 读到它、
+      # 核对项数，才算复制全了（漏了开头几行，本机会被改回默认线路）
+      local name value count=0 lines=""
+      # 每项只读一次：核过、转写过、再按本机的规矩核一遍，全部没问题才一次打出来；有一项不对一行都不打
+      for name in YOUJU_AI_BASE_URL YOUJU_AI_MODEL YOUJU_AI_BACKGROUND_MODEL YOUJU_AI_REQUEST_EXTRA; do
+        value=$(env_get "$name")
+        [ -n "$value" ] || continue
+        ai_show_ok "$name" "$value" \
+          || die "${name} 看着不像正常的线路、模型名或附加参数（可能夹带了密钥），一行都没打：先把它改对（${SELF} env-set ${name}）再来"
+        if [ "$name" = YOUJU_AI_REQUEST_EXTRA ]; then
+          # 附加参数按纯 ASCII 重写（中文写成 \uXXXX，意思不变）：网页终端复制中文到 UU 可能变成乱码，
+          # 乱码也是合法 JSON，会被悄悄写进本机；本机 set-config.sh 只收纯 ASCII。重写以后可能变长，
+          # \u0024 这类转义也会还原成 $，所以按本机的规矩再核一遍（不超过 2000 字、没有 $ 和 " #"）
+          value=$(printf '%s' "$value" | ai_extra_ascii) \
+            || die "${name} 转不成纯 ASCII，一行都没打：要手动看"
+          # 转写以后整套再核一遍：转义藏着的 $、长串、像密钥的值这时都现出来了
+          ai_show_ok "$name" "$value" \
+            || die "${name} 转成纯 ASCII 以后本机收不了（超过 2000 字、有 \$ 或 \" #\"，或者看着像密钥），一行都没打：要手动看"
+        fi
+        lines="${lines}${name}=${value}"$'\n'
+        count=$((count + 1))
+      done
+      printf '%s' "$lines"
+      value=$(env_get YOUJU_AI_API_KEY)
+      if [ -n "$value" ]; then
+        echo "#END ${count} （以上 ${count} 项；YOUJU_AI_API_KEY 不打印：${#value} 位，指纹 $(fingerprint "$value")；本机用 set-secret.sh 录同一个，指纹要一样）"
+      else
+        echo "#END ${count} （以上 ${count} 项；服务器上还没录 YOUJU_AI_API_KEY：先录，再给本机录同一个）"
+      fi
+      ;;
+    *) die "用法：show push|sync|ai" ;;
   esac
-  echo "看完关掉这个终端窗口"
 }
 
 rotate_sync() {
