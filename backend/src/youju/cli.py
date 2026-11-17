@@ -668,17 +668,18 @@ def _cmd_deadline_verify_auto(args: argparse.Namespace) -> int:
         # 手工跑：先拿每轮任务的锁（不等），每轮任务正在跑或在等锁就跳过。这样自动核对写库时，
         # 抽截止、AI 检查、补详情都不会同时在改候选、AI 结果和正文
         # （round.sh 里跑时它已经拿着这把锁）
-        from youju.ai.pipeline import round_slot
+        from youju.ai.pipeline import round_slot, round_wanted
 
         with round_slot() as free:
             if not free:
                 print("每轮抓取和处理正在跑或在等锁，跳过截止日期自动核对（不和每轮任务同时写）")
                 return 0
-            return _run_deadline_verify_auto(args)
+            # 拿着锁的时候 round.sh 来了（留了等锁标记）：做完手上这一条就停，让每轮任务先跑
+            return _run_deadline_verify_auto(args, stop=round_wanted)
     return _run_deadline_verify_auto(args)
 
 
-def _run_deadline_verify_auto(args: argparse.Namespace) -> int:
+def _run_deadline_verify_auto(args: argparse.Namespace, stop=None) -> int:
     from collections import Counter
 
     from youju.api.v1 import now
@@ -688,9 +689,13 @@ def _run_deadline_verify_auto(args: argparse.Namespace) -> int:
     counts = Counter()
     with session_factory()() as session:
         # 每条判断时重新取当前时间（clock）：跑的过程中跨过截止时刻的不放
-        for item in auto_verify(session, current.date(), current, write=args.apply, clock=now):
+        for item in auto_verify(
+            session, current.date(), current, write=args.apply, clock=now, stop=stop
+        ):
             counts[item["result"]] += 1
             print(json.dumps(item, ensure_ascii=False))
+    if stop is not None and stop():
+        print("每轮抓取和处理要开始了，自动核对先停下，没做到的下一轮再核")
     passed = counts.pop("通过", 0)
     failed = "、".join(f"{reason} {n}" for reason, n in counts.most_common())
     print(

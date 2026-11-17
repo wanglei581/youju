@@ -451,12 +451,26 @@ def _auto_reason(session, row, members, now):
     return None
 
 
-def auto_twin_quote(session, row):
-    """D-135：AI 自动通过的结果沿用给同组副本（dedup.sync_reviewed_twins）前，按 apply_one 同一套
-    证据规则核这条副本自己的原句：去掉空白后 12–300 字、在它自己的当前正文里、写着这个日期（有时刻
-    的也写着这个时刻），而且它没被标过对当前正文的看不准。行就返回正文里原样的那段（记成它自己的
-    verification_quote），不行返回 None（留在待核对）。自动核对不像人核过整份通知，所以不凭"同一份
-    通知"直接沿用。"""
+def auto_twin_quote(session, row, members, now=None):
+    """D-135：AI 自动通过的结果沿用给同组副本（dedup.sync_reviewed_twins）前，把自动核对的条件对这条
+    副本再核一遍：没过期（按当时的北京时间）；同组当前的 AI 结果也标企业申报截止、和它同一天同一
+    时刻、AI 原句在正文里写着这个日期和时刻（_ai_supports）；它自己的原句去掉空白后 12–300 字、在它
+    自己的当前正文里、写着这个日期（有时刻的也写着这个时刻）；它没被标过对当前正文的看不准。行就
+    返回正文里原样的那段（记成它自己的 verification_quote），不行返回 None（留在待核对）。自动核对
+    不像人核过整份通知，所以不凭"同一份通知"直接沿用。"""
+    if now is None:
+        from youju.api.v1 import now as beijing_now
+
+        now = beijing_now()
+    local_now = now.astimezone(timezone(timedelta(hours=8))) if now.tzinfo else now
+    if row.candidate_date < local_now.date() or (
+        row.candidate_date == local_now.date()
+        and row.candidate_time
+        and row.candidate_time <= local_now.time().replace(tzinfo=None)
+    ):
+        return None
+    if not _ai_supports(session, row, members):
+        return None
     detail = session.scalar(
         select(DocumentDetail)
         .where(DocumentDetail.document_id == row.document_id)
@@ -487,7 +501,7 @@ def auto_switch(value):
     return None
 
 
-def auto_verify(session, today, now, write=False, clock=None):
+def auto_verify(session, today, now, write=False, clock=None, stop=None):
     """D-135：核对清单（queue，7 天内）里同时满足下面几条的，按 apply_one 同一套校验写成核对通过，
     核对人记 AUTO_REVIEWER；不满足的不动，照旧显示"截止时间见原文"。
     - 规则候选（origin=rule），AI 也找到同一天同一时刻（ai_agrees），类型是企业申报截止；
@@ -502,6 +516,7 @@ def auto_verify(session, today, now, write=False, clock=None):
     写库时每一条先锁住同组各文件的全部截止行（_lock_notice）再判断、写入；撞锁（等锁超时、死锁）
     的这一条回滚，记"加锁冲突，下一轮再试"，接着做下一条。clock：取当前时间的函数
     （命令传 v1.now），每条判断时重新取，跑的过程中跨过截止时刻的不放；不给就一直用 now。
+    stop：每做一条之前问一次，说要停就不再做后面的（手工跑时传"每轮任务在等锁"，让它先跑）。
     逐条返回结果；每条单独提交（write）或回滚（演练），演练不留下修改。"""
     from youju.dedup import canonical_ids, groups_for
 
@@ -541,6 +556,8 @@ def auto_verify(session, today, now, write=False, clock=None):
         )
 
     for item in items:
+        if stop is not None and stop():
+            return
         master = masters.get(item["document_id"], item["document_id"])
         key = (master, item["kind"], item["date"], item["time"])
         try:

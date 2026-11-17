@@ -595,7 +595,7 @@ def test_auto_cli_dry_run_ignores_settings_and_key(monkeypatch, capsys):
     monkeypatch.setattr(
         verify,
         "auto_verify",
-        lambda session, today, now, write, clock=None: iter(
+        lambda session, today, now, write, clock=None, stop=None: iter(
             [
                 {
                     "id": 1,
@@ -856,6 +856,71 @@ def test_auto_commit_conflict_does_not_mark_the_deadline_passed(monkeypatch):
     assert [r["result"] for r in result] == ["加锁冲突，下一轮再试", "通过"]
 
 
+def test_auto_stops_before_the_next_item_when_asked(monkeypatch):
+    """stop 说要停（手工跑时每轮任务在等锁），做完手上这一条就不再做后面的。"""
+    from youju import dedup
+
+    def entry(i):
+        return dict(
+            id=i,
+            document_id=i,
+            kind="企业申报截止",
+            date="2026-09-30",
+            time=None,
+            origin="rule",
+            ai_agrees=True,
+            reopened=False,
+            evidence=QUOTE,
+            body_sha256="x",
+        )
+
+    session = SimpleNamespace(
+        get=lambda model, key: SimpleNamespace(id=key, document_id=key),
+        commit=lambda: None,
+        rollback=lambda: None,
+    )
+    monkeypatch.setattr(verify, "queue", lambda *args: [entry(1), entry(2), entry(3)])
+    monkeypatch.setattr(dedup, "canonical_ids", lambda *args: {})
+    monkeypatch.setattr(dedup, "groups_for", lambda *args: {})
+    monkeypatch.setattr(verify, "_auto_reason", lambda *args: "不是企业申报截止")
+    answers = iter([False, True])
+    result = list(
+        verify.auto_verify(
+            session, date(2026, 9, 29), datetime(2026, 9, 29), stop=lambda: next(answers)
+        )
+    )
+    assert [r["id"] for r in result] == [1]
+
+
+def test_manual_apply_stops_when_the_round_is_waiting(monkeypatch, capsys):
+    """手工跑拿着每轮任务的锁时，round.sh 来了（留了等锁标记）：不再做后面的，说明先停下。"""
+    from contextlib import contextmanager
+
+    from youju import ai
+    from youju.ai import pipeline
+
+    monkeypatch.setattr(cli, "get_settings", lambda: SimpleNamespace(deadline_auto_verify="1"))
+    monkeypatch.setattr(ai, "get_chat_client", lambda: object())
+    monkeypatch.setattr(cli, "session_factory", lambda: lambda: Session([]))
+
+    @contextmanager
+    def free_slot():
+        yield True
+
+    monkeypatch.setattr(pipeline, "round_slot", free_slot)
+    monkeypatch.setattr(pipeline, "round_wanted", lambda: True)
+    seen = []
+
+    def fake_auto(session, today, now, write, clock=None, stop=None):
+        seen.append(stop())
+        return iter([])
+
+    monkeypatch.setattr(verify, "auto_verify", fake_auto)
+    assert cli._cmd_deadline_verify_auto(argparse.Namespace(apply=True, in_round=False)) == 0
+    assert seen == [True]
+    assert "自动核对先停下" in capsys.readouterr().out
+
+
 def test_reopen_auto_preserves_long_reason():
     candidate = row(status="approved", reviewed_by=verify.AUTO_REVIEWER)
     reason = "退" * 200
@@ -878,7 +943,7 @@ def test_auto_cli_apply(monkeypatch, capsys):
     monkeypatch.setattr(cli, "session_factory", lambda: lambda: Session([]))
     writes = []
 
-    def fake_auto(session, today, now, write, clock=None):
+    def fake_auto(session, today, now, write, clock=None, stop=None):
         writes.append(write)
         return iter(
             [

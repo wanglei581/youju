@@ -161,9 +161,9 @@ def sync_reviewed_twins(session: Session, masters: set[int]) -> int:
     质检退回的（audit_state 为 reopened）不沿用：要带着退回原因重新核对（Claude 按带退回原因的清单
     写回，D-130；或在核对台核对）。
     AI 自动核对通过的（D-135）不凭"同一份通知"直接沿用：只沿用给证据句相同（同一句话，说的是同一件
-    事）、规则抽出、AI 也一致的副本，而且这句也在副本自己的当前正文里、写着这个日期和时刻
-    （deadline_verify.auto_twin_quote），原句记它自己的；不行就留在待核对。同一截止另有人核过的
-    （Claude、管理台），先沿用人核的。"""
+    事）、规则抽出、AI 也一致的副本，而且对这条副本把自动核对的条件再核一遍（没过期、当前 AI 结果
+    相符、这句在它自己的当前正文里写着这个日期和时刻，见 deadline_verify.auto_twin_quote），原句记
+    它自己的；不行就留在待核对。同一截止另有人核过的（Claude、管理台），先沿用人核的。"""
     from youju.deadline_verify import AUTO_REVIEWER, auto_twin_quote
     from youju.models import DocumentDeadline
 
@@ -203,7 +203,7 @@ def sync_reviewed_twins(session: Session, masters: set[int]) -> int:
                 source = auto.get(reviewed_key(d, "rejected"))
                 if source is None or d.origin != "rule" or d.ai_agrees is not True:
                     continue
-                own_quote = auto_twin_quote(session, d)
+                own_quote = auto_twin_quote(session, d, members)
                 if own_quote is None:
                     continue
             for field in _REVIEW_FIELDS:
