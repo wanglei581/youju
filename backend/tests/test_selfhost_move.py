@@ -886,7 +886,7 @@ def test_local_set_config(tmp_path):
         done = run(text)
         assert done.returncode == 1 and message in done.stderr, (text, done.stderr)
         assert secret not in done.stdout + done.stderr
-        assert env.read_text(encoding="utf-8") == before, text
+        assert env.read_bytes() == before.encode(), text  # 原样没动（连 CRLF 都没改）
 
     (tmp_path / ".env").unlink()
     done = run("YOUJU_AI_MODEL=deepseek-chat\n")
