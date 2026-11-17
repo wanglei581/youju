@@ -918,6 +918,31 @@ def test_lonsun_service_two_steps_and_unopened(session):
     assert fetcher.requested == [url, tree, api]
 
 
+@pytest.mark.parametrize("old_style_script", [False, True])
+def test_lonsun_marked_source_never_falls_back_to_generic_items(session, old_style_script):
+    # 经龙讯接口读的来源（第十四轮独立 Claude）：页面认不出龙讯栏目时，页面上通用规则认出的几条带日期
+    # 的链接不当栏目条目，记待人工处理；别的内联脚本切不开（老式 <!-- … //-->）时原因也不丢
+    url, html, *_ = _lonsun_service_fixture()
+    links = "".join(
+        f"<li><a href='/art/2026/11/{d}/art_{d}.html'>关于开展第{d}批申报工作的通知</a>"
+        f"<span>2026-11-{d:02d}</span></li>"
+        for d in (1, 2, 3)
+    )
+    changed = html.replace("function PublicTree()", "function PublicTree(x)", 1)
+    if old_style_script:
+        changed = changed.replace(
+            "</head>", '<script type="text/javascript"><!--\nvar f = 1;\n//--></script></head>', 1
+        )
+    changed = changed.replace("<body>", f"<body><ul>{links}</ul>", 1)
+    source = make_source(session, url)
+    source.parser_config = {"list_api_open": "龙讯public"}
+    session.commit()
+    fetcher = RecordingFetcher({url: [page(url, changed)]})
+    check = check_source(session, source, fetcher, today=date(2026, 11, 13))
+    assert check.status == "parse_empty" and check.error.startswith("待人工处理"), check.error
+    assert check.items_found == 0 and fetcher.requested == [url]
+
+
 def test_lonsun_service_refusal_remembers_tree(session):
     url, html, tree, catalog, api, _ = _lonsun_service_fixture()
     source = make_source(session, url)

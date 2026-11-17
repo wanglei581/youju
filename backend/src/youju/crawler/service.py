@@ -429,8 +429,12 @@ def check_source(
             else extract_items(result.text, result.final_url or url, parser_config, today=today)
         )
         api = None
-        attempted_api = gkmlpt or (
-            len(items) < ADAPTER_MIN_ITEMS and not parser_config.get("item_selector")
+        # 经龙讯接口读的来源：照接口读，页面上通用规则认出的链接不当栏目条目（认不出就待人工处理）
+        lonsun_marked = parser_config.get(LIST_API_OPEN_KEY) == LONSUN
+        attempted_api = (
+            gkmlpt
+            or lonsun_marked
+            or (len(items) < ADAPTER_MIN_ITEMS and not parser_config.get("item_selector"))
         )
         if attempted_api:
             api = find_list_api(
@@ -455,6 +459,10 @@ def check_source(
         ):
             items = []
             status, error = "parse_empty", f"待人工处理：{reason}"
+        elif lonsun_marked and api is None:
+            # 经龙讯接口读的来源，页面认不出龙讯栏目了（改版、不是栏目页）：不用通用规则认出的链接
+            items = []
+            status, error = "parse_empty", "待人工处理：页面认不出龙讯栏目（PublicTree）"
         elif api is not None and parser_config.get(LIST_API_OPEN_KEY) != api.adapter:
             # D-128：来源没标"经接口读"（复检、抽查合格、打开时才写）——不走接口、不读，也不悄悄
             # 记成 0 条：记"读不出"并写明待复检，进失败清单等复检

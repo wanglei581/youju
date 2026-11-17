@@ -4644,13 +4644,24 @@ def lonsun_unrecognized_reason(
     catalog_host: str | None = None,
     county: bool = False,
 ) -> str | None:
-    """仅对龙讯栏目页给出第一步识别失败的原因。"""
+    """仅对龙讯栏目页给出第一步识别失败的原因：页面有一段会执行的内联脚本声明了 PublicTree。各段
+    分开看——切得开的照记号认（字符串里写着的不算），切不开的（老式的 <script><!-- … //--></script>
+    这类）照文字认；别的脚本切不开时，原因不能丢。"""
     if column_spec(column_url) is None:
         return None
     from lxml import etree
     from lxml import html as lxml_html
 
     from youju.crawler.adapters import _STRAY_END
+
+    def has_constructor(source):
+        try:
+            tokens = [token.value for token in _js_tokens(source)]
+        except LonsunFormatError:
+            return bool(re.search(r"\bfunction\s+PublicTree\s*\(", source))
+        return any(
+            tokens[i : i + 3] == ["function", "PublicTree", "("] for i in range(len(tokens) - 2)
+        )
 
     try:
         doc = lxml_html.document_fromstring(_STRAY_END.sub("", html))
@@ -4661,13 +4672,6 @@ def lonsun_unrecognized_reason(
             and not any(a.tag in ("noscript", "template") for a in el.iterancestors())
             and _script_kind(el) == "classic"
         ]
-
-        def has_constructor(source):
-            tokens = [token.value for token in _js_tokens(source)]
-            return any(
-                tokens[i : i + 3] == ["function", "PublicTree", "("] for i in range(len(tokens) - 2)
-            )
-
         if not any(has_constructor(source) for source in sources):
             return None
     except (ValueError, etree.LxmlError):

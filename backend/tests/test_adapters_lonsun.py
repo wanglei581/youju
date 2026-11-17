@@ -3797,3 +3797,14 @@ def test_round_guard_records_refusal_even_if_target_blocked_meanwhile():
     release.set()
     worker.join(5)
     assert out[0].http_status == 403 and guard.blocked(A_COLUMN)
+
+
+def test_unrecognized_reason_kept_when_another_script_cannot_be_tokenized():
+    # 别的内联脚本是老式的 <script><!-- … //--></script>（切不开）：原因不能丢（第十四轮独立 Claude）
+    from youju.crawler.lonsun import lonsun_unrecognized_reason
+
+    old_style = '<script type="text/javascript"><!--\nvar siteFlag = 1;\n//--></script>'
+    page = fixture("jx_page.html").replace("</head>", old_style + "</head>", 1)
+    assert _found(page) is None
+    reason = lonsun_unrecognized_reason(page, BASE, BASE)
+    assert reason and "<!--" in reason, reason
