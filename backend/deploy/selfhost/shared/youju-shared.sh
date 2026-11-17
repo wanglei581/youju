@@ -814,17 +814,20 @@ show() {
     ai)
       # 本机的后台 AI 要和服务器同一条线路、同一个模型：全部几行照抄到本机 set-config.sh（它把这几项在
       # 本机改成和这里一样：没打出来的，本机也去掉、用程序默认的）。密钥不打，只给长度和指纹。
-      # 括号里那行说明必须是最后一行：set-config.sh 读到它才算复制全了
-      local name value
+      # 最后一行以 "#END <项数>" 开头（纯 ASCII，网页终端复制中文出乱码也认得出）：set-config.sh 读到它、
+      # 核对项数，才算复制全了（漏了开头几行，本机会被改回默认线路）
+      local name value count=0
       for name in YOUJU_AI_BASE_URL YOUJU_AI_MODEL YOUJU_AI_BACKGROUND_MODEL YOUJU_AI_REQUEST_EXTRA; do
         value=$(env_get "$name")
-        [ -z "$value" ] || echo "${name}=${value}"
+        [ -n "$value" ] || continue
+        echo "${name}=${value}"
+        count=$((count + 1))
       done
       value=$(env_get YOUJU_AI_API_KEY)
       if [ -n "$value" ]; then
-        echo "（YOUJU_AI_API_KEY 不打印：${#value} 位，指纹 $(fingerprint "$value")；本机用 set-secret.sh 录同一个，指纹要一样）"
+        echo "#END ${count} （以上 ${count} 项；YOUJU_AI_API_KEY 不打印：${#value} 位，指纹 $(fingerprint "$value")；本机用 set-secret.sh 录同一个，指纹要一样）"
       else
-        echo "（服务器上还没录 YOUJU_AI_API_KEY：先录，再给本机录同一个）"
+        echo "#END ${count} （以上 ${count} 项；服务器上还没录 YOUJU_AI_API_KEY：先录，再给本机录同一个）"
       fi
       ;;
     *) die "用法：show push|sync|ai" ;;

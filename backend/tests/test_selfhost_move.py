@@ -835,8 +835,13 @@ def test_local_set_secret(tmp_path):
     assert env.read_text(encoding="utf-8").endswith(f"YOUJU_AI_API_KEY={key}\n")
 
 
+def _end_line(count: int) -> str:
+    """show ai 的最后一行（纯 ASCII 的开头加中文说明）。"""
+    return f"#END {count} （以上 {count} 项；YOUJU_AI_API_KEY 不打印：35 位，指纹 ab12；本机用 set-secret.sh 录同一个，指纹要一样）"
+
+
 @needs_bash
-def test_local_set_config(tmp_path):
+def test_local_set_config(tmp_path, monkeypatch):
     shutil.copy(SELFHOST / "local" / "set-config.sh", tmp_path)
     env = tmp_path / ".env"
     before = (
@@ -845,26 +850,23 @@ def test_local_set_config(tmp_path):
     )
     env.write_text(before, encoding="utf-8", newline="")
     script = ["bash", str(tmp_path / "set-config.sh")]
-    note = (
-        "（YOUJU_AI_API_KEY 不打印：35 位，指纹 ab12；本机用 set-secret.sh 录同一个，指纹要一样）"
-    )
     extra = '{"thinking":{"type":"disabled"},"stop":["\\n"],"note":"中文 a#b"}'
 
     done = subprocess.run(script, input="x\n", capture_output=True, text=True)
     assert done.returncode == 1 and "只能在交互终端里用" in done.stderr
 
+    # 换行变成回车加换行、行尾带空格、#END 那行的中文复制成乱码：照样认
     pasted = (
-        "YOUJU_AI_BASE_URL=https://api.deepseek.com:443/v1\r\n"
-        "YOUJU_AI_MODEL=first\r\n"
-        "YOUJU_AI_MODEL=deepseek-chat\r\n"
+        "YOUJU_AI_BASE_URL=https://api.deepseek.com:443/v1 \r\n"
+        "YOUJU_AI_MODEL=deepseek-chat\t\r\n"
         f"YOUJU_AI_REQUEST_EXTRA={extra}\r\n"
-        f"{note}\r\n"
-        "YOUJU_AI_MODEL=after-the-note-is-not-read\r\n"
+        "#END 3 ���\r\n"
+        "YOUJU_AI_MODEL=after-the-end-line-is-not-read\r\n"
     )
     code, out = _tty(script, pasted)
     assert code == 0, out
     # 原来有的就地改、重复的旧行去掉、没有的加在最后；粘贴里没有的（服务器没填）本机也去掉；
-    # 同一项粘了两次以后面的为准；读到括号那行就停；注释行原样留下
+    # 读到 #END 就停；注释行原样留下
     assert env.read_bytes().decode() == (
         "YOUJU_SYNC_URL=https://yj.example.cn\n# YOUJU_AI_MODEL=\n"
         "YOUJU_AI_MODEL=deepseek-chat\n"
@@ -876,28 +878,41 @@ def test_local_set_config(tmp_path):
     assert "deepseek-chat" not in out and "api.deepseek.com" not in out and "thinking" not in out
     assert "已写入 YOUJU_AI_MODEL（13 位）" in out
     assert "YOUJU_AI_BACKGROUND_MODEL：服务器没填，本机也不填" in out
+    # 程序按这份 .env 读回来的和粘贴的一样（附加参数是同一个字典）
+    from youju.config import Settings
 
-    # 服务器四项都没填：只有那行说明，本机这几项都去掉
-    code, out = _tty(script, note + "\n")
+    for name in ("YOUJU_AI_BASE_URL", "YOUJU_AI_MODEL", "YOUJU_AI_REQUEST_EXTRA"):
+        monkeypatch.delenv(name, raising=False)
+    settings = Settings(_env_file=str(env))
+    assert settings.ai_base_url == "https://api.deepseek.com:443/v1"
+    assert settings.ai_model == "deepseek-chat"
+    assert settings.ai_request_extra == json.loads(extra)
+
+    # 服务器四项都没填：只有 #END 0，本机这几项都去掉
+    code, out = _tty(script, _end_line(0) + "\n")
     assert code == 0, out
     assert env.read_bytes().decode() == "YOUJU_SYNC_URL=https://yj.example.cn\n# YOUJU_AI_MODEL=\n"
 
-    # 有一行不对、没粘到最后那行说明，都整批不写；不认识的行、误粘的密钥都不打出来
+    # 有一行不对、没粘到 #END、行数和项数对不上（漏了开头几行），都整批不写；
+    # 不认识的行、误粘的密钥都不打出来；行号不算空行
     env.write_text(before, encoding="utf-8", newline="")
     secret = "sk-pasted-by-mistake-0123456789"
     bad_batches = {
-        f"YOUJU_AI_MODEL=deepseek-chat\nYOUJU_AI_API_KEY={secret}\n{note}\n": "第 2 行不认识",
-        f"{secret}\n{note}\n": "第 1 行不认识",
-        f"YOUJU_AI_MODEL={secret}\n\x04": "没粘到最后一行",
-        "YOUJU_AI_MODEL=deepseek-chat\n\n\x04": "没粘到最后一行",
-        f"YOUJU_AI_REQUEST_EXTRA=[1, 2]\n{note}\n": "格式不对",
-        f"YOUJU_AI_REQUEST_EXTRA={{bad\n{note}\n": "格式不对",
-        f'YOUJU_AI_REQUEST_EXTRA={{"k": "{secret} #x"}}\n{note}\n': "格式不对",
-        f"YOUJU_AI_MODEL=model-$(reboot)\n{note}\n": "格式不对",
-        f"YOUJU_AI_BASE_URL=http://api.deepseek.com/v1\n{note}\n": "格式不对",
-        f"YOUJU_AI_BASE_URL=https://api.deepseek.com:99999/v1\n{note}\n": "格式不对",
-        f"YOUJU_AI_BASE_URL=https://api.deepseek.com:0/v1\n{note}\n": "格式不对",
-        f"YOUJU_AI_BASE_URL=https://api.deepseek.com/v1?key={secret}\n{note}\n": "格式不对",
+        f"YOUJU_AI_MODEL=deepseek-chat\r\nYOUJU_AI_API_KEY={secret}\r\n{_end_line(1)}\n": "第 2 行不认识",
+        f"{secret}\n{_end_line(0)}\n": "第 1 行不认识",
+        f"YOUJU_AI_MODEL={secret}\n\x04": "没粘到最后那行 #END",
+        "YOUJU_AI_MODEL=deepseek-chat\n\n\x04": "没粘到最后那行 #END",
+        f"YOUJU_AI_MODEL=deepseek-chat\nYOUJU_AI_REQUEST_EXTRA={{}}\n{_end_line(3)}\n": "可能没复制全",
+        f"YOUJU_AI_MODEL=a\nYOUJU_AI_MODEL=b\n{_end_line(1)}\n": "可能没复制全",
+        f"YOUJU_AI_REQUEST_EXTRA=[1, 2]\n{_end_line(1)}\n": "格式不对",
+        f"YOUJU_AI_REQUEST_EXTRA={{bad\n{_end_line(1)}\n": "格式不对",
+        f'YOUJU_AI_REQUEST_EXTRA={{"k": "{secret} #x"}}\n{_end_line(1)}\n': "格式不对",
+        f'YOUJU_AI_REQUEST_EXTRA={{"k": "$HOME"}}\n{_end_line(1)}\n': "格式不对",
+        f"YOUJU_AI_MODEL=model-$(reboot)\n{_end_line(1)}\n": "格式不对",
+        f"YOUJU_AI_BASE_URL=http://api.deepseek.com/v1\n{_end_line(1)}\n": "格式不对",
+        f"YOUJU_AI_BASE_URL=https://api.deepseek.com:99999/v1\n{_end_line(1)}\n": "格式不对",
+        f"YOUJU_AI_BASE_URL=https://api.deepseek.com:0/v1\n{_end_line(1)}\n": "格式不对",
+        f"YOUJU_AI_BASE_URL=https://api.deepseek.com/v1?key={secret}\n{_end_line(1)}\n": "格式不对",
     }
     for text, message in bad_batches.items():
         code, out = _tty(script, text)
@@ -905,34 +920,32 @@ def test_local_set_config(tmp_path):
         assert secret not in out
         assert env.read_bytes() == before.encode(), text  # 原样没动（连 CRLF 都没改）
 
-    # 写临时文件失败（目录不能写）：报错退出，.env 原样
-    tmp_path.chmod(0o555)
-    try:
-        code, out = _tty(script, f"YOUJU_AI_MODEL=deepseek-chat\n{note}\n")
-    finally:
-        tmp_path.chmod(0o755)
-    assert code != 0, out
-    assert env.read_bytes() == before.encode()
+    # 写临时文件失败（目录不能写）：报错退出，.env 原样（root 不受目录权限限制，跳过）
+    if os.geteuid() != 0:
+        tmp_path.chmod(0o555)
+        try:
+            code, out = _tty(script, f"YOUJU_AI_MODEL=deepseek-chat\n{_end_line(1)}\n")
+        finally:
+            tmp_path.chmod(0o755)
+        assert code != 0, out
+        assert env.read_bytes() == before.encode()
 
     env.unlink()
-    code, out = _tty(script, f"YOUJU_AI_MODEL=deepseek-chat\n{note}\n")
+    code, out = _tty(script, f"YOUJU_AI_MODEL=deepseek-chat\n{_end_line(1)}\n")
     assert code == 1 and "还没有 .env" in out
 
 
 @needs_bash
 def test_local_set_config_switch(tmp_path):
-    """本机自己的开关（截止日期自动核对，D-135）：只收 0 或 1；命令后面、粘贴里都能给，给了才改；
-    --only 只改开关、不粘贴，AI 那几项原样留着。"""
+    """本机自己的开关（截止日期自动核对，D-135）：只收 0 或 1；命令后面、粘贴里都能给，给了才改，
+    不算进 AI 配置的行数；--only 只改开关、不粘贴，AI 那几项原样留着。"""
     shutil.copy(SELFHOST / "local" / "set-config.sh", tmp_path)
     env = tmp_path / ".env"
     env.write_text(
         "YOUJU_AI_MODEL=deepseek-chat\nYOUJU_SYNC_URL=https://yj.example.cn\n", encoding="utf-8"
     )
     script = ["bash", str(tmp_path / "set-config.sh")]
-    note = (
-        "（YOUJU_AI_API_KEY 不打印：35 位，指纹 ab12；本机用 set-secret.sh 录同一个，指纹要一样）"
-    )
-    paste = f"YOUJU_AI_MODEL=deepseek-chat\n{note}\n"
+    paste = f"YOUJU_AI_MODEL=deepseek-chat\n{_end_line(1)}\n"
 
     # 上线那天：命令后面带开关，再粘贴 show ai 的几行
     code, out = _tty([*script, "YOUJU_DEADLINE_AUTO_VERIFY=1"], paste)
@@ -947,7 +960,7 @@ def test_local_set_config_switch(tmp_path):
     code, out = _tty(script, paste)
     assert code == 0 and "YOUJU_DEADLINE_AUTO_VERIFY=1\n" in env.read_text(encoding="utf-8")
 
-    # 粘贴里给开关也行；命令里也给了的，以命令里的为准
+    # 粘贴里给开关也行（不算进 AI 配置的行数）；命令里也给了的，以命令里的为准
     code, out = _tty(
         [*script, "YOUJU_DEADLINE_AUTO_VERIFY=0"], "YOUJU_DEADLINE_AUTO_VERIFY=1\n" + paste
     )
@@ -973,10 +986,10 @@ def test_local_set_config_switch(tmp_path):
         ([*script, "--only"], "", "--only 要和开关一起给"),
         ([*script, "--only", "YOUJU_AI_MODEL=other"], "", "参数不认识"),
         ([*script, "--only", secret], "", "参数不认识"),
-        (script, f"YOUJU_DEADLINE_AUTO_VERIFY=true\n{note}\n", "格式不对"),
+        (script, f"YOUJU_DEADLINE_AUTO_VERIFY=true\n{_end_line(0)}\n", "格式不对"),
         (
             [*script, "YOUJU_DEADLINE_AUTO_VERIFY=1"],
-            "YOUJU_AI_MODEL=bad model\n" + note + "\n",
+            f"YOUJU_AI_MODEL=bad model\n{_end_line(1)}\n",
             "格式不对",
         ),
     ]
@@ -1006,12 +1019,11 @@ def test_shared_show_ai_prints_route_and_only_a_key_fingerprint(tmp_path):
         "YOUJU_AI_MODEL=deepseek-chat",
         f"YOUJU_AI_REQUEST_EXTRA={extra}",
     ]
-    # 没填的不打；密钥和别的密钥都不打，只给长度和指纹；括号那行说明是最后一行
+    # 没填的不打；密钥和别的密钥都不打，只给长度和指纹；最后一行是 #END 加项数
     assert "YOUJU_AI_BACKGROUND_MODEL" not in out
     assert key not in out and "a" * 64 not in out
-    assert (
-        lines[-1].startswith("（") and f"{len(key)} 位，指纹 {_sha(key.encode())[:4]}" in lines[-1]
-    )
+    assert len(lines) == 4 and lines[-1].startswith("#END 3 ")
+    assert f"{len(key)} 位，指纹 {_sha(key.encode())[:4]}" in lines[-1]
 
     # 原样粘进本机 set-config.sh：本机这几项和服务器一样
     shutil.copy(SELFHOST / "local" / "set-config.sh", tmp_path)
@@ -1020,10 +1032,15 @@ def test_shared_show_ai_prints_route_and_only_a_key_fingerprint(tmp_path):
     code, pasted_out = _tty(["bash", str(tmp_path / "set-config.sh")], "\n".join(lines) + "\n")
     assert code == 0, pasted_out
     assert local_env.read_text(encoding="utf-8") == "\n".join(lines[:3]) + "\n"
+    # 漏了第一行：项数对不上，整批不写
+    local_env.write_text("YOUJU_AI_BACKGROUND_MODEL=stale\n", encoding="utf-8")
+    code, pasted_out = _tty(["bash", str(tmp_path / "set-config.sh")], "\n".join(lines[1:]) + "\n")
+    assert code == 1 and "可能没复制全" in pasted_out
+    assert local_env.read_text(encoding="utf-8") == "YOUJU_AI_BACKGROUND_MODEL=stale\n"
 
     _server_env(tmp_path, "YOUJU_AI_MODEL=deepseek-chat\n")
     code, out = _tty(show, "")
-    assert code == 0 and "服务器上还没录 YOUJU_AI_API_KEY" in out
+    assert code == 0 and "#END 1 " in out and "服务器上还没录 YOUJU_AI_API_KEY" in out
     # "执行命令"里（没有交互终端）不显示
     done = _bash(tmp_path, "show ai")
     assert done.returncode == 1 and "只能在交互终端里用" in done.stderr

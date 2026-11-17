@@ -1,14 +1,15 @@
 #!/bin/bash
 # 本机端（Windows 主机的 WSL 发行版 youju）录不涉密的配置：后台 AI 的线路、模型、附加参数（和服务器一样），
 # 和本机自己的开关。后台 AI（截止日期交叉核对、分类、申报条件抽取）在本机跑，要和服务器用同一条线路、同一个模型：
-#   1. 服务器网页终端：sudo /opt/youju/bin/youju-shared.sh show ai，复制打出来的全部几行（含最后一行括号里的说明）；
+#   1. 服务器网页终端：sudo /opt/youju/bin/youju-shared.sh show ai，复制打出来的全部几行（最后一行以 #END 开头）；
 #   2. UU 远程的终端：wsl -d youju -u root --cd /opt/youju/local -e bash set-config.sh [开关=0或1 …]，粘贴（不显示），
-#      读到括号那行就结束（空行不算；没复制全按 Ctrl-C 取消，什么都不写）；
+#      再按一次回车（多按无妨）；读到 #END 那行就结束，空行不算；没复制全按 Ctrl-C 取消，什么都不写；
 #   3. 密钥另用 set-secret.sh YOUJU_AI_API_KEY 录；都录完 docker compose up -d worker 生效（在同一个目录）。
 # 粘贴的内容就是 AI 这几项在本机的全部：服务器没填的，本机也去掉（用程序默认的，和服务器一样）。
 # 开关（服务器上没有，show ai 不打）：只收 0 或 1，写在命令后面或粘贴里都行，给了才改、没给的原样留着；
 # 只改开关、不粘贴：bash set-config.sh --only YOUJU_DEADLINE_AUTO_VERIFY=0。
-# 只认下面几项；有一项不认识、格式不对，或者没粘到最后那行说明（可能没复制全），整批都不写。
+# 只认下面几项；有一项不认识、格式不对，没粘到 #END 那行，或者 AI 配置的行数和 #END 后面的项数对不上
+# （可能没复制全），整批都不写。
 # 输入不显示、AI 这几项只回名称和长度：万一粘进来的是密钥，也不会打到屏幕上或进命令行参数。
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -90,29 +91,43 @@ done
 if [ "$only" -eq 1 ]; then
   [ "${#args[@]}" -gt 0 ] || die "--only 要和开关一起给，如 --only YOUJU_DEADLINE_AUTO_VERIFY=0"
 else
-  printf '%s' '粘贴服务器 show ai 打出来的全部几行（含最后一行括号里的说明；粘贴的内容不显示，读到括号那行就结束，没复制全可以按 Ctrl-C 取消）：'
-  complete=0
+  printf '%s' '粘贴服务器 show ai 打出来的全部几行，再按一次回车（多按无妨；粘贴的内容不显示，没复制全可以按 Ctrl-C 取消）：'
+  # 整段粘贴都不回显（read -s 只在每次读的时候关回显，两次读之间到的内容会被显示出来）；退出时恢复
+  saved_tty=$(stty -g)
+  trap 'stty "$saved_tty"' EXIT
+  trap 'stty "$saved_tty"; exit 130' INT TERM
+  stty -echo
+  end_re='^#END ([0-9]{1,2})($| )'
+  expected=-1
+  ai_lines=0
   n=0
-  while IFS= read -rs line || [ -n "$line" ]; do
-    n=$((n + 1))
+  while IFS= read -r line || [ -n "$line" ]; do
     line=${line%$'\r'}
-    # show ai 最后一行是括号里的说明（密钥只给指纹）：读到它就是复制全了
-    if [[ "$line" == "（"* ]]; then
-      complete=1
-      break
-    fi
+    # 行尾的空格、制表符去掉（复制时可能带上）
+    line=${line%"${line##*[![:space:]]}"}
     # 空行跳过：粘贴时换行可能变成两个（回车加换行）
     [ -n "$line" ] || continue
+    n=$((n + 1))
+    # show ai 最后一行以 "#END <项数>" 开头：读到它就停，项数下面核对
+    if [[ "$line" =~ $end_re ]]; then
+      expected=${BASH_REMATCH[1]}
+      break
+    fi
     name=${line%%=*}
     value=${line#*=}
     # 不认识的行不把内容打出来：万一粘进来的是密钥
     [[ "$line" == *=* && " $NAMES $SWITCHES " == *" $name "* ]] \
       || die "第 ${n} 行不认识（只认 ${NAMES} ${SWITCHES}），什么都没写"
     value_ok "$name" "$value" || die "${name} 的格式不对，什么都没写"
+    [[ " $NAMES " != *" $name "* ]] || ai_lines=$((ai_lines + 1))
     remember "$name" "$value"
   done
+  stty "$saved_tty"
+  trap - EXIT INT TERM
   echo
-  [ "$complete" -eq 1 ] || die "没粘到最后一行括号里的说明（可能没复制全），什么都没写"
+  [ "$expected" -ge 0 ] || die "没粘到最后那行 #END（可能没复制全），什么都没写"
+  [ "$ai_lines" -eq "$expected" ] \
+    || die "粘贴里 AI 配置有 ${ai_lines} 行，服务器打出来的是 ${expected} 项（可能没复制全），什么都没写"
 fi
 for arg in ${args[@]+"${args[@]}"}; do
   remember "${arg%%=*}" "${arg#*=}"
