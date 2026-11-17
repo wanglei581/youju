@@ -903,7 +903,7 @@ def _reopened_line(digest: Digest) -> str:
     """质检退回、等人看的截止（D-135：自动核对不碰，攒着由 Claude 一起核）；没有的不写这一行。"""
     ids = "、".join(f"#{doc_id}" for doc_id in digest.reopened_docs[:_REOPENED_IDS])
     more = "等" if len(digest.reopened_docs) > _REOPENED_IDS else ""
-    return f"质检退回待人看：{digest.reopened} 条（文件 {ids}{more}）"
+    return f"质检退回待人看（没过期的）：{digest.reopened} 条（文件 {ids}{more}）"
 
 
 def digest_text(digest: Digest, picks: list[Pick]) -> str:

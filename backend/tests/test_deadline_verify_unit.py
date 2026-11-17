@@ -52,6 +52,8 @@ def row(**kw):
                 reviewed_by=None,
                 reviewed_at=None,
                 ai_agrees=True,
+                origin="rule",
+                verification_unclear_hash=None,
                 verification_corrected=None,
                 verification_unclear_at=None,
             )
@@ -80,6 +82,7 @@ def setup(monkeypatch):
             setattr(d, "reviewed_by", by) or setattr(d, "reviewed_at", stamp) for d in locked
         ],
     )
+    monkeypatch.setattr(verify, "_ai_items", lambda *args: iter([]))
     return session, candidate
 
 
@@ -228,7 +231,7 @@ def test_stats_groups_and_since(monkeypatch):
 
     class StatsSession(Session):
         def scalars(self, stmt):
-            if "document_deadlines.audit_note LIKE" in str(stmt):
+            if "document_deadlines.audit_by LIKE" in str(stmt):
                 return []
             return self.rows
 
@@ -337,6 +340,9 @@ def test_auto_ai_evidence_current_version():
     record.error = "失败"
     assert not verify._ai_supports(session, candidate, [1])
     record.error = None
+    record.result["items"][0]["evidence"] = "请各单位在2026年9月30日前提交申报材料。"
+    detail.body_text = record.result["items"][0]["evidence"]
+    assert not verify._ai_supports(session, candidate, [1])
     detail.body_text = "正文已改变"
     assert not verify._ai_supports(session, candidate, [1])
 
@@ -348,7 +354,7 @@ def test_auto_ai_evidence_current_version():
         ({"ai_agrees": False}, "规则和 AI 未一致"),
         ({"ai_agrees": None}, "规则和 AI 未一致"),
         ({"kind": "材料报送截止"}, "不是企业申报截止"),
-        ({"reopened": True}, "质检退回，须人工核对"),
+        ({"audit_state": "reopened"}, "同一截止有质检退回，须人工核对"),
     ],
 )
 def test_auto_skips_ineligible(monkeypatch, setup, changes, expected):
@@ -370,6 +376,8 @@ def test_auto_skips_ineligible(monkeypatch, setup, changes, expected):
         )
         | changes
     )
+    for key, value in changes.items():
+        setattr(candidate, key, value)
     monkeypatch.setattr(verify, "queue", lambda *args: [entry])
     monkeypatch.setattr(dedup, "canonical_ids", lambda *args: {1: 1})
     monkeypatch.setattr(dedup, "groups_for", lambda *args: {1: [1]})
@@ -456,10 +464,10 @@ def test_auto_tries_next_candidate_until_one_passes(monkeypatch):
     )
     monkeypatch.setattr(dedup, "canonical_ids", lambda *args: {1: 1})
     monkeypatch.setattr(dedup, "groups_for", lambda *args: {1: [1]})
-    monkeypatch.setattr(verify, "_ai_supports", lambda *args: True)
+    monkeypatch.setattr(verify, "_auto_reason", lambda *args: None)
     calls = []
 
-    def fake_apply(session, item, write=False, reviewer="Claude"):
+    def fake_apply(session, item, write=False, reviewer="Claude", precheck=None):
         calls.append((item["id"], reviewer))
         return "quote 不在当前正文" if item["quote"] == "不在正文" else "通过"
 
@@ -526,14 +534,15 @@ def test_auto_stats_groups_and_reopened(monkeypatch):
         document_id=3,
         audit_state="reopened",
         audit_at=stamp,
-        audit_note=f"{verify.AUTO_REOPEN_TAG}Codex 抽查不一致：原文不符",
+        audit_note="Codex 抽查不一致：原文不符",
+        audit_by=f"Codex{verify.AUTO_REOPEN_TAG}",
     )
 
     class StatsSession(Session):
         def scalars(self, stmt):
             return (
                 [approved, twin, reopened]
-                if "document_deadlines.audit_note LIKE" in str(stmt)
+                if "document_deadlines.audit_by LIKE" in str(stmt)
                 else []
             )
 
@@ -603,3 +612,100 @@ def test_auto_cli_dry_run_ignores_settings_and_key(monkeypatch, capsys):
     lines = capsys.readouterr().out.splitlines()
     assert json.loads(lines[0])["result"] == "通过"
     assert lines[1] == "截止日期自动核对（演练，没写库）：候选 1 条，通过 1 条"
+
+
+@pytest.mark.parametrize(
+    "case,expected",
+    [
+        ("reopened", "同一截止有质检退回，须人工核对"),
+        ("unclear", "同一截止有人标过看不准"),
+        ("times", "同一天有几个不同的时刻"),
+    ],
+)
+def test_auto_group_reasons(setup, monkeypatch, case, expected):
+    session, candidate = setup
+    other = row(id=2, document_id=2, candidate_time=time(17))
+    session.rows.append(other)
+    session.details[2] = SimpleNamespace(status="ok", body_text=BODY)
+    session.scalar = lambda stmt: session.details[2]
+    if case == "reopened":
+        other.audit_state = "reopened"
+    elif case == "unclear":
+        other.verification_unclear_hash = verify.body_hash(BODY)
+    else:
+        other.candidate_time = None
+    monkeypatch.setattr(verify, "_ai_supports", lambda *args: True)
+    assert (
+        verify._auto_reason(session, candidate, [1, 2], date(2026, 9, 29), datetime(2026, 9, 29))
+        == expected
+    )
+
+
+def test_precheck_after_lock(setup, monkeypatch):
+    session, candidate = setup
+
+    def lock(session, row):
+        row.ai_agrees = False
+        return [row]
+
+    monkeypatch.setattr(app, "_lock_candidates", lock)
+    result = verify.apply_one(
+        session,
+        item(),
+        True,
+        precheck=lambda r: verify._auto_reason(
+            session, r, [1], date(2026, 9, 29), datetime(2026, 9, 29)
+        ),
+    )
+    assert result == "规则和 AI 未一致"
+    assert candidate.reviewed_by is None
+
+
+def test_reopen_auto_preserves_long_reason():
+    candidate = row(status="approved", reviewed_by=verify.AUTO_REVIEWER)
+    reason = "退" * 200
+    verify.reopen_group([candidate], reason, "审" * 80, datetime.now(UTC))
+    assert candidate.audit_note == reason
+    assert candidate.audit_by.endswith(verify.AUTO_REOPEN_TAG)
+    assert len(candidate.audit_by) == 80
+
+
+def test_auto_cli_apply(monkeypatch, capsys):
+    from youju import ai
+
+    monkeypatch.setattr(cli, "get_settings", lambda: SimpleNamespace(deadline_auto_verify="1"))
+    monkeypatch.setattr(ai, "get_chat_client", lambda: object())
+    monkeypatch.setattr(cli, "session_factory", lambda: lambda: Session([]))
+    monkeypatch.setattr(
+        verify,
+        "auto_verify",
+        lambda session, today, now, write: iter(
+            [
+                {
+                    "id": 1,
+                    "document_id": 1,
+                    "kind": "企业申报截止",
+                    "date": "2026-09-30",
+                    "time": None,
+                    "result": "通过",
+                }
+            ]
+        ),
+    )
+    assert cli._cmd_deadline_verify_auto(argparse.Namespace(apply=True)) == 0
+    assert "截止日期自动核对：候选 1 条，通过 1 条" in capsys.readouterr().out
+
+
+def test_auto_group_ai_time_and_stale_unclear(setup, monkeypatch):
+    session, candidate = setup
+    candidate.verification_unclear_hash = verify.body_hash("旧正文")
+    monkeypatch.setattr(verify, "_ai_supports", lambda *args: True)
+    monkeypatch.setattr(
+        verify,
+        "_ai_items",
+        lambda *args: iter([(1, {}, date(2026, 9, 30), None)]),
+    )
+    args = (session, candidate, [1], date(2026, 9, 29), datetime(2026, 9, 29))
+    assert verify._auto_reason(*args) == "同一天有几个不同的时刻"
+    monkeypatch.setattr(verify, "_ai_items", lambda *args: iter([]))
+    assert verify._auto_reason(*args) is None

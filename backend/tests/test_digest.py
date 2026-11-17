@@ -255,10 +255,11 @@ def test_digest_reports_auto_verified_and_reopened_waiting(session, world) -> No
     assert (d.reopened, d.reopened_docs) == (1, (world["apply"].id,))
     text = digest_text(d, [])
     assert "24 小时通过 2（其中 AI 自动 1）、驳回 1；" in text
-    assert f"质检退回待人看：1 条（文件 #{world['apply'].id}）" in text
+    assert f"质检退回待人看（没过期的）：1 条（文件 #{world['apply'].id}）" in text
     d.reopened, d.reopened_docs = 12, tuple(range(1, 13))
-    assert "质检退回待人看：12 条（文件 #1、#2、#3、#4、#5、#6、#7、#8、#9、#10等）" in digest_text(
-        d, []
+    assert (
+        "质检退回待人看（没过期的）：12 条（文件 #1、#2、#3、#4、#5、#6、#7、#8、#9、#10等）"
+        in digest_text(d, [])
     )
 
 

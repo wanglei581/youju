@@ -11,7 +11,8 @@ from youju import deadline_excerpts as excerpts
 from youju.models import AICheck, Document, DocumentDeadline, DocumentDetail
 
 AUTO_REVIEWER = "AI 自动（规则与 AI 一致）"
-# 自动核对通过的被退回时，退回原因前面加这一句（退回会清掉核对人），统计自动核对错了几条要用
+# 自动核对通过的被退回时，在退回人（audit_by）后面加这一句（退回会清掉核对人），
+# 统计自动核对错了几条要用
 AUTO_REOPEN_TAG = "（原为 AI 自动通过）"
 
 
@@ -158,7 +159,7 @@ def queue(session, today, days=7):
     return sorted(result, key=lambda r: (r["date"], r["time"] or "", r["id"]))
 
 
-def apply_one(session, item, write=False, reviewer="Claude"):
+def apply_one(session, item, write=False, reviewer="Claude", precheck=None):
     """逐条处理；写入调用方负责提交。"""
     from youju.api.app import _apply_review, _lock_candidates
 
@@ -196,6 +197,10 @@ def apply_one(session, item, write=False, reviewer="Claude"):
     locked = _lock_candidates(session, row)
     if row.status != "pending":
         return "状态已变，不再待核对"
+    if precheck is not None:
+        reason = precheck(row)
+        if reason:
+            return reason
     reopened = _reopened_same_deadline(session, row) if verdict != "unclear" else []
     if reopened:
         # 结果要来自带着当前退回原因的清单：reopened 为 true，现在整组的每条退回原因都在
@@ -298,24 +303,18 @@ def apply_one(session, item, write=False, reviewer="Claude"):
     return "通过并修改日期" if verdict == "corrected" else "通过"
 
 
-def _ai_supports(session, row, members):
-    """同一通知（归并组）里有当前版本、没出错的 AI 截止结果，标的也是企业申报截止、和这条同一天同一
-    时刻，而且 AI 的原句去掉空白后在它那份文件的当前正文里、写着这个日期（D-135）。"""
+def _ai_items(session, members):
+    """同组（members）当前版本（RESULT_VERSION）、没出错的 AI 截止结果里标为企业申报截止的各项：
+    (文件, 原项, 日期, 时刻)；日期、时刻写法不对的跳过。"""
     from youju.ai.deadlines import RESULT_VERSION, stored_items, stored_version
-    from youju.extract.deadlines import same_moment
 
     checks = session.scalars(
-        select(AICheck).where(AICheck.document_id.in_(members), AICheck.task == "deadlines")
+        select(AICheck)
+        .where(AICheck.document_id.in_(members), AICheck.task == "deadlines")
+        .execution_options(populate_existing=True)
     )
     for check in checks:
         if check.error or stored_version(check.result) != RESULT_VERSION:
-            continue
-        detail = session.scalar(
-            select(DocumentDetail)
-            .where(DocumentDetail.document_id == check.document_id)
-            .execution_options(populate_existing=True)
-        )
-        if not detail or detail.status != "ok":
             continue
         for item in stored_items(check.result):
             if not isinstance(item, dict) or item.get("kind") != "企业申报截止":
@@ -325,16 +324,91 @@ def _ai_supports(session, row, members):
                 clock = time.fromisoformat(item["time"]) if item.get("time") else None
             except (ValueError, TypeError, KeyError):
                 continue
-            quote = item.get("evidence")
-            if (
-                same_moment(row.candidate_date, row.candidate_time, day, clock)
-                and isinstance(quote, str)
-                and _without_space(quote)
-                and _without_space(quote) in _without_space(detail.body_text or "")
-                and excerpts.date_in_quote(day, quote)
-            ):
-                return True
+            yield check.document_id, item, day, clock
+
+
+def _ai_supports(session, row, members):
+    """同组有 AI 结果标的也是企业申报截止、和这条同一天同一时刻，而且 AI 的原句去掉空白后在它那份
+    文件的当前正文里、写着这个日期（写了时刻的也写着这个时刻）。"""
+    from youju.extract.deadlines import same_moment
+
+    for document_id, item, day, clock in _ai_items(session, members):
+        if not same_moment(row.candidate_date, row.candidate_time, day, clock):
+            continue
+        detail = session.scalar(
+            select(DocumentDetail)
+            .where(DocumentDetail.document_id == document_id)
+            .execution_options(populate_existing=True)
+        )
+        quote = item.get("evidence")
+        if (
+            detail
+            and detail.status == "ok"
+            and isinstance(quote, str)
+            and _without_space(quote)
+            and _without_space(quote) in _without_space(detail.body_text or "")
+            and excerpts.date_in_quote(day, quote)
+            and (clock is None or _has_time(quote, clock))
+        ):
+            return True
     return False
+
+
+def _auto_reason(session, row, members, today, local_now):
+    """D-135 自动核对除证据校验（apply_one）以外的条件：都满足返回 None，否则返回没通过的原因。
+    调 apply_one 前判断一次；apply_one 锁住同组同一候选、刷新以后再判断一次（precheck），手工另跑
+    命令、和别的任务撞上时，按最新的数据判断。"同一天"指同一归并组（members）里同一类型、同一日期：
+    - 同一天有质检退回的、有人对当前正文标过看不准的，都不自动通过（apply_one 会把同证据副本一起
+      通过并清掉看不准；退回的不挡同一天别的时刻，这一类一旦核过，退回那条就从清单里消失了）；
+    - 同一天待核对候选和 AI 结果的时刻不止一种（没写时刻也算一种）的不通过，免得丢掉"17:00"。"""
+    if row.origin != "rule":
+        return "不是规则候选"
+    if row.ai_agrees is not True:
+        return "规则和 AI 未一致"
+    if row.kind != "企业申报截止":
+        return "不是企业申报截止"
+    if row.candidate_date < today or (
+        row.candidate_date == today
+        and row.candidate_time
+        and row.candidate_time <= local_now.time().replace(tzinfo=None)
+    ):
+        return "截止已过"
+    candidates = list(
+        session.scalars(
+            select(DocumentDeadline)
+            .where(
+                DocumentDeadline.document_id.in_(members),
+                DocumentDeadline.kind == row.kind,
+                DocumentDeadline.candidate_date == row.candidate_date,
+                DocumentDeadline.status == "pending",
+            )
+            .execution_options(populate_existing=True)
+        )
+    )
+    if any(candidate.audit_state == "reopened" for candidate in candidates):
+        return "同一截止有质检退回，须人工核对"
+    for candidate in candidates:
+        if candidate.verification_unclear_hash:
+            detail = session.scalar(
+                select(DocumentDetail)
+                .where(DocumentDetail.document_id == candidate.document_id)
+                .execution_options(populate_existing=True)
+            )
+            if (
+                detail
+                and detail.status == "ok"
+                and candidate.verification_unclear_hash == body_hash(detail.body_text or "")
+            ):
+                return "同一截止有人标过看不准"
+    clocks = {candidate.candidate_time for candidate in candidates}
+    clocks.update(
+        clock for _, _, day, clock in _ai_items(session, members) if day == row.candidate_date
+    )
+    if len(clocks) > 1:
+        return "同一天有几个不同的时刻"
+    if not _ai_supports(session, row, members):
+        return "没有符合条件的 AI 证据"
+    return None
 
 
 def auto_switch(value):
@@ -371,26 +445,13 @@ def auto_verify(session, today, now, write=False):
         row = session.get(DocumentDeadline, item["id"])
         master = masters.get(item["document_id"], item["document_id"])
         key = (master, item["kind"], item["date"], item["time"])
+        members = groups.get(master, [master])
         if row is None:
             result = "截止不存在"
         elif key in passed:
             result = "同一截止已由较早的候选通过"
-        elif item["reopened"]:
-            result = "质检退回，须人工核对"
-        elif item["origin"] != "rule":
-            result = "不是规则候选"
-        elif item["ai_agrees"] is not True:
-            result = "规则和 AI 未一致"
-        elif item["kind"] != "企业申报截止":
-            result = "不是企业申报截止"
-        elif row.candidate_date < today or (
-            row.candidate_date == today
-            and row.candidate_time
-            and row.candidate_time <= local_now.time().replace(tzinfo=None)
-        ):
-            result = "截止已过"
-        elif not _ai_supports(session, row, groups.get(master, [master])):
-            result = "没有符合条件的 AI 证据"
+        elif reason := _auto_reason(session, row, members, today, local_now):
+            result = reason
         else:
             result = apply_one(
                 session,
@@ -402,6 +463,9 @@ def auto_verify(session, today, now, write=False):
                 },
                 write=write,
                 reviewer=AUTO_REVIEWER,
+                precheck=lambda r, members=members: _auto_reason(
+                    session, r, members, today, local_now
+                ),
             )
         if result == "通过":
             passed.add(key)
@@ -488,7 +552,7 @@ def stats(session, since=None):
                 | (
                     (DocumentDeadline.status == "pending")
                     & (DocumentDeadline.audit_state == "reopened")
-                    & DocumentDeadline.audit_note.startswith(AUTO_REOPEN_TAG, autoescape=True)
+                    & DocumentDeadline.audit_by.endswith(AUTO_REOPEN_TAG, autoescape=True)
                 )
             )
             .order_by(DocumentDeadline.id)
@@ -530,20 +594,22 @@ _AUDIT_NOTE_MAX = 200  # document_deadlines.audit_note 的长度
 
 def reopen_group(group, note, reviewer, stamp):
     """调用方先按管理台口径锁定同组，并检查目标仍为 approved。
-    AI 自动核对通过的（D-135），退回原因前面加 AUTO_REOPEN_TAG：退回会清掉核对人，不注明就查不出
-    自动核对错了几条（Codex 抽查退回、管理台退回都走这里）。"""
+    AI 自动核对通过的（D-135）在 audit_by 末尾加 AUTO_REOPEN_TAG：退回会清掉核对人，不注明就查不出
+    自动核对错了几条（Codex 抽查退回、管理台退回都走这里）；退回原因 audit_note 照原样写。"""
     count = 0
     for row in group:
         if row.status != "approved":
             continue
-        row_note = (
-            (AUTO_REOPEN_TAG + note)[:_AUDIT_NOTE_MAX] if row.reviewed_by == AUTO_REVIEWER else note
+        audit_by = (
+            reviewer[: 80 - len(AUTO_REOPEN_TAG)] + AUTO_REOPEN_TAG
+            if row.reviewed_by == AUTO_REVIEWER
+            else reviewer
         )
         row.status = "pending"
         row.reviewed_by = row.reviewed_at = None
         row.approved_date = row.approved_time = None
-        row.audit_state, row.audit_note = "reopened", row_note
-        row.audit_by, row.audit_at = reviewer, stamp
+        row.audit_state, row.audit_note = "reopened", note
+        row.audit_by, row.audit_at = audit_by, stamp
         count += 1
     return count
 

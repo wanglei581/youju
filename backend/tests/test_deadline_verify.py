@@ -616,11 +616,89 @@ def test_auto_verify_twins_and_dry_run(session, candidate):
     )
     session.commit()
     current = datetime(2026, 9, 27, 12)
-    assert any(x["result"] == "通过" for x in verify.auto_verify(session, TODAY, current))
+    assert [(x["id"], x["result"]) for x in verify.auto_verify(session, TODAY, current)] == [
+        (candidate.id, "通过"),
+        (twin.id, "同一截止已由较早的候选通过"),
+    ]
     assert candidate.status == twin.status == "pending"
-    assert any(x["result"] == "通过" for x in verify.auto_verify(session, TODAY, current, True))
+    assert [(x["id"], x["result"]) for x in verify.auto_verify(session, TODAY, current, True)] == [
+        (candidate.id, "通过"),
+        (twin.id, "同一截止已由较早的候选通过"),
+    ]
     assert candidate.reviewed_by == twin.reviewed_by == verify.AUTO_REVIEWER
     assert candidate.verification_quote == candidate.evidence
     assert twin.verification_quote == candidate.evidence.replace("申报截止", "申报  截止")
     counts = verify.stats(session)["auto"]
     assert counts["approved"] >= 1
+
+
+def _auto_ai_record(session, candidate):
+    from youju.ai.deadlines import RESULT_VERSION
+    from youju.models import AICheck
+
+    candidate.ai_agrees = True
+    session.add(
+        AICheck(
+            document_id=candidate.document_id,
+            task="deadlines",
+            model="test",
+            error=None,
+            checked_at=datetime.now(UTC),
+            result={
+                "version": RESULT_VERSION,
+                "items": [
+                    {
+                        "kind": candidate.kind,
+                        "date": "2026-09-30",
+                        "time": None,
+                        "evidence": candidate.evidence,
+                    }
+                ],
+            },
+        )
+    )
+
+
+def test_auto_same_deadline_different_evidence(session, candidate):
+    detail = session.get(DocumentDetail, candidate.document_id)
+    second_quote = "请于2026年9月30日前提交申报材料。"
+    detail.body_text += second_quote
+    second = DocumentDeadline(
+        document_id=candidate.document_id,
+        fingerprint="auto-second",
+        kind=candidate.kind,
+        candidate_date=candidate.candidate_date,
+        evidence=second_quote,
+        confidence="高",
+        status="pending",
+        origin="rule",
+        ai_agrees=True,
+    )
+    session.add(second)
+    _auto_ai_record(session, candidate)
+    session.commit()
+    results = list(verify.auto_verify(session, TODAY, datetime(2026, 9, 27, 12), True))
+    assert [(r["id"], r["result"]) for r in results] == [
+        (candidate.id, "通过"),
+        (second.id, "同一截止已由较早的候选通过"),
+    ]
+
+
+def test_admin_reopens_auto_verified(session, candidate, client, monkeypatch):  # noqa: F811
+    from types import SimpleNamespace
+
+    _auto_ai_record(session, candidate)
+    session.commit()
+    results = list(verify.auto_verify(session, TODAY, datetime(2026, 9, 27, 12), True))
+    assert [(r["id"], r["result"]) for r in results] == [(candidate.id, "通过")]
+    monkeypatch.setattr("youju.api.app.get_settings", lambda: SimpleNamespace(admin_token="secret"))
+    response = client.post(
+        f"/api/admin/deadlines/{candidate.id}/reopen",
+        headers={"X-Admin-Token": "secret"},
+        json={"reviewed_by": "创始人"},
+    )
+    assert response.json() == {"status": "pending"}
+    session.expire_all()
+    assert candidate.audit_note == "人工退回"
+    assert candidate.audit_by.endswith(verify.AUTO_REOPEN_TAG)
+    assert verify.stats(session)["auto"]["reopened"] == 1
