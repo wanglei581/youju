@@ -380,3 +380,17 @@ def test_city_proposal_only_keeps_city_from_page():
     assert onboard._checked(raw, facts).city == "青岛"
     assert onboard._checked({**raw, "city": "济南"}, facts).city == ""
     assert onboard._checked({**raw, "level": "省级"}, facts).city == ""
+
+
+def test_trial_endpoint_reports_unusable_rate_limit_dir(api, monkeypatch) -> None:
+    # 跨进程限速目录用不了：试跑不去敲网站，返回 503 和提示（不是 500）
+    from youju.crawler.fetcher import SharedLimitError
+
+    client, _fetcher = api
+
+    def broken():
+        raise SharedLimitError("目录用不了")
+
+    monkeypatch.setattr(app_module, "_trial_fetcher", broken)
+    res = client.post("/api/admin/sources/trial", headers=HEADERS, json={"url": URL})
+    assert res.status_code == 503 and "限速目录" in res.json()["detail"]

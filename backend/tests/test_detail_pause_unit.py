@@ -1412,7 +1412,7 @@ def test_bare_notice_titled_captcha_does_not_pause(tmp_path):
 
 
 @pytest.mark.parametrize("title", ["安全验证", "人机验证 - 某局", "captcha"])
-def test_short_captcha_title_with_readable_notice_is_read(tmp_path, title):
+def test_short_captcha_title_with_notice_does_not_pause(tmp_path, title):
     # 标题很短、写着安全验证这类验证码的字，正文是正常通知（第十四轮 Codex）：验证码一类的字不直接
     # 算拦截页，详情页上还要看取不取得到正文——取得到，照常读、不停站
     body = "现将有关事项通知如下。各单位要按要求做好申报工作，材料齐全、内容真实。" * 4
@@ -1427,7 +1427,8 @@ def test_short_captcha_title_with_readable_notice_is_read(tmp_path, title):
             return _html_result(url, html)
 
     outcomes = _fetch_outcomes([(1, "https://a.gov.cn/1")], Fake(), 1, pause=_SitePause(path))
-    assert outcomes[1].status != "protected"
+    # 不停网站；这份能不能取到正文照解析原来的规矩（标题带验证码这类字的记读不出）
+    assert outcomes[1].status in ("ok", "parse_empty")
     assert _SitePause(path).expiry("a.gov.cn") is None
     # 明说拦着的（访问被拒绝、拦截）照样直接算拦截页
     blocked = _html_result("https://a.gov.cn/2", _FIREWALL)
@@ -1539,3 +1540,43 @@ def test_login_page_with_navigation_and_plain_title_pauses(tmp_path):
     outcomes = _fetch_outcomes([(1, "https://a.gov.cn/1")], Fake(), 1, pause=_SitePause(path))
     assert outcomes[1].status == "protected"
     assert _SitePause(path).expiry("a.gov.cn") is not None
+
+
+@pytest.mark.parametrize(
+    "html",
+    [
+        "<html><head><title>安全验证</title></head><body><form>验证码：<input name='c'>"
+        "<img src='/c.jpg'><button>确定</button></form></body></html>",
+        "<html><head><title>验证码</title></head><body>请输入下图中的验证码"
+        "<input name='c'><img src='/c.jpg'></body></html>",
+    ],
+    ids=["title-safety-check", "title-captcha"],
+)
+def test_captcha_pages_with_short_titles_pause(tmp_path, html):
+    # 短标题写着安全验证、验证码，正文就是个验证码框（第十五轮独立 Claude）：停站
+    result = _html_result("https://a.gov.cn/1", html)
+    assert detail_service._gate_page(result, result.url) is True
+
+
+@pytest.mark.parametrize(
+    "html",
+    [
+        # 只有一句中标结果加一个附件的采购公告（标题以外的字里有"防火墙"）
+        "<html><head><title>某局防火墙设备采购项目结果公告</title></head><body>"
+        "<div id='zoom'><p>本项目防火墙设备采购的中标供应商为某公司。</p>"
+        "<a href='/f.pdf'>结果公告.pdf</a></div></body></html>",
+        # 只放 PDF 链接、带 noscript 提示的页面（浏览器开着脚本时 noscript 不显示）
+        "<html><head><title>关于开展申报工作的通知</title></head><body>"
+        "<noscript>请开启浏览器的JavaScript功能</noscript>"
+        "<div id='zoom'><p>详见附件。</p><a href='/f.pdf'>通知.pdf</a></div></body></html>",
+        # 只放 PDF 链接的短通知，页头挂着登录小框（整页几乎没字又有密码框）
+        "<html><head><title>关于开展申报工作的通知</title></head><body>"
+        "<div class='top'>用户名<input name='u'>密码<input type='password' name='p'></div>"
+        "<div id='zoom'><p>详见附件。</p><a href='/f.pdf'>通知.pdf</a></div></body></html>",
+    ],
+    ids=["firewall-procurement", "noscript-pdf", "login-widget-pdf"],
+)
+def test_short_notices_with_attachments_are_not_gates(tmp_path, html):
+    # 第十五轮独立 Claude：取得到正文或附件就不算关卡，不停站
+    result = _html_result("https://a.gov.cn/1", html)
+    assert detail_service._gate_page(result, result.url) is False

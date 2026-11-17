@@ -35,7 +35,7 @@ from youju.crawler.adapters import (
     jpaas_tree_categories,
     jpaas_xxgk_groups,
 )
-from youju.crawler.fetcher import FetchResult, resolve_host
+from youju.crawler.fetcher import FetchResult, SharedLimitError, resolve_host
 from youju.crawler.urls import page_dir
 from youju.govsites import colrules
 from youju.govsites.attribution import (  # noqa: F401 - level_*、_own_branch 原在本模块，保留旧名字
@@ -576,6 +576,8 @@ class Inventory:
                     running[prov] -= 1
                     try:
                         children = fut.result()
+                    except SharedLimitError:
+                        raise  # 跨进程限速目录用不了：整批停下（和 verify 一样），不记成各地出错
                     except Exception:  # 单个地方出错不影响别处
                         log.exception("处理 %s 的一个行政区时出错", prov)
                         continue
@@ -586,6 +588,8 @@ class Inventory:
         """处理一个行政区；出了意外也记一行"出错"、照常排下级，整棵子树不会从结果里消失。"""
         try:
             return self._process_inner(div, found)
+        except SharedLimitError:
+            raise
         except Exception as exc:  # noqa: BLE001 - 单个行政区的意外不影响别处
             log.exception("处理 %s %s 时出错", div.province, div.name)
             row = PortalRow(
@@ -685,6 +689,8 @@ class Inventory:
             return self._enqueue(div, children, child_found)
         try:
             depts = self._find_depts(div, home, pages, portal_pages=portal_pages)
+        except SharedLimitError:
+            raise
         except Exception as exc:  # noqa: BLE001 - 部门出意外不影响下级照常排队
             log.exception("找 %s %s 的部门时出错", div.province, div.name)
             row.reason = f"找部门时出错：{exc.__class__.__name__}"
@@ -1011,6 +1017,8 @@ class Inventory:
         """信息公开平台里的部门目录页（deptdir.py），当导航页用；出了意外只是不找目录，部门照常认。"""
         try:
             extra = find_directories(self, div, home, pages)
+        except SharedLimitError:
+            raise
         except Exception:  # noqa: BLE001 - 找目录出意外不影响这个行政区别的部门
             log.exception("找 %s %s 的部门目录时出错", div.province, div.name)
             return []

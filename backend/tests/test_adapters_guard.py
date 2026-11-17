@@ -842,3 +842,20 @@ def test_trial_report_marks_columns_read_via_api():
     assert status.startswith("试跑可读") and "经接口读" in status
     col.reason = ""
     assert import_status(col) == "试跑可读（全国覆盖 v1，未启用）"
+
+
+def test_inventory_stops_on_unusable_rate_limit_dir(monkeypatch):
+    # 跨进程限速目录用不了（SharedLimitError）：盘点整批停下（和 verify 一样），不记成各地"出错"接着跑
+    from youju.crawler.fetcher import SharedLimitError
+    from youju.govsites.divisions import Division, DivisionIndex, parse_tree
+    from youju.govsites.inventory import Inventory
+
+    inv = Inventory(DivisionIndex(parse_tree({})), _Cache({}), provinces=[])
+
+    def broken(div, found):
+        raise SharedLimitError("目录用不了")
+
+    monkeypatch.setattr(inv, "_process_inner", broken)
+    div = Division("110000", "北京市", "直辖市", "省级", "北京", None, None, None)
+    with pytest.raises(SharedLimitError):
+        inv._process(div, None)

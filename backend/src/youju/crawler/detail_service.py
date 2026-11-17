@@ -40,7 +40,6 @@ from youju.crawler.fetcher import (
     FetchResult,
     PoliteFetcher,
     SharedLimitError,
-    bare_page,
     bom_codec,
     decode_text,
     html_gate,
@@ -48,6 +47,7 @@ from youju.crawler.fetcher import (
     robots_gate,
     short_title_parts,
     text_gate,
+    title_blocked,
 )
 from youju.crawler.pdf import extract_pdf_text
 from youju.crawler.titles import clean_title, completed_title, is_truncated
@@ -202,11 +202,24 @@ def _html_page_gate(text: str, url: str) -> bool:
     平台的拦截页、整页几乎没字的拦截页（html_gate）。html_gate 说是登录页、验证页的，详情页上还要过
     _login_page（整页几乎没字的也一样：链接少的短通知不少，留言区脚本里带着验证码）。详情页解析认出的
     验证码这类字不在这里判（正常通知讲验证码使用要求、标题带着这些字的都不算），见 _fetch_one。"""
-    reason = html_gate(_without_throttle_dialogs(text, url))
+    cleaned = _without_throttle_dialogs(text, url)
+    reason = html_gate(cleaned)
+    if reason == "拦截页" and not title_blocked(cleaned):
+        # 只靠标题以外的字认出来的拦截页（整页几乎没字、不到 300 字里写着防火墙、拦截这类字）：去掉
+        # 标题解析，取得到正文或附件就不算（"防火墙设备采购结果公告"这类只有一句话加附件的短通知）
+        parsed = parse_detail(_untitled(text), url)
+        return parsed.failure_reason == "防护页或验证码" or not (
+            parsed.raw_body or parsed.attachments
+        )
     if reason and reason != "需要登录或验证码":
         return True
     # 登录页、验证页详情页另有一套（不靠 html_gate 先认出：带导航、标题不像登录的登录页也有）
     return _login_page(text, url)
+
+
+def _untitled(text: str) -> str:
+    """去掉 <title>：详情页的标题就是文章标题，解析判防护页时不能让它带着的验证码这类字作数。"""
+    return re.sub(r"<title\b[^>]*>.*?</title\s*>", " ", text, count=1, flags=re.S | re.I)
 
 
 def _without_throttle_dialogs(text: str, url: str) -> str:
@@ -245,10 +258,9 @@ def _login_page(text: str, url: str) -> bool:
     - 先看有没有信号：密码框，或者验证码提示——很短的标题段（标题拆掉站名以后 10 个字以内）、
       placeholder 这类属性里写着验证码、安全验证这类字，或者正文里看得见的"请输入验证码"这类整句
       （标题、脚本、核实过的站内搜索限流弹窗都不算）；没有信号的不是；
-    - 整页几乎没字又有密码框：这一页就是登录表单；
-    - 别的去掉标题解析：正文开头就写着验证码这类字（解析判防护页），解析出的"正文"很短（不到 300
-      字）、开头是用户名、密码这类登录表单的字（有密码框时；表单放在 .content、#zoom 里时解析会把它
-      当正文），或者取不到正文、附件，才算。
+    - 有信号的去掉标题解析：正文开头就写着验证码这类字（解析判防护页），解析出的"正文"很短（不到
+      300 字）、里面是用户名、密码这类登录表单的字（有密码框时；表单放在 .content、#zoom 里时解析会
+      把它当正文），或者取不到正文、附件，才算（只放 PDF 链接的短通知页头挂着登录小框不算）。
     详情页的标题就是文章标题（"关于启用短信验证码登录的通知"），页头的登录小框、限流弹窗、留言区的
     验证码也常见，只凭这些不停整个网站。"""
     from youju.govsites.platform import _CAPTCHA, _PASSWORD, _TITLE
@@ -265,10 +277,7 @@ def _login_page(text: str, url: str) -> bool:
     )
     if not (password or captcha):
         return False
-    if password and bare_page(text):
-        return True
-    untitled = re.sub(r"<title\b[^>]*>.*?</title\s*>", " ", text, count=1, flags=re.S | re.I)
-    parsed = parse_detail(untitled, url)
+    parsed = parse_detail(_untitled(text), url)
     if parsed.failure_reason == "防护页或验证码":
         return True
     body = parsed.raw_body or ""

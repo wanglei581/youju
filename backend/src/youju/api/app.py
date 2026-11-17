@@ -2351,10 +2351,17 @@ def source_trial(
             raise HTTPException(status_code=429, detail="同一网站 10 秒内只试跑一次，请稍后再试")
         _trial_hosts[host] = now
     session.commit()  # 抓取可能要几十秒，期间不占着数据库事务
+    from youju.crawler.fetcher import SharedLimitError
+
     client = get_chat_client()
     try:
         with _trial_fetcher() as fetcher:
             result = trial(url, fetcher, client, want_ai_rule=body.ai_rule)
+    except SharedLimitError:
+        # 跨进程限速目录用不了（YOUJU_RATE_LIMIT_DIR）：不在没有整机限速的情况下去敲网站
+        raise HTTPException(
+            status_code=503, detail="跨进程限速目录用不了，暂时不能试跑，请联系运维检查"
+        ) from None
     finally:
         if client is not None:
             try:

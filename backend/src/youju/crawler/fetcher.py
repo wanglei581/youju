@@ -153,6 +153,14 @@ def short_title_parts(title: str) -> str:
     return " ".join(part for part in parts if 0 < len(part) <= 10)
 
 
+def title_blocked(html: str) -> bool:
+    """标题拆掉站名以后很短的那一段写着拦截、访问被拒绝这类明说拦着的字（"访问被拒绝""网站防火墙"）。"""
+    from youju.govsites.platform import _TITLE
+
+    m = _TITLE.search(html[:200000])
+    return bool(m and _BLOCK_WORDS.search(short_title_parts(unescape_html(m.group(1)))))
+
+
 def html_gate(html: str) -> str | None:
     """网页是不是关卡（robots.txt 和详情页共用）：平台的拦截页照 challenge_marker；整页几乎没字、
     又写着拦截、访问被拒绝、访问过于频繁这类明说拦着的字（_BLOCK_WORDS，防火墙回 200 的拦截页多是
@@ -170,9 +178,9 @@ def html_gate(html: str) -> str | None:
     m = _TITLE.search(head)
     short = short_title_parts(unescape_html(m.group(1))) if m else ""
     bare = bare_page(html)
-    # 看得见的字：去掉标题（标题只看很短的那一段）、脚本、样式、标签（属性跟着去掉），留言区脚本里的
-    # onCaptcha()、脚本名里的 captcha 都不算
-    visible = re.sub(r"<(script|style|title)\b.*?</\1\s*>", " ", head, flags=re.S | re.I)
+    # 看得见的字：去掉标题（标题只看很短的那一段）、脚本、样式、noscript（浏览器开着脚本时不显示）、
+    # 标签（属性跟着去掉），留言区脚本里的 onCaptcha()、脚本名里的 captcha 都不算
+    visible = re.sub(r"<(script|style|title|noscript)\b.*?</\1\s*>", " ", head, flags=re.S | re.I)
     visible = re.sub(r"\s+", " ", unescape_html(re.sub(r"<[^>]+>", " ", visible))).strip()
     # 验证码提示：正文里、placeholder 这类属性里写着"请输入验证码"这类整句，或者很短的标题段写着
     # 验证码、安全验证（单个"验证码"这类字太常见，"启用短信验证码登录的通知"不算）
