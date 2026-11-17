@@ -560,3 +560,67 @@ def test_spotcheck_with_a_long_quote_and_note_still_reopens(session, candidate):
     session.commit()
     assert candidate.status == "pending" and candidate.audit_state == "reopened"
     assert len(candidate.audit_note) <= 200 and candidate.audit_note.startswith("Codex 抽查不一致")
+
+
+def test_auto_verify_twins_and_dry_run(session, candidate):
+    from youju.ai.deadlines import RESULT_VERSION
+    from youju.models import AICheck
+
+    doc = session.get(Document, candidate.document_id)
+    twin_doc = _doc(doc.source, 99, doc.title, TODAY)
+    session.add(twin_doc)
+    session.flush()
+    twin = DocumentDeadline(
+        document_id=twin_doc.id,
+        fingerprint="auto-twin",
+        kind=candidate.kind,
+        candidate_date=candidate.candidate_date,
+        evidence=candidate.evidence,
+        confidence="高",
+        status="pending",
+        origin="rule",
+        ai_agrees=True,
+    )
+    candidate.ai_agrees = True
+    session.add_all(
+        [
+            DocumentMerge(
+                duplicate_id=twin_doc.id, canonical_id=doc.id, match_key="auto", active=True
+            ),
+            DocumentDetail(
+                document_id=twin_doc.id,
+                body_text=BODY.replace("申报截止", "申报  截止"),
+                status="ok",
+                fetched_at=datetime.now(UTC),
+            ),
+            twin,
+            AICheck(
+                document_id=doc.id,
+                task="deadlines",
+                model="test",
+                error=None,
+                checked_at=datetime.now(UTC),
+                result={
+                    "version": RESULT_VERSION,
+                    "items": [
+                        {
+                            "kind": candidate.kind,
+                            "date": "2026-09-30",
+                            "time": None,
+                            "evidence": candidate.evidence,
+                        }
+                    ],
+                },
+            ),
+        ]
+    )
+    session.commit()
+    current = datetime(2026, 9, 27, 12)
+    assert any(x["result"] == "通过" for x in verify.auto_verify(session, TODAY, current))
+    assert candidate.status == twin.status == "pending"
+    assert any(x["result"] == "通过" for x in verify.auto_verify(session, TODAY, current, True))
+    assert candidate.reviewed_by == twin.reviewed_by == verify.AUTO_REVIEWER
+    assert candidate.verification_quote == candidate.evidence
+    assert twin.verification_quote == candidate.evidence.replace("申报截止", "申报  截止")
+    counts = verify.stats(session)["auto"]
+    assert counts["approved"] >= 1

@@ -8,7 +8,9 @@ from datetime import UTC, date, datetime, time, timedelta, timezone
 from sqlalchemy import select
 
 from youju import deadline_excerpts as excerpts
-from youju.models import Document, DocumentDeadline, DocumentDetail
+from youju.models import AICheck, Document, DocumentDeadline, DocumentDetail
+
+AUTO_REVIEWER = "AI 自动（规则与 AI 一致）"
 
 
 def body_hash(body):
@@ -154,7 +156,7 @@ def queue(session, today, days=7):
     return sorted(result, key=lambda r: (r["date"], r["time"] or "", r["id"]))
 
 
-def apply_one(session, item, write=False):
+def apply_one(session, item, write=False, reviewer="Claude"):
     """逐条处理；写入调用方负责提交。"""
     from youju.api.app import _apply_review, _lock_candidates
 
@@ -284,14 +286,106 @@ def apply_one(session, item, write=False):
             for d in locked
             if d.status == "pending" and d.audit_state == "reopened"
         }
-        _apply_review(row, locked, "approved", "Claude", stamp, day, clock)
+        _apply_review(row, locked, "approved", reviewer, stamp, day, clock)
         for item_row in locked:
-            if item_row.reviewed_by == "Claude" and item_row.reviewed_at == stamp:
+            if item_row.reviewed_by == reviewer and item_row.reviewed_at == stamp:
                 item_row.verification_quote = twin_quotes[item_row.id]
                 item_row.verification_corrected = verdict == "corrected"
                 if item_row.id in reopen_notes:
                     item_row.verification_unclear_note = reopen_notes[item_row.id]
     return "通过并修改日期" if verdict == "corrected" else "通过"
+
+
+def _ai_supports(session, row, members):
+    from youju.ai.deadlines import RESULT_VERSION, stored_items, stored_version
+    from youju.extract.deadlines import same_moment
+
+    checks = session.scalars(
+        select(AICheck).where(AICheck.document_id.in_(members), AICheck.task == "deadlines")
+    )
+    for check in checks:
+        if check.error or stored_version(check.result) != RESULT_VERSION:
+            continue
+        detail = session.scalar(
+            select(DocumentDetail)
+            .where(DocumentDetail.document_id == check.document_id)
+            .execution_options(populate_existing=True)
+        )
+        if not detail or detail.status != "ok":
+            continue
+        for item in stored_items(check.result):
+            if not isinstance(item, dict) or item.get("kind") != "企业申报截止":
+                continue
+            try:
+                day = date.fromisoformat(item["date"])
+                clock = time.fromisoformat(item["time"]) if item.get("time") else None
+            except (ValueError, TypeError, KeyError):
+                continue
+            quote = item.get("evidence")
+            if (
+                same_moment(row.candidate_date, row.candidate_time, day, clock)
+                and isinstance(quote, str)
+                and _without_space(quote)
+                and _without_space(quote) in _without_space(detail.body_text or "")
+                and excerpts.date_in_quote(day, quote)
+            ):
+                return True
+    return False
+
+
+def auto_verify(session, today, now, write=False):
+    """逐条返回结果；每条单独提交或回滚，演练不留下修改。"""
+    from youju.dedup import canonical_ids, groups_for
+
+    items = sorted(queue(session, today, 7), key=lambda item: item["id"])
+    masters = canonical_ids(session, [item["document_id"] for item in items])
+    master_ids = {masters.get(item["document_id"], item["document_id"]) for item in items}
+    groups = groups_for(session, list(master_ids)) if items else {}
+    seen = set()
+    local_now = now.astimezone(timezone(timedelta(hours=8))) if now.tzinfo else now
+    for item in items:
+        row = session.get(DocumentDeadline, item["id"])
+        master = masters.get(item["document_id"], item["document_id"])
+        key = (master, item["kind"], item["date"], item["time"])
+        if item["origin"] == "rule" and key in seen:
+            result = "同一截止已有较早候选"
+        elif item["reopened"]:
+            result = "质检退回，须人工核对"
+        elif item["origin"] != "rule":
+            result = "不是规则候选"
+        elif item["ai_agrees"] is not True:
+            result = "规则和 AI 未一致"
+        elif item["kind"] != "企业申报截止":
+            result = "不是企业申报截止"
+        elif row.candidate_date < today or (
+            row.candidate_date == today
+            and row.candidate_time
+            and row.candidate_time <= local_now.time().replace(tzinfo=None)
+        ):
+            result = "截止已过"
+        elif not _ai_supports(session, row, groups.get(master, [master])):
+            result = "没有符合条件的 AI 证据"
+        else:
+            result = apply_one(
+                session,
+                {
+                    "id": item["id"],
+                    "verdict": "confirmed",
+                    "quote": item["evidence"],
+                    "body_sha256": item["body_sha256"],
+                },
+                write=write,
+                reviewer=AUTO_REVIEWER,
+            )
+        if item["origin"] == "rule":
+            seen.add(key)
+        if write:
+            session.commit()
+        else:
+            session.rollback()
+        yield {k: item[k] for k in ("id", "document_id", "kind", "date", "time")} | {
+            "result": result
+        }
 
 
 def stats(session, since=None):
@@ -357,6 +451,51 @@ def stats(session, since=None):
     for counts in result.values():
         n = counts["confirmed"] + counts["corrected"]
         counts["accuracy"] = counts["confirmed"] / n if n else None
+    auto_rows = list(
+        session.scalars(
+            select(DocumentDeadline)
+            .where(
+                (
+                    (DocumentDeadline.status == "approved")
+                    & (DocumentDeadline.reviewed_by == AUTO_REVIEWER)
+                )
+                | (
+                    (DocumentDeadline.status == "pending")
+                    & (DocumentDeadline.audit_state == "reopened")
+                    & DocumentDeadline.audit_note.startswith("Codex 抽查不一致（原为 AI 自动通过）")
+                )
+            )
+            .order_by(DocumentDeadline.id)
+        )
+    )
+    auto_masters = canonical_ids(session, [r.document_id for r in auto_rows])
+    auto_groups = {}
+    for row in auto_rows:
+        stamp = row.reviewed_at if row.status == "approved" else row.audit_at
+        if since and (
+            stamp is None
+            or stamp
+            < datetime.combine(since, time.min, timezone(timedelta(hours=8))).astimezone(UTC)
+        ):
+            continue
+        key = (
+            auto_masters.get(row.document_id, row.document_id),
+            stamp,
+            row.kind,
+            row.candidate_date,
+            row.candidate_time,
+            row.status,
+        )
+        auto_groups.setdefault(key, []).append(row)
+    result["auto"] = {
+        "approved": sum(g[0].status == "approved" for g in auto_groups.values()),
+        "spotchecked": sum(
+            g[0].status == "approved"
+            and any((r.audit_note or "").startswith("Codex 抽查一致") for r in g)
+            for g in auto_groups.values()
+        ),
+        "reopened": sum(g[0].status == "pending" for g in auto_groups.values()),
+    }
     return result
 
 
@@ -386,7 +525,7 @@ def _verified_groups(session, since, until):
             select(DocumentDeadline)
             .where(
                 DocumentDeadline.status == "approved",
-                DocumentDeadline.reviewed_by == "Claude",
+                DocumentDeadline.reviewed_by.in_(("Claude", AUTO_REVIEWER)),
                 DocumentDeadline.reviewed_at >= since,
                 DocumentDeadline.reviewed_at <= until,
             )
@@ -399,6 +538,7 @@ def _verified_groups(session, since, until):
         key = (
             masters.get(r.document_id, r.document_id),
             r.reviewed_at,
+            r.reviewed_by,
             r.kind,
             r.candidate_date,
             r.candidate_time,
@@ -478,6 +618,7 @@ def _sample_item(session, row):
         total += len(sentence)
     return dict(
         id=row.id,
+        reviewed_by=row.reviewed_by,
         title=doc.title,
         url=doc.url,
         kind=row.kind,
@@ -497,11 +638,16 @@ def sample(session, days=7, rate=0.05, minimum=5, seed=None, now=None):
     now = now or datetime.now(UTC)
     groups = _verified_groups(session, now - timedelta(days=days), now)
     # 先选组再读取正文；不可用的组保留提示，避免悄悄改变抽样概率。
-    chosen = random.Random(seed).sample(
-        groups, min(len(groups), max(minimum, math.ceil(len(groups) * rate)))
-    )
+    rng = random.Random(seed)
+    chosen = []
+    for reviewer in ("Claude", AUTO_REVIEWER):
+        stratum = [group for group in groups if group[0].reviewed_by == reviewer]
+        chosen.extend(
+            rng.sample(stratum, min(len(stratum), max(minimum, math.ceil(len(stratum) * rate))))
+        )
     return [
-        _sample_item(session, group[0]) or {"id": group[0].id, "error": "当前正文不可用"}
+        _sample_item(session, group[0])
+        or {"id": group[0].id, "reviewed_by": group[0].reviewed_by, "error": "当前正文不可用"}
         for group in chosen
     ]
 
@@ -534,7 +680,7 @@ def spotcheck(session, item, write=False, now=None):
     if row is None:
         return done("截止不存在")
     group = _lock_group(session, row)
-    if row.status != "approved" or row.reviewed_by != "Claude":
+    if row.status != "approved" or row.reviewed_by not in ("Claude", AUTO_REVIEWER):
         return done("状态或核对人已变")
     stmt = select(DocumentDetail).where(DocumentDetail.document_id == row.document_id)
     detail = session.scalar(
@@ -598,7 +744,12 @@ def spotcheck(session, item, write=False, now=None):
     # 免得 200 字的上限把存疑原因截掉
     flagged = next((x.audit_note for x in group if x.audit_state == "flagged" and x.audit_note), "")
     shown = (quote[:100] + "…") if quote and len(quote) > 100 else quote
-    reason = f"Codex 抽查不一致：原文{shown or '未找到这一类截止日期'}"
+    prefix = (
+        "Codex 抽查不一致（原为 AI 自动通过）"
+        if row.reviewed_by == AUTO_REVIEWER
+        else "Codex 抽查不一致"
+    )
+    reason = f"{prefix}：原文{shown or '未找到这一类截止日期'}"
     if flagged:
         reason += f"；原质检存疑：{flagged}"
     if item["note"].strip():

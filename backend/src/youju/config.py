@@ -95,6 +95,8 @@ class Settings(BaseSettings):
     ai_request_extra: dict = {}
     # 后台核对（截止日期交叉抽取、质检）用的模型；空值表示和 ai_model 相同。调用量大，适合便宜的模型
     ai_background_model: str = ""
+    # 规则与 AI 一致时自动核对近期企业申报截止，默认关闭。
+    deadline_auto_verify: bool = False
     # 对外的 AI（政策解读、条款对照）单独的调用地址、密钥、模型和附加参数（10/17 创始人确认）：
     # 对外 AI 走腾讯云开发（和微信「深度合成 > AI 问答」类目的算法合作协议、网信办登记材料一致），
     # 后台核对继续直连 DeepSeek 官方。地址、密钥、模型三项要么都不填（沿用上面后台的），要么一起填；

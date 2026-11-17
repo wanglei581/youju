@@ -644,6 +644,37 @@ def _cmd_deadline_verify_apply(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_deadline_verify_auto(args: argparse.Namespace) -> int:
+    from collections import Counter
+
+    from youju.api.v1 import now
+    from youju.deadline_verify import auto_verify
+
+    if args.apply:
+        if not get_settings().deadline_auto_verify:
+            print("自动核对开关未开启，跳过")
+            return 0
+        from youju.ai import get_chat_client
+
+        if get_chat_client() is None:
+            print("没有配置 AI 密钥，跳过自动核对")
+            return 0
+    current = now()
+    counts = Counter()
+    with session_factory()() as session:
+        for item in auto_verify(session, current.date(), current, write=args.apply):
+            counts[item["result"]] += 1
+            print(json.dumps(item, ensure_ascii=False))
+    passed = counts.pop("通过", 0)
+    print(
+        json.dumps(
+            {"候选": passed + sum(counts.values()), "通过": passed, "未通过": dict(counts)},
+            ensure_ascii=False,
+        )
+    )
+    return 0
+
+
 def _cmd_deadline_verify_sample(args: argparse.Namespace) -> int:
     from youju.deadline_verify import sample
 
@@ -694,6 +725,12 @@ def _cmd_deadline_verify_stats(args: argparse.Namespace) -> int:
                 f"{label}：确认 {counts['confirmed']}，修正 {counts['corrected']}，"
                 f"看不准 {counts['unclear']}，准确率 {accuracy}"
             )
+    if not args.json:
+        counts = result["auto"]
+        print(
+            f"AI 自动通过：现存 {counts['approved']}，抽查一致 {counts['spotchecked']}，"
+            f"抽查退回 {counts['reopened']}"
+        )
     return 0
 
 
@@ -2961,6 +2998,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--apply", action="store_true")
     p.set_defaults(func=_cmd_deadline_verify_apply)
 
+    p = sub.add_parser("deadline-verify-auto", help="自动核对规则和 AI 一致的截止")
+    p.add_argument("--apply", action="store_true")
+    p.set_defaults(func=_cmd_deadline_verify_auto)
     p = sub.add_parser("deadline-verify-sample", help="生成独立抽查清单")
     p.add_argument("--days", type=int, default=7)
     p.add_argument("--rate", type=float, default=0.05)

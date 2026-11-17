@@ -225,7 +225,14 @@ def test_stats_groups_and_since(monkeypatch):
         ),
     ]
     monkeypatch.setattr(dedup, "canonical_ids", lambda session, ids: {2: 1})
-    result = verify.stats(Session(rows), date(2026, 11, 12))
+
+    class StatsSession(Session):
+        def scalars(self, stmt):
+            if "document_deadlines.audit_note LIKE" in str(stmt):
+                return []
+            return self.rows
+
+    result = verify.stats(StatsSession(rows), date(2026, 11, 12))
     assert result["total"] == dict(confirmed=1, corrected=1, unclear=1, accuracy=0.5)
     assert result["ai_agrees"] == dict(confirmed=0, corrected=1, unclear=0, accuracy=0.0)
     assert result["other"] == dict(confirmed=1, corrected=0, unclear=1, accuracy=1.0)
@@ -296,3 +303,231 @@ def test_reopen_reason_with_semicolons_still_matches(setup, monkeypatch):
     candidate.status, candidate.reviewed_by = "pending", None
     candidate.audit_note = "日期对"
     assert "等下一份清单" in verify.apply_one(session, result, True)
+
+
+def test_auto_ai_evidence_current_version():
+    from youju.ai.deadlines import RESULT_VERSION
+
+    candidate = row()
+    record = SimpleNamespace(
+        document_id=1,
+        error=None,
+        result={
+            "version": RESULT_VERSION,
+            "items": [dict(kind="企业申报截止", date="2026-09-30", time="17:00", evidence=QUOTE)],
+        },
+    )
+    detail = SimpleNamespace(status="ok", body_text=BODY)
+
+    class EvidenceSession:
+        def scalars(self, stmt):
+            return [record]
+
+        def scalar(self, stmt):
+            return detail
+
+    session = EvidenceSession()
+    assert verify._ai_supports(session, candidate, [1])
+    record.result["items"][0]["kind"] = "材料报送截止"
+    assert not verify._ai_supports(session, candidate, [1])
+    record.result["items"][0]["kind"] = "企业申报截止"
+    record.result["version"] = RESULT_VERSION - 1
+    assert not verify._ai_supports(session, candidate, [1])
+    record.result["version"] = RESULT_VERSION
+    record.error = "失败"
+    assert not verify._ai_supports(session, candidate, [1])
+    record.error = None
+    detail.body_text = "正文已改变"
+    assert not verify._ai_supports(session, candidate, [1])
+
+
+@pytest.mark.parametrize(
+    ("changes", "expected"),
+    [
+        ({"origin": "ai"}, "不是规则候选"),
+        ({"ai_agrees": False}, "规则和 AI 未一致"),
+        ({"ai_agrees": None}, "规则和 AI 未一致"),
+        ({"kind": "材料报送截止"}, "不是企业申报截止"),
+        ({"reopened": True}, "质检退回，须人工核对"),
+    ],
+)
+def test_auto_skips_ineligible(monkeypatch, setup, changes, expected):
+    from youju import dedup
+
+    session, candidate = setup
+    entry = (
+        dict(
+            id=1,
+            document_id=1,
+            kind=candidate.kind,
+            date="2026-09-30",
+            time="17:00",
+            origin="rule",
+            ai_agrees=True,
+            reopened=False,
+            evidence=QUOTE,
+            body_sha256=verify.body_hash(BODY),
+        )
+        | changes
+    )
+    monkeypatch.setattr(verify, "queue", lambda *args: [entry])
+    monkeypatch.setattr(dedup, "canonical_ids", lambda *args: {1: 1})
+    monkeypatch.setattr(dedup, "groups_for", lambda *args: {1: [1]})
+    result = list(verify.auto_verify(session, date(2026, 9, 29), datetime(2026, 9, 29)))
+    assert result[0]["result"] == expected
+    assert candidate.reviewed_by is None
+
+
+def test_auto_apply_and_expired(monkeypatch, setup):
+    from youju import dedup
+
+    session, candidate = setup
+    session.commit = lambda: None
+    entry = dict(
+        id=1,
+        document_id=1,
+        kind=candidate.kind,
+        date="2026-09-30",
+        time="17:00",
+        origin="rule",
+        ai_agrees=True,
+        reopened=False,
+        evidence=QUOTE,
+        body_sha256=verify.body_hash(BODY),
+    )
+    monkeypatch.setattr(verify, "queue", lambda *args: [entry])
+    monkeypatch.setattr(dedup, "canonical_ids", lambda *args: {1: 1})
+    monkeypatch.setattr(dedup, "groups_for", lambda *args: {1: [1]})
+    monkeypatch.setattr(verify, "_ai_supports", lambda *args: True)
+    assert (
+        list(verify.auto_verify(session, date(2026, 9, 30), datetime(2026, 9, 30, 18)))[0]["result"]
+        == "截止已过"
+    )
+    assert (
+        list(verify.auto_verify(session, date(2026, 9, 29), datetime(2026, 9, 29)))[0]["result"]
+        == "通过"
+    )
+    assert candidate.reviewed_by is None
+    assert (
+        list(verify.auto_verify(session, date(2026, 9, 29), datetime(2026, 9, 29), True))[0][
+            "result"
+        ]
+        == "通过"
+    )
+    assert candidate.reviewed_by == verify.AUTO_REVIEWER
+    assert candidate.verification_quote == BODY
+
+
+def test_auto_cli_gates(monkeypatch, capsys):
+    from youju import ai
+
+    monkeypatch.setattr(cli, "session_factory", lambda: pytest.fail("不应打开数据库"))
+    monkeypatch.setattr(cli, "get_settings", lambda: SimpleNamespace(deadline_auto_verify=False))
+    assert cli._cmd_deadline_verify_auto(argparse.Namespace(apply=True)) == 0
+    assert "开关" in capsys.readouterr().out
+    monkeypatch.setattr(cli, "get_settings", lambda: SimpleNamespace(deadline_auto_verify=True))
+    monkeypatch.setattr(ai, "get_chat_client", lambda: None)
+    assert cli._cmd_deadline_verify_auto(argparse.Namespace(apply=True)) == 0
+    assert "密钥" in capsys.readouterr().out
+
+
+def test_auto_stats_groups_and_reopened(monkeypatch):
+    from youju import dedup
+
+    stamp = datetime(2026, 11, 12, tzinfo=UTC)
+    approved = row(
+        status="approved",
+        reviewed_by=verify.AUTO_REVIEWER,
+        reviewed_at=stamp,
+        audit_note="Codex 抽查一致：已核对",
+    )
+    twin = row(
+        id=2,
+        document_id=2,
+        status="approved",
+        reviewed_by=verify.AUTO_REVIEWER,
+        reviewed_at=stamp,
+        audit_note=None,
+    )
+    reopened = row(
+        id=3,
+        document_id=3,
+        audit_state="reopened",
+        audit_at=stamp,
+        audit_note="Codex 抽查不一致（原为 AI 自动通过）：原文不符",
+    )
+
+    class StatsSession(Session):
+        def scalars(self, stmt):
+            return (
+                [approved, twin, reopened]
+                if "document_deadlines.audit_note LIKE" in str(stmt)
+                else []
+            )
+
+    monkeypatch.setattr(dedup, "canonical_ids", lambda session, ids: {2: 1})
+    result = verify.stats(StatsSession([]))
+    assert result["total"]["confirmed"] == 0
+    assert result["auto"] == {"approved": 1, "spotchecked": 1, "reopened": 1}
+
+
+def test_auto_reuses_quote_validation(monkeypatch, setup):
+    from youju import dedup
+
+    session, candidate = setup
+    entry = dict(
+        id=1,
+        document_id=1,
+        kind=candidate.kind,
+        date="2026-09-30",
+        time="17:00",
+        origin="rule",
+        ai_agrees=True,
+        reopened=False,
+        evidence="不存在的原句2026年9月30日17:00",
+        body_sha256=verify.body_hash(BODY),
+    )
+    monkeypatch.setattr(verify, "queue", lambda *args: [entry])
+    monkeypatch.setattr(dedup, "canonical_ids", lambda *args: {})
+    monkeypatch.setattr(dedup, "groups_for", lambda session, ids: {1: [1]})
+    monkeypatch.setattr(verify, "_ai_supports", lambda *args: True)
+
+    def run():
+        return list(verify.auto_verify(session, date(2026, 9, 29), datetime(2026, 9, 29)))[0][
+            "result"
+        ]
+
+    assert run() == "quote 不在当前正文"
+    text = "请各单位在2026年9月30日前提交申报材料。"
+    session.details[1].body_text = text
+    entry.update(evidence=text, body_sha256=verify.body_hash(text))
+    assert run() == "原句里没有时间"
+    assert candidate.reviewed_by is None
+
+
+def test_auto_cli_dry_run_ignores_settings_and_key(monkeypatch, capsys):
+    from youju import ai
+
+    monkeypatch.setattr(cli, "get_settings", lambda: pytest.fail("演练不检查开关"))
+    monkeypatch.setattr(ai, "get_chat_client", lambda: pytest.fail("演练不检查密钥"))
+    monkeypatch.setattr(cli, "session_factory", lambda: lambda: Session([]))
+    monkeypatch.setattr(
+        verify,
+        "auto_verify",
+        lambda session, today, now, write: iter(
+            [
+                {
+                    "id": 1,
+                    "document_id": 2,
+                    "kind": "企业申报截止",
+                    "date": "2026-09-30",
+                    "time": None,
+                    "result": "通过",
+                }
+            ]
+        ),
+    )
+    assert cli._cmd_deadline_verify_auto(argparse.Namespace(apply=False)) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert json.loads(lines[0])["result"] == "通过"
+    assert json.loads(lines[1]) == {"候选": 1, "通过": 1, "未通过": {}}
