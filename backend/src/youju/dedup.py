@@ -159,7 +159,10 @@ def sync_reviewed_twins(session: Session, masters: set[int]) -> int:
     """归并组里还在待核对、但同组已有同一截止核对过的（见 reviewed_key），沿用那条的核对结果
     （通过、驳回、已变更），免得同一截止换个网址又送审，或已变更的又被通过。
     质检退回的（audit_state 为 reopened）不沿用：要带着退回原因重新核对（Claude 按带退回原因的清单
-    写回，D-130；或在核对台核对）。"""
+    写回，D-130；或在核对台核对）。
+    AI 自动核对通过的（D-135）不凭"同一份通知"直接沿用：这条副本自己的原句也要在它自己的当前正文里、
+    写着这个日期和时刻（deadline_verify.auto_twin_quote），原句记它自己的；不行就留在待核对。"""
+    from youju.deadline_verify import AUTO_REVIEWER, auto_twin_quote
     from youju.models import DocumentDeadline
 
     synced = 0
@@ -187,10 +190,18 @@ def sync_reviewed_twins(session: Session, masters: set[int]) -> int:
             source = exact.get(reviewed_key(d, "rejected")) or confirmed.get(
                 reviewed_key(d, "approved")
             )
-            if source is not None:
-                for field in _REVIEW_FIELDS:
-                    setattr(d, field, getattr(source, field))
-                synced += 1
+            if source is None:
+                continue
+            own_quote = None
+            if source.status == "approved" and source.reviewed_by == AUTO_REVIEWER:
+                own_quote = auto_twin_quote(session, d)
+                if own_quote is None:
+                    continue
+            for field in _REVIEW_FIELDS:
+                setattr(d, field, getattr(source, field))
+            if own_quote is not None:
+                d.verification_quote = own_quote
+            synced += 1
     return synced
 
 

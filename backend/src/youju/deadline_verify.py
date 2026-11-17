@@ -354,37 +354,62 @@ def _ai_supports(session, row, members):
     return False
 
 
-def _auto_reason(session, row, members, today, local_now):
+def _lock_kind(session, row, members):
+    """D-135：先按编号顺序锁住同一归并组（members）里同一类型的全部截止行，锁着判断、写入：判断以后
+    别人退回、标看不准、通过了这一类、加进别的时刻的候选，都要等这一条做完。和管理台、Claude 写回
+    一样先拿审阅队列的锁（开了纠错奖励时才有），再按编号锁行，锁的次序一致，不会互相等成死锁。
+    只在写库时锁；演练不锁。"""
+    from youju import deadline_clues as clues
+    from youju.config import get_settings
+
+    clues.lock_review_queue(session, settings=get_settings())
+    list(
+        session.scalars(
+            select(DocumentDeadline)
+            .where(DocumentDeadline.document_id.in_(members), DocumentDeadline.kind == row.kind)
+            .order_by(DocumentDeadline.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    )
+
+
+def _auto_reason(session, row, members, now):
     """D-135 自动核对除证据校验（apply_one）以外的条件：都满足返回 None，否则返回没通过的原因。
-    调 apply_one 前判断一次；apply_one 锁住同组同一候选、刷新以后再判断一次（precheck），手工另跑
-    命令、和别的任务撞上时，按最新的数据判断。"同一天"指同一归并组（members）里同一类型、同一日期：
+    调 apply_one 前判断一次；apply_one 锁住同组同一候选、刷新以后再判断一次（precheck），按最新的
+    数据和当时的时间判断。now 是北京时间（带时区的会换算）。"同一天"指同一归并组（members）里
+    同一类型、同一日期：
+    - 同组这一类已经有核对通过或标了变更的，不再自动通过（对外每一类只显示一个核对过的）；
     - 同一天有质检退回的、有人对当前正文标过看不准的，都不自动通过（apply_one 会把同证据副本一起
       通过并清掉看不准；退回的不挡同一天别的时刻，这一类一旦核过，退回那条就从清单里消失了）；
     - 同一天待核对候选和 AI 结果的时刻不止一种（没写时刻也算一种）的不通过，免得丢掉"17:00"。"""
+    local_now = now.astimezone(timezone(timedelta(hours=8))) if now.tzinfo else now
     if row.origin != "rule":
         return "不是规则候选"
     if row.ai_agrees is not True:
         return "规则和 AI 未一致"
     if row.kind != "企业申报截止":
         return "不是企业申报截止"
-    if row.candidate_date < today or (
-        row.candidate_date == today
+    if row.candidate_date < local_now.date() or (
+        row.candidate_date == local_now.date()
         and row.candidate_time
         and row.candidate_time <= local_now.time().replace(tzinfo=None)
     ):
         return "截止已过"
-    candidates = list(
+    same_kind = list(
         session.scalars(
             select(DocumentDeadline)
-            .where(
-                DocumentDeadline.document_id.in_(members),
-                DocumentDeadline.kind == row.kind,
-                DocumentDeadline.candidate_date == row.candidate_date,
-                DocumentDeadline.status == "pending",
-            )
+            .where(DocumentDeadline.document_id.in_(members), DocumentDeadline.kind == row.kind)
             .execution_options(populate_existing=True)
         )
     )
+    if any(other.status in ("approved", "changed") for other in same_kind):
+        return "这一类已有核对结果"
+    candidates = [
+        other
+        for other in same_kind
+        if other.status == "pending" and other.candidate_date == row.candidate_date
+    ]
     if any(candidate.audit_state == "reopened" for candidate in candidates):
         return "同一截止有质检退回，须人工核对"
     for candidate in candidates:
@@ -411,6 +436,32 @@ def _auto_reason(session, row, members, today, local_now):
     return None
 
 
+def auto_twin_quote(session, row):
+    """D-135：AI 自动通过的结果沿用给同组副本（dedup.sync_reviewed_twins）前，按 apply_one 同一套
+    证据规则核这条副本自己的原句：去掉空白后 12–300 字、在它自己的当前正文里、写着这个日期（有时刻
+    的也写着这个时刻），而且它没被标过对当前正文的看不准。行就返回正文里原样的那段（记成它自己的
+    verification_quote），不行返回 None（留在待核对）。自动核对不像人核过整份通知，所以不凭"同一份
+    通知"直接沿用。"""
+    detail = session.scalar(
+        select(DocumentDetail)
+        .where(DocumentDetail.document_id == row.document_id)
+        .execution_options(populate_existing=True)
+    )
+    if detail is None or detail.status != "ok":
+        return None
+    body = detail.body_text or ""
+    if row.verification_unclear_hash and row.verification_unclear_hash == body_hash(body):
+        return None
+    if not 12 <= len(_without_space(row.evidence or "")) <= 300:
+        return None
+    quote = _body_quote(body, row.evidence)
+    if quote is None or not excerpts.date_in_quote(row.candidate_date, quote):
+        return None
+    if row.candidate_time is not None and not _has_time(quote, row.candidate_time):
+        return None
+    return quote
+
+
 def auto_switch(value):
     """D-135 自动核对的开关（YOUJU_DEADLINE_AUTO_VERIFY）：只认 "0" 和 "1"，没配（空）当 "0"。
     返回 True 开、False 关；None 是写成了别的值，调用方按关处理并记一行（round.sh 同一个规则）。"""
@@ -421,17 +472,20 @@ def auto_switch(value):
     return None
 
 
-def auto_verify(session, today, now, write=False):
+def auto_verify(session, today, now, write=False, clock=None):
     """D-135：核对清单（queue，7 天内）里同时满足下面几条的，按 apply_one 同一套校验写成核对通过，
     核对人记 AUTO_REVIEWER；不满足的不动，照旧显示"截止时间见原文"。
-    - 不是质检退回的（退回原因要人看）；
     - 规则候选（origin=rule），AI 也找到同一天同一时刻（ai_agrees），类型是企业申报截止；
-    - AI 给这一天标的也是企业申报截止，AI 的原句在当前正文里（_ai_supports）；
+    - AI 给这一天标的也是企业申报截止，AI 的原句在当前正文里、写着这个日期和时刻（_ai_supports）；
     - 没过期（是今天的，没写时刻或时刻还没到，北京时间）；
+    - 同组这一类还没有核对过的结果；同一天没有质检退回的（退回原因要人看）、没有人对当前正文标过
+      看不准的，待核对候选和 AI 结果的时刻只有一种（_auto_reason）；
     - 规则的原句（evidence）通过 apply_one 的校验：去掉空白后在当前正文里、写着这个日期和时刻，
       同组副本正文也都有这句。
     同一截止（同一通知、类型、日期、时刻）有几条规则候选时，前一条通过了，后面的不再核（由
-    sync_reviewed_twins 沿用）；前一条没通过，接着试下一条。
+    sync_reviewed_twins 按 auto_twin_quote 核过再沿用）；前一条没通过，接着试下一条。
+    写库时每一条先锁住同组这一类的全部截止行（_lock_kind）再判断、写入。clock：取当前时间的函数
+    （命令传 v1.now），每条判断时重新取，跑的过程中跨过截止时刻的不放；不给就一直用 now。
     逐条返回结果；每条单独提交（write）或回滚（演练），演练不留下修改。"""
     from youju.dedup import canonical_ids, groups_for
 
@@ -440,17 +494,22 @@ def auto_verify(session, today, now, write=False):
     master_ids = {masters.get(item["document_id"], item["document_id"]) for item in items}
     groups = groups_for(session, list(master_ids)) if items else {}
     passed = set()
-    local_now = now.astimezone(timezone(timedelta(hours=8))) if now.tzinfo else now
+
+    def current():
+        return clock() if clock is not None else now
+
     for item in items:
         row = session.get(DocumentDeadline, item["id"])
         master = masters.get(item["document_id"], item["document_id"])
         key = (master, item["kind"], item["date"], item["time"])
         members = groups.get(master, [master])
+        if row is not None and write:
+            _lock_kind(session, row, members)
         if row is None:
             result = "截止不存在"
         elif key in passed:
             result = "同一截止已由较早的候选通过"
-        elif reason := _auto_reason(session, row, members, today, local_now):
+        elif reason := _auto_reason(session, row, members, current()):
             result = reason
         else:
             result = apply_one(
@@ -463,9 +522,7 @@ def auto_verify(session, today, now, write=False):
                 },
                 write=write,
                 reviewer=AUTO_REVIEWER,
-                precheck=lambda r, members=members: _auto_reason(
-                    session, r, members, today, local_now
-                ),
+                precheck=lambda r, members=members: _auto_reason(session, r, members, current()),
             )
         if result == "通过":
             passed.add(key)

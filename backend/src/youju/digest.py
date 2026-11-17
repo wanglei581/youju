@@ -153,8 +153,8 @@ class Digest:
     nearest_due: date | None = None
     kinds_pending: int = 0
     audit_flagged: int = 0
-    # 质检退回（Codex 抽查或管理台退回）、还没过期、等人带着退回原因再核的截止：条数和文件编号
-    # （自动核对不碰这些，D-135；攒着由 Claude 一起核）
+    # 质检退回（Codex 抽查或管理台退回）、还待核对、等人带着退回原因再核的截止：条数和文件编号
+    # （自动核对不碰这些，D-135；攒着由 Claude 一起核。过期的也算，交给核的人看）
     reopened: int = 0
     reopened_docs: tuple[int, ...] = ()
     feedback_pending: int = 0
@@ -289,7 +289,6 @@ def build_digest(session: Session, now: datetime | None = None) -> Digest:
         select(DocumentDeadline).where(
             DocumentDeadline.status == "pending",
             DocumentDeadline.audit_state == "reopened",
-            DocumentDeadline.candidate_date >= today,
         )
     ).all()
     masters = canonical_ids(session, [d.document_id for d in reopened])
@@ -896,14 +895,38 @@ def _access_line(digest: Digest) -> str:
     return f"接口（{yesterday}，小程序接口）：" + "；".join(parts)
 
 
-_REOPENED_IDS = 10  # 日报里最多列几个质检退回的文件编号，多了写"等"
+_REOPENED_IDS = 10  # 日报正文里最多列几个质检退回的文件编号，多了另发（reopened_messages）
 
 
 def _reopened_line(digest: Digest) -> str:
-    """质检退回、等人看的截止（D-135：自动核对不碰，攒着由 Claude 一起核）；没有的不写这一行。"""
+    """质检退回、等人看的截止（D-135：自动核对不碰，攒着由 Claude 一起核）；没有的不写这一行。
+    编号多了正文里只列前几个，完整的紧接着另发（群提醒一条有字节上限）。"""
     ids = "、".join(f"#{doc_id}" for doc_id in digest.reopened_docs[:_REOPENED_IDS])
-    more = "等" if len(digest.reopened_docs) > _REOPENED_IDS else ""
-    return f"质检退回待人看（没过期的）：{digest.reopened} 条（文件 {ids}{more}）"
+    more = "等，完整编号见下一条" if len(digest.reopened_docs) > _REOPENED_IDS else ""
+    return f"质检退回待人看：{digest.reopened} 条（文件 {ids}{more}）"
+
+
+def reopened_messages(digest: Digest) -> list[str]:
+    """质检退回待人看的完整文件编号：正文里列不下（超过 _REOPENED_IDS 个）时另发，一条放不下就
+    分几条，每条都在群提醒的字节上限以内；列得下的不另发。"""
+    docs = digest.reopened_docs
+    if len(docs) <= _REOPENED_IDS:
+        return []
+    budget = MAX_ALERT_BYTES - len("【有据】".encode())
+    messages: list[str] = []
+    ids: list[str] = []
+
+    def text(part: int, items: list[str]) -> str:
+        return f"质检退回待人看的文件编号（共 {len(docs)} 份，第 {part} 条）：" + "、".join(items)
+
+    for doc_id in docs:
+        tag = f"#{doc_id}"
+        if ids and len(text(len(messages) + 1, ids + [tag]).encode()) > budget:
+            messages.append(text(len(messages) + 1, ids))
+            ids = []
+        ids.append(tag)
+    messages.append(text(len(messages) + 1, ids))
+    return messages
 
 
 def digest_text(digest: Digest, picks: list[Pick]) -> str:

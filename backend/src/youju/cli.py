@@ -670,7 +670,8 @@ def _cmd_deadline_verify_auto(args: argparse.Namespace) -> int:
     current = now()
     counts = Counter()
     with session_factory()() as session:
-        for item in auto_verify(session, current.date(), current, write=args.apply):
+        # 每条判断时重新取当前时间（clock）：跑的过程中跨过截止时刻的不放
+        for item in auto_verify(session, current.date(), current, write=args.apply, clock=now):
             counts[item["result"]] += 1
             print(json.dumps(item, ensure_ascii=False))
     passed = counts.pop("通过", 0)
@@ -1004,7 +1005,13 @@ def _cmd_audit_deadlines(args: argparse.Namespace) -> int:
 def _cmd_daily_report(args: argparse.Namespace) -> int:
     from youju.ai import get_chat_client
     from youju.alerts import send_alert
-    from youju.digest import build_digest, digest_text, pick_for_review, readability_text
+    from youju.digest import (
+        build_digest,
+        digest_text,
+        pick_for_review,
+        readability_text,
+        reopened_messages,
+    )
 
     client = get_chat_client()
     usage_ok = False
@@ -1027,9 +1034,13 @@ def _cmd_daily_report(args: argparse.Namespace) -> int:
     # 能读情况（D-097 ④）放不进同一条（群机器人一条有字节上限），紧接着另发一条；统计出错时不发
     # （主日报里已写"取不到"）
     extra = readability_text(digest)
+    # 质检退回待人看的完整编号（D-135）：正文里列不下时另发一条或几条
+    reopened = reopened_messages(digest)
     print(text)
     if extra:
         print(extra)
+    for message in reopened:
+        print(message)
     if args.dry_run:
         return 0 if usage_ok else 1
     sent = send_alert(text)
@@ -1037,6 +1048,9 @@ def _cmd_daily_report(args: argparse.Namespace) -> int:
         print("未配置告警，日报未发送")
     elif sent is True and extra:
         sent = send_alert(extra)
+    for message in reopened:
+        if sent is True:
+            sent = send_alert(message)
     return 0 if usage_ok and sent is True else 1
 
 

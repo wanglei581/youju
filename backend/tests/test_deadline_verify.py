@@ -1,6 +1,6 @@
 """需要 MySQL 测试库；清单和写回按真实公开查询及归并规则验证。"""
 
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 
 import pytest
 from sqlalchemy import select
@@ -702,3 +702,93 @@ def test_admin_reopens_auto_verified(session, candidate, client, monkeypatch):  
     assert candidate.audit_note == "人工退回"
     assert candidate.audit_by.endswith(verify.AUTO_REOPEN_TAG)
     assert verify.stats(session)["auto"]["reopened"] == 1
+
+
+def test_auto_result_carries_over_only_to_twins_with_their_own_sentence(session, candidate):
+    """D-135：AI 自动通过的结果沿用给同组副本前，要核副本自己的原句在它自己的当前正文里、写着这个
+    日期（原句记它自己的）；不在的留在待核对，不凭"同一份通知"直接沿用。"""
+    from youju.dedup import sync_reviewed_twins
+
+    _auto_ai_record(session, candidate)
+    session.commit()
+    results = list(verify.auto_verify(session, TODAY, datetime(2026, 9, 27, 12), True))
+    assert [r["result"] for r in results] == ["通过"]
+    doc = session.get(Document, candidate.document_id)
+    sentence = "各单位请于2026年9月30日前完成网上申报。"
+    rows = {}
+    for n, (body, evidence) in enumerate(
+        (
+            (f"通知正文。{sentence}", sentence),
+            ("正文改过，没有那一句。", "请于9月30日前完成网上申报工作。"),
+        ),
+        start=1,
+    ):
+        twin_doc = _doc(doc.source, 90 + n, doc.title, TODAY)
+        session.add(twin_doc)
+        session.flush()
+        session.add_all(
+            [
+                DocumentMerge(
+                    duplicate_id=twin_doc.id,
+                    canonical_id=doc.id,
+                    match_key=f"carry{n}",
+                    active=True,
+                ),
+                DocumentDetail(
+                    document_id=twin_doc.id,
+                    body_text=body,
+                    status="ok",
+                    fetched_at=datetime.now(UTC),
+                ),
+            ]
+        )
+        rows[n] = DocumentDeadline(
+            document_id=twin_doc.id,
+            fingerprint=f"carry-{n}",
+            kind=candidate.kind,
+            candidate_date=candidate.candidate_date,
+            evidence=evidence,
+            confidence="高",
+            status="pending",
+            origin="rule",
+            ai_agrees=True,
+        )
+        session.add(rows[n])
+    session.commit()
+    sync_reviewed_twins(session, {doc.id})
+    session.commit()
+    assert rows[1].status == "approved" and rows[1].reviewed_by == verify.AUTO_REVIEWER
+    assert rows[1].verification_quote == sentence
+    assert rows[2].status == "pending" and rows[2].reviewed_by is None
+
+
+def test_auto_skips_when_another_time_of_the_same_day_was_reopened(session, candidate):
+    """同一通知同一天，17:00 那条被质检退回、还待核对时，没写时刻的那条规则和 AI 一致也不自动通过：
+    这一类一旦核过，退回那条就从清单里消失了，用户照样看到这个日期。"""
+    _auto_ai_record(session, candidate)
+    detail = session.get(DocumentDetail, candidate.document_id)
+    reopened_quote = "网上申报截止时间为2026年9月30日17:00。"
+    detail.body_text += reopened_quote
+    reopened = DocumentDeadline(
+        document_id=candidate.document_id,
+        fingerprint="auto-reopened-1700",
+        kind=candidate.kind,
+        candidate_date=candidate.candidate_date,
+        candidate_time=time(17),
+        evidence=reopened_quote,
+        confidence="高",
+        status="pending",
+        origin="rule",
+        ai_agrees=True,
+        audit_state="reopened",
+        audit_note="Codex 抽查不一致：原文不符",
+    )
+    session.add(reopened)
+    session.commit()
+    results = {
+        r["id"]: r["result"]
+        for r in verify.auto_verify(session, TODAY, datetime(2026, 9, 27, 12), True)
+    }
+    assert results[candidate.id] == "同一截止有质检退回，须人工核对"
+    session.expire_all()
+    assert candidate.status == "pending" and candidate.reviewed_by is None

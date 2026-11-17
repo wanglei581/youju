@@ -233,9 +233,12 @@ def test_digest_numbers_match_the_consoles(session, world) -> None:
 
 
 def test_digest_reports_auto_verified_and_reopened_waiting(session, world) -> None:
-    """D-135：24 小时通过的里写明其中 AI 自动通过几条；质检退回、还没过期、等人看的截止列出条数和
-    文件编号（同一通知同一截止只算一条，过期的不列）。没有退回的不写这一行。"""
+    """D-135：24 小时通过的里写明其中 AI 自动通过几条；质检退回、还待核对的截止列出条数和文件编号
+    （同一通知同一截止只算一条，过期的也算）。没有退回的不写这一行；编号多了正文只列前 10 个，完整的
+    另发，每条都在群提醒的字节上限以内。"""
+    from youju.alerts import MAX_ALERT_BYTES
     from youju.deadline_verify import AUTO_REVIEWER
+    from youju.digest import reopened_messages
 
     assert "质检退回待人看" not in digest_text(build_digest(session, now=NOW), [])
     auto = add_deadline(
@@ -244,23 +247,31 @@ def test_digest_reports_auto_verified_and_reopened_waiting(session, world) -> No
     auto.reviewed_by, auto.reviewed_at = AUTO_REVIEWER, NOW - timedelta(hours=2)
     for n, due in ((9, date(2026, 10, 3)), (10, date(2026, 10, 3)), (11, date(2026, 9, 20))):
         row = add_deadline(session, world["apply"], due, n=n)
-        row.audit_state, row.audit_note = (
-            "reopened",
-            "（原为 AI 自动通过）Codex 抽查不一致：原文不符",
-        )
+        row.audit_state, row.audit_note = "reopened", "Codex 抽查不一致：原文不符"
     session.commit()
     d = build_digest(session, now=NOW)
     assert (d.approved, d.auto_approved) == (2, 1)
-    # 同一通知同一天的两条算一条；9 月 20 日的已过期，不列
-    assert (d.reopened, d.reopened_docs) == (1, (world["apply"].id,))
+    # 同一通知同一天的两条算一条；9 月 20 日的已过期，也算（交给核的人看）
+    assert (d.reopened, d.reopened_docs) == (2, (world["apply"].id,))
     text = digest_text(d, [])
     assert "24 小时通过 2（其中 AI 自动 1）、驳回 1；" in text
-    assert f"质检退回待人看（没过期的）：1 条（文件 #{world['apply'].id}）" in text
+    assert f"质检退回待人看：2 条（文件 #{world['apply'].id}）" in text
+    assert reopened_messages(d) == []
     d.reopened, d.reopened_docs = 12, tuple(range(1, 13))
     assert (
-        "质检退回待人看（没过期的）：12 条（文件 #1、#2、#3、#4、#5、#6、#7、#8、#9、#10等）"
+        "质检退回待人看：12 条（文件 #1、#2、#3、#4、#5、#6、#7、#8、#9、#10等，完整编号见下一条）"
         in digest_text(d, [])
     )
+    assert reopened_messages(d) == [
+        "质检退回待人看的文件编号（共 12 份，第 1 条）：" + "、".join(f"#{i}" for i in range(1, 13))
+    ]
+    # 编号很多时分几条，每条都放得下，合起来一个不漏
+    d.reopened_docs = tuple(range(100000, 100500))
+    parts = reopened_messages(d)
+    assert len(parts) > 1
+    assert all(len(p.encode()) <= MAX_ALERT_BYTES - len("【有据】".encode()) for p in parts)
+    listed = [x for p in parts for x in p.split("：", 1)[1].split("、")]
+    assert listed == [f"#{i}" for i in range(100000, 100500)]
 
 
 def test_digest_prices_deepseek_without_a_free_quota(session, world) -> None:

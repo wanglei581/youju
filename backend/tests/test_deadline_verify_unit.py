@@ -595,7 +595,7 @@ def test_auto_cli_dry_run_ignores_settings_and_key(monkeypatch, capsys):
     monkeypatch.setattr(
         verify,
         "auto_verify",
-        lambda session, today, now, write: iter(
+        lambda session, today, now, write, clock=None: iter(
             [
                 {
                     "id": 1,
@@ -635,10 +635,7 @@ def test_auto_group_reasons(setup, monkeypatch, case, expected):
     else:
         other.candidate_time = None
     monkeypatch.setattr(verify, "_ai_supports", lambda *args: True)
-    assert (
-        verify._auto_reason(session, candidate, [1, 2], date(2026, 9, 29), datetime(2026, 9, 29))
-        == expected
-    )
+    assert verify._auto_reason(session, candidate, [1, 2], datetime(2026, 9, 29)) == expected
 
 
 def test_precheck_after_lock(setup, monkeypatch):
@@ -653,12 +650,121 @@ def test_precheck_after_lock(setup, monkeypatch):
         session,
         item(),
         True,
-        precheck=lambda r: verify._auto_reason(
-            session, r, [1], date(2026, 9, 29), datetime(2026, 9, 29)
-        ),
+        precheck=lambda r: verify._auto_reason(session, r, [1], datetime(2026, 9, 29)),
     )
     assert result == "规则和 AI 未一致"
     assert candidate.reviewed_by is None
+
+
+def test_auto_group_skips_a_kind_already_verified(setup, monkeypatch):
+    """同组这一类已经有核对通过（或标了变更）的，不再自动通过：对外每一类只显示一个核对过的。"""
+    session, candidate = setup
+    for status in ("approved", "changed"):
+        session.rows[1:] = [
+            row(id=2, document_id=2, status=status, candidate_date=date(2026, 10, 9))
+        ]
+        monkeypatch.setattr(verify, "_ai_supports", lambda *args: True)
+        assert verify._auto_reason(session, candidate, [1, 2], datetime(2026, 9, 29)) == (
+            "这一类已有核对结果"
+        )
+
+
+def test_auto_rechecks_the_time_after_locking(monkeypatch):
+    """每条判断时重新取时间（clock）：加锁前没过期、加锁后跨过了截止时刻的，不写入。"""
+    from youju import dedup
+
+    target = SimpleNamespace(
+        id=1,
+        document_id=1,
+        origin="rule",
+        ai_agrees=True,
+        kind="企业申报截止",
+        candidate_date=date(2026, 9, 30),
+        candidate_time=time(17),
+        audit_state=None,
+        verification_unclear_hash=None,
+        status="pending",
+    )
+
+    class Rows:
+        def get(self, model, key):
+            return target
+
+        def scalars(self, stmt):
+            return [target]
+
+        def commit(self):
+            pass
+
+        def rollback(self):
+            pass
+
+    entry = dict(
+        id=1,
+        document_id=1,
+        kind="企业申报截止",
+        date="2026-09-30",
+        time="17:00",
+        origin="rule",
+        ai_agrees=True,
+        reopened=False,
+        evidence=QUOTE,
+        body_sha256="x",
+    )
+    monkeypatch.setattr(verify, "queue", lambda *args: [entry])
+    monkeypatch.setattr(dedup, "canonical_ids", lambda *args: {1: 1})
+    monkeypatch.setattr(dedup, "groups_for", lambda *args: {1: [1]})
+    monkeypatch.setattr(verify, "_ai_supports", lambda *args: True)
+    monkeypatch.setattr(verify, "_ai_items", lambda *args: iter([]))
+    times = iter([datetime(2026, 9, 30, 16, 59), datetime(2026, 9, 30, 17, 1)])
+
+    def fake_apply(session, item, write=False, reviewer="Claude", precheck=None):
+        return precheck(target) or "通过"
+
+    monkeypatch.setattr(verify, "apply_one", fake_apply)
+    result = list(
+        verify.auto_verify(
+            Rows(), date(2026, 9, 30), datetime(2026, 9, 30, 16), clock=lambda: next(times)
+        )
+    )
+    assert result[0]["result"] == "截止已过"
+
+
+def test_auto_locks_the_kind_only_when_writing(monkeypatch):
+    """写库时每条先锁同组这一类的全部截止行（_lock_kind）再判断；演练不锁。"""
+    from youju import dedup
+
+    target = SimpleNamespace(id=1, document_id=1)
+    monkeypatch.setattr(
+        verify,
+        "queue",
+        lambda *args: [
+            dict(
+                id=1,
+                document_id=1,
+                kind="企业申报截止",
+                date="2026-09-30",
+                time=None,
+                origin="rule",
+                ai_agrees=True,
+                reopened=False,
+                evidence=QUOTE,
+                body_sha256="x",
+            )
+        ],
+    )
+    monkeypatch.setattr(dedup, "canonical_ids", lambda *args: {1: 1})
+    monkeypatch.setattr(dedup, "groups_for", lambda *args: {1: [1, 2]})
+    monkeypatch.setattr(verify, "_auto_reason", lambda *args: "不是企业申报截止")
+    locks = []
+    monkeypatch.setattr(verify, "_lock_kind", lambda session, row, members: locks.append(members))
+    session = SimpleNamespace(
+        get=lambda model, key: target, commit=lambda: None, rollback=lambda: None
+    )
+    list(verify.auto_verify(session, date(2026, 9, 29), datetime(2026, 9, 29)))
+    assert locks == []
+    list(verify.auto_verify(session, date(2026, 9, 29), datetime(2026, 9, 29), True))
+    assert locks == [[1, 2]]
 
 
 def test_reopen_auto_preserves_long_reason():
@@ -679,7 +785,7 @@ def test_auto_cli_apply(monkeypatch, capsys):
     monkeypatch.setattr(
         verify,
         "auto_verify",
-        lambda session, today, now, write: iter(
+        lambda session, today, now, write, clock=None: iter(
             [
                 {
                     "id": 1,
@@ -705,7 +811,7 @@ def test_auto_group_ai_time_and_stale_unclear(setup, monkeypatch):
         "_ai_items",
         lambda *args: iter([(1, {}, date(2026, 9, 30), None)]),
     )
-    args = (session, candidate, [1], date(2026, 9, 29), datetime(2026, 9, 29))
+    args = (session, candidate, [1], datetime(2026, 9, 29))
     assert verify._auto_reason(*args) == "同一天有几个不同的时刻"
     monkeypatch.setattr(verify, "_ai_items", lambda *args: iter([]))
     assert verify._auto_reason(*args) is None
