@@ -803,7 +803,10 @@ secret() {
 # 或者 sk-、Bearer 开头的值。附加参数用 python 按 JSON 查（值从标准输入给，不进命令行参数）
 ai_show_ok() {
   local name=$1 value=$2 port
+  local key_like='(^|[^A-Za-z0-9])sk-[A-Za-z0-9_-]{8,}' long_run='[A-Za-z0-9]{32,}'
   [[ "$value" != *'$'* && "$value" != *' #'* && "$value" != \"* && "$value" != \'* ]] || return 1
+  # 哪一项都不该像密钥：sk- 开头的一长串、32 个以上连着的字母数字（比如模型名误填了密钥）
+  [[ ! "$value" =~ $key_like && ! "$value" =~ $long_run ]] || return 1
   case "$name" in
     YOUJU_AI_BASE_URL)
       [[ "$value" =~ ^https://[A-Za-z0-9.-]+(:([0-9]{1,5}))?(/[A-Za-z0-9._~/-]*)?$ ]] || return 1
@@ -866,22 +869,26 @@ show() {
       # 本机改成和这里一样：没打出来的，本机也去掉、用程序默认的）。密钥不打，只给长度和指纹。
       # 最后一行以 "#END <项数>" 开头（纯 ASCII，网页终端复制中文出乱码也认得出）：set-config.sh 读到它、
       # 核对项数，才算复制全了（漏了开头几行，本机会被改回默认线路）
-      local name value count=0
-      # 先全部核一遍，有一项不对就一行都不打
-      for name in YOUJU_AI_BASE_URL YOUJU_AI_MODEL YOUJU_AI_BACKGROUND_MODEL YOUJU_AI_REQUEST_EXTRA; do
-        value=$(env_get "$name")
-        [ -z "$value" ] || ai_show_ok "$name" "$value" \
-          || die "${name} 看着不像正常的线路、模型名或附加参数（可能夹带了密钥），一行都没打：先把它改对（${SELF} env-set ${name}）再来"
-      done
+      local name value count=0 lines=""
+      # 每项只读一次：核过、转写过、再按本机的规矩核一遍，全部没问题才一次打出来；有一项不对一行都不打
       for name in YOUJU_AI_BASE_URL YOUJU_AI_MODEL YOUJU_AI_BACKGROUND_MODEL YOUJU_AI_REQUEST_EXTRA; do
         value=$(env_get "$name")
         [ -n "$value" ] || continue
-        # 附加参数按纯 ASCII 重写一遍再打（中文写成 \uXXXX，意思不变）：网页终端复制中文到 UU 可能变成乱码，
-        # 乱码也是合法 JSON，会被悄悄写进本机；本机 set-config.sh 只收纯 ASCII
-        [ "$name" != YOUJU_AI_REQUEST_EXTRA ] || value=$(printf '%s' "$value" | ai_extra_ascii)
-        echo "${name}=${value}"
+        ai_show_ok "$name" "$value" \
+          || die "${name} 看着不像正常的线路、模型名或附加参数（可能夹带了密钥），一行都没打：先把它改对（${SELF} env-set ${name}）再来"
+        if [ "$name" = YOUJU_AI_REQUEST_EXTRA ]; then
+          # 附加参数按纯 ASCII 重写（中文写成 \uXXXX，意思不变）：网页终端复制中文到 UU 可能变成乱码，
+          # 乱码也是合法 JSON，会被悄悄写进本机；本机 set-config.sh 只收纯 ASCII。重写以后可能变长，
+          # \u0024 这类转义也会还原成 $，所以按本机的规矩再核一遍（不超过 2000 字、没有 $ 和 " #"）
+          value=$(printf '%s' "$value" | ai_extra_ascii) \
+            || die "${name} 转不成纯 ASCII，一行都没打：要手动看"
+          [ "${#value}" -le 2000 ] && [[ "$value" != *'$'* && "$value" != *' #'* ]] \
+            || die "${name} 转成纯 ASCII 以后本机收不了（超过 2000 字，或者有 \$、\" #\"），一行都没打：要手动看"
+        fi
+        lines="${lines}${name}=${value}"$'\n'
         count=$((count + 1))
       done
+      printf '%s' "$lines"
       value=$(env_get YOUJU_AI_API_KEY)
       if [ -n "$value" ]; then
         echo "#END ${count} （以上 ${count} 项；YOUJU_AI_API_KEY 不打印：${#value} 位，指纹 $(fingerprint "$value")；本机用 set-secret.sh 录同一个，指纹要一样）"

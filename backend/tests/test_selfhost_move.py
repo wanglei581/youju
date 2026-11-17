@@ -911,8 +911,9 @@ def test_local_set_config(tmp_path, monkeypatch):
     bad_batches = {
         f"YOUJU_AI_MODEL=deepseek-chat\r\nYOUJU_AI_API_KEY={secret}\r\n{_end_line(1)}\n": "第 2 行不认识",
         f"{secret}\n{_end_line(0)}\n": "第 1 行不认识",
-        f"YOUJU_AI_MODEL={secret}\n\x04": "没粘到最后那行 #END",
-        "YOUJU_AI_MODEL=deepseek-chat\n\n\x04": "没粘到最后那行 #END",
+        f"YOUJU_AI_MODEL={secret}\n{_end_line(1)}\n": "格式不对",
+        f"YOUJU_AI_MODEL=x{'a1' * 16}\n{_end_line(1)}\n": "格式不对",
+        "YOUJU_AI_MODEL=deepseek-chat\n\x04": "没粘到最后那行 #END",
         f"YOUJU_AI_MODEL=deepseek-chat\nYOUJU_AI_REQUEST_EXTRA={{}}\n{_end_line(3)}\n": "可能没复制全",
         f"YOUJU_AI_MODEL=a\nYOUJU_AI_MODEL=b\n{_end_line(2)}\n": "出现了两次",
         f"YOUJU_AI_REQUEST_EXTRA=[1, 2]\n{_end_line(1)}\n": "格式不对",
@@ -955,9 +956,11 @@ def test_local_set_config_drains_leftover_paste_and_restores_the_terminal(tmp_pa
     (tmp_path / ".env").write_text("YOUJU_SYNC_URL=https://yj.example.cn\n", encoding="utf-8")
     secret = "sk-leftover-0123456789"
     # 跑完打出退出码、回显恢复没有（echo / -echo）、终端里还剩什么
+    # 剩没剩：换成非规范模式读（没按回车的半行也读得到），等 2 秒
     after = (
         'echo "EXIT=$?"; stty -a | tr " " "\\n" | grep -x -e echo -e -echo; '
-        'if IFS= read -r -t 2 rest; then echo "LEFT=$rest"; else echo "LEFT-NONE"; fi'
+        "stty -icanon min 0 time 20; left=$(dd bs=4096 count=1 2>/dev/null); stty icanon; "
+        'if [ -n "$left" ]; then echo "LEFT=$left"; else echo "LEFT-NONE"; fi'
     )
     run = f'stty echo; bash "{tmp_path}/set-config.sh"; {after}'
     # 中途被停下：测试的伪终端不是控制终端，Ctrl-C 发不出信号，这里直接发 TERM（和 INT 走同一段恢复）；
@@ -978,6 +981,8 @@ def test_local_set_config_drains_leftover_paste_and_restores_the_terminal(tmp_pa
             "EXIT=1",
         ),
         "停下": (stopped, "", "EXIT=130"),
+        # 最后一行没按回车（规范模式下读不到的半行）也要丢掉
+        "半行": (run, f"YOUJU_AI_MODEL=deepseek-chat\n{_end_line(1)}\n{secret}", "EXIT=0"),
     }
     for label, (wrapper, typed, exit_line) in cases.items():
         code, out = _tty(["bash", "-c", wrapper], typed)
@@ -1106,12 +1111,24 @@ def test_shared_show_ai_prints_route_and_only_a_key_fingerprint(tmp_path):
         f'YOUJU_AI_REQUEST_EXTRA={{"x":["{token}"]}}': "YOUJU_AI_REQUEST_EXTRA",
         f"YOUJU_AI_BASE_URL=https://api.deepseek.com/v1?key={token}": "YOUJU_AI_BASE_URL",
         f"YOUJU_AI_BASE_URL=https://user:{token}@api.deepseek.com/v1": "YOUJU_AI_BASE_URL",
+        f"YOUJU_AI_BACKGROUND_MODEL={token}": "YOUJU_AI_BACKGROUND_MODEL",
+        f"YOUJU_AI_BACKGROUND_MODEL=m{'a1' * 16}": "YOUJU_AI_BACKGROUND_MODEL",
     }
     for line, name in refused.items():
         _server_env(tmp_path, f"YOUJU_AI_MODEL=deepseek-chat\n{line}\n")
         code, out = _tty(show, "")
         assert code == 1 and f"{name} 看着不像" in out, (line, out)
         assert token not in out and "YOUJU_AI_MODEL=deepseek-chat" not in out
+    # 转成纯 ASCII 以后本机收不了的也不打：转义的 $ 会还原成 $；中文转义以后超过 2000 字
+    dollar = '{"k":"' + chr(92) + 'u0024x"}'
+    for line in (
+        f"YOUJU_AI_REQUEST_EXTRA={dollar}",
+        'YOUJU_AI_REQUEST_EXTRA={"k":"' + "中" * 400 + '"}',
+    ):
+        _server_env(tmp_path, f"YOUJU_AI_MODEL=deepseek-chat\n{line}\n")
+        code, out = _tty(show, "")
+        assert code == 1 and "本机收不了" in out, (line[:60], out)
+        assert "YOUJU_AI_MODEL=deepseek-chat" not in out
     _server_env(
         tmp_path,
         'YOUJU_AI_REQUEST_EXTRA={"max_tokens":1024,"thinking":{"type":"disabled"}}\n',

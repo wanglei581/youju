@@ -43,6 +43,9 @@ value_ok() {
   [[ "$value" != *'$'* && "$value" != *' #'* && "$value" != \"* && "$value" != \'* ]] || return 1
   # 只收纯 ASCII 的可见字符：show ai 打出来的都是（附加参数里的中文写成 \uXXXX），有别的多半是复制出了乱码
   ! printf '%s' "$value" | LC_ALL=C grep -q '[^ -~]' || return 1
+  # 看着像密钥的不收：sk- 开头的一长串、32 个以上连着的字母数字（万一粘错了行）
+  local key_like='(^|[^A-Za-z0-9])sk-[A-Za-z0-9_-]{8,}' long_run='[A-Za-z0-9]{32,}'
+  [[ ! "$value" =~ $key_like && ! "$value" =~ $long_run ]] || return 1
   case "$name" in
     YOUJU_AI_BASE_URL)
       [[ "$value" =~ ^https://[A-Za-z0-9.-]+(:([0-9]{1,5}))?(/[A-Za-z0-9._~/-]*)?$ ]] || return 1
@@ -103,7 +106,13 @@ else
   # 读掉丢弃，再恢复回显：不然剩下的会交给外面的终端当命令执行，万一是密钥还会在报错里打出来
   saved_tty=$(stty -g)
   finish_paste() {
-    while IFS= read -r -t 1 _rest; do :; done 2>/dev/null || true
+    # 换成非规范模式再读：没按回车的半行也读得到；连续 1 秒没有新内容才停（最多 30 秒），读到的都丢掉
+    local k n
+    stty -icanon min 0 time 10 2>/dev/null || true
+    for k in $(seq 30); do
+      n=$(dd bs=4096 count=1 2>/dev/null | wc -c | tr -d ' ')
+      [ "$n" -gt 0 ] || break
+    done
     stty "$saved_tty" 2>/dev/null || true
   }
   trap 'finish_paste' EXIT
