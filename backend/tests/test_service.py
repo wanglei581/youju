@@ -979,6 +979,25 @@ def test_lonsun_marked_source_whose_page_lost_public_tree_waits_for_review(sessi
     assert check.items_found == 0 and fetcher.requested == [url]
 
 
+def test_lonsun_page_with_item_selector_and_too_few_documents_still_checked(session):
+    # 配了 item_selector、选出的本机构文件页不够 3 条的龙讯栏目页（第十六轮 Codex）：照样先认龙讯写法
+    # （这里认出来了、没标经接口读，记待复检），和试读、抽查一致
+    url, html, *_ = _lonsun_service_fixture()
+    links = "".join(
+        f"<li><a href='/public/6991/{1000 + d}.html'>关于开展第{d}批申报工作的通知</a>"
+        f"<span>2026-11-{d:02d}</span></li>"
+        for d in (1, 2)
+    )
+    source = make_source(session, url)
+    source.parser_config = {"item_selector": "ul.own li"}
+    session.commit()
+    changed = html.replace("<body>", f"<body><ul class='own'>{links}</ul>", 1)
+    fetcher = RecordingFetcher({url: [page(url, changed)]})
+    check = check_source(session, source, fetcher, today=date(2026, 11, 13))
+    assert check.status == "parse_empty" and "待复检" in check.error, check.error
+    assert check.items_found == 0
+
+
 def test_lonsun_service_refusal_remembers_tree(session):
     url, html, tree, catalog, api, _ = _lonsun_service_fixture()
     source = make_source(session, url)

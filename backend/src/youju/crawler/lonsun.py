@@ -4712,15 +4712,22 @@ def lonsun_column_page(html: str, column_url: str) -> bool:
         return False
 
 
-def lonsun_page_items(items: list, column_url: str) -> list:
+def lonsun_page_items(items: list, column_url: str, page_url: str | None = None) -> list:
     """龙讯栏目页上通用规则认出的条目里，只留这个机构的文件页（…/public/<机构编号>/<编号>.html，前面
-    可以带 /zwgk 这类前缀）：页面上直接写着的栏目列表（服务器写好的）。导航、别的栏目、外链里带日期
+    可以带 /zwgk 这类前缀），而且就在这个网站上（主机是栏目网址或跳转以后的页面地址的主机；别的网站
+    上编号碰巧一样的不算）：页面上直接写着的栏目列表（服务器写好的）。导航、别的栏目、外链里带日期
     的链接不当栏目条目。不是龙讯栏目网址的原样交回。"""
     spec = column_spec(column_url)
     if spec is None:
         return items
+    hosts = {(urlsplit(u).hostname or "").lower() for u in (column_url, page_url) if u}
     document = re.compile(rf"/public/{re.escape(spec[0])}/[0-9]+\.html?$")
-    return [item for item in items if document.search(urlsplit(item.url).path)]
+    kept = []
+    for item in items:
+        parts = urlsplit(item.url)
+        if (parts.hostname or "").lower() in hosts and document.search(parts.path):
+            kept.append(item)
+    return kept
 
 
 def lonsun_unrecognized_reason(

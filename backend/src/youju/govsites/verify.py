@@ -159,7 +159,7 @@ def check_one(cache: PageCache, col: ColumnCheck, today: date) -> ColumnCheck:
     # 不够数就照龙讯的写法读，认不出待人工处理
     lonsun = lonsun_column_page(r.text, col.url)
     if lonsun:
-        items = lonsun_page_items(items, col.url)
+        items = lonsun_page_items(items, col.url, final)
     via_api = False
     if len(items) < 3:
         # 和正式抓取一样：页面声明了集约化平台的列表接口就按它读（crawler/adapters.py）

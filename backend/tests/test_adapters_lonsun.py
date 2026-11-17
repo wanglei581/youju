@@ -3910,3 +3910,30 @@ def test_in_operator_follows_javascript():
     assert _evaluate(_parse_expression("'toString' in q"), env) is True
     assert _evaluate(_parse_expression("'dom' in q"), env) is False
     assert _evaluate(_parse_expression("'b' in p"), env) is UNKNOWN
+
+
+def test_page_items_only_count_documents_on_this_site():
+    # 别的网站上编号碰巧一样的文件页（other.gov.cn/public/6991/…）不算本栏目的列表（第十六轮 Codex）
+    from youju.crawler.listing import ListItem
+    from youju.crawler.lonsun import lonsun_page_items
+
+    own = ListItem("通知", "https://jx.ah.gov.cn/public/6991/1001.html", TODAY)
+    moved = ListItem("通知", "https://www.jx.ah.gov.cn/public/6991/1002.html", TODAY)
+    other = ListItem("通知", "https://other.gov.cn/public/6991/1003.html", TODAY)
+    assert lonsun_page_items([own, moved, other], BASE) == [own]
+    # 跳转以后页面地址的主机也算这个网站
+    final = BASE.replace("jx.ah.gov.cn", "www.jx.ah.gov.cn")
+    assert lonsun_page_items([own, moved, other], BASE, final) == [own, moved]
+
+
+def test_trial_ignores_same_number_documents_on_other_sites():
+    from youju.govsites.verify import check_one
+
+    links = "".join(
+        f"<li><a href='https://other.gov.cn/public/6991/{1000 + d}.html'>关于开展第{d}批申报工作的通知</a>"
+        f"<span>2026-11-{d:02d}</span></li>"
+        for d in (1, 2, 3)
+    )
+    page = fixture("jx_page.html").replace("<body>", f"<body><ul>{links}</ul>", 1)
+    col = check_one(_jx_cache(page), lonsun_column(), TODAY)
+    assert col.reason.startswith("经龙讯"), col.reason

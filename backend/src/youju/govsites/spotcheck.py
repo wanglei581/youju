@@ -482,7 +482,7 @@ def _first_list_item(
     # 的写法读，认不出不取证
     lonsun = lonsun_column_page(r.text, url)
     if lonsun:
-        items = lonsun_page_items(items, url)
+        items = lonsun_page_items(items, url, final)
     if len(items) < 3:
         api = find_list_api(r.text, final, url, catalog_host=catalog_host, county=county)
         if api is None:

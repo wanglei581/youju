@@ -437,13 +437,17 @@ def check_source(
         api = None
         # 经龙讯接口读的来源：照接口读，页面上通用规则认出的链接不当栏目条目（认不出就待人工处理）
         lonsun_marked = parser_config.get(LIST_API_OPEN_KEY) == LONSUN
-        if items and lonsun_column_page(result.text, url):
-            # 龙讯栏目页：通用规则认出的只算这个机构的文件页（服务器写好的栏目列表），导航里带日期的
-            # 链接不当栏目条目；不够数就照龙讯的写法认（认不出待人工处理，认出了没标的待复检）
-            items = lonsun_page_items(items, url)
+        lonsun_page = lonsun_column_page(result.text, url)
+        if lonsun_page:
+            # 龙讯栏目页：通用规则认出的只算这个机构在这个网站上的文件页（服务器写好的栏目列表），
+            # 导航里带日期的链接不当栏目条目；不够数就照龙讯的写法认（认不出待人工处理，认出了没标的
+            # 待复检），配了 item_selector 的也一样（和试读、抽查一致）
+            items = lonsun_page_items(items, url, result.final_url)
         attempted_api = (
             gkmlpt
             or lonsun_marked
+            or lonsun_page
+            and len(items) < ADAPTER_MIN_ITEMS
             or (len(items) < ADAPTER_MIN_ITEMS and not parser_config.get("item_selector"))
         )
         if attempted_api:
