@@ -898,7 +898,7 @@ def _access_line(digest: Digest) -> str:
 def _reopened_line(digest: Digest) -> str:
     """质检退回、等人看的截止（D-135：自动核对不碰，攒着由 Claude 一起核）；没有的不写这一行。
     正文里只写条数，文件编号一律另发（reopened_messages）：正文超长被截掉一段时，编号也不会丢。"""
-    return f"质检退回待人看：{digest.reopened} 条（文件编号另发一条）"
+    return f"质检退回待人看：{digest.reopened} 条（文件编号另发）"
 
 
 def reopened_messages(digest: Digest) -> list[str]:

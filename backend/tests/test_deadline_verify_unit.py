@@ -467,7 +467,7 @@ def test_auto_tries_next_candidate_until_one_passes(monkeypatch):
     monkeypatch.setattr(verify, "_auto_reason", lambda *args: None)
     calls = []
 
-    def fake_apply(session, item, write=False, reviewer="Claude", precheck=None):
+    def fake_apply(session, item, write=False, reviewer="Claude", **kw):
         calls.append((item["id"], reviewer))
         return "quote 不在当前正文" if item["quote"] == "不在正文" else "通过"
 
@@ -718,8 +718,8 @@ def test_auto_rechecks_the_time_after_locking(monkeypatch):
     monkeypatch.setattr(verify, "_ai_items", lambda *args: iter([]))
     times = iter([datetime(2026, 9, 30, 16, 59), datetime(2026, 9, 30, 17, 1)])
 
-    def fake_apply(session, item, write=False, reviewer="Claude", precheck=None):
-        return precheck(target) or "通过"
+    def fake_apply(session, item, write=False, reviewer="Claude", **kw):
+        return kw["precheck"](target) or "通过"
 
     monkeypatch.setattr(verify, "apply_one", fake_apply)
     result = list(
@@ -731,7 +731,7 @@ def test_auto_rechecks_the_time_after_locking(monkeypatch):
 
 
 def test_auto_locks_the_kind_only_when_writing(monkeypatch):
-    """写库时每条先锁同组这一类的全部截止行（_lock_kind）再判断；演练不锁。"""
+    """写库时每条先锁同组各文件的全部截止行（_lock_notice）再判断；演练不锁。"""
     from youju import dedup
 
     target = SimpleNamespace(id=1, document_id=1)
@@ -757,7 +757,7 @@ def test_auto_locks_the_kind_only_when_writing(monkeypatch):
     monkeypatch.setattr(dedup, "groups_for", lambda *args: {1: [1, 2]})
     monkeypatch.setattr(verify, "_auto_reason", lambda *args: "不是企业申报截止")
     locks = []
-    monkeypatch.setattr(verify, "_lock_kind", lambda session, row, members: locks.append(members))
+    monkeypatch.setattr(verify, "_lock_notice", lambda session, members: locks.append(members))
     session = SimpleNamespace(
         get=lambda model, key: target, commit=lambda: None, rollback=lambda: None
     )
@@ -765,6 +765,53 @@ def test_auto_locks_the_kind_only_when_writing(monkeypatch):
     assert locks == []
     list(verify.auto_verify(session, date(2026, 9, 29), datetime(2026, 9, 29), True))
     assert locks == [[1, 2]]
+
+
+def test_auto_lock_conflict_rolls_back_one_and_goes_on(monkeypatch):
+    """和管理台、抽查撞锁（MySQL 1205 等锁超时、1213 死锁）：这一条回滚，记"加锁冲突，下一轮再试"，
+    接着做下一条；别的数据库错误照常抛出。"""
+    from sqlalchemy.exc import OperationalError
+
+    from youju import dedup
+
+    def entry(i):
+        return dict(
+            id=i,
+            document_id=i,
+            kind="企业申报截止",
+            date="2026-09-30",
+            time=None,
+            origin="rule",
+            ai_agrees=True,
+            reopened=False,
+            evidence=QUOTE,
+            body_sha256="x",
+        )
+
+    rolled = []
+    session = SimpleNamespace(
+        get=lambda model, key: SimpleNamespace(id=key, document_id=key),
+        commit=lambda: None,
+        rollback=lambda: rolled.append(True),
+    )
+    monkeypatch.setattr(verify, "queue", lambda *args: [entry(1), entry(2)])
+    monkeypatch.setattr(dedup, "canonical_ids", lambda *args: {1: 1, 2: 2})
+    monkeypatch.setattr(dedup, "groups_for", lambda *args: {1: [1], 2: [2]})
+    monkeypatch.setattr(verify, "_auto_reason", lambda *args: "不是企业申报截止")
+
+    def lock(session, members, code=1213):
+        if members == [1]:
+            raise OperationalError("SELECT", {}, Exception(code, "Deadlock found"))
+
+    monkeypatch.setattr(verify, "_lock_notice", lock)
+    result = list(verify.auto_verify(session, date(2026, 9, 29), datetime(2026, 9, 29), True))
+    assert [r["result"] for r in result] == ["加锁冲突，下一轮再试", "不是企业申报截止"]
+    assert rolled == [True]
+    monkeypatch.setattr(
+        verify, "_lock_notice", lambda session, members: lock(session, members, 1054)
+    )
+    with pytest.raises(OperationalError):
+        list(verify.auto_verify(session, date(2026, 9, 29), datetime(2026, 9, 29), True))
 
 
 def test_reopen_auto_preserves_long_reason():

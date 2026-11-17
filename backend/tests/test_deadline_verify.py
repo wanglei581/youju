@@ -815,3 +815,94 @@ def test_auto_skips_when_another_time_of_the_same_day_was_reopened(session, cand
     assert results[candidate.id] == "同一截止有质检退回，须人工核对"
     session.expire_all()
     assert candidate.status == "pending" and candidate.reviewed_by is None
+
+
+def test_auto_only_approves_eligible_twins_with_the_same_sentence(session, candidate):
+    """自动核对写入时，同组证据相同的副本也要是规则抽出、AI 一致的才一起通过；AI 单独找到的、
+    AI 不一致的留在待核对。"""
+    _auto_ai_record(session, candidate)
+    doc = session.get(Document, candidate.document_id)
+    twins = {}
+    for n, (origin, agrees) in enumerate((("rule", True), ("ai", None), ("rule", False)), start=1):
+        twin_doc = _doc(doc.source, 80 + n, doc.title, TODAY)
+        session.add(twin_doc)
+        session.flush()
+        session.add_all(
+            [
+                DocumentMerge(
+                    duplicate_id=twin_doc.id, canonical_id=doc.id, match_key=f"elig{n}", active=True
+                ),
+                DocumentDetail(
+                    document_id=twin_doc.id,
+                    body_text=BODY,
+                    status="ok",
+                    fetched_at=datetime.now(UTC),
+                ),
+            ]
+        )
+        twins[n] = DocumentDeadline(
+            document_id=twin_doc.id,
+            fingerprint=f"elig-{n}",
+            kind=candidate.kind,
+            candidate_date=candidate.candidate_date,
+            evidence=candidate.evidence,
+            confidence="高",
+            status="pending",
+            origin=origin,
+            ai_agrees=agrees,
+        )
+        session.add(twins[n])
+    session.commit()
+    results = {
+        r["id"]: r["result"]
+        for r in verify.auto_verify(session, TODAY, datetime(2026, 9, 27, 12), True)
+    }
+    assert results[candidate.id] == "通过"
+    session.expire_all()
+    assert candidate.reviewed_by == twins[1].reviewed_by == verify.AUTO_REVIEWER
+    assert twins[2].status == twins[3].status == "pending"
+    assert twins[2].reviewed_by is None and twins[3].reviewed_by is None
+
+
+def test_auto_waits_for_another_writer_in_the_same_notice(session, session_factory, candidate):
+    """另一个连接（管理台、Claude 写回）正锁着同一通知另一类的截止行时，自动核对等它提交以后再做，
+    不会互相等成死锁：自动核对一开始就锁住这份通知的全部截止行，之后不再去拿别的行。"""
+    import threading
+    import time as clock
+
+    _auto_ai_record(session, candidate)
+    other = DocumentDeadline(
+        document_id=candidate.document_id,
+        fingerprint="other-kind",
+        kind="材料报送截止",
+        candidate_date=date(2026, 10, 20),
+        evidence="纸质材料请于2026年10月20日前报送。",
+        confidence="高",
+        status="pending",
+        origin="rule",
+    )
+    session.add(other)
+    session.commit()
+    holder = session_factory()
+    holder.scalars(
+        select(DocumentDeadline).where(DocumentDeadline.id == other.id).with_for_update()
+    ).all()
+    results, errors = [], []
+
+    def run():
+        try:
+            with session_factory() as worker:
+                results.extend(verify.auto_verify(worker, TODAY, datetime(2026, 9, 27, 12), True))
+        except Exception as exc:  # noqa: BLE001 - 断言里报出来
+            errors.append(exc)
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    clock.sleep(1.5)
+    assert thread.is_alive()  # 在等另一个连接放开
+    # 另一个连接提交以后，自动核对接着做完
+    holder.commit()
+    holder.close()
+    thread.join(30)
+    assert not thread.is_alive() and errors == []
+    assert [(r["id"], r["result"]) for r in results] == [(candidate.id, "通过")]

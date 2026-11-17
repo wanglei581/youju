@@ -6,6 +6,7 @@ from collections import Counter
 from datetime import UTC, date, datetime, time, timedelta, timezone
 
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
 
 from youju import deadline_excerpts as excerpts
 from youju.models import AICheck, Document, DocumentDeadline, DocumentDetail
@@ -159,8 +160,10 @@ def queue(session, today, days=7):
     return sorted(result, key=lambda r: (r["date"], r["time"] or "", r["id"]))
 
 
-def apply_one(session, item, write=False, reviewer="Claude", precheck=None):
-    """逐条处理；写入调用方负责提交。"""
+def apply_one(session, item, write=False, reviewer="Claude", precheck=None, twin_filter=None):
+    """逐条处理；写入调用方负责提交。
+    precheck(row)：自动核对（D-135）用，锁住以后、写入之前各判断一次，返回原因就不写。
+    twin_filter(副本)：自动核对用，只有它说行的同组同证据副本才一起通过，其余留在待核对。"""
     from youju.api.app import _apply_review, _lock_candidates
 
     if not isinstance(item, dict) or type(item.get("id")) is not int:
@@ -195,6 +198,8 @@ def apply_one(session, item, write=False, reviewer="Claude", precheck=None):
     if row is None:
         return "截止不存在"
     locked = _lock_candidates(session, row)
+    if twin_filter is not None:
+        locked = [d for d in locked if d.id == row.id or twin_filter(d)]
     if row.status != "pending":
         return "状态已变，不再待核对"
     if precheck is not None:
@@ -359,11 +364,16 @@ def _ai_supports(session, row, members):
     return False
 
 
-def _lock_kind(session, row, members):
-    """D-135：先按编号顺序锁住同一归并组（members）里同一类型的全部截止行，锁着判断、写入：判断以后
-    别人退回、标看不准、通过了这一类、加进别的时刻的候选，都要等这一条做完。和管理台、Claude 写回
-    一样先拿审阅队列的锁（开了纠错奖励时才有），再按编号锁行，锁的次序一致，不会互相等成死锁。
-    只在写库时锁；演练不锁。"""
+_LOCK_ERRORS = (1205, 1213)  # MySQL 等锁超时、死锁
+
+
+def _lock_notice(session, members):
+    """D-135：写库时先按编号锁住同一归并组（members）各文件的全部截止行（不分类型），锁着判断、写入：
+    判断以后别人退回、标看不准、通过了这一类、加进别的时刻的候选，都要等这一条做完；apply_one 再扫
+    一遍同组时，只碰已经锁住的行（库是读已提交，只锁一类的话，第二遍要重新去拿别的类型的行，和同组
+    正在处理另一类的管理台、Claude 写回互相等）。和它们一样先拿审阅队列的锁（开了纠错奖励才有）。
+    抽查、管理台退回按条件锁同组已通过的行，走的索引不一定一样，万一撞上，数据库回滚其中一方：
+    auto_verify 这一条记"加锁冲突，下一轮再试"，接着做下一条。只在写库时锁；演练不锁。"""
     from youju import deadline_clues as clues
     from youju.config import get_settings
 
@@ -371,7 +381,7 @@ def _lock_kind(session, row, members):
     list(
         session.scalars(
             select(DocumentDeadline)
-            .where(DocumentDeadline.document_id.in_(members), DocumentDeadline.kind == row.kind)
+            .where(DocumentDeadline.document_id.in_(members))
             .order_by(DocumentDeadline.id)
             .with_for_update()
             .execution_options(populate_existing=True)
@@ -489,7 +499,8 @@ def auto_verify(session, today, now, write=False, clock=None):
       同组副本正文也都有这句。
     同一截止（同一通知、类型、日期、时刻）有几条规则候选时，前一条通过了，后面的不再核（由
     sync_reviewed_twins 按 auto_twin_quote 核过再沿用）；前一条没通过，接着试下一条。
-    写库时每一条先锁住同组这一类的全部截止行（_lock_kind）再判断、写入。clock：取当前时间的函数
+    写库时每一条先锁住同组各文件的全部截止行（_lock_notice）再判断、写入；撞锁（等锁超时、死锁）
+    的这一条回滚，记"加锁冲突，下一轮再试"，接着做下一条。clock：取当前时间的函数
     （命令传 v1.now），每条判断时重新取，跑的过程中跨过截止时刻的不放；不给就一直用 now。
     逐条返回结果；每条单独提交（write）或回滚（演练），演练不留下修改。"""
     from youju.dedup import canonical_ids, groups_for
@@ -503,38 +514,49 @@ def auto_verify(session, today, now, write=False, clock=None):
     def current():
         return clock() if clock is not None else now
 
-    for item in items:
+    def one(item, key, members):
         row = session.get(DocumentDeadline, item["id"])
+        if row is None:
+            return "截止不存在"
+        if write:
+            _lock_notice(session, members)
+        if key in passed:
+            return "同一截止已由较早的候选通过"
+        if reason := _auto_reason(session, row, members, current()):
+            return reason
+        return apply_one(
+            session,
+            {
+                "id": item["id"],
+                "verdict": "confirmed",
+                "quote": item["evidence"],
+                "body_sha256": item["body_sha256"],
+            },
+            write=write,
+            reviewer=AUTO_REVIEWER,
+            precheck=lambda r: _auto_reason(session, r, members, current()),
+            # 同组证据相同的副本，也要是规则抽出、AI 一致的才一起通过（AI 单独找到的、AI 不一致的
+            # 留在待核对）
+            twin_filter=lambda d: d.origin == "rule" and d.ai_agrees is True,
+        )
+
+    for item in items:
         master = masters.get(item["document_id"], item["document_id"])
         key = (master, item["kind"], item["date"], item["time"])
-        members = groups.get(master, [master])
-        if row is not None and write:
-            _lock_kind(session, row, members)
-        if row is None:
-            result = "截止不存在"
-        elif key in passed:
-            result = "同一截止已由较早的候选通过"
-        elif reason := _auto_reason(session, row, members, current()):
-            result = reason
-        else:
-            result = apply_one(
-                session,
-                {
-                    "id": item["id"],
-                    "verdict": "confirmed",
-                    "quote": item["evidence"],
-                    "body_sha256": item["body_sha256"],
-                },
-                write=write,
-                reviewer=AUTO_REVIEWER,
-                precheck=lambda r, members=members: _auto_reason(session, r, members, current()),
-            )
-        if result == "通过":
-            passed.add(key)
-        if write:
-            session.commit()
-        else:
+        try:
+            result = one(item, key, groups.get(master, [master]))
+            if result == "通过":
+                passed.add(key)
+            if write:
+                session.commit()
+            else:
+                session.rollback()
+        except OperationalError as exc:
+            # 和管理台、抽查撞锁（等锁超时、死锁）：这一条回滚、下一轮再试，接着做下一条
+            if getattr(exc.orig, "args", (None,))[0] not in _LOCK_ERRORS:
+                raise
             session.rollback()
+            result = "加锁冲突，下一轮再试"
         yield {k: item[k] for k in ("id", "document_id", "kind", "date", "time")} | {
             "result": result
         }
