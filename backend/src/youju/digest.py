@@ -22,6 +22,7 @@ from youju.ai.client import AIError, ChatClient
 from youju.ai.usage import BEIJING, UsageSummary, usage_summary
 from youju.alerts import MAX_ALERT_BYTES
 from youju.classify import effective_kind
+from youju.deadline_verify import AUTO_REVIEWER
 from youju.dedup import canonical_ids, groups_for, visible_documents
 from youju.models import (
     AccessDaily,
@@ -141,6 +142,8 @@ class Digest:
     details_failed: int = 0
     new_candidates: int = 0
     approved: int = 0
+    # D-135：24 小时通过的里面 AI 自动核对通过的（已算在 approved 里）
+    auto_approved: int = 0
     rejected: int = 0
     pending: int = 0
     pending_7: int = 0
@@ -150,6 +153,10 @@ class Digest:
     nearest_due: date | None = None
     kinds_pending: int = 0
     audit_flagged: int = 0
+    # 质检退回（Codex 抽查或管理台退回）、还没过期、等人带着退回原因再核的截止：条数和文件编号
+    # （自动核对不碰这些，D-135；攒着由 Claude 一起核）
+    reopened: int = 0
+    reopened_docs: tuple[int, ...] = ()
     feedback_pending: int = 0
     new_users: int = 0
     active_users: int = 0
@@ -271,8 +278,27 @@ def build_digest(session: Session, now: datetime | None = None) -> Digest:
     reviewed = session.scalars(
         select(DocumentDeadline).where(DocumentDeadline.reviewed_at >= since)
     ).all()
-    by_status = Counter(d.status for d in _distinct(session, list(reviewed)))
+    reviewed = _distinct(session, list(reviewed))
+    by_status = Counter(d.status for d in reviewed)
     digest.approved, digest.rejected = by_status["approved"], by_status["rejected"]
+    digest.auto_approved = sum(
+        d.status == "approved" and d.reviewed_by == AUTO_REVIEWER for d in reviewed
+    )
+    # 质检退回、等人看的：同一通知同一截止（类型、日期、时刻）只算一条，文件编号写归并组的主文件
+    reopened = session.scalars(
+        select(DocumentDeadline).where(
+            DocumentDeadline.status == "pending",
+            DocumentDeadline.audit_state == "reopened",
+            DocumentDeadline.candidate_date >= today,
+        )
+    ).all()
+    masters = canonical_ids(session, [d.document_id for d in reopened])
+    same = {
+        (masters.get(d.document_id, d.document_id), d.kind, d.candidate_date, d.candidate_time)
+        for d in reopened
+    }
+    digest.reopened = len(same)
+    digest.reopened_docs = tuple(sorted({key[0] for key in same}))
 
     # 待办：待核对用核对台列表的同一规则（_pending_shown_ids），日期都按这份日报的"今天"算
     pending = session.scalars(
@@ -870,6 +896,16 @@ def _access_line(digest: Digest) -> str:
     return f"接口（{yesterday}，小程序接口）：" + "；".join(parts)
 
 
+_REOPENED_IDS = 10  # 日报里最多列几个质检退回的文件编号，多了写"等"
+
+
+def _reopened_line(digest: Digest) -> str:
+    """质检退回、等人看的截止（D-135：自动核对不碰，攒着由 Claude 一起核）；没有的不写这一行。"""
+    ids = "、".join(f"#{doc_id}" for doc_id in digest.reopened_docs[:_REOPENED_IDS])
+    more = "等" if len(digest.reopened_docs) > _REOPENED_IDS else ""
+    return f"质检退回待人看：{digest.reopened} 条（文件 {ids}{more}）"
+
+
 def digest_text(digest: Digest, picks: list[Pick]) -> str:
     """群提醒正文：数字部分完整保留，超出字节上限时少列 AI 建议。"""
     failures = ""
@@ -897,10 +933,13 @@ def digest_text(digest: Digest, picks: list[Pick]) -> str:
         + (f"（{kinds}）" if kinds else "")
         + f"；补详情成功 {digest.details_ok}、失败 {digest.details_failed}；"
         f"新截止候选 {digest.new_candidates} 条",
-        f"核对：24 小时通过 {digest.approved}、驳回 {digest.rejected}；"
+        f"核对：24 小时通过 {digest.approved}"
+        + (f"（其中 AI 自动 {digest.auto_approved}）" if digest.auto_approved else "")
+        + f"、驳回 {digest.rejected}；"
         f"待核对 {digest.pending} 条（30 天内截止 {digest.pending_30} 条{nearest}）；"
         f"类型待定 {digest.kinds_pending}；质检存疑 {digest.audit_flagged}；"
         f"纠错待处理 {digest.feedback_pending}",
+        *([_reopened_line(digest)] if digest.reopened else []),
         f"用户：新增 {digest.new_users}、24 小时活跃 {digest.active_users}、"
         f"累计 {digest.total_users}；新关注 {digest.new_follows}；"
         f"提醒发出 {digest.reminders_sent}、失败 {digest.reminders_failed}",

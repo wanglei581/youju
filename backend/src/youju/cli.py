@@ -648,16 +648,24 @@ def _cmd_deadline_verify_auto(args: argparse.Namespace) -> int:
     from collections import Counter
 
     from youju.api.v1 import now
-    from youju.deadline_verify import auto_verify
+    from youju.deadline_verify import auto_switch, auto_verify
 
     if args.apply:
-        if not get_settings().deadline_auto_verify:
-            print("自动核对开关未开启，跳过")
+        # D-135：开关只认 0 和 1（round.sh 先按同一个规则判断，值是 1 才调用这一步）
+        switch = auto_switch(get_settings().deadline_auto_verify)
+        if switch is None:
+            print(
+                "截止日期自动核对的开关 YOUJU_DEADLINE_AUTO_VERIFY 只认 0 或 1，"
+                "现在的值按关处理，跳过"
+            )
+            return 0
+        if not switch:
+            print("截止日期自动核对的开关没开（YOUJU_DEADLINE_AUTO_VERIFY），跳过")
             return 0
         from youju.ai import get_chat_client
 
         if get_chat_client() is None:
-            print("没有配置 AI 密钥，跳过自动核对")
+            print("没有配置 AI 密钥（YOUJU_AI_API_KEY），跳过截止日期自动核对")
             return 0
     current = now()
     counts = Counter()
@@ -666,11 +674,11 @@ def _cmd_deadline_verify_auto(args: argparse.Namespace) -> int:
             counts[item["result"]] += 1
             print(json.dumps(item, ensure_ascii=False))
     passed = counts.pop("通过", 0)
+    failed = "、".join(f"{reason} {n}" for reason, n in counts.most_common())
     print(
-        json.dumps(
-            {"候选": passed + sum(counts.values()), "通过": passed, "未通过": dict(counts)},
-            ensure_ascii=False,
-        )
+        ("截止日期自动核对" if args.apply else "截止日期自动核对（演练，没写库）")
+        + f"：候选 {passed + sum(counts.values())} 条，通过 {passed} 条"
+        + (f"；没通过：{failed}" if failed else "")
     )
     return 0
 
@@ -728,8 +736,8 @@ def _cmd_deadline_verify_stats(args: argparse.Namespace) -> int:
     if not args.json:
         counts = result["auto"]
         print(
-            f"AI 自动通过：现存 {counts['approved']}，抽查一致 {counts['spotchecked']}，"
-            f"抽查退回 {counts['reopened']}"
+            f"AI 自动通过（D-135）：现存 {counts['approved']}，其中 Codex 抽查一致 "
+            f"{counts['spotchecked']}；被退回（Codex 抽查或管理台）{counts['reopened']}"
         )
     return 0
 

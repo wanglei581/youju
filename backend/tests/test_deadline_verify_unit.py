@@ -418,17 +418,89 @@ def test_auto_apply_and_expired(monkeypatch, setup):
     assert candidate.verification_quote == BODY
 
 
+def test_auto_tries_next_candidate_until_one_passes(monkeypatch):
+    """同一截止有几条规则候选：前一条没通过接着试下一条，有一条通过了后面的不再核（D-135）。"""
+    from youju import dedup
+
+    rows = {
+        i: SimpleNamespace(id=i, candidate_date=date(2026, 9, 30), candidate_time=None)
+        for i in (1, 2, 3)
+    }
+
+    class Rows:
+        def get(self, model, key):
+            return rows.get(key)
+
+        def commit(self):
+            pass
+
+        def rollback(self):
+            pass
+
+    def entry(i, quote):
+        return dict(
+            id=i,
+            document_id=1,
+            kind="企业申报截止",
+            date="2026-09-30",
+            time=None,
+            origin="rule",
+            ai_agrees=True,
+            reopened=False,
+            evidence=quote,
+            body_sha256="x",
+        )
+
+    monkeypatch.setattr(
+        verify, "queue", lambda *args: [entry(1, "不在正文"), entry(2, "在正文"), entry(3, "也在")]
+    )
+    monkeypatch.setattr(dedup, "canonical_ids", lambda *args: {1: 1})
+    monkeypatch.setattr(dedup, "groups_for", lambda *args: {1: [1]})
+    monkeypatch.setattr(verify, "_ai_supports", lambda *args: True)
+    calls = []
+
+    def fake_apply(session, item, write=False, reviewer="Claude"):
+        calls.append((item["id"], reviewer))
+        return "quote 不在当前正文" if item["quote"] == "不在正文" else "通过"
+
+    monkeypatch.setattr(verify, "apply_one", fake_apply)
+    result = [
+        r["result"] for r in verify.auto_verify(Rows(), date(2026, 9, 29), datetime(2026, 9, 29))
+    ]
+    assert result == ["quote 不在当前正文", "通过", "同一截止已由较早的候选通过"]
+    assert calls == [(1, verify.AUTO_REVIEWER), (2, verify.AUTO_REVIEWER)]
+
+
 def test_auto_cli_gates(monkeypatch, capsys):
     from youju import ai
 
     monkeypatch.setattr(cli, "session_factory", lambda: pytest.fail("不应打开数据库"))
-    monkeypatch.setattr(cli, "get_settings", lambda: SimpleNamespace(deadline_auto_verify=False))
-    assert cli._cmd_deadline_verify_auto(argparse.Namespace(apply=True)) == 0
-    assert "开关" in capsys.readouterr().out
-    monkeypatch.setattr(cli, "get_settings", lambda: SimpleNamespace(deadline_auto_verify=True))
+    monkeypatch.setattr(ai, "get_chat_client", lambda: pytest.fail("开关没开时不看密钥"))
+    # D-135：只认 0 和 1，没配当 0；别的值（true、2、带空格的 1）按关处理并说明
+    for value, words in (
+        ("", "没开"),
+        ("0", "没开"),
+        ("true", "只认 0 或 1"),
+        ("2", "只认 0 或 1"),
+    ):
+        monkeypatch.setattr(
+            cli, "get_settings", lambda v=value: SimpleNamespace(deadline_auto_verify=v)
+        )
+        assert cli._cmd_deadline_verify_auto(argparse.Namespace(apply=True)) == 0
+        assert words in capsys.readouterr().out
+    monkeypatch.setattr(cli, "get_settings", lambda: SimpleNamespace(deadline_auto_verify="1"))
     monkeypatch.setattr(ai, "get_chat_client", lambda: None)
     assert cli._cmd_deadline_verify_auto(argparse.Namespace(apply=True)) == 0
     assert "密钥" in capsys.readouterr().out
+
+
+def test_auto_switch_only_accepts_zero_and_one():
+    assert verify.auto_switch(None) is False
+    assert verify.auto_switch("") is False
+    assert verify.auto_switch("0") is False
+    assert verify.auto_switch("1") is True
+    for value in ("true", "True", "yes", "on", "2", " 1", "1 ", "01", "false"):
+        assert verify.auto_switch(value) is None, value
 
 
 def test_auto_stats_groups_and_reopened(monkeypatch):
@@ -454,7 +526,7 @@ def test_auto_stats_groups_and_reopened(monkeypatch):
         document_id=3,
         audit_state="reopened",
         audit_at=stamp,
-        audit_note="Codex 抽查不一致（原为 AI 自动通过）：原文不符",
+        audit_note=f"{verify.AUTO_REOPEN_TAG}Codex 抽查不一致：原文不符",
     )
 
     class StatsSession(Session):
@@ -530,4 +602,4 @@ def test_auto_cli_dry_run_ignores_settings_and_key(monkeypatch, capsys):
     assert cli._cmd_deadline_verify_auto(argparse.Namespace(apply=False)) == 0
     lines = capsys.readouterr().out.splitlines()
     assert json.loads(lines[0])["result"] == "通过"
-    assert json.loads(lines[1]) == {"候选": 1, "通过": 1, "未通过": {}}
+    assert lines[1] == "截止日期自动核对（演练，没写库）：候选 1 条，通过 1 条"

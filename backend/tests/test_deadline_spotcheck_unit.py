@@ -241,4 +241,5 @@ def test_auto_stratum_and_reopen(monkeypatch):
     session.scalar = lambda stmt: session.details[2]
     result = v.spotcheck(session, answer(id=2, date=None, time=None), True, NOW)
     assert result["result"] == "抽查不一致，退回待核对"
-    assert automatic.audit_note.startswith("Codex 抽查不一致（原为 AI 自动通过）")
+    assert automatic.audit_note.startswith(f"{v.AUTO_REOPEN_TAG}Codex 抽查不一致：")
+    assert len(automatic.audit_note) <= 200

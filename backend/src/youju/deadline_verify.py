@@ -11,6 +11,8 @@ from youju import deadline_excerpts as excerpts
 from youju.models import AICheck, Document, DocumentDeadline, DocumentDetail
 
 AUTO_REVIEWER = "AI 自动（规则与 AI 一致）"
+# 自动核对通过的被退回时，退回原因前面加这一句（退回会清掉核对人），统计自动核对错了几条要用
+AUTO_REOPEN_TAG = "（原为 AI 自动通过）"
 
 
 def body_hash(body):
@@ -297,6 +299,8 @@ def apply_one(session, item, write=False, reviewer="Claude"):
 
 
 def _ai_supports(session, row, members):
+    """同一通知（归并组）里有当前版本、没出错的 AI 截止结果，标的也是企业申报截止、和这条同一天同一
+    时刻，而且 AI 的原句去掉空白后在它那份文件的当前正文里、写着这个日期（D-135）。"""
     from youju.ai.deadlines import RESULT_VERSION, stored_items, stored_version
     from youju.extract.deadlines import same_moment
 
@@ -333,22 +337,44 @@ def _ai_supports(session, row, members):
     return False
 
 
+def auto_switch(value):
+    """D-135 自动核对的开关（YOUJU_DEADLINE_AUTO_VERIFY）：只认 "0" 和 "1"，没配（空）当 "0"。
+    返回 True 开、False 关；None 是写成了别的值，调用方按关处理并记一行（round.sh 同一个规则）。"""
+    if value in (None, "", "0"):
+        return False
+    if value == "1":
+        return True
+    return None
+
+
 def auto_verify(session, today, now, write=False):
-    """逐条返回结果；每条单独提交或回滚，演练不留下修改。"""
+    """D-135：核对清单（queue，7 天内）里同时满足下面几条的，按 apply_one 同一套校验写成核对通过，
+    核对人记 AUTO_REVIEWER；不满足的不动，照旧显示"截止时间见原文"。
+    - 不是质检退回的（退回原因要人看）；
+    - 规则候选（origin=rule），AI 也找到同一天同一时刻（ai_agrees），类型是企业申报截止；
+    - AI 给这一天标的也是企业申报截止，AI 的原句在当前正文里（_ai_supports）；
+    - 没过期（是今天的，没写时刻或时刻还没到，北京时间）；
+    - 规则的原句（evidence）通过 apply_one 的校验：去掉空白后在当前正文里、写着这个日期和时刻，
+      同组副本正文也都有这句。
+    同一截止（同一通知、类型、日期、时刻）有几条规则候选时，前一条通过了，后面的不再核（由
+    sync_reviewed_twins 沿用）；前一条没通过，接着试下一条。
+    逐条返回结果；每条单独提交（write）或回滚（演练），演练不留下修改。"""
     from youju.dedup import canonical_ids, groups_for
 
     items = sorted(queue(session, today, 7), key=lambda item: item["id"])
     masters = canonical_ids(session, [item["document_id"] for item in items])
     master_ids = {masters.get(item["document_id"], item["document_id"]) for item in items}
     groups = groups_for(session, list(master_ids)) if items else {}
-    seen = set()
+    passed = set()
     local_now = now.astimezone(timezone(timedelta(hours=8))) if now.tzinfo else now
     for item in items:
         row = session.get(DocumentDeadline, item["id"])
         master = masters.get(item["document_id"], item["document_id"])
         key = (master, item["kind"], item["date"], item["time"])
-        if item["origin"] == "rule" and key in seen:
-            result = "同一截止已有较早候选"
+        if row is None:
+            result = "截止不存在"
+        elif key in passed:
+            result = "同一截止已由较早的候选通过"
         elif item["reopened"]:
             result = "质检退回，须人工核对"
         elif item["origin"] != "rule":
@@ -377,8 +403,8 @@ def auto_verify(session, today, now, write=False):
                 write=write,
                 reviewer=AUTO_REVIEWER,
             )
-        if item["origin"] == "rule":
-            seen.add(key)
+        if result == "通过":
+            passed.add(key)
         if write:
             session.commit()
         else:
@@ -462,7 +488,7 @@ def stats(session, since=None):
                 | (
                     (DocumentDeadline.status == "pending")
                     & (DocumentDeadline.audit_state == "reopened")
-                    & DocumentDeadline.audit_note.startswith("Codex 抽查不一致（原为 AI 自动通过）")
+                    & DocumentDeadline.audit_note.startswith(AUTO_REOPEN_TAG, autoescape=True)
                 )
             )
             .order_by(DocumentDeadline.id)
@@ -503,15 +529,20 @@ _AUDIT_NOTE_MAX = 200  # document_deadlines.audit_note 的长度
 
 
 def reopen_group(group, note, reviewer, stamp):
-    """调用方先按管理台口径锁定同组，并检查目标仍为 approved。"""
+    """调用方先按管理台口径锁定同组，并检查目标仍为 approved。
+    AI 自动核对通过的（D-135），退回原因前面加 AUTO_REOPEN_TAG：退回会清掉核对人，不注明就查不出
+    自动核对错了几条（Codex 抽查退回、管理台退回都走这里）。"""
     count = 0
     for row in group:
         if row.status != "approved":
             continue
+        row_note = (
+            (AUTO_REOPEN_TAG + note)[:_AUDIT_NOTE_MAX] if row.reviewed_by == AUTO_REVIEWER else note
+        )
         row.status = "pending"
         row.reviewed_by = row.reviewed_at = None
         row.approved_date = row.approved_time = None
-        row.audit_state, row.audit_note = "reopened", note
+        row.audit_state, row.audit_note = "reopened", row_note
         row.audit_by, row.audit_at = reviewer, stamp
         count += 1
     return count
@@ -744,12 +775,7 @@ def spotcheck(session, item, write=False, now=None):
     # 免得 200 字的上限把存疑原因截掉
     flagged = next((x.audit_note for x in group if x.audit_state == "flagged" and x.audit_note), "")
     shown = (quote[:100] + "…") if quote and len(quote) > 100 else quote
-    prefix = (
-        "Codex 抽查不一致（原为 AI 自动通过）"
-        if row.reviewed_by == AUTO_REVIEWER
-        else "Codex 抽查不一致"
-    )
-    reason = f"{prefix}：原文{shown or '未找到这一类截止日期'}"
+    reason = f"Codex 抽查不一致：原文{shown or '未找到这一类截止日期'}"
     if flagged:
         reason += f"；原质检存疑：{flagged}"
     if item["note"].strip():

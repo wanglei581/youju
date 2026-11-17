@@ -232,6 +232,36 @@ def test_digest_numbers_match_the_consoles(session, world) -> None:
     assert "o-fresh" not in text and "AI 建议" not in text
 
 
+def test_digest_reports_auto_verified_and_reopened_waiting(session, world) -> None:
+    """D-135：24 小时通过的里写明其中 AI 自动通过几条；质检退回、还没过期、等人看的截止列出条数和
+    文件编号（同一通知同一截止只算一条，过期的不列）。没有退回的不写这一行。"""
+    from youju.deadline_verify import AUTO_REVIEWER
+
+    assert "质检退回待人看" not in digest_text(build_digest(session, now=NOW), [])
+    auto = add_deadline(
+        session, world["apply"], date(2026, 10, 2), "approved", NOW - timedelta(hours=2), n=8
+    )
+    auto.reviewed_by, auto.reviewed_at = AUTO_REVIEWER, NOW - timedelta(hours=2)
+    for n, due in ((9, date(2026, 10, 3)), (10, date(2026, 10, 3)), (11, date(2026, 9, 20))):
+        row = add_deadline(session, world["apply"], due, n=n)
+        row.audit_state, row.audit_note = (
+            "reopened",
+            "（原为 AI 自动通过）Codex 抽查不一致：原文不符",
+        )
+    session.commit()
+    d = build_digest(session, now=NOW)
+    assert (d.approved, d.auto_approved) == (2, 1)
+    # 同一通知同一天的两条算一条；9 月 20 日的已过期，不列
+    assert (d.reopened, d.reopened_docs) == (1, (world["apply"].id,))
+    text = digest_text(d, [])
+    assert "24 小时通过 2（其中 AI 自动 1）、驳回 1；" in text
+    assert f"质检退回待人看：1 条（文件 #{world['apply'].id}）" in text
+    d.reopened, d.reopened_docs = 12, tuple(range(1, 13))
+    assert "质检退回待人看：12 条（文件 #1、#2、#3、#4、#5、#6、#7、#8、#9、#10等）" in digest_text(
+        d, []
+    )
+
+
 def test_digest_prices_deepseek_without_a_free_quota(session, world) -> None:
     """DeepSeek 按官网最高价估费用上限（高峰时段、输入都按没命中缓存）；不写免费额度。"""
     session.add(
