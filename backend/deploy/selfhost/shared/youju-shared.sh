@@ -818,11 +818,16 @@ ai_show_ok() {
       [ "${#value}" -le 2000 ] || return 1
       local check='
 import json, re, sys
-# 键名拆成词再看（驼峰也拆：authToken -> auth token），max_tokens 这类不算
-SECRET_WORDS = {"token", "secret", "password", "passwd", "cookie", "authorization", "auth", "credential", "credentials", "apikey", "key"}
+# 键名：去掉分隔符以后含这些的都算（apisecret、APISecret、client_secret 都拦）；再拆成词（驼峰、缩写
+# 也拆：authToken -> auth token），词是 token、key、auth、pwd 或以 token 结尾的也算；max_tokens 不算
+STRONG = ("secret", "password", "passwd", "credential", "authorization", "apikey", "accesskey", "privatekey", "cookie", "bearer")
+WORDS = {"token", "key", "auth", "pwd"}
 def bad_key(name):
-    words = re.split(r"[^a-z0-9]+", re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", str(name)).lower())
-    return any(w in SECRET_WORDS for w in words)
+    name = str(name)
+    if any(w in re.sub(r"[^a-z0-9]", "", name.lower()) for w in STRONG):
+        return True
+    spaced = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])|(?<=[a-z0-9])(?=[A-Z])", "_", name).lower()
+    return any(w in WORDS or w.endswith("token") for w in re.split(r"[^a-z0-9]+", spaced))
 bad_value = re.compile(r"(?i)^(sk-|bearer\s)")
 def ok(x):
     if isinstance(x, dict):

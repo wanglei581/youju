@@ -1152,6 +1152,8 @@ def test_shared_show_ai_prints_route_and_only_a_key_fingerprint(tmp_path):
         f'YOUJU_AI_REQUEST_EXTRA={{"api_key":"{token}"}}': "YOUJU_AI_REQUEST_EXTRA",
         'YOUJU_AI_REQUEST_EXTRA={"authToken":"short1"}': "YOUJU_AI_REQUEST_EXTRA",
         'YOUJU_AI_REQUEST_EXTRA={"x":{"clientSecret":"short2"}}': "YOUJU_AI_REQUEST_EXTRA",
+        'YOUJU_AI_REQUEST_EXTRA={"APISecret":"short3"}': "YOUJU_AI_REQUEST_EXTRA",
+        'YOUJU_AI_REQUEST_EXTRA={"apisecret":"short4"}': "YOUJU_AI_REQUEST_EXTRA",
         f'YOUJU_AI_REQUEST_EXTRA={{"x":["{token}"]}}': "YOUJU_AI_REQUEST_EXTRA",
         f"YOUJU_AI_BASE_URL=https://api.deepseek.com/v1?key={token}": "YOUJU_AI_BASE_URL",
         f"YOUJU_AI_BASE_URL=https://user:{token}@api.deepseek.com/v1": "YOUJU_AI_BASE_URL",
