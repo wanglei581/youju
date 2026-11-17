@@ -805,11 +805,16 @@ show() {
     push)
       echo "消息推送 Token：$(env_get YOUJU_WX_PUSH_TOKEN)"
       echo "消息推送 EncodingAESKey：$(env_get YOUJU_WX_PUSH_AES_KEY)"
+      echo "看完关掉这个终端窗口"
       ;;
-    sync) echo "同步密钥：$(env_get YOUJU_SYNC_SECRET)" ;;
+    sync)
+      echo "同步密钥：$(env_get YOUJU_SYNC_SECRET)"
+      echo "看完关掉这个终端窗口"
+      ;;
     ai)
-      # 本机的后台 AI 要和服务器同一条线路、同一个模型：这几行照抄到本机 set-config.sh。
-      # 没填的不打（本机也不填，用程序默认的，和服务器一样）；密钥不打，只给长度和指纹
+      # 本机的后台 AI 要和服务器同一条线路、同一个模型：全部几行照抄到本机 set-config.sh（它把这几项在
+      # 本机改成和这里一样：没打出来的，本机也去掉、用程序默认的）。密钥不打，只给长度和指纹。
+      # 括号里那行说明必须是最后一行：set-config.sh 读到它才算复制全了
       local name value
       for name in YOUJU_AI_BASE_URL YOUJU_AI_MODEL YOUJU_AI_BACKGROUND_MODEL YOUJU_AI_REQUEST_EXTRA; do
         value=$(env_get "$name")
@@ -824,7 +829,6 @@ show() {
       ;;
     *) die "用法：show push|sync|ai" ;;
   esac
-  echo "看完关掉这个终端窗口"
 }
 
 rotate_sync() {
