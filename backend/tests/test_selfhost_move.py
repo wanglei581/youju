@@ -920,6 +920,74 @@ def test_local_set_config(tmp_path):
 
 
 @needs_bash
+def test_local_set_config_switch(tmp_path):
+    """本机自己的开关（截止日期自动核对，D-135）：只收 0 或 1；命令后面、粘贴里都能给，给了才改；
+    --only 只改开关、不粘贴，AI 那几项原样留着。"""
+    shutil.copy(SELFHOST / "local" / "set-config.sh", tmp_path)
+    env = tmp_path / ".env"
+    env.write_text(
+        "YOUJU_AI_MODEL=deepseek-chat\nYOUJU_SYNC_URL=https://yj.example.cn\n", encoding="utf-8"
+    )
+    script = ["bash", str(tmp_path / "set-config.sh")]
+    note = (
+        "（YOUJU_AI_API_KEY 不打印：35 位，指纹 ab12；本机用 set-secret.sh 录同一个，指纹要一样）"
+    )
+    paste = f"YOUJU_AI_MODEL=deepseek-chat\n{note}\n"
+
+    # 上线那天：命令后面带开关，再粘贴 show ai 的几行
+    code, out = _tty([*script, "YOUJU_DEADLINE_AUTO_VERIFY=1"], paste)
+    assert code == 0, out
+    assert env.read_text(encoding="utf-8") == (
+        "YOUJU_AI_MODEL=deepseek-chat\nYOUJU_SYNC_URL=https://yj.example.cn\n"
+        "YOUJU_DEADLINE_AUTO_VERIFY=1\n"
+    )
+    assert "YOUJU_DEADLINE_AUTO_VERIFY=1（截止日期自动核对：开）" in out
+
+    # 以后再粘贴 AI 那几行、没带开关：开关原样留着
+    code, out = _tty(script, paste)
+    assert code == 0 and "YOUJU_DEADLINE_AUTO_VERIFY=1\n" in env.read_text(encoding="utf-8")
+
+    # 粘贴里给开关也行；命令里也给了的，以命令里的为准
+    code, out = _tty(
+        [*script, "YOUJU_DEADLINE_AUTO_VERIFY=0"], "YOUJU_DEADLINE_AUTO_VERIFY=1\n" + paste
+    )
+    assert code == 0, out
+    assert env.read_text(encoding="utf-8").endswith("YOUJU_DEADLINE_AUTO_VERIFY=0\n")
+
+    # --only：不粘贴，只改开关；AI 那几项、别的行原样
+    code, out = _tty([*script, "--only", "YOUJU_DEADLINE_AUTO_VERIFY=1"], "")
+    assert code == 0, out
+    assert "粘贴" not in out and "已写入 YOUJU_AI_MODEL" not in out
+    assert env.read_text(encoding="utf-8") == (
+        "YOUJU_AI_MODEL=deepseek-chat\nYOUJU_SYNC_URL=https://yj.example.cn\n"
+        "YOUJU_DEADLINE_AUTO_VERIFY=1\n"
+    )
+
+    # 只收 0 或 1；不认识的参数不打出来；有一项不对整批不写
+    before = env.read_bytes()
+    secret = "sk-typed-by-mistake-0123456789"
+    bad = [
+        ([*script, "--only", "YOUJU_DEADLINE_AUTO_VERIFY=2"], "", "只能是 0 或 1"),
+        ([*script, "--only", "YOUJU_DEADLINE_AUTO_VERIFY=yes"], "", "只能是 0 或 1"),
+        ([*script, "--only", "YOUJU_DEADLINE_AUTO_VERIFY="], "", "只能是 0 或 1"),
+        ([*script, "--only"], "", "--only 要和开关一起给"),
+        ([*script, "--only", "YOUJU_AI_MODEL=other"], "", "参数不认识"),
+        ([*script, "--only", secret], "", "参数不认识"),
+        (script, f"YOUJU_DEADLINE_AUTO_VERIFY=true\n{note}\n", "格式不对"),
+        (
+            [*script, "YOUJU_DEADLINE_AUTO_VERIFY=1"],
+            "YOUJU_AI_MODEL=bad model\n" + note + "\n",
+            "格式不对",
+        ),
+    ]
+    for args, typed, message in bad:
+        code, out = _tty(args, typed)
+        assert code == 1 and message in out, (args, out)
+        assert secret not in out
+        assert env.read_bytes() == before, args
+
+
+@needs_bash
 def test_shared_show_ai_prints_route_and_only_a_key_fingerprint(tmp_path):
     defs = _functions(tmp_path)
     key = "sk-0123456789abcdef0123456789abcdef"
