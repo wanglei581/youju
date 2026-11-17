@@ -863,8 +863,14 @@ def test_local_set_config(tmp_path, monkeypatch):
         "#END 3 ���\r\n"
         "YOUJU_AI_MODEL=after-the-end-line-is-not-read\r\n"
     )
+    # 上次留下的 .env.tmp（权限宽）不碍事：临时文件每次用 mktemp 新建，用完不留
+    stale = tmp_path / ".env.tmp"
+    stale.write_text("junk\n", encoding="utf-8")
+    stale.chmod(0o644)
     code, out = _tty(script, pasted)
     assert code == 0, out
+    assert stale.read_text(encoding="utf-8") == "junk\n"
+    assert sorted(x.name for x in tmp_path.glob(".env*")) == [".env", ".env.tmp"]
     # 原来有的就地改、重复的旧行去掉、没有的加在最后；粘贴里没有的（服务器没填）本机也去掉；
     # 读到 #END 就停；注释行原样留下
     assert env.read_bytes().decode() == (
@@ -903,7 +909,7 @@ def test_local_set_config(tmp_path, monkeypatch):
         f"YOUJU_AI_MODEL={secret}\n\x04": "没粘到最后那行 #END",
         "YOUJU_AI_MODEL=deepseek-chat\n\n\x04": "没粘到最后那行 #END",
         f"YOUJU_AI_MODEL=deepseek-chat\nYOUJU_AI_REQUEST_EXTRA={{}}\n{_end_line(3)}\n": "可能没复制全",
-        f"YOUJU_AI_MODEL=a\nYOUJU_AI_MODEL=b\n{_end_line(1)}\n": "可能没复制全",
+        f"YOUJU_AI_MODEL=a\nYOUJU_AI_MODEL=b\n{_end_line(2)}\n": "出现了两次",
         f"YOUJU_AI_REQUEST_EXTRA=[1, 2]\n{_end_line(1)}\n": "格式不对",
         f"YOUJU_AI_REQUEST_EXTRA={{bad\n{_end_line(1)}\n": "格式不对",
         f'YOUJU_AI_REQUEST_EXTRA={{"k": "{secret} #x"}}\n{_end_line(1)}\n': "格式不对",
@@ -933,6 +939,47 @@ def test_local_set_config(tmp_path, monkeypatch):
     env.unlink()
     code, out = _tty(script, f"YOUJU_AI_MODEL=deepseek-chat\n{_end_line(1)}\n")
     assert code == 1 and "还没有 .env" in out
+
+
+@needs_bash
+def test_local_set_config_drains_leftover_paste_and_restores_the_terminal(tmp_path):
+    """读完、出错、中途被停下都先把终端里没读完的粘贴内容丢掉（不然会交给外面的终端当命令执行，
+    万一是密钥还会在报错里打出来），再恢复回显。"""
+    shutil.copy(SELFHOST / "local" / "set-config.sh", tmp_path)
+    (tmp_path / ".env").write_text("YOUJU_SYNC_URL=https://yj.example.cn\n", encoding="utf-8")
+    secret = "sk-leftover-0123456789"
+    # 跑完打出退出码、回显恢复没有（echo / -echo）、终端里还剩什么
+    after = (
+        'echo "EXIT=$?"; stty -a | tr " " "\\n" | grep -x -e echo -e -echo; '
+        'if IFS= read -r -t 2 rest; then echo "LEFT=$rest"; else echo "LEFT-NONE"; fi'
+    )
+    run = f'stty echo; bash "{tmp_path}/set-config.sh"; {after}'
+    # 中途被停下：测试的伪终端不是控制终端，Ctrl-C 发不出信号，这里直接发 TERM（和 INT 走同一段恢复）；
+    # 放到后台时标准输入要明写 <&0，不然是 /dev/null
+    stopped = (
+        f'stty echo; bash "{tmp_path}/set-config.sh" <&0 & pid=$!; sleep 2; kill -TERM $pid; '
+        f"wait $pid; {after}"
+    )
+    cases = {
+        "读完": (
+            run,
+            f"YOUJU_AI_MODEL=deepseek-chat\n{_end_line(1)}\n{secret}\necho PWNED\n",
+            "EXIT=0",
+        ),
+        "出错": (
+            run,
+            f"YOUJU_AI_MODEL=bad model\n{secret}\necho PWNED\n{_end_line(1)}\n",
+            "EXIT=1",
+        ),
+        "停下": (stopped, "", "EXIT=130"),
+    }
+    for label, (wrapper, typed, exit_line) in cases.items():
+        code, out = _tty(["bash", "-c", wrapper], typed)
+        lines = out.replace("\r", "").splitlines()
+        assert exit_line in lines, (label, out)
+        assert "echo" in lines and "-echo" not in lines, (label, out)
+        assert "LEFT-NONE" in lines, (label, out)
+        assert secret not in out and "PWNED" not in out, (label, out)
 
 
 @needs_bash
@@ -1041,6 +1088,27 @@ def test_shared_show_ai_prints_route_and_only_a_key_fingerprint(tmp_path):
     _server_env(tmp_path, "YOUJU_AI_MODEL=deepseek-chat\n")
     code, out = _tty(show, "")
     assert code == 0 and "#END 1 " in out and "服务器上还没录 YOUJU_AI_API_KEY" in out
+
+    # 看着像夹带了密钥的值：一行都不打；max_tokens 这类正常参数照打
+    token = "sk-in-the-config-0123456789"
+    refused = {
+        f'YOUJU_AI_REQUEST_EXTRA={{"headers":{{"Authorization":"Bearer {token}"}}}}': "YOUJU_AI_REQUEST_EXTRA",
+        f'YOUJU_AI_REQUEST_EXTRA={{"api_key":"{token}"}}': "YOUJU_AI_REQUEST_EXTRA",
+        f'YOUJU_AI_REQUEST_EXTRA={{"x":["{token}"]}}': "YOUJU_AI_REQUEST_EXTRA",
+        f"YOUJU_AI_BASE_URL=https://api.deepseek.com/v1?key={token}": "YOUJU_AI_BASE_URL",
+        f"YOUJU_AI_BASE_URL=https://user:{token}@api.deepseek.com/v1": "YOUJU_AI_BASE_URL",
+    }
+    for line, name in refused.items():
+        _server_env(tmp_path, f"YOUJU_AI_MODEL=deepseek-chat\n{line}\n")
+        code, out = _tty(show, "")
+        assert code == 1 and f"{name} 看着不像" in out, (line, out)
+        assert token not in out and "YOUJU_AI_MODEL=deepseek-chat" not in out
+    _server_env(
+        tmp_path,
+        'YOUJU_AI_REQUEST_EXTRA={"max_tokens":1024,"thinking":{"type":"disabled"}}\n',
+    )
+    code, out = _tty(show, "")
+    assert code == 0 and '"max_tokens":1024' in out and "#END 1 " in out
     # "执行命令"里（没有交互终端）不显示
     done = _bash(tmp_path, "show ai")
     assert done.returncode == 1 and "只能在交互终端里用" in done.stderr

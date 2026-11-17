@@ -798,6 +798,46 @@ secret() {
   echo "已写入 ${name}：${#value} 位，指纹 $(fingerprint "$value")。都填完运行 ${SELF} up 生效"
 }
 
+# show ai 打出来之前逐项核一遍：这几项只该是线路、模型名、附加参数。看着像夹带了密钥的不打：地址里有
+# ?、@ 之类（只认 https://主机[:端口][/路径]），附加参数里有 authorization、api_key、token 之类的键，
+# 或者 sk-、Bearer 开头的值。附加参数用 python 按 JSON 查（值从标准输入给，不进命令行参数）
+ai_show_ok() {
+  local name=$1 value=$2 port
+  [[ "$value" != *'$'* && "$value" != *' #'* && "$value" != \"* && "$value" != \'* ]] || return 1
+  case "$name" in
+    YOUJU_AI_BASE_URL)
+      [[ "$value" =~ ^https://[A-Za-z0-9.-]+(:([0-9]{1,5}))?(/[A-Za-z0-9._~/-]*)?$ ]] || return 1
+      port=${BASH_REMATCH[2]}
+      [ -z "$port" ] || { [ $((10#$port)) -ge 1 ] && [ $((10#$port)) -le 65535 ]; }
+      ;;
+    YOUJU_AI_MODEL | YOUJU_AI_BACKGROUND_MODEL) [[ "$value" =~ ^[A-Za-z0-9._:/-]{1,100}$ ]] ;;
+    YOUJU_AI_REQUEST_EXTRA)
+      [ "${#value}" -le 2000 ] || return 1
+      local check='
+import json, re, sys
+bad_key = re.compile(r"(?i)(^|[_-])(api[_-]?key|authorization|access[_-]?token|token|secret|password|passwd|cookie)($|[_-])")
+bad_value = re.compile(r"(?i)^(sk-|bearer\s)")
+def ok(x):
+    if isinstance(x, dict):
+        return all(not bad_key.search(str(k)) and ok(v) for k, v in x.items())
+    if isinstance(x, list):
+        return all(ok(v) for v in x)
+    if isinstance(x, str):
+        return not bad_value.search(x)
+    return True
+value = json.load(sys.stdin)
+sys.exit(0 if isinstance(value, dict) and ok(value) else 1)
+'
+      if command -v python3 >/dev/null 2>&1; then
+        printf '%s' "$value" | python3 -I -c "$check" >/dev/null 2>&1
+      else
+        printf '%s' "$value" | compose exec -T worker python -I -c "$check" >/dev/null 2>&1
+      fi
+      ;;
+    *) return 1 ;;
+  esac
+}
+
 show() {
   need_tty
   [ -f "$SERVER/.env" ] || die "还没装（没有 ${SERVER}/.env）"
@@ -817,6 +857,12 @@ show() {
       # 最后一行以 "#END <项数>" 开头（纯 ASCII，网页终端复制中文出乱码也认得出）：set-config.sh 读到它、
       # 核对项数，才算复制全了（漏了开头几行，本机会被改回默认线路）
       local name value count=0
+      # 先全部核一遍，有一项不对就一行都不打
+      for name in YOUJU_AI_BASE_URL YOUJU_AI_MODEL YOUJU_AI_BACKGROUND_MODEL YOUJU_AI_REQUEST_EXTRA; do
+        value=$(env_get "$name")
+        [ -z "$value" ] || ai_show_ok "$name" "$value" \
+          || die "${name} 看着不像正常的线路、模型名或附加参数（可能夹带了密钥），一行都没打：先把它改对（${SELF} env-set ${name}）再来"
+      done
       for name in YOUJU_AI_BASE_URL YOUJU_AI_MODEL YOUJU_AI_BACKGROUND_MODEL YOUJU_AI_REQUEST_EXTRA; do
         value=$(env_get "$name")
         [ -n "$value" ] || continue

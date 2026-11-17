@@ -17,7 +17,12 @@ cd "$(dirname "$0")"
 NAMES="YOUJU_AI_BASE_URL YOUJU_AI_MODEL YOUJU_AI_BACKGROUND_MODEL YOUJU_AI_REQUEST_EXTRA"
 # 本机自己的开关：YOUJU_DEADLINE_AUTO_VERIFY 截止日期自动核对（D-135），没配当 0
 SWITCHES="YOUJU_DEADLINE_AUTO_VERIFY"
-die() { echo "错误：$*" >&2; exit 1; }
+# 粘贴时提示后面没有换行：出错先换一行再说
+die() {
+  [ "${in_paste:-0}" -eq 0 ] || echo >&2
+  echo "错误：$*" >&2
+  exit 1
+}
 
 [ -t 0 ] && [ -t 1 ] || die "只能在交互终端里用"
 [ -f .env ] || die "还没有 .env：先跑一遍 setup-wsl.ps1"
@@ -91,15 +96,23 @@ done
 if [ "$only" -eq 1 ]; then
   [ "${#args[@]}" -gt 0 ] || die "--only 要和开关一起给，如 --only YOUJU_DEADLINE_AUTO_VERIFY=0"
 else
-  printf '%s' '粘贴服务器 show ai 打出来的全部几行，再按一次回车（多按无妨；粘贴的内容不显示，没复制全可以按 Ctrl-C 取消）：'
-  # 整段粘贴都不回显（read -s 只在每次读的时候关回显，两次读之间到的内容会被显示出来）；退出时恢复
+  # 整段粘贴都不回显（read -s 只在每次读的时候关回显，两次读之间到的内容会被显示出来），而且先关回显
+  # 再打提示：看到提示马上粘贴也不会显示出来。结束时（读完、出错、Ctrl-C）先把终端里没读完的粘贴内容
+  # 读掉丢弃，再恢复回显：不然剩下的会交给外面的终端当命令执行，万一是密钥还会在报错里打出来
   saved_tty=$(stty -g)
-  trap 'stty "$saved_tty"' EXIT
-  trap 'stty "$saved_tty"; exit 130' INT TERM
+  finish_paste() {
+    while IFS= read -r -t 1 _rest; do :; done 2>/dev/null || true
+    stty "$saved_tty" 2>/dev/null || true
+  }
+  trap 'finish_paste' EXIT
+  trap 'finish_paste; echo; exit 130' INT TERM
   stty -echo
+  printf '%s' '粘贴服务器 show ai 打出来的全部几行，再按一次回车（多按无妨；粘贴的内容不显示，没复制全可以按 Ctrl-C 取消）：'
+  in_paste=1
   end_re='^#END ([0-9]{1,2})($| )'
   expected=-1
   ai_lines=0
+  seen=" "
   n=0
   while IFS= read -r line || [ -n "$line" ]; do
     line=${line%$'\r'}
@@ -119,11 +132,15 @@ else
     [[ "$line" == *=* && " $NAMES $SWITCHES " == *" $name "* ]] \
       || die "第 ${n} 行不认识（只认 ${NAMES} ${SWITCHES}），什么都没写"
     value_ok "$name" "$value" || die "${name} 的格式不对，什么都没写"
+    # 同一项粘了两次（可能复制重了）：项数会对上、漏掉的那项却会被删掉，整批不写
+    [[ "$seen" != *" $name "* ]] || die "粘贴里 ${name} 出现了两次（可能复制重了），什么都没写"
+    seen="${seen}${name} "
     [[ " $NAMES " != *" $name "* ]] || ai_lines=$((ai_lines + 1))
     remember "$name" "$value"
   done
-  stty "$saved_tty"
+  finish_paste
   trap - EXIT INT TERM
+  in_paste=0
   echo
   [ "$expected" -ge 0 ] || die "没粘到最后那行 #END（可能没复制全），什么都没写"
   [ "$ai_lines" -eq "$expected" ] \
@@ -135,9 +152,10 @@ done
 
 # 整份 .env 先写进临时文件，一次改名：给了的几项照写（原来有的就地改、没有的加在最后，重复的旧行去掉）；
 # 粘贴时 AI 那几项没给的也去掉（和服务器一样用默认的）；开关没给的、--only 时 AI 那几项都原样留着；
-# 别的行原样留下（CRLF 改成 LF）
+# 别的行原样留下（CRLF 改成 LF）。临时文件用 mktemp 新建（只有自己能读写），出错退出时删掉
+tmp=$(mktemp .env.XXXXXX)
+trap 'rm -f "$tmp"' EXIT
 (
-  umask 077
   written=" "
   {
     while IFS= read -r l || [ -n "$l" ]; do
@@ -161,9 +179,10 @@ done
     for i in ${wnames[@]+"${!wnames[@]}"}; do
       [[ "$written" == *" ${wnames[$i]} "* ]] || printf '%s=%s\n' "${wnames[$i]}" "${wvalues[$i]}"
     done
-  } > .env.tmp
+  } > "$tmp"
 )
-mv -f .env.tmp .env
+mv -f "$tmp" .env
+trap - EXIT
 if [ "$only" -eq 0 ]; then
   for key in $NAMES; do
     i=$(pos "$key")

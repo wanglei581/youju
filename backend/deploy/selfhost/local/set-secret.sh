@@ -25,14 +25,15 @@ IFS= read -rs value || true
 echo
 value=${value%$'\r'}
 [[ "$value" =~ $re ]] || die "格式不对（${#value} 位），没有写"
-# 先写临时文件再改名；值经环境变量给 awk，不进命令行参数
-(
-  umask 077
-  KEY="$name" VALUE="$value" awk 'BEGIN { k = ENVIRON["KEY"]; v = ENVIRON["VALUE"]; done = 0 }
-    { sub(/\r$/, "") }
-    index($0, k "=") == 1 { if (!done) print k "=" v; done = 1; next }
-    { print }
-    END { if (!done) print k "=" v }' .env > .env.tmp
-)
-mv -f .env.tmp .env
+# 先写临时文件再改名；值经环境变量给 awk，不进命令行参数。临时文件用 mktemp 新建（只有自己能读写），
+# 出错退出时删掉
+tmp=$(mktemp .env.XXXXXX)
+trap 'rm -f "$tmp"' EXIT
+KEY="$name" VALUE="$value" awk 'BEGIN { k = ENVIRON["KEY"]; v = ENVIRON["VALUE"]; done = 0 }
+  { sub(/\r$/, "") }
+  index($0, k "=") == 1 { if (!done) print k "=" v; done = 1; next }
+  { print }
+  END { if (!done) print k "=" v }' .env > "$tmp"
+mv -f "$tmp" .env
+trap - EXIT
 echo "已写入 ${name}：${#value} 位，指纹 $(printf '%s' "$value" | sha256sum | cut -c1-4)。运行 docker compose up -d worker 生效"
