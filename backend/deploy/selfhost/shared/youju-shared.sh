@@ -39,7 +39,8 @@
 #   emergency-carry [段号]                      只读：打印紧急下架清单（gzip 后 base64），电脑恢复后带回本机
 #   emergency-settle                            带回本机已经正式下架的撤掉（定时任务每小时也做）
 #   secret <名称>          只在交互终端里用：录一个密钥进 .env（输入不显示，只回长度和指纹）
-#   show push|sync         只在交互终端里用：显示消息推送的 Token、EncodingAESKey / 同步密钥
+#   show push|sync|ai      只在交互终端里用：显示消息推送的 Token、EncodingAESKey / 同步密钥 /
+#                          后台 AI 的线路、模型（不涉密，照抄到本机 set-config.sh；密钥只给指纹）
 #   rotate-sync            换一个新的同步密钥（不显示）
 #   env-set <名称>         改一项不涉密的配置（值从标准输入读，如 echo '<值>' | … env-set YOUJU_CRONTAB）
 #   env-unset <名称>       删掉一项不涉密的配置
@@ -806,7 +807,22 @@ show() {
       echo "消息推送 EncodingAESKey：$(env_get YOUJU_WX_PUSH_AES_KEY)"
       ;;
     sync) echo "同步密钥：$(env_get YOUJU_SYNC_SECRET)" ;;
-    *) die "用法：show push|sync" ;;
+    ai)
+      # 本机的后台 AI 要和服务器同一条线路、同一个模型：这几行照抄到本机 set-config.sh。
+      # 没填的不打（本机也不填，用程序默认的，和服务器一样）；密钥不打，只给长度和指纹
+      local name value
+      for name in YOUJU_AI_BASE_URL YOUJU_AI_MODEL YOUJU_AI_BACKGROUND_MODEL YOUJU_AI_REQUEST_EXTRA; do
+        value=$(env_get "$name")
+        [ -z "$value" ] || echo "${name}=${value}"
+      done
+      value=$(env_get YOUJU_AI_API_KEY)
+      if [ -n "$value" ]; then
+        echo "（YOUJU_AI_API_KEY 不打印：${#value} 位，指纹 $(fingerprint "$value")；本机用 set-secret.sh 录同一个，指纹要一样）"
+      else
+        echo "（服务器上还没录 YOUJU_AI_API_KEY：先录，再给本机录同一个）"
+      fi
+      ;;
+    *) die "用法：show push|sync|ai" ;;
   esac
   echo "看完关掉这个终端窗口"
 }

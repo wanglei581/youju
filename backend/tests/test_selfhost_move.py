@@ -827,6 +827,99 @@ def test_local_set_secret(tmp_path):
     assert code == 1 and "格式不对" in out
     code, out = _tty(["bash", str(tmp_path / "set-secret.sh"), "YOUJU_ADMIN_TOKEN"], "x\n")
     assert code == 1 and "用法" in out
+    # 后台 AI 的密钥也在本机录（和服务器同一个）：不回显，只给指纹
+    key = "sk-0123456789abcdef0123"
+    code, out = _tty(["bash", str(tmp_path / "set-secret.sh"), "YOUJU_AI_API_KEY"], key + "\n")
+    assert code == 0, out
+    assert key not in out and f"指纹 {_sha(key.encode())[:4]}" in out
+    assert env.read_text(encoding="utf-8").endswith(f"YOUJU_AI_API_KEY={key}\n")
+
+
+@needs_bash
+def test_local_set_config(tmp_path):
+    shutil.copy(SELFHOST / "local" / "set-config.sh", tmp_path)
+    env = tmp_path / ".env"
+    before = "YOUJU_SYNC_URL=https://yj.example.cn\r\nYOUJU_AI_MODEL=old-model\r\n"
+    env.write_text(before, encoding="utf-8")
+
+    def run(text):
+        return subprocess.run(
+            ["bash", str(tmp_path / "set-config.sh")], input=text, capture_output=True, text=True
+        )
+
+    extra = '{"thinking":{"type":"disabled"}}'
+    pasted = (
+        "YOUJU_AI_BASE_URL=https://api.deepseek.com/v1\n"
+        "YOUJU_AI_MODEL=deepseek-chat\n"
+        f"YOUJU_AI_REQUEST_EXTRA={extra}\n"
+        "（YOUJU_AI_API_KEY 不打印：35 位，指纹 ab12；本机用 set-secret.sh 录同一个，指纹要一样）\n"
+        "\n"
+        "YOUJU_AI_BACKGROUND_MODEL=after-the-blank-line\n"
+    )
+    done = run(pasted)
+    assert done.returncode == 0, done.stderr
+    # 改原有的、加没有的；空行以后的不读；括号里的说明跳过
+    assert env.read_text(encoding="utf-8") == (
+        "YOUJU_SYNC_URL=https://yj.example.cn\n"
+        "YOUJU_AI_MODEL=deepseek-chat\n"
+        "YOUJU_AI_BASE_URL=https://api.deepseek.com/v1\n"
+        f"YOUJU_AI_REQUEST_EXTRA={extra}\n"
+    )
+    assert f"已写入 YOUJU_AI_REQUEST_EXTRA={extra}" in done.stdout
+    assert env.stat().st_mode & 0o777 == 0o600
+
+    # 有一行不对就整批不写；不认识的行不把内容打出来（万一粘进来的是密钥）
+    env.write_text(before, encoding="utf-8")
+    secret = "sk-pasted-by-mistake-0123456789"
+    bad_batches = {
+        f"YOUJU_AI_MODEL=deepseek-chat\nYOUJU_AI_API_KEY={secret}\n": "第 2 行不认识",
+        f"{secret}\n": "第 1 行不认识",
+        "YOUJU_AI_MODEL=deepseek-chat\nYOUJU_AI_REQUEST_EXTRA=[1, 2]\n": "格式不对",
+        "YOUJU_AI_REQUEST_EXTRA={bad\n": "格式不对",
+        "YOUJU_AI_MODEL=model-$(reboot)\n": "格式不对",
+        "YOUJU_AI_BASE_URL=http://api.deepseek.com/v1\n": "格式不对",
+        'YOUJU_AI_REQUEST_EXTRA={"stop": "a #b"}\n': "格式不对",
+        "\n": "没有粘贴到配置",
+        "": "没有粘贴到配置",
+    }
+    for text, message in bad_batches.items():
+        done = run(text)
+        assert done.returncode == 1 and message in done.stderr, (text, done.stderr)
+        assert secret not in done.stdout + done.stderr
+        assert env.read_text(encoding="utf-8") == before, text
+
+    (tmp_path / ".env").unlink()
+    done = run("YOUJU_AI_MODEL=deepseek-chat\n")
+    assert done.returncode == 1 and "还没有 .env" in done.stderr
+
+
+@needs_bash
+def test_shared_show_ai_prints_route_and_only_a_key_fingerprint(tmp_path):
+    defs = _functions(tmp_path)
+    key = "sk-0123456789abcdef0123456789abcdef"
+    extra = '{"thinking":{"type":"disabled"}}'
+    _server_env(
+        tmp_path,
+        "YOUJU_AI_BASE_URL=https://api.deepseek.com/v1\nYOUJU_AI_MODEL=deepseek-chat\n"
+        f"YOUJU_AI_REQUEST_EXTRA={extra}\nYOUJU_AI_API_KEY={key}\nYOUJU_SYNC_SECRET={'a' * 64}\n",
+    )
+    show = ["bash", "-c", f'source "{defs}"; SERVER="{tmp_path}/server"; show ai']
+    code, out = _tty(show, "")
+    assert code == 0, out
+    lines = out.replace("\r", "").splitlines()
+    assert "YOUJU_AI_BASE_URL=https://api.deepseek.com/v1" in lines
+    assert "YOUJU_AI_MODEL=deepseek-chat" in lines
+    assert f"YOUJU_AI_REQUEST_EXTRA={extra}" in lines
+    # 没填的不打；密钥和别的密钥都不打，只给长度和指纹
+    assert "YOUJU_AI_BACKGROUND_MODEL" not in out
+    assert key not in out and "a" * 64 not in out
+    assert f"{len(key)} 位，指纹 {_sha(key.encode())[:4]}" in out
+    _server_env(tmp_path, "YOUJU_AI_MODEL=deepseek-chat\n")
+    code, out = _tty(show, "")
+    assert code == 0 and "服务器上还没录 YOUJU_AI_API_KEY" in out
+    # "执行命令"里（没有交互终端）不显示
+    done = _bash(tmp_path, "show ai")
+    assert done.returncode == 1 and "只能在交互终端里用" in done.stderr
 
 
 @needs_bash

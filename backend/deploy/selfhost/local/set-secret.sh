@@ -1,12 +1,13 @@
 #!/bin/bash
 # 本机端（Windows 主机的 WSL 发行版 youju）录密钥：只在交互终端里用，输入不显示、不进命令历史，
-# 只回长度和指纹（SHA-256 的前 4 位，和服务器上 rotate-sync 显示的对一下）。在 UU 远程的终端里：
+# 只回长度和指纹（SHA-256 的前 4 位，和服务器上 rotate-sync、show ai 显示的对一下）。在 UU 远程的终端里：
 #   wsl -d youju -u root --cd /opt/youju/local -e bash set-secret.sh YOUJU_SYNC_SECRET
-# 填完 docker compose up -d worker 生效（在同一个目录）。
+# 填完 docker compose up -d worker 生效（在同一个目录）。后台 AI 的密钥 YOUJU_AI_API_KEY 和服务器录同一个；
+# 线路、模型这些不涉密的另用 set-config.sh 录（手册第六节第 11 步）。
 set -euo pipefail
 cd "$(dirname "$0")"
 
-NAMES="YOUJU_SYNC_SECRET YOUJU_OFFSITE_S3_ACCESS_KEY YOUJU_OFFSITE_S3_SECRET_KEY YOUJU_ALERT_WEBHOOK"
+NAMES="YOUJU_SYNC_SECRET YOUJU_OFFSITE_S3_ACCESS_KEY YOUJU_OFFSITE_S3_SECRET_KEY YOUJU_ALERT_WEBHOOK YOUJU_AI_API_KEY"
 die() { echo "错误：$*" >&2; exit 1; }
 
 name=${1:-}
