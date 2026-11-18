@@ -132,7 +132,8 @@ def test_text_for_the_model_masks_like_the_page_with_store_marks(session):
     # 入库的文字没动；11/18 起入库规则（texts.mask、redact_sensitive）也遮联系电话那一行里不带区号的
     # 号码，和显示层一个口径
     assert v1._reading_body(session, doc.id) == BODY
-    assert "87687769" not in texts.mask(BODY) and "87687769" not in v1.redact_sensitive(BODY)
+    second = "咨询电话：[电话已脱敏]、[电话已脱敏]。"
+    assert second in texts.mask(BODY) and second in v1.redact_sensitive(BODY)
 
 
 # ---- 网址（D-112，创始人 11/2 同意）：显示时换成"（这里隐去了网址）"，和隐去电话一个写法 ----
@@ -864,20 +865,71 @@ def test_phone_labels_stop_at_meeting_and_code_labels(stored: str, shown: str) -
 
 
 @pytest.mark.parametrize(
-    "raw",
+    ("raw", "stored"),
     [
-        "意见发至test＠foo－bar.com。",
-        "意见发至test@foo—bar.com。",
-        "意见发至abcdef @126.com。",
-        "意见发至13812345678@163.com。",
+        ("意见发至test＠foo－bar.com。", "意见发至[邮箱已脱敏]。"),
+        ("意见发至test@foo—bar.com。", "意见发至[邮箱已脱敏]。"),
+        ("意见发至abcdef @126.com。", "意见发至[邮箱已脱敏]。"),
+        # 手机号当邮箱名的：入库照旧先遮成手机号标记（同一行的姓名按电话行遮），页面上并成邮箱
+        ("意见发至13812345678@163.com。", "意见发至[手机号已脱敏]@163.com。"),
     ],
 )
-def test_emails_masked_alike_by_store_and_page(raw: str) -> None:
-    # 11/18 Codex 第三轮：域名里的全角横线、破折号，"@"前面隔一个空格，手机号当邮箱名的，入库规则
-    # 和页面一样认：入库时遮成邮箱的标记，页面上直接拿原文也遮成邮箱
-    assert v1.redact_sensitive(raw) == "意见发至[邮箱已脱敏]。"
-    assert v1.display_body_text(v1.redact_sensitive(raw)) == f"意见发至{EMAIL_MARK}。"
+def test_emails_masked_alike_by_store_and_page(raw: str, stored: str) -> None:
+    # 11/18 Codex 第三轮：域名里的全角横线、破折号，"@"前面隔一个空格，入库规则和页面一样认
+    assert v1.redact_sensitive(raw) == stored
+    assert v1.display_body_text(stored) == f"意见发至{EMAIL_MARK}。"
     assert v1.display_body_text(raw) == f"意见发至{EMAIL_MARK}。"
+    assert v1.model_body_text(stored) == "意见发至[邮箱已脱敏]。"
+
+
+def test_name_on_an_email_line_with_a_mobile_name():
+    # 11/18 独立 Claude 确认轮：手机号当邮箱名的那一行，详情页、交给模型的文字照旧遮姓名（和主干一样）
+    raw = "高新处 张某，邮箱：13812345678@163.com。"
+    assert v1.display_body_text(v1._clean_reading_body(raw)) == (
+        f"高新处 {CONTACT}，邮箱：{EMAIL_MARK}。"
+    )
+    assert (
+        v1.model_body_text(v1.redact_sensitive(raw)) == "高新处 [姓名已脱敏]，邮箱：[邮箱已脱敏]。"
+    )
+
+
+QQ_MARK = "（这里隐去了QQ号）"
+
+
+@pytest.mark.parametrize(
+    ("raw", "page", "model"),
+    [
+        # 11/18 独立 Claude 确认轮：分机后面紧跟"-"和 7–8 位的是下一个号码；分机后面接着姓名
+        (
+            "联系人：张某 0571-87654321-0571-87654322",
+            f"联系人：{CONTACT} {MARK}-{MARK}",
+            "联系人：[姓名已脱敏] [电话已脱敏]-[电话已脱敏]",
+        ),
+        (
+            "联系电话：65432109转801张某",
+            f"联系电话：{MARK}{CONTACT}",
+            "联系电话：[电话已脱敏][姓名已脱敏]",
+        ),
+        # "QQ号："不截断前面的电话标签
+        (
+            "联系电话：0571-87654321（QQ号：123456789）、65432109",
+            f"联系电话：{MARK}（QQ号：{QQ_MARK}）、{MARK}",
+            "联系电话：[电话已脱敏]（QQ号：[QQ号已脱敏]）、[电话已脱敏]",
+        ),
+        # QQ 群号的另两种写法
+        ("培训QQ群：群号123456789", f"培训QQ群：群号{QQ_MARK}", "培训QQ群：群号[QQ号已脱敏]"),
+        (
+            "交流QQ群，群号为：123456789",
+            f"交流QQ群，群号为：{QQ_MARK}",
+            "交流QQ群，群号为：[QQ号已脱敏]",
+        ),
+    ],
+)
+def test_privacy_review_cases_on_every_path(raw: str, page: str, model: str) -> None:
+    assert v1.display_body_text(v1._clean_reading_body(raw)) == page  # 详情页
+    assert v1.display_body_text(v1._clean_reading_body(raw, redact=texts.mask)) == page  # 阅读页
+    assert v1.display_attachment_text(texts.mask(raw)) == page  # 附件
+    assert v1.model_body_text(v1.redact_sensitive(raw)) == model  # 交给模型
 
 
 @pytest.mark.parametrize(
