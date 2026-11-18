@@ -521,10 +521,13 @@ def mask(text: str, *, column: str | None = None) -> str:
        10/20 去掉，交给正文规则。
     全角数字先按半角找（一个字换一个字，位置不变）。"""
     text = _MOBILE_AS_EMAIL_NAME.sub("[手机号已脱敏]", text)
-    text = _EMAIL.sub("[邮箱已脱敏]", text).replace("\x01", "").replace("\x02", "")
+    # 用户名是一串数字的邮箱先换成临时标记（body_rules._email_mark），下面遮姓名时当号码看，最后
+    # 再换回"[邮箱已脱敏]"
+    text = _EMAIL.sub(body_rules._email_mark, text).replace("\x01", "").replace("\x02", "")
     text = _replace(text, _number_spans(text.translate(_HALF), column))
     pieces = _KEEP.split(text)  # 单数位是金额
-    return "".join(p if i % 2 else _body(p) for i, p in enumerate(pieces))
+    text = "".join(p if i % 2 else _body(p) for i, p in enumerate(pieces))
+    return text.replace(body_rules._NUMBER_EMAIL_MARK, "[邮箱已脱敏]")
 
 
 def _body(text: str) -> str:

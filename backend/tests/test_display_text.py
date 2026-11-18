@@ -948,15 +948,14 @@ def test_qq_mark_on_the_page_for_the_model_and_in_ai_quotes():
     assert content.locate(loaded, "P002", "请于6月10日前报送")[1] is None
 
 
-# 11/18 独立 Claude 第六轮：入库先把号码换成了标记（电话、手机号、QQ 号、邮箱），页面上按原始数字遮
-# 姓名的规则认不到。每种号码写法 × 每条"号码旁边的姓名"规则，详情页、阅读页、附件、交给模型四条路
-# 都要把姓名和号码遮掉
+# 11/18 独立 Claude 第六轮：入库先把号码换成了标记（电话、手机号、QQ 号、用户名是一串数字的邮箱），
+# 页面上按原始数字遮姓名的规则认不到。每种号码写法 × 每条"号码旁边的姓名"规则，详情页、阅读页、
+# 附件、交给模型四条路都要把姓名和号码遮掉（字母用户名的邮箱不当号码，见下一条）
 _NUMBERS = {
     "座机": ("0123-65432109", "65432109"),
     "本地号码": ("65432109", "65432109"),
     "手机号": ("13812345678", "13812345678"),
     "QQ号": ("QQ：123456789", "123456789"),
-    "邮箱": ("abc@qq.com", "abc"),
     "号码当邮箱名": ("87654321＠qq.com", "87654321"),
     "手机号当邮箱名": ("13812345678＠qq.com", "13812345678"),
 }
@@ -997,3 +996,24 @@ def test_names_next_to_masked_numbers_on_every_path(number: str, rule: str) -> N
 def test_masked_numbers_do_not_turn_common_words_into_names(text: str) -> None:
     shown = v1.display_body_text(v1._clean_reading_body(text))
     assert "联系人" not in shown, shown
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "简历：hr@abc.com",
+        "申报书：abc@163.com",
+        # 隔空格、同一行还写着"手机"的：页面上"号码前的人名""整行有号码"两条规则也不认邮箱标记
+        "简历 hr@abc.com",
+        "申报书，abc@163.com，手机同号",
+    ],
+)
+def test_word_before_a_letter_email_is_not_a_name(raw: str) -> None:
+    # 正确性那位第六轮：字母用户名的邮箱不当号码线索，前面的词哪一层都不当姓名
+    for where, out in (
+        ("详情页", v1.display_body_text(v1._clean_reading_body(raw))),
+        ("阅读页", v1.display_body_text(v1._clean_reading_body(raw, redact=texts.mask))),
+        ("附件", v1.display_attachment_text(texts.mask(raw))),
+        ("交给模型", v1.model_body_text(v1.redact_sensitive(raw))),
+    ):
+        assert out.startswith(raw[:2]) and "联系人" not in out, (where, out)

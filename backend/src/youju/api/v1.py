@@ -2836,9 +2836,8 @@ def _mask_more_numbers(text: str) -> str:
             or _VERB_BEFORE_NUMBER.search(before)
         ):
             spans.append((*_with_brackets(text, start, end), PHONE_MARK))
-    # ③ 也看遮成标记的号码（电话、QQ 号、邮箱）：入库时先遮了号码，上面按原始数字认不到，前面的
-    # 人名照样遮（"请致电王老师 （这里隐去了电话）""王某、（这里隐去了邮箱）"，11/18 独立 Claude
-    # 第六轮）
+    # ③ 也看遮成标记的号码（电话、QQ 号）：入库时先遮了号码，上面按原始数字认不到，前面的人名
+    # 照样遮（"请致电王老师 （这里隐去了电话）"，11/18 独立 Claude 第六轮）
     for mark in _NUMBER_MARK_ANY.finditer(text):
         name = _name_before(text, mark.start())
         if name is not None and _whole_or_called(text, *name):
@@ -2944,15 +2943,16 @@ _LABEL_AT_END = re.compile(
 # 写着电话的行：有号码（或入库时遮过的号码）的，像姓名的都遮（"吾慧星、张竞博，电话：
 # （这里隐去了电话）""刘老师，（这里隐去了电话）""联系电话：88888888（李四）"）；只有"电话""手机"
 # 字样、没有号码的（表头"联系电话"、"联系电话：张三、李四"），只遮带称呼的和"电话：""手机："后面的
-# 遮成标记的号码：电话、QQ 号、邮箱（号码当邮箱名的入库先认成邮箱）。入库时先换成了标记，这里按
-# 原始数字认号码的规则认不到，旁边的姓名要照样遮（11/18 独立 Claude 第六轮）。QQ 号、邮箱的标记
-# 算"这一行有号码"，但光有它们不算电话行（只写着邮箱的一句话里，"申请表""盖章版"这类词不当姓名）
+# 遮成标记的号码：电话（手机号也写这个）、QQ 号。入库时先换成了标记，这里按原始数字认号码的规则
+# 认不到，旁边的姓名要照样遮（11/18 独立 Claude 第六轮）。QQ 号的标记算"这一行有号码"，但光有它
+# 不算电话行。邮箱的标记不算：页面上看不出邮箱原来的用户名，用户名是一串数字的入库时已经顺带遮了
+# 前面的姓名（detail._NUMBER_EMAIL_MARK），"简历：（这里隐去了邮箱）"的"简历"不当姓名
 QQ_MARK = "（这里隐去了QQ号）"
-_NUMBER_MARKS = (PHONE_MARK, QQ_MARK, EMAIL_MARK)
+_NUMBER_MARKS = (PHONE_MARK, QQ_MARK)
 _NUMBER_MARK_ANY = re.compile("|".join(map(re.escape, _NUMBER_MARKS)))
 _PHONE_LINE = re.compile(rf"电话|手机|{PHONE_MARK}")
 _PHONE = (
-    rf"(?:{PHONE_MARK}|{QQ_MARK}|{EMAIL_MARK}"
+    rf"(?:{PHONE_MARK}|{QQ_MARK}"
     r"|(?<!\d)0\d{2,3}[-－]?\d{7,8}(?!\d)|(?<!\d)1[3-9]\d{9}(?!\d)"
     r"|(?<!\d)\d{7,8}(?!\d))"
 )
