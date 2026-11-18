@@ -564,6 +564,20 @@ def test_server_package_structure(tmp_path):
         assert not any(name.endswith(".env") for name in members)
 
 
+def test_server_mysql_configs_turn_binlog_and_query_logs_off():
+    """服务器（共用、单独两种）的 MySQL：binlog 关掉（没在用：不做主从、没有按时刻恢复），慢查询日志、
+    通用查询日志写明关着；本机电脑那份只有公开数据，不在这里管。"""
+    for path in (SHARED / "mysql.cnf", SELFHOST / "server" / "mysql.cnf"):
+        lines = [
+            line.strip()
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+        assert "disable_log_bin" in lines, path
+        assert "slow_query_log = OFF" in lines and "general_log = OFF" in lines, path
+        assert not any(line.startswith(("log_bin", "log-bin", "binlog_")) for line in lines), path
+
+
 def test_offsite_pull_keeps_a_ciphertext_copy_locally(tmp_path):
     """本机每天把异地最新的加密备份下一份（已经有就不下），删掉过期的。"""
     settings = offsite_settings(tmp_path)

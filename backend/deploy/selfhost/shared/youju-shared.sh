@@ -48,6 +48,9 @@
 #   cloudrun-gone deregistered|deleted  记下云托管里的库已经删了（注销环境 / 手动删），不再提醒
 #   alert-probe            往告警通道发一条验收消息（删库期限的提醒走这个通道）
 #   export-reset           退回云托管以后再切回来时用：清掉上一批"存档过"的标记，好重走导出（手册第七节）
+# 数据库：
+#   binlog-off             关掉 MySQL 的 binlog（install、up 带 disable_log_bin 的版本以后跑一次）：停接口和
+#                          worker，清掉现有的 binlog，用新配置重建 MySQL，查 @@log_bin 是 0，再起来
 set -euo pipefail
 umask 022
 
@@ -574,6 +577,35 @@ EOF
 
 # 密码用容器里的环境变量给 mysql（MYSQL_PWD），不写成 -p 参数；脚本从标准输入给
 purge_binlog() { binlog_purge_sql | compose exec -T mysql sh -s; }
+
+# 在 mysql 容器里跑（sh -s）：打出 binlog 开没开（1 开、0 关）
+binlog_state_sql() {
+  cat <<'EOF'
+set -eu
+export MYSQL_PWD="$MYSQL_ROOT_PASSWORD"
+mysql -uroot -N -B -e 'SELECT @@GLOBAL.log_bin'
+EOF
+}
+
+# 关掉 MySQL 的二进制日志（binlog）：没在用——不做主从，也没有按时刻恢复，恢复只用每天的备份。
+# install 已经把带 disable_log_bin 的 mysql.cnf 拷到 ${SERVER}；MySQL 要重建一次容器才用上
+# （mysql.cnf 是按文件挂进去的，up 看不出它变了）。先停接口和 worker（不让新的写入落进还开着的
+# binlog），清掉现有的 binlog（只剩当前一个，里面只有文件头），再重建 MySQL、查 @@log_bin 是 0；
+# 最后把 worker、接口起来（成功、失败都起来，on_exit）。已经关了的再跑一遍也没事：清 binlog 那步
+# 打"binlog 没开，不用清"
+binlog_off() {
+  [ -f "$SERVER/.env" ] || die "还没装（没有 ${SERVER}/.env）"
+  grep -q '^disable_log_bin' "$SERVER/mysql.cnf" 2>/dev/null \
+    || die "${SERVER}/mysql.cnf 里还没有 disable_log_bin：先 install、up 含这一改的版本"
+  say "关掉 MySQL 的 binlog：停接口和 worker → 清掉现有的 binlog → 用新配置重建 MySQL → 查 @@log_bin 是 0 → 起 worker、接口"
+  pause_services
+  purge_binlog
+  compose up -d --force-recreate --wait --wait-timeout 300 mysql
+  local on
+  on=$(binlog_state_sql | compose exec -T mysql sh -s | tr -d '[:space:]')
+  [ "$on" = 0 ] || die "MySQL 重建以后 binlog 还开着（@@GLOBAL.log_bin=${on:-读不出}）"
+  echo "BINLOG OFF"
+}
 resume_services() {
   if ! { compose up -d --wait --wait-timeout 900 worker && compose up -d --wait --wait-timeout 300 api; }; then
     echo "注意：接口、worker 没起来，运行 ${SELF} up" >&2
@@ -1077,5 +1109,6 @@ case "$cmd" in
   cloudrun-gone) cloudrun_gone "$@" ;;
   alert-probe) alert_probe ;;
   export-reset) export_reset ;;
+  binlog-off) binlog_off ;;
   *) awk 'NR > 1 && /^#/ {print; next} NR > 1 {exit}' "$0"; exit 1 ;;
 esac

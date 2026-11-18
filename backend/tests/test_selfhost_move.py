@@ -1907,6 +1907,79 @@ def test_import_export_purges_binlog_even_when_interrupted(tmp_path):
     assert not any("archive-export" in c for c in calls)
 
 
+def _binlog_off_setup(tmp_path: Path, state: str) -> str:
+    """查 binlog 开没开的那一段回 state；别的 exec（清 binlog）照常读掉标准输入。"""
+    log = tmp_path / "calls.log"
+    return (
+        f'compose() {{ echo "compose $*" >> "{log}"; if [ "$1" = exec ]; then '
+        f'case "$(cat)" in *"@@GLOBAL.log_bin"*) echo "{state}" ;; esac; fi; }}'
+    )
+
+
+@needs_bash
+def test_shared_binlog_off_purges_recreates_and_checks(tmp_path):
+    _server_env(tmp_path, "MYSQL_ROOT_PASSWORD=r00tpw\n")
+    (tmp_path / "server" / "mysql.cnf").write_text("[mysqld]\ndisable_log_bin\n", encoding="utf-8")
+    done = _bash(tmp_path, "binlog_off", setup=_binlog_off_setup(tmp_path, "0"))
+    assert done.returncode == 0, done.stderr
+    assert "BINLOG OFF" in done.stdout
+    calls = [c for c in _calls(tmp_path) if c.startswith("compose")]
+    # 先停接口和 worker，清掉现有的 binlog，用新配置重建 MySQL，查是 0，最后起 worker、接口
+    assert calls == [
+        "compose stop api worker",
+        "compose exec -T mysql sh -s",
+        "compose up -d --force-recreate --wait --wait-timeout 300 mysql",
+        "compose exec -T mysql sh -s",
+        "compose up -d --wait --wait-timeout 900 worker",
+        "compose up -d --wait --wait-timeout 300 api",
+    ]
+    assert "r00tpw" not in "\n".join(_calls(tmp_path))
+
+
+@needs_bash
+def test_shared_binlog_off_needs_the_new_config_and_stops_if_still_on(tmp_path):
+    _server_env(tmp_path, "MYSQL_ROOT_PASSWORD=r00tpw\n")
+    # 服务器上的 mysql.cnf 还是旧的（没 install 新版本）：什么都不停
+    (tmp_path / "server" / "mysql.cnf").write_text(
+        "[mysqld]\nbinlog_expire_logs_seconds = 259200\n", encoding="utf-8"
+    )
+    done = _bash(tmp_path, "binlog_off", setup=_binlog_off_setup(tmp_path, "0"))
+    assert done.returncode == 1 and "还没有 disable_log_bin" in done.stderr
+    assert not [c for c in _calls(tmp_path) if c.startswith("compose")]
+    # 重建以后还开着（或读不出）：报错，照样把 worker、接口起来
+    (tmp_path / "server" / "mysql.cnf").write_text("[mysqld]\ndisable_log_bin\n", encoding="utf-8")
+    for state, shown in (("1", "@@GLOBAL.log_bin=1"), ("", "@@GLOBAL.log_bin=读不出")):
+        (tmp_path / "calls.log").unlink(missing_ok=True)
+        done = _bash(tmp_path, "binlog_off", setup=_binlog_off_setup(tmp_path, state))
+        assert done.returncode != 0 and shown in done.stderr and "BINLOG OFF" not in done.stdout
+        calls = [c for c in _calls(tmp_path) if c.startswith("compose")]
+        assert calls[-1].startswith("compose up -d --wait --wait-timeout 300 api")
+
+
+@needs_bash
+def test_binlog_state_script_reads_the_global_switch_with_the_password_from_env(tmp_path):
+    defs = _functions(tmp_path)
+    script = subprocess.run(
+        ["bash", "-c", f'source "{defs}"; binlog_state_sql'],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "mysql"
+    fake.write_text(
+        f'#!/bin/sh\necho "$* | pwd=$MYSQL_PWD" >> "{tmp_path}/mysql.log"\necho 0\n',
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+    env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "MYSQL_ROOT_PASSWORD": "r00t"}
+    done = subprocess.run(["sh", "-s"], input=script, capture_output=True, text=True, env=env)
+    assert done.returncode == 0 and done.stdout.strip() == "0"
+    (line,) = (tmp_path / "mysql.log").read_text(encoding="utf-8").splitlines()
+    assert line == "-uroot -N -B -e SELECT @@GLOBAL.log_bin | pwd=r00t"
+
+
 @needs_bash
 def test_on_exit_keeps_going_when_a_step_fails(tmp_path):
     """退出时清 binlog 失败（或往断开的终端写字失败）也要接着把接口、worker 起来。"""
