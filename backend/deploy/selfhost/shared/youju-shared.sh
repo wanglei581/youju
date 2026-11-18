@@ -758,9 +758,12 @@ pause_services() {
 
 # 退出时（成功、失败、被打断都一样）：试恢复开始了还没清 binlog 的先清，再把接口和 worker 起来。
 # 关掉网页终端、断线时 compose 客户端死了，它起的一次性容器（下载、试恢复）还在跑：先停掉——不然
-# 试恢复接着往 binlog 写，又和接口、worker 叠在一起超内存。试恢复收到停止信号会自己删临时库。
+# 试恢复接着往 binlog 写，又和接口、worker 叠在一起超内存。试恢复收到停止信号会自己删临时库；
+# 被强杀（内存不够被系统杀掉）的删不了，恢复演练（restore-drill）只跑这一次，等不到"下次开头删"，
+# 所以它退出时在这里把留下的临时库删掉（DROP_DRILL_DBS）。
 # 这里每一步失败都接着做下一步（不让 set -e 半途退出，服务至少要起来）
 PURGE_BINLOG=""
+DROP_DRILL_DBS=""
 on_exit() {
   set +e
   local stray
@@ -768,9 +771,14 @@ on_exit() {
     --filter label=com.docker.compose.oneoff=True)
   # shellcheck disable=SC2086  # 可能有几个容器编号
   [ -z "$stray" ] || docker stop -t 60 $stray >/dev/null
-  if [ -n "$PURGE_BINLOG" ]; then
+  if [ -n "$DROP_DRILL_DBS" ]; then
+    echo "恢复演练没走完：正式库不受影响；留下的临时库 youju_drill_… 现在删掉" >&2
+    drop_drill_dbs || echo "注意：临时库 youju_drill_… 没删掉，照手册第八节\"恢复演练\"查" >&2
+  elif [ -n "$PURGE_BINLOG" ]; then
     echo "试恢复被打断：正式库不受影响；临时库 youju_drill_… 它自己会删，没删掉的下次试恢复开头会删" >&2
-    purge_binlog || echo "注意：binlog 没清掉，再跑 ${SELF} import-export 之前先查（手册第六节第 7 步）" >&2
+  fi
+  if [ -n "$PURGE_BINLOG" ]; then
+    purge_binlog || echo "注意：binlog 没清掉，再跑之前先查（手册第六节第 7 步、第八节\"恢复演练\"）" >&2
   fi
   resume_services
 }
@@ -851,6 +859,22 @@ binlog_off() {
   trap - EXIT
   echo "BINLOG OFF"
 }
+# 在 mysql 容器里跑（sh -s）：删掉恢复演练留下的临时库（名字和 youju/restore_drill.py 的 NAME 一样：
+# youju_drill_<14 位时间>_<4 位十六进制>），别的库一概不碰
+drill_drop_sql() {
+  cat <<'EOF'
+set -eu
+export MYSQL_PWD="$MYSQL_ROOT_PASSWORD"
+# 先取名单（查不到就按失败退出，不当作没有），再逐个删
+dbs=$(mysql -uroot -N -B -e "SELECT schema_name FROM information_schema.schemata WHERE schema_name REGEXP '^youju_drill_[0-9]{14}_[0-9a-f]{4}\$'")
+for db in $dbs; do
+  case "$db" in youju_drill_[0-9]*) ;; *) continue ;; esac
+  mysql -uroot -e "DROP DATABASE IF EXISTS \`$db\`"
+  echo "删掉了留下的临时库 $db"
+done
+EOF
+}
+drop_drill_dbs() { drill_drop_sql | compose exec -T mysql sh -s; }
 resume_services() {
   if ! { compose up -d --wait --wait-timeout 900 worker && compose up -d --wait --wait-timeout 300 api; }; then
     echo "注意：接口、worker 没起来，运行 ${SELF} up" >&2
@@ -975,13 +999,14 @@ import_export() {
 # 北京时间的时、分（HHMM）；测试里换掉
 beijing_hhmm() { TZ=Asia/Shanghai date +%H%M; }
 
-# 拿存储卷里最新的一份整库备份（每天 4:00 做的，只有用户数据），在临时库 youju_drill_… 里恢复一遍、
-# 核对条数、外键和每张表的 SHA-256，结束删掉，不碰正式库。容器里直接跑 youju restore-drill 不带 --file
-# 会去云托管下载，这里用不了；有据的库账号也建不了临时库：和 import-export 一样用 root，口令从 .env
-# 经环境变量传进临时容器（不进命令行参数）。临时容器用 worker 那份内存（有据三个容器合计 1.5G）：
-# 先停 worker，接口照常；结束（成功、失败、被打断都一样）再起来（on_exit）。worker 停着的这几分钟里
-# 定时任务不跑、本机推同步会失败（下一轮补上），所以只在北京时间 10:00–23:30 跑，避开凌晨的备份、
-# 早上的提醒、日报和对账
+# 拿存储卷里最新的一份用户数据备份（每天 4:00 做的，D-129 ⑥），在临时库 youju_drill_… 里恢复一遍、
+# 核对条数、外键和每张表的 SHA-256，结束删掉，不碰正式库。不在容器里直接跑 youju restore-drill：有据的
+# 库账号建不了临时库，也不会先停 worker。这里和 import-export 一样用 root，口令从 .env 经环境变量传进
+# 临时容器（不进命令行参数）。临时容器用 worker 那份内存（有据三个容器合计 1.5G）：先停 worker，接口
+# 照常；结束（成功、失败、被打断都一样）再起来（on_exit）。worker 停着的这几分钟里定时任务不跑、本机推
+# 同步会失败（下一轮补上），所以只在北京时间 10:00–23:30 跑，避开凌晨的备份、早上的提醒、日报和对账。
+# 试恢复把一整份用户数据写进了 binlog：binlog 只在轮换时按 3 天过期，平时很少轮换，可能留得比备份的
+# 30 天还久，所以跑完清掉；被强杀留下的临时库也删掉（见 on_exit）
 restore_drill() {
   [ -f "$SERVER/.env" ] || die "还没装（没有 ${SERVER}/.env）"
   local now
@@ -995,20 +1020,27 @@ restore_drill() {
   { [ -n "$dir" ] && [ -d "$dir" ]; } || die "读不出存储卷的位置（docker volume inspect youju-server_storage）"
   # 文件名里是备份那天的日期，按名字排就是按日期排
   local files=("$dir"/backups/youju-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9].jsonl.gz)
-  [ -e "${files[0]}" ] || die "存储里还没有整库备份（每天 4:00 做，上线打开正式定时任务的第二天才有）"
+  [ -e "${files[0]}" ] || die "存储里还没有用户数据备份（每天 4:00 做，上线打开正式定时任务的第二天才有）"
   local name root_pw
   name=$(basename "${files[${#files[@]} - 1]}")
   drill_space_ok "$dir/backups/$name"
   root_pw=$(sed -n 's/^MYSQL_ROOT_PASSWORD=//p' "$SERVER/.env")
   [ -n "$root_pw" ] || die ".env 里没有 MYSQL_ROOT_PASSWORD"
-  say "恢复演练：${name} 在临时库 youju_drill_… 里恢复一遍（核对条数、外键、每张表的 SHA-256），结束删掉；不碰正式库"
+  say "恢复演练：用户数据备份 ${name} 在临时库 youju_drill_… 里恢复一遍（核对条数、外键、每张表的 SHA-256），结束删掉；不碰正式库"
   say "先停 worker（定时任务、本机推同步停几分钟），接口照常；结束再起来"
   compose stop worker
   trap on_exit EXIT
+  DROP_DRILL_DBS=1
+  PURGE_BINLOG=1
   YOUJU_DATABASE_URL="mysql+pymysql://root:${root_pw}@mysql:3306/youju?charset=utf8mb4" \
     compose run --rm --no-deps -e YOUJU_DATABASE_URL worker \
     youju restore-drill --file "/data/storage/backups/$name" \
     || die "恢复演练没通过（原因见上面）"
+  say "演练通过；删掉以前被打断留下的临时库（一般没有），再清 MySQL 的 binlog（试恢复写进了一份用户数据）"
+  drop_drill_dbs || die "演练通过了，但留下的临时库没删掉（照手册第八节\"恢复演练\"查）"
+  DROP_DRILL_DBS=""
+  purge_binlog || die "演练通过了，但 binlog 没清掉（照手册第六节第 7 步查）"
+  PURGE_BINLOG=""
   echo "DRILL OK ${name}"
 }
 

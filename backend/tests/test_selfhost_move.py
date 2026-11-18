@@ -1233,11 +1233,17 @@ def test_shared_restore_drill_uses_root_and_the_newest_backup(tmp_path):
     assert "db=mysql+pymysql://root:r00tpw@mysql:3306/youju?charset=utf8mb4 " in drill
     assert "r00tpw" not in drill.split(" | ")[0]
     assert "image= " in drill
-    # 服务器自己的备份：不清 binlog（库里本来就有这些数据，binlog 3 天过期）
-    assert not any(c.startswith("compose exec -T mysql") for c in calls)
+    # 演练通过以后：删掉以前被打断留下的临时库，再清 binlog（试恢复写进了一份用户数据）；
+    # 两段都经标准输入给 mysql 容器里的 sh，口令不在参数里（脚本内容见下面两条测试）
+    assert calls[2].startswith("compose exec -T mysql sh -s |")
+    assert calls[3].startswith("compose exec -T mysql sh -s |")
+    assert "r00tpw" not in calls[2] + calls[3]
     # 结束把 worker 起来（接口本来就在跑，up 一下不影响）
-    assert calls[2].startswith("compose up -d --wait --wait-timeout 900 worker")
-    assert calls[3].startswith("compose up -d --wait --wait-timeout 300 api")
+    assert calls[4].startswith("compose up -d --wait --wait-timeout 900 worker")
+    assert calls[5].startswith("compose up -d --wait --wait-timeout 300 api")
+    # 存储卷按项目名找（compose 文件里 name: youju-server）
+    assert "docker volume inspect youju-server_storage --format {{.Mountpoint}}" in _calls(tmp_path)
+    assert "没走完" not in done.stderr
 
 
 @needs_bash
@@ -1262,7 +1268,7 @@ def test_shared_restore_drill_needs_a_backup_and_enough_disk(tmp_path):
     _server_env(tmp_path, "MYSQL_ROOT_PASSWORD=r00tpw\n")
     (tmp_path / "volume" / "backups").mkdir(parents=True)
     done = _bash(tmp_path, "restore_drill", setup=_drill_setup(tmp_path))
-    assert done.returncode == 1 and "存储里还没有整库备份" in done.stderr
+    assert done.returncode == 1 and "存储里还没有用户数据备份" in done.stderr
     assert not [c for c in _calls(tmp_path) if c.startswith("compose")]
     _drill_backups(tmp_path, "youju-20261119.jsonl.gz")
     small = _drill_setup(tmp_path) + "\ndf() { printf 'Avail\\n 1073741824\\n'; }"
@@ -1289,8 +1295,80 @@ def test_shared_restore_drill_brings_the_worker_back_when_it_fails(tmp_path):
     assert "恢复演练没通过" in done.stderr and "DRILL OK" not in done.stdout
     calls = [c for c in _calls(tmp_path) if c.startswith("compose")]
     assert calls[0] == "compose stop worker"
+    # 没通过也照样：删留下的临时库、清 binlog，再把 worker、接口起来
+    run = next(i for i, c in enumerate(calls) if c.startswith("compose run"))
+    assert calls[run + 1 : run + 3] == ["compose exec -T mysql sh -s"] * 2
+    assert "恢复演练没走完" in done.stderr
     assert calls[-1].startswith("compose up -d --wait --wait-timeout 300 api")
     assert "compose up -d --wait --wait-timeout 900 worker" in calls
+
+
+@needs_bash
+def test_shared_restore_drill_cleans_up_when_interrupted(tmp_path):
+    """演练中途被打断（关掉网页终端、Ctrl+C）：先停掉还在跑的临时容器，删留下的临时库、清 binlog，
+    再把 worker、接口起来。"""
+    _server_env(tmp_path, "MYSQL_ROOT_PASSWORD=r00tpw\n")
+    _drill_backups(tmp_path, "youju-20261119.jsonl.gz")
+    log = tmp_path / "calls.log"
+    interrupted = (
+        f"beijing_hhmm() {{ echo 1430; }}\n"
+        f'compose() {{ echo "compose $*" >> "{log}"; '
+        'if [ "$1" = exec ]; then cat >/dev/null; fi; '
+        'if [ "$1" = run ]; then kill -TERM $$; sleep 1; fi; }\n'
+        f'docker() {{ echo "docker $*" >> "{log}"; case "$1" in '
+        f'ps) echo abc123 ;; info) echo "{tmp_path}" ;; volume) echo "{tmp_path}/volume" ;; esac; }}'
+    )
+    done = _bash(tmp_path, "restore_drill", setup=interrupted)
+    assert done.returncode != 0 and "DRILL OK" not in done.stdout
+    calls = _calls(tmp_path)
+    run = next(i for i, c in enumerate(calls) if c.startswith("compose run"))
+    assert calls[run + 1].startswith(
+        "docker ps -q --filter label=com.docker.compose.project=youju-server"
+    )
+    assert calls[run + 2] == "docker stop -t 60 abc123"
+    assert calls[run + 3 : run + 5] == ["compose exec -T mysql sh -s"] * 2
+    assert calls[-1].startswith("compose up -d --wait --wait-timeout 300 api")
+
+
+@needs_bash
+@pytest.mark.parametrize("fails", [False, True])
+def test_drill_drop_script_drops_only_drill_databases(tmp_path, fails):
+    """容器里跑的那段：只删恢复演练的临时库（youju_drill_<14 位>_<4 位十六进制>），口令只在环境变量里；
+    查不到名单时按失败退出，不当作没有。"""
+    defs = _functions(tmp_path)
+    script = subprocess.run(
+        ["bash", "-c", f'source "{defs}"; drill_drop_sql'],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "mysql"
+    select = "exit 1" if fails else "printf 'youju_drill_20261119143000_ab12\\nyouju\\n'"
+    fake.write_text(
+        "#!/bin/sh\n"
+        f'echo "$* | pwd=$MYSQL_PWD" >> "{tmp_path}/mysql.log"\n'
+        'case "$*" in\n'
+        f'  *"information_schema.schemata"*) {select} ;;\n'
+        "esac\n",
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+    env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "MYSQL_ROOT_PASSWORD": "r00t"}
+    done = subprocess.run(["sh", "-s"], input=script, capture_output=True, text=True, env=env)
+    lines = (tmp_path / "mysql.log").read_text(encoding="utf-8").splitlines()
+    assert all(line.endswith("| pwd=r00t") and "r00t" not in line.split(" | ")[0] for line in lines)
+    assert "REGEXP '^youju_drill_[0-9]{14}_[0-9a-f]{4}$'" in lines[0]
+    drops = [line for line in lines if "DROP DATABASE" in line]
+    if fails:
+        assert done.returncode != 0 and not drops
+    else:
+        assert done.returncode == 0
+        assert drops == [
+            "-uroot -e DROP DATABASE IF EXISTS `youju_drill_20261119143000_ab12` | pwd=r00t"
+        ]
+        assert "删掉了留下的临时库 youju_drill_20261119143000_ab12" in done.stdout
 
 
 @needs_bash
