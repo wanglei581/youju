@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from youju.ai.client import AIError, ChatClient
 from youju.ai.deadlines import _compact, _date_span
+from youju.crawler.detail import redact_sensitive
 from youju.dedup import visible_documents
 from youju.models import AICheck, Document, DocumentDeadline, DocumentDetail
 
@@ -271,7 +272,8 @@ def run_audit(
                 )
             )
         )
-        targets, excerpt = _plan(body, due_rows) if body else ([], "")
+        # 发给模型的原文片段从按现行规则再遮一遍的正文里取（旧规则漏遮的正文还在库里，11/18）
+        targets, excerpt = _plan(redact_sensitive(body), due_rows) if body else ([], "")
         if not targets:
             continue
         check = session.scalar(

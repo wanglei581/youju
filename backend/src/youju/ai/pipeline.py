@@ -26,6 +26,7 @@ from youju.ai.classify import classify_with_ai
 from youju.ai.client import AIError, ChatClient
 from youju.ai.deadlines import RESULT_VERSION, extract_deadlines_with_ai, stored_version
 from youju.classify import comparable_kind, doc_kind
+from youju.crawler.detail import redact_sensitive
 from youju.dedup import (
     canonical_ids,
     groups_for,
@@ -382,15 +383,17 @@ def run_ai_checks(
     for doc, detail in _documents_to_check(session, limit, now, first):
         report.documents += 1
         tasks = _pending_tasks(session, doc.id, now)
-        # 这次交给模型的正文；结果先放着，写之前核对正文没被换掉（见下）
+        # 这次交给模型的正文；结果先放着，写之前核对正文没被换掉（见下）。交给模型的按现行规则再遮
+        # 一遍（旧规则漏遮的正文还在库里，11/18）；核对正文换没换照旧比库里存的原文
         body = detail.body_text
+        sent = redact_sensitive(body)
         records: list[tuple[str, dict]] = []
         ai_kind: str | None = None
         items: list[DeadlineCandidate] | None = None
         failed = 0
         if "kind" in tasks:
             try:
-                kind = classify_with_ai(client, doc.title, body)
+                kind = classify_with_ai(client, doc.title, sent)
                 if kind is None:
                     # 类别不在四类之内或字段不对：按出错记，隔 24 小时再试
                     records.append(
@@ -412,7 +415,7 @@ def run_ai_checks(
         if "deadlines" in tasks:
             try:
                 items = extract_deadlines_with_ai(
-                    client, doc.title, body, detail.publish_date or doc.publish_date
+                    client, doc.title, sent, detail.publish_date or doc.publish_date
                 )
                 records.append(
                     ("deadlines", {"result": _serialize(items), "usage": client.last_usage})
@@ -509,10 +512,11 @@ def rerun_old_deadlines(
     consecutive_errors = 0
     for doc, detail, _ in old_deadline_checks(session, now, days)[:limit]:
         report.documents += 1
+        # 交给模型的按现行规则再遮一遍；写之前核对正文换没换照旧比库里存的原文（_write_one）
         body = detail.body_text
         try:
             items = extract_deadlines_with_ai(
-                client, doc.title, body, detail.publish_date or doc.publish_date
+                client, doc.title, redact_sensitive(body), detail.publish_date or doc.publish_date
             )
         except AIError:
             _count_usage(report, client.last_usage)

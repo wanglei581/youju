@@ -495,3 +495,13 @@ def test_only_real_booleans_count_as_answers(session) -> None:
     assert report.flagged == [] and report.unverified == 0
     session.expire_all()
     assert all(session.get(DocumentDeadline, r.id).audit_at is None for r in (one, text))
+
+
+def test_audit_sends_the_text_masked_again_by_current_rules(session) -> None:
+    # 11/18：库里还有旧规则漏遮的正文，发给 AI 的原文片段按现行规则再遮一遍
+    doc = add_doc(session, body=BODY + "联系人：张某，联系电话：65432109。")
+    approve(session, doc, date(2026, 10, 15))
+    client, calls = fake_ai([])
+    run_audit(session, client, now=datetime.now(UTC))
+    sent = calls[0]["messages"][1]["content"]
+    assert "2026年10月15日" in sent and "65432109" not in sent and "张某" not in sent

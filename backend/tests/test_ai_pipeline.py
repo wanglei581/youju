@@ -995,3 +995,43 @@ def test_rerun_counts_only_after_the_commit_succeeds(
     )
     session.expire_all()
     assert _deadline_check(session, doc).result == []
+
+
+# 旧规则漏遮、还在库里的联系人和号码（11/18 起的入库规则会遮）
+LEFTOVER = "联系人：张某，联系电话：65432109。"
+
+
+def test_model_gets_the_body_masked_again_by_current_rules(session) -> None:
+    """11/18：交给模型前按现行规则再遮一遍；写结果前核对正文换没换照旧比库里存的原文，结果照常记下，
+    库里存的正文不改。"""
+    doc = add_doc(session, body=BODY + LEFTOVER)
+    client, calls = fake_ai(
+        deadlines=[ai_item("2026-10-15", "请各单位于2026年10月15日前完成网上申报。")]
+    )
+    report = run_ai_checks(session, client)
+    sent = json.dumps(calls, ensure_ascii=False)
+    assert len(calls) == 2 and "65432109" not in sent and "张某" not in sent
+    assert "[电话已脱敏]" in sent and "[姓名已脱敏]" in sent
+    assert report.body_changed == 0
+    checks = session.scalars(select(AICheck).where(AICheck.document_id == doc.id)).all()
+    assert sorted(c.task for c in checks) == ["deadlines", "kind"] and all(
+        c.error is None for c in checks
+    )
+    assert session.get(DocumentDetail, doc.id).body_text == BODY + LEFTOVER
+
+
+def test_rerun_of_old_deadline_checks_sends_the_masked_body_too(session) -> None:
+    from youju.ai.deadlines import RESULT_VERSION
+    from youju.ai.pipeline import rerun_old_deadlines
+
+    now = datetime(2026, 10, 28, 1, tzinfo=UTC)
+    doc = add_doc(session, body=BODY + LEFTOVER)
+    _old_check(session, doc)
+    client, calls = fake_ai(
+        deadlines=[ai_item("2026-10-15", "请各单位于2026年10月15日前完成网上申报。")]
+    )
+    report = rerun_old_deadlines(session, client, days=90, limit=10, now=now)
+    sent = json.dumps(calls, ensure_ascii=False)
+    assert report.documents == 1 and report.body_changed == 0
+    assert "65432109" not in sent and "张某" not in sent
+    assert _deadline_check(session, doc).result["version"] == RESULT_VERSION
