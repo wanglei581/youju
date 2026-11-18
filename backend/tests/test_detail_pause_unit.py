@@ -525,8 +525,8 @@ def test_streak_pauses_host(tmp_path, reply, reason):
     assert len(calls) == 3
     assert pause.reasons == {"a.gov.cn": reason}
     # 写进共享文件停 6 小时：下次运行也不来（第二十一轮独立 Claude）
-    expiry = _SitePause(str(path)).expiry("a.gov.cn")
-    assert expiry is not None and expiry < datetime.now(UTC) + timedelta(hours=6, minutes=1)
+    hours = (_SitePause(str(path)).expiry("a.gov.cn") - datetime.now(UTC)).total_seconds() / 3600
+    assert 5.9 < hours < 6.01
 
 
 def test_streamed_outcomes_drop_page_content_only_when_asked():
@@ -1893,3 +1893,34 @@ def test_short_notice_titled_with_block_words_and_attachment_is_read():
     )
     result = _html_result("https://a.gov.cn/1", page)
     assert detail_service._gate_page(result, "https://a.gov.cn/1") is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "因系统升级，本周六8:00至12:00网上办事大厅部分栏目访问受限，给您带来的不便敬请谅解。",
+        "本项目网站安全狗防护软件采购的成交供应商为某公司，成交金额3.2万元，特此公告。",
+        "近期我市已拦截多起冒充政府工作人员的诈骗电话，请广大群众提高警惕，谨防上当受骗。",
+    ],
+    ids=["maintenance", "safedog-purchase", "anti-fraud"],
+)
+def test_short_notice_mentioning_block_nouns_without_attachment_is_read(tmp_path, text):
+    # 整页几乎没字、不带附件的短通知，正文里有"访问受限""安全狗""拦截"这类名词：不是拦截提示句，
+    # 照常读、不停网站（第二十二轮独立 Claude）
+    path = str(tmp_path / "pause.json")
+    page = (
+        "<html><head><title>关于本周六系统维护等事项的通知</title></head><body>"
+        f"<div id='zoom'><p>{text}</p></div></body></html>"
+    )
+    assert (
+        detail_service._gate_page(_html_result("https://a.gov.cn/1", page), "https://a.gov.cn/1")
+        is False
+    )
+
+    class Fake:
+        def fetch(self, url):
+            return _html_result(url, page)
+
+    outcomes = _fetch_outcomes([(1, "https://a.gov.cn/1")], Fake(), 1, pause=_SitePause(path))
+    assert outcomes[1].status == "ok"
+    assert _SitePause(path).expiry("a.gov.cn") is None

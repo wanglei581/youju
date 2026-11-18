@@ -244,7 +244,7 @@ def test_streaks_count_across_batches(session, kind):
     else:
         # 405 这类 4xx 连着几份多半是网站在拦：也过 6、24 小时再试（第二十一轮 Codex）
         assert all(d.status == "http_error" and d.next_retry_at is not None for d in written[:3])
-    # 到了重试时间、停站也到期了（4xx 的只停那一次运行，验证码字样的停 24 小时）：下一次运行把这三份
+    # 到了重试时间、停站也到期了（4xx 的停 6 小时，验证码字样的停 24 小时）：下一次运行把这三份
     # 选回来
     for detail in written[:3]:
         detail.next_retry_at = datetime.now(UTC) - timedelta(seconds=1)

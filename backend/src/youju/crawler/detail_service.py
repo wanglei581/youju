@@ -35,7 +35,6 @@ from youju.crawler.detail import (
     search_throttle_site,
 )
 from youju.crawler.fetcher import (
-    _BLOCK_WORDS,
     CAPTCHA_WORDS,
     SITE_PAUSED,
     FetchResult,
@@ -119,9 +118,9 @@ def _retryable(status: str, http_status: int | None, reason: str | None = None) 
     # robots.txt 暂不可用时禁止本次抓取，但可在退避后重新检查。pdf_retry：读 PDF 正文的子进程
     # 遇到和当时的环境有关的问题（容器内存不够被停掉、太忙等，见 pdf_sandbox），不是文件本身的问题。
     # 页面上有验证码这类字、又不像整页关卡的（CAPTCHA_WORDS_ONLY）：可能是网站临时出的验证页，
-    # 过 6、24 小时再试（第十九轮独立 Claude）。404、410 以外、又不是明确拒绝（401、403、412）的
-    # 4xx（405、418 这类）：连着几份都这样多半是网站在拦（见"连续 3 份"），文件本身没问题，同样过
-    # 6、24 小时再试（第二十一轮 Codex）
+    # 过 6、24 小时再试（第十九轮独立 Claude）。404、410 以外、又不是明确拒绝（401、403、412、
+    # 451）的 4xx（405、418 这类）：连着几份都这样多半是网站在拦（见"连续 3 份"），文件本身没问题，
+    # 同样过 6、24 小时再试（第二十一轮 Codex）
     return (
         status in {"network_error", "robots_error", "pdf_retry"}
         or (status == "parse_empty" and reason == CAPTCHA_WORDS_ONLY)
@@ -130,7 +129,7 @@ def _retryable(status: str, http_status: int | None, reason: str | None = None) 
             and http_status is not None
             and (
                 400 <= http_status < 500
-                and http_status not in (401, 403, 404, 410, 412)
+                and http_status not in (401, 403, 404, 410, 412, 451)
                 or (http_status >= 500 and http_status != 521)
             )
         )
@@ -250,7 +249,8 @@ def _html_page_gate(text: str, url: str) -> bool:
         # - 带附件的是一句话加附件的短通知（"防火墙设备采购结果公告"，标题就是"防火墙采购公告"的也
         #   一样，第二十一轮独立 Claude 建议），不算拦截页，照样查是不是登录页、验证页；
         # - 标题很短的那一段就写着拦截（"访问被拒绝""网站防火墙"）、取不到正文，或者"正文"本身就是
-        #   拦截提示（"访问受限：您的访问已被网站防火墙拦截……"，第二十一轮独立 Claude）的，算；
+        #   拦截提示句（"您的访问已被网站防火墙拦截……"，第二十一轮独立 Claude；只认提示句，"部分栏目
+        #   访问受限"的维护通知、"安全狗防护软件采购"公告不算，第二十二轮独立 Claude）的，算；
         # - 取得到不带这些字的正文：不当拦截页，照样查登录页（登录页上写着"非授权用户禁止访问"）
         parsed = parse_detail(_untitled(text), url)
         if parsed.failure_reason == "防护页或验证码":
@@ -258,13 +258,22 @@ def _html_page_gate(text: str, url: str) -> bool:
         if parsed.attachments:
             return _login_page(text, url)
         body = parsed.raw_body or ""
-        if title_blocked(cleaned) or not body or _BLOCK_WORDS.search(body):
+        if title_blocked(cleaned) or not body or _BLOCK_PROMPT.search(body):
             return True
         return _login_page(text, url)
     if reason and reason != "需要登录或验证码":
         return True
     # 登录页、验证页详情页另有一套（不靠 html_gate 先认出：带导航、标题不像登录的登录页也有）
     return _login_page(text, url)
+
+
+# 拦截提示句："正文"本身就是拦截提示时用。"防火墙""访问受限""安全狗"这类名词在正常短通知里常见
+# （维护通知、采购公告、反诈提醒），不算（第二十二轮独立 Claude）
+_BLOCK_PROMPT = re.compile(
+    r"(?:您|你)的(?:访问|请求|IP).{0,20}(?:拦截|阻断|受限|限制|拒绝|禁止)|访问被(?:拒绝|阻断|拦截)|"
+    r"已被.{0,15}(?:拦截|阻断)|禁止访问|access denied|forbidden",
+    re.I,
+)
 
 
 def _untitled(text: str) -> str:
