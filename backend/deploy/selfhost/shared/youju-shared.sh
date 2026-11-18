@@ -772,7 +772,7 @@ on_exit() {
   # shellcheck disable=SC2086  # 可能有几个容器编号
   [ -z "$stray" ] || docker stop -t 60 $stray >/dev/null
   if [ -n "$DROP_DRILL_DBS" ]; then
-    echo "恢复演练没走完：正式库不受影响；留下的临时库 youju_drill_… 现在删掉" >&2
+    echo "恢复演练没收完尾：正式库不受影响；留下的临时库 youju_drill_…（有的话）现在删掉，再清 binlog" >&2
     drop_drill_dbs || echo "注意：临时库 youju_drill_… 没删掉，照手册第八节\"恢复演练\"查" >&2
   elif [ -n "$PURGE_BINLOG" ]; then
     echo "试恢复被打断：正式库不受影响；临时库 youju_drill_… 它自己会删，没删掉的下次试恢复开头会删" >&2
@@ -1005,8 +1005,8 @@ beijing_hhmm() { TZ=Asia/Shanghai date +%H%M; }
 # 临时容器（不进命令行参数）。临时容器用 worker 那份内存（有据三个容器合计 1.5G）：先停 worker，接口
 # 照常；结束（成功、失败、被打断都一样）再起来（on_exit）。worker 停着的这几分钟里定时任务不跑、本机推
 # 同步会失败（下一轮补上），所以只在北京时间 10:00–23:30 跑，避开凌晨的备份、早上的提醒、日报和对账。
-# 试恢复把一整份用户数据写进了 binlog：binlog 只在轮换时按 3 天过期，平时很少轮换，可能留得比备份的
-# 30 天还久，所以跑完清掉；被强杀留下的临时库也删掉（见 on_exit）
+# 试恢复把一整份用户数据写进了 binlog，跑完清掉；演练进程被系统强杀留下的临时库也删掉（见 on_exit）。
+# 两件都做完才撤掉收尾标记：哪一步失败，退出时 on_exit 再删一遍、再清一遍
 restore_drill() {
   [ -f "$SERVER/.env" ] || die "还没装（没有 ${SERVER}/.env）"
   local now
@@ -1037,9 +1037,9 @@ restore_drill() {
     youju restore-drill --file "/data/storage/backups/$name" \
     || die "恢复演练没通过（原因见上面）"
   say "演练通过；删掉以前被打断留下的临时库（一般没有），再清 MySQL 的 binlog（试恢复写进了一份用户数据）"
-  drop_drill_dbs || die "演练通过了，但留下的临时库没删掉（照手册第八节\"恢复演练\"查）"
+  drop_drill_dbs || die "演练通过了，但留下的临时库没删掉（照手册第八节\"恢复演练\"做）"
+  purge_binlog || die "演练通过了，但 binlog 没清掉（照手册第八节\"恢复演练\"做）"
   DROP_DRILL_DBS=""
-  purge_binlog || die "演练通过了，但 binlog 没清掉（照手册第六节第 7 步查）"
   PURGE_BINLOG=""
   echo "DRILL OK ${name}"
 }

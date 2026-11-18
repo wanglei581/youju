@@ -1298,9 +1298,34 @@ def test_shared_restore_drill_brings_the_worker_back_when_it_fails(tmp_path):
     # 没通过也照样：删留下的临时库、清 binlog，再把 worker、接口起来
     run = next(i for i, c in enumerate(calls) if c.startswith("compose run"))
     assert calls[run + 1 : run + 3] == ["compose exec -T mysql sh -s"] * 2
-    assert "恢复演练没走完" in done.stderr
+    assert "恢复演练没收完尾" in done.stderr
     assert calls[-1].startswith("compose up -d --wait --wait-timeout 300 api")
     assert "compose up -d --wait --wait-timeout 900 worker" in calls
+
+
+@needs_bash
+def test_shared_restore_drill_retries_cleanup_when_only_the_binlog_purge_fails(tmp_path):
+    """演练通过、删临时库也成了，只有清 binlog 失败：不打 DRILL OK；退出时再删一遍、再清一遍，
+    提示不说成"试恢复被打断"（那是 import-export 的说法）。"""
+    _server_env(tmp_path, "MYSQL_ROOT_PASSWORD=r00tpw\n")
+    _drill_backups(tmp_path, "youju-20261119.jsonl.gz")
+    log = tmp_path / "calls.log"
+    count = tmp_path / "exec-count"
+    # 第 2 次 exec（演练通过后的清 binlog）失败，其余都成
+    flaky = (
+        _drill_setup(tmp_path) + f'\ncompose() {{ echo "compose $*" >> "{log}"; '
+        'if [ "$1" = exec ]; then cat >/dev/null; '
+        f'n=$(( $(cat "{count}" 2>/dev/null || echo 0) + 1 )); echo "$n" > "{count}"; '
+        '[ "$n" -ne 2 ]; fi; }'
+    )
+    done = _bash(tmp_path, "restore_drill", setup=flaky)
+    assert done.returncode != 0 and "DRILL OK" not in done.stdout
+    assert "演练通过了，但 binlog 没清掉" in done.stderr
+    assert "试恢复被打断" not in done.stderr and "恢复演练没收完尾" in done.stderr
+    calls = [c for c in _calls(tmp_path) if c.startswith("compose")]
+    run = next(i for i, c in enumerate(calls) if c.startswith("compose run"))
+    assert calls[run + 1 : run + 5] == ["compose exec -T mysql sh -s"] * 4
+    assert calls[-1].startswith("compose up -d --wait --wait-timeout 300 api")
 
 
 @needs_bash
