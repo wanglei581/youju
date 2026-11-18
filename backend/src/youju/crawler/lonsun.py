@@ -49,6 +49,7 @@ import math
 import re
 from dataclasses import dataclass, replace
 from datetime import date
+from decimal import Decimal
 from functools import cached_property, lru_cache
 from urllib.parse import parse_qsl, unquote, urlsplit
 
@@ -1085,6 +1086,33 @@ class _Environment:
         return UNKNOWN
 
 
+def _js_number_string(value: float) -> str:
+    """ECMAScript 的 Number::toString（十进制，第十九轮 Codex）：位数取最短的往返表示（和 Python
+    repr 一样），写法照 JS——整数位不超过 21 位的不用科学记数法（0.000001 写成 0.000001，不是
+    1e-06；2^53 以上的整数照最短位数补零，不照二进制精确值），小数点前是 0、后面 6 个 0 以上的才写成
+    1e-7 这样。"""
+    if math.isnan(value):
+        return "NaN"
+    if value == 0:
+        return "0"
+    if value < 0:
+        return "-" + _js_number_string(-value)
+    if math.isinf(value):
+        return "Infinity"
+    _, digits, exponent = Decimal(repr(value)).normalize().as_tuple()
+    s = "".join(map(str, digits))
+    k = len(s)
+    n = exponent + k  # 值 = s × 10^(n − k)
+    if k <= n <= 21:
+        return s + "0" * (n - k)
+    if 0 < n <= 21:
+        return s[:n] + "." + s[n:]
+    if -6 < n <= 0:
+        return "0." + "0" * -n + s
+    e = n - 1
+    return (s if k == 1 else s[0] + "." + s[1:]) + ("e+" if e >= 0 else "e-") + str(abs(e))
+
+
 def _js_string(value):
     if value is UNDEFINED:
         return "undefined"
@@ -1095,13 +1123,7 @@ def _js_string(value):
     if value is False:
         return "false"
     if isinstance(value, (int, float)):
-        if math.isnan(value):
-            return "NaN"
-        if math.isinf(value):
-            return "Infinity" if value > 0 else "-Infinity"
-        if value == 0:
-            return "0"
-        return str(int(value)) if value == int(value) and abs(value) < 1e21 else str(value)
+        return _js_number_string(float(value))
     if isinstance(value, str):
         return value
     if isinstance(value, (list, tuple)):

@@ -3991,3 +3991,43 @@ def test_string_index_follows_utf16(check, read):
     assert page.count(head) == 1
     page = page.replace(head, head + " " + check, 1)
     assert _refused(page) is not read, check
+
+
+@pytest.mark.parametrize(
+    "value,text",
+    [
+        (0.000001, "0.000001"),
+        (0.000123, "0.000123"),
+        (1e-7, "1e-7"),
+        (1.2e-7, "1.2e-7"),
+        (0.5, "0.5"),
+        (20, "20"),
+        (20.0, "20"),
+        (-1.5, "-1.5"),
+        (-0.0, "0"),
+        (0.1 + 0.2, "0.30000000000000004"),
+        (1e16, "10000000000000000"),
+        (2**53 + 2, "9007199254740994"),
+        (12345678901234567890, "12345678901234567000"),
+        (1e20, "100000000000000000000"),
+        (1e21, "1e+21"),
+        (1.5e300, "1.5e+300"),
+        (5e-324, "5e-324"),
+    ],
+)
+def test_numbers_print_like_javascript(value, text):
+    # 数字转字符串照 ECMAScript 的 Number::toString（第十九轮 Codex）：0.000001 浏览器写成 0.000001，
+    # Python 写成 1e-06；2^53 以上的整数浏览器照最短位数补零
+    from youju.crawler.lonsun import _js_string
+
+    assert _js_string(value) == text
+
+
+def test_numeric_page_size_goes_out_like_the_browser():
+    # 列表参数是数字时，发出去的写法和浏览器一样（pageSize: 0.000001 → pageSize=0.000001）
+    page = fixture("jx_page.html")
+    assert page.count('pageSize: "20",') == 1
+    page = page.replace('pageSize: "20",', "pageSize: 0.000001,", 1)
+    plan = resolve_fixture("jx", "49949451", page=page)
+    assert not isinstance(plan, str), plan
+    assert "pageSize=0.000001&" in plan.url and "1e-06" not in plan.url, plan.url
