@@ -890,9 +890,18 @@ QQ_MARK = "（这里隐去了QQ号）"
             f"交流QQ群，群号为：{QQ_MARK}",
             "交流QQ群，群号为：[QQ号已脱敏]",
         ),
+        # 独立 Claude 第五轮：带分机的日期；新加写法里"00"开头的区号；新加的姓开头的常见词
+        (
+            "联系电话：0571-87654321，受理时间：20231108-1",
+            f"联系电话：{MARK}，受理时间：20231108-1",
+            "联系电话：[电话已脱敏]，受理时间：20231108-1",
+        ),
+        ("批次 0001—1234567", "批次 0001—1234567", "批次 0001—1234567"),
+        ("暴雨，电话：0571-87654321", f"暴雨，电话：{MARK}", "暴雨，电话：[电话已脱敏]"),
+        ("索取 13812345678", f"索取 {MARK}", "索取 [电话已脱敏]"),
     ],
 )
-def test_privacy_review_cases_on_every_path(raw: str, page: str, model: str) -> None:
+def test_review_cases_on_every_path(raw: str, page: str, model: str) -> None:
     assert v1.display_body_text(v1._clean_reading_body(raw)) == page  # 详情页
     assert v1.display_body_text(v1._clean_reading_body(raw, redact=texts.mask)) == page  # 阅读页
     assert v1.display_attachment_text(texts.mask(raw)) == page  # 附件
