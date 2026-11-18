@@ -1,5 +1,7 @@
 from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -240,7 +242,17 @@ def test_streaks_count_across_batches(session, kind):
         # 记读不出（页面上有验证码这类字），过几小时再试，不永远丢掉（第十九轮独立 Claude）
         assert all(d.status == "parse_empty" and d.next_retry_at is not None for d in written[:3])
     else:
-        assert all(d.status == "http_error" for d in written[:3])
+        # 405 这类 4xx 连着几份多半是网站在拦：也过 6、24 小时再试（第二十一轮 Codex）
+        assert all(d.status == "http_error" and d.next_retry_at is not None for d in written[:3])
+    # 到了重试时间、停站也到期了（4xx 的只停那一次运行，验证码字样的停 24 小时）：下一次运行把这三份
+    # 选回来
+    for detail in written[:3]:
+        detail.next_retry_at = datetime.now(UTC) - timedelta(seconds=1)
+    session.commit()
+    Path(get_settings().detail_pause_path).unlink(missing_ok=True)
+    retried = FakeFetcher({d.url: response(d) for d in docs})
+    run_detail_queue(session, minutes=1, workers=1, per_host=1, fetcher=retried)
+    assert set(retried.calls) == {d.url for d in docs}
 
 
 def test_time_stop_without_database():
@@ -476,8 +488,9 @@ def test_robots_http_status_controls_detail_writes(session, robots_status, page_
     elif robots_status == 403:
         # 页面也回 403 才算被拒绝：第一份记下、网站停取（写进共享的停取文件），第二份不再去
         assert [r.status for r in results] == ["http_error", "site_paused"]
+        assert session.get(DocumentDetail, docs[0].id) is not None
         assert session.get(DocumentDetail, docs[1].id) is None
-        assert calls == ["/robots.txt", calls[1]]
+        assert calls == ["/robots.txt", urlsplit(docs[0].url).path]
         assert results.paused_hosts == {"gxt.ln.gov.cn": "HTTP 403"}
         assert _SitePause(get_settings().detail_pause_path).reasons == {"gxt.ln.gov.cn": "HTTP 403"}
     else:

@@ -118,14 +118,20 @@ def _retryable(status: str, http_status: int | None, reason: str | None = None) 
     # robots.txt 暂不可用时禁止本次抓取，但可在退避后重新检查。pdf_retry：读 PDF 正文的子进程
     # 遇到和当时的环境有关的问题（容器内存不够被停掉、太忙等，见 pdf_sandbox），不是文件本身的问题。
     # 页面上有验证码这类字、又不像整页关卡的（CAPTCHA_WORDS_ONLY）：可能是网站临时出的验证页，
-    # 过 6、24 小时再试（第十九轮独立 Claude）
+    # 过 6、24 小时再试（第十九轮独立 Claude）。404、410 以外、又不是明确拒绝（401、403、412）的
+    # 4xx（405、418 这类）：连着几份都这样多半是网站在拦（见"连续 3 份"），文件本身没问题，同样过
+    # 6、24 小时再试（第二十一轮 Codex）
     return (
         status in {"network_error", "robots_error", "pdf_retry"}
         or (status == "parse_empty" and reason == CAPTCHA_WORDS_ONLY)
         or (
             status == "http_error"
             and http_status is not None
-            and (http_status == 429 or (http_status >= 500 and http_status != 521))
+            and (
+                400 <= http_status < 500
+                and http_status not in (401, 403, 404, 410, 412)
+                or (http_status >= 500 and http_status != 521)
+            )
         )
     )
 
