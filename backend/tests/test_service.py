@@ -979,6 +979,30 @@ def test_lonsun_marked_source_whose_page_lost_public_tree_waits_for_review(sessi
     assert check.items_found == 0 and fetcher.requested == [url]
 
 
+@pytest.mark.parametrize("recognizable", [True, False])
+def test_lonsun_marked_source_reads_server_rendered_documents_like_trial_read(
+    session, recognizable
+):
+    # 经龙讯接口读的来源，栏目页上直接写着这个机构在这个网站上的文件页、够 3 条（第十七轮 Codex）：
+    # 照页面读，和试读、抽查一样——PublicTree 认不出也不记待人工处理，认得出也不再请求栏目树和接口
+    url, html, *_ = _lonsun_service_fixture()
+    own = "".join(
+        f"<li><a href='/public/6991/{1000 + d}.html'>关于开展第{d}批申报工作的通知</a>"
+        f"<span>2026-11-{d:02d}</span></li>"
+        for d in (1, 2, 3)
+    )
+    changed = html.replace("<body>", f"<body><ul>{own}</ul>", 1)
+    if not recognizable:
+        changed = changed.replace("function PublicTree()", "function PublicTree(x)", 1)
+    source = make_source(session, url)
+    source.parser_config = {"list_api_open": "龙讯public"}
+    session.commit()
+    fetcher = RecordingFetcher({url: [page(url, changed)]})
+    check = check_source(session, source, fetcher, today=date(2026, 11, 13))
+    assert check.status == "ok" and check.items_found == 3, check.error
+    assert fetcher.requested == [url]
+
+
 def test_lonsun_page_with_item_selector_and_too_few_documents_still_checked(session):
     # 配了 item_selector、选出的本机构文件页不够 3 条的龙讯栏目页（第十六轮 Codex）：照样先认龙讯写法
     # （这里认出来了、没标经接口读，记待复检），和试读、抽查一致

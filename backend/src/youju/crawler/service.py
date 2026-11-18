@@ -435,19 +435,21 @@ def check_source(
             else extract_items(result.text, result.final_url or url, parser_config, today=today)
         )
         api = None
-        # 经龙讯接口读的来源：照接口读，页面上通用规则认出的链接不当栏目条目（认不出就待人工处理）
+        # 经龙讯接口读的来源：栏目页上本机构的文件页不够数就照接口读，页面上通用规则认出的别的链接
+        # 不当栏目条目（认不出就待人工处理）
         lonsun_marked = parser_config.get(LIST_API_OPEN_KEY) == LONSUN
         lonsun_page = lonsun_column_page(result.text, url)
         if lonsun_page:
             # 龙讯栏目页：通用规则认出的只算这个机构在这个网站上的文件页（服务器写好的栏目列表），
-            # 导航里带日期的链接不当栏目条目；不够数就照龙讯的写法认（认不出待人工处理，认出了没标的
-            # 待复检），配了 item_selector 的也一样（和试读、抽查一致）
+            # 导航里带日期的链接不当栏目条目；够数就照页面读，标没标经龙讯接口读都一样；不够数就照
+            # 龙讯的写法认（认不出待人工处理，认出了没标的待复检），配了 item_selector 的也一样
+            # （和试读、抽查一致）
             items = lonsun_page_items(items, url, result.final_url)
+        lonsun_page_enough = bool(lonsun_page) and len(items) >= ADAPTER_MIN_ITEMS
+        lonsun_needs_api = (lonsun_marked or bool(lonsun_page)) and not lonsun_page_enough
         attempted_api = (
             gkmlpt
-            or lonsun_marked
-            or lonsun_page
-            and len(items) < ADAPTER_MIN_ITEMS
+            or lonsun_needs_api
             or (len(items) < ADAPTER_MIN_ITEMS and not parser_config.get("item_selector"))
         )
         if attempted_api:
@@ -473,7 +475,7 @@ def check_source(
         ):
             items = []
             status, error = "parse_empty", f"待人工处理：{reason}"
-        elif lonsun_marked and api is None:
+        elif lonsun_marked and not lonsun_page_enough and api is None:
             # 经龙讯接口读的来源，页面认不出龙讯栏目了（改版、不是栏目页）：不用通用规则认出的链接
             items = []
             status, error = "parse_empty", "待人工处理：页面认不出龙讯栏目（PublicTree）"
