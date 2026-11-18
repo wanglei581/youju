@@ -1189,6 +1189,110 @@ def test_shared_import_export_stops_when_drill_fails(tmp_path):
     )  # 接口、worker 照样起来
 
 
+def _drill_setup(tmp_path: Path, hhmm: str = "1430") -> str:
+    """恢复演练用：docker volume inspect 指到临时目录里的"存储卷"，北京时间固定成 hhmm。"""
+    log = tmp_path / "calls.log"
+    return (
+        f'docker() {{ printf "docker %s\\n" "$*" >> "{log}"; case "$1" in '
+        f'info) echo "{tmp_path}" ;; volume) echo "{tmp_path}/volume" ;; esac; }}\n'
+        f"beijing_hhmm() {{ echo {hhmm}; }}"
+    )
+
+
+def _drill_backups(tmp_path: Path, *names: str) -> Path:
+    backups = tmp_path / "volume" / "backups"
+    backups.mkdir(parents=True, exist_ok=True)
+    for name in names:
+        (backups / name).write_bytes(gzip.compress(b'{"format":"youju-backup"}\n'))
+    return backups
+
+
+@needs_bash
+def test_shared_restore_drill_uses_root_and_the_newest_backup(tmp_path):
+    _server_env(tmp_path, "MYSQL_ROOT_PASSWORD=r00tpw\n")
+    # 名字不对的（没有 8 位日期、没压完的）不算
+    _drill_backups(
+        tmp_path,
+        "youju-20261118.jsonl.gz",
+        "youju-20261119.jsonl.gz",
+        "youju-2026112.jsonl.gz",
+        "youju-20261120.jsonl.gz.part",
+    )
+    done = _bash(tmp_path, "restore_drill", setup=_drill_setup(tmp_path))
+    assert done.returncode == 0, done.stderr
+    assert "DRILL OK youju-20261119.jsonl.gz" in done.stdout
+    calls = [c for c in _calls(tmp_path) if c.startswith("compose")]
+    # 只停 worker（临时容器用它那份内存），接口照常
+    assert calls[0].startswith("compose stop worker |")
+    drill = calls[1]
+    assert drill.startswith(
+        "compose run --rm --no-deps -e YOUJU_DATABASE_URL worker "
+        "youju restore-drill --file /data/storage/backups/youju-20261119.jsonl.gz |"
+    )
+    # root 连接串经环境变量（不在命令行参数里）；镜像用 .env 里现在这一版
+    assert "db=mysql+pymysql://root:r00tpw@mysql:3306/youju?charset=utf8mb4 " in drill
+    assert "r00tpw" not in drill.split(" | ")[0]
+    assert "image= " in drill
+    # 服务器自己的备份：不清 binlog（库里本来就有这些数据，binlog 3 天过期）
+    assert not any(c.startswith("compose exec -T mysql") for c in calls)
+    # 结束把 worker 起来（接口本来就在跑，up 一下不影响）
+    assert calls[2].startswith("compose up -d --wait --wait-timeout 900 worker")
+    assert calls[3].startswith("compose up -d --wait --wait-timeout 300 api")
+
+
+@needs_bash
+@pytest.mark.parametrize(
+    ("hhmm", "ok"),
+    [("0959", False), ("1000", True), ("2330", True), ("2331", False), ("0415", False)],
+)
+def test_shared_restore_drill_runs_only_in_the_daytime(tmp_path, hhmm, ok):
+    _server_env(tmp_path, "MYSQL_ROOT_PASSWORD=r00tpw\n")
+    _drill_backups(tmp_path, "youju-20261119.jsonl.gz")
+    done = _bash(tmp_path, "restore_drill", setup=_drill_setup(tmp_path, hhmm))
+    compose = [c for c in _calls(tmp_path) if c.startswith("compose")]
+    if ok:
+        assert done.returncode == 0, done.stderr
+    else:
+        assert done.returncode == 1 and "只在 10:00–23:30 之间跑" in done.stderr
+        assert not compose  # 什么都没停
+
+
+@needs_bash
+def test_shared_restore_drill_needs_a_backup_and_enough_disk(tmp_path):
+    _server_env(tmp_path, "MYSQL_ROOT_PASSWORD=r00tpw\n")
+    (tmp_path / "volume" / "backups").mkdir(parents=True)
+    done = _bash(tmp_path, "restore_drill", setup=_drill_setup(tmp_path))
+    assert done.returncode == 1 and "存储里还没有整库备份" in done.stderr
+    assert not [c for c in _calls(tmp_path) if c.startswith("compose")]
+    _drill_backups(tmp_path, "youju-20261119.jsonl.gz")
+    small = _drill_setup(tmp_path) + "\ndf() { printf 'Avail\\n 1073741824\\n'; }"
+    done = _bash(tmp_path, "restore_drill", setup=small)
+    assert done.returncode == 1 and "硬盘不够试恢复" in done.stderr
+    assert not [c for c in _calls(tmp_path) if c.startswith("compose")]
+    # 读不出存储卷的位置：停下
+    done = _bash(tmp_path, "restore_drill", setup="beijing_hhmm() { echo 1430; }")
+    assert done.returncode == 1 and "读不出存储卷的位置" in done.stderr
+    assert not [c for c in _calls(tmp_path) if c.startswith("compose")]
+
+
+@needs_bash
+def test_shared_restore_drill_brings_the_worker_back_when_it_fails(tmp_path):
+    _server_env(tmp_path, "MYSQL_ROOT_PASSWORD=r00tpw\n")
+    _drill_backups(tmp_path, "youju-20261119.jsonl.gz")
+    log = tmp_path / "calls.log"
+    failing = (
+        _drill_setup(tmp_path) + f'\ncompose() {{ echo "compose $*" >> "{log}"; '
+        'if [ "$1" = exec ]; then cat >/dev/null; fi; [ "$1" != run ]; }'
+    )
+    done = _bash(tmp_path, "restore_drill", setup=failing)
+    assert done.returncode != 0
+    assert "恢复演练没通过" in done.stderr and "DRILL OK" not in done.stdout
+    calls = [c for c in _calls(tmp_path) if c.startswith("compose")]
+    assert calls[0] == "compose stop worker"
+    assert calls[-1].startswith("compose up -d --wait --wait-timeout 300 api")
+    assert "compose up -d --wait --wait-timeout 900 worker" in calls
+
+
 @needs_bash
 def test_shared_takedowns_prints_parts_that_decode(tmp_path):
     export = tmp_path / "export"

@@ -58,6 +58,9 @@
 #   binlog-off             关掉 MySQL 的 binlog（install、up 带 disable_log_bin 的版本以后跑一次）：停接口和
 #                          worker，清掉现有的 binlog，用新配置重建 MySQL，查 @@log_bin 是 0，删掉留下的
 #                          binlog 文件，再起来
+# 恢复演练（D-118 ②，手册第八节）：
+#   restore-drill          用存储里最新的一份整库备份在临时库里恢复一遍、核对、删掉（不碰正式库）；
+#                          先停 worker、接口照常，结束再起来；只在北京时间 10:00–23:30 跑
 set -euo pipefail
 umask 022
 
@@ -899,24 +902,12 @@ export_show() {
   ls -l "$EXPORT_DIR" "$EXPORT_DIR/backups"
 }
 
-import_export() {
-  local old=${1:-}
-  [[ "$old" =~ ^[0-9a-f]{8}$ ]] || die "用法：import-export <旧版本号>（迁移版本和备份一样的那一版，如 a79a0042）"
-  [ -f "$SERVER/.env" ] || die "还没装（没有 ${SERVER}/.env）"
-  [ ! -f "$EXPORT_DIR/imported" ] || die "这批已经存档过（IMPORT OK），不再重做"
-  docker image inspect "youju-selfhost:$old" >/dev/null 2>&1 \
-    || die "没有镜像 youju-selfhost:${old}（${BASE}/releases/${old} 还在的话，照手册重新构建这一版的镜像）"
-  [ -f "$EXPORT_DIR/fetch-complete" ] \
-    || die "下载还没全部完成（fetch-export 要看到 FETCH OK）：没下好的先重跑 fetch-export"
-  local files=("$EXPORT_DIR"/backups/youju-*.jsonl.gz)
-  [ -e "${files[0]}" ] || die "${EXPORT_DIR}/backups 里没有整库备份：先 fetch-export"
-  [ -f "$EXPORT_DIR/pay-records.jsonl.gz" ] || die "没有交易记录：先 fetch-export"
-  [ "${#files[@]}" -eq 1 ] || die "${EXPORT_DIR}/backups 里不止一份备份，只留要归档的那一份"
-  # 试恢复之前按备份解压后的大小再核一次硬盘：临时库加 binlog 大约是它的 3 倍，再留 2G。
-  # 解压后的大小整个解压数一遍（gzip -l 读文件尾的记录，超过 4G 会绕回去）；按字节比，
-  # ${BASE}（加密副本）和 docker 的数据目录（MySQL 数据卷，临时库写在这里）各核一次
+# 试恢复之前按备份解压后的大小核一次硬盘：临时库加 binlog 大约是它的 3 倍，再留 2G。
+# 解压后的大小整个解压数一遍（gzip -l 读文件尾的记录，超过 4G 会绕回去）；按字节比，
+# ${BASE}（加密副本）和 docker 的数据目录（MySQL 数据卷，临时库写在这里）各核一次
+drill_space_ok() {
   local raw need free dir dirs n
-  raw=$(gzip -dc "${files[0]}" | wc -c | tr -d ' ') || die "整库备份解压不了"
+  raw=$(gzip -dc "$1" | wc -c | tr -d ' ') || die "整库备份解压不了"
   [[ "$raw" =~ ^[0-9]+$ ]] || die "读不出整库备份解压后的大小"
   need=$(( raw * 3 + 2 * 1073741824 ))
   dirs=("$BASE")
@@ -931,6 +922,22 @@ import_export() {
     if [ -z "$free" ] || [ "$n" -lt "$free" ]; then free=$n; fi
   done
   [ "$free" -ge "$need" ] || die "硬盘不够试恢复：要 $(( (need + 1073741823) / 1073741824 ))G，现在只剩 $(( free / 1073741824 ))G（先腾空间，别动别的项目的文件）"
+}
+
+import_export() {
+  local old=${1:-}
+  [[ "$old" =~ ^[0-9a-f]{8}$ ]] || die "用法：import-export <旧版本号>（迁移版本和备份一样的那一版，如 a79a0042）"
+  [ -f "$SERVER/.env" ] || die "还没装（没有 ${SERVER}/.env）"
+  [ ! -f "$EXPORT_DIR/imported" ] || die "这批已经存档过（IMPORT OK），不再重做"
+  docker image inspect "youju-selfhost:$old" >/dev/null 2>&1 \
+    || die "没有镜像 youju-selfhost:${old}（${BASE}/releases/${old} 还在的话，照手册重新构建这一版的镜像）"
+  [ -f "$EXPORT_DIR/fetch-complete" ] \
+    || die "下载还没全部完成（fetch-export 要看到 FETCH OK）：没下好的先重跑 fetch-export"
+  local files=("$EXPORT_DIR"/backups/youju-*.jsonl.gz)
+  [ -e "${files[0]}" ] || die "${EXPORT_DIR}/backups 里没有整库备份：先 fetch-export"
+  [ -f "$EXPORT_DIR/pay-records.jsonl.gz" ] || die "没有交易记录：先 fetch-export"
+  [ "${#files[@]}" -eq 1 ] || die "${EXPORT_DIR}/backups 里不止一份备份，只留要归档的那一份"
+  drill_space_ok "${files[0]}"
   local name root_pw
   name=$(basename "${files[0]}")
   root_pw=$(root_password)
@@ -961,6 +968,48 @@ import_export() {
   # 存档过了：以后再跑 fetch-export 会拒绝（不再下一份明文备份）
   date '+%F %T' > "$EXPORT_DIR/imported"
   echo "IMPORT OK"
+}
+
+# ---- 恢复演练（D-118 ②：提审前用服务器自己的备份做一次） ----
+
+# 北京时间的时、分（HHMM）；测试里换掉
+beijing_hhmm() { TZ=Asia/Shanghai date +%H%M; }
+
+# 拿存储卷里最新的一份整库备份（每天 4:00 做的，只有用户数据），在临时库 youju_drill_… 里恢复一遍、
+# 核对条数、外键和每张表的 SHA-256，结束删掉，不碰正式库。容器里直接跑 youju restore-drill 不带 --file
+# 会去云托管下载，这里用不了；有据的库账号也建不了临时库：和 import-export 一样用 root，口令从 .env
+# 经环境变量传进临时容器（不进命令行参数）。临时容器用 worker 那份内存（有据三个容器合计 1.5G）：
+# 先停 worker，接口照常；结束（成功、失败、被打断都一样）再起来（on_exit）。worker 停着的这几分钟里
+# 定时任务不跑、本机推同步会失败（下一轮补上），所以只在北京时间 10:00–23:30 跑，避开凌晨的备份、
+# 早上的提醒、日报和对账
+restore_drill() {
+  [ -f "$SERVER/.env" ] || die "还没装（没有 ${SERVER}/.env）"
+  local now
+  now=$(beijing_hhmm)
+  [[ "$now" =~ ^[0-9]{4}$ ]] || die "读不出现在的时间"
+  if [ "$((10#$now))" -lt 1000 ] || [ "$((10#$now))" -gt 2330 ]; then
+    die "现在是北京时间 ${now:0:2}:${now:2:2}：只在 10:00–23:30 之间跑（别的时段有每天的备份、提醒、日报和对账，停 worker 会让它们跳过）"
+  fi
+  local dir
+  dir=$(docker volume inspect youju-server_storage --format '{{.Mountpoint}}' 2>/dev/null || true)
+  { [ -n "$dir" ] && [ -d "$dir" ]; } || die "读不出存储卷的位置（docker volume inspect youju-server_storage）"
+  # 文件名里是备份那天的日期，按名字排就是按日期排
+  local files=("$dir"/backups/youju-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9].jsonl.gz)
+  [ -e "${files[0]}" ] || die "存储里还没有整库备份（每天 4:00 做，上线打开正式定时任务的第二天才有）"
+  local name root_pw
+  name=$(basename "${files[${#files[@]} - 1]}")
+  drill_space_ok "$dir/backups/$name"
+  root_pw=$(sed -n 's/^MYSQL_ROOT_PASSWORD=//p' "$SERVER/.env")
+  [ -n "$root_pw" ] || die ".env 里没有 MYSQL_ROOT_PASSWORD"
+  say "恢复演练：${name} 在临时库 youju_drill_… 里恢复一遍（核对条数、外键、每张表的 SHA-256），结束删掉；不碰正式库"
+  say "先停 worker（定时任务、本机推同步停几分钟），接口照常；结束再起来"
+  compose stop worker
+  trap on_exit EXIT
+  YOUJU_DATABASE_URL="mysql+pymysql://root:${root_pw}@mysql:3306/youju?charset=utf8mb4" \
+    compose run --rm --no-deps -e YOUJU_DATABASE_URL worker \
+    youju restore-drill --file "/data/storage/backups/$name" \
+    || die "恢复演练没通过（原因见上面）"
+  echo "DRILL OK ${name}"
 }
 
 takedowns() {
@@ -1354,5 +1403,6 @@ case "$cmd" in
   alert-probe) alert_probe ;;
   export-reset) export_reset ;;
   binlog-off) binlog_off ;;
+  restore-drill) restore_drill ;;
   *) awk 'NR > 1 && /^#/ {print; next} NR > 1 {exit}' "$0"; exit 1 ;;
 esac
