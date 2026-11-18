@@ -819,3 +819,9 @@ def test_contact_table_cell_with_extensions_and_company_amounts():
         "某某有限公司",
         "50000000",
     ]
+
+
+def test_common_words_on_a_phone_line_are_not_names():
+    # 11/18：号码遮了以后，这一行按电话行把像姓名的词都遮掉；"查阅"这类普通词不能当成姓名
+    shown = v1._clean_reading_body("操作指南可在网站查阅，技术支持：0571-87654321。")
+    assert shown == f"操作指南可在网站查阅，技术支持：{MARK}。"
