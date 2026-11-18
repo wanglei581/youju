@@ -1083,3 +1083,52 @@ def test_auto_result_is_not_carried_over_when_ai_changed_or_expired(
     sync_reviewed_twins(session, {doc.id})
     session.commit()
     assert twin.status == "approved" and twin.reviewed_by == verify.AUTO_REVIEWER
+
+
+def test_auto_skips_a_notice_whose_other_url_solicits_suggestions(session, candidate, monkeypatch):
+    """同一通知另一个网址的标题是征集建议、征求意见：这份通知不自动核对，副本也不跟着通过、不沿用。"""
+    from zoneinfo import ZoneInfo
+
+    from youju.dedup import sync_reviewed_twins
+
+    monkeypatch.setattr(
+        v1, "now", lambda: datetime(2026, 9, 27, 12, tzinfo=ZoneInfo("Asia/Shanghai"))
+    )
+    monkeypatch.setattr(verify, "auto_enabled", lambda settings=None: True)
+    _auto_ai_record(session, candidate)
+    doc = session.get(Document, candidate.document_id)
+    twin_doc = _doc(doc.source, 60, "关于征集2027年度项目指南建议的通知", TODAY)
+    session.add(twin_doc)
+    session.flush()
+    twin = DocumentDeadline(
+        document_id=twin_doc.id,
+        fingerprint="solicit-twin",
+        kind=candidate.kind,
+        candidate_date=candidate.candidate_date,
+        evidence=candidate.evidence,
+        confidence="高",
+        status="pending",
+        origin="rule",
+        ai_agrees=True,
+    )
+    session.add_all(
+        [
+            DocumentMerge(
+                duplicate_id=twin_doc.id, canonical_id=doc.id, match_key="solicit", active=True
+            ),
+            DocumentDetail(
+                document_id=twin_doc.id, body_text=BODY, status="ok", fetched_at=datetime.now(UTC)
+            ),
+            twin,
+        ]
+    )
+    session.commit()
+    results = {
+        r["id"]: r["result"]
+        for r in verify.auto_verify(session, TODAY, datetime(2026, 9, 27, 12), True)
+    }
+    assert results[candidate.id] == "标题是征集建议、征求意见"
+    sync_reviewed_twins(session, {doc.id})
+    session.commit()
+    session.expire_all()
+    assert candidate.status == twin.status == "pending"

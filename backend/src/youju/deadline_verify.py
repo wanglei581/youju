@@ -27,6 +27,13 @@ def solicits_suggestions(title):
     return bool(_SOLICIT.search(title) and _SUGGESTION.search(title))
 
 
+def _notice_solicits(session, members):
+    """同一通知（归并组 members）里任何一个网址的标题是征集建议、征求意见，整份通知都不自动核对、
+    也不沿用自动结果（同组副本标题不同时，只看自己那条会让副本跟着一起通过）。"""
+    titles = session.scalars(select(Document.title).where(Document.id.in_(members)))
+    return any(solicits_suggestions(title) for title in titles)
+
+
 def body_hash(body):
     return hashlib.sha256(body.encode("utf-8")).hexdigest()
 
@@ -415,8 +422,7 @@ def _auto_reason(session, row, members, now):
         return "规则和 AI 未一致"
     if row.kind != "企业申报截止":
         return "不是企业申报截止"
-    doc = session.get(Document, row.document_id)
-    if solicits_suggestions(doc.title if doc else ""):
+    if _notice_solicits(session, members):
         return "标题是征集建议、征求意见"
     if row.candidate_date < local_now.date() or (
         row.candidate_date == local_now.date()
@@ -484,7 +490,7 @@ def _same_day_reason(session, row, members, same_kind=None):
 def auto_twin_quote(session, row, members, now=None):
     """D-135：AI 自动通过的结果沿用给同组副本（dedup.sync_reviewed_twins）前，把自动核对的条件对这条
     副本再核一遍：
-    - 没过期（按当时的北京时间）；标题不是征集建议、征求意见（solicits_suggestions）；
+    - 没过期（按当时的北京时间）；这份通知各网址的标题都不是征集建议、征求意见（_notice_solicits）；
     - 同一天没有待核对的质检退回、没有人对当前正文标过看不准、时刻只有一种（_same_day_reason，
       和自动核对同一个检查）；
     - 同组当前的 AI 结果也标企业申报截止、和它同一天同一时刻，AI 原句在正文里写着这个日期和时刻
@@ -504,8 +510,7 @@ def auto_twin_quote(session, row, members, now=None):
         and row.candidate_time <= local_now.time().replace(tzinfo=None)
     ):
         return None
-    doc = session.get(Document, row.document_id)
-    if solicits_suggestions(doc.title if doc else ""):
+    if _notice_solicits(session, members):
         return None
     if _same_day_reason(session, row, members) or not _ai_supports(session, row, members):
         return None
@@ -554,7 +559,8 @@ def auto_verify(session, today, now, write=False, clock=None, stop=None):
     """D-135：核对清单（queue，7 天内）里同时满足下面几条的，按 apply_one 同一套校验写成核对通过，
     核对人记 AUTO_REVIEWER；不满足的不动，照旧显示"截止时间见原文"。
     - 规则候选（origin=rule），AI 也找到同一天同一时刻（ai_agrees），类型是企业申报截止；
-    - 标题不是征集建议、征求意见（solicits_suggestions：交建议、交意见不是企业申报）；
+    - 这份通知（各网址）的标题都不是征集建议、征求意见（_notice_solicits：交建议、交意见不是企业
+      申报）；
     - AI 给这一天标的也是企业申报截止，AI 的原句在当前正文里、写着这个日期和时刻（_ai_supports）；
     - 没过期（是今天的，没写时刻或时刻还没到，北京时间）；
     - 同组这一类还没有核对过的结果；同一天没有质检退回的（退回原因要人看）、没有人对当前正文标过

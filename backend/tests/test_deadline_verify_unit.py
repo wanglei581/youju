@@ -32,6 +32,9 @@ class Session:
         return self.details[self.rows[0].document_id]
 
     def scalars(self, stmt):
+        if "documents.title" in str(stmt):
+            # 查这份通知各网址的标题（_notice_solicits）
+            return [d.title for d in self.documents.values()] or [APPLY_TITLE]
         return self.rows
 
     def __enter__(self):
@@ -489,6 +492,20 @@ def test_auto_reason_excludes_suggestion_calls(setup, monkeypatch):
     assert verify._auto_reason(session, candidate, [1], now) == "不是企业申报截止"
 
 
+def test_auto_reason_checks_every_url_title_of_the_notice(setup, monkeypatch):
+    """同一通知别的网址的标题是征集建议、征求意见的，整份通知都不自动核对（只看自己那条会让副本
+    跟着一起通过）。"""
+    session, candidate = setup
+    monkeypatch.setattr(verify, "_ai_supports", lambda *args: True)
+    monkeypatch.setattr(verify, "_ai_items", lambda *args: iter([]))
+    session.documents[1] = SimpleNamespace(id=1, title="关于组织申报2026年度科技计划项目的通知")
+    session.documents[2] = SimpleNamespace(id=2, title="关于征求2027年度项目指南编制建议的通知")
+    assert (
+        verify._auto_reason(session, candidate, [1, 2], datetime(2026, 9, 29))
+        == "标题是征集建议、征求意见"
+    )
+
+
 def test_auto_tries_next_candidate_until_one_passes(monkeypatch):
     """同一截止有几条规则候选：前一条没通过接着试下一条，有一条通过了后面的不再核（D-135）。"""
     from youju import dedup
@@ -754,7 +771,7 @@ def test_auto_rechecks_the_time_after_locking(monkeypatch):
             return SimpleNamespace(id=key, title=APPLY_TITLE) if model is Document else target
 
         def scalars(self, stmt):
-            return [target]
+            return [APPLY_TITLE] if "documents.title" in str(stmt) else [target]
 
         def commit(self):
             pass
