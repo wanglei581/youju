@@ -69,3 +69,15 @@ def test_takes_the_newest_snapshot_and_keeps_three_recent_ones(tmp_path):
     # 7 天以前的删掉，7 天以内的只留最近 3 份，别的文件不动；标准输出不打选了哪份（只留连接地址）
     assert sorted(p.name for p in public.iterdir()) == sorted([*recent[-3:], "notes.txt"])
     assert "最新的一份" not in done.stdout
+
+
+@needs_bash
+def test_keeps_a_snapshot_dated_after_today(tmp_path):
+    """电脑和 Mac 的时钟、时区不一样时，文件名里的日期可能比 Mac 的今天晚：不当过期删，照样用。"""
+    public = tmp_path / "public"
+    public.mkdir()
+    name = _name(-1)  # 明天
+    (public / name).write_bytes(gzip.compress(b'{"format": "something-else"}\n'))
+    done = _run(tmp_path, "youju_tmp_snapshot_test")
+    assert f"最新的一份：{name}" in done.stderr
+    assert (public / name).exists()

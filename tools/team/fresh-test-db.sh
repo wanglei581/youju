@@ -15,9 +15,9 @@
 #   （默认 ~/youju-worktrees/public-data），当天就删掉电脑上那份（传失败也删：
 #   wsl -d youju -u root -e rm -f /mnt/e/youju/public-snapshots/<文件名>）。
 #   快照里只有公开内容表，不含用户数据、密钥、日志和下架的文件（backend/src/youju/public_snapshot.py）。
-#   导出前看一眼服务器上有没有还没带回电脑的紧急下架（手册第八节"紧急下架"第 3 步 emergency-list）：
-#   有的话先照第 5 步带回电脑，不然那些文件还在快照里。
-#   电脑要装过 11/18 以后打的安装包（带 _build.json），快照里才记得下代码版本；没记的话，本机代码的迁移版本
+#   导出前看一眼服务器上有没有还没带回电脑的紧急下架（手册第八节"紧急下架"第 3 步 emergency-list；要进服务器，
+#   创始人扫码登录服务器控制台、进网页终端）：有的话先照第 5 步带回电脑，不然那些文件还在快照里。
+#   电脑要装过含 #530 的提交打的安装包（带 _build.json），快照里才记得下代码版本；没记的话，本机代码的迁移版本
 #   和快照不同时建不了库。
 #
 # 做的事：
@@ -130,7 +130,7 @@ def fresh(name):
         day = datetime.datetime.strptime(name[13:21], "%Y%m%d").date()
     except ValueError:
         return False
-    return 0 <= (today - day).days <= 7
+    return (today - day).days <= 7  # 只删 7 天以前的；日期比今天晚的（两边时钟、时区不一）留着
 keep = [name for name in names if fresh(name)][-3:]
 for name in names:
     if name not in keep:
