@@ -159,10 +159,17 @@ def sync_reviewed_twins(session: Session, masters: set[int]) -> int:
     """归并组里还在待核对、但同组已有同一截止核对过的（见 reviewed_key），沿用那条的核对结果
     （通过、驳回、已变更），免得同一截止换个网址又送审，或已变更的又被通过。
     质检退回的（audit_state 为 reopened）不沿用：要带着退回原因重新核对（Claude 按带退回原因的清单
-    写回，D-130；或在核对台核对）。"""
+    写回，D-130；或在核对台核对）。
+    AI 自动核对通过的（D-135）不凭"同一份通知"直接沿用：只沿用给证据句相同（同一句话，说的是同一件
+    事）、规则抽出、AI 也一致的副本，而且对这条副本把自动核对的条件再核一遍（没过期、当前 AI 结果
+    相符、这句在它自己的当前正文里写着这个日期和时刻，见 deadline_verify.auto_twin_quote），原句记
+    它自己的；不行就留在待核对。自动核对关着（开关不是 1，或没配 AI 密钥）时一律不沿用自动结果。
+    同一截止另有人核过的（Claude、管理台），先沿用人核的。"""
+    from youju.deadline_verify import AUTO_REVIEWER, auto_enabled, auto_twin_quote
     from youju.models import DocumentDeadline
 
     synced = 0
+    auto_on = None  # 用到时才读一次配置
     for members in groups_for(session, sorted(masters)).values():
         if len(members) < 2:
             continue
@@ -173,24 +180,43 @@ def sync_reviewed_twins(session: Session, masters: set[int]) -> int:
             .with_for_update()
             .execution_options(populate_existing=True)  # 读最新状态，别用会话里的旧值
         ).all()
-        # 先找证据句也相同的已核对记录（任何结果），找不到再按（类型, 日期, 时间）找已通过、已变更的
+        # 先找证据句也相同的已核对记录（任何结果），找不到再按（类型, 日期, 时间）找已通过、
+        # 已变更的；AI 自动通过的另放，人核的都没有时才用，而且只认证据句相同的（见上）
         exact: dict[tuple, object] = {}
         confirmed: dict[tuple, object] = {}
+        auto: dict[tuple, object] = {}
         for d in rows:
-            if d.status != "pending":
-                exact.setdefault(reviewed_key(d, "rejected"), d)
-                if d.status in ("approved", "changed"):
-                    confirmed.setdefault(reviewed_key(d, "approved"), d)
+            if d.status == "pending":
+                continue
+            if d.status == "approved" and d.reviewed_by == AUTO_REVIEWER:
+                auto.setdefault(reviewed_key(d, "rejected"), d)
+                continue
+            exact.setdefault(reviewed_key(d, "rejected"), d)
+            if d.status in ("approved", "changed"):
+                confirmed.setdefault(reviewed_key(d, "approved"), d)
         for d in rows:
             if d.status != "pending" or d.audit_state == "reopened":
                 continue
             source = exact.get(reviewed_key(d, "rejected")) or confirmed.get(
                 reviewed_key(d, "approved")
             )
-            if source is not None:
-                for field in _REVIEW_FIELDS:
-                    setattr(d, field, getattr(source, field))
-                synced += 1
+            own_quote = None
+            if source is None:
+                source = auto.get(reviewed_key(d, "rejected"))
+                if source is None or d.origin != "rule" or d.ai_agrees is not True:
+                    continue
+                if auto_on is None:
+                    auto_on = auto_enabled()
+                if not auto_on:
+                    continue
+                own_quote = auto_twin_quote(session, d, members)
+                if own_quote is None:
+                    continue
+            for field in _REVIEW_FIELDS:
+                setattr(d, field, getattr(source, field))
+            if own_quote is not None:
+                d.verification_quote = own_quote
+            synced += 1
     return synced
 
 

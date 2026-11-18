@@ -95,6 +95,10 @@ class Settings(BaseSettings):
     ai_request_extra: dict = {}
     # 后台核对（截止日期交叉抽取、质检）用的模型；空值表示和 ai_model 相同。调用量大，适合便宜的模型
     ai_background_model: str = ""
+    # D-135：7 天内的企业申报截止，规则和 AI 一致、原句在正文里的自动核对（deadline-verify-auto）。
+    # 开关 YOUJU_DEADLINE_AUTO_VERIFY 只认 0 和 1，没配当 0（关）。按字符串读、由
+    # deadline_verify.auto_switch 判断：写成别的值时按关处理并记一行，不至于整个配置读不出来
+    deadline_auto_verify: str = ""
     # 对外的 AI（政策解读、条款对照）单独的调用地址、密钥、模型和附加参数（10/17 创始人确认）：
     # 对外 AI 走腾讯云开发（和微信「深度合成 > AI 问答」类目的算法合作协议、网信办登记材料一致），
     # 后台核对继续直连 DeepSeek 官方。地址、密钥、模型三项要么都不填（沿用上面后台的），要么一起填；

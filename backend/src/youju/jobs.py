@@ -35,6 +35,7 @@ JOB_NAMES = OVERVIEW_JOBS + (
     "extract-deadlines",
     "extract-fields",
     "ai-check",
+    "deadline-verify-auto",
     # 每天 02:25 全部重算一次能不能 AI 解读（每 10 分钟的增量 ai-eligibility 不记，见 job.sh）
     "ai-eligibility-rebuild",
     "extract-conditions",

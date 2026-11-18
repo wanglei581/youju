@@ -644,6 +644,68 @@ def _cmd_deadline_verify_apply(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_deadline_verify_auto(args: argparse.Namespace) -> int:
+    from youju.deadline_verify import auto_switch
+
+    if args.apply:
+        # D-135：开关只认 0 和 1（round.sh 先按同一个规则判断，值是 1 才调用这一步）
+        switch = auto_switch(get_settings().deadline_auto_verify)
+        if switch is None:
+            print(
+                "截止日期自动核对的开关 YOUJU_DEADLINE_AUTO_VERIFY 只认 0 或 1，"
+                "现在的值按关处理，跳过"
+            )
+            return 0
+        if not switch:
+            print("截止日期自动核对的开关没开（YOUJU_DEADLINE_AUTO_VERIFY），跳过")
+            return 0
+        from youju.ai import get_chat_client
+
+        if get_chat_client() is None:
+            print("没有配置 AI 密钥（YOUJU_AI_API_KEY），跳过截止日期自动核对")
+            return 0
+    if args.apply and not getattr(args, "in_round", False):
+        # 手工跑：先拿每轮任务的锁（不等），每轮任务正在跑或在等锁就跳过。这样自动核对写库时，
+        # 抽截止、AI 检查、补详情都不会同时在改候选、AI 结果和正文
+        # （round.sh 里跑时它已经拿着这把锁）
+        from youju.ai.pipeline import round_slot, round_wanted
+
+        with round_slot() as free:
+            if not free:
+                print("每轮抓取和处理正在跑或在等锁，跳过截止日期自动核对（不和每轮任务同时写）")
+                return 0
+            # 拿着锁的时候 round.sh 来了（留了等锁标记）：做完手上这一条就停，让每轮任务先跑
+            return _run_deadline_verify_auto(args, stop=round_wanted)
+    return _run_deadline_verify_auto(args)
+
+
+def _run_deadline_verify_auto(args: argparse.Namespace, stop=None) -> int:
+    from collections import Counter
+
+    from youju.api.v1 import now
+    from youju.deadline_verify import auto_verify
+
+    current = now()
+    counts = Counter()
+    with session_factory()() as session:
+        # 每条判断时重新取当前时间（clock）：跑的过程中跨过截止时刻的不放
+        for item in auto_verify(
+            session, current.date(), current, write=args.apply, clock=now, stop=stop
+        ):
+            counts[item["result"]] += 1
+            print(json.dumps(item, ensure_ascii=False))
+    if stop is not None and stop():
+        print("每轮抓取和处理要开始了，自动核对先停下，没做到的下一轮再核")
+    passed = counts.pop("通过", 0)
+    failed = "、".join(f"{reason} {n}" for reason, n in counts.most_common())
+    print(
+        ("截止日期自动核对" if args.apply else "截止日期自动核对（演练，没写库）")
+        + f"：候选 {passed + sum(counts.values())} 条，通过 {passed} 条"
+        + (f"；没通过：{failed}" if failed else "")
+    )
+    return 0
+
+
 def _cmd_deadline_verify_sample(args: argparse.Namespace) -> int:
     from youju.deadline_verify import sample
 
@@ -694,6 +756,12 @@ def _cmd_deadline_verify_stats(args: argparse.Namespace) -> int:
                 f"{label}：确认 {counts['confirmed']}，修正 {counts['corrected']}，"
                 f"看不准 {counts['unclear']}，准确率 {accuracy}"
             )
+    if not args.json:
+        counts = result["auto"]
+        print(
+            f"AI 自动通过（D-135）：现存 {counts['approved']}，其中 Codex 抽查一致 "
+            f"{counts['spotchecked']}；被退回（Codex 抽查或管理台）{counts['reopened']}"
+        )
     return 0
 
 
@@ -959,7 +1027,13 @@ def _cmd_audit_deadlines(args: argparse.Namespace) -> int:
 def _cmd_daily_report(args: argparse.Namespace) -> int:
     from youju.ai import get_chat_client
     from youju.alerts import send_alert
-    from youju.digest import build_digest, digest_text, pick_for_review, readability_text
+    from youju.digest import (
+        build_digest,
+        digest_text,
+        pick_for_review,
+        readability_text,
+        reopened_messages,
+    )
 
     client = get_chat_client()
     usage_ok = False
@@ -982,9 +1056,13 @@ def _cmd_daily_report(args: argparse.Namespace) -> int:
     # 能读情况（D-097 ④）放不进同一条（群机器人一条有字节上限），紧接着另发一条；统计出错时不发
     # （主日报里已写"取不到"）
     extra = readability_text(digest)
+    # 质检退回待人看的完整编号（D-135）：正文里列不下时另发一条或几条
+    reopened = reopened_messages(digest)
     print(text)
     if extra:
         print(extra)
+    for message in reopened:
+        print(message)
     if args.dry_run:
         return 0 if usage_ok else 1
     sent = send_alert(text)
@@ -992,6 +1070,9 @@ def _cmd_daily_report(args: argparse.Namespace) -> int:
         print("未配置告警，日报未发送")
     elif sent is True and extra:
         sent = send_alert(extra)
+    for message in reopened:
+        if sent is True:
+            sent = send_alert(message)
     return 0 if usage_ok and sent is True else 1
 
 
@@ -2961,6 +3042,14 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--apply", action="store_true")
     p.set_defaults(func=_cmd_deadline_verify_apply)
 
+    p = sub.add_parser("deadline-verify-auto", help="自动核对规则和 AI 一致的截止")
+    p.add_argument("--apply", action="store_true")
+    p.add_argument(
+        "--in-round",
+        action="store_true",
+        help="只由 round.sh 传：这一轮已经拿着每轮任务的锁；手工跑不要传（会先拿锁，拿不到就跳过）",
+    )
+    p.set_defaults(func=_cmd_deadline_verify_auto)
     p = sub.add_parser("deadline-verify-sample", help="生成独立抽查清单")
     p.add_argument("--days", type=int, default=7)
     p.add_argument("--rate", type=float, default=0.05)
