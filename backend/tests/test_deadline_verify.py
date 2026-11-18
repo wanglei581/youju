@@ -963,21 +963,23 @@ def test_auto_holds_the_whole_notice_while_deciding(
     thread.start()
     try:
         assert deciding.wait(30)
-        with session_factory() as probe:
+        # 用一条独占的连接探：等锁时间设成 1 秒，用完直接作废、不还回连接池。用会话的话，rollback
+        # 以后连接就还回池子了，后面"改回默认"可能落在另一条连接上，这条等 1 秒的连接留在池子里，
+        # 会让后面要等锁的测试（如紧急下架那几条）偶尔等锁超时
+        probe = session.get_bind().connect()
+        try:
             probe.execute(text("SET SESSION innodb_lock_wait_timeout = 1"))
-            try:
-                with pytest.raises(OperationalError) as caught:
-                    probe.scalars(
-                        select(DocumentDeadline)
-                        .where(DocumentDeadline.id == other.id)
-                        .with_for_update()
-                    ).all()
-                assert caught.value.orig.args[0] == 1205
-            finally:
-                # 这条连接要还回整个测试共用的连接池：等锁时间改回默认，免得后面的测试只等 1 秒
-                probe.rollback()
-                probe.execute(text("SET SESSION innodb_lock_wait_timeout = DEFAULT"))
-                probe.commit()
+            with pytest.raises(OperationalError) as caught:
+                probe.execute(
+                    select(DocumentDeadline.id)
+                    .where(DocumentDeadline.id == other.id)
+                    .with_for_update()
+                ).all()
+            assert caught.value.orig.args[0] == 1205
+        finally:
+            probe.rollback()
+            probe.invalidate()
+            probe.close()
     finally:
         release.set()
         thread.join(30)
