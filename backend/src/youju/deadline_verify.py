@@ -15,16 +15,22 @@ AUTO_REVIEWER = "AI 自动（规则与 AI 一致）"
 # 自动核对通过的被退回时，在退回人（audit_by）后面加这一句（退回会清掉核对人），
 # 统计自动核对错了几条要用
 AUTO_REOPEN_TAG = "（原为 AI 自动通过）"
-# 标题里有"征集"或"征求"、又有"建议"或"意见"的（征集……项目指南建议、公开征求……意见）：交的是建议、
-# 意见，不是企业申报，不自动核对（协调会话 11/17，按 D-135"确实是申报截止"；只按标题判，不用 AI）
-_SOLICIT = re.compile(r"征集|征求")
+# 标题里有"征集""征求"或"征询"、又有"建议"或"意见"的（征集……项目指南建议、公开征求……意见、
+# 征询……意见）：交的是建议、意见，不是企业申报，不自动核对（协调会话 11/17，按 D-135"确实是申报
+# 截止"；只按标题判，不用 AI）。标题被截断（末尾是省略号）、又有"征集""征求""征询"的，看不到后面
+# 有没有"建议""意见"，也不自动核对
+_SOLICIT = re.compile(r"征集|征求|征询")
 _SUGGESTION = re.compile(r"建议|意见")
+_TRUNCATED = re.compile(r"(?:…|\.{3}|．{3}|。{3})\s*$")
 
 
 def solicits_suggestions(title):
-    """标题写的是征集建议、征求意见（见 _SOLICIT、_SUGGESTION），不自动核对。"""
+    """标题写的是征集建议、征求意见（见 _SOLICIT、_SUGGESTION），或者有征集一类的字、又被截断了，
+    不自动核对。"""
     title = title or ""
-    return bool(_SOLICIT.search(title) and _SUGGESTION.search(title))
+    if not _SOLICIT.search(title):
+        return False
+    return bool(_SUGGESTION.search(title) or _TRUNCATED.search(title))
 
 
 def _notice_solicits(session, members):

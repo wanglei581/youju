@@ -245,19 +245,32 @@ def test_digest_reports_auto_verified_and_reopened_waiting(session, world) -> No
         session, world["apply"], date(2026, 10, 2), "approved", NOW - timedelta(hours=2), n=8
     )
     auto.reviewed_by, auto.reviewed_at = AUTO_REVIEWER, NOW - timedelta(hours=2)
-    for n, due in ((9, date(2026, 10, 3)), (10, date(2026, 10, 3)), (11, date(2026, 9, 20))):
-        row = add_deadline(session, world["apply"], due, n=n)
+    reopened = (
+        (world["apply"], date(2026, 10, 3), 9),
+        (world["apply"], date(2026, 10, 3), 10),
+        (world["list"], date(2026, 9, 29), 11),  # 北京时间的今天：算
+        (world["old"], date(2026, 9, 28), 12),  # 北京时间的昨天（UTC 的今天）：不算
+        (world["old"], date(2026, 9, 20), 13),
+    )
+    for doc, due, n in reopened:
+        row = add_deadline(session, doc, due, n=n)
         row.audit_state, row.audit_note = "reopened", "Codex 抽查不一致：原文不符"
     session.commit()
     d = build_digest(session, now=NOW)
     assert (d.approved, d.auto_approved) == (2, 1)
-    # 同一通知同一天的两条算一条；9 月 20 日的已过期，不算（D-135 过期的不核，列着只会越攒越多）
-    assert (d.reopened, d.reopened_docs) == (1, (world["apply"].id,))
+    # 同一通知同一天的两条算一条；截止在今天（北京时间）的算；过期的不算，编号里也没有那份文件
+    # （D-135 过期的不核，列着只会越攒越多）
+    expected = tuple(sorted((world["apply"].id, world["list"].id)))
+    assert (d.reopened, d.reopened_docs) == (2, expected)
+    # 按北京时间算"今天"：UTC 还是 9 月 28 日、北京已是 9 月 29 日时，28 日的照样算过期
+    late = build_digest(session, now=datetime(2026, 9, 28, 17, 0, tzinfo=UTC))
+    assert (late.reopened, late.reopened_docs) == (2, expected)
     text = digest_text(d, [])
     assert "24 小时通过 2（其中 AI 自动 1）、驳回 1；" in text
-    assert "质检退回待人看（没过期的）：1 条（文件编号另发）" in text
+    assert "质检退回待人看（没过期的）：2 条（文件编号另发）" in text
     assert reopened_messages(d) == [
-        f"质检退回待人看的文件编号（共 1 份，第 1 条）：#{world['apply'].id}"
+        "质检退回待人看的文件编号（共 2 份，第 1 条）："
+        + "、".join(f"#{doc_id}" for doc_id in expected)
     ]
     d.reopened, d.reopened_docs = 12, tuple(range(1, 13))
     assert "质检退回待人看（没过期的）：12 条（文件编号另发）" in digest_text(d, [])
