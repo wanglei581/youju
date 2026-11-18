@@ -511,7 +511,7 @@ def test_pdf_on_paused_host_defers_only_that_document(tmp_path, monkeypatch):
 @pytest.mark.parametrize(
     "reply,reason", [(FetchResult("", "http_error", http_status=405), "连续 3 份 HTTP 405")]
 )
-def test_streak_pauses_host_for_this_run(tmp_path, reply, reason):
+def test_streak_pauses_host(tmp_path, reply, reason):
     calls = []
 
     class Fake:
@@ -524,7 +524,9 @@ def test_streak_pauses_host_for_this_run(tmp_path, reply, reason):
     _fetch_outcomes([(n, f"https://a.gov.cn/{n}") for n in range(1, 7)], Fake(), 1, pause=pause)
     assert len(calls) == 3
     assert pause.reasons == {"a.gov.cn": reason}
-    assert not path.exists()  # 只停这次运行
+    # 写进共享文件停 6 小时：下次运行也不来（第二十一轮独立 Claude）
+    expiry = _SitePause(str(path)).expiry("a.gov.cn")
+    assert expiry is not None and expiry < datetime.now(UTC) + timedelta(hours=6, minutes=1)
 
 
 def test_streamed_outcomes_drop_page_content_only_when_asked():
@@ -1852,3 +1854,42 @@ def test_safedog_cookie_challenge_still_pauses():
         "</script></head><body></body></html>"
     )
     assert detail_service._gate_page(_html_result("https://a.gov.cn/1", html), "https://a.gov.cn/1")
+
+
+@pytest.mark.parametrize(
+    "html",
+    [
+        "<html><head><title>提示信息</title></head><body><div class='content'><p>访问受限：您的访问已"
+        "被网站防火墙拦截，可能原因是提交的内容包含攻击请求，请联系网站管理员。</p></div></body></html>",
+        "<html><head><title>Error</title></head><body><div class='content'><p>您的访问被阻断。您的"
+        "请求ID是：0a1b2c3d4e5f，如有疑问请联系网站管理员处理。</p></div></body></html>",
+    ],
+    ids=["access-limited", "blocked-360"],
+)
+def test_block_notice_as_the_whole_body_pauses(tmp_path, html):
+    # 拦截提示放在正文容器里、字又够 30 个：解析取得到的"正文"就是拦截提示，照样算拦截页、停网站，
+    # 不把提示当正文存下（第二十一轮独立 Claude）
+    path = str(tmp_path / "pause.json")
+    calls = []
+
+    class Fake:
+        def fetch(self, url):
+            calls.append(url)
+            return _html_result(url, html)
+
+    docs = [(1, "https://a.gov.cn/1"), (2, "https://a.gov.cn/2")]
+    outcomes = _fetch_outcomes(docs, Fake(), 1, pause=_SitePause(path))
+    assert outcomes[1].status == "protected"
+    assert calls == ["https://a.gov.cn/1"]
+    assert _SitePause(path).expiry("a.gov.cn") is not None
+
+
+def test_short_notice_titled_with_block_words_and_attachment_is_read():
+    # 标题就是"防火墙采购公告"、正文一句话加附件的短通知：带附件就不算拦截页（第二十一轮独立 Claude
+    # 建议）；真的拦截页不带附件
+    page = (
+        "<html><head><title>防火墙采购公告_某市政府</title></head><body><div id='zoom'>"
+        "<p>防火墙采购结果见附件</p><a href='/files/result.pdf'>结果.pdf</a></div></body></html>"
+    )
+    result = _html_result("https://a.gov.cn/1", page)
+    assert detail_service._gate_page(result, "https://a.gov.cn/1") is False

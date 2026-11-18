@@ -35,6 +35,7 @@ from youju.crawler.detail import (
     search_throttle_site,
 )
 from youju.crawler.fetcher import (
+    _BLOCK_WORDS,
     CAPTCHA_WORDS,
     SITE_PAUSED,
     FetchResult,
@@ -243,13 +244,22 @@ def _html_page_gate(text: str, url: str) -> bool:
     验证码这类字不在这里判（正常通知讲验证码使用要求、标题带着这些字的都不算），见 _fetch_one。"""
     cleaned = _without_throttle_dialogs(text, url)
     reason = html_gate(cleaned)
-    if reason == "拦截页" and not title_blocked(cleaned):
-        # 只靠标题以外的字认出来的拦截页（整页几乎没字、不到 300 字里写着防火墙、拦截这类字）：去掉
-        # 标题解析，取得到正文或附件就不算（"防火墙设备采购结果公告"这类只有一句话加附件的短通知）
+    if reason == "拦截页":
+        # 整页几乎没字、明说拦着的字（标题拆掉站名以后很短的那一段，或者标题以外看得见的字不到 300
+        # 字里写着防火墙、拦截、访问受限这类字）：去掉标题解析——
+        # - 带附件的是一句话加附件的短通知（"防火墙设备采购结果公告"，标题就是"防火墙采购公告"的也
+        #   一样，第二十一轮独立 Claude 建议），不算拦截页，照样查是不是登录页、验证页；
+        # - 标题很短的那一段就写着拦截（"访问被拒绝""网站防火墙"）、取不到正文，或者"正文"本身就是
+        #   拦截提示（"访问受限：您的访问已被网站防火墙拦截……"，第二十一轮独立 Claude）的，算；
+        # - 取得到不带这些字的正文：不当拦截页，照样查登录页（登录页上写着"非授权用户禁止访问"）
         parsed = parse_detail(_untitled(text), url)
-        if parsed.failure_reason == "防护页或验证码" or not (parsed.raw_body or parsed.attachments):
+        if parsed.failure_reason == "防护页或验证码":
             return True
-        # 取得到正文：不当拦截页，但照样查是不是登录页、验证页（登录页上写着"非授权用户禁止访问"）
+        if parsed.attachments:
+            return _login_page(text, url)
+        body = parsed.raw_body or ""
+        if title_blocked(cleaned) or not body or _BLOCK_WORDS.search(body):
+            return True
         return _login_page(text, url)
     if reason and reason != "需要登录或验证码":
         return True
@@ -900,8 +910,9 @@ def _fetch_outcomes(
                 # （第二十轮 Codex：丢掉的话停取到期后又当没取过的选回来）
                 streak_tripped = False
                 if pause.streak("odd-4xx", own, odd) >= 3:
-                    # 连续 3 份回 404、410 以外的 4xx（405、418 这类多半是拦截）：这次运行先停
-                    pause.add(own, f"连续 3 份 HTTP {http}", persistent=False)
+                    # 连续 3 份回 404、410 以外的 4xx（405、418 这类多半是拦截）：写进共享文件停 6
+                    # 小时，下次运行也不来（第二十一轮独立 Claude：只停这次运行，每半小时又来 3 次）
+                    pause.add(own, f"连续 3 份 HTTP {http}", hours=6)
                     streak_tripped = True
                 captcha = outcome.failure_reason == CAPTCHA_WORDS_ONLY and answered == own
                 if pause.streak("captcha-words", own, captcha) >= 3:
