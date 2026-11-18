@@ -704,6 +704,27 @@ UNDEFINED = _Special("undefined")
 UNKNOWN = _Special("UNKNOWN")
 
 
+class _Builtin:
+    """平台、jQuery 函数的替身（$.extend、Ls.url.get、Ls.url.stringify、
+    _organTree2.getNodeByParam）：只按身份认调用；typeof 是 'function'，和别的值比较、拼接、转
+    字符串、取成员一律当不知道（以前用普通字符串当替身，typeof 给 'string'、== 'extend' 为真，
+    第二十轮独立 Claude）。"""
+
+    __slots__ = ("name",)
+
+    def __init__(self, name: str):
+        self.name = name
+
+    def __repr__(self):
+        return f"<{self.name}>"
+
+
+_EXTEND = _Builtin("$.extend")
+_URL_GET = _Builtin("Ls.url.get")
+_URL_STRINGIFY = _Builtin("Ls.url.stringify")
+_GET_NODE = _Builtin("_organTree2.getNodeByParam")
+
+
 def _number_literal(token: str) -> float:
     """数字字面量：0 开头的（010 在 JS 里是八进制）和超过 15 位的整数部分（超出双精度能精确表示的
     范围）认不出。"""
@@ -1343,6 +1364,8 @@ def _evaluate(tree, env):
             # 只知道部分属性的对象：$、Ls 在浏览器里是函数（typeof $ === 'function'），说不准
             # （第十九轮独立 Claude）
             return UNKNOWN
+        if isinstance(value, _Builtin):
+            return "function"
         return (
             "function"
             if callable(value) or (isinstance(value, tuple) and value and value[0] == "function")
@@ -1360,6 +1383,9 @@ def _evaluate(tree, env):
             return UNKNOWN
         if op in ("&&", "||"):
             return b
+        if isinstance(a, _Builtin) or isinstance(b, _Builtin):
+            # 函数替身和别的值比较、拼接、算数：浏览器里是真函数（转字符串是源码），说不准
+            return UNKNOWN
         if op in ("==", "!=") and (
             isinstance(a, (dict, list, tuple)) != isinstance(b, (dict, list, tuple))
         ):
@@ -3292,6 +3318,17 @@ def _dynamic_code_problem(tokens, values):
         path = strip(path, k)
         if path[0] in ("$", "jQuery") and len(path) > 1 and path[1] not in ("fn", "()"):
             return f"改了 jQuery 的 {'.'.join(path)}"
+    for k in range(len(values) - 2):
+        if values[k] not in ("createElement", "createElementNS") or values[k + 1] != "(":
+            continue
+        close = _matching_token(tokens, k + 1)
+        args = values[k + 2 : close]
+        name = args[-1] if args else ""
+        if name[:1] not in ("'", '"') or len(args) not in (1, 3):
+            return f"{values[k]} 的元素名不是直接写的字符串，看不出新建了什么"
+        if _string_literal(name).strip().lower() == "base":
+            # <base> 改了文档的基准地址：列表请求浏览器按它去别的网站（第二十轮独立 Claude）
+            return "新建 base 元素改文档的基准地址"
     script_element = any(
         values[k] == "createElement"
         and values[k + 1 : k + 2] == ["("]
@@ -5480,6 +5517,46 @@ def _init_calls_getdata(body):
     return False
 
 
+def _pure_expression(tree) -> bool:
+    """只有字面量、变量、成员读取和运算（没有调用、函数、赋值、自增自减、delete）。"""
+    if not isinstance(tree, tuple) or not tree:
+        return True
+    kind = tree[0]
+    if kind in ("literal", "identifier"):
+        return True
+    if kind == "member":
+        return _pure_expression(tree[1]) and _pure_expression(tree[2])
+    if kind == "unary":
+        return tree[1] not in ("delete", "++", "--") and _pure_expression(tree[2])
+    if kind == "binary":
+        return (
+            tree[1] not in _ASSIGN_OPS and _pure_expression(tree[2]) and _pure_expression(tree[3])
+        )
+    if kind == "conditional":
+        return all(_pure_expression(part) for part in tree[1:4])
+    if kind == "array":
+        return all(_pure_expression(item) for item in tree[1])
+    if kind == "object":
+        return all(_pure_expression(item) for _, item in tree[1])
+    return False
+
+
+class _NotSkippable(LonsunFormatError):
+    """按名字跳过的那几句（me.setMeta、console.log、Ls.tipsLoading……）不能跳。"""
+
+
+def _skippable_call(call, env, me):
+    """按名字跳过、不求值的调用：参数只许字面量、变量、成员读取和运算（浏览器先算参数，
+    console.log($.extend(me.listParams, …)) 能改请求参数），调用的根（console、me、Ls）不能被方法里
+    的局部变量遮住（var console = {log: …}），不然抛 _NotSkippable（第二十轮独立 Claude）。"""
+    path = _call_path(call) or ""
+    root_name = path.split(".")[0]
+    if root_name in env.values and not (root_name == "me" and env.values["me"] is me):
+        raise _NotSkippable(f"{path} 的 {root_name} 被方法里的局部变量遮住了，认不准")
+    if not all(_pure_expression(arg) for arg in call[2]):
+        raise _NotSkippable(f"{path} 的参数里有调用或函数，浏览器会先算它们，认不准")
+
+
 def _has_unmodeled_call(tree, env):
     if not isinstance(tree, tuple) or not tree:
         return False
@@ -6314,10 +6391,10 @@ def resolve_lonsun(api, catalog_text):
                 "me": me,
                 "location": _PartialDict({"href": api.base_url}),
                 "Ls": _PartialDict(
-                    {"url": _PartialDict({"get": "url.get", "stringify": "url.stringify"})}
+                    {"url": _PartialDict({"get": _URL_GET, "stringify": _URL_STRINGIFY})}
                 ),
-                "$": _PartialDict({"extend": "extend"}),
-                "_organTree2": _PartialDict({"getNodeByParam": "node"}),
+                "$": _PartialDict({"extend": _EXTEND}),
+                "_organTree2": _PartialDict({"getNodeByParam": _GET_NODE}),
             }
         )
 
@@ -6341,14 +6418,14 @@ def resolve_lonsun(api, catalog_text):
 
         def call(fn, args, receiver):
             if (
-                fn == "node"
+                fn is _GET_NODE
                 and len(args) == 3
                 and args[0] == "id"
                 and args[1] == cat_id
                 and args[2] is None
             ):
                 return node
-            if fn == "url.get" and len(args) == 1 and isinstance(args[0], str):
+            if fn is _URL_GET and len(args) == 1 and isinstance(args[0], str):
                 if not re.fullmatch(r"[A-Za-z0-9_]+", args[0]):
                     # 平台把参数名拼进正则：名字里有元字符的，两边取到的不一样
                     if not root.unknown_reason:
@@ -6360,7 +6437,7 @@ def resolve_lonsun(api, catalog_text):
                     return UNKNOWN
                 # 平台 common.min.js：get 通过 TT.isEmpty 将缺失值转为空串。
                 return current["query"].get(args[0], "")
-            if fn == "url.stringify" and len(args) == 1 and isinstance(args[0], dict):
+            if fn is _URL_STRINGIFY and len(args) == 1 and isinstance(args[0], dict):
                 from urllib.parse import quote
 
                 if any(
@@ -6372,7 +6449,7 @@ def resolve_lonsun(api, catalog_text):
                     for k, v in args[0].items()
                 )
             if (
-                fn == "extend"
+                fn is _EXTEND
                 and len(args) == 3
                 and all(isinstance(x, dict) for x in args)
                 and not args[0]
@@ -6410,6 +6487,7 @@ def resolve_lonsun(api, catalog_text):
                         and value
                         and _call_path(value) == "Ls.tipsLoading"
                     ):
+                        _skippable_call(value, env, me)
                         phase = 2
                         continue
                     if (
@@ -6585,6 +6663,10 @@ def resolve_lonsun(api, catalog_text):
                         "me.getGd",
                         "console.log",
                     ):
+                        # 跳过的这几句不碍请求，但浏览器会先算参数：参数里有调用、函数（能改
+                        # me.listParams）的不跳；console、me 被局部变量遮住的也不跳（第二十轮
+                        # 独立 Claude）
+                        _skippable_call(expr, env, me)
                         return False
                     if path == "window.history.pushState":
                         from urllib.parse import urljoin

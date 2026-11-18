@@ -4082,3 +4082,69 @@ def test_catalog_with_proto_key_refused():
     text = 'var catalogs = {6991:[{"id":1,"name":"a","parentId":0,"__proto__":{"x":1}}]}'
     with pytest.raises(LonsunFormatError):
         parse_catalog(text, "6991")
+
+
+@pytest.mark.parametrize(
+    "old,new,read",
+    [
+        # 跳过不算的那几句，浏览器会先算参数（第二十轮独立 Claude）：参数里有调用的不跳
+        (
+            "me.getNav();",
+            "me.getNav(); console.log($.extend(me.listParams, {pageSize: 100}));",
+            False,
+        ),
+        ("me.getNav();", "me.getNav(); console.log('导航', me.currNode.name);", True),
+        # console 被方法里的局部变量遮住：调的不是浏览器自带的 console.log
+        (
+            "me.getNav();",
+            "me.getNav(); var console = {log: function () {}}; console.log(1);",
+            False,
+        ),
+    ],
+)
+def test_skipped_calls_need_plain_arguments(old, new, read):
+    page = fixture("jx_page.html")
+    assert page.count(old) == 1
+    assert _refused(page.replace(old, new, 1)) is not read, new
+
+
+def test_tips_loading_arguments_are_checked():
+    # var tipsLoading = Ls.tipsLoading(…) 也是跳过不算的：参数里改 me.listParams 的不跳
+    page = fixture("jx_page.html").replace(
+        "Ls.tipsLoading('加载中...', {times: 999999})",
+        "Ls.tipsLoading($.extend(me.listParams, {pageSize: 100, catId: 1}), {times: 999999})",
+    )
+    assert _refused(page)
+
+
+@pytest.mark.parametrize(
+    "check",
+    [
+        # 平台、jQuery 函数的替身不再是普通字符串：typeof、比较、取成员都不确定（第二十轮独立 Claude）
+        "if (typeof $.extend === 'function') { return; }",
+        "if ($.extend != 'extend') { return; }",
+        "if ($.extend.length !== 6) { return; }",
+    ],
+)
+def test_builtin_stand_ins_are_not_strings(check):
+    head = "getData: function () {\n      var me = this;"
+    page = fixture("jx_page.html")
+    assert page.count(head) == 1
+    assert _refused(page.replace(head, head + " " + check, 1)), check
+
+
+@pytest.mark.parametrize(
+    "script,read",
+    [
+        # <base> 改了文档的基准地址，列表请求浏览器按它去别的网站（第二十轮独立 Claude）
+        (
+            "var b = document.createElement('base'); b.href = 'https://www.ah.gov.cn/';"
+            " document.head.appendChild(b);",
+            False,
+        ),
+        ("var t = 'ba' + 'se'; document.createElement(t);", False),
+        ("var d = document.createElement('div'); d.className = 'x';", True),
+    ],
+)
+def test_base_element_created_by_script_refused(script, read):
+    assert (_found(_jx(extra=f"<script>{script}</script>")) is not None) is read, script
