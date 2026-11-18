@@ -565,7 +565,8 @@ binlog_purge_sql() {
   cat <<'EOF'
 set -eu
 export MYSQL_PWD="$MYSQL_ROOT_PASSWORD"
-if [ "$(mysql -uroot -N -B -e 'SELECT @@log_bin')" != 1 ]; then echo "binlog 没开，不用清"; exit 0; fi
+on=$(mysql -uroot -N -B -e 'SELECT @@log_bin')
+if [ "$on" != 1 ]; then echo "binlog 没开，不用清"; exit 0; fi
 current=$(mysql -uroot -N -B -e 'FLUSH BINARY LOGS; SHOW MASTER STATUS' | awk 'NR == 1 {print $1}')
 case "$current" in "" | *[!A-Za-z0-9._-]*) echo "取不到当前的 binlog 文件名" >&2; exit 1 ;; esac
 mysql -uroot -e "PURGE BINARY LOGS TO '$current'"
@@ -587,23 +588,49 @@ mysql -uroot -N -B -e 'SELECT @@GLOBAL.log_bin'
 EOF
 }
 
+# 在 mysql 容器里跑（sh -s）：binlog 确实关着时，删掉数据目录里以前留下的 binlog 文件
+# （binlog.<6 位编号> 和 binlog.index）；还开着、读不出就按失败退出，什么都不删
+binlog_files_cleanup_sql() {
+  cat <<'EOF'
+set -eu
+export MYSQL_PWD="$MYSQL_ROOT_PASSWORD"
+on=$(mysql -uroot -N -B -e 'SELECT @@GLOBAL.log_bin')
+[ "$on" = 0 ] || { echo "binlog 还开着（${on:-读不出}），不删文件" >&2; exit 1; }
+dir=$(mysql -uroot -N -B -e 'SELECT @@GLOBAL.datadir')
+case "$dir" in /*/) ;; *) echo "读不出数据目录" >&2; exit 1 ;; esac
+n=0
+for f in "${dir}"binlog.[0-9][0-9][0-9][0-9][0-9][0-9] "${dir}binlog.index"; do
+  [ -e "$f" ] || continue
+  rm -f -- "$f"
+  n=$((n + 1))
+done
+echo "删掉了以前留下的 binlog 文件 ${n} 个"
+EOF
+}
+
 # 关掉 MySQL 的二进制日志（binlog）：没在用——不做主从，也没有按时刻恢复，恢复只用每天的备份。
 # install 已经把带 disable_log_bin 的 mysql.cnf 拷到 ${SERVER}；MySQL 要重建一次容器才用上
 # （mysql.cnf 是按文件挂进去的，up 看不出它变了）。先停接口和 worker（不让新的写入落进还开着的
-# binlog），清掉现有的 binlog（只剩当前一个，里面只有文件头），再重建 MySQL、查 @@log_bin 是 0；
-# 最后把 worker、接口起来（成功、失败都起来，on_exit）。已经关了的再跑一遍也没事：清 binlog 那步
-# 打"binlog 没开，不用清"
+# binlog），清掉现有的 binlog，再重建 MySQL、查 @@log_bin 是 0，删掉数据目录里留下的 binlog 文件
+# （MySQL 之前已经用上新配置的，清 binlog 那步会打"binlog 没开，不用清"，旧文件就靠这一步删）；
+# 最后把 worker、接口起来，起来了才打 BINLOG OFF。中途失败、被打断，on_exit 照样把它们起来。
+# 再跑一遍也没事
 binlog_off() {
   [ -f "$SERVER/.env" ] || die "还没装（没有 ${SERVER}/.env）"
   grep -q '^disable_log_bin' "$SERVER/mysql.cnf" 2>/dev/null \
     || die "${SERVER}/mysql.cnf 里还没有 disable_log_bin：先 install、up 含这一改的版本"
-  say "关掉 MySQL 的 binlog：停接口和 worker → 清掉现有的 binlog → 用新配置重建 MySQL → 查 @@log_bin 是 0 → 起 worker、接口"
+  say "关掉 MySQL 的 binlog：停接口和 worker → 清掉现有的 binlog → 用新配置重建 MySQL → 查 @@log_bin 是 0 → 删留下的 binlog 文件 → 起 worker、接口"
   pause_services
   purge_binlog
   compose up -d --force-recreate --wait --wait-timeout 300 mysql
   local on
-  on=$(binlog_state_sql | compose exec -T mysql sh -s | tr -d '[:space:]')
+  on=$(binlog_state_sql | compose exec -T mysql sh -s | tr -d '[:space:]') \
+    || die "查不出 MySQL 的 binlog 开没开（MySQL 连不上？）"
   [ "$on" = 0 ] || die "MySQL 重建以后 binlog 还开着（@@GLOBAL.log_bin=${on:-读不出}）"
+  binlog_files_cleanup_sql | compose exec -T mysql sh -s \
+    || die "binlog 关了，但数据目录里留下的 binlog 文件没删掉（原因见上面）"
+  resume_services
+  trap - EXIT
   echo "BINLOG OFF"
 }
 resume_services() {
@@ -702,9 +729,9 @@ import_export() {
     YOUJU_DATABASE_URL="mysql+pymysql://root:${root_pw}@mysql:3306/youju?charset=utf8mb4" \
     compose run --rm --no-deps -e YOUJU_DATABASE_URL -v "$EXPORT_DIR:/export:ro" worker \
     youju restore-drill --file "/export/backups/$name" || drill_ok=0
-  # 试恢复写进 binlog 的是旧库的明文（binlog 留 3 天）：成不成都清掉（中途被打断的，退出时清）。
+  # 试恢复写进 binlog 的是旧库的明文（binlog 开着时）：成不成都清掉（中途被打断的，退出时清）。
   # 不做主从，binlog 没人用。清不干净就停下：不存档、不删明文
-  say "    清掉 MySQL 的 binlog（试恢复写进去的是旧库的明文）"
+  say "    清掉 MySQL 的 binlog（试恢复写进去的是旧库的明文；binlog 关了以后这步打\"binlog 没开，不用清\"）"
   purge_binlog
   PURGE_BINLOG=""
   [ "$drill_ok" = 1 ] || die "试恢复没通过（原因见上面）：没存档、没删明文"
