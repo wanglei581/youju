@@ -96,6 +96,24 @@ class _FetchOutcome:
     failure_reason: str | None
 
 
+def _network_failure(outcome: _FetchOutcome) -> bool:
+    """熔断只数的网络失败：连不上、超时、域名解析失败（取页器的原因写着"域名解析失败"，解析排队
+    过多也包在里面）。robots.txt 回了状态码（5xx、429、521）、证书或加密连接出错是对方的事，不是
+    我们自己断网。不按子串 dns 认：主机名（cdnstatic.……）、跳转地址里也会有。"""
+    reason = outcome.failure_reason or ""
+    robots_status = outcome.fetch.robots_status if outcome.fetch else None
+    robots_failure = outcome.fetch.robots_failure if outcome.fetch else ""
+    return (
+        outcome.status == "network_error"
+        or (
+            outcome.status == "robots_error"
+            and robots_status is None
+            and robots_failure not in ("ssl_error", "too_large")
+        )
+        or any(text in reason for text in ("域名解析失败", "同时在等的域名解析过多"))
+    )
+
+
 def _retryable(status: str, http_status: int | None) -> bool:
     # robots.txt 暂不可用时禁止本次抓取，但可在退避后重新检查。pdf_retry：读 PDF 正文的子进程
     # 遇到和当时的环境有关的问题（容器内存不够被停掉、太忙等，见 pdf_sandbox），不是文件本身的问题
@@ -264,9 +282,10 @@ def _login_page(text: str, url: str) -> bool:
       （标题拆掉站名以后 10 个字以内）写着验证码、安全验证这类字，正文里看得见的"请输入验证码"这类
       整句（标题、脚本、核实过的站内搜索限流弹窗都不算）；只在 placeholder 这类属性里写着的是弱
       信号，整页几乎没字时才算（整站留言框上也常有）。没有信号的不是；
-    - 有信号的去掉标题解析：正文开头就写着验证码这类字（解析判防护页），解析选中的正文里就有密码框、
-      "正文"很短（不到 300 字）又是用户名、密码这类登录表单的字（表单放在 .content、#zoom 里时解析
-      会把它当正文；页头的登录小框不算），或者取不到正文、附件，才算。
+    - 有信号的去掉标题解析：正文开头就写着验证码这类字（解析判防护页）而正文区没有完整的正文（去掉
+      空白不到 300 字或没有句子：标题在正文区上面又写一遍、第一段讲怎么输入验证码的长通知不算），
+      解析选中的正文里就有密码框、"正文"很短（不到 300 字）又是用户名、密码这类登录表单的字（表单
+      放在 .content、#zoom 里时解析会把它当正文；页头的登录小框不算），或者取不到正文、附件，才算。
     详情页的标题就是文章标题（"关于启用短信验证码登录的通知"），页头的登录小框、限流弹窗、留言区的
     验证码也常见，只凭这些不停整个网站。"""
     from youju.crawler.detail import _body_node
@@ -291,11 +310,17 @@ def _login_page(text: str, url: str) -> bool:
     if not (password or captcha):
         return False
     parsed = parse_detail(untitled, url)
+    host = (urlsplit(url).hostname or "").lower()
     if parsed.failure_reason == "防护页或验证码":
-        return True
+        # 解析判防护页（标题以外前 500 个看得见的字里有验证码、安全验证这类字）：正文区里有完整的
+        # 正文（去掉空白 300 字以上、有句子）的是正常通知——文章标题在正文区上面又写一遍（"关于开展
+        # ……安全验证试点工作的通知"）、第一段讲怎么输入验证码，不停网站（第十八轮独立 Claude）
+        node = _body_node(root, host)
+        words = "".join("".join(_plain_lines(node)).split()) if node is not None else ""
+        return not (len(words) >= 300 and "。" in words)
     body = parsed.raw_body or ""
     if password and len(body) < 300 and re.search(r"用户名|密码|账号|帐号", body):
-        node = _body_node(root, (urlsplit(url).hostname or "").lower())
+        node = _body_node(root, host)
         if node is not None and node.xpath("." + _PASSWORD_INPUT):
             return True
     return not body and not parsed.attachments
@@ -303,6 +328,8 @@ def _login_page(text: str, url: str) -> bool:
 
 # 放过站内搜索限流弹窗的网站遇到防护页：这一轮停取（不写进共享文件）、要复核
 THROTTLE_PROTECTED = "搜索限流弹窗网站遇到防护页，这一轮停取，要复核"
+# 页面上有验证码这类字、又不像整页就是一个关卡（正常通知讲验证码使用要求这类）：这份记读不出
+CAPTCHA_WORDS_ONLY = "页面上有验证码这类字，不像整页就是关卡，没停取网站，也没取正文"
 
 
 def _gate_text(result: FetchResult) -> str:
@@ -407,8 +434,9 @@ def _fetch_one(document_id: int, url: str, fetcher: DetailFetcher) -> _FetchOutc
                 THROTTLE_PROTECTED,
             )
         # 整页关卡上面已经停了网站；这里是页面上有验证码这类字、又不像整页就是一个关卡（正常通知讲
-        # 验证码使用要求这类）：不停网站，这份记读不出、不取正文
-        why = "页面上有验证码这类字，不像整页就是关卡，没停取网站，也没取正文"
+        # 验证码使用要求这类）：不停网站，这份记读不出、不取正文（同一网站连续 3 份这样的，取页线程
+        # 这次运行先停这个网站，见 _fetch_outcomes）
+        why = CAPTCHA_WORDS_ONLY
         return _FetchOutcome(
             document_id, now, fetched, DetailResult(failure_reason=why), "parse_empty", why
         )
@@ -726,10 +754,12 @@ def _fetch_outcomes(
     should_stop=None,
     strip_content: bool = False,
     on_start=None,
+    on_paused=None,
 ) -> dict[int, _FetchOutcome]:
     """strip_content：交回的结果不带页面内容（只写库的调用方用；body_refresh 这类要拿原网页核对的
     不能清）。on_start(document_id)：一份文件开始取时（取页线程里）调一次，汇总时分得出哪些是开始
-    了又被停下打断的。"""
+    了又被停下打断的；on_paused(document_id)：取了但被停取挡下、不交回的（所在网站或 PDF 所在网站
+    真在停取中；停下信号挡下的不算），也在取页线程里调。"""
     by_host: dict[str, list[tuple[int, str]]] = {}
     for document_id, url in selected:
         by_host.setdefault(_host(url), []).append((document_id, url))
@@ -753,6 +783,7 @@ def _fetch_outcomes(
 
     def produce(documents):
         odd_streak = 0
+        captcha_streak = 0
         try:
             for document_id, url in documents:
                 if stopped():
@@ -838,6 +869,12 @@ def _fetch_outcomes(
                 if odd_streak >= 3:
                     # 连续 3 份回 404、410 以外的 4xx（405、418 这类多半是拦截）：这次运行先停
                     pause.add(own, f"连续 3 份 HTTP {http}", persistent=False)
+                captcha = outcome.failure_reason == CAPTCHA_WORDS_ONLY and answered == own
+                captcha_streak = captcha_streak + 1 if captcha else 0
+                if captcha_streak >= 3:
+                    # 连续 3 份页面上有验证码这类字、又不像整页关卡：多半是认不出的验证页（正常通知
+                    # 讲验证码的不会一连几份），这次运行先停
+                    pause.add(own, "连续 3 份页面上有验证码这类字", persistent=False)
                 touched = {_host(u) for u in (url, *guarded.touched, *guarded.visited)}
                 refused = outcome.status == "protected" or (
                     outcome.fetch and outcome.fetch.http_status in {401, 403, 412, 429, 521}
@@ -853,6 +890,11 @@ def _fetch_outcomes(
                             outcome, fetch=replace(outcome.fetch, content=b"", text="")
                         )
                     put(outcome)
+                elif on_paused is not None and touched & pause.reasons.keys():
+                    # 碰到的网站（所在网站、PDF 所在网站）在停取中、不交回：汇总时算 site_paused。
+                    # 停下信号（到时间、让路、每轮要锁）挡下的取页器也回"停取中"，那些不算，汇总按
+                    # 开始了又被打断数
+                    on_paused(document_id)
                 del outcome, guarded
                 if _host(url) in pause.reasons:
                     break
@@ -901,6 +943,7 @@ def _fetch_selected(
     should_stop=None,
     on_outcome=None,
     on_start=None,
+    on_paused=None,
 ) -> list[DetailFetchSummary]:
     if not selected:
         return []
@@ -925,6 +968,7 @@ def _fetch_selected(
         should_stop=should_stop,
         strip_content=True,
         on_start=on_start,
+        on_paused=on_paused,
     )
     return [
         saved[document_id]
@@ -1003,11 +1047,16 @@ def run_detail_queue(
     timed_out: set[int] = set()
     dropped: set[int] = set()
     started: set[int] = set()
+    paused_docs: set[int] = set()  # 取了但被停取挡下的（PDF 所在网站只停这次运行这类）
     started_lock = threading.Lock()
 
     def on_start(document_id):
         with started_lock:
             started.add(document_id)
+
+    def on_paused(document_id):
+        with started_lock:
+            paused_docs.add(document_id)
 
     # 还没写库的连续网络失败（到达时刻, 结果）：凑够熔断条件就整批不写
     pending: list[tuple[float, _FetchOutcome]] = []
@@ -1036,20 +1085,7 @@ def run_detail_queue(
         if outcome.status == "deadline":
             timed_out.add(outcome.document_id)
             return None  # 到了这次运行的期限没取完：不算网络失败、不写库，下次再取
-        reason = (outcome.failure_reason or "").lower()
-        robots_status = outcome.fetch.robots_status if outcome.fetch else None
-        robots_failure = outcome.fetch.robots_failure if outcome.fetch else ""
-        network = (
-            outcome.status == "network_error"
-            # robots.txt 回了状态码（5xx、429、521）、证书或加密连接出错是对方的事，不是我们自己
-            # 断网；连不上、超时才可能是
-            or (
-                outcome.status == "robots_error"
-                and robots_status is None
-                and robots_failure not in ("ssl_error", "too_large")
-            )
-            or any(text in reason for text in ("域名解析失败", "同时在等的域名解析过多", "dns"))
-        )
+        network = _network_failure(outcome)
         if tripped.is_set():
             # 熔断以后网络失败不写库；别的结果（熔断前已经在取的）照常写
             if network:
@@ -1165,6 +1201,7 @@ def run_detail_queue(
                 should_stop=lambda: stop_reason() is not None,
                 on_outcome=receive,
                 on_start=on_start,
+                on_paused=on_paused,
             )
 
     if fetcher is None:
@@ -1184,8 +1221,9 @@ def run_detail_queue(
     if not tripped.is_set():
         flush()
     # 选了没写库的分开数（total 只算写了库的）：circuit_dropped 熔断时扔掉，site_paused 所在网站（或
-    # 这份文件）在停取中，interrupted 开始取了、停下时（到时间、给别的任务让路、每轮要锁——为什么停
-    # 看 stop_reason）被打断（取到一半、正要取 PDF），not_started 停下时还没开始
+    # 这份文件）在停取中、取了被停取挡下（PDF 所在网站在停取中这类），interrupted 开始取了、停下时
+    # （到时间、给别的任务让路、每轮要锁——为什么停看 stop_reason）被打断（取到一半、正要取 PDF），
+    # not_started 停下时还没开始
     paused_now = pause.reasons
     for document_id in sorted(chosen - written - gone):
         if document_id in dropped:
@@ -1193,6 +1231,7 @@ def run_detail_queue(
         elif (
             _host(urls[document_id]) in paused_now
             or f"{DEFERRED_PREFIX}{document_id}" in paused_now
+            or document_id in paused_docs
         ):
             key = "site_paused"
         elif document_id in timed_out or document_id in started:

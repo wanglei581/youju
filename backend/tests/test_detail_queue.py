@@ -187,6 +187,30 @@ def test_document_cut_off_before_its_pdf_counts_as_interrupted(session):
     assert session.get(DocumentDetail, doc.id) is None
 
 
+def test_document_whose_pdf_host_is_paused_for_this_run_counts_as_site_paused(session, monkeypatch):
+    # 详情页取到了、唯一的 PDF 所在网站这次运行停着（连续 3 份 405 这类，只停这次运行）：这份被停取
+    # 挡下，汇总记 site_paused，不算"开始了又被打断"（第十八轮独立 Claude）
+    from youju.crawler import detail_service
+
+    class Paused(detail_service._SitePause):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.add("files.example.gov.cn", "连续 3 份 HTTP 405", persistent=False)
+
+    monkeypatch.setattr(detail_service, "_SitePause", Paused)
+    doc = add_document(session, 9471)
+    pdf = "https://files.example.gov.cn/f/1.pdf"
+    page = FetchResult(
+        doc.url, "ok", http_status=200, text=f"<div id='zoom'><a href='{pdf}'>附件.pdf</a></div>"
+    )
+    fake = FakeFetcher({doc.url: page})
+    summary = run_detail_queue(session, minutes=1, workers=1, fetcher=fake)
+    assert fake.calls == [doc.url]
+    assert summary.stop_reason == "没有了"
+    assert summary.statuses == {"site_paused": 1}
+    assert session.get(DocumentDetail, doc.id) is None
+
+
 def test_time_stop_without_database():
     ticks = iter([0, 60])
     summary = run_detail_queue(None, minutes=1, fetcher=object(), clock=lambda: next(ticks))

@@ -58,7 +58,7 @@ elif [ -n "$yields" ]; then
       exec timeout 3h youju "$@"' \
     "$name" "$@" >> /proc/1/fd/1 2>&1
 else
-  # 等 5 秒再放弃：补正文队列查"别的任务在跑没有"时会瞬间拿一下共享锁，撞上那一下不算重叠
+  # 等 5 秒再放弃：两次定时撞在一起时（上一次刚要结束）不算重叠，不白白跳过一次
   flock -w 5 -E 75 "/tmp/youju-${name}.lock" timeout 3h youju "$@" >> /proc/1/fd/1 2>&1
 fi
 code=$?

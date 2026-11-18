@@ -1091,6 +1091,104 @@ def test_normal_pages_mentioning_gates_do_not_pause(tmp_path, html, expected):
     assert _SitePause(path).expiry("a.gov.cn") is None
 
 
+def _notice_with_h1(title, first=""):
+    # 政府网页常见的样子：导航 30 个链接，正文区上面用 h1 把文章标题再写一遍，#zoom 里是完整的正文
+    nav = "".join(f"<a href='/c{i}.html'>栏目{i}</a>" for i in range(30))
+    body = first + "现将有关事项通知如下。各单位要按要求做好申报工作，材料齐全、内容真实。" * 25
+    return (
+        f"<html><head><title>{title}_某市工业和信息化局</title></head><body><div>{nav}</div>"
+        f"<h1>{title}</h1><div id='zoom'><p>{body}</p></div></body></html>"
+    )
+
+
+_SECURITY_NOTICE = _notice_with_h1("关于开展工业控制系统安全验证试点工作的通知")
+
+
+@pytest.mark.parametrize(
+    "html",
+    [
+        _SECURITY_NOTICE,
+        _notice_with_h1(
+            "关于做好政务服务网账号迁移工作的通知",
+            "登录政务服务网时，在登录页面请输入验证码后完成登录。",
+        ),
+    ],
+    ids=["title-in-h1", "first-paragraph"],
+)
+def test_long_notice_with_gate_words_up_front_does_not_pause(tmp_path, html):
+    # 文章标题在正文区上面又写一遍、带着"安全验证"，或第一段讲怎么"请输入验证码"的长通知（第十八轮
+    # 独立 Claude）：不是验证页，不停网站——这份记读不出、不取正文（解析判防护页）
+    path = str(tmp_path / "pause.json")
+
+    class Fake:
+        def fetch(self, url):
+            return _html_result(url, html)
+
+    assert (
+        detail_service._gate_page(_html_result("https://a.gov.cn/1", html), "https://a.gov.cn/1")
+        is False
+    )
+    docs = [(1, "https://a.gov.cn/1"), (2, "https://a.gov.cn/2")]
+    outcomes = _fetch_outcomes(docs, Fake(), 1, pause=_SitePause(path))
+    assert [outcomes[i].failure_reason for i in (1, 2)] == [detail_service.CAPTCHA_WORDS_ONLY] * 2
+    assert _SitePause(path).expiry("a.gov.cn") is None
+
+
+def test_templated_verify_page_with_little_body_still_pauses():
+    # 带全套网站模板（导航、很长的页尾）的验证页：正文区只有一句"请输入验证码"，照旧算关卡、停网站
+    nav = "".join(f"<a href='/c{i}.html'>栏目{i}</a>" for i in range(30))
+    footer = "主办单位：某市人民政府办公室 承办单位：某市数据资源管理局 网站标识码：某某 " * 8
+    html = (
+        f"<html><head><title>某市人民政府门户网站</title></head><body><div>{nav}</div>"
+        "<div class='box'><p>您的访问过于频繁，请输入验证码后继续访问本网站</p>"
+        "<input name='code'><img src='/code.jpg'></div>"
+        f"<div class='footer'>{footer}</div></body></html>"
+    )
+    result = _html_result("https://a.gov.cn/1", html)
+    assert detail_service._gate_page(result, "https://a.gov.cn/1") is True
+
+
+def test_three_captcha_word_pages_in_a_row_pause_the_site_for_this_run(tmp_path):
+    # 同一网站连续 3 份"页面上有验证码这类字、不像整页关卡"：多半是认不出的验证页，这次运行先停这个
+    # 网站（不写进共享文件），后面的不再取；第 3 份被停取挡下、不交回
+    path = str(tmp_path / "pause.json")
+    calls = []
+
+    class Fake:
+        def fetch(self, url):
+            calls.append(url)
+            return _html_result(url, _SECURITY_NOTICE)
+
+    pause = _SitePause(path)
+    paused = []
+    docs = [(i, f"https://a.gov.cn/{i}") for i in range(1, 6)]
+    outcomes = _fetch_outcomes(docs, Fake(), 1, pause=pause, on_paused=paused.append)
+    assert calls == [f"https://a.gov.cn/{i}" for i in (1, 2, 3)]
+    assert sorted(outcomes) == [1, 2] and paused == [3]
+    assert pause.reasons["a.gov.cn"] == "连续 3 份页面上有验证码这类字"
+    assert _SitePause(path).expiry("a.gov.cn") is None
+
+
+def test_network_failure_only_counts_connection_and_resolver_errors():
+    # 熔断只数网络失败（第十八轮独立 Claude）：原因里碰巧带着 dns 字样的（主机名 cdnstatic……）不算
+    from youju.crawler.detail_service import _FetchOutcome, _network_failure
+
+    now = datetime.now(UTC)
+
+    def outcome(status, reason, fetch=None):
+        return _FetchOutcome(1, now, fetch, None, status, reason)
+
+    assert _network_failure(outcome("network_error", "连不上"))
+    assert _network_failure(outcome("http_error", "域名解析失败：解析超过 10 秒"))
+    assert not _network_failure(
+        outcome("unsupported_host", "跳到 https://cdnstatic.example.gov.cn/a.pdf，不跟")
+    )
+    busy = FetchResult("https://a.gov.cn/1", "robots_error", robots_status=503)
+    assert not _network_failure(outcome("robots_error", "robots.txt 读不到", busy))
+    down = FetchResult("https://a.gov.cn/1", "robots_error")
+    assert _network_failure(outcome("robots_error", "robots.txt 读不到", down))
+
+
 @pytest.mark.parametrize(
     "robots",
     [
