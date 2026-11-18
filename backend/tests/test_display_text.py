@@ -880,6 +880,23 @@ def test_emails_masked_alike_by_store_and_page(raw: str) -> None:
     assert v1.display_body_text(raw) == f"意见发至{EMAIL_MARK}。"
 
 
+@pytest.mark.parametrize(
+    ("raw", "page"),
+    [
+        # 独立 Claude 第二轮：区号后面 9–16 位的编号、400/800 热线的后半截，入库、页面都不当电话
+        ("受理号：0571-1234567890", "受理号：0571-1234567890"),
+        ("项目批次 0001-123456789", "项目批次 0001-123456789"),
+        ("咨询电话：400—2345678", "咨询电话：400—2345678"),
+        ("联系电话：65432109、400—2345678", f"联系电话：{MARK}、400—2345678"),
+        # 原网页写错、电话那一行上的长号码照样遮
+        ("系统技术支持电话：0591-8123456781234567", f"系统技术支持电话：{MARK}"),
+    ],
+)
+def test_long_codes_and_hotlines_on_store_and_page(raw: str, page: str) -> None:
+    assert v1.display_body_text(v1._clean_reading_body(raw, redact=texts.mask)) == page
+    assert v1.display_body_text(v1.redact_sensitive(raw)) == page
+
+
 def test_qq_mark_on_the_page_for_the_model_and_in_ai_quotes():
     # 11/18 起入库遮 QQ 号：页面上写"（这里隐去了QQ号）"；交给模型的写回入库的标记，处理两次一样；
     # AI 引用落在这一句上，照旧按"原句里有已脱敏的内容"不用
