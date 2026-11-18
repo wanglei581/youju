@@ -211,6 +211,29 @@ def test_document_whose_pdf_host_is_paused_for_this_run_counts_as_site_paused(se
     assert session.get(DocumentDetail, doc.id) is None
 
 
+@pytest.mark.parametrize("kind", ["captcha-words", "odd-4xx"])
+def test_streaks_count_across_batches(session, kind):
+    # 每批每个网站只取一份（per_host=1）时，"连续 3 份"也跨批数（第十九轮 Codex）：第 3 份以后这次
+    # 运行先停这个网站（不写进共享文件），第 4 份不再取
+    from urllib.parse import urlsplit
+
+    from tests.test_detail_pause_unit import _SECURITY_NOTICE
+
+    docs = [add_document(session, 9480 + i) for i in range(4)]
+
+    def answer(doc):
+        if kind == "odd-4xx":
+            return FetchResult(doc.url, "http_error", http_status=405)
+        return FetchResult(doc.url, "ok", http_status=200, text=_SECURITY_NOTICE)
+
+    fake = FakeFetcher({d.url: answer(d) for d in docs})
+    summary = run_detail_queue(session, minutes=1, workers=1, per_host=1, fetcher=fake)
+    assert len(fake.calls) == 3
+    host = urlsplit(docs[0].url).hostname
+    assert host in summary.paused_hosts
+    assert _SitePause(get_settings().detail_pause_path).expiry(host) is None
+
+
 def test_time_stop_without_database():
     ticks = iter([0, 60])
     summary = run_detail_queue(None, minutes=1, fetcher=object(), clock=lambda: next(ticks))

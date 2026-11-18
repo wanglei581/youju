@@ -507,6 +507,8 @@ class _SitePause:
     def __init__(self, path: str | None = None) -> None:
         self.persistent: dict[str, tuple[str, datetime]] = {}
         self.temporary: dict[str, str] = {}
+        # 这次运行里各网站连续几份是某一类（连续 3 份 4xx、页面上有验证码这类字）：跨批保留
+        self._streaks: dict[tuple[str, str], int] = {}
         self.lock = threading.RLock()
         self.path = Path(path) if path else None
         self._seen: tuple[int, int, int] | None = None
@@ -524,6 +526,14 @@ class _SitePause:
             merged = {h: r for h, (r, until) in self.persistent.items() if until > now}
             merged.update(self.temporary)
             return merged
+
+    def streak(self, kind: str, host: str, hit: bool) -> int:
+        """这次运行里 host 连续几份是 kind 这一类：hit 为真加一、为假清零，交回加完的数。存在这个
+        对象上（一次运行一份），跨批保留（第十九轮 Codex：每批每个网站只取一份时也数得到 3）。"""
+        with self.lock:
+            count = self._streaks.get((kind, host), 0) + 1 if hit else 0
+            self._streaks[(kind, host)] = count
+            return count
 
     @property
     def hosts(self) -> dict[str, str]:
@@ -782,8 +792,6 @@ def _fetch_outcomes(
                 pass
 
     def produce(documents):
-        odd_streak = 0
-        captcha_streak = 0
         try:
             for document_id, url in documents:
                 if stopped():
@@ -865,13 +873,11 @@ def _fetch_outcomes(
                 # 只算详情页所在网站自己回的（PDF 在别的网站上回的不算到它头上）
                 http = outcome.fetch.http_status if outcome.fetch and answered == own else None
                 odd = http is not None and 400 <= http < 500 and http not in (404, 410)
-                odd_streak = odd_streak + 1 if odd else 0
-                if odd_streak >= 3:
+                if pause.streak("odd-4xx", own, odd) >= 3:
                     # 连续 3 份回 404、410 以外的 4xx（405、418 这类多半是拦截）：这次运行先停
                     pause.add(own, f"连续 3 份 HTTP {http}", persistent=False)
                 captcha = outcome.failure_reason == CAPTCHA_WORDS_ONLY and answered == own
-                captcha_streak = captcha_streak + 1 if captcha else 0
-                if captcha_streak >= 3:
+                if pause.streak("captcha-words", own, captcha) >= 3:
                     # 连续 3 份页面上有验证码这类字、又不像整页关卡：多半是认不出的验证页（正常通知
                     # 讲验证码的不会一连几份），这次运行先停
                     pause.add(own, "连续 3 份页面上有验证码这类字", persistent=False)
