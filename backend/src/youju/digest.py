@@ -153,8 +153,9 @@ class Digest:
     nearest_due: date | None = None
     kinds_pending: int = 0
     audit_flagged: int = 0
-    # 质检退回（Codex 抽查或管理台退回）、还待核对、等人带着退回原因再核的截止：条数和文件编号
-    # （自动核对不碰这些，D-135；攒着由 Claude 一起核。过期的也算，交给核的人看）
+    # 质检退回（Codex 抽查或管理台退回）、还待核对、截止在今天或以后、等人带着退回原因再核的截止：
+    # 条数和文件编号（自动核对不碰这些，攒着由 Claude 一起核）。过期的不列：D-135 定了过期的不核，
+    # 列着只会越攒越多；退回记录都留在库里，deadline-verify-stats 照样能数
     reopened: int = 0
     reopened_docs: tuple[int, ...] = ()
     feedback_pending: int = 0
@@ -289,6 +290,7 @@ def build_digest(session: Session, now: datetime | None = None) -> Digest:
         select(DocumentDeadline).where(
             DocumentDeadline.status == "pending",
             DocumentDeadline.audit_state == "reopened",
+            DocumentDeadline.candidate_date >= today,
         )
     ).all()
     masters = canonical_ids(session, [d.document_id for d in reopened])
@@ -898,7 +900,7 @@ def _access_line(digest: Digest) -> str:
 def _reopened_line(digest: Digest) -> str:
     """质检退回、等人看的截止（D-135：自动核对不碰，攒着由 Claude 一起核）；没有的不写这一行。
     正文里只写条数，文件编号一律另发（reopened_messages）：正文超长被截掉一段时，编号也不会丢。"""
-    return f"质检退回待人看：{digest.reopened} 条（文件编号另发）"
+    return f"质检退回待人看（没过期的）：{digest.reopened} 条（文件编号另发）"
 
 
 def reopened_messages(digest: Digest) -> list[str]:

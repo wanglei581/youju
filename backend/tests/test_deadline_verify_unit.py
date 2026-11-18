@@ -10,16 +10,22 @@ import pytest
 from youju import cli
 from youju import deadline_verify as verify
 from youju.api import app
+from youju.models import Document
 
 BODY = "请各单位在2026年9月30日  下午5点前提交申报材料。"
+APPLY_TITLE = "关于组织申报2026年度科技计划项目的通知"
 QUOTE = "请各单位在2026年9月30日 下午5点前提交申报材料。"
 
 
 class Session:
     def __init__(self, rows, details=None):
         self.rows, self.details = rows, details or {}
+        # 文件标题（自动核对按标题排除征集建议、征求意见）；没给的当作普通的申报通知
+        self.documents = {}
 
     def get(self, model, key):
+        if model is Document:
+            return self.documents.get(key) or SimpleNamespace(id=key, title=APPLY_TITLE)
         return self.rows[0] if self.rows and self.rows[0].id == key else None
 
     def scalar(self, stmt):
@@ -443,6 +449,46 @@ def test_auto_enabled_needs_the_switch_and_an_ai_key():
     assert verify.auto_enabled(settings("true", "k")) is False
 
 
+@pytest.mark.parametrize(
+    ("title", "excluded"),
+    [
+        ("关于征集2027年度山东省重点研发计划（软科学）项目指南建议的通知", True),
+        ("关于公开征求《科技计划项目管理办法（征求意见稿）》意见的通知", True),
+        ("关于征求2027年度项目指南编制建议的通知", True),
+        ("关于组织申报2026年度科技计划项目的通知", False),
+        ("关于征集2026年工业互联网典型案例的通知", False),
+        ("关于征集2027年度重点研发项目的通知", False),
+        ("关于印发《促进科技成果转化的实施意见》的通知", False),
+        ("", False),
+        (None, False),
+    ],
+)
+def test_solicits_suggestions_by_title(title, excluded):
+    """标题里有"征集"或"征求"、又有"建议"或"意见"的不自动核对；只有其中一样的照常。"""
+    assert verify.solicits_suggestions(title) is excluded
+
+
+def test_auto_reason_excludes_suggestion_calls(setup, monkeypatch):
+    """征集建议、征求意见的通知（如文件 38781 那种标题）不自动通过，照旧当候选；普通申报通知、
+    征集典型案例或项目的，照旧按两边是否都标企业申报截止来判。"""
+    session, candidate = setup
+    monkeypatch.setattr(verify, "_ai_supports", lambda *args: True)
+    monkeypatch.setattr(verify, "_ai_items", lambda *args: iter([]))
+    now = datetime(2026, 9, 29)
+    session.documents[1] = SimpleNamespace(
+        id=1, title="关于征集2027年度山东省重点研发计划（软科学）项目指南建议的通知"
+    )
+    assert verify._auto_reason(session, candidate, [1], now) == "标题是征集建议、征求意见"
+    for title in (
+        "关于组织申报2026年度科技计划项目的通知",
+        "关于征集2026年工业互联网典型案例的通知",
+    ):
+        session.documents[1] = SimpleNamespace(id=1, title=title)
+        assert verify._auto_reason(session, candidate, [1], now) is None
+    candidate.kind = "材料报送截止"
+    assert verify._auto_reason(session, candidate, [1], now) == "不是企业申报截止"
+
+
 def test_auto_tries_next_candidate_until_one_passes(monkeypatch):
     """同一截止有几条规则候选：前一条没通过接着试下一条，有一条通过了后面的不再核（D-135）。"""
     from youju import dedup
@@ -705,7 +751,7 @@ def test_auto_rechecks_the_time_after_locking(monkeypatch):
 
     class Rows:
         def get(self, model, key):
-            return target
+            return SimpleNamespace(id=key, title=APPLY_TITLE) if model is Document else target
 
         def scalars(self, stmt):
             return [target]

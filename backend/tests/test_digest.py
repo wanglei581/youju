@@ -233,9 +233,9 @@ def test_digest_numbers_match_the_consoles(session, world) -> None:
 
 
 def test_digest_reports_auto_verified_and_reopened_waiting(session, world) -> None:
-    """D-135：24 小时通过的里写明其中 AI 自动通过几条；质检退回、还待核对的截止写条数（同一通知同一
-    截止只算一条，过期的也算），文件编号一律另发（正文超长被截时也不丢），一条放不下分几条，每条都在
-    群提醒的字节上限以内。没有退回的不写这一行，也不另发。"""
+    """D-135：24 小时通过的里写明其中 AI 自动通过几条；质检退回、还待核对、截止在今天或以后的写条数
+    （同一通知同一截止只算一条，过期的不算），文件编号一律另发（正文超长被截时也不丢），一条放不下
+    分几条，每条都在群提醒的字节上限以内。没有退回的不写这一行，也不另发。"""
     from youju.alerts import MAX_ALERT_BYTES
     from youju.deadline_verify import AUTO_REVIEWER
     from youju.digest import reopened_messages
@@ -251,16 +251,16 @@ def test_digest_reports_auto_verified_and_reopened_waiting(session, world) -> No
     session.commit()
     d = build_digest(session, now=NOW)
     assert (d.approved, d.auto_approved) == (2, 1)
-    # 同一通知同一天的两条算一条；9 月 20 日的已过期，也算（交给核的人看）
-    assert (d.reopened, d.reopened_docs) == (2, (world["apply"].id,))
+    # 同一通知同一天的两条算一条；9 月 20 日的已过期，不算（D-135 过期的不核，列着只会越攒越多）
+    assert (d.reopened, d.reopened_docs) == (1, (world["apply"].id,))
     text = digest_text(d, [])
     assert "24 小时通过 2（其中 AI 自动 1）、驳回 1；" in text
-    assert "质检退回待人看：2 条（文件编号另发）" in text
+    assert "质检退回待人看（没过期的）：1 条（文件编号另发）" in text
     assert reopened_messages(d) == [
         f"质检退回待人看的文件编号（共 1 份，第 1 条）：#{world['apply'].id}"
     ]
     d.reopened, d.reopened_docs = 12, tuple(range(1, 13))
-    assert "质检退回待人看：12 条（文件编号另发）" in digest_text(d, [])
+    assert "质检退回待人看（没过期的）：12 条（文件编号另发）" in digest_text(d, [])
     assert reopened_messages(d) == [
         "质检退回待人看的文件编号（共 12 份，第 1 条）：" + "、".join(f"#{i}" for i in range(1, 13))
     ]

@@ -170,6 +170,8 @@ def test_daily_report_requires_submission_except_dry_run(monkeypatch, sent, expe
     monkeypatch.setattr(digest, "digest_text", lambda *a: "synthetic report")
     # 能读情况另发的第二条（D-097 ④）：这里只测第一条的发送结果，第二条见 test_digest.py
     monkeypatch.setattr(digest, "readability_text", lambda *a: None)
+    # 质检退回编号另发的那几条（D-135）：这个测试只管日报第一条的发送结果
+    monkeypatch.setattr(digest, "reopened_messages", lambda *a: [])
     monkeypatch.setattr(alerts, "send_alert", lambda _: sent)
     assert cli._cmd_daily_report(SimpleNamespace(dry_run=False)) == expected
     assert ("未配置告警" in capsys.readouterr().out) == (sent is None)
