@@ -50,7 +50,8 @@
 #   export-reset           退回云托管以后再切回来时用：清掉上一批"存档过"的标记，好重走导出（手册第七节）
 # 数据库：
 #   binlog-off             关掉 MySQL 的 binlog（install、up 带 disable_log_bin 的版本以后跑一次）：停接口和
-#                          worker，清掉现有的 binlog，用新配置重建 MySQL，查 @@log_bin 是 0，再起来
+#                          worker，清掉现有的 binlog，用新配置重建 MySQL，查 @@log_bin 是 0，删掉留下的
+#                          binlog 文件，再起来
 set -euo pipefail
 umask 022
 

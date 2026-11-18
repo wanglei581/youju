@@ -2018,18 +2018,23 @@ def test_binlog_files_cleanup_script_deletes_only_leftover_binlog_files(tmp_path
         assert done.returncode != 0 and left == sorted(old + keep)
 
 
-@needs_bash
 @pytest.mark.skipif(not shutil.which("mysqld"), reason="没有 mysqld")
 @pytest.mark.parametrize("variant", ["shared", "server"])
 def test_server_mysql_configs_pass_mysqld_validation(tmp_path, variant):
-    """两份 mysql.cnf 交给真的 mysqld 校验（拼错的选项会报错）。"""
-    cnf = SELFHOST / variant / "mysql.cnf"
+    """两份 mysql.cnf 交给真的 mysqld：写法要过校验（拼错的选项会报错），binlog 也真的关了
+    （关了以后 log-replica-updates 跟着是 FALSE，开着是 TRUE）。先拷进临时目录再给它：Ubuntu 的
+    mysqld 有 AppArmor，读不了检出目录里的文件。"""
+    cnf = tmp_path / "mysql.cnf"
+    shutil.copyfile(SELFHOST / variant / "mysql.cnf", cnf)
+    cnf.chmod(0o644)
     done = subprocess.run(
-        ["mysqld", f"--defaults-file={cnf}", "--validate-config", f"--datadir={tmp_path}"],
-        capture_output=True,
-        text=True,
+        ["mysqld", f"--defaults-file={cnf}", "--validate-config"], capture_output=True, text=True
     )
     assert done.returncode == 0, done.stderr
+    shown = subprocess.run(
+        ["mysqld", f"--defaults-file={cnf}", "--verbose", "--help"], capture_output=True, text=True
+    )
+    assert re.search(r"^log-(replica|slave)-updates\s+FALSE\s*$", shown.stdout, re.M), shown.stderr
 
 
 @needs_bash
