@@ -243,6 +243,10 @@ _AMOUNT_BEFORE = re.compile(
 # 邮箱先遮掉，免得邮箱里的数字被当成号码。用正文规则同一个写法（只认英文字母、数字和 ._%+- 组成的
 # 地址；10/20 以前正文规则用 \w，汉字也算，"于7月2日前发送至abc@163.com"整段变成"[邮箱已脱敏]"）
 _EMAIL = body_rules._EMAIL
+# 手机号当邮箱名的（"1381234…＠qq.com"）先遮成手机号，再认邮箱：和正文规则（先遮手机号）一样，
+# 同一行的姓名才按电话行遮。以前先认邮箱，手机号被当成邮箱名吞掉，姓名跟着露出来（11/18 独立
+# Claude 第六轮）；页面上、交给模型时"[手机号已脱敏]＠qq.com"再并成邮箱
+_MOBILE_AS_EMAIL_NAME = re.compile(r"(?<![A-Za-z0-9._%+-])1[3-9]\d{9}(?=[ \u3000]?[@＠])")
 # 小数："13812345678.50""0.5"（前后都不是数字、小数点）
 _DECIMAL = re.compile(r"((?<![\d.])\d+\.\d+(?![\d.]))")
 
@@ -516,6 +520,7 @@ def mask(text: str, *, column: str | None = None) -> str:
        "联 系 人："后面的 2–8 个汉字，会把单位名当姓名遮掉（"联系人：省科技厅高新处 张三"），
        10/20 去掉，交给正文规则。
     全角数字先按半角找（一个字换一个字，位置不变）。"""
+    text = _MOBILE_AS_EMAIL_NAME.sub("[手机号已脱敏]", text)
     text = _EMAIL.sub("[邮箱已脱敏]", text).replace("\x01", "").replace("\x02", "")
     text = _replace(text, _number_spans(text.translate(_HALF), column))
     pieces = _KEEP.split(text)  # 单数位是金额

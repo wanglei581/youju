@@ -824,7 +824,7 @@ def test_contact_table_cell_with_extensions_and_company_amounts():
 
 def test_common_words_on_a_phone_line_are_not_names():
     # 11/18：号码遮了以后，这一行按电话行把像姓名的词都遮掉；"查阅"这类普通词不能当成姓名
-    shown = v1._clean_reading_body("操作指南可在网站查阅，技术支持：0571-87654321。")
+    shown = v1._clean_reading_body("操作指南可在网站查阅，技术支持：0123-87654321。")
     assert shown == f"操作指南可在网站查阅，技术支持：{MARK}。"
 
 
@@ -834,19 +834,19 @@ EMAIL_MARK = "（这里隐去了邮箱）"
 @pytest.mark.parametrize(
     ("raw", "stored"),
     [
-        ("意见发至test＠foo－bar.com。", "意见发至[邮箱已脱敏]。"),
-        ("意见发至test@foo—bar.com。", "意见发至[邮箱已脱敏]。"),
-        ("意见发至abcdef @126.com。", "意见发至[邮箱已脱敏]。"),
+        ("材料发到test＠foo－bar.com。", "材料发到[邮箱已脱敏]。"),
+        ("材料发到test@foo—bar.com。", "材料发到[邮箱已脱敏]。"),
+        ("材料发到abcdef @126.com。", "材料发到[邮箱已脱敏]。"),
         # 手机号当邮箱名的：入库照旧先遮成手机号标记（同一行的姓名按电话行遮），页面上并成邮箱
-        ("意见发至13812345678@163.com。", "意见发至[手机号已脱敏]@163.com。"),
+        ("材料发到13812345678@163.com。", "材料发到[手机号已脱敏]@163.com。"),
     ],
 )
 def test_emails_masked_alike_by_store_and_page(raw: str, stored: str) -> None:
     # 11/18 Codex 第三轮：域名里的全角横线、破折号，"@"前面隔一个空格，入库规则和页面一样认
     assert v1.redact_sensitive(raw) == stored
-    assert v1.display_body_text(stored) == f"意见发至{EMAIL_MARK}。"
-    assert v1.display_body_text(raw) == f"意见发至{EMAIL_MARK}。"
-    assert v1.model_body_text(stored) == "意见发至[邮箱已脱敏]。"
+    assert v1.display_body_text(stored) == f"材料发到{EMAIL_MARK}。"
+    assert v1.display_body_text(raw) == f"材料发到{EMAIL_MARK}。"
+    assert v1.model_body_text(stored) == "材料发到[邮箱已脱敏]。"
 
 
 def test_name_on_an_email_line_with_a_mobile_name():
@@ -868,7 +868,7 @@ QQ_MARK = "（这里隐去了QQ号）"
     [
         # 11/18 独立 Claude 确认轮：分机后面紧跟"-"和 7–8 位的是下一个号码；分机后面接着姓名
         (
-            "联系人：张某 0571-87654321-0571-87654322",
+            "联系人：张某 0123-87654321-0123-87654322",
             f"联系人：{CONTACT} {MARK}-{MARK}",
             "联系人：[姓名已脱敏] [电话已脱敏]-[电话已脱敏]",
         ),
@@ -879,7 +879,7 @@ QQ_MARK = "（这里隐去了QQ号）"
         ),
         # "QQ号："不截断前面的电话标签
         (
-            "联系电话：0571-87654321（QQ号：123456789）、65432109",
+            "联系电话：0123-87654321（QQ号：123456789）、65432109",
             f"联系电话：{MARK}（QQ号：{QQ_MARK}）、{MARK}",
             "联系电话：[电话已脱敏]（QQ号：[QQ号已脱敏]）、[电话已脱敏]",
         ),
@@ -892,12 +892,12 @@ QQ_MARK = "（这里隐去了QQ号）"
         ),
         # 独立 Claude 第五轮：带分机的日期；新加写法里"00"开头的区号；新加的姓开头的常见词
         (
-            "联系电话：0571-87654321，受理时间：20231108-1",
+            "联系电话：0123-87654321，受理时间：20231108-1",
             f"联系电话：{MARK}，受理时间：20231108-1",
             "联系电话：[电话已脱敏]，受理时间：20231108-1",
         ),
         ("批次 0001—1234567", "批次 0001—1234567", "批次 0001—1234567"),
-        ("暴雨，电话：0571-87654321", f"暴雨，电话：{MARK}", "暴雨，电话：[电话已脱敏]"),
+        ("暴雨，电话：0123-87654321", f"暴雨，电话：{MARK}", "暴雨，电话：[电话已脱敏]"),
         ("索取 13812345678", f"索取 {MARK}", "索取 [电话已脱敏]"),
         # 独立 Claude 第五轮：号码当邮箱名、写成"＠"或"@"两边带空格的，前面的姓名照样遮（正文、附件）
         (
@@ -919,13 +919,13 @@ def test_review_cases_on_every_path(raw: str, page: str, model: str) -> None:
     ("raw", "page"),
     [
         # 独立 Claude 第二轮：区号后面 9–16 位的编号、400/800 热线的后半截，入库、页面都不当电话
-        ("受理号：0571-1234567890", "受理号：0571-1234567890"),
-        ("项目批次 0001-123456789", "项目批次 0001-123456789"),
-        ("联系电话：65432109，0571-202311080001", f"联系电话：{MARK}，0571-202311080001"),
+        ("受理号：0123-1234567890", "受理号：0123-1234567890"),
+        ("申报批次 0001-123456789", "申报批次 0001-123456789"),
+        ("联系电话：65432109，0123-202311080001", f"联系电话：{MARK}，0123-202311080001"),
         ("咨询电话：400—2345678", "咨询电话：400—2345678"),
         ("联系电话：65432109、400—2345678", f"联系电话：{MARK}、400—2345678"),
         # 原网页写错、紧跟在电话类标签后面的长号码照样遮
-        ("系统技术支持电话：0591-8123456781234567", f"系统技术支持电话：{MARK}"),
+        ("技术支持电话：0123-8123456781234567", f"技术支持电话：{MARK}"),
     ],
 )
 def test_long_codes_and_hotlines_on_store_and_page(raw: str, page: str) -> None:
@@ -946,3 +946,54 @@ def test_qq_mark_on_the_page_for_the_model_and_in_ai_quotes():
     loaded = content.Texts.from_paragraphs(interpret.split_paragraphs(model))
     assert content.locate(loaded, "P001", "技术咨询QQ群") == (None, "redacted")
     assert content.locate(loaded, "P002", "请于6月10日前报送")[1] is None
+
+
+# 11/18 独立 Claude 第六轮：入库先把号码换成了标记（电话、手机号、QQ 号、邮箱），页面上按原始数字遮
+# 姓名的规则认不到。每种号码写法 × 每条"号码旁边的姓名"规则，详情页、阅读页、附件、交给模型四条路
+# 都要把姓名和号码遮掉
+_NUMBERS = {
+    "座机": ("0123-65432109", "65432109"),
+    "本地号码": ("65432109", "65432109"),
+    "手机号": ("13812345678", "13812345678"),
+    "QQ号": ("QQ：123456789", "123456789"),
+    "邮箱": ("abc@qq.com", "abc"),
+    "号码当邮箱名": ("87654321＠qq.com", "87654321"),
+    "手机号当邮箱名": ("13812345678＠qq.com", "13812345678"),
+}
+_NAME_RULES = {
+    "隔逗号": "王某，{n}",
+    "隔顿号": "王某、{n}",
+    "隔分号": "王某；{n}",
+    "隔斜杠": "王某/{n}",
+    "隔空格": "王某 {n}",
+    "致电": "请致电王老师 {n}",
+    "整行": "王某，{n}，手机同号",
+}
+
+
+@pytest.mark.parametrize("number", list(_NUMBERS))
+@pytest.mark.parametrize("rule", list(_NAME_RULES))
+def test_names_next_to_masked_numbers_on_every_path(number: str, rule: str) -> None:
+    written, digits = _NUMBERS[number]
+    raw = _NAME_RULES[rule].format(n=written)
+    for where, out in (
+        ("详情页", v1.display_body_text(v1._clean_reading_body(raw))),
+        ("阅读页", v1.display_body_text(v1._clean_reading_body(raw, redact=texts.mask))),
+        ("附件", v1.display_attachment_text(texts.mask(raw))),
+        ("交给模型", v1.model_body_text(v1.redact_sensitive(raw))),
+    ):
+        assert "王某" not in out and "王老师" not in out and digits not in out, (where, out)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # 只写着邮箱的一句话不算电话行，里面的"申请表""盖章版"这类词不当姓名；长词的尾巴不当人名
+        "请把申请表（附件2）发到邮箱abc@qq.com。",
+        "请示（盖章版）、证书（盖章版）发到邮箱abc@qq.com，纸质版寄某某处。",
+        "测试应用场景资源 0123-65432109",
+    ],
+)
+def test_masked_numbers_do_not_turn_common_words_into_names(text: str) -> None:
+    shown = v1.display_body_text(v1._clean_reading_body(text))
+    assert "联系人" not in shown, shown

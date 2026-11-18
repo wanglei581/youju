@@ -236,8 +236,8 @@ def test_run_extraction_orders_due_soon_first_and_respects_limit(session):
     ]
     # 30 天内截止的先（截止早的先），再是截止更晚或不知道的（新的先），已过截止的最后
     assert picked == [sooner.id, soon.id, unknown.id, later.id]
-    # 发给模型的是脱敏后的正文，不带个人手机号
-    assert all("13812345678" not in user and "[手机号已脱敏]" in user for user in client.calls)
+    # 发给模型的是脱敏后的正文（model_text：手机号和电话一样写成"[电话已脱敏]"），不带个人手机号
+    assert all("13812345678" not in user and "[电话已脱敏]" in user for user in client.calls)
     # 第二轮只抽剩下的，抽过的不再花用量
     report = service.run_extraction(session, client, limit=10, now=NOW)
     assert report.documents == 1

@@ -25,8 +25,8 @@ from sqlalchemy.orm import Session
 from youju.ai.classify import classify_with_ai
 from youju.ai.client import AIError, ChatClient
 from youju.ai.deadlines import RESULT_VERSION, extract_deadlines_with_ai, stored_version
+from youju.ai.model_text import model_text
 from youju.classify import comparable_kind, doc_kind
-from youju.crawler.detail import redact_sensitive
 from youju.dedup import (
     canonical_ids,
     groups_for,
@@ -383,10 +383,11 @@ def run_ai_checks(
     for doc, detail in _documents_to_check(session, limit, now, first):
         report.documents += 1
         tasks = _pending_tasks(session, doc.id, now)
-        # 这次交给模型的正文；结果先放着，写之前核对正文没被换掉（见下）。交给模型的按现行规则再遮
-        # 一遍（旧规则漏遮的正文还在库里，11/18）；核对正文换没换照旧比库里存的原文
+        # 这次交给模型的正文；结果先放着，写之前核对正文没被换掉（见下）。交给模型的走 model_text
+        # （D-114：发送前隐去号码、联系人姓名和邮箱）；核对正文换没换、证据在正文里定位，照旧对库里
+        # 存的原文
         body = detail.body_text
-        sent = redact_sensitive(body)
+        sent = model_text(body)
         records: list[tuple[str, dict]] = []
         ai_kind: str | None = None
         items: list[DeadlineCandidate] | None = None
@@ -415,7 +416,7 @@ def run_ai_checks(
         if "deadlines" in tasks:
             try:
                 items = extract_deadlines_with_ai(
-                    client, doc.title, sent, detail.publish_date or doc.publish_date
+                    client, doc.title, sent, detail.publish_date or doc.publish_date, body=body
                 )
                 records.append(
                     ("deadlines", {"result": _serialize(items), "usage": client.last_usage})
@@ -512,11 +513,15 @@ def rerun_old_deadlines(
     consecutive_errors = 0
     for doc, detail, _ in old_deadline_checks(session, now, days)[:limit]:
         report.documents += 1
-        # 交给模型的按现行规则再遮一遍；写之前核对正文换没换照旧比库里存的原文（_write_one）
+        # 交给模型的走 model_text；证据在正文里定位、写之前核对正文换没换，照旧对库里存的原文
         body = detail.body_text
         try:
             items = extract_deadlines_with_ai(
-                client, doc.title, redact_sensitive(body), detail.publish_date or doc.publish_date
+                client,
+                doc.title,
+                model_text(body),
+                detail.publish_date or doc.publish_date,
+                body=body,
             )
         except AIError:
             _count_usage(report, client.last_usage)

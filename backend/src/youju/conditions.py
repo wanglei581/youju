@@ -272,6 +272,7 @@ def run_extraction(
     """逐份抽取，每份做完就提交，中途停下不丢已做的。只写清单（待核对）和 AI 检查记录，
     从不改核对结果：对外与否只由人在核对台决定。"""
     from youju.ai.conditions import extract_conditions_with_ai
+    from youju.ai.model_text import model_text
     from youju.ai.pipeline import _record
 
     now = now or datetime.now(UTC)
@@ -291,7 +292,13 @@ def run_extraction(
         report.documents += 1
         digest = body_fingerprint(detail.body_text)
         try:
-            result = extract_conditions_with_ai(client, doc.title, public_body(detail.body_text))
+            # 交给模型的走 model_text（D-114）；引用照旧在 public_body 里定位，页面上用的也是它
+            result = extract_conditions_with_ai(
+                client,
+                doc.title,
+                public_body(detail.body_text),
+                sent=model_text(detail.body_text),
+            )
         except AIError as exc:
             _record(
                 session, doc_id, TASK, client.model, now, error=str(exc), usage=client.last_usage
