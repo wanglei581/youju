@@ -213,8 +213,8 @@ def test_document_whose_pdf_host_is_paused_for_this_run_counts_as_site_paused(se
 
 @pytest.mark.parametrize("kind", ["captcha-words", "odd-4xx"])
 def test_streaks_count_across_batches(session, kind):
-    # 每批每个网站只取一份（per_host=1）时，"连续 3 份"也跨批数（第十九轮 Codex）：第 3 份以后这次
-    # 运行先停这个网站（不写进共享文件），第 4 份不再取
+    # 每批每个网站只取一份（per_host=1）时，"连续 3 份"也跨批数（第十九轮 Codex）：第 3 份以后停这个
+    # 网站，第 4 份不再取。验证码字样的写进共享文件停 24 小时，4xx 的只停这次运行
     from urllib.parse import urlsplit
 
     from tests.test_detail_pause_unit import _SECURITY_NOTICE
@@ -231,7 +231,12 @@ def test_streaks_count_across_batches(session, kind):
     assert len(fake.calls) == 3
     host = urlsplit(docs[0].url).hostname
     assert host in summary.paused_hosts
-    assert _SitePause(get_settings().detail_pause_path).expiry(host) is None
+    expiry = _SitePause(get_settings().detail_pause_path).expiry(host)
+    assert (expiry is not None) is (kind == "captcha-words")
+    if kind == "captcha-words":
+        # 前两份记读不出（页面上有验证码这类字），过几小时再试，不永远丢掉（第十九轮独立 Claude）
+        first = session.get(DocumentDetail, docs[0].id)
+        assert first.status == "parse_empty" and first.next_retry_at is not None
 
 
 def test_time_stop_without_database():

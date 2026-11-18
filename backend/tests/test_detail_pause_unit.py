@@ -1134,23 +1134,48 @@ def test_long_notice_with_gate_words_up_front_does_not_pause(tmp_path, html):
     assert _SitePause(path).expiry("a.gov.cn") is None
 
 
-def test_templated_verify_page_with_little_body_still_pauses():
-    # 带全套网站模板（导航、很长的页尾）的验证页：正文区只有一句"请输入验证码"，照旧算关卡、停网站
+_LONG_FOOTER = "主办单位：某市人民政府办公室。承办单位：某市数据资源管理局。网站标识码：某某。" * 8
+
+
+@pytest.mark.parametrize(
+    "box,footer",
+    [
+        # 页尾是 footer（不算正文）
+        ("<p>您的访问过于频繁，请输入验证码后继续访问本网站</p>", "<div class='footer'>{}</div>"),
+        # 页尾类名不是 footer、字又带句号（按文字密度会挑中它，第十九轮独立 Claude）
+        ("<p>您的访问过于频繁，请输入验证码后继续访问本网站</p>", "<div class='bottom'>{}</div>"),
+        ("<p>您的访问过于频繁，请输入验证码后继续访问本网站</p>", "<div id='bottom'>{}</div>"),
+        # 登录框加"请输入验证码"
+        (
+            "<p>用户名</p><input name='u'><p>密码</p><input type='password' name='p'>"
+            "<p>请输入验证码</p><input name='code'>",
+            "<div class='foot'>{}</div>",
+        ),
+        # 验证说明本身就写满 300 多字
+        (
+            "<p>请输入验证码后继续访问。" + "为保障网站安全，系统检测到异常访问。" * 18 + "</p>",
+            "<div>{}</div>",
+        ),
+    ],
+    ids=["footer", "bottom-class", "bottom-id", "login", "long-explanation"],
+)
+def test_templated_verify_page_with_little_body_still_pauses(box, footer):
+    # 带全套网站模板（导航、很长的页尾）的验证页、登录页：明确的正文区（#zoom 这类）里没有完整的
+    # 正文，照旧算关卡、停网站；按文字密度挑出来的页尾、验证说明不算正文（第十九轮独立 Claude）
     nav = "".join(f"<a href='/c{i}.html'>栏目{i}</a>" for i in range(30))
-    footer = "主办单位：某市人民政府办公室 承办单位：某市数据资源管理局 网站标识码：某某 " * 8
     html = (
         f"<html><head><title>某市人民政府门户网站</title></head><body><div>{nav}</div>"
-        "<div class='box'><p>您的访问过于频繁，请输入验证码后继续访问本网站</p>"
-        "<input name='code'><img src='/code.jpg'></div>"
-        f"<div class='footer'>{footer}</div></body></html>"
+        f"<div class='box'>{box}<img src='/code.jpg'></div>"
+        + footer.format(_LONG_FOOTER)
+        + "</body></html>"
     )
     result = _html_result("https://a.gov.cn/1", html)
     assert detail_service._gate_page(result, "https://a.gov.cn/1") is True
 
 
-def test_three_captcha_word_pages_in_a_row_pause_the_site_for_this_run(tmp_path):
-    # 同一网站连续 3 份"页面上有验证码这类字、不像整页关卡"：多半是认不出的验证页，这次运行先停这个
-    # 网站（不写进共享文件），后面的不再取；第 3 份被停取挡下、不交回
+def test_three_captcha_word_pages_in_a_row_pause_the_site(tmp_path):
+    # 同一网站连续 3 份"页面上有验证码这类字、不像整页关卡"：多半是认不出的验证页，和防护页一样写进
+    # 共享文件停 24 小时（第十九轮独立 Claude），后面的不再取；第 3 份被停取挡下、不交回
     path = str(tmp_path / "pause.json")
     calls = []
 
@@ -1166,7 +1191,7 @@ def test_three_captcha_word_pages_in_a_row_pause_the_site_for_this_run(tmp_path)
     assert calls == [f"https://a.gov.cn/{i}" for i in (1, 2, 3)]
     assert sorted(outcomes) == [1, 2] and paused == [3]
     assert pause.reasons["a.gov.cn"] == "连续 3 份页面上有验证码这类字"
-    assert _SitePause(path).expiry("a.gov.cn") is None
+    assert _SitePause(path).expiry("a.gov.cn") is not None
 
 
 def test_network_failure_only_counts_connection_and_resolver_errors():

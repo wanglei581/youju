@@ -853,7 +853,11 @@ def _collect_lines(
     return lines, reached
 
 
-def _body_node(root: etree._Element, host: str | None = None) -> etree._Element | None:
+def _body_node(
+    root: etree._Element, host: str | None = None, *, density: bool = True
+) -> etree._Element | None:
+    """正文区：站点自己的写法、TRS 编辑器块、常见的正文标记；都没有时按文字密度挑一块（density 为假
+    时不挑，交回 None——判是不是关卡时只认明确的正文区，页尾、验证说明这类按密度挑出来的不算）。"""
     if host in _SCRIPT_BODY_HOSTS and (node := _script_body_node(root)) is not None:
         return node
     site = _SITE_BODY_SELECTORS.get(host or "")
@@ -864,7 +868,7 @@ def _body_node(root: etree._Element, host: str | None = None) -> etree._Element 
     for selector in _BODY_SELECTORS:
         if (node := _longest(root.xpath(selector))) is not None:
             return node
-    return _density_body_node(root)
+    return _density_body_node(root) if density else None
 
 
 def _longest(nodes: list[etree._Element]) -> etree._Element | None:

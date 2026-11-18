@@ -114,13 +114,19 @@ def _network_failure(outcome: _FetchOutcome) -> bool:
     )
 
 
-def _retryable(status: str, http_status: int | None) -> bool:
+def _retryable(status: str, http_status: int | None, reason: str | None = None) -> bool:
     # robots.txt 暂不可用时禁止本次抓取，但可在退避后重新检查。pdf_retry：读 PDF 正文的子进程
-    # 遇到和当时的环境有关的问题（容器内存不够被停掉、太忙等，见 pdf_sandbox），不是文件本身的问题
-    return status in {"network_error", "robots_error", "pdf_retry"} or (
-        status == "http_error"
-        and http_status is not None
-        and (http_status == 429 or (http_status >= 500 and http_status != 521))
+    # 遇到和当时的环境有关的问题（容器内存不够被停掉、太忙等，见 pdf_sandbox），不是文件本身的问题。
+    # 页面上有验证码这类字、又不像整页关卡的（CAPTCHA_WORDS_ONLY）：可能是网站临时出的验证页，
+    # 过 6、24 小时再试（第十九轮独立 Claude）
+    return (
+        status in {"network_error", "robots_error", "pdf_retry"}
+        or (status == "parse_empty" and reason == CAPTCHA_WORDS_ONLY)
+        or (
+            status == "http_error"
+            and http_status is not None
+            and (http_status == 429 or (http_status >= 500 and http_status != 521))
+        )
     )
 
 
@@ -161,7 +167,11 @@ def _save_result(
         detail.next_retry_at = (
             outcome.fetched_at + _RETRY_DELAYS[attempts - 1]
             if attempts <= len(_RETRY_DELAYS)
-            and _retryable(outcome.status, outcome.fetch.http_status if outcome.fetch else None)
+            and _retryable(
+                outcome.status,
+                outcome.fetch.http_status if outcome.fetch else None,
+                outcome.failure_reason,
+            )
             else None
         )
         session.commit()
@@ -174,7 +184,11 @@ def _save_result(
     detail.next_retry_at = (
         outcome.fetched_at + _RETRY_DELAYS[attempts - 1]
         if attempts <= len(_RETRY_DELAYS)
-        and _retryable(outcome.status, outcome.fetch.http_status if outcome.fetch else None)
+        and _retryable(
+            outcome.status,
+            outcome.fetch.http_status if outcome.fetch else None,
+            outcome.failure_reason,
+        )
         else None
     )
     body = outcome.parsed.body_text if outcome.parsed else ""
@@ -282,8 +296,9 @@ def _login_page(text: str, url: str) -> bool:
       （标题拆掉站名以后 10 个字以内）写着验证码、安全验证这类字，正文里看得见的"请输入验证码"这类
       整句（标题、脚本、核实过的站内搜索限流弹窗都不算）；只在 placeholder 这类属性里写着的是弱
       信号，整页几乎没字时才算（整站留言框上也常有）。没有信号的不是；
-    - 有信号的去掉标题解析：正文开头就写着验证码这类字（解析判防护页）而正文区没有完整的正文（去掉
-      空白不到 300 字或没有句子：标题在正文区上面又写一遍、第一段讲怎么输入验证码的长通知不算），
+    - 有信号的去掉标题解析：正文开头就写着验证码这类字（解析判防护页）而明确的正文区（不含按文字密度
+      挑的）没有完整的正文（去掉空白不到 300 字或没有句子：标题在正文区上面又写一遍、第一段讲怎么
+      输入验证码的长通知不算），
       解析选中的正文里就有密码框、"正文"很短（不到 300 字）又是用户名、密码这类登录表单的字（表单
       放在 .content、#zoom 里时解析会把它当正文；页头的登录小框不算），或者取不到正文、附件，才算。
     详情页的标题就是文章标题（"关于启用短信验证码登录的通知"），页头的登录小框、限流弹窗、留言区的
@@ -312,10 +327,12 @@ def _login_page(text: str, url: str) -> bool:
     parsed = parse_detail(untitled, url)
     host = (urlsplit(url).hostname or "").lower()
     if parsed.failure_reason == "防护页或验证码":
-        # 解析判防护页（标题以外前 500 个看得见的字里有验证码、安全验证这类字）：正文区里有完整的
-        # 正文（去掉空白 300 字以上、有句子）的是正常通知——文章标题在正文区上面又写一遍（"关于开展
-        # ……安全验证试点工作的通知"）、第一段讲怎么输入验证码，不停网站（第十八轮独立 Claude）
-        node = _body_node(root, host)
+        # 解析判防护页（标题以外前 500 个看得见的字里有验证码、安全验证这类字）：明确的正文区（站点
+        # 写法、TRS 编辑器块、#zoom 这类正文标记）里有完整的正文（去掉空白 300 字以上、有句子）的是
+        # 正常通知——文章标题在正文区上面又写一遍（"关于开展……安全验证试点工作的通知"）、第一段讲怎么
+        # 输入验证码，不停网站（第十八轮独立 Claude）。按文字密度挑出来的块不算（验证页、登录页上常
+        # 挑中页尾、验证说明，第十九轮独立 Claude）
+        node = _body_node(root, host, density=False)
         words = "".join("".join(_plain_lines(node)).split()) if node is not None else ""
         return not (len(words) >= 300 and "。" in words)
     body = parsed.raw_body or ""
@@ -434,8 +451,8 @@ def _fetch_one(document_id: int, url: str, fetcher: DetailFetcher) -> _FetchOutc
                 THROTTLE_PROTECTED,
             )
         # 整页关卡上面已经停了网站；这里是页面上有验证码这类字、又不像整页就是一个关卡（正常通知讲
-        # 验证码使用要求这类）：不停网站，这份记读不出、不取正文（同一网站连续 3 份这样的，取页线程
-        # 这次运行先停这个网站，见 _fetch_outcomes）
+        # 验证码使用要求这类）：不停网站，这份记读不出、不取正文，过 6、24 小时再试（同一网站连续
+        # 3 份这样的，取页线程停这个网站 24 小时，见 _fetch_outcomes）
         why = CAPTCHA_WORDS_ONLY
         return _FetchOutcome(
             document_id, now, fetched, DetailResult(failure_reason=why), "parse_empty", why
@@ -879,8 +896,9 @@ def _fetch_outcomes(
                 captcha = outcome.failure_reason == CAPTCHA_WORDS_ONLY and answered == own
                 if pause.streak("captcha-words", own, captcha) >= 3:
                     # 连续 3 份页面上有验证码这类字、又不像整页关卡：多半是认不出的验证页（正常通知
-                    # 讲验证码的不会一连几份），这次运行先停
-                    pause.add(own, "连续 3 份页面上有验证码这类字", persistent=False)
+                    # 讲验证码的不会一连几份），和防护页一样写进共享文件停 24 小时，下次运行也不来
+                    # （第十九轮独立 Claude）
+                    pause.add(own, "连续 3 份页面上有验证码这类字")
                 touched = {_host(u) for u in (url, *guarded.touched, *guarded.visited)}
                 refused = outcome.status == "protected" or (
                     outcome.fetch and outcome.fetch.http_status in {401, 403, 412, 429, 521}
