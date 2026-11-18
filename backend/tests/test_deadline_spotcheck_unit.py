@@ -77,6 +77,7 @@ def test_sample_independent_and_reproducible(monkeypatch):
     # 只给独立核对要用的，不给 Claude 的结论（日期、时间、原句）
     assert set(a[0]) == {
         "id",
+        "reviewed_by",
         "title",
         "url",
         "kind",
@@ -227,3 +228,19 @@ def test_reopen_keeps_a_twins_doubt_and_requires_a_note_when_not_found(monkeypat
     assert v.spotcheck(s, found, True, NOW)["result"] == "抽查不一致，退回待核对"
     assert "原质检存疑：AI 说日期应为 11 月 16 日" in r.audit_note
     assert len(r.audit_note) <= 200
+
+
+def test_auto_stratum_and_reopen(monkeypatch):
+    manual, automatic = row(1), row(2)
+    automatic.reviewed_by = v.AUTO_REVIEWER
+    session = Session([manual, automatic])
+    monkeypatch.setattr(v, "_verified_groups", lambda *args: [[manual], [automatic]])
+    sampled = v.sample(session, minimum=1, now=NOW, seed=1)
+    assert {r["reviewed_by"] for r in sampled} == {"Claude", v.AUTO_REVIEWER}
+    monkeypatch.setattr(app, "_lock_group", lambda *args: [automatic])
+    session.scalar = lambda stmt: session.details[2]
+    result = v.spotcheck(session, answer(id=2, date=None, time=None), True, NOW)
+    assert result["result"] == "抽查不一致，退回待核对"
+    assert automatic.audit_note.startswith("Codex 抽查不一致：")
+    assert automatic.audit_by.endswith(v.AUTO_REOPEN_TAG)
+    assert len(automatic.audit_note) <= 200

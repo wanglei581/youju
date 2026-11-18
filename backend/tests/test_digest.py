@@ -232,6 +232,60 @@ def test_digest_numbers_match_the_consoles(session, world) -> None:
     assert "o-fresh" not in text and "AI 建议" not in text
 
 
+def test_digest_reports_auto_verified_and_reopened_waiting(session, world) -> None:
+    """D-135：24 小时通过的里写明其中 AI 自动通过几条；质检退回、还待核对、截止在今天或以后的写条数
+    （同一通知同一截止只算一条，过期的不算），文件编号一律另发（正文超长被截时也不丢），一条放不下
+    分几条，每条都在群提醒的字节上限以内。没有退回的不写这一行，也不另发。"""
+    from youju.alerts import MAX_ALERT_BYTES
+    from youju.deadline_verify import AUTO_REVIEWER
+    from youju.digest import reopened_messages
+
+    assert "质检退回待人看" not in digest_text(build_digest(session, now=NOW), [])
+    auto = add_deadline(
+        session, world["apply"], date(2026, 10, 2), "approved", NOW - timedelta(hours=2), n=8
+    )
+    auto.reviewed_by, auto.reviewed_at = AUTO_REVIEWER, NOW - timedelta(hours=2)
+    reopened = (
+        (world["apply"], date(2026, 10, 3), 9),
+        (world["apply"], date(2026, 10, 3), 10),
+        (world["list"], date(2026, 9, 29), 11),  # 北京时间的今天：算
+        (world["old"], date(2026, 9, 28), 12),  # 北京时间的昨天（UTC 的今天）：不算
+        (world["old"], date(2026, 9, 20), 13),
+    )
+    for doc, due, n in reopened:
+        row = add_deadline(session, doc, due, n=n)
+        row.audit_state, row.audit_note = "reopened", "Codex 抽查不一致：原文不符"
+    session.commit()
+    d = build_digest(session, now=NOW)
+    assert (d.approved, d.auto_approved) == (2, 1)
+    # 同一通知同一天的两条算一条；截止在今天（北京时间）的算；过期的不算，编号里也没有那份文件
+    # （D-135 过期的不核，列着只会越攒越多）
+    expected = tuple(sorted((world["apply"].id, world["list"].id)))
+    assert (d.reopened, d.reopened_docs) == (2, expected)
+    # 按北京时间算"今天"：UTC 还是 9 月 28 日、北京已是 9 月 29 日时，28 日的照样算过期
+    late = build_digest(session, now=datetime(2026, 9, 28, 17, 0, tzinfo=UTC))
+    assert (late.reopened, late.reopened_docs) == (2, expected)
+    text = digest_text(d, [])
+    assert "24 小时通过 2（其中 AI 自动 1）、驳回 1；" in text
+    assert "质检退回待人看（没过期的）：2 条（文件编号另发）" in text
+    assert reopened_messages(d) == [
+        "质检退回待人看的文件编号（共 2 份，第 1 条）："
+        + "、".join(f"#{doc_id}" for doc_id in expected)
+    ]
+    d.reopened, d.reopened_docs = 12, tuple(range(1, 13))
+    assert "质检退回待人看（没过期的）：12 条（文件编号另发）" in digest_text(d, [])
+    assert reopened_messages(d) == [
+        "质检退回待人看的文件编号（共 12 份，第 1 条）：" + "、".join(f"#{i}" for i in range(1, 13))
+    ]
+    # 编号很多时分几条，每条都放得下，合起来一个不漏
+    d.reopened_docs = tuple(range(100000, 100500))
+    parts = reopened_messages(d)
+    assert len(parts) > 1
+    assert all(len(p.encode()) <= MAX_ALERT_BYTES - len("【有据】".encode()) for p in parts)
+    listed = [x for p in parts for x in p.split("：", 1)[1].split("、")]
+    assert listed == [f"#{i}" for i in range(100000, 100500)]
+
+
 def test_digest_prices_deepseek_without_a_free_quota(session, world) -> None:
     """DeepSeek 按官网最高价估费用上限（高峰时段、输入都按没命中缓存）；不写免费额度。"""
     session.add(

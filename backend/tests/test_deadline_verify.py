@@ -1,6 +1,6 @@
 """需要 MySQL 测试库；清单和写回按真实公开查询及归并规则验证。"""
 
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 
 import pytest
 from sqlalchemy import select
@@ -560,3 +560,660 @@ def test_spotcheck_with_a_long_quote_and_note_still_reopens(session, candidate):
     session.commit()
     assert candidate.status == "pending" and candidate.audit_state == "reopened"
     assert len(candidate.audit_note) <= 200 and candidate.audit_note.startswith("Codex 抽查不一致")
+
+
+def test_auto_verify_twins_and_dry_run(session, candidate):
+    from youju.ai.deadlines import RESULT_VERSION
+    from youju.models import AICheck
+
+    doc = session.get(Document, candidate.document_id)
+    twin_doc = _doc(doc.source, 99, doc.title, TODAY)
+    session.add(twin_doc)
+    session.flush()
+    twin = DocumentDeadline(
+        document_id=twin_doc.id,
+        fingerprint="auto-twin",
+        kind=candidate.kind,
+        candidate_date=candidate.candidate_date,
+        evidence=candidate.evidence,
+        confidence="高",
+        status="pending",
+        origin="rule",
+        ai_agrees=True,
+    )
+    candidate.ai_agrees = True
+    session.add_all(
+        [
+            DocumentMerge(
+                duplicate_id=twin_doc.id, canonical_id=doc.id, match_key="auto", active=True
+            ),
+            DocumentDetail(
+                document_id=twin_doc.id,
+                body_text=BODY.replace("申报截止", "申报  截止"),
+                status="ok",
+                fetched_at=datetime.now(UTC),
+            ),
+            twin,
+            AICheck(
+                document_id=doc.id,
+                task="deadlines",
+                model="test",
+                error=None,
+                checked_at=datetime.now(UTC),
+                result={
+                    "version": RESULT_VERSION,
+                    "items": [
+                        {
+                            "kind": candidate.kind,
+                            "date": "2026-09-30",
+                            "time": None,
+                            "evidence": candidate.evidence,
+                        }
+                    ],
+                },
+            ),
+        ]
+    )
+    session.commit()
+    current = datetime(2026, 9, 27, 12)
+    assert [(x["id"], x["result"]) for x in verify.auto_verify(session, TODAY, current)] == [
+        (candidate.id, "通过"),
+        (twin.id, "同一截止已由较早的候选通过"),
+    ]
+    assert candidate.status == twin.status == "pending"
+    assert [(x["id"], x["result"]) for x in verify.auto_verify(session, TODAY, current, True)] == [
+        (candidate.id, "通过"),
+        (twin.id, "同一截止已由较早的候选通过"),
+    ]
+    assert candidate.reviewed_by == twin.reviewed_by == verify.AUTO_REVIEWER
+    assert candidate.verification_quote == candidate.evidence
+    assert twin.verification_quote == candidate.evidence.replace("申报截止", "申报  截止")
+    counts = verify.stats(session)["auto"]
+    assert counts["approved"] >= 1
+
+
+def _auto_ai_record(session, candidate):
+    from youju.ai.deadlines import RESULT_VERSION
+    from youju.models import AICheck
+
+    candidate.ai_agrees = True
+    session.add(
+        AICheck(
+            document_id=candidate.document_id,
+            task="deadlines",
+            model="test",
+            error=None,
+            checked_at=datetime.now(UTC),
+            result={
+                "version": RESULT_VERSION,
+                "items": [
+                    {
+                        "kind": candidate.kind,
+                        "date": "2026-09-30",
+                        "time": None,
+                        "evidence": candidate.evidence,
+                    }
+                ],
+            },
+        )
+    )
+
+
+def test_auto_same_deadline_different_evidence(session, candidate):
+    detail = session.get(DocumentDetail, candidate.document_id)
+    second_quote = "请于2026年9月30日前提交申报材料。"
+    detail.body_text += second_quote
+    second = DocumentDeadline(
+        document_id=candidate.document_id,
+        fingerprint="auto-second",
+        kind=candidate.kind,
+        candidate_date=candidate.candidate_date,
+        evidence=second_quote,
+        confidence="高",
+        status="pending",
+        origin="rule",
+        ai_agrees=True,
+    )
+    session.add(second)
+    _auto_ai_record(session, candidate)
+    session.commit()
+    results = list(verify.auto_verify(session, TODAY, datetime(2026, 9, 27, 12), True))
+    assert [(r["id"], r["result"]) for r in results] == [
+        (candidate.id, "通过"),
+        (second.id, "同一截止已由较早的候选通过"),
+    ]
+
+
+def test_admin_reopens_auto_verified(session, candidate, client, monkeypatch):  # noqa: F811
+    from types import SimpleNamespace
+
+    _auto_ai_record(session, candidate)
+    session.commit()
+    results = list(verify.auto_verify(session, TODAY, datetime(2026, 9, 27, 12), True))
+    assert [(r["id"], r["result"]) for r in results] == [(candidate.id, "通过")]
+    monkeypatch.setattr("youju.api.app.get_settings", lambda: SimpleNamespace(admin_token="secret"))
+    response = client.post(
+        f"/api/admin/deadlines/{candidate.id}/reopen",
+        headers={"X-Admin-Token": "secret"},
+        json={"reviewed_by": "创始人"},
+    )
+    assert response.json() == {"status": "pending"}
+    session.expire_all()
+    assert candidate.audit_note == "人工退回"
+    assert candidate.audit_by.endswith(verify.AUTO_REOPEN_TAG)
+    assert verify.stats(session)["auto"]["reopened"] == 1
+
+
+def test_auto_result_carries_over_only_to_twins_with_their_own_sentence(
+    session, candidate, monkeypatch
+):
+    """D-135：AI 自动通过的结果只沿用给证据句相同（同一句话）、规则抽出、AI 也一致的副本，而且这句也在
+    副本自己的当前正文里（原句记它自己的）；正文里没有这句的、证据句不同的都留在待核对。同一截止另有
+    人核过的，按人核的沿用。"""
+    from zoneinfo import ZoneInfo
+
+    from youju.dedup import sync_reviewed_twins
+
+    # 沿用时按当时的北京时间判断过期：固定在 9 月 27 日；自动核对开着（开关 1、配了 AI 密钥）
+    monkeypatch.setattr(
+        v1, "now", lambda: datetime(2026, 9, 27, 12, tzinfo=ZoneInfo("Asia/Shanghai"))
+    )
+    monkeypatch.setattr(verify, "auto_enabled", lambda settings=None: True)
+    _auto_ai_record(session, candidate)
+    session.commit()
+    results = list(verify.auto_verify(session, TODAY, datetime(2026, 9, 27, 12), True))
+    assert [r["result"] for r in results] == ["通过"]
+    doc = session.get(Document, candidate.document_id)
+    same = candidate.evidence
+    other = "各单位请于2026年9月30日前完成网上申报。"
+    rows = {}
+    cases = (
+        (f"通知正文。{same}", same),  # 同一句、在自己正文里：沿用，原句记自己的
+        ("正文改过，没有那一句。", same),  # 同一句、自己正文里没有：不沿用
+        (f"通知正文。{other}", other),  # 不是同一句：不沿用
+    )
+    for n, (body, evidence) in enumerate(cases, start=1):
+        twin_doc = _doc(doc.source, 90 + n, doc.title, TODAY)
+        session.add(twin_doc)
+        session.flush()
+        session.add_all(
+            [
+                DocumentMerge(
+                    duplicate_id=twin_doc.id,
+                    canonical_id=doc.id,
+                    match_key=f"carry{n}",
+                    active=True,
+                ),
+                DocumentDetail(
+                    document_id=twin_doc.id,
+                    body_text=body,
+                    status="ok",
+                    fetched_at=datetime.now(UTC),
+                ),
+            ]
+        )
+        rows[n] = DocumentDeadline(
+            document_id=twin_doc.id,
+            fingerprint=f"carry-{n}",
+            kind=candidate.kind,
+            candidate_date=candidate.candidate_date,
+            evidence=evidence,
+            confidence="高",
+            status="pending",
+            origin="rule",
+            ai_agrees=True,
+        )
+        session.add(rows[n])
+    session.commit()
+    sync_reviewed_twins(session, {doc.id})
+    session.commit()
+    assert rows[1].status == "approved" and rows[1].reviewed_by == verify.AUTO_REVIEWER
+    assert rows[1].verification_quote == same
+    assert rows[2].status == rows[3].status == "pending"
+    # 同一截止另有人核过的：照原来的规则，人核的结果沿用给这一截止（类型、日期、时刻相同）的各份副本，
+    # 不被自动通过的那条挡住
+    human = DocumentDeadline(
+        document_id=rows[1].document_id,
+        fingerprint="carry-human",
+        kind=candidate.kind,
+        candidate_date=candidate.candidate_date,
+        evidence=other,
+        confidence="高",
+        status="approved",
+        origin="rule",
+        reviewed_by="创始人",
+        reviewed_at=datetime.now(UTC),
+        approved_date=candidate.candidate_date,
+    )
+    session.add(human)
+    session.commit()
+    sync_reviewed_twins(session, {doc.id})
+    session.commit()
+    assert rows[2].reviewed_by == rows[3].reviewed_by == "创始人"
+    assert rows[2].status == rows[3].status == "approved"
+    assert rows[1].reviewed_by == verify.AUTO_REVIEWER  # 已经沿用过的不动
+
+
+def test_auto_skips_when_another_time_of_the_same_day_was_reopened(session, candidate):
+    """同一通知同一天，17:00 那条被质检退回、还待核对时，没写时刻的那条规则和 AI 一致也不自动通过：
+    这一类一旦核过，退回那条就从清单里消失了，用户照样看到这个日期。"""
+    _auto_ai_record(session, candidate)
+    detail = session.get(DocumentDetail, candidate.document_id)
+    reopened_quote = "网上申报截止时间为2026年9月30日17:00。"
+    detail.body_text += reopened_quote
+    reopened = DocumentDeadline(
+        document_id=candidate.document_id,
+        fingerprint="auto-reopened-1700",
+        kind=candidate.kind,
+        candidate_date=candidate.candidate_date,
+        candidate_time=time(17),
+        evidence=reopened_quote,
+        confidence="高",
+        status="pending",
+        origin="rule",
+        ai_agrees=True,
+        audit_state="reopened",
+        audit_note="Codex 抽查不一致：原文不符",
+    )
+    session.add(reopened)
+    session.commit()
+    results = {
+        r["id"]: r["result"]
+        for r in verify.auto_verify(session, TODAY, datetime(2026, 9, 27, 12), True)
+    }
+    assert results[candidate.id] == "同一截止有质检退回，须人工核对"
+    session.expire_all()
+    assert candidate.status == "pending" and candidate.reviewed_by is None
+
+
+def test_auto_only_approves_eligible_twins_with_the_same_sentence(session, candidate):
+    """自动核对写入时，同组证据相同的副本也要是规则抽出、AI 一致的才一起通过；AI 单独找到的、
+    AI 不一致的留在待核对。"""
+    _auto_ai_record(session, candidate)
+    doc = session.get(Document, candidate.document_id)
+    twins = {}
+    for n, (origin, agrees) in enumerate((("rule", True), ("ai", None), ("rule", False)), start=1):
+        twin_doc = _doc(doc.source, 80 + n, doc.title, TODAY)
+        session.add(twin_doc)
+        session.flush()
+        session.add_all(
+            [
+                DocumentMerge(
+                    duplicate_id=twin_doc.id, canonical_id=doc.id, match_key=f"elig{n}", active=True
+                ),
+                DocumentDetail(
+                    document_id=twin_doc.id,
+                    body_text=BODY,
+                    status="ok",
+                    fetched_at=datetime.now(UTC),
+                ),
+            ]
+        )
+        twins[n] = DocumentDeadline(
+            document_id=twin_doc.id,
+            fingerprint=f"elig-{n}",
+            kind=candidate.kind,
+            candidate_date=candidate.candidate_date,
+            evidence=candidate.evidence,
+            confidence="高",
+            status="pending",
+            origin=origin,
+            ai_agrees=agrees,
+        )
+        session.add(twins[n])
+    session.commit()
+    results = {
+        r["id"]: r["result"]
+        for r in verify.auto_verify(session, TODAY, datetime(2026, 9, 27, 12), True)
+    }
+    assert results[candidate.id] == "通过"
+    session.expire_all()
+    assert candidate.reviewed_by == twins[1].reviewed_by == verify.AUTO_REVIEWER
+    assert twins[2].status == twins[3].status == "pending"
+    assert twins[2].reviewed_by is None and twins[3].reviewed_by is None
+
+
+def test_auto_waits_for_another_writer_in_the_same_notice(session, session_factory, candidate):
+    """另一个连接（管理台、Claude 写回）正锁着同一通知另一类的截止行时，自动核对等它提交以后再做，
+    不会互相等成死锁：自动核对一开始就锁住这份通知的全部截止行，之后不再去拿别的行。"""
+    import threading
+    import time as clock
+
+    _auto_ai_record(session, candidate)
+    other = DocumentDeadline(
+        document_id=candidate.document_id,
+        fingerprint="other-kind",
+        kind="材料报送截止",
+        candidate_date=date(2026, 10, 20),
+        evidence="纸质材料请于2026年10月20日前报送。",
+        confidence="高",
+        status="pending",
+        origin="rule",
+    )
+    session.add(other)
+    session.commit()
+    holder = session_factory()
+    holder.scalars(
+        select(DocumentDeadline).where(DocumentDeadline.id == other.id).with_for_update()
+    ).all()
+    results, errors = [], []
+
+    def run():
+        try:
+            with session_factory() as worker:
+                results.extend(verify.auto_verify(worker, TODAY, datetime(2026, 9, 27, 12), True))
+        except Exception as exc:  # noqa: BLE001 - 断言里报出来
+            errors.append(exc)
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    clock.sleep(1.5)
+    assert thread.is_alive()  # 在等另一个连接放开
+    # 另一个连接提交以后，自动核对接着做完
+    holder.commit()
+    holder.close()
+    thread.join(30)
+    assert not thread.is_alive() and errors == []
+    assert [(r["id"], r["result"]) for r in results] == [(candidate.id, "通过")]
+
+
+def test_auto_holds_the_whole_notice_while_deciding(
+    session, session_factory, candidate, monkeypatch
+):
+    """写库时自动核对一开始就锁住这份通知（各网址）的全部截止行，不分类型：它判断的时候，另一个连接
+    去锁同一通知另一类的行要等（这里等锁时间设成 1 秒，等不到就超时）。只锁一类的话这一行是空着的，
+    第二遍扫描还要回头去拿，才会和管理台互相等成死锁。"""
+    import threading
+
+    from sqlalchemy import text
+    from sqlalchemy.exc import OperationalError
+
+    _auto_ai_record(session, candidate)
+    other = DocumentDeadline(
+        document_id=candidate.document_id,
+        fingerprint="other-kind-held",
+        kind="材料报送截止",
+        candidate_date=date(2026, 10, 20),
+        evidence="纸质材料请于2026年10月20日前报送。",
+        confidence="高",
+        status="pending",
+        origin="rule",
+    )
+    session.add(other)
+    session.commit()
+    deciding, release = threading.Event(), threading.Event()
+    real_reason = verify._auto_reason
+
+    def paused(*args):
+        deciding.set()
+        release.wait(30)
+        return real_reason(*args)
+
+    monkeypatch.setattr(verify, "_auto_reason", paused)
+    results, errors = [], []
+
+    def run():
+        try:
+            with session_factory() as worker:
+                results.extend(verify.auto_verify(worker, TODAY, datetime(2026, 9, 27, 12), True))
+        except Exception as exc:  # noqa: BLE001 - 断言里报出来
+            errors.append(exc)
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    try:
+        assert deciding.wait(30)
+        # 用一条独占的连接探：等锁时间设成 1 秒，用完直接作废、不还回连接池。用会话的话，rollback
+        # 以后连接就还回池子了，后面"改回默认"可能落在另一条连接上，这条等 1 秒的连接留在池子里，
+        # 会让后面要等锁的测试（如紧急下架那几条）偶尔等锁超时
+        probe = session.get_bind().connect()
+        try:
+            probe.execute(text("SET SESSION innodb_lock_wait_timeout = 1"))
+            with pytest.raises(OperationalError) as caught:
+                probe.execute(
+                    select(DocumentDeadline.id)
+                    .where(DocumentDeadline.id == other.id)
+                    .with_for_update()
+                ).all()
+            assert caught.value.orig.args[0] == 1205
+        finally:
+            probe.rollback()
+            probe.invalidate()
+            probe.close()
+    finally:
+        release.set()
+        thread.join(30)
+    assert not thread.is_alive() and errors == []
+    assert [(r["id"], r["result"]) for r in results] == [(candidate.id, "通过")]
+
+
+def test_auto_result_is_not_carried_over_when_ai_changed_or_expired(
+    session, candidate, monkeypatch
+):
+    """沿用前对副本把自动核对的条件再核一遍：同组当前的 AI 结果不再相符的、已经过期的、自动核对关着的
+    （开关不是 1 或没配 AI 密钥）、同一天有质检退回还待核对的，都不沿用。"""
+    from zoneinfo import ZoneInfo
+
+    from youju.dedup import sync_reviewed_twins
+    from youju.models import AICheck
+
+    monkeypatch.setattr(verify, "auto_enabled", lambda settings=None: True)
+    _auto_ai_record(session, candidate)
+    session.commit()
+    results = list(verify.auto_verify(session, TODAY, datetime(2026, 9, 27, 12), True))
+    assert [r["result"] for r in results] == ["通过"]
+    doc = session.get(Document, candidate.document_id)
+    twin_doc = _doc(doc.source, 70, doc.title, TODAY)
+    session.add(twin_doc)
+    session.flush()
+    twin = DocumentDeadline(
+        document_id=twin_doc.id,
+        fingerprint="carry-checks",
+        kind=candidate.kind,
+        candidate_date=candidate.candidate_date,
+        evidence=candidate.evidence,
+        confidence="高",
+        status="pending",
+        origin="rule",
+        ai_agrees=True,
+    )
+    session.add_all(
+        [
+            DocumentMerge(
+                duplicate_id=twin_doc.id, canonical_id=doc.id, match_key="checks", active=True
+            ),
+            DocumentDetail(
+                document_id=twin_doc.id, body_text=BODY, status="ok", fetched_at=datetime.now(UTC)
+            ),
+            twin,
+        ]
+    )
+    session.commit()
+    # 过期了（北京时间 10 月 1 日）：不沿用
+    monkeypatch.setattr(
+        v1, "now", lambda: datetime(2026, 10, 1, 9, tzinfo=ZoneInfo("Asia/Shanghai"))
+    )
+    sync_reviewed_twins(session, {doc.id})
+    session.commit()
+    assert twin.status == "pending"
+    # 没过期，但 AI 现在给这一天标的是别的类型：不沿用
+    monkeypatch.setattr(
+        v1, "now", lambda: datetime(2026, 9, 27, 12, tzinfo=ZoneInfo("Asia/Shanghai"))
+    )
+    record = session.scalars(select(AICheck).where(AICheck.document_id == doc.id)).one()
+    record.result = {
+        **record.result,
+        "items": [{**record.result["items"][0], "kind": "材料报送截止"}],
+    }
+    session.commit()
+    sync_reviewed_twins(session, {doc.id})
+    session.commit()
+    assert twin.status == "pending"
+    # AI 改回来，但自动核对关了（开关改回 0 或去掉了 AI 密钥）：不沿用
+    record.result = {
+        **record.result,
+        "items": [{**record.result["items"][0], "kind": candidate.kind}],
+    }
+    session.commit()
+    monkeypatch.setattr(verify, "auto_enabled", lambda settings=None: False)
+    sync_reviewed_twins(session, {doc.id})
+    session.commit()
+    assert twin.status == "pending"
+    # 自动核对开着，但同组同一天有一条质检退回还待核对：不沿用（免得把退回的截止遮住）
+    monkeypatch.setattr(verify, "auto_enabled", lambda settings=None: True)
+    returned = DocumentDeadline(
+        document_id=twin_doc.id,
+        fingerprint="carry-returned",
+        kind=candidate.kind,
+        candidate_date=candidate.candidate_date,
+        evidence="另一句：申报截止2026年9月30日。",
+        confidence="高",
+        status="pending",
+        origin="rule",
+        ai_agrees=True,
+        audit_state="reopened",
+        audit_note="Codex 抽查不一致：原文不符",
+    )
+    session.add(returned)
+    session.commit()
+    sync_reviewed_twins(session, {doc.id})
+    session.commit()
+    assert twin.status == "pending"
+    # 退回那条处理掉以后（这里直接驳回）：这一回沿用，原句记它自己的
+    returned.status, returned.audit_state = "rejected", None
+    session.commit()
+    sync_reviewed_twins(session, {doc.id})
+    session.commit()
+    assert twin.status == "approved" and twin.reviewed_by == verify.AUTO_REVIEWER
+
+
+def test_auto_skips_a_notice_whose_other_url_solicits_suggestions(session, candidate, monkeypatch):
+    """同一通知另一个网址的标题是征集建议、征求意见：这份通知不自动核对，副本也不跟着通过、不沿用。"""
+    from zoneinfo import ZoneInfo
+
+    from youju.dedup import sync_reviewed_twins
+
+    monkeypatch.setattr(
+        v1, "now", lambda: datetime(2026, 9, 27, 12, tzinfo=ZoneInfo("Asia/Shanghai"))
+    )
+    monkeypatch.setattr(verify, "auto_enabled", lambda settings=None: True)
+    _auto_ai_record(session, candidate)
+    doc = session.get(Document, candidate.document_id)
+    twin_doc = _doc(doc.source, 60, "关于征集2027年度项目指南建议的通知", TODAY)
+    session.add(twin_doc)
+    session.flush()
+    twin = DocumentDeadline(
+        document_id=twin_doc.id,
+        fingerprint="solicit-twin",
+        kind=candidate.kind,
+        candidate_date=candidate.candidate_date,
+        evidence=candidate.evidence,
+        confidence="高",
+        status="pending",
+        origin="rule",
+        ai_agrees=True,
+    )
+    session.add_all(
+        [
+            DocumentMerge(
+                duplicate_id=twin_doc.id, canonical_id=doc.id, match_key="solicit", active=True
+            ),
+            DocumentDetail(
+                document_id=twin_doc.id, body_text=BODY, status="ok", fetched_at=datetime.now(UTC)
+            ),
+            twin,
+        ]
+    )
+    session.commit()
+    results = {
+        r["id"]: r["result"]
+        for r in verify.auto_verify(session, TODAY, datetime(2026, 9, 27, 12), True)
+    }
+    assert results[candidate.id] == "标题是征集建议、征求意见"
+    sync_reviewed_twins(session, {doc.id})
+    session.commit()
+    session.expire_all()
+    assert candidate.status == twin.status == "pending"
+
+
+def test_auto_result_is_not_carried_over_to_a_notice_that_turns_out_to_solicit(
+    session, candidate, monkeypatch
+):
+    """沿用那一路（auto_twin_quote）也按整份通知各网址的标题判：自动通过以后才进来一个标题是征集建议的
+    网址，同证据的副本不沿用自动结果。"""
+    from zoneinfo import ZoneInfo
+
+    from youju.dedup import sync_reviewed_twins
+
+    monkeypatch.setattr(
+        v1, "now", lambda: datetime(2026, 9, 27, 12, tzinfo=ZoneInfo("Asia/Shanghai"))
+    )
+    monkeypatch.setattr(verify, "auto_enabled", lambda settings=None: True)
+    _auto_ai_record(session, candidate)
+    session.commit()
+    results = list(verify.auto_verify(session, TODAY, datetime(2026, 9, 27, 12), True))
+    assert [r["result"] for r in results] == ["通过"]
+    doc = session.get(Document, candidate.document_id)
+    twin_doc = _doc(doc.source, 61, "关于征求2027年度项目指南编制建议的通知", TODAY)
+    session.add(twin_doc)
+    session.flush()
+    twin = DocumentDeadline(
+        document_id=twin_doc.id,
+        fingerprint="late-solicit-twin",
+        kind=candidate.kind,
+        candidate_date=candidate.candidate_date,
+        evidence=candidate.evidence,
+        confidence="高",
+        status="pending",
+        origin="rule",
+        ai_agrees=True,
+    )
+    session.add_all(
+        [
+            DocumentMerge(
+                duplicate_id=twin_doc.id, canonical_id=doc.id, match_key="late", active=True
+            ),
+            DocumentDetail(
+                document_id=twin_doc.id, body_text=BODY, status="ok", fetched_at=datetime.now(UTC)
+            ),
+            twin,
+        ]
+    )
+    session.commit()
+    sync_reviewed_twins(session, {doc.id})
+    session.commit()
+    assert twin.status == "pending" and twin.reviewed_by is None
+
+
+def test_auto_rereads_the_notice_after_locking(session, session_factory, candidate, monkeypatch):
+    """跑到一半同一通知新进来一个网址（另一个连接归并进来），标题是征求意见：锁住以后按现查的
+    归并组判断，这一条不再自动通过。"""
+    _auto_ai_record(session, candidate)
+    session.commit()
+    real_lock = verify._lock_notice
+    joined = []
+
+    def lock_after_a_new_url_joins(session_, members):
+        if not joined:
+            with session_factory() as other:
+                doc = other.get(Document, candidate.document_id)
+                late = _doc(doc.source, 62, "关于公开征求2027年度项目指南意见的通知", TODAY)
+                other.add(late)
+                other.flush()
+                other.add(
+                    DocumentMerge(
+                        duplicate_id=late.id, canonical_id=doc.id, match_key="joined", active=True
+                    )
+                )
+                other.commit()
+                joined.append(late.id)
+        return real_lock(session_, members)
+
+    monkeypatch.setattr(verify, "_lock_notice", lock_after_a_new_url_joins)
+    results = {
+        r["id"]: r["result"]
+        for r in verify.auto_verify(session, TODAY, datetime(2026, 9, 27, 12), True)
+    }
+    assert joined and results[candidate.id] == "标题是征集建议、征求意见"
+    session.expire_all()
+    assert candidate.status == "pending"

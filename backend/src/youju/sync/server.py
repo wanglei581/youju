@@ -343,10 +343,13 @@ class MissingBlobs(Exception):
 def _take_turn(conn: Connection, stamp: int) -> None:
     """在 sync_order 那一行上排队（SELECT … FOR UPDATE）：所有写入（apply、reset）和附件副本的
     清理都先拿这把锁。stamp 是请求签名里的毫秒时间，要比写过的最新一次新，否则抛 Stale；
-    清理不是请求，传 0 只排队、不比时间。"""
+    清理不是请求，传 0 只排队、不比时间。
+    一开始就拿排他锁（INSERT … ON DUPLICATE KEY UPDATE）：INSERT IGNORE 遇到已有的行只拿共享锁，
+    两个事务都拿到共享锁再都要升级成排他锁时，InnoDB 会判死锁、回滚其中一个。"""
     conn.execute(
         text(
-            f"INSERT IGNORE INTO `{ORDER}` (name, last_stamp, updated_at) VALUES ('public', 0, :u)"
+            f"INSERT INTO `{ORDER}` (name, last_stamp, updated_at) VALUES ('public', 0, :u)"
+            " ON DUPLICATE KEY UPDATE name = name"
         ),
         {"u": datetime.now(UTC).replace(tzinfo=None)},
     )
@@ -355,6 +358,26 @@ def _take_turn(conn: Connection, stamp: int) -> None:
     ).scalar_one()
     if stamp and stamp <= last:
         raise Stale(int(last))
+
+
+def queue_with_sync(conn: Connection) -> bool:
+    """服务器上直接改和公开数据有关的东西（紧急下架，youju/emergency_takedown.py）之前，和同步写入
+    在 sync_order 那一行上排队，一直到这个事务结束：这期间同步改不了归并、文件。
+    进度表还没有（这个库还没收过同步）：服务器（public_replica）上先建好再排，第一次同步也要在
+    这一行上排队；别的库（本机、测试库）没有同步写入，不排，返回 False。"""
+    exists = conn.execute(
+        text(
+            "SELECT COUNT(*) FROM information_schema.tables"
+            " WHERE table_schema = DATABASE() AND table_name = :t"
+        ),
+        {"t": ORDER},
+    ).scalar()
+    if not exists:
+        if not getattr(get_settings(), "public_replica", False):
+            return False
+        ensure_state(conn.engine)
+    _take_turn(conn, 0)
+    return True
 
 
 def _record_turn(conn: Connection, stamp: int) -> None:

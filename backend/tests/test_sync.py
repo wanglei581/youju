@@ -291,6 +291,118 @@ def test_user_data_survives_updates_and_follows_deletes(env):
     assert rows(env.server, "feedback")[0]["document_id"] is None
 
 
+def test_emergency_takedown_survives_updates_and_keeps_record_on_delete(env):
+    """服务器上的紧急下架（只在服务器上、不同步）：本机改文件不动它、文件照样不对外；本机删了
+    文件，记录留着（编号置空、网址留着），别的文件照常对外。"""
+    from sqlalchemy.orm import Session
+
+    from youju.models import Document
+    from youju.takedown import available_condition
+
+    src = source(env.local)
+    doc = document(env.local, src, "a")
+    other = document(env.local, src, "b")
+    bootstrap(env)
+    key = "kjt.shandong.gov.cn/tzgg/a.html"
+    insert(
+        env.server,
+        "emergency_takedowns",
+        document_id=doc,
+        url_key=key,
+        batch="0123456789abcdef" * 2,
+        reason="侵权投诉",
+        note="说明",
+        created_by="测试",
+        created_at=NOW,
+    )
+
+    def visible():
+        with Session(env.server) as s:
+            query = select(Document.id).where(available_condition()).order_by(Document.id)
+            return s.scalars(query).all()
+
+    assert visible() == [other]
+    with env.local.begin() as conn:
+        conn.execute(T["documents"].update().where(T["documents"].c.id == doc).values(title="改了"))
+    local.push(env.local, env.client)
+    # 改文件不动它（写用 REPLACE、关外键检查，不置空）
+    assert rows(env.server, "emergency_takedowns")[0]["document_id"] == doc
+    assert visible() == [other]
+    with env.local.begin() as conn:
+        conn.execute(T["documents"].delete().where(T["documents"].c.id == doc))
+    local.push(env.local, env.client)
+    kept = rows(env.server, "emergency_takedowns")
+    assert [(r["document_id"], r["url_key"], r["note"]) for r in kept] == [(None, key, "说明")]
+    assert visible() == [other]
+
+
+def test_emergency_takedown_queues_with_sync_writes(env):
+    """紧急下架和同步写入在 sync_order 那一行上排队：同步正在写（可能在改归并）时，紧急下架等它
+    写完再读归并、记行；没收过同步的库（进度表还没有）不用排。"""
+    import threading
+
+    from sqlalchemy.orm import Session
+
+    from youju import emergency_takedown as urgent
+
+    src = source(env.local)
+    warm = document(env.local, src, "warm")
+    doc = document(env.local, src, "a")
+    bootstrap(env)
+    # 先做一次（第一次要建连接、编译查询，一两秒），后面那次不排队的话不到 0.1 秒就做完
+    with Session(env.server) as session:
+        urgent.add(session, warm, reason="other")
+    conn = env.server.connect()
+    trans = conn.begin()
+    sync_server._take_turn(conn, 0)  # 一次同步写入正在进行
+    result = {}
+
+    def run():
+        with Session(env.server) as session:
+            result["rows"] = len(urgent.add(session, doc, reason="other"))
+
+    thread = threading.Thread(target=run)
+    try:
+        thread.start()
+        time.sleep(2.5)
+        assert thread.is_alive()
+    finally:
+        trans.commit()
+        conn.close()
+    thread.join(30)
+    assert not thread.is_alive() and result == {"rows": 1}
+    with env.local.connect() as local_conn:
+        assert not sync_server.queue_with_sync(local_conn)  # 本机库没有进度表：不排
+
+
+def test_first_sync_waits_for_an_emergency_takedown_on_the_server(env, monkeypatch):
+    """服务器还没收过同步（进度表还没有）：紧急下架先建好进度表再排队，第一次同步也要等它提交；
+    不是服务器的库（本机、测试库）不建、不排。"""
+    import threading
+
+    src = source(env.local)
+    document(env.local, src, "a")
+    with env.server.connect() as conn:
+        assert not sync_server.queue_with_sync(conn)
+        conn.rollback()
+    monkeypatch.setenv("YOUJU_HOSTING", "self")
+    monkeypatch.setenv("YOUJU_PUBLIC_REPLICA", "true")
+    get_settings.cache_clear()
+    conn = env.server.connect()
+    trans = conn.begin()
+    assert sync_server.queue_with_sync(conn)  # 紧急下架拿着这一队
+    thread = threading.Thread(target=bootstrap, args=(env,))
+    try:
+        thread.start()
+        time.sleep(2.5)
+        assert thread.is_alive() and count(env.server, "documents") == 0
+    finally:
+        trans.commit()
+        conn.close()
+    thread.join(60)
+    assert not thread.is_alive() and count(env.server, "documents") == 1
+
+
 def test_failed_batch_changes_nothing_and_resumes(env, monkeypatch):
     src = source(env.local)
     bootstrap(env)

@@ -11,7 +11,9 @@ import pty
 import re
 import select
 import shutil
+import signal
 import subprocess
+import sys
 import termios
 import time
 from datetime import UTC, date, datetime, timedelta
@@ -826,6 +828,383 @@ def test_local_set_secret(tmp_path):
     assert code == 1 and "格式不对" in out
     code, out = _tty(["bash", str(tmp_path / "set-secret.sh"), "YOUJU_ADMIN_TOKEN"], "x\n")
     assert code == 1 and "用法" in out
+    # 后台 AI 的密钥也在本机录（和服务器同一个）：不回显，只给指纹
+    key = "sk-0123456789abcdef0123"
+    code, out = _tty(["bash", str(tmp_path / "set-secret.sh"), "YOUJU_AI_API_KEY"], key + "\n")
+    assert code == 0, out
+    assert key not in out and f"指纹 {_sha(key.encode())[:4]}" in out
+    assert env.read_text(encoding="utf-8").endswith(f"YOUJU_AI_API_KEY={key}\n")
+
+
+def _end_line(count: int) -> str:
+    """show ai 的最后一行（纯 ASCII 的开头加中文说明）。"""
+    return f"#END {count} （以上 {count} 项；YOUJU_AI_API_KEY 不打印：35 位，指纹 ab12；本机用 set-secret.sh 录同一个，指纹要一样）"
+
+
+@needs_bash
+def test_local_set_config(tmp_path, monkeypatch):
+    shutil.copy(SELFHOST / "local" / "set-config.sh", tmp_path)
+    env = tmp_path / ".env"
+    before = (
+        "YOUJU_SYNC_URL=https://yj.example.cn\r\n# YOUJU_AI_MODEL=\r\n"
+        "YOUJU_AI_MODEL=old-model\r\nYOUJU_AI_BACKGROUND_MODEL=old-bg\r\nYOUJU_AI_MODEL=dup\r\n"
+    )
+    env.write_text(before, encoding="utf-8", newline="")
+    script = ["bash", str(tmp_path / "set-config.sh")]
+    # 附加参数照 show ai 的打法：纯 ASCII、紧凑，中文写成转义
+    extra = json.dumps(
+        {"thinking": {"type": "disabled"}, "stop": ["\n"], "note": "中文 a#b"},
+        ensure_ascii=True,
+        separators=(",", ":"),
+    )
+
+    done = subprocess.run(script, input="x\n", capture_output=True, text=True)
+    assert done.returncode == 1 and "只能在交互终端里用" in done.stderr
+
+    # 换行变成回车加换行、行尾带空格、#END 那行的中文复制成乱码：照样认
+    pasted = (
+        "YOUJU_AI_BASE_URL=https://api.deepseek.com:443/v1 \r\n"
+        "YOUJU_AI_MODEL=deepseek-chat\t\r\n"
+        f"YOUJU_AI_REQUEST_EXTRA={extra}\r\n"
+        "#END 3 ���\r\n"
+        "YOUJU_AI_MODEL=after-the-end-line-is-not-read\r\n"
+    )
+    # 上次留下的 .env.tmp（权限宽）不碍事：临时文件每次用 mktemp 新建，用完不留
+    stale = tmp_path / ".env.tmp"
+    stale.write_text("junk\n", encoding="utf-8")
+    stale.chmod(0o644)
+    code, out = _tty(script, pasted)
+    assert code == 0, out
+    assert stale.read_text(encoding="utf-8") == "junk\n"
+    assert sorted(x.name for x in tmp_path.glob(".env*")) == [".env", ".env.tmp"]
+    # 原来有的就地改、重复的旧行去掉、没有的加在最后；粘贴里没有的（服务器没填）本机也去掉；
+    # 读到 #END 就停；注释行原样留下
+    assert env.read_bytes().decode() == (
+        "YOUJU_SYNC_URL=https://yj.example.cn\n# YOUJU_AI_MODEL=\n"
+        "YOUJU_AI_MODEL=deepseek-chat\n"
+        "YOUJU_AI_BASE_URL=https://api.deepseek.com:443/v1\n"
+        f"YOUJU_AI_REQUEST_EXTRA={extra}\n"
+    )
+    assert env.stat().st_mode & 0o777 == 0o600
+    # 只回名称和长度，不回显粘贴的值
+    assert "deepseek-chat" not in out and "api.deepseek.com" not in out and "thinking" not in out
+    assert "已写入 YOUJU_AI_MODEL（13 位）" in out
+    assert "YOUJU_AI_BACKGROUND_MODEL：服务器没填，本机也不填" in out
+    # 程序按这份 .env 读回来的和粘贴的一样（附加参数是同一个字典）
+    from youju.config import Settings
+
+    for name in ("YOUJU_AI_BASE_URL", "YOUJU_AI_MODEL", "YOUJU_AI_REQUEST_EXTRA"):
+        monkeypatch.delenv(name, raising=False)
+    settings = Settings(_env_file=str(env))
+    assert settings.ai_base_url == "https://api.deepseek.com:443/v1"
+    assert settings.ai_model == "deepseek-chat"
+    assert settings.ai_request_extra == json.loads(extra)
+
+    # 服务器四项都没填：只有 #END 0，本机这几项都去掉
+    code, out = _tty(script, _end_line(0) + "\n")
+    assert code == 0, out
+    assert env.read_bytes().decode() == "YOUJU_SYNC_URL=https://yj.example.cn\n# YOUJU_AI_MODEL=\n"
+
+    # 有一行不对、没粘到 #END、行数和项数对不上（漏了开头几行），都整批不写；
+    # 不认识的行、误粘的密钥都不打出来；行号不算空行
+    env.write_text(before, encoding="utf-8", newline="")
+    secret = "sk-pasted-by-mistake-0123456789"
+    bad_batches = {
+        f"YOUJU_AI_MODEL=deepseek-chat\r\nYOUJU_AI_API_KEY={secret}\r\n{_end_line(1)}\n": "第 2 行不认识",
+        f"{secret}\n{_end_line(0)}\n": "第 1 行不认识",
+        f"YOUJU_AI_MODEL={secret}\n{_end_line(1)}\n": "格式不对",
+        f"YOUJU_AI_MODEL=x{'a1' * 16}\n{_end_line(1)}\n": "格式不对",
+        "YOUJU_AI_MODEL=deepseek-chat\n\x04": "没粘到最后那行 #END",
+        f"YOUJU_AI_MODEL=deepseek-chat\nYOUJU_AI_REQUEST_EXTRA={{}}\n{_end_line(3)}\n": "可能没复制全",
+        f"YOUJU_AI_MODEL=a\nYOUJU_AI_MODEL=b\n{_end_line(2)}\n": "出现了两次",
+        f"YOUJU_AI_REQUEST_EXTRA=[1, 2]\n{_end_line(1)}\n": "格式不对",
+        f"YOUJU_AI_REQUEST_EXTRA={{bad\n{_end_line(1)}\n": "格式不对",
+        f'YOUJU_AI_REQUEST_EXTRA={{"k": "{secret} #x"}}\n{_end_line(1)}\n': "格式不对",
+        f'YOUJU_AI_REQUEST_EXTRA={{"k": "$HOME"}}\n{_end_line(1)}\n': "格式不对",
+        f'YOUJU_AI_REQUEST_EXTRA={{"note": "{chr(0xFFFD) * 2}"}}\n{_end_line(1)}\n': "格式不对",
+        f"YOUJU_AI_MODEL=model-$(reboot)\n{_end_line(1)}\n": "格式不对",
+        f"YOUJU_AI_BASE_URL=http://api.deepseek.com/v1\n{_end_line(1)}\n": "格式不对",
+        f"YOUJU_AI_BASE_URL=https://api.deepseek.com:99999/v1\n{_end_line(1)}\n": "格式不对",
+        f"YOUJU_AI_BASE_URL=https://api.deepseek.com:0/v1\n{_end_line(1)}\n": "格式不对",
+        f"YOUJU_AI_BASE_URL=https://api.deepseek.com/v1?key={secret}\n{_end_line(1)}\n": "格式不对",
+    }
+    for text, message in bad_batches.items():
+        code, out = _tty(script, text)
+        assert code == 1 and message in out, (text, out)
+        assert secret not in out
+        assert env.read_bytes() == before.encode(), text  # 原样没动（连 CRLF 都没改）
+
+    # 写临时文件失败（目录不能写）：报错退出，.env 原样（root 不受目录权限限制，跳过）
+    if os.geteuid() != 0:
+        tmp_path.chmod(0o555)
+        try:
+            code, out = _tty(script, f"YOUJU_AI_MODEL=deepseek-chat\n{_end_line(1)}\n")
+        finally:
+            tmp_path.chmod(0o755)
+        assert code != 0, out
+        assert env.read_bytes() == before.encode()
+
+    env.unlink()
+    code, out = _tty(script, f"YOUJU_AI_MODEL=deepseek-chat\n{_end_line(1)}\n")
+    assert code == 1 and "还没有 .env" in out
+
+
+@needs_bash
+def test_local_set_config_checks_json_in_the_worker_without_python(tmp_path):
+    """电脑的发行版里没有 python3 时，附加参数改在 worker 镜像里查（docker compose run）。"""
+    shutil.copy(SELFHOST / "local" / "set-config.sh", tmp_path)
+    env = tmp_path / ".env"
+    env.write_text("YOUJU_SYNC_URL=https://yj.example.cn\n", encoding="utf-8")
+    # PATH 里只有脚本要用的几个命令，没有 python3；docker 换成假的：记下参数，用真的 python 查
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for tool in ("dirname", "stty", "dd", "wc", "tr", "grep", "mktemp", "mv", "rm", "seq", "cat"):
+        os.symlink(shutil.which(tool), bin_dir / tool)
+    log = tmp_path / "docker.log"
+    real_python = sys.executable
+    (bin_dir / "docker").write_text(
+        f'#!/bin/bash\necho "$@" >> "{log}"\n'
+        # docker compose run --rm --no-deps -T worker python -I -c <代码>
+        f'[ "$1 $2 $6 $7" = "compose run worker python" ] || exit 99\nshift 7\nexec "{real_python}" "$@"\n',
+        encoding="utf-8",
+    )
+    (bin_dir / "docker").chmod(0o755)
+    run_env = {**os.environ, "PATH": str(bin_dir)}
+    script = [shutil.which("bash"), str(tmp_path / "set-config.sh")]
+    extra = '{"thinking":{"type":"disabled"}}'
+    code, out = _tty(script, f"YOUJU_AI_REQUEST_EXTRA={extra}\n{_end_line(1)}\n", env=run_env)
+    assert code == 0, out
+    assert env.read_text(encoding="utf-8").endswith(f"YOUJU_AI_REQUEST_EXTRA={extra}\n")
+    assert "compose run --rm --no-deps -T worker python -I -c" in log.read_text(encoding="utf-8")
+    code, out = _tty(script, f"YOUJU_AI_REQUEST_EXTRA=[1]\n{_end_line(1)}\n", env=run_env)
+    assert code == 1 and "格式不对" in out
+
+
+@needs_bash
+def test_local_set_config_drains_leftover_paste_and_restores_the_terminal(tmp_path):
+    """读完、出错、中途被停下都先把终端里没读完的粘贴内容丢掉（不然会交给外面的终端当命令执行，
+    万一是密钥还会在报错里打出来），再恢复回显。"""
+    shutil.copy(SELFHOST / "local" / "set-config.sh", tmp_path)
+    (tmp_path / ".env").write_text("YOUJU_SYNC_URL=https://yj.example.cn\n", encoding="utf-8")
+    secret = "sk-leftover-0123456789"
+    # 跑完打出退出码、回显恢复没有（echo / -echo）、终端里还剩什么
+    # 剩没剩：换成非规范模式读（没按回车的半行也读得到），等 2 秒
+    after = (
+        'echo "EXIT=$?"; stty -a | tr " " "\\n" | grep -x -e echo -e -echo; '
+        "stty -icanon min 0 time 20; left=$(dd bs=4096 count=1 2>/dev/null); stty icanon; "
+        'if [ -n "$left" ]; then echo "LEFT=$left"; else echo "LEFT-NONE"; fi'
+    )
+    run = f'stty echo; bash "{tmp_path}/set-config.sh"; {after}'
+    # 中途被停下：测试的伪终端不是控制终端，Ctrl-C 发不出信号，这里直接发 TERM（和 INT 走同一段恢复）；
+    # 放到后台时标准输入要明写 <&0，不然是 /dev/null
+    # 等它关掉回显再发（关回显之前已经装好了信号处理），不靠固定等几秒
+    stopped = (
+        f'stty echo; bash "{tmp_path}/set-config.sh" <&0 & pid=$!; '
+        'for i in $(seq 100); do stty -a | tr " " "\\n" | grep -qx -- -echo && break; sleep 0.1; done; '
+        f"kill -TERM $pid; wait $pid; {after}"
+    )
+    cases = {
+        "读完": (
+            run,
+            f"YOUJU_AI_MODEL=deepseek-chat\n{_end_line(1)}\n{secret}\necho PWNED\n",
+            "EXIT=0",
+        ),
+        "出错": (
+            run,
+            f"YOUJU_AI_MODEL=bad model\n{secret}\necho PWNED\n{_end_line(1)}\n",
+            "EXIT=1",
+        ),
+        "停下": (stopped, "", "EXIT=130"),
+        # 最后一行没按回车（规范模式下读不到的半行）也要丢掉
+        "半行": (run, f"YOUJU_AI_MODEL=deepseek-chat\n{_end_line(1)}\n{secret}", "EXIT=0"),
+        # 一下子粘了很多（远多于 30 次 4KB 的读）：照样全丢掉
+        "很多": (
+            run,
+            f"YOUJU_AI_MODEL=deepseek-chat\n{_end_line(1)}\n"
+            + "".join(f"echo PWNED-{i:05d} {'y' * 40}\n" for i in range(3000))
+            + secret,
+            "EXIT=0",
+        ),
+    }
+    for label, (wrapper, typed, exit_line) in cases.items():
+        code, out = _tty(["bash", "-c", wrapper], typed)
+        lines = out.replace("\r", "").splitlines()
+        assert exit_line in lines, (label, out)
+        assert "echo" in lines and "-echo" not in lines, (label, out)
+        assert "LEFT-NONE" in lines, (label, out)
+        assert secret not in out and "PWNED" not in out, (label, out)
+
+
+@needs_bash
+def test_local_set_config_switch(tmp_path):
+    """本机自己的开关（截止日期自动核对，D-135）：只收 0 或 1；命令后面、粘贴里都能给，给了才改，
+    不算进 AI 配置的行数；--only 只改开关、不粘贴，AI 那几项原样留着。"""
+    shutil.copy(SELFHOST / "local" / "set-config.sh", tmp_path)
+    env = tmp_path / ".env"
+    env.write_text(
+        "YOUJU_AI_MODEL=deepseek-chat\nYOUJU_SYNC_URL=https://yj.example.cn\n", encoding="utf-8"
+    )
+    script = ["bash", str(tmp_path / "set-config.sh")]
+    # #END 后面什么都没有也认
+    paste = "YOUJU_AI_MODEL=deepseek-chat\n#END 1\n"
+
+    # 上线那天：命令后面带开关，再粘贴 show ai 的几行
+    code, out = _tty([*script, "YOUJU_DEADLINE_AUTO_VERIFY=1"], paste)
+    assert code == 0, out
+    assert env.read_text(encoding="utf-8") == (
+        "YOUJU_AI_MODEL=deepseek-chat\nYOUJU_SYNC_URL=https://yj.example.cn\n"
+        "YOUJU_DEADLINE_AUTO_VERIFY=1\n"
+    )
+    assert "YOUJU_DEADLINE_AUTO_VERIFY=1（截止日期自动核对：开）" in out
+
+    # 以后再粘贴 AI 那几行、没带开关：开关原样留着
+    code, out = _tty(script, paste)
+    assert code == 0 and "YOUJU_DEADLINE_AUTO_VERIFY=1\n" in env.read_text(encoding="utf-8")
+
+    # 粘贴里给开关也行（不算进 AI 配置的行数）；命令里也给了的，以命令里的为准
+    code, out = _tty(
+        [*script, "YOUJU_DEADLINE_AUTO_VERIFY=0"], "YOUJU_DEADLINE_AUTO_VERIFY=1\n" + paste
+    )
+    assert code == 0, out
+    assert env.read_text(encoding="utf-8").endswith("YOUJU_DEADLINE_AUTO_VERIFY=0\n")
+
+    # --only：不粘贴，只改开关；AI 那几项、别的行原样
+    code, out = _tty([*script, "--only", "YOUJU_DEADLINE_AUTO_VERIFY=1"], "")
+    assert code == 0, out
+    assert "粘贴" not in out and "已写入 YOUJU_AI_MODEL" not in out
+    assert env.read_text(encoding="utf-8") == (
+        "YOUJU_AI_MODEL=deepseek-chat\nYOUJU_SYNC_URL=https://yj.example.cn\n"
+        "YOUJU_DEADLINE_AUTO_VERIFY=1\n"
+    )
+
+    # 只收 0 或 1；不认识的参数不打出来；有一项不对整批不写
+    before = env.read_bytes()
+    secret = "sk-typed-by-mistake-0123456789"
+    bad = [
+        ([*script, "--only", "YOUJU_DEADLINE_AUTO_VERIFY=2"], "", "只能是 0 或 1"),
+        ([*script, "--only", "YOUJU_DEADLINE_AUTO_VERIFY=yes"], "", "只能是 0 或 1"),
+        ([*script, "--only", "YOUJU_DEADLINE_AUTO_VERIFY="], "", "只能是 0 或 1"),
+        ([*script, "--only"], "", "--only 要和开关一起给"),
+        ([*script, "--only", "YOUJU_AI_MODEL=other"], "", "参数不认识"),
+        ([*script, "--only", secret], "", "参数不认识"),
+        (script, f"YOUJU_DEADLINE_AUTO_VERIFY=true\n{_end_line(0)}\n", "格式不对"),
+        (
+            [*script, "YOUJU_DEADLINE_AUTO_VERIFY=1"],
+            f"YOUJU_AI_MODEL=bad model\n{_end_line(1)}\n",
+            "格式不对",
+        ),
+    ]
+    for args, typed, message in bad:
+        code, out = _tty(args, typed)
+        assert code == 1 and message in out, (args, out)
+        assert secret not in out
+        assert env.read_bytes() == before, args
+
+
+@needs_bash
+def test_shared_show_ai_prints_route_and_only_a_key_fingerprint(tmp_path):
+    defs = _functions(tmp_path)
+    key = "sk-0123456789abcdef0123456789abcdef"
+    # 服务器 .env 里附加参数带中文、有空格：show ai 按纯 ASCII、紧凑写法打（意思不变）
+    raw_extra = '{"thinking": {"type": "disabled"}, "note": "中文"}'
+    extra = json.dumps(json.loads(raw_extra), ensure_ascii=True, separators=(",", ":"))
+    _server_env(
+        tmp_path,
+        "YOUJU_AI_BASE_URL=https://api.deepseek.com/v1\nYOUJU_AI_MODEL=deepseek-chat\n"
+        f"YOUJU_AI_REQUEST_EXTRA={raw_extra}\nYOUJU_AI_API_KEY={key}\nYOUJU_SYNC_SECRET={'a' * 64}\n",
+    )
+    show = ["bash", "-c", f'source "{defs}"; SERVER="{tmp_path}/server"; show ai']
+    code, out = _tty(show, "")
+    assert code == 0, out
+    lines = [line for line in out.replace("\r", "").splitlines() if line]
+    assert lines[:3] == [
+        "YOUJU_AI_BASE_URL=https://api.deepseek.com/v1",
+        "YOUJU_AI_MODEL=deepseek-chat",
+        f"YOUJU_AI_REQUEST_EXTRA={extra}",
+    ]
+    # 没填的不打；密钥和别的密钥都不打，只给长度和指纹；最后一行是 #END 加项数
+    assert "YOUJU_AI_BACKGROUND_MODEL" not in out
+    assert key not in out and "a" * 64 not in out
+    assert len(lines) == 4 and lines[-1].startswith("#END 3 ")
+    assert f"{len(key)} 位，指纹 {_sha(key.encode())[:4]}" in lines[-1]
+
+    # 原样粘进本机 set-config.sh：本机这几项和服务器一样
+    shutil.copy(SELFHOST / "local" / "set-config.sh", tmp_path)
+    local_env = tmp_path / ".env"
+    local_env.write_text("YOUJU_AI_BACKGROUND_MODEL=stale\n", encoding="utf-8")
+    code, pasted_out = _tty(["bash", str(tmp_path / "set-config.sh")], "\n".join(lines) + "\n")
+    assert code == 0, pasted_out
+    assert local_env.read_text(encoding="utf-8") == "\n".join(lines[:3]) + "\n"
+    # 漏了第一行：项数对不上，整批不写
+    local_env.write_text("YOUJU_AI_BACKGROUND_MODEL=stale\n", encoding="utf-8")
+    code, pasted_out = _tty(["bash", str(tmp_path / "set-config.sh")], "\n".join(lines[1:]) + "\n")
+    assert code == 1 and "可能没复制全" in pasted_out
+    assert local_env.read_text(encoding="utf-8") == "YOUJU_AI_BACKGROUND_MODEL=stale\n"
+
+    _server_env(tmp_path, "YOUJU_AI_MODEL=deepseek-chat\n")
+    code, out = _tty(show, "")
+    assert code == 0 and "#END 1 " in out and "服务器上还没录 YOUJU_AI_API_KEY" in out
+
+    # 看着像夹带了密钥的值：一行都不打；max_tokens 这类正常参数照打
+    token = "sk-in-the-config-0123456789"
+    refused = {
+        f'YOUJU_AI_REQUEST_EXTRA={{"headers":{{"Authorization":"Bearer {token}"}}}}': "YOUJU_AI_REQUEST_EXTRA",
+        f'YOUJU_AI_REQUEST_EXTRA={{"api_key":"{token}"}}': "YOUJU_AI_REQUEST_EXTRA",
+        'YOUJU_AI_REQUEST_EXTRA={"authToken":"short1"}': "YOUJU_AI_REQUEST_EXTRA",
+        'YOUJU_AI_REQUEST_EXTRA={"x":{"clientSecret":"short2"}}': "YOUJU_AI_REQUEST_EXTRA",
+        'YOUJU_AI_REQUEST_EXTRA={"APISecret":"short3"}': "YOUJU_AI_REQUEST_EXTRA",
+        'YOUJU_AI_REQUEST_EXTRA={"apisecret":"short4"}': "YOUJU_AI_REQUEST_EXTRA",
+        f'YOUJU_AI_REQUEST_EXTRA={{"x":["{token}"]}}': "YOUJU_AI_REQUEST_EXTRA",
+        f"YOUJU_AI_BASE_URL=https://api.deepseek.com/v1?key={token}": "YOUJU_AI_BASE_URL",
+        f"YOUJU_AI_BASE_URL=https://user:{token}@api.deepseek.com/v1": "YOUJU_AI_BASE_URL",
+        f"YOUJU_AI_BACKGROUND_MODEL={token}": "YOUJU_AI_BACKGROUND_MODEL",
+        f"YOUJU_AI_BACKGROUND_MODEL=m{'a1' * 16}": "YOUJU_AI_BACKGROUND_MODEL",
+        # 用转义写的 sk-：按 JSON 解开以后查，打之前就拦下
+        'YOUJU_AI_REQUEST_EXTRA={"k":"'
+        + chr(92)
+        + "u0073k-"
+        + token[3:]
+        + '"}': "YOUJU_AI_REQUEST_EXTRA",
+    }
+    for line, name in refused.items():
+        _server_env(tmp_path, f"YOUJU_AI_MODEL=deepseek-chat\n{line}\n")
+        code, out = _tty(show, "")
+        assert code == 1 and f"{name} 看着不像" in out, (line, out)
+        assert token not in out and "YOUJU_AI_MODEL=deepseek-chat" not in out
+    # 转成纯 ASCII 以后本机收不了的也不打：转义的 $ 会还原成 $；中文转义以后超过 2000 字；
+    # 用转义藏起来的长串（转写后现出来）
+    esc = chr(92) + "u00"
+    dollar = '{"k":"' + esc + '24x"}'
+    hidden_run = '{"k":"' + (esc + "61") * 40 + '"}'
+    for line in (
+        f"YOUJU_AI_REQUEST_EXTRA={dollar}",
+        'YOUJU_AI_REQUEST_EXTRA={"k":"' + "中" * 400 + '"}',
+        f"YOUJU_AI_REQUEST_EXTRA={hidden_run}",
+    ):
+        _server_env(tmp_path, f"YOUJU_AI_MODEL=deepseek-chat\n{line}\n")
+        code, out = _tty(show, "")
+        assert code == 1 and "本机收不了" in out, (line[:60], out)
+        assert "YOUJU_AI_MODEL=deepseek-chat" not in out
+    _server_env(
+        tmp_path,
+        'YOUJU_AI_REQUEST_EXTRA={"max_tokens":1024,"thinking":{"type":"disabled"}}\n',
+    )
+    code, out = _tty(show, "")
+    assert code == 0 and '"max_tokens":1024' in out and "#END 1 " in out
+    # "执行命令"里（没有交互终端）不显示
+    done = _bash(tmp_path, "show ai")
+    assert done.returncode == 1 and "只能在交互终端里用" in done.stderr
+    # show push、show sync 照旧以"看完关掉这个终端窗口"结尾（show ai 不打这行，见上）
+    _server_env(
+        tmp_path,
+        f"YOUJU_SYNC_SECRET={'a' * 64}\nYOUJU_WX_PUSH_TOKEN=t0ken\nYOUJU_WX_PUSH_AES_KEY=aes\n",
+    )
+    for sub in ("push", "sync"):
+        code, out = _tty(
+            ["bash", "-c", f'source "{defs}"; SERVER="{tmp_path}/server"; show {sub}'], ""
+        )
+        lines = [line for line in out.replace("\r", "").splitlines() if line]
+        assert code == 0 and lines[-1] == "看完关掉这个终端窗口", (sub, out)
 
 
 @needs_bash
@@ -861,10 +1240,8 @@ def test_local_carry_takedowns_checks_hash_before_applying(tmp_path):
     assert done.returncode == 0, done.stderr
     assert (tmp_path / "takedowns.jsonl").read_text(encoding="utf-8") == listing
     log = (tmp_path / "docker.log").read_text(encoding="utf-8").splitlines()
-    assert [line.split()[-3:] for line in log[:2]] == [
-        ["apply", "--file", "/move/takedowns.jsonl"],
-        ["check", "--file", "/move/takedowns.jsonl"],
-    ]
+    assert log[0].split()[-5:] == ["apply", "--file", "/move/takedowns.jsonl", "--origin", "d127"]
+    assert log[1].split()[-3:] == ["check", "--file", "/move/takedowns.jsonl"]
     assert all(line.startswith("compose run --rm --no-deps -v ") for line in log[:2])
     assert log[2] == "compose exec -T worker youju sync-push"  # 马上推一次
     assert "已经推到服务器" in done.stdout
@@ -890,6 +1267,134 @@ def test_local_carry_takedowns_checks_hash_before_applying(tmp_path):
         env={**env, "PUSH_OUT": "连不上服务器", "PUSH_CODE": "1"},
     )
     assert broken.returncode == 1 and "推到服务器没成功" in broken.stderr
+
+
+@needs_bash
+def test_local_carry_emergency_listing_keeps_the_move_listing(tmp_path):
+    """紧急下架带回本机：另存一个文件（不盖掉搬家的那份），apply 带 --origin emergency。"""
+    shutil.copy(SELFHOST / "local" / "carry-takedowns.sh", tmp_path)
+    (tmp_path / "takedowns.jsonl").write_text("move\n", encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "docker"
+    fake.write_text(f'#!/bin/sh\necho "$*" >> "{tmp_path}/docker.log"\n', encoding="utf-8")
+    fake.chmod(0o755)
+    env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"}
+    listing = '{"url_key":"example.gov.cn/1.html","reason":"侵权投诉"}\n'
+    blob = base64.encodebytes(gzip.compress(listing.encode(), mtime=0)).decode()
+    script = str(tmp_path / "carry-takedowns.sh")
+    sha = _sha(listing.encode())
+    bad = subprocess.run(
+        ["bash", script, sha, "other"], input=blob, capture_output=True, text=True, env=env
+    )
+    assert bad.returncode == 1 and "用法" in bad.stderr
+    done = subprocess.run(
+        ["bash", script, sha, "emergency"], input=blob, capture_output=True, text=True, env=env
+    )
+    assert done.returncode == 0, done.stderr
+    assert (tmp_path / "emergency-takedowns.jsonl").read_text(encoding="utf-8") == listing
+    assert (tmp_path / "takedowns.jsonl").read_text(encoding="utf-8") == "move\n"
+    log = (tmp_path / "docker.log").read_text(encoding="utf-8").splitlines()
+    assert log[0].split()[-5:] == [
+        "apply",
+        "--file",
+        "/move/emergency-takedowns.jsonl",
+        "--origin",
+        "emergency",
+    ]
+    assert log[1].split()[-3:] == ["check", "--file", "/move/emergency-takedowns.jsonl"]
+    assert "emergency-settle" in done.stdout
+
+
+def _interrupt_at_prompt(args: list[str], timeout: float = 10) -> tuple[int, str]:
+    """在伪终端里跑，看到提示的"："先等一会儿（边问边启动的写法这时已经起来了），再给整个进程组
+    发中断（和网页终端里按 Ctrl-C 一样）。"""
+    master, slave = pty.openpty()
+    proc = subprocess.Popen(args, stdin=slave, stdout=slave, stderr=slave, start_new_session=True)
+    os.close(slave)
+    out = b""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline and "：".encode() not in out:
+        ready, _, _ = select.select([master], [], [], 0.1)
+        if ready:
+            try:
+                out += os.read(master, 4096)
+            except OSError:
+                break
+    time.sleep(0.5)
+    os.killpg(proc.pid, signal.SIGINT)
+    proc.wait(timeout=5)
+    os.close(master)
+    return proc.returncode, out.decode("utf-8", "replace")
+
+
+@needs_bash
+def test_shared_emergency_commands_pass_arguments_and_carry_decodes(tmp_path):
+    listing = (
+        json.dumps(
+            {
+                "url_key": "example.gov.cn/1.html",
+                "origin_source_id": 1,
+                "taken_down_at": "2026-11-13T02:00:00+00:00",
+                "reason": "侵权投诉",
+            },
+            ensure_ascii=False,
+        )
+        + "\n"
+    )
+    log = tmp_path / "calls.log"
+    # 假的 compose：每个参数单独加括号记下（引号传错、说明被拆开都看得出来），exec 时连标准输入一起记
+    exporting = (
+        f"compose() {{ {{ printf compose; printf ' [%s]' \"$@\"; "
+        f'if [ "$1" = exec ]; then printf \' stdin=[%s]\' "$(cat)"; fi; echo; }} >> "{log}"; '
+        f"case \"$*\" in *' export') printf '%s' '{listing}' ;; esac; }}"
+    )
+    head = "compose [exec] [-T] [worker] [youju] [emergency-takedown]"
+    # 没有终端（如控制台"执行命令"）：不问、不带说明
+    done = _bash(
+        tmp_path,
+        "YOUJU_BY=创始人 emergency_takedown 12 complaint; emergency_lift 12",
+        setup=exporting,
+    )
+    assert done.returncode == 0, done.stderr
+    assert _calls(tmp_path) == [
+        f"{head} [add] [12] [--reason] [complaint] [--note-stdin] [--by] [创始人] stdin=[]",
+        f"{head} [lift] [12] [--note-stdin] [--by] [] stdin=[]",
+    ]
+    log.unlink()
+    # 网页终端里：提示里输入的说明经标准输入给，不在命令参数里
+    code, out = _tty(
+        ["bash", "-c", _script(tmp_path, "emergency_takedown 12 other", exporting)],
+        "来电 要求删除\n",
+    )
+    assert code == 0, out
+    assert "别写投诉人的姓名、电话" in out and "Ctrl-C 取消" in out
+    assert _calls(tmp_path) == [
+        f"{head} [add] [12] [--reason] [other] [--note-stdin] [--by] [] stdin=[来电 要求删除]"
+    ]
+    log.unlink()
+    # 在提示处 Ctrl-C：说明还没读完时容器里的命令还没起来（边问边启动的话，这时已经起来了，
+    # 中断只停得了这边），中断以后也什么都没做
+    for body in ("emergency_takedown 12 other", "emergency_lift 12"):
+        code, out = _interrupt_at_prompt(["bash", "-c", _script(tmp_path, body, exporting)])
+        assert "Ctrl-C 取消" in out and code != 0, out
+        assert not log.exists(), body
+    for body in (
+        "emergency_takedown 12",
+        "emergency_takedown 12 complaint 说明",
+        "emergency_lift",
+        "emergency_lift 12 说明",
+    ):
+        wrong = _bash(tmp_path, body, setup=exporting)
+        assert wrong.returncode == 1 and "用法" in wrong.stderr, body
+    carried = _bash(tmp_path, "emergency_carry", setup=exporting)
+    assert carried.returncode == 0, carried.stderr
+    header, *lines = carried.stdout.splitlines()
+    assert _sha(listing.encode()) in header and "共 1 段" in header
+    assert gzip.decompress(base64.b64decode("".join(lines))).decode() == listing
+    empty = _bash(tmp_path, "emergency_carry", setup="compose() { :; }")
+    assert empty.returncode == 0 and "没有紧急下架着的" in empty.stdout
+    assert _bash(tmp_path, "emergency_carry x", setup=exporting).returncode == 1
 
 
 def test_export_paste_block_is_ascii_and_decodes_to_the_script(tmp_path):

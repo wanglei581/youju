@@ -86,6 +86,7 @@ _ROLE = re.compile(
                 *("局长", "主任", "主席", "部长", "厅长", "处长", "科长", "院长", "校长", "董事长"),
                 *("总经理", "秘书长", "行长", "社长", "所长", "队长", "站长", "署长", "司长"),
                 *("关长", "会长", "理事长", "检察长", "庭长", "政委", "总理", "委员长"),
+                *("党组成员", "党委成员"),
             ),
             key=len,
             reverse=True,
@@ -101,6 +102,9 @@ _ROLE = re.compile(
 # "市长质量奖"）。人名在职务前面的，要在标题开头或标点后面（"第三季度局长接待日"不挡）
 _OPEN = '、，,：:；;（(“"《—- 　'
 _PLACE_ENDS = tuple("市县区省州镇乡村旗盟")
+# #513 新加的写法（第二遍，见 _news_named）里，以街道、社区结尾的也算地名（"王府井街道在社区开展
+# 宣讲"）
+_PLACE_ENDS_NEW = (*_PLACE_ENDS, "街道", "社区")
 _NOT_ROLE_NAMES = ("单位", "质量")
 _ORG_ENDS = tuple("委府办局厅院部司处室署会团社校所站队组科")
 # 候选正好是这些常用词的不是人名（"关于宣布……""全市出席……""我市……""本次……"）；只认整词，不按单字、
@@ -117,6 +121,19 @@ _NOT_NAME_WORDS = frozenset(
         *("关于对", "关于在", "关于向", "关于为", "关于与", "关于将", "关于把", "关于从", "关于以"),
         *("时间", "日期", "地点", "主题", "内容", "来源", "作者", "标题", "附件", "备注", "说明"),
         *("地址", "电话", "编号", "文号", "索引"),
+    )
+)
+# #513 新加的新闻写法（第二遍，见 _news_named）前面那串字正好是这些的不是人名（"“党员在身边”宣讲"
+# "党委为基层党员讲党课""高校为企业提供技术指导""林业局在……作交流发言""施工作业安全交流会"）：
+# 党组织、高校，常见姓氏开头的部门（全称、简称），施工。只认整串、只认这些词，不按"常用词开头、机构
+# 的字结尾"推；main 原来的写法（第一遍）不用这份（"文联出席会议""安全会出席会议"照原来挡）
+_NOT_NAME_RUNS = frozenset(
+    (
+        *("党员", "党委", "党组", "党支部", "党总支", "党工委", "党小组", "党校", "党史办", "纪委"),
+        *("关工委", "高校", "施工", "林业局", "林业厅", "林草局", "商务局", "商务厅", "商务委"),
+        *("司法局", "司法厅", "司法所", "文旅局", "文化局", "文物局", "文广局", "文体局", "文明办"),
+        *("卫健委", "卫健局", "卫生局", "应急局", "应急厅", "安监局", "安委办", "金融办", "金融局"),
+        *("金融委", "史志办", "方志办", "房管局", "房产局", "管委会", "武装部", "文联"),
     )
 )
 # ② 领导人、官员的新闻："某某出席……""某某主持召开……""某某签署……""某某同某国总统会谈"
@@ -145,12 +162,24 @@ _TRIP_WORDS = (
     *("调研", "考察", "督导", "督查", "检查", "走访", "慰问", "看望", "暗访", "出席", "参加"),
     *("主持", "会见", "讲话", "强调", "指出", "视察", "发表", "要求", "指导", "报告"),
 )
+# #513 新加的（第二遍）："某某在某某培训班上作开班动员""某某为全体党员讲党课""某某在开幕式上
+# 致欢迎辞"
+_TRIP_NEW = (*_TRIP, "为")
+_TRIP_WORDS_NEW = (
+    *_TRIP_WORDS,
+    *("动员", "部署", "致辞", "致词", "发言", "授课", "宣讲", "党课", "辅导", "总结", "交流"),
+    *("汇报", "点评", "表态", "述职", "欢迎辞", "欢迎词", "开幕辞", "开幕词", "闭幕辞", "闭幕词"),
+    *("贺词", "贺信", "演讲", "讲座"),
+)
 # 人名和动词中间常夹的词（"某某等出席""某某、某某共同出席""某某亲切看望""某某专题调研"），
 # 先去掉再看
 _BETWEEN = (
     *("等人", "等", "共同", "一行", "同志", "一同", "分别", "亲切", "热情", "专题", "实地"),
     *("专程", "深入", "亲自"),
 )
+# #513 新加的写法（第二遍）还去掉头衔和受邀、应邀（"某某副教授在培训班上授课""某某教授应邀作专题
+# 讲座"）
+_BETWEEN_NEW = (*_BETWEEN, "副教授", "教授", "副研究员", "研究员", "院士", "博士", "受邀", "应邀")
 # 开头或标点后"某某："的讲话摘要标题（"某某：推动……"），看姓氏
 _QUOTE = re.compile(rf"(?:^|[{re.escape(_OPEN)}])({_H}{{2,3}})[：:]")
 # "某某作政府工作报告"："作"和"报告"中间隔着几个字
@@ -160,6 +189,35 @@ _NEWS_VERB = re.compile(
             *sorted({*_LEAD, *_LEAD_WEAK, *_PAIR, *_TRIP}, key=len, reverse=True),
             r"作(?=[^，。、：:\s]{0,8}报告)",
         ]
+    )
+)
+# #513 新加的（第二遍）："某某作动员讲话""某某讲授“七一”专题党课""某某致欢迎辞""某某以“……”为题讲授
+# 党课"：动词和后面的词中间隔着几个字，按 _GAP 数：一个字（标点、空格以外），或者一整段引号、书名号
+# 算一个（"讲授“学党纪 明规矩 强作风”专题党课""以“学思想、强党性”为题"：引号里可以有顿号、空格）
+_GAP = r'(?:[^，。、：:\s]|“[^“”]{0,30}”|"[^"]{0,30}"|《[^《》]{0,30}》|「[^「」]{0,30}」)'
+_NEWS_VERB_NEW = re.compile(
+    "|".join(
+        [
+            *sorted(_TRIP_NEW, key=len, reverse=True),
+            f"作(?={_GAP}{{0,8}}(?:报告|动员|部署|讲话|发言|辅导|总结|交流|汇报|点评|表态|述职|演讲"
+            "|讲座|宣讲))",
+            f"讲(?={_GAP}{{0,16}}党课)",
+            f"致(?={_GAP}{{0,4}}(?:辞|词|贺信))",
+            f"以(?={_GAP}{{0,16}}为题)",
+        ]
+    )
+)
+# "工作""合作"里的"作"（第二遍）："作"前面两个字是这些常用词的不是人名（"安全工作部署会召开"
+# "党建工作部署会召开""龙华安全工作部署会"）；"张德合作动员讲话""王合作动员讲话""张小明王合作动员
+# 讲话"照样挡。只列常见姓氏开头、和"工""合"连起来像人名的
+_WORK_HEADS = frozenset(
+    (
+        *("党务", "党建", "党史", "党风", "党群", "党委", "党政", "党纪", "廉政", "纪检", "高考"),
+        *("卫健", "卫生", "卫监", "司法", "商务", "安全", "安监", "安委", "安置", "安居", "安保"),
+        *("安防", "安检", "宗教", "师生", "应急", "成果", "房产", "文化", "文旅", "文明", "文物"),
+        *("文艺", "文博", "文体", "林业", "林草", "林长", "田长", "路长", "武装", "武警", "边防"),
+        *("边境", "申报", "管理", "金税", "金融", "金秋", "项目", "高新", "史志", "方志", "夏季"),
+        *("季度", "常态", "关爱", "包保", "包联"),
     )
 )
 # 中央领导的姓名：转载的中央新闻、"某某思想"的学习材料里最常见，写法太多（"……作出重要指示"
@@ -191,11 +249,13 @@ def _named(title: str) -> bool:
     return False
 
 
-def _name_ish(word: str, *, any_surname: bool = False) -> bool:
+def _name_ish(word: str, *, any_surname: bool = False, new: bool = False) -> bool:
     """职务旁、新闻动词前的词像不像人名（宁可多挡）：常见姓氏开头、不是常用词或地名、不以地名的字结尾、
-    不以"关于""我"这类开头。any_surname：不看姓氏（不常见的姓认不出）。"""
+    不以"关于""我"这类开头。any_surname：不看姓氏（不常见的姓认不出）。new：#513 新加的写法，以
+    街道、社区结尾的也算地名。"""
     from youju.crawler import detail
 
+    ends = _PLACE_ENDS_NEW if new else _PLACE_ENDS
     return (
         2 <= len(word) <= 3
         and re.fullmatch(f"{_H}+", word) is not None
@@ -212,8 +272,8 @@ def _name_ish(word: str, *, any_surname: bool = False) -> bool:
         and word not in detail._TITLES
         and word not in detail._PLACE_NAMES
         and not word.startswith(_NOT_ROLE_NAMES)
-        and not word.endswith(_PLACE_ENDS)
-        and not (len(word) == 3 and word[:2].endswith(_PLACE_ENDS))
+        and not word.endswith(ends)
+        and not (len(word) == 3 and word[:2].endswith(ends))
         and word not in _NOT_NAME_WORDS
     )
 
@@ -240,6 +300,7 @@ def _news_named(title: str) -> bool:
             return True
     if any(_name_ish(m.group(1)) for m in _QUOTE.finditer(title)):
         return True
+    # 第一遍：main 原来的写法，原样看，原来挡得住的照样挡
     for m in _NEWS_VERB.finditer(title):
         verb, rest = m.group(0), title[m.end() :]
         if verb in _PAIR and not any(w in rest for w in _PAIR_WORDS):
@@ -248,13 +309,26 @@ def _news_named(title: str) -> bool:
             continue
         if _names_before(title, m.start(), any_surname=verb in _LEAD or verb in _PAIR):
             return True
+    # 第二遍：#513 新加的写法。前面那串字正好是部门、党员这类词的不算（_NOT_NAME_RUNS）；"工作"
+    # "合作"里的"作"，前面两个字是安全、党建这类常用词的不算（_WORK_HEADS）
+    for m in _NEWS_VERB_NEW.finditer(title):
+        verb, rest = m.group(0), title[m.end() :]
+        if verb in _TRIP_NEW and not any(w in rest for w in _TRIP_WORDS_NEW):
+            continue
+        work = verb == "作" and title[m.start() - 1 : m.start()] in ("工", "合")
+        if _names_before(title, m.start(), any_surname=False, new=True, work=work):
+            return True
     return False
 
 
-def _names_before(title: str, i: int, *, any_surname: bool) -> bool:
+def _names_before(
+    title: str, i: int, *, any_surname: bool, new: bool = False, work: bool = False
+) -> bool:
     """title[i] 前面那串汉字（到开头或标点为止；动词前的空格不算）是不是人名：2–3 个字的看
     any_surname；4–9 个字的拆成两三个 2–3 个字的词（中间可以有"与""和""及"），每个都像人名
-    （看姓氏）才算。"""
+    （看姓氏）才算。new：#513 新加的写法，多去掉头衔（_BETWEEN_NEW），街道、社区算地名，整串是
+    _NOT_NAME_RUNS 里的词的不算；work："工作""合作"里的"作"，"作"前面两个字是 _WORK_HEADS 里的
+    不算。new 是 False 时和 main 原来一样。"""
     while i > 0 and title[i - 1] in " \u3000":  # "某某 出席会议"
         i -= 1
     j = i
@@ -263,25 +337,32 @@ def _names_before(title: str, i: int, *, any_surname: bool) -> bool:
     if j > 0 and title[j - 1] not in _OPEN:
         return False
     run = title[j:i]
+    between = _BETWEEN_NEW if new else _BETWEEN
     for _ in range(2):  # "某某等亲切看望"：最多去掉两个
-        word = next((w for w in _BETWEEN if run.endswith(w) and len(run) > len(w) + 1), "")
+        word = next((w for w in between if run.endswith(w) and len(run) > len(w) + 1), "")
         run = run[: len(run) - len(word)]
+    if work and run[-3:-1] in _WORK_HEADS:  # "安全工作部署""龙华安全工作部署"
+        return False
     if len(run) in (2, 3):
-        return _name_ish(run, any_surname=any_surname)
+        return _name_ish(run, any_surname=any_surname, new=new) and not (
+            new and run in _NOT_NAME_RUNS
+        )
     if not 4 <= len(run) <= 11 or any(w in run for w in _NOT_NAME_WORDS):  # "关于专项执法"
         return False
     parts = [w for w in re.split("[与和及]", run) if w]  # "某某与某某赴某地调研"
     if len(parts) > 1:
-        return all(len(w) in (2, 3) and _name_ish(w) for w in parts)
-    return len(run) <= 9 and any(_split_names(run, n) for n in (2, 3))
+        return all(len(w) in (2, 3) and _name_ish(w, new=new) for w in parts)
+    return len(run) <= 9 and any(_split_names(run, n, new=new) for n in (2, 3))
 
 
-def _split_names(run: str, parts: int) -> bool:
+def _split_names(run: str, parts: int, *, new: bool = False) -> bool:
     """run 能不能正好拆成 parts 个 2–3 个字、都像人名（看姓氏）的词。"""
     if parts == 1:
-        return len(run) in (2, 3) and _name_ish(run)
+        return len(run) in (2, 3) and _name_ish(run, new=new)
     return any(
-        _name_ish(run[:k]) and _split_names(run[k:], parts - 1) for k in (2, 3) if len(run) > k
+        _name_ish(run[:k], new=new) and _split_names(run[k:], parts - 1, new=new)
+        for k in (2, 3)
+        if len(run) > k
     )
 
 

@@ -3,15 +3,35 @@
 import re
 from datetime import date, timedelta
 
-# 2026-09-24、2026/9/24、2026.09.24、2026年9月24日
-_FULL = re.compile(r"(20\d{2})\s*[-/.年]\s*(\d{1,2})\s*[-/.月]\s*(\d{1,2})\s*日?")
+# 年份后面写"几-几月"的月份区间（"2026年1-6月""2025年10-12月""2026 年 01-06 月""2026.1-6月"）：
+# 后一个数不超过 12，后面（可隔空格）紧跟"月"；或者是月龄区间（"2026年6-24月龄"）。
+# "2025年9-20 月度报告"的 20 超过 12，是日期。列表识别的 _EDGE_DATE 也用这一句
+YEAR_RANGE_TAIL = r"(?:(?:0?[1-9]|1[0-2])(?!\d)\s*月|\d{1,2}\s*月龄)"
+# 2026-09-24、2026/9/24、2026.09.24、2026年9月24日。
+# 年份后面是"年""."或"/"、月日之间是"-"的，才可能是上面的月份区间（"2026年1-6月襄阳市财政局规范性
+# 文件清理表"不是 2026-01-06）：日期前后用的是同一种分隔符。"2026-10-08 月度报告"这种照认日期，
+# 紧贴"10月……"开头的标题"2026-11-0510月……"也是
+_FULL = re.compile(
+    r"(20\d{2})\s*"
+    r"(?:[年./]\s*(\d{1,2})\s*-\s*(?!" + YEAR_RANGE_TAIL + r")(\d{1,2})"
+    r"|(?![年./]\s*\d{1,2}\s*-)[-/.年]\s*(\d{1,2})\s*[-/.月]\s*(\d{1,2}))"
+    r"\s*日?"
+)
 # 只有月日：09-24、[09-24]；09/24、09.24 只认两位数，避免把"3.5 亿"当日期。
 # 前后不能紧挨数字或分隔符，前面不能是"第"，后面（可隔空格）不能是号、期、条、万、元等：
-# 避开电话号码、"〔2026〕1-2 号"这类文号、"第1-2期"和"10.25万元"
+# 避开电话号码、"〔2026〕1-2 号"这类文号、"第1-2期""10.25万元"
 _SHORT = re.compile(
     r"(?<![\d./\-第])(?:(\d{1,2})-(\d{1,2})|(\d{2})[./](\d{2}))"
     r"(?![\d:./\-%])(?!\s*[号期条项批万元亿])"
 )
+# "1-6月""10-12 月""11-3月"（跨年）：后面（可隔空格）跟着"月"、两个数都没补零、都不超过 12 的是
+# 月份区间。"09-20 月度报告""10-08 月度报告"这种补了零、或者有一个数超过 12 的照认日期
+_MONTH_AFTER = re.compile(r"\s*月")
+# "6-24月龄"是月龄区间，不是日期
+_MONTH_AGE = re.compile(r"\s*月龄")
+# 年份后面的月份区间整段（"2026年1-6月""2026. 01-06月"）：里面的"几-几"不单独当月日。
+# "建校80周年 09-17""规划2026-2030年 09-20"后面没跟着"几-几月"，照认月日
+_YEAR_RANGE = re.compile(r"20\d{2}\s*[年./]\s*\d{1,2}\s*-\s*" + YEAR_RANGE_TAIL)
 # 政府网站常见的正文网址：/202609/t20260924_4878106.html
 _URL_DAY = re.compile(r"[/_]t?(20\d{2})(\d{2})(\d{2})[_./]")
 # 允许略晚于今天（时区差、提前发布），更晚的视为误识别
@@ -26,6 +46,17 @@ def _safe_date(year: int, month: int, day: int, today: date) -> date | None:
     if d.year < 2000 or d > today + _FUTURE_TOLERANCE:
         return None
     return d
+
+
+def _not_a_short_date(m: re.Match[str], text: str, ranges: list[tuple[int, int]]) -> bool:
+    if _MONTH_AGE.match(text, m.end()) or any(s <= m.start() < e for s, e in ranges):
+        return True
+    first, last = m.group(1), m.group(2)
+    if not first or first.startswith("0") or last.startswith("0"):
+        return False
+    if not _MONTH_AFTER.match(text, m.end()):
+        return False
+    return 1 <= int(first) <= 12 and 1 <= int(last) <= 12
 
 
 def _infer_year(month: int, day: int, today: date) -> date | None:
@@ -45,10 +76,15 @@ def parse_date_detail(text: str, today: date | None = None) -> tuple[date | None
     """
     today = today or date.today()
     for m in _FULL.finditer(text):
-        d = _safe_date(int(m.group(1)), int(m.group(2)), int(m.group(3)), today)
+        month, day = (m.group(2), m.group(3)) if m.group(2) else (m.group(4), m.group(5))
+        d = _safe_date(int(m.group(1)), int(month), int(day), today)
         if d:
             return d, True
-    for m in reversed(list(_SHORT.finditer(text))):
+    ranges = [r.span() for r in _YEAR_RANGE.finditer(text)]
+    shorts = [m for m in _SHORT.finditer(text) if not _not_a_short_date(m, text, ranges)]
+    # 取最靠后的一个。后面紧跟"月"的（"09-20 月度报告"）可能是日期，也可能是补了零的月份区间
+    # （"01-06月……"）：同一行另有月日时先用另一个（"07-15 01-06月财政收支情况"是 07-15）
+    for m in sorted(reversed(shorts), key=lambda m: bool(_MONTH_AFTER.match(text, m.end()))):
         month, day = (
             (int(m.group(1)), int(m.group(2)))
             if m.group(1)

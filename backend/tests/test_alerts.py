@@ -750,6 +750,8 @@ def test_round_runs_in_order_and_checks_only_after_crawl(
         "ROUND_LOCKED": "1" if round_locked else "0",
         "QUEUE_LOCKED": "1" if queue_locked else "0",
     }
+    # 截止日期自动核对的开关没配（当 0，关）：这一步不跑（D-135，开关的几种值见下一个测试）
+    env.pop("YOUJU_DEADLINE_AUTO_VERIFY", None)
     result = subprocess.run(["sh", str(tmp_path / "round.sh"), *args], env=env, check=False)
     assert result.returncode == 0
     calls = (tmp_path / "calls").read_text().splitlines()
@@ -761,6 +763,60 @@ def test_round_runs_in_order_and_checks_only_after_crawl(
     if "attachment-texts" in expected:
         # 补完详情（这里补详情失败也照跑）紧接着取附件文字，每轮最多 200 个（取舍写在 round.sh 里）
         assert "attachment-texts --limit 200" in calls
+
+
+@pytest.mark.parametrize(
+    ("value", "runs", "logged"),
+    [
+        (None, False, False),
+        ("", False, False),
+        ("0", False, False),
+        ("1", True, False),
+        ("true", False, True),
+        ("2", False, True),
+        (" 1", False, True),
+    ],
+)
+def test_round_auto_verify_switch_only_accepts_zero_and_one(tmp_path, value, runs, logged) -> None:
+    """D-135：YOUJU_DEADLINE_AUTO_VERIFY 只认 0 和 1，没配当 0；是 1 才在 ai-check 后面跑自动核对，
+    别的值按关处理、日志里记一行。"""
+    original = (Path(__file__).resolve().parents[1] / "deploy" / "round.sh").read_text()
+    script = (
+        original.replace("D=/app/backend/deploy", f"D={tmp_path}")
+        .replace("cd /app/backend", f"cd {tmp_path}")
+        .replace("/proc/1/fd/1", str(tmp_path / "round.log"))
+        .replace("/tmp/youju-round.lock", str(tmp_path / "round.lock"))
+        .replace("/tmp/youju-round.wanted", str(tmp_path / "round.wanted"))
+    )
+    (tmp_path / "round.sh").write_text(script)
+    (tmp_path / "env.sh").write_text("")
+    youju = tmp_path / "youju"
+    youju.write_text("#!/bin/sh\nexit 1\n")
+    youju.chmod(0o755)
+    job = tmp_path / "job.sh"
+    job.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$CALLS"\nexit 0\n')
+    job.chmod(0o755)
+    flock = tmp_path / "flock"
+    flock.write_text("#!/bin/sh\nexit 0\n")
+    flock.chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{tmp_path}:{os.environ['PATH']}",
+        "CALLS": str(tmp_path / "calls"),
+    }
+    env.pop("YOUJU_DEADLINE_AUTO_VERIFY", None)
+    if value is not None:
+        env["YOUJU_DEADLINE_AUTO_VERIFY"] = value
+    result = subprocess.run(["sh", str(tmp_path / "round.sh")], env=env, check=False)
+    assert result.returncode == 0
+    calls = (tmp_path / "calls").read_text().splitlines()
+    names = [line.split()[0] for line in calls]
+    if runs:
+        assert calls[names.index("ai-check") + 1] == "deadline-verify-auto --apply --in-round"
+    else:
+        assert "deadline-verify-auto" not in names
+    log = (tmp_path / "round.log").read_text() if (tmp_path / "round.log").exists() else ""
+    assert ("只认 0 或 1" in log) is logged
 
 
 @pytest.mark.parametrize(
