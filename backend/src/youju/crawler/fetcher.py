@@ -104,23 +104,38 @@ def bare_page(html: str) -> bool:
     return len(words) < 1500 and len(re.findall(r"<a\s[^>]*href=", head, re.I)) < 15
 
 
+# 平台拦截页、验证页上脚本、Cookie、域名一级的特征（govsites.platform._BLOCK_MARKERS 去掉普通字）：
+# 整页就是一个关卡时直接算。安全狗只认脚本里的（它的访问认证页设 safedog 开头的 Cookie）；"安全狗"
+# "访问受限""访问被拦截"这类普通字归 _BLOCK_WORDS，只看看得见的字——页尾的安全狗徽标（图片地址、
+# alt 里的字）、正文里的"访问受限"、"安全狗防护软件采购"都不算（第二十轮独立 Claude）
+_CHALLENGE_MARKERS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("瑞数防护", re.compile(r"\$_ts\s*=|\$_ts\.|9DhefwqGPrzGxEp9hPaoag|FSSBBIl1UgzbN7N", re.I)),
+    ("加速乐防护", re.compile(r"__jsl_clearance|jsl_clearance_s", re.I)),
+    ("云锁防护", re.compile(r"yunsuo_session", re.I)),
+    ("WAF 拦截", re.compile(r"waf\.tencent-cloud|aliyun_waf|_waf_", re.I)),
+)
+
+
 def challenge_marker(html: str) -> str | None:
     """云锁、安全狗、瑞数、加速乐、WAF 的拦截页、验证页：整页就是一个关卡（bare_page），又带着这些
-    平台的特征。正常页面页脚挂个"安全狗"徽标、正文里提到"访问受限"都不算（12384 个缓存的真实网页里
-    只有一个真的瑞数挑战页命中）。"""
+    平台在脚本、Cookie、域名一级的特征（_CHALLENGE_MARKERS；安全狗只认脚本里的 safedog）。正常页面
+    页脚挂个"安全狗"徽标、正文里提到"访问受限"都不算（12384 个缓存的真实网页里只有一个真的瑞数挑战页
+    命中）。"""
     if not bare_page(html):
         return None
-    from youju.govsites.platform import _BLOCK_MARKERS
-
     head = html[:200000]
-    return next((name for name, pattern in _BLOCK_MARKERS if pattern.search(head)), None)
+    for name, pattern in _CHALLENGE_MARKERS:
+        if pattern.search(head):
+            return name
+    scripts = " ".join(re.findall(r"<script\b[^>]*>(.*?)</script\s*>", head, flags=re.S | re.I))
+    return "安全狗防护" if re.search(r"safedog", scripts, re.I) else None
 
 
 # 整页几乎没字的网页上：明说拦着的字（直接算拦截页），验证码一类的字（算登录、验证页，详情页上还要看
 # 取不取得到正文，见 detail_service._login_page）。两张表不重叠
 _BLOCK_WORDS = re.compile(
-    r"拦截|防火墙|访问被拒绝|禁止访问|安全狗|云锁|请开启.{0,12}JavaScript|访问过于频繁|请求过于频繁|"
-    r"访问太频繁|访问频率过高|异常访问|access denied|forbidden",
+    r"拦截|防火墙|访问被拒绝|禁止访问|访问受限|访问被阻断|安全狗|云锁|请开启.{0,12}JavaScript|"
+    r"访问过于频繁|请求过于频繁|访问太频繁|访问频率过高|异常访问|access denied|forbidden",
     re.I,
 )
 CAPTCHA_WORDS = re.compile(

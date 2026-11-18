@@ -1777,3 +1777,78 @@ def test_pause_file_that_is_not_an_object_stops_run(tmp_path):
     path.write_text("[]")
     with pytest.raises(detail_service._PauseStoreError):
         pause.reasons  # noqa: B018
+
+
+_SAFEDOG_BADGE = (
+    "<a href='http://www.safedog.cn/'><img src='/images/safedog.png' alt='网站安全狗'></a>"
+)
+
+
+def test_safedog_badge_on_a_real_notice_is_not_a_gate():
+    # 上海科委的真实页面（整页几乎没字）页尾挂一个安全狗徽标：徽标的地址、alt 不是看得见的字，不算
+    # 关卡（第二十轮独立 Claude）
+    from tests.conftest import read_fixture_html
+
+    html = read_fixture_html("detail_shanghai_stcsm").replace("</body>", _SAFEDOG_BADGE + "</body>")
+    assert detail_service._gate_page(_html_result(_STCSM, html), _STCSM) is False
+
+
+@pytest.mark.parametrize(
+    "title,text",
+    [
+        ("某局网站安全狗防护软件采购项目结果公告", "某局网站安全狗防护软件采购项目结果公告"),
+        ("关于系统升级的通知", "因系统升级，本周六部分栏目访问受限，详见附件"),
+    ],
+    ids=["safedog-purchase", "access-limited"],
+)
+def test_bare_notice_with_block_words_and_attachment_is_read(tmp_path, title, text):
+    # 一句话加一个附件的短通知，字里有"安全狗""访问受限"：取得到附件就不算拦截页，不停网站
+    # （第二十轮独立 Claude）
+    path = str(tmp_path / "pause.json")
+    calls = []
+    page = (
+        f"<html><head><title>{title}</title></head><body><div id='zoom'><p>{text}</p>"
+        "<a href='/files/notice.pdf'>附件.pdf</a></div></body></html>"
+    )
+
+    class Fake:
+        def fetch(self, url):
+            calls.append(url)
+            if url.endswith(".pdf"):
+                return FetchResult(url, "http_error", final_url=url, http_status=404)
+            return _html_result(url, page)
+
+    docs = [(1, "https://a.gov.cn/1"), (2, "https://a.gov.cn/2")]
+    outcomes = _fetch_outcomes(docs, Fake(), 1, pause=_SitePause(path))
+    assert outcomes[1].status != "protected" and outcomes[2].status != "protected"
+    assert "https://a.gov.cn/2" in calls
+    assert _SitePause(path).expiry("a.gov.cn") is None
+
+
+def test_robots_soft_404_with_safedog_badge_is_no_robots():
+    # robots.txt 回 200 的软 404 网页（"页面不存在"加安全狗徽标）：当没有 robots.txt、照常抓，
+    # 不当防护页（第二十轮独立 Claude）
+    soft_404 = f"<html><body><p>页面不存在</p>{_SAFEDOG_BADGE}</body></html>"
+
+    def handler(request):
+        if request.url.path == "/robots.txt":
+            return httpx.Response(200, text=soft_404, headers={"content-type": "text/html"})
+        return httpx.Response(200, text="<html><body>ok</body></html>")
+
+    with PoliteFetcher(
+        "test",
+        per_host_interval=0,
+        per_address_interval=0,
+        transport=httpx.MockTransport(handler),
+        resolver=lambda host: ["1.2.3.4"],
+    ) as fetcher:
+        assert fetcher.fetch("https://a.gov.cn/list.html").status == "ok"
+
+
+def test_safedog_cookie_challenge_still_pauses():
+    # 安全狗的访问认证页（脚本里设 safedog 开头的 Cookie 再刷新）：脚本一级的特征，照旧算关卡
+    html = (
+        "<html><head><script>document.cookie = 'safedog-flow-item=1'; location.reload();"
+        "</script></head><body></body></html>"
+    )
+    assert detail_service._gate_page(_html_result("https://a.gov.cn/1", html), "https://a.gov.cn/1")
