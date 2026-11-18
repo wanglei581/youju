@@ -129,9 +129,10 @@ def test_text_for_the_model_masks_like_the_page_with_store_marks(session):
     body = loaded.texts.sources[0].text
     assert "[电话已脱敏]、[电话已脱敏]" in body and "87687769" not in body
     assert MARK not in body
-    # 入库的文字也没动；遮号码的入库规则（texts.mask、redact_sensitive）照旧，只有显示层多遮这一个
+    # 入库的文字没动；11/18 起入库规则（texts.mask、redact_sensitive）也遮联系电话那一行里不带区号的
+    # 号码，和显示层一个口径
     assert v1._reading_body(session, doc.id) == BODY
-    assert "、87687769" in texts.mask(BODY) and "、87687769" in v1.redact_sensitive(BODY)
+    assert "87687769" not in texts.mask(BODY) and "87687769" not in v1.redact_sensitive(BODY)
 
 
 # ---- 网址（D-112，创始人 11/2 同意）：显示时换成"（这里隐去了网址）"，和隐去电话一个写法 ----

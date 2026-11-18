@@ -44,9 +44,39 @@ _BANK = re.compile(
 # 从上一个标点起连着邮箱的整段中文都被遮掉（"PDF电子版于7月2日前发送至abc@163.com"整段没了）。
 # 不往前看（两个邮箱用"-""_"连着写时，后一个第一遍就遮掉，遮过的再过一遍不变）；用户名最多 64 个字，
 # 一长串英文字母不会让查找变慢
-_EMAIL = re.compile(r"[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,253}\.[A-Za-z]{2,63}")
-_LANDLINE = r"0\d{2,3}[-－]\d{7,8}"
+# "@"也认全角的"＠"（11/18：有的网站把"@"写成全角，以前漏遮）
+_EMAIL = re.compile(r"[A-Za-z0-9._%+-]{1,64}[@＠][A-Za-z0-9.-]{1,253}\.[A-Za-z]{2,63}")
+# 座机：区号（0 开头，或者前面带国家码"86""+86"、区号不带 0："8610-1234…"）、横线、7–8 位号码。
+# 横线也认各种破折号（"023—1234…"，以前只认"-""－"，11/18 漏遮）
+_DASHES = "-－\u2010-\u2015\u2212"
+_LANDLINE = rf"(?:0\d{{2,3}}|\+?86[^\S\n]?\d{{2,3}})[{_DASHES}]\d{{7,8}}"
 _PHONE = re.compile(rf"(?<!\d){_LANDLINE}(?!\d)")
+# 联系电话那一类的行里不带区号的 7–8 位号码（"电话：[电话已脱敏]、6543…""电话：6543…"，
+# 11/18 漏遮）：同一行、前面 40 个字以内有电话一类的字样或遮过的号码才认。后面接着金额、年月日、
+# 单位一类的字的，8 位像日期的，前面紧挨着"编号""邮编""文号"这类标签的，前后紧挨着英文字母的
+# （代码），都不是电话；国内座机不以 1 开头，1 开头的不认。前面是"/"的只在遮过的号码后面认
+# （"[电话已脱敏]/6543…"），别的"/"后面多半是日期、比例
+_LOCAL_NUMBER = re.compile(
+    r"(?<![\d.．\-－A-Za-z])[2-9]\d{6,7}"
+    r"(?![\dA-Za-z.．年月日元万亿千百%％人个件户家项名位次条份号吨米])"
+)
+_PHONE_CUE = re.compile(
+    r"电\s*话|传\s*真|手\s*机|座\s*机|固\s*话|热\s*线|联系方式|\[(?:电话|手机号|姓名)已脱敏\]"
+)
+_CODE_LABEL = re.compile(
+    r"(?:编号|编码|代码|邮编|邮政编码|文号|证号|批准号|登记号|序号|序列号|合同号|发票号|项目号|批次号)"
+    r"[^\S\n]*[:：]?[^\S\n]*$"
+)
+_CUE_REACH = 40
+_SENTENCE_END = re.compile(r"[。！？!?]")
+# QQ 号、QQ 群号（"技术咨询QQ群：1234…""QQ：…"，11/18 漏遮）：标签后面的号码；一串里接着写的几个
+# （"QQ群：1234…、5678…"）也遮。"QQ"前面、号码后面紧挨着英文字母或数字的不认：统一社会信用代码
+# 里也有字母 Q（"…0000QQ1234567X"），名单解析拿 redact_sensitive 有没有改动判断代码和机构名
+_QQ = re.compile(
+    r"((?<![A-Za-z0-9])(?:QQ|qq|Qq|ＱＱ)[^\S\n]*+(?:[\u4e00-\u9fff]{0,4}?群)?[^\S\n]*+(?:号码|号)?"
+    r"[^\S\n]*+[:：]?[^\S\n]*+)(\d{5,11})(?![\dA-Za-z])"
+)
+_QQ_MORE = re.compile(r"(\[QQ号已脱敏\][^\S\n]*+[、，,/或和及][^\S\n]*+)(\d{5,11})(?![\dA-Za-z])")
 _AGENCY = re.compile(
     r"^[\u4e00-\u9fff（）()、\s]{3,100}(?:厅|局|委|委员会|部|中心|政府|办公室|研究院|院|署|海关|分行)(?:（[^）]{1,20}）)?$"
 )
@@ -345,8 +375,50 @@ def redact_sensitive(text: str) -> str:
     text = _ACCOUNT.sub(_account, text)
     text = _EMAIL.sub("[邮箱已脱敏]", text)
     text = _PHONE.sub("[电话已脱敏]", text)
+    text = _mask_qq(text)
+    text = _mask_local_numbers(text)
     # 姓名最后认：邮箱、座机先换成"[…已脱敏]"，姓名前后挨着的是"]"，第一遍和再过一遍看到的一样
     return _mask_names(text)
+
+
+def _mask_qq(text: str) -> str:
+    text = _QQ.sub(lambda m: m.group(1) + "[QQ号已脱敏]", text)
+    while (more := _QQ_MORE.sub(lambda m: m.group(1) + "[QQ号已脱敏]", text)) != text:
+        text = more
+    return text
+
+
+def _mask_local_numbers(text: str) -> str:
+    """联系电话那一类的行里不带区号的 7–8 位号码（见 _LOCAL_NUMBER）。"""
+    out: list[str] = []
+    at = 0
+    for found in _LOCAL_NUMBER.finditer(text):
+        start = found.start()
+        # "/"后面的：前面是遮过的号码（原来就遮好的标记，或这一遍刚遮的那个）才认，一遍就遮完，
+        # 再过一遍不变
+        if (
+            start
+            and text[start - 1] == "/"
+            and not (text.endswith("]", 0, start - 1) or (out and at == start - 1))
+        ):
+            continue
+        line_start = text.rfind("\n", 0, start) + 1
+        before = text[max(line_start, start - _CUE_REACH) : start]
+        number = found.group()
+        cues = list(_PHONE_CUE.finditer(before))
+        if (
+            not cues
+            # 和显示层同一个口径（api/v1.display_text）：中间隔了句末标点的不算这一处；
+            # 直接贴着遮过的标记、没有分隔的也不算
+            or _SENTENCE_END.search(before, cues[-1].end())
+            or before.endswith("]")
+            or _CODE_LABEL.search(before)
+            or (len(number) == 8 and _YMD.fullmatch(number))
+        ):
+            continue
+        out += [text[at:start], "[电话已脱敏]"]
+        at = found.end()
+    return "".join(out) + text[at:]
 
 
 # ---- 银行账号 ----
@@ -497,6 +569,8 @@ _SURNAMES = frozenset(
     "应臧闵苟邬边卞姬师仇栾隋商刁沙荣巫寇桑郎甄丛仲虞敖巩佘池查麻苑迟邝封谈匡鞠惠荆冀郁胥班"
     "储栗燕楚鄢劳谌奚皮粟冼蔺楼满闻厉伊仝郜阚屠豆朴盖练廉禹井祖漆巴丰支卿狄敬扈晁芮浦戈伏鹿"
     "薄邸雍辜羊母裘亓修邰赫杭况宿鲜逯茹亢嵇湛戎勾茅揭尉檀雎吾赖洪原蔚"
+    # 11/18：云南州市联系人名单里"索""濮"开头的姓名漏遮
+    "索濮"
 )
 _COMPOUND_SURNAMES = (
     "欧阳", "司马", "上官", "诸葛", "东方", "皇甫", "尉迟", "公孙", "慕容", "令狐", "长孙",
@@ -557,7 +631,12 @@ _NAME_STOP = re.compile(r"[\n，,。；;：:（(）)/【\[]|\d")
 # 同一行里隔开几个姓名的：空格、顿号
 _NAME_GAP = re.compile(r"(?:[^\S\n]|、)+")
 _HAN_RUN = re.compile(rf"[{_HAN}·]+")
-_BEFORE_PHONE = re.compile(rf"(?<!\d){_LANDLINE}(?!\d)|\[电话已脱敏\]")
+_BEFORE_PHONE = re.compile(rf"(?<!\d){_LANDLINE}(?!\d)|\[(?:电话|手机号)已脱敏\]")
+# 姓名和号码中间隔着的"，电话：""，""电话：""（"（"某某，电话：[电话已脱敏]""某老师，[手机号已脱敏]"
+# "某某、某某（[电话已脱敏]，某中心）"，11/18 漏遮）：从号码往前去掉这一截，再看前面那个词
+_NAME_TO_PHONE = re.compile(
+    r"(?:[，,（(][^\S\n]*+)?(?:(?:联系)?(?:电话|手机|座机|固话)(?:号码)?[^\S\n]*+)?[:：]?[^\S\n]*+$"
+)
 
 
 def _is_han(char: str) -> bool:
@@ -600,20 +679,47 @@ def _name_like(
     return 2 <= len(word) <= 3 or (len(word) == 4 and word.startswith(_COMPOUND_SURNAMES))
 
 
+# 单位名、地名后面紧跟着姓名时，前面那截的结尾：单位的字、"联系人"这类标签，还有不以单位的字结尾的
+# 地区名（"大兴安岭王某某"，11/18 漏遮；"兴安盟""神农架"同理）
+_GLUE_HEADS = (*_UNIT_ENDS, *_PERSON_LABELS, "盟", "大兴安岭", "神农架")
+
+
 def _glued_name(run: str) -> int | None:
     """单位名后面紧跟着姓名、中间没隔开的（"省财政厅张三""办公室李四"，还有没写冒号的"联系人张三"）：
     前面一截以单位的字或"联系人"结尾、后面 2–4 个字以常见姓氏开头，返回姓名从第几个字起；不是这样的
-    返回 None。"""
+    返回 None。后面 4 个字是两个连写的两字姓名的也算（"佳木斯市孙某文某"）；"联系"后面紧跟着姓加
+    称呼的也算（"请联系黄老师 [电话]"）。11/18 这三种漏遮。"""
     # 长的优先：复姓"司马"的"司"也是单位的字（"省科技厅司马小明"不能切成"省科技厅司|马小明"）
     for size in (4, 3, 2):
         cut = len(run) - size
-        if (
-            cut >= 2
-            and run[:cut].endswith((*_UNIT_ENDS, *_PERSON_LABELS))
-            and _name_like(run[cut:])
+        if cut < 2:
+            continue
+        head, tail = run[:cut], run[cut:]
+        if head.endswith(_GLUE_HEADS) and (
+            _name_like(tail) or (size == 4 and _name_like(tail[:2]) and _name_like(tail[2:]))
         ):
             return cut
+        if head.endswith("联系") and size == 3 and tail[0] in _SURNAMES and tail[1:] in _TITLES:
+            return cut
     return None
+
+
+def _spaced_glued_name(text: str, end: int) -> int | None:
+    """单位名后面紧跟着中间隔空格写的两字姓名（"省工信厅刘 某"，11/18 漏遮）：姓名从哪里起；
+    不是这样的返回 None。只认空格两边各一个字的。"""
+    if end < 2 or not _is_han(text[end - 1]) or not _inline_space(text[end - 2]):
+        return None
+    gap = end - 1
+    while gap > 0 and _inline_space(text[gap - 1]):
+        gap -= 1
+    start = gap
+    while start > 0 and _is_han(text[start - 1]):
+        start -= 1
+    if gap - start < 3 or (start > 0 and text[start - 1].isalnum()):
+        return None
+    run = text[start:gap] + text[end - 1]
+    cut = _glued_name(run)
+    return start + cut if cut == len(run) - 2 else None
 
 
 def _words(text: str, start: int, end: int) -> list[tuple[int, int, str]]:
@@ -710,6 +816,17 @@ def _phone_names(text: str) -> list[tuple[int, int]]:
         end = phone.start()
         while end > 0 and text[end - 1].isspace():
             end -= 1
+        # 去掉姓名和号码中间的"，电话："这一截（只在同一行里找）
+        line_start = text.rfind("\n", 0, end) + 1
+        glue = _NAME_TO_PHONE.search(text, line_start, end)
+        if glue and glue.group():
+            end = glue.start()
+        if (
+            _word_ending_at(text, end) is None
+            and (cut := _spaced_glued_name(text, end)) is not None
+        ):
+            spans.append((cut, end))
+            continue
         while (found := _word_ending_at(text, end)) is not None:
             start, word = found
             if not _name_like(word):
