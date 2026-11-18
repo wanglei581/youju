@@ -220,8 +220,19 @@ def _reject_constant(name: str):
     raise ValueError(f"JSON 里不该有 {name}")
 
 
-def _strict_json(text: str):
-    """严格按 JSON 解析：Python 自带的 json 还认 NaN、Infinity，JSON 里没有，认不出。"""
+def _object_literal(pairs):
+    """栏目树是脚本里的对象字面量（不是 JSON.parse）：键 __proto__ 在 JS 里是设原型（parentId 这些
+    会被继承），Python 当普通键，认不出（第十九轮独立 Claude）。"""
+    if any(key == "__proto__" for key, _ in pairs):
+        raise ValueError("对象字面量里有 __proto__")
+    return dict(pairs)
+
+
+def _strict_json(text: str, *, literal: bool = False):
+    """严格按 JSON 解析：Python 自带的 json 还认 NaN、Infinity，JSON 里没有，认不出。literal：内容是
+    脚本里的对象字面量（栏目树），带 __proto__ 键的认不出。"""
+    if literal:
+        return json.loads(text, parse_constant=_reject_constant, object_pairs_hook=_object_literal)
     return json.loads(text, parse_constant=_reject_constant)
 
 
@@ -247,7 +258,7 @@ def parse_catalog(text: str, organ_id: str) -> list[dict]:
     if not match or match.group(1) != organ_id:
         raise LonsunFormatError("栏目树脚本格式或机构编号不符")
     try:
-        nodes = _strict_json(match.group(2))
+        nodes = _strict_json(match.group(2), literal=True)
     except (ValueError, RecursionError) as exc:  # 嵌套太深也当认不出
         raise LonsunFormatError("栏目树 JSON 无效") from exc
     if not isinstance(nodes, list) or any(
@@ -1131,6 +1142,22 @@ def _js_string(value):
     return "[object Object]"
 
 
+def _js_concat(a: str, b: str) -> str:
+    """JS 的字符串按 UTF-16 码元拼接：前一段末尾是高位代理、后一段开头是低位代理的，拼起来就是一个
+    字符（'\\uD83D' + '\\uDE00' === '😀'，第十九轮独立 Claude）；Python 里是两个孤立的代理字符，
+    比较、当键都会给出确定的错答案。"""
+    if a and b and "\ud800" <= a[-1] <= "\udbff" and "\udc00" <= b[0] <= "\udfff":
+        return (a + b).encode("utf-16-le", "surrogatepass").decode("utf-16-le", "surrogatepass")
+    return a + b
+
+
+# JS 把字符串转成数字时去掉的空白（StrWhiteSpaceChar）；Python 的 strip() 还会去掉 \x1c—\x1f 这些
+_JS_SPACES = (
+    "\t\n\v\f\r \u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a"
+    "\u2028\u2029\u202f\u205f\u3000\ufeff"
+)
+
+
 def _js_number(value):
     if value is UNDEFINED:
         return math.nan
@@ -1143,7 +1170,7 @@ def _js_number(value):
     if isinstance(value, (list, tuple, dict)):
         value = _js_string(value)
     if isinstance(value, str):
-        value = value.strip()
+        value = value.strip(_JS_SPACES)
         if not value:
             return 0.0
         try:
@@ -1152,7 +1179,11 @@ def _js_number(value):
                     return float(int(value, 0))
                 except OverflowError:
                     return math.inf  # 和 JS 一样，太大的数是 Infinity
-            if not re.fullmatch(r"[+-]?(?:Infinity|(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)", value):
+            # 只认 ASCII 数字：Python 的 \d、float() 还认全角数字（JS 的 Number('１') 是 NaN，
+            # 第十九轮独立 Claude）
+            if not re.fullmatch(
+                r"[+-]?(?:Infinity|(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?)", value
+            ):
                 return math.nan
             return float(value)
         except ValueError:
@@ -1216,7 +1247,7 @@ def _member(obj, key, env):
                 if isinstance(obj, str)
                 else len(obj)
             )
-        if key.isdigit() and str(int(key)) == key:
+        if key.isascii() and key.isdigit() and str(int(key)) == key:
             if isinstance(obj, str) and any(
                 ord(ch) > 0xFFFF or 0xD800 <= ord(ch) <= 0xDFFF for ch in obj
             ):
@@ -1308,6 +1339,10 @@ def _evaluate(tree, env):
             return "number"
         if isinstance(value, str):
             return "string"
+        if isinstance(value, _PartialDict):
+            # 只知道部分属性的对象：$、Ls 在浏览器里是函数（typeof $ === 'function'），说不准
+            # （第十九轮独立 Claude）
+            return UNKNOWN
         return (
             "function"
             if callable(value) or (isinstance(value, tuple) and value and value[0] == "function")
@@ -1358,7 +1393,7 @@ def _evaluate(tree, env):
         if isinstance(a, (dict, list, tuple)) or isinstance(b, (dict, list, tuple)):
             return UNKNOWN
         if op == "+" and (isinstance(a, str) or isinstance(b, str)):
-            return _js_string(a) + _js_string(b)
+            return _js_concat(_js_string(a), _js_string(b))
         a, b = _js_number(a), _js_number(b)
         if op == "+":
             return a + b
@@ -1770,12 +1805,13 @@ def _write_root_problem(source, *, scoped=(), me_ok=True):
         ):
             continue
         return f"改了 {'.'.join(path)}，看不出是不是栏目节点或 me 上的数据"
-    for k in range(len(values) - 2):
-        if values[k] != "." or in_handler(k):
+    for k, name, paren, indirect in _member_calls(tokens, values):
+        if in_handler(k):
             continue
-        name = values[k + 1]
-        if (name in _TRIGGERS and values[k + 2] == "(") or (
-            name in _EVENT_SHORTHANDS | {"focus", "blur"} and values[k + 2 : k + 4] == ["(", ")"]
+        if (
+            name in _TRIGGERS
+            or name in _EVENT_SHORTHANDS | {"focus", "blur"}
+            and (indirect or values[paren + 1 : paren + 2] == [")"])
         ):
             return f"加载时用 .{name}() 替用户触发了事件"
     return None
@@ -1809,27 +1845,55 @@ def _method_references(source, names):
     return found
 
 
+def _member_calls(tokens, values):
+    """成员方法调用的位置：.名字(、['名字'](（字符串下标写的方法名），经 .call(、.apply( 调的也算
+    （x['click']()、$.fn.click.call(el)，第十九轮独立 Claude）。交回 (位置, 名字, 参数左括号的位置,
+    是不是经 call、apply)，位置是 . 或 [ 那个记号。"""
+    for k in range(len(values) - 2):
+        if values[k] in (".", "?."):
+            name, nxt = values[k + 1], k + 2
+        elif values[k] == "[" and _index_access(values, k):
+            close = _matching_token(tokens, k)
+            key = values[k + 1 : close]
+            if len(key) != 1 or key[0][:1] not in ("'", '"'):
+                continue
+            name, nxt = _string_literal(key[0]), close + 1
+        else:
+            continue
+        if values[nxt : nxt + 1] == ["("]:
+            yield k, name, nxt, False
+        elif values[nxt : nxt + 2] in ([".", "call"], [".", "apply"]) and values[
+            nxt + 2 : nxt + 3
+        ] == ["("]:
+            yield k, name, nxt + 2, True
+
+
+def _user_trigger_call(values, name, paren, indirect):
+    """这次成员调用是不是替用户触发事件：.trigger('click') 这类（事件名认不出的也算，自定义事件
+    不算）、dispatchEvent，.click() 这类不带参数的简写；经 call、apply 调的一律算（看不清参数）。"""
+    if name in ("trigger", "triggerHandler") and not indirect:
+        first = values[paren + 1] if paren + 1 < len(values) else ""
+        if first[:1] in ("'", '"'):
+            events = {e.split(".")[0] for e in _string_literal(first).split()}
+            return bool(events & (_USER_EVENTS | {"focus", "blur"}))
+        return True
+    if name in _TRIGGERS:
+        return True
+    return name in _EVENT_SHORTHANDS | {"focus", "blur"} and (
+        indirect or values[paren + 1 : paren + 2] == [")"]
+    )
+
+
 def _load_trigger(tokens, values, mask=()):
     """这段代码在加载时替用户触发点击这类事件没有（.trigger('click')、.click() 这类不带参数的
     简写、dispatchEvent；事件名认不出的也算，自定义事件不算；用户点了才跑的事件处理函数里的
     不算）。mask：不看的记号范围。"""
     spans = [*_handler_spans(tokens, values), *mask]
-    for k in range(len(values) - 2):
-        if values[k] != "." or any(a < k < b for a, b in spans):
-            continue
-        name = values[k + 1]
-        if name in ("trigger", "triggerHandler") and values[k + 2] == "(":
-            first = values[k + 3] if k + 3 < len(values) else ""
-            if first[:1] in ("'", '"'):
-                events = {e.split(".")[0] for e in _string_literal(first).split()}
-                if not events & (_USER_EVENTS | {"focus", "blur"}):
-                    continue  # 自定义事件（validate 这类）：碰不到"点了才跑"的处理函数
-            return True
-        if (name in _TRIGGERS and values[k + 2] == "(") or (
-            name in _EVENT_SHORTHANDS | {"focus", "blur"} and values[k + 2 : k + 4] == ["(", ")"]
-        ):
-            return True
-    return False
+    # 自定义事件（validate 这类）碰不到"点了才跑"的处理函数，不算
+    return any(
+        not any(a < k < b for a, b in spans) and _user_trigger_call(values, name, paren, indirect)
+        for k, name, paren, indirect in _member_calls(tokens, values)
+    )
 
 
 def _ready_path(raw):
@@ -4440,7 +4504,9 @@ def find_lonsun_api(
                     # 给 Ls 加新函数（芜湖的 Ls.isPublicQcsmCatIds）不碍事：请求流程里要是用到，
                     # 受限求值认不出、不读
                     or path[0] == "Ls"
-                    and (len(path) == 1 or path[1] in ("ajax", "ajaxGet", "url", "*"))
+                    and (
+                        len(path) == 1 or path[1] in ("ajax", "ajaxGet", "url", "tipsLoading", "*")
+                    )
                     # 任何对象上的 .ajax、.ajaxGet 被改写（经别名改 $.ajax 也算）
                     or len(path) > 1
                     and path[-1] in ("ajax", "ajaxGet")
@@ -5933,6 +5999,18 @@ def _tree_one_problem(raw, args):
         and values[f + 2] == "("
         and (f == 0 or values[f - 1] in (";", "{", "}", ")"))
     }
+    for k, name, paren, indirect in _member_calls(tokens, values):
+        # 字符串下标写的（x['click']()）、经 call、apply 调的也算（第十九轮独立 Claude）
+        if (
+            k < call
+            and not any(a < k < b for a, b in spans)
+            and (
+                name in _TRIGGERS
+                or name in _EVENT_SHORTHANDS
+                and (indirect or values[paren + 1 : paren + 2] == [")"])
+            )
+        ):
+            return f"initTree 在 setSelect 之前替用户触发事件（.{name}）" + _UNCLEAR
     text = []
     for k in positions:
         value = values[k]

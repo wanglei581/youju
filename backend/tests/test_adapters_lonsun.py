@@ -4031,3 +4031,54 @@ def test_numeric_page_size_goes_out_like_the_browser():
     plan = resolve_fixture("jx", "49949451", page=page)
     assert not isinstance(plan, str), plan
     assert "pageSize=0.000001&" in plan.url and "1e-06" not in plan.url, plan.url
+
+
+@pytest.mark.parametrize(
+    "check,read",
+    [
+        # 拼起来正好是一对代理字符：JS 里就是 '😀'，浏览器在这里退出、不发请求（第十九轮独立 Claude）
+        ("if ('\\uD83D' + '\\uDE00' === '😀') { return; }", False),
+        ("if ('a' + 'b' === 'c') { return; }", True),
+        # typeof $ 在浏览器里是 'function'：只知道部分属性的对象不知道 typeof，不读
+        ("if (typeof $ === 'function') { return; }", False),
+        # 全角数字：JS 的 +'１' 是 NaN（条件不成立、照常发请求），不能当成 1
+        ("if (+'１' === 1) { return; }", True),
+    ],
+)
+def test_string_and_number_semantics_follow_javascript(check, read):
+    head = "getData: function () {\n      var me = this;"
+    page = fixture("jx_page.html")
+    assert page.count(head) == 1
+    page = page.replace(head, head + " " + check, 1)
+    assert _refused(page) is not read, check
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        # 字符串下标、经 call 调的触发写法和 .click() 一样（第十九轮独立 Claude）
+        "<script>$(function () { $('#qtzcwj')['click'](); });</script>",
+        "<script>$(function () { $('#x')['trigger']('click'); });</script>",
+        "<script>$(function () { $.fn.click.call($('#x')); });</script>",
+    ],
+)
+def test_load_time_triggers_in_other_notations_refused(extra):
+    from youju.crawler.lonsun import find_lonsun_api
+
+    page = fixture("wuhu_page.html")
+    changed = page.replace("</body>", extra + "</body>", 1)
+    assert changed != page and find_lonsun_api(changed, WUHU, WUHU) is None, extra
+
+
+def test_tips_loading_rewritten_by_another_script_refused():
+    # request() 发请求前调 Ls.tipsLoading：别的脚本把它改掉，浏览器在发请求之前就出错
+    assert _found(_jx(extra="<script>Ls.tipsLoading = null;</script>")) is None
+
+
+def test_catalog_with_proto_key_refused():
+    # 栏目树是脚本里的对象字面量：__proto__ 在 JS 里是设原型（parentId 会被继承），认不出
+    from youju.crawler.lonsun import LonsunFormatError, parse_catalog
+
+    text = 'var catalogs = {6991:[{"id":1,"name":"a","parentId":0,"__proto__":{"x":1}}]}'
+    with pytest.raises(LonsunFormatError):
+        parse_catalog(text, "6991")
