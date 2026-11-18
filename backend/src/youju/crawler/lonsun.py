@@ -1195,6 +1195,12 @@ def _member(obj, key, env):
                 else len(obj)
             )
         if key.isdigit() and str(int(key)) == key:
+            if isinstance(obj, str) and any(
+                ord(ch) > 0xFFFF or 0xD800 <= ord(ch) <= 0xDFFF for ch in obj
+            ):
+                # JS 的字符串下标按 UTF-16 码元算（"😀"[0] 是半个代理对），和这里按字符算的不一样：
+                # 带基本平面以外字符的字符串按下标取一律当不知道（第十八轮 Codex）
+                return UNKNOWN
             index = int(key)
             return obj[index] if index < len(obj) else UNDEFINED
     return env.resolve_member(obj, key)

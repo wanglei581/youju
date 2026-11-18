@@ -3973,3 +3973,21 @@ def test_inherited_members_of_plain_objects_are_unknown():
     assert _evaluate(_parse_expression("q.constructor"), env) is UNKNOWN
     assert _evaluate(_parse_expression("q.catId"), env) == "1"
     assert _evaluate(_parse_expression("q.other"), env) is not UNKNOWN
+
+
+@pytest.mark.parametrize(
+    "check,read",
+    [
+        # JS 的字符串下标按 UTF-16 码元算："😀"[0] 是半个代理对，不等于 "😀"，浏览器这里就退出、
+        # 不发列表请求（第十八轮 Codex）；带基本平面以外字符的字符串按下标取当不知道，不读
+        ("if ('😀'[0] !== '😀') { return; }", False),
+        # 只有基本平面字符的照常算
+        ("if ('abc'[0] !== 'a') { return; }", True),
+    ],
+)
+def test_string_index_follows_utf16(check, read):
+    head = "getData: function () {\n      var me = this;"
+    page = fixture("jx_page.html")
+    assert page.count(head) == 1
+    page = page.replace(head, head + " " + check, 1)
+    assert _refused(page) is not read, check
