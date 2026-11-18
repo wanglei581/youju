@@ -12,11 +12,16 @@
 # 快照从哪来：在电脑上导出，要进电脑（创始人同意以后，在 UU 远程的终端里跑这一行）：
 #   wsl -d youju -u root --cd /opt/youju/local -e bash -c 'mkdir -p /mnt/e/youju/public-snapshots && docker compose run --rm --no-deps -v /mnt/e/youju/public-snapshots:/out worker youju public-snapshot --output /out/youju-public-$(date +%Y%m%d).jsonl.gz'
 #   再用 UU 的文件传输，把 E:\youju\public-snapshots 里那份传到这台 Mac 的 $YOUJU_PUBLIC_DIR
-#   （默认 ~/youju-worktrees/public-data），传完删掉电脑上那份。
+#   （默认 ~/youju-worktrees/public-data），当天就删掉电脑上那份（传失败也删：
+#   wsl -d youju -u root -e rm -f /mnt/e/youju/public-snapshots/<文件名>）。
 #   快照里只有公开内容表，不含用户数据、密钥、日志和下架的文件（backend/src/youju/public_snapshot.py）。
+#   导出前看一眼服务器上有没有还没带回电脑的紧急下架（手册第八节"紧急下架"第 3 步 emergency-list）：
+#   有的话先照第 5 步带回电脑，不然那些文件还在快照里。
+#   电脑要装过 11/18 以后打的安装包（带 _build.json），快照里才记得下代码版本；没记的话，本机代码的迁移版本
+#   和快照不同时建不了库。
 #
 # 做的事：
-#   1. 取 $YOUJU_PUBLIC_DIR 里最新的一份（youju-public-<8 位日期>.jsonl.gz），那里只留最近 3 份。
+#   1. 取 $YOUJU_PUBLIC_DIR 里最新的一份（youju-public-<8 位日期>.jsonl.gz），那里只留 7 天以内、最近的 3 份。
 #   2. 在本机 MySQL（$YOUJU_LOCAL_MYSQL，默认 mysql+pymysql://root@127.0.0.1:33306）新建空库，排序规则和服务器一致。
 #   3. 当前代码的最新迁移版本和快照相同，就用当前代码建表、导入；不同，就临时检出快照对应的代码
 #      （说明行的 code_revision）来建表、导入，用完删掉。
@@ -111,19 +116,33 @@ py() {
   (cd "$dir" && YOUJU_DATABASE_URL="$URL" uv run --no-sync --quiet python "$@")
 }
 
-# 1. 快照文件：没给 --file 就用 $DIR 里最新的一份（文件名里是日期，按名字排就是按日期排），只留最近 3 份
+# 1. 快照文件：没给 --file 就用 $DIR 里最新的一份（文件名里是导出那天的日期）。那里只留 7 天以内、最近的 3 份，
+#    别的删掉（以前云托管上的快照也只留 7 天）；一份都没有就说清怎么拿
 if [ -z "$FILE" ]; then
-  SNAPS=$(ls -1 "$DIR" 2> /dev/null | grep -E '^youju-public-[0-9]{8}\.jsonl\.gz$' | sort || true)
-  [ -n "$SNAPS" ] || {
-    echo "$DIR 里还没有公开快照：先在电脑上导出、传过来（看本脚本开头的说明，或 -h），或者用 --file 指定" >&2
+  mkdir -p "$DIR"
+  FILE=$(python3 -I - "$DIR" << 'PY'
+import datetime, pathlib, re, sys
+folder = pathlib.Path(sys.argv[1])
+today = datetime.date.today()
+names = sorted(p.name for p in folder.iterdir() if re.fullmatch(r"youju-public-\d{8}\.jsonl\.gz", p.name))
+def fresh(name):
+    try:
+        day = datetime.datetime.strptime(name[13:21], "%Y%m%d").date()
+    except ValueError:
+        return False
+    return 0 <= (today - day).days <= 7
+keep = [name for name in names if fresh(name)][-3:]
+for name in names:
+    if name not in keep:
+        (folder / name).unlink()
+print(folder / keep[-1] if keep else "")
+PY
+)
+  [ -n "$FILE" ] || {
+    echo "$DIR 里没有 7 天以内的公开快照：先在电脑上导出、传过来（看本脚本开头的说明，或 -h），或者用 --file 指定" >&2
     exit 1
   }
-  FILE="$DIR/$(printf '%s\n' "$SNAPS" | tail -n 1)"
-  COUNT=$(printf '%s\n' "$SNAPS" | wc -l | tr -d ' ')
-  if [ "$COUNT" -gt 3 ]; then
-    printf '%s\n' "$SNAPS" | head -n "$((COUNT - 3))" | while IFS= read -r OLD; do rm -f -- "$DIR/$OLD"; done
-  fi
-  echo "用 $DIR 里最新的一份：$(basename "$FILE")"
+  echo "用 $DIR 里最新的一份：$(basename "$FILE")" >&2
 fi
 [ -s "$FILE" ] || {
   echo "快照文件不存在或是空的：$FILE" >&2

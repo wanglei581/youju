@@ -492,6 +492,6 @@ def describe(header: dict[str, Any]) -> str:
     created = datetime.fromisoformat(header["created_at"]).astimezone(BEIJING)
     total = sum(header.get("tables", {}).values())
     return (
-        f"线上公开内容 {created:%m/%d %H:%M}（北京时间），共 {total} 条，"
+        f"公开内容快照 {created:%m/%d %H:%M}（北京时间导出），共 {total} 条，"
         f"迁移版本 {header.get('revision')}"
     )
