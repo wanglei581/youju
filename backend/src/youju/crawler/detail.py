@@ -61,8 +61,8 @@ _EMAIL = re.compile(
 #   区号和号码只隔空格的（"0591 8788…"）不一定是电话，按下面不带区号的号码那样要有线索才认
 # - 号码：7–8 位，可以带分机（"-801""转801"），可以写成"1234 5678"；原网页写错、多了几位或两个号码
 #   连写的，区号后面最多 16 位也算（long）。这种长的也可能是编号（"受理号：0571-1234…""项目批次
-#   0001-1234…"，独立 Claude 第二轮），要像下面不带区号的号码那样有线索、前面不是"编号""批次"这类
-#   标签才认（_mask_landlines）
+#   0001-1234…"，独立 Claude 第二轮），要紧跟在电话类标签后面（"电话：0371-6123…"）、前面不是
+#   "受理号""批次"这类标签才认（_mask_landlines）
 # 11/18 以前入库只认"-""－"连着区号的写法
 _DASHES = "-－‐-―−"
 _LANDLINE = (
@@ -144,6 +144,8 @@ _NOT_PHONE_LABEL = re.compile(
 # （全部正文里有 6 处）。显示层（api/v1.py 的 _mask_context_numbers）用同一个
 LABEL_STOP = re.compile(rf"(?:{_NOT_PHONE_WORDS})[^\S\n]*+[:：]")
 _CUE_REACH = 30
+# 电话类标签紧挨在号码前面，中间只隔空白（"电话：0371-6123…""致电0571-…"）
+_CUE_RIGHT_BEFORE = re.compile(rf"(?:{_FAR_CUE.pattern})[^\S\n]*+\Z")
 # 400/800 热线（"400—2345…""800 2345…"）：单位的服务热线，后半截不当本地号码（同显示层的
 # _HOTLINE_HEAD；独立 Claude 第二轮）
 _HOTLINE_HEAD = re.compile(rf"(?<!\d)[48]00[^\S\n]*[{_DASHES}]?[^\S\n]*\Z")
@@ -477,31 +479,23 @@ def _redact_once(text: str) -> str:
 
 def _mask_landlines(text: str) -> str:
     """座机换成标记。前面紧挨着"编号""会议号"这类标签的（_CODE_BEFORE）照原样留着；区号后面
-    9–16 位的（long）还要像不带区号的号码那样：前面不是"受理号""批次"这类标签，有电话类标签或
-    紧挨着的线索。"""
-    phones = list(_PHONE.finditer(text))
-    if not phones:
-        return text
-    labeled = _label_finder(text) if any(m.group("long") for m in phones) else None
+    9–16 位的（long）还要紧跟在电话类标签后面（_CUE_RIGHT_BEFORE），前面又不是"受理号""批次"
+    这类标签。"""
     out: list[str] = []
     at = 0
-    for match in phones:
+    for match in _PHONE.finditer(text):
         start = match.start()
         window = max(0, start - _CUE_REACH)
         if _CODE_BEFORE.search(text, window, start):
             continue
-        if (
-            labeled is not None
-            and match.group("long")
-            and (
-                _NOT_PHONE_LABEL.search(text, window, start)
-                or not (labeled(start) or _NEAR_CUE.search(text, window, start))
-            )
+        if match.group("long") and (
+            _NOT_PHONE_LABEL.search(text, window, start)
+            or not _CUE_RIGHT_BEFORE.search(text, window, start)
         ):
             continue
         out += [text[at:start], "[电话已脱敏]"]
         at = match.end()
-    return "".join(out) + text[at:]
+    return "".join(out) + text[at:] if out else text
 
 
 def _label_finder(text: str) -> Callable[[int], bool]:
@@ -537,8 +531,9 @@ def _mask_local_numbers(text: str) -> str:
     一次定下来：先从左往右看标签和紧挨着的线索（上一个号码这一次要遮的，也算遮过的号码），再从右往左
     看后面的线索（后面那个号码这一次要遮的，也算遮过的电话），"6543…，6543…，[电话已脱敏]"这样的
     一串一次遮完，再过一遍不会变。行首、标签、句末标点的位置先记下来，长行里号码多也只看一遍。"""
-    # 没当座机遮的（_mask_landlines：前面是"编号""会议号"这类标签的，区号后面太长、又没有线索的），
-    # 里面的号码也不认（"会议编号：010—2345…"的"2345…"）。座机这时都已经遮了，还认得出的就是这种
+    # 没当座机遮的（_mask_landlines：前面是"编号""会议号"这类标签的，区号后面太长、又不紧跟电话类
+    # 标签的），里面的号码也不认（"会议编号：010—2345…"的"2345…"）。座机这时都已经遮了，还认得出的
+    # 就是这种
     kept = [m.span() for m in _PHONE.finditer(text)]
     kept_starts = [a for a, _ in kept]
     found = []
@@ -828,7 +823,8 @@ _NAME_STOP = re.compile(r"[\n，,。；;：:（(）)/【\[]|\d")
 # 同一行里隔开几个姓名的：空格、顿号
 _NAME_GAP = re.compile(r"(?:[^\S\n]|、)+")
 _HAN_RUN = re.compile(rf"[{_HAN}·]+")
-_BEFORE_PHONE = re.compile(rf"(?<!\d){_LANDLINE}(?!\d)|\[(?:电话|手机号)已脱敏\]")
+# 遮姓名时座机都已经遮了（_mask_landlines）；还认得出的座机写法是没当电话的编号，前面的字不当姓名
+_BEFORE_PHONE = re.compile(r"\[(?:电话|手机号)已脱敏\]")
 # 姓名和号码中间隔着的"，电话：""，""电话：""（"（"某某，电话：[电话已脱敏]""某老师，[手机号已脱敏]"
 # "某某、某某（[电话已脱敏]，某中心）"，11/18 漏遮）：从号码往前去掉这一截，再看前面那个词
 _NAME_TO_PHONE = re.compile(
