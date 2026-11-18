@@ -45,8 +45,14 @@ _BANK = re.compile(
 # 从上一个标点起连着邮箱的整段中文都被遮掉（"PDF电子版于7月2日前发送至abc@163.com"整段没了）。
 # 不往前看（两个邮箱用"-""_"连着写时，后一个第一遍就遮掉，遮过的再过一遍不变）；用户名最多 64 个字，
 # 一长串英文字母不会让查找变慢
-# "@""."也认全角的"＠""．"（11/18：有的网站这样写，以前漏遮）
-_EMAIL = re.compile(r"[A-Za-z0-9._%+-]{1,64}[@＠][A-Za-z0-9.．-]{1,253}[.．][A-Za-z]{2,63}")
+# "@""."也认全角的"＠""．"（11/18：有的网站这样写，以前漏遮）。写法和显示层（api/v1.py 的
+# _EMAIL_ANY）对齐（11/18 Codex 第三轮）：域名里的横线也认"－""—"（"test＠foo－bar.com"）；"@"
+# 前后可以各隔一个空格（"abc @126.com"）；手机号当邮箱名、先遮成了标记的（"[手机号已脱敏]@163.com"）
+# 整个换成邮箱的标记
+_EMAIL = re.compile(
+    r"(?:\[(?:电话|手机号)已脱敏\]|[A-Za-z0-9._%+-]{1,64})"
+    r"[ 　]?[@＠][ 　]?[A-Za-z0-9.．—－-]{1,253}[.．][A-Za-z]{2,63}"
+)
 # 座机：区号加号码，写法和显示层（api/v1.py 的 _AREA_PHONE、_INTL_PHONE）对齐，整个号码一起遮（只遮
 # 号码、把区号和分机留在标记旁边的话，页面上反倒比以前多露出区号、分机）：
 # - 区号：0 开头，后面接各种横线、破折号（"023—1234…"，可以带空格），或者写在括号里
@@ -63,20 +69,29 @@ _LANDLINE = (
     r"(?:\d{7,8}(?:(?:[-－]|转)\d{1,6})?|[2-9]\d{2,3}[^\S\n]\d{4}|\d{9,16})"
 )
 _PHONE = re.compile(rf"(?<!\d){_LANDLINE}(?!\d)")
+# "编号""会议号"这类标签（"会议编号：010—1234…""腾讯会议：2345…""会议ID：…"）后面的号码不是电话
+# （11/18 Codex 第三轮）：座机（_landline）、不带区号的号码（_NOT_PHONE_LABEL）都不认。显示层
+# （api/v1.py 的 _CODE_BEFORE）用同一套
+CODE_LABELS = (
+    r"编号|代码|文号|序号|邮编|批号|编码|账号|卡号|会议(?:号码?|ID|码)?|(?<![A-Za-z])(?:ID|Id|id)"
+    r"|密码"
+)
+_CODE_BEFORE = re.compile(rf"(?:{CODE_LABELS})[^\S\n]*+[:：]?[^\S\n]*+\Z")
 # 联系电话那一类的行里不带区号（或者区号只隔空格）的 7–8 位号码（"电话：[电话已脱敏]、6543…"
 # "电话：6543…""政策咨询：某某，6543…""请致电6543…咨询"，11/18 漏遮）。写法和显示层对齐（api/v1.py
 # 的 _PHONE_CONTEXT、_PHONE_TAIL、_NUMBER_BEFORE_MARK、_is_phone_number），要有线索才认：
 # - 标签（_FAR_CUE）：同一行里、号码前面有"电话：""咨询：""联系方式：""联系人："这类带冒号的标签，
-#   或者"致电"，中间没隔句末标点；
+#   或者"致电"，中间没隔句末标点，也没隔"编号：""腾讯会议："这类别的标签（LABEL_STOP）；
 # - 紧挨着的（_NEAR_CUE、_MARK_NAME_BEFORE）：号码前面只隔分隔符、空白就是遮过的号码、姓名，或者
 #   "某老师"，或者这一次认出来的上一个号码（"[电话已脱敏]、6543…、6543…"）；中间还可以夹一个姓名
 #   （"某市：张某 [电话已脱敏] 李某 6543…"）；
 # - 后面的：号码后面只隔一个分隔符（和一个姓名）就是遮过的电话，或者是这一次认出来的号码
 #   （"谢某，6543…；杨某，[手机号已脱敏]"，_LIST_GAP）。
 # 不认的：后面紧接着金额、年月日、"台、家、件"这类单位的（隔着空白的只认钱和百分比）；8 位像日期的；
-# 前面紧挨着"编号""受理号""邮编""预算""人民币"这类标签的（_NOT_PHONE_LABEL）；前后紧挨着英文字母的
-# （代码）；1 开头的（国内座机不以 1 开头）；直接贴着遮过的标记的；前面是"/"、"/"前面又不是遮过的
-# 号码、姓名或别的号码的（日期、比例）。号码可以带分机（"-801""转801"），和显示层一样整个遮。
+# 前面紧挨着"编号""受理号""会议号""邮编""预算""人民币"这类标签的（_NOT_PHONE_LABEL）；前后紧挨着
+# 英文字母的（代码）；1 开头的（国内座机不以 1 开头）；直接贴着遮过的标记的；前面是"/"、"/"前面
+# 又不是遮过的号码、姓名或别的号码的（日期、比例）。号码可以带分机（"-801""转801"），和显示层一样
+# 整个遮。
 # 标签按行、按句找，不按字数：号码换成标记以后再过一遍，看到的线索一样。
 _LOCAL_NUMBER = re.compile(
     r"(?<![\d.．\-－A-Za-z])(?:0[1-9]\d{1,2}[^\S\n]+)?[2-9]\d{6,7}(?:(?:[-－]|转)\d{1,6})?"
@@ -108,16 +123,23 @@ _LIST_GAP = re.compile(
     r"(?:[^\S\n]*+[，,、；;/][^\S\n]*+|[^\S\n]++)"
     r"(?:([\u4e00-\u9fff·]{2,6}|\[姓名已脱敏\])[^\S\n]*+[，,：:]?[^\S\n]*+)?"
 )
-# 号码前面紧挨着这类标签的不是电话：编号、代码、"某某号"（"电话号""手机号"除外）一类，金额、数量、
-# 币种一类（"项目编号为2345…""受理号2345…""预算2345…""人民币2345…"）；标签和号码中间可以隔着
-# "为、是、约、达、共、计"、冒号、空白
-_NOT_PHONE_LABEL = re.compile(
-    r"(?:编号|编码|代码|邮编|邮政编码|序列号|(?<![话机线])号"
+# 号码前面紧挨着这类标签的不是电话：编号、会议号、代码、"某某号"（"电话号""手机号""传真号"除外）
+# 一类，金额、数量、币种一类（"项目编号为2345…""受理号2345…""腾讯会议：2345…""预算2345…"
+# "人民币2345…"）；标签和号码中间可以隔着"为、是、约、达、共、计"、冒号、空白
+_NOT_PHONE_WORDS = (
+    rf"{CODE_LABELS}|邮政编码|序列号|(?<![话机线真])号"
     r"|金额|资金|预算|投资|总额|合计|共计|总计|小计|费用|经费|补助|补贴|奖励|资助|规模|产值|营收|收入"
     r"|销售额|利润|税收|纳税|数量|总数|总量|数额|人数|面积|容量|产能|产量|价格|单价|总价|余额|资本"
-    r"|股本|额度|限额|人民币|美元|欧元|港元|港币|￥|¥)"
-    r"[^\S\n]*+(?:[为是约达共计][^\S\n]*+)?[:：]?[^\S\n]*+\Z"
+    r"|股本|额度|限额|人民币|美元|欧元|港元|港币|￥|¥"
 )
+_NOT_PHONE_LABEL = re.compile(
+    rf"(?:{_NOT_PHONE_WORDS})[^\S\n]*+(?:[为是约达共计][^\S\n]*+)?[:：]?[^\S\n]*+\Z"
+)
+# 电话类标签管到哪：同一行、同一句里，到下一个上面这类标签（"编号：""腾讯会议：""金额："）为止
+# （"电话：1234，腾讯会议：2345…"的会议号不算，11/18 Codex 第三轮）。单位、姓名写成的标签不算：
+# "联系电话：业务部门：某某科，6511…""致电某某服务处：8312…""张老师：8661…"这样写的是电话
+# （全部正文里有 6 处）。显示层（api/v1.py 的 _mask_context_numbers）用同一个
+LABEL_STOP = re.compile(rf"(?:{_NOT_PHONE_WORDS})[^\S\n]*+[:：]")
 _CUE_REACH = 30
 # "/"前面是这些标记的，"/"后面的号码才认（"[电话已脱敏]/6543…""联系人：[姓名已脱敏]/6543…"）
 _SLASH_MARKS = ("[电话已脱敏]", "[手机号已脱敏]", "[姓名已脱敏]")
@@ -440,11 +462,19 @@ def _redact_once(text: str) -> str:
     text = _MOBILE.sub("[手机号已脱敏]", text)
     text = _ACCOUNT.sub(_account, text)
     text = _EMAIL.sub("[邮箱已脱敏]", text)
-    text = _PHONE.sub("[电话已脱敏]", text)
+    text = _PHONE.sub(_landline, text)
     text = _mask_qq(text)
     text = _mask_local_numbers(text)
     # 姓名最后认：邮箱、座机先换成"[…已脱敏]"，姓名前后挨着的是"]"，第一遍和再过一遍看到的一样
     return _mask_names(text)
+
+
+def _landline(match: re.Match[str]) -> str:
+    """座机换成标记；前面紧挨着"编号""会议号"这类标签的（_CODE_BEFORE）照原样留着。"""
+    start = match.start()
+    if _CODE_BEFORE.search(match.string, max(0, start - _CUE_REACH), start):
+        return match.group()
+    return "[电话已脱敏]"
 
 
 def _mask_qq(text: str) -> str:
@@ -457,14 +487,20 @@ def _mask_local_numbers(text: str) -> str:
     一次定下来：先从左往右看标签和紧挨着的线索（上一个号码这一次要遮的，也算遮过的号码），再从右往左
     看后面的线索（后面那个号码这一次要遮的，也算遮过的电话），"6543…，6543…，[电话已脱敏]"这样的
     一串一次遮完，再过一遍不会变。行首、标签、句末标点的位置先记下来，长行里号码多也只看一遍。"""
+    # 前面是"编号""会议号"这类标签、没当座机遮的（_landline），里面的号码也不认（"会议编号：
+    # 010—2345…"的"2345…"）。座机这时都已经遮了，还认得出的就是这种
+    kept = [m.span() for m in _PHONE.finditer(text)]
+    kept_starts = [a for a, _ in kept]
     found = []
     for match in _LOCAL_NUMBER.finditer(text):
         start = match.start()
+        k = bisect.bisect_right(kept_starts, start) - 1
         if (
             # 直接贴着遮过的标记、没有分隔的不算
             text.endswith("]", 0, start)
             or _NOT_PHONE_LABEL.search(text, max(0, start - _CUE_REACH), start)
             or (len(match.group()) == 8 and _YMD.fullmatch(match.group()))
+            or (k >= 0 and kept[k][1] > start)
         ):
             continue
         found.append(match)
@@ -488,14 +524,19 @@ def _mask_local_numbers(text: str) -> str:
     lines = [m.start() for m in re.finditer("\n", text)]
     stops = [m.start() for m in _SENTENCE_END.finditer(text)]
     cues = [m.end() for m in _FAR_CUE.finditer(text)]
+    others = [m.start() for m in LABEL_STOP.finditer(text)]
 
     def labeled(start: int) -> bool:
         line_start = lines[i - 1] + 1 if (i := bisect.bisect_left(lines, start)) else 0
         k = bisect.bisect_right(cues, start) - 1
         if k < 0 or cues[k] < line_start:
             return False
+        # 标签和号码中间隔着句末标点、"编号：""腾讯会议："这类别的标签的不算
         j = bisect.bisect_left(stops, cues[k])
-        return not (j < len(stops) and stops[j] < start)
+        o = bisect.bisect_left(others, cues[k])
+        return not (j < len(stops) and stops[j] < start) and not (
+            o < len(others) and others[o] < start
+        )
 
     def listed_after(prev_end: int, start: int) -> bool:
         """上一个号码（这一次要遮的）和这一个中间只隔分隔符，或者分隔符加一个姓名。"""

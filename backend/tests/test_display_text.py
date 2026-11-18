@@ -12,7 +12,7 @@ import pytest
 
 from tests.test_readers import client, path, seed  # noqa: F401 - 夹具和造数据的函数
 from youju import attachment_text as texts
-from youju.ai import content
+from youju.ai import content, interpret
 from youju.api import v1
 from youju.models import AttachmentTextSegment
 
@@ -825,3 +825,71 @@ def test_common_words_on_a_phone_line_are_not_names():
     # 11/18：号码遮了以后，这一行按电话行把像姓名的词都遮掉；"查阅"这类普通词不能当成姓名
     shown = v1._clean_reading_body("操作指南可在网站查阅，技术支持：0571-87654321。")
     assert shown == f"操作指南可在网站查阅，技术支持：{MARK}。"
+
+
+EMAIL_MARK = "（这里隐去了邮箱）"
+
+
+@pytest.mark.parametrize(
+    ("stored", "shown"),
+    [
+        # 11/18 Codex 第三轮：电话类标签管到"腾讯会议：""会议号：""金额："这类别的标签为止（和入库
+        # 规则同一个 detail.LABEL_STOP），后面的号码不当电话；单位、部门写成的标签不算
+        ("电话：[电话已脱敏]，腾讯会议：23456789", f"电话：{MARK}，腾讯会议：23456789"),
+        ("电话：12345，腾讯会议：23456789", "电话：12345，腾讯会议：23456789"),
+        (
+            "电话：[电话已脱敏]，腾讯会议：主题某某，23456789",
+            f"电话：{MARK}，腾讯会议：主题某某，23456789",
+        ),
+        ("请致电[电话已脱敏]，会议号：23456789", f"请致电{MARK}，会议号：23456789"),
+        ("请致电12345，腾讯会议：23456789", "请致电12345，腾讯会议：23456789"),
+        ("联系电话：业务部门：某局某科，65432109", f"联系电话：业务部门：某局某科，{MARK}"),
+        (
+            "政策咨询可致电某局企业服务处：65432101、65432102。",
+            f"政策咨询可致电某局企业服务处：{MARK}、{MARK}。",
+        ),
+        # 会议号、会议 ID 后面像座机的号码不遮；会议编号整个没遮时，后半截也不单拿出来遮
+        ("会议号：010—12345678", "会议号：010—12345678"),
+        ("会议ID：+86 10 12345678", "会议ID：+86 10 12345678"),
+        (
+            "联系电话：[电话已脱敏]，会议编号 010—23456789",
+            f"联系电话：{MARK}，会议编号 010—23456789",
+        ),
+    ],
+)
+def test_phone_labels_stop_at_meeting_and_code_labels(stored: str, shown: str) -> None:
+    assert v1.display_body_text(stored) == shown
+    # 交给模型的文字按同一套规则补遮，标记写成入库的写法
+    assert v1.model_body_text(stored) == shown.replace(MARK, "[电话已脱敏]")
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "意见发至test＠foo－bar.com。",
+        "意见发至test@foo—bar.com。",
+        "意见发至abcdef @126.com。",
+        "意见发至13812345678@163.com。",
+    ],
+)
+def test_emails_masked_alike_by_store_and_page(raw: str) -> None:
+    # 11/18 Codex 第三轮：域名里的全角横线、破折号，"@"前面隔一个空格，手机号当邮箱名的，入库规则
+    # 和页面一样认：入库时遮成邮箱的标记，页面上直接拿原文也遮成邮箱
+    assert v1.redact_sensitive(raw) == "意见发至[邮箱已脱敏]。"
+    assert v1.display_body_text(v1.redact_sensitive(raw)) == f"意见发至{EMAIL_MARK}。"
+    assert v1.display_body_text(raw) == f"意见发至{EMAIL_MARK}。"
+
+
+def test_qq_mark_on_the_page_for_the_model_and_in_ai_quotes():
+    # 11/18 起入库遮 QQ 号：页面上写"（这里隐去了QQ号）"；交给模型的写回入库的标记，处理两次一样；
+    # AI 引用落在这一句上，照旧按"原句里有已脱敏的内容"不用
+    stored = v1.redact_sensitive("技术咨询QQ群：123456789、987654321。\n请于6月10日前报送。")
+    assert stored == "技术咨询QQ群：[QQ号已脱敏]、[QQ号已脱敏]。\n请于6月10日前报送。"
+    assert v1.display_body_text(stored) == (
+        "技术咨询QQ群：（这里隐去了QQ号）、（这里隐去了QQ号）。\n请于6月10日前报送。"
+    )
+    model = v1.model_body_text(stored)
+    assert model == stored and v1.model_body_text(model) == model
+    loaded = content.Texts.from_paragraphs(interpret.split_paragraphs(model))
+    assert content.locate(loaded, "P001", "技术咨询QQ群") == (None, "redacted")
+    assert content.locate(loaded, "P002", "请于6月10日前报送")[1] is None
