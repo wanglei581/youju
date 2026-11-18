@@ -81,3 +81,9 @@ def test_keeps_a_snapshot_dated_after_today(tmp_path):
     done = _run(tmp_path, "youju_tmp_snapshot_test")
     assert f"最新的一份：{name}" in done.stderr
     assert (public / name).exists()
+    # 晚得太多（3 天以后，时钟错了或改过名）：删掉，不会一直被选中
+    later = _name(-3)
+    (public / later).write_bytes(gzip.compress(b'{"format": "something-else"}\n'))
+    done = _run(tmp_path, "youju_tmp_snapshot_test")
+    assert f"最新的一份：{name}" in done.stderr
+    assert not (public / later).exists()

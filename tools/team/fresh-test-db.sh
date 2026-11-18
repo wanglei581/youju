@@ -130,7 +130,8 @@ def fresh(name):
         day = datetime.datetime.strptime(name[13:21], "%Y%m%d").date()
     except ValueError:
         return False
-    return (today - day).days <= 7  # 只删 7 天以前的；日期比今天晚的（两边时钟、时区不一）留着
+    # 7 天以内的留着；两边时钟、时区不一，日期最多容许比今天晚 1 天，再晚的（时钟错、改过名）也删
+    return -1 <= (today - day).days <= 7
 keep = [name for name in names if fresh(name)][-3:]
 for name in names:
     if name not in keep:
