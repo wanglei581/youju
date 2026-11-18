@@ -1,3 +1,6 @@
 {
-  "navigationBarTitleText": "关于有据"
+  "navigationBarTitleText": "关于有据",
+  "usingComponents": {
+    "follow-account": "/components/follow-account/index"
+  }
 }

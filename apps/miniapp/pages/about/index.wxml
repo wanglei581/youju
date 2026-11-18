@@ -5,6 +5,9 @@
   <view wx:if="{{version}}" class="weak brand-ver">版本 {{version}}</view>
 </view>
 
+<!-- 关注公众号（PR #287）：每周一的申报周报；没配公众号原始 ID、基础库低于 3.7.10 时不显示（组件里判断） -->
+<follow-account />
+
 <view class="card">
   <view class="section-title">说明</view>
   <view class="muted plain">{{disclaimer}}</view>

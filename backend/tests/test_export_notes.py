@@ -119,3 +119,36 @@ def test_broken_optional_image_keeps_text_export(kind, mini_code, tmp_path):
     note = book["数据说明"]
     assert not note._images
     assert SEARCH_NOTICE in [cell.value for row in note for cell in row]
+
+
+ACCOUNT_NOTICE = "微信公众号「有据申报与行业助手」：每周一发申报周报。"
+
+
+@pytest.mark.parametrize(
+    "name, shown",
+    [
+        ("", False),
+        ("有据申报与行业助手", True),
+        ("有据\n申报", False),  # 写法不对时不加，也不影响导出
+        ("有据 https://example.org", False),
+        ("长" * 31, False),
+    ],
+)
+def test_official_account_line_only_when_configured(name, shown, monkeypatch, tmp_path):
+    from youju.config import Settings
+
+    settings = Settings(_env_file=None, official_account_name=name)
+    monkeypatch.setattr(export_notes, "get_settings", lambda: settings)
+    for kind in ("public", "compare", "track"):
+        note = load_workbook(BytesIO(excel(kind, tmp_path)))["数据说明"]
+        rows = [[cell.value for cell in row] for row in note.iter_rows()]
+        assert (["公众号", ACCOUNT_NOTICE] in [row[:2] for row in rows]) is shown, kind
+        # 加在"查看原文和更新"下面，样式一样；不挪动已有业务行
+        if shown:
+            index = [row[0] for row in rows].index("公众号")
+            assert rows[index - 1][0] == "查看原文和更新"
+            assert note.cell(index + 1, 2).alignment.wrap_text
+    paragraphs = [p.text for p in WordDocument(BytesIO(exports._docx([item()], "x"))).paragraphs]
+    assert (ACCOUNT_NOTICE in paragraphs) is shown
+    if shown:
+        assert paragraphs.index(ACCOUNT_NOTICE) == paragraphs.index(SEARCH_NOTICE) + 1
