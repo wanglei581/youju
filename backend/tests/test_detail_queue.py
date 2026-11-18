@@ -233,10 +233,14 @@ def test_streaks_count_across_batches(session, kind):
     assert host in summary.paused_hosts
     expiry = _SitePause(get_settings().detail_pause_path).expiry(host)
     assert (expiry is not None) is (kind == "captcha-words")
+    # 触发停站的第 3 份也照常写库（第二十轮 Codex）；第 4 份没取、不写
+    written = [session.get(DocumentDetail, d.id) for d in docs]
+    assert all(detail is not None for detail in written[:3]) and written[3] is None
     if kind == "captcha-words":
-        # 前两份记读不出（页面上有验证码这类字），过几小时再试，不永远丢掉（第十九轮独立 Claude）
-        first = session.get(DocumentDetail, docs[0].id)
-        assert first.status == "parse_empty" and first.next_retry_at is not None
+        # 记读不出（页面上有验证码这类字），过几小时再试，不永远丢掉（第十九轮独立 Claude）
+        assert all(d.status == "parse_empty" and d.next_retry_at is not None for d in written[:3])
+    else:
+        assert all(d.status == "http_error" for d in written[:3])
 
 
 def test_time_stop_without_database():

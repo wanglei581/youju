@@ -890,15 +890,20 @@ def _fetch_outcomes(
                 # 只算详情页所在网站自己回的（PDF 在别的网站上回的不算到它头上）
                 http = outcome.fetch.http_status if outcome.fetch and answered == own else None
                 odd = http is not None and 400 <= http < 500 and http not in (404, 410)
+                # 触发停站的这一份照常交回、写库（带重试次数和时间），不当成被停取挡下的丢掉
+                # （第二十轮 Codex：丢掉的话停取到期后又当没取过的选回来）
+                streak_tripped = False
                 if pause.streak("odd-4xx", own, odd) >= 3:
                     # 连续 3 份回 404、410 以外的 4xx（405、418 这类多半是拦截）：这次运行先停
                     pause.add(own, f"连续 3 份 HTTP {http}", persistent=False)
+                    streak_tripped = True
                 captcha = outcome.failure_reason == CAPTCHA_WORDS_ONLY and answered == own
                 if pause.streak("captcha-words", own, captcha) >= 3:
                     # 连续 3 份页面上有验证码这类字、又不像整页关卡：多半是认不出的验证页（正常通知
                     # 讲验证码的不会一连几份），和防护页一样写进共享文件停 24 小时，下次运行也不来
                     # （第十九轮独立 Claude）
                     pause.add(own, "连续 3 份页面上有验证码这类字")
+                    streak_tripped = True
                 touched = {_host(u) for u in (url, *guarded.touched, *guarded.visited)}
                 refused = outcome.status == "protected" or (
                     outcome.fetch and outcome.fetch.http_status in {401, 403, 412, 429, 521}
@@ -906,6 +911,7 @@ def _fetch_outcomes(
                 if outcome.status != "site_paused" and (
                     outcome.status in {"ok", "robots_error"}
                     or refused
+                    or streak_tripped
                     or not touched & pause.reasons.keys()
                 ):
                     if strip_content and outcome.fetch is not None:

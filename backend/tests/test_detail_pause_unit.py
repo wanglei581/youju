@@ -1175,7 +1175,8 @@ def test_templated_verify_page_with_little_body_still_pauses(box, footer):
 
 def test_three_captcha_word_pages_in_a_row_pause_the_site(tmp_path):
     # 同一网站连续 3 份"页面上有验证码这类字、不像整页关卡"：多半是认不出的验证页，和防护页一样写进
-    # 共享文件停 24 小时（第十九轮独立 Claude），后面的不再取；第 3 份被停取挡下、不交回
+    # 共享文件停 24 小时（第十九轮独立 Claude），后面的不再取；触发停站的第 3 份照常交回（第二十轮
+    # Codex：要写库、带重试次数和时间）
     path = str(tmp_path / "pause.json")
     calls = []
 
@@ -1189,7 +1190,8 @@ def test_three_captcha_word_pages_in_a_row_pause_the_site(tmp_path):
     docs = [(i, f"https://a.gov.cn/{i}") for i in range(1, 6)]
     outcomes = _fetch_outcomes(docs, Fake(), 1, pause=pause, on_paused=paused.append)
     assert calls == [f"https://a.gov.cn/{i}" for i in (1, 2, 3)]
-    assert sorted(outcomes) == [1, 2] and paused == [3]
+    assert sorted(outcomes) == [1, 2, 3] and paused == []
+    assert outcomes[3].failure_reason == detail_service.CAPTCHA_WORDS_ONLY
     assert pause.reasons["a.gov.cn"] == "连续 3 份页面上有验证码这类字"
     assert _SitePause(path).expiry("a.gov.cn") is not None
 
