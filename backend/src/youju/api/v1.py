@@ -41,7 +41,7 @@ from youju.classify import (
     status_filter,
 )
 from youju.conditions import public_conditions
-from youju.crawler.detail import CODE_LABELS, LABEL_STOP, _name_like, redact_sensitive
+from youju.crawler.detail import _name_like, redact_sensitive
 from youju.crawler.urls import public_url
 from youju.db import get_session
 from youju.dedup import canonical_ids, group_ids, groups_for, visible_documents
@@ -2367,8 +2367,10 @@ _CONTACT_THEN_NUMBER = re.compile(
 )
 
 
-# 前面几个字是"编号""代码""会议号"这类的，是编号不是电话（和入库规则同一套：detail.CODE_LABELS）
-_CODE_BEFORE = re.compile(rf"(?:{CODE_LABELS})[ \t\u3000]*[:：]?[ \t\u3000]*$")
+# 前面几个字是"编号""代码"这类的，是编号不是电话
+_CODE_BEFORE = re.compile(
+    r"(?:编号|代码|文号|序号|邮编|批号|编码|账号|卡号)[ \t\u3000]*[:：]?[ \t\u3000]*$"
+)
 
 
 def _mask_area_phones(text: str) -> str:
@@ -2565,8 +2567,7 @@ def _hide_emails(text: str) -> str:
 # 电话类标签（电话、手机、传真、技术支持、咨询、联系方式、热线、值班）后面同一句里的本地号码
 # （11/2 复测）："技术支持：83124114""业务咨询：83124079、83124035"
 # "联系电话：业务部门：市科技局科技人才科，65119071"。到句号、问号、叹号、换行（最多 300 个字）
-# 为止，也到"编号：""腾讯会议：""金额："这类别的标签为止（"电话：1234，腾讯会议：2345…"，
-# 11/18 Codex 第三轮；和入库规则同一个 detail.LABEL_STOP，单位、姓名写成的标签不算）；后面接着
+# 为止；后面接着
 # 金额单位、"年月日号"的，小数，8 位像日期的，"编号""代码"这类后面的不算
 # 电话类词要紧挨着冒号（"咨询电话：""业务咨询：""电话号码："），"电话会议："这类不算
 _PHONE_CONTEXT = re.compile(
@@ -2586,12 +2587,6 @@ _NUMBER_BEFORE_MARK = re.compile(
 
 
 _HOTLINE_HEAD = re.compile(r"(?<![0-9])[48]00[ \t\u3000]*[-－—–‐−‑]?[ \t\u3000]*$")
-# 号码前面的区号（写法同 _AREA_PHONE）：区号前面又是"编号""会议号"这类标签的，整个是编号
-# （_mask_area_phones 不遮），后半截也不当号码（"联系电话：…，会议编号 010—2345…"，和入库规则一样）
-_AREA_HEAD = re.compile(
-    r"(?<![0-9A-Za-z])(?:[（(]0\d{2,3}[）)][ \t\u3000]*"
-    r"|0\d{2,3}[ \t\u3000]*[-－—–‐−‑]{1,2}[ \t\u3000]*|0\d{2,3}[ \t\u3000]+)$"
-)
 
 
 def _is_phone_number(text: str, match: re.Match[str]) -> bool:
@@ -2607,9 +2602,6 @@ def _is_phone_number(text: str, match: re.Match[str]) -> bool:
     # 400/800 热线的后半截（"400-8205114"）：单位的服务热线，整个不遮
     if _HOTLINE_HEAD.search(text, max(0, match.start() - 8), match.start()):
         return False
-    head = _AREA_HEAD.search(text, max(0, match.start() - 12), match.start())
-    if head is not None and _CODE_BEFORE.search(text, max(0, head.start() - 8), head.start()):
-        return False
     return _CODE_BEFORE.search(text, max(0, match.start() - 8), match.start()) is None
 
 
@@ -2621,9 +2613,6 @@ def _mask_context_numbers(text: str) -> str:
         stop = _CONTEXT_STOP.search(text, label.end(), end)
         if stop is not None:
             end = stop.start()
-        other = LABEL_STOP.search(text, label.end(), end)
-        if other is not None:
-            end = other.start()
         for number in _LOCAL_NUMBER.finditer(text, label.end(), end):
             if _is_phone_number(text, number):
                 spans.append(number.span())
@@ -2679,7 +2668,7 @@ def _mask_local_numbers(text: str) -> str:
 #    遇到附件、邮箱、地址、下一节标题、空行就停，最多 24 行）；
 # ② 单位名（以处、科、室、局、委、办、中心、部门……结尾）后面隔着冒号、逗号、空格的号码；
 # ③ 人名（常见姓氏开头的 2–3 个字）后面隔着括号、逗号、空格、换行的号码，括号连号码一起换；
-# ④ "致电""电询""拨打"后面同一句里（20 个字以内）、中间没隔"编号：""腾讯会议："这类标签的号码；
+# ④ "致电""电询""拨打"后面同一句里（20 个字以内）的号码；
 # ⑤ 一行里只有一串号码（两个以上）的，整串遮。
 # 号码照旧：7–8 位本地号码（可带分机）或区号连写的 11–12 位；后面接金额单位、"年月日号"的，
 # 小数、像日期的、"编号"这类后面的、400/800 热线的后半截都不算（_is_phone_number）
@@ -2712,7 +2701,7 @@ _CLOSE_AFTER = re.compile(r"[ \t\u3000]*[）)]")
 # 号码后面紧跟大写字母加数字的编码（"91220101 MA0Y5F26"：统一社会信用代码被空格拆开）不是电话
 _CODE_AFTER = re.compile(r"[ \t\u3000]*[A-Z][A-Z0-9]{3,}")
 _UNIT_LINE_END = re.compile(r"(?:[处科室局委办厅站所院组队]|中心|部门|单位|纪委|监委)[ \t\u3000]*$")
-_VERB_BEFORE_NUMBER = re.compile(r"(?P<verb>致电|电询|拨打)[^。！？!?\n]{0,20}$")
+_VERB_BEFORE_NUMBER = re.compile(r"(?:致电|电询|拨打)[^。！？!?\n]{0,20}$")
 # 一行一串号码只认 8 位或区号连写的：7 位的一串（"2060501、2060502"）更像科目编码（agy 审阅）
 _ONE_NUMBER = r"(?:0\d{2,3}[2-9]\d{6,7}|[2-9]\d{7}(?:(?:[-－]|转)\d{1,6})?)"
 _NUMBER_LIST_LINE = re.compile(
@@ -2831,10 +2820,7 @@ def _mask_more_numbers(text: str) -> str:
             name is not None
             or unit is not None
             or any(a <= start and end <= b for a, b in blocks)
-            or (
-                (verb := _VERB_BEFORE_NUMBER.search(before)) is not None
-                and LABEL_STOP.search(before, verb.end("verb")) is None
-            )
+            or _VERB_BEFORE_NUMBER.search(before)
         ):
             spans.append((*_with_brackets(text, start, end), PHONE_MARK))
     at = 0
