@@ -1181,3 +1181,37 @@ def test_auto_result_is_not_carried_over_to_a_notice_that_turns_out_to_solicit(
     sync_reviewed_twins(session, {doc.id})
     session.commit()
     assert twin.status == "pending" and twin.reviewed_by is None
+
+
+def test_auto_rereads_the_notice_after_locking(session, session_factory, candidate, monkeypatch):
+    """跑到一半同一通知新进来一个网址（另一个连接归并进来），标题是征求意见：锁住以后按现查的
+    归并组判断，这一条不再自动通过。"""
+    _auto_ai_record(session, candidate)
+    session.commit()
+    real_lock = verify._lock_notice
+    joined = []
+
+    def lock_after_a_new_url_joins(session_, members):
+        if not joined:
+            with session_factory() as other:
+                doc = other.get(Document, candidate.document_id)
+                late = _doc(doc.source, 62, "关于公开征求2027年度项目指南意见的通知", TODAY)
+                other.add(late)
+                other.flush()
+                other.add(
+                    DocumentMerge(
+                        duplicate_id=late.id, canonical_id=doc.id, match_key="joined", active=True
+                    )
+                )
+                other.commit()
+                joined.append(late.id)
+        return real_lock(session_, members)
+
+    monkeypatch.setattr(verify, "_lock_notice", lock_after_a_new_url_joins)
+    results = {
+        r["id"]: r["result"]
+        for r in verify.auto_verify(session, TODAY, datetime(2026, 9, 27, 12), True)
+    }
+    assert joined and results[candidate.id] == "标题是征集建议、征求意见"
+    session.expire_all()
+    assert candidate.status == "pending"

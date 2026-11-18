@@ -17,11 +17,11 @@ AUTO_REVIEWER = "AI 自动（规则与 AI 一致）"
 AUTO_REOPEN_TAG = "（原为 AI 自动通过）"
 # 标题里有"征集""征求"或"征询"、又有"建议"或"意见"的（征集……项目指南建议、公开征求……意见、
 # 征询……意见）：交的是建议、意见，不是企业申报，不自动核对（协调会话 11/17，按 D-135"确实是申报
-# 截止"；只按标题判，不用 AI）。标题被截断（末尾是省略号）、又有"征集""征求""征询"的，看不到后面
-# 有没有"建议""意见"，也不自动核对
+# 截止"；只按标题判，不用 AI）。标题被截断（末尾是省略号或两个以上的点）、又有"征集""征求""征询"
+# 的，看不到后面有没有"建议""意见"，也不自动核对
 _SOLICIT = re.compile(r"征集|征求|征询")
 _SUGGESTION = re.compile(r"建议|意见")
-_TRUNCATED = re.compile(r"(?:…|\.{3}|．{3}|。{3})\s*$")
+_TRUNCATED = re.compile(r"(?:…|\.{2,}|．{2,}|。{3})\s*$")
 
 
 def solicits_suggestions(title):
@@ -591,12 +591,22 @@ def auto_verify(session, today, now, write=False, clock=None, stop=None):
     def current():
         return clock() if clock is not None else now
 
+    def notice_members(document_id):
+        """这份文件所在的归并组（各网址），每次现查：跑的过程中组里进了新网址，也按现在的算。"""
+        master = canonical_ids(session, [document_id]).get(document_id, document_id)
+        return groups_for(session, [master]).get(master, [master])
+
     def one(item, key, members):
         row = session.get(DocumentDeadline, item["id"])
         if row is None:
             return "截止不存在"
         if write:
             _lock_notice(session, members)
+            # 锁住以后再查一次归并组：组里新进的网址也锁上，再按现在的组判断
+            fresh = notice_members(row.document_id)
+            if set(fresh) - set(members):
+                _lock_notice(session, fresh)
+            members = fresh
         if key in passed:
             return "同一截止已由较早的候选通过"
         if reason := _auto_reason(session, row, members, current()):
@@ -611,7 +621,8 @@ def auto_verify(session, today, now, write=False, clock=None, stop=None):
             },
             write=write,
             reviewer=AUTO_REVIEWER,
-            precheck=lambda r: _auto_reason(session, r, members, current()),
+            # 锁住以后、写入之前的复查也按现查的归并组（标题、同一天的检查都看整组）
+            precheck=lambda r: _auto_reason(session, r, notice_members(r.document_id), current()),
             # 同组证据相同的副本，也要是规则抽出、AI 一致的才一起通过（AI 单独找到的、AI 不一致的
             # 留在待核对）
             twin_filter=lambda d: d.origin == "rule" and d.ai_agrees is True,
