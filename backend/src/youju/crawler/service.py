@@ -6,7 +6,7 @@ from collections import defaultdict
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 
 from sqlalchemy import select
@@ -27,6 +27,12 @@ from youju.crawler.adapters import (
     gkmlpt_categories,
 )
 from youju.crawler.fetcher import FetchResult
+from youju.crawler.list_api import (
+    api_http_problem,
+    api_request,
+    read_api_response,
+    search_config,
+)
 from youju.crawler.listing import ListItem, extract_items
 from youju.crawler.urls import host_of, public_url, url_key
 from youju.dedup import reconcile_documents
@@ -38,13 +44,21 @@ log = logging.getLogger(__name__)
 PARSE_EMPTY_MESSAGE = (
     "页面可以访问，但没有识别到列表条目：可能网站改版，或列表由脚本加载需要浏览器渲染"
 )
+# 检查期间来源的网址或检索接口配置被改时，按新配置最多重来几次（改配置是人工操作，正常不会连着改）
+_CONFIG_RECHECKS = 2
 
 
 class Fetcher:
-    """抓取器接口；测试时可以换成假的实现。"""
+    """抓取器接口；测试时可以换成假的实现。
+
+    same_address_only 见 PoliteFetcher.fetch；form 只在来源配了检索接口时传
+    （见 crawler/list_api.py）。"""
 
     def fetch(
-        self, url: str, same_address_only: bool = False
+        self,
+        url: str,
+        same_address_only: bool = False,
+        form: Sequence[tuple[str, str]] | None = None,
     ) -> FetchResult:  # pragma: no cover - 接口定义
         raise NotImplementedError
 
@@ -260,27 +274,48 @@ def _items_via_adapter(
     return _AdapterResult(items, api.adapter, api_url=api.url)
 
 
-def check_source(
-    session: Session,
-    source: Source,
-    fetcher: Fetcher,
-    failure_threshold: int = 3,
-    today: date | None = None,
-) -> SourceCheck:
-    """检查一个来源：先抓取和识别，再在一个短事务里入库、记录结果。
+@dataclass
+class _Fetched:
+    result: FetchResult
+    status: str
+    error: str | None
+    items: list[ListItem]
+    # 第一次经平台适配器读出整页（以前只认出零星几条的来源，整页旧通知按基线记、不算"新增"）
+    first_via_adapter: bool = False
+    # 要写回来源 parser_config 的改动：加锁以后合到库里最新的配置上，不拿加锁前的旧副本整个
+    # 覆盖（两次检查同时进行时，不会把对方刚记下的拦下记录冲掉）
+    config_set: dict[str, object] = field(default_factory=dict)
+    config_drop: dict[str, object] = field(default_factory=dict)  # 要去掉的项 → 本次看到的旧值
 
-    网络请求可能持续几十秒，期间不开数据库事务、不持有锁（开始前先结束会话里已有的事务）。
-    """
-    url, parser_config = source.url, source.parser_config
-    session.commit()
-    started = _now()
-    t0 = time.monotonic()
+
+def _fetch_items(
+    fetcher: Fetcher,
+    source_id: int,
+    url: str,
+    parser_config: dict,
+    today: date | None,
+    started: datetime,
+) -> _Fetched:
+    """按来源配置抓一次、识别条目。不碰数据库：要写回配置的改动放在结果里，由调用方加锁后合并。
+
+    两种接口互不相干：配了检索接口（search_api，人工核实后用 youju source-list-api 写入，见
+    crawler/list_api.py）的，直接请求那个接口，不抓栏目页；其余抓栏目页，通用规则认出的条目太少时，
+    再看页面自己有没有声明平台列表接口（crawler/adapters.py，只读标了"经接口读"的，D-128）。"""
+    search = api_request(parser_config)
+    if search is not None:
+        result = fetcher.fetch(search.url, form=search.form)
+        status, error, items = result.status, result.error, []
+        if result.status == "ok":
+            # 每轮都复核：拒绝访问、栏目编号对不上、过半条目不在栏目目录下的都不入库；
+            # 条目链接按栏目页补全，不按接口网址
+            status, error, items, _ = read_api_response(result.text, url, parser_config, today)
+        elif problem := api_http_problem(result):
+            status, error = problem
+        return _Fetched(result, status, error, items)
     result = fetcher.fetch(url)
     status, error = result.status, result.error
     items: list[ListItem] = []
     first_via_adapter = False
-    # 要写回来源 parser_config 的改动：加锁以后合到库里最新的配置上，不拿加锁前的旧副本整个
-    # 覆盖（两次检查同时进行时，不会把对方刚记下的拦下记录冲掉）
     config_set: dict[str, object] = {}
     config_drop: dict[str, object] = {}  # 要去掉的项 → 本次看到的旧值（库里还是它才去掉）
     if result.status == "ok":
@@ -304,7 +339,7 @@ def check_source(
             # 记成 0 条：记"读不出"并写明待复检，进失败清单等复检
             items = []
             status, error = "parse_empty", NEEDS_REVIEW_MESSAGE
-            log.warning("来源 #%s 页面改用接口加载，待复检（没有经接口读的标记）", source.id)
+            log.warning("来源 #%s 页面改用接口加载，待复检（没有经接口读的标记）", source_id)
             api = None
         before = _refused_before(parser_config, api.url, started) if api is not None else ""
         if before:
@@ -361,8 +396,41 @@ def check_source(
                     error = f"列表接口（{via.adapter}）：{via.part}返回读不出列表，下次再试"
         if not items and status == "ok":
             status, error = "parse_empty", PARSE_EMPTY_MESSAGE
+    return _Fetched(result, status, error, items, first_via_adapter, config_set, config_drop)
 
-    _lock_source(session, source)
+
+def check_source(
+    session: Session,
+    source: Source,
+    fetcher: Fetcher,
+    failure_threshold: int = 3,
+    today: date | None = None,
+) -> SourceCheck:
+    """检查一个来源：先抓取和识别，再在一个短事务里入库、记录结果。
+
+    网络请求可能持续几十秒，期间不开数据库事务、不持有锁（开始前先结束会话里已有的事务）。
+    锁住来源后再核对一次网址和检索接口配置（search_api）：期间被改了（如有人执行
+    youju source-list-api），这次结果作废，按新配置重新检查；最多重来 _CONFIG_RECHECKS 次，
+    还在变就报错（记为内部错误）。别的配置项期间被改了（如同时进行的另一次检查记下了接口标记、
+    拦下记录）不作废：这次要写回的改动合到库里最新的配置上。
+    """
+    # 起始时间和计时算整次检查（包括作废重来的部分）；条目的"看到时间"也用它，和平时一样是检查开始时
+    started = _now()
+    t0 = time.monotonic()
+    for _ in range(_CONFIG_RECHECKS + 1):
+        url, parser_config, source_id = source.url, source.parser_config, source.id
+        session.commit()
+        fetched = _fetch_items(fetcher, source_id, url, parser_config, today, started)
+        _lock_source(session, source)
+        now_search = (source.url, search_config(source.parser_config))
+        if now_search == (url, search_config(parser_config)):
+            break
+        session.commit()  # 放开锁，按新配置重来
+    else:
+        raise RuntimeError(f"来源 #{source.id} 的网址或抓取配置在检查期间反复被改")
+    result, status, error, items = fetched.result, fetched.status, fetched.error, fetched.items
+    first_via_adapter = fetched.first_via_adapter
+    config_set, config_drop = fetched.config_set, fetched.config_drop
     if config_set or config_drop:
         # 记下这个栏目要经列表接口读，或列表接口被读取护栏拦下（以后不再请求）、去掉旧记录
         # 要去掉的项，只有库里还是本次看到的那个值才去掉（别的检查刚记下的新拦下记录不动）
