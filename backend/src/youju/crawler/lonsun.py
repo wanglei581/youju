@@ -35,7 +35,8 @@ window 和函数里的 this 都不许整个当值用（只认 this.名字、$(th
 还有两条前提（第十二、十三轮审阅）：所有外链脚本（平台的 common.min.js、ztree.min.js，龙讯云、
 无障碍、统计这些动态插入的脚本，也包括站点自己的 /assets/js/… 这类）都不分析，当它们不改我们照着推
 请求用的东西、也不让页面在发列表请求之前出错——平台脚本的写法核对过（参数顺序、编码、跳过
-undefined）；页面用到外链脚本定义的变量时（淮南 preprocessData 的 hideCatalogId），当真实页面在
+undefined；页面调的 Ls.extend 就是 $.extend，照它认改了谁）；页面用到外链脚本定义的变量时（淮南
+preprocessData 的 hideCatalogId），当真实页面在
 浏览器里能跑。异步取回的网页片段（$.get(…).done(h → .html(h)) 这类，标签页内容）里的脚本也不分析，
 当它们不改这些东西——片段可能在列表请求发出之前回来、执行（脚本顶层发的请求，在解析器等后面的外链
 脚本下载时就可能回来）；用 .load(地址) 插片段的照旧不认（写法更直接，真实页面没有）。
@@ -1183,6 +1184,8 @@ def _member(obj, key, env):
     if isinstance(obj, _PartialDict):
         return obj.get(key, UNKNOWN)
     if isinstance(obj, dict):
+        if key not in obj and key in _OBJECT_PROTOTYPE_KEYS:
+            return UNKNOWN  # 继承来的 toString、constructor 这类（和 in 一致，第十七轮独立 Claude）
         return obj.get(key, UNDEFINED)
     if isinstance(obj, (list, tuple, str)):
         if key == "length":
@@ -1459,12 +1462,20 @@ def _write_sites(tokens, values, skipped=frozenset()):
                 continue  # x.split(',').sort().reverse()：改的是新建的数组
             result.append((tuple(parts[:-1]), parts[-1], i))
         elif (
-            parts in (["$", "extend"], ["jQuery", "extend"], ["$", "merge"], ["jQuery", "merge"])
+            parts
+            in (
+                ["$", "extend"],
+                ["jQuery", "extend"],
+                ["Ls", "extend"],
+                ["$", "merge"],
+                ["jQuery", "merge"],
+            )
             or len(parts) == 2
             and parts[0] in ("Object", "Reflect")
         ) and op == "(":
             # 只需要找目标；复杂目标一律作为未知写入。$.extend(true, X, …) 的第一个参数是"深拷贝"
-            # 标志，目标是第二个；$.merge(X, …) 把后面的数组并进 X
+            # 标志，目标是第二个；$.merge(X, …) 把后面的数组并进 X。Ls.extend 就是 $.extend（平台
+            # common.min.js 里 _win.Ls=TT、TT.extend=$.extend）
             k = j + 1
             if parts[-1] == "extend" and k < len(v) and v[k] in ("true", "false", "!"):
                 k += 2 if v[k] == "!" else 1
@@ -2437,16 +2448,100 @@ def _index_access(values, k):
     )
 
 
+def _grouped_write_problem(tokens, values, k):
+    """values[k] 是分组括号或数组字面量的开头：后面接成员链、最后赋值、自增自减、被 delete，或者在
+    链上调原地修改方法（_MUTATORS）的，_write_sites 只从名字往后接成员，看不见改了谁（第十七轮独立
+    Claude）。只读的、IIFE、新建的数组上直接调原地修改方法（[a, b].sort()）、链上经过返回新数组的
+    调用（[a].concat(b).push(c)）以后再改的不算。"""
+    grouping = values[k] == "("
+    close = _matching_token(tokens, k)
+    j, members = close + 1, 0
+    while j < len(values):
+        token = values[j]
+        name = None
+        if token in (".", "?.") and j + 1 < len(values):
+            name, nxt = values[j + 1], j + 2
+        elif token == "[":
+            end = _matching_token(tokens, j)
+            key = values[j + 1 : end]
+            if len(key) == 1 and key[0][:1] in ("'", '"'):
+                name = _string_literal(key[0])
+            nxt = end + 1
+        elif token == "(" and (grouping or members):
+            # 调用：(0, f)(x)、(a || b).c(…)；调的是返回新数组的方法时，后面改的是新数组
+            nxt = _matching_token(tokens, j) + 1
+            if values[j - 1] in _FRESH_RESULTS and values[j - 2 : j - 1] in (["."], ["?."]):
+                grouping, members = False, 0
+            j = nxt
+            continue
+        else:
+            break
+        if name in _MUTATORS and values[nxt : nxt + 1] == ["("]:
+            if grouping or members:
+                return (
+                    f"在括号或数组字面量打头的东西上调原地修改方法 {name}（(x || []).push(…)），"
+                    "看不出改了谁"
+                )
+            # 新建的数组上直接调：sort、reverse 返回的还是这个新数组，别的返回元素或长度
+            j = _matching_token(tokens, nxt) + 1
+            members = 0 if name in ("sort", "reverse") else 1
+            continue
+        members += 1
+        j = nxt
+    op = values[j] if j < len(values) else ""
+    before = values[k - 1] if k else ""
+    if (grouping or members) and (op in _ASSIGN_OPS or before in ("++", "--", "delete")):
+        return "给括号或数组字面量打头的东西赋值、改成员（(x).y = …、[x][0].y = …），看不出改了谁"
+    return None
+
+
+def _merge_target_problem(tokens, values, k):
+    """values[k] 是 $.extend(、jQuery.extend(、Ls.extend(、$.merge(、Object.x(、Reflect.x( 的
+    左括号：目标（$.extend 跳过深拷贝标志）是括号打头的，或者是从数组字面量里取出来的（[x][0]），
+    看不出改了谁（第十七轮独立 Claude）。"""
+    if k < 3 or values[k - 2] != "." or (k >= 4 and values[k - 4] in (".", "?.")):
+        return None
+    root, method = values[k - 3], values[k - 1]
+    merging = root in ("$", "jQuery", "Ls") and method in ("extend", "merge")
+    if not (merging or root in ("Object", "Reflect") and _IDENT.fullmatch(method)):
+        return None
+    t = k + 1
+    if method == "extend" and t < len(values) and values[t] in ("true", "false", "!"):
+        t += 2 if values[t] == "!" else 1
+        if t < len(values) and values[t] == ",":
+            t += 1
+    target = values[t] if t < len(values) else ""
+    if target == "(":
+        return f"{root}.{method} 的目标是括号打头的东西（{root}.{method}((x), …)），看不出改了谁"
+    if target == "[":
+        end = _matching_token(tokens, t)
+        if values[end + 1 : end + 2] in (["."], ["["]):
+            return f"{root}.{method} 的目标是从数组字面量里取出来的（[x][0]），看不出改了谁"
+    return None
+
+
 def _pattern_write_problem(tokens, values):
     """_write_sites 看不见的写法（第十一轮审阅）：解构赋值（[me.listParams.pageSize] = […]、
     ({x: Ls.ajaxGet} = …)、var [a] = …），for-in/of 每次写进成员、解构或页面依赖的全局名字，
     for await，class、对象字面量里的简写方法和取值函数（this 跟着谁走、改了什么看不清），with
     （里面的名字先按对象的成员找），可选链 ?.，经 call、apply 调用或存起来的数组原地修改方法
-    （push、splice 这类），按算出来的名字调用方法。真实页面上都没有（for (var i in …)、
-    Array.prototype.slice.call(…) 这种照常），一律不认。"""
+    （push、splice 这类，点号和字符串下标写的都算），按算出来的名字调用方法（直接调或者经 call、
+    apply、bind 调），括号、数组字面量打头再接成员的写入（(me.query || {}).type = …、
+    (catalogs[1] || []).push(…)、[x][0].y = …、(GLOBAL_CONTEXTPATH) = …，第十七轮独立 Claude），
+    合并、改属性的目标是括号或数组字面量里取出来的（$.extend((x), …)）。真实页面上都没有
+    （for (var i in …)、Array.prototype.slice.call(…)、(function(){…})()、(a || b).toString()、
+    [a, b].sort() 这种照常），一律不认。"""
     for k, value in enumerate(values):
         before = values[k - 1] if k else ""
         after = values[k + 1] if k + 1 < len(values) else ""
+        if value in ("(", "[") and not _index_access(values, k):
+            problem = _grouped_write_problem(tokens, values, k)
+            if problem:
+                return problem
+        if value == "(":
+            problem = _merge_target_problem(tokens, values, k)
+            if problem:
+                return problem
         if value in ("[", "{"):
             close = _matching_token(tokens, k)
             if values[close + 1 : close + 2] == ["="] and not (
@@ -2483,14 +2578,29 @@ def _pattern_write_problem(tokens, values):
             # Array.prototype.push.apply(me.ztreeData, …)、[].splice.call(…)、var p = [].push：
             # 经 call、apply 调用或存起来再调，原地改了谁看不出来
             return f"把数组的原地修改方法 {value} 当值用（经 call、apply 调用，或者存起来再调）"
+        if (
+            value[:1] in ("'", '"')
+            and before == "["
+            and after == "]"
+            and _index_access(values, k - 1)
+            and _string_literal(value) in _MUTATORS
+            and values[k + 2 : k + 3] != ["("]
+        ):
+            # Array.prototype['push'].apply(me.ztreeData, …)：字符串下标写的方法名和点号一样看
+            name = _string_literal(value)
+            return f"把数组的原地修改方法 {name} 当值用（经 call、apply 调用，或者存起来再调）"
         if value == "[" and _index_access(values, k):
             close = _matching_token(tokens, k)
             key = values[k + 1 : close]
             literal = len(key) == 1 and (
                 key[0][:1] in ("'", '"') or bool(re.fullmatch(r"[0-9]+", key[0]))
             )
-            if not literal and values[close + 1 : close + 2] == ["("]:
-                return "按算出来的名字调用方法（x[k](…)），看不出调了什么"
+            if not literal and (
+                values[close + 1 : close + 2] == ["("]
+                or values[close + 1 : close + 3] in ([".", "call"], [".", "apply"], [".", "bind"])
+            ):
+                # x[k](…)，或者 x[k].call(…)、.apply(…)、.bind(…)（var m = 'push'; a[m].call(a, …)）
+                return "按算出来的名字调用方法（x[k](…)、x[k].call(…)），看不出调了什么"
         if value != "for":
             continue
         if after == "await":

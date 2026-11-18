@@ -3429,6 +3429,19 @@ def _with_code(where, code):
         ("script", "catalogs[6991]?.push({id: 1, name: 'x', parentId: 49949451});"),
         ("script", "var p = [].push; p.call(catalogs[6991], {});"),
         ("bind", "me.ztreeData['pu' + 'sh']({});"),
+        # 括号、数组字面量打头再接成员的写入和合并，字符串下标写的原地修改方法当值用，按算出来的
+        # 名字取方法再经 call 调（第十七轮独立 Claude）
+        ("bind", "(me.query || {}).type = '5';"),
+        ("bind", "(me.listParams).pageSize = '100';"),
+        ("script", "(GLOBAL_CONTEXTPATH) = '/x';"),
+        ("script", "(catalogs[6991] || []).push({id: 1, name: 'x', parentId: 49949451});"),
+        ("bind", "[me.ztreeData][0].push({id: 1, name: 'x', parentId: 49949451});"),
+        ("script", "$.extend((catalogs[6991]), [{id: 1}]);"),
+        (
+            "bind",
+            "Array.prototype['push'].apply(me.ztreeData, [{id: 1, name: 'x', parentId: 49949451}]);",
+        ),
+        ("bind", "var m = 'push'; me.ztreeData2[m].call(me.ztreeData2, {id: 1});"),
     ],
 )
 def test_hidden_writes_refused(where, code):
@@ -3454,6 +3467,10 @@ def test_hidden_writes_refused(where, code):
         ("script", "var obj = {}; obj.Ls = 1; var arr = []; arr[0] = 1;"),
         ("link", "void(0)"),
         ("script", "function f(id, el) {} "),
+        # 括号、数组字面量打头的只读写法、IIFE、新建数组上排序照常（第十七轮）
+        ("script", "(function () { var a = 1; })();"),
+        ("script", "var s = (location.search || '').replace('?', ''); var n = [1, 2].sort();"),
+        ("script", "var a = {}; var t = (new Date()).getTime(); var q = (a || {}).y;"),
     ],
 )
 def test_similar_harmless_code_still_recognized(where, code):
@@ -3937,3 +3954,22 @@ def test_trial_ignores_same_number_documents_on_other_sites():
     page = fixture("jx_page.html").replace("<body>", f"<body><ul>{links}</ul>", 1)
     col = check_one(_jx_cache(page), lonsun_column(), TODAY)
     assert col.reason.startswith("经龙讯"), col.reason
+
+
+@pytest.mark.parametrize("call", ["$.extend", "Ls.extend"])
+def test_ls_extend_counts_as_jquery_extend(call):
+    # 平台 common.min.js 里 _win.Ls=TT、TT.extend=$.extend：Ls.extend 改第一个参数，和 $.extend 一样
+    # 当改了 me.listParams（第十七轮独立 Claude：以前当它不改，照发 pageSize 20，浏览器发 100）
+    page = _with_code("bind", f"{call}(me.listParams, {{pageSize: '100'}});")
+    assert _refused(page), call
+
+
+def test_inherited_members_of_plain_objects_are_unknown():
+    # 普通对象上读继承来的 toString、constructor 这类：JS 里有值，不当 undefined（和 in 一致）
+    from youju.crawler.lonsun import UNKNOWN, _Environment, _evaluate, _parse_expression
+
+    env = _Environment({"q": {"catId": "1"}})
+    assert _evaluate(_parse_expression("q.toString"), env) is UNKNOWN
+    assert _evaluate(_parse_expression("q.constructor"), env) is UNKNOWN
+    assert _evaluate(_parse_expression("q.catId"), env) == "1"
+    assert _evaluate(_parse_expression("q.other"), env) is not UNKNOWN
