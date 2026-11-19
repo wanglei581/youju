@@ -122,7 +122,7 @@ _CODE_BEFORE = re.compile(rf"(?:{_CODE_LABELS})[^\S\n]*+[:：]?[^\S\n]*+\Z")
 # 整个遮；"台、张"这类单位只看号码本身后面（"8765…转801张某"的"张"是姓）。
 # 标签按行、按句找，不按字数：号码换成标记以后再过一遍，看到的线索一样。
 _LOCAL_NUMBER = re.compile(
-    r"(?<![\d.．\-－A-Za-z])(?P<area>0[1-9]\d{1,2}[^\S\n]+)?(?P<num>[2-9]\d{6,7})"
+    r"(?:(?<![0-9A-Za-z])(?P<area>0[1-9]\d{1,2}[^\S\n]+)|(?<![\d.．\-－A-Za-z]))(?P<num>[2-9]\d{6,7})"
     r"(?![\dA-Za-z.．年月日元万亿千百%％‰人个件户家项名位次条份号吨米台部辆架艘套张本册篇场座栋间只"
     r"头株棵亩倍岁批期届级页字])"
     r"(?![^\S\n]+[元万亿%％‰])"
@@ -136,17 +136,17 @@ _FAR_CUE = re.compile(
 )
 # 可以隔一个换行（表格里一格一行："[姓名已脱敏]⏎6543…"，同显示层的 _PHONE_TAIL）
 _NEAR_CUE = re.compile(
-    r"(?:\[(?:电话|手机号|姓名)已脱敏\]|[\u4e00-\u9fff](?:老师|先生|女士|同志))"
+    r"(?:\[(?:新?电话|手机号|姓名)已脱敏\]|[\u4e00-\u9fff](?:老师|先生|女士|同志))"
     r"[^\S\n]*+(?:[、，,；;/／：:或和及][^\S\n]*+)?(?:\n[^\S\n]*+)?\Z"
 )
 # 遮过的电话后面隔一个姓名再写号码（"[电话已脱敏] 李某 6543…"）
 _MARK_NAME_BEFORE = re.compile(
-    r"\[(?:电话|手机号)已脱敏\](?:[^\S\n]*+[，,、；;/][^\S\n]*+|[^\S\n]++)"
+    r"\[(?:新?电话|手机号)已脱敏\](?:[^\S\n]*+[，,、；;/][^\S\n]*+|[^\S\n]++)"
     r"([\u4e00-\u9fff·]{2,6})[^\S\n]*+[，,：:]?[^\S\n]*+\Z"
 )
 # 上一个号码和这一个中间只隔这些（"6543…、6543…"，可以隔一个换行）
 _NUMBER_GAP = re.compile(r"[^\S\n]*+(?:[、，,；;/／或和及][^\S\n]*+)?(?:\n[^\S\n]*+)?")
-_PHONE_MARK = re.compile(r"\[(?:电话|手机号)已脱敏\]")
+_PHONE_MARK = re.compile(r"\[(?:新?电话|手机号)已脱敏\]")
 # 号码和后面那个遮过的电话（或这一次认出来的号码）中间只隔这些：分隔符，加上可能有的一个姓名
 _LIST_GAP = re.compile(
     r"(?:[^\S\n]*+[，,、；;/][^\S\n]*+|[^\S\n]++)"
@@ -177,7 +177,7 @@ _CUE_RIGHT_BEFORE = re.compile(rf"(?:{_FAR_CUE.pattern})[^\S\n]*+\Z")
 # _HOTLINE_HEAD；独立 Claude 第二轮）
 _HOTLINE_HEAD = re.compile(rf"(?<!\d)[48]00[^\S\n]*[{_DASHES}]?[^\S\n]*\Z")
 # "/"前面是这些标记的，"/"后面的号码才认（"[电话已脱敏]/6543…""联系人：[姓名已脱敏]/6543…"）
-_SLASH_MARKS = ("[电话已脱敏]", "[手机号已脱敏]", "[姓名已脱敏]")
+_SLASH_MARKS = ("[电话已脱敏]", "[新电话已脱敏]", "[手机号已脱敏]", "[姓名已脱敏]")
 _SENTENCE_END = re.compile(r"[。！？!?]")
 # QQ 号、QQ 群号（"技术咨询QQ群：1234…""QQ：…"，11/18 漏遮）：标签后面的号码，一串里接着写的几个
 # （"QQ群：1234…、5678…"）一起遮。"QQ"前面、号码后面紧挨着英文字母或数字的不认：统一社会信用代码
@@ -503,15 +503,63 @@ def _redact_once(text: str) -> str:
     text = _mask_qq(text)
     text = _mask_local_numbers(text)
     # 姓名最后认：邮箱、座机先换成"[…已脱敏]"，姓名前后挨着的是"]"，第一遍和再过一遍看到的一样
-    return _mask_names(text).replace(_NUMBER_EMAIL_MARK, "[邮箱已脱敏]")
+    text = _mask_names(text)
+    # 这一遍新遮的号码（临时标记），前面还没遮的人名照主干页面规则 ③ 遮：入库规则先认（几个连写的
+    # 姓名合成一个标记），这条补它没认出来的。最后换回正常的标记
+    news = [m.start() for m in _NEW_MARKS.finditer(text)]
+    text = _apply_spans(text, [(*span, _NAME_MARK) for span in _page_names_before(text, news)])
+    for temp, mark in _TEMP_MARKS:
+        text = text.replace(temp, mark)
+    return text
+
+
+_NAME_MARK = "[姓名已脱敏]"
+# 这一遍新遮、主干入库不遮的号码先换成临时标记（主干不认的座机写法、不带区号的本地号码、QQ 号；
+# 数字用户名的邮箱见 _NUMBER_EMAIL_MARK），遮完姓名再换回来：认电话标记的几条规则（_NEAR_CUE、
+# _PHONE_MARK、_BEFORE_PHONE 这些）也认它们
+_NEW_PHONE_MARK = "[新电话已脱敏]"
+_NEW_QQ_MARK = "[新QQ号已脱敏]"
+_TEMP_MARKS = (
+    (_NEW_PHONE_MARK, "[电话已脱敏]"),
+    (_NEW_QQ_MARK, "[QQ号已脱敏]"),
+    (_NUMBER_EMAIL_MARK, "[邮箱已脱敏]"),
+)
+_NEW_MARKS = re.compile("|".join(re.escape(temp) for temp, _ in _TEMP_MARKS))
+# 主干入库就遮的座机写法（区号接"-""－"，后面 7–8 位）
+_MAIN_LANDLINE = re.compile(r"0\d{2,3}[-－]\d{7,8}")
+
+
+def _page_names_before(text: str, starts: list[int]) -> list[tuple[int, int]]:
+    """这次入库新遮、主干入库不遮的号码（不带区号的本地号码、主干不认的座机写法、QQ 号、数字用户名的
+    邮箱），号码前面的人名：主干页面上按原始数字认出来遮掉（v1._name_before，号码前 2–3 个字像人名
+    就遮，规则 ③）。现在入库先换成了标记，页面上那条认不到，所以入库时照同一个函数、照样宽地把前面的
+    人名遮掉（11/18 独立 Claude 第五到七轮）。starts：号码在 text 里的起点。延迟引入 v1。"""
+    if not starts:
+        return []
+    from youju.api import v1
+
+    return [span for start in starts if (span := v1._name_before(text, start)) is not None]
+
+
+def _apply_spans(text: str, spans: list[tuple[int, int, str]]) -> str:
+    """把 [(开始, 结束, 标记)] 换成标记；按位置排，和前一段重叠的不换。"""
+    if not spans:
+        return text
+    out: list[str] = []
+    at = 0
+    for start, end, mark in sorted(spans):
+        if start < at:
+            continue
+        out += [text[at:start], mark]
+        at = end
+    return "".join(out) + text[at:]
 
 
 def _mask_landlines(text: str) -> str:
     """座机换成标记。照原样留着的：新加的写法（括号、破折号、横线两边带空格）区号是"00"开头的；
     前面紧挨着"编号""会议号"这类标签的（_CODE_BEFORE）；区号后面 9–16 位的（long）不紧跟在电话类
     标签后面（_CUE_RIGHT_BEFORE）或者前面是"受理号""批次"这类标签的。"""
-    out: list[str] = []
-    at = 0
+    spans: list[tuple[int, int, str]] = []
     for match in _PHONE.finditer(text):
         start = match.start()
         window = max(0, start - _CUE_REACH)
@@ -525,9 +573,10 @@ def _mask_landlines(text: str) -> str:
             or not _CUE_RIGHT_BEFORE.search(text, window, start)
         ):
             continue
-        out += [text[at:start], "[电话已脱敏]"]
-        at = match.end()
-    return "".join(out) + text[at:] if out else text
+        # 主干入库就遮的写法照旧，别的写法是这次新遮的
+        new = not _MAIN_LANDLINE.fullmatch(match.group())
+        spans.append((start, match.end(), _NEW_PHONE_MARK if new else "[电话已脱敏]"))
+    return _apply_spans(text, spans)
 
 
 def _label_finder(text: str) -> Callable[[int], bool]:
@@ -554,7 +603,7 @@ def _label_finder(text: str) -> Callable[[int], bool]:
 
 
 def _mask_qq(text: str) -> str:
-    return _QQ.sub(lambda m: m.group(1) + _QQ_NUMBER.sub("[QQ号已脱敏]", m.group(2)), text)
+    return _QQ.sub(lambda m: m.group(1) + _QQ_NUMBER.sub(_NEW_QQ_MARK, m.group(2)), text)
 
 
 def _mask_local_numbers(text: str) -> str:
@@ -577,7 +626,7 @@ def _mask_local_numbers(text: str) -> str:
             text.endswith("]", 0, start)
             or _NOT_PHONE_LABEL.search(text, max(0, start - _CUE_REACH), start)
             # 8 位像日期的（只看分机前面那一段："受理时间：20231108-1"；带区号的是电话，"电话：
-            # 0571 2023…"照样遮）
+            # 0123 2023…"照样遮）
             or (not match.group("area") and _YMD.fullmatch(match.group("num")))
             or (k >= 0 and kept[k][1] > start)
             or _HOTLINE_HEAD.search(text, max(0, start - 8), start)
@@ -631,13 +680,12 @@ def _mask_local_numbers(text: str) -> str:
         masked[i] = _PHONE_MARK.match(text, nxt) is not None or (
             i + 1 < len(candidates) and candidates[i + 1].start() == nxt and masked[i + 1]
         )
-    out: list[str] = []
-    at = 0
-    for match, hide in zip(candidates, masked, strict=True):
-        if hide:
-            out += [text[at : match.start()], "[电话已脱敏]"]
-            at = match.end()
-    return "".join(out) + text[at:]
+    spans = [
+        (match.start(), match.end(), _NEW_PHONE_MARK)
+        for match, hide in zip(candidates, masked, strict=True)
+        if hide
+    ]
+    return _apply_spans(text, spans)
 
 
 def _listed_name(word: str | None) -> bool:
@@ -866,14 +914,14 @@ _HAN_RUN = re.compile(rf"[{_HAN}·]+")
 # 遮成标记的号码都算：电话、手机号、QQ 号，还有用户名是一串数字的邮箱（_NUMBER_EMAIL_MARK，号码当
 # 邮箱名的"王某，8765…＠qq.com"入库先认成邮箱）。以前号码先露着、页面上当号码遮，姓名跟着遮；现在
 # 入库先换成了标记，前面的姓名照样要遮（11/18 独立 Claude 第五、六轮）。字母用户名的邮箱不算
-_BEFORE_PHONE = re.compile(r"\[(?:电话|手机号|QQ号|号码邮箱)已脱敏\]")
+_BEFORE_PHONE = re.compile(r"\[(?:新?电话|手机号|新?QQ号|号码邮箱)已脱敏\]")
 # 姓名和号码中间隔着的"，电话：""，""电话：""（"（"某某，电话：[电话已脱敏]""某老师，[手机号已脱敏]"
 # "某某、某某（[电话已脱敏]，某中心）"，11/18 漏遮）：从号码往前去掉这一截，再看前面那个词。
 # 隔开符也认"、；/"，标签也认"QQ：""邮箱："，前面可以带空格（"王某、[邮箱已脱敏]""王某 QQ：
 # [QQ号已脱敏]"，11/18 独立 Claude 第六轮）
 _NAME_TO_PHONE = re.compile(
     r"[^\S\n]*+(?:[，,（(、；;/／][^\S\n]*+)?"
-    r"(?:(?:(?:联系)?(?:电话|手机|座机|固话)(?:号码)?|(?:QQ|qq|Qq|ＱＱ)群?(?:号码?)?|(?:电子)?邮箱)"
+    r"(?:(?:(?:联系)?(?:电话|手机|座机|固话)(?:号码)?|(?:QQ|qq|Qq|ＱＱ)群?(?:号码?)?|(?:电子)?(?:邮箱|邮件))"
     r"[^\S\n]*+)?[:：]?[^\S\n]*+$"
 )
 
@@ -942,8 +990,10 @@ def _glued_name(run: str) -> int | None:
             _name_like(tail) or (size == 4 and _name_like(tail[:2]) and _name_like(tail[2:]))
         ):
             return cut
-        # "联系""致电"这类词后面紧跟着的姓名、姓加称呼（"请联系张老师 [电话]""请致电王老师
-        # [电话]"，11/18 独立 Claude 第六轮）
+        # 姓加称呼（"某某大学张老师 [电话]"）前面不论是什么字都认；"联系""致电"这类词后面紧跟着的
+        # 姓名也认（"请致电张三 [电话]"，11/18 独立 Claude 第六、七轮）
+        if size == 3 and tail[0] in _SURNAMES and tail[1:] in _TITLES:
+            return cut
         if (
             head.endswith(_CALL_VERBS)
             and size <= 3

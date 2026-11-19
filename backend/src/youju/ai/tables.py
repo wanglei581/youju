@@ -71,7 +71,8 @@ def pick_name_column(
     if not kept:
         return None
 
-    kept_headers = [normalized_headers[i] for i in kept]
+    # 表头也按隐私要求遮（缺表头时第一行数据就是表头，"张某 0123-8765…"原样发过去过）
+    kept_headers = [_text(normalized_headers[i]) for i in kept]
     sample_rows: list[list[str]] = []
     for row in rows:
         values = [_text(row[i] if i < len(row) else "") for i in kept]

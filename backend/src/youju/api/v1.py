@@ -41,6 +41,7 @@ from youju.classify import (
     status_filter,
 )
 from youju.conditions import public_conditions
+from youju.crawler.detail import _TITLES as _DETAIL_TITLES
 from youju.crawler.detail import _name_like, redact_sensitive
 from youju.crawler.urls import public_url
 from youju.db import get_session
@@ -2740,10 +2741,13 @@ _CALL_VERB_BEFORE = re.compile(r"(?:致电|电询|拨打|联系|咨询|询问|�
 
 
 def _whole_or_called(text: str, begin: int, end: int) -> bool:
-    """标记前面认出的人名（③ 的标记版）只认整个词（前面不是汉字），或者前面紧挨着"致电""联系"
-    这类词的（"请致电王老师 （这里隐去了电话）"）：长词的尾巴不当人名（"测试应用场景资源 （这里
-    隐去了电话）"的"景资源"）。"""
+    """标记前面认出的人名（③ 的标记版）只认整个词（前面不是汉字）、姓加称呼（"某某大学张老师
+    （这里隐去了电话）"，前面不论是什么字），或者前面紧挨着"致电""联系"这类词的（"请致电王某
+    （这里隐去了电话）"）：长词的尾巴不当人名（"测试应用场景资源 （这里隐去了电话）"的
+    "景资源"）。"""
     if begin == 0 or not re.match(f"[{_HAN_RANGE}]", text[begin - 1]):
+        return True
+    if text[begin:end].endswith(_DETAIL_TITLES):
         return True
     return _CALL_VERB_BEFORE.search(text, max(0, begin - 4), begin) is not None
 

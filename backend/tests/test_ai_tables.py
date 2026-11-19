@@ -114,3 +114,17 @@ def test_person_header_synonyms_and_spaced_headers_are_not_sent() -> None:
     sent = json.loads(seen["body"])["messages"][1]["content"]
     for text in ("联 系 人", "邮箱", "法人代表", "甲某", "乙某", "a@example.com"):
         assert text not in sent
+
+
+def test_headers_are_masked_too() -> None:
+    # 独立 Claude 第七轮：缺表头时第一行数据就当表头，表头也要按隐私要求遮，不能原样发给模型
+    seen: dict[str, str] = {}
+    client = _client('{"column": 1, "reason": "企业名称"}', seen)
+    pick_name_column(
+        client,
+        "企业名单",
+        ["张某 0123-87654321", "某某示例公司", "某省"],
+        [["王某 0123-87654322", "某某示例集团", "某省"], ["李某", "某某示例企业", "某市"]],
+    )
+    body = seen["body"]
+    assert "87654321" not in body and "87654322" not in body and "张某" not in body

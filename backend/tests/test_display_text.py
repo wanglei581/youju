@@ -8,6 +8,8 @@
 只改给页面的文字（详情页正文、阅读页正文和附件、名单单行页），入库的文字、交给模型和核对 AI 原句
 用的文字不变。"""
 
+import re
+
 import pytest
 
 from tests.test_readers import client, path, seed  # noqa: F401 - 夹具和造数据的函数
@@ -1017,3 +1019,32 @@ def test_word_before_a_letter_email_is_not_a_name(raw: str) -> None:
         ("交给模型", v1.model_body_text(v1.redact_sensitive(raw))),
     ):
         assert out.startswith(raw[:2]) and "联系人" not in out, (where, out)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        # 独立 Claude 第七轮：这次入库新遮的号码前面粘着别的字的人名，主干页面按原始数字遮了（规则
+        # ③），现在入库照同一个函数遮；四条路都不能露名字、号码和区号
+        "联系人：某某大学张老师 87654321",
+        "详询张老师 87654321",
+        "详询王某 87654321＠qq.com",
+        "王某 邮件：87654321＠qq.com",
+        "如有疑问，可咨询某某大学张老师 87654321。",
+        "报名请联系某某学院李老师 87654321",
+        "有关事宜请与某某厂办王先生 87654321联系",
+        "详询王某 123456789＠qq.com",
+        "王某，电子邮件：87654321＠qq.com",
+        "王某 电子邮件：87654321 @qq.com",
+        "联系电话：李某-0123 87654321",
+        "电话：Tel.0123 87654321",
+    ],
+)
+def test_names_before_newly_masked_numbers_on_every_path(raw: str) -> None:
+    for where, out in (
+        ("详情页", v1.display_body_text(v1._clean_reading_body(raw))),
+        ("阅读页", v1.display_body_text(v1._clean_reading_body(raw, redact=texts.mask))),
+        ("附件", v1.display_attachment_text(texts.mask(raw))),
+        ("交给模型", v1.model_body_text(v1.redact_sensitive(raw))),
+    ):
+        assert not re.search(r"张老师|李老师|王先生|王某|李某|\d{4,}", out), (where, out)
