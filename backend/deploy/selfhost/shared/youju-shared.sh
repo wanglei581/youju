@@ -21,8 +21,8 @@
 #                          自己的账号（db-api.env、db-worker.env），.env 里不留连库口令（用解包出来的新脚本 install 时
 #                          会自动做；用旧脚本装的，up 之前补跑这个；已经分好就不动）
 #   unsplit-db-env         回退到不认这几个文件的旧版本之前跑：把 root、youju 的口令和 youju 的连接串写回 .env
-#   up                     启动：先 MySQL，再迁移（youju），再照 mysql_accounts.sql 设好接口、worker 的库账号和授权，
-#                          再起 worker、接口
+#   up                     启动：先 MySQL，再用 youju 迁移、建好收同步的进度表，再照 mysql_accounts.sql 设好接口、
+#                          worker 的库账号和授权，再起 worker、接口（换镜像、改配置以后都用它起，别直接 docker compose up）
 #   site http|https        写 nginx 站点文件，检查通过才重载（http 只为申请证书；https 正式转发并加续期定时任务）
 #   cert                   申请证书（Let's Encrypt，HTTP 验证）
 #   renew                  续期证书（定时任务每周一跑）；证书和 nginx 已加载的不一样才重载
@@ -587,9 +587,12 @@ up() {
   compose up -d --wait --wait-timeout 300 mysql
   # 升级时先停 worker、接口，迁移完再起（和本机 setup-wsl.sh 一样）
   compose stop worker api >/dev/null 2>&1 || true
-  # 迁移用 youju 账号（建表、改表要它）；连接串经环境变量传进临时容器，不进命令行参数
+  # 迁移用 youju 账号（建表、改表要它）；连接串经环境变量传进临时容器，不进命令行参数。收同步的进度表、
+  # 编号下限也要建表、改表权限，同样用 youju 先做好（worker 平时只有增删改查）
   YOUJU_DATABASE_URL="$(db_url_for youju "$(migrate_password)")" \
     compose run --rm --no-deps -e YOUJU_DATABASE_URL worker youju db-upgrade
+  YOUJU_DATABASE_URL="$(db_url_for youju "$(migrate_password)")" \
+    compose run --rm --no-deps -e YOUJU_DATABASE_URL worker youju sync-server-setup
   db_accounts
   compose up -d --wait --wait-timeout 900 worker
   compose up -d --wait --wait-timeout 300 api

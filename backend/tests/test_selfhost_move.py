@@ -780,13 +780,15 @@ def test_shared_up_migrates_as_youju_then_sets_accounts_before_starting(tmp_path
         "compose up -d --wait --wait-timeout 300 mysql",
         "compose stop worker api",
         "compose run --rm --no-deps -e YOUJU_DATABASE_URL worker youju db-upgrade",
+        "compose run --rm --no-deps -e YOUJU_DATABASE_URL worker youju sync-server-setup",
         'compose exec -T mysql sh -c MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot -N -B',
         "compose up -d --wait --wait-timeout 900 worker",
         "compose up -d --wait --wait-timeout 300 api",
     ]
-    # 迁移用 youju（经环境变量）；别的调用都不带连接串，口令都不在参数里
+    # 迁移、建收同步的进度表用 youju（经环境变量）；别的调用都不带连接串，口令都不在参数里
     assert calls[3].endswith(f"| db={_url('youju', MIGRATE_PW)}")
-    assert all(c.endswith("| db=") for i, c in enumerate(calls) if i != 3)
+    assert calls[4].endswith(f"| db={_url('youju', MIGRATE_PW)}")
+    assert all(c.endswith("| db=") for i, c in enumerate(calls) if i not in (3, 4))
     assert not any(MIGRATE_PW in c.split(" | ")[0] or ROOT_PW in c for c in calls)
     api_line = (tmp_path / "server" / "db-api.env").read_text(encoding="utf-8")
     api_pw = re.search(r"youju_api:([0-9a-f]{48})@", api_line).group(1)

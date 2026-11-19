@@ -2390,6 +2390,22 @@ def _cmd_sync_setup(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_sync_server_setup(args: argparse.Namespace) -> int:
+    """（服务器）建好收同步要用的进度表、把服务器自己会新建行的表的编号下限抬好。
+    共用服务器上 worker 的库账号没有建表、改表权限：youju-shared.sh up 用建表迁移的账号
+    先跑这一步。没配同步密钥的什么都不做。"""
+    from youju.sync import server
+
+    settings = get_settings()
+    secret = settings.sync_secret.get_secret_value().strip() if settings.sync_secret else ""
+    if not secret:
+        print("这台不收本机的同步（没设 YOUJU_SYNC_SECRET），跳过")
+        return 0
+    server.ensure_state(server.get_engine())
+    print("收同步的进度表已建好、编号下限已抬好")
+    return 0
+
+
 def _cmd_sync_push(args: argparse.Namespace) -> int:
     from youju.sync import local
 
@@ -3446,6 +3462,11 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser("sync-setup", help="（本机）建同步变更表和触发器，可以重复执行")
     p.set_defaults(func=_cmd_sync_setup)
+    p = sub.add_parser(
+        "sync-server-setup",
+        help="（服务器）建好收同步的进度表、抬好编号下限（要建表权限；up 用迁移的账号跑，可重复）",
+    )
+    p.set_defaults(func=_cmd_sync_server_setup)
     p = sub.add_parser("sync-push", help="（本机）把公开数据的变更推到服务器")
     p.add_argument("--full", action="store_true", help="整表全推一遍，再删掉服务器上多出来的行")
     p.add_argument("--no-prune", action="store_true", help="全推时不删服务器上多出来的行")
