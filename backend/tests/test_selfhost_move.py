@@ -740,6 +740,30 @@ def test_shared_install_splits_the_root_password_before_building(tmp_path):
     done = _bash(tmp_path, f"install_release {ver}", setup=portable)
     assert done.returncode == 1 and "不一样" in done.stderr
     assert not any(c.startswith("docker build") for c in _calls(tmp_path))
+    # 回退：装的是还不认 mysql-root.env 的旧版本（口令已经加回 .env）：不拆，照常构建
+    (tmp_path / "calls.log").unlink(missing_ok=True)
+    root_env.unlink()
+    env.write_text("YOUJU_IMAGE=x\nMYSQL_ROOT_PASSWORD=r00tpw\n", encoding="utf-8")
+    (shared / "docker-compose.yml").write_text("services:\n  mysql:\n", encoding="utf-8")
+    done = _bash(tmp_path, f"install_release {ver}", setup=portable)
+    assert done.returncode == 0, done.stderr
+    assert "MYSQL_ROOT_PASSWORD=r00tpw" in env.read_text(encoding="utf-8")
+    assert not root_env.exists()
+    assert any(c.startswith("docker build") for c in _calls(tmp_path))
+
+
+@needs_bash
+def test_shared_pause_services_checks_the_root_password_before_stopping(tmp_path):
+    """先停服务再起的流程（导出、关 binlog 等）：root 口令没放好时 compose 加载不了项目，停了就起不来——
+    所以停之前先查，一个容器都不动。"""
+    _old_layout(tmp_path, "YOUJU_IMAGE=x\nMYSQL_ROOT_PASSWORD=r00tpw\n")
+    done = _bash(tmp_path, "pause_services")
+    assert done.returncode == 1 and "split-root-env" in done.stderr
+    assert _calls(tmp_path) == []
+    assert _bash(tmp_path, "split_root_env").returncode == 0
+    done = _bash(tmp_path, "pause_services; trap - EXIT")
+    assert done.returncode == 0, done.stderr
+    assert _calls(tmp_path)[0].startswith("compose stop api worker")
 
 
 @needs_bash

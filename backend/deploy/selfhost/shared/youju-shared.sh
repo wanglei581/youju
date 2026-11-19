@@ -324,8 +324,10 @@ install_release() {
   install -m 644 "$rel/shared/nginx-http.conf" "$rel/shared/nginx-https.conf" "$BASE/nginx/"
   install -m 755 "$rel/shared/youju-shared.sh" "$BASE/bin/youju-shared.sh"
   # 新的 compose 一装上就把 root 口令单独放好：不然构建镜像这段时间里 status、logs、紧急下架这些
-  # 要读 compose 的子命令都会因为没有 mysql-root.env 用不了
-  if [ -f "$SERVER/.env" ]; then split_root_env; fi
+  # 要读 compose 的子命令都会因为没有 mysql-root.env 用不了。装的是还不认它的旧版本（回退）就不动
+  if [ -f "$SERVER/.env" ] && grep -qx '    env_file: mysql-root.env' "$SERVER/docker-compose.yml"; then
+    split_root_env
+  fi
   say "构建镜像 youju-selfhost:${ver}（第一次 5–15 分钟）"
   docker build -t "youju-base:$ver" -f "$rel/source/Dockerfile" "$rel/source"
   docker build -t "youju-selfhost:$ver" --build-arg "BASE=youju-base:$ver" \
@@ -584,6 +586,8 @@ logs() {
 # 导出窗口里临时起的容器（下载、试恢复、加密）用 worker 的内存上限（640M）：先停接口和 worker，
 # 有据合计不超过 1.5G；结束时（成功、失败都一样）再起来。停着的这段时间本机推同步会失败、下一轮再推
 pause_services() {
+  # 先确认起得来再停：root 口令没放好时 compose 加载不了项目，停了就起不来
+  root_env_ok
   compose stop api worker
   trap on_exit EXIT
 }
