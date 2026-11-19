@@ -15,14 +15,18 @@
 #   unkey                  删掉用户 youju 和它的公钥
 #   unpack <版本> <哈希>   把传上来的安装包拷到只有 root 能进的目录，核对 SHA-256，解包到 /opt/youju/releases/<版本>
 #   install <版本>         把 /opt/youju/releases/<版本> 里的配置装到 /opt/youju，构建镜像
-#   env <版本>             生成 /opt/youju/server/.env 和 mysql-root.env（随机密钥；已有就不动）
-#   split-root-env         数据库 root 口令单独放进 mysql-root.env（只有 root 能读，只给 MySQL 容器），
-#                          .env 里不留（用解包出来的新脚本 install 时会自动做；用旧脚本装的，up 之前补跑这个）
-#   up                     启动：先 MySQL，再迁移，再 worker、接口
+#   env <版本>             生成 /opt/youju/server/ 下的配置和口令文件（随机密钥；已有就不动）：.env（接口、worker
+#                          共用的配置，不含连库口令）、mysql-root.env（root 和建表迁移用的 youju）、db-api.env、db-worker.env
+#   split-db-env           数据库账号按最小权限分开放：root、youju 的口令放进 mysql-root.env，接口、worker 各给一个
+#                          自己的账号（db-api.env、db-worker.env），.env 里不留连库口令（用解包出来的新脚本 install 时
+#                          会自动做；用旧脚本装的，up 之前补跑这个；已经分好就不动）
+#   unsplit-db-env         回退到不认这几个文件的旧版本之前跑：把 root、youju 的口令和 youju 的连接串写回 .env
+#   up                     启动：先 MySQL，再迁移（youju），再照 mysql_accounts.sql 设好接口、worker 的库账号和授权，
+#                          再起 worker、接口
 #   site http|https        写 nginx 站点文件，检查通过才重载（http 只为申请证书；https 正式转发并加续期定时任务）
 #   cert                   申请证书（Let's Encrypt，HTTP 验证）
 #   renew                  续期证书（定时任务每周一跑）；证书和 nginx 已加载的不一样才重载
-#   status                 容器、内存、健康检查，接口和 worker 里有没有数据库 root 口令（只说有没有）
+#   status                 容器、内存、健康检查，接口和 worker 各用哪个库账号、有没有 root 和 youju 的口令（只说有没有）
 #   logs mysql|api|worker [行数]
 #   uninstall [--purge]    停掉有据、撤掉站点和定时任务；--purge 连数据库、文件、镜像一起删
 # 首发前搬家（D-127，手册第六节）：
@@ -318,19 +322,20 @@ install_release() {
   local ver=${1:-}
   check_version "$ver"
   local rel=$BASE/releases/$ver
-  # 这一版要把 root 口令单独放（它的 compose 认 mysql-root.env）：先核对放得了，放不了就停下，一个文件都不换
-  if [ -f "$SERVER/.env" ] && grep -qx '    env_file: mysql-root.env' "$rel/shared/docker-compose.yml"; then
-    root_split_check || die "install 停下了，一个文件都没换；核对改好以后重跑 install"
+  # 这一版要按最小权限分开库账号（它的 compose 认这几个口令文件）：先核对分得了，分不了就停下，一个文件都不换
+  if [ -f "$SERVER/.env" ] && compose_splits_db "$rel/shared/docker-compose.yml"; then
+    db_split_check || die "install 停下了，一个文件都没换；核对改好以后重跑 install"
   fi
   install -d -m 755 "$BASE" "$BASE/bin" "$BASE/nginx" "$WEBROOT"
   install -d -m 700 "$SERVER" "$LE_DIR"
-  install -m 644 "$rel/shared/docker-compose.yml" "$rel/shared/mysql.cnf" "$SERVER/"
+  install -m 644 "$rel/shared/docker-compose.yml" "$rel/shared/mysql.cnf" \
+    "$rel/source/backend/deploy/mysql_accounts.sql" "$SERVER/"
   install -m 644 "$rel/shared/nginx-http.conf" "$rel/shared/nginx-https.conf" "$BASE/nginx/"
   install -m 755 "$rel/shared/youju-shared.sh" "$BASE/bin/youju-shared.sh"
-  # 新的 compose 一装上就把 root 口令单独放好：不然构建镜像这段时间里 status、logs、紧急下架这些
-  # 要读 compose 的子命令都会因为没有 mysql-root.env 用不了。装的是还不认它的旧版本（回退）就不动
-  if [ -f "$SERVER/.env" ] && grep -qx '    env_file: mysql-root.env' "$SERVER/docker-compose.yml"; then
-    split_root_env
+  # 新的 compose 一装上就把库账号分开放好：不然构建镜像这段时间里 status、logs、紧急下架这些要读 compose 的
+  # 子命令都会因为缺口令文件用不了。装的是还不认这几个文件的旧版本（回退）就不动
+  if [ -f "$SERVER/.env" ] && compose_splits_db "$SERVER/docker-compose.yml"; then
+    split_db_env
   fi
   say "构建镜像 youju-selfhost:${ver}（第一次 5–15 分钟）"
   docker build -t "youju-base:$ver" -f "$rel/source/Dockerfile" "$rel/source"
@@ -351,14 +356,22 @@ make_env() {
     echo "已有 ${SERVER}/.env，不动（要重新生成先自己挪走）"
     return
   fi
-  [ ! -f "$SERVER/mysql-root.env" ] \
-    || die "已有 ${SERVER}/mysql-root.env、没有 .env：数据库可能已经用那个 root 口令建好了，先人工核对（要重新生成先把它也挪走）"
+  local f
+  for f in $DB_FILES; do
+    [ ! -f "$SERVER/$f" ] \
+      || die "已有 ${SERVER}/${f}、没有 .env：数据库可能已经用里面的口令建好了，先人工核对（要重新生成先把它也挪走）"
+  done
   local cloud_env
   cloud_env=$(sed -n 's/^YOUJU_CLOUD_ENV=//p' "$BASE/releases/$ver/source/backend/deploy/selfhost/server/env.example")
   [ -n "$cloud_env" ] || die "env.example 里没有 YOUJU_CLOUD_ENV"
-  local db_pw root_pw aes
+  local db_pw root_pw api_pw worker_pw aes
   db_pw=$(openssl rand -hex 24)
   root_pw=$(openssl rand -hex 24)
+  api_pw=$(openssl rand -hex 24)
+  worker_pw=$(openssl rand -hex 24)
+  for f in "$db_pw" "$root_pw" "$api_pw" "$worker_pw"; do
+    [ "${#f}" -eq 48 ] || die "生成数据库口令失败"
+  done
   aes=$(openssl rand -base64 96 | tr -dc 'A-Za-z0-9')
   aes=${aes:0:43}
   [ "${#aes}" -eq 43 ] || die "生成消息推送密钥失败"
@@ -372,9 +385,8 @@ make_env() {
 # - worker 只写心跳、不跑定时任务（docker-compose.yml 里 YOUJU_CRONTAB 的默认值）。
 # 上线前按手册第十节"上线前"一项项改：真的 AppSecret、删掉 YOUJU_WX_API_BASE、YOUJU_CRONTAB、异地备份、
 # 换掉同步密钥……
+# 连库的口令不在这里：root 和 youju（建表迁移）在 mysql-root.env，接口、worker 各在 db-api.env、db-worker.env。
 YOUJU_IMAGE=youju-selfhost:${ver}
-MYSQL_PASSWORD=${db_pw}
-YOUJU_DATABASE_URL=mysql+pymysql://youju:${db_pw}@mysql:3306/youju?charset=utf8mb4
 YOUJU_HOSTING=self
 YOUJU_SESSION_LOGIN=true
 YOUJU_SESSION_SECRET=$(openssl rand -hex 32)
@@ -395,71 +407,190 @@ YOUJU_CLOUD_ENV=${cloud_env}
 YOUJU_STORAGE_BUCKET=youju-self
 YOUJU_SYNC_SECRET=$(openssl rand -hex 32)
 EOF
-    printf 'MYSQL_ROOT_PASSWORD=%s\n' "$root_pw" > "$SERVER/mysql-root.env.tmp"
-    mv -f "$SERVER/mysql-root.env.tmp" "$SERVER/mysql-root.env"
+    printf 'MYSQL_ROOT_PASSWORD=%s\nMYSQL_PASSWORD=%s\n' "$root_pw" "$db_pw" > "$SERVER/mysql-root.env.tmp"
+    printf 'YOUJU_DATABASE_URL=%s\n' "$(db_url_for youju_api "$api_pw")" > "$SERVER/db-api.env.tmp"
+    printf 'YOUJU_DATABASE_URL=%s\n' "$(db_url_for youju_worker "$worker_pw")" > "$SERVER/db-worker.env.tmp"
+    for f in $DB_FILES; do mv -f "$SERVER/$f.tmp" "$SERVER/$f"; done
     mv -f "$SERVER/.env.tmp" "$SERVER/.env"
   )
-  echo "已生成 ${SERVER}/.env 和 mysql-root.env（数据库 root 口令只在后一个里；都只有 root 能读）"
+  echo "已生成 ${SERVER}/.env、mysql-root.env、db-api.env、db-worker.env（连库口令按账号分开放，都只有 root 能读）"
 }
 
-# 数据库 root 口令只在 mysql-root.env 里（只有 root 能读，compose 只把它给 MySQL 容器）；接口、worker
-# 按 env_file 读的是 .env，那里不留，连库只用有据自己的账号。文件没有时回空
-root_password() { { sed -n 's/^MYSQL_ROOT_PASSWORD=//p' "$SERVER/mysql-root.env" 2>/dev/null || true; } | head -n 1; }
+# 数据库账号按最小权限分开（共用服务器）：
+# - root 和 youju（建表、迁移用，对 youju 库有全部权限）的口令只在 mysql-root.env：只给 MySQL 容器和这个脚本；
+# - 接口用 youju_api（授权照 mysql_accounts.sql 第 ② 节，和云托管同一份），worker 用 youju_worker（增删改查，
+#   加上备份要的 LOCK TABLES），连接串各在 db-api.env、db-worker.env，compose 只给各自的容器；
+# - 接口、worker 共用的 .env 里不留任何连库口令。这几个文件都只有 root 能读。
+DB_FILES="mysql-root.env db-api.env db-worker.env"
+DB_WORKER_GRANTS="SELECT, INSERT, UPDATE, DELETE, LOCK TABLES"
 
-root_env_ok() {
-  [ -z "$(env_get MYSQL_ROOT_PASSWORD)" ] && [ -n "$(root_password)" ] \
-    || die "数据库 root 口令要单独放在 ${SERVER}/mysql-root.env、.env 里不留：先运行 ${SELF} split-root-env"
+# 这几个文件里的一项（文件没有时回空）
+kv_get() { { sed -n "s/^$2=//p" "$SERVER/$1" 2>/dev/null || true; } | head -n 1; }
+root_password() { kv_get mysql-root.env MYSQL_ROOT_PASSWORD; }
+migrate_password() { kv_get mysql-root.env MYSQL_PASSWORD; }
+db_url() { kv_get "db-$1.env" YOUJU_DATABASE_URL; }
+db_url_for() { printf 'mysql+pymysql://%s:%s@mysql:3306/youju?charset=utf8mb4' "$1" "$2"; }
+# 连接串里的口令：只认 db_url_for 写的那种（账号对、连本机 MySQL 的 youju 库、口令只有字母数字），不是就返回 1
+db_url_password() {
+  local rest
+  case "$1" in "mysql+pymysql://$2:"*"@mysql:3306/youju?charset=utf8mb4") ;; *) return 1 ;; esac
+  rest=${1#"mysql+pymysql://$2:"}
+  rest=${rest%"@mysql:3306/youju?charset=utf8mb4"}
+  [[ "$rest" =~ ^[A-Za-z0-9]+$ ]] || return 1
+  printf '%s' "$rest"
+}
+# 这份 compose 认不认这几个口令文件
+compose_splits_db() {
+  grep -qx '    env_file: mysql-root.env' "$1" \
+    && grep -qx '    env_file: \[\.env, db-api\.env\]' "$1" \
+    && grep -qx '    env_file: \[\.env, db-worker\.env\]' "$1"
 }
 
-# install 这一版时自动跑（也可以单独补跑）：root 口令从 .env 放进 mysql-root.env，.env 里删掉这一行。
-# 值不显示，只回长度和指纹；已经放好就不动。新文件先写好再删 .env 里那一行，中途断了重跑就行
-# root 口令能不能单独放：.env 里有、mysql-root.env 里没有或一样；或者已经放好。不能放时说清原因、返回 1。
-# 两边不一样时只打两边的指纹（不打口令）：停下找团队核对，别把两个文件的内容打出来（"执行命令"有记录）
-root_split_check() {
-  local pw old
-  pw=$(env_get MYSQL_ROOT_PASSWORD)
-  old=$(root_password)
-  if [ -z "$pw" ] && [ -z "$old" ]; then
-    echo "错误：${SERVER}/.env 和 mysql-root.env 里都没有 MYSQL_ROOT_PASSWORD" >&2
+db_env_ok() {
+  local name
+  for name in MYSQL_ROOT_PASSWORD MYSQL_PASSWORD YOUJU_DATABASE_URL; do
+    [ -z "$(env_get "$name")" ] \
+      || die "${SERVER}/.env 里还有 ${name}：数据库账号要按最小权限分开放，先运行 ${SELF} split-db-env"
+  done
+  { [ -n "$(root_password)" ] && [ -n "$(migrate_password)" ] \
+    && db_url_password "$(db_url api)" youju_api >/dev/null \
+    && db_url_password "$(db_url worker)" youju_worker >/dev/null; } \
+    || die "${SERVER} 下的 mysql-root.env、db-api.env、db-worker.env 缺了或写法不对：先运行 ${SELF} split-db-env"
+}
+
+# 能不能照最小权限分开放：.env 里的口令和 mysql-root.env 里已有的不能对不上，.env 里的连接串要就是 youju 连本机
+# 的那一个，已有的 db-*.env 写法要对。不能放时说清原因、返回 1；只打指纹（不打口令）：停下找团队核对，别把文件
+# 内容打出来（"执行命令"有记录）
+db_split_check() {
+  local name in_env in_file url pw svc
+  for name in MYSQL_ROOT_PASSWORD MYSQL_PASSWORD; do
+    in_env=$(env_get "$name")
+    in_file=$(kv_get mysql-root.env "$name")
+    if [ -z "$in_env" ] && [ -z "$in_file" ]; then
+      echo "错误：${SERVER}/.env 和 mysql-root.env 里都没有 ${name}" >&2
+      return 1
+    fi
+    if [ -n "$in_env" ] && [ -n "$in_file" ] && [ "$in_env" != "$in_file" ]; then
+      echo "错误：mysql-root.env 里的 ${name} 和 .env 里的不一样（.env 那个指纹 $(fingerprint "$in_env")，mysql-root.env 那个指纹 $(fingerprint "$in_file")）：停下找团队核对，别把两个文件的内容打出来" >&2
+      return 1
+    fi
+  done
+  url=$(env_get YOUJU_DATABASE_URL)
+  pw=$(env_get MYSQL_PASSWORD)
+  [ -n "$pw" ] || pw=$(migrate_password)
+  if [ -n "$url" ] && [ "$url" != "$(db_url_for youju "$pw")" ]; then
+    echo "错误：.env 里的 YOUJU_DATABASE_URL 不是 youju 账号连本机 MySQL 的那一个（指纹 $(fingerprint "$url")）：停下找团队核对" >&2
     return 1
   fi
-  if [ -n "$pw" ] && [ -n "$old" ] && [ "$pw" != "$old" ]; then
-    echo "错误：mysql-root.env 里已有一个和 .env 里不一样的 root 口令（.env 那个指纹 $(fingerprint "$pw")，mysql-root.env 那个指纹 $(fingerprint "$old")）：停下找团队核对，别把两个文件的内容打出来" >&2
-    return 1
-  fi
+  for svc in api worker; do
+    url=$(db_url "$svc")
+    if [ -n "$url" ] && ! db_url_password "$url" "youju_$svc" >/dev/null; then
+      echo "错误：${SERVER}/db-${svc}.env 写法不对（指纹 $(fingerprint "$url")）：停下找团队核对" >&2
+      return 1
+    fi
+  done
 }
 
-split_root_env() {
+# 用解包出来的新脚本 install 这一版时自动跑（也可以单独补跑）：root、youju 的口令放进 mysql-root.env；接口、
+# worker 还没有自己的账号的，各生成一个（口令随机）；.env 里删掉这三项。值不显示；已经分好就不动。
+# 新文件都写好了才改 .env，中途断了重跑就行
+split_db_env() {
   [ -f "$SERVER/.env" ] || die "还没装（没有 ${SERVER}/.env）"
-  grep -qx '    env_file: mysql-root.env' "$SERVER/docker-compose.yml" \
-    || die "先 install 这一版（${SERVER}/docker-compose.yml 还不认 mysql-root.env），什么都没动"
-  root_split_check || die "什么都没动"
-  local pw old
-  pw=$(env_get MYSQL_ROOT_PASSWORD)
-  old=$(root_password)
-  if [ -z "$pw" ]; then
-    echo "数据库 root 口令已经单独放在 ${SERVER}/mysql-root.env（${#old} 位，指纹 $(fingerprint "$old")）"
-    return
-  fi
+  compose_splits_db "$SERVER/docker-compose.yml" \
+    || die "先 install 这一版（${SERVER}/docker-compose.yml 还不认这几个口令文件），什么都没动"
+  db_split_check || die "什么都没动"
+  local root_pw pw svc new
+  root_pw=$(env_get MYSQL_ROOT_PASSWORD)
+  [ -n "$root_pw" ] || root_pw=$(root_password)
+  pw=$(env_get MYSQL_PASSWORD)
+  [ -n "$pw" ] || pw=$(migrate_password)
   (
     umask 077
-    printf 'MYSQL_ROOT_PASSWORD=%s\n' "$pw" > "$SERVER/mysql-root.env.tmp"
+    printf 'MYSQL_ROOT_PASSWORD=%s\nMYSQL_PASSWORD=%s\n' "$root_pw" "$pw" > "$SERVER/mysql-root.env.tmp"
     mv -f "$SERVER/mysql-root.env.tmp" "$SERVER/mysql-root.env"
-    KEY=MYSQL_ROOT_PASSWORD awk 'index($0, ENVIRON["KEY"] "=") != 1' "$SERVER/.env" > "$SERVER/.env.tmp"
+    for svc in api worker; do
+      [ -z "$(db_url "$svc")" ] || continue
+      new=$(openssl rand -hex 24)
+      [ "${#new}" -eq 48 ] || exit 1
+      printf 'YOUJU_DATABASE_URL=%s\n' "$(db_url_for "youju_$svc" "$new")" > "$SERVER/db-$svc.env.tmp"
+      mv -f "$SERVER/db-$svc.env.tmp" "$SERVER/db-$svc.env"
+    done
+    awk 'index($0, "MYSQL_ROOT_PASSWORD=") != 1 && index($0, "MYSQL_PASSWORD=") != 1 \
+      && index($0, "YOUJU_DATABASE_URL=") != 1' "$SERVER/.env" > "$SERVER/.env.tmp"
     mv -f "$SERVER/.env.tmp" "$SERVER/.env"
-  )
-  root_env_ok
-  echo "数据库 root 口令已单独放进 ${SERVER}/mysql-root.env（只有 root 能读；${#pw} 位，指纹 $(fingerprint "$pw")），.env 里删了这一行；运行 ${SELF} up 生效"
+  ) || die "没分好（生成口令或写文件出错），查 ${SERVER} 下的文件"
+  db_env_ok
+  echo "数据库账号已按最小权限分开放（都只有 root 能读）：root 和 youju（建表迁移）的口令在 mysql-root.env，接口、worker 各用 db-api.env、db-worker.env 里自己的账号，.env 里不再有连库口令。运行 ${SELF} up 生效：它会照 mysql_accounts.sql 设好这两个账号和授权"
+}
+
+# 回退到还不认这几个口令文件的旧版本之前跑（用现在这份脚本）：把 root、youju 的口令和 youju 的连接串写回 .env
+# （旧版本的 compose 从 .env 读）。口令文件留着；以后再升级回来，install 会照样分开
+unsplit_db_env() {
+  [ -f "$SERVER/.env" ] || die "还没装（没有 ${SERVER}/.env）"
+  local root_pw pw
+  root_pw=$(root_password)
+  pw=$(migrate_password)
+  { [ -n "$root_pw" ] && [ -n "$pw" ]; } || die "${SERVER}/mysql-root.env 里缺 root 或 youju 的口令，什么都没动"
+  set_env MYSQL_ROOT_PASSWORD "$root_pw"
+  set_env MYSQL_PASSWORD "$pw"
+  set_env YOUJU_DATABASE_URL "$(db_url_for youju "$pw")"
+  echo "已把 root、youju 的口令和 youju 的连接串写回 .env（值不显示）；接着用旧版本解包出来的脚本 install 旧版本，再 up"
+}
+
+# 接口的授权：mysql_accounts.sql 第 ② 节里 TO 'youju_api'@'%' 的那些行（install 时拷到这里；和
+# tests/conftest.py 建受限账号用的是同一个取法）
+api_grants() { grep -E "^GRANT [^;]+ TO 'youju_api'@'%';$" "$SERVER/mysql_accounts.sql" 2>/dev/null || true; }
+# 改权限之前先逐条查授权用到的表和列都在（SELECT … WHERE 1 = 0：不读数据，表或列不在就报错），不在就停在这里，
+# 一项权限都不改
+api_grant_checks() {
+  api_grants | awk '
+    match($0, / ON youju\.[a-z_]+ TO /) {
+      table = substr($0, RSTART + 10, RLENGTH - 14)
+      privs = substr($0, 1, RSTART - 1)
+      cols = "1"
+      if (match(privs, /\([a-z_, ]+\)/)) cols = substr(privs, RSTART + 1, RLENGTH - 2)
+      print "SELECT " cols " FROM youju." table " WHERE 1 = 0;"
+    }'
+}
+# 接口和 worker 的库账号：没有就建、口令和 db-*.env 对齐；查过表和列都在以后，权限先全部收回再照清单授（不多不少）
+db_accounts_sql() {
+  local api_pw worker_pw grants
+  api_pw=$(db_url_password "$(db_url api)" youju_api)
+  worker_pw=$(db_url_password "$(db_url worker)" youju_worker)
+  grants=$(api_grants)
+  [ -n "$grants" ] || die "${SERVER}/mysql_accounts.sql 里没找到接口的授权：先用解包出来的新脚本 install 这一版"
+  printf '%s\n' \
+    "CREATE USER IF NOT EXISTS 'youju_api'@'%' IDENTIFIED BY '${api_pw}';" \
+    "ALTER USER 'youju_api'@'%' IDENTIFIED BY '${api_pw}';" \
+    "CREATE USER IF NOT EXISTS 'youju_worker'@'%' IDENTIFIED BY '${worker_pw}';" \
+    "ALTER USER 'youju_worker'@'%' IDENTIFIED BY '${worker_pw}';"
+  api_grant_checks
+  printf '%s\n' \
+    "REVOKE ALL PRIVILEGES, GRANT OPTION FROM 'youju_api'@'%', 'youju_worker'@'%';" \
+    "GRANT ${DB_WORKER_GRANTS} ON youju.* TO 'youju_worker'@'%';" \
+    "$grants"
+}
+# 在 MySQL 容器里用 root 跑（口令是容器里的环境变量）；SQL 从标准输入给，口令不进命令行参数
+db_accounts() {
+  local sql
+  sql=$(db_accounts_sql)
+  # shellcheck disable=SC2016  # 要在容器里展开
+  printf '%s\n' "$sql" | compose exec -T mysql sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot -N -B' \
+    || die "接口、worker 的库账号和授权没设好（原因见上面）：接口和 worker 还停着，改好以后再 ${SELF} up"
+  echo "接口（youju_api）、worker（youju_worker）的库账号和授权已照清单设好"
 }
 
 up() {
   [ -f "$SERVER/.env" ] || die "先 env"
-  root_env_ok
+  db_env_ok
   compose config -q
   compose up -d --wait --wait-timeout 300 mysql
   # 升级时先停 worker、接口，迁移完再起（和本机 setup-wsl.sh 一样）
   compose stop worker api >/dev/null 2>&1 || true
-  compose run --rm --no-deps worker youju db-upgrade
+  # 迁移用 youju 账号（建表、改表要它）；连接串经环境变量传进临时容器，不进命令行参数
+  YOUJU_DATABASE_URL="$(db_url_for youju "$(migrate_password)")" \
+    compose run --rm --no-deps -e YOUJU_DATABASE_URL worker youju db-upgrade
+  db_accounts
   compose up -d --wait --wait-timeout 900 worker
   compose up -d --wait --wait-timeout 300 api
   status
@@ -582,13 +713,18 @@ status() {
   for port in 18100 18101; do
     echo "127.0.0.1:${port}/health → $(curl -fsS -m 5 "http://127.0.0.1:${port}/health" || echo 不通)"
   done
-  # 接口、worker 里应当没有数据库 root 口令：只看有没有，不显示值
-  local svc has
+  # 接口、worker 各用自己的库账号，里面不该有 root 和 youju 的口令：只打账号名和"有没有"，不显示口令
+  local svc got
   for svc in api worker; do
     # shellcheck disable=SC2016  # 要在容器里展开
-    has=$(compose exec -T "$svc" sh -c 'if [ -n "${MYSQL_ROOT_PASSWORD+x}" ]; then echo 有; else echo 没有; fi' \
-      </dev/null 2>/dev/null) || has=查不了
-    echo "${svc} 里的数据库 root 口令：${has:-查不了}"
+    got=$(compose exec -T "$svc" sh -c 'u=${YOUJU_DATABASE_URL#*://}; u=${u%%:*}
+if [ -n "${MYSQL_ROOT_PASSWORD+x}${MYSQL_PASSWORD+x}" ]; then s=有; else s=没有; fi
+echo "${u:-无}" "$s"' </dev/null 2>/dev/null) || got=""
+    if [ -n "$got" ]; then
+      echo "${svc}：连库账号 ${got% *}；root、youju 的口令：${got##* }"
+    else
+      echo "${svc}：查不了"
+    fi
   done
   free -m
 }
@@ -604,8 +740,8 @@ logs() {
 # 导出窗口里临时起的容器（下载、试恢复、加密）用 worker 的内存上限（640M）：先停接口和 worker，
 # 有据合计不超过 1.5G；结束时（成功、失败都一样）再起来。停着的这段时间本机推同步会失败、下一轮再推
 pause_services() {
-  # 先确认起得来再停：root 口令没放好时 compose 加载不了项目，停了就起不来
-  root_env_ok
+  # 先确认起得来再停：口令文件没放好时 compose 加载不了项目，停了就起不来
+  db_env_ok
   compose stop api worker
   trap on_exit EXIT
 }
@@ -735,7 +871,7 @@ import_export() {
   local name root_pw
   name=$(basename "${files[0]}")
   root_pw=$(root_password)
-  [ -n "$root_pw" ] || die "${SERVER}/mysql-root.env 里没有 MYSQL_ROOT_PASSWORD（先 ${SELF} split-root-env）"
+  [ -n "$root_pw" ] || die "${SERVER}/mysql-root.env 里没有 MYSQL_ROOT_PASSWORD（先 ${SELF} split-db-env）"
   pause_services
   say "1/3 试恢复：${old} 的镜像在临时库 youju_drill_… 里恢复一遍（核对条数、外键、每张表的 SHA-256），结束删掉；不碰正式库"
   # 建临时库要 root；连接串经环境变量传进容器（不进命令行参数）。临时库和正式库在同一个 MySQL 里
@@ -1108,7 +1244,7 @@ uninstall() {
       "$EXPORT_DIR"
     echo "已删除有据的容器、数据卷、镜像、证书和 ${BASE} 下的文件"
   else
-    echo "已停掉有据、撤掉站点和定时任务；数据卷和 ${SERVER}/.env、mysql-root.env 留着（${SELF} up 重新启动）"
+    echo "已停掉有据、撤掉站点和定时任务；数据卷和 ${SERVER} 下的配置、口令文件留着（${SELF} up 重新启动）"
   fi
   echo "用户 youju 另用 unkey 删；桌面服务另用 desktop on 恢复"
 }
@@ -1125,7 +1261,8 @@ case "$cmd" in
   unpack) unpack "$@" ;;
   install) install_release "$@" ;;
   env) make_env "$@" ;;
-  split-root-env) split_root_env ;;
+  split-db-env) split_db_env ;;
+  unsplit-db-env) unsplit_db_env ;;
   up) up ;;
   site) need_domain site; site "$@" ;;
   cert) need_domain cert; cert ;;
