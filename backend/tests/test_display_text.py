@@ -1099,11 +1099,16 @@ def test_skipping_masked_contacts_does_not_cut_a_long_unit_name() -> None:
 
 
 def test_rows_under_a_contact_label_go_on_past_masked_names() -> None:
-    # "联系人："写在行尾、下面一行一个"姓名 电话"的一直遮：入库遮成联系人标记的那一行也算
-    raw = "联系人：\n李某 0123-65432109\n王五"
-    for where, out in _on_every_path(raw):
-        if where != "附件":  # 附件只看标签下面那一行（见 v1 附件规则 3）
-            assert "王五" not in out, (where, out)
+    # "联系人："写在行尾、下面一行一个"姓名 电话"的一直遮：入库遮成联系人标记的那一行也算；再往下
+    # 只接"姓名 电话"行、以姓名开头或结尾的行
+    for raw, name in (
+        ("联系人：\n李某 0123-65432109\n王五", "王五"),
+        ("联系人：\n张三 0123-65432109\n李四 0123-65432108\n王五", "王五"),
+        ("联系人：\n张老师 65432109\n李老师（政策咨询）", "李老师"),
+    ):
+        for where, out in _on_every_path(raw):
+            if where != "附件":  # 附件只看标签下面那一行（见 v1 附件规则 3）
+                assert name not in out, (where, out)
 
 
 def test_qq_marks_count_as_numbers_for_the_page_rules() -> None:
@@ -1258,6 +1263,10 @@ def test_common_phrases_next_to_numbers_are_not_names(raw: str) -> None:
             "高新技术企业 黄金 周期 严格",
         ),
         ("联系人：\n张三 0123-65432109\n申请表", "申请表"),
+        # 别的标签后面接着遮的只遮像姓名的词：只有文书名的行照旧
+        ("联系方式：\n张三 13812345678\n\n附件：1. 申报书", "附件：1. 申报书"),
+        # "联系人："这类标签后面只接"姓名 电话"行、以姓名开头或结尾的行：带一串数字的附件说明不接
+        ("联系人：\n张三 0123-65432109\n附件：申报书 20261108", "附件：申报书 20261108"),
     ],
 )
 def test_lines_after_masked_contact_rows_stay(raw: str, kept: str) -> None:
@@ -1276,6 +1285,14 @@ def test_lines_after_masked_contact_rows_stay(raw: str, kept: str) -> None:
         ("联系方式：\n张老师 65432109\n审核人 王五", "王五"),
         ("联系方式：\n张老师 65432109\n负责 李老师 某某公司 65432110", "李老师"),
         ("联系方式：\n张三 87654321＠qq.com\n王五（处长）", "王五"),
+        # 正确性那位第九轮："联系方式：""经办人：""联络人："后面主干入库不遮这一行的姓名，页面接着把再
+        # 下一行整行遮掉；这里下一行有像姓名的词就遮（"联系人："这类标签后面的见下面那条）
+        ("联系方式：\n张三 13812345678\n邮寄地址：某某路1号 李四（收）", "李四"),
+        ("联系方式：\n张三 13812345678\n收件人：李四", "李四"),
+        ("经办人：\n张老师 87654321\n李四（副科长）", "李四"),
+        ("联络人：\n张三 87654321＠qq.com\n李四、王五、赵六", "李四"),
+        ("联系方式：\n张三 13812345678\n张 伟", "张 伟"),
+        ("联系方式：\n张三 13812345678\n李四 13812345679\n王五", "王五"),
     ],
 )
 def test_lines_after_rows_main_saw_unmasked(raw: str, name: str) -> None:
