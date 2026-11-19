@@ -863,6 +863,8 @@ _LABEL_WORDS = (
 )  # fmt: skip
 # 光是称呼、前面没有姓的不是姓名（"Ryan LEE 先生"的"先生"）
 _TITLES = ("先生", "女士", "老师", "同志")
+# 职务（"请联系张三主任""办公室李处长"，见 _titled_cut）：同页面那一层的 _TITLE_END 里称呼以外的那些
+_JOB_TITLES = ("处长", "科长", "主任", "部长", "局长", "所长", "站长", "经理", "专员", "工程师")
 # 以常见姓氏开头、常挨着电话写的普通词、部门简称、职务（"值班电话：白天 0571-…""商务 0571-…"）：
 # 不当姓名
 _COMMON_WORDS = frozenset(
@@ -880,6 +882,18 @@ _COMMON_WORDS = frozenset(
         "索求", "索票",
     )
 )  # fmt: skip
+# 常写在"QQ群：""QQ：""邮箱：""电话："前面、以常见姓氏开头的身份、用途词（"党员QQ群：""管理员QQ："
+# "简历：[邮箱]"，11/18 独立 Claude 第七轮的合成用例，本机库里没有）：号码前面的这些词不当姓名
+# （_phone_names、_glued_name）。不放进 _COMMON_WORDS：网站标题里的人名（govsites.privacy："党员
+# 张小明出席会议"）、名单（lists.body）也用 _name_like，那边照旧
+_ROLE_WORDS = frozenset(
+    (
+        "党员", "党建", "管理员", "简历", "简报", "简章", "成员", "应聘", "申请人", "毕业生",
+        "应届", "班长", "班主任", "车主", "房东", "商户", "游客", "关注",
+    )
+)  # fmt: skip
+# 职务前面以常见姓氏开头、不是姓名的词（"常务副主任""高级工程师""车间主任""班主任"，见 _titled_cut）
+_TITLE_PREFIXES = frozenset(("常务", "常务副", "高级", "车间", "金牌", "文秘", "安环", "班"))
 # 以常见姓氏开头、不带"省、市"的省份和地级市名（"石家庄 0311-…"这样按城市列的联系电话）：
 # 不当姓名。别的省市名不以这些姓氏开头，本来就不会被当成姓名；县、区名太多，不列。以"州"结尾的
 # 地级市（"杭州"）一般按单位字结尾排除，"联系人："后面最后一个词的两字例外（见 _name_like）不看
@@ -975,17 +989,42 @@ _GLUE_HEADS = (*_UNIT_ENDS, *_PERSON_LABELS, "盟", "大兴安岭", "神农架")
 _CALL_VERBS = ("联系", "致电", "电询", "拨打", "咨询", "询问", "找")
 
 
+def _titled_cut(run: str) -> int | None:
+    """联系类词、单位名后面紧跟着"姓名+职务"的（"请联系张三主任 [电话]""办公室李处长"，11/18 独立
+    Claude 第七轮：主干页面上按"张三主任 李某"连着认出来遮，现在入库先遮了李某，页面上"联系张三主任"
+    拆不出姓名）：姓名从第几个字起，姓名连职务一起遮；不是这样的返回 None。姓名是像姓名的 2–4 个字，
+    或者单独一个常见姓氏（"李处长"）。"""
+    title = next((t for t in _JOB_TITLES if run.endswith(t)), None)
+    if title is None:
+        return None
+    rest = run[: -len(title)]
+    for size in (4, 3, 2, 1):
+        cut = len(rest) - size
+        if cut < 2 or not rest[:cut].endswith((*_GLUE_HEADS, *_CALL_VERBS)):
+            continue
+        name = rest[cut:]
+        if name in _TITLE_PREFIXES:
+            continue
+        if (size > 1 and _name_like(name)) or (size == 1 and name in _SURNAMES):
+            return cut
+    return None
+
+
 def _glued_name(run: str) -> int | None:
     """单位名后面紧跟着姓名、中间没隔开的（"省财政厅张三""办公室李四"，还有没写冒号的"联系人张三"）：
     前面一截以单位的字或"联系人"结尾、后面 2–4 个字以常见姓氏开头，返回姓名从第几个字起；不是这样的
     返回 None。后面 4 个字是两个连写的两字姓名的也算（"某市张某李某"）；"联系"后面紧跟着姓加
-    称呼的也算（"请联系张老师 [电话]"）。11/18 这三种漏遮。"""
+    称呼的也算（"请联系张老师 [电话]"）。11/18 这三种漏遮。姓名后面带职务的见 _titled_cut。"""
+    if (cut := _titled_cut(run)) is not None:
+        return cut
     # 长的优先：复姓"司马"的"司"也是单位的字（"省科技厅司马小明"不能切成"省科技厅司|马小明"）
     for size in (4, 3, 2):
         cut = len(run) - size
         if cut < 2:
             continue
         head, tail = run[:cut], run[cut:]
+        if tail in _ROLE_WORDS:  # "请联系班主任""某某支部党员"
+            continue
         if head.endswith(_GLUE_HEADS) and (
             _name_like(tail) or (size == 4 and _name_like(tail[:2]) and _name_like(tail[2:]))
         ):
@@ -1131,7 +1170,7 @@ def _phone_names(text: str) -> list[tuple[int, int]]:
             continue
         while (found := _word_ending_at(text, end)) is not None:
             start, word = found
-            if not _name_like(word):
+            if not _name_like(word) or word in _ROLE_WORDS:
                 # 单位名后面紧跟着姓名（"省财政厅张三 0531-…"）：只遮姓名
                 if word == text[start:end] and (cut := _glued_name(word)) is not None:
                     spans.append((start + cut, end))

@@ -1019,6 +1019,18 @@ def test_model_gets_the_body_masked_again_by_current_rules(session) -> None:
     assert session.get(DocumentDetail, doc.id).body_text == OWN + LEFTOVER
 
 
+def test_model_gets_names_only_the_page_rules_mask(session) -> None:
+    """正确性那位第七轮："联系电话："后面没写号码的姓名入库规则不遮、页面那套遮（model_text 两步都过），
+    交给模型的也不带；结果照常记下。"""
+    doc = add_doc(session, body=OWN + "联系电话：张某、李某。")
+    client, calls = fake_ai(deadlines=[ai_item("2026-10-15", OWN)])
+    report = run_ai_checks(session, client)
+    sent = json.dumps(calls, ensure_ascii=False)
+    assert len(calls) == 2 and "张某" not in sent and "李某" not in sent
+    assert report.body_changed == 0
+    assert _deadline_check(session, doc).error is None
+
+
 def test_rerun_of_old_deadline_checks_sends_the_masked_body_too(session) -> None:
     from youju.ai.deadlines import RESULT_VERSION
     from youju.ai.pipeline import rerun_old_deadlines

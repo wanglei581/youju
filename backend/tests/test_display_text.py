@@ -15,6 +15,7 @@ import pytest
 from tests.test_readers import client, path, seed  # noqa: F401 - 夹具和造数据的函数
 from youju import attachment_text as texts
 from youju.ai import content, interpret
+from youju.ai.model_text import model_text
 from youju.api import v1
 from youju.models import AttachmentTextSegment
 
@@ -1048,3 +1049,117 @@ def test_names_before_newly_masked_numbers_on_every_path(raw: str) -> None:
         ("交给模型", v1.model_body_text(v1.redact_sensitive(raw))),
     ):
         assert not re.search(r"张老师|李老师|王先生|王某|李某|\d{4,}", out), (where, out)
+
+
+def _on_every_path(raw: str) -> list[tuple[str, str]]:
+    """一段原文在详情页、阅读页、附件、交给模型（model_text）四条路上的写法。"""
+    return [
+        ("详情页", v1.display_body_text(v1._clean_reading_body(raw))),
+        ("阅读页", v1.display_body_text(v1._clean_reading_body(raw, redact=texts.mask))),
+        ("附件", v1.display_attachment_text(texts.mask(raw))),
+        ("交给模型", model_text(raw)),
+    ]
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        # 正确性那位第七轮：入库先遮了号码旁边的姓名，页面往前看被联系人标记挡住。标记当姓名看，跳过
+        # 它接着往前看（附件那两条、规则 ③）；"联系张三主任"入库认"姓名+职务"
+        "省科技厅 张三处长 李某，0123-65432109",
+        "省科技厅 张三处长 李某，电话：0123-65432109",
+        "请联系张三主任 李某 （0123）65432109",
+        "咨询：刘老师，李某/65432109",
+        "刘老师  李某/65432109",
+        "刘老师 李某（65432109",
+        "咨询：张 三 李某/65432109",
+        "刘老师、李某/0123-65432109",
+        "刘老师、李某/13812345678",
+    ],
+)
+def test_names_behind_masked_contacts_on_every_path(raw: str) -> None:
+    for where, out in _on_every_path(raw):
+        assert not re.search(r"张三|张 三|李某|刘老师|处长|主任|\d{5,}", out), (where, out)
+
+
+def test_skipping_masked_contacts_does_not_cut_a_long_unit_name() -> None:
+    # 跳过联系人标记往前看的词要是整个词：长单位名的后几个字不当词，"联系人："那一段不从词中间截开
+    # （11/19 全部正文对比看到"某厅高新技（这里隐去了联系人）术及产业化处"）
+    raw = "联 系 人：某省科技厅高新技术及产业化处 张某、李某联系电话：0123-65432109"
+    for where, out in _on_every_path(raw):
+        assert "高新技术及产业化处" in out and "张某" not in out and "李某" not in out, (where, out)
+
+
+def test_rows_under_a_contact_label_go_on_past_masked_names() -> None:
+    # "联系人："写在行尾、下面一行一个"姓名 电话"的一直遮：入库遮成联系人标记的那一行也算
+    raw = "联系人：\n李某 0123-65432109\n王五"
+    for where, out in _on_every_path(raw):
+        if where != "附件":  # 附件只看标签下面那一行（见 v1 附件规则 3）
+            assert "王五" not in out, (where, out)
+
+
+def test_qq_marks_count_as_numbers_for_the_page_rules() -> None:
+    # "标记对页面规则透明"：QQ 号入库先遮成了标记，页面上看左邻右舍的规则把它当号码看
+    # 联系方式标题后面写着 QQ 号（主干按原始数字认），下面一行单独的号码照样遮
+    for where, out in _on_every_path("联系方式：QQ 23456789\n65432109"):
+        assert "65432109" not in out and "23456789" not in out, (where, out)
+    # 紧跟在 QQ 号标记后面、写在它前面的本地号码
+    assert v1.display_text("QQ：（这里隐去了QQ号）、65432109") == f"QQ：（这里隐去了QQ号）、{MARK}"
+    assert v1.display_text("65432109、（这里隐去了QQ号）") == f"{MARK}、（这里隐去了QQ号）"
+    # 表格一行里有遮掉的 QQ 号：单独一个号码的格子也遮
+    row = v1.display_attachment_row([("QQ", "[QQ号已脱敏]"), ("备注", "65432109")])
+    assert row == ["（这里隐去了QQ号）", MARK]
+
+
+def test_quotes_mask_names_before_masked_numbers() -> None:
+    # 原句只走显示层（shown_quote：没有整行遮姓名、附件那几条），遮成标记的号码前面的人名靠规则 ③
+    # 的标记版遮；中间隔着联系人标记的跳过它接着看（正确性那位第七轮）
+    assert v1.shown_quote("请致电王老师 [电话已脱敏]") == f"请致电（这里隐去了联系人） {MARK}"
+    assert v1.shown_quote("请致电王老师 [QQ号已脱敏]") == (
+        "请致电（这里隐去了联系人） （这里隐去了QQ号）"
+    )
+    assert v1.shown_quote("咨询：刘老师，[姓名已脱敏]/[电话已脱敏]") == (
+        f"咨询：（这里隐去了联系人），（这里隐去了联系人）/{MARK}"
+    )
+    # 和标记紧挨着的：标记开头的括号当隔开的括号
+    assert v1.shown_quote("刘老师[姓名已脱敏] [电话已脱敏]") == (
+        f"（这里隐去了联系人）（这里隐去了联系人） {MARK}"
+    )
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        # 页面那套遮了号码旁边的姓名以后，入库规则再看又认出后面的号码（标记后面隔一个换行）：
+        # 过到不再变为止，结果再交给它不变（正确性那位第七轮）
+        "联系人：刘老师/李某\n65432109",
+        "联系人：刘老师，李某\n65432109",
+        "咨询：刘老师，李某/65432109",
+    ],
+)
+def test_model_text_runs_until_nothing_changes(raw: str) -> None:
+    once = model_text(raw)
+    assert model_text(once) == once
+    assert not re.search(r"刘老师|李某|65432109", once), once
+
+
+def test_model_text_uses_both_the_store_and_the_page_rules() -> None:
+    # 入库不遮、页面那套遮的（"联系电话："后面没写号码的姓名）；页面那套不管、入库遮的（证件号、
+    # 数字用户名的邮箱前面隔着"电子邮件："的姓名）：交给模型的都遮
+    assert model_text("联系电话：张某、李某。") == "联系电话：[姓名已脱敏]、[姓名已脱敏]"
+    assert model_text("身份证号：110101199001011234") == "身份证号：[身份证号已脱敏]"
+    assert model_text("王某，电子邮件：87654321＠qq.com") == "[姓名已脱敏]，电子邮件：[邮箱已脱敏]"
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "党员QQ群：12345678",
+        "管理员QQ：1234567",
+        "简历：1234567@qq.com",
+        "请联系高级工程师 0123-65432109",
+    ],
+)
+def test_role_words_next_to_masked_numbers_are_not_names(raw: str) -> None:
+    for where, out in _on_every_path(raw):
+        assert out.startswith(raw[:2]) and "联系人" not in out and "姓名" not in out, (where, out)
