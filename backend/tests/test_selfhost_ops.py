@@ -384,6 +384,12 @@ def test_shared_server_compose_stays_small_and_local():
     assert (
         "${YOUJU_CRONTAB:-/app/backend/deploy/selfhost/shared/crontab.idle}" in services["worker"]
     )
+    # 数据库账号按最小权限分开：root 口令只经 mysql-root.env 给 MySQL 容器；接口、worker 只读 .env
+    assert "\n    env_file: mysql-root.env\n" in services["mysql"]
+    code = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
+    assert "MYSQL_ROOT_PASSWORD" not in code.replace("$$MYSQL_ROOT_PASSWORD", "")  # 只剩健康检查
+    assert "\n  env_file: .env\n" in text.split("\nservices:\n")[0]
+    assert all("env_file" not in services[name] for name in ("api", "worker"))
 
 
 def test_shared_server_nginx_site_only_forwards_app_paths():
@@ -532,6 +538,8 @@ def test_shared_server_env_passes_startup_checks(monkeypatch):
         assert "$" not in value, line
         env[key] = value
     assert env["YOUJU_WX_API_BASE"] == "http://127.0.0.1:9"
+    # 接口、worker 读的 .env 里没有数据库 root 口令（它只在 mysql-root.env 里）
+    assert "MYSQL_ROOT_PASSWORD" not in env and "MYSQL_PASSWORD" in env
     for key, value in env.items():
         monkeypatch.setenv(key, value)
     for role in ("api", "admin"):

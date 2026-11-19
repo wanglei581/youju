@@ -476,10 +476,17 @@ def _calls(tmp_path: Path) -> list[str]:
 
 
 def _server_env(tmp_path: Path, text: str) -> Path:
+    """服务器的 .env（只有 root 能读）。数据库 root 口令那一行照现在的做法单独写进 mysql-root.env。"""
     (tmp_path / "server").mkdir(exist_ok=True)
+    lines = text.splitlines(keepends=True)
+    root = [line for line in lines if line.startswith("MYSQL_ROOT_PASSWORD=")]
     env = tmp_path / "server" / ".env"
-    env.write_text(text, encoding="utf-8")
+    env.write_text("".join(line for line in lines if line not in root), encoding="utf-8")
     env.chmod(0o600)
+    if root:
+        root_env = tmp_path / "server" / "mysql-root.env"
+        root_env.write_text("".join(root), encoding="utf-8")
+        root_env.chmod(0o600)
     return env
 
 
@@ -586,6 +593,146 @@ def test_shared_rotate_sync_prints_only_a_fingerprint(tmp_path):
     new = env.read_text(encoding="utf-8").strip().split("=", 1)[1]
     assert re.fullmatch(r"[0-9a-f]{64}", new) and new != "a" * 64
     assert new not in done.stdout and _sha(new.encode())[:4] in done.stdout
+
+
+def _old_layout(
+    tmp_path: Path, env_text: str, compose_line: str = "    env_file: mysql-root.env\n"
+):
+    """还没把 root 口令单独放的 .env（只有 root 能读），和装好的 docker-compose.yml。"""
+    server = tmp_path / "server"
+    server.mkdir(exist_ok=True)
+    env = server / ".env"
+    env.write_text(env_text, encoding="utf-8")
+    env.chmod(0o600)
+    (server / "docker-compose.yml").write_text(
+        "services:\n  mysql:\n" + compose_line, encoding="utf-8"
+    )
+    return env, server / "mysql-root.env"
+
+
+@needs_bash
+def test_shared_split_root_env_keeps_the_root_password_out_of_env(tmp_path):
+    """数据库账号按最小权限分开：root 口令从 .env 放进只有 root 能读的 mysql-root.env（只给 MySQL 容器），
+    .env 里删掉这一行；值不显示，只回长度和指纹；重跑不动。"""
+    env, root_env = _old_layout(
+        tmp_path, "YOUJU_IMAGE=x\nMYSQL_ROOT_PASSWORD=r00tpw\nMYSQL_PASSWORD=dbpw\n", ""
+    )
+    # 装好的 compose 还是旧的（不认 mysql-root.env）：什么都不动
+    done = _bash(tmp_path, "split_root_env")
+    assert done.returncode == 1 and "先 install 这一版" in done.stderr
+    assert "MYSQL_ROOT_PASSWORD=r00tpw" in env.read_text(encoding="utf-8")
+    assert not root_env.exists()
+    env, root_env = _old_layout(tmp_path, env.read_text(encoding="utf-8"))
+    done = _bash(tmp_path, "split_root_env")
+    assert done.returncode == 0, done.stderr
+    assert root_env.read_text(encoding="utf-8") == "MYSQL_ROOT_PASSWORD=r00tpw\n"
+    assert env.read_text(encoding="utf-8") == "YOUJU_IMAGE=x\nMYSQL_PASSWORD=dbpw\n"
+    assert root_env.stat().st_mode & 0o777 == 0o600 and env.stat().st_mode & 0o777 == 0o600
+    assert "r00tpw" not in done.stdout + done.stderr
+    assert f"6 位，指纹 {_sha(b'r00tpw')[:4]}" in done.stdout and "up 生效" in done.stdout
+    assert not list((tmp_path / "server").glob("*.tmp"))
+    again = _bash(tmp_path, "split_root_env")
+    assert again.returncode == 0 and "已经单独放在" in again.stdout
+    assert root_env.read_text(encoding="utf-8") == "MYSQL_ROOT_PASSWORD=r00tpw\n"
+    # 上次放到一半（新文件写好了、.env 里还没删）：重跑把 .env 里那一行删掉
+    env.write_text("YOUJU_IMAGE=x\nMYSQL_ROOT_PASSWORD=r00tpw\n", encoding="utf-8")
+    done = _bash(tmp_path, "split_root_env")
+    assert done.returncode == 0 and env.read_text(encoding="utf-8") == "YOUJU_IMAGE=x\n"
+    # 两边的口令不一样：不知道哪个是对的，什么都不动
+    env.write_text("YOUJU_IMAGE=x\nMYSQL_ROOT_PASSWORD=other\n", encoding="utf-8")
+    done = _bash(tmp_path, "split_root_env")
+    assert done.returncode == 1 and "不一样" in done.stderr
+    assert "MYSQL_ROOT_PASSWORD=other" in env.read_text(encoding="utf-8")
+    assert root_env.read_text(encoding="utf-8") == "MYSQL_ROOT_PASSWORD=r00tpw\n"
+    # 两边都没有
+    env.write_text("YOUJU_IMAGE=x\n", encoding="utf-8")
+    root_env.unlink()
+    done = _bash(tmp_path, "split_root_env")
+    assert done.returncode == 1 and "都没有 MYSQL_ROOT_PASSWORD" in done.stderr
+
+
+@needs_bash
+def test_shared_up_and_import_need_the_root_password_on_its_own(tmp_path):
+    """root 口令还在 .env 里（没跑 split-root-env）：up 停下提示，一个容器都不动；import-export 也不拿 .env 里的。"""
+    _old_layout(tmp_path, "YOUJU_IMAGE=x\nMYSQL_ROOT_PASSWORD=r00tpw\n")
+    fake_status = "status() { echo STATUS; }"
+    done = _bash(tmp_path, "up", setup=fake_status)
+    assert done.returncode == 1 and "先运行 youju-shared.sh split-root-env" in done.stderr
+    assert _calls(tmp_path) == []
+    _downloaded(tmp_path)
+    done = _bash(tmp_path, "import_export a79a0042")
+    assert done.returncode == 1 and "mysql-root.env 里没有 MYSQL_ROOT_PASSWORD" in done.stderr
+    assert not [c for c in _calls(tmp_path) if c.startswith("compose")]
+    # 放好以后照常：先起 MySQL、迁移，再起 worker、接口
+    assert _bash(tmp_path, "split_root_env").returncode == 0
+    (tmp_path / "calls.log").unlink()
+    done = _bash(tmp_path, "up", setup=fake_status)
+    assert done.returncode == 0, done.stderr
+    calls = [c.split(" | ")[0] for c in _calls(tmp_path)]
+    assert calls[:2] == ["compose config -q", "compose up -d --wait --wait-timeout 300 mysql"]
+    assert "STATUS" in done.stdout
+
+
+@needs_bash
+def test_shared_status_says_whether_app_containers_hold_the_root_password(tmp_path):
+    """status（up 最后也打）：接口、worker 里有没有数据库 root 口令，只说有没有、不显示值。"""
+    _server_env(tmp_path, "YOUJU_IMAGE=x\nMYSQL_ROOT_PASSWORD=r00tpw\n")
+    script = tmp_path / "probe.sh"
+    setup = (
+        "curl() { return 7; }; free() { :; }\n"
+        # 容器里的 sh -c 脚本记下来；worker 当作查不了
+        f'compose() {{ if [ "$1" = exec ]; then [ "$3" = worker ] && return 1; '
+        f'printf "%s" "$6" > "{script}"; echo 没有; fi; }}'
+    )
+    done = _bash(tmp_path, "status", setup=setup)
+    assert done.returncode == 0, done.stderr
+    assert "api 里的数据库 root 口令：没有" in done.stdout
+    assert "worker 里的数据库 root 口令：查不了" in done.stdout
+    # 容器里跑的那段：有这个变量只打"有"，不打值
+    probe = script.read_text(encoding="utf-8")
+    has = subprocess.run(
+        ["sh", "-c", probe],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "MYSQL_ROOT_PASSWORD": "r00tpw"},
+    )
+    assert has.stdout.strip() == "有" and "r00tpw" not in has.stdout + has.stderr
+    clean = {k: v for k, v in os.environ.items() if k != "MYSQL_ROOT_PASSWORD"}
+    none = subprocess.run(["sh", "-c", probe], capture_output=True, text=True, env=clean)
+    assert none.stdout.strip() == "没有"
+
+
+@needs_bash
+def test_shared_make_env_writes_the_root_password_on_its_own(tmp_path):
+    """新装（env）：数据库 root 口令只写进 mysql-root.env，.env 里没有；两个都只有 root 能读，已有就不动。"""
+    if shutil.which("openssl") is None:
+        pytest.skip("没有 openssl")
+    ver = "abcdef12"
+    rel = tmp_path / "releases" / ver / "source"
+    (rel / "backend/deploy/selfhost/server").mkdir(parents=True)
+    (rel / "VERSION").write_text(ver + "\n", encoding="utf-8")
+    (rel / "backend/deploy/selfhost/server/env.example").write_text(
+        "YOUJU_CLOUD_ENV=test-env\n", encoding="utf-8"
+    )
+    server = tmp_path / "server"
+    server.mkdir()
+    (server / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+    done = _bash(tmp_path, f"make_env {ver}")
+    assert done.returncode == 0, done.stderr
+    env, root_env = server / ".env", server / "mysql-root.env"
+    text = env.read_text(encoding="utf-8")
+    assert "MYSQL_ROOT_PASSWORD" not in text and "\nMYSQL_PASSWORD=" in text
+    root_pw = re.fullmatch(r"MYSQL_ROOT_PASSWORD=([0-9a-f]{48})\n", root_env.read_text()).group(1)
+    assert root_pw not in text and root_pw not in done.stdout
+    assert env.stat().st_mode & 0o777 == 0o600 and root_env.stat().st_mode & 0o777 == 0o600
+    assert not list(server.glob("*.tmp"))
+    again = _bash(tmp_path, f"make_env {ver}")
+    assert again.returncode == 0 and "不动" in again.stdout
+    assert root_env.read_text(encoding="utf-8") == f"MYSQL_ROOT_PASSWORD={root_pw}\n"
+    # 只剩 mysql-root.env（数据库可能已经用它建好了）：不另生成一个口令
+    env.unlink()
+    done = _bash(tmp_path, f"make_env {ver}")
+    assert done.returncode == 1 and "先人工核对" in done.stderr and not env.exists()
 
 
 @needs_bash

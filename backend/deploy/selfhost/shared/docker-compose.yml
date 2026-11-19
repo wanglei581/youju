@@ -6,6 +6,8 @@
 #   项目）；主机内存不够时内核先挑有据的进程停（oom_score_adj），不连累别的项目；
 # - worker 默认只写心跳、不跑定时任务（测试期没有用户数据；shared/crontab.idle，只多一条旧库存档的
 #   到期删除）；上线前在 .env 里设 YOUJU_CRONTAB=/app/backend/deploy/selfhost/server/crontab。
+# - 数据库账号按最小权限分开：root 口令只在 mysql-root.env（只有 root 能读），只给 MySQL 容器；接口、
+#   worker 读的 .env 里没有它，连库只用有据自己的账号（YOUJU_DATABASE_URL 里的 youju）。
 # 都由 youju-shared.sh 调用，见 docs/部署/自建服务器.md 第十节（已有服务器）。
 name: youju-server
 
@@ -34,8 +36,9 @@ services:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_0900_bin
       - --default-time-zone=+00:00
+    # MYSQL_ROOT_PASSWORD 从这里来（youju-shared.sh env 生成；已装好的用 split-root-env 放进来）
+    env_file: mysql-root.env
     environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?在 .env 里填 MYSQL_ROOT_PASSWORD}
       MYSQL_DATABASE: youju
       MYSQL_USER: youju
       MYSQL_PASSWORD: ${MYSQL_PASSWORD:?在 .env 里填 MYSQL_PASSWORD}

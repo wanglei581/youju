@@ -15,12 +15,14 @@
 #   unkey                  删掉用户 youju 和它的公钥
 #   unpack <版本> <哈希>   把传上来的安装包拷到只有 root 能进的目录，核对 SHA-256，解包到 /opt/youju/releases/<版本>
 #   install <版本>         把 /opt/youju/releases/<版本> 里的配置装到 /opt/youju，构建镜像
-#   env <版本>             生成 /opt/youju/server/.env（随机密钥；已有就不动）
+#   env <版本>             生成 /opt/youju/server/.env 和 mysql-root.env（随机密钥；已有就不动）
+#   split-root-env         数据库 root 口令单独放进 mysql-root.env（只有 root 能读，只给 MySQL 容器），
+#                          .env 里不留；装了这一版、up 之前跑一次（已经放好就不动）
 #   up                     启动：先 MySQL，再迁移，再 worker、接口
 #   site http|https        写 nginx 站点文件，检查通过才重载（http 只为申请证书；https 正式转发并加续期定时任务）
 #   cert                   申请证书（Let's Encrypt，HTTP 验证）
 #   renew                  续期证书（定时任务每周一跑）；证书和 nginx 已加载的不一样才重载
-#   status                 容器、内存、健康检查
+#   status                 容器、内存、健康检查，接口和 worker 里有没有数据库 root 口令（只说有没有）
 #   logs mysql|api|worker [行数]
 #   uninstall [--purge]    停掉有据、撤掉站点和定时任务；--purge 连数据库、文件、镜像一起删
 # 首发前搬家（D-127，手册第六节）：
@@ -328,6 +330,8 @@ install_release() {
   if [ -f "$SERVER/.env" ]; then
     sed -i "s#^YOUJU_IMAGE=.*#YOUJU_IMAGE=youju-selfhost:${ver}#" "$SERVER/.env"
     echo "已把 .env 里的镜像换成 youju-selfhost:${ver}，运行 ${BASE}/bin/youju-shared.sh up 生效"
+    [ -z "$(env_get MYSQL_ROOT_PASSWORD)" ] \
+      || echo "这一版起数据库 root 口令单独放：up 之前先运行 ${BASE}/bin/youju-shared.sh split-root-env"
   fi
   echo "回退：.env 里 YOUJU_IMAGE 改回上一版再 up；不要的镜像 docker image rm youju-selfhost:${ver} youju-base:${ver}"
 }
@@ -340,6 +344,8 @@ make_env() {
     echo "已有 ${SERVER}/.env，不动（要重新生成先自己挪走）"
     return
   fi
+  [ ! -f "$SERVER/mysql-root.env" ] \
+    || die "已有 ${SERVER}/mysql-root.env、没有 .env：数据库可能已经用那个 root 口令建好了，先人工核对（要重新生成先把它也挪走）"
   local cloud_env
   cloud_env=$(sed -n 's/^YOUJU_CLOUD_ENV=//p' "$BASE/releases/$ver/source/backend/deploy/selfhost/server/env.example")
   [ -n "$cloud_env" ] || die "env.example 里没有 YOUJU_CLOUD_ENV"
@@ -360,7 +366,6 @@ make_env() {
 # 上线前按手册第十节"上线前"一项项改：真的 AppSecret、删掉 YOUJU_WX_API_BASE、YOUJU_CRONTAB、异地备份、
 # 换掉同步密钥……
 YOUJU_IMAGE=youju-selfhost:${ver}
-MYSQL_ROOT_PASSWORD=${root_pw}
 MYSQL_PASSWORD=${db_pw}
 YOUJU_DATABASE_URL=mysql+pymysql://youju:${db_pw}@mysql:3306/youju?charset=utf8mb4
 YOUJU_HOSTING=self
@@ -383,13 +388,52 @@ YOUJU_CLOUD_ENV=${cloud_env}
 YOUJU_STORAGE_BUCKET=youju-self
 YOUJU_SYNC_SECRET=$(openssl rand -hex 32)
 EOF
+    printf 'MYSQL_ROOT_PASSWORD=%s\n' "$root_pw" > "$SERVER/mysql-root.env.tmp"
+    mv -f "$SERVER/mysql-root.env.tmp" "$SERVER/mysql-root.env"
     mv -f "$SERVER/.env.tmp" "$SERVER/.env"
   )
-  echo "已生成 ${SERVER}/.env（只有 root 能读）"
+  echo "已生成 ${SERVER}/.env 和 mysql-root.env（数据库 root 口令只在后一个里；都只有 root 能读）"
+}
+
+# 数据库 root 口令只在 mysql-root.env 里（只有 root 能读，compose 只把它给 MySQL 容器）；接口、worker
+# 按 env_file 读的是 .env，那里不留，连库只用有据自己的账号。文件没有时回空
+root_password() { { sed -n 's/^MYSQL_ROOT_PASSWORD=//p' "$SERVER/mysql-root.env" 2>/dev/null || true; } | head -n 1; }
+
+root_env_ok() {
+  [ -z "$(env_get MYSQL_ROOT_PASSWORD)" ] && [ -n "$(root_password)" ] \
+    || die "数据库 root 口令要单独放在 ${SERVER}/mysql-root.env、.env 里不留：先运行 ${SELF} split-root-env"
+}
+
+# 装了这一版以后、up 之前跑一次：root 口令从 .env 放进 mysql-root.env，.env 里删掉这一行。值不显示，
+# 只回长度和指纹；已经放好就不动。新文件先写好再删 .env 里那一行，中途断了重跑就行
+split_root_env() {
+  [ -f "$SERVER/.env" ] || die "还没装（没有 ${SERVER}/.env）"
+  grep -qx '    env_file: mysql-root.env' "$SERVER/docker-compose.yml" \
+    || die "先 install 这一版（${SERVER}/docker-compose.yml 还不认 mysql-root.env），什么都没动"
+  local pw old
+  pw=$(env_get MYSQL_ROOT_PASSWORD)
+  old=$(root_password)
+  if [ -z "$pw" ]; then
+    [ -n "$old" ] || die "${SERVER}/.env 和 mysql-root.env 里都没有 MYSQL_ROOT_PASSWORD，什么都没动"
+    echo "数据库 root 口令已经单独放在 ${SERVER}/mysql-root.env（${#old} 位，指纹 $(fingerprint "$old")），不用再放"
+    return
+  fi
+  [ -z "$old" ] || [ "$old" = "$pw" ] \
+    || die "mysql-root.env 里已有一个和 .env 里不一样的 root 口令：先人工核对是哪一个，什么都没动"
+  (
+    umask 077
+    printf 'MYSQL_ROOT_PASSWORD=%s\n' "$pw" > "$SERVER/mysql-root.env.tmp"
+    mv -f "$SERVER/mysql-root.env.tmp" "$SERVER/mysql-root.env"
+    KEY=MYSQL_ROOT_PASSWORD awk 'index($0, ENVIRON["KEY"] "=") != 1' "$SERVER/.env" > "$SERVER/.env.tmp"
+    mv -f "$SERVER/.env.tmp" "$SERVER/.env"
+  )
+  root_env_ok
+  echo "数据库 root 口令已单独放进 ${SERVER}/mysql-root.env（只有 root 能读；${#pw} 位，指纹 $(fingerprint "$pw")），.env 里删了这一行；运行 ${SELF} up 生效"
 }
 
 up() {
   [ -f "$SERVER/.env" ] || die "先 env"
+  root_env_ok
   compose config -q
   compose up -d --wait --wait-timeout 300 mysql
   # 升级时先停 worker、接口，迁移完再起（和本机 setup-wsl.sh 一样）
@@ -516,6 +560,14 @@ status() {
   local port
   for port in 18100 18101; do
     echo "127.0.0.1:${port}/health → $(curl -fsS -m 5 "http://127.0.0.1:${port}/health" || echo 不通)"
+  done
+  # 接口、worker 里应当没有数据库 root 口令：只看有没有，不显示值
+  local svc has
+  for svc in api worker; do
+    # shellcheck disable=SC2016  # 要在容器里展开
+    has=$(compose exec -T "$svc" sh -c 'if [ -n "${MYSQL_ROOT_PASSWORD+x}" ]; then echo 有; else echo 没有; fi' \
+      </dev/null 2>/dev/null) || has=查不了
+    echo "${svc} 里的数据库 root 口令：${has:-查不了}"
   done
   free -m
 }
@@ -659,8 +711,8 @@ import_export() {
   [ "$free" -ge "$need" ] || die "硬盘不够试恢复：要 $(( (need + 1073741823) / 1073741824 ))G，现在只剩 $(( free / 1073741824 ))G（先腾空间，别动别的项目的文件）"
   local name root_pw
   name=$(basename "${files[0]}")
-  root_pw=$(sed -n 's/^MYSQL_ROOT_PASSWORD=//p' "$SERVER/.env")
-  [ -n "$root_pw" ] || die ".env 里没有 MYSQL_ROOT_PASSWORD"
+  root_pw=$(root_password)
+  [ -n "$root_pw" ] || die "${SERVER}/mysql-root.env 里没有 MYSQL_ROOT_PASSWORD（先 ${SELF} split-root-env）"
   pause_services
   say "1/3 试恢复：${old} 的镜像在临时库 youju_drill_… 里恢复一遍（核对条数、外键、每张表的 SHA-256），结束删掉；不碰正式库"
   # 建临时库要 root；连接串经环境变量传进容器（不进命令行参数）。临时库和正式库在同一个 MySQL 里
@@ -1033,7 +1085,7 @@ uninstall() {
       "$EXPORT_DIR"
     echo "已删除有据的容器、数据卷、镜像、证书和 ${BASE} 下的文件"
   else
-    echo "已停掉有据、撤掉站点和定时任务；数据卷和 ${SERVER}/.env 留着（${SELF} up 重新启动）"
+    echo "已停掉有据、撤掉站点和定时任务；数据卷和 ${SERVER}/.env、mysql-root.env 留着（${SELF} up 重新启动）"
   fi
   echo "用户 youju 另用 unkey 删；桌面服务另用 desktop on 恢复"
 }
@@ -1050,6 +1102,7 @@ case "$cmd" in
   unpack) unpack "$@" ;;
   install) install_release "$@" ;;
   env) make_env "$@" ;;
+  split-root-env) split_root_env ;;
   up) up ;;
   site) need_domain site; site "$@" ;;
   cert) need_domain cert; cert ;;
