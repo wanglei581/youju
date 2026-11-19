@@ -703,6 +703,46 @@ def test_shared_status_says_whether_app_containers_hold_the_root_password(tmp_pa
 
 
 @needs_bash
+def test_shared_install_splits_the_root_password_before_building(tmp_path):
+    """已装好的服务器 install 这一版：新 compose 一装上就把 root 口令单独放好，再构建镜像
+    （不然构建这段时间里要读 compose 的子命令都用不了）；放不成就停下，不构建。"""
+    ver = "abcdef12"
+    rel = tmp_path / "releases" / ver
+    (rel / "source").mkdir(parents=True)
+    (rel / "source" / "VERSION").write_text(ver + "\n", encoding="utf-8")
+    shared = rel / "shared"
+    shared.mkdir()
+    (shared / "docker-compose.yml").write_text(
+        "services:\n  mysql:\n    env_file: mysql-root.env\n", encoding="utf-8"
+    )
+    for name in ("mysql.cnf", "nginx-http.conf", "nginx-https.conf", "youju-shared.sh"):
+        (shared / name).write_text("x\n", encoding="utf-8")
+    env, root_env = _old_layout(
+        tmp_path, "YOUJU_IMAGE=youju-selfhost:old\nMYSQL_ROOT_PASSWORD=r00tpw\n"
+    )
+    # 证书、验证目录也指到临时目录；跑测试的机器可能是 BSD sed：只替身 install 里那一处 sed -i
+    portable = (
+        f'WEBROOT="{tmp_path}/acme-webroot"; LE_DIR="{tmp_path}/letsencrypt"\n'
+        'sed() { if [ "$1" = -i ]; then command sed "$2" "$3" > "$3.t" && mv "$3.t" "$3"; '
+        'else command sed "$@"; fi; }'
+    )
+    done = _bash(tmp_path, f"install_release {ver}", setup=portable)
+    assert done.returncode == 0, done.stderr
+    assert root_env.read_text(encoding="utf-8") == "MYSQL_ROOT_PASSWORD=r00tpw\n"
+    assert env.read_text(encoding="utf-8") == f"YOUJU_IMAGE=youju-selfhost:{ver}\n"
+    assert "r00tpw" not in done.stdout + done.stderr
+    out = done.stdout
+    assert out.index("已单独放进") < out.index("构建镜像")
+    assert any(c.startswith("docker build") for c in _calls(tmp_path))
+    # 两边口令对不上：停下，不构建
+    (tmp_path / "calls.log").unlink()
+    env.write_text("YOUJU_IMAGE=x\nMYSQL_ROOT_PASSWORD=other\n", encoding="utf-8")
+    done = _bash(tmp_path, f"install_release {ver}", setup=portable)
+    assert done.returncode == 1 and "不一样" in done.stderr
+    assert not any(c.startswith("docker build") for c in _calls(tmp_path))
+
+
+@needs_bash
 def test_shared_make_env_writes_the_root_password_on_its_own(tmp_path):
     """新装（env）：数据库 root 口令只写进 mysql-root.env，.env 里没有；两个都只有 root 能读，已有就不动。"""
     if shutil.which("openssl") is None:

@@ -17,7 +17,7 @@
 #   install <版本>         把 /opt/youju/releases/<版本> 里的配置装到 /opt/youju，构建镜像
 #   env <版本>             生成 /opt/youju/server/.env 和 mysql-root.env（随机密钥；已有就不动）
 #   split-root-env         数据库 root 口令单独放进 mysql-root.env（只有 root 能读，只给 MySQL 容器），
-#                          .env 里不留；装了这一版、up 之前跑一次（已经放好就不动）
+#                          .env 里不留（install 会自动做；它停下了，人工核对以后用这个补跑；放好了就不动）
 #   up                     启动：先 MySQL，再迁移，再 worker、接口
 #   site http|https        写 nginx 站点文件，检查通过才重载（http 只为申请证书；https 正式转发并加续期定时任务）
 #   cert                   申请证书（Let's Encrypt，HTTP 验证）
@@ -323,6 +323,9 @@ install_release() {
   install -m 644 "$rel/shared/docker-compose.yml" "$rel/shared/mysql.cnf" "$SERVER/"
   install -m 644 "$rel/shared/nginx-http.conf" "$rel/shared/nginx-https.conf" "$BASE/nginx/"
   install -m 755 "$rel/shared/youju-shared.sh" "$BASE/bin/youju-shared.sh"
+  # 新的 compose 一装上就把 root 口令单独放好：不然构建镜像这段时间里 status、logs、紧急下架这些
+  # 要读 compose 的子命令都会因为没有 mysql-root.env 用不了
+  if [ -f "$SERVER/.env" ]; then split_root_env; fi
   say "构建镜像 youju-selfhost:${ver}（第一次 5–15 分钟）"
   docker build -t "youju-base:$ver" -f "$rel/source/Dockerfile" "$rel/source"
   docker build -t "youju-selfhost:$ver" --build-arg "BASE=youju-base:$ver" \
@@ -330,8 +333,6 @@ install_release() {
   if [ -f "$SERVER/.env" ]; then
     sed -i "s#^YOUJU_IMAGE=.*#YOUJU_IMAGE=youju-selfhost:${ver}#" "$SERVER/.env"
     echo "已把 .env 里的镜像换成 youju-selfhost:${ver}，运行 ${BASE}/bin/youju-shared.sh up 生效"
-    [ -z "$(env_get MYSQL_ROOT_PASSWORD)" ] \
-      || echo "这一版起数据库 root 口令单独放：up 之前先运行 ${BASE}/bin/youju-shared.sh split-root-env"
   fi
   echo "回退：.env 里 YOUJU_IMAGE 改回上一版再 up；不要的镜像 docker image rm youju-selfhost:${ver} youju-base:${ver}"
 }
@@ -404,8 +405,8 @@ root_env_ok() {
     || die "数据库 root 口令要单独放在 ${SERVER}/mysql-root.env、.env 里不留：先运行 ${SELF} split-root-env"
 }
 
-# 装了这一版以后、up 之前跑一次：root 口令从 .env 放进 mysql-root.env，.env 里删掉这一行。值不显示，
-# 只回长度和指纹；已经放好就不动。新文件先写好再删 .env 里那一行，中途断了重跑就行
+# install 这一版时自动跑（也可以单独补跑）：root 口令从 .env 放进 mysql-root.env，.env 里删掉这一行。
+# 值不显示，只回长度和指纹；已经放好就不动。新文件先写好再删 .env 里那一行，中途断了重跑就行
 split_root_env() {
   [ -f "$SERVER/.env" ] || die "还没装（没有 ${SERVER}/.env）"
   grep -qx '    env_file: mysql-root.env' "$SERVER/docker-compose.yml" \
@@ -415,7 +416,7 @@ split_root_env() {
   old=$(root_password)
   if [ -z "$pw" ]; then
     [ -n "$old" ] || die "${SERVER}/.env 和 mysql-root.env 里都没有 MYSQL_ROOT_PASSWORD，什么都没动"
-    echo "数据库 root 口令已经单独放在 ${SERVER}/mysql-root.env（${#old} 位，指纹 $(fingerprint "$old")），不用再放"
+    echo "数据库 root 口令已经单独放在 ${SERVER}/mysql-root.env（${#old} 位，指纹 $(fingerprint "$old")）"
     return
   fi
   [ -z "$old" ] || [ "$old" = "$pw" ] \
