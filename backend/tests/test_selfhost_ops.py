@@ -109,7 +109,7 @@ def test_uptime_check_resends_an_alert_that_did_not_go_out(tmp_path, monkeypatch
     assert noted == {"fails": 2, "alerted": False}
     code, out, noted = run()  # 没配告警也不算提醒过
     assert code == 1 and len(sent) == 2 and "连续 3 次" in sent[1]
-    assert "没配置告警，提醒没发（配好以后下次检查会发）" in out and noted["alerted"] is False
+    assert "没配置告警，提醒没发（配好以后照常提醒）" in out and noted["alerted"] is False
     code, out, noted = run()
     assert code == 1 and len(sent) == 3 and "连续 4 次" in sent[2]
     assert "下次再发" not in out and noted == {"fails": 4, "alerted": True}
@@ -131,7 +131,16 @@ def test_uptime_check_resends_an_alert_that_did_not_go_out(tmp_path, monkeypatch
 
 
 @pytest.mark.parametrize(
-    "broken", ["null", "[1]", '"x"', '{"fails": "x"}', '{"fails": null, "alerted": "yes"}']
+    "broken",
+    [
+        "null",
+        "[1]",
+        '"x"',
+        '{"fails": "x"}',
+        '{"fails": null, "alerted": "yes"}',
+        '{"fails": 1e999}',
+        '{"fails": -3, "alerted": 1}',
+    ],
 )
 def test_uptime_check_survives_a_broken_state_file(tmp_path, monkeypatch, broken):
     """状态文件被改坏了：当作没有记录重新数，不崩（崩了的话整次故障都不提醒）。"""

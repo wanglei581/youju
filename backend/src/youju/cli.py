@@ -2847,7 +2847,7 @@ def _cmd_uptime_check(args: argparse.Namespace) -> int:
         # 文件被改坏了（不是字典、次数不是数）也当作没有记录：不然一不通就崩，整次故障都不提醒
         fails = max(0, int(noted.get("fails", 0)))
         state = {"fails": fails, "alerted": noted.get("alerted") is True}
-    except (OSError, ValueError, TypeError, AttributeError):
+    except (OSError, ValueError, TypeError, AttributeError, OverflowError):
         state = {"fails": 0, "alerted": False}
     sent = True  # 这次要发的提醒发出去了没有（不用发时算发了）
     if healthy:
@@ -2865,7 +2865,7 @@ def _cmd_uptime_check(args: argparse.Namespace) -> int:
     if sent is False:
         print("提醒没发出去，下次再发")
     elif sent is None:
-        print("没配置告警，提醒没发（配好以后下次检查会发）")
+        print("没配置告警，提醒没发（配好以后照常提醒）")
     return 0 if healthy else 1
 
 
