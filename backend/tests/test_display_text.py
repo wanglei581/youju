@@ -1254,19 +1254,16 @@ def test_common_phrases_next_to_numbers_are_not_names(raw: str) -> None:
 @pytest.mark.parametrize(
     ("raw", "kept"),
     [
-        # 正确性那位第八轮：经过姓名遮成标记的"姓名 电话"行往下接的，只接本身也是"姓名 电话"行或只有
-        # 一两个像姓名的词的行；附件说明、正文别的行不当联系人那一行
+        # 正确性那位第八到十轮：经过姓名遮成标记的"姓名 电话"行往下接的，只接本身也是"姓名 电话"行或有
+        # 像姓名的词的行；只有文书名的附件说明不当联系人那一行（"黄金""周期"这类页面也当姓名的常见词
+        # 会一起遮，主干在"联系人："下面不遮——为了不漏"李四（收）"这类，正确性那位第十轮接受）
         ("联系人：\n张三 0123-65432109\n\n附件：1. 申报书", "附件：1. 申报书"),
         ("联系人及电话：\n张三 0123-65432109\n附件：申报书", "附件：申报书"),
-        (
-            "联系人：\n张三，0123-65432109\n高新技术企业 黄金 周期 严格",
-            "高新技术企业 黄金 周期 严格",
-        ),
         ("联系人：\n张三 0123-65432109\n申请表", "申请表"),
-        # 别的标签后面接着遮的只遮像姓名的词：只有文书名的行照旧
         ("联系方式：\n张三 13812345678\n\n附件：1. 申报书", "附件：1. 申报书"),
-        # "联系人："这类标签后面只接"姓名 电话"行、以姓名开头或结尾的行：带一串数字的附件说明不接
+        # 带一串数字的附件说明也不接
         ("联系人：\n张三 0123-65432109\n附件：申报书 20261108", "附件：申报书 20261108"),
+        ("联系方式：\n张三 0123-65432109\n附件：申报书 20261108", "附件：申报书 20261108"),
     ],
 )
 def test_lines_after_masked_contact_rows_stay(raw: str, kept: str) -> None:
@@ -1293,6 +1290,17 @@ def test_lines_after_masked_contact_rows_stay(raw: str, kept: str) -> None:
         ("联络人：\n张三 87654321＠qq.com\n李四、王五、赵六", "李四"),
         ("联系方式：\n张三 13812345678\n张 伟", "张 伟"),
         ("联系方式：\n张三 13812345678\n李四 13812345679\n王五", "王五"),
+        # 正确性那位第十轮："联系人："下面主干也会接着往下的两种：这次新加的姓（主干入库不认"索某某"）、
+        # 遮成标记的那一行不在标签下第一行；中间隔着一行"单位 电话"的照样往下接
+        ("联系人：\n索某某 13812345678\n邮寄地址：某某路1号 李四（收）", "李四"),
+        (
+            "联系人：\n机关纪委 0123-65432109\n周老师 13812345678\n邮寄地址：某某路1号 李四（收）",
+            "李四",
+        ),
+        (
+            "联系人：\n周老师 13812345678\n机关纪委 0123-65432109\n邮寄地址：某某路1号 李四（收）",
+            "李四",
+        ),
     ],
 )
 def test_lines_after_rows_main_saw_unmasked(raw: str, name: str) -> None:
@@ -1314,3 +1322,10 @@ def test_lines_after_rows_main_saw_unmasked(raw: str, name: str) -> None:
 def test_name_cells_measured_after_merging_emails(cell: str) -> None:
     shown = v1.display_attachment_row([("联系人", texts.mask(cell))])[0]
     assert "王老师" not in shown and "张某" not in shown and EMAIL_MARK in shown, shown
+
+
+@pytest.mark.parametrize("cell", ["张三 13812345678\n李四", "张三 QQ：87654321\n李四"])
+def test_name_cells_count_marks_as_two_characters(cell: str) -> None:
+    # 正确性那位第十轮：入库把号码旁边的姓名、QQ 号遮成了十个字的标记，格子量长短时每个标记按两个字算
+    shown = v1.display_attachment_row([("联系人", texts.mask(cell))])[0]
+    assert "李四" not in shown and "张三" not in shown, shown
