@@ -734,11 +734,20 @@ def test_shared_install_splits_the_root_password_before_building(tmp_path):
     out = done.stdout
     assert out.index("已单独放进") < out.index("构建镜像")
     assert any(c.startswith("docker build") for c in _calls(tmp_path))
-    # 两边口令对不上：停下，不构建
+    # 两边口令对不上：换文件之前就停下（只打两边的指纹），一个文件都不换，不构建
     (tmp_path / "calls.log").unlink()
     env.write_text("YOUJU_IMAGE=x\nMYSQL_ROOT_PASSWORD=other\n", encoding="utf-8")
+    installed = tmp_path / "server" / "docker-compose.yml"
+    installed.write_text("old compose\n", encoding="utf-8")
+    script = tmp_path / "bin" / "youju-shared.sh"
+    script.write_text("old script\n", encoding="utf-8")
     done = _bash(tmp_path, f"install_release {ver}", setup=portable)
-    assert done.returncode == 1 and "不一样" in done.stderr
+    assert done.returncode == 1 and "不一样" in done.stderr and "一个文件都没换" in done.stderr
+    assert _sha(b"other")[:4] in done.stderr and _sha(b"r00tpw")[:4] in done.stderr
+    assert "other" not in done.stderr  # 只打指纹，不打口令
+    assert "r00tpw" not in done.stdout + done.stderr
+    assert installed.read_text(encoding="utf-8") == "old compose\n"
+    assert script.read_text(encoding="utf-8") == "old script\n"
     assert not any(c.startswith("docker build") for c in _calls(tmp_path))
     # 回退：装的是还不认 mysql-root.env 的旧版本（口令已经加回 .env）：不拆，照常构建
     (tmp_path / "calls.log").unlink(missing_ok=True)

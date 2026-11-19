@@ -17,7 +17,7 @@
 #   install <版本>         把 /opt/youju/releases/<版本> 里的配置装到 /opt/youju，构建镜像
 #   env <版本>             生成 /opt/youju/server/.env 和 mysql-root.env（随机密钥；已有就不动）
 #   split-root-env         数据库 root 口令单独放进 mysql-root.env（只有 root 能读，只给 MySQL 容器），
-#                          .env 里不留（install 会自动做；它停下了，人工核对以后用这个补跑；放好了就不动）
+#                          .env 里不留（用解包出来的新脚本 install 时会自动做；用旧脚本装的，up 之前补跑这个）
 #   up                     启动：先 MySQL，再迁移，再 worker、接口
 #   site http|https        写 nginx 站点文件，检查通过才重载（http 只为申请证书；https 正式转发并加续期定时任务）
 #   cert                   申请证书（Let's Encrypt，HTTP 验证）
@@ -318,6 +318,10 @@ install_release() {
   local ver=${1:-}
   check_version "$ver"
   local rel=$BASE/releases/$ver
+  # 这一版要把 root 口令单独放（它的 compose 认 mysql-root.env）：先核对放得了，放不了就停下，一个文件都不换
+  if [ -f "$SERVER/.env" ] && grep -qx '    env_file: mysql-root.env' "$rel/shared/docker-compose.yml"; then
+    root_split_check || die "install 停下了，一个文件都没换；核对改好以后重跑 install"
+  fi
   install -d -m 755 "$BASE" "$BASE/bin" "$BASE/nginx" "$WEBROOT"
   install -d -m 700 "$SERVER" "$LE_DIR"
   install -m 644 "$rel/shared/docker-compose.yml" "$rel/shared/mysql.cnf" "$SERVER/"
@@ -409,20 +413,34 @@ root_env_ok() {
 
 # install 这一版时自动跑（也可以单独补跑）：root 口令从 .env 放进 mysql-root.env，.env 里删掉这一行。
 # 值不显示，只回长度和指纹；已经放好就不动。新文件先写好再删 .env 里那一行，中途断了重跑就行
+# root 口令能不能单独放：.env 里有、mysql-root.env 里没有或一样；或者已经放好。不能放时说清原因、返回 1。
+# 两边不一样时只打两边的指纹（不打口令）：停下找团队核对，别把两个文件的内容打出来（"执行命令"有记录）
+root_split_check() {
+  local pw old
+  pw=$(env_get MYSQL_ROOT_PASSWORD)
+  old=$(root_password)
+  if [ -z "$pw" ] && [ -z "$old" ]; then
+    echo "错误：${SERVER}/.env 和 mysql-root.env 里都没有 MYSQL_ROOT_PASSWORD" >&2
+    return 1
+  fi
+  if [ -n "$pw" ] && [ -n "$old" ] && [ "$pw" != "$old" ]; then
+    echo "错误：mysql-root.env 里已有一个和 .env 里不一样的 root 口令（.env 那个指纹 $(fingerprint "$pw")，mysql-root.env 那个指纹 $(fingerprint "$old")）：停下找团队核对，别把两个文件的内容打出来" >&2
+    return 1
+  fi
+}
+
 split_root_env() {
   [ -f "$SERVER/.env" ] || die "还没装（没有 ${SERVER}/.env）"
   grep -qx '    env_file: mysql-root.env' "$SERVER/docker-compose.yml" \
     || die "先 install 这一版（${SERVER}/docker-compose.yml 还不认 mysql-root.env），什么都没动"
+  root_split_check || die "什么都没动"
   local pw old
   pw=$(env_get MYSQL_ROOT_PASSWORD)
   old=$(root_password)
   if [ -z "$pw" ]; then
-    [ -n "$old" ] || die "${SERVER}/.env 和 mysql-root.env 里都没有 MYSQL_ROOT_PASSWORD，什么都没动"
     echo "数据库 root 口令已经单独放在 ${SERVER}/mysql-root.env（${#old} 位，指纹 $(fingerprint "$old")）"
     return
   fi
-  [ -z "$old" ] || [ "$old" = "$pw" ] \
-    || die "mysql-root.env 里已有一个和 .env 里不一样的 root 口令：先人工核对是哪一个，什么都没动"
   (
     umask 077
     printf 'MYSQL_ROOT_PASSWORD=%s\n' "$pw" > "$SERVER/mysql-root.env.tmp"
