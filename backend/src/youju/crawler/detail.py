@@ -537,7 +537,10 @@ _TEMP_MARKS = (
     (_NEW_QQ_MARK, "[QQ号已脱敏]"),
     (_NUMBER_EMAIL_MARK, "[邮箱已脱敏]"),
 )
-_NEW_MARKS = re.compile("|".join(re.escape(temp) for temp, _ in _TEMP_MARKS))
+# 主干入库不遮、主干页面上看到原始数字的号码（_page_names_before 补遮前面的人名）。主干写法的数字
+# 邮箱（_NUMBER_EMAIL_MARK）主干入库就遮成了邮箱，页面上看不到号码，不算：前面的姓名只按入库规则
+# 认（"请将简历、1234…@qq.com"的"将简历"不当姓名，11/19 正确性那位第八轮）
+_NEW_MARKS = re.compile(f"{re.escape(_NEW_PHONE_MARK)}|{re.escape(_NEW_QQ_MARK)}")
 # 主干入库就遮的座机写法（区号接"-""－"，后面 7–8 位）；_MAIN_PHONE 是主干找它的写法（前后不连着
 # 数字）
 _MAIN_LANDLINE = re.compile(r"0\d{2,3}[-－]\d{7,8}")
@@ -548,12 +551,14 @@ def _page_names_before(text: str, starts: list[int]) -> list[tuple[int, int]]:
     """这次入库新遮、主干入库不遮的号码（不带区号的本地号码、主干不认的座机写法、QQ 号、数字用户名的
     邮箱），号码前面的人名：主干页面上按原始数字认出来遮掉（v1._name_before，号码前 2–3 个字像人名
     就遮，规则 ③）。现在入库先换成了标记，页面上那条认不到，所以入库时照同一个函数、照样宽地把前面的
-    人名遮掉（11/18 独立 Claude 第五到七轮）。starts：号码在 text 里的起点。延迟引入 v1。"""
+    人名遮掉（11/18 独立 Claude 第五到七轮）。"简历""党员"这类身份、用途词（_ROLE_WORDS）不当姓名
+    （11/19 正确性那位第八轮）。starts：号码在 text 里的起点。延迟引入 v1。"""
     if not starts:
         return []
     from youju.api import v1
 
-    return [span for start in starts if (span := v1._name_before(text, start)) is not None]
+    spans = [span for start in starts if (span := v1._name_before(text, start)) is not None]
+    return [(a, b) for a, b in spans if text[a:b] not in _ROLE_WORDS]
 
 
 def _apply_spans(text: str, spans: list[tuple[int, int, str]]) -> str:
@@ -902,14 +907,16 @@ _COMMON_WORDS = frozenset(
         "索求", "索票",
     )
 )  # fmt: skip
-# 常写在"QQ群：""QQ：""邮箱：""电话："前面、以常见姓氏开头的身份、用途词（"党员QQ群：""管理员QQ："
-# "简历：[邮箱]"，11/18 独立 Claude 第七轮的合成用例，本机库里没有）：号码前面的这些词不当姓名
+# 常写在"QQ群：""QQ：""邮箱：""电话："前面、以常见姓氏开头的身份、用途词和文书名（"党员QQ群："
+# "管理员QQ：""简历：[邮箱]""申请表 [邮箱]"，11/18、11/19 独立 Claude 第七、八轮的合成用例，本机库里
+# 没有）：号码前面的这些词不当姓名
 # （_phone_names、_glued_name）。不放进 _COMMON_WORDS：网站标题里的人名（govsites.privacy："党员
 # 张小明出席会议"）、名单（lists.body）也用 _name_like，那边照旧
 _ROLE_WORDS = frozenset(
     (
         "党员", "党建", "管理员", "简历", "简报", "简章", "成员", "应聘", "申请人", "毕业生",
         "应届", "班长", "班主任", "车主", "房东", "商户", "游客", "关注",
+        "申请表", "申请书", "申报书", "申报表", "原件", "盖章版",
     )
 )  # fmt: skip
 # 职务前面以常见姓氏开头、不是姓名的词（"常务副主任""高级工程师""车间主任""班主任"，见 _titled_cut）
@@ -1003,6 +1010,11 @@ def _name_like(
 # 单位名、地名后面紧跟着姓名时，前面那截的结尾：单位的字、"联系人"这类标签，还有不以单位的字结尾的
 # 地区名（"某盟张某某"，11/18 漏遮；以"盟"结尾的、下面另写的两个地区名同理）
 _GLUE_HEADS = (*_UNIT_ENDS, *_PERSON_LABELS, "盟", "大兴安岭", "神农架")
+# 姓加称呼（"张老师""王同志"）前面那截的结尾：单位、地区的字（_GLUE_HEADS），或者学校（"某某大学
+# 张老师 [电话]"）；"联系""致电"这类词后面的另算（_glued_name）。"相关同志""有关同志""值班老师"
+# 前面是普通词，不当姓名（主干不遮；11/19 正确性那位第八轮：上一轮放成"前面不论什么字都认"，多遮
+# 了）。页面那一层（v1._whole_or_called）同一套
+_TITLED_HEADS = (*_GLUE_HEADS, "大学", "中学", "小学")
 
 
 # 号码前面写着的"联系""致电"这类词（同页面那一层的 _CALL_VERB_BEFORE）
@@ -1033,8 +1045,9 @@ def _titled_cut(run: str) -> int | None:
 def _glued_name(run: str) -> int | None:
     """单位名后面紧跟着姓名、中间没隔开的（"省财政厅张三""办公室李四"，还有没写冒号的"联系人张三"）：
     前面一截以单位的字或"联系人"结尾、后面 2–4 个字以常见姓氏开头，返回姓名从第几个字起；不是这样的
-    返回 None。后面 4 个字是两个连写的两字姓名的也算（"某市张某李某"）；"联系"后面紧跟着姓加
-    称呼的也算（"请联系张老师 [电话]"）。11/18 这三种漏遮。姓名后面带职务的见 _titled_cut。"""
+    返回 None。后面 4 个字是两个连写的两字姓名的也算（"某市张某李某"）；"联系"后面、学校名后面紧跟着
+    姓加称呼的也算（"请联系张老师 [电话]""某某大学张老师"）。11/18 这三种漏遮。姓名后面带职务的见
+    _titled_cut。"""
     if (cut := _titled_cut(run)) is not None:
         return cut
     # 长的优先：复姓"司马"的"司"也是单位的字（"省科技厅司马小明"不能切成"省科技厅司|马小明"）
@@ -1049,15 +1062,13 @@ def _glued_name(run: str) -> int | None:
             _name_like(tail) or (size == 4 and _name_like(tail[:2]) and _name_like(tail[2:]))
         ):
             return cut
-        # 姓加称呼（"某某大学张老师 [电话]"）前面不论是什么字都认；"联系""致电"这类词后面紧跟着的
-        # 姓名也认（"请致电张三 [电话]"，11/18 独立 Claude 第六、七轮）
-        if size == 3 and tail[0] in _SURNAMES and tail[1:] in _TITLES:
+        # 姓加称呼前面以单位、地区的字或学校结尾的也认（"某某大学张老师 [电话]"，_TITLED_HEADS）；
+        # "联系""致电"这类词后面紧跟着的姓名也认（"请致电张三 [电话]"，11/18 独立 Claude 第六、
+        # 七轮）
+        titled = size == 3 and tail[0] in _SURNAMES and tail[1:] in _TITLES
+        if titled and head.endswith(_TITLED_HEADS):
             return cut
-        if (
-            head.endswith(_CALL_VERBS)
-            and size <= 3
-            and (_name_like(tail) or (size == 3 and tail[0] in _SURNAMES and tail[1:] in _TITLES))
-        ):
+        if head.endswith(_CALL_VERBS) and size <= 3 and (_name_like(tail) or titled):
             return cut
     return None
 

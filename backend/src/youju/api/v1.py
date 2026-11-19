@@ -41,8 +41,8 @@ from youju.classify import (
     status_filter,
 )
 from youju.conditions import public_conditions
+from youju.crawler.detail import _ROLE_WORDS, _TITLED_HEADS, _name_like, redact_sensitive
 from youju.crawler.detail import _TITLES as _DETAIL_TITLES
-from youju.crawler.detail import _name_like, redact_sensitive
 from youju.crawler.urls import public_url
 from youju.db import get_session
 from youju.dedup import canonical_ids, group_ids, groups_for, visible_documents
@@ -2773,13 +2773,14 @@ _CALL_VERB_BEFORE = re.compile(r"(?:致电|电询|拨打|联系|咨询|询问|�
 
 
 def _whole_or_called(text: str, begin: int, end: int) -> bool:
-    """标记前面认出的人名（③ 的标记版）只认整个词（前面不是汉字）、姓加称呼（"某某大学张老师
-    （这里隐去了电话）"，前面不论是什么字），或者前面紧挨着"致电""联系"这类词的（"请致电王某
+    """标记前面认出的人名（③ 的标记版）只认整个词（前面不是汉字）、单位或学校名后面的姓加称呼
+    （"某某大学张老师 （这里隐去了电话）"，前面那截的结尾同入库的 detail._TITLED_HEADS；"值班老师"
+    "相关同志"不算，11/19 正确性那位第八轮），或者前面紧挨着"致电""联系"这类词的（"请致电王某
     （这里隐去了电话）"）：长词的尾巴不当人名（"测试应用场景资源 （这里隐去了电话）"的
     "景资源"）。"""
     if begin == 0 or not re.match(f"[{_HAN_RANGE}]", text[begin - 1]):
         return True
-    if text[begin:end].endswith(_DETAIL_TITLES):
+    if text[begin:end].endswith(_DETAIL_TITLES) and text.endswith(_TITLED_HEADS, 0, begin):
         return True
     return _CALL_VERB_BEFORE.search(text, max(0, begin - 4), begin) is not None
 
@@ -2873,10 +2874,15 @@ def _mask_more_numbers(text: str) -> str:
         ):
             spans.append((*_with_brackets(text, start, end), PHONE_MARK))
     # ③ 也看遮成标记的号码（电话、QQ 号）：入库时先遮了号码，上面按原始数字认不到，前面的人名
-    # 照样遮（"请致电王老师 （这里隐去了电话）"，11/18 独立 Claude 第六轮）
+    # 照样遮（"请致电王老师 （这里隐去了电话）"，11/18 独立 Claude 第六轮）。"班主任""申请表"这类
+    # 身份词、文书名（detail._ROLE_WORDS）不当人名（11/19 正确性那位第八轮）
     for mark in _NUMBER_MARK_ANY.finditer(text):
         name = _name_before(text, mark.start())
-        if name is not None and _whole_or_called(text, *name):
+        if (
+            name is not None
+            and _whole_or_called(text, *name)
+            and text[name[0] : name[1]] not in _ROLE_WORDS
+        ):
             spans.append((*name, _CONTACT_MARK))
     at = 0
     for line in text.split("\n"):
@@ -2995,12 +3001,25 @@ _PHONE = (
 )
 _PHONE_ANY = re.compile(_PHONE)
 _PHONE_LABEL = re.compile(r"(?:电\s*话|手\s*机)(?:号码?)?\s*[:：]")
-# "联系人："写在上一行末尾、下面一行一个"姓名 电话"的：这几行都遮。姓名已经遮成联系人标记的
-# （入库先遮了号码旁边的姓名）也算，"张三处长 （这里隐去了联系人） 号码"这样一行几个的也算
-_CONTACT_ROW = re.compile(
-    rf"^\s*(?:[{chr(0x4E00)}-{chr(0x9FFF)}·]{{2,4}}|{_SKIPPED_CONTACT})"
+# "联系人："写在上一行末尾、下面一行一个"姓名 电话"的：这几行都遮
+_CONTACT_ROW = re.compile(rf"^\s*[{chr(0x4E00)}-{chr(0x9FFF)}·]{{2,4}}\s*[，,、:：]?\s*{_PHONE}")
+# 姓名已经遮成联系人标记的"姓名 电话"行（入库先遮了号码旁边的姓名；"张三处长 （这里隐去了联系人）
+# 号码"这样一行几个的也算）：也接着往下认，但经过它往下接的行，本身也要是"姓名 电话"行，或者只有
+# 一两个像姓名的词（_lone_names），才当联系人那一行遮（"附件：1. 申报书"不遮，11/19 正确性那位
+# 第八轮）
+_MARKED_ROW = re.compile(
+    rf"^\s*(?:[{chr(0x4E00)}-{chr(0x9FFF)}·]{{2,4}}\s*[，,、/／]?\s*)?{_SKIPPED_CONTACT}"
     rf"(?:\s*[，,、/／]?\s*{_SKIPPED_CONTACT})*\s*[，,、:：]?\s*{_PHONE}"
 )
+
+
+def _lone_names(line: str) -> bool:
+    """一行只有一两个像姓名的词（"王五""王五、李四"；按入库认姓名那一套，"申请表"这类文书名、身份词
+    不算）。"""
+    words = [w for w in _CONTACT_SPLIT.split(line.strip()) if w]
+    return 0 < len(words) <= 2 and all(_name_like(w) and w not in _ROLE_WORDS for w in words)
+
+
 _TITLE_END = (
     "老师",
     "先生",
@@ -3130,13 +3149,21 @@ def _mask_contact_names(text: str) -> str:
     拆行、空格隔开的写法）。"""
     out = []
     after_label = False
+    # 往下接的这一串"姓名 电话"行里有姓名遮成标记的（_MARKED_ROW）：后面的行要本身是这种行或短行才遮
+    by_mark = False
     for line in text.split("\n"):
         if not line.strip():
             # 空行不打断"标签写在上一行末尾"：下面第一行有字的照样遮
             out.append(line)
             continue
         raw = line
-        contact = (after_label and not _FORM_FIELD.search(line)) or (
+        follow = after_label and (
+            not by_mark
+            or _CONTACT_ROW.match(raw) is not None
+            or _MARKED_ROW.match(raw) is not None
+            or _lone_names(raw)
+        )
+        contact = (follow and not _FORM_FIELD.search(line)) or (
             _CONTACT_LABEL.search(line) is not None
         )
         editor = _EDITOR.search(line) is not None
@@ -3156,8 +3183,11 @@ def _mask_contact_names(text: str) -> str:
             ]
             line = _mask_line(line, near_label, _CONTACT_MARK)
         # 标签写在行尾的，下一行也遮；下面接着是一行一个"姓名 电话"的，一直遮到不是为止
-        row = after_label and _CONTACT_ROW.match(raw) is not None
-        after_label = _LABEL_AT_END.search(line) is not None or row
+        label = _LABEL_AT_END.search(line) is not None
+        main_row = follow and _CONTACT_ROW.match(raw) is not None
+        marked_row = follow and not main_row and _MARKED_ROW.match(raw) is not None
+        after_label = label or main_row or marked_row
+        by_mark = not label and (marked_row or (main_row and by_mark))
         out.append(line)
     return "\n".join(out)
 

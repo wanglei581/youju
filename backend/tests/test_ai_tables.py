@@ -117,14 +117,20 @@ def test_person_header_synonyms_and_spaced_headers_are_not_sent() -> None:
 
 
 def test_headers_are_masked_too() -> None:
-    # 独立 Claude 第七轮：缺表头时第一行数据就当表头，表头也要按隐私要求遮，不能原样发给模型
+    # 独立 Claude 第七轮：缺表头时第一行数据就当表头，表头也要按隐私要求遮，不能原样发给模型。
+    # 正确性那位第八轮：带姓名、号码的表头放在会发给模型的那一列（整列像人名的列连表头一起不发，
+    # 测不到表头遮没遮）
     seen: dict[str, str] = {}
-    client = _client('{"column": 1, "reason": "企业名称"}', seen)
+    client = _client('{"column": 0, "reason": "企业名称"}', seen)
     pick_name_column(
         client,
         "企业名单",
-        ["张某 0123-87654321", "某某示例公司", "某省"],
-        [["王某 0123-87654322", "某某示例集团", "某省"], ["李某", "某某示例企业", "某市"]],
+        ["某某示例公司", "张某 0123-87654321", "某省"],
+        [
+            ["某某示例集团", "某某示例企业 0123-87654322", "某省"],
+            ["某某示例企业", "某某示例集团", "某市"],
+        ],
     )
     body = seen["body"]
+    assert "某某示例企业" in body and "[电话已脱敏]" in body
     assert "87654321" not in body and "87654322" not in body and "张某" not in body
