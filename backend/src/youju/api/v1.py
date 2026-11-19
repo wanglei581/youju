@@ -3004,20 +3004,27 @@ _PHONE_LABEL = re.compile(r"(?:电\s*话|手\s*机)(?:号码?)?\s*[:：]")
 # "联系人："写在上一行末尾、下面一行一个"姓名 电话"的：这几行都遮
 _CONTACT_ROW = re.compile(rf"^\s*[{chr(0x4E00)}-{chr(0x9FFF)}·]{{2,4}}\s*[，,、:：]?\s*{_PHONE}")
 # 姓名已经遮成联系人标记的"姓名 电话"行（入库先遮了号码旁边的姓名；"张三处长 （这里隐去了联系人）
-# 号码"这样一行几个的也算）：也接着往下认，但经过它往下接的行，本身也要是"姓名 电话"行，或者只有
-# 一两个像姓名的词（_lone_names），才当联系人那一行遮（"附件：1. 申报书"不遮，11/19 正确性那位
-# 第八轮）
+# 号码"这样一行几个的也算）：也接着往下认，但经过它往下接的行，本身要有号码（原始数字或标记），或者
+# 以姓名开头、以姓名结尾（带称呼、职务的也算，_edge_name），才当联系人那一行遮（"附件：1. 申报书"
+# 不遮，11/19 正确性那位第八轮）。主干入库存原样的"张老师 6543…"，主干页面按原始号码认出"姓名 电话"
+# 行、接着遮下一行（"李老师（政策咨询）""某某局 王五"）；现在入库遮成了标记行，下一行有号码、以姓名
+# 开头或结尾的照样遮（11/19 隐私合规那位第九轮）
 _MARKED_ROW = re.compile(
     rf"^\s*(?:[{chr(0x4E00)}-{chr(0x9FFF)}·]{{2,4}}\s*[，,、/／]?\s*)?{_SKIPPED_CONTACT}"
     rf"(?:\s*[，,、/／]?\s*{_SKIPPED_CONTACT})*\s*[，,、:：]?\s*{_PHONE}"
 )
 
 
-def _lone_names(line: str) -> bool:
-    """一行只有一两个像姓名的词（"王五""王五、李四"；按入库认姓名那一套，"申请表"这类文书名、身份词
-    不算）。"""
+def _edge_name(line: str) -> bool:
+    """一行以姓名开头（"李老师（政策咨询）""王五 处长"），或者不超过三个词、以姓名结尾（"某某局
+    王五""审核人 王五"）。按页面认姓名那一套 _masked，"申请表"这类文书名、身份词不算；长一点的一句话
+    （"高新技术企业 黄金 周期 严格"）只看开头的词。"""
     words = [w for w in _CONTACT_SPLIT.split(line.strip()) if w]
-    return 0 < len(words) <= 2 and all(_name_like(w) and w not in _ROLE_WORDS for w in words)
+
+    def named(word: str) -> bool:
+        return word not in _ROLE_WORDS and _masked(word, _CONTACT_MARK) is not None
+
+    return bool(words) and (named(words[0]) or (len(words) <= 3 and named(words[-1])))
 
 
 _TITLE_END = (
@@ -3149,7 +3156,8 @@ def _mask_contact_names(text: str) -> str:
     拆行、空格隔开的写法）。"""
     out = []
     after_label = False
-    # 往下接的这一串"姓名 电话"行里有姓名遮成标记的（_MARKED_ROW）：后面的行要本身是这种行或短行才遮
+    # 往下接的这一串"姓名 电话"行里有姓名遮成标记的（_MARKED_ROW）：后面的行要有号码、以姓名开头或
+    # 结尾才遮（_edge_name）
     by_mark = False
     for line in text.split("\n"):
         if not line.strip():
@@ -3158,10 +3166,7 @@ def _mask_contact_names(text: str) -> str:
             continue
         raw = line
         follow = after_label and (
-            not by_mark
-            or _CONTACT_ROW.match(raw) is not None
-            or _MARKED_ROW.match(raw) is not None
-            or _lone_names(raw)
+            not by_mark or _PHONE_ANY.search(raw) is not None or _edge_name(raw)
         )
         contact = (follow and not _FORM_FIELD.search(line)) or (
             _CONTACT_LABEL.search(line) is not None
@@ -3574,7 +3579,12 @@ def display_attachment_row(cells: list[tuple[str, str]]) -> list[str]:
             # （"和文丹"，11/2 复测）。只看列名，不看"上一格写着姓名"：空白表格
             # "姓名 | 性别 | 年龄"里的栏目名不是名字（11/2 独立审阅）
             masked = value.replace(value.strip(), _CONTACT_MARK)
-        elif named and len(value.strip()) <= _NAME_CELL_MAX:
+        elif named and (
+            len(value.strip()) <= _NAME_CELL_MAX
+            # 号码、邮箱入库先遮成了标记，"（这里隐去了QQ号）＠qq.com"比原来的邮箱长：并成邮箱以后
+            # 再量一次，有一个不超过就算（11/19 隐私合规那位第九轮）
+            or len(_hide_emails(value).strip()) <= _NAME_CELL_MAX
+        ):
             # 列名是"联系人""姓名"这类，或者上一格只写着"联系人"：这一格像姓名的都遮
             masked = _mask_span(value, 0, len(value), _CONTACT_MARK)
         else:

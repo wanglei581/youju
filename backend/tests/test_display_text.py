@@ -1263,3 +1263,37 @@ def test_common_phrases_next_to_numbers_are_not_names(raw: str) -> None:
 def test_lines_after_masked_contact_rows_stay(raw: str, kept: str) -> None:
     for where, out in _on_every_path(raw):
         assert out.endswith(kept) and "张三" not in out, (where, out)
+
+
+@pytest.mark.parametrize(
+    ("raw", "name"),
+    [
+        # 隐私合规那位第九轮：主干入库存原样的"张老师 6543…"，主干页面按原始号码认出"姓名 电话"行、接着
+        # 遮下一行；现在入库遮成了标记行，下一行有号码、以姓名开头或（不超过三个词）以姓名结尾的照样遮
+        ("联系方式：\n张老师 65432109\n李老师（政策咨询）", "李老师"),
+        ("联系方式：\n张老师 65432109\n李老师（技术）65432110", "李老师"),
+        ("联系方式：\n张老师 65432109\n某某局 王五", "王五"),
+        ("联系方式：\n张老师 65432109\n审核人 王五", "王五"),
+        ("联系方式：\n张老师 65432109\n负责 李老师 某某公司 65432110", "李老师"),
+        ("联系方式：\n张三 87654321＠qq.com\n王五（处长）", "王五"),
+    ],
+)
+def test_lines_after_rows_main_saw_unmasked(raw: str, name: str) -> None:
+    for where, out in _on_every_path(raw):
+        if where != "附件":  # 附件只看标签下面那一行（见 v1 附件规则 3）
+            assert name not in out, (where, out)
+
+
+@pytest.mark.parametrize(
+    "cell",
+    [
+        # 隐私合规那位第九轮："联系人"列的格子整格像姓名的都遮，只看不超过 20 字的；号码、邮箱入库先遮成了
+        # 标记，"（这里隐去了QQ号）＠qq.com"比原来的邮箱长，并成邮箱以后再量
+        "87654321＠qq.com\n王老师",
+        "87654321 @qq.com 张某",
+        "张某主任\n13812345678@163.com",
+    ],
+)
+def test_name_cells_measured_after_merging_emails(cell: str) -> None:
+    shown = v1.display_attachment_row([("联系人", texts.mask(cell))])[0]
+    assert "王老师" not in shown and "张某" not in shown and EMAIL_MARK in shown, shown
