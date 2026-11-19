@@ -22,7 +22,7 @@
 #                          会自动做；用旧脚本装的，up 之前补跑这个；已经分好就不动）
 #   unsplit-db-env         回退到不认这几个文件的旧版本之前跑：把 root、youju 的口令和 youju 的连接串写回 .env
 #   up                     启动：先 MySQL，再用 youju 迁移、建好收同步的进度表，再照 mysql_accounts.sql 设好接口、
-#                          worker 的库账号和授权，再起 worker、接口（换镜像、改配置以后都用它起，别直接 docker compose up）
+#                          worker 的库账号和授权，再起 worker、接口（换镜像、改配置以后都用它起，接口、worker 别直接 docker compose up）
 #   site http|https        写 nginx 站点文件，检查通过才重载（http 只为申请证书；https 正式转发并加续期定时任务）
 #   cert                   申请证书（Let's Encrypt，HTTP 验证）
 #   renew                  续期证书（定时任务每周一跑）；证书和 nginx 已加载的不一样才重载
@@ -419,7 +419,7 @@ EOF
 # 数据库账号按最小权限分开（共用服务器）：
 # - root 和 youju（建表、迁移用，对 youju 库有全部权限）的口令只在 mysql-root.env：只给 MySQL 容器和这个脚本；
 # - 接口用 youju_api（授权照 mysql_accounts.sql 第 ② 节，和云托管同一份），worker 用 youju_worker（增删改查，
-#   加上备份要的 LOCK TABLES），连接串各在 db-api.env、db-worker.env，compose 只给各自的容器；
+#   加上恢复备份要的 LOCK TABLES），连接串各在 db-api.env、db-worker.env，compose 只给各自的容器；
 # - 接口、worker 共用的 .env 里不留任何连库口令。这几个文件都只有 root 能读。
 DB_FILES="mysql-root.env db-api.env db-worker.env"
 DB_WORKER_GRANTS="SELECT, INSERT, UPDATE, DELETE, LOCK TABLES"

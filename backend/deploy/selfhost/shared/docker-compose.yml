@@ -79,7 +79,7 @@ services:
   # 定时任务 + 核对台（不对外，只在服务器上访问）+ 收本机推来的公开数据（/api/sync/，经 nginx）
   worker:
     <<: *app
-    # worker 自己的库账号 youju_worker（增删改查，加上备份要的 LOCK TABLES）
+    # worker 自己的库账号 youju_worker（增删改查，加上恢复备份要的 LOCK TABLES）
     env_file: [.env, db-worker.env]
     environment:
       YOUJU_ROLE: admin
