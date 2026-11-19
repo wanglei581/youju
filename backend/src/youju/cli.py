@@ -2821,7 +2821,8 @@ def _cmd_uptime_check(args: argparse.Namespace) -> int:
     """从服务器外面（2.0 的本机）每 5 分钟看一次服务器的 /health：连续 2 次不通就提醒到群里，
     恢复了再说一声；状态记在 --state 文件里（同一次故障只提醒一次）。提醒真发出去了才记成
     "已提醒"：发送失败或没配告警，下一次照样发；恢复的消息没发出去也一样，下次检查通过时再发。
-    退出码只看服务器通不通。"""
+    发送失败不一定没送到（比如机器人收到了、回包超时）：那样会多发一次"不通"，或者下一次就恢复了时
+    群里收不到"恢复了"——宁可多发一次，不能整次故障都没人知道。退出码只看服务器通不通。"""
     import json as _json
 
     import httpx
@@ -2842,24 +2843,29 @@ def _cmd_uptime_check(args: argparse.Namespace) -> int:
         if not healthy:
             break
     try:
-        state = _json.loads(args.state.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        noted = _json.loads(args.state.read_text(encoding="utf-8"))
+        # 文件被改坏了（不是字典、次数不是数）也当作没有记录：不然一不通就崩，整次故障都不提醒
+        fails = max(0, int(noted.get("fails", 0)))
+        state = {"fails": fails, "alerted": noted.get("alerted") is True}
+    except (OSError, ValueError, TypeError, AttributeError):
         state = {"fails": 0, "alerted": False}
     sent = True  # 这次要发的提醒发出去了没有（不用发时算发了）
     if healthy:
-        if state.get("alerted"):
+        if state["alerted"]:
             sent = send_alert(f"服务器恢复了：{url} 健康检查通过")
         # 恢复的消息没发出去：群里最后看到的还是"不通"，留着"已提醒"，下次检查通过时再发
-        state = {"fails": 0, "alerted": bool(state.get("alerted")) and sent is not True}
+        state = {"fails": 0, "alerted": state["alerted"] and sent is not True}
     else:
-        state["fails"] = int(state.get("fails", 0)) + 1
-        if state["fails"] >= 2 and not state.get("alerted"):
+        state["fails"] += 1
+        if state["fails"] >= 2 and not state["alerted"]:
             sent = send_alert(f"服务器连续 {state['fails']} 次健康检查不通（{reason}）：{url}")
             state["alerted"] = sent is True
     args.state.write_text(_json.dumps(state), encoding="utf-8")
     print(f"{url}：{'正常' if healthy else '不通（' + reason + '）'}")
-    if sent is not True:
-        print(("提醒没发出去" if sent is False else "没配置告警，提醒没发") + "，下次再发")
+    if sent is False:
+        print("提醒没发出去，下次再发")
+    elif sent is None:
+        print("没配置告警，提醒没发（配好以后下次检查会发）")
     return 0 if healthy else 1
 
 

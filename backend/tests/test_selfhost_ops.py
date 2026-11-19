@@ -99,8 +99,9 @@ def test_uptime_check_resends_an_alert_that_did_not_go_out(tmp_path, monkeypatch
 
     down = httpx.ConnectError("x")
     up = httpx.Response(200, json={"status": "ok"})
-    replies.extend([down] * 5 + [up] * 6)  # 不通时只看第一处，通时两处都看
-    results.extend([False, None, True, False, True])
+    # 不通时只看第一处，通时两处都看
+    replies.extend([down] * 5 + [up, up] + [down] + [up] * 6)
+    results.extend([False, None, True, False, None, True])
 
     assert run()[0] == 1 and sent == []  # 第一次不通先不提醒
     code, out, noted = run()
@@ -108,7 +109,7 @@ def test_uptime_check_resends_an_alert_that_did_not_go_out(tmp_path, monkeypatch
     assert noted == {"fails": 2, "alerted": False}
     code, out, noted = run()  # 没配告警也不算提醒过
     assert code == 1 and len(sent) == 2 and "连续 3 次" in sent[1]
-    assert "没配置告警，提醒没发，下次再发" in out and noted["alerted"] is False
+    assert "没配置告警，提醒没发（配好以后下次检查会发）" in out and noted["alerted"] is False
     code, out, noted = run()
     assert code == 1 and len(sent) == 3 and "连续 4 次" in sent[2]
     assert "下次再发" not in out and noted == {"fails": 4, "alerted": True}
@@ -117,10 +118,33 @@ def test_uptime_check_resends_an_alert_that_did_not_go_out(tmp_path, monkeypatch
     code, out, noted = run()
     assert code == 0 and len(sent) == 4 and "恢复" in sent[3] and "提醒没发出去" in out
     assert noted == {"fails": 0, "alerted": True}
+    # 补发"恢复了"之前又不通：群里最后看到的就是"不通"，不另发新的"不通"
     code, out, noted = run()
-    assert code == 0 and len(sent) == 5 and "恢复" in sent[4]
+    assert code == 1 and len(sent) == 4 and noted == {"fails": 1, "alerted": True}
+    code, out, noted = run()  # 恢复的消息碰上没配告警，也留着下次再发
+    assert code == 0 and len(sent) == 5 and "恢复" in sent[4] and "没配置告警" in out
+    assert noted == {"fails": 0, "alerted": True}
+    code, out, noted = run()
+    assert code == 0 and len(sent) == 6 and "恢复" in sent[5]
     assert noted == {"fails": 0, "alerted": False}
-    assert run()[0] == 0 and len(sent) == 5 and not replies and not results
+    assert run()[0] == 0 and len(sent) == 6 and not replies and not results
+
+
+@pytest.mark.parametrize(
+    "broken", ["null", "[1]", '"x"', '{"fails": "x"}', '{"fails": null, "alerted": "yes"}']
+)
+def test_uptime_check_survives_a_broken_state_file(tmp_path, monkeypatch, broken):
+    """状态文件被改坏了：当作没有记录重新数，不崩（崩了的话整次故障都不提醒）。"""
+    monkeypatch.setattr("youju.alerts.send_alert", lambda m: True)
+
+    def fake_get(url, **kw):
+        raise httpx.ConnectError("x")
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+    state = tmp_path / "state.json"
+    state.write_text(broken, encoding="utf-8")
+    code = cli.main(["uptime-check", "--url", "https://api.example.com", "--state", str(state)])
+    assert code == 1 and json.loads(state.read_text()) == {"fails": 1, "alerted": False}
 
 
 class FakeOffsite:
