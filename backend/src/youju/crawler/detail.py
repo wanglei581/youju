@@ -55,15 +55,28 @@ _EMAIL = re.compile(
     r"(?P<user>[A-Za-z0-9._%+-]{1,64})[ \u3000]?[@＠][ \u3000]?"
     r"[A-Za-z0-9.．—－-]{1,253}[.．][A-Za-z]{2,63}"
 )
-# 用户名是一串数字的邮箱（QQ 号、手机号当邮箱名："王某、8765…＠qq.com"）：遮姓名时当号码看，前面
-# 的姓名照样遮；"简历：hr@abc.com"这类字母用户名的不当号码，前面的词不当姓名（11/18 独立 Claude
-# 第六轮）。同一遍里先换成这个临时标记，遮完姓名再换回"[邮箱已脱敏]"，库里存的、页面上看到的都是
-# 邮箱的标记
+# 用户名是一串数字的邮箱（QQ 号、号码当邮箱名："王某、8765…＠qq.com"）遮姓名时当号码看，前面的姓名
+# 照样遮；"简历：hr@abc.com"这类字母用户名的整个遮成邮箱，不当号码（11/18 独立 Claude 第六轮）。
+# 按主干页面上看到的分两种（标记对页面规则透明，11/19 隐私合规那位第八轮）：
+# - 主干入库就遮的写法（_MAIN_EMAIL：半角"@"、前后不带空格）：页面上本来看不到号码，同一遍里
+#   先换成临时标记 _NUMBER_EMAIL_MARK，遮完姓名再换回"[邮箱已脱敏]"；
+# - 这次新认的写法（全角"＠"、"@"旁边带空格、域名里有全角的点或横线）：主干入库不遮，页面上的规则
+#   看到的是原始数字。只把用户名遮成号码的标记，"＠域名"留着（同手机号当邮箱名的
+#   "[手机号已脱敏]@…"），页面上"整行有号码""标签下一行"这类规则照样把它当号码认，号码后面、
+#   隔着标签的姓名也遮（"电话咨询：8765…＠qq.com（张某）"），最后再并成邮箱（显示层
+#   _hide_emails）。用 QQ 号的标记：页面上它算号码，但光有它不算电话行（v1._PHONE_LINE），和主干
+#   看到原始数字时一样
 _NUMBER_EMAIL_MARK = "[号码邮箱已脱敏]"
+_MAIN_EMAIL = re.compile(r"[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,253}\.[A-Za-z]{2,63}")
 
 
 def _email_mark(match: re.Match[str]) -> str:
-    return _NUMBER_EMAIL_MARK if match.group("user").isdigit() else "[邮箱已脱敏]"
+    user = match.group("user")
+    if not user.isdigit():
+        return "[邮箱已脱敏]"
+    if _MAIN_EMAIL.fullmatch(match.group()):
+        return _NUMBER_EMAIL_MARK
+    return _NEW_QQ_MARK + match.group()[len(user) :]
 
 
 # 座机：区号加号码，写法和显示层（api/v1.py 的 _AREA_PHONE、_INTL_PHONE）对齐，整个号码一起遮（只遮
@@ -514,8 +527,8 @@ def _redact_once(text: str) -> str:
 
 
 _NAME_MARK = "[姓名已脱敏]"
-# 这一遍新遮、主干入库不遮的号码先换成临时标记（主干不认的座机写法、不带区号的本地号码、QQ 号；
-# 数字用户名的邮箱见 _NUMBER_EMAIL_MARK），遮完姓名再换回来：认电话标记的几条规则（_NEAR_CUE、
+# 这一遍新遮、主干入库不遮的号码先换成临时标记（主干不认的座机写法、不带区号的本地号码、QQ 号，
+# 数字用户名的邮箱见 _email_mark），遮完姓名再换回来：认电话标记的几条规则（_NEAR_CUE、
 # _PHONE_MARK、_BEFORE_PHONE 这些）也认它们
 _NEW_PHONE_MARK = "[新电话已脱敏]"
 _NEW_QQ_MARK = "[新QQ号已脱敏]"
@@ -525,8 +538,10 @@ _TEMP_MARKS = (
     (_NUMBER_EMAIL_MARK, "[邮箱已脱敏]"),
 )
 _NEW_MARKS = re.compile("|".join(re.escape(temp) for temp, _ in _TEMP_MARKS))
-# 主干入库就遮的座机写法（区号接"-""－"，后面 7–8 位）
+# 主干入库就遮的座机写法（区号接"-""－"，后面 7–8 位）；_MAIN_PHONE 是主干找它的写法（前后不连着
+# 数字）
 _MAIN_LANDLINE = re.compile(r"0\d{2,3}[-－]\d{7,8}")
+_MAIN_PHONE = re.compile(r"(?<!\d)0\d{2,3}[-－]\d{7,8}(?!\d)")
 
 
 def _page_names_before(text: str, starts: list[int]) -> list[tuple[int, int]]:
@@ -557,8 +572,8 @@ def _apply_spans(text: str, spans: list[tuple[int, int, str]]) -> str:
 
 def _mask_landlines(text: str) -> str:
     """座机换成标记。照原样留着的：新加的写法（括号、破折号、横线两边带空格）区号是"00"开头的；
-    前面紧挨着"编号""会议号"这类标签的（_CODE_BEFORE）；区号后面 9–16 位的（long）不紧跟在电话类
-    标签后面（_CUE_RIGHT_BEFORE）或者前面是"受理号""批次"这类标签的。"""
+    前面紧挨着"编号""会议号"这类标签的新加写法（_CODE_BEFORE）；区号后面 9–16 位的（long）不紧跟在
+    电话类标签后面（_CUE_RIGHT_BEFORE）或者前面是"受理号""批次"这类标签的。"""
     spans: list[tuple[int, int, str]] = []
     for match in _PHONE.finditer(text):
         start = match.start()
@@ -567,7 +582,12 @@ def _mask_landlines(text: str) -> str:
         if code and code[1] == "0" and (paren or match.group("sep") not in ("-", "－")):
             continue
         if _CODE_BEFORE.search(text, window, start):
-            continue
+            # 只放过这次新加的写法：主干入库就遮的"0xxx-xxxxxxx"（_MAIN_PHONE）照旧遮，放过的话旁边
+            # 的姓名跟着露出来（"会议码：0123-8765…（张某）""张某 文号 0123-8765…"），比主干少遮
+            # （11/19 隐私合规那位第八轮）
+            main = _MAIN_PHONE.search(text, start)
+            if main is None or main.start() >= match.end():
+                continue
         if match.group("long") and (
             _NOT_PHONE_LABEL.search(text, window, start)
             or not _CUE_RIGHT_BEFORE.search(text, window, start)
@@ -925,9 +945,9 @@ _NAME_STOP = re.compile(r"[\n，,。；;：:（(）)/【\[]|\d")
 _NAME_GAP = re.compile(r"(?:[^\S\n]|、)+")
 _HAN_RUN = re.compile(rf"[{_HAN}·]+")
 # 遮姓名时座机都已经遮了（_mask_landlines）；还认得出的座机写法是没当电话的编号，前面的字不当姓名。
-# 遮成标记的号码都算：电话、手机号、QQ 号，还有用户名是一串数字的邮箱（_NUMBER_EMAIL_MARK，号码当
-# 邮箱名的"王某，8765…＠qq.com"入库先认成邮箱）。以前号码先露着、页面上当号码遮，姓名跟着遮；现在
-# 入库先换成了标记，前面的姓名照样要遮（11/18 独立 Claude 第五、六轮）。字母用户名的邮箱不算
+# 遮成标记的号码都算：电话、手机号、QQ 号，还有用户名是一串数字的邮箱（见 _email_mark）。以前号码
+# 先露着、页面上当号码遮，姓名跟着遮；现在入库先换成了标记，前面的姓名照样要遮（11/18 独立 Claude
+# 第五、六轮）。字母用户名的邮箱不算
 _BEFORE_PHONE = re.compile(r"\[(?:新?电话|手机号|新?QQ号|号码邮箱)已脱敏\]")
 # 姓名和号码中间隔着的"，电话：""，""电话：""（"（"某某，电话：[电话已脱敏]""某老师，[手机号已脱敏]"
 # "某某、某某（[电话已脱敏]，某中心）"，11/18 漏遮）：从号码往前去掉这一截，再看前面那个词。

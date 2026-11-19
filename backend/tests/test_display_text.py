@@ -840,8 +840,11 @@ EMAIL_MARK = "（这里隐去了邮箱）"
         ("材料发到test＠foo－bar.com。", "材料发到[邮箱已脱敏]。"),
         ("材料发到test@foo—bar.com。", "材料发到[邮箱已脱敏]。"),
         ("材料发到abcdef @126.com。", "材料发到[邮箱已脱敏]。"),
-        # 手机号当邮箱名的：入库照旧先遮成手机号标记（同一行的姓名按电话行遮），页面上并成邮箱
+        # 手机号当邮箱名的：入库照旧先遮成手机号标记（同一行的姓名按电话行遮），页面上并成邮箱；这次
+        # 新认写法的数字用户名邮箱同样只遮用户名（QQ 号的标记，隐私合规那位第八轮）
         ("材料发到13812345678@163.com。", "材料发到[手机号已脱敏]@163.com。"),
+        ("材料发到87654321＠qq.com。", "材料发到[QQ号已脱敏]＠qq.com。"),
+        ("材料发到87654321 @qq.com。", "材料发到[QQ号已脱敏] @qq.com。"),
     ],
 )
 def test_emails_masked_alike_by_store_and_page(raw: str, stored: str) -> None:
@@ -1084,10 +1087,13 @@ def test_names_behind_masked_contacts_on_every_path(raw: str) -> None:
 
 def test_skipping_masked_contacts_does_not_cut_a_long_unit_name() -> None:
     # 跳过联系人标记往前看的词要是整个词：长单位名的后几个字不当词，"联系人："那一段不从词中间截开
-    # （11/19 全部正文对比看到"某厅高新技（这里隐去了联系人）术及产业化处"）
-    raw = "联 系 人：某省科技厅高新技术及产业化处 张某、李某联系电话：0123-65432109"
+    # （11/19 全部正文对比看到过长单位名被截开、后半截前面的字当成人名遮掉）
+    raw = "联 系 人：某某局高原测试数据服务站 张某、李某联系电话：0123-65432109"
     for where, out in _on_every_path(raw):
-        assert "高新技术及产业化处" in out and "张某" not in out and "李某" not in out, (where, out)
+        assert "某某局高原测试数据服务站" in out and "张某" not in out and "李某" not in out, (
+            where,
+            out,
+        )
 
 
 def test_rows_under_a_contact_label_go_on_past_masked_names() -> None:
@@ -1163,3 +1169,40 @@ def test_model_text_uses_both_the_store_and_the_page_rules() -> None:
 def test_role_words_next_to_masked_numbers_are_not_names(raw: str) -> None:
     for where, out in _on_every_path(raw):
         assert out.startswith(raw[:2]) and "联系人" not in out and "姓名" not in out, (where, out)
+
+
+@pytest.mark.parametrize(
+    ("raw", "paths"),
+    [
+        # 隐私合规那位第八轮：这次新认写法的数字用户名邮箱（全角"＠"、"@"旁边带空格），主干页面上
+        # 看到的是原始数字，"整行有号码""标签下一行"两条规则把它当号码、遮旁边的姓名。现在入库只把
+        # 用户名遮成号码的标记，这两条照样认，最后并成邮箱。附件那条路主干只认"标签下一行"
+        ("电话咨询：87654321＠qq.com（张某）", ("详情页", "阅读页", "交给模型")),
+        ("张某 电话/邮箱：87654321 @qq.com", ("详情页", "阅读页", "交给模型")),
+        ("联系人：\n87654321＠qq.com 张某", ("详情页", "阅读页", "附件", "交给模型")),
+    ],
+)
+def test_names_next_to_new_digit_emails_on_every_path(raw: str, paths: tuple[str, ...]) -> None:
+    for where, out in _on_every_path(raw):
+        assert "87654321" not in out and "邮箱" in out, (where, out)
+        if where in paths:
+            assert "张某" not in out, (where, out)
+
+
+@pytest.mark.parametrize(
+    ("raw", "paths"),
+    [
+        # 隐私合规那位第八轮：主干入库就遮的"0xxx-xxxxxxx"前面是编号、会议号这类标签的照旧遮，旁边的
+        # 姓名和主干一样遮（附件那条路主干只认号码前面的词）
+        ("编号：0123-87654321", ()),
+        ("张某 文号 0123-87654321", ("详情页", "阅读页", "附件", "交给模型")),
+        ("会议码：0123-87654321（张某）", ("详情页", "阅读页", "交给模型")),
+    ],
+)
+def test_main_style_landlines_after_code_labels_on_every_path(
+    raw: str, paths: tuple[str, ...]
+) -> None:
+    for where, out in _on_every_path(raw):
+        assert "87654321" not in out, (where, out)
+        if where in paths:
+            assert "张某" not in out, (where, out)
