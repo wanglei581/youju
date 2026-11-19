@@ -49,7 +49,7 @@ def test_clear_seed_rows_only_on_a_fresh_database(session_factory, db_engine):
 
 def test_uptime_check_alerts_once_and_on_recovery(tmp_path, monkeypatch):
     sent, replies = [], []
-    monkeypatch.setattr("youju.alerts.send_alert", lambda m: sent.append(m))
+    monkeypatch.setattr("youju.alerts.send_alert", lambda m: sent.append(m) or True)
 
     def fake_get(url, **kw):
         reply = replies.pop(0)
@@ -73,6 +73,54 @@ def test_uptime_check_alerts_once_and_on_recovery(tmp_path, monkeypatch):
     assert run() == 0 and len(sent) == 2 and "恢复" in sent[1]
     assert run() == 0 and len(sent) == 2
     assert json.loads(state.read_text()) == {"fails": 0, "alerted": False}
+
+
+def test_uptime_check_resends_an_alert_that_did_not_go_out(tmp_path, monkeypatch, capsys):
+    """提醒没发出去（发送失败、没配告警）不算提醒过：下一次照样发；恢复的消息也一样。"""
+    sent, results, replies = [], [], []
+
+    def fake_send(message):
+        sent.append(message)
+        return results.pop(0)
+
+    def fake_get(url, **kw):
+        reply = replies.pop(0)
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+    monkeypatch.setattr("youju.alerts.send_alert", fake_send)
+    monkeypatch.setattr(httpx, "get", fake_get)
+    state = tmp_path / "state.json"
+
+    def run():
+        code = cli.main(["uptime-check", "--url", "https://api.example.com", "--state", str(state)])
+        return code, capsys.readouterr().out, json.loads(state.read_text())
+
+    down = httpx.ConnectError("x")
+    up = httpx.Response(200, json={"status": "ok"})
+    replies.extend([down] * 5 + [up] * 6)  # 不通时只看第一处，通时两处都看
+    results.extend([False, None, True, False, True])
+
+    assert run()[0] == 1 and sent == []  # 第一次不通先不提醒
+    code, out, noted = run()
+    assert code == 1 and len(sent) == 1 and "提醒没发出去，下次再发" in out
+    assert noted == {"fails": 2, "alerted": False}
+    code, out, noted = run()  # 没配告警也不算提醒过
+    assert code == 1 and len(sent) == 2 and "连续 3 次" in sent[1]
+    assert "没配置告警，提醒没发，下次再发" in out and noted["alerted"] is False
+    code, out, noted = run()
+    assert code == 1 and len(sent) == 3 and "连续 4 次" in sent[2]
+    assert "下次再发" not in out and noted == {"fails": 4, "alerted": True}
+    assert run()[0] == 1 and len(sent) == 3  # 发出去了：同一次故障不再提醒
+    # 恢复的消息没发出去：留着"已提醒"，下次检查通过时再发；退出码只看服务器通不通
+    code, out, noted = run()
+    assert code == 0 and len(sent) == 4 and "恢复" in sent[3] and "提醒没发出去" in out
+    assert noted == {"fails": 0, "alerted": True}
+    code, out, noted = run()
+    assert code == 0 and len(sent) == 5 and "恢复" in sent[4]
+    assert noted == {"fails": 0, "alerted": False}
+    assert run()[0] == 0 and len(sent) == 5 and not replies and not results
 
 
 class FakeOffsite:
