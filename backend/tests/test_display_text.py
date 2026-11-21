@@ -827,12 +827,15 @@ def test_contact_table_cell_with_extensions_and_company_amounts():
 
 
 def test_common_words_on_a_phone_line_are_not_names():
-    # 11/18：入库按电话行认姓名时，"查阅"等普通词不当姓名；页面原有规则仍保留（"只加不减"，
-    # 如附件"责编：查阅"与主干一致照旧遮，已在 v1._NOT_NAMES 里的"查询"照旧留着）
-    assert (
-        v1.redact_sensitive("操作指南可在网站查阅，技术支持：0123-87654321。")
-        == "操作指南可在网站查阅，技术支持：[电话已脱敏]。"
-    )
+    # 保留主干原有的姓名遮蔽（"只加不减"）："查询 0123-87654321"、"责编：查阅"、"操作指南可在网站查阅"
+    # （_clean_reading_body）均与主干一致；"操作指南可在网站查阅，技术支持：……"在入库和详情页均留着"查阅"
+    stored_query = v1.redact_sensitive("查询 0123-87654321")
+    assert stored_query == "[姓名已脱敏] [电话已脱敏]"
+    assert v1.display_body_text(stored_query) == f"（这里隐去了联系人） {MARK}"
+    assert v1._clean_reading_body("查询 0123-87654321") == f"（这里隐去了联系人） {MARK}"
+    stored_view = v1.redact_sensitive("操作指南可在网站查阅，技术支持：0123-87654321。")
+    assert stored_view == "操作指南可在网站查阅，技术支持：[电话已脱敏]。"
+    assert v1.display_body_text(stored_view) == f"操作指南可在网站查阅，技术支持：{MARK}。"
     assert (
         v1._clean_reading_body("操作指南可在网站查询，技术支持：0123-87654321。")
         == f"操作指南可在网站查询，技术支持：{MARK}。"
@@ -1395,17 +1398,21 @@ def test_label_windows_count_marks_as_two_characters() -> None:
 
 
 def test_marked_row_does_not_backtrack_on_long_whitespace() -> None:
-    # Codex 终审第 2 条：长空白匹配失败时不能出现二次回溯
-    cases = [
-        ("（这里隐去了联系人）" + " " * 10000 + "X", v1._MARKED_ROW),
-        ("（这里隐去了联系人）手机" + " " * 10000 + "X", v1._MARKED_ROW),
+    # Codex 终审第 2 条：长空白匹配失败时不能出现二次回溯（按长度翻 10 倍的耗时比判断线性复杂度）
+    for make_line, pattern in [
+        (lambda n: "（这里隐去了联系人）" + " " * n + "X", v1._MARKED_ROW),
+        (lambda n: "（这里隐去了联系人）手机" + " " * n + "X", v1._MARKED_ROW),
         (
-            "（这里隐去了联系人），" + " " * 10000 + "（这里隐去了联系人）" + " " * 10000 + "X",
+            lambda n: "（这里隐去了联系人），" + " " * n + "（这里隐去了联系人）" + " " * n + "X",
             v1._MARKED_ROW,
         ),
-        ("张三" + " " * 10000 + "X", v1._CONTACT_ROW),
-    ]
-    start = time.perf_counter()
-    for line, pattern in cases:
-        assert pattern.match(line) is None
-    assert time.perf_counter() - start < 0.2
+        (lambda n: "张三" + " " * n + "X", v1._CONTACT_ROW),
+    ]:
+        short_line, long_line = make_line(1000), make_line(10000)
+        t0 = time.perf_counter()
+        assert pattern.match(short_line) is None
+        t_short = time.perf_counter() - t0
+        t1 = time.perf_counter()
+        assert pattern.match(long_line) is None
+        t_long = time.perf_counter() - t1
+        assert t_long < 0.5 and t_long <= max(t_short * 25, 0.05)
