@@ -148,6 +148,12 @@ function endTextOf(label, status, scanned) {
   return `${label}${/\d$/.test(label) ? ' ' : ''}完`;
 }
 
+// 我的保存（D-123）里保存的副本不记读到哪一页（副本不会变，也免得和通知本身的阅读进度混在一起）
+const NO_PROGRESS = { get: () => null, save() {}, clear() {} };
+function track(page) {
+  return page.savedId ? NO_PROGRESS : progress;
+}
+
 // 换页、换部分时回到页面顶上（一页约 4000 字，不回去新页开头在屏幕外面）
 function toTop() {
   if (typeof wx !== 'undefined' && wx && typeof wx.pageScrollTo === 'function') wx.pageScrollTo({ scrollTop: 0, duration: 0 });
@@ -157,13 +163,16 @@ Page({
   data: { loading: false, error: '', changed: false, source: null, title: '', revision: '', status: '', notice: '', has: flags(),
     segments: [], nextCursor: null, prevCursor: null, page: 1, pages: 0, totalSegments: 0, scannedPages: 0, complete: false,
     docTitle: '', partLabel: '正文', partName: '', toc: [], nextPart: null, endText: '', resumePage: 0, updatedNote: '',
-    listMode: false, listTitle: LIST_TITLE, listErrorKind: '', record: null, listHidden: false },
+    listMode: false, listTitle: LIST_TITLE, listErrorKind: '', record: null, listHidden: false, savedMode: false, goneNote: '' },
   onLoad(q) {
-    this.docId = String(q.id || ''); this.part = q.attachment ? String(q.attachment) : '';
+    // saved：我的保存里的一份（D-123），按页读保存的正文和附件；否则读这份通知现在的正文和附件
+    this.savedId = q.saved != null ? String(q.saved) : '';
+    this.docId = this.savedId ? '' : String(q.id || ''); this.part = q.attachment ? String(q.attachment) : '';
     this.revision = ''; this.firstShow = true;
     this.listMode = q.entry != null;
     this.entryToken = this.listMode ? String(q.entry) : '';
     if (this.listMode) this.setData({ listMode: true });
+    if (this.savedId) this.setData({ savedMode: true });
   },
   onShow() {
     this.visible = true;
@@ -192,23 +201,24 @@ Page({
     this.setData({ segments: [], source: null, revision: '', nextCursor: null, prevCursor: null, page: 1, pages: 0,
       complete: false, endText: '', nextPart: null, resumePage: 0, updatedNote: '', toc,
       partLabel: here ? here.label : (this.part ? '附件' : '正文'), partName: here && this.part ? here.name : '' });
-    const saved = opts.resume && /^\d+$/.test(this.docId) ? progress.get(this.docId, this.part) : null;
+    const saved = opts.resume && /^\d+$/.test(this.docId) ? track(this).get(this.docId, this.part) : null;
     if (saved) return this.loadPage(saved.cursor, saved.revision, { resumed: saved.page, banner: opts.banner });
     return this.loadPage('0', '');
   },
-  restart() { progress.clear(this.docId, this.part); return this.openPart(this.part); },
+  restart() { track(this).clear(this.docId, this.part); return this.openPart(this.part); },
   loadPage(cursor, revision, opts = {}) {
     if (!this.visible) return Promise.resolve();
     const seq = this.seq = (this.seq || 0) + 1;
     const current = () => this.visible && seq === this.seq;
     this.setData({ loading: true, error: '', changed: false, segments: [], complete: false });
-    if (!/^\d+$/.test(this.docId) || this.part && !/^\d+$/.test(this.part)) {
-      this.setData({ loading: false, error: '阅读地址无效，请返回文件详情重新打开。' }); return Promise.resolve();
+    if (!/^\d+$/.test(this.savedId || this.docId) || this.part && !/^\d+$/.test(this.part)) {
+      this.setData({ loading: false, error: this.savedId ? '阅读地址无效，请回“我的保存”重新打开。' : '阅读地址无效，请返回文件详情重新打开。' }); return Promise.resolve();
     }
     // 出错时"重试"重新请求这一页（不跳过、不回到第 1 页）
     this.lastRequest = { cursor, revision, opts };
     const params = revision ? { cursor, revision } : { cursor };
-    return api.reading(this.docId, this.part, params).then((res) => {
+    const ask = this.savedId ? api.savedReading(this.savedId, this.part, params) : api.reading(this.docId, this.part, params);
+    return ask.then((res) => {
       if (!current()) return;
       if (!res) throw new Error('阅读内容格式有误，请重试');
       const toc = tocItems(res.toc, this.part);
@@ -216,9 +226,11 @@ Page({
       const source = objectOf(res.source);
       const docTitle = this.part ? (this.data.docTitle || textOf(source.title)) : textOf(res.title);
       const head = { toc, docTitle, partLabel: here.label, partName: this.part ? textOf(res.title) : '', source,
-        title: docTitle || '站内阅读' };
+        title: docTitle || '站内阅读',
+        // D-123：原网页打不开、7 天后清理的（或我的保存里的副本）：服务端写好的那句，打不开的日期、清理或保存的日期
+        goneNote: textOf(res.goneNote) };
       if (!['ok', 'partial'].includes(res.status)) {
-        progress.clear(this.docId, this.part); this.revision = '';
+        track(this).clear(this.docId, this.part); this.revision = '';
         this.setData(Object.assign(head, { segments: [], revision: '', nextCursor: null, prevCursor: null, page: 1, pages: 0,
           listHidden: false, status: res.status, notice: textOf(res.notice) || STATUS[res.status] || '这部分暂时读不了。',
           scannedPages: 0, complete: false, endText: '', nextPart: nextPartOf(toc, this.part), resumePage: 0 }));
@@ -235,7 +247,7 @@ Page({
       if (next !== null && (!/^\d+$/.test(next) || next === cursor)) throw new Error('阅读分页信息有误，请重试');
       this.revision = res.revision;
       // 记住读到第几页：内容版本、这一页的续读位置（第 1 页不记）
-      progress.save(this.docId, this.part, res.revision, cursor, page);
+      track(this).save(this.docId, this.part, res.revision, cursor, page);
       const last = next === null;
       const scanned = Number(res.scannedPages) > 0 ? Number(res.scannedPages) : 0;
       this.setData(Object.assign(head, { revision: res.revision, status: res.status, listHidden: res.listHidden === true,
@@ -250,7 +262,7 @@ Page({
       // 内容更新了（409），或记着的、正在翻的位置已不是一页的开头（422，如分页规则改了）：作废记着的位置，
       // 回到第 1 页。不然"重试"会一直发同一个位置
       if (err.status === 409 || (err.status === 422 && cursor !== '0')) {
-        progress.clear(this.docId, this.part); this.revision = '';
+        track(this).clear(this.docId, this.part); this.revision = '';
         const what = this.part ? '附件' : '正文';
         const updated = err.status === 409 ? `${what}已更新，从第 1 页开始读`
           : `${opts.resumed ? '上次读到的' : '阅读'}位置已失效，从第 1 页开始读`;
@@ -261,7 +273,7 @@ Page({
         return this.loadPage('0', '', { updated });
       }
       if ([403, 404, 410].includes(err.status)) {
-        progress.clear(this.docId, this.part); this.revision = '';
+        track(this).clear(this.docId, this.part); this.revision = '';
         this.setData({ source: null, revision: '', nextCursor: null, prevCursor: null, segments: [], page: 1, pages: 0 });
       }
       this.setData({ error: err.message || '内容未加载，请重试', changed: false });
@@ -308,7 +320,7 @@ Page({
   // "从开头看"：不用记着的位置，从第 1 页读
   fromStart() {
     if (this.data.loading) return undefined;
-    progress.clear(this.docId, this.part);
+    track(this).clear(this.docId, this.part);
     this.setData({ resumePage: 0 });
     toTop();
     return this.loadPage('0', this.revision);
@@ -349,6 +361,17 @@ Page({
     if (!rec) return;
     if (!/^\d+$/.test(rec.docId)) return;
     wx.navigateTo({ url: `/pages/detail/index?id=${encodeURIComponent(rec.docId)}` });
+  },
+  // 上一页就是我的保存才退回去；从导出记录等别处打开的，换成我的保存页（独立审阅第 1 轮）
+  backToSaved() {
+    const stack = typeof getCurrentPages === 'function' ? getCurrentPages() : [];
+    const prev = stack.length > 1 ? stack[stack.length - 2] : null;
+    const openSaved = () => wx.redirectTo({ url: '/pages/saved/index' });
+    if (prev && prev.route === 'pages/saved/index' && typeof wx.navigateBack === 'function') {
+      wx.navigateBack({ fail: openSaved });
+      return;
+    }
+    openSaved();
   },
   backToLists() {
     const openLists = () => wx.navigateTo({ url: '/pages/lists/index' });

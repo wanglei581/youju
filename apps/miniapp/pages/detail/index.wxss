@@ -67,6 +67,9 @@
 .source-site { margin-top: 4rpx; font-size: 28rpx; }
 .source-note { margin-top: 20rpx; font-size: 24rpx; line-height: 1.7; color: var(--t2); }
 .gone-note { margin-top: 20rpx; padding: 16rpx 24rpx; background: var(--o-tint); color: var(--o-txt); border-radius: 12rpx; font-size: 26rpx; line-height: 1.7; }
+/* D-123 清理期：提示下面两个按钮（保存、导出 Word），用 view 做，按钮宽度不受微信新版按钮样式影响 */
+.gone-actions { margin-top: 12rpx; display: flex; gap: 16rpx; }
+.gone-act { padding: 8rpx 28rpx; border: 2rpx solid currentColor; border-radius: 28rpx; font-size: 26rpx; line-height: 1.6; }
 
 .bar { position: fixed; left: 0; right: 0; bottom: 0; padding: 16rpx 32rpx calc(16rpx + env(safe-area-inset-bottom)); display: flex; align-items: center; gap: 8rpx; background: var(--card); border-top: 2rpx solid var(--line); }
 .bar-item { width: 100rpx; height: 96rpx; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2rpx; font-size: 22rpx; color: var(--t2); }

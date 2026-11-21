@@ -120,6 +120,8 @@ EXCLUDED_TABLES = frozenset(
         "ai_credit_grants",
         "ai_credit_uses",
         "ai_credit_pool_days",
+        # 我的保存（D-123）：用户保存的通知副本
+        "saved_documents",
         # 密钥
         "app_keys",
         "signing_keys",

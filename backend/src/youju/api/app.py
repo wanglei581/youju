@@ -46,6 +46,7 @@ from youju.api.me import router as me_router
 from youju.api.pay import push_router
 from youju.api.pay import router as pay_router
 from youju.api.readers import router as readers_router
+from youju.api.saved import router as saved_router
 from youju.api.v1 import _approved, _details
 from youju.api.v1 import router as v1_router
 from youju.classify import (
@@ -114,6 +115,7 @@ app.include_router(exports_router)
 app.include_router(me_router)
 app.include_router(attachments_router)
 app.include_router(readers_router)
+app.include_router(saved_router)
 
 app.include_router(pay_router)
 app.include_router(push_router)

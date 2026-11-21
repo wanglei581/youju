@@ -31,4 +31,5 @@ module.exports = [
   'pages/help/index',
   'pages/reader/index',
   'pages/results/index',
+  'pages/saved/index',
 ];
