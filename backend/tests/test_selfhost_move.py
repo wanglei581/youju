@@ -1586,6 +1586,69 @@ def test_shared_ops_lock_fails_bounded_on_helper_crash_and_handshake_timeout(tmp
 
 
 @needs_bash
+@pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGKILL])
+def test_shared_ops_lock_aborts_main_op_and_protects_cleanup_when_helper_dies(tmp_path, sig):
+    """握手成功后若持锁子进程被 SIGTERM 或 SIGKILL 杀死：主操作必须立即中止（不打 DRILL OK），
+    由 on_exit 在受锁保护下完成删临时库、清 binlog 并拉起 worker，期间并发操作仍被拦下。"""
+    _server_env(tmp_path, f"MYSQL_ROOT_PASSWORD={ROOT_PW}\n")
+    _drill_backups(tmp_path, "youju-20261119.jsonl.gz")
+    in_run = tmp_path / "in_run"
+    lock_pid_file = tmp_path / "lock_pid"
+    in_cleanup = tmp_path / "in_cleanup"
+    release_cleanup = tmp_path / "release_cleanup"
+    log = tmp_path / "calls.log"
+    setup = (
+        _drill_setup(tmp_path)
+        + f'\ncompose() {{ printf "compose %s\\n" "$*" >> "{log}"; '
+        + f'if [ "$1" = run ]; then echo "$OPS_LOCK_PID" > "{lock_pid_file}"; touch "{in_run}"; while true; do sleep 0.05; done; fi; '
+        + f'if [ "$1" = exec ]; then cat >/dev/null; touch "{in_cleanup}"; '
+        + f'while [ ! -f "{release_cleanup}" ]; do sleep 0.05; done; fi; }}'
+    )
+    proc = subprocess.Popen(
+        ["bash", "-c", _script(tmp_path, "restore_drill", setup)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while not in_run.exists():
+            assert time.monotonic() < deadline, "没进入 compose run"
+            assert proc.poll() is None, proc.communicate()
+            time.sleep(0.05)
+
+        lock_pid = int(lock_pid_file.read_text(encoding="utf-8").strip())
+        os.kill(lock_pid, sig)
+
+        deadline = time.monotonic() + 10
+        while not in_cleanup.exists():
+            assert time.monotonic() < deadline, "持锁子进程退出后没触发 on_exit 收尾"
+            time.sleep(0.05)
+
+        # 收尾正在跑期间：并发 restore_drill 仍必须被锁拦下
+        concurrent = subprocess.Popen(
+            ["bash", "-c", _script(tmp_path, "restore_drill", _drill_setup(tmp_path))],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        out_c, err_c = concurrent.communicate(timeout=10)
+        assert concurrent.returncode == 1
+        assert "正在运行" in err_c
+    finally:
+        release_cleanup.write_text("go\n", encoding="utf-8")
+
+    out, err = proc.communicate(timeout=15)
+    assert proc.returncode != 0
+    assert "DRILL OK" not in out
+    calls = [c for c in _calls(tmp_path) if c.startswith("compose")]
+    assert "compose up -d --wait --wait-timeout 900 worker" in calls
+    assert calls[-1].startswith("compose up -d --wait --wait-timeout 300 api")
+    again = _bash(tmp_path, "restore_drill", setup=_drill_setup(tmp_path))
+    assert again.returncode == 0, again.stderr
+
+
+@needs_bash
 def test_shared_binlog_off_keeps_lock_until_on_exit_finishes_when_resume_fails(tmp_path):
     """binlog_off 正常路径调用 resume_services 失败时，不能提前释放锁：直到 on_exit 里的
     resume_services 也跑完才释放，期间并发 restore_drill 仍被拦下。"""

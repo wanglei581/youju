@@ -753,9 +753,12 @@ logs() {
 # 由独立 python3 子进程持内核 fcntl.flock（不把锁文件描述符放进主 shell，外部子进程不会继承锁；不删
 # $BASE/.ops.lock，避免 inode 替换竞态）。经双向 FIFO 握手确认子进程已进入持锁保活态才继续；正常释放
 # 发送显式释放字节 Q（不被仍存活的外部子进程继承 FD 9 阻塞）；主 shell 被 SIGKILL 强杀（含未回收的僵尸
-# 态或外部子进程仍存活）均通过 getppid/进程状态检测在 0.2s 内自动放锁
+# 态或外部子进程仍存活）均通过 getppid/进程状态周期性检测后自动放锁；持锁子进程被 SIGTERM/异常或
+# SIGKILL 强杀时，经 SIGTERM 通知及 watch 管道断线守卫联动终止主操作，并由受锁保护的 on_exit 收尾
 OPS_LOCK_FD=""
 OPS_LOCK_PID=""
+OPS_LOCK_GUARD_PID=""
+OPS_LOCK_FDIR=""
 OPS_LOCK_TIMEOUT=${YOUJU_OPS_LOCK_TIMEOUT:-5}
 ops_lock_read_ack() {
   local out="" _i
@@ -770,7 +773,7 @@ ops_lock_read_ack() {
 }
 acquire_ops_lock() {
   [ -n "${OPS_LOCK_FD:-}" ] && return 0
-  local lock="$BASE/.ops.lock" py fdir old old_pid ans holder
+  local lock="$BASE/.ops.lock" py fdir old old_pid ans holder wait_flag=${1:-}
   py=$(command -v python3 || true)
   [ -n "$py" ] || die "需要 python3 来加互斥锁"
   mkdir -p "$BASE"
@@ -783,12 +786,12 @@ acquire_ops_lock() {
     fi
   done
   fdir=$(mktemp -d "$BASE/.ops.fifo.$$.XXXXXX")
-  mkfifo "$fdir/ctrl" "$fdir/ack"
+  mkfifo "$fdir/ctrl" "$fdir/ack" "$fdir/watch"
   exec 8<>"$fdir/ack"
   "$py" -I -c '
-import errno, fcntl, os, select, subprocess, sys, time
-lock_path, ctrl_path, ack_path, ppid, timeout = (
-    sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4]), float(sys.argv[5])
+import errno, fcntl, os, select, signal, subprocess, sys, time
+lock_path, ctrl_path, ack_path, watch_path, ppid, timeout, wait_flag = (
+    sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], int(sys.argv[5]), float(sys.argv[6]), sys.argv[7]
 )
 def parent_dead():
     if os.getppid() != ppid:
@@ -812,18 +815,35 @@ def parent_dead():
     state = res.stdout.strip()
     return not state or state[0] in ("Z", "X")
 
+aborted = False
+def on_term(_signum, _frame):
+    global aborted
+    if not aborted:
+        aborted = True
+        try:
+            os.kill(ppid, signal.SIGTERM)
+        except OSError:
+            pass
+
 fd = None
 ctrl = None
+watch = None
 try:
     fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError as e:
-        if e.errno in (errno.EACCES, errno.EAGAIN):
-            with open(ack_path, "w", encoding="utf-8") as ack:
-                ack.write("BUSY\n")
-            sys.exit(0)
-        raise
+    deadline_lock = time.monotonic() + (timeout if wait_flag == "wait" else 0.0)
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except OSError as e:
+            if e.errno in (errno.EACCES, errno.EAGAIN):
+                if wait_flag == "wait" and time.monotonic() < deadline_lock and not parent_dead():
+                    time.sleep(0.05)
+                    continue
+                with open(ack_path, "w", encoding="utf-8") as ack:
+                    ack.write("BUSY\n")
+                sys.exit(0)
+            raise
     os.ftruncate(fd, 0)
     os.lseek(fd, 0, os.SEEK_SET)
     os.write(fd, f"{ppid}\n".encode())
@@ -842,17 +862,31 @@ try:
                 armed = True
                 break
             time.sleep(0.01)
-    if not armed:
+    if armed:
+        while time.monotonic() < deadline:
+            try:
+                watch = os.open(watch_path, os.O_WRONLY | os.O_NONBLOCK)
+                break
+            except OSError as e:
+                if e.errno == errno.ENXIO and not parent_dead():
+                    time.sleep(0.01)
+                    continue
+                raise
+    if not armed or watch is None:
         try:
             with open(ack_path, "w", encoding="utf-8") as ack:
                 ack.write("TIMEOUT\n")
         except OSError:
             pass
     else:
+        signal.signal(signal.SIGTERM, on_term)
         with open(ack_path, "w", encoding="utf-8") as ack:
             ack.write("ARMED\n")
         while True:
-            r, _, _ = select.select([ctrl], [], [], 0.2)
+            try:
+                r, _, _ = select.select([ctrl], [], [], 0.2)
+            except InterruptedError:
+                continue
             if r:
                 chunk = os.read(ctrl, 64)
                 if not chunk or b"Q" in chunk:
@@ -862,16 +896,22 @@ try:
     os.ftruncate(fd, 0)
 except Exception:
     try:
+        os.kill(ppid, signal.SIGTERM)
+    except OSError:
+        pass
+    try:
         with open(ack_path, "w", encoding="utf-8") as ack:
             ack.write("ERR\n")
     except OSError:
         pass
 finally:
+    if watch is not None:
+        os.close(watch)
     if ctrl is not None:
         os.close(ctrl)
     if fd is not None:
         os.close(fd)
-' "$lock" "$fdir/ctrl" "$fdir/ack" "$$" "$OPS_LOCK_TIMEOUT" </dev/null >/dev/null 2>&1 &
+' "$lock" "$fdir/ctrl" "$fdir/ack" "$fdir/watch" "$$" "$OPS_LOCK_TIMEOUT" "$wait_flag" </dev/null >/dev/null 2>&1 &
   OPS_LOCK_PID=$!
   ans=$(ops_lock_read_ack || true)
   if [ "$ans" != "OK" ]; then
@@ -883,27 +923,56 @@ finally:
     OPS_LOCK_PID=""
     rm -rf "$fdir"
     if [ "$ans" = "BUSY" ]; then
+      [ "$wait_flag" = "wait" ] && return 1
       die "已有另一个恢复演练、搬家或关 binlog 操作正在运行${holder:+（PID ${holder}）}，等它结束再跑"
     fi
+    [ "$wait_flag" = "wait" ] && return 1
     die "加互斥锁失败（${ans:-子进程无响应或异常退出}）"
   fi
+  (
+    exec 8>&-
+    read -r _ < "$fdir/watch" || true
+    [ -f "$fdir/released" ] || kill -TERM "$$" 2>/dev/null || true
+  ) </dev/null >/dev/null 2>&1 &
+  OPS_LOCK_GUARD_PID=$!
   exec 9<>"$fdir/ctrl"
   printf '1\n' >&9 || true
   ans=$(ops_lock_read_ack || true)
   exec 8>&-
-  rm -rf "$fdir"
   if [ "$ans" != "ARMED" ] || ! kill -0 "$OPS_LOCK_PID" 2>/dev/null; then
+    : > "$fdir/released" 2>/dev/null || true
     exec 9>&-
-    kill "$OPS_LOCK_PID" 2>/dev/null || true
+    kill "$OPS_LOCK_GUARD_PID" "$OPS_LOCK_PID" 2>/dev/null || true
+    wait "$OPS_LOCK_GUARD_PID" 2>/dev/null || true
     wait "$OPS_LOCK_PID" 2>/dev/null || true
+    OPS_LOCK_GUARD_PID=""
     OPS_LOCK_PID=""
+    rm -rf "$fdir"
+    [ "$wait_flag" = "wait" ] && return 1
     die "加互斥锁握手未确认（${ans:-超时}），没有进入操作"
   fi
   OPS_LOCK_FD=9
+  OPS_LOCK_FDIR="$fdir"
   trap release_ops_lock EXIT
 }
 
+ops_lock_alive() {
+  [ -n "${OPS_LOCK_PID:-}" ] || return 1
+  if [ -d /proc ]; then
+    local st=""
+    st=$(awk -F') ' '{print substr($2,1,1)}' "/proc/${OPS_LOCK_PID}/stat" 2>/dev/null || true)
+    [ -n "$st" ] && [ "$st" != Z ] && [ "$st" != X ]
+  else
+    local st=""
+    st=$(ps -o state= -p "$OPS_LOCK_PID" 2>/dev/null | tr -d '[:space:]' || true)
+    [ -n "$st" ] && case "$st" in Z* | X*) return 1 ;; *) return 0 ;; esac
+  fi
+}
+
 release_ops_lock() {
+  if [ -n "${OPS_LOCK_FDIR:-}" ]; then
+    : > "${OPS_LOCK_FDIR}/released" 2>/dev/null || true
+  fi
   if [ -n "${OPS_LOCK_FD:-}" ]; then
     printf 'Q\n' >&9 2>/dev/null || true
     exec 9>&-
@@ -912,6 +981,15 @@ release_ops_lock() {
   if [ -n "${OPS_LOCK_PID:-}" ]; then
     wait "$OPS_LOCK_PID" 2>/dev/null || true
     OPS_LOCK_PID=""
+  fi
+  if [ -n "${OPS_LOCK_GUARD_PID:-}" ]; then
+    kill "$OPS_LOCK_GUARD_PID" 2>/dev/null || true
+    wait "$OPS_LOCK_GUARD_PID" 2>/dev/null || true
+    OPS_LOCK_GUARD_PID=""
+  fi
+  if [ -n "${OPS_LOCK_FDIR:-}" ]; then
+    rm -rf "$OPS_LOCK_FDIR" 2>/dev/null || true
+    OPS_LOCK_FDIR=""
   fi
 }
 
@@ -948,6 +1026,10 @@ DROP_DRILL_DBS=""
 on_exit() {
   set +e
   trap - INT TERM HUP
+  if [ -n "${OPS_LOCK_FD:-}" ] && ! ops_lock_alive; then
+    release_ops_lock
+    acquire_ops_lock wait || echo "注意：锁子进程意外退出，没能重新拿到互斥锁" >&2
+  fi
   local stray
   stray=$(docker ps -q --filter label=com.docker.compose.project=youju-server \
     --filter label=com.docker.compose.oneoff=True)
