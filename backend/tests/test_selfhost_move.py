@@ -2323,6 +2323,160 @@ def test_import_export_purges_binlog_even_when_interrupted(tmp_path):
     assert not any("archive-export" in c for c in calls)
 
 
+def _binlog_off_setup(
+    tmp_path: Path, state: str = "0", *, state_fails: bool = False, cleanup_fails: bool = False
+) -> str:
+    """假的 compose：删留下的 binlog 文件那段（含 binlog.index）回"删掉了"或失败；查开没开那段回
+    state 或失败（exec 返回 1，像连不上 MySQL）；清 binlog 那段照常读掉标准输入。"""
+    log = tmp_path / "calls.log"
+    cleanup = "return 1" if cleanup_fails else "echo cleaned"
+    check = "return 1" if state_fails else f"echo '{state}'"
+    return (
+        f'compose() {{ echo "compose $*" >> "{log}"; if [ "$1" = exec ]; then s=$(cat); '
+        f'case "$s" in *binlog.index*) {cleanup} ;; *"@@GLOBAL.log_bin"*) {check} ;; esac; fi; }}'
+    )
+
+
+@needs_bash
+def test_shared_binlog_off_purges_recreates_checks_and_cleans_up(tmp_path):
+    _server_env(tmp_path, "MYSQL_ROOT_PASSWORD=r00tpw\n")
+    (tmp_path / "server" / "mysql.cnf").write_text("[mysqld]\ndisable_log_bin\n", encoding="utf-8")
+    done = _bash(tmp_path, "binlog_off", setup=_binlog_off_setup(tmp_path))
+    assert done.returncode == 0, done.stderr
+    # worker、接口起来了才打 BINLOG OFF（这时关终端不会打断起服务），而且是最后一行
+    assert done.stdout.strip().splitlines()[-1] == "BINLOG OFF"
+    calls = _calls(tmp_path)
+    # 先停接口和 worker，清掉现有的 binlog，用新配置重建 MySQL，查是 0，删留下的 binlog 文件，
+    # 最后起 worker、接口；退出时不再起一遍（trap 已撤掉）
+    assert calls == [
+        "compose stop api worker",
+        "compose exec -T mysql sh -s",
+        "compose up -d --force-recreate --wait --wait-timeout 300 mysql",
+        "compose exec -T mysql sh -s",
+        "compose exec -T mysql sh -s",
+        "compose up -d --wait --wait-timeout 900 worker",
+        "compose up -d --wait --wait-timeout 300 api",
+    ]
+    assert "r00tpw" not in "\n".join(calls)
+
+
+@needs_bash
+def test_shared_binlog_off_needs_the_new_config_and_stops_on_any_doubt(tmp_path):
+    _server_env(tmp_path, "MYSQL_ROOT_PASSWORD=r00tpw\n")
+    # 服务器上的 mysql.cnf 还是旧的（没 install 新版本）：什么都不停
+    (tmp_path / "server" / "mysql.cnf").write_text(
+        "[mysqld]\nbinlog_expire_logs_seconds = 259200\n", encoding="utf-8"
+    )
+    done = _bash(tmp_path, "binlog_off", setup=_binlog_off_setup(tmp_path))
+    assert done.returncode == 1 and "还没有 disable_log_bin" in done.stderr
+    assert not [c for c in _calls(tmp_path) if c.startswith("compose")]
+    (tmp_path / "server" / "mysql.cnf").write_text("[mysqld]\ndisable_log_bin\n", encoding="utf-8")
+    cases = [
+        # 重建以后还开着、读不出、查的时候连不上：不删文件，报错
+        (_binlog_off_setup(tmp_path, "1"), "@@GLOBAL.log_bin=1", 2),
+        (_binlog_off_setup(tmp_path, ""), "@@GLOBAL.log_bin=读不出", 2),
+        (_binlog_off_setup(tmp_path, state_fails=True), "查不出 MySQL 的 binlog 开没开", 2),
+        # 关了，但留下的 binlog 文件没删掉：报错
+        (_binlog_off_setup(tmp_path, cleanup_fails=True), "留下的 binlog 文件没删掉", 3),
+    ]
+    for setup, shown, execs in cases:
+        (tmp_path / "calls.log").unlink(missing_ok=True)
+        done = _bash(tmp_path, "binlog_off", setup=setup)
+        assert done.returncode != 0 and shown in done.stderr, done.stderr
+        assert "BINLOG OFF" not in done.stdout
+        calls = [c for c in _calls(tmp_path) if c.startswith("compose")]
+        assert calls.count("compose exec -T mysql sh -s") == execs
+        # 照样把 worker、接口起来（on_exit）
+        assert calls[-1].startswith("compose up -d --wait --wait-timeout 300 api")
+
+
+@needs_bash
+@pytest.mark.parametrize("state", ["0", "1", "fail"])
+def test_binlog_files_cleanup_script_deletes_only_leftover_binlog_files(tmp_path, state):
+    """容器里跑的那段：binlog 确实关着才删数据目录里的 binlog.<6 位编号> 和 binlog.index，别的不碰；
+    开着、读不出时按失败退出，什么都不删；口令只在环境变量里。"""
+    defs = _functions(tmp_path)
+    script = subprocess.run(
+        ["bash", "-c", f'source "{defs}"; binlog_files_cleanup_sql'],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    data = tmp_path / "data"
+    data.mkdir()
+    old = ["binlog.000001", "binlog.000002", "binlog.index"]
+    keep = ["binlog.000001.bak", "ibdata1", "mysql.ibd"]
+    for name in old + keep:
+        (data / name).write_text("x", encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "mysql"
+    answer = "exit 1" if state == "fail" else f"echo {state}"
+    fake.write_text(
+        "#!/bin/sh\n"
+        f'echo "$* | pwd=$MYSQL_PWD" >> "{tmp_path}/mysql.log"\n'
+        'case "$*" in\n'
+        f'  *"@@GLOBAL.log_bin"*) {answer} ;;\n'
+        f'  *"@@GLOBAL.datadir"*) echo "{data}/" ;;\n'
+        "esac\n",
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+    env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "MYSQL_ROOT_PASSWORD": "r00t"}
+    done = subprocess.run(["sh", "-s"], input=script, capture_output=True, text=True, env=env)
+    lines = (tmp_path / "mysql.log").read_text(encoding="utf-8").splitlines()
+    assert all(line.endswith("| pwd=r00t") and "r00t" not in line.split(" | ")[0] for line in lines)
+    left = sorted(p.name for p in data.iterdir())
+    if state == "0":
+        assert done.returncode == 0 and "删掉了以前留下的 binlog 文件 3 个" in done.stdout
+        assert left == sorted(keep)
+    else:
+        assert done.returncode != 0 and left == sorted(old + keep)
+
+
+@pytest.mark.skipif(not shutil.which("mysqld"), reason="没有 mysqld")
+@pytest.mark.parametrize("variant", ["shared", "server"])
+def test_server_mysql_configs_pass_mysqld_validation(tmp_path, variant):
+    """两份 mysql.cnf 交给真的 mysqld：写法要过校验（拼错的选项会报错），binlog 也真的关了
+    （关了以后 log-replica-updates 跟着是 FALSE，开着是 TRUE）。先拷进临时目录再给它：Ubuntu 的
+    mysqld 有 AppArmor，读不了检出目录里的文件。"""
+    cnf = tmp_path / "mysql.cnf"
+    shutil.copyfile(SELFHOST / variant / "mysql.cnf", cnf)
+    cnf.chmod(0o644)
+    done = subprocess.run(
+        ["mysqld", f"--defaults-file={cnf}", "--validate-config"], capture_output=True, text=True
+    )
+    assert done.returncode == 0, done.stderr
+    shown = subprocess.run(
+        ["mysqld", f"--defaults-file={cnf}", "--verbose", "--help"], capture_output=True, text=True
+    )
+    assert re.search(r"^log-(replica|slave)-updates\s+FALSE\s*$", shown.stdout, re.M), shown.stderr
+
+
+@needs_bash
+def test_binlog_state_script_reads_the_global_switch_with_the_password_from_env(tmp_path):
+    defs = _functions(tmp_path)
+    script = subprocess.run(
+        ["bash", "-c", f'source "{defs}"; binlog_state_sql'],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "mysql"
+    fake.write_text(
+        f'#!/bin/sh\necho "$* | pwd=$MYSQL_PWD" >> "{tmp_path}/mysql.log"\necho 0\n',
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+    env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "MYSQL_ROOT_PASSWORD": "r00t"}
+    done = subprocess.run(["sh", "-s"], input=script, capture_output=True, text=True, env=env)
+    assert done.returncode == 0 and done.stdout.strip() == "0"
+    (line,) = (tmp_path / "mysql.log").read_text(encoding="utf-8").splitlines()
+    assert line == "-uroot -N -B -e SELECT @@GLOBAL.log_bin | pwd=r00t"
+
+
 @needs_bash
 def test_on_exit_keeps_going_when_a_step_fails(tmp_path):
     """退出时清 binlog 失败（或往断开的终端写字失败）也要接着把接口、worker 起来。"""
@@ -2374,3 +2528,30 @@ def test_binlog_purge_script_purges_up_to_the_current_file(tmp_path, left):
         assert done.returncode == 0 and "binlog 已清" in done.stdout
     else:
         assert done.returncode != 0 and "没清干净" in done.stderr
+
+
+@needs_bash
+@pytest.mark.parametrize("answer", ["0", "fail"])
+def test_binlog_purge_script_skips_only_when_binlog_is_really_off(tmp_path, answer):
+    """binlog 关着才打"不用清"、退出 0；连不上 MySQL（查不出开没开）时按失败退出，不当作关着。"""
+    defs = _functions(tmp_path)
+    script = subprocess.run(
+        ["bash", "-c", f'source "{defs}"; binlog_purge_sql'],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "mysql"
+    fake.write_text(
+        "#!/bin/sh\n" + ("echo 0\n" if answer == "0" else "echo 'cannot connect' >&2\nexit 1\n"),
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+    env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "MYSQL_ROOT_PASSWORD": "r00t"}
+    done = subprocess.run(["sh", "-s"], input=script, capture_output=True, text=True, env=env)
+    if answer == "0":
+        assert done.returncode == 0 and "binlog 没开，不用清" in done.stdout
+    else:
+        assert done.returncode != 0 and "不用清" not in done.stdout
