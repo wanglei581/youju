@@ -1432,14 +1432,92 @@ def test_shared_restore_drill_blocks_concurrent_runs_and_reclaims_stale_lock(tmp
     assert "DRILL OK youju-20261119.jsonl.gz" in out1
     assert not (tmp_path / ".ops.lock").exists()
 
-    # 模拟上一次被 kill -9 留下死 PID 的锁：下一个 restore_drill 自动接管并正常跑完
+    # 模拟上一次被 kill -9 留下死 PID 的锁：两个进程同时抢回收，最多只能进一个，另一个被拦下
     lock = tmp_path / ".ops.lock"
-    lock.mkdir()
-    (lock / "pid").write_text("999999\n", encoding="utf-8")
-    again = _bash(tmp_path, "restore_drill", setup=_drill_setup(tmp_path))
-    assert again.returncode == 0, again.stderr
-    assert "DRILL OK youju-20261119.jsonl.gz" in again.stdout
+    lock.write_text("999999\n", encoding="utf-8")
+    release.unlink(missing_ok=True)
+    started.unlink(missing_ok=True)
+    (tmp_path / "first.log").unlink(missing_ok=True)
+    p1 = subprocess.Popen(
+        ["bash", "-c", _script(tmp_path, "restore_drill", setup_first)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    p2 = subprocess.Popen(
+        ["bash", "-c", _script(tmp_path, "restore_drill", setup_first)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while not (started.exists() and (p1.poll() is not None or p2.poll() is not None)):
+            assert time.monotonic() < deadline, "并发进程没有按预期一个进演练、一个被锁拦下"
+            time.sleep(0.05)
+    finally:
+        release.write_text("go\n", encoding="utf-8")
+    out_p1, err_p1 = p1.communicate(timeout=15)
+    out_p2, err_p2 = p2.communicate(timeout=15)
+    results = [(p1.returncode, out_p1, err_p1), (p2.returncode, out_p2, err_p2)]
+    assert sorted(r[0] for r in results) == [0, 1], results
+    winner = next(r for r in results if r[0] == 0)
+    loser = next(r for r in results if r[0] == 1)
+    assert "DRILL OK youju-20261119.jsonl.gz" in winner[1]
+    assert "正在运行" in loser[2] or "占着锁" in loser[2]
+    first_log = (tmp_path / "first.log").read_text(encoding="utf-8").splitlines()
+    assert first_log.count("compose stop worker") == 1
     assert not lock.exists()
+
+
+@needs_bash
+def test_shared_binlog_off_keeps_lock_until_on_exit_finishes_when_resume_fails(tmp_path):
+    """binlog_off 正常路径调用 resume_services 失败时，不能提前释放锁：直到 on_exit 里的
+    resume_services 也跑完才释放，期间并发 restore_drill 仍被拦下。"""
+    _server_env(tmp_path, f"MYSQL_ROOT_PASSWORD={ROOT_PW}\n")
+    _drill_backups(tmp_path, "youju-20261119.jsonl.gz")
+    (tmp_path / "server" / "mysql.cnf").write_text("[mysqld]\ndisable_log_bin\n", encoding="utf-8")
+    in_on_exit_resume = tmp_path / "in_on_exit_resume"
+    release = tmp_path / "release_resume"
+    attempt_file = tmp_path / "resume_attempts"
+    setup = (
+        _binlog_off_setup(tmp_path, state="0")
+        + "\ncompose() {\n"
+        + f'  printf "compose %s\\n" "$*" >> "{tmp_path}/binlog.log"\n'
+        + '  if [ "$1" = exec ]; then s=$(cat); case "$s" in *binlog.index*) echo cleaned ;; *"@@GLOBAL.log_bin"*) echo 0 ;; esac; return 0; fi\n'
+        + '  if [ "$1" = up ] && [[ "$*" == *" worker"* ]]; then\n'
+        + f'    n=$(( $(cat "{attempt_file}" 2>/dev/null || echo 0) + 1 ))\n'
+        + f'    echo "$n" > "{attempt_file}"\n'
+        + '    if [ "$n" -eq 1 ]; then return 1; fi\n'
+        + f'    touch "{in_on_exit_resume}"\n'
+        + f'    while [ ! -f "{release}" ]; do sleep 0.05; done\n'
+        + "    return 1\n"
+        + "  fi\n"
+        + "}\n"
+    )
+    proc = subprocess.Popen(
+        ["bash", "-c", _script(tmp_path, "binlog_off", setup)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while not in_on_exit_resume.exists():
+            assert time.monotonic() < deadline, "没进入 on_exit 的 resume_services"
+            assert proc.poll() is None, proc.communicate()
+            time.sleep(0.05)
+        (tmp_path / "calls.log").unlink(missing_ok=True)
+        blocked = _bash(tmp_path, "restore_drill", setup=_drill_setup(tmp_path))
+        assert blocked.returncode == 1 and "正在运行" in blocked.stderr
+        assert not [
+            c for c in _calls(tmp_path) if c.startswith(("compose", "docker ps", "docker stop"))
+        ]
+    finally:
+        release.write_text("go\n", encoding="utf-8")
+    out, err = proc.communicate(timeout=15)
+    assert proc.returncode == 1
+    assert not (tmp_path / ".ops.lock").exists()
 
 
 @needs_bash

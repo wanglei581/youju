@@ -749,47 +749,47 @@ logs() {
 # ---- 首发前搬家（D-127） ----
 
 # 互斥锁：同时只跑一个会停服务、起一次性容器或碰临时库的命令（restore-drill、import-export、fetch-export、
-# binlog-off、up），免得一个命令的收尾把另一个正在跑的一次性容器停掉、把还在用的 youju_drill_… 临时库删掉
-OPS_LOCK_DIR=""
+# binlog-off、up），免得一个命令的收尾把另一个正在跑的一次性容器停掉、把还在用的 youju_drill_… 临时库删掉。
+# 先写好带 $$ 的临时文件再 ln 成 $BASE/.ops.lock（文件一出现就有 PID，没有空窗期）；死锁回收时先抢到
+# .reclaim 目录，再在里面重新读 PID 确认持锁进程已不在才删，免得两个进程并发回收时删掉对方刚拿到的新锁
+OPS_LOCK_FILE=""
 OPS_LOCK_HELD=""
 acquire_ops_lock() {
   [ "${OPS_LOCK_HELD:-}" = "$$" ] && return 0
-  local dir="$BASE/.ops.lock" pid="" i
+  local lock="$BASE/.ops.lock" tmp="$BASE/.ops.lock.tmp.$$" pid="" i
   mkdir -p "$BASE"
-  for i in 1 2; do
-    if mkdir "$dir" 2>/dev/null; then
-      printf '%s\n' "$$" > "$dir/pid"
-      OPS_LOCK_DIR="$dir"
+  printf '%s\n' "$$" > "$tmp"
+  for i in 1 2 3; do
+    if ln "$tmp" "$lock" 2>/dev/null; then
+      rm -f "$tmp"
+      OPS_LOCK_FILE="$lock"
       OPS_LOCK_HELD="$$"
       trap release_ops_lock EXIT
       return 0
     fi
-    pid=$(cat "$dir/pid" 2>/dev/null || true)
-    if [ -z "$pid" ]; then
-      sleep 0.2
-      pid=$(cat "$dir/pid" 2>/dev/null || true)
-    fi
-    if [ -n "$pid" ] && [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
-      die "已有另一个恢复演练、搬家或关 binlog 操作正在运行（PID ${pid}），等它结束再跑"
-    fi
-    if mkdir "${dir}.reclaim" 2>/dev/null; then
-      rm -f "$dir/pid" 2>/dev/null || true
-      rmdir "$dir" 2>/dev/null || true
-      rmdir "${dir}.reclaim" 2>/dev/null || true
+    if mkdir "${lock}.reclaim" 2>/dev/null; then
+      pid=$(cat "$lock" 2>/dev/null || true)
+      if [ -n "$pid" ] && [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+        rmdir "${lock}.reclaim" 2>/dev/null || true
+        rm -f "$tmp"
+        die "已有另一个恢复演练、搬家或关 binlog 操作正在运行（PID ${pid}），等它结束再跑"
+      fi
+      rm -f "$lock"
+      rmdir "${lock}.reclaim" 2>/dev/null || true
     else
-      sleep 0.2
+      sleep 0.1
     fi
   done
-  die "已经有另一个操作正在占着锁（${dir}），等它结束再跑"
+  rm -f "$tmp"
+  die "已经有另一个操作正在占着锁（${lock}），等它结束再跑"
 }
 
 release_ops_lock() {
   [ -n "${OPS_LOCK_HELD:-}" ] || return 0
   local holder=""
-  holder=$(cat "${OPS_LOCK_DIR}/pid" 2>/dev/null || true)
+  holder=$(cat "${OPS_LOCK_FILE}" 2>/dev/null || true)
   if [ "$holder" = "$OPS_LOCK_HELD" ]; then
-    rm -f "${OPS_LOCK_DIR}/pid" 2>/dev/null || true
-    rmdir "${OPS_LOCK_DIR}" 2>/dev/null || true
+    rm -f "${OPS_LOCK_FILE}" 2>/dev/null || true
   fi
   OPS_LOCK_HELD=""
 }
@@ -841,10 +841,10 @@ on_exit() {
   if [ -n "$PURGE_BINLOG" ]; then
     purge_binlog || echo "注意：binlog 没清掉，再跑之前先查（手册第六节第 7 步、第八节\"恢复演练\"）" >&2
   fi
-  resume_services
-  local rc=$?
+  local rc=0
+  resume_services || rc=$?
   release_ops_lock
-  return "$rc"
+  [ "$rc" -eq 0 ] || exit "$rc"
 }
 
 # 在 mysql 容器里跑（sh -s）：轮换 binlog，删掉当前这个以前的全部，再查只剩一个。不用
@@ -943,8 +943,7 @@ drop_drill_dbs() { drill_drop_sql | compose exec -T mysql sh -s; }
 resume_services() {
   if ! { compose up -d --wait --wait-timeout 900 worker && compose up -d --wait --wait-timeout 300 api; }; then
     echo "注意：接口、worker 没起来，运行 ${SELF} up" >&2
-    release_ops_lock
-    exit 1
+    return 1
   fi
 }
 
