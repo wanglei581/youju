@@ -637,8 +637,8 @@ up() {
   db_accounts
   run_fg compose up -d --wait --wait-timeout 900 worker
   run_fg compose up -d --wait --wait-timeout 300 api
-  status
   clear_exit_trap
+  status
   echo "回退：${SELF} uninstall（停掉、撤站点，数据留着）"
 }
 

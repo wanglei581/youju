@@ -1989,8 +1989,6 @@ def test_shared_ops_lock_kills_sigterm_ignoring_descendant_and_interrupts_binlog
         stubborn_pid = int(child_pid_file.read_text(encoding="utf-8").strip())
         deadline = time.monotonic() + 3
         os.kill(int(lock_pid_file.read_text(encoding="utf-8").strip()), signal.SIGKILL)
-        out, err = proc.communicate(timeout=10)
-        assert proc.returncode != 0
         while time.monotonic() < deadline:
             st = subprocess.run(
                 ["ps", "-o", "state=", "-p", str(stubborn_pid)],
@@ -2002,6 +2000,8 @@ def test_shared_ops_lock_kills_sigterm_ignoring_descendant_and_interrupts_binlog
             time.sleep(0.05)
         else:
             pytest.fail(f"忽略 SIGTERM 的子进程 {stubborn_pid} 3 秒内未被 SIGKILL 终止")
+        out, err = proc.communicate(timeout=10)
+        assert proc.returncode != 0
     finally:
         if stubborn_pid is not None:
             with contextlib.suppress(OSError):
@@ -2135,6 +2135,40 @@ def test_shared_up_aborts_blocking_migration_and_protects_oneoff_cleanup_when_he
         if proc.poll() is None:
             proc.kill()
             proc.wait(timeout=5)
+
+
+@needs_bash
+def test_shared_up_releases_ops_lock_before_readonly_status(tmp_path):
+    """up 把 worker、api 起来后就放锁再跑只读 status：status 阶段不再占着互斥锁。"""
+    _server_env(tmp_path, f"MYSQL_ROOT_PASSWORD={ROOT_PW}\n")
+    shutil.copy(MYSQL_ACCOUNTS, tmp_path / "server" / "mysql_accounts.sql")
+    _drill_backups(tmp_path, "youju-20261119.jsonl.gz")
+    in_status = tmp_path / "in_status"
+    release_status = tmp_path / "release_status"
+    setup = (
+        f'status() {{ echo "${{OPS_LOCK_PID:-}}" > "{tmp_path}/status_lock_pid"; '
+        f'touch "{in_status}"; while [ ! -f "{release_status}" ]; do sleep 0.05; done; echo STATUS; }}'
+    )
+    proc = subprocess.Popen(
+        ["bash", "-c", _script(tmp_path, "up", setup)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while not in_status.exists():
+            assert time.monotonic() < deadline
+            assert proc.poll() is None, proc.communicate()
+            time.sleep(0.05)
+        assert (tmp_path / "status_lock_pid").read_text(encoding="utf-8").strip() == ""
+        concurrent = _bash(tmp_path, "restore_drill", setup=_drill_setup(tmp_path))
+        assert concurrent.returncode == 0, concurrent.stderr
+    finally:
+        release_status.write_text("go\n", encoding="utf-8")
+    out, err = proc.communicate(timeout=10)
+    assert proc.returncode == 0, err
+    assert "STATUS" in out
 
 
 @needs_bash
