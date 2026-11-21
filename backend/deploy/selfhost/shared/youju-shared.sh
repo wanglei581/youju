@@ -582,29 +582,63 @@ db_accounts() {
   local sql
   sql=$(db_accounts_sql)
   # shellcheck disable=SC2016  # 要在容器里展开
-  printf '%s\n' "$sql" | compose exec -T mysql sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot -N -B' \
+  run_fg_stdin compose exec -T mysql sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot -N -B' <<<"$sql" \
     || die "接口、worker 的库账号和授权没设好（原因见上面）：接口和 worker 还停着，改好以后再 ${SELF} up"
   echo "接口（youju_api）、worker（youju_worker）的库账号和授权已照清单设好"
+}
+
+UP_MAY_HAVE_ONEOFF=""
+on_up_exit() {
+  set +e
+  trap '' INT HUP
+  trap 'on_exit_term' TERM
+  OPS_LOCK_IN_EXIT=1
+  OPS_LOCK_LOST=""
+  stop_fg
+  if [ -n "${UP_MAY_HAVE_ONEOFF:-}" ]; then
+    if ! ensure_ops_lock; then
+      echo "错误：锁子进程意外退出且另一个操作正在运行，已跳过停临时容器；等那个操作结束后运行 ${SELF} status 核对（必要时 ${SELF} up）" >&2
+      exit 1
+    fi
+    run_locked_step stop_stray_oneoffs || true
+    if [ -n "$OPS_LOCK_RECOVER_FAILED" ]; then
+      echo "错误：停临时容器时持锁进程意外退出且另一个操作抢先拿锁，已中止清理；等那个操作结束后运行 ${SELF} status 核对（必要时 ${SELF} up）" >&2
+      exit 1
+    fi
+  fi
+  release_ops_lock
+}
+
+install_up_exit_trap() {
+  trap on_up_exit EXIT
+  trap 'trap "" INT TERM HUP; stop_fg; exit 130' INT
+  trap 'trap "" INT TERM HUP; stop_fg; exit 143' TERM
+  trap 'trap "" INT TERM HUP; stop_fg; exit 129' HUP
 }
 
 up() {
   [ -f "$SERVER/.env" ] || die "先 env"
   db_env_ok
   acquire_ops_lock
-  compose config -q
-  compose up -d --wait --wait-timeout 300 mysql
+  install_up_exit_trap
+  UP_MAY_HAVE_ONEOFF=""
+  run_fg compose config -q
+  run_fg compose up -d --wait --wait-timeout 300 mysql
   # 升级时先停 worker、接口，迁移完再起（和本机 setup-wsl.sh 一样）
-  compose stop worker api >/dev/null 2>&1 || true
+  run_fg compose stop worker api >/dev/null 2>&1 || true
   # 迁移用 youju 账号（建表、改表要它）；连接串经环境变量传进临时容器，不进命令行参数。收同步的进度表、
   # 编号下限也要建表、改表权限，同样用 youju 先做好（worker 平时只有增删改查）
+  UP_MAY_HAVE_ONEOFF=1
   YOUJU_DATABASE_URL="$(db_url_for youju "$(migrate_password)")" \
-    compose run --rm --no-deps -e YOUJU_DATABASE_URL worker youju db-upgrade
+    run_fg compose run --rm --no-deps -e YOUJU_DATABASE_URL worker youju db-upgrade
   YOUJU_DATABASE_URL="$(db_url_for youju "$(migrate_password)")" \
-    compose run --rm --no-deps -e YOUJU_DATABASE_URL worker youju sync-server-setup
+    run_fg compose run --rm --no-deps -e YOUJU_DATABASE_URL worker youju sync-server-setup
+  UP_MAY_HAVE_ONEOFF=""
   db_accounts
-  compose up -d --wait --wait-timeout 900 worker
-  compose up -d --wait --wait-timeout 300 api
+  run_fg compose up -d --wait --wait-timeout 900 worker
+  run_fg compose up -d --wait --wait-timeout 300 api
   status
+  clear_exit_trap
   echo "回退：${SELF} uninstall（停掉、撤站点，数据留着）"
 }
 

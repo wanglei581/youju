@@ -1987,18 +1987,21 @@ def test_shared_ops_lock_kills_sigterm_ignoring_descendant_and_interrupts_binlog
             assert proc.poll() is None, proc.communicate()
             time.sleep(0.05)
         stubborn_pid = int(child_pid_file.read_text(encoding="utf-8").strip())
+        deadline = time.monotonic() + 3
         os.kill(int(lock_pid_file.read_text(encoding="utf-8").strip()), signal.SIGKILL)
         out, err = proc.communicate(timeout=10)
         assert proc.returncode != 0
-        deadline = time.monotonic() + 3
         while time.monotonic() < deadline:
-            try:
-                os.kill(stubborn_pid, 0)
-                time.sleep(0.05)
-            except ProcessLookupError:
+            st = subprocess.run(
+                ["ps", "-o", "state=", "-p", str(stubborn_pid)],
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            if not st or st[0] in ("Z", "X"):
                 break
+            time.sleep(0.05)
         else:
-            pytest.fail(f"忽略 SIGTERM 的子进程 {stubborn_pid} 未被 SIGKILL 终止")
+            pytest.fail(f"忽略 SIGTERM 的子进程 {stubborn_pid} 3 秒内未被 SIGKILL 终止")
     finally:
         if stubborn_pid is not None:
             with contextlib.suppress(OSError):
@@ -2057,6 +2060,81 @@ def test_shared_ops_lock_kills_sigterm_ignoring_descendant_and_interrupts_binlog
         if proc2.poll() is None:
             proc2.kill()
             proc2.wait(timeout=5)
+
+
+@needs_bash
+@pytest.mark.parametrize("competitor_holds_past_timeout", [False, True])
+def test_shared_up_aborts_blocking_migration_and_protects_oneoff_cleanup_when_helper_dies(
+    tmp_path, competitor_holds_past_timeout
+):
+    """up 纳入互斥锁后，若持锁子进程被 SIGKILL：必须立即中止正在跑的迁移/阻塞命令，且只在实际重新
+    拿锁后才停止一次性容器（竞争者抢锁超时时跳过 docker stop，且不误拉起 worker/api）。"""
+    _server_env(tmp_path, f"MYSQL_ROOT_PASSWORD={ROOT_PW}\n")
+    in_migrate = tmp_path / "in_migrate"
+    lock_pid_file = tmp_path / "up_lock.pid"
+    log = tmp_path / "calls.log"
+    timeout_sec = "0.4" if competitor_holds_past_timeout else "3"
+    setup = (
+        f"OPS_LOCK_TIMEOUT={timeout_sec}\n"
+        "status() { echo STATUS; }\n"
+        f'docker() {{ printf "docker %s\\n" "$*" >> "{log}"; '
+        'if [ "$1" = ps ]; then echo up_stray123; fi; }\n'
+        f'compose() {{ printf "compose %s\\n" "$*" >> "{log}"; '
+        'if [ "$1" = run ]; then echo "$OPS_LOCK_PID" > "'
+        + str(lock_pid_file)
+        + f'"; touch "{in_migrate}"; exec sleep 30; fi; '
+        'if [ "$1" = exec ]; then cat >/dev/null; fi; }\n'
+    )
+    proc = subprocess.Popen(
+        ["bash", "-c", _script(tmp_path, "up", setup)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    comp_fh = None
+    try:
+        deadline = time.monotonic() + 10
+        while not (in_migrate.exists() and lock_pid_file.exists()):
+            assert time.monotonic() < deadline
+            assert proc.poll() is None, proc.communicate()
+            time.sleep(0.05)
+
+        lock_pid = int(lock_pid_file.read_text(encoding="utf-8").strip())
+        if competitor_holds_past_timeout:
+            comp_fh = (tmp_path / ".ops.lock").open("r+")
+            os.kill(lock_pid, signal.SIGKILL)
+            deadline = time.monotonic() + 5
+            while True:
+                try:
+                    fcntl.flock(comp_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    assert time.monotonic() < deadline
+                    time.sleep(0.01)
+            before_n = len(_calls(tmp_path))
+            out, err = proc.communicate(timeout=10)
+            assert proc.returncode != 0
+            assert "另一个操作正在运行" in err
+            post_calls = _calls(tmp_path)[before_n:]
+            assert not any(
+                c.startswith(("docker stop", "compose up -d --wait --wait-timeout 900 worker"))
+                for c in post_calls
+            ), post_calls
+        else:
+            os.kill(lock_pid, signal.SIGKILL)
+            out, err = proc.communicate(timeout=10)
+            assert proc.returncode != 0
+            calls = _calls(tmp_path)
+            assert "docker stop -t 60 up_stray123" in calls
+            assert not any("compose up -d --wait --wait-timeout 900 worker" in c for c in calls)
+    finally:
+        if comp_fh is not None:
+            with contextlib.suppress(OSError):
+                fcntl.flock(comp_fh, fcntl.LOCK_UN)
+                comp_fh.close()
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
 
 
 @needs_bash
