@@ -986,17 +986,20 @@ finally:
   [ "$wait_flag" = "wait" ] || trap release_ops_lock EXIT
 }
 
-ops_lock_alive() {
-  [ -n "${OPS_LOCK_PID:-}" ] || return 1
+pid_running() {
+  [ -n "${1:-}" ] || return 1
+  local st=""
   if [ -d /proc ]; then
-    local st=""
-    st=$(awk -F') ' '{print substr($2,1,1)}' "/proc/${OPS_LOCK_PID}/stat" 2>/dev/null || true)
+    st=$(awk -F') ' '{print substr($2,1,1)}' "/proc/${1}/stat" 2>/dev/null || true)
     [ -n "$st" ] && [ "$st" != Z ] && [ "$st" != X ]
   else
-    local st=""
-    st=$(ps -o state= -p "$OPS_LOCK_PID" 2>/dev/null | tr -d '[:space:]' || true)
+    st=$(ps -o state= -p "$1" 2>/dev/null | tr -d '[:space:]' || true)
     [ -n "$st" ] && case "$st" in Z* | X*) return 1 ;; *) return 0 ;; esac
   fi
+}
+
+ops_lock_alive() {
+  pid_running "${OPS_LOCK_PID:-}"
 }
 
 stop_fg() {
@@ -1026,7 +1029,7 @@ stop_fg() {
   while [ "$_i" -lt 20 ]; do
     local alive=0
     for p in $desc "$pid"; do
-      if kill -0 "$p" 2>/dev/null; then
+      if pid_running "$p"; then
         alive=1
         break
       fi
@@ -1035,11 +1038,11 @@ stop_fg() {
     sleep 0.05
     _i=$((_i + 1))
   done
-  if kill -0 "$pid" 2>/dev/null; then
-    for p in $desc "$pid"; do
+  for p in $desc "$pid"; do
+    if pid_running "$p"; then
       kill -KILL "$p" 2>/dev/null || true
-    done
-  fi
+    fi
+  done
   wait "$pid" 2>/dev/null || true
   OPS_FG_PID=""
 }
@@ -1163,9 +1166,14 @@ run_locked_step() {
 }
 
 stop_stray_oneoffs() {
-  local stray
-  stray=$(docker ps -q --filter label=com.docker.compose.project=youju-server \
-    --filter label=com.docker.compose.oneoff=True)
+  local stray_file="${OPS_LOCK_FDIR:-/tmp}/stray.$$.out" stray=""
+  if ! run_fg docker ps -q --filter label=com.docker.compose.project=youju-server \
+    --filter label=com.docker.compose.oneoff=True >"$stray_file"; then
+    rm -f "$stray_file"
+    return 1
+  fi
+  stray=$(cat "$stray_file")
+  rm -f "$stray_file"
   # shellcheck disable=SC2086  # 可能有几个容器编号
   [ -z "$stray" ] || run_fg docker stop -t 60 $stray >/dev/null
 }
@@ -1299,10 +1307,14 @@ binlog_off() {
   pause_services
   purge_binlog
   run_fg compose up -d --force-recreate --wait --wait-timeout 300 mysql
-  local on state_sql cleanup_sql
+  local on state_sql cleanup_sql state_file="${OPS_LOCK_FDIR:-/tmp}/binlog_state.$$.out"
   state_sql=$(binlog_state_sql)
-  on=$(run_fg_stdin compose exec -T mysql sh -s <<<"$state_sql" | tr -d '[:space:]') \
-    || die "查不出 MySQL 的 binlog 开没开（MySQL 连不上？）"
+  if ! run_fg_stdin compose exec -T mysql sh -s <<<"$state_sql" >"$state_file"; then
+    rm -f "$state_file"
+    die "查不出 MySQL 的 binlog 开没开（MySQL 连不上？）"
+  fi
+  on=$(tr -d '[:space:]' <"$state_file")
+  rm -f "$state_file"
   [ "$on" = 0 ] || die "MySQL 重建以后 binlog 还开着（@@GLOBAL.log_bin=${on:-读不出}）"
   cleanup_sql=$(binlog_files_cleanup_sql)
   run_fg_stdin compose exec -T mysql sh -s <<<"$cleanup_sql" \

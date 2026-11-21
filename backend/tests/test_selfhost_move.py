@@ -1946,6 +1946,120 @@ def test_shared_ops_lock_keeps_lock_on_helper_exception_after_armed(tmp_path):
 
 
 @needs_bash
+def test_shared_ops_lock_kills_sigterm_ignoring_descendant_and_interrupts_binlog_state_and_docker_ps(
+    tmp_path,
+):
+    """补充覆盖 Codex 第八轮复审两条边缘场景：
+    1. 父进程响应 SIGTERM 先退出、但子进程忽略 SIGTERM 时，stop_fg 仍必须按后代列表强杀（SIGKILL）；
+    2. binlog_off 查状态（原本在 $() 内）与 on_exit 的 docker ps 阻塞时，持锁子进程被 SIGKILL 也必须即时中止并按竞争规则收尾。"""
+    _server_env(tmp_path, f"MYSQL_ROOT_PASSWORD={ROOT_PW}\n")
+    _drill_backups(tmp_path, "youju-20261119.jsonl.gz")
+    (tmp_path / "server" / "mysql.cnf").write_text("[mysqld]\ndisable_log_bin\n", encoding="utf-8")
+
+    # 1. 父子进程树：父进程收到 SIGTERM 立即退出，子进程忽略 SIGTERM（必须被 SIGKILL 清掉）
+    child_pid_file = tmp_path / "stubborn_child.pid"
+    lock_pid_file = tmp_path / "lock1.pid"
+    in_run = tmp_path / "in_run1"
+    log = tmp_path / "calls.log"
+    setup_tree = (
+        _drill_setup(tmp_path)
+        + f'\ncompose() {{ printf "compose %s\\n" "$*" >> "{log}"; '
+        + 'if [ "$1" = run ]; then '
+        + f'echo "$OPS_LOCK_PID" > "{lock_pid_file}"; '
+        + 'sh -c \'trap "" TERM; echo $$ > "'
+        + str(child_pid_file)
+        + "\"; exec sleep 30' & "
+        + f'c=$!; while [ ! -s "{child_pid_file}" ]; do sleep 0.02; done; touch "{in_run}"; '
+        + 'trap "exit 0" TERM; while true; do sleep 0.05; done; fi; '
+        + 'if [ "$1" = exec ]; then cat >/dev/null; fi; }\n'
+    )
+    proc = subprocess.Popen(
+        ["bash", "-c", _script(tmp_path, "restore_drill", setup_tree)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    stubborn_pid = None
+    try:
+        deadline = time.monotonic() + 10
+        while not (in_run.exists() and child_pid_file.exists() and lock_pid_file.exists()):
+            assert time.monotonic() < deadline
+            assert proc.poll() is None, proc.communicate()
+            time.sleep(0.05)
+        stubborn_pid = int(child_pid_file.read_text(encoding="utf-8").strip())
+        os.kill(int(lock_pid_file.read_text(encoding="utf-8").strip()), signal.SIGKILL)
+        out, err = proc.communicate(timeout=10)
+        assert proc.returncode != 0
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            try:
+                os.kill(stubborn_pid, 0)
+                time.sleep(0.05)
+            except ProcessLookupError:
+                break
+        else:
+            pytest.fail(f"忽略 SIGTERM 的子进程 {stubborn_pid} 未被 SIGKILL 终止")
+    finally:
+        if stubborn_pid is not None:
+            with contextlib.suppress(OSError):
+                os.kill(stubborn_pid, signal.SIGKILL)
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+
+    # 2. binlog_off 在查 @@GLOBAL.log_bin 时阻塞（原本在 $() 内），以及 on_exit 在 docker ps 阻塞时被 SIGKILL 持锁子进程
+    (tmp_path / "calls.log").unlink(missing_ok=True)
+    in_state = tmp_path / "in_state"
+    in_ps = tmp_path / "in_ps"
+    lock_pid2 = tmp_path / "lock2.pid"
+    ps_block_once = tmp_path / "ps_blocked_once"
+    setup_binlog = (
+        f'docker() {{ printf "docker %s\\n" "$*" >> "{log}"; '
+        + f'if [ "$1" = ps ]; then if [ ! -f "{ps_block_once}" ]; then '
+        + f'touch "{ps_block_once}" "{in_ps}"; echo "$OPS_LOCK_PID" > "{lock_pid2}"; '
+        + "exec sleep 30; fi; echo stray_after_ps; fi; }\n"
+        + f'compose() {{ printf "compose %s\\n" "$*" >> "{log}"; '
+        + 'if [ "$1" = exec ]; then s=$(cat); case "$s" in '
+        + f'*"@@GLOBAL.log_bin"*) echo "$OPS_LOCK_PID" > "{lock_pid2}"; touch "{in_state}"; exec sleep 30 ;; '
+        + "esac; fi; }\n"
+    )
+    proc2 = subprocess.Popen(
+        ["bash", "-c", _script(tmp_path, "binlog_off", setup_binlog)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while not in_state.exists():
+            assert time.monotonic() < deadline
+            assert proc2.poll() is None, proc2.communicate()
+            time.sleep(0.05)
+        os.kill(int(lock_pid2.read_text(encoding="utf-8").strip()), signal.SIGKILL)
+
+        deadline = time.monotonic() + 10
+        while not in_ps.exists():
+            assert time.monotonic() < deadline, (
+                "binlog_off 查状态阻塞未及时中止进入 on_exit docker ps"
+            )
+            assert proc2.poll() is None, proc2.communicate()
+            time.sleep(0.05)
+        os.kill(int(lock_pid2.read_text(encoding="utf-8").strip()), signal.SIGKILL)
+
+        out2, err2 = proc2.communicate(timeout=10)
+        assert proc2.returncode != 0
+        assert "BINLOG OFF" not in out2
+        calls2 = _calls(tmp_path)
+        assert "docker stop -t 60 stray_after_ps" in calls2
+        assert "compose up -d --wait --wait-timeout 900 worker" in calls2
+        assert calls2[-1].startswith("compose up -d --wait --wait-timeout 300 api")
+    finally:
+        if proc2.poll() is None:
+            proc2.kill()
+            proc2.wait(timeout=5)
+
+
+@needs_bash
 def test_shared_binlog_off_keeps_lock_until_on_exit_finishes_when_resume_fails(tmp_path):
     """binlog_off 正常路径调用 resume_services 失败时，不能提前释放锁：直到 on_exit 里的
     resume_services 也跑完才释放，期间并发 restore_drill 仍被拦下。"""
