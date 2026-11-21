@@ -71,6 +71,46 @@ jobs:
       - name: 测试
         run: uv run pytest
 
+  # 扫描页识别（D-125）：识别组件是可选的一组依赖（uv sync --extra ocr），平时的测试和云托管镜像都
+  # 不装。这里装上跑真识别的测试（子进程有内存上限，Linux 上管用），量 Linux 上的用时、内存和装出来
+  # 多大；再在和云托管同一个基础镜像里装一遍、识别一遍，看缺不缺系统库（pip 要加 --no-deps：锁文件
+  # 里已经是全部依赖，rapidocr 要的带界面的 OpenCV 由 uv 换成了不带界面的，pip 不认这个替换）
+  ocr:
+    name: 扫描页识别（装识别组件：真识别、用时、内存、大小）
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          python-version: "3.12"
+      - name: 安装依赖和识别组件（按锁文件），量识别组件装出来多大
+        run: |
+          uv sync --locked
+          site=$(uv run --no-sync python -c "import sysconfig; print(sysconfig.get_paths()['purelib'])")
+          before=$(du -sk "$site" | cut -f1)
+          uv sync --locked --extra ocr
+          after=$(du -sk "$site" | cut -f1)
+          echo "识别组件装出来多 $(( (after - before) / 1024 ))MB"
+      - name: 真识别的测试
+        run: uv run --no-sync pytest tests/test_attachment_ocr.py -k real -s -q
+      - name: 用时和内存（单线程，本进程；再在限内存的子进程里走一遍）
+        run: |
+          uv run --no-sync python scripts/ocr_measure.py --pages 3 --threads 1
+          uv run --no-sync python scripts/ocr_measure.py --pages 3 --threads 1 --sandbox
+      - name: 和云托管同一个基础镜像里装得上、识别得了
+        run: |
+          base=$(sed -n 's/^FROM \(python:[^ ]*\).*/\1/p' ../Dockerfile | head -1)
+          docker run --rm -v "$PWD":/src -w /src "$base" sh -c '
+            pip install -q --no-cache-dir uv==0.12.5 &&
+            uv export --frozen --no-dev --no-emit-project --extra ocr -o /tmp/req.txt &&
+            pip install -q --no-cache-dir --no-deps --require-hashes -r /tmp/req.txt &&
+            pip install -q --no-cache-dir --no-deps -e . &&
+            python scripts/ocr_measure.py --pages 2 --sandbox'
+
   image:
     name: 镜像构建（云托管用的 Dockerfile）
     runs-on: ubuntu-latest
