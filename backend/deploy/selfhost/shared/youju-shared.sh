@@ -754,20 +754,29 @@ logs() {
 # $BASE/.ops.lock，避免 inode 替换竞态）。经双向 FIFO 握手确认子进程已进入持锁保活态才继续；正常释放
 # 发送显式释放字节 Q（不被仍存活的外部子进程继承 FD 9 阻塞）；主 shell 被 SIGKILL 强杀（含未回收的僵尸
 # 态或外部子进程仍存活）均通过 getppid/进程状态周期性检测后自动放锁；持锁子进程被 SIGTERM/异常或
-# SIGKILL 强杀时，经 SIGTERM 通知及 watch 管道断线守卫联动终止主操作，并由受锁保护的 on_exit 收尾
+# SIGKILL 强杀时，经 SIGTERM 通知及 watch 管道断线守卫立即中止运行中的外部命令，再由受锁保护的 on_exit
+# 收尾（若持锁子进程已死且另一个操作抢先拿锁超时，则跳过危险清理和拉起服务，避免踩踏新持锁者）
 OPS_LOCK_FD=""
 OPS_LOCK_PID=""
 OPS_LOCK_GUARD_PID=""
 OPS_LOCK_FDIR=""
+OPS_FG_PID=""
+OPS_LOCK_LOST=""
+OPS_LOCK_IN_EXIT=""
+OPS_LOCK_RECOVER_FAILED=""
 OPS_LOCK_TIMEOUT=${YOUJU_OPS_LOCK_TIMEOUT:-5}
 ops_lock_read_ack() {
-  local out="" _i
-  for _i in 1 2 3 4 5; do
+  local out="" _i=0 limit=5
+  if [ "${1:-}" = wait ]; then
+    limit=$(( ${OPS_LOCK_TIMEOUT%.*} + 4 ))
+  fi
+  while [ "$_i" -lt "$limit" ]; do
     if read -r -t 1 out <&8; then
       printf '%s' "$out"
       return 0
     fi
-    kill -0 "$OPS_LOCK_PID" 2>/dev/null || return 1
+    ops_lock_alive || return 1
+    _i=$((_i + 1))
   done
   return 1
 }
@@ -790,8 +799,8 @@ acquire_ops_lock() {
   exec 8<>"$fdir/ack"
   "$py" -I -c '
 import errno, fcntl, os, select, signal, subprocess, sys, time
-lock_path, ctrl_path, ack_path, watch_path, ppid, timeout, wait_flag = (
-    sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], int(sys.argv[5]), float(sys.argv[6]), sys.argv[7]
+lock_path, ctrl_path, ack_path, watch_path, ppid, timeout, wait_flag, released_path = (
+    sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], int(sys.argv[5]), float(sys.argv[6]), sys.argv[7], sys.argv[8]
 )
 def parent_dead():
     if os.getppid() != ppid:
@@ -828,6 +837,7 @@ def on_term(_signum, _frame):
 fd = None
 ctrl = None
 watch = None
+is_armed = False
 try:
     fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
     deadline_lock = time.monotonic() + (timeout if wait_flag == "wait" else 0.0)
@@ -882,7 +892,10 @@ try:
         signal.signal(signal.SIGTERM, on_term)
         with open(ack_path, "w", encoding="utf-8") as ack:
             ack.write("ARMED\n")
+        is_armed = True
         while True:
+            if os.path.exists(released_path) or parent_dead():
+                break
             try:
                 r, _, _ = select.select([ctrl], [], [], 0.2)
             except InterruptedError:
@@ -891,19 +904,36 @@ try:
                 chunk = os.read(ctrl, 64)
                 if not chunk or b"Q" in chunk:
                     break
-            if parent_dead():
-                break
     os.ftruncate(fd, 0)
 except Exception:
     try:
         os.kill(ppid, signal.SIGTERM)
     except OSError:
         pass
-    try:
-        with open(ack_path, "w", encoding="utf-8") as ack:
-            ack.write("ERR\n")
-    except OSError:
-        pass
+    if is_armed:
+        while not os.path.exists(released_path) and not parent_dead():
+            if ctrl is not None:
+                try:
+                    r, _, _ = select.select([ctrl], [], [], 0.05)
+                    if r:
+                        chunk = os.read(ctrl, 64)
+                        if not chunk or b"Q" in chunk:
+                            break
+                except Exception:
+                    time.sleep(0.05)
+            else:
+                time.sleep(0.05)
+        try:
+            if fd is not None:
+                os.ftruncate(fd, 0)
+        except OSError:
+            pass
+    else:
+        try:
+            with open(ack_path, "w", encoding="utf-8") as ack:
+                ack.write("ERR\n")
+        except OSError:
+            pass
 finally:
     if watch is not None:
         os.close(watch)
@@ -911,9 +941,9 @@ finally:
         os.close(ctrl)
     if fd is not None:
         os.close(fd)
-' "$lock" "$fdir/ctrl" "$fdir/ack" "$fdir/watch" "$$" "$OPS_LOCK_TIMEOUT" "$wait_flag" </dev/null >/dev/null 2>&1 &
+' "$lock" "$fdir/ctrl" "$fdir/ack" "$fdir/watch" "$$" "$OPS_LOCK_TIMEOUT" "$wait_flag" "$fdir/released" </dev/null >/dev/null 2>&1 &
   OPS_LOCK_PID=$!
-  ans=$(ops_lock_read_ack || true)
+  ans=$(ops_lock_read_ack "$wait_flag" || true)
   if [ "$ans" != "OK" ]; then
     holder=""
     [ "$ans" = "BUSY" ] && holder=$(cat "$lock" 2>/dev/null || true)
@@ -937,9 +967,9 @@ finally:
   OPS_LOCK_GUARD_PID=$!
   exec 9<>"$fdir/ctrl"
   printf '1\n' >&9 || true
-  ans=$(ops_lock_read_ack || true)
+  ans=$(ops_lock_read_ack "$wait_flag" || true)
   exec 8>&-
-  if [ "$ans" != "ARMED" ] || ! kill -0 "$OPS_LOCK_PID" 2>/dev/null; then
+  if [ "$ans" != "ARMED" ] || ! ops_lock_alive; then
     : > "$fdir/released" 2>/dev/null || true
     exec 9>&-
     kill "$OPS_LOCK_GUARD_PID" "$OPS_LOCK_PID" 2>/dev/null || true
@@ -953,7 +983,7 @@ finally:
   fi
   OPS_LOCK_FD=9
   OPS_LOCK_FDIR="$fdir"
-  trap release_ops_lock EXIT
+  [ "$wait_flag" = "wait" ] || trap release_ops_lock EXIT
 }
 
 ops_lock_alive() {
@@ -967,6 +997,89 @@ ops_lock_alive() {
     st=$(ps -o state= -p "$OPS_LOCK_PID" 2>/dev/null | tr -d '[:space:]' || true)
     [ -n "$st" ] && case "$st" in Z* | X*) return 1 ;; *) return 0 ;; esac
   fi
+}
+
+stop_fg() {
+  local pid=${OPS_FG_PID:-}
+  [ -n "$pid" ] || return 0
+  local desc="" p _i=0
+  desc=$(ps -eo pid=,ppid= 2>/dev/null | awk -v root="$pid" '
+    { kids[$2] = kids[$2] " " $1 }
+    END {
+      q[1] = root; head = 1; tail = 1
+      while (head <= tail) {
+        cur = q[head++]
+        n = split(kids[cur], arr, " ")
+        for (i = 1; i <= n; i++) {
+          if (arr[i] != "") {
+            out = out " " arr[i]
+            q[++tail] = arr[i]
+          }
+        }
+      }
+      print out
+    }
+  ' || true)
+  for p in $desc "$pid"; do
+    kill -TERM "$p" 2>/dev/null || true
+  done
+  while [ "$_i" -lt 20 ]; do
+    local alive=0
+    for p in $desc "$pid"; do
+      if kill -0 "$p" 2>/dev/null; then
+        alive=1
+        break
+      fi
+    done
+    [ "$alive" -eq 0 ] && break
+    sleep 0.05
+    _i=$((_i + 1))
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    for p in $desc "$pid"; do
+      kill -KILL "$p" 2>/dev/null || true
+    done
+  fi
+  wait "$pid" 2>/dev/null || true
+  OPS_FG_PID=""
+}
+
+run_fg() {
+  if [ -n "${OPS_LOCK_FD:-}" ] && { [ -n "${OPS_LOCK_LOST:-}" ] || ! ops_lock_alive; }; then
+    return 125
+  fi
+  "$@" </dev/null &
+  OPS_FG_PID=$!
+  local rc=0
+  while true; do
+    rc=0
+    wait "$OPS_FG_PID" || rc=$?
+    if [ -n "${OPS_LOCK_IN_EXIT:-}" ] && [ -z "${OPS_LOCK_LOST:-}" ] && kill -0 "$OPS_FG_PID" 2>/dev/null; then
+      continue
+    fi
+    break
+  done
+  OPS_FG_PID=""
+  return "$rc"
+}
+
+run_fg_stdin() {
+  if [ -n "${OPS_LOCK_FD:-}" ] && { [ -n "${OPS_LOCK_LOST:-}" ] || ! ops_lock_alive; }; then
+    return 125
+  fi
+  "$@" <&0 &
+  OPS_FG_PID=$!
+  local rc=0
+  while true; do
+    rc=0
+    wait "$OPS_FG_PID" || rc=$?
+    if [ -n "${OPS_LOCK_IN_EXIT:-}" ] && [ -z "${OPS_LOCK_LOST:-}" ] && kill -0 "$OPS_FG_PID" 2>/dev/null; then
+      continue
+    fi
+    break
+  done
+  OPS_FG_PID=""
+  return "$rc"
 }
 
 release_ops_lock() {
@@ -995,9 +1108,9 @@ release_ops_lock() {
 
 install_exit_trap() {
   trap on_exit EXIT
-  trap 'exit 130' INT
-  trap 'exit 143' TERM
-  trap 'exit 129' HUP
+  trap 'trap "" INT TERM HUP; stop_fg; exit 130' INT
+  trap 'trap "" INT TERM HUP; stop_fg; exit 143' TERM
+  trap 'trap "" INT TERM HUP; stop_fg; exit 129' HUP
 }
 
 clear_exit_trap() {
@@ -1012,7 +1125,49 @@ pause_services() {
   db_env_ok
   acquire_ops_lock
   install_exit_trap
-  compose stop api worker
+  run_fg compose stop api worker
+}
+
+on_exit_term() {
+  if [ -n "${OPS_LOCK_FD:-}" ] && ops_lock_alive; then
+    return 0
+  fi
+  OPS_LOCK_LOST=1
+  stop_fg
+}
+
+ensure_ops_lock() {
+  if [ -n "${OPS_LOCK_FD:-}" ] && [ -z "${OPS_LOCK_LOST:-}" ] && ops_lock_alive; then
+    return 0
+  fi
+  OPS_LOCK_LOST=""
+  release_ops_lock
+  acquire_ops_lock wait
+}
+
+run_locked_step() {
+  OPS_LOCK_RECOVER_FAILED=""
+  local rc=0
+  while true; do
+    if ! ensure_ops_lock; then
+      OPS_LOCK_RECOVER_FAILED=1
+      return 1
+    fi
+    rc=0
+    "$@" || rc=$?
+    if [ -n "${OPS_LOCK_LOST:-}" ] || ! ops_lock_alive; then
+      continue
+    fi
+    return "$rc"
+  done
+}
+
+stop_stray_oneoffs() {
+  local stray
+  stray=$(docker ps -q --filter label=com.docker.compose.project=youju-server \
+    --filter label=com.docker.compose.oneoff=True)
+  # shellcheck disable=SC2086  # 可能有几个容器编号
+  [ -z "$stray" ] || run_fg docker stop -t 60 $stray >/dev/null
 }
 
 # 退出时（成功、失败、被打断都一样）：试恢复开始了还没清 binlog 的先清，再把接口和 worker 起来。
@@ -1020,32 +1175,55 @@ pause_services() {
 # 试恢复接着往 binlog 写，又和接口、worker 叠在一起超内存。试恢复收到停止信号会自己删临时库；
 # 被强杀（内存不够被系统杀掉）的删不了，恢复演练（restore-drill）只跑这一次，等不到"下次开头删"，
 # 所以它退出时在这里把留下的临时库删掉（DROP_DRILL_DBS）。
-# 这里每一步失败都接着做下一步（不让 set -e 半途退出，服务至少要起来）
+# 这里每一步失败都接着做下一步（不让 set -e 半途退出，服务至少要起来）；但如果持锁子进程意外死亡
+# 且另一个操作抢先拿锁超时，必须跳过危险清理和拉起服务，避免影响新持锁者
 PURGE_BINLOG=""
 DROP_DRILL_DBS=""
 on_exit() {
   set +e
-  trap - INT TERM HUP
-  if [ -n "${OPS_LOCK_FD:-}" ] && ! ops_lock_alive; then
-    release_ops_lock
-    acquire_ops_lock wait || echo "注意：锁子进程意外退出，没能重新拿到互斥锁" >&2
+  trap '' INT HUP
+  trap 'on_exit_term' TERM
+  OPS_LOCK_IN_EXIT=1
+  OPS_LOCK_LOST=""
+  stop_fg
+  if ! ensure_ops_lock; then
+    echo "错误：锁子进程意外退出且另一个操作正在运行，已跳过收尾与拉起服务；等那个操作结束后运行 ${SELF} status 核对（必要时 ${SELF} up / ${SELF} restore-drill）" >&2
+    exit 1
   fi
-  local stray
-  stray=$(docker ps -q --filter label=com.docker.compose.project=youju-server \
-    --filter label=com.docker.compose.oneoff=True)
-  # shellcheck disable=SC2086  # 可能有几个容器编号
-  [ -z "$stray" ] || docker stop -t 60 $stray >/dev/null
+  local rc=0 step_rc=0
+  run_locked_step stop_stray_oneoffs || step_rc=$?
+  if [ -n "$OPS_LOCK_RECOVER_FAILED" ]; then
+    echo "错误：收尾期间持锁进程意外退出且另一个操作抢先拿锁，已中止后续清理与拉起服务；等那个操作结束后运行 ${SELF} status 核对" >&2
+    exit 1
+  fi
   if [ -n "$DROP_DRILL_DBS" ]; then
     echo "恢复演练没收完尾：正式库不受影响；留下的临时库 youju_drill_…（有的话）现在删掉，再清 binlog" >&2
-    drop_drill_dbs || echo "注意：临时库 youju_drill_… 没删掉，照手册第八节\"恢复演练\"查" >&2
+    step_rc=0
+    run_locked_step drop_drill_dbs || step_rc=$?
+    if [ -n "$OPS_LOCK_RECOVER_FAILED" ]; then
+      echo "错误：删临时库时持锁进程意外退出且另一个操作抢先拿锁，已中止后续清理与拉起服务；等那个操作结束后运行 ${SELF} status / ${SELF} restore-drill 核对" >&2
+      exit 1
+    fi
+    [ "$step_rc" -eq 0 ] || echo "注意：临时库 youju_drill_… 没删掉，照手册第八节\"恢复演练\"查" >&2
   elif [ -n "$PURGE_BINLOG" ]; then
     echo "试恢复被打断：正式库不受影响；临时库 youju_drill_… 它自己会删，没删掉的下次试恢复开头会删" >&2
   fi
   if [ -n "$PURGE_BINLOG" ]; then
-    purge_binlog || echo "注意：binlog 没清掉，再跑之前先查（手册第六节第 7 步、第八节\"恢复演练\"）" >&2
+    step_rc=0
+    run_locked_step purge_binlog || step_rc=$?
+    if [ -n "$OPS_LOCK_RECOVER_FAILED" ]; then
+      echo "错误：清 binlog 时持锁进程意外退出且另一个操作抢先拿锁，已中止后续清理与拉起服务；等那个操作结束后运行 ${SELF} status / ${SELF} restore-drill 核对" >&2
+      exit 1
+    fi
+    [ "$step_rc" -eq 0 ] || echo "注意：binlog 没清掉，再跑之前先查（手册第六节第 7 步、第八节\"恢复演练\"）" >&2
   fi
-  local rc=0
-  resume_services || rc=$?
+  step_rc=0
+  run_locked_step resume_services || step_rc=$?
+  if [ -n "$OPS_LOCK_RECOVER_FAILED" ]; then
+    echo "错误：拉起服务时持锁进程意外退出且另一个操作抢先拿锁，已停下拉起；等那个操作结束后运行 ${SELF} status 核对（必要时 ${SELF} up）" >&2
+    exit 1
+  fi
+  rc=$step_rc
   release_ops_lock
   [ "$rc" -eq 0 ] || exit "$rc"
 }
@@ -1071,7 +1249,11 @@ EOF
 }
 
 # 密码用容器里的环境变量给 mysql（MYSQL_PWD），不写成 -p 参数；脚本从标准输入给
-purge_binlog() { binlog_purge_sql | compose exec -T mysql sh -s; }
+purge_binlog() {
+  local sql
+  sql=$(binlog_purge_sql)
+  run_fg_stdin compose exec -T mysql sh -s <<<"$sql"
+}
 
 # 在 mysql 容器里跑（sh -s）：打出 binlog 开没开（1 开、0 关）
 binlog_state_sql() {
@@ -1116,12 +1298,14 @@ binlog_off() {
   say "关掉 MySQL 的 binlog：停接口和 worker → 清掉现有的 binlog → 用新配置重建 MySQL → 查 @@log_bin 是 0 → 删留下的 binlog 文件 → 起 worker、接口"
   pause_services
   purge_binlog
-  compose up -d --force-recreate --wait --wait-timeout 300 mysql
-  local on
-  on=$(binlog_state_sql | compose exec -T mysql sh -s | tr -d '[:space:]') \
+  run_fg compose up -d --force-recreate --wait --wait-timeout 300 mysql
+  local on state_sql cleanup_sql
+  state_sql=$(binlog_state_sql)
+  on=$(run_fg_stdin compose exec -T mysql sh -s <<<"$state_sql" | tr -d '[:space:]') \
     || die "查不出 MySQL 的 binlog 开没开（MySQL 连不上？）"
   [ "$on" = 0 ] || die "MySQL 重建以后 binlog 还开着（@@GLOBAL.log_bin=${on:-读不出}）"
-  binlog_files_cleanup_sql | compose exec -T mysql sh -s \
+  cleanup_sql=$(binlog_files_cleanup_sql)
+  run_fg_stdin compose exec -T mysql sh -s <<<"$cleanup_sql" \
     || die "binlog 关了，但数据目录里留下的 binlog 文件没删掉（原因见上面）"
   resume_services
   clear_exit_trap
@@ -1142,9 +1326,16 @@ for db in $dbs; do
 done
 EOF
 }
-drop_drill_dbs() { drill_drop_sql | compose exec -T mysql sh -s; }
+drop_drill_dbs() {
+  local sql
+  sql=$(drill_drop_sql)
+  run_fg_stdin compose exec -T mysql sh -s <<<"$sql"
+}
 resume_services() {
-  if ! { compose up -d --wait --wait-timeout 900 worker && compose up -d --wait --wait-timeout 300 api; }; then
+  if ! { run_fg compose up -d --wait --wait-timeout 900 worker && run_fg compose up -d --wait --wait-timeout 300 api; }; then
+    if [ -n "${OPS_LOCK_FD:-}" ] && { [ -n "${OPS_LOCK_LOST:-}" ] || ! ops_lock_alive; }; then
+      return 1
+    fi
     echo "注意：接口、worker 没起来，运行 ${SELF} up" >&2
     return 1
   fi
@@ -1183,7 +1374,7 @@ fetch_export() {
   [ "$free_g" -ge 10 ] || die "硬盘只剩 ${free_g}G，不到 10G，先别下"
   install -d -m 700 "$EXPORT_DIR"
   pause_services
-  YOUJU_EXPORT_URL="$url" compose run --rm --no-deps -e YOUJU_EXPORT_URL -v "$EXPORT_DIR:/export" worker \
+  YOUJU_EXPORT_URL="$url" run_fg compose run --rm --no-deps -e YOUJU_EXPORT_URL -v "$EXPORT_DIR:/export" worker \
     youju export-fetch --sha256 "$sum" --dir /export
   echo "下一步：${SELF} export-show 看汇总；${SELF} import-export <旧版本> 试恢复、加密存档"
 }
@@ -1241,7 +1432,7 @@ import_export() {
   PURGE_BINLOG=1
   YOUJU_IMAGE="youju-selfhost:$old" \
     YOUJU_DATABASE_URL="mysql+pymysql://root:${root_pw}@mysql:3306/youju?charset=utf8mb4" \
-    compose run --rm --no-deps -e YOUJU_DATABASE_URL -v "$EXPORT_DIR:/export:ro" worker \
+    run_fg compose run --rm --no-deps -e YOUJU_DATABASE_URL -v "$EXPORT_DIR:/export:ro" worker \
     youju restore-drill --file "/export/backups/$name" || drill_ok=0
   # 试恢复写进 binlog 的是旧库的明文（binlog 开着时）：成不成都清掉（中途被打断的，退出时清）。
   # 不做主从，binlog 没人用。清不干净就停下：不存档、不删明文
@@ -1252,7 +1443,7 @@ import_export() {
   say "2/3 加密存档：整库备份、交易记录、批量工具结果分别用 .env 里的 age 公钥加密，存到服务器存储和异地的"
   say "    archive/，到期日写在文件名里（整库自备份起 30 天；交易记录自最早一笔下单或赠送起 3650 天；"
   say "    批量工具结果自生成起 30 天），每天 archive-prune 到期删"
-  compose run --rm --no-deps -v "$EXPORT_DIR:/export:ro" worker youju archive-export --dir /export
+  run_fg compose run --rm --no-deps -v "$EXPORT_DIR:/export:ro" worker youju archive-export --dir /export
   say "3/3 删掉明文的整库备份、交易记录、批量工具结果和带链接的清单"
   rm -f "$EXPORT_DIR/backups/$name" "$EXPORT_DIR/pay-records.jsonl.gz" "$EXPORT_DIR/manifest.json" \
     "$EXPORT_DIR/advisor-out.json"
@@ -1299,11 +1490,11 @@ restore_drill() {
   say "恢复演练：用户数据备份 ${name} 在临时库 youju_drill_… 里恢复一遍（核对条数、外键、每张表的 SHA-256），结束删掉；不碰正式库"
   say "先停 worker（定时任务、本机推同步停几分钟），接口照常；结束再起来"
   install_exit_trap
-  compose stop worker
+  run_fg compose stop worker
   DROP_DRILL_DBS=1
   PURGE_BINLOG=1
   YOUJU_DATABASE_URL="mysql+pymysql://root:${root_pw}@mysql:3306/youju?charset=utf8mb4" \
-    compose run --rm --no-deps -e YOUJU_DATABASE_URL worker \
+    run_fg compose run --rm --no-deps -e YOUJU_DATABASE_URL worker \
     youju restore-drill --file "/data/storage/backups/$name" \
     || die "恢复演练没通过（原因见上面）"
   say "演练通过；删掉以前被打断留下的临时库（一般没有），再清 MySQL 的 binlog（binlog 关了以后这步打\"binlog 没开，不用清\"）"

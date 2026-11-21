@@ -1649,6 +1649,303 @@ def test_shared_ops_lock_aborts_main_op_and_protects_cleanup_when_helper_dies(tm
 
 
 @needs_bash
+@pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGKILL])
+def test_shared_ops_lock_aborts_external_blocking_command_and_stops_container_when_helper_dies(
+    tmp_path, sig
+):
+    """持锁子进程死亡时，即使主操作正在等待真实外部阻塞命令（不是 shell 内循环），也必须立即杀掉
+    该外部命令并停止一次性容器，不等待外部命令自己超时，且容器清理受锁保护。"""
+    _server_env(tmp_path, f"MYSQL_ROOT_PASSWORD={ROOT_PW}\n")
+    _drill_backups(tmp_path, "youju-20261119.jsonl.gz")
+    bin_dir = tmp_path / "extbin"
+    bin_dir.mkdir()
+    ext_pid_file = tmp_path / "ext.pid"
+    lock_pid_file = tmp_path / "lock.pid"
+    in_run = tmp_path / "in_run"
+    log = tmp_path / "calls.log"
+    fake_docker = bin_dir / "docker"
+    fake_docker.write_text(
+        "#!/bin/sh\n"
+        f'echo "docker $*" >> "{log}"\n'
+        'case "$1" in\n'
+        f'  info) echo "{tmp_path}" ;;\n'
+        f'  volume) echo "{tmp_path}/volume" ;;\n'
+        "  ps) echo stray123 ;;\n"
+        "  stop) exit 0 ;;\n"
+        "  compose)\n"
+        "    shift\n"
+        '    if [ "$1" = run ]; then\n'
+        f'      echo "$$" > "{ext_pid_file}"\n'
+        f'      touch "{in_run}"\n'
+        "      exec sleep 30\n"
+        "    fi\n"
+        "    ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    fake_docker.chmod(0o755)
+    setup = (
+        f'PATH="{bin_dir}:$PATH"\n'
+        "unset -f docker\n"
+        "beijing_hhmm() { echo 1430; }\n"
+        f'compose() {{ printf "compose %s\\n" "$*" >> "{log}"; '
+        f'if [ "$1" = run ]; then echo "$OPS_LOCK_PID" > "{lock_pid_file}"; '
+        'docker compose "$@"; return $?; fi; '
+        'if [ "$1" = exec ]; then cat >/dev/null; fi; }\n'
+    )
+    proc = subprocess.Popen(
+        ["bash", "-c", _script(tmp_path, "restore_drill", setup)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    ext_pid = None
+    try:
+        deadline = time.monotonic() + 10
+        while not (in_run.exists() and ext_pid_file.exists() and lock_pid_file.exists()):
+            assert time.monotonic() < deadline, "没进入外部阻塞 docker 命令"
+            assert proc.poll() is None, proc.communicate()
+            time.sleep(0.05)
+        ext_pid = int(ext_pid_file.read_text(encoding="utf-8").strip())
+        lock_pid = int(lock_pid_file.read_text(encoding="utf-8").strip())
+        os.kill(lock_pid, sig)
+        out, err = proc.communicate(timeout=8)
+        assert proc.returncode != 0
+        assert "DRILL OK" not in out
+        # 外部 sleep 30 必须已被立即中止（进程不存在）
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            try:
+                os.kill(ext_pid, 0)
+                time.sleep(0.05)
+            except ProcessLookupError:
+                break
+        else:
+            pytest.fail(f"外部阻塞进程 {ext_pid} 没被中止")
+    finally:
+        if ext_pid is not None:
+            with contextlib.suppress(OSError):
+                os.kill(ext_pid, signal.SIGKILL)
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+    calls = _calls(tmp_path)
+    assert "docker stop -t 60 stray123" in calls
+    assert "compose up -d --wait --wait-timeout 900 worker" in calls
+    assert calls[-1].startswith("compose up -d --wait --wait-timeout 300 api")
+
+
+@needs_bash
+@pytest.mark.parametrize("competitor_holds_past_timeout", [True, False])
+def test_shared_ops_lock_sigkill_race_protects_cleanup_against_competitor(
+    tmp_path, competitor_holds_past_timeout
+):
+    """持锁子进程被 SIGKILL 后、on_exit 重新拿锁前，另一个进程抢先拿到锁：
+    - 若竞争者持有超过等待超时：on_exit 必须跳过 docker stop、删临时库、清 binlog 和拉起服务，不踩踏新持锁者；
+    - 若竞争者在超时前释放：on_exit 等它放锁后再重新拿锁并完成收尾和拉起服务。"""
+    _server_env(tmp_path, f"MYSQL_ROOT_PASSWORD={ROOT_PW}\n")
+    _drill_backups(tmp_path, "youju-20261119.jsonl.gz")
+    in_run = tmp_path / "in_run"
+    lock_pid_file = tmp_path / "lock_pid"
+    after_kill = tmp_path / "after_kill"
+    log = tmp_path / "calls.log"
+    timeout_sec = "0.4" if competitor_holds_past_timeout else "3"
+    setup = (
+        _drill_setup(tmp_path)
+        + f"\nOPS_LOCK_TIMEOUT={timeout_sec}\n"
+        + f'compose() {{ printf "compose %s\\n" "$*" >> "{log}"; '
+        + f'if [ "$1" = run ]; then echo "$OPS_LOCK_PID" > "{lock_pid_file}"; touch "{in_run}"; '
+        + "exec sleep 30; fi; "
+        + 'if [ "$1" = exec ]; then cat >/dev/null; fi; }\n'
+        + f'docker() {{ printf "docker %s\\n" "$*" >> "{log}"; case "$1" in '
+        + f'ps) echo stray123 ;; info) echo "{tmp_path}" ;; volume) echo "{tmp_path}/volume" ;; esac; }}'
+    )
+    proc = subprocess.Popen(
+        ["bash", "-c", _script(tmp_path, "restore_drill", setup)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    comp_fh = None
+    try:
+        deadline = time.monotonic() + 10
+        while not (in_run.exists() and lock_pid_file.exists()):
+            assert time.monotonic() < deadline
+            assert proc.poll() is None, proc.communicate()
+            time.sleep(0.05)
+
+        lock_pid = int(lock_pid_file.read_text(encoding="utf-8").strip())
+        # 先把锁文件的竞争者打开，待 SIGKILL 后立即抢到 flock（比 on_exit 更早）
+        comp_fh = (tmp_path / ".ops.lock").open("r+")
+        os.kill(lock_pid, signal.SIGKILL)
+        deadline = time.monotonic() + 5
+        while True:
+            try:
+                fcntl.flock(comp_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                assert time.monotonic() < deadline, "SIGKILL 后内核锁未释放"
+                time.sleep(0.01)
+        after_kill.write_text(str(len(_calls(tmp_path))), encoding="utf-8")
+
+        if competitor_holds_past_timeout:
+            out, err = proc.communicate(timeout=10)
+            assert proc.returncode != 0
+            assert "另一个操作正在运行" in err
+            before_n = int(after_kill.read_text(encoding="utf-8"))
+            post_calls = _calls(tmp_path)[before_n:]
+            assert not any(
+                c.startswith(("docker stop", "compose exec", "compose up")) for c in post_calls
+            ), post_calls
+        else:
+            time.sleep(0.25)
+            fcntl.flock(comp_fh, fcntl.LOCK_UN)
+            comp_fh.close()
+            comp_fh = None
+            out, err = proc.communicate(timeout=10)
+            assert proc.returncode != 0
+            before_n = int(after_kill.read_text(encoding="utf-8"))
+            post_calls = _calls(tmp_path)[before_n:]
+            assert "docker stop -t 60 stray123" in post_calls
+            assert post_calls.count("compose exec -T mysql sh -s") == 2
+            assert "compose up -d --wait --wait-timeout 900 worker" in post_calls
+            assert post_calls[-1].startswith("compose up -d --wait --wait-timeout 300 api")
+    finally:
+        if comp_fh is not None:
+            with contextlib.suppress(OSError):
+                fcntl.flock(comp_fh, fcntl.LOCK_UN)
+                comp_fh.close()
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+
+
+@needs_bash
+@pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGKILL])
+def test_shared_ops_lock_helper_death_during_on_exit_completes_resume_under_lock(tmp_path, sig):
+    """收尾（on_exit）进行中持锁子进程收到 SIGTERM 或被 SIGKILL 强杀：
+    不能中断收尾导致 worker/api 起不来，且收尾全程仍在锁保护下完成。"""
+    _server_env(tmp_path, f"MYSQL_ROOT_PASSWORD={ROOT_PW}\n")
+    _drill_backups(tmp_path, "youju-20261119.jsonl.gz")
+    in_cleanup = tmp_path / "in_cleanup"
+    release_cleanup = tmp_path / "release_cleanup"
+    lock_pid_file = tmp_path / "lock_pid"
+    log = tmp_path / "calls.log"
+    setup = (
+        _drill_setup(tmp_path)
+        + f'\ncompose() {{ printf "compose %s\\n" "$*" >> "{log}"; '
+        + 'if [ "$1" = run ]; then return 1; fi; '
+        + 'if [ "$1" = exec ]; then cat >/dev/null; '
+        + f'if [ ! -f "{in_cleanup}" ]; then echo "$OPS_LOCK_PID" > "{lock_pid_file}"; '
+        + f'touch "{in_cleanup}"; while [ ! -f "{release_cleanup}" ]; do sleep 0.05; done; fi; fi; }}'
+    )
+    proc = subprocess.Popen(
+        ["bash", "-c", _script(tmp_path, "restore_drill", setup)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while not (in_cleanup.exists() and lock_pid_file.exists()):
+            assert time.monotonic() < deadline
+            assert proc.poll() is None, proc.communicate()
+            time.sleep(0.05)
+
+        lock_pid = int(lock_pid_file.read_text(encoding="utf-8").strip())
+        os.kill(lock_pid, sig)
+        time.sleep(0.2)
+        # 无论 SIGTERM 还是 SIGKILL，释放收尾前/后都不应遗漏拉起服务；SIGTERM 下原锁仍护住当前阶段
+        if sig == signal.SIGTERM:
+            concurrent = _bash(tmp_path, "restore_drill", setup=_drill_setup(tmp_path))
+            assert concurrent.returncode == 1 and "正在运行" in concurrent.stderr
+    finally:
+        release_cleanup.write_text("go\n", encoding="utf-8")
+
+    out, err = proc.communicate(timeout=15)
+    assert proc.returncode != 0
+    calls = [c for c in _calls(tmp_path) if c.startswith("compose")]
+    assert "compose up -d --wait --wait-timeout 900 worker" in calls
+    assert calls[-1].startswith("compose up -d --wait --wait-timeout 300 api")
+    again = _bash(tmp_path, "restore_drill", setup=_drill_setup(tmp_path))
+    assert again.returncode == 0, again.stderr
+
+
+@needs_bash
+def test_shared_ops_lock_keeps_lock_on_helper_exception_after_armed(tmp_path):
+    """握手成功（ARMED）后若持锁子进程进入异常分支：必须发 SIGTERM 通知主操作中止，并继续持锁
+    直到 on_exit 完成清理与拉起服务后发送 Q/released 才释放锁（不在异常分支提前放锁也不卡 ack）。"""
+    _server_env(tmp_path, f"MYSQL_ROOT_PASSWORD={ROOT_PW}\n")
+    _drill_backups(tmp_path, "youju-20261119.jsonl.gz")
+    fake_bin = tmp_path / "pywrap"
+    fake_bin.mkdir()
+    inject_trigger = tmp_path / "inject_err"
+    in_run = tmp_path / "in_run"
+    in_cleanup = tmp_path / "in_cleanup"
+    release_cleanup = tmp_path / "release_cleanup"
+    log = tmp_path / "calls.log"
+    wrapper = fake_bin / "python3"
+    wrapper.write_text(
+        f"#!{sys.executable}\n"
+        "import os, select, sys\n"
+        "if len(sys.argv) >= 4 and sys.argv[1] == '-I' and sys.argv[2] == '-c':\n"
+        "    code = sys.argv[3]\n"
+        "    sys.argv = [sys.argv[0]] + sys.argv[4:]\n"
+        "    orig_select = select.select\n"
+        "    def wrapped_select(*args, **kwargs):\n"
+        f"        if os.path.exists({str(inject_trigger)!r}):\n"
+        "            raise RuntimeError('injected post-armed error')\n"
+        "        return orig_select(*args, **kwargs)\n"
+        "    select.select = wrapped_select\n"
+        "    exec(compile(code, '<lock-helper>', 'exec'), {'__name__': '__main__'})\n"
+        "else:\n"
+        f"    os.execv({sys.executable!r}, [{sys.executable!r}] + sys.argv[1:])\n",
+        encoding="utf-8",
+    )
+    wrapper.chmod(0o755)
+    setup = (
+        _drill_setup(tmp_path)
+        + f'\nPATH="{fake_bin}:$PATH"\n'
+        + f'compose() {{ printf "compose %s\\n" "$*" >> "{log}"; '
+        + f'if [ "$1" = run ]; then touch "{in_run}"; exec sleep 30; fi; '
+        + f'if [ "$1" = exec ]; then cat >/dev/null; touch "{in_cleanup}"; '
+        + f'while [ ! -f "{release_cleanup}" ]; do sleep 0.05; done; fi; }}'
+    )
+    proc = subprocess.Popen(
+        ["bash", "-c", _script(tmp_path, "restore_drill", setup)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while not in_run.exists():
+            assert time.monotonic() < deadline
+            assert proc.poll() is None, proc.communicate()
+            time.sleep(0.05)
+
+        inject_trigger.write_text("boom\n", encoding="utf-8")
+        deadline = time.monotonic() + 10
+        while not in_cleanup.exists():
+            assert time.monotonic() < deadline, "持锁子进程异常后没中止主操作并进入 on_exit"
+            time.sleep(0.05)
+
+        concurrent = _bash(tmp_path, "restore_drill", setup=_drill_setup(tmp_path))
+        assert concurrent.returncode == 1 and "正在运行" in concurrent.stderr
+    finally:
+        release_cleanup.write_text("go\n", encoding="utf-8")
+
+    out, err = proc.communicate(timeout=15)
+    assert proc.returncode != 0
+    assert "DRILL OK" not in out
+    calls = [c for c in _calls(tmp_path) if c.startswith("compose")]
+    assert "compose up -d --wait --wait-timeout 900 worker" in calls
+    assert calls[-1].startswith("compose up -d --wait --wait-timeout 300 api")
+    again = _bash(tmp_path, "restore_drill", setup=_drill_setup(tmp_path))
+    assert again.returncode == 0, again.stderr
+
+
+@needs_bash
 def test_shared_binlog_off_keeps_lock_until_on_exit_finishes_when_resume_fails(tmp_path):
     """binlog_off 正常路径调用 resume_services 失败时，不能提前释放锁：直到 on_exit 里的
     resume_services 也跑完才释放，期间并发 restore_drill 仍被拦下。"""
