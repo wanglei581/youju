@@ -1433,32 +1433,55 @@ def test_shared_restore_drill_blocks_concurrent_runs_and_recovers_after_sigkill(
     assert first.returncode == 0, err1
     assert "DRILL OK youju-20261119.jsonl.gz" in out1
 
-    # 模拟正在跑的进程被 SIGKILL（kill -9）强杀：内核（缺 flock 时由保活子进程）自动放锁，并发恢复最多只能进一个
+    # 模拟正在跑的进程被 SIGKILL（kill -9）强杀，且它启动的外部子进程（sleep）仍活着并继承了 FD：
+    # 保活子进程在 0.2s 内检测到主 shell 退出后自动放锁，遗留的死 PID FIFO 目录也在下次被清掉
     release.unlink(missing_ok=True)
     started.unlink(missing_ok=True)
+    child_pid_file = tmp_path / "child.pid"
+    setup_with_child = (
+        _drill_setup(tmp_path)
+        + f'\ncompose() {{ printf "compose %s\\n" "$*" >> "{tmp_path}/first.log"; '
+        + f'if [ "$1" = run ]; then touch "{started}"; '
+        + f"python3 -c \"import os, time; open('{child_pid_file}', 'w').write(str(os.getpid())); time.sleep(30)\" & "
+        + "wait $!; fi; "
+        + 'if [ "$1" = exec ]; then cat >/dev/null; fi; }'
+    )
+    stale_fifo = tmp_path / ".ops.fifo.999999.stale"
+    stale_fifo.mkdir()
     victim = subprocess.Popen(
-        ["bash", "-c", _script(tmp_path, "restore_drill", setup_first)],
+        ["bash", "-c", _script(tmp_path, "restore_drill", setup_with_child)],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
     )
-    deadline = time.monotonic() + 10
-    while not started.exists():
-        assert time.monotonic() < deadline
-        assert victim.poll() is None, victim.communicate()
-        time.sleep(0.05)
-    victim.kill()
-    victim.wait(timeout=10)
-    deadline = time.monotonic() + 5
-    while True:
-        with (tmp_path / ".ops.lock").open("r+") as fh:
-            try:
-                fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                fcntl.flock(fh, fcntl.LOCK_UN)
-                break
-            except BlockingIOError:
-                assert time.monotonic() < deadline, "SIGKILL 后内核锁未释放"
-                time.sleep(0.05)
+    child_pid = None
+    try:
+        deadline = time.monotonic() + 10
+        while not (
+            started.exists() and child_pid_file.exists() and child_pid_file.read_text().strip()
+        ):
+            assert time.monotonic() < deadline
+            assert victim.poll() is None, victim.communicate()
+            time.sleep(0.05)
+        child_pid = int(child_pid_file.read_text().strip())
+        victim.kill()
+        victim.wait(timeout=10)
+        # 外部子进程还在跑着，内核锁已自动放开
+        os.kill(child_pid, 0)
+        deadline = time.monotonic() + 5
+        while True:
+            with (tmp_path / ".ops.lock").open("r+") as fh:
+                try:
+                    fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    fcntl.flock(fh, fcntl.LOCK_UN)
+                    break
+                except BlockingIOError:
+                    assert time.monotonic() < deadline, "SIGKILL 后内核锁未释放"
+                    time.sleep(0.05)
+    finally:
+        if child_pid is not None:
+            with contextlib.suppress(OSError):
+                os.kill(child_pid, signal.SIGKILL)
 
     release.unlink(missing_ok=True)
     started.unlink(missing_ok=True)
@@ -1492,6 +1515,41 @@ def test_shared_restore_drill_blocks_concurrent_runs_and_recovers_after_sigkill(
     assert "正在运行" in loser[2]
     first_log = (tmp_path / "first.log").read_text(encoding="utf-8").splitlines()
     assert first_log.count("compose stop worker") == 1
+    assert not stale_fifo.exists()
+
+
+@needs_bash
+def test_shared_ops_lock_fails_bounded_on_helper_crash_and_handshake_timeout(tmp_path):
+    """保活子进程在打开 ack 前崩溃退出，或主进程确认超时，都必须在有限时间内报错退出，
+    不卡死在 FIFO 上，也不进入 stop worker。"""
+    _server_env(tmp_path, f"MYSQL_ROOT_PASSWORD={ROOT_PW}\n")
+    _drill_backups(tmp_path, "youju-20261119.jsonl.gz")
+
+    # 1. 子进程打开 ack 前直接异常退出：有界失败，不卡死
+    fake_bin = tmp_path / "crashbin"
+    fake_bin.mkdir()
+    (fake_bin / "python3").write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    (fake_bin / "python3").chmod(0o755)
+    crash = _bash(
+        tmp_path,
+        "restore_drill",
+        setup=_drill_setup(tmp_path) + f'\nPATH="{fake_bin}:$PATH"',
+    )
+    assert crash.returncode == 1
+    assert "加互斥锁失败" in crash.stderr
+    assert not [c for c in _calls(tmp_path) if c.startswith("compose")]
+
+    # 2. 握手延迟超过确认期限（子进程超时放锁）：主进程收到 TIMEOUT，拒绝进入操作
+    (tmp_path / "calls.log").unlink(missing_ok=True)
+    delay_setup = (
+        _drill_setup(tmp_path)
+        + "\nOPS_LOCK_TIMEOUT=0.1\n"
+        + 'printf() { if [ "$1" = "1\\n" ]; then sleep 0.4; fi; builtin printf "$@"; }\n'
+    )
+    delayed = _bash(tmp_path, "restore_drill", setup=delay_setup)
+    assert delayed.returncode == 1
+    assert "加互斥锁握手未确认" in delayed.stderr
+    assert not [c for c in _calls(tmp_path) if c.startswith("compose")]
 
 
 @needs_bash

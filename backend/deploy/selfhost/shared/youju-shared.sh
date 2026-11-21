@@ -750,96 +750,139 @@ logs() {
 
 # 互斥锁：同时只跑一个会停服务、起一次性容器或碰临时库的命令（restore-drill、import-export、fetch-export、
 # binlog-off、up），免得一个命令的收尾把另一个正在跑的一次性容器停掉、把还在用的 youju_drill_… 临时库删掉。
-# 统一用内核 flock(2) 锁在 $BASE/.ops.lock 上（不删锁文件，避免 inode 替换竞态）：Linux 直接用 flock(1)，
-# 缺 flock(1) 的环境（如 macOS 测试）由 python3 子进程持 fcntl.flock 并通过控制管道保活；进程被 SIGKILL
-# 强杀或机器断电后由内核自动放锁，不存在锁文件或回收区永久残留问题
+# 由独立 python3 子进程持内核 fcntl.flock（不把锁文件描述符放进主 shell，外部子进程不会继承锁；不删
+# $BASE/.ops.lock，避免 inode 替换竞态）。经双向 FIFO 握手确认子进程已进入持锁保活态才继续；任意环节
+# 失败/超时有界退出；主 shell 正常退出或被 SIGKILL 强杀（即使还挂着外部子进程）均在 0.2s 内自动放锁
 OPS_LOCK_FD=""
 OPS_LOCK_PID=""
+OPS_LOCK_TIMEOUT=${YOUJU_OPS_LOCK_TIMEOUT:-5}
+ops_lock_read_ack() {
+  local out="" _i
+  for _i in 1 2 3 4 5; do
+    if read -r -t 1 out <&8; then
+      printf '%s' "$out"
+      return 0
+    fi
+    kill -0 "$OPS_LOCK_PID" 2>/dev/null || return 1
+  done
+  return 1
+}
 acquire_ops_lock() {
   [ -n "${OPS_LOCK_FD:-}" ] && return 0
-  local lock="$BASE/.ops.lock"
-  mkdir -p "$BASE"
-  if command -v flock >/dev/null 2>&1; then
-    exec 9>>"$lock"
-    if ! flock -n 9; then
-      local holder=""
-      holder=$(cat "$lock" 2>/dev/null || true)
-      exec 9>&-
-      die "已有另一个恢复演练、搬家或关 binlog 操作正在运行${holder:+（PID ${holder}）}，等它结束再跑"
-    fi
-    printf '%s\n' "$$" > "$lock"
-    OPS_LOCK_FD=9
-    trap release_ops_lock EXIT
-    return 0
-  fi
-
-  local py fdir ans holder
+  local lock="$BASE/.ops.lock" py fdir old old_pid ans holder
   py=$(command -v python3 || true)
-  [ -n "$py" ] || die "需要 flock 或 python3 来加互斥锁"
-  fdir=$(mktemp -d "$BASE/.ops.fifo.XXXXXX")
+  [ -n "$py" ] || die "需要 python3 来加互斥锁"
+  mkdir -p "$BASE"
+  for old in "$BASE"/.ops.fifo.*; do
+    [ -d "$old" ] || continue
+    old_pid=${old#"$BASE"/.ops.fifo.}
+    old_pid=${old_pid%%.*}
+    if [[ "$old_pid" =~ ^[0-9]+$ ]] && ! kill -0 "$old_pid" 2>/dev/null; then
+      rm -rf "$old" 2>/dev/null || true
+    fi
+  done
+  fdir=$(mktemp -d "$BASE/.ops.fifo.$$.XXXXXX")
   mkfifo "$fdir/ctrl" "$fdir/ack"
+  exec 8<>"$fdir/ack"
   "$py" -I -c '
 import errno, fcntl, os, select, sys, time
-lock_path, ctrl_path, ack_path, ppid = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
-fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+lock_path, ctrl_path, ack_path, ppid, timeout = (
+    sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4]), float(sys.argv[5])
+)
+fd = None
+ctrl = None
 try:
-    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-except OSError as e:
-    if e.errno in (errno.EACCES, errno.EAGAIN):
-        with open(ack_path, "w", encoding="utf-8") as ack:
-            ack.write("BUSY\n")
-        sys.exit(0)
-    raise
-os.ftruncate(fd, 0)
-os.lseek(fd, 0, os.SEEK_SET)
-os.write(fd, f"{ppid}\n".encode())
-ctrl = os.open(ctrl_path, os.O_RDONLY | os.O_NONBLOCK)
-with open(ack_path, "w", encoding="utf-8") as ack:
-    ack.write("OK\n")
-deadline = time.monotonic() + 5.0
-armed = False
-while time.monotonic() < deadline:
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
     try:
-        os.kill(ppid, 0)
-    except OSError:
-        break
-    r, _, _ = select.select([ctrl], [], [], 0.05)
-    if r:
-        if os.read(ctrl, 64):
-            armed = True
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as e:
+        if e.errno in (errno.EACCES, errno.EAGAIN):
+            with open(ack_path, "w", encoding="utf-8") as ack:
+                ack.write("BUSY\n")
+            sys.exit(0)
+        raise
+    os.ftruncate(fd, 0)
+    os.lseek(fd, 0, os.SEEK_SET)
+    os.write(fd, f"{ppid}\n".encode())
+    ctrl = os.open(ctrl_path, os.O_RDONLY | os.O_NONBLOCK)
+    with open(ack_path, "w", encoding="utf-8") as ack:
+        ack.write("OK\n")
+    deadline = time.monotonic() + timeout
+    armed = False
+    while time.monotonic() < deadline:
+        try:
+            os.kill(ppid, 0)
+        except OSError:
             break
-        time.sleep(0.01)
-while armed:
-    r, _, _ = select.select([ctrl], [], [], 0.2)
-    if r and not os.read(ctrl, 64):
-        break
+        r, _, _ = select.select([ctrl], [], [], 0.05)
+        if r:
+            if os.read(ctrl, 64):
+                armed = True
+                break
+            time.sleep(0.01)
+    if not armed:
+        try:
+            with open(ack_path, "w", encoding="utf-8") as ack:
+                ack.write("TIMEOUT\n")
+        except OSError:
+            pass
+    else:
+        with open(ack_path, "w", encoding="utf-8") as ack:
+            ack.write("ARMED\n")
+        while True:
+            r, _, _ = select.select([ctrl], [], [], 0.2)
+            if r and not os.read(ctrl, 64):
+                break
+            try:
+                os.kill(ppid, 0)
+            except OSError:
+                break
+    os.ftruncate(fd, 0)
+except Exception:
     try:
-        os.kill(ppid, 0)
+        with open(ack_path, "w", encoding="utf-8") as ack:
+            ack.write("ERR\n")
     except OSError:
-        break
-os.ftruncate(fd, 0)
-os.close(ctrl)
-os.close(fd)
-' "$lock" "$fdir/ctrl" "$fdir/ack" "$$" </dev/null >/dev/null 2>&1 &
+        pass
+finally:
+    if ctrl is not None:
+        os.close(ctrl)
+    if fd is not None:
+        os.close(fd)
+' "$lock" "$fdir/ctrl" "$fdir/ack" "$$" "$OPS_LOCK_TIMEOUT" </dev/null >/dev/null 2>&1 &
   OPS_LOCK_PID=$!
-  read -r ans < "$fdir/ack" || ans=""
+  ans=$(ops_lock_read_ack || true)
   if [ "$ans" != "OK" ]; then
-    holder=$(cat "$lock" 2>/dev/null || true)
+    holder=""
+    [ "$ans" = "BUSY" ] && holder=$(cat "$lock" 2>/dev/null || true)
+    exec 8>&-
+    kill "$OPS_LOCK_PID" 2>/dev/null || true
     wait "$OPS_LOCK_PID" 2>/dev/null || true
     OPS_LOCK_PID=""
     rm -rf "$fdir"
-    die "已有另一个恢复演练、搬家或关 binlog 操作正在运行${holder:+（PID ${holder}）}，等它结束再跑"
+    if [ "$ans" = "BUSY" ]; then
+      die "已有另一个恢复演练、搬家或关 binlog 操作正在运行${holder:+（PID ${holder}）}，等它结束再跑"
+    fi
+    die "加互斥锁失败（${ans:-子进程无响应或异常退出}）"
   fi
-  exec 9>"$fdir/ctrl"
-  printf '1\n' >&9
+  exec 9<>"$fdir/ctrl"
+  printf '1\n' >&9 || true
+  ans=$(ops_lock_read_ack || true)
+  exec 8>&-
   rm -rf "$fdir"
+  if [ "$ans" != "ARMED" ] || ! kill -0 "$OPS_LOCK_PID" 2>/dev/null; then
+    exec 9>&-
+    kill "$OPS_LOCK_PID" 2>/dev/null || true
+    wait "$OPS_LOCK_PID" 2>/dev/null || true
+    OPS_LOCK_PID=""
+    die "加互斥锁握手未确认（${ans:-超时}），没有进入操作"
+  fi
   OPS_LOCK_FD=9
   trap release_ops_lock EXIT
 }
 
 release_ops_lock() {
   if [ -n "${OPS_LOCK_FD:-}" ]; then
-    [ -z "${OPS_LOCK_PID:-}" ] && : > "${BASE}/.ops.lock" 2>/dev/null || true
     exec 9>&-
     OPS_LOCK_FD=""
   fi
