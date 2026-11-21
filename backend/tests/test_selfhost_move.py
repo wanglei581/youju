@@ -1465,8 +1465,7 @@ def test_shared_restore_drill_blocks_concurrent_runs_and_recovers_after_sigkill(
             time.sleep(0.05)
         child_pid = int(child_pid_file.read_text().strip())
         victim.kill()
-        victim.wait(timeout=10)
-        # 外部子进程还在跑着，内核锁已自动放开
+        # 不先 victim.wait()：在主 shell 仍处于未回收僵尸态、且外部子进程也还活着时，锁仍必须在 0.2s 内放开
         os.kill(child_pid, 0)
         deadline = time.monotonic() + 5
         while True:
@@ -1476,12 +1475,16 @@ def test_shared_restore_drill_blocks_concurrent_runs_and_recovers_after_sigkill(
                     fcntl.flock(fh, fcntl.LOCK_UN)
                     break
                 except BlockingIOError:
-                    assert time.monotonic() < deadline, "SIGKILL 后内核锁未释放"
+                    assert time.monotonic() < deadline, "SIGKILL 僵尸窗口内内核锁未释放"
                     time.sleep(0.05)
+        victim.wait(timeout=10)
     finally:
         if child_pid is not None:
             with contextlib.suppress(OSError):
                 os.kill(child_pid, signal.SIGKILL)
+        if victim.poll() is None:
+            victim.kill()
+            victim.wait(timeout=5)
 
     release.unlink(missing_ok=True)
     started.unlink(missing_ok=True)
@@ -1550,6 +1553,36 @@ def test_shared_ops_lock_fails_bounded_on_helper_crash_and_handshake_timeout(tmp
     assert delayed.returncode == 1
     assert "加互斥锁握手未确认" in delayed.stderr
     assert not [c for c in _calls(tmp_path) if c.startswith("compose")]
+
+    # 3. 外部子进程继承了控制 FIFO 的 FD 9 且正常退出时仍活着：正常放锁通过显式 Q 消息立即放开，不卡死
+    surviving_pid_file = tmp_path / "survivor.pid"
+    setup_surviving = (
+        _drill_setup(tmp_path)
+        + "\ncompose() {\n"
+        + '  if [ "$1" = run ]; then '
+        + f"python3 -c \"import os, time; open('{surviving_pid_file}', 'w').write(str(os.getpid())); time.sleep(30)\" </dev/null >/dev/null 2>&1 & "
+        + f'while [ ! -s "{surviving_pid_file}" ]; do sleep 0.05; done; fi\n'
+        + '  if [ "$1" = exec ]; then cat >/dev/null; fi\n'
+        + "}\n"
+    )
+    surviving_pid = None
+    try:
+        normal = subprocess.run(
+            ["bash", "-c", _script(tmp_path, "restore_drill", setup_surviving)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert normal.returncode == 0, normal.stderr
+        assert "DRILL OK youju-20261119.jsonl.gz" in normal.stdout
+        surviving_pid = int(surviving_pid_file.read_text().strip())
+        os.kill(surviving_pid, 0)
+        again = _bash(tmp_path, "restore_drill", setup=_drill_setup(tmp_path))
+        assert again.returncode == 0, again.stderr
+    finally:
+        if surviving_pid is not None:
+            with contextlib.suppress(OSError):
+                os.kill(surviving_pid, signal.SIGKILL)
 
 
 @needs_bash

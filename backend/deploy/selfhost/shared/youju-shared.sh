@@ -751,8 +751,9 @@ logs() {
 # 互斥锁：同时只跑一个会停服务、起一次性容器或碰临时库的命令（restore-drill、import-export、fetch-export、
 # binlog-off、up），免得一个命令的收尾把另一个正在跑的一次性容器停掉、把还在用的 youju_drill_… 临时库删掉。
 # 由独立 python3 子进程持内核 fcntl.flock（不把锁文件描述符放进主 shell，外部子进程不会继承锁；不删
-# $BASE/.ops.lock，避免 inode 替换竞态）。经双向 FIFO 握手确认子进程已进入持锁保活态才继续；任意环节
-# 失败/超时有界退出；主 shell 正常退出或被 SIGKILL 强杀（即使还挂着外部子进程）均在 0.2s 内自动放锁
+# $BASE/.ops.lock，避免 inode 替换竞态）。经双向 FIFO 握手确认子进程已进入持锁保活态才继续；正常释放
+# 发送显式释放字节 Q（不被仍存活的外部子进程继承 FD 9 阻塞）；主 shell 被 SIGKILL 强杀（含未回收的僵尸
+# 态或外部子进程仍存活）均通过 getppid/进程状态检测在 0.2s 内自动放锁
 OPS_LOCK_FD=""
 OPS_LOCK_PID=""
 OPS_LOCK_TIMEOUT=${YOUJU_OPS_LOCK_TIMEOUT:-5}
@@ -785,10 +786,32 @@ acquire_ops_lock() {
   mkfifo "$fdir/ctrl" "$fdir/ack"
   exec 8<>"$fdir/ack"
   "$py" -I -c '
-import errno, fcntl, os, select, sys, time
+import errno, fcntl, os, select, subprocess, sys, time
 lock_path, ctrl_path, ack_path, ppid, timeout = (
     sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4]), float(sys.argv[5])
 )
+def parent_dead():
+    if os.getppid() != ppid:
+        return True
+    try:
+        os.kill(ppid, 0)
+    except OSError:
+        return True
+    if os.path.isdir("/proc"):
+        try:
+            with open(f"/proc/{ppid}/stat", encoding="utf-8", errors="replace") as st:
+                rest = st.read().rsplit(")", 1)[1].lstrip()
+            return rest[:1] in ("Z", "X")
+        except FileNotFoundError:
+            return True
+        except OSError:
+            return False
+    res = subprocess.run(["ps", "-o", "state=", "-p", str(ppid)], capture_output=True, text=True)
+    if res.returncode != 0:
+        return True
+    state = res.stdout.strip()
+    return not state or state[0] in ("Z", "X")
+
 fd = None
 ctrl = None
 try:
@@ -810,13 +833,12 @@ try:
     deadline = time.monotonic() + timeout
     armed = False
     while time.monotonic() < deadline:
-        try:
-            os.kill(ppid, 0)
-        except OSError:
+        if parent_dead():
             break
         r, _, _ = select.select([ctrl], [], [], 0.05)
         if r:
-            if os.read(ctrl, 64):
+            chunk = os.read(ctrl, 64)
+            if chunk and b"1" in chunk:
                 armed = True
                 break
             time.sleep(0.01)
@@ -831,11 +853,11 @@ try:
             ack.write("ARMED\n")
         while True:
             r, _, _ = select.select([ctrl], [], [], 0.2)
-            if r and not os.read(ctrl, 64):
-                break
-            try:
-                os.kill(ppid, 0)
-            except OSError:
+            if r:
+                chunk = os.read(ctrl, 64)
+                if not chunk or b"Q" in chunk:
+                    break
+            if parent_dead():
                 break
     os.ftruncate(fd, 0)
 except Exception:
@@ -883,6 +905,7 @@ finally:
 
 release_ops_lock() {
   if [ -n "${OPS_LOCK_FD:-}" ]; then
+    printf 'Q\n' >&9 2>/dev/null || true
     exec 9>&-
     OPS_LOCK_FD=""
   fi
