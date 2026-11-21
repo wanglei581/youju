@@ -521,5 +521,7 @@ def test_cli_snapshot_and_restore(session, db_engine, tmp_path, monkeypatch, cap
     clear_restore_target(session, db_engine)
     assert cli.main(["restore-public", str(target)]) == 0
     out = capsys.readouterr().out
-    assert "已导入：线上公开内容 " in out and "（北京时间），共 " in out and "documents: 1" in out
+    assert (
+        "已导入：公开内容快照 " in out and "（北京时间导出），共 " in out and "documents: 1" in out
+    )
     assert "users" not in out and "feedback" not in out

@@ -8,8 +8,11 @@ import gzip
 import hashlib
 import io
 import json
+import os
+import re
 import time
 from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -1278,3 +1281,127 @@ def test_sync_watch_alerts_after_three_hours_once_per_outage(env, monkeypatch, t
     monkeypatch.setattr(alerts, "send_alert", lambda text: None)
     assert cli.main(["sync-watch"]) == 1
     get_settings.cache_clear()
+
+
+# ---- 共用服务器上 worker 的库账号：只有增删改查加 LOCK TABLES，没有建表、改表权限 ----
+
+WORKER_GRANTS = re.search(
+    r'^DB_WORKER_GRANTS="([^"]+)"$',
+    (Path(__file__).resolve().parents[1] / "deploy/selfhost/shared/youju-shared.sh").read_text(
+        encoding="utf-8"
+    ),
+    re.M,
+).group(1)
+
+
+@pytest.fixture
+def worker_engine(server_engine):
+    """服务器那边的库上建一个只有 youju-shared.sh 里 DB_WORKER_GRANTS 那几项权限的账号（同 conftest 的
+    restricted_api_factory：按服务器实际看到的来源建，用完删掉）。"""
+    import secrets
+
+    from sqlalchemy.exc import DBAPIError
+
+    url = server_engine.url
+    account = {"u": "youju_worker_test"}
+    password = secrets.token_urlsafe(24)
+    created = False
+    engine = None
+    try:
+        try:
+            with server_engine.begin() as conn:
+                account["h"] = conn.scalar(text("SELECT SUBSTRING_INDEX(USER(), '@', -1)"))
+                conn.execute(text("DROP USER IF EXISTS :u@:h"), account)
+                conn.execute(text("CREATE USER :u@:h IDENTIFIED BY :p"), {**account, "p": password})
+                created = True
+                conn.execute(text(f"GRANT {WORKER_GRANTS} ON `{url.database}`.* TO :u@:h"), account)
+        except DBAPIError as exc:
+            if (
+                exc.orig.args[0] in (1044, 1045, 1142, 1227)
+                and os.environ.get("YOUJU_REQUIRE_DB") != "1"
+            ):
+                pytest.skip(
+                    f"测试 root 无 CREATE USER 权限（MySQL {exc.orig.args[0]}），worker 账号测试未运行"
+                )
+            raise
+        engine = create_mysql_engine(url.set(username=account["u"], password=password))
+        yield engine
+    finally:
+        if engine is not None:
+            engine.dispose()
+        if created:
+            with server_engine.begin() as conn:
+                conn.execute(text("DROP USER IF EXISTS :u@:h"), account)
+
+
+def test_worker_account_receives_syncs_once_up_prepared_the_state(env, worker_engine, monkeypatch):
+    """worker 的账号自己建不了进度表（MySQL 对 CREATE TABLE IF NOT EXISTS 也先查建表权限）；up 用建表
+    迁移的账号先做好（youju sync-server-setup）以后，用 worker 的账号收全推、增量、紧急下架都照常，
+    一句建表、改表、删表的语句都不发。"""
+    from sqlalchemy.orm import Session
+
+    from youju import emergency_takedown as urgent
+
+    # env 已经把进度表删了：worker 的账号建不了
+    sync_server._FLOORS_READY = False
+    with pytest.raises(sa.exc.DBAPIError) as err:
+        sync_server.ensure_state(worker_engine)
+    assert err.value.orig.args[0] == 1142
+    # up 先用建表的账号做一遍（就是 youju sync-server-setup 做的）
+    sync_server._FLOORS_READY = False
+    sync_server.ensure_state(env.server)
+    sync_server._FLOORS_READY = False
+    monkeypatch.setattr(sync_server, "get_engine", lambda: worker_engine)
+    statements = []
+
+    def record(conn, cursor, statement, *args):
+        statements.append(statement)
+
+    sa.event.listen(worker_engine, "before_cursor_execute", record)
+    try:
+        src = source(env.local)
+        doc = document(env.local, src, "a")
+        bootstrap(env)
+        assert count(env.server, "documents") == 1
+        document(env.local, src, "b")
+        assert local.push(env.local, env.client).batches == 1
+        assert count(env.server, "documents") == 2
+        with Session(worker_engine) as session:
+            assert len(urgent.add(session, doc, reason="other")) == 1
+        assert env.client.json("GET", "/state")["stream"] == env.stream
+    finally:
+        sa.event.remove(worker_engine, "before_cursor_execute", record)
+    assert statements
+    assert not [s for s in statements if re.match(r"\s*(CREATE|ALTER|DROP|TRUNCATE)\b", s, re.I)]
+
+
+def test_sync_server_setup_prepares_state_and_floor(env, monkeypatch, capsys):
+    """youju sync-server-setup（共用服务器的 up 用建表迁移的账号跑）：建好三张进度表、抬好编号下限，
+    可以重复跑；这台不收同步（没配同步密钥）的跳过。"""
+    from youju import cli
+
+    sync_server._FLOORS_READY = False
+    assert cli.main(["sync-server-setup"]) == 0
+    with env.server.connect() as conn:
+        names = {
+            row[0]
+            for row in conn.execute(
+                text(
+                    "SELECT table_name FROM information_schema.tables WHERE table_schema = DATABASE()"
+                )
+            )
+        }
+        conn.execute(text("SET SESSION information_schema_stats_expiry = 0"))
+        floor = conn.scalar(
+            text(
+                "SELECT AUTO_INCREMENT FROM information_schema.TABLES"
+                " WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'document_deadlines'"
+            )
+        )
+    assert {sync_server.STATE, sync_server.ORDER, sync_server.PENDING} <= names
+    assert floor is not None and int(floor) >= sync_tables.SERVER_ID_FLOOR["document_deadlines"]
+    assert "进度表已建好" in capsys.readouterr().out
+    assert cli.main(["sync-server-setup"]) == 0
+    monkeypatch.delenv("YOUJU_SYNC_SECRET")
+    get_settings.cache_clear()
+    assert cli.main(["sync-server-setup"]) == 0 and "跳过" in capsys.readouterr().out

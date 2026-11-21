@@ -15,12 +15,18 @@
 #   unkey                  删掉用户 youju 和它的公钥
 #   unpack <版本> <哈希>   把传上来的安装包拷到只有 root 能进的目录，核对 SHA-256，解包到 /opt/youju/releases/<版本>
 #   install <版本>         把 /opt/youju/releases/<版本> 里的配置装到 /opt/youju，构建镜像
-#   env <版本>             生成 /opt/youju/server/.env（随机密钥；已有就不动）
-#   up                     启动：先 MySQL，再迁移，再 worker、接口
+#   env <版本>             生成 /opt/youju/server/ 下的配置和口令文件（随机密钥；已有就不动）：.env（接口、worker
+#                          共用的配置，不含连库口令）、mysql-root.env（root 和建表迁移用的 youju）、db-api.env、db-worker.env
+#   split-db-env           数据库账号按最小权限分开放：root、youju 的口令放进 mysql-root.env，接口、worker 各给一个
+#                          自己的账号（db-api.env、db-worker.env），.env 里不留连库口令（用解包出来的新脚本 install 时
+#                          会自动做；用旧脚本装的，up 之前补跑这个；已经分好就不动）
+#   unsplit-db-env         回退到不认这几个文件的旧版本之前跑：把 root、youju 的口令和 youju 的连接串写回 .env
+#   up                     启动：先 MySQL，再用 youju 迁移、建好收同步的进度表，再照 mysql_accounts.sql 设好接口、
+#                          worker 的库账号和授权，再起 worker、接口（换镜像、改配置以后都用它起，接口、worker 别直接 docker compose up）
 #   site http|https        写 nginx 站点文件，检查通过才重载（http 只为申请证书；https 正式转发并加续期定时任务）
 #   cert                   申请证书（Let's Encrypt，HTTP 验证）
 #   renew                  续期证书（定时任务每周一跑）；证书和 nginx 已加载的不一样才重载
-#   status                 容器、内存、健康检查
+#   status                 容器、内存、健康检查，接口和 worker 各用哪个库账号、有没有 root 和 youju 的口令（只说有没有）
 #   logs mysql|api|worker [行数]
 #   uninstall [--purge]    停掉有据、撤掉站点和定时任务；--purge 连数据库、文件、镜像一起删
 # 首发前搬家（D-127，手册第六节）：
@@ -48,6 +54,13 @@
 #   cloudrun-gone deregistered|deleted  记下云托管里的库已经删了（注销环境 / 手动删），不再提醒
 #   alert-probe            往告警通道发一条验收消息（删库期限的提醒走这个通道）
 #   export-reset           退回云托管以后再切回来时用：清掉上一批"存档过"的标记，好重走导出（手册第七节）
+# 数据库：
+#   binlog-off             关掉 MySQL 的 binlog（install、up 带 disable_log_bin 的版本以后跑一次）：停接口和
+#                          worker，清掉现有的 binlog，用新配置重建 MySQL，查 @@log_bin 是 0，删掉留下的
+#                          binlog 文件，再起来
+# 恢复演练（D-118 ②，手册第八节）：
+#   restore-drill          用存储里最新的一份整库备份在临时库里恢复一遍、核对、删掉（不碰正式库）；
+#                          先停 worker、接口照常，结束再起来；只在北京时间 10:00–23:30 跑
 set -euo pipefail
 umask 022
 
@@ -316,11 +329,21 @@ install_release() {
   local ver=${1:-}
   check_version "$ver"
   local rel=$BASE/releases/$ver
+  # 这一版要按最小权限分开库账号（它的 compose 认这几个口令文件）：先核对分得了，分不了就停下，一个文件都不换
+  if [ -f "$SERVER/.env" ] && compose_splits_db "$rel/shared/docker-compose.yml"; then
+    db_split_check || die "install 停下了，一个文件都没换；核对改好以后重跑 install"
+  fi
   install -d -m 755 "$BASE" "$BASE/bin" "$BASE/nginx" "$WEBROOT"
   install -d -m 700 "$SERVER" "$LE_DIR"
-  install -m 644 "$rel/shared/docker-compose.yml" "$rel/shared/mysql.cnf" "$SERVER/"
+  install -m 644 "$rel/shared/docker-compose.yml" "$rel/shared/mysql.cnf" \
+    "$rel/source/backend/deploy/mysql_accounts.sql" "$SERVER/"
   install -m 644 "$rel/shared/nginx-http.conf" "$rel/shared/nginx-https.conf" "$BASE/nginx/"
   install -m 755 "$rel/shared/youju-shared.sh" "$BASE/bin/youju-shared.sh"
+  # 新的 compose 一装上就把库账号分开放好：不然构建镜像这段时间里 status、logs、紧急下架这些要读 compose 的
+  # 子命令都会因为缺口令文件用不了。装的是还不认这几个文件的旧版本（回退）就不动
+  if [ -f "$SERVER/.env" ] && compose_splits_db "$SERVER/docker-compose.yml"; then
+    split_db_env
+  fi
   say "构建镜像 youju-selfhost:${ver}（第一次 5–15 分钟）"
   docker build -t "youju-base:$ver" -f "$rel/source/Dockerfile" "$rel/source"
   docker build -t "youju-selfhost:$ver" --build-arg "BASE=youju-base:$ver" \
@@ -340,12 +363,22 @@ make_env() {
     echo "已有 ${SERVER}/.env，不动（要重新生成先自己挪走）"
     return
   fi
+  local f
+  for f in $DB_FILES; do
+    [ ! -f "$SERVER/$f" ] \
+      || die "已有 ${SERVER}/${f}、没有 .env：数据库可能已经用里面的口令建好了，先人工核对（要重新生成先把它也挪走）"
+  done
   local cloud_env
   cloud_env=$(sed -n 's/^YOUJU_CLOUD_ENV=//p' "$BASE/releases/$ver/source/backend/deploy/selfhost/server/env.example")
   [ -n "$cloud_env" ] || die "env.example 里没有 YOUJU_CLOUD_ENV"
-  local db_pw root_pw aes
+  local db_pw root_pw api_pw worker_pw aes
   db_pw=$(openssl rand -hex 24)
   root_pw=$(openssl rand -hex 24)
+  api_pw=$(openssl rand -hex 24)
+  worker_pw=$(openssl rand -hex 24)
+  for f in "$db_pw" "$root_pw" "$api_pw" "$worker_pw"; do
+    [ "${#f}" -eq 48 ] || die "生成数据库口令失败"
+  done
   aes=$(openssl rand -base64 96 | tr -dc 'A-Za-z0-9')
   aes=${aes:0:43}
   [ "${#aes}" -eq 43 ] || die "生成消息推送密钥失败"
@@ -359,10 +392,8 @@ make_env() {
 # - worker 只写心跳、不跑定时任务（docker-compose.yml 里 YOUJU_CRONTAB 的默认值）。
 # 上线前按手册第十节"上线前"一项项改：真的 AppSecret、删掉 YOUJU_WX_API_BASE、YOUJU_CRONTAB、异地备份、
 # 换掉同步密钥……
+# 连库的口令不在这里：root 和 youju（建表迁移）在 mysql-root.env，接口、worker 各在 db-api.env、db-worker.env。
 YOUJU_IMAGE=youju-selfhost:${ver}
-MYSQL_ROOT_PASSWORD=${root_pw}
-MYSQL_PASSWORD=${db_pw}
-YOUJU_DATABASE_URL=mysql+pymysql://youju:${db_pw}@mysql:3306/youju?charset=utf8mb4
 YOUJU_HOSTING=self
 YOUJU_SESSION_LOGIN=true
 YOUJU_SESSION_SECRET=$(openssl rand -hex 32)
@@ -383,20 +414,230 @@ YOUJU_CLOUD_ENV=${cloud_env}
 YOUJU_STORAGE_BUCKET=youju-self
 YOUJU_SYNC_SECRET=$(openssl rand -hex 32)
 EOF
+    printf 'MYSQL_ROOT_PASSWORD=%s\nMYSQL_PASSWORD=%s\n' "$root_pw" "$db_pw" > "$SERVER/mysql-root.env.tmp"
+    printf 'YOUJU_DATABASE_URL=%s\n' "$(db_url_for youju_api "$api_pw")" > "$SERVER/db-api.env.tmp"
+    printf 'YOUJU_DATABASE_URL=%s\n' "$(db_url_for youju_worker "$worker_pw")" > "$SERVER/db-worker.env.tmp"
+    for f in $DB_FILES; do mv -f "$SERVER/$f.tmp" "$SERVER/$f"; done
     mv -f "$SERVER/.env.tmp" "$SERVER/.env"
   )
-  echo "已生成 ${SERVER}/.env（只有 root 能读）"
+  echo "已生成 ${SERVER}/.env、mysql-root.env、db-api.env、db-worker.env（连库口令按账号分开放，都只有 root 能读）"
+}
+
+# 数据库账号按最小权限分开（共用服务器）：
+# - root 和 youju（建表、迁移用，对 youju 库有全部权限）的口令只在 mysql-root.env：只给 MySQL 容器和这个脚本；
+# - 接口用 youju_api（授权照 mysql_accounts.sql 第 ② 节，和云托管同一份），worker 用 youju_worker（增删改查，
+#   加上恢复备份要的 LOCK TABLES），连接串各在 db-api.env、db-worker.env，compose 只给各自的容器；
+# - 接口、worker 共用的 .env 里不留任何连库口令。这几个文件都只有 root 能读。
+DB_FILES="mysql-root.env db-api.env db-worker.env"
+DB_WORKER_GRANTS="SELECT, INSERT, UPDATE, DELETE, LOCK TABLES"
+
+# 这几个文件里的一项（文件没有时回空）
+kv_get() { { sed -n "s/^$2=//p" "$SERVER/$1" 2>/dev/null || true; } | head -n 1; }
+root_password() { kv_get mysql-root.env MYSQL_ROOT_PASSWORD; }
+migrate_password() { kv_get mysql-root.env MYSQL_PASSWORD; }
+db_url() { kv_get "db-$1.env" YOUJU_DATABASE_URL; }
+db_url_for() { printf 'mysql+pymysql://%s:%s@mysql:3306/youju?charset=utf8mb4' "$1" "$2"; }
+# 连接串里的口令：只认 db_url_for 写的那种（账号对、连本机 MySQL 的 youju 库、口令只有字母数字），不是就返回 1
+db_url_password() {
+  local rest
+  case "$1" in "mysql+pymysql://$2:"*"@mysql:3306/youju?charset=utf8mb4") ;; *) return 1 ;; esac
+  rest=${1#"mysql+pymysql://$2:"}
+  rest=${rest%"@mysql:3306/youju?charset=utf8mb4"}
+  [[ "$rest" =~ ^[A-Za-z0-9]+$ ]] || return 1
+  printf '%s' "$rest"
+}
+# 这份 compose 认不认这几个口令文件
+compose_splits_db() {
+  grep -qx '    env_file: mysql-root.env' "$1" \
+    && grep -qx '    env_file: \[\.env, db-api\.env\]' "$1" \
+    && grep -qx '    env_file: \[\.env, db-worker\.env\]' "$1"
+}
+
+db_env_ok() {
+  local name
+  for name in MYSQL_ROOT_PASSWORD MYSQL_PASSWORD YOUJU_DATABASE_URL; do
+    [ -z "$(env_get "$name")" ] \
+      || die "${SERVER}/.env 里还有 ${name}：数据库账号要按最小权限分开放，先运行 ${SELF} split-db-env"
+  done
+  { [ -n "$(root_password)" ] && [ -n "$(migrate_password)" ] \
+    && db_url_password "$(db_url api)" youju_api >/dev/null \
+    && db_url_password "$(db_url worker)" youju_worker >/dev/null; } \
+    || die "${SERVER} 下的 mysql-root.env、db-api.env、db-worker.env 缺了或写法不对：先运行 ${SELF} split-db-env"
+}
+
+# 能不能照最小权限分开放：.env 里的口令和 mysql-root.env 里已有的不能对不上，.env 里的连接串要就是 youju 连本机
+# 的那一个，已有的 db-*.env 写法要对。不能放时说清原因、返回 1；只打指纹（不打口令）：停下找团队核对，别把文件
+# 内容打出来（"执行命令"有记录）
+db_split_check() {
+  local name in_env in_file url pw svc
+  for name in MYSQL_ROOT_PASSWORD MYSQL_PASSWORD; do
+    in_env=$(env_get "$name")
+    in_file=$(kv_get mysql-root.env "$name")
+    if [ -z "$in_env" ] && [ -z "$in_file" ]; then
+      echo "错误：${SERVER}/.env 和 mysql-root.env 里都没有 ${name}" >&2
+      return 1
+    fi
+    if [ -n "$in_env" ] && [ -n "$in_file" ] && [ "$in_env" != "$in_file" ]; then
+      echo "错误：mysql-root.env 里的 ${name} 和 .env 里的不一样（.env 那个指纹 $(fingerprint "$in_env")，mysql-root.env 那个指纹 $(fingerprint "$in_file")）：停下找团队核对，别把两个文件的内容打出来" >&2
+      return 1
+    fi
+  done
+  url=$(env_get YOUJU_DATABASE_URL)
+  pw=$(env_get MYSQL_PASSWORD)
+  [ -n "$pw" ] || pw=$(migrate_password)
+  if [ -n "$url" ] && [ "$url" != "$(db_url_for youju "$pw")" ]; then
+    echo "错误：.env 里的 YOUJU_DATABASE_URL 不是 youju 账号连本机 MySQL 的那一个（指纹 $(fingerprint "$url")）：停下找团队核对" >&2
+    return 1
+  fi
+  for svc in api worker; do
+    url=$(db_url "$svc")
+    if [ -n "$url" ] && ! db_url_password "$url" "youju_$svc" >/dev/null; then
+      echo "错误：${SERVER}/db-${svc}.env 写法不对（指纹 $(fingerprint "$url")）：停下找团队核对" >&2
+      return 1
+    fi
+  done
+}
+
+# 用解包出来的新脚本 install 这一版时自动跑（也可以单独补跑）：root、youju 的口令放进 mysql-root.env；接口、
+# worker 还没有自己的账号的，各生成一个（口令随机）；.env 里删掉这三项。值不显示；已经分好就不动。
+# 新文件都写好了才改 .env，中途断了重跑就行
+split_db_env() {
+  [ -f "$SERVER/.env" ] || die "还没装（没有 ${SERVER}/.env）"
+  compose_splits_db "$SERVER/docker-compose.yml" \
+    || die "先 install 这一版（${SERVER}/docker-compose.yml 还不认这几个口令文件），什么都没动"
+  db_split_check || die "什么都没动"
+  local root_pw pw svc new
+  root_pw=$(env_get MYSQL_ROOT_PASSWORD)
+  [ -n "$root_pw" ] || root_pw=$(root_password)
+  pw=$(env_get MYSQL_PASSWORD)
+  [ -n "$pw" ] || pw=$(migrate_password)
+  (
+    umask 077
+    printf 'MYSQL_ROOT_PASSWORD=%s\nMYSQL_PASSWORD=%s\n' "$root_pw" "$pw" > "$SERVER/mysql-root.env.tmp"
+    mv -f "$SERVER/mysql-root.env.tmp" "$SERVER/mysql-root.env"
+    for svc in api worker; do
+      [ -z "$(db_url "$svc")" ] || continue
+      new=$(openssl rand -hex 24)
+      [ "${#new}" -eq 48 ] || exit 1
+      printf 'YOUJU_DATABASE_URL=%s\n' "$(db_url_for "youju_$svc" "$new")" > "$SERVER/db-$svc.env.tmp"
+      mv -f "$SERVER/db-$svc.env.tmp" "$SERVER/db-$svc.env"
+    done
+    awk 'index($0, "MYSQL_ROOT_PASSWORD=") != 1 && index($0, "MYSQL_PASSWORD=") != 1 \
+      && index($0, "YOUJU_DATABASE_URL=") != 1' "$SERVER/.env" > "$SERVER/.env.tmp"
+    mv -f "$SERVER/.env.tmp" "$SERVER/.env"
+  ) || die "没分好（生成口令或写文件出错），查 ${SERVER} 下的文件"
+  db_env_ok
+  echo "数据库账号已按最小权限分开放（都只有 root 能读）：root 和 youju（建表迁移）的口令在 mysql-root.env，接口、worker 各用 db-api.env、db-worker.env 里自己的账号，.env 里不再有连库口令。运行 ${SELF} up 生效：它会照 mysql_accounts.sql 设好这两个账号和授权"
+}
+
+# 回退到还不认这几个口令文件的旧版本之前跑（用现在这份脚本）：把 root、youju 的口令和 youju 的连接串写回 .env
+# （旧版本的 compose 从 .env 读）。口令文件留着；以后再升级回来，install 会照样分开
+unsplit_db_env() {
+  [ -f "$SERVER/.env" ] || die "还没装（没有 ${SERVER}/.env）"
+  local root_pw pw
+  root_pw=$(root_password)
+  pw=$(migrate_password)
+  { [ -n "$root_pw" ] && [ -n "$pw" ]; } || die "${SERVER}/mysql-root.env 里缺 root 或 youju 的口令，什么都没动"
+  set_env MYSQL_ROOT_PASSWORD "$root_pw"
+  set_env MYSQL_PASSWORD "$pw"
+  set_env YOUJU_DATABASE_URL "$(db_url_for youju "$pw")"
+  echo "已把 root、youju 的口令和 youju 的连接串写回 .env（值不显示）；接着用旧版本解包出来的脚本 install 旧版本，再 up"
+}
+
+# 接口的授权：mysql_accounts.sql 第 ② 节里 TO 'youju_api'@'%' 的那些行（install 时拷到这里；和
+# tests/conftest.py 建受限账号用的是同一个取法）
+api_grants() { grep -E "^GRANT [^;]+ TO 'youju_api'@'%';$" "$SERVER/mysql_accounts.sql" 2>/dev/null || true; }
+# 改权限之前先逐条查授权用到的表和列都在（SELECT … WHERE 1 = 0：不读数据，表或列不在就报错），不在就停在这里，
+# 一项权限都不改
+api_grant_checks() {
+  api_grants | awk '
+    match($0, / ON youju\.[a-z_]+ TO /) {
+      table = substr($0, RSTART + 10, RLENGTH - 14)
+      privs = substr($0, 1, RSTART - 1)
+      cols = "1"
+      if (match(privs, /\([a-z_, ]+\)/)) cols = substr(privs, RSTART + 1, RLENGTH - 2)
+      print "SELECT " cols " FROM youju." table " WHERE 1 = 0;"
+    }'
+}
+# 接口和 worker 的库账号：没有就建、口令和 db-*.env 对齐；查过表和列都在以后，权限先全部收回再照清单授（不多不少）
+db_accounts_sql() {
+  local api_pw worker_pw grants
+  api_pw=$(db_url_password "$(db_url api)" youju_api)
+  worker_pw=$(db_url_password "$(db_url worker)" youju_worker)
+  grants=$(api_grants)
+  [ -n "$grants" ] || die "${SERVER}/mysql_accounts.sql 里没找到接口的授权：先用解包出来的新脚本 install 这一版"
+  printf '%s\n' \
+    "CREATE USER IF NOT EXISTS 'youju_api'@'%' IDENTIFIED BY '${api_pw}';" \
+    "ALTER USER 'youju_api'@'%' IDENTIFIED BY '${api_pw}';" \
+    "CREATE USER IF NOT EXISTS 'youju_worker'@'%' IDENTIFIED BY '${worker_pw}';" \
+    "ALTER USER 'youju_worker'@'%' IDENTIFIED BY '${worker_pw}';"
+  api_grant_checks
+  printf '%s\n' \
+    "REVOKE ALL PRIVILEGES, GRANT OPTION FROM 'youju_api'@'%', 'youju_worker'@'%';" \
+    "GRANT ${DB_WORKER_GRANTS} ON youju.* TO 'youju_worker'@'%';" \
+    "$grants"
+}
+# 在 MySQL 容器里用 root 跑（口令是容器里的环境变量）；SQL 从标准输入给，口令不进命令行参数
+db_accounts() {
+  local sql
+  sql=$(db_accounts_sql)
+  # shellcheck disable=SC2016  # 要在容器里展开
+  run_fg_stdin compose exec -T mysql sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot -N -B' <<<"$sql" \
+    || die "接口、worker 的库账号和授权没设好（原因见上面）：接口和 worker 还停着，改好以后再 ${SELF} up"
+  echo "接口（youju_api）、worker（youju_worker）的库账号和授权已照清单设好"
+}
+
+UP_MAY_HAVE_ONEOFF=""
+on_up_exit() {
+  set +e
+  trap '' INT HUP
+  trap 'on_exit_term' TERM
+  OPS_LOCK_IN_EXIT=1
+  OPS_LOCK_LOST=""
+  stop_fg
+  if [ -n "${UP_MAY_HAVE_ONEOFF:-}" ]; then
+    if ! ensure_ops_lock; then
+      echo "错误：锁子进程意外退出且另一个操作正在运行，已跳过停临时容器；等那个操作结束后运行 ${SELF} status 核对（必要时 ${SELF} up）" >&2
+      exit 1
+    fi
+    run_locked_step stop_stray_oneoffs || true
+    if [ -n "$OPS_LOCK_RECOVER_FAILED" ]; then
+      echo "错误：停临时容器时持锁进程意外退出且另一个操作抢先拿锁，已中止清理；等那个操作结束后运行 ${SELF} status 核对（必要时 ${SELF} up）" >&2
+      exit 1
+    fi
+  fi
+  release_ops_lock
+}
+
+install_up_exit_trap() {
+  trap on_up_exit EXIT
+  trap 'trap "" INT TERM HUP; stop_fg; exit 130' INT
+  trap 'trap "" INT TERM HUP; stop_fg; exit 143' TERM
+  trap 'trap "" INT TERM HUP; stop_fg; exit 129' HUP
 }
 
 up() {
   [ -f "$SERVER/.env" ] || die "先 env"
-  compose config -q
-  compose up -d --wait --wait-timeout 300 mysql
+  db_env_ok
+  acquire_ops_lock
+  install_up_exit_trap
+  UP_MAY_HAVE_ONEOFF=""
+  run_fg compose config -q
+  run_fg compose up -d --wait --wait-timeout 300 mysql
   # 升级时先停 worker、接口，迁移完再起（和本机 setup-wsl.sh 一样）
-  compose stop worker api >/dev/null 2>&1 || true
-  compose run --rm --no-deps worker youju db-upgrade
-  compose up -d --wait --wait-timeout 900 worker
-  compose up -d --wait --wait-timeout 300 api
+  run_fg compose stop worker api >/dev/null 2>&1 || true
+  # 迁移用 youju 账号（建表、改表要它）；连接串经环境变量传进临时容器，不进命令行参数。收同步的进度表、
+  # 编号下限也要建表、改表权限，同样用 youju 先做好（worker 平时只有增删改查）
+  UP_MAY_HAVE_ONEOFF=1
+  YOUJU_DATABASE_URL="$(db_url_for youju "$(migrate_password)")" \
+    run_fg compose run --rm --no-deps -e YOUJU_DATABASE_URL worker youju db-upgrade
+  YOUJU_DATABASE_URL="$(db_url_for youju "$(migrate_password)")" \
+    run_fg compose run --rm --no-deps -e YOUJU_DATABASE_URL worker youju sync-server-setup
+  UP_MAY_HAVE_ONEOFF=""
+  db_accounts
+  run_fg compose up -d --wait --wait-timeout 900 worker
+  run_fg compose up -d --wait --wait-timeout 300 api
+  clear_exit_trap
   status
   echo "回退：${SELF} uninstall（停掉、撤站点，数据留着）"
 }
@@ -517,6 +758,19 @@ status() {
   for port in 18100 18101; do
     echo "127.0.0.1:${port}/health → $(curl -fsS -m 5 "http://127.0.0.1:${port}/health" || echo 不通)"
   done
+  # 接口、worker 各用自己的库账号，里面不该有 root 和 youju 的口令：只打账号名和"有没有"，不显示口令
+  local svc got
+  for svc in api worker; do
+    # shellcheck disable=SC2016  # 要在容器里展开
+    got=$(compose exec -T "$svc" sh -c 'u=${YOUJU_DATABASE_URL#*://}; u=${u%%:*}
+if [ -n "${MYSQL_ROOT_PASSWORD+x}${MYSQL_PASSWORD+x}" ]; then s=有; else s=没有; fi
+echo "${u:-无}" "$s"' </dev/null 2>/dev/null) || got=""
+    if [ -n "$got" ]; then
+      echo "${svc}：连库账号 ${got% *}；root、youju 的口令：${got##* }"
+    else
+      echo "${svc}：查不了"
+    fi
+  done
   free -m
 }
 
@@ -528,30 +782,492 @@ logs() {
 
 # ---- 首发前搬家（D-127） ----
 
+# 互斥锁：同时只跑一个会停服务、起一次性容器或碰临时库的命令（restore-drill、import-export、fetch-export、
+# binlog-off、up），免得一个命令的收尾把另一个正在跑的一次性容器停掉、把还在用的 youju_drill_… 临时库删掉。
+# 由独立 python3 子进程持内核 fcntl.flock（不把锁文件描述符放进主 shell，外部子进程不会继承锁；不删
+# $BASE/.ops.lock，避免 inode 替换竞态）。经双向 FIFO 握手确认子进程已进入持锁保活态才继续；正常释放
+# 发送显式释放字节 Q（不被仍存活的外部子进程继承 FD 9 阻塞）；主 shell 被 SIGKILL 强杀（含未回收的僵尸
+# 态或外部子进程仍存活）均通过 getppid/进程状态周期性检测后自动放锁；持锁子进程被 SIGTERM/异常或
+# SIGKILL 强杀时，经 SIGTERM 通知及 watch 管道断线守卫立即中止运行中的外部命令，再由受锁保护的 on_exit
+# 收尾（若持锁子进程已死且另一个操作抢先拿锁超时，则跳过危险清理和拉起服务，避免踩踏新持锁者）
+OPS_LOCK_FD=""
+OPS_LOCK_PID=""
+OPS_LOCK_GUARD_PID=""
+OPS_LOCK_FDIR=""
+OPS_FG_PID=""
+OPS_LOCK_LOST=""
+OPS_LOCK_IN_EXIT=""
+OPS_LOCK_RECOVER_FAILED=""
+OPS_LOCK_TIMEOUT=${YOUJU_OPS_LOCK_TIMEOUT:-5}
+ops_lock_read_ack() {
+  local out="" _i=0 limit=5
+  if [ "${1:-}" = wait ]; then
+    limit=$(( ${OPS_LOCK_TIMEOUT%.*} + 4 ))
+  fi
+  while [ "$_i" -lt "$limit" ]; do
+    if read -r -t 1 out <&8; then
+      printf '%s' "$out"
+      return 0
+    fi
+    ops_lock_alive || return 1
+    _i=$((_i + 1))
+  done
+  return 1
+}
+acquire_ops_lock() {
+  [ -n "${OPS_LOCK_FD:-}" ] && return 0
+  local lock="$BASE/.ops.lock" py fdir old old_pid ans holder wait_flag=${1:-}
+  py=$(command -v python3 || true)
+  [ -n "$py" ] || die "需要 python3 来加互斥锁"
+  mkdir -p "$BASE"
+  for old in "$BASE"/.ops.fifo.*; do
+    [ -d "$old" ] || continue
+    old_pid=${old#"$BASE"/.ops.fifo.}
+    old_pid=${old_pid%%.*}
+    if [[ "$old_pid" =~ ^[0-9]+$ ]] && ! kill -0 "$old_pid" 2>/dev/null; then
+      rm -rf "$old" 2>/dev/null || true
+    fi
+  done
+  fdir=$(mktemp -d "$BASE/.ops.fifo.$$.XXXXXX")
+  mkfifo "$fdir/ctrl" "$fdir/ack" "$fdir/watch"
+  exec 8<>"$fdir/ack"
+  "$py" -I -c '
+import errno, fcntl, os, select, signal, subprocess, sys, time
+lock_path, ctrl_path, ack_path, watch_path, ppid, timeout, wait_flag, released_path = (
+    sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], int(sys.argv[5]), float(sys.argv[6]), sys.argv[7], sys.argv[8]
+)
+def parent_dead():
+    if os.getppid() != ppid:
+        return True
+    try:
+        os.kill(ppid, 0)
+    except OSError:
+        return True
+    if os.path.isdir("/proc"):
+        try:
+            with open(f"/proc/{ppid}/stat", encoding="utf-8", errors="replace") as st:
+                rest = st.read().rsplit(")", 1)[1].lstrip()
+            return rest[:1] in ("Z", "X")
+        except FileNotFoundError:
+            return True
+        except OSError:
+            return False
+    res = subprocess.run(["ps", "-o", "state=", "-p", str(ppid)], capture_output=True, text=True)
+    if res.returncode != 0:
+        return True
+    state = res.stdout.strip()
+    return not state or state[0] in ("Z", "X")
+
+aborted = False
+def on_term(_signum, _frame):
+    global aborted
+    if not aborted:
+        aborted = True
+        try:
+            os.kill(ppid, signal.SIGTERM)
+        except OSError:
+            pass
+
+fd = None
+ctrl = None
+watch = None
+is_armed = False
+try:
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    deadline_lock = time.monotonic() + (timeout if wait_flag == "wait" else 0.0)
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except OSError as e:
+            if e.errno in (errno.EACCES, errno.EAGAIN):
+                if wait_flag == "wait" and time.monotonic() < deadline_lock and not parent_dead():
+                    time.sleep(0.05)
+                    continue
+                with open(ack_path, "w", encoding="utf-8") as ack:
+                    ack.write("BUSY\n")
+                sys.exit(0)
+            raise
+    os.ftruncate(fd, 0)
+    os.lseek(fd, 0, os.SEEK_SET)
+    os.write(fd, f"{ppid}\n".encode())
+    ctrl = os.open(ctrl_path, os.O_RDONLY | os.O_NONBLOCK)
+    with open(ack_path, "w", encoding="utf-8") as ack:
+        ack.write("OK\n")
+    deadline = time.monotonic() + timeout
+    armed = False
+    while time.monotonic() < deadline:
+        if parent_dead():
+            break
+        r, _, _ = select.select([ctrl], [], [], 0.05)
+        if r:
+            chunk = os.read(ctrl, 64)
+            if chunk and b"1" in chunk:
+                armed = True
+                break
+            time.sleep(0.01)
+    if armed:
+        while time.monotonic() < deadline:
+            try:
+                watch = os.open(watch_path, os.O_WRONLY | os.O_NONBLOCK)
+                break
+            except OSError as e:
+                if e.errno == errno.ENXIO and not parent_dead():
+                    time.sleep(0.01)
+                    continue
+                raise
+    if not armed or watch is None:
+        try:
+            with open(ack_path, "w", encoding="utf-8") as ack:
+                ack.write("TIMEOUT\n")
+        except OSError:
+            pass
+    else:
+        signal.signal(signal.SIGTERM, on_term)
+        with open(ack_path, "w", encoding="utf-8") as ack:
+            ack.write("ARMED\n")
+        is_armed = True
+        while True:
+            if os.path.exists(released_path) or parent_dead():
+                break
+            try:
+                r, _, _ = select.select([ctrl], [], [], 0.2)
+            except InterruptedError:
+                continue
+            if r:
+                chunk = os.read(ctrl, 64)
+                if not chunk or b"Q" in chunk:
+                    break
+    os.ftruncate(fd, 0)
+except Exception:
+    try:
+        os.kill(ppid, signal.SIGTERM)
+    except OSError:
+        pass
+    if is_armed:
+        while not os.path.exists(released_path) and not parent_dead():
+            if ctrl is not None:
+                try:
+                    r, _, _ = select.select([ctrl], [], [], 0.05)
+                    if r:
+                        chunk = os.read(ctrl, 64)
+                        if not chunk or b"Q" in chunk:
+                            break
+                except Exception:
+                    time.sleep(0.05)
+            else:
+                time.sleep(0.05)
+        try:
+            if fd is not None:
+                os.ftruncate(fd, 0)
+        except OSError:
+            pass
+    else:
+        try:
+            with open(ack_path, "w", encoding="utf-8") as ack:
+                ack.write("ERR\n")
+        except OSError:
+            pass
+finally:
+    if watch is not None:
+        os.close(watch)
+    if ctrl is not None:
+        os.close(ctrl)
+    if fd is not None:
+        os.close(fd)
+' "$lock" "$fdir/ctrl" "$fdir/ack" "$fdir/watch" "$$" "$OPS_LOCK_TIMEOUT" "$wait_flag" "$fdir/released" </dev/null >/dev/null 2>&1 &
+  OPS_LOCK_PID=$!
+  ans=$(ops_lock_read_ack "$wait_flag" || true)
+  if [ "$ans" != "OK" ]; then
+    holder=""
+    [ "$ans" = "BUSY" ] && holder=$(cat "$lock" 2>/dev/null || true)
+    exec 8>&-
+    kill "$OPS_LOCK_PID" 2>/dev/null || true
+    wait "$OPS_LOCK_PID" 2>/dev/null || true
+    OPS_LOCK_PID=""
+    rm -rf "$fdir"
+    if [ "$ans" = "BUSY" ]; then
+      [ "$wait_flag" = "wait" ] && return 1
+      die "已有另一个恢复演练、搬家或关 binlog 操作正在运行${holder:+（PID ${holder}）}，等它结束再跑"
+    fi
+    [ "$wait_flag" = "wait" ] && return 1
+    die "加互斥锁失败（${ans:-子进程无响应或异常退出}）"
+  fi
+  (
+    exec 8>&-
+    read -r _ < "$fdir/watch" || true
+    [ -f "$fdir/released" ] || kill -TERM "$$" 2>/dev/null || true
+  ) </dev/null >/dev/null 2>&1 &
+  OPS_LOCK_GUARD_PID=$!
+  exec 9<>"$fdir/ctrl"
+  printf '1\n' >&9 || true
+  ans=$(ops_lock_read_ack "$wait_flag" || true)
+  exec 8>&-
+  if [ "$ans" != "ARMED" ] || ! ops_lock_alive; then
+    : > "$fdir/released" 2>/dev/null || true
+    exec 9>&-
+    kill "$OPS_LOCK_GUARD_PID" "$OPS_LOCK_PID" 2>/dev/null || true
+    wait "$OPS_LOCK_GUARD_PID" 2>/dev/null || true
+    wait "$OPS_LOCK_PID" 2>/dev/null || true
+    OPS_LOCK_GUARD_PID=""
+    OPS_LOCK_PID=""
+    rm -rf "$fdir"
+    [ "$wait_flag" = "wait" ] && return 1
+    die "加互斥锁握手未确认（${ans:-超时}），没有进入操作"
+  fi
+  OPS_LOCK_FD=9
+  OPS_LOCK_FDIR="$fdir"
+  [ "$wait_flag" = "wait" ] || trap release_ops_lock EXIT
+}
+
+pid_running() {
+  [ -n "${1:-}" ] || return 1
+  local st=""
+  if [ -d /proc ]; then
+    st=$(awk -F') ' '{print substr($2,1,1)}' "/proc/${1}/stat" 2>/dev/null || true)
+    [ -n "$st" ] && [ "$st" != Z ] && [ "$st" != X ]
+  else
+    st=$(ps -o state= -p "$1" 2>/dev/null | tr -d '[:space:]' || true)
+    [ -n "$st" ] && case "$st" in Z* | X*) return 1 ;; *) return 0 ;; esac
+  fi
+}
+
+ops_lock_alive() {
+  pid_running "${OPS_LOCK_PID:-}"
+}
+
+stop_fg() {
+  local pid=${OPS_FG_PID:-}
+  [ -n "$pid" ] || return 0
+  local desc="" p _i=0
+  desc=$(ps -eo pid=,ppid= 2>/dev/null | awk -v root="$pid" '
+    { kids[$2] = kids[$2] " " $1 }
+    END {
+      q[1] = root; head = 1; tail = 1
+      while (head <= tail) {
+        cur = q[head++]
+        n = split(kids[cur], arr, " ")
+        for (i = 1; i <= n; i++) {
+          if (arr[i] != "") {
+            out = out " " arr[i]
+            q[++tail] = arr[i]
+          }
+        }
+      }
+      print out
+    }
+  ' || true)
+  for p in $desc "$pid"; do
+    kill -TERM "$p" 2>/dev/null || true
+  done
+  while [ "$_i" -lt 20 ]; do
+    local alive=0
+    for p in $desc "$pid"; do
+      if pid_running "$p"; then
+        alive=1
+        break
+      fi
+    done
+    [ "$alive" -eq 0 ] && break
+    sleep 0.05
+    _i=$((_i + 1))
+  done
+  for p in $desc "$pid"; do
+    if pid_running "$p"; then
+      kill -KILL "$p" 2>/dev/null || true
+    fi
+  done
+  wait "$pid" 2>/dev/null || true
+  OPS_FG_PID=""
+}
+
+run_fg() {
+  if [ -n "${OPS_LOCK_FD:-}" ] && { [ -n "${OPS_LOCK_LOST:-}" ] || ! ops_lock_alive; }; then
+    return 125
+  fi
+  "$@" </dev/null &
+  OPS_FG_PID=$!
+  local rc=0
+  while true; do
+    rc=0
+    wait "$OPS_FG_PID" || rc=$?
+    if [ -n "${OPS_LOCK_IN_EXIT:-}" ] && [ -z "${OPS_LOCK_LOST:-}" ] && kill -0 "$OPS_FG_PID" 2>/dev/null; then
+      continue
+    fi
+    break
+  done
+  OPS_FG_PID=""
+  return "$rc"
+}
+
+run_fg_stdin() {
+  if [ -n "${OPS_LOCK_FD:-}" ] && { [ -n "${OPS_LOCK_LOST:-}" ] || ! ops_lock_alive; }; then
+    return 125
+  fi
+  "$@" <&0 &
+  OPS_FG_PID=$!
+  local rc=0
+  while true; do
+    rc=0
+    wait "$OPS_FG_PID" || rc=$?
+    if [ -n "${OPS_LOCK_IN_EXIT:-}" ] && [ -z "${OPS_LOCK_LOST:-}" ] && kill -0 "$OPS_FG_PID" 2>/dev/null; then
+      continue
+    fi
+    break
+  done
+  OPS_FG_PID=""
+  return "$rc"
+}
+
+release_ops_lock() {
+  if [ -n "${OPS_LOCK_FDIR:-}" ]; then
+    : > "${OPS_LOCK_FDIR}/released" 2>/dev/null || true
+  fi
+  if [ -n "${OPS_LOCK_FD:-}" ]; then
+    printf 'Q\n' >&9 2>/dev/null || true
+    exec 9>&-
+    OPS_LOCK_FD=""
+  fi
+  if [ -n "${OPS_LOCK_PID:-}" ]; then
+    wait "$OPS_LOCK_PID" 2>/dev/null || true
+    OPS_LOCK_PID=""
+  fi
+  if [ -n "${OPS_LOCK_GUARD_PID:-}" ]; then
+    kill "$OPS_LOCK_GUARD_PID" 2>/dev/null || true
+    wait "$OPS_LOCK_GUARD_PID" 2>/dev/null || true
+    OPS_LOCK_GUARD_PID=""
+  fi
+  if [ -n "${OPS_LOCK_FDIR:-}" ]; then
+    rm -rf "$OPS_LOCK_FDIR" 2>/dev/null || true
+    OPS_LOCK_FDIR=""
+  fi
+}
+
+install_exit_trap() {
+  trap on_exit EXIT
+  trap 'trap "" INT TERM HUP; stop_fg; exit 130' INT
+  trap 'trap "" INT TERM HUP; stop_fg; exit 143' TERM
+  trap 'trap "" INT TERM HUP; stop_fg; exit 129' HUP
+}
+
+clear_exit_trap() {
+  trap - EXIT INT TERM HUP
+  release_ops_lock
+}
+
 # 导出窗口里临时起的容器（下载、试恢复、加密）用 worker 的内存上限（640M）：先停接口和 worker，
 # 有据合计不超过 1.5G；结束时（成功、失败都一样）再起来。停着的这段时间本机推同步会失败、下一轮再推
 pause_services() {
-  compose stop api worker
-  trap on_exit EXIT
+  # 先确认起得来再停：口令文件没放好时 compose 加载不了项目，停了就起不来
+  db_env_ok
+  acquire_ops_lock
+  install_exit_trap
+  run_fg compose stop api worker
+}
+
+on_exit_term() {
+  if [ -n "${OPS_LOCK_FD:-}" ] && ops_lock_alive; then
+    return 0
+  fi
+  OPS_LOCK_LOST=1
+  stop_fg
+}
+
+ensure_ops_lock() {
+  if [ -n "${OPS_LOCK_FD:-}" ] && [ -z "${OPS_LOCK_LOST:-}" ] && ops_lock_alive; then
+    return 0
+  fi
+  OPS_LOCK_LOST=""
+  release_ops_lock
+  acquire_ops_lock wait
+}
+
+run_locked_step() {
+  OPS_LOCK_RECOVER_FAILED=""
+  local rc=0
+  while true; do
+    if ! ensure_ops_lock; then
+      OPS_LOCK_RECOVER_FAILED=1
+      return 1
+    fi
+    rc=0
+    "$@" || rc=$?
+    if [ -n "${OPS_LOCK_LOST:-}" ] || ! ops_lock_alive; then
+      continue
+    fi
+    return "$rc"
+  done
+}
+
+stop_stray_oneoffs() {
+  local stray_file="${OPS_LOCK_FDIR:-/tmp}/stray.$$.out" stray=""
+  if ! run_fg docker ps -q --filter label=com.docker.compose.project=youju-server \
+    --filter label=com.docker.compose.oneoff=True >"$stray_file"; then
+    rm -f "$stray_file"
+    return 1
+  fi
+  stray=$(cat "$stray_file")
+  rm -f "$stray_file"
+  # shellcheck disable=SC2086  # 可能有几个容器编号
+  [ -z "$stray" ] || run_fg docker stop -t 60 $stray >/dev/null
 }
 
 # 退出时（成功、失败、被打断都一样）：试恢复开始了还没清 binlog 的先清，再把接口和 worker 起来。
 # 关掉网页终端、断线时 compose 客户端死了，它起的一次性容器（下载、试恢复）还在跑：先停掉——不然
-# 试恢复接着往 binlog 写，又和接口、worker 叠在一起超内存。试恢复收到停止信号会自己删临时库。
-# 这里每一步失败都接着做下一步（不让 set -e 半途退出，服务至少要起来）
+# 试恢复接着往 binlog 写，又和接口、worker 叠在一起超内存。试恢复收到停止信号会自己删临时库；
+# 被强杀（内存不够被系统杀掉）的删不了，恢复演练（restore-drill）只跑这一次，等不到"下次开头删"，
+# 所以它退出时在这里把留下的临时库删掉（DROP_DRILL_DBS）。
+# 这里每一步失败都接着做下一步（不让 set -e 半途退出，服务至少要起来）；但如果持锁子进程意外死亡
+# 且另一个操作抢先拿锁超时，必须跳过危险清理和拉起服务，避免影响新持锁者
 PURGE_BINLOG=""
+DROP_DRILL_DBS=""
 on_exit() {
   set +e
-  local stray
-  stray=$(docker ps -q --filter label=com.docker.compose.project=youju-server \
-    --filter label=com.docker.compose.oneoff=True)
-  # shellcheck disable=SC2086  # 可能有几个容器编号
-  [ -z "$stray" ] || docker stop -t 60 $stray >/dev/null
-  if [ -n "$PURGE_BINLOG" ]; then
-    echo "试恢复被打断：正式库不受影响；临时库 youju_drill_… 它自己会删，没删掉的下次试恢复开头会删" >&2
-    purge_binlog || echo "注意：binlog 没清掉，再跑 ${SELF} import-export 之前先查（手册第六节第 7 步）" >&2
+  trap '' INT HUP
+  trap 'on_exit_term' TERM
+  OPS_LOCK_IN_EXIT=1
+  OPS_LOCK_LOST=""
+  stop_fg
+  if ! ensure_ops_lock; then
+    echo "错误：锁子进程意外退出且另一个操作正在运行，已跳过收尾与拉起服务；等那个操作结束后运行 ${SELF} status 核对（必要时 ${SELF} up / ${SELF} restore-drill）" >&2
+    exit 1
   fi
-  resume_services
+  local rc=0 step_rc=0
+  run_locked_step stop_stray_oneoffs || step_rc=$?
+  if [ -n "$OPS_LOCK_RECOVER_FAILED" ]; then
+    echo "错误：收尾期间持锁进程意外退出且另一个操作抢先拿锁，已中止后续清理与拉起服务；等那个操作结束后运行 ${SELF} status 核对" >&2
+    exit 1
+  fi
+  if [ -n "$DROP_DRILL_DBS" ]; then
+    echo "恢复演练没收完尾：正式库不受影响；留下的临时库 youju_drill_…（有的话）现在删掉，再清 binlog" >&2
+    step_rc=0
+    run_locked_step drop_drill_dbs || step_rc=$?
+    if [ -n "$OPS_LOCK_RECOVER_FAILED" ]; then
+      echo "错误：删临时库时持锁进程意外退出且另一个操作抢先拿锁，已中止后续清理与拉起服务；等那个操作结束后运行 ${SELF} status / ${SELF} restore-drill 核对" >&2
+      exit 1
+    fi
+    [ "$step_rc" -eq 0 ] || echo "注意：临时库 youju_drill_… 没删掉，照手册第八节\"恢复演练\"查" >&2
+  elif [ -n "$PURGE_BINLOG" ]; then
+    echo "试恢复被打断：正式库不受影响；临时库 youju_drill_… 它自己会删，没删掉的下次试恢复开头会删" >&2
+  fi
+  if [ -n "$PURGE_BINLOG" ]; then
+    step_rc=0
+    run_locked_step purge_binlog || step_rc=$?
+    if [ -n "$OPS_LOCK_RECOVER_FAILED" ]; then
+      echo "错误：清 binlog 时持锁进程意外退出且另一个操作抢先拿锁，已中止后续清理与拉起服务；等那个操作结束后运行 ${SELF} status / ${SELF} restore-drill 核对" >&2
+      exit 1
+    fi
+    [ "$step_rc" -eq 0 ] || echo "注意：binlog 没清掉，再跑之前先查（手册第六节第 7 步、第八节\"恢复演练\"）" >&2
+  fi
+  step_rc=0
+  run_locked_step resume_services || step_rc=$?
+  if [ -n "$OPS_LOCK_RECOVER_FAILED" ]; then
+    echo "错误：拉起服务时持锁进程意外退出且另一个操作抢先拿锁，已停下拉起；等那个操作结束后运行 ${SELF} status 核对（必要时 ${SELF} up）" >&2
+    exit 1
+  fi
+  rc=$step_rc
+  release_ops_lock
+  [ "$rc" -eq 0 ] || exit "$rc"
 }
 
 # 在 mysql 容器里跑（sh -s）：轮换 binlog，删掉当前这个以前的全部，再查只剩一个。不用
@@ -562,7 +1278,9 @@ binlog_purge_sql() {
   cat <<'EOF'
 set -eu
 export MYSQL_PWD="$MYSQL_ROOT_PASSWORD"
-if [ "$(mysql -uroot -N -B -e 'SELECT @@log_bin')" != 1 ]; then echo "binlog 没开，不用清"; exit 0; fi
+on=$(mysql -uroot -N -B -e 'SELECT @@log_bin')
+if [ "$on" = 0 ]; then echo "binlog 没开，不用清"; exit 0; fi
+[ "$on" = 1 ] || { echo "查不出 MySQL 的 binlog 开没开（@@log_bin=${on:-空}）" >&2; exit 1; }
 current=$(mysql -uroot -N -B -e 'FLUSH BINARY LOGS; SHOW MASTER STATUS' | awk 'NR == 1 {print $1}')
 case "$current" in "" | *[!A-Za-z0-9._-]*) echo "取不到当前的 binlog 文件名" >&2; exit 1 ;; esac
 mysql -uroot -e "PURGE BINARY LOGS TO '$current'"
@@ -573,11 +1291,99 @@ EOF
 }
 
 # 密码用容器里的环境变量给 mysql（MYSQL_PWD），不写成 -p 参数；脚本从标准输入给
-purge_binlog() { binlog_purge_sql | compose exec -T mysql sh -s; }
+purge_binlog() {
+  local sql
+  sql=$(binlog_purge_sql)
+  run_fg_stdin compose exec -T mysql sh -s <<<"$sql"
+}
+
+# 在 mysql 容器里跑（sh -s）：打出 binlog 开没开（1 开、0 关）
+binlog_state_sql() {
+  cat <<'EOF'
+set -eu
+export MYSQL_PWD="$MYSQL_ROOT_PASSWORD"
+mysql -uroot -N -B -e 'SELECT @@GLOBAL.log_bin'
+EOF
+}
+
+# 在 mysql 容器里跑（sh -s）：binlog 确实关着时，删掉数据目录里以前留下的 binlog 文件
+# （binlog.<6 位编号> 和 binlog.index）；还开着、读不出就按失败退出，什么都不删
+binlog_files_cleanup_sql() {
+  cat <<'EOF'
+set -eu
+export MYSQL_PWD="$MYSQL_ROOT_PASSWORD"
+on=$(mysql -uroot -N -B -e 'SELECT @@GLOBAL.log_bin')
+[ "$on" = 0 ] || { echo "binlog 还开着（${on:-读不出}），不删文件" >&2; exit 1; }
+dir=$(mysql -uroot -N -B -e 'SELECT @@GLOBAL.datadir')
+case "$dir" in /*/) ;; *) echo "读不出数据目录" >&2; exit 1 ;; esac
+n=0
+for f in "${dir}"binlog.[0-9][0-9][0-9][0-9][0-9][0-9] "${dir}binlog.index"; do
+  [ -e "$f" ] || continue
+  rm -f -- "$f"
+  n=$((n + 1))
+done
+echo "删掉了以前留下的 binlog 文件 ${n} 个"
+EOF
+}
+
+# 关掉 MySQL 的二进制日志（binlog）：没在用——不做主从，也没有按时刻恢复，恢复只用每天的备份。
+# install 已经把带 disable_log_bin 的 mysql.cnf 拷到 ${SERVER}；MySQL 要重建一次容器才用上
+# （mysql.cnf 是按文件挂进去的，up 看不出它变了）。先停接口和 worker（不让新的写入落进还开着的
+# binlog），清掉现有的 binlog，再重建 MySQL、查 @@log_bin 是 0，删掉数据目录里留下的 binlog 文件
+# （MySQL 之前已经用上新配置的，清 binlog 那步会打"binlog 没开，不用清"，旧文件就靠这一步删）；
+# 最后把 worker、接口起来，起来了才打 BINLOG OFF。中途失败、被打断，on_exit 照样把它们起来。
+# 再跑一遍也没事
+binlog_off() {
+  [ -f "$SERVER/.env" ] || die "还没装（没有 ${SERVER}/.env）"
+  grep -q '^disable_log_bin' "$SERVER/mysql.cnf" 2>/dev/null \
+    || die "${SERVER}/mysql.cnf 里还没有 disable_log_bin：先 install、up 含这一改的版本"
+  say "关掉 MySQL 的 binlog：停接口和 worker → 清掉现有的 binlog → 用新配置重建 MySQL → 查 @@log_bin 是 0 → 删留下的 binlog 文件 → 起 worker、接口"
+  pause_services
+  purge_binlog
+  run_fg compose up -d --force-recreate --wait --wait-timeout 300 mysql
+  local on state_sql cleanup_sql state_file="${OPS_LOCK_FDIR:-/tmp}/binlog_state.$$.out"
+  state_sql=$(binlog_state_sql)
+  if ! run_fg_stdin compose exec -T mysql sh -s <<<"$state_sql" >"$state_file"; then
+    rm -f "$state_file"
+    die "查不出 MySQL 的 binlog 开没开（MySQL 连不上？）"
+  fi
+  on=$(tr -d '[:space:]' <"$state_file")
+  rm -f "$state_file"
+  [ "$on" = 0 ] || die "MySQL 重建以后 binlog 还开着（@@GLOBAL.log_bin=${on:-读不出}）"
+  cleanup_sql=$(binlog_files_cleanup_sql)
+  run_fg_stdin compose exec -T mysql sh -s <<<"$cleanup_sql" \
+    || die "binlog 关了，但数据目录里留下的 binlog 文件没删掉（原因见上面）"
+  resume_services
+  clear_exit_trap
+  echo "BINLOG OFF"
+}
+# 在 mysql 容器里跑（sh -s）：删掉恢复演练留下的临时库（名字和 youju/restore_drill.py 的 NAME 一样：
+# youju_drill_<14 位时间>_<4 位十六进制>），别的库一概不碰
+drill_drop_sql() {
+  cat <<'EOF'
+set -eu
+export MYSQL_PWD="$MYSQL_ROOT_PASSWORD"
+# 先取名单（查不到就按失败退出，不当作没有），再逐个删
+dbs=$(mysql -uroot -N -B -e "SELECT schema_name FROM information_schema.schemata WHERE schema_name REGEXP '^youju_drill_[0-9]{14}_[0-9a-f]{4}\$'")
+for db in $dbs; do
+  case "$db" in youju_drill_[0-9]*) ;; *) continue ;; esac
+  mysql -uroot -e "DROP DATABASE IF EXISTS \`$db\`"
+  echo "删掉了留下的临时库 $db"
+done
+EOF
+}
+drop_drill_dbs() {
+  local sql
+  sql=$(drill_drop_sql)
+  run_fg_stdin compose exec -T mysql sh -s <<<"$sql"
+}
 resume_services() {
-  if ! { compose up -d --wait --wait-timeout 900 worker && compose up -d --wait --wait-timeout 300 api; }; then
+  if ! { run_fg compose up -d --wait --wait-timeout 900 worker && run_fg compose up -d --wait --wait-timeout 300 api; }; then
+    if [ -n "${OPS_LOCK_FD:-}" ] && { [ -n "${OPS_LOCK_LOST:-}" ] || ! ops_lock_alive; }; then
+      return 1
+    fi
     echo "注意：接口、worker 没起来，运行 ${SELF} up" >&2
-    exit 1
+    return 1
   fi
 }
 
@@ -614,7 +1420,7 @@ fetch_export() {
   [ "$free_g" -ge 10 ] || die "硬盘只剩 ${free_g}G，不到 10G，先别下"
   install -d -m 700 "$EXPORT_DIR"
   pause_services
-  YOUJU_EXPORT_URL="$url" compose run --rm --no-deps -e YOUJU_EXPORT_URL -v "$EXPORT_DIR:/export" worker \
+  YOUJU_EXPORT_URL="$url" run_fg compose run --rm --no-deps -e YOUJU_EXPORT_URL -v "$EXPORT_DIR:/export" worker \
     youju export-fetch --sha256 "$sum" --dir /export
   echo "下一步：${SELF} export-show 看汇总；${SELF} import-export <旧版本> 试恢复、加密存档"
 }
@@ -623,6 +1429,28 @@ export_show() {
   [ -f "$EXPORT_DIR/summary.json" ] || die "还没有导出汇总：先 fetch-export"
   cat "$EXPORT_DIR/summary.json"
   ls -l "$EXPORT_DIR" "$EXPORT_DIR/backups"
+}
+
+# 试恢复之前按备份解压后的大小核一次硬盘：临时库加 binlog 大约是它的 3 倍，再留 2G。
+# 解压后的大小整个解压数一遍（gzip -l 读文件尾的记录，超过 4G 会绕回去）；按字节比，
+# ${BASE}（加密副本）和 docker 的数据目录（MySQL 数据卷，临时库写在这里）各核一次
+drill_space_ok() {
+  local raw need free dir dirs n
+  raw=$(gzip -dc "$1" | wc -c | tr -d ' ') || die "整库备份解压不了"
+  [[ "$raw" =~ ^[0-9]+$ ]] || die "读不出整库备份解压后的大小"
+  need=$(( raw * 3 + 2 * 1073741824 ))
+  dirs=("$BASE")
+  dir=$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || true)
+  { [ -n "$dir" ] && [ -d "$dir" ]; } \
+    || die "读不出 docker 的数据目录（docker info），没法核对 MySQL 数据卷那块盘的空间"
+  dirs+=("$dir")
+  free=""
+  for dir in "${dirs[@]}"; do
+    n=$(df -B1 --output=avail "$dir" | tail -1 | tr -dc '0-9')
+    [ -n "$n" ] || die "读不出 ${dir} 所在硬盘的剩余空间"
+    if [ -z "$free" ] || [ "$n" -lt "$free" ]; then free=$n; fi
+  done
+  [ "$free" -ge "$need" ] || die "硬盘不够试恢复：要 $(( (need + 1073741823) / 1073741824 ))G，现在只剩 $(( free / 1073741824 ))G（先腾空间，别动别的项目的文件）"
 }
 
 import_export() {
@@ -638,29 +1466,11 @@ import_export() {
   [ -e "${files[0]}" ] || die "${EXPORT_DIR}/backups 里没有整库备份：先 fetch-export"
   [ -f "$EXPORT_DIR/pay-records.jsonl.gz" ] || die "没有交易记录：先 fetch-export"
   [ "${#files[@]}" -eq 1 ] || die "${EXPORT_DIR}/backups 里不止一份备份，只留要归档的那一份"
-  # 试恢复之前按备份解压后的大小再核一次硬盘：临时库加 binlog 大约是它的 3 倍，再留 2G。
-  # 解压后的大小整个解压数一遍（gzip -l 读文件尾的记录，超过 4G 会绕回去）；按字节比，
-  # ${BASE}（加密副本）和 docker 的数据目录（MySQL 数据卷，临时库写在这里）各核一次
-  local raw need free dir dirs n
-  raw=$(gzip -dc "${files[0]}" | wc -c | tr -d ' ') || die "整库备份解压不了"
-  [[ "$raw" =~ ^[0-9]+$ ]] || die "读不出整库备份解压后的大小"
-  need=$(( raw * 3 + 2 * 1073741824 ))
-  dirs=("$BASE")
-  dir=$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || true)
-  { [ -n "$dir" ] && [ -d "$dir" ]; } \
-    || die "读不出 docker 的数据目录（docker info），没法核对 MySQL 数据卷那块盘的空间"
-  dirs+=("$dir")
-  free=""
-  for dir in "${dirs[@]}"; do
-    n=$(df -B1 --output=avail "$dir" | tail -1 | tr -dc '0-9')
-    [ -n "$n" ] || die "读不出 ${dir} 所在硬盘的剩余空间"
-    if [ -z "$free" ] || [ "$n" -lt "$free" ]; then free=$n; fi
-  done
-  [ "$free" -ge "$need" ] || die "硬盘不够试恢复：要 $(( (need + 1073741823) / 1073741824 ))G，现在只剩 $(( free / 1073741824 ))G（先腾空间，别动别的项目的文件）"
+  drill_space_ok "${files[0]}"
   local name root_pw
   name=$(basename "${files[0]}")
-  root_pw=$(sed -n 's/^MYSQL_ROOT_PASSWORD=//p' "$SERVER/.env")
-  [ -n "$root_pw" ] || die ".env 里没有 MYSQL_ROOT_PASSWORD"
+  root_pw=$(root_password)
+  [ -n "$root_pw" ] || die "${SERVER}/mysql-root.env 里没有 MYSQL_ROOT_PASSWORD（先 ${SELF} split-db-env）"
   pause_services
   say "1/3 试恢复：${old} 的镜像在临时库 youju_drill_… 里恢复一遍（核对条数、外键、每张表的 SHA-256），结束删掉；不碰正式库"
   # 建临时库要 root；连接串经环境变量传进容器（不进命令行参数）。临时库和正式库在同一个 MySQL 里
@@ -668,18 +1478,18 @@ import_export() {
   PURGE_BINLOG=1
   YOUJU_IMAGE="youju-selfhost:$old" \
     YOUJU_DATABASE_URL="mysql+pymysql://root:${root_pw}@mysql:3306/youju?charset=utf8mb4" \
-    compose run --rm --no-deps -e YOUJU_DATABASE_URL -v "$EXPORT_DIR:/export:ro" worker \
+    run_fg compose run --rm --no-deps -e YOUJU_DATABASE_URL -v "$EXPORT_DIR:/export:ro" worker \
     youju restore-drill --file "/export/backups/$name" || drill_ok=0
-  # 试恢复写进 binlog 的是旧库的明文（binlog 留 3 天）：成不成都清掉（中途被打断的，退出时清）。
+  # 试恢复写进 binlog 的是旧库的明文（binlog 开着时）：成不成都清掉（中途被打断的，退出时清）。
   # 不做主从，binlog 没人用。清不干净就停下：不存档、不删明文
-  say "    清掉 MySQL 的 binlog（试恢复写进去的是旧库的明文）"
+  say "    清掉 MySQL 的 binlog（试恢复写进去的是旧库的明文；binlog 关了以后这步打\"binlog 没开，不用清\"）"
   purge_binlog
   PURGE_BINLOG=""
   [ "$drill_ok" = 1 ] || die "试恢复没通过（原因见上面）：没存档、没删明文"
   say "2/3 加密存档：整库备份、交易记录、批量工具结果分别用 .env 里的 age 公钥加密，存到服务器存储和异地的"
   say "    archive/，到期日写在文件名里（整库自备份起 30 天；交易记录自最早一笔下单或赠送起 3650 天；"
   say "    批量工具结果自生成起 30 天），每天 archive-prune 到期删"
-  compose run --rm --no-deps -v "$EXPORT_DIR:/export:ro" worker youju archive-export --dir /export
+  run_fg compose run --rm --no-deps -v "$EXPORT_DIR:/export:ro" worker youju archive-export --dir /export
   say "3/3 删掉明文的整库备份、交易记录、批量工具结果和带链接的清单"
   rm -f "$EXPORT_DIR/backups/$name" "$EXPORT_DIR/pay-records.jsonl.gz" "$EXPORT_DIR/manifest.json" \
     "$EXPORT_DIR/advisor-out.json"
@@ -687,6 +1497,58 @@ import_export() {
   # 存档过了：以后再跑 fetch-export 会拒绝（不再下一份明文备份）
   date '+%F %T' > "$EXPORT_DIR/imported"
   echo "IMPORT OK"
+}
+
+# ---- 恢复演练（D-118 ②：提审前用服务器自己的备份做一次） ----
+
+# 北京时间的时、分（HHMM）；测试里换掉
+beijing_hhmm() { TZ=Asia/Shanghai date +%H%M; }
+
+# 拿存储卷里最新的一份用户数据备份（每天 4:00 做的，D-129 ⑥），在临时库 youju_drill_… 里恢复一遍、
+# 核对条数、外键和每张表的 SHA-256，结束删掉，不碰正式库。不在容器里直接跑 youju restore-drill：有据的
+# 库账号建不了临时库，也不会先停 worker。这里和 import-export 一样用 root，口令从 mysql-root.env
+# 经环境变量传进临时容器（不进命令行参数）。临时容器用 worker 那份内存（有据三个容器合计 1.5G）：先停 worker，
+# 接口照常；结束（成功、失败、被打断都一样）再起来（on_exit）。worker 停着的这几分钟里定时任务不跑、本机推
+# 同步会失败（下一轮补上），所以只在北京时间 10:00–23:30 跑，避开凌晨的备份、早上的提醒、日报和对账。
+# binlog 还开着时试恢复会把一整份用户数据写进去，跑完清掉（binlog 关了以后这步跳过）；演练进程被系统强杀
+# 留下的临时库也删掉（见 on_exit）。两件都做完才撤掉收尾标记：哪一步失败，退出时 on_exit 再删一遍、再清一遍
+restore_drill() {
+  [ -f "$SERVER/.env" ] || die "还没装（没有 ${SERVER}/.env）"
+  local now
+  now=$(beijing_hhmm)
+  [[ "$now" =~ ^[0-9]{4}$ ]] || die "读不出现在的时间"
+  if [ "$((10#$now))" -lt 1000 ] || [ "$((10#$now))" -gt 2330 ]; then
+    die "现在是北京时间 ${now:0:2}:${now:2:2}：只在 10:00–23:30 之间跑（别的时段有每天的备份、提醒、日报和对账，停 worker 会让它们跳过）"
+  fi
+  local dir
+  dir=$(docker volume inspect youju-server_storage --format '{{.Mountpoint}}' 2>/dev/null || true)
+  { [ -n "$dir" ] && [ -d "$dir" ]; } || die "读不出存储卷的位置（docker volume inspect youju-server_storage）"
+  # 文件名里是备份那天的日期，按名字排就是按日期排
+  local files=("$dir"/backups/youju-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9].jsonl.gz)
+  [ -e "${files[0]}" ] || die "存储里还没有用户数据备份（每天 4:00 做，上线打开正式定时任务的第二天才有）"
+  local name root_pw
+  name=$(basename "${files[${#files[@]} - 1]}")
+  drill_space_ok "$dir/backups/$name"
+  root_pw=$(root_password)
+  [ -n "$root_pw" ] || die "${SERVER}/mysql-root.env 里没有 MYSQL_ROOT_PASSWORD（先 ${SELF} split-db-env）"
+  db_env_ok
+  acquire_ops_lock
+  say "恢复演练：用户数据备份 ${name} 在临时库 youju_drill_… 里恢复一遍（核对条数、外键、每张表的 SHA-256），结束删掉；不碰正式库"
+  say "先停 worker（定时任务、本机推同步停几分钟），接口照常；结束再起来"
+  install_exit_trap
+  run_fg compose stop worker
+  DROP_DRILL_DBS=1
+  PURGE_BINLOG=1
+  YOUJU_DATABASE_URL="mysql+pymysql://root:${root_pw}@mysql:3306/youju?charset=utf8mb4" \
+    run_fg compose run --rm --no-deps -e YOUJU_DATABASE_URL worker \
+    youju restore-drill --file "/data/storage/backups/$name" \
+    || die "恢复演练没通过（原因见上面）"
+  say "演练通过；删掉以前被打断留下的临时库（一般没有），再清 MySQL 的 binlog（binlog 关了以后这步打\"binlog 没开，不用清\"）"
+  drop_drill_dbs || die "演练通过了，但留下的临时库没删掉（照手册第八节\"恢复演练\"做）"
+  purge_binlog || die "演练通过了，但 binlog 没清掉（照手册第八节\"恢复演练\"做）"
+  DROP_DRILL_DBS=""
+  PURGE_BINLOG=""
+  echo "DRILL OK ${name}"
 }
 
 takedowns() {
@@ -1033,7 +1895,7 @@ uninstall() {
       "$EXPORT_DIR"
     echo "已删除有据的容器、数据卷、镜像、证书和 ${BASE} 下的文件"
   else
-    echo "已停掉有据、撤掉站点和定时任务；数据卷和 ${SERVER}/.env 留着（${SELF} up 重新启动）"
+    echo "已停掉有据、撤掉站点和定时任务；数据卷和 ${SERVER} 下的配置、口令文件留着（${SELF} up 重新启动）"
   fi
   echo "用户 youju 另用 unkey 删；桌面服务另用 desktop on 恢复"
 }
@@ -1050,6 +1912,8 @@ case "$cmd" in
   unpack) unpack "$@" ;;
   install) install_release "$@" ;;
   env) make_env "$@" ;;
+  split-db-env) split_db_env ;;
+  unsplit-db-env) unsplit_db_env ;;
   up) up ;;
   site) need_domain site; site "$@" ;;
   cert) need_domain cert; cert ;;
@@ -1077,5 +1941,7 @@ case "$cmd" in
   cloudrun-gone) cloudrun_gone "$@" ;;
   alert-probe) alert_probe ;;
   export-reset) export_reset ;;
+  binlog-off) binlog_off ;;
+  restore-drill) restore_drill ;;
   *) awk 'NR > 1 && /^#/ {print; next} NR > 1 {exit}' "$0"; exit 1 ;;
 esac

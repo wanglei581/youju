@@ -49,7 +49,7 @@ def test_clear_seed_rows_only_on_a_fresh_database(session_factory, db_engine):
 
 def test_uptime_check_alerts_once_and_on_recovery(tmp_path, monkeypatch):
     sent, replies = [], []
-    monkeypatch.setattr("youju.alerts.send_alert", lambda m: sent.append(m))
+    monkeypatch.setattr("youju.alerts.send_alert", lambda m: sent.append(m) or True)
 
     def fake_get(url, **kw):
         reply = replies.pop(0)
@@ -73,6 +73,87 @@ def test_uptime_check_alerts_once_and_on_recovery(tmp_path, monkeypatch):
     assert run() == 0 and len(sent) == 2 and "恢复" in sent[1]
     assert run() == 0 and len(sent) == 2
     assert json.loads(state.read_text()) == {"fails": 0, "alerted": False}
+
+
+def test_uptime_check_resends_an_alert_that_did_not_go_out(tmp_path, monkeypatch, capsys):
+    """提醒没发出去（发送失败、没配告警）不算提醒过：下一次照样发；恢复的消息也一样。"""
+    sent, results, replies = [], [], []
+
+    def fake_send(message):
+        sent.append(message)
+        return results.pop(0)
+
+    def fake_get(url, **kw):
+        reply = replies.pop(0)
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+    monkeypatch.setattr("youju.alerts.send_alert", fake_send)
+    monkeypatch.setattr(httpx, "get", fake_get)
+    state = tmp_path / "state.json"
+
+    def run():
+        code = cli.main(["uptime-check", "--url", "https://api.example.com", "--state", str(state)])
+        return code, capsys.readouterr().out, json.loads(state.read_text())
+
+    down = httpx.ConnectError("x")
+    up = httpx.Response(200, json={"status": "ok"})
+    # 不通时只看第一处，通时两处都看
+    replies.extend([down] * 5 + [up, up] + [down] + [up] * 6)
+    results.extend([False, None, True, False, None, True])
+
+    assert run()[0] == 1 and sent == []  # 第一次不通先不提醒
+    code, out, noted = run()
+    assert code == 1 and len(sent) == 1 and "提醒没发出去，下次再发" in out
+    assert noted == {"fails": 2, "alerted": False}
+    code, out, noted = run()  # 没配告警也不算提醒过
+    assert code == 1 and len(sent) == 2 and "连续 3 次" in sent[1]
+    assert "没配置告警，提醒没发（配好以后照常提醒）" in out and noted["alerted"] is False
+    code, out, noted = run()
+    assert code == 1 and len(sent) == 3 and "连续 4 次" in sent[2]
+    assert "下次再发" not in out and noted == {"fails": 4, "alerted": True}
+    assert run()[0] == 1 and len(sent) == 3  # 发出去了：同一次故障不再提醒
+    # 恢复的消息没发出去：留着"已提醒"，下次检查通过时再发；退出码只看服务器通不通
+    code, out, noted = run()
+    assert code == 0 and len(sent) == 4 and "恢复" in sent[3] and "提醒没发出去" in out
+    assert noted == {"fails": 0, "alerted": True}
+    # 补发"恢复了"之前又不通：群里最后看到的就是"不通"，不另发新的"不通"
+    code, out, noted = run()
+    assert code == 1 and len(sent) == 4 and noted == {"fails": 1, "alerted": True}
+    code, out, noted = run()  # 恢复的消息碰上没配告警，也留着下次再发
+    assert code == 0 and len(sent) == 5 and "恢复" in sent[4] and "没配置告警" in out
+    assert noted == {"fails": 0, "alerted": True}
+    code, out, noted = run()
+    assert code == 0 and len(sent) == 6 and "恢复" in sent[5]
+    assert noted == {"fails": 0, "alerted": False}
+    assert run()[0] == 0 and len(sent) == 6 and not replies and not results
+
+
+@pytest.mark.parametrize(
+    "broken",
+    [
+        "null",
+        "[1]",
+        '"x"',
+        '{"fails": "x"}',
+        '{"fails": null, "alerted": "yes"}',
+        '{"fails": 1e999}',
+        '{"fails": -3, "alerted": 1}',
+    ],
+)
+def test_uptime_check_survives_a_broken_state_file(tmp_path, monkeypatch, broken):
+    """状态文件被改坏了：当作没有记录重新数，不崩（崩了的话整次故障都不提醒）。"""
+    monkeypatch.setattr("youju.alerts.send_alert", lambda m: True)
+
+    def fake_get(url, **kw):
+        raise httpx.ConnectError("x")
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+    state = tmp_path / "state.json"
+    state.write_text(broken, encoding="utf-8")
+    code = cli.main(["uptime-check", "--url", "https://api.example.com", "--state", str(state)])
+    assert code == 1 and json.loads(state.read_text()) == {"fails": 1, "alerted": False}
 
 
 class FakeOffsite:
@@ -290,6 +371,16 @@ def test_windows_package_marks_chinese_names_utf8(tmp_path):
             "set-config.sh",
         ):
             assert f"local/{wanted}" in names, wanted
+        # 镜像里带完整提交号：电脑导出的公开快照靠它记代码版本（tools/team/fresh-test-db.sh）
+        build = json.loads(z.read("local/source/backend/src/youju/_build.json"))
+        head = subprocess.run(
+            ["git", "-C", str(SELFHOST), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        assert build == {"revision": head}
+        assert z.read("local/source/VERSION").decode().strip() == head[:8]
 
 
 def _alembic_head():
@@ -384,6 +475,15 @@ def test_shared_server_compose_stays_small_and_local():
     assert (
         "${YOUJU_CRONTAB:-/app/backend/deploy/selfhost/shared/crontab.idle}" in services["worker"]
     )
+    # 数据库账号按最小权限分开：root 和 youju 的口令只经 mysql-root.env 给 MySQL 容器；接口、worker 各读
+    # 共用的 .env 和自己的库账号；compose 里不再从 .env 取任何连库口令
+    assert "\n    env_file: mysql-root.env\n" in services["mysql"]
+    assert "\n    env_file: [.env, db-api.env]\n" in services["api"]
+    assert "\n    env_file: [.env, db-worker.env]\n" in services["worker"]
+    code = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
+    assert "MYSQL_ROOT_PASSWORD" not in code.replace("$$MYSQL_ROOT_PASSWORD", "")  # 只剩健康检查
+    assert "MYSQL_PASSWORD" not in code and "YOUJU_DATABASE_URL" not in code
+    assert "\n  env_file: .env\n" in text.split("\nservices:\n")[0]
 
 
 def test_shared_server_nginx_site_only_forwards_app_paths():
@@ -532,10 +632,15 @@ def test_shared_server_env_passes_startup_checks(monkeypatch):
         assert "$" not in value, line
         env[key] = value
     assert env["YOUJU_WX_API_BASE"] == "http://127.0.0.1:9"
+    # 接口、worker 共用的 .env 里没有任何连库口令：各自的连接串在 db-api.env、db-worker.env（compose 再给）
+    for name in ("MYSQL_ROOT_PASSWORD", "MYSQL_PASSWORD", "YOUJU_DATABASE_URL"):
+        assert name not in env, name
     for key, value in env.items():
         monkeypatch.setenv(key, value)
-    for role in ("api", "admin"):
+    for role, user in (("api", "youju_api"), ("admin", "youju_worker")):
         monkeypatch.setenv("YOUJU_ROLE", role)
+        url = f"mysql+pymysql://{user}:{'a' * 48}@mysql:3306/youju?charset=utf8mb4"
+        monkeypatch.setenv("YOUJU_DATABASE_URL", url)
         settings = Settings(_env_file=None)
         assert (settings.hosting, settings.role, settings.public_replica) == ("self", role, True)
 
@@ -562,6 +667,20 @@ def test_server_package_structure(tmp_path):
         assert all(m.uid == 0 and m.gid == 0 for m in members.values())
         assert all(name.split("/", 1)[0] in {"shared", "source"} for name in members)
         assert not any(name.endswith(".env") for name in members)
+
+
+def test_server_mysql_configs_turn_binlog_and_query_logs_off():
+    """服务器（共用、单独两种）的 MySQL：binlog 关掉（没在用：不做主从、没有按时刻恢复），慢查询日志、
+    通用查询日志写明关着；本机电脑那份只有公开数据，不在这里管。"""
+    for path in (SHARED / "mysql.cnf", SELFHOST / "server" / "mysql.cnf"):
+        lines = [
+            line.strip()
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+        assert "disable_log_bin" in lines, path
+        assert "slow_query_log = OFF" in lines and "general_log = OFF" in lines, path
+        assert not any(line.startswith(("log_bin", "log-bin", "binlog_")) for line in lines), path
 
 
 def test_offsite_pull_keeps_a_ciphertext_copy_locally(tmp_path):

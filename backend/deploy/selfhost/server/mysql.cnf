@@ -9,8 +9,11 @@ performance_schema = OFF
 table_open_cache = 1024
 tmp_table_size = 32M
 max_heap_table_size = 32M
-# 二进制日志只留 3 天（每天整库备份 + 异地备份；不做主从）
-binlog_expire_logs_seconds = 259200
+# 二进制日志（binlog）关掉：没在用——不做主从，也没有按时刻恢复，恢复只用每天的备份（手册第八节）
+disable_log_bin
+# 慢查询日志、通用查询日志都关着（MySQL 8 默认就关，这里写明）
+slow_query_log = OFF
+general_log = OFF
 # 同步一批最多 64MB（压缩前更大），写库用的单条语句要放得下
 max_allowed_packet = 128M
 skip_name_resolve = ON

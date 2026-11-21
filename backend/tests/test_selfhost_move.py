@@ -3,6 +3,7 @@
 
 import base64
 import contextlib
+import fcntl
 import gzip
 import hashlib
 import json
@@ -475,11 +476,37 @@ def _calls(tmp_path: Path) -> list[str]:
     return log.read_text(encoding="utf-8").splitlines() if log.exists() else []
 
 
+ROOT_PW, MIGRATE_PW, API_PW, WORKER_PW = "r00tpw", "m1gratepw", "ap1pw0", "w0rkerpw"
+DB_SUFFIX = "@mysql:3306/youju?charset=utf8mb4"
+MYSQL_ACCOUNTS = SELFHOST.parent / "mysql_accounts.sql"
+
+
+def _url(user: str, password: str) -> str:
+    return f"mysql+pymysql://{user}:{password}{DB_SUFFIX}"
+
+
 def _server_env(tmp_path: Path, text: str) -> Path:
-    (tmp_path / "server").mkdir(exist_ok=True)
-    env = tmp_path / "server" / ".env"
-    env.write_text(text, encoding="utf-8")
+    """服务器的 .env（只有 root 能读）。写了 MYSQL_ROOT_PASSWORD 的，照现在的做法把库账号分开放：root 和 youju
+    的口令进 mysql-root.env，接口、worker 各有 db-api.env、db-worker.env；.env 里不留这几项。"""
+    server = tmp_path / "server"
+    server.mkdir(exist_ok=True)
+    lines = text.splitlines(keepends=True)
+    secret = ("MYSQL_ROOT_PASSWORD=", "MYSQL_PASSWORD=", "YOUJU_DATABASE_URL=")
+    env = server / ".env"
+    env.write_text("".join(x for x in lines if not x.startswith(secret)), encoding="utf-8")
     env.chmod(0o600)
+    root = [x for x in lines if x.startswith("MYSQL_ROOT_PASSWORD=")]
+    if root:
+        migrate = [x for x in lines if x.startswith("MYSQL_PASSWORD=")]
+        files = {
+            "mysql-root.env": root[0]
+            + (migrate[0] if migrate else f"MYSQL_PASSWORD={MIGRATE_PW}\n"),
+            "db-api.env": f"YOUJU_DATABASE_URL={_url('youju_api', API_PW)}\n",
+            "db-worker.env": f"YOUJU_DATABASE_URL={_url('youju_worker', WORKER_PW)}\n",
+        }
+        for name, body in files.items():
+            (server / name).write_text(body, encoding="utf-8")
+            (server / name).chmod(0o600)
     return env
 
 
@@ -586,6 +613,396 @@ def test_shared_rotate_sync_prints_only_a_fingerprint(tmp_path):
     new = env.read_text(encoding="utf-8").strip().split("=", 1)[1]
     assert re.fullmatch(r"[0-9a-f]{64}", new) and new != "a" * 64
     assert new not in done.stdout and _sha(new.encode())[:4] in done.stdout
+
+
+SPLIT_COMPOSE = (
+    "services:\n  mysql:\n    env_file: mysql-root.env\n"
+    "  api:\n    env_file: [.env, db-api.env]\n  worker:\n    env_file: [.env, db-worker.env]\n"
+)
+OLD_ENV = (
+    f"YOUJU_IMAGE=x\nMYSQL_ROOT_PASSWORD={ROOT_PW}\nMYSQL_PASSWORD={MIGRATE_PW}\n"
+    f"YOUJU_DATABASE_URL={_url('youju', MIGRATE_PW)}\nYOUJU_SYNC_SECRET=s\n"
+)
+SPLIT_ENV = "YOUJU_IMAGE=x\nYOUJU_SYNC_SECRET=s\n"
+
+
+def _old_layout(tmp_path: Path, env_text: str, compose: str = SPLIT_COMPOSE) -> Path:
+    """还没把库账号分开放的 .env（只有 root 能读）、装好的 docker-compose.yml 和授权清单。"""
+    server = tmp_path / "server"
+    server.mkdir(exist_ok=True)
+    env = server / ".env"
+    env.write_text(env_text, encoding="utf-8")
+    env.chmod(0o600)
+    (server / "docker-compose.yml").write_text(compose, encoding="utf-8")
+    shutil.copy(MYSQL_ACCOUNTS, server / "mysql_accounts.sql")
+    return env
+
+
+def _db_files(tmp_path: Path) -> dict[str, Path]:
+    server = tmp_path / "server"
+    return {name: server / name for name in ("mysql-root.env", "db-api.env", "db-worker.env")}
+
+
+def _texts(files: dict[str, Path]) -> dict[str, str]:
+    return {name: path.read_text(encoding="utf-8") for name, path in files.items()}
+
+
+@needs_bash
+def test_shared_split_db_env_gives_each_service_its_own_account(tmp_path):
+    """数据库账号按最小权限分开：root、youju 的口令进 mysql-root.env，接口、worker 各生成一个自己的账号，
+    .env 里不留连库口令；值不显示，文件都只有 root 能读；重跑不动，放到一半的补完。"""
+    env = _old_layout(tmp_path, OLD_ENV, compose="services:\n  mysql:\n")
+    # 装好的 compose 还是旧的（不认这几个口令文件）：什么都不动
+    done = _bash(tmp_path, "split_db_env")
+    assert done.returncode == 1 and "先 install 这一版" in done.stderr
+    assert env.read_text(encoding="utf-8") == OLD_ENV
+    assert not any(path.exists() for path in _db_files(tmp_path).values())
+    env = _old_layout(tmp_path, OLD_ENV)
+    done = _bash(tmp_path, "split_db_env")
+    assert done.returncode == 0, done.stderr
+    files = _db_files(tmp_path)
+    assert env.read_text(encoding="utf-8") == SPLIT_ENV
+    assert files["mysql-root.env"].read_text(encoding="utf-8") == (
+        f"MYSQL_ROOT_PASSWORD={ROOT_PW}\nMYSQL_PASSWORD={MIGRATE_PW}\n"
+    )
+    made = {}
+    for svc in ("api", "worker"):
+        line = files[f"db-{svc}.env"].read_text(encoding="utf-8")
+        pattern = rf"YOUJU_DATABASE_URL=mysql\+pymysql://youju_{svc}:([0-9a-f]{{48}}){re.escape(DB_SUFFIX)}\n"
+        found = re.fullmatch(pattern, line)
+        assert found, line
+        made[svc] = found.group(1)
+    assert made["api"] != made["worker"]
+    for path in [env, *files.values()]:
+        assert path.stat().st_mode & 0o777 == 0o600, path
+    out = done.stdout + done.stderr
+    assert not any(value in out for value in (ROOT_PW, MIGRATE_PW, *made.values()))
+    assert not list((tmp_path / "server").glob("*.tmp"))
+    # 重跑：已经分好的不动（接口、worker 的口令不换）
+    before = _texts(files)
+    assert _bash(tmp_path, "split_db_env").returncode == 0
+    assert _texts(files) == before
+    # 上次放到一半（口令文件写好了、.env 里还没删）：重跑把 .env 里那几项删掉，口令文件照旧
+    env.write_text(OLD_ENV, encoding="utf-8")
+    assert _bash(tmp_path, "split_db_env").returncode == 0
+    assert env.read_text(encoding="utf-8") == SPLIT_ENV and _texts(files) == before
+
+
+@needs_bash
+@pytest.mark.parametrize(
+    "env_text, existing, message",
+    [
+        (
+            OLD_ENV.replace(ROOT_PW, "other1"),
+            {"mysql-root.env": f"MYSQL_ROOT_PASSWORD={ROOT_PW}\n"},
+            "MYSQL_ROOT_PASSWORD 和 .env 里的不一样",
+        ),
+        (OLD_ENV.replace("@mysql:3306", "@elsewhere:3306"), {}, "不是 youju 账号连本机 MySQL"),
+        (
+            OLD_ENV,
+            {"db-api.env": f"YOUJU_DATABASE_URL={_url('root', 'x')}\n"},
+            "db-api.env 写法不对",
+        ),
+        (f"YOUJU_IMAGE=x\nMYSQL_ROOT_PASSWORD={ROOT_PW}\n", {}, "都没有 MYSQL_PASSWORD"),
+    ],
+)
+def test_shared_split_db_env_stops_before_touching_anything(tmp_path, env_text, existing, message):
+    """口令对不上、连接串不是 youju 连本机的、已有的文件写法不对、缺口令：停下，一个文件都不动；只打指纹。"""
+    _old_layout(tmp_path, env_text)
+    for name, body in existing.items():
+        (tmp_path / "server" / name).write_text(body, encoding="utf-8")
+    server = tmp_path / "server"
+    before = {p.name: p.read_text(encoding="utf-8") for p in server.iterdir() if p.is_file()}
+    done = _bash(tmp_path, "split_db_env")
+    assert done.returncode == 1 and message in done.stderr, done.stderr
+    assert {
+        p.name: p.read_text(encoding="utf-8") for p in server.iterdir() if p.is_file()
+    } == before
+    assert not any(value in done.stderr for value in (ROOT_PW, MIGRATE_PW, "other1"))
+
+
+@needs_bash
+def test_shared_unsplit_db_env_writes_back_for_a_rollback(tmp_path):
+    """回退到不认这几个口令文件的旧版本之前：root、youju 的口令和 youju 的连接串写回 .env（值不显示）；
+    写回以后新脚本的 up 会拦住，再升级回来照样分开。"""
+    env = _old_layout(tmp_path, OLD_ENV)
+    assert _bash(tmp_path, "split_db_env").returncode == 0
+    done = _bash(tmp_path, "unsplit_db_env")
+    assert done.returncode == 0, done.stderr
+    text = env.read_text(encoding="utf-8")
+    for line in (
+        f"MYSQL_ROOT_PASSWORD={ROOT_PW}",
+        f"MYSQL_PASSWORD={MIGRATE_PW}",
+        f"YOUJU_DATABASE_URL={_url('youju', MIGRATE_PW)}",
+    ):
+        assert line + "\n" in text, line
+    assert env.stat().st_mode & 0o777 == 0o600
+    assert ROOT_PW not in done.stdout + done.stderr and MIGRATE_PW not in done.stdout + done.stderr
+    assert _bash(tmp_path, "up", setup="status() { :; }").returncode == 1
+    assert _bash(tmp_path, "split_db_env").returncode == 0
+    assert env.read_text(encoding="utf-8") == SPLIT_ENV
+
+
+@needs_bash
+def test_shared_up_migrates_as_youju_then_sets_accounts_before_starting(tmp_path):
+    """up：口令没分开放就停下、一个容器都不动（先停后起的 pause_services、import-export 也是）；分好以后先起
+    MySQL、停接口和 worker，用 youju 迁移（连接串经环境变量），再在 MySQL 容器里用 root 设好接口、worker 的账号
+    和授权（SQL 经标准输入），最后起 worker、接口。"""
+    _old_layout(tmp_path, OLD_ENV)
+    fake_status = "status() { echo STATUS; }"
+    done = _bash(tmp_path, "up", setup=fake_status)
+    assert done.returncode == 1 and "先运行 youju-shared.sh split-db-env" in done.stderr
+    done = _bash(tmp_path, "pause_services")
+    assert done.returncode == 1 and "split-db-env" in done.stderr
+    assert _calls(tmp_path) == []
+    _downloaded(tmp_path)
+    done = _bash(tmp_path, "import_export a79a0042")
+    assert done.returncode == 1 and "mysql-root.env 里没有 MYSQL_ROOT_PASSWORD" in done.stderr
+    assert not [c for c in _calls(tmp_path) if c.startswith("compose")]
+    assert _bash(tmp_path, "split_db_env").returncode == 0
+    (tmp_path / "calls.log").unlink(missing_ok=True)
+    done = _bash(tmp_path, "pause_services; trap - EXIT")
+    assert done.returncode == 0 and _calls(tmp_path)[0].startswith("compose stop api worker")
+    (tmp_path / "calls.log").unlink()
+    sql_file = tmp_path / "accounts.sql"
+    log = tmp_path / "calls.log"
+    # 跑测试的进程环境里有测试库的连接串（conftest 设的）；服务器上跑脚本的 root 环境里没有
+    setup = (
+        fake_status
+        + "\nunset YOUJU_DATABASE_URL\n"
+        + f'compose() {{ printf "compose %s | db=%s\\n" "$*" "${{YOUJU_DATABASE_URL:-}}" >> "{log}"; '
+        + f'if [ "$1" = exec ]; then cat > "{sql_file}"; fi; }}'
+    )
+    done = _bash(tmp_path, "up", setup=setup)
+    assert done.returncode == 0, done.stderr
+    calls = _calls(tmp_path)
+    assert [c.split(" | ")[0] for c in calls] == [
+        "compose config -q",
+        "compose up -d --wait --wait-timeout 300 mysql",
+        "compose stop worker api",
+        "compose run --rm --no-deps -e YOUJU_DATABASE_URL worker youju db-upgrade",
+        "compose run --rm --no-deps -e YOUJU_DATABASE_URL worker youju sync-server-setup",
+        'compose exec -T mysql sh -c MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot -N -B',
+        "compose up -d --wait --wait-timeout 900 worker",
+        "compose up -d --wait --wait-timeout 300 api",
+    ]
+    # 迁移、建收同步的进度表用 youju（经环境变量）；别的调用都不带连接串，口令都不在参数里
+    assert calls[3].endswith(f"| db={_url('youju', MIGRATE_PW)}")
+    assert calls[4].endswith(f"| db={_url('youju', MIGRATE_PW)}")
+    assert all(c.endswith("| db=") for i, c in enumerate(calls) if i not in (3, 4))
+    assert not any(MIGRATE_PW in c.split(" | ")[0] or ROOT_PW in c for c in calls)
+    api_line = (tmp_path / "server" / "db-api.env").read_text(encoding="utf-8")
+    api_pw = re.search(r"youju_api:([0-9a-f]{48})@", api_line).group(1)
+    sql = sql_file.read_text(encoding="utf-8")
+    assert f"CREATE USER IF NOT EXISTS 'youju_api'@'%' IDENTIFIED BY '{api_pw}';" in sql
+    assert "接口（youju_api）、worker（youju_worker）的库账号和授权已照清单设好" in done.stdout
+    assert "STATUS" in done.stdout
+
+
+def _conftest_api_grants() -> list[str]:
+    """tests/conftest.py 建受限账号时取接口授权的办法：GRANT 语句里 TO 'youju_api'@ 的那些。"""
+    sql = MYSQL_ACCOUNTS.read_text(encoding="utf-8")
+    return [
+        s for s in re.findall(r"^GRANT\b[^;]*;", sql, re.M) if re.search(r"TO\s+'youju_api'@", s)
+    ]
+
+
+@needs_bash
+def test_shared_db_accounts_sql_checks_tables_before_changing_grants(tmp_path):
+    """接口、worker 的账号：建好、口令和 db-*.env 对齐；先逐条查授权用到的表和列都在，再收回、照清单重授。
+    接口的授权就是 mysql_accounts.sql 第 ② 节那些行（和 conftest 建受限账号同一个取法），一条不漏。"""
+    _server_env(tmp_path, f"YOUJU_IMAGE=x\nMYSQL_ROOT_PASSWORD={ROOT_PW}\n")
+    shutil.copy(MYSQL_ACCOUNTS, tmp_path / "server" / "mysql_accounts.sql")
+    done = _bash(tmp_path, "db_accounts_sql")
+    assert done.returncode == 0, done.stderr
+    lines = done.stdout.splitlines()
+    grants = _conftest_api_grants()
+    assert grants and lines[-len(grants) :] == grants
+    assert lines[:4] == [
+        f"CREATE USER IF NOT EXISTS 'youju_api'@'%' IDENTIFIED BY '{API_PW}';",
+        f"ALTER USER 'youju_api'@'%' IDENTIFIED BY '{API_PW}';",
+        f"CREATE USER IF NOT EXISTS 'youju_worker'@'%' IDENTIFIED BY '{WORKER_PW}';",
+        f"ALTER USER 'youju_worker'@'%' IDENTIFIED BY '{WORKER_PW}';",
+    ]
+    revoke = lines.index(
+        "REVOKE ALL PRIVILEGES, GRANT OPTION FROM 'youju_api'@'%', 'youju_worker'@'%';"
+    )
+    assert lines[revoke + 1] == (
+        "GRANT SELECT, INSERT, UPDATE, DELETE, LOCK TABLES ON youju.* TO 'youju_worker'@'%';"
+    )
+    checks = lines[4:revoke]
+    per_table = [g for g in grants if re.search(r" ON youju\.\w+ TO ", g)]
+    assert len(checks) == len(per_table)  # 按表的授权每条查一句（youju.* 那条不用查）
+    assert all(re.fullmatch(r"SELECT [a-z_, 1]+ FROM youju\.\w+ WHERE 1 = 0;", c) for c in checks)
+    assert "SELECT ends_at FROM youju.boost_trials WHERE 1 = 0;" in checks
+    assert "SELECT 1 FROM youju.access_logs WHERE 1 = 0;" in checks
+    # 清单里没有接口的授权：停下
+    (tmp_path / "server" / "mysql_accounts.sql").write_text("-- 空\n", encoding="utf-8")
+    done = _bash(tmp_path, "db_accounts_sql")
+    assert done.returncode == 1 and "没找到接口的授权" in done.stderr
+
+
+def test_api_grants_name_tables_and_columns_that_exist():
+    """mysql_accounts.sql 第 ② 节授权用到的表和列都在现在的表结构里：表或列删了要同时删掉 GRANT 行，不然共用
+    服务器的 up 会停在改权限之前。"""
+    from youju.models import Base
+
+    tables = Base.metadata.tables
+    for grant in _conftest_api_grants():
+        found = re.search(r"^GRANT (.+) ON youju\.(\w+|\*) TO ", grant)
+        assert found, grant
+        if found.group(2) == "*":
+            continue
+        assert found.group(2) in tables, grant
+        for cols in re.findall(r"\(([^)]*)\)", found.group(1)):
+            for col in cols.split(","):
+                assert col.strip() in tables[found.group(2)].c, grant
+
+
+@needs_bash
+def test_shared_status_names_each_services_account_without_secrets(tmp_path):
+    """status（up 最后也打）：接口、worker 各用哪个库账号，里面有没有 root 和 youju 的口令；不打口令。"""
+    _server_env(tmp_path, f"YOUJU_IMAGE=x\nMYSQL_ROOT_PASSWORD={ROOT_PW}\n")
+    script = tmp_path / "probe.sh"
+    setup = (
+        "curl() { return 7; }; free() { :; }\n"
+        # 容器里的 sh -c 脚本记下来；worker 当作查不了
+        f'compose() {{ if [ "$1" = exec ]; then [ "$3" = worker ] && return 1; '
+        f'printf "%s" "$6" > "{script}"; echo "youju_api 没有"; fi; }}'
+    )
+    done = _bash(tmp_path, "status", setup=setup)
+    assert done.returncode == 0, done.stderr
+    assert "api：连库账号 youju_api；root、youju 的口令：没有" in done.stdout
+    assert "worker：查不了" in done.stdout
+    probe = script.read_text(encoding="utf-8")
+    clean = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in ("MYSQL_ROOT_PASSWORD", "MYSQL_PASSWORD", "YOUJU_DATABASE_URL")
+    }
+
+    def run(extra: dict) -> str:
+        got = subprocess.run(
+            ["sh", "-c", probe], capture_output=True, text=True, env={**clean, **extra}
+        )
+        return got.stdout + got.stderr
+
+    out = run({"YOUJU_DATABASE_URL": _url("youju_api", API_PW)})
+    assert out.strip() == "youju_api 没有" and API_PW not in out
+    out = run({"YOUJU_DATABASE_URL": _url("youju", MIGRATE_PW), "MYSQL_PASSWORD": MIGRATE_PW})
+    assert out.strip() == "youju 有" and MIGRATE_PW not in out
+    assert run({}).strip() == "无 没有"
+
+
+@needs_bash
+def test_shared_install_splits_accounts_before_building(tmp_path):
+    """已装好的服务器 install 这一版：换文件之前先核对分得了；新 compose 一装上就把库账号分开放好、拷好授权
+    清单，再构建镜像；分不了就停下，一个文件都不换、不构建（只打指纹）；回退装旧版本时不分，照常构建。"""
+    ver = "abcdef12"
+    rel = tmp_path / "releases" / ver
+    (rel / "source" / "backend" / "deploy").mkdir(parents=True)
+    (rel / "source" / "VERSION").write_text(ver + "\n", encoding="utf-8")
+    shutil.copy(MYSQL_ACCOUNTS, rel / "source" / "backend" / "deploy" / "mysql_accounts.sql")
+    shared = rel / "shared"
+    shared.mkdir()
+    (shared / "docker-compose.yml").write_text(SPLIT_COMPOSE, encoding="utf-8")
+    for name in ("mysql.cnf", "nginx-http.conf", "nginx-https.conf", "youju-shared.sh"):
+        (shared / name).write_text("x\n", encoding="utf-8")
+    old_env = OLD_ENV.replace("YOUJU_IMAGE=x", "YOUJU_IMAGE=youju-selfhost:old")
+    env = _old_layout(tmp_path, old_env, compose="old compose\n")
+    (tmp_path / "server" / "mysql_accounts.sql").unlink()
+    # 证书、验证目录也指到临时目录；跑测试的机器可能是 BSD sed：只替身 install 里那一处 sed -i
+    portable = (
+        f'WEBROOT="{tmp_path}/acme-webroot"; LE_DIR="{tmp_path}/letsencrypt"\n'
+        'sed() { if [ "$1" = -i ]; then command sed "$2" "$3" > "$3.t" && mv "$3.t" "$3"; '
+        'else command sed "$@"; fi; }'
+    )
+    done = _bash(tmp_path, f"install_release {ver}", setup=portable)
+    assert done.returncode == 0, done.stderr
+    files = _db_files(tmp_path)
+    assert all(path.exists() for path in files.values())
+    assert (
+        env.read_text(encoding="utf-8")
+        == f"YOUJU_IMAGE=youju-selfhost:{ver}\nYOUJU_SYNC_SECRET=s\n"
+    )
+    copied = tmp_path / "server" / "mysql_accounts.sql"
+    assert copied.read_bytes() == MYSQL_ACCOUNTS.read_bytes()
+    assert ROOT_PW not in done.stdout + done.stderr and MIGRATE_PW not in done.stdout + done.stderr
+    assert done.stdout.index("按最小权限分开放") < done.stdout.index("构建镜像")
+    assert any(c.startswith("docker build") for c in _calls(tmp_path))
+    # 对不上：换文件之前就停下（只打两边的指纹），一个文件都不换，不构建
+    (tmp_path / "calls.log").unlink()
+    for path in files.values():
+        path.unlink()
+    env.write_text(OLD_ENV, encoding="utf-8")
+    files["mysql-root.env"].write_text("MYSQL_ROOT_PASSWORD=other1\n", encoding="utf-8")
+    installed = tmp_path / "server" / "docker-compose.yml"
+    installed.write_text("old compose\n", encoding="utf-8")
+    script = tmp_path / "bin" / "youju-shared.sh"
+    script.write_text("old script\n", encoding="utf-8")
+    done = _bash(tmp_path, f"install_release {ver}", setup=portable)
+    assert done.returncode == 1 and "不一样" in done.stderr and "一个文件都没换" in done.stderr
+    assert _sha(b"other1")[:4] in done.stderr and _sha(ROOT_PW.encode())[:4] in done.stderr
+    assert "other1" not in done.stderr and ROOT_PW not in done.stdout + done.stderr
+    assert installed.read_text(encoding="utf-8") == "old compose\n"
+    assert script.read_text(encoding="utf-8") == "old script\n"
+    assert not any(c.startswith("docker build") for c in _calls(tmp_path))
+    # 回退：装的是还不认这几个文件的旧版本（口令已经写回 .env）：不分，照常构建
+    (tmp_path / "calls.log").unlink(missing_ok=True)
+    files["mysql-root.env"].unlink()
+    (shared / "docker-compose.yml").write_text("services:\n  mysql:\n", encoding="utf-8")
+    done = _bash(tmp_path, f"install_release {ver}", setup=portable)
+    assert done.returncode == 0, done.stderr
+    assert f"MYSQL_PASSWORD={MIGRATE_PW}" in env.read_text(encoding="utf-8")
+    assert not any(path.exists() for path in files.values())
+    assert any(c.startswith("docker build") for c in _calls(tmp_path))
+
+
+@needs_bash
+def test_shared_make_env_writes_db_secrets_per_account(tmp_path):
+    """新装（env）：.env 里没有连库口令；root 和 youju 的在 mysql-root.env，接口、worker 各一个账号；
+    都只有 root 能读，已有就不动；只剩口令文件、没有 .env 时不另生成。"""
+    if shutil.which("openssl") is None:
+        pytest.skip("没有 openssl")
+    ver = "abcdef12"
+    rel = tmp_path / "releases" / ver / "source"
+    (rel / "backend/deploy/selfhost/server").mkdir(parents=True)
+    (rel / "VERSION").write_text(ver + "\n", encoding="utf-8")
+    (rel / "backend/deploy/selfhost/server/env.example").write_text(
+        "YOUJU_CLOUD_ENV=test-env\n", encoding="utf-8"
+    )
+    server = tmp_path / "server"
+    server.mkdir()
+    (server / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+    done = _bash(tmp_path, f"make_env {ver}")
+    assert done.returncode == 0, done.stderr
+    env, files = server / ".env", _db_files(tmp_path)
+    text = env.read_text(encoding="utf-8")
+    for name in ("MYSQL_ROOT_PASSWORD", "MYSQL_PASSWORD", "YOUJU_DATABASE_URL"):
+        assert name + "=" not in text, name
+    found = re.fullmatch(
+        r"MYSQL_ROOT_PASSWORD=([0-9a-f]{48})\nMYSQL_PASSWORD=([0-9a-f]{48})\n",
+        files["mysql-root.env"].read_text(encoding="utf-8"),
+    )
+    assert found and found.group(1) != found.group(2)
+    secrets = [found.group(1), found.group(2)]
+    for svc in ("api", "worker"):
+        line = files[f"db-{svc}.env"].read_text(encoding="utf-8")
+        pattern = rf"YOUJU_DATABASE_URL=mysql\+pymysql://youju_{svc}:([0-9a-f]{{48}}){re.escape(DB_SUFFIX)}\n"
+        url = re.fullmatch(pattern, line)
+        assert url, line
+        secrets.append(url.group(1))
+    assert len(set(secrets)) == 4 and not any(s in text or s in done.stdout for s in secrets)
+    for path in [env, *files.values()]:
+        assert path.stat().st_mode & 0o777 == 0o600, path
+    assert not list(server.glob("*.tmp"))
+    before = _texts(files)
+    again = _bash(tmp_path, f"make_env {ver}")
+    assert again.returncode == 0 and "不动" in again.stdout and _texts(files) == before
+    # 只剩口令文件（数据库可能已经用它们建好了）：不另生成
+    env.unlink()
+    done = _bash(tmp_path, f"make_env {ver}")
+    assert done.returncode == 1 and "先人工核对" in done.stderr and not env.exists()
 
 
 @needs_bash
@@ -771,6 +1188,1153 @@ def test_shared_import_export_stops_when_drill_fails(tmp_path):
     assert calls[-1].startswith(
         "compose up -d --wait --wait-timeout 300 api"
     )  # 接口、worker 照样起来
+
+
+def _drill_setup(tmp_path: Path, hhmm: str = "1430") -> str:
+    """恢复演练用：docker volume inspect 指到临时目录里的"存储卷"，北京时间固定成 hhmm。"""
+    log = tmp_path / "calls.log"
+    return (
+        f'docker() {{ printf "docker %s\\n" "$*" >> "{log}"; case "$1" in '
+        f'info) echo "{tmp_path}" ;; volume) echo "{tmp_path}/volume" ;; esac; }}\n'
+        f"beijing_hhmm() {{ echo {hhmm}; }}"
+    )
+
+
+def _drill_backups(tmp_path: Path, *names: str) -> Path:
+    backups = tmp_path / "volume" / "backups"
+    backups.mkdir(parents=True, exist_ok=True)
+    for name in names:
+        (backups / name).write_bytes(gzip.compress(b'{"format":"youju-backup"}\n'))
+    return backups
+
+
+@needs_bash
+def test_shared_restore_drill_uses_root_and_the_newest_backup(tmp_path):
+    _server_env(tmp_path, "MYSQL_ROOT_PASSWORD=r00tpw\n")
+    assert "MYSQL_ROOT_PASSWORD" not in (tmp_path / "server" / ".env").read_text(encoding="utf-8")
+    assert "MYSQL_ROOT_PASSWORD=r00tpw" in (tmp_path / "server" / "mysql-root.env").read_text(
+        encoding="utf-8"
+    )
+    # 名字不对的（没有 8 位日期、没压完的）不算
+    _drill_backups(
+        tmp_path,
+        "youju-20261118.jsonl.gz",
+        "youju-20261119.jsonl.gz",
+        "youju-2026112.jsonl.gz",
+        "youju-20261120.jsonl.gz.part",
+    )
+    done = _bash(tmp_path, "restore_drill", setup=_drill_setup(tmp_path))
+    assert done.returncode == 0, done.stderr
+    assert "DRILL OK youju-20261119.jsonl.gz" in done.stdout
+    calls = [c for c in _calls(tmp_path) if c.startswith("compose")]
+    # 只停 worker（临时容器用它那份内存），接口照常
+    assert calls[0].startswith("compose stop worker |")
+    drill = calls[1]
+    assert drill.startswith(
+        "compose run --rm --no-deps -e YOUJU_DATABASE_URL worker "
+        "youju restore-drill --file /data/storage/backups/youju-20261119.jsonl.gz |"
+    )
+    # root 连接串经环境变量（不在命令行参数里）；镜像用 .env 里现在这一版
+    assert "db=mysql+pymysql://root:r00tpw@mysql:3306/youju?charset=utf8mb4 " in drill
+    assert "r00tpw" not in drill.split(" | ")[0]
+    assert "image= " in drill
+    # 演练通过以后：删掉以前被打断留下的临时库，再清 binlog（试恢复写进了一份用户数据）；
+    # 两段都经标准输入给 mysql 容器里的 sh，口令不在参数里（脚本内容见下面两条测试）
+    assert calls[2].startswith("compose exec -T mysql sh -s |")
+    assert calls[3].startswith("compose exec -T mysql sh -s |")
+    assert "r00tpw" not in calls[2] + calls[3]
+    # 结束把 worker 起来（接口本来就在跑，up 一下不影响）
+    assert calls[4].startswith("compose up -d --wait --wait-timeout 900 worker")
+    assert calls[5].startswith("compose up -d --wait --wait-timeout 300 api")
+    # 存储卷按项目名找（compose 文件里 name: youju-server）
+    assert "docker volume inspect youju-server_storage --format {{.Mountpoint}}" in _calls(tmp_path)
+    assert "没走完" not in done.stderr
+
+
+@needs_bash
+@pytest.mark.parametrize(
+    ("hhmm", "ok"),
+    [("0959", False), ("1000", True), ("2330", True), ("2331", False), ("0415", False)],
+)
+def test_shared_restore_drill_runs_only_in_the_daytime(tmp_path, hhmm, ok):
+    _server_env(tmp_path, "MYSQL_ROOT_PASSWORD=r00tpw\n")
+    _drill_backups(tmp_path, "youju-20261119.jsonl.gz")
+    done = _bash(tmp_path, "restore_drill", setup=_drill_setup(tmp_path, hhmm))
+    compose = [c for c in _calls(tmp_path) if c.startswith("compose")]
+    if ok:
+        assert done.returncode == 0, done.stderr
+    else:
+        assert done.returncode == 1 and "只在 10:00–23:30 之间跑" in done.stderr
+        assert not compose  # 什么都没停
+
+
+@needs_bash
+def test_shared_restore_drill_needs_a_backup_and_enough_disk(tmp_path):
+    _server_env(tmp_path, "MYSQL_ROOT_PASSWORD=r00tpw\n")
+    (tmp_path / "volume" / "backups").mkdir(parents=True)
+    done = _bash(tmp_path, "restore_drill", setup=_drill_setup(tmp_path))
+    assert done.returncode == 1 and "存储里还没有用户数据备份" in done.stderr
+    assert not [c for c in _calls(tmp_path) if c.startswith("compose")]
+    _drill_backups(tmp_path, "youju-20261119.jsonl.gz")
+    small = _drill_setup(tmp_path) + "\ndf() { printf 'Avail\\n 1073741824\\n'; }"
+    done = _bash(tmp_path, "restore_drill", setup=small)
+    assert done.returncode == 1 and "硬盘不够试恢复" in done.stderr
+    assert not [c for c in _calls(tmp_path) if c.startswith("compose")]
+    # 读不出存储卷的位置：停下
+    done = _bash(tmp_path, "restore_drill", setup="beijing_hhmm() { echo 1430; }")
+    assert done.returncode == 1 and "读不出存储卷的位置" in done.stderr
+    assert not [c for c in _calls(tmp_path) if c.startswith("compose")]
+
+
+@needs_bash
+def test_shared_restore_drill_reads_root_password_only_from_mysql_root_env(tmp_path):
+    """还没按最小权限分开时（.env 里有 root 口令、没有 mysql-root.env），或 mysql-root.env 缺口令、
+    或 db_env_ok 没过：都在停 worker 之前停下，提示先 split-db-env，一个容器都不动。"""
+    _old_layout(tmp_path, OLD_ENV)
+    _drill_backups(tmp_path, "youju-20261119.jsonl.gz")
+    done = _bash(tmp_path, "restore_drill", setup=_drill_setup(tmp_path))
+    assert done.returncode == 1
+    assert (
+        "mysql-root.env 里没有 MYSQL_ROOT_PASSWORD（先 youju-shared.sh split-db-env）"
+        in done.stderr
+    )
+    assert not [c for c in _calls(tmp_path) if c.startswith("compose")]
+
+    (tmp_path / "server" / "mysql-root.env").write_text(
+        f"MYSQL_PASSWORD={MIGRATE_PW}\n", encoding="utf-8"
+    )
+    (tmp_path / "calls.log").unlink(missing_ok=True)
+    done = _bash(tmp_path, "restore_drill", setup=_drill_setup(tmp_path))
+    assert done.returncode == 1
+    assert (
+        "mysql-root.env 里没有 MYSQL_ROOT_PASSWORD（先 youju-shared.sh split-db-env）"
+        in done.stderr
+    )
+    assert not [c for c in _calls(tmp_path) if c.startswith("compose")]
+
+    # mysql-root.env 有 root 口令但还没 split-db-env（.env 留着口令 / 缺 db-*.env）：db_env_ok 也提前拦下
+    (tmp_path / "server" / "mysql-root.env").write_text(
+        f"MYSQL_ROOT_PASSWORD={ROOT_PW}\nMYSQL_PASSWORD={MIGRATE_PW}\n", encoding="utf-8"
+    )
+    (tmp_path / "calls.log").unlink(missing_ok=True)
+    done = _bash(tmp_path, "restore_drill", setup=_drill_setup(tmp_path))
+    assert done.returncode == 1 and "split-db-env" in done.stderr
+    assert not [c for c in _calls(tmp_path) if c.startswith("compose")]
+
+
+@needs_bash
+def test_shared_restore_drill_with_binlog_off_still_drops_drill_dbs(tmp_path):
+    """组合态（#534 分开账号 + #528 关掉 binlog + #527 恢复演练）：@@log_bin=0 时 purge_binlog 打
+    "binlog 没开，不用清"并退出 0，而 drop_drill_dbs 仍照常删掉 youju_drill_… 临时库。"""
+    _server_env(tmp_path, f"MYSQL_ROOT_PASSWORD={ROOT_PW}\n")
+    _drill_backups(tmp_path, "youju-20261119.jsonl.gz")
+    bin_dir = tmp_path / "fakebin"
+    bin_dir.mkdir()
+    mysql_log = tmp_path / "mysql.log"
+    fake = bin_dir / "mysql"
+    fake.write_text(
+        "#!/bin/sh\n"
+        f'echo "$* | pwd=$MYSQL_PWD" >> "{mysql_log}"\n'
+        'case "$*" in\n'
+        '  *"information_schema.schemata"*) printf "youju_drill_20261119143000_ab12\\nyouju\\n" ;;\n'
+        '  *"SELECT @@log_bin"*) echo 0 ;;\n'
+        "esac\n",
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+    log = tmp_path / "calls.log"
+    setup = (
+        _drill_setup(tmp_path)
+        + f'\ncompose() {{ printf "compose %s\\n" "$*" >> "{log}"; '
+        + f'if [ "$1" = exec ]; then MYSQL_ROOT_PASSWORD="{ROOT_PW}" PATH="{bin_dir}:$PATH" sh -s; fi; }}'
+    )
+    done = _bash(tmp_path, "restore_drill", setup=setup)
+    assert done.returncode == 0, done.stderr
+    assert "DRILL OK youju-20261119.jsonl.gz" in done.stdout
+    assert "删掉了留下的临时库 youju_drill_20261119143000_ab12" in done.stdout
+    assert "binlog 没开，不用清" in done.stdout
+    sql_calls = mysql_log.read_text(encoding="utf-8").splitlines()
+    assert any(
+        "DROP DATABASE IF EXISTS `youju_drill_20261119143000_ab12`" in line for line in sql_calls
+    )
+    assert not any("PURGE BINARY LOGS" in line for line in sql_calls)
+    assert all(
+        line.endswith(f"| pwd={ROOT_PW}") and ROOT_PW not in line.split(" | ")[0]
+        for line in sql_calls
+    )
+    calls = [c for c in _calls(tmp_path) if c.startswith("compose")]
+    assert calls[0] == "compose stop worker"
+    assert calls[-1].startswith("compose up -d --wait --wait-timeout 300 api")
+
+
+@needs_bash
+@pytest.mark.parametrize("mode", ["fail", "term"])
+def test_shared_restore_drill_recovers_worker_when_stop_fails_or_interrupted(tmp_path, mode):
+    """stop worker 失败或中途被 SIGTERM 打断时，EXIT/TERM trap 已经装好：on_exit 照样把 worker、接口拉起来并放锁。"""
+    _server_env(tmp_path, f"MYSQL_ROOT_PASSWORD={ROOT_PW}\n")
+    _drill_backups(tmp_path, "youju-20261119.jsonl.gz")
+    log = tmp_path / "calls.log"
+    action = "return 1" if mode == "fail" else "kill -TERM $$; sleep 1"
+    setup = (
+        _drill_setup(tmp_path)
+        + f'\ncompose() {{ printf "compose %s\\n" "$*" >> "{log}"; '
+        + f'if [ "$1" = stop ]; then {action}; fi; }}'
+    )
+    done = _bash(tmp_path, "restore_drill", setup=setup)
+    assert done.returncode != 0
+    calls = [c for c in _calls(tmp_path) if c.startswith("compose")]
+    assert calls[0] == "compose stop worker"
+    assert "compose up -d --wait --wait-timeout 900 worker" in calls
+    assert calls[-1].startswith("compose up -d --wait --wait-timeout 300 api")
+    again = _bash(tmp_path, "restore_drill", setup=_drill_setup(tmp_path))
+    assert again.returncode == 0, again.stderr
+
+
+@needs_bash
+def test_shared_restore_drill_blocks_concurrent_runs_and_recovers_after_sigkill(tmp_path):
+    """同时只能跑一个 restore-drill / import-export：第二个在动任何容器或临时库之前就被拦下；
+    前一个结束后自动放锁；被 SIGKILL 强杀后内核自动放锁，并发恢复也最多只能进一个。"""
+    _server_env(tmp_path, f"MYSQL_ROOT_PASSWORD={ROOT_PW}\n")
+    _drill_backups(tmp_path, "youju-20261119.jsonl.gz")
+    _downloaded(tmp_path)
+    started = tmp_path / "first.started"
+    release = tmp_path / "first.release"
+    setup_first = (
+        _drill_setup(tmp_path)
+        + f'\ncompose() {{ printf "compose %s\\n" "$*" >> "{tmp_path}/first.log"; '
+        + f'if [ "$1" = run ]; then touch "{started}"; '
+        + f'while [ ! -f "{release}" ]; do sleep 0.05; done; fi; '
+        + 'if [ "$1" = exec ]; then cat >/dev/null; fi; }'
+    )
+    first = subprocess.Popen(
+        ["bash", "-c", _script(tmp_path, "restore_drill", setup_first)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while not started.exists():
+            assert time.monotonic() < deadline, "第一个 restore_drill 没启动"
+            assert first.poll() is None, first.communicate()
+            time.sleep(0.05)
+
+        for cmd in ("restore_drill", "import_export a79a0042"):
+            (tmp_path / "calls.log").unlink(missing_ok=True)
+            second = _bash(tmp_path, cmd, setup=_drill_setup(tmp_path))
+            assert second.returncode == 1
+            assert "正在运行" in second.stderr
+            assert not [
+                c for c in _calls(tmp_path) if c.startswith(("compose", "docker ps", "docker stop"))
+            ]
+    finally:
+        release.write_text("go\n", encoding="utf-8")
+    out1, err1 = first.communicate(timeout=15)
+    assert first.returncode == 0, err1
+    assert "DRILL OK youju-20261119.jsonl.gz" in out1
+
+    # 模拟正在跑的进程被 SIGKILL（kill -9）强杀，且它启动的外部子进程（sleep）仍活着并继承了 FD：
+    # 保活子进程在 0.2s 内检测到主 shell 退出后自动放锁，遗留的死 PID FIFO 目录也在下次被清掉
+    release.unlink(missing_ok=True)
+    started.unlink(missing_ok=True)
+    child_pid_file = tmp_path / "child.pid"
+    setup_with_child = (
+        _drill_setup(tmp_path)
+        + f'\ncompose() {{ printf "compose %s\\n" "$*" >> "{tmp_path}/first.log"; '
+        + f'if [ "$1" = run ]; then touch "{started}"; '
+        + f"python3 -c \"import os, time; open('{child_pid_file}', 'w').write(str(os.getpid())); time.sleep(30)\" & "
+        + "wait $!; fi; "
+        + 'if [ "$1" = exec ]; then cat >/dev/null; fi; }'
+    )
+    stale_fifo = tmp_path / ".ops.fifo.999999.stale"
+    stale_fifo.mkdir()
+    victim = subprocess.Popen(
+        ["bash", "-c", _script(tmp_path, "restore_drill", setup_with_child)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    child_pid = None
+    try:
+        deadline = time.monotonic() + 10
+        while not (
+            started.exists() and child_pid_file.exists() and child_pid_file.read_text().strip()
+        ):
+            assert time.monotonic() < deadline
+            assert victim.poll() is None, victim.communicate()
+            time.sleep(0.05)
+        child_pid = int(child_pid_file.read_text().strip())
+        victim.kill()
+        # 不先 victim.wait()：在主 shell 仍处于未回收僵尸态、且外部子进程也还活着时，锁仍必须在 0.2s 内放开
+        os.kill(child_pid, 0)
+        deadline = time.monotonic() + 5
+        while True:
+            with (tmp_path / ".ops.lock").open("r+") as fh:
+                try:
+                    fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    fcntl.flock(fh, fcntl.LOCK_UN)
+                    break
+                except BlockingIOError:
+                    assert time.monotonic() < deadline, "SIGKILL 僵尸窗口内内核锁未释放"
+                    time.sleep(0.05)
+        victim.wait(timeout=10)
+    finally:
+        if child_pid is not None:
+            with contextlib.suppress(OSError):
+                os.kill(child_pid, signal.SIGKILL)
+        if victim.poll() is None:
+            victim.kill()
+            victim.wait(timeout=5)
+
+    release.unlink(missing_ok=True)
+    started.unlink(missing_ok=True)
+    (tmp_path / "first.log").unlink(missing_ok=True)
+    p1 = subprocess.Popen(
+        ["bash", "-c", _script(tmp_path, "restore_drill", setup_first)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    p2 = subprocess.Popen(
+        ["bash", "-c", _script(tmp_path, "restore_drill", setup_first)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while not (started.exists() and (p1.poll() is not None or p2.poll() is not None)):
+            assert time.monotonic() < deadline, "并发进程没有按预期一个进演练、一个被锁拦下"
+            time.sleep(0.05)
+    finally:
+        release.write_text("go\n", encoding="utf-8")
+    out_p1, err_p1 = p1.communicate(timeout=15)
+    out_p2, err_p2 = p2.communicate(timeout=15)
+    results = [(p1.returncode, out_p1, err_p1), (p2.returncode, out_p2, err_p2)]
+    assert sorted(r[0] for r in results) == [0, 1], results
+    winner = next(r for r in results if r[0] == 0)
+    loser = next(r for r in results if r[0] == 1)
+    assert "DRILL OK youju-20261119.jsonl.gz" in winner[1]
+    assert "正在运行" in loser[2]
+    first_log = (tmp_path / "first.log").read_text(encoding="utf-8").splitlines()
+    assert first_log.count("compose stop worker") == 1
+    assert not stale_fifo.exists()
+
+
+@needs_bash
+def test_shared_ops_lock_fails_bounded_on_helper_crash_and_handshake_timeout(tmp_path):
+    """保活子进程在打开 ack 前崩溃退出，或主进程确认超时，都必须在有限时间内报错退出，
+    不卡死在 FIFO 上，也不进入 stop worker。"""
+    _server_env(tmp_path, f"MYSQL_ROOT_PASSWORD={ROOT_PW}\n")
+    _drill_backups(tmp_path, "youju-20261119.jsonl.gz")
+
+    # 1. 子进程打开 ack 前直接异常退出：有界失败，不卡死
+    fake_bin = tmp_path / "crashbin"
+    fake_bin.mkdir()
+    (fake_bin / "python3").write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    (fake_bin / "python3").chmod(0o755)
+    crash = _bash(
+        tmp_path,
+        "restore_drill",
+        setup=_drill_setup(tmp_path) + f'\nPATH="{fake_bin}:$PATH"',
+    )
+    assert crash.returncode == 1
+    assert "加互斥锁失败" in crash.stderr
+    assert not [c for c in _calls(tmp_path) if c.startswith("compose")]
+
+    # 2. 握手延迟超过确认期限（子进程超时放锁）：主进程收到 TIMEOUT，拒绝进入操作
+    (tmp_path / "calls.log").unlink(missing_ok=True)
+    delay_setup = (
+        _drill_setup(tmp_path)
+        + "\nOPS_LOCK_TIMEOUT=0.1\n"
+        + 'printf() { if [ "$1" = "1\\n" ]; then sleep 0.4; fi; builtin printf "$@"; }\n'
+    )
+    delayed = _bash(tmp_path, "restore_drill", setup=delay_setup)
+    assert delayed.returncode == 1
+    assert "加互斥锁握手未确认" in delayed.stderr
+    assert not [c for c in _calls(tmp_path) if c.startswith("compose")]
+
+    # 3. 外部子进程继承了控制 FIFO 的 FD 9 且正常退出时仍活着：正常放锁通过显式 Q 消息立即放开，不卡死
+    surviving_pid_file = tmp_path / "survivor.pid"
+    setup_surviving = (
+        _drill_setup(tmp_path)
+        + "\ncompose() {\n"
+        + '  if [ "$1" = run ]; then '
+        + f"python3 -c \"import os, time; open('{surviving_pid_file}', 'w').write(str(os.getpid())); time.sleep(30)\" </dev/null >/dev/null 2>&1 & "
+        + f'while [ ! -s "{surviving_pid_file}" ]; do sleep 0.05; done; fi\n'
+        + '  if [ "$1" = exec ]; then cat >/dev/null; fi\n'
+        + "}\n"
+    )
+    surviving_pid = None
+    try:
+        normal = subprocess.run(
+            ["bash", "-c", _script(tmp_path, "restore_drill", setup_surviving)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert normal.returncode == 0, normal.stderr
+        assert "DRILL OK youju-20261119.jsonl.gz" in normal.stdout
+        surviving_pid = int(surviving_pid_file.read_text().strip())
+        os.kill(surviving_pid, 0)
+        again = _bash(tmp_path, "restore_drill", setup=_drill_setup(tmp_path))
+        assert again.returncode == 0, again.stderr
+    finally:
+        if surviving_pid is not None:
+            with contextlib.suppress(OSError):
+                os.kill(surviving_pid, signal.SIGKILL)
+
+
+@needs_bash
+@pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGKILL])
+def test_shared_ops_lock_aborts_main_op_and_protects_cleanup_when_helper_dies(tmp_path, sig):
+    """握手成功后若持锁子进程被 SIGTERM 或 SIGKILL 杀死：主操作必须立即中止（不打 DRILL OK），
+    由 on_exit 在受锁保护下完成删临时库、清 binlog 并拉起 worker，期间并发操作仍被拦下。"""
+    _server_env(tmp_path, f"MYSQL_ROOT_PASSWORD={ROOT_PW}\n")
+    _drill_backups(tmp_path, "youju-20261119.jsonl.gz")
+    in_run = tmp_path / "in_run"
+    lock_pid_file = tmp_path / "lock_pid"
+    in_cleanup = tmp_path / "in_cleanup"
+    release_cleanup = tmp_path / "release_cleanup"
+    log = tmp_path / "calls.log"
+    setup = (
+        _drill_setup(tmp_path)
+        + f'\ncompose() {{ printf "compose %s\\n" "$*" >> "{log}"; '
+        + f'if [ "$1" = run ]; then echo "$OPS_LOCK_PID" > "{lock_pid_file}"; touch "{in_run}"; while true; do sleep 0.05; done; fi; '
+        + f'if [ "$1" = exec ]; then cat >/dev/null; touch "{in_cleanup}"; '
+        + f'while [ ! -f "{release_cleanup}" ]; do sleep 0.05; done; fi; }}'
+    )
+    proc = subprocess.Popen(
+        ["bash", "-c", _script(tmp_path, "restore_drill", setup)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while not in_run.exists():
+            assert time.monotonic() < deadline, "没进入 compose run"
+            assert proc.poll() is None, proc.communicate()
+            time.sleep(0.05)
+
+        lock_pid = int(lock_pid_file.read_text(encoding="utf-8").strip())
+        os.kill(lock_pid, sig)
+
+        deadline = time.monotonic() + 10
+        while not in_cleanup.exists():
+            assert time.monotonic() < deadline, "持锁子进程退出后没触发 on_exit 收尾"
+            time.sleep(0.05)
+
+        # 收尾正在跑期间：并发 restore_drill 仍必须被锁拦下
+        concurrent = subprocess.Popen(
+            ["bash", "-c", _script(tmp_path, "restore_drill", _drill_setup(tmp_path))],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        out_c, err_c = concurrent.communicate(timeout=10)
+        assert concurrent.returncode == 1
+        assert "正在运行" in err_c
+    finally:
+        release_cleanup.write_text("go\n", encoding="utf-8")
+
+    out, err = proc.communicate(timeout=15)
+    assert proc.returncode != 0
+    assert "DRILL OK" not in out
+    calls = [c for c in _calls(tmp_path) if c.startswith("compose")]
+    assert "compose up -d --wait --wait-timeout 900 worker" in calls
+    assert calls[-1].startswith("compose up -d --wait --wait-timeout 300 api")
+    again = _bash(tmp_path, "restore_drill", setup=_drill_setup(tmp_path))
+    assert again.returncode == 0, again.stderr
+
+
+@needs_bash
+@pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGKILL])
+def test_shared_ops_lock_aborts_external_blocking_command_and_stops_container_when_helper_dies(
+    tmp_path, sig
+):
+    """持锁子进程死亡时，即使主操作正在等待真实外部阻塞命令（不是 shell 内循环），也必须立即杀掉
+    该外部命令并停止一次性容器，不等待外部命令自己超时，且容器清理受锁保护。"""
+    _server_env(tmp_path, f"MYSQL_ROOT_PASSWORD={ROOT_PW}\n")
+    _drill_backups(tmp_path, "youju-20261119.jsonl.gz")
+    bin_dir = tmp_path / "extbin"
+    bin_dir.mkdir()
+    ext_pid_file = tmp_path / "ext.pid"
+    lock_pid_file = tmp_path / "lock.pid"
+    in_run = tmp_path / "in_run"
+    log = tmp_path / "calls.log"
+    fake_docker = bin_dir / "docker"
+    fake_docker.write_text(
+        "#!/bin/sh\n"
+        f'echo "docker $*" >> "{log}"\n'
+        'case "$1" in\n'
+        f'  info) echo "{tmp_path}" ;;\n'
+        f'  volume) echo "{tmp_path}/volume" ;;\n'
+        "  ps) echo stray123 ;;\n"
+        "  stop) exit 0 ;;\n"
+        "  compose)\n"
+        "    shift\n"
+        '    if [ "$1" = run ]; then\n'
+        f'      echo "$$" > "{ext_pid_file}"\n'
+        f'      touch "{in_run}"\n'
+        "      exec sleep 30\n"
+        "    fi\n"
+        "    ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    fake_docker.chmod(0o755)
+    setup = (
+        f'PATH="{bin_dir}:$PATH"\n'
+        "unset -f docker\n"
+        "beijing_hhmm() { echo 1430; }\n"
+        f'compose() {{ printf "compose %s\\n" "$*" >> "{log}"; '
+        f'if [ "$1" = run ]; then echo "$OPS_LOCK_PID" > "{lock_pid_file}"; '
+        'docker compose "$@"; return $?; fi; '
+        'if [ "$1" = exec ]; then cat >/dev/null; fi; }\n'
+    )
+    proc = subprocess.Popen(
+        ["bash", "-c", _script(tmp_path, "restore_drill", setup)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    ext_pid = None
+    try:
+        deadline = time.monotonic() + 10
+        while not (in_run.exists() and ext_pid_file.exists() and lock_pid_file.exists()):
+            assert time.monotonic() < deadline, "没进入外部阻塞 docker 命令"
+            assert proc.poll() is None, proc.communicate()
+            time.sleep(0.05)
+        ext_pid = int(ext_pid_file.read_text(encoding="utf-8").strip())
+        lock_pid = int(lock_pid_file.read_text(encoding="utf-8").strip())
+        os.kill(lock_pid, sig)
+        out, err = proc.communicate(timeout=8)
+        assert proc.returncode != 0
+        assert "DRILL OK" not in out
+        # 外部 sleep 30 必须已被立即中止（进程不存在）
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            try:
+                os.kill(ext_pid, 0)
+                time.sleep(0.05)
+            except ProcessLookupError:
+                break
+        else:
+            pytest.fail(f"外部阻塞进程 {ext_pid} 没被中止")
+    finally:
+        if ext_pid is not None:
+            with contextlib.suppress(OSError):
+                os.kill(ext_pid, signal.SIGKILL)
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+    calls = _calls(tmp_path)
+    assert "docker stop -t 60 stray123" in calls
+    assert "compose up -d --wait --wait-timeout 900 worker" in calls
+    assert calls[-1].startswith("compose up -d --wait --wait-timeout 300 api")
+
+
+@needs_bash
+@pytest.mark.parametrize("competitor_holds_past_timeout", [True, False])
+def test_shared_ops_lock_sigkill_race_protects_cleanup_against_competitor(
+    tmp_path, competitor_holds_past_timeout
+):
+    """持锁子进程被 SIGKILL 后、on_exit 重新拿锁前，另一个进程抢先拿到锁：
+    - 若竞争者持有超过等待超时：on_exit 必须跳过 docker stop、删临时库、清 binlog 和拉起服务，不踩踏新持锁者；
+    - 若竞争者在超时前释放：on_exit 等它放锁后再重新拿锁并完成收尾和拉起服务。"""
+    _server_env(tmp_path, f"MYSQL_ROOT_PASSWORD={ROOT_PW}\n")
+    _drill_backups(tmp_path, "youju-20261119.jsonl.gz")
+    in_run = tmp_path / "in_run"
+    lock_pid_file = tmp_path / "lock_pid"
+    after_kill = tmp_path / "after_kill"
+    log = tmp_path / "calls.log"
+    timeout_sec = "0.4" if competitor_holds_past_timeout else "3"
+    setup = (
+        _drill_setup(tmp_path)
+        + f"\nOPS_LOCK_TIMEOUT={timeout_sec}\n"
+        + f'compose() {{ printf "compose %s\\n" "$*" >> "{log}"; '
+        + f'if [ "$1" = run ]; then echo "$OPS_LOCK_PID" > "{lock_pid_file}"; touch "{in_run}"; '
+        + "exec sleep 30; fi; "
+        + 'if [ "$1" = exec ]; then cat >/dev/null; fi; }\n'
+        + f'docker() {{ printf "docker %s\\n" "$*" >> "{log}"; case "$1" in '
+        + f'ps) echo stray123 ;; info) echo "{tmp_path}" ;; volume) echo "{tmp_path}/volume" ;; esac; }}'
+    )
+    proc = subprocess.Popen(
+        ["bash", "-c", _script(tmp_path, "restore_drill", setup)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    comp_fh = None
+    try:
+        deadline = time.monotonic() + 10
+        while not (in_run.exists() and lock_pid_file.exists()):
+            assert time.monotonic() < deadline
+            assert proc.poll() is None, proc.communicate()
+            time.sleep(0.05)
+
+        lock_pid = int(lock_pid_file.read_text(encoding="utf-8").strip())
+        # 先把锁文件的竞争者打开，待 SIGKILL 后立即抢到 flock（比 on_exit 更早）
+        comp_fh = (tmp_path / ".ops.lock").open("r+")
+        os.kill(lock_pid, signal.SIGKILL)
+        deadline = time.monotonic() + 5
+        while True:
+            try:
+                fcntl.flock(comp_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                assert time.monotonic() < deadline, "SIGKILL 后内核锁未释放"
+                time.sleep(0.01)
+        after_kill.write_text(str(len(_calls(tmp_path))), encoding="utf-8")
+
+        if competitor_holds_past_timeout:
+            out, err = proc.communicate(timeout=10)
+            assert proc.returncode != 0
+            assert "另一个操作正在运行" in err
+            before_n = int(after_kill.read_text(encoding="utf-8"))
+            post_calls = _calls(tmp_path)[before_n:]
+            assert not any(
+                c.startswith(("docker stop", "compose exec", "compose up")) for c in post_calls
+            ), post_calls
+        else:
+            time.sleep(0.25)
+            fcntl.flock(comp_fh, fcntl.LOCK_UN)
+            comp_fh.close()
+            comp_fh = None
+            out, err = proc.communicate(timeout=10)
+            assert proc.returncode != 0
+            before_n = int(after_kill.read_text(encoding="utf-8"))
+            post_calls = _calls(tmp_path)[before_n:]
+            assert "docker stop -t 60 stray123" in post_calls
+            assert post_calls.count("compose exec -T mysql sh -s") == 2
+            assert "compose up -d --wait --wait-timeout 900 worker" in post_calls
+            assert post_calls[-1].startswith("compose up -d --wait --wait-timeout 300 api")
+    finally:
+        if comp_fh is not None:
+            with contextlib.suppress(OSError):
+                fcntl.flock(comp_fh, fcntl.LOCK_UN)
+                comp_fh.close()
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+
+
+@needs_bash
+@pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGKILL])
+def test_shared_ops_lock_helper_death_during_on_exit_completes_resume_under_lock(tmp_path, sig):
+    """收尾（on_exit）进行中持锁子进程收到 SIGTERM 或被 SIGKILL 强杀：
+    不能中断收尾导致 worker/api 起不来，且收尾全程仍在锁保护下完成。"""
+    _server_env(tmp_path, f"MYSQL_ROOT_PASSWORD={ROOT_PW}\n")
+    _drill_backups(tmp_path, "youju-20261119.jsonl.gz")
+    in_cleanup = tmp_path / "in_cleanup"
+    release_cleanup = tmp_path / "release_cleanup"
+    lock_pid_file = tmp_path / "lock_pid"
+    log = tmp_path / "calls.log"
+    setup = (
+        _drill_setup(tmp_path)
+        + f'\ncompose() {{ printf "compose %s\\n" "$*" >> "{log}"; '
+        + 'if [ "$1" = run ]; then return 1; fi; '
+        + 'if [ "$1" = exec ]; then cat >/dev/null; '
+        + f'if [ ! -f "{in_cleanup}" ]; then echo "$OPS_LOCK_PID" > "{lock_pid_file}"; '
+        + f'touch "{in_cleanup}"; while [ ! -f "{release_cleanup}" ]; do sleep 0.05; done; fi; fi; }}'
+    )
+    proc = subprocess.Popen(
+        ["bash", "-c", _script(tmp_path, "restore_drill", setup)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while not (in_cleanup.exists() and lock_pid_file.exists()):
+            assert time.monotonic() < deadline
+            assert proc.poll() is None, proc.communicate()
+            time.sleep(0.05)
+
+        lock_pid = int(lock_pid_file.read_text(encoding="utf-8").strip())
+        os.kill(lock_pid, sig)
+        time.sleep(0.2)
+        # 无论 SIGTERM 还是 SIGKILL，释放收尾前/后都不应遗漏拉起服务；SIGTERM 下原锁仍护住当前阶段
+        if sig == signal.SIGTERM:
+            concurrent = _bash(tmp_path, "restore_drill", setup=_drill_setup(tmp_path))
+            assert concurrent.returncode == 1 and "正在运行" in concurrent.stderr
+    finally:
+        release_cleanup.write_text("go\n", encoding="utf-8")
+
+    out, err = proc.communicate(timeout=15)
+    assert proc.returncode != 0
+    calls = [c for c in _calls(tmp_path) if c.startswith("compose")]
+    assert "compose up -d --wait --wait-timeout 900 worker" in calls
+    assert calls[-1].startswith("compose up -d --wait --wait-timeout 300 api")
+    again = _bash(tmp_path, "restore_drill", setup=_drill_setup(tmp_path))
+    assert again.returncode == 0, again.stderr
+
+
+@needs_bash
+def test_shared_ops_lock_keeps_lock_on_helper_exception_after_armed(tmp_path):
+    """握手成功（ARMED）后若持锁子进程进入异常分支：必须发 SIGTERM 通知主操作中止，并继续持锁
+    直到 on_exit 完成清理与拉起服务后发送 Q/released 才释放锁（不在异常分支提前放锁也不卡 ack）。"""
+    _server_env(tmp_path, f"MYSQL_ROOT_PASSWORD={ROOT_PW}\n")
+    _drill_backups(tmp_path, "youju-20261119.jsonl.gz")
+    fake_bin = tmp_path / "pywrap"
+    fake_bin.mkdir()
+    inject_trigger = tmp_path / "inject_err"
+    in_run = tmp_path / "in_run"
+    in_cleanup = tmp_path / "in_cleanup"
+    release_cleanup = tmp_path / "release_cleanup"
+    log = tmp_path / "calls.log"
+    wrapper = fake_bin / "python3"
+    wrapper.write_text(
+        f"#!{sys.executable}\n"
+        "import os, select, sys\n"
+        "if len(sys.argv) >= 4 and sys.argv[1] == '-I' and sys.argv[2] == '-c':\n"
+        "    code = sys.argv[3]\n"
+        "    sys.argv = [sys.argv[0]] + sys.argv[4:]\n"
+        "    orig_select = select.select\n"
+        "    def wrapped_select(*args, **kwargs):\n"
+        f"        if os.path.exists({str(inject_trigger)!r}):\n"
+        "            raise RuntimeError('injected post-armed error')\n"
+        "        return orig_select(*args, **kwargs)\n"
+        "    select.select = wrapped_select\n"
+        "    exec(compile(code, '<lock-helper>', 'exec'), {'__name__': '__main__'})\n"
+        "else:\n"
+        f"    os.execv({sys.executable!r}, [{sys.executable!r}] + sys.argv[1:])\n",
+        encoding="utf-8",
+    )
+    wrapper.chmod(0o755)
+    setup = (
+        _drill_setup(tmp_path)
+        + f'\nPATH="{fake_bin}:$PATH"\n'
+        + f'compose() {{ printf "compose %s\\n" "$*" >> "{log}"; '
+        + f'if [ "$1" = run ]; then touch "{in_run}"; exec sleep 30; fi; '
+        + f'if [ "$1" = exec ]; then cat >/dev/null; touch "{in_cleanup}"; '
+        + f'while [ ! -f "{release_cleanup}" ]; do sleep 0.05; done; fi; }}'
+    )
+    proc = subprocess.Popen(
+        ["bash", "-c", _script(tmp_path, "restore_drill", setup)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while not in_run.exists():
+            assert time.monotonic() < deadline
+            assert proc.poll() is None, proc.communicate()
+            time.sleep(0.05)
+
+        inject_trigger.write_text("boom\n", encoding="utf-8")
+        deadline = time.monotonic() + 10
+        while not in_cleanup.exists():
+            assert time.monotonic() < deadline, "持锁子进程异常后没中止主操作并进入 on_exit"
+            time.sleep(0.05)
+
+        concurrent = _bash(tmp_path, "restore_drill", setup=_drill_setup(tmp_path))
+        assert concurrent.returncode == 1 and "正在运行" in concurrent.stderr
+    finally:
+        release_cleanup.write_text("go\n", encoding="utf-8")
+
+    out, err = proc.communicate(timeout=15)
+    assert proc.returncode != 0
+    assert "DRILL OK" not in out
+    calls = [c for c in _calls(tmp_path) if c.startswith("compose")]
+    assert "compose up -d --wait --wait-timeout 900 worker" in calls
+    assert calls[-1].startswith("compose up -d --wait --wait-timeout 300 api")
+    again = _bash(tmp_path, "restore_drill", setup=_drill_setup(tmp_path))
+    assert again.returncode == 0, again.stderr
+
+
+@needs_bash
+def test_shared_ops_lock_kills_sigterm_ignoring_descendant_and_interrupts_binlog_state_and_docker_ps(
+    tmp_path,
+):
+    """补充覆盖 Codex 第八轮复审两条边缘场景：
+    1. 父进程响应 SIGTERM 先退出、但子进程忽略 SIGTERM 时，stop_fg 仍必须按后代列表强杀（SIGKILL）；
+    2. binlog_off 查状态（原本在 $() 内）与 on_exit 的 docker ps 阻塞时，持锁子进程被 SIGKILL 也必须即时中止并按竞争规则收尾。"""
+    _server_env(tmp_path, f"MYSQL_ROOT_PASSWORD={ROOT_PW}\n")
+    _drill_backups(tmp_path, "youju-20261119.jsonl.gz")
+    (tmp_path / "server" / "mysql.cnf").write_text("[mysqld]\ndisable_log_bin\n", encoding="utf-8")
+
+    # 1. 父子进程树：父进程收到 SIGTERM 立即退出，子进程忽略 SIGTERM（必须被 SIGKILL 清掉）
+    child_pid_file = tmp_path / "stubborn_child.pid"
+    lock_pid_file = tmp_path / "lock1.pid"
+    in_run = tmp_path / "in_run1"
+    log = tmp_path / "calls.log"
+    setup_tree = (
+        _drill_setup(tmp_path)
+        + f'\ncompose() {{ printf "compose %s\\n" "$*" >> "{log}"; '
+        + 'if [ "$1" = run ]; then '
+        + f'echo "$OPS_LOCK_PID" > "{lock_pid_file}"; '
+        + 'sh -c \'trap "" TERM; echo $$ > "'
+        + str(child_pid_file)
+        + "\"; exec sleep 30' & "
+        + f'c=$!; while [ ! -s "{child_pid_file}" ]; do sleep 0.02; done; touch "{in_run}"; '
+        + 'trap "exit 0" TERM; while true; do sleep 0.05; done; fi; '
+        + 'if [ "$1" = exec ]; then cat >/dev/null; fi; }\n'
+    )
+    proc = subprocess.Popen(
+        ["bash", "-c", _script(tmp_path, "restore_drill", setup_tree)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    stubborn_pid = None
+    try:
+        deadline = time.monotonic() + 10
+        while not (in_run.exists() and child_pid_file.exists() and lock_pid_file.exists()):
+            assert time.monotonic() < deadline
+            assert proc.poll() is None, proc.communicate()
+            time.sleep(0.05)
+        stubborn_pid = int(child_pid_file.read_text(encoding="utf-8").strip())
+        deadline = time.monotonic() + 3
+        os.kill(int(lock_pid_file.read_text(encoding="utf-8").strip()), signal.SIGKILL)
+        while time.monotonic() < deadline:
+            st = subprocess.run(
+                ["ps", "-o", "state=", "-p", str(stubborn_pid)],
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            if not st or st[0] in ("Z", "X"):
+                break
+            time.sleep(0.05)
+        else:
+            pytest.fail(f"忽略 SIGTERM 的子进程 {stubborn_pid} 3 秒内未被 SIGKILL 终止")
+        out, err = proc.communicate(timeout=10)
+        assert proc.returncode != 0
+    finally:
+        if stubborn_pid is not None:
+            with contextlib.suppress(OSError):
+                os.kill(stubborn_pid, signal.SIGKILL)
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+
+    # 2. binlog_off 在查 @@GLOBAL.log_bin 时阻塞（原本在 $() 内），以及 on_exit 在 docker ps 阻塞时被 SIGKILL 持锁子进程
+    (tmp_path / "calls.log").unlink(missing_ok=True)
+    in_state = tmp_path / "in_state"
+    in_ps = tmp_path / "in_ps"
+    lock_pid2 = tmp_path / "lock2.pid"
+    ps_block_once = tmp_path / "ps_blocked_once"
+    setup_binlog = (
+        f'docker() {{ printf "docker %s\\n" "$*" >> "{log}"; '
+        + f'if [ "$1" = ps ]; then if [ ! -f "{ps_block_once}" ]; then '
+        + f'touch "{ps_block_once}" "{in_ps}"; echo "$OPS_LOCK_PID" > "{lock_pid2}"; '
+        + "exec sleep 30; fi; echo stray_after_ps; fi; }\n"
+        + f'compose() {{ printf "compose %s\\n" "$*" >> "{log}"; '
+        + 'if [ "$1" = exec ]; then s=$(cat); case "$s" in '
+        + f'*"@@GLOBAL.log_bin"*) echo "$OPS_LOCK_PID" > "{lock_pid2}"; touch "{in_state}"; exec sleep 30 ;; '
+        + "esac; fi; }\n"
+    )
+    proc2 = subprocess.Popen(
+        ["bash", "-c", _script(tmp_path, "binlog_off", setup_binlog)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while not in_state.exists():
+            assert time.monotonic() < deadline
+            assert proc2.poll() is None, proc2.communicate()
+            time.sleep(0.05)
+        os.kill(int(lock_pid2.read_text(encoding="utf-8").strip()), signal.SIGKILL)
+
+        deadline = time.monotonic() + 10
+        while not in_ps.exists():
+            assert time.monotonic() < deadline, (
+                "binlog_off 查状态阻塞未及时中止进入 on_exit docker ps"
+            )
+            assert proc2.poll() is None, proc2.communicate()
+            time.sleep(0.05)
+        os.kill(int(lock_pid2.read_text(encoding="utf-8").strip()), signal.SIGKILL)
+
+        out2, err2 = proc2.communicate(timeout=10)
+        assert proc2.returncode != 0
+        assert "BINLOG OFF" not in out2
+        calls2 = _calls(tmp_path)
+        assert "docker stop -t 60 stray_after_ps" in calls2
+        assert "compose up -d --wait --wait-timeout 900 worker" in calls2
+        assert calls2[-1].startswith("compose up -d --wait --wait-timeout 300 api")
+    finally:
+        if proc2.poll() is None:
+            proc2.kill()
+            proc2.wait(timeout=5)
+
+
+@needs_bash
+@pytest.mark.parametrize("competitor_holds_past_timeout", [False, True])
+def test_shared_up_aborts_blocking_migration_and_protects_oneoff_cleanup_when_helper_dies(
+    tmp_path, competitor_holds_past_timeout
+):
+    """up 纳入互斥锁后，若持锁子进程被 SIGKILL：必须立即中止正在跑的迁移/阻塞命令，且只在实际重新
+    拿锁后才停止一次性容器（竞争者抢锁超时时跳过 docker stop，且不误拉起 worker/api）。"""
+    _server_env(tmp_path, f"MYSQL_ROOT_PASSWORD={ROOT_PW}\n")
+    in_migrate = tmp_path / "in_migrate"
+    lock_pid_file = tmp_path / "up_lock.pid"
+    log = tmp_path / "calls.log"
+    timeout_sec = "0.4" if competitor_holds_past_timeout else "3"
+    setup = (
+        f"OPS_LOCK_TIMEOUT={timeout_sec}\n"
+        "status() { echo STATUS; }\n"
+        f'docker() {{ printf "docker %s\\n" "$*" >> "{log}"; '
+        'if [ "$1" = ps ]; then echo up_stray123; fi; }\n'
+        f'compose() {{ printf "compose %s\\n" "$*" >> "{log}"; '
+        'if [ "$1" = run ]; then echo "$OPS_LOCK_PID" > "'
+        + str(lock_pid_file)
+        + f'"; touch "{in_migrate}"; exec sleep 30; fi; '
+        'if [ "$1" = exec ]; then cat >/dev/null; fi; }\n'
+    )
+    proc = subprocess.Popen(
+        ["bash", "-c", _script(tmp_path, "up", setup)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    comp_fh = None
+    try:
+        deadline = time.monotonic() + 10
+        while not (in_migrate.exists() and lock_pid_file.exists()):
+            assert time.monotonic() < deadline
+            assert proc.poll() is None, proc.communicate()
+            time.sleep(0.05)
+
+        lock_pid = int(lock_pid_file.read_text(encoding="utf-8").strip())
+        if competitor_holds_past_timeout:
+            comp_fh = (tmp_path / ".ops.lock").open("r+")
+            os.kill(lock_pid, signal.SIGKILL)
+            deadline = time.monotonic() + 5
+            while True:
+                try:
+                    fcntl.flock(comp_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    assert time.monotonic() < deadline
+                    time.sleep(0.01)
+            before_n = len(_calls(tmp_path))
+            out, err = proc.communicate(timeout=10)
+            assert proc.returncode != 0
+            assert "另一个操作正在运行" in err
+            post_calls = _calls(tmp_path)[before_n:]
+            assert not any(
+                c.startswith(("docker stop", "compose up -d --wait --wait-timeout 900 worker"))
+                for c in post_calls
+            ), post_calls
+        else:
+            os.kill(lock_pid, signal.SIGKILL)
+            out, err = proc.communicate(timeout=10)
+            assert proc.returncode != 0
+            calls = _calls(tmp_path)
+            assert "docker stop -t 60 up_stray123" in calls
+            assert not any("compose up -d --wait --wait-timeout 900 worker" in c for c in calls)
+    finally:
+        if comp_fh is not None:
+            with contextlib.suppress(OSError):
+                fcntl.flock(comp_fh, fcntl.LOCK_UN)
+                comp_fh.close()
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+
+
+@needs_bash
+def test_shared_up_releases_ops_lock_before_readonly_status(tmp_path):
+    """up 把 worker、api 起来后就放锁再跑只读 status：status 阶段不再占着互斥锁。"""
+    _server_env(tmp_path, f"MYSQL_ROOT_PASSWORD={ROOT_PW}\n")
+    shutil.copy(MYSQL_ACCOUNTS, tmp_path / "server" / "mysql_accounts.sql")
+    _drill_backups(tmp_path, "youju-20261119.jsonl.gz")
+    in_status = tmp_path / "in_status"
+    release_status = tmp_path / "release_status"
+    setup = (
+        f'status() {{ echo "${{OPS_LOCK_PID:-}}" > "{tmp_path}/status_lock_pid"; '
+        f'touch "{in_status}"; while [ ! -f "{release_status}" ]; do sleep 0.05; done; echo STATUS; }}'
+    )
+    proc = subprocess.Popen(
+        ["bash", "-c", _script(tmp_path, "up", setup)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while not in_status.exists():
+            assert time.monotonic() < deadline
+            assert proc.poll() is None, proc.communicate()
+            time.sleep(0.05)
+        assert (tmp_path / "status_lock_pid").read_text(encoding="utf-8").strip() == ""
+        concurrent = _bash(tmp_path, "restore_drill", setup=_drill_setup(tmp_path))
+        assert concurrent.returncode == 0, concurrent.stderr
+    finally:
+        release_status.write_text("go\n", encoding="utf-8")
+    out, err = proc.communicate(timeout=10)
+    assert proc.returncode == 0, err
+    assert "STATUS" in out
+
+
+@needs_bash
+def test_shared_binlog_off_keeps_lock_until_on_exit_finishes_when_resume_fails(tmp_path):
+    """binlog_off 正常路径调用 resume_services 失败时，不能提前释放锁：直到 on_exit 里的
+    resume_services 也跑完才释放，期间并发 restore_drill 仍被拦下。"""
+    _server_env(tmp_path, f"MYSQL_ROOT_PASSWORD={ROOT_PW}\n")
+    _drill_backups(tmp_path, "youju-20261119.jsonl.gz")
+    (tmp_path / "server" / "mysql.cnf").write_text("[mysqld]\ndisable_log_bin\n", encoding="utf-8")
+    in_on_exit_resume = tmp_path / "in_on_exit_resume"
+    release = tmp_path / "release_resume"
+    attempt_file = tmp_path / "resume_attempts"
+    setup = (
+        _binlog_off_setup(tmp_path, state="0")
+        + "\ncompose() {\n"
+        + f'  printf "compose %s\\n" "$*" >> "{tmp_path}/binlog.log"\n'
+        + '  if [ "$1" = exec ]; then s=$(cat); case "$s" in *binlog.index*) echo cleaned ;; *"@@GLOBAL.log_bin"*) echo 0 ;; esac; return 0; fi\n'
+        + '  if [ "$1" = up ] && [[ "$*" == *" worker"* ]]; then\n'
+        + f'    n=$(( $(cat "{attempt_file}" 2>/dev/null || echo 0) + 1 ))\n'
+        + f'    echo "$n" > "{attempt_file}"\n'
+        + '    if [ "$n" -eq 1 ]; then return 1; fi\n'
+        + f'    touch "{in_on_exit_resume}"\n'
+        + f'    while [ ! -f "{release}" ]; do sleep 0.05; done\n'
+        + "    return 1\n"
+        + "  fi\n"
+        + "}\n"
+    )
+    proc = subprocess.Popen(
+        ["bash", "-c", _script(tmp_path, "binlog_off", setup)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while not in_on_exit_resume.exists():
+            assert time.monotonic() < deadline, "没进入 on_exit 的 resume_services"
+            assert proc.poll() is None, proc.communicate()
+            time.sleep(0.05)
+        (tmp_path / "calls.log").unlink(missing_ok=True)
+        blocked = _bash(tmp_path, "restore_drill", setup=_drill_setup(tmp_path))
+        assert blocked.returncode == 1 and "正在运行" in blocked.stderr
+        assert not [
+            c for c in _calls(tmp_path) if c.startswith(("compose", "docker ps", "docker stop"))
+        ]
+    finally:
+        release.write_text("go\n", encoding="utf-8")
+    out, err = proc.communicate(timeout=15)
+    assert proc.returncode == 1
+    again = _bash(tmp_path, "restore_drill", setup=_drill_setup(tmp_path))
+    assert again.returncode == 0, again.stderr
+
+
+@needs_bash
+def test_shared_restore_drill_brings_the_worker_back_when_it_fails(tmp_path):
+    _server_env(tmp_path, "MYSQL_ROOT_PASSWORD=r00tpw\n")
+    _drill_backups(tmp_path, "youju-20261119.jsonl.gz")
+    log = tmp_path / "calls.log"
+    failing = (
+        _drill_setup(tmp_path) + f'\ncompose() {{ echo "compose $*" >> "{log}"; '
+        'if [ "$1" = exec ]; then cat >/dev/null; fi; [ "$1" != run ]; }'
+    )
+    done = _bash(tmp_path, "restore_drill", setup=failing)
+    assert done.returncode != 0
+    assert "恢复演练没通过" in done.stderr and "DRILL OK" not in done.stdout
+    calls = [c for c in _calls(tmp_path) if c.startswith("compose")]
+    assert calls[0] == "compose stop worker"
+    # 没通过也照样：删留下的临时库、清 binlog，再把 worker、接口起来
+    run = next(i for i, c in enumerate(calls) if c.startswith("compose run"))
+    assert calls[run + 1 : run + 3] == ["compose exec -T mysql sh -s"] * 2
+    assert "恢复演练没收完尾" in done.stderr
+    assert calls[-1].startswith("compose up -d --wait --wait-timeout 300 api")
+    assert "compose up -d --wait --wait-timeout 900 worker" in calls
+
+
+@needs_bash
+def test_shared_restore_drill_retries_cleanup_when_only_the_binlog_purge_fails(tmp_path):
+    """演练通过、删临时库也成了，只有清 binlog 失败：不打 DRILL OK；退出时再删一遍、再清一遍，
+    提示不说成"试恢复被打断"（那是 import-export 的说法）。"""
+    _server_env(tmp_path, "MYSQL_ROOT_PASSWORD=r00tpw\n")
+    _drill_backups(tmp_path, "youju-20261119.jsonl.gz")
+    log = tmp_path / "calls.log"
+    count = tmp_path / "exec-count"
+    # 第 2 次 exec（演练通过后的清 binlog）失败，其余都成
+    flaky = (
+        _drill_setup(tmp_path) + f'\ncompose() {{ echo "compose $*" >> "{log}"; '
+        'if [ "$1" = exec ]; then cat >/dev/null; '
+        f'n=$(( $(cat "{count}" 2>/dev/null || echo 0) + 1 )); echo "$n" > "{count}"; '
+        '[ "$n" -ne 2 ]; fi; }'
+    )
+    done = _bash(tmp_path, "restore_drill", setup=flaky)
+    assert done.returncode != 0 and "DRILL OK" not in done.stdout
+    assert "演练通过了，但 binlog 没清掉" in done.stderr
+    assert "试恢复被打断" not in done.stderr and "恢复演练没收完尾" in done.stderr
+    calls = [c for c in _calls(tmp_path) if c.startswith("compose")]
+    run = next(i for i, c in enumerate(calls) if c.startswith("compose run"))
+    assert calls[run + 1 : run + 5] == ["compose exec -T mysql sh -s"] * 4
+    assert calls[-1].startswith("compose up -d --wait --wait-timeout 300 api")
+
+
+@needs_bash
+def test_shared_restore_drill_cleans_up_when_interrupted(tmp_path):
+    """演练中途被打断（关掉网页终端、Ctrl+C）：先停掉还在跑的临时容器，删留下的临时库、清 binlog，
+    再把 worker、接口起来。"""
+    _server_env(tmp_path, "MYSQL_ROOT_PASSWORD=r00tpw\n")
+    _drill_backups(tmp_path, "youju-20261119.jsonl.gz")
+    log = tmp_path / "calls.log"
+    interrupted = (
+        f"beijing_hhmm() {{ echo 1430; }}\n"
+        f'compose() {{ echo "compose $*" >> "{log}"; '
+        'if [ "$1" = exec ]; then cat >/dev/null; fi; '
+        'if [ "$1" = run ]; then kill -TERM $$; sleep 1; fi; }\n'
+        f'docker() {{ echo "docker $*" >> "{log}"; case "$1" in '
+        f'ps) echo abc123 ;; info) echo "{tmp_path}" ;; volume) echo "{tmp_path}/volume" ;; esac; }}'
+    )
+    done = _bash(tmp_path, "restore_drill", setup=interrupted)
+    assert done.returncode != 0 and "DRILL OK" not in done.stdout
+    calls = _calls(tmp_path)
+    run = next(i for i, c in enumerate(calls) if c.startswith("compose run"))
+    assert calls[run + 1].startswith(
+        "docker ps -q --filter label=com.docker.compose.project=youju-server"
+    )
+    assert calls[run + 2] == "docker stop -t 60 abc123"
+    assert calls[run + 3 : run + 5] == ["compose exec -T mysql sh -s"] * 2
+    assert calls[-1].startswith("compose up -d --wait --wait-timeout 300 api")
+
+
+@needs_bash
+@pytest.mark.parametrize("fails", [False, True])
+def test_drill_drop_script_drops_only_drill_databases(tmp_path, fails):
+    """容器里跑的那段：只删恢复演练的临时库（youju_drill_<14 位>_<4 位十六进制>），口令只在环境变量里；
+    查不到名单时按失败退出，不当作没有。"""
+    defs = _functions(tmp_path)
+    script = subprocess.run(
+        ["bash", "-c", f'source "{defs}"; drill_drop_sql'],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "mysql"
+    select = "exit 1" if fails else "printf 'youju_drill_20261119143000_ab12\\nyouju\\n'"
+    fake.write_text(
+        "#!/bin/sh\n"
+        f'echo "$* | pwd=$MYSQL_PWD" >> "{tmp_path}/mysql.log"\n'
+        'case "$*" in\n'
+        f'  *"information_schema.schemata"*) {select} ;;\n'
+        "esac\n",
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+    env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "MYSQL_ROOT_PASSWORD": "r00t"}
+    done = subprocess.run(["sh", "-s"], input=script, capture_output=True, text=True, env=env)
+    lines = (tmp_path / "mysql.log").read_text(encoding="utf-8").splitlines()
+    assert all(line.endswith("| pwd=r00t") and "r00t" not in line.split(" | ")[0] for line in lines)
+    assert "REGEXP '^youju_drill_[0-9]{14}_[0-9a-f]{4}$'" in lines[0]
+    drops = [line for line in lines if "DROP DATABASE" in line]
+    if fails:
+        assert done.returncode != 0 and not drops
+    else:
+        assert done.returncode == 0
+        assert drops == [
+            "-uroot -e DROP DATABASE IF EXISTS `youju_drill_20261119143000_ab12` | pwd=r00t"
+        ]
+        assert "删掉了留下的临时库 youju_drill_20261119143000_ab12" in done.stdout
 
 
 @needs_bash
@@ -1907,6 +3471,160 @@ def test_import_export_purges_binlog_even_when_interrupted(tmp_path):
     assert not any("archive-export" in c for c in calls)
 
 
+def _binlog_off_setup(
+    tmp_path: Path, state: str = "0", *, state_fails: bool = False, cleanup_fails: bool = False
+) -> str:
+    """假的 compose：删留下的 binlog 文件那段（含 binlog.index）回"删掉了"或失败；查开没开那段回
+    state 或失败（exec 返回 1，像连不上 MySQL）；清 binlog 那段照常读掉标准输入。"""
+    log = tmp_path / "calls.log"
+    cleanup = "return 1" if cleanup_fails else "echo cleaned"
+    check = "return 1" if state_fails else f"echo '{state}'"
+    return (
+        f'compose() {{ echo "compose $*" >> "{log}"; if [ "$1" = exec ]; then s=$(cat); '
+        f'case "$s" in *binlog.index*) {cleanup} ;; *"@@GLOBAL.log_bin"*) {check} ;; esac; fi; }}'
+    )
+
+
+@needs_bash
+def test_shared_binlog_off_purges_recreates_checks_and_cleans_up(tmp_path):
+    _server_env(tmp_path, "MYSQL_ROOT_PASSWORD=r00tpw\n")
+    (tmp_path / "server" / "mysql.cnf").write_text("[mysqld]\ndisable_log_bin\n", encoding="utf-8")
+    done = _bash(tmp_path, "binlog_off", setup=_binlog_off_setup(tmp_path))
+    assert done.returncode == 0, done.stderr
+    # worker、接口起来了才打 BINLOG OFF（这时关终端不会打断起服务），而且是最后一行
+    assert done.stdout.strip().splitlines()[-1] == "BINLOG OFF"
+    calls = _calls(tmp_path)
+    # 先停接口和 worker，清掉现有的 binlog，用新配置重建 MySQL，查是 0，删留下的 binlog 文件，
+    # 最后起 worker、接口；退出时不再起一遍（trap 已撤掉）
+    assert calls == [
+        "compose stop api worker",
+        "compose exec -T mysql sh -s",
+        "compose up -d --force-recreate --wait --wait-timeout 300 mysql",
+        "compose exec -T mysql sh -s",
+        "compose exec -T mysql sh -s",
+        "compose up -d --wait --wait-timeout 900 worker",
+        "compose up -d --wait --wait-timeout 300 api",
+    ]
+    assert "r00tpw" not in "\n".join(calls)
+
+
+@needs_bash
+def test_shared_binlog_off_needs_the_new_config_and_stops_on_any_doubt(tmp_path):
+    _server_env(tmp_path, "MYSQL_ROOT_PASSWORD=r00tpw\n")
+    # 服务器上的 mysql.cnf 还是旧的（没 install 新版本）：什么都不停
+    (tmp_path / "server" / "mysql.cnf").write_text(
+        "[mysqld]\nbinlog_expire_logs_seconds = 259200\n", encoding="utf-8"
+    )
+    done = _bash(tmp_path, "binlog_off", setup=_binlog_off_setup(tmp_path))
+    assert done.returncode == 1 and "还没有 disable_log_bin" in done.stderr
+    assert not [c for c in _calls(tmp_path) if c.startswith("compose")]
+    (tmp_path / "server" / "mysql.cnf").write_text("[mysqld]\ndisable_log_bin\n", encoding="utf-8")
+    cases = [
+        # 重建以后还开着、读不出、查的时候连不上：不删文件，报错
+        (_binlog_off_setup(tmp_path, "1"), "@@GLOBAL.log_bin=1", 2),
+        (_binlog_off_setup(tmp_path, ""), "@@GLOBAL.log_bin=读不出", 2),
+        (_binlog_off_setup(tmp_path, state_fails=True), "查不出 MySQL 的 binlog 开没开", 2),
+        # 关了，但留下的 binlog 文件没删掉：报错
+        (_binlog_off_setup(tmp_path, cleanup_fails=True), "留下的 binlog 文件没删掉", 3),
+    ]
+    for setup, shown, execs in cases:
+        (tmp_path / "calls.log").unlink(missing_ok=True)
+        done = _bash(tmp_path, "binlog_off", setup=setup)
+        assert done.returncode != 0 and shown in done.stderr, done.stderr
+        assert "BINLOG OFF" not in done.stdout
+        calls = [c for c in _calls(tmp_path) if c.startswith("compose")]
+        assert calls.count("compose exec -T mysql sh -s") == execs
+        # 照样把 worker、接口起来（on_exit）
+        assert calls[-1].startswith("compose up -d --wait --wait-timeout 300 api")
+
+
+@needs_bash
+@pytest.mark.parametrize("state", ["0", "1", "fail"])
+def test_binlog_files_cleanup_script_deletes_only_leftover_binlog_files(tmp_path, state):
+    """容器里跑的那段：binlog 确实关着才删数据目录里的 binlog.<6 位编号> 和 binlog.index，别的不碰；
+    开着、读不出时按失败退出，什么都不删；口令只在环境变量里。"""
+    defs = _functions(tmp_path)
+    script = subprocess.run(
+        ["bash", "-c", f'source "{defs}"; binlog_files_cleanup_sql'],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    data = tmp_path / "data"
+    data.mkdir()
+    old = ["binlog.000001", "binlog.000002", "binlog.index"]
+    keep = ["binlog.000001.bak", "ibdata1", "mysql.ibd"]
+    for name in old + keep:
+        (data / name).write_text("x", encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "mysql"
+    answer = "exit 1" if state == "fail" else f"echo {state}"
+    fake.write_text(
+        "#!/bin/sh\n"
+        f'echo "$* | pwd=$MYSQL_PWD" >> "{tmp_path}/mysql.log"\n'
+        'case "$*" in\n'
+        f'  *"@@GLOBAL.log_bin"*) {answer} ;;\n'
+        f'  *"@@GLOBAL.datadir"*) echo "{data}/" ;;\n'
+        "esac\n",
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+    env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "MYSQL_ROOT_PASSWORD": "r00t"}
+    done = subprocess.run(["sh", "-s"], input=script, capture_output=True, text=True, env=env)
+    lines = (tmp_path / "mysql.log").read_text(encoding="utf-8").splitlines()
+    assert all(line.endswith("| pwd=r00t") and "r00t" not in line.split(" | ")[0] for line in lines)
+    left = sorted(p.name for p in data.iterdir())
+    if state == "0":
+        assert done.returncode == 0 and "删掉了以前留下的 binlog 文件 3 个" in done.stdout
+        assert left == sorted(keep)
+    else:
+        assert done.returncode != 0 and left == sorted(old + keep)
+
+
+@pytest.mark.skipif(not shutil.which("mysqld"), reason="没有 mysqld")
+@pytest.mark.parametrize("variant", ["shared", "server"])
+def test_server_mysql_configs_pass_mysqld_validation(tmp_path, variant):
+    """两份 mysql.cnf 交给真的 mysqld：写法要过校验（拼错的选项会报错），binlog 也真的关了
+    （关了以后 log-replica-updates 跟着是 FALSE，开着是 TRUE）。先拷进临时目录再给它：Ubuntu 的
+    mysqld 有 AppArmor，读不了检出目录里的文件。"""
+    cnf = tmp_path / "mysql.cnf"
+    shutil.copyfile(SELFHOST / variant / "mysql.cnf", cnf)
+    cnf.chmod(0o644)
+    done = subprocess.run(
+        ["mysqld", f"--defaults-file={cnf}", "--validate-config"], capture_output=True, text=True
+    )
+    assert done.returncode == 0, done.stderr
+    shown = subprocess.run(
+        ["mysqld", f"--defaults-file={cnf}", "--verbose", "--help"], capture_output=True, text=True
+    )
+    assert re.search(r"^log-(replica|slave)-updates\s+FALSE\s*$", shown.stdout, re.M), shown.stderr
+
+
+@needs_bash
+def test_binlog_state_script_reads_the_global_switch_with_the_password_from_env(tmp_path):
+    defs = _functions(tmp_path)
+    script = subprocess.run(
+        ["bash", "-c", f'source "{defs}"; binlog_state_sql'],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "mysql"
+    fake.write_text(
+        f'#!/bin/sh\necho "$* | pwd=$MYSQL_PWD" >> "{tmp_path}/mysql.log"\necho 0\n',
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+    env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "MYSQL_ROOT_PASSWORD": "r00t"}
+    done = subprocess.run(["sh", "-s"], input=script, capture_output=True, text=True, env=env)
+    assert done.returncode == 0 and done.stdout.strip() == "0"
+    (line,) = (tmp_path / "mysql.log").read_text(encoding="utf-8").splitlines()
+    assert line == "-uroot -N -B -e SELECT @@GLOBAL.log_bin | pwd=r00t"
+
+
 @needs_bash
 def test_on_exit_keeps_going_when_a_step_fails(tmp_path):
     """退出时清 binlog 失败（或往断开的终端写字失败）也要接着把接口、worker 起来。"""
@@ -1958,3 +3676,33 @@ def test_binlog_purge_script_purges_up_to_the_current_file(tmp_path, left):
         assert done.returncode == 0 and "binlog 已清" in done.stdout
     else:
         assert done.returncode != 0 and "没清干净" in done.stderr
+
+
+@needs_bash
+@pytest.mark.parametrize("answer", ["0", "fail", "empty", "weird"])
+def test_binlog_purge_script_skips_only_when_binlog_is_really_off(tmp_path, answer):
+    """binlog 关着（@@log_bin=0）才打"不用清"、退出 0；连不上或返回值不是 0/1 时按失败退出。"""
+    defs = _functions(tmp_path)
+    script = subprocess.run(
+        ["bash", "-c", f'source "{defs}"; binlog_purge_sql'],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "mysql"
+    bodies = {
+        "0": "echo 0\n",
+        "fail": "echo 'cannot connect' >&2\nexit 1\n",
+        "empty": "\n",
+        "weird": "echo OFF\n",
+    }
+    fake.write_text("#!/bin/sh\n" + bodies[answer], encoding="utf-8")
+    fake.chmod(0o755)
+    env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "MYSQL_ROOT_PASSWORD": "r00t"}
+    done = subprocess.run(["sh", "-s"], input=script, capture_output=True, text=True, env=env)
+    if answer == "0":
+        assert done.returncode == 0 and "binlog 没开，不用清" in done.stdout
+    else:
+        assert done.returncode != 0 and "不用清" not in done.stdout

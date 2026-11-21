@@ -2390,6 +2390,22 @@ def _cmd_sync_setup(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_sync_server_setup(args: argparse.Namespace) -> int:
+    """（服务器）建好收同步要用的进度表、把服务器自己会新建行的表的编号下限抬好。
+    共用服务器上 worker 的库账号没有建表、改表权限：youju-shared.sh up 用建表迁移的账号
+    先跑这一步。没配同步密钥的什么都不做。"""
+    from youju.sync import server
+
+    settings = get_settings()
+    secret = settings.sync_secret.get_secret_value().strip() if settings.sync_secret else ""
+    if not secret:
+        print("这台不收本机的同步（没设 YOUJU_SYNC_SECRET），跳过")
+        return 0
+    server.ensure_state(server.get_engine())
+    print("收同步的进度表已建好、编号下限已抬好")
+    return 0
+
+
 def _cmd_sync_push(args: argparse.Namespace) -> int:
     from youju.sync import local
 
@@ -2819,7 +2835,10 @@ def _cmd_offsite_pull(args: argparse.Namespace) -> int:
 
 def _cmd_uptime_check(args: argparse.Namespace) -> int:
     """从服务器外面（2.0 的本机）每 5 分钟看一次服务器的 /health：连续 2 次不通就提醒到群里，
-    恢复了再说一声；状态记在 --state 文件里（同一次故障只提醒一次）。"""
+    恢复了再说一声；状态记在 --state 文件里（同一次故障只提醒一次）。提醒真发出去了才记成
+    "已提醒"：发送失败或没配告警，下一次照样发；恢复的消息没发出去也一样，下次检查通过时再发。
+    发送失败不一定没送到（比如机器人收到了、回包超时）：那样会多发一次"不通"，或者下一次就恢复了时
+    群里收不到"恢复了"——宁可多发一次，不能整次故障都没人知道。退出码只看服务器通不通。"""
     import json as _json
 
     import httpx
@@ -2840,20 +2859,29 @@ def _cmd_uptime_check(args: argparse.Namespace) -> int:
         if not healthy:
             break
     try:
-        state = _json.loads(args.state.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        noted = _json.loads(args.state.read_text(encoding="utf-8"))
+        # 文件被改坏了（不是字典、次数不是数）也当作没有记录：不然一不通就崩，整次故障都不提醒
+        fails = max(0, int(noted.get("fails", 0)))
+        state = {"fails": fails, "alerted": noted.get("alerted") is True}
+    except (OSError, ValueError, TypeError, AttributeError, OverflowError):
         state = {"fails": 0, "alerted": False}
+    sent = True  # 这次要发的提醒发出去了没有（不用发时算发了）
     if healthy:
-        if state.get("alerted"):
-            send_alert(f"服务器恢复了：{url} 健康检查通过")
-        state = {"fails": 0, "alerted": False}
+        if state["alerted"]:
+            sent = send_alert(f"服务器恢复了：{url} 健康检查通过")
+        # 恢复的消息没发出去：群里最后看到的还是"不通"，留着"已提醒"，下次检查通过时再发
+        state = {"fails": 0, "alerted": state["alerted"] and sent is not True}
     else:
-        state["fails"] = int(state.get("fails", 0)) + 1
-        if state["fails"] >= 2 and not state.get("alerted"):
-            send_alert(f"服务器连续 {state['fails']} 次健康检查不通（{reason}）：{url}")
-            state["alerted"] = True
+        state["fails"] += 1
+        if state["fails"] >= 2 and not state["alerted"]:
+            sent = send_alert(f"服务器连续 {state['fails']} 次健康检查不通（{reason}）：{url}")
+            state["alerted"] = sent is True
     args.state.write_text(_json.dumps(state), encoding="utf-8")
     print(f"{url}：{'正常' if healthy else '不通（' + reason + '）'}")
+    if sent is False:
+        print("提醒没发出去，下次再发")
+    elif sent is None:
+        print("没配置告警，提醒没发（配好以后照常提醒）")
     return 0 if healthy else 1
 
 
@@ -3166,7 +3194,8 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser(
         "public-snapshot",
         help="公开内容快照：只导出通知、正文、附件文字、名单等公开内容（不含用户数据、密钥、日志），"
-        "上传到对象存储 public-snapshots/，保留 7 天；给本机测试用",
+        "给本机测试用。自建以后在电脑上用 --output 导出成文件；不带 --output 是云托管时的做法"
+        "（上传到对象存储 public-snapshots/，保留 7 天）",
     )
     p.add_argument("--output", type=Path, help="只导出到本机这个文件，不上传")
     p.set_defaults(func=_cmd_public_snapshot)
@@ -3446,6 +3475,11 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser("sync-setup", help="（本机）建同步变更表和触发器，可以重复执行")
     p.set_defaults(func=_cmd_sync_setup)
+    p = sub.add_parser(
+        "sync-server-setup",
+        help="（服务器）建好收同步的进度表、抬好编号下限（要建表权限；up 用迁移的账号跑，可重复）",
+    )
+    p.set_defaults(func=_cmd_sync_server_setup)
     p = sub.add_parser("sync-push", help="（本机）把公开数据的变更推到服务器")
     p.add_argument("--full", action="store_true", help="整表全推一遍，再删掉服务器上多出来的行")
     p.add_argument("--no-prune", action="store_true", help="全推时不删服务器上多出来的行")

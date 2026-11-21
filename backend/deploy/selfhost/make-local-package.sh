@@ -31,6 +31,10 @@ git -C "$root" archive HEAD Dockerfile .dockerignore backend/pyproject.toml back
   backend/README.md backend/alembic.ini backend/alembic backend/src backend/deploy "docs/数据来源" \
   | tar -x -C "$pkg/source"
 echo "$sha" > "$pkg/source/VERSION"
+# 完整提交号写进镜像（youju/version.py 读）：电脑导出的公开快照靠它记代码版本，团队的 Mac 迁移版本不同时
+# 才能检出同一版代码导入（tools/team/fresh-test-db.sh）
+python3 -I "$root/tools/release/write_build.py" --revision HEAD \
+  --output "$pkg/source/backend/src/youju/_build.json" > /dev/null
 if [ "${2:-}" != "" ]; then
   python3 -I - "$2" "$pkg/source/backend/alembic/versions" <<'EOF'
 import ast
