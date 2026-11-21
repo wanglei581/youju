@@ -9,6 +9,7 @@
 用的文字不变。"""
 
 import re
+import time
 
 import pytest
 
@@ -826,9 +827,21 @@ def test_contact_table_cell_with_extensions_and_company_amounts():
 
 
 def test_common_words_on_a_phone_line_are_not_names():
-    # 11/18：号码遮了以后，这一行按电话行把像姓名的词都遮掉；"查阅"这类普通词不能当成姓名
-    shown = v1._clean_reading_body("操作指南可在网站查阅，技术支持：0123-87654321。")
-    assert shown == f"操作指南可在网站查阅，技术支持：{MARK}。"
+    # 11/18：入库按电话行认姓名时，"查阅"等普通词不当姓名；页面原有规则仍保留（"只加不减"，
+    # 如附件"责编：查阅"与主干一致照旧遮，已在 v1._NOT_NAMES 里的"查询"照旧留着）
+    assert (
+        v1.redact_sensitive("操作指南可在网站查阅，技术支持：0123-87654321。")
+        == "操作指南可在网站查阅，技术支持：[电话已脱敏]。"
+    )
+    assert (
+        v1._clean_reading_body("操作指南可在网站查询，技术支持：0123-87654321。")
+        == f"操作指南可在网站查询，技术支持：{MARK}。"
+    )
+    assert (
+        v1._clean_reading_body("操作指南可在网站查阅，技术支持：0123-87654321。")
+        == f"操作指南可在网站（这里隐去了联系人），技术支持：{MARK}。"
+    )
+    assert v1.display_attachment_text("责编：查阅") == "责编：（这里隐去了署名）"
 
 
 EMAIL_MARK = "（这里隐去了邮箱）"
@@ -1379,3 +1392,20 @@ def test_label_windows_count_marks_as_two_characters() -> None:
     assert v1._mask_context_numbers(f"联系电话：{marks}65432109").endswith(MARK)
     line = "联系人：" + "（这里隐去了联系人）、" * 4 + "赵六"
     assert v1._att_window(line, len("联系人：")) == len(line)
+
+
+def test_marked_row_does_not_backtrack_on_long_whitespace() -> None:
+    # Codex 终审第 2 条：长空白匹配失败时不能出现二次回溯
+    cases = [
+        ("（这里隐去了联系人）" + " " * 10000 + "X", v1._MARKED_ROW),
+        ("（这里隐去了联系人）手机" + " " * 10000 + "X", v1._MARKED_ROW),
+        (
+            "（这里隐去了联系人），" + " " * 10000 + "（这里隐去了联系人）" + " " * 10000 + "X",
+            v1._MARKED_ROW,
+        ),
+        ("张三" + " " * 10000 + "X", v1._CONTACT_ROW),
+    ]
+    start = time.perf_counter()
+    for line, pattern in cases:
+        assert pattern.match(line) is None
+    assert time.perf_counter() - start < 0.2

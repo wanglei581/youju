@@ -3022,8 +3022,10 @@ _PHONE = (
 )
 _PHONE_ANY = re.compile(_PHONE)
 _PHONE_LABEL = re.compile(r"(?:电\s*话|手\s*机)(?:号码?)?\s*[:：]")
-# "联系人："写在上一行末尾、下面一行一个"姓名 电话"的：这几行都遮
-_CONTACT_ROW = re.compile(rf"^\s*[{chr(0x4E00)}-{chr(0x9FFF)}·]{{2,4}}\s*[，,、:：]?\s*{_PHONE}")
+# "联系人："写在上一行末尾、下面一行一个"姓名 电话"的：这几行都遮（用占有量词避免长空白回溯）
+_ROW_SEP = r"\s*+(?:[，,、/／]\s*+)?+"
+_ROW_END_SEP = r"\s*+(?:[，,、:：]\s*+)?+"
+_CONTACT_ROW = re.compile(rf"^\s*+[{chr(0x4E00)}-{chr(0x9FFF)}·]{{2,4}}{_ROW_END_SEP}{_PHONE}")
 # 姓名已经遮成联系人标记的"姓名 电话"行（入库先遮了号码旁边的姓名；"张三处长 （这里隐去了联系人）
 # 号码"这样一行几个的也算）：也接着往下认。主干入库存原样的"张三 138…""索某某 138…"（新加的姓）、
 # 不在标签下第一行的"周老师 138…"，主干页面认出"姓名 电话"行、接着遮下一行（11/19 正确性那位第八到
@@ -3034,9 +3036,9 @@ _CONTACT_ROW = re.compile(rf"^\s*[{chr(0x4E00)}-{chr(0x9FFF)}·]{{2,4}}\s*[，,�
 # 入库遮了姓名以后是"（这里隐去了联系人）手机：（这里隐去了电话）"）也算（11/19 隐私合规那位第十轮）
 _ROW_LABEL = r"(?:(?:联系)?(?:电话|手机|座机|固话)(?:号码?)?|(?:电子)?(?:邮箱|邮件))"
 _MARKED_ROW = re.compile(
-    rf"^\s*(?:[{chr(0x4E00)}-{chr(0x9FFF)}·]{{2,4}}\s*[，,、/／]?\s*)?{_SKIPPED_CONTACT}"
-    rf"(?:\s*[，,、/／]?\s*{_SKIPPED_CONTACT})*(?:\s*[，,、/／]?\s*{_ROW_LABEL})?"
-    rf"\s*[，,、:：]?\s*{_PHONE}"
+    rf"^\s*+(?:[{chr(0x4E00)}-{chr(0x9FFF)}·]{{2,4}}{_ROW_SEP})?{_SKIPPED_CONTACT}"
+    rf"(?:{_ROW_SEP}{_SKIPPED_CONTACT})*+(?:{_ROW_SEP}{_ROW_LABEL})?+"
+    rf"{_ROW_END_SEP}{_PHONE}"
 )
 
 
