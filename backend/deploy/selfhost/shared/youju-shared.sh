@@ -590,6 +590,7 @@ db_accounts() {
 up() {
   [ -f "$SERVER/.env" ] || die "先 env"
   db_env_ok
+  acquire_ops_lock
   compose config -q
   compose up -d --wait --wait-timeout 300 mysql
   # 升级时先停 worker、接口，迁移完再起（和本机 setup-wsl.sh 一样）
@@ -747,13 +748,72 @@ logs() {
 
 # ---- 首发前搬家（D-127） ----
 
+# 互斥锁：同时只跑一个会停服务、起一次性容器或碰临时库的命令（restore-drill、import-export、fetch-export、
+# binlog-off、up），免得一个命令的收尾把另一个正在跑的一次性容器停掉、把还在用的 youju_drill_… 临时库删掉
+OPS_LOCK_DIR=""
+OPS_LOCK_HELD=""
+acquire_ops_lock() {
+  [ "${OPS_LOCK_HELD:-}" = "$$" ] && return 0
+  local dir="$BASE/.ops.lock" pid="" i
+  mkdir -p "$BASE"
+  for i in 1 2; do
+    if mkdir "$dir" 2>/dev/null; then
+      printf '%s\n' "$$" > "$dir/pid"
+      OPS_LOCK_DIR="$dir"
+      OPS_LOCK_HELD="$$"
+      trap release_ops_lock EXIT
+      return 0
+    fi
+    pid=$(cat "$dir/pid" 2>/dev/null || true)
+    if [ -z "$pid" ]; then
+      sleep 0.2
+      pid=$(cat "$dir/pid" 2>/dev/null || true)
+    fi
+    if [ -n "$pid" ] && [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+      die "已有另一个恢复演练、搬家或关 binlog 操作正在运行（PID ${pid}），等它结束再跑"
+    fi
+    if mkdir "${dir}.reclaim" 2>/dev/null; then
+      rm -f "$dir/pid" 2>/dev/null || true
+      rmdir "$dir" 2>/dev/null || true
+      rmdir "${dir}.reclaim" 2>/dev/null || true
+    else
+      sleep 0.2
+    fi
+  done
+  die "已经有另一个操作正在占着锁（${dir}），等它结束再跑"
+}
+
+release_ops_lock() {
+  [ -n "${OPS_LOCK_HELD:-}" ] || return 0
+  local holder=""
+  holder=$(cat "${OPS_LOCK_DIR}/pid" 2>/dev/null || true)
+  if [ "$holder" = "$OPS_LOCK_HELD" ]; then
+    rm -f "${OPS_LOCK_DIR}/pid" 2>/dev/null || true
+    rmdir "${OPS_LOCK_DIR}" 2>/dev/null || true
+  fi
+  OPS_LOCK_HELD=""
+}
+
+install_exit_trap() {
+  trap on_exit EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  trap 'exit 129' HUP
+}
+
+clear_exit_trap() {
+  trap - EXIT INT TERM HUP
+  release_ops_lock
+}
+
 # 导出窗口里临时起的容器（下载、试恢复、加密）用 worker 的内存上限（640M）：先停接口和 worker，
 # 有据合计不超过 1.5G；结束时（成功、失败都一样）再起来。停着的这段时间本机推同步会失败、下一轮再推
 pause_services() {
   # 先确认起得来再停：口令文件没放好时 compose 加载不了项目，停了就起不来
   db_env_ok
+  acquire_ops_lock
+  install_exit_trap
   compose stop api worker
-  trap on_exit EXIT
 }
 
 # 退出时（成功、失败、被打断都一样）：试恢复开始了还没清 binlog 的先清，再把接口和 worker 起来。
@@ -766,6 +826,7 @@ PURGE_BINLOG=""
 DROP_DRILL_DBS=""
 on_exit() {
   set +e
+  trap - INT TERM HUP
   local stray
   stray=$(docker ps -q --filter label=com.docker.compose.project=youju-server \
     --filter label=com.docker.compose.oneoff=True)
@@ -781,6 +842,9 @@ on_exit() {
     purge_binlog || echo "注意：binlog 没清掉，再跑之前先查（手册第六节第 7 步、第八节\"恢复演练\"）" >&2
   fi
   resume_services
+  local rc=$?
+  release_ops_lock
+  return "$rc"
 }
 
 # 在 mysql 容器里跑（sh -s）：轮换 binlog，删掉当前这个以前的全部，再查只剩一个。不用
@@ -792,7 +856,8 @@ binlog_purge_sql() {
 set -eu
 export MYSQL_PWD="$MYSQL_ROOT_PASSWORD"
 on=$(mysql -uroot -N -B -e 'SELECT @@log_bin')
-if [ "$on" != 1 ]; then echo "binlog 没开，不用清"; exit 0; fi
+if [ "$on" = 0 ]; then echo "binlog 没开，不用清"; exit 0; fi
+[ "$on" = 1 ] || { echo "查不出 MySQL 的 binlog 开没开（@@log_bin=${on:-空}）" >&2; exit 1; }
 current=$(mysql -uroot -N -B -e 'FLUSH BINARY LOGS; SHOW MASTER STATUS' | awk 'NR == 1 {print $1}')
 case "$current" in "" | *[!A-Za-z0-9._-]*) echo "取不到当前的 binlog 文件名" >&2; exit 1 ;; esac
 mysql -uroot -e "PURGE BINARY LOGS TO '$current'"
@@ -856,7 +921,7 @@ binlog_off() {
   binlog_files_cleanup_sql | compose exec -T mysql sh -s \
     || die "binlog 关了，但数据目录里留下的 binlog 文件没删掉（原因见上面）"
   resume_services
-  trap - EXIT
+  clear_exit_trap
   echo "BINLOG OFF"
 }
 # 在 mysql 容器里跑（sh -s）：删掉恢复演练留下的临时库（名字和 youju/restore_drill.py 的 NAME 一样：
@@ -878,6 +943,7 @@ drop_drill_dbs() { drill_drop_sql | compose exec -T mysql sh -s; }
 resume_services() {
   if ! { compose up -d --wait --wait-timeout 900 worker && compose up -d --wait --wait-timeout 300 api; }; then
     echo "注意：接口、worker 没起来，运行 ${SELF} up" >&2
+    release_ops_lock
     exit 1
   fi
 }
@@ -1027,10 +1093,11 @@ restore_drill() {
   root_pw=$(root_password)
   [ -n "$root_pw" ] || die "${SERVER}/mysql-root.env 里没有 MYSQL_ROOT_PASSWORD（先 ${SELF} split-db-env）"
   db_env_ok
+  acquire_ops_lock
   say "恢复演练：用户数据备份 ${name} 在临时库 youju_drill_… 里恢复一遍（核对条数、外键、每张表的 SHA-256），结束删掉；不碰正式库"
   say "先停 worker（定时任务、本机推同步停几分钟），接口照常；结束再起来"
+  install_exit_trap
   compose stop worker
-  trap on_exit EXIT
   DROP_DRILL_DBS=1
   PURGE_BINLOG=1
   YOUJU_DATABASE_URL="mysql+pymysql://root:${root_pw}@mysql:3306/youju?charset=utf8mb4" \

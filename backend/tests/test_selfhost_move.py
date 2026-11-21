@@ -1367,6 +1367,82 @@ def test_shared_restore_drill_with_binlog_off_still_drops_drill_dbs(tmp_path):
 
 
 @needs_bash
+@pytest.mark.parametrize("mode", ["fail", "term"])
+def test_shared_restore_drill_recovers_worker_when_stop_fails_or_interrupted(tmp_path, mode):
+    """stop worker 失败或中途被 SIGTERM 打断时，EXIT/TERM trap 已经装好：on_exit 照样把 worker、接口拉起来并放锁。"""
+    _server_env(tmp_path, f"MYSQL_ROOT_PASSWORD={ROOT_PW}\n")
+    _drill_backups(tmp_path, "youju-20261119.jsonl.gz")
+    log = tmp_path / "calls.log"
+    action = "return 1" if mode == "fail" else "kill -TERM $$; sleep 1"
+    setup = (
+        _drill_setup(tmp_path)
+        + f'\ncompose() {{ printf "compose %s\\n" "$*" >> "{log}"; '
+        + f'if [ "$1" = stop ]; then {action}; fi; }}'
+    )
+    done = _bash(tmp_path, "restore_drill", setup=setup)
+    assert done.returncode != 0
+    calls = [c for c in _calls(tmp_path) if c.startswith("compose")]
+    assert calls[0] == "compose stop worker"
+    assert "compose up -d --wait --wait-timeout 900 worker" in calls
+    assert calls[-1].startswith("compose up -d --wait --wait-timeout 300 api")
+    assert not (tmp_path / ".ops.lock").exists()
+
+
+@needs_bash
+def test_shared_restore_drill_blocks_concurrent_runs_and_reclaims_stale_lock(tmp_path):
+    """同时只能跑一个 restore-drill / import-export：第二个在动任何容器或临时库之前就被拦下；
+    前一个结束后自动放锁；被 kill -9 留下的死锁（PID 已不在）下次自动清理并继续。"""
+    _server_env(tmp_path, f"MYSQL_ROOT_PASSWORD={ROOT_PW}\n")
+    _drill_backups(tmp_path, "youju-20261119.jsonl.gz")
+    _downloaded(tmp_path)
+    started = tmp_path / "first.started"
+    release = tmp_path / "first.release"
+    setup_first = (
+        _drill_setup(tmp_path)
+        + f'\ncompose() {{ printf "compose %s\\n" "$*" >> "{tmp_path}/first.log"; '
+        + f'if [ "$1" = run ]; then touch "{started}"; '
+        + f'while [ ! -f "{release}" ]; do sleep 0.05; done; fi; '
+        + 'if [ "$1" = exec ]; then cat >/dev/null; fi; }'
+    )
+    first = subprocess.Popen(
+        ["bash", "-c", _script(tmp_path, "restore_drill", setup_first)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while not started.exists():
+            assert time.monotonic() < deadline, "第一个 restore_drill 没启动"
+            assert first.poll() is None, first.communicate()
+            time.sleep(0.05)
+
+        for cmd in ("restore_drill", "import_export a79a0042"):
+            (tmp_path / "calls.log").unlink(missing_ok=True)
+            second = _bash(tmp_path, cmd, setup=_drill_setup(tmp_path))
+            assert second.returncode == 1
+            assert "正在运行" in second.stderr
+            assert not [
+                c for c in _calls(tmp_path) if c.startswith(("compose", "docker ps", "docker stop"))
+            ]
+    finally:
+        release.write_text("go\n", encoding="utf-8")
+    out1, err1 = first.communicate(timeout=15)
+    assert first.returncode == 0, err1
+    assert "DRILL OK youju-20261119.jsonl.gz" in out1
+    assert not (tmp_path / ".ops.lock").exists()
+
+    # 模拟上一次被 kill -9 留下死 PID 的锁：下一个 restore_drill 自动接管并正常跑完
+    lock = tmp_path / ".ops.lock"
+    lock.mkdir()
+    (lock / "pid").write_text("999999\n", encoding="utf-8")
+    again = _bash(tmp_path, "restore_drill", setup=_drill_setup(tmp_path))
+    assert again.returncode == 0, again.stderr
+    assert "DRILL OK youju-20261119.jsonl.gz" in again.stdout
+    assert not lock.exists()
+
+
+@needs_bash
 def test_shared_restore_drill_brings_the_worker_back_when_it_fails(tmp_path):
     _server_env(tmp_path, "MYSQL_ROOT_PASSWORD=r00tpw\n")
     _drill_backups(tmp_path, "youju-20261119.jsonl.gz")
@@ -2823,9 +2899,9 @@ def test_binlog_purge_script_purges_up_to_the_current_file(tmp_path, left):
 
 
 @needs_bash
-@pytest.mark.parametrize("answer", ["0", "fail"])
+@pytest.mark.parametrize("answer", ["0", "fail", "empty", "weird"])
 def test_binlog_purge_script_skips_only_when_binlog_is_really_off(tmp_path, answer):
-    """binlog 关着才打"不用清"、退出 0；连不上 MySQL（查不出开没开）时按失败退出，不当作关着。"""
+    """binlog 关着（@@log_bin=0）才打"不用清"、退出 0；连不上或返回值不是 0/1 时按失败退出。"""
     defs = _functions(tmp_path)
     script = subprocess.run(
         ["bash", "-c", f'source "{defs}"; binlog_purge_sql'],
@@ -2836,10 +2912,13 @@ def test_binlog_purge_script_skips_only_when_binlog_is_really_off(tmp_path, answ
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     fake = bin_dir / "mysql"
-    fake.write_text(
-        "#!/bin/sh\n" + ("echo 0\n" if answer == "0" else "echo 'cannot connect' >&2\nexit 1\n"),
-        encoding="utf-8",
-    )
+    bodies = {
+        "0": "echo 0\n",
+        "fail": "echo 'cannot connect' >&2\nexit 1\n",
+        "empty": "\n",
+        "weird": "echo OFF\n",
+    }
+    fake.write_text("#!/bin/sh\n" + bodies[answer], encoding="utf-8")
     fake.chmod(0o755)
     env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "MYSQL_ROOT_PASSWORD": "r00t"}
     done = subprocess.run(["sh", "-s"], input=script, capture_output=True, text=True, env=env)
