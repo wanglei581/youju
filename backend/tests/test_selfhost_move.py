@@ -3,6 +3,7 @@
 
 import base64
 import contextlib
+import fcntl
 import gzip
 import hashlib
 import json
@@ -1385,13 +1386,14 @@ def test_shared_restore_drill_recovers_worker_when_stop_fails_or_interrupted(tmp
     assert calls[0] == "compose stop worker"
     assert "compose up -d --wait --wait-timeout 900 worker" in calls
     assert calls[-1].startswith("compose up -d --wait --wait-timeout 300 api")
-    assert not (tmp_path / ".ops.lock").exists()
+    again = _bash(tmp_path, "restore_drill", setup=_drill_setup(tmp_path))
+    assert again.returncode == 0, again.stderr
 
 
 @needs_bash
-def test_shared_restore_drill_blocks_concurrent_runs_and_reclaims_stale_lock(tmp_path):
+def test_shared_restore_drill_blocks_concurrent_runs_and_recovers_after_sigkill(tmp_path):
     """同时只能跑一个 restore-drill / import-export：第二个在动任何容器或临时库之前就被拦下；
-    前一个结束后自动放锁；被 kill -9 留下的死锁（PID 已不在）下次自动清理并继续。"""
+    前一个结束后自动放锁；被 SIGKILL 强杀后内核自动放锁，并发恢复也最多只能进一个。"""
     _server_env(tmp_path, f"MYSQL_ROOT_PASSWORD={ROOT_PW}\n")
     _drill_backups(tmp_path, "youju-20261119.jsonl.gz")
     _downloaded(tmp_path)
@@ -1430,11 +1432,34 @@ def test_shared_restore_drill_blocks_concurrent_runs_and_reclaims_stale_lock(tmp
     out1, err1 = first.communicate(timeout=15)
     assert first.returncode == 0, err1
     assert "DRILL OK youju-20261119.jsonl.gz" in out1
-    assert not (tmp_path / ".ops.lock").exists()
 
-    # 模拟上一次被 kill -9 留下死 PID 的锁：两个进程同时抢回收，最多只能进一个，另一个被拦下
-    lock = tmp_path / ".ops.lock"
-    lock.write_text("999999\n", encoding="utf-8")
+    # 模拟正在跑的进程被 SIGKILL（kill -9）强杀：内核（缺 flock 时由保活子进程）自动放锁，并发恢复最多只能进一个
+    release.unlink(missing_ok=True)
+    started.unlink(missing_ok=True)
+    victim = subprocess.Popen(
+        ["bash", "-c", _script(tmp_path, "restore_drill", setup_first)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    deadline = time.monotonic() + 10
+    while not started.exists():
+        assert time.monotonic() < deadline
+        assert victim.poll() is None, victim.communicate()
+        time.sleep(0.05)
+    victim.kill()
+    victim.wait(timeout=10)
+    deadline = time.monotonic() + 5
+    while True:
+        with (tmp_path / ".ops.lock").open("r+") as fh:
+            try:
+                fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(fh, fcntl.LOCK_UN)
+                break
+            except BlockingIOError:
+                assert time.monotonic() < deadline, "SIGKILL 后内核锁未释放"
+                time.sleep(0.05)
+
     release.unlink(missing_ok=True)
     started.unlink(missing_ok=True)
     (tmp_path / "first.log").unlink(missing_ok=True)
@@ -1464,10 +1489,9 @@ def test_shared_restore_drill_blocks_concurrent_runs_and_reclaims_stale_lock(tmp
     winner = next(r for r in results if r[0] == 0)
     loser = next(r for r in results if r[0] == 1)
     assert "DRILL OK youju-20261119.jsonl.gz" in winner[1]
-    assert "正在运行" in loser[2] or "占着锁" in loser[2]
+    assert "正在运行" in loser[2]
     first_log = (tmp_path / "first.log").read_text(encoding="utf-8").splitlines()
     assert first_log.count("compose stop worker") == 1
-    assert not lock.exists()
 
 
 @needs_bash
@@ -1517,7 +1541,8 @@ def test_shared_binlog_off_keeps_lock_until_on_exit_finishes_when_resume_fails(t
         release.write_text("go\n", encoding="utf-8")
     out, err = proc.communicate(timeout=15)
     assert proc.returncode == 1
-    assert not (tmp_path / ".ops.lock").exists()
+    again = _bash(tmp_path, "restore_drill", setup=_drill_setup(tmp_path))
+    assert again.returncode == 0, again.stderr
 
 
 @needs_bash

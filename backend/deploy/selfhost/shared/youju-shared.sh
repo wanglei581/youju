@@ -750,48 +750,103 @@ logs() {
 
 # 互斥锁：同时只跑一个会停服务、起一次性容器或碰临时库的命令（restore-drill、import-export、fetch-export、
 # binlog-off、up），免得一个命令的收尾把另一个正在跑的一次性容器停掉、把还在用的 youju_drill_… 临时库删掉。
-# 先写好带 $$ 的临时文件再 ln 成 $BASE/.ops.lock（文件一出现就有 PID，没有空窗期）；死锁回收时先抢到
-# .reclaim 目录，再在里面重新读 PID 确认持锁进程已不在才删，免得两个进程并发回收时删掉对方刚拿到的新锁
-OPS_LOCK_FILE=""
-OPS_LOCK_HELD=""
+# 统一用内核 flock(2) 锁在 $BASE/.ops.lock 上（不删锁文件，避免 inode 替换竞态）：Linux 直接用 flock(1)，
+# 缺 flock(1) 的环境（如 macOS 测试）由 python3 子进程持 fcntl.flock 并通过控制管道保活；进程被 SIGKILL
+# 强杀或机器断电后由内核自动放锁，不存在锁文件或回收区永久残留问题
+OPS_LOCK_FD=""
+OPS_LOCK_PID=""
 acquire_ops_lock() {
-  [ "${OPS_LOCK_HELD:-}" = "$$" ] && return 0
-  local lock="$BASE/.ops.lock" tmp="$BASE/.ops.lock.tmp.$$" pid="" i
+  [ -n "${OPS_LOCK_FD:-}" ] && return 0
+  local lock="$BASE/.ops.lock"
   mkdir -p "$BASE"
-  printf '%s\n' "$$" > "$tmp"
-  for i in 1 2 3; do
-    if ln "$tmp" "$lock" 2>/dev/null; then
-      rm -f "$tmp"
-      OPS_LOCK_FILE="$lock"
-      OPS_LOCK_HELD="$$"
-      trap release_ops_lock EXIT
-      return 0
+  if command -v flock >/dev/null 2>&1; then
+    exec 9>>"$lock"
+    if ! flock -n 9; then
+      local holder=""
+      holder=$(cat "$lock" 2>/dev/null || true)
+      exec 9>&-
+      die "已有另一个恢复演练、搬家或关 binlog 操作正在运行${holder:+（PID ${holder}）}，等它结束再跑"
     fi
-    if mkdir "${lock}.reclaim" 2>/dev/null; then
-      pid=$(cat "$lock" 2>/dev/null || true)
-      if [ -n "$pid" ] && [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
-        rmdir "${lock}.reclaim" 2>/dev/null || true
-        rm -f "$tmp"
-        die "已有另一个恢复演练、搬家或关 binlog 操作正在运行（PID ${pid}），等它结束再跑"
-      fi
-      rm -f "$lock"
-      rmdir "${lock}.reclaim" 2>/dev/null || true
-    else
-      sleep 0.1
-    fi
-  done
-  rm -f "$tmp"
-  die "已经有另一个操作正在占着锁（${lock}），等它结束再跑"
+    printf '%s\n' "$$" > "$lock"
+    OPS_LOCK_FD=9
+    trap release_ops_lock EXIT
+    return 0
+  fi
+
+  local py fdir ans holder
+  py=$(command -v python3 || true)
+  [ -n "$py" ] || die "需要 flock 或 python3 来加互斥锁"
+  fdir=$(mktemp -d "$BASE/.ops.fifo.XXXXXX")
+  mkfifo "$fdir/ctrl" "$fdir/ack"
+  "$py" -I -c '
+import errno, fcntl, os, select, sys, time
+lock_path, ctrl_path, ack_path, ppid = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
+fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+try:
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except OSError as e:
+    if e.errno in (errno.EACCES, errno.EAGAIN):
+        with open(ack_path, "w", encoding="utf-8") as ack:
+            ack.write("BUSY\n")
+        sys.exit(0)
+    raise
+os.ftruncate(fd, 0)
+os.lseek(fd, 0, os.SEEK_SET)
+os.write(fd, f"{ppid}\n".encode())
+ctrl = os.open(ctrl_path, os.O_RDONLY | os.O_NONBLOCK)
+with open(ack_path, "w", encoding="utf-8") as ack:
+    ack.write("OK\n")
+deadline = time.monotonic() + 5.0
+armed = False
+while time.monotonic() < deadline:
+    try:
+        os.kill(ppid, 0)
+    except OSError:
+        break
+    r, _, _ = select.select([ctrl], [], [], 0.05)
+    if r:
+        if os.read(ctrl, 64):
+            armed = True
+            break
+        time.sleep(0.01)
+while armed:
+    r, _, _ = select.select([ctrl], [], [], 0.2)
+    if r and not os.read(ctrl, 64):
+        break
+    try:
+        os.kill(ppid, 0)
+    except OSError:
+        break
+os.ftruncate(fd, 0)
+os.close(ctrl)
+os.close(fd)
+' "$lock" "$fdir/ctrl" "$fdir/ack" "$$" </dev/null >/dev/null 2>&1 &
+  OPS_LOCK_PID=$!
+  read -r ans < "$fdir/ack" || ans=""
+  if [ "$ans" != "OK" ]; then
+    holder=$(cat "$lock" 2>/dev/null || true)
+    wait "$OPS_LOCK_PID" 2>/dev/null || true
+    OPS_LOCK_PID=""
+    rm -rf "$fdir"
+    die "已有另一个恢复演练、搬家或关 binlog 操作正在运行${holder:+（PID ${holder}）}，等它结束再跑"
+  fi
+  exec 9>"$fdir/ctrl"
+  printf '1\n' >&9
+  rm -rf "$fdir"
+  OPS_LOCK_FD=9
+  trap release_ops_lock EXIT
 }
 
 release_ops_lock() {
-  [ -n "${OPS_LOCK_HELD:-}" ] || return 0
-  local holder=""
-  holder=$(cat "${OPS_LOCK_FILE}" 2>/dev/null || true)
-  if [ "$holder" = "$OPS_LOCK_HELD" ]; then
-    rm -f "${OPS_LOCK_FILE}" 2>/dev/null || true
+  if [ -n "${OPS_LOCK_FD:-}" ]; then
+    [ -z "${OPS_LOCK_PID:-}" ] && : > "${BASE}/.ops.lock" 2>/dev/null || true
+    exec 9>&-
+    OPS_LOCK_FD=""
   fi
-  OPS_LOCK_HELD=""
+  if [ -n "${OPS_LOCK_PID:-}" ]; then
+    wait "$OPS_LOCK_PID" 2>/dev/null || true
+    OPS_LOCK_PID=""
+  fi
 }
 
 install_exit_trap() {
