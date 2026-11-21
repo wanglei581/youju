@@ -41,7 +41,8 @@ from youju.classify import (
     status_filter,
 )
 from youju.conditions import public_conditions
-from youju.crawler.detail import _name_like, redact_sensitive
+from youju.crawler.detail import _ROLE_WORDS, _TITLED_HEADS, _name_like, redact_sensitive
+from youju.crawler.detail import _TITLES as _DETAIL_TITLES
 from youju.crawler.urls import public_url
 from youju.db import get_session
 from youju.dedup import canonical_ids, group_ids, groups_for, visible_documents
@@ -2092,6 +2093,8 @@ MASK_MARKS = (
     ("[邮箱已脱敏]", "（这里隐去了邮箱）"),
     ("[身份证号已脱敏]", "（这里隐去了证件号）"),
     ("[银行账号已脱敏]", "（这里隐去了银行账号）"),
+    # QQ 号、QQ 群号（11/18 起入库规则遮，以前漏遮）
+    ("[QQ号已脱敏]", "（这里隐去了QQ号）"),
 )
 PHONE_MARK = "（这里隐去了电话）"
 _PAGE_BUTTONS = ("【关闭窗口】", "【打印本页】", "【字体：大 中 小】", "扫一扫在手机打开当前页")
@@ -2241,8 +2244,11 @@ def display_marks(text: str) -> str:
 # （这里隐去了电话）/62651782"——入库规则只遮带区号的座机和手机号，同一处接着列的不带区号的号码漏了。
 # 只认紧跟在已遮号码后面、用"、""/""，""或"隔开的 7–8 位号码（本地号码不以 0、1 开头，可以带"-801"
 # "转801"这样的分机），一个接一个也认；后面接着小数、金额单位、"年月日号"这类字的不算，8 位像日期
-# （20261101）的不算。别处的数字（金额、年份、文号、编号）不碰
-_PHONE_MARK_ANY = re.compile(r"（这里隐去了电话）|\[电话已脱敏\]|\[手机号已脱敏\]")
+# （20261101）的不算。别处的数字（金额、年份、文号、编号）不碰。QQ 号的标记也当已遮的号码看
+# （入库先遮成了标记，11/18 独立 Claude 第七轮："标记对页面规则透明"）
+_PHONE_MARK_ANY = re.compile(
+    r"（这里隐去了(?:电话|QQ号)）|\[电话已脱敏\]|\[手机号已脱敏\]|\[QQ号已脱敏\]"
+)
 _PHONE_TAIL = re.compile(
     r"(?P<sep>[ \t\u3000]*(?:[、/／，,；;]|或)[ \t\u3000]*|[ \t\u3000]+"
     # 下一行接着写的号码（"（这里隐去了电话）转8002⏎4682138转8002"，11/3 全库扫描）
@@ -2294,7 +2300,7 @@ def _phone_tail(text: str, at: int) -> re.Match[str] | None:
 
 def _mask_phone_tails(text: str) -> str:
     """把紧跟在已遮号码后面的号码也换成"（这里隐去了电话）"，分隔符照原样留着。"""
-    if "隐去了电话" not in text and "已脱敏]" not in text:
+    if "隐去了电话" not in text and "已脱敏]" not in text and "隐去了QQ号" not in text:
         return text
     out: list[str] = []
     done = 0
@@ -2546,10 +2552,13 @@ def _replace_links(text: str, pattern: re.Pattern[str]) -> str:
 
 # 邮箱（11/2 F14）：全角"＠"写的（"jxkjjcc＠kjt.jiangxi.gov.cn"，入库规则只认半角"@"，漏了）和
 # 半角的都遮成"（这里隐去了邮箱）"，和入库时遮的写法一样；域名里的点、横线写成全角的（"．""—"）
-# 也认。本地部分是一串数字、入库时被当成号码遮了的（"（这里隐去了电话）@163.com"）整个换成邮箱的说法
+# 也认。本地部分是一串数字、入库时被当成号码遮了的（"（这里隐去了电话）@163.com"）整个换成邮箱的
+# 说法；QQ 号的标记也算（这次新认写法的数字用户名邮箱入库只遮用户名，见 detail._email_mark，11/19
+# 隐私合规那位第八轮）
 EMAIL_MARK = "（这里隐去了邮箱）"
 _EMAIL_ANY = re.compile(
-    r"(?:（这里隐去了电话）|\[(?:电话|手机号)已脱敏\]|(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]{1,64})"
+    r"(?:（这里隐去了(?:电话|QQ号)）|\[(?:电话|手机号|QQ号)已脱敏\]"
+    r"|(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]{1,64})"
     r"[ \u3000]?[@＠][ \u3000]?[A-Za-z0-9-]+(?:[.．—－][A-Za-z0-9-]+)*[.．][A-Za-z]{2,63}"
     r"(?![A-Za-z0-9-])"
 )
@@ -2577,10 +2586,10 @@ _LOCAL_NUMBER = re.compile(
 )
 _CONTEXT_STOP = re.compile(r"[。！？!?\n]")
 _CONTEXT_WINDOW = 300
-# 写在已遮号码前面的本地号码（"65119071、（这里隐去了电话）"）
+# 写在已遮号码前面的本地号码（"65432109、（这里隐去了电话）"；QQ 号的标记也算，同 _PHONE_MARK_ANY）
 _NUMBER_BEFORE_MARK = re.compile(
     r"(?<![0-9A-Za-z])[2-9]\d{6,7}(?![0-9])"
-    r"(?=[ \t\u3000]*[、/／，,或；;][ \t\u3000]*（这里隐去了电话）)"
+    r"(?=[ \t\u3000]*[、/／，,或；;][ \t\u3000]*（这里隐去了(?:电话|QQ号)）)"
 )
 
 
@@ -2693,7 +2702,8 @@ _HAN_AFTER = re.compile(r"[\u4e00-\u9fff]")
 _HAN_AFTER_OK = frozenset("转或至和及")
 _NAME_SEP_BEFORE = re.compile(
     r"(?P<open>[ \t\u3000]*[（(][ \t\u3000]*)$"
-    r"|(?:[ \t\u3000]*[，,、][ \t\u3000]*|[ \t\u3000]*\n[ \t\u3000]*|[ \t\u3000]+)$"
+    # 隔开符也认"；/"（11/18 独立 Claude 第六轮）
+    r"|(?:[ \t\u3000]*[，,、；;/／][ \t\u3000]*|[ \t\u3000]*\n[ \t\u3000]*|[ \t\u3000]+)$"
 )
 _CLOSE_AFTER = re.compile(r"[ \t\u3000]*[）)]")
 # 号码后面紧跟大写字母加数字的编码（"91220101 MA0Y5F26"：统一社会信用代码被空格拆开）不是电话
@@ -2708,9 +2718,35 @@ _NUMBER_LIST_LINE = re.compile(
 )
 
 
+# 已遮的联系人标记（入库那层照页面规则 ③ 遮人名时看到的是入库的写法"[姓名已脱敏]"，见
+# detail._page_names_before）。往前看姓名的规则遇到它：标记当姓名看，跳过它接着往前看——入库先遮了
+# 号码旁边的姓名，再往前的姓名主干页面上是连着认出来的（"张三处长 李某，号码"，11/18 独立 Claude
+# 第七轮）
+_SKIPPED_CONTACT = r"(?:（这里隐去了联系人）|\[姓名已脱敏\])"
+# 号码前面紧挨着的一串联系人标记（标记中间、标记和号码中间可以隔着空格、逗号、斜杠、括号、换行）
+_CONTACTS_BEFORE = re.compile(
+    rf"{_SKIPPED_CONTACT}(?:[ \t\u3000]*[，,、；;/／]?[ \t\u3000]*{_SKIPPED_CONTACT})*"
+    r"(?:[ \t\u3000]*[（(，,、；;/／]?[ \t\u3000]*|[ \t\u3000]*\n[ \t\u3000]*)$"
+)
+
+
 def _name_before(text: str, start: int) -> tuple[int, int] | None:
     """号码前面隔着括号、逗号、空格、换行的是不是人名（3 个字不像就看后 2 个字）；
-    是就给这个名字在 text 里的位置。"""
+    是就给这个名字在 text 里的位置。中间隔着已遮的联系人标记的，跳过标记接着看标记前面
+    （"刘老师 （这里隐去了联系人）/号码""刘老师（这里隐去了联系人）号码"）。"""
+    skipped = _CONTACTS_BEFORE.search(text, max(0, start - 80), start)
+    if skipped is not None:
+        mark = skipped.start()
+        # 标记前面隔着空格、逗号的照下面一样认；紧挨着的，标记开头的括号当隔开的括号
+        found = _name_word_before(text, mark)
+        if found is None and text.startswith("（", mark):
+            found = _name_word_before(text, mark + 1)
+        return found
+    return _name_word_before(text, start)
+
+
+def _name_word_before(text: str, start: int) -> tuple[int, int] | None:
+    """_name_before 不看标记的那一截：start 前面隔着括号、逗号、空格、换行的人名。"""
     base = max(0, start - 12)
     window = text[base:start]
     sep = _NAME_SEP_BEFORE.search(window)
@@ -2731,6 +2767,22 @@ def _name_before(text: str, start: int) -> tuple[int, int] | None:
                 return None
             return begin, end
     return None
+
+
+_CALL_VERB_BEFORE = re.compile(r"(?:致电|电询|拨打|联系|咨询|询问|找)$")
+
+
+def _whole_or_called(text: str, begin: int, end: int) -> bool:
+    """标记前面认出的人名（③ 的标记版）只认整个词（前面不是汉字）、单位或学校名后面的姓加称呼
+    （"某某大学张老师 （这里隐去了电话）"，前面那截的结尾同入库的 detail._TITLED_HEADS；"值班老师"
+    "相关同志"不算，11/19 正确性那位第八轮），或者前面紧挨着"致电""联系"这类词的（"请致电王某
+    （这里隐去了电话）"）：长词的尾巴不当人名（"测试应用场景资源 （这里隐去了电话）"的
+    "景资源"）。"""
+    if begin == 0 or not re.match(f"[{_HAN_RANGE}]", text[begin - 1]):
+        return True
+    if text[begin:end].endswith(_DETAIL_TITLES) and text.endswith(_TITLED_HEADS, 0, begin):
+        return True
+    return _CALL_VERB_BEFORE.search(text, max(0, begin - 4), begin) is not None
 
 
 def _name_line(text: str, begin: int, end: int) -> bool:
@@ -2790,8 +2842,8 @@ def _block_lines(text: str) -> list[tuple[int, int]]:
 
 
 def _mask_more_numbers(text: str) -> str:
-    """把上面 ①–⑤ 几种语境里的号码换成"（这里隐去了电话）"。"""
-    if not any(c.isdigit() for c in text):
+    """把上面 ①–⑤ 几种语境里的号码换成"（这里隐去了电话）"；遮成标记的号码前面的人名也遮。"""
+    if not any(c.isdigit() for c in text) and _NUMBER_MARK_ANY.search(text) is None:
         return text
     spans: list[tuple[int, int, str]] = []
     blocks = _block_lines(text)
@@ -2821,6 +2873,17 @@ def _mask_more_numbers(text: str) -> str:
             or _VERB_BEFORE_NUMBER.search(before)
         ):
             spans.append((*_with_brackets(text, start, end), PHONE_MARK))
+    # ③ 也看遮成标记的号码（电话、QQ 号）：入库时先遮了号码，上面按原始数字认不到，前面的人名
+    # 照样遮（"请致电王老师 （这里隐去了电话）"，11/18 独立 Claude 第六轮）。"班主任""申请表"这类
+    # 身份词、文书名（detail._ROLE_WORDS）不当人名（11/19 正确性那位第八轮）
+    for mark in _NUMBER_MARK_ANY.finditer(text):
+        name = _name_before(text, mark.start())
+        if (
+            name is not None
+            and _whole_or_called(text, *name)
+            and text[name[0] : name[1]] not in _ROLE_WORDS
+        ):
+            spans.append((*name, _CONTACT_MARK))
     at = 0
     for line in text.split("\n"):
         if _NUMBER_LIST_LINE.fullmatch(line):
@@ -2922,15 +2985,45 @@ _LABEL_AT_END = re.compile(
 # 写着电话的行：有号码（或入库时遮过的号码）的，像姓名的都遮（"吾慧星、张竞博，电话：
 # （这里隐去了电话）""刘老师，（这里隐去了电话）""联系电话：88888888（李四）"）；只有"电话""手机"
 # 字样、没有号码的（表头"联系电话"、"联系电话：张三、李四"），只遮带称呼的和"电话：""手机："后面的
+# 遮成标记的号码：电话（手机号也写这个）、QQ 号。入库时先换成了标记，这里按原始数字认号码的规则
+# 认不到，旁边的姓名要照样遮（11/18 独立 Claude 第六轮）。QQ 号的标记算"这一行有号码"，但光有它
+# 不算电话行。邮箱的标记不算（"简历：（这里隐去了邮箱）"的"简历"不当姓名）；这次新认写法的、用户名
+# 是一串数字的邮箱，入库只把用户名遮成 QQ 号的标记、留着"＠域名"（detail._email_mark），这里按号码
+# 认，最后再并成邮箱（_hide_emails）
+QQ_MARK = "（这里隐去了QQ号）"
+_NUMBER_MARKS = (PHONE_MARK, QQ_MARK)
+_NUMBER_MARK_ANY = re.compile("|".join(map(re.escape, _NUMBER_MARKS)))
 _PHONE_LINE = re.compile(rf"电话|手机|{PHONE_MARK}")
 _PHONE = (
-    rf"(?:{PHONE_MARK}|(?<!\d)0\d{{2,3}}[-－]?\d{{7,8}}(?!\d)|(?<!\d)1[3-9]\d{{9}}(?!\d)"
+    rf"(?:{PHONE_MARK}|{QQ_MARK}"
+    r"|(?<!\d)0\d{2,3}[-－]?\d{7,8}(?!\d)|(?<!\d)1[3-9]\d{9}(?!\d)"
     r"|(?<!\d)\d{7,8}(?!\d))"
 )
 _PHONE_ANY = re.compile(_PHONE)
 _PHONE_LABEL = re.compile(r"(?:电\s*话|手\s*机)(?:号码?)?\s*[:：]")
 # "联系人："写在上一行末尾、下面一行一个"姓名 电话"的：这几行都遮
 _CONTACT_ROW = re.compile(rf"^\s*[{chr(0x4E00)}-{chr(0x9FFF)}·]{{2,4}}\s*[，,、:：]?\s*{_PHONE}")
+# 姓名已经遮成联系人标记的"姓名 电话"行（入库先遮了号码旁边的姓名；"张三处长 （这里隐去了联系人）
+# 号码"这样一行几个的也算）：也接着往下认。主干入库存原样的"张三 138…""索某某 138…"（新加的姓）、
+# 不在标签下第一行的"周老师 138…"，主干页面认出"姓名 电话"行、接着遮下一行（11/19 正确性那位第八到
+# 十轮，隐私合规那位第九轮）。经过它往下接的行，本身是"姓名 电话"行，或者有像姓名的词（_any_name，
+# "申请表"这类文书名、身份词不算）就遮："邮寄地址：某某路1号 李四（收）""某某局 王五"遮，"附件：1.
+# 申报书""附件：申报书 20261108"不遮
+_MARKED_ROW = re.compile(
+    rf"^\s*(?:[{chr(0x4E00)}-{chr(0x9FFF)}·]{{2,4}}\s*[，,、/／]?\s*)?{_SKIPPED_CONTACT}"
+    rf"(?:\s*[，,、/／]?\s*{_SKIPPED_CONTACT})*\s*[，,、:：]?\s*{_PHONE}"
+)
+
+
+def _any_name(line: str) -> bool:
+    """一行里有像姓名的词（按页面认姓名那一套 _masked、字间带空格的 _SPACED_NAME；"申请表"这类
+    文书名、身份词不算）。"""
+    words = [w for w in _CONTACT_SPLIT.split(line.strip()) if w]
+    return any(
+        w not in _ROLE_WORDS and _masked(w, _CONTACT_MARK) is not None for w in words
+    ) or any(_person(m.group(0).replace(" ", "")) for m in _SPACED_NAME.finditer(line))
+
+
 _TITLE_END = (
     "老师",
     "先生",
@@ -3060,13 +3153,22 @@ def _mask_contact_names(text: str) -> str:
     拆行、空格隔开的写法）。"""
     out = []
     after_label = False
+    # 往下接的这一串"姓名 电话"行里有姓名遮成标记的（_MARKED_ROW）：后面的行要本身是"姓名 电话"行、
+    # 或者有像姓名的词才遮（见 _MARKED_ROW 上面）
+    by_mark = False
     for line in text.split("\n"):
         if not line.strip():
             # 空行不打断"标签写在上一行末尾"：下面第一行有字的照样遮
             out.append(line)
             continue
         raw = line
-        contact = (after_label and not _FORM_FIELD.search(line)) or (
+        follow = after_label and (
+            not by_mark
+            or _CONTACT_ROW.match(raw) is not None
+            or _MARKED_ROW.match(raw) is not None
+            or _any_name(raw)
+        )
+        contact = (follow and not _FORM_FIELD.search(line)) or (
             _CONTACT_LABEL.search(line) is not None
         )
         editor = _EDITOR.search(line) is not None
@@ -3086,8 +3188,11 @@ def _mask_contact_names(text: str) -> str:
             ]
             line = _mask_line(line, near_label, _CONTACT_MARK)
         # 标签写在行尾的，下一行也遮；下面接着是一行一个"姓名 电话"的，一直遮到不是为止
-        row = after_label and _CONTACT_ROW.match(raw) is not None
-        after_label = _LABEL_AT_END.search(line) is not None or row
+        label = _LABEL_AT_END.search(line) is not None
+        main_row = follow and _CONTACT_ROW.match(raw) is not None
+        marked_row = follow and not main_row and _MARKED_ROW.match(raw) is not None
+        after_label = label or main_row or marked_row
+        by_mark = not label and (marked_row or (main_row and by_mark))
         out.append(line)
     return "\n".join(out)
 
@@ -3108,11 +3213,28 @@ _ATT_LABEL = re.compile(
 _ATT_FIELD = re.compile(rf"[{_HAN_CHAR}]{{2,6}}\s*[:：]")
 _ATT_STOP = re.compile(r"[。；;！？!?\n]")
 _ATT_WINDOW = 40
-_ATT_BEFORE_PHONE = re.compile(rf"([{_HAN_CHAR}·](?: ?[{_HAN_CHAR}·]){{1,5}})[\s，,、:：]*$")
+_ATT_WORD = rf"[{_HAN_CHAR}·](?: ?[{_HAN_CHAR}·]){{1,5}}"
+# 词和号码（下面的标签）中间隔着一串已遮的联系人标记的：跳过标记，看标记前面那个词（"省科技厅
+# 张三处长 （这里隐去了联系人），（这里隐去了电话）"，见 _SKIPPED_CONTACT）。这个词要是整个词
+# （前面不是汉字）：长词的后几个字（"某某局高原测试数据服务站 （这里隐去了联系人）"的
+# "试数据服务站"）不算，不然会把"联系人："那一段从词中间截开（11/19 全部正文对比看到的）
+_ATT_SKIP_CONTACTS = (
+    rf"(?<![{_HAN_CHAR}·])(?P<skipped>{_ATT_WORD})"
+    rf"(?:[\s，,、；;/／（(]*{_SKIPPED_CONTACT})+[\s，,、:：；;/／（(]*"
+)
+_ATT_BEFORE_PHONE = re.compile(rf"(?:{_ATT_SKIP_CONTACTS}|(?P<word>{_ATT_WORD})[\s，,、:：]*)$")
 # 紧挨在"电话：""联系电话："这类标签前面的那个词（"电力处 梁弢；联系电话：……"，11/2 Codex 审阅）
 # 词和标签之间要隔着标点或空格："储备课题技术电话""纪检监察组联系电话"这类和标签连在一起的
 # 是部门、事项名，不是姓名（本机库全量对比看到的）
-_ATT_BEFORE_LABEL = re.compile(rf"([{_HAN_CHAR}·](?: ?[{_HAN_CHAR}·]){{1,5}})[\s，,、；;。.]+$")
+_ATT_BEFORE_LABEL = re.compile(rf"(?:{_ATT_SKIP_CONTACTS}|(?P<word>{_ATT_WORD})[\s，,、；;。.]+)$")
+
+
+def _att_word(match: re.Match[str]) -> tuple[int, int]:
+    """_ATT_BEFORE_PHONE、_ATT_BEFORE_LABEL 认出的那个词的位置。"""
+    name = "skipped" if match.group("skipped") is not None else "word"
+    return match.start(name), match.end(name)
+
+
 _NAME_HEAD = re.compile(r"联\s*系\s*人|联\s*络\s*人|经\s*办\s*人|负\s*责\s*人|姓\s*名|填\s*表\s*人")
 _BARE_NAME_LABEL = re.compile(
     r"(?:联\s*系\s*人|联\s*络\s*人|经\s*办\s*人|负\s*责\s*人|姓\s*名)"
@@ -3300,6 +3422,14 @@ def _before_contact(match: re.Match[str]) -> str:
 
 # 列名是"联系人""姓名"这类的格子，内容不超过这么多字才整格按姓名遮；长的（一段话）照 1–3 判断
 _NAME_CELL_MAX = 20
+_PAGE_MARK_ANY = re.compile(r"（这里隐去了[^（）\n]{1,8}）")
+
+
+def _cell_length(value: str) -> int:
+    """格子按字数量长短：号码、姓名、QQ 号入库先遮成了标记（"（这里隐去了联系人）"十个字，比原来的
+    "张三""6543…"长），邮箱并成标记以后，每个标记按两个字算，不比主干看到的原文长（11/19 隐私合规
+    那位第九轮、正确性那位第十轮）。"""
+    return len(_PAGE_MARK_ANY.sub("某某", _hide_emails(value)).strip())
 
 
 def _att_window(line: str, start: int) -> int:
@@ -3337,19 +3467,19 @@ def _mask_attachment_line(line: str, after_label: bool) -> str:
     if after_label and (_PHONE_ANY.search(line) or len(line.strip()) <= 8):
         spans.append((0, _att_window(line, 0), _CONTACT_MARK))
     for phone in _PHONE_ANY.finditer(line):
-        if phone.group(0) != PHONE_MARK and not _is_phone_number(line, phone):
+        if phone.group(0) not in _NUMBER_MARKS and not _is_phone_number(line, phone):
             # "金额：3000000元"：后面接金额单位、像日期、"编号"后面的数不是号码，
             # 前面的词不当姓名（11/3）
             continue
         before = _ATT_BEFORE_PHONE.search(line, 0, phone.start())
         if before is not None:
-            spans.append((before.start(1), before.end(1), _CONTACT_MARK))
+            spans.append((*_att_word(before), _CONTACT_MARK))
     for label in _PHONE_LABEL.finditer(line):
         # 标签前面紧挨着的"联系"是标签的一部分（"联系电话："），不算在词里
         end = label.start() - 2 if line[: label.start()].endswith("联系") else label.start()
         before = _ATT_BEFORE_LABEL.search(line, 0, end)
         if before is not None:
-            spans.append((before.start(1), before.end(1), _CONTACT_MARK))
+            spans.append((*_att_word(before), _CONTACT_MARK))
     # 从后往前遮，前面的位置不变；重叠的只遮一次
     done = len(line)
     for start, end, mark in sorted(spans, reverse=True):
@@ -3410,6 +3540,7 @@ _TO_STORE_MARKS = (
     ("（这里隐去了邮箱）", "[邮箱已脱敏]"),
     ("（这里隐去了证件号）", "[身份证号已脱敏]"),
     ("（这里隐去了银行账号）", "[银行账号已脱敏]"),
+    ("（这里隐去了QQ号）", "[QQ号已脱敏]"),
 )
 
 
@@ -3417,7 +3548,7 @@ def model_body_text(text: str) -> str:
     """交给模型的正文：传入入库脱敏后的文字（redact_sensitive 的结果），按页面那套规则补遮，
     标记写成入库的写法。顺序和页面一样：先按整行遮联系人（_clean_reading_body 里那一道），再补遮
     号码、姓名，最后邮箱；页面上删按钮、并空行这些整理不做，段落位置和交给模型的文字对得上。
-    处理两次结果一样。"""
+    再过一遍有时还会多遮（见 ai/model_text.py）：交给模型的文字用 model_text，过到不再变。"""
     shown = _mask_contact_names(display_marks(text))
     shown = _hide_emails(_mask_phones(_mask_attachment_names(_mask_phones(shown))))
     for old, new in _TO_STORE_MARKS:
@@ -3456,7 +3587,7 @@ def display_attachment_row(cells: list[tuple[str, str]]) -> list[str]:
             # （"和文丹"，11/2 复测）。只看列名，不看"上一格写着姓名"：空白表格
             # "姓名 | 性别 | 年龄"里的栏目名不是名字（11/2 独立审阅）
             masked = value.replace(value.strip(), _CONTACT_MARK)
-        elif named and len(value.strip()) <= _NAME_CELL_MAX:
+        elif named and _cell_length(value) <= _NAME_CELL_MAX:
             # 列名是"联系人""姓名"这类，或者上一格只写着"联系人"：这一格像姓名的都遮
             masked = _mask_span(value, 0, len(value), _CONTACT_MARK)
         else:
@@ -3471,7 +3602,7 @@ def display_attachment_row(cells: list[tuple[str, str]]) -> list[str]:
     # 同一行里已经有遮掉的联系人或电话（表头没写"电话"的联系人表，11/3 独立审阅）：
     # 单独一个号码的格子也遮；列名是金额、数量、编号、日期这类的不算
     # 左边一格是单位名（"某某局 | 号码 | 地址"这样没写列名的通讯录表）的也遮
-    marked_row = any(_CONTACT_MARK in v or PHONE_MARK in v for v in out)
+    marked_row = any(_CONTACT_MARK in v or PHONE_MARK in v or QQ_MARK in v for v in out)
     for i, (head, value) in enumerate(pairs):
         single = _SINGLE_PHONE_CELL.fullmatch(value.strip())
         if single is None or _NUMERIC_HEAD.search(head):

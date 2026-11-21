@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from youju.ai.client import AIError, ChatClient
 from youju.ai.deadlines import _compact, _date_span
+from youju.ai.model_text import model_text
 from youju.dedup import visible_documents
 from youju.models import AICheck, Document, DocumentDeadline, DocumentDetail
 
@@ -162,7 +163,11 @@ class AIVerdict:
 
 
 def _ai_check(
-    client: ChatClient, doc: Document, excerpt: str, rows: list[DocumentDeadline]
+    client: ChatClient,
+    doc: Document,
+    excerpt: str,
+    rows: list[DocumentDeadline],
+    original: str | None = None,
 ) -> AIVerdict:
     """请 AI 对照原文复查这些截止，按回答分成：存疑且对得上原文、没采信、明确没问题。"""
     listing = "\n".join(
@@ -188,7 +193,8 @@ def _ai_check(
         if item.get("ok") is True:
             verdict.confirmed.append(deadline_id)
             continue
-        note = _verified_note(item, excerpt)
+        # 照抄的原句对库里存的原文核对（excerpt 是交给模型的、遮过的片段；不给原文就对它）
+        note = _verified_note(item, excerpt if original is None else original)
         if note is None:
             verdict.unverified.append(deadline_id)
         else:
@@ -271,7 +277,8 @@ def run_audit(
                 )
             )
         )
-        targets, excerpt = _plan(body, due_rows) if body else ([], "")
+        # 发给模型的原文片段从 model_text 里取（D-114：发送前隐去号码、联系人姓名和邮箱）
+        targets, excerpt = _plan(model_text(body), due_rows) if body else ([], "")
         if not targets:
             continue
         check = session.scalar(
@@ -283,7 +290,7 @@ def run_audit(
         check.model = client.model
         check.checked_at = now
         try:
-            verdict = _ai_check(client, doc, excerpt, targets)
+            verdict = _ai_check(client, doc, excerpt, targets, body)
         except AIError as exc:
             check.result = None
             check.error = str(exc)[:200]

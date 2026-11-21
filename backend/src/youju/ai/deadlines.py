@@ -87,15 +87,22 @@ def _clock(value: str) -> time | None | bool:
 
 
 def extract_deadlines_with_ai(
-    client: ChatClient, title: str, text: str, publish_date: date | None
+    client: ChatClient,
+    title: str,
+    text: str,
+    publish_date: date | None,
+    *,
+    body: str | None = None,
 ) -> list[DeadlineCandidate]:
-    """AI 给出的截止候选，按规则抽取的格式返回；不可信的逐条丢掉。"""
+    """AI 给出的截止候选，按规则抽取的格式返回；不可信的逐条丢掉。text 是交给模型的文字
+    （model_text）；body 是库里存的原文，原句在它里面核对（不给就用 text）：带这次才遮的标记的
+    原句对不上原文，不用。"""
     result = client.complete_json(_SYSTEM, f"标题：{title}\n正文：{_prepare_text(text)}")
     items = result.get("deadlines", [])
     if not isinstance(items, list):
         return []
     # 原句按全文逐字核对（去掉空白）：可以跨"；"和换行。以前按单句核对，跨了的整条丢掉（D-099 期 0）
-    full = _compact(text)
+    full = _compact(body if body is not None else text)
     lower = publish_date - timedelta(days=30) if publish_date else None
     upper = publish_date + timedelta(days=730) if publish_date else None
     output: list[DeadlineCandidate] = []

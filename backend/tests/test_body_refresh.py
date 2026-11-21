@@ -8,6 +8,7 @@ from sqlalchemy import select
 from tests.conftest import read_fixture_html
 from youju import cli
 from youju.ai import interpret
+from youju.ai.model_text import model_text
 from youju.api import v1
 from youju.crawler import detail_service
 from youju.crawler.body_refresh import Impact, _not_on_page, refresh_bodies, survey, trimmed_lines
@@ -209,7 +210,7 @@ def _reviewed_results(session, doc: Document) -> None:
     )
     shown = {
         "body_hash": interpret.digest(OLD),
-        "paragraphs": interpret.split_paragraphs(v1.model_body_text(redact_sensitive(OLD))),
+        "paragraphs": interpret.split_paragraphs(model_text(OLD)),
     }
     earlier = {
         "body_hash": interpret.digest("早先"),
@@ -256,6 +257,20 @@ def _reviewed_results(session, doc: Document) -> None:
             )
         ]
     )
+
+
+def test_impact_compares_paragraphs_written_like_model_text(session) -> None:
+    """还在显示的 AI 结果按 interpret.prepare 的段落比（model_text，过到不再变）：再过一遍还会多遮的
+    正文（"联系人：刘老师/李某⏎号码"）照 model_text 算，没变的照样算上（正确性那位第七轮）。"""
+    from youju.crawler.body_refresh import _impact
+
+    old = "联系人：刘老师/李某\n65432109"
+    assert model_text(old) != v1.model_body_text(redact_sensitive(old))
+    shown = {
+        "body_hash": interpret.digest(old),
+        "paragraphs": interpret.split_paragraphs(model_text(old)),
+    }
+    assert _impact(session, 1, old, "新正文", {1: [shown]}).ai_results == 1
 
 
 def test_trimmed_lines() -> None:

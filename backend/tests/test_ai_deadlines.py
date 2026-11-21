@@ -5,6 +5,7 @@ import httpx
 
 from youju.ai.client import ChatClient
 from youju.ai.deadlines import extract_deadlines_with_ai
+from youju.ai.model_text import model_text
 
 
 def make_client(items):
@@ -144,3 +145,21 @@ def test_stored_result_versions():
     assert stored_items(new) == old and stored_version(new) == RESULT_VERSION
     assert stored_items(None) == [] and stored_version(None) == 0
     assert stored_items({"version": 2}) == [] and stored_version({"items": []}) == 0
+
+
+def test_evidence_is_checked_against_the_stored_body():
+    """交给模型的是 model_text（"联系电话："后面没写号码的姓名入库不遮、它遮），原句对库里存的原文
+    核对：照抄了这次才有的标记的对不上原文，丢掉；原文里有的照常（正确性那位第七轮）。"""
+    body = "请于2026年10月15日前报送材料，联系电话：张某、李某。"
+    text = model_text(body)
+    assert "张某" not in text and "李某" not in text
+    marked = item("2026-10-15", "请于2026年10月15日前报送材料，联系电话：[姓名已脱敏]")
+    result = extract_deadlines_with_ai(
+        make_client([marked]), "标题", text, date(2026, 9, 1), body=body
+    )
+    assert result == []
+    plain = item("2026-10-15", "请于2026年10月15日前报送材料")
+    result = extract_deadlines_with_ai(
+        make_client([plain]), "标题", text, date(2026, 9, 1), body=body
+    )
+    assert [r.due_date for r in result] == [date(2026, 10, 15)]

@@ -299,3 +299,32 @@ def test_radar_support_is_filtered_in_sql_and_uses_reviewed_value(session, monke
         event.remove(session.bind, "before_cursor_execute", capture)
     assert result["total"] == 1
     assert any("EXISTS" in sql and "document_fields" in sql and "sha2" in sql for sql in statements)
+
+
+def test_ai_fields_get_the_masked_body_and_offsets_in_the_stored_body(session):
+    # 11/18：交给模型的正文按现行规则再遮一遍；证据位置按库里存的正文重找，证据里有这次才遮的
+    # 内容（库里正文对不上）的不用
+    # 联系人那句写在证据句前面：遮了以后证据句的位置跟着变，按库里正文重找的位置才对得上。模型给的
+    # "资格认定"规则没找到，记成只有 AI 找到的那条，存的就是它自己的位置
+    body = "联系人：张某，联系电话：65432109。\n" + BODY
+    doc = add_document(session, body=body)
+    sent = []
+
+    def complete_json(system, user, **kwargs):
+        sent.append(user)
+        return {
+            "fields": [
+                {"field": "support", "value": "资格认定", "evidence": "须正常经营。"},
+                {"field": "support", "value": "其他", "evidence": "联系电话：[电话已脱敏]。"},
+            ]
+        }
+
+    fields.extract_existing(
+        session, document_ids=[doc.id], ai_client=SimpleNamespace(complete_json=complete_json)
+    )
+    assert sent and "65432109" not in sent[0] and "张某" not in sent[0]
+    rows = session.scalars(select(DocumentField).where(DocumentField.document_id == doc.id)).all()
+    ai_rows = [row for row in rows if row.source == "ai"]
+    assert [(row.value, row.evidence_offset) for row in ai_rows] == [
+        ("资格认定", body.find("须正常经营。"))
+    ]

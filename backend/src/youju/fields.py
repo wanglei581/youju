@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 
 from sqlalchemy import case, select
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.orm import Session
 
+from youju.ai.model_text import model_text
 from youju.classify import effective_kind
 from youju.models import Document, DocumentDetail, DocumentField
 
@@ -294,7 +295,16 @@ def extract_existing(
             from youju.ai.fields import extract_fields_with_ai
 
             try:
-                ai_candidates = extract_fields_with_ai(ai_client, doc.title, detail.body_text)
+                # 交给模型的走 model_text（D-114：发送前隐去号码、联系人姓名和邮箱）。证据位置按
+                # 库里存的正文重找；找不到的（句子里有这次才遮的内容）不用，同问一问"原句里有
+                # 已脱敏的内容不用"
+                ai_candidates = [
+                    replace(item, evidence_offset=detail.body_text.find(item.evidence))
+                    for item in extract_fields_with_ai(
+                        ai_client, doc.title, model_text(detail.body_text)
+                    )
+                    if item.evidence in detail.body_text
+                ]
             except Exception:  # noqa: BLE001 - 单份模型失败不影响规则抽取
                 ai_candidates = []
         merged = _merge_candidates(rules, ai_candidates)

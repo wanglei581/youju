@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from youju.ai.audit import MAX_CONSECUTIVE_ERRORS, _ai_check, _flag, _plan, rule_note
 from youju.ai.client import AIError, ChatClient
+from youju.ai.model_text import model_text
 from youju.classify import AI_KINDS, comparable_kind, effective_kind
 from youju.dedup import canonical_ids
 from youju.models import AICheck, Document, DocumentDeadline, DocumentDetail, Feedback
@@ -109,11 +110,13 @@ def triage_one(
         unsure: list[DocumentDeadline] = []
         confirmed = 0
         batches = 0
+        # 发给模型的原文片段从 model_text 里取（D-114：发送前隐去号码、联系人姓名和邮箱）
+        sent = model_text(body) if client is not None and body else ""
         while client is not None and body and remaining and batches < _MAX_BATCHES:
-            targets, excerpt = _plan(body, remaining)
+            targets, excerpt = _plan(sent, remaining)
             if not targets:
                 break
-            verdict = _ai_check(client, doc, excerpt, targets)
+            verdict = _ai_check(client, doc, excerpt, targets, body)
             batches += 1
             answered = verdict.answered()
             for row in targets:

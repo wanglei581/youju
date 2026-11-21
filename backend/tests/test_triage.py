@@ -402,3 +402,14 @@ def test_join_keeps_reminders_whole() -> None:
     assert len(note) == _NOTE_MAX and note.endswith("；" + "提醒" * 140)
     short = _join("已发布的截止 1 条，", "：" + "原因" * 200, ["请人工核对"])
     assert short.endswith("…；请人工核对") and len(short) == _NOTE_MAX
+
+
+def test_triage_sends_the_text_masked_again_by_current_rules(session) -> None:
+    # 11/18：库里还有旧规则漏遮的正文，发给 AI 的原文片段按现行规则再遮一遍
+    doc = add_doc(session, body=BODY + "联系人：张某，联系电话：65432109。")
+    deadline(session, doc, date(2026, 10, 15))
+    feedback(session, doc)
+    client, calls = fake_ai([])
+    triage_feedback(session, client, now=NOW)
+    sent = json.dumps(calls, ensure_ascii=False)
+    assert calls and APPLY in sent and "65432109" not in sent and "张某" not in sent
