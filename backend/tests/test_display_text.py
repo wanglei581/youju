@@ -1329,3 +1329,53 @@ def test_name_cells_count_marks_as_two_characters(cell: str) -> None:
     # 正确性那位第十轮：入库把号码旁边的姓名、QQ 号遮成了十个字的标记，格子量长短时每个标记按两个字算
     shown = v1.display_attachment_row([("联系人", texts.mask(cell))])[0]
     assert "李四" not in shown and "张三" not in shown, shown
+
+
+@pytest.mark.parametrize(
+    ("raw", "name"),
+    [
+        # 隐私合规那位第十轮：姓名和号码中间写着"手机""座机""邮箱"的行，主干按"姓名 电话"行认、接着遮
+        # 下一行；入库遮了姓名以后是"（这里隐去了联系人）手机：（这里隐去了电话）"，照样算
+        ("联系方式：\n张三手机：13812345678\n王五（副科长）", "王五"),
+        ("经办人：\n王五座机：0123-65432109\n办公室 欧阳某", "欧阳某"),
+        ("联系人：\n张三电话：0123-65432109\n王五（副科长）", "王五"),
+        ("联系方式：\n张三固话0123-65432109\n王五（副科长）", "王五"),
+        ("联系方式：\n张三邮箱：87654321＠qq.com\n王五（副科长）", "王五"),
+        ("联系方式：\n张三，手机：13812345678\n王五（副科长）", "王五"),
+    ],
+)
+def test_rows_with_a_phone_label_after_the_name_go_on(raw: str, name: str) -> None:
+    for where, out in _on_every_path(raw):
+        if where != "附件":  # 附件只看标签下面那一行（见 v1 附件规则 3）
+            assert name not in out, (where, out)
+
+
+@pytest.mark.parametrize(
+    ("raw", "number"),
+    [
+        # 隐私合规那位第十轮：页面上"短了、近了才遮"的门槛，入库先遮成的标记都按两个字量，不比主干看到
+        # 原文时少遮。电话标题行不超过 60 字才往下接（下一行的传真号）
+        (
+            "联系电话：张老师 65432101，李老师 65432102，王老师 65432103，赵老师 65432104，共四人\n"
+            "传真 65432105",
+            "65432105",
+        ),
+        # "致电"和号码中间不超过 20 字
+        ("电询王五65432108＠qq.com，65432109", "65432109"),
+    ],
+)
+def test_thresholds_count_marks_as_two_characters(raw: str, number: str) -> None:
+    for where, out in _on_every_path(raw):
+        assert number not in out, (where, out)
+
+
+def test_label_windows_count_marks_as_two_characters() -> None:
+    # 附件里标签下一行不超过 8 字的整行当联系人
+    assert "赵六" not in v1.display_attachment_text(
+        texts.mask("联系人：\n赵六老师 12345678@qq.com")
+    )
+    # 电话标签后面看 300 字、附件里联系人标签后面看 40 字
+    marks = "（这里隐去了联系人）、" * 30
+    assert v1._mask_context_numbers(f"联系电话：{marks}65432109").endswith(MARK)
+    line = "联系人：" + "（这里隐去了联系人）、" * 4 + "赵六"
+    assert v1._att_window(line, len("联系人：")) == len(line)

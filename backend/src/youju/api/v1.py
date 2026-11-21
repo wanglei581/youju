@@ -2586,6 +2586,27 @@ _LOCAL_NUMBER = re.compile(
 )
 _CONTEXT_STOP = re.compile(r"[。！？!?\n]")
 _CONTEXT_WINDOW = 300
+_PAGE_MARK_ANY = re.compile(r"（这里隐去了[^（）\n]{1,8}）")
+
+
+def _short(text: str) -> str:
+    """量长短、远近用：遮成的标记（"（这里隐去了联系人）"十个字，比原来的"张三""6543…"长）都按两个字算。
+    页面上看长短的门槛都是"短了、近了才遮"（姓名列的格子、电话标题行、标签后面认姓名的那一段、
+    "致电"和号码中间……）；号码、姓名、QQ 号这次入库先遮成了标记，按标记的字数量，会比主干看到原文
+    时长、少遮（11/19 隐私合规那位、正确性那位第十轮）。"""
+    return _PAGE_MARK_ANY.sub("某某", text)
+
+
+def _window_end(text: str, start: int, size: int) -> int:
+    """从 start 往后 size 个字的位置，标记按两个字算（见 _short）。"""
+    end, left = start, size
+    while left > 0 and end < len(text):
+        mark = _PAGE_MARK_ANY.match(text, end) if text[end] == "（" else None
+        end = end + 1 if mark is None else mark.end()
+        left -= 1 if mark is None else 2
+    return end
+
+
 # 写在已遮号码前面的本地号码（"65432109、（这里隐去了电话）"；QQ 号的标记也算，同 _PHONE_MARK_ANY）
 _NUMBER_BEFORE_MARK = re.compile(
     r"(?<![0-9A-Za-z])[2-9]\d{6,7}(?![0-9])"
@@ -2616,7 +2637,7 @@ def _mask_context_numbers(text: str) -> str:
     """把电话类标签后面同一句里的本地号码、已遮号码前面的本地号码换成"（这里隐去了电话）"。"""
     spans: list[tuple[int, int]] = []
     for label in _PHONE_CONTEXT.finditer(text):
-        end = min(len(text), label.end() + _CONTEXT_WINDOW)
+        end = _window_end(text, label.end(), _CONTEXT_WINDOW)
         stop = _CONTEXT_STOP.search(text, label.end(), end)
         if stop is not None:
             end = stop.start()
@@ -2830,7 +2851,7 @@ def _block_lines(text: str) -> list[tuple[int, int]]:
         rest = line[heading.end() :].strip()
         if rest and not (_PHONE_MARK_ANY.search(rest) or _LOCAL_NUMBER.search(rest)):
             continue
-        if "。" in rest or len(rest) > 60:
+        if "。" in rest or len(_short(rest)) > 60:
             continue
         for j in range(i + 1, min(len(lines), i + 1 + _BLOCK_LINES)):
             following = lines[j].rstrip("\r")
@@ -2870,7 +2891,7 @@ def _mask_more_numbers(text: str) -> str:
             name is not None
             or unit is not None
             or any(a <= start and end <= b for a, b in blocks)
-            or _VERB_BEFORE_NUMBER.search(before)
+            or _VERB_BEFORE_NUMBER.search(_short(text[max(0, start - 120) : start]))
         ):
             spans.append((*_with_brackets(text, start, end), PHONE_MARK))
     # ③ 也看遮成标记的号码（电话、QQ 号）：入库时先遮了号码，上面按原始数字认不到，前面的人名
@@ -3009,9 +3030,13 @@ _CONTACT_ROW = re.compile(rf"^\s*[{chr(0x4E00)}-{chr(0x9FFF)}·]{{2,4}}\s*[，,�
 # 十轮，隐私合规那位第九轮）。经过它往下接的行，本身是"姓名 电话"行，或者有像姓名的词（_any_name，
 # "申请表"这类文书名、身份词不算）就遮："邮寄地址：某某路1号 李四（收）""某某局 王五"遮，"附件：1.
 # 申报书""附件：申报书 20261108"不遮
+# 姓名和号码中间夹着"电话""手机""座机""邮箱"这类标签的（"张三手机：138…"，主干按"姓名 电话"行认，
+# 入库遮了姓名以后是"（这里隐去了联系人）手机：（这里隐去了电话）"）也算（11/19 隐私合规那位第十轮）
+_ROW_LABEL = r"(?:(?:联系)?(?:电话|手机|座机|固话)(?:号码?)?|(?:电子)?(?:邮箱|邮件))"
 _MARKED_ROW = re.compile(
     rf"^\s*(?:[{chr(0x4E00)}-{chr(0x9FFF)}·]{{2,4}}\s*[，,、/／]?\s*)?{_SKIPPED_CONTACT}"
-    rf"(?:\s*[，,、/／]?\s*{_SKIPPED_CONTACT})*\s*[，,、:：]?\s*{_PHONE}"
+    rf"(?:\s*[，,、/／]?\s*{_SKIPPED_CONTACT})*(?:\s*[，,、/／]?\s*{_ROW_LABEL})?"
+    rf"\s*[，,、:：]?\s*{_PHONE}"
 )
 
 
@@ -3422,19 +3447,18 @@ def _before_contact(match: re.Match[str]) -> str:
 
 # 列名是"联系人""姓名"这类的格子，内容不超过这么多字才整格按姓名遮；长的（一段话）照 1–3 判断
 _NAME_CELL_MAX = 20
-_PAGE_MARK_ANY = re.compile(r"（这里隐去了[^（）\n]{1,8}）")
 
 
 def _cell_length(value: str) -> int:
-    """格子按字数量长短：号码、姓名、QQ 号入库先遮成了标记（"（这里隐去了联系人）"十个字，比原来的
-    "张三""6543…"长），邮箱并成标记以后，每个标记按两个字算，不比主干看到的原文长（11/19 隐私合规
-    那位第九轮、正确性那位第十轮）。"""
-    return len(_PAGE_MARK_ANY.sub("某某", _hide_emails(value)).strip())
+    """格子按字数量长短：邮箱并成标记以后，每个标记按两个字算（见 _short；11/19 隐私合规那位第九、
+    十轮，正确性那位第十轮）。"""
+    return len(_short(_hide_emails(value)).strip())
 
 
 def _att_window(line: str, start: int) -> int:
-    """标签后面从 start 起，姓名只看到哪里为止：下一个"××："标签、句末、40 个字。"""
-    end = min(len(line), start + _ATT_WINDOW)
+    """标签后面从 start 起，姓名只看到哪里为止：下一个"××："标签、句末、40 个字（标记按两个字
+    算）。"""
+    end = _window_end(line, start, _ATT_WINDOW)
     for pattern in (_ATT_STOP, _ATT_FIELD):
         found = pattern.search(line, start, end)
         if found is not None:
@@ -3464,7 +3488,7 @@ def _mask_attachment_line(line: str, after_label: bool) -> str:
         spans.append((label.end(), _att_window(line, label.end()), _CONTACT_MARK))
     for label in _EDITOR.finditer(line):
         spans.append((label.end(), _att_window(line, label.end()), _EDITOR_MARK))
-    if after_label and (_PHONE_ANY.search(line) or len(line.strip()) <= 8):
+    if after_label and (_PHONE_ANY.search(line) or len(_short(line.strip())) <= 8):
         spans.append((0, _att_window(line, 0), _CONTACT_MARK))
     for phone in _PHONE_ANY.finditer(line):
         if phone.group(0) not in _NUMBER_MARKS and not _is_phone_number(line, phone):
