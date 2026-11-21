@@ -10,11 +10,13 @@
   截止日期里由用户提交的线索生成的行（origin='user'，依据是用户填的）不导出。
 - 字段：恢复上架的文件，下架、恢复备注是人工填写的，可能写到投诉人，导出时清空。
 - 格式和整库备份相同（gzip JSON Lines：说明行、记录、结尾各表 SHA-256），说明行的 format 不同，
-  整库恢复和公开快照导入互相认不出对方的文件。说明行另记线上代码版本（code_revision），本机用同一
+  整库恢复和公开快照导入互相认不出对方的文件。说明行另记导出时的代码版本（code_revision），本机用同一
   版本的代码建表导入，表结构才对得上。
-- 存放：对象存储 public-snapshots/youju-public-日期.jsonl.gz（北京时间的日期，同一天重跑就覆盖），
-  保留 7 天，和 backups/ 分开。admin 每天 3:00 生成；本机用 tools/team/fresh-test-db.sh 下载最新
-  一份、建一个新测试库导入。
+- 存放：D-127 以后（云托管停用）在电脑（公开数据的主库）上按需导出：
+  `youju public-snapshot --output 文件`，用 UU 传到团队的 Mac，用 tools/team/fresh-test-db.sh
+  建一个新测试库导入（命令见那个脚本开头）。
+  云托管时 admin 每天 3:00 生成，存对象存储 public-snapshots/youju-public-日期.jsonl.gz、保留 7 天
+  （下面的 run()，不带 --output 时走这一路）。
 """
 
 import gzip
@@ -490,6 +492,6 @@ def describe(header: dict[str, Any]) -> str:
     created = datetime.fromisoformat(header["created_at"]).astimezone(BEIJING)
     total = sum(header.get("tables", {}).values())
     return (
-        f"线上公开内容 {created:%m/%d %H:%M}（北京时间），共 {total} 条，"
+        f"公开内容快照 {created:%m/%d %H:%M}（北京时间导出），共 {total} 条，"
         f"迁移版本 {header.get('revision')}"
     )

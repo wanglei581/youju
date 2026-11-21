@@ -3178,7 +3178,8 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser(
         "public-snapshot",
         help="公开内容快照：只导出通知、正文、附件文字、名单等公开内容（不含用户数据、密钥、日志），"
-        "上传到对象存储 public-snapshots/，保留 7 天；给本机测试用",
+        "给本机测试用。自建以后在电脑上用 --output 导出成文件；不带 --output 是云托管时的做法"
+        "（上传到对象存储 public-snapshots/，保留 7 天）",
     )
     p.add_argument("--output", type=Path, help="只导出到本机这个文件，不上传")
     p.set_defaults(func=_cmd_public_snapshot)

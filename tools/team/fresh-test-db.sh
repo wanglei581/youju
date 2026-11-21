@@ -1,28 +1,40 @@
 #!/bin/bash
-# 用线上最新的公开内容建一个本机测试库（创始人 10/25："本机测试数据换成线上最新的公开内容，用户数据不出线上"）。
+# 用电脑（公开数据的主库）导出的公开快照，建一个本机测试库（创始人 10/25："本机测试数据换成线上最新的公开内容，
+# 用户数据不出线上"；D-127 以后云托管停用，快照改从电脑出）。
 #
 # 用法：tools/team/fresh-test-db.sh <库名> [--replace] [--file 快照文件] [--snapshot-code]
 #   库名          youju_ 开头，只用小写字母、数字、下划线，例如 youju_pr301。不能是 youju（本机核对台的库），
 #                 也不能 youju_test 开头（pytest 会把它整个删掉重建）。
 #   --replace     库已存在时先删掉再重建（只动这一个库；中途失败的话原来的库也没了）。
-#   --file        不下载，直接用这个快照文件（离线或复现时用）。
-#   --snapshot-code  总是用快照说明行里的线上代码版本建表、导入（默认只在迁移版本不同时才这样做）。
+#   --file        用这个快照文件（不给就用 $YOUJU_PUBLIC_DIR 里最新的一份）。
+#   --snapshot-code  总是用快照说明行里的代码版本建表、导入（默认只在迁移版本不同时才这样做）。
+#
+# 快照从哪来：在电脑上导出，要进电脑（创始人同意以后，在 UU 远程的终端里跑这一行）：
+#   wsl -d youju -u root --cd /opt/youju/local -e bash -c 'mkdir -p /mnt/e/youju/public-snapshots && docker compose run --rm --no-deps -v /mnt/e/youju/public-snapshots:/out worker youju public-snapshot --output /out/youju-public-$(date +%Y%m%d).jsonl.gz'
+#   再用 UU 的文件传输，把 E:\youju\public-snapshots 里那份传到这台 Mac 的 $YOUJU_PUBLIC_DIR
+#   （默认 ~/youju-worktrees/public-data），当天就删掉电脑上那份（传失败也删：
+#   wsl -d youju -u root -e rm -f /mnt/e/youju/public-snapshots/<文件名>）。
+#   快照里只有公开内容表，不含用户数据、密钥、日志和下架的文件（backend/src/youju/public_snapshot.py）。
+#   导出前看一眼服务器上有没有还没带回电脑的紧急下架（手册第八节"紧急下架"第 3 步 emergency-list；要进服务器，
+#   创始人扫码登录服务器控制台、进网页终端）：有的话先照第 5 步带回电脑，不然那些文件还在快照里。
+#   电脑要装过含 #530 的提交打的安装包（带 _build.json），快照里才记得下代码版本；没记的话，本机代码的迁移版本
+#   和快照不同时建不了库。
 #
 # 做的事：
-#   1. 下载线上最新的公开快照到 $YOUJU_PUBLIC_DIR（默认 ~/youju-worktrees/public-data，重启不丢，只留最近 3 份）。
-#      用 tools/team/public-snapshot.cjs：只读，只认 public-snapshots/ 下的文件，整库备份一概不读。
-#   2. 在本机 MySQL（$YOUJU_LOCAL_MYSQL，默认 mysql+pymysql://root@127.0.0.1:33306）新建空库，排序规则和线上一致。
-#   3. 当前代码的最新迁移版本和快照相同，就用当前代码建表、导入；不同，就临时检出快照对应的线上代码
+#   1. 取 $YOUJU_PUBLIC_DIR 里最新的一份（youju-public-<8 位日期>.jsonl.gz），那里只留 7 天以内、最近的 3 份。
+#   2. 在本机 MySQL（$YOUJU_LOCAL_MYSQL，默认 mysql+pymysql://root@127.0.0.1:33306）新建空库，排序规则和服务器一致。
+#   3. 当前代码的最新迁移版本和快照相同，就用当前代码建表、导入；不同，就临时检出快照对应的代码
 #      （说明行的 code_revision）来建表、导入，用完删掉。
-#   4. 再用当前代码把库迁移到最新。当前代码比线上旧（没有线上的迁移版本）就在建库前停下，提示先合最新 origin/main。
+#   4. 再用当前代码把库迁移到最新。当前代码比快照旧（没有快照的迁移版本）就在建库前停下，提示先合最新 origin/main。
 #   中途失败会删掉建了一半的库，修好原因后直接重跑。
-# 前提：本机已运行过 wxcloud login；本机 MySQL 在跑（没在跑就在 youju-worktrees/mysql 里启动）。
+# 前提：$YOUJU_PUBLIC_DIR 里有快照（或用 --file 指定）；本机 MySQL 在跑（没在跑就在 youju-worktrees/mysql 里启动）。
 # 最后一行输出库的连接地址：把本机后台的 YOUJU_DATABASE_URL 设成它再启动后台。测试窗口名写上脚本打印的
 # "数据MM/DD"，给创始人看时说明数据日期（AGENTS.md 第 9 条）。
 set -euo pipefail
 
 usage() {
-  sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'
+  # 开头的说明（第 2 行到 set -euo pipefail 之前）
+  sed -n '2,/^set -euo pipefail/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'
   exit 2
 }
 
@@ -104,9 +116,34 @@ py() {
   (cd "$dir" && YOUJU_DATABASE_URL="$URL" uv run --no-sync --quiet python "$@")
 }
 
-# 1. 快照文件
+# 1. 快照文件：没给 --file 就用 $DIR 里最新的一份（文件名里是导出那天的日期）。那里只留 7 天以内、最近的 3 份，
+#    别的删掉（以前云托管上的快照也只留 7 天）；一份都没有就说清怎么拿
 if [ -z "$FILE" ]; then
-  FILE=$(node "$REPO/tools/team/public-snapshot.cjs" "$DIR" | tail -1)
+  mkdir -p "$DIR"
+  FILE=$(python3 -I - "$DIR" << 'PY'
+import datetime, pathlib, re, sys
+folder = pathlib.Path(sys.argv[1])
+today = datetime.date.today()
+names = sorted(p.name for p in folder.iterdir() if re.fullmatch(r"youju-public-\d{8}\.jsonl\.gz", p.name))
+def fresh(name):
+    try:
+        day = datetime.datetime.strptime(name[13:21], "%Y%m%d").date()
+    except ValueError:
+        return False
+    # 7 天以内的留着；两边时钟、时区不一，日期最多容许比今天晚 1 天，再晚的（时钟错、改过名）也删
+    return -1 <= (today - day).days <= 7
+keep = [name for name in names if fresh(name)][-3:]
+for name in names:
+    if name not in keep:
+        (folder / name).unlink()
+print(folder / keep[-1] if keep else "")
+PY
+)
+  [ -n "$FILE" ] || {
+    echo "$DIR 里没有 7 天以内的公开快照：先在电脑上导出、传过来（看本脚本开头的说明，或 -h），或者用 --file 指定" >&2
+    exit 1
+  }
+  echo "用 $DIR 里最新的一份：$(basename "$FILE")" >&2
 fi
 [ -s "$FILE" ] || {
   echo "快照文件不存在或是空的：$FILE" >&2
@@ -125,7 +162,7 @@ PY
 )
 read -r REV CODE STAMP DAY <<< "$META"
 
-# 2. 当前代码认不认识快照的迁移版本：不认识就是代码比线上旧，先停下
+# 2. 当前代码认不认识快照的迁移版本：不认识就是代码比快照旧，先停下
 ensure_env "$BACKEND"
 HEADS=$(py "$BACKEND" - "$REV" << 'PY'
 import os, sys
@@ -135,7 +172,7 @@ script = ScriptDirectory.from_config(alembic_config(os.environ["YOUJU_DATABASE_U
 try:
     script.get_revision(sys.argv[1])
 except Exception:
-    sys.exit(f"当前代码没有线上的迁移版本 {sys.argv[1]}：先把最新 origin/main 合进来再建库")
+    sys.exit(f"当前代码没有快照的迁移版本 {sys.argv[1]}：先把最新 origin/main 合进来再建库")
 print(" ".join(sorted(script.get_heads())))
 PY
 )
@@ -158,14 +195,14 @@ engine.dispose()
 PY
 CREATED=1
 
-# 4. 选建表、导入用的代码：迁移版本相同就用当前代码，否则临时检出线上那一版
+# 4. 选建表、导入用的代码：迁移版本相同就用当前代码，否则临时检出快照对应的那一版
 CODE_DIR="$BACKEND"
 if [ "$FORCE_CODE" = 1 ] || [ "$HEADS" != "$REV" ]; then
   if [ "$CODE" = "-" ]; then
     if [ "$FORCE_CODE" = 1 ]; then
-      echo "快照没写线上代码版本，没法按 --snapshot-code 用线上代码导入；去掉这个参数再试" >&2
+      echo "快照没写代码版本，没法按 --snapshot-code 用快照对应的代码导入；去掉这个参数再试" >&2
     else
-      echo "快照没写线上代码版本，当前代码的迁移版本（$HEADS）又和快照（$REV）不同，没法导入" >&2
+      echo "快照没写代码版本，当前代码的迁移版本（$HEADS）又和快照（$REV）不同，没法导入" >&2
     fi
     exit 1
   fi
@@ -173,7 +210,7 @@ if [ "$FORCE_CODE" = 1 ] || [ "$HEADS" != "$REV" ]; then
   TMP=$(mktemp -d "${TMPDIR:-/tmp}/youju-snapshot-code.XXXXXX")
   git -C "$REPO" worktree add -q --detach "$TMP/code" "$CODE"
   CODE_DIR="$TMP/code/backend"
-  echo "用线上代码 ${CODE:0:8} 建表、导入（当前代码的迁移版本是 $HEADS，快照是 $REV）" >&2
+  echo "用快照对应的代码 ${CODE:0:8} 建表、导入（当前代码的迁移版本是 $HEADS，快照是 $REV）" >&2
   ensure_env "$CODE_DIR"
 fi
 
@@ -217,7 +254,7 @@ PY
   exit 1
 fi
 
-echo "本机测试库 $NAME 已建好：线上公开内容 ${STAMP/_/ }（北京时间），不含用户数据。" >&2
+echo "本机测试库 $NAME 已建好：公开内容快照 ${STAMP/_/ }（北京时间导出），不含用户数据。" >&2
 echo "测试窗口名请带上\"数据$DAY\"，例如\"有据-测试（Claude·#PR号 提交号·数据$DAY）\"。" >&2
 CREATED=0
 echo "$URL"

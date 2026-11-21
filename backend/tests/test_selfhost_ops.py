@@ -371,6 +371,16 @@ def test_windows_package_marks_chinese_names_utf8(tmp_path):
             "set-config.sh",
         ):
             assert f"local/{wanted}" in names, wanted
+        # 镜像里带完整提交号：电脑导出的公开快照靠它记代码版本（tools/team/fresh-test-db.sh）
+        build = json.loads(z.read("local/source/backend/src/youju/_build.json"))
+        head = subprocess.run(
+            ["git", "-C", str(SELFHOST), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        assert build == {"revision": head}
+        assert z.read("local/source/VERSION").decode().strip() == head[:8]
 
 
 def _alembic_head():
