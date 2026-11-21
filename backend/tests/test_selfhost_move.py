@@ -1210,6 +1210,10 @@ def _drill_backups(tmp_path: Path, *names: str) -> Path:
 @needs_bash
 def test_shared_restore_drill_uses_root_and_the_newest_backup(tmp_path):
     _server_env(tmp_path, "MYSQL_ROOT_PASSWORD=r00tpw\n")
+    assert "MYSQL_ROOT_PASSWORD" not in (tmp_path / "server" / ".env").read_text(encoding="utf-8")
+    assert "MYSQL_ROOT_PASSWORD=r00tpw" in (tmp_path / "server" / "mysql-root.env").read_text(
+        encoding="utf-8"
+    )
     # 名字不对的（没有 8 位日期、没压完的）不算
     _drill_backups(
         tmp_path,
@@ -1279,6 +1283,87 @@ def test_shared_restore_drill_needs_a_backup_and_enough_disk(tmp_path):
     done = _bash(tmp_path, "restore_drill", setup="beijing_hhmm() { echo 1430; }")
     assert done.returncode == 1 and "读不出存储卷的位置" in done.stderr
     assert not [c for c in _calls(tmp_path) if c.startswith("compose")]
+
+
+@needs_bash
+def test_shared_restore_drill_reads_root_password_only_from_mysql_root_env(tmp_path):
+    """还没按最小权限分开时（.env 里有 root 口令、没有 mysql-root.env），或 mysql-root.env 缺口令、
+    或 db_env_ok 没过：都在停 worker 之前停下，提示先 split-db-env，一个容器都不动。"""
+    _old_layout(tmp_path, OLD_ENV)
+    _drill_backups(tmp_path, "youju-20261119.jsonl.gz")
+    done = _bash(tmp_path, "restore_drill", setup=_drill_setup(tmp_path))
+    assert done.returncode == 1
+    assert (
+        "mysql-root.env 里没有 MYSQL_ROOT_PASSWORD（先 youju-shared.sh split-db-env）"
+        in done.stderr
+    )
+    assert not [c for c in _calls(tmp_path) if c.startswith("compose")]
+
+    (tmp_path / "server" / "mysql-root.env").write_text(
+        f"MYSQL_PASSWORD={MIGRATE_PW}\n", encoding="utf-8"
+    )
+    (tmp_path / "calls.log").unlink(missing_ok=True)
+    done = _bash(tmp_path, "restore_drill", setup=_drill_setup(tmp_path))
+    assert done.returncode == 1
+    assert (
+        "mysql-root.env 里没有 MYSQL_ROOT_PASSWORD（先 youju-shared.sh split-db-env）"
+        in done.stderr
+    )
+    assert not [c for c in _calls(tmp_path) if c.startswith("compose")]
+
+    # mysql-root.env 有 root 口令但还没 split-db-env（.env 留着口令 / 缺 db-*.env）：db_env_ok 也提前拦下
+    (tmp_path / "server" / "mysql-root.env").write_text(
+        f"MYSQL_ROOT_PASSWORD={ROOT_PW}\nMYSQL_PASSWORD={MIGRATE_PW}\n", encoding="utf-8"
+    )
+    (tmp_path / "calls.log").unlink(missing_ok=True)
+    done = _bash(tmp_path, "restore_drill", setup=_drill_setup(tmp_path))
+    assert done.returncode == 1 and "split-db-env" in done.stderr
+    assert not [c for c in _calls(tmp_path) if c.startswith("compose")]
+
+
+@needs_bash
+def test_shared_restore_drill_with_binlog_off_still_drops_drill_dbs(tmp_path):
+    """组合态（#534 分开账号 + #528 关掉 binlog + #527 恢复演练）：@@log_bin=0 时 purge_binlog 打
+    "binlog 没开，不用清"并退出 0，而 drop_drill_dbs 仍照常删掉 youju_drill_… 临时库。"""
+    _server_env(tmp_path, f"MYSQL_ROOT_PASSWORD={ROOT_PW}\n")
+    _drill_backups(tmp_path, "youju-20261119.jsonl.gz")
+    bin_dir = tmp_path / "fakebin"
+    bin_dir.mkdir()
+    mysql_log = tmp_path / "mysql.log"
+    fake = bin_dir / "mysql"
+    fake.write_text(
+        "#!/bin/sh\n"
+        f'echo "$* | pwd=$MYSQL_PWD" >> "{mysql_log}"\n'
+        'case "$*" in\n'
+        '  *"information_schema.schemata"*) printf "youju_drill_20261119143000_ab12\\nyouju\\n" ;;\n'
+        '  *"SELECT @@log_bin"*) echo 0 ;;\n'
+        "esac\n",
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+    log = tmp_path / "calls.log"
+    setup = (
+        _drill_setup(tmp_path)
+        + f'\ncompose() {{ printf "compose %s\\n" "$*" >> "{log}"; '
+        + f'if [ "$1" = exec ]; then MYSQL_ROOT_PASSWORD="{ROOT_PW}" PATH="{bin_dir}:$PATH" sh -s; fi; }}'
+    )
+    done = _bash(tmp_path, "restore_drill", setup=setup)
+    assert done.returncode == 0, done.stderr
+    assert "DRILL OK youju-20261119.jsonl.gz" in done.stdout
+    assert "删掉了留下的临时库 youju_drill_20261119143000_ab12" in done.stdout
+    assert "binlog 没开，不用清" in done.stdout
+    sql_calls = mysql_log.read_text(encoding="utf-8").splitlines()
+    assert any(
+        "DROP DATABASE IF EXISTS `youju_drill_20261119143000_ab12`" in line for line in sql_calls
+    )
+    assert not any("PURGE BINARY LOGS" in line for line in sql_calls)
+    assert all(
+        line.endswith(f"| pwd={ROOT_PW}") and ROOT_PW not in line.split(" | ")[0]
+        for line in sql_calls
+    )
+    calls = [c for c in _calls(tmp_path) if c.startswith("compose")]
+    assert calls[0] == "compose stop worker"
+    assert calls[-1].startswith("compose up -d --wait --wait-timeout 300 api")
 
 
 @needs_bash

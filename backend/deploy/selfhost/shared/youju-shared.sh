@@ -1001,12 +1001,12 @@ beijing_hhmm() { TZ=Asia/Shanghai date +%H%M; }
 
 # 拿存储卷里最新的一份用户数据备份（每天 4:00 做的，D-129 ⑥），在临时库 youju_drill_… 里恢复一遍、
 # 核对条数、外键和每张表的 SHA-256，结束删掉，不碰正式库。不在容器里直接跑 youju restore-drill：有据的
-# 库账号建不了临时库，也不会先停 worker。这里和 import-export 一样用 root，口令从 .env 经环境变量传进
-# 临时容器（不进命令行参数）。临时容器用 worker 那份内存（有据三个容器合计 1.5G）：先停 worker，接口
-# 照常；结束（成功、失败、被打断都一样）再起来（on_exit）。worker 停着的这几分钟里定时任务不跑、本机推
+# 库账号建不了临时库，也不会先停 worker。这里和 import-export 一样用 root，口令从 mysql-root.env
+# 经环境变量传进临时容器（不进命令行参数）。临时容器用 worker 那份内存（有据三个容器合计 1.5G）：先停 worker，
+# 接口照常；结束（成功、失败、被打断都一样）再起来（on_exit）。worker 停着的这几分钟里定时任务不跑、本机推
 # 同步会失败（下一轮补上），所以只在北京时间 10:00–23:30 跑，避开凌晨的备份、早上的提醒、日报和对账。
-# 试恢复把一整份用户数据写进了 binlog，跑完清掉；演练进程被系统强杀留下的临时库也删掉（见 on_exit）。
-# 两件都做完才撤掉收尾标记：哪一步失败，退出时 on_exit 再删一遍、再清一遍
+# binlog 还开着时试恢复会把一整份用户数据写进去，跑完清掉（binlog 关了以后这步跳过）；演练进程被系统强杀
+# 留下的临时库也删掉（见 on_exit）。两件都做完才撤掉收尾标记：哪一步失败，退出时 on_exit 再删一遍、再清一遍
 restore_drill() {
   [ -f "$SERVER/.env" ] || die "还没装（没有 ${SERVER}/.env）"
   local now
@@ -1024,8 +1024,9 @@ restore_drill() {
   local name root_pw
   name=$(basename "${files[${#files[@]} - 1]}")
   drill_space_ok "$dir/backups/$name"
-  root_pw=$(sed -n 's/^MYSQL_ROOT_PASSWORD=//p' "$SERVER/.env")
-  [ -n "$root_pw" ] || die ".env 里没有 MYSQL_ROOT_PASSWORD"
+  root_pw=$(root_password)
+  [ -n "$root_pw" ] || die "${SERVER}/mysql-root.env 里没有 MYSQL_ROOT_PASSWORD（先 ${SELF} split-db-env）"
+  db_env_ok
   say "恢复演练：用户数据备份 ${name} 在临时库 youju_drill_… 里恢复一遍（核对条数、外键、每张表的 SHA-256），结束删掉；不碰正式库"
   say "先停 worker（定时任务、本机推同步停几分钟），接口照常；结束再起来"
   compose stop worker
@@ -1036,7 +1037,7 @@ restore_drill() {
     compose run --rm --no-deps -e YOUJU_DATABASE_URL worker \
     youju restore-drill --file "/data/storage/backups/$name" \
     || die "恢复演练没通过（原因见上面）"
-  say "演练通过；删掉以前被打断留下的临时库（一般没有），再清 MySQL 的 binlog（试恢复写进了一份用户数据）"
+  say "演练通过；删掉以前被打断留下的临时库（一般没有），再清 MySQL 的 binlog（binlog 关了以后这步打\"binlog 没开，不用清\"）"
   drop_drill_dbs || die "演练通过了，但留下的临时库没删掉（照手册第八节\"恢复演练\"做）"
   purge_binlog || die "演练通过了，但 binlog 没清掉（照手册第八节\"恢复演练\"做）"
   DROP_DRILL_DBS=""
