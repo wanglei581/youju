@@ -9,6 +9,9 @@ coverage/
 *.log
 .env
 .env.*
+mysql-root.env
+db-api.env
+db-worker.env
 !.env.example
 # 后端本地开发
 backend/.pgdata/

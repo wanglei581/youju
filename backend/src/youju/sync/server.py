@@ -157,9 +157,23 @@ def ensure_floors_on_start() -> None:
 
 
 def ensure_state(engine: Engine) -> None:
-    """进度表（不是迁移：只是同步的记账，服务器第一次收同步时建）。"""
+    """进度表（不是迁移：只是同步的记账，服务器第一次收同步时建）。三张都在就不发 CREATE：MySQL 对
+    CREATE TABLE IF NOT EXISTS 也先查建表权限，共用服务器上 worker 的库账号没有这个权限——这几张表和
+    编号下限由 youju-shared.sh up 用建表迁移的账号先做好（youju sync-server-setup）。"""
     with engine.connect() as conn:
         ensure_floors(conn)
+        have = {
+            row[0]
+            for row in conn.execute(
+                text(
+                    "SELECT table_name FROM information_schema.tables"
+                    " WHERE table_schema = DATABASE() AND table_name IN (:a, :b, :c)"
+                ),
+                {"a": STATE, "b": ORDER, "c": PENDING},
+            )
+        }
+    if have >= {STATE, ORDER, PENDING}:
+        return
     with engine.begin() as conn:
         conn.execute(
             text(

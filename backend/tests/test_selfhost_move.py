@@ -475,11 +475,37 @@ def _calls(tmp_path: Path) -> list[str]:
     return log.read_text(encoding="utf-8").splitlines() if log.exists() else []
 
 
+ROOT_PW, MIGRATE_PW, API_PW, WORKER_PW = "r00tpw", "m1gratepw", "ap1pw0", "w0rkerpw"
+DB_SUFFIX = "@mysql:3306/youju?charset=utf8mb4"
+MYSQL_ACCOUNTS = SELFHOST.parent / "mysql_accounts.sql"
+
+
+def _url(user: str, password: str) -> str:
+    return f"mysql+pymysql://{user}:{password}{DB_SUFFIX}"
+
+
 def _server_env(tmp_path: Path, text: str) -> Path:
-    (tmp_path / "server").mkdir(exist_ok=True)
-    env = tmp_path / "server" / ".env"
-    env.write_text(text, encoding="utf-8")
+    """服务器的 .env（只有 root 能读）。写了 MYSQL_ROOT_PASSWORD 的，照现在的做法把库账号分开放：root 和 youju
+    的口令进 mysql-root.env，接口、worker 各有 db-api.env、db-worker.env；.env 里不留这几项。"""
+    server = tmp_path / "server"
+    server.mkdir(exist_ok=True)
+    lines = text.splitlines(keepends=True)
+    secret = ("MYSQL_ROOT_PASSWORD=", "MYSQL_PASSWORD=", "YOUJU_DATABASE_URL=")
+    env = server / ".env"
+    env.write_text("".join(x for x in lines if not x.startswith(secret)), encoding="utf-8")
     env.chmod(0o600)
+    root = [x for x in lines if x.startswith("MYSQL_ROOT_PASSWORD=")]
+    if root:
+        migrate = [x for x in lines if x.startswith("MYSQL_PASSWORD=")]
+        files = {
+            "mysql-root.env": root[0]
+            + (migrate[0] if migrate else f"MYSQL_PASSWORD={MIGRATE_PW}\n"),
+            "db-api.env": f"YOUJU_DATABASE_URL={_url('youju_api', API_PW)}\n",
+            "db-worker.env": f"YOUJU_DATABASE_URL={_url('youju_worker', WORKER_PW)}\n",
+        }
+        for name, body in files.items():
+            (server / name).write_text(body, encoding="utf-8")
+            (server / name).chmod(0o600)
     return env
 
 
@@ -586,6 +612,396 @@ def test_shared_rotate_sync_prints_only_a_fingerprint(tmp_path):
     new = env.read_text(encoding="utf-8").strip().split("=", 1)[1]
     assert re.fullmatch(r"[0-9a-f]{64}", new) and new != "a" * 64
     assert new not in done.stdout and _sha(new.encode())[:4] in done.stdout
+
+
+SPLIT_COMPOSE = (
+    "services:\n  mysql:\n    env_file: mysql-root.env\n"
+    "  api:\n    env_file: [.env, db-api.env]\n  worker:\n    env_file: [.env, db-worker.env]\n"
+)
+OLD_ENV = (
+    f"YOUJU_IMAGE=x\nMYSQL_ROOT_PASSWORD={ROOT_PW}\nMYSQL_PASSWORD={MIGRATE_PW}\n"
+    f"YOUJU_DATABASE_URL={_url('youju', MIGRATE_PW)}\nYOUJU_SYNC_SECRET=s\n"
+)
+SPLIT_ENV = "YOUJU_IMAGE=x\nYOUJU_SYNC_SECRET=s\n"
+
+
+def _old_layout(tmp_path: Path, env_text: str, compose: str = SPLIT_COMPOSE) -> Path:
+    """还没把库账号分开放的 .env（只有 root 能读）、装好的 docker-compose.yml 和授权清单。"""
+    server = tmp_path / "server"
+    server.mkdir(exist_ok=True)
+    env = server / ".env"
+    env.write_text(env_text, encoding="utf-8")
+    env.chmod(0o600)
+    (server / "docker-compose.yml").write_text(compose, encoding="utf-8")
+    shutil.copy(MYSQL_ACCOUNTS, server / "mysql_accounts.sql")
+    return env
+
+
+def _db_files(tmp_path: Path) -> dict[str, Path]:
+    server = tmp_path / "server"
+    return {name: server / name for name in ("mysql-root.env", "db-api.env", "db-worker.env")}
+
+
+def _texts(files: dict[str, Path]) -> dict[str, str]:
+    return {name: path.read_text(encoding="utf-8") for name, path in files.items()}
+
+
+@needs_bash
+def test_shared_split_db_env_gives_each_service_its_own_account(tmp_path):
+    """数据库账号按最小权限分开：root、youju 的口令进 mysql-root.env，接口、worker 各生成一个自己的账号，
+    .env 里不留连库口令；值不显示，文件都只有 root 能读；重跑不动，放到一半的补完。"""
+    env = _old_layout(tmp_path, OLD_ENV, compose="services:\n  mysql:\n")
+    # 装好的 compose 还是旧的（不认这几个口令文件）：什么都不动
+    done = _bash(tmp_path, "split_db_env")
+    assert done.returncode == 1 and "先 install 这一版" in done.stderr
+    assert env.read_text(encoding="utf-8") == OLD_ENV
+    assert not any(path.exists() for path in _db_files(tmp_path).values())
+    env = _old_layout(tmp_path, OLD_ENV)
+    done = _bash(tmp_path, "split_db_env")
+    assert done.returncode == 0, done.stderr
+    files = _db_files(tmp_path)
+    assert env.read_text(encoding="utf-8") == SPLIT_ENV
+    assert files["mysql-root.env"].read_text(encoding="utf-8") == (
+        f"MYSQL_ROOT_PASSWORD={ROOT_PW}\nMYSQL_PASSWORD={MIGRATE_PW}\n"
+    )
+    made = {}
+    for svc in ("api", "worker"):
+        line = files[f"db-{svc}.env"].read_text(encoding="utf-8")
+        pattern = rf"YOUJU_DATABASE_URL=mysql\+pymysql://youju_{svc}:([0-9a-f]{{48}}){re.escape(DB_SUFFIX)}\n"
+        found = re.fullmatch(pattern, line)
+        assert found, line
+        made[svc] = found.group(1)
+    assert made["api"] != made["worker"]
+    for path in [env, *files.values()]:
+        assert path.stat().st_mode & 0o777 == 0o600, path
+    out = done.stdout + done.stderr
+    assert not any(value in out for value in (ROOT_PW, MIGRATE_PW, *made.values()))
+    assert not list((tmp_path / "server").glob("*.tmp"))
+    # 重跑：已经分好的不动（接口、worker 的口令不换）
+    before = _texts(files)
+    assert _bash(tmp_path, "split_db_env").returncode == 0
+    assert _texts(files) == before
+    # 上次放到一半（口令文件写好了、.env 里还没删）：重跑把 .env 里那几项删掉，口令文件照旧
+    env.write_text(OLD_ENV, encoding="utf-8")
+    assert _bash(tmp_path, "split_db_env").returncode == 0
+    assert env.read_text(encoding="utf-8") == SPLIT_ENV and _texts(files) == before
+
+
+@needs_bash
+@pytest.mark.parametrize(
+    "env_text, existing, message",
+    [
+        (
+            OLD_ENV.replace(ROOT_PW, "other1"),
+            {"mysql-root.env": f"MYSQL_ROOT_PASSWORD={ROOT_PW}\n"},
+            "MYSQL_ROOT_PASSWORD 和 .env 里的不一样",
+        ),
+        (OLD_ENV.replace("@mysql:3306", "@elsewhere:3306"), {}, "不是 youju 账号连本机 MySQL"),
+        (
+            OLD_ENV,
+            {"db-api.env": f"YOUJU_DATABASE_URL={_url('root', 'x')}\n"},
+            "db-api.env 写法不对",
+        ),
+        (f"YOUJU_IMAGE=x\nMYSQL_ROOT_PASSWORD={ROOT_PW}\n", {}, "都没有 MYSQL_PASSWORD"),
+    ],
+)
+def test_shared_split_db_env_stops_before_touching_anything(tmp_path, env_text, existing, message):
+    """口令对不上、连接串不是 youju 连本机的、已有的文件写法不对、缺口令：停下，一个文件都不动；只打指纹。"""
+    _old_layout(tmp_path, env_text)
+    for name, body in existing.items():
+        (tmp_path / "server" / name).write_text(body, encoding="utf-8")
+    server = tmp_path / "server"
+    before = {p.name: p.read_text(encoding="utf-8") for p in server.iterdir() if p.is_file()}
+    done = _bash(tmp_path, "split_db_env")
+    assert done.returncode == 1 and message in done.stderr, done.stderr
+    assert {
+        p.name: p.read_text(encoding="utf-8") for p in server.iterdir() if p.is_file()
+    } == before
+    assert not any(value in done.stderr for value in (ROOT_PW, MIGRATE_PW, "other1"))
+
+
+@needs_bash
+def test_shared_unsplit_db_env_writes_back_for_a_rollback(tmp_path):
+    """回退到不认这几个口令文件的旧版本之前：root、youju 的口令和 youju 的连接串写回 .env（值不显示）；
+    写回以后新脚本的 up 会拦住，再升级回来照样分开。"""
+    env = _old_layout(tmp_path, OLD_ENV)
+    assert _bash(tmp_path, "split_db_env").returncode == 0
+    done = _bash(tmp_path, "unsplit_db_env")
+    assert done.returncode == 0, done.stderr
+    text = env.read_text(encoding="utf-8")
+    for line in (
+        f"MYSQL_ROOT_PASSWORD={ROOT_PW}",
+        f"MYSQL_PASSWORD={MIGRATE_PW}",
+        f"YOUJU_DATABASE_URL={_url('youju', MIGRATE_PW)}",
+    ):
+        assert line + "\n" in text, line
+    assert env.stat().st_mode & 0o777 == 0o600
+    assert ROOT_PW not in done.stdout + done.stderr and MIGRATE_PW not in done.stdout + done.stderr
+    assert _bash(tmp_path, "up", setup="status() { :; }").returncode == 1
+    assert _bash(tmp_path, "split_db_env").returncode == 0
+    assert env.read_text(encoding="utf-8") == SPLIT_ENV
+
+
+@needs_bash
+def test_shared_up_migrates_as_youju_then_sets_accounts_before_starting(tmp_path):
+    """up：口令没分开放就停下、一个容器都不动（先停后起的 pause_services、import-export 也是）；分好以后先起
+    MySQL、停接口和 worker，用 youju 迁移（连接串经环境变量），再在 MySQL 容器里用 root 设好接口、worker 的账号
+    和授权（SQL 经标准输入），最后起 worker、接口。"""
+    _old_layout(tmp_path, OLD_ENV)
+    fake_status = "status() { echo STATUS; }"
+    done = _bash(tmp_path, "up", setup=fake_status)
+    assert done.returncode == 1 and "先运行 youju-shared.sh split-db-env" in done.stderr
+    done = _bash(tmp_path, "pause_services")
+    assert done.returncode == 1 and "split-db-env" in done.stderr
+    assert _calls(tmp_path) == []
+    _downloaded(tmp_path)
+    done = _bash(tmp_path, "import_export a79a0042")
+    assert done.returncode == 1 and "mysql-root.env 里没有 MYSQL_ROOT_PASSWORD" in done.stderr
+    assert not [c for c in _calls(tmp_path) if c.startswith("compose")]
+    assert _bash(tmp_path, "split_db_env").returncode == 0
+    (tmp_path / "calls.log").unlink(missing_ok=True)
+    done = _bash(tmp_path, "pause_services; trap - EXIT")
+    assert done.returncode == 0 and _calls(tmp_path)[0].startswith("compose stop api worker")
+    (tmp_path / "calls.log").unlink()
+    sql_file = tmp_path / "accounts.sql"
+    log = tmp_path / "calls.log"
+    # 跑测试的进程环境里有测试库的连接串（conftest 设的）；服务器上跑脚本的 root 环境里没有
+    setup = (
+        fake_status
+        + "\nunset YOUJU_DATABASE_URL\n"
+        + f'compose() {{ printf "compose %s | db=%s\\n" "$*" "${{YOUJU_DATABASE_URL:-}}" >> "{log}"; '
+        + f'if [ "$1" = exec ]; then cat > "{sql_file}"; fi; }}'
+    )
+    done = _bash(tmp_path, "up", setup=setup)
+    assert done.returncode == 0, done.stderr
+    calls = _calls(tmp_path)
+    assert [c.split(" | ")[0] for c in calls] == [
+        "compose config -q",
+        "compose up -d --wait --wait-timeout 300 mysql",
+        "compose stop worker api",
+        "compose run --rm --no-deps -e YOUJU_DATABASE_URL worker youju db-upgrade",
+        "compose run --rm --no-deps -e YOUJU_DATABASE_URL worker youju sync-server-setup",
+        'compose exec -T mysql sh -c MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot -N -B',
+        "compose up -d --wait --wait-timeout 900 worker",
+        "compose up -d --wait --wait-timeout 300 api",
+    ]
+    # 迁移、建收同步的进度表用 youju（经环境变量）；别的调用都不带连接串，口令都不在参数里
+    assert calls[3].endswith(f"| db={_url('youju', MIGRATE_PW)}")
+    assert calls[4].endswith(f"| db={_url('youju', MIGRATE_PW)}")
+    assert all(c.endswith("| db=") for i, c in enumerate(calls) if i not in (3, 4))
+    assert not any(MIGRATE_PW in c.split(" | ")[0] or ROOT_PW in c for c in calls)
+    api_line = (tmp_path / "server" / "db-api.env").read_text(encoding="utf-8")
+    api_pw = re.search(r"youju_api:([0-9a-f]{48})@", api_line).group(1)
+    sql = sql_file.read_text(encoding="utf-8")
+    assert f"CREATE USER IF NOT EXISTS 'youju_api'@'%' IDENTIFIED BY '{api_pw}';" in sql
+    assert "接口（youju_api）、worker（youju_worker）的库账号和授权已照清单设好" in done.stdout
+    assert "STATUS" in done.stdout
+
+
+def _conftest_api_grants() -> list[str]:
+    """tests/conftest.py 建受限账号时取接口授权的办法：GRANT 语句里 TO 'youju_api'@ 的那些。"""
+    sql = MYSQL_ACCOUNTS.read_text(encoding="utf-8")
+    return [
+        s for s in re.findall(r"^GRANT\b[^;]*;", sql, re.M) if re.search(r"TO\s+'youju_api'@", s)
+    ]
+
+
+@needs_bash
+def test_shared_db_accounts_sql_checks_tables_before_changing_grants(tmp_path):
+    """接口、worker 的账号：建好、口令和 db-*.env 对齐；先逐条查授权用到的表和列都在，再收回、照清单重授。
+    接口的授权就是 mysql_accounts.sql 第 ② 节那些行（和 conftest 建受限账号同一个取法），一条不漏。"""
+    _server_env(tmp_path, f"YOUJU_IMAGE=x\nMYSQL_ROOT_PASSWORD={ROOT_PW}\n")
+    shutil.copy(MYSQL_ACCOUNTS, tmp_path / "server" / "mysql_accounts.sql")
+    done = _bash(tmp_path, "db_accounts_sql")
+    assert done.returncode == 0, done.stderr
+    lines = done.stdout.splitlines()
+    grants = _conftest_api_grants()
+    assert grants and lines[-len(grants) :] == grants
+    assert lines[:4] == [
+        f"CREATE USER IF NOT EXISTS 'youju_api'@'%' IDENTIFIED BY '{API_PW}';",
+        f"ALTER USER 'youju_api'@'%' IDENTIFIED BY '{API_PW}';",
+        f"CREATE USER IF NOT EXISTS 'youju_worker'@'%' IDENTIFIED BY '{WORKER_PW}';",
+        f"ALTER USER 'youju_worker'@'%' IDENTIFIED BY '{WORKER_PW}';",
+    ]
+    revoke = lines.index(
+        "REVOKE ALL PRIVILEGES, GRANT OPTION FROM 'youju_api'@'%', 'youju_worker'@'%';"
+    )
+    assert lines[revoke + 1] == (
+        "GRANT SELECT, INSERT, UPDATE, DELETE, LOCK TABLES ON youju.* TO 'youju_worker'@'%';"
+    )
+    checks = lines[4:revoke]
+    per_table = [g for g in grants if re.search(r" ON youju\.\w+ TO ", g)]
+    assert len(checks) == len(per_table)  # 按表的授权每条查一句（youju.* 那条不用查）
+    assert all(re.fullmatch(r"SELECT [a-z_, 1]+ FROM youju\.\w+ WHERE 1 = 0;", c) for c in checks)
+    assert "SELECT ends_at FROM youju.boost_trials WHERE 1 = 0;" in checks
+    assert "SELECT 1 FROM youju.access_logs WHERE 1 = 0;" in checks
+    # 清单里没有接口的授权：停下
+    (tmp_path / "server" / "mysql_accounts.sql").write_text("-- 空\n", encoding="utf-8")
+    done = _bash(tmp_path, "db_accounts_sql")
+    assert done.returncode == 1 and "没找到接口的授权" in done.stderr
+
+
+def test_api_grants_name_tables_and_columns_that_exist():
+    """mysql_accounts.sql 第 ② 节授权用到的表和列都在现在的表结构里：表或列删了要同时删掉 GRANT 行，不然共用
+    服务器的 up 会停在改权限之前。"""
+    from youju.models import Base
+
+    tables = Base.metadata.tables
+    for grant in _conftest_api_grants():
+        found = re.search(r"^GRANT (.+) ON youju\.(\w+|\*) TO ", grant)
+        assert found, grant
+        if found.group(2) == "*":
+            continue
+        assert found.group(2) in tables, grant
+        for cols in re.findall(r"\(([^)]*)\)", found.group(1)):
+            for col in cols.split(","):
+                assert col.strip() in tables[found.group(2)].c, grant
+
+
+@needs_bash
+def test_shared_status_names_each_services_account_without_secrets(tmp_path):
+    """status（up 最后也打）：接口、worker 各用哪个库账号，里面有没有 root 和 youju 的口令；不打口令。"""
+    _server_env(tmp_path, f"YOUJU_IMAGE=x\nMYSQL_ROOT_PASSWORD={ROOT_PW}\n")
+    script = tmp_path / "probe.sh"
+    setup = (
+        "curl() { return 7; }; free() { :; }\n"
+        # 容器里的 sh -c 脚本记下来；worker 当作查不了
+        f'compose() {{ if [ "$1" = exec ]; then [ "$3" = worker ] && return 1; '
+        f'printf "%s" "$6" > "{script}"; echo "youju_api 没有"; fi; }}'
+    )
+    done = _bash(tmp_path, "status", setup=setup)
+    assert done.returncode == 0, done.stderr
+    assert "api：连库账号 youju_api；root、youju 的口令：没有" in done.stdout
+    assert "worker：查不了" in done.stdout
+    probe = script.read_text(encoding="utf-8")
+    clean = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in ("MYSQL_ROOT_PASSWORD", "MYSQL_PASSWORD", "YOUJU_DATABASE_URL")
+    }
+
+    def run(extra: dict) -> str:
+        got = subprocess.run(
+            ["sh", "-c", probe], capture_output=True, text=True, env={**clean, **extra}
+        )
+        return got.stdout + got.stderr
+
+    out = run({"YOUJU_DATABASE_URL": _url("youju_api", API_PW)})
+    assert out.strip() == "youju_api 没有" and API_PW not in out
+    out = run({"YOUJU_DATABASE_URL": _url("youju", MIGRATE_PW), "MYSQL_PASSWORD": MIGRATE_PW})
+    assert out.strip() == "youju 有" and MIGRATE_PW not in out
+    assert run({}).strip() == "无 没有"
+
+
+@needs_bash
+def test_shared_install_splits_accounts_before_building(tmp_path):
+    """已装好的服务器 install 这一版：换文件之前先核对分得了；新 compose 一装上就把库账号分开放好、拷好授权
+    清单，再构建镜像；分不了就停下，一个文件都不换、不构建（只打指纹）；回退装旧版本时不分，照常构建。"""
+    ver = "abcdef12"
+    rel = tmp_path / "releases" / ver
+    (rel / "source" / "backend" / "deploy").mkdir(parents=True)
+    (rel / "source" / "VERSION").write_text(ver + "\n", encoding="utf-8")
+    shutil.copy(MYSQL_ACCOUNTS, rel / "source" / "backend" / "deploy" / "mysql_accounts.sql")
+    shared = rel / "shared"
+    shared.mkdir()
+    (shared / "docker-compose.yml").write_text(SPLIT_COMPOSE, encoding="utf-8")
+    for name in ("mysql.cnf", "nginx-http.conf", "nginx-https.conf", "youju-shared.sh"):
+        (shared / name).write_text("x\n", encoding="utf-8")
+    old_env = OLD_ENV.replace("YOUJU_IMAGE=x", "YOUJU_IMAGE=youju-selfhost:old")
+    env = _old_layout(tmp_path, old_env, compose="old compose\n")
+    (tmp_path / "server" / "mysql_accounts.sql").unlink()
+    # 证书、验证目录也指到临时目录；跑测试的机器可能是 BSD sed：只替身 install 里那一处 sed -i
+    portable = (
+        f'WEBROOT="{tmp_path}/acme-webroot"; LE_DIR="{tmp_path}/letsencrypt"\n'
+        'sed() { if [ "$1" = -i ]; then command sed "$2" "$3" > "$3.t" && mv "$3.t" "$3"; '
+        'else command sed "$@"; fi; }'
+    )
+    done = _bash(tmp_path, f"install_release {ver}", setup=portable)
+    assert done.returncode == 0, done.stderr
+    files = _db_files(tmp_path)
+    assert all(path.exists() for path in files.values())
+    assert (
+        env.read_text(encoding="utf-8")
+        == f"YOUJU_IMAGE=youju-selfhost:{ver}\nYOUJU_SYNC_SECRET=s\n"
+    )
+    copied = tmp_path / "server" / "mysql_accounts.sql"
+    assert copied.read_bytes() == MYSQL_ACCOUNTS.read_bytes()
+    assert ROOT_PW not in done.stdout + done.stderr and MIGRATE_PW not in done.stdout + done.stderr
+    assert done.stdout.index("按最小权限分开放") < done.stdout.index("构建镜像")
+    assert any(c.startswith("docker build") for c in _calls(tmp_path))
+    # 对不上：换文件之前就停下（只打两边的指纹），一个文件都不换，不构建
+    (tmp_path / "calls.log").unlink()
+    for path in files.values():
+        path.unlink()
+    env.write_text(OLD_ENV, encoding="utf-8")
+    files["mysql-root.env"].write_text("MYSQL_ROOT_PASSWORD=other1\n", encoding="utf-8")
+    installed = tmp_path / "server" / "docker-compose.yml"
+    installed.write_text("old compose\n", encoding="utf-8")
+    script = tmp_path / "bin" / "youju-shared.sh"
+    script.write_text("old script\n", encoding="utf-8")
+    done = _bash(tmp_path, f"install_release {ver}", setup=portable)
+    assert done.returncode == 1 and "不一样" in done.stderr and "一个文件都没换" in done.stderr
+    assert _sha(b"other1")[:4] in done.stderr and _sha(ROOT_PW.encode())[:4] in done.stderr
+    assert "other1" not in done.stderr and ROOT_PW not in done.stdout + done.stderr
+    assert installed.read_text(encoding="utf-8") == "old compose\n"
+    assert script.read_text(encoding="utf-8") == "old script\n"
+    assert not any(c.startswith("docker build") for c in _calls(tmp_path))
+    # 回退：装的是还不认这几个文件的旧版本（口令已经写回 .env）：不分，照常构建
+    (tmp_path / "calls.log").unlink(missing_ok=True)
+    files["mysql-root.env"].unlink()
+    (shared / "docker-compose.yml").write_text("services:\n  mysql:\n", encoding="utf-8")
+    done = _bash(tmp_path, f"install_release {ver}", setup=portable)
+    assert done.returncode == 0, done.stderr
+    assert f"MYSQL_PASSWORD={MIGRATE_PW}" in env.read_text(encoding="utf-8")
+    assert not any(path.exists() for path in files.values())
+    assert any(c.startswith("docker build") for c in _calls(tmp_path))
+
+
+@needs_bash
+def test_shared_make_env_writes_db_secrets_per_account(tmp_path):
+    """新装（env）：.env 里没有连库口令；root 和 youju 的在 mysql-root.env，接口、worker 各一个账号；
+    都只有 root 能读，已有就不动；只剩口令文件、没有 .env 时不另生成。"""
+    if shutil.which("openssl") is None:
+        pytest.skip("没有 openssl")
+    ver = "abcdef12"
+    rel = tmp_path / "releases" / ver / "source"
+    (rel / "backend/deploy/selfhost/server").mkdir(parents=True)
+    (rel / "VERSION").write_text(ver + "\n", encoding="utf-8")
+    (rel / "backend/deploy/selfhost/server/env.example").write_text(
+        "YOUJU_CLOUD_ENV=test-env\n", encoding="utf-8"
+    )
+    server = tmp_path / "server"
+    server.mkdir()
+    (server / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+    done = _bash(tmp_path, f"make_env {ver}")
+    assert done.returncode == 0, done.stderr
+    env, files = server / ".env", _db_files(tmp_path)
+    text = env.read_text(encoding="utf-8")
+    for name in ("MYSQL_ROOT_PASSWORD", "MYSQL_PASSWORD", "YOUJU_DATABASE_URL"):
+        assert name + "=" not in text, name
+    found = re.fullmatch(
+        r"MYSQL_ROOT_PASSWORD=([0-9a-f]{48})\nMYSQL_PASSWORD=([0-9a-f]{48})\n",
+        files["mysql-root.env"].read_text(encoding="utf-8"),
+    )
+    assert found and found.group(1) != found.group(2)
+    secrets = [found.group(1), found.group(2)]
+    for svc in ("api", "worker"):
+        line = files[f"db-{svc}.env"].read_text(encoding="utf-8")
+        pattern = rf"YOUJU_DATABASE_URL=mysql\+pymysql://youju_{svc}:([0-9a-f]{{48}}){re.escape(DB_SUFFIX)}\n"
+        url = re.fullmatch(pattern, line)
+        assert url, line
+        secrets.append(url.group(1))
+    assert len(set(secrets)) == 4 and not any(s in text or s in done.stdout for s in secrets)
+    for path in [env, *files.values()]:
+        assert path.stat().st_mode & 0o777 == 0o600, path
+    assert not list(server.glob("*.tmp"))
+    before = _texts(files)
+    again = _bash(tmp_path, f"make_env {ver}")
+    assert again.returncode == 0 and "不动" in again.stdout and _texts(files) == before
+    # 只剩口令文件（数据库可能已经用它们建好了）：不另生成
+    env.unlink()
+    done = _bash(tmp_path, f"make_env {ver}")
+    assert done.returncode == 1 and "先人工核对" in done.stderr and not env.exists()
 
 
 @needs_bash

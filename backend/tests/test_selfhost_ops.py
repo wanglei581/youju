@@ -475,6 +475,15 @@ def test_shared_server_compose_stays_small_and_local():
     assert (
         "${YOUJU_CRONTAB:-/app/backend/deploy/selfhost/shared/crontab.idle}" in services["worker"]
     )
+    # 数据库账号按最小权限分开：root 和 youju 的口令只经 mysql-root.env 给 MySQL 容器；接口、worker 各读
+    # 共用的 .env 和自己的库账号；compose 里不再从 .env 取任何连库口令
+    assert "\n    env_file: mysql-root.env\n" in services["mysql"]
+    assert "\n    env_file: [.env, db-api.env]\n" in services["api"]
+    assert "\n    env_file: [.env, db-worker.env]\n" in services["worker"]
+    code = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
+    assert "MYSQL_ROOT_PASSWORD" not in code.replace("$$MYSQL_ROOT_PASSWORD", "")  # 只剩健康检查
+    assert "MYSQL_PASSWORD" not in code and "YOUJU_DATABASE_URL" not in code
+    assert "\n  env_file: .env\n" in text.split("\nservices:\n")[0]
 
 
 def test_shared_server_nginx_site_only_forwards_app_paths():
@@ -623,10 +632,15 @@ def test_shared_server_env_passes_startup_checks(monkeypatch):
         assert "$" not in value, line
         env[key] = value
     assert env["YOUJU_WX_API_BASE"] == "http://127.0.0.1:9"
+    # 接口、worker 共用的 .env 里没有任何连库口令：各自的连接串在 db-api.env、db-worker.env（compose 再给）
+    for name in ("MYSQL_ROOT_PASSWORD", "MYSQL_PASSWORD", "YOUJU_DATABASE_URL"):
+        assert name not in env, name
     for key, value in env.items():
         monkeypatch.setenv(key, value)
-    for role in ("api", "admin"):
+    for role, user in (("api", "youju_api"), ("admin", "youju_worker")):
         monkeypatch.setenv("YOUJU_ROLE", role)
+        url = f"mysql+pymysql://{user}:{'a' * 48}@mysql:3306/youju?charset=utf8mb4"
+        monkeypatch.setenv("YOUJU_DATABASE_URL", url)
         settings = Settings(_env_file=None)
         assert (settings.hosting, settings.role, settings.public_replica) == ("self", role, True)
 

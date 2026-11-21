@@ -6,6 +6,9 @@
 #   项目）；主机内存不够时内核先挑有据的进程停（oom_score_adj），不连累别的项目；
 # - worker 默认只写心跳、不跑定时任务（测试期没有用户数据；shared/crontab.idle，只多一条旧库存档的
 #   到期删除）；上线前在 .env 里设 YOUJU_CRONTAB=/app/backend/deploy/selfhost/server/crontab。
+# - 数据库账号按最小权限分开：root 和建表迁移用的 youju 的口令只在 mysql-root.env，只给 MySQL 容器（迁移由
+#   youju-shared.sh up 用 youju 跑）；接口用 youju_api、worker 用 youju_worker，连接串各在 db-api.env、
+#   db-worker.env，只给各自的容器；共用的 .env 里不留连库口令。这几个文件都只有 root 能读。
 # 都由 youju-shared.sh 调用，见 docs/部署/自建服务器.md 第十节（已有服务器）。
 name: youju-server
 
@@ -34,11 +37,11 @@ services:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_0900_bin
       - --default-time-zone=+00:00
+    # MYSQL_ROOT_PASSWORD、MYSQL_PASSWORD（youju 的）从这里来：youju-shared.sh env 生成；已装好的由 install 分开放
+    env_file: mysql-root.env
     environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?在 .env 里填 MYSQL_ROOT_PASSWORD}
       MYSQL_DATABASE: youju
       MYSQL_USER: youju
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?在 .env 里填 MYSQL_PASSWORD}
     volumes:
       - mysql:/var/lib/mysql
       - ./mysql.cnf:/etc/mysql/conf.d/youju.cnf:ro
@@ -57,6 +60,8 @@ services:
   # 小程序接口：只经宝塔 nginx 的 yj 站点对外（/api/v1/、/health、/api/wx/push）
   api:
     <<: *app
+    # 接口自己的库账号 youju_api（授权照 mysql_accounts.sql 第 ② 节）
+    env_file: [.env, db-api.env]
     environment:
       YOUJU_ROLE: api
       PORT: "8000"
@@ -74,6 +79,8 @@ services:
   # 定时任务 + 核对台（不对外，只在服务器上访问）+ 收本机推来的公开数据（/api/sync/，经 nginx）
   worker:
     <<: *app
+    # worker 自己的库账号 youju_worker（增删改查，加上恢复备份要的 LOCK TABLES）
+    env_file: [.env, db-worker.env]
     environment:
       YOUJU_ROLE: admin
       PORT: "8000"
