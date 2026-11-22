@@ -190,10 +190,10 @@ _CUE_RIGHT_BEFORE = re.compile(rf"(?:{_FAR_CUE.pattern})[^\S\n]*+\Z")
 # _HOTLINE_HEAD；独立 Claude 第二轮）
 _HOTLINE_HEAD = re.compile(rf"(?<!\d)[48]00[^\S\n]*[{_DASHES}]?[^\S\n]*\Z")
 # 被空格拆开的统一社会信用代码（"91220101 MA0Y5F26" / "91220101 MA0Y5F261X"：
-# 前段是没有区号和分机的 8 位信用代码前缀，后段隔空白跟着同时含大写字母和数字的 8–10 位后缀），
-# 不是电话（"致电87654321 ABCD" 照常遮蔽；与显示层 v1._CODE_AFTER 对齐）
+# 前段是没有区号和分机的 8 位信用代码前缀，后段隔空白跟着字母开头且含数字的 8–10 位后缀），
+# 不是电话（"致电87654321 ABCD"、"致电91220101 1A234567" 和紧跟电话标签的写法照常遮蔽）
 _CREDIT_HEAD = re.compile(r"(?:2[19]|3[1-59]|4[19]|5[1-39]|6[19]|7[129]|8[19]|9[1-39])\d{6}")
-_CODE_AFTER = re.compile(r"[^\S\n]+(?=[A-Z0-9]*[A-Z])(?=[A-Z0-9]*\d)[A-Z0-9]{8,10}(?![A-Za-z0-9])")
+_CODE_AFTER = re.compile(r"[^\S\n]+[A-Z](?=[A-Z0-9]*\d)[A-Z0-9]{7,9}(?![A-Za-z0-9])")
 # "/"前面是这些标记的，"/"后面的号码才认（"[电话已脱敏]/6543…""联系人：[姓名已脱敏]/6543…"）
 _SLASH_MARKS = ("[电话已脱敏]", "[新电话已脱敏]", "[手机号已脱敏]", "[姓名已脱敏]")
 _SENTENCE_END = re.compile(r"[。！？!?]")
@@ -665,6 +665,7 @@ def _mask_local_numbers(text: str) -> str:
                 and match.end("num") == match.end()
                 and _CREDIT_HEAD.fullmatch(match.group("num")) is not None
                 and _CODE_AFTER.match(text, match.end()) is not None
+                and not _CUE_RIGHT_BEFORE.search(text, max(0, start - 16), start)
             )
         ):
             continue

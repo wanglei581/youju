@@ -2727,12 +2727,10 @@ _NAME_SEP_BEFORE = re.compile(
     r"|(?:[ \t\u3000]*[，,、；;/／][ \t\u3000]*|[ \t\u3000]*\n[ \t\u3000]*|[ \t\u3000]+)$"
 )
 _CLOSE_AFTER = re.compile(r"[ \t\u3000]*[）)]")
-# 被空格或直接拆开的统一社会信用代码（"91220101 MA0Y5F26" / "91220101MA0Y5F261X"）不是电话，
-# "张三 87654321 ABCD" 仍按电话遮蔽（Codex r4 审阅）
+# 被空格或直接拆开的统一社会信用代码（"91220101 MA0Y5F26" / "91220101MA0Y5F261X"：
+# 后段必须字母开头且含数字）不是电话，"张三 87654321 ABCD" 与 "张三 91220101 1A234567" 仍遮蔽
 _CREDIT_HEAD = re.compile(r"(?:2[19]|3[1-59]|4[19]|5[1-39]|6[19]|7[129]|8[19]|9[1-39])\d{6}")
-_CODE_AFTER = re.compile(
-    r"[ \t\u3000]*(?=[A-Z0-9]*[A-Z])(?=[A-Z0-9]*\d)[A-Z0-9]{8,10}(?![A-Za-z0-9])"
-)
+_CODE_AFTER = re.compile(r"[ \t\u3000]*[A-Z](?=[A-Z0-9]*\d)[A-Z0-9]{7,9}(?![A-Za-z0-9])")
 _UNIT_LINE_END = re.compile(r"(?:[处科室局委办厅站所院组队]|中心|部门|单位|纪委|监委)[ \t\u3000]*$")
 _VERB_BEFORE_NUMBER = re.compile(r"(?:致电|电询|拨打)[^。！？!?\n]{0,20}$")
 # 一行一串号码只认 8 位或区号连写的：7 位的一串（"2060501、2060502"）更像科目编码（agy 审阅）
@@ -2873,13 +2871,14 @@ def _mask_more_numbers(text: str) -> str:
     spans: list[tuple[int, int, str]] = []
     blocks = _block_lines(text)
     for number in _LOCAL_NUMBER.finditer(text):
-        if not _is_phone_number(text, number) or (
-            _CREDIT_HEAD.fullmatch(number.group(0)) is not None
-            and _CODE_AFTER.match(text, number.end()) is not None
-        ):
-            continue
         start, end = number.span()
         before = text[max(0, start - 30) : start]
+        if not _is_phone_number(text, number) or (
+            _CREDIT_HEAD.fullmatch(number.group(0)) is not None
+            and _CODE_AFTER.match(text, end) is not None
+            and not _CALL_VERB_BEFORE.search(before.rstrip(" \t\u3000:："))
+        ):
+            continue
         next_char = text[end : end + 1]
         coded = bool(_HAN_AFTER.match(next_char)) and next_char not in _HAN_AFTER_OK
         unit = None if coded else _UNIT_BEFORE_NUMBER.search(before)
