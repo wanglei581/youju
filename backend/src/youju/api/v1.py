@@ -2873,12 +2873,12 @@ def _mask_more_numbers(text: str) -> str:
     for number in _LOCAL_NUMBER.finditer(text):
         start, end = number.span()
         before = text[max(0, start - 30) : start]
-        if not _is_phone_number(text, number) or (
+        if not _is_phone_number(text, number):
+            continue
+        credit_split = (
             _CREDIT_HEAD.fullmatch(number.group(0)) is not None
             and _CODE_AFTER.match(text, end) is not None
-            and not _CALL_VERB_BEFORE.search(before.rstrip(" \t\u3000:："))
-        ):
-            continue
+        )
         next_char = text[end : end + 1]
         coded = bool(_HAN_AFTER.match(next_char)) and next_char not in _HAN_AFTER_OK
         unit = None if coded else _UNIT_BEFORE_NUMBER.search(before)
@@ -2890,6 +2890,9 @@ def _mask_more_numbers(text: str) -> str:
             # 单位名下一行写的号码：这一行只有号码、而且是 8 位以上才算（"某研究院⏎3000000"不算）
             unit = None
         name = None if coded else _name_before(text, start)
+        verb = _VERB_BEFORE_NUMBER.search(_short(text[max(0, start - 120) : start]))
+        if credit_split and name is None and verb is None:
+            continue
         if name is not None:
             # 号码前面是人名：名字也遮（"某处⏎张某⏎号码"这样分行写的，遮姓名那一步认不出来）
             spans.append((*name, _CONTACT_MARK))
@@ -2897,7 +2900,7 @@ def _mask_more_numbers(text: str) -> str:
             name is not None
             or unit is not None
             or any(a <= start and end <= b for a, b in blocks)
-            or _VERB_BEFORE_NUMBER.search(_short(text[max(0, start - 120) : start]))
+            or verb is not None
         ):
             spans.append((*_with_brackets(text, start, end), PHONE_MARK))
     # ③ 也看遮成标记的号码（电话、QQ 号）：入库时先遮了号码，上面按原始数字认不到，前面的人名

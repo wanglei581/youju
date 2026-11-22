@@ -1459,6 +1459,42 @@ def test_split_credit_code_and_short_email_cell_keep_non_pii() -> None:
             "致电[电话已脱敏] MA0Y5F26",
         ),
         (
+            "电话：张三 91220101 MA0Y5F26",
+            "电话：[姓名已脱敏] [电话已脱敏] MA0Y5F26",
+            f"电话：（这里隐去了联系人） {MARK} MA0Y5F26",
+            "电话：[姓名已脱敏] [电话已脱敏] MA0Y5F26",
+        ),
+        (
+            "联系人：张三 91220101 MA0Y5F26",
+            "联系人：[姓名已脱敏] [电话已脱敏] MA0Y5F26",
+            f"联系人：（这里隐去了联系人） {MARK} MA0Y5F26",
+            "联系人：[姓名已脱敏] [电话已脱敏] MA0Y5F26",
+        ),
+        (
+            "电话：张老师 91220101 MA0Y5F26",
+            "电话：[姓名已脱敏] [电话已脱敏] MA0Y5F26",
+            f"电话：（这里隐去了联系人） {MARK} MA0Y5F26",
+            "电话：[姓名已脱敏] [电话已脱敏] MA0Y5F26",
+        ),
+        (
+            "电话：65432109、91220101 MA0Y5F26",
+            "电话：[电话已脱敏]、[电话已脱敏] MA0Y5F26",
+            f"电话：{MARK}、{MARK} MA0Y5F26",
+            "电话：[电话已脱敏]、[电话已脱敏] MA0Y5F26",
+        ),
+        (
+            "电话：[姓名已脱敏] 91220101 MA0Y5F26",
+            "电话：[姓名已脱敏] [电话已脱敏] MA0Y5F26",
+            f"电话：（这里隐去了联系人） {MARK} MA0Y5F26",
+            "电话：[姓名已脱敏] [电话已脱敏] MA0Y5F26",
+        ),
+        (
+            "请致电办公室 91220101 MA0Y5F26",
+            "请致电办公室 [电话已脱敏] MA0Y5F26",
+            f"请致电办公室 {MARK} MA0Y5F26",
+            "请致电办公室 [电话已脱敏] MA0Y5F26",
+        ),
+        (
             "张三 87654321 ABCD",
             "张三 87654321 ABCD",
             "（这里隐去了联系人） （这里隐去了电话） ABCD",
@@ -1490,6 +1526,7 @@ def test_split_credit_code_and_short_email_cell_keep_non_pii() -> None:
         ),
     ]:
         assert v1.redact_sensitive(raw) == stored
+        assert v1.redact_sensitive(stored) == stored
         assert v1.display_body_text(raw) == shown
         assert v1.display_body_text(stored) == shown
         assert model_text(raw) == modeled

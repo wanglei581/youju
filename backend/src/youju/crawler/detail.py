@@ -148,6 +148,13 @@ _FAR_CUE = re.compile(
     r"|致[^\S\n]*电"
 )
 # 可以隔一个换行（表格里一格一行："[姓名已脱敏]⏎6543…"，同显示层的 _PHONE_TAIL）
+_NEAR_CONTACT_CUE = re.compile(
+    r"(?:\[姓名已脱敏\]|[\u4e00-\u9fff](?:老师|先生|女士|同志))"
+    r"[^\S\n]*+(?:[、，,；;/／：:或和及][^\S\n]*+)?(?:\n[^\S\n]*+)?\Z"
+)
+_NEAR_PHONE_LIST_CUE = re.compile(
+    r"\[(?:新?电话|手机号)已脱敏\][^\S\n]*+[、，,；;/／：:或和及][^\S\n]*+(?:\n[^\S\n]*+)?\Z"
+)
 _NEAR_CUE = re.compile(
     r"(?:\[(?:新?电话|手机号|姓名)已脱敏\]|[\u4e00-\u9fff](?:老师|先生|女士|同志))"
     r"[^\S\n]*+(?:[、，,；;/／：:或和及][^\S\n]*+)?(?:\n[^\S\n]*+)?\Z"
@@ -186,6 +193,7 @@ _LABEL_STOP = re.compile(rf"(?:{_NOT_PHONE_WORDS})[^\S\n]*+[:：]")
 _CUE_REACH = 30
 # 电话类标签紧挨在号码前面，中间只隔空白（"电话：0123-6123…""致电0123-…"）
 _CUE_RIGHT_BEFORE = re.compile(rf"(?:{_FAR_CUE.pattern})[^\S\n]*+\Z")
+_CALL_VERB_NEAR = re.compile(r"(?:致[^\S\n]*电|电[^\S\n]*询|拨[^\S\n]*打)[^。！？!?；;\n]{0,12}\Z")
 # 400/800 热线（"400—2345…""800 2345…"）：单位的服务热线，后半截不当本地号码（同显示层的
 # _HOTLINE_HEAD；独立 Claude 第二轮）
 _HOTLINE_HEAD = re.compile(rf"(?<!\d)[48]00[^\S\n]*[{_DASHES}]?[^\S\n]*\Z")
@@ -660,13 +668,6 @@ def _mask_local_numbers(text: str) -> str:
             or (not match.group("area") and _YMD.fullmatch(match.group("num")))
             or (k >= 0 and kept[k][1] > start)
             or _HOTLINE_HEAD.search(text, max(0, start - 8), start)
-            or (
-                not match.group("area")
-                and match.end("num") == match.end()
-                and _CREDIT_HEAD.fullmatch(match.group("num")) is not None
-                and _CODE_AFTER.match(text, match.end()) is not None
-                and not _CUE_RIGHT_BEFORE.search(text, max(0, start - 16), start)
-            )
         ):
             continue
         found.append(match)
@@ -689,10 +690,14 @@ def _mask_local_numbers(text: str) -> str:
         candidates.append(match)
     labeled = _label_finder(text)
 
-    def listed_after(prev_end: int, start: int) -> bool:
+    def listed_after(prev_end: int, start: int, *, require_sep: bool = False) -> bool:
         """上一个号码（这一次要遮的）和这一个中间只隔分隔符，或者分隔符加一个姓名。"""
         if _NUMBER_GAP.fullmatch(text, prev_end, start):
-            return True
+            if not require_sep:
+                return True
+            gap_text = text[prev_end:start]
+            if any(ch in gap_text for ch in "、，,；;/／或和及"):
+                return True
         gap = _LIST_GAP.fullmatch(text, prev_end, start)
         return gap is not None and _listed_name(gap.group(1))
 
@@ -701,12 +706,35 @@ def _mask_local_numbers(text: str) -> str:
         start = match.start()
         window = max(0, start - _CUE_REACH)
         named = _MARK_NAME_BEFORE.search(text, window, start)
-        masked[i] = (
-            labeled(start)
-            or _NEAR_CUE.search(text, window, start) is not None
-            or (named is not None and _listed_name(named.group(1)))
-            or (i > 0 and masked[i - 1] and listed_after(candidates[i - 1].end(), start))
+        credit_split = (
+            not match.group("area")
+            and match.end("num") == match.end()
+            and _CREDIT_HEAD.fullmatch(match.group("num")) is not None
+            and _CODE_AFTER.match(text, match.end()) is not None
         )
+        if credit_split:
+            # 像被空格拆开的信用代码时，只在有明确直接线索时按电话遮：紧挨电话标签/致电、
+            # 紧挨联系人/带分隔符的已遮电话、同一句有电话标签且紧挨人名，或号码串显式分隔续写
+            masked[i] = (
+                _CUE_RIGHT_BEFORE.search(text, max(0, start - 16), start) is not None
+                or _CALL_VERB_NEAR.search(text, max(0, start - 20), start) is not None
+                or _NEAR_CONTACT_CUE.search(text, window, start) is not None
+                or _NEAR_PHONE_LIST_CUE.search(text, window, start) is not None
+                or (named is not None and _listed_name(named.group(1)))
+                or (
+                    i > 0
+                    and masked[i - 1]
+                    and listed_after(candidates[i - 1].end(), start, require_sep=True)
+                )
+                or (labeled(start) and bool(_page_names_before(text, [start])))
+            )
+        else:
+            masked[i] = (
+                labeled(start)
+                or _NEAR_CUE.search(text, window, start) is not None
+                or (named is not None and _listed_name(named.group(1)))
+                or (i > 0 and masked[i - 1] and listed_after(candidates[i - 1].end(), start))
+            )
     for i in range(len(candidates) - 1, -1, -1):
         if masked[i]:
             continue
