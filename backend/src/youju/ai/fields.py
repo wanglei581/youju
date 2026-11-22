@@ -7,6 +7,7 @@ import re
 from youju.fields import SUPPORT_LABELS, FieldCandidate
 
 from .client import ChatClient
+from .model_text import model_text
 
 _SYSTEM = """你是政府申报通知字段核对助手。只返回 JSON 对象，字段 fields 为数组。
 每项字段 field 为 support 或 audience，value 为固定支持方式标签或申报对象原文摘录，
@@ -28,7 +29,7 @@ def _prepare(text: str) -> str:
 
 
 def extract_fields_with_ai(client: ChatClient, title: str, text: str) -> list[FieldCandidate]:
-    result = client.complete_json(_SYSTEM, f"标题：{title}\n正文：{_prepare(text)}")
+    result = client.complete_json(_SYSTEM, f"标题：{model_text(title)}\n正文：{_prepare(text)}")
     items = result.get("fields", [])
     if not isinstance(items, list):
         return []

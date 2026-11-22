@@ -9,6 +9,7 @@ from datetime import date, time, timedelta
 from youju.extract.deadlines import _DATE, DeadlineCandidate, _evidence
 
 from .client import ChatClient
+from .model_text import model_text
 
 KINDS = ("企业申报截止", "推荐或审核截止", "材料报送截止", "其他")
 CONFIDENCES = ("高", "中", "低")
@@ -97,7 +98,9 @@ def extract_deadlines_with_ai(
     """AI 给出的截止候选，按规则抽取的格式返回；不可信的逐条丢掉。text 是交给模型的文字
     （model_text）；body 是库里存的原文，原句在它里面核对（不给就用 text）：带这次才遮的标记的
     原句对不上原文，不用。"""
-    result = client.complete_json(_SYSTEM, f"标题：{title}\n正文：{_prepare_text(text)}")
+    result = client.complete_json(
+        _SYSTEM, f"标题：{model_text(title)}\n正文：{_prepare_text(text)}"
+    )
     items = result.get("deadlines", [])
     if not isinstance(items, list):
         return []

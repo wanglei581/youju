@@ -42,7 +42,17 @@ from youju.classify import (
     status_filter,
 )
 from youju.conditions import public_conditions
-from youju.crawler.detail import _ROLE_WORDS, _TITLED_HEADS, _name_like, redact_sensitive
+from youju.crawler.detail import (
+    _HOUSEHOLD_ITEM_ENDS,
+    _HOUSEHOLD_NON_NAME_ENDS,
+    _ROLE_WORDS,
+    _SENSITIVE_HOUSEHOLD,
+    _TITLED_HEADS,
+    _household_name_spans,
+    _household_row_targets,
+    _name_like,
+    redact_sensitive,
+)
 from youju.crawler.detail import _TITLES as _DETAIL_TITLES
 from youju.crawler.urls import public_url
 from youju.db import get_session
@@ -2797,6 +2807,16 @@ _ORG_CELL_END = re.compile(
 _NUMERIC_HEAD = re.compile(
     r"金额|经费|资金|元|数|量|额|投资|面积|产值|收入|利润|编号|代码|序号|邮编|日期|时间|年|号"
 )
+# QQ 列排除金额/数量/编号/日期，但保留"QQ号""QQ群号"（不含"|号"）
+_NON_QQ_NUMERIC_HEAD = re.compile(
+    r"金额|经费|资金|元|数|量|额|投资|面积|产值|收入|利润|编号|代码|序号|邮编|日期|时间|年"
+)
+_QQ_HEAD = re.compile(r"(?<![A-Za-z0-9])(?:QQ|qq|Qq|ＱＱ)")
+_BARE_QQ_LABEL = re.compile(
+    r"(?<![A-Za-z0-9])(?:联系|咨询|工作|官方)?(?:QQ|qq|Qq|ＱＱ)(?:群)?(?:号码?)?\s*[:：]?"
+)
+_QQ_NUMBER_CELL = re.compile(r"(?<![0-9A-Za-z])[1-9]\d{4,10}(?![0-9A-Za-z])")
+_EMAIL_AT_AFTER = re.compile(r"[ \u3000]?[@＠]")
 # 一格里只写着电话类标签（"联系方式:""联系电话："），右边那格是号码
 _BARE_PHONE_LABEL = re.compile(
     r"(?:联系|咨询|办公)?(?:电\s*话|手\s*机|联系方式|传\s*真)(?:号码?)?\s*[:：]?"
@@ -2808,6 +2828,29 @@ def _mask_local_numbers(text: str) -> str:
     return _LOCAL_NUMBER.sub(
         lambda m: PHONE_MARK if _is_phone_number(text, m) else m.group(0), text
     )
+
+
+def _mask_qq_numbers(text: str) -> str:
+    """QQ 列格子里 5–11 位非零开头的 QQ 号码换成"（这里隐去了QQ号）"；
+    邮箱、日期、金额、小数、热线、编号不算。"""
+
+    def repl(match: re.Match[str]) -> str:
+        after = text[match.end() : match.end() + 3]
+        if _EMAIL_AT_AFTER.match(after):
+            return match.group(0)
+        if _DATE_DIGITS.fullmatch(match.group(0)):
+            return match.group(0)
+        if _unit_after(text, match.end()):
+            return match.group(0)
+        if after[:1] in ".．" and after[1:2].isdigit():
+            return match.group(0)
+        if _HOTLINE_HEAD.search(text, max(0, match.start() - 8), match.start()):
+            return match.group(0)
+        if _CODE_BEFORE.search(text, max(0, match.start() - 8), match.start()):
+            return match.group(0)
+        return QQ_MARK
+
+    return _QQ_NUMBER_CELL.sub(repl, text)
 
 
 # 正文里还漏着的几种号码写法（11/3：11/2 第 3 轮复测和全库扫描）。只在"电话语境"里认，免得把
@@ -3119,14 +3162,23 @@ def display_text(text: str) -> str:
 # 核对 AI 原句的都不变
 def shown_quote(text: str | None) -> str | None:
     """一句原文片段按显示层给；不是字符串（没有原句）照原样。"""
-    return display_text(text) if isinstance(text, str) else text
+    if not isinstance(text, str):
+        return text
+    cur = text
+    for _ in range(4):
+        src = cur.replace(_CONTACT_MARK, "[姓名已脱敏]")
+        step = display_text(_mask_quote_names(display_text(redact_sensitive(src))))
+        if step == cur:
+            break
+        cur = step
+    return cur
 
 
 def shown_due(data: dict | None) -> dict | None:
     """截止的公开写法（deadline_excerpts.View.public）里的原句按显示层给，返回副本。"""
     if not data or not isinstance(data.get("quote"), str):
         return data
-    return {**data, "quote": display_text(data["quote"])}
+    return {**data, "quote": shown_quote(data["quote"])}
 
 
 def _shown_fields(fields: dict[str, Any]) -> dict[str, Any]:
@@ -3243,7 +3295,10 @@ _EDITOR = re.compile(
 _CONTACT_SPLIT = re.compile(r"[\s；;，,、：:（）()\[\]【】/／]+")
 _HAN_CHAR = f"{chr(0x4E00)}-{chr(0x9FFF)}"
 _UNIT_END_CHARS = "处科室局厅部办站所院会队组股区"
-_UNIT_THEN_NAME = re.compile(rf"[{_UNIT_END_CHARS}]([{_HAN_CHAR}]{{2,3}})$")
+_UNIT_THEN_NAME = re.compile(
+    rf"(?:[{_UNIT_END_CHARS}]|中心|公司|集团|大学|学院|学校|医院|银行|基地|园区|协会|学会)"
+    rf"([{_HAN_CHAR}]{{2,3}})$"
+)
 # 字间带空格的姓名（"联系人：张 三""孟 双、王 璐 联系电话"）：前后不能再接着一个单字（"张 三 李 四"
 # 分不清，不遮）
 _SPACED_NAME = re.compile(
@@ -3321,7 +3376,7 @@ def _masked(token: str, mark: str) -> str | None:
     if len(parts) >= 2 and all(_person(p) for p in parts):
         return re.sub(r"[^和与及]+", mark, token)
     match = _UNIT_THEN_NAME.search(token)
-    if match and _person(match.group(1)):
+    if match and match.group(1) not in _ROLE_WORDS and _person(match.group(1)):
         return token[: match.start(1)] + mark
     return None
 
@@ -3341,18 +3396,133 @@ def _mask_line(line: str, tokens: list[str], mark: str) -> str:
     return line
 
 
+_CROSS_PHONE_LABEL = re.compile(
+    r"^\s*(?:(?:联\s*系\s*)?(?:电\s*话|手\s*机|座\s*机|固\s*话)|传\s*真)(?:号码?)?\s*[:：]"
+)
+_BARE_PHONE_MARK_LINE = re.compile(rf"^\s*{re.escape(PHONE_MARK)}(?:\s|$|[，,、；;])")
+_TAIL_SPACED_NAME = re.compile(rf"(?:^|(?<=[、，, \t\u3000])){_SPACED_NAME.pattern}$")
+_TAIL_HAN_WORD = re.compile(rf"(?<![{_HAN_CHAR}·])([{_HAN_CHAR}·]{{2,15}})$")
+_STANDALONE_HAN_LINE = re.compile(rf"^\s*([{_HAN_CHAR}·]{{2,4}})\s*$")
+_STANDALONE_SPACED_LINE = re.compile(rf"^\s*([{_HAN_CHAR}](?: [{_HAN_CHAR}]){{1,2}})\s*$")
+
+
+def _mask_household_lines(text: str, mark: str = _CONTACT_MARK) -> str:
+    """帮扶/低保户表格与行内姓名按 _household_name_spans 遮蔽。"""
+    spans = sorted(set(_household_name_spans(text)))
+    if not spans:
+        return text
+    out: list[str] = []
+    at = 0
+    for start, end in spans:
+        if start < at:
+            continue
+        out.append(text[at:start])
+        out.append(mark)
+        at = end
+    out.append(text[at:])
+    return "".join(out)
+
+
+def _mask_line_before_phone(line: str, next_line: str) -> str:
+    """下一行以'电话：…'开头并带号码（或单独电话标记）时，遮掉本行末尾的姓名。"""
+    if not next_line:
+        return line
+    if _CROSS_PHONE_LABEL.match(next_line) and _PHONE_ANY.search(next_line):
+        cut = len(line)
+        while cut > 0 and line[cut - 1] in " \t\u3000":
+            cut -= 1
+        if cut > 0 and line[cut - 1] in "，,、；;":
+            cut -= 1
+        spans: list[tuple[int, int, str]] = []
+        pos = cut
+        while pos > 0:
+            while pos > 0 and line[pos - 1] in "、，, \t\u3000":
+                pos -= 1
+            if line.endswith(_CONTACT_MARK, 0, pos):
+                pos -= len(_CONTACT_MARK)
+                continue
+            if line.endswith("[姓名已脱敏]", 0, pos):
+                pos -= len("[姓名已脱敏]")
+                continue
+            win_start = max(0, pos - 64)
+            window = line[win_start:pos]
+            spaced = _TAIL_SPACED_NAME.search(window)
+            if spaced is not None:
+                word = spaced.group(0).replace(" ", "")
+                if (
+                    word not in _ROLE_WORDS
+                    and word not in _NOT_NAME_WORDS
+                    and word not in _ATT_NOT_NAMES
+                    and _person(word)
+                ):
+                    abs_start = win_start + spaced.start()
+                    abs_end = win_start + spaced.end()
+                    spans.append((abs_start, abs_end, _CONTACT_MARK))
+                    pos = abs_start
+                    continue
+            han = _TAIL_HAN_WORD.search(window)
+            if han is None:
+                break
+            tok = han.group(1)
+            if (
+                tok in _ROLE_WORDS
+                or tok in _NOT_NAME_WORDS
+                or not _att_name_token(tok)
+                or (new := _masked(tok, _CONTACT_MARK)) is None
+            ):
+                break
+            abs_start = win_start + han.start(1)
+            abs_end = win_start + han.end(1)
+            spans.append((abs_start, abs_end, new))
+            if new != _CONTACT_MARK:
+                break
+            pos = abs_start
+        if not spans:
+            return line
+        out: list[str] = []
+        at = 0
+        for start, end, mark in reversed(spans):
+            out.append(line[at:start])
+            out.append(mark)
+            at = end
+        out.append(line[at:])
+        return "".join(out)
+    if _BARE_PHONE_MARK_LINE.match(next_line):
+        if m := _STANDALONE_HAN_LINE.match(line):
+            tok = m.group(1)
+            if (
+                tok not in _ROLE_WORDS
+                and tok not in _NOT_NAME_WORDS
+                and _att_name_token(tok)
+                and _person(tok)
+            ):
+                return line[: m.start(1)] + _CONTACT_MARK + line[m.end(1) :]
+        elif m := _STANDALONE_SPACED_LINE.match(line):
+            tok = m.group(1).replace(" ", "")
+            if (
+                tok not in _ROLE_WORDS
+                and tok not in _NOT_NAME_WORDS
+                and _att_name_token(tok)
+                and _person(tok)
+            ):
+                return line[: m.start(1)] + _CONTACT_MARK + line[m.end(1) :]
+    return line
+
+
 def _mask_contact_names(text: str) -> str:
     """给出正文前，联系人所在的行、只写了电话的行、网站编审署名里像姓名的词（常见姓氏开头的
     2–3 个字，和入库脱敏认姓名同一套）再遮一遍。以前入库时只遮了"联系人："后面的第一个词：
     "联系人：（这里隐去了联系人）某某处 张三"的张三、"刘老师，电话……""一审：张三"都还在
     （D-092 让名单类通知的正文也能读，10/25 用本机数据副本实测发现；Grok、agy 审阅补了连写、
     拆行、空格隔开的写法）。"""
+    text = _mask_household_lines(text, _CONTACT_MARK)
+    lines = text.split("\n")
     out = []
     after_label = False
     # 往下接的这一串"姓名 电话"行里有姓名遮成标记的（_MARKED_ROW）：后面的行要本身是"姓名 电话"行、
     # 或者有像姓名的词才遮（见 _MARKED_ROW 上面）
     by_mark = False
-    for line in text.split("\n"):
+    for idx, line in enumerate(lines):
         if not line.strip():
             # 空行不打断"标签写在上一行末尾"：下面第一行有字的照样遮
             out.append(line)
@@ -3364,10 +3534,12 @@ def _mask_contact_names(text: str) -> str:
             or _MARKED_ROW.match(raw) is not None
             or _any_name(raw)
         )
-        contact = (follow and not _FORM_FIELD.search(line)) or (
-            _CONTACT_LABEL.search(line) is not None
-        )
         editor = _EDITOR.search(line) is not None
+        strip_mark = editor or _is_household_line(line)
+        contact = (follow and not _FORM_FIELD.search(line)) or (
+            _CONTACT_LABEL.search(line.replace(_CONTACT_MARK, "") if strip_mark else line)
+            is not None
+        )
         tokens = [w for w in _CONTACT_SPLIT.split(line) if w]
         if contact:
             line = _mask_line(line, tokens, _CONTACT_MARK)
@@ -3383,6 +3555,8 @@ def _mask_contact_names(text: str) -> str:
                 if t.endswith(_TITLE_END) or (label is not None and line.find(t) >= label.end())
             ]
             line = _mask_line(line, near_label, _CONTACT_MARK)
+        if idx + 1 < len(lines):
+            line = _mask_line_before_phone(line, lines[idx + 1])
         # 标签写在行尾的，下一行也遮；下面接着是一行一个"姓名 电话"的，一直遮到不是为止
         label = _LABEL_AT_END.search(line) is not None
         main_row = follow and _CONTACT_ROW.match(raw) is not None
@@ -3402,6 +3576,16 @@ def _mask_contact_names(text: str) -> str:
 #   4. 表格：列名是"联系人""负责人""姓名"这类的格子，和只写着"联系人"那一格的下一格。
 # 正文那套是整行判断（行里有"联系人""联系方式"就把整行像姓名的词都遮）：附件里的表头、长表格行、
 # 长句子这样遮会误遮"万元""申请日""安装""成长期"这类词（本机库全量对比看到的），所以收窄到上面几处
+def _is_household_line(line: str) -> bool:
+    """含低保/帮扶词的行里，已遮联系人标记不当成'联系人：'标签往后续遮同行的项目格。"""
+    return (
+        _SENSITIVE_HOUSEHOLD.search(line) is not None
+        or "帮扶" in line
+        or "结对" in line
+        or "户主" in line
+    )
+
+
 _ATT_LABEL = re.compile(
     rf"(?:联\s*系\s*人|联\s*络\s*人|经\s*办\s*人)(?:及其?(?:电话|手机|职务|联系方式))?\s*[:：]?"
     rf"|联系方式\s*[:：]|{_PHONE_LABEL.pattern}"
@@ -3431,12 +3615,55 @@ def _att_word(match: re.Match[str]) -> tuple[int, int]:
     return match.start(name), match.end(name)
 
 
-_NAME_HEAD = re.compile(r"联\s*系\s*人|联\s*络\s*人|经\s*办\s*人|负\s*责\s*人|姓\s*名|填\s*表\s*人")
+_NAME_HEAD = re.compile(
+    r"联\s*系\s*人|联\s*络\s*人|经\s*办\s*人|负\s*责\s*人|姓\s*名|填\s*表\s*人"
+    r"|帮\s*扶\s*对\s*象|结\s*对\s*对\s*象|帮\s*扶\s*户|结\s*对\s*户|帮\s*扶\s*人"
+    r"|结\s*对\s*干\s*部|帮\s*扶\s*干\s*部|帮\s*扶\s*责\s*任\s*人|户\s*主"
+)
 _BARE_NAME_LABEL = re.compile(
-    r"(?:联\s*系\s*人|联\s*络\s*人|经\s*办\s*人|负\s*责\s*人|姓\s*名)"
+    r"(?:联\s*系\s*人|联\s*络\s*人|经\s*办\s*人|负\s*责\s*人|姓\s*名"
+    r"|帮\s*扶\s*对\s*象|结\s*对\s*对\s*象|帮\s*扶\s*户|结\s*对\s*户|帮\s*扶\s*人"
+    r"|结\s*对\s*干\s*部|帮\s*扶\s*干\s*部|帮\s*扶\s*责\s*任\s*人|户\s*主)"
     r"(?:及其?(?:电话|手机|职务|联系方式))?\s*[:：]?"
 )
+_NON_PERSON_HEAD = re.compile(
+    r"日期|时间|编号|代码|序号|邮编|金额|经费|资金|数量|面积|产值|收入|利润"
+    r"|职务|职称|性别|年龄|学历|民族|籍贯|备注|地址|住址|单位|部门|机构|企业|公司"
+    r"|地区|城市|省份|区县|村名|帮扶村|属性|类别|类型"
+)
 _ONLY_PHONES = re.compile(rf"(?:{_PHONE}|[\s、/，,;；])+")
+_TARGET_CELL_SEP = re.compile(r"[\s、/，,;；]+")
+_CELL_AREA_OR_MOBILE = re.compile(r"0\d{2,3}[-－—–‐−‑]?\d{7,8}(?:(?:[-－]|转)\d{1,6})?|1[3-9]\d{9}")
+_CELL_LOCAL_PHONE = re.compile(r"[2-9]\d{6,7}(?:(?:[-－]|转)\d{1,6})?")
+_CELL_EXT = re.compile(r"(?:(?:[-－]|转)\d{1,6})?")
+
+
+def _is_contact_target_cell(head: str, value: str) -> bool:
+    """相邻格是否全部由电话/QQ/邮箱或对应标记组成（排除编号/日期列里的 7–8 位数字）。"""
+    stripped = value.strip()
+    if not stripped:
+        return False
+    parts = [p for p in _TARGET_CELL_SEP.split(stripped) if p]
+    if not parts:
+        return False
+    for part in parts:
+        if part in (PHONE_MARK, QQ_MARK, EMAIL_MARK):
+            continue
+        if _EMAIL_ANY.fullmatch(part):
+            continue
+        if _CELL_AREA_OR_MOBILE.fullmatch(part):
+            continue
+        if (
+            _CELL_LOCAL_PHONE.fullmatch(part)
+            and not _NUMERIC_HEAD.search(head)
+            and not _DATE_DIGITS.fullmatch(part[:8])
+            and not _CODE_BEFORE.search(head)
+        ):
+            continue
+        return False
+    return True
+
+
 # 附件表格里常见、像姓名（常见姓氏开头的两个字）但不是姓名的词（本机库全量对比看到的）：
 # 金额单位（"总经费（万元）"）、"团队成员"
 _ATT_NOT_NAMES = frozenset(
@@ -3508,6 +3735,18 @@ _ATT_NOT_NAMES = frozenset(
         "预算",
         "定额",
         "基数",
+        "满族",
+        "蒙古族",
+        "低保户",
+        "脱贫户",
+        "贫困户",
+        "监测户",
+        "特困户",
+        "五保户",
+        "帮扶户",
+        "结对户",
+        "困难户",
+        "边缘户",
     }
 )
 # 少见姓的姓名（"丘珞珈""和文丹"，11/2 复测）：只在把握大的位置上不靠姓氏表认——"联系人：""姓名："
@@ -3518,6 +3757,7 @@ _NOT_NAME_WORDS = frozenset(
         "本人",
         "暂无",
         "待定",
+        "见正文",
         "见附件",
         "详见",
         "同上",
@@ -3567,6 +3807,38 @@ _NOT_NAME_WORDS = frozenset(
         "角色",
         "合计",
         "小计",
+        "低保户",
+        "残疾人户",
+        "特困户",
+        "五保户",
+        "建档立卡户",
+        "贫困户",
+        "脱贫户",
+        "监测户",
+        "脱贫不稳定户",
+        "边缘易致贫户",
+        "突发严重困难户",
+        "一般脱贫户",
+        "一般农户",
+        "困难户",
+        "边缘户",
+        "帮扶户",
+        "结对户",
+        "帮扶对象",
+        "结对对象",
+        "帮扶人",
+        "结对干部",
+        "帮扶干部",
+        "帮扶责任人",
+        "户主",
+        "属性",
+        "帮扶村",
+        "汉族",
+        "藏族",
+        "回族",
+        "土族",
+        "满族",
+        "蒙古族",
     }
 )
 _NAME_TAIL_UNITS = tuple(_UNIT_END_CHARS + "心司校县市省位")
@@ -3664,11 +3936,49 @@ def _mask_span(line: str, start: int, end: int, mark: str) -> str:
     return line[:start] + _mask_line(piece, tokens, mark) + line[end:]
 
 
+def _extend_before(line: str, ws: int, spans: list[tuple[int, int, str]]) -> None:
+    """从 ws 往前走过逗号/顿号/空格（以及已遮联系人标记），连遮前面并列的多个姓名。"""
+    pos = ws
+    while pos > 0:
+        sep_pos = pos
+        while sep_pos > 0 and line[sep_pos - 1] in "、，, \t\u3000":
+            sep_pos -= 1
+        if sep_pos == pos:
+            break
+        if line.endswith(_CONTACT_MARK, 0, sep_pos):
+            pos = sep_pos - len(_CONTACT_MARK)
+            continue
+        if line.endswith("[姓名已脱敏]", 0, sep_pos):
+            pos = sep_pos - len("[姓名已脱敏]")
+            continue
+        win_start = max(0, sep_pos - 64)
+        m = re.search(rf"(?<![{_HAN_CHAR}·])(?P<word>{_ATT_WORD})$", line[win_start:sep_pos])
+        if m is None:
+            break
+        tok = m.group("word")
+        if (
+            tok in _ROLE_WORDS
+            or tok in _NOT_NAME_WORDS
+            or not _att_name_token(tok)
+            or (new := _masked(tok, _CONTACT_MARK)) is None
+        ):
+            break
+        abs_start = win_start + m.start("word")
+        abs_end = win_start + m.end("word")
+        spans.append((abs_start, abs_end, _CONTACT_MARK))
+        if new != _CONTACT_MARK:
+            break
+        pos = abs_start
+
+
 def _mask_attachment_line(line: str, after_label: bool) -> str:
     """附件里的一行：按上面 1–3 遮姓名。after_label：上一行以"联系人："这类标签结尾。"""
     line = _mask_sure_names(line)
     spans: list[tuple[int, int, str]] = []
+    hh_line = _is_household_line(line)
     for label in _ATT_LABEL.finditer(line):
+        if hh_line and label.start() >= 6 and line.startswith(_CONTACT_MARK, label.start() - 6):
+            continue
         spans.append((label.end(), _att_window(line, label.end()), _CONTACT_MARK))
     for label in _EDITOR.finditer(line):
         spans.append((label.end(), _att_window(line, label.end()), _EDITOR_MARK))
@@ -3681,13 +3991,17 @@ def _mask_attachment_line(line: str, after_label: bool) -> str:
             continue
         before = _ATT_BEFORE_PHONE.search(line, 0, phone.start())
         if before is not None:
-            spans.append((*_att_word(before), _CONTACT_MARK))
+            ws, we = _att_word(before)
+            spans.append((ws, we, _CONTACT_MARK))
+            _extend_before(line, ws, spans)
     for label in _PHONE_LABEL.finditer(line):
         # 标签前面紧挨着的"联系"是标签的一部分（"联系电话："），不算在词里
         end = label.start() - 2 if line[: label.start()].endswith("联系") else label.start()
         before = _ATT_BEFORE_LABEL.search(line, 0, end)
         if before is not None:
-            spans.append((*_att_word(before), _CONTACT_MARK))
+            ws, we = _att_word(before)
+            spans.append((ws, we, _CONTACT_MARK))
+            _extend_before(line, ws, spans)
     # 从后往前遮，前面的位置不变；重叠的只遮一次
     done = len(line)
     for start, end, mark in sorted(spans, reverse=True):
@@ -3700,15 +4014,49 @@ def _mask_attachment_line(line: str, after_label: bool) -> str:
     return _mask_sure_names(line)
 
 
+def _mask_quote_line(line: str) -> str:
+    """显示原句里只遮紧跟标签/署名的姓名（排除 _ROLE_WORDS），避免整行放宽误遮政策正文。"""
+    line = _mask_sure_names(line)
+    spans: list[tuple[int, int, str]] = []
+    hh_line = _is_household_line(line)
+    for label in _ATT_LABEL.finditer(line):
+        if hh_line and label.start() >= 6 and line.startswith(_CONTACT_MARK, label.start() - 6):
+            continue
+        spans.append((label.end(), _att_window(line, label.end()), _CONTACT_MARK))
+    for label in _EDITOR.finditer(line):
+        spans.append((label.end(), _att_window(line, label.end()), _EDITOR_MARK))
+    done = len(line)
+    for start, end, mark in sorted(spans, reverse=True):
+        end = min(end, done)
+        if start < end:
+            piece = line[start:end]
+            tokens = [
+                w
+                for w in _CONTACT_SPLIT.split(piece)
+                if _att_name_token(w) and w not in _ROLE_WORDS
+            ]
+            line = line[:start] + _mask_line(piece, tokens, mark) + line[end:]
+            done = start
+    return _mask_sure_names(line)
+
+
+def _mask_quote_names(text: str) -> str:
+    return "\n".join(_mask_quote_line(line) for line in text.split("\n"))
+
+
 def _mask_attachment_names(text: str) -> str:
     """附件一段文字里的联系人姓名（按行判断，"联系人："写在行尾时看下一行）。"""
+    text = _mask_household_lines(text, _CONTACT_MARK)
+    lines = text.split("\n")
     out = []
     after_label = False
-    for line in text.split("\n"):
+    for idx, line in enumerate(lines):
         if not line.strip():
             out.append(line)
             continue
         masked = _mask_attachment_line(line, after_label)
+        if idx + 1 < len(lines):
+            masked = _mask_line_before_phone(masked, lines[idx + 1])
         after_label = _LABEL_AT_END.search(line) is not None
         out.append(masked)
     return "\n".join(out)
@@ -3779,28 +4127,79 @@ def display_attachment_text(text: str) -> str:
     return _mask_display_names(text)
 
 
+def _is_household_row_name(
+    value: str, *, allow_unit_end: bool = False, allow_item_end: bool = False
+) -> bool:
+    """帮扶户/低保户表格行里，单个姓名格（含非常见姓氏的 2–4 字少数民族姓名）。"""
+    word = value.strip()
+    if not (
+        bool(re.fullmatch(rf"[{_HAN_CHAR}·]{{2,4}}", word))
+        and word not in _NOT_NAME_WORDS
+        and word not in _ATT_NOT_NAMES
+        and word not in _NOT_NAMES
+        and word not in _ROLE_WORDS
+        and _SENSITIVE_HOUSEHOLD.search(word) is None
+        and not word.endswith((*_HOUSEHOLD_NON_NAME_ENDS, "族", "户", "病", "级", "类", "型"))
+        and (allow_item_end or not word.endswith(_HOUSEHOLD_ITEM_ENDS))
+    ):
+        return False
+    if word.endswith(_NAME_TAIL_UNITS):
+        return allow_unit_end
+    return True
+
+
 def display_attachment_row(cells: list[tuple[str, str]]) -> list[str]:
     """附件表格一行各格的内容（列名、内容都已按入库规则遮过号码）给页面的写法：遮联系人姓名后走
     display_text。列名本身照 display_text 给，由调用方处理。"""
     pairs = [(display_marks(head), _mask_phones(display_marks(value))) for head, value in cells]
-    # 电话列（列名是电话类）的格子，和左边一格只写着"联系方式：""电话"这类标签的格子（两列的
-    # "项目 | 内容"表，11/3 全库扫描），里面像号码的都遮
-    pairs = [
-        (
-            head,
-            _mask_local_numbers(value)
-            if _PHONE_HEAD.search(head)
-            or (i and _BARE_PHONE_LABEL.fullmatch(pairs[i - 1][1].strip()))
-            else value,
-        )
-        for i, (head, value) in enumerate(pairs)
-    ]
+    # 电话列（列名是电话类/联系人列）和 QQ 列的格子，以及左边一格只写着对应标签的格子
+    normalized: list[tuple[str, str]] = []
+    for i, (head, value) in enumerate(pairs):
+        prev = pairs[i - 1][1].strip() if i else ""
+        if (
+            _PHONE_HEAD.search(head)
+            or (_NAME_HEAD.search(head) and not _NUMERIC_HEAD.search(head))
+            or (i and (_BARE_PHONE_LABEL.fullmatch(prev) or _BARE_NAME_LABEL.fullmatch(prev)))
+        ):
+            value = _mask_local_numbers(value)
+        if (_QQ_HEAD.search(head) and not _NON_QQ_NUMERIC_HEAD.search(head)) or (
+            i and _BARE_QQ_LABEL.fullmatch(prev)
+        ):
+            value = _mask_qq_numbers(value)
+        normalized.append((head, value))
+    pairs = normalized
+    row_has_household = any(
+        len(v.strip()) <= 30
+        and not any(p in v for p in "。！？")
+        and _SENSITIVE_HOUSEHOLD.search(v)
+        for _, v in pairs
+    )
+    hh_targets = _household_row_targets([v.strip() for _, v in pairs]) if row_has_household else {}
     out = []
     for i, (head, value) in enumerate(pairs):
         previous = pairs[i - 1][1].strip() if i else ""
         by_head = _NAME_HEAD.search(head)
         named = by_head or (previous and _BARE_NAME_LABEL.fullmatch(previous))
-        if by_head and _sure_name_word(value.strip().replace(" ", "")):
+        explicit_head = bool(by_head or re.search(r"对象|主", head))
+        if (
+            row_has_household
+            and not _NON_PERSON_HEAD.search(head)
+            and _is_household_row_name(
+                value,
+                allow_unit_end=explicit_head or (not head.strip() and i in hh_targets),
+                allow_item_end=explicit_head,
+            )
+            and (
+                explicit_head
+                or (
+                    not head.strip()
+                    and i in hh_targets
+                    and (hh_targets[i] or _person(value.strip()) or len(value.strip()) == 2)
+                )
+            )
+        ):
+            masked = value.replace(value.strip(), _CONTACT_MARK)
+        elif by_head and _sure_name_word(value.strip().replace(" ", "")):
             # 列名是"姓名""联系人"这类、整格就是一个 2–3 字的名字：不看姓氏表也遮
             # （"和文丹"，11/2 复测）。只看列名，不看"上一格写着姓名"：空白表格
             # "姓名 | 性别 | 年龄"里的栏目名不是名字（11/2 独立审阅）
@@ -3818,11 +4217,18 @@ def display_attachment_row(cells: list[tuple[str, str]]) -> list[str]:
             # 避免"电话：（这里隐去了网址）李四a.cn"这类姓名紧贴网址/邮箱时首次漏遮、二次才遮
             clean = _tidy_marks(_hide_urls_keeping_marked_emails(_hide_raw_emails(value)))
             masked = _mask_attachment_names(clean)
-            following = pairs[i + 1][1].strip() if i + 1 < len(pairs) else ""
-            if following and _ONLY_PHONES.fullmatch(following):
-                # 下一格只有号码：这一格整格像姓名就遮（"信推处 | 徐丽萍 | （这里隐去了电话）"）
+            adj = (
+                i + 1 < len(pairs) and _is_contact_target_cell(pairs[i + 1][0], pairs[i + 1][1])
+            ) or (i > 0 and _is_contact_target_cell(pairs[i - 1][0], pairs[i - 1][1]))
+            if adj and not _NON_PERSON_HEAD.search(head):
+                # 相邻格只有电话/QQ/邮箱或对应标记：这一格整格像姓名就遮
                 word = value.strip().replace(" ", "")
-                if word and _att_name_token(word) and _masked(word, _CONTACT_MARK) == _CONTACT_MARK:
+                if (
+                    word
+                    and _att_name_token(word)
+                    and word not in _NOT_NAME_WORDS
+                    and _masked(word, _CONTACT_MARK) == _CONTACT_MARK
+                ):
                     masked = value.replace(value.strip(), _CONTACT_MARK)
         out.append(display_text(masked))
     # 同一行里已经有遮掉的联系人或电话（表头没写"电话"的联系人表，11/3 独立审阅）：

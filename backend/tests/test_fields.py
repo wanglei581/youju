@@ -180,3 +180,21 @@ def test_ai_audience_must_be_bounded_contiguous_original(value, valid):
     assert bool(candidates) is valid
     if valid:
         assert candidates[0].value == value
+
+
+def test_ai_fields_masks_title_before_sending():
+    seen = []
+
+    def complete_json(system, user, **kwargs):
+        seen.append(user)
+        return {"fields": []}
+
+    extract_fields_with_ai(
+        SimpleNamespace(complete_json=complete_json),
+        "申报通知（联系人：张某，65432109，test@example.com）",
+        "申报对象：本省企业。",
+    )
+    assert seen
+    for secret in ("张某", "65432109", "test@example.com"):
+        assert secret not in seen[0]
+    assert "[姓名已脱敏]" in seen[0] and "[电话已脱敏]" in seen[0] and "[邮箱已脱敏]" in seen[0]

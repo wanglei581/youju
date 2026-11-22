@@ -394,7 +394,7 @@ def run_ai_checks(
         failed = 0
         if "kind" in tasks:
             try:
-                kind = classify_with_ai(client, doc.title, sent)
+                kind = classify_with_ai(client, model_text(doc.title), sent)
                 if kind is None:
                     # 类别不在四类之内或字段不对：按出错记，隔 24 小时再试
                     records.append(
@@ -416,7 +416,11 @@ def run_ai_checks(
         if "deadlines" in tasks:
             try:
                 items = extract_deadlines_with_ai(
-                    client, doc.title, sent, detail.publish_date or doc.publish_date, body=body
+                    client,
+                    model_text(doc.title),
+                    sent,
+                    detail.publish_date or doc.publish_date,
+                    body=body,
                 )
                 records.append(
                     ("deadlines", {"result": _serialize(items), "usage": client.last_usage})
@@ -518,7 +522,7 @@ def rerun_old_deadlines(
         try:
             items = extract_deadlines_with_ai(
                 client,
-                doc.title,
+                model_text(doc.title),
                 model_text(body),
                 detail.publish_date or doc.publish_date,
                 body=body,

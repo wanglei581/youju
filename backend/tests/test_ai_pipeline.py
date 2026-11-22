@@ -1044,3 +1044,34 @@ def test_rerun_of_old_deadline_checks_sends_the_masked_body_too(session) -> None
     assert report.documents == 1 and report.body_changed == 0
     assert "65432109" not in sent and "张某" not in sent
     assert _deadline_check(session, doc).result["version"] == RESULT_VERSION
+
+
+def test_pipeline_and_rerun_mask_doc_title_before_sending(session) -> None:
+    from youju.ai.pipeline import rerun_old_deadlines
+
+    title = (
+        "科技项目通知（联系人：张某，13812345678，010-12345678，test@example.com，QQ：123456789）"
+    )
+    doc = add_doc(session, body=OWN)
+    doc.title = title
+    session.commit()
+    client, calls = fake_ai(deadlines=[ai_item("2026-10-15", OWN)])
+    run_ai_checks(session, client)
+    sent = json.dumps(calls, ensure_ascii=False)
+    assert len(calls) == 2
+    for secret in ("张某", "13812345678", "12345678", "test@example.com", "123456789"):
+        assert secret not in sent
+    assert "[姓名已脱敏]" in sent and "[电话已脱敏]" in sent and "[邮箱已脱敏]" in sent
+
+    doc2 = add_doc(session, number=2, body=OWN)
+    doc2.title = title
+    session.commit()
+    _old_check(session, doc2)
+    client2, calls2 = fake_ai(deadlines=[ai_item("2026-10-15", OWN)])
+    rerun_old_deadlines(
+        session, client2, days=90, limit=10, now=datetime(2026, 10, 28, 1, tzinfo=UTC)
+    )
+    sent2 = json.dumps(calls2, ensure_ascii=False)
+    for secret in ("张某", "13812345678", "12345678", "test@example.com", "123456789"):
+        assert secret not in sent2
+    assert "[姓名已脱敏]" in sent2 and "[电话已脱敏]" in sent2

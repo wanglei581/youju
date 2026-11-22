@@ -521,3 +521,16 @@ def test_audit_checks_quotes_against_the_stored_body(session) -> None:
     sent = calls[0]["messages"][1]["content"]
     assert quote in sent and "张某" not in sent and "李某" not in sent
     assert report.flagged == [] and report.unverified == 1
+
+
+def test_audit_masks_doc_title_before_sending(session) -> None:
+    doc = add_doc(session, body=BODY)
+    doc.title = "关于申报项目的通知（联系人：张某，13812345678，test@example.com）"
+    session.commit()
+    approve(session, doc, date(2026, 10, 15))
+    client, calls = fake_ai([])
+    run_audit(session, client, now=datetime.now(UTC))
+    sent = calls[0]["messages"][1]["content"]
+    for secret in ("张某", "13812345678", "test@example.com"):
+        assert secret not in sent
+    assert "[姓名已脱敏]" in sent and "[电话已脱敏]" in sent and "[邮箱已脱敏]" in sent

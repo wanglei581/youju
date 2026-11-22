@@ -4,6 +4,8 @@
 其余单元格脱敏（手机号、身份证、邮箱、银行账号、电话、联系人姓名）后截到 40 字，只发前 10 行。
 """
 
+import re
+
 from youju.ai.model_text import model_text
 from youju.lists.rules import is_person_query, valid_org_name
 
@@ -28,6 +30,27 @@ PERSON_HEADERS = (
     "电子邮件",
     "联系方式",
     "住址",
+    "帮扶对象",
+    "结对对象",
+    "帮扶户",
+    "结对户",
+    "户主",
+    "帮扶人",
+    "结对干部",
+    "帮扶干部",
+    "帮扶责任人",
+    "填表人",
+    "经办人",
+    "联络人",
+    "QQ",
+    "qq",
+    "Qq",
+    "ＱＱ",
+)
+
+_HOUSEHOLD_SUFFIX = re.compile(
+    r"[（(][^（）()]{0,20}(?:低保户|残疾人户|特困户|五保户|建档立卡户|贫困户|脱贫户|监测户"
+    r"|脱贫不稳定户|边缘易致贫户|突发严重困难户)[^（）()]{0,20}[）)]$"
 )
 
 _SYSTEM = """你是政府名单表格分析助手。必须只返回 JSON 对象。
@@ -48,7 +71,9 @@ def _mostly_person_names(rows: list[list[str]], index: int) -> bool:
         for row in rows
         if index < len(row) and row[index] is not None and str(row[index]).strip()
     ][:10]
-    return bool(values) and sum(is_person_query(v) for v in values) * 2 >= len(values)
+    return bool(values) and sum(
+        is_person_query(_HOUSEHOLD_SUFFIX.sub("", v).strip() or v) for v in values
+    ) * 2 >= len(values)
 
 
 def pick_name_column(
