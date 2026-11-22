@@ -193,7 +193,39 @@ _LABEL_STOP = re.compile(rf"(?:{_NOT_PHONE_WORDS})[^\S\n]*+[:：]")
 _CUE_REACH = 30
 # 电话类标签紧挨在号码前面，中间只隔空白（"电话：0123-6123…""致电0123-…"）
 _CUE_RIGHT_BEFORE = re.compile(rf"(?:{_FAR_CUE.pattern})[^\S\n]*+\Z")
+_CALL_VERB_HEAD = re.compile(r"(?:致[^\S\n]*电|电[^\S\n]*询|拨[^\S\n]*打)")
 _CALL_VERB_NEAR = re.compile(r"(?:致[^\S\n]*电|电[^\S\n]*询|拨[^\S\n]*打)[^。！？!?；;\n]{0,12}\Z")
+_CREDIT_LONG_MEASURE = "占位符" + "x" * 18
+_CREDIT_EMAIL_OR_MARK = re.compile(
+    r"\[(?:邮箱|号码邮箱)已脱敏\]|（这里隐去了(?:邮箱|网址)）"
+    r"|\[(?:新?QQ号|手机号)已脱敏\][ \u3000]?[@＠]"
+    r"[A-Za-z0-9-]+(?:[.．—－][A-Za-z0-9-]+)*[.．][A-Za-z]{2,63}(?![A-Za-z0-9-])"
+)
+
+
+def _credit_call_verb_near(text: str, start: int) -> bool:
+    """拆开信用代码前看有没有"致电/电询/拨打"：任何邮箱标记、网址（含已遮标记）统一按 21 字算，
+    与显示层（api/v1.py）共享网址与邮箱替换规则，避免空网址壳或尾随标点导致两端不一致。"""
+    line_start = text.rfind("\n", 0, start) + 1
+    line_before = text[line_start:start]
+    if "致" not in line_before and "电" not in line_before and "拨" not in line_before:
+        return False
+    last = None
+    for match in _CALL_VERB_HEAD.finditer(line_before):
+        last = match
+    if last is None:
+        return False
+    from youju.api import v1
+
+    before = _CREDIT_EMAIL_OR_MARK.sub(_CREDIT_LONG_MEASURE, line_before[last.start() :])
+    before = (
+        v1._hide_urls(v1._hide_emails(before))
+        .replace(v1.URL_MARK, _CREDIT_LONG_MEASURE)
+        .replace(v1.EMAIL_MARK, _CREDIT_LONG_MEASURE)
+    )
+    return _CALL_VERB_NEAR.search(before) is not None
+
+
 # 400/800 热线（"400—2345…""800 2345…"）：单位的服务热线，后半截不当本地号码（同显示层的
 # _HOTLINE_HEAD；独立 Claude 第二轮）
 _HOTLINE_HEAD = re.compile(rf"(?<!\d)[48]00[^\S\n]*[{_DASHES}]?[^\S\n]*\Z")
@@ -717,7 +749,7 @@ def _mask_local_numbers(text: str) -> str:
             # 紧挨联系人/带分隔符的已遮电话、同一句有电话标签且紧挨人名，或号码串显式分隔续写
             masked[i] = (
                 _CUE_RIGHT_BEFORE.search(text, max(0, start - 16), start) is not None
-                or _CALL_VERB_NEAR.search(text, max(0, start - 20), start) is not None
+                or _credit_call_verb_near(text, start)
                 or _NEAR_CONTACT_CUE.search(text, window, start) is not None
                 or _NEAR_PHONE_LIST_CUE.search(text, window, start) is not None
                 or (named is not None and _listed_name(named.group(1)))

@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import bisect
 import logging
 import re
 import time as _time
@@ -2455,6 +2456,47 @@ def _tidy_marks(text: str) -> str:
     return _MARK_RUN.sub(r"\1", text)
 
 
+def _tidy_marks_with_url_weights(text: str, weights: list[int]) -> tuple[str, list[int]]:
+    """按 _tidy_marks 同一顺序整理标记，并同步合并相邻网址标记各自的计数长度。"""
+    if "（这里隐去了" not in text:
+        return text, weights
+    if weights:
+        starts = [m.start() for m in _URL_MARK_RE.finditer(text)]
+        merged_away: set[int] = set()
+        for m in _URL_REMNANT.finditer(text):
+            k = bisect.bisect_left(starts, m.start())
+            if k + 1 < len(weights):
+                weights[k + 1] = min(
+                    weights[k] + (m.end() - m.start() - len(URL_MARK)) + weights[k + 1],
+                    _URL_CELL_CAP,
+                )
+                merged_away.add(k)
+        if merged_away:
+            weights = [w for i, w in enumerate(weights) if i not in merged_away]
+    text = _URL_REMNANT.sub("", text)
+    while True:
+        stripped = _MARK_IN_BRACKETS.sub(lambda m: m.group(1) or m.group(2), text)
+        if stripped == text:
+            break
+        text = stripped
+    if weights:
+        starts = [m.start() for m in _URL_MARK_RE.finditer(text)]
+        new_weights: list[int] = []
+        w_idx = 0
+        for m in _MARK_RUN.finditer(text):
+            if m.group(1) != URL_MARK:
+                continue
+            k = bisect.bisect_left(starts, m.start())
+            new_weights.extend(weights[w_idx:k])
+            count = m.group(0).count(URL_MARK)
+            run_weights = weights[k : k + count]
+            new_weights.append(min(sum(run_weights) + max(0, count - 1), _URL_CELL_CAP))
+            w_idx = k + count
+        new_weights.extend(weights[w_idx:])
+        weights = new_weights
+    return _MARK_RUN.sub(r"\1", text), weights
+
+
 # 正文、附件里政府原文自带的网址（D-112，创始人 11/2 同意）：显示时换成"（这里隐去了网址）"，
 # 和隐去电话一个写法——留着 http/https 网址有被判"引导跳出到浏览器"的风险（10/23 审核退回的原因
 # 之一）。认 http://、https:// 开头的和 www. 开头的（"www"挨着别的字母、数字，或在邮箱里的不算）；
@@ -2462,6 +2504,7 @@ def _tidy_marks(text: str) -> str:
 # 末尾的句点、逗号这类标点不算网址。网址外面只剩一对括号时连括号一起换：
 # "平台（https://x.gov.cn/login）"→"平台（这里隐去了网址）"。邮箱不在这次范围
 URL_MARK = "（这里隐去了网址）"
+_URL_MARK_RE = re.compile(re.escape(URL_MARK))
 # "http："后面的冒号常写成全角（"http：//www.…"），也有整个网址的标点都是全角的
 # （"http：／／www．ccgp．gov．cn"），都认
 _URL = re.compile(
@@ -2520,34 +2563,73 @@ def _hide_urls(text: str) -> str:
     return text
 
 
+def _hide_urls_with_weights(text: str) -> tuple[str, list[int]]:
+    """同 _hide_urls，并记录结果里每个 URL_MARK 对应原片段被 _URL_CELL_CAP 截断后的字数。"""
+    weights = [_URL_CELL_CAP] * text.count(URL_MARK)
+    lowered = text.lower()
+    if "http" in lowered or "www" in lowered:
+        text, weights = _replace_links_counted(text, _URL, weights)
+    if _BARE_HINT.search(text):
+        text, weights = _replace_links_counted(text, _BARE_DOMAIN, weights)
+    return text, weights
+
+
+def _link_span(text: str, match: re.Match[str], done: int) -> tuple[int, int] | None:
+    start = match.start()
+    if start < done:
+        return None
+    whole = text[start : _url_end(text, match.end())]
+    end = start + len(whole.rstrip(_URL_TRAILING))
+    if _URL_EMPTY.fullmatch(text[start:end]):
+        return None
+    left, right = start, end
+    while left > done and text[left - 1] in _URL_SPACES:
+        left -= 1
+    while right < len(text) and text[right] in _URL_SPACES:
+        right += 1
+    if left > done and right < len(text) and text[left - 1] in "（(" and text[right] in "）)":
+        return left - 1, right + 1
+    return start, end
+
+
 def _replace_links(text: str, pattern: re.Pattern[str]) -> str:
     """把 pattern 认出的网址换成"（这里隐去了网址）"；网址外面只剩一对括号时连括号一起换。"""
     out: list[str] = []
     done = 0
     for match in pattern.finditer(text):
-        start = match.start()
-        if start < done:
-            # 已经算在前一个网址断开的后半截里
+        span = _link_span(text, match, done)
+        if span is None:
             continue
-        whole = text[start : _url_end(text, match.end())]
-        end = start + len(whole.rstrip(_URL_TRAILING))
-        if _URL_EMPTY.fullmatch(text[start:end]):
-            # 只有"http://"这样的空壳，后面没有网址
-            continue
-        left, right = start, end
-        while left > done and text[left - 1] in _URL_SPACES:
-            left -= 1
-        while right < len(text) and text[right] in _URL_SPACES:
-            right += 1
-        if left > done and right < len(text) and text[left - 1] in "（(" and text[right] in "）)":
-            out.append(text[done : left - 1])
-            done = right + 1
-        else:
-            out.append(text[done:start])
-            done = end
+        span_start, span_end = span
+        out.append(text[done:span_start])
         out.append(URL_MARK)
+        done = span_end
     out.append(text[done:])
     return "".join(out)
+
+
+def _replace_links_counted(
+    text: str, pattern: re.Pattern[str], weights: list[int]
+) -> tuple[str, list[int]]:
+    out: list[str] = []
+    new_weights: list[int] = []
+    done = 0
+    w_idx = 0
+    for match in pattern.finditer(text):
+        span = _link_span(text, match, done)
+        if span is None:
+            continue
+        span_start, span_end = span
+        kept = text.count(URL_MARK, done, span_start)
+        new_weights.extend(weights[w_idx : w_idx + kept])
+        w_idx += kept
+        out.append(text[done:span_start])
+        out.append(URL_MARK)
+        new_weights.append(min(span_end - span_start, _URL_CELL_CAP))
+        done = span_end
+    new_weights.extend(weights[w_idx:])
+    out.append(text[done:])
+    return "".join(out), new_weights
 
 
 # 邮箱（11/2 F14）：全角"＠"写的（"jxkjjcc＠kjt.jiangxi.gov.cn"，入库规则只认半角"@"，漏了）和
@@ -2564,11 +2646,25 @@ _EMAIL_ANY = re.compile(
 )
 
 
+_RAW_EMAIL_ANY = re.compile(
+    r"(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]{1,64}"
+    r"[ \u3000]?[@＠][ \u3000]?[A-Za-z0-9-]+(?:[.．—－][A-Za-z0-9-]+)*[.．][A-Za-z]{2,63}"
+    r"(?![A-Za-z0-9-])"
+)
+
+
 def _hide_emails(text: str) -> str:
     """把邮箱换成"（这里隐去了邮箱）"。"""
     if "@" not in text and "＠" not in text:
         return text
     return _EMAIL_ANY.sub(EMAIL_MARK, text)
+
+
+def _hide_raw_emails(text: str) -> str:
+    """只把未脱敏的邮箱换成"（这里隐去了邮箱）"，保留"（这里隐去了QQ号）＠..."里的号码标记供认姓名使用。"""
+    if "@" not in text and "＠" not in text:
+        return text
+    return _RAW_EMAIL_ANY.sub(EMAIL_MARK, text)
 
 
 # 电话类标签（电话、手机、传真、技术支持、咨询、联系方式、热线、值班）后面同一句里的本地号码
@@ -2586,14 +2682,13 @@ _LOCAL_NUMBER = re.compile(
 )
 _CONTEXT_STOP = re.compile(r"[。！？!?\n]")
 _CONTEXT_WINDOW = 300
-_PAGE_MARK_ANY = re.compile(r"（这里隐去了[^（）\n]{1,8}）")
+_PAGE_MARK_ANY = re.compile(r"（这里隐去了(?:联系人|署名|电话|QQ号)）")
 
 
 def _short(text: str) -> str:
     """量长短、远近用：遮成的标记（"（这里隐去了联系人）"十个字，比原来的"张三""6543…"长）都按两个字算。
-    页面上看长短的门槛都是"短了、近了才遮"（姓名列的格子、电话标题行、标签后面认姓名的那一段、
-    "致电"和号码中间……）；号码、姓名、QQ 号这次入库先遮成了标记，按标记的字数量，会比主干看到原文
-    时长、少遮（11/19 隐私合规那位、正确性那位第十轮）。"""
+    只缩入库先遮的联系人、署名、电话、QQ 号标记；邮箱、网址原本可以很长，不在这里缩成两个字
+    （11/19 隐私合规那位、正确性那位第十轮；二次脱敏与信用代码复核）。"""
     return _PAGE_MARK_ANY.sub("某某", text)
 
 
@@ -2733,6 +2828,32 @@ _CREDIT_HEAD = re.compile(r"(?:2[19]|3[1-59]|4[19]|5[1-39]|6[19]|7[129]|8[19]|9[
 _CODE_AFTER = re.compile(r"[ \t\u3000]*[A-Z](?=[A-Z0-9]*\d)[A-Z0-9]{7,9}(?![A-Za-z0-9])")
 _UNIT_LINE_END = re.compile(r"(?:[处科室局委办厅站所院组队]|中心|部门|单位|纪委|监委)[ \t\u3000]*$")
 _VERB_BEFORE_NUMBER = re.compile(r"(?:致电|电询|拨打)[^。！？!?\n]{0,20}$")
+_CREDIT_VERB_BEFORE_NUMBER = re.compile(r"(?:致电|电询|拨打)[^。！？!?；;\n]{0,12}\Z")
+_CALL_VERBS = ("致电", "电询", "拨打")
+_LONG_MEASURE = (
+    "占位符" + "x" * 18
+)  # 21 字：已遮的"（这里隐去了网址）"（以及信用代码分支里的邮箱）按超长算
+
+
+def _verb_before_text(text: str) -> str:
+    """量"致电"到普通号码中间有多远：邮箱先并成标记按实长（9 字）算，和入库/二次显示
+    看到的距离一致（既不漏遮"致电（这里隐去了邮箱）      87654321"，也不因长邮箱后漏遮真实电话）；
+    已遮网址标记按 21 字算（原文网址保留实长），联系人等短标记按两字算。"""
+    text = _hide_emails(text).replace(URL_MARK, _LONG_MEASURE)
+    return _short(text)
+
+
+def _credit_verb_before_text(text: str) -> str:
+    """量"致电"到拆开信用代码中间有多远：任何邮箱/网址（含已遮标记）都按 21 字算，避免
+    邮箱或网址遮后拉近距离，把"致电……/邮箱或网址/91220101 MA0Y5F261X"误遮成电话。"""
+    text = (
+        _hide_urls(_hide_emails(text))
+        .replace(URL_MARK, _LONG_MEASURE)
+        .replace(EMAIL_MARK, _LONG_MEASURE)
+    )
+    return _short(text)
+
+
 # 一行一串号码只认 8 位或区号连写的：7 位的一串（"2060501、2060502"）更像科目编码（agy 审阅）
 _ONE_NUMBER = r"(?:0\d{2,3}[2-9]\d{6,7}|[2-9]\d{7}(?:(?:[-－]|转)\d{1,6})?)"
 _NUMBER_LIST_LINE = re.compile(
@@ -2890,7 +3011,21 @@ def _mask_more_numbers(text: str) -> str:
             # 单位名下一行写的号码：这一行只有号码、而且是 8 位以上才算（"某研究院⏎3000000"不算）
             unit = None
         name = None if coded else _name_before(text, start)
-        verb = _VERB_BEFORE_NUMBER.search(_short(text[max(0, start - 120) : start]))
+        search_end = start - 1 if start > 0 and text[start - 1] == "\n" else start
+        line_start = text.rfind("\n", 0, search_end) + 1
+        last_verb = max(text.rfind(v, line_start, start) for v in _CALL_VERBS)
+        if last_verb >= 0:
+            before_slice = text[last_verb:start]
+            before_verb = (
+                _credit_verb_before_text(before_slice)
+                if credit_split
+                else _verb_before_text(before_slice)
+            )
+            verb = (_CREDIT_VERB_BEFORE_NUMBER if credit_split else _VERB_BEFORE_NUMBER).search(
+                before_verb
+            )
+        else:
+            verb = None
         if credit_split and name is None and verb is None:
             continue
         if name is not None:
@@ -3458,12 +3593,25 @@ def _before_contact(match: re.Match[str]) -> str:
 
 # 列名是"联系人""姓名"这类的格子，内容不超过这么多字才整格按姓名遮；长的（一段话）照 1–3 判断
 _NAME_CELL_MAX = 20
+_URL_CELL_CAP = 15
 
 
 def _cell_length(value: str) -> int:
-    """格子按字数量长短：邮箱并成标记以后，每个标记按两个字算（见 _short；11/19 隐私合规那位第九、
-    十轮，正确性那位第十轮）。"""
-    return len(_short(_hide_emails(value)).strip())
+    """格子按字数量长短：与实际显示（display_text）同一顺序做邮箱替换、网址替换和括号/连续标记
+    整理，再统一计长：邮箱按两字算，联系人/电话标记按四字算，网址与已遮网址标记上限按 15 字算，
+    既保证短格照常遮姓名，又让带"（网址：…）"、连续网址或超长网址的格子两次调用结果一致。"""
+    value, weights = _hide_urls_with_weights(_hide_emails(value))
+    value, weights = _tidy_marks_with_url_weights(value, weights)
+    if weights:
+        it = iter(weights)
+        value = _URL_MARK_RE.sub(lambda _: "x" * next(it), value)
+    value = value.replace(EMAIL_MARK, "某某")
+    return len(_PAGE_MARK_ANY.sub("某某某某", value).strip())
+
+
+def _after_label_short(line: str) -> str:
+    """标签下一行量长短：邮箱先并成标记并按两个字算，和二次显示看到的一样；网址不缩。"""
+    return _short(_hide_emails(line)).replace(EMAIL_MARK, "某某")
 
 
 def _att_window(line: str, start: int) -> int:
@@ -3499,7 +3647,7 @@ def _mask_attachment_line(line: str, after_label: bool) -> str:
         spans.append((label.end(), _att_window(line, label.end()), _CONTACT_MARK))
     for label in _EDITOR.finditer(line):
         spans.append((label.end(), _att_window(line, label.end()), _EDITOR_MARK))
-    if after_label and (_PHONE_ANY.search(line) or len(_short(line.strip())) <= 8):
+    if after_label and (_PHONE_ANY.search(line) or len(_after_label_short(line.strip())) <= 8):
         spans.append((0, _att_window(line, 0), _CONTACT_MARK))
     for phone in _PHONE_ANY.finditer(line):
         if phone.group(0) not in _NUMBER_MARKS and not _is_phone_number(line, phone):
@@ -3558,10 +3706,17 @@ def display_attachment_name(name: str) -> str:
     return name[: cut.start()].rstrip(" ;；,，") or name[: cut.start()]
 
 
+def _mask_display_names(text: str) -> str:
+    """显示层补遮号码后、认联系人姓名前，先隐去未脱敏邮箱与网址并整理标记，
+    再补遮漏掉的姓名，避免姓名紧贴网址或邮箱时首次漏遮、二次才遮，同时保留 QQ/电话标记供认姓名。"""
+    clean = _tidy_marks(_hide_urls(_hide_raw_emails(_mask_phones(display_marks(text)))))
+    return display_text(_mask_attachment_names(clean))
+
+
 def display_body_text(text: str) -> str:
     """正文给页面的写法：入库时已经按整行遮过联系人姓名，这里再按上面 1–4 补遮漏掉的
     （"电力处 梁弢；联系电话："，11/2 Codex 审阅），再走 display_text。"""
-    return display_text(_mask_attachment_names(_mask_phones(display_marks(text))))
+    return _mask_display_names(text)
 
 
 # 交给模型的正文（D-114 独立审阅）：协议写“发送前隐去其中的身份证号、手机号、电话、邮箱、
@@ -3592,8 +3747,9 @@ def model_body_text(text: str) -> str:
 
 
 def display_attachment_text(text: str) -> str:
-    """附件一段文字（不是表格的格子）给页面的写法：先补遮号码、再遮姓名，再走 display_text。"""
-    return display_text(_mask_attachment_names(_mask_phones(display_marks(text))))
+    """附件一段文字（不是表格的格子）给页面的写法：先补遮号码、再整理网址邮箱标记并遮姓名，
+    再走 display_text。"""
+    return _mask_display_names(text)
 
 
 def display_attachment_row(cells: list[tuple[str, str]]) -> list[str]:
@@ -3623,10 +3779,16 @@ def display_attachment_row(cells: list[tuple[str, str]]) -> list[str]:
             # "姓名 | 性别 | 年龄"里的栏目名不是名字（11/2 独立审阅）
             masked = value.replace(value.strip(), _CONTACT_MARK)
         elif named and _cell_length(value) <= _NAME_CELL_MAX:
-            # 列名是"联系人""姓名"这类，或者上一格只写着"联系人"：这一格像姓名的都遮
-            masked = _mask_span(value, 0, len(value), _CONTACT_MARK)
+            # 列名是"联系人""姓名"这类，或者上一格只写着"联系人"：这一格像姓名的都遮；
+            # 先按与 _cell_length / display_text 一致的边界隐去邮箱、网址并整理标记，
+            # 避免"张三a.cn"这类姓名紧贴网址时首次漏遮、二次才遮
+            clean = _tidy_marks(_hide_urls(_hide_emails(value)))
+            masked = _mask_span(clean, 0, len(clean), _CONTACT_MARK)
         else:
-            masked = _mask_attachment_names(value)
+            # 长格及非联系人列同样先隐去未脱敏邮箱与网址并整理标记，
+            # 避免"电话：（这里隐去了网址）李四a.cn"这类姓名紧贴网址/邮箱时首次漏遮、二次才遮
+            clean = _tidy_marks(_hide_urls(_hide_raw_emails(value)))
+            masked = _mask_attachment_names(clean)
             following = pairs[i + 1][1].strip() if i + 1 < len(pairs) else ""
             if following and _ONLY_PHONES.fullmatch(following):
                 # 下一格只有号码：这一格整格像姓名就遮（"信推处 | 徐丽萍 | （这里隐去了电话）"）

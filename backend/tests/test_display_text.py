@@ -18,6 +18,7 @@ from youju import attachment_text as texts
 from youju.ai import content, interpret
 from youju.ai.model_text import model_text
 from youju.api import v1
+from youju.crawler import detail as crawler_detail
 from youju.models import AttachmentTextSegment
 
 MARK = "（这里隐去了电话）"
@@ -1534,3 +1535,275 @@ def test_split_credit_code_and_short_email_cell_keep_non_pii() -> None:
     assert v1.display_attachment_row([("联系人", "张三 87654321＠qq.com 20261101")]) == [
         "（这里隐去了联系人） （这里隐去了邮箱） 20261101"
     ]
+
+
+def test_short_marks_keep_display_idempotent_and_preserve_split_credit_codes() -> None:
+    # 复核回归：邮箱/网址不能缩成两字把"致电"与拆开的社会信用代码拉近，也不能让二次显示多遮
+    for raw, code in [
+        ("致电高新处，查询/abc@kjt.gov.cn/91220101 MA0Y5F261X/联系人：暴某", "91220101 MA0Y5F261X"),
+        (
+            "致电https://very-long-government-portal.example.gov.cn/path/to/notice 91220101 MA0Y5F26",
+            "91220101 MA0Y5F26",
+        ),
+    ]:
+        stored = v1.redact_sensitive(raw)
+        assert v1.redact_sensitive(stored) == stored
+        assert code in stored
+        m_raw = model_text(raw)
+        assert m_raw == model_text(m_raw)
+        assert code in m_raw
+        m_stored = model_text(stored)
+        assert m_stored == model_text(m_stored)
+        assert code in m_stored
+        assert code in v1.display_body_text(v1._clean_reading_body(stored))
+        d1 = v1.display_body_text(raw)
+        assert d1 == v1.display_body_text(d1)
+        assert code in d1
+        a1 = v1.display_attachment_text(texts.mask(raw))
+        assert a1 == v1.display_attachment_text(a1)
+        assert code in a1
+        r1 = v1.display_attachment_row([("说明", raw)])
+        assert r1 == v1.display_attachment_row([("说明", r1[0])])
+        assert code in r1[0]
+
+    for short_email_code in [
+        "致电abc@kjt.gov.cn 91220101 MA0Y5F261X",
+        "致电a@b.cn 91220101 MA0Y5F261X",
+        "致电a＠b.cn 91220101 MA0Y5F261X",
+        "致电a.cn 91220101 MA0Y5F261X",
+        "致电a.cn; 91220101 MA0Y5F261X",
+        "致电https://a.cn? 91220101 MA0Y5F261X",
+        "致电（a.cn） 91220101 MA0Y5F261X",
+        "致电http://; 91220101 MA0Y5F261X",
+        "致电www.. 91220101 MA0Y5F261X",
+        "致电very-long-email@department.gov.cn 91220101 MA0Y5F261X",
+        "致电（这里隐去了邮箱） 91220101 MA0Y5F261X",
+        "致电（这里隐去了网址） 91220101 MA0Y5F261X",
+        "请致电李娜\n91220101 MA0Y5F261X",
+    ]:
+        stored_short_code = v1.redact_sensitive(short_email_code)
+        assert v1.redact_sensitive(stored_short_code) == stored_short_code
+        assert "91220101 MA0Y5F261X" in stored_short_code
+        m_sc = model_text(short_email_code)
+        assert m_sc == model_text(m_sc) and "91220101 MA0Y5F261X" in m_sc
+        d_short = v1.display_body_text(short_email_code)
+        assert d_short == v1.display_body_text(d_short)
+        assert "91220101 MA0Y5F261X" in d_short
+        d_stored_short = v1.display_body_text(stored_short_code)
+        assert d_stored_short == v1.display_body_text(d_stored_short)
+        assert "91220101 MA0Y5F261X" in d_stored_short
+
+    # 空网址壳不展开：入库距离判定与展示、模型路径保持一致（注："http:///" 紧挨斜杠受入库 "/" 前置规则跳过，但距离判定本身同样返回 True）
+    slash_shell = "致电http:/// 91220101 MA0Y5F261X"
+    assert crawler_detail._credit_call_verb_near(slash_shell, slash_shell.index("91220101")) is True
+    d_slash_shell = v1.display_body_text(slash_shell)
+    assert d_slash_shell == v1.display_body_text(d_slash_shell) and MARK in d_slash_shell
+    assert v1.display_body_text(v1.redact_sensitive(slash_shell)) == d_slash_shell
+
+    for empty_shell in [
+        "致电http://, 91220101 MA0Y5F261X",
+        "致电http:///: 91220101 MA0Y5F261X",
+        "致电www. 91220101 MA0Y5F261X",
+    ]:
+        stored_shell = v1.redact_sensitive(empty_shell)
+        assert v1.redact_sensitive(stored_shell) == stored_shell
+        assert "[电话已脱敏]" in stored_shell
+        m_shell = model_text(empty_shell)
+        assert m_shell == model_text(m_shell) and "[电话已脱敏]" in m_shell
+        d_shell = v1.display_body_text(empty_shell)
+        assert d_shell == v1.display_body_text(d_shell) and MARK in d_shell
+        ds_shell = v1.display_body_text(stored_shell)
+        assert ds_shell == v1.display_body_text(ds_shell) and ds_shell == d_shell
+
+    # 短网址、短邮箱、超长邮箱与已有邮箱标记附近的真实电话不能漏遮；超长网址后的非电话数字二次显示不缩进 20 字内
+    for raw in [
+        "致电a.cn 87654321",
+        "致电https://b.cn 87654321",
+        "致电a@b.cn 87654321",
+        "致电a@b.cn      87654321",
+        "致电（这里隐去了邮箱）      87654321",
+        "致电very-long-email@department.gov.cn 87654321",
+        "致电" + "a" * 60 + "@" + "b" * 100 + ".com 87654321",
+    ]:
+        stored = v1.redact_sensitive(raw)
+        assert v1.redact_sensitive(stored) == stored
+        m1 = model_text(raw)
+        assert m1 == model_text(m1) and "[电话已脱敏]" in m1
+        d1 = v1.display_body_text(raw)
+        assert d1 == v1.display_body_text(d1) and MARK in d1
+        ds = v1.display_body_text(stored)
+        assert ds == v1.display_body_text(ds) and MARK in ds
+        a1 = v1.display_attachment_text(raw)
+        assert a1 == v1.display_attachment_text(a1) and MARK in a1
+        r1 = v1.display_attachment_row([("说明", raw)])
+        assert r1 == v1.display_attachment_row([("说明", r1[0])]) and MARK in r1[0]
+
+    # 入库已先遮邮箱后的路径也同样不漏遮真实电话
+    ds_marked = v1.display_body_text(v1.redact_sensitive("致电[邮箱已脱敏]      87654321"))
+    assert ds_marked == f"致电（这里隐去了邮箱）      {MARK}"
+    assert v1.display_body_text(ds_marked) == ds_marked
+
+    # 致电紧接着单次换行写本地号码（"请致电李娜\n87654321"）照常遮蔽且不跨空行
+    for nl_call in ("请致电李娜\n87654321", "请致电张老师\n87654321"):
+        nl_d = v1.display_body_text(nl_call)
+        assert nl_d == nl_call.replace("87654321", MARK)
+        assert v1.display_body_text(nl_d) == nl_d
+        nl_a = v1.display_attachment_text(nl_call)
+        assert nl_a == nl_d
+        assert v1.display_attachment_text(nl_a) == nl_a
+        nl_m = model_text(nl_call)
+        assert nl_m == "请致电[姓名已脱敏]\n[电话已脱敏]"
+        assert model_text(nl_m) == nl_m
+        assert v1.shown_quote(nl_call) == nl_d
+    assert v1.display_body_text("请致电李娜\n\n87654321") == "请致电李娜\n\n87654321"
+
+    # 超长网址后的非电话数字（一次未遮、二次保持不遮）；拆开信用代码隔着短/长网址或已遮标记也保留
+    d_long_url = v1.display_body_text(
+        "致电https://very-long-government-portal.example.gov.cn/path/to/notice 87654321"
+    )
+    assert d_long_url == "致电（这里隐去了网址） 87654321"
+    assert v1.display_body_text(d_long_url) == d_long_url
+
+    for code_raw in [
+        "致电a.cn 91220101 MA0Y5F261X",
+        "致电（这里隐去了邮箱） 91220101 MA0Y5F261X",
+        "致电（这里隐去了网址） 91220101 MA0Y5F261X",
+        "请致电李娜\n91220101 MA0Y5F261X",
+    ]:
+        dc = v1.display_body_text(code_raw)
+        assert "91220101 MA0Y5F261X" in dc
+        assert v1.display_body_text(dc) == dc
+
+    # 原文短距离内的邮箱+电话也遮且两次一致
+    d_mail_phone = v1.display_body_text("电询王五65432108@qq.com，65432109")
+    assert d_mail_phone == f"电询王五（这里隐去了邮箱），{MARK}"
+    assert v1.display_body_text(d_mail_phone) == d_mail_phone
+
+    # "联系人："下一行带邮箱或长网址时，两次显示结果一致
+    for raw in [
+        "联系人：\n张三 邮箱：abc@163.com\n李四 87654322",
+        "联系人：\n张三 网址：https://very-long-government-portal.example.gov.cn/path\n李四 87654322",
+    ]:
+        b1 = v1.display_body_text(raw)
+        assert b1 == v1.display_body_text(b1)
+        a1 = v1.display_attachment_text(raw)
+        assert a1 == v1.display_attachment_text(a1)
+        r1 = v1.display_attachment_row([("说明", raw)])
+        assert r1 == v1.display_attachment_row([("说明", r1[0])])
+
+    # 联系人列短格（含已有网址标记、紧贴/带空格短网址、连续网址合并、紧贴邮箱、带"（网址：…）"括号或单纯姓名+长网址）照常首次即遮姓名；带前缀的长格二次不缩进 20 字内
+    for short_val, expected_row in [
+        ("张三a.cn", ["（这里隐去了联系人）（这里隐去了网址）"]),
+        ("张三https://a.cn", ["（这里隐去了联系人）（这里隐去了网址）"]),
+        ("张三www.a.cn", ["（这里隐去了联系人）（这里隐去了网址）"]),
+        ("张三a@b.cn", ["（这里隐去了联系人）（这里隐去了邮箱）"]),
+        ("张三 a.cn", ["（这里隐去了联系人） （这里隐去了网址）"]),
+        ("张三 （这里隐去了网址）", ["（这里隐去了联系人） （这里隐去了网址）"]),
+        ("张三（这里隐去了网址）", ["（这里隐去了联系人）（这里隐去了网址）"]),
+        (
+            "张三 https://very-long-government-portal.example.gov.cn/path",
+            ["（这里隐去了联系人） （这里隐去了网址）"],
+        ),
+        ("张三（网址：https://abc.example.com）", ["（这里隐去了联系人）（这里隐去了网址）"]),
+        (
+            "张三（https://a.cn）（https://b.cn）（https://c.cn）",
+            ["（这里隐去了联系人）（这里隐去了网址）"],
+        ),
+        (
+            "张三：https://a.example.com、https://b.example.com、https://c.example.com",
+            ["（这里隐去了联系人）：（这里隐去了网址）"],
+        ),
+        ("高新处：张三a.cn", ["高新处：（这里隐去了联系人）（这里隐去了网址）"]),
+        ("高新处高新处张三a.cn", ["高新处高新处（这里隐去了联系人）（这里隐去了网址）"]),
+    ]:
+        short_url_cell = v1.display_attachment_row([("联系人", short_val)])
+        assert short_url_cell == expected_row
+        assert v1.display_attachment_row([("联系人", short_url_cell[0])]) == short_url_cell
+
+    # 超阈值长格以及正文、附件文本路径中，姓名紧贴网址/邮箱时首次即遮且二次严格相等；普通正文不被误遮
+    for long_attached_val, expected_attached_text in [
+        (
+            "电话：（这里隐去了网址）李四a.cn",
+            "电话：（这里隐去了网址）（这里隐去了联系人）（这里隐去了网址）",
+        ),
+        (
+            "电话：（这里隐去了网址）李四a@b.cn",
+            "电话：（这里隐去了网址）（这里隐去了联系人）（这里隐去了邮箱）",
+        ),
+        (
+            "电话：张三a.cn，李四（https://b.cn）",
+            "电话：（这里隐去了联系人）（这里隐去了网址），（这里隐去了联系人）（这里隐去了网址）",
+        ),
+        (
+            "电话：张三（https://a.cn）（https://b.cn）（https://c.cn）李四",
+            "电话：（这里隐去了联系人）（这里隐去了网址）（这里隐去了联系人）",
+        ),
+        (
+            "电话：高新处高新处测试普通正文a.cn",
+            "电话：高新处高新处测试普通正文（这里隐去了网址）",
+        ),
+    ]:
+        long_attached_cell = v1.display_attachment_row([("联系人", long_attached_val)])
+        assert long_attached_cell == [expected_attached_text]
+        assert v1.display_attachment_row([("联系人", long_attached_cell[0])]) == long_attached_cell
+
+        body_attached = v1.display_body_text(long_attached_val)
+        assert body_attached == expected_attached_text
+        assert v1.display_body_text(body_attached) == body_attached
+
+        att_attached = v1.display_attachment_text(long_attached_val)
+        assert att_attached == expected_attached_text
+        assert v1.display_attachment_text(att_attached) == att_attached
+
+    # 数字局部已转成电话/QQ标记的邮箱，在遮姓名阶段仍保留标记供前邻姓名识别，最终再统一显示为邮箱标记
+    for mark_mail_raw in [
+        "张伟主任 [QQ号已脱敏]＠qq.com",
+        v1.redact_sensitive("张伟主任 87654321＠qq.com"),
+        v1.redact_sensitive("张伟主任 87654321 @qq.com"),
+    ]:
+        expected_mark_mail = "（这里隐去了联系人） （这里隐去了邮箱）"
+        assert v1.display_body_text(mark_mail_raw) == expected_mark_mail
+        assert v1.display_body_text(expected_mark_mail) == expected_mark_mail
+        assert v1.display_attachment_row([("说明", mark_mail_raw)]) == [expected_mark_mail]
+        assert v1.display_attachment_row([("说明", expected_mark_mail)]) == [expected_mark_mail]
+    for att_mail_raw in [
+        texts.mask("张伟主任 87654321＠qq.com"),
+        texts.mask("张伟主任 87654321 @qq.com"),
+    ]:
+        expected_mark_mail = "（这里隐去了联系人） （这里隐去了邮箱）"
+        assert v1.display_attachment_text(att_mail_raw) == expected_mark_mail
+        assert v1.display_attachment_text(expected_mark_mail) == expected_mark_mail
+
+    # 普通正文里非联系人标签上下文（无联系人/电话标签、无号码）紧贴网址的普通词不被误遮
+    for prose_raw, prose_expected in [
+        ("高新处测试普通正文a.cn", "高新处测试普通正文（这里隐去了网址）"),
+        ("请登录http://a.cn查看张贴通知", "请登录（这里隐去了网址）查看张贴通知"),
+    ]:
+        assert v1.display_body_text(prose_raw) == prose_expected
+        assert v1.display_body_text(prose_expected) == prose_expected
+        assert v1.display_attachment_text(prose_raw) == prose_expected
+        assert v1.display_attachment_text(prose_expected) == prose_expected
+
+    short_prefixed_url_cell = v1.display_attachment_row([("联系人", "高新处：张三\n详见a.cn")])
+    assert short_prefixed_url_cell == ["高新处：（这里隐去了联系人）\n详见（这里隐去了网址）"]
+    assert (
+        v1.display_attachment_row([("联系人", short_prefixed_url_cell[0])])
+        == short_prefixed_url_cell
+    )
+
+    row_cell = "联系方式：\n高新处、李四/联系人：欧阳娜娜"
+    r1 = v1.display_attachment_row([("联系人", row_cell)])
+    assert r1 == ["联系方式：\n高新处、李四/联系人：（这里隐去了联系人）"]
+    assert v1.display_attachment_row([("联系人", r1[0])]) == r1
+    for long_cell in [
+        "高新处：张三\n详见https://a.cn/1234",
+        "高新处：张三\n详见https://very-long-government-portal.example.gov.cn/path",
+        "高新处：张三\n（网址：https://abc.example.com）",
+        "高新处：张三\n详见https://a.example.com、https://b.example.com、https://c.example.com",
+    ]:
+        u1 = v1.display_attachment_row([("联系人", long_cell)])
+        assert u1 in (
+            ["高新处：张三\n详见（这里隐去了网址）"],
+            ["高新处：张三\n（这里隐去了网址）"],
+        )
+        assert v1.display_attachment_row([("联系人", u1[0])]) == u1
