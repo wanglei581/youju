@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import bisect
 import logging
 import re
 import time as _time
@@ -2455,6 +2456,47 @@ def _tidy_marks(text: str) -> str:
     return _MARK_RUN.sub(r"\1", text)
 
 
+def _tidy_marks_with_url_weights(text: str, weights: list[int]) -> tuple[str, list[int]]:
+    """按 _tidy_marks 同一顺序整理标记，并同步合并相邻网址标记各自的计数长度。"""
+    if "（这里隐去了" not in text:
+        return text, weights
+    if weights:
+        starts = [m.start() for m in _URL_MARK_RE.finditer(text)]
+        merged_away: set[int] = set()
+        for m in _URL_REMNANT.finditer(text):
+            k = bisect.bisect_left(starts, m.start())
+            if k + 1 < len(weights):
+                weights[k + 1] = min(
+                    weights[k] + (m.end() - m.start() - len(URL_MARK)) + weights[k + 1],
+                    _URL_CELL_CAP,
+                )
+                merged_away.add(k)
+        if merged_away:
+            weights = [w for i, w in enumerate(weights) if i not in merged_away]
+    text = _URL_REMNANT.sub("", text)
+    while True:
+        stripped = _MARK_IN_BRACKETS.sub(lambda m: m.group(1) or m.group(2), text)
+        if stripped == text:
+            break
+        text = stripped
+    if weights:
+        starts = [m.start() for m in _URL_MARK_RE.finditer(text)]
+        new_weights: list[int] = []
+        w_idx = 0
+        for m in _MARK_RUN.finditer(text):
+            if m.group(1) != URL_MARK:
+                continue
+            k = bisect.bisect_left(starts, m.start())
+            new_weights.extend(weights[w_idx:k])
+            count = m.group(0).count(URL_MARK)
+            run_weights = weights[k : k + count]
+            new_weights.append(min(sum(run_weights) + max(0, count - 1), _URL_CELL_CAP))
+            w_idx = k + count
+        new_weights.extend(weights[w_idx:])
+        weights = new_weights
+    return _MARK_RUN.sub(r"\1", text), weights
+
+
 # 正文、附件里政府原文自带的网址（D-112，创始人 11/2 同意）：显示时换成"（这里隐去了网址）"，
 # 和隐去电话一个写法——留着 http/https 网址有被判"引导跳出到浏览器"的风险（10/23 审核退回的原因
 # 之一）。认 http://、https:// 开头的和 www. 开头的（"www"挨着别的字母、数字，或在邮箱里的不算）；
@@ -2462,6 +2504,7 @@ def _tidy_marks(text: str) -> str:
 # 末尾的句点、逗号这类标点不算网址。网址外面只剩一对括号时连括号一起换：
 # "平台（https://x.gov.cn/login）"→"平台（这里隐去了网址）"。邮箱不在这次范围
 URL_MARK = "（这里隐去了网址）"
+_URL_MARK_RE = re.compile(re.escape(URL_MARK))
 # "http："后面的冒号常写成全角（"http：//www.…"），也有整个网址的标点都是全角的
 # （"http：／／www．ccgp．gov．cn"），都认
 _URL = re.compile(
@@ -2520,37 +2563,73 @@ def _hide_urls(text: str) -> str:
     return text
 
 
-def _replace_links(text: str, pattern: re.Pattern[str], *, cap: int | None = None) -> str:
-    """把 pattern 认出的网址换成"（这里隐去了网址）"；网址外面只剩一对括号时连括号一起换。
-    传入 cap 时只按上限截断字数占位，供表格格长计数用。"""
+def _hide_urls_with_weights(text: str) -> tuple[str, list[int]]:
+    """同 _hide_urls，并记录结果里每个 URL_MARK 对应原片段被 _URL_CELL_CAP 截断后的字数。"""
+    weights = [_URL_CELL_CAP] * text.count(URL_MARK)
+    lowered = text.lower()
+    if "http" in lowered or "www" in lowered:
+        text, weights = _replace_links_counted(text, _URL, weights)
+    if _BARE_HINT.search(text):
+        text, weights = _replace_links_counted(text, _BARE_DOMAIN, weights)
+    return text, weights
+
+
+def _link_span(text: str, match: re.Match[str], done: int) -> tuple[int, int] | None:
+    start = match.start()
+    if start < done:
+        return None
+    whole = text[start : _url_end(text, match.end())]
+    end = start + len(whole.rstrip(_URL_TRAILING))
+    if _URL_EMPTY.fullmatch(text[start:end]):
+        return None
+    left, right = start, end
+    while left > done and text[left - 1] in _URL_SPACES:
+        left -= 1
+    while right < len(text) and text[right] in _URL_SPACES:
+        right += 1
+    if left > done and right < len(text) and text[left - 1] in "（(" and text[right] in "）)":
+        return left - 1, right + 1
+    return start, end
+
+
+def _replace_links(text: str, pattern: re.Pattern[str]) -> str:
+    """把 pattern 认出的网址换成"（这里隐去了网址）"；网址外面只剩一对括号时连括号一起换。"""
     out: list[str] = []
     done = 0
     for match in pattern.finditer(text):
-        start = match.start()
-        if start < done:
-            # 已经算在前一个网址断开的后半截里
+        span = _link_span(text, match, done)
+        if span is None:
             continue
-        whole = text[start : _url_end(text, match.end())]
-        end = start + len(whole.rstrip(_URL_TRAILING))
-        if _URL_EMPTY.fullmatch(text[start:end]):
-            # 只有"http://"这样的空壳，后面没有网址
-            continue
-        left, right = start, end
-        while left > done and text[left - 1] in _URL_SPACES:
-            left -= 1
-        while right < len(text) and text[right] in _URL_SPACES:
-            right += 1
-        if left > done and right < len(text) and text[left - 1] in "（(" and text[right] in "）)":
-            span_start = left - 1
-            out.append(text[done:span_start])
-            done = right + 1
-        else:
-            span_start = start
-            out.append(text[done:start])
-            done = end
-        out.append(URL_MARK if cap is None else "x" * min(done - span_start, cap))
+        span_start, span_end = span
+        out.append(text[done:span_start])
+        out.append(URL_MARK)
+        done = span_end
     out.append(text[done:])
     return "".join(out)
+
+
+def _replace_links_counted(
+    text: str, pattern: re.Pattern[str], weights: list[int]
+) -> tuple[str, list[int]]:
+    out: list[str] = []
+    new_weights: list[int] = []
+    done = 0
+    w_idx = 0
+    for match in pattern.finditer(text):
+        span = _link_span(text, match, done)
+        if span is None:
+            continue
+        span_start, span_end = span
+        kept = text.count(URL_MARK, done, span_start)
+        new_weights.extend(weights[w_idx : w_idx + kept])
+        w_idx += kept
+        out.append(text[done:span_start])
+        out.append(URL_MARK)
+        new_weights.append(min(span_end - span_start, _URL_CELL_CAP))
+        done = span_end
+    new_weights.extend(weights[w_idx:])
+    out.append(text[done:])
+    return "".join(out), new_weights
 
 
 # 邮箱（11/2 F14）：全角"＠"写的（"jxkjjcc＠kjt.jiangxi.gov.cn"，入库规则只认半角"@"，漏了）和
@@ -2735,7 +2814,8 @@ _CREDIT_HEAD = re.compile(r"(?:2[19]|3[1-59]|4[19]|5[1-39]|6[19]|7[129]|8[19]|9[
 _CODE_AFTER = re.compile(r"[ \t\u3000]*[A-Z](?=[A-Z0-9]*\d)[A-Z0-9]{7,9}(?![A-Za-z0-9])")
 _UNIT_LINE_END = re.compile(r"(?:[处科室局委办厅站所院组队]|中心|部门|单位|纪委|监委)[ \t\u3000]*$")
 _VERB_BEFORE_NUMBER = re.compile(r"(?:致电|电询|拨打)[^。！？!?\n]{0,20}$")
-_CREDIT_VERB_BEFORE_NUMBER = re.compile(r"(?:致电|电询|拨打)[^。！？!?\n]{0,12}$")
+_CREDIT_VERB_BEFORE_NUMBER = re.compile(r"(?:致电|电询|拨打)[^。！？!?；;\n]{0,12}\Z")
+_CALL_VERBS = ("致电", "电询", "拨打")
 _LONG_MEASURE = (
     "占位符" + "x" * 18
 )  # 21 字：已遮的"（这里隐去了网址）"（以及信用代码分支里的邮箱）按超长算
@@ -2917,15 +2997,21 @@ def _mask_more_numbers(text: str) -> str:
             # 单位名下一行写的号码：这一行只有号码、而且是 8 位以上才算（"某研究院⏎3000000"不算）
             unit = None
         name = None if coded else _name_before(text, start)
-        before_slice = text[max(0, start - 120) : start]
-        before_verb = (
-            _credit_verb_before_text(before_slice)
-            if credit_split
-            else _verb_before_text(before_slice)
-        )
-        verb = (_CREDIT_VERB_BEFORE_NUMBER if credit_split else _VERB_BEFORE_NUMBER).search(
-            before_verb
-        )
+        search_end = start - 1 if start > 0 and text[start - 1] == "\n" else start
+        line_start = text.rfind("\n", 0, search_end) + 1
+        last_verb = max(text.rfind(v, line_start, start) for v in _CALL_VERBS)
+        if last_verb >= 0:
+            before_slice = text[last_verb:start]
+            before_verb = (
+                _credit_verb_before_text(before_slice)
+                if credit_split
+                else _verb_before_text(before_slice)
+            )
+            verb = (_CREDIT_VERB_BEFORE_NUMBER if credit_split else _VERB_BEFORE_NUMBER).search(
+                before_verb
+            )
+        else:
+            verb = None
         if credit_split and name is None and verb is None:
             continue
         if name is not None:
@@ -3496,21 +3582,16 @@ _NAME_CELL_MAX = 20
 _URL_CELL_CAP = 15
 
 
-def _hide_urls_for_cell(text: str) -> str:
-    lowered = text.lower()
-    if "http" in lowered or "www" in lowered:
-        text = _replace_links(text, _URL, cap=_URL_CELL_CAP)
-    if _BARE_HINT.search(text):
-        text = _replace_links(text, _BARE_DOMAIN, cap=_URL_CELL_CAP)
-    return text
-
-
 def _cell_length(value: str) -> int:
-    """格子按字数量长短：邮箱并成标记按两个字算，联系人/电话标记按四个字算（避免四字姓名遮后
-    把 >20 字的长格缩进 20 字内）；网址与已遮网址标记上限按 15 字算，既保证"张三 （这里隐去了网址）"
-    这类短格照常遮姓名，又让长格一次/二次调用在 20 字门槛前后保持一致。"""
-    value = _hide_urls_for_cell(_tidy_marks(_hide_emails(value)))
-    value = value.replace(URL_MARK, "x" * _URL_CELL_CAP).replace(EMAIL_MARK, "某某")
+    """格子按字数量长短：与实际显示（display_text）同一顺序做邮箱替换、网址替换和括号/连续标记
+    整理，再统一计长：邮箱按两字算，联系人/电话标记按四字算，网址与已遮网址标记上限按 15 字算，
+    既保证短格照常遮姓名，又让带"（网址：…）"、连续网址或超长网址的格子两次调用结果一致。"""
+    value, weights = _hide_urls_with_weights(_hide_emails(value))
+    value, weights = _tidy_marks_with_url_weights(value, weights)
+    if weights:
+        it = iter(weights)
+        value = _URL_MARK_RE.sub(lambda _: "x" * next(it), value)
+    value = value.replace(EMAIL_MARK, "某某")
     return len(_PAGE_MARK_ANY.sub("某某某某", value).strip())
 
 
