@@ -1416,3 +1416,18 @@ def test_marked_row_does_not_backtrack_on_long_whitespace() -> None:
         assert pattern.match(long_line) is None
         t_long = time.perf_counter() - t1
         assert t_long < 0.5 and t_long <= max(t_short * 25, 0.05)
+
+
+def test_split_credit_code_and_short_email_cell_keep_non_pii() -> None:
+    # Grok 终审：空格拆开的统一社会信用代码前 8 位不当本地电话；短姓名格里的日期仍保留
+    assert (
+        v1.redact_sensitive("电话：0123-87654321；企业 91220101 MA0Y5F26")
+        == "电话：[电话已脱敏]；企业 91220101 MA0Y5F26"
+    )
+    assert (
+        v1.redact_sensitive("联系方式：0123-87654321 91220101 MA0Y5F26")
+        == "联系方式：[电话已脱敏] 91220101 MA0Y5F26"
+    )
+    assert v1.display_attachment_row([("联系人", "张三 87654321＠qq.com 20261101")]) == [
+        "（这里隐去了联系人） （这里隐去了邮箱） 20261101"
+    ]

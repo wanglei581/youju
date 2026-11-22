@@ -189,6 +189,9 @@ _CUE_RIGHT_BEFORE = re.compile(rf"(?:{_FAR_CUE.pattern})[^\S\n]*+\Z")
 # 400/800 热线（"400—2345…""800 2345…"）：单位的服务热线，后半截不当本地号码（同显示层的
 # _HOTLINE_HEAD；独立 Claude 第二轮）
 _HOTLINE_HEAD = re.compile(rf"(?<!\d)[48]00[^\S\n]*[{_DASHES}]?[^\S\n]*\Z")
+# 号码后面隔空白紧跟大写字母加数字的编码（"91220101 MA0Y5F26"：统一社会信用代码被空格拆开）
+# 不是电话（与显示层 v1._CODE_AFTER 对齐）
+_CODE_AFTER = re.compile(r"[^\S\n]*[A-Z][A-Z0-9]{3,}")
 # "/"前面是这些标记的，"/"后面的号码才认（"[电话已脱敏]/6543…""联系人：[姓名已脱敏]/6543…"）
 _SLASH_MARKS = ("[电话已脱敏]", "[新电话已脱敏]", "[手机号已脱敏]", "[姓名已脱敏]")
 _SENTENCE_END = re.compile(r"[。！？!?]")
@@ -655,6 +658,7 @@ def _mask_local_numbers(text: str) -> str:
             or (not match.group("area") and _YMD.fullmatch(match.group("num")))
             or (k >= 0 and kept[k][1] > start)
             or _HOTLINE_HEAD.search(text, max(0, start - 8), start)
+            or _CODE_AFTER.match(text, match.end()) is not None
         ):
             continue
         found.append(match)
