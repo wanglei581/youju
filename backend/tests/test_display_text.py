@@ -1419,7 +1419,16 @@ def test_marked_row_does_not_backtrack_on_long_whitespace() -> None:
 
 
 def test_split_credit_code_and_short_email_cell_keep_non_pii() -> None:
-    # Grok 终审：空格拆开的统一社会信用代码前 8 位不当本地电话；短姓名格里的日期仍保留
+    # Grok 终审 + Codex r4：空格拆开的统一社会信用代码前 8 位不当本地电话；后接英文/电话串/带区号或分机的真实电话照常遮蔽；短姓名格里的日期仍保留
+    for code in ("91220101 MA0Y5F26", "91220101 MA0Y5F261X"):
+        raw = f"电话：0123-87654321。企业 {code}。电话：65432109"
+        stored = f"电话：[电话已脱敏]。企业 {code}。电话：[电话已脱敏]"
+        shown = f"电话：{MARK}。企业 {code}。电话：{MARK}"
+        assert v1.redact_sensitive(raw) == stored
+        assert v1.display_body_text(raw) == shown
+        assert v1.display_body_text(stored) == shown
+        assert model_text(raw) == stored
+        assert model_text(stored) == stored
     assert (
         v1.redact_sensitive("电话：0123-87654321；企业 91220101 MA0Y5F26")
         == "电话：[电话已脱敏]；企业 91220101 MA0Y5F26"
@@ -1428,6 +1437,45 @@ def test_split_credit_code_and_short_email_cell_keep_non_pii() -> None:
         v1.redact_sensitive("联系方式：0123-87654321 91220101 MA0Y5F26")
         == "联系方式：[电话已脱敏] 91220101 MA0Y5F26"
     )
+    for raw, stored, shown, modeled in [
+        ("致电87654321 ABCD", "致电[电话已脱敏] ABCD", f"致电{MARK} ABCD", "致电[电话已脱敏] ABCD"),
+        (
+            "电话：87654321 ABCD",
+            "电话：[电话已脱敏] ABCD",
+            f"电话：{MARK} ABCD",
+            "电话：[电话已脱敏] ABCD",
+        ),
+        ("致电91220101 ABCD", "致电[电话已脱敏] ABCD", f"致电{MARK} ABCD", "致电[电话已脱敏] ABCD"),
+        (
+            "张三 87654321 ABCD",
+            "张三 87654321 ABCD",
+            "（这里隐去了联系人） （这里隐去了电话） ABCD",
+            "[姓名已脱敏] [电话已脱敏] ABCD",
+        ),
+        (
+            "电话：91220101-801 MA0Y5F26",
+            "电话：[电话已脱敏] MA0Y5F26",
+            f"电话：{MARK} MA0Y5F26",
+            "电话：[电话已脱敏] MA0Y5F26",
+        ),
+        (
+            "电话：0123 91220101 MA0Y5F26",
+            "电话：[电话已脱敏] MA0Y5F26",
+            f"电话：{MARK} MA0Y5F26",
+            "电话：[电话已脱敏] MA0Y5F26",
+        ),
+        (
+            "电话：91220101 65432109",
+            "电话：[电话已脱敏] [电话已脱敏]",
+            f"电话：{MARK} {MARK}",
+            "电话：[电话已脱敏] [电话已脱敏]",
+        ),
+    ]:
+        assert v1.redact_sensitive(raw) == stored
+        assert v1.display_body_text(raw) == shown
+        assert v1.display_body_text(stored) == shown
+        assert model_text(raw) == modeled
+        assert model_text(stored) == modeled
     assert v1.display_attachment_row([("联系人", "张三 87654321＠qq.com 20261101")]) == [
         "（这里隐去了联系人） （这里隐去了邮箱） 20261101"
     ]
