@@ -3763,7 +3763,10 @@ def display_attachment_row(cells: list[tuple[str, str]]) -> list[str]:
             clean = _tidy_marks(_hide_urls(_hide_emails(value)))
             masked = _mask_span(clean, 0, len(clean), _CONTACT_MARK)
         else:
-            masked = _mask_attachment_names(value)
+            # 长格及非联系人列同样先按显示层边界隐去邮箱与网址并整理标记，
+            # 避免"电话：（这里隐去了网址）李四a.cn"这类姓名紧贴网址/邮箱时首次漏遮、二次才遮
+            clean = _tidy_marks(_hide_urls(_hide_emails(value)))
+            masked = _mask_attachment_names(clean)
             following = pairs[i + 1][1].strip() if i + 1 < len(pairs) else ""
             if following and _ONLY_PHONES.fullmatch(following):
                 # 下一格只有号码：这一格整格像姓名就遮（"信推处 | 徐丽萍 | （这里隐去了电话）"）

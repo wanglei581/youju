@@ -1714,10 +1714,40 @@ def test_short_marks_keep_display_idempotent_and_preserve_split_credit_codes() -
             ["（这里隐去了联系人）：（这里隐去了网址）"],
         ),
         ("高新处：张三a.cn", ["高新处：（这里隐去了联系人）（这里隐去了网址）"]),
+        ("高新处高新处张三a.cn", ["高新处高新处（这里隐去了联系人）（这里隐去了网址）"]),
     ]:
         short_url_cell = v1.display_attachment_row([("联系人", short_val)])
         assert short_url_cell == expected_row
         assert v1.display_attachment_row([("联系人", short_url_cell[0])]) == short_url_cell
+
+    # 超阈值长格中姓名紧贴网址/邮箱时，首次即遮且二次严格相等；普通正文不被整格误遮
+    for long_attached_val, expected_long_row in [
+        (
+            "电话：（这里隐去了网址）李四a.cn",
+            ["电话：（这里隐去了网址）（这里隐去了联系人）（这里隐去了网址）"],
+        ),
+        (
+            "电话：（这里隐去了网址）李四a@b.cn",
+            ["电话：（这里隐去了网址）（这里隐去了联系人）（这里隐去了邮箱）"],
+        ),
+        (
+            "电话：张三a.cn，李四（https://b.cn）",
+            [
+                "电话：（这里隐去了联系人）（这里隐去了网址），（这里隐去了联系人）（这里隐去了网址）"
+            ],
+        ),
+        (
+            "电话：张三（https://a.cn）（https://b.cn）（https://c.cn）李四",
+            ["电话：（这里隐去了联系人）（这里隐去了网址）（这里隐去了联系人）"],
+        ),
+        (
+            "电话：高新处高新处测试普通正文a.cn",
+            ["电话：高新处高新处测试普通正文（这里隐去了网址）"],
+        ),
+    ]:
+        long_attached_cell = v1.display_attachment_row([("联系人", long_attached_val)])
+        assert long_attached_cell == expected_long_row
+        assert v1.display_attachment_row([("联系人", long_attached_cell[0])]) == long_attached_cell
 
     short_prefixed_url_cell = v1.display_attachment_row([("联系人", "高新处：张三\n详见a.cn")])
     assert short_prefixed_url_cell == ["高新处：（这里隐去了联系人）\n详见（这里隐去了网址）"]
