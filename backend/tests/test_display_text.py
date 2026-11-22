@@ -1573,12 +1573,14 @@ def test_short_marks_keep_display_idempotent_and_preserve_split_credit_codes() -
     assert d_short == v1.display_body_text(d_short)
     assert "91220101 MA0Y5F261X" in d_short
 
-    # 短网址、短邮箱附近的真实电话不能漏遮；超长网址/邮箱后的非电话数字二次显示不缩进 20 字内
+    # 短网址、短邮箱与已有邮箱标记附近的真实电话不能漏遮；超长网址后的非电话数字二次显示不缩进 20 字内
     for raw in [
         "致电a.cn 87654321",
         "致电https://b.cn 87654321",
         "致电a@b.cn 87654321",
         "致电a@b.cn      87654321",
+        "致电（这里隐去了邮箱）      87654321",
+        "致电very-long-email@department.gov.cn 87654321",
     ]:
         stored = v1.redact_sensitive(raw)
         assert v1.redact_sensitive(stored) == stored
@@ -1593,19 +1595,26 @@ def test_short_marks_keep_display_idempotent_and_preserve_split_credit_codes() -
         r1 = v1.display_attachment_row([("说明", raw)])
         assert r1 == v1.display_attachment_row([("说明", r1[0])]) and MARK in r1[0]
 
-    for raw, expected in [
-        (
-            "致电https://very-long-government-portal.example.gov.cn/path/to/notice 87654321",
-            "致电（这里隐去了网址） 87654321",
-        ),
-        (
-            "致电very-long-email@department.gov.cn 87654321",
-            "致电（这里隐去了邮箱） 87654321",
-        ),
+    # 入库已先遮邮箱后的路径也同样不漏遮真实电话
+    ds_marked = v1.display_body_text(v1.redact_sensitive("致电[邮箱已脱敏]      87654321"))
+    assert ds_marked == f"致电（这里隐去了邮箱）      {MARK}"
+    assert v1.display_body_text(ds_marked) == ds_marked
+
+    # 超长网址后的非电话数字（一次未遮、二次保持不遮）；拆开信用代码隔着短/长网址或已遮标记也保留
+    d_long_url = v1.display_body_text(
+        "致电https://very-long-government-portal.example.gov.cn/path/to/notice 87654321"
+    )
+    assert d_long_url == "致电（这里隐去了网址） 87654321"
+    assert v1.display_body_text(d_long_url) == d_long_url
+
+    for code_raw in [
+        "致电a.cn 91220101 MA0Y5F261X",
+        "致电（这里隐去了邮箱） 91220101 MA0Y5F261X",
+        "致电（这里隐去了网址） 91220101 MA0Y5F261X",
     ]:
-        d_long = v1.display_body_text(raw)
-        assert d_long == expected
-        assert v1.display_body_text(d_long) == d_long
+        dc = v1.display_body_text(code_raw)
+        assert "91220101 MA0Y5F261X" in dc
+        assert v1.display_body_text(dc) == dc
 
     # 原文短距离内的邮箱+电话也遮且两次一致
     d_mail_phone = v1.display_body_text("电询王五65432108@qq.com，65432109")
@@ -1624,10 +1633,15 @@ def test_short_marks_keep_display_idempotent_and_preserve_split_credit_codes() -
         r1 = v1.display_attachment_row([("说明", raw)])
         assert r1 == v1.display_attachment_row([("说明", r1[0])])
 
-    # 联系人列短网址短格仍遮姓名；超过 20 字的格子遮后二次显示不能缩进 20 字内把非标签部分全遮
-    short_url_cell = v1.display_attachment_row([("联系人", "张三 a.cn")])
-    assert short_url_cell == ["（这里隐去了联系人） （这里隐去了网址）"]
-    assert v1.display_attachment_row([("联系人", short_url_cell[0])]) == short_url_cell
+    # 联系人列短格（含已有网址标记、短网址或单纯姓名+长网址）照常遮姓名；带前缀的长格二次不缩进 20 字内
+    for short_val in [
+        "张三 a.cn",
+        "张三 （这里隐去了网址）",
+        "张三 https://very-long-government-portal.example.gov.cn/path",
+    ]:
+        short_url_cell = v1.display_attachment_row([("联系人", short_val)])
+        assert short_url_cell == ["（这里隐去了联系人） （这里隐去了网址）"]
+        assert v1.display_attachment_row([("联系人", short_url_cell[0])]) == short_url_cell
 
     short_prefixed_url_cell = v1.display_attachment_row([("联系人", "高新处：张三\n详见a.cn")])
     assert short_prefixed_url_cell == ["高新处：（这里隐去了联系人）\n详见（这里隐去了网址）"]

@@ -2520,8 +2520,9 @@ def _hide_urls(text: str) -> str:
     return text
 
 
-def _replace_links(text: str, pattern: re.Pattern[str]) -> str:
-    """把 pattern 认出的网址换成"（这里隐去了网址）"；网址外面只剩一对括号时连括号一起换。"""
+def _replace_links(text: str, pattern: re.Pattern[str], *, cap: int | None = None) -> str:
+    """把 pattern 认出的网址换成"（这里隐去了网址）"；网址外面只剩一对括号时连括号一起换。
+    传入 cap 时只按上限截断字数占位，供表格格长计数用。"""
     out: list[str] = []
     done = 0
     for match in pattern.finditer(text):
@@ -2540,12 +2541,14 @@ def _replace_links(text: str, pattern: re.Pattern[str]) -> str:
         while right < len(text) and text[right] in _URL_SPACES:
             right += 1
         if left > done and right < len(text) and text[left - 1] in "（(" and text[right] in "）)":
-            out.append(text[done : left - 1])
+            span_start = left - 1
+            out.append(text[done:span_start])
             done = right + 1
         else:
+            span_start = start
             out.append(text[done:start])
             done = end
-        out.append(URL_MARK)
+        out.append(URL_MARK if cap is None else "x" * min(done - span_start, cap))
     out.append(text[done:])
     return "".join(out)
 
@@ -2735,13 +2738,25 @@ _VERB_BEFORE_NUMBER = re.compile(r"(?:致电|电询|拨打)[^。！？!?\n]{0,20
 _CREDIT_VERB_BEFORE_NUMBER = re.compile(r"(?:致电|电询|拨打)[^。！？!?\n]{0,12}$")
 _LONG_MEASURE = (
     "占位符" + "x" * 18
-)  # 21 字：已遮的"（这里隐去了网址）"/"（这里隐去了邮箱）"按超长算，避免二次显示变短；原文保留实长
+)  # 21 字：已遮的"（这里隐去了网址）"（以及信用代码分支里的邮箱）按超长算
 
 
 def _verb_before_text(text: str) -> str:
-    """量"致电"到号码中间有多远：已遮网址/邮箱标记按 21 字算（原文保留实长），
-    联系人等短标记按两字算。"""
-    text = text.replace(URL_MARK, _LONG_MEASURE).replace(EMAIL_MARK, _LONG_MEASURE)
+    """量"致电"到普通号码中间有多远：邮箱先并成标记按实长（9 字）算，和入库/二次显示
+    看到的距离一致（既不漏遮"致电（这里隐去了邮箱）      87654321"，也不因长邮箱后漏遮真实电话）；
+    已遮网址标记按 21 字算（原文网址保留实长），联系人等短标记按两字算。"""
+    text = _hide_emails(text).replace(URL_MARK, _LONG_MEASURE)
+    return _short(text)
+
+
+def _credit_verb_before_text(text: str) -> str:
+    """量"致电"到拆开信用代码中间有多远：任何邮箱/网址（含已遮标记）都按 21 字算，避免
+    邮箱或网址遮后拉近距离，把"致电……/邮箱或网址/91220101 MA0Y5F261X"误遮成电话。"""
+    text = (
+        _hide_urls(_hide_emails(text))
+        .replace(URL_MARK, _LONG_MEASURE)
+        .replace(EMAIL_MARK, _LONG_MEASURE)
+    )
     return _short(text)
 
 
@@ -2902,7 +2917,12 @@ def _mask_more_numbers(text: str) -> str:
             # 单位名下一行写的号码：这一行只有号码、而且是 8 位以上才算（"某研究院⏎3000000"不算）
             unit = None
         name = None if coded else _name_before(text, start)
-        before_verb = _verb_before_text(text[max(0, start - 120) : start])
+        before_slice = text[max(0, start - 120) : start]
+        before_verb = (
+            _credit_verb_before_text(before_slice)
+            if credit_split
+            else _verb_before_text(before_slice)
+        )
         verb = (_CREDIT_VERB_BEFORE_NUMBER if credit_split else _VERB_BEFORE_NUMBER).search(
             before_verb
         )
@@ -3473,13 +3493,24 @@ def _before_contact(match: re.Match[str]) -> str:
 
 # 列名是"联系人""姓名"这类的格子，内容不超过这么多字才整格按姓名遮；长的（一段话）照 1–3 判断
 _NAME_CELL_MAX = 20
+_URL_CELL_CAP = 15
+
+
+def _hide_urls_for_cell(text: str) -> str:
+    lowered = text.lower()
+    if "http" in lowered or "www" in lowered:
+        text = _replace_links(text, _URL, cap=_URL_CELL_CAP)
+    if _BARE_HINT.search(text):
+        text = _replace_links(text, _BARE_DOMAIN, cap=_URL_CELL_CAP)
+    return text
 
 
 def _cell_length(value: str) -> int:
     """格子按字数量长短：邮箱并成标记按两个字算，联系人/电话标记按四个字算（避免四字姓名遮后
-    把 >20 字的长格缩进 20 字内），已遮网址标记按 21 字算（原文网址保留实长）。"""
-    value = _tidy_marks(_hide_emails(value)).replace(URL_MARK, _LONG_MEASURE)
-    value = value.replace(EMAIL_MARK, "某某")
+    把 >20 字的长格缩进 20 字内）；网址与已遮网址标记上限按 15 字算，既保证"张三 （这里隐去了网址）"
+    这类短格照常遮姓名，又让长格一次/二次调用在 20 字门槛前后保持一致。"""
+    value = _hide_urls_for_cell(_tidy_marks(_hide_emails(value)))
+    value = value.replace(URL_MARK, "x" * _URL_CELL_CAP).replace(EMAIL_MARK, "某某")
     return len(_PAGE_MARK_ANY.sub("某某某某", value).strip())
 
 
