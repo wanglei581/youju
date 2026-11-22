@@ -1807,3 +1807,95 @@ def test_short_marks_keep_display_idempotent_and_preserve_split_credit_codes() -
             ["高新处：张三\n（这里隐去了网址）"],
         )
         assert v1.display_attachment_row([("联系人", u1[0])]) == u1
+
+
+def test_row_short_url_sure_names_and_marked_email_variants_stay_idempotent():
+    # 短网址跨过表格单元格长度阈值时，联系人格首轮即按 _mask_sure_names 补遮，避免首轮漏遮与不幂等
+    for head, val, expected_row in [
+        ("联系人", "联系人：扎西 x.gov.cn", ["联系人：（这里隐去了联系人） （这里隐去了网址）"]),
+        ("联系人", "联系人：扎西 a.cn", ["联系人：（这里隐去了联系人） （这里隐去了网址）"]),
+        ("联系人", "联系人：扎西 http://a.cn", ["联系人：（这里隐去了联系人） （这里隐去了网址）"]),
+        ("负责人", "负责人：乌云 www.a.cn", ["负责人：（这里隐去了联系人） （这里隐去了网址）"]),
+        ("姓名", "姓名：次仁 x.org.cn", ["姓名：（这里隐去了联系人） （这里隐去了网址）"]),
+        ("联系人", "联系人：乙丙 a.cn", ["联系人：（这里隐去了联系人） （这里隐去了网址）"]),
+        ("联系人", "联系人：乙丙丁 a.cn", ["联系人：（这里隐去了联系人） （这里隐去了网址）"]),
+        (
+            "联系人",
+            "联系人：高新处乙丙、张三 a.cn",
+            ["联系人：高新处（这里隐去了联系人）、（这里隐去了联系人） （这里隐去了网址）"],
+        ),
+        (
+            "联系人",
+            "经办人：财务王小明 87654321",
+            ["经办人：（这里隐去了联系人）（这里隐去了联系人） （这里隐去了电话）"],
+        ),
+    ]:
+        row1 = v1.display_attachment_row([(head, val)])
+        assert row1 == expected_row
+        assert v1.display_attachment_row([(head, row1[0])]) == row1
+
+    multi_col = v1.display_attachment_row([("联系人", "联系人：扎西 a.cn"), ("办公", "87654321")])
+    assert multi_col == ["联系人：（这里隐去了联系人） （这里隐去了网址）", "（这里隐去了电话）"]
+    assert (
+        v1.display_attachment_row([("联系人", multi_col[0]), ("办公", multi_col[1])]) == multi_col
+    )
+
+    # 含空格、全角＠/－/— 的电话/QQ标记邮箱在隐去网址时不被拆碎，供认姓名并最终转为邮箱标记
+    marked_mail_inputs = [
+        v1.redact_sensitive("张伟主任 87654321@ qq.com"),
+        v1.redact_sensitive("张伟主任 87654321＠ qq.com"),
+        v1.redact_sensitive("张伟主任 87654321@\u3000qq.com"),
+        v1.redact_sensitive("张伟主任 87654321@foo－bar.com"),
+        v1.redact_sensitive("张伟主任 87654321@foo—bar.com"),
+        v1.redact_sensitive("张伟主任 87654321＠foo－bar.com"),
+        v1.redact_sensitive("张伟主任 87654321＠www.qq.com"),
+        v1.redact_sensitive("张伟主任 87654321@ www.qq.com"),
+        v1.redact_sensitive("张伟主任 13812345678@ qq.com"),
+        v1.redact_sensitive("张伟主任 13812345678@foo－bar.com"),
+        "张伟主任 [QQ号已脱敏]@ qq.com",
+        "张伟主任 （这里隐去了电话）@foo－bar.com",
+    ]
+    for sample in marked_mail_inputs:
+        expected = "（这里隐去了联系人） （这里隐去了邮箱）"
+        assert v1.display_body_text(sample) == expected
+        assert v1.display_body_text(expected) == expected
+        assert v1.display_attachment_row([("说明", sample)]) == [expected]
+        assert v1.display_attachment_row([("说明", expected)]) == [expected]
+
+    for att_sample in [
+        texts.mask("张伟主任 87654321@ qq.com"),
+        texts.mask("张伟主任 87654321＠ qq.com"),
+        texts.mask("张伟主任 87654321@foo－bar.com"),
+        texts.mask("张伟主任 13812345678@ qq.com"),
+        texts.mask("张伟主任 13812345678@foo－bar.com"),
+    ]:
+        expected = "（这里隐去了联系人） （这里隐去了邮箱）"
+        assert v1.display_attachment_text(att_sample) == expected
+        assert v1.display_attachment_text(expected) == expected
+
+    # 括号及混合网址 + 标记邮箱场景同样保持首轮遮全与幂等
+    for raw_mix, expected_mix in [
+        (
+            v1.redact_sensitive("张伟主任 87654321@ qq.com 详见https://example.com/path"),
+            "（这里隐去了联系人） （这里隐去了邮箱） 详见（这里隐去了网址）",
+        ),
+        (v1.redact_sensitive("（87654321@ qq.com）"), "（这里隐去了邮箱）"),
+        (v1.redact_sensitive("【87654321@foo－bar.com】"), "【（这里隐去了邮箱）】"),
+    ]:
+        assert v1.display_body_text(raw_mix) == expected_mix
+        assert v1.display_body_text(expected_mix) == expected_mix
+        assert v1.display_attachment_row([("说明", raw_mix)]) == [expected_mix]
+        assert v1.display_attachment_row([("说明", expected_mix)]) == [expected_mix]
+
+    att_mix = texts.mask("张伟主任 87654321@ qq.com 详见https://example.com/path")
+    expected_att_mix = "（这里隐去了联系人） （这里隐去了邮箱） 详见（这里隐去了网址）"
+    assert v1.display_attachment_text(att_mix) == expected_att_mix
+    assert v1.display_attachment_text(expected_att_mix) == expected_att_mix
+
+    # 带 userinfo 的网址不被 _MARKED_EMAIL_ANY 误当成标记邮箱，且 display_body_text 行为保持一致
+    assert (
+        v1._hide_urls_keeping_marked_emails("https://user@example.com/path") == "（这里隐去了网址）"
+    )
+    body_userinfo = v1.display_body_text("请访问https://user@example.com/path查看")
+    assert body_userinfo == "请访问https://（这里隐去了邮箱）/path查看"
+    assert v1.display_body_text(body_userinfo) == body_userinfo

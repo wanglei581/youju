@@ -2667,6 +2667,31 @@ def _hide_raw_emails(text: str) -> str:
     return _RAW_EMAIL_ANY.sub(EMAIL_MARK, text)
 
 
+_MARKED_EMAIL_ANY = re.compile(
+    r"(?:（这里隐去了(?:电话|QQ号)）|\[(?:电话|手机号|QQ号)已脱敏\])"
+    r"[ \u3000]?[@＠][ \u3000]?[A-Za-z0-9-]+(?:[.．—－][A-Za-z0-9-]+)*[.．][A-Za-z]{2,63}"
+    r"(?![A-Za-z0-9-])"
+)
+
+
+def _hide_urls_keeping_marked_emails(text: str) -> str:
+    """隐去网址时保留仍带电话/QQ标记的邮箱片段，供认姓名阶段识别前邻姓名，
+    再由 display_text 统一转为邮箱标记。"""
+    if ("@" not in text and "＠" not in text) or ("隐去了" not in text and "已脱敏]" not in text):
+        return _hide_urls(text)
+    out: list[str] = []
+    done = 0
+    for match in _MARKED_EMAIL_ANY.finditer(text):
+        if match.start() > done:
+            out.append(_hide_urls(text[done : match.start()]))
+        out.append(match.group(0))
+        done = match.end()
+    if done == 0:
+        return _hide_urls(text)
+    out.append(_hide_urls(text[done:]))
+    return "".join(out)
+
+
 # 电话类标签（电话、手机、传真、技术支持、咨询、联系方式、热线、值班）后面同一句里的本地号码
 # （11/2 复测）："技术支持：83124114""业务咨询：83124079、83124035"
 # "联系电话：业务部门：市科技局科技人才科，65119071"。到句号、问号、叹号、换行（最多 300 个字）
@@ -3709,7 +3734,9 @@ def display_attachment_name(name: str) -> str:
 def _mask_display_names(text: str) -> str:
     """显示层补遮号码后、认联系人姓名前，先隐去未脱敏邮箱与网址并整理标记，
     再补遮漏掉的姓名，避免姓名紧贴网址或邮箱时首次漏遮、二次才遮，同时保留 QQ/电话标记供认姓名。"""
-    clean = _tidy_marks(_hide_urls(_hide_raw_emails(_mask_phones(display_marks(text)))))
+    clean = _tidy_marks(
+        _hide_urls_keeping_marked_emails(_hide_raw_emails(_mask_phones(display_marks(text))))
+    )
     return display_text(_mask_attachment_names(clean))
 
 
@@ -3781,13 +3808,15 @@ def display_attachment_row(cells: list[tuple[str, str]]) -> list[str]:
         elif named and _cell_length(value) <= _NAME_CELL_MAX:
             # 列名是"联系人""姓名"这类，或者上一格只写着"联系人"：这一格像姓名的都遮；
             # 先按与 _cell_length / display_text 一致的边界隐去邮箱、网址并整理标记，
-            # 避免"张三a.cn"这类姓名紧贴网址时首次漏遮、二次才遮
+            # 避免"张三a.cn"这类姓名紧贴网址时首次漏遮、二次才遮；
+            # 前后各跑一次 _mask_sure_names，使短网址跨阈值切到长格路径时首轮即与长格一致
             clean = _tidy_marks(_hide_urls(_hide_emails(value)))
-            masked = _mask_span(clean, 0, len(clean), _CONTACT_MARK)
+            sure = _mask_sure_names(clean)
+            masked = _mask_sure_names(_mask_span(sure, 0, len(sure), _CONTACT_MARK))
         else:
             # 长格及非联系人列同样先隐去未脱敏邮箱与网址并整理标记，
             # 避免"电话：（这里隐去了网址）李四a.cn"这类姓名紧贴网址/邮箱时首次漏遮、二次才遮
-            clean = _tidy_marks(_hide_urls(_hide_raw_emails(value)))
+            clean = _tidy_marks(_hide_urls_keeping_marked_emails(_hide_raw_emails(value)))
             masked = _mask_attachment_names(clean)
             following = pairs[i + 1][1].strip() if i + 1 < len(pairs) else ""
             if following and _ONLY_PHONES.fullmatch(following):
