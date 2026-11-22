@@ -2586,14 +2586,13 @@ _LOCAL_NUMBER = re.compile(
 )
 _CONTEXT_STOP = re.compile(r"[。！？!?\n]")
 _CONTEXT_WINDOW = 300
-_PAGE_MARK_ANY = re.compile(r"（这里隐去了[^（）\n]{1,8}）")
+_PAGE_MARK_ANY = re.compile(r"（这里隐去了(?:联系人|署名|电话|QQ号)）")
 
 
 def _short(text: str) -> str:
     """量长短、远近用：遮成的标记（"（这里隐去了联系人）"十个字，比原来的"张三""6543…"长）都按两个字算。
-    页面上看长短的门槛都是"短了、近了才遮"（姓名列的格子、电话标题行、标签后面认姓名的那一段、
-    "致电"和号码中间……）；号码、姓名、QQ 号这次入库先遮成了标记，按标记的字数量，会比主干看到原文
-    时长、少遮（11/19 隐私合规那位、正确性那位第十轮）。"""
+    只缩入库先遮的联系人、署名、电话、QQ 号标记；邮箱、网址原本可以很长，不在这里缩成两个字
+    （11/19 隐私合规那位、正确性那位第十轮；二次脱敏与信用代码复核）。"""
     return _PAGE_MARK_ANY.sub("某某", text)
 
 
@@ -2733,6 +2732,18 @@ _CREDIT_HEAD = re.compile(r"(?:2[19]|3[1-59]|4[19]|5[1-39]|6[19]|7[129]|8[19]|9[
 _CODE_AFTER = re.compile(r"[ \t\u3000]*[A-Z](?=[A-Z0-9]*\d)[A-Z0-9]{7,9}(?![A-Za-z0-9])")
 _UNIT_LINE_END = re.compile(r"(?:[处科室局委办厅站所院组队]|中心|部门|单位|纪委|监委)[ \t\u3000]*$")
 _VERB_BEFORE_NUMBER = re.compile(r"(?:致电|电询|拨打)[^。！？!?\n]{0,20}$")
+_CREDIT_VERB_BEFORE_NUMBER = re.compile(r"(?:致电|电询|拨打)[^。！？!?\n]{0,12}$")
+_URL_MEASURE = "网址占位符" + "x" * 16  # 21 字：和"（这里隐去了网址）"同按超长算，避免两次调用变短
+_EMAIL_MEASURE = "邮箱占位符" + "x" * 10  # 15 字：原文邮箱和"（这里隐去了邮箱）"同长度，两次一致
+
+
+def _verb_before_text(text: str) -> str:
+    """量"致电"到号码中间有多远：网址和邮箱（含已遮标记）各自按固定长度算，联系人等短标记按两字算。"""
+    text = _hide_urls(text).replace(URL_MARK, _URL_MEASURE)
+    text = _hide_emails(text).replace(EMAIL_MARK, _EMAIL_MEASURE)
+    return _short(text)
+
+
 # 一行一串号码只认 8 位或区号连写的：7 位的一串（"2060501、2060502"）更像科目编码（agy 审阅）
 _ONE_NUMBER = r"(?:0\d{2,3}[2-9]\d{6,7}|[2-9]\d{7}(?:(?:[-－]|转)\d{1,6})?)"
 _NUMBER_LIST_LINE = re.compile(
@@ -2890,7 +2901,10 @@ def _mask_more_numbers(text: str) -> str:
             # 单位名下一行写的号码：这一行只有号码、而且是 8 位以上才算（"某研究院⏎3000000"不算）
             unit = None
         name = None if coded else _name_before(text, start)
-        verb = _VERB_BEFORE_NUMBER.search(_short(text[max(0, start - 120) : start]))
+        before_verb = _verb_before_text(text[max(0, start - 120) : start])
+        verb = (_CREDIT_VERB_BEFORE_NUMBER if credit_split else _VERB_BEFORE_NUMBER).search(
+            before_verb
+        )
         if credit_split and name is None and verb is None:
             continue
         if name is not None:
@@ -3461,9 +3475,16 @@ _NAME_CELL_MAX = 20
 
 
 def _cell_length(value: str) -> int:
-    """格子按字数量长短：邮箱并成标记以后，每个标记按两个字算（见 _short；11/19 隐私合规那位第九、
-    十轮，正确性那位第十轮）。"""
-    return len(_short(_hide_emails(value)).strip())
+    """格子按字数量长短：邮箱并成标记按两个字算，联系人/电话标记按四个字算（避免四字姓名遮后
+    把 >20 字的长格缩进 20 字内），网址按 21 字算。"""
+    value = _tidy_marks(_hide_urls(_hide_emails(value))).replace(URL_MARK, _URL_MEASURE)
+    value = value.replace(EMAIL_MARK, "某某")
+    return len(_PAGE_MARK_ANY.sub("某某某某", value).strip())
+
+
+def _after_label_short(line: str) -> str:
+    """标签下一行量长短：邮箱先并成标记并按两个字算，和二次显示看到的一样；网址不缩。"""
+    return _short(_hide_emails(line)).replace(EMAIL_MARK, "某某")
 
 
 def _att_window(line: str, start: int) -> int:
@@ -3499,7 +3520,7 @@ def _mask_attachment_line(line: str, after_label: bool) -> str:
         spans.append((label.end(), _att_window(line, label.end()), _CONTACT_MARK))
     for label in _EDITOR.finditer(line):
         spans.append((label.end(), _att_window(line, label.end()), _EDITOR_MARK))
-    if after_label and (_PHONE_ANY.search(line) or len(_short(line.strip())) <= 8):
+    if after_label and (_PHONE_ANY.search(line) or len(_after_label_short(line.strip())) <= 8):
         spans.append((0, _att_window(line, 0), _CONTACT_MARK))
     for phone in _PHONE_ANY.finditer(line):
         if phone.group(0) not in _NUMBER_MARKS and not _is_phone_number(line, phone):

@@ -1534,3 +1534,54 @@ def test_split_credit_code_and_short_email_cell_keep_non_pii() -> None:
     assert v1.display_attachment_row([("联系人", "张三 87654321＠qq.com 20261101")]) == [
         "（这里隐去了联系人） （这里隐去了邮箱） 20261101"
     ]
+
+
+def test_short_marks_keep_display_idempotent_and_preserve_split_credit_codes() -> None:
+    # 复核回归：邮箱/网址不能缩成两字把"致电"与拆开的社会信用代码拉近，也不能让二次显示多遮
+    for raw, code in [
+        ("致电高新处，查询/abc@kjt.gov.cn/91220101 MA0Y5F261X/联系人：暴某", "91220101 MA0Y5F261X"),
+        (
+            "致电https://very-long-government-portal.example.gov.cn/path/to/notice 91220101 MA0Y5F26",
+            "91220101 MA0Y5F26",
+        ),
+    ]:
+        stored = v1.redact_sensitive(raw)
+        assert code in stored
+        assert code in model_text(stored)
+        assert code in v1.display_body_text(v1._clean_reading_body(stored))
+        d1 = v1.display_body_text(raw)
+        assert d1 == v1.display_body_text(d1)
+        assert code in d1
+        a1 = v1.display_attachment_text(texts.mask(raw))
+        assert a1 == v1.display_attachment_text(a1)
+        assert code in a1
+        r1 = v1.display_attachment_row([("说明", raw)])
+        assert r1 == v1.display_attachment_row([("说明", r1[0])])
+        assert code in r1[0]
+
+    short_email_code = "致电abc@kjt.gov.cn 91220101 MA0Y5F261X"
+    d_short = v1.display_body_text(short_email_code)
+    assert d_short == v1.display_body_text(d_short)
+    assert "91220101 MA0Y5F261X" in d_short
+
+    # "联系人："下一行带邮箱或长网址时，两次显示结果一致
+    for raw in [
+        "联系人：\n张三 邮箱：abc@163.com\n李四 87654322",
+        "联系人：\n张三 网址：https://very-long-government-portal.example.gov.cn/path\n李四 87654322",
+    ]:
+        b1 = v1.display_body_text(raw)
+        assert b1 == v1.display_body_text(b1)
+        a1 = v1.display_attachment_text(raw)
+        assert a1 == v1.display_attachment_text(a1)
+        r1 = v1.display_attachment_row([("说明", raw)])
+        assert r1 == v1.display_attachment_row([("说明", r1[0])])
+
+    # 超过 20 字的联系人格子把四字姓名遮成标记后，二次显示不能缩进 20 字内把非标签部分全遮
+    row_cell = "联系方式：\n高新处、李四/联系人：欧阳娜娜"
+    r1 = v1.display_attachment_row([("联系人", row_cell)])
+    assert r1 == ["联系方式：\n高新处、李四/联系人：（这里隐去了联系人）"]
+    assert v1.display_attachment_row([("联系人", r1[0])]) == r1
+    url_cell = "高新处：张三\n详见https://very-long-government-portal.example.gov.cn/path"
+    u1 = v1.display_attachment_row([("联系人", url_cell)])
+    assert u1 == ["高新处：张三\n详见（这里隐去了网址）"]
+    assert v1.display_attachment_row([("联系人", u1[0])]) == u1
