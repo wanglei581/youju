@@ -25,13 +25,22 @@ from youju.models import (
     Source,
 )
 
+_EXPORT_NOW = datetime(2026, 10, 12, 9, 0, tzinfo=exports.TZ)
+
+
+class _FrozenDateTime(datetime):
+    @classmethod
+    def now(cls, tz=None):
+        return _EXPORT_NOW.astimezone(tz) if tz else _EXPORT_NOW.replace(tzinfo=None)
+
 
 @pytest.fixture
-def client(session_factory):
+def client(session_factory, monkeypatch):
     def override():
         with session_factory() as session:
             yield session
 
+    monkeypatch.setattr(exports, "datetime", _FrozenDateTime)
     app.dependency_overrides[get_session] = override
     yield TestClient(app)
     app.dependency_overrides.clear()
