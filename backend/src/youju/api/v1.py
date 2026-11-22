@@ -2646,11 +2646,25 @@ _EMAIL_ANY = re.compile(
 )
 
 
+_RAW_EMAIL_ANY = re.compile(
+    r"(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]{1,64}"
+    r"[ \u3000]?[@＠][ \u3000]?[A-Za-z0-9-]+(?:[.．—－][A-Za-z0-9-]+)*[.．][A-Za-z]{2,63}"
+    r"(?![A-Za-z0-9-])"
+)
+
+
 def _hide_emails(text: str) -> str:
     """把邮箱换成"（这里隐去了邮箱）"。"""
     if "@" not in text and "＠" not in text:
         return text
     return _EMAIL_ANY.sub(EMAIL_MARK, text)
+
+
+def _hide_raw_emails(text: str) -> str:
+    """只把未脱敏的邮箱换成"（这里隐去了邮箱）"，保留"（这里隐去了QQ号）＠..."里的号码标记供认姓名使用。"""
+    if "@" not in text and "＠" not in text:
+        return text
+    return _RAW_EMAIL_ANY.sub(EMAIL_MARK, text)
 
 
 # 电话类标签（电话、手机、传真、技术支持、咨询、联系方式、热线、值班）后面同一句里的本地号码
@@ -3692,10 +3706,17 @@ def display_attachment_name(name: str) -> str:
     return name[: cut.start()].rstrip(" ;；,，") or name[: cut.start()]
 
 
+def _mask_display_names(text: str) -> str:
+    """显示层补遮号码后、认联系人姓名前，先隐去未脱敏邮箱与网址并整理标记，
+    再补遮漏掉的姓名，避免姓名紧贴网址或邮箱时首次漏遮、二次才遮，同时保留 QQ/电话标记供认姓名。"""
+    clean = _tidy_marks(_hide_urls(_hide_raw_emails(_mask_phones(display_marks(text)))))
+    return display_text(_mask_attachment_names(clean))
+
+
 def display_body_text(text: str) -> str:
     """正文给页面的写法：入库时已经按整行遮过联系人姓名，这里再按上面 1–4 补遮漏掉的
     （"电力处 梁弢；联系电话："，11/2 Codex 审阅），再走 display_text。"""
-    return display_text(_mask_attachment_names(_mask_phones(display_marks(text))))
+    return _mask_display_names(text)
 
 
 # 交给模型的正文（D-114 独立审阅）：协议写“发送前隐去其中的身份证号、手机号、电话、邮箱、
@@ -3726,8 +3747,9 @@ def model_body_text(text: str) -> str:
 
 
 def display_attachment_text(text: str) -> str:
-    """附件一段文字（不是表格的格子）给页面的写法：先补遮号码、再遮姓名，再走 display_text。"""
-    return display_text(_mask_attachment_names(_mask_phones(display_marks(text))))
+    """附件一段文字（不是表格的格子）给页面的写法：先补遮号码、再整理网址邮箱标记并遮姓名，
+    再走 display_text。"""
+    return _mask_display_names(text)
 
 
 def display_attachment_row(cells: list[tuple[str, str]]) -> list[str]:
@@ -3763,9 +3785,9 @@ def display_attachment_row(cells: list[tuple[str, str]]) -> list[str]:
             clean = _tidy_marks(_hide_urls(_hide_emails(value)))
             masked = _mask_span(clean, 0, len(clean), _CONTACT_MARK)
         else:
-            # 长格及非联系人列同样先按显示层边界隐去邮箱与网址并整理标记，
+            # 长格及非联系人列同样先隐去未脱敏邮箱与网址并整理标记，
             # 避免"电话：（这里隐去了网址）李四a.cn"这类姓名紧贴网址/邮箱时首次漏遮、二次才遮
-            clean = _tidy_marks(_hide_urls(_hide_emails(value)))
+            clean = _tidy_marks(_hide_urls(_hide_raw_emails(value)))
             masked = _mask_attachment_names(clean)
             following = pairs[i + 1][1].strip() if i + 1 < len(pairs) else ""
             if following and _ONLY_PHONES.fullmatch(following):

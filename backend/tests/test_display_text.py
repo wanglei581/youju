@@ -1720,34 +1720,69 @@ def test_short_marks_keep_display_idempotent_and_preserve_split_credit_codes() -
         assert short_url_cell == expected_row
         assert v1.display_attachment_row([("联系人", short_url_cell[0])]) == short_url_cell
 
-    # 超阈值长格中姓名紧贴网址/邮箱时，首次即遮且二次严格相等；普通正文不被整格误遮
-    for long_attached_val, expected_long_row in [
+    # 超阈值长格以及正文、附件文本路径中，姓名紧贴网址/邮箱时首次即遮且二次严格相等；普通正文不被误遮
+    for long_attached_val, expected_attached_text in [
         (
             "电话：（这里隐去了网址）李四a.cn",
-            ["电话：（这里隐去了网址）（这里隐去了联系人）（这里隐去了网址）"],
+            "电话：（这里隐去了网址）（这里隐去了联系人）（这里隐去了网址）",
         ),
         (
             "电话：（这里隐去了网址）李四a@b.cn",
-            ["电话：（这里隐去了网址）（这里隐去了联系人）（这里隐去了邮箱）"],
+            "电话：（这里隐去了网址）（这里隐去了联系人）（这里隐去了邮箱）",
         ),
         (
             "电话：张三a.cn，李四（https://b.cn）",
-            [
-                "电话：（这里隐去了联系人）（这里隐去了网址），（这里隐去了联系人）（这里隐去了网址）"
-            ],
+            "电话：（这里隐去了联系人）（这里隐去了网址），（这里隐去了联系人）（这里隐去了网址）",
         ),
         (
             "电话：张三（https://a.cn）（https://b.cn）（https://c.cn）李四",
-            ["电话：（这里隐去了联系人）（这里隐去了网址）（这里隐去了联系人）"],
+            "电话：（这里隐去了联系人）（这里隐去了网址）（这里隐去了联系人）",
         ),
         (
             "电话：高新处高新处测试普通正文a.cn",
-            ["电话：高新处高新处测试普通正文（这里隐去了网址）"],
+            "电话：高新处高新处测试普通正文（这里隐去了网址）",
         ),
     ]:
         long_attached_cell = v1.display_attachment_row([("联系人", long_attached_val)])
-        assert long_attached_cell == expected_long_row
+        assert long_attached_cell == [expected_attached_text]
         assert v1.display_attachment_row([("联系人", long_attached_cell[0])]) == long_attached_cell
+
+        body_attached = v1.display_body_text(long_attached_val)
+        assert body_attached == expected_attached_text
+        assert v1.display_body_text(body_attached) == body_attached
+
+        att_attached = v1.display_attachment_text(long_attached_val)
+        assert att_attached == expected_attached_text
+        assert v1.display_attachment_text(att_attached) == att_attached
+
+    # 数字局部已转成电话/QQ标记的邮箱，在遮姓名阶段仍保留标记供前邻姓名识别，最终再统一显示为邮箱标记
+    for mark_mail_raw in [
+        "张伟主任 [QQ号已脱敏]＠qq.com",
+        v1.redact_sensitive("张伟主任 87654321＠qq.com"),
+        v1.redact_sensitive("张伟主任 87654321 @qq.com"),
+    ]:
+        expected_mark_mail = "（这里隐去了联系人） （这里隐去了邮箱）"
+        assert v1.display_body_text(mark_mail_raw) == expected_mark_mail
+        assert v1.display_body_text(expected_mark_mail) == expected_mark_mail
+        assert v1.display_attachment_row([("说明", mark_mail_raw)]) == [expected_mark_mail]
+        assert v1.display_attachment_row([("说明", expected_mark_mail)]) == [expected_mark_mail]
+    for att_mail_raw in [
+        texts.mask("张伟主任 87654321＠qq.com"),
+        texts.mask("张伟主任 87654321 @qq.com"),
+    ]:
+        expected_mark_mail = "（这里隐去了联系人） （这里隐去了邮箱）"
+        assert v1.display_attachment_text(att_mail_raw) == expected_mark_mail
+        assert v1.display_attachment_text(expected_mark_mail) == expected_mark_mail
+
+    # 普通正文里非联系人标签上下文（无联系人/电话标签、无号码）紧贴网址的普通词不被误遮
+    for prose_raw, prose_expected in [
+        ("高新处测试普通正文a.cn", "高新处测试普通正文（这里隐去了网址）"),
+        ("请登录http://a.cn查看张贴通知", "请登录（这里隐去了网址）查看张贴通知"),
+    ]:
+        assert v1.display_body_text(prose_raw) == prose_expected
+        assert v1.display_body_text(prose_expected) == prose_expected
+        assert v1.display_attachment_text(prose_raw) == prose_expected
+        assert v1.display_attachment_text(prose_expected) == prose_expected
 
     short_prefixed_url_cell = v1.display_attachment_row([("联系人", "高新处：张三\n详见a.cn")])
     assert short_prefixed_url_cell == ["高新处：（这里隐去了联系人）\n详见（这里隐去了网址）"]
