@@ -18,6 +18,7 @@ from youju import attachment_text as texts
 from youju.ai import content, interpret
 from youju.ai.model_text import model_text
 from youju.api import v1
+from youju.crawler import detail as crawler_detail
 from youju.models import AttachmentTextSegment
 
 MARK = "（这里隐去了电话）"
@@ -1568,7 +1569,13 @@ def test_short_marks_keep_display_idempotent_and_preserve_split_credit_codes() -
     for short_email_code in [
         "致电abc@kjt.gov.cn 91220101 MA0Y5F261X",
         "致电a@b.cn 91220101 MA0Y5F261X",
+        "致电a＠b.cn 91220101 MA0Y5F261X",
         "致电a.cn 91220101 MA0Y5F261X",
+        "致电a.cn; 91220101 MA0Y5F261X",
+        "致电https://a.cn? 91220101 MA0Y5F261X",
+        "致电（a.cn） 91220101 MA0Y5F261X",
+        "致电http://; 91220101 MA0Y5F261X",
+        "致电www.. 91220101 MA0Y5F261X",
         "致电very-long-email@department.gov.cn 91220101 MA0Y5F261X",
         "致电（这里隐去了邮箱） 91220101 MA0Y5F261X",
         "致电（这里隐去了网址） 91220101 MA0Y5F261X",
@@ -1585,6 +1592,28 @@ def test_short_marks_keep_display_idempotent_and_preserve_split_credit_codes() -
         d_stored_short = v1.display_body_text(stored_short_code)
         assert d_stored_short == v1.display_body_text(d_stored_short)
         assert "91220101 MA0Y5F261X" in d_stored_short
+
+    # 空网址壳不展开：入库距离判定与展示、模型路径保持一致（注："http:///" 紧挨斜杠受入库 "/" 前置规则跳过，但距离判定本身同样返回 True）
+    slash_shell = "致电http:/// 91220101 MA0Y5F261X"
+    assert crawler_detail._credit_call_verb_near(slash_shell, slash_shell.index("91220101")) is True
+    d_slash_shell = v1.display_body_text(slash_shell)
+    assert d_slash_shell == v1.display_body_text(d_slash_shell) and MARK in d_slash_shell
+    assert v1.display_body_text(v1.redact_sensitive(slash_shell)) == d_slash_shell
+
+    for empty_shell in [
+        "致电http://, 91220101 MA0Y5F261X",
+        "致电http:///: 91220101 MA0Y5F261X",
+        "致电www. 91220101 MA0Y5F261X",
+    ]:
+        stored_shell = v1.redact_sensitive(empty_shell)
+        assert v1.redact_sensitive(stored_shell) == stored_shell
+        assert "[电话已脱敏]" in stored_shell
+        m_shell = model_text(empty_shell)
+        assert m_shell == model_text(m_shell) and "[电话已脱敏]" in m_shell
+        d_shell = v1.display_body_text(empty_shell)
+        assert d_shell == v1.display_body_text(d_shell) and MARK in d_shell
+        ds_shell = v1.display_body_text(stored_shell)
+        assert ds_shell == v1.display_body_text(ds_shell) and ds_shell == d_shell
 
     # 短网址、短邮箱、超长邮箱与已有邮箱标记附近的真实电话不能漏遮；超长网址后的非电话数字二次显示不缩进 20 字内
     for raw in [
@@ -1662,19 +1691,29 @@ def test_short_marks_keep_display_idempotent_and_preserve_split_credit_codes() -
         r1 = v1.display_attachment_row([("说明", raw)])
         assert r1 == v1.display_attachment_row([("说明", r1[0])])
 
-    # 联系人列短格（含已有网址标记、短网址、带"（网址：…）"括号、连续网址合并或单纯姓名+长网址）照常遮姓名；带前缀的长格二次不缩进 20 字内
+    # 联系人列短格（含已有网址标记、紧贴/带空格短网址、连续网址合并、紧贴邮箱、带"（网址：…）"括号或单纯姓名+长网址）照常首次即遮姓名；带前缀的长格二次不缩进 20 字内
     for short_val, expected_row in [
+        ("张三a.cn", ["（这里隐去了联系人）（这里隐去了网址）"]),
+        ("张三https://a.cn", ["（这里隐去了联系人）（这里隐去了网址）"]),
+        ("张三www.a.cn", ["（这里隐去了联系人）（这里隐去了网址）"]),
+        ("张三a@b.cn", ["（这里隐去了联系人）（这里隐去了邮箱）"]),
         ("张三 a.cn", ["（这里隐去了联系人） （这里隐去了网址）"]),
         ("张三 （这里隐去了网址）", ["（这里隐去了联系人） （这里隐去了网址）"]),
+        ("张三（这里隐去了网址）", ["（这里隐去了联系人）（这里隐去了网址）"]),
         (
             "张三 https://very-long-government-portal.example.gov.cn/path",
             ["（这里隐去了联系人） （这里隐去了网址）"],
         ),
         ("张三（网址：https://abc.example.com）", ["（这里隐去了联系人）（这里隐去了网址）"]),
         (
+            "张三（https://a.cn）（https://b.cn）（https://c.cn）",
+            ["（这里隐去了联系人）（这里隐去了网址）"],
+        ),
+        (
             "张三：https://a.example.com、https://b.example.com、https://c.example.com",
             ["（这里隐去了联系人）：（这里隐去了网址）"],
         ),
+        ("高新处：张三a.cn", ["高新处：（这里隐去了联系人）（这里隐去了网址）"]),
     ]:
         short_url_cell = v1.display_attachment_row([("联系人", short_val)])
         assert short_url_cell == expected_row

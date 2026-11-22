@@ -201,21 +201,11 @@ _CREDIT_EMAIL_OR_MARK = re.compile(
     r"|\[(?:新?QQ号|手机号)已脱敏\][ \u3000]?[@＠]"
     r"[A-Za-z0-9-]+(?:[.．—－][A-Za-z0-9-]+)*[.．][A-Za-z]{2,63}(?![A-Za-z0-9-])"
 )
-_CREDIT_URL = re.compile(
-    r"(?:(?<![A-Za-z0-9])https?[:：][/／]{2}|(?<![A-Za-z0-9.．@_-])www[.．])"
-    r"[A-Za-z0-9._~:/?#@&+=%,;．／-]+",
-    re.IGNORECASE,
-)
-_CREDIT_BARE_DOMAIN = re.compile(
-    r"(?<![A-Za-z0-9.．@＠_/-])(?:[A-Za-z0-9][A-Za-z0-9-]*[.．])+"
-    r"(?:(?i:gov|com|org|net|edu)[.．](?i:cn)|cn|com|net|org)(?![A-Za-z0-9-])"
-    r"(?:[/／][A-Za-z0-9._~:/?#@&+=%,;．／-]*)?"
-)
 
 
 def _credit_call_verb_near(text: str, start: int) -> bool:
     """拆开信用代码前看有没有"致电/电询/拨打"：任何邮箱标记、网址（含已遮标记）统一按 21 字算，
-    和显示层（api/v1.py）同口径，避免隔着短网址或邮箱把信用代码遮成电话。"""
+    与显示层（api/v1.py）共享网址与邮箱替换规则，避免空网址壳或尾随标点导致两端不一致。"""
     line_start = text.rfind("\n", 0, start) + 1
     line_before = text[line_start:start]
     if "致" not in line_before and "电" not in line_before and "拨" not in line_before:
@@ -225,13 +215,14 @@ def _credit_call_verb_near(text: str, start: int) -> bool:
         last = match
     if last is None:
         return False
-    before = line_before[last.start() :]
-    before = _CREDIT_EMAIL_OR_MARK.sub(_CREDIT_LONG_MEASURE, before)
-    lowered = before.lower()
-    if "http" in lowered or "www" in lowered:
-        before = _CREDIT_URL.sub(_CREDIT_LONG_MEASURE, before)
-    if "." in before or "．" in before:
-        before = _CREDIT_BARE_DOMAIN.sub(_CREDIT_LONG_MEASURE, before)
+    from youju.api import v1
+
+    before = _CREDIT_EMAIL_OR_MARK.sub(_CREDIT_LONG_MEASURE, line_before[last.start() :])
+    before = (
+        v1._hide_urls(v1._hide_emails(before))
+        .replace(v1.URL_MARK, _CREDIT_LONG_MEASURE)
+        .replace(v1.EMAIL_MARK, _CREDIT_LONG_MEASURE)
+    )
     return _CALL_VERB_NEAR.search(before) is not None
 
 

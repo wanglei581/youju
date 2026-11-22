@@ -3757,8 +3757,11 @@ def display_attachment_row(cells: list[tuple[str, str]]) -> list[str]:
             # "姓名 | 性别 | 年龄"里的栏目名不是名字（11/2 独立审阅）
             masked = value.replace(value.strip(), _CONTACT_MARK)
         elif named and _cell_length(value) <= _NAME_CELL_MAX:
-            # 列名是"联系人""姓名"这类，或者上一格只写着"联系人"：这一格像姓名的都遮
-            masked = _mask_span(value, 0, len(value), _CONTACT_MARK)
+            # 列名是"联系人""姓名"这类，或者上一格只写着"联系人"：这一格像姓名的都遮；
+            # 先按与 _cell_length / display_text 一致的边界隐去邮箱、网址并整理标记，
+            # 避免"张三a.cn"这类姓名紧贴网址时首次漏遮、二次才遮
+            clean = _tidy_marks(_hide_urls(_hide_emails(value)))
+            masked = _mask_span(clean, 0, len(clean), _CONTACT_MARK)
         else:
             masked = _mask_attachment_names(value)
             following = pairs[i + 1][1].strip() if i + 1 < len(pairs) else ""
