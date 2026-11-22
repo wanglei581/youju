@@ -22,6 +22,7 @@ from youju.ai.conditions import (
     prepare_text,
     validate,
 )
+from youju.ai.model_text import model_text
 from youju.api import app as app_module
 from youju.api import v1
 from youju.config import get_settings
@@ -236,8 +237,8 @@ def test_run_extraction_orders_due_soon_first_and_respects_limit(session):
     ]
     # 30 天内截止的先（截止早的先），再是截止更晚或不知道的（新的先），已过截止的最后
     assert picked == [sooner.id, soon.id, unknown.id, later.id]
-    # 发给模型的是脱敏后的正文，不带个人手机号
-    assert all("13812345678" not in user and "[手机号已脱敏]" in user for user in client.calls)
+    # 发给模型的是脱敏后的正文（model_text：手机号和电话一样写成"[电话已脱敏]"），不带个人手机号
+    assert all("13812345678" not in user and "[电话已脱敏]" in user for user in client.calls)
     # 第二轮只抽剩下的，抽过的不再花用量
     report = service.run_extraction(session, client, limit=10, now=NOW)
     assert report.documents == 1
@@ -740,3 +741,24 @@ def test_run_extraction_overflow_records_error_and_saves_no_list(session):
     assert check.error == "申报条件超过清单容量，需人工整理"
     assert check.result is None
     assert (check.prompt_tokens, check.completion_tokens) == (100, 20)
+
+
+def test_extract_locates_quotes_in_public_body_not_in_model_text():
+    """交给模型的是 model_text，比 public_body 多遮了"联系电话："后面的姓名，位置对不上；引用照旧在
+    public_body 里定位，姓名不出现在交给模型的文字里（正确性那位第七轮）。"""
+    seen = {}
+
+    class Recorder:
+        def complete_json(self, system, user, max_tokens=800):
+            seen["user"] = user
+            return {"conditions": GOOD}
+
+    raw = "联系电话：张某、李某。\n" + BODY
+    body = service.public_body(raw)
+    sent = model_text(raw)
+    assert sent.index("一、申报条件") != body.index("一、申报条件")
+    result = extract_conditions_with_ai(Recorder(), "关于组织申报科技项目的通知", body, sent=sent)
+    assert "张某" not in seen["user"] and "李某" not in seen["user"]
+    assert len(result.items) == 3
+    for item in result.items:
+        assert body[item.offset : item.offset + len(item.quote)] == item.quote

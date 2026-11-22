@@ -220,10 +220,14 @@ def _check(item, body, squashed_body, positions, sentences):
     return None, ConditionCandidate(category, text, original, start)
 
 
-def extract_conditions_with_ai(client: ChatClient, title: str, body: str) -> ExtractResult:
-    """调用模型并校验；body 是脱敏后的整篇正文。"""
+def extract_conditions_with_ai(
+    client: ChatClient, title: str, body: str, *, sent: str | None = None
+) -> ExtractResult:
+    """调用模型并校验。body 是入库规则脱敏后的整篇正文（conditions.public_body，页面、核对台用的
+    也是它），引用在它里面定位；sent 是交给模型的文字（model_text，D-114），不给就用 body。"""
     # 输出预算固定 6000，不在通用客户端里按失败再加。
+    text = body if sent is None else sent
     payload = client.complete_json(
-        SYSTEM_PROMPT, f"标题：{title}\n正文：\n{prepare_text(body)}", max_tokens=6000
+        SYSTEM_PROMPT, f"标题：{title}\n正文：\n{prepare_text(text)}", max_tokens=6000
     )
     return validate(payload, body)

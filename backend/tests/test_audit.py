@@ -495,3 +495,29 @@ def test_only_real_booleans_count_as_answers(session) -> None:
     assert report.flagged == [] and report.unverified == 0
     session.expire_all()
     assert all(session.get(DocumentDeadline, r.id).audit_at is None for r in (one, text))
+
+
+def test_audit_sends_the_text_masked_again_by_current_rules(session) -> None:
+    # 11/18：库里还有旧规则漏遮的正文，发给 AI 的原文片段按现行规则再遮一遍
+    doc = add_doc(session, body=BODY + "联系人：张某，联系电话：65432109。")
+    approve(session, doc, date(2026, 10, 15))
+    client, calls = fake_ai([])
+    run_audit(session, client, now=datetime.now(UTC))
+    sent = calls[0]["messages"][1]["content"]
+    assert "2026年10月15日" in sent and "65432109" not in sent and "张某" not in sent
+
+
+def test_audit_checks_quotes_against_the_stored_body(session) -> None:
+    """发给 AI 的片段是 model_text（"联系电话："后面没写号码的姓名入库不遮、它遮）；AI 照抄的原句
+    带着这次才有的标记，对不上库里存的原文，不采信（正确性那位第七轮）。"""
+    body = "请各单位于2026年10月15日前完成网上申报，联系电话：张某、李某。"
+    doc = add_doc(session, body=body)
+    row = approve(session, doc, date(2026, 10, 15))
+    quote = "请各单位于2026年10月15日前完成网上申报，联系电话：[姓名已脱敏]"
+    client, calls = fake_ai(
+        [{"id": row.id, "ok": False, "quote": quote, "found_date": "2026-10-15", "reason": "测试"}]
+    )
+    report = run_audit(session, client, now=datetime.now(UTC))
+    sent = calls[0]["messages"][1]["content"]
+    assert quote in sent and "张某" not in sent and "李某" not in sent
+    assert report.flagged == [] and report.unverified == 1

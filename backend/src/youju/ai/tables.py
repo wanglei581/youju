@@ -4,7 +4,7 @@
 其余单元格脱敏（手机号、身份证、邮箱、银行账号、电话、联系人姓名）后截到 40 字，只发前 10 行。
 """
 
-from youju.crawler.detail import redact_sensitive
+from youju.ai.model_text import model_text
 from youju.lists.rules import is_person_query, valid_org_name
 
 from .client import ChatClient
@@ -37,8 +37,8 @@ reason 是不超过 40 字的简短理由。返回格式：{"column": 0, "reason
 
 
 def _text(value: object) -> str:
-    """按隐私要求脱敏并限制单元格长度。"""
-    return redact_sensitive(str(value) if value is not None else "")[:40]
+    """按隐私要求脱敏（model_text，D-114）并限制单元格长度。"""
+    return model_text(str(value) if value is not None else "")[:40]
 
 
 def _mostly_person_names(rows: list[list[str]], index: int) -> bool:
@@ -71,7 +71,8 @@ def pick_name_column(
     if not kept:
         return None
 
-    kept_headers = [normalized_headers[i] for i in kept]
+    # 表头也按隐私要求遮（缺表头时第一行数据就是表头，"张某 0123-8765…"原样发过去过）
+    kept_headers = [_text(normalized_headers[i]) for i in kept]
     sample_rows: list[list[str]] = []
     for row in rows:
         values = [_text(row[i] if i < len(row) else "") for i in kept]
