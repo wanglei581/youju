@@ -2733,17 +2733,15 @@ _CODE_AFTER = re.compile(r"[ \t\u3000]*[A-Z](?=[A-Z0-9]*\d)[A-Z0-9]{7,9}(?![A-Za
 _UNIT_LINE_END = re.compile(r"(?:[处科室局委办厅站所院组队]|中心|部门|单位|纪委|监委)[ \t\u3000]*$")
 _VERB_BEFORE_NUMBER = re.compile(r"(?:致电|电询|拨打)[^。！？!?\n]{0,20}$")
 _CREDIT_VERB_BEFORE_NUMBER = re.compile(r"(?:致电|电询|拨打)[^。！？!?\n]{0,12}$")
-_URL_MEASURE = (
-    "网址占位符" + "x" * 16
-)  # 21 字：已遮的"（这里隐去了网址）"按超长算，避免长网址二次显示变短；原文网址保留实长
-_EMAIL_MEASURE = "邮箱占位符" + "x" * 10  # 15 字：原文邮箱和"（这里隐去了邮箱）"同长度，两次一致
+_LONG_MEASURE = (
+    "占位符" + "x" * 18
+)  # 21 字：已遮的"（这里隐去了网址）"/"（这里隐去了邮箱）"按超长算，避免二次显示变短；原文保留实长
 
 
 def _verb_before_text(text: str) -> str:
-    """量"致电"到号码中间有多远：已遮网址标记按 21 字算（原文网址保留实长），
-    邮箱（含已遮标记）按 15 字算，联系人等短标记按两字算。"""
-    text = text.replace(URL_MARK, _URL_MEASURE)
-    text = _hide_emails(text).replace(EMAIL_MARK, _EMAIL_MEASURE)
+    """量"致电"到号码中间有多远：已遮网址/邮箱标记按 21 字算（原文保留实长），
+    联系人等短标记按两字算。"""
+    text = text.replace(URL_MARK, _LONG_MEASURE).replace(EMAIL_MARK, _LONG_MEASURE)
     return _short(text)
 
 
@@ -3480,7 +3478,7 @@ _NAME_CELL_MAX = 20
 def _cell_length(value: str) -> int:
     """格子按字数量长短：邮箱并成标记按两个字算，联系人/电话标记按四个字算（避免四字姓名遮后
     把 >20 字的长格缩进 20 字内），已遮网址标记按 21 字算（原文网址保留实长）。"""
-    value = _tidy_marks(_hide_emails(value)).replace(URL_MARK, _URL_MEASURE)
+    value = _tidy_marks(_hide_emails(value)).replace(URL_MARK, _LONG_MEASURE)
     value = value.replace(EMAIL_MARK, "某某")
     return len(_PAGE_MARK_ANY.sub("某某某某", value).strip())
 

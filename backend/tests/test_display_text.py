@@ -1578,7 +1578,7 @@ def test_short_marks_keep_display_idempotent_and_preserve_split_credit_codes() -
         "致电a.cn 87654321",
         "致电https://b.cn 87654321",
         "致电a@b.cn 87654321",
-        "电询王五65432108@qq.com，65432109",
+        "致电a@b.cn      87654321",
     ]:
         stored = v1.redact_sensitive(raw)
         assert v1.redact_sensitive(stored) == stored
@@ -1593,10 +1593,24 @@ def test_short_marks_keep_display_idempotent_and_preserve_split_credit_codes() -
         r1 = v1.display_attachment_row([("说明", raw)])
         assert r1 == v1.display_attachment_row([("说明", r1[0])]) and MARK in r1[0]
 
-    long_url_num = "致电https://very-long-government-portal.example.gov.cn/path/to/notice 87654321"
-    d_long_url = v1.display_body_text(long_url_num)
-    assert d_long_url == "致电（这里隐去了网址） 87654321"
-    assert v1.display_body_text(d_long_url) == d_long_url
+    for raw, expected in [
+        (
+            "致电https://very-long-government-portal.example.gov.cn/path/to/notice 87654321",
+            "致电（这里隐去了网址） 87654321",
+        ),
+        (
+            "致电very-long-email@department.gov.cn 87654321",
+            "致电（这里隐去了邮箱） 87654321",
+        ),
+    ]:
+        d_long = v1.display_body_text(raw)
+        assert d_long == expected
+        assert v1.display_body_text(d_long) == d_long
+
+    # 原文短距离内的邮箱+电话也遮且两次一致
+    d_mail_phone = v1.display_body_text("电询王五65432108@qq.com，65432109")
+    assert d_mail_phone == f"电询王五（这里隐去了邮箱），{MARK}"
+    assert v1.display_body_text(d_mail_phone) == d_mail_phone
 
     # "联系人："下一行带邮箱或长网址时，两次显示结果一致
     for raw in [
