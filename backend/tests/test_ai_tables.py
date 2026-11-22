@@ -134,3 +134,39 @@ def test_headers_are_masked_too() -> None:
     body = seen["body"]
     assert "某某示例企业" in body and "[电话已脱敏]" in body
     assert "87654321" not in body and "87654322" not in body and "张某" not in body
+
+
+def test_household_and_qq_columns_and_labeled_names_are_not_sent() -> None:
+    import json
+
+    seen: dict[str, str] = {}
+    client = _client('{"column": 0, "reason": "企业名称"}', seen)
+    result = pick_name_column(
+        client,
+        "帮扶名单",
+        ["帮扶企业", "帮扶对象", "结对户", "户主", "结对干部", "QQ", ""],
+        [
+            [
+                "山东示例科技有限公司",
+                "王小华",
+                "李明",
+                "赵强",
+                "张伟",
+                "123456789",
+                "王小华（低保户）",
+            ],
+            [
+                "烟台示例电子股份有限公司",
+                "陈芳",
+                "刘洋",
+                "周敏",
+                "孙浩",
+                "987654321",
+                "陈芳（残疾人户）",
+            ],
+        ],
+    )
+    assert result == 0
+    sent = json.loads(seen["body"])["messages"][1]["content"]
+    for secret in ("王小华", "李明", "赵强", "张伟", "陈芳", "123456789", "低保户"):
+        assert secret not in sent

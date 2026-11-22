@@ -328,3 +328,22 @@ def test_ai_fields_get_the_masked_body_and_offsets_in_the_stored_body(session):
     assert [(row.value, row.evidence_offset) for row in ai_rows] == [
         ("资格认定", body.find("须正常经营。"))
     ]
+
+
+def test_extract_existing_masks_doc_title_before_calling_ai(session):
+    doc = add_document(session, number=99, body=BODY)
+    doc.title = "关于申报科技项目的通知（联系人：张某，13812345678，QQ：123456789）"
+    session.commit()
+    sent = []
+
+    def complete_json(system, user, **kwargs):
+        sent.append(user)
+        return {"fields": []}
+
+    fields.extract_existing(
+        session, document_ids=[doc.id], ai_client=SimpleNamespace(complete_json=complete_json)
+    )
+    assert sent
+    for secret in ("张某", "13812345678", "123456789"):
+        assert secret not in sent[0]
+    assert "[姓名已脱敏]" in sent[0] and "[电话已脱敏]" in sent[0] and "[QQ号已脱敏]" in sent[0]

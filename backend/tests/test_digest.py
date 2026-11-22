@@ -904,3 +904,55 @@ def test_readability_text_drops_sites_to_fit_one_message() -> None:
     shown = text_.split("一份可能有几个原因）：")[1].split("；")
     assert 0 < len(shown) < 10 and shown[0].startswith(f"{LONG_SITE}0 9")
     assert digest_module.readability_text(digest_module.Digest(day=date(2026, 9, 29))) is None
+
+
+def test_pick_for_review_masks_dept_and_long_title_before_truncation(session) -> None:
+    from youju.models import Document, DocumentDeadline, Source
+
+    source = Source(
+        level="省级",
+        province="山东",
+        dept="科技",
+        dept_full_name="山东省科学技术厅（联系人：张某，010-12345678）",
+        column_name="通知公告",
+        url="https://kjt.shandong.gov.cn/pii-dept/",
+        enabled=True,
+        parser_config={},
+    )
+    session.add(source)
+    session.flush()
+    long_title = (
+        "关于组织申报2026年度全省重点领域科技创新专项资金和重大示范项目申报工作的通知"
+        "（联系人：李四，电话：13812345678，邮箱：test@example.com）"
+    )
+    assert len(long_title[:60]) < len(long_title)
+    doc = Document(
+        source_id=source.id,
+        url="https://kjt.shandong.gov.cn/pii-dept/1.html",
+        url_key="kjt.shandong.gov.cn/pii-dept/1.html",
+        title=long_title,
+        publish_date=date(2026, 9, 20),
+        first_seen_at=NOW,
+        last_seen_at=NOW,
+    )
+    session.add(doc)
+    session.flush()
+    session.add(
+        DocumentDeadline(
+            document_id=doc.id,
+            fingerprint="p" * 64,
+            kind="企业申报截止",
+            candidate_date=date(2026, 10, 15),
+            evidence="截止2026年10月15日",
+            confidence="高",
+            status="pending",
+        )
+    )
+    session.commit()
+    client, calls = fake_ai(lambda _: [{"id": doc.id, "reason": "覆盖面广"}])
+    picks = pick_for_review(session, client, now=NOW)
+    sent = calls[0]["messages"][1]["content"]
+    for secret in ("张某", "12345678", "李四", "13812345678", "test@example.com"):
+        assert secret not in sent
+    assert "[姓名已脱敏]" in sent and "[电话已脱敏]" in sent
+    assert picks and picks[0].dept == source.dept_full_name and picks[0].title == long_title

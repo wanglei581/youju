@@ -390,7 +390,7 @@ def _shown_quotes(stored: dict, field: str) -> dict:
     def shown(entry: dict, key: str) -> dict:
         copy = dict(entry)
         if isinstance(copy.get(key), str):
-            copy[key] = v1.display_text(copy[key])
+            copy[key] = v1.shown_quote(copy[key])
         return copy
 
     def item_out(item):

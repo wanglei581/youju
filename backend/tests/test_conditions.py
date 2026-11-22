@@ -762,3 +762,25 @@ def test_extract_locates_quotes_in_public_body_not_in_model_text():
     assert len(result.items) == 3
     for item in result.items:
         assert body[item.offset : item.offset + len(item.quote)] == item.quote
+
+
+def test_conditions_masks_title_before_calling_model(session):
+    doc = add_notice(session, 9)
+    doc.title = "关于申报科技项目的通知（联系人：张某，13812345678，test@example.com）"
+    session.commit()
+    seen = []
+    client = FakeClient(lambda user: seen.append(user) or {"conditions": GOOD})
+    service.run_extraction(session, client, now=NOW)
+    assert seen
+    for secret in ("张某", "13812345678", "test@example.com"):
+        assert secret not in seen[0]
+    assert "[姓名已脱敏]" in seen[0] and "[电话已脱敏]" in seen[0] and "[邮箱已脱敏]" in seen[0]
+
+    seen.clear()
+    extract_conditions_with_ai(
+        FakeClient(lambda user: seen.append(user) or {"conditions": GOOD}),
+        "科技项目申报通知（QQ：123456789，010-12345678）",
+        service.public_body(BODY),
+    )
+    assert seen and "123456789" not in seen[0] and "12345678" not in seen[0]
+    assert "[QQ号已脱敏]" in seen[0] and "[电话已脱敏]" in seen[0]

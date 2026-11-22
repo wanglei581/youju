@@ -1654,7 +1654,7 @@ def test_short_marks_keep_display_idempotent_and_preserve_split_credit_codes() -
         nl_m = model_text(nl_call)
         assert nl_m == "请致电[姓名已脱敏]\n[电话已脱敏]"
         assert model_text(nl_m) == nl_m
-        assert v1.shown_quote(nl_call) == nl_d
+        assert v1.shown_quote(nl_call) == v1.display_body_text(v1.redact_sensitive(nl_call))
     assert v1.display_body_text("请致电李娜\n\n87654321") == "请致电李娜\n\n87654321"
 
     # 超长网址后的非电话数字（一次未遮、二次保持不遮）；拆开信用代码隔着短/长网址或已遮标记也保留
@@ -1899,3 +1899,424 @@ def test_row_short_url_sure_names_and_marked_email_variants_stay_idempotent():
     body_userinfo = v1.display_body_text("请访问https://user@example.com/path查看")
     assert body_userinfo == "请访问https://（这里隐去了邮箱）/path查看"
     assert v1.display_body_text(body_userinfo) == body_userinfo
+
+
+def test_pr_a_categories_1_2_3_4_display_and_quotes() -> None:
+    """PR A ①–④：结对帮扶表、跨行姓名、见正文、单位粘连/逗号多姓名、联系人/QQ/邻格、shown_quote 幂等。"""
+    # ① 结对帮扶表格（正文、阅读、附件、模型、原句、附件表格行）与政策正文反例
+    household = "\n".join(
+        [
+            "（二）巩固脱贫户、监测户、低保户帮扶成果。",
+            "1",
+            "王小华",
+            "边缘易致贫户",
+            "13812345678",
+            "李明",
+            "（某某科技处）",
+            "13912345678",
+            "2",
+            "才让多杰",
+            "低保户、残疾人户",
+            "13712345678",
+            "阿旺曲珍",
+            "（某某服务中心）",
+            "13612345678",
+            "备注：保障对象包括脱贫不稳定户、边缘易致贫户、突发严重困难户及低保户。",
+        ]
+    )
+    for fn, check_phones in (
+        (lambda s: v1.display_body_text(v1.redact_sensitive(s)), True),
+        (lambda s: v1.display_attachment_text(texts.mask(s)), True),
+        (v1.display_body_text, False),
+        (v1._clean_reading_body, True),
+        (v1.display_attachment_text, False),
+        (model_text, True),
+        (v1.shown_quote, True),
+    ):
+        out = fn(household)
+        for name in ("王小华", "才让多杰", "李明", "阿旺曲珍"):
+            assert name not in out
+        if check_phones:
+            assert "13812345678" not in out and "13912345678" not in out
+        assert "脱贫户、监测户、低保户" in out
+        assert "脱贫不稳定户、边缘易致贫户、突发严重困难户及低保户" in out
+        assert fn(out) == out
+
+    assert v1.display_attachment_row([("帮扶对象", "低保户"), ("姓名", "王小华")]) == [
+        "低保户",
+        "（这里隐去了联系人）",
+    ]
+    assert v1.display_attachment_row(
+        [("类别", "低保户"), ("项目", "科技项目"), ("姓名", "张三")]
+    ) == ["低保户", "科技项目", "（这里隐去了联系人）"]
+    assert v1.display_attachment_row([("序号", "1"), ("对象", "才让多杰"), ("类别", "五保户")]) == [
+        "1",
+        "（这里隐去了联系人）",
+        "五保户",
+    ]
+
+    for sent_raw in ("帮扶对象：王小华。其他说明。", "王小华（低保户）。其他说明。"):
+        for fn in (
+            v1.display_body_text,
+            v1._clean_reading_body,
+            v1.display_attachment_text,
+            model_text,
+            v1.shown_quote,
+        ):
+            sent_out = fn(sent_raw)
+            assert "王小华" not in sent_out and "其他说明。" in sent_out
+            assert fn(sent_out) == sent_out
+
+    for row_raw, hidden_words, kept_cells in (
+        ("1 | 张三 | 低保户 | 李子酒", ("张三",), ("李子酒",)),
+        ("1\t张三\t低保户\t李子酒", ("张三",), ("李子酒",)),
+        ("低保户 | 张三 | 李子酒", ("张三",), ("李子酒",)),
+        ("1 | 低保户 | 张三 | 李子酒", ("张三",), ("李子酒",)),
+        ("1 | 李子酒 | 低保户 | 张三", ("张三",), ("李子酒",)),
+        ("1 | 才让多杰 | 低保户 | 李子酒", ("才让多杰",), ("李子酒",)),
+        ("1 | 苹果 | 低保户 | 才让多杰", ("才让多杰",), ("苹果",)),
+        ("1 | 李四 | 低保户 | 张三", ("李四", "张三"), ("低保户",)),
+        ("1 | 科技项目 | 低保户 | 张三", ("张三",), ("科技项目",)),
+        ("1 | 低保户 | 才让多杰 | 项目", ("才让多杰",), ("项目",)),
+        ("1 | 才让多杰 | 低保户 | 科技项目", ("才让多杰",), ("科技项目",)),
+        ("序号 | 项目 | 类别 | 姓名\n1 | 李子酒 | 低保户 | 张三", ("张三",), ("李子酒",)),
+        ("序号 | 姓名 | 类别 | 项目\n1 | 王路 | 低保户 | 李子酒", ("王路",), ("李子酒",)),
+        ("序号 | 姓名 | 类别 | 项目\n1 | 张小酒 | 低保户 | 苹果", ("张小酒",), ("苹果",)),
+        (
+            "1 | 李子酒 | 低保户 | 张三\n2 | 科技项目 | 低保户 | 王五",
+            ("张三", "王五"),
+            ("李子酒", "科技项目"),
+        ),
+        (
+            "1 | 张三 | 低保户 | 苹果\n2 | 王路 | 低保户 | 梨子",
+            ("张三", "王路"),
+            ("苹果", "梨子"),
+        ),
+        (
+            "1 | 张三 | 低保户 | 苹果\n2 | 王小路 | 低保户 | 梨子",
+            ("张三", "王小路"),
+            ("苹果", "梨子"),
+        ),
+        (
+            "1 | 王小路 | 低保户 | 苹果\n2 | 张三 | 低保户 | 梨子",
+            ("王小路", "张三"),
+            ("苹果", "梨子"),
+        ),
+        (
+            "1 | 张三 | 低保户 | 苹果\n2 | 王小路 |  | 梨子",
+            ("张三", "王小路"),
+            ("苹果", "梨子"),
+        ),
+        (
+            "1 | 张三 | 低保户 | 苹果\n2 | 科技项目 |  | 梨子",
+            ("张三",),
+            ("科技项目", "苹果", "梨子"),
+        ),
+        (
+            "1 | 张三 | 低保户 | 苹果\n2 | 王小路 | 其他说明 | 梨子",
+            ("张三",),
+            ("王小路", "其他说明", "苹果", "梨子"),
+        ),
+        ("1 | 张三 | 低保户 | 其他说明。", ("张三",), ("其他说明。",)),
+        ("1\t张三\t低保户\t其他说明。", ("张三",), ("其他说明。",)),
+        ("1 | 张三 | 低保户 | 其他说明？", ("张三",), ("其他说明？",)),
+    ):
+        for fn in (
+            v1.display_body_text,
+            v1._clean_reading_body,
+            v1.display_attachment_text,
+            model_text,
+            v1.shown_quote,
+        ):
+            row_out = fn(row_raw)
+            for secret in hidden_words:
+                assert secret not in row_out
+            for kept_cell in kept_cells:
+                assert kept_cell in row_out
+            assert fn(row_out) == row_out
+
+    for keep_tab in (
+        "备注：\t保障对象包括低保户。\t李子酒",
+        "1 | 张三 | 类别甲 | 苹果\n2 | 王小路 |  | 梨子",
+    ):
+        for fn in (
+            v1.display_body_text,
+            v1._clean_reading_body,
+            v1.display_attachment_text,
+            model_text,
+            v1.shown_quote,
+        ):
+            assert fn(keep_tab) == keep_tab
+
+    for headerless_cells, expected_row in (
+        (
+            [("", "1"), ("", "张三"), ("", "低保户"), ("", "李子酒")],
+            ["1", "（这里隐去了联系人）", "低保户", "李子酒"],
+        ),
+        (
+            [("", "1"), ("", "低保户"), ("", "才让多杰"), ("", "项目")],
+            ["1", "低保户", "（这里隐去了联系人）", "项目"],
+        ),
+        (
+            [("", "1"), ("", "科技项目"), ("", "低保户"), ("", "张三")],
+            ["1", "科技项目", "低保户", "（这里隐去了联系人）"],
+        ),
+        (
+            [("", "1"), ("", "张三"), ("", "低保户"), ("", "其他说明。")],
+            ["1", "（这里隐去了联系人）", "低保户", "其他说明。"],
+        ),
+        (
+            [("", "1"), ("", "李子酒"), ("", "低保户"), ("", "张三")],
+            ["1", "李子酒", "低保户", "（这里隐去了联系人）"],
+        ),
+        (
+            [("", "1"), ("", "李四"), ("", "低保户"), ("", "张三")],
+            ["1", "（这里隐去了联系人）", "低保户", "（这里隐去了联系人）"],
+        ),
+        (
+            [("", "1"), ("", "才让多杰"), ("", "低保户"), ("", "李子酒")],
+            ["1", "（这里隐去了联系人）", "低保户", "李子酒"],
+        ),
+        (
+            [("", "1"), ("", "苹果"), ("", "低保户"), ("", "才让多杰")],
+            ["1", "苹果", "低保户", "（这里隐去了联系人）"],
+        ),
+        (
+            [("", "1"), ("", "王路"), ("", "低保户"), ("", "梨子")],
+            ["1", "（这里隐去了联系人）", "低保户", "梨子"],
+        ),
+        (
+            [("序号", "1"), ("项目", "李子酒"), ("类别", "低保户"), ("姓名", "张三")],
+            ["1", "李子酒", "低保户", "（这里隐去了联系人）"],
+        ),
+        (
+            [("序号", "1"), ("姓名", "王路"), ("类别", "低保户"), ("项目", "李子酒")],
+            ["1", "（这里隐去了联系人）", "低保户", "李子酒"],
+        ),
+        (
+            [("序号", "1"), ("姓名", "张小酒"), ("类别", "低保户"), ("项目", "苹果")],
+            ["1", "（这里隐去了联系人）", "低保户", "苹果"],
+        ),
+    ):
+        got_row = v1.display_attachment_row(headerless_cells)
+        assert got_row == expected_row
+        assert (
+            v1.display_attachment_row(
+                [(h, g) for (h, _), g in zip(headerless_cells, got_row, strict=True)]
+            )
+            == got_row
+        )
+
+    # 非帮扶行的既有联系人链式规则不回退（入库脱敏后经页面/阅读/模型路径）
+    for chain_raw, hidden_chain in (
+        ("省科技厅 赵刚处长 李娜 QQ：12345678", ("赵刚处长", "李娜", "12345678")),
+        ("钱多多、87654321@qq.com（张 伟）", ("钱多多", "87654321@qq.com", "张 伟")),
+    ):
+        stored_chain = v1.redact_sensitive(chain_raw)
+        for fn in (
+            lambda s: v1.display_body_text(v1._clean_reading_body(s)),
+            v1._clean_reading_body,
+            model_text,
+        ):
+            chain_out = fn(stored_chain)
+            for tok in hidden_chain:
+                assert tok not in chain_out
+            assert fn(chain_out) == chain_out
+
+    # ② 跨行姓名与"见正文"反例
+    for raw in (
+        "某处 张某\n电话：0123-65432109",
+        "某处 张某 李四\n电 话：0123-65432109、65432110",
+        "某处 张某 张 蕾\n联系电话：65432109",
+        "某处 张某，\n联系电话：13812345678",
+        "某处\n张某\n电话：0123-65432109",
+        "某处 张某\n电话：[电话已脱敏]",
+    ):
+        for fn in (
+            v1.display_body_text,
+            v1._clean_reading_body,
+            v1.display_attachment_text,
+            model_text,
+            v1.shown_quote,
+        ):
+            res = fn(raw)
+            assert "张某" not in res and "李四" not in res and "张 蕾" not in res
+            assert fn(res) == res
+
+    for keep in (
+        "推荐表\n电话：（这里隐去了电话）",
+        "方案\n电话：（这里隐去了电话）",
+        "高新处\n电话：（这里隐去了电话）",
+        "关于\n电话：（这里隐去了电话）",
+        "联系人：见正文",
+    ):
+        assert v1.display_body_text(keep) == keep
+        assert v1._clean_reading_body(keep) == keep
+        assert v1.shown_quote(keep) == keep
+    assert v1.display_attachment_row([("联系人", "姓名：见正文 a.cn")]) == [
+        "姓名：见正文 （这里隐去了网址）"
+    ]
+
+    # ③ 单位粘连（中心/公司）与逗号多姓名（42069 / 118 / 45316）
+    unit_sample = (
+        "咨询电话及联系人：[电话已脱敏]-8505，某市科技创新发展中心王小明\n"
+        "举报电话及联系人：[电话已脱敏]，[电话已脱敏]，某局政策法规处李四，赵五"
+    )
+    for fn in (
+        v1.display_body_text,
+        v1._clean_reading_body,
+        v1.display_attachment_text,
+        model_text,
+    ):
+        out = fn(unit_sample)
+        assert "王小明" not in out and "李四" not in out and "赵五" not in out
+        assert fn(out) == out
+    assert v1.display_body_text("联系人：请提交中心申请书") == "联系人：请提交中心申请书"
+    assert "王小明" not in v1.display_body_text("某高新公司王小明[手机号已脱敏]咨询。")
+
+    comma_raw = (
+        "某市经济信息委：王小明，李四，赵五；联系电话：65432109，65432108；邮箱：abc@example.com；"
+    )
+    comma_stored = "某市经济信息委：王小明，[姓名已脱敏]；联系电话：[电话已脱敏]，[电话已脱敏]；"
+    for sample in (comma_raw, comma_stored):
+        for fn in (
+            v1.display_body_text,
+            v1._clean_reading_body,
+            v1.display_attachment_text,
+            model_text,
+        ):
+            out = fn(sample)
+            assert "王小明" not in out and "李四" not in out and "赵五" not in out
+            assert "65432109" not in out and "abc@example.com" not in out
+            assert fn(out) == out
+
+    # ③ 联系人列本地号码、QQ 数字列、邮箱/QQ 相邻格（左+右）
+    assert v1.display_attachment_row([("联系人", "张三\n65432109")]) == [
+        "（这里隐去了联系人）\n（这里隐去了电话）"
+    ]
+    row_multi = v1.display_attachment_row([("联系人", "张三\n65432109"), ("工作", "23456789")])
+    assert row_multi == ["（这里隐去了联系人）\n（这里隐去了电话）", "（这里隐去了电话）"]
+    assert (
+        v1.display_attachment_row([("联系人", row_multi[0]), ("工作", row_multi[1])]) == row_multi
+    )
+    assert v1.display_attachment_row([("项目", "联系人"), ("内容", "张三\n65432109")]) == [
+        "联系人",
+        "（这里隐去了联系人）\n（这里隐去了电话）",
+    ]
+    for keep_row in (
+        [("联系人编号", "12345678")],
+        [("联系人", "20261122")],
+        [("联系人", "10000000元")],
+        [("联系人", "33610")],
+    ):
+        assert v1.display_attachment_row(keep_row) == [keep_row[0][1]]
+
+    Q = v1.QQ_MARK
+    E = EMAIL_MARK
+    assert v1.display_attachment_row([("QQ", "123456789")]) == [Q]
+    assert v1.display_attachment_row([("QQ", "202611221")]) == [Q]
+    assert v1.display_attachment_row([("QQ", "2026112299")]) == [Q]
+    assert v1.display_attachment_row([("QQ号", "123456789")]) == [Q]
+    assert v1.display_attachment_row([("QQ群号", "123456789、987654321")]) == [f"{Q}、{Q}"]
+    assert v1.display_attachment_row([("联系QQ", "张三：123456789")]) == [
+        f"（这里隐去了联系人）：{Q}"
+    ]
+    assert v1.display_attachment_row([("项目", "联系QQ"), ("内容", "123456789")]) == ["联系QQ", Q]
+    assert v1.display_attachment_row([("QQ", "12345678"), ("备用", "23456789")]) == [Q, MARK]
+    assert v1.display_attachment_row([("QQ", "123456789@qq.com")]) == [E]
+    for keep_qq in (
+        [("QQ", "20261122")],
+        [("QQ", "100000元")],
+        [("QQ", "12345.67")],
+        [("QQ", "012345")],
+        [("QQ数量", "123456")],
+        [("QQ编号", "12345678")],
+    ):
+        assert v1.display_attachment_row(keep_qq) == [keep_qq[0][1]]
+
+    for adj_row, expected in (
+        ([("", "王五"), ("", "abc@example.com")], ["（这里隐去了联系人）", E]),
+        ([("", "abc@example.com"), ("", "王五")], [E, "（这里隐去了联系人）"]),
+        ([("", "王五"), ("", "87654321＠qq.com")], ["（这里隐去了联系人）", E]),
+        ([("", "87654321＠qq.com"), ("", "王五")], [E, "（这里隐去了联系人）"]),
+        ([("", "王五"), ("", Q)], ["（这里隐去了联系人）", Q]),
+        ([("", "王五"), ("QQ", "123456789")], ["（这里隐去了联系人）", Q]),
+        ([("QQ", "123456789"), ("", "王五")], [Q, "（这里隐去了联系人）"]),
+        (
+            [("", "王五"), ("", "abc@example.com"), ("", "65432109")],
+            ["（这里隐去了联系人）", E, MARK],
+        ),
+        ([("工作单位", "某研究院"), ("邮箱", "abc@example.com")], ["某研究院", E]),
+        ([("日期", "20261122"), ("", "黄金")], ["20261122", "黄金"]),
+        ([("项目编号", "12345678"), ("", "黄金")], ["12345678", "黄金"]),
+        ([("职务", "科员"), ("", "abc@example.com")], ["科员", E]),
+    ):
+        got = v1.display_attachment_row(adj_row)
+        assert got == expected
+        assert (
+            v1.display_attachment_row([(h, g) for (h, _), g in zip(adj_row, got, strict=True)])
+            == got
+        )
+
+    # ④B shown_quote / shown_due 补遮、防误遮与幂等性
+    quote_cases = [
+        (
+            "联系人：张某，电话：65432109，截止2026年10月15日",
+            "联系人：（这里隐去了联系人），电话：（这里隐去了电话），截止2026年10月15日",
+        ),
+        ("联系电话：张某、李某。", "联系电话：（这里隐去了联系人）、（这里隐去了联系人）。"),
+        ("QQ：123456789，网址https://a.gov.cn", f"QQ：{Q}，网址（这里隐去了网址）"),
+        ("联系电话：010 - 12345678", f"联系电话：{MARK}"),
+        ("一审：张三、二审：李四", "一审：（这里隐去了署名）、二审：（这里隐去了署名）"),
+        (
+            "钱多多、李娜 87654321",
+            f"（这里隐去了联系人）、（这里隐去了联系人） {MARK}",
+        ),
+        (
+            "联系人：刘老师\n65432109",
+            f"联系人：（这里隐去了联系人）\n{MARK}",
+        ),
+        (
+            "经办人：和文丹\n65432109",
+            f"经办人：（这里隐去了联系人）\n{MARK}",
+        ),
+        (
+            "咨询：刘老师，联系人：王小明，项目资金（万元）按规定拨付。",
+            "咨询：刘老师，联系人：（这里隐去了联系人），项目资金（万元）按规定拨付。",
+        ),
+        (
+            "申报条件：总经费（万元）不低于100万元，团队成员中韩语、英语人才不少于2人，成长期企业优先。",
+            "申报条件：总经费（万元）不低于100万元，团队成员中韩语、英语人才不少于2人，成长期企业优先。",
+        ),
+        ("班主任 0123-87654321", f"班主任 {MARK}"),
+        ("申请表 87654321＠qq.com", f"申请表 {E}"),
+        ("值班老师 [电话已脱敏]", f"值班老师 {MARK}"),
+        ("请联系相关同志，[电话已脱敏]", f"请联系相关同志，{MARK}"),
+    ]
+    for raw_q, expected_q in quote_cases:
+        shown = v1.shown_quote(raw_q)
+        assert shown == expected_q
+        assert v1.shown_quote(shown) == shown
+        due_out = v1.shown_due({"kind": "申报截止", "quote": raw_q})
+        assert due_out == {"kind": "申报截止", "quote": expected_q}
+
+    # 长分隔符/长空白/长并列姓名性能回归：不能出现二次回溯或平方级重建
+    import time
+
+    long_sep = "A" + "," * 12000
+    long_spaces = "A" + " " * 20000 + "X\n电话：65432109"
+    long_names = "、".join(["张三"] * 2000) + "\n电话：65432109"
+    for perf_raw in (f"{long_sep}张三\n电话：65432109", f"{long_sep}张三 65432109"):
+        started = time.perf_counter()
+        perf_out = v1.display_body_text(perf_raw)
+        assert time.perf_counter() - started < 0.5
+        assert "张三" not in perf_out and "65432109" not in perf_out
+    for fn in (v1.display_body_text, v1._clean_reading_body, model_text):
+        started_space = time.perf_counter()
+        space_out = fn(long_spaces)
+        assert time.perf_counter() - started_space < 0.5
+        assert "65432109" not in space_out and space_out.startswith("A")
+        started_names = time.perf_counter()
+        names_out = fn(long_names)
+        assert time.perf_counter() - started_names < 0.5
+        assert "张三" not in names_out and "65432109" not in names_out

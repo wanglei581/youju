@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 
 from .client import ChatClient
+from .model_text import model_text
 
 
 @dataclass(frozen=True)
@@ -24,7 +25,7 @@ _SYSTEM = """你是有据后台的文档分类助手。必须只返回 JSON 对�
 def classify_with_ai(client: ChatClient, title: str, text: str) -> AIClassification | None:
     """分类标题和正文；无效类别或字段时丢弃结果。"""
     try:
-        result = client.complete_json(_SYSTEM, f"标题：{title}\n正文：{text[:3000]}")
+        result = client.complete_json(_SYSTEM, f"标题：{model_text(title)}\n正文：{text[:3000]}")
         kind = result.get("kind")
         if kind not in ("申报通知", "名单", "政策", "其他"):
             return None

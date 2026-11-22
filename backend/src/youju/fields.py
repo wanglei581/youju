@@ -301,7 +301,7 @@ def extract_existing(
                 ai_candidates = [
                     replace(item, evidence_offset=detail.body_text.find(item.evidence))
                     for item in extract_fields_with_ai(
-                        ai_client, doc.title, model_text(detail.body_text)
+                        ai_client, model_text(doc.title), model_text(detail.body_text)
                     )
                     if item.evidence in detail.body_text
                 ]

@@ -175,7 +175,7 @@ def _ai_check(
         + (f" {row.approved_time.strftime('%H:%M')}" if row.approved_time else "")
         for row in rows
     )
-    user = f"标题：{doc.title}\n相关原文：\n{excerpt}\n\n截止：\n{listing}"
+    user = f"标题：{model_text(doc.title)}\n相关原文：\n{excerpt}\n\n截止：\n{listing}"
     result = client.complete_json(_SYSTEM, user, max_tokens=200 + 150 * len(rows))
     items = result.get("items")
     wanted = {row.id for row in rows}

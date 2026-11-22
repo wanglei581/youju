@@ -17,6 +17,7 @@ from youju.models import CONDITION_CATEGORIES
 
 from .client import AIError, ChatClient
 from .interpret import SENTENCES, normalize
+from .model_text import model_text
 
 # 新输出来源。已入库清单和候选筛选不改。
 PROMPT_VERSION = "conditions-v2"
@@ -228,6 +229,6 @@ def extract_conditions_with_ai(
     # 输出预算固定 6000，不在通用客户端里按失败再加。
     text = body if sent is None else sent
     payload = client.complete_json(
-        SYSTEM_PROMPT, f"标题：{title}\n正文：\n{prepare_text(text)}", max_tokens=6000
+        SYSTEM_PROMPT, f"标题：{model_text(title)}\n正文：\n{prepare_text(text)}", max_tokens=6000
     )
     return validate(payload, body)

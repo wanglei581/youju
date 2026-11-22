@@ -220,8 +220,17 @@ _ID_CELL = re.compile(
 )
 _PHONE_CELL = re.compile(
     r"^[*＊]?\s*(?:[\u4e00-\u9fff]\s*){0,6}"
-    r"(?:手\s*机(?:\s*号(?:\s*码)?)?|电\s*话(?:\s*号(?:\s*码)?)?|联\s*系\s*方\s*式)"
+    r"(?:手\s*机(?:\s*号(?:\s*码)?)?|电\s*话(?:\s*号(?:\s*码)?)?|联\s*系\s*方\s*式"
+    r"|联\s*系\s*人|联\s*络\s*人|经\s*办\s*人|负\s*责\s*人)"
     r"(?:\s*[/／、]\s*(?:手\s*机|电\s*话)(?:\s*号(?:\s*码)?)?)?"
+    r"(?:\s*[(（][^()（）]{1,12}[)）])?\s*[*＊]?[\s:：]*$"
+)
+_NON_QQ_NUMERIC = re.compile(
+    r"金额|经费|资金|元|数|量|额|投资|面积|产值|收入|利润|编号|代码|序号|邮编|日期|时间|年|邮箱|邮件"
+)
+_QQ_CELL = re.compile(
+    r"^[*＊]?\s*(?:[\u4e00-\u9fff]\s*){0,6}"
+    r"(?:QQ|ＱＱ|qq)(?:\s*群)?(?:\s*号(?:\s*码)?)?"
     r"(?:\s*[(（][^()（）]{1,12}[)）])?\s*[*＊]?[\s:：]*$"
 )
 # 没写标签的号码：一整串数字（两边都不是数字）要能整个分成几段，每段是常见分法的身份证号、手机号、
@@ -259,12 +268,16 @@ def _account_cell(text: str, *, types: bool = False) -> bool:
 
 
 def _cell_label(text: str, *, types: bool = False) -> str | None:
-    """表格里这一格是不是标签：账号（_account_cell）、身份证号、手机（_ID_CELL、_PHONE_CELL）。"""
+    """表格里这一格是不是标签：账号（_account_cell）、身份证号、手机、QQ（_ID_CELL、_PHONE_CELL、_QQ_CELL）。"""
     if _account_cell(text, types=types):
         return "account"
     if _ID_CELL.match(text):
         return "id"
-    return "phone" if _PHONE_CELL.match(text) else None
+    if _PHONE_CELL.match(text):
+        return "phone"
+    if _QQ_CELL.match(text) and not _NON_QQ_NUMERIC.search("".join(text.split())):
+        return "qq"
+    return None
 
 
 def _is_card(values: list[str]) -> bool:
@@ -328,6 +341,13 @@ def _labeled_label(values: list[str], label: str) -> str | None:
         return None
     if label == "phone":
         return "[手机号已脱敏]" if _MOBILE.fullmatch(digits) else None
+    if label == "qq":
+        ok = (
+            5 <= len(digits) <= 11
+            and digits[0] != "0"
+            and not (len(digits) == 8 and _DATE.fullmatch(digits))
+        )
+        return "[QQ号已脱敏]" if ok else None
     # 账号：10–30 位
     return "[银行账号已脱敏]" if 10 <= len(digits) <= 30 else None
 
@@ -448,7 +468,7 @@ def _number_spans(plain: str, column: str | None) -> list[tuple[int, int, str]]:
         after_word = bool(_AMOUNT_BEFORE.search(before))
         after_unit = unit in ("元", "万", "亿")
         amount = after_word or after_unit
-        parts = _split(plain, groups, values, label, amount)
+        parts = _split(plain, groups, values, None if (label == "qq" and amount) else label, amount)
         parts += _ids_left(values, {k for i, j, _ in parts for k in range(i, j)})
         spans += [(groups[i][0], groups[j - 1][1], name) for i, j, name in parts]
         if amount:

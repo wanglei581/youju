@@ -163,3 +163,27 @@ def test_evidence_is_checked_against_the_stored_body():
         make_client([plain]), "标题", text, date(2026, 9, 1), body=body
     )
     assert [r.due_date for r in result] == [date(2026, 10, 15)]
+
+
+def test_title_pii_is_masked_before_deadline_model():
+    seen = {}
+
+    def handler(request):
+        seen["body"] = request.content.decode()
+        return httpx.Response(
+            200, json={"choices": [{"message": {"content": '{"deadlines": []}'}}]}
+        )
+
+    client = ChatClient(
+        "https://example.test", "key", "qwen", transport=httpx.MockTransport(handler)
+    )
+    extract_deadlines_with_ai(
+        client,
+        "关于申报项目的通知（联系人：张某，010-12345678，65432109，test@example.com）",
+        BODY,
+        date(2026, 9, 1),
+    )
+    sent = seen["body"]
+    for secret in ("张某", "12345678", "65432109", "test@example.com"):
+        assert secret not in sent
+    assert "[姓名已脱敏]" in sent and "[电话已脱敏]" in sent and "[邮箱已脱敏]" in sent

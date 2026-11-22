@@ -295,7 +295,7 @@ def run_extraction(
             # 交给模型的走 model_text（D-114）；引用照旧在 public_body 里定位，页面上用的也是它
             result = extract_conditions_with_ai(
                 client,
-                doc.title,
+                model_text(doc.title),
                 public_body(detail.body_text),
                 sent=model_text(detail.body_text),
             )

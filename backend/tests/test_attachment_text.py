@@ -2790,3 +2790,23 @@ def test_policy_texts_kept_two_years_without_copies(session, client) -> None:  #
     copies.extract_texts(session, fetcher=fetcher, now=later)
     assert _url_rows(session) == {}
     assert [x.state for x in at.readings(session, kept.id, later)] == ["old"]
+
+
+def test_mask_contact_wrapped_mobile_and_qq_columns() -> None:
+    """PR A ③：联系人列折行手机、QQ 列数字脱敏（排除日期/金额/小数/前导0/数量编号）。"""
+    assert at.mask("张三\n1381234\n5678", column="phone") == "[姓名已脱敏]\n[手机号已脱敏]"
+    assert at._cell_label("联系人") == "phone"
+    assert at._cell_label("QQ") == "qq"
+    assert at._cell_label("QQ号") == "qq"
+    assert at._cell_label("QQ群号") == "qq"
+    assert at._cell_label("QQ数量") is None
+    assert at._cell_label("QQ编号") is None
+
+    assert at.mask("123456789", column="qq") == "[QQ号已脱敏]"
+    assert at.mask("202611221", column="qq") == "[QQ号已脱敏]"
+    assert at.mask("2026112299", column="qq") == "[QQ号已脱敏]"
+    assert at.mask("12345\n6789", column="qq") == "[QQ号已脱敏]"
+    assert at.mask("123456789、987654321", column="qq") == "[QQ号已脱敏]、[QQ号已脱敏]"
+    assert at.mask("123456789@qq.com", column="qq") == "[邮箱已脱敏]"
+    for keep in ("20261122", "100000元", "12345.67", "012345"):
+        assert at.mask(keep, column="qq") == keep

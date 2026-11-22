@@ -132,3 +132,39 @@ def test_machine_excerpt_quote_in_list_rows_is_masked(client, session, seeded): 
     item = next(i for i in report["items"] if i["id"] == str(seeded["apply"]))
     assert item["source"] == "excerpt"
     assert item["quote"] == f"材料报送截止：2026年10月10日，网址{URL}。"
+
+
+def test_exports_and_advisor_shown_quotes_mask_contacts_and_phones(client, session, seeded):  # noqa: F811
+    from youju.api.advisor import _shown_quotes
+
+    row = session.scalar(
+        select(DocumentDeadline).where(
+            DocumentDeadline.document_id == seeded["apply"], DocumentDeadline.status == "approved"
+        )
+    )
+    raw_quote = "联系人：张某，电话：65432109，截止2026年10月15日，网址https://a.gov.cn"
+    row.evidence = raw_quote
+    session.commit()
+    v1._EXCERPT_CACHE.clear()
+    v1._REPORT_CACHE.clear()
+
+    preview = client.post(
+        "/api/v1/exports/preview", json={"ids": [str(seeded["apply"])], "excerpts": 1}
+    ).json()
+    shown = preview["items"][0]["deadline_quote"]
+    assert "张某" not in shown and "65432109" not in shown and "https://" not in shown
+    assert "（这里隐去了联系人）" in shown and "（这里隐去了电话）" in shown and URL in shown
+
+    stored = {
+        "items": [
+            {
+                "text": "联系电话：张某、李某。",
+                "refs": [{"quote": "QQ：123456789，网址https://a.gov.cn"}],
+            }
+        ],
+        "verified": [{"quote": "一审：张三、二审：李四"}],
+    }
+    out = _shown_quotes(stored, "items")
+    assert out["items"][0]["text"] == "联系电话：（这里隐去了联系人）、（这里隐去了联系人）。"
+    assert out["items"][0]["refs"][0]["quote"] == f"QQ：{v1.QQ_MARK}，网址{URL}"
+    assert out["verified"][0]["quote"] == "一审：（这里隐去了署名）、二审：（这里隐去了署名）"

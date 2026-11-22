@@ -19,6 +19,7 @@ from sqlalchemy import func, or_, select, text
 from sqlalchemy.orm import Session
 
 from youju.ai.client import AIError, ChatClient
+from youju.ai.model_text import model_text
 from youju.ai.usage import BEIJING, UsageSummary, usage_summary
 from youju.alerts import MAX_ALERT_BYTES
 from youju.classify import effective_kind
@@ -808,7 +809,8 @@ def pick_for_review(
         return []
     offered = {doc_id: (title, dept, due) for doc_id, title, dept, due in rows}
     listing = "\n".join(
-        f"编号 {doc_id}｜{dept}｜{title[:60]}｜候选截止 {due}" for doc_id, title, dept, due in rows
+        f"编号 {doc_id}｜{model_text(dept)}｜{model_text(title)[:60]}｜候选截止 {due}"
+        for doc_id, title, dept, due in rows
     )
     try:
         result = client.complete_json(_SYSTEM, f"待核对通知：\n{listing}", max_tokens=300)

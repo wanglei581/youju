@@ -339,7 +339,7 @@ def _items(session: Session, raw_ids: list[str], excerpts: bool = False) -> list
         # 截止原句和页面一样走显示层：网址、号码、邮箱不露（11/2 复测，D-112）
         excerpt_quote = "\n".join(
             dict.fromkeys(
-                v1.display_text(d.verification_quote or d.evidence)
+                v1.shown_quote(d.verification_quote or d.evidence)
                 for d in [*approved, *changed]
                 if d.verification_quote or d.evidence
             )
@@ -355,7 +355,7 @@ def _items(session: Session, raw_ids: list[str], excerpts: bool = False) -> list
                     + ("（原文摘录）" if due.source == "excerpt" else "")
                 ]
                 roles = [due.kind + ("（原文摘录）" if due.source == "excerpt" else "")]
-                excerpt_quote = v1.display_text(due.quote) if due.quote else ""
+                excerpt_quote = v1.shown_quote(due.quote) if due.quote else ""
             elif excerpt_views.get(master):
                 notes = ["截止未核对，以原文为准"]
                 roles = ["截止未核对"]

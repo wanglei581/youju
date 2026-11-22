@@ -413,3 +413,17 @@ def test_triage_sends_the_text_masked_again_by_current_rules(session) -> None:
     triage_feedback(session, client, now=NOW)
     sent = json.dumps(calls, ensure_ascii=False)
     assert calls and APPLY in sent and "65432109" not in sent and "张某" not in sent
+
+
+def test_triage_masks_doc_title_before_sending(session) -> None:
+    doc = add_doc(session, body=BODY)
+    doc.title = "关于申报项目的通知（联系人：张某，010-12345678，QQ：123456789）"
+    session.commit()
+    deadline(session, doc, date(2026, 10, 15))
+    feedback(session, doc)
+    client, calls = fake_ai([])
+    triage_feedback(session, client, now=NOW)
+    sent = json.dumps(calls, ensure_ascii=False)
+    for secret in ("张某", "12345678", "123456789"):
+        assert secret not in sent
+    assert "[姓名已脱敏]" in sent and "[电话已脱敏]" in sent and "[QQ号已脱敏]" in sent
