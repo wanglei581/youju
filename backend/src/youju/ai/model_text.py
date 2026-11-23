@@ -13,7 +13,7 @@
 照旧不用。
 """
 
-from youju.crawler.detail import redact_sensitive
+from youju.crawler.detail import _redact_until_stable
 
 # 最多过几遍（见模块说明）
 _MAX_PASSES = 4
@@ -26,8 +26,9 @@ def model_text(raw: str | None) -> str:
 
     text = raw or ""
     for _ in range(_MAX_PASSES):
-        once = v1.model_body_text(redact_sensitive(text))
-        if once == text:
-            break
+        redacted, converged = _redact_until_stable(text)
+        once = v1.model_body_text(redacted)
+        if once == text or (converged and once == redacted):
+            return once
         text = once
     return text
