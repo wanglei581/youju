@@ -43,7 +43,9 @@ from youju.classify import (
 )
 from youju.conditions import public_conditions
 from youju.crawler.detail import (
+    _HOUSEHOLD_HAN_CELL,
     _HOUSEHOLD_ITEM_ENDS,
+    _HOUSEHOLD_ITEM_WORDS,
     _HOUSEHOLD_NON_NAME_ENDS,
     _ROLE_WORDS,
     _SENSITIVE_HOUSEHOLD,
@@ -3429,7 +3431,7 @@ def _mask_line_before_phone(line: str, next_line: str) -> str:
         return line
     if _CROSS_PHONE_LABEL.match(next_line) and _PHONE_ANY.search(next_line):
         cut = len(line)
-        while cut > 0 and line[cut - 1] in " \t\u3000":
+        while cut > 0 and line[cut - 1] in " \t\u3000\r":
             cut -= 1
         if cut > 0 and line[cut - 1] in "，,、；;":
             cut -= 1
@@ -3630,6 +3632,7 @@ _NON_PERSON_HEAD = re.compile(
     r"日期|时间|编号|代码|序号|邮编|金额|经费|资金|数量|面积|产值|收入|利润"
     r"|职务|职称|性别|年龄|学历|民族|籍贯|备注|地址|住址|单位|部门|机构|企业|公司"
     r"|地区|城市|省份|区县|村名|帮扶村|属性|类别|类型"
+    r"|项目(?![ \t\u3000]*(?:负责人|联系人|联络人|经办人|填表人))"
 )
 _ONLY_PHONES = re.compile(rf"(?:{_PHONE}|[\s、/，,;；])+")
 _TARGET_CELL_SEP = re.compile(r"[\s、/，,;；]+")
@@ -3643,7 +3646,8 @@ def _is_contact_target_cell(head: str, value: str) -> bool:
     stripped = value.strip()
     if not stripped:
         return False
-    parts = [p for p in _TARGET_CELL_SEP.split(stripped) if p]
+    normalized = _EMAIL_ANY.sub(EMAIL_MARK, stripped)
+    parts = [p for p in _TARGET_CELL_SEP.split(normalized) if p]
     if not parts:
         return False
     for part in parts:
@@ -4130,17 +4134,20 @@ def display_attachment_text(text: str) -> str:
 def _is_household_row_name(
     value: str, *, allow_unit_end: bool = False, allow_item_end: bool = False
 ) -> bool:
-    """帮扶户/低保户表格行里，单个姓名格（含非常见姓氏的 2–4 字少数民族姓名）。"""
+    """帮扶户/低保户表格行里，单个姓名格（含非常见姓氏的 2–4 字及带"·"的少数民族姓名）。"""
     word = value.strip()
     if not (
-        bool(re.fullmatch(rf"[{_HAN_CHAR}·]{{2,4}}", word))
+        bool(_HOUSEHOLD_HAN_CELL.fullmatch(word))
         and word not in _NOT_NAME_WORDS
         and word not in _ATT_NOT_NAMES
         and word not in _NOT_NAMES
         and word not in _ROLE_WORDS
         and _SENSITIVE_HOUSEHOLD.search(word) is None
         and not word.endswith((*_HOUSEHOLD_NON_NAME_ENDS, "族", "户", "病", "级", "类", "型"))
-        and (allow_item_end or not word.endswith(_HOUSEHOLD_ITEM_ENDS))
+        and (
+            allow_item_end
+            or (word not in _HOUSEHOLD_ITEM_WORDS and not word.endswith(_HOUSEHOLD_ITEM_ENDS))
+        )
     ):
         return False
     if word.endswith(_NAME_TAIL_UNITS):
@@ -4194,7 +4201,12 @@ def display_attachment_row(cells: list[tuple[str, str]]) -> list[str]:
                 or (
                     not head.strip()
                     and i in hh_targets
-                    and (hh_targets[i] or _person(value.strip()) or len(value.strip()) == 2)
+                    and (
+                        hh_targets[i]
+                        or _person(value.strip())
+                        or len(value.strip()) == 2
+                        or "·" in value.strip()
+                    )
                 )
             )
         ):

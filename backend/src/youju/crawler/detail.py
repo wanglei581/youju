@@ -1036,11 +1036,11 @@ _BEFORE_PHONE = re.compile(r"\[(?:新?电话|手机号|新?QQ号|号码邮箱)�
 # [QQ号已脱敏]"，11/18 独立 Claude 第六轮）
 _NAME_TO_PHONE = re.compile(
     r"[^\S\n]*+(?:[，,（(、；;/／][^\S\n]*+)?"
-    r"(?:(?:(?:联[^\S\n]*+系)?(?:电[^\S\n]*+话|手[^\S\n]*+机|座[^\S\n]*+机|固[^\S\n]*+话)(?:号码?)?"
+    r"(?:(?:(?:联[^\S\n]*+系)?(?:电[^\S\n]*+话|手[^\S\n]*+机|座[^\S\n]*+机|固[^\S\n]*+话|传[^\S\n]*+真)(?:号码?)?"
     r"|(?:QQ|qq|Qq|ＱＱ)群?(?:号码?)?|(?:电子)?(?:邮箱|邮件))"
     r"[^\S\n]*+)?[:：]?[^\S\n]*+$"
 )
-_REAL_PHONE_CUE = re.compile(r"电|手|座|固|联|QQ|qq|Qq|ＱＱ|邮|[:：]")
+_REAL_PHONE_CUE = re.compile(r"电|手|座|固|传|联|QQ|qq|Qq|ＱＱ|邮|[:：]")
 
 
 def _is_han(char: str) -> bool:
@@ -1408,21 +1408,24 @@ _HOUSEHOLD_PHONE_LINE = re.compile(
     r"(?:\[(?:新?电话|手机号)已脱敏\]|（这里隐去了电话）|1[3-9]\d{9}|0\d{2,3}[-－]?\d{7,8})"
 )
 _HOUSEHOLD_PARENS_LINE = re.compile(r"^[（(][^（）()\n]{2,20}[）)]$")
-_HOUSEHOLD_HAN_CELL = re.compile(rf"^[{_HAN}·]{{2,4}}$")
+_HOUSEHOLD_NAME_TOKEN = (
+    rf"(?:(?=[{_HAN}·]{{3,12}}(?![{_HAN}·]))[{_HAN}]+(?:·[{_HAN}]+)+|[{_HAN}]{{2,4}})"
+)
+_HOUSEHOLD_HAN_CELL = re.compile(rf"^{_HOUSEHOLD_NAME_TOKEN}$")
 _HOUSEHOLD_INLINE_LABEL = re.compile(
     rf"(?:帮扶对象|结对对象|帮扶户|结对户|户主|帮扶人|结对干部|帮扶干部|帮扶责任人)"
-    rf"[ \t\u3000]*[:：][ \t\u3000]*([{_HAN}·]{{2,4}})(?![{_HAN}])"
+    rf"[ \t\u3000]*[:：][ \t\u3000]*({_HOUSEHOLD_NAME_TOKEN})(?![{_HAN}·])"
 )
 _HOUSEHOLD_INLINE_PARENS = re.compile(
-    rf"(?<![{_HAN}])([{_HAN}·]{{2,4}})[ \t\u3000]*"
+    rf"(?<![{_HAN}·])({_HOUSEHOLD_NAME_TOKEN})[ \t\u3000]*"
     rf"[（(][^（）()\n]{{0,20}}{_SENSITIVE_HOUSEHOLD.pattern}[^（）()\n]{{0,20}}[）)]"
 )
 _HOUSEHOLD_CAT_THEN_NAME = re.compile(
     rf"{_SENSITIVE_HOUSEHOLD.pattern}(?:[ \t\u3000]*[:：][ \t\u3000]*|[ \t\u3000]+)"
-    rf"([{_HAN}·]{{2,4}})(?![{_HAN}])"
+    rf"({_HOUSEHOLD_NAME_TOKEN})(?![{_HAN}·])"
 )
 _HOUSEHOLD_ROW_BEFORE_CAT = re.compile(
-    rf"(?:^|(?<=\d[.、\s]))[ \t\u3000]*([{_HAN}·]{{2,4}})[ \t\u3000]+"
+    rf"(?:^|(?<=\d[.、\s]))[ \t\u3000]*({_HOUSEHOLD_NAME_TOKEN})[ \t\u3000]+"
     rf"(?:[^ \t\u3000\n]{{0,12}})?{_SENSITIVE_HOUSEHOLD.pattern}"
 )
 
@@ -1501,6 +1504,178 @@ _HOUSEHOLD_ITEM_ENDS = (
     "制品",
     "用品",
 )
+_MINORITY_NAME_WORDS = frozenset(
+    (
+        "阿依",
+        "阿旺",
+        "阿卜",
+        "阿布",
+        "阿力",
+        "阿迪",
+        "阿木",
+        "阿米",
+        "阿热",
+        "阿达",
+        "阿孜",
+        "阿西",
+        "阿克",
+        "阿斯",
+        "古丽",
+        "迪丽",
+        "热依",
+        "艾力",
+        "买买提",
+        "吐尔逊",
+        "木拉提",
+        "库尔班",
+        "帕丽",
+        "哈丽",
+        "扎西",
+        "达瓦",
+        "卓玛",
+        "次仁",
+        "才让",
+        "格桑",
+        "尼玛",
+        "索朗",
+        "拉姆",
+        "巴桑",
+        "多吉",
+        "央金",
+        "嘎玛",
+        "普布",
+        "洛桑",
+        "益西",
+        "琼达",
+        "旦增",
+        "贡嘎",
+        "土登",
+        "乌兰",
+        "巴图",
+        "斯琴",
+        "敖登",
+        "娜仁",
+        "萨仁",
+        "吉克",
+    )
+)
+_HOUSEHOLD_ITEM_WORDS = frozenset(
+    (
+        "苹果",
+        "梨子",
+        "李子",
+        "香蕉",
+        "核桃",
+        "青稞",
+        "小麦",
+        "大麦",
+        "荞麦",
+        "燕麦",
+        "玉米",
+        "大米",
+        "小米",
+        "糯米",
+        "黑米",
+        "水稻",
+        "高粱",
+        "谷子",
+        "黄豆",
+        "绿豆",
+        "红豆",
+        "黑豆",
+        "大豆",
+        "豌豆",
+        "扁豆",
+        "蚕豆",
+        "土豆",
+        "芸豆",
+        "豇豆",
+        "毛豆",
+        "红枣",
+        "大枣",
+        "枸杞",
+        "葡萄",
+        "柑橘",
+        "橙子",
+        "柚子",
+        "橘子",
+        "桃子",
+        "蜜桃",
+        "杏子",
+        "梅子",
+        "杨梅",
+        "樱桃",
+        "石榴",
+        "芒果",
+        "荔枝",
+        "龙眼",
+        "枇杷",
+        "柿子",
+        "栗子",
+        "板栗",
+        "菠萝",
+        "甘蔗",
+        "番茄",
+        "草莓",
+        "蓝莓",
+        "西瓜",
+        "甜瓜",
+        "黄瓜",
+        "冬瓜",
+        "南瓜",
+        "丝瓜",
+        "苦瓜",
+        "白菜",
+        "油菜",
+        "菠菜",
+        "芹菜",
+        "生菜",
+        "韭菜",
+        "青菜",
+        "香菜",
+        "萝卜",
+        "茄子",
+        "红薯",
+        "紫薯",
+        "甘薯",
+        "马铃薯",
+        "大蒜",
+        "大葱",
+        "洋葱",
+        "辣椒",
+        "花椒",
+        "青椒",
+        "花生",
+        "芝麻",
+        "棉花",
+        "烟叶",
+        "蜂蜜",
+        "木耳",
+        "香菇",
+        "蘑菇",
+        "猪肉",
+        "牛肉",
+        "羊肉",
+        "鸡肉",
+        "鸡蛋",
+        "鸭蛋",
+        "牛奶",
+        "羊奶",
+        "菜油",
+        "豆油",
+        "面粉",
+        "白糖",
+        "红糖",
+        "食盐",
+        "面条",
+        "面包",
+        "棉被",
+        "化肥",
+        "鸡苗",
+        "养殖",
+        "种植",
+    )
+)
 _MASKED_NAME_MARKS = frozenset(("[姓名已脱敏]", "（这里隐去了联系人）"))
 _HH_PLACEHOLDERS = frozenset(("无", "暂无", "略", "-", "—", "/", "未填写", "待定"))
 _MULTI_UNIT_ENDS = (
@@ -1569,7 +1744,10 @@ def _is_household_name(
         or any(label in word for label in _LABEL_WORDS)
         or _SENSITIVE_HOUSEHOLD.search(word) is not None
         or word.endswith(_HOUSEHOLD_NON_NAME_ENDS)
-        or (not allow_item_end and word.endswith(_HOUSEHOLD_ITEM_ENDS))
+        or (
+            not allow_item_end
+            and (word in _HOUSEHOLD_ITEM_WORDS or word.endswith(_HOUSEHOLD_ITEM_ENDS))
+        )
         or word.endswith(("户", "族"))
         or word.startswith(("已", "未", "无", "非"))
     ):
@@ -1579,8 +1757,10 @@ def _is_household_name(
         or (len(word) == 2 and word[0] in _SURNAMES and word not in _TWO_CHAR_UNIT_WORDS)
     ):
         return False
-    if allow_any_surname:
+    if allow_any_surname or word in _MINORITY_NAME_WORDS:
         return True
+    if "·" in word:
+        return 3 <= len(word) <= 12
     if len(word) == 2 and word[0] in _SURNAMES and word.endswith(_UNIT_ENDS):
         return word not in _TWO_CHAR_UNIT_WORDS
     return _name_like(word)
@@ -1602,7 +1782,7 @@ def _household_row_targets(
     has_serial = any(t.isdigit() and len(t) <= 3 for t in trims[:2])
     targets: dict[int, bool] = {}
 
-    def _score(idx: int) -> tuple[int, bool]:
+    def _score(idx: int, hh_idx: int) -> tuple[int, bool]:
         if idx < 0 or idx >= len(trims) or idx in non_name_cols:
             return 0, False
         t = trims[idx]
@@ -1617,22 +1797,28 @@ def _household_row_targets(
             return 10, False
         canonical_left = idx > 0 and trims[idx - 1].isdigit() and len(trims[idx - 1]) <= 3
         if _is_household_name(t, allow_any_surname=False):
-            return (3 if canonical_left else 2), False
-        if has_serial and _is_household_name(t, allow_any_surname=True):
-            minority_shape = len(t) == 4 or "·" in t
-            if canonical_left and minority_shape:
-                return 3, True
-            if minority_shape:
-                return 2, True
+            return (3 if canonical_left else 2), ("·" in t or t in _MINORITY_NAME_WORDS)
+        minority_shape = len(t) == 4 or "·" in t or t in _MINORITY_NAME_WORDS
+        if minority_shape and _is_household_name(t, allow_any_surname=True):
+            return (3 if canonical_left else 2), True
+        serial_adj_right = (
+            idx == hh_idx + 1
+            and hh_idx > 0
+            and trims[hh_idx - 1].isdigit()
+            and len(trims[hh_idx - 1]) <= 3
+        )
+        if (
+            has_serial
+            and (canonical_left or serial_adj_right)
+            and _is_household_name(t, allow_any_surname=True)
+        ):
             return 1, True
-        if (len(t) == 4 or "·" in t) and _is_household_name(t, allow_any_surname=True):
-            return 2, True
         return 0, False
 
     for hh_idx in hh_indices:
         left, right = hh_idx - 1, hh_idx + 1
-        ls, la = _score(left)
-        rs, ra = _score(right)
+        ls, la = _score(left, hh_idx)
+        rs, ra = _score(right, hh_idx)
         if ls == 0 and rs == 0:
             continue
         if ls >= 2 and rs >= 2:
@@ -1745,13 +1931,15 @@ def _household_name_spans(text: str) -> list[tuple[int, int]]:
                     or _HOUSEHOLD_PHONE_LINE.match(v) is not None
                 ):
                     continue
-                if not _is_household_name(v, allow_any_surname=True, allow_unit_end=True):
+                if not _is_household_name(
+                    v, allow_any_surname=True, allow_unit_end=True, allow_item_end=_name_like(v)
+                ):
                     sibling_non_names.setdefault(ncols, set()).add(ci)
                 elif (
                     v in _MASKED_NAME_MARKS
                     or _is_household_name(v, allow_any_surname=False, allow_unit_end=False)
                     or (
-                        (len(v) == 4 or "·" in v)
+                        (len(v) == 4 or "·" in v or v in _MINORITY_NAME_WORDS)
                         and _is_household_name(v, allow_any_surname=True, allow_unit_end=False)
                     )
                 ):
@@ -1774,7 +1962,7 @@ def _household_name_spans(text: str) -> list[tuple[int, int]]:
             h_cols = header_names.get(ncols)
             known_names = h_cols or inferred_names.get(ncols)
             disq_for_row = header_non_names.get(ncols, set())
-            if not known_names:
+            if not h_cols:
                 disq_for_row = disq_for_row | (
                     sibling_non_names.get(ncols, set()) - col_strong.get(ncols, set())
                 )
@@ -1828,7 +2016,7 @@ def _household_name_spans(text: str) -> list[tuple[int, int]]:
                 continue
 
         for m in _HOUSEHOLD_INLINE_LABEL.finditer(content):
-            if _is_household_name(m.group(1), allow_any_surname=True):
+            if _is_household_name(m.group(1), allow_any_surname=True, allow_item_end=True):
                 spans.append((line_start + m.start(1), line_start + m.end(1)))
         for m in _HOUSEHOLD_INLINE_PARENS.finditer(content):
             if _is_household_name(m.group(1), allow_any_surname=False):
@@ -1851,10 +2039,31 @@ def _household_name_spans(text: str) -> list[tuple[int, int]]:
             )
             if not has_hh_here and not cont_blank_hh:
                 continue
-            if known_names:
+            if explicit_header and known_names:
                 targets = {ci: True for ci in known_names}
             else:
-                targets = _household_row_targets(trims, non_name_cols=non_name_cols)
+                targets = (
+                    _household_row_targets(trims, non_name_cols=non_name_cols)
+                    if has_hh_here
+                    else {}
+                )
+                if known_names:
+                    for ci in known_names:
+                        if ci >= len(trims):
+                            continue
+                        val = trims[ci]
+                        targets[ci] = targets.get(ci, False) or bool(
+                            val
+                            and (
+                                cont_blank_hh
+                                or (ci > 0 and trims[ci - 1].isdigit() and len(trims[ci - 1]) <= 3)
+                                or len(val) == 4
+                                or "·" in val
+                                or val in _MINORITY_NAME_WORDS
+                                or val[0] in _SURNAMES
+                                or val.startswith(_COMPOUND_SURNAMES)
+                            )
+                        )
             pos = 0
             for idx, cell in enumerate(raw_cells):
                 c_trim = trims[idx]
@@ -1862,7 +2071,8 @@ def _household_name_spans(text: str) -> list[tuple[int, int]]:
                     c_trim,
                     allow_any_surname=targets[idx],
                     allow_unit_end=bool(known_names),
-                    allow_item_end=explicit_header,
+                    allow_item_end=explicit_header
+                    or (bool(known_names) and idx in known_names and _name_like(c_trim)),
                 ):
                     lead = len(cell) - len(cell.lstrip())
                     spans.append((line_start + pos + lead, line_start + pos + lead + len(c_trim)))
