@@ -3596,25 +3596,50 @@ _ATT_FIELD = re.compile(rf"[{_HAN_CHAR}]{{2,6}}\s*[:：]")
 _ATT_STOP = re.compile(r"[。；;！？!?\n]")
 _ATT_WINDOW = 40
 _ATT_WORD = rf"[{_HAN_CHAR}·](?: ?[{_HAN_CHAR}·]){{1,5}}"
+_ATT_TAIL_CHARS_PHONE = frozenset("，,、:：")
+_ATT_TAIL_CHARS_LABEL = frozenset("，,、；;。.")
+_ATT_SKIP_TRAIL_CHARS = frozenset("，,、:：；;/／（(")
+_ATT_SKIP_SEP_CHARS = frozenset("，,、；;/／（(")
 # 词和号码（下面的标签）中间隔着一串已遮的联系人标记的：跳过标记，看标记前面那个词（"省科技厅
 # 张三处长 （这里隐去了联系人），（这里隐去了电话）"，见 _SKIPPED_CONTACT）。这个词要是整个词
 # （前面不是汉字）：长词的后几个字（"某某局高原测试数据服务站 （这里隐去了联系人）"的
-# "试数据服务站"）不算，不然会把"联系人："那一段从词中间截开（11/19 全部正文对比看到的）
-_ATT_SKIP_CONTACTS = (
-    rf"(?<![{_HAN_CHAR}·])(?P<skipped>{_ATT_WORD})"
-    rf"(?:[\s，,、；;/／（(]*{_SKIPPED_CONTACT})+[\s，,、:：；;/／（(]*"
-)
-_ATT_BEFORE_PHONE = re.compile(rf"(?:{_ATT_SKIP_CONTACTS}|(?P<word>{_ATT_WORD})[\s，,、:：]*)$")
+# "试数据服务站"）不算，不然会把"联系人："那一段从词中间截开（11/19 全部正文对比看到的）。
 # 紧挨在"电话：""联系电话："这类标签前面的那个词（"电力处 梁弢；联系电话：……"，11/2 Codex 审阅）
 # 词和标签之间要隔着标点或空格："储备课题技术电话""纪检监察组联系电话"这类和标签连在一起的
-# 是部门、事项名，不是姓名（本机库全量对比看到的）
-_ATT_BEFORE_LABEL = re.compile(rf"(?:{_ATT_SKIP_CONTACTS}|(?P<word>{_ATT_WORD})[\s，,、；;。.]+)$")
+# 是部门、事项名，不是姓名（本机库全量对比看到的）。
+_ATT_WORD_END = re.compile(rf"(?P<word>{_ATT_WORD})$")
+_ATT_SKIPPED_WORD_END = re.compile(rf"(?<![{_HAN_CHAR}·])(?P<word>{_ATT_WORD})$")
 
 
-def _att_word(match: re.Match[str]) -> tuple[int, int]:
-    """_ATT_BEFORE_PHONE、_ATT_BEFORE_LABEL 认出的那个词的位置。"""
-    name = "skipped" if match.group("skipped") is not None else "word"
-    return match.start(name), match.end(name)
+def _att_before_word(line: str, end: int, *, before_label: bool) -> tuple[int, int] | None:
+    """在 line[:end] 末尾找号码或电话标签前的词，跳过任意长度的已遮联系人标记串。"""
+    pos = end
+    while pos > 0 and (line[pos - 1].isspace() or line[pos - 1] in _ATT_SKIP_TRAIL_CHARS):
+        pos -= 1
+    scan = pos
+    matched_skip = False
+    while scan > 0:
+        if line.endswith(_CONTACT_MARK, 0, scan):
+            scan -= len(_CONTACT_MARK)
+        elif line.endswith("[姓名已脱敏]", 0, scan):
+            scan -= len("[姓名已脱敏]")
+        else:
+            break
+        matched_skip = True
+        while scan > 0 and (line[scan - 1].isspace() or line[scan - 1] in _ATT_SKIP_SEP_CHARS):
+            scan -= 1
+    if matched_skip:
+        match = _ATT_SKIPPED_WORD_END.search(line, max(0, scan - 16), scan)
+        return None if match is None else (match.start("word"), match.end("word"))
+
+    trail_chars = _ATT_TAIL_CHARS_LABEL if before_label else _ATT_TAIL_CHARS_PHONE
+    wpos = end
+    while wpos > 0 and (line[wpos - 1].isspace() or line[wpos - 1] in trail_chars):
+        wpos -= 1
+    if before_label and wpos == end:
+        return None
+    match = _ATT_WORD_END.search(line, max(0, wpos - 16), wpos)
+    return None if match is None else (match.start("word"), match.end("word"))
 
 
 _NAME_HEAD = re.compile(
@@ -3993,17 +4018,17 @@ def _mask_attachment_line(line: str, after_label: bool) -> str:
             # "金额：3000000元"：后面接金额单位、像日期、"编号"后面的数不是号码，
             # 前面的词不当姓名（11/3）
             continue
-        before = _ATT_BEFORE_PHONE.search(line, 0, phone.start())
+        before = _att_before_word(line, phone.start(), before_label=False)
         if before is not None:
-            ws, we = _att_word(before)
+            ws, we = before
             spans.append((ws, we, _CONTACT_MARK))
             _extend_before(line, ws, spans)
     for label in _PHONE_LABEL.finditer(line):
         # 标签前面紧挨着的"联系"是标签的一部分（"联系电话："），不算在词里
-        end = label.start() - 2 if line[: label.start()].endswith("联系") else label.start()
-        before = _ATT_BEFORE_LABEL.search(line, 0, end)
+        end = label.start() - 2 if line.endswith("联系", 0, label.start()) else label.start()
+        before = _att_before_word(line, end, before_label=True)
         if before is not None:
-            ws, we = _att_word(before)
+            ws, we = before
             spans.append((ws, we, _CONTACT_MARK))
             _extend_before(line, ws, spans)
     # 从后往前遮，前面的位置不变；重叠的只遮一次

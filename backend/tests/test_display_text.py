@@ -2593,3 +2593,49 @@ def test_followup_minority_dot_crlf_produce_fax_project_and_spaced_email() -> No
     assert row_out[0] == "（这里隐去了联系人）"
     assert E in row_out[1] and "87654321 @qq.com" not in row_out[1]
     assert v1.display_attachment_row([("", row_out[0]), ("", row_out[1])]) == row_out
+
+    # 7. 连续多个已遮联系人标记（含长数字前缀）在号码与电话标签前的脱敏、不误伤长机构后缀与性能
+    long_skip_phone = "87654321 " * 2000 + "王五" + "（这里隐去了联系人）" * 12 + "13800138000"
+    t0 = time.perf_counter()
+    skip_phone_out = v1.display_attachment_row([("", long_skip_phone)])
+    assert time.perf_counter() - t0 < 0.5
+    assert "王五" not in skip_phone_out[0] and "13800138000" not in skip_phone_out[0]
+    assert skip_phone_out[0].endswith(f"（这里隐去了联系人）（这里隐去了联系人）{MARK}")
+    assert v1.display_attachment_row([("", skip_phone_out[0])]) == skip_phone_out
+
+    skip_label_in = "赵六" + "（这里隐去了联系人），[姓名已脱敏] " * 6 + "联系电话：010-82345678"
+    skip_label_out = v1.display_attachment_row([("", skip_label_in)])
+    assert "赵六" not in skip_label_out[0] and "010-82345678" not in skip_label_out[0]
+    assert skip_label_out[0] == f"（这里隐去了联系人）（这里隐去了联系人） 联系电话：{MARK}"
+    assert v1.display_attachment_row([("", skip_label_out[0])]) == skip_label_out
+
+    # 直接测 _mask_attachment_names（尚未经过 _tidy_marks 合并标记），确认 12 连环标记仍被完整跳过
+    raw_chain_phone = "王五" + "（这里隐去了联系人）" * 12 + "13800138000"
+    raw_chain_label = "赵六" + "（这里隐去了联系人），[姓名已脱敏] " * 6 + "联系电话：010-82345678"
+    assert "王五" not in v1._mask_attachment_names(raw_chain_phone)
+    assert "赵六" not in v1._mask_attachment_names(raw_chain_label)
+
+    # 直接边界：11 字最长 _ATT_WORD 窗口、链间禁冒号/句号、标签前须有分隔符、重复标签无二次方回退
+    s_max = "甲 乙 丙 丁 戊 己（这里隐去了联系人）"
+    assert v1._att_before_word(s_max, len(s_max), before_label=False) == (0, 11)
+    s_over = "庚甲乙丙丁戊己（这里隐去了联系人）"
+    assert v1._att_before_word(s_over, len(s_over), before_label=False) is None
+    s_bad_colon = "王五（这里隐去了联系人）：（这里隐去了联系人）"
+    assert v1._att_before_word(s_bad_colon, len(s_bad_colon), before_label=False) is None
+    s_bad_dot = "王五（这里隐去了联系人）。（这里隐去了联系人）"
+    assert v1._att_before_word(s_bad_dot, len(s_bad_dot), before_label=True) is None
+    assert v1._att_before_word("王五", 2, before_label=True) is None
+    assert v1._att_before_word("王五。", 3, before_label=True) == (0, 2)
+    s_skip_label = "王五（这里隐去了联系人）"
+    assert v1._att_before_word(s_skip_label, len(s_skip_label), before_label=True) == (0, 2)
+
+    t0 = time.perf_counter()
+    rep_labels = v1._mask_attachment_names("电话：" * 2000)
+    assert time.perf_counter() - t0 < 0.5
+    assert rep_labels == "电话：" * 2000
+
+    long_org_skip = "省科技厅服务站" + "（这里隐去了联系人）" * 12 + "010-82345678"
+    long_org_out = v1.display_attachment_row([("", long_org_skip)])
+    assert "010-82345678" not in long_org_out[0]
+    assert long_org_out[0] == f"省科技厅服务站（这里隐去了联系人）{MARK}"
+    assert v1.display_attachment_row([("", long_org_out[0])]) == long_org_out
