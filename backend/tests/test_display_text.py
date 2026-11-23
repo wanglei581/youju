@@ -2639,3 +2639,75 @@ def test_followup_minority_dot_crlf_produce_fax_project_and_spaced_email() -> No
     assert "010-82345678" not in long_org_out[0]
     assert long_org_out[0] == f"省科技厅服务站（这里隐去了联系人）{MARK}"
     assert v1.display_attachment_row([("", long_org_out[0])]) == long_org_out
+
+
+def test_household_distinct_names_perf_and_model_text_convergence(monkeypatch) -> None:
+    """2,000 个不重复姓名表格冷缓存保持低耗时且幂等；超长串不入全局缓存；快路径与常量前提不回退。"""
+    assert all(len(s) == 2 for s in crawler_detail._COMPOUND_SURNAMES)
+    assert all(len(u) in (1, 2) for u in crawler_detail._UNIT_ENDS)
+    assert all(len(u) == 2 for u in crawler_detail._MULTI_UNIT_ENDS)
+    assert all(len(u) == 2 for u in crawler_detail._HOUSEHOLD_NON_NAME_ENDS)
+    assert all(len(u) in (1, 2) for u in crawler_detail._HOUSEHOLD_ITEM_ENDS)
+
+    distinct_table = "\n".join(
+        f"{i + 1} | 买买提{chr(0x4E00 + (i % 100))}·吐尔逊{chr(0x4E00 + (i // 100))} | 低保户 | 苹果"
+        for i in range(2000)
+    )
+    for fn in (v1.redact_sensitive, v1.display_body_text, model_text):
+        crawler_detail._name_like_cached.cache_clear()
+        crawler_detail._is_household_name_cached.cache_clear()
+        t0 = time.perf_counter()
+        out = fn(distinct_table)
+        assert time.perf_counter() - t0 < 0.5
+        assert "买买提" not in out and "吐尔逊" not in out
+        assert "低保户" in out and "苹果" in out
+        assert fn(out) == out
+
+    # 超长单元格/非姓名短串不会进入全局 LRU 缓存，避免长期驻留大字符串
+    crawler_detail._name_like_cached.cache_clear()
+    crawler_detail._is_household_name_cached.cache_clear()
+    for oversized in ("一" * 500, "甲·" * 20, "超长五字词", "单"):
+        assert crawler_detail._is_household_name(oversized) is False
+        assert crawler_detail._name_like(oversized, after_label=True) is False
+    assert crawler_detail._is_household_name_cached.cache_info().currsize == 0
+    assert crawler_detail._name_like_cached.cache_info().currsize == 0
+
+    redacted, converged = crawler_detail._redact_until_stable("1 | 张三 | 低保户 | 苹果")
+    assert converged is True
+    assert "张三" not in redacted
+    assert crawler_detail._redact_until_stable(redacted) == (redacted, True)
+
+    # _redact_until_stable 返回 False 时，model_text 仍需继续下一轮外层迭代
+    calls: list[str] = []
+
+    def fake_once(s: str) -> str:
+        calls.append(s)
+        return "联系人：张三" if s == "初始" else "联系人：[姓名已脱敏]"
+
+    monkeypatch.setattr(crawler_detail, "_redact_once", fake_once)
+    out_false, flag_false = crawler_detail._redact_until_stable("初始")
+    assert (out_false, flag_false) == ("联系人：张三", False)
+    assert model_text("初始") == "联系人：[姓名已脱敏]"
+    assert len(calls) >= 3
+    monkeypatch.undo()
+
+    multi_pass = "联系人：刘老师/李某\n65432109"
+    assert model_text(multi_pass) != v1.model_body_text(v1.redact_sensitive(multi_pass))
+    assert "65432109" not in model_text(multi_pass)
+
+    for sample in (
+        "1 | 张三 | 低保户 | 苹果\n联系人：李四 13800138000",
+        "1 | [姓名已脱敏] | 低保户 | 苹果\n电话：010-12345678",
+        "联系人：王五\n电话：65432109",
+        "姓名\t类别\t备注\n---\t---\t---\n1\t低保户\t\n张伟\t低保户\t无",
+    ):
+        shown_fast = v1.model_body_text(sample)
+        shown_full = v1._mask_contact_names(v1.display_marks(sample), mask_household=True)
+        shown_full = v1._hide_emails(
+            v1._mask_phones(
+                v1._mask_attachment_names(v1._mask_phones(shown_full), mask_household=True)
+            )
+        )
+        for old, new in v1._TO_STORE_MARKS:
+            shown_full = shown_full.replace(old, new)
+        assert shown_fast == shown_full

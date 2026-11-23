@@ -535,6 +535,17 @@ class DetailResult:
     raw_body: str = field(default="", repr=False)
 
 
+def _redact_until_stable(text: str) -> tuple[str, bool]:
+    """返回 (脱敏后文字, 是否已收敛到 _redact_once 不动点)。"""
+    while True:
+        once = _redact_once(text)
+        if once == text:
+            return once, True
+        if once.count("已脱敏]") <= text.count("已脱敏]"):
+            return once, False
+        text = once
+
+
 def redact_sensitive(text: str) -> str:
     """入库和测试快照共用的脱敏规则；不更改原站链接。
 
@@ -545,11 +556,7 @@ def redact_sensitive(text: str) -> str:
     一遍遮完再过一遍，直到不再变：遮了姓名，同一行后面的号码才认得出是电话（"联系人：\n张三 6543…"
     的姓名第一遍才遮），一遍遮不完的在这里遮完，所以再过一遍一定不变。每一遍只加标记、不去掉标记，
     一定会停；实际最多三遍，没有要遮的文字只走一遍。"""
-    while True:
-        once = _redact_once(text)
-        if once == text or once.count("已脱敏]") <= text.count("已脱敏]"):
-            return once
-        text = once
+    return _redact_until_stable(text)[0]
 
 
 def _redact_once(text: str) -> str:
@@ -960,6 +967,11 @@ _LABEL_WORDS = (
 )  # fmt: skip
 # 光是称呼、前面没有姓的不是姓名（"Ryan LEE 先生"的"先生"）
 _TITLES = ("先生", "女士", "老师", "同志")
+_COMPOUND_SURNAME_SET = frozenset(_COMPOUND_SURNAMES)
+_UNIT_END_1 = frozenset(u for u in _UNIT_ENDS if len(u) == 1)
+_UNIT_END_2 = frozenset(u for u in _UNIT_ENDS if len(u) == 2)
+_TITLES_SET = frozenset(_TITLES)
+_LABEL_WORDS_RE = re.compile("|".join(map(re.escape, _LABEL_WORDS)))
 # 职务（"请联系张三主任""办公室李处长"，见 _titled_cut）：同页面那一层的 _TITLE_END 里称呼以外的那些
 _JOB_TITLES = ("处长", "科长", "主任", "部长", "局长", "所长", "站长", "经理", "专员", "工程师")
 # 以常见姓氏开头、常挨着电话写的普通词、部门简称、职务（"值班电话：白天 0571-…""商务 0571-…"）：
@@ -1051,25 +1063,18 @@ def _inline_space(char: str) -> bool:
     return char.isspace() and char not in "\r\n"
 
 
-def _name_like(
-    word: str, *, after_label: bool = False, any_surname: bool = False, last: bool = False
-) -> bool:
-    """word 像不像姓名（"张 蕾"传进来时去掉了中间的空格）：以常见姓氏开头（复姓也认），2–3 个字
-    （复姓 4 个）；after_label——紧跟"联系人："的第一个像姓名的词——2–4 个字，带"·"的少数民族
-    姓名（3–12 个字）只在这里认、不看姓氏。any_surname：连写的"联系人："（旧规则认的写法，后面
-    2–8 个汉字一律遮）后面那个词也不看姓氏（"联系人：南楠"，和以前一样）；本次新认的写法（"联系人
-    及电话：""联 系 人："）后面要以常见姓氏开头（"联系人及电话：日前"的"日前"不遮）。
-    以单位、地名的字结尾的，含"电话""单位"这类标签字的，光是"先生""老师"的，都不算。
-    last：这个词是"联系人："后面同一行（冒号后没换行）的最后一个词（到标点、数字、换行为止）。"""
+@functools.lru_cache(maxsize=8192)
+def _name_like_cached(word: str, after_label: bool, any_surname: bool, last: bool) -> bool:
     if (
-        word in _TITLES
+        word in _TITLES_SET
         or word in _COMMON_WORDS
         or word in _PLACE_NAMES
-        or any(label in word for label in _LABEL_WORDS)
+        or _LABEL_WORDS_RE.search(word) is not None
     ):
         return False
-    surname = word[0] in _SURNAMES or word.startswith(_COMPOUND_SURNAMES)
-    if word.endswith(_UNIT_ENDS):
+    is_compound = word[:2] in _COMPOUND_SURNAME_SET
+    surname = word[0] in _SURNAMES or is_compound
+    if word[-1] in _UNIT_END_1 or word[-2:] in _UNIT_END_2:
         # "联系人："这一行的最后一个词、两个字、以常见姓氏开头的，以"路、镇、科"这类字结尾也是姓名
         # （"联系人：王镇""联系人：省科技厅高新处 张路"）；别处以单位、地名的字结尾的不当姓名
         # （"高新处""沙县"，"联系人：省科技厅 高校 张三"的"高校"）
@@ -1080,7 +1085,23 @@ def _name_like(
         return 2 <= len(word) <= 4
     if not surname:
         return False
-    return 2 <= len(word) <= 3 or (len(word) == 4 and word.startswith(_COMPOUND_SURNAMES))
+    return 2 <= len(word) <= 3 or (len(word) == 4 and is_compound)
+
+
+def _name_like(
+    word: str, *, after_label: bool = False, any_surname: bool = False, last: bool = False
+) -> bool:
+    """word 像不像姓名（"张 蕾"传进来时去掉了中间的空格）：以常见姓氏开头（复姓也认），2–3 个字
+    （复姓 4 个）；after_label——紧跟"联系人："的第一个像姓名的词——2–4 个字，带"·"的少数民族
+    姓名（3–12 个字）只在这里认、不看姓氏。any_surname：连写的"联系人："（旧规则认的写法，后面
+    2–8 个汉字一律遮）后面那个词也不看姓氏（"联系人：南楠"，和以前一样）；本次新认的写法（"联系人
+    及电话：""联 系 人："）后面要以常见姓氏开头（"联系人及电话：日前"的"日前"不遮）。
+    以单位、地名的字结尾的，含"电话""单位"这类标签字的，光是"先生""老师"的，都不算。
+    last：这个词是"联系人："后面同一行（冒号后没换行）的最后一个词（到标点、数字、换行为止）。"""
+    n = len(word)
+    if n < 2 or n > 12 or ("·" not in word and n > 4):
+        return False
+    return _name_like_cached(word, after_label, any_surname, last)
 
 
 # 单位名、地名后面紧跟着姓名时，前面那截的结尾：单位的字、"联系人"这类标签，还有不以单位的字结尾的
@@ -1724,6 +1745,58 @@ _HH_HEADER_NON_NAME = re.compile(
     r"|村名|帮扶村|性别|年龄|民族|日期|时间|金额|经费|资金|原因|情况|说明|内容"
     r"|标准|状态|等级|结果|关系"
 )
+_MULTI_UNIT_ENDS_SET = frozenset(_MULTI_UNIT_ENDS)
+_HOUSEHOLD_NON_NAME_ENDS_SET = frozenset(_HOUSEHOLD_NON_NAME_ENDS)
+_HOUSEHOLD_ITEM_END_1 = frozenset(s for s in _HOUSEHOLD_ITEM_ENDS if len(s) == 1)
+_HOUSEHOLD_ITEM_END_2 = frozenset(s for s in _HOUSEHOLD_ITEM_ENDS if len(s) == 2)
+_HOUSEHOLD_STOP_LAST = frozenset(("户", "族"))
+_HOUSEHOLD_STOP_FIRST = frozenset(("已", "未", "无", "非"))
+_SEP_CELL_RE = re.compile(r"^[-: ]*$")
+_PHONE_LINE_FIRST = frozenset("联电手座固[（01")
+
+
+@functools.lru_cache(maxsize=8192)
+def _is_household_name_cached(
+    word: str,
+    allow_any_surname: bool,
+    allow_unit_end: bool,
+    allow_item_end: bool,
+) -> bool:
+    if (
+        word in _TITLES_SET
+        or word in _COMMON_WORDS
+        or word in _PLACE_NAMES
+        or word in _ROLE_WORDS
+        or word in _HOUSEHOLD_NON_NAMES
+        or word[-1] in _HOUSEHOLD_STOP_LAST
+        or word[0] in _HOUSEHOLD_STOP_FIRST
+        or word[-2:] in _HOUSEHOLD_NON_NAME_ENDS_SET
+        or (
+            not allow_item_end
+            and (
+                word in _HOUSEHOLD_ITEM_WORDS
+                or word[-1] in _HOUSEHOLD_ITEM_END_1
+                or word[-2:] in _HOUSEHOLD_ITEM_END_2
+            )
+        )
+        or ("户" in word and _SENSITIVE_HOUSEHOLD.search(word) is not None)
+        or _LABEL_WORDS_RE.search(word) is not None
+        or _HOUSEHOLD_HAN_CELL.fullmatch(word) is None
+    ):
+        return False
+    has_unit_end = word[-1] in _UNIT_END_1 or word[-2:] in _UNIT_END_2
+    if has_unit_end and not (
+        (allow_unit_end and word[-2:] not in _MULTI_UNIT_ENDS_SET)
+        or (len(word) == 2 and word[0] in _SURNAMES and word not in _TWO_CHAR_UNIT_WORDS)
+    ):
+        return False
+    if allow_any_surname or word in _MINORITY_NAME_WORDS:
+        return True
+    if "·" in word:
+        return True
+    if len(word) == 2 and word[0] in _SURNAMES and has_unit_end:
+        return word not in _TWO_CHAR_UNIT_WORDS
+    return _name_like(word)
 
 
 def _is_household_name(
@@ -1733,53 +1806,35 @@ def _is_household_name(
     allow_unit_end: bool = False,
     allow_item_end: bool = False,
 ) -> bool:
-    if not _HOUSEHOLD_HAN_CELL.fullmatch(word):
+    n = len(word)
+    if n < 2 or n > 12 or ("·" not in word and n > 4):
         return False
-    if (
-        word in _TITLES
-        or word in _COMMON_WORDS
-        or word in _PLACE_NAMES
-        or word in _ROLE_WORDS
-        or word in _HOUSEHOLD_NON_NAMES
-        or any(label in word for label in _LABEL_WORDS)
-        or _SENSITIVE_HOUSEHOLD.search(word) is not None
-        or word.endswith(_HOUSEHOLD_NON_NAME_ENDS)
-        or (
-            not allow_item_end
-            and (word in _HOUSEHOLD_ITEM_WORDS or word.endswith(_HOUSEHOLD_ITEM_ENDS))
-        )
-        or word.endswith(("户", "族"))
-        or word.startswith(("已", "未", "无", "非"))
-    ):
-        return False
-    if word.endswith(_UNIT_ENDS) and not (
-        (allow_unit_end and not word.endswith(_MULTI_UNIT_ENDS))
-        or (len(word) == 2 and word[0] in _SURNAMES and word not in _TWO_CHAR_UNIT_WORDS)
-    ):
-        return False
-    if allow_any_surname or word in _MINORITY_NAME_WORDS:
-        return True
-    if "·" in word:
-        return 3 <= len(word) <= 12
-    if len(word) == 2 and word[0] in _SURNAMES and word.endswith(_UNIT_ENDS):
-        return word not in _TWO_CHAR_UNIT_WORDS
-    return _name_like(word)
+    return _is_household_name_cached(word, allow_any_surname, allow_unit_end, allow_item_end)
 
 
 def _household_row_targets(
-    trims: list[str], *, non_name_cols: set[int] | frozenset[int] = frozenset()
+    trims: list[str],
+    *,
+    non_name_cols: set[int] | frozenset[int] = frozenset(),
+    hh_indices: list[int] | None = None,
 ) -> dict[int, bool]:
     """含低保/帮扶类别格的表格行里，挑与类别格相邻的姓名格 {列下标: 是否放开姓氏表}。"""
-    hh_indices = [
-        idx
-        for idx, ct in enumerate(trims)
-        if len(ct) <= 30
-        and not any(p in ct for p in "。！？")
-        and _SENSITIVE_HOUSEHOLD.search(ct) is not None
-    ]
+    if hh_indices is None:
+        hh_indices = [
+            idx
+            for idx, ct in enumerate(trims)
+            if len(ct) <= 30
+            and "户" in ct
+            and "。" not in ct
+            and "！" not in ct
+            and "？" not in ct
+            and _SENSITIVE_HOUSEHOLD.search(ct) is not None
+        ]
     if not hh_indices:
         return {}
-    has_serial = any(t.isdigit() and len(t) <= 3 for t in trims[:2])
+    has_serial = (bool(trims) and len(trims[0]) <= 3 and trims[0].isdigit()) or (
+        len(trims) > 1 and len(trims[1]) <= 3 and trims[1].isdigit()
+    )
     targets: dict[int, bool] = {}
 
     def _score(idx: int, hh_idx: int) -> tuple[int, bool]:
@@ -1788,14 +1843,14 @@ def _household_row_targets(
         t = trims[idx]
         if (
             not t
-            or (t.isdigit() and len(t) <= 3)
+            or (len(t) <= 3 and t.isdigit())
             or t in _HOUSEHOLD_NON_NAMES
-            or _SENSITIVE_HOUSEHOLD.search(t) is not None
+            or ("户" in t and _SENSITIVE_HOUSEHOLD.search(t) is not None)
         ):
             return 0, False
         if t in _MASKED_NAME_MARKS:
             return 10, False
-        canonical_left = idx > 0 and trims[idx - 1].isdigit() and len(trims[idx - 1]) <= 3
+        canonical_left = idx > 0 and len(trims[idx - 1]) <= 3 and trims[idx - 1].isdigit()
         if _is_household_name(t, allow_any_surname=False):
             return (3 if canonical_left else 2), ("·" in t or t in _MINORITY_NAME_WORDS)
         minority_shape = len(t) == 4 or "·" in t or t in _MINORITY_NAME_WORDS
@@ -1804,8 +1859,8 @@ def _household_row_targets(
         serial_adj_right = (
             idx == hh_idx + 1
             and hh_idx > 0
-            and trims[hh_idx - 1].isdigit()
             and len(trims[hh_idx - 1]) <= 3
+            and trims[hh_idx - 1].isdigit()
         )
         if (
             has_serial
@@ -1853,13 +1908,17 @@ def _household_name_spans(text: str) -> list[tuple[int, int]]:
 
     def _has_household_near(idx: int, radius: int = 15) -> bool:
         lo, hi = max(0, idx - radius), min(len(lines), idx + radius + 1)
-        return any(_SENSITIVE_HOUSEHOLD.search(lines[k][2]) for k in range(lo, hi))
+        return any(
+            "户" in lines[k][2] and _SENSITIVE_HOUSEHOLD.search(lines[k][2]) for k in range(lo, hi)
+        )
 
     # 连续 | / \t 表格块的表头和同列非姓名格上下文
     # （用于区分"项目 | 低保户 | 姓名"与"姓名 | 低保户 | 项目"）
     table_ctx: dict[int, tuple[set[int] | None, set[int], bool, set[int]]] = {}
     table_skip: set[int] = set()
-    block_rows: list[tuple[int, str, list[str]]] = []
+    row_cells: dict[int, tuple[list[str], list[str]]] = {}
+    row_hh_map: dict[int, list[int]] = {}
+    block_rows: list[tuple[int, list[str]]] = []
     block_sep = ""
 
     def _flush_table_block() -> None:
@@ -1868,84 +1927,102 @@ def _household_name_spans(text: str) -> list[tuple[int, int]]:
         header_names: dict[int, set[int]] = {}
         header_non_names: dict[int, set[int]] = {}
         data_rows: list[tuple[int, list[str]]] = []
-        for l_idx, trims in ((r[0], r[2]) for r in block_rows):
-            if all(not t or set(t) <= set("-: ") for t in trims):
+        for l_idx, trims in block_rows:
+            all_sep = True
+            is_data_row = False
+            for t in trims:
+                if not t:
+                    continue
+                if all_sep and not (t[0] in "-: " and _SEP_CELL_RE.fullmatch(t) is not None):
+                    all_sep = False
+                if (
+                    t.isdigit()
+                    or t in _MASKED_NAME_MARKS
+                    or ("户" in t and _SENSITIVE_HOUSEHOLD.fullmatch(t) is not None)
+                ):
+                    is_data_row = True
+                    if not all_sep:
+                        break
+            if all_sep:
                 table_skip.add(l_idx)
                 continue
             ncols = len(trims)
-            header_hits = sum(
-                1
-                for t in trims
-                if t and (_HH_HEADER_NAME.search(t) or _HH_HEADER_NON_NAME.search(t))
-            )
-            if (
-                header_hits >= 2
-                and not any(t.isdigit() for t in trims if t)
-                and not any(t in _MASKED_NAME_MARKS for t in trims)
-                and not any(_SENSITIVE_HOUSEHOLD.fullmatch(t) for t in trims if t)
-            ):
-                table_skip.add(l_idx)
-                n_cols = {
-                    ci
-                    for ci, t in enumerate(trims)
-                    if _HH_HEADER_NAME.search(t) and not _HH_HEADER_NON_NAME.search(t)
-                }
-                nn_cols = {
-                    ci
-                    for ci, t in enumerate(trims)
-                    if _HH_HEADER_NON_NAME.search(t) and ci not in n_cols
-                }
-                if n_cols:
-                    header_names[ncols] = n_cols
-                if nn_cols:
-                    header_non_names[ncols] = nn_cols
-            else:
-                data_rows.append((l_idx, trims))
+            if not is_data_row:
+                header_hits = sum(
+                    1
+                    for t in trims
+                    if t and (_HH_HEADER_NAME.search(t) or _HH_HEADER_NON_NAME.search(t))
+                )
+                if header_hits >= 2:
+                    table_skip.add(l_idx)
+                    n_cols = {
+                        ci
+                        for ci, t in enumerate(trims)
+                        if _HH_HEADER_NAME.search(t) and not _HH_HEADER_NON_NAME.search(t)
+                    }
+                    nn_cols = {
+                        ci
+                        for ci, t in enumerate(trims)
+                        if _HH_HEADER_NON_NAME.search(t) and ci not in n_cols
+                    }
+                    if n_cols:
+                        header_names[ncols] = n_cols
+                    if nn_cols:
+                        header_non_names[ncols] = nn_cols
+                    continue
+            data_rows.append((l_idx, trims))
         sibling_non_names: dict[int, set[int]] = {}
         col_strong: dict[int, set[int]] = {}
         col_adj_hh: dict[int, set[int]] = {}
         hh_cols_by_ncols: dict[int, set[int]] = {}
-        for _, trims in data_rows:
+        for l_idx, trims in data_rows:
             ncols = len(trims)
+            hh_cols_row: list[int] = []
             for ci, ct in enumerate(trims):
                 if (
                     len(ct) <= 30
-                    and not any(p in ct for p in "。！？")
+                    and "户" in ct
+                    and "。" not in ct
+                    and "！" not in ct
+                    and "？" not in ct
                     and _SENSITIVE_HOUSEHOLD.search(ct) is not None
                 ):
+                    hh_cols_row.append(ci)
                     hh_cols_by_ncols.setdefault(ncols, set()).add(ci)
                     if ci > 0:
                         col_adj_hh.setdefault(ncols, set()).add(ci - 1)
                     if ci + 1 < ncols:
                         col_adj_hh.setdefault(ncols, set()).add(ci + 1)
+            row_hh_map[l_idx] = hh_cols_row
             if ncols in header_names:
                 continue
             for ci, v in enumerate(trims):
+                if not v:
+                    continue
+                if v in _MASKED_NAME_MARKS:
+                    col_strong.setdefault(ncols, set()).add(ci)
+                    continue
                 if (
-                    not v
-                    or v in _HOUSEHOLD_NON_NAMES
+                    v in _HOUSEHOLD_NON_NAMES
                     or v in _HH_PLACEHOLDERS
-                    or v in _MASKED_NAME_MARKS
                     or v.isdigit()
-                    or _SENSITIVE_HOUSEHOLD.search(v) is not None
-                    or _HOUSEHOLD_PHONE_LINE.match(v) is not None
+                    or ("户" in v and _SENSITIVE_HOUSEHOLD.search(v) is not None)
+                    or (v[0] in _PHONE_LINE_FIRST and _HOUSEHOLD_PHONE_LINE.match(v) is not None)
                 ):
                     continue
+                allow_item = (
+                    v in _HOUSEHOLD_ITEM_WORDS
+                    or v[-1] in _HOUSEHOLD_ITEM_END_1
+                    or (len(v) >= 2 and v[-2:] in _HOUSEHOLD_ITEM_END_2)
+                ) and _name_like(v)
                 if not _is_household_name(
-                    v, allow_any_surname=True, allow_unit_end=True, allow_item_end=_name_like(v)
+                    v, allow_any_surname=True, allow_unit_end=True, allow_item_end=allow_item
                 ):
                     sibling_non_names.setdefault(ncols, set()).add(ci)
-                elif (
-                    v in _MASKED_NAME_MARKS
-                    or _is_household_name(v, allow_any_surname=False, allow_unit_end=False)
-                    or (
-                        (len(v) == 4 or "·" in v or v in _MINORITY_NAME_WORDS)
-                        and _is_household_name(v, allow_any_surname=True, allow_unit_end=False)
-                    )
+                elif _is_household_name(v, allow_any_surname=False, allow_unit_end=False) or (
+                    (len(v) == 4 or "·" in v or v in _MINORITY_NAME_WORDS)
+                    and _is_household_name(v, allow_any_surname=True, allow_unit_end=False)
                 ):
-                    col_strong.setdefault(ncols, set()).add(ci)
-            for ci, v in enumerate(trims):
-                if v in _MASKED_NAME_MARKS:
                     col_strong.setdefault(ncols, set()).add(ci)
         inferred_names: dict[int, set[int]] = {}
         if len(data_rows) >= 2:
@@ -1957,21 +2034,26 @@ def _household_name_spans(text: str) -> list[tuple[int, int]]:
                 inferred = (strong_cols & adj) - disq
                 if inferred:
                     inferred_names[ncols] = inferred
+        ctx_by_ncols: dict[int, tuple[set[int] | None, set[int], bool, set[int]]] = {}
         for l_idx, trims in data_rows:
             ncols = len(trims)
-            h_cols = header_names.get(ncols)
-            known_names = h_cols or inferred_names.get(ncols)
-            disq_for_row = header_non_names.get(ncols, set())
-            if not h_cols:
-                disq_for_row = disq_for_row | (
-                    sibling_non_names.get(ncols, set()) - col_strong.get(ncols, set())
+            ctx = ctx_by_ncols.get(ncols)
+            if ctx is None:
+                h_cols = header_names.get(ncols)
+                known_names = h_cols or inferred_names.get(ncols)
+                disq_for_row = header_non_names.get(ncols, set())
+                if not h_cols:
+                    disq_for_row = disq_for_row | (
+                        sibling_non_names.get(ncols, set()) - col_strong.get(ncols, set())
+                    )
+                ctx = (
+                    known_names,
+                    disq_for_row,
+                    bool(h_cols),
+                    hh_cols_by_ncols.get(ncols, set()),
                 )
-            table_ctx[l_idx] = (
-                known_names,
-                disq_for_row,
-                bool(h_cols),
-                hh_cols_by_ncols.get(ncols, set()),
-            )
+                ctx_by_ncols[ncols] = ctx
+            table_ctx[l_idx] = ctx
 
     for idx_line, (_, content_line, _) in enumerate(lines):
         sep_line = "|" if "|" in content_line else ("\t" if "\t" in content_line else "")
@@ -1984,29 +2066,50 @@ def _household_name_spans(text: str) -> list[tuple[int, int]]:
             _flush_table_block()
             block_rows = []
         block_sep = sep_line
-        block_rows.append((idx_line, sep_line, [c.strip() for c in content_line.split(sep_line)]))
+        raw_cells = content_line.split(sep_line)
+        trims = [c.strip() for c in raw_cells]
+        row_cells[idx_line] = (raw_cells, trims)
+        block_rows.append((idx_line, trims))
     _flush_table_block()
 
     for i, (line_start, content, trimmed) in enumerate(lines):
-        if _HOUSEHOLD_HAN_CELL.fullmatch(trimmed):
+        if (
+            2 <= len(trimmed) <= 12
+            and "|" not in trimmed
+            and "\t" not in trimmed
+            and _HOUSEHOLD_HAN_CELL.fullmatch(trimmed)
+        ):
             prev_t = lines[i - 1][2] if i > 0 else ""
-            has_serial = prev_t.isdigit() and len(prev_t) <= 3
+            has_serial = len(prev_t) <= 3 and prev_t.isdigit()
             next_t = lines[i + 1][2] if i + 1 < len(lines) else ""
             next2_t = lines[i + 2][2] if i + 2 < len(lines) else ""
             short_cat = (
-                bool(next_t) and len(next_t) <= 30 and not any(p in next_t for p in "。！？；：")
+                bool(next_t)
+                and len(next_t) <= 30
+                and "。" not in next_t
+                and "！" not in next_t
+                and "？" not in next_t
+                and "；" not in next_t
+                and "：" not in next_t
             )
             matched_cell = False
-            if short_cat and _SENSITIVE_HOUSEHOLD.search(next_t):
+            if short_cat and "户" in next_t and _SENSITIVE_HOUSEHOLD.search(next_t):
                 matched_cell = _is_household_name(trimmed, allow_any_surname=has_serial)
             elif (
                 has_serial
                 and short_cat
+                and next2_t
+                and next2_t[0] in _PHONE_LINE_FIRST
                 and _HOUSEHOLD_PHONE_LINE.match(next2_t)
                 and _has_household_near(i, 15)
             ):
                 matched_cell = _is_household_name(trimmed, allow_any_surname=True)
-            elif _HOUSEHOLD_PARENS_LINE.fullmatch(next_t) and _HOUSEHOLD_PHONE_LINE.match(next2_t):
+            elif (
+                _HOUSEHOLD_PARENS_LINE.fullmatch(next_t)
+                and next2_t
+                and next2_t[0] in _PHONE_LINE_FIRST
+                and _HOUSEHOLD_PHONE_LINE.match(next2_t)
+            ):
                 matched_cell = _is_household_name(
                     trimmed, allow_any_surname=_has_household_near(i, 20)
                 )
@@ -2015,19 +2118,21 @@ def _household_name_spans(text: str) -> list[tuple[int, int]]:
                 spans.append((line_start + lead, line_start + lead + len(trimmed)))
                 continue
 
-        for m in _HOUSEHOLD_INLINE_LABEL.finditer(content):
-            if _is_household_name(m.group(1), allow_any_surname=True, allow_item_end=True):
-                spans.append((line_start + m.start(1), line_start + m.end(1)))
-        for m in _HOUSEHOLD_INLINE_PARENS.finditer(content):
-            if _is_household_name(m.group(1), allow_any_surname=False):
-                spans.append((line_start + m.start(1), line_start + m.end(1)))
-        has_hh_here = _SENSITIVE_HOUSEHOLD.search(content) is not None
-        if "|" in content or "\t" in content:
+        if (":" in content or "：" in content) and (
+            "帮扶" in content or "结对" in content or "户主" in content
+        ):
+            for m in _HOUSEHOLD_INLINE_LABEL.finditer(content):
+                if _is_household_name(m.group(1), allow_any_surname=True, allow_item_end=True):
+                    spans.append((line_start + m.start(1), line_start + m.end(1)))
+        if "户" in content and ("(" in content or "（" in content):
+            for m in _HOUSEHOLD_INLINE_PARENS.finditer(content):
+                if _is_household_name(m.group(1), allow_any_surname=False):
+                    spans.append((line_start + m.start(1), line_start + m.end(1)))
+        has_hh_here = "户" in content and _SENSITIVE_HOUSEHOLD.search(content) is not None
+        if i in row_cells:
             if i in table_skip:
                 continue
-            sep = "|" if "|" in content else "\t"
-            raw_cells = content.split(sep)
-            trims = [c.strip() for c in raw_cells]
+            raw_cells, trims = row_cells[i]
             known_names, non_name_cols, explicit_header, hh_cols = table_ctx.get(
                 i, (None, set(), False, set())
             )
@@ -2043,7 +2148,9 @@ def _household_name_spans(text: str) -> list[tuple[int, int]]:
                 targets = {ci: True for ci in known_names}
             else:
                 targets = (
-                    _household_row_targets(trims, non_name_cols=non_name_cols)
+                    _household_row_targets(
+                        trims, non_name_cols=non_name_cols, hh_indices=row_hh_map.get(i)
+                    )
                     if has_hh_here
                     else {}
                 )
@@ -2056,12 +2163,12 @@ def _household_name_spans(text: str) -> list[tuple[int, int]]:
                             val
                             and (
                                 cont_blank_hh
-                                or (ci > 0 and trims[ci - 1].isdigit() and len(trims[ci - 1]) <= 3)
+                                or (ci > 0 and len(trims[ci - 1]) <= 3 and trims[ci - 1].isdigit())
                                 or len(val) == 4
                                 or "·" in val
                                 or val in _MINORITY_NAME_WORDS
                                 or val[0] in _SURNAMES
-                                or val.startswith(_COMPOUND_SURNAMES)
+                                or (len(val) >= 2 and val[:2] in _COMPOUND_SURNAME_SET)
                             )
                         )
             pos = 0
@@ -2072,11 +2179,32 @@ def _household_name_spans(text: str) -> list[tuple[int, int]]:
                     allow_any_surname=targets[idx],
                     allow_unit_end=bool(known_names),
                     allow_item_end=explicit_header
-                    or (bool(known_names) and idx in known_names and _name_like(c_trim)),
+                    or (
+                        bool(known_names)
+                        and idx in known_names
+                        and (
+                            c_trim in _HOUSEHOLD_ITEM_WORDS
+                            or (
+                                bool(c_trim)
+                                and (
+                                    c_trim[-1] in _HOUSEHOLD_ITEM_END_1
+                                    or (len(c_trim) >= 2 and c_trim[-2:] in _HOUSEHOLD_ITEM_END_2)
+                                )
+                            )
+                        )
+                        and _name_like(c_trim)
+                    ),
                 ):
                     lead = len(cell) - len(cell.lstrip())
                     spans.append((line_start + pos + lead, line_start + pos + lead + len(c_trim)))
-                if not any(p in cell for p in "。！？") and _SENSITIVE_HOUSEHOLD.search(cell):
+                if (
+                    len(c_trim) >= 6
+                    and "户" in c_trim
+                    and "。" not in cell
+                    and "！" not in cell
+                    and "？" not in cell
+                    and _SENSITIVE_HOUSEHOLD.search(cell)
+                ):
                     for pat, any_surname in (
                         (_HOUSEHOLD_CAT_THEN_NAME, False),
                         (_HOUSEHOLD_ROW_BEFORE_CAT, False),
@@ -2090,7 +2218,7 @@ def _household_name_spans(text: str) -> list[tuple[int, int]]:
             continue
         if not has_hh_here:
             continue
-        if any(p in content for p in "。！？"):
+        if "。" in content or "！" in content or "？" in content:
             continue
         for pat, any_surname in (
             (_HOUSEHOLD_CAT_THEN_NAME, False),

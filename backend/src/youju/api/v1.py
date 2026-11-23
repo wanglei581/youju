@@ -3511,13 +3511,14 @@ def _mask_line_before_phone(line: str, next_line: str) -> str:
     return line
 
 
-def _mask_contact_names(text: str) -> str:
+def _mask_contact_names(text: str, *, mask_household: bool = True) -> str:
     """给出正文前，联系人所在的行、只写了电话的行、网站编审署名里像姓名的词（常见姓氏开头的
     2–3 个字，和入库脱敏认姓名同一套）再遮一遍。以前入库时只遮了"联系人："后面的第一个词：
     "联系人：（这里隐去了联系人）某某处 张三"的张三、"刘老师，电话……""一审：张三"都还在
     （D-092 让名单类通知的正文也能读，10/25 用本机数据副本实测发现；Grok、agy 审阅补了连写、
     拆行、空格隔开的写法）。"""
-    text = _mask_household_lines(text, _CONTACT_MARK)
+    if mask_household:
+        text = _mask_household_lines(text, _CONTACT_MARK)
     lines = text.split("\n")
     out = []
     after_label = False
@@ -4073,9 +4074,10 @@ def _mask_quote_names(text: str) -> str:
     return "\n".join(_mask_quote_line(line) for line in text.split("\n"))
 
 
-def _mask_attachment_names(text: str) -> str:
+def _mask_attachment_names(text: str, *, mask_household: bool = True) -> str:
     """附件一段文字里的联系人姓名（按行判断，"联系人："写在行尾时看下一行）。"""
-    text = _mask_household_lines(text, _CONTACT_MARK)
+    if mask_household:
+        text = _mask_household_lines(text, _CONTACT_MARK)
     lines = text.split("\n")
     out = []
     after_label = False
@@ -4143,8 +4145,14 @@ def model_body_text(text: str) -> str:
     标记写成入库的写法。顺序和页面一样：先按整行遮联系人（_clean_reading_body 里那一道），再补遮
     号码、姓名，最后邮箱；页面上删按钮、并空行这些整理不做，段落位置和交给模型的文字对得上。
     再过一遍有时还会多遮（见 ai/model_text.py）：交给模型的文字用 model_text，过到不再变。"""
-    shown = _mask_contact_names(display_marks(text))
-    shown = _hide_emails(_mask_phones(_mask_attachment_names(_mask_phones(shown))))
+    marked = display_marks(text)
+    hh = _mask_household_lines(marked, _CONTACT_MARK)
+    shown = _mask_contact_names(hh, mask_household=False)
+    phoned = _mask_phones(shown)
+    # 若 _mask_household_lines 未改动任何字符且其后步骤也未改动，则 _mask_attachment_names 开头的
+    # _mask_household_lines 面对的是同一个已验证无匹配的串，可直接跳过。
+    need_hh = not (hh == marked and phoned == marked)
+    shown = _hide_emails(_mask_phones(_mask_attachment_names(phoned, mask_household=need_hh)))
     for old, new in _TO_STORE_MARKS:
         shown = shown.replace(old, new)
     return shown
