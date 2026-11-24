@@ -15,6 +15,8 @@
 /* AI 解读靠右；有"原文链接已失效"时它已靠右，AI 解读紧跟在后面 */
 .meta-ai { margin-left: auto; }
 .gone + .meta-ai { margin-left: 0; }
+/* D-123 清理期里的提示：橙色小字单独一行（和"原文链接已失效"同色） */
+.gone-line { margin-top: 10rpx; font-size: 24rpx; line-height: 1.6; color: var(--orange); }
 .group { margin-top: 16rpx; display: inline-flex; align-items: center; gap: 6rpx; padding: 6rpx 16rpx; border-radius: 8rpx; background: var(--fill); font-size: 25rpx; line-height: 1.6; color: var(--t2); }
 .versions { margin-top: 12rpx; padding: 4rpx 20rpx; border-left: 4rpx solid var(--line2); }
 .version { display: flex; align-items: center; gap: 16rpx; padding: 16rpx 0; border-bottom: 2rpx solid var(--line); }

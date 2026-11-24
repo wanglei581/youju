@@ -307,6 +307,7 @@ def profile(request: Request, session: SessionDep, user: KnownUserDep) -> dict:
             ),
             "pass": None,
             "correctionReward": rewards.correction_info(get_settings()),
+            "saved": _saved_entry(session, None),
         }
     counts = dict(
         session.execute(
@@ -364,7 +365,30 @@ def profile(request: Request, session: SessionDep, user: KnownUserDep) -> dict:
         "pass": payments.pass_summary(session, user.id, v1.now()),
         # 纠错被采纳送天数（D-070 ⑦）开着时，纠错页公开写出规则和采纳标准；关着为 None
         "correctionReward": rewards.correction_info(get_settings()),
+        # 我的保存（D-123）：开关开着、或者已经保存过的，"我的"页显示入口
+        "saved": _saved_entry(session, user),
     }
+
+
+def _saved_entry(session: Session, user: User | None) -> dict | None:
+    """ "我的"页"我的保存"入口：能保存时给（开关开着、新版隐私指引已上线）；不能保存但已经保存过
+    的也给（自己的数据要能看、能删）；都不是给 None，不放入口。"""
+    from youju import gone, saved
+    from youju.models import SavedDocument
+
+    # 能保存：开关开着、新版隐私指引已经上线（gone.saving_open）
+    enabled = gone.saving_open()
+    # 不能保存时：没保存过的人（绝大多数）只看一眼有没有行，不数（agy 第 1 轮）
+    if not enabled and (
+        user is None
+        or session.scalar(select(SavedDocument.id).where(SavedDocument.user_id == user.id).limit(1))
+        is None
+    ):
+        return None
+    count = saved.count(session, user.id) if user is not None else 0
+    if not enabled and not count:
+        return None
+    return {"enabled": enabled, "count": count, "max": get_settings().saved_max_per_user}
 
 
 def _require_rewards() -> None:
@@ -539,7 +563,8 @@ def agreement(body: AgreementIn, request: Request, session: SessionDep) -> dict:
 
 @router.delete("/me", status_code=204)
 def delete_account(session: SessionDep, user: KnownUserDep) -> None:
-    """注销：删除用户及其关注、订阅、纠错、埋点；没有记录也返回成功。"""
+    """注销：删除用户及其关注、订阅、纠错、埋点、保存的通知（saved_documents 随用户行级联删除）；
+    没有记录也返回成功。"""
     if user is not None:
         # 把本请求的配置传进去，注销时即使顾问开关已关闭也要删除结果文件。
         from youju import rewards
@@ -689,6 +714,9 @@ def personal_data(session: SessionDep, user: KnownUserDep) -> JSONResponse:
         "boostTrial": None,
         "passGifts": [],
         "passGiftsTotal": 0,
+        # 我的保存（D-123）：只列标题、日期和字数，保存的正文在"我的保存"里看、导出
+        "saved": [],
+        "savedTotal": 0,
         "retention": {
             "events": settings.retain_events_days,
             "feedback": settings.retain_feedback_days,
@@ -796,6 +824,18 @@ def personal_data(session: SessionDep, user: KnownUserDep) -> JSONResponse:
         )
     ]
 
+    from youju.api.saved import saved_list
+
+    result["saved"] = [
+        {
+            key: item[key]
+            for key in ("id", "docId", "title", "issuer", "date", "goneOn", "savedAt", "chars")
+        }
+        | {"cleaned": item["cleaned"]}
+        for item in saved_list(session, user.id)
+    ]
+    result["savedTotal"] = len(result["saved"])
+
     follows = session.scalars(
         select(Follow)
         .where(Follow.user_id == user.id)
@@ -900,7 +940,7 @@ def personal_data(session: SessionDep, user: KnownUserDep) -> JSONResponse:
 
     response = JSONResponse(result)
     # 历史数据中的标题或埋点属性可能很长；按时间保留较新的条目。
-    for key in ("events", "subscriptions", "feedback", "aiChats"):
+    for key in ("events", "subscriptions", "feedback", "aiChats", "saved"):
         if len(response.body) <= _DATA_BYTES_LIMIT:
             break
         items = result[key]

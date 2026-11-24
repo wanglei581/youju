@@ -17,8 +17,12 @@ AI 解读的时候）；31–90 天的大约一周查一次；没查过的先查
   （防机器人脚本），200 却没有内容：说明不了网页没了，状态不变，只记检查时间。
 连续两次（相隔至少 20 小时）都像是撤下了，才记"原网页已失效"（link_gone_at）；中间一次能打开
 就清空。小程序卡片标"原文链接已失效"（分不清撤稿还是改了地址，不说"已撤下"）、详情页写明哪天
-检查时打不开，正文照样可以看（我们保存的）；不能再开始新的 AI 解读（content.check 的
-link_gone）。
+检查时打不开；不能再开始新的 AI 解读（content.check 的 link_gone）。正文和附件照 D-097 不给
+（v1.reading_body、attachment_text.judge）。
+
+D-123（开关 YOUJU_GONE_CLEANUP_ENABLED，youju/gone.py）：失效那天起 7 天是清理期，正文、附件照常
+给看、可以保存和导出，期间每天再查一次（下面的清理期队列，最先查；能打开了就清空、清理取消），
+第 8 天这里跑完以后删掉（cli check-links 接着调 gone.cleanup_expired）。
 """
 
 import html
@@ -34,9 +38,10 @@ from zoneinfo import ZoneInfo
 
 import lxml.html
 from lxml import etree
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
+from youju import gone
 from youju.config import get_settings
 from youju.crawler.fetcher import FetchResult, PoliteFetcher
 from youju.models import Document, Source
@@ -207,7 +212,18 @@ def _select(session: Session, now: datetime, limit: int) -> tuple[list[tuple[int
     first = (Document.link_checked_at.is_not(None), Document.link_checked_at, Document.id)
     # 待确认的（上次像是撤下了、隔了 20 小时）最先；再是近 30 天该查的；再是 31–90 天该查的。
     # 后两种都是没查过的先查，再按上次检查从早到晚
-    queues = [
+    queues = []
+    if gone.enabled():
+        # D-123 清理期：失效后 10 天以内的每天查（不管发布了多久），排最前面，免得到了清理那天
+        # 还没再确认过（gone.cleanup_expired 要求最近 30 小时确认还打不开）。下面两队不再重复挑这些
+        window = Document.link_gone_at >= now - gone.RECHECK_SPAN
+        queues.append(
+            base.where(window, Document.link_checked_at <= now - RECENT_RECHECK).order_by(
+                Document.link_checked_at, Document.id
+            )
+        )
+        settled = and_(settled, or_(Document.link_gone_at.is_(None), ~window))
+    queues += [
         base.where(
             Document.link_suspect_at.is_not(None),
             Document.link_gone_at.is_(None),
@@ -260,16 +276,22 @@ def _apply(doc: Document, verdict: str, now: datetime) -> str:
     if verdict == "ok":
         doc.link_suspect_at = None
         doc.link_gone_at = None
+        doc.link_gone_seen_at = None
         return "ok"
     if verdict == "unknown":
+        # 判断不了：不改状态，也不算"确认还打不开"（D-123 到期清理看 link_gone_seen_at）
         return "unknown"
     if doc.link_suspect_at is None:
         doc.link_suspect_at = now
         return "suspect"
     if doc.link_gone_at is None and now - _utc(doc.link_suspect_at) >= CONFIRM_AFTER:
         doc.link_gone_at = now
+        doc.link_gone_seen_at = now
         return "gone"
-    return "gone" if doc.link_gone_at is not None else "suspect"
+    if doc.link_gone_at is not None:
+        doc.link_gone_seen_at = now
+        return "gone"
+    return "suspect"
 
 
 def _utc(value: datetime) -> datetime:

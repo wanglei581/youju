@@ -465,6 +465,8 @@ def test_personal_data_no_record_and_owned_rows(client, session, monkeypatch):
         "boostTrial": None,
         "passGifts": [],
         "passGiftsTotal": 0,
+        "saved": [],
+        "savedTotal": 0,
         "retention": {
             "events": 90,
             "feedback": 180,
@@ -1086,6 +1088,8 @@ def test_cleanup_removes_expired_personal_data(client, session, monkeypatch):
         "ai_results_removed": 0,
         "ai_chat_turns": 0,
         "ai_chats": 0,
+        # 我的保存（D-123）：下架了的通知的副本
+        "saved_taken_down": 0,
     }
     assert session.scalar(select(func.count(Event.id))) == 1
     assert [f.content for f in session.scalars(select(Feedback))] == ["新的"]

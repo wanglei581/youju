@@ -130,6 +130,43 @@ function exportDocs(ids, options) {
   });
 }
 
+// 一份通知的正文和附件文字导出成 Word（D-123：原网页打不开、7 天后清理的通知，清理期里导出；我的保存里
+// 导出副本）。fetch 返回文件内容；存到本机后用微信打开，记进导出记录（source 为 gone / saved，导出记录页
+// 据此回到详情页或保存的副本）。返回 true 表示已打开
+function exportWord(fetch, options) {
+  const opts = options || {};
+  if (!api.isLive()) {
+    wx.showToast({ title: '演示数据不能导出，连上接口后可用', icon: 'none' });
+    return Promise.resolve(false);
+  }
+  wx.showLoading({ title: '正在生成…', mask: true });
+  let size = 0;
+  return Promise.resolve().then(fetch)
+    .then((buffer) => { size = (buffer && buffer.byteLength) || 0; return save(buffer, 'docx'); })
+    .then((filePath) => {
+      const recorded = exportsLog.add({
+        id: Date.now(),
+        label: opts.label || '1 份文件',
+        count: 1,
+        format: 'docx',
+        size,
+        at: new Date().toISOString(),
+        path: filePath,
+        source: opts.source,
+        docId: opts.docId == null ? undefined : String(opts.docId),
+        savedId: opts.savedId == null ? undefined : String(opts.savedId),
+      });
+      if (recorded) clearOld(wx.getFileSystemManager(), filePath);
+      wx.hideLoading();
+      return open(filePath, 'docx');
+    })
+    .catch((err) => {
+      wx.hideLoading();
+      wx.showToast({ title: (err && err.message) || '导出失败', icon: 'none' });
+      return false;
+    });
+}
+
 // 目录结果先在小程序内查看；文件保存由结果页另行选择。
 function previewDocs(ids, options = {}) {
   if (!Array.isArray(ids) || !ids.length || ids.length > MAX) {
@@ -142,4 +179,4 @@ function previewDocs(ids, options = {}) {
 
 }
 
-module.exports = { exportDocs, previewDocs, MAX, open, exists, removeFiles, save, clearOld, remove };
+module.exports = { exportDocs, exportWord, previewDocs, MAX, open, exists, removeFiles, save, clearOld, remove };

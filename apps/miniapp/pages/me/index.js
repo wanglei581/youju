@@ -38,6 +38,9 @@ Page({
     // passHint：没买过写最便宜一档的价格（"30 天 29 元起"），买过写到期日；取不到就不写
     passEntry: false,
     passHint: '',
+    // "我的保存"（D-123）：服务端 /me 给了 saved（开关开着，或者保存过）、包里有这一页时显示；savedHint 写保存了几份
+    savedEntry: false,
+    savedHint: '',
     // 页头"批量工具"标识：使用期内才有（买的、送的都算，不看在不在卖），写到哪天；点了去购买页（在售时）或订单页
     passBadge: '',
     // 数据从哪里来：取自收录范围接口（演示时是演示数据）；取到之前不显示数字
@@ -75,7 +78,7 @@ Page({
   // 查询 /me 不会建用户记录。
   refresh() {
     if (!api.isLive() || !this.data.loginOpen) {
-      this.setData({ signedIn: false, hasRecord: false, outdated: false, profileLoading: false, profileError: '', ordersEntry: false, passEntry: false, passHint: '', passBadge: '' });
+      this.setData({ signedIn: false, hasRecord: false, outdated: false, profileLoading: false, profileError: '', ordersEntry: false, passEntry: false, passHint: '', passBadge: '', savedEntry: false, savedHint: '' });
       return;
     }
     const started = consentEpoch();
@@ -99,6 +102,8 @@ Page({
           ordersEntry: pages.has('orders') && !!(res.pay && res.pay.hasOrders === true),
           passEntry: pages.has('pass') && !!(res.pay && res.pay.enabled === true),
           passHint: '',
+          savedEntry: pages.has('saved') && !!(res.saved && typeof res.saved === 'object'),
+          savedHint: res.saved && Number.isInteger(res.saved.count) && res.saved.count > 0 ? `${res.saved.count} 份` : '',
           // 标识点了去购买页、订单页或工具中心，包里一个都没有时不显示
           passBadge: current && res.pass && res.pass.active === true && (pages.has('pass') || pages.has('orders') || pages.has('advisor'))
             ? payUtils().passBadge(res.pass) : '',
@@ -166,7 +171,8 @@ Page({
   deleteAccount() {
     // 有没到期的使用期时多一个确认框（付费协议开卖必做第 3 项，utils/consent.js withdrawAccount）；
     // 弹窗按包里有的功能写删哪些记录（11/2 完整测试第 7 条）
-    withdrawAccount(this.data.has).then((ok) => {
+    // "保存的通知"只在服务端有这项功能（/me 给了 saved）时写，开关关着时不提（独立审阅第 1 轮）
+    withdrawAccount(Object.assign({}, this.data.has, { saved: !!(this.data.has.saved && this.data.savedEntry) })).then((ok) => {
       if (ok) this.setData({ signedIn: false, hasRecord: false, outdated: false, agreed: false, nudge: false, followCount: 0, reminderCount: 0, profileLoading: false, profileError: '' });
     });
   },

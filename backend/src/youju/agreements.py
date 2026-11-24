@@ -25,6 +25,12 @@ WITHOUT_TOOLS_TERMS = frozenset({"2026-11.1"})
 # 文字定稿以后不改；改字就升版本、请大家重新同意（小程序 content/chat-terms.js 的 version 一致）
 CHAT_AGREEMENT_VERSION = "chat-2026-12-v1"
 
+# "您保存的通知"（D-123 ⑤，我的保存）写进隐私保护指引的那一版：保存时核对，没同意过的先请他
+# 重新同意（同 TOOLS_AGREEMENT_VERSION，回退配置也不放宽）。2.0 的新版指引还没定稿，先写草稿
+# 建议的版本号（docs/合规/隐私保护指引_2.0自建服务器_草稿.md 第二节）；定稿时改成真正的版本号，
+# 比现行 2026-12 新：在那之前就算打开开关，也没人能保存
+SAVED_AGREEMENT_VERSION = "2027-01"
+
 
 def agreement_at_least(version: str | None, needed: str) -> bool:
     """同意的版本不早于 needed（如 AI 条款第一次写进去的那一版）。写法不对的不算。"""
