@@ -272,7 +272,7 @@ def test_group_notice_survives_template_length_limit(monkeypatch, field):
 
 def test_weekly_group_annotation_in_all_rendered_formats():
     own_due = SimpleNamespace(
-        kind="企业申报截止", approved_date=date(2026, 10, 9), approved_time=None
+        kind="企业申报截止", approved_date=date(2026, 10, 9), approved_time=None, reviewed_at=None
     )
     item = weekly.Item(
         12,
@@ -285,11 +285,15 @@ def test_weekly_group_annotation_in_all_rendered_formats():
         deadlines=(own_due,),
         versions=2,
     )
-    profile = SimpleNamespace(name="山东版", columns={"applications": True})
-    columns = {key: [item] if key == "applications" else [] for key in weekly.COLUMNS}
-    _, html, text, linked, counts, ids = weekly.render(
-        profile, reports.START, reports.START + timedelta(days=6), reports.NOW.date(), columns
+    profile = SimpleNamespace(
+        name="山东版", columns={"applications": True}, provinces=["山东"], keywords=[]
     )
+    columns = {key: [item] if key == "applications" else [] for key in weekly.COLUMNS}
+    rendered = weekly.render(
+        profile, reports.START, reports.START + timedelta(days=6), reports.NOW, columns
+    )
+    html, text, linked = rendered.body_html, rendered.body_text, rendered.body_text_with_links
+    counts, ids = rendered.counts, rendered.document_ids
     assert counts["applications"] == 1 and ids == [12]
     for body in (html, text, linked):
         assert "另有 2 个转发版本" in body
