@@ -176,9 +176,10 @@ test('不填 apiBaseUrl：照旧走云托管（callContainer），不登录', as
   assert.equal(h.cloud[0].config.env, 'prod-x');
 });
 
-test('配置文件：默认不填 apiBaseUrl；app.js 填了就不初始化云托管', () => {
+test('配置文件：已切到 2.0 自建服务器正式域名且清空云托管；app.js 填了就不初始化云托管', () => {
   const config = require('../utils/config.js');
-  assert.equal(config.apiBaseUrl, '');
+  assert.equal(config.apiBaseUrl, 'https://yj.zlixc.cn');
+  assert.equal(config.cloudEnv, '');
   assert.match(read('app.js'), /!config\.apiBaseUrl && config\.cloudEnv && wx\.cloud/);
 });
 
