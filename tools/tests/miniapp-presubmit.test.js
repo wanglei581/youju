@@ -202,6 +202,7 @@ test('已确认正式发布身份可以通过静态对照，环境变量不能�
     committed.project = { appid: project.appid };
     committed.config.cloudEnv = config.cloudEnv;
     committed.config.cloudService = config.cloudService;
+    committed.config.apiBaseUrl = config.apiBaseUrl;
     const committedResult = inspect({ ...committed, mode: 'prepare' });
     assert.equal(committedResult.checks.find(c => c.id === 'release-identity').state, 'pass');
     assert.equal(committedResult.externalEvidence, 'not_checked');
@@ -342,5 +343,5 @@ test('2.0 自建服务器：apiBaseUrl 只认登记的正式 https 域名，登�
       assert.equal(r.checks.find(c => c.id === 'cloud').state, 'fail');
     }
   }
-  assert.equal(releaseIdentity.apiBaseUrl, '');
+  assert.equal(releaseIdentity.apiBaseUrl, 'https://yj.zlixc.cn');
 });
